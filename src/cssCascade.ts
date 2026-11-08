@@ -34,6 +34,12 @@ type PseudoName = 'before' | 'after' | 'first-letter' | 'first-line' | 'marker';
  *
  * 後半は、仕様に値の決まりの無い部分の既定 (Chrome の既定のうち組版に効くもの): フォームの部品の字の大きさ・書体・余白・背景、
  * ルビの注釈の字の大きさなど。
+ *
+ * 後半のうちルビの規則 (rbc・rtc・rb と、rtc・rt の字の大きさなど) は、CSS Ruby 1 の付録 A.1 の既定のスタイルシートを写したもの
+ * (https://www.w3.org/TR/css-ruby-1/#default-stylesheet 、取得した版は https://www.w3.org/TR/2022/WD-css-ruby-1-20221231/ )。
+ * This software includes material copied from or derived from CSS Ruby Annotation Layout Module Level 1 (https://www.w3.org/TR/2022/WD-css-ruby-1-20221231/).
+ * Copyright © 2022 W3C® (MIT, ERCIM, Keio, Beihang).
+ * (ライセンスの本文は THIRD_PARTY_NOTICES.md の 8 節)
  */
 export const HTML_UA_CSS = `
 /* 15.3.1 Hidden elements */
@@ -208,7 +214,10 @@ input[type="submit"], input[type="button"], input[type="reset"], button { paddin
 textarea { display: inline-block; }
 `;
 
-/** 互換モード (quirks mode) の文書の既定のスタイル (HTML Living Standard の 15 章の「In quirks mode」の規則。2026-11-04 取得) */
+/**
+ * 互換モード (quirks mode) の文書の既定のスタイル (HTML Living Standard の 15 章の「In quirks mode」の規則。2026-11-04 取得)。
+ * Copyright © WHATWG (Apple, Google, Mozilla, Microsoft)。ソースコードに取り込んだ部分は BSD 3-Clause License (THIRD_PARTY_NOTICES.md の 5 節)
+ */
 export const QUIRKS_UA_CSS = `
 /* 15.3.3 */ form { margin-block-end: 1em; }
 /* 15.3.7 */ li { list-style-position: inside; }

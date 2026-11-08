@@ -52,4 +52,4 @@ python3 scripts/make-conformance-images.py
 
 ## Quotations
 
-The text of the W3C specifications is quoted verbatim from the fetched originals. The sources and the dates of retrieval are recorded in the "Sources" appendix of each document. Product manuals are not quoted.
+The text of the W3C specifications is quoted verbatim from the fetched originals. The sources and the dates of retrieval are recorded in the "Sources" appendix of each document. The copyright in the quoted text belongs to W3C; the "Sources" appendix also gives, for each document, the version retrieved, the copyright notice of the original document and its license, followed by the full texts of the licenses. Product manuals are not quoted.
