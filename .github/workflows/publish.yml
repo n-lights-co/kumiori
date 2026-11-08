@@ -1,0 +1,56 @@
+# npm に公開する。タグ v<版> を push したときに動く (docs/RELEASING.md の「版を出すたびに」)。
+# npm の Trusted Publishing (OIDC) で認証するので、npm のトークンは保管しない。
+# npm のパッケージの設定 (Settings → Trusted Publisher) に、このリポジトリ・このファイルの名前 (publish.yml)・環境の名前 (npm) を登録しておく。
+# 来歴 (provenance) は Trusted Publishing で自動で付く。
+# Trusted Publishing には npm 11.5.1 以上・Node 22.14.0 以上・GitHub のホストのランナーが要る
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  # GitHub Actions の OIDC のトークンを npm へ渡すのに要る
+  id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # 環境 npm: リポジトリの Settings → Environments で「Required reviewers」を付けると、公開の前に人の承認を挟める
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # タグが main の上にあるかを確かめるため、main の履歴も取る
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@^11.5.1
+      # タグ (v0.1.1 など) が package.json の version と同じで、main に入ったコミットを指していること
+      - name: タグと版の確認
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$version" ]; then
+            echo "::error::タグ $GITHUB_REF_NAME が package.json の版 $version と違う"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::タグ $GITHUB_REF_NAME のコミットが main に入っていない"
+            exit 1
+          fi
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: .cache/fonts
+          # ci.yml と同じ (単体テストと Node のコマンドのテストが使う既定の書体)
+          key: fonts-defaults-v1
+      # prepublishOnly が型検査・テスト・3 つのビルド (build:dist) を走らせる
+      - run: npm publish

@@ -30,33 +30,49 @@ Kumiori は 3 つの形で公開します。
 
 ## 2. 版を出すたびに
 
-1. `CHANGELOG.md` に、その版の項目を書く (「(未公開)」を日付にする)
-2. `package.json` の `version` を上げる (`npm version patch|minor|major` を使うと、コミットとタグ `v0.1.1` も作られる)
-3. 公開前の確認:
+main はルールセットで守っているので、版の変更も PR で入れる。npm への公開は、タグを push すると GitHub Actions (`.github/workflows/publish.yml`) が行う (Trusted Publishing。下の「Trusted Publishing の設定」)。
+
+1. 作業用のブランチで、`CHANGELOG.md`・`CHANGELOG.en.md` にその版の項目を書き (見出しは「0.1.1 (公開の日付)」)、`package.json` の `version` を上げる。
+   `npm version patch|minor|major --no-git-tag-version` を使う (タグはマージした後の main に付けるので、ここでは作らない)
+2. 公開前の確認:
 
    ```bash
    npm publish --dry-run
    ```
 
    `prepublishOnly` が型検査・テスト・3 つのビルド (`build:dist`) を走らせ、tarball に入るファイルの一覧が出る。`dist-lib`・`dist-cli`・`dist-browser`・README・LICENSE などが入っていること、`src` やテストが入っていないことを見る
-4. 公開:
+3. PR を作り、CI が通ったらマージする
+4. マージした後の main にタグを付けて push する:
 
    ```bash
-   npm publish
+   git switch main && git pull
+   git tag -a v0.1.1 -m "v0.1.1"
+   git push origin v0.1.1
    ```
 
-   二段階認証のコードを聞かれる。一度公開した版は取り消せても同じ番号を使い直せないので、`--dry-run` の結果を見てから公開する
-5. タグと GitHub Release:
-
-   ```bash
-   git push origin main --tags
-   ```
-
-   GitHub の Releases で `v0.1.0` のリリースを作り、CHANGELOG の項目を本文にする
+   publish.yml が、タグと `package.json` の版が同じで、タグのコミットが main に入っていることを確かめてから `npm publish` する。Actions の「Publish」の実行で結果を見る。
+   一度公開した版は取り消せても同じ番号を使い直せない
+5. GitHub の Releases で、そのタグのリリースを作り、CHANGELOG の項目 (日本語と英語) を本文にする
 6. 確認: 別のディレクトリで `npx kumiori@<版> --version` が動くこと、`https://cdn.jsdelivr.net/npm/kumiori@<版>/dist-browser/kumiori.js` が開けること、GitHub Pages の画面が新しくなっていること
+
+### Trusted Publishing の設定 (最初に 1 度だけ)
+
+npm の Trusted Publishing では、GitHub Actions が OIDC で npm に認証する。npm のトークンを GitHub に保管しない。来歴 (provenance) も自動で付く。
+
+1. npm の `kumiori` のパッケージの **Settings** で、**Trusted Publisher** に GitHub Actions を足し、次を入れる:
+   - Organization or user: `n-lights-co`
+   - Repository: `kumiori`
+   - Workflow filename: `publish.yml` (拡張子まで同じに)
+   - Environment name: `npm`
+2. 登録した設定は、48 時間のうちに 1 度公開に使われないと切れる。次の版を出す直前に登録する (切れたら登録し直す)
+3. 公開の前に人の承認を挟むなら、GitHub のリポジトリの **Settings → Environments → npm** で **Required reviewers** を付ける (環境 `npm` は publish.yml が初めて動いたときにできる。先に作っておいてもよい)
+4. Trusted Publishing で公開できたら、npm のパッケージの **Settings → Publishing access** で、トークンでの公開を禁じる設定 (「Require two-factor authentication and disallow tokens」) にする
+5. タグを勝手に消したり付け替えたりできないよう、GitHub の **Settings → Rules** でタグのルールセット (対象 `v*`、Restrict deletions・Restrict updates) を作っておく
+
+手元からの公開 (`npm login` してから `npm publish`) もできる。Trusted Publishing が使えないときの代わりにする (4 でトークンを禁じても、2FA での手元からの公開はできる)
 
 ## 補足
 
 - 書体は npm のパッケージにも Pages にも入れていない。初回の実行時に Google Fonts から取る (Node のコマンドはキャッシュに保存する)
 - ライブラリは ES モジュールだけ。`require()` で読むには Node 22 以降が要る
-- npm の [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) を設定すれば、タグを push したときに GitHub Actions から公開できる (トークンの保管が要らず、来歴 (provenance) も付く)。最初の版を手元から公開した後に、npm のパッケージの設定で GitHub のリポジトリとワークフローの名前を登録し、公開のワークフローを足す
+- Trusted Publishing の仕組みと条件 (npm 11.5.1 以上・Node 22.14.0 以上・GitHub のホストのランナー) は npm の説明 ([Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers)) にある
