@@ -1,0 +1,350 @@
+> English translation of [xslfo-import.md](../xslfo-import.md) (the Japanese text is the original).
+
+# XSL-FO Import
+
+`src/xslfoImport.ts` converts XSL-FO (1.0 / 1.1) into Kumiori's logical tree (JSON).
+Choosing an FO file from "XSL-FO を読み込む" (Load XSL-FO) in the web app runs conversion → typesetting → preview;
+"JSON を保存" (Save JSON) exports the converted JSON, and "PDF としてダウンロード" (Download as PDF) exports the PDF.
+Elements and attributes that could not be converted are **not silently dropped**: the count of each kind is listed in the "変換レポート" (conversion report).
+
+```ts
+import { importXslFo, browserParse } from './xslfoImport';
+const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, trimMarks: true });
+// Node では @xmldom/xmldom の DOMParser を包んだ関数を第 2 引数に渡す (テストを参照)
+```
+
+(In Node, pass a function wrapping the DOMParser of `@xmldom/xmldom` as the second argument; see the tests.)
+
+## Conversion Table
+
+| XSL-FO | Kumiori |
+| --- | --- |
+| `simple-page-master` | `PageMaster` (page margins + `region-body` margins are summed into the body region's margins) |
+| `region-before/after/start/end` + `static-content` | Absolutely positioned containers placed in the region's rectangle (`staticContent`). Supports `region-name`. Follows `precedence` (before / after, default false): by default start / end run the full height to the top and bottom edges and before / after fit between them (reversed when true) |
+| `page-sequence-master` (single / repeatable / alternatives) | `masterAlternatives` (`page-position`, `odd-or-even`) plus per-master `staticContent` |
+| `page-sequence` / `flow` | `LPageSequence` / `LFlow` (`initial-page-number`, `writing-mode`) |
+| `block`, `inline`, `wrapper`, `basic-link`, `character` | `LBlock`, `LInline`, characters |
+| `inline-container` (a small block + a base-text block) | `LRuby` (ruby written with inline-container) |
+| Other `inline-container` | `LInlineContainer` (an inline box. May contain blocks. Shrink-to-fit, first-line baseline alignment and a differing `writing-mode` are also possible) |
+| `external-graphic` | `LImage` (unwraps `url()`, `content-width/height`; `scale-to-fit` fits `width/height` to the frame while keeping the aspect ratio). Image data comes from `AssetStore` |
+| `instream-foreign-object` | SVG is written back out as a standalone SVG document and becomes a data URI image (`LImage`) (the web app lets the browser draw it; the PDF keeps it as vectors). MathML: if the math font (STIX Two Math; loaded only for documents containing MathML) is available, formulas are typeset with the values in that font's OpenType MATH table, turned into an image of the glyph outlines (SVG), and placed with the formula's baseline aligned to the line baseline (`src/mathLayout.ts`). Layout follows the MathML Core algorithms (stretching of mo and large operators, spacing between characters in mrow, mfrac, msqrt, mroot, msub, msup, msubsup, munder, mover, munderover, mmultiscripts, script sizes), and operator properties are determined by the MathML Core operator dictionary (`src/mathOperators.ts`). Elements absent from MathML Core (mtable attributes, mlabeledtr, maligngroup, malignmark, mfenced, menclose, mstack, mlongdiv) and Content MathML (apply etc., rewritten into presentation notation) are also supported. `<mo>-</mo>` is typeset as a minus sign (−). Since a formula is a single image, it never wraps mid-line. When the math font cannot be loaded, the formula is rebuilt from inline elements (superscripts/subscripts, boxes for fractions and over/under scripts, radicals, stacked rows of mtable) and typeset in the body font. Stretchy brackets (( ) [ ] { } | etc. unless stretchy="false") are stretched as shapes (SVG) based on an estimate of the content height. Accent arrows (→ etc.) are drawn as a thin shape the width of the character below; a radical is a box with top and left borders plus a shape for the tick at the bottom left; ⎴ ⎵ are drawn as shapes. Negative rowspacing tightens the rows. MathML and SVG inside CDATA are also read. Anything else becomes a grey placeholder of the specified size |
+| `background-color` (block / inline / inline-container / table / row / cell / table-header, body, footer / block-container) | `backgroundColor` (header/body/footer backgrounds are inherited by cells without a background of their own) |
+| `background-color` of `region-body` / `region-before, after, start, end` | Absolutely positioned fill laid behind the body (`layer: 'behind'`) |
+| `reference-orientation` (block-container / inline-container / region-start, end, before, after / region-body) | Box rotation (`rotation`, counter-clockwise 0/90/180/270; `-90` etc. are normalized). For region-body it is `PageMaster.bodyRotation` (the body is typeset at its pre-rotation dimensions and rotated when drawn) |
+| `writing-mode` (block / block-container / inline-container / table / region-body / **each region**) | `writingMode`. A region follows its own setting (`from-page-master-region()` on the page-sequence = the region's setting); horizontal writing when none is given. `display-align` (center / after) is the block-direction alignment of the region's content (`blockAlign`) |
+| `axf:background-color` on `simple-page-master` (whole-page background) | `PageMaster.backgroundColor` (extends into the bleed) |
+| `table-and-caption`, `table`, `table-header/body/footer`, `table-row/cell` | `LTable` (fixed, proportional and % column widths, `number-columns/rows-spanned`; missing column definitions are filled in). When neither the table width nor the column widths are specified and `table-layout` is not fixed, columns are sized to their content (`fitContent`). If they do not fit, columns with short content keep their maximum length and the remaining columns share the rest in proportion to each column's maximum length (capped at the line width) (`fitContentRule: 'max-ratio'`. HTML uses the browser method of distributing proportionally between minimum and maximum) |
+| `list-block` / `list-item` | A borderless table of "label column + body column" (`provisional-distance-between-starts`) |
+| `float` (start/end/left/right/before) | `LFloat`. The position where it is placed (the anchor) counts as content, so the space-before and space-after of a block containing only a float are not collapsed (`anchorIsContent`) |
+| `footnote` / `footnote-body` | `LFootnote` (the reference-mark text becomes the label; the body is treated as carrying its own label, so `bodyLabel: false`) |
+| `leader` | `LLeader` (dots / rule / space / use-content, `leader-length.*`) |
+| `marker` / `retrieve-marker` | `LMarker` / `LRetrieveMarker` (`retrieve-position`, `retrieve-boundary`) |
+| `page-number` / `page-number-citation` | `{pageNumber}` token / `LPageNumberCitation` (typesetting is repeated until it converges) |
+| `block-container` | `LBlockContainer` (`absolute-position`, `top/left/right/bottom`; the body region origin is added to convert to page coordinates). `width`, `height` and `inline/block-progression-dimension` are the content dimensions (border and padding lie outside); `top`, `left` etc. are the position of the content edge (the border sticks out beyond it). Specifying only `inline-progression-dimension.maximum` uses the maximum width when the region's width exceeds it. A container with no height specified (except rotated, multi-column, clipped or orthogonal-writing-mode ones) continues across pages when it overflows |
+| `space-before/after`, `margin-*`, `start/end-indent` | `margin` (indent is an inherited absolute position, so the difference from the parent becomes the margin) |
+| `padding*`, `border*` (shorthands and before/after/start/end mapped to physical sides by writing mode) | `padding`, `border` (`thin/medium/thick` supported) |
+| `font-size` (em/% relative to the inherited value), `line-height` (lengths become ratios), `font-weight`, `color`, `background-color`, `text-align`, `text-indent`, `letter-spacing`, `orphans/widows`, `keep-together`, `break-before/after` | Styles of the same name |
+| `rgb-icc(r,g,b,#CMYK,c,m,y,k)` | `cmyk(c,m,y,k)` (kept as DeviceCMYK in the PDF) |
+| `rgb-icc(r,g,b,#Separation,'name',tint)` | If the name is among the spot color values (`spotColors`, `--spot-colors` on the CLI), `spot(tint,c,m,y,k,name)` (Separation in the PDF). Otherwise `rgb(r,g,b)` |
+
+## Default Values and Fonts
+
+When the FO gives no value, the **XSL-FO defaults** are used, not Kumiori's HTML defaults (10pt, line pitch 1.75, justified, hanging punctuation). The flavor of defaults is chosen with `compat` (`--compat` on the CLI): the spec mode `spec` (default) follows the XSL-FO 1.1 initial values (`font-size` = medium = 12pt, line pitch 1.2, start, no hanging punctuation); the compatibility mode `antenna` provides defaults that let documents written for AH Formatter be typeset as well (the values below are those of the compatibility mode).
+Values are layered in the order `fo:root` → `fo:page-sequence`: `font-size` = 10pt (medium; the XSL-FO specification leaves it implementation-dependent), `line-height` = 1.2 (a stand-in for normal. 10pt lines have a 12pt line pitch and 12pt lines 14.4pt. Half-leading is not varied per character in mixed Japanese/Latin lines. Changeable with `defaultLineHeight`), `text-align` = start (same as the XSL-FO initial value. Paragraphs with no setting are not justified), and 、。 at the line end are not hung (the initial value of `axf:hanging-punctuation` is none; enabled by `end` etc.). Line adjustment follows Requirements for Japanese Text Layout (JLREQ, https://www.w3.org/TR/jlreq/) §3.8 (in both compatibility and spec mode): when a line overflows, before pushing out, it first tries to pull in up to the next break opportunity by compressing (pulling in takes priority, §3.8.2). The order and limits of compression follow §3.8.3: Latin word spaces (down to 1/3 of the space) → the half-em space after closing brackets, commas and full stops at the line end → the quarter-em spaces around middle dots at the line end → the quarter-em spaces around middle dots within the line → the half-em space before opening brackets and after closing brackets and commas within the line → the quarter-em space between Japanese and Latin characters/digits (down to an eighth). The space after full stops within the line and the space before opening brackets at the line head are not compressed. Spacing between Japanese characters (solid setting) is not compressed. In compatibility mode, the total amount compressed by pulling in (word spaces, punctuation spaces, spacing between Japanese and Latin text) is limited to a half em (one punctuation mark's worth) per line (`lineSqueezeMax` = 0.5. For example, a character that would fit by compressing two commas, or one that would fit by slightly compressing Japanese/Latin spaces in many places, is sent to the next line instead of pulled in, while an amount that one comma suffices for is pulled in. In spec mode there is no such limit, as in JLREQ).
+The font is decided by the rules the web app passes to `mapFont`: bold, gothic-family and sans-serif are Noto Sans JP (Regular / Bold); everything else (mincho, serif, unspecified) is Noto Serif JP.
+Fonts such as MS Mincho and MS Gothic specified by the FO cannot be bundled (they are Microsoft fonts). They can be used by choosing the font files on your PC from "書体を読み込む" (Load fonts) in the web app (see the next section). If they are not loaded, Latin character widths and the like differ slightly from the original typesetting result.
+
+## Unsupported (counted in the report)
+
+Unknown elements (`fo:*`, MathML, the contents of `instream-foreign-object`), unknown region names, `reference-orientation` values that are not multiples of 90 (typeset as 0), unknown functions in length expressions, unreadable colors, `font-variant` and `word-spacing` (and `font-stretch`, which is read and typeset but also reported in the same place), unreadable values of `text-decoration`, `text-transform` and `baseline-shift`, `overflow` other than auto and visible, unknown values of `axf:punctuation-trim`, `axf:field-type`, `axf:field-checked-style`, `axf:field-font-size`, `axf:annotation-type` and `axf:annotation-flags`, images in `axf:printer-marks`, and FileAttachment annotations without a file to attach (turned into text annotations).
+Fine points of math (Content MathML, maligngroup, mlabeledtr) remain undrawn without being counted (I-02 in `BACKLOG.md`).
+
+The list of unsupported items and their priorities is recorded in [BACKLOG.md](BACKLOG.md).
+
+## Loading Images
+
+From "XSL-FO・画像を読み込む" (Load XSL-FO / images) in the web app, select **the FO file and the image files together (multiple selection)**. `src="url('img/a.png')"` in the FO is matched by file name (`a.png`).
+`data:` URIs and absolute URLs (when CORS allows) are loaded automatically. Images not found are shown as grey frames and listed in the conversion report. Adding just the images afterwards re-typesets the document.
+Supported formats are PNG / JPEG / GIF / BMP / SVG / WebP plus TIFF, WMF, EMF, EPS and CGM below. PNG and JPEG go into the PDF as is; GIF, BMP, WebP and TIFF have their pixels decoded and are embedded as PNG (images the browser can open are redrawn at output size × 300dpi). SVG is embedded as shapes; things that cannot become shapes, such as filter, are rasterized in the browser and approximated (shadows, blurs) in Node.
+
+Formats the browser cannot open are also read:
+
+- **TIFF**: pixels are read with utif (MIT) (uncompressed, PackBits, LZW; RGB, CMYK, YCbCr, palette). The reading code is loaded only when a TIFF is read.
+  CCITT codes (Compression=2 Modified Huffman, Compression=3 T.4 one- and two-dimensional, Compression=4 T.6) are read by `src/ccitt.ts`, written from Sections 10 and 11 of the TIFF 6.0 Specification and 4.1 / 4.2 of ITU-T T.4 (07/96) (the one-dimensional code table is copied from the tables in Section 10 of TIFF 6.0 and was verified to match the T.4 tables. FillOrder=2 and the black/white inversion when PhotometricInterpretation is BlackIsZero are also supported). The uncompressed mode (bit 1 of T4Options / T6Options; Table 5/T.4 of T.4) and tiled images (TIFF 6.0 Section 15) are also supported.
+- **WMF / EMF**: drawing commands (`src/metafile.ts`) are turned into SVG and drawn. They go into the PDF as vectors. Supported are pens, brushes and fonts; lines, polygons, rectangles, ellipses, arcs, chords, pies, paths and text;
+  coordinate systems (window; EMF world transforms); clipping (rectangle, region, path; every combination of RegionMode. OR / XOR involving a path is merged into one shape by polygon operations (`src/regionBool.ts`).
+  Restored by SAVEDC / RESTOREDC); region fills; pixels; images (DIB: RLE4, RLE8, JPEG, PNG, including DIB_PAL_COLORS / DIB_PAL_INDICES with logical palette indices);
+  EMR_ALPHABLEND (compositing with opacity); pattern brushes (DIB patterns, as a pattern tiled at the size of one device pixel. For EMF decided from the Device and Millimeters fields of the header, for WMF from the mapping mode).
+  Raster operations: those independent of the destination are drawn with the computed color. Those depending on the destination (SRCAND, SRCPAINT, SRCINVERT, DSTINVERT etc.) produce the same result through multiply, screen and difference blend layers (SVG mix-blend-mode, PDF BM)
+  when the color components of the source and pattern are 0 or 255. A SRCAND mask paired with a SRCINVERT at the same place becomes a single image with transparent parts.
+  Not drawn: operations mixing a source with color components other than 0 / 255 into the destination (bit operations cannot be expressed by compositing), Bitmap16 pattern brushes (a device-dependent format with no rule for pixel colors),
+  WMF pattern brushes whose device pixel size cannot be determined from the mapping mode, DIBs indexed into DEFAULT_PALETTE (device-dependent), and EMF+.
+  Hatched brushes (BS_HATCHED): the specification only fixes the orientation of the pattern and has no rule for the line spacing. At the user's request, lines 1 pixel thick are drawn every 8 device pixels
+  (as with pattern brushes, only when the device pixel size can be determined. Between the lines, the background color is used if the background mode is OPAQUE and a background color exists; otherwise nothing is painted).
+  Things for which the specifications ([MS-WMF], [MS-EMF]) fix no value, and which are therefore not guessed: dash lengths of PS_DASH etc., the initial background color (when there is no SETBKCOLOR),
+  and the break character of SETTEXTJUSTIFICATION.
+- **EPS**: drawn by executing the PostScript (`src/psInterp.ts`, `src/psFilters.ts`, `src/psGraphics.ts`, `src/eps.ts`; written from the PostScript Language Reference, 3rd edition, and the EPSF 3.0 specification).
+  Supports fills, strokes, clipping, color spaces (DeviceGray, DeviceRGB, DeviceCMYK, Indexed, Separation, DeviceN; CIE-based spaces use the components as is), images (image, colorimage, imagemask, type 3 and 4) and filters (ASCIIHex, ASCII85, RunLength, LZW, Flate, SubFile, ReusableStream; DCT is kept as JPEG).
+  The result is turned into SVG and goes into the PDF as shapes. Colors defined in DeviceCMYK also go into the PDF as DeviceCMYK.
+  Text is drawn with the glyph shapes of the embedded fonts (`src/psFonts.ts`, written from the Adobe Type 1 Font Format): Type 1 fonts (eexec, charstring encryption, flex, seac),
+  Type 3 fonts (BuildGlyph, BuildChar), composite fonts via CMap and CIDFontType 0 (composefont, StartData, GlyphDirectory),
+  and CFF fonts (StartData of FontSetInit; FontType 2 and CID-keyed CFF. `src/psCff.ts`, written from the CFF and Type 2 charstring specifications).
+  Fonts without glyph shapes (not embedded) are drawn by choosing a family (gothic, mincho, monospace) from the available fonts based on the font name.
+  Shadings (shfill and PatternType 2 patterns; ShadingType 1 to 7, with FunctionType 0, 2 and 3 functions and procedures) are drawn as an image that divides the painted area into pixels. Tiling patterns (PatternType 1) draw the PaintProc once and place copies shifted by XStep and YStep, clipped to the painted path (PaintType 2 uses the current color). Pattern strokes are not drawn yet. An EPS that contains something undrawable and has a DOS-format preview (TIFF, WMF) is drawn from the preview.
+  EPS written directly inside `fo:instream-foreign-object` (text starting with %!PS) is drawn too.
+- **CGM** (binary encoding): elements are read and turned into SVG (`src/cgm.ts`, written from the functional specification ISO/IEC 8632-1:1999 and the binary encoding 8632-3:1999).
+  Draws the precision elements (integer, real, VDC, colour, index), METAFILE DEFAULTS REPLACEMENT, VDC EXTENT and SCALING MODE (metric gives the size in mm, abstract a width of 400px),
+  colours (colour indices and colour tables, direct colours, COLOUR VALUE EXTENT, CMYK), lines, edges and fills (hollow, solid, hatch, empty, parallel and elliptical INTERPOLATED INTERIOR),
+  POLYLINE, DISJOINT POLYLINE, POLYMARKER, POLYGON, POLYGON SET, RECTANGLE, CIRCLE, circular arcs (3-point, centre), ELLIPSE, elliptical arcs, POLYBEZIER,
+  TEXT, RESTRICTED TEXT and APPEND TEXT (the font family is chosen from the PostScript names in FONT LIST), and CLIP RECTANGLE.
+  Values the specification leaves to the display device or implementation are as follows: the background colour is white, the foreground colour black. The reference for scaled line width is 0.192pt.
+  The cap height of text is taken as 0.72em. For line types 2–5, the dash and gap lengths are multiples of the line width. RESTRICTED TEXT (basic) shrinks the character height to the box height and shrinks horizontally only when the width is exceeded.
+  Scaled and mm line/edge widths and marker sizes are treated as sizes on the display device and do not change when the picture is scaled (`vector-effect="non-scaling-stroke"` / `"non-scaling-size"`; in PDF drawing, the inverse of the scale factor at which the picture is placed is applied. The reference for scaled marker size is 1.34pt). Fractional (a fraction of the display surface) scales together with the picture.
+  Closed figures (BEGIN FIGURE – END FIGURE, NEW REGION) join the line and fill elements inside into a region, drawn at END FIGURE as a single fill according to the interior style, with the edges drawn using the edge attributes.
+  Not drawn yet: CELL ARRAY, patterns, ESCAPE (registered content such as transparency), colour interpolation of triangles (filled with the average of the 3 colours), TEXT PATH (other than right), and pictures after the first.
+- **.svgz** (gzipped SVG) is decompressed and read as SVG.
+
+Per-language punctuation spacing: `axf:space-before-punctuation`, `axf:space-after-punctuation`, `axf:space-between-punctuation-and-digit` and `axf:space-between-digit-and-punctuation` (code, space, language) in `fo:declarations` are read, and in text whose language (`xml:lang` / `language`) matches, spacing is inserted around the symbols as inline margins. A percentage in space is relative to the font size; `thin` is 1/6em. Nothing is inserted when the symbol is next to a space.
+
+Hyphenation: Latin words with `hyphenate="true"` are broken at hyphenation points with a hyphen at the line end. The hyphenation rules are hyphen (ISC; TeX patterns), currently English only (`xml:lang` / `language` of en, en-US or en-GB; English when unspecified). The rules are loaded only when a document using hyphenation is opened. Words shorter than 5 letters are not broken.
+
+Even for formats that cannot be drawn, the size is read from the file header (`src/imageInfo.ts`), so the placeholder frame has the correct dimensions. `border`, `padding` and `background-color` of `fo:external-graphic` are drawn outside the image (or outside the frame if there is a width / height frame).
+
+## Results on Published Sample FO Files
+
+The result of converting and typesetting published XSL-FO sample `.fo` files (the samples themselves are not bundled).
+The bullets below are the record from the early days of XSL-FO import (late 2026-10); the unsupported items and layout breakages listed were addressed in later PRs (E-01–E-06, E-10–E-13, I-01, I-03, I-08 in `BACKLOG.md`). The typeset results are checked against the sample PDFs with `scripts/compare-pdf.mjs` (`--ref` takes the directory of sample PDFs; see the README for the procedure).
+
+The early record:
+
+- **All samples succeeded in both conversion and typesetting** (no exceptions).
+- Frequently occurring unsupported items: borders other than solid, images, `text-align-last`, `keep-with-next`,
+  `inline-container` other than ruby, `font-style`, `baseline-shift`, multi-column layout.
+- Tables of contents (`page-number-citation` + `leader`), footnotes, `float` (side / before), left/right alternation via `page-sequence-master`, `marker` headings,
+  tables (`rowspan` / `colspan`), vertical writing (`tb-rl`) and ruby were confirmed to typeset with the same structure as the samples.
+- Examples of broken appearance: `float`s extending into the margin area (`marginal-notes-*`), rotation by `reference-orientation`, multi-column layout.
+
+## Latin Fallback
+
+The Latin character widths of Noto Serif/Sans JP are wider than Times/Arial, so line-break positions drift from documents made with Times/Arial widths in mind.
+Therefore `FontManager.setLatinFallback()` measures, draws and embeds in the PDF only the Latin characters (U+0020–024F, excluding § ¨ ° ± ´ ¶ × ÷)
+with Tinos (mincho family) / Arimo (gothic family). Japanese text stays in Noto JP as before.
+Since MS Mincho / MS Gothic themselves, as specified by the FO, are not bundled, this is not an exact match but Times/Arial-compatible widths.
+
+## Footnote Separator
+
+The `fo:leader` in `xsl-footnote-separator` is read: `leader-pattern="dots"` gives a dotted line (1pt square dots at a 3pt pitch),
+`rule` a solid line (reflecting `rule-thickness`), and `leader-length` is also interpreted as a percentage of the body width.
+When there is no leader, the default solid rule (1/3 of the body width) is used.
+
+## Multi-Column Layout
+
+`column-count` / `column-gap` of `fo:region-body` are converted to `PageMaster.columns`, and `span="all"` of `fo:block` to `LBlock.span`
+(effective only for blocks directly under the flow). Columns are arranged in the inline direction (top to bottom in vertical writing); when a column is full, content flows to the next column, and when the last column is full, to the next page.
+The columns just before a `span="all"` are balanced by trial typesetting while shrinking the column height on the last page by binary search. However, when the span block starts with a page break (or the preceding block ends with one), the columns on the preceding page are not balanced. Hoisting a nested block's `span="all"` to directly under the flow so it takes effect is done only in compatibility mode (per the spec it applies only to blocks directly under the flow, §7.21.4).
+Columns at the end of the flow (when nothing follows the span) are not balanced. Multi-column layout inside a block-container (`axf:column-count` / `axf:column-gap` / `axf:column-rule-*` / `axf:column-rule-display`) is also supported (columns are filled in order when a height is specified, balanced otherwise).
+
+
+## SVG
+
+SVG in `fo:external-graphic` is embedded in the PDF as vector commands (path, basic shapes, transform, fill/stroke, opacity, dashes).
+Linear and radial gradients (fill and stroke; spreadMethod repeat / reflect and the focal circle radius fr too. stop-opacity becomes a luminosity soft mask using the same gradient with the opacity turned into grey), clipPath, use / symbol, pattern (tiling patterns; contents limited to solid fills and strokes), `<style>` rules (simple selectors: element name, .class, #id), text (converted to the glyph outlines of the loaded fonts. In the PDF, text that is a plain solid fill only (no stroke, gradient or pattern) is drawn as PDF text with that font embedded, so the viewer renders it (hinting) the same way as the body text and it is selectable. x / y, dx / dy (em too), tspan, text-anchor, font-size / family / weight),
+nested svg and symbol with a viewBox (the viewBox is fitted to the frame with preserveAspectRatio and clipped to the frame unless overflow is visible),
+switch (the first child whose conditions are met; a child with requiredExtensions never qualifies),
+marker (placed at the start, middle and end vertices. orient auto / auto-start-reverse / angle, markerUnits, viewBox and refX / refY. Clipped to the marker frame unless overflow is visible or auto. However, for XSL-FO in the CLI's compatibility mode (`--compat antenna`), a marker with no overflow setting is not clipped),
+textPath (characters are placed one by one along the path and rotated to the direction at that point. startOffset, text-anchor),
+and mask (the contents are turned into shapes in the coordinates of the element using the mask, and in the PDF become a luminosity soft mask of a Form XObject. The mask region x, y, width, height are ignored. For nested masks only the inner one takes effect) are all output as vectors.
+@font-face, @import, @charset and @namespace in `<style>` are skipped, and elements in non-SVG namespaces (Visio's v:, Illustrator's i: etc.) are not drawn.
+SVG containing filter, patterns with transparency and the like, or CSS selectors that cannot be handled is rasterized at 300dpi as before.
+The Node CLI (`dist-cli/cli.js`) cannot rasterize, so among filters, shadows (feDropShadow; feGaussianBlur + feOffset + feMerge;
+the color of feFlood / feComposite, the density of feFuncA) and blur-only filters are approximated as shapes (a shadow is a stack of semi-transparent copies dilated by 0, 0.5σ, σ, 1.5σ and 2σ;
+a blur-only filter keeps the original shape). Other such SVG is drawn as a placeholder frame with a warning.
+
+## Separator Regions, Italics and Superscripts
+
+- If `xsl-footnote-separator` contains text or a block with a background color, that content, typeset across the full width of the footnote area, is used as the separator instead of a rule.
+- `xsl-before-float-separator` is placed between before-floats and the body only in columns / pages that have `float="before"` (`LPageSequence.beforeFloatSeparator`).
+- The `space-after` of a footnote body block becomes the gap to the next footnote. The footnote body inherits the font, alignment and color of the referencing block.
+- `font-style="italic|oblique"` is a synthetic oblique (12° slant; the same formula for Canvas and PDF). `baseline-shift` on `fo:inline` (super / sub / length) is expressed by raising the glyphs. A line containing shifted characters grows by the shift amount of those characters' line-height area (including half-leading) (not when `line-height-shift-adjustment="disregard-shifts"`).
+- For lines containing boxes such as images (including lines with no characters), the block's nominal-requested-line-rectangle (XSL §4.5) is determined by the ascent and descent of the block's nominal-font (§5.5.7: the font chosen by font-family etc.). Since generic family names (serif etc.) map to a pair of Japanese and Latin fonts, Japanese, Chinese and Korean documents (also when no language is specified) use the pair's Japanese font as the nominal-font, and documents in other languages the Latin font.
+- `line-height.conditionality="discard"` discards the half-leading above the first line and below the last line of a reference area (page, column, block-container, inline-container, table cell. XSL §6.5.3, §6.6.8, §6.7.10) (XSL §7.16.4, §4.3.1). It is not discarded if the edge of a block with a border or padding lies between the line and the edge of the reference area (§4.3.1). With `line-stacking-strategy="line-height"` the half-leading is part of the line rectangle and is not discarded (the Note in §4.5). Specifying line-height as a number or length resets to retain; specifying only conditionality changes the inherited value. `line-height.precedence` (§4.3.1): force (default; also when line-height is given as a single value) adds the half-leadings above and below consecutive lines; with a number, only the larger of the half-leadings between consecutive lines in the same paragraph is kept (no overlapping with `line-stacking-strategy="line-height"`). `line-height.minimum` / `.maximum` clamp the line pitch (optimum, or normal if absent) between the lower and upper bound (since lines are not adjusted by stretching or shrinking spaces, the line pitch is always that value).
+- `axf:ligature-mode="latin"` (Latin ligatures) replaces sequences with the ligature characters (U+FB00–U+FB04) if the font has them, and sequences without a Unicode ligature (fft, ffk etc.) also become ligatures if the font's ligature table (OpenType liga) merges them into a single glyph (in horizontal writing, with no letter-spacing). If the font has no ligature (ff in Tinos, for instance), no ligature is formed.
+- When a rotated (reference-orientation="90" / "270") block-container is placed page by page at the size of its contents, the leading space inside (space-before) is still discarded (start of a reference area).
+
+Footnotes, before-floats and separators in multi-column layout: by default, before-floats and their separator are placed at the top edge of the body region and footnotes and their separator at the bottom edge,
+spanning all columns, and the columns are typeset between them. Since the height of these areas is not known until typeset, the per-page reservation is increased and typesetting repeated until it stabilizes (at most 6 times).
+Only when `axf:footnote-position="column"` is specified on `fo:region-body` are footnotes placed per column (`PageMaster.columns.footnotePosition`).
+`axf:footnote-position="outside"` (horizontal-writing pages, non-multi-column body) makes side notes (`PageMaster.sideNotes`). The footnote body is typeset at the width of the region-end region on odd pages and region-start on even pages, placed from the top of the referencing line. When it would overlap the previous side note, it is pushed below it. If the page has no such region, it becomes an ordinary footnote.
+`space-before.conditionality="retain"` keeps the space even at the start of a column or page (`BoxStyle.retainSpaceBefore`). When it is on the first block of a multi-column layout, the tops of the following columns are lowered by the same amount.
+
+## Loading Fonts (MS Mincho, MS Gothic, etc.)
+
+From "書体を読み込む" (Load fonts) in the web app, choose TTF / OTF / TTC files on your PC (on Windows, `msmincho.ttc` and `msgothic.ttc` in `C:\Windows\Fonts`).
+A TTC is split into standalone fonts per face (`src/fontLoader.ts`), and the English family name and the alias (Japanese name) are read. Loaded fonts are saved in IndexedDB and available next time. They are never sent anywhere.
+
+The FO's `font-family` is interpreted as a whole list (differences in Japanese names, full-width characters and whitespace are absorbed: `ＭＳ 明朝` = `MS Mincho`).
+- The first entry is a loaded font: everything, Latin included, is typeset in that font.
+- A Latin font comes first, as in `Times New Roman, ＭＳ 明朝`: Latin text is typeset in Tinos (Arimo for gothic families), Japanese text in the loaded font.
+- No matching font: as before (Noto Sans JP for gothic families and bold, Noto Serif JP otherwise).
+
+Only the fonts used are embedded in the PDF, as subsets. Checking the font licenses is the responsibility of whoever loads them.
+
+## keep-with-next, text-align-last and Border Styles
+
+- `keep-with-next` / `keep-with-previous` (`always` or an integer of 1 or more) map to `LBlock.keepWithNext` / `keepWithPrevious`. Trial typesetting checks whether the chained run and the start of the following block fit on the same page; a page break is inserted before the run only if they do not fit but would after a page break.
+- `text-align-last` maps to `textAlignLast` (inherited). `relative` is the same as unspecified (the last line of justified text is set flush start).
+- `border-style` keeps dotted / dashed / double / groove / ridge / inset / outset in `BorderSide.style` and draws them as combinations of rectangles in both Canvas and PDF.
+  The patterns and corners are as follows:
+  - Sides are drawn clockwise (top left to right, right top to bottom, bottom right to left, left bottom to top). Dashes, for a thickness w, are [dash 4w, gap 2w] starting with a half-length (2w) dash. Dots are round dots every 2.5w along the path through the center of the line (w/2 inside from both ends). Neither evens out the pattern at the ends; the opposite end just stops with the remainder. If the preceding side in clockwise order has the same style, thickness and color, the pattern continues across the corner.
+  - For groove / ridge / inset / outset, the light side is the color mixed half-and-half with white and the dark side is 2/3 of the original color. Corners are mitered diagonally along the line joining the outer and inner corner (for solid, only when the adjacent side differs in color or style). Table cells are mitered only at the table's outer corners; at intersections with inner rules, horizontal lines pass through uncut. When a band is thinner than 0.5pt it is drawn as a stroke (so it is at least 1 pixel thick on screen).
+- Inside a multi-column block-container (`column-count`), the width of elements and the base for percentages is the width of one column (for example, an image with `width="80%"` is 80% of one column's width).
+- In multi-column layout, at a forced column break (`break-before="column"`) after a spanning (`span="all"`) block, the retained space at the top of the next column is not added on top of the heading's space-after (it lines up with the top of the first column).
+- `widows` / `orphans` are honored even when lines running alongside a float cross a page (if the lines going to the next page fall short of widows, lines from this page are sent along).
+- On multi-column pages (`column-count` on region-body) too, the width of elements in the flow and the base for percentages is the width of one column (for example, `inline-progression-dimension="50%"` on a multi-column page). A spanning (`span="all"`) block uses the body width.
+- Specifying only `inline-progression-dimension.minimum`: if the region is narrower than the minimum, the minimum width is used. Specifying only `block-progression-dimension.minimum`: that height is taken even with little content (`BoxStyle.minBlockSize`).
+- For an absolutely positioned block-container in compatibility mode with neither `left` nor `right`, the content edge is placed at the left edge of the reference area (the border outside it), and if no width is given it extends to the right edge of the reference area. Extending to the bottom edge when only `top` is given happens only when there is no `block-progression-dimension.minimum`.
+
+## inside / outside for text-align
+
+Alignment relative to the binding side. On odd pages inside = start (left) and outside = end (right); on even pages the reverse. Since the parity of the page being typeset is known when the line is placed,
+even a paragraph crossing pages changes its alignment page by page. Inside a block-container or table cell it is decided by the page on which that container is placed (`FlowHost.pageNumber`).
+
+## start-indent / end-indent and border / padding
+
+`start-indent` / `end-indent` express how many mm the edge **inside** the border and padding (the content area) is from the parent's content edge. Since border and padding attach outside it,
+`margin = indent difference − border − padding` (which can be negative, overflowing the parent's frame). Even when `margin-left` etc. are specified, the indent inherited by children is
+counted as parent content edge + margin + border + padding.
+
+Drawing order of borders: a block's borders are drawn after its children (in front). When a child overflows the parent's frame through `start-indent` etc., the parent's border is not hidden by the child's background or border.
+
+letter-spacing: a line with a value (length) specified has fixed character spacing, so even with `text-align="justify"` the spacing is not stretched and the line is set flush left (start) (`fixedLetterSpacing`). `letter-spacing="normal"` cancels this.
+
+Rationale (XSL-FO 1.1 §7.17.2): only when `letter-spacing` is `normal` may the implementation adjust inter-character spacing for justification. With `<length>`, "User agents may not further increase or decrease the inter-character space in order to justify text", so `.minimum` = `.optimum` = `.maximum`.
+The `<space>` form (`letter-spacing.minimum` / `.maximum`) allows adjustment within that range. Here `.maximum − .optimum` is treated as the upper limit of widening per character gap (`letterSpacingStretch`) (the shrinking side `.minimum` is unsupported).
+The order of adjustment relative to word spaces is implementation-dependent (spec). Kumiori does not stretch the spaces either in lines whose letter spacing is given as a length.
+
+`inline-progression-dimension` on `fo:inline` (a fixed length) becomes `LInline.width`. When the content is short, the remainder is filled with blank space, and the inline's background color also covers that blank space
+(for example, `<fo:inline inline-progression-dimension="2em" background-color="yellow"/>` is a yellow box 2em wide).
+
+Chained keep-with-next runs: trial typesetting confirms that the first block of the run and the start of the block following the run land on the same page (the same column in multi-column layout). Only when they do not, but would on a new page (column), is a page (column) break inserted before the run.
+
+Percentages in `content-width` / `content-height` of `fo:external-graphic` (`60%` etc.) are treated as a scale factor relative to the image's intrinsic size (px × 0.75 = pt) (`LImage.widthScale` / `heightScale`).
+They are not a fraction of the surrounding width. Percentages in `width` / `height` remain, as before, a fraction of the surrounding width.
+
+Length expressions: addition and subtraction of lengths such as `space-before="20mm+18pt+30pt"` (terms joined with `+` / `-`; units pt, mm, cm, in, px, pc, em, %) are interpreted. Multiplication, division, parentheses and numeric functions (`floor()`, `round()`, `min()`, etc.) are interpreted as well (see §5.9 below). Functions that refer to property values (`from-parent()`, `inherited-property-value()`, etc.) are unsupported and reported as a warning.
+
+## Changes to Match the XSL 1.1 Specification (Spec Review)
+
+- The initial value of `border-collapse` on tables is `collapse` (§7.28.3). For the borders of adjacent cells, only one line is drawn: the thicker one (if equal, by style double > solid > dashed > dotted …).
+  The width specified for a collapsed table is measured from the center of the outer border to the center of the outer border, and the outer half of the outer border sticks out of the table (into the margin) (CSS 2.1 §17.6.2).
+  In compatibility mode, a specified row height is also measured from border center to border center (a row touching the table's own outer border is shorter by half that border, and a border between rows is shared half-and-half by the rows above and below).
+- `display-align` on `table-cell` (inherited) is supported.
+- When `line-height` is specified as a length or percentage, the computed length is inherited as is (§7.16.4). Numbers are inherited as ratios.
+- The space derived from the leading block-direction margin, such as margin-top, is kept even at the start of a page or column (conditionality=retain in §5.3.2).
+- Whitespace and line feeds: `linefeed-treatment` / `white-space-treatment` / `white-space-collapse` / `wrap-option` and the shorthand `white-space` are handled according to their respective initial values. A tab is a single space.
+- `font-size` keywords step by a factor of 1.2 per level from medium (12pt in spec mode, 10pt in compatibility mode). A border with only a style specified has thickness medium. `thin` / `medium` / `thick` borders use the CSS values (0.75pt / 2.25pt / 3.75pt) in spec mode and 1pt / 3pt / 5pt in compatibility mode.
+- Page breaks: `column` (the next column in multi-column layout), `odd-page` and `even-page` (a blank page is inserted if the parity does not match) for `break-before` / `break-after` are supported (§7.20.2). In multi-column layout, `page` leaves the remaining columns empty and moves to the next page. `break-before/after` on tables also take effect.
+- `auto-odd` / `auto-even` for `initial-page-number` and `force-page-count` (default auto: if the next page-sequence's initial-page-number is a number, the parity of the last page is adjusted to lead into it) are supported (§7.27.6-7).
+- `id` is also picked up from inline, wrapper, table rows and cells, list items, block-containers, images and inline-containers, as targets of page-number-citation.
+- writing-mode: `tb-lr` is vertical writing stacking lines left to right (`vertical-lr`). `lr` / `tb` are abbreviations of `lr-tb` / `tb-rl`. `rl-tb` (`rl`) and `direction="rtl"` are right-to-left horizontal writing (`direction: 'rtl'`): lines run from the right, start / end are right / left, left / right in `text-align` are end / start, and table (list) columns also run from the right. Character ordering is determined by UAX #9 (Unicode Bidirectional Algorithm, Unicode 18.0.0) (see "Bidirectional text" below). Cursive scripts such as Arabic (characters whose Joining_Type is D, R, L or C, plus the combining marks following them) are grouped into a single unit, measured and drawn via the font's glyph substitution (initial, medial, final and isolated forms, and mandatory ligatures such as lam-alef; horizontal writing). GPOS adjustments such as mark positions within a unit are also included in the measured width and the glyph positions in the PDF. Ruby overhang is not handled. Values that progress bottom to top or change direction per line (§7.29.7) are typeset horizontally or vertically and then have an axis flipped: `bt-lr` and `bt-rl` run lines bottom to top in vertical writing (sideways Latin glyphs keep their top-to-bottom orientation), `lr-bt` and `rl-bt` stack lines and blocks bottom to top, `lr-alternating-*` reverses the direction of even lines, `lr-inverting-*` rotates even lines by 180 degrees (upside-down glyphs, right to left), and `tb-lr-in-lr-pairs` stacks two-character tate-chu-yoko pairs vertically (fitted to 1 em). They apply to block-container and to the writing-mode of page-sequence and region-body. A flipping container is kept as one box and does not continue across pages even without a specified height.
+- Region borders (drawn only in compatibility mode) are drawn inside the region, and the contents (static-content, body) are placed inside them (the contents are inset by the border thickness: 1pt for a thin border, 3pt for a medium border).
+- Regions are placed on the sides determined by the `simple-page-master`'s writing mode (§6.4.15-18). On a tb-rl page, region-before is at the right edge and region-start at the top edge. The default writing mode of the regions and the body is the page's writing mode.
+- keep: `keep-with-next` / `keep-with-previous` on table rows and list items (chained rows move to the next page together; if longer than one page they are split), `keep-together` and `keep-with-next` on tables, and `keep-together` on inline (within-line: no break mid-line). Integer strengths are not distinguished.
+
+## Flavors of Default Values (compatibility mode / per spec)
+
+Switched with `ImportOptions.compat` (in the web app, "仕様どおりの既定値で組む" (Typeset with spec defaults)).
+- `spec` (default): the XSL-FO 1.1 initial values. font-size medium = 12pt (the CSS2 recommendation), line-height normal = 1.2 (the upper end of the recommended range 1.0–1.2), text-align start, no hanging punctuation
+- `antenna`: 10pt, line pitch 1.2, line-end punctuation compressed to fit (values for typesetting documents written for AH Formatter)
+
+### Things typeset per spec, changed only in compatibility mode
+
+These were built according to the specification (XSL 1.1), and only those found to need a different layout when compared with published sample PDFs are changed in compatibility mode (`antenna`).
+
+| Item | Spec mode (`spec`) | Compatibility mode (`antenna`) | Evidence |
+|---|---|---|---|
+| Inner lines when table borders collapse | Adjacent cells each own half (§6.7.10) | The later (right / lower) cell owns the full thickness | Comparison with sample PDFs (text positions) |
+| letter-spacing | Half before and half after Alphabetic characters. The portions at the line start and end are discarded (§7.17.2) | After every character, punctuation included | Comparison with sample PDFs (line breaks) |
+| Line height (max-height, line-height) | The rules of §4.5. Character extents are the font's ascent and descent | The previous method (switching between the font's vertical extents and the em box) | Comparison with sample PDFs (using the font's ascent and descent with the §4.5 rules increased the difference) |
+| Table row height | minimum = optimum = maximum (§7.15.3) | Minimum height (grows when there is more content) | Previous comparisons |
+| capitalize | The rest of the word is left unchanged (§7.17.6) | The rest of the word is lowercased | Comparison with sample PDFs |
+| A line containing characters larger than the block's (max-height) | The rules of §4.5 | Enclose the font-size box and add the block's half-leading above and below (the same idea as §4.5) | Comparison with sample PDFs |
+| An absolutely positioned container with only top specified | Content height (CSS2 absolute positioning) | Extends to the bottom edge of the reference area as if bottom were 0 | Comparison with sample PDFs |
+| A rotated vertical-writing inline-container inside a horizontal line | Aligned to the baseline | The center of the box is aligned to the center line of the characters | Comparison with sample PDFs |
+| A rotated block-container (90° / 270°) that crosses pages | Width is the size of the contents | Full body width (270° is shifted to the right) | Comparison with sample PDFs |
+
+### Things done per spec (both modes)
+
+- Length expressions (§5.9): multiplication and division bind more tightly than addition and subtraction. Parentheses, `mod`, `floor()`, `ceiling()`, `round()`, `min()`, `max()`, `abs()`. Column widths of `proportional-column-width(N)+length` (§5.10.4). The `lh` unit (line height) is read for border thickness
+- Collapsing of table borders (§6.7.10): one line is chosen per segment from the borders of the cell, row, row group, column and table (including table-footer). `hidden` beats everything and removes the line. If thickness and style are equal and only the color differs: cell > row > row group > column > table. A `transparent` border takes up space but is not drawn
+- `border-separation` / `border-spacing` (§7.28.5, §7.31.9), `empty-cells="hide"` (§7.28.10), `starts-row` / `ends-row` in tables without table-row, and `column-number` on cells
+- A `table-layout="auto"` table with a width specified is still laid out automatically (§6.7.3). The missing width is given to columns with stretching leaders
+- Lists: the start-indent of the label and body is a position relative to the reference area (the list-block's own indent is not added twice). The end of the label with `label-end()` is provisional-distance-between-starts − provisional-label-separation (§7.30.11). The space-before / space-after of a list-item become margins before and after the row and collapse with the neighboring items
+- Spaces (§4.3.1): among spaces of the same precedence, the largest value including sign wins. Conditional spaces at the top of a page after a forced page break are discarded. Conditional spaces after a retained space are kept. A block-container is a reference area, so the leading and trailing spaces inside it do not collapse with the spaces outside (§4.2.5)
+- Bases for percentages: margin, padding and text-indent use the width of the containing block (the parent's content) (§7.11.1); height and block-progression-dimension use the height of a containing block with a determined height (§7.15.6); page and region-body margins use the page (page-reference-area) width; region extents use the page dimensions (§7.27.4; negative values become 0); baseline-shift uses the parent's line-height (em is that inline's font-size; §7.14.3); leader-length uses the dimensions of the area it is placed in (§7.22.4)
+- `.conditionality="retain"` on borders and padding: kept even at the cut between fragments split across pages or columns
+- Absolute positioning (§7.6.1): `right` and `bottom` are measured from the edge of the reference area (body region, region). `absolute-position="fixed"` uses the page as reference. The shorthand `position` is also read (§7.31.20)
+- em on page masters is based on the font-size inherited from fo:root. The page number format follows XSLT 1.0 §7.7.1 (only the first token is used; an unknown token is 1)
+- `line-stacking-strategy="font-height"` (the line pitch is always line-height. §4.5)
+- Initial values of leader: `rule-thickness` 1pt, `leader-length` 0pt / 12pt / 100%. `leader-pattern-width` is never narrower than the character width (§7.22). A rule's line is centered on the baseline with equal thickness above and below (§7.22.6)
+- Trailing spaces at the line end are not removed with `white-space-treatment="preserve"` / `ignore-if-after-linefeed` (§7.16.8)
+
+### Things not yet per spec
+
+- `last-line-end-indent` (§7.16.3), `word-spacing` and `font-size-adjust` are not read
+- `border-*-precedence` and `collapse-with-precedence` (treated the same as collapse)
+- The reference for absolute positioning inside rotated or vertical-writing block-containers (does not switch to the container)
+- `reference-orientation` on `simple-page-master`
+- `grouping-separator`, `grouping-size` and `letter-value` for page numbers
+
+## Other Spec Support (S-12)
+
+- Page number `format` (§7.26.1): `1` `01` `i` `I` `a` `A` `１` `一` with surrounding characters (per XSLT 1.0 §7.7.1, only the first token is used). Both page-number and page-number-citation output in the format of the referenced page.
+- `page-number-citation-last`: the last page on which the target is placed.
+- `page-sequence-master` (§6.4.8-11): single, repeatable (maximum-repeats) and alternatives are used in order. `blank-or-not-blank` treats blank pages added for parity or force-page-count as blank (not determined on multi-column pages).
+- `overflow` (§7.21.2): `hidden`, `scroll` and `error-if-overflow` clip (block-container, regions). `condense` and the like are reported as unsupported.
+- Lists: when the label has `end-indent="label-end()"`, `provisional-label-separation` (default 6pt) is left after the label.
+- Space precedence (§4.3.1): force (summed) and integers (only the higher one kept) for `space-before/after.precedence`.
+- Footnote reference marks are typeset with the font size and baseline-shift of the referencing inline in the FO.
+
+## Text Decoration, Table Footers and Row Splitting
+
+- `text-decoration`: underline, overline, line-through and the negations such as `no-underline` (`none` cancels everything). Inherited by child inlines; the line is drawn across the full extent of the inline.
+- `font-stretch`: keywords, percentages, wider / narrower (one step at a time). Characters are stretched horizontally. The keyword ratios are the CSS values in spec mode (ultra-condensed 50% to ultra-expanded 200%) and a factor of 1.2 per step from normal in compatibility mode (expanded is 1.44×, ultra-expanded about 2.07×).
+- `text-transform`: uppercase, lowercase, capitalize (inherited; stopped by `none`). capitalize uppercases the first letter of each word (after the apostrophe in "Oliver's" the word continues). In compatibility mode (`--compat antenna`), the rest of the word is lowercased; in spec mode the rest is left unchanged (XSL 1.1 §7.17.6). Uppercasing the Dutch "ij" as a single letter is unsupported
+- `table-footer` is repeated at the end of each page at every page break (body rows are placed leaving room for its height). With `table-omit-footer-at-break="true"`, only at the end of the table. `table-omit-header-at-break` is also supported.
+- A table row that does not fit on the page has its cell contents split line by line onto the next page (the default auto of keep-together). A row with `keep-together` specified is moved to the next page unsplit. A group of rows containing a rowSpan is moved unsplit if it fits on one page; if not, the spanning cells are split per row and the page break falls at a row boundary.
+- `border` / `padding` on inline (a frame around the text). When the inline crosses lines, the border and padding on the cut side are not drawn.
+- Japanese character spacing: consecutive punctuation (」「 get a half-em gap, 。」 is set solid, （「 compresses the space before the second bracket) and the quarter-em space between Japanese and Latin characters/digits (the full-width space U+3000 is also treated as a Japanese character). On in compatibility mode, off in spec mode (the default). Stopped by `axf:punctuation-trim="none"` / `axf:text-autospace="none"`.
+  The half-em space before full-width opening brackets at the line head (（「『【 etc.) is also compressed (the compatibility-mode default. Compressed with start / both of `axf:punctuation-trim`, not with none / end).
+  The half-em space after full-width closing brackets and punctuation at the line end (」。、 etc.) is discarded (the compatibility-mode default. In right-aligned and centered lines, the glyph face of a line-end 。 reaches the line edge. Discarded with end / both of `axf:punctuation-trim`, not with none / start. Not discarded in spec mode).
+- Punctuation compression amount: `axf:punctuation-spacing` (initial value 0.5em). The space after closing brackets (punctuation included) and before opening brackets is set to this value. When closing brackets follow one another (）、 etc.), a further half em is removed from that space (solid at 0.5em; a 0.25em overlap at 0.25em). When fitting a line, the remaining space is compressed until no space outside the glyph face remains (up to a half em).
+- Bidirectional text: the ordering of characters in a horizontal paragraph is determined by the rules of UAX #9 (Unicode Bidirectional Algorithm, Unicode 18.0.0) (P2–P3, X1–X10, W1–W7, N0–N2, I1–I2, L1, L2, L4) (`src/bidi.ts`; matches every case of the Unicode conformance tests BidiTest.txt and BidiCharacterTest.txt). The paragraph direction is `direction` (rtl, ltr).
+  Hebrew and Arabic words inside a left-to-right paragraph are also ordered right to left, and brackets etc. at right-to-left levels become their mirrored characters (L4). Control characters within the text (U+202A–U+202E, U+2066–U+2069) also take effect. `unicode-bidi` (embed, bidi-override) and `direction` on `fo:inline`, `fo:bidi-override` etc. are ordered as if control characters were inserted around the contents (§5.8). HTML's `unicode-bidi` (embed, isolate, bidi-override, isolate-override, plaintext) works the same way (Writing Modes 3 §2.4.2. bidi-override on a block overrides the whole contents, and plaintext decides the paragraph direction from the first strong character). In vertical lines too, right-to-left runs within the line are reordered (the paragraph direction is treated as top to bottom; rtl `direction` layout in vertical writing is not handled).
+- Line break opportunities are determined from the whole character sequence of the paragraph by rules LB1–LB31 of UAX #14 (Unicode Line Breaking Algorithm, Unicode 18.0.0) (`src/lineBreak.ts`; the character property tables are in `src/unicodeData.ts`. Matches all 19,346 cases of the Unicode conformance test LineBreakTest.txt).
+  Examples: a break is allowed after a slash (/) when a Latin letter follows. No break after a colon (:) before Latin letters or a slash (a URL is not cut between "http:" and "//"). No break between a number and a postfix symbol (14％), nor before a combining character.
+  Around quotation marks of undetermined direction (ASCII `"`) no break is allowed even next to Japanese characters (LB19).
+  CSS `line-break` (strict, normal, loose, anywhere) adjusts as in CSS Text 3 §5.2 (the Japanese/Chinese-only rules of normal and loose apply when the language is ja or zh).
+- Line-head prohibition (kinsoku): with normal in `axf:line-break` (the compatibility-mode default), small kana and the prolonged sound mark (ー) may start a line (of the relaxations listed in the note of JLREQ §3.1.7, only small kana and the prolonged sound mark; the iteration mark "々" is not relaxed). Iteration marks (ゝゞヽヾ々) remain prohibited at the line head (NS characters in UAX #14). With strict (the spec-mode default), small kana and the prolonged sound mark are also prohibited at the line head. No break between a number and a full-width unit symbol (㎏ etc.) (JLREQ §3.1.10). Closing brackets, punctuation, middle dots and the like never start a line in either mode.
+- The orientation of characters in vertical writing is determined by Vertical_Orientation of UAX #50 (U and Tu upright, R rotated, Tr upright if a vertical glyph exists, otherwise rotated). CSS `text-orientation` (upright, sideways) is also used.
+  For vertical glyphs, the font's OpenType vert feature (enabled by default in vertical writing) is used first; failing that, the Unicode vertical forms (U+FE10–FE48) or a positional adjustment substitute.
+- Ruby overhang: ruby longer than its base text overhangs the neighboring kana and punctuation by up to one ruby character (not over kanji, Latin text, the line head or the line end). On in compatibility mode, off in spec mode. Stopped by `axf:ruby-overhang="none"`.
+- Pair kerning: if `axf:kerning-mode` (or `font-kerning`) is anything other than none, the font's kerning is applied to horizontal Latin text. Off by default.
+- Side notes (as written in the marginal-notes samples): when a float's contents extend outside the body through negative `start-indent` / `end-indent`, they are placed in the margin without changing the body's line width. `float="inside" / "outside"` decides start / end by the parity of the page being typeset.
+- The `margin` shorthand (2–4 values) on `simple-page-master` and `region-body` is expanded to top, right, bottom and left (previously only one value could be read).
+- `axf:document-info` (title, author, subject, keywords) goes into the PDF's document information.
+- Bookmarks: PDF outlines are built from `fo:bookmark-tree` (`internal-destination`, `starting-state`) and the extensions (`axf:*`) `axf:outline-level` / `axf:outline-title` / `axf:outline-group` (the destination is the page where that id is first placed).
+- Background images: `background-image`, `background-repeat`, `background-position(-horizontal/-vertical)`; the size comes from `axf:background-content-width/height` (otherwise the image's intrinsic size). Supported on blocks, cells, block-containers and regions. Also embedded in the PDF (SVG stays vector).
+- Column rules: `axf:column-rule-width/style/color` on `region-body`.
+- Links: `external-destination` (URI) and `internal-destination` (the page where that id is placed) of `fo:basic-link` become PDF link annotations. A link crossing lines gets one area per line.
+- Annotations: `axf:annotation-type` (Text, FreeText, Stamp. FileAttachment carries no attached file, so it becomes a text annotation) and `axf:annotation-contents/title/color/text-color/font-size/icon-name/open/position-horizontal/position-vertical/width/height`. The reference point is the first line for an inline and the top left of the first fragment for a block. FreeText gets an appearance built with the embedded font. The web app draws a marker for the annotation.
+- Line numbers: `axf:line-number` (show / hide / none) and `axf:line-number-format/initial/interval/start/reset/position/offset/font-family/font-size/font-weight/font-style/color`. Wherever written (page-sequence, flow or block), they are inherited by children. Numbers are placed outside the column edge, aligned to the line baseline (in vertical writing, rotated 90° clockwise like Latin text in the body, centered on the line, above the column). The default gap from the column edge to the number (`offset`) is 0. The default for the first number shown (`start`) is the number counting starts from (`initial`); with `interval="2"` the output is 1, 3, 5…. The default font size of the numbers in compatibility mode is 10pt (independent of the body size).
+- Rounded corners and shadows: `axf:border-radius` (horizontal and vertical radius; shared by all four corners) and `axf:box-shadow` (horizontal and vertical offset and color; blur is not drawn). Rounded borders are drawn rounded only when all 4 sides have the same thickness, style and color.
+- Diagonal borders: `axf:diagonal-border-style/width/color` (diagonal rule, from the before-start corner to the after-end corner) and `axf:reverse-diagonal-border-*` (reverse diagonal rule, from the before-end corner to the after-start corner). The shorthand (`axf:diagonal-border="1pt solid black"`) is also read. Drawn on table cells, blocks and block-containers.
+- `height` / `block-progression-dimension` on table rows: in compatibility mode, the minimum row height (grows when there is more content). In spec mode, minimum = optimum = maximum (§7.15.3).
+- Forms: `axf:form-field` inside `axf:form` (`external-destination`, `axf:field-submit-method`) becomes a field of the PDF's AcroForm. `axf:field-type` covers text (password, multiline, maxlen, required), checkbox, radio (one group per name), listbox, combobox (`axf:form-field-option`) and button (submit / reset via `axf:action-type`, `axf:field-button-face`). Borders, padding and size are drawn by Kumiori from the FO settings, and the field itself is transparent. The web app draws a sample of the field.
+- Revision bars: `axf:revision-bar-style/color/width/offset/position` (start / end / both / alternate). Attached to an inline, the bar covers the line containing that text; attached to a block, the lines inside it; drawn outside the column edge (consecutive lines are joined). The default gap from the column edge to the bar (`offset`) is 0 (the bar touches the column edge).
+- Automatic footnote numbers: `axf:footnote-number` on the referencing side is the footnote's automatic sequence number, and `axf:footnote-number-citation` in the body is replaced by that number. `axf:footnote-number-format` on page-sequence (the same formats as page numbers; `Ⅰ`, `①`, `*1` and so on), `-initial` and `-reset="page"` (renumbered per page).
+- Image frames: `width` / `height` on `external-graphic` / `instream-foreign-object` are the frame the image is placed in, and `content-width` / `content-height` are the image size (default auto = the image's intrinsic size; scale-to-fit etc. fit it to the frame). Inside the frame, the image is aligned with `text-align` / `display-align` (`text-align` is inherited, so when the image has none, the parent block's value is used).
+- Inherited properties written on `fo:flow` (font-size, font-family etc.) are picked up.
+- indent inside `fo:block-container` (§5.3.2): in spec mode, the elements inside inherit the container's start-indent / end-indent values measured from the container's content edge (indented inward). Compatibility mode (`--compat antenna`) keeps the previous behavior until a comparison with the sample PDFs is done (the outer indent is not carried inside. How a container inside an indented block is laid out has not been verified yet).

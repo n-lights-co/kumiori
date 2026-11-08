@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>和文組版と段組の見本</title>
+<style>
+@page { size: A5; margin: 15mm; }
+body { columns: 2; column-gap: 6mm; column-rule: 0.5pt solid #999; }
+h1 { column-span: all; font-size: 16pt; }
+.em { text-emphasis: filled sesame; }
+.fig { float: right; width: 25mm; margin: 0 0 2mm 3mm; border: 0.5pt solid #333; padding: 2mm; font-size: 8pt; }
+.stamp { position: absolute; top: 0; right: 0; width: 20mm; font-size: 8pt; border: 0.5pt solid red; color: red; text-align: center; }
+.draft { position: fixed; bottom: -10mm; left: 0; font-size: 7pt; color: #888; }
+.tate { writing-mode: vertical-rl; text-combine-upright: digits 2; height: 40mm; border: 0.5pt solid #ccc; margin-top: 3mm; }
+.noauto { text-autospace: no-autospace; }
+</style>
+</head>
+<body>
+<h1>和文組版と段組</h1>
+<div class="stamp">見本</div>
+<div class="draft">組み織りの見本（全ページに出す）</div>
+<p><span class="fig">回り込みの囲み。本文はこの囲みの左に回り込みます。</span>本文は二段組です。和文と欧文の間には、四分のアキ（text-autospace）が入ります。Kumiori で組む HTML と CSS の文書です。<span class="em">圏点</span>を付けた語もあります。</p>
+<p class="noauto">この段落は和欧間のアキを入れません。Kumiori で組む HTML と CSS の文書です。</p>
+<p>段の高さは釣り合わせます。本文の段落が続きます。本文の段落が続きます。本文の段落が続きます。本文の段落が続きます。本文の段落が続きます。本文の段落が続きます。本文の段落が続きます。</p>
+<div class="tate">平成12年3月100日に<span class="em">縦書き</span>の圏点。</div>
+</body>
+</html>

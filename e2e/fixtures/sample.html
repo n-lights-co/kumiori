@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>組み織りの HTML 見本</title>
+<style>
+@page { size: A5; margin: 15mm 15mm 18mm; }
+h1 { color: #224466; border-bottom: 1pt solid #224466; }
+.note { background: #f3f3f3; border: 0.5pt solid #999; padding: 4pt 6pt; }
+em { font-style: normal; font-weight: bold; }
+.tcy { text-combine-upright: all; }
+.next { break-before: page; }
+</style>
+</head>
+<body>
+<h1>第一章　組版の基本</h1>
+<p>組み織り（くみおり）は、ブラウザで動く組版エンジンです。HTML と CSS で書いた文書を、ページに組んで PDF にします。<ruby>和文<rt>わぶん</rt></ruby>の組版の規則（禁則・ぶら下げ・和欧間のアキ）に従います。</p>
+<p>段落の先頭は一字下げます。<em>強調</em>や<a href="#sec2">内部の参照</a>、上付き（x<sup>2</sup>）も扱えます。</p>
+<div class="note">囲みの中の文章です。背景と枠を付けています。</div>
+<h2 id="sec2">リスト</h2>
+<ul>
+<li>箇条書きの一つ目</li>
+<li>箇条書きの二つ目。長い文章は折り返して、記号の位置から下がったところで揃います。長い文章は折り返して揃います。</li>
+</ul>
+<ol>
+<li>番号付きの一つ目</li>
+<li>番号付きの二つ目</li>
+</ol>
+<h2>表</h2>
+<table>
+<thead><tr><th>項目</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>行送り</td><td>1.75</td></tr>
+<tr><td>文字の大きさ</td><td>10pt</td></tr>
+</tbody>
+</table>
+<h2 class="next">改ページの後</h2>
+<p>平成<span class="tcy">12</span>年の記録です。</p>
+</body>
+</html>

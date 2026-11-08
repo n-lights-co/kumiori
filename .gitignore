@@ -1,0 +1,14 @@
+node_modules
+dist
+*.log
+public/fonts/*.ttf
+public/fonts/*.otf
+.cache
+test-results/
+playwright-report/
+compare-pdf-out/
+dist-cli
+compare-view-out/
+dist-lib
+docs/conformance/out
+dist-browser

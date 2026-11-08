@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format">
+  <fo:layout-master-set>
+    <fo:simple-page-master master-name="m" page-width="148mm" page-height="105mm" margin="10mm">
+      <fo:region-body margin-top="12mm" column-count="2" column-gap="6mm"/>
+      <fo:region-before extent="10mm"/>
+    </fo:simple-page-master>
+  </fo:layout-master-set>
+  <fo:page-sequence master-reference="m" format="i">
+    <fo:static-content flow-name="xsl-region-before"><fo:block font-size="8pt" text-align="end">e2e <fo:page-number/></fo:block></fo:static-content>
+    <fo:flow flow-name="xsl-region-body">
+      <fo:block span="all" font-size="16pt" font-weight="bold" text-decoration="underline">組版テスト</fo:block>
+      <fo:block>本文です。脚注を付けます<fo:footnote><fo:inline baseline-shift="super" font-size="70%">1</fo:inline><fo:footnote-body><fo:block font-size="8pt">脚注の本文。</fo:block></fo:footnote-body></fo:footnote>。</fo:block>
+      <fo:table border="solid 0.5pt black"><fo:table-column column-width="20mm"/><fo:table-column/>
+        <fo:table-body>
+          <fo:table-row><fo:table-cell border="solid 0.5pt black"><fo:block>行 1</fo:block></fo:table-cell><fo:table-cell border="solid 0.5pt black" display-align="center"><fo:block>表のセル</fo:block></fo:table-cell></fo:table-row>
+          <fo:table-row><fo:table-cell border="solid 0.5pt black"><fo:block>行 2</fo:block></fo:table-cell><fo:table-cell border="solid 0.5pt black"><fo:block>表のセル</fo:block></fo:table-cell></fo:table-row>
+        </fo:table-body>
+      </fo:table>
+      <fo:block break-before="page">二ページ目。<fo:inline border="solid 1pt red">囲み</fo:inline>と「括弧」（括弧）。</fo:block>
+    </fo:flow>
+  </fo:page-sequence>
+</fo:root>

@@ -1,0 +1,51 @@
+# 画面 (ブラウザで動く Kumiori) を GitHub Pages に置く。main に push するたびに作り直す。
+# リポジトリの Settings → Pages で、Source を「GitHub Actions」にしておく (docs/RELEASING.md)
+# 非公開のリポジトリの間は、配置 (deploy) を飛ばす (無料のプランでは非公開のリポジトリの Pages を有効にできず、配置が 404 で失敗するため)。
+# ビルド (build) は毎回走らせ、画面のビルドが壊れていないことは確かめる。公開にすれば、そのまま配置される
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 置かれる URL は https://<アカウント>.github.io/<リポジトリ名>/ なので、アセットのパスの土台 (base) をリポジトリ名にする
+      # (<アカウント>.github.io という名前のリポジトリなら、土台は /)
+      - name: Build
+        run: |
+          REPO="${{ github.event.repository.name }}"
+          case "$REPO" in *.github.io) BASE="/" ;; *) BASE="/$REPO/" ;; esac
+          npx vite build --base="$BASE"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+  deploy:
+    needs: build
+    # 公開のリポジトリのときだけ配置する (非公開の間は「skipped」と表示される)
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>組み織りの本の見本</title>
+<style>
+@page { size: A5; margin: 20mm 15mm 18mm;
+  @bottom-center { content: counter(page) " / " counter(pages); font-size: 8pt; } }
+@page :left { @top-left { content: string(book); font-size: 8pt; border-bottom: 0.5pt solid #888; } }
+@page :right { @top-right { content: element(runhead); font-size: 8pt; border-bottom: 0.5pt solid #888; } }
+@page :first { @bottom-center { content: none; } }
+@page cover { margin: 30mm; @bottom-center { content: none; } }
+.cover { page: cover; text-align: center; }
+.cover h1 { string-set: book content(); font-size: 20pt; }
+body { counter-reset: chapter; }
+h2 { counter-increment: chapter; break-before: page; string-set: chapter content(); }
+h2::before { content: "第" counter(chapter, cjk-decimal) "章　"; }
+.runhead { position: running(runhead); }
+.fn { float: footnote; }
+.toc a { text-decoration: none; color: inherit; }
+.toc a::after { content: leader(dotted) target-counter(attr(href), page); }
+.toc li { list-style: none; }
+p { text-indent: 1em; margin: 0; }
+</style>
+</head>
+<body>
+<section class="cover"><h1>組み織りの本</h1><p>見本の本です</p></section>
+<section class="toc">
+<h1>目次</h1>
+<ul>
+<li><a href="#c1">組版の基本</a></li>
+<li><a href="#c2">和文の規則</a></li>
+</ul>
+</section>
+<section>
+<div class="runhead">柱：本文の章</div>
+<h2 id="c1">組版の基本</h2>
+<p>組み織りは、ブラウザで動く組版エンジンです<span class="fn">脚注の本文です。ページの下に置かれます。</span>。HTML と CSS で書いた文書をページに組みます。</p>
+<p>本文の段落が続きます。本文の段落が続きます。本文の段落が続きます。本文の段落が続きます。</p>
+<h2 id="c2">和文の規則</h2>
+<p>禁則・ぶら下げ・和欧間のアキに従います<span class="fn">二つ目の脚注です。</span>。</p>
+</section>
+</body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": false,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "types": [
+      "vite/client"
+    ]
+  },
+  "include": [
+    "src",
+    "examples",
+    "test",
+    "e2e",
+    "playwright.config.ts",
+    "vite.config.ts",
+    "vite.lib.config.ts",
+    "vitest.config.ts"
+  ]
+}

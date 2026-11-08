@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>flex と grid の見本</title>
+<style>
+@page { size: A5; margin: 15mm; }
+.cover { height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; break-after: page; }
+.cover h1 { font-size: 28pt; margin: 0 0 6mm; }
+.cover .sub { font-size: 12pt; color: #555; }
+.cover .author { margin-top: 20mm; font-size: 11pt; }
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+.card { border: 0.5pt solid #888; padding: 3mm; background: #f4f6f8; }
+.card h2 { font-size: 11pt; margin: 0 0 2mm; }
+.card p { margin: 0; font-size: 9pt; }
+.bar { display: flex; justify-content: space-between; border-bottom: 0.5pt solid #333; margin-bottom: 5mm; font-size: 9pt; }
+</style>
+</head>
+<body>
+<section class="cover">
+<h1>組み織りの見本</h1>
+<div class="sub">flex と grid の配置</div>
+<div class="author">組み織りの開発者</div>
+</section>
+<div class="bar"><span>左の見出し</span><span>中央</span><span>右の見出し</span></div>
+<div class="cards">
+<div class="card"><h2>一つ目</h2><p>grid の 2 列に並べたカードです。中の文章は Kumiori が組みます。</p></div>
+<div class="card"><h2>二つ目</h2><p>カードの幅と高さは、ブラウザが決めたものを使います。</p></div>
+<div class="card"><h2>三つ目</h2><p>行の高さは、その行のいちばん高いカードに揃います。長い文章のカードがあると、隣のカードも同じ高さになります。</p></div>
+<div class="card"><h2>四つ目</h2><p>短い文章。</p></div>
+</div>
+</body>
+</html>

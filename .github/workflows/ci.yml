@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: .cache/fonts
+          # 単体テストの Noto Serif JP と、Node のコマンドのテスト (test/cli.test.ts) が使う既定の書体
+          key: fonts-defaults-v1
+      - run: npm run build
+      # ライブラリとしてのビルド (dist-lib。ES モジュールと型の宣言) と、ブラウザで単体で動くバンドル (dist-browser)
+      - run: npm run build:lib
+      - run: npm run build:browser
+      # npm test は、Node のコマンド (dist-cli) も作って試す
+      - run: npm test
+
+  # ブラウザでの結合テスト (画面の組版・XSL-FO の読み込み・PDF の出力)
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # ブラウザで単体で動くバンドル (dist-browser) も e2e で読んで試す
+      - run: npm run build:browser
+      - run: npm run e2e

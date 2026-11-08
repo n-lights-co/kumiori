@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kumiori（組み織り）— ブラウザ組版エンジン</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- Google Fonts (CSS は画面 UI 用。組版用の TTF は fontManager が gstatic から ArrayBuffer として取得する) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet" />
+    <style>
+      /* 作業台: 上に細い帯 (文書の名前と主な操作)、左にページの一覧と警告、中央に紙面、右に設定の引き出し */
+      :root {
+        color-scheme: dark;
+        --desk: #23272e;
+        --panel: #1a1e24;
+        --line: #343a44;
+        --text: #e6e8ec;
+        --muted: #9aa3b1;
+        --accent: #e9b44c;
+        --accent-ink: #221a08;
+        --warn: #ffcf7a;
+        --bar-h: 56px;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body { margin: 0; font-family: 'Noto Sans JP', system-ui, sans-serif; font-size: 13px; background: var(--desk); color: var(--text); }
+      button, select, input { font: inherit; color: inherit; }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      [hidden] { display: none !important; }
+
+      /* 上の帯 */
+      header.bar { height: var(--bar-h); display: flex; align-items: center; gap: 16px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+      .brand { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1; }
+      .brand img { height: 30px; width: auto; display: block; flex: none; }
+      #status { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+      .actions { display: flex; align-items: center; gap: 8px; flex: none; }
+      .btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 6px; border: 1px solid var(--line); background: transparent; cursor: pointer; font-weight: 700; white-space: nowrap; }
+      .btn:hover { background: #2b313a; }
+      .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+      .btn.primary:hover { filter: brightness(1.06); }
+      .btn:disabled { opacity: .45; cursor: default; }
+      .btn[aria-expanded="true"] { background: #2b313a; border-color: var(--muted); }
+      .zoom { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); margin-right: 6px; }
+      .zoom input { width: 110px; accent-color: var(--accent); }
+
+      /* 本体 */
+      .layout { display: flex; height: calc(100% - var(--bar-h)); }
+      #sidebar { width: 168px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+      #sidebar.collapsed { width: 36px; }
+      #sidebar.collapsed .side-body, #sidebar.collapsed .side-title { display: none; }
+      .side-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 6px 12px; }
+      .side-title { color: var(--muted); font-size: 12px; letter-spacing: .06em; }
+      #sidetoggle { width: 22px; height: 22px; border: 0; background: transparent; color: var(--muted); cursor: pointer; border-radius: 4px; }
+      #sidetoggle:hover { background: #2b313a; }
+      .side-body { overflow: auto; flex: 1; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 14px; }
+      #thumbs { display: flex; flex-direction: column; gap: 10px; }
+      #thumbs button { display: grid; justify-items: center; gap: 3px; padding: 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; cursor: pointer; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+      #thumbs button:hover { background: #2b313a; }
+      #thumbs button.current { border-color: var(--accent); color: var(--text); }
+      #thumbs canvas { background: #fff; display: block; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+      .notes { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+      #warnings { color: var(--warn); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+      #warnings:empty { display: none; }
+      #report { font-size: 12px; color: #cfd8e6; }
+      #report summary { cursor: pointer; font-weight: 700; }
+      #report table { border-collapse: collapse; margin-top: 6px; }
+      #report td { padding: 1px 8px 1px 0; vertical-align: top; }
+
+      #viewport { flex: 1; overflow: auto; min-width: 0; position: relative; }
+      #sheets { display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 28px 20px 80px; }
+      figure { margin: 0; }
+      figcaption { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-align: center; font-variant-numeric: tabular-nums; }
+      #sheets canvas { background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.5); display: block; }
+
+      /* 設定の引き出し */
+      #settings { width: 300px; flex: none; background: var(--panel); border-left: 1px solid var(--line); overflow: auto; padding: 14px 16px 24px; display: flex; flex-direction: column; gap: 18px; }
+      #settings h2 { margin: 0; font-size: 14px; }
+      fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      legend { color: var(--muted); font-size: 12px; letter-spacing: .06em; margin-bottom: 4px; padding: 0; }
+      .field { display: flex; flex-direction: column; gap: 4px; }
+      .field select { width: 100%; height: 32px; border-radius: 6px; border: 1px solid var(--line); background: var(--desk); padding: 0 8px; }
+      .check { display: flex; gap: 8px; align-items: flex-start; line-height: 1.45; cursor: pointer; }
+      .check input { margin-top: 3px; accent-color: var(--accent); }
+      .hint { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+      /* ファイルをドロップする場所 */
+      #dropzone { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: rgba(20, 23, 28, .82); border: 3px dashed var(--accent); font-size: 18px; font-weight: 700; pointer-events: none; }
+
+      @media (max-width: 760px) {
+        #sidebar { display: none; }
+        .zoom { display: none; }
+        #settings { position: fixed; top: var(--bar-h); right: 0; bottom: 0; z-index: 10; width: min(300px, 100%); }
+        .btn.folder { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">
+        <img src="/kumiori-logo-on-dark.svg" alt="Kumiori 組み織り" />
+        <span id="status" role="status">起動中…</span>
+      </div>
+      <div class="actions">
+        <label class="zoom" title="表示の倍率">倍率 <input type="range" id="zoom" min="0.5" max="2" step="0.1" value="1" /></label>
+        <label class="btn" title="XSL-FO・HTML・EPUB を、使う CSS・画像・書体と一緒に選ぶ (複数選べます。画面にドラッグ&ドロップしても開けます)">開く<input type="file" id="fofile" multiple accept=".fo,.xml,.xsl,.html,.htm,.xhtml,.epub,.css,.otf,.ttf,.png,.jpg,.jpeg,.gif,.bmp,.svg,.svgz,.webp,.tif,.tiff,.wmf,.emf,.eps,.cgm,.mml,text/xml,application/xml,text/html,image/*" hidden /></label>
+        <label class="btn folder" title="文書・CSS・画像の入ったフォルダを選ぶ">フォルダを開く<input type="file" id="folderfile" webkitdirectory multiple hidden /></label>
+        <button id="download" class="btn primary" disabled>PDF を保存</button>
+        <button id="settingsbtn" class="btn" aria-expanded="false" aria-controls="settings">設定</button>
+      </div>
+    </header>
+    <div class="layout">
+      <aside id="sidebar" aria-label="ページの一覧と警告">
+        <div class="side-head">
+          <span class="side-title">ページ</span>
+          <button id="sidetoggle" title="ページの一覧をたたむ" aria-label="ページの一覧をたたむ">‹</button>
+        </div>
+        <div class="side-body">
+          <nav id="thumbs" aria-label="ページ"></nav>
+          <div class="notes">
+            <div id="warnings"></div>
+            <details id="report" hidden></details>
+          </div>
+        </div>
+      </aside>
+      <div id="viewport">
+        <div id="sheets"></div>
+      </div>
+      <aside id="settings" aria-label="設定" hidden>
+        <h2>設定</h2>
+        <fieldset>
+          <legend>HTML</legend>
+          <label class="field" title="HTML を組むときの既定のスタイル (作者の CSS で上書きできる)">既定のスタイル
+            <select id="htmlstyle"><option value="kumiori">本の組版向け</option><option value="browser">ブラウザの既定</option><option value="browser-margin">ブラウザの既定 (body の余白を残す。WeasyPrint と同じ)</option><option value="ah">アンテナハウス互換 (CSS 2.1 の既定)</option><option value="vivliostyle">Vivliostyle 互換 (見出しの後ろで改ページしない)</option><option value="weasyprint">WeasyPrint 互換 (body の余白を残し、フォームの部品は WeasyPrint の既定)</option></select>
+          </label>
+          <label class="field">CSS の解釈
+            <select id="cssengine"><option value="kumiori">Kumiori</option><option value="browser">ブラウザ (比較用)</option></select>
+          </label>
+          <span class="hint">Kumiori は iframe を使わず自前のカスケードで計算値を決めます (Node のコマンドと同じ)。ブラウザ (比較用) は見えない iframe に読み込み、ブラウザの計算値と配置を使います。</span>
+        </fieldset>
+        <fieldset>
+          <legend>XSL-FO</legend>
+          <label class="check"><input type="checkbox" id="fospec" checked /><span>仕様どおりの既定値で組む<br /><span class="hint">オン (既定): XSL-FO 1.1 の初期値 (12pt・行送り 1.2・ぶら下げ無し)。オフ: アンテナハウスの出力に合わせる (10pt・ぶら下げ)</span></span></label>
+        </fieldset>
+        <fieldset>
+          <legend>印刷</legend>
+          <label class="check"><input type="checkbox" id="foprint" /><span>トンボと塗り足し 3mm を付ける</span></label>
+          <label class="check"><input type="checkbox" id="guides" checked /><span>仕上がり・塗り足しのガイドを表示する</span></label>
+        </fieldset>
+        <fieldset>
+          <legend>書体</legend>
+          <span class="hint">MS 明朝・MS ゴシックなど、お使いの PC にある書体 (TTF・OTF・TTC) を使えます。PC の外へは送りません。</span>
+          <div class="row">
+            <label class="btn">書体を読み込む<input type="file" id="fontfile" multiple accept=".ttf,.otf,.ttc" hidden /></label>
+            <button id="clearfonts" class="btn" hidden>読み込んだ書体を消す</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>そのほか</legend>
+          <div class="row">
+            <button id="savejson" class="btn" disabled>論理ツリーを JSON で保存</button>
+            <button id="resetsample" class="btn" hidden>見本の文書に戻す</button>
+          </div>
+        </fieldset>
+      </aside>
+    </div>
+    <div id="dropzone" hidden>ここにドロップすると開きます</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

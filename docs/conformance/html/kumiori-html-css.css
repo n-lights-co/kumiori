@@ -1,0 +1,571 @@
+/*
+ * Kumiori 対応仕様説明書 — HTML と CSS 編 のスタイルシート
+ * ページの組み立て (CSS Paged Media 3・GCPM 3) と、文書の見た目。見本の書式は見本の中に書く (見本だけで組めるように)。
+ */
+
+/* ---------------------------------------------------------------- ページ */
+@page {
+  size: 182mm 257mm;
+  margin: 20mm 18mm 18mm 18mm;
+  font-family: sans-serif;
+  @bottom-center {
+    content: none;
+  }
+  @bottom-left {
+    content: counter(page) "　|　Kumiori 対応仕様説明書 — HTML と CSS 編";
+    font-size: 7pt;
+    color: #6b7275;
+  }
+}
+@page :right {
+  @bottom-left {
+    content: none;
+  }
+  @bottom-right {
+    content: string(chapter) "　|　" counter(page);
+    font-size: 7pt;
+    color: #6b7275;
+  }
+}
+/* 章のつまみ (小口の側)。章ごとに名前の違うページにして、章の順に上から下へずらす (スクリプトで生成) */
+/*gen:tabs*/
+section.c1 { page: c1; }
+@page c1:right { @right-middle { content: string(chapno); margin: 0.0mm -4mm 209.0mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c1:left { @left-middle { content: string(chapno); margin: 0.0mm 5mm 209.0mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c2 { page: c2; }
+@page c2:right { @right-middle { content: string(chapno); margin: 11.61mm -4mm 197.39mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c2:left { @left-middle { content: string(chapno); margin: 11.61mm 5mm 197.39mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c3 { page: c3; }
+@page c3:right { @right-middle { content: string(chapno); margin: 23.22mm -4mm 185.78mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c3:left { @left-middle { content: string(chapno); margin: 23.22mm 5mm 185.78mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c4 { page: c4; }
+@page c4:right { @right-middle { content: string(chapno); margin: 34.83mm -4mm 174.17mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c4:left { @left-middle { content: string(chapno); margin: 34.83mm 5mm 174.17mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c5 { page: c5; }
+@page c5:right { @right-middle { content: string(chapno); margin: 46.44mm -4mm 162.56mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c5:left { @left-middle { content: string(chapno); margin: 46.44mm 5mm 162.56mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c6 { page: c6; }
+@page c6:right { @right-middle { content: string(chapno); margin: 58.06mm -4mm 150.94mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c6:left { @left-middle { content: string(chapno); margin: 58.06mm 5mm 150.94mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c7 { page: c7; }
+@page c7:right { @right-middle { content: string(chapno); margin: 69.67mm -4mm 139.33mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c7:left { @left-middle { content: string(chapno); margin: 69.67mm 5mm 139.33mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c8 { page: c8; }
+@page c8:right { @right-middle { content: string(chapno); margin: 81.28mm -4mm 127.72mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c8:left { @left-middle { content: string(chapno); margin: 81.28mm 5mm 127.72mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c9 { page: c9; }
+@page c9:right { @right-middle { content: string(chapno); margin: 92.89mm -4mm 116.11mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c9:left { @left-middle { content: string(chapno); margin: 92.89mm 5mm 116.11mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c10 { page: c10; }
+@page c10:right { @right-middle { content: string(chapno); margin: 104.5mm -4mm 104.5mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c10:left { @left-middle { content: string(chapno); margin: 104.5mm 5mm 104.5mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c11 { page: c11; }
+@page c11:right { @right-middle { content: string(chapno); margin: 116.11mm -4mm 92.89mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c11:left { @left-middle { content: string(chapno); margin: 116.11mm 5mm 92.89mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c12 { page: c12; }
+@page c12:right { @right-middle { content: string(chapno); margin: 127.72mm -4mm 81.28mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c12:left { @left-middle { content: string(chapno); margin: 127.72mm 5mm 81.28mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c13 { page: c13; }
+@page c13:right { @right-middle { content: string(chapno); margin: 139.33mm -4mm 69.67mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c13:left { @left-middle { content: string(chapno); margin: 139.33mm 5mm 69.67mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c14 { page: c14; }
+@page c14:right { @right-middle { content: string(chapno); margin: 150.94mm -4mm 58.06mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c14:left { @left-middle { content: string(chapno); margin: 150.94mm 5mm 58.06mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c15 { page: c15; }
+@page c15:right { @right-middle { content: string(chapno); margin: 162.56mm -4mm 46.44mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c15:left { @left-middle { content: string(chapno); margin: 162.56mm 5mm 46.44mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c16 { page: c16; }
+@page c16:right { @right-middle { content: string(chapno); margin: 174.17mm -4mm 34.83mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c16:left { @left-middle { content: string(chapno); margin: 174.17mm 5mm 34.83mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c17 { page: c17; }
+@page c17:right { @right-middle { content: string(chapno); margin: 185.78mm -4mm 23.22mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c17:left { @left-middle { content: string(chapno); margin: 185.78mm 5mm 23.22mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c18 { page: c18; }
+@page c18:right { @right-middle { content: string(chapno); margin: 197.39mm -4mm 11.61mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c18:left { @left-middle { content: string(chapno); margin: 197.39mm 5mm 11.61mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+section.c19 { page: c19; }
+@page c19:right { @right-middle { content: string(chapno); margin: 209.0mm -4mm 0.0mm 5mm; padding-right: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-left-radius: 2.5mm; border-bottom-left-radius: 2.5mm; } }
+@page c19:left { @left-middle { content: string(chapno); margin: 209.0mm 5mm 0.0mm -4mm; padding-left: 4mm; background-color: #c3ccc8; color: #ffffff; font-size: 13pt; font-weight: bold; text-align: center; vertical-align: middle; border-top-right-radius: 2.5mm; border-bottom-right-radius: 2.5mm; } }
+/*/gen:tabs*/
+@page cover {
+  margin: 0;
+  @bottom-left {
+    content: none;
+  }
+  @bottom-right {
+    content: none;
+  }
+}
+/* 前付 (目次): ノンブルをローマ数字にする。本文と同じく、左ページは左下、右ページは右下 */
+@page front:left {
+  @bottom-left {
+    content: counter(page, lower-roman);
+  }
+}
+@page front:right {
+  @bottom-right {
+    content: counter(page, lower-roman);
+  }
+}
+
+/* ---------------------------------------------------------------- 本文 */
+html {
+  font-family: serif;
+  font-size: 9pt;
+  line-height: 1.75;
+  color: #24292c;
+}
+body {
+  margin: 0;
+}
+p {
+  margin: 0;
+  text-align: justify;
+  text-indent: 1em;
+}
+code {
+  font-family: monospace;
+  font-size: 0.92em;
+}
+
+/* ---------------------------------------------------------------- 表紙 */
+.cover {
+  page: cover;
+  height: 257mm;
+  position: relative;
+  color: #1e3550;
+}
+.cover img.logo {
+  position: absolute;
+  top: 34mm;
+  left: 18mm;
+  width: 100mm;
+}
+.cover .text {
+  position: absolute;
+  top: 96mm;
+  left: 18mm;
+  width: 146mm;
+  border-top: 1.2pt solid #c9482b;
+  padding-top: 7mm;
+}
+.cover .kicker {
+  font-family: sans-serif;
+  font-size: 10pt;
+  letter-spacing: 0.2em;
+  color: #c9482b;
+}
+.cover h1 {
+  font-family: sans-serif;
+  font-size: 30pt;
+  line-height: 1.3;
+  margin: 4mm 0 0;
+  bookmark-level: none;
+}
+.cover .sub {
+  font-family: sans-serif;
+  font-size: 17pt;
+  margin-top: 1mm;
+}
+.cover .lead {
+  margin-top: 12mm;
+  color: #3b4245;
+  text-indent: 0;
+  line-height: 1.8;
+}
+.cover .note {
+  margin-top: 6mm;
+  font-size: 8pt;
+  color: #6b7275;
+  text-indent: 0;
+}
+.cover .foot {
+  position: absolute;
+  top: 236mm;
+  left: 18mm;
+  width: 146mm;
+  border-top: 0.5pt solid #1e3550;
+  padding-top: 2.5mm;
+  font-family: sans-serif;
+  font-size: 8pt;
+  color: #6b7275;
+}
+
+/* ---------------------------------------------------------------- 目次 */
+.toc {
+  page: front;
+  break-before: page;
+  font-family: sans-serif;
+}
+.toc h2 {
+  font-size: 16pt;
+  color: #23313a;
+  margin: 0 0 6mm;
+  bookmark-level: 1;
+}
+.toc ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* 折り返した項目の 1 行目を均等割り付けにしない (リーダーが右端まで伸びる) */
+.toc li {
+  text-align: left;
+}
+.toc a {
+  color: inherit;
+  text-decoration: none;
+}
+.toc a::after {
+  content: leader(dotted) target-counter(attr(href url), page);
+  color: #6b7275;
+}
+/* 番号は固定幅の span に入れ、折り返した 2 行目は題の頭にそろえる (ぶら下げ) */
+.toc li.ch {
+  margin-top: 2.5mm;
+  font-size: 9.5pt;
+  font-weight: bold;
+  line-height: 1.9;
+  padding-left: 11mm;
+  text-indent: -11mm;
+  break-after: avoid;
+}
+.toc li.ch .num {
+  display: inline-block;
+  width: 11mm;
+  text-indent: 0;
+}
+.toc li.sec {
+  font-size: 7.8pt;
+  line-height: 1.75;
+  padding-left: 17mm;
+  text-indent: -8mm;
+  color: #3b4245;
+}
+.toc li.sec .num {
+  display: inline-block;
+  width: 8mm;
+  text-indent: 0;
+}
+/* 折り返さないところ: 目次のプロパティの名前 (ハイフンや括弧で切らない)、見出しのバッジとその前の &nbsp; (バッジだけが次の行に落ちない) */
+.nw {
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 章と節 */
+body {
+  counter-reset: chapter;
+}
+section.chapter {
+  counter-reset: sec;
+}
+h1.chapter {
+  counter-increment: chapter;
+  string-set: chapter content(text), chapno attr(data-no);
+  break-before: page;
+  font-family: sans-serif;
+  font-size: 18pt;
+  line-height: 1.35;
+  color: #23313a;
+  margin: 0 0 8mm;
+  padding: 0 0 3mm;
+  border-bottom: 0.6pt solid #23313a;
+  bookmark-level: 1;
+}
+h1.chapter::before {
+  content: attr(data-no);
+  display: block;
+  font-size: 30pt;
+  font-weight: bold;
+  color: #c3ccc8;
+  line-height: 1.1;
+}
+h2 {
+  counter-increment: sec;
+  font-family: sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.45;
+  color: #23313a;
+  margin: 8mm 0 1.5mm;
+  break-after: avoid;
+  bookmark-level: 2;
+}
+h2 .num {
+  display: inline-block;
+  width: 11mm;
+  color: #23313a;
+}
+h2 code {
+  font-family: monospace;
+  font-size: 0.92em;
+  font-weight: normal;
+  white-space: nowrap;
+}
+h3 {
+  font-family: sans-serif;
+  font-size: 8.8pt;
+  color: #23313a;
+  margin: 4mm 0 1mm;
+  break-after: avoid;
+}
+
+/* 対応の印 */
+.badge {
+  display: inline-block;
+  font-family: sans-serif;
+  font-size: 6.5pt;
+  font-weight: normal;
+  color: #ffffff;
+  padding: 0 4pt;
+  margin-left: 0.45em; /* 見出しでは、前に &nbsp; を置いた span.nw に入れて、バッジだけが次の行に落ちないようにしている */
+  line-height: 1.6;
+  border-radius: 2pt;
+}
+.ok {
+  background-color: #4f7a64;
+}
+.part {
+  background-color: #b08132;
+}
+.no-support {
+  background-color: #8c9396;
+}
+
+/* 性質の定義 (仕様の定義の表から原文のまま) */
+p.props {
+  text-indent: 0;
+  text-align: left; /* 折り返しても字の間を広げない */
+  font-family: sans-serif;
+  font-size: 7.3pt;
+  line-height: 1.6;
+  color: #3b4245;
+  margin: 0 0 1.5mm;
+  break-after: avoid;
+}
+p.props .k {
+  color: #4f7a64;
+  white-space: nowrap;
+}
+p.props .k::before {
+  content: "● ";
+}
+p.props .v {
+  margin-right: 1.2em;
+}
+p.props .src {
+  color: #8c9396;
+  white-space: nowrap;
+}
+
+/* 値の一覧 */
+ul.values {
+  margin: 1.5mm 0 1mm;
+  padding-left: 6mm;
+  font-size: 8.3pt;
+  line-height: 1.65;
+}
+ul.values li::marker {
+  color: #8c9396;
+}
+ul.values code {
+  font-weight: bold;
+}
+
+/* 仕様の原文の引用 */
+blockquote {
+  margin: 0 0 1.5mm;
+  padding: 1.5mm 3mm;
+  background-color: #f4f6f5;
+  font-size: 7.8pt;
+  line-height: 1.55;
+  color: #3b4245;
+  break-after: avoid;
+  text-align: left;
+}
+blockquote.ah {
+  background-color: #fbf5ea;
+}
+blockquote cite {
+  display: block;
+  text-align: right;
+  font-family: sans-serif;
+  font-size: 6.5pt;
+  font-style: normal;
+  color: #6b7275;
+}
+
+/* 見本: 組版例 (枠) の後にコード (scripts/conformance-lib.mjs が差し込む) */
+.kumiori-result {
+  border: 0.5pt solid #b9bfbc;
+  padding: 7pt;
+  margin-top: 3mm;
+  break-after: avoid;
+  break-inside: avoid;
+}
+pre.kumiori-listing {
+  margin: 0 0 4mm;
+  padding: 5pt 7pt;
+  font-family: monospace;
+  font-size: 7.1pt;
+  line-height: 1.45;
+  color: #2f3437;
+  background-color: #f2f3f1;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere; /* 長い 1 語 (URL など) も枠の中で折り返す */
+  break-inside: avoid;
+}
+pre.kumiori-listing b {
+  font-weight: bold;
+  background-color: #fff3a8;
+}
+
+/* 注 */
+p.note {
+  text-indent: 0;
+  font-size: 7.8pt;
+  color: #3b4245;
+  margin-top: 1.5mm;
+  padding-left: 1.2em;
+  text-indent: -1.2em;
+}
+p.note::before {
+  content: "※ ";
+  color: #b08132;
+}
+
+/* 一覧の表 */
+table.list {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 7.8pt;
+  line-height: 1.55;
+  margin: 2mm 0 3mm;
+}
+table.list th {
+  font-family: sans-serif;
+  font-weight: bold;
+  color: #23313a;
+  text-align: left;
+  padding: 2pt 3pt;
+  border: none;
+  border-bottom: 0.8pt solid #23313a;
+}
+table.list td {
+  border: none;
+  border-bottom: 0.4pt solid #cfd4d2;
+  padding: 2pt 3pt;
+  vertical-align: top;
+}
+table.list td code {
+  font-family: monospace;
+}
+/* 対応していない項目・-ah- の一覧の説明の表 */
+table.expl {
+  table-layout: fixed;
+  font-size: 7.2pt;
+  line-height: 1.45;
+}
+table.expl td {
+  padding: 1.5pt 3pt;
+  text-align: left;
+}
+table.expl thead {
+  break-after: avoid;
+}
+h3 + table.expl {
+  break-before: avoid;
+}
+table.expl tr {
+  break-inside: avoid;
+}
+table.expl .spec {
+  font-size: 6.3pt;
+  color: #6b7275;
+}
+/* 各節の値の意味の表 */
+p.vals-h {
+  font-family: sans-serif;
+  font-weight: bold;
+  font-size: 8pt;
+  color: #23313a;
+  text-indent: 0;
+  margin-top: 2.5mm;
+  break-after: avoid;
+}
+p.vals-h .spec {
+  font-weight: normal;
+  font-size: 6.3pt;
+  color: #6b7275;
+}
+table.vals {
+  table-layout: fixed;
+  font-size: 7.2pt;
+  line-height: 1.45;
+  margin: 1mm 0 2mm;
+}
+table.vals td {
+  padding: 1.2pt 3pt;
+  text-align: left;
+}
+/* 値の表の見出しの行は、表の題 (p.vals-h) より控えめに */
+table.vals th {
+  font-weight: normal;
+  color: #3b4245;
+  border-bottom-width: 0.5pt;
+}
+table.vals thead {
+  break-after: avoid;
+}
+table.vals tr {
+  break-inside: avoid;
+}
+/* 付録 A.4 の -ah- の一覧 (項目が多いので小さめに) */
+table.ah-list {
+  font-size: 7.2pt;
+  line-height: 1.45;
+}
+table.ah-list td {
+  padding: 1.2pt 3pt;
+}
+table.ah-list td code {
+  font-size: 6.8pt;
+}
+
+/* 脚注 (GCPM 3 §2) */
+.fn {
+  float: footnote;
+  font-size: 7pt;
+  line-height: 1.5;
+  text-indent: 0;
+}
+::footnote-call {
+  color: #4f7a64;
+}
+
+ul.sources {
+  padding-left: 5mm;
+}
+ul.sources li {
+  margin-bottom: 1.5mm;
+  font-size: 8pt;
+}
+ul.sources .url {
+  font-family: monospace;
+  font-size: 7pt;
+}
+
+/* 奥付 (最終ページの下のほう。CSS-Print の奥付と同じ置き方) */
+section.colophon { break-before: page; padding-top: 150mm; font-family: sans-serif; font-size: 8pt; line-height: 1.6; color: #23313a; text-indent: 0; }
+section.colophon p { text-indent: 0; }
+p.colophon-title { font-size: 10pt; font-weight: bold; margin: 0 0 2.5mm; padding-bottom: 1.5mm; border-bottom: 0.6pt solid #23313a; }
+table.colophon-table { border-collapse: collapse; }
+table.colophon-table th { width: 18mm; text-align: left; font-weight: normal; color: #6b7275; padding: 0.8pt 0; vertical-align: top; }
+table.colophon-table td { padding: 0.8pt 0; }
+p.colophon-note { margin-top: 3mm; font-size: 7.5pt; color: #3b4245; }
+table.colophon-table, table.colophon-table th, table.colophon-table td { border: none; background: none; }
+table.colophon-table { width: auto; margin: 0; font-size: 8pt; }
+
+/* 組版例の画像 (アラビア語の組版例など。見本として組めないものを画像で示す) */
+figure { margin: 2mm 0 3mm; break-inside: avoid; }
+figure img { display: block; max-width: 100%; border: 0.3pt solid #cfd4d2; }
+figcaption { font-family: sans-serif; font-size: 7.3pt; line-height: 1.5; color: #3b4245; margin-top: 1mm; }

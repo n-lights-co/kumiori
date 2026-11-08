@@ -1,0 +1,223 @@
+import { describe, expect, it } from 'vitest';
+import { deflateSync } from 'node:zlib';
+import { existsSync, readFileSync } from 'node:fs';
+import { Interp, latin1, strText, type PSObj } from '../src/psInterp';
+import { filterSource, inflate } from '../src/psFilters';
+import { decryptCharstring, runType1Charstring } from '../src/psFonts';
+import { cffGlyph, parseCff } from '../src/psCff';
+import { Graphics } from '../src/psGraphics';
+import { epsToSvg, runEps } from '../src/eps';
+
+/** プログラムを実行して、オペランドスタックを返す */
+function run(src: string): { stack: PSObj[]; error?: string } {
+  const I = new Interp();
+  new Graphics(I, { bbox: [0, 0, 100, 100] });
+  const error = I.run(latin1(src));
+  return { stack: I.ostack, error };
+}
+const nums = (src: string) => run(src).stack.map((o) => (o.t === 'int' || o.t === 'real' ? o.v : o.t === 'bool' ? o.v : o.t === 'string' ? strText(o) : o.t === 'name' ? '/' + o.v : o.t));
+const bytesOf = (src: { read(): number }) => {
+  const out: number[] = [];
+  for (let c = src.read(); c >= 0; c = src.read()) out.push(c);
+  return out;
+};
+const source = (b: ArrayLike<number>) => {
+  let i = 0;
+  return { read: () => (i < b.length ? b[i++] : -1) };
+};
+
+describe('PostScript: 言語 (PLRM 第 3 章)', () => {
+  it('算術・スタック', () => {
+    expect(nums('40 60 add 2 div')).toEqual([50]);
+    expect(nums('7 2 idiv 7 2 mod -7 2 idiv')).toEqual([3, 1, -3]);
+    expect(nums('1 2 3 3 1 roll')).toEqual([3, 1, 2]);
+    expect(nums('1 2 3 2 copy count')).toEqual([1, 2, 3, 2, 3, 5]);
+    expect(nums('16#FF 8#17 2#101')).toEqual([255, 15, 5]);
+    expect(nums('2.5 round -2.5 round 3.7 truncate')).toEqual([3, -2, 3]);
+  });
+  it('手続き・制御・辞書', () => {
+    expect(nums('/average {add 2 div} def 40 60 average')).toEqual([50]);
+    expect(nums('0 1 1 4 {add} for')).toEqual([10]);
+    expect(nums('3 {1} repeat')).toEqual([1, 1, 1]);
+    expect(nums('0 {1 add dup 5 eq {exit} if} loop')).toEqual([5]);
+    expect(nums('1 2 gt {(a)} {(b)} ifelse')).toEqual(['b']);
+    expect(nums('/d 2 dict def d /k 3 put d /k get d /x known')).toEqual([3, false]);
+    expect(nums('{1 0 div} stopped')).toEqual([1, 0, true]);
+    expect(nums('[1 2 3] {2 mul} forall')).toEqual([2, 4, 6]);
+  });
+  it('文字列の字句: 括弧・エスケープ・16 進・ASCII85 (§3.2)', () => {
+    expect(nums('(a(b)c\\051\\n) length')).toEqual([7]);
+    expect(nums('<41 42 4> ')).toEqual(['AB@']);
+    expect(nums('<~87cURD]i,"Ebo80~>')).toEqual(['Hello World!']);
+  });
+  it('save と restore: 辞書の値を戻す (§3.7.3)', () => {
+    expect(nums('/x 1 def save /x 2 def restore x')).toEqual([1]);
+  });
+  it('手続きの中の注釈の直後の }', () => {
+    expect(nums('{1 % 注釈\n} exec')).toEqual([1]);
+  });
+  it('資源: Generic の分類を写して新しい分類を作る (§3.9.3)', () => {
+    const r = nums('true setglobal /Widget /Generic /Category findresource dup length dict copy /Category defineresource pop false setglobal /F 7 /Widget defineresource pop /F /Widget findresource');
+    expect(r[r.length - 1]).toBe(7);
+  });
+});
+
+describe('PostScript: フィルタ (§3.13)', () => {
+  it('LZWDecode: 仕様の例 (表 3.18 の符号 80 0B 60 50 22 0C 0E 02)', () => {
+    // 9 ビットの符号 256 45 258 258 65 259 257 (表 3.18 の出力の列。最後の 66 は表にも出力されない)
+    const out = bytesOf(filterSource('LZWDecode', source([0x80, 0x0b, 0x60, 0x50, 0x22, 0x0c, 0x0e, 0x02])));
+    expect(out).toEqual([45, 45, 45, 45, 45, 65, 45, 45, 45]);
+  });
+  it('FlateDecode: zlib で圧縮したものを元に戻す', () => {
+    const data = Uint8Array.from({ length: 70000 }, (_, i) => (i * 7 + (i >> 5)) & 255);
+    const z = deflateSync(data);
+    expect(Uint8Array.from(bytesOf(inflate(source(z))))).toEqual(data);
+  });
+  it('RunLengthDecode・ASCIIHexDecode', () => {
+    expect(bytesOf(filterSource('RunLengthDecode', source([2, 1, 2, 3, 254, 9, 128])))).toEqual([1, 2, 3, 9, 9, 9]);
+    expect(bytesOf(filterSource('ASCIIHexDecode', source(latin1('41 4 2>'))))).toEqual([0x41, 0x42]);
+  });
+  it('予測関数 (PNG の Up)', () => {
+    // 2 行 × 2 バイト: 1 行目は None、2 行目は Up
+    const data = Uint8Array.from([0, 10, 20, 2, 1, 1]);
+    const params = new Interp().newDict();
+    params.put('Predictor', { t: 'int', v: 12 });
+    params.put('Columns', { t: 'int', v: 2 });
+    expect(bytesOf(filterSource('FlateDecode', source(deflateSync(data)), params))).toEqual([10, 20, 11, 21]);
+  });
+});
+
+describe('EPS (EPSF 3.0)', () => {
+  const eps = (body: string, bbox = '0 0 100 50') => latin1(`%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: ${bbox}\n${body}\nshowpage\n`);
+  it('塗り・線・クリップを描く', () => {
+    const r = runEps(eps('1 0 0 setrgbcolor 10 10 moveto 50 10 lineto 50 40 lineto closepath fill 0 0 1 setrgbcolor 2 setlinewidth 0 0 moveto 100 50 lineto stroke'))!;
+    expect(r.error).toBeUndefined();
+    expect(r.items.map((i) => i.k)).toEqual(['fill', 'stroke']);
+    const f = r.items[0];
+    expect(f.k === 'fill' && f.color).toEqual([1, 0, 0]);
+  });
+  it('CMYK の色は CMYK の値も持つ (§7.2.4 の RGB と一緒に)', () => {
+    const r = runEps(eps('0 1 0 0 setcmykcolor 0 0 10 10 rectfill'))!;
+    const f = r.items[0];
+    expect(f.k === 'fill' && f.color).toEqual([1, 0, 1]);
+    expect(f.k === 'fill' && f.cmyk).toEqual([0, 1, 0, 0]);
+  });
+  it('色材の名前が None の Separation は描かない (§4.8.4)', () => {
+    const r = runEps(eps('[/Separation /None /DeviceGray {pop 0}] setcolorspace 1 setcolor 0 0 10 10 rectfill [/Separation /Spot /DeviceCMYK {dup dup dup}] setcolorspace 1 setcolor 0 0 10 10 rectfill'))!;
+    expect(r.items.length).toBe(1);
+    const f = r.items[0];
+    expect(f.k === 'fill' && f.cmyk).toEqual([1, 1, 1, 1]);
+  });
+  it('画像 (colorimage・手続きのデータの元) を描く', async () => {
+    const r = await epsToSvg(eps('/s 6 string def 2 1 8 [2 0 0 1 0 0] {currentfile s readhexstring pop} false 3 colorimage\nff000000ff00', '0 0 2 1'));
+    expect(r?.svg).toMatch(/<image [^>]*href="data:image\/png;base64,/);
+  });
+  it('埋め込まれていない書体の文字は SVG の text にする', async () => {
+    const r = await epsToSvg(eps('/Helvetica findfont 12 scalefont setfont 10 10 moveto (Hi) show'));
+    expect(r?.svg).toMatch(/<text [^>]*font-family="sans-serif"[^>]*>Hi<\/text>/);
+  });
+});
+
+describe('Type 1 の書体 (Adobe Type 1 Font Format)', () => {
+  const eps = (body: string, bbox = '0 0 100 50') => latin1(`%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: ${bbox}\n${body}\nshowpage\n`);
+  // T1 §6.6 と §7.3 の例: 字「C」の字形の命令と、その暗号 (鍵 4330、先頭の 4 バイトは 0)
+  const cipher = '10BF31704FAB5B1F03F9B68B1F39A66521B1841F1481697F8E12B7F7DDD6E3D7248D965B1CD45E2114';
+  const plain = 'BDF9B40D8BEF038BEF01F8ECEF018B16F95006EF07FCEC06F88807F8EC06EF07FD5006090E';
+  const hex = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
+  it('字形の命令の暗号を解く (§7.3 の例)', () => {
+    expect(decryptCharstring(hex(cipher), 4)).toEqual(hex(plain));
+  });
+  it('字形の命令を実行して輪郭と送りを作る (§6.6 の例)', () => {
+    const g = runType1Charstring(hex(plain), { subr: () => undefined })!;
+    expect([g.wx, g.wy]).toEqual([800, 0]);
+    const pts = g.segs.filter((s) => s.op !== 'Z').map((s) => (s.op === 'C' ? [] : [s.x, s.y]));
+    expect(pts).toEqual([
+      [50, 0],
+      [750, 0],
+      [750, 100],
+      [150, 100],
+      [150, 600],
+      [750, 600],
+      [750, 700],
+      [50, 700],
+    ]);
+  });
+  it('埋め込んだ Type 1 の書体の字を、塗りとして描く (送りは字の幅)', () => {
+    // 字形の命令は暗号のまま、CharStrings に入れる
+    const r = runEps(
+      eps(
+        `/F 10 dict dup begin /FontName /T1Test def /FontType 1 def /PaintType 0 def /FontMatrix [0.001 0 0 0.001 0 0] def /FontBBox [0 0 1000 1000] def ` +
+          `/Encoding 256 array 0 1 255 {1 index exch /.notdef put} for dup 67 /C put def ` +
+          `/Private 2 dict dup begin /lenIV 4 def end def /CharStrings 2 dict dup begin /C <${cipher}> def /.notdef <${cipher}> def end def end def ` +
+          `/T1Test F definefont 10 scalefont setfont 0 0 moveto (CC) show currentpoint`,
+        '0 0 100 100',
+      ),
+    )!;
+    expect(r.error).toBeUndefined();
+    const f = r.items[0];
+    expect(f.k).toBe('fill');
+    // 2 字目は 8 (800 × 10/1000) 右にある
+    const xs = f.k === 'fill' ? f.segs.filter((s) => s.op === 'M').map((s) => (s.op === 'M' ? s.x : 0)) : [];
+    expect(xs[0]).toBeCloseTo(0.5, 5);
+    expect(xs[1]).toBeCloseTo(8.5, 5);
+  });
+  it('eexec の暗号を解く (§7.2: 鍵 55665、先頭の 4 バイトを捨てる)', () => {
+    // 平文「0 0 0 0」に続けて「userdict /x 5 put」を、鍵 55665 で暗号にして 16 進にする
+    // (暗号を解いたプログラムは systemdict を辞書スタックに積んで実行するので、辞書を指定して定義する。PLRM §8.2 eexec)
+    const text = latin1('\u0000\u0000\u0000\u0000userdict /x 5 put currentfile closefile ');
+    let r = 55665;
+    let h = '';
+    for (const p of text) {
+      const c = p ^ (r >> 8);
+      r = ((c + r) * 52845 + 22719) & 0xffff;
+      h += c.toString(16).padStart(2, '0');
+    }
+    expect(nums(`currentfile eexec ${h}\n x`)).toEqual([5]);
+  });
+});
+
+describe('CFF の書体 (The Compact Font Format Specification・The Type 2 Charstring Format)', () => {
+  const INTER = '/usr/share/fonts/opentype/inter/Inter-Regular.otf';
+  const UNIFONT = '/usr/share/fonts/opentype/unifont/unifont_jp.otf';
+  /** OpenType の CFF 表 */
+  const cffTable = (file: string) => {
+    const b = new Uint8Array(readFileSync(file));
+    const dv = new DataView(b.buffer, b.byteOffset);
+    for (let i = 0; i < dv.getUint16(4); i++)
+      if (String.fromCharCode(...b.subarray(12 + i * 16, 16 + i * 16)) === 'CFF ') {
+        const off = dv.getUint32(12 + i * 16 + 8);
+        return b.subarray(off, off + dv.getUint32(12 + i * 16 + 12));
+      }
+    throw new Error('no CFF');
+  };
+  /** EPS の中に FontSetInit の StartData で CFF を埋め込む */
+  const withCff = (cff: Uint8Array, body: string) => {
+    const head = latin1(`%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\n/FontSetInit /ProcSet findresource begin /KumioriSet ${cff.length} StartData `);
+    const tail = latin1(`\n${body}\nshowpage\n`);
+    const out = new Uint8Array(head.length + cff.length + tail.length);
+    out.set(head);
+    out.set(cff, head.length);
+    out.set(tail, head.length + cff.length);
+    return out;
+  };
+  it.skipIf(!existsSync(INTER))('FontType 2 の書体の字を描く (幅は字の送り)', () => {
+    const cff = cffTable(INTER);
+    const fname = parseCff(cff)[0].name;
+    const r = runEps(withCff(cff, `/${fname} findfont 20 scalefont setfont 10 10 moveto (Hi) show currentpoint`))!;
+    expect(r.error).toBeUndefined();
+    const f = r.items[0];
+    expect(f.k).toBe('fill');
+    // 字の送り = 2 字の幅 (fontkit の送りと同じことは、全部の字で別に確かめた)
+    const g = parseCff(cff)[0];
+    const w = (cffGlyph(g, g.byName.get('H')!)!.wx + cffGlyph(g, g.byName.get('i')!)!.wx) * 0.02;
+    expect(w).toBeGreaterThan(10);
+  });
+  it.skipIf(!existsSync(UNIFONT))('CID の CFF を composefont の複合書体で描く (Identity-H)', () => {
+    const cff = cffTable(UNIFONT);
+    const cname = parseCff(cff)[0].name;
+    const r = runEps(withCff(cff, `/U /Identity-H [/${cname}] composefont 16 scalefont setfont 10 10 moveto <0041 0042> show`))!;
+    expect(r.error).toBeUndefined();
+    expect(r.warnings).toEqual([]);
+    expect(r.items[0]?.k).toBe('fill');
+  });
+});

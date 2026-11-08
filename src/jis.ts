@@ -1,0 +1,178 @@
+/**
+ * JLREQ (日本語組版処理の要件。W3C。JIS X 4051 に基づく。https://www.w3.org/TR/jlreq/ ) の文字クラス (付録 A) に基づく禁則と、縦書き時の字形処理テーブル。
+ * 基礎的な範囲 (行頭禁則・行末禁則・分離禁止・ぶら下げ) をカバーする。
+ */
+
+import { verticalOrientation } from './lineBreak';
+
+const set = (s: string) => new Set([...s]);
+
+/** 行頭禁則: 閉じ括弧・句読点・約物・小書き仮名・長音・繰返し記号など */
+const LINE_HEAD_PROHIBITED = set(
+  [
+    '）〕］｝〉》」』】〙〗〟’”｠»',
+    '‐゠–〜～',
+    '！？‼⁇⁈⁉',
+    '・：；',
+    '。．、，',
+    'ヽヾーァィゥェォッャュョヮヵヶぁぃぅぇぉっゃゅょゎゕゖㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ々〻ゝゞ',
+    '!?)]},.:;%',
+  ].join(''),
+);
+
+/** 行末禁則: 開き括弧類 */
+const LINE_END_PROHIBITED = set('（〔［｛〈《「『【〘〖〝‘“｟«([{');
+
+/** ぶら下げ可能 (句点・読点) */
+const HANGABLE = set('。、．，.,');
+
+/** 分離禁止 (同じ字が連続する場合に行をまたがない) */
+const INSEPARABLE = set('―…‥');
+
+/** 行頭禁則を緩めるとき (looseLineStart。axf:line-break="normal") に行頭に置いてよい字: 小書き仮名・長音記号 (繰返し記号は行頭禁則のまま。lineBreak.ts) */
+const LOOSE_LINE_HEAD = set('ーァィゥェォッャュョヮヵヶぁぃぅぇぉっゃゅょゎゕゖㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ');
+
+export const isLineHeadProhibited = (ch: string, loose = false) => LINE_HEAD_PROHIBITED.has(ch) && !(loose && LOOSE_LINE_HEAD.has(ch));
+export const isLineEndProhibited = (ch: string) => LINE_END_PROHIBITED.has(ch);
+export const isHangable = (ch: string) => HANGABLE.has(ch);
+export const isInseparablePair = (a: string, b: string) => a === b && INSEPARABLE.has(a);
+
+// 語の途中で改行しない字: 欧文・数字と、空白で語を区切る文字 (ギリシア・キリル・ヘブライ・アラビア文字など)
+// ASCII の引用符・括弧も語の一部 (UAX #14 と同じく、欧文の語との間では改行しない: absolute="x" や f(x) を途中で切らない)
+// (U+FB00〜U+FB06 は欧文の合字 ﬀ ﬁ ﬂ ﬃ ﬄ など。axf:ligature-mode で置き換えた字)
+const isWordChar = (ch: string) => /[A-Za-z0-9_À-ɏ'’"%$#@&*+/=<>()[\]{}\u0370-\u052F\u0590-\u08FF\uFB00-\uFB06\uFB1D-\uFDFF\uFE70-\uFEFF-]/u.test(ch) || /[.,]/.test(ch);
+const NO_BREAK_SPACE = /^[\u00A0\u202F\u2007]$/;
+export const isSpace = (ch: string) => ch === ' ' || ch === ' ' || ch === '\t';
+/** 折り返しで改行でき、行末では捨てる空白 (U+0020・タブ)。改行しない空白 (U+00A0 など) は含まない (UAX #14 の GL。CSS Text 3 §4.1.2) */
+export const isWrapSpace = (ch: string) => ch === ' ' || ch === '\t';
+
+/**
+ * 文字 a と b の間で改行してよいか (a の直後・b の直前)。
+ * 欧文の単語内は不可、スペースの直後は可、和文は原則可。ただし禁則で不可。
+ */
+export function canBreakBetween(a: string, b: string, looseLineStart = false): boolean {
+  if (isSpace(b)) return false; // 行頭にスペースを置かない
+  // 改行しない空白 (U+00A0・U+202F・U+2007) の前後では改行しない
+  if (NO_BREAK_SPACE.test(a) || NO_BREAK_SPACE.test(b)) return false;
+  if (a === '\n') return true;
+  if (isInseparablePair(a, b)) return false;
+  if (isLineHeadProhibited(b, looseLineStart)) return false;
+  if (isLineEndProhibited(a)) return false;
+  if (isSpace(a)) return true;
+  // 語の中のハイフンの後ろは改行してよい (UAX #14 の HY。数字の前は除く: inline-progression-dimension を - の後で折る)
+  if (a === '-' && /[A-Za-zÀ-ɏ]/.test(b)) return true;
+  // 斜線の後ろは、欧文字の前なら改行してよい (UAX #14 の SY: 前では改行しない。数字の前は除く)。
+  // (例: URL を「…/」の後ろで折れる)
+  if (a === '/' && /[A-Za-zÀ-ɏ]/.test(b)) return true;
+  // コロンの後ろは、欧文字・斜線・数字の前では改行しない (UAX #14 の IS。「http:」と「//」を分けない)
+  if (a === ':' && (isWordChar(b) || b === '/')) return false;
+  if (isWordChar(a) && isWordChar(b)) return false;
+  // 欧文語と和文の境界は可。和文同士は可
+  return true;
+}
+
+// ───────────────────────── 縦書き ─────────────────────────
+
+/**
+ * 縦書きで正立 (upright) させる字か。それ以外は 90° 時計回りに横倒し (rotate)。
+ * UAX #50 の Vertical_Orientation (https://www.unicode.org/reports/tr50/ 、2026-11-04 取得) による (text-orientation: mixed。Writing Modes 3 §5.1):
+ * U・Tu は正立、R は横倒し。Tr は縦書き用の字形があれば正立 (その字形に差し替える)、無ければ横倒し。
+ * Kumiori は書体の vert の機能を使わず、縦書き用の字形は Unicode の縦書き用字形 (VERTICAL_FORMS) だけなので、Tr はその字があるものだけ正立
+ */
+export function isUprightInVertical(ch: string): boolean {
+  const vo = verticalOrientation(ch.codePointAt(0)!);
+  return vo === 'U' || vo === 'Tu' || (vo === 'Tr' && ch in VERTICAL_FORMS);
+}
+
+/** 縦書き用の字形 (Unicode 縦書き用字形 / Vertical Forms) */
+const VERTICAL_FORMS: Record<string, string> = {
+  '、': '︑',
+  '。': '︒',
+  '，': '︐',
+  '「': '﹁',
+  '」': '﹂',
+  '『': '﹃',
+  '』': '﹄',
+  '（': '︵',
+  '）': '︶',
+  '｛': '︷',
+  '｝': '︸',
+  '〔': '︹',
+  '〕': '︺',
+  '【': '︻',
+  '】': '︼',
+  '《': '︽',
+  '》': '︾',
+  '〈': '︿',
+  '〉': '﹀',
+  '［': '﹇',
+  '］': '﹈',
+};
+
+const PUNCT_SHIFT = set('、。，．');
+const SMALL_KANA = set('ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ');
+/** 縦書き用字形が無いフォント向けの回転フォールバック (括弧類) */
+const BRACKET_ROTATE = set('「」『』（）｛｝〔〕【】《》〈〉［］');
+
+export interface VerticalTreatment {
+  /** 描画する文字 (縦書き用字形に差し替え後) */
+  glyph: string;
+  mode: 'upright' | 'rotate';
+  /** em に対する比。物理座標 (右 +, 下 +) のオフセット */
+  dx: number;
+  dy: number;
+  /** 字形を差し替える OpenType の機能 (書体の縦書き用の字形 vert を使うとき ['vert']) */
+  features?: string[];
+}
+
+/**
+ * 縦書き時の 1 文字の扱いを決める。
+ * 書体が縦書き用の字形 (OpenType の vert。正立で組むための字形) を持つ字は、その字形で正立にする
+ * (vert は縦書きで既定で使う機能。OpenType の機能の一覧の 'vert'、https://learn.microsoft.com/en-us/typography/opentype/spec/features_uz 、2026-11-04 取得)。
+ * 正立にする字 (UAX #50 の U・Tu、text-orientation: upright の字) と、Tr の字で vert の字形があるものに使う (Tr は Writing Modes 3 §5.1 の mixed)。
+ * vert の字形が無ければ、Unicode の縦書き用字形か、位置の補正で代える
+ * @param hasGlyph フォントが指定字形を持つか (縦書き用字形の存在確認)
+ * @param hasVert 書体の vert がこの字を別の字形に替えるか
+ */
+export function verticalTreatment(ch: string, hasGlyph: (c: string) => boolean, orientation: 'mixed' | 'upright' | 'sideways' = 'mixed', hasVert: (c: string) => boolean = () => false): VerticalTreatment {
+  // text-orientation: sideways はすべて横倒し、upright はすべて正立 (Writing Modes 3 §5.1)
+  if (orientation === 'sideways') return { glyph: ch, mode: 'rotate', dx: 0, dy: 0 };
+  const vo = verticalOrientation(ch.codePointAt(0)!);
+  const upright = orientation === 'upright' || vo === 'U' || vo === 'Tu' || vo === 'Tr';
+  if (upright && hasVert(ch)) return { glyph: ch, mode: 'upright', dx: 0, dy: 0, features: ['vert'] };
+  if (orientation !== 'upright' && !isUprightInVertical(ch)) return { glyph: ch, mode: 'rotate', dx: 0, dy: 0 };
+  const vf = VERTICAL_FORMS[ch];
+  if (vf && hasGlyph(vf)) return { glyph: vf, mode: 'upright', dx: 0, dy: 0 };
+  if (BRACKET_ROTATE.has(ch)) return { glyph: ch, mode: 'rotate', dx: 0, dy: 0 };
+  if (PUNCT_SHIFT.has(ch)) return { glyph: ch, mode: 'upright', dx: 0.55, dy: -0.6 };
+  if (SMALL_KANA.has(ch)) return { glyph: ch, mode: 'upright', dx: 0.125, dy: -0.125 };
+  return { glyph: ch, mode: 'upright', dx: 0, dy: 0 };
+}
+
+/** 全角幅で組む字か (縦書き正立時に advance = 1em とする) */
+export function isFullWidth(ch: string): boolean {
+  const cp = ch.codePointAt(0)!;
+  if (cp >= 0xff61 && cp <= 0xff9f) return false; // 半角カナ
+  if (cp >= 0xffe8 && cp <= 0xffee) return false;
+  return isUprightInVertical(ch);
+}
+
+// ───────── 約物の詰め・和欧間アキ (JLREQ §3.1・§3.2 の基礎部分) ─────────
+
+/** 終わり括弧類・句読点 (字面が前半にあり、後ろに二分のアキを持つ全角約物) */
+const CLOSING_PUNCT = set('、。，．）〕］｝〉》」』】〙〗〟’”');
+/** 始め括弧類 (字面が後半にあり、前に二分のアキを持つ) */
+const OPENING_PUNCT = set('（〔［｛〈《「『【〘〖〝‘“');
+/** 中点類 (前後に四分のアキ) */
+const MIDDLE_PUNCT = set('・：；');
+export const isClosingPunct = (ch: string) => CLOSING_PUNCT.has(ch);
+export const isOpeningPunct = (ch: string) => OPENING_PUNCT.has(ch);
+export const isMiddlePunct = (ch: string) => MIDDLE_PUNCT.has(ch);
+
+/** 和文 (仮名・漢字)。約物は含まない */
+export function isIdeographicOrKana(ch: string): boolean {
+  const cp = ch.codePointAt(0) ?? 0;
+  return (cp >= 0x3041 && cp <= 0x30ff && ch !== '・' && ch !== '゠') || (cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff) || ch === '々';
+}
+/** 欧文の文字・数字 (和欧間アキの対象) */
+export const isLatinAlnum = (ch: string) => /^[A-Za-z0-9À-ÖØ-öø-ɏ]$/.test(ch);
