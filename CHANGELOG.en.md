@@ -4,7 +4,7 @@
 
 Version numbers follow [Semantic Versioning](https://semver.org/). During 0.x, incompatible changes may also be released in a minor version (such as 0.2.0).
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-08)
 
 The first public release.
 
