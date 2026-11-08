@@ -4,6 +4,18 @@
 
 Version numbers follow [Semantic Versioning](https://semver.org/). During 0.x, incompatible changes may also be released in a minor version (such as 0.2.0).
 
+## 0.1.1 (2026-11-09)
+
+A release that completes the notices for third-party software and documents. Typesetting behaviour and the API are the same as in 0.1.0.
+
+- **Third-party notices** (`THIRD_PARTY_NOTICES.md`, also included in the `dist-lib`, `dist-cli` and `dist-browser` distributions):
+  - Added the copyright notices and licenses (including the full text of the W3C Document License) for the default style sheet rules copied from W3C documents (CSS Ruby 1 Appendix A.1 and CSS 2.1 Appendix D)
+  - Stated that part of the WebP decoding code is derived from libwebp (the libwebp notice has been included since 0.1.0)
+  - Added the distribution terms of the Adobe font metrics (AFM) for the standard 14 fonts, included in @pdf-lib/standard-fonts
+  - Corrected the description of which distributions bundle the dependencies (`dist-browser` also bundles @xmldom/xmldom; `dist-lib` bundles none)
+- **README**: states that `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md` are included in the output of all four builds
+- **Documents**: the "Sources" appendix of the Conformance Guides (Japanese and English) now gives the version, copyright notice and full license text of each quoted W3C specification
+
 ## 0.1.0 (2026-11-08)
 
 The first public release.

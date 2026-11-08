@@ -143,7 +143,7 @@ result.renderPage(canvas, 0);                                  // 1 ページ目
 
   ```html
   <script type="module">
-    import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.1.0/dist-browser/kumiori.js';
+    import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.1.1/dist-browser/kumiori.js';
     const result = await typesetHtml(html, { name: 'a.html' });
     result.renderPage(document.querySelector('canvas'), 0);
   </script>
