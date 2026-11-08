@@ -24,7 +24,8 @@ async function run(input: string, ...args: string[]) {
 }
 
 beforeAll(async () => {
-  execFileSync('npm', ['run', '--silent', 'build:cli'], { cwd: root, stdio: 'ignore' });
+  // Windows の npm は npm.cmd で、Node は .cmd・.bat をシェル無しでは起動しない (Node 18.20.2・20.12.2 からの変更) ので、Windows ではシェルを通す
+  execFileSync('npm', ['run', '--silent', 'build:cli'], { cwd: root, stdio: 'ignore', shell: process.platform === 'win32' });
   fs.mkdirSync(fontDir, { recursive: true });
   for (const spec of [...FONT_SPECS, ...LATIN_SPECS, ...MONO_SPECS]) {
     const url = spec.urls.find((u) => /^https:/.test(u))!;
