@@ -7,7 +7,14 @@ Kumiori の配布物に含まれる、または Kumiori の実行に使われる
 - 対象の版: このリポジトリの `package-lock.json` で入る版 (下の各節に版を書いています)
 - この文書は、ライセンスの解釈や法的な判断を示すものではありません。
 
-## 1. ブラウザ向けの配布物 (`vite build` の `dist/`) に含まれるもの
+## 1. ブラウザ向けの配布物 (`dist/`・`dist-browser/`) に含まれるもの
+
+次の 2 つのブラウザ向けの配布物は、この節のパッケージを束ねて含みます (2026-11-08 に、ビルドのソースマップで束ねられたパッケージを確かめました)。
+
+- 画面 (`npm run build` の `dist/`。GitHub Pages に置くもの)
+- ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も束ねて含みます (XSL-FO を読むため)
+
+ライブラリ (`npm run build:lib` の `dist-lib/`。npm の `kumiori`) は依存パッケージを束ねず、実行時に node_modules から読み込みます (下の 2 節と同じ)。
 
 ### pdf-lib 1.17.1
 
@@ -438,7 +445,20 @@ pako の LICENSE ファイル (上) は MIT の条文です。Zlib の条文は�
 ### 1.3 @pdf-lib/standard-fonts に含まれる Adobe の AFM の Notice
 
 @pdf-lib/standard-fonts は、14 の標準書体の寸法 (AFM) を圧縮したデータを持っています。データを展開したときの、各書体の `Notice` の文言をそのまま引用します。
-元の AFM の配布条件は、パッケージの中では確認できていません (未確認)。
+このデータは、Adobe の 14 の AFM のファイルを JSON の形に変換して圧縮したもので、元の AFM のファイルそのものではありません。
+
+元の AFM に添えられた Adobe の配布条件 (Core 14 AFM Files の ReadMe。`MustRead.html`) は、パッケージの中にはありません。下は、その本文です。
+条件のとおり、この文書で AFM のファイルに添えて配布し、上の変換をここに記します。
+
+- 取得元: https://raw.githubusercontent.com/apache/pdfbox/trunk/pdfbox/src/main/resources/org/apache/pdfbox/resources/afm/MustRead.html (Apache PDFBox が AFM のファイルと一緒に収めているもの。取得日 2026-11-08)
+- HTML から本文の段落だけを取り出しました (語句は書き換えていません。白い字で書かれた段落の外の語は含めていません)。
+
+```text
+This file and the 14 PostScript(R) AFM files it accompanies may be used, copied, and distributed for any purpose and without charge, with or without modification, provided that all copyright notices are retained; that the AFM files are not distributed without this file; that all modifications to this file or any of the AFM files are prominently noted in the modified file(s); and that this paragraph is not modified. Adobe Systems has no responsibility or obligation to support the use of the AFM files.
+```
+
+各書体の `Notice` の文言:
+
 
 - Courier: `Copyright (c) 1989, 1990, 1991, 1992, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
 - Courier-Bold: `Copyright (c) 1989, 1990, 1991, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
@@ -1001,9 +1021,10 @@ pdf-lib のパッケージには、Apache License 2.0 の本文は入ってい�
    limitations under the License.
 ```
 
-## 2. Node のコマンド (`dist-cli/cli.js`) を配布するときの依存
+## 2. Node のコマンド (`dist-cli/cli.js`) とライブラリ (`dist-lib/`) を配布するときの依存
 
-Node のコマンドのビルドでは、次のパッケージはバンドルに入らず、実行時に node_modules から読み込まれます (上の 1 の pdf-lib・@pdf-lib/fontkit も同じ)。コマンドを配布する場合は、これらも依存として一緒に配布されます。
+Node のコマンドとライブラリのビルドでは、次のパッケージはバンドルに入らず、実行時に node_modules から読み込まれます (上の 1 のパッケージも同じ)。npm の `kumiori` を入れると、これらも依存として一緒に入ります。
+このうち @xmldom/xmldom は、ブラウザで単体で動くライブラリ (`dist-browser/`) には束ねて含まれます (上の 1)。
 
 ### @xmldom/xmldom 0.9.12
 

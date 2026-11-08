@@ -1,5 +1,6 @@
 /**
- * WeasyPrint の見本 (report・invoice・ticket・book) と対応仕様説明書の点検で見つけた不具合の修正:
+ * WeasyPrint の見本 (report・invoice・ticket・book) と対応仕様説明書の点検で見つけた不具合の修正。
+ * テストの文書の文面と CSS の値は、見本 (他の人の著作物) から写さず、同じ振る舞いを試す自前のものにしている。直したもの:
  *  - break-before / break-after: always (Fragmentation 4) は page と同じ
  *  - 要素の content: '' は、::before / ::after が無ければ中身を捨てない (footer { content: '' })
  *  - 縦並びの flex の justify-content: space-between / space-around / space-evenly、flex の項目の margin: auto
@@ -86,7 +87,7 @@ describe('改ページ・content・flex (WeasyPrint の report・invoice・ticke
   });
   it('flex の項目の margin-left: auto は、伸びる項目が無ければ余りを吸い取る比例の列になる (右端に寄せる)', () => {
     const [ul] = flow(
-      '<ul><li>5:10pm</li><li>Coach</li><li class="bar">1257797706706</li></ul>',
+      '<ul><li>9:30</li><li>2 号車</li><li class="bar">0123456789</li></ul>',
       'ul { display: flex; list-style: none; margin: 0; padding: 0; width: 500px } li { width: 60px } .bar { margin-left: auto }',
     );
     const t = find<LTable>(ul, (n) => n.type === 'table')[0];
@@ -109,7 +110,7 @@ describe('絶対配置の margin・表の幅、行内要素のブロックの ::
   it('top も bottom も無い絶対配置の箱は、static position から margin-top だけ下がる (ticket の h1#destination)', () => {
     const [sec] = flow(
       '<section><h1 id="n">Name</h1><h1 id="d">DEST</h1></section>',
-      'section { position: relative } h1 { display: inline-block; margin: 16pt 0 } #d { position: absolute; right: 1cm }',
+      'section { position: relative } h1 { display: inline-block; margin: 16pt 0 } #d { position: absolute; right: 12mm }',
     );
     const abs = find<LBlockContainer>(sec, (n) => n.type === 'block-container' && n.absolutePosition === true)[0];
     expect(abs.top).toBeUndefined();
@@ -118,29 +119,29 @@ describe('絶対配置の margin・表の幅、行内要素のブロックの ::
   });
   it('絶対配置の表の width は罫線を含む幅 (border-box) で、中の表はその内側いっぱい (invoice の table#total)', () => {
     const [footer] = flow(
-      '<footer><table id="total"><tr><td>May 10</td><td>€10,545.00</td></tr></table></footer>',
-      '#total { position: absolute; bottom: 0; width: 18cm; margin: 0 -3cm; border: solid #eee; border-width: 2cm 3cm } table { width: 100% }',
+      '<footer><table id="total"><tr><td>11 月 30 日</td><td>12,345 円</td></tr></table></footer>',
+      '#total { position: absolute; bottom: 0; width: 16cm; margin: 0 -2cm; border: solid #ddd; border-width: 1cm 2cm } table { width: 100% }',
     );
     const abs = find<LBlockContainer>(footer, (n) => n.type === 'block-container' && n.absolutePosition === true)[0];
     expect(abs.boxSizing).toBe('border-box');
-    expect(abs.width).toBeCloseTo((18 * 72) / 2.54, 2);
+    expect(abs.width).toBeCloseTo((16 * 72) / 2.54, 2);
     const t = find<LTable>(abs, (n) => n.type === 'table')[0];
-    // 罫線の太さは px に丸める (3cm = 113px = 84.75pt) ので、1pt の差を許す
+    // 罫線の太さは整数の px に丸める (2cm は 75.6px) ので、1pt の差を許す。中の表は 16cm − 2cm × 2
     expect(Math.abs((t.width as number) - (12 * 72) / 2.54)).toBeLessThan(1);
-    // 左右の位置が無ければ、static position (基準の左端) から margin-left (−3cm) だけ左へ
-    const base = flow('<footer><table id="total"><tr><td>x</td></tr></table></footer>', '#total { position: absolute; bottom: 0; width: 18cm }')[0];
+    // 左右の位置が無ければ、static position (基準の左端) から margin-left (−2cm) だけ左へ
+    const base = flow('<footer><table id="total"><tr><td>x</td></tr></table></footer>', '#total { position: absolute; bottom: 0; width: 16cm }')[0];
     const abs0 = find<LBlockContainer>(base, (n) => n.type === 'block-container' && n.absolutePosition === true)[0];
-    expect((abs0.left ?? 0) - (abs.left ?? 0)).toBeCloseTo((3 * 72) / 2.54, 2);
+    expect((abs0.left ?? 0) - (abs.left ?? 0)).toBeCloseTo((2 * 72) / 2.54, 2);
   });
   it("行内の dt の ::before { content: ''; display: block } は行を分ける (行頭では空の行を作らない)", () => {
     const [dl] = flow(
-      '<dl><dt>Invoice number</dt><dd>12345</dd><dt>Date</dt><dd>March 31</dd></dl>',
+      '<dl><dt>番号</dt><dd>101</dd><dt>日付</dt><dd>11 月 8 日</dd></dl>',
       "dt, dd { display: inline; margin: 0 } dt::before { content: ''; display: block } dt::after { content: ':' }",
     );
     const soft = find<LInline>(dl, (n) => n.type === 'inline' && n.softBreak === true);
     expect(soft).toHaveLength(2);
     // 組版: 2 行 (先頭の改行は空の行にならない)
-    const r = load('<dl><dt>Invoice number</dt><dd>12345</dd><dt>Date</dt><dd>March 31</dd></dl>', "dt, dd { display: inline; margin: 0 } dt::before { content: ''; display: block }");
+    const r = load('<dl><dt>番号</dt><dd>101</dd><dt>日付</dt><dd>11 月 8 日</dd></dl>', "dt, dd { display: inline; margin: 0 } dt::before { content: ''; display: block }");
     const lines = find<{ type: string }>(E.engine.layout(r.document).sheets[0].page.regionBody, (n) => n.type === 'line');
     expect(lines).toHaveLength(2);
   });
@@ -180,7 +181,7 @@ describe('img の罫線・余白の箱の重なり・SVG の引き伸ばし・pa
     expect((b.children[0] as LImage).borderRadius?.corners?.[0]).toEqual(['50%', '50%']);
   });
   it('ブロックの img の箱の幅は画像の幅 (max-width で決まった幅も)。左右の余白が auto なら中央に置く (罫線・角丸が画像より広くならない)', () => {
-    const d = new DOMParser().parseFromString('<html><body><figure style="width: 200px"><img src="a.png"><figcaption>John McMiaou</figcaption></figure></body></html>', 'text/html') as never;
+    const d = new DOMParser().parseFromString('<html><body><figure style="width: 200px"><img src="a.png"><figcaption>写真の説明</figcaption></figure></body></html>', 'text/html') as never;
     const css = 'figure { margin: 0; text-align: center } img { display: block; margin: 0 auto; max-width: 40px; border: 2pt solid #fff; border-radius: 50% }';
     const r = importHtml(d, cascadeStyles(d, css, { viewport: { width: 600, height: 800 } }), { css, imageSize: () => ({ width: 151, height: 151 }) });
     const b = find<LBlock>(r.document, (n) => n.type === 'block' && !!n.borderRadius)[0];
@@ -326,15 +327,15 @@ describe('report の章扉・invoice の合計の表・font-variant (2 回目の
   });
   it('絶対配置の表は、表として (自動レイアウトで中身の幅の比に列を配り) 組む。罫線・余白は箱だけが持つ', () => {
     const [footer] = flow(
-      '<footer><table id="total"><thead><tr><th>Due by</th><th>Account</th><th>Total</th></tr></thead><tbody><tr><td>May 10, 2018</td><td>132 456 789 012</td><td>€10,545.00</td></tr></tbody></table></footer>',
-      '#total { position: absolute; bottom: 0; width: 18cm; margin: 0 -3cm; border: solid #eee; border-width: 2cm 3cm; font-size: 20pt } table { width: 100%; border-collapse: collapse }',
+      '<footer><table id="total"><thead><tr><th>期日</th><th>口座</th><th>金額</th></tr></thead><tbody><tr><td>2026 年 11 月 30 日</td><td>0001 2345 6789</td><td>12,345 円</td></tr></tbody></table></footer>',
+      '#total { position: absolute; bottom: 0; width: 16cm; margin: 0 -2cm; border: solid #ddd; border-width: 1cm 2cm; font-size: 18pt } table { width: 100%; border-collapse: collapse }',
     );
     const abs = find<LBlockContainer>(footer, (n) => n.type === 'block-container' && n.absolutePosition === true)[0];
     const t = find<LTable>(abs, (n) => n.type === 'table')[0];
     expect(t.fillContent).toBe(true);
-    // 罫線を重ねる表: 表の幅 18cm は左右の罫線の半分 (1.5cm ずつ) だけを含む (CSS 2.1 §17.6.2) ので、中身は 18cm − 3cm
-    expect(Math.abs((t.width as number) - (15 * 72) / 2.54)).toBeLessThan(1);
-    expect(Math.abs((abs.width as number) - (21 * 72) / 2.54)).toBeLessThan(1);
+    // 罫線を重ねる表: 表の幅 16cm は左右の罫線の半分 (1cm ずつ) だけを含む (CSS 2.1 §17.6.2) ので、中身は 16cm − 2cm
+    expect(Math.abs((t.width as number) - (14 * 72) / 2.54)).toBeLessThan(1);
+    expect(Math.abs((abs.width as number) - (18 * 72) / 2.54)).toBeLessThan(1);
     expect(t.header?.rows).toHaveLength(1);
     expect(t.border).toBeUndefined();
     expect(t.margin).toBeUndefined();

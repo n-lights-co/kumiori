@@ -238,7 +238,7 @@ The fonts used are embedded in the PDF. Check the license terms of each font wit
 
 The code is under the [Apache License 2.0](LICENSE) (Copyright 2026 Northern Lights Co.; see [NOTICE](NOTICE)). The fonts for typesetting are not bundled in this repository (for the fonts and their licenses, see the "[Fonts](#fonts)" section).
 
-The licenses and copyright notices of the third-party software Kumiori uses (pdf-lib, pako, utif, hyphen, etc.) are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The output of `npm run build` and `npm run build:cli` (`dist/`, `dist-cli/`) also contains `LICENSE` and `THIRD_PARTY_NOTICES.md`.
+The licenses and copyright notices of the third-party software Kumiori uses (pdf-lib, pako, utif, hyphen, etc.) are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The output of `npm run build`, `npm run build:cli`, `npm run build:lib` and `npm run build:browser` (`dist/`, `dist-cli/`, `dist-lib/`, `dist-browser/`) also contains `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md`.
 
 ## Relationship to other companies' products
 

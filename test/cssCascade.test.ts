@@ -312,8 +312,8 @@ describe('カスケード', () => {
   });
 
   it('var() を含む一括指定は、置き換えてから分ける', () => {
-    const { c } = styleOf('<p id="p">x</p>', ':root { --grey: #eef1f5; --w: white } p { background: var(--grey); border-left: 1pt solid var(--w) }', 'p');
-    expect([c('background-color'), c('background-position-x'), c('border-left-width'), c('border-left-color')]).toEqual(['rgb(238, 241, 245)', '0%', '1px', 'rgb(255, 255, 255)']);
+    const { c } = styleOf('<p id="p">x</p>', ':root { --grey: #e0e4ea; --w: white } p { background: var(--grey); border-left: 1pt solid var(--w) }', 'p');
+    expect([c('background-color'), c('background-position-x'), c('border-left-width'), c('border-left-color')]).toEqual(['rgb(224, 228, 234)', '0%', '1px', 'rgb(255, 255, 255)']);
   });
 
   it('monospaceSize13 では、等幅の書体の既定の大きさから来た字の大きさを 13/16 にする (Chrome の既定)。既定では変えない', () => {

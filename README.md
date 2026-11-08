@@ -238,7 +238,7 @@ Node のコマンドは、取った書体を OS のキャッシュ (`~/.cache/ku
 
 コードは [Apache License 2.0](LICENSE) (Copyright 2026 Northern Lights Co.。[NOTICE](NOTICE))。組版用の書体は、本リポジトリには同梱していません (書体とそのライセンスは「[フォント](#フォント)」の節)。
 
-Kumiori が使う第三者のソフトウェア (pdf-lib・pako・utif・hyphen など) のライセンスと著作権表示は、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にまとめています。`npm run build` と `npm run build:cli` の出力 (`dist/`・`dist-cli/`) にも、`LICENSE` と `THIRD_PARTY_NOTICES.md` が入ります。
+Kumiori が使う第三者のソフトウェア (pdf-lib・pako・utif・hyphen など) のライセンスと著作権表示は、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にまとめています。`npm run build`・`npm run build:cli`・`npm run build:lib`・`npm run build:browser` の出力 (`dist/`・`dist-cli/`・`dist-lib/`・`dist-browser/`) にも、`LICENSE`・`NOTICE`・`THIRD_PARTY_NOTICES.md` が入ります。
 
 ## 他社の製品との関係
 
