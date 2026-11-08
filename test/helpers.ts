@@ -8,6 +8,7 @@ import path from 'node:path';
 import { FontManager } from '../src/fontManager';
 import { Measurer } from '../src/measurer';
 import { LayoutEngine } from '../src/layoutEngine';
+import { FONT_SPECS, LATIN_SPECS, MONO_SPECS } from '../src/fontMapping';
 import type { Area, LBlockLevel, LDocument, PageMaster, WritingMode, LPageSequence } from '../src/types';
 
 const FONT_URL = 'https://fonts.gstatic.com/s/notoserifjp/v34/xn71YHs72GKoTvER4Gn3b5eMRtWGkp6o7MjQ2bwxOubA.ttf';
@@ -21,6 +22,29 @@ export async function fontBuffer(): Promise<ArrayBuffer> {
     const res = await fetch(FONT_URL);
     if (!res.ok) throw new Error(`font download failed: ${res.status}`);
     fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  }
+  const b = fs.readFileSync(file);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+}
+
+/**
+ * 既定の書体 (src/fontMapping.ts の FONT_SPECS・LATIN_SPECS・MONO_SPECS) のファイルを読む。
+ * .cache/fonts (KUMIORI_FONT_DIR で上書き可) に無ければ配信元から取得して置く。
+ * 他のテストのファイルが同時に同じ書体を取りに行っても、書きかけのファイルを読まないように、一時ファイルに書いてから名前を変える。
+ */
+export async function defaultFontBuffer(name: string): Promise<ArrayBuffer> {
+  const dir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
+  const file = path.join(dir, name);
+  if (!fs.existsSync(file)) {
+    const spec = [...FONT_SPECS, ...LATIN_SPECS, ...MONO_SPECS].find((s) => s.urls.some((u) => !/^https:/.test(u) && path.basename(u) === name));
+    const url = spec?.urls.find((u) => /^https:/.test(u));
+    if (!url) throw new Error(`not a default font: ${name}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`font download failed: ${res.status} ${url}`);
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
+    fs.renameSync(tmp, file);
   }
   const b = fs.readFileSync(file);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;

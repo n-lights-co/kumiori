@@ -4,8 +4,6 @@
  *  - 内側の影 (box-shadow: inset・axf:box-shadow の inset): padding の箱の内側に描く
  */
 import { beforeAll, describe, expect, it } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import { DOMParser } from '@xmldom/xmldom';
 import { FontManager } from '../src/fontManager';
 import { Measurer } from '../src/measurer';
@@ -14,23 +12,18 @@ import { resolveStyle, type ResolvedStyle } from '../src/lnode';
 import { shadowsOf } from '../src/htmlImport';
 import { importXslFo } from '../src/xslfoImport';
 import { paintSheet } from '../src/paint';
-import { doc, makeEngine } from './helpers';
+import { defaultFontBuffer, doc, makeEngine } from './helpers';
 import type { LBlock } from '../src/types';
 
-const FONT_DIR = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
-const buf = (name: string) => {
-  const b = fs.readFileSync(path.join(FONT_DIR, name));
-  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
-};
 
 let fonts: FontManager;
 let m: Measurer;
 let E: Awaited<ReturnType<typeof makeEngine>>;
 beforeAll(async () => {
   fonts = new FontManager();
-  await fonts.registerBuffer('Tinos', 400, buf('Tinos-Regular.ttf'), false);
-  await fonts.registerBuffer('Cousine', 400, buf('Cousine-Regular.ttf'), false);
-  await fonts.registerBuffer('Noto Serif JP', 400, buf('NotoSerifJP-Regular.ttf'), false);
+  await fonts.registerBuffer('Tinos', 400, await defaultFontBuffer('Tinos-Regular.ttf'), false);
+  await fonts.registerBuffer('Cousine', 400, await defaultFontBuffer('Cousine-Regular.ttf'), false);
+  await fonts.registerBuffer('Noto Serif JP', 400, await defaultFontBuffer('NotoSerifJP-Regular.ttf'), false);
   m = new Measurer(fonts, 'fontkit');
   E = await makeEngine();
 });
