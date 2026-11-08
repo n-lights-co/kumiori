@@ -2,6 +2,42 @@
  * vp8 — VP8 (WebP の非可逆圧縮) のキーフレームを読み、RGBA にする (画像を Canvas に描けない環境 (Node) 用。RFC 6386)。
  *  - ブール符号・セグメント・係数の確率の更新・16×16 / 4×4 / 色差 8×8 の画面内予測・WHT と IDCT・ループフィルタ (簡易・通常)
  *  - YUV → RGB は libwebp と同じ (色差の補間 (fancy upsampling) と 14 ビットの係数)
+ *
+ * このファイルの一部は libwebp (https://chromium.googlesource.com/webm/libwebp) から派生している:
+ * WHT と 4×4 の逆 DCT の組み立て (libwebp の src/dsp/dec.c の TransformWHT_C・TransformOne_C)、YUV → RGB の係数
+ * (src/dsp/yuv.h の VP8YUVToR・VP8YUVToG・VP8YUVToB)、色差の補間 (src/dsp/upsampling.c の UPSAMPLE_FUNC)、予測の向きの番号。
+ * 2026-11-08 に libwebp の main ブランチのソース (GitHub の写し https://github.com/webmproject/libwebp) と比べて確かめた。libwebp のライセンス (BSD 3-Clause) に従い、
+ * 著作権表示と条文を下に書き換えずに載せる (libwebp の COPYING。PATENTS とあわせて THIRD_PARTY_NOTICES.md の 3 節):
+ *
+ * Copyright (c) 2010, Google Inc. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *
+ *   * Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in
+ *     the documentation and/or other materials provided with the
+ *     distribution.
+ *
+ *   * Neither the name of Google nor the names of its contributors may
+ *     be used to endorse or promote products derived from this software
+ *     without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 import { MAX_PIXELS } from './imageLimits';
 import { AC_TABLE, BMODES_PROBA, COEFF_PROBA0, COEFF_UPDATE_PROBA, DC_TABLE } from './vp8Tables';

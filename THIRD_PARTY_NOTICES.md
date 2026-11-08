@@ -7,7 +7,14 @@ Kumiori の配布物に含まれる、または Kumiori の実行に使われる
 - 対象の版: このリポジトリの `package-lock.json` で入る版 (下の各節に版を書いています)
 - この文書は、ライセンスの解釈や法的な判断を示すものではありません。
 
-## 1. ブラウザ向けの配布物 (`vite build` の `dist/`) に含まれるもの
+## 1. ブラウザ向けの配布物 (`dist/`・`dist-browser/`) に含まれるもの
+
+次の 2 つのブラウザ向けの配布物は、この節のパッケージを束ねて含みます (2026-11-08 に、ビルドのソースマップで束ねられたパッケージを確かめました)。
+
+- 画面 (`npm run build` の `dist/`。GitHub Pages に置くもの)
+- ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も束ねて含みます (XSL-FO を読むため)
+
+ライブラリ (`npm run build:lib` の `dist-lib/`。npm の `kumiori`) は依存パッケージを束ねず、実行時に node_modules から読み込みます (下の 2 節と同じ)。
 
 ### pdf-lib 1.17.1
 
@@ -438,7 +445,20 @@ pako の LICENSE ファイル (上) は MIT の条文です。Zlib の条文は�
 ### 1.3 @pdf-lib/standard-fonts に含まれる Adobe の AFM の Notice
 
 @pdf-lib/standard-fonts は、14 の標準書体の寸法 (AFM) を圧縮したデータを持っています。データを展開したときの、各書体の `Notice` の文言をそのまま引用します。
-元の AFM の配布条件は、パッケージの中では確認できていません (未確認)。
+このデータは、Adobe の 14 の AFM のファイルを JSON の形に変換して圧縮したもので、元の AFM のファイルそのものではありません。
+
+元の AFM に添えられた Adobe の配布条件 (Core 14 AFM Files の ReadMe。`MustRead.html`) は、パッケージの中にはありません。下は、その本文です。
+条件のとおり、この文書で AFM のファイルに添えて配布し、上の変換をここに記します。
+
+- 取得元: https://raw.githubusercontent.com/apache/pdfbox/trunk/pdfbox/src/main/resources/org/apache/pdfbox/resources/afm/MustRead.html (Apache PDFBox が AFM のファイルと一緒に収めているもの。取得日 2026-11-08)
+- HTML から本文の段落だけを取り出しました (語句は書き換えていません。白い字で書かれた段落の外の語は含めていません)。
+
+```text
+This file and the 14 PostScript(R) AFM files it accompanies may be used, copied, and distributed for any purpose and without charge, with or without modification, provided that all copyright notices are retained; that the AFM files are not distributed without this file; that all modifications to this file or any of the AFM files are prominently noted in the modified file(s); and that this paragraph is not modified. Adobe Systems has no responsibility or obligation to support the use of the AFM files.
+```
+
+各書体の `Notice` の文言:
+
 
 - Courier: `Copyright (c) 1989, 1990, 1991, 1992, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
 - Courier-Bold: `Copyright (c) 1989, 1990, 1991, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
@@ -1001,9 +1021,10 @@ pdf-lib のパッケージには、Apache License 2.0 の本文は入ってい�
    limitations under the License.
 ```
 
-## 2. Node のコマンド (`dist-cli/cli.js`) を配布するときの依存
+## 2. Node のコマンド (`dist-cli/cli.js`) とライブラリ (`dist-lib/`) を配布するときの依存
 
-Node のコマンドのビルドでは、次のパッケージはバンドルに入らず、実行時に node_modules から読み込まれます (上の 1 の pdf-lib・@pdf-lib/fontkit も同じ)。コマンドを配布する場合は、これらも依存として一緒に配布されます。
+Node のコマンドとライブラリのビルドでは、次のパッケージはバンドルに入らず、実行時に node_modules から読み込まれます (上の 1 のパッケージも同じ)。npm の `kumiori` を入れると、これらも依存として一緒に入ります。
+このうち @xmldom/xmldom は、ブラウザで単体で動くライブラリ (`dist-browser/`) には束ねて含まれます (上の 1)。
 
 ### @xmldom/xmldom 0.9.12
 
@@ -1473,17 +1494,21 @@ OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
-## 3. Kumiori のコードが参照している文書 (VP8・WebP)
+## 3. Kumiori のコードが参照している文書と、派生元のソフトウェア (VP8・WebP)
 
 Kumiori の `src/vp8.ts`・`src/vp8Tables.ts`・`src/webp.ts` (WebP の画像を読むコード) が、ファイルの中のコメントで参照している文書と、関連するライセンスの表示です。
-これらの表示は、Kumiori のコードに移植があるかどうかを確認できていないため、念のために掲載しています。
+
+- `src/vp8.ts` の一部は libwebp から派生しています。WHT と 4×4 の逆 DCT の組み立て (libwebp の `src/dsp/dec.c` の `TransformWHT_C`・`TransformOne_C`)、YUV → RGB の係数 (`src/dsp/yuv.h` の `VP8YUVToR`・`VP8YUVToG`・`VP8YUVToB`)、色差の補間 (`src/dsp/upsampling.c` の `UPSAMPLE_FUNC`)、予測の向きの番号が、libwebp と同じ手順・同じ値です。2026-11-08 に、libwebp の main ブランチのソース (GitHub の写し https://github.com/webmproject/libwebp) と比べて確かめました。
+- そのため libwebp のライセンス (下の 3.4。BSD 3-Clause) に従い、`src/vp8.ts` の冒頭に libwebp の著作権表示と条文を載せています。配布物には、この文書で同じ表示を添えます。
+- `src/webp.ts` は RFC 9649 の手順で書いたものですが、画素の加算 (`addPixels`) と平均 (`avg2`) の 2 つの小さな関数は、libwebp の `VP8LAddPixels` (`src/dsp/lossless_common.h`) と `Average2` (`src/dsp/lossless.c`) と同じ書き方です。この 2 つも libwebp から派生したものとして扱い、`src/webp.ts` の冒頭で libwebp の表示 (`src/vp8.ts` の冒頭とこの文書) を指しています。
+- `src/vp8Tables.ts` の数表は RFC 6386 の表と同じ値です。RFC の表示 (下の 3.2・3.3) は、参照している文書の表示として載せています。
 
 ### 3.1 ファイルの中のコメント
 
-- `src/vp8.ts` の冒頭 (2 行目): 「… RGBA にする (画像を Canvas に描けない環境 (Node) 用。RFC 6386)。」
+- `src/vp8.ts` の冒頭 (2 行目): 「… RGBA にする (画像を Canvas に描けない環境 (Node) 用。RFC 6386)。」。6〜10 行目は libwebp から派生した部分の説明で、その後に libwebp の著作権表示と条文が続きます。
 - `src/vp8Tables.ts` の冒頭 (2 行目): 「… VP8 (WebP の非可逆圧縮) の数表 (RFC 6386 の表と同じ値)。」
-- `src/webp.ts` の冒頭 (2 行目): 「… WebP の画素を読む (画像を Canvas に描けない環境 (Node) 用。RFC 9649)。」
-- `src/vp8.ts` の次のコメントは、libwebp と同じであることを述べています: 4 行目 (YUV → RGB)、387 行目 (「libwebp の TransformOne と同じ」)、418 行目 (フレームの外の値)、495 行目 (4×4 の予測)、658 行目 (YUV → RGBA)。57 行目は、予測の向きの番号を「libwebp の番号」としています。
+- `src/webp.ts` の冒頭 (2 行目): 「… WebP の画素を読む (画像を Canvas に描けない環境 (Node) 用。RFC 9649)。」。6〜8 行目は libwebp と同じ書き方の関数の説明です。
+- `src/vp8.ts` の次のコメントは、libwebp と同じであることを述べています: 4 行目 (YUV → RGB)、424 行目 (「libwebp の TransformOne と同じ」)、455 行目 (フレームの外の値)、532 行目 (4×4 の予測)、695 行目 (YUV → RGBA)。94 行目は、予測の向きの番号を「libwebp の番号」としています。
 
 ### 3.2 RFC 6386 (VP8 Data Format and Decoding Guide) の著作権とライセンスの表示
 
@@ -1709,6 +1734,7 @@ The name and trademarks of copyright holders may NOT be used in advertising or p
 ## 5. Kumiori のコードに取り込んだ WHATWG の文書の CSS (HTML の既定のスタイルシート)
 
 `src/cssCascade.ts` の `HTML_UA_CSS` の前半は、WHATWG の文書 HTML Living Standard の 15 章「Rendering」の CSS (15.3〜15.5) を取り込んだものです。組版に効かない規則は除き、文章で書かれた規則の一部を CSS で書き足しています。
+同じファイルの `QUIRKS_UA_CSS` (互換モードの文書の既定のスタイル) も、同じ 15 章の「In quirks mode」の規則 (15.3.3・15.3.7・15.3.8・15.3.10・15.4.2) を取り込んだものです。
 
 - 文書の取得元: https://html.spec.whatwg.org/multipage/rendering.html (取得日 2026-11-04。Living Standard のため、版の名前はありません)
 - 文書の著作権表示とライセンス (原文。取得元: https://html.spec.whatwg.org/multipage/acknowledgements.html 、取得日 2026-11-04): 「Copyright © WHATWG (Apple, Google, Mozilla, Microsoft). This work is licensed under a Creative Commons Attribution 4.0 International License. To the extent portions of it are incorporated into source code, such portions in the source code are licensed under the BSD 3-Clause License instead.」。BSD 3-Clause License のリンク先は https://opensource.org/licenses/BSD-3-Clause
@@ -1802,4 +1828,46 @@ Disclaimers
 THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
 COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
 The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to the work without specific, written prior permission. Title to copyright in this work will at all times remain with copyright holders.
+```
+
+## 8. Kumiori のコードに写した W3C の文書の CSS (CSS Ruby 1 の既定のスタイルシート)
+
+`src/cssCascade.ts` の `HTML_UA_CSS` の後半にあるルビの規則 (rbc・rtc・rb の display、ruby・rb・rt・rbc・rtc の unicode-bidi、rtc・rt の font-variant-east-asian・text-justify・text-emphasis・white-space・line-height・font-size) は、W3C の文書 CSS Ruby Annotation Layout Module Level 1 の付録 A.1 (Default stylesheet) の規則を写したものです。台湾の注音の規則 (font-size: 30%) は、セレクタの並びの終わりに `,` があって無効な規則なので写していません。ruby・rp・rt の display は、HTML Living Standard の規則 (上の 5 節) で決まるので、ここでは写していません。
+
+This software includes material copied from or derived from CSS Ruby Annotation Layout Module Level 1 (https://www.w3.org/TR/2022/WD-css-ruby-1-20221231/). Copyright © 2022 W3C® (MIT, ERCIM, Keio, Beihang).
+
+- 文書の取得元: https://www.w3.org/TR/css-ruby-1/#default-stylesheet (2026-11-08 に取り直した文書の版は W3C Working Draft 31 December 2022、https://www.w3.org/TR/2022/WD-css-ruby-1-20221231/)
+- 文書の著作権表示 (原文): 「Copyright © 2022 W3C® (MIT, ERCIM, Keio, Beihang). W3C liability, trademark and permissive document license rules apply.」。permissive document license のリンク先は https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document (https://www.w3.org/copyright/software-license-2015/ に転送される)
+- ライセンスの本文は、上の 7 節に写した Software and Document license - 2015 version と同じです。
+
+## 9. Kumiori のコードに写した W3C の文書の CSS (CSS 2.1 の付録 D の既定のスタイルシート)
+
+`src/htmlPrepare.ts` の `CSS21_DEFAULT_CSS` (`--style ah` の既定) は、W3C の文書 CSS 2.1 の付録 D「Default style sheet for HTML 4」の規則のうち、ブラウザ (Chrome) の既定と違うものを写したものです。ol・ul の字下げ (margin-left: 40px を padding-left: 2.5em に)、figure の左右の余白、sub・sup の line-height は、Kumiori が変えたり足したりしています (変えた点は `src/htmlPrepare.ts` のコメントに書いています)。
+
+This software includes material copied from or derived from Cascading Style Sheets Level 2 Revision 1 (CSS 2.1) Specification, Appendix D. Default style sheet for HTML 4 (https://www.w3.org/TR/2011/REC-CSS2-20110607/sample.html). Copyright © 2011 W3C® (MIT, ERCIM, Keio), All Rights Reserved.
+
+- 文書の取得元: https://www.w3.org/TR/CSS2/sample.html (取得日 2026-11-05。2026-11-08 に取り直した文書の版は https://www.w3.org/TR/2011/REC-CSS2-20110607 )
+- 文書の状態 (原文): 「W3C Recommendation 07 June 2011, edited in place 12 April 2016 to point to new work, edited in place 07 December 2021 to correct markup.」
+- 文書の著作権表示 (原文。文書の表紙 https://www.w3.org/TR/CSS2/ にあるもの): 「Copyright © 2011 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C liability, trademark and document use rules apply.」。document use のリンク先は https://www.w3.org/Consortium/Legal/copyright-documents (https://www.w3.org/copyright/document-license-2023/ に転送される)
+- 下はそのライセンスの本文です。取得元: https://www.w3.org/copyright/document-license-2023/ (取得日 2026-11-08)。HTML から文字だけを取り出しました (語句は書き換えていません。見出しと段落の区切りは改行にしています。末尾の版の一覧と変更点の説明は含めていません)。
+
+```text
+Document license - 2023 version
+Status: This document is in effect since 1 January 2023.
+Public documents on the W3C site are provided by the copyright holders under the following license.
+License
+By using and/or copying this document, or the W3C document from which this statement is linked, you (the licensee) agree that you have read, understood, and will comply with the following terms and conditions:
+Permission to copy, and distribute the contents of this document, or the W3C document from which this statement is linked, in any medium for any purpose and without fee or royalty is hereby granted, provided that you include the following on ALL copies of the document, or portions thereof, that you use:
+A link or URL to the original W3C document.
+The pre-existing copyright notice of the original author, or if it doesn't exist, a notice (hypertext is preferred, but a textual representation is permitted) of the form: "Copyright © [$date-of-document] World Wide Web Consortium. https://www.w3.org/copyright/document-license-2023/"
+If it exists, the STATUS of the W3C document.
+When space permits, inclusion of the full text of this NOTICE should be provided. We request that authorship attribution be provided in any software, documents, or other items or products that you create pursuant to the implementation of the contents of this document, or any portion thereof.
+No right to create modifications or derivatives of W3C documents is granted pursuant to this license, except as follows: To facilitate implementation of the technical specifications set forth in this document, anyone may prepare and distribute derivative works and portions of this document in software, in supporting materials accompanying software, and in documentation of software, PROVIDED that all such works include the notice below. HOWEVER, the publication of derivative works of this document for use as a technical specification is expressly prohibited.
+In addition, "Code Components" —Web IDL in sections clearly marked as Web IDL; and W3C-defined markup (HTML, CSS, etc.) and computer programming language code clearly marked as code examples— are licensed under the W3C Software License.
+The notice is:
+"Copyright © 2023 W3C®. This software or document includes material copied from or derived from [title and URI of the W3C document]."
+Disclaimers
+THIS DOCUMENT IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, OR TITLE; THAT THE CONTENTS OF THE DOCUMENT ARE SUITABLE FOR ANY PURPOSE; NOR THAT THE IMPLEMENTATION OF SUCH CONTENTS WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE DOCUMENT OR THE PERFORMANCE OR IMPLEMENTATION OF THE CONTENTS THEREOF.
+The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to this document or its contents without specific, written prior permission. Title to copyright in this document will at all times remain with copyright holders.
 ```

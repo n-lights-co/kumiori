@@ -43,6 +43,13 @@ body { margin: 0; }
  * figure (付録 D には無い要素) の左右の余白は 0 にする (図は本文の幅いっぱいに置く。ブラウザの既定の左右 40px の余白は付けない)
  * sub・sup は、付録 D に line-height の指定が無い (https://www.w3.org/TR/CSS2/sample.html 、2026-11-05 取得) ので、
  * ブラウザの既定 (WHATWG 15.3.4 の line-height: normal) を打ち消して、親の line-height を受け継ぐ
+ *
+ * 付録 D の規則は、取得した文書 (W3C Recommendation 07 June 2011, edited in place 12 April 2016 to point to new work,
+ * edited in place 07 December 2021 to correct markup) から写し、上のとおり一部を変えた。
+ * This software includes material copied from or derived from Cascading Style Sheets Level 2 Revision 1 (CSS 2.1) Specification,
+ * Appendix D. Default style sheet for HTML 4 (https://www.w3.org/TR/2011/REC-CSS2-20110607/sample.html).
+ * Copyright © 2011 W3C® (MIT, ERCIM, Keio), All Rights Reserved.
+ * (ライセンスの本文は THIRD_PARTY_NOTICES.md の 9 節)
  */
 export const CSS21_DEFAULT_CSS = `
 h1 { font-size: 2em; margin: .67em 0; }

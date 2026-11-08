@@ -553,6 +553,31 @@ ul.sources .url {
   font-family: monospace;
   font-size: 7pt;
 }
+ul.sources .copy {
+  font-size: 7pt;
+}
+/* 付録 C の終わりの、引用した文書のライセンスの本文 */
+p.license-h {
+  font-family: sans-serif;
+  font-weight: bold;
+  font-size: 9pt;
+  margin: 5mm 0 1.5mm;
+  text-indent: 0;
+  text-align: start;
+  break-after: avoid;
+}
+p.license-h .url {
+  font-family: monospace;
+  font-weight: normal;
+  font-size: 7pt;
+}
+p.license {
+  font-size: 7pt;
+  line-height: 1.45;
+  margin: 0 0 1mm;
+  text-indent: 0;
+  text-align: start;
+}
 
 /* 奥付 (最終ページの下のほう。CSS-Print の奥付と同じ置き方) */
 section.colophon { break-before: page; padding-top: 150mm; font-family: sans-serif; font-size: 8pt; line-height: 1.6; color: #23313a; text-indent: 0; }

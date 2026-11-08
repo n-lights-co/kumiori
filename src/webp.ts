@@ -2,6 +2,10 @@
  * webp — WebP の画素を読む (画像を Canvas に描けない環境 (Node) 用。RFC 9649)。
  *  - 可逆 (VP8L): 変換 (予測・色の変換・緑を引く・色の表)、色のキャッシュ、メタの符号 (場所ごとの符号の組)、LZ77 の後方参照
  *  - 非可逆 (VP8): src/vp8.ts で読み、透明度 (ALPH。生・可逆、予測のフィルタ) を重ねる
+ *
+ * 画素の加算 (addPixels) と平均 (avg2) は、libwebp の VP8LAddPixels (src/dsp/lossless_common.h) と Average2 (src/dsp/lossless.c) と
+ * 同じ書き方 (2026-11-08 に libwebp の main ブランチのソースと比べて確かめた)。libwebp の著作権表示とライセンス (BSD 3-Clause) は
+ * src/vp8.ts の冒頭と THIRD_PARTY_NOTICES.md の 3 節にある
  */
 import type { Pixels } from './pixels';
 import { MAX_PIXELS } from './imageLimits';
