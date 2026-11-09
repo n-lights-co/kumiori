@@ -3572,6 +3572,13 @@ class HtmlImporter {
       if (img?.type === 'image' && img.borderRadius && bs.borderRadius) img.borderRadius = innerRadius(bs.borderRadius, bs.border, bs.padding);
       // ブロックの置換要素の箱の幅は画像の使われる幅 (CSS 2.1 §10.3.4 → §10.3.2: 本来の大きさと上限・下限で決まる)。親いっぱいにすると、
       // 罫線・背景・角丸が画像より広く描かれる (border-radius: 50% が楕円になる)。画像の幅が分かるときだけ (分からなければ組版で本来の大きさになる)
+      // 幅の指定のある画像: 箱の幅も、上限・下限 (max-width・min-width) で抑えた、画像の使われる幅にする (CSS 2.1 §10.4)。
+      // 指定の幅のままだと、箱が画像より広くなり、margin: auto で箱を中央に置いても画像は箱の左に寄る
+      if (img?.type === 'image' && bs.width !== undefined && img.width !== undefined) {
+        const side = (s: 'left' | 'right') => ((bs.border as Partial<Record<string, BorderSide>> | undefined)?.[s]?.width ?? 0) + (typeof bs.padding === 'number' ? bs.padding : ((bs.padding as Partial<Record<string, number>> | undefined)?.[s] ?? 0));
+        const used = bs.boxSizing === 'border-box' ? img.width + side('left') + side('right') : img.width;
+        if (Math.abs(used - bs.width) > 0.01) bs.width = used;
+      }
       if (img?.type === 'image' && bs.width === undefined && img.width !== undefined) {
         const side = (s: 'left' | 'right') => ((bs.border as Partial<Record<string, BorderSide>> | undefined)?.[s]?.width ?? 0) + (typeof bs.padding === 'number' ? bs.padding : ((bs.padding as Partial<Record<string, number>> | undefined)?.[s] ?? 0));
         const extra = side('left') + side('right');

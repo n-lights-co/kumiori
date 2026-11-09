@@ -180,6 +180,15 @@ describe('img の罫線・余白の箱の重なり・SVG の引き伸ばし・pa
     expect((b.children[0] as LImage).type).toBe('image');
     expect((b.children[0] as LImage).borderRadius?.corners?.[0]).toEqual(['50%', '50%']);
   });
+  it('幅の指定のあるブロックの img も、箱の幅は max-width で抑えた画像の幅にする (CSS 2.1 §10.4。箱が画像より広くならない)', () => {
+    const d = new DOMParser().parseFromString('<html><body><section style="width: 400px"><img src="a.png"></section></body></html>', 'text/html') as never;
+    const css = 'img { display: block; margin: auto; width: 75%; max-width: 70%; border: 2pt solid #fff; border-radius: 50% }';
+    const r = importHtml(d, cascadeStyles(d, css, { viewport: { width: 600, height: 800 } }), { css, imageSize: () => ({ width: 900, height: 520 }) });
+    const b = find<LBlock>(r.document, (n) => n.type === 'block' && !!n.borderRadius)[0];
+    // 75% (225pt) ではなく、上限の 70% = 280px = 210pt
+    expect((b.children[0] as LImage).width).toBeCloseTo(210, 3);
+    expect(b.width).toBeCloseTo(210, 3);
+  });
   it('ブロックの img の箱の幅は画像の幅 (max-width で決まった幅も)。左右の余白が auto なら中央に置く (罫線・角丸が画像より広くならない)', () => {
     const d = new DOMParser().parseFromString('<html><body><figure style="width: 200px"><img src="a.png"><figcaption>写真の説明</figcaption></figure></body></html>', 'text/html') as never;
     const css = 'figure { margin: 0; text-align: center } img { display: block; margin: 0 auto; max-width: 40px; border: 2pt solid #fff; border-radius: 50% }';
