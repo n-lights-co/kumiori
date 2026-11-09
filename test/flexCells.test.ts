@@ -419,8 +419,7 @@ describe('縦書きの縦並び・折り返しの列・visibility・aspect-ratio
   });
   it('flex の項目の visibility: collapse は、主軸から外す (Flexbox 1 §4.4)', () => {
     const b = lay('<div style="display: flex"><p style="margin: 0; width: 50pt">A</p><p style="margin: 0; width: 50pt; visibility: collapse">B</p><p style="margin: 0; width: 50pt">C</p></div>');
-    // 中身は見えない (支柱として組むが、字の色は transparent)
-    expect(glyph(b, 'B').color).toBe('transparent');
+    expect(b.find((a) => a.type === 'glyph' && a.text === 'B')).toBeUndefined();
     expect(glyph(b, 'C').x).toBeLessThan(60);
   });
   it('collapse の項目は、交差軸の大きさを支柱として残す (行の高さが変わらない。Flexbox 1 §4.4)', () => {
@@ -430,7 +429,18 @@ describe('縦書きの縦並び・折り返しの列・visibility・aspect-ratio
     expect(bgOf(b, '#ff0000').h).toBeCloseTo(36, 1);
     expect(glyph(b, 'C').x - glyph(b, 'A').x).toBeCloseTo(60, 1);
     expect(b.find((a) => a.bg === '#0000ff')).toBeUndefined();
-    expect(glyph(b, '2').color).toBe('transparent');
+    expect(b.find((a) => a.type === 'glyph' && a.text === '2')).toBeUndefined();
+    // 中の visible の子孫も描かず、見出しのしおりも出さない (支柱は空の箱)。上下の margin も支柱の高さに入る (12 + 40pt)
+    const doc = load('<div style="display: flex; background: #ff0000"><div style="visibility: collapse; margin: 20pt 0"><span style="visibility: visible">X</span><h2 style="margin: 0; font-size: 10pt">見出し</h2></div><p style="margin: 0">B</p></div>', PAGE).document;
+    const tree = E.engine.layout(doc);
+    const v = boxes(tree.sheets[0] as unknown as Area);
+    expect(v.find((a) => a.type === 'glyph' && a.text === 'X')).toBeUndefined();
+    expect(tree.bookmarks ?? []).toEqual([]);
+    expect(bgOf(v, '#ff0000').h).toBeCloseTo(64, 1);
+    // 折り返し: 見える項目の後ろの collapse の項目には間の空きを数えず、同じ行に残す (容器 200pt、項目 95 + 10 + 95)
+    const w = lay('<div style="display: flex; flex-wrap: wrap; column-gap: 10pt; width: 200pt"><p style="margin: 0; width: 95pt">A</p><p style="margin: 0; width: 95pt">B</p><p style="margin: 0; width: 50pt; visibility: collapse">C</p><p style="margin: 0; width: 50pt">D</p></div>');
+    expect(glyph(w, 'B').y).toBeCloseTo(glyph(w, 'A').y, 1);
+    expect(glyph(w, 'D').y).toBeGreaterThan(glyph(w, 'A').y + 5);
     // grid の項目の collapse は hidden と同じ (場所を残す)
     const g = lay('<div style="display: grid; grid-template-columns: 50pt 50pt 50pt"><p style="margin: 0">A</p><p style="margin: 0; visibility: collapse">B</p><p style="margin: 0">C</p></div>');
     expect(glyph(g, 'C').x - glyph(g, 'A').x).toBeCloseTo(100, 1);
@@ -452,6 +462,17 @@ describe('縦書きの縦並び・折り返しの列・visibility・aspect-ratio
     const many = '<p style="margin: 0">1</p><p style="margin: 0">2</p><p style="margin: 0">3</p><p style="margin: 0">4</p>';
     expect(bgOf(lay(`<div style="width: 200pt"><div style="aspect-ratio: 10; background: #ff0000">${many}</div></div>`), '#ff0000').h).toBeCloseTo(48, 1);
     expect(bgOf(lay(`<div style="width: 200pt"><div style="aspect-ratio: 10; overflow: hidden; background: #ff0000">${many}</div></div>`), '#ff0000').h).toBeCloseTo(20, 1);
+    // max-height・min-height で比の高さを抑え、幅が auto なら比で幅にも移す (Chromium と同じ)。中身が多くても max-height は超えない
+    const mx = bgOf(lay('<div style="width: 200pt"><div style="aspect-ratio: 1; max-height: 50pt; background: #ff0000">x</div></div>'), '#ff0000');
+    expect([mx.w, mx.h].map((x) => Math.round(x))).toEqual([50, 50]);
+    expect(bgOf(lay(`<div style="width: 200pt"><div style="aspect-ratio: 10; max-height: 30pt; background: #ff0000">${many}</div></div>`), '#ff0000').h).toBeCloseTo(30, 1);
+    // float の横の新しいブロック整形文脈の箱は、縮めた幅 (200pt) から高さを出す
+    const fl = bgOf(lay('<div style="width: 300pt"><div style="float: left; width: 100pt; height: 10pt"></div><div style="display: flow-root; aspect-ratio: 2; background: #ff0000"></div></div>'), '#ff0000');
+    expect([fl.w, fl.h].map((x) => Math.round(x))).toEqual([200, 100]);
+    // 絶対配置の箱 (幅も高さも auto) は、幅の見積もりから高さを出す
+    expect(bgOf(lay('<div style="position: relative; width: 200pt; height: 200pt"><div style="position: absolute; left: 0; right: 0; aspect-ratio: 4; background: #ff0000"></div></div>'), '#ff0000').h).toBeCloseTo(50, 0);
+    // 親と書字方向の違うブロック (横書きの中の縦書き): 高さ 100pt と比 2 から、幅 200pt
+    expect(bgOf(lay('<div style="writing-mode: vertical-rl; height: 100pt; aspect-ratio: 2; background: #ff0000"></div>'), '#ff0000').w).toBeCloseTo(200, 1);
     // 縦書き: inline の大きさ (高さ) 200pt と比 1 / 2 (幅 / 高さ) から、幅 100pt
     expect(bgOf(lay('<div style="height: 200pt"><div style="aspect-ratio: 1 / 2; background: #ff0000"></div></div>', V), '#ff0000').w).toBeCloseTo(100, 1);
   });

@@ -1172,8 +1172,9 @@ class HtmlImporter {
         const auto = specified !== undefined ? Math.min(content, specified + (kc('box-sizing') === 'border-box' ? 0 : outer(k) - margins)) : content;
         return auto + margins;
       };
-      // 項目の幅の基準 (flex-basis、無ければ width。分からなければ undefined)
-      const info = items.map((k) => {
+      /** 項目の幅の基準 (w: flex-basis、無ければ width。分からなければ undefined)・伸び縮みの比と下限・上限。strut は collapse の項目の本来の幅 */
+      type Info = { el: Item; w: number | undefined; grow: number; shrink: number; base: number; floor: number; cap?: number; strut?: number };
+      const info = items.map((k): Info => {
         const kc = ics(k);
         const b = kc('flex-basis');
         // ::before・::after は、幅の指定が長さか % なら、それ
@@ -1194,10 +1195,9 @@ class HtmlImporter {
         const shrink = parseFloat(kc('flex-shrink'));
         // collapse の項目 (§4.4・§9.1 の 4): 行に分けるときも、伸ばし縮めるときも、主軸の大きさは 0。中身は本来の幅 (strut) で組み、
         // その交差軸の大きさ (高さ) で行の高さを支える
-        if (k.collapse) return { el: k, w: 0, grow: 0, shrink: 0, base: 0, floor: 0, cap: undefined, strut: inner !== undefined ? inner + outer(k) : (est ?? 0) + margins };
+        if (k.collapse) return { el: k, w: 0, grow: 0, shrink: 0, base: 0, floor: 0, strut: inner !== undefined ? inner + outer(k) : (est ?? 0) + margins };
         return {
           el: k,
-          strut: undefined as number | undefined,
           w: inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined,
           grow: parseFloat(kc('flex-grow')) || 0,
           shrink: Number.isFinite(shrink) && shrink >= 0 ? shrink : 1,
@@ -1214,12 +1214,15 @@ class HtmlImporter {
       let used = 0;
       for (const it of info) {
         const w = it.w ?? 0;
-        if (c('flex-wrap') !== 'nowrap' && cur.length && used + colGap + w > W + 0.5) {
+        // 間の空きは、見える項目どうしの間にだけ数える (collapse の項目は主軸の大きさも空きも 0)
+        // collapse の項目では折り返さない (支柱は前の項目と同じ行に残る)
+        const shownBefore = cur.some((x) => !x.el.collapse);
+        const gap = !it.el.collapse && shownBefore ? colGap : 0;
+        if (c('flex-wrap') !== 'nowrap' && !it.el.collapse && shownBefore && used + gap + w > W + 0.5) {
           groups.push(cur);
           cur = [];
-          used = 0;
-        }
-        used += (cur.length && !it.el.collapse ? colGap : 0) + w;
+          used = w;
+        } else used += gap + w;
         cur.push(it);
       }
       if (cur.length) groups.push(cur);
@@ -1332,8 +1335,8 @@ class HtmlImporter {
         if (!cell.el) return { type: 'table-cell', children: [] };
         const n = cell.el.node;
         delete (n as LBlock).width;
-        // collapse の項目の支柱: 幅 0 の列の中で、本来の幅の箱に組む (見えない。高さだけが行の高さに効く。伸ばさず、揃えない)
-        if (cell.strut !== undefined) return { type: 'table-cell', children: [{ type: 'block', width: Math.max(cell.strut, 0), children: [n] } as LBlock] };
+        // collapse の項目の支柱: 幅 0 の列の中に、本来の幅で組んだときの高さの空の箱を置く (phantom。中身は描かない。伸ばさず、揃えない)
+        if (cell.strut !== undefined) return { type: 'table-cell', keepEdgeSpace: true, children: [{ type: 'block', phantom: true, width: Math.max(cell.strut, 0), children: [n] } as LBlock] };
         // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
         // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
         const ic = ics(cell.el);
@@ -2554,18 +2557,20 @@ class HtmlImporter {
     // 置換要素 (画像など) の auto の幅は本来の大きさなので、ここでは扱わない (image() で上限・下限を当てる)
     const replaced = /^(img|svg|object|video|canvas|iframe|embed|input|textarea|select|button|math)$/.test(el.localName);
     // aspect-ratio (CSS Sizing 4 §5.1): 幅と高さの一方だけが決まっていれば、もう一方を比から決める (box-sizing の箱どうしの比)。どちらも
-    // 決まらない flex・grid の容器は、幅 (容器の幅の見積もり) から高さを決める。置換要素に auto 付きで書いたときは、本来の縦横比を使う (image() が扱う)
+    // 決まらないブロック (流れの中のブロックでないもの・flex・grid の容器) は、幅 (容器の幅の見積もり) から高さを決める。置換要素に auto 付きで書いたときは、本来の縦横比を使う (image() が扱う)
     const ar = parseAspectRatio(c('aspect-ratio'));
     if (ar && !(replaced && ar.auto)) {
       const bbA = c('box-sizing') === 'border-box';
       const hb = (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
       const vb = (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0);
-      // 流れの中のブロック (float・絶対配置でない) は、組むときの実際の幅から高さを決める (flex の項目の中など、幅が組むときに決まる場所でもずれない)
-      const flowBlock = !pseudo && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'));
+      // 流れの中のブロック (float・絶対配置でなく、書字方向が親と同じ) は、組むときの実際の幅から高さを決める (flex の項目の中など、
+      // 幅が組むときに決まる場所でもずれない)。書字方向が親と違うブロックは、組版エンジンが別の道で組むので、ここで決める
+      const sameWm = !el.parentElement || this.cs(el.parentElement)('writing-mode') === c('writing-mode');
+      const flowBlock = !pseudo && sameWm && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'));
       if (o[this.axisOf(el)('height') as 'height' | 'width'] === undefined && flowBlock) o.aspectRatio = ar.ratio;
       else if (o.width !== undefined && o.height === undefined) o.height = o.width / ar.ratio;
       else if (o.height !== undefined && o.width === undefined) o.width = o.height * ar.ratio;
-      else if (o.width === undefined && o.height === undefined && !pseudo && /^(flex|grid)$/.test(c('display'))) {
+      else if (o.width === undefined && o.height === undefined && !pseudo && /^(block|list-item|flow-root|flex|grid)$/.test(c('display'))) {
         const cw = this.src.contentWidth?.(el);
         // 比は box-sizing の箱どうし: content-box なら内容の幅、border-box なら枠までの幅から高さを出す
         if (cw) o.height = (cw * PT_PER_PX + (bbA ? hb : 0)) / ar.ratio;
@@ -2602,10 +2607,10 @@ class HtmlImporter {
       const mxh = /px$/.test(c('max-height')) ? cssLen(c('max-height')) : undefined;
       if (o.height !== undefined && mxh !== undefined) o.height = Math.min(o.height, mxh);
       if (o.height !== undefined && mnh !== undefined) o.height = Math.max(o.height, mnh);
-      if (mnh) {
-        const bbH = c('box-sizing') === 'border-box' ? (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0) : 0;
-        o.minBlockSize = Math.max(0, mnh - bbH);
-      }
+      const bbH = c('box-sizing') === 'border-box' ? (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0) : 0;
+      if (mnh) o.minBlockSize = Math.max(0, mnh - bbH);
+      // aspect-ratio の箱: max-height で、比から出す高さを抑える (組版エンジンが組むときに当てる)
+      if (o.aspectRatio && mxh !== undefined) o.maxBlockSize = Math.max(0, mxh - bbH);
     }
     // ブラウザの配置が無いとき: 幅の決まった箱の左右の余白が両方 auto なら、残りを等分する (CSS 2.1 §10.3.3)
     const cbEl = pseudo ? el : el.parentElement;

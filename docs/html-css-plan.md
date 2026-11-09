@@ -401,10 +401,12 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      縦並びの折り返しの列ごとに、`flex-grow`・主軸の auto の余白・`justify-content` で余りを分ける (`flexWrapColumns.justify`)。
      `visibility: hidden`・`collapse` は、字の色を `transparent` にして運び (受け継ぐ。中の visible の要素は自分の色)、背景・影を外し、
      枠は太さを残して色を `transparent` にする。描画 (`paint.ts`) は transparent の字・背景と、印の付いた画像を描かない。flex の項目の collapse は
-     主軸から外し (主軸の大きさ 0・間の空きなし)、交差軸の大きさは支柱として残す (幅 0 の列の中で、本来の幅の見えない箱に組む。Flexbox 1 §4.4)。
+     主軸から外し (主軸の大きさ 0・間の空きなし・その項目では折り返さない)、交差軸の大きさは支柱として残す (幅 0 の列の中に、本来の幅で測った高さの
+     空の箱を置く。`LBlock.phantom`。中身・しおり・リンクは出さない。Flexbox 1 §4.4)。
      grid の項目の collapse は hidden と同じ。`aspect-ratio` は、幅か高さの一方からもう一方を決める。流れの中のブロックで高さが auto なら、
      組版エンジンが組むときの実際の幅から高さを出す (`BoxStyle.aspectRatio`。flex の項目の伸びた幅にも効く)。overflow が visible なら中身で伸び
-     (自動の最小の大きさ。CSS Sizing 4 §5.1)、切り抜く箱は比の高さで固定
+     (自動の最小の大きさ。CSS Sizing 4 §5.1)、切り抜く箱は比の高さで固定。min-height・max-height (`maxBlockSize`) で比の高さを抑え、
+     幅が auto なら比で幅にも移す。float の横で縮めた幅にも効く。float・絶対配置・書字方向が親と違うブロックは、読み込みのときの幅から決める
    - html が flex の容器なら、body を `justify-content`・`align-items` でページの領域の中に寄せる
    - 角丸: `border-*-radius` を読む (角ごと・百分率・楕円。組版エンジンの `BorderRadius.corners`)。ブラウザ経由でも効く
    - 段組のコンテナ (`column-count`): ページに収まらなければ、ページをまたいで段を続ける (1 ページ目はページの残り、最後のページは釣り合わせる)。

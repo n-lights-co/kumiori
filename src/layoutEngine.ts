@@ -1667,6 +1667,46 @@ class Flow {
     return kept(Math.max(pageLimit - reserve, 1)); // 新しいページなら一緒に入る場合だけ、改ページする
   }
 
+  /** 中身を、内容の inline の大きさ ci で測るだけ組んで、block の大きさを返す (先頭・末尾の子の余白も含める) */
+  private measureBlockSize(children: LBlock['children'], st: ResolvedStyle, ci: number): number {
+    const sub = new Flow({ ...this.host, warn: () => {} }, { wm: st.wm, rootI: Math.max(ci, 1), abs: () => [], pageSize: this.pageSize, measure: true, referenceArea: true });
+    sub.layoutChildren(children, st);
+    return sub.finishAtomic();
+  }
+
+  /**
+   * aspect-ratio の箱の大きさ (CSS Sizing 4 §5.1)。比は box-sizing の箱どうし。
+   * - inline が auto なら、block の min・max (min-height・max-height) を比で inline に移して抑える
+   * - block は inline × 比 を min・max で抑える。scroll なしの箱 (overflow: visible) は中身で伸びる (自動の最小の大きさ) が、max は超えない。
+   *   切り抜く箱は比の高さで固定
+   */
+  private aspectBox(node: LBlock, desc: BoxDesc, st: ResolvedStyle): BoxDesc {
+    const r = node.aspectRatio!;
+    const bb = node.boxSizing === 'border-box';
+    const bpB = desc.bpStart + desc.bpEnd;
+    // block の箱 = inline の箱 × k (box-sizing の箱どうし)
+    const k = this.wm === 'horizontal-tb' ? 1 / r : r;
+    const toB = (ci: number) => Math.max((ci + (bb ? desc.bpI : 0)) * k - (bb ? bpB : 0), 0);
+    const toI = (cb: number) => Math.max((cb + (bb ? bpB : 0)) / k - (bb ? desc.bpI : 0), 0);
+    const maxB = node.maxBlockSize;
+    const minB = desc.minB;
+    let ci = desc.isizeExplicit;
+    if (ci == null) {
+      const avail = Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0);
+      ci = avail;
+      if (maxB != null) ci = Math.min(ci, toI(maxB));
+      if (minB != null) ci = Math.max(ci, toI(minB));
+      if (Math.abs(ci - avail) > EPS) desc = { ...desc, isizeExplicit: ci };
+    }
+    let b = toB(ci);
+    if (maxB != null) b = Math.min(b, maxB);
+    if (minB != null) b = Math.max(b, minB);
+    if (node.overflow === 'hidden') return { ...desc, bsizeExplicit: b };
+    // 中身で伸びるが、max-height は超えない (max を超える中身ははみ出す)
+    if (maxB != null) return { ...desc, bsizeExplicit: Math.min(Math.max(b, this.measureBlockSize(node.children, st, ci)), Math.max(maxB, minB ?? 0)) };
+    return { ...desc, minB: Math.max(minB ?? 0, b) };
+  }
+
   layoutBlockLevel(node: LBlockLevel, ps: ResolvedStyle) {
     if (node.type === 'block') this.layoutBlock(node, ps);
     else if (node.type === 'table') this.layoutTable(node, ps);
@@ -1685,17 +1725,17 @@ class Flow {
       const y = this.floatBottom(node.clear);
       if (y > this.cursor + this.pendingValue()) this.pendMin = Math.max(this.pendMin, y - this.cursor);
     }
-    let desc = describeBox(node, this.wm);
-    // aspect-ratio (CSS Sizing 4 §5.1): 高さが auto なら、実際の inline の大きさから block の大きさを決める。比は box-sizing の箱どうしで、
-    // 幅 / 高さ (物理)。縦書きでは inline が高さなので、block (幅) = inline × 比。scroll なしの箱は中身で伸びる (自動の最小の大きさ)
-    if (node.aspectRatio && desc.bsizeExplicit == null) {
-      const bb = node.boxSizing === 'border-box';
-      const bpB = desc.bpStart + desc.bpEnd;
-      const ci = desc.isizeExplicit ?? Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0);
-      const ib = ci + (bb ? desc.bpI : 0);
-      const b = Math.max((this.wm === 'horizontal-tb' ? ib / node.aspectRatio : ib * node.aspectRatio) - (bb ? bpB : 0), 0);
-      desc = node.overflow === 'hidden' ? { ...desc, bsizeExplicit: b } : { ...desc, minB: Math.max(desc.minB ?? 0, b) };
+    // 支柱だけの箱 (flex の visibility: collapse の項目。LBlock.phantom): 中身を測るだけ組み、その block の大きさの空の箱を置く
+    if (node.phantom) {
+      const d0 = describeBox(node, this.wm);
+      const ci = d0.isizeExplicit ?? Math.max(this.contentI() - d0.m.is - d0.m.ie - d0.bpI, 0);
+      const used = this.measureBlockSize(node.children, st, ci);
+      const horizontal = this.wm === 'horizontal-tb';
+      const { phantom: _p, ...rest } = node;
+      this.layoutBlock({ ...rest, boxSizing: 'content-box', [horizontal ? 'width' : 'height']: ci, [horizontal ? 'height' : 'width']: used, children: [] }, ps);
+      return;
     }
+    let desc = describeBox(node, this.wm);
     // 幅の決まった箱の auto の余白 (CSS 2.1 §10.3.3): 置く場所の残りを、auto の側に配る。margin-left/right は物理の向きなので、rtl では逆
     if (node.autoMargins && desc.isizeExplicit != null) {
       const free = this.contentI() - desc.m.is - desc.m.ie - desc.bpI - desc.isizeExplicit;
@@ -1715,6 +1755,9 @@ class Flow {
         else this.pendMin = Math.max(this.pendMin, r.clearTo - this.cursor);
       }
     }
+    // aspect-ratio (CSS Sizing 4 §5.1): 高さが auto なら、実際の inline の大きさ (float を避けて縮めた後) から block の大きさを決める。
+    // 比は box-sizing の箱どうしで、幅 / 高さ (物理)。縦書きでは inline が高さなので、block (幅) = inline × 比
+    if (node.aspectRatio && desc.bsizeExplicit == null) desc = this.aspectBox(node, desc, st);
     const frame = this.openFrame(desc);
     // 中の絶対配置の箱の基準になる箱 (CSS の position が static でない箱。横書きだけ)・position: relative でずらす箱は、断片を集める
     const outerCb = this.cbAbs;
