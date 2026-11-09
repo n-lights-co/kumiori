@@ -1871,3 +1871,45 @@ THIS DOCUMENT IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS
 COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE DOCUMENT OR THE PERFORMANCE OR IMPLEMENTATION OF THE CONTENTS THEREOF.
 The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to this document or its contents without specific, written prior permission. Title to copyright in this document will at all times remain with copyright holders.
 ```
+
+## 10. Kumiori のコードに写した W3C の文書の CSS (CSS GCPM 3 の付録 B の既定のスタイルシート)
+
+`src/htmlPrepare.ts` の `GCPM_BOOKMARK_CSS` (見出しのしおり。どの `--style` の既定にも入る) は、W3C の文書 CSS Generated Content for Paged Media Module の付録 B「Default UA Stylesheet」の規則のうち、h1〜h6 の bookmark-level の 6 行を、書き換えずに写したものです。
+
+This software includes material copied from or derived from CSS Generated Content for Paged Media Module, Appendix B: Default UA Stylesheet (https://www.w3.org/TR/2024/WD-css-gcpm-3-20240125/). Copyright © 2024 World Wide Web Consortium.
+
+- 文書の取得元: https://www.w3.org/TR/css-gcpm-3/ (取得日 2026-11-09。文書の版は W3C Working Draft, 25 January 2024、https://www.w3.org/TR/2024/WD-css-gcpm-3-20240125/)
+- 文書の著作権表示 (原文): 「Copyright © 2024 World Wide Web Consortium. W3C® liability, trademark and permissive document license rules apply.」。permissive document license のリンク先は https://www.w3.org/copyright/software-license/ (https://www.w3.org/copyright/software-license-2023/ に転送される)
+- 下はそのライセンスの本文です。取得元: https://www.w3.org/copyright/software-license-2023/ (取得日 2026-11-09)。HTML から文字だけを取り出しました (語句は書き換えていません。見出しと段落の区切りは改行にしています。末尾の版の一覧のうち、ほかのライセンスへの案内は除きました)。
+
+```text
+Software and Document license - 2023 version
+Status:
+This document is in effect since 1 January 2023.
+This work is being provided by the copyright holders under the following license.
+License
+By obtaining and/or copying this work, you (the licensee) agree that you have read, understood, and will comply with the following terms and conditions.
+Permission to copy, modify, and distribute this work, with or without modification, for any purpose and without fee or royalty is hereby granted, provided that you include the following on ALL copies of the work or portions thereof, including modifications:
+The full text of this NOTICE in a location viewable to users of the redistributed or derivative work.
+Any pre-existing intellectual property disclaimers, notices, or terms and conditions. If none exist, the
+W3C software and document short notice
+should be included.
+Notice of any changes or modifications, through a copyright statement on the new code or document such as "This software or document includes material copied from or derived from [title and URI of the W3C document]. Copyright © [$year-of-document]
+World Wide Web Consortium
+.
+https://www.w3.org/copyright/software-license-2023/
+"
+Disclaimers
+THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
+The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to the work without specific, written prior permission. Title to copyright in this work will at all times remain with copyright holders.
+Versions
+This version:
+https://www.w3.org/copyright/software-license-2023/
+Latest version:
+https://www.w3.org/copyright/software-license/
+Previous version:
+https://www.w3.org/copyright/software-license-2015/
+Changes since the previous document
+The 2023 version updates identification of the copyright holder.
+```

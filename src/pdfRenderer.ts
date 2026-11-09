@@ -224,6 +224,38 @@ function pdfUri(u: string): PDFString {
   return PDFString.of(ascii.replace(/[\\()]/g, (c) => '\\' + c));
 }
 
+/** URL のスキーム (RFC 3986 §3.1: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )) があるか */
+export function hasUriScheme(u: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(u);
+}
+
+/**
+ * 外へのリンクの動作。スキームのある URL と、ネットワークパスの参照 (//host/…) は URI 動作 (ISO 32000-1 §12.6.4.7)。
+ * 相対参照 (RFC 3986 §4.2) は、PDF の場所からの相対のファイル (§7.11.2 の相対のファイル指定): PDF なら別の PDF へ飛ぶ動作 (GoToR。§12.6.4.3。
+ * #page=N はそのページ、#名前 は名前付きの飛び先、無ければ 1 ページ目)、ほかのファイルは開く動作 (Launch。§12.6.4.5)
+ */
+function externalAction(u: string): Record<string, unknown> {
+  if (hasUriScheme(u) || u.startsWith('//')) return { S: 'URI', URI: pdfUri(u) };
+  const hash = u.indexOf('#');
+  const q = u.search(/[?#]/);
+  const path = q < 0 ? u : u.slice(0, q);
+  const frag = hash < 0 ? '' : u.slice(hash + 1);
+  let file = path;
+  try {
+    file = decodeURIComponent(path);
+  } catch {
+    // 正しくない %xx はそのまま
+  }
+  // ファイル指定の文字列 (§7.11.2): 区切りは /。( ) \ は逃がす (PDFString)
+  const F = PDFString.of(file.replace(/[\\()]/g, (c) => '\\' + c));
+  if (/\.pdf$/i.test(path)) {
+    const page = /(?:^|&)page=(\d+)/.exec(frag);
+    const D = page ? [Math.max(0, parseInt(page[1], 10) - 1), PDFName.of('Fit')] : frag && !/=/.test(frag) ? PDFString.of(frag) : [0, PDFName.of('Fit')];
+    return { S: 'GoToR', F, D };
+  }
+  return { S: 'Launch', F };
+}
+
 /** 命令をページに足す。大量の命令を引数に展開すると JS のスタックを使い切るので、区切って渡す */
 function pushOps(page: PDFPage, ops: PDFOperator[]) {
   for (let i = 0; i < ops.length; i += 2000) page.pushOperators(...ops.slice(i, i + 2000));
@@ -1495,7 +1527,7 @@ function addAnnotations(
       const base = { Type: 'Annot', Rect: m.rect, P: pages[k].ref };
       if (m.link) {
         const dict: Record<string, unknown> = { ...base, Subtype: 'Link', Border: [0, 0, 0] };
-        if (m.link.external) dict.A = { S: 'URI', URI: pdfUri(m.link.external) };
+        if (m.link.external) dict.A = externalAction(m.link.external);
         else if (m.link.internal !== undefined) {
           const page = pages[destinations[m.link.internal] ?? -1];
           if (!page) continue;

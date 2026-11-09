@@ -19,6 +19,7 @@
 import { firstGradient } from './cssGradient';
 import { applyTextTransform } from './textTransform';
 import type {
+  LinkTarget,
   BorderInput,
   EdgesInput,
   BackgroundImage,
@@ -973,7 +974,7 @@ class HtmlImporter {
     const W = (this.src.contentWidth?.(el) ?? 0) * PT_PER_PX;
     const isGrid = /grid$/.test(this.display(el));
     if (!W || /vertical|tb-rl|sideways-rl/.test(c('writing-mode'))) return undefined;
-    if (Array.from(el.childNodes).some((n) => (n.nodeType === 3 || n.nodeType === 4) && (n.textContent ?? '').trim())) return this.flexColumn(el, parent);
+    // 直下の文字は、続いた文字の並びごとに無名の項目にする (下の flexItemSources。目次の <a> の題とページ番号など)
     // 縦に並べる flex: ふつうのブロックとして組み、項目の揃えは項目の文字の揃えにする (幅が中身で決まる項目を中央・終わりに寄せるのと同じ)。
     // 高さが決まっていれば、justify-content を中身の上下の揃えにする
     if (!isGrid && /^column/.test(c('flex-direction'))) {
@@ -993,11 +994,18 @@ class HtmlImporter {
     if (!srcs) return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     const extra: LBlockLevel[] = [];
     /** 項目: 子の要素か ::before・::after (ps)。node は組んだ中身 (文書の順に組む: カウンターの値が文書の順になるように) */
-    type Item = { el: Element; ps?: '::before' | '::after'; node: LBlockLevel; text?: string; order: number };
+    type Item = { el: Element; ps?: '::before' | '::after'; anon?: boolean; node: LBlockLevel; text?: string; order: number };
     const items: Item[] = [];
     let pseudoSeen = false;
     for (const src of srcs) {
       const k = src.el;
+      if (src.text !== undefined) {
+        // 無名の項目: 文字の並びを包むブロック。字の書式は持ち主から受け継ぐ (持ち主が容器なら、容器の箱が持つ)
+        const fi: FlowItem[] = this.decorateText(this.text(src.text, k), k).map((v) => ({ v, block: false }));
+        const children = this.collapseFlowWhitespace(fi, /^pre/.test(this.cs(k)('white-space')));
+        items.push({ el: k, anon: true, node: { type: 'block', ...(k !== el ? this.textStyle(k, el) : {}), children } as LBlock, text: src.text, order: 0 });
+        continue;
+      }
       const kc = this.cs(k, src.ps);
       const pos = kc('position');
       if (src.ps) {
@@ -1025,7 +1033,7 @@ class HtmlImporter {
     if (pseudoSeen) this.leaveCounters(el);
     // order の順 (同じ order の間は文書の順。Flexbox 1 §5.4)
     items.sort((a, b) => a.order - b.order);
-    const ics = (it: Item) => this.cs(it.el, it.ps);
+    const ics = (it: Item): ((n: string) => string) => (it.anon ? (n) => HtmlImporter.ANON_ITEM[n] ?? (/^(margin|padding|border)-/.test(n) ? '0' : this.cs(it.el)(n)) : this.cs(it.el, it.ps));
     const rowReverse = !isGrid && c('flex-direction') === 'row-reverse';
     if (rowReverse) items.reverse();
     // wrap-reverse: 交差軸の始めと終わりを入れ替える (行は下から上へ積む。Flexbox 1 §5.2)
@@ -1067,12 +1075,15 @@ class HtmlImporter {
         const kc = ics(k);
         const b = kc('flex-basis');
         // ::before・::after は、幅の指定が長さか % なら、それ
-        const fixedW = k.ps ? kc('width') !== 'auto' && len(kc('width'), W) !== undefined : this.src.isAuto?.(k.el, 'width') === false;
+        const fixedW = k.ps || k.anon ? kc('width') !== 'auto' && len(kc('width'), W) !== undefined : this.src.isAuto?.(k.el, 'width') === false;
         const basis = b && b !== 'auto' && b !== 'content' ? len(b, W) : fixedW ? len(kc('width'), W) : undefined;
         const max = len(kc('max-width'), W);
         const inner = basis === undefined ? undefined : max !== undefined ? Math.min(basis, max) : basis;
         // flex-basis も width も無い項目は、中身の幅 (max-content) の見積もり。flex: 1 (basis 0) の項目は 0 から伸びる
-        const est = inner === undefined ? Math.min(k.ps ? this.pseudoMaxContentWidth(k.el, k.ps, k.text ?? '') : this.maxContentWidth(k.el), max ?? Infinity, W) : undefined;
+        const est =
+          inner === undefined
+            ? Math.min(k.anon ? this.textWidth((k.text ?? '').replace(/\s+/g, ' '), k.el) : k.ps ? this.pseudoMaxContentWidth(k.el, k.ps, k.text ?? '') : this.maxContentWidth(k.el), max ?? Infinity, W)
+            : undefined;
         // 見積もりは枠・内側の余白を含むので、足すのは外側の余白だけ
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
         const shrink = parseFloat(kc('flex-shrink'));
@@ -1214,23 +1225,52 @@ class HtmlImporter {
    * display: contents の子は自分の箱を作らないので、その子と疑似要素が項目になる (CSS Display 3 §2.5)。display: none は除く。
    * display: contents の子の直下に文字があれば (無名の項目は扱わない) undefined
    */
-  private flexItemSources(el: Element): Array<{ el: Element; ps?: '::before' | '::after' }> | undefined {
-    const out: Array<{ el: Element; ps?: '::before' | '::after' }> = [];
+  private flexItemSources(el: Element): Array<{ el: Element; ps?: '::before' | '::after'; text?: string }> | undefined {
+    const out: Array<{ el: Element; ps?: '::before' | '::after'; text?: string }> = [];
     const walk = (e: Element): boolean => {
-      if (e !== el && Array.from(e.childNodes).some((n) => (n.nodeType === 3 || n.nodeType === 4) && (n.textContent ?? '').trim())) return false;
       if (this.hasPseudoContent(e, '::before')) out.push({ el: e, ps: '::before' });
-      for (const k of Array.from(e.children)) {
+      // 続いた文字の並び (空白だけのものは除く) は、無名の項目 (Flexbox 1 §4)。el は文字の持ち主 (display: contents の子の中ならその要素)
+      let run = '';
+      const flush = () => {
+        if (run.trim()) out.push({ el: e, text: run });
+        run = '';
+      };
+      for (const n of Array.from(e.childNodes)) {
+        if (n.nodeType === 3 || n.nodeType === 4) {
+          run += n.textContent ?? '';
+          continue;
+        }
+        if (n.nodeType !== 1) continue;
+        const k = n as Element;
         const d = this.display(k);
         if (d === 'none') continue;
+        flush();
         if (d === 'contents') {
           if (!walk(k)) return false;
         } else out.push({ el: k });
       }
+      flush();
       if (this.hasPseudoContent(e, '::after')) out.push({ el: e, ps: '::after' });
       return true;
     };
     return walk(el) ? out : undefined;
   }
+
+  /** 無名の flex の項目の計算値: 受け継がない性質は初期値 (余白・枠・幅は無し。CSS Display 3 §2.6・Flexbox 1 §4) */
+  private static readonly ANON_ITEM: Record<string, string> = {
+    'flex-grow': '0',
+    'flex-shrink': '1',
+    'flex-basis': 'auto',
+    width: 'auto',
+    'min-width': 'auto',
+    'max-width': 'none',
+    'align-self': 'auto',
+    order: '0',
+    'box-sizing': 'content-box',
+    position: 'static',
+    'grid-column-start': 'auto',
+    'grid-column-end': 'auto',
+  };
 
   /**
    * flex・grid の項目になる ::before・::after を組む。中身はブロックにし、箱の書式 (余白・枠・背景) を付ける (項目はブロック化される。
@@ -2941,7 +2981,32 @@ class HtmlImporter {
   }
 
   /** ブロック要素 */
+  /**
+   * <a href> の飛び先 (HTML Living Standard §4.6.1)。#id は文書の中、スキームのある URL (RFC 3986 §3.1 の形:
+   * 英字の後に英字・数字・+・-・.) と相対参照 (§4.2。file.pdf・../a/b.html など) は外。相対参照は PDF の場所からの相対として書き出す
+   */
+  private linkOf(el: Element): LinkTarget | undefined {
+    if (el.localName !== 'a') return undefined;
+    const href = (el.getAttribute('href') ?? '').trim();
+    if (!href) return undefined;
+    if (href.startsWith('#')) return href.length > 1 ? { internal: href.slice(1) } : undefined;
+    return { external: href };
+  }
+
+  /** ブロックの箱を組む。<a href> なら箱にリンクを付ける (ブロック・flex・表の <a> も、箱の全体が飛び先へのリンクになる) */
   private block(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
+    const b = this.blockBox(el, parent, plain);
+    const link = b && this.linkOf(el);
+    if (!b || !link) return b;
+    if (b.type === 'block' && !(b as LBlock).link) {
+      (b as LBlock).link = link;
+      return b;
+    }
+    // 表・高さの決まった箱などは、書式を持たないブロックで包んでリンクにする
+    return { type: 'block', link, children: [b] } as LBlock;
+  }
+
+  private blockBox(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
     const d = this.display(el);
     if (!plain && /^(inline-)?(flex|grid)$/.test(d)) {
       const fg = this.flexGrid(el, parent);
@@ -3450,11 +3515,8 @@ class HtmlImporter {
     if (inlId) inl.id = inlId;
     // 中身の無い行内要素も、字の大きさと行の高さを行の箱に入れる (CSS 2.1 §10.8)
     if (!inl.children.length) inl.emptyStrut = true;
-    if (name === 'a') {
-      const href = el.getAttribute('href') ?? '';
-      if (href.startsWith('#') && href.length > 1) inl.link = { internal: href.slice(1) };
-      else if (/^[a-z]+:/i.test(href)) inl.link = { external: href };
-    }
+    const link = this.linkOf(el);
+    if (link) inl.link = link;
     return [inl];
   }
 

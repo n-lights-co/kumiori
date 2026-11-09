@@ -247,7 +247,7 @@
 <p class="vals-h"><code>bleed</code> の値の意味 <span class="spec">(CSS Paged Media 3 §7.3)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>auto</code></td><td>marks に crop があれば 6pt、なければ 0 になります。</td><td>一部: いつも 0 にします</td></tr><tr><td><code>&lt;length&gt;</code></td><td>塗り足しの領域を、ページボックスの外へ各辺どれだけ広げるかを指定します。負の値も書けます。</td><td>対応</td></tr></tbody></table><!--/gen:vals-s-marks-->
 <h2 id="s-bookmark"><span class="num">2.9</span>しおり : <code>bookmark-level</code>・&#8203;<code>bookmark-label</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
 <p class="props" data-p="bookmark-level"><span class="k">初期値</span> : <span class="v">none</span> <span class="k">適用対象</span> : <span class="v">all elements</span> <span class="k">継承</span> : <span class="v">no</span> <span class="src">(bookmark-level — CSS Generated Content 3)</span></p>
-<p>bookmark-level を付けた要素が PDF のしおりになります。しおりの文字は bookmark-label で変えられます (既定は要素の文字)。この文書は、章の見出しを 1 段目、節の見出しを 2 段目のしおりにしています。</p>
+<p>bookmark-level を付けた要素が PDF のしおりになります。しおりの文字は bookmark-label で変えられます (既定は要素の文字)。どの既定のスタイル (--style) でも、h1〜h6 に bookmark-level の 1〜6 を付けます (CSS GCPM 3 の付録 B の既定のスタイルシートの例と同じ。bookmark-level: none で外せます)。この文書は、章の見出しを 1 段目、節の見出しを 2 段目のしおりにしています。</p>
 <pre class="kumiori-listing"><code>h1.chapter { <b>bookmark-level: 1;</b> }
 h2 { <b>bookmark-level: 2;</b> }</code></pre>
 

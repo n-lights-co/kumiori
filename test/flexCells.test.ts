@@ -198,3 +198,22 @@ describe('flex の order と項目 (Flexbox 1 §4・§5.4)', () => {
     expect(order('<div style="display: flex"><p style="margin: 0; order: 2.5">A</p><p style="margin: 0; order: 1">B</p></div>')).toBe('AB');
   });
 });
+
+describe('flex の容器の直下の文字 (無名の項目。Flexbox 1 §4)', () => {
+  it('目次: <a> の題 (直下の文字)・リーダー (::before)・ページ番号 (::after) を order の順に並べ、リーダーを伸ばす', () => {
+    const css =
+      ' a { display: flex } a::before { content: ""; flex: 1; border-bottom: 1pt dotted #ff0000; order: 1 } a::after { content: "P"; order: 2 }';
+    const r = load('<a href="#x">Title</a><p id="x" style="margin: 0">x</p>', PAGE + css);
+    const b = boxes(E.engine.layout(r.document).sheets[0] as unknown as Area);
+    const T = b.find((a) => a.type === 'glyph' && a.text === 'T')!;
+    const P = b.find((a) => a.type === 'glyph' && a.text === 'P')!;
+    // 題は左端、ページ番号は右端 (容器の幅 400pt)、間をリーダーが埋める
+    expect(Math.round(T.x)).toBe(0);
+    expect(P.x + P.w).toBeGreaterThan(395);
+    expect(P.y).toBeCloseTo(T.y, 1);
+  });
+  it('文字の並びと子の要素は、それぞれ項目になる', () => {
+    const t = tables(load('<div style="display: flex">AB <span style="order: -1">C</span> DE</div>', PAGE));
+    expect(t[0].columns.length).toBe(3);
+  });
+});

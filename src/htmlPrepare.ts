@@ -36,6 +36,25 @@ body { margin: 0; }
 `;
 
 /**
+ * 見出しのしおり: CSS GCPM 3 の付録 B「Default UA Stylesheet」(参考) の bookmark-level の規則。しおりの文 (bookmark-label) は
+ * 初期値の content(text) (見出しの文字)。作成者スタイルシートで bookmark-level: none にすれば付かない。どの既定のスタイルにも入れる。
+ * WeasyPrint の既定 (65.1 の css/html5_ua.css) も、h1〜h6 に同じ bookmark-level を付けている
+ *
+ * 規則は、取得した文書 (W3C Working Draft, 25 January 2024。https://www.w3.org/TR/2024/WD-css-gcpm-3-20240125/ 、2026-11-09 取得) から写した。
+ * This software includes material copied from or derived from CSS Generated Content for Paged Media Module,
+ * Appendix B: Default UA Stylesheet (https://www.w3.org/TR/2024/WD-css-gcpm-3-20240125/). Copyright © 2024 World Wide Web Consortium.
+ * (THIRD_PARTY_NOTICES.md の 10 節)
+ */
+export const GCPM_BOOKMARK_CSS = `
+h1 { bookmark-level: 1 }
+h2 { bookmark-level: 2 }
+h3 { bookmark-level: 3 }
+h4 { bookmark-level: 4 }
+h5 { bookmark-level: 5 }
+h6 { bookmark-level: 6 }
+`;
+
+/**
  * CSS 2.1 の付録 D の既定のスタイルシート (--style ah の既定) のうち、ブラウザ (Chrome) の既定と違うもの。
  * 見出しの大きさ・余白、段落・リストの余白など。作成者スタイルシート より前に入れる (作成者スタイルシート で上書きできる)。
  * ただし ol・ul の字下げは、付録 D の margin-left: 40px ではなく padding-left: 2.5em にする (字の大きさに比例させ、字下げを
@@ -220,7 +239,8 @@ export async function prepareHtml(
     }
   });
   // 既定のスタイル (作成者スタイルシート より前)。browser-margin 以外は、body の余白 (画面の 8px) を付けない (ページの余白は @page)
-  const base = defaults === 'browser-margin' ? '' : defaults === 'weasyprint' ? WEASYPRINT_UA_CSS : PRINT_UA_CSS + (defaults === 'kumiori' ? KUMIORI_BOOK_CSS : defaults === 'ah' ? CSS21_DEFAULT_CSS : defaults === 'vivliostyle' ? VIVLIOSTYLE_UA_CSS : '');
+  // 見出しのしおり (GCPM 3 の付録 B) は、どの既定にも入れる
+  const base = GCPM_BOOKMARK_CSS + (defaults === 'browser-margin' ? '' : defaults === 'weasyprint' ? WEASYPRINT_UA_CSS : PRINT_UA_CSS + (defaults === 'kumiori' ? KUMIORI_BOOK_CSS : defaults === 'ah' ? CSS21_DEFAULT_CSS : defaults === 'vivliostyle' ? VIVLIOSTYLE_UA_CSS : ''));
   // Vivliostyle 互換: 見出しのセル (th) は align 属性によらず中央に揃う (既定のスタイルの th の text-align: center が、
   // 属性による指定より優先される。Vivliostyle の 2025 年度財務報告書の PDF で、align="left"・"right" の th が中央にあることを見た)
   if (defaults === 'vivliostyle') parsed.querySelectorAll('th[align]').forEach((th) => th.removeAttribute('align'));

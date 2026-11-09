@@ -92,6 +92,25 @@ describe('公開 API: typeset', () => {
     expect(pdf.getProducer()).toContain('Kumiori');
   });
 
+  it('リンクの動作: スキームのある URL は URI、相対の PDF は GoToR (#page=N・#名前)、ほかの相対のファイルは Launch (ISO 32000-1 §12.6.4)', async () => {
+    const r = await typeset(
+      '<p><a href="pdf-media-link://x">m</a></p><a style="display: block" href="other.pdf#page=3">p</a><a style="display: flex" href="dir/memo%20a.docx"><span>d</span></a><a style="display: block" href="b.pdf#sec">n</a>',
+      { loadFont },
+    );
+    const pdf = await PDFDocument.load(await r.toPdf());
+    const { PDFName } = await import('pdf-lib');
+    const acts = (pdf.getPages()[0].node.lookup(PDFName.of('Annots')) as unknown as { asArray(): unknown[] }).asArray().map((ref) => String((pdf.context.lookup(ref as never) as unknown as { lookup(n: unknown): unknown }).lookup(PDFName.of('A'))).replace(/\s+/g, ' '));
+    expect(acts).toEqual(['<< /S /URI /URI (pdf-media-link://x) >>', '<< /S /GoToR /F (other.pdf) /D [ 2 /Fit ] >>', '<< /S /Launch /F (dir/memo a.docx) >>', '<< /S /GoToR /F (b.pdf) /D (sec) >>']);
+  });
+  it('見出しのしおり: どの既定のスタイルでも h1〜h6 にしおりが付く (GCPM 3 の付録 B)。bookmark-level: none で外せる', async () => {
+    const html = '<h1>One</h1><h2>Two</h2><h3 style="bookmark-level: none">No</h3>';
+    for (const style of ['browser', 'kumiori', 'weasyprint'] as const) {
+      const r = await typeset(html, { loadFont, style });
+      const bm = r.areaTree.bookmarks ?? [];
+      expect(bm.map((b) => b.title)).toEqual(['One']);
+      expect((bm[0].children ?? []).map((b) => b.title)).toEqual(['Two']);
+    }
+  });
   it('XSL-FO を中身で見分けて組む (kind を省略)。typesetFo と同じ結果', async () => {
     const fo = `<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set>
       <fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>
