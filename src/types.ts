@@ -1090,7 +1090,7 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
    * 列の幅はその列のいちばん広い子の幅、列の間は gap。reverse (wrap-reverse) なら列を右から並べる。stretch (align-content: normal・stretch) なら、
    * 余った幅を列に等しく分けて列を広げる (Flexbox 1 §9.4 の 15)
    */
-  flexWrapColumns?: { gap: number; reverse?: boolean; stretch?: boolean };
+  flexWrapColumns?: { gap: number; reverse?: boolean; stretch?: boolean; justify?: 'start' | 'center' | 'end' | 'space-between' | 'space-around' | 'space-evenly' };
   /** 書字方向の裏返し (XSL-FO の bt-lr・lr-bt など。WritingFlip) */
   writingFlip?: WritingFlip;
   /** true: 通常フローから切り離し、PageArea 原点 (仕上がり左上) 基準で配置 */
@@ -1438,6 +1438,8 @@ export interface ImageArea extends AreaBase {
   naturalHeight?: number;
   /** 枠へ引き伸ばす (XSL の scaling="non-uniform")。SVG は preserveAspectRatio を none として描く */
   stretch?: boolean;
+  /** 描かない (CSS の visibility: hidden。場所は残す) */
+  hidden?: boolean;
 }
 
 export interface RubyArea extends AreaBase {

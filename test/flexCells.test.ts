@@ -378,3 +378,54 @@ describe('flex の残りの指定 (縦並び・伸ばし方・揃え・縦書き
     expect(page.y).toBeGreaterThan(380);
   });
 });
+
+describe('縦書きの縦並び・折り返しの列・visibility・aspect-ratio', () => {
+  const lay = (body: string, css = '') => boxes(E.engine.layout(load(body, PAGE + css).document).sheets[0] as unknown as Area);
+  const glyph = (b: Box[], t: string) => b.find((a) => a.type === 'glyph' && a.text === t)!;
+  const bgOf = (b: Box[], c: string) => b.find((a) => a.bg === c)!;
+  const V = ' html { writing-mode: vertical-rl }';
+  it('縦書きの容器の縦並び: 主軸は横 (右から左)。flex-grow で幅が伸び、row-gap は横に空ける', () => {
+    const b = lay('<div style="display: flex; flex-direction: column; width: 200pt"><p style="margin: 0; background: #ff0000">一</p><p style="margin: 0; flex-grow: 1; background: #0000ff">二</p><p style="margin: 0; background: #00ff00">三</p></div>', V);
+    // 容器はページの右端 (200〜400pt)。一 が右端、三 が左端、二 がその間を埋める
+    expect(bgOf(b, '#ff0000').x + bgOf(b, '#ff0000').w).toBeCloseTo(400, 0);
+    expect(bgOf(b, '#00ff00').x).toBeCloseTo(200, 0);
+    expect(bgOf(b, '#0000ff').w).toBeGreaterThan(150);
+    const g = lay('<div style="display: flex; flex-direction: column; width: 200pt; row-gap: 20pt"><p style="margin: 0">一</p><p style="margin: 0">二</p></div>', V);
+    expect(glyph(g, '一').x - glyph(g, '二').x).toBeCloseTo(32, 1);
+  });
+  it('縦並びの折り返しの列ごとに、flex-grow で伸ばし、justify-content で寄せる', () => {
+    const b = lay('<div style="display: flex; flex-direction: column; flex-wrap: wrap; height: 40pt; width: 200pt"><p style="margin: 0">A</p><p style="margin: 0; flex-grow: 1; background: #0000ff">B</p><p style="margin: 0">C</p><p style="margin: 0">D</p><p style="margin: 0">E</p></div>');
+    // 1 列目 (A・B・C、36pt) の余り 4pt を B が取る
+    expect(bgOf(b, '#0000ff').h).toBeCloseTo(16, 1);
+    const j = lay('<div style="display: flex; flex-direction: column; flex-wrap: wrap; height: 40pt; width: 200pt; justify-content: flex-end"><p style="margin: 0">A</p><p style="margin: 0">B</p><p style="margin: 0">C</p><p style="margin: 0">D</p></div>');
+    // 1 列目 (A〜C) は 4pt 下げ、2 列目 (D だけ) は 28pt 下げる
+    expect(glyph(j, 'A').y).toBeCloseTo(glyph(lay('<p style="margin: 0">A</p>'), 'A').y + 4, 1);
+    expect(glyph(j, 'D').y).toBeCloseTo(glyph(lay('<p style="margin: 0">D</p>'), 'D').y + 28, 1);
+  });
+  it('visibility: hidden は場所を残して描かない (字の色が transparent・背景なし・枠は太さを残す)。中の visible の要素は描く (CSS 2.1 §11.2)', () => {
+    const b = lay('<p style="margin: 0">a<span style="visibility: hidden">HID<span style="visibility: visible">V</span></span>b</p><div style="visibility: hidden; border: 2pt solid #000000; background: #ff0000">x</div>');
+    expect(glyph(b, 'H').bg ?? '').toBe('');
+    const colorOf = (t: string) => {
+      let col: string | undefined;
+      JSON.stringify(E.engine.layout(load('<p style="margin: 0">a<span style="visibility: hidden">HID<span style="visibility: visible">V</span></span>b</p>', PAGE).document), (_k, v) => (v && v.type === 'glyph' && v.text === t && (col ??= v.color), v));
+      return col;
+    };
+    expect(colorOf('H')).toBe('transparent');
+    expect(colorOf('V')).not.toBe('transparent');
+    // b は、見えない HIDV の幅の後ろに置かれる (場所は残る)
+    expect(glyph(b, 'b').x).toBeGreaterThan(glyph(b, 'V').x);
+    // 見えない箱は背景を描かない
+    expect(b.find((a) => a.bg === '#ff0000')).toBeUndefined();
+  });
+  it('flex の項目の visibility: collapse は、主軸から外す (Flexbox 1 §4.4)', () => {
+    const b = lay('<div style="display: flex"><p style="margin: 0; width: 50pt">A</p><p style="margin: 0; width: 50pt; visibility: collapse">B</p><p style="margin: 0; width: 50pt">C</p></div>');
+    expect(b.find((a) => a.type === 'glyph' && a.text === 'B')).toBeUndefined();
+    expect(glyph(b, 'C').x).toBeLessThan(60);
+  });
+  it('aspect-ratio は、幅か高さの一方からもう一方を決める (CSS Sizing 4 §5.1)', () => {
+    expect(bgOf(lay('<div style="width: 100pt; aspect-ratio: 2; background: #ff0000"></div>'), '#ff0000').h).toBeCloseTo(50, 1);
+    // 幅も高さも決まらないブロックは、幅 (親の内容の幅 200pt) から高さを出す
+    expect(bgOf(lay('<div style="width: 200pt"><div style="aspect-ratio: 4; background: #ff0000"></div></div>'), '#ff0000').h).toBeCloseTo(50, 1);
+    expect(bgOf(lay('<div style="display: inline-block; height: 90pt; aspect-ratio: 16 / 9; background: #ff0000"></div>'), '#ff0000').w).toBeCloseTo(160, 1);
+  });
+});

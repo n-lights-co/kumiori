@@ -396,7 +396,12 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      中身の幅の箱を `autoMargins` で寄せる) にも対応する。`flex-grow` の合計が 1 未満なら、残りは `justify-content` の空き。stretch は高さの
      決まった項目を伸ばさず、`max-height` で止める (`stretchMax`)。複数行の `align-content: stretch` は、行の表に伸ばす比を付け、組版エンジンが
      行とセルを伸ばす (`growTableLine`)。縦書きの容器は、プロパティの名前を読み替えて (`axisMapper`) 横並びと同じに組む。
-     中身の幅の見積もりの空白の詰め方は、CSS の詰める空白だけ (全角の空白 U+3000 は字として数える。CSS Text 3 §4.1.1)
+     中身の幅の見積もりの空白の詰め方は、CSS の詰める空白だけ (全角の空白 U+3000 は字として数える。CSS Text 3 §4.1.1)。
+     縦書きの容器の縦並び (主軸が横) も、同じ読み替えで縦並びの処理を当てる (組版エンジンの縮め・折り返しは、余白・枠を論理の向きで読む)。
+     縦並びの折り返しの列ごとに、`flex-grow`・主軸の auto の余白・`justify-content` で余りを分ける (`flexWrapColumns.justify`)。
+     `visibility: hidden`・`collapse` は、字の色を `transparent` にして運び (受け継ぐ。中の visible の要素は自分の色)、背景・影を外し、
+     枠は太さを残して色を `transparent` にする。描画 (`paint.ts`) は transparent の字・背景と、印の付いた画像を描かない。flex の項目の collapse は
+     主軸から外す (交差軸の支柱は扱わない)。`aspect-ratio` は、幅か高さの一方 (どちらも決まらないブロックは見積もりの幅) からもう一方を決める
    - html が flex の容器なら、body を `justify-content`・`align-items` でページの領域の中に寄せる
    - 角丸: `border-*-radius` を読む (角ごと・百分率・楕円。組版エンジンの `BorderRadius.corners`)。ブラウザ経由でも効く
    - 段組のコンテナ (`column-count`): ページに収まらなければ、ページをまたいで段を続ける (1 ページ目はページの残り、最後のページは釣り合わせる)。

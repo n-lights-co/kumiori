@@ -2361,6 +2361,8 @@ class Flow {
         ...((c.fit === 'cover' || c.fit === 'contain') && nat ? { fit: c.fit, naturalWidth: nat.w, naturalHeight: nat.h } : {}),
         // scaling="non-uniform" (XSL §7.15.11): 縦横の比を変えて枠へ引き伸ばす (SVG も preserveAspectRatio によらず)
         ...(c.scaling === 'non-uniform' && c.width !== undefined && c.height !== undefined ? { stretch: true } : {}),
+        // 見えない要素 (CSS の visibility: hidden。読み込みが字の色を transparent にして運ぶ) の画像は、場所を残して描かない
+        ...(st.color === 'transparent' ? { hidden: true } : {}),
       },
       ...(c.id ? { src: c.id } : {}),
       ...(c.borderRadius ? { radius: c.borderRadius } : {}),
@@ -2965,20 +2967,26 @@ class Flow {
         kids.push(a);
       }
     }
-    // 縦並びの flex の折り返し (flexWrapColumns。Flexbox 1 §9.3): 上から積んだ子を、高さを超える所で次の列へ移す。列の幅はその列の
-    // いちばん広い子の幅 (余白を含む)。flexWrapStretch の子は列の幅まで広げる
+    // 縦並びの flex の折り返し (flexWrapColumns。Flexbox 1 §9.3): 主軸 (ブロックの向き) に積んだ子を、内容の大きさを超える所で次の列 (行の向きの
+    // 次の並び) へ移す。列の幅はその列のいちばん広い子の幅 (余白を含む)。flexWrapStretch の子は列の幅まで広げる。列ごとに、余りを flexGrow の比で
+    // 分け、無ければ auto の余白 (flexAutoMargin)、それも無ければ justify の空きにする (§9.7・§8.1・§8.2)。余白・枠は書字方向に合わせて論理の向きで読む
     const wrapCols = (node as LBlockContainer).flexWrapColumns;
     if (wrapCols && contentB != null && kids.length) {
       const stretchRefs = new Set<number>();
       const alignOf = new Map<number, 'start' | 'center' | 'end'>();
+      const growOf = new Map<number, number>();
+      const autoOf = new Map<number, { before?: boolean; after?: boolean }>();
       for (const ch of node.children) {
         const r = sourceRef(ch);
         if (r === undefined) continue;
-        if ((ch as LBlock).flexWrapStretch) stretchRefs.add(r);
-        const a = (ch as LBlock).flexWrapAlign;
-        if (a) alignOf.set(r, a);
+        const b = ch as LBlock;
+        if (b.flexWrapStretch) stretchRefs.add(r);
+        if (b.flexWrapAlign) alignOf.set(r, b.flexWrapAlign);
+        if (b.flexGrow && b.flexGrow > 0) growOf.set(r, b.flexGrow);
+        if (b.flexAutoMargin) autoOf.set(r, b.flexAutoMargin);
       }
-      const occ = (k: LNode) => k.margin.top + k.bsize + k.margin.bottom;
+      const lm = (k: LNode) => toLogical(k.margin, k.wm);
+      const occ = (k: LNode) => lm(k).bs + k.bsize + lm(k).be;
       const cols: LNode[][] = [[]];
       let colH = 0;
       for (const k of [...kids].sort((a, b) => a.b - b.b)) {
@@ -2991,7 +2999,7 @@ class Flow {
         colH += occ(k);
       }
       const cw = Math.max(isize - desc.bpI, 0);
-      const widths = cols.map((col) => Math.max(...col.map((k) => k.margin.left + k.isize + k.margin.right)));
+      const widths = cols.map((col) => Math.max(...col.map((k) => lm(k).is + k.isize + lm(k).ie)));
       // align-content: stretch (normal): 余った幅を列に等しく分ける
       const spare = cw - widths.reduce((a, b) => a + b, 0) - wrapCols.gap * (cols.length - 1);
       if (wrapCols.stretch && spare > EPS) widths.forEach((_, k) => (widths[k] += spare / cols.length));
@@ -2999,21 +3007,44 @@ class Flow {
       let maxH = 0;
       for (const [ci, col] of cols.entries()) {
         const w = widths[ci];
-        let y = 0;
-        for (const k of col) {
-          if (k.ref !== undefined && stretchRefs.has(k.ref)) k.isize = Math.max(k.isize, w - k.margin.left - k.margin.right);
+        // 列の中の余り (主軸の向き) の分け方: 伸ばす子 → auto の余白 → justify の空き
+        const free = contentB - col.reduce((a, k) => a + occ(k), 0);
+        const gsum = col.reduce((a, k) => a + (k.ref !== undefined ? (growOf.get(k.ref) ?? 0) : 0), 0);
+        const slots = col.reduce((a, k) => {
+          const m = k.ref !== undefined ? autoOf.get(k.ref) : undefined;
+          return a + (m?.before ? 1 : 0) + (m?.after ? 1 : 0);
+        }, 0);
+        const n = col.length;
+        const j = wrapCols.justify ?? 'start';
+        let lead = 0;
+        let between = 0;
+        if (free > EPS && !gsum && !slots) {
+          if (j === 'end') lead = free;
+          else if (j === 'center') lead = free / 2;
+          else if (j === 'space-between' && n > 1) between = free / (n - 1);
+          else if (j === 'space-around') [lead, between] = [free / (2 * n), free / n];
+          else if (j === 'space-evenly') [lead, between] = [free / (n + 1), free / (n + 1)];
+        }
+        let y = lead;
+        for (const [ki, k] of col.entries()) {
+          if (k.ref !== undefined && stretchRefs.has(k.ref)) k.isize = Math.max(k.isize, w - lm(k).is - lm(k).ie);
+          const g = k.ref !== undefined ? growOf.get(k.ref) : undefined;
+          if (free > EPS && gsum && g) k.bsize += gsum < 1 ? free * g : (free * g) / gsum;
+          const am = !gsum && slots && free > EPS && k.ref !== undefined ? autoOf.get(k.ref) : undefined;
+          if (am?.before) y += free / slots;
           // 広げない子は、列の中で寄せる
           const a = k.ref !== undefined ? alignOf.get(k.ref) : undefined;
-          const free = w - k.margin.left - k.isize - k.margin.right;
-          const off = a === 'center' ? free / 2 : a === 'end' ? free : 0;
-          k.i = (wrapCols.reverse ? cw - x - w : x) + k.margin.left + Math.max(0, off);
-          k.b = y + k.margin.top;
-          y += occ(k);
+          const room = w - lm(k).is - k.isize - lm(k).ie;
+          const off = a === 'center' ? room / 2 : a === 'end' ? room : 0;
+          k.i = (wrapCols.reverse ? cw - x - w : x) + lm(k).is + Math.max(0, off);
+          k.b = y + lm(k).bs;
+          y += occ(k) + (ki < n - 1 ? between : 0);
+          if (am?.after) y += free / slots;
         }
         maxH = Math.max(maxH, y);
         x += w + wrapCols.gap;
       }
-      used = maxH;
+      used = Math.min(maxH, contentB);
     }
     // 中身が高さの決まった箱に入りきらなければ、flexShrink のある子 (縦並びの flex の項目) を縮める (Flexbox 1 §9.7): はみ出した分を
     // flexShrink × 子の箱の高さの比で分けて引き、下限 (flexMin。無ければ中身の高さ: min-height: auto。§4.5) で止め、後ろの子を上げる
@@ -3025,8 +3056,12 @@ class Flow {
         if (r !== undefined) sh.set(r, { s: b.flexShrink!, ...(b.flexMin !== undefined ? { min: b.flexMin } : {}) });
       }
       if (sh.size) {
-        const extent = (k: LNode) =>
-          k.padding.top + (k.border.top?.width ?? 0) + (k.children.length ? Math.max(...k.children.map((c) => c.b + c.bsize)) : 0) + k.padding.bottom + (k.border.bottom?.width ?? 0);
+        // 中身の大きさ (主軸の向き): 内側の余白・枠は書字方向に合わせて論理の向きで読む
+        const extent = (k: LNode) => {
+          const lp = toLogical(k.padding, k.wm);
+          const lb = borderToLogicalWidths(k.border, k.wm);
+          return lp.bs + lb.bs + (k.children.length ? Math.max(...k.children.map((c) => c.b + c.bsize)) : 0) + lp.be + lb.be;
+        };
         const order = [...kids].sort((a, b) => a.b - b.b);
         const items = order.flatMap((k) => {
           const x = k.ref !== undefined ? sh.get(k.ref) : undefined;
@@ -3062,7 +3097,7 @@ class Flow {
     }
     // 余った高さを、flexGrow のある子 (縦並びの flex の項目の flex-grow) にその比で分ける: 子の箱を伸ばし、後ろの子を下げる (Flexbox 1 §9.7)。
     // 子の箱は、元の節の通し番号 (ref) で見分ける
-    if (contentB != null && used < contentB - EPS) {
+    if (contentB != null && used < contentB - EPS && !wrapCols) {
       const grow = new Map<number, number>();
       for (const ch of node.children) {
         const g = (ch as LBlock).flexGrow;
@@ -4489,6 +4524,7 @@ export function toArea(n: LNode, parentWm: WritingMode, PW: number): Area {
         alt: n.image?.alt,
         ...(n.image?.fit ? { fit: n.image.fit, naturalWidth: n.image.naturalWidth, naturalHeight: n.image.naturalHeight } : {}),
         ...(n.image?.stretch ? { stretch: true } : {}),
+        ...(n.image?.hidden ? { hidden: true } : {}),
       };
     case 'region-body':
       return { ...base, type: 'region-body', children: kids() } as RegionBodyArea;

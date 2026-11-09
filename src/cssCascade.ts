@@ -341,6 +341,7 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   bottom: [false, 'auto', 'len-auto'],
   left: [false, 'auto', 'len-auto'],
   width: [false, 'auto', 'len-auto'],
+  'aspect-ratio': [false, 'auto', 'raw'],
   height: [false, 'auto', 'len-auto'],
   'min-width': [false, 'auto', 'len-auto'],
   'min-height': [false, 'auto', 'len-auto'],

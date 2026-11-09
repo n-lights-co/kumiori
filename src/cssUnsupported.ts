@@ -27,7 +27,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'justify-self',
   'place-items',
   'opacity',
-  'visibility',
   'font-size-adjust',
   'font-synthesis',
   'font-synthesis-weight',

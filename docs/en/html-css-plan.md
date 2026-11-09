@@ -400,7 +400,12 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      border becomes a box of its content width moved with `autoMargins`). When the `flex-grow` factors sum to less than 1, the rest is the free space of `justify-content`. stretch does not stretch
      items whose height is set, and stops at `max-height` (`stretchMax`). Multi-line `align-content: stretch` gives the line tables a grow factor, and the layout engine grows
      the rows and cells (`growTableLine`). A vertical container is laid out the same as a row by mapping the property names (`axisMapper`).
-     When estimating content widths, only CSS collapsible white space is collapsed (the ideographic space U+3000 counts as a character. CSS Text 3 §4.1.1)
+     When estimating content widths, only CSS collapsible white space is collapsed (the ideographic space U+3000 counts as a character. CSS Text 3 §4.1.1).
+     A column in a vertical container (the main axis is horizontal) gets the column processing through the same mapping (the layout engine's shrinking and wrapping read margins and borders in logical directions).
+     In each column of a wrapping column container, `flex-grow`, main-axis auto margins and `justify-content` divide the free space (`flexWrapColumns.justify`).
+     `visibility: hidden` and `collapse` carry the text color as `transparent` (inherited; visible elements inside keep their own color), drop backgrounds and shadows,
+     and keep border widths with a `transparent` color. Painting (`paint.ts`) skips transparent glyphs and backgrounds and flagged images. collapse on a flex item
+     removes it from the main axis (the cross-axis strut is not handled). `aspect-ratio` decides one of width and height from the other (for a block where neither is definite, from the estimated width)
    - If html is a flex container, body is positioned within the page area by `justify-content` and `align-items`
    - Rounded corners: `border-*-radius` is read (per corner, percentages, ellipses. `BorderRadius.corners` in the layout engine). It works via the browser too
    - Multi-column containers (`column-count`): if they do not fit on the page, the columns continue across pages (the first page uses the rest of the page, the last page is balanced).
