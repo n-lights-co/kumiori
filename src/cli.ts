@@ -23,6 +23,8 @@
  *    入力が 1 つでも、-o が既存のディレクトリなら、その中に <入力名>.pdf を書く
  *  - 入力の文字の符号化は、BOM と XML 宣言の encoding (Shift_JIS・EUC-JP など)・HTML の <meta charset> で決める (無ければ UTF-8)
  *  - --no-fetch-images: 文書が http(s) で参照する画像をネットワークから取らない (既定は取る。他人の文書をサーバーで組むときに)
+ *  - --no-fetch-styles: 文書が http(s) で参照する CSS (<link>・@import) をネットワークから取らない (既定は取る)
+ *  - 文書・CSS が file: の URL で参照するファイル (file:///…/style.css など) は、そのファイルを読む
  *  - '-' は標準入力から読む (CSS・画像・書体は --base のディレクトリ (既定は今のディレクトリ) から。FO かどうかは中身で見分ける)。
  *    -o - は PDF を標準出力へ書く (報告は標準エラーへ)
  *  - --watch: 入力のディレクトリの変更を見張り、変わるたびに組み直す (Ctrl+C で終わる)
@@ -38,7 +40,6 @@
  *  - 未対応の CSS・XSL-FO の指定は、黙って無視せずに「警告:」で知らせる (typeset の warnings)
  */
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
@@ -46,8 +47,10 @@ import { parseColor } from './color';
 import type { HtmlDefaults } from './htmlPrepare';
 import { FO_COMPATS, HTML_STYLES, type FoCompat } from './compat';
 import { isXhtmlFile } from './xhtml';
-import type { FontSpec } from './types';
-import { decodeDocumentText, fetchFont, typeset, type KumioriFile } from './api';
+import { decodeDocumentText, typeset, type KumioriFile } from './api';
+import { createFileResolver, defaultFontCacheDir, FETCH_TIMEOUT_MS, localFont } from './nodeFonts';
+// テストと、これまで cli から読んでいた利用者のために出し直す
+export { defaultFontCacheDir, localFont, looksLikeFont } from './nodeFonts';
 import { MESSAGE_LANGS, detectMessageLang, messageLang, msg, setMessageLang, type MessageLang } from './messages';
 
 // テストなどが使う (中身は api.ts)
@@ -82,6 +85,8 @@ export function parseArgs(argv: string[]) {
     imageMaxDpi?: number;
     /** 文書が http(s) で参照する画像をネットワークから取る (--no-fetch-images で止める) */
     fetchImages: boolean;
+    /** 文書が http(s) で参照する CSS をネットワークから取る (--no-fetch-styles で止める) */
+    fetchStyles: boolean;
     /** --help: 使い方を書いて終わる */
     help: boolean;
     /** --version: 版を書いて終わる */
@@ -98,6 +103,7 @@ export function parseArgs(argv: string[]) {
     compat: 'spec',
     watch: false,
     fetchImages: true,
+    fetchStyles: true,
     noFontCache: false,
     help: false,
     version: false,
@@ -142,6 +148,7 @@ export function parseArgs(argv: string[]) {
     }
     else if (a === '--watch') out.watch = true;
     else if (a === '--no-fetch-images') out.fetchImages = false;
+    else if (a === '--no-fetch-styles') out.fetchStyles = false;
     else if (a === '--base') out.base = value(k++);
     else if (a === '--spot-colors') out.spotColors = readSpotColors(value(k++));
     else if (a === '--image-max-dpi') {
@@ -192,103 +199,6 @@ export function parseSpotColors(raw: unknown, file = ''): Record<string, [number
 }
 
 /** ネットワークからの取得 (書体・画像) の時限 */
-const FETCH_TIMEOUT_MS = 30_000;
-
-/** 読んだ既定の書体 (変換ごとに使い回す) */
-const fontCache = new Map<string, ArrayBuffer>();
-
-/**
- * 書体のキャッシュの既定の場所: 環境変数 KUMIORI_FONT_CACHE があればそこ。無ければ OS のキャッシュ ディレクトリの kumiori/fonts
- * (Windows: %LOCALAPPDATA%、macOS: ~/Library/Caches、ほか: $XDG_CACHE_HOME か ~/.cache)。home が分からなければ undefined (キャッシュしない)
- */
-export function defaultFontCacheDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, home: string | undefined = os.homedir()): string | undefined {
-  if (env.KUMIORI_FONT_CACHE) return path.resolve(env.KUMIORI_FONT_CACHE);
-  const sub = path.join('kumiori', 'fonts');
-  if (platform === 'win32') {
-    const base = env.LOCALAPPDATA || (home ? path.join(home, 'AppData', 'Local') : undefined);
-    return base ? path.join(base, sub) : undefined;
-  }
-  if (platform === 'darwin') return home ? path.join(home, 'Library', 'Caches', sub) : undefined;
-  if (env.XDG_CACHE_HOME) return path.join(env.XDG_CACHE_HOME, sub);
-  return home ? path.join(home, '.cache', sub) : undefined;
-}
-
-/** 書体のファイルらしいか (TrueType・OpenType (CFF)・TrueType Collection の先頭 4 バイト)。途中で切れた取得や壊れたキャッシュを見分ける */
-export function looksLikeFont(buf: ArrayBuffer | Uint8Array): boolean {
-  const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  if (b.length < 12) return false;
-  const tag = String.fromCharCode(b[0], b[1], b[2], b[3]);
-  return tag === 'OTTO' || tag === 'true' || tag === 'ttcf' || (b[0] === 0 && b[1] === 1 && b[2] === 0 && b[3] === 0);
-}
-
-/** 既定の書体のキャッシュのファイル名 (spec.urls の、ネットワークでない名前。NotoSerifJP-Regular.ttf など) */
-function fontFileName(spec: FontSpec): string {
-  return path.basename(spec.urls.find((u) => !/^https?:/.test(u)) ?? spec.urls[0]);
-}
-
-/**
- * 既定の書体を読む: --font-dir に同じ名前のファイル → 書体のキャッシュ → ネットワーク (Google Fonts) の順。
- * ネットワークから取った書体は、キャッシュに保存する (書体のファイルらしいものだけ。一時ファイルに書いてから名前を変える)。
- * キャッシュに書けなくても変換は続ける (1 度だけ知らせる)。ネットワークからも取れなければ、理由を添えて投げる
- */
-export function localFont(fontDir: string | undefined, cacheDir: string | undefined, log: (s: string) => void = (s) => console.error(s), timeoutMs = FETCH_TIMEOUT_MS) {
-  let cacheWriteFailed = false;
-  const readFile = (p: string): ArrayBuffer | undefined => {
-    try {
-      const b = fs.readFileSync(p);
-      return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
-    } catch {
-      return undefined;
-    }
-  };
-  return async (spec: FontSpec): Promise<ArrayBuffer | undefined> => {
-    const key = `${spec.family}|${spec.weight ?? 400}`;
-    const hit = fontCache.get(key);
-    if (hit) return hit;
-    const names = [...new Set(spec.urls.map((u) => path.basename(u)))];
-    const local = fontDir && names.map((n) => path.join(fontDir, n)).find((p) => fs.existsSync(p));
-    let buf = local ? readFile(local) : undefined;
-    // キャッシュ: 壊れたファイル (途中で切れた取得など) は捨てて取り直す
-    const cached = !buf && cacheDir ? names.map((n) => path.join(cacheDir, n)).find((p) => fs.existsSync(p)) : undefined;
-    if (cached) {
-      buf = readFile(cached);
-      if (buf && !looksLikeFont(buf)) {
-        buf = undefined;
-        try {
-          fs.unlinkSync(cached);
-        } catch {
-          // 消せなくても取り直す
-        }
-      }
-    }
-    if (!buf) {
-      buf = await fetchFont(spec, timeoutMs);
-      if (!buf || !looksLikeFont(buf)) {
-        throw new Error(
-          msg(
-            `書体を取得できません: ${spec.family}${spec.weight && spec.weight !== 400 ? ` (${spec.weight})` : ''} (ネットワークに接続できないときは、--font-dir で手元の書体 (${fontFileName(spec)}) を渡してください)`,
-            `cannot fetch the font ${spec.family}${spec.weight && spec.weight !== 400 ? ` (${spec.weight})` : ''} (without network access, pass a local copy (${fontFileName(spec)}) with --font-dir)`,
-          ),
-        );
-      }
-      if (cacheDir) {
-        const file = path.join(cacheDir, fontFileName(spec));
-        try {
-          fs.mkdirSync(cacheDir, { recursive: true });
-          const tmp = `${file}.${process.pid}.tmp`;
-          fs.writeFileSync(tmp, new Uint8Array(buf));
-          fs.renameSync(tmp, file);
-          log(msg(`書体 ${path.basename(file)} を取得して ${cacheDir} に保存しました`, `fetched the font ${path.basename(file)} and saved it to ${cacheDir}`));
-        } catch (e) {
-          if (!cacheWriteFailed) log(msg(`書体のキャッシュに書けません: ${cacheDir} (${e instanceof Error ? e.message : String(e)})`, `cannot write to the font cache: ${cacheDir} (${e instanceof Error ? e.message : String(e)})`));
-          cacheWriteFailed = true;
-        }
-      }
-    }
-    fontCache.set(key, buf);
-    return buf;
-  };
-}
 
 /** 1 つの入力を PDF にする。input が '-' なら標準入力 (text に中身)、output が '-' なら標準出力 */
 async function convert(input: string, output: string, args: Args, text: string) {
@@ -326,6 +236,9 @@ async function convert(input: string, output: string, args: Args, text: string) 
     compat: args.compat,
     print: args.print,
     fetchImages: args.fetchImages,
+    fetchStyles: args.fetchStyles,
+    // file: の URL の参照は、そのファイルを読む (入力のディレクトリの外でも。ブラウザで手元の HTML を開いたときと同じ)
+    resolveResource: createFileResolver(),
     ...(args.spotColors ? { spotColors: args.spotColors } : {}),
     loadFont: localFont(args.fontDir, args.noFontCache ? undefined : args.fontCache ? path.resolve(args.fontCache) : defaultFontCacheDir()),
     lang: messageLang(),
@@ -351,7 +264,7 @@ export class UsageError extends Error {}
 
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font serif|sans-serif=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--xhtml] [--watch] [--lang ja|en]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font serif|sans-serif=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--xhtml] [--watch] [--lang ja|en]',
   '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--watch]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
@@ -371,6 +284,7 @@ export const USAGE_JA = [
   '  --print                   トンボと塗り足し (3mm) を付ける',
   '  --spot-colors <JSON>      特色の名前と代わりの CMYK      --image-max-dpi <dpi>  JPEG の解像度の上限',
   '  --no-fetch-images         文書が http(s) で参照する画像を取らない',
+  '  --no-fetch-styles         文書が http(s) で参照する CSS を取らない',
   '  --base <dir>              標準入力の文書の CSS・画像・書体を探すディレクトリ (既定は今のディレクトリ)',
   '  --watch                   入力のディレクトリの変更を見張って組み直す (Ctrl+C で終わる)',
   '  --lang ja|en              文言の言語 (無ければ環境変数 KUMIORI_LANG、OS のロケール (LANG) の順。既定は日本語)',
@@ -381,7 +295,7 @@ export const USAGE_JA = [
 
 /** 使い方。英語 */
 export const USAGE_EN = [
-  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font serif|sans-serif=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--xhtml] [--watch] [--lang ja|en]',
+  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font serif|sans-serif=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--xhtml] [--watch] [--lang ja|en]',
   '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--watch]',
   '       kumiori a.html b.fo … -o <output directory>',
   '       kumiori - -o - [--base <dir>] < input > output.pdf',
@@ -401,6 +315,7 @@ export const USAGE_EN = [
   '  --print                   add trim marks and 3mm bleed',
   '  --spot-colors <JSON>      spot color names and fallback CMYK      --image-max-dpi <dpi>  resolution limit for JPEG images',
   '  --no-fetch-images         do not fetch images the document references over http(s)',
+  '  --no-fetch-styles         do not fetch stylesheets the document references over http(s)',
   '  --base <dir>              directory where CSS, images and fonts of a document read from standard input are looked up (default: current directory)',
   '  --watch                   watch the input directories and re-typeset on changes (Ctrl+C to stop)',
   '  --lang ja|en              language of messages (otherwise KUMIORI_LANG, then the OS locale (LANG); default Japanese)',

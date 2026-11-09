@@ -124,6 +124,8 @@ export type HtmlDefaults = 'browser' | 'browser-margin' | 'kumiori' | 'ah' | 'vi
 export interface CssFile {
   name: string;
   text(): Promise<string>;
+  /** 拡張子が .css でなくても CSS として読む (参照から取った CSS。https://fonts.googleapis.com/css2?family=… など) */
+  css?: boolean;
 }
 
 export interface PreparedHtml {
@@ -167,7 +169,7 @@ export async function prepareHtml(
   const parsed = parse(html);
   parsed.querySelectorAll('script').forEach((s) => s.remove());
   const cssFiles = new Map<string, string>();
-  for (const f of files) if (/\.css$/i.test(f.name)) cssFiles.set(f.name.toLowerCase(), await f.text());
+  for (const f of files) if (f.css || /\.css$/i.test(f.name)) cssFiles.set(f.name.toLowerCase(), await f.text());
   const cssTexts: string[] = [];
   const linked = new Set<string>();
   // 印刷の媒体として読む: screen だけの CSS は使わず、@media print の規則は iframe (画面) でも効くようにする。

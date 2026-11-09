@@ -83,6 +83,8 @@ cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
 - `-` は標準入力から読む (CSS・画像・書体は `--base` のディレクトリ (既定は今のディレクトリ) から。FO かどうかは中身で見分ける)。`-o -` は PDF を標準出力へ書く
 - 入力の文字の符号化は、BOM と XML 宣言の `encoding` (`Shift_JIS`・`EUC-JP` など)・HTML の `<meta charset>` で決める (無ければ UTF-8)
 - 文書が `http(s):` で参照する画像は、既定ではネットワークから取る。`--no-fetch-images` で取らない (他人の書いた文書をサーバーで組むときなど。読めない画像として組む)
+- 文書が `http(s):` で参照する CSS (`<link rel="stylesheet">`・`@import`) も、既定ではネットワークから取る。`--no-fetch-styles` で取らない
+- 文書・CSS が `file:` の URL で参照するファイル (`file:///…/style.css` など) は、入力のディレクトリの外でも、そのファイルを読む
 - `--watch`: 入力のディレクトリの HTML・FO・CSS・画像・書体が変わるたびに組み直す
 - `--help` (`-h`) で使い方、`--version` (`-v`) で版を出す
 - 未対応の CSS のプロパティ・値 (対応仕様説明書の 16 章の一覧) と、Kumiori の知らないプロパティ (綴りの誤りか未対応)、XSL-FO の読めない要素・プロパティ、読めない画像などは、黙って無視せずに「警告:」として知らせる (ライブラリでは `result.warnings`)
@@ -130,14 +132,22 @@ const pdf = await result.toPdf();                              // Uint8Array
 result.renderPage(canvas, 0);                                  // 1 ページ目を canvas に描く (ブラウザ)
 ```
 
-- `typeset(text, options)` が入口です (`typesetHtml`・`typesetFo` は種類を決め打ちする版)。ファイルシステムには触らず、ネットワークは既定の書体の取得 (`loadFont` で差し替えられる) と、文書が `http(s):` で参照する画像の取得 (`fetchImages` で止められる) にだけ使うので、ブラウザでも Node でも動きます
+- `typeset(text, options)` が入口です (`typesetHtml`・`typesetFo` は種類を決め打ちする版)。ファイルシステムには触らず、ネットワークは既定の書体の取得 (`loadFont` で差し替えられる) と、文書が `http(s):` で参照する画像・CSS の取得 (`fetchImages`・`fetchStyles` で止められる) にだけ使うので、ブラウザでも Node でも動きます
 - `text` は文字列です。ファイルから読むときは `decodeDocumentText(bytes)` で文字列にすると、BOM・XML 宣言の `encoding`・`<meta charset>` に従って復号します (UTF-8 固定で読むと、Shift_JIS の FO などが化けます)
-- 主な `options`: `kind` (`html`・`xhtml`・`fo`。省略すれば `name` と中身で決める)、`name` (入力のファイル名)、`files` (CSS・画像・書体)、`fonts` (足す書体)、`genericFonts` (総称の書体の欧文に使う書体)、`style` (HTML の既定のスタイル)、`compat` (XSL-FO の既定値の流儀)、`print` (塗り足しとトンボ)、`spotColors` (特色の代わりの CMYK)、`loadFont`、`fetchTimeoutMs` (書体・画像の取得の時限。既定 30 秒)、`fetchImages` (文書が `http(s):` で参照する画像を取るか。既定 `true`。`false` か、URL を受けて真偽を返す関数。他人の文書をサーバーで組むときは止めるか、許す URL だけにする)、`lang` (`warnings` と誤りの文の言語。`ja` か `en`。既定は日本語)、`deflate` (Node なら `zlib.deflateSync` を渡すと PDF の書き出しが速い)
+- 主な `options`: `kind` (`html`・`xhtml`・`fo`。省略すれば `name` と中身で決める)、`name` (入力のファイル名)、`files` (CSS・画像・書体)、`fonts` (足す書体)、`genericFonts` (総称の書体の欧文に使う書体)、`style` (HTML の既定のスタイル)、`compat` (XSL-FO の既定値の流儀)、`print` (塗り足しとトンボ)、`spotColors` (特色の代わりの CMYK)、`loadFont`、`fetchTimeoutMs` (書体・画像の取得の時限。既定 30 秒)、`fetchImages` (文書が `http(s):` で参照する画像を取るか。既定 `true`。`false` か、URL を受けて真偽を返す関数。他人の文書をサーバーで組むときは止めるか、許す URL だけにする)、`fetchStyles` (文書が `http(s):` で参照する CSS を取るか。`fetchImages` と同じ形)、`resolveResource` (文書・CSS が参照するファイルのうち `files` に無いものの中身を返す関数。下を見てください)、`lang` (`warnings` と誤りの文の言語。`ja` か `en`。既定は日本語)、`deflate` (Node なら `zlib.deflateSync` を渡すと PDF の書き出しが速い)
 - `result.toPdf({ title, pdfx, imageMaxDpi })`: PDF の題名、PDF/X-3 の印 (`pdfx`。RGB の色・画像を CMYK にする)、JPEG の解像度の上限。`result.renderPage(canvas, i, { scale, devicePixelRatio, guides })`: 倍率、画面の画素の細かさ、仕上がり・塗り足しのガイド線
 - FO の DOCTYPE の内部サブセットに宣言した内部実体 (`<!ENTITY nbsp "&#160;">` など) は、読み込みの前に展開します (外部実体は読みません)
 - 例外: FO の XML が読めない (`XML の解析に失敗しました: …`)、既定の書体が読めない (`書体を読めません: …`) は `typeset` が投げる。`fonts` に渡した壊れた書体ファイルは投げずに `warnings` に入る。`renderPage` の無いページ番号は `RangeError`。組版の警告 (読めない画像・溢れなど) は投げずに `result.warnings` (文字列の配列) に入る
+- `resolveResource(url)`: 文書・CSS が参照するファイル (`<link rel="stylesheet">`・`@import`・`url()`・`<img src>` など) のうち、`files` に無いものを問い合わせます。`url` は書かれた参照 (`file:///…/a.css`・`img/a.png`・`https://…`) で、CSS の中の相対参照は、その CSS の URL を基準に解決したものです。中身 (文字列・`Uint8Array`・`ArrayBuffer`) を返せばそれを使い、`undefined` ならこれまでどおり (`http(s):` の画像・CSS はネットワークから取る) です。参照を書き換えて `files` に入れ直す手間が要りません
+- Node では、`kumiori/node` の部品が使えます: `createFontLoader({ fontDir, cacheDir, log, timeoutMs })` は `loadFont` に渡す既定の書体の読み込み (Node のコマンドと同じ: `fontDir` → 書体のキャッシュ → ネットワーク。取った書体はキャッシュに保存する。`cacheDir` の既定は `defaultFontCacheDir()`、`null` でキャッシュしない)。`createFileResolver({ root })` は `resolveResource` に渡す、`file:` の URL のファイルを読む関数 (`root` を渡すと、その中のファイルだけを読む)
+
+  ```ts
+  import { typeset } from 'kumiori';
+  import { createFileResolver, createFontLoader } from 'kumiori/node';
+  const result = await typeset(html, { loadFont: createFontLoader(), resolveResource: createFileResolver() });
+  ```
 - 既定で使う書体は `DEFAULT_FONTS` で分かります (`loadFont` に渡される `spec` の `family`・`weight`・`urls`)
-- 公開しているのは `src/index.ts` から出しているものだけです (ほかのモジュールの関数・型は、版の間で変わることがあります)
+- 公開しているのは `src/index.ts` (と Node 用の `src/node.ts`) から出しているものだけです (ほかのモジュールの関数・型は、版の間で変わることがあります)
 - `kumiori` (`dist-lib/index.js`) は依存パッケージ (pdf-lib・fontkit・xmldom など) を束ねていない ES モジュールです。Vite・webpack などのバンドラーで使うか、Node から読んでください。ES モジュールだけなので、`require()` で読むには Node 22 以降が要ります
 - バンドラーを使わないブラウザでは、依存まで束ねた 1 ファイル `kumiori/browser` (`dist-browser/kumiori.js`。約 2.7MB、gzip で 0.9MB。ハイフネーションの辞書などは使うときだけ別ファイルを読む) を使います。npm に公開したものは jsDelivr や unpkg の CDN からそのまま読めます:
 
@@ -189,6 +199,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 | ファイル | 役割 |
 | --- | --- |
 | `src/index.ts`, `src/api.ts` | 公開 API (`typeset`・`createTypesetter`・`DEFAULT_FONTS` など。公開しているのは `src/index.ts` から出しているものだけ) |
+| `src/node.ts`, `src/nodeFonts.ts`, `src/resources.ts` | Node 用の部品 (`kumiori/node`: 書体のキャッシュ・`file:` の参照の読み込み)、文書と CSS の参照の集め方 (`resolveResource`・CSS の取得) |
 | `src/types.ts` | 論理ツリー (Input) / 物理ツリー (Area Tree) / ページ設定の型 |
 | `src/areaTree.ts`, `src/areaResources.ts` | Area Tree をたどる・JSON で読み書きする ([`docs/area-tree.md`](docs/area-tree.md))、使った書体・画像の一覧 |
 | `src/fontManager.ts` | TTF/OTF を fetch → `FontFace`(Canvas) + `ArrayBuffer`(PDF) + fontkit(メトリクス) |

@@ -2559,7 +2559,13 @@ class HtmlImporter {
       if (this.flowFloat(e, el, pg, items)) continue;
       // position: absolute は本文領域を基準にそのページへ、fixed は全ページに置く
       const pos = this.cs(e)('position');
-      if ((pos === 'absolute' || pos === 'fixed') && this.cs(e)('visibility') === 'hidden') continue;
+      if ((pos === 'absolute' || pos === 'fixed') && this.cs(e)('visibility') === 'hidden') {
+        // 見えない箱も飛び先にはなる (visibility: hidden は箱を描かないだけ。CSS 2.1 §11.2): id (しおり・リンクの飛び先) があれば、
+        // 高さの無い印を残す (book の表題の h1 { position: absolute; visibility: hidden } のしおりなど)
+        const hid = e.getAttribute('id');
+        if (hid) items.push({ v: { type: 'block', id: hid, children: [] } as LBlock, block: true });
+        continue;
+      }
       if (this.flowPositioned(e, el, pos, items)) continue;
       if (/^table-(row|cell|row-group|header-group|footer-group|caption|column|column-group)$/.test(d)) {
         // 表の外の表の部分 (セル・行など): 続くものをまとめて、匿名の表で包む (CSS 2.1 §17.2.1)
