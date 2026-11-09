@@ -9,11 +9,12 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { brotliCompressSync, deflateSync } from 'node:zlib';
+import { brotliCompressSync, brotliDecompressSync, deflateSync } from 'node:zlib';
 import fontkit from '@pdf-lib/fontkit';
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { toSfnt, webFontKind } from '../src/webFont';
 import { cssRefs, parseUnicodeRange } from '../src/resources';
+import { collectionFaces } from '../src/fontLoader';
 import { defaultFontBuffer } from './helpers';
 import { DEFAULT_FONTS, typeset, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
 
@@ -118,6 +119,86 @@ async function lobsterWoff2(): Promise<Uint8Array> {
   return new Uint8Array(fs.readFileSync(file));
 }
 
+/** WOFF2 の表の目録の 1 つ (テストの組み立て用。flags・名前・長さ・変換した長さと、展開した中身) */
+type W2 = { tag: string; flags: number; origLength: number; transformLength?: number; data: Uint8Array };
+
+/** 255UInt16 (W3C WOFF2 §3.1) を書く */
+function u255(n: number): number[] {
+  return n < 253 ? [n] : n < 506 ? [255, n - 253] : n < 759 ? [254, n - 506] : [253, n >> 8, n & 0xff];
+}
+
+/** 1 つの書体の WOFF2 を読んで、表の目録と展開した中身にする (Node の Brotli で展開。変換した表は変換したまま) */
+function readWoff2(w: Uint8Array): { flavor: number; tables: W2[] } {
+  const v = new DataView(w.buffer, w.byteOffset, w.byteLength);
+  const known = ['cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name', 'OS/2', 'post', 'cvt ', 'fpgm', 'glyf', 'loca', 'prep', 'CFF ', 'VORG', 'EBDT', 'EBLC', 'gasp', 'hdmx', 'kern', 'LTSH', 'PCLT', 'VDMX', 'vhea', 'vmtx', 'BASE', 'GDEF', 'GPOS', 'GSUB'];
+  let at = 48;
+  const b128 = () => {
+    let r = 0;
+    for (;;) {
+      const c = w[at++];
+      r = r * 128 + (c & 0x7f);
+      if (!(c & 0x80)) return r;
+    }
+  };
+  const tables: W2[] = [];
+  for (let k = 0; k < v.getUint16(12); k++) {
+    const flags = w[at++];
+    const tag = (flags & 0x3f) === 0x3f ? String.fromCharCode(...w.slice(at, (at += 4))) : known[flags & 0x3f];
+    const origLength = b128();
+    const ver = flags >> 6;
+    const transformed = tag === 'glyf' || tag === 'loca' ? ver === 0 : ver !== 0;
+    tables.push({ tag, flags, origLength, ...(transformed ? { transformLength: b128() } : {}), data: new Uint8Array() });
+  }
+  const data = new Uint8Array(brotliDecompressSync(w.subarray(at, at + v.getUint32(20))));
+  let p = 0;
+  for (const t of tables) {
+    const n = t.transformLength ?? t.origLength;
+    t.data = data.slice(p, p + n);
+    p += n;
+  }
+  return { flavor: v.getUint32(4), tables };
+}
+
+/** 書体の集まりの WOFF2 を組み立てる (§4.2: 表の目録は重ならない表を 1 つずつ、書体ごとに使う表の番号) */
+function makeWoff2Collection(tables: W2[], fonts: Array<{ flavor: number; indices: number[] }>): Uint8Array {
+  const dir: number[] = [];
+  for (const t of tables) {
+    dir.push(t.flags);
+    if ((t.flags & 0x3f) === 0x3f) dir.push(...Array.from(t.tag, (c) => c.charCodeAt(0)));
+    dir.push(...base128(t.origLength), ...(t.transformLength !== undefined ? base128(t.transformLength) : []));
+  }
+  const coll: number[] = [0, 1, 0, 0, ...u255(fonts.length)];
+  for (const f of fonts) coll.push(...u255(f.indices.length), (f.flavor >>> 24) & 0xff, (f.flavor >> 16) & 0xff, (f.flavor >> 8) & 0xff, f.flavor & 0xff, ...f.indices.flatMap(u255));
+  const joined = new Uint8Array(tables.reduce((a, t) => a + t.data.length, 0));
+  let p = 0;
+  for (const t of tables) {
+    joined.set(t.data, p);
+    p += t.data.length;
+  }
+  const comp = new Uint8Array(brotliCompressSync(joined));
+  const out = new Uint8Array((48 + dir.length + coll.length + comp.length + 3) & ~3);
+  const v = new DataView(out.buffer);
+  out.set([0x77, 0x4f, 0x46, 0x32]);
+  v.setUint32(4, 0x74746366); // ttcf
+  v.setUint32(8, out.length);
+  v.setUint16(12, tables.length);
+  v.setUint32(20, comp.length);
+  out.set(dir, 48);
+  out.set(coll, 48 + dir.length);
+  out.set(comp, 48 + dir.length + coll.length);
+  return out;
+}
+
+/** name の表の、書体のファミリー名 (nameID 1) を書き換えた写し (英語の名前を同じ長さの別の名前にする) */
+function renamed(name: Uint8Array, from: string, to: string): Uint8Array {
+  const out = name.slice();
+  const enc16 = (t: string) => Array.from(t).flatMap((c) => [0, c.charCodeAt(0)]);
+  const a = enc16(from);
+  const b = enc16(to);
+  for (let k = 0; k + a.length <= out.length; k++) if (a.every((x, i) => out[k + i] === x)) out.set(b, k);
+  return out;
+}
+
 let arimo: ArrayBuffer;
 beforeAll(async () => {
   arimo = await defaultFontBuffer('Arimo-Regular.ttf');
@@ -155,6 +236,60 @@ describe('WOFF・WOFF2 を sfnt に戻す (webFont.ts)', () => {
     expect(glyphDiffs(w, back)).toBe(0);
     // ふつうの TrueType の表がそろう (glyf・loca を組み立て直した)
     expect([...tablesOf(back).keys()]).toEqual(expect.arrayContaining(['glyf', 'loca', 'hmtx', 'cmap', 'head']));
+  }, 120_000);
+  it('書体の集まりの WOFF2 (表を分け合う 2 書体) は TTC に戻り、書体ごとに元の字形と同じ (§4.2)', async () => {
+    const w = await lobsterWoff2();
+    const { flavor, tables } = readWoff2(w);
+    // 2 つめの書体は name の表だけが別 (ファミリー名を Lobster → Lobstar)。glyf・loca・hmtx (変換した表) は分け合う
+    const ni = tables.findIndex((t) => t.tag === 'name');
+    const name2 = renamed(tables[ni].data, 'Lobster', 'Lobstar');
+    const all = [...tables, { tag: 'name', flags: 0x05, origLength: name2.length, data: name2 }];
+    const base = tables.map((_, k) => k);
+    const ttc = toSfnt(makeWoff2Collection(all, [{ flavor, indices: base }, { flavor, indices: base.map((k) => (k === ni ? all.length - 1 : k)) }]).buffer as ArrayBuffer);
+    expect(String.fromCharCode(...new Uint8Array(ttc, 0, 4))).toBe('ttcf');
+    const faces = collectionFaces(ttc);
+    expect(faces.length).toBe(2);
+    for (const f of faces) expect(glyphDiffs(w, f)).toBe(0);
+    const names = faces.map((f) => (fontkit.create(new Uint8Array(f)) as unknown as { familyName: string }).familyName);
+    expect(names).toEqual(['Lobster', 'Lobstar']);
+    // 分け合う表は TTC の中に 1 度だけ置く (書体ごとの表の記録が、同じ位置を指す)
+    const dv = new DataView(ttc);
+    const glyfAt = [0, 1].map((f) => {
+      const d = dv.getUint32(12 + 4 * f);
+      for (let k = 0; k < dv.getUint16(d + 4); k++) if (String.fromCharCode(...new Uint8Array(ttc, d + 12 + 16 * k, 4)) === 'glyf') return dv.getUint32(d + 12 + 16 * k + 8);
+      return -1;
+    });
+    expect(glyfAt[0]).toBe(glyfAt[1]);
+  }, 120_000);
+  it('glyf・loca の組が 2 つある書体の集まり (変換した Lobster と、変換しない Arimo) も戻る。組が合わなければ投げる', async () => {
+    const w = await lobsterWoff2();
+    const lob = readWoff2(w);
+    const ari = [...tablesOf(arimo)].map(([tag, data]): W2 => ({ tag, flags: (tag === 'glyf' || tag === 'loca' ? 3 << 6 : 0) | 0x3f, origLength: data.length, data }));
+    // 表の目録では、それぞれの glyf のすぐ後ろに、組の loca を置く (§5.5)
+    const order = (ts: W2[]) => {
+      const rest = ts.filter((t) => t.tag !== 'loca');
+      const loca = ts.find((t) => t.tag === 'loca')!;
+      const g = rest.findIndex((t) => t.tag === 'glyf');
+      return [...rest.slice(0, g + 1), loca, ...rest.slice(g + 1)];
+    };
+    const a = order(lob.tables);
+    const b = order(ari);
+    const all = [...a, ...b];
+    const fonts = [
+      { flavor: lob.flavor, indices: a.map((_, k) => k) },
+      { flavor: 0x00010000, indices: b.map((_, k) => a.length + k) },
+    ];
+    const faces = collectionFaces(toSfnt(makeWoff2Collection(all, fonts).buffer as ArrayBuffer));
+    expect(faces.length).toBe(2);
+    expect(glyphDiffs(w, faces[0])).toBe(0);
+    // 変換しない Arimo は、元の TTF と表が同じ (fontkit は Arimo の一部の字形の外枠を読めないので、字形ではなく表で比べる)
+    const ta = tablesOf(arimo);
+    const tb = tablesOf(faces[1]);
+    expect([...tb.keys()].sort()).toEqual([...ta.keys()].sort());
+    for (const [tag, d] of ta) expect(tb.get(tag)).toEqual(d);
+    // 2 つめの書体が 1 つめの書体の loca を使う (glyf と loca の組が合わない): 投げる (§4.2)
+    const bad = [{ ...fonts[0] }, { ...fonts[1], indices: fonts[1].indices.map((ix) => (all[ix].tag === 'loca' ? a.findIndex((t) => t.tag === 'loca') : ix)) }];
+    expect(() => toSfnt(makeWoff2Collection(all, bad).buffer as ArrayBuffer)).toThrow(/paired/);
   }, 120_000);
   it('壊れた WOFF2 は投げる (黙って違う書体にしない)', () => {
     const w = makeWoff2Null(arimo).slice(0, 60);
@@ -195,6 +330,14 @@ describe('@font-face の WOFF・WOFF2 で組む', () => {
       }
       expect(names.some((n) => (name === 'a.woff' ? /Arimo/ : /Lobster/).test(n))).toBe(true);
     }
+  }, 120_000);
+  it('@font-face で書体の集まりの WOFF2 を指すと、最初の書体を使う', async () => {
+    const { flavor, tables } = readWoff2(await lobsterWoff2());
+    const base = tables.map((_, k) => k);
+    const coll = makeWoff2Collection(tables, [{ flavor, indices: base }, { flavor, indices: base }]);
+    const r = await typeset('<style>@font-face { font-family: C; src: url(c.woff2) }</style><p style="font-family: C">Hello</p>', { loadFont, files: [{ name: 'c.woff2', data: coll }] });
+    expect(firstFamily(r)).toBe('css:C');
+    expect(r.warnings).toEqual([]);
   }, 120_000);
   it('CSS の @font-face が http(s) で参照する書体を取る (fetchStyles)。unicode-range が文書の字と重ならない書体は取らない', async () => {
     const woff2 = await lobsterWoff2();

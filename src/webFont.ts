@@ -3,9 +3,9 @@
  * 戻した書体は、TTF・OTF と同じに登録し、PDF に埋め込む (PDF には WOFF・WOFF2 をそのまま入れられない)。
  *
  *  - WOFF 1.0 (W3C Recommendation 13 December 2012): 表ごとに zlib で圧縮してある (§5)。自前の zlib の展開 (psFilters) で戻す
- *  - WOFF2 (W3C Recommendation 01 March 2024): 表をまとめて Brotli で圧縮し (§4)、glyf・loca・hmtx は形を変えて縮めてある (§5)。
+ *  - WOFF2 (W3C Recommendation, 08 August 2024。https://www.w3.org/TR/2024/REC-WOFF2-20240808/ 、2026-11-09 取得): 表をまとめて Brotli で圧縮し (§5)、glyf・loca・hmtx は形を変えて縮めてある (§5)。
  *    Brotli の展開は fontkit (@pdf-lib/fontkit 1.1.1 の WOFF2Font) に任せ、変換した表 (glyf・loca §5.1〜5.3、hmtx §5.4) はここで元に戻す。
- *    書体の集まり (WOFF2 の collection。flavor が ttcf) は扱わない
+ *    書体の集まり (flavor が ttcf。§4.2) は TTC にする (読み込みの側が、TTC の中の書体をそれぞれ取り出す)
  */
 import fontkit from '@pdf-lib/fontkit';
 import { inflateBytes } from './psFilters';
@@ -51,7 +51,7 @@ function woffToSfnt(b: Uint8Array): ArrayBuffer {
   return buildSfnt(flavor, tables);
 }
 
-/** WOFF2 の表の名前 (表の目録の flags の下位 6 ビット。§4.2 の Known Table Tags) */
+/** WOFF2 の表の名前 (表の目録の flags の下位 6 ビット。§4.1 の Known Table Tags) */
 const KNOWN_TAGS = [
   'cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name', 'OS/2', 'post', 'cvt ', 'fpgm', 'glyf', 'loca', 'prep', 'CFF ', 'VORG', 'EBDT', 'EBLC', 'gasp', 'hdmx', 'kern', 'LTSH', 'PCLT', 'VDMX', 'vhea', 'vmtx', 'BASE', 'GDEF', 'GPOS', 'GSUB', 'EBSC', 'JSTF', 'MATH', 'CBDT', 'CBLC', 'COLR', 'CPAL', 'SVG ', 'sbix', 'acnt', 'avar', 'bdat', 'bloc', 'bsln', 'cvar', 'fdsc', 'feat', 'fmtx', 'fvar', 'gvar', 'hsty', 'just', 'lcar', 'mort', 'morx', 'opbd', 'prop', 'trak', 'Zapf', 'Silf', 'Glat', 'Gloc', 'Feat', 'Sill',
 ];
@@ -110,7 +110,7 @@ class Reader {
     }
     throw new Error('WOFF2: UIntBase128 too long');
   }
-  /** 255UInt16 (§3.2) */
+  /** 255UInt16 (§3.1) */
   u255() {
     const c = this.u8();
     if (c === 253) return this.u16();
@@ -120,20 +120,30 @@ class Reader {
   }
 }
 
-/** WOFF2 → sfnt (W3C WOFF2 §4 のファイルの形、§5 の表の変換) */
+/** WOFF2 の表の目録の 1 つ (§4.1) */
+interface Woff2Entry {
+  tag: string;
+  origLength: number;
+  transformLength?: number;
+  version: number;
+}
+
+/**
+ * WOFF2 → sfnt (W3C WOFF2 §3.2 の見出し、§4.1 の表の目録、§4.2 の書体の集まりの目録、§5 の表の変換)。
+ * 書体の集まり (flavor が ttcf) なら TTC (書体の集まりの見出しの版 1.0) にする。表は目録の番号で区別する (集まりでは、同じ名前の表が書体ごとにある)
+ */
 function woff2ToSfnt(b: Uint8Array): ArrayBuffer {
   const r = new Reader(b);
   r.pos = 4;
   const flavor = r.u32();
-  if (flavor === 0x74746366) throw new Error('WOFF2: font collections are not supported');
   r.u32(); // length
   const numTables = r.u16();
   r.u16(); // reserved
   r.u32(); // totalSfntSize
   const totalCompressedSize = r.u32();
   r.pos = 48;
-  // 表の目録 (§4.2): 変換した表は transformLength の長さで、展開したデータの中に順に並ぶ
-  const dir: Array<{ tag: string; origLength: number; transformLength?: number; version: number }> = [];
+  // 表の目録 (§4.1): 変換した表は transformLength の長さで、展開したデータの中に順に並ぶ
+  const dir: Woff2Entry[] = [];
   for (let k = 0; k < numTables; k++) {
     const flags = r.u8();
     const tagNo = flags & 0x3f;
@@ -145,47 +155,151 @@ function woff2ToSfnt(b: Uint8Array): ArrayBuffer {
     const transformed = tag === 'glyf' || tag === 'loca' ? version === 0 : version !== 0;
     dir.push({ tag, origLength, version, ...(transformed ? { transformLength: r.base128() } : {}) });
   }
-  // Brotli の展開 (fontkit の WOFF2Font が、表を読むときに行う。展開したデータは font.stream に入る)
-  const data = brotliTables(b);
+  // 書体の集まりの目録 (§4.2): 書体ごとに、sfnt の版と、使う表の目録の番号
+  const collection = flavor === 0x74746366;
+  const fonts: Array<{ flavor: number; indices: number[] }> = [];
+  if (collection) {
+    r.u32(); // 元の TTC の見出しの版 (出力は版 1.0 にする。§4.2: 版 2.0 の DSIG の欄は捨ててよい)
+    const numFonts = r.u255();
+    for (let f = 0; f < numFonts; f++) {
+      const n = r.u255();
+      const fl = r.u32();
+      const indices: number[] = [];
+      for (let k = 0; k < n; k++) {
+        const ix = r.u255();
+        if (ix >= dir.length) throw new Error('WOFF2: bad table index in the collection directory');
+        indices.push(ix);
+      }
+      fonts.push({ flavor: fl, indices });
+    }
+    if (!fonts.length) throw new Error('WOFF2: empty collection');
+  } else fonts.push({ flavor, indices: dir.map((_, k) => k) });
+  // Brotli の展開 (圧縮したデータは、目録のすぐ後ろから totalCompressedSize バイト。§5)
+  if (r.pos + totalCompressedSize > b.length) throw new Error('WOFF2: the data is too short');
   const expected = dir.reduce((a, d) => a + (d.transformLength ?? d.origLength), 0);
-  if (data.length < expected || totalCompressedSize > b.length) throw new Error('WOFF2: the data is too short');
-  const raw = new Map<string, { data: Uint8Array; transformed: boolean; version: number }>();
+  const data = brotliDecompress(b.subarray(r.pos, r.pos + totalCompressedSize), expected);
+  if (data.length < expected) throw new Error('WOFF2: the decompressed data is too short');
+  const raw: Uint8Array[] = [];
   let at = 0;
   for (const d of dir) {
     const len = d.transformLength ?? d.origLength;
-    raw.set(d.tag, { data: data.subarray(at, at + len), transformed: d.transformLength !== undefined, version: d.version });
+    raw.push(data.subarray(at, at + len));
     at += len;
   }
-  const out = new Map<string, Uint8Array>();
-  for (const [tag, t] of raw) if (!t.transformed) out.set(tag, t.data.slice());
-  // glyf・loca の変換を戻す (§5.1〜5.3)
-  const glyf = raw.get('glyf');
-  let xMins: number[] | undefined;
-  if (glyf?.transformed) {
-    const g = reconstructGlyf(glyf.data);
-    out.set('glyf', g.glyf);
-    out.set('loca', g.loca);
-    xMins = g.xMins;
-  } else if (raw.get('loca')?.transformed) throw new Error('WOFF2: loca is transformed but glyf is not');
-  // hmtx の変換を戻す (§5.4)
-  const hmtx = raw.get('hmtx');
-  if (hmtx?.transformed) {
-    if (hmtx.version !== 1) throw new Error('WOFF2: unknown hmtx transform');
-    out.set('hmtx', reconstructHmtx(hmtx.data, out, xMins));
+  const out: Array<Uint8Array | undefined> = dir.map((d, k) => (d.transformLength === undefined ? raw[k].slice() : undefined));
+  // glyf・loca の変換を戻す (§5.1〜5.3)。glyf の組の loca は、目録で glyf の後ろの最初の loca (§5.5。書体の集まりでは、すぐ後ろ)
+  const xMinsOf = new Map<number, number[]>();
+  const locaOf = new Map<number, number>();
+  dir.forEach((d, gi) => {
+    if (d.tag !== 'glyf') return;
+    const li = dir.findIndex((e, k) => k > gi && e.tag === 'loca');
+    if (li < 0 || (collection && li !== gi + 1)) throw new Error('WOFF2: glyf has no paired loca');
+    locaOf.set(gi, li);
+    if (d.transformLength === undefined) return;
+    const g = reconstructGlyf(raw[gi]);
+    out[gi] = g.glyf;
+    out[li] = g.loca;
+    xMinsOf.set(gi, g.xMins);
+  });
+  // 書体ごとの表の番号 (名前 → 番号)。書体の集まりでは、glyf と loca が組で使われているかを確かめる (§4.2)
+  const byTag = fonts.map((f) => new Map(f.indices.map((ix) => [dir[ix].tag, ix])));
+  for (const m of byTag) {
+    const gi = m.get('glyf');
+    if (gi !== undefined && m.get('loca') !== locaOf.get(gi)) throw new Error('WOFF2: glyf and loca are not paired');
   }
-  for (const [tag, t] of raw) if (t.transformed && !out.has(tag)) throw new Error(`WOFF2: the transform of the table ${tag} is not supported`);
-  const tables = dir.map((d) => ({ tag: d.tag, data: out.get(d.tag)! }));
-  return buildSfnt(flavor, tables);
+  // hmtx の変換を戻す (§5.4): 同じ書体の hhea・maxp と、glyf の外枠の xMin を使う
+  dir.forEach((d, hi) => {
+    if (d.tag !== 'hmtx' || d.transformLength === undefined) return;
+    if (d.version !== 1) throw new Error('WOFF2: unknown hmtx transform');
+    const m = byTag.find((t) => t.get('hmtx') === hi);
+    const hhea = m?.get('hhea');
+    const maxp = m?.get('maxp');
+    if (hhea === undefined || maxp === undefined || !out[hhea] || !out[maxp]) throw new Error('WOFF2: hmtx needs hhea and maxp');
+    const gi = m!.get('glyf');
+    out[hi] = reconstructHmtx(raw[hi], out[hhea]!, out[maxp]!, gi !== undefined ? xMinsOf.get(gi) : undefined);
+  });
+  dir.forEach((d, k) => {
+    if (!out[k]) throw new Error(`WOFF2: the transform of the table ${d.tag} is not supported`);
+  });
+  if (!collection) return buildSfnt(flavor, dir.map((d, k) => ({ tag: d.tag, data: out[k]! })));
+  return buildTtc(fonts, dir.map((d) => d.tag), out as Uint8Array[]);
 }
 
-/** fontkit に WOFF2 の Brotli の展開をさせ、展開したデータ (表の並び) を返す */
-function brotliTables(b: Uint8Array): Uint8Array {
-  const font = fontkit.create(b) as unknown as { _decompress?: () => void; stream?: { buffer?: Uint8Array } };
+/**
+ * Brotli の展開 (RFC 7932)。fontkit (@pdf-lib/fontkit 1.1.1) の WOFF2 の読み込みが持つ展開を使う: 圧縮したデータを、表が 1 つだけの
+ * WOFF2 (変換なし・任意の名前の表) に包んで fontkit に読ませ、展開したデータを受け取る。size は展開した後の大きさ
+ */
+function brotliDecompress(comp: Uint8Array, size: number): Uint8Array {
+  const entry = [0x3f, 0x5f, 0x5f, 0x5f, 0x5f]; // 任意の名前 '____' の表、変換なし
+  const len: number[] = [size & 0x7f];
+  for (let n = size >>> 7; n; n >>>= 7) len.unshift((n & 0x7f) | 0x80);
+  const head = 48 + entry.length + len.length;
+  const w = new Uint8Array(head + comp.length);
+  const v = new DataView(w.buffer);
+  w.set([0x77, 0x4f, 0x46, 0x32]); // wOF2
+  v.setUint32(4, 0x00010000);
+  v.setUint32(8, w.length);
+  v.setUint16(12, 1);
+  v.setUint32(16, size);
+  v.setUint32(20, comp.length);
+  w.set(entry, 48);
+  w.set(len, 48 + entry.length);
+  w.set(comp, head);
+  const font = fontkit.create(w) as unknown as { _decompress?: () => void; stream?: { buffer?: Uint8Array } };
   if (typeof font._decompress !== 'function') throw new Error('WOFF2: cannot decompress (fontkit has no WOFF2 support)');
   font._decompress();
   const buf = font.stream?.buffer;
   if (!(buf instanceof Uint8Array)) throw new Error('WOFF2: cannot decompress');
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
+/**
+ * TTC (書体の集まり。OpenType の TTC Header の版 1.0) を組み立てる。表は 1 度だけ置き (分け合う表は、書体ごとの表の記録から同じ位置を指す)、
+ * 書体の順は元のまま (§4.2)。head の checkSumAdjustment は元の値のまま
+ */
+function buildTtc(fonts: Array<{ flavor: number; indices: number[] }>, tags: string[], data: Uint8Array[]): ArrayBuffer {
+  const headerLen = 12 + 4 * fonts.length;
+  const dirLens = fonts.map((f) => 12 + 16 * f.indices.length);
+  let offset = headerLen + dirLens.reduce((a, b) => a + b, 0);
+  const tableAt: number[] = [];
+  data.forEach((d, k) => {
+    tableAt[k] = offset;
+    offset += (d.length + 3) & ~3;
+  });
+  const w = new Writer();
+  w.u32(0x74746366); // ttcf
+  w.u32(0x00010000);
+  w.u32(fonts.length);
+  let dirAt = headerLen;
+  for (const len of dirLens) {
+    w.u32(dirAt);
+    dirAt += len;
+  }
+  for (const f of fonts) {
+    const n = f.indices.length;
+    let pow = 1;
+    let log = 0;
+    while (pow * 2 <= n) {
+      pow *= 2;
+      log++;
+    }
+    w.u32(f.flavor);
+    w.u16(n);
+    w.u16(pow * 16);
+    w.u16(log);
+    w.u16(n * 16 - pow * 16);
+    for (const ix of [...f.indices].sort((a, b) => (tags[a] < tags[b] ? -1 : tags[a] > tags[b] ? 1 : 0))) {
+      for (let k = 0; k < 4; k++) w.u8(tags[ix].charCodeAt(k));
+      w.u32(checksum(data[ix]));
+      w.u32(tableAt[ix]);
+      w.u32(data[ix].length);
+    }
+  }
+  for (const d of data) {
+    w.bytes(d);
+    w.pad4();
+  }
+  return w.result().buffer;
 }
 
 /** glyf の点の組の読み方 (§5.2 の表: 先頭の 1 バイトの値で、差のバイト数と符号が決まる) */
@@ -389,10 +503,7 @@ function reconstructGlyf(data: Uint8Array): { glyf: Uint8Array; loca: Uint8Array
 }
 
 /** 変換した hmtx を戻す (§5.4): 省いた左の余白 (lsb) は、字形の外枠の xMin で補う */
-function reconstructHmtx(data: Uint8Array, tables: Map<string, Uint8Array>, xMins: number[] | undefined): Uint8Array {
-  const hhea = tables.get('hhea');
-  const maxp = tables.get('maxp');
-  if (!hhea || !maxp) throw new Error('WOFF2: hmtx needs hhea and maxp');
+function reconstructHmtx(data: Uint8Array, hhea: Uint8Array, maxp: Uint8Array, xMins: number[] | undefined): Uint8Array {
   const numberOfHMetrics = new DataView(hhea.buffer, hhea.byteOffset).getUint16(34);
   const numGlyphs = new DataView(maxp.buffer, maxp.byteOffset).getUint16(4);
   const r = new Reader(data);
