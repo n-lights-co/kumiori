@@ -55,7 +55,7 @@ const textOf = (tree: Awaited<ReturnType<typeof typeset>>['areaTree']) => {
   return t;
 };
 
-/** 書体ファイルを束ねて TTC (OpenType 1.9 の TTC Header version 1.0) を作る。表の位置は TTC の先頭からの位置に直す */
+/** 書体ファイルをまとめて TTC (OpenType 1.9 の TTC Header version 1.0) を作る。表の位置は TTC の先頭からの位置に直す */
 function makeTtc(faces: Buffer[]): ArrayBuffer {
   const head = 12 + 4 * faces.length;
   const total = head + faces.reduce((n, f) => n + f.length + ((4 - (f.length % 4)) % 4), 0);

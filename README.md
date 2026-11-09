@@ -148,8 +148,8 @@ result.renderPage(canvas, 0);                                  // 1 ページ目
   ```
 - 既定で使う書体は `DEFAULT_FONTS` で分かります (`loadFont` に渡される `spec` の `family`・`weight`・`urls`)
 - 公開しているのは `src/index.ts` (と Node 用の `src/node.ts`) から出しているものだけです (ほかのモジュールの関数・型は、版の間で変わることがあります)
-- `kumiori` (`dist-lib/index.js`) は依存パッケージ (pdf-lib・fontkit・xmldom など) を束ねていない ES モジュールです。Vite・webpack などのバンドラーで使うか、Node から読んでください。ES モジュールだけなので、`require()` で読むには Node 22 以降が要ります
-- バンドラーを使わないブラウザでは、依存まで束ねた 1 ファイル `kumiori/browser` (`dist-browser/kumiori.js`。約 2.7MB、gzip で 0.9MB。ハイフネーションの辞書などは使うときだけ別ファイルを読む) を使います。npm に公開したものは jsDelivr や unpkg の CDN からそのまま読めます:
+- `kumiori` (`dist-lib/index.js`) は依存パッケージ (pdf-lib・fontkit・xmldom など) を取り込んでいない ES モジュールです。Vite・webpack などのバンドラーで使うか、Node から読んでください。ES モジュールだけなので、`require()` で読むには Node 22 以降が要ります
+- バンドラーを使わないブラウザでは、依存まで 1 つにまとめたファイル `kumiori/browser` (`dist-browser/kumiori.js`。約 2.7MB、gzip で 0.9MB。ハイフネーションの辞書などは使うときだけ別ファイルを読む) を使います。npm に公開したものは jsDelivr や unpkg の CDN からそのまま読めます:
 
   ```html
   <script type="module">

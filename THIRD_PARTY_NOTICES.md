@@ -9,12 +9,12 @@ Kumiori の配布物に含まれる、または Kumiori の実行に使われる
 
 ## 1. ブラウザ向けの配布物 (`dist/`・`dist-browser/`) に含まれるもの
 
-次の 2 つのブラウザ向けの配布物は、この節のパッケージを束ねて含みます (2026-11-08 に、ビルドのソースマップで束ねられたパッケージを確かめました)。
+次の 2 つのブラウザ向けの配布物は、この節のパッケージを取り込んでいます (2026-11-08 に、ビルドのソースマップで取り込まれたパッケージを確かめました)。
 
 - 画面 (`npm run build` の `dist/`。GitHub Pages に置くもの)
-- ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も束ねて含みます (XSL-FO を読むため)
+- ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も取り込んでいます (XSL-FO を読むため)
 
-ライブラリ (`npm run build:lib` の `dist-lib/`。npm の `kumiori`) は依存パッケージを束ねず、実行時に node_modules から読み込みます (下の 2 節と同じ)。
+ライブラリ (`npm run build:lib` の `dist-lib/`。npm の `kumiori`) は依存パッケージを取り込まず、実行時に node_modules から読み込みます (下の 2 節と同じ)。
 
 ### pdf-lib 1.17.1
 
@@ -53,7 +53,7 @@ SOFTWARE.
 - 場所: `node_modules/@pdf-lib/fontkit`
 - fontkit のフォーク (package.json の repository: `git://github.com/Hopding/fontkit.git`)。
 - パッケージに LICENSE ファイルなし。
-- 配布物には、ほかのパッケージのコードが束ねられています。その表示は下の 1.1.1 にあります。
+- 配布物には、ほかのパッケージのコードが取り込まれています。その表示は下の 1.1.1 にあります。
 
 package.json の表示 (そのまま):
 
@@ -418,12 +418,12 @@ import { __extends } from "tslib";
   // USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 1.1.1 @pdf-lib/fontkit の配布物に束ねられたもの
+### 1.1.1 @pdf-lib/fontkit の配布物に取り込まれたもの
 
-`node_modules/@pdf-lib/fontkit/dist/` の配布物 (`fontkit.es.js`・`fontkit.umd.js` とその縮めたもの) には、fontkit を作るときに rollup で束ねた、ほかのパッケージのコードが入っています。fontkit のパッケージにはそれらの表示が無いので、ここにまとめます。Kumiori のブラウザ向けの配布物 (`dist-browser/`) は fontkit を束ね、コメントを除くので、ここの表示がそれらの表示になります。
+`node_modules/@pdf-lib/fontkit/dist/` の配布物 (`fontkit.es.js`・`fontkit.umd.js` とその縮めたもの) には、fontkit を作るときに rollup で取り込んだ、ほかのパッケージのコードが入っています。fontkit のパッケージにはそれらの表示が無いので、ここにまとめます。Kumiori のブラウザ向けの配布物 (`dist-browser/`) は fontkit を取り込み、コメントを除くので、ここの表示がそれらの表示になります。
 
-- 束ねたもの: fontkit の package.json の開発用の依存 (`devDependencies`) と、配布物の中のコードの特徴 (関数の名前・文字列) から洗い出しました。配布物にはソースマップが無く、束ねた版は分かりません。下の条文は、package.json の範囲に合う版のパッケージ (2026-11-09 に npm から取得) から、書き換えずに写しています。
-- 配布物に入っていないことを確かめたもの: rollup-plugin-node-builtins の setimmediate・zlib など、上に挙げた以外の Node の組み込みの代わり。fontkit の依存 (`dependencies`) の pako は、束ねずに読み込みます (上の pako の節)。
+- 取り込まれたもの: fontkit の package.json の開発用の依存 (`devDependencies`) と、配布物の中のコードの特徴 (関数の名前・文字列) から洗い出しました。配布物にはソースマップが無く、取り込まれた版は分かりません。下の条文は、package.json の範囲に合う版のパッケージ (2026-11-09 に npm から取得) から、書き換えずに写しています。
+- 配布物に入っていないことを確かめたもの: rollup-plugin-node-builtins の setimmediate・zlib など、上に挙げた以外の Node の組み込みの代わり。fontkit の依存 (`dependencies`) の pako は、取り込まずに読み込みます (上の pako の節)。
 - `fontkit.es.js` の中に残っている表示は、string_decoder の Joyent の表示 (上の 1.1 に転記)、base64-arraybuffer の表示 (23697 行目。下の base64-arraybuffer の LICENSE と同じ著作権者)、Brotli の展開の Google Inc. の表示 (34218 行目ほか。下に転記) です。
 - @pdf-lib/unicode-properties の字の性質の表と、fontkit の字の並びの照合の表は、Unicode の文字データベースから作られたものです。Unicode の文字データの許諾 (Unicode License v3) の本文は、下の 6 節にあります。
 
@@ -450,7 +450,7 @@ Kumiori は、WOFF2 の書体を読むとき (`src/webFont.ts`) に、この Bro
 */
 ```
 
-- base64-js (@pdf-lib/brotli と buffer の依存。束ねた版は分かりません): base64-js 1.5.1 の LICENSE:
+- base64-js (@pdf-lib/brotli と buffer の依存。取り込まれた版は分かりません): base64-js 1.5.1 の LICENSE:
 
 ```text
 The MIT License (MIT)
@@ -936,7 +936,7 @@ SOFTWARE.
 - package.json の license: `ISC`
 - パッケージに LICENSE ファイルなし。package.json の author: ``、repository: `git@github.com:calvinmetcalf/rollup-plugin-node-builtins.git`
 
-束ねられたファイルのうち、`src/es6/util.js` の冒頭 (`src/es6/string-decoder.js` も同じ。readable-stream の部分も Node のコードから作られたもの):
+取り込まれたファイルのうち、`src/es6/util.js` の冒頭 (`src/es6/string-decoder.js` も同じ。readable-stream の部分も Node のコードから作られたもの):
 
 ```text
 // Copyright Joyent, Inc. and other Node contributors.
@@ -1426,7 +1426,7 @@ pdf-lib 1.17.1 のソースの中のコメント (上の 1.1 に転記) が、�
 - `node_modules/pdf-lib/es/core/streams/Ascii85Stream.js`
 - `node_modules/pdf-lib/es/core/streams/LZWStream.js`
 
-@pdf-lib/fontkit 1.1.1 の配布物に束ねられた Brotli の展開のコード (上の 1.1.1) も、Google Inc. の Apache License 2.0 の表示を持っています。
+@pdf-lib/fontkit 1.1.1 の配布物に取り込まれた Brotli の展開のコード (上の 1.1.1) も、Google Inc. の Apache License 2.0 の表示を持っています。
 
 pdf-lib のパッケージには、Apache License 2.0 の本文は入っていません。下の本文は、次の配布元から取得したものを、書き換えずに転記しています。
 
@@ -1640,7 +1640,7 @@ pdf-lib のパッケージには、Apache License 2.0 の本文は入ってい�
 ## 2. Node のコマンド (`dist-cli/cli.js`) とライブラリ (`dist-lib/`) を配布するときの依存
 
 Node のコマンドとライブラリのビルドでは、次のパッケージはバンドルに入らず、実行時に node_modules から読み込まれます (上の 1 のパッケージも同じ)。npm の `kumiori` を入れると、これらも依存として一緒に入ります。
-このうち @xmldom/xmldom は、ブラウザで単体で動くライブラリ (`dist-browser/`) には束ねて含まれます (上の 1)。
+このうち @xmldom/xmldom は、ブラウザで単体で動くライブラリ (`dist-browser/`) に取り込まれます (上の 1)。
 
 ### @xmldom/xmldom 0.9.12
 

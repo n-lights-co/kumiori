@@ -3,7 +3,7 @@ import base from './vite.config';
 
 /**
  * ライブラリとしてのビルド (npm run build:lib): src/index.ts (と Node 用の src/node.ts) を ES モジュールにして dist-lib/ に出す。
- * 依存パッケージは束ねず、使う側で読み込む (package.json の dependencies)
+ * 依存パッケージは取り込まず、使う側で読み込む (package.json の dependencies)
  */
 export default mergeConfig(
   base,

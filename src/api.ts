@@ -213,7 +213,7 @@ const xmlParse = (xml: string): XNode => {
 };
 /**
  * HTML・SVG の読み取り。ブラウザでは、ブラウザに備わった DOMParser (HTML の仕様の読み取り) を使う。
- * Node では linkedom を使う。linkedom は Node のときだけ読み込む (ブラウザ向けに束ねる側が linkedom を束ねずに済むように、名前を変数で渡す)
+ * Node では linkedom を使う。linkedom は Node のときだけ読み込む (ブラウザ向けに 1 つのファイルにまとめる側 (バンドラー) が linkedom を取り込まずに済むように、名前を変数で渡す)
  */
 type Parsers = { html: (t: string) => Document; svg: (t: string) => unknown };
 let parsersP: Promise<Parsers> | undefined;
