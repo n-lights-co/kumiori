@@ -593,6 +593,16 @@ export interface LBlock extends BaseNode, BoxStyle {
   relativeOffset?: { x: number; y: number };
   /** リンク (ブロックを含む fo:basic-link) */
   link?: LinkTarget;
+  /**
+   * 高さの決まった箱 (block-container) の子として、箱の中の余った高さを分けてもらう比 (縦並びの flex の項目の flex-grow。Flexbox 1 §9.7)。
+   * 余りは比で分けて子の箱を伸ばし、後ろの子を下げる
+   */
+  flexGrow?: number;
+  /**
+   * 高さの決まった箱の子として、前 (before)・後 (after) の余白が auto (縦並びの flex の項目の margin-top・margin-bottom: auto。Flexbox 1 §8.1)。
+   * flexGrow の子が無ければ、余った高さを auto の余白の数で等分して空ける
+   */
+  flexAutoMargin?: { before?: boolean; after?: boolean };
   /** PDF の注釈 (ブロックの最初の断片の左上から) */
   annotation?: Annotation;
   /** ブロック子 or インライン子。混在時は連続するインライン列が匿名ブロックになる */
@@ -1153,8 +1163,11 @@ export interface LTableColumn {
 
 export interface LTableCell extends BaseNode, BoxStyle {
   type: 'table-cell';
-  /** セルの高さの中での内容の block 方向の配置 (display-align)。既定 start */
-  blockAlign?: 'start' | 'center' | 'end' | 'baseline';
+  /**
+   * セルの高さの中での内容の block 方向の配置 (display-align)。既定 start。baseline は同じ行の baseline のセルの最初の行の基線をそろえる。
+   * last-baseline は同じ行の last-baseline のセルの最後の行の基線をそろえ、行の下端に寄せる (CSS の flex の align-items: last baseline)
+   */
+  blockAlign?: 'start' | 'center' | 'end' | 'baseline' | 'last-baseline';
   colSpan?: number;
   /** 行方向の結合。結合された行は 1 つの塊として扱い、ページをまたがない */
   rowSpan?: number;

@@ -2965,6 +2965,51 @@ class Flow {
         kids.push(a);
       }
     }
+    // 余った高さを、flexGrow のある子 (縦並びの flex の項目の flex-grow) にその比で分ける: 子の箱を伸ばし、後ろの子を下げる (Flexbox 1 §9.7)。
+    // 子の箱は、元の節の通し番号 (ref) で見分ける
+    if (contentB != null && used < contentB - EPS) {
+      const grow = new Map<number, number>();
+      for (const ch of node.children) {
+        const g = (ch as LBlock).flexGrow;
+        const r = g && g > 0 ? sourceRef(ch) : undefined;
+        if (r !== undefined) grow.set(r, g!);
+      }
+      const sum = [...grow.values()].reduce((a, b) => a + b, 0);
+      // 伸ばす子が無ければ、auto の余白 (flexAutoMargin) が余りを等分して吸い取る (Flexbox 1 §8.1)
+      const autoM = new Map<number, { before?: boolean; after?: boolean }>();
+      if (sum === 0)
+        for (const ch of node.children) {
+          const m = (ch as LBlock).flexAutoMargin;
+          const r = m ? sourceRef(ch) : undefined;
+          if (r !== undefined) autoM.set(r, m!);
+        }
+      const slots = [...autoM.values()].reduce((a, m) => a + (m.before ? 1 : 0) + (m.after ? 1 : 0), 0);
+      if (slots > 0) {
+        const each = (contentB - used) / slots;
+        let shift = 0;
+        for (const k of [...kids].sort((a, b) => a.b - b.b)) {
+          const m = k.ref !== undefined ? autoM.get(k.ref) : undefined;
+          if (m?.before) shift += each;
+          k.b += shift;
+          if (m?.after) shift += each;
+        }
+        used += shift;
+      }
+      if (sum > 0) {
+        const free = contentB - used;
+        let shift = 0;
+        for (const k of [...kids].sort((a, b) => a.b - b.b)) {
+          k.b += shift;
+          const g = k.ref !== undefined ? grow.get(k.ref) : undefined;
+          if (g) {
+            const add = (free * g) / sum;
+            k.bsize += add;
+            shift += add;
+          }
+        }
+        used += shift;
+      }
+    }
     // 固定の高さの中での内容の配置 (display-align)
     if (node.blockAlign && node.blockAlign !== 'start' && contentB != null && used < contentB) {
       if (node.blockAlign === 'space-between' || node.blockAlign === 'space-around' || node.blockAlign === 'space-evenly') {
@@ -3894,6 +3939,11 @@ class Flow {
       rows.forEach((_, j) => {
         // 行の無いセルの基線は、内容の下端 (中の箱の下端。空なら上端)
         const contentBottom = (n: LNode) => (n.children.length ? Math.max(...n.children.map((c) => c.b + c.bsize)) : 0);
+        // last-baseline のセル (flex の align-items: last baseline。CSS Box Alignment 3 §9.3): 最後の行の基線から下端までの距離を
+        // いちばん長いものにそろえ (下に空きを足す)、下で行の下端に寄せる (代わりの揃えは end)。行の無いセルは下端を基線にする
+        const ll = placed.filter((p) => p.row === j && p.align === 'last-baseline').map((p) => ({ p, below: p.node.bsize - (lastBaseline(p.node) ?? p.node.bsize) }));
+        const deepest = Math.max(...ll.map((x) => x.below), -Infinity);
+        for (const { p, below } of ll) if (deepest - below > EPS) p.node.bsize += deepest - below;
         const bl = placed.filter((p) => p.row === j && p.align === 'baseline').map((p) => ({ p, fb: firstBaseline(p.node) ?? (this.host.xslSpace ? undefined : contentBottom(p.node)) }));
         const target = Math.max(...bl.map((x) => x.fb ?? -Infinity));
         if (!Number.isFinite(target)) return;
@@ -3921,7 +3971,7 @@ class Flow {
       if (sb) p.node.b = sb;
       // display-align: 行の高さに余りがあれば、内容を中央・末尾へ寄せる
       const extra = p.node.bsize - natural;
-      if (extra > EPS && (p.align === 'center' || p.align === 'end')) {
+      if (extra > EPS && (p.align === 'center' || p.align === 'end' || p.align === 'last-baseline')) {
         // アンテナハウス互換 (rowspanMiddleAh): 中央寄せでは、またいだ行の間の間隔を除いた高さで中央を出す
         const ahGap = this.rowspanMiddleAh ? sb * (p.span - 1) : 0;
         const off = p.align === 'center' ? Math.max(extra - ahGap, 0) / 2 : extra;

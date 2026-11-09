@@ -133,6 +133,28 @@ describe('flex の向き・縮め方・揃え (Flexbox 1)', () => {
     // 字の箱の下端どうしは、字の大きさに比例した深さだけずれる (基線は同じ)
     expect(b.y).toBeGreaterThan(A.y + 10);
   });
+  it('align-items: last baseline は、最後の行の基線をそろえ、組を行の下端に寄せる (CSS Box Alignment 3 §4.2: 代わりの揃えは end)', () => {
+    const r = load(
+      '<div style="display: flex; align-items: last baseline; height: 100pt"><p style="margin: 0; font-size: 20pt; line-height: 24pt">X<br>Y</p><p style="margin: 0">a<br>z</p></div>',
+      PAGE,
+    );
+    expect(tables(r)[0].body!.rows[0].cells.map((c) => c.blockAlign)).toEqual(['last-baseline', 'last-baseline']);
+    // 字の基線 (字の領域の y + baselineY) を、絶対の位置で集める
+    const base: Record<string, number> = {};
+    const walk = (n: unknown, oy: number) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) return n.forEach((c) => walk(c, oy));
+      const a = n as { type?: string; y?: number; text?: string; baselineY?: number };
+      const y = oy + (a.y ?? 0);
+      if (a.type === 'glyph') base[a.text!] = y + (a.baselineY ?? 0);
+      for (const [k, v] of Object.entries(a)) if (v && typeof v === 'object' && !['margin', 'padding', 'border'].includes(k)) walk(v, y);
+    };
+    walk(E.engine.layout(r.document).sheets[0], 0);
+    // 最後の行 (Y・z) の基線がそろい、組は下端 (100pt) に付く。最初の行 (X・a) はそろわない
+    expect(base.Y).toBeCloseTo(base.z, 1);
+    expect(base.X).not.toBeCloseTo(base.a, 0);
+    expect(base.Y).toBeGreaterThan(90);
+  });
   it('交差軸の margin: auto は、align-items より先に空きを取る (§8.1)', () => {
     const r = load(
       '<div style="display: flex; align-items: flex-start"><p style="margin: 0">x<br>x<br>x</p><p style="margin: auto 0 0">e</p><p style="margin: auto 0">c</p><p style="margin: 0 0 auto">s</p></div>',
@@ -194,6 +216,18 @@ describe('flex の order と項目 (Flexbox 1 §4・§5.4)', () => {
     expect(order(`<div style="display: flex">${body}</div>`)).toBe('CBA');
     expect(order(`<div style="display: flex; flex-direction: column">${body}</div>`)).toBe('CBA');
   });
+  it('文字と疑似要素を持つ display: contents も、中身を項目にして order の順に並べる (縦並び・横並び)', () => {
+    const css = ' .c { display: contents; color: #ff0000 } .c::before { content: "B"; order: 3 }';
+    const body = '<span class="c">T<p style="margin: 0; order: -1">C</p></span><p style="margin: 0; order: 1">D</p>';
+    // T (無名の項目、order 0) → D (1) → B (::before、3)。C は -1 で先頭
+    expect(order(`<div style="display: flex; flex-direction: column">${body}</div>`, css)).toBe('CTDB');
+    expect(order(`<div style="display: flex">${body}</div>`, css)).toBe('CTDB');
+    // 無名の項目の字の色は、display: contents の要素から受け継ぐ
+    const r = load(`<div style="display: flex; flex-direction: column">${body}</div>`, PAGE + css);
+    const t: string[] = [];
+    JSON.stringify(r.document.sequences[0].flow, (_k, v) => (v && v.type === 'block' && v.color && v.children?.includes?.('T') && t.push(v.color), v));
+    expect(t).toEqual(['#ff0000']);
+  });
   it('整数でない order の宣言は捨てる', () => {
     expect(order('<div style="display: flex"><p style="margin: 0; order: 2.5">A</p><p style="margin: 0; order: 1">B</p></div>')).toBe('AB');
   });
@@ -215,5 +249,73 @@ describe('flex の容器の直下の文字 (無名の項目。Flexbox 1 §4)', (
   it('文字の並びと子の要素は、それぞれ項目になる', () => {
     const t = tables(load('<div style="display: flex">AB <span style="order: -1">C</span> DE</div>', PAGE));
     expect(t[0].columns.length).toBe(3);
+  });
+});
+
+describe('flex の項目の大きさの上限・下限 (Flexbox 1 §4.5・§9.7)', () => {
+  it('min-width: auto は、中身の最も狭い幅 (長い語) より狭く縮めない。min-width: 0 なら縮める', () => {
+    const cols = (mw: string) =>
+      tables(load(`<div style="display: flex; width: 60pt"><p style="margin: 0; ${mw}">Wwwwwwwwwwww a</p><p style="margin: 0; ${mw}">b</p></div>`, PAGE))[0].columns.map((c) => c.width as number);
+    // 語の幅 (W と w の 12 字。10pt で 60pt を超える) より狭くならない
+    expect(cols('')[0]).toBeGreaterThan(60);
+    expect(cols('min-width: 0')[0]).toBeLessThan(60);
+  });
+  it('伸ばすとき max-width で止め、残りをほかの項目で分ける。全部止まれば justify-content で空きを置く', () => {
+    const r = load('<div style="display: flex"><p style="margin: 0; flex: 1; max-width: 100pt; background: #ff0000">a</p><p style="margin: 0; flex: 1; background: #0000ff">b</p></div>', PAGE);
+    const b = boxes(E.engine.layout(r.document).sheets[0] as unknown as Area);
+    expect(Math.round(b.find((a) => a.bg === '#ff0000')!.w)).toBe(100);
+    expect(Math.round(b.find((a) => a.bg === '#0000ff')!.w)).toBe(300);
+    const c = tables(load('<div style="display: flex; justify-content: center"><p style="margin: 0; flex: 1; max-width: 100pt">a</p></div>', PAGE))[0].columns;
+    expect(c.map((x) => (typeof x.width === 'number' ? Math.round(x.width) : x.width))).toEqual(['1*', 100, '1*']);
+  });
+  it('和文は 1 字ずつ改行できるので、1 字の幅まで縮められる', () => {
+    const c = tables(load('<div style="display: flex; width: 30pt"><p style="margin: 0">日本語の文章</p><p style="margin: 0">あいう</p></div>', PAGE))[0].columns.map((x) => x.width as number);
+    expect(c[0] + c[1]).toBeLessThan(31);
+  });
+});
+
+describe('右から左の flex の容器 (direction: rtl。Flexbox 1 §2.1)', () => {
+  const xs = (body: string) => {
+    const r = load(body, PAGE + ' .f { display: flex; direction: rtl } .f > p { margin: 0; width: 100pt }');
+    const b = boxes(E.engine.layout(r.document).sheets[0] as unknown as Area);
+    return ['A', 'B'].map((t) => Math.floor(b.find((a) => a.type === 'glyph' && a.text === t)!.x / 100));
+  };
+  it('主軸の始めは右: 項目は右から並ぶ。justify-content: left は左へ。左右の margin: auto は物理の向き', () => {
+    // 字は箱の右端にあるので、x / 100 の整数部で箱の位置を見る (A は 300〜400、B は 200〜300)
+    expect(xs('<div class="f"><p>A</p><p>B</p></div>')).toEqual([3, 2]);
+    expect(xs('<div class="f" style="justify-content: left"><p>A</p><p>B</p></div>')).toEqual([1, 0]);
+    // B は A の左。margin-right: auto は B の右 (A との間) の空きを取って B を左端へ押し、margin-left: auto は B の左 (行の終わり) の空きを取る
+    expect(xs('<div class="f"><p>A</p><p style="margin-right: auto">B</p></div>')).toEqual([3, 0]);
+    expect(xs('<div class="f"><p>A</p><p style="margin-left: auto">B</p></div>')).toEqual([3, 2]);
+  });
+});
+
+describe('高さの決まった縦並びの flex の容器 (Flexbox 1 §9.7・§8.1)', () => {
+  it('flex-grow の項目は、余った高さを比で分けて伸び、後ろの項目は下がる', () => {
+    const r = load(
+      '<div style="display: flex; flex-direction: column; height: 200pt"><p style="margin: 0">H</p><p style="margin: 0; flex-grow: 1; background: #ff0000">a</p><p style="margin: 0; flex-grow: 3; background: #0000ff">b</p><p style="margin: 0">F</p></div>',
+      PAGE,
+    );
+    const b = boxes(E.engine.layout(r.document).sheets[0] as unknown as Area);
+    const red = b.find((a) => a.bg === '#ff0000')!;
+    const blue = b.find((a) => a.bg === '#0000ff')!;
+    // 4 行 (各 12pt) で 48pt、余り 152pt を 1 : 3 (38pt・114pt) で分ける
+    expect(red.h).toBeCloseTo(12 + 38, 1);
+    expect(blue.h).toBeCloseTo(12 + 114, 1);
+    const F = b.find((a) => a.type === 'glyph' && a.text === 'F')!;
+    expect(F.y + F.h).toBeGreaterThan(195);
+  });
+  it('伸ばす項目が無ければ、主軸の margin: auto が余りを吸い取る (column-reverse でも上下の余白は物理の向き)', () => {
+    const y = (dir: string, m: string) => {
+      const r = load(`<div style="display: flex; flex-direction: ${dir}; height: 200pt"><p style="margin: 0">T</p><p style="margin: 0; ${m}">B</p></div>`, PAGE);
+      return Math.round(boxes(E.engine.layout(r.document).sheets[0] as unknown as Area).find((a) => a.type === 'glyph' && a.text === 'B')!.y / 10);
+    };
+    expect(y('column', 'margin-top: auto')).toBe(19);
+    // 上下の auto の余白で余り (176pt) を 2 等分: B は 12 + 88 = 100pt
+    expect(y('column', 'margin: auto 0')).toBe(10);
+    // column-reverse: B が上、T が下 (既定の flex-start で下端に寄る)。B の margin-bottom: auto は B と T の間を空け (B は上端)、
+    // margin-top: auto は B の上を空ける (B は T の上に付く)
+    expect(y('column-reverse', 'margin-bottom: auto')).toBe(0);
+    expect(y('column-reverse', 'margin-top: auto')).toBe(18);
   });
 });

@@ -390,7 +390,11 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      Percentages in `row-gap` and `column-gap` are kept in the computed value and resolved against the container's content width or height (0 if the height is not definite. CSS Box Alignment 3 §8.1).
      `::before`, `::after` and the children of `display: contents` are also items (§4, CSS Display 3 §2.5) and are placed in `order` order (§5.4; an `order` declaration that is not an integer is dropped).
      On the route via the browser, pseudo-element items are not typeset because their positions cannot be read.
-     Not handled: the content-based minimum width (`min-width: auto`. §4.5), `max-width` while growing, and `last baseline`
+     When shrinking, the lower limit is the automatic minimum size (`min-width: auto`. §4.5: the narrowest content width; words for Latin text, one character at a time for CJK); when growing, items stop at `max-width` (the freezing in §9.7, judged with the container width at import time).
+     A `direction: rtl` container is laid out from the right (the row table also places its columns from the right, so a line without a growing column gets an empty column on the end side).
+     `last baseline` becomes the `last-baseline` alignment of the table cells (the baselines of the last lines are aligned and the group is packed to the bottom of the row; the fallback alignment end of CSS Box Alignment 3 §4.2).
+     In a column container with a definite height, the items' `flex-grow` and top and bottom `margin: auto` become `flexGrow` and `flexAutoMargin` on the blocks of the logical tree,
+     and the layout engine divides the remaining height after laying out the box (§9.7, §8.1). Text and pseudo-elements of `display: contents` in a column container are also items
    - If html is a flex container, body is positioned within the page area by `justify-content` and `align-items`
    - Rounded corners: `border-*-radius` is read (per corner, percentages, ellipses. `BorderRadius.corners` in the layout engine). It works via the browser too
    - Multi-column containers (`column-count`): if they do not fit on the page, the columns continue across pages (the first page uses the rest of the page, the last page is balanced).

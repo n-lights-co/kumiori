@@ -386,7 +386,11 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      `row-gap`・`column-gap` の % は計算値に残し、容器の内容の幅・高さに対する割合にする (高さが決まっていなければ 0。CSS Box Alignment 3 §8.1)。
      `::before`・`::after` と `display: contents` の子も項目にし (§4・CSS Display 3 §2.5)、`order` の順に並べる (§5.4。整数でない `order` の宣言は捨てる)。
      ブラウザ経由の経路では、疑似要素の項目は位置が読めないので組まない。
-     扱わないもの: 中身で決まる最小の幅 (`min-width: auto`。§4.5)、伸ばすときの `max-width`、`last baseline`
+     縮めるときの下限は自動の最小の大きさ (`min-width: auto`。§4.5: 中身の最も狭い幅。欧文は語、和文は 1 字ずつ)、伸ばすときは `max-width` で止める (§9.7 の凍結。読み込みのときの容器の幅で判定)。
+     `direction: rtl` の容器は右から並べる (行の表も右から列を並べるので、伸びる列の無い行に終わりの側の空きの列を足す)。
+     `last baseline` は、表のセルの `last-baseline` の揃え (最後の行の基線をそろえ、行の下端に寄せる。CSS Box Alignment 3 §4.2 の代わりの揃え end)。
+     高さの決まった縦並びの容器は、項目の `flex-grow` と上下の `margin: auto` を論理ツリーのブロックの `flexGrow`・`flexAutoMargin` にし、
+     組版エンジンが箱を組んだ後に余った高さを分ける (§9.7・§8.1)。縦並びの `display: contents` の文字・疑似要素も項目にする
    - html が flex の容器なら、body を `justify-content`・`align-items` でページの領域の中に寄せる
    - 角丸: `border-*-radius` を読む (角ごと・百分率・楕円。組版エンジンの `BorderRadius.corners`)。ブラウザ経由でも効く
    - 段組のコンテナ (`column-count`): ページに収まらなければ、ページをまたいで段を続ける (1 ページ目はページの残り、最後のページは釣り合わせる)。
