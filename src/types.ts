@@ -408,6 +408,16 @@ export interface BoxStyle {
   overflow?: 'visible' | 'hidden';
   /** width/height の基準。'border-box' なら padding・border を含めた寸法 (既定 'content-box') */
   boxSizing?: 'content-box' | 'border-box';
+  /**
+   * 縦横比 (CSS の aspect-ratio。幅 / 高さ。CSS Sizing 4 §5.1)。高さが auto の箱で、組むときの実際の幅 (box-sizing の箱) から
+   * 高さを決める。scroll なしの箱 (overflow: visible) は中身で伸びる (自動の最小の大きさ。§5.1)、切り抜く箱は比の高さで固定
+   */
+  aspectRatio?: number;
+  /** block 方向の内容の寸法の最大値 (pt。max-height。aspect-ratio の箱でだけ使う: 比から出した大きさを抑える。CSS Sizing 4 §5.1) */
+  maxBlockSize?: number;
+  /** inline 方向の内容の寸法の最小値・最大値 (pt。横書きの min-width・max-width。aspect-ratio の箱でだけ使う。CSS Sizing 4 §5.1) */
+  minInlineSize?: number;
+  maxInlineSize?: number;
 }
 
 // ───────────────────────── ページ設定 ─────────────────────────
@@ -579,6 +589,13 @@ export interface LFootnoteCitation {
 export interface LBlock extends BaseNode, BoxStyle {
   type: 'block';
   /**
+   * 支柱だけの箱 (flex の項目の visibility: collapse。Flexbox 1 §4.4): 中身は描かず (字・リンク・しおりも出さない)、
+   * 子 (畳む前の行を組んだ表) を測るだけ組んで、その block の大きさの空の箱を置く
+   */
+  phantom?: boolean;
+  /** 支柱だけの箱の中に、リンクの飛び先として残す id */
+  phantomIds?: string[];
+  /**
    * 新しいブロック整形文脈を作る (CSS の display: flow-root・overflow が visible 以外。CSS 2.1 §9.4.1)。
    * 中の子の余白を箱の余白と畳まず、箱の高さは中の float を含む (§10.6.7)
    */
@@ -593,6 +610,27 @@ export interface LBlock extends BaseNode, BoxStyle {
   relativeOffset?: { x: number; y: number };
   /** リンク (ブロックを含む fo:basic-link) */
   link?: LinkTarget;
+  /**
+   * 高さの決まった箱 (block-container) の子として、箱の中の余った高さを分けてもらう比 (縦並びの flex の項目の flex-grow。Flexbox 1 §9.7)。
+   * 余りは比で分けて子の箱を伸ばし、後ろの子を下げる
+   */
+  flexGrow?: number;
+  /**
+   * 高さの決まった箱の子として、前 (before)・後 (after) の余白が auto (縦並びの flex の項目の margin-top・margin-bottom: auto。Flexbox 1 §8.1)。
+   * flexGrow の子が無ければ、余った高さを auto の余白の数で等分して空ける
+   */
+  flexAutoMargin?: { before?: boolean; after?: boolean };
+  /**
+   * 高さの決まった箱の子として、中身が箱に入りきらないときに縮める比 (縦並びの flex の項目の flex-shrink。Flexbox 1 §9.7)。
+   * 縮める量は flexShrink × 箱の高さの比で分け、flexMin (pt。枠・内側の余白を含む) より小さくしない。flexMin が無ければ中身の高さ
+   * (min-height: auto の自動の最小の大きさ。§4.5)
+   */
+  flexShrink?: number;
+  flexMin?: number;
+  /** 縦並びの flex の折り返しの容器 (LBlockContainer.flexWrapColumns) の子として、列の幅まで広げる (align-items: stretch) */
+  flexWrapStretch?: boolean;
+  /** 同じく、列の中の寄せ方 (広げない子。align-items・align-self の start・center・end) */
+  flexWrapAlign?: 'start' | 'center' | 'end';
   /** PDF の注釈 (ブロックの最初の断片の左上から) */
   annotation?: Annotation;
   /** ブロック子 or インライン子。混在時は連続するインライン列が匿名ブロックになる */
@@ -1064,6 +1102,12 @@ export interface LTateChuYoko extends BaseNode {
 
 export interface LBlockContainer extends BaseNode, BoxStyle {
   type: 'block-container';
+  /**
+   * 縦並びの flex の折り返しの容器 (flex-direction: column と flex-wrap: wrap。Flexbox 1 §9.3): 子を上から積み、高さを超える所で次の列へ移す。
+   * 列の幅はその列のいちばん広い子の幅、列の間は gap。reverse (wrap-reverse) なら列を右から並べる。stretch (align-content: normal・stretch) なら、
+   * 余った幅を列に等しく分けて列を広げる (Flexbox 1 §9.4 の 15)
+   */
+  flexWrapColumns?: { gap: number; reverse?: boolean; stretch?: boolean; justify?: 'start' | 'center' | 'end' | 'space-between' | 'space-around' | 'space-evenly' };
   /** 書字方向の裏返し (XSL-FO の bt-lr・lr-bt など。WritingFlip) */
   writingFlip?: WritingFlip;
   /** true: 通常フローから切り離し、PageArea 原点 (仕上がり左上) 基準で配置 */
@@ -1153,8 +1197,11 @@ export interface LTableColumn {
 
 export interface LTableCell extends BaseNode, BoxStyle {
   type: 'table-cell';
-  /** セルの高さの中での内容の block 方向の配置 (display-align)。既定 start */
-  blockAlign?: 'start' | 'center' | 'end' | 'baseline';
+  /**
+   * セルの高さの中での内容の block 方向の配置 (display-align)。既定 start。baseline は同じ行の baseline のセルの最初の行の基線をそろえる。
+   * last-baseline は同じ行の last-baseline のセルの最後の行の基線をそろえ、行の下端に寄せる (CSS の flex の align-items: last baseline)
+   */
+  blockAlign?: 'start' | 'center' | 'end' | 'baseline' | 'last-baseline';
   colSpan?: number;
   /** 行方向の結合。結合された行は 1 つの塊として扱い、ページをまたがない */
   rowSpan?: number;
@@ -1170,6 +1217,8 @@ export interface LTableCell extends BaseNode, BoxStyle {
   keepEdgeSpace?: boolean;
   /** 行の高さに余りがあれば、セルの中の唯一のブロックをその分だけ伸ばす (flex の align-items: stretch。項目の背景・枠が行の高さまで広がる) */
   stretchContent?: boolean;
+  /** stretchContent で伸ばすブロックの高さの上限 (pt。枠・内側の余白を含む。flex の項目の max-height) */
+  stretchMax?: number;
   children: Array<LBlockLevel | LInlineLevel>;
 }
 export interface LTableRow extends BaseNode {
@@ -1203,6 +1252,8 @@ export interface LTableBody extends BaseNode {
 
 export interface LTable extends BaseNode, BoxStyle {
   type: 'table';
+  /** 高さの決まった箱の子として、余った高さを分けてもらう比 (flex の折り返しの容器の align-content: stretch の行。LBlock.flexGrow と同じ) */
+  flexGrow?: number;
   columns: LTableColumn[];
   /**
    * 表の幅が置く場所の幅より狭いとき、親から継承した text-align (center・end) で寄せる
@@ -1404,6 +1455,8 @@ export interface ImageArea extends AreaBase {
   naturalHeight?: number;
   /** 枠へ引き伸ばす (XSL の scaling="non-uniform")。SVG は preserveAspectRatio を none として描く */
   stretch?: boolean;
+  /** 描かない (CSS の visibility: hidden。場所は残す) */
+  hidden?: boolean;
 }
 
 export interface RubyArea extends AreaBase {

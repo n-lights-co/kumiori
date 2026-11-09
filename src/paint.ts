@@ -238,9 +238,11 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
   // 中身の段では、箱の影・背景・罫線は描かない (背景の段で描いた)
   const box = phase !== 'fg';
   if (a.type === 'glyph') {
-    p.drawGlyph(a, x, y);
+    // 見えない字 (CSS の visibility: hidden。色が transparent) は描かない
+    if (a.color !== 'transparent') p.drawGlyph(a, x, y);
     return;
   }
+  if (a.type === 'image' && a.hidden) return;
   if (a.type === 'image') {
     // 角丸 (border-radius): 画像 (置換要素の中身) も角丸で切り抜く (CSS Backgrounds 3 §5.3)
     const round = a.borderRadius && !a.missing;
@@ -300,7 +302,7 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
   const bgA = a.backgroundColor && /^#[0-9a-f]{8}$/i.test(a.backgroundColor) ? parseInt(a.backgroundColor.slice(7), 16) / 255 : undefined;
   if (box && a.backgroundColor && bgA !== undefined) {
     p.fillPath(shape(x, y, a.width, a.height), a.backgroundColor.slice(0, 7), false, bgA);
-  } else if (box && a.backgroundColor) {
+  } else if (box && a.backgroundColor && a.backgroundColor !== 'transparent') {
     if (rad) p.fillPath(shape(x, y, a.width, a.height), a.backgroundColor);
     else {
       const r = snapToEdge({ x, y, width: a.width, height: a.height });

@@ -8,7 +8,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseCss } from '../src/htmlPaged';
-import { splitStyleAttribute, summarizeCounts, unsupportedCssReport, UNSUPPORTED_CSS_PROPERTIES } from '../src/cssUnsupported';
+import { isPrintIrrelevantCssProperty, splitStyleAttribute, summarizeCounts, unsupportedCssReport, UNSUPPORTED_CSS_PROPERTIES } from '../src/cssUnsupported';
 import { DEFAULT_FONTS, typesetFo, typesetHtml, type FontSpec } from '../src/index';
 
 const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
@@ -54,6 +54,23 @@ describe('未対応の CSS の数え上げ (cssUnsupported)', () => {
     const props = [...doc.slice(i, j).matchAll(/<tr><td><code>([^<]+)<\/code>/g)].map((m) => m[1]);
     expect(props.length).toBeGreaterThan(50);
     expect(new Set(props)).toEqual(UNSUPPORTED_CSS_PROPERTIES);
+  });
+  it('印刷では意味のないプロパティ (cursor・resize・appearance・アニメーション・スクロールなど) は数えない。sanitize.css の書き方', () => {
+    const css = parseCss(
+      'button { cursor: pointer; appearance: button } textarea { resize: vertical } a { transition: color .2s; animation-name: x; scroll-margin-top: 1em; touch-action: manipulation; user-select: none; pointer-events: none } svg { fill: currentColor }',
+    );
+    const r = unsupportedCssReport(css);
+    expect(r.unsupported).toEqual({});
+    // fill は印刷にも効く (Kumiori は読まない) ので、知らないプロパティとして残す
+    expect(r.unknown).toEqual({ fill: 1 });
+  });
+  it('印刷では意味のないプロパティの一覧は、対応仕様説明書の「印刷に関わらないプロパティ」の表を含む', () => {
+    const doc = fs.readFileSync(path.resolve(__dirname, '../docs/conformance/html/kumiori-html-css.html'), 'utf8');
+    const i = doc.indexOf('<h3>印刷に関わらないプロパティ (');
+    const j = doc.indexOf('</table>', i);
+    const props = [...doc.slice(i, j).matchAll(/<tr><td><code>([^<]+)<\/code>/g)].map((m) => m[1]);
+    expect(props.length).toBe(22);
+    for (const p of props) expect(isPrintIrrelevantCssProperty(p)).toBe(true);
   });
   it('警告の文: 多い順に「名前 (数)」。多すぎれば残りの数', () => {
     expect(summarizeCounts({ a: 1, b: 3, c: 2 })).toBe('b (3)、c (2)、a');

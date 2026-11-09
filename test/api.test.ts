@@ -55,7 +55,7 @@ const textOf = (tree: Awaited<ReturnType<typeof typeset>>['areaTree']) => {
   return t;
 };
 
-/** 書体ファイルを束ねて TTC (OpenType 1.9 の TTC Header version 1.0) を作る。表の位置は TTC の先頭からの位置に直す */
+/** 書体ファイルをまとめて TTC (OpenType 1.9 の TTC Header version 1.0) を作る。表の位置は TTC の先頭からの位置に直す */
 function makeTtc(faces: Buffer[]): ArrayBuffer {
   const head = 12 + 4 * faces.length;
   const total = head + faces.reduce((n, f) => n + f.length + ((4 - (f.length % 4)) % 4), 0);
@@ -92,6 +92,78 @@ describe('公開 API: typeset', () => {
     expect(pdf.getProducer()).toContain('Kumiori');
   });
 
+  it('リンクの動作: スキームのある URL は URI、相対の PDF は GoToR (#page=N・#名前)、ほかの相対のファイルは Launch (ISO 32000-1 §12.6.4)', async () => {
+    const r = await typeset(
+      '<p><a href="pdf-media-link://x">m</a></p><a style="display: block" href="other.pdf#page=3">p</a><a style="display: flex" href="dir/memo%20a.docx"><span>d</span></a><a style="display: block" href="b.pdf#sec">n</a>',
+      { loadFont },
+    );
+    const pdf = await PDFDocument.load(await r.toPdf());
+    const { PDFName } = await import('pdf-lib');
+    const acts = (pdf.getPages()[0].node.lookup(PDFName.of('Annots')) as unknown as { asArray(): unknown[] }).asArray().map((ref) => String((pdf.context.lookup(ref as never) as unknown as { lookup(n: unknown): unknown }).lookup(PDFName.of('A'))).replace(/\s+/g, ' '));
+    expect(acts).toEqual(['<< /S /URI /URI (pdf-media-link://x) >>', '<< /S /GoToR /F (other.pdf) /D [ 2 /Fit ] >>', '<< /S /Launch /F (dir/memo a.docx) >>', '<< /S /GoToR /F (b.pdf) /D (sec) >>']);
+  });
+  it('見出しのしおり: どの既定のスタイルでも h1〜h6 にしおりが付く (GCPM 3 の付録 B)。bookmark-level: none で外せる', async () => {
+    const html = '<h1>One</h1><h2>Two</h2><h3 style="bookmark-level: none">No</h3>';
+    for (const style of ['browser', 'kumiori', 'weasyprint'] as const) {
+      const r = await typeset(html, { loadFont, style });
+      const bm = r.areaTree.bookmarks ?? [];
+      expect(bm.map((b) => b.title)).toEqual(['One']);
+      expect((bm[0].children ?? []).map((b) => b.title)).toEqual(['Two']);
+    }
+    // 見えない見出し (position: absolute; visibility: hidden) のしおりも、飛び先が見つかる (CSS 2.1 §11.2)
+    const hidden = await typeset('<h1 style="position: absolute; visibility: hidden">Title</h1><p>x</p>', { loadFont });
+    expect(hidden.areaTree.bookmarks?.map((b) => [b.title, b.sheet])).toEqual([['Title', 0]]);
+    expect(hidden.warnings.filter((w) => /しおり|bookmark/.test(w))).toEqual([]);
+  });
+  it('resolveResource: files に無い参照 (file://・相対) の中身を返す。CSS の中の相対参照は CSS の URL を基準に解決して問い合わせる', async () => {
+    const asked: string[] = [];
+    const store: Record<string, string> = {
+      'file:///work/css/main.css': '@import "parts/color.css"; h1 { font-size: 30pt }',
+      'file:///work/css/parts/color.css': 'h1 { color: #ff0000 }',
+    };
+    const r = await typeset('<link rel="stylesheet" href="file:///work/css/main.css"><h1>H</h1><p><a href="other.pdf">x</a></p>', {
+      loadFont,
+      resolveResource: (u) => (asked.push(u), store[u]),
+    });
+    expect(asked).toEqual(['file:///work/css/main.css', 'file:///work/css/parts/color.css']);
+    let g: GlyphArea | undefined;
+    walkAreaTree(r.areaTree, (a) => void (a.type === 'glyph' && (a as GlyphArea).text === 'H' && (g ??= a as GlyphArea)));
+    expect(g!.color).toBe('#ff0000');
+    expect(g!.fontSize).toBeCloseTo(30, 3);
+  });
+  it('http(s) の CSS は取りに行く (fetchStyles。既定 true)。false なら取らずに警告。拡張子の無い CSS (css2?family=…) も CSS として読む', async () => {
+    const http = await import('node:http');
+    const server = http.createServer((req, res) => {
+      if (req.url?.startsWith('/css2')) {
+        res.writeHead(200, { 'content-type': 'text/css' });
+        res.end('@import "/b.css"; h1 { color: #00ff00 }');
+      } else if (req.url === '/b.css') {
+        res.writeHead(200, { 'content-type': 'text/css' });
+        res.end('h1 { font-size: 25pt }');
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const html = `<link rel="stylesheet" href="http://127.0.0.1:${port}/css2?family=Noto"><h1>H</h1>`;
+      const glyph = (r: Awaited<ReturnType<typeof typeset>>) => {
+        let g: GlyphArea | undefined;
+        walkAreaTree(r.areaTree, (a) => void (a.type === 'glyph' && (g ??= a as GlyphArea)));
+        return g!;
+      };
+      const on = await typeset(html, { loadFont });
+      expect(glyph(on).color).toBe('#00ff00');
+      expect(glyph(on).fontSize).toBeCloseTo(25, 3);
+      const off = await typeset(html, { loadFont, fetchStyles: false });
+      expect(glyph(off).color).not.toBe('#00ff00');
+      expect(off.warnings.some((w) => /fetchStyles/.test(w))).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
   it('XSL-FO を中身で見分けて組む (kind を省略)。typesetFo と同じ結果', async () => {
     const fo = `<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set>
       <fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>

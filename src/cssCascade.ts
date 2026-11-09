@@ -341,6 +341,7 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   bottom: [false, 'auto', 'len-auto'],
   left: [false, 'auto', 'len-auto'],
   width: [false, 'auto', 'len-auto'],
+  'aspect-ratio': [false, 'auto', 'raw'],
   height: [false, 'auto', 'len-auto'],
   'min-width': [false, 'auto', 'len-auto'],
   'min-height': [false, 'auto', 'len-auto'],
@@ -1532,7 +1533,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
               break;
             }
           }
-          if (p === 'text-indent' && /%/.test(raw)) {
+          // row-gap・column-gap の %: 基準は自分の内容の箱 (包含ブロックではない) で、計算値は % のまま (CSS Box Alignment 3 §8.1)。
+          // htmlImport が、flex・grid の容器の幅・高さから求める
+          if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap') && /%/.test(raw)) {
             val = raw.trim();
             break;
           }
@@ -1752,6 +1755,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
     case 'z-index':
       return s0 === 'auto' || int.test(s0);
+    // order は整数だけ (2.5 などの宣言は捨てる。Flexbox 1 §5.4)
+    case 'order':
+      return int.test(s0);
     case 'orphans':
     case 'widows':
       return int.test(s0) && parseInt(s0, 10) >= 1;

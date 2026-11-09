@@ -106,6 +106,9 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 - 余白の箱は 16 か所すべて。上下の辺の箱は本文の幅いっぱいに置き、揃え (左・中央・右) で位置を分ける (CSS の箱の幅の配分は行わない)。
 - `:first`・`:left`・`:right`・`:blank` は条件付きのページマスターにする。名前の無い `:first` は文書の先頭ページだけ、名前付きの `:first` (`chapter:first`) はその名前のページの並びの先頭ページに当てる。
 - 名前付きページは、body の直下のブロックの `page` が変わるところでページシーケンスを分ける。
+  `page` を比べるのは流れの中のブロックだけ (CSS Page 3 §8.1: `page` は class A の区切りを作る箱に効く)。絶対配置・固定配置・回り込みの箱は
+  ページの名前を変えず、最初の流れの中の箱の前にそれらしか無ければ、最初のページはその箱の名前のページにする
+  (book の見本の `h1 { position: absolute; visibility: hidden }` の後の `page: full`。WeasyPrint・Chromium と同じ)。
 - この段階で残した `string(…, first-except / start)`、`::footnote-call` / `::footnote-marker` / `@footnote` の書式、`target-text()`、本文の中の `counter(page)` は、後で対応した (下の各節)。
 - 本の組版向けの既定 (Kumiori の既定のスタイル) には、ページ下の中央のノンブルを含める。
 
@@ -379,6 +382,42 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      (読み込み時に見た幅と、組むときの容器の幅が違っても正しく分かれる: 余白 0 の 1 ページ目の全面の表紙など。WeasyPrint の report の表紙)。
      項目のセルは `keepEdgeSpace` (項目の上下の margin を捨てない。`<td>` も同じ: CSS 2.1 §17.5) と、`align-items: stretch` (既定) なら `stretchContent`
      (行の高さまで項目を伸ばし、背景・枠を行いっぱいに広げる)
+   - flex の向き・縮め方・揃え (Flexbox 1): 入りきらない行は `flex-shrink` × 基準の大きさの比で縮め、`min-width` で止まった分はほかの項目が受け持つ (§9.7)。
+     `row-reverse`・`column-reverse` は主軸の始めと終わりを入れ替え (`flex-start` は右・下へ寄せる。§5.1)、`wrap-reverse` は行を下から上へ積む (§5.2)。
+     `align-items: baseline` はセルの基線の揃え (§8.3)、交差軸の `margin: auto` は揃えより先に空きを取る (§8.1)。高さの決まった 1 行の容器は、
+     行の高さを容器の内側の高さにする (§9.4 の 15)。`justify-content` の `start`・`end`・`left`・`right`・`safe`・`unsafe` (CSS Box Alignment 3 §5.1)。
+     `row-gap`・`column-gap` の % は計算値に残し、容器の内容の幅・高さに対する割合にする (高さが決まっていなければ 0。CSS Box Alignment 3 §8.1)。
+     `::before`・`::after` と `display: contents` の子も項目にし (§4・CSS Display 3 §2.5)、`order` の順に並べる (§5.4。整数でない `order` の宣言は捨てる)。
+     ブラウザ経由の経路では、疑似要素の項目は位置が読めないので組まない。
+     縮めるときの下限は自動の最小の大きさ (`min-width: auto`。§4.5: 中身の最も狭い幅。欧文は語、和文は 1 字ずつ)、伸ばすときは `max-width` で止める (§9.7 の凍結。読み込みのときの容器の幅で判定)。
+     `direction: rtl` の容器は右から並べる (行の表も右から列を並べるので、伸びる列の無い行に終わりの側の空きの列を足す)。
+     `last baseline` は、表のセルの `last-baseline` の揃え (最後の行の基線をそろえ、行の下端に寄せる。CSS Box Alignment 3 §4.2 の代わりの揃え end)。
+     高さの決まった縦並びの容器は、項目の `flex-grow` と上下の `margin: auto` を論理ツリーのブロックの `flexGrow`・`flexAutoMargin` にし、
+     組版エンジンが箱を組んだ後に余った高さを分ける (§9.7・§8.1)。縦並びの `display: contents` の文字・疑似要素も項目にする。
+     縦並びは、`row-gap` (項目の間の空のブロック)・`flex-basis` (ブロックの高さ)・`flex-shrink` (組版エンジンが縮める。`flexShrink`・`flexMin`。
+     下限は min-height、無ければ中身の高さ)・`flex-wrap` (組版エンジンが列に並べる。`flexWrapColumns`)・交差軸の揃え (背景・枠のある項目は
+     中身の幅の箱を `autoMargins` で寄せる) にも対応する。`flex-grow` の合計が 1 未満なら、残りは `justify-content` の空き。stretch は高さの
+     決まった項目を伸ばさず、`max-height` で止める (`stretchMax`)。複数行の `align-content: stretch` は、行の表に伸ばす比を付け、組版エンジンが
+     行とセルを伸ばす (`growTableLine`)。縦書きの容器は、プロパティの名前を読み替えて (`axisMapper`) 横並びと同じに組む。
+     中身の幅の見積もりの空白の詰め方は、CSS の詰める空白だけ (全角の空白 U+3000 は字として数える。CSS Text 3 §4.1.1)。
+     縦書きの容器の縦並び (主軸が横) も、同じ読み替えで縦並びの処理を当てる (組版エンジンの縮め・折り返しは、余白・枠を論理の向きで読む)。
+     縦並びの折り返しの列ごとに、`flex-grow`・主軸の auto の余白・`justify-content` で余りを分ける (`flexWrapColumns.justify`)。
+     `visibility: hidden`・`collapse` は、字の色を `transparent` にして運び (受け継ぐ。中の visible の要素は自分の色)、背景・影を外し、
+     枠は太さを残して色を `transparent` にする。描画 (`paint.ts`) は transparent の字・背景と、印の付いた画像を描かない。flex の項目の collapse は
+     主軸から外し (主軸の大きさ 0・間の空きなし・その項目では折り返さない)、交差軸の大きさは支柱として残す (幅 0 の列の中に、本来の幅で測った高さの
+     空の箱を置く。`LBlock.phantom`。支柱の高さは、畳む前の組み (項目を本来の大きさで並べた行) を表の 1 行として測るだけ組んだ高さ
+     (基線の揃えの分も入る。同じ行の支柱どうしは表を分け合い、1 度だけ測る。§9.4)。中身・しおり・リンクは出さず、中の id は飛び先として残す (`phantomIds`)。Flexbox 1 §4.4)。
+     min-height の箱の最後の子の下の margin は、min が効かなければ箱の外へ畳み、効いて箱が伸びたら畳まず伸びた分に吸わせる
+     (CSS 2.1 §8.3.1・Chromium で測った動き。XSL-FO はこれまでどおり)。aspect-ratio で高さの決まる箱は、いつも畳まない。
+     aspect-ratio の箱の min・max は、block・inline とも組版エンジンへ運ぶ (`minBlockSize`・`maxBlockSize`・`minInlineSize`・`maxInlineSize`。
+     縦書きは名前を読み替える)。min-height の指定 (0 も) がある箱は中身で伸ばさない。auto の余白は rtl でも物理の左右で配る。
+     幅の決まった箱の左右の余白 (CSS 2.1 §10.3.3): 一方だけが auto なら、組むときに残りをその余白に配る (`autoMargins`。両方 auto の箱も、
+     組むときの置く場所の幅で等分し直す)。どちらも auto でなければ、包含ブロックが rtl のとき margin-left を捨てて右端から置く
+     (ブロック・表・流れの中のブロックコンテナ。`rtlEdge`。XSL-FO と縦書きは対象外)
+     grid の項目の collapse は hidden と同じ。`aspect-ratio` は、幅か高さの一方からもう一方を決める。流れの中のブロックで高さが auto なら、
+     組版エンジンが組むときの実際の幅から高さを出す (`BoxStyle.aspectRatio`。flex の項目の伸びた幅にも効く)。overflow が visible なら中身で伸び
+     (自動の最小の大きさ。CSS Sizing 4 §5.1)、切り抜く箱は比の高さで固定。min-height・max-height (`maxBlockSize`) で比の高さを抑え、
+     幅が auto なら比で幅にも移す。float の横で縮めた幅にも効く。float・絶対配置・書字方向が親と違うブロックは、読み込みのときの幅から決める
    - html が flex の容器なら、body を `justify-content`・`align-items` でページの領域の中に寄せる
    - 角丸: `border-*-radius` を読む (角ごと・百分率・楕円。組版エンジンの `BorderRadius.corners`)。ブラウザ経由でも効く
    - 段組のコンテナ (`column-count`): ページに収まらなければ、ページをまたいで段を続ける (1 ページ目はページの残り、最後のページは釣り合わせる)。

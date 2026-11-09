@@ -19,6 +19,7 @@
 import { firstGradient } from './cssGradient';
 import { applyTextTransform } from './textTransform';
 import type {
+  LinkTarget,
   BorderInput,
   EdgesInput,
   BackgroundImage,
@@ -224,6 +225,17 @@ const MM_PER_PT = 25.4 / 72;
  * 計算値の background-position-x・-y (最初の層) を背景画像の位置にする。
  * "right 10px"・"bottom 10px" は右・下の端からの距離 (Backgrounds 3 §3.6)
  */
+/** 組んだ節 (LNode の木) の中の id を、文書の順に集める */
+function collectIds(n: unknown, out: string[] = []): string[] {
+  if (Array.isArray(n)) for (const k of n) collectIds(k, out);
+  else if (n && typeof n === 'object') {
+    const o = n as { type?: unknown; id?: unknown };
+    if (o.type && typeof o.id === 'string') out.push(o.id);
+    for (const v of Object.values(n)) if (v && typeof v === 'object') collectIds(v, out);
+  }
+  return out;
+}
+
 function setBackgroundPosition(img: BackgroundImage, px: string, py: string) {
   const one = (v: string, far: string): [number | `${number}%` | undefined, boolean] => {
     const t = v.split(',')[0].trim();
@@ -506,6 +518,86 @@ function floatSide(v: string): string {
 /** flex・grid の項目の幅の余裕 (pt) */
 const FLEX_SLACK = 1.5;
 
+/**
+ * 縦書きの flex の容器で、物理の向きのプロパティの名前を、横書きのときの役割の名前に読み替える (CSS Writing Modes 4 §6: 縦書きでは
+ * 行の向き (inline) が縦、ブロックの向きが横)。width ↔ height、左右 (行の始め・終わり) → 上下、上下 (ブロックの始め・終わり) → 右左
+ * (vertical-rl はブロックの始めが右、vertical-lr は左)。flex の横並びの組み方 (flexNoRect) を、縦書きでもそのまま使うため
+ */
+function axisMapper(writingMode: string): (n: string) => string {
+  const blockStart = /vertical-lr|sideways-lr/.test(writingMode) ? 'left' : 'right';
+  const blockEnd = blockStart === 'left' ? 'right' : 'left';
+  const swap: Record<string, string> = {
+    width: 'height',
+    height: 'width',
+    'min-width': 'min-height',
+    'min-height': 'min-width',
+    'max-width': 'max-height',
+    'max-height': 'max-width',
+    'overflow-x': 'overflow-y',
+    'overflow-y': 'overflow-x',
+  };
+  const sides: Record<string, string> = { left: 'top', right: 'bottom', top: blockStart, bottom: blockEnd };
+  return (n) => {
+    if (swap[n]) return swap[n];
+    const m = /^(margin|padding|border)-(left|right|top|bottom)(-width)?$/.exec(n);
+    return m ? `${m[1]}-${sides[m[2]]}${m[3] ?? ''}` : n;
+  };
+}
+
+/**
+ * 詰める空白 (CSS Text 3 §4.1.1 の document white space: 半角の空白・タブ・改行)。JavaScript の \s は和文の全角の空白 (U+3000) なども含むので使わない
+ * (U+3000 は詰めない字で、幅は 1 字分)
+ */
+const CSS_WS = /[ \t\n\r\f]+/g;
+
+/** aspect-ratio の値 (CSS Sizing 4 §5.1: auto || <ratio>。<ratio> は「数」か「数 / 数」)。比が無い・0 なら undefined */
+function parseAspectRatio(v: string): { ratio: number; auto: boolean } | undefined {
+  const s = v.trim().toLowerCase();
+  if (!s || s === 'auto') return undefined;
+  const auto = /\bauto\b/.test(s);
+  const m = /([0-9]*\.?[0-9]+)\s*(?:\/\s*([0-9]*\.?[0-9]+))?/.exec(s.replace(/\bauto\b/, ''));
+  if (!m) return undefined;
+  const ratio = parseFloat(m[1]) / (m[2] !== undefined ? parseFloat(m[2]) : 1);
+  return Number.isFinite(ratio) && ratio > 0 ? { ratio, auto } : undefined;
+}
+
+/** 揃えの値の前の safe・unsafe (はみ出したときの扱い。CSS Box Alignment 3 §4.4) を除く */
+function alignKeyword(v: string): string {
+  return v.trim().replace(/^(safe|unsafe)\s+/, '');
+}
+
+/**
+ * flex の容器の justify-content (Flexbox 1 §8.2・CSS Box Alignment 3 §5.1) を、主軸の始め・終わり・中央・空きの分け方にする。
+ * reverse: 主軸が逆向き (row-reverse・column-reverse)。flex-start・flex-end は主軸の向きで決まり、start・end・left・right は
+ * 書字方向で決まる (left・right は、主軸が行の向きでなければ start と同じ)。normal・stretch は flex の項目では flex-start と同じ
+ */
+function flexJustify(v: string, reverse: boolean, inlineAxis: boolean, rtl = false): 'start' | 'end' | 'center' | 'space-between' | 'space-around' | 'space-evenly' {
+  const k = alignKeyword(v);
+  if (k === 'center' || k === 'space-between' || k === 'space-around' || k === 'space-evenly') return k;
+  if (k === 'flex-end') return reverse ? 'start' : 'end';
+  // left・right は物理の向き: 右から左へ書く行 (rtl) では、right が始め、left が終わり
+  if (k === 'end' || (inlineAxis && k === (rtl ? 'left' : 'right'))) return 'end';
+  if (k === 'start' || k === 'left' || k === 'right') return 'start';
+  return reverse ? 'end' : 'start';
+}
+
+/**
+ * flex の項目の交差軸の揃え (align-items・align-self・align-content。Flexbox 1 §8.3・§8.4)。reverse: 交差軸が逆向き (wrap-reverse)。
+ * flex-start・flex-end は交差軸の向き、start・end・self-start・self-end は書字方向で決まる。last baseline は最後の行の基線で揃える
+ * (CSS Box Alignment 3 §9.3。基線で揃えられないときの代わりの揃えは end)
+ */
+function flexCross(v: string, reverse: boolean): 'start' | 'end' | 'center' | 'baseline' | 'last-baseline' | 'stretch' {
+  const k = alignKeyword(v);
+  if (k === 'center') return 'center';
+  if (k === 'last baseline') return 'last-baseline';
+  if (/baseline$/.test(k)) return 'baseline';
+  if (k === 'flex-end') return reverse ? 'start' : 'end';
+  if (k === 'flex-start') return reverse ? 'end' : 'start';
+  if (/end$/.test(k)) return 'end';
+  if (/start$/.test(k)) return 'start';
+  return 'stretch';
+}
+
 /** 名前付きページの切り替えの印 (flowChildren が body の直下に置き、run で分ける) */
 /** 流し込みの途中の項目 (block は、ブロックの箱として並ぶもの) */
 type FlowItem = { v: LBlockLevel | LInlineLevel; block: boolean };
@@ -578,7 +670,9 @@ class HtmlImporter {
   /** ページが右から左へ進む (本文が vertical-rl)。:left・:right と同じく、左ページが奇数ページになる */
   private pagesRtl = false;
   /** 本文領域の余白 (pt) と幅 (position: absolute の基準・段の幅の計算) */
-  private area = { top: 0, right: 0, bottom: 0, left: 0, width: 400 };
+  private area = { top: 0, right: 0, bottom: 0, left: 0, width: 400, height: 600 };
+  /** 縦書きの flex の容器の中身の幅の見積もりの間だけ使う、プロパティの名前の読み替え (axisMapper) */
+  private axisMap?: (n: string) => string;
   private pageRules: PageRule[] = [];
   /** 根元の要素の字の大きさ (px。@page の em・rem の基準) */
   private rootFsPx = 16;
@@ -589,7 +683,7 @@ class HtmlImporter {
     if (!name) return this.area;
     const PT = 72 / 25.4;
     const b = pageBox(resolvePageRules(this.pageRules, { name }, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors);
-    return { top: b.margins.top * PT, right: b.margins.right * PT, bottom: b.margins.bottom * PT, left: b.margins.left * PT, width: (b.width - b.margins.left - b.margins.right) * PT };
+    return { top: b.margins.top * PT, right: b.margins.right * PT, bottom: b.margins.bottom * PT, left: b.margins.left * PT, width: (b.width - b.margins.left - b.margins.right) * PT, height: (b.height - b.margins.top - b.margins.bottom) * PT };
   }
   /** position: fixed の箱 (全ページに出す) */
   private fixed: LBlockContainer[] = [];
@@ -812,13 +906,26 @@ class HtmlImporter {
    */
   private flexColumn(el: Element, parent: Element): LBlock | undefined {
     const c = this.cs(el);
-    if (!/^column/.test(c('flex-direction')) || this.src.isAuto?.(el, 'height') !== false) return undefined;
-    const jc = c('justify-content');
-    const align = /end$/.test(jc) ? 'end' : jc === 'center' ? 'center' : /^space-(between|around|evenly)$/.test(jc) ? (jc as 'space-between' | 'space-around' | 'space-evenly') : undefined;
-    if (!align) return undefined;
+    // 主軸の大きさ (横書きは高さ、縦書きは幅) が決まっている縦並びの容器だけ
+    if (!/^column/.test(c('flex-direction')) || this.src.isAuto?.(el, this.axisOf(el)('height') as 'height' | 'width') !== false) return undefined;
+    // column-reverse は主軸が下から上なので、flex-start (既定) は下端に寄せる (Flexbox 1 §5.1)
+    const j = flexJustify(c('justify-content'), c('flex-direction') === 'column-reverse', false);
+    const align = j === 'start' ? undefined : j;
+    // 高さが決まっているので、項目を伸ばし・縮め、auto の余白で余りを吸い取れるように、高さの決まった箱にする (項目の flexGrow・flexShrink・
+    // flexAutoMargin。組版エンジンが箱の中で分ける)
     const b = this.block(el, parent, true) as LBlock | undefined;
     if (!b) return undefined;
-    return { ...b, type: 'block-container', blockAlign: align } as unknown as LBlock;
+    // 折り返し (flex-wrap: wrap・wrap-reverse): 組版エンジンが、高さを超える所で次の列へ移す (Flexbox 1 §9.3)。列の間は column-gap
+    const wrap = c('flex-wrap') !== 'nowrap';
+    const cg = c('column-gap');
+    const W = /^(vertical|sideways|tb)/.test(c('writing-mode')) ? this.verticalInlineSize(el) : (this.src.contentWidth?.(el) ?? 0) * PT_PER_PX;
+    const gap = !cg || cg === 'normal' ? 0 : /%$/.test(cg) ? (parseFloat(cg) * W) / 100 : (cssLen(cg) ?? 0);
+    return {
+      ...b,
+      type: 'block-container',
+      ...(align && !wrap ? { blockAlign: align } : {}),
+      ...(wrap ? { flexWrapColumns: { gap, ...(align ? { justify: align } : {}), ...(c('flex-wrap') === 'wrap-reverse' ? { reverse: true } : {}), ...(/^(normal|stretch)$/.test(alignKeyword(c('align-content'))) ? { stretch: true } : {}) } } : {}),
+    } as unknown as LBlock;
   }
 
   /**
@@ -932,55 +1039,124 @@ class HtmlImporter {
    *  - 縦並びの flex・幅の分からない容器・直下に文字がある容器は、ふつうのブロックとして組む (undefined)
    */
   private flexNoRect(el: Element, parent: Element): LBlock | undefined {
-    const c = this.cs(el);
-    const W = (this.src.contentWidth?.(el) ?? 0) * PT_PER_PX;
+    // 縦書きの容器: 行の向き (主軸) が縦になる。プロパティの名前を読み替えて、横書きと同じに組む (行の表は縦書きでは上から下へ列を並べる)
+    const wm = this.cs(el)('writing-mode');
+    const vert = /^(vertical|sideways|tb)/.test(wm);
+    const L = vert ? axisMapper(wm) : (n: string) => n;
+    const c0 = this.cs(el);
+    const c = (n: string) => c0(L(n));
+    const autoOf = (e: Element, p: 'width' | 'height') => this.src.isAuto?.(e, L(p) as 'width' | 'height');
+    /** 中身の幅の見積もり (縦書きでは行の向きの大きさ) を、読み替えを効かせて呼ぶ */
+    const measure = <T,>(f: () => T): T => {
+      const prev = this.axisMap;
+      this.axisMap = vert ? L : undefined;
+      try {
+        return f();
+      } finally {
+        this.axisMap = prev;
+      }
+    };
+    const W = vert ? this.verticalInlineSize(el) : (this.src.contentWidth?.(el) ?? 0) * PT_PER_PX;
     const isGrid = /grid$/.test(this.display(el));
-    if (!W || /vertical|tb-rl|sideways-rl/.test(c('writing-mode'))) return undefined;
-    if (Array.from(el.childNodes).some((n) => (n.nodeType === 3 || n.nodeType === 4) && (n.textContent ?? '').trim())) return this.flexColumn(el, parent);
+    if (!W) return undefined;
+    // 直下の文字は、続いた文字の並びごとに無名の項目にする (下の flexItemSources。目次の <a> の題とページ番号など)
     // 縦に並べる flex: ふつうのブロックとして組み、項目の揃えは項目の文字の揃えにする (幅が中身で決まる項目を中央・終わりに寄せるのと同じ)。
     // 高さが決まっていれば、justify-content を中身の上下の揃えにする
     if (!isGrid && /^column/.test(c('flex-direction'))) {
-      for (const k of Array.from(el.children)) {
-        const kc = this.cs(k);
+      // 項目の要素 (display: contents の子は、その子。CSS Display 3 §2.5)
+      for (const k of (this.flexItemSources(el) ?? []).filter((x) => !x.ps).map((x) => x.el)) {
+        const kc0 = this.cs(k);
+        const kc = (n: string) => kc0(L(n));
         const al = kc('align-self') && kc('align-self') !== 'auto' ? kc('align-self') : c('align-items');
-        const a = /center$/.test(al) ? 'center' : /end$/.test(al) ? 'end' : undefined;
-        if (a) this.flexItemAlign.set(k, a);
+        // 交差軸 (横) の margin: auto は揃えより先に空きを取る (Flexbox 1 §8.1)。wrap-reverse は交差軸が右から左
+        const ml = kc('margin-left') === 'auto';
+        const mr = kc('margin-right') === 'auto';
+        // 縦並びでは交差軸が行の向きなので、基線では揃えられない: last baseline は代わりの end (first baseline は start)
+        const x0 = ml && mr ? 'center' : ml ? 'end' : mr ? 'start' : flexCross(al, c('flex-wrap') === 'wrap-reverse');
+        const x = x0 === 'last-baseline' ? 'end' : x0;
+        if (x === 'center' || x === 'end') this.flexItemAlign.set(k, x);
       }
       return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     }
+    const srcs = this.flexItemSources(el);
+    if (!srcs) return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     const extra: LBlockLevel[] = [];
-    const items: Element[] = [];
-    for (const k of Array.from(el.children)) {
-      if (this.display(k) === 'none') continue;
-      const pos = this.cs(k)('position');
+    /** 項目: 子の要素か ::before・::after (ps)。node は組んだ中身 (文書の順に組む: カウンターの値が文書の順になるように) */
+    type Item = { el: Element; ps?: '::before' | '::after'; anon?: boolean; node: LBlockLevel; text?: string; order: number; collapse?: boolean };
+    const items: Item[] = [];
+    let pseudoSeen = false;
+    for (const src of srcs) {
+      const k = src.el;
+      if (src.text !== undefined) {
+        // 無名の項目: 文字の並びを包むブロック。字の書式は持ち主から受け継ぐ (持ち主が容器なら、容器の箱が持つ)
+        const fi: FlowItem[] = this.decorateText(this.text(src.text, k), k).map((v) => ({ v, block: false }));
+        const children = this.collapseFlowWhitespace(fi, /^pre/.test(this.cs(k)('white-space')));
+        items.push({ el: k, anon: true, node: { type: 'block', ...(k !== el ? this.textStyle(k, el) : {}), children } as LBlock, text: src.text, order: 0 });
+        continue;
+      }
+      const kc0 = this.cs(k, src.ps);
+      const kc = (n: string) => kc0(L(n));
+      const pos = kc('position');
+      if (src.ps) {
+        pseudoSeen = true;
+        const r = this.flexPseudo(k, src.ps);
+        if (r.positioned) {
+          if (pos === 'fixed') this.fixed.push(r.positioned as LBlockContainer);
+          else extra.push(r.positioned);
+        }
+        if (r.node) items.push({ el: k, ps: src.ps, node: r.node, text: r.text, order: parseInt(kc('order'), 10) || 0 });
+        continue;
+      }
       if (pos === 'absolute' || pos === 'fixed') {
         const cont = this.positioned(k, el);
         if (pos === 'fixed') this.fixed.push(cont);
         else extra.push(cont);
         continue;
       }
-      items.push(k);
+      // 項目の上下の margin は、セルの先頭・末尾でも捨てない (CSS の flex の項目。表紙の h1 の margin-top: 5cm など)
+      const d = this.display(k);
+      const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.inline(k, el) } as LBlock);
+      // visibility: collapse の flex の項目 (Flexbox 1 §4.4): 主軸の大きさを 0 にして、交差軸の大きさだけを支柱として残す (下の行の組み立て)。
+      // grid の項目の collapse は hidden と同じ (場所を残す。CSS 2.1 §11.2)
+      items.push({ el: k, node, order: parseInt(kc('order'), 10) || 0, ...(src.collapse && !isGrid ? { collapse: true } : {}) });
     }
-    items.sort((a, b) => (parseInt(this.cs(a)('order'), 10) || 0) - (parseInt(this.cs(b)('order'), 10) || 0));
-    if (!isGrid && c('flex-direction') === 'row-reverse') items.reverse();
+    // ::before・::after のカウンターの範囲を閉じる (ふつうのブロックなら flowChildren が閉じる)
+    if (pseudoSeen) this.leaveCounters(el);
+    // order の順 (同じ order の間は文書の順。Flexbox 1 §5.4)
+    items.sort((a, b) => a.order - b.order);
+    const ics = (it: Item): ((n: string) => string) => {
+      const base = it.anon ? (n: string) => HtmlImporter.ANON_ITEM[n] ?? (/^(margin|padding|border)-/.test(n) ? '0' : this.cs(it.el)(n)) : this.cs(it.el, it.ps);
+      return (n) => base(L(n));
+    };
+    const rowReverse = !isGrid && c('flex-direction') === 'row-reverse';
+    // 右から左へ書く容器 (direction: rtl): 主軸 (行の向き) の始めは右 (Flexbox 1 §2.1)。行の表も右から左に列を並べる (CSS 2.1 §17.5) ので、
+    // 列は主軸の始めからの順のままでよい。表が容器いっぱいになるように、伸びる列が無い行には終わりの側 (左) に空きの列を足す
+    const rtl = c('direction') === 'rtl';
+    if (rowReverse) items.reverse();
+    // wrap-reverse: 交差軸の始めと終わりを入れ替える (行は下から上へ積む。Flexbox 1 §5.2)
+    const crossReverse = !isGrid && c('flex-wrap') === 'wrap-reverse';
+    const fixed = autoOf(el, 'height') === false;
     const len = (v: string, base: number) => (/%$/.test(v) ? (parseFloat(v) * base) / 100 : cssLen(v));
     const colGap = len(c('column-gap'), W) ?? 0;
-    const rowGap = len(c('row-gap'), W) ?? 0;
+    // row-gap の % は内容の高さに対する割合で、高さが決まっていなければ 0 (CSS Box Alignment 3 §8.1)
+    const rowGap = (/%$/.test(c('row-gap')) ? (fixed && cssLen(c('height')) !== undefined ? len(c('row-gap'), cssLen(c('height'))!) : 0) : cssLen(c('row-gap'))) ?? 0;
     // 項目の外側の幅のうち、内容の幅以外 (左右の余白・枠・内側の余白)
-    const outer = (k: Element) => {
-      const kc = this.cs(k);
+    const outer = (k: Item) => {
+      const kc = ics(k);
       const p = (n: string) => cssLen(kc(n)) ?? 0;
       return p('margin-left') + p('margin-right') + (kc('box-sizing') === 'border-box' ? 0 : p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width'));
     };
     /** 行の 1 列: 項目 (el) か空き。w は固定の幅 (pt)、star があれば比例の列 (組版時の容器の幅の余りを star の比で分け、w を足す。表の 'N*' + widthExtra) */
-    type Cell = { el?: Element; w: number; star?: number };
+    /** collapse の項目の支柱のもと: 畳む前の組みで同じ行にあった項目と、その幅 (同じ行の支柱どうしで分け合う) */
+    type StrutLine = Array<{ el: Item; w: number }>;
+    type Cell = { el?: Item; w: number; star?: number; strut?: StrutLine };
     const lines: Cell[][] = [];
     if (isGrid) {
       const tracks = gridTracks(c('grid-template-columns'), W, colGap);
       let line: Cell[] = [];
       let col = 0;
       for (const k of items) {
-        const span = Math.min(tracks.length, parseInt(/span\s+(\d+)/.exec(this.cs(k)('grid-column-start') + ' ' + this.cs(k)('grid-column-end'))?.[1] ?? '1', 10) || 1);
+        const span = Math.min(tracks.length, parseInt(/span\s+(\d+)/.exec(ics(k)('grid-column-start') + ' ' + ics(k)('grid-column-end'))?.[1] ?? '1', 10) || 1);
         if (col + span > tracks.length) {
           lines.push(line);
           line = [];
@@ -993,43 +1169,140 @@ class HtmlImporter {
       }
       if (line.length) lines.push(line);
     } else {
-      // 項目の幅の基準 (flex-basis、無ければ width。分からなければ undefined)
-      const info = items.map((k) => {
-        const kc = this.cs(k);
+      /**
+       * 縮める下限 (外側の幅)。min-width: auto は自動の最小の大きさ (Flexbox 1 §4.5): 中身の最も狭い幅 (min-content。max-width で抑える) と、
+       * 幅の指定があればその小さい方。overflow が visible でない (切り取る・流す) 項目は 0。min-width の指定があれば、それ
+       */
+      const minOf = (k: Item, kc: (n: string) => string, fixedW: boolean) => {
+        const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
+        const mw = kc('min-width');
+        if (mw && mw !== 'auto') return (len(mw, W) ?? 0) + outer(k);
+        if (!/^(visible|clip)?$/.test(kc('overflow-x') || kc('overflow'))) return outer(k);
+        let content = k.anon ? measure(() => this.minTextWidth(k.text ?? '', k.el)) : k.ps ? measure(() => this.minTextWidth(k.text ?? '', k.el, k.ps)) + (outer(k) - margins) : measure(() => this.minContentWidth(k.el, false));
+        const max = len(kc('max-width'), W);
+        if (max !== undefined) content = Math.min(content, max + (kc('box-sizing') === 'border-box' ? 0 : outer(k) - margins));
+        const specified = fixedW ? len(kc('width'), W) : undefined;
+        const auto = specified !== undefined ? Math.min(content, specified + (kc('box-sizing') === 'border-box' ? 0 : outer(k) - margins)) : content;
+        return auto + margins;
+      };
+      /** 項目の幅の基準 (w: flex-basis、無ければ width。分からなければ undefined)・伸び縮みの比と下限・上限。strut は collapse の項目の本来の幅 */
+      type Info = { el: Item; w: number | undefined; grow: number; shrink: number; base: number; floor: number; cap?: number; orig?: Info };
+      const info = items.map((k): Info => {
+        const kc = ics(k);
         const b = kc('flex-basis');
-        const basis = b && b !== 'auto' && b !== 'content' ? len(b, W) : this.src.isAuto?.(k, 'width') === false ? len(kc('width'), W) : undefined;
+        // ::before・::after は、幅の指定が長さか % なら、それ
+        const fixedW = k.ps || k.anon ? kc('width') !== 'auto' && len(kc('width'), W) !== undefined : autoOf(k.el, 'width') === false;
+        // flex-basis の min-content は中身の最も狭い幅、max-content・content は中身の幅 (下の見積もり)、fit-content は中身の幅を容器の幅で抑えたもの
+        // (Flexbox 1 §7.2.3・CSS Sizing 3 §2.1)。枠・内側の余白を含む見積もりなので、内容の幅に直す
+        const kwBasis = b === 'min-content' ? (k.anon ? measure(() => this.minTextWidth(k.text ?? '', k.el)) : k.ps ? measure(() => this.minTextWidth(k.text ?? '', k.el, k.ps)) : measure(() => this.minContentWidth(k.el, false))) : undefined;
+        const basis = kwBasis !== undefined ? Math.max(0, kwBasis - (outer(k) - (cssLen(kc('margin-left')) ?? 0) - (cssLen(kc('margin-right')) ?? 0))) : b && b !== 'auto' && !/content$/.test(b) ? len(b, W) : /content$/.test(b) ? undefined : fixedW ? len(kc('width'), W) : undefined;
         const max = len(kc('max-width'), W);
         const inner = basis === undefined ? undefined : max !== undefined ? Math.min(basis, max) : basis;
         // flex-basis も width も無い項目は、中身の幅 (max-content) の見積もり。flex: 1 (basis 0) の項目は 0 から伸びる
-        const est = inner === undefined ? Math.min(this.maxContentWidth(k), max ?? Infinity, W) : undefined;
+        const est =
+          inner === undefined
+            ? Math.min(k.anon ? measure(() => this.textWidth((k.text ?? '').replace(CSS_WS, ' '), k.el)) : k.ps ? measure(() => this.pseudoMaxContentWidth(k.el, k.ps!, k.text ?? '')) : measure(() => this.maxContentWidth(k.el)), max ?? Infinity, W)
+            : undefined;
         // 見積もりは枠・内側の余白を含むので、足すのは外側の余白だけ
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
-        return { el: k, w: inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined, grow: parseFloat(kc('flex-grow')) || 0 };
+        const shrink = parseFloat(kc('flex-shrink'));
+        const own: Info = {
+          el: k,
+          w: inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined,
+          grow: parseFloat(kc('flex-grow')) || 0,
+          shrink: Number.isFinite(shrink) && shrink >= 0 ? shrink : 1,
+          // 縮める比の基準 (flex の基準の大きさ) と、縮める下限 (min-width と、内容の幅以外の分)
+          base: inner ?? est ?? 0,
+          floor: minOf(k, kc, fixedW),
+          // 伸ばす上限 (外側の幅。max-width が無ければ無し)
+          cap: max !== undefined ? max + outer(k) : undefined,
+        };
+        // collapse の項目 (§4.4・§9.1 の 4): 行に分けるときも、伸ばし縮めるときも、主軸の大きさは 0。畳む前の組み (orig) は支柱に使う
+        return k.collapse ? { el: k, w: 0, grow: 0, shrink: 0, base: 0, floor: 0, orig: own } : own;
       });
-      // 行に分ける (flex-wrap)
-      const groups: Array<typeof info> = [];
-      let cur: typeof info = [];
-      let used = 0;
-      for (const it of info) {
-        const w = it.w ?? 0;
-        if (c('flex-wrap') !== 'nowrap' && cur.length && used + colGap + w > W + 0.5) {
-          groups.push(cur);
-          cur = [];
-          used = 0;
+      /** 行に分ける (flex-wrap)。hidden (collapse の項目) は主軸の大きさも間の空きも 0 で、そこでは折り返さない (支柱は前の項目と同じ行に残る) */
+      const split = (list: Info[], hidden: (it: Info) => boolean): Info[][] => {
+        const out: Info[][] = [];
+        let cur: Info[] = [];
+        let used = 0;
+        let shownBefore = false;
+        for (const it of list) {
+          const w = it.w ?? 0;
+          const h = hidden(it);
+          // 間の空きは、見える項目どうしの間にだけ数える
+          const gap = !h && shownBefore ? colGap : 0;
+          if (c('flex-wrap') !== 'nowrap' && !h && shownBefore && used + gap + w > W + 0.5) {
+            out.push(cur);
+            cur = [];
+            used = w;
+          } else used += gap + w;
+          cur.push(it);
+          if (!h) shownBefore = true;
         }
-        used += (cur.length ? colGap : 0) + w;
-        cur.push(it);
+        if (cur.length) out.push(cur);
+        return out;
+      };
+      /**
+       * 行の項目の幅を決める (it.w を書き換える。返す値は間の空きの合計)。入りきらなければ縮め (Flexbox 1 §9.7): はみ出した分を
+       * flex-shrink × 基準の大きさの比で分けて引く。下限 (min-width) に当たった項目はそこで止め、残りを他の項目で分ける。flex-shrink: 0 の項目は縮めない。
+       * 伸ばす上限 (max-width) に当たる項目は、その幅で止め (固定の列)、残りの余りをほかの項目で分ける (§9.7 の凍結)。
+       * 当たるかどうかは、読み込みのときの容器の幅 W で判定する
+       */
+      const resolveLine = (g: Info[], hidden: (it: Info) => boolean): number => {
+        // 間の空き (column-gap) は、collapse でない項目の間にだけ置く
+        const gaps = colGap * Math.max(g.filter((it) => !hidden(it)).length - 1, 0);
+        let over = g.reduce((a, it) => a + (it.w ?? 0), 0) + gaps - W;
+        const frozen = new Set<(typeof g)[number]>();
+        for (let pass = 0; pass <= g.length && over > 0.01; pass++) {
+          const act = g.filter((it) => it.w !== undefined && !frozen.has(it) && it.shrink > 0 && it.base > 0);
+          const sum = act.reduce((a, it) => a + it.shrink * it.base, 0);
+          if (!sum) break;
+          let taken = 0;
+          for (const it of act) {
+            const want = it.w! - (over * it.shrink * it.base) / sum;
+            const nw = Math.max(want, it.floor);
+            if (want < it.floor) frozen.add(it);
+            taken += it.w! - nw;
+            it.w = nw;
+          }
+          over -= taken;
+        }
+        if (g.some((it) => it.grow > 0 && it.cap !== undefined)) {
+          const frozen = new Set<(typeof g)[number]>();
+          for (let pass = 0; pass <= g.length; pass++) {
+            const act = g.filter((it) => it.grow > 0 && !frozen.has(it));
+            const sumG = act.reduce((a, it) => a + it.grow, 0);
+            const free = W - g.reduce((a, it) => a + (it.w ?? 0), 0) - gaps;
+            if (!sumG || free <= 0) break;
+            const hit = act.filter((it) => it.cap !== undefined && (it.w ?? 0) + (free * it.grow) / sumG > it.cap);
+            if (!hit.length) break;
+            for (const it of hit) {
+              it.w = Math.max(it.w ?? 0, it.cap!);
+              it.grow = 0;
+              frozen.add(it);
+            }
+          }
+        }
+        return gaps;
+      };
+      const isCollapsed = (it: Info) => !!it.el.collapse;
+      // collapse の項目の支柱 (§9.4 の 15 の後): 畳む前に入っていた行の交差軸の大きさ。畳む前の組み (項目を本来の大きさで並べた行) の
+      // 同じ行の項目と、その幅を覚えておき、組版エンジンがその行を測るだけ組んだ高さを支柱にする (LBlock.phantom)
+      const struts = new Map<Item, StrutLine>();
+      if (info.some((it) => it.orig)) {
+        for (const ga of split(info.map((it) => ({ ...(it.orig ?? it) })), () => false)) {
+          const gaps = resolveLine(ga, () => false);
+          // 余りは、伸ばす比で (幅の分からない項目があれば等分で) 分けた幅にする
+          const free = Math.max(W - ga.reduce((a, it) => a + (it.w ?? 0), 0) - gaps, 0);
+          const gs = ga.reduce((a, it) => a + it.grow, 0);
+          const unk = ga.filter((it) => it.w === undefined).length;
+          const line: StrutLine = ga.map((it) => ({ el: it.el, w: (it.w ?? 0) + (gs > 0 ? (free * it.grow) / Math.max(gs, 1) : unk && it.w === undefined ? free / unk : 0) }));
+          for (const it of ga) if (it.el.collapse) struts.set(it.el, line);
+        }
       }
-      if (cur.length) groups.push(cur);
-      const jc = c('justify-content');
-      for (const g of groups) {
-        let known = g.reduce((a, it) => a + (it.w ?? 0), 0) + colGap * (g.length - 1);
-        // 入りきらなければ縮める (flex-shrink の比を見ない近似: 幅に比例して)
-        if (known > W && known > 0) {
-          const k = (W - colGap * (g.length - 1)) / (known - colGap * (g.length - 1));
-          for (const it of g) if (it.w !== undefined) it.w *= k;
-          known = W;
-        }
+      for (const g of split(info, isCollapsed)) {
+        const shown = g.filter((it) => !isCollapsed(it)).length;
+        resolveLine(g, isCollapsed);
         // 余り (容器の幅 − 項目の幅の合計) の分け方は、比例の列 (star) にして組版に任せる: 容器の幅がここで見た W と違っても
         // (余白 0 の 1 ページ目の全面の表紙など) 正しく分かれる。flex-grow の項目はその比で、幅の分からない項目は等分、
         // 伸びる項目が無ければ justify-content の空きの列で分ける
@@ -1037,18 +1310,41 @@ class HtmlImporter {
         const unknown = g.filter((it) => it.w === undefined);
         const stars = g.map((it) => (growSum > 0 ? it.grow : unknown.length && it.w === undefined ? 1 : 0));
         // 項目の margin-left / margin-right: auto は、伸びる項目が無ければ余りを吸い取る (Flexbox 1 §8.1。バーコードを右端に寄せるなど)
-        const autoM = g.map((it) => ({ l: this.cs(it.el)('margin-left') === 'auto', r: this.cs(it.el)('margin-right') === 'auto' }));
+        // 列の並びは主軸の始めから。右から左の行 (rtl) では、物理の左の margin が終わりの側になる
+        const autoM = g.map((it) => {
+          if (it.el.collapse) return { l: false, r: false };
+          const l = ics(it.el)('margin-left') === 'auto';
+          const r = ics(it.el)('margin-right') === 'auto';
+          return rtl ? { l: r, r: l } : { l, r };
+        });
         const autoSpacers = growSum === 0 && unknown.length === 0 && autoM.some((a) => a.l || a.r);
         const spacers = growSum > 0 || unknown.length > 0 || autoSpacers;
-        const n = g.length;
-        // justify-content の空き (比例): center は前後に 1、flex-end は前に 1、space-between は間に 1、space-around は間に 2・前後に 1、space-evenly はすべて 1
-        const lead = spacers ? 0 : jc === 'center' || jc === 'space-around' || jc === 'space-evenly' ? 1 : /end$/.test(jc) ? 1 : 0;
-        const trail = spacers ? 0 : jc === 'center' || jc === 'space-around' || jc === 'space-evenly' ? 1 : 0;
-        const between = spacers ? 0 : jc === 'space-between' && n > 1 ? 1 : jc === 'space-around' ? 2 : jc === 'space-evenly' ? 1 : 0;
+        const n = shown;
+        // justify-content の空き (比例): center は前後に 1、終わりへ寄せるなら前に 1、space-between は間に 1、space-around は間に 2・前後に 1、
+        // space-evenly はすべて 1。項目が 1 つの space-between は flex-start と同じ (Flexbox 1 §8.2)。row-reverse の flex-start は右へ寄せる
+        let jc = flexJustify(c('justify-content'), rowReverse, true, rtl);
+        if (jc === 'space-between' && n < 2) jc = rowReverse ? 'end' : 'start';
+        // flex-grow の合計が 1 未満なら、項目は余りのその割合だけ取り、残り (1 − 合計) は justify-content で分ける (Flexbox 1 §9.7 の 4)
+        const rest = growSum > 0 && growSum < 1 && unknown.length === 0 ? 1 - growSum : 0;
+        const leadU = jc === 'center' || jc === 'space-around' || jc === 'space-evenly' || jc === 'end' ? 1 : 0;
+        let trailU = jc === 'center' || jc === 'space-around' || jc === 'space-evenly' ? 1 : 0;
+        const betweenU = jc === 'space-between' ? 1 : jc === 'space-around' ? 2 : jc === 'space-evenly' ? 1 : 0;
+        // 始めに寄せるときの残りは、終わりの側の空きにする
+        if (rest && !leadU && !trailU && !betweenU) trailU = 1;
+        const units = leadU + trailU + betweenU * (n - 1) || 1;
+        const share = spacers ? (rest ? rest / units : 0) : 1;
+        const lead = leadU * share;
+        const trail = trailU * share;
+        const between = betweenU * share;
         const line: Cell[] = [];
         if (lead) line.push({ w: 0, star: lead });
+        let seen = 0;
         g.forEach((it, k) => {
-          if (k > 0 && (colGap > 0.4 || between)) line.push({ w: colGap, ...(between ? { star: between } : {}) });
+          if (it.el.collapse) {
+            line.push({ el: it.el, w: 0, strut: struts.get(it.el) });
+            return;
+          }
+          if (seen++ > 0 && (colGap > 0.4 || between)) line.push({ w: colGap, ...(between ? { star: between } : {}) });
           if (autoSpacers && autoM[k].l) line.push({ w: 0, star: 1 });
           line.push({ el: it.el, w: it.w ?? 0, ...(stars[k] ? { star: stars[k] } : {}) });
           if (autoSpacers && autoM[k].r) line.push({ w: 0, star: 1 });
@@ -1057,48 +1353,239 @@ class HtmlImporter {
         lines.push(line);
       }
     }
+    // wrap-reverse: 行を下から上へ積む (最初の行がいちばん下。Flexbox 1 §5.2)
+    if (crossReverse) lines.reverse();
+    // 高さの決まった容器の行が 1 つなら、行の高さは容器の内側の高さ (1 行の容器 (nowrap) と、align-content: normal・stretch で
+    // 伸ばした行。Flexbox 1 §9.4 の 15・§9.6 の 9)。項目の揃え・stretch・上下の margin: auto は、容器の高さの中で効く
+    const pb = (n: string) => cssLen(c(n)) ?? 0;
+    const innerH = fixed && cssLen(c('height')) !== undefined ? cssLen(c('height'))! - (c('box-sizing') === 'border-box' ? pb('padding-top') + pb('padding-bottom') + pb('border-top-width') + pb('border-bottom-width') : 0) : undefined;
+    const ac0 = alignKeyword(c('align-content'));
+    const fullLine = !isGrid && lines.length === 1 && innerH !== undefined && innerH > 0 && (c('flex-wrap') === 'nowrap' || ac0 === 'normal' || ac0 === 'stretch');
+    // 高さの決まった複数行の容器の align-content: stretch (normal も同じ): 余った高さを行に等しく分ける (Flexbox 1 §8.4・§9.4 の 15)。
+    // 行の表に伸ばす比 1 を付け、組版エンジンが行とセルを伸ばす
+    const stretchLines = fixed && lines.length > 1 && (ac0 === 'normal' || ac0 === 'stretch');
     const children: LBlockLevel[] = [];
+    if (rtl) for (const line of lines) if (!line.some((cell) => cell.star)) line.push({ w: 0, star: 1 });
+    /** 項目のセル: 行の中の縦の揃え・伸ばしを付ける */
+    const itemCell = (item: Item): LTableCell => {
+      const n = item.node;
+      delete (n as LBlock).width;
+      // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
+      // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
+      const ic = ics(item);
+      const as = ic('align-self');
+      const mt = ic('margin-top') === 'auto';
+      const mb = ic('margin-bottom') === 'auto';
+      const x = mt && mb ? 'center' : mt ? 'end' : mb ? 'start' : flexCross(as && as !== 'auto' ? as : c('align-items'), crossReverse);
+      const blockAlign = x === 'center' || x === 'end' || x === 'baseline' || x === 'last-baseline' ? x : undefined;
+      // stretch (既定): 項目を行の高さまで伸ばす (背景・枠が行いっぱいに広がる。表紙の帯など)
+      // 交差軸の大きさ (高さ) の決まった項目は伸ばさない。max-height があれば、そこで止める (§8.3: 交差軸の大きさが auto の項目だけを伸ばす)
+      const auto = item.ps || item.anon ? !/\d/.test(ic('height')) || ic('height') === 'auto' : autoOf(item.el, 'height') !== false;
+      const stretch = x === 'stretch' && auto;
+      const mh = stretch ? cssLen(ic('max-height')) : undefined;
+      const stretchMax = mh === undefined ? undefined : mh + (ic('box-sizing') === 'border-box' ? 0 : (cssLen(ic('padding-top')) ?? 0) + (cssLen(ic('padding-bottom')) ?? 0) + (cssLen(ic('border-top-width')) ?? 0) + (cssLen(ic('border-bottom-width')) ?? 0));
+      return { type: 'table-cell', keepEdgeSpace: true, ...(blockAlign ? { blockAlign } : {}), ...(stretch ? { stretchContent: true } : {}), ...(stretchMax !== undefined ? { stretchMax } : {}), children: [n] };
+    };
+    /** 支柱のもとの行 → 畳む前の行を組んだ表 (測るだけ組む。基線の揃えで行が高くなる分も入る。Flexbox 1 §9.4 の 8) */
+    const strutTables = new Map<StrutLine, { table: LTable; total: number }>();
+    const strutTable = (sl: StrutLine) => {
+      let t = strutTables.get(sl);
+      if (!t) {
+        const table = { type: 'table', columns: sl.map((x) => ({ type: 'table-column', width: Math.max(x.w, 0) })), body: { type: 'table-body', rows: [{ type: 'table-row', cells: sl.map((x) => itemCell(x.el)) }] } } as LTable;
+        strutTables.set(sl, (t = { table, total: sl.reduce((a, x) => a + Math.max(x.w, 0), 0) }));
+      }
+      return t;
+    };
     lines.forEach((line, k) => {
       const columns: LTableColumn[] = line.map((cell) => (cell.star ? { type: 'table-column', width: `${cell.star}*`, ...(cell.w ? { widthExtra: cell.w } : {}) } : { type: 'table-column', width: Math.max(cell.w, 0) }));
       const cells: LTableCell[] = line.map((cell) => {
         if (!cell.el) return { type: 'table-cell', children: [] };
-        // 項目の上下の margin は、セルの先頭・末尾でも捨てない (CSS の flex の項目。表紙の h1 の margin-top: 5cm など)
-        const d = this.display(cell.el);
-        const n = (this.isBlock(d, cell.el) ? this.block(cell.el, el) : undefined) ?? ({ type: 'block', ...this.textStyle(cell.el, el), ...this.boxStyle(cell.el), children: this.inline(cell.el, el) } as LBlock);
-        delete (n as LBlock).width;
-        // 行の中の縦の揃え (align-self、無ければ容器の align-items)。stretch・baseline は上端
-        const as = this.cs(cell.el)('align-self');
-        const al = as && as !== 'auto' ? as : c('align-items');
-        const blockAlign = /center$/.test(al) ? 'center' : /end$/.test(al) ? 'end' : undefined;
-        // stretch (既定): 項目を行の高さまで伸ばす (背景・枠が行いっぱいに広がる。表紙の帯など)
-        const stretch = !blockAlign && !/baseline|start$/.test(al);
-        return { type: 'table-cell', keepEdgeSpace: true, ...(blockAlign ? { blockAlign } : {}), ...(stretch ? { stretchContent: true } : {}), children: [n] };
+        // collapse の項目の支柱: 幅 0 の列の中に、畳む前の行の高さの空の箱を置く (phantom。中身は描かない。伸ばさず、揃えない)。
+        // 測る行の長さは主軸の向き (縦書きの容器では高さ)
+        if (cell.strut) {
+          // 中の id は、リンク・target-counter() の飛び先として残す (LBlock.phantomIds)
+          const ids = collectIds(cell.el.node);
+          const { table, total } = strutTable(cell.strut);
+          return { type: 'table-cell', keepEdgeSpace: true, children: [{ type: 'block', phantom: true, [L('width')]: total, ...(ids.length ? { phantomIds: ids } : {}), children: [table] } as LBlock] };
+        }
+        return itemCell(cell.el);
       });
       this.report.counts.tables++;
-      children.push({ type: 'table', columns, ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', cells }] } } as LTable);
+      children.push({ type: 'table', columns, ...(stretchLines ? { flexGrow: 1 } : {}), ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', ...(fullLine ? { minHeight: innerH } : {}), cells }] } } as LTable);
     });
     this.report.counts.blocks++;
-    const fixed = this.src.isAuto?.(el, 'height') === false;
     // 高さの決まった容器の行の揃え: 複数行 (flex-wrap の複数行と grid) は align-content、1 行だけなら行の高さは容器いっぱいなので
-    // align-items (center・flex-end で項目を上下の中央・下端に。章扉の見出しを縦の中央に置くなど。Flexbox 1 §9.4)
-    const ac = c('align-content');
-    const ai = c('align-items');
-    const blockAlign: LBlockContainer['blockAlign'] = !fixed
+    // align-items (center・flex-end で項目を上下の中央・下端に。章扉の見出しを縦の中央に置くなど。Flexbox 1 §9.4)。
+    // wrap-reverse は交差軸が下から上なので、flex-start は下端に寄せる (stretch・normal は stretchLines で行を伸ばす)
+    const ac = alignKeyword(c('align-content'));
+    const ai = flexCross(c('align-items'), crossReverse);
+    const acx = /^space-(between|around|evenly)$/.test(ac) ? (ac as 'space-between' | 'space-around' | 'space-evenly') : flexCross(ac, crossReverse);
+    // 折り返しの容器 (flex-wrap: wrap・wrap-reverse) は複数行の容器なので、行が 1 つでも align-content で揃える (§8.4)
+    const multiLine = lines.length > 1 || (!isGrid && c('flex-wrap') !== 'nowrap' && innerH !== undefined);
+    const blockAlign: LBlockContainer['blockAlign'] = !fixed || fullLine
       ? undefined
-      : lines.length > 1
-        ? /^space-(between|around|evenly)$/.test(ac)
-          ? (ac as 'space-between' | 'space-around' | 'space-evenly')
-          : ac === 'center'
-            ? 'center'
-            : /end$/.test(ac)
-              ? 'end'
-              : undefined
-        : /center$/.test(ai)
-          ? 'center'
-          : /end$/.test(ai)
-            ? 'end'
-            : undefined;
+      : multiLine
+        ? acx === 'center' || acx === 'end' || /^space-/.test(acx)
+          ? (acx as 'center' | 'end' | 'space-between' | 'space-around' | 'space-evenly')
+          : undefined
+        : ai === 'center' || ai === 'end' || ai === 'last-baseline'
+          ? ai === 'last-baseline' ? 'end' : ai
+          : undefined;
     return { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), ...(blockAlign ? { blockAlign } : {}), children: [...extra, ...children] } as LBlock;
+  }
+
+  /** ::before・::after に content がある (none・normal でない) か */
+  private hasPseudoContent(el: Element, which: '::before' | '::after'): boolean {
+    const v = this.pagedPseudo.get(el)?.[which]?.content ?? this.cs(el, which)('content');
+    return !!v && v !== 'none' && v !== 'normal';
+  }
+
+  /**
+   * flex・grid の容器の項目の元 (文書の順): 子の要素と、中身のある ::before・::after (Flexbox 1 §4。疑似要素も項目になる)。
+   * display: contents の子は自分の箱を作らないので、その子と疑似要素が項目になる (CSS Display 3 §2.5)。display: none は除く。
+   * display: contents の子の直下に文字があれば (無名の項目は扱わない) undefined
+   */
+  private flexItemSources(el: Element): Array<{ el: Element; ps?: '::before' | '::after'; text?: string; collapse?: boolean }> | undefined {
+    const out: Array<{ el: Element; ps?: '::before' | '::after'; text?: string; collapse?: boolean }> = [];
+    const walk = (e: Element): boolean => {
+      if (this.hasPseudoContent(e, '::before')) out.push({ el: e, ps: '::before' });
+      // 続いた文字の並び (空白だけのものは除く) は、無名の項目 (Flexbox 1 §4)。el は文字の持ち主 (display: contents の子の中ならその要素)
+      let run = '';
+      const flush = () => {
+        if (run.trim()) out.push({ el: e, text: run });
+        run = '';
+      };
+      for (const n of Array.from(e.childNodes)) {
+        if (n.nodeType === 3 || n.nodeType === 4) {
+          run += n.textContent ?? '';
+          continue;
+        }
+        if (n.nodeType !== 1) continue;
+        const k = n as Element;
+        const d = this.display(k);
+        if (d === 'none') continue;
+        flush();
+        if (d === 'contents') {
+          if (!walk(k)) return false;
+        } else out.push({ el: k, ...(this.cs(k)('visibility') === 'collapse' ? { collapse: true } : {}) });
+      }
+      flush();
+      if (this.hasPseudoContent(e, '::after')) out.push({ el: e, ps: '::after' });
+      return true;
+    };
+    return walk(el) ? out : undefined;
+  }
+
+  /** 無名の flex の項目の計算値: 受け継がない性質は初期値 (余白・枠・幅は無し。CSS Display 3 §2.6・Flexbox 1 §4) */
+  private static readonly ANON_ITEM: Record<string, string> = {
+    'flex-grow': '0',
+    'flex-shrink': '1',
+    'flex-basis': 'auto',
+    width: 'auto',
+    'min-width': 'auto',
+    'max-width': 'none',
+    'align-self': 'auto',
+    order: '0',
+    'box-sizing': 'content-box',
+    position: 'static',
+    'grid-column-start': 'auto',
+    'grid-column-end': 'auto',
+  };
+
+  /**
+   * flex・grid の項目になる ::before・::after を組む。中身はブロックにし、箱の書式 (余白・枠・背景) を付ける (項目はブロック化される。
+   * Flexbox 1 §4)。絶対配置なら項目にせず positioned に返す。text: 中身の文字 (幅の見積もりに使う)
+   */
+  private flexPseudo(el: Element, which: '::before' | '::after'): { node?: LBlockLevel; positioned?: LBlockLevel; text?: string } {
+    const tmp: FlowItem[] = [];
+    this.lastPseudoText[which] = '';
+    this.pseudo(el, which, tmp);
+    const text = this.lastPseudoText[which];
+    if (!tmp.length) return {};
+    const pos = this.cs(el, which)('position');
+    if (pos === 'absolute' || pos === 'fixed') return { positioned: tmp[0].v as LBlockLevel };
+    if (tmp.length === 1 && tmp[0].block) return { node: tmp[0].v as LBlockLevel, text };
+    return { node: { type: 'block', ...this.textStyle(el, el, which), ...this.boxStyle(el, which), children: tmp.map((x) => x.v) } as LBlock, text };
+  }
+
+  /** ::before・::after の中身の幅 (max-content) の見積もり (pt): 幅の指定があればそれ、無ければ中身の文字の幅。枠・内側の余白を含む */
+  /** 縦書きの flex の容器の見積もりの間 (axisMap があるとき) は、プロパティの名前を読み替えて読む (axisMapper) */
+  private csA(el: Element, pseudo?: PseudoSel): (n: string) => string {
+    const c = this.cs(el, pseudo);
+    const m = this.axisMap;
+    return m ? (n) => c(m(n)) : c;
+  }
+  private isAutoA(el: Element, p: 'width' | 'height'): boolean | undefined {
+    return this.src.isAuto?.(el, (this.axisMap ? this.axisMap(p) : p) as 'width' | 'height');
+  }
+
+  /**
+   * 縦書きの flex の容器の行の向きの大きさ (内容の高さ。pt): 高さが決まっていればそれ。決まらなければ、親の行の向きの大きさから余白・枠・内側の余白を
+   * 引いたもの (縦書きの親)。根元か、横書きの親の中 (直交する流れ。CSS Writing Modes 4 §7.3) なら、本文の領域の高さから引く
+   */
+  private verticalInlineSize(el: Element): number {
+    let used = 0;
+    for (let e: Element | null = el; e; e = e.parentElement) {
+      const c = this.cs(e);
+      const p = (n: string) => cssLen(c(n)) ?? 0;
+      const pad = p('padding-top') + p('padding-bottom') + p('border-top-width') + p('border-bottom-width');
+      if (this.src.isAuto?.(e, 'height') === false && cssLen(c('height')) !== undefined) return Math.max(0, cssLen(c('height'))! - (c('box-sizing') === 'border-box' ? pad : 0) - used);
+      // 高さの決まらない箱: 内容の高さは、親の内容の高さからこの箱の上下の余白・枠・内側の余白を引いたもの
+      used += pad + p('margin-top') + p('margin-bottom');
+      const parent = e.parentElement;
+      if (!parent || !/^(vertical|sideways|tb)/.test(this.cs(parent)('writing-mode'))) break;
+    }
+    return Math.max(0, this.area.height - used);
+  }
+
+  private pseudoMaxContentWidth(el: Element, which: '::before' | '::after', text: string): number {
+    const c = this.csA(el, which);
+    const p = (n: string) => cssLen(c(n)) ?? 0;
+    const pad = p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width');
+    const w = c('width') !== 'auto' ? cssLen(c('width')) : undefined;
+    if (w !== undefined) return w + (c('box-sizing') === 'border-box' ? 0 : pad);
+    return this.textWidth(text.replace(CSS_WS, ' '), el, which) + pad;
+  }
+
+  /**
+   * 文字の最も狭い幅 (min-content。CSS Sizing 3 §5.1) の見積もり (pt): 改行できる所で全部改行したときの、いちばん広い塊の幅。
+   * 欧文は空白で区切った語、和文 (CJK) は 1 字ずつ (字の間で改行できる。CSS Text 3 §5.1 の近似)。改行しない (nowrap・pre) なら行ごと
+   */
+  private minTextWidth(t: string, el: Element, pseudo?: '::before' | '::after'): number {
+    const ws = this.csA(el, pseudo)('white-space');
+    const nowrap = /^(nowrap|pre)$/.test(ws);
+    const chunks = nowrap ? t.split('\n') : t.split(/[ \t\n\r\f]+|(?<=[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef])|(?=[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef])/u);
+    return chunks.reduce((m, w) => Math.max(m, w ? this.textWidth(this.transformText(w, el), el, pseudo) : 0), 0);
+  }
+
+  /**
+   * 要素の中身の最も狭い幅 (min-content) の見積もり (pt。枠・内側の余白を含む)。flex の項目の自動の最小の大きさ (Flexbox 1 §4.5) に使う。
+   * 幅の指定があれば、それ (ownWidth: false なら、自分の幅の指定は見ずに中身を測る。自動の最小の大きさの「中身の大きさ」)。
+   * 画像は置かれる幅。中のブロックは、いちばん広いもの。表は max-content と同じに数える (近似)
+   */
+  private minContentWidth(el: Element, ownWidth = true): number {
+    const c = this.csA(el);
+    const p = (n: string) => cssLen(c(n)) ?? 0;
+    const pad = p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width');
+    if (ownWidth && this.isAutoA(el, 'width') === false && cssLen(c('width')) !== undefined) return cssLen(c('width'))! + (c('box-sizing') === 'border-box' ? 0 : pad);
+    if (el.localName === 'img' || /^(inline-)?table$/.test(this.display(el))) return ownWidth ? this.maxContentWidth(el) : pad;
+    let widest = 0;
+    const walk = (k: Element) => {
+      for (const n of Array.from(k.childNodes)) {
+        if (n.nodeType === 3 || n.nodeType === 4) widest = Math.max(widest, this.minTextWidth(n.textContent ?? '', k));
+        else if (n.nodeType === 1) {
+          const e = n as Element;
+          const d = this.display(e);
+          if (d === 'none' || /^(absolute|fixed)$/.test(this.csA(e)('position'))) continue;
+          if (this.isBlock(d, e) || e.localName === 'img') {
+            const ec = this.csA(e);
+            widest = Math.max(widest, this.minContentWidth(e) + (this.isBlock(d, e) ? (cssLen(ec('margin-left')) ?? 0) + (cssLen(ec('margin-right')) ?? 0) : 0));
+          } else walk(e);
+        }
+      }
+    };
+    walk(el);
+    return widest + pad;
   }
 
   /**
@@ -1106,11 +1593,11 @@ class HtmlImporter {
    * 改行を残す (pre・pre-line) なら行ごと、画像は width 属性・指定の幅
    */
   private maxContentWidth(el: Element): number {
-    const c = this.cs(el);
+    const c = this.csA(el);
     const p = (n: string) => cssLen(c(n)) ?? 0;
     const pad = p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width');
     // 幅の指定があれば、それ
-    if (this.src.isAuto?.(el, 'width') === false && cssLen(c('width')) !== undefined) return cssLen(c('width'))! + (c('box-sizing') === 'border-box' ? 0 : pad);
+    if (this.isAutoA(el, 'width') === false && cssLen(c('width')) !== undefined) return cssLen(c('width'))! + (c('box-sizing') === 'border-box' ? 0 : pad);
     if (el.localName === 'img') {
       const w = cssLen(c('width')) ?? (parseFloat(el.getAttribute('width') ?? '') || 0) * PT_PER_PX;
       if (w) return w + pad;
@@ -1134,7 +1621,7 @@ class HtmlImporter {
       line = 0;
     };
     const text = (t: string, owner: Element) => {
-      const parts = pre ? t.split('\n') : [t.replace(/\s+/g, ' ')];
+      const parts = pre ? t.split('\n') : [t.replace(CSS_WS, ' ')];
       parts.forEach((part, k) => {
         if (k > 0) end();
         line += this.textWidth(this.transformText(part, owner), owner);
@@ -1158,10 +1645,10 @@ class HtmlImporter {
       else if (n.nodeType === 1) {
         const k = n as Element;
         const d = this.display(k);
-        if (d === 'none' || /^(absolute|fixed)$/.test(this.cs(k)('position'))) continue;
+        if (d === 'none' || /^(absolute|fixed)$/.test(this.csA(k)('position'))) continue;
         if (this.isBlock(d, k)) {
           end();
-          const kc = this.cs(k);
+          const kc = this.csA(k);
           widest = Math.max(widest, this.maxContentWidth(k) + (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0));
         } else if (k.localName === 'img') line += this.maxContentWidth(k);
         else if (k.localName === 'br') end();
@@ -1179,7 +1666,7 @@ class HtmlImporter {
    * 見出し (caption) は、それより広ければその幅
    */
   private tableMaxContentWidth(el: Element): number {
-    const c = this.cs(el);
+    const c = this.csA(el);
     const p = (n: string) => cssLen(c(n)) ?? 0;
     const collapse = c('border-collapse') === 'collapse';
     const spacing = collapse ? 0 : (cssLen((c('border-spacing') || '0').trim().split(/\s+/)[0]) ?? 0);
@@ -1200,7 +1687,7 @@ class HtmlImporter {
       for (const cell of Array.from(r.children)) {
         if (this.display(cell) !== 'table-cell') continue;
         while ((taken[col] ?? 0) > 0) col++;
-        const kc = this.cs(cell);
+        const kc = this.csA(cell);
         let w = this.maxContentWidth(cell);
         if (collapse) w -= ((cssLen(kc('border-left-width')) ?? 0) + (cssLen(kc('border-right-width')) ?? 0)) / 2;
         const span = Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1);
@@ -1225,10 +1712,11 @@ class HtmlImporter {
   }
 
   /** 1 行の文字列の幅 (pt)。measureText があれば要素の書体・字の大きさ・太さ・字間で測り、無ければ字数 × 字の大きさ (欧文は 0.55 倍) */
-  private textWidth(t: string, el: Element): number {
-    const s = t.trim();
+  private textWidth(t: string, el: Element, pseudo?: '::before' | '::after'): number {
+    // 前後の空白は、詰める空白だけを取る (全角の空白 U+3000 は字として数える)
+    const s = t.replace(/^[ \t\n\r\f]+|[ \t\n\r\f]+$/g, '');
     if (!s) return 0;
-    const c = this.cs(el);
+    const c = this.cs(el, pseudo);
     const fs = cssLen(c('font-size')) ?? 12;
     const ls = cssLen(c('letter-spacing')) ?? 0;
     if (!this.opts.measureText) return [...s].reduce((a, ch) => a + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55), 0) * fs + ls * [...s].length;
@@ -1247,7 +1735,8 @@ class HtmlImporter {
     let count = parseInt(c('column-count'), 10) || 0;
     const width = cssLen(c('column-width'));
     const g = c('column-gap');
-    const gap = g && g !== 'normal' ? (cssLen(g) ?? 0) : (cssLen(c('font-size')) ?? 12);
+    // % は段組する幅に対する割合 (CSS Box Alignment 3 §8.1)
+    const gap = g && g !== 'normal' ? (/%$/.test(g.trim()) ? (parseFloat(g) * avail) / 100 : (cssLen(g) ?? 0)) : (cssLen(c('font-size')) ?? 12);
     if (width) {
       const byWidth = Math.max(1, Math.floor((avail + gap) / (width + gap)));
       count = count ? Math.min(count, byWidth) : byWidth;
@@ -1870,6 +2359,11 @@ class HtmlImporter {
       const col = cssColor(c('color'));
       if (col) s.color = col;
     }
+    // visibility (CSS 2.1 §11.2・CSS Display 3 §4): hidden・collapse の要素は、場所を残して描かない。字の色を transparent にして運び、
+    // 描画で描かない (字・リーダー・リストの記号・画像。paint.ts)。visibility は受け継ぐので、見えない親の中で visible の子は自分の色に戻す
+    const hiddenOf = (cc: (n: string) => string) => /^(hidden|collapse)$/.test(cc('visibility'));
+    if (hiddenOf(c)) s.color = 'transparent';
+    else if (p && hiddenOf(p)) s.color = s.color ?? pcol ?? cssColor(c('color')) ?? '#000000';
     if (diff('line-height') || diff('font-size') || (c('line-height') === 'normal' && diff('font-family'))) {
       const lh = c('line-height');
       const v = cssLen(lh);
@@ -2119,7 +2613,30 @@ class HtmlImporter {
     // 幅の指定があれば、指定の幅を上限・下限で抑える
     // 置換要素 (画像など) の auto の幅は本来の大きさなので、ここでは扱わない (image() で上限・下限を当てる)
     const replaced = /^(img|svg|object|video|canvas|iframe|embed|input|textarea|select|button|math)$/.test(el.localName);
-    if (!pseudo && !this.src.rect && !replaced && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'))) {
+    // aspect-ratio (CSS Sizing 4 §5.1): 幅と高さの一方だけが決まっていれば、もう一方を比から決める (box-sizing の箱どうしの比)。どちらも
+    // 決まらないブロック (流れの中のブロックでないもの・flex・grid の容器) は、幅 (容器の幅の見積もり) から高さを決める。置換要素に auto 付きで書いたときは、本来の縦横比を使う (image() が扱う)
+    const ar = parseAspectRatio(c('aspect-ratio'));
+    if (ar && !(replaced && ar.auto)) {
+      const bbA = c('box-sizing') === 'border-box';
+      const hb = (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
+      const vb = (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0);
+      // 流れの中のブロック (float・絶対配置でなく、書字方向が親と同じ) は、組むときの実際の幅から高さを決める (flex の項目の中など、
+      // 幅が組むときに決まる場所でもずれない)。書字方向が親と違うブロックは、組版エンジンが別の道で組むので、ここで決める
+      const sameWm = !el.parentElement || this.cs(el.parentElement)('writing-mode') === c('writing-mode');
+      const flowBlock = !pseudo && !replaced && sameWm && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'));
+      if (o[this.axisOf(el)('height') as 'height' | 'width'] === undefined && flowBlock) o.aspectRatio = ar.ratio;
+      else if (o.width !== undefined && o.height === undefined) o.height = o.width / ar.ratio;
+      else if (o.height !== undefined && o.width === undefined) o.width = o.height * ar.ratio;
+      else if (o.width === undefined && o.height === undefined && !pseudo && /^(block|list-item|flow-root|flex|grid)$/.test(c('display'))) {
+        const cw = this.src.contentWidth?.(el);
+        // 比は box-sizing の箱どうし: content-box なら内容の幅、border-box なら枠までの幅から高さを出す
+        if (cw) o.height = (cw * PT_PER_PX + (bbA ? hb : 0)) / ar.ratio;
+        if (bbA && o.height !== undefined) o.height = Math.max(o.height, vb);
+      }
+    }
+    // aspect-ratio の箱 (組むときに大きさを決めるもの) の min-width・max-width は、比で移す min・max との兼ね合いがあるので、
+    // ここではなく組むときに当てる (下の minInlineSize・maxInlineSize)
+    if (!pseudo && !this.src.rect && !replaced && !o.aspectRatio && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'))) {
       const bb = c('box-sizing') === 'border-box';
       const hbPt = (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
       const lim = (p: string) => (/px$/.test(c(p)) ? cssLen(c(p)) : undefined);
@@ -2142,16 +2659,37 @@ class HtmlImporter {
         }
       }
     }
-    if ((o.width !== undefined || o.height !== undefined) && c('box-sizing') === 'border-box') o.boxSizing = 'border-box';
+    if ((o.width !== undefined || o.height !== undefined || o.aspectRatio) && c('box-sizing') === 'border-box') o.boxSizing = 'border-box';
     // min-height (CSS 2.1 §10.7): 高さの最小値。max-height は、高さの指定を抑える (中身が多い auto の高さは抑えない: はみ出しの描き方が無いため)
     if (!replaced) {
       const mnh = /px$/.test(c('min-height')) ? cssLen(c('min-height')) : undefined;
       const mxh = /px$/.test(c('max-height')) ? cssLen(c('max-height')) : undefined;
       if (o.height !== undefined && mxh !== undefined) o.height = Math.min(o.height, mxh);
       if (o.height !== undefined && mnh !== undefined) o.height = Math.max(o.height, mnh);
-      if (mnh) {
-        const bbH = c('box-sizing') === 'border-box' ? (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0) : 0;
-        o.minBlockSize = Math.max(0, mnh - bbH);
+      // block 方向の最小値・最大値は、縦書きでは min-width・max-width (CSS Writing Modes 4 §6.2。枠と内側の余白も左右の分)
+      const B = this.axisOf(el);
+      const pB = (p: string) => (/px$/.test(c(B(p))) ? cssLen(c(B(p))) : undefined);
+      const vertB = B('height') === 'width';
+      const bbH = c('box-sizing') !== 'border-box' ? 0 : vertB ? (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0) : (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0);
+      const mnB = pB('min-height');
+      if (mnB) o.minBlockSize = Math.max(0, mnB - bbH);
+      if (o.aspectRatio) {
+        // aspect-ratio の箱: block・inline の min・max を、組版エンジンが組むときに当てる (CSS Sizing 4 §5.1)。min の指定 (0 も) は
+        // auto (自動の最小の大きさ: 中身で伸びる) と区別して運ぶ。縦書きでは、inline の向きは min-height・max-height
+        if (mnB !== undefined) o.minBlockSize = Math.max(0, mnB - bbH);
+        const mxB = pB('max-height');
+        if (mxB !== undefined) o.maxBlockSize = Math.max(0, mxB - bbH);
+        const bbI = c('box-sizing') !== 'border-box' ? 0 : vertB ? (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0) : (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
+        const mnI = pB('min-width');
+        if (mnI) o.minInlineSize = Math.max(0, mnI - bbI);
+        const mxI = pB('max-width');
+        if (mxI !== undefined) o.maxInlineSize = Math.max(0, mxI - bbI);
+      }
+      // aspect-ratio の箱は、min・max で幅が組むときに決まることがあるので、inline の向きの auto の余白は組むときに配る (CSS 2.1 §10.3.3)
+      if (o.aspectRatio && !this.src.rect) {
+        const ms = c(B('margin-left')) === 'auto';
+        const me = c(B('margin-right')) === 'auto';
+        if (ms || me) o.autoMargins = ms && me ? 'center' : ms ? 'start' : 'end';
       }
     }
     // ブラウザの配置が無いとき: 幅の決まった箱の左右の余白が両方 auto なら、残りを等分する (CSS 2.1 §10.3.3)
@@ -2163,6 +2701,12 @@ class HtmlImporter {
         const m = (cw * PT_PER_PX - o.width - extra) / 2;
         if (m > 0) o.margin = { ...margin, left: m, right: m };
       }
+      // 組むときの置く場所の幅が見積もりと違えば、組版エンジンが残りを等分し直す
+      o.autoMargins ??= 'center';
+    }
+    // 左右の一方だけが auto: 組むときに、残りをその余白に配る (margin-left が auto なら右へ寄る)
+    else if (!this.src.rect && o.width !== undefined && (c('margin-left') === 'auto' || c('margin-right') === 'auto')) {
+      o.autoMargins ??= c('margin-left') === 'auto' ? 'start' : 'end';
     }
     // HTML の center 要素・align 属性 (-webkit-center など) は、子孫のブロックもそろえる (HTML 5.2 §10.3.3・§10.3.9)。
     // 幅の決まった箱で、左右の余白の指定が無い (0) ものを、親の中で寄せる
@@ -2174,6 +2718,8 @@ class HtmlImporter {
         const extra = o.boxSizing === 'border-box' ? 0 : (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
         const free = cw * PT_PER_PX - o.width - extra;
         if (free > 0) o.margin = { ...margin, ...(al === 'center' ? { left: free / 2, right: free / 2 } : { left: free }) };
+        // 寄せた箱は、rtl の「右端から置く」決まりの外 (寄せる向きは text-align が決める)
+        o.autoMargins ??= al === 'center' ? 'center' : 'start';
       }
     }
     const rad = this.radiusOf(c);
@@ -2215,6 +2761,13 @@ class HtmlImporter {
     }
     const id = pseudo ? null : el.getAttribute('id');
     if (id) o.id = id;
+    // visibility: hidden・collapse の箱は、背景・影を描かず、枠は太さを残して色を transparent にする (場所は変えない。CSS 2.1 §11.2)
+    if (/^(hidden|collapse)$/.test(c('visibility'))) {
+      delete o.backgroundColor;
+      delete o.backgroundImage;
+      delete o.boxShadow;
+      if (o.border) for (const sd of Object.values(o.border)) if (sd) sd.color = 'transparent';
+    }
     return o;
   }
 
@@ -2281,32 +2834,184 @@ class HtmlImporter {
     return s.replace(/[ \t]+/g, ' ');
   }
 
-  /** ブロックの中身: 文字列・インライン・ブロックを並べ、ブロック境界の空白を除く */
-  /** flex・grid の容器の子を、項目の order の順に並べ替える (同じ order の間は文書の順。絶対配置の子は項目ではないので 0 とする) */
-  private orderModified<T extends Node>(kids: T[]): T[] {
-    const groups: Array<{ order: number; nodes: T[] }> = [];
-    for (const n of kids) {
-      const e = n.nodeType === 1 ? (n as unknown as Element) : undefined;
-      if (!e) {
-        const last = groups[groups.length - 1];
-        if (last && last.order === 0 && last.nodes.every((x) => x.nodeType !== 1)) last.nodes.push(n);
-        else groups.push({ order: 0, nodes: [n] });
+  /**
+   * flex・grid の容器 (el) をふつうのブロックとして組むときの、display: contents の子 (e) の中身: ::before・::after、続いた文字の並び
+   * (無名の項目。字の書式は e から受け継ぐ)、子の要素 (ブロック化した項目)。項目ごとに marks に区切りと order を足す (flowChildren が並べ替える)
+   */
+  private flexContentsItems(e: Element, el: Element, items: FlowItem[], marks: Array<{ at: number; order: number }>, orderOf: (x: Element, ps?: '::before' | '::after') => number) {
+    marks.push({ at: items.length, order: orderOf(e, '::before') });
+    this.lastPseudoText['::before'] = '';
+    this.pseudo(e, '::before', items);
+    let run = '';
+    const flush = () => {
+      if (run.trim()) {
+        marks.push({ at: items.length, order: 0 });
+        const fi: FlowItem[] = this.decorateText(this.text(run, e), e).map((v) => ({ v, block: false }));
+        items.push({ v: { type: 'block', ...this.textStyle(e, el), children: this.collapseFlowWhitespace(fi, /^pre/.test(this.cs(e)('white-space'))) } as LBlock, block: true });
+      }
+      run = '';
+    };
+    for (const n of Array.from(e.childNodes)) {
+      if (n.nodeType === 3 || n.nodeType === 4) {
+        run += n.textContent ?? '';
         continue;
       }
-      const ec = this.cs(e);
-      const order = /^(absolute|fixed)$/.test(ec('position')) ? 0 : parseInt(ec('order'), 10) || 0;
-      groups.push({ order, nodes: [n] });
+      if (n.nodeType !== 1) continue;
+      const k = n as Element;
+      const d = this.display(k);
+      if (d === 'none') continue;
+      flush();
+      if (d === 'contents') {
+        this.flexContentsItems(k, el, items, marks, orderOf);
+        continue;
+      }
+      marks.push({ at: items.length, order: orderOf(k) });
+      this.enterCounters(this.cs(k), e);
+      this.bookmark(k);
+      const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.inline(k, el) } as LBlock);
+      items.push({ v: this.withFlexGrow(node, k, el), block: true });
     }
-    if (groups.every((g) => g.order === 0)) return kids;
-    return groups
-      .map((g, i) => ({ ...g, i }))
-      .sort((a, b) => a.order - b.order || a.i - b.i)
-      .flatMap((g) => g.nodes);
+    flush();
+    marks.push({ at: items.length, order: orderOf(e, '::after') });
+    this.lastPseudoText['::after'] = '';
+    this.pseudo(e, '::after', items);
+    this.leaveCounters(e);
+  }
+
+  /**
+   * 高さの決まった縦並びの flex の容器 (el) の項目 (e) なら、flex-grow をブロックの flexGrow に写す (Flexbox 1 §9.7。組版エンジンが余った高さを
+   * 比で分ける)。ブロックでなければ包む
+   */
+  /** 要素の書字方向が縦書きなら、プロパティの名前の読み替え (axisMapper)。横書きなら、そのまま */
+  private axisOf(el: Element): (n: string) => string {
+    const wm = this.cs(el)('writing-mode');
+    return /^(vertical|sideways|tb)/.test(wm) ? axisMapper(wm) : (n: string) => n;
+  }
+
+  /**
+   * 縦並びの flex の容器 (el) の項目 (e) のブロックに、主軸 (縦並びでは横書きの高さ・縦書きの幅) の flex の値を付ける: flex-basis、
+   * 交差軸の寄せ (背景・枠のある項目の箱)、高さの決まった容器なら伸ばす比・縮める比と下限・主軸の auto の余白、折り返しなら列の中の揃え。
+   * 縦書きの容器は、プロパティの名前を読み替えて (axisMapper) 横書きと同じに扱う
+   */
+  private withFlexGrow(b: LBlockLevel, e: Element, el: Element): LBlockLevel {
+    if (!/^(inline-)?flex$/.test(this.display(el))) return b;
+    const L = this.axisOf(el);
+    const c0 = this.cs(el);
+    const c = (n: string) => c0(L(n));
+    if (!/^column/.test(c('flex-direction'))) return b;
+    const vert = /^(vertical|sideways|tb)/.test(c0('writing-mode'));
+    const e0 = this.cs(e);
+    const ec = (n: string) => e0(L(n));
+    const autoOf = (x: Element, p: 'width' | 'height') => this.src.isAuto?.(x, L(p) as 'width' | 'height');
+    // 主軸 (main) と交差軸 (cross) の大きさの物理の名前 (縦書きでは width と height が入れ替わる)
+    const main = L('height') as 'height' | 'width';
+    const cross = L('width') as 'height' | 'width';
+    const len = (v: string) => cssLen(v) ?? 0;
+    const vpad = (cc: (n: string) => string) => len(cc('padding-top')) + len(cc('padding-bottom')) + len(cc('border-top-width')) + len(cc('border-bottom-width'));
+    const hpad = (cc: (n: string) => string) => len(cc('padding-left')) + len(cc('padding-right')) + len(cc('border-left-width')) + len(cc('border-right-width'));
+    /** 中身の幅の見積もり (交差軸。縦書きでは行の向きの大きさ) */
+    const measure = (x: Element) => {
+      const prev = this.axisMap;
+      this.axisMap = vert ? L : undefined;
+      try {
+        return this.maxContentWidth(x);
+      } finally {
+        this.axisMap = prev;
+      }
+    };
+    const crossW = vert ? this.verticalInlineSize(el) : (this.src.contentWidth?.(el) ?? 0) * PT_PER_PX;
+    // 容器の主軸の内容の大きさ (決まっていれば)。flex-basis の % の基準
+    const fixed = autoOf(el, 'height') === false && cssLen(c('height')) !== undefined;
+    const H = fixed ? cssLen(c('height'))! - (c('box-sizing') === 'border-box' ? vpad(c) : 0) : undefined;
+    const extra: Partial<LBlock> = {};
+    // flex-basis (主軸の大きさ。Flexbox 1 §7.2): 長さか、容器の主軸の大きさが決まっていれば %。auto・content は中身の大きさ (今のまま)
+    const fb = ec('flex-basis');
+    const basis = !fb || fb === 'auto' || /content$/.test(fb) ? undefined : /%$/.test(fb) ? (H !== undefined ? (parseFloat(fb) * H) / 100 : undefined) : cssLen(fb);
+    if (basis !== undefined) {
+      extra[main] = basis;
+      if (ec('box-sizing') === 'border-box') extra.boxSizing = 'border-box';
+    }
+    // 交差軸の揃えの center・end: 背景・枠のある項目は、箱を中身の幅にして寄せる (Flexbox 1 §8.3。字だけ寄せると、箱は容器いっぱいのまま)
+    const al = this.flexItemAlign.get(e);
+    const box = b as LBlock;
+    if (al && b.type === 'block' && autoOf(e, 'width') !== false && (box.border || box.backgroundColor || box.backgroundImage)) {
+      const inner = measure(e) - (ec('box-sizing') === 'border-box' ? 0 : hpad(ec)) + FLEX_SLACK;
+      extra[cross] = crossW ? Math.min(inner, crossW - (ec('box-sizing') === 'border-box' ? 0 : hpad(ec))) : inner;
+      if (ec('box-sizing') === 'border-box') extra.boxSizing = 'border-box';
+      // 'start' は始めの側の余白に足す (箱は終わりへ寄る)
+      extra.autoMargins = al === 'center' ? 'center' : 'start';
+    }
+    if (H === undefined) return this.withExtra(b, extra);
+    const wrap = c('flex-wrap') !== 'nowrap';
+    // 伸ばす比 (§9.7) と、主軸の margin: auto (§8.1)。項目は見た目の順に並べてあるので、column-reverse でも主軸の始めの側の余白が前
+    const g = parseFloat(ec('flex-grow')) || 0;
+    if (g > 0) extra.flexGrow = g;
+    const top = ec('margin-top') === 'auto';
+    const bottom = ec('margin-bottom') === 'auto';
+    if (top || bottom) extra.flexAutoMargin = { before: top, after: bottom };
+    if (wrap) {
+      // 折り返し: 項目は列に並ぶので、交差軸の大きさの決まらない項目は中身の幅 (見積もり) にし、align-items: stretch なら組版エンジンが
+      // 列の幅まで広げる。伸ばす比と auto の余白は、列ごとに組版エンジンが分ける。縮めはしない (入りきらない項目は次の列へ移る)
+      if (autoOf(e, 'width') !== false && extra[cross] === undefined) {
+        const inner = measure(e) - (ec('box-sizing') === 'border-box' ? 0 : hpad(ec)) + FLEX_SLACK;
+        extra[cross] = crossW ? Math.min(inner, crossW) : inner;
+        if (ec('box-sizing') === 'border-box') extra.boxSizing = 'border-box';
+      }
+      // 列の中の揃え (wrap-reverse は交差軸の向きが逆。Flexbox 1 §5.2・§8.3): stretch は列の幅まで広げ、ほかは寄せる (baseline は start)
+      const as = ec('align-self');
+      const x = flexCross(as && as !== 'auto' ? as : c('align-items'), c('flex-wrap') === 'wrap-reverse');
+      if (x === 'stretch') {
+        if (autoOf(e, 'width') !== false) extra.flexWrapStretch = true;
+      } else if (x === 'center' || x === 'end' || x === 'last-baseline') extra.flexWrapAlign = x === 'center' ? 'center' : 'end';
+      delete extra.autoMargins;
+      return this.withExtra(b, extra);
+    }
+    // 縮める比 (既定 1) と下限: min-height の指定があればそれ (枠・内側の余白を足す)、overflow が visible でなければ枠・内側の余白だけ、
+    // どちらでもなければ組版エンジンが中身の大きさにする (§4.5 の自動の最小の大きさ)
+    const sh = parseFloat(ec('flex-shrink'));
+    const shrink = Number.isFinite(sh) && sh >= 0 ? sh : 1;
+    if (shrink > 0) {
+      extra.flexShrink = shrink;
+      const mh = ec('min-height');
+      const pad = ec('box-sizing') === 'border-box' ? 0 : vpad(ec);
+      if (mh && mh !== 'auto' && cssLen(mh) !== undefined) extra.flexMin = cssLen(mh)! + pad;
+      else if (!/^(visible|clip)?$/.test(ec('overflow-y') || ec('overflow'))) extra.flexMin = vpad(ec);
+    }
+    return this.withExtra(b, extra);
+  }
+
+  /** ブロックに flex の値を付ける (ブロックでなければ包む) */
+  private withExtra(b: LBlockLevel, extra: Partial<LBlock>): LBlockLevel {
+    if (!Object.keys(extra).length) return b;
+    if (b.type === 'block') return Object.assign(b, extra);
+    return { type: 'block', ...extra, children: [b] } as LBlock;
+  }
+
+  /** ブロックの中身: 文字列・インライン・ブロックを並べ、ブロック境界の空白を除く */
+  /**
+   * flex・grid の容器の子のうち display: contents のものを、その子に置き換える (CSS Display 3 §2.5: 箱を作らず、子が項目になる)。
+   * 直下に文字があるもの、::before・::after のあるものは、置き換えない (受け継ぐ書式と疑似要素を失わないように)
+   */
+  private expandContents(kids: Node[]): Node[] {
+    return kids.flatMap((n) => {
+      const e = n.nodeType === 1 ? (n as Element) : undefined;
+      if (!e || this.display(e) !== 'contents') return [n];
+      if (Array.from(e.childNodes).some((x) => (x.nodeType === 3 || x.nodeType === 4) && (x.textContent ?? '').trim())) return [n];
+      if (this.hasPseudoContent(e, '::before') || this.hasPseudoContent(e, '::after')) return [n];
+      return this.expandContents(Array.from(e.childNodes));
+    });
   }
 
   /** 流し込む項目 (ブロックか行の中のもの) */
   private flowChildren(el: Element, inline = false): Array<LBlockLevel | LInlineLevel> {
     const items: FlowItem[] = [];
+    // flex・grid の容器をふつうのブロックとして組むとき (縦並びの flex など) も、項目は order の順 (order-modified document order。
+    // CSS Flexbox 1 §5.4) に並べる。::before・::after も項目 (§4)。項目ごとに items の区切り (at) と order を覚え、最後に並べ替える。
+    // 続いた文字の並びは 1 つの無名の項目で、order は 0
+    const flexBox = /^(inline-)?(flex|grid)$/.test(this.display(el));
+    const marks: Array<{ at: number; order: number }> = [];
+    const orderOf = (e: Element, ps?: '::before' | '::after') => (!ps && /^(absolute|fixed)$/.test(this.cs(e)('position')) ? 0 : parseInt(this.cs(e, ps)('order'), 10) || 0);
+    if (flexBox) marks.push({ at: 0, order: orderOf(el, '::before') });
     this.lastPseudoText['::before'] = '';
     this.pseudo(el, '::before', items);
     const before = this.lastPseudoText['::before'];
@@ -2326,6 +3031,7 @@ class HtmlImporter {
     };
     const emptyOwn = own !== undefined && /^\s*(''|"")\s*$/.test(own) && !pseudoContent('::before') && !pseudoContent('::after');
     const replaced = own !== undefined && own !== 'normal' && own !== 'none' && !emptyOwn;
+    if (flexBox && replaced) marks.push({ at: items.length, order: 0 });
     if (replaced) for (const v of this.evalContent(el, parseContent(own))) items.push({ v, block: false });
     let kids = replaced ? [] : Array.from(el.childNodes);
     // content-visibility: hidden は中身 (子孫の字と要素) を組まない (Contain 2 §4)
@@ -2335,11 +3041,11 @@ class HtmlImporter {
       const sum = kids.find((n) => n.nodeType === 1 && (n as Element).localName === 'summary');
       kids = sum ? [sum] : [];
     }
-    // flex・grid の容器をふつうのブロックとして組むとき (縦並びの flex など) も、項目は order の順 (order-modified document order。
-    // CSS Flexbox 1 §5.4) に並べる。続いた文字の並びは 1 つの無名の項目 (§4) で、order は 0
-    if (/^(inline-)?(flex|grid)$/.test(this.display(el))) kids = this.orderModified(kids);
+    // display: contents の子 (直下に文字が無く、::before・::after も無いもの) は、その子を項目として並べる (CSS Display 3 §2.5)
+    if (flexBox) kids = this.expandContents(kids) as ChildNode[];
     for (let i = 0; i < kids.length; i++) {
       const n = kids[i];
+      if (flexBox && (n.nodeType !== 3 || i === 0 || kids[i - 1].nodeType !== 3)) marks.push({ at: items.length, order: n.nodeType === 1 ? orderOf(n as Element) : 0 });
       if (n.nodeType === 3 || n.nodeType === 4) {
         const t = this.text(n.textContent ?? '', el);
         if (t) for (const v of this.decorateText(t, el)) items.push({ v, block: false });
@@ -2349,9 +3055,12 @@ class HtmlImporter {
       const e = n as Element;
       const d = this.display(e);
       if (d === 'none') continue;
+      // flex の容器の visibility: collapse の項目は、主軸から外す (Flexbox 1 §4.4)
+      if (flexBox && /flex$/.test(this.display(el)) && this.cs(e)('visibility') === 'collapse') continue;
       const pg = this.pg(e);
       // 名前付きページ (body の直下のブロック): ページの名前が変わるところで、ページシーケンスを分ける
-      if (el === this.bodyEl && this.isBlock(d, e)) this.flowPageSwitch(e, pg, items);
+      // page は class A の区切りを作る箱 (流れの中のブロック) に効く (CSS Page 3 §8.1)。絶対配置・固定配置・float の箱は、ページの名前を変えない
+      if (el === this.bodyEl && this.isBlock(d, e) && !/^(absolute|fixed)$/.test(this.cs(e)('position')) && (this.cs(e)('float') || 'none') === 'none') this.flowPageSwitch(e, pg, items);
       if (d !== 'list-item') this.enterCounters(this.cs(e), el);
       this.bookmark(e);
       // string-set: 要素の前にマーカーを置く (インラインの中なら、段落の外へ出す)
@@ -2361,7 +3070,17 @@ class HtmlImporter {
       if (this.flowFloat(e, el, pg, items)) continue;
       // position: absolute は本文領域を基準にそのページへ、fixed は全ページに置く
       const pos = this.cs(e)('position');
-      if ((pos === 'absolute' || pos === 'fixed') && this.cs(e)('visibility') === 'hidden') continue;
+      if ((pos === 'absolute' || pos === 'fixed') && this.cs(e)('visibility') === 'hidden') {
+        // 見えない箱も飛び先にはなる (visibility: hidden は箱を描かないだけ。CSS 2.1 §11.2): id (しおり・リンクの飛び先) があれば、
+        // 高さの無い印を残す (book の表題の h1 { position: absolute; visibility: hidden } のしおりなど)
+        const hid = e.getAttribute('id');
+        if (hid) {
+          const mark = { type: 'block', id: hid, children: [] } as LBlock;
+          this.outOfFlowMarks.add(mark);
+          items.push({ v: mark, block: true });
+        }
+        continue;
+      }
       if (this.flowPositioned(e, el, pos, items)) continue;
       if (/^table-(row|cell|row-group|header-group|footer-group|caption|column|column-group)$/.test(d)) {
         // 表の外の表の部分 (セル・行など): 続くものをまとめて、匿名の表で包む (CSS 2.1 §17.2.1)
@@ -2377,20 +3096,54 @@ class HtmlImporter {
         items.push({ v: this.list(el, lis.elements), block: true });
         continue;
       }
+      if (flexBox && d === 'contents') {
+        // flex・grid の容器の中の display: contents (直下の文字か ::before・::after を持つもの。ほかは expandContents で展開済み):
+        // 中の文字の並び・疑似要素・子の要素を、それぞれ項目として並べる (CSS Display 3 §2.5・Flexbox 1 §4)
+        this.flexContentsItems(e, el, items, marks, orderOf);
+        continue;
+      }
       if (d === 'contents' && this.hasBlockChild(e)) {
         // display: contents (CSS Display 3 §2.5): 要素自身は箱を作らず、子がその場所に入る。ブロックの子を持つときは、
         // 箱の書式 (罫線・背景・余白) を持たない入れ物のブロックで包み、受け継ぐ書式 (字の色・大きさ・揃えなど) だけを子に渡す
         items.push({ v: { type: 'block', ...this.textStyle(e, el), ...this.paragraphStyle(e, el), children: this.flowChildren(e) } as LBlock, block: true });
       } else if (this.isBlock(d, e)) {
         const b = this.block(e, el);
-        if (b) items.push({ v: b, block: true });
+        if (b) items.push({ v: this.withFlexGrow(b, e, el), block: true });
       } else {
         for (const v of this.inline(e, el)) items.push({ v, block: false });
       }
       if (!inline) for (const m of this.pendingMarkers.splice(0)) items.push({ v: m, block: false });
     }
+    if (flexBox) marks.push({ at: items.length, order: orderOf(el, '::after') });
     this.lastPseudoText['::after'] = '';
     this.pseudo(el, '::after', items);
+    // column-reverse は項目を逆の順に積む (Flexbox 1 §5.1。row-reverse は flexNoRect で並べ替える)
+    const reverse = flexBox && /flex$/.test(this.display(el)) && this.cs(el)('flex-direction') === 'column-reverse';
+    // 縦並びの flex の項目の間の空き (row-gap。CSS Box Alignment 3 §8: % は容器の高さが決まっていればその割合、決まらなければ 0)
+    const column = flexBox && /flex$/.test(this.display(el)) && /^column/.test(this.cs(el)('flex-direction'));
+    const rg = column ? this.cs(el)('row-gap') : '';
+    // 主軸の大きさ (横書きは高さ、縦書きは幅) が決まっていれば、% の基準
+    const mainP = this.axisOf(el)('height') as 'height' | 'width';
+    const fixedH = this.src.isAuto?.(el, mainP) === false ? cssLen(this.cs(el)(mainP)) : undefined;
+    const rowGap = !rg || rg === 'normal' ? 0 : /%$/.test(rg) ? (fixedH !== undefined ? (parseFloat(rg) * fixedH) / 100 : 0) : (cssLen(rg) ?? 0);
+    if (marks.length && (reverse || rowGap > 0 || marks.some((m) => m.order !== 0))) {
+      const segs = marks.map((m, k) => ({ order: m.order, v: items.slice(m.at, marks[k + 1]?.at ?? items.length) }));
+      segs.sort((a, b) => a.order - b.order);
+      if (reverse) segs.reverse();
+      // 空き: 中身のある項目 (空白だけの文字でないもの) の間に、高さだけの空のブロックを置く
+      const filled = (g: { v: FlowItem[] }) => g.v.some((x) => x.block || (typeof x.v === 'string' ? x.v.trim() !== '' : true));
+      const out: FlowItem[] = [];
+      let seen = false;
+      for (const g of segs) {
+        if (rowGap > 0 && filled(g)) {
+          // 空きは主軸の向きの大きさ (横書きは高さ、縦書きは幅)
+          if (seen) out.push({ v: { type: 'block', [mainP]: rowGap, children: [] } as LBlock, block: true });
+          seen = true;
+        }
+        out.push(...g.v);
+      }
+      items.splice(0, items.length, ...out);
+    }
     if (snap && elId) this.record.set(elId, { counters: snap, text: this.wantText ? this.plainText(el) : '', before, after: this.lastPseudoText['::after'] });
     this.leaveCounters(el);
     return this.collapseFlowWhitespace(items, /^pre/.test(this.cs(el)('white-space')));
@@ -2400,6 +3153,17 @@ class HtmlImporter {
   private pushMarker(m: LMarker, inline: boolean, items: FlowItem[]) {
     if (inline) this.pendingMarkers.push(m);
     else items.push({ v: m, block: false });
+  }
+
+  /** 流れの外の箱の代わりに置いた印 (見えない絶対配置の箱の id の印)。ページの名前の切り替えでは、流れの中の箱に数えない */
+  private outOfFlowMarks = new WeakSet<object>();
+
+  /** body の直下の項目が、流れの中の箱 (か字) か: 空白・マーカー・回り込み・絶対配置の箱・見えない絶対配置の箱の印は、流れの中の箱ではない */
+  private inFlowItem(x: LBlockLevel | LInlineLevel): boolean {
+    if (typeof x === 'string') return !!x.trim();
+    if (this.outOfFlowMarks.has(x)) return false;
+    const n = x as { type?: string; absolutePosition?: boolean };
+    return !(n.type === 'marker' || n.type === 'float' || (n.type === 'block-container' && n.absolutePosition));
   }
 
   /** 名前付きページ: body の直下のブロック e で、ページの名前が変わるところにページシーケンスの切り替え (page-switch) を置く */
@@ -2774,7 +3538,32 @@ class HtmlImporter {
   }
 
   /** ブロック要素 */
+  /**
+   * <a href> の飛び先 (HTML Living Standard §4.6.1)。#id は文書の中、スキームのある URL (RFC 3986 §3.1 の形:
+   * 英字の後に英字・数字・+・-・.) と相対参照 (§4.2。file.pdf・../a/b.html など) は外。相対参照は PDF の場所からの相対として書き出す
+   */
+  private linkOf(el: Element): LinkTarget | undefined {
+    if (el.localName !== 'a') return undefined;
+    const href = (el.getAttribute('href') ?? '').trim();
+    if (!href) return undefined;
+    if (href.startsWith('#')) return href.length > 1 ? { internal: href.slice(1) } : undefined;
+    return { external: href };
+  }
+
+  /** ブロックの箱を組む。<a href> なら箱にリンクを付ける (ブロック・flex・表の <a> も、箱の全体が飛び先へのリンクになる) */
   private block(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
+    const b = this.blockBox(el, parent, plain);
+    const link = b && this.linkOf(el);
+    if (!b || !link) return b;
+    if (b.type === 'block' && !(b as LBlock).link) {
+      (b as LBlock).link = link;
+      return b;
+    }
+    // 表・高さの決まった箱などは、書式を持たないブロックで包んでリンクにする
+    return { type: 'block', link, children: [b] } as LBlock;
+  }
+
+  private blockBox(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
     const d = this.display(el);
     if (!plain && /^(inline-)?(flex|grid)$/.test(d)) {
       const fg = this.flexGrid(el, parent);
@@ -2799,6 +3588,13 @@ class HtmlImporter {
       if (img?.type === 'image' && img.borderRadius && bs.borderRadius) img.borderRadius = innerRadius(bs.borderRadius, bs.border, bs.padding);
       // ブロックの置換要素の箱の幅は画像の使われる幅 (CSS 2.1 §10.3.4 → §10.3.2: 本来の大きさと上限・下限で決まる)。親いっぱいにすると、
       // 罫線・背景・角丸が画像より広く描かれる (border-radius: 50% が楕円になる)。画像の幅が分かるときだけ (分からなければ組版で本来の大きさになる)
+      // 幅の指定のある画像: 箱の幅も、上限・下限 (max-width・min-width) で抑えた、画像の使われる幅にする (CSS 2.1 §10.4)。
+      // 指定の幅のままだと、箱が画像より広くなり、margin: auto で箱を中央に置いても画像は箱の左に寄る
+      if (img?.type === 'image' && bs.width !== undefined && img.width !== undefined) {
+        const side = (s: 'left' | 'right') => ((bs.border as Partial<Record<string, BorderSide>> | undefined)?.[s]?.width ?? 0) + (typeof bs.padding === 'number' ? bs.padding : ((bs.padding as Partial<Record<string, number>> | undefined)?.[s] ?? 0));
+        const used = bs.boxSizing === 'border-box' ? img.width + side('left') + side('right') : img.width;
+        if (Math.abs(used - bs.width) > 0.01) bs.width = used;
+      }
       if (img?.type === 'image' && bs.width === undefined && img.width !== undefined) {
         const side = (s: 'left' | 'right') => ((bs.border as Partial<Record<string, BorderSide>> | undefined)?.[s]?.width ?? 0) + (typeof bs.padding === 'number' ? bs.padding : ((bs.padding as Partial<Record<string, number>> | undefined)?.[s] ?? 0));
         const extra = side('left') + side('right');
@@ -3063,6 +3859,8 @@ class HtmlImporter {
         if (dpi > 0 && Math.abs(dpi - 96) > 1e-6) img.widthScale = img.heightScale = 96 / dpi;
       }
     }
+    // visibility: hidden・collapse の画像は、場所を残して描かない (色を transparent にして運ぶ。組版エンジンが画像に描かない印を付ける)
+    if (/^(hidden|collapse)$/.test(this.cs(el)('visibility'))) img.color = 'transparent';
     return img;
   }
 
@@ -3283,11 +4081,8 @@ class HtmlImporter {
     if (inlId) inl.id = inlId;
     // 中身の無い行内要素も、字の大きさと行の高さを行の箱に入れる (CSS 2.1 §10.8)
     if (!inl.children.length) inl.emptyStrut = true;
-    if (name === 'a') {
-      const href = el.getAttribute('href') ?? '';
-      if (href.startsWith('#') && href.length > 1) inl.link = { internal: href.slice(1) };
-      else if (/^[a-z]+:/i.test(href)) inl.link = { external: href };
-    }
+    const link = this.linkOf(el);
+    if (link) inl.link = link;
     return [inl];
   }
 
@@ -4106,7 +4901,7 @@ class HtmlImporter {
     const PT = 72 / 25.4;
     const base = pageBox(resolvePageRules(pages, {}, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors);
     const bm = base.margins;
-    this.area = { top: bm.top * PT, right: bm.right * PT, bottom: bm.bottom * PT, left: bm.left * PT, width: (base.width - bm.left - bm.right) * PT };
+    this.area = { top: bm.top * PT, right: bm.right * PT, bottom: bm.bottom * PT, left: bm.left * PT, width: (base.width - bm.left - bm.right) * PT, height: (base.height - bm.top - bm.bottom) * PT };
     // body (か html) の段組は、ページの段組にする
     const pc = this.columnsOf(bodyEl, this.area.width) ?? this.columnsOf(html, this.area.width);
     if (pc) this.pageColumns = { count: pc.count, gap: pc.gap / PT, fill: pc.fill, ...(pc.rule ? { rule: pc.rule } : {}) };
@@ -4143,7 +4938,9 @@ class HtmlImporter {
       if (typeof c !== 'string' && (c as unknown as PageSwitch).type === 'page-switch') {
         const sw = c as unknown as PageSwitch;
         const last = groups[groups.length - 1];
-        if (!last.items.some((x) => typeof x !== 'string' || x.trim())) Object.assign(last, { page: sw.page, initial: sw.initial });
+        // 前の組に流れの中の箱が無ければ (空白・絶対配置の箱・見えない箱の印だけ)、改ページせず、その組をこの名前のページにする
+        // (ページの名前は流れの中の箱の間でだけ比べる。CSS Page 3 §8.1。最初のページの種類は、最初の流れの中の箱の page)
+        if (!last.items.some((x) => this.inFlowItem(x))) Object.assign(last, { page: sw.page, initial: sw.initial });
         else groups.push({ page: sw.page, initial: sw.initial, items: [] });
       } else groups[groups.length - 1].items.push(c);
     }

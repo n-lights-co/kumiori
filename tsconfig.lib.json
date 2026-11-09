@@ -5,8 +5,9 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "outDir": "dist-lib/types",
-    "rootDir": "src"
+    "rootDir": "src",
+    "types": ["vite/client", "node"]
   },
   "include": ["src/**/*.d.ts"],
-  "files": ["src/index.ts"]
+  "files": ["src/index.ts", "src/node.ts"]
 }

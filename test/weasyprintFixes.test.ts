@@ -180,6 +180,31 @@ describe('img の罫線・余白の箱の重なり・SVG の引き伸ばし・pa
     expect((b.children[0] as LImage).type).toBe('image');
     expect((b.children[0] as LImage).borderRadius?.corners?.[0]).toEqual(['50%', '50%']);
   });
+  it('名前付きページ: 最初の流れの中の箱の前に、見えない絶対配置の箱しか無ければ、最初のページはその名前のページ (CSS Page 3 §8.1。WeasyPrint・Chromium と同じ)', () => {
+    const css = '@page { size: 400pt 400pt; margin: 50pt } @page full { margin: 0 } body { margin: 0 } h1 { position: absolute; visibility: hidden } .fullpage { page: full } .abs { position: absolute; page: other }';
+    const seqs = (body: string) => {
+      const d = new DOMParser().parseFromString(`<html><body>${body}</body></html>`, 'text/html') as never;
+      return importHtml(d, cascadeStyles(d, css, { viewport: { width: 600, height: 800 } }), { css }).document.sequences;
+    };
+    // h1 (絶対配置・見えない。id の印だけが残る) の後の section が最初のページを決める: h1 だけのページを作らない
+    const s = seqs('<h1 id="t">Title</h1><section class="fullpage"><p>F</p></section><section><p>A</p></section>');
+    expect(s).toHaveLength(2);
+    expect(s[0].master.margins).toMatchObject({ left: 0, right: 0 });
+    expect(find<LBlock>(s[0], (n) => n.type === 'block' && n.id === 't')).toHaveLength(1);
+    // 流れの中の箱 (空の div でも) があれば、そこでページの名前が変わる
+    expect(seqs('<div id="x"></div><section class="fullpage"><p>F</p></section>')).toHaveLength(2);
+    // 絶対配置の箱の page は、ページの名前を変えない
+    expect(seqs('<p>A</p><div class="abs">x</div><p>B</p>')).toHaveLength(1);
+  });
+  it('幅の指定のあるブロックの img も、箱の幅は max-width で抑えた画像の幅にする (CSS 2.1 §10.4。箱が画像より広くならない)', () => {
+    const d = new DOMParser().parseFromString('<html><body><section style="width: 400px"><img src="a.png"></section></body></html>', 'text/html') as never;
+    const css = 'img { display: block; margin: auto; width: 75%; max-width: 70%; border: 2pt solid #fff; border-radius: 50% }';
+    const r = importHtml(d, cascadeStyles(d, css, { viewport: { width: 600, height: 800 } }), { css, imageSize: () => ({ width: 900, height: 520 }) });
+    const b = find<LBlock>(r.document, (n) => n.type === 'block' && !!n.borderRadius)[0];
+    // 75% (225pt) ではなく、上限の 70% = 280px = 210pt
+    expect((b.children[0] as LImage).width).toBeCloseTo(210, 3);
+    expect(b.width).toBeCloseTo(210, 3);
+  });
   it('ブロックの img の箱の幅は画像の幅 (max-width で決まった幅も)。左右の余白が auto なら中央に置く (罫線・角丸が画像より広くならない)', () => {
     const d = new DOMParser().parseFromString('<html><body><figure style="width: 200px"><img src="a.png"><figcaption>写真の説明</figcaption></figure></body></html>', 'text/html') as never;
     const css = 'figure { margin: 0; text-align: center } img { display: block; margin: 0 auto; max-width: 40px; border: 2pt solid #fff; border-radius: 50% }';
@@ -320,10 +345,14 @@ describe('report の章扉・invoice の合計の表・font-variant (2 回目の
   it('高さの決まった 1 行の flex (align-items: center) は、項目を上下の中央に置く (章扉の見出し)', () => {
     const [ch] = flow('<article><h2>Chapter</h2></article>', 'article { display: flex; align-items: center; justify-content: center; height: 297mm } h2 { width: 100% }') as unknown as LBlockContainer[];
     expect(ch.type).toBe('block-container');
-    expect(ch.blockAlign).toBe('center');
-    // align-items の無い (stretch) 1 行は上端から
+    // 行の高さは容器の内側の高さ (Flexbox 1 §9.4 の 15) で、項目はその中で上下の中央に揃える
+    const row = (ch.children[0] as unknown as LTable).body!.rows[0];
+    expect(row.minHeight).toBeCloseTo((297 * 72) / 25.4, 0);
+    expect(row.cells.find((c) => c.children.length)!.blockAlign).toBe('center');
+    // align-items の無い (stretch) 1 行は、項目を行 (容器) の高さまで伸ばす
     const [top] = flow('<article><h2>Chapter</h2></article>', 'article { display: flex; height: 297mm }') as unknown as LBlockContainer[];
     expect(top.blockAlign).toBeUndefined();
+    expect((top.children[0] as unknown as LTable).body!.rows[0].cells.find((c) => c.children.length)!.stretchContent).toBe(true);
   });
   it('絶対配置の表は、表として (自動レイアウトで中身の幅の比に列を配り) 組む。罫線・余白は箱だけが持つ', () => {
     const [footer] = flow(

@@ -9,12 +9,12 @@ Kumiori の配布物に含まれる、または Kumiori の実行に使われる
 
 ## 1. ブラウザ向けの配布物 (`dist/`・`dist-browser/`) に含まれるもの
 
-次の 2 つのブラウザ向けの配布物は、この節のパッケージを束ねて含みます (2026-11-08 に、ビルドのソースマップで束ねられたパッケージを確かめました)。
+次の 2 つのブラウザ向けの配布物は、この節のパッケージを取り込んでいます (2026-11-08 に、ビルドのソースマップで取り込まれたパッケージを確かめました)。
 
 - 画面 (`npm run build` の `dist/`。GitHub Pages に置くもの)
-- ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も束ねて含みます (XSL-FO を読むため)
+- ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も取り込んでいます (XSL-FO を読むため)
 
-ライブラリ (`npm run build:lib` の `dist-lib/`。npm の `kumiori`) は依存パッケージを束ねず、実行時に node_modules から読み込みます (下の 2 節と同じ)。
+ライブラリ (`npm run build:lib` の `dist-lib/`。npm の `kumiori`) は依存パッケージを取り込まず、実行時に node_modules から読み込みます (下の 2 節と同じ)。
 
 ### pdf-lib 1.17.1
 
@@ -53,6 +53,7 @@ SOFTWARE.
 - 場所: `node_modules/@pdf-lib/fontkit`
 - fontkit のフォーク (package.json の repository: `git://github.com/Hopding/fontkit.git`)。
 - パッケージに LICENSE ファイルなし。
+- 配布物には、ほかのパッケージのコードが取り込まれています。その表示は下の 1.1.1 にあります。
 
 package.json の表示 (そのまま):
 
@@ -415,6 +416,619 @@ import { __extends } from "tslib";
   // DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
   // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
   // USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### 1.1.1 @pdf-lib/fontkit の配布物に取り込まれたもの
+
+`node_modules/@pdf-lib/fontkit/dist/` の配布物 (`fontkit.es.js`・`fontkit.umd.js` とその縮めたもの) には、fontkit を作るときに rollup で取り込んだ、ほかのパッケージのコードが入っています。fontkit のパッケージにはそれらの表示が無いので、ここにまとめます。Kumiori のブラウザ向けの配布物 (`dist-browser/`) は fontkit を取り込み、コメントを除くので、ここの表示がそれらの表示になります。
+
+- 取り込まれたもの: fontkit の package.json の開発用の依存 (`devDependencies`) と、配布物の中のコードの特徴 (関数の名前・文字列) から洗い出しました。配布物にはソースマップが無く、取り込まれた版は分かりません。下の条文は、package.json の範囲に合う版のパッケージ (2026-11-09 に npm から取得) から、書き換えずに写しています。
+- 配布物に入っていないことを確かめたもの: rollup-plugin-node-builtins の setimmediate・zlib など、上に挙げた以外の Node の組み込みの代わり。fontkit の依存 (`dependencies`) の pako は、取り込まずに読み込みます (上の pako の節)。
+- `fontkit.es.js` の中に残っている表示は、string_decoder の Joyent の表示 (上の 1.1 に転記)、base64-arraybuffer の表示 (23697 行目。下の base64-arraybuffer の LICENSE と同じ著作権者)、Brotli の展開の Google Inc. の表示 (34218 行目ほか。下に転記) です。
+- @pdf-lib/unicode-properties の字の性質の表と、fontkit の字の並びの照合の表は、Unicode の文字データベースから作られたものです。Unicode の文字データの許諾 (Unicode License v3) の本文は、下の 6 節にあります。
+
+#### Brotli の展開 (@pdf-lib/brotli 0.0.0) と base64-js
+
+Kumiori は、WOFF2 の書体を読むとき (`src/webFont.ts`) に、この Brotli の展開を使います。
+
+- @pdf-lib/brotli 0.0.0 (`@pdf-lib/brotli ^0.0.0`): package.json の license は `MIT`、repository は `https://github.com/Hopding/brotli.js.git`。パッケージに LICENSE ファイルはありません。展開のコードのファイル (`dec/decode.js`・`dec/bit_reader.js`・`dec/dictionary.js`・`dec/dictionary-data.js`・`dec/prefix.js`・`dec/transform.js`・`dec/context.js`) の冒頭には、次の表示があります (`fontkit.es.js` にも残っています。`dec/decode.js` の冒頭をそのまま。Apache License 2.0 の本文は下の 1.5 にあります):
+
+```text
+/* Copyright 2013 Google Inc. All Rights Reserved.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+```
+
+- base64-js (@pdf-lib/brotli と buffer の依存。取り込まれた版は分かりません): base64-js 1.5.1 の LICENSE:
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 Jameson Little
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+#### buffer 5.7.1
+
+- 用途: Node の Buffer の代わり (`buffer ^5.6.0`)
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+The MIT License (MIT)
+
+Copyright (c) Feross Aboukhadijeh, and other contributors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+#### ieee754 1.2.1
+
+- 用途: buffer が使う浮動小数点の読み書き
+- package.json の license: `BSD-3-Clause`
+
+`LICENSE` (そのまま):
+
+```text
+Copyright 2008 Fair Oaks Labs, Inc.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+#### base64-arraybuffer 0.1.5
+
+- 用途: `base64-arraybuffer ^0.1.5`
+- package.json の license: `MIT`
+
+`LICENSE-MIT` (そのまま):
+
+```text
+Copyright (c) 2012 Niklas von Hertzen
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+```
+
+#### @pdf-lib/restructure 0.0.1
+
+- 用途: 書体の表の読み書き (`@pdf-lib/restructure ^0.0.1`)
+- package.json の license: `MIT`
+- パッケージに LICENSE ファイルなし。package.json の author: `Andrew Dillon <andrew.dillon.j@gmail.com>`、repository: `git://github.com/Hopding/restructure.git`
+
+#### @pdf-lib/unicode-properties 0.0.1
+
+- 用途: 字の Unicode の性質 (`@pdf-lib/unicode-properties ^0.0.1`)
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+Copyright 2018
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+#### unicode-trie 0.3.1
+
+- 用途: 字の性質の表 (`unicode-trie ^0.3.0`)
+- package.json の license: `MIT`
+- パッケージに LICENSE ファイルなし。package.json の author: `Devon Govett <devongovett@gmail.com>`、repository: `git://github.com/devongovett/unicode-trie.git`
+
+#### tiny-inflate 1.0.3
+
+- 用途: unicode-trie の表の展開 (`tiny-inflate ^1.0.2`)
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+MIT License
+
+Copyright (c) 2015-present Devon Govett
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+#### dfa 1.2.0
+
+- 用途: 字の並びの照合 (`dfa ^1.0.0`)
+- package.json の license: `MIT`
+- パッケージに LICENSE ファイルなし。package.json の author: `Devon Govett <devongovett@gmail.com>`、repository: `git+ssh://git@github.com/devongovett/dfa.git`
+
+#### clone 1.0.4
+
+- 用途: `clone ^1.0.1`
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+Copyright © 2011-2015 Paul Vorbach <paul@vorba.ch>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the “Software”), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+#### deep-equal 1.1.1
+
+- 用途: `deep-equal ^1.0.0`
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+MIT License
+
+Copyright (c) 2012, 2013, 2014 James Halliday <mail@substack.net>, 2009 Thomas Robinson <280north.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+#### is-arguments 1.0.4
+
+- 用途: deep-equal の依存
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 Jordan Harband
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+#### is-date-object 1.0.2
+
+- 用途: deep-equal の依存
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2015 Jordan Harband
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+#### is-regex 1.1.0
+
+- 用途: deep-equal の依存
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 Jordan Harband
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+#### object-is 1.1.2
+
+- 用途: deep-equal の依存
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 Jordan Harband
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+#### object-keys 1.1.1
+
+- 用途: deep-equal の依存
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+The MIT License (MIT)
+
+Copyright (C) 2013 Jordan Harband
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+#### regexp.prototype.flags 1.3.0
+
+- 用途: deep-equal の依存
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+The MIT License (MIT)
+
+Copyright (C) 2014 Jordan Harband
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+#### define-properties 1.1.3
+
+- 用途: regexp.prototype.flags・object-is の依存
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+The MIT License (MIT)
+
+Copyright (C) 2015 Jordan Harband
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+#### has-symbols 1.0.1
+
+- 用途: is-date-object・is-regex の依存
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+MIT License
+
+Copyright (c) 2016 Jordan Harband
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+#### rollup-plugin-node-builtins 2.1.2
+
+- 用途: Node の組み込みの代わり: events・util・inherits・string_decoder・stream・readable-stream (Readable・Writable・Duplex・Transform・PassThrough・BufferList)
+- package.json の license: `ISC`
+- パッケージに LICENSE ファイルなし。package.json の author: ``、repository: `git@github.com:calvinmetcalf/rollup-plugin-node-builtins.git`
+
+取り込まれたファイルのうち、`src/es6/util.js` の冒頭 (`src/es6/string-decoder.js` も同じ。readable-stream の部分も Node のコードから作られたもの):
+
+```text
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+#### rollup-plugin-node-globals 1.4.0
+
+- 用途: Node の大域の変数 (process・Buffer) を入れる
+- package.json の license: `MIT`
+- パッケージに LICENSE ファイルなし。package.json の author: `Calvin Metcalf <calvin.metcalf@gmail.com>`、repository: `git@github.com:calvinmetcalf/rollup-plugin-node-globals.git`
+
+#### process-es6 0.11.6
+
+- 用途: Node の process の代わり (rollup-plugin-node-globals が入れる)
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+(The MIT License)
+
+Copyright (c) 2013 Roman Shtylman <shtylman@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+#### @babel/helpers 7.10.4
+
+- 用途: Babel の補助関数 (_inheritsLoose・_createClass など。fontkit を Babel で変換したときに入ったもの)
+- package.json の license: `MIT`
+
+`LICENSE` (そのまま):
+
+```text
+MIT License
+
+Copyright (c) 2014-present Sebastian McKenzie and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### 1.2 pako の Zlib の条文
@@ -812,6 +1426,8 @@ pdf-lib 1.17.1 のソースの中のコメント (上の 1.1 に転記) が、�
 - `node_modules/pdf-lib/es/core/streams/Ascii85Stream.js`
 - `node_modules/pdf-lib/es/core/streams/LZWStream.js`
 
+@pdf-lib/fontkit 1.1.1 の配布物に取り込まれた Brotli の展開のコード (上の 1.1.1) も、Google Inc. の Apache License 2.0 の表示を持っています。
+
 pdf-lib のパッケージには、Apache License 2.0 の本文は入っていません。下の本文は、次の配布元から取得したものを、書き換えずに転記しています。
 
 - 取得元: https://www.apache.org/licenses/LICENSE-2.0.txt (取得日 2026-10-31)
@@ -1024,7 +1640,7 @@ pdf-lib のパッケージには、Apache License 2.0 の本文は入ってい�
 ## 2. Node のコマンド (`dist-cli/cli.js`) とライブラリ (`dist-lib/`) を配布するときの依存
 
 Node のコマンドとライブラリのビルドでは、次のパッケージはバンドルに入らず、実行時に node_modules から読み込まれます (上の 1 のパッケージも同じ)。npm の `kumiori` を入れると、これらも依存として一緒に入ります。
-このうち @xmldom/xmldom は、ブラウザで単体で動くライブラリ (`dist-browser/`) には束ねて含まれます (上の 1)。
+このうち @xmldom/xmldom は、ブラウザで単体で動くライブラリ (`dist-browser/`) に取り込まれます (上の 1)。
 
 ### @xmldom/xmldom 0.9.12
 
@@ -1870,4 +2486,46 @@ Disclaimers
 THIS DOCUMENT IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, OR TITLE; THAT THE CONTENTS OF THE DOCUMENT ARE SUITABLE FOR ANY PURPOSE; NOR THAT THE IMPLEMENTATION OF SUCH CONTENTS WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
 COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE DOCUMENT OR THE PERFORMANCE OR IMPLEMENTATION OF THE CONTENTS THEREOF.
 The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to this document or its contents without specific, written prior permission. Title to copyright in this document will at all times remain with copyright holders.
+```
+
+## 10. Kumiori のコードに写した W3C の文書の CSS (CSS GCPM 3 の付録 B の既定のスタイルシート)
+
+`src/htmlPrepare.ts` の `GCPM_BOOKMARK_CSS` (見出しのしおり。どの `--style` の既定にも入る) は、W3C の文書 CSS Generated Content for Paged Media Module の付録 B「Default UA Stylesheet」の規則のうち、h1〜h6 の bookmark-level の 6 行を、書き換えずに写したものです。
+
+This software includes material copied from or derived from CSS Generated Content for Paged Media Module, Appendix B: Default UA Stylesheet (https://www.w3.org/TR/2024/WD-css-gcpm-3-20240125/). Copyright © 2024 World Wide Web Consortium.
+
+- 文書の取得元: https://www.w3.org/TR/css-gcpm-3/ (取得日 2026-11-09。文書の版は W3C Working Draft, 25 January 2024、https://www.w3.org/TR/2024/WD-css-gcpm-3-20240125/)
+- 文書の著作権表示 (原文): 「Copyright © 2024 World Wide Web Consortium. W3C® liability, trademark and permissive document license rules apply.」。permissive document license のリンク先は https://www.w3.org/copyright/software-license/ (https://www.w3.org/copyright/software-license-2023/ に転送される)
+- 下はそのライセンスの本文です。取得元: https://www.w3.org/copyright/software-license-2023/ (取得日 2026-11-09)。HTML から文字だけを取り出しました (語句は書き換えていません。見出しと段落の区切りは改行にしています。末尾の版の一覧のうち、ほかのライセンスへの案内は除きました)。
+
+```text
+Software and Document license - 2023 version
+Status:
+This document is in effect since 1 January 2023.
+This work is being provided by the copyright holders under the following license.
+License
+By obtaining and/or copying this work, you (the licensee) agree that you have read, understood, and will comply with the following terms and conditions.
+Permission to copy, modify, and distribute this work, with or without modification, for any purpose and without fee or royalty is hereby granted, provided that you include the following on ALL copies of the work or portions thereof, including modifications:
+The full text of this NOTICE in a location viewable to users of the redistributed or derivative work.
+Any pre-existing intellectual property disclaimers, notices, or terms and conditions. If none exist, the
+W3C software and document short notice
+should be included.
+Notice of any changes or modifications, through a copyright statement on the new code or document such as "This software or document includes material copied from or derived from [title and URI of the W3C document]. Copyright © [$year-of-document]
+World Wide Web Consortium
+.
+https://www.w3.org/copyright/software-license-2023/
+"
+Disclaimers
+THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
+The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to the work without specific, written prior permission. Title to copyright in this work will at all times remain with copyright holders.
+Versions
+This version:
+https://www.w3.org/copyright/software-license-2023/
+Latest version:
+https://www.w3.org/copyright/software-license/
+Previous version:
+https://www.w3.org/copyright/software-license-2015/
+Changes since the previous document
+The 2023 version updates identification of the copyright holder.
 ```

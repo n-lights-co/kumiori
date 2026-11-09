@@ -108,6 +108,9 @@ The resolved styles are mapped onto `TextStyle`, `BoxStyle` and the individual n
 - All 16 margin boxes. The boxes on the top and bottom edges are placed at the full width of the body, and their position is distinguished by alignment (left, centre, right) (the CSS box-width distribution is not performed).
 - `:first`, `:left`, `:right` and `:blank` become conditional page masters. An unnamed `:first` applies only to the first page of the document; a named `:first` (`chapter:first`) applies to the first page of the run of pages with that name.
 - Named pages split the page sequence where `page` changes on a block directly under body.
+  Only in-flow blocks are compared (CSS Page 3 §8.1: `page` applies to boxes that create class A break points). Absolutely positioned, fixed and floated boxes
+  do not change the page name, and when only such boxes precede the first in-flow box, the first page takes that box's page name
+  (`page: full` after `h1 { position: absolute; visibility: hidden }` in the book sample; the same as WeasyPrint and Chromium).
 - The items left over from this stage, `string(…, first-except / start)`, the formatting of `::footnote-call` / `::footnote-marker` / `@footnote`, `target-text()` and `counter(page)` in the body text, were supported later (the sections below).
 - The default for book typesetting (Kumiori's default style sheet) includes a page number centred at the foot of the page.
 
@@ -383,6 +386,42 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      (so it divides correctly even when the container width at layout differs from the width seen at import: a full-page cover on page 1 with 0 margins, etc. The cover of the WeasyPrint report).
      Item cells use `keepEdgeSpace` (the top and bottom margins of items are not discarded. Same for `<td>`: CSS 2.1 §17.5) and, with `align-items: stretch` (the default), `stretchContent`
      (the item is stretched to the row height and its background and border fill the row)
+   - flex direction, shrinking and alignment (Flexbox 1): a line that does not fit is shrunk in proportion to `flex-shrink` × the base size, and what an item stopped by `min-width` cannot give up is taken by the other items (§9.7).
+     `row-reverse` and `column-reverse` swap the main start and end (`flex-start` packs to the right or bottom. §5.1), and `wrap-reverse` stacks the lines from bottom to top (§5.2).
+     `align-items: baseline` becomes the baseline alignment of the cells (§8.3), and auto margins in the cross axis take the free space before alignment (§8.1). In a single-line container with a definite height,
+     the line is as tall as the container's inner height (§9.4, step 15). `start`, `end`, `left`, `right`, `safe` and `unsafe` in `justify-content` (CSS Box Alignment 3 §5.1).
+     Percentages in `row-gap` and `column-gap` are kept in the computed value and resolved against the container's content width or height (0 if the height is not definite. CSS Box Alignment 3 §8.1).
+     `::before`, `::after` and the children of `display: contents` are also items (§4, CSS Display 3 §2.5) and are placed in `order` order (§5.4; an `order` declaration that is not an integer is dropped).
+     On the route via the browser, pseudo-element items are not typeset because their positions cannot be read.
+     When shrinking, the lower limit is the automatic minimum size (`min-width: auto`. §4.5: the narrowest content width; words for Latin text, one character at a time for CJK); when growing, items stop at `max-width` (the freezing in §9.7, judged with the container width at import time).
+     A `direction: rtl` container is laid out from the right (the row table also places its columns from the right, so a line without a growing column gets an empty column on the end side).
+     `last baseline` becomes the `last-baseline` alignment of the table cells (the baselines of the last lines are aligned and the group is packed to the bottom of the row; the fallback alignment end of CSS Box Alignment 3 §4.2).
+     In a column container with a definite height, the items' `flex-grow` and top and bottom `margin: auto` become `flexGrow` and `flexAutoMargin` on the blocks of the logical tree,
+     and the layout engine divides the remaining height after laying out the box (§9.7, §8.1). Text and pseudo-elements of `display: contents` in a column container are also items.
+     Column containers also support `row-gap` (empty blocks between items), `flex-basis` (the block's height), `flex-shrink` (the layout engine shrinks; `flexShrink`, `flexMin`;
+     the lower limit is min-height, otherwise the content height), `flex-wrap` (the layout engine places the items in columns; `flexWrapColumns`) and cross-axis alignment (an item with a background or
+     border becomes a box of its content width moved with `autoMargins`). When the `flex-grow` factors sum to less than 1, the rest is the free space of `justify-content`. stretch does not stretch
+     items whose height is set, and stops at `max-height` (`stretchMax`). Multi-line `align-content: stretch` gives the line tables a grow factor, and the layout engine grows
+     the rows and cells (`growTableLine`). A vertical container is laid out the same as a row by mapping the property names (`axisMapper`).
+     When estimating content widths, only CSS collapsible white space is collapsed (the ideographic space U+3000 counts as a character. CSS Text 3 §4.1.1).
+     A column in a vertical container (the main axis is horizontal) gets the column processing through the same mapping (the layout engine's shrinking and wrapping read margins and borders in logical directions).
+     In each column of a wrapping column container, `flex-grow`, main-axis auto margins and `justify-content` divide the free space (`flexWrapColumns.justify`).
+     `visibility: hidden` and `collapse` carry the text color as `transparent` (inherited; visible elements inside keep their own color), drop backgrounds and shadows,
+     and keep border widths with a `transparent` color. Painting (`paint.ts`) skips transparent glyphs and backgrounds and flagged images. collapse on a flex item
+     removes it from the main axis (zero main size, no gap, no line break at that item) and keeps its cross size as a strut (an empty box with the height measured at its natural width, in a zero-width column;
+     `LBlock.phantom`. The strut height is the height of the line in the layout before collapsing (the line with the item at its natural size), measured by laying it out as one table row
+     (this includes the extra height from baseline alignment; struts of the same line share the table and it is measured once. §9.4). Its content, bookmarks and links are not output; ids inside are kept as destinations (`phantomIds`). Flexbox 1 §4.4).
+     The bottom margin of the last child of a min-height box collapses outside the box when the minimum has no effect; when it extends the box, the margin does not collapse and is absorbed by the extension
+     (CSS 2.1 §8.3.1 and the behavior measured in Chromium; XSL-FO is unchanged). A box whose height comes from aspect-ratio never collapses it.
+     The min/max of an aspect-ratio box are carried to the layout engine in both directions (`minBlockSize`, `maxBlockSize`, `minInlineSize`, `maxInlineSize`;
+     the names are mapped in vertical writing). A box with a specified min-height (including 0) does not grow with its content. Auto margins are distributed by the physical left and right even in rtl.
+     Horizontal margins of a box with a definite width (CSS 2.1 §10.3.3): when only one is auto, the remaining space goes to that margin at layout time (`autoMargins`; a box with both auto is also
+     re-centred with the actual width of the containing block). When neither is auto and the containing block is rtl, margin-left is ignored and the box is placed from the right edge
+     (blocks, tables and in-flow block containers; `rtlEdge`; XSL-FO and vertical writing are excluded)
+     collapse on a grid item is the same as hidden. `aspect-ratio` decides one of width and height from the other. For a block in the flow whose height is auto,
+     the layout engine derives the height from the actual width at layout time (`BoxStyle.aspectRatio`; this also works for the stretched width of a flex item). With overflow visible the box grows with its content
+     (the automatic minimum size. CSS Sizing 4 §5.1); a clipping box keeps the height from the ratio. min-height and max-height (`maxBlockSize`) clamp the height from the ratio,
+     and are transferred to the width through the ratio when the width is auto. This also works for a width narrowed beside a float. Floats, absolutely positioned boxes and blocks whose writing mode differs from the parent's decide it from the width at import time
    - If html is a flex container, body is positioned within the page area by `justify-content` and `align-items`
    - Rounded corners: `border-*-radius` is read (per corner, percentages, ellipses. `BorderRadius.corners` in the layout engine). It works via the browser too
    - Multi-column containers (`column-count`): if they do not fit on the page, the columns continue across pages (the first page uses the rest of the page, the last page is balanced).

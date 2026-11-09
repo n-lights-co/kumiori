@@ -32,6 +32,7 @@ import { AH_HTML_IMPORT_OPTIONS, FO_COMPATS, HTML_STYLES, ahCascadeOptions, comp
 import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, setupDefaultFonts } from './fontMapping';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
+import { collectResources, refBasename } from './resources';
 
 export type { HtmlDefaults } from './htmlPrepare';
 export type { FontSpec } from './types';
@@ -55,7 +56,7 @@ export interface TypesetOptions {
   name?: string;
   /** 入力と一緒に使うファイル。CSS は、文書から参照されていなければ利用者のスタイルシートとして足す。FO では、書体のファイルを FO の font-family の名前で使う */
   files?: KumioriFile[];
-  /** 足す書体のファイル (TTF・OTF・TTC。システムに入れた書体のように、書体のファミリー名・太さで使う。斜体の書体は登録しない) */
+  /** 足す書体のファイル (TTF・OTF・TTC・WOFF・WOFF2。システムに入れた書体のように、書体のファミリー名・太さで使う。斜体の書体は登録しない) */
   fonts?: KumioriFile[];
   /** 総称の書体 (serif・sans-serif) の欧文に使う書体のファミリー名 (fonts で渡した書体) */
   genericFonts?: Partial<Record<'serif' | 'sans-serif', string>>;
@@ -79,6 +80,19 @@ export interface TypesetOptions {
    * 他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする (内部のホストへの要求を防ぐ)
    */
   fetchImages?: boolean | ((url: string) => boolean);
+  /**
+   * 文書・CSS が参照するファイル (CSS・画像・書体・SVG など) のうち、files に無いものの中身を返す関数。url は書かれた参照
+   * (file:///…/a.css・img/a.png・https://…)。CSS の中の相対参照は、その CSS の URL を基準に解決したもの。
+   * 中身 (文字列・Uint8Array・ArrayBuffer) を返せば、その名前のファイルとして使う。undefined を返せば、これまでどおり
+   * (http(s) の画像・CSS はネットワークから取る。fetchImages・fetchStyles)。ファイルシステムやデータベースから読むときに
+   */
+  resolveResource?: (url: string) => KumioriFileData | undefined | Promise<KumioriFileData | undefined>;
+  /**
+   * 文書が http(s) の URL で参照する CSS (<link rel="stylesheet">・@import) と、CSS の @font-face が http(s) で参照する書体 (WOFF2 など。
+   * unicode-range が文書の字と重なるものだけ) をネットワークから取るか。既定 true (取る)。
+   * 関数なら、URL ごとに決める。他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする
+   */
+  fetchStyles?: boolean | ((url: string) => boolean);
   /** PDF の圧縮 (zlib の deflate)。Node なら zlib.deflateSync を渡すと速い。既定は pdf-lib の圧縮 */
   deflate?: (data: Uint8Array) => Uint8Array;
 }
@@ -118,11 +132,13 @@ const bufferOf = (d: KumioriFileData): ArrayBuffer => {
 };
 const textOf = (d: KumioriFileData) => (typeof d === 'string' ? d : new TextDecoder().decode(bytesOf(d)));
 /** 中の処理が使う形 (ブラウザの File と同じ: 名前はファイル名、読み出しは text・arrayBuffer)。関数の中身は 1 度だけ読む */
-const toFile = (f: KumioriFile) => {
+const toFile = (f: KumioriFile, css = false) => {
   let got: Promise<KumioriFileData> | undefined;
   const data = () => (got ??= typeof f.data === 'function' ? f.data() : Promise.resolve(f.data));
-  return { name: f.name.split(/[\\/]/).pop()!, path: f.name, data, text: async () => textOf(await data()), arrayBuffer: async () => bufferOf(await data()) };
+  return { name: f.name.split(/[\\/]/).pop()!, path: f.name, css, data, text: async () => textOf(await data()), arrayBuffer: async () => bufferOf(await data()) };
 };
+/** CSS として読むファイル (拡張子 .css か、参照から CSS として取ったもの) */
+const isCss = (f: { name: string; css?: boolean }) => !!f.css || /\.css$/i.test(f.name);
 type InnerFile = ReturnType<typeof toFile>;
 
 /**
@@ -197,7 +213,7 @@ const xmlParse = (xml: string): XNode => {
 };
 /**
  * HTML・SVG の読み取り。ブラウザでは、ブラウザに備わった DOMParser (HTML の仕様の読み取り) を使う。
- * Node では linkedom を使う。linkedom は Node のときだけ読み込む (ブラウザ向けに束ねる側が linkedom を束ねずに済むように、名前を変数で渡す)
+ * Node では linkedom を使う。linkedom は Node のときだけ読み込む (ブラウザ向けに 1 つのファイルにまとめる側 (バンドラー) が linkedom を取り込まずに済むように、名前を変数で渡す)
  */
 type Parsers = { html: (t: string) => Document; svg: (t: string) => unknown };
 let parsersP: Promise<Parsers> | undefined;
@@ -252,8 +268,11 @@ function checkOptions(o: TypesetOptions) {
   if (t !== undefined && !(typeof t === 'number' && Number.isFinite(t) && t > 0)) throw optionError(msg(`fetchTimeoutMs は正の数 (ミリ秒) にしてください: ${String(t)}`, `fetchTimeoutMs must be a positive number of milliseconds: ${String(t)}`));
   for (const k of ['files', 'fonts'] as const) if (o[k] !== undefined && !Array.isArray(o[k])) throw optionError(msg(`${k} は KumioriFile の配列にしてください`, `${k} must be an array of KumioriFile`));
   for (const k of ['loadFont', 'deflate'] as const) if (o[k] !== undefined && typeof o[k] !== 'function') throw optionError(msg(`${k} は関数にしてください`, `${k} must be a function`));
-  const fi = o.fetchImages;
-  if (fi !== undefined && typeof fi !== 'boolean' && typeof fi !== 'function') throw optionError(msg('fetchImages は真偽値か関数にしてください', 'fetchImages must be a boolean or a function'));
+  for (const k of ['fetchImages', 'fetchStyles'] as const) {
+    const fi = o[k];
+    if (fi !== undefined && typeof fi !== 'boolean' && typeof fi !== 'function') throw optionError(msg(`${k} は真偽値か関数にしてください`, `${k} must be a boolean or a function`));
+  }
+  if (o.resolveResource !== undefined && typeof o.resolveResource !== 'function') throw optionError(msg('resolveResource は関数にしてください', 'resolveResource must be a function'));
   for (const k of ['genericFonts', 'spotColors'] as const) if (o[k] !== undefined && (typeof o[k] !== 'object' || o[k] === null)) throw optionError(msg(`${k} はオブジェクトにしてください`, `${k} must be an object`));
 }
 /** createTypesetter の設定のうち、Typesetter.typeset の文書ごとの設定に渡しても使われないもの (器を作るときに読み込みが済んでいる) */
@@ -319,7 +338,7 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
   for (const spec of [...FONT_SPECS, ...LATIN_SPECS]) await base.registerBuffer(spec.family, spec.weight ?? 400, await bufferOfSpec(spec), false);
   setupDefaultFonts(base);
   // 足す書体: name 表のファミリー名 (nameID 16、無ければ 1) と OS/2 の太さで登録する。斜体は登録しない (@font-face の書体と同じ。斜体の選び分けは無い)
-  for (const f of (setup.fonts ?? []).map(toFile)) {
+  for (const f of (setup.fonts ?? []).map((f) => toFile(f))) {
     // TTC (書体の集まり) は、中の書体を一つずつ取り出して登録する。壊れた・短いファイルは警告にして、ほかの書体は登録する
     let faces: ArrayBuffer[];
     try {
@@ -391,8 +410,37 @@ async function typesetDocument(
   const compat: FoCompat = options.compat ?? 'spec';
   // アンテナハウス互換 (XSL-FO の既定・HTML の style ah) の設定は compat.ts (画面と同じ)
   const ah = isAhCompat(isFo ? 'fo' : 'html', { compat, style });
-  const files = (options.files ?? []).map(toFile);
+  const files = (options.files ?? []).map((f) => toFile(f));
   const warnings: string[] = [...baseWarnings];
+  // 文書・CSS が参照するファイルのうち、files に無いもの: resolveResource に問い合わせ、http(s) の CSS は取る (fetchStyles)
+  {
+    const names = new Set(files.flatMap((f) => [f.path.split('\\').join('/').replace(/^\.\//, ''), f.name.toLowerCase()]));
+    // 文書に出てくる字 (タグや CSS の字も含む、多めの見積もり)。@font-face の書体のうち、unicode-range がこれと重ならないものは取らない
+    const chars = new Set<number>();
+    for (const ch of text) chars.add(ch.codePointAt(0)!);
+    const got = await collectResources(text, {
+      chars,
+      has: (u) => names.has(u) || names.has(refBasename(u)),
+      cssTexts: await Promise.all(files.filter(isCss).map(async (f) => ({ name: f.path, text: await f.text() }))),
+      ...(options.resolveResource ? { resolve: options.resolveResource } : {}),
+      fetchStyle: (u) => (typeof options.fetchStyles === 'function' ? options.fetchStyles(u) : options.fetchStyles !== false),
+      timeoutMs: timeout,
+    });
+    for (const f of got.files) {
+      files.push(toFile({ name: f.name, data: f.data }, f.css));
+      names.add(f.name);
+    }
+    for (const w of got.warnings) {
+      const [kind, url0] = w.split('\t');
+      const url = url0.slice(0, 200);
+      const font = kind.startsWith('font');
+      warnings.push(
+        kind.endsWith('not-fetched')
+          ? msg(`${font ? '書体' : 'CSS'}を取りません (fetchStyles): ${url}`, `${font ? 'font' : 'stylesheet'} not fetched (fetchStyles): ${url}`)
+          : msg(`${font ? '書体' : 'CSS'}を取得できません: ${url}`, `cannot fetch the ${font ? 'font' : 'stylesheet'}: ${url}`),
+      );
+    }
+  }
 
   // 書体。FO では、一緒に渡した書体ファイルを、FO の font-family の名前 (和名・英名) から使う (画面で書体を読み込んだのと同じ)
   const fonts = base.fork();
@@ -401,7 +449,7 @@ async function typesetDocument(
   if (isFo) {
     // 同じファミリー・太さの書体が複数あれば、先のものを使う。書体は輪郭から描くので、ブラウザの document.fonts には登録しない (canvas: false)
     const cands: UserFont[] = [];
-    for (const f of files.filter((x) => /\.(ttf|otf|ttc|otc)$/i.test(x.name))) cands.push(...splitFontFile(await f.arrayBuffer()));
+    for (const f of files.filter((x) => /\.(ttf|otf|ttc|otc|woff2?)$/i.test(x.name))) cands.push(...splitFontFile(await f.arrayBuffer()));
     for (const u of cands) {
       if (userFonts.some((x) => x.family === u.family && x.weight === u.weight)) continue;
       await fonts.registerBuffer(u.family, u.weight, u.buffer, false);
@@ -415,7 +463,7 @@ async function typesetDocument(
   // 画像 (と、FO の external-graphic が指す MathML の文字のファイル)。文書と CSS (と、そこから参照された SVG) に名前が出てくるものだけを読む。
   // 画像の突き合わせはファイル名 (basename) でも当たるので、ファイル名で選ぶ
   const assets = new AssetStore({ parseXml: svgParse });
-  const mentioned = mentionedFiles([text, ...(await Promise.all(files.filter((f) => /\.css$/i.test(f.name)).map((f) => f.text())))]);
+  const mentioned = mentionedFiles([text, ...(await Promise.all(files.filter(isCss).map((f) => f.text())))]);
   const images = files.filter((x) => IMAGE_FILE.test(x.name));
   for (const f of images.filter((x) => /\.svg$/i.test(x.name) && mentioned.has(x.name.toLowerCase()))) {
     for (const n of mentionedFiles([await f.text()])) mentioned.add(n);
@@ -553,12 +601,13 @@ async function importHtmlText(
   xml: boolean,
 ): Promise<Imported> {
   const parseHtml = (await parsers()).html;
-  const prepared = await prepareHtml(html, files.filter((f) => /\.css$/i.test(f.name)), style, { width: 210, height: 297, margin: 20 }, parseHtml);
+  const prepared = await prepareHtml(html, files.filter(isCss), style, { width: 210, height: 297, margin: 20 }, parseHtml);
   // 画像は data-kumiori-src に元のパスを残す (画面と同じ)
   prepared.doc.querySelectorAll('img[src]').forEach((img) => img.setAttribute('data-kumiori-src', img.getAttribute('src') ?? ''));
   // 既定のスタイル (style) は、作成者スタイルシート ではなく既定のスタイルシート (UA) として当てる (作成者スタイルシート に詳細度で勝たない)
   const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.css) : {}) });
-  await mapping.loadFontFaces(prepared.css, files.filter((f) => /\.(ttf|otf)$/i.test(f.name)));
+  // @font-face の書体 (TTF・OTF と、ふつうの書体のファイルに戻して使う WOFF・WOFF2)
+  await mapping.loadFontFaces(prepared.css, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)));
   // 分綴を使う文書なら、文書に出てくる言語の分綴の規則を読み込む
   await loadDocumentHyphenators(prepared.doc, prepared.css);
   // 作成者スタイルシート と style 属性のうち、読まない宣言 (未対応・知らないプロパティ) を数える

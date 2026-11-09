@@ -32,6 +32,10 @@
       "types": "./dist-lib/types/index.d.ts",
       "import": "./dist-lib/index.js"
     },
+    "./node": {
+      "types": "./dist-lib/types/node.d.ts",
+      "import": "./dist-lib/node.js"
+    },
     "./browser": {
       "types": "./dist-lib/types/index.d.ts",
       "default": "./dist-browser/kumiori.js"

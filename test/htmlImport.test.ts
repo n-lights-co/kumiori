@@ -667,6 +667,15 @@ describe('HTML: 組版の指摘 (描く順・飾り線・揃え・字下げ・�
     expect(j).toMatch(/"columns":\{"count":2,/);
   });
 
+  it('ブロック・flex の <a href> は箱の全体がリンク。スキームは RFC 3986 §3.1 の形、相対参照も外へのリンク', () => {
+    const links: unknown[] = [];
+    JSON.stringify(
+      imp('<a style="display: block" href="#x">b</a><a style="display: flex" href="other.pdf"><span>f</span></a><p><a href="pdf-media-link://m">m</a><a href="doc/a%20b.docx">d</a></p><p id="x">x</p>').document.sequences[0].flow,
+      (_k, v) => (v && typeof v === 'object' && v.link && links.push(v.link), v),
+    );
+    expect(links).toEqual([{ internal: 'x' }, { external: 'other.pdf' }, { external: 'pdf-media-link://m' }, { external: 'doc/a%20b.docx' }]);
+  });
+
   it('縦並び (column) の flex も、項目を order の順に並べる (Flexbox 1 §5.4)', () => {
     const t = glyphs('<div style="display: flex; flex-direction: column"><div style="order: 2">ORDER2</div><div style="order: 1">ORDER1</div></div>')
       .map((g) => g.text)

@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { defaultFontCacheDir, localFont, looksLikeFont, parseArgs } from '../src/cli';
 import { FONT_SPECS } from '../src/fontMapping';
 
@@ -57,5 +58,28 @@ describe('書体のキャッシュ', () => {
     await expect(load(FONT_SPECS[2])).rejects.toThrow(/書体を取得できません/);
     expect(fs.existsSync(path.join(cache, 'NotoSansJP-Bold.ttf'))).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('kumiori/node の部品', () => {
+  it('createFileResolver: file: の URL のファイルを読む。root の外・file: でない URL・無いファイルは undefined', async () => {
+    const { createFileResolver } = await import('../src/node');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-res-'));
+    fs.writeFileSync(path.join(dir, 'a.css'), 'h1{}');
+    const url = (p: string) => pathToFileURL(p).href;
+    const any = createFileResolver();
+    expect(new TextDecoder().decode(any(url(path.join(dir, 'a.css'))))).toBe('h1{}');
+    expect(any(url(path.join(dir, 'none.css')))).toBeUndefined();
+    expect(any('https://example.com/a.css')).toBeUndefined();
+    const inner = createFileResolver({ root: path.join(dir, 'sub') });
+    expect(inner(url(path.join(dir, 'a.css')))).toBeUndefined();
+  });
+  it('createFontLoader: fontDir の書体を読む (cacheDir: null ならキャッシュを使わない)', async () => {
+    const { createFontLoader } = await import('../src/node');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-fd-'));
+    const spec = { family: 'X', urls: ['https://example.invalid/X-Regular.ttf'] };
+    fs.writeFileSync(path.join(dir, 'X-Regular.ttf'), Buffer.from([0, 1, 0, 0, ...new Array(20).fill(0)]));
+    const buf = await createFontLoader({ fontDir: dir, cacheDir: null })(spec as never);
+    expect(buf?.byteLength).toBe(24);
   });
 });

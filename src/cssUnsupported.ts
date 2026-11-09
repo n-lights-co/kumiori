@@ -27,7 +27,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'justify-self',
   'place-items',
   'opacity',
-  'visibility',
   'font-size-adjust',
   'font-synthesis',
   'font-synthesis-weight',
@@ -99,6 +98,51 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'glyph-orientation-vertical',
 ]);
 
+/**
+ * 印刷では意味のないプロパティ (画面の操作・表示だけに効く)。未対応・知らないプロパティとして数えない (警告に出さない)。
+ *  - 対応仕様説明書 (HTML と CSS 編) の「印刷に関わらないプロパティ」の表の 22 項目。説明書の表を直したら、ここも同じに直す
+ *  - アニメーション・遷移 (CSS Animations 1・CSS Transitions 1)、スクロール (CSS Overflow 3・4、CSS Scroll Snap 1・CSS Scrollbars 1)、
+ *    タッチの操作 (touch-action)、描画の予告 (will-change)、画面の字の大きさの調整 (text-size-adjust)、画面の遷移 (view-transition-name)、
+ *    音声 (speak。CSS Speech 1 は音声の媒体だけに効く)
+ */
+const PRINT_IRRELEVANT_CSS_PROPERTIES: ReadonlySet<string> = new Set([
+  'speak-as',
+  'font-display',
+  'scroll-behavior',
+  'scrollbar-gutter',
+  'accent-color',
+  'appearance',
+  'caret',
+  'caret-color',
+  'caret-shape',
+  'caret-animation',
+  'cursor',
+  'interactivity',
+  'interest-delay',
+  'interest-delay-start',
+  'interest-delay-end',
+  'nav-up',
+  'nav-down',
+  'nav-left',
+  'nav-right',
+  'pointer-events',
+  'resize',
+  'user-select',
+  'touch-action',
+  'will-change',
+  'text-size-adjust',
+  'view-transition-name',
+  'view-transition-class',
+  'speak',
+]);
+/** 名前の頭で見分ける、印刷では意味のないプロパティ (animation-name・transition-duration・scroll-margin-top・overscroll-behavior-x・scrollbar-width など) */
+const PRINT_IRRELEVANT_PREFIX = /^(animation|transition|scroll-|overscroll-behavior|scrollbar-)/;
+
+/** 印刷では意味のないプロパティか (警告に出さない) */
+export function isPrintIrrelevantCssProperty(p: string): boolean {
+  return PRINT_IRRELEVANT_CSS_PROPERTIES.has(p) || PRINT_IRRELEVANT_PREFIX.test(p);
+}
+
 /** 対応しているプロパティのうち、読まない値 (16 章の 2 つ目の表のうち、値で見分けられるもの) */
 export const UNSUPPORTED_CSS_VALUES: Readonly<Record<string, readonly string[]>> = {
   position: ['sticky'],
@@ -142,7 +186,7 @@ export function splitStyleAttribute(text: string): Array<[string, string]> {
 /** 1 つの宣言を数える */
 function count(rep: UnsupportedCssReport, prop: string, value: string) {
   const p = prop.toLowerCase();
-  if (!p || p.startsWith('--')) return;
+  if (!p || p.startsWith('--') || isPrintIrrelevantCssProperty(p)) return;
   const v = value.replace(/\s*!important\s*$/i, '').trim();
   if (UNSUPPORTED_CSS_PROPERTIES.has(p)) {
     rep.unsupported[p] = (rep.unsupported[p] ?? 0) + 1;
