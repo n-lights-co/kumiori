@@ -406,10 +406,12 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      `visibility: hidden` and `collapse` carry the text color as `transparent` (inherited; visible elements inside keep their own color), drop backgrounds and shadows,
      and keep border widths with a `transparent` color. Painting (`paint.ts`) skips transparent glyphs and backgrounds and flagged images. collapse on a flex item
      removes it from the main axis (zero main size, no gap, no line break at that item) and keeps its cross size as a strut (an empty box with the height measured at its natural width, in a zero-width column;
-     `LBlock.phantom`. The strut height is the largest height of the items that were in the same line in the layout before collapsing (the line with the item at its natural size),
-     each measured at its width (§9.4). Its content, bookmarks and links are not output; ids inside are kept as destinations (`phantomIds`). Flexbox 1 §4.4).
-     A box with min-height or an aspect-ratio min/max still has an auto height, so the bottom margin of its last child collapses outside the box (CSS 2.1 §8.3.1; XSL-FO is unchanged).
-     In vertical writing, the minimum and maximum in the block direction are read from min-width and max-width
+     `LBlock.phantom`. The strut height is the height of the line in the layout before collapsing (the line with the item at its natural size), measured by laying it out as one table row
+     (this includes the extra height from baseline alignment; struts of the same line share the table and it is measured once. §9.4). Its content, bookmarks and links are not output; ids inside are kept as destinations (`phantomIds`). Flexbox 1 §4.4).
+     The bottom margin of the last child of a min-height box collapses outside the box when the minimum has no effect; when it extends the box, the margin does not collapse and is absorbed by the extension
+     (CSS 2.1 §8.3.1 and the behavior measured in Chromium; XSL-FO is unchanged). A box whose height comes from aspect-ratio never collapses it.
+     The min/max of an aspect-ratio box are carried to the layout engine in both directions (`minBlockSize`, `maxBlockSize`, `minInlineSize`, `maxInlineSize`;
+     the names are mapped in vertical writing). A box with a specified min-height (including 0) does not grow with its content. Auto margins are distributed by the physical left and right even in rtl
      collapse on a grid item is the same as hidden. `aspect-ratio` decides one of width and height from the other. For a block in the flow whose height is auto,
      the layout engine derives the height from the actual width at layout time (`BoxStyle.aspectRatio`; this also works for the stretched width of a flex item). With overflow visible the box grows with its content
      (the automatic minimum size. CSS Sizing 4 §5.1); a clipping box keeps the height from the ratio. min-height and max-height (`maxBlockSize`) clamp the height from the ratio,

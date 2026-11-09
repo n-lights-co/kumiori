@@ -402,10 +402,12 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      `visibility: hidden`・`collapse` は、字の色を `transparent` にして運び (受け継ぐ。中の visible の要素は自分の色)、背景・影を外し、
      枠は太さを残して色を `transparent` にする。描画 (`paint.ts`) は transparent の字・背景と、印の付いた画像を描かない。flex の項目の collapse は
      主軸から外し (主軸の大きさ 0・間の空きなし・その項目では折り返さない)、交差軸の大きさは支柱として残す (幅 0 の列の中に、本来の幅で測った高さの
-     空の箱を置く。`LBlock.phantom`。支柱の高さは、畳む前の組み (項目を本来の大きさで並べた行) で同じ行にあった項目を、その幅で測った高さの最大
-     (§9.4)。中身・しおり・リンクは出さず、中の id は飛び先として残す (`phantomIds`)。Flexbox 1 §4.4)。
-     min-height・aspect-ratio の min・max の箱でも、高さは auto なので、最後の子の下の margin は箱の外へ畳む (CSS 2.1 §8.3.1。XSL-FO はこれまでどおり)。
-     縦書きの block の向きの下限・上限は min-width・max-width から読む
+     空の箱を置く。`LBlock.phantom`。支柱の高さは、畳む前の組み (項目を本来の大きさで並べた行) を表の 1 行として測るだけ組んだ高さ
+     (基線の揃えの分も入る。同じ行の支柱どうしは表を分け合い、1 度だけ測る。§9.4)。中身・しおり・リンクは出さず、中の id は飛び先として残す (`phantomIds`)。Flexbox 1 §4.4)。
+     min-height の箱の最後の子の下の margin は、min が効かなければ箱の外へ畳み、効いて箱が伸びたら畳まず伸びた分に吸わせる
+     (CSS 2.1 §8.3.1・Chromium で測った動き。XSL-FO はこれまでどおり)。aspect-ratio で高さの決まる箱は、いつも畳まない。
+     aspect-ratio の箱の min・max は、block・inline とも組版エンジンへ運ぶ (`minBlockSize`・`maxBlockSize`・`minInlineSize`・`maxInlineSize`。
+     縦書きは名前を読み替える)。min-height の指定 (0 も) がある箱は中身で伸ばさない。auto の余白は rtl でも物理の左右で配る
      grid の項目の collapse は hidden と同じ。`aspect-ratio` は、幅か高さの一方からもう一方を決める。流れの中のブロックで高さが auto なら、
      組版エンジンが組むときの実際の幅から高さを出す (`BoxStyle.aspectRatio`。flex の項目の伸びた幅にも効く)。overflow が visible なら中身で伸び
      (自動の最小の大きさ。CSS Sizing 4 §5.1)、切り抜く箱は比の高さで固定。min-height・max-height (`maxBlockSize`) で比の高さを抑え、

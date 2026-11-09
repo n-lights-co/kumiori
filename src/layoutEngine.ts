@@ -156,6 +156,8 @@ interface BoxDesc {
   minB?: number;
   /** block 方向の内容の寸法の最大値 (aspect-ratio の箱の max。中身で伸びても、ここで止める) */
   maxB?: number;
+  /** aspect-ratio の箱 (高さは比で決まり、auto として扱わない): 最後の子の下の margin を、箱の下の margin と畳まない */
+  ratioSized?: boolean;
   src?: string;
   bpStart: number;
   bpEnd: number;
@@ -496,6 +498,9 @@ function discardsLeading(st: ResolvedStyle): boolean {
   return !!st.lineHeightDiscard && st.lineStackingStrategy !== 'line-height';
 }
 
+/** 支柱だけの箱 (LBlock.phantom) の中身の節 → 測った block の大きさ (同じ行の支柱どうしで使い回す) */
+const phantomSizes = new WeakMap<object, number>();
+
 class Flow {
   /** まだ何も置いていない先頭の余白を捨てるか (FlowInit.discardLeading) */
   private discardLeading: boolean;
@@ -813,9 +818,7 @@ class Flow {
       // CSS: 幅の指定の無い float は shrink-to-fit (CSS 2.1 §10.3.5): min(max(最小の内容の幅, 使える幅), 内容の幅)
       const availC = Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0);
       const widthAt = (rootI: number) => {
-        const sub = new Flow({ ...this.host, warn: () => {} }, { wm: st.wm, rootI: Math.max(rootI, 1), abs: () => [], pageSize: this.pageSize, measure: true, intrinsic: true });
-        sub.layoutChildren(node.children, st);
-        sub.finishAtomic();
+        const sub = this.measureSub(node.children, st, Math.max(rootI, 1), { intrinsic: true }).sub;
         return maxLineLength(sub.root);
       };
       const pref = widthAt(Math.max(availC, 1) * 100);
@@ -833,9 +836,7 @@ class Flow {
       const fullWidth = node.float === 'before' || node.float === 'after';
       let outer = node.float === 'before' ? (this.pageLevel?.pageRootI() ?? this.rootI) : fullWidth ? this.rootI : this.rootI / 3;
       if (!fullWidth) {
-        const sub = new Flow({ ...this.host, warn: () => {} }, { wm: st.wm, rootI: Math.max(this.rootI - desc.m.is - desc.m.ie - desc.bpI, 1), abs: () => [], pageSize: this.pageSize, measure: true });
-        sub.layoutChildren(node.children, st);
-        sub.finishAtomic();
+        const sub = this.measureSub(node.children, st, Math.max(this.rootI - desc.m.is - desc.m.ie - desc.bpI, 1)).sub;
         // 中の要素の罫線・余白は maxLineLength に含まれる
         const longest = maxLineLength(sub.root) + desc.m.is + desc.m.ie + desc.bpI;
         if (longest <= this.rootI / 2) outer = longest;
@@ -1292,9 +1293,14 @@ class Flow {
         return;
       }
     }
-    // CSS: 高さが auto の箱 (min-height・aspect-ratio の min・max があっても) の最後の子の下の margin は、箱の下の margin と畳む
-    // (CSS 2.1 §8.3.1)。XSL-FO の block-progression-dimension.minimum の箱は、これまでどおり中に置く
-    if (d.bpEnd > 0 || d.bsizeExplicit != null || ((d.minB != null || d.maxB != null) && this.host.xslSpace)) this.flush();
+    // CSS: 高さが auto の箱の最後の子の下の margin は、箱の下の margin と畳む (CSS 2.1 §8.3.1)。min-height・max-height (aspect-ratio の
+    // min・max も) が効いて、箱の高さが中身の高さと変わるときは畳まず、その margin は箱の高さに数えない (ブラウザと同じ: 下限で伸びた分・
+    // 上限で切った分に吸われる)。aspect-ratio で高さの決まる箱は、中身で伸びたときも畳まない (ブラウザと同じ)。XSL-FO の block-progression-dimension.minimum の箱と、ページで分かれた箱は、margin を中に置く
+    const limited = d.minB != null || d.maxB != null;
+    if (limited && !this.host.xslSpace && d.bsizeExplicit == null && d.bpEnd <= 0 && f.opened && !f.node.cont && !f.usedB) {
+      const content = this.cursor - f.contentStartB;
+      if (d.ratioSized || (d.minB != null && content < d.minB - EPS) || (d.maxB != null && content > d.maxB + EPS)) this.resetPending();
+    } else if (d.bpEnd > 0 || d.bsizeExplicit != null || limited) this.flush();
     // CSS: ページをまたぐ箱の height・min-height は、断片の長さの合計に効く (Fragmentation 3 §5.3)。
     // 残りが今のページに入らなければ、この断片をページの終わりまで伸ばして、続きを次のページに置く
     if (!this.host.xslSpace && this.paginating && (d.bsizeExplicit != null || d.minB != null)) {
@@ -1677,17 +1683,22 @@ class Flow {
   }
 
   /** 中身を、内容の inline の大きさ ci で測るだけ組んで、block の大きさを返す (先頭・末尾の子の余白も含める) */
-  private measureBlockSize(children: LBlock['children'], st: ResolvedStyle, ci: number): number {
-    const sub = new Flow({ ...this.host, warn: () => {} }, { wm: st.wm, rootI: Math.max(ci, 1), abs: () => [], pageSize: this.pageSize, measure: true, referenceArea: true });
+  /**
+   * 測るだけ組む: 中身を、行の長さ rootI の別の流れに組む (警告は出さない。ページには置かない)。sub は組んだ流れ (幅は maxLineLength(sub.root))、
+   * used は block の大きさ
+   */
+  private measureSub(children: LBlock['children'], st: ResolvedStyle, rootI: number, extra: Partial<FlowInit> = {}, wm: WritingMode = st.wm): { sub: Flow; used: number } {
+    const sub = new Flow({ ...this.host, warn: () => {} }, { wm, rootI, abs: () => [], pageSize: this.pageSize, measure: true, ...extra });
     sub.layoutChildren(children, st);
-    return sub.finishAtomic();
+    return { sub, used: sub.finishAtomic() };
   }
 
   /**
    * aspect-ratio の箱の大きさ (CSS Sizing 4 §5.1)。比は box-sizing の箱どうし。
-   * - inline が auto なら、block の min・max (min-height・max-height) を比で inline に移して抑える
-   * - block は inline × 比 を min・max で抑える。scroll なしの箱 (overflow: visible) は中身で伸びる (自動の最小の大きさ) が、max は超えない。
-   *   切り抜く箱は比の高さで固定
+   * - inline が auto なら、block の min・max を比で inline に移して抑える。移した max は inline の min を下回らず、移した min は inline の max を
+   *   上回らない。その後で inline の min・max (min-width・max-width) を当てる (min が勝つ。CSS 2.1 §10.4)
+   * - block は inline × 比 を min・max で抑える。min が auto で scroll なしの箱 (overflow: visible) は中身で伸びる (自動の最小の大きさ) が、
+   *   max は超えない。min の指定がある箱 (0 も) と切り抜く箱は、比の高さで固定 (中身ははみ出す)
    */
   private aspectBox(node: LBlock, desc: BoxDesc): BoxDesc {
     const r = node.aspectRatio!;
@@ -1698,21 +1709,24 @@ class Flow {
     const toB = (ci: number) => Math.max((ci + (bb ? desc.bpI : 0)) * k - (bb ? bpB : 0), 0);
     const toI = (cb: number) => Math.max((cb + (bb ? bpB : 0)) / k - (bb ? desc.bpI : 0), 0);
     const maxB = node.maxBlockSize;
-    const minB = desc.minB;
-    let ci = desc.isizeExplicit;
+    const minB = node.minBlockSize;
+    const maxI = node.maxInlineSize ?? Infinity;
+    const minI = node.minInlineSize ?? 0;
+    const was = desc.isizeExplicit;
+    let ci = was;
     if (ci == null) {
-      const avail = Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0);
-      ci = avail;
-      if (maxB != null) ci = Math.min(ci, toI(maxB));
-      if (minB != null) ci = Math.max(ci, toI(minB));
-      if (Math.abs(ci - avail) > EPS) desc = { ...desc, isizeExplicit: ci };
+      ci = Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0);
+      if (maxB != null) ci = Math.min(ci, Math.max(toI(maxB), minI));
+      if (minB != null) ci = Math.max(ci, Math.min(toI(minB), maxI));
     }
+    ci = Math.max(Math.min(ci, maxI), minI);
+    if (was == null ? Math.abs(ci - Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0)) > EPS : Math.abs(ci - was) > EPS) desc = { ...desc, isizeExplicit: ci };
     let b = toB(ci);
     if (maxB != null) b = Math.min(b, maxB);
     if (minB != null) b = Math.max(b, minB);
-    if (node.overflow === 'hidden') return { ...desc, bsizeExplicit: b };
-    // 中身で伸びるが、max は超えない (max を超える中身ははみ出す。箱を閉じるときに当てる)。min が max より大きければ min が勝つ
-    return { ...desc, minB: Math.max(minB ?? 0, b), ...(maxB != null ? { maxB: Math.max(maxB, minB ?? 0) } : {}) };
+    if (node.overflow === 'hidden' || minB != null) return { ...desc, bsizeExplicit: b, minB: undefined };
+    // 中身で伸びるが、max は超えない (max を超える中身ははみ出す。箱を閉じるときに当てる)
+    return { ...desc, minB: b, ratioSized: true, ...(maxB != null ? { maxB } : {}) };
   }
 
   layoutBlockLevel(node: LBlockLevel, ps: ResolvedStyle) {
@@ -1733,12 +1747,20 @@ class Flow {
       const y = this.floatBottom(node.clear);
       if (y > this.cursor + this.pendingValue()) this.pendMin = Math.max(this.pendMin, y - this.cursor);
     }
-    // 支柱だけの箱 (flex の visibility: collapse の項目。LBlock.phantom): 子を 1 つずつ測るだけ組み、その block の大きさの最大の空の箱を置く。
-    // 中の id は、リンクの飛び先として残す
+    // 支柱だけの箱 (flex の visibility: collapse の項目。LBlock.phantom): 中身 (畳む前の行) を測るだけ組み、その block の大きさの空の箱を置く。
+    // 同じ行の支柱どうしは中身の節を分け合うので、測った値を節ごとに覚えて使い回す。中の id は、リンクの飛び先として残す
     if (node.phantom) {
       const d0 = describeBox(node, this.wm);
       const ci = d0.isizeExplicit ?? Math.max(this.contentI() - d0.m.is - d0.m.ie - d0.bpI, 0);
-      const used = Math.max(0, ...node.children.map((k) => this.measureBlockSize([k], st, ci)));
+      let used = 0;
+      for (const k of node.children) {
+        let v = typeof k === 'object' ? phantomSizes.get(k) : undefined;
+        if (v === undefined) {
+          v = this.measureSub([k], st, Math.max(ci, 1), { referenceArea: true }).used;
+          if (typeof k === 'object') phantomSizes.set(k, v);
+        }
+        used = Math.max(used, v);
+      }
       const horizontal = this.wm === 'horizontal-tb';
       const { phantom: _p, phantomIds, ...rest } = node;
       // id は、支柱の高さの空の箱を包む箱に 1 つずつ付ける (高さ 0 の箱は、表のセルの中では面積の節にならず、id が記録されない)
@@ -1748,12 +1770,12 @@ class Flow {
       return;
     }
     let desc = describeBox(node, this.wm);
-    // 幅の決まった箱の auto の余白 (CSS 2.1 §10.3.3): 置く場所の残りを、auto の側に配る。margin-left/right は物理の向きなので、rtl では逆
+    // 幅の決まった箱の auto の余白 (CSS 2.1 §10.3.3): 置く場所の残りを、auto の側に配る。'start' は margin-left (縦書きは margin-top) が auto。
+    // 余白の is は direction によらず左 (上) の側なので、rtl でも入れ替えない (auto の余白は物理の左右で決まる)
     const autoMargins = (d: BoxDesc): BoxDesc => {
       if (!node.autoMargins || d.isizeExplicit == null) return d;
       const free = this.contentI() - d.m.is - d.m.ie - d.bpI - d.isizeExplicit;
-      const rtl = st.direction === 'rtl';
-      const am = rtl && node.autoMargins !== 'center' ? (node.autoMargins === 'start' ? 'end' : 'start') : node.autoMargins;
+      const am = node.autoMargins;
       return free > EPS ? { ...d, m: { ...d.m, is: d.m.is + (am === 'center' ? free / 2 : am === 'start' ? free : 0) } } : d;
     };
     desc = autoMargins(desc);
@@ -1775,7 +1797,7 @@ class Flow {
     if (node.aspectRatio && desc.bsizeExplicit == null) {
       const was = desc.isizeExplicit;
       desc = this.aspectBox(node, desc);
-      if (was == null && desc.isizeExplicit != null) desc = autoMargins(desc);
+      if (desc.isizeExplicit !== was) desc = autoMargins(desc);
     }
     const frame = this.openFrame(desc);
     // 中の絶対配置の箱の基準になる箱 (CSS の position が static でない箱。横書きだけ)・position: relative でずらす箱は、断片を集める
@@ -2659,9 +2681,7 @@ class Flow {
     // 回転した箱の局所の幅 (回転後のページの縦の長さ) は、中身の長さに合わせる (使える長さが上限。shrink-to-fit)。
     // 90°・270° の表は、表の幅 (列の幅の合計 + 字下げ) の長さで本文の上から置く
     const fit = (len: number) => {
-      const m = new Flow({ ...this.host, warn: () => {} }, { wm: st.wm, rootI: Math.max(len, 1), abs: () => [], pageSize: this.pageSize, measure: true });
-      m.layoutChildren(node.children, st);
-      m.finishAtomic();
+      const m = this.measureSub(node.children, st, Math.max(len, 1)).sub;
       const need = maxLineLength(m.root, true, true);
       return need > 0 && need < len ? need : len;
     };
@@ -2981,9 +3001,7 @@ class Flow {
     // 90° の表は、表の幅 (列の幅の合計 + 字下げ) の長さで本文の上から置く
     if (rotOdd && horizontal && pageH == null && contentI == null && node.children.length) {
       const avail = Math.max(fallbackI - desc.bpI, 1);
-      const sub = new Flow({ ...this.host, warn: () => {} }, { wm: wmC, rootI: avail, abs: () => [], pageSize: this.pageSize, measure: true });
-      sub.layoutChildren(node.children, st);
-      sub.finishAtomic();
+      const sub = this.measureSub(node.children, st, avail, {}, wmC).sub;
       const need = maxLineLength(sub.root, true, true);
       if (need > 0 && need < avail) fallbackI = need + desc.bpI;
     }
@@ -2992,9 +3010,7 @@ class Flow {
     if (node.shrinkToFit && contentI == null && horizontal && !rot && !(node.left != null && node.right != null) && node.children.length) {
       const availC = Math.max(fallbackI - desc.bpI, 0);
       const widthAt = (rootI: number) => {
-        const sub = new Flow({ ...this.host, warn: () => {} }, { wm: wmC, rootI: Math.max(rootI, 1), abs: () => [], pageSize: this.pageSize, measure: true, intrinsic: true });
-        sub.layoutChildren(node.children, st);
-        sub.finishAtomic();
+        const sub = this.measureSub(node.children, st, Math.max(rootI, 1), { intrinsic: true }, wmC).sub;
         return maxLineLength(sub.root);
       };
       const pref = widthAt(Math.max(availC, 1) * 100);
@@ -3537,9 +3553,7 @@ class Flow {
       const key = memo ? `${rootI}|${JSON.stringify(cst)}` : '';
       const hit = memo?.get(cell)?.get(key);
       if (hit !== undefined) return hit;
-      const sub = new Flow({ ...this.host, warn: () => {} }, { wm: cst.wm, rootI: Math.max(rootI, 1), abs: () => [], pageSize: this.pageSize, measure: true, intrinsic: true, ...(rootI <= 1 ? { minContent: true } : {}) });
-      sub.layoutChildren(cell.children, cst);
-      sub.finishAtomic();
+      const sub = this.measureSub(cell.children, cst, Math.max(rootI, 1), { intrinsic: true, ...(rootI <= 1 ? { minContent: true } : {}) }).sub;
       const w = Math.ceil(maxLineLength(sub.root) * 100) / 100 + 0.01;
       if (memo) {
         let m = memo.get(cell);
@@ -3662,9 +3676,7 @@ class Flow {
       for (const c of node.captions ?? []) {
         const cst = resolveStyle(st, c.block);
         const d = describeBox(c.block, cst.wm);
-        const sub = new Flow({ ...this.host, warn: () => {} }, { wm: cst.wm, rootI: 1, abs: () => [], pageSize: this.pageSize, measure: true, intrinsic: true });
-        sub.layoutChildren(c.block.children, cst);
-        sub.finishAtomic();
+        const sub = this.measureSub(c.block.children, cst, 1, { intrinsic: true }).sub;
         w = Math.max(w, Math.ceil(maxLineLength(sub.root) * 100) / 100 + d.bpI + d.m.is + d.m.ie);
       }
       return Math.max(w - desc.bpI, 0);

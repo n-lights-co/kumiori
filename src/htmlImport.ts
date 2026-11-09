@@ -1147,7 +1147,9 @@ class HtmlImporter {
       return p('margin-left') + p('margin-right') + (kc('box-sizing') === 'border-box' ? 0 : p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width'));
     };
     /** 行の 1 列: 項目 (el) か空き。w は固定の幅 (pt)、star があれば比例の列 (組版時の容器の幅の余りを star の比で分け、w を足す。表の 'N*' + widthExtra) */
-    type Cell = { el?: Item; w: number; star?: number; strut?: Array<{ node: LBlockLevel; w: number }> };
+    /** collapse の項目の支柱のもと: 畳む前の組みで同じ行にあった項目と、その幅 (同じ行の支柱どうしで分け合う) */
+    type StrutLine = Array<{ el: Item; w: number }>;
+    type Cell = { el?: Item; w: number; star?: number; strut?: StrutLine };
     const lines: Cell[][] = [];
     if (isGrid) {
       const tracks = gridTracks(c('grid-template-columns'), W, colGap);
@@ -1285,8 +1287,8 @@ class HtmlImporter {
       };
       const isCollapsed = (it: Info) => !!it.el.collapse;
       // collapse の項目の支柱 (§9.4 の 15 の後): 畳む前に入っていた行の交差軸の大きさ。畳む前の組み (項目を本来の大きさで並べた行) の
-      // 同じ行の項目と、その幅を覚えておき、組版エンジンがその最も高いものの高さを支柱にする (LBlock.phantom)
-      const struts = new Map<Item, Array<{ node: LBlockLevel; w: number }>>();
+      // 同じ行の項目と、その幅を覚えておき、組版エンジンがその行を測るだけ組んだ高さを支柱にする (LBlock.phantom)
+      const struts = new Map<Item, StrutLine>();
       if (info.some((it) => it.orig)) {
         for (const ga of split(info.map((it) => ({ ...(it.orig ?? it) })), () => false)) {
           const gaps = resolveLine(ga, () => false);
@@ -1294,7 +1296,7 @@ class HtmlImporter {
           const free = Math.max(W - ga.reduce((a, it) => a + (it.w ?? 0), 0) - gaps, 0);
           const gs = ga.reduce((a, it) => a + it.grow, 0);
           const unk = ga.filter((it) => it.w === undefined).length;
-          const line = ga.map((it) => ({ node: it.el.node, w: (it.w ?? 0) + (gs > 0 ? (free * it.grow) / Math.max(gs, 1) : unk && it.w === undefined ? free / unk : 0) }));
+          const line: StrutLine = ga.map((it) => ({ el: it.el, w: (it.w ?? 0) + (gs > 0 ? (free * it.grow) / Math.max(gs, 1) : unk && it.w === undefined ? free / unk : 0) }));
           for (const it of ga) if (it.el.collapse) struts.set(it.el, line);
         }
       }
@@ -1364,34 +1366,49 @@ class HtmlImporter {
     const stretchLines = fixed && lines.length > 1 && (ac0 === 'normal' || ac0 === 'stretch');
     const children: LBlockLevel[] = [];
     if (rtl) for (const line of lines) if (!line.some((cell) => cell.star)) line.push({ w: 0, star: 1 });
+    /** 項目のセル: 行の中の縦の揃え・伸ばしを付ける */
+    const itemCell = (item: Item): LTableCell => {
+      const n = item.node;
+      delete (n as LBlock).width;
+      // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
+      // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
+      const ic = ics(item);
+      const as = ic('align-self');
+      const mt = ic('margin-top') === 'auto';
+      const mb = ic('margin-bottom') === 'auto';
+      const x = mt && mb ? 'center' : mt ? 'end' : mb ? 'start' : flexCross(as && as !== 'auto' ? as : c('align-items'), crossReverse);
+      const blockAlign = x === 'center' || x === 'end' || x === 'baseline' || x === 'last-baseline' ? x : undefined;
+      // stretch (既定): 項目を行の高さまで伸ばす (背景・枠が行いっぱいに広がる。表紙の帯など)
+      // 交差軸の大きさ (高さ) の決まった項目は伸ばさない。max-height があれば、そこで止める (§8.3: 交差軸の大きさが auto の項目だけを伸ばす)
+      const auto = item.ps || item.anon ? !/\d/.test(ic('height')) || ic('height') === 'auto' : autoOf(item.el, 'height') !== false;
+      const stretch = x === 'stretch' && auto;
+      const mh = stretch ? cssLen(ic('max-height')) : undefined;
+      const stretchMax = mh === undefined ? undefined : mh + (ic('box-sizing') === 'border-box' ? 0 : (cssLen(ic('padding-top')) ?? 0) + (cssLen(ic('padding-bottom')) ?? 0) + (cssLen(ic('border-top-width')) ?? 0) + (cssLen(ic('border-bottom-width')) ?? 0));
+      return { type: 'table-cell', keepEdgeSpace: true, ...(blockAlign ? { blockAlign } : {}), ...(stretch ? { stretchContent: true } : {}), ...(stretchMax !== undefined ? { stretchMax } : {}), children: [n] };
+    };
+    /** 支柱のもとの行 → 畳む前の行を組んだ表 (測るだけ組む。基線の揃えで行が高くなる分も入る。Flexbox 1 §9.4 の 8) */
+    const strutTables = new Map<StrutLine, { table: LTable; total: number }>();
+    const strutTable = (sl: StrutLine) => {
+      let t = strutTables.get(sl);
+      if (!t) {
+        const table = { type: 'table', columns: sl.map((x) => ({ type: 'table-column', width: Math.max(x.w, 0) })), body: { type: 'table-body', rows: [{ type: 'table-row', cells: sl.map((x) => itemCell(x.el)) }] } } as LTable;
+        strutTables.set(sl, (t = { table, total: sl.reduce((a, x) => a + Math.max(x.w, 0), 0) }));
+      }
+      return t;
+    };
     lines.forEach((line, k) => {
       const columns: LTableColumn[] = line.map((cell) => (cell.star ? { type: 'table-column', width: `${cell.star}*`, ...(cell.w ? { widthExtra: cell.w } : {}) } : { type: 'table-column', width: Math.max(cell.w, 0) }));
       const cells: LTableCell[] = line.map((cell) => {
         if (!cell.el) return { type: 'table-cell', children: [] };
-        const n = cell.el.node;
-        delete (n as LBlock).width;
-        // collapse の項目の支柱: 幅 0 の列の中に、畳む前の行の高さの空の箱を置く (phantom。中身は描かない。伸ばさず、揃えない)
+        // collapse の項目の支柱: 幅 0 の列の中に、畳む前の行の高さの空の箱を置く (phantom。中身は描かない。伸ばさず、揃えない)。
+        // 測る行の長さは主軸の向き (縦書きの容器では高さ)
         if (cell.strut) {
           // 中の id は、リンク・target-counter() の飛び先として残す (LBlock.phantomIds)
-          const ids = collectIds(n);
-          const kids = cell.strut.map(({ node, w }) => ({ type: 'block', width: Math.max(w, 0), children: [node] }) as LBlock);
-          return { type: 'table-cell', keepEdgeSpace: true, children: [{ type: 'block', phantom: true, ...(ids.length ? { phantomIds: ids } : {}), children: kids } as LBlock] };
+          const ids = collectIds(cell.el.node);
+          const { table, total } = strutTable(cell.strut);
+          return { type: 'table-cell', keepEdgeSpace: true, children: [{ type: 'block', phantom: true, [L('width')]: total, ...(ids.length ? { phantomIds: ids } : {}), children: [table] } as LBlock] };
         }
-        // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
-        // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
-        const ic = ics(cell.el);
-        const as = ic('align-self');
-        const mt = ic('margin-top') === 'auto';
-        const mb = ic('margin-bottom') === 'auto';
-        const x = mt && mb ? 'center' : mt ? 'end' : mb ? 'start' : flexCross(as && as !== 'auto' ? as : c('align-items'), crossReverse);
-        const blockAlign = x === 'center' || x === 'end' || x === 'baseline' || x === 'last-baseline' ? x : undefined;
-        // stretch (既定): 項目を行の高さまで伸ばす (背景・枠が行いっぱいに広がる。表紙の帯など)
-        // 交差軸の大きさ (高さ) の決まった項目は伸ばさない。max-height があれば、そこで止める (§8.3: 交差軸の大きさが auto の項目だけを伸ばす)
-        const auto = cell.el.ps || cell.el.anon ? !/\d/.test(ic('height')) || ic('height') === 'auto' : autoOf(cell.el.el, 'height') !== false;
-        const stretch = x === 'stretch' && auto;
-        const mh = stretch ? cssLen(ic('max-height')) : undefined;
-        const stretchMax = mh === undefined ? undefined : mh + (ic('box-sizing') === 'border-box' ? 0 : (cssLen(ic('padding-top')) ?? 0) + (cssLen(ic('padding-bottom')) ?? 0) + (cssLen(ic('border-top-width')) ?? 0) + (cssLen(ic('border-bottom-width')) ?? 0));
-        return { type: 'table-cell', keepEdgeSpace: true, ...(blockAlign ? { blockAlign } : {}), ...(stretch ? { stretchContent: true } : {}), ...(stretchMax !== undefined ? { stretchMax } : {}), children: [n] };
+        return itemCell(cell.el);
       });
       this.report.counts.tables++;
       children.push({ type: 'table', columns, ...(stretchLines ? { flexGrow: 1 } : {}), ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', ...(fullLine ? { minHeight: innerH } : {}), cells }] } } as LTable);
@@ -2617,9 +2634,9 @@ class HtmlImporter {
         if (bbA && o.height !== undefined) o.height = Math.max(o.height, vb);
       }
     }
-    // 縦書きの aspect-ratio の箱では、max-width・min-width は block の向き (幅) の上限・下限なので、ここではなく組むときに当てる (maxBlockSize・minBlockSize)
-    const vertAspect = !!o.aspectRatio && this.axisOf(el)('height') === 'width';
-    if (!pseudo && !this.src.rect && !replaced && !vertAspect && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'))) {
+    // aspect-ratio の箱 (組むときに大きさを決めるもの) の min-width・max-width は、比で移す min・max との兼ね合いがあるので、
+    // ここではなく組むときに当てる (下の minInlineSize・maxInlineSize)
+    if (!pseudo && !this.src.rect && !replaced && !o.aspectRatio && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'))) {
       const bb = c('box-sizing') === 'border-box';
       const hbPt = (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
       const lim = (p: string) => (/px$/.test(c(p)) ? cssLen(c(p)) : undefined);
@@ -2656,9 +2673,18 @@ class HtmlImporter {
       const bbH = c('box-sizing') !== 'border-box' ? 0 : vertB ? (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0) : (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0);
       const mnB = pB('min-height');
       if (mnB) o.minBlockSize = Math.max(0, mnB - bbH);
-      // aspect-ratio の箱: max の block の大きさで、比から出す大きさを抑える (組版エンジンが組むときに当てる)
-      const mxB = pB('max-height');
-      if (o.aspectRatio && mxB !== undefined) o.maxBlockSize = Math.max(0, mxB - bbH);
+      if (o.aspectRatio) {
+        // aspect-ratio の箱: block・inline の min・max を、組版エンジンが組むときに当てる (CSS Sizing 4 §5.1)。min の指定 (0 も) は
+        // auto (自動の最小の大きさ: 中身で伸びる) と区別して運ぶ。縦書きでは、inline の向きは min-height・max-height
+        if (mnB !== undefined) o.minBlockSize = Math.max(0, mnB - bbH);
+        const mxB = pB('max-height');
+        if (mxB !== undefined) o.maxBlockSize = Math.max(0, mxB - bbH);
+        const bbI = c('box-sizing') !== 'border-box' ? 0 : vertB ? (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0) : (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
+        const mnI = pB('min-width');
+        if (mnI) o.minInlineSize = Math.max(0, mnI - bbI);
+        const mxI = pB('max-width');
+        if (mxI !== undefined) o.maxInlineSize = Math.max(0, mxI - bbI);
+      }
       // aspect-ratio の箱は、min・max で幅が組むときに決まることがあるので、inline の向きの auto の余白は組むときに配る (CSS 2.1 §10.3.3)
       if (o.aspectRatio && !this.src.rect) {
         const ms = c(B('margin-left')) === 'auto';

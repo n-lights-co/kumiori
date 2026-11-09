@@ -415,6 +415,9 @@ export interface BoxStyle {
   aspectRatio?: number;
   /** block 方向の内容の寸法の最大値 (pt。max-height。aspect-ratio の箱でだけ使う: 比から出した大きさを抑える。CSS Sizing 4 §5.1) */
   maxBlockSize?: number;
+  /** inline 方向の内容の寸法の最小値・最大値 (pt。横書きの min-width・max-width。aspect-ratio の箱でだけ使う。CSS Sizing 4 §5.1) */
+  minInlineSize?: number;
+  maxInlineSize?: number;
 }
 
 // ───────────────────────── ページ設定 ─────────────────────────
@@ -587,7 +590,7 @@ export interface LBlock extends BaseNode, BoxStyle {
   type: 'block';
   /**
    * 支柱だけの箱 (flex の項目の visibility: collapse。Flexbox 1 §4.4): 中身は描かず (字・リンク・しおりも出さない)、
-   * 子のブロックを 1 つずつ測るだけ組んで、その block の大きさの最大の、空の箱を置く (子は畳む前の行の項目)
+   * 子 (畳む前の行を組んだ表) を測るだけ組んで、その block の大きさの空の箱を置く
    */
   phantom?: boolean;
   /** 支柱だけの箱の中に、リンクの飛び先として残す id */

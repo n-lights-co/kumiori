@@ -447,6 +447,13 @@ describe('縦書きの縦並び・折り返しの列・visibility・aspect-ratio
     // 支柱は、畳む前に入っていた行の交差軸の大きさ (§9.4)。畳む前の C は D (高さ 100pt) と同じ 2 行目にあったので、1 行目は 100pt
     const s2 = lay('<div style="display: flex; flex-wrap: wrap; width: 200pt; background: #ff0000"><p style="margin: 0; width: 95pt">A</p><p style="margin: 0; width: 95pt">B</p><p style="margin: 0; width: 50pt; visibility: collapse">C</p><p style="margin: 0; width: 50pt; height: 100pt">D</p></div>');
     expect(bgOf(s2, '#ff0000').h).toBeCloseTo(200, 1);
+    // 縦書きの容器: 支柱は交差軸 (幅) の大きさ。畳む前の行の幅は 12pt の行 3 つ分 (36pt) で、項目の主軸の大きさ (80pt) ではない
+    const vs = lay(`<div style="display: flex; height: 200pt; background: #ff0000"><p style="margin: 0; height: 50pt">A</p><div style="height: 80pt; visibility: collapse">${tall}</div></div>`, V);
+    expect(bgOf(vs, '#ff0000').w).toBeCloseTo(36, 1);
+    // 基線の揃えで行が高くなる分も、支柱に入る (畳む前と同じ高さ)
+    const bl = (v: string) => bgOf(lay(`<div style="display: flex; align-items: baseline; background: #ff0000"><p style="margin: 0; font-size: 30pt; line-height: 40pt">A</p><div style="visibility: ${v}; padding-top: 50pt">b</div></div>`), '#ff0000').h;
+    expect(bl('collapse')).toBeCloseTo(bl('hidden'), 1);
+    expect(bl('collapse')).toBeGreaterThan(63);
     // grid の項目の collapse は hidden と同じ (場所を残す)
     const g = lay('<div style="display: grid; grid-template-columns: 50pt 50pt 50pt"><p style="margin: 0">A</p><p style="margin: 0; visibility: collapse">B</p><p style="margin: 0">C</p></div>');
     expect(glyph(g, 'C').x - glyph(g, 'A').x).toBeCloseTo(100, 1);
@@ -457,12 +464,32 @@ describe('縦書きの縦並び・折り返しの列・visibility・aspect-ratio
     expect(bgOf(lay('<div style="width: 200pt"><div style="aspect-ratio: 4; background: #ff0000"></div></div>'), '#ff0000').h).toBeCloseTo(50, 1);
     expect(bgOf(lay('<div style="display: inline-block; height: 90pt; aspect-ratio: 16 / 9; background: #ff0000"></div>'), '#ff0000').w).toBeCloseTo(160, 1);
   });
-  it('min-height の箱の最後の子の下の margin は、箱の下の margin と畳む (CSS 2.1 §8.3.1。Chromium と同じ)', () => {
-    const b = lay('<div style="width: 200pt"><div style="min-height: 20pt; background: #ff0000"><p style="margin: 10pt 0">x</p></div><p style="margin: 0">y</p></div>');
-    // 箱は 20pt (中身 12pt を min-height で伸ばす)。p の下の 10pt は箱の外に出て、y は 20 + 10 = 30pt から
-    expect(bgOf(b, '#ff0000').h).toBeCloseTo(20, 1);
-    expect(glyph(b, 'y').y - bgOf(b, '#ff0000').y).toBeGreaterThan(30);
-    expect(glyph(b, 'y').y - bgOf(b, '#ff0000').y).toBeLessThan(42);
+  it('min-height・aspect-ratio の箱の最後の子の下の margin (CSS 2.1 §8.3.1。Chromium で測った値)', () => {
+    /** [箱の x, 箱の幅, 箱の高さ, 次の段落の行の上端 − 箱の上端] */
+    const at = (inner: string, css = '', outer = 'width: 200pt') => {
+      const b = lay(`<div style="${outer}"><div style="background: #ff0000; ${css}">${inner}</div><p style="margin: 0">y</p></div>`);
+      const t = bgOf(b, '#ff0000');
+      const line = b.filter((a) => a.type === 'line' || a.type === 'glyph').find((a) => a.text === 'y')!;
+      return [t.x, t.w, t.h, line.y - t.y].map((v) => Math.round(v));
+    };
+    const y0 = at('', 'height: 10pt')[3] - 10; // 行の上端から字の箱までのずれ
+    const many = '<p style="margin: 0">1</p>'.repeat(4);
+    // min-height が効いて伸びた箱: 子の下の margin は伸びた分に吸われ、箱の外にも出ない
+    expect(at('<p style="margin: 0 0 10pt">x</p>', 'min-height: 20pt')).toEqual([0, 200, 20, 20 + y0]);
+    expect(at('<p style="margin: 0 0 30pt">x</p>', 'min-height: 100pt')).toEqual([0, 200, 100, 100 + y0]);
+    // min-height が効かない箱: 子の下の margin は箱の外へ畳む
+    expect(at('<p style="margin: 0 0 10pt">x</p>', 'min-height: 5pt')).toEqual([0, 200, 12, 22 + y0]);
+    // aspect-ratio の箱: 中身が比の高さより低くても高くても、子の下の margin は箱の外に出ない
+    expect(at('<p style="margin: 0 0 10pt">x</p>', 'aspect-ratio: 10')).toEqual([0, 200, 20, 20 + y0]);
+    expect(at('<p style="margin: 0">1</p><p style="margin: 0 0 10pt">x</p>', 'aspect-ratio: 10')).toEqual([0, 200, 24, 24 + y0]);
+    expect(at(`${many}<p style="margin: 0 0 10pt">x</p>`, 'aspect-ratio: 10; max-height: 30pt')).toEqual([0, 200, 30, 30 + y0]);
+    // min-height: 0 を指定した箱は中身で伸びない (自動の最小の大きさは min-height: auto のときだけ。CSS Sizing 4 §5.1)
+    expect(at(many, 'aspect-ratio: 10; min-height: 0')).toEqual([0, 200, 20, 20 + y0]);
+    // 比で移した max は min-width を下回らない
+    expect(at('x', 'aspect-ratio: 1; max-height: 50pt; min-width: 80pt')).toEqual([0, 80, 50, 50 + y0]);
+    // direction: rtl でも、auto の余白は物理の左右で決まる (CSS 2.1 §10.3.3)
+    expect(at('', 'aspect-ratio: 2; width: 100pt; margin-right: auto', 'width: 200pt; direction: rtl').slice(0, 3)).toEqual([0, 100, 50]);
+    expect(at('', 'aspect-ratio: 2; width: 100pt; margin-left: auto', 'width: 200pt; direction: rtl').slice(0, 3)).toEqual([100, 100, 50]);
   });
   it('aspect-ratio の高さは、組むときの実際の幅から出す (flex の項目の伸びた幅・border-box・中身で伸びる・切り抜く箱・縦書き)', () => {
     // flex-grow で 150pt に伸びた項目 (容器 200pt、もう一方は 50pt)
@@ -493,6 +520,9 @@ describe('縦書きの縦並び・折り返しの列・visibility・aspect-ratio
     // 縦書きの block の向きの上限は max-width: 幅 50pt で止め、高さも比で 100pt に移す
     const vm = bgOf(lay('<div style="height: 200pt"><div style="aspect-ratio: 1 / 2; max-width: 50pt; background: #ff0000">x</div></div>', V), '#ff0000');
     expect([vm.w, vm.h].map((x) => Math.round(x))).toEqual([50, 100]);
+    // 縦書きの max-height は inline の向きの上限: 高さ 100pt で止め、幅は比で 50pt
+    const vh = bgOf(lay('<div style="height: 200pt"><div style="aspect-ratio: 1 / 2; max-height: 100pt; background: #ff0000">x</div></div>', V), '#ff0000');
+    expect([vh.w, vh.h].map((x) => Math.round(x))).toEqual([50, 100]);
     // 縦書き: inline の大きさ (高さ) 200pt と比 1 / 2 (幅 / 高さ) から、幅 100pt
     expect(bgOf(lay('<div style="height: 200pt"><div style="aspect-ratio: 1 / 2; background: #ff0000"></div></div>', V), '#ff0000').w).toBeCloseTo(100, 1);
   });
