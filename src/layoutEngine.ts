@@ -2965,6 +2965,101 @@ class Flow {
         kids.push(a);
       }
     }
+    // 縦並びの flex の折り返し (flexWrapColumns。Flexbox 1 §9.3): 上から積んだ子を、高さを超える所で次の列へ移す。列の幅はその列の
+    // いちばん広い子の幅 (余白を含む)。flexWrapStretch の子は列の幅まで広げる
+    const wrapCols = (node as LBlockContainer).flexWrapColumns;
+    if (wrapCols && contentB != null && kids.length) {
+      const stretchRefs = new Set<number>();
+      const alignOf = new Map<number, 'start' | 'center' | 'end'>();
+      for (const ch of node.children) {
+        const r = sourceRef(ch);
+        if (r === undefined) continue;
+        if ((ch as LBlock).flexWrapStretch) stretchRefs.add(r);
+        const a = (ch as LBlock).flexWrapAlign;
+        if (a) alignOf.set(r, a);
+      }
+      const occ = (k: LNode) => k.margin.top + k.bsize + k.margin.bottom;
+      const cols: LNode[][] = [[]];
+      let colH = 0;
+      for (const k of [...kids].sort((a, b) => a.b - b.b)) {
+        const cur = cols[cols.length - 1];
+        if (cur.length && colH + occ(k) > contentB + EPS) {
+          cols.push([]);
+          colH = 0;
+        }
+        cols[cols.length - 1].push(k);
+        colH += occ(k);
+      }
+      const cw = Math.max(isize - desc.bpI, 0);
+      const widths = cols.map((col) => Math.max(...col.map((k) => k.margin.left + k.isize + k.margin.right)));
+      // align-content: stretch (normal): 余った幅を列に等しく分ける
+      const spare = cw - widths.reduce((a, b) => a + b, 0) - wrapCols.gap * (cols.length - 1);
+      if (wrapCols.stretch && spare > EPS) widths.forEach((_, k) => (widths[k] += spare / cols.length));
+      let x = 0;
+      let maxH = 0;
+      for (const [ci, col] of cols.entries()) {
+        const w = widths[ci];
+        let y = 0;
+        for (const k of col) {
+          if (k.ref !== undefined && stretchRefs.has(k.ref)) k.isize = Math.max(k.isize, w - k.margin.left - k.margin.right);
+          // 広げない子は、列の中で寄せる
+          const a = k.ref !== undefined ? alignOf.get(k.ref) : undefined;
+          const free = w - k.margin.left - k.isize - k.margin.right;
+          const off = a === 'center' ? free / 2 : a === 'end' ? free : 0;
+          k.i = (wrapCols.reverse ? cw - x - w : x) + k.margin.left + Math.max(0, off);
+          k.b = y + k.margin.top;
+          y += occ(k);
+        }
+        maxH = Math.max(maxH, y);
+        x += w + wrapCols.gap;
+      }
+      used = maxH;
+    }
+    // 中身が高さの決まった箱に入りきらなければ、flexShrink のある子 (縦並びの flex の項目) を縮める (Flexbox 1 §9.7): はみ出した分を
+    // flexShrink × 子の箱の高さの比で分けて引き、下限 (flexMin。無ければ中身の高さ: min-height: auto。§4.5) で止め、後ろの子を上げる
+    if (contentB != null && used > contentB + EPS && !wrapCols) {
+      const sh = new Map<number, { s: number; min?: number }>();
+      for (const ch of node.children) {
+        const b = ch as LBlock;
+        const r = b.flexShrink && b.flexShrink > 0 ? sourceRef(ch) : undefined;
+        if (r !== undefined) sh.set(r, { s: b.flexShrink!, ...(b.flexMin !== undefined ? { min: b.flexMin } : {}) });
+      }
+      if (sh.size) {
+        const extent = (k: LNode) =>
+          k.padding.top + (k.border.top?.width ?? 0) + (k.children.length ? Math.max(...k.children.map((c) => c.b + c.bsize)) : 0) + k.padding.bottom + (k.border.bottom?.width ?? 0);
+        const order = [...kids].sort((a, b) => a.b - b.b);
+        const items = order.flatMap((k) => {
+          const x = k.ref !== undefined ? sh.get(k.ref) : undefined;
+          return x ? [{ k, s: x.s, base: k.bsize, floor: Math.min(k.bsize, x.min ?? extent(k)), cut: 0 }] : [];
+        });
+        let over = used - contentB;
+        const frozen = new Set<(typeof items)[number]>();
+        for (let pass = 0; pass <= items.length && over > EPS; pass++) {
+          const act = items.filter((it) => !frozen.has(it) && it.base > 0);
+          const sum = act.reduce((a, it) => a + it.s * it.base, 0);
+          if (!sum) break;
+          let taken = 0;
+          for (const it of act) {
+            const want = it.base - it.cut - (over * it.s * it.base) / sum;
+            const nb = Math.max(want, it.floor);
+            if (want < it.floor) frozen.add(it);
+            taken += it.base - it.cut - nb;
+            it.cut = it.base - nb;
+          }
+          over -= taken;
+        }
+        let shift = 0;
+        for (const k of order) {
+          k.b -= shift;
+          const it = items.find((x) => x.k === k);
+          if (it && it.cut > EPS) {
+            k.bsize -= it.cut;
+            shift += it.cut;
+          }
+        }
+        used -= shift;
+      }
+    }
     // 余った高さを、flexGrow のある子 (縦並びの flex の項目の flex-grow) にその比で分ける: 子の箱を伸ばし、後ろの子を下げる (Flexbox 1 §9.7)。
     // 子の箱は、元の節の通し番号 (ref) で見分ける
     if (contentB != null && used < contentB - EPS) {
@@ -3002,8 +3097,11 @@ class Flow {
           k.b += shift;
           const g = k.ref !== undefined ? grow.get(k.ref) : undefined;
           if (g) {
-            const add = (free * g) / sum;
-            k.bsize += add;
+            // 比の合計が 1 未満なら、余りのその割合だけを分ける (Flexbox 1 §9.7 の 4)
+            const add = sum < 1 ? free * g : (free * g) / sum;
+            // flex の 1 行の表 (align-content: stretch の行) は、行とセルも伸ばす
+            if (k.kind === 'table') growTableLine(k, add);
+            else k.bsize += add;
             shift += add;
           }
         }
@@ -3921,7 +4019,7 @@ class Flow {
     const sb = sp?.b ?? 0;
     const total = sizes.reduce((a, b) => a + b, 0) + si * (sizes.length + 1);
     const nCols = sizes.length;
-    interface Placed { node: LNode; row: number; span: number; align?: LTableCell['blockAlign']; stretch?: boolean }
+    interface Placed { node: LNode; row: number; span: number; align?: LTableCell['blockAlign']; stretch?: boolean; stretchMax?: number }
     const placed: Placed[] = [];
     const rowNodes = rows.map((r) => newNode('row', this.wm, { isize: total, src: r.id, ref: sourceRef(r) }));
     const rowStyles = rows.map((row) => resolveStyle(st, row));
@@ -3931,7 +4029,10 @@ class Flow {
       const cn = this.layoutCell(cell, w, rowStyles[j]);
       cn.i = sizes.slice(0, col).reduce((a, b) => a + b, 0) + si * (col + 1);
       rowNodes[j].children.push(cn);
-      placed.push({ node: cn, row: j, span: rs, align: cell.blockAlign, ...(cell.stretchContent ? { stretch: true } : {}) });
+      placed.push({ node: cn, row: j, span: rs, align: cell.blockAlign, ...(cell.stretchContent ? { stretch: true } : {}), ...(cell.stretchMax !== undefined ? { stretchMax: cell.stretchMax } : {}) });
+      if (cell.blockAlign) cn.cellAlign = cell.blockAlign;
+      if (cell.stretchContent) cn.cellStretch = true;
+      if (cell.stretchMax !== undefined) cn.cellStretchMax = cell.stretchMax;
     }
     // vertical-align: baseline のセル (CSS 2.1 §17.5.3): 同じ行のそれらのセルの最初の行の基線をそろえる (横書き)。
     // 基線のいちばん低いセルに合わせ、ほかのセルの中身を下げる
@@ -3978,7 +4079,11 @@ class Flow {
         for (const c of p.node.children) c.b += off;
       }
       // flex の align-items: stretch: セルの中の唯一のブロック (項目) を行の高さまで伸ばす (背景・枠が行いっぱいに広がる)
-      if (extra > EPS && p.stretch && p.node.children.length === 1 && p.node.children[0].kind === 'block') p.node.children[0].bsize += extra;
+      if (extra > EPS && p.stretch && p.node.children.length === 1 && p.node.children[0].kind === 'block') {
+        // max-height (stretchMax) を超えては伸ばさない
+        const kid = p.node.children[0];
+        kid.bsize += p.stretchMax !== undefined ? Math.max(0, Math.min(extra, p.stretchMax - kid.bsize)) : extra;
+      }
     }
     rowNodes.forEach((r, j) => (r.bsize = heights[j] + sb));
     rows.forEach((r, j) => (r.spaceBefore || r.spaceAfter) && (rowNodes[j].rowSpace = { before: r.spaceBefore ?? 0, after: r.spaceAfter ?? 0 }));
@@ -4068,6 +4173,26 @@ function maxLineLength(n: LNode, root = true, tableByColumns = false): number {
 
 /** 横書きの箱の上端から、最初の文字の基線までの距離 */
 /** 最後の行の基線 (箱の上端から)。CSS の inline-block の基線 */
+/**
+ * 組み終えた表 (flex の 1 行の表) を add だけ高くする: 最後の行とそのセルを伸ばし、セルの揃えを当て直す (伸ばすセルは中のブロックを伸ばし、
+ * 中央・下端のセルは中身を下げる)。flex の折り返しの容器の align-content: stretch で、行を伸ばすときに使う (Flexbox 1 §9.4 の 15)
+ */
+function growTableLine(table: LNode, add: number) {
+  table.bsize += add;
+  const row = [...table.children].reverse().find((r) => r.kind === 'row');
+  if (!row) return;
+  row.bsize += add;
+  for (const cell of row.children) {
+    if (cell.kind !== 'cell') continue;
+    cell.bsize += add;
+    const a = cell.cellAlign;
+    if (cell.cellStretch && cell.children.length === 1 && cell.children[0].kind === 'block') {
+      const kid = cell.children[0];
+      kid.bsize += cell.cellStretchMax !== undefined ? Math.max(0, Math.min(add, cell.cellStretchMax - kid.bsize)) : add;
+    } else if (a === 'center' || a === 'end' || a === 'last-baseline') for (const c of cell.children) c.b += a === 'center' ? add / 2 : add;
+  }
+}
+
 function lastBaseline(n: LNode): number | undefined {
   if (n.kind === 'glyph' && n.glyph) return n.glyph.baselineY;
   const off = n.padding.top + (n.border.top?.width ?? 0);

@@ -394,7 +394,13 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      A `direction: rtl` container is laid out from the right (the row table also places its columns from the right, so a line without a growing column gets an empty column on the end side).
      `last baseline` becomes the `last-baseline` alignment of the table cells (the baselines of the last lines are aligned and the group is packed to the bottom of the row; the fallback alignment end of CSS Box Alignment 3 §4.2).
      In a column container with a definite height, the items' `flex-grow` and top and bottom `margin: auto` become `flexGrow` and `flexAutoMargin` on the blocks of the logical tree,
-     and the layout engine divides the remaining height after laying out the box (§9.7, §8.1). Text and pseudo-elements of `display: contents` in a column container are also items
+     and the layout engine divides the remaining height after laying out the box (§9.7, §8.1). Text and pseudo-elements of `display: contents` in a column container are also items.
+     Column containers also support `row-gap` (empty blocks between items), `flex-basis` (the block's height), `flex-shrink` (the layout engine shrinks; `flexShrink`, `flexMin`;
+     the lower limit is min-height, otherwise the content height), `flex-wrap` (the layout engine places the items in columns; `flexWrapColumns`) and cross-axis alignment (an item with a background or
+     border becomes a box of its content width moved with `autoMargins`). When the `flex-grow` factors sum to less than 1, the rest is the free space of `justify-content`. stretch does not stretch
+     items whose height is set, and stops at `max-height` (`stretchMax`). Multi-line `align-content: stretch` gives the line tables a grow factor, and the layout engine grows
+     the rows and cells (`growTableLine`). A vertical container is laid out the same as a row by mapping the property names (`axisMapper`).
+     When estimating content widths, only CSS collapsible white space is collapsed (the ideographic space U+3000 counts as a character. CSS Text 3 §4.1.1)
    - If html is a flex container, body is positioned within the page area by `justify-content` and `align-items`
    - Rounded corners: `border-*-radius` is read (per corner, percentages, ellipses. `BorderRadius.corners` in the layout engine). It works via the browser too
    - Multi-column containers (`column-count`): if they do not fit on the page, the columns continue across pages (the first page uses the rest of the page, the last page is balanced).

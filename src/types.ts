@@ -603,6 +603,17 @@ export interface LBlock extends BaseNode, BoxStyle {
    * flexGrow の子が無ければ、余った高さを auto の余白の数で等分して空ける
    */
   flexAutoMargin?: { before?: boolean; after?: boolean };
+  /**
+   * 高さの決まった箱の子として、中身が箱に入りきらないときに縮める比 (縦並びの flex の項目の flex-shrink。Flexbox 1 §9.7)。
+   * 縮める量は flexShrink × 箱の高さの比で分け、flexMin (pt。枠・内側の余白を含む) より小さくしない。flexMin が無ければ中身の高さ
+   * (min-height: auto の自動の最小の大きさ。§4.5)
+   */
+  flexShrink?: number;
+  flexMin?: number;
+  /** 縦並びの flex の折り返しの容器 (LBlockContainer.flexWrapColumns) の子として、列の幅まで広げる (align-items: stretch) */
+  flexWrapStretch?: boolean;
+  /** 同じく、列の中の寄せ方 (広げない子。align-items・align-self の start・center・end) */
+  flexWrapAlign?: 'start' | 'center' | 'end';
   /** PDF の注釈 (ブロックの最初の断片の左上から) */
   annotation?: Annotation;
   /** ブロック子 or インライン子。混在時は連続するインライン列が匿名ブロックになる */
@@ -1074,6 +1085,12 @@ export interface LTateChuYoko extends BaseNode {
 
 export interface LBlockContainer extends BaseNode, BoxStyle {
   type: 'block-container';
+  /**
+   * 縦並びの flex の折り返しの容器 (flex-direction: column と flex-wrap: wrap。Flexbox 1 §9.3): 子を上から積み、高さを超える所で次の列へ移す。
+   * 列の幅はその列のいちばん広い子の幅、列の間は gap。reverse (wrap-reverse) なら列を右から並べる。stretch (align-content: normal・stretch) なら、
+   * 余った幅を列に等しく分けて列を広げる (Flexbox 1 §9.4 の 15)
+   */
+  flexWrapColumns?: { gap: number; reverse?: boolean; stretch?: boolean };
   /** 書字方向の裏返し (XSL-FO の bt-lr・lr-bt など。WritingFlip) */
   writingFlip?: WritingFlip;
   /** true: 通常フローから切り離し、PageArea 原点 (仕上がり左上) 基準で配置 */
@@ -1183,6 +1200,8 @@ export interface LTableCell extends BaseNode, BoxStyle {
   keepEdgeSpace?: boolean;
   /** 行の高さに余りがあれば、セルの中の唯一のブロックをその分だけ伸ばす (flex の align-items: stretch。項目の背景・枠が行の高さまで広がる) */
   stretchContent?: boolean;
+  /** stretchContent で伸ばすブロックの高さの上限 (pt。枠・内側の余白を含む。flex の項目の max-height) */
+  stretchMax?: number;
   children: Array<LBlockLevel | LInlineLevel>;
 }
 export interface LTableRow extends BaseNode {
@@ -1216,6 +1235,8 @@ export interface LTableBody extends BaseNode {
 
 export interface LTable extends BaseNode, BoxStyle {
   type: 'table';
+  /** 高さの決まった箱の子として、余った高さを分けてもらう比 (flex の折り返しの容器の align-content: stretch の行。LBlock.flexGrow と同じ) */
+  flexGrow?: number;
   columns: LTableColumn[];
   /**
    * 表の幅が置く場所の幅より狭いとき、親から継承した text-align (center・end) で寄せる

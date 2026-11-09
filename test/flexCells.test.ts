@@ -319,3 +319,62 @@ describe('高さの決まった縦並びの flex の容器 (Flexbox 1 §9.7・§
     expect(y('column-reverse', 'margin-top: auto')).toBe(18);
   });
 });
+
+describe('flex の残りの指定 (縦並び・伸ばし方・揃え・縦書き)', () => {
+  const lay = (body: string, css = '') => boxes(E.engine.layout(load(body, PAGE + css).document).sheets[0] as unknown as Area);
+  const glyph = (b: Box[], t: string) => b.find((a) => a.type === 'glyph' && a.text === t)!;
+  const bgOf = (b: Box[], c: string) => b.find((a) => a.bg === c)!;
+  it('縦並びの row-gap は、項目の間を空ける (CSS Box Alignment 3 §8)', () => {
+    const b = lay('<div style="display: flex; flex-direction: column; row-gap: 20pt"><p style="margin: 0">A</p><p style="margin: 0">B</p></div>');
+    expect(glyph(b, 'B').y - glyph(b, 'A').y).toBeCloseTo(32, 1);
+  });
+  it('縦並びの flex-basis は高さ。高さの決まった容器では、自動の最小の大きさ (中身) より縮めず、min-height: 0 なら縮める (§7.2・§9.7・§4.5)', () => {
+    expect(bgOf(lay('<div style="display: flex; flex-direction: column; height: 100pt"><p style="margin: 0; flex-basis: 50pt; background: #ff0000">A</p></div>'), '#ff0000').h).toBeCloseTo(50, 1);
+    const auto = lay('<div style="display: flex; flex-direction: column; height: 30pt"><p style="margin: 0; background: #ff0000">A<br>A<br>A</p><p style="margin: 0; background: #0000ff">B</p></div>');
+    expect(bgOf(auto, '#ff0000').h).toBeCloseTo(36, 1);
+    const zero = lay('<div style="display: flex; flex-direction: column; height: 60pt"><p style="margin: 0; height: 50pt; min-height: 0; background: #ff0000">A</p><p style="margin: 0; height: 50pt; min-height: 0; background: #0000ff">B</p></div>');
+    expect(bgOf(zero, '#ff0000').h).toBeCloseTo(30, 1);
+    expect(bgOf(zero, '#0000ff').y).toBeCloseTo(30, 1);
+  });
+  it('縦並びの折り返しは、高さを超える所で次の列へ。列は余った幅を等しく分けて広がる (§9.3・§9.4)', () => {
+    const b = lay('<div style="display: flex; flex-direction: column; flex-wrap: wrap; height: 30pt; width: 200pt"><p style="margin: 0; background: #ff0000">A</p><p style="margin: 0">B</p><p style="margin: 0; background: #0000ff">C</p></div>');
+    const A = bgOf(b, '#ff0000');
+    const C = bgOf(b, '#0000ff');
+    expect(C.y).toBeCloseTo(0, 1);
+    expect(C.x).toBeCloseTo(100, 0);
+    expect(A.w).toBeCloseTo(100, 0);
+  });
+  it('縦並びの align-items: center は、背景のある項目の箱を中身の幅にして寄せる (§8.3)', () => {
+    const r = bgOf(lay('<div style="display: flex; flex-direction: column; align-items: center"><p style="margin: 0; background: #ff0000">A</p></div>'), '#ff0000');
+    expect(r.w).toBeLessThan(20);
+    expect(r.x + r.w / 2).toBeCloseTo(200, 0);
+  });
+  it('flex-grow の合計が 1 未満なら、余りのその割合だけ伸びる (§9.7 の 4)', () => {
+    expect(bgOf(lay('<div style="display: flex"><p style="margin: 0; flex-grow: 0.5; background: #ff0000">A</p></div>'), '#ff0000').w).toBeGreaterThan(195);
+    expect(bgOf(lay('<div style="display: flex"><p style="margin: 0; flex-grow: 0.5; background: #ff0000">A</p></div>'), '#ff0000').w).toBeLessThan(210);
+  });
+  it('stretch は、高さの決まった項目を伸ばさず、max-height で止める (§8.3)', () => {
+    expect(bgOf(lay('<div style="display: flex"><p style="margin: 0; height: 20pt; background: #ff0000">A</p><p style="margin: 0">x<br>x<br>x<br>x</p></div>'), '#ff0000').h).toBeCloseTo(20, 1);
+    expect(bgOf(lay('<div style="display: flex; height: 100pt"><p style="margin: 0; max-height: 30pt; background: #ff0000">A</p></div>'), '#ff0000').h).toBeCloseTo(30, 1);
+  });
+  it('高さの決まった折り返しの容器の align-content: stretch (既定) は、余った高さを行に等しく分ける (§8.4)', () => {
+    const b = lay('<div style="display: flex; flex-wrap: wrap; height: 200pt"><p style="margin: 0; width: 300pt; background: #ff0000">A</p><p style="margin: 0; width: 300pt; background: #0000ff">B</p></div>');
+    expect(bgOf(b, '#ff0000').h).toBeCloseTo(100, 1);
+    expect(bgOf(b, '#0000ff').y).toBeCloseTo(100, 1);
+  });
+  it('flex-basis: min-content は、中身の最も狭い幅 (§7.2.3)', () => {
+    const w = bgOf(lay('<div style="display: flex"><p style="margin: 0; flex-basis: min-content; background: #ff0000">aaa bbbbbb</p></div>'), '#ff0000').w;
+    expect(w).toBeLessThan(45);
+    expect(w).toBeGreaterThan(25);
+  });
+  it('縦書きの容器は、項目を上から下へ並べる (主軸が縦。§2)。和文の全角の空白も字として幅を見積もる', () => {
+    const b = lay('<div style="display: flex"><span>第一章　はじめに</span><span style="flex: 1"></span><span>三</span></div>', ' html { writing-mode: vertical-rl } body { font-size: 10pt; line-height: 14pt }');
+    const first = glyph(b, '第');
+    const last = glyph(b, 'に');
+    const page = glyph(b, '三');
+    // 題は 1 行 (同じ x) に収まり、ページ番号は下の端
+    expect(last.x).toBeCloseTo(first.x, 1);
+    expect(page.x).toBeCloseTo(first.x, 1);
+    expect(page.y).toBeGreaterThan(380);
+  });
+});

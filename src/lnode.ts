@@ -69,6 +69,10 @@ export interface LNode {
   flipRoot?: boolean;
   // image
   image?: { src: string; missing: boolean; alt?: string; fit?: 'cover' | 'contain'; naturalWidth?: number; naturalHeight?: number; stretch?: boolean };
+  /** cell: 表の行の中の揃え (LTableCell の blockAlign・stretchContent・stretchMax)。flex の行の表を後から伸ばすときに当て直す */
+  cellAlign?: string;
+  cellStretch?: boolean;
+  cellStretchMax?: number;
   /** 内容を padding の外端で切り抜く */
   clip?: boolean;
   radius?: import('./types').BorderRadius;

@@ -390,7 +390,13 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      `direction: rtl` の容器は右から並べる (行の表も右から列を並べるので、伸びる列の無い行に終わりの側の空きの列を足す)。
      `last baseline` は、表のセルの `last-baseline` の揃え (最後の行の基線をそろえ、行の下端に寄せる。CSS Box Alignment 3 §4.2 の代わりの揃え end)。
      高さの決まった縦並びの容器は、項目の `flex-grow` と上下の `margin: auto` を論理ツリーのブロックの `flexGrow`・`flexAutoMargin` にし、
-     組版エンジンが箱を組んだ後に余った高さを分ける (§9.7・§8.1)。縦並びの `display: contents` の文字・疑似要素も項目にする
+     組版エンジンが箱を組んだ後に余った高さを分ける (§9.7・§8.1)。縦並びの `display: contents` の文字・疑似要素も項目にする。
+     縦並びは、`row-gap` (項目の間の空のブロック)・`flex-basis` (ブロックの高さ)・`flex-shrink` (組版エンジンが縮める。`flexShrink`・`flexMin`。
+     下限は min-height、無ければ中身の高さ)・`flex-wrap` (組版エンジンが列に並べる。`flexWrapColumns`)・交差軸の揃え (背景・枠のある項目は
+     中身の幅の箱を `autoMargins` で寄せる) にも対応する。`flex-grow` の合計が 1 未満なら、残りは `justify-content` の空き。stretch は高さの
+     決まった項目を伸ばさず、`max-height` で止める (`stretchMax`)。複数行の `align-content: stretch` は、行の表に伸ばす比を付け、組版エンジンが
+     行とセルを伸ばす (`growTableLine`)。縦書きの容器は、プロパティの名前を読み替えて (`axisMapper`) 横並びと同じに組む。
+     中身の幅の見積もりの空白の詰め方は、CSS の詰める空白だけ (全角の空白 U+3000 は字として数える。CSS Text 3 §4.1.1)
    - html が flex の容器なら、body を `justify-content`・`align-items` でページの領域の中に寄せる
    - 角丸: `border-*-radius` を読む (角ごと・百分率・楕円。組版エンジンの `BorderRadius.corners`)。ブラウザ経由でも効く
    - 段組のコンテナ (`column-count`): ページに収まらなければ、ページをまたいで段を続ける (1 ページ目はページの残り、最後のページは釣り合わせる)。
