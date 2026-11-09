@@ -1184,6 +1184,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>background-image</code><br>2 枚目以降の画像<br><span class="spec">CSS Backgrounds 3 §2.3</span></td><td>background-image はカンマ区切りで複数の背景画像を並べられ、最初の画像を一番手前に、後の画像をその後ろに順に重ねて描きます。複数の画像や模様を重ねて背景にしたいときに使います。</td></tr>
 </tbody></table>
 <h3>印刷に関わらないプロパティ (22 項目)</h3>
+<p>画面の操作・表示だけに効くプロパティです。読み込みの警告 (未対応・知らない CSS) には出しません。この表のほか、アニメーション・遷移 (animation-*・transition-*)、スクロール (scroll-*・overscroll-behavior-*・scrollbar-*)、touch-action・will-change・text-size-adjust・view-transition-name・speak も、警告に出しません。</p>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>speak-as</code><br><span class="spec">CSS Counter Styles 3 §3.9</span></td><td>@counter-style の記述子で、その番号の書式で作った番号を、音声で読み上げるときの形を指定します。支援技術がこの形を使うとしています。画面の読み上げで、記号の番号などを意味の分かる言葉で読ませたいときに使います。</td></tr>
 <tr><td><code>font-display</code><br><span class="spec">CSS Fonts 4 §4.9</span></td><td>@font-face の記述子で、フォントをダウンロードしているかどうか・いつ使えるようになったかによって、フォントをどう表示するかを決めます (auto・block・swap など)。ウェブページで、フォントの読み込みを待つ間に文字を代わりのフォントで出すかどうかを決めたいときに使います。</td></tr>
