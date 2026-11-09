@@ -56,7 +56,7 @@ export interface TypesetOptions {
   name?: string;
   /** 入力と一緒に使うファイル。CSS は、文書から参照されていなければ利用者のスタイルシートとして足す。FO では、書体のファイルを FO の font-family の名前で使う */
   files?: KumioriFile[];
-  /** 足す書体のファイル (TTF・OTF・TTC。システムに入れた書体のように、書体のファミリー名・太さで使う。斜体の書体は登録しない) */
+  /** 足す書体のファイル (TTF・OTF・TTC・WOFF・WOFF2。システムに入れた書体のように、書体のファミリー名・太さで使う。斜体の書体は登録しない) */
   fonts?: KumioriFile[];
   /** 総称の書体 (serif・sans-serif) の欧文に使う書体のファミリー名 (fonts で渡した書体) */
   genericFonts?: Partial<Record<'serif' | 'sans-serif', string>>;
@@ -88,7 +88,8 @@ export interface TypesetOptions {
    */
   resolveResource?: (url: string) => KumioriFileData | undefined | Promise<KumioriFileData | undefined>;
   /**
-   * 文書が http(s) の URL で参照する CSS (<link rel="stylesheet">・@import) をネットワークから取るか。既定 true (取る)。
+   * 文書が http(s) の URL で参照する CSS (<link rel="stylesheet">・@import) と、CSS の @font-face が http(s) で参照する書体 (WOFF2 など。
+   * unicode-range が文書の字と重なるものだけ) をネットワークから取るか。既定 true (取る)。
    * 関数なら、URL ごとに決める。他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする
    */
   fetchStyles?: boolean | ((url: string) => boolean);
@@ -414,7 +415,11 @@ async function typesetDocument(
   // 文書・CSS が参照するファイルのうち、files に無いもの: resolveResource に問い合わせ、http(s) の CSS は取る (fetchStyles)
   {
     const names = new Set(files.flatMap((f) => [f.path.split('\\').join('/').replace(/^\.\//, ''), f.name.toLowerCase()]));
+    // 文書に出てくる字 (タグや CSS の字も含む、多めの見積もり)。@font-face の書体のうち、unicode-range がこれと重ならないものは取らない
+    const chars = new Set<number>();
+    for (const ch of text) chars.add(ch.codePointAt(0)!);
     const got = await collectResources(text, {
+      chars,
       has: (u) => names.has(u) || names.has(refBasename(u)),
       cssTexts: await Promise.all(files.filter(isCss).map(async (f) => ({ name: f.path, text: await f.text() }))),
       ...(options.resolveResource ? { resolve: options.resolveResource } : {}),
@@ -426,8 +431,14 @@ async function typesetDocument(
       names.add(f.name);
     }
     for (const w of got.warnings) {
-      const [kind, url] = w.split('\t');
-      warnings.push(kind === 'css-not-fetched' ? msg(`CSS を取りません (fetchStyles): ${url.slice(0, 200)}`, `stylesheet not fetched (fetchStyles): ${url.slice(0, 200)}`) : msg(`CSS を取得できません: ${url.slice(0, 200)}`, `cannot fetch the stylesheet: ${url.slice(0, 200)}`));
+      const [kind, url0] = w.split('\t');
+      const url = url0.slice(0, 200);
+      const font = kind.startsWith('font');
+      warnings.push(
+        kind.endsWith('not-fetched')
+          ? msg(`${font ? '書体' : 'CSS'}を取りません (fetchStyles): ${url}`, `${font ? 'font' : 'stylesheet'} not fetched (fetchStyles): ${url}`)
+          : msg(`${font ? '書体' : 'CSS'}を取得できません: ${url}`, `cannot fetch the ${font ? 'font' : 'stylesheet'}: ${url}`),
+      );
     }
   }
 
@@ -438,7 +449,7 @@ async function typesetDocument(
   if (isFo) {
     // 同じファミリー・太さの書体が複数あれば、先のものを使う。書体は輪郭から描くので、ブラウザの document.fonts には登録しない (canvas: false)
     const cands: UserFont[] = [];
-    for (const f of files.filter((x) => /\.(ttf|otf|ttc|otc)$/i.test(x.name))) cands.push(...splitFontFile(await f.arrayBuffer()));
+    for (const f of files.filter((x) => /\.(ttf|otf|ttc|otc|woff2?)$/i.test(x.name))) cands.push(...splitFontFile(await f.arrayBuffer()));
     for (const u of cands) {
       if (userFonts.some((x) => x.family === u.family && x.weight === u.weight)) continue;
       await fonts.registerBuffer(u.family, u.weight, u.buffer, false);
@@ -595,7 +606,8 @@ async function importHtmlText(
   prepared.doc.querySelectorAll('img[src]').forEach((img) => img.setAttribute('data-kumiori-src', img.getAttribute('src') ?? ''));
   // 既定のスタイル (style) は、作成者スタイルシート ではなく既定のスタイルシート (UA) として当てる (作成者スタイルシート に詳細度で勝たない)
   const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.css) : {}) });
-  await mapping.loadFontFaces(prepared.css, files.filter((f) => /\.(ttf|otf)$/i.test(f.name)));
+  // @font-face の書体 (TTF・OTF と、ふつうの書体のファイルに戻して使う WOFF・WOFF2)
+  await mapping.loadFontFaces(prepared.css, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)));
   // 分綴を使う文書なら、文書に出てくる言語の分綴の規則を読み込む
   await loadDocumentHyphenators(prepared.doc, prepared.css);
   // 作成者スタイルシート と style 属性のうち、読まない宣言 (未対応・知らないプロパティ) を数える

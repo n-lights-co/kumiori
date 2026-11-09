@@ -257,7 +257,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
 }
 
 /** --watch で見張るファイル */
-const WATCHED = /\.(x?html?|fo|xml|xsl|css|png|jpe?g|gif|svgz?|webp|tiff?|bmp|emf|wmf|eps|cgm|mml|ttf|otf|ttc|otc)$/i;
+const WATCHED = /\.(x?html?|fo|xml|xsl|css|png|jpe?g|gif|svgz?|webp|tiff?|bmp|emf|wmf|eps|cgm|mml|ttf|otf|ttc|otc|woff2?)$/i;
 
 /** 引数の誤り (使い方を表示して終わる。スタックトレースは出さない) */
 export class UsageError extends Error {}
@@ -277,7 +277,7 @@ export const USAGE_JA = [
   '  --font-cache <dir>        Google Fonts から取った既定の書体を保存して使い回すディレクトリ (既定は環境変数 KUMIORI_FONT_CACHE か OS のキャッシュ:',
   '                            Linux は ~/.cache/kumiori/fonts、macOS は ~/Library/Caches/kumiori/fonts、Windows は %LOCALAPPDATA%\\kumiori\\fonts)',
   '  --no-font-cache           書体のキャッシュを読まず、保存もしない (毎回 Google Fonts から取る)',
-  '  --font <書体ファイル>     書体を足す (TTF・OTF・TTC。何度でも)',
+  '  --font <書体ファイル>     書体を足す (TTF・OTF・TTC・WOFF・WOFF2。何度でも)',
   '  --generic-font serif=<書体名> | sans-serif=<書体名>   総称の書体の欧文に使う書体',
   '  --compat spec|antenna     XSL-FO の既定値の流儀 (XSL-FO 1.1 の初期値 / アンテナハウスに合わせる。既定 spec)',
   '  --fo                      拡張子によらず XSL-FO として読む   --xhtml  拡張子によらず XML の構文 (XHTML) で読む',
@@ -308,7 +308,7 @@ export const USAGE_EN = [
   '  --font-cache <dir>        directory where default fonts fetched from Google Fonts are saved and reused (default: KUMIORI_FONT_CACHE or the OS cache:',
   '                            ~/.cache/kumiori/fonts on Linux, ~/Library/Caches/kumiori/fonts on macOS, %LOCALAPPDATA%\\kumiori\\fonts on Windows)',
   '  --no-font-cache           do not read or write the font cache (fetch from Google Fonts every time)',
-  '  --font <font file>        add a font (TTF, OTF, TTC; repeatable)',
+  '  --font <font file>        add a font (TTF, OTF, TTC, WOFF, WOFF2; repeatable)',
   '  --generic-font serif=<family> | sans-serif=<family>   font used for Latin text of the generic families',
   '  --compat spec|antenna     XSL-FO default-value convention (XSL-FO 1.1 initial values / AH Formatter compatible; default spec)',
   '  --fo                      read as XSL-FO regardless of the extension   --xhtml  read with XML syntax (XHTML) regardless of the extension',

@@ -83,7 +83,7 @@ cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
 - `-` は標準入力から読む (CSS・画像・書体は `--base` のディレクトリ (既定は今のディレクトリ) から。FO かどうかは中身で見分ける)。`-o -` は PDF を標準出力へ書く
 - 入力の文字の符号化は、BOM と XML 宣言の `encoding` (`Shift_JIS`・`EUC-JP` など)・HTML の `<meta charset>` で決める (無ければ UTF-8)
 - 文書が `http(s):` で参照する画像は、既定ではネットワークから取る。`--no-fetch-images` で取らない (他人の書いた文書をサーバーで組むときなど。読めない画像として組む)
-- 文書が `http(s):` で参照する CSS (`<link rel="stylesheet">`・`@import`) も、既定ではネットワークから取る。`--no-fetch-styles` で取らない
+- 文書が `http(s):` で参照する CSS (`<link rel="stylesheet">`・`@import`) と、その `@font-face` の書体 (`unicode-range` が文書の字と重なるものだけ) も、既定ではネットワークから取る。`--no-fetch-styles` で取らない
 - 文書・CSS が `file:` の URL で参照するファイル (`file:///…/style.css` など) は、入力のディレクトリの外でも、そのファイルを読む
 - `--watch`: 入力のディレクトリの HTML・FO・CSS・画像・書体が変わるたびに組み直す
 - `--help` (`-h`) で使い方、`--version` (`-v`) で版を出す
@@ -95,7 +95,7 @@ cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
 - `--font-cache <dir>`: Google Fonts から取った既定の書体を保存して使い回すディレクトリ。既定は環境変数 `KUMIORI_FONT_CACHE`、無ければ OS のキャッシュ (Linux は `$XDG_CACHE_HOME` か `~/.cache` の `kumiori/fonts`、macOS は `~/Library/Caches/kumiori/fonts`、Windows は `%LOCALAPPDATA%\kumiori\fonts`)。初回だけネットワークから取り、`書体 … を取得して … に保存しました` と知らせる。2 回目からはネットワークに行かない。途中で切れた取得など、書体のファイルでないものは保存せず、壊れたキャッシュは捨てて取り直す。保存できない場所でも変換は続ける
 - `--no-font-cache`: 書体のキャッシュを読まず、保存もしない (毎回 Google Fonts から取る)
 - `--lang ja|en`: 使い方・報告・警告・誤りの文の言語。無ければ環境変数 `KUMIORI_LANG`、次に OS のロケール (`LC_ALL`・`LC_MESSAGES`・`LANG` が `en…` なら英語) で決める。既定は日本語
-- `--font <書体ファイル>` (何度でも): 書体のファイル (TTF・OTF・TTC) を足す (TTC は中の書体をそれぞれ足す)。書体の name 表のファミリー名と OS/2 の太さで登録し、システムに入れた書体のように `font-family` から使う (斜体のファイルは登録しない)。`--style ah` などの互換のスタイルでは、SVG の `font-family` に書いた PostScript 名 (`'CenturyGothic'` など) でも選ぶ
+- `--font <書体ファイル>` (何度でも): 書体のファイル (TTF・OTF・TTC・WOFF・WOFF2) を足す (TTC は中の書体をそれぞれ足す)。書体の name 表のファミリー名と OS/2 の太さで登録し、システムに入れた書体のように `font-family` から使う (斜体のファイルは登録しない)。`--style ah` などの互換のスタイルでは、SVG の `font-family` に書いた PostScript 名 (`'CenturyGothic'` など) でも選ぶ
 - `--generic-font serif=<書体名>`・`--generic-font sans-serif=<書体名>`: 総称の書体 (serif・sans-serif) の欧文に使う書体 (`--font` で足した書体のファミリー名)
 - `--print`: トンボと塗り足し (3mm)
 - `--image-max-dpi <dpi>`: 置かれる大きさに対してこれより細かい JPEG の写真を、この解像度に縮めて符号化し直す (PDF を小さくする。既定は元のまま)
@@ -134,7 +134,7 @@ result.renderPage(canvas, 0);                                  // 1 ページ目
 
 - `typeset(text, options)` が入口です (`typesetHtml`・`typesetFo` は種類を決め打ちする版)。ファイルシステムには触らず、ネットワークは既定の書体の取得 (`loadFont` で差し替えられる) と、文書が `http(s):` で参照する画像・CSS の取得 (`fetchImages`・`fetchStyles` で止められる) にだけ使うので、ブラウザでも Node でも動きます
 - `text` は文字列です。ファイルから読むときは `decodeDocumentText(bytes)` で文字列にすると、BOM・XML 宣言の `encoding`・`<meta charset>` に従って復号します (UTF-8 固定で読むと、Shift_JIS の FO などが化けます)
-- 主な `options`: `kind` (`html`・`xhtml`・`fo`。省略すれば `name` と中身で決める)、`name` (入力のファイル名)、`files` (CSS・画像・書体)、`fonts` (足す書体)、`genericFonts` (総称の書体の欧文に使う書体)、`style` (HTML の既定のスタイル)、`compat` (XSL-FO の既定値の流儀)、`print` (塗り足しとトンボ)、`spotColors` (特色の代わりの CMYK)、`loadFont`、`fetchTimeoutMs` (書体・画像の取得の時限。既定 30 秒)、`fetchImages` (文書が `http(s):` で参照する画像を取るか。既定 `true`。`false` か、URL を受けて真偽を返す関数。他人の文書をサーバーで組むときは止めるか、許す URL だけにする)、`fetchStyles` (文書が `http(s):` で参照する CSS を取るか。`fetchImages` と同じ形)、`resolveResource` (文書・CSS が参照するファイルのうち `files` に無いものの中身を返す関数。下を見てください)、`lang` (`warnings` と誤りの文の言語。`ja` か `en`。既定は日本語)、`deflate` (Node なら `zlib.deflateSync` を渡すと PDF の書き出しが速い)
+- 主な `options`: `kind` (`html`・`xhtml`・`fo`。省略すれば `name` と中身で決める)、`name` (入力のファイル名)、`files` (CSS・画像・書体。書体は TTF・OTF・TTC・WOFF・WOFF2)、`fonts` (足す書体)、`genericFonts` (総称の書体の欧文に使う書体)、`style` (HTML の既定のスタイル)、`compat` (XSL-FO の既定値の流儀)、`print` (塗り足しとトンボ)、`spotColors` (特色の代わりの CMYK)、`loadFont`、`fetchTimeoutMs` (書体・画像の取得の時限。既定 30 秒)、`fetchImages` (文書が `http(s):` で参照する画像を取るか。既定 `true`。`false` か、URL を受けて真偽を返す関数。他人の文書をサーバーで組むときは止めるか、許す URL だけにする)、`fetchStyles` (文書が `http(s):` で参照する CSS と、その `@font-face` の書体を取るか。`fetchImages` と同じ形)、`resolveResource` (文書・CSS が参照するファイルのうち `files` に無いものの中身を返す関数。下を見てください)、`lang` (`warnings` と誤りの文の言語。`ja` か `en`。既定は日本語)、`deflate` (Node なら `zlib.deflateSync` を渡すと PDF の書き出しが速い)
 - `result.toPdf({ title, pdfx, imageMaxDpi })`: PDF の題名、PDF/X-3 の印 (`pdfx`。RGB の色・画像を CMYK にする)、JPEG の解像度の上限。`result.renderPage(canvas, i, { scale, devicePixelRatio, guides })`: 倍率、画面の画素の細かさ、仕上がり・塗り足しのガイド線
 - FO の DOCTYPE の内部サブセットに宣言した内部実体 (`<!ENTITY nbsp "&#160;">` など) は、読み込みの前に展開します (外部実体は読みません)
 - 例外: FO の XML が読めない (`XML の解析に失敗しました: …`)、既定の書体が読めない (`書体を読めません: …`) は `typeset` が投げる。`fonts` に渡した壊れた書体ファイルは投げずに `warnings` に入る。`renderPage` の無いページ番号は `RangeError`。組版の警告 (読めない画像・溢れなど) は投げずに `result.warnings` (文字列の配列) に入る

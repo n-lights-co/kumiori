@@ -5,6 +5,7 @@
  * そのままでは扱えないので、選んだ書体のテーブルだけを集めて単独の sfnt に組み直す。
  * フォントは利用者の PC からだけ読み込み、リポジトリや配布物には含めない。
  */
+import { toSfnt } from './webFont';
 import { msg } from './messages';
 import fontkit from '@pdf-lib/fontkit';
 
@@ -83,6 +84,8 @@ export function countFonts(buf: ArrayBuffer): number {
  * 壊れたファイルは FontFileError (書体の中身の解釈はしない)
  */
 export function collectionFaces(buf: ArrayBuffer): ArrayBuffer[] {
+  // WOFF・WOFF2 は、ふつうの書体のファイルに戻してから読む (webFont.ts)
+  buf = toSfnt(buf);
   const n = countFonts(buf);
   return isCollection(buf) ? Array.from({ length: n }, (_, i) => extractFromCollection(buf, i)) : [buf];
 }

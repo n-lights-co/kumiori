@@ -417,6 +417,55 @@ import { __extends } from "tslib";
   // USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
+### 1.1.1 @pdf-lib/fontkit に束ねられた Brotli の展開 (@pdf-lib/brotli 0.0.0) と base64-js
+
+`node_modules/@pdf-lib/fontkit/dist/` の配布物には、fontkit を作るときに束ねた Brotli の展開のコード (`@pdf-lib/brotli` 0.0.0。brotli.js のフォーク) と、その依存の base64-js が入っています。束ねたときに元のファイルの表示が落ちているので、元のパッケージから写します。Kumiori は、WOFF2 の書体を読むとき (`src/webFont.ts`) に、この Brotli の展開を使います。
+
+- @pdf-lib/brotli 0.0.0: package.json の license は `MIT`、repository は `https://github.com/Hopding/brotli.js.git`。パッケージに LICENSE ファイルはありません。展開のコードのファイル (`dec/decode.js`・`dec/bit_reader.js`・`dec/dictionary.js`・`dec/dictionary-data.js`・`dec/prefix.js`・`dec/transform.js`・`dec/context.js`) の冒頭には、次の表示があります (`dec/decode.js` の冒頭をそのまま。Apache License 2.0 の本文は下の 1.5 にあります):
+
+```text
+/* Copyright 2013 Google Inc. All Rights Reserved.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+```
+
+- base64-js: 束ねた版は配布物からは分かりません (`@pdf-lib/brotli` の package.json の依存は `base64-js ^1.1.2`)。下は base64-js 1.5.1 の LICENSE を、書き換えずに転記したものです (取得日 2026-11-09):
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 Jameson Little
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
 ### 1.2 pako の Zlib の条文
 
 pako の LICENSE ファイル (上) は MIT の条文です。Zlib の条文は、`node_modules/pako/lib/zlib/` の constants.js・deflate.js・gzheader.js・inffast.js・inflate.js・inftrees.js・messages.js・trees.js・zstream.js の冒頭に、同じ形で入っています。deflate.js の 3〜20 行目をそのまま転記します。
@@ -811,6 +860,8 @@ pdf-lib 1.17.1 のソースの中のコメント (上の 1.1 に転記) が、�
 - `node_modules/pdf-lib/es/core/streams/AsciiHexStream.js`
 - `node_modules/pdf-lib/es/core/streams/Ascii85Stream.js`
 - `node_modules/pdf-lib/es/core/streams/LZWStream.js`
+
+@pdf-lib/fontkit 1.1.1 の配布物に束ねられた Brotli の展開のコード (上の 1.1.1) も、Google Inc. の Apache License 2.0 の表示を持っています。
 
 pdf-lib のパッケージには、Apache License 2.0 の本文は入っていません。下の本文は、次の配布元から取得したものを、書き換えずに転記しています。
 

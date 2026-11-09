@@ -11,11 +11,27 @@
  * CSS の中の相対参照は、その CSS の URL を基準に解決する (CSS Values 4 §4.5.1: url() の相対 URL は、スタイルシートの URL が基準)
  */
 
-/** 参照の種類: css は CSS として読む (拡張子が .css でなくても。https://fonts.googleapis.com/css2?family=… など) */
-export type ResourceKind = 'css' | 'other';
+/**
+ * 参照の種類: css は CSS として読む (拡張子が .css でなくても。https://fonts.googleapis.com/css2?family=… など)。
+ * font は @font-face の src の書体 (ranges はその unicode-range)
+ */
+export type ResourceKind = 'css' | 'font' | 'other';
 export interface ResourceRef {
   url: string;
   kind: ResourceKind;
+  ranges?: Array<[number, number]>;
+}
+
+/** unicode-range の値 (CSS Fonts 4 §4.5: U+26・U+0-7F・U+4??) → 字の番号の範囲。読めなければ undefined (すべての字) */
+export function parseUnicodeRange(v: string): Array<[number, number]> | undefined {
+  const out: Array<[number, number]> = [];
+  for (const part of v.split(',')) {
+    const m = /^\s*u\+([0-9a-f?]{1,6})(?:-([0-9a-f]{1,6}))?\s*$/i.exec(part);
+    if (!m) return undefined;
+    if (m[1].includes('?')) out.push([parseInt(m[1].replace(/\?/g, '0'), 16), parseInt(m[1].replace(/\?/g, 'f'), 16)]);
+    else out.push([parseInt(m[1], 16), parseInt(m[2] ?? m[1], 16)]);
+  }
+  return out.length ? out : undefined;
 }
 
 /** URL のスキーム (RFC 3986 §3.1) */
@@ -61,11 +77,19 @@ export function cssRefs(css: string): ResourceRef[] {
     out.push({ url: (m[1] ?? m[2] ?? m[3] ?? '').trim(), kind: 'css' });
     imports.add(m.index!);
   }
+  // @font-face の規則の範囲 (中の url() は書体。unicode-range も読む)
+  const faces: Array<{ start: number; end: number; ranges?: Array<[number, number]> }> = [];
+  for (const m of css.matchAll(/@font-face\s*\{([^}]*)\}/gi)) {
+    const ur = /unicode-range\s*:\s*([^;}]+)/i.exec(m[1]);
+    faces.push({ start: m.index!, end: m.index! + m[0].length, ...(ur ? { ranges: parseUnicodeRange(ur[1]) } : {}) });
+  }
   for (const m of css.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s]*))\s*\)/gi)) {
     // @import url(…) は上で拾った
     const before = css.slice(Math.max(0, m.index! - 20), m.index!);
     if (/@import\s*$/i.test(before)) continue;
-    out.push({ url: (m[1] ?? m[2] ?? m[3] ?? '').trim(), kind: 'other' });
+    const url = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+    const face = faces.find((f) => m.index! > f.start && m.index! < f.end);
+    out.push(face ? { url, kind: 'font', ...(face.ranges ? { ranges: face.ranges } : {}) } : { url, kind: 'other' });
   }
   return out;
 }
@@ -115,10 +139,15 @@ export interface CollectOptions {
   cssTexts: Array<{ name: string; text: string }>;
   /** 利用者の関数 (TypesetOptions.resolveResource) */
   resolve?: (url: string) => unknown;
-  /** http(s) の CSS を取るか (TypesetOptions.fetchStyles) */
+  /** http(s) の CSS と、その @font-face の書体を取るか (TypesetOptions.fetchStyles) */
   fetchStyle: (url: string) => boolean;
   timeoutMs: number;
+  /** 文書に出てくる字の番号。@font-face の書体のうち、unicode-range がこれと重ならないものは取らない (Google Fonts の分けた書体など) */
+  chars?: ReadonlySet<number>;
 }
+
+/** 同時に取りに行く数 */
+const PARALLEL = 8;
 
 /** 集めたファイル: name は参照の URL (? # を除く)。css は CSS として読むもの */
 export interface CollectedFile {
@@ -142,27 +171,37 @@ export async function collectResources(text: string, o: CollectOptions): Promise
   const seen = new Set<string>();
   type Item = ResourceRef & { depth: number };
   const queue: Item[] = documentRefs(text).map((r) => ({ ...r, depth: 0 }));
-  for (const f of o.cssTexts) for (const r of cssRefs(f.text)) queue.push({ url: resolveRef(r.url, f.name), kind: r.kind, depth: 1 });
-  while (queue.length && seen.size < MAX_REFS) {
-    const it = queue.shift()!;
+  for (const f of o.cssTexts) for (const r of cssRefs(f.text)) queue.push({ ...r, url: resolveRef(r.url, f.name), depth: 1 });
+  // 1 つの参照を処理する: files にあれば何もしない。resolveResource に問い合わせ、無ければ http(s) の CSS・書体を取る
+  const one = async (it: Item) => {
     const url = it.url;
-    if (skip(url) || seen.has(url)) continue;
-    seen.add(url);
-    if (o.has(url)) continue;
+    if (o.has(url)) return;
+    // unicode-range が文書の字と重ならない書体は使われないので、取らない
+    if (it.kind === 'font' && it.ranges && o.chars && !it.ranges.some(([a, b]) => [...o.chars!].some((c) => c >= a && c <= b))) return;
     let data = toBytes(o.resolve ? await o.resolve(url) : undefined);
-    if (!data && it.kind === 'css' && /^https?:/i.test(url)) {
+    if (!data && (it.kind === 'css' || it.kind === 'font') && /^https?:/i.test(url)) {
       if (o.fetchStyle(url)) {
         data = await fetchBytes(url, o.timeoutMs);
-        if (!data) warnings.push(`css-fetch-failed\t${url}`);
-      } else warnings.push(`css-not-fetched\t${url}`);
+        if (!data) warnings.push(`${it.kind}-fetch-failed\t${url}`);
+      } else warnings.push(`${it.kind}-not-fetched\t${url}`);
     }
-    if (!data) continue;
-    const name = url.split(/[?#]/)[0];
-    files.push({ name, url, data, css: it.kind === 'css' });
+    if (!data) return;
+    files.push({ name: url.split(/[?#]/)[0], url, data, css: it.kind === 'css' });
     if (it.kind === 'css' && it.depth < MAX_DEPTH) {
       const css = new TextDecoder().decode(data);
-      for (const r of cssRefs(css)) queue.push({ url: resolveRef(r.url, url), kind: r.kind, depth: it.depth + 1 });
+      for (const r of cssRefs(css)) queue.push({ ...r, url: resolveRef(r.url, url), depth: it.depth + 1 });
     }
+  };
+  while (queue.length && seen.size < MAX_REFS) {
+    // 同時に PARALLEL 個まで (Google Fonts の CSS は、字の範囲で分けた書体をたくさん参照する)
+    const batch: Item[] = [];
+    while (queue.length && batch.length < PARALLEL && seen.size < MAX_REFS) {
+      const it = queue.shift()!;
+      if (skip(it.url) || seen.has(it.url)) continue;
+      seen.add(it.url);
+      batch.push(it);
+    }
+    await Promise.all(batch.map(one));
   }
   return { files, warnings };
 }

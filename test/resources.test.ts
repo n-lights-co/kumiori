@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { collectResources, cssRefs, documentRefs, resolveRef } from '../src/resources';
 
 describe('参照の集め方', () => {
-  it('文書の参照: <link rel=stylesheet> と @import は CSS、src・data・SVG の href・url() はそのほか。<a href> は拾わない', () => {
+  it('文書の参照: <link rel=stylesheet> と @import は CSS、@font-face の url() は書体、src・data・SVG の href・ほかの url() はそのほか。<a href> は拾わない', () => {
     const refs = documentRefs(
       '<link rel="preload" href="p.css"><link href=\'s.css\' rel="alternate stylesheet"><style>@import url("i.css"); p { background: url(bg.png) }</style>' +
         '<img src="a.png"><svg><image xlink:href="b.svg"/></svg><object data="c.svg"></object><a href="doc.pdf">d</a><fo:external-graphic src="url(\'e.png\')"/>',
@@ -19,7 +19,7 @@ describe('参照の集め方', () => {
     ]);
     expect(cssRefs("@import 'a.css' screen; @font-face { src: url(f.ttf) }")).toEqual([
       { url: 'a.css', kind: 'css' },
-      { url: 'f.ttf', kind: 'other' },
+      { url: 'f.ttf', kind: 'font' },
     ]);
   });
   it('CSS の中の相対参照は CSS の URL を基準に解決する (RFC 3986 §5.2。スキームの無い名前はパスとしてつなぐ)', () => {

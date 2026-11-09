@@ -6,6 +6,7 @@
  * を同一バイト列から作る。Canvas と PDF が「同じフォントファイル」を見るため、
  * 文字幅の食い違いが原理的に発生しない。
  */
+import { toSfnt } from './webFont';
 import { msg } from './messages';
 import fontkit from '@pdf-lib/fontkit';
 import type { FontSpec } from './types';
@@ -67,6 +68,8 @@ export class FontManager {
 
   /** 既に読み込み済みの ArrayBuffer を登録 (Node テストやローカルファイル用) */
   async registerBuffer(family: string, weight: number, buffer: ArrayBuffer, canvas = true): Promise<LoadedFont> {
+    // WOFF・WOFF2 は、ふつうの書体のファイル (TTF・OTF) に戻してから登録する (PDF にはそのまま埋め込めない。webFont.ts)
+    buffer = toSfnt(buffer);
     this.charFallback.clear();
     this.forCharMemo.clear();
     this.getMemo.clear();
