@@ -220,7 +220,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 | `src/fontMapping.ts`, `src/compat.ts`, `src/documentResources.ts`, `src/documentText.ts`, `src/cli.ts` | 書体の割り当て・互換モードの設定・数式書体と画像の取得・文字の符号化の判定 (画面と Node で共通)、Node のコマンド |
 
 組版アルゴリズムの詳細は [`docs/REPORT.md`](docs/REPORT.md)、XSL-FO の読み込みは [`docs/xslfo-import.md`](docs/xslfo-import.md)、HTML+CSS の読み込みの計画は [`docs/html-css-plan.md`](docs/html-css-plan.md) を参照。
-対応している仕様の項目ごとの説明は対応仕様説明書 ([`docs/conformance/`](docs/conformance/README.md)。`npm run docs:conformance` で PDF にする)、まだ無い機能・既知の制限は [`docs/BACKLOG.md`](docs/BACKLOG.md)、組んだ結果 (Area Tree) の JSON は [`docs/area-tree.md`](docs/area-tree.md)。
+対応している仕様の項目ごとの説明は対応仕様説明書 ([`docs/conformance/`](docs/conformance/README.md)。`npm run docs:conformance` で PDF にする。版ごとの PDF は GitHub のリリースに付ける)、まだ無い機能・既知の制限は [`docs/BACKLOG.md`](docs/BACKLOG.md)、組んだ結果 (Area Tree) の JSON は [`docs/area-tree.md`](docs/area-tree.md)。
 
 ## フォント
 

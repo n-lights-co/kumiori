@@ -52,7 +52,9 @@ main はルールセットで守っているので、版の変更も PR で入�
 
    publish.yml が、タグと `package.json` の版が同じで、タグのコミットが main に入っていることを確かめてから `npm publish` する。Actions の「Publish」の実行で結果を見る。
    一度公開した版は取り消せても同じ番号を使い直せない
-5. GitHub の Releases で、そのタグのリリースを作り、CHANGELOG の項目 (日本語と英語) を本文にする
+5. GitHub の Releases で、そのタグのリリースを作り、CHANGELOG の項目 (日本語と英語) を本文にする。
+   リリースを公開すると、`.github/workflows/conformance-pdf.yml` がそのタグのコミットで対応仕様説明書を組み、PDF 4 冊 (`kumiori-xsl-fo-v0.1.1.pdf`・`kumiori-html-css-v0.1.1.pdf` と、それぞれの `.en.pdf`) をリリースに付ける。Actions の「Conformance PDF」の実行で結果を見る。
+   失敗したときや付け直すときは、「Conformance PDF」を「Run workflow」で動かし、タグを入れる (同じ名前のファイルは置き換える)
 6. 確認: 別のディレクトリで `npx kumiori@<版> --version` が動くこと、`https://cdn.jsdelivr.net/npm/kumiori@<版>/dist-browser/kumiori.js` が開けること、GitHub Pages の画面が新しくなっていること
 
 ### Trusted Publishing の設定 (最初に 1 度だけ)

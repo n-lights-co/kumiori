@@ -52,7 +52,9 @@ main is protected by a ruleset, so version changes also go in through a PR. Publ
 
    publish.yml checks that the tag matches the version in `package.json` and that the tagged commit is on main, then runs `npm publish`. See the result in the "Publish" run under Actions.
    A published version can be unpublished, but the same number can never be reused
-5. Create a release for the tag under Releases on GitHub, with the CHANGELOG entry (Japanese and English) as its body
+5. Create a release for the tag under Releases on GitHub, with the CHANGELOG entry (Japanese and English) as its body.
+   When the release is published, `.github/workflows/conformance-pdf.yml` typesets the Conformance Guide at the tagged commit and attaches the four PDFs (`kumiori-xsl-fo-v0.1.1.pdf`, `kumiori-html-css-v0.1.1.pdf` and their `.en.pdf` versions) to the release. Check the result in the "Conformance PDF" run under Actions.
+   If it fails, or to attach them again, run "Conformance PDF" with "Run workflow" and enter the tag (files with the same names are replaced)
 6. Verify: in another directory, `npx kumiori@<version> --version` works, `https://cdn.jsdelivr.net/npm/kumiori@<version>/dist-browser/kumiori.js` can be opened, and the GitHub Pages web app has been updated
 
 ### Setting up Trusted Publishing (once)

@@ -19,6 +19,8 @@ npm run docs:conformance
 
 `docs/conformance/out/` に PDF ができます (リポジトリには入れません。日本語版 2 冊と英語版 2 冊)。`dist-cli` が無ければ、先に `npm run build:cli` を実行します。
 
+組んだ PDF は、版ごとに GitHub のリリースに付けます (リリースを公開すると `.github/workflows/conformance-pdf.yml` が組んで付ける。[`docs/RELEASING.md`](../RELEASING.md) の「版を出すたびに」)。
+
 - XSL-FO 編は、コマンドの既定の `--compat spec` (XSL-FO 1.1 の初期値) で組みます。
 - 書体は Kumiori の既定です。和文は Noto Serif JP・Noto Sans JP、欧文は Tinos・Arimo、等幅は Cousine、数式は STIX Two Math を使います。Kumiori が配信元から取得します。
 

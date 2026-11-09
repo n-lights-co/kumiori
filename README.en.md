@@ -220,7 +220,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 | `src/fontMapping.ts`, `src/compat.ts`, `src/documentResources.ts`, `src/documentText.ts`, `src/cli.ts` | Font assignment, compatibility mode settings, fetching the math font and images, character encoding detection (shared by the web app and Node); the Node CLI |
 
 For details of the typesetting algorithms see [`docs/en/REPORT.md`](docs/en/REPORT.md), for XSL-FO import [`docs/en/xslfo-import.md`](docs/en/xslfo-import.md), and for the plan for HTML+CSS import [`docs/en/html-css-plan.md`](docs/en/html-css-plan.md).
-Per-item descriptions of the supported specifications are in the Conformance Guide ([`docs/conformance/`](docs/en/conformance.md); `npm run docs:conformance` turns it into PDFs), features not yet available and known limitations are in [`docs/en/BACKLOG.md`](docs/en/BACKLOG.md), and the JSON of the typeset result (Area Tree) is described in [`docs/en/area-tree.md`](docs/en/area-tree.md).
+Per-item descriptions of the supported specifications are in the Conformance Guide ([`docs/conformance/`](docs/en/conformance.md); `npm run docs:conformance` turns it into PDFs; the PDFs for each version are attached to the GitHub release), features not yet available and known limitations are in [`docs/en/BACKLOG.md`](docs/en/BACKLOG.md), and the JSON of the typeset result (Area Tree) is described in [`docs/en/area-tree.md`](docs/en/area-tree.md).
 
 ## Fonts
 
