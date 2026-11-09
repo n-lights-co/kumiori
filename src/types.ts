@@ -1219,6 +1219,11 @@ export interface LTableCell extends BaseNode, BoxStyle {
   stretchContent?: boolean;
   /** stretchContent で伸ばすブロックの高さの上限 (pt。枠・内側の余白を含む。flex の項目の max-height) */
   stretchMax?: number;
+  /**
+   * collapse の表で、改ページの境目の罫線を決め直すのに使う、このセルの前側・後ろ側の罫線 (セル・行・行グループの指定から選んだもの。
+   * 隣のセルとはまだ比べていない)。組版が collapseTableBorders で付ける (src/tableBorders.ts の breakEdges)
+   */
+  breakEdges?: { before?: BorderSide; after?: BorderSide };
   children: Array<LBlockLevel | LInlineLevel>;
 }
 export interface LTableRow extends BaseNode {
@@ -1298,6 +1303,11 @@ export interface LTable extends BaseNode, BoxStyle {
    * 互換モードの組み方。省略時は仕様どおり、隣り合うセルが半分ずつ持つ (XSL §6.7.10・CSS2 §17.6.2)
    */
   collapseToAfterCell?: boolean;
+  /**
+   * collapse の表で、改ページの境目の罫線を決め直すのに使う、列ごとの線 (組版が collapseTableBorders で付ける)。
+   * headerAfter: 表ヘッダーの最後の行の後ろ側、footerBefore: 表フッターの最初の行の前側 (セル・行・行グループの指定から選んだもの)
+   */
+  breakBorders?: { headerAfter: Array<BorderSide | undefined>; footerBefore: Array<BorderSide | undefined> };
   /**
    * 罫線を分ける表 (separate) のセルの間隔 (pt)。i: 列の間 (inline 方向)、b: 行の間 (block 方向)。表の端とセルの間にも空ける
    * (XSL の border-separation §7.28.5・CSS の border-spacing)

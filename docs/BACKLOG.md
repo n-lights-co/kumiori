@@ -53,7 +53,7 @@ XSL 1.1 勧告 (2006-12-05) の原文と照らし合わせて見つけた相違�
 
 | ID | 項目 | 優先度 | 状態 | メモ |
 |----|------|--------|------|------|
-| S-01 | 表の `border-collapse` (§7.28.3、初期値 collapse) | 高 | 完了 | `LTable.borderCollapse` (FO の既定は collapse)。隣接セルは右・下のセルへ、表に外枠がある辺は外枠へまとめる (`tableBorders.ts`) |
+| S-01 | 表の `border-collapse` (§7.28.3、初期値 collapse) | 高 | 完了 | `LTable.borderCollapse` (FO の既定は collapse)。隣接セルは右・下のセルへ、表に外枠がある辺は外枠へまとめる (`tableBorders.ts`)。改ページで繰り返す表ヘッダー・表フッターと、そのページの最初・最後の行の境目は、接する行どうしの線から選び直す (§6.7.3・§6.7.10) |
 | S-02 | margin-top/bottom 由来の space は `.conditionality=retain` (§5.3.2) | 高 | 完了 | margin の block 方向の前側 → retainSpaceBefore。後側 → retainSpaceAfter (仕様モードだけ。互換モードはページの終わりで捨てる)。space-after.conditionality="retain" はどちらのモードでも読む。段落の最後の行は、残す余白まで入る場合だけ置く (入れ子の箱の後ろの余白は、段落の箱のものだけを数える) |
 | S-03 | `line-height` の長さ・% は計算済みの長さで継承 (§7.16.4) | 高 | 完了 | `lineHeightPt` (長さのまま継承) |
 | S-04 | writing-mode: `tb-lr` の取り違え、rl-tb・bt-*・lr/rl/tb、page master の書字方向によるリージョン配置 (§7.29.7, §6.4.15-18) | 中 | 完了 | tb-lr (vertical-lr)・略記 lr / rl / tb・ページの書字方向によるリージョンの配置、rl-tb と direction="rtl" (行を右から。欧文・数字の並びは左から右、表の列も右から) に対応。vertical-lr のルビは左側。双方向のテキストは UAX #9 で並べる (inline・block の unicode-bidi・direction も使う)。アラビア文字などのつながる字は、並びをまとめて書体の字形の置き換えで組む (横書き)。bt-lr・bt-rl・lr-bt・rl-bt・lr-alternating-*・lr-inverting-*・tb-lr-in-lr-pairs は、横・縦で組んだ後に軸を裏返して表す (block-container と page-sequence・region-body)。bt-* の横向きの欧文の字の向きは上から下のまま、tb-lr-in-lr-pairs の組は縦中横 (1em に収める)、裏返すコンテナはページをまたがない |

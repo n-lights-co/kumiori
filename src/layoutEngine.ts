@@ -105,7 +105,7 @@ import {
 import { mm } from './units';
 import type { AssetStore } from './assets';
 import { FootnoteCtx, splitEntry, withLabel, type FootEntry } from './footnotes';
-import { collapsedOuterHalves, collapseTableBorders, placeCells } from './tableBorders';
+import { breakEdgeBorder, collapsedOuterHalves, collapseTableBorders, placeCells } from './tableBorders';
 import { formatPageNumber } from './pageNumber';
 
 export interface LayoutOptions {
@@ -540,6 +540,13 @@ class Flow {
   private spacing?: { i: number; b: number };
   /** 組んでいる表の LTable.rowspanMiddleAh (アンテナハウス互換) */
   private rowspanMiddleAh = false;
+  /**
+   * 組んでいる collapse の表の、改ページの境目で罫線を決め直すための線 (layoutTable が設定)。
+   * header: 続きのページで表ヘッダーを繰り返すか、compat: 内側の線を後ろのセルが全体の太さで持つ組み方 (collapseToAfterCell) か
+   */
+  private tableBreak?: { header: boolean; compat: boolean } & NonNullable<LTable['breakBorders']>;
+  /** 組んだ行のセルの、占める列 (c から cs 列) と、改ページの境目で使う前側・後ろ側の線 (LTableCell.breakEdges) */
+  private cellCols = new WeakMap<LNode, { c: number; cs: number; before?: BorderSide; after?: BorderSide }>();
   private intrinsic: boolean;
   private minContent: boolean;
   /** 現ページの脚注領域 */
@@ -3902,8 +3909,10 @@ class Flow {
     frame.node.colSizes = sizes;
     const savedSpacing = this.spacing;
     const savedRowspanAh = this.rowspanMiddleAh;
+    const savedTableBreak = this.tableBreak;
     this.spacing = sp;
     this.rowspanMiddleAh = !!node.rowspanMiddleAh;
+    this.tableBreak = node.breakBorders ? { ...node.breakBorders, header: !!node.header?.rows.length && !node.omitHeaderAtBreak, compat: !!node.collapseToAfterCell } : undefined;
     const headerRows = node.header ? this.layoutRowGroup(node.header.rows, sizes, resolveStyle(st, node.header)) : [];
     const footerRows = node.footer ? this.layoutRowGroup(node.footer.rows, sizes, resolveStyle(st, node.footer)) : [];
     const footerH = footerRows.reduce((a, r) => a + r.bsize, 0);
@@ -3911,7 +3920,11 @@ class Flow {
     const repeatFooter = footerRows.length > 0 && !node.omitFooterAtBreak;
     const reserve = repeatFooter ? footerH : 0;
     const placeFooterAtBreak = repeatFooter
-      ? () => this.placeRowsRaw(footerRows.map((f) => Object.assign(cloneNode(f), { repeated: true })))
+      ? () => {
+          const clones = footerRows.map((f) => Object.assign(cloneNode(f), { repeated: true }));
+          this.reborderFooterAtBreak(footerRows[0], clones[0]);
+          this.placeRowsRaw(clones);
+        }
       : undefined;
     const placeHeader = (repeated: boolean) => {
       if (!headerRows.length || (repeated && node.omitHeaderAtBreak)) return;
@@ -3933,6 +3946,7 @@ class Flow {
     if (sp?.b) this.cursor += sp.b;
     this.spacing = savedSpacing;
     this.rowspanMiddleAh = savedRowspanAh;
+    this.tableBreak = savedTableBreak;
     this.closeFrame();
     if (!node.collapseSpillAh) this.pendAdjust -= out.be;
     if (bottomCaptions) {
@@ -3968,7 +3982,10 @@ class Flow {
           if (!isHeader && !opts.beforeBreak && !opts.forceNewPage) this.closeRowAtBreak(group[0]);
           opts.beforeBreak?.();
           this.breakPage();
-          if (!isHeader) afterBreak();
+          if (!isHeader) {
+            afterBreak();
+            this.reborderAfterHeader(group[0]);
+          }
           // ヘッダ複製後に再判定 (ヘッダ + 行が入らない場合は強制配置)
         } else {
           this.host.warn('表の行がページ高さを超えているため溢れます');
@@ -4027,6 +4044,81 @@ class Flow {
     }
   }
 
+  /**
+   * 続きのページで繰り返した表ヘッダーと、そのページの最初の行の境目の罫線を決め直す (collapse の表)。
+   * 罫線は組む前に表全体の格子で決めてあり、行の前側の線は、元の格子で上にあった行と比べたもの。続きのページでその行の上に
+   * 接するのは繰り返した表ヘッダーなので、表ヘッダーの最後の行の後ろ側の線と、この行の前側の線から選び直す (XSL 1.1 §6.7.3・§6.7.10)。
+   * 表ヘッダーのセルは、境目の線の場所 (元の格子で決めた太さの半分) を取ってあり、線は行のセルが描く
+   */
+  private reborderAfterHeader(row: LNode | undefined) {
+    const tb = this.tableBreak;
+    if (!tb?.header || !row || row.kind !== 'row') return;
+    this.reborderEdge(row, tb.headerAfter, tb.compat);
+  }
+
+  /**
+   * 改ページの手前で繰り返す表フッターと、そのページの最後の行の境目の罫線を決め直す (collapse の表)。
+   * 元の格子で表フッターの上にあるのは表の最後の行なので、このページの最後の行の後ろ側の線と、表フッターの最初の行の前側の線から
+   * 選び直す (XSL 1.1 §6.7.3・§6.7.10)。orig は組んだ表フッターの最初の行、clone はこのページに置く複製
+   */
+  private reborderFooterAtBreak(orig: LNode | undefined, clone: LNode | undefined) {
+    const tb = this.tableBreak;
+    if (!tb || !orig || !clone) return;
+    const kids = this.containerNode().children;
+    let last: LNode | undefined;
+    for (let k = kids.length - 1; k >= 0; k--) {
+      if (kids[k].kind === 'row') {
+        last = kids[k];
+        break;
+      }
+    }
+    if (!last || last.repeated) return;
+    // このページの最後の行の、列ごとの後ろ側の線
+    const above: Array<BorderSide | undefined> = tb.footerBefore.map(() => undefined);
+    for (const cell of last.children) {
+      const info = this.cellCols.get(cell);
+      if (!info) continue;
+      for (let x = info.c; x < info.c + info.cs && x < above.length; x++) above[x] = info.after;
+    }
+    orig.children.forEach((cell, k) => {
+      const info = this.cellCols.get(cell);
+      const target = clone.children[k];
+      if (!info || !target) return;
+      // 列ごとの線分で選び (上の行の線が先)、太い方をセルの辺にする
+      let b: BorderSide | undefined;
+      for (let x = info.c; x < info.c + info.cs && x < above.length; x++) {
+        const w = breakEdgeBorder(above, x, 1, tb.footerBefore[x]);
+        if (w && (!b || w.width > b.width)) b = w;
+      }
+      this.setBreakSide(target, b, tb.compat);
+    });
+  }
+
+  /** 行のセルの前側の線を、edge (列ごとの線) とセルの前側の線から決め直す */
+  private reborderEdge(row: LNode, edge: Array<BorderSide | undefined>, compat: boolean) {
+    for (const cell of row.children) {
+      const info = this.cellCols.get(cell);
+      if (!info) continue;
+      this.setBreakSide(cell, breakEdgeBorder(edge, info.c, info.cs, info.before), compat);
+    }
+  }
+
+  /**
+   * セルの前側の罫線を、改ページの境目で決め直した線にする。仕様の組み方では、グリッド線を中心に描く (場所は半分、描く太さは全体)。
+   * 互換の組み方 (collapseToAfterCell) では、セルが全体の太さで持つ。
+   * セルの中身は、線の場所 (太さの半分) の内側に置かれる (§6.7.10 の内容の矩形)。行の高さは組んだときのままにする
+   * (改ページの判定を済ませた後なので。線が太くなれば、その差の分だけ中身が下がり、下の余白に食い込む)
+   */
+  private setBreakSide(cell: LNode, b: BorderSide | undefined, compat: boolean) {
+    const s = startSide(this.wm);
+    if (!b) {
+      delete cell.border[s];
+      return;
+    }
+    const { collapse: _c, ...rest } = b;
+    cell.border[s] = compat ? rest : { ...rest, width: rest.width / 2, collapse: { paintWidth: rest.width } };
+  }
+
   /** 行を、空きの確認をせずにそのまま置く (各ページ末尾の表フッター用。空きは確保済み) */
   private placeRowsRaw(rows: LNode[]) {
     this.flush();
@@ -4049,7 +4141,7 @@ class Flow {
     const sb = this.spacing?.b ?? 0;
     const nCols = sizes.length;
     const total = sizes.reduce((a, b) => a + b, 0) + si * (nCols + 1);
-    interface CellFrags { cell: LTableCell; desc: BoxDesc; i: number; w: number; roots: LNode[]; used: number[] }
+    interface CellFrags { cell: LTableCell; desc: BoxDesc; i: number; w: number; c: number; cs: number; roots: LNode[]; used: number[] }
     const cells: CellFrags[] = [];
     let col = 0;
     let brokeFirst = false;
@@ -4092,7 +4184,7 @@ class Flow {
       flow.layoutChildren(cell.children, resolveStyle(rst, cell));
       flow.finishPaginated();
       if (flow.brokeKeepPage === 0) brokeFirst = true;
-      cells.push({ cell, desc, i, w, roots, used });
+      cells.push({ cell, desc, i, w, c: col - cs, cs, roots, used });
     }
     // 最初の断片に何も入らない、または入りきらない (1 行も置けない)、または widows / orphans を守れない (CSS Fragmentation 3 §3.3)
     // なら分けない
@@ -4131,6 +4223,8 @@ class Flow {
             ref: c.desc.ref,
             children: content,
           });
+        // 断片の前側・後ろ側の線は、セルの中の切れ目では無い (改ページの境目で決め直すときも、セルの側の線は無いものとする)
+        this.cellCols.set(cn, { c: c.c, cs: c.cs, ...(!cutS && c.cell.breakEdges?.before ? { before: c.cell.breakEdges.before } : {}), ...(!cutE && c.cell.breakEdges?.after ? { after: c.cell.breakEdges.after } : {}) });
         if (cutS) cutStart(cn, c.desc.keepStart.border, c.desc.keepStart.padding);
         if (cutE) cutEnd(cn, c.desc.keepEnd.border, c.desc.keepEnd.padding);
         rn.children.push(cn);
@@ -4166,6 +4260,7 @@ class Flow {
       const w = sizes.slice(col, col + cs).reduce((a, b) => a + b, 0) + si * (Math.min(cs, nCols - col) - 1);
       const cn = this.layoutCell(cell, w, rowStyles[j]);
       cn.i = sizes.slice(0, col).reduce((a, b) => a + b, 0) + si * (col + 1);
+      this.cellCols.set(cn, { c: col, cs, ...cell.breakEdges });
       rowNodes[j].children.push(cn);
       placed.push({ node: cn, row: j, span: rs, align: cell.blockAlign, ...(cell.stretchContent ? { stretch: true } : {}), ...(cell.stretchMax !== undefined ? { stretchMax: cell.stretchMax } : {}) });
       if (cell.blockAlign) cn.cellAlign = cell.blockAlign;

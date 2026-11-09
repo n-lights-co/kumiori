@@ -196,6 +196,32 @@ export function collapseTableBorders(table: LTable, wm: WritingMode): LTable {
     }
   }
 
+  // 改ページの境目で決め直すための線 (書き戻す前の、セルが元から持つ指定から選ぶ)。
+  // 続きのページで繰り返す表ヘッダーの下に来るのは、そのページの最初の行で、元の格子で上にあった行ではない。
+  // その境目の線分は、表ヘッダーの最後の行の後ろ側と、その行の前側の指定から選び直す (XSL 1.1 §6.7.3・§6.7.10)。
+  // 改ページの手前で繰り返す表フッターと、そのページの最後の行の境目も同じ
+  const own = (cands: Cand[]) => (cands.some((c) => c.b?.style === 'hidden') ? cands.find((c) => c.b?.style === 'hidden')!.b : resolve(cands));
+  const hLast = hRows.length - 1;
+  const fFirst = hRows.length + bRows.length;
+  const headerAfter = Array.from({ length: nCols }, (_, x) => {
+    const p = hLast >= 0 ? grid[hLast]?.[x] : undefined;
+    if (!p) return undefined;
+    return own([{ b: cellB(p, S.be), rank: 5 }, { b: rowB[hLast][S.be], rank: 4 }, ...(all[hLast].group?.last ? [{ b: grpB[hLast][S.be], rank: 3 }] : [])]);
+  });
+  const footerBefore = Array.from({ length: nCols }, (_, x) => {
+    const p = fRows.length ? grid[fFirst]?.[x] : undefined;
+    if (!p) return undefined;
+    return own([{ b: cellB(p, S.bs), rank: 5 }, { b: rowB[fFirst][S.bs], rank: 4 }, ...(all[fFirst].group?.first ? [{ b: grpB[fFirst][S.bs], rank: 3 }] : [])]);
+  });
+  const edges = new Map<Placed, { before?: BorderSide; after?: BorderSide }>();
+  for (const p of placed) {
+    if (p.r < hRows.length || p.r >= fFirst) continue;
+    const last = p.r + p.rs - 1;
+    const before = own([{ b: cellB(p, S.bs), rank: 5 }, { b: rowB[p.r][S.bs], rank: 4 }, ...(all[p.r].group?.first ? [{ b: grpB[p.r][S.bs], rank: 3 }] : [])]);
+    const after = own([{ b: cellB(p, S.be), rank: 5 }, { b: rowB[last][S.be], rank: 4 }, ...(all[last].group?.last ? [{ b: grpB[last][S.be], rank: 3 }] : [])]);
+    edges.set(p, { ...(before ? { before } : {}), ...(after ? { after } : {}) });
+  }
+
   // セルの辺へ書き戻す
   const isEdge = (p: Placed, side: Side) =>
     (side === S.bs && p.r === 0) || (side === S.be && p.r + p.rs >= nRows) || (side === S.is && p.c === 0) || (side === S.ie && p.c + p.cs >= nCols);
@@ -227,6 +253,8 @@ export function collapseTableBorders(table: LTable, wm: WritingMode): LTable {
       out[side] = side === S.bs || side === S.is ? { ...base, collapse: { paintWidth: w.width } } : { ...base, collapse: { noPaint: true } };
     }
     p.cell.border = out;
+    const e = edges.get(p);
+    if (e) p.cell.breakEdges = e;
   }
   for (const side of ['top', 'right', 'bottom', 'left'] as const) {
     if (!edgeAny[side]) continue;
@@ -240,10 +268,22 @@ export function collapseTableBorders(table: LTable, wm: WritingMode): LTable {
   return {
     ...table,
     border: tb,
+    ...(hRows.length || fRows.length ? { breakBorders: { headerAfter, footerBefore } } : {}),
     ...(table.header ? { header: { ...table.header, rows: hRows } } : {}),
     body: { ...table.body, rows: bRows },
     ...(table.footer ? { footer: { ...table.footer, rows: fRows } } : {}),
   };
+}
+
+/**
+ * 改ページの境目の線分の罫線を選び直す (XSL 1.1 §6.7.10 の規則)。edge は繰り返す表ヘッダー (または表フッター) の列ごとの線、
+ * [c, c + cs) はセルの占める列、cell はそのセルの境目の側の線。edge が先 (上) なので、同じ線なら edge が勝つ。
+ * 列ごとの線分の結果のうち、太い方を返す (セルの 1 つの辺には 1 本の線しか持てないため。線分の無い列だけなら undefined)
+ */
+export function breakEdgeBorder(edge: Array<BorderSide | undefined>, c: number, cs: number, cell: BorderSide | undefined): BorderSide | undefined {
+  let out: BorderSide | undefined;
+  for (let x = c; x < Math.min(c + cs, edge.length); x++) out = wider(out, winningBorder(edge[x], cell));
+  return out;
 }
 
 /** グリッドに割り付けたセル (r, c: 左上の行・列、rs, cs: またぐ行数・列数) */
