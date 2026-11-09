@@ -411,7 +411,10 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      The bottom margin of the last child of a min-height box collapses outside the box when the minimum has no effect; when it extends the box, the margin does not collapse and is absorbed by the extension
      (CSS 2.1 §8.3.1 and the behavior measured in Chromium; XSL-FO is unchanged). A box whose height comes from aspect-ratio never collapses it.
      The min/max of an aspect-ratio box are carried to the layout engine in both directions (`minBlockSize`, `maxBlockSize`, `minInlineSize`, `maxInlineSize`;
-     the names are mapped in vertical writing). A box with a specified min-height (including 0) does not grow with its content. Auto margins are distributed by the physical left and right even in rtl
+     the names are mapped in vertical writing). A box with a specified min-height (including 0) does not grow with its content. Auto margins are distributed by the physical left and right even in rtl.
+     Horizontal margins of a box with a definite width (CSS 2.1 §10.3.3): when only one is auto, the remaining space goes to that margin at layout time (`autoMargins`; a box with both auto is also
+     re-centred with the actual width of the containing block). When neither is auto and the containing block is rtl, margin-left is ignored and the box is placed from the right edge
+     (blocks, tables and in-flow block containers; `rtlEdge`; XSL-FO and vertical writing are excluded)
      collapse on a grid item is the same as hidden. `aspect-ratio` decides one of width and height from the other. For a block in the flow whose height is auto,
      the layout engine derives the height from the actual width at layout time (`BoxStyle.aspectRatio`; this also works for the stretched width of a flex item). With overflow visible the box grows with its content
      (the automatic minimum size. CSS Sizing 4 §5.1); a clipping box keeps the height from the ratio. min-height and max-height (`maxBlockSize`) clamp the height from the ratio,

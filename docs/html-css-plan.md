@@ -407,7 +407,10 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      min-height の箱の最後の子の下の margin は、min が効かなければ箱の外へ畳み、効いて箱が伸びたら畳まず伸びた分に吸わせる
      (CSS 2.1 §8.3.1・Chromium で測った動き。XSL-FO はこれまでどおり)。aspect-ratio で高さの決まる箱は、いつも畳まない。
      aspect-ratio の箱の min・max は、block・inline とも組版エンジンへ運ぶ (`minBlockSize`・`maxBlockSize`・`minInlineSize`・`maxInlineSize`。
-     縦書きは名前を読み替える)。min-height の指定 (0 も) がある箱は中身で伸ばさない。auto の余白は rtl でも物理の左右で配る
+     縦書きは名前を読み替える)。min-height の指定 (0 も) がある箱は中身で伸ばさない。auto の余白は rtl でも物理の左右で配る。
+     幅の決まった箱の左右の余白 (CSS 2.1 §10.3.3): 一方だけが auto なら、組むときに残りをその余白に配る (`autoMargins`。両方 auto の箱も、
+     組むときの置く場所の幅で等分し直す)。どちらも auto でなければ、包含ブロックが rtl のとき margin-left を捨てて右端から置く
+     (ブロック・表・流れの中のブロックコンテナ。`rtlEdge`。XSL-FO と縦書きは対象外)
      grid の項目の collapse は hidden と同じ。`aspect-ratio` は、幅か高さの一方からもう一方を決める。流れの中のブロックで高さが auto なら、
      組版エンジンが組むときの実際の幅から高さを出す (`BoxStyle.aspectRatio`。flex の項目の伸びた幅にも効く)。overflow が visible なら中身で伸び
      (自動の最小の大きさ。CSS Sizing 4 §5.1)、切り抜く箱は比の高さで固定。min-height・max-height (`maxBlockSize`) で比の高さを抑え、

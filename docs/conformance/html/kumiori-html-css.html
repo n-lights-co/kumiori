@@ -277,7 +277,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 
 <h2 id="s-margin"><span class="num">3.1</span>外側の余白 : <code>margin</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
 <p class="props" data-p="margin"><span class="k">初期値</span> : <span class="v">see individual properties</span> <span class="k">適用対象</span> : <span class="v">all elements except elements with table display types other than table-caption, table and inline-table</span> <span class="k">継承</span> : <span class="v">no</span> <span class="src">(margin — CSS 2.1 §8)</span></p>
-<p>上下に隣り合うマージンは相殺 (margin collapsing) され、大きい方が使われます。負の値、auto (左右の auto で中央に置く) にも対応します。</p>
+<p>上下に隣り合うマージンは相殺 (margin collapsing) され、大きい方が使われます。負の値、auto (左右の auto で中央に置く。一方だけが auto なら、残りをその余白が取る) にも対応します。幅の決まった箱で左右の余白がどちらも auto でないときは、包含ブロックの direction が ltr なら左から、rtl なら右から置きます (CSS 2.1 §10.3.3)。</p>
 <!--gen:vals-s-margin--><p class="vals-h"><code>margin</code> の値の意味 <span class="spec">(CSS 2.1 §8.3)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>&lt;length&gt;</code></td><td>決まった幅の余白にします。負の値も書けます。</td><td>対応</td></tr><tr><td><code>&lt;percentage&gt;</code></td><td>包含ブロックの幅に対する割合で余白を決めます。</td><td>対応</td></tr><tr><td><code>auto</code></td><td>幅と余白の計算の規則 (CSS 2.1 §10.3 など) で余白を決めます。</td><td>対応</td></tr></tbody></table><!--/gen:vals-s-margin-->
 <!--kumiori-sample id="margin" mark="margin: 0 0 8pt|margin: 12pt 0 0|margin: 0 auto"-->
 <div style="margin: 0 0 8pt; background-color: #dfe7e3; padding: 2pt;">下に 8pt の余白</div>

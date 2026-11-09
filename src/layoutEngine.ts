@@ -1729,10 +1729,29 @@ class Flow {
     return { ...desc, minB: b, ratioSized: true, ...(maxB != null ? { maxB } : {}) };
   }
 
+  /**
+   * 幅の決まった箱で、左右の余白がどちらも auto でないとき (制約が余る。CSS 2.1 §10.3.3): 包含ブロックの direction が ltr なら
+   * margin-right を、rtl なら margin-left を捨てて、残りに合わせる。rtl では、箱は右端 (margin-right の内側) から置く。
+   * 入りきらない箱は左へはみ出す。XSL-FO の文書と縦書きは扱わない (余白の is は左の側)
+   */
+  private rtlEdge(desc: BoxDesc, node: { autoMargins?: unknown }, ps: ResolvedStyle): BoxDesc {
+    if (this.host.xslSpace || this.wm !== 'horizontal-tb' || ps.direction !== 'rtl' || node.autoMargins || desc.isizeExplicit == null) return desc;
+    const free = this.contentI() - desc.m.is - desc.m.ie - desc.bpI - desc.isizeExplicit;
+    return Math.abs(free) > EPS ? { ...desc, m: { ...desc.m, is: desc.m.is + free } } : desc;
+  }
+
   layoutBlockLevel(node: LBlockLevel, ps: ResolvedStyle) {
     if (node.type === 'block') this.layoutBlock(node, ps);
     else if (node.type === 'table') this.layoutTable(node, ps);
-    else if (node.type === 'block-container') this.layoutContainer(node, ps);
+    else if (node.type === 'block-container') {
+      // 流れの中のブロックコンテナ (高さの決まった flex の容器など) も、rtl では右端から置く (左の余白を残りに合わせる)
+      if (!node.absolutePosition && !node.rotation && resolveStyle(ps, node).wm === this.wm) {
+        const d = describeBox(node, this.wm);
+        const e = this.rtlEdge(d, node, ps);
+        if (e !== d) node = { ...node, margin: { ...d.marginP, left: e.m.is } };
+      }
+      this.layoutContainer(node, ps);
+    }
   }
 
   // ── ブロック ──
@@ -1778,7 +1797,7 @@ class Flow {
       const am = node.autoMargins;
       return free > EPS ? { ...d, m: { ...d.m, is: d.m.is + (am === 'center' ? free / 2 : am === 'start' ? free : 0) } } : d;
     };
-    desc = autoMargins(desc);
+    desc = this.rtlEdge(autoMargins(desc), node, ps);
     // CSS: 新しいブロック整形文脈の箱 (overflow が visible でない・flow-root など) は、外の float に重ならない (CSS 2.1 §9.5)。
     // 上端の高さで float の横に入れば、その幅に縮めて横に置く。入らなければ float の下へ下げる
     if (node.bfc && !this.host.xslSpace && this.floats.length && this.wm === 'horizontal-tb') {
@@ -1797,7 +1816,7 @@ class Flow {
     if (node.aspectRatio && desc.bsizeExplicit == null) {
       const was = desc.isizeExplicit;
       desc = this.aspectBox(node, desc);
-      if (desc.isizeExplicit !== was) desc = autoMargins(desc);
+      if (desc.isizeExplicit !== was) desc = this.rtlEdge(autoMargins(desc), node, ps);
     }
     const frame = this.openFrame(desc);
     // 中の絶対配置の箱の基準になる箱 (CSS の position が static でない箱。横書きだけ)・position: relative でずらす箱は、断片を集める
@@ -3693,14 +3712,13 @@ class Flow {
       if (node.captions?.length) widths = widen(widths, capMin() - gaps);
       node = { ...node, columns: widths.map((w) => ({ type: 'table-column' as const, width: w })) };
       desc = { ...desc, isizeExplicit: widths.reduce((a, b) => a + b, 0) + gaps };
-      // 余白が auto なら、残りをその余白に配る (CSS 2.1 §10.3.3)。margin-left/right は物理の向きなので、rtl では逆
+      // 余白が auto なら、残りをその余白に配る (CSS 2.1 §10.3.3)。'start' は margin-left が auto (rtl でも物理の左右で決まる)
       if (node.autoMargins) {
         // collapse の表が持つ外枠の罫線は、半分が余白の側へ出る (後で余白から引く)。表の箱 (罫線の中心の線まで) を寄せる。
         // アンテナハウス互換 (collapseSpillAh) では、外へ出る半分も表の内側に置くので、罫線の外側までを寄せる
         const spill = node.borderCollapse === 'collapse' && !node.collapseSpillAh ? (desc.bw.is ? out.is : 0) + (desc.bw.ie ? out.ie : 0) : 0;
         const free = this.contentI() - desc.m.is - desc.m.ie - desc.bpI - desc.isizeExplicit! + spill;
-        const rtl = st.direction === 'rtl';
-        const am = rtl && node.autoMargins !== 'center' ? (node.autoMargins === 'start' ? 'end' : 'start') : node.autoMargins;
+        const am = node.autoMargins;
         if (free > EPS) desc = { ...desc, m: { ...desc.m, is: desc.m.is + (am === 'center' ? free / 2 : am === 'start' ? free : 0) } };
       }
     } else if (node.fillContent && desc.isizeExplicit != null) {
@@ -3875,6 +3893,7 @@ class Flow {
     // block 方向は、前後の余白を畳んだ後から引く (前後の表のはみ出しは、どちらも余白に重なる)
     // アンテナハウス互換: 始めの側も余白に重ねない (表全体を内側に置く)
     this.pendAdjust -= node.collapseSpillAh ? 0 : out.bs;
+    desc = this.rtlEdge(desc, node, ps);
     const frame = this.openFrame(desc, 'table');
     // 罫線を分ける表のセルの間隔 (border-separation / border-spacing): 列の幅は、間隔を除いた幅で決める
     const sp = node.borderCollapse !== 'collapse' && node.borderSpacing && (node.borderSpacing.i > 0 || node.borderSpacing.b > 0) ? node.borderSpacing : undefined;

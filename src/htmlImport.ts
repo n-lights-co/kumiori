@@ -2701,6 +2701,12 @@ class HtmlImporter {
         const m = (cw * PT_PER_PX - o.width - extra) / 2;
         if (m > 0) o.margin = { ...margin, left: m, right: m };
       }
+      // 組むときの置く場所の幅が見積もりと違えば、組版エンジンが残りを等分し直す
+      o.autoMargins ??= 'center';
+    }
+    // 左右の一方だけが auto: 組むときに、残りをその余白に配る (margin-left が auto なら右へ寄る)
+    else if (!this.src.rect && o.width !== undefined && (c('margin-left') === 'auto' || c('margin-right') === 'auto')) {
+      o.autoMargins ??= c('margin-left') === 'auto' ? 'start' : 'end';
     }
     // HTML の center 要素・align 属性 (-webkit-center など) は、子孫のブロックもそろえる (HTML 5.2 §10.3.3・§10.3.9)。
     // 幅の決まった箱で、左右の余白の指定が無い (0) ものを、親の中で寄せる
@@ -2712,6 +2718,8 @@ class HtmlImporter {
         const extra = o.boxSizing === 'border-box' ? 0 : (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
         const free = cw * PT_PER_PX - o.width - extra;
         if (free > 0) o.margin = { ...margin, ...(al === 'center' ? { left: free / 2, right: free / 2 } : { left: free }) };
+        // 寄せた箱は、rtl の「右端から置く」決まりの外 (寄せる向きは text-align が決める)
+        o.autoMargins ??= al === 'center' ? 'center' : 'start';
       }
     }
     const rad = this.radiusOf(c);
