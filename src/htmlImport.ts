@@ -3059,7 +3059,8 @@ class HtmlImporter {
       if (flexBox && /flex$/.test(this.display(el)) && this.cs(e)('visibility') === 'collapse') continue;
       const pg = this.pg(e);
       // 名前付きページ (body の直下のブロック): ページの名前が変わるところで、ページシーケンスを分ける
-      if (el === this.bodyEl && this.isBlock(d, e)) this.flowPageSwitch(e, pg, items);
+      // page は class A の区切りを作る箱 (流れの中のブロック) に効く (CSS Page 3 §8.1)。絶対配置・固定配置・float の箱は、ページの名前を変えない
+      if (el === this.bodyEl && this.isBlock(d, e) && !/^(absolute|fixed)$/.test(this.cs(e)('position')) && (this.cs(e)('float') || 'none') === 'none') this.flowPageSwitch(e, pg, items);
       if (d !== 'list-item') this.enterCounters(this.cs(e), el);
       this.bookmark(e);
       // string-set: 要素の前にマーカーを置く (インラインの中なら、段落の外へ出す)
@@ -3073,7 +3074,11 @@ class HtmlImporter {
         // 見えない箱も飛び先にはなる (visibility: hidden は箱を描かないだけ。CSS 2.1 §11.2): id (しおり・リンクの飛び先) があれば、
         // 高さの無い印を残す (book の表題の h1 { position: absolute; visibility: hidden } のしおりなど)
         const hid = e.getAttribute('id');
-        if (hid) items.push({ v: { type: 'block', id: hid, children: [] } as LBlock, block: true });
+        if (hid) {
+          const mark = { type: 'block', id: hid, children: [] } as LBlock;
+          this.outOfFlowMarks.add(mark);
+          items.push({ v: mark, block: true });
+        }
         continue;
       }
       if (this.flowPositioned(e, el, pos, items)) continue;
@@ -3148,6 +3153,17 @@ class HtmlImporter {
   private pushMarker(m: LMarker, inline: boolean, items: FlowItem[]) {
     if (inline) this.pendingMarkers.push(m);
     else items.push({ v: m, block: false });
+  }
+
+  /** 流れの外の箱の代わりに置いた印 (見えない絶対配置の箱の id の印)。ページの名前の切り替えでは、流れの中の箱に数えない */
+  private outOfFlowMarks = new WeakSet<object>();
+
+  /** body の直下の項目が、流れの中の箱 (か字) か: 空白・マーカー・回り込み・絶対配置の箱・見えない絶対配置の箱の印は、流れの中の箱ではない */
+  private inFlowItem(x: LBlockLevel | LInlineLevel): boolean {
+    if (typeof x === 'string') return !!x.trim();
+    if (this.outOfFlowMarks.has(x)) return false;
+    const n = x as { type?: string; absolutePosition?: boolean };
+    return !(n.type === 'marker' || n.type === 'float' || (n.type === 'block-container' && n.absolutePosition));
   }
 
   /** 名前付きページ: body の直下のブロック e で、ページの名前が変わるところにページシーケンスの切り替え (page-switch) を置く */
@@ -4922,7 +4938,9 @@ class HtmlImporter {
       if (typeof c !== 'string' && (c as unknown as PageSwitch).type === 'page-switch') {
         const sw = c as unknown as PageSwitch;
         const last = groups[groups.length - 1];
-        if (!last.items.some((x) => typeof x !== 'string' || x.trim())) Object.assign(last, { page: sw.page, initial: sw.initial });
+        // 前の組に流れの中の箱が無ければ (空白・絶対配置の箱・見えない箱の印だけ)、改ページせず、その組をこの名前のページにする
+        // (ページの名前は流れの中の箱の間でだけ比べる。CSS Page 3 §8.1。最初のページの種類は、最初の流れの中の箱の page)
+        if (!last.items.some((x) => this.inFlowItem(x))) Object.assign(last, { page: sw.page, initial: sw.initial });
         else groups.push({ page: sw.page, initial: sw.initial, items: [] });
       } else groups[groups.length - 1].items.push(c);
     }

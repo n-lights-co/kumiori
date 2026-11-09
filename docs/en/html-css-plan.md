@@ -108,6 +108,9 @@ The resolved styles are mapped onto `TextStyle`, `BoxStyle` and the individual n
 - All 16 margin boxes. The boxes on the top and bottom edges are placed at the full width of the body, and their position is distinguished by alignment (left, centre, right) (the CSS box-width distribution is not performed).
 - `:first`, `:left`, `:right` and `:blank` become conditional page masters. An unnamed `:first` applies only to the first page of the document; a named `:first` (`chapter:first`) applies to the first page of the run of pages with that name.
 - Named pages split the page sequence where `page` changes on a block directly under body.
+  Only in-flow blocks are compared (CSS Page 3 §8.1: `page` applies to boxes that create class A break points). Absolutely positioned, fixed and floated boxes
+  do not change the page name, and when only such boxes precede the first in-flow box, the first page takes that box's page name
+  (`page: full` after `h1 { position: absolute; visibility: hidden }` in the book sample; the same as WeasyPrint and Chromium).
 - The items left over from this stage, `string(…, first-except / start)`, the formatting of `::footnote-call` / `::footnote-marker` / `@footnote`, `target-text()` and `counter(page)` in the body text, were supported later (the sections below).
 - The default for book typesetting (Kumiori's default style sheet) includes a page number centred at the foot of the page.
 

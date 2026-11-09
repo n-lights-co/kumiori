@@ -106,6 +106,9 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 - 余白の箱は 16 か所すべて。上下の辺の箱は本文の幅いっぱいに置き、揃え (左・中央・右) で位置を分ける (CSS の箱の幅の配分は行わない)。
 - `:first`・`:left`・`:right`・`:blank` は条件付きのページマスターにする。名前の無い `:first` は文書の先頭ページだけ、名前付きの `:first` (`chapter:first`) はその名前のページの並びの先頭ページに当てる。
 - 名前付きページは、body の直下のブロックの `page` が変わるところでページシーケンスを分ける。
+  `page` を比べるのは流れの中のブロックだけ (CSS Page 3 §8.1: `page` は class A の区切りを作る箱に効く)。絶対配置・固定配置・回り込みの箱は
+  ページの名前を変えず、最初の流れの中の箱の前にそれらしか無ければ、最初のページはその箱の名前のページにする
+  (book の見本の `h1 { position: absolute; visibility: hidden }` の後の `page: full`。WeasyPrint・Chromium と同じ)。
 - この段階で残した `string(…, first-except / start)`、`::footnote-call` / `::footnote-marker` / `@footnote` の書式、`target-text()`、本文の中の `counter(page)` は、後で対応した (下の各節)。
 - 本の組版向けの既定 (Kumiori の既定のスタイル) には、ページ下の中央のノンブルを含める。
 
