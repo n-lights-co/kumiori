@@ -1,0 +1,72 @@
+# 対応仕様説明書 (docs/conformance/) を Kumiori で組んで PDF にし、GitHub のリリースに付ける。
+# リリースを公開 (published) したときに動き、そのリリースのタグのコミットで組む (docs/RELEASING.md の「版を出すたびに」)。
+# PDF はリポジトリに入れない (原稿から作り直せる生成物で、組版のコードを変えるたびに中身が変わるため)。
+# 手で動かす (Run workflow) ときは、タグを入れればそのリリースに付け直し (同じ名前のファイルは置き換える)、
+# 空なら選んだブランチで組んで、Actions の実行の成果物 (artifact) に置くだけにする。
+name: Conformance PDF
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: PDF を付けるリリースのタグ (v0.1.1 など。空ならリリースに付けず、成果物に置くだけ)
+        required: false
+        default: ''
+
+permissions:
+  # リリースにファイルを付けるのに要る
+  contents: write
+
+concurrency:
+  group: conformance-pdf-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # 既定の書体 (Noto Serif JP・Noto Sans JP・Tinos・Arimo・Cousine・STIX Two Math) を取得して置く場所
+      KUMIORI_FONT_CACHE: ${{ github.workspace }}/.cache/conformance-fonts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # リリースのタグのコミットで組む (タグが無ければ、動かしたブランチ)
+          ref: ${{ env.TAG || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: .cache/conformance-fonts
+          key: fonts-conformance-v1
+      # dist-cli を作り、日本語版 2 冊と英語版 2 冊を docs/conformance/out/ に組む
+      - run: npm run build:cli
+      - run: npm run docs:conformance
+      # 配るファイルの名前に版 (タグ。無ければコミットの短い番号) を付ける
+      - name: ファイルの名前に版を付ける
+        run: |
+          ver="${TAG:-$(git rev-parse --short HEAD)}"
+          mkdir -p release-pdf
+          for f in docs/conformance/out/*.pdf; do
+            name="$(basename "$f" .pdf)"
+            case "$name" in
+              *.en) cp "$f" "release-pdf/${name%.en}-${ver}.en.pdf" ;;
+              *) cp "$f" "release-pdf/${name}-${ver}.pdf" ;;
+            esac
+          done
+          ls -l release-pdf
+          test "$(ls release-pdf | wc -l)" -eq 4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conformance-pdf
+          path: release-pdf/*.pdf
+      - name: リリースに付ける
+        if: ${{ env.TAG != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" release-pdf/*.pdf --clobber --repo "$GITHUB_REPOSITORY"

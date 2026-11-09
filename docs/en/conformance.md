@@ -17,7 +17,9 @@ For each element and property of XSL-FO 1.1, CSS and MathML, this document sets 
 npm run docs:conformance
 ```
 
-The PDFs are produced in `docs/conformance/out/` (not kept in the repository). If `dist-cli` does not exist, run `npm run build:cli` first.
+The PDFs are produced in `docs/conformance/out/` (not kept in the repository; two volumes in Japanese and two in English). If `dist-cli` does not exist, run `npm run build:cli` first.
+
+The typeset PDFs are attached to each GitHub release (publishing a release makes `.github/workflows/conformance-pdf.yml` typeset and attach them; see "For every release" in [`RELEASING.md`](RELEASING.md)).
 
 - The XSL-FO volume is typeset with the CLI's default `--compat spec` (XSL-FO 1.1 initial values).
 - The fonts are Kumiori's defaults: Noto Serif JP and Noto Sans JP for Japanese, Tinos and Arimo for Latin, Cousine for monospace, and STIX Two Math for formulas. Kumiori fetches them from the distribution host.
