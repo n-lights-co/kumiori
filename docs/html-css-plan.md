@@ -384,6 +384,8 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      `align-items: baseline` はセルの基線の揃え (§8.3)、交差軸の `margin: auto` は揃えより先に空きを取る (§8.1)。高さの決まった 1 行の容器は、
      行の高さを容器の内側の高さにする (§9.4 の 15)。`justify-content` の `start`・`end`・`left`・`right`・`safe`・`unsafe` (CSS Box Alignment 3 §5.1)。
      `row-gap`・`column-gap` の % は計算値に残し、容器の内容の幅・高さに対する割合にする (高さが決まっていなければ 0。CSS Box Alignment 3 §8.1)。
+     `::before`・`::after` と `display: contents` の子も項目にし (§4・CSS Display 3 §2.5)、`order` の順に並べる (§5.4。整数でない `order` の宣言は捨てる)。
+     ブラウザ経由の経路では、疑似要素の項目は位置が読めないので組まない。
      扱わないもの: 中身で決まる最小の幅 (`min-width: auto`。§4.5)、伸ばすときの `max-width`、`last baseline`
    - html が flex の容器なら、body を `justify-content`・`align-items` でページの領域の中に寄せる
    - 角丸: `border-*-radius` を読む (角ごと・百分率・楕円。組版エンジンの `BorderRadius.corners`)。ブラウザ経由でも効く

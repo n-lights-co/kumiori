@@ -167,3 +167,34 @@ describe('flex の向き・縮め方・揃え (Flexbox 1)', () => {
     expect(t[1].margin).toBeUndefined();
   });
 });
+
+describe('flex の order と項目 (Flexbox 1 §4・§5.4)', () => {
+  /** 組んだ字の並び (左上から) */
+  const order = (body: string, css = '') => {
+    const r = load(body, PAGE + css);
+    return boxes(E.engine.layout(r.document).sheets[0] as unknown as Area)
+      .filter((a) => a.type === 'glyph' && /^[A-Z]$/.test(a.text ?? ''))
+      .sort((a, b) => a.y - b.y || a.x - b.x)
+      .map((a) => a.text)
+      .join('');
+  };
+  it('::before・::after も項目で、order の順に並ぶ (横並び・縦並び・column-reverse)', () => {
+    const css = ' .f { display: flex } .f::before { content: "B"; order: 2 } .f::after { content: "C"; order: -1 }';
+    expect(order('<div class="f"><p style="margin: 0">A</p></div>', css)).toBe('CAB');
+    expect(order('<div class="f" style="flex-direction: column"><p style="margin: 0">A</p></div>', css)).toBe('CAB');
+    expect(order('<div class="f" style="flex-direction: column-reverse"><p style="margin: 0">A</p></div>', css)).toBe('BAC');
+  });
+  it('::before の背景・幅も項目の箱になる', () => {
+    const r = load('<div class="f"><p style="margin: 0">A</p></div>', PAGE + ' .f { display: flex } .f::before { content: "B"; width: 50pt; background: #ff0000 }');
+    const red = boxes(E.engine.layout(r.document).sheets[0] as unknown as Area).find((a) => a.bg === '#ff0000')!;
+    expect(Math.round(red.w)).toBe(50);
+  });
+  it('display: contents の子は項目で、order の順に並ぶ (CSS Display 3 §2.5)', () => {
+    const body = '<div style="display: contents"><p style="margin: 0; order: 2">A</p><p style="margin: 0; order: 1">B</p></div><p style="margin: 0">C</p>';
+    expect(order(`<div style="display: flex">${body}</div>`)).toBe('CBA');
+    expect(order(`<div style="display: flex; flex-direction: column">${body}</div>`)).toBe('CBA');
+  });
+  it('整数でない order の宣言は捨てる', () => {
+    expect(order('<div style="display: flex"><p style="margin: 0; order: 2.5">A</p><p style="margin: 0; order: 1">B</p></div>')).toBe('AB');
+  });
+});

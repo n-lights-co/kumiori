@@ -1754,6 +1754,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
     case 'z-index':
       return s0 === 'auto' || int.test(s0);
+    // order は整数だけ (2.5 などの宣言は捨てる。Flexbox 1 §5.4)
+    case 'order':
+      return int.test(s0);
     case 'orphans':
     case 'widows':
       return int.test(s0) && parseInt(s0, 10) >= 1;

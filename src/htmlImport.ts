@@ -977,7 +977,8 @@ class HtmlImporter {
     // 縦に並べる flex: ふつうのブロックとして組み、項目の揃えは項目の文字の揃えにする (幅が中身で決まる項目を中央・終わりに寄せるのと同じ)。
     // 高さが決まっていれば、justify-content を中身の上下の揃えにする
     if (!isGrid && /^column/.test(c('flex-direction'))) {
-      for (const k of Array.from(el.children)) {
+      // 項目の要素 (display: contents の子は、その子。CSS Display 3 §2.5)
+      for (const k of (this.flexItemSources(el) ?? []).filter((x) => !x.ps).map((x) => x.el)) {
         const kc = this.cs(k);
         const al = kc('align-self') && kc('align-self') !== 'auto' ? kc('align-self') : c('align-items');
         // 交差軸 (横) の margin: auto は揃えより先に空きを取る (Flexbox 1 §8.1)。wrap-reverse は交差軸が右から左
@@ -988,20 +989,43 @@ class HtmlImporter {
       }
       return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     }
+    const srcs = this.flexItemSources(el);
+    if (!srcs) return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     const extra: LBlockLevel[] = [];
-    const items: Element[] = [];
-    for (const k of Array.from(el.children)) {
-      if (this.display(k) === 'none') continue;
-      const pos = this.cs(k)('position');
+    /** 項目: 子の要素か ::before・::after (ps)。node は組んだ中身 (文書の順に組む: カウンターの値が文書の順になるように) */
+    type Item = { el: Element; ps?: '::before' | '::after'; node: LBlockLevel; text?: string; order: number };
+    const items: Item[] = [];
+    let pseudoSeen = false;
+    for (const src of srcs) {
+      const k = src.el;
+      const kc = this.cs(k, src.ps);
+      const pos = kc('position');
+      if (src.ps) {
+        pseudoSeen = true;
+        const r = this.flexPseudo(k, src.ps);
+        if (r.positioned) {
+          if (pos === 'fixed') this.fixed.push(r.positioned as LBlockContainer);
+          else extra.push(r.positioned);
+        }
+        if (r.node) items.push({ el: k, ps: src.ps, node: r.node, text: r.text, order: parseInt(kc('order'), 10) || 0 });
+        continue;
+      }
       if (pos === 'absolute' || pos === 'fixed') {
         const cont = this.positioned(k, el);
         if (pos === 'fixed') this.fixed.push(cont);
         else extra.push(cont);
         continue;
       }
-      items.push(k);
+      // 項目の上下の margin は、セルの先頭・末尾でも捨てない (CSS の flex の項目。表紙の h1 の margin-top: 5cm など)
+      const d = this.display(k);
+      const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.inline(k, el) } as LBlock);
+      items.push({ el: k, node, order: parseInt(kc('order'), 10) || 0 });
     }
-    items.sort((a, b) => (parseInt(this.cs(a)('order'), 10) || 0) - (parseInt(this.cs(b)('order'), 10) || 0));
+    // ::before・::after のカウンターの範囲を閉じる (ふつうのブロックなら flowChildren が閉じる)
+    if (pseudoSeen) this.leaveCounters(el);
+    // order の順 (同じ order の間は文書の順。Flexbox 1 §5.4)
+    items.sort((a, b) => a.order - b.order);
+    const ics = (it: Item) => this.cs(it.el, it.ps);
     const rowReverse = !isGrid && c('flex-direction') === 'row-reverse';
     if (rowReverse) items.reverse();
     // wrap-reverse: 交差軸の始めと終わりを入れ替える (行は下から上へ積む。Flexbox 1 §5.2)
@@ -1012,20 +1036,20 @@ class HtmlImporter {
     // row-gap の % は内容の高さに対する割合で、高さが決まっていなければ 0 (CSS Box Alignment 3 §8.1)
     const rowGap = (/%$/.test(c('row-gap')) ? (fixed && cssLen(c('height')) !== undefined ? len(c('row-gap'), cssLen(c('height'))!) : 0) : cssLen(c('row-gap'))) ?? 0;
     // 項目の外側の幅のうち、内容の幅以外 (左右の余白・枠・内側の余白)
-    const outer = (k: Element) => {
-      const kc = this.cs(k);
+    const outer = (k: Item) => {
+      const kc = ics(k);
       const p = (n: string) => cssLen(kc(n)) ?? 0;
       return p('margin-left') + p('margin-right') + (kc('box-sizing') === 'border-box' ? 0 : p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width'));
     };
     /** 行の 1 列: 項目 (el) か空き。w は固定の幅 (pt)、star があれば比例の列 (組版時の容器の幅の余りを star の比で分け、w を足す。表の 'N*' + widthExtra) */
-    type Cell = { el?: Element; w: number; star?: number };
+    type Cell = { el?: Item; w: number; star?: number };
     const lines: Cell[][] = [];
     if (isGrid) {
       const tracks = gridTracks(c('grid-template-columns'), W, colGap);
       let line: Cell[] = [];
       let col = 0;
       for (const k of items) {
-        const span = Math.min(tracks.length, parseInt(/span\s+(\d+)/.exec(this.cs(k)('grid-column-start') + ' ' + this.cs(k)('grid-column-end'))?.[1] ?? '1', 10) || 1);
+        const span = Math.min(tracks.length, parseInt(/span\s+(\d+)/.exec(ics(k)('grid-column-start') + ' ' + ics(k)('grid-column-end'))?.[1] ?? '1', 10) || 1);
         if (col + span > tracks.length) {
           lines.push(line);
           line = [];
@@ -1040,13 +1064,15 @@ class HtmlImporter {
     } else {
       // 項目の幅の基準 (flex-basis、無ければ width。分からなければ undefined)
       const info = items.map((k) => {
-        const kc = this.cs(k);
+        const kc = ics(k);
         const b = kc('flex-basis');
-        const basis = b && b !== 'auto' && b !== 'content' ? len(b, W) : this.src.isAuto?.(k, 'width') === false ? len(kc('width'), W) : undefined;
+        // ::before・::after は、幅の指定が長さか % なら、それ
+        const fixedW = k.ps ? kc('width') !== 'auto' && len(kc('width'), W) !== undefined : this.src.isAuto?.(k.el, 'width') === false;
+        const basis = b && b !== 'auto' && b !== 'content' ? len(b, W) : fixedW ? len(kc('width'), W) : undefined;
         const max = len(kc('max-width'), W);
         const inner = basis === undefined ? undefined : max !== undefined ? Math.min(basis, max) : basis;
         // flex-basis も width も無い項目は、中身の幅 (max-content) の見積もり。flex: 1 (basis 0) の項目は 0 から伸びる
-        const est = inner === undefined ? Math.min(this.maxContentWidth(k), max ?? Infinity, W) : undefined;
+        const est = inner === undefined ? Math.min(k.ps ? this.pseudoMaxContentWidth(k.el, k.ps, k.text ?? '') : this.maxContentWidth(k.el), max ?? Infinity, W) : undefined;
         // 見積もりは枠・内側の余白を含むので、足すのは外側の余白だけ
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
         const shrink = parseFloat(kc('flex-shrink'));
@@ -1101,7 +1127,7 @@ class HtmlImporter {
         const unknown = g.filter((it) => it.w === undefined);
         const stars = g.map((it) => (growSum > 0 ? it.grow : unknown.length && it.w === undefined ? 1 : 0));
         // 項目の margin-left / margin-right: auto は、伸びる項目が無ければ余りを吸い取る (Flexbox 1 §8.1。バーコードを右端に寄せるなど)
-        const autoM = g.map((it) => ({ l: this.cs(it.el)('margin-left') === 'auto', r: this.cs(it.el)('margin-right') === 'auto' }));
+        const autoM = g.map((it) => ({ l: ics(it.el)('margin-left') === 'auto', r: ics(it.el)('margin-right') === 'auto' }));
         const autoSpacers = growSum === 0 && unknown.length === 0 && autoM.some((a) => a.l || a.r);
         const spacers = growSum > 0 || unknown.length > 0 || autoSpacers;
         const n = g.length;
@@ -1137,13 +1163,11 @@ class HtmlImporter {
       const columns: LTableColumn[] = line.map((cell) => (cell.star ? { type: 'table-column', width: `${cell.star}*`, ...(cell.w ? { widthExtra: cell.w } : {}) } : { type: 'table-column', width: Math.max(cell.w, 0) }));
       const cells: LTableCell[] = line.map((cell) => {
         if (!cell.el) return { type: 'table-cell', children: [] };
-        // 項目の上下の margin は、セルの先頭・末尾でも捨てない (CSS の flex の項目。表紙の h1 の margin-top: 5cm など)
-        const d = this.display(cell.el);
-        const n = (this.isBlock(d, cell.el) ? this.block(cell.el, el) : undefined) ?? ({ type: 'block', ...this.textStyle(cell.el, el), ...this.boxStyle(cell.el), children: this.inline(cell.el, el) } as LBlock);
+        const n = cell.el.node;
         delete (n as LBlock).width;
         // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
         // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
-        const ic = this.cs(cell.el);
+        const ic = ics(cell.el);
         const as = ic('align-self');
         const mt = ic('margin-top') === 'auto';
         const mb = ic('margin-bottom') === 'auto';
@@ -1177,6 +1201,61 @@ class HtmlImporter {
           ? ai
           : undefined;
     return { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), ...(blockAlign ? { blockAlign } : {}), children: [...extra, ...children] } as LBlock;
+  }
+
+  /** ::before・::after に content がある (none・normal でない) か */
+  private hasPseudoContent(el: Element, which: '::before' | '::after'): boolean {
+    const v = this.pagedPseudo.get(el)?.[which]?.content ?? this.cs(el, which)('content');
+    return !!v && v !== 'none' && v !== 'normal';
+  }
+
+  /**
+   * flex・grid の容器の項目の元 (文書の順): 子の要素と、中身のある ::before・::after (Flexbox 1 §4。疑似要素も項目になる)。
+   * display: contents の子は自分の箱を作らないので、その子と疑似要素が項目になる (CSS Display 3 §2.5)。display: none は除く。
+   * display: contents の子の直下に文字があれば (無名の項目は扱わない) undefined
+   */
+  private flexItemSources(el: Element): Array<{ el: Element; ps?: '::before' | '::after' }> | undefined {
+    const out: Array<{ el: Element; ps?: '::before' | '::after' }> = [];
+    const walk = (e: Element): boolean => {
+      if (e !== el && Array.from(e.childNodes).some((n) => (n.nodeType === 3 || n.nodeType === 4) && (n.textContent ?? '').trim())) return false;
+      if (this.hasPseudoContent(e, '::before')) out.push({ el: e, ps: '::before' });
+      for (const k of Array.from(e.children)) {
+        const d = this.display(k);
+        if (d === 'none') continue;
+        if (d === 'contents') {
+          if (!walk(k)) return false;
+        } else out.push({ el: k });
+      }
+      if (this.hasPseudoContent(e, '::after')) out.push({ el: e, ps: '::after' });
+      return true;
+    };
+    return walk(el) ? out : undefined;
+  }
+
+  /**
+   * flex・grid の項目になる ::before・::after を組む。中身はブロックにし、箱の書式 (余白・枠・背景) を付ける (項目はブロック化される。
+   * Flexbox 1 §4)。絶対配置なら項目にせず positioned に返す。text: 中身の文字 (幅の見積もりに使う)
+   */
+  private flexPseudo(el: Element, which: '::before' | '::after'): { node?: LBlockLevel; positioned?: LBlockLevel; text?: string } {
+    const tmp: FlowItem[] = [];
+    this.lastPseudoText[which] = '';
+    this.pseudo(el, which, tmp);
+    const text = this.lastPseudoText[which];
+    if (!tmp.length) return {};
+    const pos = this.cs(el, which)('position');
+    if (pos === 'absolute' || pos === 'fixed') return { positioned: tmp[0].v as LBlockLevel };
+    if (tmp.length === 1 && tmp[0].block) return { node: tmp[0].v as LBlockLevel, text };
+    return { node: { type: 'block', ...this.textStyle(el, el, which), ...this.boxStyle(el, which), children: tmp.map((x) => x.v) } as LBlock, text };
+  }
+
+  /** ::before・::after の中身の幅 (max-content) の見積もり (pt): 幅の指定があればそれ、無ければ中身の文字の幅。枠・内側の余白を含む */
+  private pseudoMaxContentWidth(el: Element, which: '::before' | '::after', text: string): number {
+    const c = this.cs(el, which);
+    const p = (n: string) => cssLen(c(n)) ?? 0;
+    const pad = p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width');
+    const w = c('width') !== 'auto' ? cssLen(c('width')) : undefined;
+    if (w !== undefined) return w + (c('box-sizing') === 'border-box' ? 0 : pad);
+    return this.textWidth(text.replace(/\s+/g, ' '), el, which) + pad;
   }
 
   /**
@@ -1303,10 +1382,10 @@ class HtmlImporter {
   }
 
   /** 1 行の文字列の幅 (pt)。measureText があれば要素の書体・字の大きさ・太さ・字間で測り、無ければ字数 × 字の大きさ (欧文は 0.55 倍) */
-  private textWidth(t: string, el: Element): number {
+  private textWidth(t: string, el: Element, pseudo?: '::before' | '::after'): number {
     const s = t.trim();
     if (!s) return 0;
-    const c = this.cs(el);
+    const c = this.cs(el, pseudo);
     const fs = cssLen(c('font-size')) ?? 12;
     const ls = cssLen(c('letter-spacing')) ?? 0;
     if (!this.opts.measureText) return [...s].reduce((a, ch) => a + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55), 0) * fs + ls * [...s].length;
@@ -2361,30 +2440,30 @@ class HtmlImporter {
   }
 
   /** ブロックの中身: 文字列・インライン・ブロックを並べ、ブロック境界の空白を除く */
-  /** flex・grid の容器の子を、項目の order の順に並べ替える (同じ order の間は文書の順。絶対配置の子は項目ではないので 0 とする) */
-  private orderModified<T extends Node>(kids: T[], reverse = false): T[] {
-    const groups: Array<{ order: number; nodes: T[] }> = [];
-    for (const n of kids) {
-      const e = n.nodeType === 1 ? (n as unknown as Element) : undefined;
-      if (!e) {
-        const last = groups[groups.length - 1];
-        if (last && last.order === 0 && last.nodes.every((x) => x.nodeType !== 1)) last.nodes.push(n);
-        else groups.push({ order: 0, nodes: [n] });
-        continue;
-      }
-      const ec = this.cs(e);
-      const order = /^(absolute|fixed)$/.test(ec('position')) ? 0 : parseInt(ec('order'), 10) || 0;
-      groups.push({ order, nodes: [n] });
-    }
-    if (!reverse && groups.every((g) => g.order === 0)) return kids;
-    const sorted = groups.map((g, i) => ({ ...g, i })).sort((a, b) => a.order - b.order || a.i - b.i);
-    if (reverse) sorted.reverse();
-    return sorted.flatMap((g) => g.nodes);
+  /**
+   * flex・grid の容器の子のうち display: contents のものを、その子に置き換える (CSS Display 3 §2.5: 箱を作らず、子が項目になる)。
+   * 直下に文字があるもの、::before・::after のあるものは、置き換えない (受け継ぐ書式と疑似要素を失わないように)
+   */
+  private expandContents(kids: Node[]): Node[] {
+    return kids.flatMap((n) => {
+      const e = n.nodeType === 1 ? (n as Element) : undefined;
+      if (!e || this.display(e) !== 'contents') return [n];
+      if (Array.from(e.childNodes).some((x) => (x.nodeType === 3 || x.nodeType === 4) && (x.textContent ?? '').trim())) return [n];
+      if (this.hasPseudoContent(e, '::before') || this.hasPseudoContent(e, '::after')) return [n];
+      return this.expandContents(Array.from(e.childNodes));
+    });
   }
 
   /** 流し込む項目 (ブロックか行の中のもの) */
   private flowChildren(el: Element, inline = false): Array<LBlockLevel | LInlineLevel> {
     const items: FlowItem[] = [];
+    // flex・grid の容器をふつうのブロックとして組むとき (縦並びの flex など) も、項目は order の順 (order-modified document order。
+    // CSS Flexbox 1 §5.4) に並べる。::before・::after も項目 (§4)。項目ごとに items の区切り (at) と order を覚え、最後に並べ替える。
+    // 続いた文字の並びは 1 つの無名の項目で、order は 0
+    const flexBox = /^(inline-)?(flex|grid)$/.test(this.display(el));
+    const marks: Array<{ at: number; order: number }> = [];
+    const orderOf = (e: Element, ps?: '::before' | '::after') => (!ps && /^(absolute|fixed)$/.test(this.cs(e)('position')) ? 0 : parseInt(this.cs(e, ps)('order'), 10) || 0);
+    if (flexBox) marks.push({ at: 0, order: orderOf(el, '::before') });
     this.lastPseudoText['::before'] = '';
     this.pseudo(el, '::before', items);
     const before = this.lastPseudoText['::before'];
@@ -2404,6 +2483,7 @@ class HtmlImporter {
     };
     const emptyOwn = own !== undefined && /^\s*(''|"")\s*$/.test(own) && !pseudoContent('::before') && !pseudoContent('::after');
     const replaced = own !== undefined && own !== 'normal' && own !== 'none' && !emptyOwn;
+    if (flexBox && replaced) marks.push({ at: items.length, order: 0 });
     if (replaced) for (const v of this.evalContent(el, parseContent(own))) items.push({ v, block: false });
     let kids = replaced ? [] : Array.from(el.childNodes);
     // content-visibility: hidden は中身 (子孫の字と要素) を組まない (Contain 2 §4)
@@ -2413,12 +2493,11 @@ class HtmlImporter {
       const sum = kids.find((n) => n.nodeType === 1 && (n as Element).localName === 'summary');
       kids = sum ? [sum] : [];
     }
-    // flex・grid の容器をふつうのブロックとして組むとき (縦並びの flex など) も、項目は order の順 (order-modified document order。
-    // CSS Flexbox 1 §5.4) に並べる。続いた文字の並びは 1 つの無名の項目 (§4) で、order は 0
-    // column-reverse は項目を逆の順に積む (Flexbox 1 §5.1。row-reverse は flexNoRect で並べ替える)
-    if (/^(inline-)?(flex|grid)$/.test(this.display(el))) kids = this.orderModified(kids, /flex$/.test(this.display(el)) && this.cs(el)('flex-direction') === 'column-reverse');
+    // display: contents の子 (直下に文字が無く、::before・::after も無いもの) は、その子を項目として並べる (CSS Display 3 §2.5)
+    if (flexBox) kids = this.expandContents(kids) as ChildNode[];
     for (let i = 0; i < kids.length; i++) {
       const n = kids[i];
+      if (flexBox && (n.nodeType !== 3 || i === 0 || kids[i - 1].nodeType !== 3)) marks.push({ at: items.length, order: n.nodeType === 1 ? orderOf(n as Element) : 0 });
       if (n.nodeType === 3 || n.nodeType === 4) {
         const t = this.text(n.textContent ?? '', el);
         if (t) for (const v of this.decorateText(t, el)) items.push({ v, block: false });
@@ -2468,8 +2547,17 @@ class HtmlImporter {
       }
       if (!inline) for (const m of this.pendingMarkers.splice(0)) items.push({ v: m, block: false });
     }
+    if (flexBox) marks.push({ at: items.length, order: orderOf(el, '::after') });
     this.lastPseudoText['::after'] = '';
     this.pseudo(el, '::after', items);
+    // column-reverse は項目を逆の順に積む (Flexbox 1 §5.1。row-reverse は flexNoRect で並べ替える)
+    const reverse = flexBox && /flex$/.test(this.display(el)) && this.cs(el)('flex-direction') === 'column-reverse';
+    if (marks.length && (reverse || marks.some((m) => m.order !== 0))) {
+      const segs = marks.map((m, k) => ({ order: m.order, v: items.slice(m.at, marks[k + 1]?.at ?? items.length) }));
+      segs.sort((a, b) => a.order - b.order);
+      if (reverse) segs.reverse();
+      items.splice(0, items.length, ...segs.flatMap((g) => g.v));
+    }
     if (snap && elId) this.record.set(elId, { counters: snap, text: this.wantText ? this.plainText(el) : '', before, after: this.lastPseudoText['::after'] });
     this.leaveCounters(el);
     return this.collapseFlowWhitespace(items, /^pre/.test(this.cs(el)('white-space')));

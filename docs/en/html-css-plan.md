@@ -388,6 +388,8 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      `align-items: baseline` becomes the baseline alignment of the cells (§8.3), and auto margins in the cross axis take the free space before alignment (§8.1). In a single-line container with a definite height,
      the line is as tall as the container's inner height (§9.4, step 15). `start`, `end`, `left`, `right`, `safe` and `unsafe` in `justify-content` (CSS Box Alignment 3 §5.1).
      Percentages in `row-gap` and `column-gap` are kept in the computed value and resolved against the container's content width or height (0 if the height is not definite. CSS Box Alignment 3 §8.1).
+     `::before`, `::after` and the children of `display: contents` are also items (§4, CSS Display 3 §2.5) and are placed in `order` order (§5.4; an `order` declaration that is not an integer is dropped).
+     On the route via the browser, pseudo-element items are not typeset because their positions cannot be read.
      Not handled: the content-based minimum width (`min-width: auto`. §4.5), `max-width` while growing, and `last baseline`
    - If html is a flex container, body is positioned within the page area by `justify-content` and `align-items`
    - Rounded corners: `border-*-radius` is read (per corner, percentages, ellipses. `BorderRadius.corners` in the layout engine). It works via the browser too
