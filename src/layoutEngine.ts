@@ -154,6 +154,8 @@ interface BoxDesc {
   bsizeExplicit?: number;
   /** block 方向の内容の寸法の最小値 (BoxStyle.minBlockSize) */
   minB?: number;
+  /** block 方向の内容の寸法の最大値 (aspect-ratio の箱の max。中身で伸びても、ここで止める) */
+  maxB?: number;
   src?: string;
   bpStart: number;
   bpEnd: number;
@@ -1290,7 +1292,9 @@ class Flow {
         return;
       }
     }
-    if (d.bpEnd > 0 || d.bsizeExplicit != null || d.minB != null) this.flush();
+    // CSS: 高さが auto の箱 (min-height・aspect-ratio の min・max があっても) の最後の子の下の margin は、箱の下の margin と畳む
+    // (CSS 2.1 §8.3.1)。XSL-FO の block-progression-dimension.minimum の箱は、これまでどおり中に置く
+    if (d.bpEnd > 0 || d.bsizeExplicit != null || ((d.minB != null || d.maxB != null) && this.host.xslSpace)) this.flush();
     // CSS: ページをまたぐ箱の height・min-height は、断片の長さの合計に効く (Fragmentation 3 §5.3)。
     // 残りが今のページに入らなければ、この断片をページの終わりまで伸ばして、続きを次のページに置く
     if (!this.host.xslSpace && this.paginating && (d.bsizeExplicit != null || d.minB != null)) {
@@ -1323,6 +1327,11 @@ class Flow {
     // 高さの最小値: 分かれていない箱だけ (分かれた箱の最後の断片には当てない)
     if (d.minB != null && !f.node.cont && this.cursor < f.contentStartB + d.minB) {
       this.cursor = f.contentStartB + d.minB;
+      this.adjacent = 0;
+    }
+    // 高さの最大値 (aspect-ratio の箱の max): 中身が多くても、ここで止める (中身ははみ出す)
+    if (d.maxB != null && !f.node.cont && this.cursor > f.contentStartB + d.maxB) {
+      this.cursor = f.contentStartB + d.maxB;
       this.adjacent = 0;
     }
     this.cursor += d.bpEnd;
@@ -1680,7 +1689,7 @@ class Flow {
    * - block は inline × 比 を min・max で抑える。scroll なしの箱 (overflow: visible) は中身で伸びる (自動の最小の大きさ) が、max は超えない。
    *   切り抜く箱は比の高さで固定
    */
-  private aspectBox(node: LBlock, desc: BoxDesc, st: ResolvedStyle): BoxDesc {
+  private aspectBox(node: LBlock, desc: BoxDesc): BoxDesc {
     const r = node.aspectRatio!;
     const bb = node.boxSizing === 'border-box';
     const bpB = desc.bpStart + desc.bpEnd;
@@ -1702,9 +1711,8 @@ class Flow {
     if (maxB != null) b = Math.min(b, maxB);
     if (minB != null) b = Math.max(b, minB);
     if (node.overflow === 'hidden') return { ...desc, bsizeExplicit: b };
-    // 中身で伸びるが、max-height は超えない (max を超える中身ははみ出す)
-    if (maxB != null) return { ...desc, bsizeExplicit: Math.min(Math.max(b, this.measureBlockSize(node.children, st, ci)), Math.max(maxB, minB ?? 0)) };
-    return { ...desc, minB: Math.max(minB ?? 0, b) };
+    // 中身で伸びるが、max は超えない (max を超える中身ははみ出す。箱を閉じるときに当てる)。min が max より大きければ min が勝つ
+    return { ...desc, minB: Math.max(minB ?? 0, b), ...(maxB != null ? { maxB: Math.max(maxB, minB ?? 0) } : {}) };
   }
 
   layoutBlockLevel(node: LBlockLevel, ps: ResolvedStyle) {
@@ -1725,24 +1733,30 @@ class Flow {
       const y = this.floatBottom(node.clear);
       if (y > this.cursor + this.pendingValue()) this.pendMin = Math.max(this.pendMin, y - this.cursor);
     }
-    // 支柱だけの箱 (flex の visibility: collapse の項目。LBlock.phantom): 中身を測るだけ組み、その block の大きさの空の箱を置く
+    // 支柱だけの箱 (flex の visibility: collapse の項目。LBlock.phantom): 子を 1 つずつ測るだけ組み、その block の大きさの最大の空の箱を置く。
+    // 中の id は、リンクの飛び先として残す
     if (node.phantom) {
       const d0 = describeBox(node, this.wm);
       const ci = d0.isizeExplicit ?? Math.max(this.contentI() - d0.m.is - d0.m.ie - d0.bpI, 0);
-      const used = this.measureBlockSize(node.children, st, ci);
+      const used = Math.max(0, ...node.children.map((k) => this.measureBlockSize([k], st, ci)));
       const horizontal = this.wm === 'horizontal-tb';
-      const { phantom: _p, ...rest } = node;
-      this.layoutBlock({ ...rest, boxSizing: 'content-box', [horizontal ? 'width' : 'height']: ci, [horizontal ? 'height' : 'width']: used, children: [] }, ps);
+      const { phantom: _p, phantomIds, ...rest } = node;
+      // id は、支柱の高さの空の箱を包む箱に 1 つずつ付ける (高さ 0 の箱は、表のセルの中では面積の節にならず、id が記録されない)
+      let inner: LBlock = { type: 'block', [horizontal ? 'height' : 'width']: used, children: [] };
+      for (const id of [...(phantomIds ?? [])].reverse()) inner = { type: 'block', id, children: [inner] };
+      this.layoutBlock({ ...rest, boxSizing: 'content-box', [horizontal ? 'width' : 'height']: ci, children: [inner] }, ps);
       return;
     }
     let desc = describeBox(node, this.wm);
     // 幅の決まった箱の auto の余白 (CSS 2.1 §10.3.3): 置く場所の残りを、auto の側に配る。margin-left/right は物理の向きなので、rtl では逆
-    if (node.autoMargins && desc.isizeExplicit != null) {
-      const free = this.contentI() - desc.m.is - desc.m.ie - desc.bpI - desc.isizeExplicit;
+    const autoMargins = (d: BoxDesc): BoxDesc => {
+      if (!node.autoMargins || d.isizeExplicit == null) return d;
+      const free = this.contentI() - d.m.is - d.m.ie - d.bpI - d.isizeExplicit;
       const rtl = st.direction === 'rtl';
       const am = rtl && node.autoMargins !== 'center' ? (node.autoMargins === 'start' ? 'end' : 'start') : node.autoMargins;
-      if (free > EPS) desc = { ...desc, m: { ...desc.m, is: desc.m.is + (am === 'center' ? free / 2 : am === 'start' ? free : 0) } };
-    }
+      return free > EPS ? { ...d, m: { ...d.m, is: d.m.is + (am === 'center' ? free / 2 : am === 'start' ? free : 0) } } : d;
+    };
+    desc = autoMargins(desc);
     // CSS: 新しいブロック整形文脈の箱 (overflow が visible でない・flow-root など) は、外の float に重ならない (CSS 2.1 §9.5)。
     // 上端の高さで float の横に入れば、その幅に縮めて横に置く。入らなければ float の下へ下げる
     if (node.bfc && !this.host.xslSpace && this.floats.length && this.wm === 'horizontal-tb') {
@@ -1757,7 +1771,12 @@ class Flow {
     }
     // aspect-ratio (CSS Sizing 4 §5.1): 高さが auto なら、実際の inline の大きさ (float を避けて縮めた後) から block の大きさを決める。
     // 比は box-sizing の箱どうしで、幅 / 高さ (物理)。縦書きでは inline が高さなので、block (幅) = inline × 比
-    if (node.aspectRatio && desc.bsizeExplicit == null) desc = this.aspectBox(node, desc, st);
+    // min・max で inline の大きさが決まったら、auto の余白をその大きさで配り直す
+    if (node.aspectRatio && desc.bsizeExplicit == null) {
+      const was = desc.isizeExplicit;
+      desc = this.aspectBox(node, desc);
+      if (was == null && desc.isizeExplicit != null) desc = autoMargins(desc);
+    }
     const frame = this.openFrame(desc);
     // 中の絶対配置の箱の基準になる箱 (CSS の position が static でない箱。横書きだけ)・position: relative でずらす箱は、断片を集める
     const outerCb = this.cbAbs;

@@ -587,9 +587,11 @@ export interface LBlock extends BaseNode, BoxStyle {
   type: 'block';
   /**
    * 支柱だけの箱 (flex の項目の visibility: collapse。Flexbox 1 §4.4): 中身は描かず (字・リンク・しおりも出さない)、
-   * 中身を測るだけ組んで、その block の大きさの空の箱を置く
+   * 子のブロックを 1 つずつ測るだけ組んで、その block の大きさの最大の、空の箱を置く (子は畳む前の行の項目)
    */
   phantom?: boolean;
+  /** 支柱だけの箱の中に、リンクの飛び先として残す id */
+  phantomIds?: string[];
   /**
    * 新しいブロック整形文脈を作る (CSS の display: flow-root・overflow が visible 以外。CSS 2.1 §9.4.1)。
    * 中の子の余白を箱の余白と畳まず、箱の高さは中の float を含む (§10.6.7)

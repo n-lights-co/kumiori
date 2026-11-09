@@ -406,7 +406,10 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      `visibility: hidden` and `collapse` carry the text color as `transparent` (inherited; visible elements inside keep their own color), drop backgrounds and shadows,
      and keep border widths with a `transparent` color. Painting (`paint.ts`) skips transparent glyphs and backgrounds and flagged images. collapse on a flex item
      removes it from the main axis (zero main size, no gap, no line break at that item) and keeps its cross size as a strut (an empty box with the height measured at its natural width, in a zero-width column;
-     `LBlock.phantom`; its content, bookmarks and links are not output. Flexbox 1 §4.4).
+     `LBlock.phantom`. The strut height is the largest height of the items that were in the same line in the layout before collapsing (the line with the item at its natural size),
+     each measured at its width (§9.4). Its content, bookmarks and links are not output; ids inside are kept as destinations (`phantomIds`). Flexbox 1 §4.4).
+     A box with min-height or an aspect-ratio min/max still has an auto height, so the bottom margin of its last child collapses outside the box (CSS 2.1 §8.3.1; XSL-FO is unchanged).
+     In vertical writing, the minimum and maximum in the block direction are read from min-width and max-width
      collapse on a grid item is the same as hidden. `aspect-ratio` decides one of width and height from the other. For a block in the flow whose height is auto,
      the layout engine derives the height from the actual width at layout time (`BoxStyle.aspectRatio`; this also works for the stretched width of a flex item). With overflow visible the box grows with its content
      (the automatic minimum size. CSS Sizing 4 §5.1); a clipping box keeps the height from the ratio. min-height and max-height (`maxBlockSize`) clamp the height from the ratio,

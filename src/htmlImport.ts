@@ -225,6 +225,17 @@ const MM_PER_PT = 25.4 / 72;
  * 計算値の background-position-x・-y (最初の層) を背景画像の位置にする。
  * "right 10px"・"bottom 10px" は右・下の端からの距離 (Backgrounds 3 §3.6)
  */
+/** 組んだ節 (LNode の木) の中の id を、文書の順に集める */
+function collectIds(n: unknown, out: string[] = []): string[] {
+  if (Array.isArray(n)) for (const k of n) collectIds(k, out);
+  else if (n && typeof n === 'object') {
+    const o = n as { type?: unknown; id?: unknown };
+    if (o.type && typeof o.id === 'string') out.push(o.id);
+    for (const v of Object.values(n)) if (v && typeof v === 'object') collectIds(v, out);
+  }
+  return out;
+}
+
 function setBackgroundPosition(img: BackgroundImage, px: string, py: string) {
   const one = (v: string, far: string): [number | `${number}%` | undefined, boolean] => {
     const t = v.split(',')[0].trim();
@@ -1136,7 +1147,7 @@ class HtmlImporter {
       return p('margin-left') + p('margin-right') + (kc('box-sizing') === 'border-box' ? 0 : p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width'));
     };
     /** 行の 1 列: 項目 (el) か空き。w は固定の幅 (pt)、star があれば比例の列 (組版時の容器の幅の余りを star の比で分け、w を足す。表の 'N*' + widthExtra) */
-    type Cell = { el?: Item; w: number; star?: number; strut?: number };
+    type Cell = { el?: Item; w: number; star?: number; strut?: Array<{ node: LBlockLevel; w: number }> };
     const lines: Cell[][] = [];
     if (isGrid) {
       const tracks = gridTracks(c('grid-template-columns'), W, colGap);
@@ -1173,7 +1184,7 @@ class HtmlImporter {
         return auto + margins;
       };
       /** 項目の幅の基準 (w: flex-basis、無ければ width。分からなければ undefined)・伸び縮みの比と下限・上限。strut は collapse の項目の本来の幅 */
-      type Info = { el: Item; w: number | undefined; grow: number; shrink: number; base: number; floor: number; cap?: number; strut?: number };
+      type Info = { el: Item; w: number | undefined; grow: number; shrink: number; base: number; floor: number; cap?: number; orig?: Info };
       const info = items.map((k): Info => {
         const kc = ics(k);
         const b = kc('flex-basis');
@@ -1193,10 +1204,7 @@ class HtmlImporter {
         // 見積もりは枠・内側の余白を含むので、足すのは外側の余白だけ
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
         const shrink = parseFloat(kc('flex-shrink'));
-        // collapse の項目 (§4.4・§9.1 の 4): 行に分けるときも、伸ばし縮めるときも、主軸の大きさは 0。中身は本来の幅 (strut) で組み、
-        // その交差軸の大きさ (高さ) で行の高さを支える
-        if (k.collapse) return { el: k, w: 0, grow: 0, shrink: 0, base: 0, floor: 0, strut: inner !== undefined ? inner + outer(k) : (est ?? 0) + margins };
-        return {
+        const own: Info = {
           el: k,
           w: inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined,
           grow: parseFloat(kc('flex-grow')) || 0,
@@ -1207,31 +1215,40 @@ class HtmlImporter {
           // 伸ばす上限 (外側の幅。max-width が無ければ無し)
           cap: max !== undefined ? max + outer(k) : undefined,
         };
+        // collapse の項目 (§4.4・§9.1 の 4): 行に分けるときも、伸ばし縮めるときも、主軸の大きさは 0。畳む前の組み (orig) は支柱に使う
+        return k.collapse ? { el: k, w: 0, grow: 0, shrink: 0, base: 0, floor: 0, orig: own } : own;
       });
-      // 行に分ける (flex-wrap)
-      const groups: Array<typeof info> = [];
-      let cur: typeof info = [];
-      let used = 0;
-      for (const it of info) {
-        const w = it.w ?? 0;
-        // 間の空きは、見える項目どうしの間にだけ数える (collapse の項目は主軸の大きさも空きも 0)
-        // collapse の項目では折り返さない (支柱は前の項目と同じ行に残る)
-        const shownBefore = cur.some((x) => !x.el.collapse);
-        const gap = !it.el.collapse && shownBefore ? colGap : 0;
-        if (c('flex-wrap') !== 'nowrap' && !it.el.collapse && shownBefore && used + gap + w > W + 0.5) {
-          groups.push(cur);
-          cur = [];
-          used = w;
-        } else used += gap + w;
-        cur.push(it);
-      }
-      if (cur.length) groups.push(cur);
-      for (const g of groups) {
-        // 入りきらなければ縮める (Flexbox 1 §9.7): はみ出した分を flex-shrink × 基準の大きさの比で分けて引く。
-        // 下限 (min-width) に当たった項目はそこで止め、残りを他の項目で分ける。flex-shrink: 0 の項目は縮めない
+      /** 行に分ける (flex-wrap)。hidden (collapse の項目) は主軸の大きさも間の空きも 0 で、そこでは折り返さない (支柱は前の項目と同じ行に残る) */
+      const split = (list: Info[], hidden: (it: Info) => boolean): Info[][] => {
+        const out: Info[][] = [];
+        let cur: Info[] = [];
+        let used = 0;
+        let shownBefore = false;
+        for (const it of list) {
+          const w = it.w ?? 0;
+          const h = hidden(it);
+          // 間の空きは、見える項目どうしの間にだけ数える
+          const gap = !h && shownBefore ? colGap : 0;
+          if (c('flex-wrap') !== 'nowrap' && !h && shownBefore && used + gap + w > W + 0.5) {
+            out.push(cur);
+            cur = [];
+            used = w;
+          } else used += gap + w;
+          cur.push(it);
+          if (!h) shownBefore = true;
+        }
+        if (cur.length) out.push(cur);
+        return out;
+      };
+      /**
+       * 行の項目の幅を決める (it.w を書き換える。返す値は間の空きの合計)。入りきらなければ縮め (Flexbox 1 §9.7): はみ出した分を
+       * flex-shrink × 基準の大きさの比で分けて引く。下限 (min-width) に当たった項目はそこで止め、残りを他の項目で分ける。flex-shrink: 0 の項目は縮めない。
+       * 伸ばす上限 (max-width) に当たる項目は、その幅で止め (固定の列)、残りの余りをほかの項目で分ける (§9.7 の凍結)。
+       * 当たるかどうかは、読み込みのときの容器の幅 W で判定する
+       */
+      const resolveLine = (g: Info[], hidden: (it: Info) => boolean): number => {
         // 間の空き (column-gap) は、collapse でない項目の間にだけ置く
-        const shown = g.filter((it) => !it.el.collapse).length;
-        const gaps = colGap * Math.max(shown - 1, 0);
+        const gaps = colGap * Math.max(g.filter((it) => !hidden(it)).length - 1, 0);
         let over = g.reduce((a, it) => a + (it.w ?? 0), 0) + gaps - W;
         const frozen = new Set<(typeof g)[number]>();
         for (let pass = 0; pass <= g.length && over > 0.01; pass++) {
@@ -1248,11 +1265,6 @@ class HtmlImporter {
           }
           over -= taken;
         }
-        // 余り (容器の幅 − 項目の幅の合計) の分け方は、比例の列 (star) にして組版に任せる: 容器の幅がここで見た W と違っても
-        // (余白 0 の 1 ページ目の全面の表紙など) 正しく分かれる。flex-grow の項目はその比で、幅の分からない項目は等分、
-        // 伸びる項目が無ければ justify-content の空きの列で分ける
-        // 伸ばす上限 (max-width) に当たる項目は、その幅で止め (固定の列)、残りの余りをほかの項目で分ける (§9.7 の凍結)。
-        // 当たるかどうかは、読み込みのときの容器の幅 W で判定する
         if (g.some((it) => it.grow > 0 && it.cap !== undefined)) {
           const frozen = new Set<(typeof g)[number]>();
           for (let pass = 0; pass <= g.length; pass++) {
@@ -1269,6 +1281,29 @@ class HtmlImporter {
             }
           }
         }
+        return gaps;
+      };
+      const isCollapsed = (it: Info) => !!it.el.collapse;
+      // collapse の項目の支柱 (§9.4 の 15 の後): 畳む前に入っていた行の交差軸の大きさ。畳む前の組み (項目を本来の大きさで並べた行) の
+      // 同じ行の項目と、その幅を覚えておき、組版エンジンがその最も高いものの高さを支柱にする (LBlock.phantom)
+      const struts = new Map<Item, Array<{ node: LBlockLevel; w: number }>>();
+      if (info.some((it) => it.orig)) {
+        for (const ga of split(info.map((it) => ({ ...(it.orig ?? it) })), () => false)) {
+          const gaps = resolveLine(ga, () => false);
+          // 余りは、伸ばす比で (幅の分からない項目があれば等分で) 分けた幅にする
+          const free = Math.max(W - ga.reduce((a, it) => a + (it.w ?? 0), 0) - gaps, 0);
+          const gs = ga.reduce((a, it) => a + it.grow, 0);
+          const unk = ga.filter((it) => it.w === undefined).length;
+          const line = ga.map((it) => ({ node: it.el.node, w: (it.w ?? 0) + (gs > 0 ? (free * it.grow) / Math.max(gs, 1) : unk && it.w === undefined ? free / unk : 0) }));
+          for (const it of ga) if (it.el.collapse) struts.set(it.el, line);
+        }
+      }
+      for (const g of split(info, isCollapsed)) {
+        const shown = g.filter((it) => !isCollapsed(it)).length;
+        resolveLine(g, isCollapsed);
+        // 余り (容器の幅 − 項目の幅の合計) の分け方は、比例の列 (star) にして組版に任せる: 容器の幅がここで見た W と違っても
+        // (余白 0 の 1 ページ目の全面の表紙など) 正しく分かれる。flex-grow の項目はその比で、幅の分からない項目は等分、
+        // 伸びる項目が無ければ justify-content の空きの列で分ける
         const growSum = g.reduce((a, it) => a + it.grow, 0);
         const unknown = g.filter((it) => it.w === undefined);
         const stars = g.map((it) => (growSum > 0 ? it.grow : unknown.length && it.w === undefined ? 1 : 0));
@@ -1304,7 +1339,7 @@ class HtmlImporter {
         let seen = 0;
         g.forEach((it, k) => {
           if (it.el.collapse) {
-            line.push({ el: it.el, w: 0, strut: it.strut });
+            line.push({ el: it.el, w: 0, strut: struts.get(it.el) });
             return;
           }
           if (seen++ > 0 && (colGap > 0.4 || between)) line.push({ w: colGap, ...(between ? { star: between } : {}) });
@@ -1335,8 +1370,13 @@ class HtmlImporter {
         if (!cell.el) return { type: 'table-cell', children: [] };
         const n = cell.el.node;
         delete (n as LBlock).width;
-        // collapse の項目の支柱: 幅 0 の列の中に、本来の幅で組んだときの高さの空の箱を置く (phantom。中身は描かない。伸ばさず、揃えない)
-        if (cell.strut !== undefined) return { type: 'table-cell', keepEdgeSpace: true, children: [{ type: 'block', phantom: true, width: Math.max(cell.strut, 0), children: [n] } as LBlock] };
+        // collapse の項目の支柱: 幅 0 の列の中に、畳む前の行の高さの空の箱を置く (phantom。中身は描かない。伸ばさず、揃えない)
+        if (cell.strut) {
+          // 中の id は、リンク・target-counter() の飛び先として残す (LBlock.phantomIds)
+          const ids = collectIds(n);
+          const kids = cell.strut.map(({ node, w }) => ({ type: 'block', width: Math.max(w, 0), children: [node] }) as LBlock);
+          return { type: 'table-cell', keepEdgeSpace: true, children: [{ type: 'block', phantom: true, ...(ids.length ? { phantomIds: ids } : {}), children: kids } as LBlock] };
+        }
         // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
         // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
         const ic = ics(cell.el);
@@ -2566,7 +2606,7 @@ class HtmlImporter {
       // 流れの中のブロック (float・絶対配置でなく、書字方向が親と同じ) は、組むときの実際の幅から高さを決める (flex の項目の中など、
       // 幅が組むときに決まる場所でもずれない)。書字方向が親と違うブロックは、組版エンジンが別の道で組むので、ここで決める
       const sameWm = !el.parentElement || this.cs(el.parentElement)('writing-mode') === c('writing-mode');
-      const flowBlock = !pseudo && sameWm && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'));
+      const flowBlock = !pseudo && !replaced && sameWm && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'));
       if (o[this.axisOf(el)('height') as 'height' | 'width'] === undefined && flowBlock) o.aspectRatio = ar.ratio;
       else if (o.width !== undefined && o.height === undefined) o.height = o.width / ar.ratio;
       else if (o.height !== undefined && o.width === undefined) o.width = o.height * ar.ratio;
@@ -2577,7 +2617,9 @@ class HtmlImporter {
         if (bbA && o.height !== undefined) o.height = Math.max(o.height, vb);
       }
     }
-    if (!pseudo && !this.src.rect && !replaced && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'))) {
+    // 縦書きの aspect-ratio の箱では、max-width・min-width は block の向き (幅) の上限・下限なので、ここではなく組むときに当てる (maxBlockSize・minBlockSize)
+    const vertAspect = !!o.aspectRatio && this.axisOf(el)('height') === 'width';
+    if (!pseudo && !this.src.rect && !replaced && !vertAspect && /^(block|list-item|flow-root)$/.test(c('display')) && c('float') === 'none' && !/^(absolute|fixed)$/.test(c('position'))) {
       const bb = c('box-sizing') === 'border-box';
       const hbPt = (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
       const lim = (p: string) => (/px$/.test(c(p)) ? cssLen(c(p)) : undefined);
@@ -2607,10 +2649,22 @@ class HtmlImporter {
       const mxh = /px$/.test(c('max-height')) ? cssLen(c('max-height')) : undefined;
       if (o.height !== undefined && mxh !== undefined) o.height = Math.min(o.height, mxh);
       if (o.height !== undefined && mnh !== undefined) o.height = Math.max(o.height, mnh);
-      const bbH = c('box-sizing') === 'border-box' ? (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0) : 0;
-      if (mnh) o.minBlockSize = Math.max(0, mnh - bbH);
-      // aspect-ratio の箱: max-height で、比から出す高さを抑える (組版エンジンが組むときに当てる)
-      if (o.aspectRatio && mxh !== undefined) o.maxBlockSize = Math.max(0, mxh - bbH);
+      // block 方向の最小値・最大値は、縦書きでは min-width・max-width (CSS Writing Modes 4 §6.2。枠と内側の余白も左右の分)
+      const B = this.axisOf(el);
+      const pB = (p: string) => (/px$/.test(c(B(p))) ? cssLen(c(B(p))) : undefined);
+      const vertB = B('height') === 'width';
+      const bbH = c('box-sizing') !== 'border-box' ? 0 : vertB ? (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0) : (padding?.top ?? 0) + (padding?.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0);
+      const mnB = pB('min-height');
+      if (mnB) o.minBlockSize = Math.max(0, mnB - bbH);
+      // aspect-ratio の箱: max の block の大きさで、比から出す大きさを抑える (組版エンジンが組むときに当てる)
+      const mxB = pB('max-height');
+      if (o.aspectRatio && mxB !== undefined) o.maxBlockSize = Math.max(0, mxB - bbH);
+      // aspect-ratio の箱は、min・max で幅が組むときに決まることがあるので、inline の向きの auto の余白は組むときに配る (CSS 2.1 §10.3.3)
+      if (o.aspectRatio && !this.src.rect) {
+        const ms = c(B('margin-left')) === 'auto';
+        const me = c(B('margin-right')) === 'auto';
+        if (ms || me) o.autoMargins = ms && me ? 'center' : ms ? 'start' : 'end';
+      }
     }
     // ブラウザの配置が無いとき: 幅の決まった箱の左右の余白が両方 auto なら、残りを等分する (CSS 2.1 §10.3.3)
     const cbEl = pseudo ? el : el.parentElement;
