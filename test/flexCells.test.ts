@@ -21,7 +21,7 @@ function load(body: string, css: string) {
   return importHtml(d, cascadeStyles(d, css, { viewport: { width: 600, height: 800 } }), { css });
 }
 
-type Box = { type: string; text?: string; x: number; y: number; w: number; h: number; bg?: string };
+type Box = { type: string; text?: string; x: number; y: number; w: number; h: number; bg?: string; color?: string };
 /** 面積木の箱 (絶対の位置) */
 function boxes(root: Area): Box[] {
   const out: Box[] = [];
@@ -31,10 +31,10 @@ function boxes(root: Area): Box[] {
       for (const c of n) walk(c, ox, oy);
       return;
     }
-    const a = n as { type?: string; x?: number; y?: number; width?: number; height?: number; text?: string; backgroundColor?: string };
+    const a = n as { type?: string; x?: number; y?: number; width?: number; height?: number; text?: string; backgroundColor?: string; color?: string };
     const x = ox + (a.x ?? 0);
     const y = oy + (a.y ?? 0);
-    if (a.type) out.push({ type: a.type, text: a.text, x, y, w: a.width ?? 0, h: a.height ?? 0, bg: a.backgroundColor });
+    if (a.type) out.push({ type: a.type, text: a.text, x, y, w: a.width ?? 0, h: a.height ?? 0, bg: a.backgroundColor, color: a.color });
     for (const [k, v] of Object.entries(a)) if (v && typeof v === 'object' && k !== 'margin' && k !== 'padding' && k !== 'border') walk(v, x, y);
   };
   walk(root, 0, 0);
@@ -419,13 +419,40 @@ describe('縦書きの縦並び・折り返しの列・visibility・aspect-ratio
   });
   it('flex の項目の visibility: collapse は、主軸から外す (Flexbox 1 §4.4)', () => {
     const b = lay('<div style="display: flex"><p style="margin: 0; width: 50pt">A</p><p style="margin: 0; width: 50pt; visibility: collapse">B</p><p style="margin: 0; width: 50pt">C</p></div>');
-    expect(b.find((a) => a.type === 'glyph' && a.text === 'B')).toBeUndefined();
+    // 中身は見えない (支柱として組むが、字の色は transparent)
+    expect(glyph(b, 'B').color).toBe('transparent');
     expect(glyph(b, 'C').x).toBeLessThan(60);
+  });
+  it('collapse の項目は、交差軸の大きさを支柱として残す (行の高さが変わらない。Flexbox 1 §4.4)', () => {
+    const tall = '<p style="margin: 0">1</p><p style="margin: 0">2</p><p style="margin: 0">3</p>';
+    const b = lay(`<div style="display: flex; column-gap: 10pt; background: #ff0000"><p style="margin: 0; width: 50pt">A</p><div style="width: 50pt; visibility: collapse; background: #0000ff">${tall}</div><p style="margin: 0; width: 50pt">C</p></div>`);
+    // 3 行分の高さ (36pt) が残り、C は A の後ろに間の空き 1 つ分で置かれる
+    expect(bgOf(b, '#ff0000').h).toBeCloseTo(36, 1);
+    expect(glyph(b, 'C').x - glyph(b, 'A').x).toBeCloseTo(60, 1);
+    expect(b.find((a) => a.bg === '#0000ff')).toBeUndefined();
+    expect(glyph(b, '2').color).toBe('transparent');
+    // grid の項目の collapse は hidden と同じ (場所を残す)
+    const g = lay('<div style="display: grid; grid-template-columns: 50pt 50pt 50pt"><p style="margin: 0">A</p><p style="margin: 0; visibility: collapse">B</p><p style="margin: 0">C</p></div>');
+    expect(glyph(g, 'C').x - glyph(g, 'A').x).toBeCloseTo(100, 1);
   });
   it('aspect-ratio は、幅か高さの一方からもう一方を決める (CSS Sizing 4 §5.1)', () => {
     expect(bgOf(lay('<div style="width: 100pt; aspect-ratio: 2; background: #ff0000"></div>'), '#ff0000').h).toBeCloseTo(50, 1);
     // 幅も高さも決まらないブロックは、幅 (親の内容の幅 200pt) から高さを出す
     expect(bgOf(lay('<div style="width: 200pt"><div style="aspect-ratio: 4; background: #ff0000"></div></div>'), '#ff0000').h).toBeCloseTo(50, 1);
     expect(bgOf(lay('<div style="display: inline-block; height: 90pt; aspect-ratio: 16 / 9; background: #ff0000"></div>'), '#ff0000').w).toBeCloseTo(160, 1);
+  });
+  it('aspect-ratio の高さは、組むときの実際の幅から出す (flex の項目の伸びた幅・border-box・中身で伸びる・切り抜く箱・縦書き)', () => {
+    // flex-grow で 150pt に伸びた項目 (容器 200pt、もう一方は 50pt)
+    const f = lay('<div style="display: flex; width: 200pt"><div style="width: 50pt; flex-shrink: 0"></div><div style="flex-grow: 1; aspect-ratio: 3; background: #ff0000"></div></div>');
+    expect(bgOf(f, '#ff0000').w).toBeCloseTo(150, 0);
+    expect(bgOf(f, '#ff0000').h).toBeCloseTo(50, 0);
+    // border-box: 枠までの幅 200pt から、枠までの高さ 100pt
+    expect(bgOf(lay('<div style="width: 200pt"><div style="box-sizing: border-box; padding: 10pt; aspect-ratio: 2; background: #ff0000"></div></div>'), '#ff0000').h).toBeCloseTo(100, 1);
+    // 中身が比の高さより多ければ伸びる (自動の最小の大きさ)。overflow: hidden なら比の高さで切る
+    const many = '<p style="margin: 0">1</p><p style="margin: 0">2</p><p style="margin: 0">3</p><p style="margin: 0">4</p>';
+    expect(bgOf(lay(`<div style="width: 200pt"><div style="aspect-ratio: 10; background: #ff0000">${many}</div></div>`), '#ff0000').h).toBeCloseTo(48, 1);
+    expect(bgOf(lay(`<div style="width: 200pt"><div style="aspect-ratio: 10; overflow: hidden; background: #ff0000">${many}</div></div>`), '#ff0000').h).toBeCloseTo(20, 1);
+    // 縦書き: inline の大きさ (高さ) 200pt と比 1 / 2 (幅 / 高さ) から、幅 100pt
+    expect(bgOf(lay('<div style="height: 200pt"><div style="aspect-ratio: 1 / 2; background: #ff0000"></div></div>', V), '#ff0000').w).toBeCloseTo(100, 1);
   });
 });

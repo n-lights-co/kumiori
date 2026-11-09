@@ -405,7 +405,10 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      In each column of a wrapping column container, `flex-grow`, main-axis auto margins and `justify-content` divide the free space (`flexWrapColumns.justify`).
      `visibility: hidden` and `collapse` carry the text color as `transparent` (inherited; visible elements inside keep their own color), drop backgrounds and shadows,
      and keep border widths with a `transparent` color. Painting (`paint.ts`) skips transparent glyphs and backgrounds and flagged images. collapse on a flex item
-     removes it from the main axis (the cross-axis strut is not handled). `aspect-ratio` decides one of width and height from the other (for a block where neither is definite, from the estimated width)
+     removes it from the main axis (zero main size, no gap) and keeps its cross size as a strut (laid out as an invisible box of its natural width in a zero-width column. Flexbox 1 §4.4).
+     collapse on a grid item is the same as hidden. `aspect-ratio` decides one of width and height from the other. For a block in the flow whose height is auto,
+     the layout engine derives the height from the actual width at layout time (`BoxStyle.aspectRatio`; this also works for the stretched width of a flex item). With overflow visible the box grows with its content
+     (the automatic minimum size. CSS Sizing 4 §5.1); a clipping box keeps the height from the ratio
    - If html is a flex container, body is positioned within the page area by `justify-content` and `align-items`
    - Rounded corners: `border-*-radius` is read (per corner, percentages, ellipses. `BorderRadius.corners` in the layout engine). It works via the browser too
    - Multi-column containers (`column-count`): if they do not fit on the page, the columns continue across pages (the first page uses the rest of the page, the last page is balanced).

@@ -408,6 +408,11 @@ export interface BoxStyle {
   overflow?: 'visible' | 'hidden';
   /** width/height の基準。'border-box' なら padding・border を含めた寸法 (既定 'content-box') */
   boxSizing?: 'content-box' | 'border-box';
+  /**
+   * 縦横比 (CSS の aspect-ratio。幅 / 高さ。CSS Sizing 4 §5.1)。高さが auto の箱で、組むときの実際の幅 (box-sizing の箱) から
+   * 高さを決める。scroll なしの箱 (overflow: visible) は中身で伸びる (自動の最小の大きさ。§5.1)、切り抜く箱は比の高さで固定
+   */
+  aspectRatio?: number;
 }
 
 // ───────────────────────── ページ設定 ─────────────────────────

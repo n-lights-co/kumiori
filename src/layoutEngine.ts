@@ -1686,6 +1686,16 @@ class Flow {
       if (y > this.cursor + this.pendingValue()) this.pendMin = Math.max(this.pendMin, y - this.cursor);
     }
     let desc = describeBox(node, this.wm);
+    // aspect-ratio (CSS Sizing 4 §5.1): 高さが auto なら、実際の inline の大きさから block の大きさを決める。比は box-sizing の箱どうしで、
+    // 幅 / 高さ (物理)。縦書きでは inline が高さなので、block (幅) = inline × 比。scroll なしの箱は中身で伸びる (自動の最小の大きさ)
+    if (node.aspectRatio && desc.bsizeExplicit == null) {
+      const bb = node.boxSizing === 'border-box';
+      const bpB = desc.bpStart + desc.bpEnd;
+      const ci = desc.isizeExplicit ?? Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0);
+      const ib = ci + (bb ? desc.bpI : 0);
+      const b = Math.max((this.wm === 'horizontal-tb' ? ib / node.aspectRatio : ib * node.aspectRatio) - (bb ? bpB : 0), 0);
+      desc = node.overflow === 'hidden' ? { ...desc, bsizeExplicit: b } : { ...desc, minB: Math.max(desc.minB ?? 0, b) };
+    }
     // 幅の決まった箱の auto の余白 (CSS 2.1 §10.3.3): 置く場所の残りを、auto の側に配る。margin-left/right は物理の向きなので、rtl では逆
     if (node.autoMargins && desc.isizeExplicit != null) {
       const free = this.contentI() - desc.m.is - desc.m.ie - desc.bpI - desc.isizeExplicit;
