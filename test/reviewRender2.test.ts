@@ -289,6 +289,24 @@ describe('PDF の SVG: pattern の中の特色・ToUnicode・グラデーショ�
     expect(values).toContain('0079'); // y
     expect(values.filter((v) => v === '')).toHaveLength(0);
   });
+  it('合字の字 (fi を U+FB01 に置き換えたもの) の ToUnicode は、元の字の並び (fi) にする (ISO 32000-1 §9.10.3)', async () => {
+    const engine = new LayoutEngine(E.fonts, E.measurer, { defaultFontFamily: FAMILY });
+    const tree = engine.layout(doc([{ type: 'block', children: ['x'] }]));
+    // 「x」の領域を、合字の字の領域に作り替える (組版で fi を U+FB01 に置き換えたときの形。字形は x のものを借りる)
+    let found = false;
+    walk(tree.sheets[0] as unknown as Area, (a: Area) => {
+      if (a.type === 'glyph' && a.text === 'x' && !found) {
+        found = true;
+        (a as GlyphArea).text = '\uFB01';
+      }
+    });
+    expect(found).toBe(true);
+    const pdf = await PDFDocument.load(await renderPdf(tree, E.fonts));
+    const cmap = streamsOf(pdf).find((s) => /beginbfchar/.test(s.text))!.text;
+    const values = [...cmap.matchAll(/<([0-9a-f]+)> <([0-9a-f]*)>/gi)].map((m) => m[2].toLowerCase());
+    expect(values).toContain('00660069'); // f i
+    expect(values).not.toContain('fb01');
+  });
   it('疑似太字の輪郭の継ぎ目は丸 (Canvas の strokeText と同じ)', async () => {
     const engine = new LayoutEngine(E.fonts, E.measurer, { defaultFontFamily: FAMILY });
     const tree = engine.layout(doc([{ type: 'block', fontWeight: 700, children: ['太'] }]));
