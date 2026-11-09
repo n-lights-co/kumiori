@@ -328,6 +328,11 @@ export function memoEncode(f: PDFFont): FeatureFont {
   // 字形の番号 (GlyphArea.glyphIds) から符号にする。書体の組む処理 (layout) を、その字形を返すものに差し替えて encodeText を通す
   // (部分書体への字形の追加・CID の書き方・W・ToUnicode は encodeText と同じになる)。字 (text) は ToUnicode に使う
   const fk = (emb as unknown as { font: { unitsPerEm: number; layout: (t: string, f?: unknown) => unknown; getGlyph(id: number, cps?: number[]): { id: number; advanceWidth: number } } }).font;
+  // ToUnicode の字: 互換用の合字の字 (組版で fi を U+FB01 に置き換えたもの) は、元の字の並びにする (ISO 32000-1 §9.10.3 の
+  // 1 つの符号から複数の字への対応)。字を取り出したとき・検索したときに「fi」になる。fontkit は字形を最初に作ったときの字で覚え、
+  // 書体の中の呼び出し (glyphForCodePoint など) も this.getGlyph を通るので、ここで差し替える
+  const getGlyph = fk.getGlyph.bind(fk);
+  fk.getGlyph = (id: number, cps?: number[]) => getGlyph(id, cps && decomposeLigatures(cps));
   const glyphCache = new Map<string, ReturnType<PDFFont['encodeText']>>();
   (f as FeatureFont).encodeGlyphs = (ids: number[], text: string) => {
     const key = ids.join(',') + '\u0000' + text;
@@ -335,11 +340,11 @@ export function memoEncode(f: PDFFont): FeatureFont {
     if (!v) {
       const cps = [...text].map((c) => c.codePointAt(0)!);
       // ToUnicode の符号位置: 字と字形が同じ数なら 1 つずつ、違えば (合字など) 最初の字形に全部。fontkit は字形を番号で記憶し、
-      // 符号位置は最初に作ったときの値で固定されるので、空で作られた字形には後から分かった符号位置を入れる
+      // 符号位置は最初に作ったときの値で固定されるので、空で作られた字形には後から分かった符号位置を入れる。合字の字は元の字の並びにする
       const glyphs = ids.map((id, k) => {
-        const own = ids.length === cps.length ? [cps[k]] : k === 0 ? cps : [];
+        const own = decomposeLigatures(ids.length === cps.length ? [cps[k]] : k === 0 ? cps : []);
         const g = fk.getGlyph(id, own) as { id: number; advanceWidth: number; codePoints?: number[] };
-        if (own.length && !g.codePoints?.length) g.codePoints = own;
+        if (own.length && (!g.codePoints?.length || (g.codePoints.length === 1 && LIGATURE_SEQ[g.codePoints[0]]))) g.codePoints = own;
         return g;
       });
       const layout = fk.layout;
@@ -355,6 +360,12 @@ export function memoEncode(f: PDFFont): FeatureFont {
     return v;
   };
   return f as FeatureFont;
+}
+
+/** 互換用の欧文の合字 (U+FB00〜U+FB06) を、元の字の並びにする (Unicode の互換分解) */
+const LIGATURE_SEQ: Record<number, string> = { 0xfb00: 'ff', 0xfb01: 'fi', 0xfb02: 'fl', 0xfb03: 'ffi', 0xfb04: 'ffl', 0xfb05: 'ſt', 0xfb06: 'st' };
+export function decomposeLigatures(cps: number[]): number[] {
+  return cps.some((c) => LIGATURE_SEQ[c]) ? cps.flatMap((c) => (LIGATURE_SEQ[c] ? [...LIGATURE_SEQ[c]].map((x) => x.codePointAt(0)!) : [c])) : cps;
 }
 
 /** 機能の組を渡せる encodeText と、字形の番号から符号にする encodeGlyphs を持つ書体 (memoEncode) */

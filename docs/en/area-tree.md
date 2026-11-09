@@ -75,6 +75,6 @@ To walk the tree, use `walkAreas()` (from one node) or `walkAreaTree()` (all she
 ## Current limitations
 
 - `sourceId` is set only when the original element has an explicit id. An inline's id is set not on the inline's Area but on the Area of the first glyph (or box) of its content.
-- PDF (`renderPdf`) writes the glyph IDs (`glyphIds`) if present (the same glyphs as measured during typesetting; `text` is used for ToUnicode). If absent, the characters are re-shaped with the font and written. The web app (Canvas) draws from the characters (`text`).
+- PDF (`renderPdf`) writes the glyph IDs (`glyphIds`) if present (the same glyphs as measured during typesetting; `text` is used for ToUnicode; ligature characters (such as U+FB01, which typesetting substitutes for fi and the like) are mapped to the original character sequence (such as fi)). If absent, the characters are re-shaped with the font and written. The web app (Canvas) draws from the characters (`text`).
 - Font and image data are not in the tree. The tree holds only their identification (SHA-256). Given the same font and image files, the tree can be drawn using the glyph IDs.
 - A tree turned into JSON and read back is painted identically given the same FontManager and AssetStore (`test/areaTree.test.ts`).
