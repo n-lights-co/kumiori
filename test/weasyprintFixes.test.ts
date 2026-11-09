@@ -320,10 +320,14 @@ describe('report の章扉・invoice の合計の表・font-variant (2 回目の
   it('高さの決まった 1 行の flex (align-items: center) は、項目を上下の中央に置く (章扉の見出し)', () => {
     const [ch] = flow('<article><h2>Chapter</h2></article>', 'article { display: flex; align-items: center; justify-content: center; height: 297mm } h2 { width: 100% }') as unknown as LBlockContainer[];
     expect(ch.type).toBe('block-container');
-    expect(ch.blockAlign).toBe('center');
-    // align-items の無い (stretch) 1 行は上端から
+    // 行の高さは容器の内側の高さ (Flexbox 1 §9.4 の 15) で、項目はその中で上下の中央に揃える
+    const row = (ch.children[0] as unknown as LTable).body!.rows[0];
+    expect(row.minHeight).toBeCloseTo((297 * 72) / 25.4, 0);
+    expect(row.cells.find((c) => c.children.length)!.blockAlign).toBe('center');
+    // align-items の無い (stretch) 1 行は、項目を行 (容器) の高さまで伸ばす
     const [top] = flow('<article><h2>Chapter</h2></article>', 'article { display: flex; height: 297mm }') as unknown as LBlockContainer[];
     expect(top.blockAlign).toBeUndefined();
+    expect((top.children[0] as unknown as LTable).body!.rows[0].cells.find((c) => c.children.length)!.stretchContent).toBe(true);
   });
   it('絶対配置の表は、表として (自動レイアウトで中身の幅の比に列を配り) 組む。罫線・余白は箱だけが持つ', () => {
     const [footer] = flow(

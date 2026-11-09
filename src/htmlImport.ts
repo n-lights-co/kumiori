@@ -506,6 +506,42 @@ function floatSide(v: string): string {
 /** flex・grid の項目の幅の余裕 (pt) */
 const FLEX_SLACK = 1.5;
 
+/** 揃えの値の前の safe・unsafe (はみ出したときの扱い。CSS Box Alignment 3 §4.4) を除く */
+function alignKeyword(v: string): string {
+  return v.trim().replace(/^(safe|unsafe)\s+/, '');
+}
+
+/**
+ * flex の容器の justify-content (Flexbox 1 §8.2・CSS Box Alignment 3 §5.1) を、主軸の始め・終わり・中央・空きの分け方にする。
+ * reverse: 主軸が逆向き (row-reverse・column-reverse)。flex-start・flex-end は主軸の向きで決まり、start・end・left・right は
+ * 書字方向で決まる (left・right は、主軸が行の向きでなければ start と同じ)。normal・stretch は flex の項目では flex-start と同じ
+ */
+function flexJustify(v: string, reverse: boolean, inlineAxis: boolean): 'start' | 'end' | 'center' | 'space-between' | 'space-around' | 'space-evenly' {
+  const k = alignKeyword(v);
+  if (k === 'center' || k === 'space-between' || k === 'space-around' || k === 'space-evenly') return k;
+  if (k === 'flex-end') return reverse ? 'start' : 'end';
+  if (k === 'end' || (inlineAxis && k === 'right')) return 'end';
+  if (k === 'start' || k === 'left' || k === 'right') return 'start';
+  return reverse ? 'end' : 'start';
+}
+
+/**
+ * flex の項目の交差軸の揃え (align-items・align-self・align-content。Flexbox 1 §8.3・§8.4)。reverse: 交差軸が逆向き (wrap-reverse)。
+ * flex-start・flex-end は交差軸の向き、start・end・self-start・self-end は書字方向で決まる。last baseline は扱わず、
+ * 代わりの揃え (safe end。CSS Box Alignment 3 §4.2) にする
+ */
+function flexCross(v: string, reverse: boolean): 'start' | 'end' | 'center' | 'baseline' | 'stretch' {
+  const k = alignKeyword(v);
+  if (k === 'center') return 'center';
+  if (k === 'last baseline') return 'end';
+  if (/baseline$/.test(k)) return 'baseline';
+  if (k === 'flex-end') return reverse ? 'start' : 'end';
+  if (k === 'flex-start') return reverse ? 'end' : 'start';
+  if (/end$/.test(k)) return 'end';
+  if (/start$/.test(k)) return 'start';
+  return 'stretch';
+}
+
 /** 名前付きページの切り替えの印 (flowChildren が body の直下に置き、run で分ける) */
 /** 流し込みの途中の項目 (block は、ブロックの箱として並ぶもの) */
 type FlowItem = { v: LBlockLevel | LInlineLevel; block: boolean };
@@ -813,8 +849,9 @@ class HtmlImporter {
   private flexColumn(el: Element, parent: Element): LBlock | undefined {
     const c = this.cs(el);
     if (!/^column/.test(c('flex-direction')) || this.src.isAuto?.(el, 'height') !== false) return undefined;
-    const jc = c('justify-content');
-    const align = /end$/.test(jc) ? 'end' : jc === 'center' ? 'center' : /^space-(between|around|evenly)$/.test(jc) ? (jc as 'space-between' | 'space-around' | 'space-evenly') : undefined;
+    // column-reverse は主軸が下から上なので、flex-start (既定) は下端に寄せる (Flexbox 1 §5.1)
+    const j = flexJustify(c('justify-content'), c('flex-direction') === 'column-reverse', false);
+    const align = j === 'start' ? undefined : j;
     if (!align) return undefined;
     const b = this.block(el, parent, true) as LBlock | undefined;
     if (!b) return undefined;
@@ -943,8 +980,11 @@ class HtmlImporter {
       for (const k of Array.from(el.children)) {
         const kc = this.cs(k);
         const al = kc('align-self') && kc('align-self') !== 'auto' ? kc('align-self') : c('align-items');
-        const a = /center$/.test(al) ? 'center' : /end$/.test(al) ? 'end' : undefined;
-        if (a) this.flexItemAlign.set(k, a);
+        // 交差軸 (横) の margin: auto は揃えより先に空きを取る (Flexbox 1 §8.1)。wrap-reverse は交差軸が右から左
+        const ml = kc('margin-left') === 'auto';
+        const mr = kc('margin-right') === 'auto';
+        const x = ml && mr ? 'center' : ml ? 'end' : mr ? 'start' : flexCross(al, c('flex-wrap') === 'wrap-reverse');
+        if (x === 'center' || x === 'end') this.flexItemAlign.set(k, x);
       }
       return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     }
@@ -962,10 +1002,15 @@ class HtmlImporter {
       items.push(k);
     }
     items.sort((a, b) => (parseInt(this.cs(a)('order'), 10) || 0) - (parseInt(this.cs(b)('order'), 10) || 0));
-    if (!isGrid && c('flex-direction') === 'row-reverse') items.reverse();
+    const rowReverse = !isGrid && c('flex-direction') === 'row-reverse';
+    if (rowReverse) items.reverse();
+    // wrap-reverse: 交差軸の始めと終わりを入れ替える (行は下から上へ積む。Flexbox 1 §5.2)
+    const crossReverse = !isGrid && c('flex-wrap') === 'wrap-reverse';
+    const fixed = this.src.isAuto?.(el, 'height') === false;
     const len = (v: string, base: number) => (/%$/.test(v) ? (parseFloat(v) * base) / 100 : cssLen(v));
     const colGap = len(c('column-gap'), W) ?? 0;
-    const rowGap = len(c('row-gap'), W) ?? 0;
+    // row-gap の % は内容の高さに対する割合で、高さが決まっていなければ 0 (CSS Box Alignment 3 §8.1)
+    const rowGap = (/%$/.test(c('row-gap')) ? (fixed && cssLen(c('height')) !== undefined ? len(c('row-gap'), cssLen(c('height'))!) : 0) : cssLen(c('row-gap'))) ?? 0;
     // 項目の外側の幅のうち、内容の幅以外 (左右の余白・枠・内側の余白)
     const outer = (k: Element) => {
       const kc = this.cs(k);
@@ -1004,7 +1049,16 @@ class HtmlImporter {
         const est = inner === undefined ? Math.min(this.maxContentWidth(k), max ?? Infinity, W) : undefined;
         // 見積もりは枠・内側の余白を含むので、足すのは外側の余白だけ
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
-        return { el: k, w: inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined, grow: parseFloat(kc('flex-grow')) || 0 };
+        const shrink = parseFloat(kc('flex-shrink'));
+        return {
+          el: k,
+          w: inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined,
+          grow: parseFloat(kc('flex-grow')) || 0,
+          shrink: Number.isFinite(shrink) && shrink >= 0 ? shrink : 1,
+          // 縮める比の基準 (flex の基準の大きさ) と、縮める下限 (min-width と、内容の幅以外の分)
+          base: inner ?? est ?? 0,
+          floor: (len(kc('min-width'), W) ?? 0) + outer(k),
+        };
       });
       // 行に分ける (flex-wrap)
       const groups: Array<typeof info> = [];
@@ -1021,14 +1075,24 @@ class HtmlImporter {
         cur.push(it);
       }
       if (cur.length) groups.push(cur);
-      const jc = c('justify-content');
       for (const g of groups) {
-        let known = g.reduce((a, it) => a + (it.w ?? 0), 0) + colGap * (g.length - 1);
-        // 入りきらなければ縮める (flex-shrink の比を見ない近似: 幅に比例して)
-        if (known > W && known > 0) {
-          const k = (W - colGap * (g.length - 1)) / (known - colGap * (g.length - 1));
-          for (const it of g) if (it.w !== undefined) it.w *= k;
-          known = W;
+        // 入りきらなければ縮める (Flexbox 1 §9.7): はみ出した分を flex-shrink × 基準の大きさの比で分けて引く。
+        // 下限 (min-width) に当たった項目はそこで止め、残りを他の項目で分ける。flex-shrink: 0 の項目は縮めない
+        let over = g.reduce((a, it) => a + (it.w ?? 0), 0) + colGap * (g.length - 1) - W;
+        const frozen = new Set<(typeof g)[number]>();
+        for (let pass = 0; pass <= g.length && over > 0.01; pass++) {
+          const act = g.filter((it) => it.w !== undefined && !frozen.has(it) && it.shrink > 0 && it.base > 0);
+          const sum = act.reduce((a, it) => a + it.shrink * it.base, 0);
+          if (!sum) break;
+          let taken = 0;
+          for (const it of act) {
+            const want = it.w! - (over * it.shrink * it.base) / sum;
+            const nw = Math.max(want, it.floor);
+            if (want < it.floor) frozen.add(it);
+            taken += it.w! - nw;
+            it.w = nw;
+          }
+          over -= taken;
         }
         // 余り (容器の幅 − 項目の幅の合計) の分け方は、比例の列 (star) にして組版に任せる: 容器の幅がここで見た W と違っても
         // (余白 0 の 1 ページ目の全面の表紙など) 正しく分かれる。flex-grow の項目はその比で、幅の分からない項目は等分、
@@ -1041,10 +1105,13 @@ class HtmlImporter {
         const autoSpacers = growSum === 0 && unknown.length === 0 && autoM.some((a) => a.l || a.r);
         const spacers = growSum > 0 || unknown.length > 0 || autoSpacers;
         const n = g.length;
-        // justify-content の空き (比例): center は前後に 1、flex-end は前に 1、space-between は間に 1、space-around は間に 2・前後に 1、space-evenly はすべて 1
-        const lead = spacers ? 0 : jc === 'center' || jc === 'space-around' || jc === 'space-evenly' ? 1 : /end$/.test(jc) ? 1 : 0;
+        // justify-content の空き (比例): center は前後に 1、終わりへ寄せるなら前に 1、space-between は間に 1、space-around は間に 2・前後に 1、
+        // space-evenly はすべて 1。項目が 1 つの space-between は flex-start と同じ (Flexbox 1 §8.2)。row-reverse の flex-start は右へ寄せる
+        let jc = flexJustify(c('justify-content'), rowReverse, true);
+        if (jc === 'space-between' && n < 2) jc = rowReverse ? 'end' : 'start';
+        const lead = spacers ? 0 : jc === 'center' || jc === 'space-around' || jc === 'space-evenly' || jc === 'end' ? 1 : 0;
         const trail = spacers ? 0 : jc === 'center' || jc === 'space-around' || jc === 'space-evenly' ? 1 : 0;
-        const between = spacers ? 0 : jc === 'space-between' && n > 1 ? 1 : jc === 'space-around' ? 2 : jc === 'space-evenly' ? 1 : 0;
+        const between = spacers ? 0 : jc === 'space-between' ? 1 : jc === 'space-around' ? 2 : jc === 'space-evenly' ? 1 : 0;
         const line: Cell[] = [];
         if (lead) line.push({ w: 0, star: lead });
         g.forEach((it, k) => {
@@ -1057,6 +1124,14 @@ class HtmlImporter {
         lines.push(line);
       }
     }
+    // wrap-reverse: 行を下から上へ積む (最初の行がいちばん下。Flexbox 1 §5.2)
+    if (crossReverse) lines.reverse();
+    // 高さの決まった容器の行が 1 つなら、行の高さは容器の内側の高さ (1 行の容器 (nowrap) と、align-content: normal・stretch で
+    // 伸ばした行。Flexbox 1 §9.4 の 15・§9.6 の 9)。項目の揃え・stretch・上下の margin: auto は、容器の高さの中で効く
+    const pb = (n: string) => cssLen(c(n)) ?? 0;
+    const innerH = fixed && cssLen(c('height')) !== undefined ? cssLen(c('height'))! - (c('box-sizing') === 'border-box' ? pb('padding-top') + pb('padding-bottom') + pb('border-top-width') + pb('border-bottom-width') : 0) : undefined;
+    const ac0 = alignKeyword(c('align-content'));
+    const fullLine = !isGrid && lines.length === 1 && innerH !== undefined && innerH > 0 && (c('flex-wrap') === 'nowrap' || ac0 === 'normal' || ac0 === 'stretch');
     const children: LBlockLevel[] = [];
     lines.forEach((line, k) => {
       const columns: LTableColumn[] = line.map((cell) => (cell.star ? { type: 'table-column', width: `${cell.star}*`, ...(cell.w ? { widthExtra: cell.w } : {}) } : { type: 'table-column', width: Math.max(cell.w, 0) }));
@@ -1066,38 +1141,41 @@ class HtmlImporter {
         const d = this.display(cell.el);
         const n = (this.isBlock(d, cell.el) ? this.block(cell.el, el) : undefined) ?? ({ type: 'block', ...this.textStyle(cell.el, el), ...this.boxStyle(cell.el), children: this.inline(cell.el, el) } as LBlock);
         delete (n as LBlock).width;
-        // 行の中の縦の揃え (align-self、無ければ容器の align-items)。stretch・baseline は上端
-        const as = this.cs(cell.el)('align-self');
-        const al = as && as !== 'auto' ? as : c('align-items');
-        const blockAlign = /center$/.test(al) ? 'center' : /end$/.test(al) ? 'end' : undefined;
+        // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
+        // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
+        const ic = this.cs(cell.el);
+        const as = ic('align-self');
+        const mt = ic('margin-top') === 'auto';
+        const mb = ic('margin-bottom') === 'auto';
+        const x = mt && mb ? 'center' : mt ? 'end' : mb ? 'start' : flexCross(as && as !== 'auto' ? as : c('align-items'), crossReverse);
+        const blockAlign = x === 'center' || x === 'end' || x === 'baseline' ? x : undefined;
         // stretch (既定): 項目を行の高さまで伸ばす (背景・枠が行いっぱいに広がる。表紙の帯など)
-        const stretch = !blockAlign && !/baseline|start$/.test(al);
+        const stretch = x === 'stretch';
         return { type: 'table-cell', keepEdgeSpace: true, ...(blockAlign ? { blockAlign } : {}), ...(stretch ? { stretchContent: true } : {}), children: [n] };
       });
       this.report.counts.tables++;
-      children.push({ type: 'table', columns, ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', cells }] } } as LTable);
+      children.push({ type: 'table', columns, ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', ...(fullLine ? { minHeight: innerH } : {}), cells }] } } as LTable);
     });
     this.report.counts.blocks++;
-    const fixed = this.src.isAuto?.(el, 'height') === false;
     // 高さの決まった容器の行の揃え: 複数行 (flex-wrap の複数行と grid) は align-content、1 行だけなら行の高さは容器いっぱいなので
-    // align-items (center・flex-end で項目を上下の中央・下端に。章扉の見出しを縦の中央に置くなど。Flexbox 1 §9.4)
-    const ac = c('align-content');
-    const ai = c('align-items');
-    const blockAlign: LBlockContainer['blockAlign'] = !fixed
+    // align-items (center・flex-end で項目を上下の中央・下端に。章扉の見出しを縦の中央に置くなど。Flexbox 1 §9.4)。
+    // wrap-reverse は交差軸が下から上なので、flex-start (と、扱わない stretch の代わりの flex-start) は下端に寄せる
+    const ac = alignKeyword(c('align-content'));
+    const ai = flexCross(c('align-items'), crossReverse);
+    const acx = /^space-(between|around|evenly)$/.test(ac) ? (ac as 'space-between' | 'space-around' | 'space-evenly') : flexCross(ac, crossReverse);
+    // 折り返しの容器 (flex-wrap: wrap・wrap-reverse) は複数行の容器なので、行が 1 つでも align-content で揃える (§8.4)
+    const multiLine = lines.length > 1 || (!isGrid && c('flex-wrap') !== 'nowrap' && innerH !== undefined);
+    const blockAlign: LBlockContainer['blockAlign'] = !fixed || fullLine
       ? undefined
-      : lines.length > 1
-        ? /^space-(between|around|evenly)$/.test(ac)
-          ? (ac as 'space-between' | 'space-around' | 'space-evenly')
-          : ac === 'center'
-            ? 'center'
-            : /end$/.test(ac)
-              ? 'end'
-              : undefined
-        : /center$/.test(ai)
-          ? 'center'
-          : /end$/.test(ai)
+      : multiLine
+        ? acx === 'center' || acx === 'end' || /^space-/.test(acx)
+          ? (acx as 'center' | 'end' | 'space-between' | 'space-around' | 'space-evenly')
+          : acx === 'stretch' && crossReverse
             ? 'end'
-            : undefined;
+            : undefined
+        : ai === 'center' || ai === 'end'
+          ? ai
+          : undefined;
     return { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), ...(blockAlign ? { blockAlign } : {}), children: [...extra, ...children] } as LBlock;
   }
 
@@ -1247,7 +1325,8 @@ class HtmlImporter {
     let count = parseInt(c('column-count'), 10) || 0;
     const width = cssLen(c('column-width'));
     const g = c('column-gap');
-    const gap = g && g !== 'normal' ? (cssLen(g) ?? 0) : (cssLen(c('font-size')) ?? 12);
+    // % は段組する幅に対する割合 (CSS Box Alignment 3 §8.1)
+    const gap = g && g !== 'normal' ? (/%$/.test(g.trim()) ? (parseFloat(g) * avail) / 100 : (cssLen(g) ?? 0)) : (cssLen(c('font-size')) ?? 12);
     if (width) {
       const byWidth = Math.max(1, Math.floor((avail + gap) / (width + gap)));
       count = count ? Math.min(count, byWidth) : byWidth;
@@ -2283,7 +2362,7 @@ class HtmlImporter {
 
   /** ブロックの中身: 文字列・インライン・ブロックを並べ、ブロック境界の空白を除く */
   /** flex・grid の容器の子を、項目の order の順に並べ替える (同じ order の間は文書の順。絶対配置の子は項目ではないので 0 とする) */
-  private orderModified<T extends Node>(kids: T[]): T[] {
+  private orderModified<T extends Node>(kids: T[], reverse = false): T[] {
     const groups: Array<{ order: number; nodes: T[] }> = [];
     for (const n of kids) {
       const e = n.nodeType === 1 ? (n as unknown as Element) : undefined;
@@ -2297,11 +2376,10 @@ class HtmlImporter {
       const order = /^(absolute|fixed)$/.test(ec('position')) ? 0 : parseInt(ec('order'), 10) || 0;
       groups.push({ order, nodes: [n] });
     }
-    if (groups.every((g) => g.order === 0)) return kids;
-    return groups
-      .map((g, i) => ({ ...g, i }))
-      .sort((a, b) => a.order - b.order || a.i - b.i)
-      .flatMap((g) => g.nodes);
+    if (!reverse && groups.every((g) => g.order === 0)) return kids;
+    const sorted = groups.map((g, i) => ({ ...g, i })).sort((a, b) => a.order - b.order || a.i - b.i);
+    if (reverse) sorted.reverse();
+    return sorted.flatMap((g) => g.nodes);
   }
 
   /** 流し込む項目 (ブロックか行の中のもの) */
@@ -2337,7 +2415,8 @@ class HtmlImporter {
     }
     // flex・grid の容器をふつうのブロックとして組むとき (縦並びの flex など) も、項目は order の順 (order-modified document order。
     // CSS Flexbox 1 §5.4) に並べる。続いた文字の並びは 1 つの無名の項目 (§4) で、order は 0
-    if (/^(inline-)?(flex|grid)$/.test(this.display(el))) kids = this.orderModified(kids);
+    // column-reverse は項目を逆の順に積む (Flexbox 1 §5.1。row-reverse は flexNoRect で並べ替える)
+    if (/^(inline-)?(flex|grid)$/.test(this.display(el))) kids = this.orderModified(kids, /flex$/.test(this.display(el)) && this.cs(el)('flex-direction') === 'column-reverse');
     for (let i = 0; i < kids.length; i++) {
       const n = kids[i];
       if (n.nodeType === 3 || n.nodeType === 4) {

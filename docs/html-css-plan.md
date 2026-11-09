@@ -379,6 +379,12 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
      (読み込み時に見た幅と、組むときの容器の幅が違っても正しく分かれる: 余白 0 の 1 ページ目の全面の表紙など。WeasyPrint の report の表紙)。
      項目のセルは `keepEdgeSpace` (項目の上下の margin を捨てない。`<td>` も同じ: CSS 2.1 §17.5) と、`align-items: stretch` (既定) なら `stretchContent`
      (行の高さまで項目を伸ばし、背景・枠を行いっぱいに広げる)
+   - flex の向き・縮め方・揃え (Flexbox 1): 入りきらない行は `flex-shrink` × 基準の大きさの比で縮め、`min-width` で止まった分はほかの項目が受け持つ (§9.7)。
+     `row-reverse`・`column-reverse` は主軸の始めと終わりを入れ替え (`flex-start` は右・下へ寄せる。§5.1)、`wrap-reverse` は行を下から上へ積む (§5.2)。
+     `align-items: baseline` はセルの基線の揃え (§8.3)、交差軸の `margin: auto` は揃えより先に空きを取る (§8.1)。高さの決まった 1 行の容器は、
+     行の高さを容器の内側の高さにする (§9.4 の 15)。`justify-content` の `start`・`end`・`left`・`right`・`safe`・`unsafe` (CSS Box Alignment 3 §5.1)。
+     `row-gap`・`column-gap` の % は計算値に残し、容器の内容の幅・高さに対する割合にする (高さが決まっていなければ 0。CSS Box Alignment 3 §8.1)。
+     扱わないもの: 中身で決まる最小の幅 (`min-width: auto`。§4.5)、伸ばすときの `max-width`、`last baseline`
    - html が flex の容器なら、body を `justify-content`・`align-items` でページの領域の中に寄せる
    - 角丸: `border-*-radius` を読む (角ごと・百分率・楕円。組版エンジンの `BorderRadius.corners`)。ブラウザ経由でも効く
    - 段組のコンテナ (`column-count`): ページに収まらなければ、ページをまたいで段を続ける (1 ページ目はページの残り、最後のページは釣り合わせる)。

@@ -383,6 +383,12 @@ All that htmlImport receives from the browser is a StyleSource (`style()`, `isAu
      (so it divides correctly even when the container width at layout differs from the width seen at import: a full-page cover on page 1 with 0 margins, etc. The cover of the WeasyPrint report).
      Item cells use `keepEdgeSpace` (the top and bottom margins of items are not discarded. Same for `<td>`: CSS 2.1 §17.5) and, with `align-items: stretch` (the default), `stretchContent`
      (the item is stretched to the row height and its background and border fill the row)
+   - flex direction, shrinking and alignment (Flexbox 1): a line that does not fit is shrunk in proportion to `flex-shrink` × the base size, and what an item stopped by `min-width` cannot give up is taken by the other items (§9.7).
+     `row-reverse` and `column-reverse` swap the main start and end (`flex-start` packs to the right or bottom. §5.1), and `wrap-reverse` stacks the lines from bottom to top (§5.2).
+     `align-items: baseline` becomes the baseline alignment of the cells (§8.3), and auto margins in the cross axis take the free space before alignment (§8.1). In a single-line container with a definite height,
+     the line is as tall as the container's inner height (§9.4, step 15). `start`, `end`, `left`, `right`, `safe` and `unsafe` in `justify-content` (CSS Box Alignment 3 §5.1).
+     Percentages in `row-gap` and `column-gap` are kept in the computed value and resolved against the container's content width or height (0 if the height is not definite. CSS Box Alignment 3 §8.1).
+     Not handled: the content-based minimum width (`min-width: auto`. §4.5), `max-width` while growing, and `last baseline`
    - If html is a flex container, body is positioned within the page area by `justify-content` and `align-items`
    - Rounded corners: `border-*-radius` is read (per corner, percentages, ellipses. `BorderRadius.corners` in the layout engine). It works via the browser too
    - Multi-column containers (`column-count`): if they do not fit on the page, the columns continue across pages (the first page uses the rest of the page, the last page is balanced).

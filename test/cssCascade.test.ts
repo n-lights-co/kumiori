@@ -277,6 +277,12 @@ describe('カスケード', () => {
     expect(c('text-indent')).toBe('20px');
   });
 
+  it('row-gap・column-gap の % は計算値に残す (基準は自分の内容の箱。CSS Box Alignment 3 §8.1)', () => {
+    const { c } = styleOf('<div style="width: 200px"><p id="p">x</p></div>', 'p { display: flex; gap: 10% 5px }', 'p');
+    expect(c('row-gap')).toBe('10%');
+    expect(c('column-gap')).toBe('5px');
+  });
+
   it('::before の content と、要素から受け継ぐ値。float はブロック化。幅の指定が auto かどうか', () => {
     const { c } = styleOf('<p id="p" style="color: green">x</p>', 'p::before { content: "§ "; float: left }', 'p', '::before');
     expect(c('content')).toBe('"§ "');

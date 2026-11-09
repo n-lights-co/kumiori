@@ -1532,7 +1532,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
               break;
             }
           }
-          if (p === 'text-indent' && /%/.test(raw)) {
+          // row-gap・column-gap の %: 基準は自分の内容の箱 (包含ブロックではない) で、計算値は % のまま (CSS Box Alignment 3 §8.1)。
+          // htmlImport が、flex・grid の容器の幅・高さから求める
+          if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap') && /%/.test(raw)) {
             val = raw.trim();
             break;
           }
