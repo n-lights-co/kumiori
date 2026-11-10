@@ -292,3 +292,23 @@ describe('flex の中の縦書きの項目 (LAY-16。Flexbox 1 §9.2・Writing M
     expect(r.bg('#0000ff').y).toBeCloseTo(80, 1);
   });
 });
+
+describe('縦書きの文書の中の縦書きの箱 (直交しない。近くで見つけた誤り)', () => {
+  const V = 'html { writing-mode: vertical-rl }';
+  it('絶対配置の箱の高さ (行の向きの大きさ) の指定が無ければ、中身の長さ (shrink-to-fit。CSS 2.1 §10.3.7 を行の向きに当てる)', async () => {
+    const r = await lay(`<div style="position: absolute; left: 30pt; top: 20pt; ${RED}">${a(4)}</div><div style="position: absolute; left: 80pt; top: 20pt; width: 40pt; ${BLUE}">${a(4)}</div><p>い</p>`, V);
+    expect(size(r.bg('#ff0000'))).toEqual([15, 40]);
+    expect(at(r.bg('#ff0000'))).toEqual([30, 20]);
+    expect(size(r.bg('#0000ff'))).toEqual([40, 40]);
+    // 長い文は、ページの下端 (包含ブロックの高さ − top) で折り返す
+    const l = await lay(`<div style="position: absolute; left: 30pt; top: 20pt; ${RED}">${a(40)}</div><p>い</p>`, V);
+    expect(size(l.bg('#ff0000'))).toEqual([30, 280]);
+  });
+  it('縦書きの flex の容器の項目の width (交差軸の大きさ) の指定は消さない', async () => {
+    const r = await lay(`<div style="display: flex"><div style="width: 60pt; height: 80pt; ${RED}">${a(4)}</div><div style="width: 60pt; height: 80pt; ${BLUE}">${a(12)}</div></div>`, V);
+    expect(size(r.bg('#ff0000'))).toEqual([60, 80]);
+    expect(size(r.bg('#0000ff'))).toEqual([60, 80]);
+    expect(at(r.bg('#ff0000'))).toEqual([340, 0]);
+    expect(at(r.bg('#0000ff'))).toEqual([340, 80]);
+  });
+});

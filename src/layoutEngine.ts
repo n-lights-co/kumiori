@@ -3347,10 +3347,10 @@ class Flow {
       const minC = pref <= availC ? pref : widthAt(1);
       contentI = Math.min(Math.max(minC, availC), pref);
     }
-    // 書字方向がこの流れと直交する絶対配置の箱 (横書きの文書の中の縦書きの箱) で、行の向きの大きさ (高さ) が auto (top と bottom の両方の
-    // 指定は無い): fit-content (CSS Writing Modes 3 §7.3.2。CSS 2.1 §10.3.7 の shrink-to-fit を行の向きに当てる。§7.2)。使える長さは、
+    // 縦書きの絶対配置の箱 (縦書きの文書の中でも、横書きの文書の中でも) で、行の向きの大きさ (高さ) が auto (top と bottom の両方の
+    // 指定は無い): shrink-to-fit (CSS 2.1 §10.3.7 を行の向きに当てる。CSS Writing Modes 3 §7.2・§7.3.2 の fit-content)。使える長さは、
     // 包含ブロックの高さから top・bottom を引いたもの (fallbackI)
-    if (node.shrinkToFit && contentI == null && !horizontal && this.wm === 'horizontal-tb' && !rot && !(node.top != null && node.bottom != null) && node.children.length) {
+    if (node.shrinkToFit && contentI == null && !horizontal && !rot && !(node.top != null && node.bottom != null) && node.children.length) {
       contentI = this.fitContent(Math.max(fallbackI - desc.bpI, 0), (rootI, min) => this.intrinsicWidth(node.children, st, rootI, min));
     }
     const isize = (contentI ?? fallbackI - desc.bpI) + desc.bpI;

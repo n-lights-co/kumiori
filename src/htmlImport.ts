@@ -1454,7 +1454,9 @@ class HtmlImporter {
       // 書字方向が容器と直交する項目: 主軸の大きさ (横書きの容器なら幅 = 項目の block の大きさ) は、組むときに列の幅にする (fillOrthogonal)。
       // 指定の大きさは消さない (列の幅を測るときの大きさ)
       if (item.ortho) (n as LBlock).fillOrthogonal = true;
-      else delete (n as LBlock).width;
+      // ほかの項目は、主軸の大きさの指定 (横書きの容器なら width、縦書きの容器なら height) を消す: 主軸の大きさは列の幅で決まる。
+      // 交差軸の大きさの指定 (縦書きの容器の項目の width) は残す
+      else delete (n as LBlock)[L('width') as 'width' | 'height'];
       // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
       // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
       const ic = ics(item);
@@ -2083,6 +2085,8 @@ class HtmlImporter {
       if (w) cont.width = w;
       else cont.shrinkToFit = true;
     }
+    // 縦書きの箱は、行の向きの大きさが高さ: 高さの指定が無ければ shrink-to-fit (§10.3.7 を行の向きに当てる。CSS Writing Modes 3 §7.2)
+    if (cont.height === undefined && /^vertical/.test(this.wm(c('writing-mode')) ?? '')) cont.shrinkToFit = true;
     // 絶対配置の表 (table#total { position: absolute; width: 18cm; border-width: 2cm 3cm } など): CSS の表の width は罫線を含む幅
     // (CSS 2.1 §17.4 の表の箱。ブラウザ・WeasyPrint と同じ) なので、箱は border-box にし、中の表はその内側いっぱいに広げる
     if (e.localName === 'table' && cont.width !== undefined) {
