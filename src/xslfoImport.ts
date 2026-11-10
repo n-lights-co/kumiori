@@ -15,6 +15,7 @@
  * 数式用の書体が無いときの MathML の組み替えは foMathFallback.ts。どちらも Importer の読み方 (attr・len・color など) を借りて動く
  */
 import { msg } from './messages';
+import { countDroppedLink, judgeExternalLink, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { evalExpr, evalLength } from './foExpr';
 import { FO_NS, serializeSvg, utf8Base64, type XEl, type XNode } from './foDom';
 import { WS_INITIAL, type Ctx, type WhiteSpace } from './foContext';
@@ -81,6 +82,11 @@ const MAX_FO_NEST = 250;
 const tooDeep = () => new Error(msg(`要素の入れ子が深すぎます (${MAX_FO_NEST} 段まで)`, `elements are nested too deeply (up to ${MAX_FO_NEST} levels)`));
 
 export interface ImportOptions {
+  /**
+   * 文書の外への飛び先のうち、通すもの (linkPolicy.ts)。既定では、http・https・mailto・tel の URL と相対の PDF だけをリンクにする。
+   * 通さない飛び先はリンクにせず (字はそのまま組む)、report.droppedLinks に数える
+   */
+  links?: LinkPolicy;
   /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。rgb-icc(…, #Separation, '名前', 濃度) を特色 (PDF の Separation) にする */
   spotColors?: Record<string, [number, number, number, number]>;
   /** FO の font-family (カンマ区切りの並び) と太字かどうかから、使う書体 (ファミリ名) を決める。undefined なら親から継承 */
@@ -117,6 +123,8 @@ export interface ImportReport {
   images: string[];
   /** 添付ファイルの注釈が参照するファイル (axf:annotation-file-attachment。data: の URI は除く) */
   files?: string[];
+  /** リンクにしなかった、文書の外への飛び先 (ImportOptions の links で通さないもの)。理由の見出しごとの件数 */
+  droppedLinks?: DroppedLinks;
   counts: { sequences: number; blocks: number; tables: number; footnotes: number; floats: number; rubies: number };
 }
 
@@ -1459,7 +1467,9 @@ class Importer {
         // external-destination (§7.23.6): 文書の外への飛び先。internal-destination もあれば、そちらを使う (§6.11.2)。
         // 外への飛び先は href に入れる (PDF のしおりの動作になる。fo:basic-link の external-destination と同じ扱い)
         const ext = this.attr(b, 'external-destination');
-        if (!bm.ref && ext) bm.href = ext.replace(/^url\(\s*['"]?(.*?)['"]?\s*\)$/i, '$1');
+        // 通さない飛び先 (linkPolicy) は、しおりの動作にしない (題だけのしおりになる)
+        const href = !bm.ref && ext ? this.allowedExternal(ext.replace(/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i, '$1')) : undefined;
+        if (href !== undefined) bm.href = href;
         if (this.attr(b, 'starting-state') === 'hide') bm.open = false;
         const kids = this.bookmarks(b);
         if (kids.length) bm.children = kids;
@@ -1645,7 +1655,9 @@ class Importer {
       const saved = this.form;
       const url = this.attr(n, 'external-destination');
       const method = this.attr(n, 'axf:field-submit-method');
-      this.form = { ...(url ? { url: url.replace(/^url\(\s*['"]?(.*?)['"]?\s*\)$/i, '$1') } : {}), ...(method === 'get' || method === 'post' ? { method } : {}) };
+      // 送り先の URL も、リンクと同じ決まりでスキームを見る (スキームの無い相対の送り先は、そのまま)
+      const dest = url ? this.allowedSubmitUrl(url.replace(/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i, '$1')) : undefined;
+      this.form = { ...(dest ? { url: dest } : {}), ...(method === 'get' || method === 'post' ? { method } : {}) };
       const kids = this.children(n, ctx, true);
       this.form = saved;
       return kids.map((v) => ({ v, block: typeof v !== 'string' && ['block', 'table', 'block-container', 'float'].includes((v as { type: string }).type) }));
@@ -2024,10 +2036,32 @@ class Importer {
     return Object.keys(ln).length ? ln : undefined;
   }
 
-  /** fo:basic-link の飛び先。external-destination は url(...) を外す */
+  /**
+   * 文書の外への飛び先を、通してよければ返す (前後の空白・制御文字と、タブ・改行を取り除いた文字列。linkPolicy の judgeExternalLink)。
+   * 通さないものは undefined を返し、report.droppedLinks に数える
+   */
+  private allowedExternal(url: string): string | undefined {
+    const j = judgeExternalLink(url, this.opts.links);
+    if (j.allowed) return j.url;
+    countDroppedLink((this.report.droppedLinks ??= {}), j);
+    return undefined;
+  }
+
+  /** フォームの送り先の URL。スキームが通さないものなら undefined (数える)。スキームの無い相対の送り先は、そのまま返す */
+  private allowedSubmitUrl(url: string): string | undefined {
+    const j = judgeExternalLink(url, this.opts.links);
+    if (j.kind !== 'uri' || j.allowed) return url;
+    countDroppedLink((this.report.droppedLinks ??= {}), j);
+    return undefined;
+  }
+
+  /** fo:basic-link の飛び先。external-destination は url(...) を外す。通さない飛び先 (linkPolicy) はリンクにしない */
   private linkOf(n: XEl): LinkTarget | undefined {
     const ext = this.attr(n, 'external-destination');
-    if (ext) return { external: ext.replace(/^url\(\s*['"]?(.*?)['"]?\s*\)$/i, '$1') };
+    if (ext) {
+      const url = this.allowedExternal(ext.replace(/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i, '$1'));
+      return url !== undefined ? { external: url } : undefined;
+    }
     const int = this.attr(n, 'internal-destination');
     return int ? { internal: int } : undefined;
   }

@@ -18,6 +18,7 @@ import { LayoutEngine } from './layoutEngine';
 import { renderPdf, type PdfRenderOptions } from './pdfRenderer';
 import { renderSheetToCanvas } from './canvasRenderer';
 import { AssetStore, mentionedFiles, normalizeSrc } from './assets';
+import { droppedLinkWarning, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { SANS, SERIF } from './sampleData';
 import { importHtml } from './htmlImport';
 import { importXslFo, type ImportOptions, type XNode } from './xslfoImport';
@@ -36,6 +37,7 @@ import { collectResources, documentChars, refBasename } from './resources';
 
 export type { HtmlDefaults } from './htmlPrepare';
 export type { FontSpec } from './types';
+export type { LinkPolicy } from './linkPolicy';
 
 /** ファイルの中身 */
 export type KumioriFileData = ArrayBuffer | Uint8Array | string;
@@ -102,6 +104,15 @@ export interface TypesetOptions {
   fetchStyles?: boolean | ((url: string) => boolean);
   /** PDF の圧縮 (zlib の deflate)。Node なら zlib.deflateSync を渡すと速い。既定は pdf-lib の圧縮 */
   deflate?: (data: Uint8Array) => Uint8Array;
+  /**
+   * 文書の外へのリンク (HTML の <a href>・XSL-FO の fo:basic-link・fo:bookmark の external-destination) のうち、PDF に動作を書くもの。
+   * 既定では、スキームが http・https・mailto・tel の URL (URI 動作) と、相対参照の PDF (別の PDF を開く動作 GoToR) だけを書く。
+   * ほかのスキーム (javascript:・data:・file: など)、PDF でない相対のファイル・絶対パスのファイル (ファイルを開く動作)、スキームの無い //host/… は、
+   * 動作を書かず (字はそのまま組む)、warnings に知らせる (他人の書いた文書から作った PDF を、別の人が開くときのため)。
+   * schemes: 許すスキームの一覧 (既定の一覧と置き換わる。'*' はすべて)。launch: true なら、ファイルを開く動作 (Launch など) も書く。
+   * 以前の版と同じ動き (すべて書く) にするには { schemes: ['*'], launch: true }
+   */
+  links?: LinkPolicy;
 }
 
 export interface TypesetResult {
@@ -284,6 +295,12 @@ function checkOptions(o: TypesetOptions) {
   }
   if (o.resolveResource !== undefined && typeof o.resolveResource !== 'function') throw optionError(msg('resolveResource は関数にしてください', 'resolveResource must be a function'));
   for (const k of ['genericFonts', 'spotColors'] as const) if (o[k] !== undefined && (typeof o[k] !== 'object' || o[k] === null)) throw optionError(msg(`${k} はオブジェクトにしてください`, `${k} must be an object`));
+  const ln = o.links;
+  if (ln !== undefined) {
+    if (typeof ln !== 'object' || ln === null) throw optionError(msg('links はオブジェクトにしてください', 'links must be an object'));
+    if (ln.schemes !== undefined && !(Array.isArray(ln.schemes) && ln.schemes.every((s) => typeof s === 'string'))) throw optionError(msg('links.schemes は文字列の配列にしてください', 'links.schemes must be an array of strings'));
+    if (ln.launch !== undefined && typeof ln.launch !== 'boolean') throw optionError(msg('links.launch は真偽値にしてください', 'links.launch must be a boolean'));
+  }
 }
 /** createTypesetter の設定のうち、Typesetter.typeset の文書ごとの設定に渡しても使われないもの (器を作るときに読み込みが済んでいる) */
 const SETUP_ONLY_OPTIONS = ['fonts', 'genericFonts', 'loadFont'] as const;
@@ -512,6 +529,9 @@ async function typesetDocument(
     if (f) assets.registerFile(src, bytesOf(await f.data()));
     else warnings.push(msg(`添付するファイルが見つかりません: ${src}`, `attachment file not found: ${src}`));
   }
+  // 動作を書かなかった、文書の外へのリンク (links の設定で通さないもの)
+  const dropped = summarizeDroppedLinks(res.report.droppedLinks);
+  if (dropped) warnings.push(droppedLinkWarning(dropped));
   const unknown = summarizeCounts(res.report.unknownCss);
   if (unknown) warnings.push(msg(`知らない CSS のプロパティを無視しました (綴りの誤りか未対応): ${unknown}`, `ignored unknown CSS properties (misspelled or unsupported): ${unknown}`));
   // 等幅の指定があれば、等幅の書体を読み込む (SVG の字に Courier・monospace の指定があっても読み込む)
@@ -537,6 +557,7 @@ async function typesetDocument(
         assets,
         parseXml: svgParse,
         ...(options.deflate ? { deflate: options.deflate } : {}),
+        ...(options.links ? { links: options.links } : {}),
         ...o,
       }),
     renderPage: (canvas, pageIndex, o = {}) => {
@@ -559,7 +580,7 @@ export const typesetHtml = (html: string, options: Omit<TypesetOptions, 'kind'> 
 export const typesetFo = (fo: string, options: Omit<TypesetOptions, 'kind'> = {}) => typeset(fo, { ...options, kind: 'fo' });
 
 type Mapping = ReturnType<typeof createFontMapping>;
-type Imported = { document: LDocument; report: { images: string[]; unsupported?: Record<string, number>; unknownCss?: Record<string, number> }; /** 文書の用意の途中の警告 (深すぎる入れ子など) */ warnings?: string[] };
+type Imported = { document: LDocument; report: { images: string[]; unsupported?: Record<string, number>; unknownCss?: Record<string, number>; droppedLinks?: DroppedLinks }; /** 文書の用意の途中の警告 (深すぎる入れ子など) */ warnings?: string[] };
 type MathOpts = MathOptions;
 
 /** XSL-FO を論理ツリーにする (画面の XSL-FO の読み込みと同じ) */
@@ -572,6 +593,7 @@ async function importFo(text: string, o: TypesetOptions, compat: FoCompat, mappi
     bleedMm: o.print ? 3 : 0,
     trimMarks: !!o.print,
     readText: (src) => assets.getText(src),
+    ...(o.links ? { links: o.links } : {}),
     ...(o.spotColors ? { spotColors: o.spotColors } : {}),
     ...extra,
   });
@@ -645,6 +667,7 @@ async function importHtmlText(
     sheet: prepared.sheet,
     bleedMm: o.print ? 3 : 0,
     trimMarks: !!o.print,
+    ...(o.links ? { links: o.links } : {}),
     ...(o.spotColors ? { spotColors: o.spotColors } : {}),
     ...math,
   });

@@ -261,8 +261,9 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <p>a 要素は、PDF のリンクになります。行の中の a だけでなく、ブロック・flex・表の a も、箱の全体がリンクです。href の飛び先は、次のとおりに決めます。</p>
 <ul>
 <li># の付いた参照は、文書の中のその id へ飛びます。</li>
-<li>スキームのある URL (RFC 3986 §3.1 の形: 英字の後に英字・数字・+・-・. が続き、: で終わる。https:・mailto:・独自のスキームなど) は、その URL を開きます (PDF の URI の動作)。</li>
-<li>相対参照 (file.pdf・../doc/a.docx など) は、PDF の置き場所からの相対のファイルを開きます。PDF には別の PDF を開く動作 (GoToR。#page=N はそのページ、#名前 は名前付きの飛び先) を、ほかのファイルにはファイルを開く動作 (Launch) を使います (ISO 32000-1 §12.6.4)。</li>
+<li>スキームのある URL (RFC 3986 §3.1 の形: 英字の後に英字・数字・+・-・. が続き、: で終わる) は、その URL を開きます (PDF の URI の動作)。既定では、スキームが http・https・mailto・tel のものだけをリンクにします。ほかのスキーム (javascript:・data:・file:・独自のスキームなど) は、リンクにせずに字だけを組み、警告に知らせます。スキームは、ブラウザと同じく、前後の空白・制御文字と、タブ・改行を取り除いてから読みます。</li>
+<li>相対参照 (file.pdf・../doc/a.docx など) は、PDF の置き場所からの相対のファイルを開きます。PDF には別の PDF を開く動作 (GoToR。#page=N はそのページ、#名前 は名前付きの飛び先) を、ほかのファイルにはファイルを開く動作 (Launch) を使います (ISO 32000-1 §12.6.4)。既定では、相対の PDF だけをリンクにし、ファイルを開く動作 (PDF でないファイル・絶対パス・スキームの無い //host/…) はリンクにしません。</li>
+<li>リンクにするスキームと、ファイルを開く動作を書くかは、設定で選べます (API の links、コマンドの --link-schemes・--link-launch)。</li>
 </ul>
 <!--gen:vals-s-toc--><p class="vals-h"><code>target-counter()</code> の値の意味 <span class="spec">(CSS Generated Content 3 §2.6.1)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>&lt;url&gt; / &lt;string&gt;</code></td><td>参照先 (文書の中の場所を指す、# の付いた URL) です。</td><td>対応</td></tr><tr><td><code>&lt;custom-ident&gt;</code></td><td>参照先で値を取り出すカウンターの名前です (page なら参照先のページの番号)。</td><td>対応</td></tr><tr><td><code>&lt;counter-style&gt;</code></td><td>取り出した値の書式です (省けます)。</td><td>一部: カウンターが page のときは、この書式を見ません</td></tr></tbody></table>
 <p class="vals-h"><code>target-text()</code> の値の意味 <span class="spec">(CSS Generated Content 3 §2.6.3)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>content</code></td><td>参照先の要素の文字を取り出します (既定)。</td><td>対応</td></tr><tr><td><code>before</code></td><td>参照先の要素の ::before の文字を取り出します。</td><td>対応</td></tr><tr><td><code>after</code></td><td>参照先の要素の ::after の文字を取り出します。</td><td>対応</td></tr><tr><td><code>first-letter</code></td><td>参照先の要素の最初の字を、::first-letter と同じく前後の約物を含めて取り出します。</td><td>対応</td></tr></tbody></table>

@@ -93,10 +93,10 @@ describe('公開 API: typeset', () => {
     expect(pdf.getProducer()).toContain('Kumiori');
   });
 
-  it('リンクの動作: スキームのある URL は URI、相対の PDF は GoToR (#page=N・#名前)、ほかの相対のファイルは Launch (ISO 32000-1 §12.6.4)', async () => {
+  it('リンクの動作 (links ですべて許したとき): スキームのある URL は URI、相対の PDF は GoToR (#page=N・#名前)、ほかの相対のファイルは Launch (ISO 32000-1 §12.6.4)', async () => {
     const r = await typeset(
       '<p><a href="pdf-media-link://x">m</a></p><a style="display: block" href="other.pdf#page=3">p</a><a style="display: flex" href="dir/memo%20a.docx"><span>d</span></a><a style="display: block" href="b.pdf#sec">n</a>',
-      { loadFont },
+      { loadFont, links: { schemes: ['*'], launch: true } },
     );
     const pdf = await PDFDocument.load(await r.toPdf());
     const { PDFName } = await import('pdf-lib');
