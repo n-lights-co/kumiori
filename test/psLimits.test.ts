@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { Interp, latin1, strText, type InterpOptions, type PSObj } from '../src/psInterp';
 import { filterSource } from '../src/psFilters';
 import { Graphics } from '../src/psGraphics';
+import { matchTemplate, parseTemplate } from '../src/psResources';
 import { epsToSvg, runEps } from '../src/eps';
 
 const MB = 1024 * 1024;
@@ -264,5 +265,62 @@ describe('PostScript の上限: 網の網かけ (ShadingType 4〜7) の画素の
     expect(r.G.items.length).toBe(1);
     expect(r.I.steps).toBeGreaterThan(3 * 2500);
     expect(r.I.steps).toBeLessThan(20000);
+  });
+});
+
+describe('PostScript: resourceforall の型紙 (PLRM §8.2 filenameforall の型紙の決まり)', () => {
+  const m = (pat: string, text: string) => matchTemplate(parseTemplate(pat), text);
+  it('* は 0 字以上、? は 1 字、\\ は次の 1 字を文字通りに', () => {
+    expect(m('*', '')).toBe(true);
+    expect(m('*', 'abc')).toBe(true);
+    expect(m('a*c', 'ac')).toBe(true);
+    expect(m('a*c', 'abbbc')).toBe(true);
+    expect(m('a*c', 'abbbd')).toBe(false);
+    expect(m('a?c', 'abc')).toBe(true);
+    expect(m('a?c', 'ac')).toBe(false);
+    expect(m('?', '')).toBe(false);
+    expect(m('', '')).toBe(true);
+    expect(m('', 'a')).toBe(false);
+    expect(m('abc', 'abc')).toBe(true);
+    expect(m('abc', 'abcd')).toBe(false);
+    expect(m('*a*b', 'xxaxxbxxab')).toBe(true);
+    expect(m('*a*b', 'xxaxxbxxa')).toBe(false);
+    expect(m('a**b', 'ab')).toBe(true);
+    // 正規表現の特別な字は、ただの字
+    expect(m('a.c', 'abc')).toBe(false);
+    expect(m('a.c', 'a.c')).toBe(true);
+    expect(m('[a]+(b)|$^', '[a]+(b)|$^')).toBe(true);
+    // \ の逃がし
+    expect(m('a\\*c', 'a*c')).toBe(true);
+    expect(m('a\\*c', 'abc')).toBe(false);
+    expect(m('a\\?c', 'a?c')).toBe(true);
+    expect(m('a\\?c', 'abc')).toBe(false);
+    expect(m('a\\\\c', 'a\\c')).toBe(true);
+    expect(m('a\\bc', 'abc')).toBe(true);
+    expect(m('a\\', 'a\\')).toBe(true);
+    // 改行を含む名前にも一致する
+    expect(m('a*', 'a\nb')).toBe(true);
+  });
+  it('resourceforall は、型紙に合う実例だけを渡す', () => {
+    const defs = ['ab', 'axb', 'a*b', 'b'].map((n) => `(${n}) cvn 1 dict /Pattern defineresource pop`).join(' ');
+    const names = (pat: string) =>
+      vals(`${defs} [ (${pat}) { dup length string copy } 100 string /Pattern resourceforall ]  { } forall`)
+        .map(String)
+        .sort();
+    expect(names('a*b')).toEqual(['a*b', 'ab', 'axb']);
+    expect(names('a?b')).toEqual(['a*b', 'axb']);
+    expect(names('a\\\\*b')).toEqual(['a*b']);
+    expect(names('*')).toEqual(['a*b', 'ab', 'axb', 'b']);
+  });
+  it('* の多い型紙でも、後戻りが爆発しない', { timeout: 5000 }, () => {
+    const r = run(`/${'a'.repeat(40)} 1 dict /Pattern defineresource pop (${'*a'.repeat(9)}*b) { pop } 100 string /Pattern resourceforall (done)`);
+    expect(r.error).toBeUndefined();
+    expect(r.stack.map(show)).toEqual(['done']);
+    // 長い型紙と長い名前の照合 (長さの積に比例する) は、手間として数える
+    // (名前は a が 12 万字、型紙は * と a が 6 万字と b: どの位置からも 6 万字まで合って外れる)
+    const setup = '/s 120000 string def 0 1 119999 { s exch 97 put } for s cvn 1 dict /Pattern defineresource pop /t 60002 string def 0 1 60000 { t exch 97 put } for t 0 42 put t 60001 98 put ';
+    const before = run(setup).I.steps;
+    const long = run(setup + 't { pop } 100 string /Pattern resourceforall', { maxSteps: before + 500000 });
+    expect(long.error).toBe('limit:steps');
   });
 });

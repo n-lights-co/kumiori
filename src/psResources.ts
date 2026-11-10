@@ -22,6 +22,54 @@ function instancesOf(I: Interp, impl: PSDict) {
   return r;
 }
 
+// ── 型紙 (resourceforall・filenameforall の template。§8.2 filenameforall) ──
+// 「*」は 0 字以上のどんな並びにも、「?」はどの 1 字にも一致する。「\」は次の 1 字を文字通りに扱う (「\*」は * そのもの)。ほかの字はその字に一致する。
+
+const T_STAR = -1;
+const T_ANY = -2;
+
+/** 型紙を、字の符号・T_STAR・T_ANY の並びにする (続く * は 1 つにまとめる。末尾の \ は \ そのもの) */
+export function parseTemplate(t: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if (c === 0x5c && i + 1 < t.length) out.push(t.charCodeAt(++i));
+    else if (c === 0x2a) {
+      if (out[out.length - 1] !== T_STAR) out.push(T_STAR);
+    } else if (c === 0x3f) out.push(T_ANY);
+    else out.push(c);
+  }
+  return out;
+}
+
+/**
+ * 型紙 (parseTemplate の結果) が text の全体に一致するか。
+ * 後戻りは「最後に見た * に 1 字多く食わせる」の 1 通りだけなので、手間は長さの積までで済む (正規表現の .* の入れ子のように、* の数の乗で増えない)。
+ * work は、4096 歩ごとに呼ぶ (呼び手が、手間として数える)
+ */
+export function matchTemplate(pat: number[], text: string, work?: () => void): boolean {
+  let p = 0;
+  let t = 0;
+  let starP = -1;
+  let starT = 0;
+  let steps = 0;
+  while (t < text.length) {
+    if (p < pat.length && (pat[p] === T_ANY || pat[p] === text.charCodeAt(t))) {
+      p++;
+      t++;
+    } else if (p < pat.length && pat[p] === T_STAR) {
+      starP = p++;
+      starT = t;
+    } else if (starP >= 0) {
+      p = starP + 1;
+      t = ++starT;
+    } else return false;
+    if ((++steps & 4095) === 0) work?.();
+  }
+  while (p < pat.length && pat[p] === T_STAR) p++;
+  return p === pat.length;
+}
+
 /** 分類の辞書 (Category の資源の実例) */
 function categories(I: Interp): PSDict {
   const v = I.systemdict.map.get('\u0000categories');
@@ -118,15 +166,18 @@ export function installResources(I: Interp, fontProcSets: FontProcSets) {
         const template = I.popString();
         const d = impl();
         const ins = instancesOf(I, d);
-        const pat = strText(template);
-        const re = new RegExp('^' + pat.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+        // 型紙の照合は、後戻りの爆発しない手書きのものでする (正規表現に直すと、(*a*a*a*a*a*a*a*a*a*b) のような型紙 1 つで十数秒かかる)
+        I.work(template.n);
+        const pat = parseTemplate(strText(template));
+        const work = () => I.charge(64);
         const keys = [...ins.local.map.values(), ...ins.global.map.values()].map((e) => e.k);
         // 実装の辞書を辞書スタックから外して、手続きを呼ぶ (表 3.11 ResourceForAll)
         const top = I.dstack.pop()!;
         try {
           for (const k of keys) {
             const t = k.t === 'name' ? k.v : k.t === 'string' ? strText(k) : k.t === 'int' || k.t === 'real' ? String(k.v) : '';
-            if (!re.test(t)) continue;
+            I.tick();
+            if (!matchTemplate(pat, t, work)) continue;
             const b = new TextEncoder().encode(t);
             scratch.b.set(b.subarray(0, scratch.n), scratch.o);
             I.push({ ...scratch, n: Math.min(b.length, scratch.n) });
