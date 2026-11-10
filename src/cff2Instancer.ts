@@ -1,7 +1,7 @@
 /**
  * cff2Instancer — 可変の CFF ('CFF2' の表) の、軸の値を決めた実体を、静的な CFF (版 1。'CFF ' の表) に作り直す。
  *
- * PDF に埋め込める CFF は版 1 だけ (ISO 32000-2 §9.9 の表 126 の FontFile3: Type1C・CIDFontType0C・OpenType。CFF2 は無い)。
+ * PDF に埋め込める CFF は版 1 だけ (ISO 32000-2 §9.9 の、埋め込む書体のプログラムの種類に CFF2 は無い)。
  * そこで、字形 (CharString) の差分 (blend) を、決めた軸の値で計算し、Type 2 の CharString に書き直す。
  *
  * 根拠は OpenType の仕様の「CFF2 — Compact Font Format (CFF) Version 2」(https://learn.microsoft.com/typography/opentype/spec/cff2。
@@ -19,8 +19,9 @@
  *    FDArray・FDSelect になる (CFF2 は字の名前を持たないので、名前の方式にはしない)
  *  - PrivateDICT のヒントの値 (BlueValues・StdHW など) は、blend を計算した値を書く
  *
- * 輪郭の重なり: CFF2 の字形は輪郭が重なってよく、非ゼロの規則で塗る (CFF2「Path direction」)。重なりは取り除かない。
- * PDF の表示ソフト・ブラウザは、CFF の字形も非ゼロの規則で塗る (PDF の字は、文字を塗る演算子が非ゼロの規則で塗る。ISO 32000-2 §9.3.6・§8.5.3.3)。
+ * 輪郭の重なり: CFF2 の字形は輪郭が重なってよく、非ゼロの規則で塗る (CFF2「Path direction」。CFF に直すときは重なりに気を付けるよう書いてある)。
+ * 重なりは取り除かない (輪郭を作り直すと、形が変わりうる)。確かめた表示の道具 (Poppler・Chromium) は、CFF の字形も非ゼロの規則で塗るので、
+ * 重なったところも塗られる。
  */
 
 const MAX_STACK = 513; // CFF2「Stack-based CFF2 decoding」: 積める数は 513 まで
@@ -591,19 +592,8 @@ function writeCharString(out: Bytes, it: Interpreter, width: number | undefined,
       // 1 本ずつ、相対の値 (dxa dya dxb dyb dxc dyc) と、接線の向き
       const startI = i;
       const startQ = q;
-      // この位置から続けられる数を、形ごとに数える
-      const rel = (r: number, px: number, py: number, o: number[]) => {
-        o[0] = xy[r] - px;
-        o[1] = xy[r + 1] - py;
-        o[2] = xy[r + 2] - xy[r];
-        o[3] = xy[r + 3] - xy[r + 1];
-        o[4] = xy[r + 4] - xy[r + 2];
-        o[5] = xy[r + 5] - xy[r + 3];
-      };
       const d = REL;
-      rel(q, cx, cy, d);
-      // 形: 0 = hv (横で始まり縦で終わる)、1 = vh、2 = hh、3 = vv、4 = そのほか
-      const shapeOf = (o: number[]) => (o[1] === 0 && o[4] === 0 ? 0 : o[0] === 0 && o[5] === 0 ? 1 : o[1] === 0 && o[5] === 0 ? 2 : o[0] === 0 && o[4] === 0 ? 3 : 4);
+      relCurve(xy, q, cx, cy, d);
       const shape = shapeOf(d);
       let count = 0;
       let px = cx;
@@ -613,7 +603,7 @@ function writeCharString(out: Bytes, it: Interpreter, width: number | undefined,
         // hvcurveto・vhcurveto: 横で始まる曲線と縦で始まる曲線が交互
         let horizontal = shape === 0;
         while (i + count < j && count < T2_ARGS / 4) {
-          rel(r, px, py, d);
+          relCurve(xy, r, px, py, d);
           if (horizontal ? !(d[1] === 0 && d[4] === 0) : !(d[0] === 0 && d[5] === 0)) break;
           if (horizontal) {
             out.int(d[0]);
@@ -636,7 +626,7 @@ function writeCharString(out: Bytes, it: Interpreter, width: number | undefined,
       } else if (shape === 2 || shape === 3) {
         // hhcurveto・vvcurveto
         while (i + count < j && count < T2_ARGS / 4) {
-          rel(r, px, py, d);
+          relCurve(xy, r, px, py, d);
           if (shape === 2 ? !(d[1] === 0 && d[5] === 0) : !(d[0] === 0 && d[4] === 0)) break;
           if (shape === 2) {
             out.int(d[0]);
@@ -657,7 +647,7 @@ function writeCharString(out: Bytes, it: Interpreter, width: number | undefined,
         out.push(shape === 2 ? 27 : 26);
       } else {
         while (i + count < j && count < T2_ARGS / 6) {
-          rel(r, px, py, d);
+          relCurve(xy, r, px, py, d);
           if (count && shapeOf(d) !== 4) break;
           for (let k = 0; k < 6; k++) out.int(d[k]);
           px = xy[r + 4];
@@ -685,6 +675,17 @@ function writeCharString(out: Bytes, it: Interpreter, width: number | undefined,
   out.push(14); // endchar
 }
 const REL = [0, 0, 0, 0, 0, 0];
+/** 曲線 (xy の r から 3 点) の、前の点 (px, py) からの相対の値 dxa dya dxb dyb dxc dyc を o に入れる */
+function relCurve(xy: Int32Array, r: number, px: number, py: number, o: number[]) {
+  o[0] = xy[r] - px;
+  o[1] = xy[r + 1] - py;
+  o[2] = xy[r + 2] - xy[r];
+  o[3] = xy[r + 3] - xy[r + 1];
+  o[4] = xy[r + 4] - xy[r + 2];
+  o[5] = xy[r + 5] - xy[r + 3];
+}
+/** 曲線の形: 0 = hv (横で始まり縦で終わる)、1 = vh、2 = hh、3 = vv、4 = そのほか */
+const shapeOf = (o: number[]) => (o[1] === 0 && o[4] === 0 ? 0 : o[0] === 0 && o[5] === 0 ? 1 : o[1] === 0 && o[5] === 0 ? 2 : o[0] === 0 && o[4] === 0 ? 3 : 4);
 
 /** CFF (版 1) の INDEX (#5176 §5) */
 function writeIndex1(count: number, data: Uint8Array, offsets: ArrayLike<number>): Uint8Array {
