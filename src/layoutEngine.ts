@@ -81,6 +81,7 @@ import {
 import {
   breakLines,
   breakOne,
+  breakOneBoxed,
   buildLineNode,
   adjustJapaneseSpacing,
   adjustHangulWordSpaces,
@@ -1434,8 +1435,9 @@ class Flow {
       const total = d.bsizeExplicit ?? d.minB!;
       for (let guard = 0; ; guard++) {
         const need = f.contentStartB + total - (f.usedB ?? 0);
-        const pageEnd = this.limit - this.footReserve;
-        if (this.cursor >= need - EPS || need + d.bpEnd <= pageEnd + EPS || pageEnd - f.contentStartB <= EPS) break;
+        // 断片の末尾に残す罫線・余白 (box-decoration-break: clone・conditionality="retain") の分は、内容の箱に使えない
+        const pageEnd = this.room;
+        if (this.cursor >= need - EPS || need + d.bpEnd <= pageEnd + d.keepEnd.size + EPS || pageEnd - f.contentStartB <= EPS) break;
         if (guard >= 50) {
           this.host.warn('高さの指定が 50 ページを超える箱は、50 ページで打ち切ります');
           break;
@@ -1545,6 +1547,8 @@ class Flow {
       // CSS: 分かれた箱の内容の箱は、ページ (段) の残りを埋めるまで伸びる (CSS Fragmentation 3 §5.3)。背景・罫線も下端まで描く
       const fill = !clone && !this.host.xslSpace && this.paginating ? Math.max(this.room - f.startB, 0) : 0;
       f.node.bsize = Math.max(this.cursor - f.startB, fill, 0) + (ke?.size ?? 0);
+      // 残した罫線・余白の分は、外側の箱の中身の長さに数える (入れ子の箱がどちらも残すとき、外側の箱が内側の箱の末尾まで包む)
+      if (ke?.size) this.cursor = f.startB + f.node.bsize;
       f.node.contNext = true;
       cutEnd(f.node, clone || !!ke?.border, !!ke?.padding);
     }
@@ -2278,7 +2282,7 @@ class Flow {
         this.layoutInlineRunFloating(atoms, st, first);
         return;
       }
-      raws = breakLines(atoms, L, 0, true, { st, first });
+      raws = breakLines(atoms, L, 0, true, { st, first }, this.wm);
       pls = raws.map((r) => positionLine(r, L, st));
       for (const pl of pls) reorderLine(pl, L, this.wm === 'horizontal-tb' && st.direction === 'rtl');
       const wm = this.wm;
@@ -2437,7 +2441,8 @@ class Flow {
    */
   private relayoutIfWidthChanged(L: number, atoms: Atom[], raw: RawLine, st: ResolvedStyle, first: boolean): boolean {
     if (Math.abs(this.contentI() - L) <= EPS) return false;
-    const head = raw.items[0] ?? raw.metric;
+    // 行を切り出した後で足した枠の空き (frameEdge) は、元の並びに無いので飛ばす
+    const head = raw.items.find((a) => !a.frameEdge) ?? raw.metric;
     const at = head ? atoms.indexOf(head) : -1;
     if (at < 0) return false;
     this.layoutInlineRunFloating(atoms.slice(at), st, first);
@@ -2547,7 +2552,7 @@ class Flow {
         this.pendMin = Math.max(this.pendMin, range.clearTo - this.cursor);
         if (this.pendingValue() > pv + EPS) continue;
       }
-      const { line, next } = breakOne(atoms, start, range.width, lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start)), true);
+      const { line, next } = breakOneBoxed(atoms, start, range.width, lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start)), true, this.wm);
       const pl = positionLine(line, range.width, st);
       reorderLine(pl, range.width, this.wm === 'horizontal-tb' && st.direction === 'rtl');
       const lm = lineMetrics(pl, this.wm, st, this.nominalRatio(st), this.strutOf(st));
@@ -2612,7 +2617,7 @@ class Flow {
     const w = this.contentI();
     let r = 0;
     for (let s = start, fl = firstLine; s < atoms.length && r < widows; r++) {
-      const { next } = breakOne(atoms, s, w, lineIndent(st, fl, startsAfterForcedBreak(atoms, s)), true);
+      const { next } = breakOneBoxed(atoms, s, w, lineIndent(st, fl, startsAfterForcedBreak(atoms, s)), true, this.wm);
       if (next <= s) break;
       s = next;
       fl = false;

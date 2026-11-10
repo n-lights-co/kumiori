@@ -24,6 +24,8 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `width` と `max-width` の両方がある `display: block` の画像で、包む箱を画像の幅にした
   - 名前付きページ: 流れの外の箱 (絶対配置・回り込みなど) だけの最初のページを作らない (CSS Page 3 §8.1)
   - 印刷に関わらないプロパティ (`cursor`・`transition-*` など) を、未対応の CSS の警告に出さない
+  - `box-decoration-break: clone` (CSS Fragmentation 3 §5.4) に対応。ページ・段で分かれた囲みの断片ごと、行で分かれた行内の枠 (`span` の罫線・背景) の断片ごとに、罫線と内側の余白を付け直す (縦書きも。`-webkit-box-decoration-break` も読む)。初期値 `slice` の結果は変わらない
+  - XSL-FO: 罫線・余白の `.conditionality="retain"` を、入れ子の箱の両方に指定したとき、外側の断片が、内側の断片の末尾の罫線・余白まで包むよう直した (前は、内側の罫線・余白の分だけ外側の断片が短かった)
   - ルビの配置: `ruby-position` (`under` で親文字の下、縦書きは左。`alternate` との組)、`ruby-align` (`start`・`center`・`space-between`・`space-around`)、`ruby-overhang` (`auto` を明示すると前後の仮名・約物に掛ける)、`ruby-merge: merge` (グループルビ) に対応。指定の無いルビの置く側・掛け方は変わらない
   - ルビの字の配り方の既定を、`ruby-align` の初期値 `space-around` (CSS Ruby 1 §4.3) にした。**欧文・注音字母のルビの既定の並べ方が変わる**: 字の間を空けずに、親文字の中央にそろえる (前は字ごとに間を空けていた)。和文 (漢字・仮名) のルビと親文字は前と同じ。XSL-FO のルビは変わらない
   - `font-variant-east-asian` に対応 (`jis78`・`jis83`・`jis90`・`jis04`・`simplified`・`traditional`・`full-width`・`proportional-width`・`ruby`。フォントの OpenType の機能で字形と字の幅を選ぶ。一括指定の `font-variant` からも読む)

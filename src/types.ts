@@ -763,6 +763,8 @@ export interface LInline extends BaseNode {
   /** 文字を囲む罫線・内側の余白 (fo:inline の border / padding)。行をまたぐときは、切れ目の辺は描かない */
   border?: BorderInput;
   padding?: EdgesInput;
+  /** 行をまたぐ枠の切れ目にも、罫線・内側の余白を付ける (CSS の box-decoration-break: clone。CSS Fragmentation 3 §5.4) */
+  boxDecorationBreak?: 'clone';
   /** 角丸 (CSS の border-radius)。枠の罫線と背景を丸め、中の画像も内側の角丸で切り抜く */
   borderRadius?: BorderRadius;
   /** 外側の空き (pt)。行の進む方向の始端 (start) と終端 (end) に、枠の外の空白を置く (CSS の inline 要素の左右の margin) */

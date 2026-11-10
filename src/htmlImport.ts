@@ -2969,6 +2969,9 @@ class HtmlImporter {
     if (rad) o.borderRadius = rad;
     const shadows = shadowsOf(c('box-shadow'), c('filter'));
     if (shadows.length) o.boxShadow = shadows.length === 1 ? shadows[0] : shadows;
+    // box-decoration-break: clone (CSS Fragmentation 3 §5.4): ページ・段で分かれた断片のそれぞれを、罫線と内側の余白で包み直す
+    // (初期値 slice は、切れ目に罫線も余白も入れない)。余白 (margin) は、ブロックの箱では切れ目で 0 に切り詰める (§5.4 の注)
+    if (c('box-decoration-break') === 'clone') o.edgeRetain = { borderBefore: true, paddingBefore: true, borderAfter: true, paddingAfter: true };
     // 改ページ (break-before / after。left・right・recto・verso は偶数・奇数ページ)。
     // recto (右から左へ進む本では左ページ) は奇数ページ、verso は偶数ページ。left・right は、ページが右から左へ進む文書では
     // 左ページが奇数ページなので入れ替える (:left・:right の選び方と同じ。CSS Fragmentation 3 §3.1 の left・right・recto・verso)
@@ -4406,6 +4409,8 @@ class HtmlImporter {
     const box = this.boxStyle(el);
     if (box.border) inl.border = box.border;
     if (box.padding) inl.padding = box.padding;
+    // box-decoration-break: clone: 行で分かれた枠の断片のそれぞれを、罫線と内側の余白で包む (CSS Fragmentation 3 §5.4)
+    if ((box.border || box.padding) && c('box-decoration-break') === 'clone') inl.boxDecorationBreak = 'clone';
     // 行の進む方向の margin は行内の空き (横書きは左右。右から左へ書く段落では入れ替わる。縦書きは上下)
     const vert = /^(vertical|sideways-rl)/.test(c('writing-mode'));
     const [ms, me] = vert ? [cssLen(c('margin-top')) ?? 0, cssLen(c('margin-bottom')) ?? 0] : [cssLen(c('margin-left')) ?? 0, cssLen(c('margin-right')) ?? 0];

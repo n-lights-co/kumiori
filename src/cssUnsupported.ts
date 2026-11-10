@@ -46,7 +46,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'font-named-instance',
   'base-palette',
   'override-colors',
-  'box-decoration-break',
   'hyphenate-limit-zone',
   'hyphenate-limit-lines',
   'hyphenate-limit-last',

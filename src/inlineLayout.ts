@@ -110,6 +110,8 @@ export interface Atom {
   frameClose?: InlineFrame;
   /** この atom を囲む枠 (外側から) */
   frames?: InlineFrame[];
+  /** 行で分かれた枠の切れ目に、行を切り出した後で足した空き (box-decoration-break: clone の罫線 + 余白。元の atom の並びには無い) */
+  frameEdge?: boolean;
   /** この atom (参照記号の先頭) を含む行が置かれたページに、脚注本体も置く */
   fnRef?: LFootnote;
   src?: string;
@@ -138,6 +140,8 @@ export interface InlineFrame {
   radius?: BorderRadius;
   /** 罫線・余白を描く枠か (false ならリンク・注釈の範囲だけを示す) */
   box: boolean;
+  /** 行で分かれた断片のそれぞれを、罫線・余白で包む (box-decoration-break: clone。CSS Fragmentation 3 §5.4) */
+  clone?: boolean;
   link?: LinkTarget;
   annot?: Annotation;
   /** 枠の最初の atom (注釈は、これを含む行にだけ付ける) */
@@ -716,6 +720,82 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
   return { line: makeLine(atoms.slice(start, j), false, indent), next: j };
 }
 
+/** 行を切り出した後で足す枠の空きの、並びの番号 (flattenInline の番号と重ならないよう、負の数) */
+let edgeRunSeq = 0;
+
+/** 行の切れ目で、枠 f の始端 (start) / 終端の側に付け直す「余白 + 罫線」の長さ (行の進む向き) */
+function frameEdgeSize(f: InlineFrame, wm: WritingMode, start: boolean): number {
+  const pl = toLogical(f.padding, wm);
+  const bl = borderToLogicalWidths(f.border, wm);
+  return start ? pl.is + bl.is : pl.ie + bl.ie;
+}
+
+/**
+ * breakOne に、box-decoration-break: clone の inline の枠 (InlineFrame.clone) の扱いを足したもの (CSS Fragmentation 3 §5.4:
+ * 行で分かれた断片のそれぞれを、罫線と内側の余白で包む)。
+ *  - 前の行から続く枠があれば、行頭に「余白 + 罫線」の空きを置き、その分だけ行に入る字を減らす
+ *  - 次の行へ続く枠があれば、行末に同じ空きを置き、その分を空けて行を切り直す
+ * 空きは、枠の始まり・終わりの空き (frameOpen・frameClose) と同じ形の atom (frameEdge の印付き) で、行の中身 (RawLine.items) にだけ足す。
+ * clone の枠が無い行は、breakOne と同じ結果
+ */
+export function breakOneBoxed(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, wm: WritingMode): { line: RawLine; next: number } {
+  const head = atoms[start];
+  // 前の行から続く clone の枠 (この行で始まる枠は除く)
+  const startFrames = (head?.frames ?? []).filter((f) => f.clone && head.frameOpen !== f);
+  const S = startFrames.reduce((t, f) => t + frameEdgeSize(f, wm, true), 0);
+  let res = breakOne(atoms, start, L - S, indent, hangingDefault);
+  /** 行末の字を囲み、次の行へ続く clone の枠 */
+  const endFramesOf = (r: { line: RawLine; next: number }): InlineFrame[] => {
+    const tail = r.line.hang ?? r.line.items[r.line.items.length - 1];
+    const nextFrames = atoms[r.next]?.frames;
+    if (!tail?.frames || !nextFrames) return [];
+    return tail.frames.filter((f) => f.clone && tail.frameClose !== f && nextFrames.includes(f));
+  };
+  let endFrames = endFramesOf(res);
+  if (!S && !endFrames.length) return res;
+  let E = endFrames.reduce((t, f) => t + frameEdgeSize(f, wm, false), 0);
+  // 行末の空きの分を空けて切り直す。切る位置が変わって、続く枠が増えたら、もう一度 (多くて数回)。
+  // 枠の中の行末の句読点は、ぶら下げない (ぶら下げた字が、枠の終端の罫線の外へ出てしまう)
+  for (let guard = 0; E > 0 && guard < 4; guard++) {
+    res = breakOne(atoms, start, L - S - E, indent, false);
+    endFrames = endFramesOf(res);
+    const e2 = endFrames.reduce((t, f) => t + frameEdgeSize(f, wm, false), 0);
+    if (e2 <= E + EPS) break;
+    E = e2;
+  }
+  const items = res.line.items;
+  if (!items.length) return res;
+  const edge = (f: InlineFrame, startSide: boolean, like: Atom): Atom => {
+    const adv = frameEdgeSize(f, wm, startSide);
+    const frames = like.frames!.slice(0, like.frames!.indexOf(f) + 1);
+    return {
+      kind: 'box',
+      first: '\uFFFC',
+      last: '\uFFFC',
+      advance: adv,
+      isSpace: false,
+      // 字の並びとは別の並びにする (字の背景を、この空きまで延ばさない)
+      runId: --edgeRunSeq,
+      st: like.st,
+      box: { node: newNode('block', wm, { isize: adv, bsize: 0 }), adv, cross: 0, above: 0, below: 0 },
+      frames,
+      frameEdge: true,
+      ...(startSide ? { frameOpen: f } : { frameClose: f }),
+      ...(like.bidiLevel !== undefined ? { bidiLevel: like.bidiLevel } : {}),
+    };
+  };
+  // 行頭は外側の枠から、行末は内側の枠から並べる
+  const first = items[0];
+  const last = items[items.length - 1];
+  const lead = startFrames.map((f) => edge(f, true, first));
+  const trail = endFrames
+    .filter((f) => last.frames?.includes(f))
+    .reverse()
+    .map((f) => edge(f, false, last));
+  res.line.items = [...lead, ...items, ...trail];
+  return res;
+}
+
 /**
  * 分綴の位置に印を付ける: hyphenate を指定した欧文の語 (字の連なり) ごとに、hyphenate(語, 言語) が返す位置の字へ、
  * 行末に付けるハイフンの atom を持たせる
@@ -865,7 +945,7 @@ export function lineIndent(st: { textIndent: number; textIndentHanging?: boolean
  * 行に切り分ける。firstIndent は 1 行目の字下げ。st を渡すと、行ごとの字下げを lineIndent で決める
  * (first: この並びの 1 行目が要素の最初の行か)
  */
-export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0]; first: boolean }): RawLine[] {
+export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0]; first: boolean }, wm?: WritingMode): RawLine[] {
   const lines: RawLine[] = [];
   let start = 0;
   let first = true;
@@ -877,8 +957,8 @@ export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangin
       start = afterForcedBreak(atoms, start);
       continue;
     }
-    const indent = indentOf ? lineIndent(indentOf.st, first && indentOf.first, afterForced) : first ? firstIndent : 0;
-    const { line, next } = breakOne(atoms, start, L, indent, hangingDefault);
+    const indent: number = indentOf ? lineIndent(indentOf.st, first && indentOf.first, afterForced) : first ? firstIndent : 0;
+    const { line, next }: { line: RawLine; next: number } = wm ? breakOneBoxed(atoms, start, L, indent, hangingDefault, wm) : breakOne(atoms, start, L, indent, hangingDefault);
     first = false;
     // 強制改行で終わった行 (段落の最後の行は次が無いので問わない)
     afterForced = line.last;

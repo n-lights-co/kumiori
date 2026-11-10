@@ -357,6 +357,7 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'max-width': [false, 'none', 'len-none'],
   'max-height': [false, 'none', 'len-none'],
   'box-sizing': [false, 'content-box', 'raw'],
+  'box-decoration-break': [false, 'slice', 'raw'],
   'margin-top': [false, '0px', 'len-auto'],
   'margin-right': [false, '0px', 'len-auto'],
   'margin-bottom': [false, '0px', 'len-auto'],
@@ -1116,6 +1117,8 @@ shorthand(['border-block-width', 'border-block-style', 'border-block-color', 'bo
 shorthand(['inset-block', 'inset-inline'], (prop, v, global) => startEnd(`${prop}-start`, `${prop}-end`, v, global));
 // アンテナハウスの拡張の -ah-border-radius (角の丸み)。border-radius と同じに読む
 shorthand(['-ah-border-radius'], (_p, v, _g, ah) => expand('border-radius', v, ah));
+// -webkit-box-decoration-break (接頭辞付きの古い書き方) は、box-decoration-break と同じに読む
+shorthand(['-webkit-box-decoration-break'], (_p, v) => [['box-decoration-break', v]]);
 // アンテナハウスの拡張の -ah-text-align・-ah-text-align-last (text-align・text-align-last と同じに読む)・角の丸み
 shorthand(['-ah-text-align', '-ah-text-align-last', '-ah-border-top-left-radius', '-ah-border-top-right-radius', '-ah-border-bottom-right-radius', '-ah-border-bottom-left-radius'], (prop, v) => [[prop.slice(4), v]]);
 shorthand(['border-radius'], (_p, v, global) => {
@@ -2035,6 +2038,7 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'white-space': 'normal pre nowrap pre-wrap pre-line break-spaces',
     'list-style-position': 'inside outside',
     'box-sizing': 'content-box border-box',
+    'box-decoration-break': 'slice clone',
     visibility: 'visible hidden collapse',
     'content-visibility': 'visible auto hidden',
     'border-collapse': 'collapse separate',
@@ -2053,7 +2057,7 @@ const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 
 /** 1 語だけを取るキーワードの性質 */
 const SINGLE_KEYWORD = new Set([
-  'float', 'clear', 'position', 'visibility', 'box-sizing', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens',
+  'float', 'clear', 'position', 'visibility', 'box-sizing', 'box-decoration-break', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens',
   'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'text-spacing-trim', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style',
 ]);
 
