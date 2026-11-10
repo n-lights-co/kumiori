@@ -12,6 +12,7 @@
  */
 import { MAX_VAR_LENGTH, parseCss, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
 import { fmtColor, parseColor, splitTop, UNIT_PX } from './cssText';
+import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { asciiLower, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
 
@@ -659,6 +660,10 @@ function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
 /** 値を語に分ける (括弧・文字列の外の空白で) */
 const tokens = (v: string) => splitTop(v, ' ');
 
+/** 数・整数の書き方 (Values 4 §5.2・§5.3)。読めるかの検査・計算値を決める所・一括指定を分ける所で使う (食い違うと、読めると判定した値が初期値になる) */
+const CSS_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+const CSS_INTEGER = /^[+-]?\d+$/;
+
 /**
  * text-indent の値を、長さ (百分率) の部分と hanging・each-line の語に分ける (CSS Text 3 §8.1:
  * [ <length-percentage> ] && hanging? && each-line?)。構文に合わなければ undefined
@@ -717,8 +722,29 @@ export function isKnownCssProperty(prop: string, value = ''): boolean {
   return parts.length > 0 && parts.every(([p]) => p !== prop && known(p));
 }
 
-/** @supports の宣言: 知っている性質 (一括指定は、分けた性質がすべて知っているもの) なら読める */
-setSupportsDecl((prop, value) => isKnownCssProperty(prop, value));
+/**
+ * @supports の宣言 (と @import の supports()) に、対応していると答えるか。CSS Conditional 3 §6.1 (Definition of support):
+ * 宣言を、規則の中で (構文の誤りとして捨てずに) 受け付けるときに対応しているとし、性質と値の両方を「使える水準で」実装していなければ、
+ * 受け付けても対応していると答えてもいけない。値の一部だけを実装しているものも、対応しているとは答えない。
+ *  - 名前を知らない性質は偽 (印刷に関わらない性質 (animation-*・cursor など) も、読まないので偽)
+ *  - 名前は読むが組版に使わない性質 (cssUnsupported の UNSUPPORTED_CSS_PROPERTIES。transform・opacity など) は偽
+ *  - 対応している性質の、読まない値 (UNSUPPORTED_CSS_VALUES。position: sticky など) は偽
+ *  - 一括指定は、分けた性質のどれかが上の 2 つに当たれば偽 (未対応の性質を初期値に戻すだけの一括指定は真)
+ * ほかの値が読めるかは調べない (これまでと同じ。display: grid のように、性質と値は読み、働きの一部が未対応のものは真のまま)
+ */
+export function supportsCssDeclaration(prop: string, value: string): boolean {
+  const p = prop.toLowerCase();
+  const v = value.replace(/\s*!\s*important\s*$/i, '').trim();
+  const unsupported = (lp: string, lv: string, longhandOfShorthand: boolean) => {
+    const t = lv.trim().toLowerCase();
+    if (UNSUPPORTED_CSS_PROPERTIES.has(lp)) return !longhandOfShorthand || !(t === (PROPS[lp]?.[1] ?? '').toLowerCase() || /^(inherit|initial|unset|revert|revert-layer)$/.test(t));
+    return !!UNSUPPORTED_CSS_VALUES[lp]?.includes(t);
+  };
+  if (unsupported(p, v, false)) return false;
+  if (!isKnownCssProperty(p, v)) return false;
+  return !expand(p, v).some(([lp, lv]) => lp !== p && unsupported(lp, lv, true));
+}
+setSupportsDecl(supportsCssDeclaration);
 
 /** 一括指定を分けた結果 ([性質, 値] の並び) */
 type Longhands = Array<[string, string]>;
@@ -848,7 +874,9 @@ const fontShorthand: Expander = (_prop, v, global) => {
     if (t === 'normal') continue;
     if (/^(italic|oblique)$/.test(t)) out['font-style'] = t;
     else if (t === 'small-caps') out['font-variant'] = out['font-variant-caps'] = t;
-    else if (/^(bold|bolder|lighter|\d{3})$/.test(t)) out['font-weight'] = t;
+    // 太さ (Fonts 4 §2.2 の <font-weight-absolute> = normal | bold | <number [1,1000]>、bolder・lighter)。数は font-weight の
+    // 宣言と同じ読み方 (550.5・+700・50 も太さ。範囲の外の数は太さではない)
+    else if (/^(bold|bolder|lighter)$/.test(t) || (CSS_NUMBER.test(t) && parseFloat(t) >= 1 && parseFloat(t) <= 1000)) out['font-weight'] = t;
     else if (/condensed|expanded/.test(t)) out['font-stretch'] = t;
     else break;
   }
@@ -970,7 +998,8 @@ shorthand(['columns'], (_p, v, global) => {
   let width = 'auto';
   let count = 'auto';
   for (const t of tokens(v)) {
-    if (/^\d+$/.test(t)) count = t;
+    // 段の数は整数 (Multi-column 1 §3.2 の column-count: auto | <integer [1,∞]>。column-count の宣言と同じ読み方: +2 も整数)
+    if (CSS_INTEGER.test(t)) count = t;
     else if (t !== 'auto') width = t;
   }
   return [['column-width', width], ['column-count', count]];
@@ -1782,10 +1811,6 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'text-transform': 'none capitalize uppercase lowercase full-width full-size-kana math-auto',
   }).map(([k, v]) => [k, new Set(v.split(' '))]),
 );
-
-/** 数・整数の書き方 (Values 4 §5.2・§5.3)。読めるかの検査と、計算値を決める所の両方で使う (食い違うと、読めると判定した値が初期値になる) */
-const CSS_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
-const CSS_INTEGER = /^[+-]?\d+$/;
 
 /** 値が読めるかを調べるための、仮の長さの基準 */
 const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };

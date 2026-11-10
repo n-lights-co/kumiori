@@ -63,7 +63,7 @@ import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
 import { cssColor, cssColorAlpha, cssLen, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
-import { AH_ALIASES, counterText, isPagedDecl, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
+import { AH_ALIASES, counterText, isPagedDecl, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
 /** 確定したスタイルの読み取り (ブラウザでは getComputedStyle。テストでは差し替える) */
@@ -3268,7 +3268,7 @@ class HtmlImporter {
     if (name !== this.curPage || (this.opts.pageGroupFirst && name && forced)) {
       const sw: PageSwitch = { type: 'page-switch', page: name };
       // カウンターの名前は全体で見る (pagenote・page-x は page ではない)
-      const reset = /(?:^|\s)page(?![\w-])(?:\s+(-?\d+))?/.exec(this.cs(e)('counter-reset'));
+      const reset = /(?:^|\s)page(?![-\w\u0080-\uffff])(?:\s+(-?\d+))?/.exec(this.cs(e)('counter-reset'));
       if (reset) sw.initial = reset[1] !== undefined ? Math.max(1, parseInt(reset[1], 10)) : 1;
       items.push({ v: sw as unknown as LBlockLevel, block: true });
       this.curPage = name;
@@ -3277,7 +3277,7 @@ class HtmlImporter {
 
   /** position: running(name): 本文から外し、余白の箱の element(name) で出す。扱ったら true */
   private flowRunning(e: Element, parent: Element, d: string, pg: Record<string, string>, inline: boolean, items: FlowItem[]): boolean {
-    const run = /running\(\s*([\w-]+)\s*\)/.exec(pg.position ?? '');
+    const run = /running\(\s*([-\w\u0080-\uffff]+)\s*\)/.exec(pg.position ?? '');
     if (!run) return false;
     this.inRunning = true;
     const content = this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', children: this.inline(e, parent) } as LBlock);
@@ -3310,7 +3310,7 @@ class HtmlImporter {
   /** 流れの外に出す要素か (flowChildren の前処理の flowRunning・flowFootnote・flowFloat・絶対配置・固定配置のどれかに当たる) */
   private outOfFlow(e: Element): boolean {
     const pg = this.pg(e);
-    if (/running\(\s*[\w-]+\s*\)/.test(pg.position ?? '') || pg.float === 'footnote' || this.floatSideOf(e, pg)) return true;
+    if (/running\(\s*[-\w\u0080-\uffff]+\s*\)/.test(pg.position ?? '') || pg.float === 'footnote' || this.floatSideOf(e, pg)) return true;
     return /^(absolute|fixed)$/.test(this.cs(e)('position'));
   }
 
@@ -4250,6 +4250,34 @@ class HtmlImporter {
     const startSide = /^(vertical|sideways-rl)/.test(c('writing-mode')) ? 'top' : 'left';
     const indent = (cssLen(c(`padding-${startSide}`)) ?? 0) + (cssLen(c(`margin-${startSide}`)) ?? 0);
     let n = reversed ? start + lis.length - 1 : start;
+    // 項目の改ページの指定 (CSS Fragmentation 3 §3.1: break-before・break-after・break-inside は、通常の流れの block-level の箱に当たる。
+    // list-item の箱も block-level)。項目は表の行にして組むので、行の指定にする (表の tr と同じ。left・right・recto・verso は、行の間では
+    // ページを改めるだけ)。最初の項目の前・最後の項目の後ろの強制の区切りは、リストの箱の前後の区切りと同じ所なので
+    // (§3.1 の区切りの値の伝播)、リストを組む表の前後の指定にする (左右のページの指定もそのまま効く)
+    const rtlPages = this.pagesRtl;
+    const forced = (v: string): LBlock['breakBefore'] =>
+      v === 'page' || v === 'always' ? 'page' : v === 'verso' || v === (rtlPages ? 'right' : 'left') ? 'even-page' : v === 'recto' || v === (rtlPages ? 'left' : 'right') ? 'odd-page' : v === 'column' ? 'column' : undefined;
+    let listBefore: LBlock['breakBefore'];
+    let listAfter: LBlock['breakBefore'];
+    const rowBreaks = (li: Element, k: number): Pick<LTableRow, 'breakBefore' | 'breakAfter' | 'keepTogether' | 'keepWithNext' | 'keepWithPrevious'> => {
+      const lc = this.cs(li);
+      const bb = lc('break-before') || lc('page-break-before');
+      const ba = lc('break-after') || lc('page-break-after');
+      const bi = lc('break-inside') || lc('page-break-inside');
+      let multicol: boolean | undefined;
+      const avoids = (v: string) => v === 'avoid' || v === 'avoid-page' || (v === 'avoid-column' && (multicol ??= this.inMulticol(li)));
+      const fb = forced(bb);
+      const fa = forced(ba);
+      const o: ReturnType<typeof rowBreaks> = {};
+      if (k === 0) listBefore = fb;
+      else if (fb && fb !== 'column') o.breakBefore = true;
+      if (k === lis.length - 1) listAfter = fa;
+      else if (fa && fa !== 'column') o.breakAfter = true;
+      if (avoids(bi)) o.keepTogether = true;
+      if (avoids(ba)) o.keepWithNext = true;
+      if (avoids(bb)) o.keepWithPrevious = true;
+      return o;
+    };
     const rows: LTableRow[] = lis.map((li, k) => {
       const lc = this.cs(li);
       const marks = enter(li, k);
@@ -4282,6 +4310,7 @@ class HtmlImporter {
       if (box.margin) body.padding = { top: (box.margin as Record<string, number>).top ?? 0, bottom: (box.margin as Record<string, number>).bottom ?? 0 };
       return {
         type: 'table-row',
+        ...rowBreaks(li, k),
         // 記号・番号は、本文の最初の行の基線にそろえる (CSS Lists: 外側の記号は最初の行の箱に置く)
         // 本文の最後の子の下の余白は、li の外へ抜けて次の項目との間に残る (CSS 2.1 §8.3.1)。セルの高さに含める
         cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', keepTrailingSpace: true }],
@@ -4298,7 +4327,10 @@ class HtmlImporter {
     } as LTable;
     // リストの箱の行グリッド (-ah-baseline-grid): 表を、その指定を持つ箱で包む (ページの終わりの判定に使う)
     const bgrid = this.pg(container)['-ah-baseline-grid']?.trim().toLowerCase();
-    return bgrid === 'new' || bgrid === 'root' || bgrid === 'none' ? ({ type: 'block', baselineGrid: bgrid, children: [table] } as LBlock) : table;
+    const out = bgrid === 'new' || bgrid === 'root' || bgrid === 'none' ? ({ type: 'block', baselineGrid: bgrid, children: [table] } as LBlock) : table;
+    if (listBefore) out.breakBefore = listBefore;
+    if (listAfter) out.breakAfter = listAfter;
+    return out;
   }
 
   /** 表 (<table> / display: table) */
@@ -5166,7 +5198,7 @@ function hasPageCitation(node: unknown): boolean {
 /** HTML の文書 (スタイルを確定させたもの) を Kumiori の論理ツリーにする */
 export function importHtml(doc: Document, src: StyleSource, opts: HtmlImportOptions = {}): ImportResult {
   // 文書の CSS は 1 度だけ読む (prepareHtml が読んであれば、それを使う)
-  const sheet = opts.sheet ?? parseCss(opts.css ?? '');
+  const sheet = opts.sheet ?? parseCss(opts.css ?? '', opts.defaultPage ? mediaPageOf(opts.defaultPage) : undefined);
   // target-counter() / target-text() を使う文書は、2 回変換する (1 回目で、参照先の番号・文字を集める)
   let lookup: Map<string, TargetInfo> | undefined;
   if (/target-(counter|text)\(/.test(opts.css ?? '')) {

@@ -5,6 +5,7 @@
  *  - META-INF/container.xml → OPF (manifest・spine) → spine の順に XHTML の本文をつなぐ。章ごとに改ページする
  *  - CSS は <style> にしてまとめる (章の <link> と <style> を、最初に出た順に 1 度ずつ)。画像は名前つきで返す
  */
+import { disabledAlternateStylesheet, linkRelTokens } from './htmlPrepare';
 
 export interface ZipEntry {
   name: string;
@@ -125,8 +126,10 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml): Promise<Epub
     let doc = /xhtml|xml/.test(item.type) ? parse(src, 'application/xml') : undefined;
     if (!doc || doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('body')[0]) doc = parse(src, 'text/html');
     const dir = dirOf(item.href);
+    // 章の文書ごとに、無効な代わりのスタイルシート (題つきの rel="alternate stylesheet"。CSSOM 1 §6.2) は当てない (HTML の文書と同じ決まり)
+    const disabledAlternate = disabledAlternateStylesheet(doc);
     for (const l of Array.from(doc.getElementsByTagName('link'))) {
-      if (!/stylesheet/i.test(l.getAttribute('rel') ?? '')) continue;
+      if (!linkRelTokens(l).includes('stylesheet') || disabledAlternate(l)) continue;
       const p = resolvePath(dir, l.getAttribute('href') ?? '');
       if (seenCss.has(p)) continue;
       seenCss.add(p);

@@ -65,6 +65,28 @@ describe('EPUB', () => {
     );
   const PLAIN = '<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><p>一</p></body></html>';
 
+  it('題つきの rel="alternate stylesheet" の CSS は当てない (HTML の文書と同じ決まり。CSSOM 1 §6.2)', async () => {
+    const book = (head: string) =>
+      readEpub(
+        makeZip([
+          { name: 'mimetype', text: 'application/epub+zip' },
+          { name: 'META-INF/container.xml', text: '<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>' },
+          { name: 'content.opf', text: '<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/></spine></package>' },
+          { name: 'ch1.xhtml', text: `<html xmlns="http://www.w3.org/1999/xhtml"><head>${head}</head><body><p>一</p></body></html>` },
+          { name: 'a.css', text: '.x0 { color: red }' },
+          { name: 'b.css', text: '.x1 { color: red }' },
+          { name: 'c.css', text: '.x2 { color: red }' },
+        ]),
+        (t, type) => new DOMParser().parseFromString(t, type) as unknown as Document,
+      ).then((b) => ['.x0', '.x1', '.x2'].filter((s) => b.html.includes(s)));
+    // 縦書き・横書きを切り替える代わりのスタイルシート (EPUB で多い書き方): 題つきの alternate は当てない
+    expect(await book('<link rel="stylesheet" href="a.css"/><link rel="alternate stylesheet" title="横書き" href="b.css"/><link rel="Stylesheet Alternate" title="t" href="c.css"/>')).toEqual(['.x0']);
+    // 題が、選ばれた組の名前 (alternate でない題つきのスタイルシートの題) と同じなら当てる。題が無ければ当てる
+    expect(await book('<link rel="stylesheet" title="t" href="a.css"/><link rel="alternate stylesheet" title="t" href="b.css"/><link rel="alternate stylesheet" href="c.css"/>')).toEqual(['.x0', '.x1', '.x2']);
+    // 選ばれた組の名前は、題のある style でも決まる
+    expect(await book('<style title="s">p { margin: 0 }</style><link rel="alternate stylesheet" title="s" href="b.css"/><link rel="alternate stylesheet" title="t" href="c.css"/>')).toEqual(['.x1']);
+  });
+
   it('章の html・body の属性 (class・lang・dir・style・id) を、章を包む要素に写す (HTM-11)', async () => {
     const book = await twoChapters(
       '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" class="vrtl" xml:lang="ja" dir="rtl"><head/><body id="b1" class="main" style="margin: 0;" epub:type="bodymatter"><p>一</p></body></html>',

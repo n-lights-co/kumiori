@@ -150,11 +150,28 @@ export function concatCss(...sheets: ParsedCss[]): ParsedCss {
   };
 }
 
+/** メディアクエリを評価するときの用紙 (page box。余白を含む用紙の全体) の大きさ (px) */
+export interface MediaPage {
+  width: number;
+  height: number;
+}
+
+/** 用紙の大きさ (mm) → メディアクエリの評価に使う大きさ (px) */
+export const mediaPageOf = (page: { width: number; height: number }): MediaPage => ({ width: (page.width / 25.4) * 96, height: (page.height / 25.4) * 96 });
+
 /**
- * メディアクエリの並び (Media Queries 4) を、印刷の媒体として評価する。width・height などの媒体の特徴は、ページの箱の大きさ
- * (既定は A4 の 794×1123px) で見る。読めない条件は合わないものとする (§3.2)
+ * メディアクエリが、用紙の大きさに依る条件 (width・height・device-width・device-height・aspect-ratio・device-aspect-ratio・orientation と、
+ * その min-・max-) を含むか。CSS Paged Media 3 §7.1: こうした条件で条件づけた size の宣言は、無視しなければならない
  */
-export function matchMedia(list: string, page = { width: 793.7, height: 1122.5 }): boolean {
+export const mediaDependsOnPageSize = (list: string): boolean => /(?<![\w])(width|height|aspect-ratio|orientation)(?![\w-])/i.test(list);
+
+/**
+ * メディアクエリの並び (Media Queries 4) を、印刷の媒体として評価する。width・height などの媒体の特徴は、page box の大きさで見る
+ * (Media Queries 4 §4.1・§4.2: ページの媒体では page box の幅・高さ。page box は余白を含む用紙の全体。CSS 2 §13.2)。
+ * その大きさは、@page の規則が無いときに選ばれる用紙 (page。既定は A4 の 794×1123px) のもので、@page の size は見ない
+ * (CSS Paged Media 3 §7.1: Media queries do not honor size)。読めない条件は合わないものとする (§3.2)
+ */
+export function matchMedia(list: string, page: MediaPage = { width: 793.7, height: 1122.5 }): boolean {
   const q = list.trim().toLowerCase();
   if (!q) return true;
   const one = (m: string): boolean => {
@@ -253,7 +270,7 @@ export function matchSupports(cond: string): boolean {
   const and = splitTopWord(c, 'and');
   if (and.length > 1) return and.every(matchSupports);
   // 宣言 (prop: value)
-  const d = /^([-\w]+)\s*:\s*([\s\S]*)$/.exec(c);
+  const d = /^([-\w\u0080-\uffff]+)\s*:\s*([\s\S]*)$/.exec(c);
   if (d) {
     const prop = d[1].startsWith('--') ? d[1] : d[1].toLowerCase();
     return prop.startsWith('--') || isPagedDecl(prop, d[2].trim()) || supportsDecl(prop, d[2].trim());
@@ -313,8 +330,11 @@ export function layerRanks(names: Iterable<string>): Map<string, number> {
   return new Map(sorted.map((n, i) => [n, i]));
 }
 
-/** CSS の規則を読む。@media は印刷の媒体として条件を評価する (matchMedia)。@supports・@layer の中も読む */
-export function parseCss(css: string): ParsedCss {
+/**
+ * CSS の規則を読む。@media は印刷の媒体として条件を評価する (matchMedia。mediaPage は、@page の無いときに選ばれる用紙の大きさ (px)。
+ * 無ければ A4)。@supports・@layer の中も読む
+ */
+export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
   const pages: PageRule[] = [];
   const fontFaces: FontFaceRule[] = [];
   const counterStyles = new Map<string, CounterStyleRule>();
@@ -325,6 +345,8 @@ export function parseCss(css: string): ParsedCss {
   const layered: Array<[StyleRule, string]> = [];
   let anonLayers = 0;
   let curLayer: string | undefined;
+  // 用紙の大きさに依るメディアクエリの中にいる深さ (その中の @page の size は読まない。Page 3 §7.1)
+  let sizeQualified = 0;
   const layerOf = (name: string) => layers.add(name);
   const walk = (text: string) => {
     let i = 0;
@@ -342,12 +364,23 @@ export function parseCss(css: string): ParsedCss {
       const body = text.slice(open + 1, close);
       i = close + 1;
       if (/^@media\b/i.test(head)) {
-        if (matchMedia(head.slice(6))) walk(body);
+        if (matchMedia(head.slice(6), mediaPage)) {
+          const q = mediaDependsOnPageSize(head.slice(6)) ? 1 : 0;
+          sizeQualified += q;
+          walk(body);
+          sizeQualified -= q;
+        }
       }
       // @page のセレクタの並び (Page 3 §4.3: <page-selector-list> = <page-selector>#) は、セレクタごとに同じ宣言の規則にする
       else if (/^@page\b/i.test(head)) {
         const sels = head.slice(5).split(',').map((x) => x.trim());
-        for (const sel of sels.length ? sels : ['']) pages.push(parsePageBody(sel, body));
+        for (const sel of sels.length ? sels : ['']) {
+          const rule = parsePageBody(sel, body);
+          // 用紙の大きさに依るメディアクエリ (width・height・orientation など) で条件づけた size の宣言は無視する (Page 3 §7.1:
+          // 「the declaration must be ignored」)。ほかの宣言 (余白など) は読む
+          if (sizeQualified) delete rule.decls.size;
+          pages.push(rule);
+        }
       }
       else if (/^@supports\b/i.test(head)) {
         if (matchSupports(head.slice(9))) walk(body);
@@ -417,7 +450,7 @@ export function parseCss(css: string): ParsedCss {
       i = close + 1;
       // 入れ子の @media・@supports (CSS Nesting 1 §3.2): 条件に合えば、中の宣言と規則を、この規則のセレクタに当てる
       if (/^@media\b/i.test(head)) {
-        if (matchMedia(head.slice(6))) later.push(() => styleRule(selectors, inner));
+        if (matchMedia(head.slice(6), mediaPage)) later.push(() => styleRule(selectors, inner));
         continue;
       }
       if (/^@supports\b/i.test(head)) {
@@ -476,7 +509,8 @@ export const MAX_VAR_LENGTH = 2 * 1024 * 1024;
  */
 export function resolveVars(v: string, vars: Record<string, string>, depth = 0, budget: { left: number } = { left: MAX_VAR_LENGTH }): string {
   if (depth > 10) return v;
-  const out = v.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_m, name: string, fb: string | undefined) => {
+  // 名前は識別子の字 (CSS Syntax 3 §4.2 の ident code point: 英数字・_・-・ASCII でない字。cssCascade の VAR_RE・cssSelector の IDENT と同じ範囲)
+  const out = v.replace(/var\(\s*(--[-\w\u0080-\uffff]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_m, name: string, fb: string | undefined) => {
     if (budget.left < 0) return '';
     const val = vars[name] ?? fb ?? '';
     // 空の値の置き換えも 1 と数える (長さが増えない置き換えを、指数的な回数だけ繰り返させない)
@@ -512,7 +546,8 @@ function nextBraceOrSemi(s: string, from: number): number {
 }
 
 function parsePageBody(sel: string, body: string): PageRule {
-  const m = /^([a-z_][\w-]*)?((?::[a-z-]+)*)\s*$/i.exec(sel.trim());
+  // ページの名前は識別子 (CSS Syntax 3 §4.2: ASCII でない字も使える。@page 表紙 { … })
+  const m = /^(-?[a-z_\u0080-\uffff][-\w\u0080-\uffff]*)?((?::[a-z-]+)*)\s*$/i.exec(sel.trim());
   const rule: PageRule = { pseudos: [], decls: {}, boxes: {} };
   if (m) {
     if (m[1]) rule.name = m[1];
@@ -613,7 +648,8 @@ export function parseContent(v: string): ContentToken[] {
       out.push({ kind: 'str', v: unescapeCss(v.slice(k + 1, j - 1)) });
       k = j;
     } else {
-      const m = /^[a-z_-][\w-]*/i.exec(v.slice(k));
+      // 識別子・関数の名前 (CSS Syntax 3 §4.2: ASCII でない字も使える。string(題)・counter(章) の名前など)
+      const m = /^[a-z_\u0080-\uffff-][-\w\u0080-\uffff]*/i.exec(v.slice(k));
       if (!m) {
         k++;
         continue;
