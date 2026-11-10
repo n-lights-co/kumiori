@@ -55,7 +55,7 @@ The resolved styles are mapped onto `TextStyle`, `BoxStyle` and the individual n
 | `float: left / right` | `LFloat` (start / end) |
 | `break-before / after / inside`, `orphans`, `widows` | page breaks, keep, control of orphan lines |
 | `column-count`, `column-gap`, `column-rule` | multi-column layout (page, container) |
-| `hyphens: auto` + `lang` | hyphenation (English, Latin, Ukrainian, Modern Greek. The hyphenation tables for the languages given by lang / xml:lang in the document are loaded) |
+| `hyphens: auto` + `lang` | hyphenation (English, Latin, Russian, Ukrainian, Modern Greek. The hyphenation tables for the languages given by lang / xml:lang in the document are loaded) |
 | `vertical-align: super / sub`, `text-decoration` | `baselineShift`, `textDecoration` |
 | `<img>`, `<svg>` | `LImage`, SVG (an `<svg>` inside the document has its element names' case restored by the table in HTML 5.2 §8.2.5.5 and is turned into an image of a standalone SVG document. `src/htmlSvg.ts`) |
 | `<math>` | If a font for mathematics is available, turned into shapes with the same MathML typesetting as XSL-FO (`mathLayout`). `display="block"` is centred in the content box, as in the MathML Core default style sheet (`display: block math`) |

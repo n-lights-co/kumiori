@@ -234,7 +234,7 @@ SOFTWARE.
 
 - package.json の license: `ISC`
 - 場所: `node_modules/hyphen`
-- 必要なときだけ読み込む (別のチャンク)。分綴のパターン (en-us・en-gb・la・uk・el-monoton) の表示は下の 1.4。
+- 必要なときだけ読み込む (別のチャンク)。分綴のパターン (en-us・en-gb・la・ru・uk・el-monoton) の表示は下の 1.4。
 
 `node_modules/hyphen/LICENSE` の本文:
 
@@ -1089,9 +1089,9 @@ This file and the 14 PostScript(R) AFM files it accompanies may be used, copied,
 - Symbol: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated. All rights reserved.`
 - ZapfDingbats: `Copyright (c) 1985, 1987, 1988, 1989, 1997 Adobe Systems Incorporated. All Rights Reserved.ITC Zapf Dingbats is a registered trademark of International Typeface Corporation.`
 
-### 1.4 hyphen の分綴のパターン (英語・ラテン語・ウクライナ語・現代ギリシャ語)
+### 1.4 hyphen の分綴のパターン (英語・ラテン語・ロシア語・ウクライナ語・現代ギリシャ語)
 
-Kumiori が読み込むのは `hyphen/en-us`・`hyphen/en-gb`・`hyphen/la`・`hyphen/uk`・`hyphen/el-monoton` だけです。hyphen の README.md (12 行目) には "Patterns for this library were taken from ctan.org and ported to Javascript." とあります (リンクの書式を除いて引用)。npm の hyphen@1.14.1 の `patterns/en-us.js`・`patterns/en-gb.js` には、ライセンスや著作権の表示は入っていません。
+Kumiori が読み込むのは `hyphen/en-us`・`hyphen/en-gb`・`hyphen/la`・`hyphen/ru`・`hyphen/uk`・`hyphen/el-monoton` だけです。hyphen の README.md (12 行目) には "Patterns for this library were taken from ctan.org and ported to Javascript." とあります (リンクの書式を除いて引用)。npm の hyphen@1.14.1 の `patterns/en-us.js`・`patterns/en-gb.js` には、ライセンスや著作権の表示は入っていません。
 
 下に、上流の hyph-utf8 のパターンのファイルの冒頭の表示を転記します。
 
@@ -1412,6 +1412,59 @@ Kumiori が読み込むのは `hyphen/en-us`・`hyphen/en-gb`・`hyphen/la`・`h
 %
 % Happy Latin and multilingual typesetting!
 %
+```
+
+#### Russian (ru): `hyph-ru.tex` の 1〜44 行目 (パターンの前のコメントすべて)
+
+- 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-ru.tex (master ブランチ。取得日 2026-11-10。コミットは特定していない)
+- npm の hyphen@1.14.1 の `patterns/ru.js` には、ライセンスや著作権の表示は入っていません。hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
+- ライセンスは LPPL (LaTeX Project Public License) 1.2 かそれ以降 (下の表示の licence の欄)。本文は https://latex-project.org/lppl/ にあります。Kumiori は 1.3c の条件で配布します: 配布物に入るのは、上流のパターンを hyphen が JavaScript の形 (パターンの木のデータ) に変換したもの (hyphen@1.14.1 の `patterns/ru.js`) で、Kumiori は中身を変えていません (ビルドで 1 つのファイルにまとめるだけ)。変換する前のパターンは、上の取得元 (hyph-utf8 パッケージ。CTAN の hyph-utf8 にもあります) から入手できます。このパターンについて、元の作者・保守者は Kumiori の配布物のサポートに責任を負いません。
+
+```text
+% title: Hyphenation patterns for Russian
+% copyright: Copyright (C) 1999-2003 Alexander I. Lebedev
+% notice:
+%     This file is part of the hyph-utf8 package.
+%     See http://www.hyphenation.org/tex for more information.
+% language:
+%     name: Russian
+%     tag: ru
+% version: 2003/03/10
+% authors:
+%     -
+%         name: Alexander I. Lebedev
+%         contact: swan (at) scon155.phys.msu.su
+% licence:
+%     name: LPPL
+%     version: 1.2
+%     or_later: true
+%     url: https://latex-project.org/lppl/
+% hyphenmins:
+%     typesetting:
+%         left: 2
+%         right: 2
+% texlive:
+%     encoding: t2a
+%     babelname: russian
+%     use_old_patterns_comment: The old system allows choosing patterns and encodings manually. That mechanism needs to be implemented first in this package, so we still fall back on old system.
+%     legacy_patterns: ruhyphen.tex
+%     message: Russian hyphenation patterns
+%     description: |-
+%         Hyphenation patterns for Russian in T2A and UTF-8 encodings.
+%         For 8-bit engines, the 'ruhyphen' package provides a number of
+%         different pattern sets, as well as different (8-bit) encodings, that
+%         can be chosen at format-generation time.  The UTF-8 version only
+%         provides the default pattern set.  A mechanism similar to the one used
+%         for 8-bit patterns may be implemented in the future.
+% ==========================================
+% Patterns were generated with patgen from a 990,000-word list and then
+% manually corrected.
+%
+% The program consists of the files ruhyphal.tex, cyryoal.tex and two
+% document files README.ruhyphal and hyphen.rules.  The file cyryoal.tex
+% can be regenerated using mkcyryo script (a part of ruhyphen package)
+% and the latest release of rus-ispell dictionaries
+% <ftp://scon155.phys.msu.su/pub/russian/ispell/>.
 ```
 
 #### Ukrainian (uk): `hyph-uk.tex` の 1〜38 行目 (パターンの前のコメントすべて)
