@@ -168,7 +168,9 @@ export function decodeBmp(b: Uint8Array): Pixels | undefined {
   if (bpp <= 8) {
     const used = core ? 0 : dv.getUint32(46, true);
     const entry = core ? 3 : 4;
-    for (let i = 0, o = 14 + hs; i < (used || 1 << bpp) && o + 2 < b.length; i++, o += entry) pal.push([b[o + 2], b[o + 1], b[o]]);
+    // 色の表の項は 2^bpp 個まで (biClrUsed は、8 ビット以下では使う色の数で、2^bpp を超えない: [MS-WMF] 2.2.2.3 の ColorUsed)
+    const n = Math.min(used || 1 << bpp, 1 << bpp);
+    for (let i = 0, o = 14 + hs; i < n && o + 2 < b.length; i++, o += entry) pal.push([b[o + 2], b[o + 1], b[o]]);
   }
   // ビットフィールド (無ければ 16 ビットは 5-5-5、32 ビットは 8-8-8)
   const masks = comp === 3 ? [dv.getUint32(54, true), dv.getUint32(58, true), dv.getUint32(62, true), hs >= 56 ? dv.getUint32(66, true) : 0] : bpp === 16 ? [0x7c00, 0x3e0, 0x1f, 0] : [0xff0000, 0xff00, 0xff, 0];

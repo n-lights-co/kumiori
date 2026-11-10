@@ -19,7 +19,7 @@
 import { base64 } from './base64';
 import { decodeModifiedHuffman } from './ccitt';
 import { fontFamilyOf } from './eps';
-import { MAX_PIXELS } from './imageLimits';
+import { MAX_PIXELS, METAFILE_TOTAL_IMAGE_PIXELS } from './imageLimits';
 import { decodeJpeg } from './jpeg';
 import { encodePngStored } from './pixels';
 import { inflateBytes, lzwBytes } from './psFilters';
@@ -1326,6 +1326,17 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   const imageEl = (rgba: Uint8Array, w: number, h: number, m: number[], cells = true) =>
     `<image x="0" y="0" width="1" height="1" preserveAspectRatio="none"${cells ? ' style="image-rendering:pixelated"' : ''} transform="matrix(${m.map((v) => String(Math.round(v * 10000) / 10000)).join(' ')})" href="data:image/png;base64,${base64(encodePngStored({ width: w, height: h, rgba }))}"/>`;
 
+  /** この文書で画素にできる残りの数 (imageLimits.ts の METAFILE_TOTAL_IMAGE_PIXELS)。足りなければ警告して false (その画像は描かない) */
+  let pixelsLeft = METAFILE_TOTAL_IMAGE_PIXELS;
+  const takePixels = (n: number, what: string): boolean => {
+    if (n > pixelsLeft) {
+      warn(`${what} は、文書の画像の画素の合計が上限 (${METAFILE_TOTAL_IMAGE_PIXELS} 画素) を超えるので描きません`);
+      return false;
+    }
+    pixelsLeft -= n;
+    return true;
+  };
+
   let patSeq = 0;
   /**
    * PATTERN TABLE の模様 (第 1 部 7.7.32・7.7.33): 塗りの基準点 F と、PATTERN SIZE の高さの向き h・幅の向き w の平行四辺形 (模様の箱) を
@@ -1336,6 +1347,8 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     if (!t || t.nx < 1 || t.ny < 1 || t.nx * t.ny > MAX_PIXELS) return undefined;
     const box = patternBox();
     if (!box) return undefined;
+    // 模様は使うたびに定義を書き出すので、そのたびに画素の合計に数える
+    if (!takePixels(t.nx * t.ny, 'PATTERN TABLE の模様')) return undefined;
     const rgba = new Uint8Array(t.nx * t.ny * 4);
     for (let k = 0; k < t.nx * t.ny; k++) {
       const c = colourOf(t.colours[k] ?? { index: 1 });
@@ -1426,6 +1439,11 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const n = 128;
     const iw = Math.max(1, Math.round(bw >= bh ? n : (n * bw) / bh));
     const ih = Math.max(1, Math.round(bh >= bw ? n : (n * bh) / bw));
+    // この画像も文書の画素の合計に数える (図形ごとに 1 枚できる)。上限を超えたら、最初の色の一色で塗る
+    if (!takePixels(iw * ih, 'INTERPOLATED INTERIOR の色の変化')) {
+      emit(`<path d="${d}" fill="${hex(C[0])}" fill-rule="evenodd" stroke="none"${clipAttr()}/>`);
+      return;
+    }
     const rgba = new Uint8Array(iw * ih * 4);
     for (let j = 0; j < ih; j++)
       for (let i = 0; i < iw; i++) {
@@ -2021,7 +2039,8 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         for (let k = 0; k < nGeo; k++) geo.push(p.SS(st.interiorMode));
         const m = p.I();
         const stages: number[] = [];
-        for (let k = 0; k < m; k++) stages.push(p.R());
+        // 段の数は、残りの引数に入る数まで (引数の外は 0 と読めるので、数の欄だけを信じると、短い要素で数百万回まわる)
+        for (let k = 0; k < m && p.left > 0; k++) stages.push(p.R());
         const nc = style === 3 ? 3 : m + 1;
         const colours: Colour[] = [];
         for (let k = 0; k < nc && p.left > 0; k++) colours.push(p.CO());
@@ -2515,8 +2534,15 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       warn('CELL ARRAY の大きさか精度が読めないので描きません');
       return;
     }
-    const rgba = new Uint8Array(nx * ny * 4);
-    for (let j = 0; j < ny && p.left > 0; j++) {
+    // データのある行だけを画素にする: 1 行は少なくとも、詰めた並びなら nx 個のセル、連なりなら 1 組 (数と色) のビットを使うので、
+    // 残りの引数に入る行の数はそこまで (それより先の行は、下のループでも読まれず、透明のまま)。寸法だけを書いたデータの無い要素で、
+    // 大きな透明の画像を作らない。画像の行を減らした分は、行の進む向き (R → Q) の長さを同じ割合で縮めるので、描かれる所は変わらない
+    const cellBits = (prec || (s.colourSelection === 0 ? s.colourIndexPrec : s.colourPrec)) * (s.colourSelection === 0 ? 1 : compsOf(s.colourModel));
+    const rowBits = mode === 1 ? nx * cellBits : s.intPrec + cellBits;
+    const rows = rowBits > 0 ? Math.min(ny, Math.ceil(Math.max(0, p.left) / rowBits)) : ny;
+    if (!rows || !takePixels(nx * rows, 'CELL ARRAY')) return;
+    const rgba = new Uint8Array(nx * rows * 4);
+    for (let j = 0; j < rows && p.left > 0; j++) {
       p.alignWord();
       if (mode === 1) for (let i = 0; i < nx && p.left > 0; i++) putCell(rgba, j * nx + i, readCell(p, prec));
       else {
@@ -2531,9 +2557,9 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     }
     // 単位の正方形 (u: P → R、t: R → Q) を写す
     const a = mapVec(sub(R0, P0));
-    const c = mapVec(sub(Q0, R0));
+    const c = mapVec(sub(Q0, R0)).map((v) => (v * rows) / ny);
     const o = map(P0);
-    emit(clipId && !replayDepth ? `<g${clipAttr()}>${imageEl(rgba, nx, ny, [a[0], a[1], c[0], c[1], o[0], o[1]])}</g>` : imageEl(rgba, nx, ny, [a[0], a[1], c[0], c[1], o[0], o[1]]));
+    emit(clipId && !replayDepth ? `<g${clipAttr()}>${imageEl(rgba, nx, rows, [a[0], a[1], c[0], c[1], o[0], o[1]])}</g>` : imageEl(rgba, nx, rows, [a[0], a[1], c[0], c[1], o[0], o[1]]));
   };
 
   /** BEGIN TILE ARRAY (第 3 部 表 3 の 19 番) */
@@ -2550,6 +2576,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       warn('BEGIN TILE ARRAY の大きさが読めないので、タイルの並びを描きません');
       return;
     }
+    if (!takePixels(w * h, 'タイルの並び')) return;
     tiles = { pos, pathDir, lineDir, ntp, ntl, ctp, ctl, csp, csl, offp, offl, ncp, ncl, rgba: new Uint8Array(w * h * 4), next: 0 };
   };
 
@@ -2578,6 +2605,9 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const idx = t.next++;
     if (idx >= t.ntp * t.ntl) return;
     const rowLen = pad > 0 ? Math.ceil(t.ctp / pad) * pad : t.ctp;
+    // 行の埋めで増えるセルも画素の合計に数える (埋めの数 pad が巨大だと、1 行の長さ rowLen が pad そのものになり、
+    // 連なりのループや、LZW・deflate を展開する長さの上限 (rowLen から決める) が、タイルの大きさと関係なく膨らむ)
+    if (!(rowLen * t.ctl <= MAX_PIXELS) || !takePixels((rowLen - t.ctp) * t.ctl, 'TILE (行の埋め)')) return;
     const cells: Colour[] = new Array(t.ctp * t.ctl);
     const effPrec = bitonal ? 1 : prec || (s.colourSelection === 0 ? s.colourIndexPrec : s.colourPrec);
     const comps = s.colourSelection === 0 ? 1 : compsOf(s.colourModel);

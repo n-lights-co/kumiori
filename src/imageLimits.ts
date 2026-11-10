@@ -14,3 +14,12 @@ export const PS_IMAGE_MAX_PIXELS = 64_000_000;
  * 文書の画像の上限 MAX_PIXELS と同じにする (RGBA で 400MB まで)
  */
 export const PS_TOTAL_IMAGE_PIXELS = MAX_PIXELS;
+
+/**
+ * メタファイル (WMF・EMF) と CGM の 1 つの文書の中で、画素にする画像 (DIB・CELL ARRAY・PATTERN TABLE の模様・タイルの並び) の画素の合計の上限。
+ * PS_TOTAL_IMAGE_PIXELS と同じ考え方 (1 枚ごとの上限だけでは、小さな記録を並べるだけで、いくらでも画素を作れる)。
+ * これらの画像は、圧縮しない PNG を base64 にして 1 つの SVG の文字列に入れる (1 画素あたり約 5.3 字) ので、文字列の長さの上限
+ * (V8 では約 5.3 億字) に収まるよう、MAX_PIXELS より小さくする。6,400 万画素 (SVG で約 3.4 億字) は、A0 判を 200dpi で走査した
+ * 図面 (6,622 × 9,362 = 約 6,200 万画素) が入る値
+ */
+export const METAFILE_TOTAL_IMAGE_PIXELS = 64_000_000;
