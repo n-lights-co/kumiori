@@ -140,6 +140,9 @@ export const EXTRA_TEST_FONTS = {
   'SourceSans3-Regular-3.052R.otf': 'https://raw.githubusercontent.com/adobe-fonts/source-sans/3.052R/OTF/SourceSans3-Regular.otf',
   // CID で引く CFF (test/postscript.test.ts): Noto Sans JP の OTF (Google Fonts の配信元の、版の付いた URL。今の版は TrueType の輪郭なので、CFF だった版を指す)
   'NotoSansJP-Regular-v25.otf': 'https://fonts.gstatic.com/s/notosansjp/v25/-F62fjtqLzI2JPCgQBnw7HFowAIO2lZ9hg.otf',
+  // アラビア文字・ヘブライ文字 (test/rtlScripts.test.ts): Noto Sans Arabic・Noto Sans Hebrew の標準の太さ (Google Fonts の配信元の、版の付いた URL)
+  'NotoSansArabic-Regular-v33.ttf': 'https://fonts.gstatic.com/s/notosansarabic/v33/nwpxtLGrOAZMl5nJ_wfgRg3DrWFZWsnVBJ_sS6tlqHHFlhQ5l3sQWIHPqzCfyGyvuw.ttf',
+  'NotoSansHebrew-Regular-v50.ttf': 'https://fonts.gstatic.com/s/notosanshebrew/v50/or3HQ7v33eiDljA1IufXTtVf7V6RvEEdhQlk0LlGxCyaeNKYZC0sqk3xXGiXd4qtog.ttf',
   // タイ文字・デーヴァナーガリー・ハングル (test/complexScripts.test.ts・test/hangul.test.ts): 既定の書体には、これらの字が無い。
   // Google Fonts の配信元の、版の付いた TTF (可変フォントから取り出した 1 つの太さ)
   'NotoSansThai-Regular-v29.ttf': 'https://fonts.gstatic.com/s/notosansthai/v29/iJWnBXeUZi_OHPqn4wq6hQ2_hbJ1xyN9wd43SofNWcd1MKVQt_So_9CdU5RtpzE.ttf',

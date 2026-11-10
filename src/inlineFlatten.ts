@@ -7,6 +7,7 @@
 import type { LFootnote, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, WritingMode } from './types';
 import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type Measurer } from './measurer';
 import { mayCluster } from './grapheme';
+import { isGreekCyrillicLetter } from './fontManager';
 import { LIGATURE_FEATURES, ligatureTable } from './ligature';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
@@ -229,10 +230,15 @@ export function joiningUnits(units: string[], sameFont: (seq: string) => boolean
   const out: string[] = [];
   const joins = (u: string) => /^[DRLC]$/.test(joiningType(u.codePointAt(0)!));
   const attaches = (u: string) => /^[DRLCT]$/.test(joiningType(u.codePointAt(0)!));
+  const single = (u: string | undefined) => u !== undefined && [...u].length === 1;
   for (let i = 0; i < units.length; ) {
     let j = i + 1;
     if (units[i].length === 1 || /^[\uD800-\uDBFF][\uDC00-\uDFFF]$/.test(units[i])) {
-      if (joins(units[i])) while (j < units.length && [...units[j]].length === 1 && attaches(units[j])) j++;
+      // つながる字の間のゼロ幅非接合子 (U+200C。ペルシャ語の می‌خواهم など) は、並びを分けずに書体に渡す: 書体が、その前後の字を
+      // つながらない形 (語尾形・語頭形) にし、字の間の調整 (GPOS) も 1 つの語として行う。語の途中に字間・両端揃えの空きも入らない
+      // (CSS Text 3 §6.4.4・§7.2.1: つながる文字の語の字の間には、つながるかどうかによらず、空きを入れない)
+      if (joins(units[i]))
+        while (j < units.length && single(units[j]) && (attaches(units[j]) || (units[j] === ZWNJ && single(units[j + 1]) && joins(units[j + 1])))) j++;
     }
     // つながる字が 2 つ以上あり、同じ書体で描けるときだけまとめる
     const seq = units.slice(i, j).join('');
@@ -243,6 +249,59 @@ export function joiningUnits(units: string[], sameFont: (seq: string) => boolean
   }
   return out;
 }
+
+/** ギリシャ文字・キリル文字が 2 字続く所を含みうる文字列 (間に結合文字・語の中のハイフン・アポストロフィがあってもよい) */
+const GREEK_CYRILLIC_PAIR = /[\u0370-\u052F\u1F00-\u1FFF][\p{M}\-\u2010'\u2019]*[\u0370-\u052F\u1F00-\u1FFF]/u;
+const WORD_JOINER = /^[-\u2010'\u2019]$/;
+
+/**
+ * 欧文の書体で組む語の字に印を付ける: ギリシャ文字・キリル文字が 2 字以上続く語 (Россия・Ελλάδα・αβγ) の字。
+ * 日本語の文書の既定の書体の組 (和文の書体 + 欧文の書体) では、和文の書体が基本のギリシャ文字・キリル文字を持つので、これらの字は和文の書体で
+ * 組まれる。単独の 1 字 (α 線・Ω・β 版) はそれでよい (和文の字と並ぶ記号) が、語は、和文の書体が持たない字 (アクセントの付いたギリシャ文字、
+ * ウクライナ語に固有の字など) だけが欧文の書体になり、1 つの語の中で書体が混ざる。語は、ラテン文字の語と同じく、欧文の書体で組む
+ * (CSS Fonts 4 §2.1.5: 総称の書体は、字の範囲によって別の書体を組み合わせたものでよい。どう組み合わせるかは実装が決める)。
+ * 語の決め方 (字の単位の並び units の上で):
+ *  - 語の字は、ギリシャ文字・キリル文字の字 (isGreekCyrillicLetter。結合文字の付いた字の単位は、基底の字で見る)
+ *  - 字と字の間のハイフン (U+002D・U+2010)・アポストロフィ (U+0027・U+2019) 1 つは、語をつなぐ (Санкт-Петербург は 1 つの語)。
+ *    UAX #29 の語の境目 (WB6・WB7: 字の間の MidLetter では切らない) に倣い、ハイフンも加えた (ハイフンでつないだ語の前後で書体を変えない)
+ *  - ラテン文字・数字・和字・空白・ほかの記号は、語を切る (μm の μ、β-カロテンの β、α線の α は 1 字なので、これまでどおり和文の書体)
+ *  - 字が 2 つ以上ある語の、字の単位に印を付ける (ハイフン・アポストロフィには付けない。これらは元から欧文の字)
+ * 同じ文字列 (1 つの inline の中の文字列) の中だけで見る (inline の境目をまたぐ語は、境目で切れる)
+ */
+export function markLatinWords(units: string[]): boolean[] | null {
+  const letter = units.map((u) => isGreekCyrillicLetter(u));
+  let marks: boolean[] | null = null;
+  for (let i = 0; i < units.length; ) {
+    if (!letter[i]) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    let n = 1;
+    for (;;) {
+      if (letter[j]) j++;
+      else if (j + 1 < units.length && WORD_JOINER.test(units[j]) && letter[j + 1]) j += 2;
+      else break;
+      n++;
+    }
+    if (n >= 2) {
+      marks ??= new Array<boolean>(units.length).fill(false);
+      for (let k = i; k < j; k++) marks[k] = letter[k];
+    }
+    i = j;
+  }
+  return marks;
+}
+
+const ZWNJ = '\u200C';
+/**
+ * 単独の「描かない字」: 書式の制御の字 (Cf) で Default_Ignorable_Code_Point のもの (ZWNJ・ZWJ・LRM・RLM・ALM・WJ・双方向の制御文字など)。
+ * 前の字とまとまらなかったもの (LRM・RLM・WJ は書記素クラスタを作らない。ZWNJ・ZWJ は、前がつながる字の並びのとき) は、幅 0 で、何も描かない:
+ * Unicode 標準 §5.21 (Default Ignorable Code Points は、見える字形を出さず、送りも持たない)、CSS Text 3 §4 (書体が持たない
+ * Default_Ignorable の字は、描画で無視する)・§7.2 (字間は、見えない幅 0 の書式の字 (Cf) を、無いものとして空ける)。
+ * 書体は、これらの字を空白の字形に割り当てていることが多く (Tinos・Noto の各書体)、そのまま測ると空白 1 つ分の幅になる
+ */
+const LONE_IGNORABLE = /^(?=\p{Cf})\p{Default_Ignorable_Code_Point}$/u;
 
 /** Unicode の Alphabetic (letter-spacing を空ける字。XSL §7.17.2) */
 const ALPHABETIC = /\p{Alphabetic}/u;
@@ -329,12 +388,16 @@ function flattenText(c: string, cx: FlattenCtx): void {
     }
     units0 = hit;
   }
-  // つながる字 (アラビア文字など) の並びは 1 単位にする (横書き)
-  const joinable = wm === 'horizontal-tb' && JOINING_HINT.test(c);
+  // つながる字 (アラビア文字など) の並びは 1 単位にする。縦書きでは、横倒しで組むとき (text-orientation: mixed・sideways) だけ:
+  // 横倒しの字は、横書きの組み方のまま 1 つの並びとして 90° 回す (CSS Writing Modes 3 §5.1.1 sideways typesetting)。
+  // 正立で組むとき (upright) は、つながる文字も 1 字ずつ独立形で組む (同 upright typesetting)
+  const joinable = JOINING_HINT.test(c) && (wm === 'horizontal-tb' || st.textOrientation !== 'upright');
   const units1 = joinable
     ? joiningUnits(Array.from(units0), (seq) => {
-        const fonts = Array.from(seq, (x) => m.glyph(x, runStyle(st), wm).font);
-        return fonts.every((f) => f === fonts[0]);
+        // 並びの中のゼロ幅非接合子 (U+200C) は、並びの書体がその字 (字形の無い字として隠す字) を持てばよい
+        const fonts = Array.from(seq, (x) => (x === ZWNJ ? null : m.glyph(x, runStyle(st), wm).font));
+        const f0 = fonts.find((f) => f);
+        return !!f0 && fonts.every((f) => (f ? f === f0 : f0.fk.hasGlyphForCodePoint(0x200c)));
       })
     : units0;
   // 字の単位 (書記素クラスタ。UAX #29 の拡張書記素クラスタ): 基底の字と、その後ろの結合文字・異体字セレクタ (U+FE00〜FE0F・U+E0100〜E01EF)、
@@ -343,12 +406,16 @@ function flattenText(c: string, cx: FlattenCtx): void {
   // 結合文字・ZWJ などを含みうる文字列だけ、クラスタにまとめる (含まなければ、字ごとにそのまま)
   const clusters = mayCluster(c) ? m.resolveClusters(units1, runStyle(st), wm) : null;
   const units = clusters ? clusters.units : units1;
+  // ギリシャ文字・キリル文字の語を欧文の書体で組む (markLatinWords)
+  const latinWords = !state.noLatinWords && GREEK_CYRILLIC_PAIR.test(c) ? markLatinWords(Array.from(units)) : null;
+  let wi = 0;
   let ui = 0;
   // クラスタに当てる任意の合字の機能と、その書式 (要るときに 1 度だけ作る)
   let clusterLig: LigatureFeatures | null | undefined;
   let clusterLigSt: ResolvedStyle | undefined;
   for (const ch0 of units) {
     const unitKind = clusters ? clusters.kinds[ui++] : 0;
+    const inLatinWord = !!latinWords?.[wi++];
     // まとめて組むクラスタと、基底の字と異体字セレクタの並び: 字の種類で決まる処理 (禁則・約物の詰め・和欧間のアキ・字間) は基底の字
     // (並びの最初の字) で行い、描く文字列だけを並びにする
     const whole = unitKind === UNIT_CLUSTER;
@@ -356,7 +423,8 @@ function flattenText(c: string, cx: FlattenCtx): void {
     const ch = variation || whole ? String.fromCodePoint(ch0.codePointAt(0)!) : ch0;
     if (joinable && [...ch].length > 1 && JOINING_HINT.test(ch)) {
       // つながる字の並び: まとめて測り、描く (書体の字形の置き換えで、語頭・語中・語尾の形と必須の合字が決まる)
-      const g = { ...m.glyph(ch, runStyle(st), wm), draw: ch };
+      // 縦書き: 並びを 1 つの書体でまとめて組み、横倒しにする (clusterGlyph。基底の字の向きで決まる: アラビア文字は横倒し)
+      const g = wm === 'horizontal-tb' ? { ...m.glyph(ch, runStyle(st), wm), draw: ch } : m.clusterGlyph(ch, runStyle(st), wm);
       const chars = [...ch];
       out.push({ kind: 'glyph', first: chars[0], last: chars[chars.length - 1], advance: g.advance, isSpace: false, runId: state.run, st, bg, g });
       continue;
@@ -398,6 +466,13 @@ function flattenText(c: string, cx: FlattenCtx): void {
       out.push({ kind: 'box', first: ' ', last: ' ', advance: 0, isSpace: true, runId: state.run, st, bg, box: { node: newNode('block', wm, {}), adv: 0, cross: 0, above: 0, below: 0 } });
       continue;
     }
+    if (!whole && !variation && unitKind !== UNIT_CONT && LONE_IGNORABLE.test(ch)) {
+      // 単独の描かない字: 幅 0 で、字形を描かない (双方向の並べ替え・改行の決まりには、その字として加わる)
+      // 行の高さには、その書式の空白の字と同じだけ加わる (字形を持つ代わりの書体の上下を、行の高さに持ち込まない)
+      const g = { ...m.glyph(' ', runStyle(st), wm), ch, advance: 0, naturalWidth: 0 };
+      out.push({ kind: 'glyph', first: ch, last: ch, advance: 0, isSpace: false, runId: state.run, st, bg, g, hidden: true });
+      continue;
+    }
     // まとめて組むクラスタ (絵文字の並びなど): 任意の合字の機能 (既定で有効な liga など) が有効で、書体のその機能が並びの字形を変えるときは、
     // その機能を当てて測り、描く (絵文字の並びの字形を liga で作る書体。Fonts 4 §7.1: 標準の合字は既定で有効)。変えないときは、従来のまま
     let ust = st;
@@ -405,7 +480,8 @@ function flattenText(c: string, cx: FlattenCtx): void {
       if (clusterLig === undefined) clusterLig = optionalLigaturesOf(st);
       if (clusterLig?.style && m.clusterLigates(ch0, runStyle(st), clusterLig.active)) ust = clusterLigSt ??= { ...st, fontFeatures: clusterLig.style };
     }
-    const g = whole ? m.clusterGlyph(ch0, runStyle(ust), wm) : variation ? m.variationGlyph(ch0, runStyle(st), wm) : m.glyph(ch, runStyle(st), wm);
+    const rsOf = (x: ResolvedStyle) => (inLatinWord ? { ...runStyle(x), latinWord: true } : runStyle(x));
+    const g = whole ? m.clusterGlyph(ch0, rsOf(ust), wm) : variation ? m.variationGlyph(ch0, rsOf(st), wm) : m.glyph(ch, rsOf(st), wm);
     // 分けたクラスタの 2 つ目以降の字 (どの書体も並び全体を持たないとき。字ごとに組む): 前の字と同じ字の単位なので、前の字との間で改行せず、字間も空けない
     const cont = unitKind === UNIT_CONT;
     // 結合文字 (Mn・Me) の前には字間を空けない (letter-spacing は字の単位 (書記素クラスタ) の間に空ける。CSS Text 3 §8.2)
@@ -430,7 +506,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       if (!cont && ALPHABETIC.test(ch)) {
         const h = st.letterSpacing / 2;
         // 字の箱 (g.advance) は字の幅のまま。送り (advance) にだけ前後の空きを足す
-        out.push({ kind: 'glyph', first: ch, last: ch, advance: g.advance + st.letterSpacing, isSpace: isWrapSpace(ch), runId: state.run, st: ust, bg, g, dx: h, lsLead: h, lsTrail: h, ...clusterProps });
+        out.push({ kind: 'glyph', first: ch, last: ch, advance: g.advance + st.letterSpacing, isSpace: isWrapSpace(ch), runId: state.run, st: ust, bg, g, dx: h, lsLead: h, lsTrail: h, ...clusterProps, ...(inLatinWord ? { latinWord: true } : {}) });
         continue;
       }
     } else if (!mark && st.letterSpacing) {
@@ -457,6 +533,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       bg,
       g,
       ...clusterProps,
+      ...(inLatinWord ? { latinWord: true } : {}),
       ...(st.letterSpacing > 0 && !st.xslLetterSpacing && (!mark || movedLs) ? { lsTrail: st.letterSpacing } : {}),
       ...(primary && primary !== g.font ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
     });

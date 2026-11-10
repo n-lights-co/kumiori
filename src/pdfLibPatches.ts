@@ -361,6 +361,11 @@ export function memoEncode(f: PDFFont): FeatureFont {
     }
     return v;
   };
+  // 書体の字形 id に登録されている字 (ToUnicode に書かれる字。最初に使ったときの字)。無ければ空の文字列
+  (f as FeatureFont).glyphText = (id: number) => {
+    const g = fk.getGlyph(id) as { codePoints?: number[] };
+    return g.codePoints?.length ? String.fromCodePoint(...g.codePoints) : '';
+  };
   return f as FeatureFont;
 }
 
@@ -371,7 +376,7 @@ export function decomposeLigatures(cps: number[]): number[] {
 }
 
 /** 機能の組を渡せる encodeText と、字形の番号から符号にする encodeGlyphs を持つ書体 (memoEncode) */
-export type FeatureFont = PDFFont & { encodeText(t: string, features?: string[]): PDFHexString; encodeGlyphs(ids: number[], text: string): PDFHexString };
+export type FeatureFont = PDFFont & { encodeText(t: string, features?: string[]): PDFHexString; encodeGlyphs(ids: number[], text: string): PDFHexString; glyphText(id: number): string };
 
 /** 保存のときに圧縮する流れ (ページの中身など) の圧縮を、渡した関数に替える (pdf-lib は保存のときに中身を作って圧縮する) */
 export function useDeflate(pdf: PDFDocument, deflate: (data: Uint8Array) => Uint8Array) {

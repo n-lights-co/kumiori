@@ -278,6 +278,11 @@ function pushOps(page: PDFPage, ops: PDFOperator[]) {
 const REGISTRATION: SpotColor = { name: 'All', cmyk: [1, 1, 1, 1], tint: 1 };
 
 /** 同じ行列で同じ基線に並ぶ字の並び (TJ にまとめる単位)。pen は並びの原点からの、次の字が自然に置かれる位置 (文字空間) */
+/** 右から左に組む文字 (ヘブライ文字・アラビア文字・シリア文字など、提示形、補助面の右から左の文字) を含む文字列 */
+const RTL_TEXT = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]/u;
+/** 描かない字 (Default_Ignorable_Code_Point) だけの文字列 */
+const IGNORABLE_ONLY = /^\p{Default_Ignorable_Code_Point}+$/u;
+
 interface TextSeg {
   a: number;
   b: number;
@@ -789,7 +794,18 @@ class PdfPainter implements Painter {
     // インド系の用字・タイ文字の字の単位は、字形が並べ替えられることがあり、1 対 1 に対応していても付ける (基底の字の送りの中へ戻して置く
     // 記号を、字を取り出す側が別の語と見て、空白を挟んだり順を入れ替えたりするのを防ぐ)。ほかの用字の字の単位は、字と字形の数が違うときだけ付ける
     // (数が同じなら、字形 i は字 i を置き換えたもの (縦書き用の字形など) として、これまでどおり字形ごとの ToUnicode にする)
-    const own = g.glyphIds && g.glyphIds.length > 1 ? reorderedGlyphChars(font, g.glyphIds, text, /^[\u0900-\u0E7F]/.test(text)) : undefined;
+    // 右から左の文字 (アラビア文字・ヘブライ文字など) の 2 つ以上の字形の並びにも、いつも付ける: 字形は描く順 (左から右。字の順の逆) に並び、
+    // 字と字形が同じ数でも対応しない (アラビア文字の語、ヘブライ文字の字 + 母音記号)
+    const rtl = RTL_TEXT.test(text);
+    const own = g.glyphIds && g.glyphIds.length > 1 ? (rtl ? rtlGlyphChars(font, g.glyphIds, text, g.features) : reorderedGlyphChars(font, g.glyphIds, text, /^[\u0900-\u0E7F]/.test(text))) : undefined;
+    // ActualText に書く字の並び。右から左の文字の並びは、描く順 (左から右。text の字の逆順) で書く。
+    // ISO 32000-1 §14.9.4 (置き換えの文字列)・§14.8.2.3 (タグ付き PDF の、内容の読む順) の考え方では読む順の文字列だが、字を取り出す側は、
+    // ActualText の字にも「ページの内容は字を左から右に置いたもの」として右から左の字の並びを逆順にする処理を掛ける。語 1 つを 1 つの
+    // 区切りにして読む順の文字列を入れて試すと (كتاب・בְּרֵאשִׁית)、poppler 24.02 の pdftotext は既定・-layout・-raw のどれでも逆順の語
+    // (باتك) を返し、MuPDF 1.28 もアラビア文字の語を逆順で返した。描く順で入れると、poppler は読む順の語を返す (母音記号・ZWNJ つきも)。
+    // MuPDF はアラビア文字の語は読む順で返すが、記号つきの語で字が重なることがある。ActualText を読まない取り出し方 (pdfminer.six) は、
+    // どちらでも字形ごとの ToUnicode を描く順で返す。右から左の文字のページの内容 (字形を左から右へ置く) と同じ順にそろえる、という形
+    const actual = rtl ? [...text].reverse().join('') : text;
     let hex: PDFHexString;
     try {
       // 木に字形の番号があれば、それを書く (組版で測った字形と同じ)。無ければ、字を書体で組み直す
@@ -843,11 +859,26 @@ class PdfPainter implements Painter {
         };
         const spacing = placed.filter((p) => p.adv > 0);
         if (spacing.length) {
-          span(spacing, text);
+          span(spacing, actual);
           span(placed.filter((p) => !(p.adv > 0)), '');
-        } else span(placed, text);
+        } else span(placed, actual);
       } else put(placed);
-    } else this.placeGlyph(m, g.fontSize, hex, 0, 0);
+      return;
+    }
+    // 右から左の文字の、1 つの字形: 字形に登録された字 (ToUnicode。書体の字形ごとに 1 つ。最初に使ったときの字) と違う字のとき
+    // (同じ字形を別の字に使う書体: ی の単独形と ى など) と、2 字以上を 1 つの字形で表すとき (ヘブライ文字の合字など) は、ActualText で字を与える
+    if (rtl && g.glyphIds?.length === 1) {
+      const multi = text.length > (text.codePointAt(0)! > 0xffff ? 2 : 1);
+      if (multi || (font as FeatureFont).glyphText(g.glyphIds[0]) !== text) {
+        this.flushSeg(r);
+        r.ops.push(PDFOperator.of('BDC' as never, ['/Span', `<</ActualText <${utf16Hex(actual)}>>>`] as never));
+        this.placeGlyph(m, g.fontSize, hex, 0, 0);
+        this.flushSeg(r);
+        r.ops.push(PDFOperator.of('EMC' as never));
+        return;
+      }
+    }
+    this.placeGlyph(m, g.fontSize, hex, 0, 0);
   }
 
   /**
@@ -987,6 +1018,46 @@ function reorderedGlyphChars(font: PDFFont, ids: number[], text: string, reorder
     used.add(k);
     return chars[k];
   });
+}
+
+/**
+ * 右から左の文字 (アラビア文字・ヘブライ文字など) の字形の並び ids (描く順 = 左から右) の、字形ごとの ToUnicode の字。
+ * 書体は字の位置で字形を替え (語頭・語中・語尾形)、1 字を 2 つの字形に分ける (胴と点) ので、書体の cmap からは字を引けない。
+ * 埋め込む書体で text を組み直し、fontkit が置き換えの後の字形を作るときに付ける字 (font.getGlyph(番号, 符号位置)。合字は成分の字すべて、
+ * 1 字を分けた字形は最初の字形だけ) を写し取る (fontkit は字形のオブジェクトを番号ごとに使い回すので、後から字形に聞いても分からない)。
+ * 描かない字 (ZWNJ など。fontkit は空白の字形に替える) だけの字形は、空にする (空白の字形の字が ZWNJ になってしまう)。
+ * 字形の番号の並びが ids と合わなければ (組むときの機能の違いなど)、reorderedGlyphChars の決め方 (書体の cmap でその字形になる字) にする。
+ * ここで決めるのは字形ごとの ToUnicode だけ (ActualText を読まない取り出し方のため。同じ字形を別の字に使う書体では、最初に使った字になる)
+ */
+function rtlGlyphChars(font: PDFFont, ids: number[], text: string, features?: string[]): string[] {
+  const fk = (font as unknown as { embedder: { font: { layout(t: string, f?: unknown): { glyphs: Array<{ id: number }>; direction?: string }; getGlyph(id: number, cps?: number[]): unknown } } }).embedder.font;
+  const calls: Array<{ id: number; cps: number[] }> = [];
+  const orig = fk.getGlyph;
+  const hadOwn = Object.prototype.hasOwnProperty.call(fk, 'getGlyph');
+  fk.getGlyph = function (this: unknown, id: number, cps?: number[]) {
+    calls.push({ id, cps: cps ? [...cps] : [] });
+    return orig.call(this, id, cps);
+  };
+  let run: { glyphs: Array<{ id: number }>; direction?: string } | undefined;
+  try {
+    run = fk.layout(text, { kern: false, liga: false, clig: false, ...Object.fromEntries((features ?? []).map((x) => [x, true])) });
+  } catch {
+    run = undefined;
+  } finally {
+    if (hadOwn) fk.getGlyph = orig;
+    else delete (fk as { getGlyph?: unknown }).getGlyph;
+  }
+  const n = ids.length;
+  if (run && run.direction === 'rtl' && run.glyphs.length === n && run.glyphs.every((x, k) => x.id === ids[k])) {
+    // 置き換えの後の字形を作る n 回の呼び出し (字の順。描く順はその逆) を、後ろから探す (その後ろに、空白の字形を引く呼び出しなどが続く)。
+    // 描かない字の字形は、fontkit が後で空白の字形に替えるので、番号が違ってよい
+    const ignorable = (c: { cps: number[] }) => c.cps.length > 0 && c.cps.every((cp) => IGNORABLE_ONLY.test(String.fromCodePoint(cp)));
+    for (let end = calls.length; end >= n; end--) {
+      const win = calls.slice(end - n, end).reverse();
+      if (win.every((c, k) => c.id === ids[k] || ignorable(c))) return win.map((c) => (ignorable(c) ? '' : String.fromCodePoint(...c.cps)));
+    }
+  }
+  return reorderedGlyphChars(font, ids, text, true) ?? ids.map(() => '');
 }
 
 /** 色を設定する命令。spots: 特色 (Separation) を登録するページ (無ければ特色は代わりの CMYK で描く) */

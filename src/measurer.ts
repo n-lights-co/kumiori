@@ -24,6 +24,8 @@ const HAS_VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 const VARIATION_SELECTOR = /^[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]$/u;
 /** 描かない字 (Default_Ignorable_Code_Point。ZWJ・ZWNJ・異体字セレクタ・タグなど) */
 const IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
+/** 分解形を合成済みの字 (NFC) で組む並びの、基底の字 (ラテン・ギリシャ・キリル文字) */
+const COMPOSABLE_BASE = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}]/u;
 const HAS_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
 /** 異体字セレクタを後ろに付けられる基底の字 (文字・数字・記号・約物。空白・制御の字・結合文字には付けない) */
 const VARIATION_BASE = /^[\p{L}\p{N}\p{S}\p{P}]$/u;
@@ -62,6 +64,8 @@ export interface RunStyle {
   features?: string[];
   /** 縦書きの字の向き (text-orientation)。省略時は mixed */
   orientation?: 'mixed' | 'upright' | 'sideways';
+  /** 欧文の書体で組む語 (ギリシャ文字・キリル文字が 2 字以上続く語) の字。書体を、欧文の字と同じに選ぶ (FontManager.latinWordFamily) */
+  latinWord?: boolean;
 }
 
 export interface GlyphMetrics {
@@ -187,6 +191,11 @@ export class Measurer {
     return `${this.backend}:${this.fonts.generation}`;
   }
 
+  /** 字の書体を引く名前: 欧文の書体で組む語の字 (latinWord) は、その印の付いた名前 */
+  private familyOf(style: Pick<RunStyle, 'fontFamily' | 'latinWord'>): string | undefined {
+    return style.latinWord ? this.fonts.latinWordFamily(style.fontFamily) : style.fontFamily;
+  }
+
   font(style: Pick<RunStyle, 'fontFamily' | 'fontWeight'>): LoadedFont {
     return this.fonts.get(style.fontFamily, style.fontWeight ?? 400);
   }
@@ -265,10 +274,11 @@ export class Measurer {
    * フォントの kern / GPOS を fontkit で引く。a・b が別のフォントで描かれるときは 0。
    * features (smcp・onum など、字形を差し替える機能) は、差し替えた後の字形の組で引く (GSUB の後に GPOS を当てる。OpenType の処理の順)
    */
-  kern(a: string, b: string, style: Pick<RunStyle, 'fontFamily' | 'fontWeight'> & { features?: string[]; skipClass0?: boolean }): number {
+  kern(a: string, b: string, style: Pick<RunStyle, 'fontFamily' | 'fontWeight' | 'latinWord'> & { features?: string[]; skipClass0?: boolean }): number {
     const w = style.fontWeight ?? 400;
-    const fa = this.fonts.getForChar(style.fontFamily, w, a);
-    if (fa !== this.fonts.getForChar(style.fontFamily, w, b)) return 0;
+    const family = this.familyOf(style);
+    const fa = this.fonts.getForChar(family, w, a);
+    if (fa !== this.fonts.getForChar(family, w, b)) return 0;
     // 書体ごとに、2 字をつないだキーで覚える
     let pairs = this.kernPairs.get(fa);
     if (!pairs) this.kernPairs.set(fa, (pairs = new Map()));
@@ -343,7 +353,7 @@ export class Measurer {
    *  vertical-rl  : advance = 字の「高さ」(正立全角=em / 横倒し=水平幅), cross = 字の「幅」(= em 枠)
    */
   glyph(ch: string, style: RunStyle, wm: WritingMode): GlyphMetrics {
-    const font = this.fonts.getForChar(style.fontFamily, style.fontWeight ?? 400, ch);
+    const font = this.fonts.getForChar(this.familyOf(style), style.fontWeight ?? 400, ch);
     const fs = style.fontSize;
     // 書体が持たない特殊な空白 (U+2000〜U+200A・U+202F・U+205F): 決まった幅の、普通の空白の字形
     const special = SPECIAL_SPACE_EM[ch];
@@ -408,6 +418,27 @@ export class Measurer {
         out.push(u);
         kinds.push(UNIT_PLAIN);
         continue;
+      }
+      // ラテン・ギリシャ・キリル文字の分解形 (NFD。ベトナム語の e + U+0323 + U+0302、多調のギリシャ語など): 合成済みの字 (NFC) を
+      // 書体が持てば、その字で組む。正準等価な並びは同じ見た目にする (Unicode の適合性 C6・Unicode 標準 §5.13)。CSS Fonts 4 §5.3 の
+      // クラスタの照合も、並びが 1 字に正準等価でその字を書体が持てば、その字形を使うと定める。書体の位置合わせ (GPOS の mark) に
+      // 頼ると、欧文の結合文字の位置を持たない書体 (Tinos の標準の太さなど) で、記号が基底の字からずれる
+      if (COMPOSABLE_BASE.test(u)) {
+        const nfc = u.normalize('NFC');
+        if (nfc !== u) {
+          if (nfc.length === (nfc.codePointAt(0)! > 0xffff ? 2 : 1)) {
+            if (this.fonts.hasGlyph(this.fonts.getForChar(style.fontFamily, weight, nfc), nfc)) {
+              out.push(nfc);
+              kinds.push(UNIT_PLAIN);
+              continue;
+            }
+          } else if (this.fonts.getForCluster(style.fontFamily, weight, nfc)) {
+            // 一部だけ合成できる並び (合成済みの字 + 残りの結合文字): 合成した並びを、書体でまとめて組む
+            out.push(nfc);
+            kinds.push(UNIT_CLUSTER);
+            continue;
+          }
+        }
       }
       const whole = this.fonts.getForCluster(style.fontFamily, weight, u);
       if (whole && wm !== 'horizontal-tb' && this.stacksWhenUpright(whole, u, style.orientation)) {
@@ -485,7 +516,7 @@ export class Measurer {
   clusterGlyph(unit0: string, style: RunStyle, wm: WritingMode): GlyphMetrics {
     const base = String.fromCodePoint(unit0.codePointAt(0)!);
     const weight = style.fontWeight ?? 400;
-    const font = this.fonts.getForCluster(style.fontFamily, weight, unit0) ?? this.fonts.getForChar(style.fontFamily, weight, base);
+    const font = this.fonts.getForCluster(this.familyOf(style), weight, unit0) ?? this.fonts.getForChar(this.familyOf(style), weight, base);
     const unit = this.clusterText(unit0, font);
     const fs = style.fontSize;
     const natural = this.emAdvance(font, unit, wm === 'horizontal-tb' ? style.features : undefined) * fs;
@@ -510,7 +541,7 @@ export class Measurer {
   clusterLigates(unit0: string, style: RunStyle, features: readonly string[]): boolean {
     const base = String.fromCodePoint(unit0.codePointAt(0)!);
     const weight = style.fontWeight ?? 400;
-    const font = this.fonts.getForCluster(style.fontFamily, weight, unit0) ?? this.fonts.getForChar(style.fontFamily, weight, base);
+    const font = this.fonts.getForCluster(this.familyOf(style), weight, unit0) ?? this.fonts.getForChar(this.familyOf(style), weight, base);
     let m = this.clusterLigCache.get(font);
     if (!m) {
       this.clusterLigCache.set(font, (m = new Map()));
