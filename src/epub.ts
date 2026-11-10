@@ -1,19 +1,63 @@
 /**
  * epub — EPUB (zip) を、1 つの HTML (と画像) にまとめる。HTML の読み込み (htmlFrame / htmlImport) に渡して組む。
  *
- *  - zip: 中央ディレクトリを読み、無圧縮 (0) と deflate (8) を展開する (DecompressionStream の deflate-raw)
+ *  - zip: 中央ディレクトリを読み、無圧縮 (0) と deflate (8) を展開する (DecompressionStream の deflate-raw)。
+ *    展開する量には上限を置く (1 つの項目・1 つの EPUB の合計・項目の数。imageLimits.ts。小さな zip から巨大な展開をさせない)
  *  - META-INF/container.xml → OPF (manifest・spine) → spine の順に XHTML の本文をつなぐ。章ごとに改ページする
  *  - CSS は <style> にしてまとめる (章の <link> と <style> を、最初に出た順に 1 度ずつ)。画像は名前つきで返す
  */
 import { disabledAlternateStylesheet, linkRelTokens } from './htmlPrepare';
+import { EPUB_MAX_ENTRIES, EPUB_MAX_ENTRY_BYTES, EPUB_MAX_TOTAL_BYTES } from './imageLimits';
+import { msg } from './messages';
 
 export interface ZipEntry {
   name: string;
   data: () => Promise<Uint8Array>;
 }
 
-/** zip の中身の一覧 (名前と、展開する関数) */
-export function readZip(bytes: Uint8Array): ZipEntry[] {
+/** 展開の上限 (既定は imageLimits.ts の値。テストは小さな値に差し替える) */
+export interface ZipLimits {
+  /** 1 つの項目の、展開した後の大きさの上限 (バイト) */
+  maxEntryBytes: number;
+  /** 展開する量の合計の上限 (バイト。同じ項目を何度も展開すれば、その回数だけ数える) */
+  maxTotalBytes: number;
+  /** 項目の数の上限 */
+  maxEntries: number;
+}
+const DEFAULT_LIMITS: ZipLimits = { maxEntryBytes: EPUB_MAX_ENTRY_BYTES, maxTotalBytes: EPUB_MAX_TOTAL_BYTES, maxEntries: EPUB_MAX_ENTRIES };
+
+/**
+ * 展開の上限を超えた誤り。scope: entry は 1 つの項目が大きすぎる (その項目だけ読めないものとして扱える)、
+ * total は合計が大きすぎる・entries は項目が多すぎる (その zip は読まない)
+ */
+export class ZipLimitError extends Error {
+  constructor(
+    message: string,
+    readonly scope: 'entry' | 'total' | 'entries',
+  ) {
+    super(message);
+    this.name = 'ZipLimitError';
+  }
+}
+
+const mb = (n: number) => (n >= 1024 * 1024 ? `${Math.round(n / 1024 / 1024)}MB` : `${n}B`);
+
+/**
+ * zip の中身の一覧 (名前と、展開する関数)。展開は、出力を数えながら行い、上限を超えたら、そこで止めて ZipLimitError を投げる
+ * (中央ディレクトリに書かれた展開後の大きさは、偽れるので見ない)
+ */
+export function readZip(bytes: Uint8Array, limits: Partial<ZipLimits> = {}): ZipEntry[] {
+  const lim = { ...DEFAULT_LIMITS, ...limits };
+  /** これまでに展開した量の合計 */
+  let total = 0;
+  const tooLarge = (name: string) => new ZipLimitError(msg(`${name}: 展開した大きさが上限 (${mb(lim.maxEntryBytes)}) を超えます`, `${name}: the uncompressed size exceeds the limit (${mb(lim.maxEntryBytes)})`), 'entry');
+  const totalTooLarge = () => new ZipLimitError(msg(`zip の中身を展開した大きさの合計が上限 (${mb(lim.maxTotalBytes)}) を超えます`, `the total uncompressed size of the zip exceeds the limit (${mb(lim.maxTotalBytes)})`), 'total');
+  /** n バイトを出力に足してよいか (1 つの項目の上限と、合計の上限)。size はその項目のこれまでの出力 */
+  const take = (name: string, size: number, n: number) => {
+    if (size + n > lim.maxEntryBytes) throw tooLarge(name);
+    if (total + n > lim.maxTotalBytes) throw totalTooLarge();
+    total += n;
+  };
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // 中央ディレクトリの終わり (EOCD) を後ろから探す
   let eocd = -1;
@@ -25,6 +69,7 @@ export function readZip(bytes: Uint8Array): ZipEntry[] {
   }
   if (eocd < 0) throw new Error('zip ではありません');
   const count = v.getUint16(eocd + 10, true);
+  if (count > lim.maxEntries) throw new ZipLimitError(msg(`zip の項目が多すぎます (${count} 個。上限 ${lim.maxEntries} 個)`, `the zip has too many entries (${count}; the limit is ${lim.maxEntries})`), 'entries');
   let p = v.getUint32(eocd + 16, true);
   const out: ZipEntry[] = [];
   const utf8 = new TextDecoder();
@@ -45,10 +90,34 @@ export function readZip(bytes: Uint8Array): ZipEntry[] {
         const ln = v.getUint16(local + 26, true);
         const le = v.getUint16(local + 28, true);
         const raw = bytes.subarray(local + 30 + ln + le, local + 30 + ln + le + csize);
-        if (method === 0) return raw;
+        if (method === 0) {
+          take(name, 0, raw.length);
+          return raw;
+        }
         if (method !== 8) throw new Error(`${name}: 対応していない圧縮方式 (${method})`);
-        const stream = new Blob([raw as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-        return new Uint8Array(await new Response(stream).arrayBuffer());
+        // 出力を塊ごとに受け取り、数えながらためる。上限を超えたら、残りを展開せずに止める
+        const reader = new Blob([raw as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            take(name, size, value.length);
+            size += value.length;
+            chunks.push(value);
+          }
+        } catch (e) {
+          await reader.cancel().catch(() => undefined);
+          throw e;
+        }
+        const outBytes = new Uint8Array(size);
+        let at = 0;
+        for (const c of chunks) {
+          outBytes.set(c, at);
+          at += c.length;
+        }
+        return outBytes;
       },
     });
   }
@@ -79,16 +148,36 @@ export interface EpubBook {
   /** 画像 (名前は zip の中のパス) */
   images: Array<{ name: string; data: Uint8Array }>;
   title?: string;
+  /** 読めなかった項目 (展開の上限を超えた章・CSS・画像) の警告 */
+  warnings?: string[];
 }
 
 type ParseXml = (text: string, type: 'application/xml' | 'text/html') => Document;
 
-/** EPUB を 1 つの HTML にまとめる。parse: XML / HTML の文字列を文書にする (ブラウザでは DOMParser) */
-export async function readEpub(bytes: Uint8Array, parse: ParseXml): Promise<EpubBook> {
-  const entries = new Map(readZip(bytes).map((e) => [e.name, e]));
+/**
+ * EPUB を 1 つの HTML にまとめる。parse: XML / HTML の文字列を文書にする (ブラウザでは DOMParser)。
+ * limits: 展開の上限 (既定は imageLimits.ts の値)。1 つの項目の上限を超えた章・CSS・画像は、読めないものとして飛ばし (warnings に書く)、
+ * 合計の上限を超えたら、誤りで止める (ZipLimitError)。container.xml・OPF が上限を超えるときも、読めないので誤りで止める
+ */
+export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Partial<ZipLimits> = {}): Promise<EpubBook> {
+  const maxEntries = limits.maxEntries ?? EPUB_MAX_ENTRIES;
+  // 項目の名前は、メモリの上の表の鍵にするだけ (ファイルには書き出さない)。名前に ../ があっても、表の外には出ない。
+  // 文書からの参照は resolvePath で .. を解いてから引く (根より上へは出ない) ので、../ を含む名前の項目には当たらない
+  const entries = new Map(readZip(bytes, limits).map((e) => [e.name, e]));
   const text = async (name: string) => {
     const e = entries.get(name);
     return e ? new TextDecoder().decode(await e.data()) : undefined;
+  };
+  const warnings: string[] = [];
+  /** 1 つの項目の上限を超えた誤りなら、警告にして undefined を返す (その項目を飛ばす)。ほかの誤り (合計の上限など) は投げ直す */
+  const skipTooLarge = async <T>(read: () => Promise<T>): Promise<T | undefined> => {
+    try {
+      return await read();
+    } catch (e) {
+      if (!(e instanceof ZipLimitError) || e.scope !== 'entry') throw e;
+      warnings.push(e.message);
+      return undefined;
+    }
   };
   const container = await text('META-INF/container.xml');
   if (!container) throw new Error('EPUB ではありません (META-INF/container.xml がありません)');
@@ -117,10 +206,12 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml): Promise<Epub
   const seenCss = new Set<string>();
   const sections: string[] = [];
   const itemrefs = Array.from(opf.getElementsByTagName('itemref')).filter((r) => r.getAttribute('linear') !== 'no');
+  // spine には同じ章を何度でも書けるので、章の並びの長さにも上限を当てる
+  if (itemrefs.length > maxEntries) throw new ZipLimitError(msg(`EPUB の章の並び (spine) が長すぎます (${itemrefs.length} 個。上限 ${maxEntries} 個)`, `the spine of the EPUB is too long (${itemrefs.length}; the limit is ${maxEntries})`), 'entries');
   for (const [k, ref] of itemrefs.entries()) {
     const item = items.get(ref.getAttribute('idref') ?? '');
     if (!item) continue;
-    const src = await text(item.href);
+    const src = await skipTooLarge(() => text(item.href));
     if (src === undefined) continue;
     // XHTML は XML として読む (<a/> のような空要素を正しく扱う)。読めなければ HTML として読む
     let doc = /xhtml|xml/.test(item.type) ? parse(src, 'application/xml') : undefined;
@@ -133,7 +224,7 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml): Promise<Epub
       const p = resolvePath(dir, l.getAttribute('href') ?? '');
       if (seenCss.has(p)) continue;
       seenCss.add(p);
-      const t = await text(p);
+      const t = await skipTooLarge(() => text(p));
       if (t) css.push(t);
     }
     for (const s of Array.from(doc.getElementsByTagName('style'))) {
@@ -161,13 +252,17 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml): Promise<Epub
     sections.push(htmlAttrs ? `<div${htmlAttrs}>${section}</div>` : section);
   }
   const images: EpubBook['images'] = [];
+  // 同じファイルを指す item は 1 度だけ読む。上限を超える画像は渡さない (読めない画像として組まれる)
+  const seenImage = new Set<string>();
   for (const it of items.values()) {
-    if (!/^image\//.test(it.type)) continue;
+    if (!/^image\//.test(it.type) || seenImage.has(it.href)) continue;
+    seenImage.add(it.href);
     const e = entries.get(it.href);
-    if (e) images.push({ name: it.href, data: await e.data() });
+    const data = e && (await skipTooLarge(() => e.data()));
+    if (data) images.push({ name: it.href, data });
   }
   const html = `<!doctype html><html${lang ? ` lang="${escapeAttr(lang)}"` : ''}><head><meta charset="utf-8"><title>${escapeText(title ?? '')}</title>${css.map((c) => `<style>${c}</style>`).join('')}</head><body>${sections.join('')}</body></html>`;
-  return { html, images, ...(title ? { title } : {}) };
+  return { html, images, ...(title ? { title } : {}), ...(warnings.length ? { warnings } : {}) };
 }
 
 /**
