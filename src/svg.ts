@@ -452,9 +452,20 @@ interface Style {
   markerEnd?: string;
   /** xml:space="preserve" (継承する。SVG 1.1 §10.15): 改行・タブを空白にし、先頭・末尾・続いた空白もそのまま描く */
   preserveSpace?: boolean;
+  /**
+   * color (継承する。currentColor の値を決めるだけ。SVG 2 §13.3)。colorAlpha はその不透明度 (1 なら省く)。
+   * fillCurrent・strokeCurrent は、fill・stroke が currentColor か: currentcolor は語のまま継承し、使う要素の color で決まる (CSS Color 4 §15.5)
+   */
+  color: string;
+  colorAlpha?: number;
+  fillCurrent?: boolean;
+  strokeCurrent?: boolean;
+  /** fill・stroke の色の不透明度 (rgba() の 4 つ目の成分。1 なら省く)。fill-opacity・stroke-opacity に掛ける */
+  fillAlpha?: number;
+  strokeAlpha?: number;
 }
 
-const ROOT_STYLE: Style = { fill: '#000000', stroke: null, strokeWidth: 1, opacity: 1, fillOpacity: 1, strokeOpacity: 1, evenOdd: false, lineCap: 0, lineJoin: 0, fontSize: 16, fontWeight: 400, textAnchor: 'start' };
+const ROOT_STYLE: Style = { color: '#000000', fill: '#000000', stroke: null, strokeWidth: 1, opacity: 1, fillOpacity: 1, strokeOpacity: 1, evenOdd: false, lineCap: 0, lineJoin: 0, fontSize: 16, fontWeight: 400, textAnchor: 'start' };
 
 /** 文字の輪郭 (text を図形にするため)。原点は基線の始点、y は下向き。描けない文字があれば null */
 /** 字の並び (PDF の文字として描くため): 字・書体 (読み込んだ書体の鍵)・字の原点の x (字の座標。基線の上、右向き) */
@@ -611,7 +622,7 @@ export function parseCss(css: string): CssRule[] {
 
 function propsOf(n: XmlNode, css: CssRule[] = []): Record<string, string> {
   const out: Record<string, string> = {};
-  const names = ['fill', 'stroke', 'stroke-width', 'opacity', 'fill-opacity', 'stroke-opacity', 'fill-rule', 'clip-rule', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-miterlimit', 'display', 'visibility', 'clip-path', 'mask', 'filter', 'stop-color', 'stop-opacity', 'font-family', 'font-size', 'font-weight', 'text-anchor', 'overflow', 'marker', 'marker-start', 'marker-mid', 'marker-end', 'data-fill-cmyk', 'data-stroke-cmyk', 'vector-effect', 'mix-blend-mode', 'xml:space'];
+  const names = ['color', 'fill', 'stroke', 'stroke-width', 'opacity', 'fill-opacity', 'stroke-opacity', 'fill-rule', 'clip-rule', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-miterlimit', 'display', 'visibility', 'clip-path', 'mask', 'filter', 'stop-color', 'stop-opacity', 'font-family', 'font-size', 'font-weight', 'text-anchor', 'overflow', 'marker', 'marker-start', 'marker-mid', 'marker-end', 'data-fill-cmyk', 'data-stroke-cmyk', 'vector-effect', 'mix-blend-mode', 'xml:space'];
   for (const k of names) {
     const v = n.getAttribute?.(k);
     if (v !== null && v !== undefined) out[k] = v.trim();
@@ -631,7 +642,19 @@ function propsOf(n: XmlNode, css: CssRule[] = []): Record<string, string> {
   return out;
 }
 
-function colorOf(v: string, allowRef = false): string | null | PaintRef {
+const isCurrentColor = (v: string) => /^currentcolor$/i.test(v.trim());
+
+/** 色の不透明度: rgb()・rgba() の 4 つ目の成分 (数か百分率。[0, 1] に丸める)。無ければ 1 */
+function alphaOf(v: string): number {
+  const m = /^rgba?\(([^)]*)\)$/i.exec(v.trim());
+  const parts = m ? m[1].split(/[\s,/]+/).filter(Boolean) : [];
+  if (parts.length !== 4) return 1;
+  const a = parseFloat(parts[3]) / (parts[3].endsWith('%') ? 100 : 1);
+  return Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : 1;
+}
+
+/** current は、currentColor の値 (その要素の color。無ければ color の初期値の黒) */
+function colorOf(v: string, allowRef = false, current = '#000000'): string | null | PaintRef {
   const s = v.trim();
   if (s === 'none' || s === 'transparent') return null;
   const u = /^url\(\s*['"]?#([^'")\s]+)['"]?\s*\)/i.exec(s);
@@ -640,7 +663,7 @@ function colorOf(v: string, allowRef = false): string | null | PaintRef {
     return { ref: u[1] };
   }
   if (/^url\(/i.test(s)) throw new Unsupported('paint server');
-  if (s === 'currentColor') return '#000000';
+  if (isCurrentColor(s)) return current;
   const c = parseColor(s);
   if (c.mode !== 'rgb') return s;
   const h = (x: number) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, '0');
@@ -656,8 +679,33 @@ const num = (v: string | undefined, d: number) => {
 function inherit(parent: Style, p: Record<string, string>): Style {
   const ve = (p['vector-effect'] ?? '').split(/\s+/);
   const s: Style = { ...parent, opacity: 1, nonScalingStroke: ve.includes('non-scaling-stroke'), nonScalingSize: ve.includes('non-scaling-size') };
-  if (p.fill !== undefined && p.fill !== 'inherit') s.fill = colorOf(p.fill, true);
-  if (p.stroke !== undefined && p.stroke !== 'inherit') s.stroke = colorOf(p.stroke, true);
+  // color: currentColor の値 (SVG 2 §13.3)。color: currentColor は継承した値 (CSS Color 4 §15.5)
+  if (p.color !== undefined && p.color !== 'inherit' && !isCurrentColor(p.color)) {
+    const c = colorOf(p.color);
+    if (typeof c === 'string') {
+      s.color = c;
+      const a = alphaOf(p.color);
+      if (a < 1) s.colorAlpha = a;
+      else delete s.colorAlpha;
+    }
+  }
+  // fill・stroke: currentColor は語のまま継承するので、宣言の無い要素でも、自分の color で決め直す
+  for (const [k, cur, alpha] of [['fill', 'fillCurrent', 'fillAlpha'], ['stroke', 'strokeCurrent', 'strokeAlpha']] as const) {
+    const v = p[k];
+    if (v !== undefined && v !== 'inherit') {
+      s[k] = colorOf(v, true, s.color);
+      const current = isCurrentColor(v);
+      const a = current ? (s.colorAlpha ?? 1) : alphaOf(v);
+      if (current) s[cur] = true;
+      else delete s[cur];
+      if (a < 1) s[alpha] = a;
+      else delete s[alpha];
+    } else if (s[cur]) {
+      s[k] = s.color;
+      if (s.colorAlpha !== undefined) s[alpha] = s.colorAlpha;
+      else delete s[alpha];
+    }
+  }
   // Kumiori の EPS の SVG: CMYK で決まる色の値 (data-fill-cmyk・data-stroke-cmyk。ブラウザは fill・stroke の RGB で描く)。PDF には DeviceCMYK で描く
   const cmyk = (v: string | undefined) => {
     const n = (v ?? '').split(/[\s,]+/).filter(Boolean).map(Number);
@@ -765,11 +813,17 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       if (--visitsLeft < 0) throw new Unsupported('too many elements');
     };
     let patternNest = 0;
+    /** 要素 → 親の要素 (stop-color・flood-color の currentColor を、その要素の color で決めるため) */
+    const parentOf = new Map<XmlNode, XmlNode>();
     const index = (n: XmlNode) => {
       visitsLeft++;
       const id = n.getAttribute?.('id');
       if (id) byId.set(id, n);
-      for (const c of Array.from(n.childNodes)) if (c.nodeType === 1) index(c);
+      for (const c of Array.from(n.childNodes))
+        if (c.nodeType === 1) {
+          parentOf.set(c, n);
+          index(c);
+        }
     };
     index(root);
     // <style> の規則 (どこに書かれていても文書全体に効く)
@@ -781,6 +835,16 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     collectCss(root);
     const css = cssText.trim() ? parseCss(cssText) : [];
     const props = (n: XmlNode) => propsOf(n, css);
+    /** 要素の color (祖先をさかのぼって最初の指定。無ければ初期値の黒)。図形でない要素 (stop・フィルタの要素) の currentColor に使う */
+    const colorAt = (n: XmlNode): string => {
+      for (let e: XmlNode | undefined = n; e; e = parentOf.get(e)) {
+        const c = props(e).color;
+        if (c === undefined || c === 'inherit' || isCurrentColor(c)) continue;
+        const v = colorOf(c);
+        if (typeof v === 'string') return v;
+      }
+      return '#000000';
+    };
     const hrefOf = (n: XmlNode) => (n.getAttribute?.('href') ?? n.getAttribute?.('xlink:href') ?? '').replace(/^#/, '');
     const vbW = viewBox[2];
     const vbH = viewBox[3];
@@ -872,7 +936,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         .map((st) => {
           const p = props(st);
           const sc = p['stop-color'] ?? '#000000';
-          const color = colorOf(sc) as string | null;
+          const color = colorOf(sc, false, isCurrentColor(sc) ? colorAt(st) : undefined) as string | null;
           // stop-color が none・transparent なら、透明の黒
           const op = color ? Math.max(0, Math.min(1, num(p['stop-opacity'], 1))) : 0;
           return { offset: Math.max(0, Math.min(1, num(st.getAttribute?.('offset') ?? undefined, 0))), color: color ?? '#000000', ...(op < 1 ? { opacity: op } : {}) };
@@ -1019,7 +1083,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       };
       const color = (e: XmlNode) => {
         const c = props(e)['flood-color'] ?? a(e, 'flood-color');
-        return c ? ((colorOf(c) as string | null) ?? undefined) : '#000000';
+        return c ? ((colorOf(c, false, isCurrentColor(c) ? colorAt(e) : undefined) as string | null) ?? undefined) : '#000000';
       };
       const opacityOf = (e: XmlNode) => {
         const v = parseFloat(props(e)['flood-opacity'] ?? a(e, 'flood-opacity'));
@@ -1453,8 +1517,8 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         dash: s.nonScalingStroke ? s.dash : s.dash?.map((x) => x * Math.sqrt(det)),
         ...(s.dash && s.dashOffset ? { dashOffset: s.nonScalingStroke ? s.dashOffset : s.dashOffset * Math.sqrt(det) } : {}),
         ...(s.miterLimit !== undefined ? { miterLimit: s.miterLimit } : {}),
-        fillOpacity: o * s.fillOpacity,
-        strokeOpacity: o * s.strokeOpacity,
+        fillOpacity: o * s.fillOpacity * (s.fillAlpha ?? 1),
+        strokeOpacity: o * s.strokeOpacity * (s.strokeAlpha ?? 1),
         ...(text?.chars?.length && !anchor ? { text: { chars: text.chars, size: text.size, matrix: mul(mm, text.t) } } : {}),
       });
     };

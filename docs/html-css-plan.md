@@ -121,8 +121,9 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 **実装の状況 (第 3 段階)**: 対応済み。
 
 - `text-autospace`・`text-spacing-trim`・`text-spacing` → 和欧間のアキ・約物の詰め。和欧間のアキは CSS Text 4 どおり 1/8 em (互換のスタイル (`--style ah`) では 1/4 em。`-ah-text-autospace-width` も読む)。`hanging-punctuation` → ぶら下げ (CSS の既定は none なので、ブラウザの既定ではぶら下げない。本の組版向けの既定では allow-end)。
-- `text-emphasis` (圏点) は、字ごとのルビ (記号をルビ文字にする) にする。空白・約物・記号には付けない。`text-emphasis-position`・色は未対応。
+- `text-emphasis` (圏点) は、字ごとのルビ (記号をルビ文字にする) にする。空白・約物・記号には付けない。色 (`text-emphasis-color`) はルビの字の色、側 (`text-emphasis-position` の under・left) は 2 段目のルビの側にする (vertical-lr は 1 段目の側だけ)。
 - ルビの既定のスタイルは CSS Ruby 1 の付録 A.1 (rt・rtc の字は 50%、line-height: 1、white-space: nowrap など)。ルビの字の大きさは、最初の rt (無ければ rtc) の計算値の font-size の、ruby の font-size に対する比にする。付録 A.1 の注音 (bopomofo) の 30% の規則は、セレクタの並びの終わりに , があって無効なので入れない。
+- ルビの配置 (CSS Ruby 1 §4・§5.1): `ruby-position` (`over`・`under`・`alternate` との組。`inter-character` は縦書きだけ = `over`)、`ruby-merge` (`separate`・`merge`。`auto` は未対応)、`ruby-align` (`start`・`center`・`space-between`・`space-around`)、`ruby-overhang` (`auto`・`none`) を、`LRuby` の `rubyPosition`・`rubyAlign`・`rubyAlignUnder`・`rubyAlignBase`・`rubyOverhang` に写す。指定の有無を見分けるため、自前で読んだ宣言を祖先へたどって読む (指定の無いルビは、1 段目は上・2 段目は下、前後の字に掛けない。字の配り方の既定は、根元の書式に付けた `rubyAlign: 'space-around'` = §4.3 の初期値)。
 - `text-combine-upright: digits N` は、縦書きの中の N 桁以下の数字を縦中横にする (ブラウザが知らないので CSS から読む)。
 - 段組: body (か html) の `columns` はページの段組、ほかのブロックは段組のコンテナ。`column-span: all` は段抜き。`column-fill: auto` 以外は末尾を釣り合わせる。
 - `float: left / right` は回り込み (箱の幅・枠・余白は float に移す)。`inside` / `outside` (綴じ側・小口側)、`top` (ページの先頭)、`bottom` (段・ページの下端) も読む (下の「回り込みの拡張」)。`clear` は、その側の回り込みの下まで下げる。
