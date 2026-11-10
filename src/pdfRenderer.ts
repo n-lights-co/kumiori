@@ -786,9 +786,10 @@ class PdfPainter implements Painter {
     const text = g.text.replace(/\u00A0/g, ' ');
     // 字形の並びが、字の並びと 1 対 1 に対応しない字の単位 (書体が並べ替え・合成・分解をしたもの: デーヴァナーガリーの前に置く母音記号・
     // 結合子音、タイ文字の SARA AM など) は、字形ごとの ToUnicode では元の字に戻せないので、/ActualText で元の字の並びを付ける
-    // インド系の用字・タイ文字の字の単位は、1 対 1 に対応していても付ける (基底の字の送りの中へ戻して置く記号を、字を取り出す側が
-    // 別の語と見て、空白を挟んだり順を入れ替えたりするのを防ぐ。ほかの用字の字の単位は、これまでと同じ内容のままにする)
-    const own = g.glyphIds && g.glyphIds.length > 1 ? reorderedGlyphChars(font, g.glyphIds, text, !!g.glyphPositions && /^[\u0900-\u0E7F]/.test(text)) : undefined;
+    // インド系の用字・タイ文字の字の単位は、字形が並べ替えられることがあり、1 対 1 に対応していても付ける (基底の字の送りの中へ戻して置く
+    // 記号を、字を取り出す側が別の語と見て、空白を挟んだり順を入れ替えたりするのを防ぐ)。ほかの用字の字の単位は、字と字形の数が違うときだけ付ける
+    // (数が同じなら、字形 i は字 i を置き換えたもの (縦書き用の字形など) として、これまでどおり字形ごとの ToUnicode にする)
+    const own = g.glyphIds && g.glyphIds.length > 1 ? reorderedGlyphChars(font, g.glyphIds, text, /^[\u0900-\u0E7F]/.test(text)) : undefined;
     let hex: PDFHexString;
     try {
       // 木に字形の番号があれば、それを書く (組版で測った字形と同じ)。無ければ、字を書体で組み直す
@@ -965,19 +966,20 @@ function utf16Hex(text: string): string {
 }
 
 /**
- * 2 つ以上の字形の並び ids が、字の並び text と 1 対 1 に対応する (字形 i が、書体の cmap での字 i の字形) なら undefined。
- * 対応しなければ (書体が並べ替え・合成・分解をした。always なら対応していても)、字形ごとの ToUnicode の字 (書体の cmap でその字形になる字。無ければ空) の並びを返す
+ * 2 つ以上の字形の並び ids が、字の並び text と字形ごとに対応するなら undefined (字形ごとの ToUnicode で元の字に戻せる)。
+ * 対応しなければ (書体が合成・分解・並べ替えをした)、字形ごとの ToUnicode の字 (書体の cmap でその字形になる字。無ければ空) の並びを返す。
+ * 対応するとみるのは、字と字形の数が同じとき (字形 i は字 i を置き換えたもの)。reorders (字形を並べ替えることのある用字) なら、いつも対応しないとみる
  */
-function reorderedGlyphChars(font: PDFFont, ids: number[], text: string, always = false): string[] | undefined {
+function reorderedGlyphChars(font: PDFFont, ids: number[], text: string, reorders: boolean): string[] | undefined {
   const fk = (font as unknown as { embedder: { font: { glyphForCodePoint(cp: number): { id: number } } } }).embedder.font;
   const chars = [...text];
+  if (!reorders && ids.length === chars.length) return undefined;
   let nominal: number[];
   try {
     nominal = chars.map((c) => fk.glyphForCodePoint(c.codePointAt(0)!).id);
   } catch {
     return undefined;
   }
-  if (!always && ids.length === chars.length && ids.every((id, i) => id === nominal[i])) return undefined;
   const used = new Set<number>();
   return ids.map((id) => {
     const k = nominal.findIndex((n, j) => n === id && !used.has(j));
