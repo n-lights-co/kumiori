@@ -110,8 +110,28 @@ export async function loadHtml(
   const win = frame.contentWindow!;
   // 書体の読み込み (@font-face) を待つ
   await doc.fonts?.ready;
+  // 変換 (transform・translate・rotate・scale) は組版に影響しない (CSS Transforms 1 §3) が、getBoundingClientRect は変換した後の
+  // 矩形を返す。変換の付いた要素は、変換の計算値を控えてから、何もしない変換 (translate(0)) に置き換えて測る
+  // (何もしない変換でも、中の絶対配置の箱の基準になることは変わらない)。計算値は、控えた値で答える
+  const TRANSFORM_PROPS = ['transform', 'transform-origin', 'transform-box', 'translate', 'rotate', 'scale'] as const;
+  const transforms = new Map<Element, Record<string, string>>();
+  for (const el of Array.from(doc.querySelectorAll('*'))) {
+    const cs = win.getComputedStyle(el);
+    if (['transform', 'translate', 'rotate', 'scale'].every((p) => !cs.getPropertyValue(p) || cs.getPropertyValue(p) === 'none')) continue;
+    transforms.set(el, Object.fromEntries(TRANSFORM_PROPS.map((p) => [p, cs.getPropertyValue(p)])));
+  }
+  for (const el of transforms.keys()) {
+    const st = (el as HTMLElement).style;
+    if (!st) continue;
+    st.setProperty('transform', 'translate(0)', 'important');
+    for (const p of ['translate', 'rotate', 'scale']) st.setProperty(p, 'none', 'important');
+  }
   const styles: StyleSource = {
-    style: (el, pseudo) => win.getComputedStyle(el, pseudo),
+    style: (el, pseudo) => {
+      const cs = win.getComputedStyle(el, pseudo);
+      const kept = pseudo ? undefined : transforms.get(el);
+      return kept ? { getPropertyValue: (p: string) => kept[p] ?? cs.getPropertyValue(p) } : cs;
+    },
     rect: (el) => {
       const r = el.getBoundingClientRect();
       return { x: r.left + win.scrollX, y: r.top + win.scrollY, width: r.width, height: r.height };

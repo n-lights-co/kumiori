@@ -66,6 +66,8 @@
 <li class="sec"><a href="#s-gradient"><span class="num">3.12</span>グラデーション : <span class="nw">linear-gradient()</span>・&#8203;<span class="nw">radial-gradient()</span></a></li>
 <li class="sec"><a href="#s-overflow"><span class="num">3.13</span>はみ出し : <span class="nw">overflow</span></a></li>
 <li class="sec"><a href="#s-display"><span class="num">3.14</span>ボックスの種類 : <span class="nw">display</span></a></li>
+<li class="sec"><a href="#s-transform"><span class="num">3.15</span>変形 : <span class="nw">transform</span>・&#8203;<span class="nw">transform-origin</span>・&#8203;<span class="nw">transform-box</span></a></li>
+<li class="sec"><a href="#s-opacity"><span class="num">3.16</span>不透明度 : <span class="nw">opacity</span></a></li>
 <li class="ch"><a href="#ch-float"><span class="num">4</span>回り込みと配置</a></li>
 <li class="sec"><a href="#s-float"><span class="num">4.1</span>回り込み : <span class="nw">float</span></a></li>
 <li class="sec"><a href="#s-clear"><span class="num">4.2</span>回り込みの解除 : <span class="nw">clear</span></a></li>
@@ -428,6 +430,31 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <!--gen:vals-s-display--><p class="vals-h"><code>display</code> の値の意味 <span class="spec">(CSS Display 3 §2・CSS Flexbox 1 §3・CSS Grid 1 §5.1・CSS Ruby 1 §2.1)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>block</code></td><td>通常フローの中でブロックレベルボックスを作ります。</td><td>対応</td></tr><tr><td><code>inline</code></td><td>通常フローの中でインラインレベルボックスを作ります。</td><td>対応</td></tr><tr><td><code>run-in</code></td><td>後に続くブロックに入り込もうとする、インラインレベルボックス (run-in のボックス) を作ります。</td><td>未対応</td></tr><tr><td><code>flow-root</code></td><td>いつも新しいブロック整形コンテキストを作るブロックボックスを作ります。</td><td>対応</td></tr><tr><td><code>list-item</code></td><td>要素の主ボックスと、list-style で指定した内容を持つ ::marker 擬似要素を生成します。</td><td>対応</td></tr><tr><td><code>table とその仲間 (table-row・table-cell・table-caption など)</code></td><td>表と、その部分のボックスを作ります。</td><td>対応</td></tr><tr><td><code>flex・inline-flex</code></td><td>flex コンテナのボックスを、ブロックレベル (インラインレベル) で作ります。</td><td>対応</td></tr><tr><td><code>grid・inline-grid</code></td><td>grid コンテナのボックスを、ブロックレベル (インラインレベル) で作ります。</td><td>対応</td></tr><tr><td><code>inline-block</code></td><td>inline flow-root と同じです。</td><td>対応</td></tr><tr><td><code>ruby・ruby-text</code></td><td>ルビコンテナのボックス (HTML の ruby に当たる)・ルビのボックス (rt に当たる) を作ります。</td><td>一部: ruby・rt などの要素の名前で組み、ほかの要素に指定してもルビになりません</td></tr><tr><td><code>ruby-base・ruby-base-container・ruby-text-container</code></td><td>親文字のボックス・親文字のコンテナ・ルビテキストのコンテナのボックスを作ります。</td><td>未対応</td></tr><tr><td><code>contents</code></td><td>要素自身はボックスを作らず、子と擬似要素だけがボックスを作ります。</td><td>対応</td></tr><tr><td><code>none</code></td><td>要素とその子孫はボックスを作りません。</td><td>対応</td></tr></tbody></table><!--/gen:vals-s-display-->
 <!--kumiori-sample id="display" mark="display: inline-block|display: none"-->
 <p style="text-indent: 0;">行の中に <span style="display: inline-block; width: 18mm; padding: 1pt 3pt; border: 0.5pt solid #4f7a64; text-align: center;">inline-block</span> のボックスを置き、<span style="display: none;">この字は消える</span>display: none の字を消す。</p>
+<!--/kumiori-sample-->
+
+<h2 id="s-transform"><span class="num">3.15</span>変形 : <code>transform</code>・&#8203;<code>transform-origin</code>・&#8203;<code>transform-box</code><span class="nw">&nbsp;<span class="badge part">一部</span></span></h2>
+<p class="props" data-p="transform"><span class="k">初期値</span> : <span class="v">none</span> <span class="k">適用対象</span> : <span class="v">transformable elements</span> <span class="k">継承</span> : <span class="v">no</span> <span class="src">(transform — CSS Transforms 1)</span></p>
+<p>ボックスとその中身を、描くときに移動・拡大縮小・回転・傾けます。2D の変換の関数 (translate()・translateX()・translateY()・scale()・scaleX()・scaleY()・rotate()・skew()・skewX()・skewY()・matrix()) と、その並びに対応します <span class="spec">(CSS Transforms 1 §9.1)</span>。translate・rotate・scale のプロパティにも対応し、translate、rotate、scale、transform の順に掛けます <span class="spec">(CSS Transforms 2 §5・§6)</span>。変換の原点は transform-origin (初期値は基準のボックスの中央)、基準のボックスは transform-box で決まります (content-box・fill-box は内容のボックス、border-box・stroke-box・view-box は border のボックス)。</p>
+<p>変換は組版に影響しません <span class="spec">(CSS Transforms 1 §3)</span>。ボックスの位置と大きさ、まわりの中身の流れ、ページの分け方は、変換を掛ける前のままです。ページや段で分かれたボックスは、断片ごとに、その断片のボックスを基準に変換します <span class="spec">(CSS Fragmentation 3 §5.5)</span>。変換したボックスは、中の絶対配置のボックスの包含ブロックになります。変換したボックスの中のリンクは、変換した後の形を囲む矩形が押せる範囲になります。逆行列の無い変換 (scale(0) など) のボックスは描きません。</p>
+<p>3D の変換 (matrix3d()・translate3d()・translateZ()・scale3d()・scaleZ()・rotate3d()・rotateX()・rotateY()・perspective() と、translate・rotate・scale の 3D になる値) は解釈しません。その要素には変換を掛けず、読み込みのときに未対応として知らせます。百分率を含む calc() の長さ、html・body と、表の行グループ (thead・tbody・tfoot) の変換も解釈しません (読み込みのときに未対応として知らせます)。::before・::after の変換には対応します。変換したボックスは文書の順のまま描きます (後に続くボックスより手前に描く並べ替えはしません)。変換したボックスが絶対配置の包含ブロックにできないボックス (表・flex・段組の中など。16 章) のとき、その外に組まれる絶対配置の子孫には変換が掛かりません。罫線を重ねる表 (border-collapse: collapse) のセルは、セルの罫線ごと変換します。</p>
+<p class="vals-h"><code>transform</code> の値の意味 <span class="spec">(CSS Transforms 1 §9.1・CSS Transforms 2 §12)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>none</code></td><td>変換しません (初期値)。</td><td>対応</td></tr><tr><td><code>translate()・translateX()・translateY()</code></td><td>移動します。百分率は、基準のボックスの幅 (横)・高さ (縦) に対する割合です。</td><td>対応</td></tr><tr><td><code>scale()・scaleX()・scaleY()</code></td><td>拡大・縮小します。</td><td>対応</td></tr><tr><td><code>rotate()</code></td><td>変換の原点のまわりに、時計回りに回します。</td><td>対応 (rotateZ() も同じ)</td></tr><tr><td><code>skew()・skewX()・skewY()</code></td><td>傾けます。</td><td>対応</td></tr><tr><td><code>matrix()</code></td><td>6 つの数の行列で変換します。</td><td>対応</td></tr><tr><td><code>3D の関数 (matrix3d()・rotateX()・perspective() など)</code></td><td>奥行きのある変換をします。</td><td>未対応</td></tr></tbody></table>
+<!--kumiori-sample id="transform" mark="transform: rotate(-8deg)|transform: skewX(-15deg)|transform: translate(4mm, 1mm) scale(0.8)|transform-origin: left top"-->
+<div style="font-size: 8pt; text-align: center; margin: 4mm 0 5mm 4mm;">
+  <span style="display: inline-block; width: 24mm; padding: 2pt; margin-right: 6mm; background: #dfeae4; border: 0.5pt solid #4f7a64; transform: rotate(-8deg);">rotate(-8deg)</span>
+  <span style="display: inline-block; width: 24mm; padding: 2pt; margin-right: 6mm; background: #dfeae4; border: 0.5pt solid #4f7a64; transform: skewX(-15deg);">skewX(-15deg)</span>
+  <span style="display: inline-block; width: 24mm; padding: 2pt; margin-right: 6mm; background: #dfeae4; border: 0.5pt solid #4f7a64; transform: translate(4mm, 1mm) scale(0.8);">translate scale</span>
+  <span style="display: inline-block; width: 24mm; padding: 2pt; background: #dfeae4; border: 0.5pt solid #4f7a64; transform: rotate(8deg); transform-origin: left top;">origin: left top</span>
+</div>
+<!--/kumiori-sample-->
+
+<h2 id="s-opacity"><span class="num">3.16</span>不透明度 : <code>opacity</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
+<p class="props" data-p="opacity"><span class="k">初期値</span> : <span class="v">1</span> <span class="k">適用対象</span> : <span class="v">all elements</span> <span class="k">継承</span> : <span class="v">no</span> <span class="src">(opacity — CSS Color 4)</span></p>
+<p>ボックスとその中身をまとめて半透明にします <span class="spec">(CSS Color 4 §3.3)</span>。数 (0〜1) と百分率に対応し、範囲の外の値は 0〜1 に丸めます。ボックスと中身を 1 枚の絵にしてから重ねるので、中で重なっている所が濃くなることはありません (PDF は透明のグループを使います)。行の中の要素 (span など) にも効きます。組版には影響しません。opacity の付いたボックスは文書の順のまま描きます (後に続くボックスより手前に描く並べ替えはしません)。html・body と、表の行グループ (thead・tbody・tfoot) の opacity は解釈しません (読み込みのときに未対応として知らせます)。ページの余白のボックスの opacity は、透明を使わずに、色を白に混ぜて表します。PDF/X-3 は透明を使えないので、opacity を使うと警告を出します。</p>
+<!--kumiori-sample id="opacity" mark="opacity: 0.4"-->
+<div style="font-size: 8pt; margin-left: 4mm;">
+  <div style="display: inline-block; width: 44mm; margin-right: 8mm;"><div style="width: 30mm; height: 8mm; background: #4f7a64;"></div><div style="width: 30mm; height: 8mm; margin: -4mm 0 0 10mm; background: #c9a227;"></div></div>
+  <div style="display: inline-block; width: 44mm; opacity: 0.4;"><div style="width: 30mm; height: 8mm; background: #4f7a64;"></div><div style="width: 30mm; height: 8mm; margin: -4mm 0 0 10mm; background: #c9a227;"></div></div>
+</div>
 <!--/kumiori-sample-->
 </section>
 
@@ -1127,7 +1154,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <section class="chapter c16">
 <h1 class="chapter" id="ch-unsupported" data-no="16">対応していないプロパティ</h1>
 <p>第 1 章の確かめ方で、指定しても組版に何も渡らなかったプロパティを、仕様ごとに並べます。印刷に関わらないプロパティ (画面の操作・音声など) は、最後の表にまとめます。対応しているプロパティの中で対応していない値は、各節の値の表に書いています。そのうち、仕様の決まりが長く、表の 1 行では説明しきれないものを、2 つ目の表に取り出して説明しています。各項目には、どういうものか、どういう場面で使うかを書いています。説明は、取得した仕様書 (いずれも 2026-11-06 取得) の定義と、Kumiori のソースで確かめたことに基づきます。</p>
-<!--gen:unsupported--><h3>対応していないプロパティ (82 項目)</h3>
+<!--gen:unsupported--><h3>対応していないプロパティ (78 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>empty-cells</code><br><span class="spec">CSS 2.1 §17.6.1.1</span></td><td>罫線を分ける方式 (separated borders model) の表で、見える中身の無いセルのまわりに罫線と背景を描くかを指定します (show・hide)。空のセルの枠や背景を消して、表の見た目を整えたいときに使います。</td></tr>
 <tr><td><code>background-attachment</code><br><span class="spec">CSS Backgrounds 3 §2.5</span></td><td>背景画像を、ビューポートに固定するか (fixed)、ボックスと一緒に動かすか (scroll)、ボックスの中身と一緒に動かすか (local) を指定します。仕様は、ビューポートの無いページの媒体では fixed の背景がページボックスに固定され、どのページにも繰り返して描かれるとしています。背景画像をページごとに同じ位置に出したいときに使います。</td></tr>
@@ -1142,7 +1169,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>justify-items</code><br><span class="spec">CSS Box Alignment 3 §7.1</span></td><td>このボックスの整形コンテキストに入る子のボックスすべての、justify-self の既定値を指定します。グリッドなどで、子のボックスを行の向き (inline 軸) にそろえる位置をまとめて決めたいときに使います。</td></tr>
 <tr><td><code>justify-self</code><br><span class="spec">CSS Box Alignment 3 §6.1</span></td><td>ボックスを、包含ブロックの中で inline 軸 (行・主軸) の向きにそろえます。グリッドの項目などを、領域の左・中央・右にそろえたいときに使います。</td></tr>
 <tr><td><code>place-items</code><br><span class="spec">CSS Box Alignment 3 §7.3</span></td><td>align-items と justify-items を 1 つの宣言で指定する一括指定です。2 つ目の値を省くと、1 つ目の値を justify-items にも使います。子のボックスの縦横のそろえ方を一度に決めたいときに使います。</td></tr>
-<tr><td><code>opacity</code><br><span class="spec">CSS Color 4 §3.3</span></td><td>要素全体の不透明度を指定します。仕様は、不透明度が特定の色ではなく要素全体にかかるとしています。Kumiori は、ページの余白のボックスの opacity だけを解釈し、色を白に混ぜて近似します。要素の中身をまとめて半透明にして、下にあるものを透かして見せたいときに使います。</td></tr>
 <tr><td><code>font-size-adjust</code><br><span class="spec">CSS Fonts 4 §2.6</span></td><td>フォントの小文字の高さ (x-height) と文字サイズの比 (aspect value) をもとに、文字サイズを調整します。代わりのフォントに切り替わったときに、見た目の文字サイズや読みやすさがそろうようにしたいときに使います。</td></tr>
 <tr><td><code>font-synthesis</code><br><span class="spec">CSS Fonts 4 §2.8.5</span></td><td>font-synthesis-weight・-style・-small-caps・-position をまとめて指定する一括指定です。フォントに無い太字・斜体などを、処理系に作らせるかどうかを一度に決めたいときに使います。</td></tr>
 <tr><td><code>font-synthesis-weight</code><br><span class="spec">CSS Fonts 4 §2.8.1</span></td><td>フォントファミリーに太字が無いとき、処理系が太字を作ってよいかを指定します (auto・none)。太字の無いフォントで、作られた太字を使わせたくないときに使います。</td></tr>
@@ -1202,9 +1228,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>text-underline-position</code><br><span class="spec">CSS Text Decoration 3 §2.5</span></td><td>要素に付けた下線の位置を指定します (祖先の要素が付けた下線には効きません)。仕様の例は、日本語などの横書き・縦書きでの下線の位置を、この指定で決めています。縦書きの傍線を左右のどちらに付けるかを決めたいとき、下線を字の下に下げたいときに使います。</td></tr>
 <tr><td><code>text-decoration-skip-ink</code><br><span class="spec">CSS Text Decoration 4 §2.10.5</span></td><td>下線・上線が字の形と重なる所で、線を切るかどうかを指定します (auto・none・all)。Kumiori は線を切らずに引きます。</td></tr>
 <tr><td><code>text-shadow</code><br><span class="spec">CSS Text Decoration 3 §4</span></td><td>文字に付ける影を、カンマ区切りの並びで指定します。値は box-shadow と同じ書き方です (広げる値と inset は使えません)。影は文字とその線の両方に付きます。見出しの文字に影を付けて目立たせたいときに使います。</td></tr>
-<tr><td><code>transform</code><br><span class="spec">CSS Transforms 1 §4</span></td><td>要素に、回転・拡大縮小・傾け・移動などの変換 (transform-function の並び) をかけます。none 以外の値は、包含ブロックと重なりの文脈を作ります。要素を回したり、傾けたりして描きたいときに使います。</td></tr>
-<tr><td><code>transform-origin</code><br><span class="spec">CSS Transforms 1 §5</span></td><td>transform の変換の原点の位置を指定します。要素を、中心ではなく角などを軸にして回したいときに使います。</td></tr>
-<tr><td><code>transform-box</code><br><span class="spec">CSS Transforms 1 §6</span></td><td>transform と transform-origin の基準にするボックス (content-box・border-box・fill-box・stroke-box・view-box) を指定します。変換の原点のパーセントを、どのボックスの大きさで計るかを決めたいときに使います。</td></tr>
 <tr><td><code>outline</code><br><span class="spec">CSS UI 4 §3.1</span></td><td>outline-style・outline-width・outline-color をまとめて指定する一括指定です。outline-offset は含みません。要素のまわりに、配置に影響しない輪郭線を付けたいときに使います。</td></tr>
 <tr><td><code>outline-color</code><br><span class="spec">CSS UI 4 §3.4</span></td><td>輪郭線の色を指定します。border-top-color の値と auto が使えます。輪郭線の色を決めたいときに使います。</td></tr>
 <tr><td><code>outline-style</code><br><span class="spec">CSS UI 4 §3.3</span></td><td>輪郭線の形を指定します。border-style と同じ値 (hidden を除く) と auto が使えます。輪郭線を実線・点線などにしたいときに使います。</td></tr>

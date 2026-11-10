@@ -13,6 +13,7 @@
 import { MAX_VAR_LENGTH, parseCss, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
 import { fmtColor, parseColor, splitTop, UNIT_PX, type RGBA } from './cssText';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
+import { is3dTransformValue } from './cssTransform';
 import { asciiLower, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
 
@@ -481,6 +482,12 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'box-shadow': [false, 'none', 'raw'],
   filter: [false, 'none', 'raw'],
   transform: [false, 'none', 'raw'],
+  // 変換の原点・基準の箱 (CSS Transforms 1 §5・§6) と、個別の変換 (CSS Transforms 2 §5)
+  'transform-origin': [false, '50% 50%', 'raw'],
+  'transform-box': [false, 'view-box', 'raw'],
+  translate: [false, 'none', 'raw'],
+  rotate: [false, 'none', 'raw'],
+  scale: [false, 'none', 'raw'],
   'string-set': [false, 'none', 'raw'],
 };
 /** 計算値を決めるプロパティの名前 (要素ごとに Object.keys を作らない) */
@@ -837,8 +844,8 @@ export function isKnownCssProperty(prop: string, value = ''): boolean {
  * 宣言を、規則の中で (構文の誤りとして捨てずに) 受け付けるときに対応しているとし、性質と値の両方を「使える水準で」実装していなければ、
  * 受け付けても対応していると答えてもいけない。値の一部だけを実装しているものも、対応しているとは答えない。
  *  - 名前を知らない性質は偽 (印刷に関わらない性質 (animation-*・cursor など) も、読まないので偽)
- *  - 名前は読むが組版に使わない性質 (cssUnsupported の UNSUPPORTED_CSS_PROPERTIES。transform・opacity など) は偽
- *  - 対応している性質の、読まない値 (UNSUPPORTED_CSS_VALUES。position: sticky など) は偽
+ *  - 名前は読むが組版に使わない性質 (cssUnsupported の UNSUPPORTED_CSS_PROPERTIES。text-shadow・outline など) は偽
+ *  - 対応している性質の、読まない値 (UNSUPPORTED_CSS_VALUES。position: sticky など。3D の変換 (transform: rotateX() など) も) は偽
  *  - 一括指定は、分けた性質のどれかが上の 2 つに当たれば偽 (未対応の性質を初期値に戻すだけの一括指定は真)
  *  - 値が読めない宣言は偽 (display: foo・color: notacolor など)。カスケードが宣言を構文の誤りとして捨てるかの検査
  *    (cascadeDecls の、一括指定を分けて valid で調べる検査) と同じ判定を通す: 一括指定は、分けられない値・分けた性質のどれかが読めない値なら偽。
@@ -856,6 +863,8 @@ export function supportsCssDeclaration(prop: string, value: string): boolean {
   const unsupported = (lp: string, lv: string, longhandOfShorthand: boolean) => {
     const t = lv.trim().toLowerCase();
     if (UNSUPPORTED_CSS_PROPERTIES.has(lp)) return !longhandOfShorthand || !(t === (PROPS[lp]?.[1] ?? '').toLowerCase() || /^(inherit|initial|unset|revert|revert-layer)$/.test(t));
+    // 3D の変換 (transform の 3D の関数など) は読まない
+    if (is3dTransformValue(lp, t)) return true;
     return !!UNSUPPORTED_CSS_VALUES[lp]?.includes(t);
   };
   if (unsupported(p, v, false)) return false;
@@ -2108,6 +2117,12 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       return /^(normal|bold|bolder|lighter)$/.test(s0) || (num.test(s0) && parseFloat(s0) >= 1 && parseFloat(s0) <= 1000);
     case 'opacity':
       return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
+    case 'transform':
+      // none | <transform-function>+ (Transforms 1 §4。関数の名前は 2D と 3D (Transforms 2 §12)。引数の中身は読み込みのときに調べる)
+      return s0 === 'none' || /^(\s*(matrix|matrix3d|translate|translatex|translatey|translatez|translate3d|scale|scalex|scaley|scalez|scale3d|rotate|rotatex|rotatey|rotatez|rotate3d|skew|skewx|skewy|perspective)\([^()]*(\([^()]*\)[^()]*)*\))+\s*$/.test(s0);
+    case 'transform-box':
+      // content-box | border-box | fill-box | stroke-box | view-box (Transforms 1 §6)
+      return /^(content-box|border-box|fill-box|stroke-box|view-box)$/.test(s0);
     case 'z-index':
       return s0 === 'auto' || int.test(s0);
     case 'text-decoration-style':
@@ -2207,6 +2222,28 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       }
       const px = lengthPx(raw, ctx);
       return px !== undefined ? `${+px.toFixed(4)}px` : raw;
+    }
+    case 'transform': {
+      // 計算値は、指定のまま、長さだけを絶対の長さにする (Transforms 1 §4)。translate 系の関数の引数の長さを px に (百分率はそのまま)
+      if (lv === 'none') return 'none';
+      return raw.trim().replace(/\b(translate[xy]?)\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_m, fn: string, body: string) => {
+        const as = splitTop(body, ',').map((a) => {
+          const px = /%\s*$/.test(a) ? undefined : lengthPx(a, { ...ctx, pct: undefined });
+          return px !== undefined ? `${+px.toFixed(4)}px` : a.trim();
+        });
+        return `${fn.toLowerCase()}(${as.join(', ')})`;
+      });
+    }
+    case 'translate':
+    case 'transform-origin': {
+      // 長さは px に (百分率と語はそのまま。Transforms 1 §5・Transforms 2 §5)
+      if (lv === 'none') return 'none';
+      return tokens(raw)
+        .map((t) => {
+          const px = /%$/.test(t) ? undefined : lengthPx(t, { ...ctx, pct: undefined });
+          return px !== undefined ? `${+px.toFixed(4)}px` : t.toLowerCase();
+        })
+        .join(' ');
     }
     case 'border-top-left-radius':
     case 'border-top-right-radius':

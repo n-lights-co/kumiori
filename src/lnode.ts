@@ -80,6 +80,10 @@ export interface LNode {
   /** 斜めの罫線 (Area の diagonals と同じ) */
   diag?: Array<{ kind: 'tlbr' | 'trbl'; side: import('./types').BorderSide }>;
   shadow?: import('./types').BoxShadow | import('./types').BoxShadow[];
+  /** 描くときだけの効果 (transform・opacity)。toArea が Area に印を付け、組み終えてから Area の transform・opacity にする (paintEffect.ts) */
+  fx?: import('./types').PaintEffect;
+  /** 字の背景の箱: 字を作った入力の節の番号 (効果を付けるときにだけ使う。Area の sourceRef にはしない) */
+  fxRef?: number;
   /** line: ページを持たない Flow (セル・コンテナの中) で組んだ行の脚注。親が置いたときに、そのページの脚注領域へ積む */
   fns?: import('./types').LFootnote[];
   /** 段組の段 (0 始まり)。行番号の数え直し・置く側の判定に使う */

@@ -34,10 +34,10 @@ describe('未対応の CSS の数え上げ (cssUnsupported)', () => {
   it('未対応のプロパティ・値・知らないプロパティを数える (対応しているもの・接頭辞付き・カスタム プロパティは数えない)', () => {
     const css = parseCss(
       '.g { display: grid; grid-template-areas: "a b"; grid-template-columns: 1fr 1fr } .s { position: sticky; top: 0 } .t { writing-mode: sideways-lr }' +
-        ' p { hyphens: auto; opacity: .5; -webkit-line-clamp: 2; --gap: 1em; margin-inline: 1em; colr: red } h1 { text-shadow: 0 0 1px #000; opacity: 1 !important }',
+        ' p { hyphens: auto; outline: 1px solid; -webkit-line-clamp: 2; --gap: 1em; margin-inline: 1em; colr: red; opacity: .5; transform: rotate(5deg) } h1 { text-shadow: 0 0 1px #000; outline: none !important }',
     );
     const r = unsupportedCssReport(css);
-    expect(r.unsupported).toEqual({ 'grid-template-areas': 1, 'position: sticky': 1, 'writing-mode: sideways-lr': 1, opacity: 2, 'text-shadow': 1 });
+    expect(r.unsupported).toEqual({ 'grid-template-areas': 1, 'position: sticky': 1, 'writing-mode: sideways-lr': 1, outline: 2, 'text-shadow': 1 });
     expect(r.unknown).toEqual({ colr: 1 });
   });
   it('一覧は対応仕様説明書 16 章の「対応していないプロパティ」と同じ', () => {
@@ -76,10 +76,10 @@ describe('typeset の warnings', () => {
   it('HTML: 未対応の CSS と知らないプロパティを 1 行ずつ知らせる (style 属性も数える)。無ければ出さない', async () => {
     const html =
       '<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title><style>.g { display: grid; grid-template-areas: "a b" } .s { position: sticky }</style></head>' +
-      '<body><div class="g"><p>a</p><p>b</p></div><p class="s" style="opacity: .5; colr: red">s</p></body></html>';
+      '<body><div class="g"><p>a</p><p>b</p></div><p class="s" style="outline: 1px solid; colr: red">s</p></body></html>';
     const r = await typesetHtml(html, { name: 't.html', loadFont });
     const miss = r.warnings.find((w) => w.startsWith('未対応の CSS を無視しました: '));
-    expect(miss).toBe('未対応の CSS を無視しました: grid-template-areas、opacity、position: sticky');
+    expect(miss).toBe('未対応の CSS を無視しました: grid-template-areas、outline、position: sticky');
     const unknown = r.warnings.find((w) => w.startsWith('知らない CSS のプロパティを無視しました'));
     expect(unknown).toBe('知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr');
     const clean = await typesetHtml('<!DOCTYPE html><html><head><title>t</title><style>p { margin: 1em; text-indent: 1em; hyphens: auto }</style></head><body><p>x</p></body></html>', { name: 't.html', loadFont });

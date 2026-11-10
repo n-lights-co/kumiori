@@ -23,6 +23,13 @@ This document collects the rules for the `AreaTree` returned by `LayoutEngine.la
   - `x` and `y` are the top left of the bounding rectangle after rotation.
   - The children's coordinates are local coordinates before rotation.
 - `GlyphArea.rotation` is the rotation of the glyph (clockwise) and is distinct from the box rotation `orientation`.
+- When `transform` (a paint-time transform; CSS `transform`) is present:
+  - The value is a matrix `[a, b, c, d, e, f]`, with x' = a·x + c·y + e and y' = b·x + d·y + f (y points down).
+  - The origin of the matrix coordinates is the point `x`, `y` of this Area (the top left of its border-box).
+  - It is applied only when painting this Area and its descendants. `x`, `y`, `width`, `height` and the children's coordinates are those from before the transform (layout does not know about the transform).
+- When `opacity` (CSS `opacity`; 0 or more and less than 1) is present, this Area and its descendants are rendered as one image and then blended with that opacity (overlapping parts inside do not become darker). When `transform` is also present, the transformed image is blended.
+- An Area with `transform` or `opacity` is painted as a whole in the inline-content phase, without being split into background and content, even where there are floats (`float`).
+- When an inline element (such as a `span` with a border) has `opacity` or `transform`, an `inline` Area (without `sourceRef`) that groups its frame and content is created and carries them.
 
 ## Nodes and children
 

@@ -26,9 +26,11 @@ export function documentNodes(doc: LDocument): object[] {
 
 const REFS = new WeakMap<object, number>();
 
-/** 入力の節に通し番号を付ける (組版の始めに 1 回) */
-export function indexDocument(doc: LDocument) {
-  documentNodes(doc).forEach((n, k) => REFS.set(n, k));
+/** 入力の節に通し番号を付ける (組版の始めに 1 回)。番号の順の節の並びを返す */
+export function indexDocument(doc: LDocument): object[] {
+  const nodes = documentNodes(doc);
+  nodes.forEach((n, k) => REFS.set(n, k));
+  return nodes;
 }
 
 /** 入力の節の通し番号 (付いていなければ undefined) */

@@ -31,6 +31,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - 圏点の色 (`text-emphasis-color`) と付ける側 (`text-emphasis-position`。横書きの `under`、縦書きの `left`) に対応。一括指定の `text-emphasis` に色を書ける
   - 文書の CSS の `fill`・`stroke`・`color` など (`stroke-width`・`fill-opacity`・`stroke-opacity`・`opacity`・`fill-rule`・線の端・角・破線) が、文書の中にじかに書いた `<svg>` に効く。`currentColor` は、`<svg>` の外から継承した `color` になる (`svg { fill: currentColor }` と `.icon { color: red }` でアイコンに色が付く)。SVG の画像でも、`color` の属性と `currentColor`、`rgba()` の色の不透明度を読む
   - 色の関数 `hwb()`・`lab()`・`lch()`・`oklab()`・`oklch()`・`color()` (CSS Color 4) と `color-mix()` (CSS Color 5) に対応。出力は sRGB で、sRGB の色域の外の色は、明るさと色相を保って彩度を下げて色域に収める (CSS Color 4 §14.2)。これまでは、これらの色を書いた宣言は捨てていた (色は初期値や継承した値になっていた)
+  - 変形 (`transform` の 2D の関数 `translate()`・`scale()`・`rotate()`・`skew()`・`matrix()` とその並び、`transform-origin`・`transform-box`、`translate`・`rotate`・`scale`) と、不透明度 (`opacity`。箱と中身をまとめて半透明にする。PDF は透明のグループ) に対応。どちらも描くときだけに効き、組版 (位置・大きさ・ページ分け) は変えない。3D の変換は未対応として知らせる
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)

@@ -176,7 +176,7 @@ describe('HTM-24 li の改ページの指定 (Fragmentation 3 §3.1)', () => {
 
 describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   it('名前は読むが組版に使わない性質は、対応していないと答える', () => {
-    for (const c of ['transform: rotate(5deg)', 'opacity: .5', 'font-variant-alternates: historical-forms', 'object-position: top', 'text-decoration-skip-ink: none', 'text-underline-position: under', 'list-style-image: url(a.png)', 'text-shadow: 1px 1px red', 'outline: 1px solid'])
+    for (const c of ['font-variant-alternates: historical-forms', 'object-position: top', 'text-decoration-skip-ink: none', 'text-underline-position: under', 'list-style-image: url(a.png)', 'text-shadow: 1px 1px red', 'outline: 1px solid'])
       expect(matchSupports(`(${c})`), c).toBe(false);
     // 未対応の一覧の性質は、どれも偽
     expect([...UNSUPPORTED_CSS_PROPERTIES].filter((p) => matchSupports(`(${p}: initial)`))).toEqual([]);
@@ -185,6 +185,11 @@ describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   it('対応している性質の、読まない値は、対応していないと答える (!important・大文字も同じ)', () => {
     for (const c of ['position: sticky', 'display: run-in', 'writing-mode: sideways-lr', 'position: sticky !important', 'POSITION: STICKY']) expect(matchSupports(`(${c})`), c).toBe(false);
     for (const c of ['position: relative', 'display: block', 'writing-mode: vertical-rl', 'position: absolute !important']) expect(matchSupports(`(${c})`), c).toBe(true);
+    // 変換は 2D だけを読む: 3D の関数・3D になる rotate・translate・scale は偽
+    for (const c of ['transform: rotateX(10deg)', 'transform: translate(1px) perspective(10px)', 'transform: matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)', 'rotate: x 10deg', 'translate: 1px 2px 3px', 'scale: 1 1 2']) expect(matchSupports(`(${c})`), c).toBe(false);
+    for (const c of ['transform: rotate(5deg)', 'transform: translate(1em, 50%) scale(2) skewX(10deg)', 'transform: rotateZ(10deg)', 'transform: none', 'opacity: .5', 'opacity: 50%', 'transform-origin: left top', 'transform-box: content-box', 'rotate: 10deg', 'rotate: z 10deg', 'translate: 1px 2px', 'scale: 2 3'])
+      expect(matchSupports(`(${c})`), c).toBe(true);
+    for (const c of ['transform: foo(1)', 'transform: 10px', 'transform-box: padding-box', 'opacity: red']) expect(matchSupports(`(${c})`), c).toBe(false);
   });
 
   it('一括指定は、未対応の性質に初期値でない値を入れるものだけ偽にする', () => {
@@ -206,15 +211,15 @@ describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   });
 
   it('not・and・or と、@supports の規則・@import の supports() に効く', async () => {
-    expect(matchSupports('not (transform: rotate(5deg))')).toBe(true);
+    expect(matchSupports('not (text-shadow: 1px 1px red)')).toBe(true);
     expect(matchSupports('(display: block) and (position: sticky)')).toBe(false);
-    expect(matchSupports('(transform: none) or (display: block)')).toBe(true);
-    expect(supportsCssDeclaration('transform', 'none')).toBe(false);
-    const css = '@supports (transform: rotate(5deg)) { .t { color: red } } @supports not (transform: rotate(5deg)) { .nt { color: red } } @supports (position: sticky) { .s { color: red } } @supports (display: grid) { .g { color: red } } p { color: blue; @supports (opacity: .5) { margin: 0 } }';
+    expect(matchSupports('(text-shadow: none) or (display: block)')).toBe(true);
+    expect(supportsCssDeclaration('text-shadow', 'none')).toBe(false);
+    const css = '@supports (text-shadow: 1px 1px red) { .t { color: red } } @supports not (text-shadow: 1px 1px red) { .nt { color: red } } @supports (position: sticky) { .s { color: red } } @supports (display: grid) { .g { color: red } } p { color: blue; @supports (outline: 1px solid) { margin: 0 } }';
     const rules = parseCss(css).rules;
     expect(rules.map((r) => r.selector)).toEqual(['.nt', '.g', 'p']);
     const files = { 't.css': '.t { color: red }', 'g.css': '.g { color: red }', 's.css': '.s { color: red }' };
-    expect(await selectors('<style>@import "t.css" supports(transform: rotate(5deg)); @import "g.css" supports(display: grid); @import "s.css" supports((position: sticky));</style>', A4, files)).toEqual(['.g']);
+    expect(await selectors('<style>@import "t.css" supports(text-shadow: 1px 1px red); @import "g.css" supports(display: grid); @import "s.css" supports((position: sticky));</style>', A4, files)).toEqual(['.g']);
   });
 });
 
@@ -258,7 +263,7 @@ describe('PKG-18 @supports は、読めない値の宣言を偽にする (Condit
     for (const c of ['--x: anything goes', '--x: foo(', '--x:', '--色: 1']) expect(matchSupports(`(${c})`), c).toBe(true);
     for (const c of ['color: var(--c)', 'display: var(--d)', 'width: var(--w, 10px)', 'margin: var(--m) 1px', 'border: var(--b)', 'color: VAR(--c)']) expect(matchSupports(`(${c})`), c).toBe(true);
     // var() があっても、知らない性質・未対応の性質は偽のまま
-    for (const c of ['foo: var(--x)', 'transform: var(--t)', 'cursor: var(--c)']) expect(matchSupports(`(${c})`), c).toBe(false);
+    for (const c of ['foo: var(--x)', 'text-shadow: var(--t)', 'cursor: var(--c)']) expect(matchSupports(`(${c})`), c).toBe(false);
   });
 
   it('@supports の答えは、カスケードが宣言を受け付けるかと同じ', () => {

@@ -656,7 +656,7 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
   // リンク・注釈つきの inline も同じ枠の仕組みで、行ごとの範囲を求める (空きは置かない)
   const hasBox = !!(c.border || c.padding);
   if ((hasBox || c.link || c.annotation) && kids.length) {
-    const frame: InlineFrame = { id: ++frameSeq, border: normBorder(c.border), padding: normEdges(c.padding), bg: c.backgroundColor, box: hasBox, ...(c.borderRadius ? { radius: c.borderRadius } : {}) };
+    const frame: InlineFrame = { id: ++frameSeq, border: normBorder(c.border), padding: normEdges(c.padding), bg: c.backgroundColor, box: hasBox, ...(c.borderRadius ? { radius: c.borderRadius } : {}), ...(hasBox && c.paintEffect ? { fx: c.paintEffect } : {}) };
     if (c.link) frame.link = c.link;
     if (c.annotation) frame.annot = c.annotation;
     if (hasBox) {

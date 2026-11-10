@@ -136,6 +136,8 @@ export interface InlineFrame {
   bg?: string;
   /** 角丸 (border-radius)。枠の罫線と背景を丸め、中の画像も丸めて切り抜く */
   radius?: BorderRadius;
+  /** 描くときだけの効果 (transform・opacity)。枠の Area に印を付け、組み終えてから中身とまとめて付ける (paintEffect.ts) */
+  fx?: import('./types').PaintEffect;
   /** 罫線・余白を描く枠か (false ならリンク・注釈の範囲だけを示す) */
   box: boolean;
   link?: LinkTarget;
@@ -1459,7 +1461,8 @@ export function buildLineNode(
     const bg = group[0].a.bg;
     if (bg) {
       const ext = emExtent(group.map((g) => g.a), lm, emTop, wm);
-      line.children.unshift(newNode('block', wm, { i: gStart, b: ext.top, isize: span, bsize: ext.size, bg }));
+      // (fxRef: 字の背景も、字と同じ節の効果 (opacity) に入れるための番号。Area の sourceRef にはしない)
+      line.children.unshift(newNode('block', wm, { i: gStart, b: ext.top, isize: span, bsize: ext.size, bg, ...(group[0].a.ref !== undefined ? { fxRef: group[0].a.ref } : {}) }));
     }
     const inline = newNode('inline', wm, { i: gStart, b: emTop, isize: span, bsize: lm.em });
     for (const { a, off, w, ov, dx } of group) {
@@ -1636,6 +1639,7 @@ function drawInlineFrames(line: LNode, entries: { a: Atom; off: number; w: numbe
         border,
         bg: f.bg,
         ...(f.radius ? { radius: f.radius } : {}),
+        ...(f.fx ? { fx: f.fx } : {}),
       }),
     );
   }

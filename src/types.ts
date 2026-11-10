@@ -325,6 +325,37 @@ export type BreakKind = 'page' | 'column' | 'odd-page' | 'even-page';
 export interface BaseNode extends TextStyle {
   id?: string;
   writingMode?: WritingMode;
+  /**
+   * 描くときだけに効く効果 (CSS の transform・opacity)。組版 (箱の位置・大きさ・ページ分け) には関わらない。
+   * 組んだ後で、この節から作った Area に transform・opacity として付ける (paintEffect.ts)
+   */
+  paintEffect?: PaintEffect;
+}
+
+/** 変換の長さ: pt か、基準の箱の幅 (横)・高さ (縦) に対する百分率 */
+export type TransformLength = number | `${number}%`;
+
+/**
+ * 変換の関数 1 つ (CSS Transforms 1 §9.1 の 2D の関数)。translateX・scaleY などは、translate・scale にして持つ (§9.2)。
+ * 角度は度 (時計回りが正。y は下向き)。matrix の e・f は pt
+ */
+export type TransformFunction =
+  | { fn: 'matrix'; m: [number, number, number, number, number, number] }
+  | { fn: 'translate'; x: TransformLength; y: TransformLength }
+  | { fn: 'scale'; x: number; y: number }
+  | { fn: 'rotate'; deg: number }
+  | { fn: 'skew'; x: number; y: number };
+
+/** 描くときだけに効く効果 (BaseNode.paintEffect) */
+export interface PaintEffect {
+  /**
+   * 変換 (CSS の transform と、translate・rotate・scale)。functions は左から掛ける (§3)。origin は変換の原点 (transform-origin。
+   * 基準の箱の左上から。無ければ中央 50% 50%)。box は基準の箱 (transform-box。無ければ border の箱)。
+   * ページ・段で分かれた箱は、断片ごとに、その断片の箱を基準に変換する (CSS Fragmentation 3 §5.5)
+   */
+  transform?: { functions: TransformFunction[]; origin?: [TransformLength, TransformLength]; box?: 'content-box' };
+  /** 不透明度 (CSS の opacity。0〜1)。箱とその中身をまとめて 1 枚の絵にしてから、この濃さで重ねる (CSS Color 4 §3.3) */
+  opacity?: number;
 }
 
 /**
@@ -1525,6 +1556,17 @@ export interface AreaBase {
    * (GlyphArea.rotation は「文字」の回転なので別物。名前を分けている)
    */
   orientation?: Rotation;
+  /**
+   * 描くときの変換 (CSS の transform)。[a, b, c, d, e, f] は x' = a·x + c·y + e、y' = b·x + d·y + f (y は下向き、pt)。
+   * 座標の原点は、この Area の x・y の点 (border-box の左上。orientation があれば回転後の外接矩形の左上)。
+   * この Area とその子孫を描くときだけに掛ける。x・y・width・height と子の座標は、変換の前のまま (組版は変換を知らない)
+   */
+  transform?: [number, number, number, number, number, number];
+  /**
+   * 不透明度 (CSS の opacity。0 以上 1 未満。1 のときは欄が無い)。この Area とその子孫をまとめて 1 枚の絵にしてから、この濃さで重ねる
+   * (中の重なりは濃くならない)。transform と両方あれば、変換した絵を重ねる
+   */
+  opacity?: number;
   /** 内容を padding の外端で切り抜く (overflow="hidden" 等) */
   clip?: boolean;
   /** CSS の回り込み (float) の箱。親の流れの中のブロックの背景より手前、行内の中身より奥に描く (CSS 2.1 §9.5) */

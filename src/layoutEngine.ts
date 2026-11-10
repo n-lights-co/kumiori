@@ -14,6 +14,8 @@ import { msg } from './messages';
 import { gradientSvg } from './cssGradient';
 import { AREA_TREE_SCHEMA_VERSION, walkAreas, type AreaNode } from './areaTree';
 import { copySourceRef, indexDocument, sourceRef } from './sourceRef';
+import { applyPaintEffects, collectPaintEffects, PAINT_EFFECT_MARK, PAINT_REF_MARK, paintEffectState, type PaintEffectEntry } from './paintEffect';
+import type { PaintEffect } from './types';
 import { attachResources } from './areaResources';
 import type {
   Annotation,
@@ -185,6 +187,8 @@ interface BoxDesc {
   radius?: BorderRadius;
   diag?: LNode['diag'];
   shadow?: BoxShadow | BoxShadow[];
+  /** 描くときだけの効果 (transform・opacity。BaseNode.paintEffect) */
+  fx?: PaintEffect;
   /** リンク・注釈 (最初の断片にだけ付ける) */
   link?: LinkTarget;
   annot?: Annotation;
@@ -291,6 +295,7 @@ function describeBox(node: BoxStyle & { id?: string; link?: LinkTarget; annotati
     annot: node.annotation,
     radius: node.borderRadius,
     shadow: node.boxShadow,
+    fx: (node as { paintEffect?: PaintEffect }).paintEffect,
     diag: diagonalsOf(node, wm),
   };
 }
@@ -1365,8 +1370,8 @@ class Flow {
   }
 
   /** 箱の飾り (背景画像・斜めの罫線) を LNode へ渡す */
-  private decorOf(desc: BoxDesc): { bgImage?: LNode['bgImage']; diag?: LNode['diag'] } {
-    return { ...this.bgImageOf(desc), ...(desc.diag ? { diag: desc.diag } : {}) };
+  private decorOf(desc: BoxDesc): { bgImage?: LNode['bgImage']; diag?: LNode['diag']; fx?: LNode['fx'] } {
+    return { ...this.bgImageOf(desc), ...(desc.diag ? { diag: desc.diag } : {}), ...(desc.fx ? { fx: desc.fx } : {}) };
   }
 
   /** 背景画像の大きさを決める (指定が無ければ画像本来の大きさ。画像が無ければ描かない) */
@@ -4544,7 +4549,7 @@ class Flow {
     const n = Math.max(...cells.map((c) => c.roots.length));
     const out: LNode[] = [];
     for (let k = 0; k < n; k++) {
-      const rn = newNode('row', this.wm, { isize: total, src: row.id, ref: sourceRef(row) });
+      const rn = newNode('row', this.wm, { isize: total, src: row.id, ref: sourceRef(row), ...(row.paintEffect ? { fx: row.paintEffect } : {}) });
       let h = 0;
       for (const c of cells) {
         const content = c.roots[k]?.children ?? [];
@@ -4598,7 +4603,7 @@ class Flow {
     const nCols = sizes.length;
     interface Placed { node: LNode; row: number; span: number; align?: LTableCell['blockAlign']; stretch?: boolean; stretchMax?: number }
     const placed: Placed[] = [];
-    const rowNodes = rows.map((r) => newNode('row', this.wm, { isize: total, src: r.id, ref: sourceRef(r) }));
+    const rowNodes = rows.map((r) => newNode('row', this.wm, { isize: total, src: r.id, ref: sourceRef(r), ...(r.paintEffect ? { fx: r.paintEffect } : {}) }));
     const rowStyles = rows.map((row) => resolveStyle(st, row));
     // グリッドへの割り付け (placeCells): 上の行から伸びてきたセルが占める列は飛ばす。rowSpan はこの行グループの末尾で切る
     for (const { cell, r: j, c: col, rs, cs } of placeCells([rows]).placed) {
@@ -5077,6 +5082,9 @@ export function toArea(n: LNode, parentWm: WritingMode, PW: number): Area {
     ...(n.radius ? { borderRadius: n.radius } : {}),
     ...(n.diag ? { diagonals: n.diag } : {}),
     ...(n.shadow ? { boxShadow: n.shadow } : {}),
+    // 描くときだけの効果の印 (組み終えたら applyPaintEffects が transform・opacity に直して消す)
+    ...(n.fx ? { [PAINT_EFFECT_MARK]: n.fx } : {}),
+    ...(n.fxRef !== undefined && paintEffectState.on ? { [PAINT_REF_MARK]: n.fxRef } : {}),
     ...(n.link ? { link: n.link } : {}),
     ...(n.annot ? { annotation: n.annot } : {}),
     ...(n.form ? { formField: n.form } : {}),
@@ -5647,9 +5655,14 @@ export class LayoutEngine {
     return tree;
   }
 
+  /** 描くときだけの効果 (transform・opacity) を持つ入力の節 (layoutPasses が集め、組み終えた Area に付ける) */
+  private paintEffects: PaintEffectEntry[] | undefined;
+
   private layoutPasses(doc: LDocument): AreaTree {
     // 入力の節に通し番号を付ける (Area の sourceRef)
-    indexDocument(doc);
+    // 描くときだけの効果 (transform・opacity) を持つ節 (無い文書では undefined。組んだ後で Area に付ける)
+    this.paintEffects = collectPaintEffects(indexDocument(doc));
+    paintEffectState.on = !!this.paintEffects;
     this.seqMemo = [];
     this.citations = undefined;
     this.citationUsed = false;
@@ -5856,6 +5869,7 @@ export class LayoutEngine {
     // 索引のページ番号のリンクのうち、ページそのものを飛び先にするもの (範囲の途中のページ・ページをまたぐ所の 2 ページ目から)
     for (const ex of this.indexUsed.values()) for (const n of ex.pageDests) if (n < pages.length) destinations[indexPageDest(n)] = n;
     this.registerGradients(sheets);
+    if (this.paintEffects) applyPaintEffects(sheets, this.paintEffects);
     return {
       schemaVersion: AREA_TREE_SCHEMA_VERSION,
       title: doc.title ?? doc.info?.title,

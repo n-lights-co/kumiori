@@ -80,6 +80,11 @@ export interface Painter {
   drawImageTiled?(a: ImageArea, x: number, y: number, region: Rect): boolean;
   /** 座標変換 m = [a,b,c,d,e,f] (局所 → Sheet 座標, x' = a·x + c·y + e, y' = b·x + d·y + f) の中で draw を実行する */
   transform(m: Matrix, draw: () => void): void;
+  /**
+   * draw で描くものをまとめて 1 枚の絵にしてから、不透明度 opacity で重ねる (CSS の opacity。Color 4 §3.3: 中の重なりは濃くならない)。
+   * 実装しない描画先では、paint は draw をそのまま (不透明のまま) 描く
+   */
+  group?(opacity: number, draw: () => void): void;
   strokeLine(l: Line, width: number, color?: string): void;
   clipRect(r: Rect): void;
   restore(): void;
@@ -291,6 +296,29 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
  * OpenBox を返す。子の無い領域 (字・画像) と、この段では描かない領域は、ここで描き終えて undefined を返す
  */
 function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase): OpenBox | undefined {
+  if (a.transform || a.opacity !== undefined) {
+    // 変換・不透明度の付いた箱 (CSS の transform・opacity) は、重ね合わせの文脈を作る (Transforms 1 §3・Color 4 §3.3):
+    // 背景の段と中身の段に分けず、中身の段でまるごと描く (位置指定の箱と同じく、回り込みと行内の中身より後)
+    if (phase === 'bg') return undefined;
+    const { transform: t, opacity, ...rest } = a;
+    const plain = rest as Area;
+    // 逆行列の無い変換 (scale(0) など) の箱と中身は描かない (Transforms 1 §10)。不透明度 0 の箱も見えない
+    if ((t && Math.abs(t[0] * t[3] - t[1] * t[2]) < 1e-12) || (opacity !== undefined && opacity <= 0)) return undefined;
+    const body = () => (opacity !== undefined && opacity < 1 && p.group ? p.group(opacity, () => paintArea(plain, ox, oy, p, 'all')) : paintArea(plain, ox, oy, p, 'all'));
+    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(`変換・回転した領域 (transform・opacity・orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`);
+    orientationDepth++;
+    try {
+      if (t) {
+        // 行列の原点は箱の左上 (X, Y): Sheet の座標では T(X, Y)·t·T(−X, −Y)
+        const X = ox + a.x;
+        const Y = oy + a.y;
+        p.transform([t[0], t[1], t[2], t[3], t[4] + X - t[0] * X - t[2] * Y, t[5] + Y - t[1] * X - t[3] * Y], body);
+      } else body();
+    } finally {
+      orientationDepth--;
+    }
+    return undefined;
+  }
   if (a.orientation) {
     // 局所座標系 (原点 = 箱の左上) へ移って、回転なしの箱として描く
     const m = rotationMatrix(a.orientation as 90 | 180 | 270, ox + a.x, oy + a.y, a.width, a.height);

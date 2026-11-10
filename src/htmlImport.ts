@@ -33,6 +33,8 @@ import type {
   BorderRadius,
   BorderSide,
   BoxShadow,
+  PaintEffect,
+  TransformFunction,
   LFloat,
   ConditionalPageMaster,
   LBlock,
@@ -58,6 +60,7 @@ import type {
   WritingMode,
 } from './types';
 import { TOTAL_PAGES_ID } from './types';
+import { parseIndividualTransform, parseTransformList, parseTransformOrigin } from './cssTransform';
 import type { ImportReport, ImportResult } from './xslfoImport';
 import { normalizeSrc } from './assets';
 import { countDroppedLink, judgeExternalLink, type LinkPolicy } from './linkPolicy';
@@ -1926,7 +1929,7 @@ class HtmlImporter {
     // 偶奇で左右に読み替える (float: sidenote を outside の側に置くときも、箱の内側の余白の内に置く)
     const f: LFloat = { type: 'float', float: side, children: [inner], ...(side === 'start' || side === 'end' || side === 'inside' || side === 'outside' ? { cssPlacement: true } : {}) };
     // 箱の寸法・余白・枠・背景は float に移す (外側の余白は本文との間隔、幅は回り込みの幅になる)
-    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'borderRadius', 'boxShadow', 'width', 'height', 'boxSizing', 'clear'] as const) {
+    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'borderRadius', 'boxShadow', 'paintEffect', 'width', 'height', 'boxSizing', 'clear'] as const) {
       if (inner[k] === undefined) continue;
       (f as unknown as Record<string, unknown>)[k] = inner[k];
       delete inner[k];
@@ -2029,6 +2032,8 @@ class HtmlImporter {
   private localCb(start: Element | null): Element | undefined {
     for (let p = start; p && p !== this.bodyEl && p.localName !== 'html'; p = p.parentElement) {
       const pos = this.cs(p)('position');
+      // 変換の付いた箱は、中の絶対配置・固定配置の箱の基準になる (Transforms 1 §3: containing block for all descendants)
+      if ((!pos || pos === 'static') && this.paintEffectOf(p)?.transform) return this.plainBlock(p) ? p : undefined;
       if (pos && pos !== 'static') {
         if (/^(relative|sticky)$/.test(pos)) return this.plainBlock(p) ? p : undefined;
         if (/^(absolute|fixed)$/.test(pos)) return p.localName !== 'img' && !/vertical|sideways/.test(this.cs(p)('writing-mode')) ? p : undefined;
@@ -2525,6 +2530,58 @@ class HtmlImporter {
     this.report.unsupported[what] = (this.report.unsupported[what] ?? 0) + 1;
   }
 
+  /** 要素ごとの、描くときだけの効果 (同じ要素から 2 つの節を作っても、同じ物を渡す: 効果を 2 重に掛けないため) */
+  private fxCache = new WeakMap<Element, Record<string, { fx?: PaintEffect }>>();
+  /**
+   * 描くときだけの効果 (transform・opacity)。組版には関わらない (Transforms 1 §3・Color 4 §3.3)。
+   *  - 変換は、変換できる要素にだけ効く (Transforms 1 §2: 置換要素でない行内の箱・表の列・列の組は除く)。
+   *    行列は、単位行列から、translate・rotate・scale の性質、transform の関数の並びの順に掛ける (Transforms 2 §6)
+   *  - 不透明度は、どの要素にも効く (Color 4 §3.3)。計算値は [0, 1] に丸める
+   * 読めない変換 (3D の関数など) は、変換を掛けず、未対応の値として知らせる
+   */
+  private paintEffectOf(el: Element, pseudo?: PseudoSel): PaintEffect | undefined {
+    let slot = this.fxCache.get(el);
+    if (!slot) this.fxCache.set(el, (slot = {}));
+    const hit = slot[pseudo ?? ''];
+    if (hit) return hit.fx;
+    const c = this.cs(el, pseudo);
+    const fx: PaintEffect = {};
+    const d = c('display');
+    const boxless = d === 'none' || d === 'contents';
+    const op = c('opacity');
+    if (op && op !== '1' && !boxless) {
+      const n = /%$/.test(op) ? parseFloat(op) / 100 : parseFloat(op);
+      if (Number.isFinite(n) && n < 1) fx.opacity = Math.max(n, 0);
+    }
+    const tv = c('transform');
+    const iv = (['translate', 'rotate', 'scale'] as const).map((p) => [p, c(p)] as const).filter(([, v]) => v && v !== 'none');
+    if (((tv && tv !== 'none') || iv.length) && !boxless) {
+      const replaced = !pseudo && /^(img|svg|object|video|canvas|iframe|embed|input|textarea|select|button|math)$/.test(el.localName);
+      if (!(/^(inline|table-column|table-column-group)$/.test(d) && !replaced)) {
+        const fns: TransformFunction[] = [];
+        let miss: string | undefined;
+        for (const [p, v] of iv) {
+          const f = parseIndividualTransform(p, v);
+          if (f && 'miss' in f) miss ??= f.miss;
+          else if (f) fns.push(f);
+        }
+        const list = parseTransformList(tv);
+        if ('miss' in list) miss ??= `transform: ${list.miss}`;
+        else fns.push(...list);
+        if (miss) this.miss(miss);
+        else if (fns.length) {
+          const origin = parseTransformOrigin(c('transform-origin'));
+          // 基準の箱 (Transforms 1 §6): CSS の箱を持つ要素では、fill-box は content-box、stroke-box・view-box (初期値) は border-box
+          const box = /^(content-box|fill-box)$/.test(c('transform-box')) ? 'content-box' : undefined;
+          fx.transform = { functions: fns, ...(origin ? { origin } : {}), ...(box ? { box } : {}) };
+        }
+      }
+    }
+    const out = fx.transform || fx.opacity !== undefined ? fx : undefined;
+    slot[pseudo ?? ''] = { fx: out };
+    return out;
+  }
+
   /** 文字の書式: 親と違うものだけ (CSS の継承は Kumiori の resolveStyle と同じく子へ引き継ぐ) */
   private textStyle(el: Element, parent: Element | undefined, pseudo?: PseudoSel): TextStyle {
     const c = this.cs(el, pseudo);
@@ -3004,6 +3061,9 @@ class HtmlImporter {
     }
     const id = pseudo ? null : el.getAttribute('id');
     if (id) o.id = id;
+    // 描くときだけの効果 (transform・opacity)
+    const fx = !pseudo || pseudo === '::before' || pseudo === '::after' ? this.paintEffectOf(el, pseudo) : undefined;
+    if (fx) o.paintEffect = fx;
     // visibility: hidden・collapse の箱は、背景・影を描かず、枠は太さを残して色を transparent にする (場所は変えない。CSS 2.1 §11.2)
     if (/^(hidden|collapse)$/.test(c('visibility'))) {
       delete o.backgroundColor;
@@ -3748,13 +3808,14 @@ class HtmlImporter {
       const ic: LInlineContainer = {
         type: 'inline-container',
         ...style,
+        ...(this.paintEffectOf(el, which) ? { paintEffect: this.paintEffectOf(el, which) } : {}),
         width: cssLen(c('width')),
         ...(Object.keys(pad).length ? { padding: pad } : {}),
         baselineFrom: 'last',
         children: [{ type: 'block', textIndent: 0, ...textIndentOf(c('text-indent')), textAlign: align, children: parts } as LBlock],
       };
       items.push({ v: ic, block: false });
-    } else if (Object.keys(style).length || this.opts.pseudoInlineBoxAh) items.push({ v: { type: 'inline', ...style, children: parts } as LInline, block: false });
+    } else if (Object.keys(style).length || this.opts.pseudoInlineBoxAh || this.paintEffectOf(el, which)) items.push({ v: { type: 'inline', ...style, ...(this.paintEffectOf(el, which) ? { paintEffect: this.paintEffectOf(el, which) } : {}), children: parts } as LInline, block: false });
     else for (const v of parts) items.push({ v, block: false });
   }
 
@@ -3770,6 +3831,8 @@ class HtmlImporter {
     if (h) cont.height = h;
     const [top, left, right, bottom] = [len('top'), len('left'), len('right'), len('bottom')];
     if (!w) cont.shrinkToFit = true;
+    const pfx = this.paintEffectOf(el, which);
+    if (pfx) cont.paintEffect = pfx;
     // 基準は、要素自身 (position が static でなければ) か、その祖先
     const cb = c('position') === 'absolute' ? this.localCb(el) : undefined;
     if (cb) this.placeInCb(cont, cb, { top, right, bottom, left });
@@ -3908,7 +3971,7 @@ class HtmlImporter {
     if (d === 'flow-root' || /^(hidden|auto|scroll)$/.test(ov)) b.bfc = true;
     // position が static でない箱は、中の絶対配置の箱の基準 (CSS 2.1 §10.1)。relative は、組んだ箱を left・top (無ければ right・bottom の逆) だけずらす (§9.4.3)
     const posv = c('position');
-    if (posv === 'relative' || posv === 'sticky') b.containingBlock = true;
+    if (posv === 'relative' || posv === 'sticky' || b.paintEffect?.transform) b.containingBlock = true;
     if (posv === 'relative') {
       const off = (p: 'top' | 'right' | 'bottom' | 'left') => (this.src.isAuto?.(el, p) === false ? cssLen(c(p)) : undefined);
       const x = off('left') ?? (off('right') !== undefined ? -off('right')! : 0);
@@ -4150,6 +4213,9 @@ class HtmlImporter {
     }
     // visibility: hidden・collapse の画像は、場所を残して描かない (色を transparent にして運ぶ。組版エンジンが画像に描かない印を付ける)
     if (/^(hidden|collapse)$/.test(this.cs(el)('visibility'))) img.color = 'transparent';
+    // 描くときだけの効果 (transform・opacity。画像は置換要素なので、行内でも変換できる)
+    const fx = this.paintEffectOf(el);
+    if (fx) img.paintEffect = fx;
     return img;
   }
 
@@ -4183,7 +4249,9 @@ class HtmlImporter {
       if (bs.border || bs.padding || bs.backgroundColor) {
         const rad = img.borderRadius;
         if (rad) img.borderRadius = innerRadius(rad, bs.border, bs.padding);
-        return [{ type: 'inline', ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline];
+        // 変換・不透明度は、枠ごとに掛ける (基準の箱は border の箱)
+        delete img.paintEffect;
+        return [{ type: 'inline', ...(bs.paintEffect ? { paintEffect: bs.paintEffect } : {}), ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline];
       }
       return [img];
     }
@@ -4415,6 +4483,8 @@ class HtmlImporter {
     }
     const inlId = el.getAttribute('id');
     if (inlId) inl.id = inlId;
+    // 不透明度 (opacity は行内の箱にも効く。変換は、置換要素でない行内の箱には効かない)
+    if (box.paintEffect) inl.paintEffect = box.paintEffect;
     // 中身の無い行内要素も、字の大きさと行の高さを行の箱に入れる (CSS 2.1 §10.8)
     if (!inl.children.length) inl.emptyStrut = true;
     const link = this.linkOf(el);
@@ -4537,6 +4607,8 @@ class HtmlImporter {
       if (box.margin) body.padding = { top: (box.margin as Record<string, number>).top ?? 0, bottom: (box.margin as Record<string, number>).bottom ?? 0 };
       return {
         type: 'table-row',
+        // 描くときだけの効果 (li の transform・opacity): 項目の行 (記号と本文) に掛ける
+        ...(box.paintEffect ? { paintEffect: box.paintEffect } : {}),
         ...rowBreaks(li, k),
         // 記号・番号は、本文の最初の行の基線にそろえる (CSS Lists: 外側の記号は最初の行の箱に置く)
         // 本文の最後の子の下の余白は、li の外へ抜けて次の項目との間に残る (CSS 2.1 §8.3.1)。セルの高さに含める
@@ -4621,6 +4693,8 @@ class HtmlImporter {
       type: 'table-row',
       // 行の書式 (表との差分)。セルの書式は行との差分なので、行に付けた font-size などをセルへ受け継がせる
       ...(anonCells ? {} : this.textStyle(tr, el)),
+      // 描くときだけの効果 (tr の transform・opacity)
+      ...(!anonCells && this.paintEffectOf(tr) ? { paintEffect: this.paintEffectOf(tr) } : {}),
       // 行の height は、行の高さの最小値 (CSS 2.1 §17.5.3)
       ...(() => {
         if (anonCells || this.src.isAuto?.(tr, 'height') !== false) return {};
@@ -4661,6 +4735,8 @@ class HtmlImporter {
       if (gid && rows[0] && !rows[0].id) rows[0].id = gid;
       const bg = bgOf(g);
       for (const r of rows) paintCells(r, bg);
+      // 行グループ (thead・tbody・tfoot) の箱は作らないので、その transform・opacity は掛けられない (未対応として知らせる)
+      if (this.paintEffectOf(g)) this.miss('transform・opacity (thead・tbody・tfoot)');
       const gb = collapse && rows.length ? this.boxStyle(g).border : undefined;
       if (gb) rows.forEach((r, k) => (r.group = { border: gb, first: k === 0, last: k === rows.length - 1 }));
     };
@@ -5325,6 +5401,9 @@ class HtmlImporter {
     const wm = this.wm(this.cs(bodyEl)('writing-mode')) ?? 'horizontal-tb';
     this.pagesRtl = wm === 'vertical-rl';
     const box = this.boxStyle(bodyEl);
+    // html・body はページをまたぐ本文の全体で、1 つの箱として描かないので、その transform・opacity は掛けられない (未対応として知らせる)
+    if (box.paintEffect || (html !== bodyEl && this.paintEffectOf(html))) this.miss('transform・opacity (html・body)');
+    delete box.paintEffect;
     // body の背景をページの背景にしたときは、body の箱には描かない (CSS と同じ)
     if (rootFromBody) {
       delete box.backgroundColor;
