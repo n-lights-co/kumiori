@@ -3568,6 +3568,25 @@ class Flow {
   /** 直前の measureColumns で、幅の指定のあるセルを含んでいた列 */
   private specifiedColumns: boolean[] = [];
 
+  /**
+   * 中身に合わせる列 (LTableColumn.fitContent) の幅を、いまの組版でのセルの中身の幅 (max-content。CSS Sizing 3 §5.1) にした表を返す。
+   * ページ番号の引用の字は、前回の組版の結果 (1 回目は仮の字) で測るので、番号の桁が変われば、次の組版で列の幅も変わる
+   * (flex の項目の基本の大きさは、中身の幅: Flexbox 1 §9.2 の 3 の E)。列をまたぐセルは見ない
+   */
+  private fitContentColumns(table: LTable, st: ResolvedStyle): LTable {
+    const rows = [...(table.header?.rows ?? []), ...table.body.rows, ...(table.footer?.rows ?? [])];
+    const fit = new Map<number, number>();
+    for (const { cell, c: col, cs: span } of placeCells([rows]).placed) {
+      if (span !== 1 || !table.columns[col]?.fitContent) continue;
+      const cst = resolveStyle(st, cell);
+      const sub = this.measureSub(cell.children, cst, 1e5, { intrinsic: true }).sub;
+      const w = Math.ceil(maxLineLength(sub.root) * 100) / 100 + 0.01 + describeBox(cell, cst.wm).bpI;
+      fit.set(col, Math.max(fit.get(col) ?? 0, w));
+    }
+    if (!fit.size) return table;
+    return { ...table, columns: table.columns.map((c, k) => (fit.has(k) ? { ...c, width: fit.get(k)! } : c)) };
+  }
+
   private measureColumns(table: LTable, st: ResolvedStyle, avail: number): number[] {
     const maxW: number[] = [];
     const minW: number[] = [];
@@ -3873,6 +3892,7 @@ class Flow {
     const spI = node.borderCollapse !== 'collapse' && node.borderSpacing ? node.borderSpacing.i : 0;
     const gaps = spI > 0 ? spI * (columnSizes(node, 0).length + 1) : 0;
     ({ node, desc } = this.tableColumnWidths(node, desc, st, ps, out, gaps));
+    if (node.columns.some((c) => c.fitContent)) node = this.fitContentColumns(node, st);
     // 表の見出し (CSS の caption): 表と見出しを包む箱 (table wrapper box) の中で、表の上か下に置く (CSS 2.1 §17.4)。
     // 包む箱が表の余白を持ち、幅は表の罫線の外側の幅。見出しはその幅のブロックとして組む
     const caps = node.captions ?? [];

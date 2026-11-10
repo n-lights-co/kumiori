@@ -1193,6 +1193,13 @@ export interface LTableColumn {
   widthExtra?: number;
   /** 列の罫線 (罫線を重ねる表 (collapse) でだけ使う。XSL §6.7.4) */
   border?: BorderInput;
+  /**
+   * 列の幅を、組むときに測ったセルの中身の幅 (max-content) にする (width は、測れないときの値)。
+   * 中身の幅が組むまで決まらない列に使う: ページ番号の引用 (target-counter(…, page)) を持つ flex の項目は、番号の桁の数が
+   * 組んでみるまで分からない (読み込みのときの見積もりの幅のままだと、桁が増えたときに番号が箱からはみ出すか、折り返す)。
+   * 幅の変わった分は、同じ表の比例 ('N*') の列が受ける
+   */
+  fitContent?: boolean;
 }
 
 export interface LTableCell extends BaseNode, BoxStyle {

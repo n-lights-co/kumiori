@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
+import { childrenOf } from '../src/areaTree';
 import { encodeJpeg } from '../src/jpeg';
 import { encodePngStored } from '../src/pixels';
 import { DEFAULT_FONTS, createTypesetter, typeset, typesetFo, typesetHtml, walkAreaTree, serializeAreaTree, parseAreaTree, type FontSpec, type GlyphArea } from '../src/index';
@@ -130,6 +131,38 @@ describe('公開 API: typeset', () => {
     walkAreaTree(r.areaTree, (a) => void (a.type === 'glyph' && (a as GlyphArea).text === 'H' && (g ??= a as GlyphArea)));
     expect(g!.color).toBe('#ff0000');
     expect(g!.fontSize).toBeCloseTo(30, 3);
+  });
+  it('flex の項目の中の target-counter(…, page): 箱の幅は組んだ番号の桁に合い、折り返しを許す指定があっても番号が割れない', async () => {
+    // 目次の行: 題・点線 (::before、flex: 1)・ページ番号 (::after)。sanitize.css などが html に付ける word-break: break-word があると、
+    // 1 桁分の幅の箱の中で「10」が「1 / 0」に折り返していた (番号の桁の数は、組むまで分からない)
+    const secs = Array.from({ length: 12 }, (_, i) => `<h2 id="s${i + 1}" style="break-before: page">S</h2><p>b</p>`).join('');
+    const toc = [1, 9, 10, 12].map((i) => `<li><a href="#s${i}">T</a></li>`).join('');
+    const css = `@page { size: A5; margin: 15mm } html { word-break: break-word } ul { list-style: none; padding: 0 }
+      a { display: flex; color: inherit; text-decoration: none }
+      a::before { content: ""; flex: 1; order: 1; border-bottom: 1px dotted #000; margin: 0 4pt }
+      a::after { content: target-counter(attr(href), page); order: 2 }
+      .lit a::after { content: "10" }`;
+    const r = await typeset(`<style>${css}</style><ul>${toc}</ul><ul class="lit">${toc}</ul>${secs}`, { loadFont });
+    expect(r.pageCount).toBe(13);
+    // 1 ページ目の数字の字を、行 (字の領域の上端の、紙面の上での位置) ごとにまとめる。領域の位置は親からの相対なので、たどりながら足す
+    const rows = new Map<number, Array<{ x: number; right: number; text: string }>>();
+    const visit = (a: Parameters<typeof childrenOf>[0], ox: number, oy: number) => {
+      const x = ox + a.x;
+      const y = oy + a.y;
+      if (a.type === 'glyph' && /^[0-9]+$/.test(a.text)) {
+        const key = Math.round(y);
+        rows.set(key, [...(rows.get(key) ?? []), { x, right: x + a.width, text: a.text }]);
+      }
+      for (const c of childrenOf(a)) visit(c, x, y);
+    };
+    visit(r.areaTree.sheets[0], 0, 0);
+    const lines = [...rows.entries()].sort((p, q) => p[0] - q[0]).map(([, gs]) => gs.sort((p, q) => p.x - q.x));
+    // 目次の 8 行 (番号は 1 行に 1 つ。割れていれば行が増える) の番号: 飛び先のページ (1 ページ目は目次) と、じかに書いた "10"
+    const toc8 = lines.slice(0, 8);
+    expect(toc8.map((gs) => gs.map((g) => g.text).join(''))).toEqual(['2', '10', '11', '13', '10', '10', '10', '10']);
+    // 番号の右端は、どの行も容器の右端 (じかに書いた "10" の行と同じ位置) に揃う
+    const right = (gs: Array<{ right: number }>) => gs[gs.length - 1].right;
+    for (const gs of toc8) expect(right(gs)).toBeCloseTo(right(toc8[4]), 1);
   });
   it('http(s) の CSS は取りに行く (fetchStyles。既定 true)。false なら取らずに警告。拡張子の無い CSS (css2?family=…) も CSS として読む', async () => {
     const http = await import('node:http');
