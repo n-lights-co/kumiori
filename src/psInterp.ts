@@ -1552,16 +1552,36 @@ function installCoreOperators(I: Interp) {
     const s = I.popString();
     const a = strBytes(s);
     const b = strBytes(seek);
-    for (let i = 0; i + b.length <= a.length; i++) {
-      let ok = true;
-      for (let k = 0; k < b.length && ok; k++) ok = a[i + k] === b[k];
-      if (ok) {
-        I.push({ ...s, o: s.o + i + b.length, n: s.n - i - b.length });
-        I.push({ ...s, o: s.o + i, n: b.length });
-        I.push({ ...s, n: i });
-        I.push(TRUE);
-        return;
+    // 探す手間は、2 つの長さの和に比例させる (Knuth・Morris・Pratt の探し方。素朴な二重のループは長さの積に比例し、
+    // 10 万字の中から 5 万字を探すだけで数秒かかる)。その手間は、時間とステップの上限に数える
+    const n = a.length;
+    const m = b.length;
+    I.work(n + m);
+    let at = -1;
+    if (m === 0) at = 0;
+    else if (m <= n) {
+      // fail[i]: b の先頭 i + 1 字の、前と後ろで一致する最も長い部分 (全体を除く) の長さ
+      const fail = new Int32Array(m);
+      for (let i = 1, k = 0; i < m; i++) {
+        while (k > 0 && b[i] !== b[k]) k = fail[k - 1];
+        if (b[i] === b[k]) k++;
+        fail[i] = k;
       }
+      for (let i = 0, k = 0; i < n; i++) {
+        while (k > 0 && a[i] !== b[k]) k = fail[k - 1];
+        if (a[i] === b[k]) k++;
+        if (k === m) {
+          at = i - m + 1;
+          break;
+        }
+      }
+    }
+    if (at >= 0) {
+      I.push({ ...s, o: s.o + at + m, n: s.n - at - m });
+      I.push({ ...s, o: s.o + at, n: m });
+      I.push({ ...s, n: at });
+      I.push(TRUE);
+      return;
     }
     I.push(s);
     I.push(FALSE);

@@ -324,3 +324,48 @@ describe('PostScript: resourceforall の型紙 (PLRM §8.2 filenameforall の型
     expect(long.error).toBe('limit:steps');
   });
 });
+
+describe('PostScript の上限: 長さに比例して回る演算子の手間', () => {
+  it('search は、前と同じ結果を返す', () => {
+    expect(vals('(abbc) (bb) search')).toEqual(['c', 'bb', 'a', true]);
+    expect(vals('(abbc) (bc) search')).toEqual(['', 'bc', 'ab', true]);
+    expect(vals('(abbc) (ab) search')).toEqual(['bc', 'ab', '', true]);
+    expect(vals('(abbc) (x) search')).toEqual(['abbc', false]);
+    expect(vals('(abbc) (abbcd) search')).toEqual(['abbc', false]);
+    expect(vals('(abc) () search')).toEqual(['abc', '', '', true]);
+    expect(vals('() () search')).toEqual(['', '', '', true]);
+    expect(vals('() (a) search')).toEqual(['', false]);
+    // 途中まで合って外れる並び (探す側の先頭に戻る位置)
+    expect(vals('(aaab) (aab) search')).toEqual(['', 'aab', 'a', true]);
+    expect(vals('(abababc) (ababc) search')).toEqual(['', 'ababc', 'ab', true]);
+    expect(vals('(aabaabaac) (aabaac) search')).toEqual(['', 'aabaac', 'aab', true]);
+    // 最初に見つかった所
+    expect(vals('(xabxab) (ab) search')).toEqual(['xab', 'ab', 'x', true]);
+    // 部分の文字列 (getinterval) の中を探す
+    expect(vals('(xxabcxx) 2 3 getinterval (bc) search')).toEqual(['', 'bc', 'a', true]);
+  });
+  it('search の手間は長さの和に比例し、ステップとして数える', () => {
+    // 10 万字の中から 5 万字を探す (どこも 49999 字まで合って外れる): 素朴な探し方では 50 億回の比較
+    const src = '/s 100000 string def /k 50000 string def k 49999 1 put s k search';
+    const r = run(src);
+    expect(r.error).toBeUndefined();
+    expect(r.stack.map(show).slice(-1)).toEqual([false]);
+    expect(r.I.steps).toBeGreaterThan(150000 / 64);
+    expect(r.I.steps).toBeLessThan(10000);
+    expect(run(src, { maxSteps: 1000 }).error).toBe('limit:steps');
+  });
+  it('長い文字列の比較・名前への変換・辞書の鍵・写しも、ステップとして数える', () => {
+    const big = '/s 640000 string def /t 640000 string def ';
+    const steps = (op: string) => run(big + op).I.steps - run(big).I.steps;
+    for (const op of ['s t eq pop', 's t ne pop', 's t lt pop', 's t anchorsearch pop pop pop', 'userdict s known pop', 's where pop', 's 640000 string readonly eq pop']) {
+      expect(steps(op), op).toBeGreaterThanOrEqual(10000);
+      expect(steps(op), op).toBeLessThan(40000);
+    }
+    // 短い文字列では数えない
+    expect(run('(abc) (abc) eq pop (abc) (b) search pop pop pop pop').I.steps).toBeLessThan(20);
+  });
+  it('長い文字列を名前・鍵にしても、前と同じ値になる (まとめて文字にする)', () => {
+    expect(vals('/s 20000 string def 0 1 19999 { s exch dup 256 mod put } for s cvn length s cvn s eq s dup length string copy s eq')).toEqual([20000, true, true]);
+    expect(vals('/s 300 string def 0 1 299 { s exch dup 256 mod put } for /d 2 dict def d s 5 put d s get d s cvn get d s known')).toEqual([5, 5, true]);
+  });
+});
