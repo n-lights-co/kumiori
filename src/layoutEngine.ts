@@ -45,6 +45,8 @@ import type {
   LImage,
   LInlineContainer,
   LFootnote,
+  LIndexEntry,
+  LIndexPageCitationList,
   LInlineLevel,
   LMarker,
   LPageSequence,
@@ -61,6 +63,7 @@ import type {
   BoxStyle,
 } from './types';
 import { TOTAL_PAGES_ID } from './types';
+import { citedPageItems, collateCitedPages, type CitedPageItem, type IndexSource } from './indexCitation';
 import type { FontManager } from './fontManager';
 import type { Measurer } from './measurer';
 import { DEFAULT_LINE_BREAK, lineHeightOf, newNode, resolveStyle, type LNode, type ResolvedStyle } from './lnode';
@@ -341,6 +344,19 @@ interface FlowHost {
   warn(msg: string): void;
   /** page-number-citation: 参照先 id のページ番号 (文字列) */
   cite(refId: string, last?: boolean, format?: string, physical?: boolean, style?: ResolvedStyle, pageNumber?: number): string;
+  /**
+   * 索引のページ番号の並び (LIndexPageCitationList) を、字と行内の箱に置き換える。索引を使う文書 (LDocument.indexEntries がある) でだけ持つ。
+   * 置き換えるものが無ければ、渡した配列をそのまま返す
+   */
+  index?(run: InlineChild[]): InlineChild[];
+  /**
+   * 索引の目印 (領域を作らない所) の id か。その id は、行を作らない並びにあるとき、いまのページではなく、次の内容が置かれるページで記録する
+   * (XSL 1.1 §6.10.6: “If there are no areas returned from that formatting object then a cited page item is generated referring to the
+   * page containing the first area returned from a following formatting object, if any, or the last area returned from a preceding
+   * formatting object, if any.”)。範囲の終わりの印 ('end') は、いまのページ (前の内容のページ) で記録するが、ページを持たない流れ
+   * (セル・コンテナの中) では記録できないので、目印と同じ道で運ぶ。索引を使う文書でだけ持つ
+   */
+  indexPoint?(id: string): 'point' | 'end' | undefined;
   measurer: Measurer;
   /** いま組んでいるページの番号 (text-align の inside / outside の判定用)。無ければ 1 */
   pageNumber?: () => number;
@@ -430,7 +446,15 @@ interface PendingMarker {
   key?: object;
   /** ページの最初の内容と一緒に記録された (ページの先頭のマーカー。retrieve の start で使う) */
   atStart?: boolean;
+  /**
+   * マーカーではなく、索引の目印 (領域を作らない所。LIndexEntry.point) の id。マーカーと同じ道 (セル・コンテナの中から、ページを持つ流れへ) を通り、
+   * 次の内容が置かれるページで、id のページとして記録する (ページの markers には入れない)
+   */
+  indexId?: string;
 }
+
+/** 索引の目印を運ぶ、仮のマーカー (PendingMarker.indexId) */
+const INDEX_POINT_MARKER: LMarker = { type: 'marker', className: '\u0000kumiori-index-point', children: [] };
 
 /** id が置かれた最初と最後のページ (書式を当てた文字列) */
 interface IdPages {
@@ -2140,6 +2164,8 @@ class Flow {
 
   private layoutInlineRun(run: InlineChild[], st: ResolvedStyle, first: boolean, from?: { arr: object; at: number }) {
     this.rootStyle ??= st;
+    // 索引のページ番号の並び (XSL 1.1 §6.10.7) は、ここで字と行内の箱に置き換える (索引を使う文書だけ)
+    if (this.host.index) run = this.host.index(run);
     const L = this.contentI();
     const floating = this.deferredFloats.length > 0 || this.floats.some((f) => f.b1 > this.cursor + this.pendingValue() + EPS);
     // 同じ段落を同じ幅で組み直すとき (段の高さ揃え・keep-with-next の試し組みなど) は、行分けの結果を使い回す
@@ -2187,7 +2213,13 @@ class Flow {
       if (this.intrinsic) for (const a of atoms) a.intrinsic = true;
       // 中身の無い目印 (<a id="…"></a>) だけの並びは、行を作らない (字も中身も枠も無い行の箱は高さ 0。CSS 2.1 §9.4.2)。id だけを記録する
       if (atoms.some((a) => a.idMark) && atoms.every((a) => a.idMark || (a.kind === 'glyph' && a.isSpace))) {
-        for (const a of atoms) if (a.src) this.pages?.noteId(a.src);
+        for (const a of atoms)
+          if (a.src) {
+            // 索引の目印は、次の内容が置かれるページで記録する (マーカーと同じ道で運ぶ)。ほかの id は、いまのページ
+            const ip = this.host.indexPoint?.(a.src);
+            if (ip === 'point' || (ip === 'end' && !this.pages)) this.markerSink.push({ className: INDEX_POINT_MARKER.className, marker: INDEX_POINT_MARKER, indexId: a.src });
+            else this.pages?.noteId(a.src);
+          }
         return;
       }
       const ms = this.host.measurer;
@@ -5048,7 +5080,27 @@ interface SeqMemo {
   idPages: Array<[string, IdPages]>;
   idPageBuild: Array<[string, PageBuild]>;
   idPageBuildLast: Array<[string, PageBuild]>;
+  /** この sequence で組んだ索引のページ番号の並び (組み直さないときは、いまのページで作り直しても同じ並びになることを確かめる) */
+  indexLists?: Map<LIndexPageCitationList, IndexExpansion>;
 }
+
+/** 索引のページ番号の並び 1 つを、字と行内の箱に置き換えた結果 */
+interface IndexExpansion {
+  /** 並びの中身 (どのページを、どの書式・飛び先で並べたか)。同じなら、置き換えた結果も同じ */
+  sig: string;
+  nodes: InlineChild[];
+  /** ページそのものを飛び先にするリンクの、ページの通し番号 (0 始まり) */
+  pageDests: number[];
+}
+
+/** 索引が引くページの見え方: 鍵の付いた所の置かれたページ (通し番号。0 始まり) と、ページごとの番号の字・前後の字の番号 */
+interface IndexView {
+  span(e: LIndexEntry): { first: number; last: number } | undefined;
+  page(n: number): { label: string; folioKey?: number } | undefined;
+}
+
+/** ページそのものを飛び先にするリンクの id (索引のページ番号のリンク。n は 1 始まりの通し番号) */
+const indexPageDest = (n: number) => `kumiori-index-page-${n + 1}`;
 
 const DEFAULT_TRIM_MARK_MARGIN_MM = 10;
 
@@ -5107,6 +5159,191 @@ export class LayoutEngine {
     }
   }
   private citationUsed = false;
+
+  // ── 索引 (XSL 1.1 §6.10)。ページ番号の参照と同じく、前回の組版のページで並びを作り、同じ並びになるまで組み直す ──
+  /** 鍵 → 鍵の付いた所 (文書の中の順)。索引を使わない文書は undefined */
+  private indexKeys?: Map<string, Array<{ e: LIndexEntry; order: number }>>;
+  /** 前回の組版での見え方。1 回目の組版 (undefined) は、いま組んでいる途中のページから引く (索引より前に置いた所は、そのまま当たる) */
+  private indexPrev?: IndexView;
+  /** 今回の組版で置き換えた並び (同じ並びを 2 度置き換えない。組み直さない sequence の分も入れる) */
+  private indexUsed = new Map<LIndexPageCitationList, IndexExpansion>();
+  /** 置き換えの控え (行内の箱 → 中の並びを置き換えた写し。置き換えるものが無ければ元の箱) */
+  private indexInline = new Map<object, InlineChild>();
+  /** いま組んでいる sequence で置き換えた並び */
+  private indexLog?: Map<LIndexPageCitationList, IndexExpansion>;
+  /** いま組んでいる sequence の、最初のページの番号と、それより前のページの数 */
+  private indexCur = { first: 1, base: 0 };
+  /** ページ → 文書の先頭からの通し番号 (0 始まり。組み終えた sequence の分) */
+  private pageOrdinal = new Map<PageBuild, number>();
+
+  /** 索引の目印 (領域を作らない所) の id と、範囲の終わりの印の id */
+  private indexPoints = new Map<string, 'point' | 'end'>();
+  /** ページに記録するマーカーの並びから、索引の目印を取り出して id のページとして記録し、残り (本当のマーカー) を返す */
+  private takeIndexPoints(list: PendingMarker[], note: (id: string) => void): PendingMarker[] {
+    if (!this.indexPoints.size) return list;
+    return list.filter((m) => {
+      if (m.indexId === undefined) return true;
+      note(m.indexId);
+      return false;
+    });
+  }
+
+  /** いま組んでいる途中のページから引く見え方 (1 回目の組版) */
+  private indexLive(): IndexView {
+    const ord = (pb: PageBuild | undefined): number | undefined => {
+      if (!pb) return undefined;
+      // 組み終えた sequence のページは通し番号。いま組んでいる sequence のページは、ページ番号から数える
+      return this.pageOrdinal.get(pb) ?? this.indexCur.base + (pb.number - this.indexCur.first);
+    };
+    return {
+      span: (e) => this.indexSpan(e, ord, () => this.pagesBuilt.length - 1),
+      page: (n) => {
+        const pb = this.pagesBuilt[n];
+        if (pb) return { label: formatPageNumber(pb.number, pb.seq.pageNumberFormat), ...(pb.seq.folioKey !== undefined ? { folioKey: pb.seq.folioKey } : {}) };
+        const seq = this.indexSeq;
+        if (!seq || n < this.indexCur.base) return undefined;
+        return { label: formatPageNumber(this.indexCur.first + (n - this.indexCur.base), seq.pageNumberFormat), ...(seq.folioKey !== undefined ? { folioKey: seq.folioKey } : {}) };
+      },
+    };
+  }
+  private indexSeq?: LPageSequence;
+
+  /**
+   * 鍵の付いた所の、領域のある最初と最後のページ (XSL 1.1 §6.10.6: “a cited page item is generated for each page whose descendants
+   * include areas returned from that formatting object”。範囲は、始まりの印のページから終わりの印のページまで)。まだ置いていなければ undefined
+   */
+  private indexSpan(e: LIndexEntry, ord: (pb: PageBuild | undefined) => number | undefined, lastPage: () => number): { first: number; last: number } | undefined {
+    const first = ord(this.idPageBuild.get(e.id));
+    if (first === undefined) return undefined;
+    let last = ord(this.idPageBuildLast.get(e.id)) ?? first;
+    if (e.endId !== undefined) last = Math.max(last, ord(this.idPageBuildLast.get(e.endId)) ?? first);
+    // 組になる fo:index-range-end の無い範囲は、文書の終わりまで (§6.10.4 の回復)
+    else if (e.range) last = Math.max(last, lastPage());
+    return { first, last: Math.max(first, last) };
+  }
+
+  /** 組み終えた組版の見え方を固める (次の組版・収束の判定で使う) */
+  private indexSnapshot(): IndexView {
+    const pages = this.pagesBuilt.map((pb) => ({ label: formatPageNumber(pb.number, pb.seq.pageNumberFormat), ...(pb.seq.folioKey !== undefined ? { folioKey: pb.seq.folioKey } : {}) }));
+    const ord = (pb: PageBuild | undefined) => (pb ? this.pageOrdinal.get(pb) : undefined);
+    const spans = new Map<LIndexEntry, { first: number; last: number }>();
+    for (const list of this.indexKeys?.values() ?? [])
+      for (const { e } of list) {
+        const sp = this.indexSpan(e, ord, () => pages.length - 1);
+        if (sp) spans.set(e, sp);
+      }
+    return { span: (e) => spans.get(e), page: (n) => pages[n] };
+  }
+
+  /**
+   * 索引のページ番号の並び 1 つを作る (XSL 1.1 §6.10.7 の Step A〜C)。
+   * Step C: 項目ごとに、前に付ける字 (fo:index-page-number-prefix)・ページ番号 (§6.6.10 の中身 = 引いたページを作った page-sequence の
+   * fo:folio-prefix・番号・fo:folio-suffix)・後ろに付ける字 (fo:index-page-number-suffix) を、引いた fo:index-key-reference の書式で組む。
+   * 前後の字は番号と同じ行に置く (keep-with-next.within-line・keep-with-previous.within-line が always)。範囲は、最初の項目・範囲の区切り
+   * (既定は U+2013。前後で行を分けない)・最後の項目。項目・範囲の間に並びの区切り (既定はカンマと空白。カンマは前の項目と同じ行に置く)
+   */
+  private buildIndexList(list: LIndexPageCitationList, view: IndexView, warn?: (m: string) => void): IndexExpansion {
+    const perRef = list.references.map((r, k) => {
+      const entries = this.indexKeys?.get(r.refKey);
+      // “It is an error if there are no such formatting objects. Implementations should recover from this error by ignoring the
+      // fo:index-key-reference.” (§6.10.6)
+      if (!entries) {
+        warn?.(msg(`索引の鍵 "${r.refKey}" (ref-index-key) の付いた所がありません`, `no formatting object has the index key "${r.refKey}" (ref-index-key)`));
+        return [];
+      }
+      const sources: IndexSource[] = [];
+      for (const { e, order } of entries) {
+        const sp = view.span(e);
+        if (sp) sources.push({ cls: e.indexClass ?? '', first: sp.first, last: sp.last, range: !!e.range, order, id: e.id, ...(e.endId !== undefined ? { endId: e.endId } : {}) });
+      }
+      return citedPageItems(sources, k);
+    });
+    const outs = collateCitedPages(perRef, list);
+    const pageDests: number[] = [];
+    const sig: unknown[] = [];
+    const item = (it: CitedPageItem): LInline => {
+      const r = list.references[it.ref];
+      const pg = view.page(it.page);
+      const folio = pg?.folioKey !== undefined ? r.folios?.[pg.folioKey] : undefined;
+      // リンク (page-number-treatment="link"。§7.24.3): 引いた所がこのページにあればその id、無ければページそのもの
+      const target = r.link ? (it.target ?? indexPageDest(it.page)) : undefined;
+      if (r.link && it.target === undefined) pageDests.push(it.page);
+      sig.push([it.ref, pg?.label, pg?.folioKey, target]);
+      const number: LInline = { type: 'inline', ...r.style, ...(target !== undefined ? { link: { internal: target } } : {}), children: [...(folio?.prefix ?? []), pg?.label ?? '?', ...(folio?.suffix ?? [])] };
+      if (!r.prefix?.length && !r.suffix?.length) return number;
+      const side = (kids: LInlineLevel[] | undefined): LInline[] => (kids?.length ? [{ type: 'inline', ...r.style, children: kids }] : []);
+      return { type: 'inline', noBreak: true, children: [...side(r.prefix), number, ...side(r.suffix)] };
+    };
+    const nodes: InlineChild[] = [];
+    outs.forEach((o, k) => {
+      let unit: LInline = item(o.first);
+      if (o.last) {
+        sig.push('-');
+        unit = { type: 'inline', noBreak: true, children: [unit, ...(list.rangeSeparator ? [{ type: 'inline', children: list.rangeSeparator } as LInline] : ['\u2013']), item(o.last)] };
+      }
+      if (k === outs.length - 1) nodes.push(unit);
+      else if (list.listSeparator) nodes.push(unit, { type: 'inline', children: list.listSeparator });
+      else nodes.push({ type: 'inline', noBreak: true, children: [unit, ','] }, ' ');
+      sig.push(',');
+    });
+    return { sig: JSON.stringify(sig), nodes, pageDests };
+  }
+
+  /** 行内の並びの中の、索引のページ番号の並びを置き換える (FlowHost.index)。置き換えるものが無ければ、渡した配列をそのまま返す */
+  private expandIndex(run: InlineChild[], warn: (m: string) => void): InlineChild[] {
+    let out: InlineChild[] | undefined;
+    for (let k = 0; k < run.length; k++) {
+      const c = run[k];
+      if (typeof c === 'string') {
+        out?.push(c);
+        continue;
+      }
+      if (c.type === 'index-page-citation-list') {
+        let ex = this.indexUsed.get(c);
+        if (!ex) {
+          ex = this.buildIndexList(c, this.indexPrev ?? this.indexLive(), warn);
+          this.indexUsed.set(c, ex);
+        }
+        this.indexLog?.set(c, ex);
+        out ??= run.slice(0, k);
+        out.push(...ex.nodes);
+        continue;
+      }
+      let r: InlineChild = c;
+      if (c.type === 'inline') {
+        const kept = this.indexInline.get(c);
+        if (kept !== undefined) r = kept;
+        else {
+          const kids = this.expandIndex(c.children as InlineChild[], warn);
+          if (kids !== c.children) {
+            r = { ...c, children: kids as LInlineLevel[] };
+            copySourceRef(c, r);
+          }
+          this.indexInline.set(c, r);
+        }
+        // 控えから引いた写しの中の並びも、この sequence で使ったものとして数える
+        if (r !== c && this.indexLog) this.logIndexLists(c);
+      }
+      if (r !== c) out ??= run.slice(0, k);
+      out?.push(r);
+    }
+    return out ?? run;
+  }
+  private logIndexLists(c: LInline) {
+    for (const ch of c.children) {
+      if (typeof ch === 'string') continue;
+      if (ch.type === 'index-page-citation-list') {
+        const ex = this.indexUsed.get(ch);
+        if (ex) this.indexLog!.set(ch, ex);
+      } else if (ch.type === 'inline') this.logIndexLists(ch);
+    }
+  }
+
+  /** 今回の組版で置き換えた並びが、組み終えたページで作り直しても同じか (索引の収束) */
+  private indexSettled(view: IndexView): boolean {
+    for (const [list, ex] of this.indexUsed) if (this.buildIndexList(list, view).sig !== ex.sig) return false;
+    return true;
+  }
 
   /** ページごとに振り直す脚注番号: 前回の組版でのページの中の順番 / 今回の組版で置いたページ */
   private fnOrder = new Map<LFootnote, number>();
@@ -5283,8 +5520,25 @@ export class LayoutEngine {
     this.citationUsed = false;
     this.fnOrder = new Map();
     this.fnResetUsed = false;
+    // 索引 (XSL 1.1 §6.10): 鍵の付いた所を、鍵ごとに引けるようにする。索引を使わない文書では何もしない
+    this.indexPrev = undefined;
+    this.indexKeys = undefined;
+    this.indexPoints = new Map();
+    if (doc.indexEntries) {
+      this.indexKeys = new Map();
+      doc.indexEntries.forEach((e, order) => {
+        if (e.point) this.indexPoints.set(e.id, 'point');
+        if (e.endId !== undefined) this.indexPoints.set(e.endId, 'end');
+        const a = this.indexKeys!.get(e.key);
+        if (a) a.push({ e, order });
+        else this.indexKeys!.set(e.key, [{ e, order }]);
+      });
+    }
     let tree = this.layoutOnce(doc);
-    for (let pass = 0; pass < 4 && (this.citationUsed || this.fnResetUsed); pass++) {
+    let indexView: IndexView | undefined;
+    // 索引の並びが、組み終えたページで作り直しても同じなら、索引は収束している (索引の無い文書は、いつも true)
+    const indexDone = () => !this.indexUsed.size || this.indexSettled((indexView = this.indexSnapshot()));
+    for (let pass = 0; pass < 4 && (this.citationUsed || this.fnResetUsed || this.indexUsed.size); pass++) {
       const next = this.idPages;
       // 物理的なページ番号: 置かれたページの、文書の中での順番
       const index = new Map(this.pagesBuilt.map((pb, i) => [pb, i + 1]));
@@ -5300,11 +5554,15 @@ export class LayoutEngine {
         (this.citations && next.size === this.citations.size && [...next].every(([k, v]) => { const c = this.citations!.get(k); return c?.first === v.first && c?.last === v.last && c?.firstP === v.firstP && c?.lastP === v.lastP; }));
       const order = this.footnoteOrder();
       const sameFoot = !this.fnResetUsed || (order.size === this.fnOrder.size && [...order].every(([k, v]) => this.fnOrder.get(k) === v));
-      if (sameCite && sameFoot) return tree;
+      const sameIndex = indexDone();
+      if (sameCite && sameFoot && sameIndex) return tree;
       this.citations = next;
       this.fnOrder = order;
+      if (indexView) this.indexPrev = indexView;
       tree = this.layoutOnce(doc);
     }
+    // 索引のページ番号の並びが伸びてページが増え、引くページがまた変わる、を繰り返して決まらないときは、上限の回数で止めて知らせる
+    if (!indexDone()) tree.warnings.push(msg('索引のページ番号の並びが収束しませんでした (索引が伸びてページが増え、引くページが変わるなど)', 'the index page number lists did not converge (e.g. the index grew, adding pages and changing the cited pages)'));
     if (this.citationUsed || this.fnResetUsed) tree.warnings.push(msg('ページ番号参照・ページごとの脚注番号が収束しませんでした (目次の桁数が変わるなど)', 'page number references / per-page footnote numbers did not converge (e.g. the number of digits in a table of contents changed)'));
     return tree;
   }
@@ -5316,6 +5574,9 @@ export class LayoutEngine {
     this.idPages = new Map();
     this.idPageBuild = new Map();
     this.idPageBuildLast = new Map();
+    this.indexUsed = new Map();
+    this.indexInline = new Map();
+    this.pageOrdinal = new Map();
     const volatile: NonNullable<FlowHost['volatile']> = { n: 0, active: 0, cites: [] };
     const host: FlowHost = {
       ...(this.options.measureMemo === false ? {} : { measureMemo: new WeakMap() }),
@@ -5325,6 +5586,8 @@ export class LayoutEngine {
       hyphenate: this.options.hyphenate,
       ...(this.options.kernAh ? { kernAh: true } : {}),
       warn: (m) => this.warnings.push(m),
+      ...(this.indexKeys ? { index: (run: InlineChild[]) => this.expandIndex(run, (m) => this.warnings.push(m)) } : {}),
+      ...(this.indexPoints.size ? { indexPoint: (id: string) => this.indexPoints.get(id) } : {}),
       measurer: this.measurer,
       cellMeasure: new WeakMap(),
       stats: this.stats,
@@ -5362,7 +5625,11 @@ export class LayoutEngine {
       // 前回の組版と同じ条件 (開始ページ・脚注の続き番号・参照したページ番号の値) なら、前回のページをそのまま使う。
       // ページごとに脚注番号を振り直す文書は、脚注の置き場所が前回の結果に依るので使い回さない
       const memo = this.seqMemo[si];
-      if (memo && !this.fnResetUsed && memo.first === first && memo.fnCarryIn === this.fnCarry && this.reuseCites(memo)) {
+      // 索引の並びを持つ sequence は、いまのページで作り直しても同じ並びになるときだけ使い回す (索引の無い sequence は、いつも同じ)
+      const sameIndexLists = (m: SeqMemo) => !m.indexLists?.size || (!!this.indexPrev && [...m.indexLists].every(([list, ex]) => (this.indexUsed.get(list) ?? this.buildIndexList(list, this.indexPrev!)).sig === ex.sig));
+      if (memo && !this.fnResetUsed && memo.first === first && memo.fnCarryIn === this.fnCarry && sameIndexLists(memo) && this.reuseCites(memo)) {
+        if (this.indexKeys) memo.built.forEach((pb, k) => this.pageOrdinal.set(pb, pages.length + k));
+        for (const [list, ex] of memo.indexLists ?? []) this.indexUsed.set(list, ex);
         pages.push(...memo.built);
         for (const [k, v] of memo.idPages) this.idPages.set(k, { ...v });
         for (const [k, v] of memo.idPageBuild) this.idPageBuild.set(k, v);
@@ -5378,6 +5645,11 @@ export class LayoutEngine {
       const warnStart = this.warnings.length;
       const idsBefore = this.snapshotIds();
       this.citeLog = new Map();
+      if (this.indexKeys) {
+        this.indexLog = new Map();
+        this.indexCur = { first, base: pages.length };
+        this.indexSeq = seq;
+      }
       const nextIpn = doc.sequences[si + 1]?.initialPageNumber;
       // 本文 (flow) の置かれたページの数 (force-page-count で末尾に足す白ページを含まない)
       let flowPages = 0;
@@ -5417,12 +5689,15 @@ export class LayoutEngine {
       };
       noteSpan(seq.id, built.length);
       noteSpan(seq.flow.id, Math.min(flowPages, built.length));
+      if (this.indexKeys) built.forEach((pb, k) => this.pageOrdinal.set(pb, pages.length + k));
       pages.push(...built);
       pageNo = first + built.length;
       this.fnCarry = this.lastFoot?.lastNumber ?? this.fnCarry;
       this.lastFoot = undefined;
-      this.seqMemo[si] = { first, fnCarryIn, cites: this.citeLog, built, fnCarryOut: this.fnCarry, warnings: this.warnings.slice(warnStart), ...this.idDiff(idsBefore) };
+      this.seqMemo[si] = { first, fnCarryIn, cites: this.citeLog, built, fnCarryOut: this.fnCarry, warnings: this.warnings.slice(warnStart), ...this.idDiff(idsBefore), ...(this.indexLog?.size ? { indexLists: this.indexLog } : {}) };
       this.citeLog = undefined;
+      this.indexLog = undefined;
+      this.indexSeq = undefined;
     });
 
     const total = pages.length;
@@ -5443,6 +5718,8 @@ export class LayoutEngine {
       const k = pageIndex.get(pb);
       if (k !== undefined) destinations[id] = k;
     }
+    // 索引のページ番号のリンクのうち、ページそのものを飛び先にするもの (範囲の途中のページ・ページをまたぐ所の 2 ページ目から)
+    for (const ex of this.indexUsed.values()) for (const n of ex.pageDests) if (n < pages.length) destinations[indexPageDest(n)] = n;
     this.registerGradients(sheets);
     return {
       schemaVersion: AREA_TREE_SCHEMA_VERSION,
@@ -5649,7 +5926,7 @@ export class LayoutEngine {
       limit: first.limit,
       pages: {
         addMarkers: (list) => {
-          if (!o.trial) ensurePage(abs).markers.push(...list);
+          if (!o.trial) ensurePage(abs).markers.push(...this.takeIndexPoints(list, (id) => this.noteIdPage(id, firstNumber + abs, seq.pageNumberFormat, ensurePage(abs))));
         },
         markerEnd: (key) => {
           if (!o.trial) (ensurePage(abs).markerEnds ??= []).push(key);
@@ -6022,7 +6299,7 @@ export class LayoutEngine {
       root: cur.root,
       limit: firstPage.limit,
       pages: {
-        addMarkers: (list) => cur.markers.push(...list),
+        addMarkers: (list) => cur.markers.push(...this.takeIndexPoints(list, (id) => this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur))),
         markerEnd: (key) => (cur.markerEnds ??= []).push(key),
         noteId: (id) => {
           this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur);
