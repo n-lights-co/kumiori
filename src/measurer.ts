@@ -12,6 +12,35 @@ import type { FontManager, LoadedFont } from './fontManager';
 import type { WritingMode } from './types';
 import { isFullWidth, verticalTreatment, type VerticalTreatment } from './jis';
 
+/** 異体字セレクタ (字形を選ぶ U+FE00〜FE0F と、漢字の異体字の U+E0100〜E01EF) を含みうるか */
+const HAS_VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
+const VARIATION_SELECTOR = /^[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]$/u;
+/** 異体字セレクタを後ろに付けられる基底の字 (文字・数字・記号・約物。空白・制御の字・結合文字には付けない) */
+const VARIATION_BASE = /^[\p{L}\p{N}\p{S}\p{P}]$/u;
+
+/**
+ * 字の単位の並び (文字列なら字ごと) の、基底の字の直後の異体字セレクタを、基底の字と同じ単位にまとめる。
+ * 異体字セレクタは基底の字と組で 1 つの字形を選ぶもので、字の単位 (UAX #29 の書記素クラスタ。GB9: × Extend) を分けない。
+ * 異体字セレクタが無ければ、受け取った並びをそのまま返す
+ */
+export function variationUnits(units: string | string[]): string | string[] {
+  if (typeof units === 'string' ? !HAS_VARIATION_SELECTOR.test(units) : !units.some((u) => VARIATION_SELECTOR.test(u))) return units;
+  const out: string[] = [];
+  for (const u of units) {
+    const k = out.length - 1;
+    if (VARIATION_SELECTOR.test(u) && k >= 0 && isVariationSequence(out[k] + u)) out[k] += u;
+    else out.push(u);
+  }
+  return out;
+}
+
+/** 基底の字 1 つと、それに続く異体字セレクタだけの並びか (variationUnits がまとめた単位) */
+export function isVariationSequence(unit: string): boolean {
+  if (unit.length < 2 || !HAS_VARIATION_SELECTOR.test(unit)) return false;
+  const cps = [...unit];
+  return cps.length >= 2 && VARIATION_BASE.test(cps[0]) && cps.slice(1).every((c) => VARIATION_SELECTOR.test(c));
+}
+
 export interface RunStyle {
   fontFamily?: string;
   fontWeight?: number;
@@ -256,11 +285,28 @@ export class Measurer {
     return { ch, font, fontSize: fs, advance, cross: fs, naturalWidth: nat, vertical: t };
   }
 
-  /** 文字列を 1 文字ずつ計測 */
+  /**
+   * 基底の字と異体字セレクタの並び (variationUnits の単位) のメトリクス。書体・送り・縦書きの扱いは基底の字で決め、
+   * 描く文字列だけを並びにする (描く側が、並びから異体字の字形を選べるように。横書きは draw、縦書きは vertical.glyph)。
+   * 横書きの送りは並びで測る (字形が替わって幅が変わる書体のため)
+   */
+  variationGlyph(unit: string, style: RunStyle, wm: WritingMode): GlyphMetrics {
+    const base = String.fromCodePoint(unit.codePointAt(0)!);
+    const g = this.glyph(base, style, wm);
+    if (wm === 'horizontal-tb') {
+      const seq = this.glyph(unit, style, wm);
+      return { ...g, advance: seq.advance, naturalWidth: seq.naturalWidth, draw: g.draw ?? unit };
+    }
+    // 縦書き用の字 (VERTICAL_FORMS の字) に替えたときは、その字のまま (異体字セレクタは付けない)
+    if (g.vertical) g.vertical = { ...g.vertical, glyph: g.vertical.glyph === base ? unit : g.vertical.glyph };
+    return g;
+  }
+
+  /** 文字列を 1 文字ずつ計測 (基底の字と異体字セレクタの並びは 1 つ) */
   glyphs(text: string, style: RunStyle, wm: WritingMode, letterSpacing = 0): GlyphMetrics[] {
     const out: GlyphMetrics[] = [];
-    for (const ch of text) {
-      const g = this.glyph(ch, style, wm);
+    for (const ch of variationUnits(text)) {
+      const g = isVariationSequence(ch) ? this.variationGlyph(ch, style, wm) : this.glyph(ch, style, wm);
       if (letterSpacing) {
         g.advance += letterSpacing;
         g.spacing = letterSpacing;

@@ -17,7 +17,7 @@ import { Measurer } from './measurer';
 import { LayoutEngine } from './layoutEngine';
 import { renderPdf, type PdfRenderOptions } from './pdfRenderer';
 import { renderSheetToCanvas } from './canvasRenderer';
-import { AssetStore, mentionedFiles } from './assets';
+import { AssetStore, mentionedFiles, normalizeSrc } from './assets';
 import { SANS, SERIF } from './sampleData';
 import { importHtml } from './htmlImport';
 import { importXslFo, type ImportOptions, type XNode } from './xslfoImport';
@@ -32,7 +32,7 @@ import { AH_HTML_IMPORT_OPTIONS, FO_COMPATS, HTML_STYLES, ahCascadeOptions, comp
 import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, setupDefaultFonts } from './fontMapping';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
-import { collectResources, refBasename } from './resources';
+import { collectResources, documentChars, refBasename } from './resources';
 
 export type { HtmlDefaults } from './htmlPrepare';
 export type { FontSpec } from './types';
@@ -131,11 +131,14 @@ const bufferOf = (d: KumioriFileData): ArrayBuffer => {
   return b.byteOffset === 0 && b.byteLength === b.buffer.byteLength ? (b.buffer as ArrayBuffer) : (b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
 };
 const textOf = (d: KumioriFileData) => (typeof d === 'string' ? d : new TextDecoder().decode(bytesOf(d)));
-/** 中の処理が使う形 (ブラウザの File と同じ: 名前はファイル名、読み出しは text・arrayBuffer)。関数の中身は 1 度だけ読む */
-const toFile = (f: KumioriFile, css = false) => {
+/**
+ * 中の処理が使う形 (ブラウザの File と同じ: 名前はファイル名、読み出しは text・arrayBuffer)。関数の中身は 1 度だけ読む。
+ * url: 参照から取ったファイルの、参照の URL の全体 (問い合わせの ?… も含む。名前が同じでも URL の違うものを取り違えないため)
+ */
+const toFile = (f: KumioriFile, css = false, url?: string) => {
   let got: Promise<KumioriFileData> | undefined;
   const data = () => (got ??= typeof f.data === 'function' ? f.data() : Promise.resolve(f.data));
-  return { name: f.name.split(/[\\/]/).pop()!, path: f.name, css, data, text: async () => textOf(await data()), arrayBuffer: async () => bufferOf(await data()) };
+  return { name: f.name.split(/[\\/]/).pop()!, path: f.name, css, ...(url !== undefined ? { url } : {}), data, text: async () => textOf(await data()), arrayBuffer: async () => bufferOf(await data()) };
 };
 /** CSS として読むファイル (拡張子 .css か、参照から CSS として取ったもの) */
 const isCss = (f: { name: string; css?: boolean }) => !!f.css || /\.css$/i.test(f.name);
@@ -416,8 +419,11 @@ async function typesetDocument(
   {
     const names = new Set(files.flatMap((f) => [f.path.split('\\').join('/').replace(/^\.\//, ''), f.name.toLowerCase()]));
     // 文書に出てくる字 (タグや CSS の字も含む、多めの見積もり)。@font-face の書体のうち、unicode-range がこれと重ならないものは取らない
-    const chars = new Set<number>();
-    for (const ch of text) chars.add(ch.codePointAt(0)!);
+    // (CSS Fonts 4 §4.5)。数値の文字参照と CSS の逃がしの字も入る (documentChars)。CSS の content の文字列の字は collectResources が足す
+    const chars = documentChars(text);
+    // 名前の文字参照 (&alpha;・&hellip; など) は、HTML の解析に解かせる (名前の表を持たない)。XML で決まっている 5 つは ASCII の字
+    const named = new Set((text.match(/&[A-Za-z][A-Za-z0-9]*;?/g) ?? []).filter((n) => !/^&(amp|lt|gt|quot|apos);?$/.test(n)));
+    if (named.size) for (const ch of (await parsers()).html(`<p>${[...named].join(' ')}</p>`).body?.textContent ?? '') chars.add(ch.codePointAt(0)!);
     const got = await collectResources(text, {
       chars,
       has: (u) => names.has(u) || names.has(refBasename(u)),
@@ -427,7 +433,7 @@ async function typesetDocument(
       timeoutMs: timeout,
     });
     for (const f of got.files) {
-      files.push(toFile({ name: f.name, data: f.data }, f.css));
+      files.push(toFile({ name: f.name, data: f.data }, f.css, f.url));
       names.add(f.name);
     }
     for (const w of got.warnings) {
@@ -468,7 +474,15 @@ async function typesetDocument(
   for (const f of images.filter((x) => /\.svg$/i.test(x.name) && mentioned.has(x.name.toLowerCase()))) {
     for (const n of mentionedFiles([await f.text()])) mentioned.add(n);
   }
-  for (const f of images.filter((x) => mentioned.has(x.name.toLowerCase()))) await assets.addBlob(f.path.split('\\').join('/'), new Blob([bytesOf(await f.data()) as BlobPart]));
+  for (const f of images.filter((x) => mentioned.has(x.name.toLowerCase()))) {
+    const asset = await assets.addBlob(f.path.split('\\').join('/'), new Blob([bytesOf(await f.data()) as BlobPart]));
+    // 参照から取った画像は、参照の URL の全体 (問い合わせの ?… を含む) でも登録する。画像は「完全一致 → ファイル名」の順に引くので、
+    // 問い合わせだけが違う 2 つの画像 (a.png?id=1 と a.png?id=2) が、それぞれの画像になる (名前だけだと、後に登録したものに両方が当たる)
+    if (asset && f.url !== undefined && normalizeSrc(f.url) !== asset.key) {
+      const { key: _key, ...rest } = asset;
+      assets.register(f.url, rest);
+    }
+  }
 
   const measurer = new Measurer(fonts, 'fontkit');
   // MathML のある文書なら、数式の書体を読み込む (読めなければ、本文の書体で組む。画面と同じ手順: documentResources)

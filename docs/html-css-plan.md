@@ -316,6 +316,7 @@ CSS の float: start / end は、右から左へ書く段落では右 / 左。
 
 - flex・grid の一部 (表紙や扉のような、ページに 1 つの配置)
 - `@font-face` の読み込み、`counter-reset` / `counter-increment` の入れ子の番号
+- 表のセル・caption の回り込み (`float`)・絶対配置 (`position: absolute`)・脚注 (`float: footnote`): CSS 2.1 §9.7 では、こうした `td` はセルでなくなりブロックになるが、いまは指定を読まずに、ふつうのセルとして組む (既知の制限。行の作り方を変える必要がある)。リストの項目 (li) のこれらの指定と、セル・caption のしおり・`string-set` は対応済み
 
 ### ブラウザを経由しない CSS の解釈 (第 6 段階。既定)
 

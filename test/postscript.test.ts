@@ -6,7 +6,8 @@ import { filterSource, inflate } from '../src/psFilters';
 import { decryptCharstring, runType1Charstring } from '../src/psFonts';
 import { cffGlyph, parseCff } from '../src/psCff';
 import { Graphics } from '../src/psGraphics';
-import { epsToSvg, runEps } from '../src/eps';
+import { epsProgram, epsToSvg, runEps } from '../src/eps';
+import { epsPreview, imageInfo } from '../src/imageInfo';
 
 /** プログラムを実行して、オペランドスタックを返す */
 function run(src: string): { stack: PSObj[]; error?: string } {
@@ -219,5 +220,167 @@ describe('CFF の書体 (The Compact Font Format Specification・The Type 2 Char
     expect(r.error).toBeUndefined();
     expect(r.warnings).toEqual([]);
     expect(r.items[0]?.k).toBe('fill');
+  });
+});
+
+/** プログラムを実行して、描いたもの (Graphics) も返す */
+function draw(src: string) {
+  const I = new Interp();
+  const G = new Graphics(I, { bbox: [0, 0, 100, 100] });
+  const error = I.run(latin1(src));
+  return { I, G, error, stack: I.ostack };
+}
+const epsOf = (body: string) => latin1(`%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n${body}\n`);
+
+describe('PostScript: 結果の誤りの修正', () => {
+  it('imagemask: polarity が true なら標本の 1 を、false なら 0 を塗る (PLRM §8.2 imagemask・§4.10.6)', () => {
+    // 8×8。偶数の行が FF (全部 1)、奇数の行が 00
+    const alphaOf = (polarity: boolean) => {
+      const r = draw(`8 8 ${polarity} [8 0 0 8 0 0] {<FF00FF00FF00FF00>} imagemask`);
+      expect(r.error).toBeUndefined();
+      const it = r.G.items[0];
+      if (it.k !== 'image' || !it.rgba) throw new Error('画像でない');
+      return [0, 1].map((row) => it.rgba![row * 8 * 4 + 3]);
+    };
+    expect(alphaOf(true)).toEqual([255, 0]);
+    expect(alphaOf(false)).toEqual([0, 255]);
+    // 辞書の形: Decode [1 0] は 1 を塗る、[0 1] は 0 を塗る
+    const dictAlpha = (decode: string) => {
+      const r = draw(`<< /ImageType 1 /Width 8 /Height 8 /BitsPerComponent 1 /Decode [${decode}] /ImageMatrix [8 0 0 8 0 0] /DataSource <FF00FF00FF00FF00> >> imagemask`);
+      const it = r.G.items[0];
+      if (it.k !== 'image' || !it.rgba) throw new Error('画像でない');
+      return [0, 1].map((row) => it.rgba![row * 8 * 4 + 3]);
+    };
+    expect(dictAlpha('1 0')).toEqual([255, 0]);
+    expect(dictAlpha('0 1')).toEqual([0, 255]);
+  });
+
+  it('ImageType 3 のマスクの極性は imagemask と同じ: Decode [0 1] は標本の 0 を描き、[1 0] は 1 を描く (PLRM §4.10.6。PS-17)', () => {
+    // 8×2 の灰色の画像。マスクは 1 行めが 0F (左の 4 つが 0、右の 4 つが 1)、2 行めが FF (全部 1)
+    const alphaOf = (il: number, decode: string) => {
+      const dataDict = (src: string) => `/DataDict << /ImageType 1 /Width 8 /Height 2 /BitsPerComponent 8 /ImageMatrix [8 0 0 2 0 0] /Decode [0 1] /DataSource ${src} >>`;
+      const maskDict = (src: string) => `/MaskDict << /ImageType 1 /Width 8 /Height 2 /BitsPerComponent 1 /ImageMatrix [8 0 0 2 0 0] /Decode [${decode}] ${src} >>`;
+      const g = '80'.repeat(8);
+      let body: string;
+      if (il === 3) body = `${dataDict(`<${g}${g}>`)} ${maskDict('/DataSource <0FFF>')}`;
+      // 行ごとの組: マスクの行 (1 ビット) のあとに画像の行
+      else if (il === 2) body = `${dataDict(`<0F${g}FF${g}>`)} ${maskDict('')}`;
+      // 標本ごとの組: マスクの成分 (画像と同じ 8 ビット。0 か 255) が色の前に付く
+      else body = `${dataDict(`<${'0080'.repeat(4)}${'FF80'.repeat(12)}>`)} ${maskDict('')}`;
+      const r = draw(`/DeviceGray setcolorspace << /ImageType 3 /InterleaveType ${il} ${body} >> image`);
+      expect(r.error).toBeUndefined();
+      const it = r.G.items[0];
+      if (it.k !== 'image' || !it.rgba) throw new Error('画像でない');
+      // 1 行めの左・1 行めの右・2 行めの左
+      return [0, 7, 8].map((i) => it.rgba![i * 4 + 3]);
+    };
+    for (const il of [1, 2, 3]) {
+      expect(alphaOf(il, '0 1'), `InterleaveType ${il}`).toEqual([255, 0, 0]);
+      expect(alphaOf(il, '1 0'), `InterleaveType ${il} の Decode [1 0]`).toEqual([0, 255, 255]);
+    }
+  });
+
+  it('SubFileDecode は、EODCount・EODString を辞書に入れた形 (LanguageLevel 3) でも使える (PLRM §3.13.3。PS-13)', () => {
+    // 辞書の形: EODCount 0 は EODString の手前まで
+    expect(nums('(abcXdef) << /EODCount 0 /EODString (X) >> /SubFileDecode filter 10 string readstring')).toEqual(['abc', false]);
+    // EODCount 1 は 1 つめの EODString まで (EODString も含む)
+    expect(nums('(abcXdefXg) << /EODCount 1 /EODString (X) >> /SubFileDecode filter 20 string readstring')).toEqual(['abcX', false]);
+    // EODString が空なら EODCount バイト
+    expect(nums('(abcXdef) << /EODCount 5 /EODString () >> /SubFileDecode filter 10 string readstring')).toEqual(['abcXd', false]);
+    // これまでの形 (オペランドで渡す。辞書を前に置く形も) は同じ
+    expect(nums('(abcXdef) 0 (X) /SubFileDecode filter 10 string readstring')).toEqual(['abc', false]);
+    expect(nums('(abcXdef) << >> 0 (X) /SubFileDecode filter 10 string readstring')).toEqual(['abc', false]);
+  });
+
+  it('フィルタのエラーは PostScript のエラーになり、stopped で受けられる (PLRM §8.2 filter・§3.13.3)', async () => {
+    // 持っていないフィルタ: undefined (オペランドは元に戻る。§3.11.1)
+    expect(nums('{currentfile /CCITTFaxDecode filter} stopped $error /errorname get')).toEqual(['file', '/CCITTFaxDecode', true, '/undefined']);
+    // 読み出し中に壊れたデータ (ASCII85 に無い字): ioerror
+    expect(nums('{(!!!!!\\200) /ASCII85Decode filter 10 string readstring} stopped $error /errorname get').slice(-2)).toEqual([true, '/ioerror']);
+    // 壊れたデータを通したファイルを実行する
+    expect(nums('{(1 2 add \\200) /ASCII85Decode filter cvx exec} stopped $error /errorname get').slice(-2)).toEqual([true, '/ioerror']);
+    // 壊れた ASCII85 の文字列の字句は syntaxerror (§3.2.2)
+    expect(run('<~!!\x80~>').error).toMatch(/^syntaxerror/);
+    // 受けなくても、それまでに描いたものは残る (EPS 全体が描けなくならない)
+    const r = (await epsToSvg(epsOf('0 0 moveto 50 50 lineto stroke currentfile /CCITTFaxDecode filter pop 0 50 moveto 50 0 lineto stroke')))!;
+    expect(r.count).toBe(1);
+    expect(r.error).toMatch(/^undefined/);
+    expect(r.svg).toContain('<path');
+  });
+
+  it('字の名前が Object.prototype の名前 (constructor など) でも落ちない', async () => {
+    // Encoding の全部の字の名前を constructor にした書体。字は表に無いので、符号のままの字を代わりの書体で描く
+    const r = (await epsToSvg(
+      epsOf('/Helvetica findfont dup length dict copy dup /Encoding 256 array dup 0 1 255 { 1 index exch /constructor put } for pop put /Q exch definefont 10 scalefont setfont 10 10 moveto (A) show 0 0 moveto 50 50 lineto stroke'),
+    ))!;
+    expect(r.error).toBeUndefined();
+    expect(r.svg).toContain('>A</text>');
+    expect(r.count).toBe(2);
+  });
+
+  it('show は、gsave と共有しているパスを書き換えない (下線の書き方)', () => {
+    const strokes = (src: string) => {
+      const r = draw(src);
+      expect(r.error).toBeUndefined();
+      return r.G.items.filter((i) => i.k === 'stroke').map((i) => (i.k === 'stroke' ? i.segs : []));
+    };
+    const plain = strokes('0 0 moveto 50 0 rlineto stroke');
+    expect(plain[0]).toEqual([
+      { op: 'M', x: 0, y: 0 },
+      { op: 'L', x: 50, y: 0 },
+    ]);
+    // 文字を描いてから grestore で戻り、初めの点から線を引く
+    expect(strokes('/Helvetica findfont 10 scalefont setfont 0 0 moveto gsave (abc) show grestore 50 0 rlineto stroke')).toEqual(plain);
+  });
+
+  it('currentgstate は、渡された gstate を現在の状態の写しで置き換える (PLRM §8.2)', () => {
+    expect(nums('/gs gstate def 5 setlinewidth gs currentgstate pop 1 setlinewidth gs setgstate currentlinewidth')).toEqual([5]);
+    // 返すのは、渡されたのと同じ gstate
+    expect(nums('/gs gstate def gs currentgstate gs eq')).toEqual([true]);
+    // 書き換えた後に現在の状態を変えても、gstate の中身は変わらない
+    expect(nums('/gs gstate def 0 0 moveto 3 setlinewidth gs currentgstate pop 10 10 lineto 7 setlinewidth gs setgstate currentlinewidth currentpoint')).toEqual([3, 0, 0]);
+  });
+
+  it('rectfill・rectstroke は現在のパスに触れず、部分パスの始まりも元のまま (PLRM §8.2)', () => {
+    const strokes = (src: string) => {
+      const r = draw(src);
+      expect(r.error).toBeUndefined();
+      return r.G.items.filter((i) => i.k === 'stroke').map((i) => (i.k === 'stroke' ? i.segs : []));
+    };
+    // closepath は (0, 0) に戻るので、続く rlineto は (20, 0) へ
+    const plain = strokes('0 0 moveto 10 0 lineto 10 10 lineto closepath 20 0 rlineto stroke');
+    expect(plain[0][plain[0].length - 1]).toEqual({ op: 'L', x: 20, y: 0 });
+    expect(strokes('0 0 moveto 10 0 lineto 50 50 5 5 rectfill 10 10 lineto closepath 20 0 rlineto stroke')).toEqual(plain);
+    expect(strokes('0 0 moveto 10 0 lineto 1 setgray 50 50 5 5 rectstroke 0 setgray 10 10 lineto closepath 20 0 rlineto stroke')[1]).toEqual(plain[0]);
+  });
+
+  it('rectstroke: numarray matrix・x y width height matrix の形で行列を取る (PLRM §8.2)', () => {
+    for (const src of ['[0 0 10 10] [2 0 0 2 0 0] rectstroke count', '0 0 10 10 [2 0 0 2 0 0] rectstroke count', '[0 0 10 10 20 20 5 5] [2 0 0 2 0 0] rectstroke count']) {
+      const r = draw(src);
+      expect(r.error, src).toBeUndefined();
+      expect(r.stack.map((o) => (o.t === 'int' ? o.v : o.t)), src).toEqual([0]);
+      const it = r.G.items[0];
+      if (it.k !== 'stroke') throw new Error('線でない');
+      // 矩形は元の座標のまま、線だけに行列が掛かる
+      expect(it.segs[0]).toEqual({ op: 'M', x: 0, y: 0 });
+      expect(it.segs[1]).toEqual({ op: 'L', x: 10, y: 0 });
+      expect(it.ctm.slice(0, 4)).toEqual([2, 0, 0, 2]);
+    }
+    // 行列の無い形はこれまでどおり
+    const r = draw('[0 0 10 10] rectstroke 0 0 10 10 rectstroke count');
+    expect(r.stack.map((o) => (o.t === 'int' ? o.v : o.t))).toEqual([0]);
+    expect(r.G.items.length).toBe(2);
+  });
+
+  it('DOS 形式の頭が途中で切れた EPS は、読めない EPS として扱う (例外を投げない)', async () => {
+    for (const n of [4, 6, 11, 12, 20, 27]) {
+      const b = new Uint8Array(n);
+      b.set([0xc5, 0xd0, 0xd3, 0xc6]);
+      expect(epsProgram(b), String(n)).toBeUndefined();
+      expect(runEps(b), String(n)).toBeUndefined();
+      expect(await epsToSvg(b), String(n)).toBeUndefined();
+      expect(epsPreview(b), String(n)).toBeUndefined();
+      expect(imageInfo(b), String(n)).toBeUndefined();
+    }
   });
 });

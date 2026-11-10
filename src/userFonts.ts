@@ -16,6 +16,12 @@ function open(): Promise<IDBDatabase> {
   });
 }
 
+/*
+ * 書き込みの取引 (transaction) は、complete (確定)・error・abort (中止) のどれかで終わる。
+ * 中止では取引に abort のイベントが来るが、error のイベントは来ないことがある (Indexed Database API 3.0 §5.5 Aborting a transaction の注:
+ * 確定の途中の誤り (容量の超過など。§5.4 Committing a transaction) で中止されたとき)。abort も聞かないと、保存・消去が終わらず、接続も閉じない
+ */
+
 /** 接続を開いて fn を行い、途中で失敗しても必ず閉じる */
 async function withDb<T>(fn: (db: IDBDatabase) => Promise<T>): Promise<T> {
   const db = await open();
@@ -35,6 +41,7 @@ export async function saveUserFont(f: UserFont): Promise<void> {
           tx.objectStore(STORE).put({ key: `${f.family}|${f.weight}`, ...f });
           tx.oncomplete = () => res();
           tx.onerror = () => rej(tx.error);
+          tx.onabort = () => rej(tx.error);
         }),
     );
   } catch {
@@ -66,6 +73,7 @@ export async function clearUserFonts(): Promise<void> {
           tx.objectStore(STORE).clear();
           tx.oncomplete = () => res();
           tx.onerror = () => rej(tx.error);
+          tx.onabort = () => rej(tx.error);
         }),
     );
   } catch {

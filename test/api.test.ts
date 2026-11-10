@@ -132,6 +132,71 @@ describe('公開 API: typeset', () => {
     expect(g!.color).toBe('#ff0000');
     expect(g!.fontSize).toBeCloseTo(30, 3);
   });
+  it('問い合わせ (?…) だけが違う CSS は、別の CSS として両方が効く (<link> と @import)', async () => {
+    const store: Record<string, string> = {
+      'https://fonts.googleapis.com/css2?family=A': 'p { color: #ff0000 } .a { font-size: 30pt }',
+      'https://fonts.googleapis.com/css2?family=B': 'p { color: #0000ff } .b { font-size: 40pt }',
+      'https://fonts.googleapis.com/css2?family=C': '@import "css2?family=D"; .c { font-size: 50pt }',
+      'https://fonts.googleapis.com/css2?family=D': '.d { font-size: 60pt }',
+      // 属性の値の文字参照 (&amp;) は解いてから問い合わせる (HTML Living Standard §13.2.5.36 の属性の値の中の文字参照)
+      'https://fonts.googleapis.com/css2?family=E&display=swap': '.e { font-size: 70pt }',
+      'https://fonts.googleapis.com/css2?family=F&display=swap': '.f { font-size: 80pt }',
+    };
+    const asked: string[] = [];
+    const r = await typeset(
+      `<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=A"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=B">
+       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=E&amp;display=swap"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=F&#38;display=swap">
+       <style>@import url("https://fonts.googleapis.com/css2?family=C");</style>
+       <p class="a">a</p><p class="b">b</p><p class="c">c</p><p class="d">d</p><p class="e">e</p><p class="f">f</p>`,
+      { loadFont, fetchStyles: false, resolveResource: (u) => (asked.push(u), store[u]) },
+    );
+    expect(asked.sort()).toEqual(Object.keys(store));
+    const seen: Record<string, [number, string]> = {};
+    walkAreaTree(r.areaTree, (a) => void (a.type === 'glyph' && /^[a-f]$/.test((a as GlyphArea).text) && (seen[(a as GlyphArea).text] = [Math.round((a as GlyphArea).fontSize), (a as GlyphArea).color])));
+    // 後の <link> (family=B) の色が勝つ (文書の順)。どの CSS も 1 度だけ使う (利用者のスタイルシートとして足し直さない)
+    expect(seen).toEqual({ a: [30, '#0000ff'], b: [40, '#0000ff'], c: [50, '#0000ff'], d: [60, '#0000ff'], e: [70, '#0000ff'], f: [80, '#0000ff'] });
+    expect(r.warnings).toEqual([]);
+  });
+  it('問い合わせ (?…) だけが違う画像は、別の画像として組む (参照の URL の全体を先に見て、無ければ名前で突き合わせる)', async () => {
+    const png = (w: number, h: number, c: number[]) => encodePngStored({ width: w, height: h, rgba: new Uint8Array(Array.from({ length: w * h }, () => c).flat()) });
+    for (const base of ['https://example.com/a.png', 'pic/a.png']) {
+      const store: Record<string, Uint8Array> = { [`${base}?id=1`]: png(10, 10, [255, 0, 0, 255]), [`${base}?id=2`]: png(20, 5, [0, 0, 255, 255]) };
+      const asked: string[] = [];
+      // 3 つ目の参照 (問い合わせなし) は中身が返らないので、今までどおり名前で突き合わせる (後に取った画像)
+      const r = await typeset(`<p><img src="${base}?id=1"></p><p><img src="${base}?id=2"></p><p><img src="${base}"></p>`, {
+        loadFont,
+        fetchImages: false,
+        resolveResource: (u) => (asked.push(u), store[u]),
+      });
+      expect(asked).toEqual([`${base}?id=1`, `${base}?id=2`, base]);
+      const got: Array<[string, boolean, number, number]> = [];
+      walkAreaTree(r.areaTree, (a) => void (a.type === 'image' && got.push([a.src, a.missing, a.width, a.height])));
+      // 10×10 px と 20×5 px (1px = 0.75pt)
+      expect(got).toEqual([
+        [`${base}?id=1`, false, 7.5, 7.5],
+        [`${base}?id=2`, false, 15, 3.75],
+        [base, false, 15, 3.75],
+      ]);
+      expect(r.warnings).toEqual([]);
+      // PDF にも 2 つの別の画像が入る (画像は参照ごとに埋め込む)
+      const pdf = await PDFDocument.load(await r.toPdf(), { updateMetadata: false });
+      const { PDFName: Name } = await import('pdf-lib');
+      const sizes = pdf.context
+        .enumerateIndirectObjects()
+        .map(([, o]) => (o as { dict?: import('pdf-lib').PDFDict }).dict)
+        .filter((d) => d && String(d.get(Name.of('Subtype'))) === '/Image')
+        .map((d) => `${d!.get(Name.of('Width'))}x${d!.get(Name.of('Height'))}`);
+      expect([...new Set(sizes)].sort()).toEqual(['10x10', '20x5']);
+    }
+  });
+  it('ASCII でない名前のカウンターとカスタム プロパティ (counter(章)・var(--色)) が、通しで効く', async () => {
+    const r = await typeset('<style>body { counter-reset: 章; --色: #ff0000 } p { counter-increment: 章; color: var(--色) } p::before { content: counter(章) "." }</style><p>a</p><p>b</p>', { loadFont });
+    // 末尾は既定のノンブル
+    expect(textOf(r.areaTree)).toBe('1.a2.b1');
+    let g: GlyphArea | undefined;
+    walkAreaTree(r.areaTree, (x) => void (x.type === 'glyph' && (g ??= x as GlyphArea)));
+    expect(g!.color).toBe('#ff0000');
+  });
   it('flex の項目の中の target-counter(…, page): 箱の幅は組んだ番号の桁に合い、折り返しを許す指定があっても番号が割れない', async () => {
     // 目次の行: 題・点線 (::before、flex: 1)・ページ番号 (::after)。sanitize.css などが html に付ける word-break: break-word があると、
     // 1 桁分の幅の箱の中で「10」が「1 / 0」に折り返していた (番号の桁の数は、組むまで分からない)

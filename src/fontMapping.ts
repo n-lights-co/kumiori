@@ -156,7 +156,31 @@ const FACE_SOURCES: readonly FontNameSource[] = ['face', 'installed'];
 export interface FontFile {
   name: string;
   arrayBuffer(): Promise<ArrayBuffer>;
+  /** 文書からの相対パス (fonts/a.woff2)。あれば、@font-face の url() とパスで突き合わせる (無ければファイル名だけ) */
+  path?: string;
+  /** 参照から取った書体の、参照の URL の全体 (問い合わせの ?… も含む) */
+  url?: string;
 }
+
+/** %xx を戻す。不正な % の並びは、そのままにする */
+const safeDecode = (s: string) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+/** パスの区切りを / にし、. と .. の部分を畳む (fonts/./a.ttf・css/../fonts/a.ttf → fonts/a.ttf)。URL (スキームつき) は区切りだけ */
+const normalizePath = (p: string) => {
+  const s = p.split('\\').join('/');
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return s;
+  const parts: string[] = [];
+  for (const seg of s.split('/')) {
+    if (seg === '..') parts.pop();
+    else if (seg !== '.' && seg !== '') parts.push(seg);
+  }
+  return parts.join('/');
+};
 
 /**
  * 書体の割り当てを作る。table: 書体の名前 → ファミリー名の表 (利用者が読み込んだ書体 (MS 明朝など)・fonts で足した書体。@font-face の書体は loadFontFaces がここへ足す)
@@ -221,25 +245,27 @@ export function createFontMapping(
   const registeredFaces = new Set<string>();
 
   /**
-   * @font-face の書体を、一緒に選んだファイル (src の url のファイル名で突き合わせる) から読み込む。
+   * @font-face の書体を、一緒に選んだファイル (src の url のパスで突き合わせ、無ければファイル名で突き合わせる) から読み込む。
    * 斜体の書体は読まない (斜体は、立体を傾けて描く)
    */
   async function loadFontFaces(css: string, files: FontFile[]) {
     table.clear('face');
     const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
+    // src の url() は、CSS の場所を基準に解決した参照 (CSS Fonts 4 §4.3。CSS のファイルの中の相対参照は、prepareHtml が解決済みにしている)。
+    // まず参照の URL の全体 (参照から取った書体)、次にパス (文書からの相対パス) で探し、無いときだけファイル名で探す
+    // (noto/Regular.woff2 と roboto/Regular.woff2 を取り違えない)。同じ鍵のファイルが複数あれば、先のもの
+    const byUrl = new Map<string, FontFile>();
+    const byPath = new Map<string, FontFile>();
+    for (const f of files) {
+      if (f.url !== undefined && !byUrl.has(f.url)) byUrl.set(f.url, f);
+      if (f.path !== undefined && !byPath.has(normalizePath(f.path))) byPath.set(normalizePath(f.path), f);
+    }
+    const fileOf = (u: string) => byUrl.get(u) ?? byPath.get(normalizePath(safeDecode(u.split(/[?#]/)[0]))) ?? byName.get(safeDecode(u.split(/[?#]/)[0].split('/').pop() ?? '').toLowerCase());
     // ファミリごとの face の並び。unicode-range の違う face は、別の名前で登録し、範囲つきの書体の組にまとめる (Fonts 4 §4.5)
     const groups = new Map<string, Array<{ family: string; ranges?: Array<[number, number]> }>>();
     for (const ff of parseCss(css).fontFaces) {
       if (ff.italic) continue;
-      // %xx を戻す。不正な % の並び (a%zz.woff2) はそのままの名前で突き合わせる (htmlPrepare の safeDecode と同じ。例外を外へ出さない)
-      const decoded = (name: string) => {
-        try {
-          return decodeURIComponent(name);
-        } catch {
-          return name;
-        }
-      };
-      const file = ff.srcs.map((u) => byName.get(decoded(u.split(/[?#]/)[0].split('/').pop() ?? '').toLowerCase())).find(Boolean);
+      const file = ff.srcs.map(fileOf).find(Boolean);
       if (!file) continue;
       const rangeKey = ff.ranges ? ff.ranges.map(([a, b]) => `${a}-${b}`).join(',') : '';
       const family = rangeKey ? `css:${ff.family}#${rangeKey}` : `css:${ff.family}`;

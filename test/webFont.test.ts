@@ -13,7 +13,7 @@ import { brotliCompressSync, brotliDecompressSync, deflateSync } from 'node:zlib
 import fontkit from '@pdf-lib/fontkit';
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { toSfnt, webFontKind } from '../src/webFont';
-import { cssRefs, parseUnicodeRange } from '../src/resources';
+import { cssRefs, cssStringChars, documentChars, parseUnicodeRange, rebaseFontFaceUrls } from '../src/resources';
 import { collectionFaces } from '../src/fontLoader';
 import { defaultFontBuffer } from './helpers';
 import { DEFAULT_FONTS, typeset, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
@@ -365,6 +365,126 @@ describe('@font-face の WOFF・WOFF2 で組む', () => {
       server.close();
     }
   }, 120_000);
+});
+
+describe('@font-face の書体のファイルの突き合わせ (CSS Fonts 4 §4.3: url() は CSS の場所を基準に解決する)', () => {
+  const fileOf = (spec: FontSpec) => path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
+  const loadFont = async (spec: FontSpec) => {
+    const b = fs.readFileSync(fileOf(spec));
+    return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+  };
+  const font = (n: string) => new Uint8Array(fs.readFileSync(path.join(fontDir, n)));
+  /** family の書体で組んだ字の幅の合計 */
+  const widthOf = (r: Awaited<ReturnType<typeof typeset>>, family: string) => {
+    let w = 0;
+    walkAreaTree(r.areaTree, (a) => void (a.type === 'glyph' && (a as GlyphArea).fontFamily.startsWith(`css:${family}`) && (w += a.width)));
+    return w;
+  };
+  const body = '<p style="font-family: A; font-size: 40pt">Hamburgefonstiv</p><p style="font-family: B; font-size: 40pt">Hamburgefonstiv</p>';
+  // 同じ名前 (Regular.ttf) で、ディレクトリの違う 2 つの書体。字の幅が違う
+  const files = [
+    { name: 'noto/Regular.ttf', data: font('Arimo-Regular.ttf') },
+    { name: 'roboto/Regular.ttf', data: font('Tinos-Regular.ttf') },
+  ];
+  let arimo = 0;
+  let tinos = 0;
+  beforeAll(async () => {
+    const ref = await typeset(`<style>@font-face { font-family: A; src: url(a.ttf) } @font-face { font-family: B; src: url(t.ttf) }</style>${body}`, {
+      loadFont,
+      files: [{ name: 'a.ttf', data: font('Arimo-Regular.ttf') }, { name: 't.ttf', data: font('Tinos-Regular.ttf') }],
+    });
+    arimo = widthOf(ref, 'A');
+    tinos = widthOf(ref, 'B');
+    expect(Math.abs(arimo - tinos)).toBeGreaterThan(5);
+  }, 120_000);
+  it('<style> の url(noto/Regular.ttf) と url(roboto/Regular.ttf) を、パスで区別する (ファイル名だけで取り違えない)', async () => {
+    for (const fs2 of [files, [...files].reverse()]) {
+      const r = await typeset(`<style>@font-face { font-family: A; src: url(noto/Regular.ttf) } @font-face { font-family: B; src: url("./roboto/Regular.ttf?v=2#x") }</style>${body}`, { loadFont, files: fs2 });
+      expect(widthOf(r, 'A')).toBeCloseTo(arimo, 3);
+      expect(widthOf(r, 'B')).toBeCloseTo(tinos, 3);
+    }
+  }, 120_000);
+  it('CSS のファイルの中の相対の url() は、その CSS の場所を基準に解決する', async () => {
+    const css = '@font-face { font-family: A; src: url(../noto/Regular.ttf) } @font-face { font-family: B; src: url("../roboto/Regular.ttf") }';
+    for (const fs2 of [files, [...files].reverse()]) {
+      const r = await typeset(`<link rel="stylesheet" href="css/s.css">${body}`, { loadFont, files: [{ name: 'css/s.css', data: css }, ...fs2] });
+      expect(widthOf(r, 'A')).toBeCloseTo(arimo, 3);
+      expect(widthOf(r, 'B')).toBeCloseTo(tinos, 3);
+    }
+    // CSS の隣の書体 (css/Regular.ttf) を、文書の隣の同じ名前の書体 (Regular.ttf) と取り違えない
+    const near = await typeset(`<link rel="stylesheet" href="css/s.css">${body}`, {
+      loadFont,
+      files: [{ name: 'css/s.css', data: '@font-face { font-family: A; src: url(Regular.ttf) }' }, { name: 'css/Regular.ttf', data: font('Arimo-Regular.ttf') }, { name: 'Regular.ttf', data: font('Tinos-Regular.ttf') }],
+    });
+    expect(widthOf(near, 'A')).toBeCloseTo(arimo, 3);
+  }, 120_000);
+  it('解決したパスに無ければ、これまでどおりファイル名で探す。resolveResource の返した書体は URL で突き合わせる', async () => {
+    const css = '@font-face { font-family: A; src: url(fonts/Regular.ttf) }';
+    const r = await typeset(`<link rel="stylesheet" href="css/s.css">${body}`, { loadFont, files: [{ name: 'css/s.css', data: css }, { name: 'noto/Regular.ttf', data: font('Arimo-Regular.ttf') }] });
+    expect(widthOf(r, 'A')).toBeCloseTo(arimo, 3);
+    // 取った CSS (https://…/x/css/s.css) の相対の書体は、その URL を基準に解決した URL で問い合わせ、その URL で突き合わせる
+    const store: Record<string, string | Uint8Array> = {
+      'https://example.test/x/css/s.css': '@font-face { font-family: A; src: url(../noto/Regular.ttf?v=1) } @font-face { font-family: B; src: url(../roboto/Regular.ttf?v=1) }',
+      'https://example.test/x/noto/Regular.ttf?v=1': font('Arimo-Regular.ttf'),
+      'https://example.test/x/roboto/Regular.ttf?v=1': font('Tinos-Regular.ttf'),
+    };
+    const net = await typeset(`<link rel="stylesheet" href="https://example.test/x/css/s.css">${body}`, { loadFont, fetchStyles: false, resolveResource: (u) => store[u] });
+    expect(widthOf(net, 'A')).toBeCloseTo(arimo, 3);
+    expect(widthOf(net, 'B')).toBeCloseTo(tinos, 3);
+  }, 120_000);
+  it('rebaseFontFaceUrls: @font-face の中の相対の url() だけを書き換える', () => {
+    const css = '@font-face { font-family: A; src: url(../f/a.woff2) format("woff2"), url(\'b.ttf\'), url(data:font/ttf;base64,AAAA), url(https://x.test/c.ttf) } p { background: url(bg.png) }';
+    expect(rebaseFontFaceUrls(css, 'css/sub/s.css')).toBe('@font-face { font-family: A; src: url("css/f/a.woff2") format("woff2"), url("css/sub/b.ttf"), url(data:font/ttf;base64,AAAA), url(https://x.test/c.ttf) } p { background: url(bg.png) }');
+    expect(rebaseFontFaceUrls(css, 'https://y.test/css/s.css')).toContain('url("https://y.test/f/a.woff2") format("woff2"), url("https://y.test/css/b.ttf")');
+    // 文書と同じ場所の CSS (s.css) では変わらない
+    const same = '@font-face { font-family: A; src: url(f/a.woff2), url("b.ttf") }';
+    expect(rebaseFontFaceUrls(same, 's.css')).toBe(same);
+  });
+});
+
+describe('unicode-range の絞り込みに使う字 (CSS Fonts 4 §4.5)', () => {
+  const fileOf = (spec: FontSpec) => path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
+  const loadFont = async (spec: FontSpec) => {
+    const b = fs.readFileSync(fileOf(spec));
+    return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+  };
+  // 日 (U+65E5)・第 (U+7B2C)・α (U+03B1)・… (U+2026) のそれぞれだけに使う書体
+  const faces = ['65E5', '7B2C', '03B1', '2026', '0-7F'].map((r) => `@font-face { font-family: W; src: url(https://example.test/u${r}.woff2); unicode-range: U+${r} }`).join('\n');
+  /** 問い合わせた書体 (u65E5 など) */
+  const asked = async (body: string, css = '', more: Record<string, string> = {}) => {
+    const urls: string[] = [];
+    await typeset(`<html><head><link rel="stylesheet" href="s.css"></head><body>${body}</body></html>`, {
+      loadFont,
+      fetchImages: false,
+      fetchStyles: false,
+      files: [{ name: 's.css', data: `${faces}\n${css}` }],
+      resolveResource: (u) => (urls.push(u), more[u]),
+    });
+    return urls.filter((u) => /\.woff2$/.test(u)).map((u) => u.replace(/^.*\/u|\.woff2$/g, '')).sort();
+  };
+  it('書かれたままの字と、文字参照 (数値・名前) を解いた字を見る', async () => {
+    expect(await asked('<h1>日</h1>')).toEqual(['0-7F', '65E5']);
+    expect(await asked('<h1>x</h1>')).toEqual(['0-7F']);
+    expect(await asked('<h1>&#x65E5;&#31532;</h1>')).toEqual(['0-7F', '65E5', '7B2C']);
+    expect(await asked('<h1>&alpha;&hellip;</h1>')).toEqual(['0-7F', '03B1', '2026']);
+  }, 120_000);
+  it('CSS の content の文字列の字 (逃がしも解く) を見る。一緒に渡した CSS・<style>・後から取った CSS のどれでも', async () => {
+    expect(await asked('<h1>x</h1>', 'h1::before { content: "第" }')).toEqual(['0-7F', '7B2C']);
+    expect(await asked('<h1>x</h1>', "h1::before { content: '\\65E5 \\7b2c' }")).toEqual(['0-7F', '65E5', '7B2C']);
+    expect(await asked('<style>h1::before { content: "\\0003B1" }</style><h1>x</h1>')).toEqual(['0-7F', '03B1']);
+    // 注釈の中の字は使う字ではない
+    expect(await asked('<h1>x</h1>', '/* 日 "第" */ h1 { color: red }')).toEqual(['0-7F']);
+    // 書体の参照より後に読む CSS (@import で取ったもの) の content の字でも、書体を取る
+    expect(await asked('<h1>x</h1>', '', { 'https://example.test/late.css': 'h1::after { content: "日" }' })).toEqual(['0-7F']);
+    expect(await asked('<link rel="stylesheet" href="https://example.test/late.css"><h1>x</h1>', '', { 'https://example.test/late.css': 'h1::after { content: "日" }' })).toEqual(['0-7F', '65E5']);
+  }, 120_000);
+  it('documentChars・cssStringChars', () => {
+    expect([...documentChars('a&#x65E5;&#31532;\\7b2c')].sort((p, q) => p - q).filter((c) => c > 0x7f)).toEqual([0x65e5, 0x7b2c]);
+    const s = new Set<number>();
+    cssStringChars('a::before { content: "A\\42  \\"\\\n\\0\\d800 " } /* "Z" */ b { font-family: \'C\' }', s);
+    // A・B (\\42 と後ろの空白 1 つ)・空白・"・(\\ と改行は無し)・U+FFFD (\\0 と代用符号)・C
+    expect([...s].sort((p, q) => p - q)).toEqual([0x20, 0x22, 0x41, 0x42, 0x43, 0xfffd]);
+  });
 });
 
 describe('CSS の書体の参照', () => {

@@ -12,6 +12,69 @@ import { msg } from './messages';
 import fontkit from '@pdf-lib/fontkit';
 import type { FontSpec } from './types';
 
+/** 差し替え済みの印 (fontkit の原型に付ける。pdfLibPatches.ts と同じ決まり) */
+const UVS_PATCHED = Symbol.for('kumiori.fontkitUvsPatched');
+
+type UvsSelector = {
+  varSelector: number;
+  defaultUVS?: ArrayLike<{ startUnicodeValue: number; additionalCount: number }> | null;
+  nonDefaultUVS?: ArrayLike<{ unicodeValue: number; glyphID: number }> | null;
+};
+
+/** 並んだ表の 2 分探索 (cmp が 0 を返す項目。無ければ undefined) */
+function searchSorted<T>(arr: ArrayLike<T>, cmp: (x: T) => number): T | undefined {
+  let lo = 0;
+  let hi = arr.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const r = cmp(arr[mid]);
+    if (r < 0) hi = mid - 1;
+    else if (r > 0) lo = mid + 1;
+    else return arr[mid];
+  }
+  return undefined;
+}
+
+/**
+ * @pdf-lib/fontkit の、異体字の並び (基底の字 + 異体字セレクタ) の字形の引き方を正す。
+ *
+ * fontkit の CmapProcessor.getVariationSelector は、既定の表 (Default UVS) に基底の字が「ある」ときだけ
+ * 非既定の表 (Non-Default UVS) を引くので、非既定の並びのほとんどが引けず、基底の字の字形になる
+ * (Noto Serif JP の 兎 U+514E + U+E0100 は、非既定の表に字形があるのに、既定の字形が返る)。
+ *
+ * OpenType の 'cmap' の format 14 (Unicode Variation Sequences) のとおりに引く:
+ *  - 異体字セレクタの記録 (VariationSelector。varSelector の昇順) を探す
+ *  - 既定の表 (DefaultUVS。UnicodeRange の昇順) に基底の字があれば「既定の並び」で、字形は Unicode の cmap の基底の字のもの
+ *  - 無ければ、非既定の表 (NonDefaultUVS。UVSMapping の unicodeValue の昇順) の glyphID
+ *  - どちらにも無い並びは、書体が持たない (基底の字の字形になる。0 を返すと、呼び出し元の lookup が Unicode の cmap を引く)
+ *
+ * 測るとき (measurer.ts)・字形の番号を決めるとき (areaResources.ts)・描くとき (canvasRenderer.ts の輪郭・pdf-lib の埋め込み) は、
+ * どれも fontkit の layout → glyphsForString → CmapProcessor.lookup を通るので、原型 (prototype) を 1 回差し替えれば、同じ字形になる
+ */
+export function patchFontkitVariationSelector(fk: unknown) {
+  let proto: { getVariationSelector?: (this: { uvs?: { varSelectors: { toArray(): UvsSelector[] } } | null }, cp: number, vs: number) => number; [UVS_PATCHED]?: boolean } | null;
+  try {
+    // cmap を読めない書体は、_cmapProcessor を取るときに例外になる (その書体は、あとで字を引くときに扱う)
+    proto = Object.getPrototypeOf((fk as { _cmapProcessor?: object })._cmapProcessor ?? null);
+  } catch {
+    return;
+  }
+  if (!proto || proto[UVS_PATCHED] || typeof proto.getVariationSelector !== 'function') return;
+  /** 書体の format 14 の表ごとの、異体字セレクタの記録 (読むのは 1 回) */
+  const selectors = new WeakMap<object, UvsSelector[]>();
+  proto.getVariationSelector = function (codepoint: number, variationSelector: number) {
+    const uvs = this.uvs;
+    if (!uvs) return 0;
+    let list = selectors.get(uvs);
+    if (!list) selectors.set(uvs, (list = uvs.varSelectors.toArray()));
+    const sel = searchSorted(list, (x) => variationSelector - x.varSelector);
+    if (!sel) return 0;
+    if (sel.defaultUVS && searchSorted(sel.defaultUVS, (x) => (codepoint < x.startUnicodeValue ? -1 : codepoint > x.startUnicodeValue + x.additionalCount ? 1 : 0))) return 0;
+    return (sel.nonDefaultUVS && searchSorted(sel.nonDefaultUVS, (x) => codepoint - x.unicodeValue)?.glyphID) || 0;
+  };
+  proto[UVS_PATCHED] = true;
+}
+
 export interface LoadedFont {
   key: string;
   family: string;
@@ -78,6 +141,7 @@ export class FontManager {
     this.getMemo.clear();
     this.generation++;
     const fk = fontkit.create(new Uint8Array(buffer));
+    patchFontkitVariationSelector(fk);
     const upm = fk.unitsPerEm || 1000;
     // OS/2 typo メトリクスが ちょうど 1em を成すフォント (Noto CJK 等) は ideographic em ボックスと一致する
     const os2 = (fk as unknown as { 'OS/2'?: { typoAscender: number; typoDescender: number } })['OS/2'];

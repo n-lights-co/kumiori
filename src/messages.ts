@@ -10,32 +10,41 @@ export type MessageLang = 'ja' | 'en';
 
 export const MESSAGE_LANGS: readonly MessageLang[] = ['ja', 'en'];
 
-let current: MessageLang = 'ja';
+/** 既定の言語 (setMessageLang で決める。呼び出しごとの切り替えが 1 つも無いときに使う) */
+let base: MessageLang = 'ja';
+/** 進行中の withMessageLang の切り替え (始まった順)。最後のものが今の言語 */
+const scopes: Array<{ lang: MessageLang }> = [];
 
 /** 今の言語 */
 export function messageLang(): MessageLang {
-  return current;
+  return scopes.length ? scopes[scopes.length - 1].lang : base;
 }
 
-/** 言語を切り替える (以後の msg に効く) */
+/** 既定の言語を切り替える (以後の msg に効く。進行中の withMessageLang があれば、それが終わってから効く) */
 export function setMessageLang(lang: MessageLang): void {
-  current = lang;
+  base = lang;
 }
 
 /** 今の言語の文を返す */
 export function msg(ja: string, en: string): string {
-  return current === 'en' ? en : ja;
+  return messageLang() === 'en' ? en : ja;
 }
 
-/** fn の間だけ lang に切り替える (lang が無ければそのまま)。非同期の呼び出しが重なると、後の切り替えが先の呼び出しにも効く */
+/**
+ * fn の間だけ lang に切り替える (lang が無ければそのまま)。
+ * 言語は 1 つの場所 (このモジュール) に置いているので、非同期の呼び出しが重なっている間は、進行中のうち最後に始まった呼び出しの言語になる
+ * (先に始まった呼び出しの、その間の文も、その言語になる)。切り替えは呼び出しごとに覚えておき、終わったら自分の分だけを外すので、
+ * 終わる順がどうであっても、すべて終われば既定の言語に戻る (前の値を覚えて戻す作りだと、相手の途中の値に「戻して」切り替わったままになる)。
+ * 呼び出しごとの文脈 (Node の AsyncLocalStorage) は、ブラウザに無いので使わない
+ */
 export async function withMessageLang<T>(lang: MessageLang | undefined, fn: () => Promise<T>): Promise<T> {
-  if (!lang || lang === current) return fn();
-  const prev = current;
-  current = lang;
+  if (!lang) return fn();
+  const scope = { lang };
+  scopes.push(scope);
   try {
     return await fn();
   } finally {
-    current = prev;
+    scopes.splice(scopes.indexOf(scope), 1);
   }
 }
 

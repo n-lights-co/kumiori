@@ -1461,8 +1461,9 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
   if (b.length < 88 || v.getUint32(0, true) !== 1 || v.getUint32(40, true) !== 0x464d4520) return undefined;
   const bounds = [v.getInt32(8, true), v.getInt32(12, true), v.getInt32(16, true), v.getInt32(20, true)];
   const frame = [v.getInt32(24, true), v.getInt32(28, true), v.getInt32(32, true), v.getInt32(36, true)];
-  widthPx ??= ((frame[2] - frame[0]) / 100) * (96 / 25.4);
-  heightPx ??= ((frame[3] - frame[1]) / 100) * (96 / 25.4);
+  // 左右・上下が逆に書かれた枠でも、大きさは正の値 (imageInfo の emfInfo と同じ)
+  widthPx ??= (Math.abs(frame[2] - frame[0]) / 100) * (96 / 25.4);
+  heightPx ??= (Math.abs(frame[3] - frame[1]) / 100) * (96 / 25.4);
   const out = new SvgOut();
   // 装置の 1 画素の大きさ: 参照装置の大きさ (Device: 画素・Millimeters: mm。[MS-EMF] 2.2.9) から mm、
   // 出来上がりは rclFrame (0.01 mm) の大きさに viewBox を合わせるので、ページの座標の 1 単位は frame の幅 ÷ viewBox の幅

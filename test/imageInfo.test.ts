@@ -32,6 +32,16 @@ describe('imageInfo: 描けない形式の大きさ', () => {
     });
     const e = imageInfo(emf)!;
     expect([e.mime, Math.round(e.width), Math.round(e.height)]).toEqual(['image/emf', 96, 192]);
+    // 左右・上下が逆に書かれた枠 (rclFrame) でも、大きさは正の値。幅か高さが 0 の枠からは、大きさを決めない
+    const rev = bytes(100, (v) => {
+      v.setUint32(0, 1, true), v.setInt32(24, 2540, true), v.setInt32(28, 5080, true), v.setUint32(40, 0x464d4520, true);
+    });
+    const re = imageInfo(rev)!;
+    expect([re.mime, Math.round(re.width), Math.round(re.height)]).toEqual(['image/emf', 96, 192]);
+    const flat = bytes(100, (v) => {
+      v.setUint32(0, 1, true), v.setInt32(32, 2540, true), v.setUint32(40, 0x464d4520, true);
+    });
+    expect(imageInfo(flat)).toBeUndefined();
     const eps = new TextEncoder().encode('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 72 36\n');
     expect(imageInfo(eps)).toEqual({ mime: 'application/postscript', width: 96, height: 48 });
     expect(epsPreview(eps)).toBeUndefined();
@@ -530,6 +540,30 @@ describe('ネットワーク上の画像の取得 (AssetStore.addUrl)', () => {
     } finally {
       server.closeAllConnections();
       server.close();
+    }
+  });
+});
+
+describe('data URI の画像 (AssetStore.addDataUri)', () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="20"><text x="0" y="15">日本語 é</text></svg>';
+  it('base64 でない data URI: %xx はバイト (UTF-8) として戻す。日本語の SVG が化けない (RFC 2397 §2)', async () => {
+    const { AssetStore, percentDecodeBytes } = await import('../src/assets');
+    const a = await new AssetStore().addDataUri('data:image/svg+xml,' + encodeURIComponent(svg));
+    expect(new TextDecoder().decode(a!.bytes)).toBe(svg);
+    expect([a!.mime, a!.width, a!.height]).toEqual(['image/svg+xml', 100, 20]);
+    // % で書いていない ASCII 以外の字は UTF-8 のバイトに、16 進の続かない % はそのまま (投げない)
+    expect([...percentDecodeBytes('a%E6%97%A5日%zz%4')]).toEqual([0x61, 0xe6, 0x97, 0xa5, 0xe6, 0x97, 0xa5, 0x25, 0x7a, 0x7a, 0x25, 0x34]);
+    // 0x80 以上のバイトもそのまま (UTF-8 として読み直さない)
+    expect([...percentDecodeBytes('%ff%80%00')]).toEqual([0xff, 0x80, 0]);
+  });
+  it('種類の後ろのパラメータ (;charset=utf-8) があっても読む (RFC 2397 §3)。base64 はこれまでどおり', async () => {
+    const { AssetStore } = await import('../src/assets');
+    const a = await new AssetStore().addDataUri('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg));
+    expect(new TextDecoder().decode(a!.bytes)).toBe(svg);
+    const b64 = Buffer.from(svg, 'utf8').toString('base64');
+    for (const head of ['data:image/svg+xml;base64,', 'data:image/svg+xml;charset=utf-8;base64,']) {
+      const b = await new AssetStore().addDataUri(head + b64);
+      expect(new TextDecoder().decode(b!.bytes)).toBe(svg);
     }
   });
 });

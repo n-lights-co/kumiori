@@ -63,7 +63,7 @@ import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
 import { cssColor, cssColorAlpha, cssLen, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
-import { AH_ALIASES, counterText, isPagedDecl, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
+import { AH_ALIASES, counterText, isPagedDecl, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
 /** 確定したスタイルの読み取り (ブラウザでは getComputedStyle。テストでは差し替える) */
@@ -2032,7 +2032,8 @@ class HtmlImporter {
    */
   private enterCounters(c: (p: string) => string, owner: Element | null, li?: { value?: number; step?: number }) {
     const pairs = (v: string, def: number): Array<[string, number]> =>
-      !v || v === 'none' ? [] : [...v.matchAll(/([a-z_-][\w-]*)(?:\s+(-?\d+))?/gi)].map((m) => [m[1], m[2] !== undefined ? parseInt(m[2], 10) : def]);
+      // 名前は CSS の識別子 (CSS Syntax 3 §4.2: ASCII でない字 (U+0080 以上) も名前の字。counter(章) など)
+      !v || v === 'none' ? [] : [...v.matchAll(/([a-z_\u0080-\uffff-][\w\u0080-\uffff-]*)(?:\s+(-?\d+))?/gi)].map((m) => [m[1], m[2] !== undefined ? parseInt(m[2], 10) : def]);
     const top = (n: string) => {
       let st = this.counters.get(n);
       if (!st) this.counters.set(n, (st = []));
@@ -2231,7 +2232,49 @@ class HtmlImporter {
     const m = /^attr\(\s*([\w:-]+)(?:\s+[\w%-]+)?\s*(?:,[^)]*)?\)$/.exec(arg);
     const v = m ? (el.getAttribute(m[1]) ?? '') : unquote(arg.replace(/^url\((.*)\)$/, '$1'));
     const id = v.replace(/^.*#/, '');
-    return id || undefined;
+    return id ? this.fragmentId(el, id) : undefined;
+  }
+
+  /** 文書の中の id (fragmentId が飛び先を探すのに使う。最初に使うときに集める) */
+  private docIds?: Set<string>;
+
+  /**
+   * URL の fragment (# の後ろ) の指す要素の id (HTML Living Standard §7.4.6.4 Scrolling to a fragment の「indicated part」の手順):
+   * まず fragment そのままの id を探し、無ければ、% の符号化を解いて UTF-8 として読んだもの (BOM は取らない) で探す
+   * (href="#%E7%AB%A0" は id="章" を指す)。どちらも無ければ、そのまま返す
+   */
+  private fragmentId(el: Element, fragment: string): string {
+    if (!/%[0-9a-f]{2}/i.test(fragment)) return fragment;
+    if (!this.docIds) {
+      const ids = (this.docIds = new Set<string>());
+      const walk = (n: Node) => {
+        for (const k of Array.from(n.childNodes ?? [])) {
+          if (k.nodeType !== 1) continue;
+          const id = (k as Element).getAttribute('id');
+          if (id) ids.add(id);
+          walk(k);
+        }
+      };
+      if (el.ownerDocument) walk(el.ownerDocument);
+    }
+    if (this.docIds.has(fragment)) return fragment;
+    // percent-decode (URL Standard §1.3: % の後ろが 16 進の 2 桁でなければ、そのままの字)
+    const bytes: number[] = [];
+    const enc = new TextEncoder();
+    for (let i = 0; i < fragment.length; ) {
+      const hex = fragment[i] === '%' ? /^[0-9a-f]{2}/i.exec(fragment.slice(i + 1, i + 3)) : null;
+      if (hex) {
+        bytes.push(parseInt(hex[0], 16));
+        i += 3;
+      } else {
+        const cp = fragment.codePointAt(i)!;
+        const ch = String.fromCodePoint(cp);
+        bytes.push(...enc.encode(ch));
+        i += ch.length;
+      }
+    }
+    const decoded = new TextDecoder('utf-8', { ignoreBOM: true }).decode(new Uint8Array(bytes));
+    return this.docIds.has(decoded) ? decoded : fragment;
   }
 
   /**
@@ -2863,8 +2906,16 @@ class HtmlImporter {
     const ws = this.cs(parent)('white-space') || 'normal';
     if (ws === 'pre' || ws === 'pre-wrap' || ws === 'break-spaces') return t.replace(/\r\n?/g, '\n');
     let s = t.replace(/\r\n?/g, '\n').replace(/[ \t]*\n[ \t]*/g, '\n');
-    // 改行: 前後が和文なら消し、それ以外は空白 (pre-line は改行のまま)
-    s = s.replace(/(.?)\n+(.?)/gu, (m, a: string, b: string) => (ws === 'pre-line' ? m : CJK.test(a) && CJK.test(b) ? a + b : `${a} ${b}`));
+    // 改行 (CSS Text 3 §4.1.3): 続いた改行は 1 つにまとめ、残った改行は、前後の字で空白にするか消すかを決める (決め方は UA に任されている)。
+    // ここでは、前後が和文なら消し、それ以外は空白にする (pre-line は改行のまま)。前後の字は見るだけで、置き換えには含めない
+    // (含めると、1 字だけの行が続くとき (あ\nい\nう) に、次の改行の前の字を見られない)
+    if (ws !== 'pre-line')
+      s = s.replace(/\n+/g, (m, at: number, all: string) => {
+        const a = Array.from(all.slice(Math.max(0, at - 2), at)).pop() ?? '';
+        const cp = all.codePointAt(at + m.length);
+        const b = cp === undefined ? '' : String.fromCodePoint(cp);
+        return CJK.test(a) && CJK.test(b) ? '' : ' ';
+      });
     return s.replace(/[ \t]+/g, ' ');
   }
 
@@ -3077,6 +3128,7 @@ class HtmlImporter {
     }
     // display: contents の子 (直下に文字が無く、::before・::after も無いもの) は、その子を項目として並べる (CSS Display 3 §2.5)
     if (flexBox) kids = this.expandContents(kids) as ChildNode[];
+    let listStarted = false;
     for (let i = 0; i < kids.length; i++) {
       const n = kids[i];
       if (flexBox && (n.nodeType !== 3 || i === 0 || kids[i - 1].nodeType !== 3)) marks.push({ at: items.length, order: n.nodeType === 1 ? orderOf(n as Element) : 0 });
@@ -3096,6 +3148,13 @@ class HtmlImporter {
       // page は class A の区切りを作る箱 (流れの中のブロック) に効く (CSS Page 3 §8.1)。絶対配置・固定配置・float の箱は、ページの名前を変えない
       if (el === this.bodyEl && this.isBlock(d, e) && !/^(absolute|fixed)$/.test(this.cs(e)('position')) && (this.cs(e)('float') || 'none') === 'none') this.flowPageSwitch(e, pg, items);
       if (d !== 'list-item') this.enterCounters(this.cs(e), el);
+      else {
+        // リストの項目: 容器の list-item カウンターの暗黙の reset は、容器ごとに 1 度だけ (Lists 3 §4.6。項目の並びが、ほかの子や
+        // 流れの外の項目で切れても、番号は続く)。項目のカウンターは、しおり・string-set の値を読む前に当てる (§4 の順)
+        if (!listStarted) this.listStart(el, kids);
+        listStarted = true;
+        this.listItemCounters(e, el);
+      }
       this.bookmark(e);
       // string-set: 要素の前にマーカーを置く (インラインの中なら、段落の外へ出す)
       for (const m of this.stringSet(e)) this.pushMarker(m, inline, items);
@@ -3124,8 +3183,9 @@ class HtmlImporter {
         continue;
       }
       if (d === 'list-item') {
-        // 続く list-item をまとめて 1 つのリスト (2 列の表) にする
-        const lis = this.siblingRun(kids, i, (x) => this.display(x) === 'list-item');
+        // 続く list-item をまとめて 1 つのリスト (2 列の表) にする。流れの外の項目 (回り込み・脚注・絶対配置・running()) は並びに入れず、
+        // 上の前処理 (flowFloat など) を通す (float・position は list-item の箱にも効く。CSS 2.1 §9.7)
+        const lis = this.siblingRun(kids, i, (x) => this.display(x) === 'list-item' && !this.outOfFlow(x));
         i = lis.last;
         items.push({ v: this.list(el, lis.elements), block: true });
         continue;
@@ -3207,7 +3267,8 @@ class HtmlImporter {
     const forced = /^(page|left|right|recto|verso|always)$/.test(this.cs(e)('break-before') || this.cs(e)('page-break-before') || '');
     if (name !== this.curPage || (this.opts.pageGroupFirst && name && forced)) {
       const sw: PageSwitch = { type: 'page-switch', page: name };
-      const reset = /(?:^|\s)page(?:\s+(-?\d+))?/.exec(this.cs(e)('counter-reset'));
+      // カウンターの名前は全体で見る (pagenote・page-x は page ではない)
+      const reset = /(?:^|\s)page(?![-\w\u0080-\uffff])(?:\s+(-?\d+))?/.exec(this.cs(e)('counter-reset'));
       if (reset) sw.initial = reset[1] !== undefined ? Math.max(1, parseInt(reset[1], 10)) : 1;
       items.push({ v: sw as unknown as LBlockLevel, block: true });
       this.curPage = name;
@@ -3216,7 +3277,7 @@ class HtmlImporter {
 
   /** position: running(name): 本文から外し、余白の箱の element(name) で出す。扱ったら true */
   private flowRunning(e: Element, parent: Element, d: string, pg: Record<string, string>, inline: boolean, items: FlowItem[]): boolean {
-    const run = /running\(\s*([\w-]+)\s*\)/.exec(pg.position ?? '');
+    const run = /running\(\s*([-\w\u0080-\uffff]+)\s*\)/.exec(pg.position ?? '');
     if (!run) return false;
     this.inRunning = true;
     const content = this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', children: this.inline(e, parent) } as LBlock);
@@ -3240,14 +3301,27 @@ class HtmlImporter {
     return true;
   }
 
+  /** 回り込みの側 (flowFloat の説明を参照)。回り込みでなければ undefined */
+  private floatSideOf(e: Element, pg: Record<string, string>): string | undefined {
+    const fl = (pg.float && /\bsidenote\b/i.test(pg.float) ? this.sidenoteSide() : pg.float && pg.float !== 'footnote' ? floatSide(pg.float) : this.cs(e)('float')).replace(/^inline-(start|end)$/, '$1');
+    return /^(left|right|inside|outside|top|bottom|before|after|center|alternate|start|end)$/.test(fl) ? fl : undefined;
+  }
+
+  /** 流れの外に出す要素か (flowChildren の前処理の flowRunning・flowFootnote・flowFloat・絶対配置・固定配置のどれかに当たる) */
+  private outOfFlow(e: Element): boolean {
+    const pg = this.pg(e);
+    if (/running\(\s*[-\w\u0080-\uffff]+\s*\)/.test(pg.position ?? '') || pg.float === 'footnote' || this.floatSideOf(e, pg)) return true;
+    return /^(absolute|fixed)$/.test(this.cs(e)('position'));
+  }
+
   /**
    * float (left / right、ページの組版の inside / outside / top)。扱ったら true。
    * float: sidenote (アンテナハウスの拡張) は、@page の @sidenote の float (left・right・inside・outside・start・end) の側へ。指定が無ければ end。
    * float: inline-start・inline-end (Logical 1 §2.1) は start・end と同じ
    */
   private flowFloat(e: Element, parent: Element, pg: Record<string, string>, items: FlowItem[]): boolean {
-    const fl = (pg.float && /\bsidenote\b/i.test(pg.float) ? this.sidenoteSide() : pg.float && pg.float !== 'footnote' ? floatSide(pg.float) : this.cs(e)('float')).replace(/^inline-(start|end)$/, '$1');
-    if (!/^(left|right|inside|outside|top|bottom|before|after|center|alternate|start|end)$/.test(fl)) return false;
+    const fl = this.floatSideOf(e, pg);
+    if (!fl) return false;
     const fv = this.float(e, parent, fl, !!pg.float && /\bsidenote\b/i.test(pg.float));
     if (pg.float && /\bmulticol\b/i.test(pg.float) && (fl === 'top' || fl === 'before')) {
       this.multicolTop.set(fv, /^\s*([\d.]+)gr\s*$/i.exec(pg.width ?? '')?.[1]);
@@ -3285,14 +3359,15 @@ class HtmlImporter {
   }
 
   /**
-   * kids[i] から続く、match に合う要素の並び (間の空白だけの文字は読み飛ばす)。匿名の表の部分・リストの項目をまとめる。
-   * last は並びの最後の子の位置 (呼び出し側はそこまで読み終えたことにする)
+   * kids[i] から続く、match に合う要素の並び。匿名の表の部分・リストの項目をまとめる。間の、箱を作らないもの (空白だけの文字・
+   * コメント・処理命令・display: none の要素) は読み飛ばす: 並びは箱の並びで決まり (CSS 2.1 §17.2.1・§9.2.1.1)、display: none の要素は
+   * 箱を作らず、カウンターも動かさない (Lists 3 §4.5)。last は並びの最後の子の位置 (呼び出し側はそこまで読み終えたことにする)
    */
   private siblingRun(kids: Node[], i: number, match: (e: Element) => boolean): { elements: Element[]; last: number } {
     const elements: Element[] = [kids[i] as Element];
     while (i + 1 < kids.length) {
       const nx = kids[i + 1];
-      if (nx.nodeType === 3 && !(nx.textContent ?? '').trim()) {
+      if ((nx.nodeType === 3 && !(nx.textContent ?? '').trim()) || nx.nodeType === 8 || nx.nodeType === 7 || (nx.nodeType === 1 && this.display(nx as Element) === 'none')) {
         i++;
         continue;
       }
@@ -3580,7 +3655,7 @@ class HtmlImporter {
     if (el.localName !== 'a') return undefined;
     const href = (el.getAttribute('href') ?? '').trim();
     if (!href) return undefined;
-    if (href.startsWith('#')) return href.length > 1 ? { internal: href.slice(1) } : undefined;
+    if (href.startsWith('#')) return href.length > 1 ? { internal: this.fragmentId(el, href.slice(1)) } : undefined;
     return { external: href };
   }
 
@@ -4120,30 +4195,54 @@ class HtmlImporter {
     return [inl];
   }
 
-  /** list-item の並び → 2 列の表 (記号・番号の列と本文の列)。記号の列の幅は、リストの字下げ (padding-start) */
-  private list(container: Element, lis: Element[]): LBlockLevel {
-    const c = this.cs(container);
+  /**
+   * リストの容器 (ol・ul・menu) の list-item カウンターの暗黙の reset (Lists 3 §4.6 と付録 A の ol, ul { counter-reset: list-item }。
+   * ol の start は、最初の項目がその番号になるように)。reversed は、start (無ければ項目の数) + 1 から始め、項目ごとに 1 減らす
+   * (HTML の ol reversed)。容器の中身を読み始めるときに 1 度だけ呼ぶ (kids は容器の子)
+   */
+  private listStart(container: Element, kids: Node[]) {
+    if (!/^(ol|ul|menu)$/.test(container.localName) || /(^|\s)list-item(\s|$)/.test(this.cs(container)('counter-reset'))) return;
     // start は 0 や負の数でもよい (読めなければ 1。HTML の ol start、Lists 3 付録の ol[start] の規則)
     const s0 = parseInt(container.getAttribute('start') ?? '1', 10);
     const start = Number.isNaN(s0) ? 1 : s0;
     const reversed = !!container.hasAttribute?.('reversed');
-    // ol・ul・menu は list-item カウンターを暗黙に reset する (Lists 3 §4.6。ol の start は、最初の項目がその番号になるように)。
-    // reversed は、start (無ければ項目の数) + 1 から始め、項目ごとに 1 減らす (HTML の ol reversed)
-    const step = reversed ? -1 : 1;
-    if (/^(ol|ul|menu)$/.test(container.localName) && !/(^|\s)list-item(\s|$)/.test(c('counter-reset'))) {
-      if (!this.counters.has('list-item')) this.counters.set('list-item', []);
-      const first = reversed ? (container.hasAttribute('start') ? start : lis.length) + 1 : start - 1;
-      this.counters.get('list-item')!.push({ owner: container, v: first });
-    }
+    const count = () => kids.filter((k) => k.nodeType === 1 && this.display(k as Element) === 'list-item').length;
+    if (!this.counters.has('list-item')) this.counters.set('list-item', []);
+    const first = reversed ? (container.hasAttribute('start') ? start : count()) + 1 : start - 1;
+    this.counters.get('list-item')!.push({ owner: container, v: first });
+  }
+
+  /** リストの項目 (display: list-item) のカウンター: list-item を 1 つ進め (reversed の容器では 1 つ戻し)、value 属性の番号にする */
+  private listItemCounters(li: Element, container: Element) {
+    const v = parseInt(li.getAttribute('value') ?? '', 10);
+    this.enterCounters(this.cs(li), container, { value: Number.isFinite(v) ? v : undefined, step: container.hasAttribute?.('reversed') ? -1 : 1 });
+  }
+
+  /**
+   * list-item の並び → 2 列の表 (記号・番号の列と本文の列)。記号の列の幅は、リストの字下げ (padding-start)。
+   * 最初の項目のカウンター・しおり・string-set は、呼び出し側 (flowChildren) が済ませている
+   */
+  private list(container: Element, lis: Element[]): LBlockLevel {
+    const c = this.cs(container);
+    const s0 = parseInt(container.getAttribute('start') ?? '1', 10);
+    const start = Number.isNaN(s0) ? 1 : s0;
+    const reversed = !!container.hasAttribute?.('reversed');
+    // 並びの 2 つ目からの項目の前処理 (最初の項目は flowChildren が済ませている): カウンター・しおり・string-set のマーカー
+    // (マーカーは項目の中身の先頭に置く)
+    const enter = (li: Element, k: number): LMarker[] => {
+      if (k === 0) return [];
+      this.listItemCounters(li, container);
+      this.bookmark(li);
+      return this.stringSet(li);
+    };
     // 記号の無いリスト (list-style: none) は、ふつうのブロックの並びにする (li の枠・余白がそのまま付く)
     if (lis.every((li) => this.cs(li)('list-style-type') === 'none')) {
-      const blocks: LBlockLevel[] = [];
-      for (const li of lis) {
-        const v = parseInt(li.getAttribute('value') ?? '', 10);
-        this.enterCounters(this.cs(li), container, { value: Number.isFinite(v) ? v : undefined, step });
+      const blocks: Array<LBlockLevel | LInlineLevel> = [];
+      lis.forEach((li, k) => {
+        blocks.push(...enter(li, k));
         const b = this.block(li, container);
         if (b) blocks.push(b);
-      }
+      });
       return { type: 'block', children: blocks };
     }
     this.report.counts.tables++;
@@ -4151,10 +4250,37 @@ class HtmlImporter {
     const startSide = /^(vertical|sideways-rl)/.test(c('writing-mode')) ? 'top' : 'left';
     const indent = (cssLen(c(`padding-${startSide}`)) ?? 0) + (cssLen(c(`margin-${startSide}`)) ?? 0);
     let n = reversed ? start + lis.length - 1 : start;
-    const rows: LTableRow[] = lis.map((li) => {
+    // 項目の改ページの指定 (CSS Fragmentation 3 §3.1: break-before・break-after・break-inside は、通常の流れの block-level の箱に当たる。
+    // list-item の箱も block-level)。項目は表の行にして組むので、行の指定にする (表の tr と同じ。left・right・recto・verso は、行の間では
+    // ページを改めるだけ)。最初の項目の前・最後の項目の後ろの強制の区切りは、リストの箱の前後の区切りと同じ所なので
+    // (§3.1 の区切りの値の伝播)、リストを組む表の前後の指定にする (左右のページの指定もそのまま効く)
+    const rtlPages = this.pagesRtl;
+    const forced = (v: string): LBlock['breakBefore'] =>
+      v === 'page' || v === 'always' ? 'page' : v === 'verso' || v === (rtlPages ? 'right' : 'left') ? 'even-page' : v === 'recto' || v === (rtlPages ? 'left' : 'right') ? 'odd-page' : v === 'column' ? 'column' : undefined;
+    let listBefore: LBlock['breakBefore'];
+    let listAfter: LBlock['breakBefore'];
+    const rowBreaks = (li: Element, k: number): Pick<LTableRow, 'breakBefore' | 'breakAfter' | 'keepTogether' | 'keepWithNext' | 'keepWithPrevious'> => {
       const lc = this.cs(li);
-      const v = parseInt(li.getAttribute('value') ?? '', 10);
-      this.enterCounters(lc, container, { value: Number.isFinite(v) ? v : undefined, step });
+      const bb = lc('break-before') || lc('page-break-before');
+      const ba = lc('break-after') || lc('page-break-after');
+      const bi = lc('break-inside') || lc('page-break-inside');
+      let multicol: boolean | undefined;
+      const avoids = (v: string) => v === 'avoid' || v === 'avoid-page' || (v === 'avoid-column' && (multicol ??= this.inMulticol(li)));
+      const fb = forced(bb);
+      const fa = forced(ba);
+      const o: ReturnType<typeof rowBreaks> = {};
+      if (k === 0) listBefore = fb;
+      else if (fb && fb !== 'column') o.breakBefore = true;
+      if (k === lis.length - 1) listAfter = fa;
+      else if (fa && fa !== 'column') o.breakAfter = true;
+      if (avoids(bi)) o.keepTogether = true;
+      if (avoids(ba)) o.keepWithNext = true;
+      if (avoids(bb)) o.keepWithPrevious = true;
+      return o;
+    };
+    const rows: LTableRow[] = lis.map((li, k) => {
+      const lc = this.cs(li);
+      const marks = enter(li, k);
       // 番号: list-item カウンターの値
       n = this.counterValue('list-item');
       // inside: 記号・番号は、本文の最初の行の先頭に置く行内の字 (Lists 3 §3.5)。記号の後ろに空白を 1 つ
@@ -4176,6 +4302,7 @@ class HtmlImporter {
       const body: LTableCell = { type: 'table-cell', ...this.textStyle(li, container), ...this.paragraphStyle(li, container), children: this.flowChildren(li) };
       // 記号は li の内容の先頭の行内の字 (最初の子がブロックなら、その前の行になる。Lists 3 §3.5)
       if (insideMarker) (body.children as Array<LBlockLevel | LInlineLevel>).unshift(insideMarker);
+      if (marks.length) (body.children as Array<LBlockLevel | LInlineLevel>).unshift(...marks);
       // li の id (目次・索引の参照先) は、本文の列のセルに付ける
       const liId = li.getAttribute('id');
       if (liId) body.id = liId;
@@ -4183,6 +4310,7 @@ class HtmlImporter {
       if (box.margin) body.padding = { top: (box.margin as Record<string, number>).top ?? 0, bottom: (box.margin as Record<string, number>).bottom ?? 0 };
       return {
         type: 'table-row',
+        ...rowBreaks(li, k),
         // 記号・番号は、本文の最初の行の基線にそろえる (CSS Lists: 外側の記号は最初の行の箱に置く)
         // 本文の最後の子の下の余白は、li の外へ抜けて次の項目との間に残る (CSS 2.1 §8.3.1)。セルの高さに含める
         cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', keepTrailingSpace: true }],
@@ -4199,7 +4327,10 @@ class HtmlImporter {
     } as LTable;
     // リストの箱の行グリッド (-ah-baseline-grid): 表を、その指定を持つ箱で包む (ページの終わりの判定に使う)
     const bgrid = this.pg(container)['-ah-baseline-grid']?.trim().toLowerCase();
-    return bgrid === 'new' || bgrid === 'root' || bgrid === 'none' ? ({ type: 'block', baselineGrid: bgrid, children: [table] } as LBlock) : table;
+    const out = bgrid === 'new' || bgrid === 'root' || bgrid === 'none' ? ({ type: 'block', baselineGrid: bgrid, children: [table] } as LBlock) : table;
+    if (listBefore) out.breakBefore = listBefore;
+    if (listAfter) out.breakAfter = listAfter;
+    return out;
   }
 
   /** 表 (<table> / display: table) */
@@ -4222,10 +4353,28 @@ class HtmlImporter {
     const paintCells = (row: LTableRow, bg: string | undefined) => {
       if (bg) for (const cell of row.cells) if (!cell.backgroundColor) cell.backgroundColor = bg;
     };
-    const rowOf = (tr: Element, anonCells?: Element[]): LTableRow => {
+    // 表の部分 (行グループ・行・セル・caption) の前処理: カウンター (Lists 3 §4: 箱を作る要素はどれも counter-* を当てる。reset した
+    // カウンターの有効範囲は親 owner の中)・しおり・string-set。匿名の表の最初の部分 (entered) は、flowChildren が済ませている。
+    // string-set のマーカーは、次に作るセル・caption の中身の先頭に置く (行・行グループのものは、その最初のセルに入る)
+    const entered = anon?.[0];
+    let marks: LMarker[] = [];
+    const enter = (e: Element, owner: Element) => {
+      if (e === entered) return;
+      this.enterCounters(this.cs(e), owner);
+      this.bookmark(e);
+      marks.push(...this.stringSet(e));
+    };
+    const takeMarks = (): LMarker[] => marks.splice(0);
+    const rowOf = (tr: Element, anonCells?: Element[], owner: Element = el): LTableRow => {
+      if (!anonCells) enter(tr, owner);
       const row = rowOf0(tr, anonCells);
       // 匿名の行 (行の無いセルを包む行) は、書式を持たない
       if (anonCells) return row;
+      // 行の中で reset したカウンター (セルの counter-reset) は、行を出るときに外す (Lists 3 §4.4: 有効範囲は親の中)
+      this.leaveCounters(tr);
+      // 行の id は、リンク・しおりの飛び先 (行の領域に付く)
+      const rowId = tr.getAttribute('id');
+      if (rowId) row.id = rowId;
       // 行の改ページの指定 (Fragmentation 3 §3: break-* は表の行にも効く)
       const rc = this.cs(tr);
       const bb = rc('break-before') || rc('page-break-before');
@@ -4256,9 +4405,11 @@ class HtmlImporter {
         .filter((td) => this.display(td) !== 'none' && (/^table-cell$/.test(this.display(td)) || /^t[dh]$/.test(td.localName)))
         .map((td): LTableCell => {
           const tc = this.cs(td);
-          this.enterCounters(tc, tr);
+          enter(td, tr);
+          const pre = takeMarks();
           // セルの中の最初・最後のブロックの margin は捨てない (CSS 2.1 §17.5: セルは新しい整形文脈で、中の margin はセルの外と重ならない。<td><p> の上下の margin)
           const cell: LTableCell = { type: 'table-cell', keepEdgeSpace: true, ...this.textStyle(td, tr), ...this.paragraphStyle(td, tr), ...this.boxStyle(td), children: this.flowChildren(td) };
+          if (pre.length) cell.children.unshift(...pre);
           const cs = Math.min(MAX_COL_SPAN, parseInt(td.getAttribute('colspan') ?? '1', 10));
           const rs = Math.min(MAX_ROW_SPAN, parseInt(td.getAttribute('rowspan') ?? '1', 10));
           if (cs > 1) cell.colSpan = cs;
@@ -4272,10 +4423,15 @@ class HtmlImporter {
         }),
     });
     // 行グループ: 中の行を読み、グループの背景 (行より下) と、罫線を重ねる表ではグループの罫線を付ける
-    const group = (g: Element, into: LTableRow[]) => {
+    const group = (g: Element, into: LTableRow[], owner: Element) => {
       const start = into.length;
+      enter(g, owner);
       walk(g, into);
+      this.leaveCounters(g);
       const rows = into.slice(start);
+      // 行グループの id (リンク・しおりの飛び先) は、最初の行に付ける (その行に id が無ければ)
+      const gid = g.getAttribute('id');
+      if (gid && rows[0] && !rows[0].id) rows[0].id = gid;
       const bg = bgOf(g);
       for (const r of rows) paintCells(r, bg);
       const gb = collapse && rows.length ? this.boxStyle(g).border : undefined;
@@ -4298,14 +4454,14 @@ class HtmlImporter {
           continue;
         }
         flushCells();
-        if (d === 'table-row' || ch.localName === 'tr') into.push(rowOf(ch));
+        if (d === 'table-row' || ch.localName === 'tr') into.push(rowOf(ch, undefined, n));
         else if (d === 'table-header-group' || ch.localName === 'thead') {
-          group(ch, header);
+          group(ch, header, n);
           // 見出しの行の組の後ろで改ページしない (break-after: avoid。CSS 2.1 §13.3.3 の規則 A)
           if (this.cs(ch)('break-after') === 'avoid' || this.cs(ch)('page-break-after') === 'avoid') headerAvoidBreak = true;
         }
-        else if (d === 'table-footer-group' || ch.localName === 'tfoot') group(ch, footer);
-        else if (d === 'table-row-group' || ch.localName === 'tbody') group(ch, body);
+        else if (d === 'table-footer-group' || ch.localName === 'tfoot') group(ch, footer, n);
+        else if (d === 'table-row-group' || ch.localName === 'tbody') group(ch, body, n);
         else if (d === 'table-column-group' || ch.localName === 'colgroup') walk(ch, body);
         else if (d === 'table-column' || ch.localName === 'col') {
           const span = Math.min(MAX_COL_SPAN, parseInt(ch.getAttribute('span') ?? '1', 10) || 1);
@@ -4317,9 +4473,14 @@ class HtmlImporter {
         } else if (d === 'table-caption' || ch.localName === 'caption') {
           // 見出し: 表の子 (表の部分の中ではない) のときだけ。caption-side は top・bottom (CSS Tables 3 §3.5.3)
           if (n !== el || anon) continue;
+          // caption のマーカーは caption の中身の先頭に置く (前の行・セルのマーカーの残りは、次のセルへ送る)
+          const held = takeMarks();
+          enter(ch, el);
+          const pre = takeMarks();
+          marks = held;
           const block: LBlock = { type: 'block', ...this.textStyle(ch, el), ...this.paragraphStyle(ch, el), ...this.boxStyle(ch), children: [] };
           this.blockStack.push(block);
-          block.children = this.flowChildren(ch);
+          block.children = [...pre, ...this.flowChildren(ch)];
           this.blockStack.pop();
           captions.push({ side: this.cs(ch)('caption-side') === 'bottom' ? 'bottom' : 'top', block });
         }
@@ -4327,6 +4488,8 @@ class HtmlImporter {
       flushCells();
     };
     walk(el, body, anon);
+    // 表の部分が表の中に reset したカウンターは、表を出るときに外す (匿名の表では、el は外の容器なので、容器を出るときに外れる)
+    if (!anon) this.leaveCounters(el);
     const t: LTable = {
       type: 'table',
       ...(anon ? {} : this.textStyle(el, parent)),
@@ -5035,7 +5198,7 @@ function hasPageCitation(node: unknown): boolean {
 /** HTML の文書 (スタイルを確定させたもの) を Kumiori の論理ツリーにする */
 export function importHtml(doc: Document, src: StyleSource, opts: HtmlImportOptions = {}): ImportResult {
   // 文書の CSS は 1 度だけ読む (prepareHtml が読んであれば、それを使う)
-  const sheet = opts.sheet ?? parseCss(opts.css ?? '');
+  const sheet = opts.sheet ?? parseCss(opts.css ?? '', opts.defaultPage ? mediaPageOf(opts.defaultPage) : undefined);
   // target-counter() / target-text() を使う文書は、2 回変換する (1 回目で、参照先の番号・文字を集める)
   let lookup: Map<string, TargetInfo> | undefined;
   if (/target-(counter|text)\(/.test(opts.css ?? '')) {

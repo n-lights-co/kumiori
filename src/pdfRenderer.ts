@@ -1621,6 +1621,9 @@ function addOutline(pdf: PDFDocument, items: BookmarkArea[]) {
       if (k + 1 < list.length) dict.Next = refs[k + 1];
       const page = b.sheet >= 0 ? pages[b.sheet] : undefined;
       if (page) dict.Dest = ctx.obj([page.ref, PDFName.of('XYZ'), null, page.getHeight(), null]);
+      // 文書の外への飛び先 (fo:bookmark の external-destination。XSL 1.1 §6.11.2・§7.23.6): しおりの動作 (A。ISO 32000-1 §12.3.3。
+      // Dest とは同時に書かない)。URL は URI 動作、相対の PDF は GoToR、と、リンクの注釈の外への飛び先と同じ決まり (externalAction)
+      else if (b.external) dict.A = ctx.obj(externalAction(b.external) as never);
       const kids = build(b.children, refs[k]);
       if (kids) {
         dict.First = kids[0];

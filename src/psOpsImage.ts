@@ -218,8 +218,11 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   }
   const maskRGB = s.mask ? G.currentRGB() : undefined;
   const colorCache = new Map<string, RGB>();
-  // 明示したマスク (interleave 1: 標本ごとに、マスクの成分が色の前に付く)
+  // 明示したマスク (interleave 1: 標本ごとに、マスクの成分が色の前に付く)。
+  // マスクの極性は imagemask と同じ: MaskDict の Decode で復号した値が 0 の標本の所を描き、1 の所は描かない
+  // (PLRM §4.10.6 Explicit Masking の表 4.24 の Decode)。Decode [0 1] (既定) なら標本の 0 を、[1 0] なら 1 を描く
   const il = s.explicitMask?.interleave;
+  const maskOne = s.explicitMask?.decode[0] === 1;
   const compsInRow = ncomp + (il === 1 ? 1 : 0);
   const single = new Uint8Array(rowBits(compsInRow));
   const multiRows = s.multi ? readers.map(() => new Uint8Array(rowBits(1))) : [];
@@ -253,14 +256,15 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
       else {
         const base = x * compsInRow;
         if (il === 1) {
-          if (sample(single, base) === 0) alpha = 0;
+          // マスクの成分は画像と同じビット数で、全部のビットが 0 か 1。ほかの値は 1 として扱う (表 4.22 の InterleaveType 1)
+          if ((sample(single, base) !== 0) !== maskOne) alpha = 0;
           for (let k = 0; k < ncomp; k++) comps.push(sample(single, base + 1 + k));
         } else for (let k = 0; k < ncomp; k++) comps.push(sample(single, base + k));
       }
       if (curMask && em) {
         const mx = Math.min(em.w - 1, Math.floor((x * em.w) / w));
         const bit = (curMask[mx >> 3] >> (7 - (mx & 7))) & 1;
-        const paint = em.decode[0] === 1 ? bit === 0 : bit === 1;
+        const paint = maskOne ? bit === 1 : bit === 0;
         if (!paint) alpha = 0;
       }
       if (maskAlpha && em) {
@@ -279,9 +283,10 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
         if (hit) alpha = 0;
       }
       if (s.mask) {
-        // 型紙 (imagemask): decode が [1 0] なら 1 を塗る (§4.10.6 Stencil Masking)
+        // 型紙 (imagemask): polarity が true (decode が [1 0]) なら標本の 1 を、false (decode が [0 1]) なら 0 を塗る
+        // (§8.2 の imagemask・§4.10.6 Stencil Masking)
         const v = comps[0];
-        const paint = dec[0] === 1 ? v === 0 : v !== 0;
+        const paint = dec[0] === 1 ? v !== 0 : v === 0;
         if (paint) {
           rgba[o] = maskRGB![0] * 255;
           rgba[o + 1] = maskRGB![1] * 255;
@@ -332,7 +337,8 @@ function readMask(I: Interp, w: number, h: number, src: PSObj, decode: number[])
     }
     for (let x = 0; x < w; x++) {
       const bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
-      const paint = decode[0] === 1 ? bit === 0 : bit === 1;
+      // imagemask と同じ極性: Decode [0 1] は標本の 0 を、[1 0] は 1 を描く
+      const paint = decode[0] === 1 ? bit === 1 : bit === 0;
       out[y * w + x] = paint ? 255 : 0;
     }
   }

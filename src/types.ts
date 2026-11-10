@@ -487,6 +487,8 @@ export interface LBookmark {
   title: string;
   /** 飛び先の要素の id */
   ref: string;
+  /** 文書の外への飛び先 (XSL-FO の fo:bookmark の external-destination。XSL 1.1 §7.23.6)。ref が空のときだけ使う (§6.11.2) */
+  href?: string;
   /** 子のしおりを開いた状態で表示する (既定 true) */
   open?: boolean;
   children?: LBookmark[];
@@ -1595,6 +1597,8 @@ export interface BookmarkArea {
   title: string;
   /** 飛び先のシート (0 始まり)。見つからなければ -1 */
   sheet: number;
+  /** 文書の外への飛び先 (URL か、相対のファイル)。文書の中の飛び先 (sheet) が無いしおりだけが持つ。扱いはリンクの external と同じ */
+  external?: string;
   open: boolean;
   children: BookmarkArea[];
 }

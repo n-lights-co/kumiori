@@ -80,6 +80,39 @@ describe('画素の読み書き (Node 用)', () => {
     expect(decodeWebp(new TextEncoder().encode('<!DOCTYPE html>'))).toBeUndefined();
   });
 
+  it('動く WebP は最初のコマを canvas の中の位置に置く (RFC 9649 §2.7.1.1・§2.7.2)', () => {
+    // 4 色の 9×5 の可逆の画像 (上のテストと同じもの) の VP8L のチャンクを、コマ (ANMF) の中身にする
+    const still = hex('5249464642000000574542505650384c350000002f080001001f201020fc17a910a44421db0890c7fcf1cee015082441ec2fb8c4fc077713510341b6cd73de728e31a2ffc1eaacce0000');
+    const vp8l = still.subarray(12);
+    const pal = [
+      [255, 0, 0, 255],
+      [0, 128, 255, 255],
+      [20, 200, 20, 255],
+      [250, 250, 0, 255],
+    ];
+    const u24 = (v: number) => [v & 255, (v >> 8) & 255, (v >> 16) & 255];
+    const chunk = (id: string, body: number[]) => [...id].map((c) => c.charCodeAt(0)).concat([body.length & 255, (body.length >> 8) & 255, 0, 0], body, body.length & 1 ? [0] : []);
+    const anmf = (fx: number, fy: number, w: number, h: number, flags: number, data: Uint8Array) => chunk('ANMF', [...u24(fx), ...u24(fy), ...u24(w - 1), ...u24(h - 1), ...u24(100), flags, ...data]);
+    const file = (cw: number, ch: number, flags: number, frames: number[][]) => {
+      const body = [...chunk('VP8X', [flags, 0, 0, 0, ...u24(cw - 1), ...u24(ch - 1)]), ...chunk('ANIM', [0, 0, 255, 255, 0, 0]), ...frames.flat()];
+      const n = body.length + 4;
+      return Uint8Array.from([0x52, 0x49, 0x46, 0x46, n & 255, (n >> 8) & 255, 0, 0, 0x57, 0x45, 0x42, 0x50, ...body]);
+    };
+    // canvas は 16×12。最初のコマは Frame X = 2・Frame Y = 3 (位置は 2 倍の (4, 6))。2 つ目のコマ (位置 (0, 0)) は描かない
+    const p = decodeWebp(file(16, 12, 0x12, [anmf(2, 3, 9, 5, 0, vp8l), anmf(0, 0, 9, 5, 0, vp8l)]))!;
+    expect([p.width, p.height]).toEqual([16, 12]);
+    for (let y = 0; y < 12; y++)
+      for (let x = 0; x < 16; x++) {
+        const inside = x >= 4 && x < 13 && y >= 6 && y < 11;
+        // コマの外は透明 (背景の色は目安で、使わなくてよい)
+        expect(at(p, x, y), `${x},${y}`).toEqual(inside ? pal[(x - 4 + 2 * (y - 6)) % 4] : [0, 0, 0, 0]);
+      }
+    // コマが canvas からはみ出す (MUST に反する)・コマの大きさがビット列と違う・Animation の旗が無い → 読めない
+    expect(decodeWebp(file(16, 12, 0x12, [anmf(4, 3, 9, 5, 0, vp8l)]))).toBeUndefined();
+    expect(decodeWebp(file(16, 12, 0x12, [anmf(0, 0, 8, 5, 0, vp8l)]))).toBeUndefined();
+    expect(decodeWebp(file(16, 12, 0x10, [anmf(2, 3, 9, 5, 0, vp8l)]))).toBeUndefined();
+  });
+
   it('WebP の非可逆圧縮 (VP8。通常・簡易のループフィルタ) と透明度 (ALPH): libwebp が読んだ画素と同じ', () => {
     // 画素の和と、31 倍して足していった値 (1000000007 で割った余り) を、PIL の読んだ結果と比べる
     const check = (p: Pixels) => {

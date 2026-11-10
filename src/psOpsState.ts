@@ -44,8 +44,15 @@ export function installStateOperators(I: Interp, G: Graphics) {
   d('currentgstate', (I) => {
     const o = I.pop();
     if (o.t !== 'gstate') throw new PSError('typecheck');
+    // 渡された gstate の中身を、現在のグラフィックス状態の写しで置き換えて、同じ gstate を返す (PLRM §8.2 currentgstate)。
+    // 同じ gstate を指すほかのオブジェクト (辞書に入れたものなど) にも見えるように、中身をその場で書き換える
+    // 置き換える写しの分も VM に積む (前の中身の分は戻さない。数えた量より多く持てないように)
     I.vmAlloc(G.gstateCost(G.g));
-    I.push({ t: 'gstate', g: G.copy(G.g) });
+    const g = o.g as GState;
+    G.discard(g);
+    for (const k of Object.keys(g)) delete (g as unknown as Record<string, unknown>)[k];
+    Object.assign(g, G.copy(G.g));
+    I.push(o);
   });
   d('setgstate', (I) => {
     const o = I.pop();

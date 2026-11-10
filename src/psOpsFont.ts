@@ -457,7 +457,8 @@ export function installFontStubs(I: Interp, G: Graphics) {
     const enc = f.get('Encoding');
     const nm = enc && enc.t === 'array' && code < enc.n ? enc.a[enc.o + code] : undefined;
     if (nm && nm.t === 'name') {
-      const ch = GLYPH_CHARS[nm.v];
+      // 表に無い名前は、自分の持つ値だけを見る (constructor・toString などの名前で Object.prototype の値を拾わない)
+      const ch = Object.hasOwn(GLYPH_CHARS, nm.v) ? GLYPH_CHARS[nm.v] : undefined;
       if (ch) return ch;
     }
     return String.fromCharCode(code);
@@ -664,7 +665,8 @@ export function installFontStubs(I: Interp, G: Graphics) {
     }
     // 現在の点をパスにも反映する (show のあとの rlineto などのため)
     if (G.g.cp) {
-      const p = G.g.path;
+      // gsave などで共有しているパスの配列は、写してから書き換える (grestore で戻るパスを変えない)
+      const p = G.ownPath();
       if (p.length && p[p.length - 1].op === 'M') p.pop();
       p.push({ op: 'M', x: G.g.cp[0], y: G.g.cp[1] });
     }

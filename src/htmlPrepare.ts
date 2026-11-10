@@ -2,14 +2,15 @@
  * htmlPrepare — HTML と一緒に選んだ CSS から、組む文書と文書の CSS を用意する (ブラウザと Node で共通。DOM のパーサーは渡す)。
  *
  *  - <script> は取り除く
- *  - <link rel="stylesheet"> は、一緒に選んだ CSS ファイルの中身を <style> にする (ファイル名で突き合わせる)。@import も中身に置き換える
+ *  - <link rel="stylesheet"> は、一緒に選んだ CSS ファイルの中身を <style> にする (ファイル名で突き合わせる。参照から取った CSS は URL の全体で)。@import も中身に置き換える
  *  - 参照されていない CSS ファイルは、利用者のスタイルシートとして文書の CSS の後に足す (weasyprint -s と同じ)
  *  - 印刷の媒体として読む: screen だけの CSS は使わず、@media print の規則は常に効く
  *  - 既定のスタイル (HtmlDefaults) を作成者スタイルシート より前に入れる
  */
 import { parsePageRule } from './htmlImport';
 import { msg } from './messages';
-import { concatCss, matchMedia, matchSupports, parseCss, type ParsedCss } from './htmlPaged';
+import { concatCss, matchMedia, matchSupports, mediaDependsOnPageSize, mediaPageOf, parseCss, type ParsedCss } from './htmlPaged';
+import { rebaseFontFaceUrls, resolveRef } from './resources';
 
 /** 本の組版向けの既定のスタイル (作成者スタイルシート で上書きできる) */
 export const KUMIORI_BOOK_CSS = `
@@ -127,6 +128,13 @@ export interface CssFile {
   text(): Promise<string>;
   /** 拡張子が .css でなくても CSS として読む (参照から取った CSS。https://fonts.googleapis.com/css2?family=… など) */
   css?: boolean;
+  /**
+   * 参照から取った CSS の、参照の URL の全体 (問い合わせの ?… も含む)。あれば、文書の <link>・@import とは、ファイル名でなくこの URL で突き合わせる
+   * (css2?family=A と css2?family=B は、ファイル名は同じ css2 でも別の CSS)
+   */
+  url?: string;
+  /** 文書からの相対パス (css/a.css)。CSS の中の相対の @import を、この CSS の場所を基準に解決するのに使う (CSS Values 4 §4.5.1) */
+  path?: string;
 }
 
 export interface PreparedHtml {
@@ -219,6 +227,24 @@ export function limitTreeDepth(doc: Document, max = MAX_TREE_DEPTH): boolean {
   return moved;
 }
 
+/** link の rel の語 (空白で区切り、大文字小文字を区別せずに比べる。HTML Living Standard §4.6.8) */
+export const linkRelTokens = (l: Element): string[] => (l.getAttribute('rel') ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+
+/**
+ * 文書の link が、無効な代わりのスタイルシートかを答える関数を作る (HTML の文書と、EPUB の章の文書で共用する)。
+ * 代わりのスタイルシート (rel に alternate と stylesheet の両方がある link。HTML Living Standard §4.6.8.23) は、alternate の印を付けて
+ * 作られ、題 (title) が空でなく、選ばれたスタイルシートの組の名前 (alternate でない、題のある最初のスタイルシートの題) と違えば、
+ * 無効になる (CSSOM 1 §6.2 の「add a CSS style sheet」)
+ */
+export function disabledAlternateStylesheet(doc: Document): (l: Element) => boolean {
+  // 文書の順の link・style (linkedom の getElementsByTagName('*') は何も返さず、xmldom には querySelectorAll が無いので、在るほうで集める)
+  const all: Element[] = typeof doc.querySelectorAll === 'function' ? Array.from(doc.querySelectorAll('link, style')) : Array.from(doc.getElementsByTagName('*'));
+  const sheets = all.filter((e) => e.localName === 'style' || (e.localName === 'link' && linkRelTokens(e).includes('stylesheet')));
+  const titled = sheets.find((e) => (e.getAttribute('title') ?? '') !== '' && !(e.localName === 'link' && linkRelTokens(e).includes('alternate')));
+  const preferredSet = titled?.getAttribute('title') ?? '';
+  return (l) => linkRelTokens(l).includes('alternate') && (l.getAttribute('title') ?? '') !== '' && l.getAttribute('title') !== preferredSet;
+}
+
 /** 文書を用意する。parse: HTML の文字列 → Document (ブラウザは DOMParser、Node は linkedom) */
 export async function prepareHtml(
   html: string,
@@ -233,10 +259,33 @@ export async function prepareHtml(
   // 上限を超えた入れ子は、木の形 (と組版の結果) が変わるので、黙って進めずに知らせる
   if (parsed.documentElement && limitTreeDepth(parsed))
     warnings.push(msg(`要素の入れ子が深すぎます。${MAX_TREE_DEPTH} 段より深い要素は、${MAX_TREE_DEPTH} 段目の要素の後ろに並べて組みます`, `elements are nested too deeply; elements deeper than ${MAX_TREE_DEPTH} levels are laid out after their ancestor at level ${MAX_TREE_DEPTH}`));
+  // CSS の表。鍵は、参照から取った CSS (url あり) は参照の URL の全体、ほか (一緒に渡したファイル) はファイル名 (小文字)
   const cssFiles = new Map<string, string>();
-  for (const f of files) if (f.css || /\.css$/i.test(f.name)) cssFiles.set(f.name.toLowerCase(), await f.text());
+  /** 鍵 → その CSS の場所 (中の相対の @import を解決する基準)。分からなければ無い */
+  const cssBases = new Map<string, string>();
+  /** 参照から取った CSS のファイル名 → 鍵 (URL の全体で当たらない参照を、これまでどおりファイル名で探すため。同じ名前なら先のもの) */
+  const cssByName = new Map<string, string>();
+  for (const f of files) {
+    if (!(f.css || /\.css$/i.test(f.name))) continue;
+    const key = f.url ?? f.name.toLowerCase();
+    const at = f.url ?? f.path?.split('\\').join('/');
+    // @font-face の相対の url() は、この CSS の場所を基準に解決した参照にしておく (CSS Fonts 4 §4.3。<style> に差し込むと、どの CSS に書かれていたかが分からなくなる)
+    cssFiles.set(key, at ? rebaseFontFaceUrls(await f.text(), at) : await f.text());
+    if (at) cssBases.set(key, at);
+    if (f.url !== undefined && !cssByName.has(basename(f.url))) cssByName.set(basename(f.url), key);
+  }
+  /** 参照 href (base: それを書いた CSS の場所) に当たる CSS の鍵: URL の全体が同じもの、無ければファイル名が同じもの */
+  const cssKey = (href: string, base?: string) => {
+    const full = resolveRef(href.trim(), base);
+    if (cssFiles.has(full)) return full;
+    const name = basename(href);
+    return cssFiles.has(name) ? name : (cssByName.get(name) ?? name);
+  };
   const cssTexts: string[] = [];
   const linked = new Set<string>();
+  // メディアクエリの width・height・orientation は、@page の規則が無いときに選ばれる用紙 (利用者の既定の用紙) の page box で評価する
+  // (CSS Paged Media 3 §7.1・Media Queries 4 §4.1)
+  const mediaPage = mediaPageOf(defaultPage);
   // 印刷の媒体として読む: screen だけの CSS は使わず、@media print の規則は iframe (画面) でも効くようにする。
   // 媒体の種類は、@media の並び (カンマ区切り) のそれぞれで置き換える: print → all、screen (とその後の条件) → not all。
   // screen and (max-width: 600px) は条件ごと not all にする (not all and (…) だと、not が条件にも掛かり、印刷で真になりうる)
@@ -263,19 +312,20 @@ export async function prepareHtml(
   // (仕様に循環の決まりは無い。ブラウザも、祖先の鎖にある URL の @import は読み込まない)。
   // 読み込んだ CSS の長さ・回数の合計が上限 (MAX_IMPORTED_CSS_LENGTH・MAX_IMPORTS) を超える @import は、捨てて警告する
   const budget = { length: MAX_IMPORTED_CSS_LENGTH, count: MAX_IMPORTS, warned: false };
-  const inlineImports = (css: string, reading: string[] = [], depth = 0): string =>
+  const inlineImports = (css: string, reading: string[] = [], depth = 0, base?: string): string =>
     depth > 8
       ? css
       : css.replace(/@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?([^;]*);/gi, (_m, href: string, cond: string) => {
           // media・supports() の条件が合わない @import は読まない (Cascade 5 §2)。layer() は読み飛ばす
+          // 条件に合わずに読まない CSS も、参照された CSS として数える (参照されていない CSS = 利用者のスタイルシートとして足さない)
+          const name = cssKey(href, base);
+          if (cssFiles.has(name)) linked.add(name);
           const sup = /supports\(((?:[^()]|\([^()]*\))*)\)/i.exec(cond);
           if (sup && !matchSupports(sup[1])) return '';
           const media = cond.replace(/layer(\([^)]*\))?/i, '').replace(/supports\((?:[^()]|\([^()]*\))*\)/i, '').trim();
-          if (media && !matchMedia(media)) return '';
-          const name = basename(href);
+          if (media && !matchMedia(media, mediaPage)) return '';
           const t = cssFiles.get(name);
           if (t === undefined) return '';
-          linked.add(name);
           if (reading.includes(name)) return '';
           if (t.length > budget.length || budget.count <= 0) {
             if (!budget.warned)
@@ -285,17 +335,21 @@ export async function prepareHtml(
           }
           budget.length -= t.length;
           budget.count--;
-          return inlineImports(t, [...reading, name], depth + 1);
+          const inner = inlineImports(t, [...reading, name], depth + 1, cssBases.get(name));
+          // 用紙の大きさに依る条件の @import は、条件の @media で包んで残す (中の @page の size を読まないため。Page 3 §7.1)
+          return media && mediaDependsOnPageSize(media) ? `@media ${media} {\n${inner}\n}` : inner;
         });
-  for (const [name, text] of cssFiles) cssFiles.set(name, inlineImports(text, [name]));
+  for (const [name, text] of cssFiles) cssFiles.set(name, inlineImports(text, [name], 0, cssBases.get(name)));
   parsed.querySelectorAll('style').forEach((s) => {
     s.textContent = inlineImports(s.textContent ?? '');
   });
   // <link rel="stylesheet" href="x.css"> → <style>
+  // 無効な代わりのスタイルシート (disabledAlternateStylesheet) は当てない (参照された CSS としては数える)
+  const disabledAlternate = disabledAlternateStylesheet(parsed);
   parsed.querySelectorAll('link[rel~="stylesheet"]').forEach((l) => {
-    linked.add(basename(l.getAttribute('href') ?? ''));
-    const text = cssFiles.get(basename(l.getAttribute('href') ?? ''));
-    if (text === undefined || screenOnly(l.getAttribute('media'))) {
+    linked.add(cssKey(l.getAttribute('href') ?? ''));
+    const text = cssFiles.get(cssKey(l.getAttribute('href') ?? ''));
+    if (text === undefined || screenOnly(l.getAttribute('media')) || disabledAlternate(l)) {
       l.remove();
       return;
     }
@@ -330,8 +384,8 @@ export async function prepareHtml(
   const css = [base, ...cssTexts].join('\n');
   const authorCss = cssTexts.join('\n');
   // CSS はここで 1 度だけ読む (既定のスタイルと作成者スタイルシート は、カスケードの出どころが違うので別々に読み、全体はその並び)
-  const uaSheet = parseCss(base);
-  const authorSheet = parseCss(authorCss);
+  const uaSheet = parseCss(base, mediaPage);
+  const authorSheet = parseCss(authorCss, mediaPage);
   const sheet = concatCss(uaSheet, authorSheet);
   // 本文の幅 (px) で組ませる。高さはページの領域 (余白を除く) の高さ (CSS の印刷では、vh はページの領域の高さに対して決まる)
   const page = parsePageRule(sheet, defaultPage);

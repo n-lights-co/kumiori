@@ -66,7 +66,10 @@ function parseStops(items: string[], len: number, fontSize: number): Stop[] | un
     // 位置を 2 つ書いた止まりは、同じ色の 2 つの止まり
     for (const p of ps) stops.push({ color: c, pos: p });
   }
-  if (stops.length < 2) return stops.length === 1 ? [stops[0], { ...stops[0] }] : undefined;
+  if (!stops.length) return undefined;
+  // 止まりが 1 つだけなら、その色の一色 (Images 4 §3.5.1 の <color-stop-list> は止まり 1 つを許す。Images 3 §3.4.1 では 2 つ以上)。
+  // 同じ色の止まりを足してから、下の位置の補正を通す (位置の無いままにしない)
+  if (stops.length === 1) stops.push({ color: stops[0].color });
   // §3.4.3 の補正
   if (stops[0].pos === undefined) stops[0].pos = 0;
   if (stops[stops.length - 1].pos === undefined) stops[stops.length - 1].pos = len;

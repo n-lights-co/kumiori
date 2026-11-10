@@ -12,6 +12,7 @@
  */
 import { MAX_VAR_LENGTH, parseCss, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
 import { fmtColor, parseColor, splitTop, UNIT_PX } from './cssText';
+import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { asciiLower, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
 
@@ -589,7 +590,12 @@ export function lengthPx(v: string, ctx: LenCtx): number | undefined {
 /** calc() / min() / max() / clamp() を px に */
 function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
   if (fn !== 'calc') {
-    const args = splitTop(body, ',').map((a) => calcPx('calc', a, ctx));
+    // 読むのは min()・max()・clamp() だけ (ほかの関数を clamp() として読まない)。引数は、min()・max() が 1 つ以上、
+    // clamp() はちょうど 3 つ (Values 4 §10.2。空の引数は読めない)
+    if (fn !== 'min' && fn !== 'max' && fn !== 'clamp') return undefined;
+    const raw = splitTop(body, ',', { keepEmpty: true });
+    if (fn === 'clamp' ? raw.length !== 3 : raw.length < 1) return undefined;
+    const args = raw.map((a) => (a ? calcPx('calc', a, ctx) : undefined));
     if (args.some((a) => a === undefined)) return undefined;
     const n = args as number[];
     return fn === 'min' ? Math.min(...n) : fn === 'max' ? Math.max(...n) : Math.max(n[0], Math.min(n[1], n[2]));
@@ -597,6 +603,8 @@ function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
   // 項に分ける: 数・長さ・( ) と + - * /
   // 数は指数表記 (1e2px) も 1 つの項 (Values 4 §5.3。e の後に数字が続くときだけ。1em の e は単位)
   const toks = body.match(/(?:-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?[a-z%]*)|[()+\-*/]|[a-z-]+\([^()]*(?:\([^()]*\)[^()]*)*\)/gi) ?? [];
+  // 項にならない字 (calc(10px foo) の foo など) が残れば、式として読めない (読める所だけを拾って値にしない)
+  if (toks.join('').replace(/\s+/g, '') !== body.replace(/\s+/g, '')) return undefined;
   let k = 0;
   // 単位の無い数は { n, unitless: true }
   type Val = { n: number; unitless: boolean } | undefined;
@@ -651,6 +659,10 @@ function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
 
 /** 値を語に分ける (括弧・文字列の外の空白で) */
 const tokens = (v: string) => splitTop(v, ' ');
+
+/** 数・整数の書き方 (Values 4 §5.2・§5.3)。読めるかの検査・計算値を決める所・一括指定を分ける所で使う (食い違うと、読めると判定した値が初期値になる) */
+const CSS_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+const CSS_INTEGER = /^[+-]?\d+$/;
 
 /**
  * text-indent の値を、長さ (百分率) の部分と hanging・each-line の語に分ける (CSS Text 3 §8.1:
@@ -710,8 +722,29 @@ export function isKnownCssProperty(prop: string, value = ''): boolean {
   return parts.length > 0 && parts.every(([p]) => p !== prop && known(p));
 }
 
-/** @supports の宣言: 知っている性質 (一括指定は、分けた性質がすべて知っているもの) なら読める */
-setSupportsDecl((prop, value) => isKnownCssProperty(prop, value));
+/**
+ * @supports の宣言 (と @import の supports()) に、対応していると答えるか。CSS Conditional 3 §6.1 (Definition of support):
+ * 宣言を、規則の中で (構文の誤りとして捨てずに) 受け付けるときに対応しているとし、性質と値の両方を「使える水準で」実装していなければ、
+ * 受け付けても対応していると答えてもいけない。値の一部だけを実装しているものも、対応しているとは答えない。
+ *  - 名前を知らない性質は偽 (印刷に関わらない性質 (animation-*・cursor など) も、読まないので偽)
+ *  - 名前は読むが組版に使わない性質 (cssUnsupported の UNSUPPORTED_CSS_PROPERTIES。transform・opacity など) は偽
+ *  - 対応している性質の、読まない値 (UNSUPPORTED_CSS_VALUES。position: sticky など) は偽
+ *  - 一括指定は、分けた性質のどれかが上の 2 つに当たれば偽 (未対応の性質を初期値に戻すだけの一括指定は真)
+ * ほかの値が読めるかは調べない (これまでと同じ。display: grid のように、性質と値は読み、働きの一部が未対応のものは真のまま)
+ */
+export function supportsCssDeclaration(prop: string, value: string): boolean {
+  const p = prop.toLowerCase();
+  const v = value.replace(/\s*!\s*important\s*$/i, '').trim();
+  const unsupported = (lp: string, lv: string, longhandOfShorthand: boolean) => {
+    const t = lv.trim().toLowerCase();
+    if (UNSUPPORTED_CSS_PROPERTIES.has(lp)) return !longhandOfShorthand || !(t === (PROPS[lp]?.[1] ?? '').toLowerCase() || /^(inherit|initial|unset|revert|revert-layer)$/.test(t));
+    return !!UNSUPPORTED_CSS_VALUES[lp]?.includes(t);
+  };
+  if (unsupported(p, v, false)) return false;
+  if (!isKnownCssProperty(p, v)) return false;
+  return !expand(p, v).some(([lp, lv]) => lp !== p && unsupported(lp, lv, true));
+}
+setSupportsDecl(supportsCssDeclaration);
 
 /** 一括指定を分けた結果 ([性質, 値] の並び) */
 type Longhands = Array<[string, string]>;
@@ -752,32 +785,57 @@ const borderShorthand: Expander = (prop, v, global, ah) => {
   return sides.flatMap((s) => [[pre(s) + 'width', w], [pre(s) + 'style', st], [pre(s) + 'color', col]] as Longhands);
 };
 
+/**
+ * background の一括指定 (Backgrounds 3 §2.10: <bg-layer># , <final-bg-layer>)。使うのは最初の層の画像・繰り返し・位置・大きさと、最後の層の色。
+ * どの種類にも当たらない語 (-webkit-linear-gradient() など、読めない値) があれば、宣言ごと読めない (空を返す。前の宣言を消さない。
+ * CSS 2.1 §4.2: 読めない値の宣言は無視する)。色は最後の層にだけ書ける。固定 (attachment) と箱 (origin・clip。Backgrounds 4 の text を含む) の語は読み飛ばす
+ */
 const backgroundShorthand: Expander = (_prop, v, global) => {
   const props = ['background-color', 'background-image', 'background-repeat', 'background-position-x', 'background-position-y', 'background-size'];
   if (global) return each(props, v);
-  const layers = splitTop(v, ',');
-  const first = layers[0] ?? '';
-  const last = layers[layers.length - 1] ?? '';
+  const layers = splitTop(v, ',', { keepEmpty: true });
   let color = 'rgba(0, 0, 0, 0)';
-  for (const t of tokens(last)) if (isColorLike(t) && !/^(url|var)\(/i.test(t)) color = t;
   let image = 'none';
   let repeat = 'repeat';
-  const pos: string[] = [];
+  let pos: string[] = [];
   let size = 'auto';
-  // 位置と大きさを分ける / は、括弧 (url() など) の外のものだけ
-  let depth = 0;
-  const spaced = [...first].map((ch) => (ch === '(' ? (depth++, ch) : ch === ')' ? (depth--, ch) : ch === '/' && depth === 0 ? ' / ' : ch)).join('');
-  const ts = tokens(spaced);
-  for (let k = 0; k < ts.length; k++) {
-    const t = ts[k];
-    const tl = t.toLowerCase();
-    if (/^(url|(repeating-)?(linear|radial|conic)-gradient|image-set)\(/i.test(t) || tl === 'none') image = t;
-    else if (/^(repeat|no-repeat|repeat-x|repeat-y|space|round)$/.test(tl)) repeat = repeat === 'repeat' || !/^(repeat|no-repeat|space|round)$/.test(tl) ? tl : `${repeat} ${tl}`;
-    else if (t === '/') {
-      const sz: string[] = [];
-      while (k + 1 < ts.length && (isLenLike(ts[k + 1]) || /^(auto|cover|contain)$/i.test(ts[k + 1]))) sz.push(ts[++k]);
-      if (sz.length) size = sz.join(' ');
-    } else if (/^(left|right|top|bottom|center)$/.test(tl) || isLenLike(t)) pos.push(t);
+  for (let li = 0; li < layers.length; li++) {
+    const isFirst = li === 0;
+    const isLast = li === layers.length - 1;
+    // 位置と大きさを分ける / は、括弧 (url() など) の外のものだけ
+    let depth = 0;
+    const spaced = [...layers[li]].map((ch) => (ch === '(' ? (depth++, ch) : ch === ')' ? (depth--, ch) : ch === '/' && depth === 0 ? ' / ' : ch)).join('');
+    const ts = tokens(spaced);
+    if (!ts.length) return [];
+    let lImage: string | undefined;
+    let lRepeat: string | undefined;
+    const lPos: string[] = [];
+    let lSize: string | undefined;
+    for (let k = 0; k < ts.length; k++) {
+      const t = ts[k];
+      const tl = t.toLowerCase();
+      if (/^(url|(repeating-)?(linear|radial|conic)-gradient|image-set)\(/i.test(t) || tl === 'none') lImage = t;
+      else if (/^(repeat|no-repeat|repeat-x|repeat-y|space|round)$/.test(tl)) lRepeat = lRepeat === undefined || lRepeat === 'repeat' || !/^(repeat|no-repeat|space|round)$/.test(tl) ? tl : `${lRepeat} ${tl}`;
+      else if (t === '/') {
+        const sz: string[] = [];
+        while (k + 1 < ts.length && (isLenLike(ts[k + 1]) || /^(auto|cover|contain)$/i.test(ts[k + 1]))) sz.push(ts[++k]);
+        if (!sz.length) return [];
+        lSize = sz.join(' ');
+      } else if (/^(left|right|top|bottom|center)$/.test(tl) || isLenLike(t)) lPos.push(t);
+      else if (/^(scroll|fixed|local|border-box|padding-box|content-box|text)$/.test(tl)) continue;
+      else if (isColorLike(t)) {
+        // 色は最後の層だけ。var() は何になるか分からないので通す (色としては使わない)
+        if (/^var\(/i.test(t)) continue;
+        if (!isLast) return [];
+        color = t;
+      } else return [];
+    }
+    if (isFirst) {
+      image = lImage ?? image;
+      repeat = lRepeat ?? repeat;
+      pos = lPos;
+      size = lSize ?? size;
+    }
   }
   const [px, py] = positionXY(pos);
   return [['background-color', color], ['background-image', image], ['background-repeat', repeat], ['background-position-x', px], ['background-position-y', py], ['background-size', size]];
@@ -816,7 +874,9 @@ const fontShorthand: Expander = (_prop, v, global) => {
     if (t === 'normal') continue;
     if (/^(italic|oblique)$/.test(t)) out['font-style'] = t;
     else if (t === 'small-caps') out['font-variant'] = out['font-variant-caps'] = t;
-    else if (/^(bold|bolder|lighter|\d{3})$/.test(t)) out['font-weight'] = t;
+    // 太さ (Fonts 4 §2.2 の <font-weight-absolute> = normal | bold | <number [1,1000]>、bolder・lighter)。数は font-weight の
+    // 宣言と同じ読み方 (550.5・+700・50 も太さ。範囲の外の数は太さではない)
+    else if (/^(bold|bolder|lighter)$/.test(t) || (CSS_NUMBER.test(t) && parseFloat(t) >= 1 && parseFloat(t) <= 1000)) out['font-weight'] = t;
     else if (/condensed|expanded/.test(t)) out['font-stretch'] = t;
     else break;
   }
@@ -938,7 +998,8 @@ shorthand(['columns'], (_p, v, global) => {
   let width = 'auto';
   let count = 'auto';
   for (const t of tokens(v)) {
-    if (/^\d+$/.test(t)) count = t;
+    // 段の数は整数 (Multi-column 1 §3.2 の column-count: auto | <integer [1,∞]>。column-count の宣言と同じ読み方: +2 も整数)
+    if (CSS_INTEGER.test(t)) count = t;
     else if (t !== 'auto') width = t;
   }
   return [['column-width', width], ['column-count', count]];
@@ -1109,8 +1170,17 @@ interface DeclaredValue {
   order: number;
 }
 
+/**
+ * 識別子に使える字 (CSS Syntax 3 §4.2 の ident code point: 英数字・_・-・ASCII でない字。cssSelector の IDENT と同じ範囲で、
+ * ASCII でない字は U+0080 以上をすべて通す)
+ */
+const NAME_CHAR = String.raw`[-\w\u0080-\uffff]`;
+const NAME_START = String.raw`[a-zA-Z_\u0080-\uffff]`;
+
 /** var(--名前[, fallback]) (fallback は括弧の入れ子 2 段まで) */
-const VAR_RE = /var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*))?\)/g;
+/** var( に続く名前 (値の中の参照を、fallback の中のものも含めて拾う) */
+const VAR_NAME_RE = new RegExp(String.raw`var\(\s*(--${NAME_CHAR}+)`, 'g');
+const VAR_RE = new RegExp(String.raw`var\(\s*(--${NAME_CHAR}+)\s*(?:,\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*))?\)`, 'g');
 
 /** 組み込みの既定のスタイルシート (HTML_UA_CSS・QUIRKS_UA_CSS) を読んだもの (文書ごとに読み直さない。parseCss の結果は書き換えない) */
 const BUILTIN_UA_SHEETS = new Map<string, ParsedCss>();
@@ -1213,8 +1283,10 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       if ((el.localName ?? el.nodeName).toLowerCase() === 'th' && (parent?.v.get('text-align') ?? 'start') === 'start') push('text-align', 'center', false, 0, 1, -1);
       // 互換モードの余白の打ち消し (HTML Living Standard §15.3.9)。既定のスタイルの規則として、h1 などの余白の規則より強く
       if (quirks) for (const [p, v] of marginQuirks(el)) push(p, v, false, 0, 1e9, -1);
-      // HTML の属性による指定 (作成者スタイルシート より弱い)
-      presentational(el, quirks).forEach(([p, v], k) => push(p, v, false, 1, -1, -1 + k / 1e6));
+      // HTML の属性による指定 (作成者スタイルシート より弱い)。Cascade 5 §6.5: 利用者と作成者の間の独立した出どころ
+      // (author presentational hint origin) なので、作成者の規則には、層 (@layer) の中のものにも負ける。
+      // revert では作成者の出どころの一部なので、出どころは作成者のまま、どの層よりも前 (弱い) 層に置く
+      presentational(el, quirks).forEach(([p, v], k) => push(p, v, false, 1, -1, -1 + k / 1e6, -Infinity));
       const st = el.getAttribute('style');
       if (st) splitDecls(st).forEach(([p, v, imp], k) => push(p, v, !!imp, 2, 0, order + 1 + k / 1e4));
     }
@@ -1233,8 +1305,35 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     const own = new Map<string, string>();
     for (const d of decls) if (d.prop.startsWith('--') && !own.has(d.prop)) own.set(d.prop, d.value);
     const state = new Map<string, 'busy' | 'done'>();
+    // 循環 (Variables 1 §2.3): この要素のカスタム プロパティを節、値の中の var() の参照 (fallback の中のものも含む) を辺とするグラフで、
+    // 循環の上にあるものは、すべて「必ず無効な値」(fallback があっても、使われない fallback の中の参照でも)
+    const refs = new Map<string, string[]>();
+    for (const [n, raw] of own) {
+      if (!/var\(/i.test(raw)) continue;
+      const to = [...raw.matchAll(VAR_NAME_RE)].map((m) => m[1]).filter((x) => own.has(x));
+      if (to.length) refs.set(n, to);
+    }
+    const cyclic = new Set<string>();
+    for (const start of refs.keys()) {
+      const seen = new Set<string>();
+      const todo = [...refs.get(start)!];
+      while (todo.length) {
+        const n = todo.pop()!;
+        if (n === start) {
+          cyclic.add(start);
+          break;
+        }
+        if (seen.has(n)) continue;
+        seen.add(n);
+        todo.push(...(refs.get(n) ?? []));
+      }
+    }
     const resolveOwn = (name: string): string | typeof INVALID | undefined => {
       if (!own.has(name)) return vars.get(name);
+      if (cyclic.has(name)) {
+        vars.delete(name);
+        return INVALID;
+      }
       if (state.get(name) === 'done') return vars.get(name) ?? INVALID;
       if (state.get(name) === 'busy') return INVALID; // 循環
       state.set(name, 'busy');
@@ -1286,11 +1385,14 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   const cascadeDecls = (decls: DeclaredValue[], vars: Map<string, string>, fsCtx: () => LenCtx): { cascaded: Map<string, string>; rank: Map<string, number> } => {
     const cascaded = new Map<string, string>();
     const rank = new Map<string, number>();
+    // 値の無い (必ず無効な値の) カスタム プロパティを fallback なしで参照した宣言は、計算値の時点で無効 (Variables 1 §3・§3.1)。
+    // 残りの語だけで読める値になっても、有効な宣言にしない
+    let invalidVar = false;
     // 置き換えた値の長さの合計が上限 (MAX_VAR_LENGTH) を超えたら、空の値 (計算値の時点で無効な宣言) にする (Variables 1 §3.3)
     const resolveVar = (v: string, depth = 0, budget = { left: MAX_VAR_LENGTH }): string => {
       if (depth > 10 || !/var\(/i.test(v)) return v;
       const out = v.replace(VAR_RE, (_m, n: string, fb?: string) => {
-        const r = vars.get(n) ?? fb ?? '';
+        const r = vars.get(n) ?? fb ?? ((invalidVar = true), '');
         return (budget.left -= r.length) < 0 ? '' : r;
       });
       return budget.left < 0 ? '' : resolveVar(out, depth + 1, budget);
@@ -1300,9 +1402,10 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     for (const d of decls) {
       if (d.prop.startsWith('--')) continue;
       const hasVar = /var\(/i.test(d.value);
+      invalidVar = false;
       const resolved = resolveVar(d.value);
       const parts = expand(d.prop, resolved, ah);
-      const bad = !resolved.trim() || (parts.length > 1 ? parts.some(([p, v]) => !valid(p, v, ANY_CTX, ah)) : parts.some(([p, v]) => !valid(p, v, fsCtx(), ah)));
+      const bad = invalidVar || !resolved.trim() || !parts.length || (parts.length > 1 ? parts.some(([p, v]) => !valid(p, v, ANY_CTX, ah)) : parts.some(([p, v]) => !valid(p, v, fsCtx(), ah)));
       // var() を含む宣言は、置き換えた結果が読めなくても捨てない: 計算値の時点で無効な宣言として unset にする (Variables 1 §3.1)
       if (bad && hasVar) {
         for (const [p] of expand(d.prop, 'unset', ah))
@@ -1484,7 +1587,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       out.lhNumber = parent?.lhNumber;
       out.v.set('line-height', parent?.lhNumber !== undefined ? fmtPx(parent.lhNumber * fs) : (pv('line-height') ?? 'normal'));
     } else if (/^(normal|initial)$/i.test(lhRaw)) out.v.set('line-height', 'normal');
-    else if (/^-?[\d.]+$/.test(lhRaw)) {
+    else if (CSS_NUMBER.test(lhRaw.trim())) {
+      // 数の書き方は、読めるかの検査 (validUncached) と同じ (+1.5・1e1・.5 も数)
       out.lhNumber = parseFloat(lhRaw);
       out.v.set('line-height', fmtPx(out.lhNumber * fs));
     } else {
@@ -1574,7 +1678,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           break;
         }
         case 'int-auto':
-          val = /^-?\d+$/.test(raw) ? raw : 'auto';
+          // 整数の書き方は、読めるかの検査と同じ (先頭の + も読む)
+          val = CSS_INTEGER.test(raw.trim()) ? String(parseInt(raw, 10)) : 'auto';
           break;
         default:
           // border-spacing の計算値は 2 つの絶対長さ (CSS 2.1 §17.6.1)。pt・em なども px に直す (htmlImport は px として読む)
@@ -1740,8 +1845,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
     if (!fns.every((f) => /^(counter|counters|attr|url|image-set|(repeating-)?(linear|radial|conic)-gradient)$/.test(f))) return false;
     // counter(名前[, 書式])・counters(名前, 文字列[, 書式]) の引数。カンマの無い counter(page physical) は CSS の構文に無い (読めない)。
     // アンテナハウス互換 (ahCounterFlags) では、その拡張 counter(<ident> [physical || reverse]?, …) として通す
-    const ident = /^-?[a-z_][\w-]*$/i;
-    const counterName = ah.ahCounterFlags ? /^-?[a-z_][\w-]*(\s+(physical|reverse)){0,2}$/i : ident;
+    // 名前は識別子 (CSS Syntax 3 §4.2。ASCII でない字も使える)
+    const ident = new RegExp(`^-?${NAME_START}${NAME_CHAR}*$`);
+    const counterName = ah.ahCounterFlags ? new RegExp(String.raw`^-?${NAME_START}${NAME_CHAR}*(\s+(physical|reverse)){0,2}$`, 'i') : ident;
     for (const m of bare.matchAll(/\b(counters?)\(([^()]*)\)/gi)) {
       const args = m[2].split(',').map((x) => x.trim());
       const ok =
@@ -1759,8 +1865,8 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   if (kw) return tokens(v.toLowerCase()).every((t) => kw.has(t));
   // 数・整数の性質 (Cascade 5 §5: 読めない宣言は捨てる)
   const s0 = v.trim().toLowerCase();
-  const num = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/;
-  const int = /^[+-]?\d+$/;
+  const num = CSS_NUMBER;
+  const int = CSS_INTEGER;
   switch (prop) {
     case 'font-weight':
       return /^(normal|bold|bolder|lighter)$/.test(s0) || (num.test(s0) && parseFloat(s0) >= 1 && parseFloat(s0) <= 1000);
@@ -1810,7 +1916,8 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       if (lv === 'bold') return '700';
       if (lv === 'bolder') return String(pw < 350 ? 400 : pw < 550 ? 700 : 900);
       if (lv === 'lighter') return String(pw < 550 ? 100 : pw < 750 ? 400 : 700);
-      return /^\d+$/.test(lv) ? lv : '400';
+      // 数の書き方は、読めるかの検査 (validUncached) と同じ (550.5・+700・1e2 も数。Fonts 4 §2.2: 1〜1000 の数)
+      return CSS_NUMBER.test(lv) ? String(parseFloat(lv)) : '400';
     }
     case 'font-stretch': {
       const KW: Record<string, string> = { 'ultra-condensed': '50%', 'extra-condensed': '62.5%', condensed: '75%', 'semi-condensed': '87.5%', normal: '100%', 'semi-expanded': '112.5%', expanded: '125%', 'extra-expanded': '150%', 'ultra-expanded': '200%' };

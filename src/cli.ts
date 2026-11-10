@@ -216,11 +216,20 @@ export function listFiles(dir: string, readdir: (d: string) => fs.Dirent[] = (d)
   return readdir(dir).flatMap((e) => (e.isDirectory() ? (e.name === 'node_modules' || e.name.startsWith('.') ? [] : sub(path.join(dir, e.name))) : [path.join(dir, e.name)]));
 }
 
+/**
+ * --css の値 (カンマ区切り) のファイルの並び。前後の空白は捨て、空の項目は無いものとする ("a.css, b.css" の b.css も使う)。
+ * 使う CSS を選ぶところと、ディレクトリの外のファイルを探すところで、同じ並びを使う
+ */
+export function cssOptionFiles(value: string): string[] {
+  return value.split(',').map((c) => c.trim()).filter(Boolean);
+}
+
 /** 1 つの入力を PDF にする。input が '-' なら標準入力 (text に中身)、output が '-' なら標準出力 */
 async function convert(input: string, output: string, args: Args, text: string) {
   const stdin = input === '-';
   const dir = stdin ? path.resolve(args.base ?? '.') : path.dirname(input);
-  const onlyCss = args.css ? new Set(args.css.split(',').map((c) => path.basename(c).toLowerCase())) : undefined;
+  const cssNames = args.css ? cssOptionFiles(args.css) : undefined;
+  const onlyCss = cssNames ? new Set(cssNames.map((c) => path.basename(c).toLowerCase())) : undefined;
   const all = listFiles(dir).filter((f) => f !== input);
   // --css で選んだ CSS が @import する CSS も使う
   for (const name of onlyCss ?? []) {
@@ -230,7 +239,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
   const chosen = all.filter((f) => !/\.css$/i.test(f) || !onlyCss || onlyCss.has(path.basename(f).toLowerCase()));
   // --css に入力のディレクトリの外のファイルを書いたら、そのファイルを読む。どこにも無ければ誤り
   const outside: string[] = [];
-  for (const c of args.css?.split(',').map((x) => x.trim()).filter(Boolean) ?? []) {
+  for (const c of cssNames ?? []) {
     const inDir = all.some((f) => path.basename(f).toLowerCase() === path.basename(c).toLowerCase());
     const p = path.resolve(c);
     if (!all.includes(p) && fs.existsSync(p) && fs.statSync(p).isFile()) outside.push(p);

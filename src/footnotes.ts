@@ -99,20 +99,37 @@ export class FootnoteCtx {
   }
 
   private claimed = new WeakSet<LFootnote>();
+  /** 試し組みの間に積んだ脚注 (試し組みが終われば捨てる)。試し組みでなければ null */
+  private trialClaimed: Set<LFootnote> | null = null;
+  /**
+   * 試し組み (段の釣り合わせなど、結果をページに残さない組版) を f で行う。その間に積んだ脚注は、終われば積んでいないものに戻し、
+   * 置いたページも知らせない (本番の組版で、改めて積む)。本体の高さは本番と同じに数えるので、段に入る量は本番と変わらない
+   */
+  trial<T>(f: () => T): T {
+    const saved = this.trialClaimed;
+    this.trialClaimed = new Set(saved ?? []);
+    try {
+      return f();
+    } finally {
+      this.trialClaimed = saved;
+    }
+  }
+
   /** セル・コンテナの中の脚注: まだどのページにも積んでいなければ true (繰り返す表の見出しなどで二重に積まない) */
   claim(fn: LFootnote): boolean {
-    if (this.claimed.has(fn)) return false;
-    this.claimed.add(fn);
+    if (this.claimed.has(fn) || this.trialClaimed?.has(fn)) return false;
+    (this.trialClaimed ?? this.claimed).add(fn);
     return true;
   }
 
   /** まだどのページにも積んでいない脚注か (claim と違い、印は付けない) */
   unclaimed(fn: LFootnote): boolean {
-    return !this.claimed.has(fn);
+    return !this.claimed.has(fn) && !this.trialClaimed?.has(fn);
   }
 
   /** 脚注を page に置いた (ページごとの番号の確定に使う) */
   placed(fn: LFootnote, page: number) {
+    if (this.trialClaimed) return;
     this.onPlaced?.(fn, page);
   }
 

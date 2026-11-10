@@ -94,6 +94,10 @@ export function xhtmlToHtml(text: string): string {
     out.push(tag + '>');
     if (ns === NS.html && name === 'head') out.push(...sheets);
     const raw = ns === NS.html && RAW.has(name);
+    // pre・textarea・listing の開始タグの直後の改行は、HTML の構文では読み捨てられる (HTML Living Standard §13.2.6.4.7 の "pre"・"listing" と
+    // "textarea" の開始タグ)。XML の構文では中身の字なので、中身が改行で始まるときは、改行をもう 1 つ書く (§13.3 の書き出しの注意)
+    const first = kids[0];
+    if (ns === NS.html && /^(pre|textarea|listing)$/.test(name) && first && (first.nodeType === 3 || first.nodeType === 4) && (first.nodeValue ?? first.data ?? '').startsWith('\n')) out.push('\n');
     for (const c of kids) write(c, raw);
     out.push(`</${name}>`);
   };

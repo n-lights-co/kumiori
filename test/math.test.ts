@@ -75,6 +75,27 @@ describe('MATH 表と数式の組版', () => {
     const fixed = lay('<mo stretchy="false">(</mo><mfrac><mfrac><mi>a</mi><mi>b</mi></mfrac><mi>c</mi></mfrac><mo stretchy="false">)</mo>');
     expect(fixed.ascent + fixed.descent).toBeLessThan(big.ascent + big.descent);
   });
+  it('部品を組み立てて伸ばす字は、つなぐ端のコネクタの長さまで重ねて、目標の大きさにする (FO-15)', () => {
+    // STIX Two Math の ( の部品は、下の端 (start 0・end 250)・繰り返す部品 (1000・1000)・上の端 (start 250・end 0)。
+    // つなぐ端 (下の端の部品の end・上の端の部品の start) は 250 あるので、部品を重ねて目標に合わせられる
+    // (OpenType の MATH 表の GlyphPartRecord。向きを逆に見ると上限が 0 になり、115pt の目標が 125.6pt になる)
+    const h = (c: string, t: number) => {
+      const r = lay(`<mo minsize="${t}pt" maxsize="${t}pt">${c}</mo>`);
+      return r.ascent + r.descent;
+    };
+    expect(h('(', 115)).toBeCloseTo(115, 1);
+    expect(h(')', 115)).toBeCloseTo(115, 1);
+    expect(h('[', 45)).toBeCloseTo(45, 1);
+    expect(h('{', 60)).toBeCloseTo(60, 1);
+    // 重なりの上限 (250/1000em) で足りないときは、目標より大きくなる (小さくはしない)
+    const p60 = h('(', 60);
+    expect(p60).toBeGreaterThanOrEqual(60);
+    expect(p60).toBeLessThan(64);
+  });
+  it('つなぐ端のコネクタが minConnectorOverlap に足りない書体の字 (STIX Two Math の →) も、これまでどおり目標の幅に伸ばす', () => {
+    const r = lay('<mover><mspace width="30pt"/><mo>→</mo></mover>');
+    expect(r.width).toBeCloseTo(30, 1);
+  });
   it('別行立て (display="block") の和の記号は大きく、上下に添え字を置く', () => {
     const body = '<munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><mi>x</mi>';
     const inline = lay(body);
