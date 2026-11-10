@@ -5659,10 +5659,13 @@ export class LayoutEngine {
 
   private baseStyle(): ResolvedStyle {
     const fam = this.options.defaultFontFamily ?? this.fonts.all()[0]?.family ?? 'sans-serif';
+    // 可変フォントを読み込んでいれば、その軸の札 (子のスタイルの解決で、書体の名前に軸の値の指定を付ける。lnode.ts の applyVariation)
+    const varAxes = this.fonts.variationAxes();
     return {
       fontFamily: fam,
       fontWeight: 400,
       italic: false,
+      ...(varAxes ? { varAxes } : {}),
       fontSize: this.options.defaultFontSize ?? 10.5,
       lineHeight: this.options.defaultLineHeight ?? 1.7,
       color: '#000000',

@@ -290,10 +290,31 @@ export interface TextStyle {
   changeBars?: RevisionBar[];
   /** 行番号 (アンテナハウスの axf:line-number-*)。子へ引き継がれ、子の指定は親の指定に重ねる */
   lineNumber?: LineNumbering;
-  /** 字幅の伸縮 (font-stretch。1 = normal、0.75 = condensed)。字幅の違う書体は持たないので、横書きの字形を水平に拡縮する */
+  /**
+   * 字幅の伸縮 (font-stretch。1 = normal、0.75 = condensed)。幅の軸 (wdth) を持つ可変フォントは、その軸の値にする (CSS Fonts 4 §2.3)。
+   * ほかの書体は、字幅の違う書体を持たないので、横書きの字形を水平に拡縮する
+   */
   fontStretch?: number;
-  /** 斜体。実フォントの斜体は持たないので、描画時に傾斜 (疑似斜体) をかける */
+  /**
+   * 斜体。傾きの軸 (ital・slnt) を持つ可変フォントは、その軸の値にする (CSS Fonts 4 §2.4・§5.2)。
+   * ほかの書体は、実フォントの斜体を持たないので、描画時に傾斜 (疑似斜体) をかける
+   */
   fontStyle?: 'italic' | 'normal';
+  /**
+   * font-style: oblique の角度 (度。時計回りが正)。fontStyle が 'italic' のときに、italic でなく oblique <角度> であることを表す
+   * (可変フォントの slnt の軸の値を決める。軸の無い書体では、italic と同じ疑似斜体)。fontStyle と一緒に指定し、一緒に引き継がれる
+   */
+  fontObliqueAngle?: number;
+  /** 可変フォントの軸の値 (CSS の font-variation-settings。札 → 値。CSS Fonts 4 §8.2)。子へ引き継がれる。空は normal */
+  fontVariationSettings?: Record<string, number>;
+  /** 可変フォントの光学サイズの軸 (opsz) を、字の大きさに合わせるか (CSS の font-optical-sizing。§8.1)。既定は auto。子へ引き継がれる */
+  fontOpticalSizing?: 'auto' | 'none';
+  /**
+   * 光学サイズの軸 (opsz) に渡す、字の大きさの単位。既定は 'pt' (opsz の尺度は pt。OpenType の Design-variation axis tag registry)。
+   * 'px' は CSS px の数 (pt の 96/72 倍)。HTML + CSS の文書は 'px' (CSS Fonts 4 §8.1 の試験 variable-opsz.html: font-size の px の数が opsz になる)。
+   * 子へ引き継がれる
+   */
+  fontOpticalSizeUnit?: 'pt' | 'px';
   /** 行送り比 (fontSize × lineHeight が 1 行の block 方向サイズ)。比のまま継承される */
   lineHeight?: number;
   /**
@@ -1954,10 +1975,14 @@ export interface FontResource {
   weight: number;
   /** name 表の PostScript 名 (あれば) */
   postscriptName?: string;
-  /** 書体のファイルのバイト列の SHA-256 (16 進) */
+  /** 書体のファイルのバイト列の SHA-256 (16 進)。可変フォントの実体は、実体にした静的な書体のバイト列のもの (glyphIds・glyphPositions は、この書体での値) */
   sha256: string;
   /** 1 em の単位 (head の unitsPerEm) */
   unitsPerEm: number;
+  /** 可変フォントの実体のとき: 軸の値 (札 → 値。書体のすべての軸) */
+  variation?: Record<string, number>;
+  /** 可変フォントの実体のとき: 元の書体のファイル (可変フォント) のバイト列の SHA-256 (16 進) */
+  sourceSha256?: string;
 }
 
 /** 木が使う画像 (ImageArea.src・背景画像の src) */

@@ -103,14 +103,20 @@ export function splitFontFile(buf: ArrayBuffer): UserFont[] {
     try {
       const fk = fontkit.create(new Uint8Array(single)) as unknown as {
         familyName?: string;
-        name?: { records?: { fontFamily?: Record<string, string> } };
+        name?: { records?: { fontFamily?: Record<string, string>; preferredFamily?: Record<string, string> } };
         'OS/2'?: { usWeightClass?: number; fsSelection?: { italic?: boolean } };
+        directory?: { tables?: Record<string, unknown> };
       };
-      const fam = fk.familyName;
+      // 可変フォント (fvar を持つ) は、太さ・幅をまとめたファミリー名 (nameID 16。無ければ nameID 1) で登録する
+      // (nameID 1 は、既定の形の名前 (「Anybody Thin」など) のことがある。太さ・幅は、軸の値で選ぶ)
+      const variable = !!fk.directory?.tables?.fvar;
+      const typographic = variable ? fk.name?.records?.preferredFamily : undefined;
+      const fam = typographic?.en ?? fk.familyName;
       if (!fam) continue;
       // 斜体の書体は、標準の書体の代わりにしない (Kumiori の斜体は字を傾けて描く)
       if (fk['OS/2']?.fsSelection?.italic) continue;
       const names = new Set<string>([fam]);
+      for (const v of Object.values(typographic ?? {})) if (typeof v === 'string' && v) names.add(v);
       for (const v of Object.values(fk.name?.records?.fontFamily ?? {})) if (typeof v === 'string' && v) names.add(v);
       // 太さは OS/2 の usWeightClass そのまま (公開 API の fonts・CLI の --font と同じ持ち方。Medium (500) は 500 で登録する)。無ければ 400
       const wc = fk['OS/2']?.usWeightClass;

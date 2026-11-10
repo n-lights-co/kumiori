@@ -67,7 +67,16 @@ export function attachResources(tree: AreaTree, fonts: FontManager, assets?: Ass
     const f = fonts.get(a.fontFamily, a.fontWeight);
     if (!f) return;
     if (!fontRes.has(f.key))
-      fontRes.set(f.key, { id: f.key, family: f.family, weight: f.weight, ...(f.postscriptName ? { postscriptName: f.postscriptName } : {}), sha256: hashFont(f), unitsPerEm: f.unitsPerEm });
+      fontRes.set(f.key, {
+        id: f.key,
+        family: f.family,
+        weight: f.weight,
+        ...(f.postscriptName ? { postscriptName: f.postscriptName } : {}),
+        sha256: hashFont(f),
+        unitsPerEm: f.unitsPerEm,
+        // 可変フォントの実体: 軸の値と、元の書体のファイル (sha256 は、実体にした静的な書体のバイト列のもの)
+        ...(f.instanceOf ? { variation: f.instanceOf.coords, sourceSha256: hashFont(f.instanceOf.master) } : {}),
+      });
     a.fontId = f.key;
     let cache = glyphCache.get(f);
     if (!cache) glyphCache.set(f, (cache = new Map()));
