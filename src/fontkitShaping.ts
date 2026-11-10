@@ -335,44 +335,42 @@ function prepareUseStrayFix(font: FkFont) {
 }
 
 const ANCHOR_PATCHED = Symbol.for('kumiori.fontkitNullAnchorPatched');
-/** 相手の位置 (Anchor) が無い、の合図 (applyAnchor から applyLookup へ) */
-const NO_ANCHOR = Symbol('kumiori.noAnchor');
-/** prepareNullAnchorFix を済ませた書体 */
-const nullAnchorReady = new WeakSet<object>();
 /** いま組んでいる文字列で、上の 6〜8・10 を効かせるか (layout の呼び出しの間だけ true) */
 let nullAnchorActive = false;
+/** いまの applyLookup の中で、アンカーの無い組に当たったか */
+let anchorMissing = false;
+type GposProto = {
+  applyAnchor?: (this: unknown, markRecord: { markAnchor?: unknown } | null, baseAnchor: unknown, baseGlyphIndex: number) => unknown;
+  applyLookup?: (this: unknown, lookupType: number, table: unknown) => unknown;
+  [ANCHOR_PATCHED]?: boolean;
+};
 
 /**
- * 書体ごとに 1 回: 記号を載せる規則 (GPOS の MarkBasePos・MarkLigPos・MarkMarkPos) で、相手の字形にその種類の記号の位置 (Anchor) が
- * 無いとき、規則を「当たらなかった」ことにする (上の 6。GPOS の処理の原型に 1 回だけ)
+ * 記号を載せる規則 (GPOS の MarkBasePos・MarkLigPos・MarkMarkPos) で、相手の字形にその種類の記号の位置 (Anchor) が無いとき、
+ * 規則を「当たらなかった」ことにする (上の 6。GPOS の処理の原型に 1 回だけ)。
+ * ラオ・クメールなどの担当 (ブランチ lang-sea) の同じ名前の関数と、同じ形 (効かせる条件の変数だけが違う。まとめるときは条件を「または」にする)
  */
-function prepareNullAnchorFix(font: FkFont) {
-  if (nullAnchorReady.has(font)) return;
-  nullAnchorReady.add(font);
-  type GposProto = {
-    applyAnchor?: (this: unknown, markRecord: { markAnchor?: unknown }, baseAnchor: unknown, baseGlyphIndex: number) => void;
-    applyLookup?: (this: unknown, lookupType: number, table: unknown) => unknown;
-    [ANCHOR_PATCHED]?: boolean;
-  };
-  let proto = Object.getPrototypeOf(font._layoutEngine?.engine?.GPOSProcessor ?? null) as GposProto | null;
-  while (proto && !Object.prototype.hasOwnProperty.call(proto, 'applyAnchor')) proto = Object.getPrototypeOf(proto) as GposProto | null;
-  if (!proto || proto[ANCHOR_PATCHED] || typeof proto.applyAnchor !== 'function' || typeof proto.applyLookup !== 'function') return;
-  const applyAnchor = proto.applyAnchor;
-  const applyLookup = proto.applyLookup;
-  proto.applyAnchor = function (markRecord, baseAnchor, baseGlyphIndex) {
-    if (nullAnchorActive && (!baseAnchor || !markRecord?.markAnchor)) throw NO_ANCHOR;
+function patchNullAnchor(gpos: object | null | undefined) {
+  let gp = Object.getPrototypeOf(gpos ?? null) as GposProto | null;
+  while (gp && !Object.prototype.hasOwnProperty.call(gp, 'applyAnchor')) gp = Object.getPrototypeOf(gp) as GposProto | null;
+  if (!gp || gp[ANCHOR_PATCHED] || typeof gp.applyAnchor !== 'function' || typeof gp.applyLookup !== 'function') return;
+  const applyAnchor = gp.applyAnchor;
+  const applyLookup = gp.applyLookup;
+  gp.applyAnchor = function (markRecord, baseAnchor, baseGlyphIndex) {
+    if (nullAnchorActive && (!baseAnchor || !markRecord?.markAnchor)) {
+      anchorMissing = true;
+      return undefined;
+    }
     return applyAnchor.call(this, markRecord, baseAnchor, baseGlyphIndex);
   };
-  proto.applyLookup = function (lookupType, table) {
-    if (!nullAnchorActive) return applyLookup.call(this, lookupType, table);
-    try {
-      return applyLookup.call(this, lookupType, table);
-    } catch (e) {
-      if (e === NO_ANCHOR) return false;
-      throw e;
-    }
+  gp.applyLookup = function (lookupType, table) {
+    anchorMissing = false;
+    const r = applyLookup.call(this, lookupType, table);
+    if (!anchorMissing) return r;
+    anchorMissing = false;
+    return false;
   };
-  proto[ANCHOR_PATCHED] = true;
+  gp[ANCHOR_PATCHED] = true;
 }
 
 /**
@@ -430,7 +428,7 @@ export function patchFontkitShaping(fk: unknown) {
       lookupFixActive = true;
     }
     const wasAnchor = nullAnchorActive;
-    prepareNullAnchorFix(this as FkFont);
+    patchNullAnchor((this as FkFont)._layoutEngine?.engine?.GPOSProcessor);
     prepareUseStrayFix(this as FkFont);
     nullAnchorActive = true;
     if (setRuntime) g.regeneratorRuntime = syllableRuntime;
