@@ -139,7 +139,7 @@ result.renderPage(canvas, 0);                                  // 1 ページ目
 - FO の DOCTYPE の内部サブセットに宣言した内部実体 (`<!ENTITY nbsp "&#160;">` など) は、読み込みの前に展開します (外部実体は読みません)
 - 例外: FO の XML が読めない (`XML の解析に失敗しました: …`)、既定の書体が読めない (`書体を読めません: …`) は `typeset` が投げる。`fonts` に渡した壊れた書体ファイルは投げずに `warnings` に入る。`renderPage` の無いページ番号は `RangeError`。組版の警告 (読めない画像・溢れなど) は投げずに `result.warnings` (文字列の配列) に入る
 - `resolveResource(url)`: 文書・CSS が参照するファイル (`<link rel="stylesheet">`・`@import`・`url()`・`<img src>` など) のうち、`files` に無いものを問い合わせます。`url` は書かれた参照 (`file:///…/a.css`・`img/a.png`・`https://…`) で、CSS の中の相対参照は、その CSS の URL を基準に解決したものです。中身 (文字列・`Uint8Array`・`ArrayBuffer`) を返せばそれを使い、`undefined` ならこれまでどおり (`http(s):` の画像・CSS はネットワークから取る) です。参照を書き換えて `files` に入れ直す手間が要りません
-- Node では、`kumiori/node` の部品が使えます: `createFontLoader({ fontDir, cacheDir, log, timeoutMs })` は `loadFont` に渡す既定の書体の読み込み (Node のコマンドと同じ: `fontDir` → 書体のキャッシュ → ネットワーク。取った書体はキャッシュに保存する。`cacheDir` の既定は `defaultFontCacheDir()`、`null` でキャッシュしない)。`createFileResolver({ root })` は `resolveResource` に渡す、`file:` の URL のファイルを読む関数 (`root` を渡すと、その中のファイルだけを読む)
+- Node では、`kumiori/node` の部品が使えます: `createFontLoader({ fontDir, cacheDir, log, timeoutMs })` は `loadFont` に渡す既定の書体の読み込み (Node のコマンドと同じ: `fontDir` → 書体のキャッシュ → ネットワーク。取った書体はキャッシュに保存する。`cacheDir` の既定は `defaultFontCacheDir()`、`null` でキャッシュしない)。`createFileResolver({ root })` は `resolveResource` に渡す、`file:` の URL のファイルを読む関数 (`root` を渡すと、その中のファイルだけを読む。`root` はいくつかの並びでもよく、中にあるかはシンボリックリンクをたどった実体のパスで見る)
 
   ```ts
   import { typeset } from 'kumiori';

@@ -138,20 +138,35 @@ export function createFontLoader(o: FontLoaderOptions = {}): (spec: FontSpec) =>
 
 /**
  * TypesetOptions.resolveResource に渡す、file: の URL の参照を読む関数。ファイルが無ければ undefined (これまでどおりの扱い)。
- * root を渡すと、その中のファイルだけを読む (他人の書いた文書を組むときに、ほかの場所のファイルを読ませない)
+ * root を渡すと、その中のファイルだけを読む (他人の書いた文書を組むときに、ほかの場所のファイルを読ませない)。
+ * root は 1 つでも、いくつかの並びでもよい (どれかの中にあれば読む)。
+ * 中にあるかは、シンボリックリンクをたどった実体のパス (realpath) どうしで見る: root の中のリンクが外のファイルを指していれば読まない。
+ * root 自身がリンクのときは、その指す先が範囲になる。無い root は、何も含まない (その root では何も読めない)
  */
-export function createFileResolver(o: { root?: string } = {}): (url: string) => Uint8Array | undefined {
-  const root = o.root ? path.resolve(o.root) : undefined;
+export function createFileResolver(o: { root?: string | readonly string[] } = {}): (url: string) => Uint8Array | undefined {
+  const given = o.root === undefined ? undefined : typeof o.root === 'string' ? [o.root] : [...o.root];
+  // root の実体のパス。root は関数を作るときに 1 度だけ解く (後から root を別の場所へのリンクに差し替えても、範囲は変わらない)
+  const roots = given?.flatMap((r) => {
+    try {
+      return [fs.realpathSync(path.resolve(r))];
+    } catch {
+      return [];
+    }
+  });
+  /** real (実体のパス) が root の中か。path.relative が「..」そのものか「..」+ 区切りで始まる、または絶対パス (Windows の別のドライブ) なら外 */
+  const inside = (root: string, real: string) => {
+    const rel = path.relative(root, real);
+    return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  };
   return (url) => {
     if (!/^file:/i.test(url)) return undefined;
-    let p: string;
     try {
-      p = fileURLToPath(url);
-    } catch {
-      return undefined;
-    }
-    if (root && path.relative(root, p).startsWith('..')) return undefined;
-    try {
+      let p = fileURLToPath(url);
+      if (roots) {
+        // 実体のパスで範囲を見て、読むのもそのパス (見た後でリンクを差し替えられても、見たものと違うファイルを読まない)
+        p = fs.realpathSync(p);
+        if (!roots.some((r) => inside(r, p))) return undefined;
+      }
       return fs.statSync(p).isFile() ? new Uint8Array(fs.readFileSync(p)) : undefined;
     } catch {
       return undefined;
