@@ -108,5 +108,12 @@ export function foLanguages(text: string): string[] {
  */
 export async function loadFoHyphenators(text: string): Promise<void> {
   if (!/hyphenate\s*=\s*["']true/.test(text)) return;
-  for (const l of ['en', ...foLanguages(text)]) await loadHyphenator(l);
+  const langs = ['en', ...foLanguages(text)];
+  // country (XSL 1.1 §7.10.1) を足した言語 (language="en" country="GB" → en-GB) の規則も読み込む
+  const countries = new Set<string>();
+  for (const m of text.matchAll(/\bcountry\s*=\s*["']([A-Za-z]{2,3})["']/g)) countries.add(m[1]);
+  for (const l of langs) {
+    await loadHyphenator(l);
+    if (!l.includes('-')) for (const c of countries) await loadHyphenator(`${l}-${c}`);
+  }
 }

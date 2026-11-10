@@ -1,5 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { formatPageNumber } from '../src/pageNumber';
+import { DOMParser } from '@xmldom/xmldom';
+import { formatPageNumber, withGrouping } from '../src/pageNumber';
+import { importXslFo } from '../src/xslfoImport';
 import { doc, makeEngine, walk } from './helpers';
 
 let E: Awaited<ReturnType<typeof makeEngine>>;
@@ -18,6 +20,42 @@ describe('ページ番号の書式 (§7.26.1)', () => {
     expect(formatPageNumber(12, '１')).toBe('１２');
     expect(formatPageNumber(125, '一')).toBe('百二十五');
     expect(formatPageNumber(3, '- 1 -')).toBe('- 3 -');
+  });
+
+  it('桁区切り (grouping-separator・grouping-size。XSLT 1.0 §7.7.1): 10 進の書式の数を、後ろから grouping-size 桁ごとに区切る', () => {
+    expect(formatPageNumber(1234567, withGrouping('1', ',', 3))).toBe('1,234,567');
+    expect(formatPageNumber(999, withGrouping('1', ',', 3))).toBe('999');
+    expect(formatPageNumber(1000, withGrouping('1', ',', 3))).toBe('1,000');
+    expect(formatPageNumber(12345, withGrouping(undefined, ' ', 2))).toBe('1 23 45');
+    // 0 埋めした桁も区切る。前後の文字はそのまま
+    expect(formatPageNumber(12, withGrouping('(0001)', ',', 3))).toBe('(0,012)');
+    expect(formatPageNumber(1234, withGrouping('１', '，', 3))).toBe('１，２３４');
+    // 10 進でない書式 (ローマ数字・アルファベット・漢数字) は区切らない
+    expect(formatPageNumber(1234, withGrouping('i', ',', 3))).toBe('mccxxxiv');
+    expect(formatPageNumber(1234, withGrouping('一', ',', 3))).toBe('千二百三十四');
+  });
+
+  it('fo:page-sequence の grouping-separator・grouping-size。片方だけなら無視する。letter-value は値を確かめるだけ', () => {
+    const fo = (attrs: string) =>
+      `<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="60mm" page-height="40mm" margin="5mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>` +
+      `<fo:page-sequence master-reference="m" initial-page-number="1234" ${attrs}><fo:flow flow-name="xsl-region-body"><fo:block>p<fo:page-number/></fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const text = (attrs: string) => {
+      const im = importXslFo(fo(attrs), (s: string) => new DOMParser().parseFromString(s, 'text/xml') as never, { compat: 'spec' });
+      let s = '';
+      walk(E.engine.layout(im.document).sheets[0] as never, (a) => {
+        if (a.type === 'glyph') s += (a as { text: string }).text;
+      });
+      return { s, miss: Object.keys(im.report.unsupported) };
+    };
+    expect(text('grouping-separator="," grouping-size="3"').s).toBe('p1,234');
+    expect(text('format="01" grouping-separator="." grouping-size="2"').s).toBe('p12.34');
+    expect(text('grouping-separator=","').s).toBe('p1234');
+    expect(text('grouping-size="3"').s).toBe('p1234');
+    expect(text('letter-value="alphabetic" format="a"')).toEqual({ s: 'paul', miss: [] });
+    expect(text('letter-value="traditional"').miss).toEqual([]);
+    expect(text('letter-value="x"').miss.join(' ')).toContain('letter-value');
+    expect(text('grouping-separator="," grouping-size="0"').miss.join(' ')).toContain('grouping-size');
+    expect(text('grouping-separator=",," grouping-size="3"').miss.join(' ')).toContain('grouping-separator');
   });
 
   it('page-number-citation は参照先のページの書式で、-last は最後のページを返す', () => {

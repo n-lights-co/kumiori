@@ -610,7 +610,10 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <h2 id="s-hyphens"><span class="num">6.7</span>ハイフネーション : <code>hyphens</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
 <p class="props" data-p="hyphens"><span class="k">初期値</span> : <span class="v">manual</span> <span class="k">適用対象</span> : <span class="v">text</span> <span class="k">継承</span> : <span class="v">yes</span> <span class="src">(hyphens — CSS Text 3)</span></p>
 <blockquote>“This property controls whether hyphenation is allowed to create more soft wrap opportunities within a line of text.”<cite>— CSS Text 3 §5.3</cite></blockquote>
-<p>hyphens: auto で、lang の言語のハイフネーションの規則に従って語の中で改行し、ハイフンを足します。Kumiori が持つ規則は、英語 (en・en-US・en-GB)・ラテン語 (la)・ロシア語 (ru)・ウクライナ語 (uk)・現代ギリシャ語 (el。単調の綴り) です。ほかの言語の語は分けません (CSS Text 3 §5.3)。hyphenate-character は解釈しません (ハイフンの字は変えられません)。</p>
+<p>hyphens: auto で、lang の言語のハイフネーションの規則に従って語の中で改行し、ハイフンを足します。Kumiori が持つ規則は、英語 (en・en-US・en-GB)・ラテン語 (la)・ロシア語 (ru)・ウクライナ語 (uk)・現代ギリシャ語 (el。単調の綴り) です。ほかの言語の語は分けません (CSS Text 3 §5.3)。</p>
+<p>ハイフネーションの制限 (CSS Text 4 §6.3.2〜§6.3.5) は、次のように解釈します。どれも継承します。縦書きでも同じに働きます。</p>
+<table class="list vals"><thead><tr><th style="width: 40mm">プロパティ</th><th>Kumiori の解釈</th></tr></thead><tbody><tr><td><code>hyphenate-character</code><br><span class="spec">§6.3.2</span></td><td>auto | 文字列。分けた行の終わりに出す文字列です。auto (初期値) は U+002D (-) を出します。2 字以上の文字列も、空の文字列 (何も出さずに分ける) も指定できます。ソフトハイフン (U+00AD) で分けた行にも同じ字を出します。フォントに無い字は、ほかの字と同じに、その字を持つフォントで代えます。</td></tr><tr><td><code>hyphenate-limit-chars</code><br><span class="spec">§6.3.4</span></td><td>[ auto | 整数 ]{1,3}。語の最小の字数・分け目の前の最小の字数・後の最小の字数です。auto (初期値) は、語 5 字・前 2 字・後 2 字です (仕様の注が勧める値)。結合文字と約物は字数に数えません。分け目の前後は、ハイフネーションの規則の決まりで 2 字より短くはなりません (1 を指定しても 2 字)。ソフトハイフンの位置には、数を指定したときだけ当てます (auto のときは、ソフトハイフンの位置をそのまま使います)。</td></tr><tr><td><code>hyphenate-limit-lines</code><br><span class="spec">§6.3.5</span></td><td>no-limit | 整数。ハイフンで終わる行が続いてよい数の上限です。上限を超える行は分けずに、語を次の行へ送ります。0 は分けません。行に 1 語しか無く、ほかに折り返せる位置の無いときは、上限を超えても分けます (仕様も、守れないことがあるとしています)。</td></tr><tr><td><code>hyphenate-limit-last</code><br><span class="spec">§6.3.5</span></td><td>none | always。always は、段落の最後の行の 1 つ前の行 (最後の、行長いっぱいの行) を分けません。always のうち、段・ページの最後の行を分けない働きと、column・page・spread は解釈しません (16 章)。</td></tr><tr><td><code>hyphenate-limit-zone</code><br><span class="spec">§6.3.3</span></td><td>長さ | 百分率 (行の長さに対する割合)。語を分けずに次の行へ送ったときの行末の空きが、この幅以下なら分けません。</td></tr></tbody></table>
+<p>行は 1 行ずつ前から決めるので、上限に当たって語を送った行より前の行は組み直しません。</p>
 <!--gen:vals-s-hyphens--><p class="vals-h"><code>hyphens</code> の値の意味 <span class="spec">(CSS Text 3 §5.3)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>none</code></td><td>語をハイフネーションしません。語の中の字がハイフネーションの機会を示していても分けません。</td><td>一部: ソフトハイフン (U+00AD) の位置では、なお改行します</td></tr><tr><td><code>manual</code></td><td>語の中の字が明示したハイフネーションの機会 (ソフトハイフンなど) だけでハイフネーションします。</td><td>対応</td></tr><tr><td><code>auto</code></td><td>言語に合うハイフネーションの資料で自動で決めた位置でも、語を分けられます。</td><td>対応</td></tr></tbody></table><!--/gen:vals-s-hyphens-->
 <!--kumiori-sample id="hyphens" mark="hyphens: auto"-->
 <p lang="en" style="hyphens: auto; text-align: justify; width: 58mm; text-indent: 0;">Typesetting engines must balance typographic considerations such as justification, hyphenation, and internationalization requirements.</p>
@@ -1139,7 +1142,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <section class="chapter c16">
 <h1 class="chapter" id="ch-unsupported" data-no="16">対応していないプロパティ</h1>
 <p>第 1 章の確かめ方で、指定しても組版に何も渡らなかったプロパティを、仕様ごとに並べます。印刷に関わらないプロパティ (画面の操作・音声など) は、最後の表にまとめます。対応しているプロパティの中で対応していない値は、各節の値の表に書いています。そのうち、仕様の決まりが長く、表の 1 行では説明しきれないものを、2 つ目の表に取り出して説明しています。各項目には、どういうものか、どういう場面で使うかを書いています。説明は、取得した仕様書 (いずれも 2026-11-06 取得) の定義と、Kumiori のソースで確かめたことに基づきます。</p>
-<!--gen:unsupported--><h3>対応していないプロパティ (82 項目)</h3>
+<!--gen:unsupported--><h3>対応していないプロパティ (74 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>background-attachment</code><br><span class="spec">CSS Backgrounds 3 §2.5</span></td><td>背景画像を、ビューポートに固定するか (fixed)、ボックスと一緒に動かすか (scroll)、ボックスの中身と一緒に動かすか (local) を指定します。仕様は、ビューポートの無いページの媒体では fixed の背景がページボックスに固定され、どのページにも繰り返して描かれるとしています。背景画像をページごとに同じ位置に出したいときに使います。</td></tr>
 <tr><td><code>background-clip</code><br><span class="spec">CSS Backgrounds 3 §2.7</span></td><td>背景を描く範囲 (border-box・padding-box・content-box) を指定します。背景の色や画像を、罫線の下まで描くか、内側の余白や中身の範囲だけに描くかを変えたいときに使います。</td></tr>
@@ -1200,11 +1203,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>tab-size</code><br><span class="spec">CSS Text 3 §4.2</span></td><td>残したタブ文字 (U+0009) の幅を、空白の文字 (U+0020) の幅の何倍か、または長さで指定します。pre などでタブを含むプログラムの文を、決まった幅のタブで組みたいときに使います。</td></tr>
 <tr><td><code>text-align-all</code><br><span class="spec">CSS Text 3 §6.2</span></td><td>text-align の一括指定の個別のプロパティで、最後の行 (text-align-last で auto 以外を指定したとき) を除いたすべての行のそろえ方を指定します。仕様は、文書の作成者には text-align を使うよう求めています。最後の行だけ別のそろえ方にして、ほかの行のそろえ方を決めたいときに使います。</td></tr>
 <tr><td><code>text-justify</code><br><span class="spec">CSS Text 3 §6.4</span></td><td>両端そろえ (justify) のときに、アキをどう配るか (auto・none・inter-word・inter-character) を選びます。欧文は語の間で、和文は字の間でアキを広げるなど、両端そろえの方法を選びたいときに使います。</td></tr>
-<tr><td><code>hyphenate-character</code><br><span class="spec">CSS Text 4 §6.3.2</span></td><td>ハイフンで分けた語の、分け目に出す文字列を指定します。auto のときは内容の言語の習慣で決めます。分け目の記号を、言語に合った別の記号にしたいときに使います。</td></tr>
-<tr><td><code>hyphenate-limit-chars</code><br><span class="spec">CSS Text 4 §6.3.4</span></td><td>ハイフンで分ける語の最小の文字数を、語全体・分け目の前・分け目の後の 3 つで指定します。足りない語は分けません。短い語や、分け目の前後が短くなる分け方を避けたいときに使います。</td></tr>
-<tr><td><code>hyphenate-limit-zone</code><br><span class="spec">CSS Text 4 §6.3.3</span></td><td>行の終わりに残してよい空きの幅を指定します。この幅より空きが狭い行では、語をハイフンで分けません。行末をそろえない組み方で、ハイフンの多さを抑えたいときに使います。</td></tr>
-<tr><td><code>hyphenate-limit-lines</code><br><span class="spec">CSS Text 4 §6.3.5</span></td><td>ハイフンで終わる行が続いてよい数の上限を指定します。ハイフンの行が何行も続くのを避けたいときに使います。</td></tr>
-<tr><td><code>hyphenate-limit-last</code><br><span class="spec">CSS Text 4 §6.3.5</span></td><td>段落・段・ページなどの最後の行の手前で、語をハイフンで分けないようにします。分かれた語の後半だけが次のページに送られるのを避けたいときに使います。</td></tr>
 <tr><td><code>text-wrap</code><br><span class="spec">CSS Text 4 §5.5</span></td><td>text-wrap-mode と text-wrap-style をまとめて指定する一括指定です。省いた個別のプロパティは初期値になります。行を折り返すかどうかと、折り返しの方法 (バランスなど) を一度に決めたいときに使います。</td></tr>
 <tr><td><code>text-wrap-mode</code><br><span class="spec">CSS Text 4 §5.1</span></td><td>行を折り返すか (wrap)、折り返さないか (nowrap) を指定します。white-space の一括指定の一部です。</td></tr>
 <tr><td><code>text-wrap-style</code><br><span class="spec">CSS Text 4 §5.4</span></td><td>行の折り返し方を指定します (auto・balance・stable・pretty)。見出しの行の長さをそろえたいとき (balance) などに使います。</td></tr>
@@ -1221,7 +1219,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>outline-offset</code><br><span class="spec">CSS UI 4 §3.5</span></td><td>輪郭線を、罫線の外側の線 (border edge) からどれだけ離すかを指定します。負の値のときは内側に縮めます。輪郭線と要素の間を空けたいときに使います。</td></tr>
 <tr><td><code>glyph-orientation-vertical</code><br><span class="spec">CSS Writing Modes 4 §5.1.3</span></td><td>SVG 1.1 の古いプロパティです。対応は任意 (optional) で、対応する処理系は text-orientation の一括指定として扱います (auto は mixed、0deg は upright、90deg は sideways)。SVG 1.1 向けに書かれた文書の、縦書きの字の向きの指定を解釈するときに使います。</td></tr>
 </tbody></table>
-<h3>対応しているプロパティの中で対応していない値 (9 項目)</h3>
+<h3>対応しているプロパティの中で対応していない値 (10 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>position</code><br>relative (行の中の要素)<br><span class="spec">CSS Position 3 §2</span></td><td>position: relative のボックスは、static と同じに組んでから、その位置からずらします。仕様は、このずらしは見た目だけの効果で、子孫でないほかのボックスの大きさや位置を変えないとしています。行の中の文字や要素を、前後の行の組み方を変えずに少し上下左右にずらしたいときに使います。</td></tr>
 <tr><td><code>position</code><br>sticky<br><span class="spec">CSS Position 3 §2</span></td><td>position: sticky は relative と同じで、そのうえで、利用者がスクロールしてもボックスが包含ブロックの中で見えるように、近くのスクロールする祖先を基準にずらしを自動で変えます。画面でスクロールするときに、見出しなどを見える所に留めておきたいときに使います。</td></tr>
@@ -1229,6 +1227,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>display</code><br>run-in<br><span class="spec">CSS Display 3 §2.1・§5</span></td><td>run-in のボックスは、後に続くブロックの、行の中の要素の初めに入り込みます。仕様は、短い見出しや定義を、続く文と同じ行に組むのに役立つとしています。辞書の見出し語のように、見出しを続く段落の行の頭に組み込みたいときに使います。</td></tr>
 <tr><td><code>writing-mode</code><br>sideways-lr<br><span class="spec">CSS Writing Modes 4 §3.2</span></td><td>sideways-lr は、書字方向を縦にして、行を下から上へ進め、字を横倒しにして組みます。Kumiori は行を下から上へ組む処理が無いので、親の書字方向のまま組みます (sideways-rl は対応します)。</td></tr>
 <tr><td><code>ruby-position</code><br>inter-character (横書き)・同じ側の 2 段<br><span class="spec">CSS Ruby 1 §4.1</span></td><td>inter-character は、横書きで、ルビを親文字の字の間 (親文字の右) に縦に置きます (台湾の注音符号のルビ)。縦書きでは over と同じです。また、複数の段に同じ側を指定すると、親文字から外へ重ねて置きます。注音符号のルビや、同じ側に 2 段のルビを重ねたいときに使います。</td></tr>
+<tr><td><code>hyphenate-limit-last</code><br>column・page・spread (と、always の段・ページの最後の行)<br><span class="spec">CSS Text 4 §6.3.5</span></td><td>column・page・spread は、段・ページ・見開きが替わる直前の行で、語をハイフンで分けないようにします (always は、段落の最後の行の手前と、これらのすべて)。分かれた語の後半だけが次の段・ページに送られるのを避けたいときに使います。Kumiori は、行を分けてからページに割り付け、割り付けた後で行を分け直さないので、解釈しません (none と同じに組みます。always は、段落の最後の行の手前だけに働きます)。</td></tr>
 <tr><td><code>ruby-merge</code><br>auto<br><span class="spec">CSS Ruby 1 §4.2</span></td><td>auto は、すべてのルビがそれぞれの親文字に収まれば separate と同じに組み、収まらないルビがあれば、親文字の間を空けずに済むようにアキを分け合います。熟語のルビ (熟語ルビ) を組みたいときに使います。</td></tr>
 <tr><td><code>bleed</code><br>auto<br><span class="spec">CSS Paged Media 3 §7.3</span></td><td>@page の bleed は、ページボックスの外の塗り足しの幅を指定します。auto は、marks に crop があるとき 6pt に、そうでないとき 0 になります。トンボ (crop) を付けて塗り足しを取るとき、幅を書かずに既定の塗り足しを付けたいときに使います。</td></tr>
 <tr><td><code>background-image</code><br>2 枚目以降の画像<br><span class="spec">CSS Backgrounds 3 §2.3</span></td><td>background-image はカンマ区切りで複数の背景画像を並べられ、最初の画像を一番手前に、後の画像をその後ろに順に重ねて描きます。複数の画像や模様を重ねて背景にしたいときに使います。</td></tr>

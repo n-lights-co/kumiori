@@ -82,6 +82,26 @@ export interface BorderStyle {
 }
 
 /** 継承されるテキストスタイル */
+/** 分綴の制限 (TextStyle.hyphenLimits)。どれも無ければ既定 */
+export interface HyphenLimits {
+  /** 分綴した行の終わりに出す文字列 (空の文字列なら何も出さない)。無ければ既定の字 (U+002D)。ソフトハイフンで分けた行にも使う */
+  character?: string;
+  /** 分綴する語の最小の字数 (無ければ 5)。ソフトハイフンには、指定したときだけ効く */
+  minWord?: number;
+  /** 切れ目の前に残す最小の字数 (無ければ 2)。ソフトハイフンには、指定したときだけ効く */
+  minBefore?: number;
+  /** 切れ目の後 (次の行) に送る最小の字数 (無ければ 2)。ソフトハイフンには、指定したときだけ効く */
+  minAfter?: number;
+  /** 続けて分綴してよい行の数の上限 (無ければ上限なし。0 は分綴しない)。段落のブロックの値を使う */
+  maxLines?: number;
+  /** 段落の最後の行の 1 つ前の行 (最後の、行長いっぱいの行) を分綴しない (hyphenate-limit-last: always)。段落のブロックの値を使う */
+  noLast?: boolean;
+  /** 分綴せずに語を次の行へ送ったときの行末の空きがこの長さ (pt) 以下なら、分綴しない (hyphenate-limit-zone)。段落のブロックの値を使う */
+  zone?: number;
+  /** zone を行の長さに対する割合 (0〜1) で指定したもの (hyphenate-limit-zone の百分率) */
+  zoneRatio?: number;
+}
+
 export interface TextStyle {
   fontFamily?: string;
   /** pt */
@@ -225,6 +245,12 @@ export interface TextStyle {
   hyphenate?: boolean;
   /** 言語 (xml:lang / language。分綴の規則を選ぶ)。例 en, en-US */
   language?: string;
+  /**
+   * 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5 の hyphenate-character・hyphenate-limit-*、XSL 1.1 §7.10.5〜§7.10.7・§7.16.2 の
+   * hyphenation-character・hyphenation-push/remain-character-count・hyphenation-ladder-count)。継承される (指定した組がまるごと子へ伝わる)。
+   * 無ければ既定 (行末の字は U+002D、語は 5 字以上・切れ目の前後は 2 字以上、行の数の上限なし)
+   */
+  hyphenLimits?: HyphenLimits;
   /** ルビが親文字より長いとき、前後の仮名・約物に掛ける (ルビ文字 1 字分まで。JLREQ §3.3.8)。既定 false */
   rubyOverhang?: boolean;
   /**
@@ -257,6 +283,11 @@ export interface TextStyle {
   unicodeBidi?: 'embed' | 'isolate' | 'bidi-override' | 'isolate-override' | 'plaintext';
   /** 改訂バー (アンテナハウスの axf:revision-bar-*)。この要素の文字を含む行の脇に線を引く。子へ引き継がれる */
   revisionBar?: RevisionBar;
+  /**
+   * 変更バー (XSL 1.1 の fo:change-bar-begin〜fo:change-bar-end。§6.13.2)。この要素の文字を含む行の脇に、並びのすべての線を引く
+   * (入れ子・重なった変更バー)。子へ引き継がれる。空の並びは、親から引き継いだものを消す
+   */
+  changeBars?: RevisionBar[];
   /** 行番号 (アンテナハウスの axf:line-number-*)。子へ引き継がれ、子の指定は親の指定に重ねる */
   lineNumber?: LineNumbering;
   /** 字幅の伸縮 (font-stretch。1 = normal、0.75 = condensed)。字幅の違う書体は持たないので、横書きの字形を水平に拡縮する */
@@ -294,6 +325,12 @@ export interface TextStyle {
   breakClear?: 'start' | 'end' | 'both';
   /** 字下げ (pt)。1 行目の inline-start 側 */
   textIndent?: number;
+  /**
+   * 最後の行の、行の終わりの端の字下げ (pt。XSL 1.1 §7.16.3 の last-line-end-indent)。行内の並びの最後の行 (ブロックの最後の行と、
+   * 子のブロックの前で終わる行) の終わりの端を、正の値で内へ、負の値で外へずらす。子へ引き継がれる。
+   * 目次の行で、折り返した行は end-indent の手前で終え、ページ番号のある最後の行だけを端まで伸ばすのに使う
+   */
+  lastLineEndIndent?: number;
   /** 字下げを掛ける行を逆にする (1 行目以外を字下げする。CSS の text-indent の hanging。Text 3 §8.1) */
   textIndentHanging?: boolean;
   /** 強制改行の後の行も、1 行目と同じに扱う (CSS の text-indent の each-line。Text 3 §8.1) */
@@ -648,7 +685,10 @@ export interface LPageSequence extends BaseNode {
   /** 1 ページ目のページ番号 (既定 1) */
   /** 先頭ページの番号。auto-odd / auto-even: 前の続きの番号が偶数 / 奇数なら 1 足す (白ページは挟まない) */
   initialPageNumber?: number | 'auto-odd' | 'auto-even';
-  /** ページ番号の書式 (fo の format。"1" "01" "i" "I" "a" "A" "１" "一" と前後の文字)。既定は 10 進数 */
+  /**
+   * ページ番号の書式 (fo の format。"1" "01" "i" "I" "a" "A" "１" "一" と前後の文字)。既定は 10 進数。
+   * 桁区切り (fo の grouping-separator・grouping-size) は、withGrouping (pageNumber.ts) で書式に付ける
+   */
   pageNumberFormat?: string;
   /** ページ番号の前後の字 (fo:folio-prefix・fo:folio-suffix) を持つ page-sequence の番号。索引のページ番号 (LIndexKeyReference.folios) が引く */
   folioKey?: number;
@@ -664,7 +704,7 @@ export interface LFlow extends BaseNode {
   children: LBlockLevel[];
 }
 
-export type LBlockLevel = LBlock | LTable | LBlockContainer | LMarker | LRetrieveMarker | LFloat;
+export type LBlockLevel = LBlock | LTable | LBlockContainer | LMarker | LRetrieveMarker | LRetrieveTableMarker | LFloat;
 export type LInlineLevel = string | LInline | LRuby | LTateChuYoko | LLeader | LFootnote | LPageNumberCitation | LImage | LInlineContainer | LFootnoteCitation | LIndexPageCitationList;
 
 /** 脚注本体の中で、その脚注の番号 (自動連番のラベル) に置き換わる (アンテナハウスの axf:footnote-number-citation) */
@@ -822,9 +862,20 @@ export interface RevisionBar {
   style?: BorderLineStyle;
   /** 線の太さ (pt) */
   width?: number;
-  /** 段の端からの間隔 (pt) */
+  /** 段の端からの間隔 (pt)。changeBar のときは、段の端からバーの中心まで */
   offset?: number;
-  position?: 'start' | 'end' | 'both' | 'alternate';
+  /**
+   * 引く側。start・end は段の行の始め・終わりの端。both は両側、alternate は段の番号で交互 (アンテナハウスの axf:revision-bar-position)。
+   * changeBar のときは change-bar-placement (XSL 1.1 §7.30.4): left・right は段の左・右の端 (縦書きでは start・end として扱う)、
+   * inside・outside は綴じる側とその反対 (横書き: 奇数ページの綴じる側は始めの端、偶数ページは終わりの端。縦書き: inside は始め、outside は終わり)、
+   * alternate は 2 段のとき 1 段めの始めと 2 段めの終わり、ほかの段数では outside
+   */
+  position?: 'start' | 'end' | 'both' | 'alternate' | 'left' | 'right' | 'inside' | 'outside';
+  /**
+   * XSL 1.1 の変更バー (fo:change-bar-begin。§6.13.2・§6.4.5 の change bar area)。offset をバーの中心までの距離にし (§7.30.3)、
+   * position を change-bar-placement として読む。隣り合うセルの行は、高い方の下まで 1 本にまとめる
+   */
+  changeBar?: boolean;
 }
 
 /** リンクの飛び先 (fo:basic-link)。internal は文書内の id、external は URI */
@@ -1215,6 +1266,28 @@ export interface LRetrieveMarker {
 }
 
 /**
+ * fo:retrieve-table-marker 相当 (表の header・footer のセルの中でのみ有効。XSL 1.1 §6.13.7)。
+ * その表の断片 (ページ・段ごとの表の箱) の中のマーカー (本体のセル・セルの中のブロック・LTableRow.bodyMarkers) の children を、この位置へ展開する。
+ * header・footer は断片ごとに組み直すので、断片ごとに中身と高さが変わりうる
+ */
+export interface LRetrieveTableMarker {
+  type: 'retrieve-table-marker';
+  className: string;
+  /**
+   * retrieve-position-within-table (§7.25.6)。既定 first-starting。
+   * first-starting: この断片で始まる親のマーカーの最初。無ければこの断片の最初のマーカー (前の断片から続く親のもの)、それも無ければ範囲の中の最後
+   * first-including-carryover: この断片の最初のマーカー。無ければ範囲の中の最後
+   * last-starting: 範囲の中で、始まった親のマーカーの最後。無ければ範囲の中の最後
+   * last-ending: 範囲の中で、終わった親のマーカーの最後。無ければ範囲の中の最後
+   */
+  position?: 'first-starting' | 'first-including-carryover' | 'last-starting' | 'last-ending';
+  /** retrieve-boundary-within-table (§7.25.2)。探す範囲。table (既定): この断片と前の断片すべて・table-fragment: この断片だけ・page: この断片と、同じページの前の断片 */
+  boundary?: 'table' | 'table-fragment' | 'page';
+  /** marker の番号 (LMarker.key) ごとの、この位置の文脈で読んだ中身。あれば LMarker.children の代わりに使う */
+  variants?: Record<number, Array<LBlockLevel | LInlineLevel>>;
+}
+
+/**
  * fo:leader 相当。行内で「余白を埋める」伸縮要素 (目次の点線リーダー、罫線リーダー等)。
  * 行に含まれる leader は、その行の残り幅 (最大長まで) を等分して埋める。
  */
@@ -1237,6 +1310,12 @@ export interface LLeader extends BaseNode {
    * length の同じ成分より優先する。中身の長さを測るとき (表の自動レイアウト) は決められないので、minimum を使う
    */
   lengthPct?: { minimum?: number; optimum?: number; maximum?: number };
+  /**
+   * 点・文字列の繰り返しの周期の始まりを合わせる格子の基準 (XSL 1.1 §7.22.1 の leader-alignment)。
+   * reference-area: 参照領域 (本文の領域・段・表のセル) の内容の始めの端、page: ページの始めの端。
+   * 指定が無ければ (none)、行の始めからピッチの倍数の位置に置く。右から左の行・回したコンテナの中では、指定が無いのと同じ
+   */
+  alignment?: 'reference-area' | 'page';
   /**
    * CSS の leader() (Content 3 §2.5)。繰り返す字を少なくとも 1 回は見せ、入らなければ前の内容の後で改行して次の行に置く。
    * 後ろの内容とは同じ行に置く
@@ -1414,6 +1493,11 @@ export interface LTableRow extends BaseNode {
   border?: BorderInput;
   /** 行グループ (table-header・table-body・table-footer) の罫線と、この行がグループの最初・最後か (collapse でだけ使う) */
   group?: { border: BorderInput; first: boolean; last: boolean };
+  /**
+   * この行を含む fo:table-body の子の fo:marker (XSL 1.1 §6.7.8) と、この行がその本体の最初・最後の行か。
+   * 同じ本体の行は、同じ markers の配列を持つ。LRetrieveTableMarker から取り出せる (本体の断片ごとの領域に付く)
+   */
+  bodyMarkers?: { markers: LMarker[]; first: boolean; last: boolean };
 }
 export interface LTableBody extends BaseNode {
   type: 'table-body';

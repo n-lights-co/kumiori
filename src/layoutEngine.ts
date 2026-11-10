@@ -10,6 +10,7 @@
  *  4. 行は widows/orphans を考慮して分割。ルビ付き行は前行との行間アキを調整する。
  *  5. 表は行単位でページをまたぎ、ヘッダ行を各ページ先頭に複製する。
  */
+import { TableMarkerScope, collectTableRetrieves, extendAreas, replaceRetrieves, type GroupMarkers, type MarkerArea } from './tableMarkers';
 import { msg } from './messages';
 import type { LoadedFont } from './fontManager';
 import { gradientSvg } from './cssGradient';
@@ -52,8 +53,10 @@ import type {
   LMarker,
   LPageSequence,
   LRetrieveMarker,
+  LRetrieveTableMarker,
   LTable,
   LTableCell,
+  LTableBody,
   LTableRow,
   PageArea,
   PageMaster,
@@ -84,10 +87,13 @@ import {
   breakLines,
   breakOne,
   breakOneBoxed,
+  breakOneLast,
   buildLineNode,
   adjustJapaneseSpacing,
   adjustHangulWordSpaces,
   markHyphenation,
+  limitSoftHyphens,
+  breakOneLimited,
   flattenInline,
   glueAfterCssLeaders,
   markLineBreaks,
@@ -127,7 +133,7 @@ export interface LayoutOptions {
    * 分綴: 語 (欧文の字だけ) と言語から、ハイフンを入れてよい位置 (その字の後ろ。0 始まりの字の位置) を返す。
    * hyphenate を指定した文字にだけ使う。無ければ分綴しない
    */
-  hyphenate?: (word: string, language: string | undefined) => number[] | undefined;
+  hyphenate?: (word: string, language: string | undefined, minWordLength?: number) => number[] | undefined;
   /**
    * アンテナハウス互換の字の組の詰め (カーニング): inline の要素 (::before・::after を含む) の境目では詰めず、
    * 書体の GPOS の組の表 (PairPos 形式 2) で、最初の字がクラス 0 の組も詰めない。
@@ -461,6 +467,24 @@ interface PendingMarker {
    * 次の内容が置かれるページで、id のページとして記録する (ページの markers には入れない)
    */
   indexId?: string;
+}
+
+/** 分けた行 (splitRow) のセルの中のマーカーと、その親の始まる断片・終わる断片の番号 */
+type SplitMarkers = Array<{ marker: LMarker; start: number; end: number }>;
+
+/** fo:retrieve-table-marker のある表の、本体の行の配置 (layoutTableRows) への差し込み (layoutTableWithMarkers) */
+interface TableMarkerHooks {
+  /** 行の塊を置く (見出し・フッターを、その塊までの中身で決める) */
+  place(grp: LNode[], forceNewPage?: boolean): void;
+  /** 組んだ行の塊と、組む間に出てきたセルの中のマーカーを控える */
+  note(grp: LNode[], rows: LTableRow[], sink: PendingMarker[]): void;
+  /** ページをまたいで分けた行の断片ごとのマーカーを控える */
+  noteSplit(frags: LNode[], row: LTableRow, mk: SplitMarkers): void;
+  /** grp で始まる続きの断片の、見出しの高さ・フッターの高さ */
+  nextHeaderH(grp: LNode[]): number;
+  nextReserve(grp: LNode[]): number;
+  /** いまの断片に grp を入れたときの、フッターの高さ */
+  reserveNow(grp: LNode[]): number;
 }
 
 /** 索引の目印を運ぶ、仮のマーカー (PendingMarker.indexId) */
@@ -1758,6 +1782,9 @@ class Flow {
         this.layoutContainer(c, style);
       } else if (typeof c !== 'string' && c.type === 'retrieve-marker') {
         this.host.warn('retrieve-marker は PageSequence.staticContent 内でのみ使えます');
+      } else if (typeof c !== 'string' && c.type === 'retrieve-table-marker') {
+        // 表の header・footer の中のものは、組む前に中身に置き換えてある (layoutTableWithMarkers)。ここへ来るのは、それ以外の所に置いたもの
+        this.host.warn('retrieve-table-marker は表の header・footer の中でのみ使えます');
       } else if (isInlineChild(c)) run.push(c);
       else {
         // 字の並び (無名のブロック) の直後のブロックが keep-with-previous (CSS の break-before: avoid) なら、
@@ -2391,6 +2418,8 @@ class Flow {
       }
       const ms = this.host.measurer;
       if (this.host.hyphenate) markHyphenation(atoms, this.host.hyphenate, ms, this.wm);
+      // ソフトハイフンの位置にも、指定した字数の制限 (hyphenate-limit-chars など) を当てる (制限の指定が無ければ何もしない)
+      if (atoms.some((a) => a.softHyphen && a.st.hyphenLimits)) limitSoftHyphens(atoms);
       const kernAh = !!this.host.kernAh;
       adjustJapaneseSpacing(
         atoms,
@@ -2415,7 +2444,7 @@ class Flow {
         this.layoutInlineRunFloating(atoms, st, first);
         return;
       }
-      raws = breakLines(atoms, L, 0, true, { st, first }, this.wm);
+      raws = breakLines(atoms, L, 0, true, { st, first }, st.hyphenLimits, this.wm);
       pls = raws.map((r) => positionLine(r, L, st));
       for (const pl of pls) reorderLine(pl, L, this.wm === 'horizontal-tb' && st.direction === 'rtl');
       const wm = this.wm;
@@ -2673,7 +2702,9 @@ class Flow {
     let start = 0;
     let firstLine = first;
     // このページに置いた、この段落の行 (widows で次のページへ送り直すため)
-    let placedHere: Array<{ node: LNode; start: number; first: boolean; cursor: number; adjacent: number; fns: boolean; lm: LineMetrics }> = [];
+    let placedHere: Array<{ node: LNode; start: number; first: boolean; cursor: number; adjacent: number; fns: boolean; lm: LineMetrics; hyRun: number }> = [];
+    // 直前まで続けて分綴した行の数 (hyphenate-limit-lines・hyphenation-ladder-count。行を置いたときに進める)
+    let hyRun = 0;
     while (start < n) {
       this.applyPendingBreak();
       const pv = this.pendingValue();
@@ -2685,7 +2716,16 @@ class Flow {
         this.pendMin = Math.max(this.pendMin, range.clearTo - this.cursor);
         if (this.pendingValue() > pv + EPS) continue;
       }
-      const { line, next } = breakOneBoxed(atoms, start, range.width, lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start)), true, this.wm);
+      // box-decoration-break: clone の枠 (breakOneBoxed) が外、最後の行の端のずらし・分綴の制限 (breakOneLast) が内。
+      // 切り直しで試した行では分綴の続きの数を進めない (採った行の分だけ、hyState に残す)
+      const hyState = { run: hyRun };
+      const indentHere = lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start));
+      const { line, next } = breakOneBoxed(atoms, start, range.width, indentHere, true, this.wm, (w, hang) => {
+        const state = { run: hyRun };
+        const r = breakOneLast(atoms, start, w, indentHere, hang, st.lastLineEndIndent, st.hyphenLimits ? { lim: st.hyphenLimits, state, nextIndent: lineIndent(st, false, false) } : undefined);
+        hyState.run = state.run;
+        return r;
+      });
       const pl = positionLine(line, range.width, st);
       reorderLine(pl, range.width, this.wm === 'horizontal-tb' && st.direction === 'rtl');
       const lm = lineMetrics(pl, this.wm, st, this.nominalRatio(st), this.strutOf(st));
@@ -2703,9 +2743,10 @@ class Flow {
         if (this.pageHasContent) {
           // widows / orphans: 次のページへ行く行が widows より少なければ、このページに置いた行を送る
           // (残りの行の数は、回り込みの無い幅で数える)
-          const k = this.widowShift(atoms, start, placedHere, st, firstLine);
+          const k = this.widowShift(atoms, start, placedHere, st, firstLine, hyRun);
           if (k > 0) {
             const back = placedHere[placedHere.length - k];
+            hyRun = back.hyRun;
             const kids = this.containerNode().children;
             for (let j = 0; j < k; j++) kids.splice(kids.lastIndexOf(placedHere[placedHere.length - 1 - j].node), 1);
             this.cursor = back.cursor;
@@ -2725,7 +2766,8 @@ class Flow {
       this.commitMarkers();
       // 行を置く (回り込みの無い経路と共通)。幅は回り込みを避けた range の幅、始端は range.shift
       const node = this.placeLine(pl, lm, st, { cut, firstOnPage: !placedHere.length, last: next >= n, width: range.width, shift: range.shift, refs, useFoot, holdFoot });
-      placedHere.push({ node, start, first: firstLine, cursor: before.cursor, adjacent: before.adjacent, fns: refs.length > 0, lm });
+      placedHere.push({ node, start, first: firstLine, cursor: before.cursor, adjacent: before.adjacent, fns: refs.length > 0, lm, hyRun });
+      hyRun = hyState.run;
       // clear のある強制改行 (br): 次の行を、その側の回り込みの下から始める
       const brk = atoms[next - 1];
       if (brk?.kind === 'break' && brk.st.breakClear) {
@@ -2742,15 +2784,22 @@ class Flow {
    * 残りの行 (start から) が widows に満たなければ、その不足分を送る。送った後にこのページに残る行が orphans に満たなければ
    * (段落がこのページで始まっていれば) 段落ごと送る。脚注の参照を含む行や、ページにほかの中身が無くなるときは送らない
    */
-  private widowShift(atoms: ReturnType<typeof flattenInline>, start: number, placed: Array<{ first: boolean; fns: boolean }>, st: ResolvedStyle, firstLine: boolean): number {
+  private widowShift(atoms: ReturnType<typeof flattenInline>, start: number, placed: Array<{ first: boolean; fns: boolean }>, st: ResolvedStyle, firstLine: boolean, hyRun = 0): number {
     if (!placed.length || this.measureOnly) return 0;
     const widows = st.widows ?? 2;
     const orphans = st.orphans ?? 2;
     // 残りの行の数 (widows まで数えれば足りる)
     const w = this.contentI();
     let r = 0;
+    const hyState = { run: hyRun };
     for (let s = start, fl = firstLine; s < atoms.length && r < widows; r++) {
-      const { next } = breakOneBoxed(atoms, s, w, lineIndent(st, fl, startsAfterForcedBreak(atoms, s)), true, this.wm);
+      const ind = lineIndent(st, fl, startsAfterForcedBreak(atoms, s));
+      const from = s;
+      const run0 = hyState.run;
+      const { next } = breakOneBoxed(atoms, s, w, ind, true, this.wm, (len, hang) => {
+        hyState.run = run0;
+        return breakOneLimited(atoms, from, len, ind, hang, st.hyphenLimits, hyState, lineIndent(st, false, false));
+      });
       if (next <= s) break;
       s = next;
       fl = false;
@@ -4282,11 +4331,14 @@ class Flow {
    * 行単位で分けてページをまたぐ。改ページのたびに placeHeader (繰り返す見出し) と placeFooterAtBreak (ページ末尾のフッター) を呼び、
    * reserve はフッターのために空けておく高さ
    */
-  private layoutTableRows(node: LTable, st: ResolvedStyle, sizes: number[], headerRows: LNode[], reserve: number, placeHeader: (repeated: boolean) => void, placeFooterAtBreak: (() => void) | undefined) {
+  private layoutTableRows(node: LTable, st: ResolvedStyle, sizes: number[], headerRows: LNode[], reserve: number, placeHeader: (repeated: boolean) => void, placeFooterAtBreak: (() => void) | undefined, tm?: TableMarkerHooks) {
     // rowSpan で結びついた行は 1 つの塊 (グループ) として配置する
     let rows = node.body.rows;
     const bst = resolveStyle(st, node.body);
-    const place = (grp: LNode[], forceNewPage = false) => this.placeRows(grp, false, () => placeHeader(true), { reserve, beforeBreak: placeFooterAtBreak, forceNewPage });
+    const place = tm ? tm.place : (grp: LNode[], forceNewPage = false) => this.placeRows(grp, false, () => placeHeader(true), { reserve, beforeBreak: placeFooterAtBreak, forceNewPage });
+    // 続きのページで繰り返す見出しの高さ (fo:retrieve-table-marker のある表では、grp で始まる断片の見出しの高さ)
+    const repeatedHeaderH = (grp: LNode[]) => (tm ? tm.nextHeaderH(grp) : height(headerRows.length && !node.omitHeaderAtBreak ? headerRows : []));
+    const height = (ns: LNode[]) => ns.reduce((a, r) => a + r.bsize, 0);
     // keep-with-next / keep-with-previous でつながった行の塊は、まとめて置く (ただし 1 ページに入らない長さなら分ける)
     const maxKeep = Number.isFinite(this.limit) ? this.limit * 0.9 : Infinity;
     let pending: LNode[] = [];
@@ -4298,7 +4350,9 @@ class Flow {
     const closeBorder = () => this.stack.reduce((a, f) => a + (f.node.kind === 'table' ? f.desc.bw.be : 0), 0);
     for (let i = 0; i < rows.length; ) {
       const end = groupEnd(rows, i);
+      const sinkAt = this.markerSink.length;
       const grp = this.layoutRowGroup(rows.slice(i, end + 1), sizes, bst);
+      tm?.note(grp, rows.slice(i, end + 1), this.markerSink.slice(sinkAt));
       // 行の前の強制改ページ (CSS の tr の break-before)
       if ((rows[i].breakBefore || rows[i - 1]?.breakAfter) && i > 0 && this.paginating) {
         flushPending();
@@ -4308,11 +4362,10 @@ class Flow {
         continue;
       }
       const linkedToPrev = pendingLinked || !!rows[i].keepWithPrevious;
-      const height = (ns: LNode[]) => ns.reduce((a, r) => a + r.bsize, 0);
       // 行をまたぐセルを含む塊が 1 ページに入らないときは、またぐセルを行ごとのセルに分け (中身は最初の行、間の罫線は消す)、
       // 行の境目で改ページできるようにする
       if (this.paginating && end > i) {
-        const fullPage = this.limit - height(headerRows.length && !node.omitHeaderAtBreak ? headerRows : []) - closeBorder() - reserve;
+        const fullPage = this.limit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
         if (height(grp) > fullPage + EPS) {
           rows = [...rows.slice(0, i), ...unspanRows(rows.slice(i, end + 1), this.wm), ...rows.slice(end + 1)];
           continue;
@@ -4321,11 +4374,13 @@ class Flow {
       if (!(linkedToPrev && pending.length && height(pending) + height(grp) <= maxKeep)) flushPending();
       // ページに入らない 1 行 (rowSpan 無し・keep-together 無し) は、セルの中身を行単位で分けてページをまたぐ (§7.20.3 の既定 auto)
       if (this.paginating && end === i && !pending.length && !rows[i].keepTogether && !rows[i].keepWithNext) {
-        const avail = this.room - this.cursor - this.pendingValue() - closeBorder() - reserve;
+        const avail = this.room - this.cursor - this.pendingValue() - closeBorder() - (tm ? tm.reserveNow(grp) : reserve);
         if (grp[0].bsize > avail + EPS) {
-          const nextAvail = this.limit - height(headerRows.length && !node.omitHeaderAtBreak ? headerRows : []) - closeBorder() - reserve;
-          const frags = this.splitRow(rows[i], sizes, bst, avail, nextAvail);
+          const nextAvail = this.limit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
+          const splitMk: SplitMarkers | undefined = tm ? [] : undefined;
+          const frags = this.splitRow(rows[i], sizes, bst, avail, nextAvail, splitMk);
           if (frags) {
+            if (splitMk) tm?.noteSplit(frags, rows[i], splitMk);
             frags.forEach((f, k) => place([f], k > 0));
             pendingLinked = false;
             i = end + 1;
@@ -4411,35 +4466,39 @@ class Flow {
     this.spacing = sp;
     this.rowspanMiddleAh = !!node.rowspanMiddleAh;
     this.tableBreak = node.breakBorders ? { ...node.breakBorders, header: !!node.header?.rows.length && !node.omitHeaderAtBreak, compat: !!node.collapseToAfterCell } : undefined;
-    const headerRows = node.header ? this.layoutRowGroup(node.header.rows, sizes, resolveStyle(st, node.header)) : [];
-    const footerRows = node.footer ? this.layoutRowGroup(node.footer.rows, sizes, resolveStyle(st, node.footer)) : [];
-    const footerH = footerRows.reduce((a, r) => a + r.bsize, 0);
-    // 改ページのたびに各ページの末尾へ置く表フッター。その分の高さを、本体の行を置くときに空けておく
-    const repeatFooter = footerRows.length > 0 && !node.omitFooterAtBreak;
-    const reserve = repeatFooter ? footerH : 0;
-    const placeFooterAtBreak = repeatFooter
-      ? () => {
-          const clones = footerRows.map((f) => Object.assign(cloneNode(f), { repeated: true }));
-          this.reborderFooterAtBreak(footerRows[0], clones[0]);
-          this.placeRowsRaw(clones);
-        }
-      : undefined;
-    const placeHeader = (repeated: boolean) => {
-      if (!headerRows.length || (repeated && node.omitHeaderAtBreak)) return;
-      const clones = headerRows.map((h) => {
-        const c = cloneNode(h);
-        c.repeated = repeated;
-        return c;
-      });
-      this.placeRows(clones, true, () => {});
-      // ページ内容がヘッダ行だけ (ヘッダを置く前はページに何も無かった = 置いた個数がヘッダの行数と一致) なら、
-      // 以降の行は (入らなくても) 改ページしない (ヘッダだけのページが続くのを防ぐ)
-      this.headerOnly = this.pageItems === headerRows.length;
-    };
-    placeHeader(false);
-    this.layoutTableRows(node, st, sizes, headerRows, reserve, placeHeader, placeFooterAtBreak);
-    // 表の末尾のフッター (改ページで繰り返す場合も、最後のページにはここで置く)
-    if (footerRows.length) this.placeRows(footerRows, true, () => {});
+    // fo:retrieve-table-marker のある表は、見出し・フッターを断片ごとに組む (layoutTableWithMarkers)。無い表は、いままでどおり 1 度だけ組んで繰り返す
+    if ((node.header && collectTableRetrieves(node.header.rows).length) || (node.footer && collectTableRetrieves(node.footer.rows).length)) this.layoutTableWithMarkers(node, st, sizes);
+    else {
+      const headerRows = node.header ? this.layoutRowGroup(node.header.rows, sizes, resolveStyle(st, node.header)) : [];
+      const footerRows = node.footer ? this.layoutRowGroup(node.footer.rows, sizes, resolveStyle(st, node.footer)) : [];
+      const footerH = footerRows.reduce((a, r) => a + r.bsize, 0);
+      // 改ページのたびに各ページの末尾へ置く表フッター。その分の高さを、本体の行を置くときに空けておく
+      const repeatFooter = footerRows.length > 0 && !node.omitFooterAtBreak;
+      const reserve = repeatFooter ? footerH : 0;
+      const placeFooterAtBreak = repeatFooter
+        ? () => {
+            const clones = footerRows.map((f) => Object.assign(cloneNode(f), { repeated: true }));
+            this.reborderFooterAtBreak(footerRows[0], clones[0]);
+            this.placeRowsRaw(clones);
+          }
+        : undefined;
+      const placeHeader = (repeated: boolean) => {
+        if (!headerRows.length || (repeated && node.omitHeaderAtBreak)) return;
+        const clones = headerRows.map((h) => {
+          const c = cloneNode(h);
+          c.repeated = repeated;
+          return c;
+        });
+        this.placeRows(clones, true, () => {});
+        // ページ内容がヘッダ行だけ (ヘッダを置く前はページに何も無かった = 置いた個数がヘッダの行数と一致) なら、
+        // 以降の行は (入らなくても) 改ページしない (ヘッダだけのページが続くのを防ぐ)
+        this.headerOnly = this.pageItems === headerRows.length;
+      };
+      placeHeader(false);
+      this.layoutTableRows(node, st, sizes, headerRows, reserve, placeHeader, placeFooterAtBreak);
+      // 表の末尾のフッター (改ページで繰り返す場合も、最後のページにはここで置く)
+      if (footerRows.length) this.placeRows(footerRows, true, () => {});
+    }
     // 最後の行と表の端の間の間隔
     if (sp?.b) this.cursor += sp.b;
     this.spacing = savedSpacing;
@@ -4455,12 +4514,150 @@ class Flow {
     if (node.breakAfter) this.breakNext = node.breakAfter;
   }
 
+  /**
+   * fo:retrieve-table-marker (XSL 1.1 §6.13.7) のある表の、見出し・本体・フッターの配置。
+   * 見出し・フッターの中身は、表の断片 (ページ・段ごとの表の箱) に入った行のマーカーで決まるので、断片ごとに組む。
+   * 中身で見出し・フッターの高さが変わり、高さで断片に入る行が変わるので、行の塊を 1 つ置くたびに「その塊までを断片に入れたときの
+   * 見出しとフッター」で入るかを確かめる (見出しの高さの差と、フッターの高さを空きから引く)。入れば見出しをその中身に差し替え
+   * (高さが変われば、置いた行をその分ずらす)、入らなければ、その塊を入れない中身のまま断片を閉じる。断片に入る行は前から順に決まるので、
+   * 組み直しは要らない
+   */
+  private layoutTableWithMarkers(node: LTable, st: ResolvedStyle, sizes: number[]) {
+    const scope = new TableMarkerScope();
+    const height = (ns: LNode[]) => ns.reduce((a, r) => a + r.bsize, 0);
+    const ids = new Map<LMarker, number>();
+    const idOf = (m: LMarker | undefined) => (m ? (ids.get(m) ?? (ids.set(m, ids.size), ids.size - 1)) : -1);
+    /** 見出し (フッター) を、断片の領域が areas のときの中身で組む。同じ中身なら、組んだものを使い回す */
+    const variants = (group: LTableBody | undefined) => {
+      const retrieves = group ? collectTableRetrieves(group.rows) : [];
+      const gst = group ? resolveStyle(st, group) : st;
+      const cache = new Map<string, LNode[]>();
+      return (areas: readonly MarkerArea[]): LNode[] => {
+        if (!group?.rows.length) return [];
+        const picks = new Map(retrieves.map((r) => [r, scope.find(r, areas)]));
+        const key = retrieves.map((r) => idOf(picks.get(r))).join(',');
+        let rows = cache.get(key);
+        if (!rows) {
+          const sinkAt = this.markerSink.length;
+          const resolved = replaceRetrieves<LTableRow[], LRetrieveTableMarker>(group.rows, 'retrieve-table-marker', (r) => (picks.has(r) ? picks.get(r) : scope.find(r, areas)), true);
+          rows = this.layoutRowGroup(resolved, sizes, gst);
+          // 見出しの中の索引の目印などは、最初に組んだ 1 つの分だけ残す (中身の違う組み直しのたびに増やさない)
+          if (cache.size) this.markerSink.length = sinkAt;
+          cache.set(key, rows);
+        }
+        return rows;
+      };
+    };
+    const headerOf = variants(node.header);
+    const footerOf = variants(node.footer);
+    const hasFooter = !!node.footer?.rows.length;
+    const repeatFooter = hasFooter && !node.omitFooterAtBreak;
+    const repeatHeader = !!node.header?.rows.length && !node.omitHeaderAtBreak;
+    /** 行の塊 (最初の行の節) ごとの、断片に加える領域 */
+    const info = new WeakMap<LNode, GroupMarkers>();
+    const withGroup = (areas: readonly MarkerArea[], grp: LNode[]) => grp.reduce<readonly MarkerArea[]>((a, n) => extendAreas(a, info.get(n)), areas);
+    // いまの断片に置いた見出し: 組んだ行 (shown)・置いた複製 (placed)・置いた箱 (box)
+    let shown: LNode[] = [];
+    let placed: LNode[] = [];
+    let box: LNode | undefined;
+    let col = this.pages?.columnIndex?.() ?? 0;
+    let broke = false;
+    const onBreak = () => {
+      // 次の断片へ。段の番号が進んでいれば同じページ (retrieve-boundary-within-table="page" の範囲)
+      const c = this.pages?.columnIndex?.() ?? 0;
+      scope.nextFragment(c > col);
+      col = c;
+      shown = [];
+      placed = [];
+      broke = true;
+    };
+    const placeHeader = (repeated: boolean, grp: LNode[]) => {
+      shown = [];
+      placed = [];
+      if (!node.header?.rows.length || (repeated && node.omitHeaderAtBreak)) return;
+      const rows = headerOf(withGroup(scope.areas, grp));
+      const clones = rows.map((h) => Object.assign(cloneNode(h), { repeated }));
+      this.placeRows(clones, true, () => {}, { onBreak });
+      shown = rows;
+      placed = clones;
+      box = this.containerNode();
+      this.headerOnly = this.pageItems === clones.length;
+    };
+    /** 置いた見出しを、組み直した rows に差し替える。高さの差の分だけ、後ろの行をずらす */
+    const swapHeader = (rows: LNode[]) => {
+      const at = box ? box.children.indexOf(placed[0]) : -1;
+      if (!box || at < 0) return;
+      const delta = height(rows) - height(shown);
+      const clones = rows.map((h) => Object.assign(cloneNode(h), { repeated: placed[0].repeated }));
+      let b = placed[0].b;
+      for (const c of clones) {
+        c.i = 0;
+        c.b = b;
+        b += c.bsize;
+        this.noteIds(c);
+      }
+      box.children.splice(at, placed.length, ...clones);
+      for (let k = at + clones.length; k < box.children.length; k++) box.children[k].b += delta;
+      this.cursor += delta;
+      shown = rows;
+      placed = clones;
+    };
+    const placeFooterAtBreak = repeatFooter
+      ? () => {
+          const rows = footerOf(scope.areas);
+          const clones = rows.map((f) => Object.assign(cloneNode(f), { repeated: true }));
+          this.reborderFooterAtBreak(rows[0], clones[0]);
+          this.placeRowsRaw(clones);
+        }
+      : undefined;
+    const place = (grp: LNode[], forceNewPage = false) => {
+      // この塊までを断片に入れたときの見出しとフッター
+      const areas = withGroup(scope.areas, grp);
+      const head = placed.length ? headerOf(areas) : shown;
+      const reserve = (placed.length ? height(head) - height(shown) : 0) + (repeatFooter ? height(footerOf(areas)) : 0);
+      broke = false;
+      this.placeRows(grp, false, () => placeHeader(true, grp), { reserve, beforeBreak: placeFooterAtBreak, forceNewPage, onBreak });
+      if (!broke && placed.length && head !== shown) swapHeader(head);
+      scope.areas = withGroup(scope.areas, grp) as MarkerArea[];
+    };
+    const hooks: TableMarkerHooks = {
+      place,
+      note: (grp, rows, sink) => {
+        const bodies = rows.flatMap((r) => (r.bodyMarkers ? [{ ...r.bodyMarkers }] : []));
+        const areas = sink.filter((m) => !m.indexId).map((m) => ({ marker: m.marker, first: true, last: true }));
+        if (grp[0] && (bodies.length || areas.length)) info.set(grp[0], { areas, bodies });
+      },
+      noteSplit: (frags, row, mk) => {
+        frags.forEach((f, k) => {
+          const areas = mk.filter((e) => e.start <= k && k <= e.end).map((e) => ({ marker: e.marker, first: e.start === k, last: e.end === k }));
+          const bm = row.bodyMarkers;
+          info.set(f, { areas, bodies: bm ? [{ markers: bm.markers, first: bm.first && k === 0, last: bm.last && k === frags.length - 1 }] : [] });
+        });
+      },
+      nextHeaderH: (grp) => (repeatHeader ? height(headerOf(withGroup([], grp))) : 0),
+      nextReserve: (grp) => (repeatFooter ? height(footerOf(withGroup([], grp))) : 0),
+      reserveNow: (grp) => (repeatFooter ? height(footerOf(withGroup(scope.areas, grp))) : 0),
+    };
+    placeHeader(false, []);
+    this.layoutTableRows(node, st, sizes, [], 0, () => {}, placeFooterAtBreak, hooks);
+    // 表の末尾のフッター。ここで改ページしたら (各ページの末尾に繰り返さないフッターが入らないとき)、行の無い新しい断片の中身に組み直す
+    if (hasFooter) {
+      const rows = footerOf(scope.areas).slice();
+      this.placeRows(rows, true, () => {}, {
+        onBreak: () => {
+          onBreak();
+          rows.splice(0, rows.length, ...footerOf(scope.areas));
+        },
+      });
+    }
+  }
+
   /** 行の塊 (1 行以上) を 1 単位として配置。入らなければ塊ごと次ページへ */
   private placeRows(
     group: LNode[],
     isHeader: boolean,
     afterBreak: () => void,
-    opts: { reserve?: number; beforeBreak?: () => void; forceNewPage?: boolean } = {},
+    opts: { reserve?: number; beforeBreak?: () => void; forceNewPage?: boolean; /** 改ページした直後に呼ぶ (見出しの行でも) */ onBreak?: () => void } = {},
   ) {
     this.applyPendingBreak();
     // 行の前の余白 (list-item の space-before): 保留中の余白と重ね合わせる (ページの先頭では捨てる)
@@ -4480,6 +4677,7 @@ class Flow {
           if (!isHeader && !opts.beforeBreak && !opts.forceNewPage) this.closeRowAtBreak(group[0]);
           opts.beforeBreak?.();
           this.breakPage();
+          opts.onBreak?.();
           if (!isHeader) {
             afterBreak();
             this.reborderAfterHeader(group[0]);
@@ -4632,7 +4830,7 @@ class Flow {
    * ページに入らない 1 行を、セルごとにページを持つ Flow で組み直して、ページごとの断片 (行) に分ける。
    * 最初の断片は avail、以降は nextAvail の高さに収める。最初の断片に何も入らなければ null (行ごと次ページへ送る)
    */
-  private splitRow(row: LTableRow, sizes: number[], st: ResolvedStyle, avail: number, nextAvail: number): LNode[] | null {
+  private splitRow(row: LTableRow, sizes: number[], st: ResolvedStyle, avail: number, nextAvail: number, mk?: SplitMarkers): LNode[] | null {
     const rst = resolveStyle(st, row);
     // 罫線を分ける表のセルの間隔 (layoutRowGroup と同じ置き方): 列の間と表の端に si、行の前に sb
     const si = this.spacing?.i ?? 0;
@@ -4655,6 +4853,8 @@ class Flow {
       const contentI = Math.max(w - desc.bpI, 0);
       const roots: LNode[] = [newNode('block', this.wm, { isize: contentI })];
       const used: number[] = [];
+      // セルの中のマーカーの、親の始まる断片と終わる断片 (fo:retrieve-table-marker のある表でだけ控える)
+      const cellMk: Array<{ pm: PendingMarker; start: number; end?: number }> = [];
       // 試し組みを兼ねるので、警告は出さない (分けられないときは、行ごと次ページへ送る通常の処理に戻る)
       const flow = new Flow({ ...this.host, warn: () => {} }, {
         wm: this.wm,
@@ -4662,7 +4862,17 @@ class Flow {
         root: roots[0],
         limit: Math.max(avail - bp - sb, 1),
         pages: {
-          addMarkers: (list) => this.markerSink.push(...list),
+          addMarkers: (list) => {
+            this.markerSink.push(...list);
+            if (mk) for (const pm of list) if (!pm.indexId) cellMk.push({ pm, start: roots.length - 1 });
+          },
+          ...(mk
+            ? {
+                markerEnd: (key: object) => {
+                  for (const e of cellMk) if (e.pm.key === key && e.end === undefined) e.end = roots.length - 1;
+                },
+              }
+            : {}),
           noteId: () => {},
           columnEnd: (u) => used.push(u),
           atPageStart: () => roots.length > 1 || !outerHas,
@@ -4681,6 +4891,8 @@ class Flow {
       });
       flow.layoutChildren(cell.children, resolveStyle(rst, cell));
       flow.finishPaginated();
+      // 親の箱の無いマーカー (セルの子) は、セルの最後の断片で終わる
+      if (mk) for (const e of cellMk) mk.push({ marker: e.pm.marker, start: e.start, end: e.end ?? roots.length - 1 });
       if (flow.brokeKeepPage === 0) brokeFirst = true;
       cells.push({ cell, desc, i, w, c: col - cs, cs, roots, used });
     }
@@ -6637,26 +6849,36 @@ export class LayoutEngine {
       isize: number;
     }
     const hits: Array<{ line: LNode; b: number; col: Col }> = [];
-    const walk = (n: LNode, oi: number, ob: number, col: Col) => {
+    // リーダーの格子 (leader-alignment) の基準: ref は、いちばん近い参照領域 (本文の領域・段・表のセル) の内容の始めの端
+    const pageEdge = wm === 'horizontal-tb' ? mm(p.master.margins.left) : mm(p.master.margins.top);
+    const rtlPage = sst.direction === 'rtl';
+    const walk = (n: LNode, oi: number, ob: number, col: Col, ref: number) => {
       if (n.rot || n.wm !== wm) return; // 回転・書字方向の違う箱の中は数えない
       const bi = oi + n.i;
       const bb = ob + n.b;
       const c = n.colIndex !== undefined ? { k: n.colIndex, i: bi, isize: n.isize } : col;
       if (n.kind === 'line') {
         if (n.lnum || n.revs) hits.push({ line: n, b: bb, col: c });
+        if (n.hasLeaderGrid && !rtlPage) regridLeaders(n, bi, ref, pageEdge);
         return;
       }
       const pl = toLogical(n.padding, n.wm);
       const bl = borderToLogicalWidths(n.border, n.wm);
-      for (const ch of n.children) walk(ch, bi + pl.is + bl.is, bb + pl.bs + bl.bs, c);
+      const r = n.colIndex !== undefined ? bi : n.kind === 'cell' ? bi + pl.is + bl.is : ref;
+      for (const ch of n.children) walk(ch, bi + pl.is + bl.is, bb + pl.bs + bl.bs, c, r);
     };
-    for (const ch of p.root.children) walk(ch, 0, 0, { k: 0, i: 0, isize: p.root.isize });
+    for (const ch of p.root.children) walk(ch, 0, 0, { k: 0, i: 0, isize: p.root.isize }, 0);
     // 改訂バー: 同じ指定が続く行 (段落の間の空きを含む) は 1 本につなげ、行の block 方向の長さいっぱいに引く
     const runs: Array<{ rb: RevisionBar; col: Col; b0: number; b1: number; last: number }> = [];
     hits.forEach((h, k) => {
       for (const rb of h.line.revs ?? []) {
         const r = runs.find((x) => x.rb === rb && x.last === k - 1 && x.col.k === h.col.k);
-        if (r) {
+        if (r && rb.changeBar) {
+          // 変更バー: 隣り合うセルの行 (前の行より上に戻る) も含めて、いちばん上からいちばん下まで
+          r.b0 = Math.min(r.b0, h.b);
+          r.b1 = Math.max(r.b1, h.b + h.line.bsize);
+          r.last = k;
+        } else if (r) {
           r.b1 = h.b + h.line.bsize;
           r.last = k;
         } else runs.push({ rb, col: h.col, b0: h.b, b1: h.b + h.line.bsize, last: k });
@@ -6667,10 +6889,13 @@ export class LayoutEngine {
       // 段の端からバーまでの間隔 (既定 0。指定が無ければ、バーは段の端に接する)
       const off = rb.offset ?? 0;
       const pos = rb.position ?? 'start';
-      const sides = pos === 'both' ? ['start', 'end'] : pos === 'alternate' ? [col.k % 2 === 0 ? 'start' : 'end'] : [pos];
+      const sides = rb.changeBar
+        ? [changeBarSide(pos, { wm, rtl: sst.direction === 'rtl', odd: p.number % 2 === 1, col: col.k, columns: p.master.columns?.count ?? 1 })]
+        : pos === 'both' ? ['start', 'end'] : pos === 'alternate' ? [col.k % 2 === 0 ? 'start' : 'end'] : [pos];
       for (const side of sides) {
         const bar = newNode('block', wm, {
-          i: side === 'start' ? col.i - off - w : col.i + col.isize + off,
+          // 変更バーは、段の端から offset だけ離れた所がバーの中心 (XSL 1.1 §7.30.3)
+          i: rb.changeBar ? (side === 'start' ? col.i - off - w / 2 : col.i + col.isize + off - w / 2) : side === 'start' ? col.i - off - w : col.i + col.isize + off,
           b: b0,
           isize: w,
           bsize: b1 - b0,
@@ -6822,6 +7047,68 @@ export class LayoutEngine {
   }
 }
 
+/**
+ * 行の中のリーダーの点・文字列の繰り返しを、格子に合わせて並べ直す (XSL 1.1 §7.22.1 の leader-alignment):
+ * “the start-edge of each cycle of the repeated pattern will be placed on the start-edge of the next cycle in the appropriate
+ * pattern-alignment grid”。格子は、reference-area なら参照領域の内容の始めの端 (ref)、page ならページの始めの端から、ピッチごと。
+ * lineI は行の箱の位置 (本文の領域の始めの端から)、pageEdge はページの始めの端から本文の領域までの距離。
+ * リーダーの範囲に 1 周期がまるごと入る所にだけ置く
+ */
+function regridLeaders(line: LNode, lineI: number, ref: number, pageEdge: number) {
+  const visit = (n: LNode, oi: number) => {
+    const bi = oi + n.i;
+    const g = n.leaderGrid;
+    if (g) {
+      // 格子の原点から、リーダーの始まりまでの距離
+      const a = g.align === 'page' ? pageEdge + bi : bi - ref;
+      n.children = [];
+      for (let m = Math.ceil((a - EPS) / g.pitch); (m + 1) * g.pitch <= a + n.isize + EPS; m++) {
+        for (const t of g.cycle) {
+          const gn = cloneNode(t);
+          gn.i = m * g.pitch - a + t.i;
+          n.children.push(gn);
+        }
+      }
+      return;
+    }
+    const pl = toLogical(n.padding, n.wm);
+    const bl = borderToLogicalWidths(n.border, n.wm);
+    for (const ch of n.children) visit(ch, n.kind === 'line' ? bi : bi + pl.is + bl.is);
+  };
+  visit(line, lineI - line.i);
+}
+
+/**
+ * 変更バー (XSL 1.1 §7.30.4 change-bar-placement) を、段の行の向きの前 (start) と後ろ (end) のどちらの端に置くか。
+ * 段の箱の位置は左 (縦書きは上) からなので、横書きの右から左の文書では、始めの端が後ろになる。
+ * inside・outside: 綴じる側は、奇数ページでは始めの端、偶数ページでは終わりの端とする (§6.4.5 の注の “Commonly …”)。縦書きでは綴じる側が
+ * 始めの端 (上) でも終わりの端 (下) でもないので、inside は始めの端、outside は終わりの端。
+ * left・right は、縦書きでは段の端 (上・下) に当たらないので、start・end として扱う (読み込みが報告する)
+ */
+function changeBarSide(pos: NonNullable<RevisionBar['position']>, o: { wm: WritingMode; rtl: boolean; odd: boolean; col: number; columns: number }): 'start' | 'end' {
+  const horizontal = o.wm === 'horizontal-tb';
+  const flip = horizontal && o.rtl;
+  const logical = (side: 'start' | 'end'): 'start' | 'end' => (flip ? (side === 'start' ? 'end' : 'start') : side);
+  const inside = horizontal ? (o.odd ? 'start' : 'end') : 'start';
+  const outside = inside === 'start' ? 'end' : 'start';
+  switch (pos) {
+    case 'end':
+      return logical('end');
+    case 'left':
+      return 'start';
+    case 'right':
+      return 'end';
+    case 'inside':
+      return logical(inside);
+    case 'outside':
+      return logical(outside);
+    case 'alternate':
+      return logical(o.columns === 2 ? (o.col === 0 ? 'start' : 'end') : outside);
+    default:
+      return logical('start');
+  }
+}
+
 /** 書字方向の裏返しを当てた本文の箱 (ページを使い回すとき、2 度当てない) */
 const flipped = new WeakSet<LNode>();
 
@@ -6877,31 +7164,7 @@ function findMarker(r: LRetrieveMarker, pages: PageBuild[], index: number): LMar
 
 /** 静的コンテンツ中の retrieve-marker を、該当マーカーの内容 (または空) に置き換えた複製を返す */
 function resolveMarkers<T>(node: T, pages: PageBuild[], index: number): T {
-  const walk = (v: unknown): unknown => {
-    if (Array.isArray(v)) {
-      return v.flatMap((e) => {
-        if (e && typeof e === 'object' && (e as { type?: string }).type === 'retrieve-marker') {
-          const r = e as LRetrieveMarker;
-          const m = findMarker(r, pages, index);
-          if (!m) return [];
-          const kids = ((m.key !== undefined && r.variants?.[m.key]) || m.children).map(walk) as Array<LBlockLevel | LInlineLevel>;
-          const allInline = kids.every((k) => typeof k === 'string' || ['inline', 'ruby', 'tate-chu-yoko', 'leader'].includes((k as { type: string }).type));
-          if (!allInline) return kids;
-          const { type: _t, className: _c, children: _k, ...style } = m;
-          void _t; void _c; void _k;
-          return [{ ...style, type: 'inline', children: kids }];
-        }
-        return [walk(e)];
-      });
-    }
-    if (v && typeof v === 'object') {
-      const copy = Object.fromEntries(Object.entries(v).map(([k, val]) => [k, walk(val)]));
-      copySourceRef(v, copy);
-      return copy;
-    }
-    return v;
-  };
-  return walk(node) as T;
+  return replaceRetrieves<T, LRetrieveMarker>(node, 'retrieve-marker', (r) => findMarker(r, pages, index));
 }
 
 /** 静的コンテンツ内の {pageNumber} / {totalPages} を置換した複製を返す */
