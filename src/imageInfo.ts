@@ -5,6 +5,7 @@
  * サイズは CSS px (96dpi)。解像度の情報が無ければ 96dpi とみなす。
  */
 
+import { cgmPictureSize } from './cgm';
 import { epsBoundingBox } from './eps';
 
 export interface ImageInfo {
@@ -126,7 +127,10 @@ function wmfInfo(b: Uint8Array): ImageInfo | undefined {
   return { mime: 'image/wmf', width: (Math.abs(r - l) / inch) * 96, height: (Math.abs(btm - t) / inch) * 96 };
 }
 
-/** EMF: ヘッダのレコードの rclFrame (0.01mm 単位) */
+/**
+ * EMF: ヘッダのレコードの rclFrame (0.01mm 単位。[MS-EMF] 2.2.9 の Frame)。
+ * 左右・上下が逆に書かれた枠は、大きさ (差の絶対値) を使う (WMF・CGM と同じ)。幅か高さが 0 なら、大きさは決まらない (TIFF・CGM と同じ)
+ */
 function emfInfo(b: Uint8Array): ImageInfo | undefined {
   const v = view(b);
   if (b.length < 88 || v.getUint32(0, true) !== 1 || v.getUint32(40, true) !== 0x464d4520) return undefined;
@@ -134,7 +138,8 @@ function emfInfo(b: Uint8Array): ImageInfo | undefined {
   const t = v.getInt32(28, true);
   const r = v.getInt32(32, true);
   const btm = v.getInt32(36, true);
-  return { mime: 'image/emf', width: ((r - l) / 100) * PX_PER_MM, height: ((btm - t) / 100) * PX_PER_MM };
+  if (r === l || btm === t) return undefined;
+  return { mime: 'image/emf', width: (Math.abs(r - l) / 100) * PX_PER_MM, height: (Math.abs(btm - t) / 100) * PX_PER_MM };
 }
 
 /** EPS: %%HiResBoundingBox / %%BoundingBox (pt)。DOS 形式 (C5D0D3C6) は PostScript の部分から読む */
@@ -164,102 +169,11 @@ export function epsPreview(b: Uint8Array): Uint8Array | undefined {
 }
 
 /**
- * CGM (2 進形式): VDC EXTENT の大きさ。SCALING MODE が metric なら mm に直し、abstract なら縦横比だけを使う
- * (幅を 400px とする。FO は content-width などで大きさを決めることが多い)
+ * CGM (2 進形式): 最初の絵の VDC EXTENT の大きさ。SCALING MODE が metric なら mm に直し、abstract なら縦横比だけを使う
+ * (幅を 400px とする。FO は content-width などで大きさを決めることが多い)。
+ * 描くとき (cgm.ts の cgmToSvg) と同じ大きさになるように、精度の指定・倍率の型などの読みは cgm.ts の cgmPictureSize に任せる
  */
-/** CGM の命令を順に取り出す (第 3 部 5.4)。長い形の分割された引数はつなぐ (cgm.ts の elements と同じ)。壊れていれば途中まで */
-function* cgmElements(b: Uint8Array): Generator<{ cls: number; id: number; data: Uint8Array }> {
-  let p = 0;
-  for (let guard = 0; p + 2 <= b.length && guard < 10000; guard++) {
-    const h = (b[p] << 8) | b[p + 1];
-    p += 2;
-    const cls = h >> 12;
-    const id = (h >> 5) & 0x7f;
-    let len = h & 0x1f;
-    if (len !== 31) {
-      if (p + len > b.length) return;
-      yield { cls, id, data: b.subarray(p, p + len) };
-      p += len + (len & 1);
-      continue;
-    }
-    const parts: Uint8Array[] = [];
-    for (;;) {
-      if (p + 2 > b.length) return;
-      const w = (b[p] << 8) | b[p + 1];
-      p += 2;
-      len = w & 0x7fff;
-      if (p + len > b.length) return;
-      parts.push(b.subarray(p, p + len));
-      p += len + (len & 1);
-      if (!(w & 0x8000)) break;
-    }
-    if (parts.length === 1) yield { cls, id, data: parts[0] };
-    else {
-      const all = new Uint8Array(parts.reduce((a, x) => a + x.length, 0));
-      let o = 0;
-      for (const x of parts) {
-        all.set(x, o);
-        o += x.length;
-      }
-      yield { cls, id, data: all };
-    }
-  }
-}
-
 function cgmInfo(b: Uint8Array): ImageInfo | undefined {
-  if (b.length < 4 || view(b).getUint16(0, false) >> 5 !== ((0 << 7) | 1)) return undefined; // BEGIN METAFILE
-  let vdcReal = false;
-  let intPrec = 16;
-  let realForm: 'fixed32' | 'fixed64' | 'float32' | 'float64' = 'fixed32';
-  let metric: number | undefined;
-  let extent: number[] | undefined;
-  const readReal = (v: DataView, at: number) =>
-    realForm === 'float32' ? v.getFloat32(at) : realForm === 'float64' ? v.getFloat64(at) : realForm === 'fixed64' ? v.getInt32(at) + v.getUint32(at + 4) / 2 ** 32 : v.getInt16(at) + v.getUint16(at + 2) / 65536;
-  const realSize = () => (realForm === 'float64' || realForm === 'fixed64' ? 8 : 4);
-  /** 1 つの命令を見る。true なら読み終わり (VDC EXTENT を見つけた・END METAFILE) */
-  const handle = ({ cls, id, data }: { cls: number; id: number; data: Uint8Array }): boolean => {
-    const v = view(data);
-    const len = data.length;
-    try {
-      if (cls === 1 && id === 3) vdcReal = v.getInt16(0) === 1; // VDC TYPE
-      else if (cls === 3 && id === 1) intPrec = v.getInt16(0); // VDC INTEGER PRECISION
-      else if (cls === 3 && id === 2) {
-        // VDC REAL PRECISION: 形式 (0 浮動・1 固定)、指数 (整数部)、仮数 (小数部)
-        const form = v.getInt16(0);
-        const a = v.getInt16(2);
-        realForm = form === 0 ? (a > 9 ? 'float64' : 'float32') : a > 16 ? 'fixed64' : 'fixed32';
-      } else if (cls === 2 && id === 1) {
-        // SCALING MODE: 0 abstract / 1 metric (+ 倍率: VDC 1 単位あたりの mm。実数は既定の固定小数点 32 ビット)
-        if (v.getInt16(0) === 1 && len >= 6) metric = v.getFloat32(2);
-      } else if (cls === 2 && id === 6) {
-        // VDC EXTENT: 2 点
-        const ext: number[] = [];
-        for (let k = 0; k < 4; k++) {
-          if (vdcReal) ext.push(readReal(v, k * realSize()));
-          else ext.push(intPrec === 32 ? v.getInt32(k * 4) : v.getInt16(k * 2));
-        }
-        extent = ext;
-        return true;
-      } else if (cls === 0 && id === 2) return true; // END METAFILE
-    } catch {
-      /* 引数の足りない壊れた命令は見ない */
-    }
-    return false;
-  };
-  for (const el of cgmElements(b)) {
-    if (el.cls === 1 && el.id === 12) {
-      // METAFILE DEFAULTS REPLACEMENT: 中の命令 (VDC EXTENT などの既定値) も見る (入れ子の MDR は見ない。cgm.ts と同じ)
-      let done = false;
-      for (const sub of cgmElements(el.data)) if ((done = sub.cls !== 1 || sub.id !== 12 ? handle(sub) : false)) break;
-      if (done) break;
-      continue;
-    }
-    if (handle(el)) break;
-  }
-  if (!extent) return undefined;
-  const w = Math.abs(extent[2] - extent[0]);
-  const h = Math.abs(extent[3] - extent[1]);
-  if (!w || !h) return undefined;
-  if (metric && Number.isFinite(metric) && metric > 0) return { mime: 'image/cgm', width: w * metric * PX_PER_MM, height: h * metric * PX_PER_MM };
-  return { mime: 'image/cgm', width: 400, height: (400 * h) / w };
+  const size = cgmPictureSize(b);
+  return size && { mime: 'image/cgm', width: size.width, height: size.height };
 }

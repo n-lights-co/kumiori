@@ -812,6 +812,90 @@ export function isCgm(b: Uint8Array): boolean {
   return b.length >= 4 && ((b[0] << 8) | b[1]) >> 5 === 1;
 }
 
+/**
+ * 最初の絵の大きさ (px) を、絵の本体を読まずに求める (imageInfo の cgmInfo 用)。cgmToSvg の大きさと同じになるように、
+ * 記述子を cgmToSvg と同じ読み方で読む: 精度 (INTEGER PRECISION・REAL PRECISION・VDC TYPE・VDC INTEGER PRECISION・VDC REAL PRECISION。
+ * 規格に無い値は前の値のまま)、SCALING MODE の倍率 (浮動小数点で書く。第 3 部 表 1 の注 10)、METAFILE DEFAULTS REPLACEMENT
+ * (中の要素で既定値を置き換える)、BEGIN PICTURE で既定値に戻すこと。VDC EXTENT が無ければ、既定の範囲 (第 1 部 8 章) を使う。
+ * 絵の本体 (BEGIN PICTURE BODY) が無いファイルは、VDC EXTENT が書かれていればその大きさ。大きさが決まらなければ undefined
+ */
+export function cgmPictureSize(bytes: Uint8Array): { width: number; height: number } | undefined {
+  if (!isCgm(bytes)) return undefined;
+  let defaults = initialState();
+  let s = cloneState(defaults);
+  let inPicture = false;
+  const prec = (v: number, ok: number[], cur: number) => (ok.includes(v) ? v : cur);
+  const realForm = (float: boolean, a: number, b: number, cur: RealForm): RealForm =>
+    (float ? (a === 9 && b === 23) || (a === 12 && b === 52) : (a === 16 && b === 16) || (a === 32 && b === 32)) ? { float, a, b } : cur;
+  const P8 = [8, 16, 24, 32];
+  const size = (st: State, needExtent: boolean) => {
+    if (needExtent && !st.vdcExtent) return undefined;
+    const ext: [Pt, Pt] =
+      st.vdcExtent ??
+      (st.vdcType === 0
+        ? [
+            [0, 0],
+            [32767, 32767],
+          ]
+        : [
+            [0, 0],
+            [1, 1],
+          ]);
+    const w = Math.abs(ext[1][0] - ext[0][0]);
+    const h = Math.abs(ext[1][1] - ext[0][1]);
+    // 幅か高さが 0 (か数でない) の範囲からは、大きさを決めない
+    if (!(w > 0) || !(h > 0)) return undefined;
+    if (st.scalingMetric && st.scalingMetric > 0) return { width: w * st.scalingMetric * PX_PER_MM, height: h * st.scalingMetric * PX_PER_MM };
+    return { width: ABSTRACT_WIDTH, height: (ABSTRACT_WIDTH * h) / w };
+  };
+  /** 大きさに関わる要素だけを読む (cgmToSvg の process と同じ読み方) */
+  const apply = (el: Element, st: State, inMdr: boolean) => {
+    const p = new Params(el.data, st);
+    const { cls, id } = el;
+    if (cls === 1) {
+      if (id === 3) st.vdcType = p.E() === 1 ? 1 : 0;
+      else if (id === 4) st.intPrec = prec(p.I(), P8, st.intPrec);
+      else if (id === 5) {
+        const f = p.E();
+        const a = p.I();
+        const b = p.I();
+        st.realForm = realForm(f === 0, a, b, st.realForm);
+      } else if (id === 12 && !inMdr) {
+        for (const sub of elements(el.data)) apply(sub, defaults, true);
+        s = cloneState(defaults);
+      }
+    } else if (cls === 2) {
+      if (id === 1) {
+        const m = p.E();
+        const f = p.floatReal();
+        st.scalingMetric = m === 1 ? f : undefined;
+      } else if (id === 6) st.vdcExtent = [p.P(), p.P()];
+    } else if (cls === 3) {
+      if (id === 1) st.vdcIntPrec = prec(p.I(), [16, 24, 32], st.vdcIntPrec);
+      else if (id === 2) {
+        const f = p.E();
+        const a = p.I();
+        const b = p.I();
+        st.vdcRealForm = realForm(f === 0, a, b, st.vdcRealForm);
+      }
+    }
+  };
+  for (const el of elements(bytes)) {
+    if (el.cls === 0) {
+      if (el.id === 3) {
+        // BEGIN PICTURE: 既定値に戻す
+        s = cloneState(defaults);
+        inPicture = true;
+      } else if (el.id === 4) return size(s, false); // BEGIN PICTURE BODY: 絵の大きさが決まる
+      else if (el.id === 5 || el.id === 2) break; // END PICTURE・END METAFILE
+      continue;
+    }
+    apply(el, inPicture ? s : defaults, false);
+    if (!inPicture && el.cls === 1) s = cloneState(defaults);
+  }
+  return size(s, true);
+}
+
 const esc = (t: string) => t.replace(/[&<>"]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;')).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
 const num = (v: number) => (Math.abs(v) < 1e-9 ? '0' : String(Math.round(v * 1000) / 1000));
 const hex = (c: Rgb) => '#' + c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('');
