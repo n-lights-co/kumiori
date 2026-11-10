@@ -9,7 +9,7 @@ import { clusterUnits } from '../src/grapheme';
 import type { Area, GlyphArea } from '../src/types';
 
 /**
- * タイ文字とデーヴァナーガリーを組む (CSS-10)。
+ * タイ文字とデーヴァナーガリーを組む。
  *  - 書体の整形 (fontkitShaping.ts): デーヴァナーガリーが落ちずに、結合子音・レフ・前に置く母音記号の字形になる。
  *    タイ文字の SARA AM の並べ替え、上に伸びる字の声調記号の字形
  *  - 語の間に空白を書かない用字の改行 (lineBreak.ts の complexContextBreaks): 辞書 (Intl.Segmenter) の語の境目で折り返す。
@@ -153,6 +153,26 @@ describe('タイ文字: 書体の整形', () => {
     expect(withVowel[2]).not.toBe(nominal('Thai', '่'));
     // 上に伸びない字では、ふつうの字形
     expect(ids('กู่')[2]).toBe(ids('ก่')[1]);
+  });
+  it('字の組の詰め (kern): 前に置く母音と子音の間を、書体の値で詰める (font-kerning が有効なとき)。字の単位 (子音 + 記号) とも基底の字で引く', () => {
+    const fk = fonts.get('Thai', 400).fk;
+    const pair = fk.layout('เป', { kern: true, liga: false, clig: false } as never).positions[0].xAdvance - fk.glyphForCodePoint(0x0e40).advanceWidth;
+    // この書体は เ と ป の間を詰める (書体が変わって詰めなくなったら、このテストの前提を見直す)
+    expect(pair).toBeLessThan(0);
+    const xsOf = (text: string, kerning: boolean) => {
+      const out: number[] = [];
+      const visit = (a: Area, ox: number) => {
+        if (a.type === 'glyph') out.push(ox + a.x);
+        for (const c of (a as unknown as { children?: Area[] }).children ?? []) visit(c, ox + a.x);
+      };
+      for (const c of engine.layout(doc([{ type: 'block', textAlign: 'start', fontFamily: 'Thai', kerning, children: [text] }] as never)).sheets[0].page.regionBody.children) visit(c, 0);
+      return out;
+    };
+    for (const text of ['เป', 'เป็น']) {
+      const on = xsOf(text, true);
+      const off = xsOf(text, false);
+      expect(on[1] - off[1]).toBeCloseTo((pair / fonts.get('Thai', 400).unitsPerEm) * 10, 6);
+    }
   });
   it('字の文字列 (GlyphArea の text) は、並べ替える前の元の字のまま', () => {
     expect(glyphAreas('กำลัง', 'Thai').map((a) => a.text).join('')).toBe('กำลัง');
