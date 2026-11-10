@@ -1303,10 +1303,24 @@ class Importer {
     if (ttAttr === 'capitalize' || ttAttr === 'uppercase' || ttAttr === 'lowercase') textTransform = ttAttr;
     else if (ttAttr === 'none') textTransform = undefined;
     else if (ttAttr) this.miss(`text-transform:${ttAttr}`);
-    // font-stretch は上で読む。font-variant と word-spacing は読まない
-    for (const k of ['font-variant', 'word-spacing']) {
-      const v = this.attr(el, k);
-      if (v && v !== 'normal' && v !== 'none' && v !== 'baseline') this.miss(`${k}`);
+    // font-variant (§7.9.8): small-caps は、字の並びに small caps の印を付けて運ぶ (children。字形を使うか、縮めた大文字で代えるかは組むときに
+    // 書体を見て決める: “If a genuine small-caps font is not available, user agents should simulate a small-caps font”)。継承される
+    let smallCaps = ctx.smallCaps;
+    const fv = this.attrInh(el, 'font-variant');
+    if (fv === 'small-caps') smallCaps = true;
+    else if (fv === 'normal') smallCaps = false;
+    else if (fv) this.miss(`font-variant:${fv.slice(0, 20)}`);
+    // word-spacing (§7.17.8): <length> は、語の間の空白の既定の幅に足す量 (“inter-word space in addition to the default space between words”)。
+    // <space> (.minimum・.optimum・.maximum) は optimum を使う (伸び縮みの幅は、両端揃えに任せる)。normal は足さない。継承される
+    let wordSpacing = ctx.wordSpacing;
+    const wsp = this.attrInh(el, 'word-spacing') ?? this.attrInh(el, 'word-spacing.optimum');
+    if (wsp !== undefined) {
+      const v = wsp === 'normal' ? 0 : this.len(wsp, fs);
+      if (v === undefined) this.miss(`word-spacing:${wsp.slice(0, 20)}`);
+      else if (v !== (ctx.wordSpacing ?? 0)) {
+        s.wordSpacing = v;
+        wordSpacing = v;
+      }
     }
     // 空白・改行: white-space (略記) → 個別のプロパティの順に上書き
     const ws: WhiteSpace = { ...ctx.ws };
@@ -1335,7 +1349,7 @@ class Importer {
     // 書字方向の裏返し (bt-lr・lr-bt など): 自分の writing-mode があれば決め直し、無ければ親のまま
     const ownWm = this.attr(el, 'writing-mode');
     const flip = ownWm && !ownWm.startsWith('from-') ? flipOf(ownWm) : ctx.flip;
-    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: s.color ?? ctx.color, textTransform, ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
+    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: s.color ?? ctx.color, textTransform, ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
   }
 
   phys(rel: 'before' | 'after' | 'start' | 'end', wm: WritingMode, rtl = false): 'top' | 'right' | 'bottom' | 'left' {
@@ -1793,8 +1807,9 @@ class Importer {
         // ブロックの隣の、空白だけの文字列は消す (XML の空白だけ。改行しない空白 U+00A0 などは中身として残す)。
         // inline と inline の間の空白は、子にブロックがあっても語の間の空白として残す (§7.16.8・§7.16.12)
         if (hasBlock && isXmlSpaceOnly(t) && (!prev || prev.block || !next || next.block)) t = '';
-        if (t) out.push(...this.punctuationSpacing(t, ctx));
-      } else out.push(it.v);
+        if (t) out.push(...this.smallCapsOf(this.punctuationSpacing(t, ctx), ctx));
+      } else if (typeof it.v === 'string') out.push(...this.smallCapsOf([it.v], ctx));
+      else out.push(it.v);
     });
     // 行の先頭・末尾の空白だけを消す (§7.16.8)。inline の中の空白は、inline の端でも残し、
     // 段落の端に来る inline の中のものだけをここで消す
@@ -1803,6 +1818,11 @@ class Importer {
       this.trimInlineEdge(out, 'end');
     }
     return out;
+  }
+
+  /** font-variant="small-caps" の中の字の並びを、small caps の印を付けた inline に包む (LInline.smallCaps。HTML の font-variant と同じ受け皿) */
+  private smallCapsOf(kids: LInlineLevel[], ctx: Ctx): LInlineLevel[] {
+    return ctx.smallCaps ? [{ type: 'inline', smallCaps: 'small', children: kids } as LInline] : kids;
   }
 
   /** 段落の端 (最初または最後) にある inline の中の、端の空白を消す */
@@ -1973,9 +1993,9 @@ class Importer {
       case 'character': {
         // character の値は空白でもよい (前後を削らない)。字の書式 (色・書体など) も当てる (§6.6.3)
         const ch = n.getAttribute?.('character') ?? '';
-        const { style } = this.textStyle(n, ctx);
+        const { style, ctx: c2 } = this.textStyle(n, ctx);
         const id = this.idOf(n);
-        return one(Object.keys(style).length || Object.keys(id).length ? ({ type: 'inline', ...id, ...style, children: [ch] } as LInlineLevel) : ch, false);
+        return one(Object.keys(style).length || Object.keys(id).length || c2.smallCaps ? ({ type: 'inline', ...id, ...style, ...(c2.smallCaps ? { smallCaps: 'small' as const } : {}), children: [ch] } as LInlineLevel) : ch, false);
       }
       case 'inline-container':
         return this.inlineContainer(n, ctx);

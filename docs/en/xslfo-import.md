@@ -56,7 +56,7 @@ Fonts such as MS Mincho and MS Gothic specified by the FO cannot be bundled (the
 
 ## Unsupported (counted in the report)
 
-Unknown elements (`fo:*`, MathML, the contents of `instream-foreign-object`), unknown region names, `reference-orientation` values that are not multiples of 90 (typeset as 0), unknown functions in length expressions, unreadable colors, `font-variant` and `word-spacing` (and `font-stretch`, which is read and typeset but also reported in the same place), unreadable values of `text-decoration`, `text-transform` and `baseline-shift`, `overflow` other than auto and visible, unknown values of `axf:punctuation-trim`, `axf:field-type`, `axf:field-checked-style`, `axf:field-font-size`, `axf:annotation-type` and `axf:annotation-flags`, images in `axf:printer-marks`, and FileAttachment annotations without a file to attach (turned into text annotations).
+Unknown elements (`fo:*`, MathML, the contents of `instream-foreign-object`), unknown region names, `reference-orientation` values that are not multiples of 90 (typeset as 0), unknown functions in length expressions, unreadable colors, unreadable values of `font-variant`, `word-spacing` and `font-stretch`, unreadable values of `text-decoration`, `text-transform` and `baseline-shift`, `overflow` other than auto and visible, unknown values of `axf:punctuation-trim`, `axf:field-type`, `axf:field-checked-style`, `axf:field-font-size`, `axf:annotation-type` and `axf:annotation-flags`, images in `axf:printer-marks`, and FileAttachment annotations without a file to attach (turned into text annotations).
 In the fallback used when the math font cannot be loaded, fine points of math (Content MathML, maligngroup, mlabeledtr) remain undrawn without being counted (I-02 in `BACKLOG.md`; they are supported when typesetting with the math font).
 
 The list of unsupported items and their priorities is recorded in [BACKLOG.md](BACKLOG.md).
@@ -290,6 +290,7 @@ These were built according to the specification (XSL 1.1), and only those found 
 - Size limits (§7.15.8–§7.15.11, §5.3.3): `min-height`, `max-height`, `min-width` and `max-width` are mapped to the `.minimum` / `.maximum` components of the block or inline dimension according to the writing mode. `min-height` (lower bound of the height) and `max-width` / `min-width` (upper / lower bounds of the width) on a box in horizontal writing, and the block-direction limits of a table row, are read. `max-height` on a box in horizontal writing and the limits on a box in vertical writing are not read and are reported, because the typesetter has no place to receive them
 - `clear` (§7.19.1): `start`, `end` and `both` on `fo:block` (`left` is `start`, `right` is `end`) start the block below the earlier floats on that side (`LBlock.clear`). `inside` and `outside`, and `clear` on elements other than `fo:block`, are not read and are reported
 - `fo:folio-prefix` and `fo:folio-suffix` (§6.6.13, §6.6.14): their contents (text and inline-level elements) are placed before and after page numbers. `fo:page-number` takes those of the `fo:page-sequence` that contains it (§6.6.10); `fo:page-number-citation` and `-last` take those of the `fo:page-sequence` containing the element with the `ref-id` (the one that generated the cited page; §6.6.11, §6.6.12). They are not added to citations with `axf:physical-page-number="true"`. `fo:page-number` and block-level elements inside them are not read and are reported
+- `font-variant="small-caps"` (§7.9.8): text runs become inline boxes marked as small caps (`LInline.smallCaps`; the smcp glyphs if the font has them, otherwise uppercase letters at 0.7 times the size). `word-spacing` (§7.17.8): the length (`.optimum` of a `<space>`) becomes `wordSpacing` and is added to inter-word spaces
 - em on page masters is based on the font-size inherited from fo:root. The page number format follows XSLT 1.0 §7.7.1 (only the first token is used; an unknown token is 1)
 - `line-stacking-strategy="font-height"` (the line pitch is always line-height. §4.5)
 - Initial values of leader: `rule-thickness` 1pt, `leader-length` 0pt / 12pt / 100%. `leader-pattern-width` is never narrower than the character width (§7.22). A rule's line is centered on the baseline with equal thickness above and below (§7.22.6)
@@ -297,7 +298,7 @@ These were built according to the specification (XSL 1.1), and only those found 
 
 ### Things not yet per spec
 
-- `last-line-end-indent` (§7.16.3), `word-spacing` and `font-size-adjust` are not read
+- `last-line-end-indent` (§7.16.3) and `font-size-adjust` are not read. For a `<space>` in `word-spacing`, only `.optimum` is used (the range is not)
 - `border-*-precedence` and `collapse-with-precedence` (treated the same as collapse)
 - The reference for absolute positioning inside rotated or vertical-writing block-containers (does not switch to the container)
 - `reference-orientation` on `simple-page-master`

@@ -47,6 +47,10 @@ export interface Ctx {
   relAlign?: 'before' | 'baseline';
   /** 祖先で指定した axf:revision-bar-* の値 (どれも継承される) */
   revBar?: Partial<Record<'style' | 'color' | 'width' | 'offset' | 'position', string>>;
+  /** font-variant="small-caps" (継承される。§7.9.8)。字の並びに small caps の印を付ける */
+  smallCaps?: boolean;
+  /** 受け継いだ word-spacing (pt。§7.17.8)。normal で 0 に戻すかどうかを決めるのに使う */
+  wordSpacing?: number;
   /** text-transform (継承される。§7.17.6)。none は省略 */
   textTransform?: 'capitalize' | 'uppercase' | 'lowercase';
   /** 祖先の font-family の並び (太さだけを指定した要素で、書体を選び直すのに使う) */

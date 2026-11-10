@@ -1,6 +1,7 @@
 /**
  * XSL-FO の、読んで組版へ渡すだけの性質:
  *  - clear (§7.19.1)
+ *  - font-variant (§7.9.8)・word-spacing (§7.17.8)
  *  - fo:folio-prefix・fo:folio-suffix (§6.6.13・§6.6.14): fo:page-number・fo:page-number-citation・fo:page-number-citation-last の番号の前後に付く (§6.6.10〜§6.6.12)
  *  - 一括指定 (font・background・page-break-before/after/inside・size。XSL 1.1 §7.31・§5.2) と、上限・下限 (min-height・max-height・min-width・max-width。§7.15.8〜§7.15.11・§5.3.3)
  */
@@ -286,5 +287,55 @@ describe('fo:folio-prefix・fo:folio-suffix (§6.6.13・§6.6.14)', () => {
     const r = doc(seqXml('', '', head, `<fo:block><fo:page-number/></fo:block>`));
     const st = r.document.sequences[0].staticContent!.find((c) => c.children.length)!;
     expect((st.children[0] as LBlock).children).toEqual(['{pageNumber}']);
+  });
+});
+
+describe('font-variant (§7.9.8) と word-spacing (§7.17.8)', () => {
+  it('font-variant="small-caps": 字の並びに small caps の印を付ける (継承され、normal で戻る)', () => {
+    const b = first(`<fo:block font-variant="small-caps">Abc<fo:inline font-variant="normal">Def</fo:inline><fo:inline>Ghi</fo:inline></fo:block>`);
+    expect(b.children[0]).toMatchObject({ type: 'inline', smallCaps: 'small', children: ['Abc'] });
+    expect((b.children[1] as LInline).children).toEqual(['Def']);
+    expect((b.children[2] as LInline).children[0]).toMatchObject({ type: 'inline', smallCaps: 'small', children: ['Ghi'] });
+    // 指定の無い文書は、字の並びをそのまま渡す
+    expect(first(`<fo:block>Abc</fo:block>`).children).toEqual(['Abc']);
+  });
+  it('small-caps の小文字は、小さい大文字で組まれる (字形の無い書体では、縮めた大文字で代える)', () => {
+    const glyphs = (attrs: string) => {
+      const out: Array<{ text: string; size: number }> = [];
+      const tree = E.engine.layout(imp(`<fo:block font-size="20pt" ${attrs}>Ab</fo:block>`).document);
+      walk(tree.sheets[0].page as unknown as Area, (g) => g.type === 'glyph' && out.push({ text: g.text, size: g.fontSize }));
+      return out;
+    };
+    expect(glyphs('').map((g) => g.text).join('')).toBe('Ab');
+    const sc = glyphs('font-variant="small-caps"');
+    // 書体に small caps の字形 (smcp) があれば字はそのまま (字形だけ替わる)。無ければ、小文字を 0.7 倍の大文字にする
+    if (sc[1].text === 'B') expect(sc[1].size).toBeCloseTo(14, 6);
+    else expect(sc.map((g) => g.text).join('')).toBe('Ab');
+    expect(sc[0]).toMatchObject({ text: 'A', size: 20 });
+  });
+  it('font-variant の読めない値は報告する', () => {
+    const r = imp(`<fo:block font-variant="petite-caps">a</fo:block>`);
+    expect(r.report.unsupported['font-variant:petite-caps']).toBe(1);
+    expect(imp(`<fo:block font-variant="small-caps" word-spacing="2pt">a</fo:block>`).report.unsupported).toEqual({});
+  });
+  it('word-spacing: 語の間の空白を、その長さだけ広げる (継承され、normal で戻る)', () => {
+    const gap = (body: string) => {
+      const tree = E.engine.layout(imp(body).document).sheets[0];
+      return glyphPos(tree, 'b')!.x - glyphPos(tree, 'a')!.x;
+    };
+    const base = gap(`<fo:block>a b</fo:block>`);
+    expect(gap(`<fo:block word-spacing="5pt">a b</fo:block>`) - base).toBeCloseTo(5, 6);
+    expect(gap(`<fo:block font-size="10pt" word-spacing="0.5em">a b</fo:block>`) - gap(`<fo:block font-size="10pt">a b</fo:block>`)).toBeCloseTo(5, 6);
+    // <space> は optimum を使う
+    expect(gap(`<fo:block word-spacing.optimum="3pt" word-spacing.maximum="9pt">a b</fo:block>`) - base).toBeCloseTo(3, 6);
+    expect(gap(`<fo:block word-spacing="5pt"><fo:inline word-spacing="normal">a b</fo:inline></fo:block>`)).toBeCloseTo(base, 6);
+    // 字の間 (空白でない所) は広げない
+    const tree = E.engine.layout(imp(`<fo:block word-spacing="5pt">ab</fo:block>`).document).sheets[0];
+    const tree0 = E.engine.layout(imp(`<fo:block>ab</fo:block>`).document).sheets[0];
+    expect(glyphPos(tree, 'b')!.x).toBeCloseTo(glyphPos(tree0, 'b')!.x, 6);
+  });
+  it('word-spacing の読めない値は報告する。指定の無い文書には wordSpacing を付けない', () => {
+    expect(imp(`<fo:block word-spacing="wide">a</fo:block>`).report.unsupported['word-spacing:wide']).toBe(1);
+    expect(first(`<fo:block word-spacing="normal">a b</fo:block>`).wordSpacing).toBeUndefined();
   });
 });
