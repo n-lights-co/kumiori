@@ -95,6 +95,53 @@ describe('FO-04: fo:page-sequence に書いた継承される特性 (§5.1.4)', 
   });
 });
 
+describe('FO-05: 表のセルの中の start-indent・end-indent (セルは参照領域。§6.7.10・§7.11.7・§7.11.8)', () => {
+  const table = (cell: string, outer = 'start-indent="20pt" end-indent="12pt"') =>
+    fo(`<fo:block ${outer}><fo:table table-layout="fixed" width="150pt" start-indent="20pt" end-indent="0pt"><fo:table-column column-width="150pt"/><fo:table-body><fo:table-row><fo:table-cell>${cell}</fo:table-cell></fo:table-row></fo:table-body></fo:table></fo:block>`);
+  const cellBlock = (xml: string, compat: Compat) => ((first<LBlock>(xml, compat).children[0] as LTable).body.rows[0].cells[0].children[0] as LBlock);
+  it('セルの中で明示した start-indent・end-indent は、セルの内容の端から測る (外の字下げを引かない)', () => {
+    for (const compat of BOTH) {
+      const b = cellBlock(table('<fo:block start-indent="5pt" end-indent="3pt">あ</fo:block>'), compat);
+      expect(b.margin).toEqual({ left: 5, right: 3 });
+    }
+  });
+  it('組んだ結果: セルの中の字は、セルの端から start-indent だけ内側 (外へはみ出さない)', () => {
+    const x = (cell: string) => {
+      const tree = E.engine.layout(imp(table(cell)).document);
+      let gx: number | undefined;
+      type A = { x: number; type: string; children?: A[] };
+      const visit = (a: A, ox: number) => {
+        if (a.type === 'glyph' && gx === undefined) gx = ox + a.x;
+        for (const c of a.children ?? []) visit(c, ox + a.x);
+      };
+      for (const c of tree.sheets[0].page.regionBody.children as unknown as A[]) visit(c, 0);
+      return gx!;
+    };
+    expect(x('<fo:block start-indent="5pt">あ</fo:block>') - x('<fo:block start-indent="0pt">あ</fo:block>')).toBeCloseTo(5, 3);
+  });
+  it('セルの中の入れ子のブロックは、明示した値からの差で下がる', () => {
+    const b = cellBlock(table('<fo:block start-indent="5pt"><fo:block start-indent="8pt">あ</fo:block></fo:block>'), 'spec');
+    expect((b.children[0] as LBlock).margin).toEqual({ left: 3 });
+  });
+});
+
+describe('FO-06: 縦書き・回転した本文の百分率の基準 (行の進む方向の寸法)', () => {
+  const ti = (p: FoParts) => first<LBlock>(fo('<fo:block text-indent="10%">あ</fo:block>', p)).textIndent;
+  const W = (80 * 72) / 25.4;
+  const H = (170 * 72) / 25.4; // 本文の高さ: 200mm − 余白 20mm − region-body の margin-top 10mm
+  it('横書きは本文の幅、縦書き (tb-rl) は本文の高さに対する割合', () => {
+    expect(ti({})).toBeCloseTo(W / 10, 3);
+    expect(ti({ seq: 'writing-mode="tb-rl"' })).toBeCloseTo(H / 10, 3);
+    expect(ti({ body: 'writing-mode="tb-rl"' })).toBeCloseTo(H / 10, 3);
+  });
+  it('90 度・270 度回した本文 (reference-orientation) は、横書きなら本文の高さ、縦書きなら本文の幅', () => {
+    expect(ti({ body: 'reference-orientation="90"' })).toBeCloseTo(H / 10, 3);
+    expect(ti({ seq: 'reference-orientation="270"' })).toBeCloseTo(H / 10, 3);
+    expect(ti({ body: 'reference-orientation="180"' })).toBeCloseTo(W / 10, 3);
+    expect(ti({ body: 'reference-orientation="90" writing-mode="tb-rl"' })).toBeCloseTo(W / 10, 3);
+  });
+});
+
 describe('FO-07: fo:footnote・fo:footnote-body に書いた字の書式 (継承される特性。§5.1.4)', () => {
   const fn = (attrs: string, bodyAttrs: string, compat: Compat = 'spec') =>
     (first<LBlock>(fo(`<fo:block font-weight="bold" color="#ff0000">x<fo:footnote ${attrs}><fo:inline>1</fo:inline><fo:footnote-body ${bodyAttrs}><fo:block>note</fo:block></fo:footnote-body></fo:footnote></fo:block>`), compat).children[1] as LFootnote);

@@ -850,8 +850,15 @@ class Importer {
       // 段組のページ: 中の要素の幅 (百分率の基準) は 1 段の幅 (段は参照領域。段組のページの
       // inline-progression-dimension="50%" は、段の幅の半分)。段をまたぐ (span="all") ブロックは本文の幅
       const cols = def.master.columns;
-      const colW = cols && cols.count > 1 && wm === 'horizontal-tb' ? Math.max(0, (bodyW - (cols.gap ?? 12 / PT_PER_MM) * PT_PER_MM * (cols.count - 1)) / cols.count) : bodyW;
-      const flowKids = this.children(flowEl, { ...fst.ctx, wm, width: colW, cbW: colW, ...(colW !== bodyW ? { spanW: bodyW } : {}) }, false) as LBlockLevel[];
+      // 百分率の基準は、本文の参照領域の行の進む方向の寸法 (start-indent・text-indent などの百分率は
+      // inline-progression-dimension に対する割合。§7.11.7・§7.16.11)。縦書きの本文は、本文の高さ。
+      // 90 度・270 度回した本文 (reference-orientation。§7.21.3) は、幅と高さが入れ替わる (static-content の側と同じ)
+      const bodyRo = seqRo ?? def.master.bodyRotation ?? 0;
+      const turned = bodyRo === 90 || bodyRo === 270;
+      const bodyH = def.pageH - (def.master.margins.top + def.master.margins.bottom) * PT_PER_MM;
+      const bodyIpd = (wm === 'horizontal-tb') !== turned ? bodyW : bodyH;
+      const colW = cols && cols.count > 1 && wm === 'horizontal-tb' ? Math.max(0, (bodyW - (cols.gap ?? 12 / PT_PER_MM) * PT_PER_MM * (cols.count - 1)) / cols.count) : bodyIpd;
+      const flowKids = this.children(flowEl, { ...fst.ctx, wm, width: colW, cbW: colW, ...(colW !== bodyIpd ? { spanW: bodyW } : {}) }, false) as LBlockLevel[];
       // 入れ子のブロックの span="all" を効かせるのは互換モードだけ (仕様では fo:flow の直下のブロックにだけ効く。§7.21.4 の Note)
       seq.flow.children = this.spec ? flowKids : this.hoistSpans(flowKids, wm);
       // 本文の書字方向の裏返し (page-sequence か region-body の writing-mode)
@@ -2808,7 +2815,9 @@ class Importer {
     const rs = this.colInt(this.attr(c, 'number-rows-spanned') ?? '1', 'number-rows-spanned');
     // セルは参照領域なので、中の百分率はセルの内容の幅に対する値。列の幅が決まらなければ、表の幅で代える
     const cellW = this.gridPlace(colNum, Math.max(cs, 1), Math.max(rs, 1), box, c2.wm);
-    const cell: LTableCell = { type: 'table-cell', ...this.idOf(c), ...style, children: this.children(c, { ...c2, width: cellW ?? tw, cbW: undefined, cbH: undefined }, true) };
+    // セルは参照領域 (§6.7.10) なので、中で明示した start-indent・end-indent は、セルの内容の端から測る (§7.11.7・§7.11.8)。
+    // 外の字下げを引かない (引くと、外の字下げの分だけセルの外へはみ出す)。指定の無いブロックは従来どおりセルの端に置く
+    const cell: LTableCell = { type: 'table-cell', ...this.idOf(c), ...style, children: this.children(c, { ...c2, startIndent: 0, endIndent: 0, width: cellW ?? tw, cbW: undefined, cbH: undefined }, true) };
     if (box.padding) cell.padding = box.padding;
     // empty-cells="hide" (継承される。罫線を分ける表で): 中身の無いセルは、罫線と背景を描かない (§7.28.10・CSS2 §17.6.1.1)
     const ec = this.attr(c, 'empty-cells') ?? this.emptyCells;
