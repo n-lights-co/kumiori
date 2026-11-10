@@ -1388,15 +1388,15 @@ class Importer {
     const ba = brk(this.attr(el, 'break-after'));
     if (bb) o.breakBefore = bb;
     if (ba) o.breakAfter = ba;
-    const kt = this.attr(el, 'keep-together.within-page') ?? this.attr(el, 'keep-together.within-column') ?? this.attr(el, 'keep-together');
+    // keep-* の成分 (§7.20.3〜§7.20.5): within-page・within-column は別々の成分なので、どちらか (または成分を書かない形) が
+    // 保つ指定なら保つ (先に見た成分が auto でも、ほかの成分を見る)
+    const keepVals = (k: string) => [this.attr(el, `${k}.within-page`), this.attr(el, `${k}.within-column`), this.attr(el, k)];
+    const keepInt = (v: string | undefined) => v !== undefined && /^\d+$/.test(v) && parseInt(v, 10) > 0;
     // 仕様モード: keep の強さの整数 (§5.11 の <keep>) も、1 以上なら always と同じに「保つ」とみなす (表の行・リストの項目と同じ。強さの大小は比べない)。
     // 互換モードは always だけ (従来どおり)
-    if (kt === 'always' || (this.spec && kt !== undefined && /^\d+$/.test(kt) && parseInt(kt, 10) > 0)) o.keepTogether = true;
+    if (keepVals('keep-together').some((kt) => kt === 'always' || (this.spec && keepInt(kt)))) o.keepTogether = true;
     if (this.attr(el, 'span') === 'all') o.span = 'all';
-    const keep = (k: string) => {
-      const v = this.attr(el, `${k}.within-page`) ?? this.attr(el, `${k}.within-column`) ?? this.attr(el, k);
-      return v === 'always' || (v !== undefined && /^\d+$/.test(v) && parseInt(v, 10) > 0);
-    };
+    const keep = (k: string) => keepVals(k).some((v) => v === 'always' || keepInt(v));
     if (keep('keep-with-next')) o.keepWithNext = true;
     if (keep('keep-with-previous')) o.keepWithPrevious = true;
     // overflow (§7.21.2): hidden・scroll・error-if-overflow は、印刷では切り抜きと同じ
@@ -1442,12 +1442,11 @@ class Importer {
 
   /** keep-* の値 (§7.20): always と 1 以上の整数を「保つ」とみなす (強さの大小は区別しない) */
   private keepOf(el: XEl, k: string, which: Array<'page' | 'column' | 'line' | ''> = ['page', 'column', '']): boolean {
-    for (const w of which) {
+    // 成分は別々の指定なので、どれかが保つ指定なら保つ (先に見た成分が auto でも、ほかの成分を見る)
+    return which.some((w) => {
       const v = this.attr(el, w ? `${k}.within-${w}` : k);
-      if (v === undefined) continue;
-      return v === 'always' || (/^\d+$/.test(v) && parseInt(v, 10) > 0);
-    }
-    return false;
+      return v !== undefined && (v === 'always' || (/^\d+$/.test(v) && parseInt(v, 10) > 0));
+    });
   }
 
   /** fo:bookmark-tree / fo:bookmark (§6.12) */
@@ -1507,9 +1506,15 @@ class Importer {
     const bi: BackgroundImage = { src };
     const rep = at('background-repeat');
     if (rep === 'repeat' || rep === 'no-repeat' || rep === 'repeat-x' || rep === 'repeat-y') bi.repeat = rep;
+    // background-position (一括指定。§7.31.2・CSS2 §14.2.1): 長さ・百分率は「横 縦」の順で、1 つだけなら横の位置 (縦は 50%)。
+    // キーワードは top・bottom が縦、left・right が横で、順はどちらでもよく、1 つだけならもう一方は center (50%)
     const short = (at('background-position') ?? '').split(/\s+/).filter(Boolean);
-    const ph = at('background-position-horizontal') ?? short[0];
-    const pv = at('background-position-vertical') ?? short[1] ?? (short[0] === 'center' ? 'center' : undefined);
+    let sh: string | undefined;
+    let sv: string | undefined;
+    if (short.length === 1) [sh, sv] = short[0] === 'top' || short[0] === 'bottom' ? ['center', short[0]] : [short[0], 'center'];
+    else if (short.length >= 2) [sh, sv] = short[0] === 'top' || short[0] === 'bottom' || short[1] === 'left' || short[1] === 'right' ? [short[1], short[0]] : [short[0], short[1]];
+    const ph = at('background-position-horizontal') ?? sh;
+    const pv = at('background-position-vertical') ?? sv;
     const posOf = (p: string | undefined, keys: string[]): BackgroundImage['x'] | undefined => {
       if (!p) return undefined;
       if (keys.includes(p)) return p as never;
@@ -2231,7 +2236,8 @@ class Importer {
     l.ruleThickness = this.len(this.attr(n, 'rule-thickness'), ctx.fontSize) ?? 1;
     const rs = this.attr(n, 'rule-style');
     if (rs === 'dotted' || rs === 'dashed' || rs === 'double' || rs === 'groove' || rs === 'ridge') l.ruleStyle = rs;
-    else if (rs === 'none') l.pattern = 'space';
+    // rule-style は leader-pattern="rule" のときだけ効く (§7.22.5)。none は線を引かない (点・中身の繰り返しは消さない)
+    else if (rs === 'none' && pat === 'rule') l.pattern = 'space';
     // leader-pattern-width の百分率は、親の領域の内容の幅に対する割合 (§7.22.3)。字の幅より狭い指定は、組むときに字の幅にする
     const pw = this.len(this.attr(n, 'leader-pattern-width'), ctx.fontSize, this.cbW(ctx));
     if (pw !== undefined) l.patternWidth = pw;
@@ -2811,8 +2817,9 @@ class Importer {
     const { style, ctx: c2 } = this.textStyle(c, ctx);
     const box = this.boxStyle(c, c2, ctx);
     const colNum = this.colInt(this.attr(c, 'column-number'), 'column-number');
-    const cs = this.colInt(this.attr(c, 'number-columns-spanned') ?? '1', 'number-columns-spanned');
-    const rs = this.colInt(this.attr(c, 'number-rows-spanned') ?? '1', 'number-rows-spanned');
+    // 空・数でない値は初期値の 1 (§7.28.13・§7.28.14。NaN のままにすると、後ろのセルの列が決まらない)
+    const cs = this.colInt(this.attr(c, 'number-columns-spanned') ?? '1', 'number-columns-spanned') || 1;
+    const rs = this.colInt(this.attr(c, 'number-rows-spanned') ?? '1', 'number-rows-spanned') || 1;
     // セルは参照領域なので、中の百分率はセルの内容の幅に対する値。列の幅が決まらなければ、表の幅で代える
     const cellW = this.gridPlace(colNum, Math.max(cs, 1), Math.max(rs, 1), box, c2.wm);
     // セルは参照領域 (§6.7.10) なので、中で明示した start-indent・end-indent は、セルの内容の端から測る (§7.11.7・§7.11.8)。

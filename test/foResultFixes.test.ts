@@ -205,3 +205,85 @@ describe('FO-09: 数式の後備の「全体が 1 つの mtable なら下端を�
     expect(align('antenna')).toBe('after-edge');
   });
 });
+
+describe('FO-11: background-position の一括指定 (§7.31.2)', () => {
+  const pos = (v: string) => {
+    const bi = first<LBlock>(fo(`<fo:block background-image="url(a.png)" background-position="${v}">a</fo:block>`)).backgroundImage!;
+    return [bi.x, bi.y];
+  };
+  it('キーワード 1 つ: もう一方は center', () => {
+    expect(pos('bottom')).toEqual(['center', 'bottom']);
+    expect(pos('top')).toEqual(['center', 'top']);
+    expect(pos('left')).toEqual(['left', 'center']);
+    expect(pos('right')).toEqual(['right', 'center']);
+    expect(pos('center')).toEqual(['center', 'center']);
+  });
+  it('キーワード 2 つ: 順はどちらでもよい', () => {
+    expect(pos('top left')).toEqual(['left', 'top']);
+    expect(pos('left top')).toEqual(['left', 'top']);
+    expect(pos('bottom right')).toEqual(['right', 'bottom']);
+    expect(pos('center bottom')).toEqual(['center', 'bottom']);
+    expect(pos('bottom center')).toEqual(['center', 'bottom']);
+    expect(pos('center left')).toEqual(['left', 'center']);
+    expect(pos('left center')).toEqual(['left', 'center']);
+  });
+  it('長さ・百分率: 1 つなら横の位置で、縦は 50% (center)。2 つなら横・縦の順', () => {
+    expect(pos('10pt')).toEqual([10, 'center']);
+    expect(pos('25%')).toEqual(['25%', 'center']);
+    expect(pos('10pt 20%')).toEqual([10, '20%']);
+  });
+  it('個別の指定 (background-position-horizontal・-vertical) が一括指定より先', () => {
+    const bi = first<LBlock>(fo('<fo:block background-image="url(a.png)" background-position="bottom" background-position-horizontal="right">a</fo:block>')).backgroundImage!;
+    expect([bi.x, bi.y]).toEqual(['right', 'bottom']);
+  });
+});
+
+describe('FO-12: keep-together・keep-with-next・keep-with-previous の成分 (§7.20.3〜§7.20.5)', () => {
+  it('先に見る成分が auto でも、ほかの成分の指定を見る', () => {
+    for (const compat of BOTH) {
+      expect(first<LBlock>(fo('<fo:block keep-together.within-page="auto" keep-together.within-column="always">a</fo:block>'), compat).keepTogether).toBe(true);
+      expect(first<LBlock>(fo('<fo:block keep-with-next.within-page="auto" keep-with-next.within-column="always">a</fo:block>'), compat).keepWithNext).toBe(true);
+      expect(first<LBlock>(fo('<fo:block keep-with-previous.within-page="auto" keep-with-previous.within-column="always">a</fo:block>'), compat).keepWithPrevious).toBe(true);
+    }
+  });
+  it('表の行・リストの項目も同じ', () => {
+    const t = first<LTable>(fo('<fo:table><fo:table-body><fo:table-row keep-together.within-page="auto" keep-together.within-column="always" keep-with-next.within-page="auto" keep-with-next.within-column="always"><fo:table-cell><fo:block>a</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table>'));
+    expect(t.body.rows[0]).toMatchObject({ keepTogether: true, keepWithNext: true });
+    const l = first<LTable>(fo('<fo:list-block><fo:list-item keep-together.within-page="auto" keep-together.within-column="always"><fo:list-item-label><fo:block>1</fo:block></fo:list-item-label><fo:list-item-body><fo:block>a</fo:block></fo:list-item-body></fo:list-item></fo:list-block>'));
+    expect(l.body.rows[0].keepTogether).toBe(true);
+  });
+  it('どの成分も auto なら保たない。一つの成分の指定は従来どおり', () => {
+    expect(first<LBlock>(fo('<fo:block keep-together.within-page="auto" keep-together.within-column="auto">a</fo:block>')).keepTogether).toBeUndefined();
+    expect(first<LBlock>(fo('<fo:block keep-together="auto">a</fo:block>')).keepTogether).toBeUndefined();
+    expect(first<LBlock>(fo('<fo:block keep-together.within-page="always">a</fo:block>')).keepTogether).toBe(true);
+    expect(first<LBlock>(fo('<fo:block keep-together="always">a</fo:block>')).keepTogether).toBe(true);
+  });
+});
+
+describe('FO-13: rule-style は leader-pattern="rule" のときだけ効く (§7.22.5)', () => {
+  const leader = (a: string) => first<LBlock>(fo(`<fo:block><fo:leader ${a}/></fo:block>`)).children[0] as LLeader;
+  it('leader-pattern="dots" の rule-style="none" は点のまま', () => {
+    expect(leader('leader-pattern="dots" rule-style="none"').pattern).toBe('dots');
+  });
+  it('leader-pattern="rule" の rule-style="none" は線を引かない (従来どおり空白)', () => {
+    expect(leader('leader-pattern="rule" rule-style="none"').pattern).toBe('space');
+  });
+});
+
+describe('FO-14: number-columns-spanned・number-rows-spanned が空・数でないときは 1 (初期値)', () => {
+  it('後ろのセルも、自分の列の幅で組む', () => {
+    for (const bad of ['', 'x']) {
+      const t = first<LTable>(
+        fo(
+          `<fo:table table-layout="fixed" width="70pt"><fo:table-column column-width="30pt"/><fo:table-column column-width="40pt"/><fo:table-body><fo:table-row>` +
+            `<fo:table-cell number-columns-spanned="${bad}" number-rows-spanned="${bad}"><fo:block>a</fo:block></fo:table-cell><fo:table-cell><fo:block text-indent="50%">b</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table>`,
+        ),
+      );
+      const cells = t.body.rows[0].cells;
+      expect(cells[0].colSpan).toBeUndefined();
+      expect(cells[0].rowSpan).toBeUndefined();
+      // 2 列目 (40pt) の半分
+      expect((cells[1].children[0] as LBlock).textIndent).toBe(20);
+    }
+  });
+});
