@@ -41,3 +41,10 @@ export const PS_MAX_VM_BYTES = 512 * 1024 * 1024;
  * fill・stroke・clip が描画の並びに写す点の合計は、別に、この 2 倍までにする (Graphics.shownPoints。同じパスを塗って線も引く絵は、作った点の 2 倍を写す)
  */
 export const PS_MAX_PATH_POINTS = 5_000_000;
+
+/**
+ * PostScript のフィルタが、元のデータを読みためる量の上限 (16MB。超えれば limitcheck)。
+ * ReusableStreamDecode (元を全部読んでから使う。PLRM §3.13.3)・DCTDecode (JPEG を終わりまで読んでから画像にする)・予測関数の 1 行に当てる。
+ * 網かけのデータの元 (psShading) の上限と同じ値
+ */
+export const PS_FILTER_MAX_BYTES = 16 << 20;

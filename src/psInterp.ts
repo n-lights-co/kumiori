@@ -6,8 +6,8 @@
  * ファイルの書き込みと名前付きファイルの読み込みも持たない (外から受け取ったプログラムが、手元のファイルに触れないように)。
  * 図形の演算子は psGraphics.ts が足す。
  */
-import { filterSource, type ByteSource } from './psFilters';
-import { PS_MAX_VM_BYTES } from './imageLimits';
+import { FilterError, filterSource, type ByteSource } from './psFilters';
+import { PS_FILTER_MAX_BYTES, PS_MAX_VM_BYTES } from './imageLimits';
 
 // ───────────────────────── オブジェクト (PLRM §3.3) ─────────────────────────
 
@@ -530,6 +530,8 @@ export interface InterpOptions {
   maxMillis?: number;
   /** VM の使用量 (配列・文字列・辞書などの確保の合計。バイト) の上限。超えれば VMerror。既定は PS_MAX_VM_BYTES */
   maxVM?: number;
+  /** フィルタ (ReusableStreamDecode・DCTDecode) が元を読みためる量 (バイト) の上限。超えれば limitcheck。既定は PS_FILTER_MAX_BYTES */
+  maxFilterBytes?: number;
 }
 
 export class Interp {
@@ -564,6 +566,7 @@ export class Interp {
    */
   vmUsed = 0;
   maxVM: number;
+  maxFilterBytes: number;
   /** プログラムを実行し始めたか (組み込みの辞書を作る間は、VM の上限を確かめない) */
   private started = false;
   /** エラーを記録している間 (VM の上限を確かめない) */
@@ -582,6 +585,7 @@ export class Interp {
     this.maxSteps = opts.maxSteps ?? 50_000_000;
     this.deadline = Date.now() + (opts.maxMillis ?? 20_000);
     this.maxVM = opts.maxVM ?? PS_MAX_VM_BYTES;
+    this.maxFilterBytes = opts.maxFilterBytes ?? PS_FILTER_MAX_BYTES;
     this.systemdict = new PSDict(this, 500);
     this.globaldict = new PSDict(this, 100);
     this.globaldict.global = true;
@@ -1955,7 +1959,15 @@ function installCoreOperators(I: Interp) {
     else throw new PSError('typecheck');
     // フィルタの持つ状態 (Flate の窓 32KB・LZW の表など) も VM に置く
     I.vmAlloc(fname.v === 'FlateDecode' || fname.v === 'LZWDecode' ? VM_FILTER_BIG : VM_FILTER);
-    const fs = filterSource(fname.v, read, params, subfile);
+    let fs: ByteSource;
+    try {
+      // 読みためるフィルタ (ReusableStreamDecode・DCTDecode) は、ためる分を VM に積みながら読む。上限を超えれば limitcheck
+      // (PLRM §8.2 filter のエラーの一覧にある、実装の限界を超えたときのエラー)
+      fs = filterSource(fname.v, read, params, subfile, { maxBytes: I.maxFilterBytes, alloc: (n) => I.vmAlloc(n) });
+    } catch (e) {
+      if (e instanceof FilterError) throw new PSError(e.message);
+      throw e;
+    }
     I.push({ t: 'file', f: new PSFile(fs, fname.v), x: false });
   });
 

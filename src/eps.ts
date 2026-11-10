@@ -56,6 +56,8 @@ export interface EpsLimits {
   maxVM?: number;
   /** パスの点の合計の上限。超えれば limitcheck。既定は PS_MAX_PATH_POINTS */
   maxPathPoints?: number;
+  /** フィルタ (ReusableStreamDecode・DCTDecode) が元を読みためる量 (バイト) の上限。超えれば limitcheck。既定は PS_FILTER_MAX_BYTES */
+  maxFilterBytes?: number;
 }
 
 /** EPS を実行して、描いたものを返す */
@@ -65,7 +67,7 @@ export function runEps(
 ): { items: DisplayItem[]; bbox: [number, number, number, number]; warnings: string[]; notes: string[]; error?: string } | undefined {
   const prog = epsProgram(b);
   if (!prog) return undefined;
-  const I = new Interp({ maxMillis: opts.maxMillis ?? 20_000, maxVM: opts.maxVM });
+  const I = new Interp({ maxMillis: opts.maxMillis ?? 20_000, maxVM: opts.maxVM, maxFilterBytes: opts.maxFilterBytes });
   const G = new Graphics(I, { bbox: prog.bbox, maxPathPoints: opts.maxPathPoints });
   // EPSF 3.0 §3.2: save で囲み、userdict を begin し、showpage を空にする (グラフィックス状態は初期値)
   const head = latin1('save userdict begin /showpage {} def 0 setgray 0 setlinecap 1 setlinewidth 0 setlinejoin 10 setmiterlimit [] 0 setdash newpath\n');

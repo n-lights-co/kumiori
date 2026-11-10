@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Interp, latin1, strText, type InterpOptions, type PSObj } from '../src/psInterp';
+import { filterSource } from '../src/psFilters';
 import { Graphics } from '../src/psGraphics';
 import { epsToSvg, runEps } from '../src/eps';
 
@@ -127,5 +128,91 @@ describe('PostScript の上限: パスの点の合計 (PLRM 付録 B の表 B.1�
     const r = runEps(eps('10 10 moveto 90 10 lineto 90 90 lineto closepath gsave 1 0 0 setrgbcolor fill grestore stroke'));
     expect(r!.error).toBeUndefined();
     expect(r!.items.map((it) => it.k)).toEqual(['fill', 'stroke']);
+  });
+});
+
+describe('PostScript の上限: フィルタが読みためる量 (超えれば limitcheck)', () => {
+  it('ReusableStreamDecode・DCTDecode は、終わらない元を上限まで読んで limitcheck にする', () => {
+    for (const f of ['ReusableStreamDecode', 'DCTDecode']) {
+      const r = run(`/s 1000 string def { s } /${f} filter`, { maxFilterBytes: 100000 });
+      expect(r.error).toMatch(/^limitcheck \(filter\)/);
+      // 元の手続きを呼ぶのは、上限の分だけ
+      expect(r.I.steps).toBeLessThan(1000);
+    }
+  });
+  it('読みためた分は VM に数える (フィルタを作り続けるループは VMerror で終わる)', () => {
+    const r = run('/s 10000 string def { s /ReusableStreamDecode filter } loop', { maxVM: MB });
+    expect(r.error).toMatch(/^VMerror \(filter\)/);
+    expect(r.stack.length).toBeLessThan(60);
+    expect(run('/s 10 string def { s /FlateDecode filter } loop', { maxVM: MB }).error).toMatch(/^VMerror \(filter\)/);
+  });
+  it('上限までのデータは、前と同じに読める', () => {
+    expect(vals('(abcdef) /ReusableStreamDecode filter 6 string readstring pop')).toEqual(['abcdef']);
+    const big = Uint8Array.from({ length: 20000 }, (_, i) => (i * 7) & 255);
+    const src = filterSource('ReusableStreamDecode', { read: (() => { let i = 0; return () => (i < big.length ? big[i++] : -1); })() });
+    expect(src.length).toBe(20000);
+    const out: number[] = [];
+    for (let c = src.read(); c >= 0; c = src.read()) out.push(c);
+    expect(out).toEqual([...big]);
+    src.reset!();
+    expect(src.read()).toBe(0);
+  });
+  it('予測関数の 1 行の長さ (Columns) にも上限を置く', () => {
+    expect(run('(x) << /Predictor 12 /Columns 1000000000 >> /FlateDecode filter').error).toMatch(/^limitcheck \(filter\)/);
+  });
+  it('LZWDecode: 同じ字が続くデータ (表の並びが長くなる) も、前と同じに解ける', () => {
+    // 符号器 (EarlyChange 1・上位のビットから。PLRM §3.13.3 LZWEncode)
+    const encode = (data: number[]): number[] => {
+      const out: number[] = [];
+      let bits = 0;
+      let nbits = 0;
+      let width = 9;
+      const put = (code: number) => {
+        bits = (bits << width) | code;
+        nbits += width;
+        while (nbits >= 8) {
+          out.push((bits >> (nbits - 8)) & 255);
+          nbits -= 8;
+        }
+        bits &= (1 << nbits) - 1;
+      };
+      let table = new Map<string, number>();
+      let next = 258;
+      put(256);
+      let w = '';
+      for (const c of data) {
+        const wc = w + String.fromCharCode(c);
+        if (wc.length === 1 || table.has(wc)) {
+          w = wc;
+          continue;
+        }
+        put(w.length === 1 ? w.charCodeAt(0) : table.get(w)!);
+        table.set(wc, next++);
+        if (next >= 1 << width && width < 12) width++;
+        if (next >= 4094) {
+          put(256);
+          table = new Map();
+          next = 258;
+          width = 9;
+        }
+        w = String.fromCharCode(c);
+      }
+      if (w) put(w.length === 1 ? w.charCodeAt(0) : table.get(w)!);
+      put(257);
+      if (nbits) out.push((bits << (8 - nbits)) & 255);
+      return out;
+    };
+    const decode = (data: number[]) => {
+      const enc = encode(data);
+      let i = 0;
+      const src = filterSource('LZWDecode', { read: () => (i < enc.length ? enc[i++] : -1) });
+      const out: number[] = [];
+      for (let c = src.read(); c >= 0; c = src.read()) out.push(c);
+      return out;
+    };
+    const same = new Array<number>(30000).fill(7);
+    expect(decode(same)).toEqual(same);
+    const mixed = Array.from({ length: 30000 }, (_, k) => (k * k) % 5);
+    expect(decode(mixed)).toEqual(mixed);
   });
 });
