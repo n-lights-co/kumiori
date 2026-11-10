@@ -369,3 +369,37 @@ describe('PostScript の上限: 長さに比例して回る演算子の手間', 
     expect(vals('/s 300 string def 0 1 299 { s exch dup 256 mod put } for /d 2 dict def d s 5 put d s get d s cvn get d s known')).toEqual([5, 5, true]);
   });
 });
+
+describe('PostScript の上限: StartData の長さ (PLRM §8.2 StartData)', () => {
+  it('長さのオペランドをそのまま信じて確保しない (ファイルに残っている分だけ読む)', () => {
+    const r = run('/CIDInit /ProcSet findresource begin 4 dict begin /CIDFontName /X def (Binary) 2000000000 StartData ABCD');
+    expect(r.error).toBeUndefined();
+    expect(r.I.vmUsed).toBeLessThan(MB);
+    expect(vals('/CIDInit /ProcSet findresource begin 4 dict begin /CIDFontName /X def (Binary) 2000000000 StartData ABCD')).toEqual([]);
+    const f = run('/FontSetInit /ProcSet findresource begin /S 2000000000 StartData ABCD');
+    expect(f.I.vmUsed).toBeLessThan(MB);
+  });
+  it('負の長さは rangecheck', () => {
+    expect(run('/CIDInit /ProcSet findresource begin 4 dict begin /CIDFontName /X def (Binary) -1 StartData').error).toMatch(/^rangecheck/);
+  });
+  it('長さどおりのデータは、前と同じに読める (続きはプログラムとして実行する)', () => {
+    const body = (fmt: string, n: number, data: string) => `/CIDInit /ProcSet findresource begin 4 dict begin /CIDFontName /X def (${fmt}) ${n} StartData ${data} /X /CIDFont findresource /GlyphData get`;
+    expect(vals(body('Binary', 4, 'ABCD'))).toEqual(['ABCD']);
+    expect(vals(body('Hex', 4, '41 42\n4344'))).toEqual(['ABCD']);
+    // 64KB を超えるデータ (倍々に伸ばして読む)
+    const big = 'x'.repeat(200000);
+    const r = run(body('Binary', 200000, big) + ' length');
+    expect(r.error).toBeUndefined();
+    expect(r.stack.map(show)).toEqual([200000]);
+  });
+  it('終わらない元から読む StartData は VMerror で終わる', () => {
+    // 手続きを元にしたファイルを実行する: 初めに StartData までのプログラムを返し、あとは 1000 字の文字列を返し続ける
+    const r = run(
+      '/s 1000 string def /n 0 def /CIDInit /ProcSet findresource begin 4 dict begin /CIDFontName /X def ' +
+        '{ n 0 eq { /n 1 store ((Binary) 2000000000 StartData ) } { s } ifelse } /NullEncode filter cvx exec',
+      { maxVM: MB },
+    );
+    expect(r.error).toMatch(/^VMerror \(StartData\)/);
+    expect(r.I.vmUsed).toBeLessThanOrEqual(MB);
+  });
+});

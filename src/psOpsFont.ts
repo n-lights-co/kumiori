@@ -153,27 +153,7 @@ export function makeCIDInit(I: Interp): PSDict {
       const f = I.fileStack[I.fileStack.length - 1];
       if (!f) throw new PSError('ioerror');
       const hex = strText(fmt) === 'Hex';
-      const data = new Uint8Array(n);
-      let k = 0;
-      if (hex) {
-        let hi = -1;
-        while (k < n) {
-          const c = f.read();
-          if (c < 0) break;
-          const v = c >= 0x30 && c <= 0x39 ? c - 0x30 : c >= 0x41 && c <= 0x46 ? c - 55 : c >= 0x61 && c <= 0x66 ? c - 87 : -1;
-          if (v < 0) continue;
-          if (hi < 0) hi = v;
-          else {
-            data[k++] = hi * 16 + v;
-            hi = -1;
-          }
-        }
-      } else
-        for (; k < n; k++) {
-          const c = f.read();
-          if (c < 0) break;
-          data[k] = c;
-        }
+      const data = readStartData(I, f, n, hex);
       const fd = I.currentdict;
       fd.put('GlyphData', str(data));
       const cname = fd.get('CIDFontName') ?? name('Unnamed');
@@ -187,6 +167,47 @@ export function makeCIDInit(I: Interp): PSDict {
     }),
   );
   return cidInit;
+}
+
+/**
+ * StartData (§8.2) に続くデータを、実行中のファイルから n バイトまで読む (hex なら 16 進の 2 字で 1 バイト)。
+ * オペランドの n をそのまま信じて確保しない (「(Binary) 2000000000 StartData」だけで 2GB を取らない): 読めた分だけ倍々に伸ばし、
+ * 伸ばすたびに VM に積む (超えれば VMerror)。ファイルが先に終われば、読めた所までを返す。
+ * 文字列の長さの上限 (表 B.1 の 65535。string 演算子はその 16 倍まで) は当てない: CID の書体のデータは 1 つで数 MB〜十数 MB あり、
+ * その長さはファイルの中に実際にあるデータで決まる
+ */
+function readStartData(I: Interp, f: PSFile, n: number, hex: boolean): Uint8Array {
+  if (n < 0) throw new PSError('rangecheck');
+  let data = new Uint8Array(Math.min(n, 65536));
+  I.vmAlloc(data.length);
+  let k = 0;
+  let hi = -1;
+  while (k < n) {
+    const c = f.read();
+    if (c < 0) break;
+    let b = c;
+    if (hex) {
+      const v = c >= 0x30 && c <= 0x39 ? c - 0x30 : c >= 0x41 && c <= 0x46 ? c - 55 : c >= 0x61 && c <= 0x66 ? c - 87 : -1;
+      if (v < 0) continue;
+      if (hi < 0) {
+        hi = v;
+        continue;
+      }
+      b = hi * 16 + v;
+      hi = -1;
+    }
+    if (k === data.length) {
+      const cap = Math.min(n, data.length * 2);
+      I.vmAlloc(cap - data.length);
+      // 読む手間も数える (64 バイトで 1 ステップ)
+      I.charge(data.length / 64);
+      const grown = new Uint8Array(cap);
+      grown.set(data);
+      data = grown;
+    }
+    data[k++] = b;
+  }
+  return k === data.length ? data : data.slice(0, k);
 }
 
 /** 字 1 つ: 字の空間 → ユーザ空間の行列と、字の形 (または Type 3 の手続き、代わりの書体の字) */
@@ -242,12 +263,7 @@ export function makeFontSetInit(I: Interp): PSDict {
       const key = I.pop();
       const f = I.fileStack[I.fileStack.length - 1];
       if (!f) throw new PSError('ioerror');
-      const data = new Uint8Array(n);
-      for (let k = 0; k < n; k++) {
-        const c = f.read();
-        if (c < 0) break;
-        data[k] = c;
-      }
+      const data = readStartData(I, f, n, false);
       const set = I.newDict(10);
       for (const cf of parseCff(data)) {
         const fd = I.newDict(12);
