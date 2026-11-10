@@ -4,6 +4,22 @@
 
 Version numbers follow [Semantic Versioning](https://semver.org/). During 0.x, incompatible changes may also be released in a minor version (such as 0.2.0).
 
+## Unreleased
+
+Changes that will go into the next version. When it is released, the heading becomes the version number and the release date ([`docs/en/RELEASING.md`](docs/en/RELEASING.md)).
+
+- **HTML+CSS typesetting**:
+  - Added support for flex shrinking (`flex-shrink`, automatic minimum size), reversed directions (`row-reverse`, `column-reverse`, `wrap-reverse`), baseline alignment (`align-items: baseline`, `last baseline`), cross-axis `margin: auto`, `order`, growing, shrinking and wrapping in column containers, and vertical-writing containers (Flexbox 1)
+  - Added support for `visibility: hidden` and `collapse`, `aspect-ratio`, `auto` left and right margins on boxes with a fixed width and right-to-left containing blocks, and page names chosen by `page` (absolutely positioned and floated boxes do not change the name)
+  - CSS referenced by the document over `http(s):` (`<link rel="stylesheet">`, `@import`) and the fonts of its `@font-face` rules are now fetched (only those whose `unicode-range` overlaps the characters of the document). This can be turned off with `fetchStyles` in the library and `--no-fetch-styles` in the command
+  - WOFF and WOFF2 can now be used as font files (`--font`, `files`, `fonts`, `@font-face`; converted back to sfnt and embedded)
+  - Properties that do not matter for print (`cursor`, `user-select`, `will-change`, etc.) are no longer reported as unsupported
+- **XSL-FO typesetting**: In collapsed-border tables, the borders between a table header or footer repeated after a page break and the first or last row on that page are now chosen again from the borders of the adjoining rows (XSL-FO 1.1 §6.7.3, §6.7.10)
+- **PDF**: The ToUnicode entries of ligature glyphs (such as fi) now map to the original sequence of characters (text search and copy give the original characters)
+- **Library**: Added `resolveResource` (a function that returns the contents of files referenced by the document or CSS that are not in `files`). Added the Node components `kumiori/node` (`createFontLoader`, `createFileResolver`, `defaultFontCacheDir`)
+- **Node command**: Files referenced by the document or CSS with a `file:` URL are now read even outside the input directory
+- **Publishing**: Added a workflow (`.github/workflows/conformance-pdf.yml`) that attaches the four PDFs of the conformance documents (Japanese and English) to a release when it is published
+
 ## 0.1.1 (2026-11-09)
 
 A release that completes the notices for third-party software and documents. Typesetting behaviour and the API are the same as in 0.1.0.

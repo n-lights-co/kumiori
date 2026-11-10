@@ -22,7 +22,7 @@ Kumiori は 3 つの形で公開します。
 1. リポジトリの **Settings → Pages** で、**Source** を「**GitHub Actions**」にする
 2. main に push すると、`.github/workflows/pages.yml` が `dist/` を作って置く。URL は `https://<アカウント>.github.io/kumiori/` (Actions の「Pages」の実行結果にも出る)
 3. リポジトリが非公開の間は、配置 (deploy) の段階を飛ばす (無料のプランでは非公開のリポジトリの Pages を有効にできないため)。ビルドは毎回走る。公開にして 1 の設定をすれば、次の push から配置される (すぐ置くなら Actions の「Pages」を「Run workflow」で動かす)
-3. その URL を README の「画面 (ブラウザ)」の項に書く
+4. その URL を README の「画面 (ブラウザ)」の項に書く
 
 ### リポジトリを別のアカウント (組織) へ移したら
 

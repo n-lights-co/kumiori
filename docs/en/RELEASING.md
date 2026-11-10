@@ -22,7 +22,7 @@ Kumiori is released in three forms.
 1. In the repository's **Settings → Pages**, set **Source** to "**GitHub Actions**"
 2. On a push to main, `.github/workflows/pages.yml` builds `dist/` and deploys it. The URL is `https://<account>.github.io/kumiori/` (it is also shown in the result of the "Pages" run under Actions)
 3. While the repository is private, the deploy step is skipped (on the free plan, Pages cannot be enabled for a private repository). The build still runs every time. Once the repository is public and step 1 is done, the next push deploys it (to deploy right away, run the "Pages" workflow with "Run workflow" under Actions)
-3. Write that URL in the "Web app (browser)" section of the README
+4. Write that URL in the "Web app (browser)" section of the README
 
 ### If the repository is moved to another account (organization)
 
