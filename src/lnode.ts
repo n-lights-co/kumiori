@@ -5,7 +5,7 @@
  * toArea() で一度だけ物理座標 (x, y, width, height) の Area Tree に変換する。
  */
 import { zeroEdges } from './geometry';
-import type { BaseNode, BorderStyle, Edges, Rotation, TextAlign, WritingMode } from './types';
+import type { BaseNode, BorderStyle, Edges, Rotation, RubyAlign, TextAlign, WritingMode } from './types';
 
 export type LKind = 'region-body' | 'block' | 'line' | 'inline' | 'glyph' | 'ruby' | 'tcy' | 'table' | 'row' | 'cell' | 'image';
 
@@ -149,6 +149,7 @@ export interface ResolvedStyle {
   hyphenate?: boolean;
   language?: string;
   rubyOverhang?: boolean;
+  rubyAlign?: RubyAlign;
   kerning?: boolean;
   fontFeatures?: string[];
   textOrientation?: 'mixed' | 'upright' | 'sideways';
@@ -249,6 +250,7 @@ export function resolveStyle(parent: ResolvedStyle, n: BaseNode): ResolvedStyle 
     hyphenate: n.hyphenate ?? parent.hyphenate,
     language: n.language ?? parent.language,
     rubyOverhang: n.rubyOverhang ?? parent.rubyOverhang,
+    rubyAlign: n.rubyAlign ?? parent.rubyAlign,
     kerning: n.kerning ?? parent.kerning,
     fontFeatures: n.fontFeatures ?? parent.fontFeatures,
     textOrientation: n.textOrientation ?? parent.textOrientation,

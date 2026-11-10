@@ -456,7 +456,9 @@ function flattenRuby(c: LRuby, cx: FlattenCtx): void {
   // CSS の行の高さ (primaryFontMetrics) では、下側に置いたルビも行の高さに数えない (§3.6。上側と下側の厚さの合計が行間に収まらない分だけ空ける)
   if (under && s2.primaryFontMetrics) r.roomExtent = r.rubyExtent + (r.underExtent ?? 0);
   const colors = under ? [c.rubyColorUnder, c.rubyColor] : [c.rubyColor, c.rubyColorUnder];
-  const aligns = under ? [c.rubyAlignUnder, c.rubyAlign, c.rubyAlignBase] : [c.rubyAlign, c.rubyAlignUnder, c.rubyAlignBase];
+  // ruby-align (§4.3): 注釈・親文字ごとの値。無ければ、まわりから継承した値 (HTML の入力は space-around。XSL-FO の入力は無し = これまでの配り方)
+  const [a1, a2, ab] = [c.rubyAlign ?? st.rubyAlign, c.rubyAlignUnder ?? st.rubyAlign, c.rubyAlignBase ?? st.rubyAlign];
+  const aligns = under ? [a2, a1, ab] : [a1, a2, ab];
   const chars = [...c.baseText];
   // 親文字が代わりの書体の字なら、行の高さは最初に使える書体の上下で決める (字と同じ。CSS Inline 3 §5.3)
   const primary = s2.primaryFontMetrics ? m.glyph(primaryChar(s2), runStyle(s2), wm).font : undefined;

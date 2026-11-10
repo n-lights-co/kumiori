@@ -196,6 +196,12 @@ export interface TextStyle {
   language?: string;
   /** ルビが親文字より長いとき、前後の仮名・約物に掛ける (ルビ文字 1 字分まで。JLREQ §3.3.8)。既定 false */
   rubyOverhang?: boolean;
+  /**
+   * 親文字・ルビが、その箱 (親文字とルビのうち長いほうの長さ) より短いときの、字の配り方 (CSS Ruby 1 §4.3 の ruby-align)。継承する。
+   * ルビ (LRuby) に付けたときは、その注釈 (rubyText) の配り方 (親文字と 2 段目は rubyAlignBase・rubyAlignUnder。無ければ、まわりから継承した値)。
+   * 無ければ、字ごとに前後に同じアキを付ける (欧文の字の間も空ける。XSL-FO の入力の既定)。HTML の入力の既定は 'space-around' (§4.3 の初期値)
+   */
+  rubyAlign?: RubyAlign;
   /** 欧文のペアカーニング (フォントの kern / GPOS)。横書きのみ。既定 false */
   kerning?: boolean;
   /**
@@ -788,11 +794,9 @@ export interface LRuby extends BaseNode {
    */
   rubyPosition?: 'under';
   /**
-   * 親文字・ルビが、その箱 (親文字とルビのうち長いほうの長さ) より短いときの、字の配り方 (CSS Ruby 1 §4.3 の ruby-align)。
-   * rubyAlign は rubyText、rubyAlignUnder は rubyTextUnder、rubyAlignBase は親文字。
-   * 無ければ、これまでの配り方 (字ごとに、前後に同じアキを付ける。欧文の字の間も空ける)
+   * 2 段目 (rubyTextUnder)・親文字の字の配り方 (CSS Ruby 1 §4.3 の ruby-align)。注釈 (rubyText) の配り方は rubyAlign (TextStyle)。
+   * 無ければ、まわりから継承した rubyAlign
    */
-  rubyAlign?: RubyAlign;
   rubyAlignUnder?: RubyAlign;
   rubyAlignBase?: RubyAlign;
 }

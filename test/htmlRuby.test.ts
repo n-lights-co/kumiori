@@ -4,7 +4,7 @@
  *  - ruby-merge (§4.2): separate・merge (auto は未対応)
  *  - ruby-align (§4.3): start・center・space-between・space-around
  *  - ruby-overhang (§5.1): auto・none
- * 指定の無いルビは、これまでの組み方のまま (LRuby に新しい項目を付けない)
+ * 指定の無いルビは、ruby-align だけ初期値 space-around (HTML の入力の既定)。ほかは、これまでの組み方のまま (LRuby に新しい項目を付けない)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
@@ -14,7 +14,7 @@ import { unsupportedCssReport } from '../src/cssUnsupported';
 import type { Area, GlyphArea, LRuby, RubyArea } from '../src/types';
 import { cascadeStyles, HTML_UA_CSS } from '../src/cssCascade';
 import { childrenOf } from '../src/areaTree';
-import { makeEngine } from './helpers';
+import { doc, makeEngine, walk } from './helpers';
 
 describe('HTML: ルビの配置 (CSS Ruby 1 §4・§5.1)', () => {
   let E: Awaited<ReturnType<typeof makeEngine>>;
@@ -147,20 +147,35 @@ describe('HTML: ルビの配置 (CSS Ruby 1 §4・§5.1)', () => {
       // 字の間 1 つ + 両端で 1 つ分: アキ 30pt を 2 つに分け、その半分を前後に
       expect(at('ruby-align: space-around')).toEqual([7.5, 27.5]);
     });
-    it('指定の無いときの配り方は、和文のルビでは space-around と同じ', () => {
+    it('指定の無いときは、初期値 space-around と同じ (和文のルビは字の間と両端を空ける)', () => {
       const r = short('');
       expect(offs(r, r.ruby)).toEqual([7.5, 27.5]);
+      // 3 字のルビ・親文字のほうが短いルビも、明示したときと同じ位置
+      for (const body of ['<ruby STYLE>漢字漢字<rt>かなか</rt></ruby>', '<ruby STYLE>漢字<rt>かきくけこさ</rt></ruby>', '<ruby STYLE>東<rt>とう</rt>京<rt>きょう</rt><rtc>Tokyo</rtc></ruby>']) {
+        const pos = (st: string) => laid(`<p>${body.replace(' STYLE', st)}</p>`).map((x) => [offs(x, x.base), offs(x, x.ruby)]);
+        expect(pos('')).toEqual(pos(' style="ruby-align: space-around"'));
+      }
     });
-    it('space-between・space-around は、欧文の字の間を空けない (中央にそろえる)。指定の無いときは、これまでどおり字ごとに空ける', () => {
+    it('space-between・space-around は、欧文の字の間を空けない (中央にそろえる)。指定の無いとき (初期値 space-around) も同じ', () => {
       const w = (st: string) => {
         const r = short(st, 'ab');
         return { span: r.ruby[1].x - (r.ruby[0].x + r.ruby[0].width), mid: (r.ruby[0].x + r.ruby[1].x + r.ruby[1].width) / 2 - r.x };
       };
-      for (const v of ['space-between', 'space-around']) {
-        expect(w(`ruby-align: ${v}`).span).toBeCloseTo(0, 6);
-        expect(w(`ruby-align: ${v}`).mid).toBeCloseTo(20, 3);
+      for (const v of ['ruby-align: space-between', 'ruby-align: space-around', '']) {
+        expect(w(v).span).toBeCloseTo(0, 6);
+        expect(w(v).mid).toBeCloseTo(20, 3);
       }
-      expect(w('').span).toBeGreaterThan(5);
+    });
+    it('XSL-FO などの入力 (rubyAlign の無い文書) は、これまでどおり字ごとに前後へ同じアキ (欧文の字の間も空ける)', () => {
+      const t = E.engine.layout(doc([{ type: 'block', fontSize: 10, children: [{ type: 'ruby', baseText: '漢字漢字', rubyText: 'ab' }] }] as never));
+      let ruby: RubyArea | undefined;
+      walk(t.sheets[0].page, (a) => {
+        if (a.type === 'ruby') ruby = a as RubyArea;
+      });
+      const [a, b] = ruby!.ruby;
+      expect(b.x - (a.x + a.width)).toBeGreaterThan(5);
+      // 字の間のアキは、前の端のアキの 2 倍 (どの字にも前後に同じアキ)
+      expect(b.x - (a.x + a.width)).toBeCloseTo(2 * a.x, 3);
     });
     it('親文字がルビより短いとき、親文字を ruby-align で配る (ルビは詰めて置く)', () => {
       // 親文字 2 字 (20pt) に仮名 6 字 (30pt)
