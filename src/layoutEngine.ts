@@ -80,6 +80,7 @@ import {
   breakOne,
   buildLineNode,
   adjustJapaneseSpacing,
+  adjustHangulWordSpaces,
   markHyphenation,
   flattenInline,
   glueAfterCssLeaders,
@@ -2197,6 +2198,8 @@ class Flow {
           : undefined,
         kernAh,
       );
+      // ハングルの語の間の空白は、書体が文脈で決める幅にする (ハングルの字が無ければ何もしない)
+      adjustHangulWordSpaces(atoms, (p, n, s) => ms.contextSpaceDelta(p, n, { fontFamily: s.fontFamily, fontWeight: s.fontWeight }));
       // 双方向のテキスト (UAX #9): 段落の字の深さを決める。並べ替えは行ごと (reorderLine)
       // 縦書きの段落は、上から下 (左から右と同じ深さ 0) として並べる (direction の rtl の縦書きの配置は扱わない)
       markBidi(atoms, this.wm === 'horizontal-tb' && st.direction === 'rtl', ms, this.wm, st.unicodeBidi);

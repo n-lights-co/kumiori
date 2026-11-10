@@ -140,6 +140,11 @@ export const EXTRA_TEST_FONTS = {
   'SourceSans3-Regular-3.052R.otf': 'https://raw.githubusercontent.com/adobe-fonts/source-sans/3.052R/OTF/SourceSans3-Regular.otf',
   // CID で引く CFF (test/postscript.test.ts): Noto Sans JP の OTF (Google Fonts の配信元の、版の付いた URL。今の版は TrueType の輪郭なので、CFF だった版を指す)
   'NotoSansJP-Regular-v25.otf': 'https://fonts.gstatic.com/s/notosansjp/v25/-F62fjtqLzI2JPCgQBnw7HFowAIO2lZ9hg.otf',
+  // タイ文字・デーヴァナーガリー・ハングル (test/complexScripts.test.ts・test/hangul.test.ts): 既定の書体には、これらの字が無い。
+  // Google Fonts の配信元の、版の付いた TTF (可変フォントから取り出した 1 つの太さ)
+  'NotoSansThai-Regular-v29.ttf': 'https://fonts.gstatic.com/s/notosansthai/v29/iJWnBXeUZi_OHPqn4wq6hQ2_hbJ1xyN9wd43SofNWcd1MKVQt_So_9CdU5RtpzE.ttf',
+  'NotoSansDevanagari-Regular-v33.ttf': 'https://fonts.gstatic.com/s/notosansdevanagari/v33/TuGoUUFzXI5FBtUq5a8bjKYTZjtRU6Sgv3NaV_SNmI0b8QQCQmHn6B2OHjbL_08AlXQly-A.ttf',
+  'NotoSansKR-Regular-v40.ttf': 'https://fonts.gstatic.com/s/notosanskr/v40/PbyxFmXiEBPT4ITbgNA5Cgms3VYcOA-vvnIzzuoyeLQ.ttf',
   // 語をアイコンにする合字の書体 (test/iconLigatures.test.ts): Material Icons (Google。Apache-2.0)。配布元のリポジトリの、版のタグの付いたファイル。
   // 3.0.1 は名前の合字を liga (標準の合字) に、4.0.0 は rlig (必須の合字) に入れている
   'MaterialIcons-Regular-3.0.1.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/3.0.1/iconfont/MaterialIcons-Regular.ttf',

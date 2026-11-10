@@ -10,7 +10,7 @@
 import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
 import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './measurer';
 import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
-import { lineBreakActions, type LineBreakOptions } from './lineBreak';
+import { complexContextBreaks, lineBreakActions, type LineBreakOptions } from './lineBreak';
 import { newNode, type LNode, type ResolvedStyle } from './lnode';
 import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, WritingMode } from './types';
 import { borderToLogicalWidths, toLogical } from './geometry';
@@ -65,6 +65,8 @@ export interface Atom {
   glue?: boolean;
   /** この atom の前で改行してよいか (UAX #14 で段落ごとに決めたもの。markLineBreaks) */
   lbBefore?: boolean;
+  /** lbBefore が、辞書で決めた語の境目 (タイ語など、語の間に空白を書かない用字。complexContextBreaks) による */
+  lbDict?: boolean;
   /** vertical-align: top・bottom の箱: 行の高さを決めてから、行の箱の上端・下端に揃える (lineMetrics) */
   lineAlign?: 'top' | 'bottom';
   /** 前で改行してよいが、ほかに改行できる位置が無いときだけ使う (斜線の後ろ。UAX #14 §5.1 SY の推奨。lineBreakActions の soft) */
@@ -204,7 +206,9 @@ function canBreakAtoms(a: Atom, b: Atom): boolean {
   // break-all は字を ID として扱う (Text 3 §5.1)。ID でも、行頭に置けない字 (小書きの仮名・長音記号など) の前では改行しない
   // 結合文字・異体字セレクタ (General_Category が M の字) の前は、字の単位 (基底の字 + 結合文字。UAX #29 GB9・GB9a) の中なので、break-all でも分けない
   // (break-all が ID として扱うのは字の単位。Text 3 §5.1)。UAX #14 の機会 (LB9: 結合文字の前は改行しない) に任せる
-  if (wb && wb !== 'normal' && a.kind === 'glyph' && b.kind === 'glyph' && !a.isSpace && !b.isSpace && LETTER.test(a.last) && LETTER.test(b.first) && !COMBINING.test(b.first))
+  // keep-all でも、辞書で決めた語の境目 (タイ語など) では改行してよい (Text 3 §5.1 の word-break の keep-all: 字と字の間の機会を無くすが、
+  // 辞書による改行の機会は残す)。break-all は、SA の字も ID と同じに扱う (字の単位の間で改行してよい)
+  if (wb && wb !== 'normal' && !(wb === 'keep-all' && b.lbDict) && a.kind === 'glyph' && b.kind === 'glyph' && !a.isSpace && !b.isSpace && LETTER.test(a.last) && LETTER.test(b.first) && !COMBINING.test(b.first))
     return wb === 'break-all' && !isLineHeadProhibited(b.first, b.st.looseLineStart) && !isLineEndProhibited(a.last);
   return b.lbBefore ?? false;
 }
@@ -225,6 +229,7 @@ function lineBreakOptionsOf(st: ResolvedStyle): LineBreakOptions {
 export function markLineBreaks(atoms: Atom[]): void {
   const cps: number[] = [];
   const optsOf: LineBreakOptions[] = [];
+  const langOf: Array<string | undefined> = [];
   const firstIdx: number[] = new Array(atoms.length).fill(-1);
   for (let i = 0; i < atoms.length; i++) {
     const a = atoms[i];
@@ -233,6 +238,7 @@ export function markLineBreaks(atoms: Atom[]): void {
     const push = (cp: number) => {
       cps.push(cp);
       optsOf.push(o);
+      langOf.push(a.st.language);
     };
     firstIdx[i] = cps.length;
     if (a.kind === 'break') push(0x0a);
@@ -254,6 +260,20 @@ export function markLineBreaks(atoms: Atom[]): void {
     const k = firstIdx[i];
     if (k > 0) atoms[i].lbBefore = act[k] !== '×';
     if (k > 0 && soft[k]) atoms[i].lbSoft = true;
+  }
+  // 語の間に空白を書かない用字 (タイ語など。UAX #14 の SA) の並びの中は、UAX #14 の既定 (AL) では改行の機会が無い。
+  // 辞書で決めた語の境目を、改行の機会に足す (UAX #14 §5.1 SA・CSS Text 3 §5)。atom の途中 (字の単位の中) の境目は使わない。
+  // SA の字が無ければ dict は null で、何もしない
+  const dict = complexContextBreaks(cps, (k) => langOf[k]);
+  if (dict) {
+    const at = new Set(dict);
+    for (let i = 0; i < atoms.length; i++) {
+      const k = firstIdx[i];
+      if (k > 0 && at.has(k) && act[k] === '×' && !atoms[i].lbBefore) {
+        atoms[i].lbBefore = true;
+        atoms[i].lbDict = true;
+      }
+    }
   }
 }
 
@@ -326,7 +346,7 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
     // 字の組の詰め (kern): 書式が同じなら、inline の境目をまたいでも詰める (CSS Text 3 §7.3: 書式の実際の変化が無い境目では、
     // 字形の処理を切ってはならない)。上げ下げ (vertical-align) の違う境目では切る。余白・枠のある境目は間に箱の atom が入るので、隣り合わない
     const sameBox = kernAh ? a.st === b.st : (a.shift ?? 0) === (b.shift ?? 0);
-    if (kern && a.st.kerning && b.st.kerning && fa === fb && sameBox && isLatinAlnumOrPunct(a.last) && isLatinAlnumOrPunct(b.first)) a.advance += kern(a, b);
+    if (kern && a.st.kerning && b.st.kerning && fa === fb && sameBox && ((isLatinAlnumOrPunct(a.last) && isLatinAlnumOrPunct(b.first)) || (isThaiLetter(a.last) && isThaiLetter(b.first)))) a.advance += kern(a, b);
     if (a.st.punctuationSqueeze !== false) {
       // 詰めたときの間隔 (axf:punctuation-spacing。既定は二分)
       const sp = a.st.punctuationSpacing;
@@ -377,9 +397,36 @@ function isPlainChar(a: Atom, ch: string): boolean {
 }
 
 /** ルビが掛けられる字 (仮名と約物。漢字・欧文には掛けない) */
+const HANGUL = /^\p{Script=Hangul}$/u;
+/**
+ * ハングルとハングルの間の空白 (U+0020) の送りを、書体が文脈で決める幅にする (Measurer.contextSpaceDelta)。
+ * ハングルの書体は、ハングルの語の間の空白を広い字形に置き換える (OpenType の calt)。空白は描かないので、送りだけを合わせる。
+ * 字の単位 (書記素クラスタ) の atom は、基底の字 (first・last) で引く
+ */
+export function adjustHangulWordSpaces(atoms: Atom[], delta: (prev: string, next: string, st: ResolvedStyle) => number) {
+  for (let k = 1; k + 1 < atoms.length; k++) {
+    const a = atoms[k];
+    if (a.kind !== 'glyph' || !a.isSpace || a.first !== ' ' || a.cluster) continue;
+    const p = atoms[k - 1];
+    const n = atoms[k + 1];
+    if (p.kind !== 'glyph' || n.kind !== 'glyph' || !HANGUL.test(p.last) || !HANGUL.test(n.first)) continue;
+    if (p.st.fontFamily !== a.st.fontFamily || n.st.fontFamily !== a.st.fontFamily || p.st.fontWeight !== a.st.fontWeight || n.st.fontWeight !== a.st.fontWeight || p.st.fontSize !== a.st.fontSize || n.st.fontSize !== a.st.fontSize) continue;
+    a.advance += delta(p.last, n.first, a.st) * a.st.fontSize;
+  }
+}
+
 function overhangable(a: Atom | undefined, ch: string | undefined): boolean {
   if (!a || a.kind !== 'glyph' || a.isSpace || a.frameOpen || a.frameClose || !ch) return false;
   return /[\u3041-\u309F\u30A1-\u30FA\u30FD-\u30FF]/u.test(ch) || isClosingPunct(ch) || isOpeningPunct(ch) || isMiddlePunct(ch);
+}
+
+/**
+ * タイ文字の字 (U+0E01〜U+0E5B)。タイ文字の書体は、前に置く母音 (เ แ โ ใ ไ) と子音の間などを詰める組 (kern) を持つ。
+ * 字の単位 (子音 + 上下の記号) の間の詰めは、基底の字の組で引く (書体の組の表は、記号を飛ばして引く指定)
+ */
+function isThaiLetter(ch: string): boolean {
+  const cp = ch.codePointAt(0) ?? 0;
+  return cp >= 0x0e01 && cp <= 0x0e5b;
 }
 
 /** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張) */

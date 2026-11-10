@@ -9,6 +9,7 @@
 import { collectionFaces, isCollection } from './fontLoader';
 import { toSfnt } from './webFont';
 import { msg } from './messages';
+import { patchFontkitShaping } from './fontkitShaping';
 import fontkit from '@pdf-lib/fontkit';
 import type { FontSpec } from './types';
 
@@ -144,6 +145,7 @@ export class FontManager {
     this.generation++;
     const fk = fontkit.create(new Uint8Array(buffer));
     patchFontkitVariationSelector(fk);
+    patchFontkitShaping(fk);
     const upm = fk.unitsPerEm || 1000;
     // OS/2 typo メトリクスが ちょうど 1em を成すフォント (Noto CJK 等) は ideographic em ボックスと一致する
     const os2 = (fk as unknown as { 'OS/2'?: { typoAscender: number; typoDescender: number } })['OS/2'];
