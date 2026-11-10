@@ -266,20 +266,27 @@ export function installPathOperators(I: Interp, G: Graphics) {
   };
   d('rectfill', (I) => {
     const rs = rects(I);
+    // 現在のパスには触れない (PLRM §8.2 rectfill)。現在の点と、部分パスの始まり (closepath で戻る点) も元に戻す
     const saved = G.g.path;
     const cp = G.g.cp;
+    const sp = G.g.sp;
     G.g.path = [];
     appendRects(G, rs);
     G.fill(false);
     G.g.path = saved;
     G.g.cp = cp;
+    G.g.sp = sp;
   });
   d('rectstroke', (I) => {
     let m: Mat | undefined;
-    if (isMatrix(I.ostack[I.ostack.length - 1]) && I.ostack.length >= 2 && I.ostack[I.ostack.length - 2].t !== 'array') m = popMatrix(I);
+    // 形 (PLRM §8.2 rectstroke): x y width height・x y width height matrix・numarray・numarray matrix・numstring・numstring matrix。
+    // 矩形の数の並びは 4 の倍数なので、一番上が 6 つの数の配列で、その下に矩形 (数・配列・文字列) があれば、一番上は行列
+    const below = I.ostack[I.ostack.length - 2];
+    if (isMatrix(I.ostack[I.ostack.length - 1]) && below && (below.t === 'int' || below.t === 'real' || below.t === 'array' || below.t === 'string')) m = popMatrix(I);
     const rs = rects(I);
     const saved = G.g.path;
     const cp = G.g.cp;
+    const sp = G.g.sp;
     const ctm = G.g.ctm;
     G.g.path = [];
     appendRects(G, rs);
@@ -288,6 +295,7 @@ export function installPathOperators(I: Interp, G: Graphics) {
     G.g.ctm = ctm;
     G.g.path = saved;
     G.g.cp = cp;
+    G.g.sp = sp;
   });
   d('rectclip', (I) => {
     const rs = rects(I);

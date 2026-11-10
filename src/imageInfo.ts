@@ -146,6 +146,7 @@ function emfInfo(b: Uint8Array): ImageInfo | undefined {
 function epsInfo(b: Uint8Array): ImageInfo | undefined {
   let ps = b;
   if (b[0] === 0xc5 && b[1] === 0xd0 && b[2] === 0xd3 && b[3] === 0xc6) {
+    if (b.length < 12) return undefined;
     const v = view(b);
     ps = b.subarray(v.getUint32(4, true), v.getUint32(4, true) + v.getUint32(8, true));
   } else if (!(b[0] === 0x25 && b[1] === 0x21 && b[2] === 0x50 && b[3] === 0x53)) return undefined;
@@ -158,6 +159,8 @@ function epsInfo(b: Uint8Array): ImageInfo | undefined {
 /** EPS (DOS 形式) に入っているプレビュー (TIFF または WMF) */
 export function epsPreview(b: Uint8Array): Uint8Array | undefined {
   if (!(b[0] === 0xc5 && b[1] === 0xd0 && b[2] === 0xd3 && b[3] === 0xc6)) return undefined;
+  // 頭 (EPSF 3.0 §5.2 Table 1) の、プレビューの位置と長さ (12〜27 バイト目) が無ければ、プレビューは無い
+  if (b.length < 28) return undefined;
   const v = view(b);
   const tiffOff = v.getUint32(20, true);
   const tiffLen = v.getUint32(24, true);

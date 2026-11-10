@@ -31,6 +31,8 @@ export interface EpsResult {
 export function epsProgram(b: Uint8Array): { ps: Uint8Array; bbox: [number, number, number, number] } | undefined {
   let ps = b;
   if (b[0] === 0xc5 && b[1] === 0xd0 && b[2] === 0xd3 && b[3] === 0xc6) {
+    // DOS 形式の頭 (30 バイト。EPSF 3.0 §5.2 Table 1) の、PostScript の部分の位置と長さ (4〜11 バイト目) が無ければ読めない
+    if (b.length < 12) return undefined;
     const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
     const off = v.getUint32(4, true);
     const len = v.getUint32(8, true);

@@ -6,7 +6,8 @@ import { filterSource, inflate } from '../src/psFilters';
 import { decryptCharstring, runType1Charstring } from '../src/psFonts';
 import { cffGlyph, parseCff } from '../src/psCff';
 import { Graphics } from '../src/psGraphics';
-import { epsToSvg, runEps } from '../src/eps';
+import { epsProgram, epsToSvg, runEps } from '../src/eps';
+import { epsPreview, imageInfo } from '../src/imageInfo';
 
 /** プログラムを実行して、オペランドスタックを返す */
 function run(src: string): { stack: PSObj[]; error?: string } {
@@ -268,5 +269,81 @@ describe('PostScript: 結果の誤りの修正', () => {
     expect(r.count).toBe(1);
     expect(r.error).toMatch(/^undefined/);
     expect(r.svg).toContain('<path');
+  });
+
+  it('字の名前が Object.prototype の名前 (constructor など) でも落ちない', async () => {
+    // Encoding の全部の字の名前を constructor にした書体。字は表に無いので、符号のままの字を代わりの書体で描く
+    const r = (await epsToSvg(
+      epsOf('/Helvetica findfont dup length dict copy dup /Encoding 256 array dup 0 1 255 { 1 index exch /constructor put } for pop put /Q exch definefont 10 scalefont setfont 10 10 moveto (A) show 0 0 moveto 50 50 lineto stroke'),
+    ))!;
+    expect(r.error).toBeUndefined();
+    expect(r.svg).toContain('>A</text>');
+    expect(r.count).toBe(2);
+  });
+
+  it('show は、gsave と共有しているパスを書き換えない (下線の書き方)', () => {
+    const strokes = (src: string) => {
+      const r = draw(src);
+      expect(r.error).toBeUndefined();
+      return r.G.items.filter((i) => i.k === 'stroke').map((i) => (i.k === 'stroke' ? i.segs : []));
+    };
+    const plain = strokes('0 0 moveto 50 0 rlineto stroke');
+    expect(plain[0]).toEqual([
+      { op: 'M', x: 0, y: 0 },
+      { op: 'L', x: 50, y: 0 },
+    ]);
+    // 文字を描いてから grestore で戻り、初めの点から線を引く
+    expect(strokes('/Helvetica findfont 10 scalefont setfont 0 0 moveto gsave (abc) show grestore 50 0 rlineto stroke')).toEqual(plain);
+  });
+
+  it('currentgstate は、渡された gstate を現在の状態の写しで置き換える (PLRM §8.2)', () => {
+    expect(nums('/gs gstate def 5 setlinewidth gs currentgstate pop 1 setlinewidth gs setgstate currentlinewidth')).toEqual([5]);
+    // 返すのは、渡されたのと同じ gstate
+    expect(nums('/gs gstate def gs currentgstate gs eq')).toEqual([true]);
+    // 書き換えた後に現在の状態を変えても、gstate の中身は変わらない
+    expect(nums('/gs gstate def 0 0 moveto 3 setlinewidth gs currentgstate pop 10 10 lineto 7 setlinewidth gs setgstate currentlinewidth currentpoint')).toEqual([3, 0, 0]);
+  });
+
+  it('rectfill・rectstroke は現在のパスに触れず、部分パスの始まりも元のまま (PLRM §8.2)', () => {
+    const strokes = (src: string) => {
+      const r = draw(src);
+      expect(r.error).toBeUndefined();
+      return r.G.items.filter((i) => i.k === 'stroke').map((i) => (i.k === 'stroke' ? i.segs : []));
+    };
+    // closepath は (0, 0) に戻るので、続く rlineto は (20, 0) へ
+    const plain = strokes('0 0 moveto 10 0 lineto 10 10 lineto closepath 20 0 rlineto stroke');
+    expect(plain[0][plain[0].length - 1]).toEqual({ op: 'L', x: 20, y: 0 });
+    expect(strokes('0 0 moveto 10 0 lineto 50 50 5 5 rectfill 10 10 lineto closepath 20 0 rlineto stroke')).toEqual(plain);
+    expect(strokes('0 0 moveto 10 0 lineto 1 setgray 50 50 5 5 rectstroke 0 setgray 10 10 lineto closepath 20 0 rlineto stroke')[1]).toEqual(plain[0]);
+  });
+
+  it('rectstroke: numarray matrix・x y width height matrix の形で行列を取る (PLRM §8.2)', () => {
+    for (const src of ['[0 0 10 10] [2 0 0 2 0 0] rectstroke count', '0 0 10 10 [2 0 0 2 0 0] rectstroke count', '[0 0 10 10 20 20 5 5] [2 0 0 2 0 0] rectstroke count']) {
+      const r = draw(src);
+      expect(r.error, src).toBeUndefined();
+      expect(r.stack.map((o) => (o.t === 'int' ? o.v : o.t)), src).toEqual([0]);
+      const it = r.G.items[0];
+      if (it.k !== 'stroke') throw new Error('線でない');
+      // 矩形は元の座標のまま、線だけに行列が掛かる
+      expect(it.segs[0]).toEqual({ op: 'M', x: 0, y: 0 });
+      expect(it.segs[1]).toEqual({ op: 'L', x: 10, y: 0 });
+      expect(it.ctm.slice(0, 4)).toEqual([2, 0, 0, 2]);
+    }
+    // 行列の無い形はこれまでどおり
+    const r = draw('[0 0 10 10] rectstroke 0 0 10 10 rectstroke count');
+    expect(r.stack.map((o) => (o.t === 'int' ? o.v : o.t))).toEqual([0]);
+    expect(r.G.items.length).toBe(2);
+  });
+
+  it('DOS 形式の頭が途中で切れた EPS は、読めない EPS として扱う (例外を投げない)', async () => {
+    for (const n of [4, 6, 11, 12, 20, 27]) {
+      const b = new Uint8Array(n);
+      b.set([0xc5, 0xd0, 0xd3, 0xc6]);
+      expect(epsProgram(b), String(n)).toBeUndefined();
+      expect(runEps(b), String(n)).toBeUndefined();
+      expect(await epsToSvg(b), String(n)).toBeUndefined();
+      expect(epsPreview(b), String(n)).toBeUndefined();
+      expect(imageInfo(b), String(n)).toBeUndefined();
+    }
   });
 });
