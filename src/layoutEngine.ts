@@ -2698,7 +2698,7 @@ class Flow {
         src: c.src,
         missing: !asset || asset.drawable === false,
         alt: c.alt,
-        ...((c.fit === 'cover' || c.fit === 'contain') && nat ? { fit: c.fit, naturalWidth: nat.w, naturalHeight: nat.h } : {}),
+        ...(c.fit && c.fit !== 'fill' && nat ? { fit: c.fit, naturalWidth: nat.w, naturalHeight: nat.h, ...(c.fitPosition ? { fitPosition: c.fitPosition } : {}) } : {}),
         // scaling="non-uniform" (XSL §7.15.11): 縦横の比を変えて枠へ引き伸ばす (SVG も preserveAspectRatio によらず)
         ...(c.scaling === 'non-uniform' && c.width !== undefined && c.height !== undefined ? { stretch: true } : {}),
         // 見えない要素 (CSS の visibility: hidden。読み込みが字の色を transparent にして運ぶ) の画像は、場所を残して描かない
@@ -5146,7 +5146,7 @@ export function toArea(n: LNode, parentWm: WritingMode, PW: number): Area {
         src: n.image?.src ?? '',
         missing: n.image?.missing ?? true,
         alt: n.image?.alt,
-        ...(n.image?.fit ? { fit: n.image.fit, naturalWidth: n.image.naturalWidth, naturalHeight: n.image.naturalHeight } : {}),
+        ...(n.image?.fit ? { fit: n.image.fit, naturalWidth: n.image.naturalWidth, naturalHeight: n.image.naturalHeight, ...(n.image.fitPosition ? { fitPosition: n.image.fitPosition } : {}) } : {}),
         ...(n.image?.stretch ? { stretch: true } : {}),
         ...(n.image?.hidden ? { hidden: true } : {}),
       };

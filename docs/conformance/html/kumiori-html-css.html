@@ -128,7 +128,7 @@
 <li class="sec"><a href="#s-footnote"><span class="num">14.3</span>脚注 : <span class="nw">float: footnote</span></a></li>
 <li class="ch"><a href="#ch-image"><span class="num">15</span>画像と数式</a></li>
 <li class="sec"><a href="#s-formats"><span class="num">15.1</span>画像の形式</a></li>
-<li class="sec"><a href="#s-object-fit"><span class="num">15.2</span>画像の収め方 : <span class="nw">object-fit</span></a></li>
+<li class="sec"><a href="#s-object-fit"><span class="num">15.2</span>画像の収め方 : <span class="nw">object-fit</span>・&#8203;<span class="nw">object-position</span></a></li>
 <li class="sec"><a href="#s-svg-inline"><span class="num">15.3</span>HTML の中の SVG</a></li>
 <li class="sec"><a href="#s-math"><span class="num">15.4</span>数式 : <span class="nw">math (MathML)</span></a></li>
 <li class="ch"><a href="#ch-unsupported"><span class="num">16</span>対応していないプロパティ</a></li>
@@ -465,9 +465,9 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <p class="vals-h"><code>background-clip</code>・<code>background-origin</code>・<code>background-attachment</code> の値の意味 <span class="spec">(CSS Backgrounds 3 §2.5・§2.7・§2.8)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>border-box</code></td><td>border のボックス (罫線の外側まで) です。background-clip の初期値です。</td><td>一部: background-clip では、画像は padding のボックスで切り抜きます (background-origin も border-box のときを除く)</td></tr><tr><td><code>padding-box</code></td><td>padding のボックス (罫線の内側) です。background-origin の初期値です。</td><td>対応</td></tr><tr><td><code>content-box</code></td><td>内容のボックスです。</td><td>対応</td></tr><tr><td><code>scroll・local</code></td><td>背景をボックス (local は中身) に付けます。</td><td>対応 (どちらもボックスに付けます)</td></tr><tr><td><code>fixed</code></td><td>背景をビューポート (ページの媒体ではページボックス) に固定します。</td><td>未対応 (scroll と同じに描きます)</td></tr></tbody></table>
 <!--kumiori-sample id="bg-layers" mark="background-image: url(images/checker.png), linear-gradient(90deg, #dfeae4, #f6efd9)|background-clip: content-box|background-origin: content-box"-->
 <div style="font-size: 8pt;">
-  <div style="display: inline-block; box-sizing: border-box; width: 44mm; height: 16mm; margin-right: 5mm; padding: 2mm; border: 1mm solid #4f7a64; background-image: url(images/checker.png), linear-gradient(90deg, #dfeae4, #f6efd9); background-repeat: no-repeat, repeat; background-position: right 2mm center, 0 0;">background-image: 2 layers</div>
-  <div style="display: inline-block; box-sizing: border-box; width: 44mm; height: 16mm; margin-right: 5mm; padding: 2mm; border: 1mm solid #4f7a64; background-color: #f1dc9b; background-clip: content-box;">background-clip: content-box</div>
-  <div style="display: inline-block; box-sizing: border-box; width: 44mm; height: 16mm; padding: 2mm; border: 1mm solid #4f7a64; background-image: url(images/checker.png); background-repeat: no-repeat; background-origin: content-box;">background-origin: content-box</div>
+  <div style="display: inline-block; box-sizing: border-box; width: 40mm; height: 16mm; margin-right: 5mm; padding: 2mm; border: 1mm solid #4f7a64; background-image: url(images/checker.png), linear-gradient(90deg, #dfeae4, #f6efd9); background-repeat: no-repeat, repeat; background-position: right 2mm center, 0 0;">background-image: 2 layers</div>
+  <div style="display: inline-block; box-sizing: border-box; width: 40mm; height: 16mm; margin-right: 5mm; padding: 2mm; border: 1mm solid #4f7a64; background-color: #f1dc9b; background-clip: content-box;">background-clip: content-box</div>
+  <div style="display: inline-block; box-sizing: border-box; width: 40mm; height: 16mm; padding: 2mm; border: 1mm solid #4f7a64; background-image: url(images/checker.png); background-repeat: no-repeat; background-origin: content-box;">background-origin: content-box</div>
 </div>
 <!--/kumiori-sample-->
 </section>
@@ -813,7 +813,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 
 <h2 id="s-list-style-type"><span class="num">10.1</span>リストのマーカー : <code>list-style-type</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
 <p class="props" data-p="list-style-type"><span class="k">初期値</span> : <span class="v">disc</span> <span class="k">適用対象</span> : <span class="v">list items</span> <span class="k">継承</span> : <span class="v">yes</span> <span class="src">(list-style-type — CSS Lists 3)</span></p>
-<p>disc・circle・square、decimal・lower-roman・upper-alpha など、CSS Counter Styles 3 の定義済みの名前 (cjk-decimal・japanese-informal・cjk-earthly-branch など)、文字列に対応します。list-style-image は解釈しません。</p>
+<p>disc・circle・square、decimal・lower-roman・upper-alpha など、CSS Counter Styles 3 の定義済みの名前 (cjk-decimal・japanese-informal・cjk-earthly-branch など)、文字列に対応します。list-style-image に url() の画像を指定すると、記号・番号の代わりに、その画像を本来の大きさで置きます <span class="spec">(CSS Lists 3 §3.2・§3.3)</span>。画像を読めないときは、list-style-type の記号を使います。外側の記号の画像は、項目の最初の行の基線にそろえます (行より高い画像は、項目の高さを広げます)。url() でない画像 (グラデーションなど) は解釈しません。</p>
 <!--gen:vals-s-list-style-type--><p class="vals-h"><code>list-style-type</code> の値の意味 <span class="spec">(CSS Lists 3 §3.4)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>&lt;counter-style&gt; (disc・decimal・lower-roman・cjk-decimal ほか)</code></td><td>list-item カウンターの値を、指定した番号の書式で表したものをマーカーの文字にします。</td><td>対応</td></tr><tr><td><code>&lt;string&gt;</code></td><td>指定した文字列をマーカーの文字にします。</td><td>対応</td></tr><tr><td><code>none</code></td><td>マーカーの文字を作りません。</td><td>対応</td></tr></tbody></table><!--/gen:vals-s-list-style-type-->
 <!--kumiori-sample id="list-style-type" mark="list-style-type: square|list-style-type: upper-roman|list-style-type: japanese-informal|list-style-type: '→ '"-->
 <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4pt; font-size: 8pt;">
@@ -1113,15 +1113,16 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 </div>
 <!--/kumiori-sample-->
 
-<h2 id="s-object-fit"><span class="num">15.2</span>画像の収め方 : <code>object-fit</code><span class="nw">&nbsp;<span class="badge part">一部</span></span></h2>
+<h2 id="s-object-fit"><span class="num">15.2</span>画像の収め方 : <code>object-fit</code>・&#8203;<code>object-position</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
 <p class="props" data-p="object-fit"><span class="k">初期値</span> : <span class="v">fill</span> <span class="k">適用対象</span> : <span class="v">replaced elements</span> <span class="k">継承</span> : <span class="v">no</span> <span class="src">(object-fit — CSS Images 3)</span></p>
-<p>fill・contain・cover に対応します。none・scale-down は解釈せず、fill と同じくボックスいっぱいに伸ばします。画像はボックスの中央に置きます (object-position は解釈しません)。画像の本来の大きさは、ラスター画像なら解像度 (image-resolution でも変えられる)、ベクター画像ならファイルの中の大きさから決めます。</p>
-<!--gen:vals-s-object-fit--><p class="vals-h"><code>object-fit</code> の値の意味 <span class="spec">(CSS Images 3 §4.5)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>fill</code></td><td>中身を要素のコンテンツボックスいっぱいの大きさ (要素の使用値の幅と高さ) にします。</td><td>対応</td></tr><tr><td><code>contain</code></td><td>縦横比を保ったまま、コンテンツボックスに収まる大きさにします。</td><td>対応</td></tr><tr><td><code>cover</code></td><td>縦横比を保ったまま、コンテンツボックス全体を覆う大きさにします。</td><td>対応</td></tr><tr><td><code>none</code></td><td>中身の大きさを、コンテンツボックスに合わせて変えません。</td><td>未対応</td></tr><tr><td><code>scale-down</code></td><td>none と contain のうち、小さくなるほうの大きさにします。</td><td>未対応</td></tr></tbody></table><!--/gen:vals-s-object-fit-->
-<!--kumiori-sample id="object-fit" mark="object-fit: contain|object-fit: cover"-->
+<p>fill・contain・cover・none・scale-down に対応します (幅と高さの両方を指定した画像に効きます)。none は画像を本来の大きさのまま置き、scale-down は none と contain のうち小さくなるほうの大きさにします。ボックスからはみ出す部分は切り抜きます。ボックスの中での画像の位置は object-position で決めます <span class="spec">(CSS Images 3 §4.6)</span>。初期値は中央 (50% 50%) で、キーワード・長さ・パーセント (3 値・4 値の書き方を含む) に対応します。パーセントは、ボックスの大きさから画像の大きさを引いた長さに対する割合です。画像の本来の大きさは、ラスター画像なら解像度 (image-resolution でも変えられる)、ベクター画像ならファイルの中の大きさから決めます。</p>
+<!--gen:vals-s-object-fit--><p class="vals-h"><code>object-fit</code> の値の意味 <span class="spec">(CSS Images 3 §4.5)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>fill</code></td><td>中身を要素のコンテンツボックスいっぱいの大きさ (要素の使用値の幅と高さ) にします。</td><td>対応</td></tr><tr><td><code>contain</code></td><td>縦横比を保ったまま、コンテンツボックスに収まる大きさにします。</td><td>対応</td></tr><tr><td><code>cover</code></td><td>縦横比を保ったまま、コンテンツボックス全体を覆う大きさにします。</td><td>対応</td></tr><tr><td><code>none</code></td><td>中身の大きさを、コンテンツボックスに合わせて変えません。</td><td>対応</td></tr><tr><td><code>scale-down</code></td><td>none と contain のうち、小さくなるほうの大きさにします。</td><td>対応</td></tr></tbody></table><!--/gen:vals-s-object-fit-->
+<!--kumiori-sample id="object-fit" mark="object-fit: contain|object-fit: cover|object-fit: none; object-position: left top"-->
 <div style="display: flex; gap: 6pt; font-size: 7pt; text-align: center;">
-  <div><img src="images/woven.png" style="width: 40mm; height: 18mm; object-fit: fill; border: 0.5pt solid #b9bfbc;" alt=""><br>fill</div>
-  <div><img src="images/woven.png" style="width: 40mm; height: 18mm; object-fit: contain; border: 0.5pt solid #b9bfbc;" alt=""><br>contain</div>
-  <div><img src="images/woven.png" style="width: 40mm; height: 18mm; object-fit: cover; border: 0.5pt solid #b9bfbc;" alt=""><br>cover</div>
+  <div><img src="images/woven.png" style="width: 32mm; height: 18mm; object-fit: fill; border: 0.5pt solid #b9bfbc;" alt=""><br>fill</div>
+  <div><img src="images/woven.png" style="width: 32mm; height: 18mm; object-fit: contain; border: 0.5pt solid #b9bfbc;" alt=""><br>contain</div>
+  <div><img src="images/woven.png" style="width: 32mm; height: 18mm; object-fit: cover; border: 0.5pt solid #b9bfbc;" alt=""><br>cover</div>
+  <div><img src="images/woven.png" style="width: 32mm; height: 18mm; object-fit: none; object-position: left top; border: 0.5pt solid #b9bfbc;" alt=""><br>none left top</div>
 </div>
 <!--/kumiori-sample-->
 
@@ -1168,7 +1169,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <section class="chapter c16">
 <h1 class="chapter" id="ch-unsupported" data-no="16">対応していないプロパティ</h1>
 <p>第 1 章の確かめ方で、指定しても組版に何も渡らなかったプロパティを、仕様ごとに並べます。印刷に関わらないプロパティ (画面の操作・音声など) は、最後の表にまとめます。対応しているプロパティの中で対応していない値は、各節の値の表に書いています。そのうち、仕様の決まりが長く、表の 1 行では説明しきれないものを、2 つ目の表に取り出して説明しています。各項目には、どういうものか、どういう場面で使うかを書いています。説明は、取得した仕様書 (いずれも 2026-11-06 取得) の定義と、Kumiori のソースで確かめたことに基づきます。</p>
-<!--gen:unsupported--><h3>対応していないプロパティ (75 項目)</h3>
+<!--gen:unsupported--><h3>対応していないプロパティ (73 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>empty-cells</code><br><span class="spec">CSS 2.1 §17.6.1.1</span></td><td>罫線を分ける方式 (separated borders model) の表で、見える中身の無いセルのまわりに罫線と背景を描くかを指定します (show・hide)。空のセルの枠や背景を消して、表の見た目を整えたいときに使います。</td></tr>
 <tr><td><code>border-image</code><br><span class="spec">CSS Backgrounds 3 §5.7</span></td><td>border-image-source・-slice・-width・-outset・-repeat をまとめて指定する一括指定です。罫線の代わりに画像で枠を描きたいときに使います。</td></tr>
@@ -1216,9 +1217,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>grid-auto-columns</code><br><span class="spec">CSS Grid 1 §7.6</span></td><td>grid-template-columns で大きさを決めていない列 (暗黙の列) の大きさを指定します。明示した列より外に置かれた項目の列の幅を決めたいときに使います。</td></tr>
 <tr><td><code>image-orientation</code><br><span class="spec">CSS Images 3 §5.1</span></td><td>文書で使う前に、画像を 90 度単位で回します。仕様は、横向きに撮った写真や、向きのずれたスキャンの画像を正しい向きにするためのものとしています。画像のデータの向きを直して載せたいときに使います。</td></tr>
 <tr><td><code>image-rendering</code><br><span class="spec">CSS Images 3 §5.2</span></td><td>画像を拡大・縮小するときに、何を保つことを重んじるかを処理系に伝え、縮尺の方法を選ばせます (auto・smooth など)。ドット絵などを、ぼかさずに拡大して見せたいときに使います。</td></tr>
-<tr><td><code>object-position</code><br><span class="spec">CSS Images 3 §4.6</span></td><td>置き換え要素 (画像など) を、そのボックスの中のどこに置くかを指定します。ボックスのうち画像で覆われない部分には要素の背景が見えます。object-fit で縮めた画像を、ボックスの左上など中央以外にそろえたいときに使います。</td></tr>
 <tr><td><code>initial-letter</code><br><span class="spec">CSS Inline 3 §7.3</span></td><td>段落の最初の字 (ドロップキャップなど) の大きさと沈め方を、何行分にわたるかで指定します。段落の初めの字を、数行分の大きさにして下に沈めて組みたいときに使います。</td></tr>
-<tr><td><code>list-style-image</code><br><span class="spec">CSS Lists 3 §3.3</span></td><td>リスト項目のマーカーに使う画像を指定します。画像が使えないときは画像の印を持ちません。リストのマーカーを、記号や番号の代わりに画像にしたいときに使います。</td></tr>
 <tr><td><code>marker-side</code><br><span class="spec">CSS Lists 3 §3.7</span></td><td>外側に置くマーカーボックスを、項目自身の文字の向きで置くか (match-self)、親 (リスト) の文字の向きで置くか (match-parent) を指定します。項目ごとに文字の向きが違うリストで、印を同じ側にそろえたいときに使います。</td></tr>
 <tr><td><code>text-overflow</code><br><span class="spec">CSS Overflow 3 §5.1</span></td><td>overflow が visible でないブロックで、行の中身が行の終わりからはみ出したときの描き方を指定します (切る clip、省略記号 U+2026 を出す ellipsis)。折り返さない 1 行の文がはみ出すとき、末尾を「…」にしたいときに使います。</td></tr>
 <tr><td><code>overflow-block</code><br><span class="spec">CSS Overflow 3 §3.1</span></td><td>ブロックの向き (block 軸) のはみ出しの扱いを指定します。overflow-x・overflow-y・overflow-inline と、overflow の一括指定と組になる、論理のプロパティです。縦書きと横書きのどちらでも、行を重ねる向きのはみ出しを同じ指定で扱いたいときに使います。</td></tr>

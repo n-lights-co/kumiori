@@ -351,12 +351,19 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
     if (round) p.clipPath(radiusShape(a.borderRadius, a.width, a.height)(x, y, a.width, a.height));
     if (a.missing) paintPlaceholder(a, x, y, p);
     else if (a.fit && a.naturalWidth && a.naturalHeight) {
-      // object-fit: 縦横比を保って、枠を覆う (cover) / 枠に収める (contain) 大きさで中央に置き、枠で切り抜く
-      const s = (a.fit === 'cover' ? Math.max : Math.min)(a.width / a.naturalWidth, a.height / a.naturalHeight);
+      // object-fit (CSS Images 3 §4.5): 縦横比を保って、枠を覆う (cover) / 枠に収める (contain) 大きさ、画像本来の大きさ (none)、
+      // none と contain の小さいほう (scale-down) で置き、枠で切り抜く。位置は object-position (§4.6。無ければ中央)
+      const contain = Math.min(a.width / a.naturalWidth, a.height / a.naturalHeight);
+      const s = a.fit === 'cover' ? Math.max(a.width / a.naturalWidth, a.height / a.naturalHeight) : a.fit === 'none' ? 1 : a.fit === 'scale-down' ? Math.min(1, contain) : contain;
       const w = a.naturalWidth * s;
       const h = a.naturalHeight * s;
+      // 位置: 百分率は (枠 − 画像) に対する割合、長さは左・上の端 (FromEnd なら右・下の端) からの距離
+      const fp = a.fitPosition;
+      const at = (v: number | string, room: number, fromEnd?: boolean) => (typeof v === 'number' ? (fromEnd ? room - v : v) : (room * parseFloat(v)) / 100);
+      const dx = fp ? at(fp.x, a.width - w, fp.xFromEnd) : (a.width - w) / 2;
+      const dy = fp ? at(fp.y, a.height - h, fp.yFromEnd) : (a.height - h) / 2;
       p.clipRect({ x, y, width: a.width, height: a.height });
-      p.drawImage({ ...a, width: w, height: h }, x + (a.width - w) / 2, y + (a.height - h) / 2);
+      p.drawImage({ ...a, width: w, height: h }, x + dx, y + dy);
       p.restore();
     } else p.drawImage(a, x, y);
     if (round) p.restore();

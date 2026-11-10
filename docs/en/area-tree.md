@@ -27,6 +27,7 @@ This document collects the rules for the `AreaTree` returned by `LayoutEngine.la
   - `backgroundImage` is the top-most background image (its size is resolved). `under` is the list of images stacked behind it (nearest first).
   - Per image, `origin` is the positioning area (`border-box`, `content-box`; the padding box when absent) and `clip` is the painting area (`border-box`, `content-box`; the padding box when absent).
   - `backgroundClip` is the area the background color is painted in (`padding-box`, `content-box`). When absent, the border-box (`width` × `height`) is painted.
+- When an image (`image`) has `fit` (`cover`, `contain`, `none` or `scale-down` of CSS `object-fit`), `width` × `height` is the size of the box; the image is sized from its natural size (`naturalWidth` × `naturalHeight`), placed inside the box and clipped to it. `fitPosition` (CSS `object-position`) is its position inside the box (the center when absent).
 - When `transform` (a paint-time transform; CSS `transform`) is present:
   - The value is a matrix `[a, b, c, d, e, f]`, with x' = a·x + c·y + e and y' = b·x + d·y + f (y points down).
   - The origin of the matrix coordinates is the point `x`, `y` of this Area (the top left of its border-box).

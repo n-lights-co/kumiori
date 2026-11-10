@@ -417,6 +417,17 @@ export interface BackgroundImage {
   under?: BackgroundImage[];
 }
 
+/**
+ * 枠の中での画像の位置 (CSS の object-position。<position>)。x・y は、長さ (pt。枠の左・上の端から画像の左・上の端まで) か、
+ * 百分率 ((枠の大きさ − 画像の大きさ) に対する割合。50% は中央)。xFromEnd・yFromEnd は、長さを右・下の端からの距離とする
+ */
+export interface ObjectPosition {
+  x: number | `${number}%`;
+  y: number | `${number}%`;
+  xFromEnd?: boolean;
+  yFromEnd?: boolean;
+}
+
 /** 角丸 (アンテナハウスの axf:border-radius)。四隅を半径 rx (水平)・ry (垂直) の楕円で丸める */
 export interface BorderRadius {
   rx: number;
@@ -1024,10 +1035,13 @@ export interface LImage extends BaseNode {
   /** uniform (既定): width × height に収まるよう縦横比を保って縮尺 / non-uniform: 指定寸法へ引き伸ばす */
   scaling?: 'uniform' | 'non-uniform';
   /**
-   * width × height の枠への画像の収め方 (CSS の object-fit)。cover: 枠を覆うように拡大して、はみ出しを切り抜く /
-   * contain: 枠に収まる大きさで中央に置く / fill: 枠へ引き伸ばす。指定すると scaling より優先
+   * width × height の枠への画像の収め方 (CSS の object-fit。CSS Images 3 §4.5)。cover: 枠を覆うように拡大して、はみ出しを切り抜く /
+   * contain: 枠に収まる大きさで置く / fill: 枠へ引き伸ばす / none: 画像本来の大きさのまま置いて、はみ出しを切り抜く /
+   * scale-down: none と contain のうち、小さくなるほう。指定すると scaling より優先
    */
-  fit?: 'cover' | 'contain' | 'fill';
+  fit?: 'cover' | 'contain' | 'fill' | 'none' | 'scale-down';
+  /** 枠の中での画像の位置 (CSS の object-position。CSS Images 3 §4.6)。無ければ中央 (50% 50%)。fit が fill のときは使わない */
+  fitPosition?: ObjectPosition;
   /**
    * 枠に合わせる倍率の制限 (fo の content-width / content-height の scale-down-to-fit・scale-up-to-fit)。down: 1 倍を超えない
    * (本来の大きさが枠以下なら本来の大きさ) / up: 1 倍を下回らない (本来の大きさが枠以上なら本来の大きさ)
@@ -1666,10 +1680,15 @@ export interface ImageArea extends AreaBase {
   /** 画像データが無い (プレースホルダを描く) */
   missing: boolean;
   alt?: string;
-  /** 枠への収め方 (LImage.fit の cover / contain)。描く時に、画像本来の縦横比 (naturalWidth / naturalHeight) で、枠の中に置いて切り抜く */
-  fit?: 'cover' | 'contain';
+  /**
+   * 枠への収め方 (LImage.fit の cover・contain・none・scale-down)。描く時に、画像本来の大きさ (naturalWidth × naturalHeight。pt) から
+   * 大きさを決め (none は本来の大きさ、scale-down は none と contain の小さいほう)、枠の中に置いて切り抜く
+   */
+  fit?: 'cover' | 'contain' | 'none' | 'scale-down';
   naturalWidth?: number;
   naturalHeight?: number;
+  /** 枠の中での画像の位置 (CSS の object-position)。無ければ中央 */
+  fitPosition?: ObjectPosition;
   /** 枠へ引き伸ばす (XSL の scaling="non-uniform")。SVG は preserveAspectRatio を none として描く */
   stretch?: boolean;
   /** 描かない (CSS の visibility: hidden。場所は残す) */

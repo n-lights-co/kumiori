@@ -2269,6 +2269,17 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       const px = lengthPx(raw, ctx);
       return px !== undefined ? `${+px.toFixed(4)}px` : raw;
     }
+    case 'object-position': {
+      // <position> (CSS Images 3 §4.6。計算値は background-position と同じ): 横と縦の組にし、長さは px に。右・下の端からの距離は
+      // calc(100% - 距離) (Chrome の計算値と同じ形)
+      const [x, y] = positionXY(tokens(raw));
+      const one = (v: string, axis: string) => {
+        const c = computeKeyword(axis, v, parent, ctx);
+        const far = /^(right|bottom)\s+(.+)$/.exec(c);
+        return far ? `calc(100% - ${far[2]})` : c;
+      };
+      return `${one(x, 'background-position-x')} ${one(y, 'background-position-y')}`;
+    }
     case 'transform': {
       // 計算値は、指定のまま、長さだけを絶対の長さにする (Transforms 1 §4)。translate 系の関数の引数の長さを px に (百分率はそのまま)
       if (lv === 'none') return 'none';

@@ -27,6 +27,7 @@
   - `backgroundImage` は、いちばん手前の背景の画像です (大きさは解決済み)。`under` は、その後ろに重ねる画像の並び (手前のものから順) です。
   - 画像ごとの `origin` は位置の基準の領域 (`border-box`・`content-box`。無ければ padding の箱)、`clip` は描く範囲 (`border-box`・`content-box`。無ければ padding の箱) です。
   - `backgroundClip` は背景の色を塗る範囲 (`padding-box`・`content-box`) です。無ければ border-box (`width` × `height`) に塗ります。
+- 画像 (`image`) の `fit` (CSS の `object-fit` の `cover`・`contain`・`none`・`scale-down`) があるとき、`width` × `height` は枠の大きさで、画像は本来の大きさ (`naturalWidth` × `naturalHeight`) から大きさを決めて枠の中に置き、枠で切り抜きます。`fitPosition` (CSS の `object-position`) は枠の中での位置です (無ければ中央)。
 - `transform` (描くときの変換。CSS の `transform`) があるとき:
   - 値は行列 `[a, b, c, d, e, f]` で、x' = a·x + c·y + e、y' = b·x + d·y + f です (y は下向き)。
   - 行列の座標の原点は、この Area の `x`・`y` の点 (border-box の左上) です。

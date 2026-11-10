@@ -71,7 +71,7 @@ export interface LNode {
   /** 書字方向を決め直した参照領域 (block-container)。外の書字方向の裏返し (WritingFlip) は、この中へ持ち込まない */
   flipRoot?: boolean;
   // image
-  image?: { src: string; missing: boolean; alt?: string; fit?: 'cover' | 'contain'; naturalWidth?: number; naturalHeight?: number; stretch?: boolean; hidden?: boolean };
+  image?: { src: string; missing: boolean; alt?: string; fit?: 'cover' | 'contain' | 'none' | 'scale-down'; naturalWidth?: number; naturalHeight?: number; fitPosition?: import('./types').ObjectPosition; stretch?: boolean; hidden?: boolean };
   /** cell: 表の行の中の揃え (LTableCell の blockAlign・stretchContent・stretchMax)。flex の行の表を後から伸ばすときに当て直す */
   cellAlign?: string;
   cellStretch?: boolean;

@@ -33,6 +33,7 @@ import type {
   BorderRadius,
   BorderSide,
   BoxShadow,
+  ObjectPosition,
   PaintEffect,
   TransformFunction,
   LFloat,
@@ -262,6 +263,25 @@ function collectIds(n: unknown, out: string[] = []): string[] {
     for (const v of Object.values(n)) if (v && typeof v === 'object') collectIds(v, out);
   }
   return out;
+}
+
+/**
+ * object-position の計算値 (横と縦。長さ・百分率・calc(100% - 長さ) = 右・下の端からの距離) を、枠の中での画像の位置にする。
+ * 初期値 (50% 50%) と、読めない値は undefined (中央)
+ */
+function objectPositionOf(v: string): ObjectPosition | undefined {
+  const ts = splitTop(v.trim(), ' ').filter(Boolean);
+  if (ts.length !== 2) return undefined;
+  const one = (t: string): { v: number | `${number}%`; end?: boolean } | undefined => {
+    if (/^-?[\d.]+%$/.test(t)) return { v: t as `${number}%` };
+    const far = /^calc\(\s*100%\s*-\s*(.+?)\s*\)$/i.exec(t);
+    const n = cssLen(far ? far[1] : t);
+    return n === undefined ? undefined : { v: n, ...(far ? { end: true } : {}) };
+  };
+  const x = one(ts[0]);
+  const y = one(ts[1]);
+  if (!x || !y || (x.v === '50%' && y.v === '50%')) return undefined;
+  return { x: x.v, y: y.v, ...(x.end ? { xFromEnd: true } : {}), ...(y.end ? { yFromEnd: true } : {}) };
 }
 
 /**
@@ -2551,6 +2571,26 @@ class HtmlImporter {
     this.report.unsupported[what] = (this.report.unsupported[what] ?? 0) + 1;
   }
 
+  /**
+   * リストの項目の記号の画像 (list-style-image。CSS Lists 3 §3.3): url() の画像が読み込まれているときだけ、そのファイルの名前。
+   * none・読めない画像は undefined (list-style-type の記号を使う)。url() でない画像 (グラデーションなど) は未対応として知らせる
+   */
+  private markerImage(li: Element): string | undefined {
+    const v = this.cs(li)('list-style-image').trim();
+    if (!v || v === 'none') return undefined;
+    const m = /^url\(\s*["']?([^"')]+)["']?\s*\)$/.exec(v);
+    if (!m) {
+      if (!this.markerImageMissed.has(li)) this.miss(`list-style-image: ${v.replace(/\(.*$/, '()')}`);
+      this.markerImageMissed.add(li);
+      return undefined;
+    }
+    const src = normalizeSrc(m[1]);
+    if (this.opts.hasAsset?.(src) === false) return undefined;
+    if (!this.report.images.includes(src)) this.report.images.push(src);
+    return src;
+  }
+  private markerImageMissed = new WeakSet<Element>();
+
   /** 要素ごとの、描くときだけの効果 (同じ要素から 2 つの節を作っても、同じ物を渡す: 効果を 2 重に掛けないため) */
   private fxCache = new WeakMap<Element, Record<string, { fx?: PaintEffect }>>();
   /**
@@ -4218,9 +4258,13 @@ class HtmlImporter {
     if (ab === 'central' || ab === 'middle') img.alignmentBaseline = 'central';
     else if (/^(text-after-edge|after-edge|text-bottom)$/.test(ab)) img.alignmentBaseline = 'after-edge';
     else if (/^(text-before-edge|before-edge|text-top)$/.test(ab)) img.alignmentBaseline = 'before-edge';
-    // object-fit (幅・高さの両方があるとき)
+    // object-fit (幅・高さの両方があるとき。CSS Images 3 §4.5) と、枠の中での位置 object-position (§4.6。初期値は中央)
     const fit = c('object-fit');
-    if (img.width !== undefined && img.height !== undefined && (fit === 'cover' || fit === 'contain' || fit === 'fill')) img.fit = fit;
+    if (img.width !== undefined && img.height !== undefined && (fit === 'cover' || fit === 'contain' || fit === 'fill' || fit === 'none' || fit === 'scale-down')) {
+      img.fit = fit;
+      const pos = fit === 'fill' ? undefined : objectPositionOf(c('object-position'));
+      if (pos) img.fitPosition = pos;
+    }
     // アンテナハウスの -ah-content-width / -ah-content-height (寸法の指定が無いとき): % は本来の大きさに対する倍率、長さはその大きさ。
     // 片方だけなら縦横比を保つ
     if (img.width === undefined && img.height === undefined) {
@@ -4575,7 +4619,7 @@ class HtmlImporter {
       return this.stringSet(li);
     };
     // 記号の無いリスト (list-style: none) は、ふつうのブロックの並びにする (li の枠・余白がそのまま付く)
-    if (lis.every((li) => this.cs(li)('list-style-type') === 'none')) {
+    if (lis.every((li) => this.cs(li)('list-style-type') === 'none' && !this.markerImage(li))) {
       const blocks: Array<LBlockLevel | LInlineLevel> = [];
       lis.forEach((li, k) => {
         blocks.push(...enter(li, k));
@@ -4634,8 +4678,12 @@ class HtmlImporter {
         const ms = this.textStyle(li, li, '::marker');
         return Object.keys(ms).length ? { type: 'inline', ...ms, children: [t] } : t;
       };
-      const insideMarker = styled(insideText);
-      const marker = styled(outsideText);
+      // list-style-image (CSS Lists 3 §3.2・§3.3): 画像が使えるときは、記号の代わりに、その画像 (行内の置換要素。画像本来の大きさ) を置く。
+      // inside では、画像の後ろに空白を 1 つ置く (§3.2)。outside では、記号の列の右の空きがその代わり
+      const mimg = this.markerImage(li);
+      const mnode: LImage | undefined = mimg ? { type: 'image', src: mimg } : undefined;
+      const insideMarker: LInlineLevel = mnode && inside ? { type: 'inline', children: [mnode, ' '] } : styled(insideText);
+      const marker: LInlineLevel = mnode && !inside ? mnode : styled(outsideText);
       n += reversed ? -1 : 1;
       const fs = cssLen(lc('font-size')) ?? 12;
       const body: LTableCell = { type: 'table-cell', ...this.textStyle(li, container), ...this.paragraphStyle(li, container), children: this.flowChildren(li) };
