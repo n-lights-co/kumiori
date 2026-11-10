@@ -387,3 +387,348 @@ describe('PostScript: 結果の誤りの修正', () => {
     }
   });
 });
+
+/** 最初の画像の画素 (RGBA。標本の並びの順) */
+function imageOf(src: string) {
+  const r = draw(src);
+  expect(r.error, src).toBeUndefined();
+  const it = r.G.items.find((i) => i.k === 'image');
+  if (!it || it.k !== 'image' || !it.rgba) throw new Error('画像でない: ' + src);
+  const px = (i: number) => Array.from(it.rgba!.subarray(i * 4, i * 4 + 4));
+  return { it, px, alpha: Array.from({ length: it.width * it.height }, (_, i) => it.rgba![i * 4 + 3]) };
+}
+/** stopped で受けたエラーの名前 (誤りが無ければ undefined) */
+function errorName(src: string): string | undefined {
+  const s = run(`{ ${src} } stopped { $error /errorname get } { null } ifelse`).stack;
+  const top = s[s.length - 1];
+  return top.t === 'name' ? top.v : undefined;
+}
+const hex = (b: ArrayLike<number>) => `<${Array.from(b, (c) => c.toString(16).padStart(2, '0')).join('')}>`;
+
+describe('PostScript: 画像 (PLRM §4.10)', () => {
+  it('image: 画像の空間からユーザ空間への対応は ImageMatrix の逆 (§4.10.3)', () => {
+    // ImageMatrix [w 0 0 -h 0 h] は、上の行から並ぶ標本を単位の正方形に置く。標本の (0, 0) はユーザ空間の (0, 1)
+    const a = imageOf('8 8 8 [8 0 0 -8 0 8] <80> image');
+    expect(a.it.mat.map((v) => +v.toFixed(9))).toEqual([0.125, 0, 0, -0.125, 0, 1]);
+    // CTM を掛けた後: (0, 1) は (10, 60)、標本 1 つは横 30/8・縦 40/8
+    const b = imageOf('10 20 translate 30 40 scale 8 8 8 [8 0 0 -8 0 8] <80> image');
+    expect(b.it.mat.map((v) => +v.toFixed(9))).toEqual([3.75, 0, 0, -5, 10, 60]);
+    expect([b.it.width, b.it.height]).toEqual([8, 8]);
+  });
+
+  it('image: 標本の復号は Dmin + i × (Dmax − Dmin) / (2^n − 1) (§4.10.5 Sample Decoding)', () => {
+    // 4 ビット: 標本 0・5・15 (行は 1 バイトの境まで詰め物をする。幅 3 なら 1 行 2 バイト)
+    const dict = (decode: string) => `/DeviceGray setcolorspace << /ImageType 1 /Width 3 /Height 2 /BitsPerComponent 4 /Decode [${decode}] /ImageMatrix [3 0 0 2 0 0] /DataSource <05F0 F500> >> image`;
+    const g = (src: string) => {
+      const a = imageOf(src);
+      return [0, 1, 2, 3, 4, 5].map((i) => a.px(i)[0]);
+    };
+    expect(g(dict('0 1'))).toEqual([0, 85, 255, 255, 85, 0]);
+    expect(g(dict('1 0'))).toEqual([255, 170, 0, 0, 170, 255]);
+    // 色は不透明
+    expect(imageOf(dict('0 1')).alpha).toEqual([255, 255, 255, 255, 255, 255]);
+    // 1 ビット (幅 3: 行ごとに 1 バイト)。5 つのオペランドの形の image は DeviceGray で、0 が黒
+    expect(g('3 2 1 [3 0 0 2 0 0] <A0 40> image')).toEqual([255, 0, 255, 0, 255, 0]);
+    // 12 ビット: 標本 0xFFF と 0x800 (2 つで 3 バイト)
+    const a = imageOf('2 1 12 [2 0 0 1 0 0] <FFF800> image');
+    expect([a.px(0)[0], a.px(1)[0]]).toEqual([255, Math.round((0x800 / 4095) * 255)]);
+  });
+
+  it('image: 文字列のデータの元は、足りるまで繰り返し使う (§4.10.2)', () => {
+    const a = imageOf('4 2 8 [4 0 0 2 0 0] <40C0> image');
+    expect(Array.from({ length: 8 }, (_, i) => a.px(i)[0])).toEqual([64, 192, 64, 192, 64, 192, 64, 192]);
+  });
+
+  it('image: データの元が途中で終わったら、残りは描かない (§4.10.2)', () => {
+    // 手続きは 1 度めに 1 行ぶんを返し、2 度めからは長さ 0 の文字列を返す
+    const a = imageOf('/n 0 def 2 2 8 [2 0 0 2 0 0] { n 0 eq { /n 1 def <FFFF> } { () } ifelse } image');
+    expect(a.alpha).toEqual([255, 255, 0, 0]);
+  });
+
+  it('colorimage: 成分ごとの元 (multi が true) と、1 つの元に標本ごとに並べた形 (§8.2 colorimage)', () => {
+    const multi = imageOf('2 1 8 [2 0 0 1 0 0] <FF00> <00FF> <0000> true 3 colorimage');
+    expect([multi.px(0), multi.px(1)]).toEqual([
+      [255, 0, 0, 255],
+      [0, 255, 0, 255],
+    ]);
+    const single = imageOf('2 1 8 [2 0 0 1 0 0] <FF0000 00FF00> false 3 colorimage');
+    expect([single.px(0), single.px(1)]).toEqual([
+      [255, 0, 0, 255],
+      [0, 255, 0, 255],
+    ]);
+    // 4 成分は DeviceCMYK (RGB への変換は §7.2.4): マゼンタだけ・黒だけ
+    const cmyk = imageOf('2 1 8 [2 0 0 1 0 0] <00FF0000 000000FF> false 4 colorimage');
+    expect([cmyk.px(0), cmyk.px(1)]).toEqual([
+      [255, 0, 255, 255],
+      [0, 0, 0, 255],
+    ]);
+    // 成分の数は 1・3・4 だけ
+    expect(errorName('2 1 8 [2 0 0 1 0 0] <0000> false 2 colorimage')).toBe('rangecheck');
+  });
+
+  it('imagemask: 塗る所は現在の色、塗らない所は透明。行は 1 バイトの境まで詰め物をする (§4.10.6 Stencil Masking)', () => {
+    // 幅 3・高さ 2。1 行めは 101、2 行めは 010 (残りの 5 ビットは詰め物)
+    const a = imageOf('1 0 0 setrgbcolor 3 2 true [3 0 0 2 0 0] <A0 40> imagemask');
+    expect(a.alpha).toEqual([255, 0, 255, 0, 255, 0]);
+    expect(a.px(0)).toEqual([255, 0, 0, 255]);
+    expect(a.px(4)).toEqual([255, 0, 0, 255]);
+    // 詰め物のビットが 1 でも、幅の外は描かない
+    expect(imageOf('3 2 true [3 0 0 2 0 0] <BF 5F> imagemask').alpha).toEqual([255, 0, 255, 0, 255, 0]);
+    // 現在の色空間が何であっても、成分は 1 つ (DeviceCMYK の色でも標本は 1 ビット)
+    const c = imageOf('0 1 1 0 setcmykcolor 3 2 false [3 0 0 2 0 0] <A0 40> imagemask');
+    expect(c.alpha).toEqual([0, 255, 0, 255, 0, 255]);
+    expect(c.px(1)).toEqual([255, 0, 0, 255]);
+    // 辞書の形でデータの元が手続きのもの
+    const d = imageOf('0 0 1 setrgbcolor << /ImageType 1 /Width 3 /Height 2 /BitsPerComponent 1 /Decode [1 0] /ImageMatrix [3 0 0 2 0 0] /DataSource { <A0 40> } >> imagemask');
+    expect(d.alpha).toEqual([255, 0, 255, 0, 255, 0]);
+    expect(d.px(0)).toEqual([0, 0, 255, 255]);
+  });
+
+  it('Type 3 の画像: 隠した所も色の標本は読み進め、描く所は画像の色になる (§4.10.6 Explicit Masking・表 4.22)', () => {
+    // InterleaveType 1 (標本ごと)。RGB の 2×1: マスクの成分・R・G・B。マスクが 0 と 1 以外の値 (0x55) は 1 として扱う
+    const one = (mask: string) => imageOf(`/DeviceRGB setcolorspace << /ImageType 3 /InterleaveType 1
+      /DataDict << /ImageType 1 /Width 2 /Height 1 /BitsPerComponent 8 /ImageMatrix [2 0 0 1 0 0] /Decode [0 1 0 1 0 1] /DataSource <${mask}FF0000 0000FF00> >>
+      /MaskDict << /ImageType 1 /Width 2 /Height 1 /BitsPerComponent 8 /ImageMatrix [2 0 0 1 0 0] /Decode [0 1] >> >> image`);
+    for (const m of ['FF', '55']) {
+      const a = one(m);
+      expect(a.alpha, m).toEqual([0, 255]);
+      expect(a.px(1), m).toEqual([0, 255, 0, 255]);
+    }
+    expect(one('00').px(0)).toEqual([255, 0, 0, 255]);
+  });
+
+  it('Type 3 の画像: 行ごとの組 (InterleaveType 2) は、高さの比のぶんだけマスクの行と画像の行が並ぶ (表 4.22)', () => {
+    // 画像は 2×2 (灰色)、マスクは 2×1: マスクの 1 行 (1 バイトに詰める) のあとに画像の 2 行
+    const a = imageOf(`/DeviceGray setcolorspace << /ImageType 3 /InterleaveType 2
+      /DataDict << /ImageType 1 /Width 2 /Height 2 /BitsPerComponent 8 /ImageMatrix [2 0 0 2 0 0] /Decode [0 1] /DataSource <40 1020 3040> >>
+      /MaskDict << /ImageType 1 /Width 2 /Height 1 /BitsPerComponent 1 /ImageMatrix [2 0 0 1 0 0] /Decode [0 1] >> >> image`);
+    // マスクは 01: 左の列を描き、右の列は隠す (復号した値の 0 が描く所。表 4.24)
+    expect(a.alpha).toEqual([255, 0, 255, 0]);
+    expect([a.px(0)[0], a.px(2)[0]]).toEqual([0x10, 0x30]);
+  });
+
+  it('Type 3 の画像: 別の元 (InterleaveType 3) のマスクは、画像と違う寸法でも同じ所に重なる。色は成分ごとの元でもよい (表 4.22)', () => {
+    // 画像は 4×2 の RGB (成分ごとの元)、マスクは 2×1 (左半分を隠し、右半分を描く)
+    const a = imageOf(`/DeviceRGB setcolorspace << /ImageType 3 /InterleaveType 3
+      /DataDict << /ImageType 1 /Width 4 /Height 2 /BitsPerComponent 8 /ImageMatrix [4 0 0 2 0 0] /Decode [0 1 0 1 0 1]
+        /MultipleDataSources true /DataSource [ <FF> <00> <80> ] >>
+      /MaskDict << /ImageType 1 /Width 2 /Height 1 /BitsPerComponent 1 /ImageMatrix [2 0 0 1 0 0] /Decode [0 1] /DataSource <80> >> >> image`);
+    expect(a.alpha).toEqual([0, 0, 255, 255, 0, 0, 255, 255]);
+    expect(a.px(2)).toEqual([255, 0, 128, 255]);
+  });
+
+  it('Type 3 の画像: DataDict・MaskDict が無ければ typecheck (§4.10.6)', () => {
+    expect(errorName('<< /ImageType 3 /InterleaveType 3 /MaskDict << >> >> image')).toBe('typecheck');
+    expect(errorName('<< /ImageType 3 /InterleaveType 3 /DataDict << >> >> image')).toBe('typecheck');
+  });
+
+  it('Type 4 の画像: MaskColor に合う標本は描かない。比べるのは Decode を当てる前の値 (§4.10.6 Color Key Masking・表 4.25)', () => {
+    const rgb = (maskColor: string, decode = '0 1 0 1 0 1') =>
+      imageOf(`/DeviceRGB setcolorspace << /ImageType 4 /MaskColor [${maskColor}] /Width 3 /Height 1 /BitsPerComponent 8 /ImageMatrix [3 0 0 1 0 0]
+        /Decode [${decode}] /DataSource <FF0000 FA0505 00FF00> >> image`);
+    // n 個の数: その色だけ
+    const exact = rgb('255 0 0');
+    expect(exact.alpha).toEqual([0, 255, 255]);
+    expect(exact.px(1)).toEqual([250, 5, 5, 255]);
+    expect(exact.px(2)).toEqual([0, 255, 0, 255]);
+    // 2n 個の数: 成分ごとの範囲。全部の成分が範囲に入る標本だけを隠す
+    expect(rgb('250 255 0 5 0 5').alpha).toEqual([0, 0, 255]);
+    expect(rgb('250 255 0 4 0 5').alpha).toEqual([0, 255, 255]);
+    // Decode で反転しても、隠すのは元の標本の値が合う所。描く所の色は Decode を当てた値
+    const inv = rgb('255 0 0', '1 0 1 0 1 0');
+    expect(inv.alpha).toEqual([0, 255, 255]);
+    expect(inv.px(2)).toEqual([255, 0, 255, 255]);
+    // 1 ビットの灰色: 標本の 0 を隠す
+    const gray = imageOf('/DeviceGray setcolorspace << /ImageType 4 /MaskColor [0] /Width 4 /Height 1 /BitsPerComponent 1 /ImageMatrix [4 0 0 1 0 0] /Decode [0 1] /DataSource <A0> >> image');
+    expect(gray.alpha).toEqual([255, 0, 255, 0]);
+    expect(gray.px(0)).toEqual([255, 255, 255, 255]);
+  });
+
+  it('画像の辞書: ImageType が 1・3・4 以外、BitsPerComponent が決まった値以外は rangecheck (表 4.20)', () => {
+    const d = (extra: string) => `/DeviceGray setcolorspace << /Width 1 /Height 1 /ImageMatrix [1 0 0 1 0 0] /Decode [0 1] /DataSource <00> ${extra} >> image`;
+    expect(errorName(d('/ImageType 1 /BitsPerComponent 8'))).toBeUndefined();
+    expect(errorName(d('/ImageType 5 /BitsPerComponent 8'))).toBe('rangecheck');
+    expect(errorName(d('/ImageType 1 /BitsPerComponent 3'))).toBe('rangecheck');
+  });
+});
+
+describe('PostScript: フィルタのエラーと終わり (PLRM §3.13.2・§3.13.3)', () => {
+  /** フィルタから読めるだけ読んだ文字列と、readstring の結果 */
+  const readAll = (data: string, filter: string) => nums(`${data} ${filter} filter 100 string readstring`);
+
+  it('ASCIIHexDecode: 16 進の字・空白・> 以外は ioerror。奇数個で終われば 0 を補う', () => {
+    expect(readAll('(41 4)', '/ASCIIHexDecode')).toEqual(['A@', false]);
+    expect(readAll('(4>)', '/ASCIIHexDecode')).toEqual(['@', false]);
+    expect(readAll('(4a\\t4B\\n\\0004c>4d)', '/ASCIIHexDecode')).toEqual(['JKL', false]);
+    expect(errorName('(41 4G 42>) /ASCIIHexDecode filter 10 string readstring')).toBe('ioerror');
+    expect(errorName('(41<42>) /ASCIIHexDecode filter 10 string readstring')).toBe('ioerror');
+  });
+
+  it('ASCII85Decode: 符号化の決まりに反する並びは ioerror', () => {
+    expect(readAll('(87cURD]i,"Ebo80~>)', '/ASCII85Decode')).toEqual(['Hello World!', false]);
+    // z は 4 つの 0。空白は読み飛ばす
+    expect(nums('(z !!!!! ~>) /ASCII85Decode filter 20 string readstring exch length exch')).toEqual([8, false]);
+    // 5 字の組の値が 2^32 − 1 を超える (s8W-! がちょうど 2^32 − 1)
+    expect(nums('(s8W-!~>) /ASCII85Decode filter 20 string readstring exch length exch')).toEqual([4, false]);
+    expect(errorName('(s8W-"~>) /ASCII85Decode filter 20 string readstring')).toBe('ioerror');
+    // 組の途中の z
+    expect(errorName('(!!z!!~>) /ASCII85Decode filter 20 string readstring')).toBe('ioerror');
+    // 最後の半端な組が 1 字だけ
+    expect(errorName('(!!!!!!~>) /ASCII85Decode filter 20 string readstring')).toBe('ioerror');
+    // ! 〜 u・z・空白・~ 以外の字
+    expect(errorName('(!!v!!~>) /ASCII85Decode filter 20 string readstring')).toBe('ioerror');
+    // ~ の次は > でなければならない
+    expect(errorName('(!!!!!~x) /ASCII85Decode filter 20 string readstring')).toBe('ioerror');
+  });
+
+  it('RunLengthDecode: 長さ 128 が終わり。元が途中で尽きたら、そこまでで EOF になる (エラーにしない)', () => {
+    expect(readAll('<02 414243 FE 5A 80 41>', '/RunLengthDecode')).toEqual(['ABCZZZ', false]);
+    expect(readAll('<02 4142>', '/RunLengthDecode')).toEqual(['AB', false]);
+    expect(readAll('<00 41 FE>', '/RunLengthDecode')).toEqual(['A', false]);
+    expect(readAll('<00 41>', '/RunLengthDecode')).toEqual(['A', false]);
+  });
+
+  it('LZWDecode: 表に無い符号は ioerror。終わりの符号の前に元が尽きたら EOF', () => {
+    // 9 ビットの符号 256 (表の初期化)・300 (まだ表に無い)
+    expect(errorName('<804B00> /LZWDecode filter 10 string readstring')).toBe('ioerror');
+    // 256・45 のあと、符号の途中で元が尽きる
+    expect(readAll('<800B60>', '/LZWDecode')).toEqual(['-', false]);
+  });
+
+  it('FlateDecode: 壊れたデータは ioerror。途中で切れたデータは、そこまでで EOF', () => {
+    // zlib の頭 (78 9C) のあと、種類が 3 (予約。RFC 1951 §3.2.3) のブロック
+    expect(errorName('<789C07> /FlateDecode filter 10 string readstring')).toBe('ioerror');
+    // 圧縮しないブロック (RFC 1951 §3.2.4) を、中身の 5 バイトめで切る
+    const z = deflateSync(Buffer.from('hello world'), { level: 0 });
+    expect(Array.from(z.subarray(2, 7))).toEqual([1, 11, 0, 0xf4, 0xff]);
+    expect(readAll(hex(z), '/FlateDecode')).toEqual(['hello world', false]);
+    expect(readAll(hex(z.subarray(0, 12)), '/FlateDecode')).toEqual(['hello', false]);
+    // 距離が窓の外・長さの符号が表の外などの細工はここでは見ない (robustness のテストにある)
+  });
+
+  it('終わり (EOD) まで読んだフィルタは、元のファイルの EOD の直後で止まる (§3.13.2)', () => {
+    // フィルタを最後まで読んだあと、プログラムの続き (pop 7) は元のファイルから読まれる (データは readstring の次の行から)
+    expect(nums('currentfile /ASCIIHexDecode filter 10 string readstring\n4142> pop 7')).toEqual(['AB', 7]);
+    expect(nums('currentfile /ASCII85Decode filter 20 string readstring\n87cURD]i,"Ebo80~> pop 7')).toEqual(['Hello World!', 7]);
+    // EOF になったフィルタからは読めない (read は false)
+    expect(nums('/f (41>) /ASCIIHexDecode filter def f read f read')).toEqual([65, true, false]);
+  });
+
+  it('filter 演算子: 名前でないフィルタの名前・データの元にならないものは typecheck、持たないフィルタは undefined (§8.2 filter)', () => {
+    expect(errorName('(41>) (ASCIIHexDecode) filter')).toBe('typecheck');
+    expect(errorName('42 /ASCIIHexDecode filter')).toBe('typecheck');
+    expect(errorName('(x) /CCITTFaxDecode filter')).toBe('undefined');
+    expect(errorName('(x) /NoSuchDecode filter')).toBe('undefined');
+    expect(errorName('/ASCIIHexDecode filter')).toBe('stackunderflow');
+  });
+
+  it('Filter の資源の分類は、使えるフィルタだけを実例に持つ (§3.9.2 表 3.8。CCITTFaxDecode は無い)', () => {
+    const r = run('[ (*) { cvn } 40 string /Filter resourceforall ]');
+    expect(r.error).toBeUndefined();
+    const top = r.stack[0];
+    if (top.t !== 'array') throw new Error('配列でない');
+    const names = top.a.slice(top.o, top.o + top.n).map((o) => (o.t === 'name' ? o.v : ''));
+    expect(names).toContain('FlateDecode');
+    expect(names).not.toContain('CCITTFaxDecode');
+    expect(nums('/CCITTFaxDecode /Filter resourcestatus')).toEqual([false]);
+    expect(nums('/FlateDecode /Filter resourcestatus { pop pop true } { false } ifelse')).toEqual([true]);
+    // 実例に挙げたフィルタは、どれも作れる (undefined にならない)
+    for (const n of names) {
+      const operands = n === 'SubFileDecode' ? '() 0 ()' : '()';
+      expect(errorName(`${operands} /${n} filter`), n).toBeUndefined();
+    }
+  });
+});
+
+describe('PostScript: 矩形と資源の演算子 (PLRM §4.6.5・§3.9)', () => {
+  const segsOf = (src: string, kind: 'fill' | 'stroke') => {
+    const r = draw(src);
+    expect(r.error, src).toBeUndefined();
+    const it = r.G.items.find((i) => i.k === kind);
+    if (!it || (it.k !== 'fill' && it.k !== 'stroke')) throw new Error('塗り・線でない');
+    return it.segs;
+  };
+  /** 閉じた形の向き (符号つきの面積。正なら反時計まわり) */
+  const area = (pts: Array<{ x: number; y: number }>) => pts.reduce((s, p, i) => s + (p.x * pts[(i + 1) % pts.length].y - pts[(i + 1) % pts.length].x * p.y) / 2, 0);
+
+  it('rectstroke・rectfill: x y moveto、width 0 rlineto、0 height rlineto、width neg 0 rlineto、closepath の形 (§8.2)', () => {
+    for (const [src, kind] of [
+      ['10 20 30 40 rectstroke', 'stroke'],
+      ['10 20 30 40 rectfill', 'fill'],
+    ] as const) {
+      const s = segsOf(src, kind);
+      expect(s.map((p) => p.op), src).toEqual(['M', 'L', 'L', 'L', 'Z']);
+      expect(s.slice(0, 4).map((p) => ('x' in p ? [p.x, p.y] : [])), src).toEqual([
+        [10, 20],
+        [40, 20],
+        [40, 60],
+        [10, 60],
+      ]);
+    }
+  });
+
+  it('rectstroke: 線の太さ・色・CTM は現在のグラフィックス状態のもの。配列の形は矩形ごとの部分パス (§4.6.5)', () => {
+    const r = draw('3 setlinewidth 0 0 1 setrgbcolor 2 2 scale [0 0 10 10 20 20 5 5] rectstroke');
+    expect(r.error).toBeUndefined();
+    expect(r.G.items.length).toBe(1);
+    const it = r.G.items[0];
+    if (it.k !== 'stroke') throw new Error('線でない');
+    expect(it.color).toEqual([0, 0, 1]);
+    expect(it.lineWidth).toBe(3);
+    expect(it.segs.map((p) => p.op).join('')).toBe('MLLLZMLLLZ');
+    // パスは機器の座標 (2 倍)
+    expect(it.segs[5]).toEqual({ op: 'M', x: 40, y: 40 });
+  });
+
+  it('矩形は、幅・高さの符号によらず、ユーザ空間で反時計まわりに描く (§4.6.5)', () => {
+    for (const wh of ['30 40', '-30 40', '30 -40', '-30 -40']) {
+      const s = segsOf(`50 50 ${wh} rectfill`, 'fill');
+      const pts = s.filter((p) => p.op !== 'Z') as Array<{ x: number; y: number }>;
+      expect(pts[0], wh).toMatchObject({ x: 50, y: 50 });
+      expect(area(pts), wh).toBe(1200);
+    }
+  });
+
+  it('rectfill・rectstroke のオペランドの型 (§8.2)', () => {
+    expect(errorName('(a) /x 1 2 rectfill')).toBe('typecheck');
+    expect(errorName('1 2 3 rectfill')).toBe('stackunderflow');
+    expect(errorName('/x rectstroke')).toBe('typecheck');
+  });
+
+  it('resourceforall: 名前を scratch に写し、使った分の部分文字列を手続きに渡す (§8.2)', () => {
+    const defs = '/abc 1 dict /Pattern defineresource pop ';
+    // 渡すのは文字列。scratch と同じ領域を指す
+    expect(nums(defs + '/s 20 string def (ab*) { dup type exch length } s /Pattern resourceforall s 0 3 getinterval')).toEqual(['/stringtype', 3, 'abc']);
+    // 合う実例が無ければ、手続きを呼ばない (エラーにもしない)
+    expect(nums(defs + '(zz*) { pop 1 } 20 string /Pattern resourceforall')).toEqual([]);
+    // 文字列の鍵で定義した実例も、名前と同じに扱う
+    expect(nums('(xyz) 1 dict /Pattern defineresource pop (x*) { dup length string copy } 20 string /Pattern resourceforall')).toEqual(['xyz']);
+    // 分類が無ければ undefined
+    expect(errorName('(*) { pop } 20 string /NoSuchCategory resourceforall')).toBe('undefined');
+    // オペランドの型
+    expect(errorName('(*) { pop } 20 /Pattern resourceforall')).toBe('typecheck');
+  });
+
+  it('resourceforall: 手続きの中の exit で止まる (§8.2 exit)', () => {
+    const defs = ['a1', 'a2', 'a3'].map((n) => `/${n} 1 dict /Pattern defineresource pop`).join(' ');
+    expect(nums(defs + ' 0 (a*) { pop 1 add } 20 string /Pattern resourceforall')).toEqual([3]);
+    expect(nums(defs + ' 0 (a*) { pop 1 add exit } 20 string /Pattern resourceforall')).toEqual([1]);
+  });
+
+  it('resourceforall: 同じ実例は 1 度だけ。名前でも文字列でもない鍵は型紙 (*) だけに合い、鍵をそのまま渡す (§8.2)', () => {
+    // 同じ名前を global と local の両方に定義する
+    const both = 'true setglobal /dup1 1 dict /Pattern defineresource pop false setglobal /dup1 1 dict /Pattern defineresource pop ';
+    expect(nums(both + '0 (dup*) { pop 1 add } 20 string /Pattern resourceforall')).toEqual([1]);
+    // 整数の鍵
+    const intKey = '7 1 dict /Pattern defineresource pop ';
+    expect(nums(intKey + '(*) { } 20 string /Pattern resourceforall')).toEqual([7]);
+    expect(nums(intKey + '(7) { } 20 string /Pattern resourceforall')).toEqual([]);
+    expect(nums(intKey + '(?) { } 20 string /Pattern resourceforall')).toEqual([]);
+  });
+
+  it('resourcestatus: defineresource で定義した実例の status は 0。無ければ false (§8.2)', () => {
+    expect(nums('/abc 1 dict /Pattern defineresource pop /abc /Pattern resourcestatus exch pop')).toEqual([0, true]);
+    expect(nums('/nothere /Pattern resourcestatus')).toEqual([false]);
+    expect(errorName('/abc /NoSuchCategory resourcestatus')).toBe('undefined');
+  });
+});
