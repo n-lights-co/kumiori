@@ -930,10 +930,10 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 </table>
 <!--/kumiori-sample-->
 
-<h2 id="s-empty-cells"><span class="num">11.5</span>空のセル : <code>empty-cells</code><span class="nw">&nbsp;<span class="badge no-support">未対応</span></span></h2>
+<h2 id="s-empty-cells"><span class="num">11.5</span>空のセル : <code>empty-cells</code><span class="nw">&nbsp;<span class="badge part">一部</span></span></h2>
 <p class="props" data-p="empty-cells"><span class="k">初期値</span> : <span class="v">show</span> <span class="k">適用対象</span> : <span class="v">'table-cell' elements</span> <span class="k">継承</span> : <span class="v">yes</span> <span class="src">(empty-cells — CSS 2.1 §17)</span></p>
-<p>empty-cells は解釈しません。空のセルの罫線と背景も、いつも描きます。</p>
-<!--gen:vals-s-empty-cells--><p class="vals-h"><code>empty-cells</code> の値の意味 <span class="spec">(CSS 2.1 §17.6.1.1)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>show</code></td><td>罫線を分ける方式で、中身の無いセルの周りと後ろにも、ふつうのセルと同じに罫線と背景を描きます。</td><td>対応</td></tr><tr><td><code>hide</code></td><td>罫線を分ける方式で、中身の無いセルの周りと後ろに、罫線と背景を描きません。</td><td>未対応</td></tr></tbody></table><!--/gen:vals-s-empty-cells-->
+<p>hide は、罫線を分ける表 (border-collapse: separate) の、見える中身の無いセルの罫線と背景を描きません。中身が無いのは、回り込みも流れの中の内容も無く、あるのは詰めて消える空白だけのセルです (空の要素のあるセル、white-space: pre の空白のあるセルは中身があります)。罫線は、太さを残して透明にするので、表の組み方は変わりません。セル・行・行グループの背景を通して、表の背景が見えます。visibility: hidden のセルも同じです。セルがすべて中身の無い行は、高さを 0 にします。制限: 高さ 0 の行の上下の border-spacing は、両側に残ります (仕様は片側だけ)。</p>
+<!--gen:vals-s-empty-cells--><p class="vals-h"><code>empty-cells</code> の値の意味 <span class="spec">(CSS 2.1 §17.6.1.1)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>show</code></td><td>罫線を分ける方式で、中身の無いセルの周りと後ろにも、ふつうのセルと同じに罫線と背景を描きます。</td><td>対応</td></tr><tr><td><code>hide</code></td><td>罫線を分ける方式で、中身の無いセルの周りと後ろに、罫線と背景を描きません。</td><td>対応 (上の制限を参照)</td></tr></tbody></table><!--/gen:vals-s-empty-cells-->
 </section>
 
 <!-- ================================================================ 12 段組 -->
@@ -1141,7 +1141,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <p>第 1 章の確かめ方で、指定しても組版に何も渡らなかったプロパティを、仕様ごとに並べます。印刷に関わらないプロパティ (画面の操作・音声など) は、最後の表にまとめます。対応しているプロパティの中で対応していない値は、各節の値の表に書いています。そのうち、仕様の決まりが長く、表の 1 行では説明しきれないものを、2 つ目の表に取り出して説明しています。各項目には、どういうものか、どういう場面で使うかを書いています。説明は、取得した仕様書 (いずれも 2026-11-06 取得) の定義と、Kumiori のソースで確かめたことに基づきます。</p>
 <!--gen:unsupported--><h3>対応していないプロパティ (82 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
-<tr><td><code>empty-cells</code><br><span class="spec">CSS 2.1 §17.6.1.1</span></td><td>罫線を分ける方式 (separated borders model) の表で、見える中身の無いセルのまわりに罫線と背景を描くかを指定します (show・hide)。空のセルの枠や背景を消して、表の見た目を整えたいときに使います。</td></tr>
 <tr><td><code>background-attachment</code><br><span class="spec">CSS Backgrounds 3 §2.5</span></td><td>背景画像を、ビューポートに固定するか (fixed)、ボックスと一緒に動かすか (scroll)、ボックスの中身と一緒に動かすか (local) を指定します。仕様は、ビューポートの無いページの媒体では fixed の背景がページボックスに固定され、どのページにも繰り返して描かれるとしています。背景画像をページごとに同じ位置に出したいときに使います。</td></tr>
 <tr><td><code>background-clip</code><br><span class="spec">CSS Backgrounds 3 §2.7</span></td><td>背景を描く範囲 (border-box・padding-box・content-box) を指定します。背景の色や画像を、罫線の下まで描くか、内側の余白や中身の範囲だけに描くかを変えたいときに使います。</td></tr>
 <tr><td><code>background-origin</code><br><span class="spec">CSS Backgrounds 3 §2.8</span></td><td>背景画像を置く基準の範囲 (background positioning area) を指定します。背景画像の位置を、罫線の外側・内側の余白・中身のどこを基準に決めるかを変えたいときに使います。</td></tr>

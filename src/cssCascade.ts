@@ -389,6 +389,7 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'border-spacing': [true, '0px 0px', 'raw'],
   'table-layout': [false, 'auto', 'raw'],
   'caption-side': [true, 'top', 'raw'],
+  'empty-cells': [true, 'show', 'raw'],
   'vertical-align': [false, 'baseline', 'raw'],
   // Chrome の既定の書体 (標準の書体の設定)
   'font-family': [true, '"Times New Roman"', 'raw'],
@@ -2061,6 +2062,7 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'content-visibility': 'visible auto hidden',
     'border-collapse': 'collapse separate',
     'table-layout': 'auto fixed',
+    'empty-cells': 'show hide',
     'column-span': 'none all',
     'column-fill': 'auto balance',
     'text-autospace': 'normal no-autospace auto ideograph-alpha ideograph-numeric punctuation insert replace',

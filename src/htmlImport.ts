@@ -4674,6 +4674,10 @@ class HtmlImporter {
     const columns: LTableColumn[] = [];
     const captions: NonNullable<LTable['captions']> = [];
     const collapse = c('border-collapse') === 'collapse';
+    /** empty-cells: hide で、罫線・背景を描かないセル */
+    const hiddenCells = new Set<LTableCell>();
+    /** そのうち、中身の無いセル (行のセルがすべてこれなら、行の高さは 0) */
+    const emptyCells = new Set<LTableCell>();
     // 行・行グループの背景: 自分の背景の無いセルに塗る (CSS 2.1 §17.5.1: 背景はセル・行・行グループ・表の順に重なる)
     const bgOf = (e: Element) => this.printOf(this.pg(e), 'background-color', 'background') ?? cssColor(this.cs(e)('background-color'));
     const paintCells = (row: LTableRow, bg: string | undefined) => {
@@ -4745,6 +4749,19 @@ class HtmlImporter {
           else if (va === 'bottom') cell.blockAlign = 'end';
           else if (va === 'baseline') cell.blockAlign = 'baseline';
           delete (cell as { margin?: unknown }).margin;
+          // empty-cells: hide (CSS 2.1 §17.6.1.1): 罫線を分ける表の、見える中身の無いセルは、罫線も背景も描かない。中身が無いのは、
+          // 回り込みも流れの中の内容 (空の要素も内容に数える) も無く、あるのは white-space の処理で消える空白だけのセル。
+          // 罫線は、太さを残して透明にする (表の組み方は変えない)。背景は、行・行グループの背景を塗った後で消す (下)
+          // visibility: hidden のセルも、見える中身の無いセル (行の背景も、その後ろには描かない)
+          if (!collapse && tc('empty-cells') === 'hide') {
+            const empty = cell.children.every((k) => typeof k === 'string' && /^(normal|nowrap|pre-line)$/.test(tc('white-space') || 'normal') && /^[ \t\n\r\f]*$/.test(k));
+            if (empty || /^(hidden|collapse)$/.test(tc('visibility'))) {
+              hiddenCells.add(cell);
+              if (empty) emptyCells.add(cell);
+              delete cell.boxShadow;
+              if (cell.border) for (const sd of Object.values(cell.border as Record<string, BorderSide | undefined>)) if (sd) sd.color = 'transparent';
+            }
+          }
           return cell;
         }),
     });
@@ -4814,6 +4831,27 @@ class HtmlImporter {
       flushCells();
     };
     walk(el, body, anon);
+    // empty-cells: hide のセル: セル・行・行グループの背景を通して、表の背景が見える (CSS 2.1 §17.5.1 の 6)。行のセルがすべて
+    // そうなら、行の高さは 0 (§17.6.1.1。セルの内側の余白・高さの指定も取らない)
+    if (hiddenCells.size) {
+      for (const row of [...header, ...body, ...footer]) {
+        for (const cell of row.cells) {
+          if (!hiddenCells.has(cell)) continue;
+          delete cell.backgroundColor;
+          delete cell.backgroundImage;
+        }
+        if (row.cells.length && row.cells.every((cell) => emptyCells.has(cell) && (cell.rowSpan ?? 1) === 1)) {
+          delete row.minHeight;
+          for (const cell of row.cells) {
+            cell.children = [];
+            delete cell.height;
+            delete cell.minBlockSize;
+            if (cell.padding) cell.padding = { ...(cell.padding as Record<string, number>), top: 0, bottom: 0 };
+            if (cell.border) for (const k of ['top', 'bottom'] as const) delete (cell.border as Record<string, unknown>)[k];
+          }
+        }
+      }
+    }
     // 表の部分が表の中に reset したカウンターは、表を出るときに外す (匿名の表では、el は外の容器なので、容器を出るときに外れる)
     if (!anon) this.leaveCounters(el);
     const t: LTable = {

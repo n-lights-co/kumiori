@@ -3,6 +3,7 @@
  *  - box-decoration-break: clone (CSS Fragmentation 3 §5.4): ページ・段・行で分かれた箱の断片ごとに、罫線・内側の余白を付け直す
  *  - 内容による大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content、CSS Sizing 4 §3.2 の fit-content(<長さ>))
  *  - initial-letter (CSS Inline 3 §7): 段落の最初の字を大きくして、数行に沈める
+ *  - empty-cells (CSS 2.1 §17.6.1.1)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -392,6 +393,38 @@ describe('initial-letter (CSS Inline 3 §7)', () => {
     }
     const w = await lay(`<p><span style="initial-letter: 2">漢</span>${'あ'.repeat(30)}</p><p class="h">${TEXT}</p>`, 'p.h::first-letter { initial-letter: 2; initial-letter-align: hanging }', page);
     expect(w.warnings.find((x) => x.startsWith('未対応の CSS を無視しました: '))).toBe('未対応の CSS を無視しました: initial-letter (::first-letter 以外の箱)、initial-letter-align: hanging');
+  });
+});
+
+describe('empty-cells (CSS 2.1 §17.6.1.1)', () => {
+  const CSS = 'table { border-spacing: 3pt; border-collapse: separate } td { border: 3pt solid #000000; padding: 3pt; background: #ff0000 } tr.g { background: #00ff00 } tr.g td { background: none }';
+  type Cell = Box & { color: (string | undefined)[] };
+  const cells = (t: Awaited<ReturnType<typeof lay>>): Cell[] =>
+    t.boxes.filter((b) => b.type === 'table-cell').map((b) => ({ ...b, color: (['top', 'right', 'bottom', 'left'] as const).map((k) => (b.raw.border?.[k] as { color?: string } | undefined)?.color) }));
+  it('hide: 罫線を分ける表の、中身の無いセルは、罫線 (太さは残す) も背景も描かない。空の要素のあるセル・空白を残すセルは中身がある', async () => {
+    const t = await lay('<table style="empty-cells: hide"><tr><td>あ</td><td></td><td> \n</td><td><span></span></td><td style="white-space: pre"> </td></tr></table>', CSS);
+    const c = cells(t);
+    expect(c.map((x) => x.bg)).toEqual(['#ff0000', undefined, undefined, '#ff0000', '#ff0000']);
+    expect(c.map((x) => x.color[0])).toEqual(['#000000', 'transparent', 'transparent', '#000000', '#000000']);
+    // 罫線の太さは残る (表の組み方は変わらない)
+    expect(c.map((x) => x.bord)).toEqual(c.map(() => [3, 3, 3, 3]));
+    const show = cells(await lay('<table><tr><td>あ</td><td></td><td> \n</td><td><span></span></td><td style="white-space: pre"> </td></tr></table>', CSS));
+    expect(show.map((x) => [x.bg, x.color[0]])).toEqual(show.map(() => ['#ff0000', '#000000']));
+    expect(c.map((x) => [r1(x.x), r1(x.w), r1(x.h)])).toEqual(show.map((x) => [r1(x.x), r1(x.w), r1(x.h)]));
+    expect(t.warnings.filter((x) => /未対応|知らない/.test(x))).toEqual([]);
+  });
+  it('hide: 行の背景も、中身の無いセル・visibility: hidden のセルの後ろには描かない。罫線を重ねる表では効かない', async () => {
+    const t = cells(await lay('<table style="empty-cells: hide"><tr class="g"><td>あ</td><td></td><td style="visibility: hidden">い</td></tr></table>', CSS));
+    expect(t.map((x) => x.bg)).toEqual(['#00ff00', undefined, undefined]);
+    const u = cells(await lay('<table style="empty-cells: hide; border-collapse: collapse"><tr><td>あ</td><td></td></tr></table>', CSS));
+    expect(u.map((x) => x.bg)).toEqual(['#ff0000', '#ff0000']);
+  });
+  it('hide: セルがすべて中身の無い行は、高さが 0', async () => {
+    const t = await lay('<table style="empty-cells: hide"><tr><td>あ</td><td>い</td></tr><tr><td></td><td> </td></tr><tr><td>う</td><td></td></tr></table>', CSS);
+    // セルの高さ (字 10pt + 余白・罫線 12pt)。中身の無い行のセルは 0 (行の領域には、行の間の空き 3pt が残る)
+    expect(cells(t).map((x) => r1(x.h))).toEqual([22, 22, 0, 0, 22, 22]);
+    const show = await lay('<table><tr><td>あ</td><td>い</td></tr><tr><td></td><td> </td></tr><tr><td>う</td><td></td></tr></table>', CSS);
+    expect(cells(show).map((x) => r1(x.h))).toEqual([22, 22, 12, 12, 22, 22]);
   });
 });
 

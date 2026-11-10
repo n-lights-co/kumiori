@@ -13,7 +13,6 @@ import { isPagedDecl, type ParsedCss } from './htmlPaged';
 
 /** 対応していないプロパティ (対応仕様説明書 HTML と CSS 編 16 章) */
 export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
-  'empty-cells',
   'background-attachment',
   'background-clip',
   'background-origin',
