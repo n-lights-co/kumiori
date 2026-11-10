@@ -31,6 +31,16 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `fetchStyles`: 文書が `http(s):` で参照する CSS (`@import` の先も) を取る (既定 `true`)
   - `kumiori/node`: `createFontLoader` (Node のコマンドと同じ既定の書体の読み込みとキャッシュ)、`createFileResolver` (`file:` の参照を読む)、`defaultFontCacheDir`・`looksLikeFont`
 - **Node のコマンド**: `file:` の URL の参照を読む。`--no-fetch-styles` で CSS を取らない
+- **壊れた入力・細工した入力への強さ** (止まらなくなる・プロセスが落ちる入力を、その画像・その宣言だけを読めないものとして扱う。上限の値と根拠は各ソースのコメント):
+  - 組版: 回り込みの横が狭い段落の直前に、外枠のある `border-collapse: collapse` の表があると止まらなくなるのを直した。これに伴い、こうした表の直後で回り込みの下へ送る箱 (`clear` など) は、回り込みの下端ちょうどに置く (これまでは罫線の半分だけ上に重なっていた。CSS 2.1 §9.5.2)
+  - XSL-FO: `fo:marker` の中の `fo:retrieve-marker`・`fo:marker` は読まずに報告する (XSL 1.1 §6.13.5・§6.13.6)。要素の入れ子が 250 段以上の FO は、分かる文の誤りにする
+  - 数式: 極端な `scriptlevel` (math-depth は ±100 まで。MathML Core 4.5)、長い `mtext`・多数の子・深い入れ子 (300 段まで) で落ちない
+  - HTML・CSS: 引数の無い `attr()`、`@import` の循環と膨らみ、`var()` の多重参照、巨大な `colspan`・`rowspan`・`<col span>` (HTML の上限の 1000・65534)・`repeat()` (列 10000 本まで)、長すぎるカウンターの表記 (1000 字を超えれば fallback。CSS Counter Styles 3 §2) で落ちない。入れ子が 128 段を超える要素は、128 段目の祖先の後ろの兄弟として読む。取れなかった画像の URL は 1 度だけ試す (読み込みの報告の画像の一覧は、重複を 1 つにまとめる)
+  - SVG: path の `Z` の後に数が続く形、`use`・marker・pattern・mask の掛け算の展開 (要素の数 + 50 万回まで)、長い `<style>` で止まらない
+  - WMF・EMF・CGM: 点の数・字数・色の表の数を記録の長さで縛る。1 つの文書の画像の画素の合計は 6,400 万画素まで
+  - JPEG・TIFF・CCITT: 走査の数 (500 まで)、IFD の値の数、2 次元の行の探索の手間を抑える
+  - EPS (PostScript): VM の使用量 (512MB。超えれば VMerror)、パスの点の合計 (500 万点。超えれば limitcheck)、フィルタが読みためる量 (16MB)、画像のマスクの寸法、網かけの画素の手間、`resourceforall` の型紙の照合、`search`、`StartData` の長さに上限を置く。`runEps`・`epsToSvg` に `maxVM`・`maxPathPoints`・`maxFilterBytes` を足した
+  - 出力: `renderPage` が、改行しない空白 (U+00A0) の字形を読めない書体のページで例外にならない。壊れた data URI・`@font-face` の URL 1 つで `typeset` 全体が失敗しない。Node のコマンドは、入力のディレクトリの下の読めないディレクトリを飛ばす
 - **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
 - **公開**: 対応仕様説明書の PDF (日本語版と英語版の 4 冊) を、版ごとに GitHub のリリースに付ける。奥付の「組版」の欄は、組んだ Kumiori の版にする
 - **第三者の表示**:
