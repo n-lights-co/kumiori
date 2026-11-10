@@ -86,6 +86,13 @@ export interface LNode {
   colIndex?: number;
   /** line: 行番号の指定と、行の中での基線の位置 (block 方向。縦書きは字面の中央) */
   lnum?: import('./types').LineNumbering;
+  /** line: 中に、格子に合わせ直すリーダー (leaderGrid) がある */
+  hasLeaderGrid?: boolean;
+  /**
+   * リーダーの箱: 点・文字列の繰り返しを、参照領域・ページの始めの端からの格子に合わせ直す (XSL 1.1 §7.22.1 の leader-alignment)。
+   * cycle は 1 周期の字 (i は周期の始まりから)。ページに置いた後で、箱の位置から並べ直す (Paginator の addLineMarks)
+   */
+  leaderGrid?: { align: 'reference-area' | 'page'; pitch: number; cycle: LNode[] };
   /** line: この行に引く改訂バー */
   revs?: import('./types').RevisionBar[];
   baseline?: number;
@@ -178,6 +185,7 @@ export interface ResolvedStyle {
   breakClear?: 'start' | 'end' | 'both';
   textIndent: number;
   textIndentHanging?: boolean;
+  lastLineEndIndent?: number;
   textIndentEachLine?: boolean;
   letterSpacing: number;
   wordSpacing?: number;
@@ -303,6 +311,7 @@ export function resolveStyle(parent: ResolvedStyle, n: BaseNode): ResolvedStyle 
     breakClear: n.breakClear,
     textIndent: n.textIndent ?? parent.textIndent,
     textIndentHanging: n.textIndentHanging ?? parent.textIndentHanging,
+    lastLineEndIndent: n.lastLineEndIndent ?? parent.lastLineEndIndent,
     textIndentEachLine: n.textIndentEachLine ?? parent.textIndentEachLine,
     letterSpacing: n.letterSpacing ?? parent.letterSpacing,
     wordSpacing: n.wordSpacing ?? parent.wordSpacing,

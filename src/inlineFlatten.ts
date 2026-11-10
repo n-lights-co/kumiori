@@ -866,7 +866,7 @@ function flattenLeader(c: LLeader, cx: FlattenCtx): void {
     runId: state.run,
     st: s2,
     bg,
-    leader: { pattern, g, ...(gs ? { gs } : {}), pitch, thickness: c.ruleThickness ?? 0.5, ...(c.ruleStyle && c.ruleStyle !== 'solid' ? { ruleStyle: c.ruleStyle } : {}), min, opt, max, ...(c.cssLeader ? { css: true } : {}), ...(c.cssLeaderFromStart ? { fromStart: true } : {}) },
+    leader: { pattern, g, ...(gs ? { gs } : {}), pitch, thickness: c.ruleThickness ?? 0.5, ...(c.ruleStyle && c.ruleStyle !== 'solid' ? { ruleStyle: c.ruleStyle } : {}), min, opt, max, ...(c.cssLeader ? { css: true } : {}), ...(c.cssLeaderFromStart ? { fromStart: true } : {}), ...(c.alignment && pattern === 'dots' ? { align: c.alignment } : {}) },
     src: c.id,
   });
   state.run++;

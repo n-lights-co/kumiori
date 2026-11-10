@@ -299,6 +299,12 @@ export interface TextStyle {
   breakClear?: 'start' | 'end' | 'both';
   /** 字下げ (pt)。1 行目の inline-start 側 */
   textIndent?: number;
+  /**
+   * 最後の行の、行の終わりの端の字下げ (pt。XSL 1.1 §7.16.3 の last-line-end-indent)。行内の並びの最後の行 (ブロックの最後の行と、
+   * 子のブロックの前で終わる行) の終わりの端を、正の値で内へ、負の値で外へずらす。子へ引き継がれる。
+   * 目次の行で、折り返した行は end-indent の手前で終え、ページ番号のある最後の行だけを端まで伸ばすのに使う
+   */
+  lastLineEndIndent?: number;
   /** 字下げを掛ける行を逆にする (1 行目以外を字下げする。CSS の text-indent の hanging。Text 3 §8.1) */
   textIndentHanging?: boolean;
   /** 強制改行の後の行も、1 行目と同じに扱う (CSS の text-indent の each-line。Text 3 §8.1) */
@@ -1253,6 +1259,12 @@ export interface LLeader extends BaseNode {
    * length の同じ成分より優先する。中身の長さを測るとき (表の自動レイアウト) は決められないので、minimum を使う
    */
   lengthPct?: { minimum?: number; optimum?: number; maximum?: number };
+  /**
+   * 点・文字列の繰り返しの周期の始まりを合わせる格子の基準 (XSL 1.1 §7.22.1 の leader-alignment)。
+   * reference-area: 参照領域 (本文の領域・段・表のセル) の内容の始めの端、page: ページの始めの端。
+   * 指定が無ければ (none)、行の始めからピッチの倍数の位置に置く。右から左の行・回したコンテナの中では、指定が無いのと同じ
+   */
+  alignment?: 'reference-area' | 'page';
   /**
    * CSS の leader() (Content 3 §2.5)。繰り返す字を少なくとも 1 回は見せ、入らなければ前の内容の後で改行して次の行に置く。
    * 後ろの内容とは同じ行に置く

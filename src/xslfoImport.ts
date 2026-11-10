@@ -528,13 +528,7 @@ class Importer {
     let active: RevisionBar[] = NO_BARS;
     // class ごとの、開いている始まり (内側が後ろ)。線を引かない始まり (change-bar-style="none") は undefined
     const open = new Map<string, Array<RevisionBar | undefined>>();
-    const inh = (el: XEl, k: string): string | undefined => {
-      for (let e: XEl | undefined = el; e; e = this.parents.get(e)) {
-        const v = this.attrInh(e, k);
-        if (v !== undefined) return v;
-      }
-      return undefined;
-    };
+    const inh = (el: XEl, k: string) => this.inheritedAttr(el, k);
     const todo: Array<{ n: XNode; on: boolean }> = [{ n: root, on: false }];
     for (let t = todo.pop(); t; t = todo.pop()) {
       const { n } = t;
@@ -1482,6 +1476,9 @@ class Importer {
       s.textAlignLast = tal === 'center' ? 'center' : tal === 'justify' ? 'justify' : toEnd(tal) ? 'end' : this.spec && (tal === 'inside' || tal === 'outside') ? tal : 'start';
     const ti = this.len(this.attr(el, 'text-indent'), fs, this.cbW(ctx));
     if (ti !== undefined) s.textIndent = ti;
+    // last-line-end-indent (§7.16.3。継承される。百分率は、いちばん近い祖先のブロックの領域の行の向きの寸法に対する値)
+    const lle = this.len(this.attrInh(el, 'last-line-end-indent'), fs, this.cbW(ctx));
+    if (lle !== undefined) s.lastLineEndIndent = lle;
     const lsAttr = this.attr(el, 'letter-spacing') ?? this.attr(el, 'letter-spacing.optimum');
     const ls = this.len(lsAttr, fs);
     if (ls !== undefined) {
@@ -3037,6 +3034,15 @@ class Importer {
     if (length.maximum === undefined && pct.maximum === undefined) pct.maximum = 1;
     if (Object.keys(length).length) l.length = length;
     if (Object.keys(pct).length) l.lengthPct = pct;
+    // leader-alignment (§7.22.1。継承される): 点・中身の繰り返しの周期を、参照領域・ページの始めの端からの格子に合わせる
+    // (“For fo:leaders where the "leader-pattern" property is specified as "dot" or as "use-content", this property will be honored.”)
+    const la = this.inheritedAttr(n, 'leader-alignment');
+    if (la === 'reference-area' || la === 'page') {
+      if (l.pattern !== 'dots') {
+        /* 線・空白には効かない */
+      } else if (ctx.rtl) this.miss(`leader-alignment="${la}" (右から左の行)`);
+      else l.alignment = la;
+    } else if (la !== undefined && la !== 'none') this.miss(`leader-alignment="${la}"`);
     return l;
   }
 

@@ -172,6 +172,8 @@ export interface LeaderSpec {
   css?: boolean;
   /** CSS の leader() の字を、リーダーの始めの端から並べる (LLeader.cssLeaderFromStart) */
   fromStart?: boolean;
+  /** 周期を合わせる格子の基準 (LLeader.alignment) */
+  align?: 'reference-area' | 'page';
 }
 
 export interface FlattenState {
@@ -297,6 +299,8 @@ export interface RawLine {
   /** 空行 (強制改行のみ) のメトリクス用 */
   metric?: Atom;
   indent: number;
+  /** 行の終わりの端をずらす量 (正で内へ、負で外へ。XSL 1.1 §7.16.3 の last-line-end-indent を当てた最後の行) */
+  endIndent?: number;
 }
 
 const EPS = 1e-6;
@@ -862,10 +866,27 @@ export function lineIndent(st: { textIndent: number; textIndentHanging?: boolean
 }
 
 /**
+ * breakOne に、最後の行の終わりの端の字下げ (XSL 1.1 §7.16.3 の last-line-end-indent。lle) を足したもの。
+ * 残りの中身がすべて、終わりの端をずらした幅 (L − lle) の 1 行に入れば、その行が最後の行 (RawLine.endIndent を付ける)。
+ * 入らなければ、普通の幅で折り返す。ただし、普通の幅なら残りがすべて入る (最後の行になる) のに、ずらした幅 (狭い) には入らないときは、
+ * ずらした幅で折り返して、残りを次の行 (最後の行) に送る (最後の行が、ずらした端を越えないように)
+ */
+export function breakOneLast(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, lle: number | undefined): { line: RawLine; next: number } {
+  if (!lle) return breakOne(atoms, start, L, indent, hangingDefault);
+  const shifted = breakOne(atoms, start, L - lle, indent, hangingDefault);
+  if (shifted.next >= atoms.length) {
+    shifted.line.endIndent = lle;
+    return shifted;
+  }
+  const normal = breakOne(atoms, start, L, indent, hangingDefault);
+  return normal.next >= atoms.length ? shifted : normal;
+}
+
+/**
  * 行に切り分ける。firstIndent は 1 行目の字下げ。st を渡すと、行ごとの字下げを lineIndent で決める
  * (first: この並びの 1 行目が要素の最初の行か)
  */
-export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0]; first: boolean }): RawLine[] {
+export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0] & { lastLineEndIndent?: number }; first: boolean }): RawLine[] {
   const lines: RawLine[] = [];
   let start = 0;
   let first = true;
@@ -878,7 +899,7 @@ export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangin
       continue;
     }
     const indent = indentOf ? lineIndent(indentOf.st, first && indentOf.first, afterForced) : first ? firstIndent : 0;
-    const { line, next } = breakOne(atoms, start, L, indent, hangingDefault);
+    const { line, next } = breakOneLast(atoms, start, L, indent, hangingDefault, indentOf?.st.lastLineEndIndent);
     first = false;
     // 強制改行で終わった行 (段落の最後の行は次が無いので問わない)
     afterForced = line.last;
@@ -1093,7 +1114,7 @@ function fillLeaders(items: Atom[], widths: number[], free: number) {
 
 export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): PositionedLine {
   const items = raw.items;
-  const avail = Math.max(L - raw.indent, 0);
+  const avail = Math.max(L - raw.indent - (raw.endIndent ?? 0), 0);
   const widths = items.map((t) => t.advance);
   // 行頭・行末のルビは、行の外の字には掛けない (はみ出し分を送りへ戻す)
   const ov = items.map((t, k) => (t.ovL || t.ovR ? [k === 0 ? 0 : (t.ovL ?? 0), k === items.length - 1 ? 0 : (t.ovR ?? 0)] : undefined));
@@ -1334,6 +1355,19 @@ function leaderNode(a: Atom, off: number, gStart: number, w: number, bOff: numbe
       for (let x = first - ld.pitch; x >= off - EPS; x -= ld.pitch) xs.unshift(x);
     }
     else for (let m = Math.ceil((off - EPS) / ld.pitch); m * ld.pitch + ld.pitch <= off + w + EPS; m++) xs.push(m * ld.pitch);
+    // leader-alignment (XSL 1.1 §7.22.1): 1 周期の字を控えておき、ページに置いた後で、参照領域・ページの端からの格子に並べ直す
+    if (ld.align && !ld.css) {
+      const cycle: LNode[] = [];
+      let dx = ld.gs ? 0 : (ld.pitch - ld.g.advance) / 2;
+      for (const g of ld.gs ?? [ld.g]) {
+        const gn = glyphNode(g, a.st, wm, g.ch, fs, a.st.color);
+        gn.i = dx;
+        gn.b = 0;
+        cycle.push(gn);
+        dx += g.advance;
+      }
+      node.leaderGrid = { align: ld.align, pitch: ld.pitch, cycle };
+    }
     for (const x of xs) {
       if (ld.gs) {
         // 文字列の繰り返し: 単位の中に字を順に並べる
@@ -1483,7 +1517,9 @@ export function buildLineNode(
         if (a.src && !a.box.node.src) a.box.node.src = a.src;
         inline.children.push(a.box.node);
       } else if (a.kind === 'leader' && a.leader) {
-        inline.children.push(leaderNode(a, off, gStart, w, bOff, wm, L));
+        const ln = leaderNode(a, off, gStart, w, bOff, wm, L);
+        if (ln.leaderGrid) line.hasLeaderGrid = true;
+        inline.children.push(ln);
       } else if (a.kind === 'ruby' && a.r) {
         const r = a.r;
         const [ovL, ovR] = ov ?? [0, 0];

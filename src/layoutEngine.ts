@@ -84,6 +84,7 @@ import {
 import {
   breakLines,
   breakOne,
+  breakOneLast,
   buildLineNode,
   adjustJapaneseSpacing,
   adjustHangulWordSpaces,
@@ -2571,7 +2572,7 @@ class Flow {
         this.pendMin = Math.max(this.pendMin, range.clearTo - this.cursor);
         if (this.pendingValue() > pv + EPS) continue;
       }
-      const { line, next } = breakOne(atoms, start, range.width, lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start)), true);
+      const { line, next } = breakOneLast(atoms, start, range.width, lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start)), true, st.lastLineEndIndent);
       const pl = positionLine(line, range.width, st);
       reorderLine(pl, range.width, this.wm === 'horizontal-tb' && st.direction === 'rtl');
       const lm = lineMetrics(pl, this.wm, st, this.nominalRatio(st), this.strutOf(st));
@@ -6666,20 +6667,25 @@ export class LayoutEngine {
       isize: number;
     }
     const hits: Array<{ line: LNode; b: number; col: Col }> = [];
-    const walk = (n: LNode, oi: number, ob: number, col: Col) => {
+    // リーダーの格子 (leader-alignment) の基準: ref は、いちばん近い参照領域 (本文の領域・段・表のセル) の内容の始めの端
+    const pageEdge = wm === 'horizontal-tb' ? mm(p.master.margins.left) : mm(p.master.margins.top);
+    const rtlPage = sst.direction === 'rtl';
+    const walk = (n: LNode, oi: number, ob: number, col: Col, ref: number) => {
       if (n.rot || n.wm !== wm) return; // 回転・書字方向の違う箱の中は数えない
       const bi = oi + n.i;
       const bb = ob + n.b;
       const c = n.colIndex !== undefined ? { k: n.colIndex, i: bi, isize: n.isize } : col;
       if (n.kind === 'line') {
         if (n.lnum || n.revs) hits.push({ line: n, b: bb, col: c });
+        if (n.hasLeaderGrid && !rtlPage) regridLeaders(n, bi, ref, pageEdge);
         return;
       }
       const pl = toLogical(n.padding, n.wm);
       const bl = borderToLogicalWidths(n.border, n.wm);
-      for (const ch of n.children) walk(ch, bi + pl.is + bl.is, bb + pl.bs + bl.bs, c);
+      const r = n.colIndex !== undefined ? bi : n.kind === 'cell' ? bi + pl.is + bl.is : ref;
+      for (const ch of n.children) walk(ch, bi + pl.is + bl.is, bb + pl.bs + bl.bs, c, r);
     };
-    for (const ch of p.root.children) walk(ch, 0, 0, { k: 0, i: 0, isize: p.root.isize });
+    for (const ch of p.root.children) walk(ch, 0, 0, { k: 0, i: 0, isize: p.root.isize }, 0);
     // 改訂バー: 同じ指定が続く行 (段落の間の空きを含む) は 1 本につなげ、行の block 方向の長さいっぱいに引く
     const runs: Array<{ rb: RevisionBar; col: Col; b0: number; b1: number; last: number }> = [];
     hits.forEach((h, k) => {
@@ -6857,6 +6863,37 @@ export class LayoutEngine {
       ...(m.backgroundArea === 'content' ? { backgroundBox: { x: ex.left + rx, y: ex.top + ry, width: regionW, height: regionH } } : {}),
     };
   }
+}
+
+/**
+ * 行の中のリーダーの点・文字列の繰り返しを、格子に合わせて並べ直す (XSL 1.1 §7.22.1 の leader-alignment):
+ * “the start-edge of each cycle of the repeated pattern will be placed on the start-edge of the next cycle in the appropriate
+ * pattern-alignment grid”。格子は、reference-area なら参照領域の内容の始めの端 (ref)、page ならページの始めの端から、ピッチごと。
+ * lineI は行の箱の位置 (本文の領域の始めの端から)、pageEdge はページの始めの端から本文の領域までの距離。
+ * リーダーの範囲に 1 周期がまるごと入る所にだけ置く
+ */
+function regridLeaders(line: LNode, lineI: number, ref: number, pageEdge: number) {
+  const visit = (n: LNode, oi: number) => {
+    const bi = oi + n.i;
+    const g = n.leaderGrid;
+    if (g) {
+      // 格子の原点から、リーダーの始まりまでの距離
+      const a = g.align === 'page' ? pageEdge + bi : bi - ref;
+      n.children = [];
+      for (let m = Math.ceil((a - EPS) / g.pitch); (m + 1) * g.pitch <= a + n.isize + EPS; m++) {
+        for (const t of g.cycle) {
+          const gn = cloneNode(t);
+          gn.i = m * g.pitch - a + t.i;
+          n.children.push(gn);
+        }
+      }
+      return;
+    }
+    const pl = toLogical(n.padding, n.wm);
+    const bl = borderToLogicalWidths(n.border, n.wm);
+    for (const ch of n.children) visit(ch, n.kind === 'line' ? bi : bi + pl.is + bl.is);
+  };
+  visit(line, lineI - line.i);
 }
 
 /**
