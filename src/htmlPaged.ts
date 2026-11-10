@@ -756,8 +756,32 @@ export function isPagedDecl(prop: string, value: string): boolean {
   return false;
 }
 
-/** counter() の書式 (list-style-type) で数を文字にする */
+/**
+ * counter() の書式 (list-style-type) で数を文字にする。書式の範囲の外の数は、fallback の decimal で表す
+ * (Counter Styles 3 §2 の手順 2・§3.5 の range・§3.7 の fallback。定義済みの書式の範囲は §6.1・§6.2):
+ * lower-roman・upper-roman は 1〜3999、lower-alpha・upper-alpha (alphabetic) は 1 以上、cjk-decimal は 0 以上。
+ * 範囲に限りの無い numeric (decimal-leading-zero・full-width-decimal) の負の数は、絶対値の表記の前に負の符号 (-) を付ける (§2 の手順 3・5)
+ */
 export function counterText(type: string, n: number): string {
+  const inRange = (min: number, max = Infinity) => Number.isInteger(n) && n >= min && n <= max;
+  switch (type) {
+    case 'lower-alpha':
+    case 'lower-latin':
+    case 'upper-alpha':
+    case 'upper-latin':
+      if (!inRange(1)) return String(n);
+      break;
+    case 'lower-roman':
+    case 'upper-roman':
+      if (!inRange(1, 3999)) return String(n);
+      break;
+    case 'cjk-decimal':
+      if (!inRange(0)) return String(n);
+      break;
+    case 'full-width-decimal':
+      if (n < 0) return `-${counterText(type, -n)}`;
+      break;
+  }
   const alpha = (k: number, upper: boolean) => {
     let s = '';
     for (let x = k; x > 0; x = Math.floor((x - 1) / 26)) s = String.fromCharCode(((x - 1) % 26) + (upper ? 65 : 97)) + s;

@@ -2231,7 +2231,49 @@ class HtmlImporter {
     const m = /^attr\(\s*([\w:-]+)(?:\s+[\w%-]+)?\s*(?:,[^)]*)?\)$/.exec(arg);
     const v = m ? (el.getAttribute(m[1]) ?? '') : unquote(arg.replace(/^url\((.*)\)$/, '$1'));
     const id = v.replace(/^.*#/, '');
-    return id || undefined;
+    return id ? this.fragmentId(el, id) : undefined;
+  }
+
+  /** 文書の中の id (fragmentId が飛び先を探すのに使う。最初に使うときに集める) */
+  private docIds?: Set<string>;
+
+  /**
+   * URL の fragment (# の後ろ) の指す要素の id (HTML Living Standard §7.4.6.4 Scrolling to a fragment の「indicated part」の手順):
+   * まず fragment そのままの id を探し、無ければ、% の符号化を解いて UTF-8 として読んだもの (BOM は取らない) で探す
+   * (href="#%E7%AB%A0" は id="章" を指す)。どちらも無ければ、そのまま返す
+   */
+  private fragmentId(el: Element, fragment: string): string {
+    if (!/%[0-9a-f]{2}/i.test(fragment)) return fragment;
+    if (!this.docIds) {
+      const ids = (this.docIds = new Set<string>());
+      const walk = (n: Node) => {
+        for (const k of Array.from(n.childNodes ?? [])) {
+          if (k.nodeType !== 1) continue;
+          const id = (k as Element).getAttribute('id');
+          if (id) ids.add(id);
+          walk(k);
+        }
+      };
+      if (el.ownerDocument) walk(el.ownerDocument);
+    }
+    if (this.docIds.has(fragment)) return fragment;
+    // percent-decode (URL Standard §1.3: % の後ろが 16 進の 2 桁でなければ、そのままの字)
+    const bytes: number[] = [];
+    const enc = new TextEncoder();
+    for (let i = 0; i < fragment.length; ) {
+      const hex = fragment[i] === '%' ? /^[0-9a-f]{2}/i.exec(fragment.slice(i + 1, i + 3)) : null;
+      if (hex) {
+        bytes.push(parseInt(hex[0], 16));
+        i += 3;
+      } else {
+        const cp = fragment.codePointAt(i)!;
+        const ch = String.fromCodePoint(cp);
+        bytes.push(...enc.encode(ch));
+        i += ch.length;
+      }
+    }
+    const decoded = new TextDecoder('utf-8', { ignoreBOM: true }).decode(new Uint8Array(bytes));
+    return this.docIds.has(decoded) ? decoded : fragment;
   }
 
   /**
@@ -2863,8 +2905,16 @@ class HtmlImporter {
     const ws = this.cs(parent)('white-space') || 'normal';
     if (ws === 'pre' || ws === 'pre-wrap' || ws === 'break-spaces') return t.replace(/\r\n?/g, '\n');
     let s = t.replace(/\r\n?/g, '\n').replace(/[ \t]*\n[ \t]*/g, '\n');
-    // 改行: 前後が和文なら消し、それ以外は空白 (pre-line は改行のまま)
-    s = s.replace(/(.?)\n+(.?)/gu, (m, a: string, b: string) => (ws === 'pre-line' ? m : CJK.test(a) && CJK.test(b) ? a + b : `${a} ${b}`));
+    // 改行 (CSS Text 3 §4.1.3): 続いた改行は 1 つにまとめ、残った改行は、前後の字で空白にするか消すかを決める (決め方は UA に任されている)。
+    // ここでは、前後が和文なら消し、それ以外は空白にする (pre-line は改行のまま)。前後の字は見るだけで、置き換えには含めない
+    // (含めると、1 字だけの行が続くとき (あ\nい\nう) に、次の改行の前の字を見られない)
+    if (ws !== 'pre-line')
+      s = s.replace(/\n+/g, (m, at: number, all: string) => {
+        const a = Array.from(all.slice(Math.max(0, at - 2), at)).pop() ?? '';
+        const cp = all.codePointAt(at + m.length);
+        const b = cp === undefined ? '' : String.fromCodePoint(cp);
+        return CJK.test(a) && CJK.test(b) ? '' : ' ';
+      });
     return s.replace(/[ \t]+/g, ' ');
   }
 
@@ -3216,7 +3266,8 @@ class HtmlImporter {
     const forced = /^(page|left|right|recto|verso|always)$/.test(this.cs(e)('break-before') || this.cs(e)('page-break-before') || '');
     if (name !== this.curPage || (this.opts.pageGroupFirst && name && forced)) {
       const sw: PageSwitch = { type: 'page-switch', page: name };
-      const reset = /(?:^|\s)page(?:\s+(-?\d+))?/.exec(this.cs(e)('counter-reset'));
+      // カウンターの名前は全体で見る (pagenote・page-x は page ではない)
+      const reset = /(?:^|\s)page(?![\w-])(?:\s+(-?\d+))?/.exec(this.cs(e)('counter-reset'));
       if (reset) sw.initial = reset[1] !== undefined ? Math.max(1, parseInt(reset[1], 10)) : 1;
       items.push({ v: sw as unknown as LBlockLevel, block: true });
       this.curPage = name;
@@ -3603,7 +3654,7 @@ class HtmlImporter {
     if (el.localName !== 'a') return undefined;
     const href = (el.getAttribute('href') ?? '').trim();
     if (!href) return undefined;
-    if (href.startsWith('#')) return href.length > 1 ? { internal: href.slice(1) } : undefined;
+    if (href.startsWith('#')) return href.length > 1 ? { internal: this.fragmentId(el, href.slice(1)) } : undefined;
     return { external: href };
   }
 

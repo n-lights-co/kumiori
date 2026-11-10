@@ -16,6 +16,9 @@ import { parseHTML } from 'linkedom';
 import { makeEngine } from './helpers';
 import { cascadeStyles, HTML_UA_CSS } from '../src/cssCascade';
 import { importHtml } from '../src/htmlImport';
+import { counterText } from '../src/htmlPaged';
+import { prepareHtml } from '../src/htmlPrepare';
+import { serializeInlineSvg } from '../src/htmlSvg';
 import type { Area } from '../src/types';
 import { childrenOf } from '../src/areaTree';
 
@@ -150,5 +153,104 @@ describe('HTM-03 リストの 2 つ目以降の項目・表の部分の前処理
   it('脚注 (float: footnote) の li は、2 つ目以降でも脚注になる', () => {
     const r = imp('<ul><li>a</li><li class="fn">note</li><li>b</li></ul>', '.fn{float:footnote}');
     expect(find(r.document, (n) => n.type === 'footnote').length).toBe(1);
+  });
+});
+
+describe('HTM-08 和文の間の改行', () => {
+  it('1 字だけの和文の行が続いても、行の間に空白を入れない (CSS Text 3 §4.1.3)', () => {
+    const flow = (body: string) => imp(body).document.sequences[0].flow.children.map((b) => (b as { children: unknown[] }).children.join(''));
+    expect(flow('<p>あ\nい\nう</p>')).toEqual(['あいう']);
+    expect(flow('<p>あ\n\nい\nう\nえお\nか</p>')).toEqual(['あいうえおか']);
+    // 和文と欧文の間・欧文どうしは空白
+    expect(flow('<p>あ\na\nb\nい</p>')).toEqual(['あ a b い']);
+    expect(flow('<p>a\nb\nc</p>')).toEqual(['a b c']);
+    // pre-line は改行のまま
+    expect(flow('<p style="white-space:pre-line">あ\nい\nう</p>')).toEqual(['あ\nい\nう']);
+  });
+});
+
+describe('HTM-09 番号の書式の範囲の外の数', () => {
+  it('範囲の外の数は decimal で表す (Counter Styles 3 §2・§3.5・§3.7・§6)', () => {
+    // lower-roman・upper-roman は 1〜3999
+    expect([0, 1, 3999, 4000, -2].map((n) => counterText('lower-roman', n))).toEqual(['0', 'i', 'mmmcmxcix', '4000', '-2']);
+    expect([0, 4, 4000].map((n) => counterText('upper-roman', n))).toEqual(['0', 'IV', '4000']);
+    // alphabetic は 1 以上
+    expect([-3, 0, 1, 27].map((n) => counterText('lower-alpha', n))).toEqual(['-3', '0', 'a', 'aa']);
+    expect([0, 26].map((n) => counterText('upper-latin', n))).toEqual(['0', 'Z']);
+    // cjk-decimal は 0 以上。numeric (範囲の限りが無い) の負の数は、負の符号を前に付ける
+    expect([-5, 0, 12].map((n) => counterText('cjk-decimal', n))).toEqual(['-5', '〇', '一二']);
+    expect([-5, 12].map((n) => counterText('full-width-decimal', n))).toEqual(['-５', '１２']);
+    expect([-5, 5, 12].map((n) => counterText('decimal-leading-zero', n))).toEqual(['-5', '05', '12']);
+    // 範囲の外の大きな数でも、表記は長くならない
+    expect(counterText('lower-roman', 3e9)).toBe('3000000000');
+  });
+
+  it('ol の start・type で範囲の外になる項目', () => {
+    expect(texts('<ol start="0" type="i"><li>a</li><li>b</li></ol>')).toBe('0.ai.b');
+    expect(texts('<ol start="-1" type="a"><li>a</li><li>b</li><li>c</li></ol>')).toBe('-1.a0.ba.c');
+    expect(texts('<ol start="3999" type="i"><li>a</li><li>b</li></ol>')).toBe('mmmcmxcix.a4000.b');
+  });
+});
+
+describe('HTM-14 % で符号化した fragment', () => {
+  const links = (body: string, css = '') => find(imp(body, css).document, (n) => !!n.link).map((n) => n.link);
+  it('href の fragment は、そのままの id が無ければ、% の符号化を解いた id を指す (HTML の fragment の探し方)', () => {
+    expect(links('<p><a href="#%E7%AB%A0">x</a></p><h1 id="章">章</h1>')).toEqual([{ internal: '章' }]);
+    // そのままの id があれば、そちら
+    expect(links('<p><a href="#%E7%AB%A0">x</a></p><h1 id="%E7%AB%A0">a</h1><h1 id="章">章</h1>')).toEqual([{ internal: '%E7%AB%A0' }]);
+    // どちらも無い・% の後ろが 16 進でない・UTF-8 として読めない: そのまま
+    expect(links('<p><a href="#%E7%AB%A0">x</a> <a href="#100%">y</a> <a href="#%FF">z</a></p>')).toEqual([{ internal: '%E7%AB%A0' }, { internal: '100%' }, { internal: '%FF' }]);
+    expect(links('<p><a href="#a%20b">x</a></p><h1 id="a b">t</h1>')).toEqual([{ internal: 'a b' }]);
+  });
+
+  it('target-counter(attr(href), …) も同じ id を引く', () => {
+    const css = 'h1 { counter-increment: ch 3 } a::after { content: " ch." target-counter(attr(href), ch) }';
+    expect(texts('<p><a href="#%E7%AB%A0">x</a></p><h1 id="章">章</h1>', css)).toBe('x ch.3章');
+  });
+});
+
+describe('HTM-15 文書の中の svg の接頭辞つきの名前', () => {
+  const svgOf = (html: string) => {
+    const { document } = parseHTML(`<!DOCTYPE html><html><body>${html}</body></html>`);
+    return document.querySelector('svg') as unknown as Element;
+  };
+  const wellFormed = (xml: string) => {
+    const errors: string[] = [];
+    new DOMParser({ onError: (level: string, m: string) => void (level !== 'warning' && errors.push(m)) }).parseFromString(xml, 'image/svg+xml');
+    return errors;
+  };
+  it('宣言のある接頭辞は宣言ごと書き出し、宣言の無い接頭辞の属性・要素は落とす (整形式の XML になる)', () => {
+    const a = serializeInlineSvg(svgOf('<svg xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 10 10"><g inkscape:label="L" foo:bar="1"><rect width="5" height="5" xlink:href="#a" xml:space="preserve"/></g><sodipodi:namedview id="n"><rect/></sodipodi:namedview></svg>'));
+    expect(a).toBe(
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 10 10"><g inkscape:label="L"><rect width="5" height="5" xlink:href="#a" xml:space="preserve"/></g></svg>',
+    );
+    expect(wellFormed(a)).toEqual([]);
+    // 宣言が子の要素にあるときは、その要素の中だけで使える
+    const b = serializeInlineSvg(svgOf('<svg><g xmlns:a="urn:a" a:x="1"><rect a:y="2"/></g><rect a:z="3" width="1"/></svg>'));
+    expect(b).toBe('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><g xmlns:a="urn:a" a:x="1"><rect a:y="2"/></g><rect width="1"/></svg>');
+    expect(wellFormed(b)).toEqual([]);
+  });
+});
+
+describe('HTM-17 counter-reset の page', () => {
+  it('pagenote・page-x は page ではない (ページ番号を戻さない)', () => {
+    const init = (css: string) => imp('<p>a</p><div class="b">b</div>', `@page x { size: A5 } .b { page: x; ${css} }`).document.sequences.map((q) => q.initialPageNumber);
+    expect(init('counter-reset: pagenote 7')).toEqual([undefined, undefined]);
+    expect(init('counter-reset: page-x 7')).toEqual([undefined, undefined]);
+    expect(init('counter-reset: note 2 page 7')).toEqual([undefined, 7]);
+    expect(init('counter-reset: page')).toEqual([undefined, 1]);
+  });
+});
+
+describe('HTM-19 代わりのスタイルシート', () => {
+  const prep = async (head: string) => {
+    const files = ['a.css', 'b.css', 'c.css'].map((name, k) => ({ name, css: true, text: async () => `.x${k} { color: red }` }));
+    const p = await prepareHtml(`<!doctype html><html><head>${head}</head><body><p>a</p></body></html>`, files as never, 'browser', { width: 210, height: 297, margin: 20 }, (t) => parseHTML(t).document as unknown as Document);
+    return ['.x0', '.x1', '.x2'].filter((s) => p.css.includes(s));
+  };
+  it('rel="alternate stylesheet" で題のあるものは当てない (参照されていない CSS としても足さない)', async () => {
+    expect(await prep('<link rel="stylesheet" href="a.css"><link rel="alternate stylesheet" title="大きな字" href="b.css"><link rel="stylesheet alternate" title="t" href="c.css">')).toEqual(['.x0']);
+    // 題が、選ばれた組の名前 (alternate でない題つきのスタイルシートの題) と同じなら当てる。題が無ければ当てる (CSSOM 1 §6.2)
+    expect(await prep('<link rel="stylesheet" title="t" href="a.css"><link rel="alternate stylesheet" title="t" href="b.css"><link rel="alternate stylesheet" href="c.css">')).toEqual(['.x0', '.x1', '.x2']);
   });
 });

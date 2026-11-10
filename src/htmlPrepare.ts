@@ -309,10 +309,18 @@ export async function prepareHtml(
     s.textContent = inlineImports(s.textContent ?? '');
   });
   // <link rel="stylesheet" href="x.css"> → <style>
+  // 代わりのスタイルシート (rel に alternate と stylesheet の両方がある link。HTML Living Standard §4.6.8.23) は、alternate の印を付けて
+  // 作られ、題 (title) が空でなく、選ばれたスタイルシートの組の名前 (alternate でない、題のある最初のスタイルシートの題) と違えば、
+  // 無効になる (CSSOM 1 §6.2 の「add a CSS style sheet」)。無効なものは当てない (参照された CSS としては数える)。
+  // rel の語は、空白で区切り、大文字小文字を区別せずに比べる (HTML Living Standard §4.6.8)
+  const relOf = (l: Element) => (l.getAttribute('rel') ?? '').toLowerCase().split(/\s+/);
+  const titled = Array.from(parsed.querySelectorAll('link[rel~="stylesheet"], style')).find((e) => (e.getAttribute('title') ?? '') !== '' && !(e.localName === 'link' && relOf(e).includes('alternate')));
+  const preferredSet = titled?.getAttribute('title') ?? '';
+  const disabledAlternate = (l: Element) => relOf(l).includes('alternate') && (l.getAttribute('title') ?? '') !== '' && l.getAttribute('title') !== preferredSet;
   parsed.querySelectorAll('link[rel~="stylesheet"]').forEach((l) => {
     linked.add(cssKey(l.getAttribute('href') ?? ''));
     const text = cssFiles.get(cssKey(l.getAttribute('href') ?? ''));
-    if (text === undefined || screenOnly(l.getAttribute('media'))) {
+    if (text === undefined || screenOnly(l.getAttribute('media')) || disabledAlternate(l)) {
       l.remove();
       return;
     }
