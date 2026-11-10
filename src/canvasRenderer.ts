@@ -134,8 +134,9 @@ class CanvasPainter implements Painter {
     ctx.font = this.fonts.cssFont(f, g.fontSize);
     ctx.fillStyle = toCss(g.color);
     ctx.textBaseline = 'alphabetic';
-    if (g.features?.length || this.outlines) {
-      // OpenType の機能を当てた字形 (Canvas では指定できない)、または書体をブラウザに登録していないとき: 字形の輪郭を描く
+    if (g.features?.length || this.outlines || (f.instanceOf && !f.face)) {
+      // OpenType の機能を当てた字形 (Canvas では指定できない)、または書体をブラウザに登録していないとき: 字形の輪郭を描く。
+      // 可変フォントの実体は、ブラウザへの登録 (静的な書体にしたもの) が終わるまで、輪郭で描く
       const o = this.outlineOf(f, g.text, g.features ?? []);
       const k = g.fontSize / f.unitsPerEm;
       for (let i = 0; i < o.paths.length; i++) {

@@ -272,7 +272,13 @@ export function createFontMapping(
       const key = `${family}@${ff.weight}`;
       try {
         if (!registeredFaces.has(key)) {
-          await fonts.registerBuffer(family, ff.weight, await file.arrayBuffer(), canvas);
+          // 可変フォントの記述子 (Fonts 4 §4.4: 記述子が無い (auto) ときは、選ぶときは normal、軸の値は制限しない)
+          await fonts.registerBuffer(family, ff.weight, await file.arrayBuffer(), canvas, {
+            weight: ff.weightRange ?? 'auto',
+            width: ff.widthRange ?? 'auto',
+            ...(ff.variationSettings ? { settings: ff.variationSettings } : {}),
+            ...(ff.namedInstance ? { namedInstance: ff.namedInstance } : {}),
+          });
           registeredFaces.add(key);
         }
         const g = groups.get(ff.family) ?? [];

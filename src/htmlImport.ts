@@ -62,6 +62,7 @@ import type { ImportReport, ImportResult } from './xslfoImport';
 import { normalizeSrc } from './assets';
 import { countDroppedLink, judgeExternalLink, type LinkPolicy } from './linkPolicy';
 import { expand, lengthPx, splitTextIndent } from './cssCascade';
+import { parseVariationSettings } from './fontVariation';
 import { inlineSvgDataUri, isInlineSvg } from './htmlSvg';
 import { isColorName } from './color';
 import type { FkFont, MathFont } from './mathFont';
@@ -2486,7 +2487,15 @@ class HtmlImporter {
       const ub = c('unicode-bidi');
       if (ub === 'embed' || ub === 'isolate' || ub === 'bidi-override' || ub === 'isolate-override' || ub === 'plaintext') s.unicodeBidi = ub;
     }
-    if (diff('font-style')) s.fontStyle = c('font-style') === 'italic' || c('font-style').startsWith('oblique') ? 'italic' : 'normal';
+    if (diff('font-style')) {
+      s.fontStyle = c('font-style') === 'italic' || c('font-style').startsWith('oblique') ? 'italic' : 'normal';
+      // oblique <角度> (Fonts 4 §2.5: 角度が無ければ 14deg)。可変フォントの slnt の軸の値になる
+      const ob = /^oblique(?:\s+(-?[\d.]+)deg)?$/.exec(c('font-style'));
+      if (ob) s.fontObliqueAngle = ob[1] !== undefined ? Math.max(-90, Math.min(90, parseFloat(ob[1]))) : 14;
+    }
+    // 可変フォントの軸の値 (Fonts 4 §8.1・§8.2)
+    if (diff('font-optical-sizing')) s.fontOpticalSizing = c('font-optical-sizing') === 'none' ? 'none' : 'auto';
+    if (diff('font-variation-settings')) s.fontVariationSettings = parseVariationSettings(c('font-variation-settings')) ?? {};
     // 印刷の色 (特色・CMYK)。::before / ::after / ::marker は、その擬似要素の規則の宣言から
     const pdecl = pseudo === '::before' || pseudo === '::after' || pseudo === '::marker' ? this.pagedPseudo.get(el)?.[pseudo] : pseudo ? undefined : this.pg(el);
     const pcol = pdecl ? this.printOf(pdecl, 'color') : undefined;
@@ -2674,7 +2683,8 @@ class HtmlImporter {
     }
     if (diff('font-stretch')) {
       const fsr = parseFloat(c('font-stretch'));
-      if (fsr && fsr !== 100 && /%$/.test(c('font-stretch'))) s.fontStretch = fsr / 100;
+      // 親と違う値は、100% (normal) に戻す指定も渡す (渡さないと、親の幅を引き継いだままになる)
+      if (fsr && /%$/.test(c('font-stretch')) && (fsr !== 100 || parent)) s.fontStretch = fsr / 100;
     }
     const lang = el.getAttribute?.('lang') ?? el.getAttribute?.('xml:lang');
     if (lang && !pseudo) s.language = lang;
