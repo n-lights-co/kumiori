@@ -166,6 +166,9 @@ if (args.fonts) {
   await page.waitForFunction(() => document.getElementById('clearfonts')?.hidden === false, null, { timeout: 120_000 });
   console.log(`書体を読み込みました: ${files.map((f) => path.basename(f)).join(', ')}`);
 }
+// 設定の部品 (トンボ・既定のスタイル・CSS の解釈) は、画面の「設定」の引き出しの中にある。
+// 閉じたままだと、見えない部品を選べずに時限で落ちるので、先に開く
+if (await page.locator('#settings').isHidden()) await page.click('#settingsbtn');
 // トンボ・塗り足し無し (見本の PDF と同じ大きさにする)
 await page.uncheck('#foprint');
 if (args.img) {
