@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { epsPreview, imageInfo, pixelDensity } from '../src/imageInfo';
+import { epsPreview, imageInfo, pixelDensity, readIfd, tiffInfo } from '../src/imageInfo';
 
 const bytes = (n: number, f: (v: DataView) => void) => {
   const b = new Uint8Array(n);
@@ -45,6 +45,87 @@ describe('imageInfo: 描けない形式の大きさ', () => {
     const eps = new TextEncoder().encode('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 72 36\n');
     expect(imageInfo(eps)).toEqual({ mime: 'application/postscript', width: 96, height: 48 });
     expect(epsPreview(eps)).toBeUndefined();
+  });
+});
+
+describe('tiffInfo: TIFF の頭と最初の IFD (TIFF 6.0 Section 2・Section 8)', () => {
+  type Entry = [tag: number, type: 3 | 4 | 5, values: number[] | [number, number][]];
+  /**
+   * TIFF を組み立てる: 頭 (バイトの順・42・IFD の位置 8)、IFD (項の数・12 バイトの項・次の IFD の位置 0)、その後ろに 4 バイトに入らない値。
+   * 4 バイトに入る値は、項の値の欄に左詰めで入れる (Section 2 の「Value/Offset」)。type は 3 SHORT・4 LONG・5 RATIONAL (分子と分母)
+   */
+  const tiff = (le: boolean, entries: Entry[], magic = 42) => {
+    const size = { 3: 2, 4: 4, 5: 8 };
+    const dataAt = 8 + 2 + entries.length * 12 + 4;
+    const extra = entries.reduce((a, [, type, vals]) => a + (size[type] * vals.length > 4 ? size[type] * vals.length : 0), 0);
+    return bytes(dataAt + extra, (v) => {
+      v.setUint8(0, le ? 0x49 : 0x4d), v.setUint8(1, le ? 0x49 : 0x4d), v.setUint16(2, magic, le), v.setUint32(4, 8, le);
+      v.setUint16(8, entries.length, le);
+      let free = dataAt;
+      entries.forEach(([tag, type, vals], k) => {
+        const e = 10 + k * 12;
+        v.setUint16(e, tag, le), v.setUint16(e + 2, type, le), v.setUint32(e + 4, vals.length, le);
+        let at = e + 8;
+        if (size[type] * vals.length > 4) {
+          v.setUint32(e + 8, free, le);
+          at = free;
+          free += size[type] * vals.length;
+        }
+        vals.forEach((val, i) => {
+          if (type === 3) v.setUint16(at + i * 2, val as number, le);
+          else if (type === 4) v.setUint32(at + i * 4, val as number, le);
+          else v.setUint32(at + i * 8, (val as [number, number])[0], le), v.setUint32(at + i * 8 + 4, (val as [number, number])[1], le);
+        });
+      });
+    });
+  };
+
+  it('バイトの順が MM (上位が先) の TIFF。幅・高さが LONG、横と縦の解像度が違う', () => {
+    // 600 × 300 画素、横 300dpi・縦 150dpi (どちらも 2 インチ = 192px)
+    const b = tiff(false, [[256, 4, [600]], [257, 4, [300]], [282, 5, [[300, 1]]], [283, 5, [[150, 1]]], [296, 3, [2]]]);
+    expect(tiffInfo(b)).toEqual({ mime: 'image/tiff', width: 192, height: 192 });
+    expect(imageInfo(b)).toEqual({ mime: 'image/tiff', width: 192, height: 192 });
+    // 同じ中身を II (下位が先) で書いても同じ
+    expect(tiffInfo(tiff(true, [[256, 4, [600]], [257, 4, [300]], [282, 5, [[300, 1]]], [283, 5, [[150, 1]]], [296, 3, [2]]]))).toEqual({ mime: 'image/tiff', width: 192, height: 192 });
+  });
+  it('MM の SHORT の値は、値の欄の左 (先頭の 2 バイト) にある', () => {
+    const b = tiff(false, [[256, 3, [100]], [257, 3, [50]]]);
+    expect([b[18], b[19], b[20], b[21]]).toEqual([0, 100, 0, 0]);
+    expect(tiffInfo(b)).toEqual({ mime: 'image/tiff', width: 100, height: 50 });
+  });
+  it('ResolutionUnit: 3 はセンチメートル、無ければインチ (既定値 2)、1 (単位なし) と解像度の無いものは 96dpi とみなす', () => {
+    // 100 画素/cm = 254dpi。254 画素は 1 インチ = 96px
+    const cm = tiffInfo(tiff(true, [[256, 3, [254]], [257, 3, [508]], [282, 5, [[100, 1]]], [283, 5, [[100, 1]]], [296, 3, [3]]]))!;
+    expect(cm.width).toBeCloseTo(96, 9);
+    expect(cm.height).toBeCloseTo(192, 9);
+    // ResolutionUnit の項が無い: インチ。解像度は分数 (600/2 = 300dpi)
+    expect(tiffInfo(tiff(true, [[256, 3, [300]], [257, 3, [150]], [282, 5, [[600, 2]]], [283, 5, [[600, 2]]]]))).toEqual({ mime: 'image/tiff', width: 96, height: 48 });
+    // 単位なし (縦横比だけ): 解像度の値は使わない
+    expect(tiffInfo(tiff(true, [[256, 3, [300]], [257, 3, [150]], [282, 5, [[2, 1]]], [283, 5, [[1, 1]]], [296, 3, [1]]]))).toEqual({ mime: 'image/tiff', width: 300, height: 150 });
+    // 解像度の項が無い
+    expect(tiffInfo(tiff(false, [[256, 3, [300]], [257, 3, [150]]]))).toEqual({ mime: 'image/tiff', width: 300, height: 150 });
+  });
+  it('TIFF でないもの・幅か高さの無いものは undefined。途中で切れたものでも例外を投げない', () => {
+    expect(tiffInfo(new Uint8Array([0x49, 0x49, 42]))).toBeUndefined(); // 頭が 4 バイトに足りない
+    expect(tiffInfo(tiff(true, [[256, 3, [10]], [257, 3, [10]]], 43))).toBeUndefined(); // 42 でない (BigTIFF の 43)
+    expect(tiffInfo(new Uint8Array([0x49, 0x4d, 42, 0, 0, 0, 0, 8]))).toBeUndefined(); // II でも MM でもない
+    expect(tiffInfo(tiff(true, [[256, 3, [10]]]))).toBeUndefined(); // ImageLength が無い
+    expect(tiffInfo(tiff(true, [[256, 3, [0]], [257, 3, [10]]]))).toBeUndefined(); // 幅が 0
+    const whole = tiff(false, [[256, 4, [600]], [257, 4, [300]], [282, 5, [[300, 1]]], [283, 5, [[150, 1]]]]);
+    for (let n = 0; n < whole.length; n++) expect(() => imageInfo(whole.subarray(0, n))).not.toThrow();
+    expect(imageInfo(whole.subarray(0, 20))).toBeUndefined();
+  });
+  it('readIfd: 値が複数の項 (4 バイトに入る 2 つの SHORT、入らない 3 つの SHORT) と RATIONAL', () => {
+    for (const le of [true, false]) {
+      const b = tiff(le, [[258, 3, [8, 8, 8]], [530, 3, [2, 1]], [282, 5, [[72, 1]]], [273, 4, [1000]]]);
+      const ifd = readIfd(b, 8, le);
+      expect(ifd.get(258)).toEqual([8, 8, 8]);
+      expect(ifd.get(530)).toEqual([2, 1]);
+      expect(ifd.get(282)).toEqual([72]);
+      expect(ifd.get(273)).toEqual([1000]);
+      // 値の数の上限 (maxValues) で打ち切る
+      expect(readIfd(b, 8, le, 1).get(258)).toEqual([8]);
+    }
   });
 });
 
