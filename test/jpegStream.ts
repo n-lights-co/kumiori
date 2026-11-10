@@ -170,9 +170,10 @@ export function writeJpeg(img: CoefImage, opts: WriteOptions = {}): Uint8Array {
   u16(img.width);
   out.push(n);
   img.comps.forEach((c, i) => out.push(i + 1, (c.h << 4) | c.v, c.tq));
-  // DHT (B.2.4.2): 逐次は Annex K の表、漸進はすべての値を持つ表
+  // DHT (B.2.4.2): 逐次は Annex K の表。漸進は、AC だけすべての値を持つ表にする
+  // (DC の値は大きさの区分 0〜11 だけなので Annex K の表のまま。0〜255 を並べた DC の表は、libjpeg が表の誤りとして断る)
   const specs: [number, HuffmanSpec][] = progressive
-    ? [[0x00, FULL], [0x10, FULL]]
+    ? [[0x00, DC_LUMA], [0x10, FULL]]
     : n === 1
       ? [[0x00, DC_LUMA], [0x10, AC_LUMA]]
       : [[0x00, DC_LUMA], [0x10, AC_LUMA], [0x01, DC_CHROMA], [0x11, AC_CHROMA]];
