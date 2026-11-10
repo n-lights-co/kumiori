@@ -279,6 +279,9 @@ export function parsePathData(d: string): Seg[] | null {
         segs.push({ op: 'Z' });
         cx = sx;
         cy = sy;
+        // closepath は引数を取らない (SVG 2 §9.3.4 と §9.3.9 の文法)。続く数は構文エラーなので、命令を忘れて、次の周で null を返す
+        // (ここを抜かすと、数を読み進めないまま Z を足し続けて止まらない。誤りは、この関数のほかの誤りと同じく null にする)
+        cmd = '';
       } else if (C === 'M') {
         cx = ox + num();
         cy = oy + num();
@@ -492,6 +495,16 @@ const IGNORED = new Set(['title', 'desc', 'metadata', 'defs', 'sodipodi:namedvie
 
 class Unsupported extends Error {}
 
+/**
+ * 1 つの SVG で、参照 (use・marker・pattern・mask・clipPath の中の use) をたどって要素を訪ねる回数の上限 (文書に書かれた要素の数に足す分)。
+ * use を 10 個ずつ 6 段重ねるだけで 100 万の図形になり、数 KB の SVG が数秒〜止まらなくなるので、ここで切って「図形にできない」ものとして扱う。
+ * 文書に書かれた要素を 1 回ずつ訪ねる分は数えない (上限 = 要素の数 + この値) ので、要素が数十万ある地図・図面はそのまま読める。
+ * 記号 (symbol) を数万回置く地図でも、参照で増える分は数十万までなので、50 万にする
+ */
+const MAX_EXPANDED_VISITS = 500_000;
+/** pattern の中身の図形が、また pattern で塗られているときの入れ子の上限 (互いを指す pattern で止まらなくなるのを防ぐ。gradient の参照の上限と同じ 8) */
+const MAX_PATTERN_NEST = 8;
+
 /** <style> の規則 (単純な選択子だけ: 要素名・.class・#id とその組み合わせ、カンマ区切り) */
 interface CssRule {
   tag?: string;
@@ -511,22 +524,81 @@ function parseDecls(text: string): Record<string, string> {
   return out;
 }
 
+/** p 以降の最初の { か } の位置 (無ければ -1) */
+function nextBrace(text: string, p: number): number {
+  for (let i = p; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x7b || c === 0x7d) return i;
+  }
+  return -1;
+}
+
+/** 注釈を取り除く (/\/\*[\s\S]*?\*\//g の置き換えと同じ結果。終わりの無い注釈は残す) */
+function stripCssComments(css: string): string {
+  let out = '';
+  let p = 0;
+  for (;;) {
+    const s = css.indexOf('/*', p);
+    const e = s < 0 ? -1 : css.indexOf('*/', s + 2);
+    if (e < 0) return out + css.slice(p);
+    out += css.slice(p, s);
+    p = e + 2;
+  }
+}
+
+/**
+ * @import・@charset・@namespace の文 (; まで) を取り除く (/@(import|charset|namespace)\b[^;{}]*;/gi の置き換えと同じ結果。
+ * ; より先に { } が来るもの・; の無いものは残す)。次の区切り (; { }) の位置は、そこを過ぎるまで使い回す
+ */
+function stripAtStatements(text: string): string {
+  const re = /@(?:import|charset|namespace)\b/gi;
+  let out = '';
+  let p = 0;
+  let stop = -1; // 直前に探した区切りの位置 (text.length = 無い)
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const from = re.lastIndex;
+    if (stop < from) {
+      stop = from;
+      while (stop < text.length && !';{}'.includes(text[stop])) stop++;
+    }
+    if (text[stop] !== ';') continue;
+    out += text.slice(p, m.index);
+    p = stop + 1;
+    re.lastIndex = p;
+  }
+  return out + text.slice(p);
+}
+
 /** CSS を規則の列にする。扱えない選択子 (子孫・疑似クラスなど) や @ 規則 (読み飛ばすもの以外) があれば Unsupported */
 export function parseCss(css: string): CssRule[] {
   const rules: CssRule[] = [];
   // @font-face (SVG に埋め込んだ書体。text は読み込み済みの書体の輪郭で描く)・@import・@charset・@namespace は読み飛ばす
-  const text = css
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/<!\[CDATA\[|\]\]>/g, '')
-    .replace(/@font-face\s*\{[^{}]*\}/gi, '')
-    .replace(/@(import|charset|namespace)\b[^;{}]*;/gi, '');
-  const re = /([^{}]+)\{([^{}]*)\}/g;
-  let m: RegExpExecArray | null;
+  // (注釈と @import などは、終わりの無いものが並ぶと正規表現では 2 乗の手間になるので、1 回の走査で取り除く)
+  const text = stripAtStatements(
+    stripCssComments(css)
+      .replace(/<!\[CDATA\[|\]\]>/g, '')
+      .replace(/@font-face\s*\{[^{}]*\}/gi, ''),
+  );
+  // 規則 = 「{ } を含まない 1 字以上の選択子」「{」「{ } を含まない宣言」「}」。頭から 1 回の走査で切り出す
+  // (正規表現 /([^{}]+)\{([^{}]*)\}/g と同じ切り方。正規表現だと、{ の無い長い文で、始まりの位置ごとに終わりまで読み直して 2 乗の手間になる)。
+  // 規則に入らない { } や、空白でない残りがあれば Unsupported (@media などの入れ子)
+  const blocks: Array<[string, string]> = [];
+  for (let p = 0; ; ) {
+    const open = nextBrace(text, p);
+    if (open < 0) {
+      if (text.slice(p).trim()) throw new Unsupported('css');
+      break;
+    }
+    const close = text[open] === '{' && open > p ? nextBrace(text, open + 1) : -1;
+    if (close < 0 || text[close] !== '}') throw new Unsupported('css');
+    blocks.push([text.slice(p, open), text.slice(open + 1, close)]);
+    p = close + 1;
+  }
   let order = 0;
-  if (text.replace(/([^{}]+)\{([^{}]*)\}/g, '').trim()) throw new Unsupported('css'); // @media などの入れ子
-  while ((m = re.exec(text))) {
-    const decls = parseDecls(m[2]);
-    for (const raw of m[1].split(',')) {
+  for (const [selectors, body] of blocks) {
+    const decls = parseDecls(body);
+    for (const raw of selectors.split(',')) {
       const sel = raw.trim();
       // * (すべての要素。matplotlib の出力など) は型の指定なしと同じ
       const parsed = /^(\*|[a-zA-Z][\w-]*)?((?:[.#][\w-]+)*)$/.exec(sel);
@@ -692,7 +764,14 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     let target = shapes;
     // id → 要素 (グラデーション・clipPath・use の参照先)
     const byId = new Map<string, XmlNode>();
+    /** 要素を訪ねられる残りの回数 (文書の要素の数 + MAX_EXPANDED_VISITS)。尽きたら Unsupported */
+    let visitsLeft = MAX_EXPANDED_VISITS;
+    const visit = () => {
+      if (--visitsLeft < 0) throw new Unsupported('too many elements');
+    };
+    let patternNest = 0;
     const index = (n: XmlNode) => {
+      visitsLeft++;
       const id = n.getAttribute?.('id');
       if (id) byId.set(id, n);
       for (const c of Array.from(n.childNodes)) if (c.nodeType === 1) index(c);
@@ -878,9 +957,13 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       const saved = target;
       const inner: SvgShape[] = [];
       target = inner;
+      // 中身の walk は深さを 1 から数え直すので、pattern の入れ子はここで数える (中身が自分自身で塗られている pattern で止まらなくなる)
+      if (patternNest >= MAX_PATTERN_NEST) throw new Unsupported('too deep');
+      patternNest++;
       try {
         for (const c of kidsOf(g)) walk(c, ROOT_STYLE, content, 1, false, [], 1);
       } finally {
+        patternNest--;
         target = saved;
       }
       if (inner.some((sh) => sh.fillPaint || sh.fillPattern || sh.strokePaint || sh.clips || sh.blend || sh.fillOpacity < 1 || sh.strokeOpacity < 1)) throw new Unsupported('pattern content');
@@ -898,6 +981,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       const segs: Seg[] = [];
       let evenOdd = false;
       const add = (n: XmlNode, m: M, depth: number) => {
+        visit();
         const name = nm(n);
         const tr = parseTransform(n.getAttribute?.('transform'));
         if (!tr) throw new Unsupported('transform');
@@ -1168,6 +1252,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         }
         return;
       }
+      visit(); // (filter・mask でこの要素を描き直す分は、ここまで来ないので 1 回と数える)
       const s = inherit(st, p);
       const o = op * s.opacity;
       // 切り抜き: この要素の座標系 (transform 適用後) で clipPath の形を作る
