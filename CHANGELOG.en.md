@@ -83,6 +83,7 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - Every output JS file starts with a comment giving the Kumiori version, its license and where `THIRD_PARTY_NOTICES.md` is (for loading a single file from a CDN)
   - The README of the Conformance Guides states the fonts embedded in their PDFs and the fonts' licenses
 - **Latin-script text (Vietnamese), Greek and Cyrillic**: decomposed sequences (NFD, such as `e` + U+0323 + U+0302 or polytonic Greek) of Latin, Greek and Cyrillic letters are set with the precomposed character when the font has it (same appearance and width as the precomposed form; CSS Fonts 4 §5.3). Latin Extended Additional (U+1E00–1EFF: `ế`, `ệ`, `ṃ` and so on) is set in the same Latin font as the rest of the word and takes part in Japanese–Latin spacing and pair kerning. Greek and Cyrillic pairs are kerned with the font's kern data
+- **Right-to-left scripts (Arabic, Hebrew)**: Arabic combining marks are stacked in the order of UTR #53 (a fatha sits above a shadda). The zero-width non-joiner (U+200C) inside a word has no width, and stand-alone invisible characters such as LRM, RLM and WJ have no width (they used to take the width of a space). Arabic in vertical text is joined and set sideways as a word (CSS Writing Modes 3 §5.1.1). Text can be extracted from the PDF in reading order (ActualText per word or cluster; fixes swapped or wrong characters). In the Canvas outline renderer, marks of right-to-left clusters are placed correctly
 
 ## 0.1.1 (2026-11-09)
 

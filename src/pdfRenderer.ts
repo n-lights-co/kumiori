@@ -278,6 +278,11 @@ function pushOps(page: PDFPage, ops: PDFOperator[]) {
 const REGISTRATION: SpotColor = { name: 'All', cmyk: [1, 1, 1, 1], tint: 1 };
 
 /** 同じ行列で同じ基線に並ぶ字の並び (TJ にまとめる単位)。pen は並びの原点からの、次の字が自然に置かれる位置 (文字空間) */
+/** 右から左に組む文字 (ヘブライ文字・アラビア文字・シリア文字など、提示形、補助面の右から左の文字) を含む文字列 */
+const RTL_TEXT = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]/u;
+/** 描かない字 (Default_Ignorable_Code_Point) だけの文字列 */
+const IGNORABLE_ONLY = /^\p{Default_Ignorable_Code_Point}+$/u;
+
 interface TextSeg {
   a: number;
   b: number;
@@ -787,7 +792,14 @@ class PdfPainter implements Painter {
       // 改行しない空白 (U+00A0) は、通常の空白の字形で描く (Arimo の U+00A0 の字形は、fontkit が読めない壊れたデータ)
       const text = g.text.replace(/\u00A0/g, ' ');
       // 木に字形の番号があれば、それを書く (組版で測った字形と同じ)。無ければ、字を書体で組み直す
-      hex = g.glyphIds?.length ? (font as FeatureFont).encodeGlyphs(g.glyphIds, text) : (font as FeatureFont).encodeText(text, g.features);
+      // 字形ごとの字を持つ並び (glyphTexts。右から左の文字) は、下で字形を 1 つずつ、その字とともに書く (ここで並び全体の字を字形に
+      // 割り当てると、字形と字の順が逆のまま ToUnicode に残る)。字形が壊れていないかだけを確かめる
+      const perGlyph = !!g.glyphIds && g.glyphTexts?.length === g.glyphIds.length && g.glyphPositions?.length === g.glyphIds.length;
+      hex = perGlyph
+        ? (font as FeatureFont).encodeGlyphs([g.glyphIds![0]], IGNORABLE_ONLY.test(g.glyphTexts![0]) ? '' : g.glyphTexts![0])
+        : g.glyphIds?.length
+          ? (font as FeatureFont).encodeGlyphs(g.glyphIds, text)
+          : (font as FeatureFont).encodeText(text, g.features);
     } catch (e) {
       // 字形のデータが壊れている書体 (fontkit が読めない字) は、その字を描かずに続ける (PDF の書き出し全体を止めない)
       console.warn(`PDF: ${g.fontFamily} の「${g.text}」(U+${(g.text.codePointAt(0) ?? 0).toString(16)}) を描けません`, e);
@@ -810,13 +822,59 @@ class PdfPainter implements Painter {
       // ToUnicode の字: 字と字形が同じ数なら字形ごとに 1 字、違えば最初の字形に全部 (encodeGlyphs と同じ)
       const chars = [...text];
       const textOf = (i: number) => (chars.length === g.glyphIds!.length ? chars[i] : i === 0 ? text : '');
+      // 右から左の並び (glyphTexts): 字形ごとの字。字形は描く順 (左から右) に書き、字は字形ごとに持たせる (字を取り出す側が、
+      // 右から左の字の並びを読む順に直す。字形を 1 つずつ左から右へ置いた PDF の、ふつうの形)。
+      // ToUnicode は書体の字形ごとに 1 つの字しか持てないので、同じ字形を別の字に使うとき (点を別の字形にする書体の ب・ت の胴、
+      // 空白の字形で表すゼロ幅非接合子など) は、その字形を ActualText (ISO 32000-1 §14.9.4) の区切りで囲んで、字を与える
+      const own = g.glyphTexts?.length === g.glyphIds.length ? g.glyphTexts : undefined;
+      // 並び全体の字は、ActualText (ISO 32000-1 §14.9.4) で与える。字は描く順 (左から右。text の逆順): ページの内容は字形を左から右へ
+      // 置いたもので、字を取り出す側 (poppler など) は、右から左の字の並びを逆順にして読む順に直す。字形ごとの字 (ToUnicode) は、
+      // 同じ字形を別の字に使う書体 (点を別の字形にする ب・ت の胴など) では合わないので、並びごとに字を与える
+      if (own) this.beginActualText([...text].reverse().join(''));
       let pen = 0;
-      g.glyphIds.forEach((id, i) => {
+      const placed = g.glyphIds.map((id, i) => {
         const [adv, dx, dy] = pos[i];
-        this.placeGlyph(m, g.fontSize, (font as FeatureFont).encodeGlyphs([id], textOf(i)), (pen + dx) * k, dy * k);
+        // 描かない字 (ZWNJ など) だけの字形は、書体の字形の字 (ToUnicode) には登録しない (空白の字形の字が ZWNJ になってしまう)
+        const t = own ? (IGNORABLE_ONLY.test(own[i]) ? '' : own[i]) : textOf(i);
+        const p = { hex: (font as FeatureFont).encodeGlyphs([id], t), u: (pen + dx) * k, v: dy * k, adv };
         pen += adv;
+        return p;
       });
+      if (!own) {
+        for (const p of placed) this.placeGlyph(m, g.fontSize, p.hex, p.u, p.v);
+        return;
+      }
+      // ActualText の区切りの中の字形を書く順: 字を取り出す側 (poppler) は、区切りの範囲を「最初の字形の原点」から「最後の字形の
+      // 原点 + 送り」までと見る。描く順のままだと、送りの無い字形 (記号・点。基底の字からずらして置く) が先頭に来て、範囲の始まりと
+      // 基線がずれ、隣の字との間に空白が入ったり、別の行に分かれたりする。そこで、最初の送りのある字形を先頭に出し、
+      // 最後が送りの無い字形のとき (送りのある字形が 1 つ) は、その字形の後ろに、並びの終わりまでの字間 (Tc) を与える (見た目は変わらない)
+      const i0 = placed.findIndex((p) => p.adv > 0);
+      const order = i0 > 0 ? [placed[i0], ...placed.slice(0, i0), ...placed.slice(i0 + 1)] : placed;
+      order.forEach((p, i) => {
+        if (i === order.length - 1 && i0 >= 0 && !(p.adv > 0)) {
+          const r = this.run!;
+          this.flushSeg(r);
+          r.ops.push(PDFOperator.of(Ops.SetCharacterSpacing, [num(pen * k - p.u)] as never));
+          this.placeGlyph(m, g.fontSize, p.hex, p.u, p.v);
+          this.flushSeg(r);
+          r.ops.push(PDFOperator.of(Ops.SetCharacterSpacing, [num(0)] as never));
+        } else this.placeGlyph(m, g.fontSize, p.hex, p.u, p.v);
+      });
+      this.endActualText();
       return;
+    }
+    // 右から左の文字の、1 つの字形: 字形に登録された字 (ToUnicode。書体の字形ごとに 1 つ。最初に使ったときの字) と違う字のとき
+    // (同じ字形を別の字に使う書体: ی の単独形と ي の胴など) と、2 字以上を 1 つの字形で表すとき (ヘブライ文字の合字など。字を取り出す側が
+    // 字を左から右に並んだものとして逆順にするので、描く順 = 逆順の字を与える) は、ActualText で字を与える
+    const text = g.text;
+    if (RTL_TEXT.test(text) && g.glyphIds?.length === 1) {
+      const multi = text.length > (text.codePointAt(0)! > 0xffff ? 2 : 1);
+      if (multi || (font as FeatureFont).glyphText(g.glyphIds[0]) !== text) {
+        this.beginActualText(multi ? [...text].reverse().join('') : text);
+        this.placeGlyph(m, g.fontSize, hex, 0, 0);
+        this.endActualText();
+        return;
+      }
     }
     this.placeGlyph(m, g.fontSize, hex, 0, 0);
   }
@@ -826,6 +884,20 @@ class PdfPainter implements Painter {
    * 字ごとに Tm と Tj を書かない (PDF の内容が数分の 1 になる)。基線の違う字 (縦書きの正立の字・ずらした字形) は Tm から書き直す。
    * (u, v) は行列 m の文字空間での字の原点 (GPOS のずらし)
    */
+  /** 続く字形の字を、ActualText (ISO 32000-1 §14.9.4) で与える区切りを始める: /Span <</ActualText …>> BDC (字は UTF-16BE の 16 進の文字列。先頭に U+FEFF。§7.9.2.2) */
+  private beginActualText(text: string) {
+    const r = this.run!;
+    this.flushSeg(r);
+    let utf16 = 'FEFF';
+    for (let i = 0; i < text.length; i++) utf16 += text.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0');
+    r.ops.push(PDFOperator.of(Ops.BeginMarkedContentSequence, ['/Span', `<</ActualText <${utf16}>>>`] as never));
+  }
+  private endActualText() {
+    const r = this.run!;
+    this.flushSeg(r);
+    r.ops.push(PDFOperator.of(Ops.EndMarkedContent));
+  }
+
   private placeGlyph(m: number[], size: number, hex: PDFHexString, u: number, v: number) {
     const r = this.run!;
     const px = m[4] + m[0] * u + m[2] * v;

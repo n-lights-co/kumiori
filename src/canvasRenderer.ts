@@ -73,8 +73,11 @@ class CanvasPainter implements Painter {
         console.warn(`Canvas: ${f.key} の「${text}」の字形 (${i} 番目) を描けません`, e);
       }
       paths.push(new Path2D(d));
-      // 最初の字の位置のずれは、組版で描く原点に入れてある
-      offsets.push({ x: x0 + (i ? positions[i].xOffset : 0), y: i ? positions[i].yOffset : 0 });
+      // 最初の字形の位置のずれ: OpenType の機能 (palt など) を当てた字は、組版で描く原点に入れてある (inlineLayout.ts の glyphNode) ので
+      // 足さない。機能の無い並びでは、ここで足す (PDF の drawGlyph と同じ)。右から左の並び (アラビア文字・ヘブライ文字) は、描く順の最初の
+      // 字形が、基底の字からずらして置く記号 (最後の字の母音記号など) になる
+      const own = i > 0 || !features.length;
+      offsets.push({ x: x0 + (own ? positions[i].xOffset : 0), y: own ? positions[i].yOffset : 0 });
       x0 += positions[i].xAdvance;
     }
     const o = { paths, offsets };

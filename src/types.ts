@@ -1456,6 +1456,12 @@ export interface GlyphArea extends AreaBase {
    * 字形が 2 つ以上あり、送りが書体の送り幅と違うか、ずらしがあるときだけ付く (アラビア文字の記号の位置など)
    */
   glyphPositions?: Array<[number, number, number]>;
+  /**
+   * 字形ごとの字 (glyphIds と同じ順。その字形が表す text の中の字。字を持たない字形 (分けて描く点など) は空の文字列)。
+   * 右から左の文字 (アラビア文字・ヘブライ文字など) の 2 つ以上の字形の並びにだけ付く: 字形は左から右へ描く順 (text の字の順とは逆) に並び、
+   * 字と字形が 1 対 1 でも対応しないので、PDF から字を取り出せるように、字形ごとの字を持つ (PDF の ToUnicode・ActualText に使う)
+   */
+  glyphTexts?: string[];
 }
 
 export interface InlineArea extends BlockLikeArea {

@@ -59,6 +59,8 @@ export interface Atom {
   t?: TateChuYokoMetrics;
   leader?: LeaderSpec;
   box?: BoxSpec;
+  /** 幅 0 で字形を描かない字 (単独の ZWNJ・LRM・RLM など。Default_Ignorable_Code_Point)。双方向の並べ替え・改行の決まりには加わる */
+  hidden?: boolean;
   /** 直前と同じ語の一部 (脚注の参照記号など)。この atom の前では改行しない */
   glue?: boolean;
   /** この atom の前で改行してよいか (UAX #14 で段落ごとに決めたもの。markLineBreaks) */
@@ -1244,7 +1246,9 @@ export function buildLineNode(
       // 字は、その字の書体の基線の位置で置く (代わりの書体の字も、行の基線にそろえる)
       const ab = atomAboveBelow(a.primaryRatio === undefined ? a : { ...a, primaryRatio: undefined }, wm);
       const bOff = lm.above - ab.above; // 行の em ボックス内でのこの atom の block 方向位置
-      if (a.kind === 'glyph' && a.g) {
+      if (a.kind === 'glyph' && a.g && a.hidden) {
+        // 描かない字 (単独の ZWNJ・LRM など): 字形を置かない
+      } else if (a.kind === 'glyph' && a.g) {
         const gn = glyphNode(a.g, a.st, wm, a.first, a.st.fontSize, a.st.color, a.src, a.cite);
         if (a.ref !== undefined) gn.ref = a.ref;
         gn.i = off - gStart + (a.dx ?? 0) + (dx ?? 0);
