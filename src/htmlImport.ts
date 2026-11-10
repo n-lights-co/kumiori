@@ -5216,13 +5216,13 @@ class HtmlImporter {
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
     const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
-    // 文書の言語: body に lang が無ければ、html の lang を受け継ぐ (HTML Living Standard §3.2.6.2: 言語は、lang を持つ最も近い祖先のもの)。
-    // いまは中国語 (zh) のときだけ: 字の言語 (TextStyle.language) で決まる動き (line-break の normal・loose の中国語・日本語だけの決まり =
-    // CSS Text 3 §5.2、拼音のルビをまとめて置くこと) を、<html lang="zh-…"> の文書でも効かせる。ほかの言語 (<html lang="ja"> など) は、
-    // 今までどおり body より内側の lang だけを見る (同じに直すと、〜 の前の折り返しなど、いまの組版の結果が変わる)
+    // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
+    // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
+    // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、
+    // アンテナハウス互換の行の基準線) が、<html lang="…"> だけの文書でも効く
     if (!rootStyle.language) {
       const rootLang = this.langOf(bodyEl);
-      if (rootLang && /^zh\b/i.test(rootLang)) rootStyle.language = rootLang;
+      if (rootLang) rootStyle.language = rootLang;
     }
     // 互換モード・限定互換モードの行の高さ (Quirks Mode Standard §3.3・§3.4)
     if (documentModeOf(doc) !== 'no-quirks') Object.assign(rootStyle, { noStrut: true, lineHeightQuirk: true });

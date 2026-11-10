@@ -8,7 +8,8 @@
  *   2026-11-10 取得: 「defining justification opportunities between every adjacent pair of CJK characters but not between adjacent pairs of
  *   Latin or Bopomofo characters. Thus, the space-around and space-between values will nevertheless result in Latin or Bopomofo characters centered」)。
  *   配り方そのものは ruby-align の対応 (rubyOffsets) による。ここでは、注音符号の声調の記号と、声調の記号つきのラテン文字 (拼音) を確かめる
- * - <html lang="zh-…"> の言語を、文書の字の言語にする (HTML Living Standard §3.2.6.2)。ほかの言語は今までどおり
+ * - <html lang> の言語を、文書の字の言語にする (HTML Standard §3.2.6.2 https://html.spec.whatwg.org/multipage/dom.html 2026-11-10 取得:
+ *   「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element, if any」)
  * - quotes: auto の引用符 (q 要素): 簡体字の中国語は “ ” ‘ ’、繁体字は 「 」 『 』 (CSS Content 3 §4.1 https://drafts.csswg.org/css-content-3/
  *   2026-11-10 取得: auto は言語に合う引用符を UA が選ぶ。注は CLDR を挙げる。CLDR 46 の zh は親 (root) の “ ” ‘ ’、zh_Hant は 「 」 『 』)
  */
@@ -50,17 +51,42 @@ describe('圏点の位置の既定 (CSS Text Decoration 3 付録 B)', () => {
   });
 });
 
-describe('文書の言語 (html の lang)', () => {
+describe('文書の言語 (html の lang。HTML Standard §3.2.6.2)', () => {
   const lang = (html: string) => conv(html).language;
-  it('<html lang="zh-…"> は文書の字の言語になる。body の lang があれば、そちら', () => {
+  it('<html lang> は文書の字の言語になる (どの言語でも)。body の lang があれば、そちら', () => {
     expect(lang('<html lang="zh-Hans"><head></head><body><p>字</p></body></html>')).toBe('zh-Hans');
-    expect(lang('<html lang="zh-Hant"><head></head><body lang="zh-Hans"><p>字</p></body></html>')).toBe('zh-Hans');
+    expect(lang('<html lang="ja"><head></head><body><p>字</p></body></html>')).toBe('ja');
+    expect(lang('<html lang="en"><head></head><body><p>a</p></body></html>')).toBe('en');
     expect(lang('<html lang="zh-Hant"><head></head><body lang="ja"><p>字</p></body></html>')).toBe('ja');
-  });
-  it('ほかの言語は今までどおり (html の lang は、字の言語にしない)', () => {
-    expect(lang('<html lang="ja"><head></head><body><p>字</p></body></html>')).toBeUndefined();
-    expect(lang('<html lang="en"><head></head><body><p>a</p></body></html>')).toBeUndefined();
     expect(lang('<html><head></head><body lang="ja"><p>字</p></body></html>')).toBe('ja');
+    expect(lang('<html><head></head><body><p>字</p></body></html>')).toBeUndefined();
+  });
+  it('<html lang="ja"> だけの文書でも、line-break: normal の日本語の決まりが効く (〜 の前で折り返せる。CSS Text 3 §5.2)', async () => {
+    const E = await makeEngine();
+    const lines = (attrs: string) => {
+      const seq = conv(`<html${attrs}><head></head><body><p>一二三四五六〜七八九十</p></body></html>`, '@page { size: 100mm 100mm; margin: 10mm } body { margin: 0 } p { margin: 0; font-size: 10pt; width: 60pt; text-indent: 0; text-align: left; line-break: normal }');
+      const t = E.engine.layout({ type: 'document', sequences: [seq] } as never);
+      const ys = new Map<number, string>();
+      const visit = (a: Area, oy: number) => {
+        const y = oy + a.y;
+        if (a.type === 'line') ys.set(Math.round(y), '');
+        for (const c of (a as unknown as { children?: Area[] }).children ?? []) visit(c, y);
+      };
+      for (const c of t.sheets[0].page.regionBody.children) visit(c, 0);
+      const out: string[] = [];
+      const walkLine = (a: Area): string => (a.type === 'glyph' ? (a as unknown as { text: string }).text : ((a as unknown as { children?: Area[] }).children ?? []).map(walkLine).join(''));
+      const find = (a: Area) => {
+        if (a.type === 'line') out.push(walkLine(a));
+        else for (const c of (a as unknown as { children?: Area[] }).children ?? []) find(c);
+      };
+      for (const c of t.sheets[0].page.regionBody.children) find(c);
+      return out;
+    };
+    expect(lines(' lang="ja"')).toEqual(['一二三四五六', '〜七八九十']);
+    expect(lines(' lang="zh-Hant"')).toEqual(['一二三四五六', '〜七八九十']);
+    // 日本語・中国語でない文書 (と、言語の分からない文書) では、〜 の前で折り返さない
+    expect(lines(' lang="ko"')).toEqual(['一二三四五', '六〜七八九十']);
+    expect(lines('')).toEqual(['一二三四五', '六〜七八九十']);
   });
 });
 
