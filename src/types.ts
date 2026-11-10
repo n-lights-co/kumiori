@@ -82,6 +82,26 @@ export interface BorderStyle {
 }
 
 /** 継承されるテキストスタイル */
+/** 分綴の制限 (TextStyle.hyphenLimits)。どれも無ければ既定 */
+export interface HyphenLimits {
+  /** 分綴した行の終わりに出す文字列 (空の文字列なら何も出さない)。無ければ既定の字 (U+002D)。ソフトハイフンで分けた行にも使う */
+  character?: string;
+  /** 分綴する語の最小の字数 (無ければ 5)。ソフトハイフンには、指定したときだけ効く */
+  minWord?: number;
+  /** 切れ目の前に残す最小の字数 (無ければ 2)。ソフトハイフンには、指定したときだけ効く */
+  minBefore?: number;
+  /** 切れ目の後 (次の行) に送る最小の字数 (無ければ 2)。ソフトハイフンには、指定したときだけ効く */
+  minAfter?: number;
+  /** 続けて分綴してよい行の数の上限 (無ければ上限なし。0 は分綴しない)。段落のブロックの値を使う */
+  maxLines?: number;
+  /** 段落の最後の行の 1 つ前の行 (最後の、行長いっぱいの行) を分綴しない (hyphenate-limit-last: always)。段落のブロックの値を使う */
+  noLast?: boolean;
+  /** 分綴せずに語を次の行へ送ったときの行末の空きがこの長さ (pt) 以下なら、分綴しない (hyphenate-limit-zone)。段落のブロックの値を使う */
+  zone?: number;
+  /** zone を行の長さに対する割合 (0〜1) で指定したもの (hyphenate-limit-zone の百分率) */
+  zoneRatio?: number;
+}
+
 export interface TextStyle {
   fontFamily?: string;
   /** pt */
@@ -225,6 +245,12 @@ export interface TextStyle {
   hyphenate?: boolean;
   /** 言語 (xml:lang / language。分綴の規則を選ぶ)。例 en, en-US */
   language?: string;
+  /**
+   * 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5 の hyphenate-character・hyphenate-limit-*、XSL 1.1 §7.10.5〜§7.10.7・§7.16.2 の
+   * hyphenation-character・hyphenation-push/remain-character-count・hyphenation-ladder-count)。継承される (指定した組がまるごと子へ伝わる)。
+   * 無ければ既定 (行末の字は U+002D、語は 5 字以上・切れ目の前後は 2 字以上、行の数の上限なし)
+   */
+  hyphenLimits?: HyphenLimits;
   /** ルビが親文字より長いとき、前後の仮名・約物に掛ける (ルビ文字 1 字分まで。JLREQ §3.3.8)。既定 false */
   rubyOverhang?: boolean;
   /**

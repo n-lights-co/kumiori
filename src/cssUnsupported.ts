@@ -47,9 +47,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'base-palette',
   'override-colors',
   'box-decoration-break',
-  'hyphenate-limit-zone',
-  'hyphenate-limit-lines',
-  'hyphenate-limit-last',
   'text-wrap-mode',
   'text-wrap-style',
   'text-decoration-skip-ink',
@@ -81,8 +78,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'tab-size',
   'text-align-all',
   'text-justify',
-  'hyphenate-character',
-  'hyphenate-limit-chars',
   'text-wrap',
   'text-underline-position',
   'text-shadow',
@@ -148,6 +143,7 @@ export const UNSUPPORTED_CSS_VALUES: Readonly<Record<string, readonly string[]>>
   display: ['run-in'],
   'writing-mode': ['sideways-lr'],
   'ruby-merge': ['auto'],
+  'hyphenate-limit-last': ['column', 'page', 'spread'],
 };
 
 export interface UnsupportedCssReport {

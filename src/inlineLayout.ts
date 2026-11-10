@@ -13,12 +13,12 @@ import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEn
 import { kernsAsSameScript } from './orthographicSyllable';
 import { complexContextBreaks, lineBreakActions, type LineBreakOptions } from './lineBreak';
 import { newNode, type LNode, type ResolvedStyle } from './lnode';
-import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, WritingMode } from './types';
+import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, HyphenLimits, WritingMode } from './types';
 import { borderToLogicalWidths, toLogical } from './geometry';
 import { mirrorChar, resolveLevels, visualOrder } from './bidi';
 import { atomAboveBelow, DEFAULT_BASELINE_RATIO, lineMetrics, type LineMetrics } from './lineMetrics';
 import { hyphenationLetters } from './hyphenation';
-import { bidiControls, flattenInline, joiningUnits, ligatureUnits, primaryChar, runStyleOf } from './inlineFlatten';
+import { bidiControls, flattenInline, hyphenAtoms, joiningUnits, ligatureUnits, primaryChar, runStyleOf } from './inlineFlatten';
 
 // inline の木を atom に平らにする処理 (inlineFlatten.ts) も、ほかのファイルからは従来どおりここから使える
 export { bidiControls, flattenInline, joiningUnits, ligatureUnits, primaryChar, runStyleOf };
@@ -92,8 +92,8 @@ export interface Atom {
   ovR?: number;
   /** advance の末尾に足した和欧間アキ。行末に来たら捨てる (行末の字の後ろにアキを残さない) */
   trail?: number;
-  /** 分綴: この字の後ろで、ハイフン (この atom) を付けて行を分けてよい */
-  hyphen?: Atom;
+  /** 分綴: この字の後ろで、ハイフン (この atom の並び。hyphenate-character が空の文字列なら空) を付けて行を分けてよい */
+  hyphen?: Atom[];
   /** この字の後ろにソフトハイフン (U+00AD) がある (その語は自動の分綴をしない。CSS Text 3 §5.3) */
   softHyphen?: boolean;
   /** 字形を inline 方向にずらす量 (始め括弧類の前のアキを詰めたとき、字面を前へ寄せる) */
@@ -297,6 +297,16 @@ export interface RawLine {
   /** 空行 (強制改行のみ) のメトリクス用 */
   metric?: Atom;
   indent: number;
+  /** 分綴の位置 (自動の分綴・ソフトハイフン) で分けた行 */
+  hyphenated?: boolean;
+}
+
+/** breakOne に渡す、その行の分綴の扱い (breakOneLimited が決める) */
+export interface HyphenBreak {
+  /** この行は分綴しない (ほかに分けられる位置があるとき。無ければ分綴する: CSS Text 4 §6.3.5 “user agents may not be able to honor the specified value”) */
+  noHyphen?: boolean;
+  /** 分綴せずに分けたときの行末の空きがこの長さ以下なら、分綴しない (hyphenate-limit-zone。CSS Text 4 §6.3.3) */
+  zone?: number;
 }
 
 const EPS = 1e-6;
@@ -565,7 +575,7 @@ function endTrimOf(a: Atom | undefined): number {
   return a.advance > fs / 2 + EPS ? Math.min(fs / 2, a.advance - fs / 2) : 0;
 }
 
-export function breakOne(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean): { line: RawLine; next: number } {
+export function breakOne(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, hb?: HyphenBreak): { line: RawLine; next: number } {
   const n = atoms.length;
   const avail = Math.max(L - indent, 0);
   // 強制改行の直後の行の先頭の字に印を付ける (afterForcedBreak が飛ばす空白の手前に、改行がある)
@@ -668,16 +678,18 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
   // 追い出し: 禁則に抵触しない最も後ろの分割点まで戻る
   let j = k;
   while (j > lead && !canBreakAtoms(atoms[j - 1], atoms[j])) j--;
-  // 分綴: 戻った分割点より後ろに、ハイフンを付けて収まる分綴の位置があれば、そこで分ける
-  {
+  // 分綴: 戻った分割点より後ろに、ハイフンを付けて収まる分綴の位置があれば、そこで分ける。
+  // 分綴の制限 (hb) で分綴しない行は、戻った分割点で分ける (語を次の行へ送る)。戻れる分割点が無い行 (j <= lead) は、制限があっても分綴する
+  if (!(hb && j > lead && (hb.noHyphen || (hb.zone !== undefined && unfilledAt(atoms, start, j, k, x, avail) <= hb.zone + FIT_EPS)))) {
     let xj = x;
     for (let h = k; h > Math.max(j, start); h--) {
       if (h < k) xj -= atoms[h].advance;
       const hy = atoms[h - 1].hyphen;
       // xj = atoms[start..h) の長さ
-      if (hy && h < n && xj + hy.advance <= avail + FIT_EPS && h - 1 > start) {
+      if (hy && h < n && xj + hy.reduce((w, a) => w + a.advance, 0) <= avail + FIT_EPS && h - 1 > start) {
         const line = makeLine(atoms.slice(start, h), false, indent);
-        line.items.push(hy);
+        line.items.push(...hy);
+        line.hyphenated = true;
         return { line, next: h };
       }
     }
@@ -717,13 +729,76 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
 }
 
 /**
+ * atoms[start..j) で行を分けたときの、行末の空き (揃える前。hyphenate-limit-zone の “unfilled space (before justification)”。CSS Text 4 §6.3.3)。
+ * x は atoms[start..k) の長さ (行頭で捨てる分を引いたもの)。行末の空白と、行末で捨てるアキは行の長さに数えない
+ */
+function unfilledAt(atoms: Atom[], start: number, j: number, k: number, x: number, avail: number): number {
+  let w = x;
+  for (let i = j; i < k; i++) w -= atoms[i].advance;
+  let e = j;
+  while (e > start && atoms[e - 1].isSpace && !atoms[e - 1].st.keepLineEndSpace) w -= atoms[--e].advance;
+  const last = e > start ? atoms[e - 1] : undefined;
+  if (last) w -= (last.trail ?? 0) + (last.lsTrail ?? 0) + endTrimOf(last) - (last.ovR ?? 0);
+  return avail - w;
+}
+
+/**
+ * 分綴の制限のうち、行の並びで決まるもの (ブロックの hyphenLimits の maxLines・noLast・zone) を当てて、1 行を切り出す。
+ *  - hyphenate-limit-lines・hyphenation-ladder-count (CSS Text 4 §6.3.5・XSL 1.1 §7.16.2): 分綴した行が上限まで続いたら、次の行は分綴しない
+ *  - hyphenate-limit-last: always (CSS Text 4 §6.3.5): 残りが 1 行に収まる (= この行が、最後の行の 1 つ前の行になる) なら、分綴しない
+ *  - hyphenate-limit-zone (CSS Text 4 §6.3.3): 百分率は行の長さ L に対する割合
+ * 分綴をやめた行は、語を次の行へ送る (breakOne の HyphenBreak)。state.run は、直前まで続けて分綴した行の数 (呼ぶたびに更新する)。
+ * nextIndent は、次の行の字下げ (noLast の判定で、残りを 1 行に組んでみるのに使う)。制限が無ければ breakOne と同じ
+ */
+export function breakOneLimited(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, lim: HyphenLimits | undefined, state: { run: number }, nextIndent = 0): { line: RawLine; next: number } {
+  if (!lim || (lim.maxLines === undefined && !lim.noLast && !lim.zone && !lim.zoneRatio)) return breakOne(atoms, start, L, indent, hangingDefault);
+  const zone = (lim.zone ?? 0) + (lim.zoneRatio ?? 0) * L;
+  const hb: HyphenBreak | undefined = zone > 0 ? { zone } : undefined;
+  let r = breakOne(atoms, start, L, indent, hangingDefault, hb);
+  if (r.line.hyphenated) {
+    let no = lim.maxLines !== undefined && state.run >= lim.maxLines;
+    if (!no && lim.noLast) no = breakOne(atoms, r.next, L, nextIndent, hangingDefault).next >= atoms.length;
+    if (no) r = breakOne(atoms, start, L, indent, hangingDefault, { ...hb, noHyphen: true });
+  }
+  state.run = r.line.hyphenated ? state.run + 1 : 0;
+  return r;
+}
+
+// 合字の字 (U+FB00〜U+FB04、または liga でまとめた字の並び) は、元の字の並びとして語に数える
+const HYPHEN_LIG: Record<string, string> = { '\uFB00': 'ff', '\uFB01': 'fi', '\uFB02': 'fl', '\uFB03': 'ffi', '\uFB04': 'ffl' };
+const hyphenTextOf = (a: Atom) => (a.g?.draw && a.g.draw.length > 1 ? a.g.draw : (HYPHEN_LIG[a.first] ?? a.first));
+/**
+ * hyphenate-limit-chars の字の数え方 (CSS Text 4 §6.3.4): 結合文字 (General Category Mn) と語の中の約物 (P*) は数えない
+ */
+const limitCharCount = (t: string) => [...t.replace(/[\p{Mn}\p{P}]/gu, '')].length;
+
+/**
+ * ソフトハイフン (U+00AD) の分綴の位置に、字数の制限 (hyphenLimits の minWord・minBefore・minAfter。CSS Text 4 §6.3.4・XSL 1.1 §7.10.6・§7.10.7) を当てる:
+ * 語 (字・結合文字・数字の連なり。inline の境目では切らない) が制限に足りない位置の、分綴の印を外す。
+ * 制限を指定していない (auto・既定) ときは、ソフトハイフンの位置をそのまま使う (何もしない)
+ */
+export function limitSoftHyphens(atoms: Atom[]) {
+  const inWord = (a: Atom | undefined) => !!a && a.kind === 'glyph' && !!a.g && !a.isSpace && /^[\p{L}\p{M}\p{N}]+$/u.test(hyphenTextOf(a));
+  for (let i = 0; i < atoms.length; i++) {
+    const lim = atoms[i].softHyphen && atoms[i].hyphen ? atoms[i].st.hyphenLimits : undefined;
+    if (!lim || (lim.minWord === undefined && lim.minBefore === undefined && lim.minAfter === undefined) || !inWord(atoms[i])) continue;
+    let s = i;
+    while (s > 0 && inWord(atoms[s - 1])) s--;
+    let e = i + 1;
+    while (e < atoms.length && inWord(atoms[e])) e++;
+    const count = (from: number, to: number) => atoms.slice(from, to).reduce((n, a) => n + limitCharCount(hyphenTextOf(a)), 0);
+    const before = count(s, i + 1);
+    const after = count(i + 1, e);
+    if (before + after < (lim.minWord ?? 0) || before < (lim.minBefore ?? 0) || after < (lim.minAfter ?? 0)) delete atoms[i].hyphen;
+  }
+}
+
+/**
  * 分綴の位置に印を付ける: hyphenate を指定した欧文の語 (字の連なり) ごとに、hyphenate(語, 言語) が返す位置の字へ、
  * 行末に付けるハイフンの atom を持たせる
  */
-export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: string | undefined) => number[] | undefined, m: Measurer, wm: WritingMode) {
-  // 合字の字 (U+FB00〜U+FB04、または liga でまとめた字の並び) は、元の字の並びとして語に数える
-  const LIG: Record<string, string> = { '\uFB00': 'ff', '\uFB01': 'fi', '\uFB02': 'fl', '\uFB03': 'ffi', '\uFB04': 'ffl' };
-  const textOf = (a: Atom) => (a.g?.draw && a.g.draw.length > 1 ? a.g.draw : (LIG[a.first] ?? a.first));
+export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: string | undefined, minWordLength?: number) => number[] | undefined, m: Measurer, wm: WritingMode) {
+  const textOf = hyphenTextOf;
   // 語の字: ラテン文字。ロシア語・ウクライナ語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字も (その言語の規則があるときだけ。
   // CSS Text 3 §5.3: 自動の分綴は、文の言語が分かり、その言語に合う分綴の資源があるときだけ行う)
   const isLetter = (a: Atom | undefined) => {
@@ -748,20 +823,34 @@ export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: s
     }
     // 字の数と位置は、分綴の規則 (hyphenPositions) と同じくコードポイントで数える (UTF-16 の長さではない)
     const cpLen = (t: string) => [...t].length;
-    if (word.reduce((n, a) => n + cpLen(textOf(a)), 0) >= 5) {
+    // 字数の制限 (hyphenate-limit-chars。CSS Text 4 §6.3.4。XSL の hyphenation-push/remain-character-count は §7.10.6・§7.10.7):
+    // 語の最小の字数・切れ目の前後の最小の字数。指定が無い (auto) ときは、語は 5 字以上、前後は分綴の規則の決まり (2 字以上) のまま
+    // (§6.3.4 の注が auto に勧める 5・2・2 と同じ)。指定したときの字数は、結合文字 (Mn) と約物 (P*) を除いて数える
+    const lim = word[0].st.hyphenLimits;
+    const limited = lim && (lim.minWord !== undefined || lim.minBefore !== undefined || lim.minAfter !== undefined) ? lim : undefined;
+    const texts = word.map(textOf);
+    if (limited ? limitCharCount(texts.join('')) >= (limited.minWord ?? 5) : word.reduce((n, a) => n + cpLen(textOf(a)), 0) >= 5) {
       const st = word[0].st;
-      const texts = word.map(textOf);
-      const pos = hyphenate(texts.join(''), st.language) ?? [];
+      const all = texts.join('');
+      let pos = (limited?.minWord !== undefined ? hyphenate(all, st.language, limited.minWord) : hyphenate(all, st.language)) ?? [];
+      if (limited && pos.length) {
+        const cps = [...all];
+        pos = pos.filter((p) => limitCharCount(cps.slice(0, p + 1).join('')) >= (limited.minBefore ?? 0) && limitCharCount(cps.slice(p + 1).join('')) >= (limited.minAfter ?? 0));
+      }
       if (pos.length) {
-        const g = m.glyph('-', { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch }, wm);
         // 字の位置 → その字で終わる atom (合字の途中の位置では分けない)
         const endAt = new Map<number, number>();
         let c = 0;
         texts.forEach((t, k) => endAt.set((c += cpLen(t)) - 1, k));
+        let hy: Atom[] | undefined;
         for (const p of pos) {
           const k = endAt.get(p);
           const a = k === undefined ? undefined : word[k];
-          if (a && k! < word.length - 1) a.hyphen = { kind: 'glyph', first: '-', last: '-', advance: g.advance, isSpace: false, runId: a.runId, st, bg: a.bg, g };
+          if (a && k! < word.length - 1) {
+            // 行末に出す字 (hyphenate-character。既定は U+002D) は、語ごとに 1 度だけ測る
+            hy ??= hyphenAtoms(st, (ch) => m.glyph(ch, { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch }, wm), a.runId, a.bg);
+            a.hyphen = hy.map((h) => ({ ...h, runId: a.runId, bg: a.bg }));
+          }
         }
       }
     }
@@ -865,8 +954,9 @@ export function lineIndent(st: { textIndent: number; textIndentHanging?: boolean
  * 行に切り分ける。firstIndent は 1 行目の字下げ。st を渡すと、行ごとの字下げを lineIndent で決める
  * (first: この並びの 1 行目が要素の最初の行か)
  */
-export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0]; first: boolean }): RawLine[] {
+export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0]; first: boolean }, lim?: HyphenLimits): RawLine[] {
   const lines: RawLine[] = [];
+  const hyState = { run: 0 };
   let start = 0;
   let first = true;
   let afterForced = false;
@@ -877,8 +967,9 @@ export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangin
       start = afterForcedBreak(atoms, start);
       continue;
     }
-    const indent = indentOf ? lineIndent(indentOf.st, first && indentOf.first, afterForced) : first ? firstIndent : 0;
-    const { line, next } = breakOne(atoms, start, L, indent, hangingDefault);
+    const indent: number = indentOf ? lineIndent(indentOf.st, first && indentOf.first, afterForced) : first ? firstIndent : 0;
+    // 分綴の制限 (行の数の上限・最後の行・行末の幅) は、段落のブロックの値で決める (CSS Text 4 §6.3.3・§6.3.5 の Applies to: block containers)
+    const { line, next } = lim ? breakOneLimited(atoms, start, L, indent, hangingDefault, lim, hyState, indentOf ? lineIndent(indentOf.st, false, false) : 0) : breakOne(atoms, start, L, indent, hangingDefault);
     first = false;
     // 強制改行で終わった行 (段落の最後の行は次が無いので問わない)
     afterForced = line.last;

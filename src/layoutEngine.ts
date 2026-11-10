@@ -85,6 +85,8 @@ import {
   adjustJapaneseSpacing,
   adjustHangulWordSpaces,
   markHyphenation,
+  limitSoftHyphens,
+  breakOneLimited,
   flattenInline,
   glueAfterCssLeaders,
   markLineBreaks,
@@ -124,7 +126,7 @@ export interface LayoutOptions {
    * 分綴: 語 (欧文の字だけ) と言語から、ハイフンを入れてよい位置 (その字の後ろ。0 始まりの字の位置) を返す。
    * hyphenate を指定した文字にだけ使う。無ければ分綴しない
    */
-  hyphenate?: (word: string, language: string | undefined) => number[] | undefined;
+  hyphenate?: (word: string, language: string | undefined, minWordLength?: number) => number[] | undefined;
   /**
    * アンテナハウス互換の字の組の詰め (カーニング): inline の要素 (::before・::after を含む) の境目では詰めず、
    * 書体の GPOS の組の表 (PairPos 形式 2) で、最初の字がクラス 0 の組も詰めない。
@@ -2254,6 +2256,8 @@ class Flow {
       }
       const ms = this.host.measurer;
       if (this.host.hyphenate) markHyphenation(atoms, this.host.hyphenate, ms, this.wm);
+      // ソフトハイフンの位置にも、指定した字数の制限 (hyphenate-limit-chars など) を当てる (制限の指定が無ければ何もしない)
+      if (atoms.some((a) => a.softHyphen && a.st.hyphenLimits)) limitSoftHyphens(atoms);
       const kernAh = !!this.host.kernAh;
       adjustJapaneseSpacing(
         atoms,
@@ -2278,7 +2282,7 @@ class Flow {
         this.layoutInlineRunFloating(atoms, st, first);
         return;
       }
-      raws = breakLines(atoms, L, 0, true, { st, first });
+      raws = breakLines(atoms, L, 0, true, { st, first }, st.hyphenLimits);
       pls = raws.map((r) => positionLine(r, L, st));
       for (const pl of pls) reorderLine(pl, L, this.wm === 'horizontal-tb' && st.direction === 'rtl');
       const wm = this.wm;
@@ -2535,7 +2539,9 @@ class Flow {
     let start = 0;
     let firstLine = first;
     // このページに置いた、この段落の行 (widows で次のページへ送り直すため)
-    let placedHere: Array<{ node: LNode; start: number; first: boolean; cursor: number; adjacent: number; fns: boolean; lm: LineMetrics }> = [];
+    let placedHere: Array<{ node: LNode; start: number; first: boolean; cursor: number; adjacent: number; fns: boolean; lm: LineMetrics; hyRun: number }> = [];
+    // 直前まで続けて分綴した行の数 (hyphenate-limit-lines・hyphenation-ladder-count。行を置いたときに進める)
+    let hyRun = 0;
     while (start < n) {
       this.applyPendingBreak();
       const pv = this.pendingValue();
@@ -2547,7 +2553,8 @@ class Flow {
         this.pendMin = Math.max(this.pendMin, range.clearTo - this.cursor);
         if (this.pendingValue() > pv + EPS) continue;
       }
-      const { line, next } = breakOne(atoms, start, range.width, lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start)), true);
+      const hyState = { run: hyRun };
+      const { line, next } = breakOneLimited(atoms, start, range.width, lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start)), true, st.hyphenLimits, hyState, lineIndent(st, false, false));
       const pl = positionLine(line, range.width, st);
       reorderLine(pl, range.width, this.wm === 'horizontal-tb' && st.direction === 'rtl');
       const lm = lineMetrics(pl, this.wm, st, this.nominalRatio(st), this.strutOf(st));
@@ -2565,9 +2572,10 @@ class Flow {
         if (this.pageHasContent) {
           // widows / orphans: 次のページへ行く行が widows より少なければ、このページに置いた行を送る
           // (残りの行の数は、回り込みの無い幅で数える)
-          const k = this.widowShift(atoms, start, placedHere, st, firstLine);
+          const k = this.widowShift(atoms, start, placedHere, st, firstLine, hyRun);
           if (k > 0) {
             const back = placedHere[placedHere.length - k];
+            hyRun = back.hyRun;
             const kids = this.containerNode().children;
             for (let j = 0; j < k; j++) kids.splice(kids.lastIndexOf(placedHere[placedHere.length - 1 - j].node), 1);
             this.cursor = back.cursor;
@@ -2587,7 +2595,8 @@ class Flow {
       this.commitMarkers();
       // 行を置く (回り込みの無い経路と共通)。幅は回り込みを避けた range の幅、始端は range.shift
       const node = this.placeLine(pl, lm, st, { cut, firstOnPage: !placedHere.length, last: next >= n, width: range.width, shift: range.shift, refs, useFoot, holdFoot });
-      placedHere.push({ node, start, first: firstLine, cursor: before.cursor, adjacent: before.adjacent, fns: refs.length > 0, lm });
+      placedHere.push({ node, start, first: firstLine, cursor: before.cursor, adjacent: before.adjacent, fns: refs.length > 0, lm, hyRun });
+      hyRun = hyState.run;
       // clear のある強制改行 (br): 次の行を、その側の回り込みの下から始める
       const brk = atoms[next - 1];
       if (brk?.kind === 'break' && brk.st.breakClear) {
@@ -2604,15 +2613,16 @@ class Flow {
    * 残りの行 (start から) が widows に満たなければ、その不足分を送る。送った後にこのページに残る行が orphans に満たなければ
    * (段落がこのページで始まっていれば) 段落ごと送る。脚注の参照を含む行や、ページにほかの中身が無くなるときは送らない
    */
-  private widowShift(atoms: ReturnType<typeof flattenInline>, start: number, placed: Array<{ first: boolean; fns: boolean }>, st: ResolvedStyle, firstLine: boolean): number {
+  private widowShift(atoms: ReturnType<typeof flattenInline>, start: number, placed: Array<{ first: boolean; fns: boolean }>, st: ResolvedStyle, firstLine: boolean, hyRun = 0): number {
     if (!placed.length || this.measureOnly) return 0;
     const widows = st.widows ?? 2;
     const orphans = st.orphans ?? 2;
     // 残りの行の数 (widows まで数えれば足りる)
     const w = this.contentI();
     let r = 0;
+    const hyState = { run: hyRun };
     for (let s = start, fl = firstLine; s < atoms.length && r < widows; r++) {
-      const { next } = breakOne(atoms, s, w, lineIndent(st, fl, startsAfterForcedBreak(atoms, s)), true);
+      const { next } = breakOneLimited(atoms, s, w, lineIndent(st, fl, startsAfterForcedBreak(atoms, s)), true, st.hyphenLimits, hyState, lineIndent(st, false, false));
       if (next <= s) break;
       s = next;
       fl = false;

@@ -55,6 +55,7 @@ import type {
   PageMaster,
   TextDecorationStyle,
   TextStyle,
+  HyphenLimits,
   WritingMode,
 } from './types';
 import { TOTAL_PAGES_ID } from './types';
@@ -285,6 +286,42 @@ function setBackgroundPosition(img: BackgroundImage, px: string, py: string) {
  * (CSS Inline 3 §7.2 の注: ::first-letter は最初の字の前後の約物も選ぶ)。1 つ目の組は前の空白
  */
 const FIRST_LETTER = /^(\s*)([\p{Ps}\p{Pi}\p{Po}]*\s*[\p{L}\p{N}\p{S}]\p{M}*[\p{Pe}\p{Pf}\p{Po}]*)/u;
+
+const HYPHEN_LIMIT_PROPS = ['hyphenate-character', 'hyphenate-limit-chars', 'hyphenate-limit-lines', 'hyphenate-limit-last', 'hyphenate-limit-zone'] as const;
+
+/**
+ * 分綴の制限の計算値 (CSS Text 4 §6.3.2〜§6.3.5) を、組版の受け皿 (HyphenLimits) にする。
+ *  - hyphenate-character: auto は既定の字 (指定なし)。文字列はそのまま (空の文字列も有効: 何も出さずに分ける)
+ *  - hyphenate-limit-chars: 語・切れ目の前・後の最小の字数。3 つ目を省くと 2 つ目と同じ、2 つ目を省くと auto。auto は指定なし
+ *  - hyphenate-limit-lines: no-limit は指定なし
+ *  - hyphenate-limit-last: always だけ (段落の最後の行の 1 つ前の行)。column・page・spread は読まない (未対応の値として報告する。cssUnsupported)
+ *  - hyphenate-limit-zone: 長さ、または行の長さに対する百分率
+ */
+function hyphenLimitsOf(c: (name: string) => string): HyphenLimits {
+  const o: HyphenLimits = {};
+  const ch = (c('hyphenate-character') ?? '').trim();
+  if (/^["']/.test(ch)) o.character = unquote(ch);
+  const cs = (c('hyphenate-limit-chars') ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const num = (t: string | undefined) => (t !== undefined && /^\+?\d+$/.test(t) ? parseInt(t, 10) : undefined);
+  const word = num(cs[0]);
+  const before = num(cs[1]);
+  const after = cs.length >= 3 ? num(cs[2]) : before;
+  if (word !== undefined) o.minWord = word;
+  if (before !== undefined) o.minBefore = before;
+  if (after !== undefined) o.minAfter = after;
+  const lines = num((c('hyphenate-limit-lines') ?? '').trim());
+  if (lines !== undefined) o.maxLines = lines;
+  if ((c('hyphenate-limit-last') ?? '').trim().toLowerCase() === 'always') o.noLast = true;
+  const zone = (c('hyphenate-limit-zone') ?? '').trim();
+  if (/%$/.test(zone)) {
+    const r = parseFloat(zone) / 100;
+    if (r > 0) o.zoneRatio = r;
+  } else {
+    const z = cssLen(zone);
+    if (z !== undefined && z > 0) o.zone = z;
+  }
+  return o;
+}
 
 /** text-indent の計算値 (長さと hanging・each-line の語。CSS Text 3 §8.1) を、字下げの書式にする */
 function textIndentOf(v: string): Pick<TextStyle, 'textIndent' | 'textIndentHanging' | 'textIndentEachLine'> {
@@ -2643,6 +2680,8 @@ class HtmlImporter {
     }
     // hyphens: auto だけが自動の分綴。子の none・manual で打ち消せる (Text 3 §5.3)
     if (diff('hyphens')) s.hyphenate = c('hyphens') === 'auto';
+    // 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5)。どれかが親と違えば、5 つの計算値をまとめて運ぶ (初期値に戻す指定も、空の組で親の値を打ち消す)
+    if (HYPHEN_LIMIT_PROPS.some((k) => diff(k))) s.hyphenLimits = hyphenLimitsOf(c);
     if (!pseudo) {
       const sp = this.spacing(el);
       const ps = parent ? this.spacing(parent) : undefined;

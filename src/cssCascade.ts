@@ -415,6 +415,12 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'overflow-wrap': [true, 'normal', 'raw'],
   'line-break': [true, 'auto', 'raw'],
   hyphens: [true, 'manual', 'raw'],
+  // 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5。どれも受け継ぐ)。hyphenate-limit-zone の百分率は行の長さに対する割合なので、% のまま受け継ぐ
+  'hyphenate-character': [true, 'auto', 'raw'],
+  'hyphenate-limit-chars': [true, 'auto', 'raw'],
+  'hyphenate-limit-lines': [true, 'no-limit', 'raw'],
+  'hyphenate-limit-last': [true, 'none', 'raw'],
+  'hyphenate-limit-zone': [true, '0px', 'len'],
   direction: [true, 'ltr', 'raw'],
   'unicode-bidi': [false, 'normal', 'raw'],
   'writing-mode': [true, 'horizontal-tb', 'raw'],
@@ -1822,7 +1828,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           }
           // row-gap・column-gap の %: 基準は自分の内容の箱 (包含ブロックではない) で、計算値は % のまま (CSS Box Alignment 3 §8.1)。
           // htmlImport が、flex・grid の容器の幅・高さから求める
-          if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap') && /%/.test(raw)) {
+          if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap' || p === 'hyphenate-limit-zone') && /%/.test(raw)) {
             val = raw.trim();
             break;
           }
@@ -2030,6 +2036,7 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'column-rule-style': BORDER_STYLE,
     direction: 'ltr rtl',
     hyphens: 'none manual auto',
+    'hyphenate-limit-last': 'none always column page spread',
     'text-align': 'start end left right center justify match-parent -webkit-center -webkit-left -webkit-right -internal-center',
     'text-align-last': 'auto start end left right center justify match-parent',
     'white-space': 'normal pre nowrap pre-wrap pre-line break-spaces',
@@ -2053,7 +2060,7 @@ const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 
 /** 1 語だけを取るキーワードの性質 */
 const SINGLE_KEYWORD = new Set([
-  'float', 'clear', 'position', 'visibility', 'box-sizing', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens',
+  'float', 'clear', 'position', 'visibility', 'box-sizing', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens', 'hyphenate-limit-last',
   'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'text-spacing-trim', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style',
 ]);
 
@@ -2142,6 +2149,17 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
     case 'orphans':
     case 'widows':
       return int.test(s0) && parseInt(s0, 10) >= 1;
+    case 'hyphenate-character':
+      // auto | <string> (Text 4 §6.3.2)
+      return s0 === 'auto' || /^("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')$/.test(v.trim());
+    case 'hyphenate-limit-chars': {
+      // [ auto | <integer [0,∞]> ]{1,3} (Text 4 §6.3.4)
+      const ws = tokens(s0);
+      return ws.length >= 1 && ws.length <= 3 && ws.every((w) => w === 'auto' || (int.test(w) && parseInt(w, 10) >= 0));
+    }
+    case 'hyphenate-limit-lines':
+      // no-limit | <integer [0,∞]> (Text 4 §6.3.5)
+      return s0 === 'no-limit' || (int.test(s0) && parseInt(s0, 10) >= 0);
     case 'column-count':
       return s0 === 'auto' || (int.test(s0) && parseInt(s0, 10) >= 1);
     case 'line-height':

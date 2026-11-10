@@ -77,12 +77,16 @@ export function hyphenationLetters(language: string | undefined): RegExp | undef
 const CYRILLIC_WORD = /^[\u0400-\u052F]+$/;
 const GREEK_WORD = /^[\u0370-\u03FF\u1F00-\u1FFF]+$/;
 
-/** 読み込み済みの規則で、語の分綴の位置 (その字の後ろで分けてよい、0 始まりの字の位置) を返す */
-export function hyphenPositions(word: string, language: string | undefined): number[] | undefined {
+/**
+ * 読み込み済みの規則で、語の分綴の位置 (その字の後ろで分けてよい、0 始まりの字の位置) を返す。
+ * minWordLength は分綴する語の最小の字数 (既定 5。hyphenate-limit-chars の 1 つ目の値を指定したときに渡る)。
+ * 切れ目の前後は、規則の決まりで 2 字以上 (それより小さい制限を指定しても、2 字より短くは分けない)
+ */
+export function hyphenPositions(word: string, language: string | undefined, minWordLength = 5): number[] | undefined {
   const key = keyOf(language);
   const h = key ? cache.get(key) : undefined;
   if (!h) return undefined;
-  const parts = h(word, { hyphenChar: '\u00AD', minWordLength: 5 }).split('\u00AD');
+  const parts = h(word, { hyphenChar: '\u00AD', minWordLength: Math.max(1, minWordLength) }).split('\u00AD');
   const out: number[] = [];
   let at = -1;
   for (let k = 0; k < parts.length - 1; k++) {
