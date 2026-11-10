@@ -782,12 +782,17 @@ class PdfPainter implements Painter {
 
   drawGlyph(g: GlyphArea, x: number, y: number) {
     const font = this.fontOf(g);
+    // 改行しない空白 (U+00A0) は、通常の空白の字形で描く (Arimo の U+00A0 の字形は、fontkit が読めない壊れたデータ)
+    const text = g.text.replace(/\u00A0/g, ' ');
+    // 字形の並びが、字の並びと 1 対 1 に対応しない字の単位 (書体が並べ替え・合成・分解をしたもの: デーヴァナーガリーの前に置く母音記号・
+    // 結合子音、タイ文字の SARA AM など) は、字形ごとの ToUnicode では元の字に戻せないので、/ActualText で元の字の並びを付ける
+    // インド系の用字・タイ文字の字の単位は、1 対 1 に対応していても付ける (基底の字の送りの中へ戻して置く記号を、字を取り出す側が
+    // 別の語と見て、空白を挟んだり順を入れ替えたりするのを防ぐ。ほかの用字の字の単位は、これまでと同じ内容のままにする)
+    const own = g.glyphIds && g.glyphIds.length > 1 ? reorderedGlyphChars(font, g.glyphIds, text, !!g.glyphPositions && /^[\u0900-\u0E7F]/.test(text)) : undefined;
     let hex: PDFHexString;
     try {
-      // 改行しない空白 (U+00A0) は、通常の空白の字形で描く (Arimo の U+00A0 の字形は、fontkit が読めない壊れたデータ)
-      const text = g.text.replace(/\u00A0/g, ' ');
       // 木に字形の番号があれば、それを書く (組版で測った字形と同じ)。無ければ、字を書体で組み直す
-      hex = g.glyphIds?.length ? (font as FeatureFont).encodeGlyphs(g.glyphIds, text) : (font as FeatureFont).encodeText(text, g.features);
+      hex = own ? (font as FeatureFont).encodeGlyphs(g.glyphIds!, '') : g.glyphIds?.length ? (font as FeatureFont).encodeGlyphs(g.glyphIds, text) : (font as FeatureFont).encodeText(text, g.features);
     } catch (e) {
       // 字形のデータが壊れている書体 (fontkit が読めない字) は、その字を描かずに続ける (PDF の書き出し全体を止めない)
       console.warn(`PDF: ${g.fontFamily} の「${g.text}」(U+${(g.text.codePointAt(0) ?? 0).toString(16)}) を描けません`, e);
@@ -802,23 +807,46 @@ class PdfPainter implements Painter {
     const sin = Math.sin(phi);
     const m = [g.scaleX * cos, g.scaleX * sin, (g.italic ? g.scaleX * cos * ITALIC_SLANT : 0) - sin, (g.italic ? g.scaleX * sin * ITALIC_SLANT : 0) + cos, x + g.baselineX, this.H - (y + g.baselineY)];
     const pos = g.glyphPositions;
-    if (pos && g.glyphIds && pos.length === g.glyphIds.length) {
+    const r = this.run;
+    if ((pos && g.glyphIds && pos.length === g.glyphIds.length) || own) {
       // GPOS の位置: 字形ごとに、送りの合計とずらし (書体の単位) の位置に置く。字 (text) は最初の字形の ToUnicode に使う
-      const upem = (font as unknown as { embedder: { font: { unitsPerEm: number } } }).embedder.font.unitsPerEm;
-      const k = g.fontSize / upem;
-      const text = g.text.replace(/\u00A0/g, ' ');
-      // ToUnicode の字: 字と字形が同じ数なら字形ごとに 1 字、違えば最初の字形に全部 (encodeGlyphs と同じ)
+      const fk = (font as unknown as { embedder: { font: { unitsPerEm: number; getGlyph(id: number): { advanceWidth: number } } } }).embedder.font;
+      const k = g.fontSize / fk.unitsPerEm;
+      // ToUnicode の字: 字と字形が同じ数なら字形ごとに 1 字、違えば最初の字形に全部 (encodeGlyphs と同じ)。
+      // ActualText を付けた単位は、書体の cmap でその字形になる字だけ (own)
       const chars = [...text];
-      const textOf = (i: number) => (chars.length === g.glyphIds!.length ? chars[i] : i === 0 ? text : '');
+      const textOf = (i: number) => (own ? own[i] : chars.length === g.glyphIds!.length ? chars[i] : i === 0 ? text : '');
       let pen = 0;
-      g.glyphIds.forEach((id, i) => {
-        const [adv, dx, dy] = pos[i];
-        this.placeGlyph(m, g.fontSize, (font as FeatureFont).encodeGlyphs([id], textOf(i)), (pen + dx) * k, dy * k);
+      const placed = g.glyphIds!.map((id, i) => {
+        const [adv, dx, dy] = pos && pos.length === g.glyphIds!.length ? pos[i] : [fk.getGlyph(id).advanceWidth, 0, 0];
+        const at = { id, i, adv, u: pen + dx, v: dy };
         pen += adv;
+        return at;
       });
-      return;
-    }
-    this.placeGlyph(m, g.fontSize, hex, 0, 0);
+      const put = (list: typeof placed) => {
+        for (const at of list) this.placeGlyph(m, g.fontSize, (font as FeatureFont).encodeGlyphs([at.id], textOf(at.i)), at.u * k, at.v * k);
+      };
+      if (own) {
+        // 置き換えの文字列 (ISO 32000-1 §14.9.4 Replacement Text): 印の付いた内容 (/Span) の ActualText に、元の字の並びを UTF-16BE で書く。
+        // 印の付いた内容はテキストの区切り (BT…ET) の中に置ける (§14.6.1)。前の字の並び (TJ) は、ここで切る。
+        // 送りのある字形 (基底の字など) に元の字の並びの全体を付け、送りの無い字形 (基底の字の送りの中へ戻して置く記号) には空の文字列を付ける:
+        // 字を取り出す側 (poppler など) は、単位の幅を「最初の字形の始まり〜最後に書いた字形の終わり」と見るので、記号を同じ印の中に書くと、
+        // 前後の字との間が空いて見え、空白を挟んでしまう。字形は位置を決めて置くので、書く順で見た目は変わらない
+        const span = (list: typeof placed, actual: string) => {
+          if (!list.length) return;
+          this.flushSeg(r);
+          r.ops.push(PDFOperator.of('BDC' as never, ['/Span', `<</ActualText <${utf16Hex(actual)}>>>`] as never));
+          put(list);
+          this.flushSeg(r);
+          r.ops.push(PDFOperator.of('EMC' as never));
+        };
+        const spacing = placed.filter((p) => p.adv > 0);
+        if (spacing.length) {
+          span(spacing, text);
+          span(placed.filter((p) => !(p.adv > 0)), '');
+        } else span(placed, text);
+      } else put(placed);
+    } else this.placeGlyph(m, g.fontSize, hex, 0, 0);
   }
 
   /**
@@ -927,6 +955,36 @@ class PdfPainter implements Painter {
     this.page.pushOperators(popGraphicsState());
     this.clips--;
   }
+}
+
+/** PDF の文字列 (UTF-16BE。先頭に BOM) の 16 進の表記 */
+function utf16Hex(text: string): string {
+  let out = 'FEFF';
+  for (let i = 0; i < text.length; i++) out += text.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0');
+  return out;
+}
+
+/**
+ * 2 つ以上の字形の並び ids が、字の並び text と 1 対 1 に対応する (字形 i が、書体の cmap での字 i の字形) なら undefined。
+ * 対応しなければ (書体が並べ替え・合成・分解をした。always なら対応していても)、字形ごとの ToUnicode の字 (書体の cmap でその字形になる字。無ければ空) の並びを返す
+ */
+function reorderedGlyphChars(font: PDFFont, ids: number[], text: string, always = false): string[] | undefined {
+  const fk = (font as unknown as { embedder: { font: { glyphForCodePoint(cp: number): { id: number } } } }).embedder.font;
+  const chars = [...text];
+  let nominal: number[];
+  try {
+    nominal = chars.map((c) => fk.glyphForCodePoint(c.codePointAt(0)!).id);
+  } catch {
+    return undefined;
+  }
+  if (!always && ids.length === chars.length && ids.every((id, i) => id === nominal[i])) return undefined;
+  const used = new Set<number>();
+  return ids.map((id) => {
+    const k = nominal.findIndex((n, j) => n === id && !used.has(j));
+    if (k < 0) return '';
+    used.add(k);
+    return chars[k];
+  });
 }
 
 /** 色を設定する命令。spots: 特色 (Separation) を登録するページ (無ければ特色は代わりの CMYK で描く) */
