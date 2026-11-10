@@ -694,6 +694,8 @@ export interface AhFlags {
 }
 /** 拡張を読まない (ブラウザと同じ) */
 const NO_AH: AhFlags = { ahBorderStyles: false, ahCounterFlags: false };
+/** 拡張をすべて読む (@supports の答え。互換の指定が分からない所で、拡張の値を読めるものとして扱う) */
+const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true };
 const isBorderStyle = (t: string, ah: AhFlags) => BORDER_STYLES.test(t) || (ah.ahBorderStyles && AH_BORDER_STYLES.test(t));
 const isLenLike = (t: string) => /^(-?(?:\d+\.?\d*|\.\d+)[a-z%]*|calc\(.*\)|min\(.*\)|max\(.*\)|clamp\(.*\)|var\(.*\))$/i.test(t);
 const isColorLike = (t: string) => parseColor(t) !== undefined || /^var\(/i.test(t);
@@ -730,7 +732,15 @@ export function isKnownCssProperty(prop: string, value = ''): boolean {
  *  - 名前は読むが組版に使わない性質 (cssUnsupported の UNSUPPORTED_CSS_PROPERTIES。transform・opacity など) は偽
  *  - 対応している性質の、読まない値 (UNSUPPORTED_CSS_VALUES。position: sticky など) は偽
  *  - 一括指定は、分けた性質のどれかが上の 2 つに当たれば偽 (未対応の性質を初期値に戻すだけの一括指定は真)
- * ほかの値が読めるかは調べない (これまでと同じ。display: grid のように、性質と値は読み、働きの一部が未対応のものは真のまま)
+ *  - 値が読めない宣言は偽 (display: foo・color: notacolor など)。カスケードが宣言を構文の誤りとして捨てるかの検査
+ *    (cascadeDecls の、一括指定を分けて valid で調べる検査) と同じ判定を通す: 一括指定は、分けられない値・分けた性質のどれかが読めない値なら偽。
+ *    値の無い宣言 (display: ) も偽
+ *  - var() を含む値は、性質が上の 3 つに当たらなければ真 (Variables 1 §3: var() を含む値は、構文を調べる時点では有効とみなし、
+ *    置き換えた後の計算値の時点で調べる。@supports は置き換える前に答えるので、読めるかは決まらない)
+ *  - カスタム プロパティ (--x: 何でも) は、ここへ来る前に真 (htmlPaged の matchSupports。Variables 1 §2.1: 値の構文はほぼ何でも受け付ける)
+ * アンテナハウスの拡張の値 (線種 dot-dash など・counter() の physical・reverse) は、互換の指定のときだけカスケードが読むが、
+ * @supports を読む時点では互換の指定が分からないので、真のままにする (これまでと同じ)。
+ * display: grid のように、性質と値は読み、働きの一部が未対応のものも真のまま
  */
 export function supportsCssDeclaration(prop: string, value: string): boolean {
   const p = prop.toLowerCase();
@@ -741,8 +751,15 @@ export function supportsCssDeclaration(prop: string, value: string): boolean {
     return !!UNSUPPORTED_CSS_VALUES[lp]?.includes(t);
   };
   if (unsupported(p, v, false)) return false;
-  if (!isKnownCssProperty(p, v)) return false;
-  return !expand(p, v).some(([lp, lv]) => lp !== p && unsupported(lp, lv, true));
+  // var() を含む値は、性質を知っているかを、var() の無い仮の値で見る (一括指定は、値が無いと分けられない)
+  const hasVar = /var\(/i.test(v);
+  if (!isKnownCssProperty(p, v) && !(hasVar && isKnownCssProperty(p, 'initial'))) return false;
+  if (hasVar) return true;
+  const parts = expand(p, v);
+  if (parts.some(([lp, lv]) => lp !== p && unsupported(lp, lv, true))) return false;
+  // 値が読めるか (カスケードが宣言を捨てるかの検査と同じ。cascadeDecls)
+  if (!v || !parts.length) return false;
+  return parts.every(([lp, lv]) => valid(lp, lv, ANY_CTX, NO_AH) || valid(lp, lv, ANY_CTX, ALL_AH));
 }
 setSupportsDecl(supportsCssDeclaration);
 
