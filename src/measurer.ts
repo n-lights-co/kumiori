@@ -437,6 +437,12 @@ export class Measurer {
   variationGlyph(unit: string, style: RunStyle, wm: WritingMode): GlyphMetrics {
     const base = String.fromCodePoint(unit.codePointAt(0)!);
     const g = this.glyph(base, style, wm);
+    // 表示の指定 (U+FE0F = 絵文字の表示、U+FE0E = 文字の表示。UTS #51): 指定に合う書体 (色つきの書体・色つきでない書体。
+    // FontManager.getForCluster) が、基底の字の書体と別にあれば、並びをその書体でまとめて組む
+    if (/[\uFE0E\uFE0F]/.test(unit)) {
+      const suited = this.fonts.getForCluster(this.familyOf(style), style.fontWeight ?? 400, unit);
+      if (suited && suited !== g.font) return this.clusterGlyph(unit, style, wm);
+    }
     if (wm === 'horizontal-tb') {
       const seq = this.glyph(unit, style, wm);
       return { ...g, advance: seq.advance, naturalWidth: seq.naturalWidth, draw: g.draw ?? unit };

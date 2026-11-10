@@ -400,6 +400,8 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'font-variant-position': [true, 'normal', 'raw'],
   'font-kerning': [true, 'auto', 'raw'],
   'font-feature-settings': [true, 'normal', 'raw'],
+  // font-palette (CSS Fonts 4 §9.1): 継承する。font の一括指定では戻らない (§3.7 の「Cascaded Independently」)
+  'font-palette': [true, 'normal', 'raw'],
   'line-height': [true, 'normal', 'raw'],
   'letter-spacing': [true, 'normal', 'len-normal'],
   'word-spacing': [true, '0px', 'len-normal'],

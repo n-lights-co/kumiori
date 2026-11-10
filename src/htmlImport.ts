@@ -2700,6 +2700,13 @@ class HtmlImporter {
       }
       s.fontFeatures = feats;
     }
+    // font-palette (CSS Fonts 4 §9.1): normal・light・dark か、@font-palette-values の名前 (--名前。当たる規則が無ければ normal)。
+    // palette-mix() は読まない (normal として組む)
+    if (diff('font-palette')) {
+      const fp = c('font-palette').trim();
+      const rules = /^--/.test(fp) ? (this.sheet.fontPaletteValues ?? []).filter((r) => r.name === fp) : [];
+      s.fontPalette = /^(light|dark)$/i.test(fp) ? (fp.toLowerCase() as 'light' | 'dark') : rules.length ? rules : 'normal';
+    }
     // text-orientation (Writing Modes 3 §5.1)。sideways-right は sideways と同じ。
     // writing-mode: sideways-rl の中では、字の組み方が横書きなので、字はすべて横倒し (Writing Modes 4 §3.2)
     if (diff('text-orientation') || diff('writing-mode')) {

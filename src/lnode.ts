@@ -26,6 +26,8 @@ export interface GlyphPayload {
   fakeBold?: boolean;
   /** OpenType の機能 (GlyphArea.features) */
   features?: string[];
+  /** 色つきの字形のパレット (GlyphArea.fontPalette) */
+  fontPalette?: import('./colorGlyph').FontPalette;
 }
 
 export interface LNode {
@@ -167,6 +169,7 @@ export interface ResolvedStyle {
   rubyAlign?: RubyAlign;
   kerning?: boolean;
   fontFeatures?: string[];
+  fontPalette?: import('./colorGlyph').FontPaletteStyle;
   textOrientation?: 'mixed' | 'upright' | 'sideways';
   wordSpaceShrink?: boolean;
   lineNumber?: import('./types').LineNumbering;
@@ -328,6 +331,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     rubyAlign: n.rubyAlign ?? parent.rubyAlign,
     kerning: n.kerning ?? parent.kerning,
     fontFeatures: n.fontFeatures ?? parent.fontFeatures,
+    fontPalette: n.fontPalette ?? parent.fontPalette,
     textOrientation: n.textOrientation ?? parent.textOrientation,
     wordSpaceShrink: n.wordSpaceShrink ?? parent.wordSpaceShrink,
     lineNumber: n.lineNumber ? { ...parent.lineNumber, ...n.lineNumber } : parent.lineNumber,

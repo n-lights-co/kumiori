@@ -13,6 +13,7 @@ import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEn
 import { kernsAsSameScript } from './orthographicSyllable';
 import { complexContextBreaks, lineBreakActions, type LineBreakOptions } from './lineBreak';
 import { newNode, type LNode, type ResolvedStyle } from './lnode';
+import { paletteForFont } from './colorGlyph';
 import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, WritingMode } from './types';
 import { borderToLogicalWidths, toLogical } from './geometry';
 import { mirrorChar, resolveLevels, visualOrder } from './bidi';
@@ -1256,6 +1257,11 @@ export function glyphNode(
   if (st.fontFeatures?.length && wm === 'horizontal-tb') glyph.features = st.fontFeatures;
   // 縦書き: 書体の縦書き用の字形 (vert) で描く
   else if (wm !== 'horizontal-tb' && g.vertical?.features) glyph.features = g.vertical.features;
+  // font-palette: その書体 (色つきの表とパレットを持つ書体) に当てたときのパレット。既定のパレットなら付かない
+  if (st.fontPalette && st.fontPalette !== 'normal') {
+    const pal = paletteForFont(st.fontPalette, g.font);
+    if (pal) glyph.fontPalette = pal;
+  }
   return newNode('glyph', wm, { isize: g.advance, bsize: fontSize, src, glyph, ...(cite ? { cite } : {}) });
 }
 
