@@ -1843,6 +1843,15 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           const heightBase = isRoot ? vh : parent?.ch;
           const base = /^(height|min-height|max-height)$/.test(p) ? heightBase : /^(top|bottom)$/.test(p) ? undefined : cbVertical && /^(margin|padding)-/.test(p) ? vh : cbw;
           const px = lengthPx(raw, ctx(base));
+          // 内容による大きさの語 (CSS Sizing 3 §3.2 の min-content・max-content・fit-content) は、語のまま。fit-content(<長さ>)
+          // (CSS Sizing 4 §3.2) は、引数を長さにして残す (百分率は、長さ・百分率だけの値と同じ基準)
+          if (px === undefined && SIZING_PROPS.has(p)) {
+            const fc = /^fit-content\(\s*([^()]+?)\s*\)$/.exec(lv);
+            const arg = fc ? lengthPx(fc[1], ctx(base)) : undefined;
+            if (fc) val = arg !== undefined && arg >= 0 ? `fit-content(${fmtPx(arg)})` : initial;
+            else val = /^(min-content|max-content|fit-content)$/.test(lv) ? lv : p === 'width' || p === 'min-width' || p === 'max-width' ? raw : initial;
+            break;
+          }
           val = px !== undefined ? fmtPx(px) : p === 'height' || p === 'min-height' || p === 'max-height' ? initial : raw;
           break;
         }
@@ -2052,6 +2061,9 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
   }).map(([k, v]) => [k, new Set(v.split(' '))]),
 );
 
+/** 箱の大きさの性質 (内容による大きさの語を取る。CSS Sizing 3 §3.1) */
+const SIZING_PROPS = new Set(['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height']);
+
 /** 値が読めるかを調べるための、仮の長さの基準 */
 const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 
@@ -2167,6 +2179,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   if (kind === 'len' || kind === 'len-auto' || kind === 'len-none' || kind === 'len-normal' || kind === 'border-width') {
     const s = v.trim().toLowerCase();
     if (/^(auto|none|normal|thin|medium|thick|fit-content|min-content|max-content)$/.test(s)) return true;
+    // fit-content(<長さ・百分率>) (CSS Sizing 4 §3.2): 大きさの性質だけ。負の値は読めない
+    const fc = SIZING_PROPS.has(prop) ? /^fit-content\(\s*([^()]+?)\s*\)$/.exec(s) : null;
+    if (fc) return (lengthPx(fc[1], { ...ctx, pct: 100 }) ?? -1) >= 0;
     return lengthPx(s, { ...ctx, pct: 100 }) !== undefined;
   }
   return true;

@@ -50,6 +50,8 @@ export interface LNode {
   ref?: number;
   /** 物理座標を直接指定 (縦中横の内部横組みグリフ用) */
   phys?: { x: number; y: number };
+  /** 中身の幅を測る組版 (Flow の intrinsic) で、inline 方向の大きさの指定のある箱 (内容による大きさの計測で、箱の幅そのものを数える) */
+  fixedI?: boolean;
   // fragmentation
   cont?: boolean;
   contNext?: boolean;

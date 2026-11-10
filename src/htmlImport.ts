@@ -32,6 +32,7 @@ import type {
   LFootnote,
   BorderRadius,
   BorderSide,
+  ContentSizeKeyword,
   BoxShadow,
   LFloat,
   ConditionalPageMaster,
@@ -1262,7 +1263,10 @@ class HtmlImporter {
       type Info = { el: Item; w: number | undefined; grow: number; shrink: number; base: number; floor: number; cap?: number; orig?: Info };
       const info = items.map((k): Info => {
         const kc = ics(k);
-        const b = kc('flex-basis');
+        // flex-basis: auto は width を使う (Flexbox 1 §7.2.3)。width が内容による大きさの語 (CSS Sizing 3 §3.2) なら、その語を基準にする
+        const b0 = kc('flex-basis');
+        const wKw = (kc('width') || '').trim().toLowerCase();
+        const b = (!b0 || b0 === 'auto') && /^(min-content|max-content|fit-content)$/.test(wKw) ? wKw : b0;
         // ::before・::after は、幅の指定が長さか % なら、それ
         const fixedW = k.ps || k.anon ? kc('width') !== 'auto' && len(kc('width'), W) !== undefined : autoOf(k.el, 'width') === false;
         // flex-basis の min-content は中身の最も狭い幅、max-content・content は中身の幅 (下の見積もり)、fit-content は中身の幅を容器の幅で抑えたもの
@@ -1926,7 +1930,8 @@ class HtmlImporter {
     // 偶奇で左右に読み替える (float: sidenote を outside の側に置くときも、箱の内側の余白の内に置く)
     const f: LFloat = { type: 'float', float: side, children: [inner], ...(side === 'start' || side === 'end' || side === 'inside' || side === 'outside' ? { cssPlacement: true } : {}) };
     // 箱の寸法・余白・枠・背景は float に移す (外側の余白は本文との間隔、幅は回り込みの幅になる)
-    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'borderRadius', 'boxShadow', 'width', 'height', 'boxSizing', 'clear'] as const) {
+    // 内容による大きさ (inlineSizing) と、その長さの上限・下限も、float の箱が持つ
+    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'borderRadius', 'boxShadow', 'width', 'height', 'boxSizing', 'clear', ...(inner.inlineSizing ? (['inlineSizing', 'minInlineSize', 'maxInlineSize'] as const) : [])] as const) {
       if (inner[k] === undefined) continue;
       (f as unknown as Record<string, unknown>)[k] = inner[k];
       delete inner[k];
@@ -2963,6 +2968,70 @@ class HtmlImporter {
         if (free > 0) o.margin = { ...margin, ...(al === 'center' ? { left: free / 2, right: free / 2 } : { left: free }) };
         // 寄せた箱は、rtl の「右端から置く」決まりの外 (寄せる向きは text-align が決める)
         o.autoMargins ??= al === 'center' ? 'center' : 'start';
+      }
+    }
+    // 内容による大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content、CSS Sizing 4 §3.2 の fit-content(<長さ>)):
+    // 行の向きの大きさ (横書きの width・縦書きの height) とその上限・下限は、組むときに中身の幅を測って決める (inlineSizing)。
+    // block の向きの大きさ (横書きの height・縦書きの width) では、ブロックの箱の min-content・max-content・fit-content は、どれも
+    // 中身を組んだ後の大きさ (§2.1) なので、height は auto と同じ。min-height・max-height の語は、高さの指定のある箱だけに効く
+    if (!replaced && !this.src.rect) {
+      const B = this.axisOf(el);
+      const kwOf = (p: string): ContentSizeKeyword | undefined => {
+        const v = (c(B(p)) || '').trim().toLowerCase();
+        if (v === 'min-content' || v === 'max-content' || v === 'fit-content') return v;
+        const fc = /^fit-content\(\s*(-?[\d.]+px)\s*\)$/.exec(v);
+        const len = fc ? cssLen(fc[1]) : undefined;
+        return len !== undefined ? { fit: len } : undefined;
+      };
+      const vertB = B('height') === 'width';
+      const edge = (a: 'left' | 'right' | 'top' | 'bottom') => (padding?.[a] ?? 0) + (border[a]?.width ?? 0);
+      const bpI = vertB ? edge('top') + edge('bottom') : edge('left') + edge('right');
+      const bb = c('box-sizing') === 'border-box';
+      // fit-content(<長さ>) の長さは、box-sizing の箱の大きさ (§3.2: 長さ・百分率だけの値と同じに読む)。内容の箱の大きさに直す
+      const inner = (k: ContentSizeKeyword | undefined) => (typeof k === 'object' && bb ? { fit: Math.max(0, k.fit - bpI) } : k);
+      let size = inner(kwOf('width'));
+      const min = inner(kwOf('min-width'));
+      const max = inner(kwOf('max-width'));
+      const disp = c('display');
+      const outOfFlow = c('float') !== 'none' || /^(absolute|fixed)$/.test(c('position'));
+      // 幅を中身で決める箱 (float・絶対配置・inline-block・表) の fit-content は、auto (shrink-to-fit。CSS 2.1 §10.3.5・§17.5.2) と同じ
+      if (size === 'fit-content' && (outOfFlow || /^inline-/.test(disp) || disp === 'table')) size = undefined;
+      // 横並びの flex の項目の主軸の大きさは、flex の計算で決める (width の語は、flex-basis の語として読む。flexLines)
+      const pEl = pseudo ? el : el.parentElement;
+      if (size && pEl && !outOfFlow && /^(inline-)?flex$/.test(this.display(pEl)) && !/^column/.test(this.cs(pEl)('flex-direction'))) size = undefined;
+      // 語で大きさを決められる箱は、ブロックの箱 (block・list-item・flow-root・inline-block)。行内の箱には幅が効かない (CSS 2.1 §10.2)。
+      // flex・grid の容器、表とその中の箱 (セル・行・列) の語の大きさは未対応 (auto として組み、知らせる)
+      const sizable = /^(block|list-item|flow-root|inline-block)$/.test(disp);
+      if ((size || min || max) && !sizable && disp !== 'inline' && disp !== 'contents' && disp !== 'none') {
+        const name = /flex|grid/.test(disp) ? 'flex・grid の容器' : '表とその中の箱';
+        for (const [p, k] of [['width', size], ['min-width', min], ['max-width', max]] as const) if (k) this.miss(`${B(p)}: ${typeof k === 'object' ? 'fit-content()' : k} (${name})`);
+      }
+      if ((size || min || max) && sizable) {
+        o.inlineSizing = { ...(size ? { size } : {}), ...(min ? { min } : {}), ...(max ? { max } : {}) };
+        // 長さの上限・下限も、組むときに当てる (内容の箱の大きさ)
+        const numI = (p: string) => (/px$/.test(c(B(p))) ? Math.max(0, cssLen(c(B(p)))! - (bb ? bpI : 0)) : undefined);
+        const mnI = numI('min-width');
+        const mxI = numI('max-width');
+        if (mnI) o.minInlineSize ??= mnI;
+        if (mxI !== undefined) o.maxInlineSize ??= mxI;
+        // 大きさの語があれば、カスケードの見積もりの幅 (上限・下限から出したもの) は使わない
+        if (size) delete o[B('width') as 'width' | 'height'];
+        // 組むときに幅が決まるので、行の向きの auto の余白も、組むときに配る (CSS 2.1 §10.3.3)
+        const ms = c(B('margin-left')) === 'auto';
+        const me = c(B('margin-right')) === 'auto';
+        if (ms || me) o.autoMargins ??= ms && me ? 'center' : ms ? 'start' : 'end';
+      }
+      // block の向きの下限・上限の語: 高さの指定のある箱で、下限は「中身の高さまで伸びる」(min-height に高さを移し、height は auto)。
+      // 上限は「中身の高さまで縮む」(max の語 + 高さ: 中身が少なければ中身の高さ) で、これは未対応として知らせる
+      const kwB = (p: string) => /^(min-content|max-content|fit-content)/.test((c(B(p)) || '').trim().toLowerCase());
+      const hp = B('height') as 'width' | 'height';
+      if (o[hp] !== undefined && !o.aspectRatio) {
+        if (kwB('max-height')) this.miss(`${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (${hp} の指定のある箱)`);
+        else if (kwB('min-height')) {
+          const bpB = vertB ? edge('left') + edge('right') : edge('top') + edge('bottom');
+          o.minBlockSize = Math.max(o.minBlockSize ?? 0, o[hp]! - (bb ? bpB : 0));
+          delete o[hp];
+        }
       }
     }
     const rad = this.radiusOf(c);

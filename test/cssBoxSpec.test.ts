@@ -1,6 +1,7 @@
 /**
  * 箱の組版の CSS:
  *  - box-decoration-break: clone (CSS Fragmentation 3 §5.4): ページ・段・行で分かれた箱の断片ごとに、罫線・内側の余白を付け直す
+ *  - 内容による大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content、CSS Sizing 4 §3.2 の fit-content(<長さ>))
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -56,6 +57,8 @@ function boxesOf(tree: { sheets: Array<{ page: { regionBody: unknown } }> }): Bo
       for (const c of a.children ?? []) walk(c, x + pad[3] + bord[3], y + pad[0] + bord[0]);
     };
     for (const c of (sh.page.regionBody as RawArea).children ?? []) walk(c, 0, 0);
+    // 絶対配置の箱はページの原点から (余白なしのページなので、本文の領域の原点と同じ)
+    for (const c of ((sh.page as { absoluteAreas?: RawArea[] }).absoluteAreas ?? [])) walk(c, 0, 0);
   });
   return out;
 }
@@ -184,6 +187,108 @@ describe('box-decoration-break: clone の inline の箱 (行で分かれた枠�
       expect([b.bord[3], b.bord[1]]).toEqual([3, 3]);
       expect(r1(b.x + b.w)).toBe(100);
     }
+  });
+});
+
+describe('内容による大きさ (CSS Sizing 3 §3.2・§2.1)', () => {
+  // ページの幅 200pt、字は 10pt (全角)。あ を 8 字並べると、折り返さない幅 (max-content) は 80pt、最も狭い幅 (min-content) は 1 字の 10pt
+  const A8 = 'あ'.repeat(8);
+  const RED = 'background: #ff0000';
+  const w = (b: Box) => Math.round(b.w);
+  const one = async (style: string, inner = A8, css = '') => (await lay(`<div style="${RED}; ${style}">${inner}</div>`, css)).bg('#ff0000')[0];
+  it('width: max-content は折り返さない幅、min-content は最も狭い幅。中の、幅の指定のある箱は、その幅を数える', async () => {
+    expect(w(await one('width: max-content'))).toBe(80);
+    expect(w(await one('width: min-content'))).toBe(10);
+    expect(w(await one('width: min-content', `<div style="width: 30pt; height: 5pt"></div>${A8}`))).toBe(30);
+    // 使える幅 (200pt) より長い中身でも、max-content は折り返さない
+    const long = await lay(`<div style="${RED}; width: max-content">${'あ'.repeat(30)}</div>`);
+    expect(w(long.bg('#ff0000')[0])).toBe(300);
+    expect(new Set(long.glyphs('あ').map((g) => r1(g.y))).size).toBe(1);
+  });
+  it('width: fit-content は min(max-content, max(min-content, 使える幅))', async () => {
+    expect(w(await one('width: fit-content'))).toBe(80);
+    expect(w(await one('width: fit-content', 'あ'.repeat(30)))).toBe(200);
+    // 余白・枠の分は、使える幅から引く
+    expect(w(await one('width: fit-content; margin: 0 15pt; padding: 0 6pt', 'あ'.repeat(30)))).toBe(170);
+    // 使える幅が最も狭い幅より狭ければ、最も狭い幅
+    const t = await lay(`<div style="width: 20pt"><div style="${RED}; width: fit-content"><div style="width: 30pt; height: 5pt"></div></div></div>`);
+    expect(w(t.bg('#ff0000')[0])).toBe(30);
+  });
+  it('fit-content(<長さ>) は、使える幅をその長さに置き換える (CSS Sizing 4 §3.2)。負の長さの宣言は捨てる', async () => {
+    expect(w(await one('width: fit-content(50pt)'))).toBe(50);
+    expect(w(await one('width: fit-content(150pt)'))).toBe(80);
+    expect(w(await one('width: fit-content(4pt)'))).toBe(10);
+    expect(w(await one('width: fit-content(25%)'))).toBe(50);
+    expect(w(await one('width: 120pt; width: fit-content(-5pt)'))).toBe(120);
+  });
+  it('min-width・max-width の語: 幅の指定や auto の幅を、中身の幅で抑える。auto の余白は、決まった幅で配る', async () => {
+    expect(w(await one('width: 120pt; max-width: max-content'))).toBe(80);
+    expect(w(await one('width: 20pt; min-width: max-content'))).toBe(80);
+    expect(w(await one('max-width: min-content'))).toBe(10);
+    // 語の大きさと、長さの上限・下限
+    expect(w(await one('width: max-content; max-width: 50pt'))).toBe(50);
+    expect(w(await one('width: min-content; min-width: 40pt'))).toBe(40);
+    const c = await one('max-width: fit-content; margin-left: auto; margin-right: auto');
+    expect([Math.round(c.x), w(c)]).toEqual([60, 80]);
+    const r = await one('width: max-content; margin-left: auto');
+    expect([Math.round(r.x), w(r)]).toEqual([120, 80]);
+  });
+  it('box-sizing: border-box でも、語の大きさは内容の箱を中身に合わせる', async () => {
+    const b = await one('width: max-content; box-sizing: border-box; padding: 0 9pt; border: 3pt solid #000000');
+    expect(w(b)).toBe(104);
+    // fit-content(<長さ>) の長さは、box-sizing の箱の大きさ
+    expect(w(await one('width: fit-content(60pt); box-sizing: border-box; padding: 0 9pt'))).toBe(60);
+  });
+  it('float・inline-block・絶対配置の箱: min-content・max-content で幅を決める (fit-content は auto と同じ)', async () => {
+    const long = 'あ'.repeat(30);
+    for (const pos of ['float: left', 'display: inline-block', 'position: absolute']) {
+      expect([pos, w(await one(`${pos}; width: min-content`, long))]).toEqual([pos, 10]);
+      expect([pos, w(await one(`${pos}; width: max-content`, long))]).toEqual([pos, 300]);
+      // auto (shrink-to-fit) と fit-content は同じ
+      const auto = await one(pos, long);
+      const fit = await one(`${pos}; width: fit-content`, long);
+      expect([pos, fit.w]).toEqual([pos, auto.w]);
+      expect([pos, w(await one(`${pos}; max-width: min-content`, long))]).toEqual([pos, 10]);
+    }
+  });
+  it('縦書きでは、行の向きの大きさは height。width (block の向き) の語は auto と同じ', async () => {
+    const V = 'html { writing-mode: vertical-rl }';
+    const h = (b: Box) => Math.round(b.h);
+    expect(h(await one('height: max-content', A8, V))).toBe(80);
+    expect(h(await one('height: min-content', A8, V))).toBe(10);
+    expect(h(await one('height: fit-content(50pt)', A8, V))).toBe(50);
+    const auto = await one('', A8, V);
+    const kw = await one('width: min-content', A8, V);
+    expect([kw.w, kw.h]).toEqual([auto.w, auto.h]);
+  });
+  it('height (block の向き) の語は auto と同じ。min-height の語は、高さの指定のある箱を中身の高さまで伸ばす', async () => {
+    const auto = await one('width: 40pt');
+    for (const k of ['min-content', 'max-content', 'fit-content']) {
+      const b = await one(`width: 40pt; height: ${k}`);
+      expect([k, b.w, b.h]).toEqual([k, auto.w, auto.h]);
+    }
+    // 40pt の幅に 8 字 = 2 行 (20pt)
+    expect(Math.round((await one('width: 40pt; height: 5pt; min-height: min-content')).h)).toBe(20);
+    expect(Math.round((await one('width: 40pt; height: 50pt; min-height: min-content')).h)).toBe(50);
+  });
+  it('横並びの flex の項目の width の語は、flex-basis の語として効く', async () => {
+    const t = await lay(`<div style="display: flex"><div style="${RED}; width: min-content">${A8}</div><div style="background: #0000ff; width: max-content">${A8}</div></div>`);
+    expect(w(t.bg('#ff0000')[0])).toBe(10);
+    expect(w(t.bg('#0000ff')[0])).toBe(80);
+  });
+  it('flex・grid の容器、表とその中の箱の語の大きさは、auto として組んで知らせる。語の大きさを使わない文書には知らせない', async () => {
+    const t = await lay(`<div style="display: flex; width: fit-content"><div>${A8}</div></div><table style="width: max-content"><tr><td>${A8}</td></tr></table><div style="height: 30pt; max-height: min-content">${A8}</div>`);
+    expect(t.warnings.find((x) => x.startsWith('未対応の CSS を無視しました: '))).toBe('未対応の CSS を無視しました: max-height: min-content (height の指定のある箱)、width: fit-content (flex・grid の容器)、width: max-content (表とその中の箱)');
+    const u = await lay(`<div style="width: min-content">${A8}</div><fieldset><legend>あ</legend>${A8}</fieldset><div style="float: left; width: fit-content">${A8}</div><table style="width: fit-content"><tr><td>${A8}</td></tr></table>`);
+    expect(u.warnings.filter((x) => /未対応|知らない/.test(x))).toEqual([]);
+  });
+  it('語の大きさの箱の深い入れ子でも、計測は入れ子の深さに比例する回数で済む (計測の覚え)', async () => {
+    let body = A8;
+    for (let k = 0; k < 14; k++) body = `<div style="width: fit-content; padding: 0 1px">${body}</div>`;
+    const t = await lay(`<div style="${RED}; width: fit-content">${body}</div>`);
+    expect(t.pages).toBe(1);
+    expect(t.glyphs('あ').length).toBe(8);
+    expect(w(t.bg('#ff0000')[0])).toBe(101);
   });
 });
 

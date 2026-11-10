@@ -455,7 +455,19 @@ export interface BoxStyle {
   /** inline 方向の内容の寸法の最小値・最大値 (pt。横書きの min-width・max-width。aspect-ratio の箱でだけ使う。CSS Sizing 4 §5.1) */
   minInlineSize?: number;
   maxInlineSize?: number;
+  /**
+   * 内容による inline 方向の大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content)。size は大きさ (横書きの width・縦書きの height)、
+   * min・max はその下限・上限 (min-width・max-width)。組むときに、中身の幅を測って決める (§2.1・§5.1)。これがある箱では、長さで指定した
+   * 下限・上限 (minInlineSize・maxInlineSize) も、組むときに当てる
+   */
+  inlineSizing?: { size?: ContentSizeKeyword; min?: ContentSizeKeyword; max?: ContentSizeKeyword };
 }
+
+/**
+ * 内容による大きさ (CSS Sizing 3 §3.2 の語)。{ fit } は fit-content(<長さ>) (CSS Sizing 4 §3.2: fit-content の式の「使える長さ」を、
+ * この長さ (pt。内容の箱の大きさ) に置き換える)
+ */
+export type ContentSizeKeyword = 'min-content' | 'max-content' | 'fit-content' | { fit: number };
 
 // ───────────────────────── ページ設定 ─────────────────────────
 
