@@ -5,6 +5,7 @@ import path from 'node:path';
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { routeFontCache } from './fontCache';
 import { extraTestFont } from '../test/helpers';
+import { buildCff2Font } from '../test/cff2TestFont';
 
 /**
  * KUMIORI_E2E_FONT_DIR があれば、Google Fonts の代わりにそのディレクトリのフォントを返す (ネットワークの無い環境用)。
@@ -476,6 +477,89 @@ test('可変フォント: 太さ・幅の実体を、測った幅のまま canva
   }
   expect(names.filter((n) => n.startsWith('Anybody')).sort()).toEqual(['Anybody_400wght', 'Anybody_700wght', 'Anybody_75wdth_400wght']);
   await page.locator('#sheets canvas').first().screenshot({ path: test.info().outputPath('variable.png') });
+  expect(errors).toEqual([]);
+});
+
+test('CFF2 の可変フォント: 既定の形も含めて、静的な CFF にした実体を、測った幅のまま canvas に描く', async ({ page }) => {
+  const errors = await open(page);
+  // 輪郭が CFF2 の可変フォント (太さと幅の 2 軸。字は A・B・C・D) は、テストの中でバイト列を組む (test/cff2TestFont.ts)
+  const font = Buffer.from(buildCff2Font()).toString('base64');
+  await page.evaluate((b64) => {
+    const html =
+      '<!doctype html><html lang="en"><head><style>@page { size: A6; margin: 10mm } @font-face { font-family: K; src: url(k.otf); font-weight: 100 900; font-stretch: 50% 200% } p { font-family: K; font-size: 18pt; margin: 0 }</style></head>' +
+      '<body><p>ABCD</p><p><b>ABCD</b></p><p style="font-stretch: 200%">ABCD</p></body></html>';
+    const dt = new DataTransfer();
+    dt.items.add(new File([html], 'cff2.html', { type: 'text/html' }));
+    dt.items.add(new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], 'k.otf', { type: 'font/otf' }));
+    window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt }));
+    window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, cancelable: true }));
+  }, font);
+  await expect(page.locator('#status')).toContainText('cff2.html');
+  await expect(page.locator('#sheets canvas')).toHaveCount(1);
+  const info = await page.evaluate(() => {
+    type Lf = { key: string; family: string; weight: number; unitsPerEm: number; buffer: ArrayBuffer; face?: FontFace; cssFamily?: string; instanceOf?: { coords: Record<string, number> }; fk: { layout(t: string, f: object): { glyphs: Array<{ advanceWidth: number }> } } };
+    const k = (window as unknown as { __kumiori: { tree: { sheets: Array<{ page: { regionBody: unknown } }> }; fonts: { all(): Lf[]; cssFont(f: Lf, px: number): string } } }).__kumiori;
+    const glyphs: Array<{ text: string; fontFamily: string; fontWeight: number; fakeBold?: boolean; scaleX: number }> = [];
+    const walk = (a: { type?: string; children?: unknown[] }) => {
+      if (a.type === 'glyph') glyphs.push(a as never);
+      for (const c of a.children ?? []) walk(c as never);
+    };
+    walk(k.tree.sheets[0].page.regionBody as never);
+    const as = glyphs.filter((g) => g.text === 'A').map((g) => ({ family: g.fontFamily, weight: g.fontWeight, fakeBold: !!g.fakeBold, scaleX: g.scaleX }));
+    // 実体ごとに、ブラウザに登録した書体で測った幅 (描く幅) と、fontkit の実体で測った幅 (組んだ幅) を比べる (字の大きさは 1000px。上の可変フォントのテストと同じ)
+    const ctx = document.createElement('canvas').getContext('2d')!;
+    ctx.fontKerning = 'none';
+    const PX = 1000;
+    const instances = k.fonts
+      .all()
+      .filter((f) => f.instanceOf)
+      .map((f) => {
+        ctx.font = k.fonts.cssFont(f, PX);
+        const head = new DataView(f.buffer);
+        return {
+          coords: f.instanceOf!.coords,
+          registered: !!f.face && f.face.status === 'loaded' && !!f.cssFamily,
+          drawn: ctx.measureText('ABCD').width,
+          laid: (f.fk.layout('ABCD', { kern: false, liga: false, clig: false }).glyphs.reduce((a, g) => a + g.advanceWidth, 0) / f.unitsPerEm) * PX,
+          // 実体のファイルは OpenType の CFF ('OTTO')
+          otto: head.getUint32(0) === 0x4f54544f,
+        };
+      });
+    const canvas = document.querySelector('#sheets canvas') as HTMLCanvasElement;
+    const d = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
+    let dark = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] < 128 && d[i + 1] < 128 && d[i + 2] < 128) dark++;
+    return { as, instances, dark };
+  });
+  expect(info.as).toEqual([
+    { family: 'css:K', weight: 400, fakeBold: false, scaleX: 1 },
+    { family: 'css:K', weight: 700, fakeBold: false, scaleX: 1 },
+    { family: 'css:K{;wdth=200}', weight: 400, fakeBold: false, scaleX: 1 },
+  ]);
+  // 既定の形 (太さ 400・幅 100) も実体になる (CFF2 のままでは PDF に埋め込めない)
+  expect(info.instances.map((i) => i.coords)).toEqual([
+    { wght: 400, wdth: 100 },
+    { wght: 700, wdth: 100 },
+    { wght: 400, wdth: 200 },
+  ]);
+  // 組んだ幅は、書体の送り (A 500・B 600・C 600・D 600) に HVAR の差分を当てた値: 既定 2300、太さ 700 は A +48・B +12、幅 200% は A +200
+  expect(info.instances.map((i) => i.laid)).toEqual([2300, 2360, 2500]);
+  // 描く幅と組んだ幅が合う。許す差は、字の数 × 0.5px (字の送りを整数の画素に丸める環境。上の可変フォントのテストの説明)
+  const tolerance = [...'ABCD'].length * 0.5 + 0.01;
+  for (const i of info.instances) {
+    expect(i.registered).toBe(true);
+    expect(i.otto).toBe(true);
+    expect(Math.abs(i.drawn - i.laid)).toBeLessThan(tolerance);
+  }
+  expect(info.dark).toBeGreaterThan(500);
+  // PDF には、実体ごとに静的な書体が埋まる
+  const pdf = await downloadPdf(page);
+  const names: string[] = [];
+  for (const [, obj] of pdf.context.enumerateIndirectObjects()) {
+    if (obj instanceof PDFDict && obj.get(PDFName.of('Subtype')) === PDFName.of('Type0')) names.push(String(obj.get(PDFName.of('BaseFont'))).replace(/^\/[A-Z]{6}\+/, ''));
+  }
+  expect(names.filter((n) => n.startsWith('K2Test')).sort()).toEqual(['K2Test-Regular', 'K2Test_200wdth', 'K2Test_700wght']);
+  await page.locator('#sheets canvas').first().screenshot({ path: test.info().outputPath('cff2.png') });
   expect(errors).toEqual([]);
 });
 
