@@ -19,8 +19,8 @@ interface Compound {
   classes: string[];
   /** ci: true は i (大文字小文字を区別しない)、false は s (区別する)、undefined は属性の名前で決める (HTML 5.2 §4.15.1) */
   attrs: Array<{ name: string; op: AttrOp; value: string; ci?: boolean }>;
-  /** of: :nth-child(An+B of S) の S */
-  pseudos: Array<{ name: string; arg?: string; sub?: Selector[]; nth?: [number, number]; of?: Selector[]; siblings?: boolean }>;
+  /** of: :nth-child(An+B of S) の S。subSiblings: :has() の相対セレクタ (sub) ごとの、先頭の結合子が + ~ か */
+  pseudos: Array<{ name: string; arg?: string; sub?: Selector[]; nth?: [number, number]; of?: Selector[]; subSiblings?: boolean[] }>;
 }
 
 /** 右から左へ: compounds[i] と compounds[i+1] の間の結合子が combs[i] */
@@ -166,11 +166,22 @@ function parseComplex(text: string): Selector | undefined {
       }
       if (!KNOWN_PSEUDO_CLASSES.has(name) || pseudoElement) return undefined;
       const p: Compound['pseudos'][number] = { name, ...(arg !== undefined ? { arg } : {}) };
-      if (name === 'has' && /^\s*[+~]/.test(arg ?? '')) p.siblings = true;
       if (/^(not|is|where|matches|-webkit-any|has)$/.test(name)) {
         // :is()・:where() は読めないものだけ捨てる。:not()・:has() は 1 つでも読めなければ読めない
         const forgiving = !/^(not|has)$/.test(name);
-        p.sub = parseSelectorList(name === 'has' ? (arg ?? '').replace(/^\s*[>+~]/, (x) => `:scope ${x.trim()}`) : (arg ?? ''), forgiving);
+        if (name === 'has') {
+          // :has() の引数は相対セレクタの並び (Selectors 4 §4.5)。相対セレクタは、1 つずつ、基準の要素 (:scope) と結合子を先頭に補って読む
+          // (結合子が無ければ子孫。§3.4)。補った :scope は詳細度に数えない。疑似要素は :has() の中に書けない
+          p.sub = [];
+          p.subSiblings = [];
+          for (const rel of splitComma(arg ?? '')) {
+            const sub = parseComplex(`:scope ${rel.trim()}`);
+            if (!sub || sub.pseudoElement) return undefined;
+            sub.specificity -= spec(0, 1, 0);
+            p.sub.push(sub);
+            p.subSiblings.push(/^[+~]/.test(rel.trim()));
+          }
+        } else p.sub = parseSelectorList(arg ?? '', forgiving);
         if (!p.sub.length && !forgiving) return undefined;
         // :is・:not・:has は中で一番高い詳細度、:where は 0
         if (name !== 'where') {
@@ -434,9 +445,10 @@ function matchPseudo(el: Element, p: Compound['pseudos'][number], scope?: Elemen
     case '-webkit-any':
       return p.sub!.some((s) => matches(el, s, scope));
     case 'has':
-      return p.sub!.some((s) => {
-        // 子孫 (> は子)・後続の兄弟 (+ ~) のどれかが合えば (:scope を el に置き換えて調べる)
-        const all = p.siblings ? followingSiblings(el) : descendants(el);
+      return p.sub!.some((s, k) => {
+        // 子孫 (> は子)・後続の兄弟 (+ ~。その先に結合子が続けば兄弟の子孫も) のどれかが合えば (:scope を el に置き換えて調べる)
+        const sibs = p.subSiblings?.[k] ? followingSiblings(el) : undefined;
+        const all = sibs ? (s.compounds.length > 2 ? sibs.flatMap((x) => [x, ...descendants(x)]) : sibs) : descendants(el);
         return all.some((d) => matches(d, s, el));
       });
     case 'empty':

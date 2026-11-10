@@ -1109,8 +1109,15 @@ interface DeclaredValue {
   order: number;
 }
 
+/**
+ * 識別子に使える字 (CSS Syntax 3 §4.2 の ident code point: 英数字・_・-・ASCII でない字。cssSelector の IDENT と同じ範囲で、
+ * ASCII でない字は U+0080 以上をすべて通す)
+ */
+const NAME_CHAR = String.raw`[-\w\u0080-\uffff]`;
+const NAME_START = String.raw`[a-zA-Z_\u0080-\uffff]`;
+
 /** var(--名前[, fallback]) (fallback は括弧の入れ子 2 段まで) */
-const VAR_RE = /var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*))?\)/g;
+const VAR_RE = new RegExp(String.raw`var\(\s*(--${NAME_CHAR}+)\s*(?:,\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*))?\)`, 'g');
 
 /** 組み込みの既定のスタイルシート (HTML_UA_CSS・QUIRKS_UA_CSS) を読んだもの (文書ごとに読み直さない。parseCss の結果は書き換えない) */
 const BUILTIN_UA_SHEETS = new Map<string, ParsedCss>();
@@ -1213,8 +1220,10 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       if ((el.localName ?? el.nodeName).toLowerCase() === 'th' && (parent?.v.get('text-align') ?? 'start') === 'start') push('text-align', 'center', false, 0, 1, -1);
       // 互換モードの余白の打ち消し (HTML Living Standard §15.3.9)。既定のスタイルの規則として、h1 などの余白の規則より強く
       if (quirks) for (const [p, v] of marginQuirks(el)) push(p, v, false, 0, 1e9, -1);
-      // HTML の属性による指定 (作成者スタイルシート より弱い)
-      presentational(el, quirks).forEach(([p, v], k) => push(p, v, false, 1, -1, -1 + k / 1e6));
+      // HTML の属性による指定 (作成者スタイルシート より弱い)。Cascade 5 §6.5: 利用者と作成者の間の独立した出どころ
+      // (author presentational hint origin) なので、作成者の規則には、層 (@layer) の中のものにも負ける。
+      // revert では作成者の出どころの一部なので、出どころは作成者のまま、どの層よりも前 (弱い) 層に置く
+      presentational(el, quirks).forEach(([p, v], k) => push(p, v, false, 1, -1, -1 + k / 1e6, -Infinity));
       const st = el.getAttribute('style');
       if (st) splitDecls(st).forEach(([p, v, imp], k) => push(p, v, !!imp, 2, 0, order + 1 + k / 1e4));
     }
@@ -1740,8 +1749,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
     if (!fns.every((f) => /^(counter|counters|attr|url|image-set|(repeating-)?(linear|radial|conic)-gradient)$/.test(f))) return false;
     // counter(名前[, 書式])・counters(名前, 文字列[, 書式]) の引数。カンマの無い counter(page physical) は CSS の構文に無い (読めない)。
     // アンテナハウス互換 (ahCounterFlags) では、その拡張 counter(<ident> [physical || reverse]?, …) として通す
-    const ident = /^-?[a-z_][\w-]*$/i;
-    const counterName = ah.ahCounterFlags ? /^-?[a-z_][\w-]*(\s+(physical|reverse)){0,2}$/i : ident;
+    // 名前は識別子 (CSS Syntax 3 §4.2。ASCII でない字も使える)
+    const ident = new RegExp(`^-?${NAME_START}${NAME_CHAR}*$`);
+    const counterName = ah.ahCounterFlags ? new RegExp(String.raw`^-?${NAME_START}${NAME_CHAR}*(\s+(physical|reverse)){0,2}$`, 'i') : ident;
     for (const m of bare.matchAll(/\b(counters?)\(([^()]*)\)/gi)) {
       const args = m[2].split(',').map((x) => x.trim());
       const ok =
