@@ -2,7 +2,7 @@
  * fontkitShaping — @pdf-lib/fontkit で、インド系の用字 (デーヴァナーガリーなど) とタイ文字を組めるようにする。
  *
  * fontkit の書体の layout (字の並びを字形の並びにする入口。測るとき (measurer.ts)・字形の番号と位置を決めるとき (areaResources.ts)・
- * 輪郭で描くとき (canvasRenderer.ts)・pdf-lib の埋め込みは、どれもここを通る) を 1 回差し替えて、次の 14 個を補う。
+ * 輪郭で描くとき (canvasRenderer.ts)・pdf-lib の埋め込みは、どれもここを通る) を 1 回差し替えて、次の 15 個を補う。
  * どれも、当てはまる字を含む文字列を組むときだけ働く (ほかの文字列は、これまでと同じ道を通り、同じ結果になる)。
  *
  * 1. 音節に分ける処理が落ちる (デーヴァナーガリーなどが組めない)
@@ -82,8 +82,12 @@
  *    作った後、元のレフの字形を消す。র্কি・কার্তিক)。fontkit は、並びの最初の番号 (無い) を字形の番号にするので、番号の無い字形が
  *    並びに残り、その字の単位を描けない。番号の無い字形は描きようが無いので、並びから取り除く (HarfBuzz も、この規則を字形の削除として扱う)。
  *
- * 3・4 は仕様どおりの動きだが、ほかの用字の文書の結果を変えないよう、いまはインド系の用字とタイ文字 (LOOKUP_FIX_TEXT) と、
- * 東南アジア大陸部の用字・チベット文字 (LOOKUP_FIX_TEXT_SEA: ラオ・チベット・ミャンマー・クメール) を組むときだけ効かせる。
+ * 3・4 は仕様どおりの動きだが、ほかの用字の文書の結果を変えないよう、いまはインド系の用字・タイ文字と、右から左の文字 (ヘブライ文字・
+ * アラビア文字など) (LOOKUP_FIX_TEXT) と、東南アジア大陸部の用字・チベット文字 (LOOKUP_FIX_TEXT_SEA: ラオ・チベット・ミャンマー・クメール) を
+ * 組むときだけ効かせる。右から左の文字は、HarfBuzz の字形・位置との照合で確かめた: アラビア文字 65 語
+ * (Noto Naskh Arabic・Noto Sans Arabic) とヘブライ文字 27 語 (Noto Sans Hebrew・Noto Serif Hebrew・Arimo) は補いの有無で結果が変わらず、
+ * Tinos のヘブライ文字は、母音記号・カンティレーションの位置 (前の文脈が 2 字形以上の規則) が 5 語で HarfBuzz と同じになる (悪くなる語は無い)。
+ * 5〜8・10 は、音節に分けて組む用字 (MAY_SYLLABLE_SHAPE) の字を含む文字列を組むときだけ効かせる (右から左の文字だけの文字列には効かせない)。
  *
  * ラオ・クメール・ミャンマー・チベット・モンゴルの字のために、次も補う (11 は LOOKUP_FIX_TEXT_SEA の字を含む文字列を組むときだけ):
  *
@@ -103,9 +107,19 @@
  *
  * 14. クメール文字の文脈の合字 clig は、整形に必須の機能 (Microsoft「Developing OpenType Fonts for Khmer Script」の Features の表)。
  *    呼び出し側の「任意の合字を切る」指定 (clig: false) で止まらないようにする。
+ *
+ * 右から左の文字のために、次も補う:
+ *
+ * 15. アラビア文字・ヘブライ文字の結合文字の順
+ *    アラビア文字の結合文字 (母音記号・シャッダなど) は、UTR #53 (Unicode Arabic Mark Rendering) の順 (arabicMarks.ts)、ヘブライ文字の点
+ *    (母音記号・ダゲシュ・シン/スィンの点) は、HarfBuzz と同じ順 (hebrewMarks.ts) に並べ替えてから書体に渡す (HarfBuzz は、どちらも
+ *    整形の前の正規化で行う。fontkit は行わない)。並べ替えるのは書体に渡す文字列だけで、組版の字 (GlyphArea の text。PDF の文字の取り出し) は
+ *    元のまま。並べ替えた並びは、元の並びと正準等価。
  */
 
 import { isMyanmarBase, isMyanmarDependent } from './orthographicSyllable';
+import { reorderArabicMarks } from './arabicMarks';
+import { reorderHebrewMarks } from './hebrewMarks';
 
 /** 差し替え済みの印 (fontkit の原型に付ける。pdfLibPatches.ts と同じ決まり) */
 const SHAPING_PATCHED = Symbol.for('kumiori.fontkitShapingPatched');
@@ -119,8 +133,13 @@ const GROW_PATCHED = Symbol.for('kumiori.fontkitGrowPatched');
  * U+A800〜U+ABFF) と、第 1 面の古い用字など (U+10000〜U+1BFFF)。広めに取ってある (当たっても、代わりを置いて戻す手間が増えるだけ)
  */
 const MAY_SYLLABLE_SHAPE = /[ऀ-᳿ꠀ-꯿\u{10000}-\u{1BFFF}]/u;
-/** 上の 3・4 を効かせる文字列: インド系の用字 (U+0900〜U+0DFF) とタイ文字 (U+0E00〜U+0E7F) を含む */
-const LOOKUP_FIX_TEXT = /[ऀ-๿]/;
+/**
+ * 上の 3・4 を効かせる文字列: インド系の用字 (U+0900〜U+0DFF)・タイ文字 (U+0E00〜U+0E7F) か、右から左の文字 (ヘブライ文字・アラビア文字・
+ * シリア文字など U+0590〜U+08FF と、その提示形 U+FB1D〜U+FDFF・U+FE70〜U+FEFC) を含む
+ */
+const LOOKUP_FIX_TEXT = /[\u0590-\u08FF\u0900-\u0E7F\uFB1D-\uFDFF\uFE70-\uFEFC]/;
+/** 上の 15 を効かせる文字列: ヘブライ文字・アラビア文字のブロックの字 (結合文字はこの中にある) か、ヘブライ文字の提示形の点 (U+FB1E) を含む */
+const RTL_MARK_TEXT = /[\u0590-\u08FF\uFB1E\u{10EC0}-\u{10EFF}]/u;
 /** 異体字セレクタ (U+FE00〜FE0F・U+E0100〜E01EF) */
 const VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 /** タイ文字の SARA AM と、その前の上付きの記号の並び */
@@ -589,7 +608,7 @@ export function patchFontkitShaping(fk: unknown) {
   const layout = proto.layout;
   const g = globalThis as { regeneratorRuntime?: unknown };
   proto.layout = function (text0, ...rest) {
-    if (typeof text0 !== 'string' || !MAY_SYLLABLE_SHAPE.test(text0)) {
+    if (typeof text0 !== 'string' || !(MAY_SYLLABLE_SHAPE.test(text0) || LOOKUP_FIX_TEXT.test(text0))) {
       try {
         return layout.call(this, text0, ...rest);
       } catch (e) {
@@ -598,9 +617,13 @@ export function patchFontkitShaping(fk: unknown) {
         throw e;
       }
     }
+    /** 音節に分けて組む用字の字を含む (5〜8・10 を効かせる。右から左の文字だけの文字列は偽) */
+    const syllabic = MAY_SYLLABLE_SHAPE.test(text0);
     let text = text0.includes('ำ') ? text0.replace(THAI_SARA_AM, 'ํ$1า') : text0;
     if (text.includes('\u0EB3')) text = text.replace(LAO_SARA_AM, '\u0ECD$1\u0EB2');
-    const setRuntime = !('regeneratorRuntime' in g);
+    // 15: アラビア文字・ヘブライ文字の結合文字を、書体が重ねる・合成する順にする (UTR #53、hebrewMarks.ts)
+    if (RTL_MARK_TEXT.test(text)) text = reorderHebrewMarks(reorderArabicMarks(text));
+    const setRuntime = !('regeneratorRuntime' in g) && syllabic;
     const wasActive = lookupFixActive;
     const wasSea = seaFixActive;
     if (LOOKUP_FIX_TEXT.test(text) || LOOKUP_FIX_TEXT_SEA.test(text)) {
@@ -627,12 +650,14 @@ export function patchFontkitShaping(fk: unknown) {
       }
     }
     const wasAnchor = nullAnchorActive;
-    patchNullAnchor((this as FkFont)._layoutEngine?.engine?.GPOSProcessor);
-    prepareUseStrayFix(this as FkFont);
-    nullAnchorActive = true;
+    if (syllabic) {
+      patchNullAnchor((this as FkFont)._layoutEngine?.engine?.GPOSProcessor);
+      prepareUseStrayFix(this as FkFont);
+      nullAnchorActive = true;
+    }
     if (setRuntime) g.regeneratorRuntime = syllableRuntime;
     try {
-      const glyphs = glyphsWithOwnCodePoints(this, text) ?? text;
+      const glyphs = (syllabic ? glyphsWithOwnCodePoints(this, text) : null) ?? text;
       const features = resolveWordInitial(rest[0]);
       try {
         return layout.call(this, glyphs, features, ...rest.slice(1));

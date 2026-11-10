@@ -2159,6 +2159,8 @@ class Flow {
         image: (c, ps) => this.imageBox(c, ps),
         inlineBox: (c, ps) => this.inlineContainerBox(c, ps),
         containerI: L,
+        // アンテナハウス互換では、ギリシャ文字・キリル文字の語を欧文の書体に替えない (その製品に合わせる指定なので、書体の選び方を変えない)
+        ...(this.host.kernAh ? { noLatinWords: true } : {}),
         ...(this.intrinsic ? { intrinsic: true } : {}),
       });
       // ::first-line (CSS): 包んだ inline の書式は、最初の行の字だけに当てる。最初の行は、その書式で組んで決める
@@ -2201,7 +2203,7 @@ class Flow {
               // インド系・ラオ・チベット・ミャンマー・クメールの字の単位 (2 字以上) は、単位のまま書体に渡して引く
               if ((a.cluster || b.cluster) && kernScript(a.last))
                 return ms.kernUnits(a.cluster ?? a.last, b.cluster ?? b.first, a.cluster ? lastBaseOfUnit(a.cluster) : a.last, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: fontFeaturesBetweenUnits(a.st), featuresA: a.st.fontFeatures, featuresB: b.st.fontFeatures }) * a.st.fontSize;
-              return ms.kern(a.last, b.first, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: a.st.fontFeatures, ...(kernAh ? { skipClass0: true } : {}) }) * a.st.fontSize;
+              return ms.kern(a.last, b.first, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: a.st.fontFeatures, ...(kernAh ? { skipClass0: true } : {}), ...(a.latinWord || b.latinWord ? { latinWord: true } : {}) }) * a.st.fontSize;
             }
           : undefined,
         kernAh,
