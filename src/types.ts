@@ -543,6 +543,39 @@ export interface LDocument extends BaseNode {
    * 省略: CSS の margin の相殺 (正の最大と負の最小の和)
    */
   spaceResolution?: 'xsl';
+  /**
+   * 索引の鍵の付いた所 (XSL-FO の index-key・fo:index-range-begin〜-end。XSL 1.1 §6.10・§7.24)。文書の中の順に並べる。
+   * LIndexPageCitationList が、ここに並んだ所の置かれたページを引く。無ければ索引を使わない文書
+   */
+  indexEntries?: LIndexEntry[];
+}
+
+/**
+ * 索引の鍵の付いた所 1 つ (XSL 1.1 §7.24.2 index-key)。id (と endId) の要素が置かれたページを、id のページの記録
+ * (リンク先・しおり・ページ番号の参照と同じ仕組み) から引く
+ */
+export interface LIndexEntry {
+  /** 索引の鍵 (index-key) */
+  key: string;
+  /** 索引の分類 (index-class。§7.24.1)。省略は空の文字列の分類。分類の違うページは、範囲にまとめない */
+  indexClass?: string;
+  /** 鍵の付いた要素の id (文書の中の飛び先にもなる)。範囲では、始まりの印の id */
+  id: string;
+  /**
+   * 終わりの印の id。指定すると、id の最初のページから endId の最後のページまでを引く (fo:index-range-begin〜fo:index-range-end。
+   * 行内の要素がページをまたぐときの、終わりの位置にも使う)。省略は、id の要素の領域のある最初のページから最後のページまで
+   */
+  endId?: string;
+  /**
+   * 明示の範囲 (fo:index-range-begin。§6.10.4)。同じページを引く項目が重なったとき、範囲のものを残す (§6.10.6)。
+   * endId が無ければ、文書の最後のページまで (組になる fo:index-range-end が無いときの回復)
+   */
+  range?: boolean;
+  /**
+   * 領域を作らない目印 (中身の無い fo:wrapper・fo:index-range-begin)。ブロックの間など、行を作らない所に置かれたときは、
+   * 次の内容が置かれるページを引く (§6.10.6。後ろに内容が無ければ、前の内容のページ)
+   */
+  point?: boolean;
 }
 
 /** fo:conditional-page-master-reference 相当の条件 */
@@ -605,6 +638,8 @@ export interface LPageSequence extends BaseNode {
   initialPageNumber?: number | 'auto-odd' | 'auto-even';
   /** ページ番号の書式 (fo の format。"1" "01" "i" "I" "a" "A" "１" "一" と前後の文字)。既定は 10 進数 */
   pageNumberFormat?: string;
+  /** ページ番号の前後の字 (fo:folio-prefix・fo:folio-suffix) を持つ page-sequence の番号。索引のページ番号 (LIndexKeyReference.folios) が引く */
+  folioKey?: number;
   /**
    * ページ数の調整 (fo の force-page-count)。足りなければ末尾に白ページを足す。既定 auto:
    * 次の page-sequence の initialPageNumber が数値なら、それに続くよう最後のページの偶奇を合わせる
@@ -618,7 +653,7 @@ export interface LFlow extends BaseNode {
 }
 
 export type LBlockLevel = LBlock | LTable | LBlockContainer | LMarker | LRetrieveMarker | LFloat;
-export type LInlineLevel = string | LInline | LRuby | LTateChuYoko | LLeader | LFootnote | LPageNumberCitation | LImage | LInlineContainer | LFootnoteCitation;
+export type LInlineLevel = string | LInline | LRuby | LTateChuYoko | LLeader | LFootnote | LPageNumberCitation | LImage | LInlineContainer | LFootnoteCitation | LIndexPageCitationList;
 
 /** 脚注本体の中で、その脚注の番号 (自動連番のラベル) に置き換わる (アンテナハウスの axf:footnote-number-citation) */
 export interface LFootnoteCitation {
@@ -858,6 +893,45 @@ export interface LPageNumberCitation extends BaseNode {
    * アンテナハウスの拡張 (FO の axf:physical-page-number="true"、CSS の counter(page physical))
    */
   physical?: boolean;
+}
+
+/**
+ * 索引のページ番号の並び (fo:index-page-citation-list 相当。XSL 1.1 §6.10.7)。references の鍵の付いた所 (LDocument.indexEntries) の
+ * 置かれたページを集め、重複を除き、続いたページを範囲にまとめて、ページ番号の並びの字に置き換わる。
+ * ページは組版してみないと分からないので、ページ番号の参照 (LPageNumberCitation) と同じく、収束するまで組み直す
+ */
+export interface LIndexPageCitationList {
+  type: 'index-page-citation-list';
+  /** 引く鍵 (fo:index-key-reference)。文書の中の順 */
+  references: LIndexKeyReference[];
+  /** ページ番号 (と範囲) の間の区切り (fo:index-page-citation-list-separator)。省略は「, 」(カンマと空白) */
+  listSeparator?: LInlineLevel[];
+  /** 範囲の最初と最後のページ番号の間の区切り (fo:index-page-citation-range-separator)。省略は U+2013 (EN DASH) */
+  rangeSeparator?: LInlineLevel[];
+  /** 続いた 3 つ以上のページを範囲にまとめる (merge-sequential-page-numbers。§7.24.5)。既定 true */
+  mergeSequential?: boolean;
+  /** 別の references から来た続きのページも、1 つの範囲にまとめる (merge-ranges-across-index-key-references。§7.24.4)。既定 true */
+  mergeRangesAcrossReferences?: boolean;
+  /** 別の references が同じページを引いたとき、1 つだけ残す (merge-pages-across-index-key-references。§7.24.6)。既定 true */
+  mergePagesAcrossReferences?: boolean;
+}
+
+/** 索引の鍵を引く 1 つ (fo:index-key-reference 相当。XSL 1.1 §6.10.6)。引いたページ番号の字の書式も持つ */
+export interface LIndexKeyReference {
+  /** 引く鍵 (ref-index-key。§7.24.7) */
+  refKey: string;
+  /** ページ番号を、引いた所へのリンクにする (page-number-treatment="link"。§7.24.3) */
+  link?: boolean;
+  /** ページ番号と前後の字の書式 (fo:index-key-reference に書いた、継承される性質) */
+  style?: TextStyle;
+  /** ページ番号の前・後ろに付ける字 (fo:index-page-number-prefix・fo:index-page-number-suffix。§6.10.2・§6.10.3) */
+  prefix?: LInlineLevel[];
+  suffix?: LInlineLevel[];
+  /**
+   * 引いたページを作った page-sequence の、ページ番号の前後の字 (fo:folio-prefix・fo:folio-suffix。§6.6.10)。
+   * LPageSequence.folioKey → 前後の字
+   */
+  folios?: Record<number, { prefix?: LInlineLevel[]; suffix?: LInlineLevel[] }>;
 }
 
 /**

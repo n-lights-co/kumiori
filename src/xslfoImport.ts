@@ -43,6 +43,9 @@ import type {
   LFloat,
   LFootnote,
   LImage,
+  LIndexEntry,
+  LIndexKeyReference,
+  LIndexPageCitationList,
   LInlineContainer,
   LInline,
   LPageNumberCitation,
@@ -639,6 +642,8 @@ class Importer {
   // ── ページ番号の前後の字 (fo:folio-prefix・fo:folio-suffix。XSL 1.1 §6.6.13・§6.6.14) ──
   /** id → その id の要素を含む fo:page-sequence (最初と最後)。fo:folio-prefix・fo:folio-suffix のある文書でだけ作る */
   private idSeqs?: Map<string, { first: XEl; last: XEl }>;
+  /** fo:folio-prefix・fo:folio-suffix を持つ fo:page-sequence (文書の中の順) */
+  private folioSeqs: XEl[] = [];
   /** fo:folio-prefix・fo:folio-suffix の中身を読んでいる間の、その要素の名前 */
   private inFolio?: string;
   /** 読み込みの報告に数え終えた fo:folio-prefix・fo:folio-suffix (ページ番号ごとに読み直すので、2 度目からは数えない) */
@@ -652,7 +657,8 @@ class Importer {
 
   /** 文書の id と、それを含む fo:page-sequence の対応を作る (fo:folio-prefix・fo:folio-suffix が 1 つも無ければ作らない) */
   private indexFolios(seqs: XEl[]) {
-    if (!seqs.some((ps) => this.folioEls(ps).prefix || this.folioEls(ps).suffix)) return;
+    this.folioSeqs = seqs.filter((ps) => this.folioEls(ps).prefix || this.folioEls(ps).suffix);
+    if (!this.folioSeqs.length) return;
     const map = new Map<string, { first: XEl; last: XEl }>();
     const note = (el: XEl, ps: XEl) => {
       const id = this.attr(el, 'id');
@@ -684,29 +690,171 @@ class Importer {
     if (!this.idSeqs || !seq || this.inFolio) return undefined;
     const { prefix, suffix } = this.folioEls(seq);
     if (!prefix && !suffix) return undefined;
-    const read = (el: XEl | undefined): LInlineLevel[] => {
-      if (!el) return [];
-      const counted = this.countedFolios.has(el);
-      this.countedFolios.add(el);
-      const { counts, unsupported, droppedLinks, files } = this.report;
-      const kept = counted ? structuredClone({ counts, unsupported, droppedLinks, files }) : undefined;
-      this.inFolio = `fo:${this.name(el)}`;
-      try {
-        // 中身は字と行内の要素 (#PCDATA|%inline;)*。ブロックは element() が読まずに報告する
-        return this.children(el, ctx, false) as LInlineLevel[];
-      } finally {
-        this.inFolio = undefined;
-        if (kept) {
-          this.report.counts = kept.counts;
-          this.report.unsupported = kept.unsupported;
-          if (kept.droppedLinks) this.report.droppedLinks = kept.droppedLinks;
-          else delete this.report.droppedLinks;
-          if (kept.files) this.report.files = kept.files;
-          else delete this.report.files;
-        }
+    return [...this.readFolio(prefix, ctx), num, ...this.readFolio(suffix, ctx)];
+  }
+
+  /** fo:folio-prefix・fo:folio-suffix の中身を、ページ番号の位置の書式 (ctx) で読む (読み込みの報告には、最初の 1 度だけ数える) */
+  private readFolio(el: XEl | undefined, ctx: Ctx): LInlineLevel[] {
+    if (!el) return [];
+    const counted = this.countedFolios.has(el);
+    this.countedFolios.add(el);
+    const { counts, unsupported, droppedLinks, files } = this.report;
+    const kept = counted ? structuredClone({ counts, unsupported, droppedLinks, files }) : undefined;
+    this.inFolio = `fo:${this.name(el)}`;
+    try {
+      // 中身は字と行内の要素 (#PCDATA|%inline;)*。ブロックは element() が読まずに報告する
+      return this.children(el, ctx, false) as LInlineLevel[];
+    } finally {
+      this.inFolio = undefined;
+      if (kept) {
+        this.report.counts = kept.counts;
+        this.report.unsupported = kept.unsupported;
+        if (kept.droppedLinks) this.report.droppedLinks = kept.droppedLinks;
+        else delete this.report.droppedLinks;
+        if (kept.files) this.report.files = kept.files;
+        else delete this.report.files;
       }
+    }
+  }
+
+  // ── 索引 (XSL 1.1 §6.10 Formatting Objects for Indexing・§7.24 Properties for Indexing) ──
+  /** 索引の鍵 (index-key) の付いた要素 → その所 (LDocument.indexEntries の 1 つ)。同じ要素を読み直しても (marker の中身など) 1 つ */
+  private indexEls = new Map<XEl, LIndexEntry>();
+  /** fo:index-range-begin の id → その範囲 (組になる fo:index-range-end を待つ) */
+  private indexRanges = new Map<string, LIndexEntry>();
+  /** fo:index-range-end → 終わりの印の id (読み直しても同じ id) */
+  private indexEnds = new Map<XEl, string>();
+  private indexSeq = 0;
+  /** fo:index-page-citation-list を読んだか (読んでいれば、鍵の付いた所が無くても LDocument.indexEntries を作る) */
+  private indexListSeen = false;
+  /** fo:folio-prefix・fo:folio-suffix を持つ fo:page-sequence → 番号 (LPageSequence.folioKey)。索引のページ番号が前後の字を引いたものだけ */
+  private folioKeys = new Map<XEl, number>();
+  /** fo:page-sequence → 読んだ結果 */
+  private seqNodes = new Map<XEl, LPageSequence>();
+
+  /**
+   * index-key (§7.24.2) の付いた要素を、索引の鍵の付いた所として控え、その要素の id (無ければ作る) を返す。
+   * id の置かれたページの記録 (ページ番号の参照と同じ仕組み) から、その要素の領域のあるページを引く。
+   * index-class (§7.24.1) は “ignored on any formatting object for which an index-key property has not been specified”
+   */
+  private indexEntryOf(n: XEl, key: string, id: string | undefined): LIndexEntry {
+    let e = this.indexEls.get(n);
+    if (!e) {
+      const cls = this.attr(n, 'index-class');
+      e = { key, ...(cls ? { indexClass: cls } : {}), id: id || `kumiori-index-${++this.indexSeq}` };
+      this.indexEls.set(n, e);
+    }
+    return e;
+  }
+
+  /** 継承される性質の値 (その要素か、指定のある最も近い祖先。索引の性質 §7.24.3〜§7.24.6 は Inherited: yes) */
+  private inheritedAttr(n: XEl, k: string): string | undefined {
+    for (let el: XEl | undefined = n; el; el = this.parents.get(el)) {
+      const v = this.attrInh(el, k);
+      if (v !== undefined) return v;
+    }
+    return undefined;
+  }
+
+  /** 字と行内の要素だけを中身にできる索引の要素 (内容モデルは (#PCDATA|%inline;)*) の中身。ブロックは読まずに報告する */
+  private indexInlineContent(el: XEl, ctx: Ctx): LInlineLevel[] {
+    const { style, ctx: c2 } = this.textStyle(el, ctx);
+    const kids = this.children(el, c2, false).filter((k) => {
+      const block = typeof k !== 'string' && ['block', 'table', 'block-container', 'float', 'marker', 'retrieve-marker'].includes((k as { type: string }).type);
+      if (block) this.miss(`fo:${(k as { type: string }).type} (fo:${this.name(el)} の中)`);
+      return !block;
+    }) as LInlineLevel[];
+    return Object.keys(style).length ? [{ type: 'inline', ...style, children: kids } as LInline] : kids;
+  }
+
+  /**
+   * fo:index-page-citation-list (§6.10.7): 子の fo:index-key-reference (§6.10.6) が引いたページを集めて、ページ番号の並びにする。
+   * ページは組んでみないと分からないので、ここでは引く鍵・書式・区切り・前後の字を控えるだけで、並びは組版が作る
+   * (内容モデルは (index-page-citation-list-separator?, index-page-citation-range-separator?, index-key-reference+))
+   */
+  private indexCitationList(n: XEl, ctx: Ctx): LInlineLevel {
+    this.indexListSeen = true;
+    const { style, ctx: c2 } = this.textStyle(n, ctx);
+    const list: LIndexPageCitationList = { type: 'index-page-citation-list', references: [] };
+    // merge-sequential-page-numbers・merge-ranges-across-index-key-references・merge-pages-across-index-key-references (§7.24.4〜§7.24.6):
+    // 値は merge | leave-separate、初期値は merge、継承される
+    const leave = (k: string) => {
+      const v = this.inheritedAttr(n, k);
+      if (v !== undefined && v !== 'merge' && v !== 'leave-separate') this.miss(`${k}:${v.slice(0, 20)}`);
+      return v === 'leave-separate';
     };
-    return [...read(prefix), num, ...read(suffix)];
+    if (leave('merge-sequential-page-numbers')) list.mergeSequential = false;
+    if (leave('merge-ranges-across-index-key-references')) list.mergeRangesAcrossReferences = false;
+    if (leave('merge-pages-across-index-key-references')) list.mergePagesAcrossReferences = false;
+    for (const c of this.els(n)) {
+      const name = this.isFo(c) ? this.name(c) : '';
+      // 区切りの字の書式は、区切りの要素から受け継ぐ (§6.10.7: “The traits of the fo:inline are inherited from the
+      // fo:index-page-citation-list-separator”)。2 つ目からは読まない
+      if (name === 'index-page-citation-list-separator' && !list.listSeparator) list.listSeparator = this.indexInlineContent(c, c2);
+      else if (name === 'index-page-citation-range-separator' && !list.rangeSeparator) list.rangeSeparator = this.indexInlineContent(c, c2);
+      else if (name === 'index-key-reference') {
+        // ref-index-key (§7.24.7) は “Initial: none, value required”
+        const refKey = this.attr(c, 'ref-index-key');
+        if (refKey === undefined) {
+          this.miss('fo:index-key-reference (ref-index-key が無い)');
+          continue;
+        }
+        // ページ番号と前後の字の書式は、fo:index-key-reference から受け継ぐ (§6.10.7: “The traits of the fo:inline are inherited from R”)
+        const { style: rs, ctx: cr } = this.textStyle(c, c2);
+        const ref: LIndexKeyReference = { refKey };
+        // page-number-treatment (§7.24.3): link | no-link。初期値 no-link、継承される
+        const pnt = this.inheritedAttr(c, 'page-number-treatment');
+        if (pnt === 'link') ref.link = true;
+        else if (pnt !== undefined && pnt !== 'no-link') this.miss(`page-number-treatment:${pnt.slice(0, 20)}`);
+        if (Object.keys(rs).length) ref.style = rs;
+        for (const p of this.els(c)) {
+          const pn = this.isFo(p) ? this.name(p) : '';
+          if (pn === 'index-page-number-prefix' && !ref.prefix) ref.prefix = this.indexInlineContent(p, cr);
+          else if (pn === 'index-page-number-suffix' && !ref.suffix) ref.suffix = this.indexInlineContent(p, cr);
+          else this.missElement(p, this.isFo(p) ? `fo:${pn} (fo:index-key-reference の中)` : undefined);
+        }
+        // ページ番号は §6.6.10 の中身 (引いたページを作った page-sequence の fo:folio-prefix・番号・fo:folio-suffix。§6.10.7 の Step C:
+        // “using the page referenced by the cited page item as the reference-page, and the fo:page-sequence that generated the
+        // referenced page as the reference-page-sequence”)。どの page-sequence のページを引くかは組んでみないと分からないので、
+        // 前後の字を持つ page-sequence ごとに、この位置の書式で読んでおく
+        for (const ps of this.folioSeqs) {
+          const { prefix, suffix } = this.folioEls(ps);
+          let key = this.folioKeys.get(ps);
+          if (key === undefined) this.folioKeys.set(ps, (key = this.folioKeys.size + 1));
+          const pre = this.readFolio(prefix, cr);
+          const suf = this.readFolio(suffix, cr);
+          (ref.folios ??= {})[key] = { ...(pre.length ? { prefix: pre } : {}), ...(suf.length ? { suffix: suf } : {}) };
+        }
+        list.references.push(ref);
+      } else this.missElement(c, name ? `fo:${name} (fo:index-page-citation-list の中)` : undefined);
+    }
+    return Object.keys(style).length ? ({ type: 'inline', ...style, children: [list] } as LInline) : list;
+  }
+
+  /**
+   * 文書を読み終えてから: 鍵の付いた所を文書の中の順に並べて LDocument.indexEntries にする (索引を使わない文書では何もしない)。
+   * index-key を書いたのに所として控えられなかった要素 (id を組版へ渡していない要素) と、組になる fo:index-range-end の無い範囲を報告する
+   */
+  private finishIndex(doc: LDocument, root: XEl) {
+    if (!this.indexListSeen && !this.indexEls.size) return;
+    const order = new Map<LIndexEntry, number>();
+    const todo: XEl[] = [root];
+    for (let el = todo.pop(); el; el = todo.pop()) {
+      const e = this.indexEls.get(el);
+      if (e) order.set(e, order.size);
+      else if (this.isFo(el) && el.hasAttribute?.('index-key')) this.miss(`index-key (fo:${this.name(el)})`);
+      const kids = this.els(el);
+      for (let k = kids.length - 1; k >= 0; k--) todo.push(kids[k]);
+    }
+    doc.indexEntries = [...order.keys()];
+    // “If there is no such fo:index-range-end, it is an error, and the implementation should recover by assuming the equivalent of a
+    // matching fo:index-range-end at the end of the document.” (§6.10.4)
+    for (const e of doc.indexEntries)
+      if (e.range && e.endId === undefined) this.note(msg(`fo:index-range-begin id="${e.id}" と組になる fo:index-range-end がありません (文書の終わりまでを範囲にします)`, `fo:index-range-begin id="${e.id}" has no matching fo:index-range-end (the range extends to the end of the document)`));
+    for (const [ps, key] of this.folioKeys) {
+      const seq = this.seqNodes.get(ps);
+      if (seq) seq.folioKey = key;
+    }
   }
 
   convert(root: XEl): LDocument {
@@ -739,7 +887,10 @@ class Importer {
       const n = this.name(c);
       if (n === 'page-sequence') {
         const seq = this.pageSequence(c, masters, seqMasters, root);
-        if (seq) doc.sequences.push(seq);
+        if (seq) {
+          doc.sequences.push(seq);
+          this.seqNodes.set(c, seq);
+        }
       } else if (n === 'layout-master-set') {
         /* 上で読んだ */
       } else if (n === 'declarations') {
@@ -760,6 +911,7 @@ class Importer {
     // axf:outline-level のついたブロックから作るしおり (outline-group ごとに別の木)
     if (this.outlines.length) doc.bookmarks = [...(doc.bookmarks ?? []), ...this.outlineTree()];
     this.resolveMarkerVariants();
+    this.finishIndex(doc, root);
     this.report.counts.sequences = doc.sequences.length;
     if (!doc.sequences.length) this.note(msg('page-sequence が見つかりませんでした', 'no page-sequence was found'));
     return doc;
@@ -1868,6 +2020,8 @@ class Importer {
 
   private idOf(n: XEl): { id?: string } {
     const id = this.attr(n, 'id');
+    // index-key (§7.24.2) の付いた要素は、索引の鍵の付いた所。id が無ければ作る (その id の置かれたページを、索引が引く)
+    if (n.hasAttribute?.('index-key')) return { id: this.indexEntryOf(n, this.attr(n, 'index-key') ?? '', id).id };
     return id ? { id } : {};
   }
 
@@ -2034,7 +2188,7 @@ class Importer {
         // space-before と重ならずに足し合わさる。その高さの空のブロックにする
         const bAxis = this.phys('before', ctx.wm, ctx.rtl);
         const sb = (box.margin as Record<string, number> | undefined)?.[bAxis];
-        if (!this.spec && sb && sb > 0 && !blk.children.length && !box.border && !box.padding && !box.backgroundColor && box.width === undefined && box.height === undefined && !this.attr(n, 'id') && ctx.wm === 'horizontal-tb') {
+        if (!this.spec && sb && sb > 0 && !blk.children.length && !box.border && !box.padding && !box.backgroundColor && box.width === undefined && box.height === undefined && !blk.id && ctx.wm === 'horizontal-tb') {
           const { [bAxis]: _drop, ...restM } = box.margin as Record<string, number>;
           void _drop;
           const spacer: LBlock = { type: 'block', ...style, ...box, margin: restM, height: sb, ...(clr ? { clear: clr } : {}), children: [] };
@@ -2067,6 +2221,15 @@ class Importer {
         if (blockish) return one({ type: 'block', ...this.idOf(n), ...style, ...(link ? { link } : {}), children: kids } as LBlock, true);
         const bg = c2.hidden ? undefined : this.color(this.attr(n, 'background-color'));
         const inl: LInline = { type: 'inline', ...this.idOf(n), ...style, children: kids as LInlineLevel[] };
+        // index-key の付いた行内の要素がページをまたぐとき、領域のあるページすべてを引く (§6.10.6)。行内の id の記録は最初の字の
+        // ページだけなので、中身の終わりに目印 (幅の無い行内の箱) を置いて、最後のページを引けるようにする
+        // 中身の無いもの (索引の位置だけを示す fo:wrapper) は、領域を作らない目印
+        const ie = this.indexEls.get(n);
+        if (ie && !kids.length) ie.point = true;
+        else if (ie && !ie.range) {
+          ie.endId ??= `${ie.id}-kumiori-index-end`;
+          inl.children.push({ type: 'inline', id: ie.endId, children: [] });
+        }
         if (bg) inl.backgroundColor = bg;
         // unicode-bidi (embed・bidi-override。§7.29.6): 中身の前後に双方向の制御文字を入れたものとして並べる (§5.8)
         const ub = this.attr(n, 'unicode-bidi');
@@ -2112,6 +2275,37 @@ class Importer {
       }
       case 'inline-container':
         return this.inlineContainer(n, ctx);
+      case 'index-page-citation-list':
+        return one(this.indexCitationList(n, ctx), false);
+      case 'index-range-begin': {
+        // “Each fo:index-range-begin formatting object must specify both an id and an index-key property.” (§6.10.4)
+        // 領域を作らない (“does not generate any area”) ので、id の位置を記録するだけの、幅の無い目印にする
+        const id = this.attr(n, 'id');
+        if (!id || !n.hasAttribute?.('index-key')) {
+          this.miss('fo:index-range-begin (id と index-key が要る)');
+          return [];
+        }
+        const e = this.indexEntryOf(n, this.attr(n, 'index-key') ?? '', id);
+        e.range = true;
+        e.point = true;
+        if (!this.indexRanges.has(id)) this.indexRanges.set(id, e);
+        return one({ type: 'inline', id: e.id, children: [] } as LInline, false);
+      }
+      case 'index-range-end': {
+        // 組になるのは、ref-id が id と同じ fo:index-range-begin で、文書の中で前にあるもの。無ければ
+        // “it is an error, and the implementation should recover by ignoring this fo:index-range-end” (§6.10.5)
+        let endId = this.indexEnds.get(n);
+        if (endId === undefined) {
+          const b = this.indexRanges.get(this.attr(n, 'ref-id') ?? '');
+          if (!b || b.endId !== undefined) {
+            this.note(msg(`fo:index-range-end ref-id="${this.attr(n, 'ref-id') ?? ''}" と組になる fo:index-range-begin がありません (無視します)`, `fo:index-range-end ref-id="${this.attr(n, 'ref-id') ?? ''}" has no matching fo:index-range-begin (ignored)`));
+            return [];
+          }
+          endId = b.endId = `${b.id}-kumiori-index-end`;
+          this.indexEnds.set(n, endId);
+        }
+        return one({ type: 'inline', id: endId, children: [] } as LInline, false);
+      }
       case 'leader':
         return one(this.leader(n, ctx), false);
       case 'page-number': {
