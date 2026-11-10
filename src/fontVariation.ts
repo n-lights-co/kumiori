@@ -14,7 +14,7 @@ export interface VariationRequest {
   slnt?: number;
   /** font-style: italic */
   ital?: boolean;
-  /** font-optical-sizing: auto のときの字の大きさ (pt) */
+  /** font-optical-sizing: auto のときの字の大きさ (pt か CSS px の数。opticalSize) */
   opsz?: number;
   /** font-variation-settings (札 → 値) */
   settings?: Record<string, number>;
@@ -101,7 +101,7 @@ export function parseVariationSettings(value: string): Record<string, number> | 
   return out;
 }
 
-/** font-width (font-stretch) の語 → 百分率 (CSS Fonts 4 §2.4 の表) */
+/** font-width (font-stretch) の語 → 百分率 (CSS Fonts 4 §2.3 の表) */
 export const FONT_WIDTH_KEYWORDS: Readonly<Record<string, number>> = {
   'ultra-condensed': 50,
   'extra-condensed': 62.5,
@@ -118,8 +118,13 @@ export const FONT_WIDTH_KEYWORDS: Readonly<Record<string, number>> = {
  * 字の大きさだけを変えたスタイルの、書体の名前 (スタイルを解決し直さずに、ルビ・注の合印などを小さく組むとき)。
  * 名前の印に光学サイズ (opsz) の指定があれば、新しい字の大きさ (pt) に替える。無ければ名前のまま
  */
-export function withOpticalSize(family: string, fontSize: number): string {
+export function withOpticalSize(family: string, fontSize: number, unit?: 'pt' | 'px'): string {
   if (family.charCodeAt(family.length - 1) !== 125) return family;
   const [plain, req] = splitVariation(family);
-  return req?.opsz === undefined ? family : plain + variationSuffix({ ...req, opsz: fontSize });
+  return req?.opsz === undefined ? family : plain + variationSuffix({ ...req, opsz: opticalSize(fontSize, unit) });
+}
+
+/** 光学サイズの軸 (opsz) に渡す値: 字の大きさ fontSize (pt) を、単位 unit の数にする (TextStyle.fontOpticalSizeUnit) */
+export function opticalSize(fontSize: number, unit?: 'pt' | 'px'): number {
+  return unit === 'px' ? +((fontSize * 96) / 72).toFixed(4) : fontSize;
 }

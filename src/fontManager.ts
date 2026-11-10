@@ -116,7 +116,7 @@ export interface LoadedFont {
 }
 
 /**
- * 書体の登録のときに渡す、@font-face の記述子 (CSS Fonts 4 §4.4・§4.7・§4.9 の、可変フォントに関わるもの)。
+ * 書体の登録のときに渡す、@font-face の記述子 (CSS Fonts 4 §4.4・§4.7・§4.6 の、可変フォントに関わるもの)。
  * 省いた書体 (fonts の選択肢・--font で読み込んだ書体) は、入っている書体として、軸の範囲の全体を使う
  */
 export interface FaceDescriptors {
@@ -124,6 +124,8 @@ export interface FaceDescriptors {
   weight?: [number, number] | 'auto';
   /** font-width (font-stretch) の範囲 (百分率)。'auto' は制限しない */
   width?: [number, number] | 'auto';
+  /** font-style: oblique <角度>{1,2} の範囲 (度。時計回りが正)。slnt の軸の値を、この範囲に収める。省くと制限しない */
+  oblique?: [number, number];
   /** font-variation-settings の記述子 (札 → 値) */
   settings?: Record<string, number>;
   /** font-named-instance の記述子 (名前つきの実体の名前) */
@@ -170,6 +172,7 @@ export class FontManager {
     f.latinFor = new Map(this.latinFor);
     f.stacks = new Map(this.stacks);
     f.ranged = new Map(this.ranged);
+    f.canvasInstances = this.canvasInstances;
     return f;
   }
 
@@ -281,9 +284,15 @@ export class FontManager {
   /** 読み込んだ書体と、その後に、これまでに作った可変フォントの実体 (作った順) */
   all(): LoadedFont[] {
     const out = [...this.fonts.values()];
-    for (const f of this.fonts.values()) if (f.variable) for (const i of f.variable.instances.values()) if (i !== f && !out.includes(i)) out.push(i);
+    for (const i of this.handed.values()) if (i.instanceOf && this.fonts.get(i.instanceOf.master.key) === i.instanceOf.master) out.push(i);
     return out;
   }
+  /**
+   * この組が返した可変フォントの実体 (元の書体の key + 太さ・軸の値 → 実体)。all() が返す (PDF に埋める書体)。
+   * 実体そのものは、元の書体の側 (LoadedFont.variable.instances) にも覚えて、書体の組の写し (fork) の間で使い回す。そちらは数に上限があり、
+   * 古いものから忘れるが、この組が返した実体は、ここで持ち続ける (1 つの文書の中で、同じ指定は同じ実体)
+   */
+  private handed = new Map<string, LoadedFont>();
 
   /** 読み込んだ可変フォントの軸の札 (すべての書体の分)。可変フォントが無ければ undefined */
   variationAxes(): ReadonlySet<string> | undefined {
@@ -301,7 +310,7 @@ export class FontManager {
    *  1. font-weight・font-width・font-style から wght・wdth・slnt (ital)。@font-face の記述子の範囲に収める ('auto' は収めない。§4.4)
    *  2. font-named-instance の記述子の、名前つきの実体の値 (§4.7)
    *  3. font-variation-settings の記述子
-   *  4. font-optical-sizing: auto の opsz (§8.1。字の大きさを pt で渡す。opsz の尺度は pt: OpenType の Design-variation axis tag registry)
+   *  4. font-optical-sizing: auto の opsz (§8.1。字の大きさ。単位は呼び出し側が決める: lnode.ts の applyVariation)
    *  5. font-variation-settings の性質 (§8.2)
    * 最後に、書体の軸の範囲に収める (§7.2・§8.2)。既定の形で、太さも登録の太さなら、master そのもの。
    * ほかは、実体 (静的な書体にしたもの。fontInstancer.ts) を (太さ・軸の値) ごとに 1 度だけ作って覚える
@@ -326,9 +335,10 @@ export class FontManager {
       // §5.2: ital の軸のある可変フォントは、italic で ital を 1 にする。oblique は slnt (ital は使わない)
       if (r?.ital && it >= 0) coords[it] = 1;
       else if ((r?.ital || r?.slnt !== undefined) && sl >= 0) {
-        // slnt の軸は反時計回りが正 (CSS は時計回りが正。§2.5 の注)。書体の持つ CSS の角度の範囲は [-max, -min]
-        const lo = -axes[sl].max;
-        const hi = -axes[sl].min;
+        // slnt の軸は反時計回りが正 (CSS は時計回りが正。§2.4 の注)。書体の持つ CSS の角度の範囲は [-max, -min]
+        // @font-face の font-style の範囲があれば、その中 (§7.2: 記述子の値に収めてから、書体の持つ値に収める)
+        const lo = Math.max(-axes[sl].max, face.oblique?.[0] ?? -90);
+        const hi = Math.min(-axes[sl].min, face.oblique?.[1] ?? 90);
         let angle = 0;
         if (r.ital) {
           // §5.2 の italic: ital が無ければ、11deg 以上の最も小さい oblique、無ければ 11deg より小さい最も大きい oblique (正の角度だけ)
@@ -359,8 +369,14 @@ export class FontManager {
     };
     const coords = resolve(req);
     const key = `${effW}|${coords.join(',')}`;
+    const id = `${master.key}\u0000${key}`;
+    const mine = this.handed.get(id);
+    if (mine && (mine === master || mine.instanceOf?.master === master)) return mine;
     const hit = v.instances.get(key);
-    if (hit) return hit;
+    if (hit) {
+      this.handed.set(id, hit);
+      return hit;
+    }
     const isDefault = coords.every((c, i) => c === axes[i].default);
     let lf: LoadedFont;
     if (isDefault && effW === master.weight) lf = master;
@@ -401,7 +417,11 @@ export class FontManager {
       };
       if (this.canvasInstances && !isDefault) registerInstanceFace(lf);
     }
+    // 元の書体の側に覚える数の上限: 実体のバイト列の合計が 200MB ほどに収まる数 (4〜256)。超えたら古いものから忘れる
+    const cap = Math.max(4, Math.min(256, Math.floor(200e6 / Math.max(1, master.buffer.byteLength))));
+    while (v.instances.size >= cap) v.instances.delete(v.instances.keys().next().value!);
     v.instances.set(key, lf);
+    this.handed.set(id, lf);
     return lf;
   }
   /** lf が可変フォントの元の書体なら、いまの指定 (varNow) と太さの形。ほかの書体はそのまま */

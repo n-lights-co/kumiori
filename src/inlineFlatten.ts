@@ -806,7 +806,7 @@ function flattenFootnoteRef(c: LFootnote, cx: FlattenCtx): void {
   const base = c.referenceStyle ? resolveStyle(st, c.referenceStyle) : st;
   const refSize = st.fontSize * (c.referenceScale ?? state.footnote?.scale ?? 0.7);
   // 可変フォントの光学サイズ (書体の名前の印の opsz) は、小さくした字の大きさに合わせる
-  const s2 = { ...base, fontSize: refSize, ...(base.varAxes ? { fontFamily: withOpticalSize(base.fontFamily, refSize) } : {}), ...(c.referenceWeight ? { fontWeight: c.referenceWeight } : {}), ...(c.referenceLineHeight ? { lineHeightPt: c.referenceLineHeight } : {}) };
+  const s2 = { ...base, fontSize: refSize, ...(base.varAxes ? { fontFamily: withOpticalSize(base.fontFamily, refSize, base.fontOpticalSizeUnit) } : {}), ...(c.referenceWeight ? { fontWeight: c.referenceWeight } : {}), ...(c.referenceLineHeight ? { lineHeightPt: c.referenceLineHeight } : {}) };
   const rs = c.referenceShift;
   const shift = rs === 'none' ? 0 : rs === 'sub' ? -st.fontSize * 0.2 : typeof rs === 'number' ? rs : st.fontSize * 0.35;
   state.run++;
@@ -932,7 +932,7 @@ export function bidiControls(ub: Atom['st']['unicodeBidi'], rtl: boolean): [numb
 
 /** 計測 (Measurer.glyph) に渡すスタイル (書体・大きさ・字幅の伸縮・OpenType の機能・縦書きの字の向き) */
 export function runStyleOf(s: ResolvedStyle) {
-  return { fontFamily: s.fontFamily, fontWeight: s.fontWeight, fontSize: s.fontSize, stretch: s.fontStretch, features: s.fontFeatures, orientation: s.textOrientation };
+  return { fontFamily: s.fontFamily, fontWeight: s.fontWeight, fontSize: s.fontSize, stretch: s.fontStretch, features: s.fontFeatures, orientation: s.textOrientation, ...(s.fontOpticalSizeUnit ? { opticalSizeUnit: s.fontOpticalSizeUnit } : {}) };
 }
 
 /**

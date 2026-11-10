@@ -1293,7 +1293,7 @@ class Importer {
     }
     const fst = this.attr(el, 'font-style');
     if (fst === 'italic' || fst === 'oblique') s.fontStyle = 'italic';
-    // oblique は、可変フォントの slnt の軸では、CSS の oblique の既定の角度 (14deg。CSS Fonts 4 §2.5) にする
+    // oblique は、可変フォントの slnt の軸では、CSS の oblique の既定の角度 (14deg。CSS Fonts 4 §2.4) にする
     if (fst === 'oblique') s.fontObliqueAngle = 14;
     else if (fst === 'normal') s.fontStyle = 'normal';
     const lh = this.attr(el, 'line-height') ?? this.attr(el, 'line-height.optimum');

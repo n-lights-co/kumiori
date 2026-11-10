@@ -276,6 +276,7 @@ export function createFontMapping(
           await fonts.registerBuffer(family, ff.weight, await file.arrayBuffer(), canvas, {
             weight: ff.weightRange ?? 'auto',
             width: ff.widthRange ?? 'auto',
+            ...(ff.obliqueRange ? { oblique: ff.obliqueRange } : {}),
             ...(ff.variationSettings ? { settings: ff.variationSettings } : {}),
             ...(ff.namedInstance ? { namedInstance: ff.namedInstance } : {}),
           });

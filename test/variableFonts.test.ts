@@ -207,7 +207,7 @@ describe('軸の値の指定の印 (書体の名前に付ける)', () => {
     expect(parseVariationSettings('wght 300')).toBeUndefined();
     expect(parseVariationSettings('"wght"')).toBeUndefined();
   });
-  it('@font-face の記述子の範囲を読む (§4.4・§4.7・§4.9)', () => {
+  it('@font-face の記述子の範囲を読む (§4.4・§4.7・§4.6)', () => {
     const css = `@font-face { font-family: A; src: url(a.ttf); font-weight: 100 900; font-stretch: 75% 125%; font-variation-settings: "GRAD" 50; font-named-instance: "Bold"; }
       @font-face { font-family: B; src: url(b.ttf); font-weight: 900 300; font-width: condensed expanded; }
       @font-face { font-family: C; src: url(c.ttf); font-weight: bold; }
@@ -221,6 +221,19 @@ describe('軸の値の指定の印 (書体の名前に付ける)', () => {
     // 記述子が無い (auto) ときは、範囲なし
     expect(d.weight).toBe(400);
     expect(d.weightRange).toBeUndefined();
+    // font-style: oblique の範囲が 0deg を含む face は、立体の書体として読み込む (slnt の軸で傾ける)。含まない face・italic は斜体の書体
+    const styles = parseCss(`@font-face { font-family: E; src: url(e.ttf); font-style: oblique 0deg 10deg }
+      @font-face { font-family: F; src: url(f.ttf); font-style: oblique 10deg -5deg }
+      @font-face { font-family: G; src: url(g.ttf); font-style: oblique 10deg 20deg }
+      @font-face { font-family: H; src: url(h.ttf); font-style: oblique }
+      @font-face { font-family: I; src: url(i.ttf); font-style: italic }`).fontFaces;
+    expect(styles.map((f) => [f.italic, f.obliqueRange])).toEqual([
+      [false, [0, 10]],
+      [false, [-5, 10]],
+      [true, undefined],
+      [true, undefined],
+      [true, undefined],
+    ]);
   });
 });
 
@@ -286,6 +299,17 @@ describe('書体の選び方: 可変フォントは、太さ・軸の値ごと�
     fonts.get('Any', 100);
     expect(fonts.all().map((f) => f.key)).toEqual(['Any@100', 'Any@100{wdth=100,wght=700}', 'Any@100{wdth=75,wght=400}']);
     expect(fonts.variationAxes()).toEqual(new Set(['wdth', 'wght']));
+  });
+  it('書体の組の写し (fork) は、実体を使い回す。all() は、その組が使った実体だけ', async () => {
+    const base = await setup();
+    const a = base.fork();
+    const b = base.fork();
+    const bold = a.get('Any', 700);
+    expect(b.get('Any', 700)).toBe(bold);
+    b.get('Any{wdth=75}', 400);
+    expect(a.all().map((f) => f.key)).toEqual(['Any@100', 'Any@100{wdth=100,wght=700}']);
+    expect(b.all().map((f) => f.key)).toEqual(['Any@100', 'Any@100{wdth=100,wght=700}', 'Any@100{wdth=75,wght=400}']);
+    expect(base.all().map((f) => f.key)).toEqual(['Any@100']);
   });
   it('優先の順 (§7.2): font-variation-settings は、font-weight・font-stretch から決まる値より後', async () => {
     const fonts = await setup();
@@ -356,7 +380,7 @@ describe('書体の選び方: 可変フォントは、太さ・軸の値ごと�
     expect(g.family).toBe('JP');
     expect(fonts.getForChar('Any', 700, 'A').instanceOf?.coords.wght).toBe(700);
   });
-  it('傾きの軸 (slnt): italic は 11deg 以上の最も小さい角度、oblique はその角度 (§5.2)。軸は反時計回りが正 (§2.5)', async () => {
+  it('傾きの軸 (slnt): italic は 11deg 以上の最も小さい角度、oblique はその角度 (§5.2)。軸は反時計回りが正 (§2.4)', async () => {
     // 幅の軸を slnt (-12〜0〜0) に見立てた書体
     const fonts = await setup(undefined, retagAxis(varBuf, 'wdth', 'slnt', -12, 0, 0));
     const italic = fonts.get('Any{ital=1}', 400);
@@ -372,6 +396,12 @@ describe('書体の選び方: 可変フォントは、太さ・軸の値ごと�
     // 11deg に届かない書体 (0〜8deg) は、最も大きい角度
     const small = await setup(undefined, retagAxis(varBuf, 'wdth', 'slnt', -8, 0, 0));
     expect(small.get('Any{ital=1}', 400).instanceOf?.coords.slnt).toBe(-8);
+  });
+  it('@font-face の font-style: oblique の範囲に、傾きの軸の値を収める (§7.2)', async () => {
+    const fonts = await setup({ weight: 'auto', width: 'auto', oblique: [0, 6] }, retagAxis(varBuf, 'wdth', 'slnt', -12, 0, 0), 400);
+    expect(fonts.get('Any{slnt=10}', 400).instanceOf?.coords.slnt).toBe(-6);
+    expect(fonts.get('Any{ital=1}', 400).instanceOf?.coords.slnt).toBe(-6);
+    expect(fonts.get('Any{slnt=3}', 400).instanceOf?.coords.slnt).toBe(-3);
   });
   it('傾きの軸 (ital): italic で 1 にする。oblique では使わない (§5.2)', async () => {
     const fonts = await setup(undefined, retagAxis(varBuf, 'wdth', 'ital', 0, 0, 1));
@@ -489,22 +519,31 @@ describe('組版 (HTML + CSS): 可変フォントの軸', () => {
     expect(g[1].italic).toBeUndefined();
     expect(g[1].fontFamily).toBe('css:Any{;slnt=-11}');
     expect(g[2].fontFamily).toBe('css:Any{;slnt=-5}');
-    // oblique は 14deg (§2.5)。書体の範囲 (12deg まで) に収める
+    // oblique は 14deg (§2.4)。書体の範囲 (12deg まで) に収める
     expect(g[3].fontFamily).toBe('css:Any{;slnt=-12}');
     const plain = glyphs(await run(css, '<p>H<i>H</i></p>'));
     expect(plain[1].italic).toBe(true);
     expect(plain[1].fontFamily).toBe('css:Any');
   });
-  it('font-optical-sizing: auto は字の大きさ (pt) を opsz に渡す。none は既定の値', async () => {
+  it('font-optical-sizing: auto は字の大きさ (CSS px の数) を opsz に渡す。none は既定の値', async () => {
+    // CSS Fonts 4 §8.1 の試験 (WPT の variable-opsz.html) と同じ: font-size の px の数が opsz。20pt = 26.6667px、10pt = 13.3333px、10.5pt = 14px
     const opsz = retagAxis(varBuf, 'wdth', 'opsz', 8, 14, 144);
     const css = '@font-face { font-family: Any; src: url(any.ttf); font-weight: 100 900 } p { font-family: Any }';
-    const g = glyphs(await run(css, '<p>H<span style="font-size: 10pt">H</span><span style="font-optical-sizing: none">H<span style="font-size: 10pt">H</span></span><span style="font-size: 14pt">H</span></p>', opsz));
-    expect(g[0].fontFamily).toBe('css:Any{;opsz=20}');
-    expect(g[1].fontFamily).toBe('css:Any{;opsz=10}');
+    const g = glyphs(await run(css, '<p>H<span style="font-size: 10pt">H</span><span style="font-optical-sizing: none">H<span style="font-size: 10pt">H</span></span><span style="font-size: 10.5pt">H</span><span style="font-size: 3pt">H</span></p>', opsz));
+    expect(g[0].fontFamily).toBe('css:Any{;opsz=26.6667}');
+    expect(g[1].fontFamily).toBe('css:Any{;opsz=13.3333}');
     expect(g[2].fontFamily).toBe('css:Any');
     expect(g[3].fontFamily).toBe('css:Any');
-    // 既定の値と同じ大きさ (14pt) は、既定の形
+    // 既定の値と同じ大きさ (14px) は、既定の形。書体の範囲 (8 から) より小さい字は、端の値
     expect(g[4].fontFamily).toBe('css:Any');
+    expect(g[5].fontFamily).toBe('css:Any{;opsz=8}');
+  });
+  it('ルビは、ルビの字の大きさの opsz で組む', async () => {
+    const opsz = retagAxis(varBuf, 'wdth', 'opsz', 8, 14, 144);
+    const css = '@font-face { font-family: Any; src: url(any.ttf); font-weight: 100 900 } p { font-family: Any }';
+    const g = glyphs(await run(css, '<p><ruby>H<rt>h</rt></ruby></p>', opsz));
+    expect(g.find((x) => x.text === 'H')!.fontFamily).toBe('css:Any{;opsz=26.6667}');
+    expect(g.find((x) => x.text === 'h')!.fontFamily).toBe('css:Any{;opsz=13.3333}');
   });
   it('fonts の選択肢で足した可変フォント: font-weight・font-stretch が軸の値になる', async () => {
     const r = await typeset(`<!DOCTYPE html><html lang="en"><head><style>@page { size: 200mm 100mm; margin: 10mm } p { font-family: Anybody; font-size: 20pt }</style></head><body><p>H<b>H</b><span style="font-stretch: 150%; font-weight: 900">H</span></p></body></html>`, {
@@ -563,5 +602,15 @@ describe('組版 (XSL-FO): font-weight・font-stretch が可変フォントの�
     expect(em(g[2])).toBeCloseTo(refAdvance('150,900'), 9);
     expect(em(g[3])).toBeCloseTo(refAdvance('75,400'), 9);
     expect(g[3].scaleX).toBe(1);
+  });
+  it('光学サイズの軸 (opsz) には、字の大きさを pt で渡す (opsz の尺度は pt。OpenType の軸の定義)', async () => {
+    const fo = `<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="200mm" page-height="100mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>
+      <fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block font-family="Anybody" font-size="20pt">H<fo:inline font-size="14pt">H</fo:inline></fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const r = await typeset(fo, { kind: 'fo', files: [{ name: 'Anybody.ttf', data: new Uint8Array(retagAxis(varBuf, 'wdth', 'opsz', 8, 14, 144)) }], loadFont: loadCachedFont });
+    const g: GlyphArea[] = [];
+    walkAreaTree(r.areaTree, (a) => {
+      if (a.type === 'glyph') g.push(a as GlyphArea);
+    });
+    expect(g.map((x) => x.fontFamily)).toEqual(['Anybody{;opsz=20}', 'Anybody']);
   });
 });

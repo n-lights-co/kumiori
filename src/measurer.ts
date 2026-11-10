@@ -62,6 +62,8 @@ export interface RunStyle {
   fontSize: number;
   /** 字幅の伸縮 (font-stretch。横書きだけ、字形を水平に拡縮する)。既定 1 */
   stretch?: number;
+  /** 可変フォントの光学サイズの軸に渡す字の大きさの単位 (ルビを小さく組むときに、書体の名前の印の opsz を決め直す) */
+  opticalSizeUnit?: 'pt' | 'px';
   /** 字形を差し替える OpenType の機能 (横書きだけ) */
   features?: string[];
   /** 縦書きの字の向き (text-orientation)。省略時は mixed */
@@ -164,7 +166,7 @@ function hmtxAdvance(fk: LoadedFont['fk'], text: string): number {
 }
 
 /**
- * 字形を水平に拡縮する比 (font-stretch)。幅の軸 (wdth) を持つ可変フォントは、軸の値で幅を変えるので、拡縮しない (CSS Fonts 4 §2.4:
+ * 字形を水平に拡縮する比 (font-stretch)。幅の軸 (wdth) を持つ可変フォントは、軸の値で幅を変えるので、拡縮しない (CSS Fonts 4 §2.3:
  * 可変フォントでは wdth の軸で幅を変える。書体の範囲の外の幅は、最も近い値になる)
  */
 function stretchOf(font: LoadedFont, style: Pick<RunStyle, 'stretch'>): number {
@@ -653,7 +655,7 @@ export class Measurer {
    */
   ruby(baseText: string, rubyText: string, style: RunStyle, wm: WritingMode, rubyScale = 0.5, underText?: string): RubyMetrics {
     const rubySize = style.fontSize * rubyScale;
-    const rubyStyle: RunStyle = { ...style, fontSize: rubySize, ...(style.fontFamily ? { fontFamily: withOpticalSize(style.fontFamily, rubySize) } : {}) };
+    const rubyStyle: RunStyle = { ...style, fontSize: rubySize, ...(style.fontFamily ? { fontFamily: withOpticalSize(style.fontFamily, rubySize, style.opticalSizeUnit) } : {}) };
     const baseGlyphs = this.glyphs(baseText, style, wm);
     const rubyGlyphs = this.glyphs(rubyText, rubyStyle, wm);
     const baseAdvance = baseGlyphs.reduce((a, g) => a + g.advance, 0);

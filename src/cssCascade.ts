@@ -1186,7 +1186,7 @@ shorthand(['break-before', 'break-after'], (prop, v) => [[prop, v], [`page-break
 shorthand(['break-inside'], (prop, v) => [[prop, v], ['page-break-inside', /avoid/.test(v) ? 'avoid' : 'auto']]);
 shorthand(['white-space-collapse'], (_p, v) => [['white-space', v === 'preserve' ? 'pre-wrap' : v === 'collapse' ? 'normal' : v]]);
 shorthand(['word-wrap'], (_p, v) => [['overflow-wrap', v]]);
-// font-width (Fonts 4 §2.4)。font-stretch は、その古い名前 (legacy name alias)。計算値は font-stretch に持つ
+// font-width (Fonts 4 §2.3)。font-stretch は、その古い名前 (legacy name alias)。計算値は font-stretch に持つ
 shorthand(['font-width'], (_p, v) => [['font-stretch', v]]);
 
 /** 一括指定を個別の性質に分ける (分けないものはそのまま)。ah はアンテナハウスの拡張の読み方 (線種) */

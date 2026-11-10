@@ -2489,13 +2489,14 @@ class HtmlImporter {
     }
     if (diff('font-style')) {
       s.fontStyle = c('font-style') === 'italic' || c('font-style').startsWith('oblique') ? 'italic' : 'normal';
-      // oblique <角度> (Fonts 4 §2.5: 角度が無ければ 14deg)。可変フォントの slnt の軸の値になる
+      // oblique <角度> (Fonts 4 §2.4: 角度が無ければ 14deg)。可変フォントの slnt の軸の値になる
       const ob = /^oblique(?:\s+(-?[\d.]+)deg)?$/.exec(c('font-style'));
       if (ob) s.fontObliqueAngle = ob[1] !== undefined ? Math.max(-90, Math.min(90, parseFloat(ob[1]))) : 14;
     }
     // 可変フォントの軸の値 (Fonts 4 §8.1・§8.2)
-    if (diff('font-optical-sizing')) s.fontOpticalSizing = c('font-optical-sizing') === 'none' ? 'none' : 'auto';
-    if (diff('font-variation-settings')) s.fontVariationSettings = parseVariationSettings(c('font-variation-settings')) ?? {};
+    // (根の初期値は書かない: 親が無く、値が初期値のとき)
+    if (diff('font-optical-sizing') && (p || c('font-optical-sizing') === 'none')) s.fontOpticalSizing = c('font-optical-sizing') === 'none' ? 'none' : 'auto';
+    if (diff('font-variation-settings') && (p || c('font-variation-settings') !== 'normal')) s.fontVariationSettings = parseVariationSettings(c('font-variation-settings')) ?? {};
     // 印刷の色 (特色・CMYK)。::before / ::after / ::marker は、その擬似要素の規則の宣言から
     const pdecl = pseudo === '::before' || pseudo === '::after' || pseudo === '::marker' ? this.pagedPseudo.get(el)?.[pseudo] : pseudo ? undefined : this.pg(el);
     const pcol = pdecl ? this.printOf(pdecl, 'color') : undefined;
@@ -5240,7 +5241,8 @@ class HtmlImporter {
     const rootFs = cssLen(this.cs(html)('font-size')) ?? 12;
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
-    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    // fontOpticalSizeUnit: CSS の font-optical-sizing: auto は、font-size の CSS px の数を opsz にする (CSS Fonts 4 §8.1 の試験 variable-opsz.html)
+    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
     // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
     // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
     // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、

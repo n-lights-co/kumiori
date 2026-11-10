@@ -4,7 +4,7 @@
  * レイアウトエンジンは inline/block の論理座標だけを扱い、サイズ確定後に
  * toArea() で一度だけ物理座標 (x, y, width, height) の Area Tree に変換する。
  */
-import { splitVariation, variationSuffix, type VariationRequest } from './fontVariation';
+import { opticalSize, splitVariation, variationSuffix, type VariationRequest } from './fontVariation';
 import { zeroEdges } from './geometry';
 import type { BaseNode, BorderStyle, Edges, Rotation, RubyAlign, TextAlign, WritingMode } from './types';
 
@@ -130,6 +130,7 @@ export interface ResolvedStyle {
   obliqueAngle?: number;
   fontVariationSettings?: Record<string, number>;
   fontOpticalSizing?: 'auto' | 'none';
+  fontOpticalSizeUnit?: 'pt' | 'px';
   textAutospace?: boolean;
   textAutospaceWidth?: number;
   punctuationSqueeze?: boolean;
@@ -258,9 +259,9 @@ export function resolveStyle(parent: ResolvedStyle, n: BaseNode): ResolvedStyle 
 
 /**
  * 可変フォントの軸の値の指定を、書体の名前に付ける (CSS Fonts 4 §7.2 の、性質から決まる値)。読み込んだ書体が持つ軸のものだけを付ける:
- *  - wdth: font-stretch (font-width。§2.4) の百分率
- *  - ital・slnt: font-style の italic・oblique <角度> (§2.5)
- *  - opsz: font-optical-sizing が auto のときの、字の大きさ (pt。§8.1)
+ *  - wdth: font-stretch (font-width。§2.3) の百分率
+ *  - ital・slnt: font-style の italic・oblique <角度> (§2.4)
+ *  - opsz: font-optical-sizing が auto のときの、字の大きさ (§8.1。単位は fontOpticalSizeUnit: 既定は pt、HTML + CSS の文書は CSS px)
  *  - font-variation-settings (§8.2)
  * 太さ (wght) は、書体を引くときの太さで渡る
  */
@@ -272,13 +273,14 @@ function applyVariation(st: ResolvedStyle, parent: ResolvedStyle, n: BaseNode) {
   st.obliqueAngle = n.fontStyle ? (n.fontStyle === 'italic' ? n.fontObliqueAngle : undefined) : parent.obliqueAngle;
   st.fontVariationSettings = n.fontVariationSettings ?? parent.fontVariationSettings;
   st.fontOpticalSizing = n.fontOpticalSizing ?? parent.fontOpticalSizing;
+  st.fontOpticalSizeUnit = n.fontOpticalSizeUnit ?? parent.fontOpticalSizeUnit;
   const req: VariationRequest = {};
   if (st.fontStretch !== undefined && st.fontStretch !== 1 && axes.has('wdth')) req.wdth = st.fontStretch * 100;
   if (st.italic && (axes.has('ital') || axes.has('slnt'))) {
     if (st.obliqueAngle !== undefined) req.slnt = st.obliqueAngle;
     else req.ital = true;
   }
-  if (st.fontOpticalSizing !== 'none' && axes.has('opsz')) req.opsz = st.fontSize;
+  if (st.fontOpticalSizing !== 'none' && axes.has('opsz')) req.opsz = opticalSize(st.fontSize, st.fontOpticalSizeUnit);
   if (st.fontVariationSettings) {
     for (const [tag, v] of Object.entries(st.fontVariationSettings)) if (axes.has(tag)) (req.settings ??= {})[tag] = v;
   }

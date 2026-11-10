@@ -102,7 +102,12 @@ export interface FontFaceRule {
   weightRange?: [number, number];
   /** font-width (font-stretch) の記述子の範囲 (百分率)。記述子が無い (auto) ときは undefined */
   widthRange?: [number, number];
-  /** font-variation-settings の記述子 (§4.9。札 → 値) */
+  /**
+   * font-style の記述子が oblique <角度>{1,2} で、範囲に 0deg を含むときの、角度の範囲 (度。時計回りが正)。
+   * 立体から傾けられる可変フォント (slnt の軸) の face で、italic は偽になる (立体の書体として読み込む)
+   */
+  obliqueRange?: [number, number];
+  /** font-variation-settings の記述子 (§4.6。札 → 値) */
   variationSettings?: Record<string, number>;
   /** font-named-instance の記述子 (§4.7。auto は undefined) */
   namedInstance?: string;
@@ -432,6 +437,10 @@ export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
         const weightRange = d['font-weight'] !== undefined && w !== 'auto' ? sorted(ws.slice(0, 2)) : undefined;
         const fw = (d['font-width'] ?? d['font-stretch'] ?? 'auto').toLowerCase().trim();
         const widthRange = fw !== 'auto' ? sorted(fw.split(/\s+/).slice(0, 2).map((x: string) => FONT_WIDTH_KEYWORDS[x] ?? (/%$/.test(x) ? parseFloat(x) : NaN))) : undefined;
+        // font-style: oblique <角度>{1,2} (§4.4)。0deg を含む範囲は、立体も受け持つ face (可変フォントの slnt の軸)
+        const ob = /^\s*oblique\s+(-?[\d.]+)deg(?:\s+(-?[\d.]+)deg)?\s*$/i.exec(d['font-style'] ?? '');
+        const obRange = ob ? sorted([parseFloat(ob[1]), parseFloat(ob[2] ?? ob[1])]) : undefined;
+        const obliqueRange = obRange && obRange[0] <= 0 && 0 <= obRange[1] ? obRange : undefined;
         const variationSettings = d['font-variation-settings'] !== undefined ? parseVariationSettings(d['font-variation-settings']) : undefined;
         const ni = /^\s*(?:"([^"]*)"|'([^']*)')\s*$/.exec(d['font-named-instance'] ?? '');
         const namedInstance = ni ? (ni[1] ?? ni[2]) : undefined;
@@ -439,9 +448,10 @@ export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
           fontFaces.push({
             family,
             weight,
-            italic: /italic|oblique/i.test(d['font-style'] ?? ''),
+            italic: /italic|oblique/i.test(d['font-style'] ?? '') && !obliqueRange,
             srcs,
             ...(ranges.length ? { ranges } : {}),
+            ...(obliqueRange ? { obliqueRange } : {}),
             ...(weightRange ? { weightRange } : {}),
             ...(widthRange ? { widthRange } : {}),
             ...(variationSettings && Object.keys(variationSettings).length ? { variationSettings } : {}),
