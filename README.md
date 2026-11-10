@@ -96,7 +96,7 @@ cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
 - `--font-cache <dir>`: Google Fonts から取った既定の書体を保存して使い回すディレクトリ。既定は環境変数 `KUMIORI_FONT_CACHE`、無ければ OS のキャッシュ (Linux は `$XDG_CACHE_HOME` か `~/.cache` の `kumiori/fonts`、macOS は `~/Library/Caches/kumiori/fonts`、Windows は `%LOCALAPPDATA%\kumiori\fonts`)。初回だけネットワークから取り、`書体 … を取得して … に保存しました` と知らせる。2 回目からはネットワークに行かない。途中で切れた取得など、書体のファイルでないものは保存せず、壊れたキャッシュは捨てて取り直す。保存できない場所でも変換は続ける
 - `--no-font-cache`: 書体のキャッシュを読まず、保存もしない (毎回 Google Fonts から取る)
 - `--lang ja|en`: 使い方・報告・警告・誤りの文の言語。無ければ環境変数 `KUMIORI_LANG`、次に OS のロケール (`LC_ALL`・`LC_MESSAGES`・`LANG` が `en…` なら英語) で決める。既定は日本語
-- `--font <書体ファイル>` (何度でも): 書体のファイル (TTF・OTF・TTC・WOFF・WOFF2) を足す (TTC は中の書体をそれぞれ足す)。書体の name 表のファミリー名と OS/2 の太さで登録し、システムに入れた書体のように `font-family` から使う (斜体のファイルは登録しない)。`font-family` の並びは、字ごとに前から順に引き、その字を持つ最初の書体で組む (総称と既定の書体の名前も、並びの中の位置で引く)。並びのどの書体も持たない字は、既定の書体、並びに無い足した書体の順に探す。`--style ah` などの互換のスタイルでは、SVG の `font-family` に書いた PostScript 名 (`'CenturyGothic'` など) でも選ぶ
+- `--font <書体ファイル>` (何度でも): 書体のファイル (TTF・OTF・TTC・WOFF・WOFF2) を足す (TTC は中の書体をそれぞれ足す)。書体の name 表のファミリー名と OS/2 の太さで登録し、システムに入れた書体のように `font-family` から使う (斜体のファイルは登録しない)。可変フォント (OpenType Font Variations。TrueType の輪郭) は、太さ・幅などの軸の範囲の全体を使い、`font-weight`・`font-stretch`・`font-variation-settings` などに合う形を作って組む (PDF には、使った形ごとに静的な書体として埋め込む。CFF2 の可変フォントは未対応)。`font-family` の並びは、字ごとに前から順に引き、その字を持つ最初の書体で組む (総称と既定の書体の名前も、並びの中の位置で引く)。並びのどの書体も持たない字は、既定の書体、並びに無い足した書体の順に探す。`--style ah` などの互換のスタイルでは、SVG の `font-family` に書いた PostScript 名 (`'CenturyGothic'` など) でも選ぶ
 - `--generic-font serif=<書体名>`・`--generic-font sans-serif=<書体名>`: 総称の書体 (serif・sans-serif) の欧文に使う書体 (`--font` で足した書体のファミリー名)
 - `--print`: トンボと塗り足し (3mm)
 - `--image-max-dpi <dpi>`: 置かれる大きさに対してこれより細かい JPEG の写真を、この解像度に縮めて符号化し直す (PDF を小さくする。既定は元のまま)
@@ -205,6 +205,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 | `src/types.ts` | 論理ツリー (Input) / 物理ツリー (Area Tree) / ページ設定の型 |
 | `src/areaTree.ts`, `src/areaResources.ts` | Area Tree をたどる・JSON で読み書きする ([`docs/area-tree.md`](docs/area-tree.md))、使った書体・画像の一覧 |
 | `src/fontManager.ts` | TTF/OTF を fetch → `FontFace`(Canvas) + `ArrayBuffer`(PDF) + fontkit(メトリクス) |
+| `src/fontInstancer.ts`, `src/fontVariation.ts` | 可変フォント (OpenType Font Variations) の、軸の値を決めた形 (実体) を静的な書体にする (gvar・HVAR・MVAR・GPOS の値・FeatureVariations)、軸の値の指定の持ち回り |
 | `src/measurer.ts`, `src/jis.ts` | 文字幅計測 (Canvas / fontkit 両バックエンド)、縦書き・ルビ・縦中横の計測、禁則 |
 | `src/geometry.ts`, `src/lnode.ts` | 論理座標(inline/block) ↔ 物理座標の変換、レイアウト中間ツリー |
 | `src/inlineLayout.ts`, `src/inlineFlatten.ts`, `src/lineMetrics.ts` | 行分割 (禁則・ぶら下げ・追い出し)、行内配置、ルビ/縦中横の行ノード生成、inline の木 → 字の並び (Atom)、行の高さ (CSS・XSL・互換の 3 モデル) |

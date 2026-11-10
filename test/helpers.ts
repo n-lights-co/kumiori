@@ -15,7 +15,8 @@ const FONT_URL = 'https://fonts.gstatic.com/s/notoserifjp/v34/xn71YHs72GKoTvER4G
 export const FAMILY = 'Noto Serif JP';
 
 /** テストの書体の置き場 (.cache/fonts。KUMIORI_FONT_DIR で上書き可) */
-export const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
+// e2e (Playwright。ES モジュールとして読むので __dirname が無い) からも読めるように、どちらかで自分の場所を決める
+export const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(typeof __dirname !== 'undefined' ? __dirname : import.meta.dirname, '../.cache/fonts');
 
 /** 同じワーカーの中で、同じファイルを 2 度取りに行かないための控え (ファイルの場所 → 取得の約束) */
 const fetching = new Map<string, Promise<string>>();
@@ -167,6 +168,13 @@ export const EXTRA_TEST_FONTS = {
   // 3.0.1 は名前の合字を liga (標準の合字) に、4.0.0 は rlig (必須の合字) に入れている
   'MaterialIcons-Regular-3.0.1.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/3.0.1/iconfont/MaterialIcons-Regular.ttf',
   'MaterialIcons-Regular-4.0.0.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/4.0.0/font/MaterialIcons-Regular.ttf',
+  // 可変フォント (test/variableFonts.test.ts): Anybody (欧文。幅 wdth 50〜150 と太さ wght 100〜900 の 2 軸。TrueType の輪郭。約 200KB)。
+  // 配布元 (google/fonts) のリポジトリの、コミットを決めた URL。比べる相手は、同じ書体の静的な書体 (Google Fonts の配信元が可変フォントから
+  // 取り出したもの。版の付いた URL。各約 60KB): 幅 150・太さ 900、幅 75・太さ 400、幅 100・太さ 700
+  'Anybody-wdth-wght-5bb2873.ttf': 'https://raw.githubusercontent.com/google/fonts/5bb28733cec313b63fbd415b574b5ae35c8aa8b8/ofl/anybody/Anybody%5Bwdth%2Cwght%5D.ttf',
+  'Anybody-ExpandedBlack-v13.ttf': 'https://fonts.gstatic.com/s/anybody/v13/VuJbdNvK2Ib2ppdWYq311GH32hxIv0vD5wrncSUi2F_Wim4JfmfPrg.ttf',
+  'Anybody-CondensedRegular-v13.ttf': 'https://fonts.gstatic.com/s/anybody/v13/VuJbdNvK2Ib2ppdWYq311GH32hxIv0tD5grncSUi2F_Wim4J12DPrg.ttf',
+  'Anybody-Bold-v13.ttf': 'https://fonts.gstatic.com/s/anybody/v13/VuJbdNvK2Ib2ppdWYq311GH32hxIv0sd5grncSUi2F_Wim4JMGfPrg.ttf',
 } as const;
 
 /** EXTRA_TEST_FONTS の書体を置き場に用意して、その場所を返す (無ければ取得する。取得できなければ投げるので、テストは飛ばされずに失敗する) */

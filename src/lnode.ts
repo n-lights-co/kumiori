@@ -4,6 +4,7 @@
  * レイアウトエンジンは inline/block の論理座標だけを扱い、サイズ確定後に
  * toArea() で一度だけ物理座標 (x, y, width, height) の Area Tree に変換する。
  */
+import { opticalSize, splitVariation, variationSuffix, type VariationRequest } from './fontVariation';
 import { zeroEdges } from './geometry';
 import type { BaseNode, BorderStyle, Edges, Rotation, RubyAlign, TextAlign, WritingMode } from './types';
 
@@ -114,9 +115,22 @@ export interface LNode {
 export const DEFAULT_LINE_BREAK: NonNullable<ResolvedStyle['lineBreak']> = 'strict';
 
 export interface ResolvedStyle {
+  /**
+   * 書体の名前。可変フォントを読み込んだ文書 (varAxes) では、軸の値の指定 (幅・傾き・光学サイズ・font-variation-settings) の印
+   * (fontManager.ts の variationSuffix) を後ろに付けた名前 (FontManager が、その実体を返す)
+   */
   fontFamily: string;
   fontWeight: number;
   italic: boolean;
+  /** 読み込んだ可変フォントの軸の札 (根のスタイルから引き継ぐ。可変フォントの無い文書は undefined で、下の 4 つも使わない) */
+  varAxes?: ReadonlySet<string>;
+  /** 印を付ける前の書体の名前 */
+  fontFamilyBase?: string;
+  /** font-style: oblique の角度 (italic のときは undefined) */
+  obliqueAngle?: number;
+  fontVariationSettings?: Record<string, number>;
+  fontOpticalSizing?: 'auto' | 'none';
+  fontOpticalSizeUnit?: 'pt' | 'px';
   textAutospace?: boolean;
   textAutospaceWidth?: number;
   punctuationSqueeze?: boolean;
@@ -237,6 +251,43 @@ export function newNode(kind: LKind, wm: WritingMode, extra: Partial<LNode> = {}
 }
 
 export function resolveStyle(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
+  const st = resolveStyleBase(parent, n);
+  // 可変フォントのある文書だけ: 書体の名前に、軸の値の指定の印を付ける
+  if (parent.varAxes) applyVariation(st, parent, n);
+  return st;
+}
+
+/**
+ * 可変フォントの軸の値の指定を、書体の名前に付ける (CSS Fonts 4 §7.2 の、性質から決まる値)。読み込んだ書体が持つ軸のものだけを付ける:
+ *  - wdth: font-stretch (font-width。§2.3) の百分率
+ *  - ital・slnt: font-style の italic・oblique <角度> (§2.4)
+ *  - opsz: font-optical-sizing が auto のときの、字の大きさ (§8.1。単位は fontOpticalSizeUnit: 既定は pt、HTML + CSS の文書は CSS px)
+ *  - font-variation-settings (§8.2)
+ * 太さ (wght) は、書体を引くときの太さで渡る
+ */
+function applyVariation(st: ResolvedStyle, parent: ResolvedStyle, n: BaseNode) {
+  const axes = parent.varAxes!;
+  st.varAxes = axes;
+  const base = n.fontFamily ?? parent.fontFamilyBase ?? parent.fontFamily;
+  st.fontFamilyBase = splitVariation(base)[0];
+  st.obliqueAngle = n.fontStyle ? (n.fontStyle === 'italic' ? n.fontObliqueAngle : undefined) : parent.obliqueAngle;
+  st.fontVariationSettings = n.fontVariationSettings ?? parent.fontVariationSettings;
+  st.fontOpticalSizing = n.fontOpticalSizing ?? parent.fontOpticalSizing;
+  st.fontOpticalSizeUnit = n.fontOpticalSizeUnit ?? parent.fontOpticalSizeUnit;
+  const req: VariationRequest = {};
+  if (st.fontStretch !== undefined && st.fontStretch !== 1 && axes.has('wdth')) req.wdth = st.fontStretch * 100;
+  if (st.italic && (axes.has('ital') || axes.has('slnt'))) {
+    if (st.obliqueAngle !== undefined) req.slnt = st.obliqueAngle;
+    else req.ital = true;
+  }
+  if (st.fontOpticalSizing !== 'none' && axes.has('opsz')) req.opsz = opticalSize(st.fontSize, st.fontOpticalSizeUnit);
+  if (st.fontVariationSettings) {
+    for (const [tag, v] of Object.entries(st.fontVariationSettings)) if (axes.has(tag)) (req.settings ??= {})[tag] = v;
+  }
+  st.fontFamily = st.fontFamilyBase + variationSuffix(req);
+}
+
+function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
   return {
     fontFamily: n.fontFamily ?? parent.fontFamily,
     fontWeight: n.fontWeight ?? parent.fontWeight,

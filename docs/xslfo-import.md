@@ -327,7 +327,8 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 ## 文字の装飾・表のフッター・行の分割
 
 - `text-decoration`: underline・overline・line-through と、打ち消しの `no-underline` など (`none` はすべて打ち消す)。子の inline に引き継がれ、inline の範囲いっぱいに線を引く。
-- `font-stretch`: キーワード・百分率・wider / narrower (1 段ずつ)。字を横方向に伸縮する。キーワードの比率は、仕様モードでは CSS の値 (ultra-condensed 50% 〜 ultra-expanded 200%)、互換モードでは normal から 1 段ごとに 1.2 倍 (expanded が 1.44 倍、ultra-expanded が約 2.07 倍)。
+- `font-stretch`: キーワード・百分率・wider / narrower (1 段ずつ)。字を横方向に伸縮する。キーワードの比率は、仕様モードでは CSS の値 (ultra-condensed 50% 〜 ultra-expanded 200%)、互換モードでは normal から 1 段ごとに 1.2 倍 (expanded が 1.44 倍、ultra-expanded が約 2.07 倍)。幅の軸 (wdth) を持つ可変フォントでは、字を伸縮せずに、軸の値 (比率 × 100) にする。
+- 可変フォント (OpenType Font Variations。TrueType の輪郭): `font-weight` を太さの軸 (wght)、`font-stretch` を幅の軸 (wdth)、`font-style` の italic・oblique を ital・slnt の軸 (あれば)、字の大きさ (pt) を光学サイズの軸 (opsz) の値にして、その形の静的な書体 (実体) を作って組む (`src/fontInstancer.ts`。PDF には実体ごとに埋め込む)。書体の範囲の外の値は近い端。ファミリー名は name 表の nameID 16。CFF2 の可変フォントは対応しない (警告を出して既定の形)。
 - `text-transform`: uppercase・lowercase・capitalize (継承される。`none` で止める)。capitalize は語の最初の字を大文字にする (「Oliver's」のアポストロフィの後ろは語の続き)。互換モード (`--compat antenna`) では語の残りの字を小文字にし、仕様モードでは残りの字を変えない (XSL 1.1 §7.17.6)。オランダ語の「ij」を 1 文字として大文字にする処理は未対応
 - `table-footer` は、改ページのたびに各ページの末尾で繰り返す (その高さを空けて本体の行を置く)。`table-omit-footer-at-break="true"` なら表の末尾だけ。`table-omit-header-at-break` も対応。
 - ページに入らない表の行は、セルの中身を行単位で次のページへ分ける (keep-together の既定 auto)。`keep-together` を指定した行は分けずに次ページへ送る。rowSpan を含む行の塊は、1 ページに入れば分けずに送り、入らなければ、またぐセルを行ごとに分けて行の境目でページをまたぐ。

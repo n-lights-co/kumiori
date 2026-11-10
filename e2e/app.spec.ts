@@ -2,8 +2,9 @@ import { expect, test, type Page } from '@playwright/test';
 import { makeZip } from '../test/makeZip';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { routeFontCache } from './fontCache';
+import { extraTestFont } from '../test/helpers';
 
 /**
  * KUMIORI_E2E_FONT_DIR があれば、Google Fonts の代わりにそのディレクトリのフォントを返す (ネットワークの無い環境用)。
@@ -386,6 +387,95 @@ test('公開 API: typeset した結果を renderPage で canvas に描く (書�
   expect(info.dark).toBeGreaterThan(500);
   expect(info.bad).toBe('RangeError');
   await page.locator('#api-preview').screenshot({ path: test.info().outputPath('api-preview.png') });
+  expect(errors).toEqual([]);
+});
+
+test('可変フォント: 太さ・幅の実体を、測った幅のまま canvas に描く (実体を静的な書体としてブラウザに登録する)', async ({ page }) => {
+  const errors = await open(page);
+  // 可変フォント (Anybody。幅と太さの 2 軸) は、テストの書体の置き場から (test/helpers.ts の EXTRA_TEST_FONTS)
+  const font = fs.readFileSync(await extraTestFont('Anybody-wdth-wght-5bb2873.ttf')).toString('base64');
+  await page.evaluate((b64) => {
+    const html =
+      '<!doctype html><html lang="en"><head><style>@page { size: A6; margin: 10mm } @font-face { font-family: Any; src: url(any.ttf); font-weight: 100 900; font-stretch: 50% 150% } p { font-family: Any; font-size: 18pt; margin: 0 }</style></head>' +
+      '<body><p>Hamburg</p><p><b>Hamburg</b></p><p style="font-stretch: 75%">Hamburg</p></body></html>';
+    const dt = new DataTransfer();
+    dt.items.add(new File([html], 'variable.html', { type: 'text/html' }));
+    dt.items.add(new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], 'any.ttf', { type: 'font/ttf' }));
+    window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt }));
+    window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, cancelable: true }));
+  }, font);
+  await expect(page.locator('#status')).toContainText('variable.html');
+  await expect(page.locator('#sheets canvas')).toHaveCount(1);
+  const info = await page.evaluate(() => {
+    type Lf = { key: string; family: string; weight: number; unitsPerEm: number; face?: FontFace; cssFamily?: string; instanceOf?: { coords: Record<string, number> }; fk: { layout(t: string, f: object): { glyphs: Array<{ advanceWidth: number }> } } };
+    const k = (window as unknown as { __kumiori: { tree: { sheets: Array<{ page: { regionBody: unknown } }> }; fonts: { all(): Lf[]; cssFont(f: Lf, px: number): string } } }).__kumiori;
+    const glyphs: Array<{ text: string; fontFamily: string; fontWeight: number; fakeBold?: boolean; scaleX: number }> = [];
+    const walk = (a: { type?: string; children?: unknown[] }) => {
+      if (a.type === 'glyph') glyphs.push(a as never);
+      for (const c of a.children ?? []) walk(c as never);
+    };
+    walk(k.tree.sheets[0].page.regionBody as never);
+    const hs = glyphs.filter((g) => g.text === 'H').map((g) => ({ family: g.fontFamily, weight: g.fontWeight, fakeBold: !!g.fakeBold, scaleX: g.scaleX }));
+    // 実体ごとに、ブラウザに登録した書体で測った幅 (描く幅) と、fontkit の実体で測った幅 (組んだ幅) を比べる。
+    // 字の大きさは 1000px (Measurer が Canvas で測るときの大きさと同じ): 字の送りを整数の画素に丸める環境 (下の説明) でも、丸めが幅に比べて小さくなる。
+    // master は、可変フォントの既定の形 (太さ 100・幅 100) を fontkit で測った幅 (実体が既定の形のまま描かれていないかを見分ける)
+    const ctx = document.createElement('canvas').getContext('2d')!;
+    ctx.fontKerning = 'none';
+    const PX = 1000;
+    const laidOf = (f: Lf) => (f.fk.layout('Hamburg', { kern: false, liga: false, clig: false }).glyphs.reduce((a, g) => a + g.advanceWidth, 0) / f.unitsPerEm) * PX;
+    const master = laidOf(k.fonts.all().find((f) => !f.instanceOf && f.family === 'css:Any')!);
+    const instances = k.fonts
+      .all()
+      .filter((f) => f.instanceOf)
+      .map((f) => {
+        ctx.font = k.fonts.cssFont(f, PX);
+        const drawn = ctx.measureText('Hamburg').width;
+        return { coords: f.instanceOf!.coords, registered: !!f.face && f.face.status === 'loaded' && !!f.cssFamily, drawn, laid: laidOf(f) };
+      });
+    // 字が描かれているか (濃い画素)
+    const canvas = document.querySelector('#sheets canvas') as HTMLCanvasElement;
+    const d = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
+    let dark = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] < 128 && d[i + 1] < 128 && d[i + 2] < 128) dark++;
+    return { hs, instances, dark, master };
+  });
+  // 太字は本物の太字 (擬似太字にしない)。幅は軸の値 (字形を拡縮しない)
+  expect(info.hs).toEqual([
+    { family: 'css:Any', weight: 400, fakeBold: false, scaleX: 1 },
+    { family: 'css:Any', weight: 700, fakeBold: false, scaleX: 1 },
+    { family: 'css:Any{;wdth=75}', weight: 400, fakeBold: false, scaleX: 1 },
+  ]);
+  expect(info.instances.map((i) => i.coords)).toEqual([
+    { wdth: 100, wght: 400 },
+    { wdth: 100, wght: 700 },
+    { wdth: 75, wght: 400 },
+  ]);
+  // 描く幅 (ブラウザに登録した実体) と、組んだ幅 (fontkit の実体) が合う。許す差は、字の数 × 0.5px:
+  // Chromium は、書体のヒンティングが medium・full の環境 (Linux の fontconfig の設定で決まる。GitHub Actions の ubuntu がそう。
+  // 起動の指定 --font-render-hinting=full で再現できる) では、字の送りを字ごとに整数の画素に丸める (subpixel positioning を使わない) ので、
+  // 字ごとに最大 0.5px ずれる。可変フォントでない書体 (Arimo など) でも同じだけずれる、ブラウザの側の丸め。
+  // Kumiori は、字 (字の単位) ごとに、組んだ位置を指定して描く (canvasRenderer.ts の drawGlyph) ので、この丸めは字の位置に積もらない。
+  // ヒンティングの無い環境では、差は 0.01px より小さい
+  const tolerance = [...'Hamburg'].length * 0.5 + 0.01;
+  for (const i of info.instances) {
+    expect(i.registered).toBe(true);
+    expect(Math.abs(i.drawn - i.laid)).toBeLessThan(tolerance);
+    // 既定の形 (太さ 100・幅 100) のまま描かれてはいない: 既定の形の幅とは、丸めの幅よりずっと大きく違う
+    expect(Math.abs(i.drawn - info.master)).toBeGreaterThan(20 * tolerance);
+  }
+  // 3 つの実体は、描く幅が互いに違う (丸めの幅より大きく)
+  const widths = info.instances.map((i) => i.drawn).sort((a, b) => a - b);
+  expect(widths[1] - widths[0]).toBeGreaterThan(20 * tolerance);
+  expect(widths[2] - widths[1]).toBeGreaterThan(20 * tolerance);
+  expect(info.dark).toBeGreaterThan(500);
+  // PDF には、実体ごとに静的な書体が埋まる
+  const pdf = await downloadPdf(page);
+  const names: string[] = [];
+  for (const [, obj] of pdf.context.enumerateIndirectObjects()) {
+    if (obj instanceof PDFDict && obj.get(PDFName.of('Subtype')) === PDFName.of('Type0')) names.push(String(obj.get(PDFName.of('BaseFont'))).replace(/^\/[A-Z]{6}\+/, ''));
+  }
+  expect(names.filter((n) => n.startsWith('Anybody')).sort()).toEqual(['Anybody_400wght', 'Anybody_700wght', 'Anybody_75wdth_400wght']);
+  await page.locator('#sheets canvas').first().screenshot({ path: test.info().outputPath('variable.png') });
   expect(errors).toEqual([]);
 });
 

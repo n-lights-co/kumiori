@@ -360,6 +360,7 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
   };
   const base = new FontManager();
   const baseWarnings: string[] = [];
+  base.onNotice = (m) => baseWarnings.push(m);
   /** 書体の名前 → ファミリー名の表 (fontMapping の FontNameTable)。ここには fonts で足した書体 (installed) を登録し、文書ごとの書体は文書を組むときに写しへ足す */
   const fontNames = new FontNameTable();
   for (const spec of [...FONT_SPECS, ...LATIN_SPECS]) await base.registerBuffer(spec.family, spec.weight ?? 400, await bufferOfSpec(spec), false);
@@ -474,6 +475,7 @@ async function typesetDocument(
 
   // 書体。FO では、一緒に渡した書体ファイルを、FO の font-family の名前 (和名・英名) から使う (画面で書体を読み込んだのと同じ)
   const fonts = base.fork();
+  fonts.onNotice = (m) => warnings.push(m);
   const fontNames = baseNames.fork();
   const userFonts: UserFont[] = [];
   if (isFo) {
