@@ -279,9 +279,10 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
         if (hit) alpha = 0;
       }
       if (s.mask) {
-        // 型紙 (imagemask): decode が [1 0] なら 1 を塗る (§4.10.6 Stencil Masking)
+        // 型紙 (imagemask): polarity が true (decode が [1 0]) なら標本の 1 を、false (decode が [0 1]) なら 0 を塗る
+        // (§8.2 の imagemask・§4.10.6 Stencil Masking)
         const v = comps[0];
-        const paint = dec[0] === 1 ? v === 0 : v !== 0;
+        const paint = dec[0] === 1 ? v !== 0 : v === 0;
         if (paint) {
           rgba[o] = maskRGB![0] * 255;
           rgba[o + 1] = maskRGB![1] * 255;

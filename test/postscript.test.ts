@@ -221,3 +221,52 @@ describe('CFF の書体 (The Compact Font Format Specification・The Type 2 Char
     expect(r.items[0]?.k).toBe('fill');
   });
 });
+
+/** プログラムを実行して、描いたもの (Graphics) も返す */
+function draw(src: string) {
+  const I = new Interp();
+  const G = new Graphics(I, { bbox: [0, 0, 100, 100] });
+  const error = I.run(latin1(src));
+  return { I, G, error, stack: I.ostack };
+}
+const epsOf = (body: string) => latin1(`%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n${body}\n`);
+
+describe('PostScript: 結果の誤りの修正', () => {
+  it('imagemask: polarity が true なら標本の 1 を、false なら 0 を塗る (PLRM §8.2 imagemask・§4.10.6)', () => {
+    // 8×8。偶数の行が FF (全部 1)、奇数の行が 00
+    const alphaOf = (polarity: boolean) => {
+      const r = draw(`8 8 ${polarity} [8 0 0 8 0 0] {<FF00FF00FF00FF00>} imagemask`);
+      expect(r.error).toBeUndefined();
+      const it = r.G.items[0];
+      if (it.k !== 'image' || !it.rgba) throw new Error('画像でない');
+      return [0, 1].map((row) => it.rgba![row * 8 * 4 + 3]);
+    };
+    expect(alphaOf(true)).toEqual([255, 0]);
+    expect(alphaOf(false)).toEqual([0, 255]);
+    // 辞書の形: Decode [1 0] は 1 を塗る、[0 1] は 0 を塗る
+    const dictAlpha = (decode: string) => {
+      const r = draw(`<< /ImageType 1 /Width 8 /Height 8 /BitsPerComponent 1 /Decode [${decode}] /ImageMatrix [8 0 0 8 0 0] /DataSource <FF00FF00FF00FF00> >> imagemask`);
+      const it = r.G.items[0];
+      if (it.k !== 'image' || !it.rgba) throw new Error('画像でない');
+      return [0, 1].map((row) => it.rgba![row * 8 * 4 + 3]);
+    };
+    expect(dictAlpha('1 0')).toEqual([255, 0]);
+    expect(dictAlpha('0 1')).toEqual([0, 255]);
+  });
+
+  it('フィルタのエラーは PostScript のエラーになり、stopped で受けられる (PLRM §8.2 filter・§3.13.3)', async () => {
+    // 持っていないフィルタ: undefined (オペランドは元に戻る。§3.11.1)
+    expect(nums('{currentfile /CCITTFaxDecode filter} stopped $error /errorname get')).toEqual(['file', '/CCITTFaxDecode', true, '/undefined']);
+    // 読み出し中に壊れたデータ (ASCII85 に無い字): ioerror
+    expect(nums('{(!!!!!\\200) /ASCII85Decode filter 10 string readstring} stopped $error /errorname get').slice(-2)).toEqual([true, '/ioerror']);
+    // 壊れたデータを通したファイルを実行する
+    expect(nums('{(1 2 add \\200) /ASCII85Decode filter cvx exec} stopped $error /errorname get').slice(-2)).toEqual([true, '/ioerror']);
+    // 壊れた ASCII85 の文字列の字句は syntaxerror (§3.2.2)
+    expect(run('<~!!\x80~>').error).toMatch(/^syntaxerror/);
+    // 受けなくても、それまでに描いたものは残る (EPS 全体が描けなくならない)
+    const r = (await epsToSvg(epsOf('0 0 moveto 50 50 lineto stroke currentfile /CCITTFaxDecode filter pop 0 50 moveto 50 0 lineto stroke')))!;
+    expect(r.count).toBe(1);
+    expect(r.error).toMatch(/^undefined/);
+    expect(r.svg).toContain('<path');
+  });
+});
