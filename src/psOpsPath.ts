@@ -158,6 +158,8 @@ export function installPathOperators(I: Interp, G: Graphics) {
       if (closed) out.push({ op: 'Z' });
       sub = [];
     };
+    // 逆向きのパスは、点を作り直す
+    G.countPoints(G.g.path.length);
     for (const s of G.g.path) {
       if (s.op === 'M') flush();
       sub.push(s);
@@ -170,6 +172,7 @@ export function installPathOperators(I: Interp, G: Graphics) {
     G.newPath();
   });
   d('clippath', () => {
+    if (G.g.clip) G.countCopy(G.g.clip.segs.length);
     G.g.path = G.clipPathSegs();
     const last = G.g.path.find((s) => s.op === 'M');
     G.g.cp = last && last.op === 'M' ? [last.x, last.y] : undefined;
@@ -213,6 +216,7 @@ export function installPathOperators(I: Interp, G: Graphics) {
     const move = I.popProc();
     const inv = invert(G.g.ctm);
     if (!inv) throw new PSError('undefinedresult');
+    I.work(G.g.path.length);
     for (const s of G.g.path.slice()) {
       if (s.op === 'Z') {
         if (!I.loopBody(close)) break;
@@ -233,7 +237,11 @@ export function installPathOperators(I: Interp, G: Graphics) {
   d('initclip', () => void (G.g.clip = undefined));
   d('clip', () => G.clip(false));
   d('eoclip', () => G.clip(true));
-  d('clipsave', () => G.g.clipStack.push(G.g.clip));
+  d('clipsave', () => {
+    // 入れ子の深さの上限は gsave と同じ (clipStack は gsave のたびに写すので、際限なく積ませない)
+    if (G.g.clipStack.length >= 1000) throw new PSError('limitcheck');
+    G.g.clipStack.push(G.g.clip);
+  });
   d('cliprestore', () => {
     if (G.g.clipStack.length) G.g.clip = G.g.clipStack.pop();
   });

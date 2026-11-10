@@ -16,6 +16,7 @@ import { apply, applyVector, invert, mul, transformSegs, type Matrix, type Seg }
 import { type Interp, type PSDict, type PSObj, PSError, arrItems, isProc, strBytes } from './psInterp';
 import type { Clip, DisplayItem, Graphics, RGB } from './psGraphics';
 import type { ColorSpace } from './psColorSpace';
+import { PS_TOTAL_IMAGE_PIXELS } from './imageLimits';
 
 type Fn = (x: number[]) => number[];
 const numOf = (o: PSObj | undefined, d = 0) => (o && (o.t === 'int' || o.t === 'real') ? o.v : d);
@@ -249,7 +250,10 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
   if (!inv) return undefined;
   const { w, h } = gridOf(box);
   G.I.charge((w * h) / 16);
+  // 網かけの画像も、文書の画像の画素の合計の上限に数える (網かけを描き続けるループで、メモリを使い切らない)
   G.imagePixels = (G.imagePixels ?? 0) + w * h;
+  if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
+  G.countItem();
   const rgba = new Uint8Array(w * h * 4);
   const sx = (box[2] - box[0]) / w;
   const sy = (box[3] - box[1]) / h;
@@ -596,6 +600,7 @@ export function patternFill(G: Graphics, segs: Seg[], evenOdd: boolean) {
     G.I.warn('模様の塗り');
     return;
   }
+  G.countItem(segs.length);
   const fillClip: Clip = { segs: segs.slice(), evenOdd, parent: G.g.clip };
   const region = intersect(intersect(segsBox(segs), segsBox(G.clipPathSegs())), G.opts.bbox);
   if (!(region[2] > region[0] && region[3] > region[1])) return;
@@ -707,6 +712,8 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
         if (!c || c === tile!.bboxClip) return tileClip;
         let m = memo.get(c);
         if (!m) {
+          G.countPoints(c.segs.length);
+          G.countItem(c.segs.length);
           m = { segs: c.segs.map((s) => moveSeg(s, dx, dy)), evenOdd: c.evenOdd, parent: clipOf(c.parent) };
           memo.set(c, m);
         }
@@ -714,6 +721,10 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
       };
       for (const it of tile.items) {
         budget--;
+        // 写しは点を作り直すので、点の合計の上限に数える
+        const n = it.k === 'fill' || it.k === 'stroke' ? it.segs.length : 0;
+        G.countPoints(n);
+        G.countItem(n);
         G.items.push(moveItem(it, dx, dy, clipOf(it.clip), color));
       }
     }

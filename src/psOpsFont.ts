@@ -528,6 +528,8 @@ export function installFontStubs(I: Interp, G: Graphics) {
     glyphs: ShownGlyph[],
     opts: { paint: boolean; path?: boolean; extra?: (g: ShownGlyph, i: number) => [number, number]; between?: (i: number) => void } = { paint: true },
   ): [number, number] => {
+    // 字ごとのループの手間を数える (4 字で 1 ステップ)
+    I.work(glyphs.length * 16);
     const ctm = G.g.ctm;
     const lin: Mat = [ctm[0], ctm[1], ctm[2], ctm[3], 0, 0];
     let total: [number, number] = [0, 0];
@@ -587,6 +589,8 @@ export function installFontStubs(I: Interp, G: Graphics) {
             const [x, y] = apply(m, s.x, s.y);
             return { op: s.op, x, y };
           });
+          // 字の形の点も、パスの点の合計の上限に数える
+          G.countPoints(segs.length);
           if (opts.path) {
             const p = G.ownPath();
             for (const s of segs) p.push(s);
@@ -603,8 +607,12 @@ export function installFontStubs(I: Interp, G: Graphics) {
           const e = mul(lin, mul(g.m, [1000, 0, 0, 1000, 0, 0]));
           const last = G.items[G.items.length - 1];
           const own = !opts.extra || (opts.extra(g, i)[0] === 0 && opts.extra(g, i)[1] === 0);
-          if (own && runItem && last === runItem && runItem.k === 'text' && runItem.fontName === g.fallback.fontName) runItem.text += g.fallback.ch;
-          else {
+          if (own && runItem && last === runItem && runItem.k === 'text' && runItem.fontName === g.fallback.fontName) {
+            // 文字は 1 字を 1 点と数える (1 字ずつ足した文字列は、つなぎ目ごとにメモリを使う)
+            G.countPoints(1);
+            runItem.text += g.fallback.ch;
+          } else {
+            G.countItem();
             runItem = { k: 'text', text: g.fallback.ch, fontName: g.fallback.fontName, mat: [e[0], e[1], e[2], e[3], cp[0], cp[1]], color: G.currentRGB(), cmyk: G.currentCMYK(), clip: G.g.clip };
             G.items.push(runItem);
             if (!own) runItem = undefined;
@@ -622,6 +630,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
       if (opts.between && i + 1 < glyphs.length) opts.between(i);
     }
     if (fillSegs.length && opts.paint && !G.invisible()) {
+      G.countItem(fillSegs.length);
       if (stroke)
         G.items.push({
           k: 'stroke',
@@ -800,6 +809,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
   });
   d('stringwidth', (I) => {
     const s = I.popString();
+    I.work(G.g.path.length);
     const save = { cp: G.g.cp, path: G.g.path.slice() };
     const [x, y] = showGlyphs(glyphsOf(G.g.font, s), { paint: false });
     G.g.cp = save.cp;

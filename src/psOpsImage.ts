@@ -162,6 +162,7 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   I.charge((w * h) / 64);
   G.imagePixels = (G.imagePixels ?? 0) + w * h;
   if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
+  G.countItem();
   const inv = invert(s.mat);
   if (!inv) throw new PSError('undefinedresult');
   const mat = mul(G.g.ctm, inv);

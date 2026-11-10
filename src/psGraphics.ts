@@ -7,7 +7,8 @@
  *  模様 (§4.9) と網かけ (shfill) は psShading で描く (網かけは画素の画像、並べる模様は PaintProc の絵の写し)。模様の線 (stroke) は、線の輪郭を模様で塗る。
  */
 import { apply, IDENTITY, invert, mul, type Matrix, type Seg } from './matrix';
-import { type Interp, type PSObj, PSError, arr, arrItems, dictObj, name, real, strBytes, strText, NULL } from './psInterp';
+import { type Interp, type PSObj, PSError, VM_GSTATE, arr, arrItems, dictObj, name, real, strBytes, strText, NULL } from './psInterp';
+import { PS_MAX_PATH_POINTS } from './imageLimits';
 
 import { DEVICE_GRAY, DEVICE_RGB, DEVICE_CMYK, clamp01, type ColorSpace, type RGB } from './psColorSpace';
 export type { RGB } from './psColorSpace';
@@ -97,6 +98,8 @@ export interface GState {
 export interface GraphicsOptions {
   /** 既定の座標 (EPS の外接矩形) */
   bbox: [number, number, number, number];
+  /** パスの点の合計の上限 (超えれば limitcheck)。既定は PS_MAX_PATH_POINTS */
+  maxPathPoints?: number;
 }
 
 export class Graphics {
@@ -105,13 +108,29 @@ export class Graphics {
   items: DisplayItem[] = [];
   /** これまでに描いた画像の画素の合計 (上限を確かめる) */
   imagePixels?: number;
+  /**
+   * これまでに作ったパスの点の合計 (PS_MAX_PATH_POINTS の説明。メモリの量を抑える)。
+   * 点を 1 つ作るごとに 1、グラフィックス状態が持つパスの写し (gsave のあとの書き換え。点の本体は共有する) は 8 点で 1、
+   * 描画の並びの 1 件は 4、文字は 1 字で 1 と数える。
+   * newpath で捨てたパスの分は戻さない (描画の並びが点を持ち続けているかどうかを、点ごとに追わない)
+   */
+  pathPoints = 0;
+  maxPathPoints: number;
+  /**
+   * 描画の並び (fill・stroke・クリップ) に写したパスの点の合計。上限は maxPathPoints の 2 倍 (同じパスを塗って線も引く絵が、作った点の 2 倍を写す)。
+   * 写しは点の本体を共有するのでメモリは小さいが、描画の並びを SVG・PDF にするときに、写した点の数だけ出力が増える
+   * ({ gsave fill grestore } loop が、10 万点のパスを何百回も写す)
+   */
+  shownPoints = 0;
   /** 一度だけ出す警告 */
   constructor(
     public I: Interp,
     public opts: GraphicsOptions,
   ) {
+    this.maxPathPoints = opts.maxPathPoints ?? PS_MAX_PATH_POINTS;
     this.g = this.initial();
     I.gfx = {
+      saveCost: () => this.gstateCost(this.g) + this.stack.reduce((t, s) => t + this.gstateCost(s), 0),
       saveForRestore: () => ({ g: this.copy(this.g), stack: this.stack.map((s) => this.copy(s)) }),
       restoreTo: (s) => {
         const st = s as { g: GState; stack: GState[] };
@@ -154,6 +173,30 @@ export class Graphics {
     // パスは写さずに共有し、書き換える側が写す (ownPath)
     sharePath(g.path);
     return { ...g, color: g.color.slice(), dash: { ...g.dash, array: g.dash.array.slice() }, clipStack: g.clipStack.slice(), ctm: [...g.ctm] as Mat };
+  }
+
+  /** グラフィックス状態 1 つの写しが使う量 (VM に積む。gstate のオブジェクト・save の記録) */
+  gstateCost(g: GState): number {
+    return VM_GSTATE + (g.dash.array.length + g.clipStack.length + g.color.length) * 8;
+  }
+
+  // ── 点の数 (付録 B の「パス」の限界) ──
+  /** パスの点を n 個作った (または、描画の並びに n 点ぶんを足した) と数える。上限を超えれば limitcheck */
+  countPoints(n: number) {
+    this.pathPoints += n;
+    if (this.pathPoints > this.maxPathPoints) throw new PSError('limitcheck');
+  }
+  /** グラフィックス状態が持つ n 点のパスを写した (点の本体は共有する) と数える。写す手間も数える */
+  countCopy(n: number) {
+    this.countPoints(Math.ceil(n / 8));
+    this.I.work(n);
+  }
+  /** 描画の並び (またはクリップ) に 1 件を足す前に呼ぶ。n: その 1 件が持つパスの点の数 */
+  countItem(n = 0) {
+    this.countPoints(4);
+    this.shownPoints += n;
+    if (this.shownPoints > this.maxPathPoints * 2) throw new PSError('limitcheck');
+    this.I.work(n);
   }
 
   // ── 色 ──
@@ -360,6 +403,7 @@ export class Graphics {
   ownPath(): Seg[] {
     let p = this.g.path;
     if ((PATH_HOLDERS.get(p) ?? 1) > 1) {
+      this.countCopy(p.length);
       releasePath(p);
       p = p.slice();
       this.g.path = p;
@@ -372,6 +416,7 @@ export class Graphics {
   }
   moveTo(x: number, y: number) {
     const [dx, dy] = apply(this.g.ctm, x, y);
+    this.countPoints(1);
     const p = this.ownPath();
     if (p.length && p[p.length - 1].op === 'M') p.pop();
     p.push({ op: 'M', x: dx, y: dy });
@@ -380,11 +425,13 @@ export class Graphics {
   }
   lineToDev(dx: number, dy: number) {
     this.needCP();
+    this.countPoints(1);
     this.ownPath().push({ op: 'L', x: dx, y: dy });
     this.g.cp = [dx, dy];
   }
   curveToDev(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number) {
     this.needCP();
+    this.countPoints(1);
     this.ownPath().push({ op: 'C', x1, y1, x2, y2, x: x3, y: y3 });
     this.g.cp = [x3, y3];
   }
@@ -392,6 +439,7 @@ export class Graphics {
     if (!this.g.cp || !this.g.path.length) return;
     const last = this.g.path[this.g.path.length - 1];
     if (last.op === 'Z') return;
+    this.countPoints(1);
     this.ownPath().push({ op: 'Z' });
     if (this.g.sp) this.g.cp = this.g.sp;
   }
@@ -441,7 +489,11 @@ export class Graphics {
     const segs = this.g.path;
     if (segs.some((s) => s.op !== 'M') && !this.invisible()) {
       if (this.g.cs.family === 'Pattern') this.patternFill(segs, evenOdd);
-      else this.items.push({ k: 'fill', segs: segs.slice(), evenOdd, color: this.currentRGB(), cmyk: this.currentCMYK(), clip: this.g.clip });
+      else {
+        // 描画の並びに写すパスの点にも上限を置く ({ gsave fill grestore } loop が、メモリを使い切る前に limitcheck にする)
+        this.countItem(segs.length);
+        this.items.push({ k: 'fill', segs: segs.slice(), evenOdd, color: this.currentRGB(), cmyk: this.currentCMYK(), clip: this.g.clip });
+      }
     }
     this.newPath();
   }
@@ -453,7 +505,8 @@ export class Graphics {
         // 模様の線: 線の輪郭 (太さを持った形) を求めて、その形を模様で塗る
         const outline = strokeOutline(segs, g.ctm, g.lineWidth, g.cap, g.join, g.dash, g.miter);
         if (outline.length) shadePatternFill(this, outline, false);
-      } else
+      } else {
+        this.countItem(segs.length);
         this.items.push({
           k: 'stroke',
           segs: segs.slice(),
@@ -467,6 +520,7 @@ export class Graphics {
           ctm: [...g.ctm] as Mat,
           clip: g.clip,
         });
+      }
     }
     this.newPath();
   }
@@ -481,6 +535,7 @@ export class Graphics {
   }
   clip(evenOdd: boolean) {
     // クリップは描いたあとも現在のパスを残す (§8.2 clip)
+    this.countItem(this.g.path.length);
     const segs = this.g.path.slice();
     this.g.clip = { segs, evenOdd, parent: this.g.clip };
   }
