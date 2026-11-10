@@ -3034,12 +3034,11 @@ class HtmlImporter {
         if (img.widthPct !== undefined && (parts[1] ?? 'auto') === 'auto') img.pctAuto = 'height';
         else if (img.heightPct !== undefined && parts[0] === 'auto') img.pctAuto = 'width';
       }
-      // 位置の基準の領域 (background-origin。§2.8。初期値は padding の箱) と、描く範囲 (background-clip。§2.7)。
-      // 描く範囲の初期値 border-box は、これまでどおり padding の箱で切り抜く (罫線の下には描かない)。基準の領域も border-box のときだけ、
-      // border の箱まで描く
+      // 位置の基準の領域 (background-origin。CSS Backgrounds 3 §2.8。初期値は padding の箱) と、描く範囲 (background-clip。§2.7。
+      // 初期値は border の箱: 罫線の下にも描く)。計算値どおりに渡す。組版エンジンの既定 (clip の欄なし) は padding の箱で、
+      // XSL-FO の背景 (XSL 1.1 §4.9.4: 背景は padding の矩形に描く) がそれを使う
       if (L.origin === 'border-box' || L.origin === 'content-box') img.origin = L.origin;
-      if (L.clip === 'content-box') img.clip = 'content-box';
-      else if (L.clip === 'border-box' && L.origin === 'border-box') img.clip = 'border-box';
+      if (L.clip === 'content-box' || L.clip === 'border-box') img.clip = L.clip;
       // ページに固定する背景 (background-attachment: fixed。§2.5) は、箱に付く背景 (scroll) として描き、未対応として知らせる
       if (L.attachment === 'fixed') this.miss('background-attachment: fixed');
       imgs.push(img);
@@ -3967,10 +3966,16 @@ class HtmlImporter {
           }
           setBackgroundPosition(img, c('background-position-x'), c('background-position-y'));
           if (/no-repeat/.test(c('background-repeat').split(',')[0])) img.repeat = 'no-repeat';
+          // 描く範囲 (background-clip。初期値は border の箱)
+          const bcl = backgroundLayers(c)[0]?.clip;
+          if (bcl === 'border-box' || bcl === 'content-box') img.clip = bcl;
           boxC.backgroundImage = img;
           this.report.images.push(img.src);
         }
-        if (bgrad) boxC.backgroundImage = { src: '', gradient: bgrad, gradientFontSize: cssLen(c('font-size')) ?? 12 };
+        if (bgrad) {
+      const gcl = backgroundLayers(c)[0]?.clip;
+      boxC.backgroundImage = { src: '', gradient: bgrad, gradientFontSize: cssLen(c('font-size')) ?? 12, ...(gcl === 'border-box' || gcl === 'content-box' ? { clip: gcl } : {}) };
+    }
         // (回り込みの ::before・::after の背景は 1 枚目だけ)
         if (backgroundLayers(c).filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss('background-image: 2 枚目以降 (::before・::after)');
         const mg: Record<string, number> = {};
@@ -4067,11 +4072,17 @@ class HtmlImporter {
       if (bsz === 'cover' || bsz === 'contain') img.size = bsz;
       setBackgroundPosition(img, c('background-position-x'), c('background-position-y'));
       if (/no-repeat/.test(c('background-repeat').split(',')[0]) || img.size) img.repeat = 'no-repeat';
+      // 描く範囲 (background-clip。初期値は border の箱)
+      const bcl = backgroundLayers(c)[0]?.clip;
+      if (bcl === 'border-box' || bcl === 'content-box') img.clip = bcl;
       cont.backgroundImage = img;
       this.report.images.push(img.src);
     }
     const cgrad = bi ? undefined : firstGradient(c('background-image'));
-    if (cgrad) cont.backgroundImage = { src: '', gradient: cgrad, gradientFontSize: cssLen(c('font-size')) ?? 12 };
+    if (cgrad) {
+      const gcl = backgroundLayers(c)[0]?.clip;
+      cont.backgroundImage = { src: '', gradient: cgrad, gradientFontSize: cssLen(c('font-size')) ?? 12, ...(gcl === 'border-box' || gcl === 'content-box' ? { clip: gcl } : {}) };
+    }
     // (絶対配置の ::before・::after の背景は 1 枚目だけ)
     if (backgroundLayers(c).filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss('background-image: 2 枚目以降 (::before・::after)');
     if ((parseInt(c('z-index'), 10) || 0) < 0) cont.layer = 'behind';

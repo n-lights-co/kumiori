@@ -472,7 +472,7 @@ export interface BackgroundImage {
    */
   origin?: 'border-box' | 'content-box';
   /**
-   * 描く範囲 (CSS の background-clip。Backgrounds 3 §2.7)。無ければ padding の箱 (罫線の下には描かない)。border-box は border の箱 (罫線の下も)、
+   * 描く範囲 (CSS の background-clip。Backgrounds 3 §2.7)。無ければ padding の箱 (罫線の下には描かない。XSL-FO の背景: XSL 1.1 §4.9.4)。HTML の読み込みは、初期値 border-box もそのまま渡す。border-box は border の箱 (罫線の下も)、
    * content-box は内容の箱。角丸の箱では、その箱の角丸で切り抜く
    */
   clip?: 'border-box' | 'content-box';
