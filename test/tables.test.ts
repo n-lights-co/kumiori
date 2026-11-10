@@ -412,3 +412,53 @@ describe('ページをまたぐ箱の高さ', () => {
     expect(y).toBeCloseTo(100 - (pt(80) - 200), 0);
   });
 });
+
+describe('collapse の表の改ページの境目の罫線 (XSL 1.1 §6.7.3・§6.7.10)', () => {
+  type CellArea = { border?: Record<string, { width: number; collapse?: { paintWidth?: number } } | undefined> };
+  type RowArea = { isRepeatedHeader?: boolean; children: CellArea[] };
+  const rowsOf = (t: ReturnType<typeof E.engine.layout>, page: number) => (t.sheets[page].page.regionBody.children[0] as unknown as { children: RowArea[] }).children;
+  /** セルの上の線の描く太さ (仕様の組み方では paintWidth、互換の組み方では width) */
+  const topLine = (c: CellArea) => c.border?.top?.collapse?.paintWidth ?? c.border?.top?.width;
+  const bodyRows = (n: number, last?: Partial<LTableCell>) =>
+    Array.from({ length: n }, (_, i) => ({ type: 'table-row' as const, cells: [cell(`行${i + 1}`, { border: { bottom: b(0.4) }, ...(i === n - 1 ? last : {}) })] }));
+  const header = { type: 'table-body' as const, rows: [{ type: 'table-row' as const, cells: [cell('見出し', { border: { bottom: b(3) } })] }] };
+
+  it('続きのページで繰り返した表ヘッダーの下の線は、表ヘッダーの線 (太い方) で描く', () => {
+    for (const collapseToAfterCell of [false, true]) {
+      const tb: LTable = { type: 'table', borderCollapse: 'collapse', ...(collapseToAfterCell ? { collapseToAfterCell } : {}), columns: [{ type: 'table-column' }], header, body: { type: 'table-body', rows: bodyRows(40) } };
+      const t = E.engine.layout(doc([tb]));
+      expect(t.sheets.length).toBeGreaterThan(1);
+      for (let p = 0; p < t.sheets.length; p++) {
+        const rows = rowsOf(t, p);
+        expect(rows[0].isRepeatedHeader ?? false).toBe(p > 0);
+        expect(topLine(rows[1].children[0])).toBeCloseTo(3);
+        // その後ろの行の間は、本体の行の線のまま
+        expect(topLine(rows[2].children[0])).toBeCloseTo(0.4);
+      }
+    }
+  });
+
+  it('改ページの手前で繰り返す表フッターの上の線は、そのページの最後の行と表フッターの線から選ぶ', () => {
+    // 表の最後の行だけ下の線が太い (元の格子で表フッターに接するのはこの行)。途中のページの表フッターの上には、それを使わない
+    const tb: LTable = {
+      type: 'table',
+      borderCollapse: 'collapse',
+      columns: [{ type: 'table-column' }],
+      body: { type: 'table-body', rows: bodyRows(40, { border: { bottom: b(3) } }) },
+      footer: { type: 'table-body', rows: [{ type: 'table-row', cells: [cell('脚', { border: { top: b(0.4) } })] }] },
+    };
+    const t = E.engine.layout(doc([tb]));
+    expect(t.sheets.length).toBeGreaterThan(1);
+    const lastPage = t.sheets.length - 1;
+    for (let p = 0; p <= lastPage; p++) {
+      const rows = rowsOf(t, p);
+      expect(topLine(rows[rows.length - 1].children[0])).toBeCloseTo(p === lastPage ? 3 : 0.4);
+    }
+  });
+
+  it('表ヘッダーを繰り返さない (table-omit-header-at-break) 表は、決め直さない', () => {
+    const tb: LTable = { type: 'table', borderCollapse: 'collapse', omitHeaderAtBreak: true, columns: [{ type: 'table-column' }], header, body: { type: 'table-body', rows: bodyRows(40) } };
+    const t = E.engine.layout(doc([tb]));
+    expect(topLine(rowsOf(t, 1)[0].children[0])).toBeCloseTo(0.4);
+  });
+});
