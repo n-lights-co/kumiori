@@ -275,7 +275,7 @@ npm run e2e       # ブラウザでの結合テスト (Playwright。初回は np
 ```
 
 テストが使う書体は、初回に取得して `.cache/fonts` (`KUMIORI_FONT_DIR` で変えられる) に置く。配信元は Google Fonts (`fonts.gstatic.com`) と、PostScript の書体のテスト用の Source Sans 3 (`raw.githubusercontent.com` の adobe-fonts/source-sans)。取得は `test/helpers.ts` の 1 か所にまとめてあり、テストに書体を足すときは、そこの一覧に足す (CI のキャッシュの鍵になる)。
-Unicode の公式の適合試験 (UAX #14 の `LineBreakTest.txt`、UAX #9 の `BidiTest.txt`・`BidiCharacterTest.txt`) も、初回に `unicode.org` (`https://www.unicode.org/Public/<版>/ucd/`) から取得して `.cache/unicode` (`KUMIORI_UCD_DIR` で変えられる) に置く。取得は `test/ucdTestData.ts` の 1 か所にまとめてあり、版は `src/unicodeData.ts` の表を作った UCD の版に合わせる。取得できない環境では、公式の試験の代わりに、テストの中の手書きの小さな並びだけを確かめる。
+Unicode の公式の適合試験 (UAX #14 の `LineBreakTest.txt`、UAX #29 の `GraphemeBreakTest.txt`、UAX #9 の `BidiTest.txt`・`BidiCharacterTest.txt`) も、初回に `unicode.org` (`https://www.unicode.org/Public/<版>/ucd/`) から取得して `.cache/unicode` (`KUMIORI_UCD_DIR` で変えられる) に置く。取得は `test/ucdTestData.ts` の 1 か所にまとめてあり、版は `src/unicodeData.ts` の表を作った UCD の版に合わせる。取得できない環境では、公式の試験の代わりに、テストの中の手書きの小さな並びだけを確かめる。
 結合テストは、`KUMIORI_E2E_FONT_CACHE` にディレクトリを指定すると、ブラウザが取った書体をそこに覚えて、次からはネットワークに行かない (CI はこれを使う)。`KUMIORI_E2E_FONT_DIR` は、決まった名前の書体を手で用意して使うときの口。
 
 見本の PDF との比較 (比べる見本の FO と PDF は各自で用意する。リポジトリには入っていない。poppler の pdftoppm が必要):

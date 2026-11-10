@@ -5,31 +5,12 @@
  * (KUMIORI_UCD_DIR で場所を上書きできる)。取得できない環境では、公式の試験の代わりに、下の手書きの小さな並びだけを確かめる
  * (test/lineBreakConformance.test.ts と同じやり方)。
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { clusterUnits, graphemeClusters, mayCluster } from '../src/grapheme';
-
-const URL_18 = 'https://www.unicode.org/Public/18.0.0/ucd/auxiliary/GraphemeBreakTest.txt';
+import { ucdTestData } from './ucdTestData';
 
 /** 試験のデータ。取得できなければ undefined */
-async function graphemeBreakTestData(): Promise<string | undefined> {
-  const dir = process.env.KUMIORI_UCD_DIR ?? path.resolve(__dirname, '../.cache/unicode');
-  const file = path.join(dir, 'GraphemeBreakTest-18.0.0.txt');
-  if (!fs.existsSync(file)) {
-    try {
-      const res = await fetch(URL_18);
-      if (!res.ok) return undefined;
-      fs.mkdirSync(dir, { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
-      fs.renameSync(tmp, file);
-    } catch {
-      return undefined;
-    }
-  }
-  return fs.readFileSync(file, 'utf8');
-}
+const graphemeBreakTestData = () => ucdTestData('auxiliary/GraphemeBreakTest.txt');
 
 /** 試験の 1 行 (÷ 0061 × 0308 ÷ 0062 ÷ # 注記) を、文字列と、期待するクラスタの並びに */
 function parseLine(line: string): { text: string; clusters: string[] } | undefined {
