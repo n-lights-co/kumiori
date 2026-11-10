@@ -4,8 +4,11 @@
  * SVG にすれば、画面 (ブラウザの SVG の描画) と PDF (svg.ts のベクター出力) の両方に、そのまま流せる。
  * 対応: 座標系 (window の原点・大きさ、EMF の世界変換)、ペン・ブラシ・フォントの作成と選択・削除、線・多角形・複数の多角形・
  * 矩形・角丸矩形・楕円・弧・弦・扇形・パス (EMF)、文字 (揃え・色・回転・太さ・斜体)、塗りの規則、状態の保存と復元、
- * 切り抜き (矩形・領域・パス)、領域の塗り、画素、画像 (DIB。描き先に依らないラスター演算のもの)。
- * ハッチの模様・模様のブラシ・描き先と混ぜるラスター演算・EMF+ (GDI コメント) は扱わない (描かずに飛ばす)。
+ * 切り抜き (矩形・領域・パス)、領域の塗り、画素、画像 (DIB)、模様のブラシ (DIB の模様・ハッチ。装置の 1 画素の大きさが決まるときだけ)、
+ * ラスター演算 (描き先に依らないものは色を計算して描く。描き先に依るものは、元と型の色の成分が 0 か 255 なら描画モードの層で表す)、
+ * EMR_ALPHABLEND (不透明度で重ねる)・EMR_GRADIENTFILL (色を変えながら塗る)。
+ * 描かないもの (描かずに飛ばす): 色の成分が 0・255 以外の元や型を描き先と混ぜるラスター演算、模様のブラシを使う PATCOPY 以外のラスター演算、
+ * Bitmap16 の模様のブラシ、装置の画素の大きさが決まらないときの模様のブラシ、EMF+ (GDI コメントの記録)。
  */
 import { decodeBmp, encodePngStored, expandRle, type Pixels } from './pixels';
 import { MAX_PIXELS, METAFILE_TOTAL_IMAGE_PIXELS } from './imageLimits';
@@ -1668,7 +1671,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         const ps = type === 2 || type === 5 ? pts32(a + 20, n) : pts16(a + 20, n);
         const to = type === 5 || type === 88;
         let d = to ? `M${num(out.dc.x)} ${num(out.dc.y)}` : `M${num(ps[0][0])} ${num(ps[0][1])}`;
-        for (let k = to ? 0 : 1; k + 2 < ps.length + (to ? 0 : 0); k += 3) d += `C${[ps[k], ps[k + 1], ps[k + 2]].map((q) => `${num(q[0])} ${num(q[1])}`).join(' ')}`;
+        for (let k = to ? 0 : 1; k + 2 < ps.length; k += 3) d += `C${[ps[k], ps[k + 1], ps[k + 2]].map((q) => `${num(q[0])} ${num(q[1])}`).join(' ')}`;
         if (out.path !== null && to) d = d.replace(/^M[^C]*/, '');
         out.shape(d, false);
         const last = ps[ps.length - 1];

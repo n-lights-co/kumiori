@@ -2461,7 +2461,6 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         cellArray(p);
         break;
       case 10:
-        // GENERALIZED DRAWING PRIMITIVE: 中身 (GDP の番号ごとの意味) は登録簿で決まり、規格には無い
         // GENERALIZED DRAWING PRIMITIVE (第 1 部 7.6.10): 中身は登録簿で決まるが、登録された GDP は無い (負の番号は処理系ごとの私用)
         warn(`GENERALIZED DRAWING PRIMITIVE (GDP ${p.I()}) は描きません (登録された GDP がありません)`);
         break;
@@ -2532,8 +2531,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         break;
       }
       case 27:
-        // POLYSYMBOL: 記号の表 (SYMBOL LIBRARY LIST) はメタファイルの外のファイル
-        // 記号の表 (SYMBOL LIBRARY LIST の名前) はメタファイルの外のもので、形は規格に無く、登録簿にも登録された表が無い (第 1 部 6.6.12・7.3.23)
+        // POLYSYMBOL: 記号の表 (SYMBOL LIBRARY LIST の名前) はメタファイルの外のもので、形は規格に無く、登録簿にも登録された表が無い (第 1 部 6.6.12・7.3.23)
         warn('POLYSYMBOL は描きません (記号の表はメタファイルの外のもので、登録された表もありません)');
         break;
       case 28:
