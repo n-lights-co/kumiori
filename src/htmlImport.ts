@@ -32,6 +32,7 @@ import type {
   LFootnote,
   BorderRadius,
   BorderSide,
+  ContentSizeKeyword,
   BoxShadow,
   ObjectPosition,
   PaintEffect,
@@ -58,6 +59,7 @@ import type {
   PageMaster,
   TextDecorationStyle,
   TextStyle,
+  HyphenLimits,
   WritingMode,
 } from './types';
 import { TOTAL_PAGES_ID } from './types';
@@ -65,7 +67,7 @@ import { parseIndividualTransform, parseTransformList, parseTransformOrigin } fr
 import type { ImportReport, ImportResult } from './xslfoImport';
 import { normalizeSrc } from './assets';
 import { countDroppedLink, judgeExternalLink, type LinkPolicy } from './linkPolicy';
-import { expand, lengthPx, splitTextIndent } from './cssCascade';
+import { expand, lengthPx, parseInitialLetter, splitTextIndent } from './cssCascade';
 import { inlineSvgDataUri, isInlineSvg } from './htmlSvg';
 import { isColorName } from './color';
 import type { FkFont, MathFont } from './mathFont';
@@ -329,6 +331,42 @@ function setBackgroundPosition(img: BackgroundImage, px: string, py: string) {
  * (CSS Inline 3 §7.2 の注: ::first-letter は最初の字の前後の約物も選ぶ)。1 つ目の組は前の空白
  */
 const FIRST_LETTER = /^(\s*)([\p{Ps}\p{Pi}\p{Po}]*\s*[\p{L}\p{N}\p{S}]\p{M}*[\p{Pe}\p{Pf}\p{Po}]*)/u;
+
+const HYPHEN_LIMIT_PROPS = ['hyphenate-character', 'hyphenate-limit-chars', 'hyphenate-limit-lines', 'hyphenate-limit-last', 'hyphenate-limit-zone'] as const;
+
+/**
+ * 分綴の制限の計算値 (CSS Text 4 §6.3.2〜§6.3.5) を、組版の受け皿 (HyphenLimits) にする。
+ *  - hyphenate-character: auto は既定の字 (指定なし)。文字列はそのまま (空の文字列も有効: 何も出さずに分ける)
+ *  - hyphenate-limit-chars: 語・切れ目の前・後の最小の字数。3 つ目を省くと 2 つ目と同じ、2 つ目を省くと auto。auto は指定なし
+ *  - hyphenate-limit-lines: no-limit は指定なし
+ *  - hyphenate-limit-last: always だけ (段落の最後の行の 1 つ前の行)。column・page・spread は読まない (未対応の値として報告する。cssUnsupported)
+ *  - hyphenate-limit-zone: 長さ、または行の長さに対する百分率
+ */
+function hyphenLimitsOf(c: (name: string) => string): HyphenLimits {
+  const o: HyphenLimits = {};
+  const ch = (c('hyphenate-character') ?? '').trim();
+  if (/^["']/.test(ch)) o.character = unquote(ch);
+  const cs = (c('hyphenate-limit-chars') ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const num = (t: string | undefined) => (t !== undefined && /^\+?\d+$/.test(t) ? parseInt(t, 10) : undefined);
+  const word = num(cs[0]);
+  const before = num(cs[1]);
+  const after = cs.length >= 3 ? num(cs[2]) : before;
+  if (word !== undefined) o.minWord = word;
+  if (before !== undefined) o.minBefore = before;
+  if (after !== undefined) o.minAfter = after;
+  const lines = num((c('hyphenate-limit-lines') ?? '').trim());
+  if (lines !== undefined) o.maxLines = lines;
+  if ((c('hyphenate-limit-last') ?? '').trim().toLowerCase() === 'always') o.noLast = true;
+  const zone = (c('hyphenate-limit-zone') ?? '').trim();
+  if (/%$/.test(zone)) {
+    const r = parseFloat(zone) / 100;
+    if (r > 0) o.zoneRatio = r;
+  } else {
+    const z = cssLen(zone);
+    if (z !== undefined && z > 0) o.zone = z;
+  }
+  return o;
+}
 
 /** text-indent の計算値 (長さと hanging・each-line の語。CSS Text 3 §8.1) を、字下げの書式にする */
 function textIndentOf(v: string): Pick<TextStyle, 'textIndent' | 'textIndentHanging' | 'textIndentEachLine'> {
@@ -1306,7 +1344,10 @@ class HtmlImporter {
       type Info = { el: Item; w: number | undefined; grow: number; shrink: number; base: number; floor: number; cap?: number; orig?: Info };
       const info = items.map((k): Info => {
         const kc = ics(k);
-        const b = kc('flex-basis');
+        // flex-basis: auto は width を使う (Flexbox 1 §7.2.3)。width が内容による大きさの語 (CSS Sizing 3 §3.2) なら、その語を基準にする
+        const b0 = kc('flex-basis');
+        const wKw = (kc('width') || '').trim().toLowerCase();
+        const b = (!b0 || b0 === 'auto') && /^(min-content|max-content|fit-content)$/.test(wKw) ? wKw : b0;
         // ::before・::after は、幅の指定が長さか % なら、それ
         const fixedW = k.ps || k.anon ? kc('width') !== 'auto' && len(kc('width'), W) !== undefined : autoOf(k.el, 'width') === false;
         // flex-basis の min-content は中身の最も狭い幅、max-content・content は中身の幅 (下の見積もり)、fit-content は中身の幅を容器の幅で抑えたもの
@@ -1970,7 +2011,8 @@ class HtmlImporter {
     // 偶奇で左右に読み替える (float: sidenote を outside の側に置くときも、箱の内側の余白の内に置く)
     const f: LFloat = { type: 'float', float: side, children: [inner], ...(side === 'start' || side === 'end' || side === 'inside' || side === 'outside' ? { cssPlacement: true } : {}) };
     // 箱の寸法・余白・枠・背景は float に移す (外側の余白は本文との間隔、幅は回り込みの幅になる)
-    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'backgroundClip', 'borderRadius', 'boxShadow', 'paintEffect', 'width', 'height', 'boxSizing', 'clear'] as const) {
+    // 内容による大きさ (inlineSizing) と、その長さの上限・下限も、float の箱が持つ
+    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'backgroundClip', 'borderRadius', 'boxShadow', 'paintEffect', 'width', 'height', 'boxSizing', 'clear', ...(inner.inlineSizing ? (['inlineSizing', 'minInlineSize', 'maxInlineSize'] as const) : [])] as const) {
       if (inner[k] === undefined) continue;
       (f as unknown as Record<string, unknown>)[k] = inner[k];
       delete inner[k];
@@ -2616,7 +2658,7 @@ class HtmlImporter {
     }
     const tv = c('transform');
     const iv = (['translate', 'rotate', 'scale'] as const).map((p) => [p, c(p)] as const).filter(([, v]) => v && v !== 'none');
-    if (((tv && tv !== 'none') || iv.length) && !boxless) {
+    if (((tv && tv !== 'none') || iv.length) && !boxless && pseudo !== '::first-letter') {
       const replaced = !pseudo && /^(img|svg|object|video|canvas|iframe|embed|input|textarea|select|button|math)$/.test(el.localName);
       if (!(/^(inline|table-column|table-column-group)$/.test(d) && !replaced)) {
         const fns: TransformFunction[] = [];
@@ -2761,6 +2803,8 @@ class HtmlImporter {
     }
     // hyphens: auto だけが自動の分綴。子の none・manual で打ち消せる (Text 3 §5.3)
     if (diff('hyphens')) s.hyphenate = c('hyphens') === 'auto';
+    // 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5)。どれかが親と違えば、5 つの計算値をまとめて運ぶ (初期値に戻す指定も、空の組で親の値を打ち消す)
+    if (HYPHEN_LIMIT_PROPS.some((k) => diff(k))) s.hyphenLimits = hyphenLimitsOf(c);
     if (!pseudo) {
       const sp = this.spacing(el);
       const ps = parent ? this.spacing(parent) : undefined;
@@ -2884,10 +2928,16 @@ class HtmlImporter {
     const ta = c('text-align').replace(/^-(webkit|internal)-/, '');
     if (diff('text-align') || diff('direction')) {
       const rtl = c('direction') === 'rtl';
-      s.textAlign = ta === 'center' ? 'center' : ta === 'justify' ? 'justify' : ta === 'end' || ta === (rtl ? 'left' : 'right') ? 'end' : 'start';
+      s.textAlign = ta === 'center' ? 'center' : ta === 'justify' || ta === 'justify-all' ? 'justify' : ta === 'end' || ta === (rtl ? 'left' : 'right') ? 'end' : 'start';
     }
     // text-align-last の left・right も、text-align と同じく direction で start・end に読み替える (rtl では left が end)
     const tal = c('text-align-last');
+    // text-align: justify-all (CSS Text 3 §6.1): 最後の行 (と強制改行の前の行) も両端をそろえる。text-align-last の指定があれば、そちら。
+    // justify-all を受け継がない子 (text-align を指定し直した子) は、最後の行のそろえを auto の動き (§6.3) に戻す
+    if ((!tal || tal === 'auto') && diff('text-align')) {
+      if (ta === 'justify-all') s.textAlignLast = 'justify';
+      else if (p && p('text-align') === 'justify-all' && s.textAlign) s.textAlignLast = s.textAlign === 'justify' ? 'start' : s.textAlign;
+    }
     if ((diff('text-align-last') || diff('direction')) && tal && tal !== 'auto') {
       const rtl = c('direction') === 'rtl';
       s.textAlignLast = tal === 'center' ? 'center' : tal === 'justify' ? 'justify' : tal === 'end' || tal === (rtl ? 'left' : 'right') ? 'end' : 'start';
@@ -3099,10 +3149,77 @@ class HtmlImporter {
         o.autoMargins ??= al === 'center' ? 'center' : 'start';
       }
     }
+    // 内容による大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content、CSS Sizing 4 §3.2 の fit-content(<長さ>)):
+    // 行の向きの大きさ (横書きの width・縦書きの height) とその上限・下限は、組むときに中身の幅を測って決める (inlineSizing)。
+    // block の向きの大きさ (横書きの height・縦書きの width) では、ブロックの箱の min-content・max-content・fit-content は、どれも
+    // 中身を組んだ後の大きさ (§2.1) なので、height は auto と同じ。min-height・max-height の語は、高さの指定のある箱だけに効く
+    if (!replaced && !this.src.rect) {
+      const B = this.axisOf(el);
+      const kwOf = (p: string): ContentSizeKeyword | undefined => {
+        const v = (c(B(p)) || '').trim().toLowerCase();
+        if (v === 'min-content' || v === 'max-content' || v === 'fit-content') return v;
+        const fc = /^fit-content\(\s*(-?[\d.]+px)\s*\)$/.exec(v);
+        const len = fc ? cssLen(fc[1]) : undefined;
+        return len !== undefined ? { fit: len } : undefined;
+      };
+      const vertB = B('height') === 'width';
+      const edge = (a: 'left' | 'right' | 'top' | 'bottom') => (padding?.[a] ?? 0) + (border[a]?.width ?? 0);
+      const bpI = vertB ? edge('top') + edge('bottom') : edge('left') + edge('right');
+      const bb = c('box-sizing') === 'border-box';
+      // fit-content(<長さ>) の長さは、box-sizing の箱の大きさ (§3.2: 長さ・百分率だけの値と同じに読む)。内容の箱の大きさに直す
+      const inner = (k: ContentSizeKeyword | undefined) => (typeof k === 'object' && bb ? { fit: Math.max(0, k.fit - bpI) } : k);
+      let size = inner(kwOf('width'));
+      const min = inner(kwOf('min-width'));
+      const max = inner(kwOf('max-width'));
+      const disp = c('display');
+      const outOfFlow = c('float') !== 'none' || /^(absolute|fixed)$/.test(c('position'));
+      // 幅を中身で決める箱 (float・絶対配置・inline-block・表) の fit-content は、auto (shrink-to-fit。CSS 2.1 §10.3.5・§17.5.2) と同じ
+      if (size === 'fit-content' && (outOfFlow || /^inline-/.test(disp) || disp === 'table')) size = undefined;
+      // 横並びの flex の項目の主軸の大きさは、flex の計算で決める (width の語は、flex-basis の語として読む。flexLines)
+      const pEl = pseudo ? el : el.parentElement;
+      if (size && pEl && !outOfFlow && /^(inline-)?flex$/.test(this.display(pEl)) && !/^column/.test(this.cs(pEl)('flex-direction'))) size = undefined;
+      // 語で大きさを決められる箱は、ブロックの箱 (block・list-item・flow-root・inline-block)。行内の箱には幅が効かない (CSS 2.1 §10.2)。
+      // flex・grid の容器、表とその中の箱 (セル・行・列) の語の大きさは未対応 (auto として組み、知らせる)
+      const sizable = /^(block|list-item|flow-root|inline-block)$/.test(disp);
+      if ((size || min || max) && !sizable && disp !== 'inline' && disp !== 'contents' && disp !== 'none') {
+        const name = /flex|grid/.test(disp) ? 'flex・grid の容器' : '表とその中の箱';
+        for (const [p, k] of [['width', size], ['min-width', min], ['max-width', max]] as const) if (k) this.miss(`${B(p)}: ${typeof k === 'object' ? 'fit-content()' : k} (${name})`);
+      }
+      if ((size || min || max) && sizable) {
+        o.inlineSizing = { ...(size ? { size } : {}), ...(min ? { min } : {}), ...(max ? { max } : {}) };
+        // 長さの上限・下限も、組むときに当てる (内容の箱の大きさ)
+        const numI = (p: string) => (/px$/.test(c(B(p))) ? Math.max(0, cssLen(c(B(p)))! - (bb ? bpI : 0)) : undefined);
+        const mnI = numI('min-width');
+        const mxI = numI('max-width');
+        if (mnI) o.minInlineSize ??= mnI;
+        if (mxI !== undefined) o.maxInlineSize ??= mxI;
+        // 大きさの語があれば、カスケードの見積もりの幅 (上限・下限から出したもの) は使わない
+        if (size) delete o[B('width') as 'width' | 'height'];
+        // 組むときに幅が決まるので、行の向きの auto の余白も、組むときに配る (CSS 2.1 §10.3.3)
+        const ms = c(B('margin-left')) === 'auto';
+        const me = c(B('margin-right')) === 'auto';
+        if (ms || me) o.autoMargins ??= ms && me ? 'center' : ms ? 'start' : 'end';
+      }
+      // block の向きの下限・上限の語: 高さの指定のある箱で、下限は「中身の高さまで伸びる」(min-height に高さを移し、height は auto)。
+      // 上限は「中身の高さまで縮む」(max の語 + 高さ: 中身が少なければ中身の高さ) で、これは未対応として知らせる
+      const kwB = (p: string) => /^(min-content|max-content|fit-content)/.test((c(B(p)) || '').trim().toLowerCase());
+      const hp = B('height') as 'width' | 'height';
+      if (o[hp] !== undefined && !o.aspectRatio) {
+        if (kwB('max-height')) this.miss(`${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (${hp} の指定のある箱)`);
+        else if (kwB('min-height')) {
+          const bpB = vertB ? edge('left') + edge('right') : edge('top') + edge('bottom');
+          o.minBlockSize = Math.max(o.minBlockSize ?? 0, o[hp]! - (bb ? bpB : 0));
+          delete o[hp];
+        }
+      }
+    }
     const rad = this.radiusOf(c);
     if (rad) o.borderRadius = rad;
     const shadows = shadowsOf(c('box-shadow'), c('filter'));
     if (shadows.length) o.boxShadow = shadows.length === 1 ? shadows[0] : shadows;
+    // box-decoration-break: clone (CSS Fragmentation 3 §5.4): ページ・段で分かれた断片のそれぞれを、罫線と内側の余白で包み直す
+    // (初期値 slice は、切れ目に罫線も余白も入れない)。余白 (margin) は、ブロックの箱では切れ目で 0 に切り詰める (§5.4 の注)
+    if (c('box-decoration-break') === 'clone') o.edgeRetain = { borderBefore: true, paddingBefore: true, borderAfter: true, paddingAfter: true };
     // 改ページ (break-before / after。left・right・recto・verso は偶数・奇数ページ)。
     // recto (右から左へ進む本では左ページ) は奇数ページ、verso は偶数ページ。left・right は、ページが右から左へ進む文書では
     // 左ページが奇数ページなので入れ替える (:left・:right の選び方と同じ。CSS Fragmentation 3 §3.1 の left・right・recto・verso)
@@ -3139,7 +3256,8 @@ class HtmlImporter {
     const id = pseudo ? null : el.getAttribute('id');
     if (id) o.id = id;
     // 描くときだけの効果 (transform・opacity)
-    const fx = !pseudo || pseudo === '::before' || pseudo === '::after' ? this.paintEffectOf(el, pseudo) : undefined;
+    // (::first-letter には opacity だけが効く。CSS Pseudo 4 §2.3 の、効く性質の一覧に変換は無い)
+    const fx = !pseudo || pseudo === '::before' || pseudo === '::after' || pseudo === '::first-letter' ? this.paintEffectOf(el, pseudo) : undefined;
     if (fx) o.paintEffect = fx;
     // visibility: hidden・collapse の箱は、背景・影を描かず、枠は太さを残して色を transparent にする (場所は変えない。CSS 2.1 §11.2)
     if (/^(hidden|collapse)$/.test(c('visibility'))) {
@@ -4151,22 +4269,45 @@ class HtmlImporter {
             const fc = this.cs(el, '::first-letter');
             const fl = fc('float');
             let node: LInlineLevel;
-            if (fl === 'left' || fl === 'right') {
+            // initial-letter (CSS Inline 3 §7.3): 最初の字を大きくして、数行に沈める。float の指定があれば、ただの回り込みの字
+            // (§7.3.1 の注: float が none でない箱には当たらない)
+            const il = fl === 'left' || fl === 'right' ? undefined : parseInitialLetter(fc('initial-letter'));
+            if (il) {
+              // 字の大きさ・行の高さの指定は当たらない (§7.5.1)。大きさは、組むときに行の数と書体の値から決める (§7.5.3)
+              const { fontSize: _fs, lineHeight: _lh, lineHeightPt: _lhp, ...ist } = st;
+              void [_fs, _lh, _lhp];
+              const inner: LBlock = { type: 'block', ...ist, ...this.boxStyle(el, '::first-letter'), textIndent: 0, textAlign: 'start', children: [letter] };
+              // 合わせる位置 (initial-letter-align。§7.4)。hanging・border-box は未対応 (alphabetic として組み、知らせる)
+              const av = (fc('initial-letter-align') || 'alphabetic').trim().toLowerCase();
+              if (/border-box|hanging/.test(av)) this.miss(`initial-letter-align: ${/border-box/.test(av) ? 'border-box' : 'hanging'}`);
+              const align = /border-box|hanging/.test(av) ? 'alphabetic' : (av as 'alphabetic' | 'ideographic' | 'leading');
+              const f: LFloat = { type: 'float', float: 'start', cssPlacement: true, initialLetter: { ...il, align }, children: [inner] };
+              // 余白・枠・背景は、字の箱 (回り込む範囲) が持つ (§7.5.2)。幅の指定は箱の幅 (§7.5.5)。高さは行の数で決まる
+              for (const key of ['margin', 'padding', 'border', 'backgroundColor', 'paintEffect', 'width', 'boxSizing'] as const) {
+                if (inner[key] === undefined) continue;
+                (f as unknown as Record<string, unknown>)[key] = inner[key];
+                delete inner[key];
+              }
+              delete inner.height;
+              delete inner.inlineSizing;
+              node = f as unknown as LInlineLevel;
+            } else if (fl === 'left' || fl === 'right') {
               const inner: LBlock = { type: 'block', ...st, ...this.boxStyle(el, '::first-letter'), children: [letter] };
               const f: LFloat = { type: 'float', float: fl === 'left' ? 'start' : 'end', cssPlacement: true, children: [inner] };
-              for (const key of ['margin', 'padding', 'border', 'backgroundColor', 'width', 'height', 'boxSizing'] as const) {
+              for (const key of ['margin', 'padding', 'border', 'backgroundColor', 'paintEffect', 'width', 'height', 'boxSizing'] as const) {
                 if (inner[key] === undefined) continue;
                 (f as unknown as Record<string, unknown>)[key] = inner[key];
                 delete inner[key];
               }
               node = f as unknown as LInlineLevel;
             } else {
-              const inl: LInline = { type: 'inline', ...st, children: [letter] };
+              const inl: LInline = { type: 'inline', ...st, ...(this.paintEffectOf(el, '::first-letter') ? { paintEffect: this.paintEffectOf(el, '::first-letter') } : {}), children: [letter] };
               const bg = cssColor(fc('background-color'));
               if (bg) inl.backgroundColor = bg;
               node = inl;
             }
-            const rest = k.slice(m[0].length);
+            // 沈めた最初の字と、続く内容の間の、詰める空白は消す (CSS Inline 3 §7.8.1: 回り込む行の頭をそろえる)
+            const rest = il && il.sink > 1 ? k.slice(m[0].length).replace(/^[ \t\n\r\f]+/, '') : k.slice(m[0].length);
             list.splice(i, 1, ...(m[1] ? [m[1]] : []), node, ...(rest ? [rest] : []));
             return true;
           }
@@ -4555,11 +4696,22 @@ class HtmlImporter {
     if (va === 'super' && this.opts.superShiftAh) inl.baselineShift = (cssLen(this.cs(parent)('font-size')) ?? 12) / 3;
     else if (va === 'super' || va === 'sub') inl.baselineShift = va;
     else if (cssLen(va)) inl.baselineShift = cssLen(va);
+    else if (/^[+-]?(\d+\.?\d*|\.\d+)%$/.test(va)) {
+      // 百分率は、この要素の line-height に対する割合だけ上げ下げする (CSS 2.1 §10.8.1)。line-height: normal は、書体の値 (textStyle と同じ)
+      const fams = c('font-family').split(',').map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
+      const lh = cssLen(c('line-height')) ?? (this.opts.normalLineHeight?.(fams, (parseInt(c('font-weight'), 10) || 400) >= 600) ?? 1.2) * (cssLen(c('font-size')) ?? 12);
+      const shift = (parseFloat(va) / 100) * lh;
+      if (shift) inl.baselineShift = shift;
+    }
     const bg = this.printOf(this.pg(el), 'background-color', 'background') ?? cssColor(c('background-color'));
     if (bg) inl.backgroundColor = bg;
     const box = this.boxStyle(el);
     if (box.border) inl.border = box.border;
     if (box.padding) inl.padding = box.padding;
+    // initial-letter は ::first-letter だけ (行の最初の行内の箱への指定 (CSS Inline 3 §7.3.1) は未対応。知らせる)
+    if (parseInitialLetter(c('initial-letter') || '')) this.miss('initial-letter (::first-letter 以外の箱)');
+    // box-decoration-break: clone: 行で分かれた枠の断片のそれぞれを、罫線と内側の余白で包む (CSS Fragmentation 3 §5.4)
+    if ((box.border || box.padding) && c('box-decoration-break') === 'clone') inl.boxDecorationBreak = 'clone';
     // 行の進む方向の margin は行内の空き (横書きは左右。右から左へ書く段落では入れ替わる。縦書きは上下)
     const vert = /^(vertical|sideways-rl)/.test(c('writing-mode'));
     const [ms, me] = vert ? [cssLen(c('margin-top')) ?? 0, cssLen(c('margin-bottom')) ?? 0] : [cssLen(c('margin-left')) ?? 0, cssLen(c('margin-right')) ?? 0];
@@ -4737,6 +4889,10 @@ class HtmlImporter {
     const columns: LTableColumn[] = [];
     const captions: NonNullable<LTable['captions']> = [];
     const collapse = c('border-collapse') === 'collapse';
+    /** empty-cells: hide で、罫線・背景を描かないセル */
+    const hiddenCells = new Set<LTableCell>();
+    /** そのうち、中身の無いセル (行のセルがすべてこれなら、行の高さは 0) */
+    const emptyCells = new Set<LTableCell>();
     // 行・行グループの背景: 自分の背景の無いセルに塗る (CSS 2.1 §17.5.1: 背景はセル・行・行グループ・表の順に重なる)
     const bgOf = (e: Element) => this.printOf(this.pg(e), 'background-color', 'background') ?? cssColor(this.cs(e)('background-color'));
     const paintCells = (row: LTableRow, bg: string | undefined) => {
@@ -4810,6 +4966,19 @@ class HtmlImporter {
           else if (va === 'bottom') cell.blockAlign = 'end';
           else if (va === 'baseline') cell.blockAlign = 'baseline';
           delete (cell as { margin?: unknown }).margin;
+          // empty-cells: hide (CSS 2.1 §17.6.1.1): 罫線を分ける表の、見える中身の無いセルは、罫線も背景も描かない。中身が無いのは、
+          // 回り込みも流れの中の内容 (空の要素も内容に数える) も無く、あるのは white-space の処理で消える空白だけのセル。
+          // 罫線は、太さを残して透明にする (表の組み方は変えない)。背景は、行・行グループの背景を塗った後で消す (下)
+          // visibility: hidden のセルも、見える中身の無いセル (行の背景も、その後ろには描かない)
+          if (!collapse && tc('empty-cells') === 'hide') {
+            const empty = cell.children.every((k) => typeof k === 'string' && /^(normal|nowrap|pre-line)$/.test(tc('white-space') || 'normal') && /^[ \t\n\r\f]*$/.test(k));
+            if (empty || /^(hidden|collapse)$/.test(tc('visibility'))) {
+              hiddenCells.add(cell);
+              if (empty) emptyCells.add(cell);
+              delete cell.boxShadow;
+              if (cell.border) for (const sd of Object.values(cell.border as Record<string, BorderSide | undefined>)) if (sd) sd.color = 'transparent';
+            }
+          }
           return cell;
         }),
     });
@@ -4881,6 +5050,28 @@ class HtmlImporter {
       flushCells();
     };
     walk(el, body, anon);
+    // empty-cells: hide のセル: セル・行・行グループの背景を通して、表の背景が見える (CSS 2.1 §17.5.1 の 6)。行のセルがすべて
+    // そうなら、行の高さは 0 (§17.6.1.1。セルの内側の余白・高さの指定も取らない)
+    if (hiddenCells.size) {
+      for (const row of [...header, ...body, ...footer]) {
+        for (const cell of row.cells) {
+          if (!hiddenCells.has(cell)) continue;
+          delete cell.backgroundColor;
+          delete cell.backgroundImage;
+          delete cell.backgroundClip;
+        }
+        if (row.cells.length && row.cells.every((cell) => emptyCells.has(cell) && (cell.rowSpan ?? 1) === 1)) {
+          delete row.minHeight;
+          for (const cell of row.cells) {
+            cell.children = [];
+            delete cell.height;
+            delete cell.minBlockSize;
+            if (cell.padding) cell.padding = { ...(cell.padding as Record<string, number>), top: 0, bottom: 0 };
+            if (cell.border) for (const k of ['top', 'bottom'] as const) delete (cell.border as Record<string, unknown>)[k];
+          }
+        }
+      }
+    }
     // 表の部分が表の中に reset したカウンターは、表を出るときに外す (匿名の表では、el は外の容器なので、容器を出るときに外れる)
     if (!anon) this.leaveCounters(el);
     const t: LTable = {

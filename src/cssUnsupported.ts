@@ -13,7 +13,6 @@ import { isPagedDecl, type ParsedCss } from './htmlPaged';
 
 /** 対応していないプロパティ (対応仕様説明書 HTML と CSS 編 16 章) */
 export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
-  'empty-cells',
   'border-image',
   'border-image-source',
   'border-image-slice',
@@ -42,10 +41,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'font-named-instance',
   'base-palette',
   'override-colors',
-  'box-decoration-break',
-  'hyphenate-limit-zone',
-  'hyphenate-limit-lines',
-  'hyphenate-limit-last',
   'text-wrap-mode',
   'text-wrap-style',
   'text-decoration-skip-ink',
@@ -65,7 +60,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'grid-auto-columns',
   'image-orientation',
   'image-rendering',
-  'initial-letter',
   'marker-side',
   'text-overflow',
   'overflow-block',
@@ -75,8 +69,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'tab-size',
   'text-align-all',
   'text-justify',
-  'hyphenate-character',
-  'hyphenate-limit-chars',
   'text-wrap',
   'text-underline-position',
   'text-shadow',
@@ -141,6 +133,7 @@ export const UNSUPPORTED_CSS_VALUES: Readonly<Record<string, readonly string[]>>
   'ruby-merge': ['auto'],
   // 描く範囲の text は CSS Backgrounds 4 の値 (Backgrounds 3 §2.7 の <visual-box> は border-box・padding-box・content-box)
   'background-clip': ['text'],
+  'hyphenate-limit-last': ['column', 'page', 'spread'],
 };
 
 export interface UnsupportedCssReport {

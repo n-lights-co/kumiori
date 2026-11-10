@@ -212,6 +212,11 @@ rtc, :not(rtc) > rt {
    言語ごとの圏点の位置: 中国語は字の下 (縦書きは右)、日本語・韓国語は字の上 (clreq §5.3.1 の着重号) */
 :root:lang(zh), [lang|=zh] { text-emphasis-position: under right; }
 [lang|=ja], [lang|=ko] { text-emphasis-position: over right; }
+/* CSS Inline 3 §7.4.1 (UA の既定のスタイルシート): 言語ごとの、最初の字 (initial-letter) を合わせる位置 */
+[lang]:lang(zh, ja, ko, ii) { initial-letter-align: ideographic; }
+[lang]:lang(hi, mr, ne, pi, kok, brx, mai, sd, sa) { initial-letter-align: hanging; }
+[lang]:lang('*-Latn', '*-Cyrl') { initial-letter-align: alphabetic; }
+[lang]:lang('*-Hani', '*-Hant', '*-Hans') { initial-letter-align: ideographic; }
 input, textarea, select, button { font-size: 13.3333px; }
 input { padding: 1px 2px; } textarea { padding: 2px; }
 input, textarea, select { background-color: white; }
@@ -362,6 +367,9 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'max-width': [false, 'none', 'len-none'],
   'max-height': [false, 'none', 'len-none'],
   'box-sizing': [false, 'content-box', 'raw'],
+  'box-decoration-break': [false, 'slice', 'raw'],
+  'initial-letter': [false, 'normal', 'raw'],
+  'initial-letter-align': [true, 'alphabetic', 'raw'],
   'margin-top': [false, '0px', 'len-auto'],
   'margin-right': [false, '0px', 'len-auto'],
   'margin-bottom': [false, '0px', 'len-auto'],
@@ -386,6 +394,7 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'border-spacing': [true, '0px 0px', 'raw'],
   'table-layout': [false, 'auto', 'raw'],
   'caption-side': [true, 'top', 'raw'],
+  'empty-cells': [true, 'show', 'raw'],
   'vertical-align': [false, 'baseline', 'raw'],
   // Chrome の既定の書体 (標準の書体の設定)
   'font-family': [true, '"Times New Roman"', 'raw'],
@@ -420,6 +429,12 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'overflow-wrap': [true, 'normal', 'raw'],
   'line-break': [true, 'auto', 'raw'],
   hyphens: [true, 'manual', 'raw'],
+  // 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5。どれも受け継ぐ)。hyphenate-limit-zone の百分率は行の長さに対する割合なので、% のまま受け継ぐ
+  'hyphenate-character': [true, 'auto', 'raw'],
+  'hyphenate-limit-chars': [true, 'auto', 'raw'],
+  'hyphenate-limit-lines': [true, 'no-limit', 'raw'],
+  'hyphenate-limit-last': [true, 'none', 'raw'],
+  'hyphenate-limit-zone': [true, '0px', 'len'],
   direction: [true, 'ltr', 'raw'],
   'unicode-bidi': [false, 'normal', 'raw'],
   'writing-mode': [true, 'horizontal-tb', 'raw'],
@@ -1154,6 +1169,10 @@ shorthand(['border-block-width', 'border-block-style', 'border-block-color', 'bo
 shorthand(['inset-block', 'inset-inline'], (prop, v, global) => startEnd(`${prop}-start`, `${prop}-end`, v, global));
 // アンテナハウスの拡張の -ah-border-radius (角の丸み)。border-radius と同じに読む
 shorthand(['-ah-border-radius'], (_p, v, _g, ah) => expand('border-radius', v, ah));
+// -webkit-initial-letter (接頭辞付きの古い書き方) は、initial-letter と同じに読む
+shorthand(['-webkit-initial-letter'], (_p, v) => [['initial-letter', v]]);
+// -webkit-box-decoration-break (接頭辞付きの古い書き方) は、box-decoration-break と同じに読む
+shorthand(['-webkit-box-decoration-break'], (_p, v) => [['box-decoration-break', v]]);
 // アンテナハウスの拡張の -ah-text-align・-ah-text-align-last (text-align・text-align-last と同じに読む)・角の丸み
 shorthand(['-ah-text-align', '-ah-text-align-last', '-ah-border-top-left-radius', '-ah-border-top-right-radius', '-ah-border-bottom-right-radius', '-ah-border-bottom-left-radius'], (prop, v) => [[prop.slice(4), v]]);
 shorthand(['border-radius'], (_p, v, global) => {
@@ -1862,7 +1881,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           }
           // row-gap・column-gap の %: 基準は自分の内容の箱 (包含ブロックではない) で、計算値は % のまま (CSS Box Alignment 3 §8.1)。
           // htmlImport が、flex・grid の容器の幅・高さから求める
-          if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap') && /%/.test(raw)) {
+          if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap' || p === 'hyphenate-limit-zone') && /%/.test(raw)) {
             val = raw.trim();
             break;
           }
@@ -1880,6 +1899,15 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           const heightBase = isRoot ? vh : parent?.ch;
           const base = /^(height|min-height|max-height)$/.test(p) ? heightBase : /^(top|bottom)$/.test(p) ? undefined : cbVertical && /^(margin|padding)-/.test(p) ? vh : cbw;
           const px = lengthPx(raw, ctx(base));
+          // 内容による大きさの語 (CSS Sizing 3 §3.2 の min-content・max-content・fit-content) は、語のまま。fit-content(<長さ>)
+          // (CSS Sizing 4 §3.2) は、引数を長さにして残す (百分率は、長さ・百分率だけの値と同じ基準)
+          if (px === undefined && SIZING_PROPS.has(p)) {
+            const fc = /^fit-content\(\s*([^()]+?)\s*\)$/.exec(lv);
+            const arg = fc ? lengthPx(fc[1], ctx(base)) : undefined;
+            if (fc) val = arg !== undefined && arg >= 0 ? `fit-content(${fmtPx(arg)})` : initial;
+            else val = /^(min-content|max-content|fit-content)$/.test(lv) ? lv : p === 'width' || p === 'min-width' || p === 'max-width' ? raw : initial;
+            break;
+          }
           val = px !== undefined ? fmtPx(px) : p === 'height' || p === 'min-height' || p === 'max-height' ? initial : raw;
           break;
         }
@@ -2075,15 +2103,18 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'column-rule-style': BORDER_STYLE,
     direction: 'ltr rtl',
     hyphens: 'none manual auto',
-    'text-align': 'start end left right center justify match-parent -webkit-center -webkit-left -webkit-right -internal-center',
+    'hyphenate-limit-last': 'none always column page spread',
+    'text-align': 'start end left right center justify justify-all match-parent -webkit-center -webkit-left -webkit-right -internal-center',
     'text-align-last': 'auto start end left right center justify match-parent',
     'white-space': 'normal pre nowrap pre-wrap pre-line break-spaces',
     'list-style-position': 'inside outside',
     'box-sizing': 'content-box border-box',
+    'box-decoration-break': 'slice clone',
     visibility: 'visible hidden collapse',
     'content-visibility': 'visible auto hidden',
     'border-collapse': 'collapse separate',
     'table-layout': 'auto fixed',
+    'empty-cells': 'show hide',
     'column-span': 'none all',
     'column-fill': 'auto balance',
     'text-autospace': 'normal no-autospace auto ideograph-alpha ideograph-numeric punctuation insert replace',
@@ -2093,12 +2124,35 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
   }).map(([k, v]) => [k, new Set(v.split(' '))]),
 );
 
+/**
+ * initial-letter の値 (CSS Inline 3 §7.3) を、字の大きさ (行の数) と沈める行の数にする。normal・読めない値は undefined。
+ * 沈める行の数を省くと drop (大きさを切り捨てた整数)、raise は 1
+ */
+export function parseInitialLetter(v: string): { size: number; sink: number } | undefined {
+  const w = v.trim().toLowerCase().split(/\s+/);
+  if (w.length < 1 || w.length > 2) return undefined;
+  const num = (x: string) => (/^\+?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/.test(x) ? parseFloat(x) : undefined);
+  const kw = w.find((x) => x === 'drop' || x === 'raise');
+  const nums = w.filter((x) => x !== kw);
+  if (kw ? nums.length !== 1 : nums.length < 1) return undefined;
+  const size = num(nums[0]);
+  if (size === undefined || !(size >= 1)) return undefined;
+  if (kw) return { size, sink: kw === 'raise' ? 1 : Math.floor(size) };
+  if (nums.length === 1) return { size, sink: Math.floor(size) };
+  const sink = num(nums[1]);
+  if (sink === undefined || !Number.isInteger(sink) || sink < 1) return undefined;
+  return { size, sink };
+}
+
+/** 箱の大きさの性質 (内容による大きさの語を取る。CSS Sizing 3 §3.1) */
+const SIZING_PROPS = new Set(['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height']);
+
 /** 値が読めるかを調べるための、仮の長さの基準 */
 const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 
 /** 1 語だけを取るキーワードの性質 */
 const SINGLE_KEYWORD = new Set([
-  'float', 'clear', 'position', 'visibility', 'box-sizing', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens',
+  'float', 'clear', 'position', 'visibility', 'box-sizing', 'box-decoration-break', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens', 'hyphenate-limit-last',
   'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'text-spacing-trim', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style',
 ]);
 
@@ -2119,6 +2173,10 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   // always (Fragmentation 4 §3.1: いちばん近い断片化の文脈で改ページ・改段) は、ページでは page と同じ
   if (/^break-(before|after)$/.test(prop)) return /^(auto|avoid|avoid-page|avoid-column|page|column|left|right|recto|verso|always)$/i.test(v.trim());
   if (prop === 'break-inside') return /^(auto|avoid|avoid-page|avoid-column)$/i.test(v.trim());
+  // initial-letter (CSS Inline 3 §7.3): normal | <数 1 以上> <整数 1 以上> | <数 1 以上> && [ drop | raise ]?
+  if (prop === 'initial-letter') return v.trim().toLowerCase() === 'normal' || parseInitialLetter(v) !== undefined;
+  // initial-letter-align (§7.4): [ border-box? [ alphabetic | ideographic | hanging | leading ]? ]!
+  if (prop === 'initial-letter-align') return /^(border-box(\s+(alphabetic|ideographic|hanging|leading))?|alphabetic|ideographic|hanging|leading)$/i.test(v.trim());
   if (prop === 'content') {
     // ブラウザが知らない関数 (leader()・target-counter() など) を含む content は読めない (自前の読み取り htmlPaged で扱う)
     const bare = v.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '"s"');
@@ -2200,6 +2258,17 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
     case 'orphans':
     case 'widows':
       return int.test(s0) && parseInt(s0, 10) >= 1;
+    case 'hyphenate-character':
+      // auto | <string> (Text 4 §6.3.2)
+      return s0 === 'auto' || /^("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')$/.test(v.trim());
+    case 'hyphenate-limit-chars': {
+      // [ auto | <integer [0,∞]> ]{1,3} (Text 4 §6.3.4)
+      const ws = tokens(s0);
+      return ws.length >= 1 && ws.length <= 3 && ws.every((w) => w === 'auto' || (int.test(w) && parseInt(w, 10) >= 0));
+    }
+    case 'hyphenate-limit-lines':
+      // no-limit | <integer [0,∞]> (Text 4 §6.3.5)
+      return s0 === 'no-limit' || (int.test(s0) && parseInt(s0, 10) >= 0);
     case 'column-count':
       return s0 === 'auto' || (int.test(s0) && parseInt(s0, 10) >= 1);
     case 'line-height':
@@ -2221,6 +2290,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   if (kind === 'len' || kind === 'len-auto' || kind === 'len-none' || kind === 'len-normal' || kind === 'border-width') {
     const s = v.trim().toLowerCase();
     if (/^(auto|none|normal|thin|medium|thick|fit-content|min-content|max-content)$/.test(s)) return true;
+    // fit-content(<長さ・百分率>) (CSS Sizing 4 §3.2): 大きさの性質だけ。負の値は読めない
+    const fc = SIZING_PROPS.has(prop) ? /^fit-content\(\s*([^()]+?)\s*\)$/.exec(s) : null;
+    if (fc) return (lengthPx(fc[1], { ...ctx, pct: 100 }) ?? -1) >= 0;
     return lengthPx(s, { ...ctx, pct: 100 }) !== undefined;
   }
   return true;

@@ -24,6 +24,13 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `width` と `max-width` の両方がある `display: block` の画像で、包む箱を画像の幅にした
   - 名前付きページ: 流れの外の箱 (絶対配置・回り込みなど) だけの最初のページを作らない (CSS Page 3 §8.1)
   - 印刷に関わらないプロパティ (`cursor`・`transition-*` など) を、未対応の CSS の警告に出さない
+  - `box-decoration-break: clone` (CSS Fragmentation 3 §5.4) に対応。ページ・段で分かれた囲みの断片ごと、行で分かれた行内の枠 (`span` の罫線・背景) の断片ごとに、罫線と内側の余白を付け直す (縦書きも。`-webkit-box-decoration-break` も読む)。初期値 `slice` の結果は変わらない
+  - 内容による大きさ (CSS Sizing 3 §3.2): `width`・`min-width`・`max-width` (縦書きは `height`・`min-height`・`max-height`) の `min-content`・`max-content`・`fit-content` と、`fit-content(<長さ>)` (CSS Sizing 4 §3.2) に対応 (ブロックの箱と、その回り込み・絶対配置・inline-block。横並びの flex の項目の `width` の語は `flex-basis` の語として読む)。block の向きの `height` の語は auto と同じ。flex・grid の容器と表の語の大きさは未対応で、警告で知らせる。**`fieldset` は、HTML の既定のスタイル (`min-inline-size: min-content`) のとおり、中身の最も狭い幅より狭くならない**
+  - `initial-letter` (CSS Inline 3 §7。ドロップキャップ): `::first-letter` の字を、行の数で決めた大きさにして沈める (`initial-letter: 3`・`3 2`・`3 raise`、`initial-letter-align: alphabetic | ideographic | leading`)。字の大きさと位置は、段落の `line-height` と書体の大文字の高さ・字の枠から決める。和文 (`lang` が `ja`・`zh`・`ko`) は字の枠で合わせる。縦書きも。`::first-letter` 以外への指定、`initial-letter-align: hanging | border-box`、`initial-letter-wrap` は未対応
+  - `empty-cells: hide` (CSS 2.1 §17.6.1.1): 罫線を分ける表の、中身の無いセルの罫線と背景を描かない。セルがすべて中身の無い行は高さ 0
+  - `vertical-align` の百分率 (CSS 2.1 §10.8.1): 行内の箱を、その要素の `line-height` に対する割合だけ上げ下げする
+  - `text-align: justify-all` (CSS Text 3 §6.1): 最後の行も両端をそろえる
+  - XSL-FO: 罫線・余白の `.conditionality="retain"` を、入れ子の箱の両方に指定したとき、外側の断片が、内側の断片の末尾の罫線・余白まで包むよう直した (前は、内側の罫線・余白の分だけ外側の断片が短かった)
   - ルビの配置: `ruby-position` (`under` で親文字の下、縦書きは左。`alternate` との組)、`ruby-align` (`start`・`center`・`space-between`・`space-around`)、`ruby-overhang` (`auto` を明示すると前後の仮名・約物に掛ける)、`ruby-merge: merge` (グループルビ) に対応。指定の無いルビの置く側・掛け方は変わらない
   - ルビの字の配り方の既定を、`ruby-align` の初期値 `space-around` (CSS Ruby 1 §4.3) にした。**欧文・注音字母のルビの既定の並べ方が変わる**: 字の間を空けずに、親文字の中央にそろえる (前は字ごとに間を空けていた)。和文 (漢字・仮名) のルビと親文字は前と同じ。XSL-FO のルビは変わらない
   - `font-variant-east-asian` に対応 (`jis78`・`jis83`・`jis90`・`jis04`・`simplified`・`traditional`・`full-width`・`proportional-width`・`ruby`。フォントの OpenType の機能で字形と字の幅を選ぶ。一括指定の `font-variant` からも読む)
@@ -34,6 +41,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - 変形 (`transform` の 2D の関数 `translate()`・`scale()`・`rotate()`・`skew()`・`matrix()` とその並び、`transform-origin`・`transform-box`、`translate`・`rotate`・`scale`) と、不透明度 (`opacity`。箱と中身をまとめて半透明にする。PDF は透明のグループ) に対応。どちらも描くときだけに効き、組版 (位置・大きさ・ページ分け) は変えない。3D の変換は未対応として知らせる
   - 複数の背景 (`background-image`・`background` のカンマ区切りの層。層ごとの位置・大きさ・繰り返し)、`background-clip`・`background-origin` (`border-box`・`padding-box`・`content-box`。背景の色を塗る範囲にも効く) に対応。`background-attachment: fixed` と `background-clip: text` は未対応として知らせる
   - `object-fit` の `none`・`scale-down` と `object-position` (画像の枠の中での位置)、`list-style-image` (リストの記号の画像) に対応
+  - ハイフネーションの制限 (CSS Text 4 §6.3): `hyphenate-character` (行末に出す字。ソフトハイフンで分けた行にも)、`hyphenate-limit-chars` (語・分け目の前後の最小の字数)、`hyphenate-limit-lines` (ハイフンで終わる行が続く数の上限)、`hyphenate-limit-last: always` (段落の最後の行の手前を分けない)、`hyphenate-limit-zone` に対応。`hyphenate-limit-last` の `column`・`page`・`spread` は未対応 (警告に出す)
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)
@@ -107,6 +115,13 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `font-variant="small-caps"` (スモールキャップ) と `word-spacing` (語の間の空白に足す長さ) を読む (XSL 1.1 §7.9.8・§7.17.8)
   - `glyph-orientation-vertical` の `auto`・`0deg` (すべての字を立てる)・`90deg` (すべての字を横に倒す) を読む (XSL 1.1 §7.29.3)。180・270 度と `glyph-orientation-horizontal` の 0 度以外は、読まずに報告する
   - `relative-position="relative"` (横書きの `fo:block` をずらして描く)、`visibility` の `hidden`・`collapse` (場所を残して描かない)、絶対配置の `fo:block-container` の負の `z-index` (本文の背面に描く) を読む (XSL 1.1 §7.13.5・§7.30.17・§7.30.18)
+  - ページ番号の桁区切り (`fo:page-sequence` の `grouping-separator`・`grouping-size`) を読む (XSL 1.1 §7.26.2・§7.26.3。「1,234」)。`letter-value` の値を受け付ける (§7.26.4)
+  - 目次の行: `last-line-end-indent` を読む (XSL 1.1 §7.16.3)。折り返した行を `end-indent` の手前で終え、ページ番号のある最後の行だけを端まで伸ばせる (`text-align-last="justify"` + `end-indent` + 負の `last-line-end-indent`)。`leader-alignment` の `reference-area`・`page` を読む (§7.22.1): 点のリーダーの周期を、本文の領域 (段・表のセル)・ページの端からの格子に合わせる
+  - `fo:initial-property-set` を読む (XSL 1.1 §6.6.4): `fo:block` の最初の行にだけ、フォント・`color`・`letter-spacing`・`word-spacing`・`text-decoration`・`background-color` を当てる。`text-transform`・`font-variant`・`line-height`・罫線・`padding` などは読まずに報告する
+  - 変更バー (`fo:change-bar-begin`・`fo:change-bar-end`) を読む (XSL 1.1 §6.13.2・§6.13.3): 始まりから終わりまでの行の横に線を引く (入れ子・重なった範囲、段組、縦書き)。`change-bar-color`・`change-bar-offset`・`change-bar-placement` (`start`・`end`・`left`・`right`・`inside`・`outside`・`alternate`)・`change-bar-style`・`change-bar-width`
+  - `fo:retrieve-table-marker` を読む (XSL 1.1 §6.13.7): 表の見出し・フッターの中に、その表のそのページ (段) の部分にある `fo:marker` の中身を出す (帳票の「前ページからの繰越」「小計」、表の「(続き)」)。`retrieve-position-within-table`・`retrieve-boundary-within-table` のすべての値。取り出した中身で見出し・フッターの高さが変われば、そのページに入る行の数も変わる。`fo:table` の子として書く形は未対応 (報告する)
+  - ハイフネーションの特性 `hyphenation-character`・`hyphenation-push-character-count`・`hyphenation-remain-character-count`・`hyphenation-ladder-count` に対応。`country` を `language` と合わせて規則の選び分けに使う (`language="en" country="GB"` は英国式。**これまで country を無視して米国式で分けていた文書は、分かれ方が変わる**)。`hyphenation-keep` の `column`・`page` は未対応 (警告に出す)
+  - **ハイフネーションで分けた行の終わりの字を、仕様モード (`--compat spec`。既定) では U+2010 にした** (XSL 1.1 §7.10.5 の `hyphenation-character` の初期値。これまでは U+002D)。字の幅が変わるので、`hyphenate="true"` の文書は行の分かれ方が変わることがある。互換モード (`--compat antenna`) と HTML は U+002D のまま。U+002D にするには `hyphenation-character="-"` と書く
 - **中国語 (繁体字) の句読点**: 字の枠の中央にある句読点 (繁体字の書体の `、。，．`) を、後ろの二分を詰めて次の字と重ねない (`。」`・`，」`・`、）` など)。句読点とコロン類 (`：；`) を終わり括弧類として詰めるか中点類として詰めるかは、書体の字形の墨の位置で決める (CSS Text 4 §8.5.3。簡体字の書体の、枠の左下のコロン類は終わり括弧類)。日本語の書体の結果は変わらない
 - **縦書きの句読点 (繁体字の書体)**: 書体に `vert` があるのに句読点を替えないとき、既定の字形 (枠の中央) のまま置く (Unicode の縦書き用字形 = 右上に寄った字形に替えない)
 - **中国語の圏点の位置の既定**: 中国語 (`lang` が `zh`) の圏点は、指定が無ければ字の下 (縦書きは右) に付ける (CSS Text Decoration 3 の付録 B の既定のスタイルシート: `:root:lang(zh), [lang|=zh] { text-emphasis-position: under right; }`)
