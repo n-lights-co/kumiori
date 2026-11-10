@@ -10,8 +10,8 @@ import path from 'node:path';
 import { parseCss } from '../src/htmlPaged';
 import { isPrintIrrelevantCssProperty, splitStyleAttribute, summarizeCounts, unsupportedCssReport, UNSUPPORTED_CSS_PROPERTIES } from '../src/cssUnsupported';
 import { DEFAULT_FONTS, typesetFo, typesetHtml, type FontSpec } from '../src/index';
+import { ensureFonts, fontDir } from './helpers';
 
-const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
 const fileOf = (spec: FontSpec) => path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
 const loadFont = async (spec: FontSpec) => {
   const f = fileOf(spec);
@@ -20,15 +20,8 @@ const loadFont = async (spec: FontSpec) => {
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
 };
 beforeAll(async () => {
-  fs.mkdirSync(fontDir, { recursive: true });
-  for (const spec of DEFAULT_FONTS.base) {
-    const file = fileOf(spec);
-    if (fs.existsSync(file)) continue;
-    const res = await fetch(spec.urls.find((u) => /^https:/.test(u))!);
-    if (!res.ok) throw new Error(`font download failed: ${res.status}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-  }
-});
+  await ensureFonts(DEFAULT_FONTS.base);
+}, 300_000);
 
 describe('未対応の CSS の数え上げ (cssUnsupported)', () => {
   it('style 属性の宣言を分ける (括弧・引用符の中の ; と : は区切りにしない)', () => {

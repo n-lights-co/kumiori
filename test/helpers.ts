@@ -9,45 +9,86 @@ import { FontManager } from '../src/fontManager';
 import { Measurer } from '../src/measurer';
 import { LayoutEngine } from '../src/layoutEngine';
 import { FONT_SPECS, LATIN_SPECS, MONO_SPECS } from '../src/fontMapping';
-import type { Area, LBlockLevel, LDocument, PageMaster, WritingMode, LPageSequence } from '../src/types';
+import type { FontSpec, Area, LBlockLevel, LDocument, PageMaster, WritingMode, LPageSequence } from '../src/types';
 
 const FONT_URL = 'https://fonts.gstatic.com/s/notoserifjp/v34/xn71YHs72GKoTvER4Gn3b5eMRtWGkp6o7MjQ2bwxOubA.ttf';
 export const FAMILY = 'Noto Serif JP';
 
-export async function fontBuffer(): Promise<ArrayBuffer> {
-  const dir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
-  const file = path.join(dir, 'NotoSerifJP-Regular.ttf');
-  if (!fs.existsSync(file)) {
-    fs.mkdirSync(dir, { recursive: true });
-    const res = await fetch(FONT_URL);
-    if (!res.ok) throw new Error(`font download failed: ${res.status}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+/** テストの書体の置き場 (.cache/fonts。KUMIORI_FONT_DIR で上書き可) */
+export const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
+
+/** 同じワーカーの中で、同じファイルを 2 度取りに行かないための控え (ファイルの場所 → 取得の約束) */
+const fetching = new Map<string, Promise<string>>();
+
+/**
+ * テストの書体を置き場に用意して、その場所を返す。無ければ url から取得して置く。
+ * テストの書体の取得は、すべてここを通す (PKG-06): vitest はテストのファイルごとに別のワーカーで並列に走るので、
+ * 置き場へ直接書くと、書きかけのファイルを別のワーカーが「ある」と見て読んでしまう。
+ * 一時ファイル (ワーカーごと・呼び出しごとに別の名前) に書き終えてから名前を変える (同じディレクトリの中の rename は、途中の状態が見えない) ので、
+ * 置き場にある名前のファイルは、いつも全体が書かれている。2 つのワーカーが同時に取りに行ったときは、どちらも同じ中身を取り、後の rename が前のものを置き換えるだけ
+ */
+export function cachedFont(name: string, url: string): Promise<string> {
+  const file = path.join(fontDir, name);
+  if (fs.existsSync(file)) return Promise.resolve(file);
+  let p = fetching.get(file);
+  if (!p) {
+    p = (async () => {
+      fs.mkdirSync(fontDir, { recursive: true });
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`font download failed: ${res.status} ${url}`);
+      const data = Buffer.from(await res.arrayBuffer());
+      const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+      try {
+        fs.writeFileSync(tmp, data);
+        fs.renameSync(tmp, file);
+      } catch (e) {
+        fs.rmSync(tmp, { force: true });
+        throw e;
+      }
+      return file;
+    })();
+    fetching.set(file, p);
+    // 失敗したら控えを消す (次の呼び出しで取り直せるように)
+    p.catch(() => fetching.delete(file));
   }
-  const b = fs.readFileSync(file);
-  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+  return p;
+}
+
+const toArrayBuffer = (b: Buffer): ArrayBuffer => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+
+/** 既定の書体の、置き場でのファイルの名前 (urls の、https でない方の名前。無ければ配信元の URL の末尾) */
+export const fontFileName = (spec: FontSpec): string => path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]);
+
+/** 既定の書体 (FontSpec) を置き場に用意する (無いものだけ取得する) */
+export async function ensureFonts(specs: readonly FontSpec[]): Promise<void> {
+  await Promise.all(
+    specs.map((spec) => {
+      const url = spec.urls.find((u) => /^https:/.test(u));
+      if (!url) throw new Error(`no download url: ${spec.family}`);
+      return cachedFont(fontFileName(spec), url);
+    }),
+  );
+}
+
+/** 置き場の書体を読む、API の loadFont (ネットワークを使わない。置き場に無ければ undefined。先に ensureFonts で用意しておく) */
+export const loadCachedFont = async (spec: FontSpec): Promise<ArrayBuffer | undefined> => {
+  const f = path.join(fontDir, fontFileName(spec));
+  return fs.existsSync(f) ? toArrayBuffer(fs.readFileSync(f)) : undefined;
+};
+
+export async function fontBuffer(): Promise<ArrayBuffer> {
+  return toArrayBuffer(fs.readFileSync(await cachedFont('NotoSerifJP-Regular.ttf', FONT_URL)));
 }
 
 /**
  * 既定の書体 (src/fontMapping.ts の FONT_SPECS・LATIN_SPECS・MONO_SPECS) のファイルを読む。
- * .cache/fonts (KUMIORI_FONT_DIR で上書き可) に無ければ配信元から取得して置く。
- * 他のテストのファイルが同時に同じ書体を取りに行っても、書きかけのファイルを読まないように、一時ファイルに書いてから名前を変える。
+ * 置き場に無ければ配信元から取得して置く (cachedFont)
  */
 export async function defaultFontBuffer(name: string): Promise<ArrayBuffer> {
-  const dir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
-  const file = path.join(dir, name);
-  if (!fs.existsSync(file)) {
-    const spec = [...FONT_SPECS, ...LATIN_SPECS, ...MONO_SPECS].find((s) => s.urls.some((u) => !/^https:/.test(u) && path.basename(u) === name));
-    const url = spec?.urls.find((u) => /^https:/.test(u));
-    if (!url) throw new Error(`not a default font: ${name}`);
-    fs.mkdirSync(dir, { recursive: true });
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`font download failed: ${res.status} ${url}`);
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
-    fs.renameSync(tmp, file);
-  }
-  const b = fs.readFileSync(file);
-  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+  const spec = [...FONT_SPECS, ...LATIN_SPECS, ...MONO_SPECS].find((s) => s.urls.some((u) => !/^https:/.test(u) && path.basename(u) === name));
+  const url = spec?.urls.find((u) => /^https:/.test(u));
+  if (!url) throw new Error(`not a default font: ${name}`);
+  return toArrayBuffer(fs.readFileSync(await cachedFont(name, url)));
 }
 
 export async function makeEngine() {
@@ -85,16 +126,7 @@ export function walk(a: Area, f: (a: Area) => void) {
   walkAreas(a, (x) => void f(x as Area));
 }
 
-/** 数式の書体 (STIX Two Math)。.cache/fonts に無ければ Google Fonts 配信元から取得する */
+/** 数式の書体 (STIX Two Math)。置き場に無ければ Google Fonts 配信元から取得する */
 export async function mathFontBuffer(): Promise<ArrayBuffer> {
-  const dir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
-  const file = path.join(dir, 'STIXTwoMath-Regular.ttf');
-  if (!fs.existsSync(file)) {
-    fs.mkdirSync(dir, { recursive: true });
-    const res = await fetch('https://fonts.gstatic.com/s/stixtwomath/v12/pONg1hwwL_6M9EkZySr_yteUi1o.ttf');
-    if (!res.ok) throw new Error(`font download failed: ${res.status}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-  }
-  const b = fs.readFileSync(file);
-  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+  return toArrayBuffer(fs.readFileSync(await cachedFont('STIXTwoMath-Regular.ttf', 'https://fonts.gstatic.com/s/stixtwomath/v12/pONg1hwwL_6M9EkZySr_yteUi1o.ttf')));
 }

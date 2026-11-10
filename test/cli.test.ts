@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { PDFDict, PDFDocument, PDFName, PDFRawStream } from 'pdf-lib';
-import { FONT_SPECS, LATIN_SPECS, MONO_SPECS } from '../src/fontMapping';
+import { FONT_SPECS, LATIN_SPECS, MATH_SPEC, MONO_SPECS } from '../src/fontMapping';
 import { ensureFonts, fontDir } from './helpers';
 
 const root = path.resolve(__dirname, '..');
@@ -32,7 +32,8 @@ async function run(input: string, ...args: string[]) {
 beforeAll(async () => {
   // Windows の npm は npm.cmd で、Node は .cmd・.bat をシェル無しでは起動しない (Node 18.20.2・20.12.2 からの変更) ので、Windows ではシェルを通す
   execFileSync('npm', ['run', '--silent', 'build:cli'], { cwd: root, stdio: 'ignore', shell: process.platform === 'win32' });
-  await ensureFonts([...FONT_SPECS, ...LATIN_SPECS, ...MONO_SPECS]);
+  // 数式の書体も置いておく (無いと、MathML のテストでコマンドがネットワークから取り、利用者のキャッシュ (~/.cache/kumiori/fonts) に保存する)
+  await ensureFonts([...FONT_SPECS, ...LATIN_SPECS, ...MONO_SPECS, MATH_SPEC]);
   work = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-cli-'));
 }, 300_000);
 

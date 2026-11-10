@@ -15,10 +15,9 @@ import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { toSfnt, webFontKind } from '../src/webFont';
 import { cssRefs, cssStringChars, documentChars, parseUnicodeRange, rebaseFontFaceUrls } from '../src/resources';
 import { collectionFaces } from '../src/fontLoader';
-import { defaultFontBuffer } from './helpers';
+import { defaultFontBuffer, cachedFont, ensureFonts, fontDir } from './helpers';
 import { DEFAULT_FONTS, typeset, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
 
-const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
 
 /** sfnt の表 (名前 → 中身) */
 function tablesOf(buf: ArrayBuffer): Map<string, Uint8Array> {
@@ -109,14 +108,7 @@ function glyphDiffs(a: ArrayBuffer | Uint8Array, b: ArrayBuffer | Uint8Array): n
 /** Google Fonts の配信の WOFF2 (glyf・loca を変換したもの)。Lobster の欧文 (latin) の部分。.cache/fonts に無ければ取得する */
 const LOBSTER_WOFF2 = 'https://fonts.gstatic.com/s/lobster/v32/neILzCirqoswsqX9zoKmMw.woff2';
 async function lobsterWoff2(): Promise<Uint8Array> {
-  const file = path.join(fontDir, 'Lobster-latin.woff2');
-  if (!fs.existsSync(file)) {
-    const res = await fetch(LOBSTER_WOFF2);
-    if (!res.ok) throw new Error(`font download failed: ${res.status} ${LOBSTER_WOFF2}`);
-    fs.mkdirSync(fontDir, { recursive: true });
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-  }
-  return new Uint8Array(fs.readFileSync(file));
+  return new Uint8Array(fs.readFileSync(await cachedFont('Lobster-latin.woff2', LOBSTER_WOFF2)));
 }
 
 /** WOFF2 の表の目録の 1 つ (テストの組み立て用。flags・名前・長さ・変換した長さと、展開した中身) */
@@ -306,7 +298,7 @@ describe('@font-face の WOFF・WOFF2 で組む', () => {
     return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
   };
   beforeAll(async () => {
-    for (const s of DEFAULT_FONTS.base) if (!fs.existsSync(fileOf(s))) await defaultFontBuffer(path.basename(fileOf(s)));
+    await ensureFonts(DEFAULT_FONTS.base);
   }, 300_000);
   const firstFamily = (r: Awaited<ReturnType<typeof typeset>>) => {
     let f: string | undefined;
@@ -389,6 +381,7 @@ describe('@font-face の書体のファイルの突き合わせ (CSS Fonts 4 §4
   let arimo = 0;
   let tinos = 0;
   beforeAll(async () => {
+    await ensureFonts(DEFAULT_FONTS.base);
     const ref = await typeset(`<style>@font-face { font-family: A; src: url(a.ttf) } @font-face { font-family: B; src: url(t.ttf) }</style>${body}`, {
       loadFont,
       files: [{ name: 'a.ttf', data: font('Arimo-Regular.ttf') }, { name: 't.ttf', data: font('Tinos-Regular.ttf') }],
@@ -396,7 +389,7 @@ describe('@font-face の書体のファイルの突き合わせ (CSS Fonts 4 §4
     arimo = widthOf(ref, 'A');
     tinos = widthOf(ref, 'B');
     expect(Math.abs(arimo - tinos)).toBeGreaterThan(5);
-  }, 120_000);
+  }, 300_000);
   it('<style> の url(noto/Regular.ttf) と url(roboto/Regular.ttf) を、パスで区別する (ファイル名だけで取り違えない)', async () => {
     for (const fs2 of [files, [...files].reverse()]) {
       const r = await typeset(`<style>@font-face { font-family: A; src: url(noto/Regular.ttf) } @font-face { font-family: B; src: url("./roboto/Regular.ttf?v=2#x") }</style>${body}`, { loadFont, files: fs2 });
@@ -448,6 +441,9 @@ describe('unicode-range の絞り込みに使う字 (CSS Fonts 4 §4.5)', () => 
     const b = fs.readFileSync(fileOf(spec));
     return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
   };
+  beforeAll(async () => {
+    await ensureFonts(DEFAULT_FONTS.base);
+  }, 300_000);
   // 日 (U+65E5)・第 (U+7B2C)・α (U+03B1)・… (U+2026) のそれぞれだけに使う書体
   const faces = ['65E5', '7B2C', '03B1', '2026', '0-7F'].map((r) => `@font-face { font-family: W; src: url(https://example.test/u${r}.woff2); unicode-range: U+${r} }`).join('\n');
   /** 問い合わせた書体 (u65E5 など) */
