@@ -182,6 +182,7 @@ export function isInlineChild(c: unknown): c is InlineChild {
  * glue で先に弾く) と、目印の後ろに来た段落の最初の字だけで、文頭 (UAX #14 の sot) では改行しない
  */
 const LETTER = /^[\p{L}\p{N}\p{M}]$/u;
+const COMBINING = /^\p{M}$/u;
 function canBreakAtoms(a: Atom, b: Atom): boolean {
   // CSS の leader(): 前の内容の後ろ (空白の後) で改行してよい。leader が入らなければ、leader と後ろの内容を次の行に置く (Content 3 §2.5.3)
   if (b.kind === 'leader' && b.leader?.css && a.kind === 'glyph' && /^\p{Zs}$/u.test(a.last)) return true;
@@ -192,7 +193,9 @@ function canBreakAtoms(a: Atom, b: Atom): boolean {
   // word-break (Text 3 §5.2): break-all は字と字の間でも改行してよい。keep-all は字と字の間では改行しない
   const wb = b.st.wordBreak ?? a.st.wordBreak;
   // break-all は字を ID として扱う (Text 3 §5.1)。ID でも、行頭に置けない字 (小書きの仮名・長音記号など) の前では改行しない
-  if (wb && wb !== 'normal' && a.kind === 'glyph' && b.kind === 'glyph' && !a.isSpace && !b.isSpace && LETTER.test(a.last) && LETTER.test(b.first))
+  // 結合文字・異体字セレクタ (General_Category が M の字) の前は、字の単位 (基底の字 + 結合文字。UAX #29 GB9・GB9a) の中なので、break-all でも分けない
+  // (break-all が ID として扱うのは字の単位。Text 3 §5.1)。UAX #14 の機会 (LB9: 結合文字の前は改行しない) に任せる
+  if (wb && wb !== 'normal' && a.kind === 'glyph' && b.kind === 'glyph' && !a.isSpace && !b.isSpace && LETTER.test(a.last) && LETTER.test(b.first) && !COMBINING.test(b.first))
     return wb === 'break-all' && !isLineHeadProhibited(b.first, b.st.looseLineStart) && !isLineEndProhibited(a.last);
   return b.lbBefore ?? false;
 }

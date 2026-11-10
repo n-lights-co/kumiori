@@ -5,7 +5,7 @@
  * inline の種類ごとの処理は flattenText・flattenInlineElement・… に分かれ、flattenInline がそれらを順に呼ぶ
  */
 import type { LFootnote, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, WritingMode } from './types';
-import type { GlyphMetrics, Measurer } from './measurer';
+import { isVariationSequence, variationUnits, type GlyphMetrics, type Measurer } from './measurer';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
 import { JT_DATA, JT_VALUES } from './unicodeData';
@@ -211,13 +211,18 @@ function flattenText(c: string, cx: FlattenCtx): void {
   }
   // つながる字 (アラビア文字など) の並びは 1 単位にする (横書き)
   const joinable = wm === 'horizontal-tb' && JOINING_HINT.test(c);
-  const units = joinable
+  const units1 = joinable
     ? joiningUnits(Array.from(units0), (seq) => {
         const fonts = Array.from(seq, (x) => m.glyph(x, runStyle(st), wm).font);
         return fonts.every((f) => f === fonts[0]);
       })
     : units0;
-  for (const ch of units) {
+  // 基底の字の直後の異体字セレクタ (U+FE00〜FE0F・U+E0100〜E01EF) は、基底の字と 1 単位 (別の atom にしない)
+  const units = variationUnits(units1);
+  for (const ch0 of units) {
+    // 基底の字と異体字セレクタの並び: 字の種類で決まる処理 (禁則・約物の詰め・和欧間のアキ・字間) は基底の字で行い、描く文字列だけを並びにする
+    const variation = ch0.length > 1 && isVariationSequence(ch0);
+    const ch = variation ? String.fromCodePoint(ch0.codePointAt(0)!) : ch0;
     if (joinable && [...ch].length > 1 && JOINING_HINT.test(ch)) {
       // つながる字の並び: まとめて測り、描く (書体の字形の置き換えで、語頭・語中・語尾の形と必須の合字が決まる)
       const g = { ...m.glyph(ch, runStyle(st), wm), draw: ch };
@@ -225,7 +230,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       out.push({ kind: 'glyph', first: chars[0], last: chars[chars.length - 1], advance: g.advance, isSpace: false, runId: state.run, st, bg, g });
       continue;
     }
-    if (ligSt && ch.length > 1 && !/[\uD800-\uDBFF]/.test(ch[0])) {
+    if (!variation && ligSt && ch.length > 1 && !/[\uD800-\uDBFF]/.test(ch[0])) {
       // 合字の字形: 字の並びをまとめて、liga を当てて測り、描く
       const g = { ...m.glyph(ch, runStyle(ligSt), wm), draw: ch };
       out.push({ kind: 'glyph', first: ch[0], last: ch[ch.length - 1], advance: g.advance, isSpace: false, runId: state.run, st: ligSt, bg, g });
@@ -250,7 +255,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       out.push({ kind: 'box', first: ' ', last: ' ', advance: 0, isSpace: true, runId: state.run, st, bg, box: { node: newNode('block', wm, {}), adv: 0, cross: 0, above: 0, below: 0 } });
       continue;
     }
-    const g = m.glyph(ch, runStyle(st), wm);
+    const g = variation ? m.variationGlyph(ch0, runStyle(st), wm) : m.glyph(ch, runStyle(st), wm);
     // 結合文字 (Mn・Me) の前には字間を空けない (letter-spacing は字の単位 (書記素クラスタ) の間に空ける。CSS Text 3 §8.2)
     const mark = /^[\p{Mn}\p{Me}]$/u.test(ch);
     // 前の字の後ろの字間を、結合文字の後ろへ移す (字の単位の後ろに空ける)
