@@ -63,6 +63,7 @@ import type {
   Rotation,
   ConditionalPageMaster,
   TextStyle,
+  HyphenLimits,
   WritingMode,
   WritingFlip,
 } from './types';
@@ -498,6 +499,53 @@ class Importer {
    * それが inherit の意味 (XSL 1.1 §5.9.10.1: 親の計算値) になる。inherit を知らない値として既定に落としたり報告したりしないための共通の層。
    * 継承されない性質 (reference-orientation など) の inherit は親の計算値を取らないと誤るので、refOrientation のように別に親を見る
    */
+  /**
+   * 分綴の特性を、親から受け継いだ組 (parent) に重ねる。この要素に指定が無ければ undefined (親の組をそのまま受け継ぐ)。
+   *  - hyphenation-character (XSL 1.1 §7.10.5): 行末に出す字 (1 字)
+   *  - hyphenation-push-character-count (§7.10.6): 切れ目の後 (次の行へ送る側) の最小の字数。hyphenation-remain-character-count (§7.10.7): 前の最小の字数。
+   *    どちらも 1 以上の整数に丸める (“rounded to the nearest integer value greater than or equal to 1”)
+   *  - hyphenation-ladder-count (§7.16.2): 続けて分綴する行の数の上限 (no-limit か、1 以上の整数に丸めた数)
+   *  - hyphenation-keep (§7.16.1): auto だけ。column・page (分綴した語の前後を同じ段・ページに置く) は読まず、未対応として報告する
+   */
+  private hyphenLimits(el: XEl, parent: HyphenLimits | undefined): HyphenLimits | undefined {
+    const o: HyphenLimits = { ...parent };
+    let set = false;
+    const count = (k: string): number | undefined => {
+      const v = this.attrInh(el, k);
+      const n = v === undefined ? NaN : parseFloat(v);
+      return Number.isFinite(n) ? Math.max(1, Math.round(n)) : undefined;
+    };
+    const ch = this.attrInh(el, 'hyphenation-character');
+    if (ch) {
+      o.character = [...ch][0];
+      set = true;
+    }
+    const push = count('hyphenation-push-character-count');
+    if (push !== undefined) {
+      o.minAfter = push;
+      set = true;
+    }
+    const remain = count('hyphenation-remain-character-count');
+    if (remain !== undefined) {
+      o.minBefore = remain;
+      set = true;
+    }
+    const ladder = this.attrInh(el, 'hyphenation-ladder-count');
+    if (ladder === 'no-limit') {
+      delete o.maxLines;
+      set = true;
+    } else {
+      const n = count('hyphenation-ladder-count');
+      if (n !== undefined) {
+        o.maxLines = n;
+        set = true;
+      }
+    }
+    const keep = this.attrInh(el, 'hyphenation-keep');
+    if (keep && keep !== 'auto') this.miss(`hyphenation-keep:${keep}`);
+    return set ? o : undefined;
+  }
+
   attrInh(n: XNode, k: string): string | undefined {
     const v = this.attr(n, k);
     return v === 'inherit' ? undefined : v;
@@ -1380,6 +1428,17 @@ class Importer {
     if (hy === 'true' || hy === 'false') s.hyphenate = hy === 'true';
     const lang = this.attr(el, 'xml:lang') ?? this.attr(el, 'language');
     if (lang && lang !== 'none') s.language = lang;
+    // country (§7.10.1: 言語と組で、分綴などの規則を選ぶ): 地域の付いていない言語に足して、言語の名前にする (language="en" country="GB" → en-GB。
+    // 英語の分綴は GB だけ英国式)。xml:lang="en-GB" のように地域まで書いた言語は、そのまま。script (§7.10.3) は、規則の選び分けには使わない
+    const countryAttr = this.attrInh(el, 'country');
+    const country = countryAttr === undefined ? ctx.country : /^([A-Za-z]{2,3}|\d{3})$/.test(countryAttr) ? countryAttr : undefined;
+    const langBase = (lang && lang !== 'none' ? lang : undefined) ?? ctx.langBase ?? ctx.lang;
+    if (countryAttr !== undefined || (country && lang && lang !== 'none')) {
+      if (langBase && !langBase.includes('-')) s.language = country ? `${langBase}-${country}` : langBase;
+    }
+    // 分綴の特性 (§7.10.5〜§7.10.7・§7.16.1・§7.16.2)。CSS の hyphenate-character・hyphenate-limit-* と同じ受け皿 (hyphenLimits) に写す
+    const hyph = this.hyphenLimits(el, ctx.hyph);
+    if (hyph) s.hyphenLimits = hyph;
     const lss = this.attr(el, 'line-stacking-strategy');
     if (lss === 'line-height' || lss === 'max-height' || lss === 'font-height') s.lineStackingStrategy = lss;
     // 仕様モード: 行の高さを §4.5 の規則で決める
@@ -1540,7 +1599,7 @@ class Importer {
     // 書字方向の裏返し (bt-lr・lr-bt など): 自分の writing-mode があれば決め直し、無ければ親のまま
     const ownWm = this.attr(el, 'writing-mode');
     const flip = ownWm && !ownWm.startsWith('from-') ? flipOf(ownWm) : ctx.flip;
-    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: shownColor, textTransform, ...(hidden !== !!ctx.hidden ? { hidden } : {}), ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
+    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, ...(langBase !== ctx.langBase ? { langBase } : {}), ...(country !== ctx.country ? { country } : {}), ...(hyph ? { hyph } : {}), color: shownColor, textTransform, ...(hidden !== !!ctx.hidden ? { hidden } : {}), ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
   }
 
   phys(rel: 'before' | 'after' | 'start' | 'end', wm: WritingMode, rtl = false): 'top' | 'right' | 'bottom' | 'left' {

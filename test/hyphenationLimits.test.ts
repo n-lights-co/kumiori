@@ -14,7 +14,7 @@ import { unsupportedCssReport } from '../src/cssUnsupported';
 import { FontManager } from '../src/fontManager';
 import { Measurer } from '../src/measurer';
 import { LayoutEngine } from '../src/layoutEngine';
-import { DEFAULT_FONTS, typesetHtml, type FontSpec } from '../src/index';
+import { DEFAULT_FONTS, typesetFo, typesetHtml, type FontSpec } from '../src/index';
 import type { Area, AreaTree, HyphenLimits } from '../src/types';
 import { defaultFontBuffer, doc, ensureFonts, fontDir, walk } from './helpers';
 
@@ -268,5 +268,78 @@ describe('分綴の制限 (CSS)', () => {
     const hy = glyphs.filter((g) => g.text === '\u2010');
     expect(hy.length).toBeGreaterThan(1);
     for (const g of hy) expect(g.width).toBeGreaterThan(0);
+  });
+});
+
+describe('分綴の特性 (XSL-FO)', () => {
+  const fo = (attrs: string, text = TEXT, width = '80pt') =>
+    `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="300pt" page-height="400pt" margin="20pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body" font-family="Arimo" font-size="10pt"><fo:block width="${width}" xml:lang="en" hyphenate="true" text-align="start" ${attrs}>${text}</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+  const run = async (attrs: string, text?: string, width?: string) => {
+    const r = await typesetFo(fo(attrs, text, width), { name: 't.fo', loadFont });
+    return { lines: linesOf(r.areaTree), warnings: r.warnings };
+  };
+
+  it('指定が無いときと、初期値 (push・remain = 2、ladder = no-limit、keep = auto) を書いたときは、同じ行分け', async () => {
+    const base = await run('');
+    expect(hyphenated(base.lines).length).toBeGreaterThan(1);
+    const init = await run('hyphenation-push-character-count="2" hyphenation-remain-character-count="2" hyphenation-ladder-count="no-limit" hyphenation-keep="auto"');
+    expect(init.lines).toEqual(base.lines);
+    expect(init.warnings.join('\n')).not.toMatch(/hyphenation/);
+  });
+
+  it('hyphenation-character (§7.10.5)・push/remain-character-count (§7.10.6・§7.10.7)・ladder-count (§7.16.2)', async () => {
+    const base = await run('');
+    const ch = (await run('hyphenation-character="&#x2010;"')).lines;
+    expect(hyphenated(base.lines).length).toBeGreaterThan(1);
+    expect(hyphenated(ch, '\u2010').length).toBeGreaterThan(1);
+    expect(hyphenated(ch)).toEqual([]);
+    // remain = 切れ目の前 (行に残す側)、push = 切れ目の後 (次の行へ送る側)
+    const remain = (await run('hyphenation-remain-character-count="4"')).lines;
+    for (const l of remain.filter((x) => x.endsWith('-'))) expect(l.split(' ').pop()!.length - 1).toBeGreaterThanOrEqual(4);
+    expect(remain.join('|')).not.toMatch(/\ben-|\bbal-/);
+    const push = (await run('hyphenation-push-character-count="9"')).lines;
+    expect(push.join('|')).not.toMatch(/justifica-|international-/);
+    const one = hyphenated((await run('hyphenation-ladder-count="1"')).lines);
+    expect(one.length).toBeGreaterThan(0);
+    for (let k = 1; k < one.length; k++) expect(one[k] - one[k - 1]).toBeGreaterThan(1);
+    // 1 より小さい数・整数でない数は、1 以上の整数に丸める (§7.16.2)
+    expect((await run('hyphenation-ladder-count="0.2"')).lines).toEqual((await run('hyphenation-ladder-count="1"')).lines);
+  });
+
+  it('継承される。子の fo:block で no-limit に戻せる', async () => {
+    const r = await typesetFo(
+      `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="300pt" page-height="400pt" margin="20pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body" font-family="Arimo" font-size="10pt" xml:lang="en" hyphenate="true" hyphenation-ladder-count="1" hyphenation-character="="><fo:block width="80pt" text-align="start">${TEXT}</fo:block><fo:block width="80pt" text-align="start" hyphenation-ladder-count="no-limit">${TEXT}</fo:block></fo:flow></fo:page-sequence></fo:root>`,
+      { name: 't.fo', loadFont },
+    );
+    const ls = linesOf(r.areaTree);
+    const at = ls.map((l) => l.startsWith('Typesetting')).lastIndexOf(true);
+    expect(at).toBeGreaterThan(0);
+    const a = hyphenated(ls.slice(0, at), '=');
+    for (let k = 1; k < a.length; k++) expect(a[k] - a[k - 1]).toBeGreaterThan(1);
+    // 上限を外した段落には、続けて分綴する行がある
+    const b = hyphenated(ls.slice(at), '=');
+    expect(b.some((x, k) => k > 0 && x - b[k - 1] === 1)).toBe(true);
+  });
+
+  it('hyphenation-keep の column・page は読まない: 未対応として警告に出す (auto と同じに組む)', async () => {
+    const base = await run('');
+    const page = await run('hyphenation-keep="page"');
+    expect(page.lines).toEqual(base.lines);
+    expect(page.warnings.join('\n')).toMatch(/hyphenation-keep:page/);
+    expect((await run('hyphenation-keep="auto"')).warnings.join('\n')).not.toMatch(/hyphenation-keep/);
+  });
+
+  it('country (§7.10.1): language と組で規則を選ぶ (language="en" country="GB" は英国式)', async () => {
+    // 米国式と英国式で分かれ方の違う語
+    const word = ['organization', 'characterization', 'philosophy', 'democracy', 'analysis', 'photography'].find((w) => JSON.stringify(hyphenPositions(w, 'en')) !== JSON.stringify(hyphenPositions(w, 'en-GB')))!;
+    expect(word).toBeDefined();
+    const text = Array(6).fill(word).join(' ');
+    const lang = (attrs: string) => typesetFo(fo(attrs, text, '70pt').replace('xml:lang="en" ', ''), { name: 't.fo', loadFont }).then((r) => linesOf(r.areaTree));
+    const us = await lang('language="en"');
+    const gb = await lang('xml:lang="en-GB"');
+    expect(await lang('language="en" country="GB"')).toEqual(gb);
+    expect(await lang('language="en" country="US"')).toEqual(us);
+    expect(await lang('language="en" country="none"')).toEqual(us);
+    expect(gb).not.toEqual(us);
   });
 });

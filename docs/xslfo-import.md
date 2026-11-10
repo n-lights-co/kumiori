@@ -105,7 +105,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 
 言語ごとの約物のアキ: `fo:declarations` の `axf:space-before-punctuation`・`axf:space-after-punctuation`・`axf:space-between-punctuation-and-digit`・`axf:space-between-digit-and-punctuation` (code・space・language) を読み、言語 (`xml:lang` / `language`) が合う文字列で、記号の前後に行内の余白でアキを入れる。space の百分率は字の大きさに対する割合、`thin` は 1/6em。記号の隣が空白なら入れない。
 
-分綴: `hyphenate="true"` の欧文の語は、分綴の位置で行末にハイフンを付けて分ける。分綴の規則は hyphen (ISC、TeX のパターン) で、今は英語 (`xml:lang` / `language` が en・en-US・en-GB、指定が無ければ英語) ・ラテン語 (la)・ロシア語 (ru)・ウクライナ語 (uk)・現代ギリシャ語 (el。単調の綴り) だけ (ロシア語・ウクライナ語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字の語も分ける)。規則は分綴を使う文書を開いたときだけ読み込む。5 字未満の語は分けない。
+分綴: `hyphenate="true"` の欧文の語は、分綴の位置で行末にハイフンを付けて分ける。分綴の規則は hyphen (ISC、TeX のパターン) で、今は英語 (`xml:lang` / `language` が en・en-US・en-GB、指定が無ければ英語) ・ラテン語 (la)・ロシア語 (ru)・ウクライナ語 (uk)・現代ギリシャ語 (el。単調の綴り) だけ (ロシア語・ウクライナ語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字の語も分ける)。規則は分綴を使う文書を開いたときだけ読み込む。5 字未満の語は分けない。 `country` を指定すると、`language` と合わせて規則を選ぶ (`language="en" country="GB"` は en-GB。XSL 1.1 §7.10.1)。`script` は規則の選び分けに使わない。分綴の制限: `hyphenation-character` (行末に出す字。指定が無ければ U+002D。仕様の初期値 U+2010 とは違う。ソフトハイフンで分けた行にも出す)、`hyphenation-remain-character-count`・`hyphenation-push-character-count` (分け目の前・後の最小の字数。§7.10.6・§7.10.7)、`hyphenation-ladder-count` (分綴した行が続く数の上限。§7.16.2。超える行は語を次の行へ送る。ほかに折り返せる位置の無い行は、上限を超えても分ける) を読む。CSS の `hyphenate-character`・`hyphenate-limit-*` と同じ受け皿 (`hyphenLimits`) に写す。`hyphenation-keep` の `column`・`page` (§7.16.1) は読まず、未対応として報告する (行を分けた後のページ分けで、行を分け直さないため)。
 
 描けない形式でも、大きさはファイルの先頭から読む (`src/imageInfo.ts`) ので、仮の枠は正しい寸法になる。`fo:external-graphic` の `border`・`padding`・`background-color` は、画像 (width / height の枠があれば枠) の外側に描く。
 
