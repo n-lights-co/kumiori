@@ -193,3 +193,15 @@ describe('FO-08: fo:page-number 自身の字の書式 (§6.6.10 の共通フォ�
     expect(textOf(tree.sheets[0].page.regionBody.children)).toBe('p1');
   });
 });
+
+describe('FO-09: 数式の後備の「全体が 1 つの mtable なら下端を字の下端に揃える」は互換モードだけ', () => {
+  const math = '<fo:block>x<fo:instream-foreign-object><math xmlns="http://www.w3.org/1998/Math/MathML"><mtable><mtr><mtd><mi>a</mi></mtd></mtr><mtr><mtd><mi>b</mi></mtd></mtr></mtable></math></fo:instream-foreign-object></fo:block>';
+  const align = (compat: Compat) => {
+    const json = JSON.stringify(first<LBlock>(fo(math), compat));
+    return /"type":"inline-container","alignmentBaseline":"([a-z-]+)"/.exec(json)?.[1] as LInlineContainer['alignmentBaseline'];
+  };
+  it('仕様モードは表の中央を軸に (式の中の表と同じ)、互換モードは下端', () => {
+    expect(align('spec')).toBe('central');
+    expect(align('antenna')).toBe('after-edge');
+  });
+});

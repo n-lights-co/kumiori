@@ -19,6 +19,8 @@ export interface FoMathHost {
   miss(what: string, n?: number): void;
   /** 参照する画像 (図形の data URI) を読み込みの報告に足す */
   addImage(src: string): void;
+  /** 仕様モードか (互換モードでなければ true)。他の組版ソフトに合わせる動きは、互換モードのときだけにする */
+  readonly spec: boolean;
 }
 
 /**
@@ -79,8 +81,9 @@ export class FoMathFallback {
     if (this.fo.name(n) === 'math') {
       this.mathRootTable = undefined;
       this.mathDisplay = this.fo.attr(n, 'display') === 'block' || this.fo.attr(n, 'mode') === 'display';
-      // 数式の全体が 1 つの表 (mtable) のとき: 表の下端を行の文字の下端に揃える (アンテナハウスに合わせる。式の中の表は軸に揃える)
-      let r: XEl | undefined = n;
+      // 数式の全体が 1 つの表 (mtable) のとき: 表の下端を行の文字の下端に揃える (アンテナハウスに合わせる動きなので、互換モードだけ。
+      // 仕様モードと式の中の表は軸に揃える。数式の書体で組む mathLayout の mtable と同じ分け方)
+      let r: XEl | undefined = this.fo.spec ? undefined : n;
       while (r && (this.fo.name(r) === 'math' || this.fo.name(r) === 'mrow' || this.fo.name(r) === 'semantics') && this.fo.els(r).length >= 1) r = this.fo.name(r) === 'semantics' ? this.fo.els(r)[0] : this.fo.els(r).length === 1 ? this.fo.els(r)[0] : undefined;
       if (r && this.fo.name(r) === 'mtable') this.mathRootTable = r;
     }
