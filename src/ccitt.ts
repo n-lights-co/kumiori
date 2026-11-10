@@ -370,10 +370,14 @@ export function decodeModifiedHuffman(data: Uint8Array, o: CcittOptions): Uint8A
   const line2d = (y: number, ref: number[]): boolean => {
     let a0 = -1;
     let isBlack = false;
+    // 参照行の、a0 より右の最初の変わり目の番号。a0 は行の中で左へ戻らず、変わり目の位置は昇順なので、行の中で持ち越せる
+    // (符号ごとに頭から探すと、変わり目の多い行で、幅の 2 乗の手間になる)
+    let j = 0;
     while (a0 < W) {
-      // b1: a0 より右で、a0 と反対の色に変わる参照行の位置 (参照行の i 番目の変わり目は、i が偶数なら黒へ、奇数なら白へ)
-      let i = 0;
-      while (i < ref.length && (ref[i] <= a0 || (i % 2 === 0) === isBlack)) i++;
+      // b1: a0 より右で、a0 と反対の色に変わる参照行の位置 (参照行の i 番目の変わり目は、i が偶数なら黒へ、奇数なら白へ)。
+      // a0 より右の最初の変わり目 j か、色の向きが合わなければその次 (向きは 1 つおきに入れ替わる)
+      while (j < ref.length && ref[j] <= a0) j++;
+      const i = j < ref.length && (j % 2 === 0) === isBlack ? j + 1 : j;
       const b1 = i < ref.length ? ref[i] : W;
       const b2 = i + 1 < ref.length ? ref[i + 1] : W;
       if (peek('0000001111')) {
