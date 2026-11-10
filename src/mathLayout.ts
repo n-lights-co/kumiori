@@ -614,11 +614,30 @@ class MathLayouter {
     const size = (o: number, r: number) => sNon + r * sExt - o * (non.length + r * ext.length - 1);
     let omax = count > 1 ? (size(0, rmin) - T) / (count - 1) : 0;
     if (count > 1) {
+      // 重なりの上限は、つなぐ側の端のコネクタの長さ。OpenType の MATH 表 (GlyphPartRecord) は、
+      // startConnectorLength を「伸ばす向きの始まりの端 (横は左、縦は下)」、endConnectorLength を「終わりの端 (右・上)」の
+      // まっすぐな部分の長さとし、重なりは「その端のコネクタの長さを超えない」とする。部品は始まりから終わりへ並ぶので、
+      // 隣とつながるのは、最初の部品を除く部品の start と、最後の部品を除く部品の end (繰り返す部品は自分自身ともつながる
+      // ので、端にあっても両方を見る)。Chromium (blink の stretchy_operator_shaper.cc の GetAssemblyParameters) と
+      // XeTeX (xetex.web の build_opentype_assembly: 前の部品の end と次の部品の start の小さいほう) も、この向きで見る。
+      // MathML Core 5.3.1 の o_max の文面は「start は最後の非 extender を除く・end は最初の非 extender を除く」で、
+      // 向きが逆になっている (その文面のとおりだと、STIX Two Math の括弧のように、下の端の部品の start が 0・上の端の部品の
+      // end が 0 の書体で、上限が必ず 0 になり、同じ節の「どの部品の start・end も o_min 以上」の条件も満たせない)。
+      let lim = Infinity;
       parts.forEach((p, k) => {
-        if (!(k === parts.length - 1 && !p.extender)) omax = Math.min(omax, p.start);
-        if (!(k === 0 && !p.extender)) omax = Math.min(omax, p.end);
+        if (p.extender || k !== 0) lim = Math.min(lim, p.start);
+        if (p.extender || k !== parts.length - 1) lim = Math.min(lim, p.end);
       });
-      omax = Math.max(omax, 0);
+      if (lim < omin) {
+        // つなぐ端のコネクタが o_min に足りない書体 (5.3.1 の条件では組み立てが無効。たとえば STIX Two Math の矢印は、
+        // 矢じりの start が 0)。ここでは無効とせずに組み立てているので、これまでどおりの部品の選び方で上限を求める
+        lim = Infinity;
+        parts.forEach((p, k) => {
+          if (!(k === parts.length - 1 && !p.extender)) lim = Math.min(lim, p.start);
+          if (!(k === 0 && !p.extender)) lim = Math.min(lim, p.end);
+        });
+      }
+      omax = Math.max(Math.min(omax, lim), 0);
     }
     const items: Item[] = [];
     let pos = 0;
