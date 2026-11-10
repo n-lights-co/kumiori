@@ -243,3 +243,26 @@ describe('PostScript の上限: Type 3 の画像のマスク (MaskDict。PLRM §
     if (it0.k === 'image') expect([it0.width, it0.height, it0.rgba!.length]).toEqual([2, 2, 16]);
   });
 });
+
+describe('PostScript の上限: 網の網かけ (ShadingType 4〜7) の画素の手間', () => {
+  /** 範囲の半分を覆う三角形を n 個重ねた Type 4 の網かけ */
+  const mesh = (n: number) => {
+    const P = ['0 0', '100 0', '0 100', '100 100'];
+    let d = `0 ${P[0]} 0 0 ${P[1]} 0 0 ${P[2]} 0 `;
+    for (let i = 0; i < n; i++) d += `1 ${P[(i + 3) % 4]} ${i % 2} `;
+    return `<< /ShadingType 4 /ColorSpace /DeviceGray /DataSource [${d}] >> shfill`;
+  };
+  it('三角形ごとに見る画素を、ステップとして数える', () => {
+    // 三角形 1 つが 200 × 200 画素の範囲を見る = 2500 ステップ。200 個で 50 万ステップ
+    const r = run(mesh(200), { maxSteps: 100000 });
+    expect(r.error).toBe('limit:steps');
+    expect(r.G.items.length).toBe(0);
+  });
+  it('少ない三角形の網かけは、前と同じに描ける', () => {
+    const r = run(mesh(2));
+    expect(r.error).toBeUndefined();
+    expect(r.G.items.length).toBe(1);
+    expect(r.I.steps).toBeGreaterThan(3 * 2500);
+    expect(r.I.steps).toBeLessThan(20000);
+  });
+});

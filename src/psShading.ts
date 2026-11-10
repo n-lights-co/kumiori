@@ -363,6 +363,9 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
       const i1 = Math.min(w - 1, Math.ceil((Math.max(P[0][0], P[1][0], P[2][0]) - box[0]) / sx));
       const j0 = Math.max(0, Math.floor((box[3] - Math.max(P[0][1], P[1][1], P[2][1])) / sy));
       const j1 = Math.min(h - 1, Math.ceil((box[3] - Math.min(P[0][1], P[1][1], P[2][1])) / sy));
+      // 三角形ごとに見る画素も、手間として数える (面を塗る網かけと同じく 16 画素で 1 ステップ)。
+      // 三角形はいくつでも重ねられるので、数えないと、数千個の三角形が時間の上限の何十倍もかかる
+      if (i1 >= i0 && j1 >= j0) G.I.charge(((i1 - i0 + 1) * (j1 - j0 + 1)) / 16);
       for (let j = j0; j <= j1; j++)
         for (let i = i0; i <= i1; i++) {
           const x = box[0] + (i + 0.5) * sx;
