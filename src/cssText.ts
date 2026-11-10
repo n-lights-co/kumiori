@@ -3,11 +3,13 @@
  *
  *  - 区切り: 括弧・文字列の外の区切り文字で分ける (splitTop)、括弧の外の空白で分ける (splitWords)
  *  - 長さ: 絶対の長さの単位の表 (px と pt)、計算値の長さ (px) → pt (cssLen)
- *  - 色: CSS の色 (名前・#rgb・rgb()・hsl()) → RGBA (parseColor)、計算値の rgb() → Kumiori の色 #rrggbb (cssColor・cssColorAlpha)
+ *  - 色: CSS の色 (名前・#rgb・rgb()・hsl()、cssColorFunctions の hwb()・lab()・color()・color-mix() など) → RGBA (parseColor)、
+ *    計算値の rgb() → Kumiori の色 #rrggbb (cssColor・cssColorAlpha)
  *
  * cssCascade・htmlPaged・htmlImport・cssGradient・cssSelector が使う (それぞれが持っていた同じ役割の関数を寄せたもの)
  */
 import { NAMED_COLORS } from './color';
+import { isColorFunction, parseColorFunction } from './cssColorFunctions';
 
 // ───────────────────────── 区切り ─────────────────────────
 
@@ -88,8 +90,13 @@ const SYSTEM_COLORS: Record<string, string> = { canvas: 'ffffff', canvastext: '0
 
 export type RGBA = [number, number, number, number];
 
-/** CSS の色 (名前・システムの色・#rgb(a)・#rrggbb(aa)・rgb()・rgba()・hsl()・hsla()) を読む (currentcolor は undefined ではなく 'current') */
-export function parseColor(v: string): RGBA | 'current' | undefined {
+/**
+ * CSS の色 (名前・システムの色・#rgb(a)・#rrggbb(aa)・rgb()・rgba()・hsl()・hsla() と、Color 4 の hwb()・lab()・lch()・oklab()・oklch()・color()、
+ * Color 5 の color-mix()) を読む (currentcolor は undefined ではなく 'current')。
+ * Color 4・5 の関数は、sRGB の色域に収めた 8 ビットの sRGB にする (cssColorFunctions)。current は、color-mix() の中の currentcolor の色
+ * (無ければ color の初期値の黒)
+ */
+export function parseColor(v: string, current?: RGBA): RGBA | 'current' | undefined {
   const s = v.trim().toLowerCase();
   if (s === 'currentcolor') return 'current';
   if (s === 'transparent') return [0, 0, 0, 0];
@@ -101,7 +108,7 @@ export function parseColor(v: string): RGBA | 'current' | undefined {
     return [n[0], n[1], n[2], n[3] / 255];
   }
   const m = /^(rgba?|hsla?)\(\s*([^)]*)\)$/.exec(s);
-  if (!m) return undefined;
+  if (!m) return isColorFunction(s) ? parseColorFunction(s, (x) => parseColor(x), current ?? [0, 0, 0, 1]) : undefined;
   const parts = m[2].split(/[\s,/]+/).filter(Boolean);
   if (parts.length < 3 || parts.length > 4) return undefined;
   // 成分は数か百分率 (Color 4 §5.1・§7)。数として読めない成分 (rgb(1, 2, 3, foo) など) があれば、色として読めない
@@ -157,6 +164,11 @@ export function cssColor(v: string): string | undefined {
   }
   if (/^#[0-9a-f]{6}$/i.test(s)) return s.toLowerCase();
   if (/^#[0-9a-f]{3}$/i.test(s)) return `#${[...s.slice(1)].map((c) => c + c).join('')}`.toLowerCase();
+  // 計算値を通らない値 (ページの文脈の宣言など) の、Color 4・5 の色の関数は、ここで sRGB にする
+  if (isColorFunction(s.toLowerCase())) {
+    const fc = parseColor(s);
+    if (Array.isArray(fc)) return cssColor(fmtColor(fc));
+  }
   if (s === 'transparent' || s === '') return undefined;
   return s;
 }

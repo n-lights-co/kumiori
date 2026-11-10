@@ -770,6 +770,9 @@ export function isPagedDecl(prop: string, value: string): boolean {
   if (prop === 'float') return !/^(left|right|none|inline-start|inline-end)$/i.test(value.trim());
   // 和文組版の指定 (ブラウザによっては知らない。継承するので、祖先をたどって読む)
   if (prop === 'text-autospace' || prop === 'text-spacing-trim' || prop === 'text-spacing' || prop === 'hanging-punctuation') return true;
+  // ルビの配置 (CSS Ruby 1 §4・§5.1。指定の有無を見分けるために、自前で読む。継承するので、祖先をたどって読む)
+  // ruby-merge: auto は未対応 (読まない値。@supports にも対応していないと答える)
+  if (prop === 'ruby-position' || prop === 'ruby-align' || prop === 'ruby-merge' || prop === 'ruby-overhang') return !(prop === 'ruby-merge' && /^auto$/i.test(value.trim()));
   // ブラウザが読めない色 (印刷の CMYK・特色)
   if ((prop === 'color' || prop === 'background-color' || prop === 'background') && /(?:\b(device-cmyk|rgb-icc)|(?<![\w-])cmyk)\(/i.test(value)) return true;
   // 罫線の印刷の色 (border・border-color・border-<辺>・border-<辺>-color)
