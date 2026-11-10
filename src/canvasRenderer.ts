@@ -50,7 +50,9 @@ class CanvasPainter implements Painter {
     private outlines = false,
   ) {}
   /** 書体 f で text を組んだ字形の輪郭 (OpenType の機能 features を当てる) */
-  private outlineOf(f: ReturnType<FontManager['get']>, text: string, features: string[]): Outline {
+  private outlineOf(f: ReturnType<FontManager['get']>, text0: string, features: string[]): Outline {
+    // 改行しない空白 (U+00A0) は、通常の空白の字形で描く (Arimo の U+00A0 の字形は、fontkit が読めない壊れたデータ。PDF の drawGlyph と同じ)
+    const text = text0.replace(/\u00A0/g, ' ');
     const key = `${f.key}\u0000${features.join(',')}\u0000${text}`;
     const hit = this.outlineCache.get(key);
     if (hit) return hit;
@@ -59,7 +61,14 @@ class CanvasPainter implements Painter {
     const offsets: { x: number; y: number }[] = [];
     let x0 = 0;
     for (let i = 0; i < run.glyphs.length; i++) {
-      paths.push(new Path2D((run.glyphs[i] as unknown as { path: { toSVG(): string } }).path.toSVG()));
+      let d = '';
+      try {
+        d = (run.glyphs[i] as unknown as { path: { toSVG(): string } }).path.toSVG();
+      } catch (e) {
+        // 字形のデータが壊れている書体 (fontkit が読めない字) は、その字を描かずに続ける (ページの残りを描く。PDF の drawGlyph と同じ)
+        console.warn(`Canvas: ${f.key} の「${text}」の字形 (${i} 番目) を描けません`, e);
+      }
+      paths.push(new Path2D(d));
       // 最初の字の位置のずれは、組版で描く原点に入れてある
       offsets.push({ x: x0 + (i ? run.positions[i].xOffset : 0), y: i ? run.positions[i].yOffset : 0 });
       x0 += run.positions[i].xAdvance;

@@ -231,7 +231,15 @@ export function createFontMapping(
     const groups = new Map<string, Array<{ family: string; ranges?: Array<[number, number]> }>>();
     for (const ff of parseCss(css).fontFaces) {
       if (ff.italic) continue;
-      const file = ff.srcs.map((u) => byName.get(decodeURIComponent(u.split(/[?#]/)[0].split('/').pop() ?? '').toLowerCase())).find(Boolean);
+      // %xx を戻す。不正な % の並び (a%zz.woff2) はそのままの名前で突き合わせる (htmlPrepare の safeDecode と同じ。例外を外へ出さない)
+      const decoded = (name: string) => {
+        try {
+          return decodeURIComponent(name);
+        } catch {
+          return name;
+        }
+      };
+      const file = ff.srcs.map((u) => byName.get(decoded(u.split(/[?#]/)[0].split('/').pop() ?? '').toLowerCase())).find(Boolean);
       if (!file) continue;
       const rangeKey = ff.ranges ? ff.ranges.map(([a, b]) => `${a}-${b}`).join(',') : '';
       const family = rangeKey ? `css:${ff.family}#${rangeKey}` : `css:${ff.family}`;

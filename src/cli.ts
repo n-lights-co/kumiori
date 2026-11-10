@@ -200,15 +200,28 @@ export function parseSpotColors(raw: unknown, file = ''): Record<string, [number
 
 /** ネットワークからの取得 (書体・画像) の時限 */
 
+/**
+ * 入力のディレクトリの下のファイル (文書が参照しうる CSS・画像・書体など)。node_modules と . で始まるディレクトリは見ない。
+ * 下の階層の読めないディレクトリ (権限が無い・たどる途中で消えたなど) は飛ばす (参照していないディレクトリ 1 つで変換全体を止めない)。
+ * 入力のディレクトリそのものが読めないときは、今までどおり誤り
+ */
+export function listFiles(dir: string, readdir: (d: string) => fs.Dirent[] = (d) => fs.readdirSync(d, { withFileTypes: true })): string[] {
+  const sub = (d: string): string[] => {
+    try {
+      return listFiles(d, readdir);
+    } catch {
+      return [];
+    }
+  };
+  return readdir(dir).flatMap((e) => (e.isDirectory() ? (e.name === 'node_modules' || e.name.startsWith('.') ? [] : sub(path.join(dir, e.name))) : [path.join(dir, e.name)]));
+}
+
 /** 1 つの入力を PDF にする。input が '-' なら標準入力 (text に中身)、output が '-' なら標準出力 */
 async function convert(input: string, output: string, args: Args, text: string) {
   const stdin = input === '-';
   const dir = stdin ? path.resolve(args.base ?? '.') : path.dirname(input);
-  // node_modules と . で始まるディレクトリは見ない
-  const walk = (d: string): string[] =>
-    fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === 'node_modules' || e.name.startsWith('.') ? [] : walk(path.join(d, e.name))) : [path.join(d, e.name)]));
   const onlyCss = args.css ? new Set(args.css.split(',').map((c) => path.basename(c).toLowerCase())) : undefined;
-  const all = walk(dir).filter((f) => f !== input);
+  const all = listFiles(dir).filter((f) => f !== input);
   // --css で選んだ CSS が @import する CSS も使う
   for (const name of onlyCss ?? []) {
     const file = all.find((f) => path.basename(f).toLowerCase() === name);
