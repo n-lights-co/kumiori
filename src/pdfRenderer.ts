@@ -54,6 +54,7 @@ import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, re
 import { iccRgbToCmyk, type CmykConverter } from './icc';
 import { embedCmykImage, embedPngAsIs, markCffSubset, memoEncode, patchCffEmbedding, patchFontkitSubset, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
 import { shrinkJpeg } from './jpeg';
+import { PdfColorGlyphs } from './colorGlyphPdf';
 import { mul, type Seg } from './matrix';
 import { parseSvg, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type TextChars, type XmlNode } from './svg';
 import type { Annotation, Area, AreaTree, BookmarkArea, FormField, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea } from './types';
@@ -785,7 +786,17 @@ class PdfPainter implements Painter {
   /** ページの資源の書体の名前 (書体ごとに 1 つ) */
   private fontKeys = new Map<PDFFont, PDFName>();
 
+  /** 色つきの字形を持つ書体の字の描き手 (colorGlyphPdf.ts)。色つきの書体を使わない文書では undefined */
+  colorGlyphs?: PdfColorGlyphs;
+
   drawGlyph(g: GlyphArea, x: number, y: number) {
+    // 色つきの表 (COLR・CBDT・sbix・SVG) を持つ書体の字は、Type 3 書体の字として描く
+    const colored = this.colorGlyphs?.draw(g, x, y, this.page, this.H, (css) => colorOps(css, true, this.spots));
+    if (colored) {
+      this.flushText();
+      pushOps(this.page, colored);
+      return;
+    }
     const font = this.fontOf(g);
     // 改行しない空白 (U+00A0) は、通常の空白の字形で描く (Arimo の U+00A0 の字形は、fontkit が読めない壊れたデータ)
     const text = g.text.replace(/\u00A0/g, ' ');
@@ -1217,9 +1228,11 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   setDocumentInfo(pdf, tree, opts);
 
   // 使用フォントだけを埋め込む (サブセット)。OpenType の機能 (onum・vert など) を使う字も、同じ埋め込みの字形として書く
+  // 色つきの表を持つ書体の字は、別に Type 3 書体として書く (ふつうの埋め込みを通さない)。色つきの書体を使わない文書では undefined
+  const colorGlyphs = await PdfColorGlyphs.create(pdf, tree, fonts, { cmyk: pdfxConverter(opts), warnings: opts.pdfx?.warnings });
   const used = new Set<string>();
   walkAreaTree(tree, (a) => {
-    if (a.type === 'glyph') used.add(fonts.get(a.fontFamily, a.fontWeight).key);
+    if (a.type === 'glyph' && !colorGlyphs?.handles(a)) used.add(fonts.get(a.fontFamily, a.fontWeight).key);
   });
   const embedded = new Map<string, PDFFont>();
   /**
@@ -1259,6 +1272,7 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     setBoxes(page, sheet);
     const painter = new PdfPainter(page, sheet.height, fontOf, (src) => images.get(src), (src) => vectors.get(src), pdf, svgFontOf, svgImages);
     if (cmykOf) painter.cmykOutput = cmykOf;
+    painter.colorGlyphs = colorGlyphs;
     paintSheet(sheet, painter);
     painter.flushText();
     painters.push(painter);
@@ -1272,6 +1286,7 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     }
     return undefined;
   };
+  colorGlyphs?.finish();
   if (opts.pdfx) markPdfX(pdf, opts.pdfx, painters);
   // ファイルの識別子 (trailer の ID)。PDF 2.0 では必須、それより前の版では任意 (ISO 32000-2 §7.5.5 の Table 15・§14.4)
   if (!pdf.context.trailerInfo.ID) {

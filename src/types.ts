@@ -1588,6 +1588,11 @@ export interface GlyphArea extends AreaBase {
    * 字形が 2 つ以上あり、送りが書体の送り幅と違うか、ずらしがあるときだけ付く (アラビア文字の記号の位置など)
    */
   glyphPositions?: Array<[number, number, number]>;
+  /**
+   * 色つきの字形のパレットの選び方 (CSS の font-palette と @font-palette-values の結果。colorGlyph.ts の FontPalette)。
+   * 既定のパレット (font-palette: normal) のときは付かない。色つきの表 (COLR/CPAL) を持つ書体の字だけに効く
+   */
+  fontPalette?: { base?: number | 'light' | 'dark'; colors?: Array<[number, string]> };
 }
 
 export interface InlineArea extends BlockLikeArea {
