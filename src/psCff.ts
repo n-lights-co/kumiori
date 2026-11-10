@@ -208,15 +208,23 @@ export function parseCff(data: Uint8Array): CffFont[] {
   return fonts;
 }
 
+/** 字形の命令を実行して分かったこと (cffGlyph の呼び出し元が、知りたいときに空のものを渡す) */
+export interface Type2Info {
+  /** 字形そのもの (seac で重ねる字は除く) が、hflex か hflex1 を実行した */
+  hflex?: boolean;
+  /** endchar の 4 つの数で、2 つの字を重ねた (seac) */
+  seac?: boolean;
+}
+
 /** Type 2 の字形の命令を実行する (T2 第 3・4 章)。GID の字の輪郭と送り */
-export function cffGlyph(f: CffFont, gid: number): Glyph | undefined {
+export function cffGlyph(f: CffFont, gid: number, info?: Type2Info): Glyph | undefined {
   const cs = f.charStrings[gid];
   if (!cs) return undefined;
   const priv = f.privates[f.cid ? f.fdSelect(gid) : 0] ?? f.privates[0];
-  return runType2(cs, f, priv, 0);
+  return runType2(cs, f, priv, 0, info);
 }
 
-function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: number): Glyph | undefined {
+function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: number, info?: Type2Info): Glyph | undefined {
   const segs: Seg[] = [];
   let x = 0;
   let y = 0;
@@ -407,6 +415,7 @@ function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: numbe
           takeWidth(st.length === 5 || st.length === 1);
           if (st.length >= 4 && seacDepth === 0) {
             const [adx, ady, bchar, achar] = st.slice(-4);
+            if (info) info.seac = true;
             const gb = f.byName.get(STANDARD_ENCODING[bchar] ?? '');
             const ga = f.byName.get(STANDARD_ENCODING[achar] ?? '');
             const base = gb !== undefined ? runType2(f.charStrings[gb], f, priv, 1) : undefined;
@@ -436,6 +445,7 @@ function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: numbe
             case 34: {
               // hflex: dx1 dx2 dy2 dx3 dx4 dx5 dx6
               const [dx1, dx2, dy2, dx3, dx4, dx5, dx6] = st;
+              if (info) info.hflex = true;
               curveTo(dx1, 0, dx2, dy2, dx3, 0);
               curveTo(dx4, 0, dx5, -dy2, dx6, 0);
               break;
@@ -443,6 +453,7 @@ function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: numbe
             case 36: {
               // hflex1: dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6
               const [dx1, dy1, dx2, dy2, dx3, dx4, dx5, dy5, dx6] = st;
+              if (info) info.hflex = true;
               curveTo(dx1, dy1, dx2, dy2, dx3, 0);
               curveTo(dx4, 0, dx5, dy5, dx6, -(dy1 + dy2 + dy5));
               break;

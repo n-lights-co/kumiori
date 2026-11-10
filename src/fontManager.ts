@@ -10,6 +10,7 @@ import { collectionFaces, isCollection } from './fontLoader';
 import { toSfnt } from './webFont';
 import { msg } from './messages';
 import { patchFontkitShaping } from './fontkitShaping';
+import { patchFontkitCffFlex } from './fontkitCffFlex';
 import { colorFontOf, orderByPresentation, prepareColorFont, presentationOf } from './colorGlyph';
 import { instantiateFont, readVariationInfo, variationNamePrefix, type VariationInfo } from './fontInstancer';
 import { splitVariation, variationNumber as num, variationSuffix, type VariationRequest } from './fontVariation';
@@ -206,6 +207,8 @@ export class FontManager {
     const fk = fontkit.create(new Uint8Array(buffer));
     patchFontkitVariationSelector(fk);
     patchFontkitShaping(fk);
+    // CFF の字形の hflex・hflex1 の読みを正す (輪郭で描くとき・字形の外接枠を使うとき。CFF の表の無い書体には何もしない)
+    patchFontkitCffFlex(fk);
     // 輪郭の表を持たない、ビットマップだけの色つきの書体 (CBDT の絵文字) を組めるようにする (ほかの書体には何もしない)
     prepareColorFont(fk);
     const info = readVariationInfo(buffer);
@@ -402,6 +405,7 @@ export class FontManager {
         fk = fontkit.create(new Uint8Array(buffer));
         patchFontkitVariationSelector(fk);
         patchFontkitShaping(fk);
+        patchFontkitCffFlex(fk);
         prepareColorFont(fk);
         metrics = fontMetricsOf(fk);
       }
