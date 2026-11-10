@@ -12,7 +12,7 @@ import { msg } from './messages';
 import { patchFontkitShaping } from './fontkitShaping';
 import { patchFontkitCffFlex } from './fontkitCffFlex';
 import { colorFontOf, orderByPresentation, prepareColorFont, presentationOf } from './colorGlyph';
-import { instantiateFont, readVariationInfo, variationNamePrefix, type VariationInfo } from './fontInstancer';
+import { instantiateFont, readVariationInfo, staticCff2ToCff, variationNamePrefix, type VariationInfo } from './fontInstancer';
 import { splitVariation, variationNumber as num, variationSuffix, type VariationRequest } from './fontVariation';
 import fontkit from '@pdf-lib/fontkit';
 import type { FontSpec } from './types';
@@ -110,6 +110,8 @@ export interface LoadedFont {
     face: FaceDescriptors;
     /** 作った実体 (太さと軸の値ごとに 1 つ) */
     instances: Map<string, LoadedFont>;
+    /** 実体を作れなかった (CFF2 の字形を読めないなど)。知らせを 1 度出して、以後は既定の形 (この書体そのもの) を返す */
+    failed?: boolean;
   };
   /** 可変フォントの実体のとき: 元の書体と、軸の値 (札 → 値)。slanted は、傾きを軸 (slnt・ital) で付けた (描くときに傾けない) */
   instanceOf?: { master: LoadedFont; coords: Record<string, number>; slanted?: boolean };
@@ -154,8 +156,8 @@ function fontMetricsOf(fk: LoadedFont['fk']): Pick<LoadedFont, 'unitsPerEm' | 'b
   return { unitsPerEm: upm, baselineRatio, ascentMinusDescent: asc - desc, ascent: asc, descent: desc };
 }
 
-/** CFF2 の可変フォントを知らせたか (書体のファイルごとに 1 度) */
-const cff2Warned = new WeakSet<ArrayBuffer>();
+/** 実体を作れない可変フォントを知らせたか (書体のファイルごとに 1 度) */
+const unsupportedWarned = new WeakSet<ArrayBuffer>();
 
 export class FontManager {
   private fonts = new Map<string, LoadedFont>();
@@ -191,7 +193,8 @@ export class FontManager {
 
   /**
    * 既に読み込み済みの ArrayBuffer を登録 (Node テストやローカルファイル用)。
-   * 可変フォント (fvar を持つ TrueType) は、既定の形をこの書体として登録し、ほかの軸の値は、引くときに実体を作る (find・instance)。
+   * 可変フォント (fvar を持つ書体) は、既定の形をこの書体として登録し、ほかの軸の値は、引くときに実体を作る (find・instance)。
+   * 輪郭が CFF2 の可変フォントは、既定の形も、引くときに実体 (静的な CFF にしたもの) を作る (CFF2 のままでは PDF に埋め込めない)。
    * face: @font-face の記述子 (省くと、入っている書体として軸の範囲の全体を使う)
    */
   async registerBuffer(family: string, weight: number, buffer: ArrayBuffer, canvas = true, face?: FaceDescriptors): Promise<LoadedFont> {
@@ -199,6 +202,18 @@ export class FontManager {
     // 書体の集まり (TTC と、WOFF2 の書体の集まりを戻したもの) は、最初の書体を使う (@font-face で集まりを指したとき)
     buffer = toSfnt(buffer);
     if (isCollection(buffer)) buffer = collectionFaces(buffer)[0];
+    // 可変でない CFF2 の書体 (fvar の無い、輪郭が CFF2 の OpenType) は、静的な CFF に作り直して登録する (CFF2 の輪郭は PDF に埋め込めない)
+    try {
+      buffer = staticCff2ToCff(buffer) ?? buffer;
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      this.onNotice(
+        msg(
+          `${family}: CFF2 の輪郭の書体を、PDF に埋め込める形 (CFF) にできません (${why})。PDF では字が正しく出ないことがあります`,
+          `${family}: cannot convert the font with CFF2 outlines to an embeddable form (CFF) (${why}). Glyphs may not render correctly in the PDF`,
+        ),
+      );
+    }
     this.charFallback.clear();
     this.forCharMemo.clear();
     this.clusterMemo.clear();
@@ -212,14 +227,13 @@ export class FontManager {
     // 輪郭の表を持たない、ビットマップだけの色つきの書体 (CBDT の絵文字) を組めるようにする (ほかの書体には何もしない)
     prepareColorFont(fk);
     const info = readVariationInfo(buffer);
-    if (info?.cff2 && !cff2Warned.has(buffer)) {
-      // CFF2 (可変の CFF) の実体は作れない: これまでどおり、既定の形のまま 1 つの太さの書体として使う
-      // (CFF2 の輪郭は PDF に埋め込める形 (CFF) にしていないので、PDF では字が正しく出ないことがある)
-      cff2Warned.add(buffer);
+    if (info?.unsupported && !unsupportedWarned.has(buffer)) {
+      // 輪郭の差分 (TrueType の gvar か、CFF2) を持たない可変フォントの実体は作れない: 既定の形のまま 1 つの太さの書体として使う
+      unsupportedWarned.add(buffer);
       this.onNotice(
         msg(
-          `${family}: CFF2 の可変フォント (輪郭が CFF2 の OpenType) には対応していません。既定の形 (default instance) で組み、太さ・幅などの軸は効きません。PDF では字が正しく出ないことがあります (TrueType の輪郭の可変フォントか、静的な書体を使ってください)`,
-          `${family}: CFF2 variable fonts (OpenType with CFF2 outlines) are not supported; the default instance is used and the weight, width and other axes have no effect. Glyphs may not render correctly in the PDF (use a variable font with TrueType outlines, or static fonts)`,
+          `${family}: 輪郭の差分 (gvar の表か CFF2 の輪郭) を持たない可変フォントには対応していません。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
+          `${family}: variable fonts without outline variations (a gvar table or CFF2 outlines) are not supported; the default instance is used and the weight, width and other axes have no effect`,
         ),
       );
     }
@@ -240,7 +254,7 @@ export class FontManager {
       ...fontMetricsOf(fk),
       ...(names.postscriptName ? { postscriptName: names.postscriptName } : {}),
       ...(names.fullName ? { fullName: names.fullName } : {}),
-      ...(info && !info.cff2 ? { variable: { info, face: face ?? {}, instances: new Map<string, LoadedFont>() } } : {}),
+      ...(info && !info.unsupported ? { variable: { info, face: face ?? {}, instances: new Map<string, LoadedFont>() } } : {}),
     };
     if (lf.variable) this.canvasInstances = this.canvasInstances || canvas;
     this.fonts.set(lf.key, lf);
@@ -319,10 +333,13 @@ export class FontManager {
    *  4. font-optical-sizing: auto の opsz (§8.1。字の大きさ。単位は呼び出し側が決める: lnode.ts の applyVariation)
    *  5. font-variation-settings の性質 (§8.2)
    * 最後に、書体の軸の範囲に収める (§7.2・§8.2)。既定の形で、太さも登録の太さなら、master そのもの。
-   * ほかは、実体 (静的な書体にしたもの。fontInstancer.ts) を (太さ・軸の値) ごとに 1 度だけ作って覚える
+   * ほかは、実体 (静的な書体にしたもの。fontInstancer.ts) を (太さ・軸の値) ごとに 1 度だけ作って覚える。
+   * 輪郭が CFF2 の書体は、既定の形も実体にする (CFF2 の輪郭は PDF に埋め込めないので、静的な CFF にしたものを測って描く)。
+   * 実体を作れない書体 (CFF2 の字形が読めないなど) は、知らせを 1 度出して、master そのものを返す
    */
   private instance(master: LoadedFont, weight: number, req: VariationRequest | undefined): LoadedFont {
     const v = master.variable!;
+    if (v.failed) return master;
     const axes = v.info.axes;
     const face = v.face;
     const at = (tag: string) => axes.findIndex((a) => a.tag === tag);
@@ -384,8 +401,10 @@ export class FontManager {
       return hit;
     }
     const isDefault = coords.every((c, i) => c === axes[i].default);
+    // 静的な書体に作り直すか: 既定の形でない実体と、CFF2 の書体のすべての形
+    const rebuild = !isDefault || v.info.cff2;
     let lf: LoadedFont;
-    if (isDefault && effW === master.weight) lf = master;
+    if (isDefault && effW === master.weight && !rebuild) lf = master;
     else {
       // 実体の名前: 元の名前 + 「太さだけから決まる値」と違う軸の値 (font-variation-settings の形の印)。この名前と太さで引き直すと、同じ実体になる
       const plain = resolve(undefined);
@@ -398,8 +417,23 @@ export class FontManager {
       let buffer = master.buffer;
       let fk = master.fk;
       let metrics: ReturnType<typeof fontMetricsOf> = { unitsPerEm: master.unitsPerEm, baselineRatio: master.baselineRatio, ascentMinusDescent: master.ascentMinusDescent, ascent: master.ascent, descent: master.descent };
-      if (!isDefault) {
-        const r = instantiateFont(master.buffer, v.info, coords);
+      if (rebuild) {
+        let r: ReturnType<typeof instantiateFont>;
+        try {
+          r = instantiateFont(master.buffer, v.info, coords);
+        } catch (e) {
+          if (!v.info.cff2) throw e;
+          // CFF2 の表・字形が読めない書体: 実体を作らず、既定の形のまま使う (CFF2 の輪郭は PDF に埋め込める形にできていない)
+          v.failed = true;
+          const why = e instanceof Error ? e.message : String(e);
+          this.onNotice(
+            msg(
+              `${master.family}: CFF2 の可変フォント (輪郭が CFF2 の OpenType) の実体を作れません (${why})。既定の形 (default instance) で組み、太さ・幅などの軸は効きません。PDF では字が正しく出ないことがあります (TrueType の輪郭の可変フォントか、静的な書体を使ってください)`,
+              `${master.family}: cannot instantiate the CFF2 variable font (${why}); the default instance is used and the weight, width and other axes have no effect. Glyphs may not render correctly in the PDF (use a variable font with TrueType outlines, or static fonts)`,
+            ),
+          );
+          return master;
+        }
         for (const n of r.notes) this.onNotice(`${master.family}: ${n}`);
         buffer = r.buffer;
         fk = fontkit.create(new Uint8Array(buffer));
@@ -423,7 +457,7 @@ export class FontManager {
         ...(master.fullName ? { fullName: master.fullName } : {}),
         instanceOf: { master, coords: coordMap, ...(slanted ? { slanted: true } : {}) },
       };
-      if (this.canvasInstances && !isDefault) registerInstanceFace(lf);
+      if (this.canvasInstances && rebuild) registerInstanceFace(lf);
     }
     // 元の書体の側に覚える数の上限: 実体のバイト列の合計が 200MB ほどに収まる数 (4〜256)。超えたら古いものから忘れる
     const cap = Math.max(4, Math.min(256, Math.floor(200e6 / Math.max(1, master.buffer.byteLength))));

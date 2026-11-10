@@ -75,7 +75,7 @@ function retagAxis(buf: ArrayBuffer, from: string, to: string, min: number, def:
   return out;
 }
 
-/** 表の札を書き換えた写し (gvar を持たない可変フォント = 輪郭が CFF2 の書体と同じ扱いになるもの) を作る */
+/** 表の札を書き換えた写し (gvar を持たない可変フォント = 輪郭の差分が無く、実体を作れないもの) を作る */
 function renameTable(buf: ArrayBuffer, from: string, to: string): ArrayBuffer {
   const out = buf.slice(0);
   const dv = new DataView(out);
@@ -102,6 +102,7 @@ beforeAll(async () => {
 describe('可変フォントの軸と正規化 (fvar・avar)', () => {
   it('軸の札・範囲・既定の値と、名前つきの実体を読む', () => {
     expect(info.cff2).toBe(false);
+    expect(info.unsupported).toBe(false);
     expect(info.axes).toEqual([
       { tag: 'wdth', min: 50, default: 100, max: 150 },
       { tag: 'wght', min: 100, default: 100, max: 900 },
@@ -417,14 +418,14 @@ describe('書体の選び方: 可変フォントは、太さ・軸の値ごと�
     // font-variation-settings の opsz は、font-optical-sizing から決まる値より後 (§7.2)
     expect(fonts.get('Any{opsz=10.5;opsz=72}', 400).instanceOf?.coords.opsz).toBe(72);
   });
-  it('輪郭が gvar でない可変フォント (CFF2 と同じ扱い): 知らせを出して、既定の形の 1 つの書体として使う', async () => {
+  it('輪郭の差分 (gvar の表・CFF2 の輪郭) を持たない可変フォント: 知らせを出して、既定の形の 1 つの書体として使う', async () => {
     const fonts = new FontManager();
     const notices: string[] = [];
     fonts.onNotice = (m) => notices.push(m);
     const f = await fonts.registerBuffer('NoGvar', 400, renameTable(varBuf, 'gvar', 'xvar'), false);
     expect(f.variable).toBeUndefined();
     expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('CFF2');
+    expect(notices[0]).toContain('gvar');
     expect(fonts.get('NoGvar', 700)).toBe(f);
     expect(fonts.variationAxes()).toBeUndefined();
   });

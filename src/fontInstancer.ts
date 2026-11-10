@@ -15,9 +15,12 @@
  *  - 軸の値による機能の差し替え: 'GSUB'・'GPOS' の FeatureVariations 表 (「OpenType Layout Common Table Formats」)
  *  - ヒントの制御値: 'cvar'
  *
- * 対応するのは TrueType の輪郭 ('glyf' + 'gvar') の書体。CFF2 (可変の CFF) は対応しない (readVariationInfo の cff2 が真。
- * 呼び出し側が、既定の形のまま使う)。
+ * 輪郭は、TrueType ('glyf' + 'gvar') と CFF2 (可変の CFF) の両方。CFF2 の実体は、静的な CFF (版 1) の OpenType にする
+ * (字形の差分 blend を計算して Type 2 の CharString に書き直す。cff2Instancer.ts)。送り・書体全体の寸法・位置合わせ・機能の差し替えは、
+ * TrueType の輪郭と同じ扱い。輪郭の差分をどちらの形でも持たない可変フォント (readVariationInfo の unsupported が真) は、実体を作れない
+ * (呼び出し側が、既定の形のまま使う)。
  */
+import { instantiateCff2 } from './cff2Instancer';
 
 /** 可変フォントの軸 ('fvar' の VariationAxisRecord) */
 export interface VariationAxis {
@@ -32,8 +35,10 @@ export interface VariationInfo {
   axes: VariationAxis[];
   /** 名前つきの実体: 名前 ('name' 表の subfamilyNameID の文字列。読めなければ空) と、軸の値 (axes と同じ順) */
   instances: Array<{ name: string; coords: number[] }>;
-  /** 輪郭が CFF2 (実体を作れない) */
+  /** 輪郭が CFF2 (可変の CFF)。実体は、静的な CFF の OpenType になる */
   cff2: boolean;
+  /** 実体を作れない (輪郭の差分を、TrueType の 'glyf' + 'gvar' でも CFF2 でも持たない) */
+  unsupported: boolean;
 }
 
 interface TableRec {
@@ -131,7 +136,8 @@ export function readVariationInfo(buffer: ArrayBuffer): VariationInfo | undefine
     for (let a = 0; a < axisCount; a++) coords.push(dv.getInt32(o + 4 + a * 4) / 65536);
     instances.push({ name: nameString(dv, name, dv.getUint16(o)), coords });
   }
-  return { axes, instances, cff2: !dir.has('glyf') || !dir.has('gvar') };
+  const cff2 = dir.has('CFF2');
+  return { axes, instances, cff2, unsupported: !cff2 && (!dir.has('glyf') || !dir.has('gvar')) };
 }
 
 /** 仕様の丸め (0.5 は上へ)。fontTools の otRound と同じ */
@@ -244,6 +250,20 @@ class ItemVariationStore {
     this.ok = true;
   }
   private limit = 0;
+  /**
+   * 差分の組 outer (ItemVariationData) が使う領域の重み (regionIndexes の順)。組が無ければ undefined。
+   * CFF2 の blend は、差分をこの表ではなく字形の中に持ち、領域の並びだけをここから引く (CFF2 の表の「VariationStore」)
+   */
+  regionScalars(outer: number): number[] | undefined {
+    if (!this.ok || outer < 0 || outer >= this.data.length) return undefined;
+    const d = this.data[outer];
+    if (d + 6 > this.limit) return undefined;
+    const regionCount = this.dv.getUint16(d + 4);
+    if (d + 6 + regionCount * 2 > this.limit) return undefined;
+    const out: number[] = [];
+    for (let r = 0; r < regionCount; r++) out.push(this.scalars[this.dv.getUint16(d + 6 + r * 2)] ?? 0);
+    return out;
+  }
   /** 差分の合計 (丸めない)。番号が表に無ければ 0 */
   delta(outer: number, inner: number): number {
     if (!this.ok || outer >= this.data.length) return 0;
@@ -904,16 +924,141 @@ function instantiateFeatureVariations(t: Uint8Array, coords: readonly number[]):
   return out;
 }
 
+/** hmtx・vmtx の形 (どの字形も、送りと空きの組) */
+function longMetrics(numGlyphs: number, adv: Int32Array, sb: Int32Array): Uint8Array {
+  const t = new Uint8Array(numGlyphs * 4);
+  const d = new DataView(t.buffer);
+  for (let g = 0; g < numGlyphs; g++) {
+    d.setUint16(g * 4, Math.min(65535, adv[g]));
+    d.setInt16(g * 4 + 2, clamp16(sb[g]));
+  }
+  return t;
+}
+
+/** HVAR・VVAR (tag) の送りの差分を、字形ごとの既定の送り defOf に足して、out に入れる。表が無ければ、何もしない */
+function metricVariations(dv: DataView, dir: Map<string, TableRec>, tag: string, coords: readonly number[], numGlyphs: number, defOf: (g: number) => number, out: Int32Array) {
+  const r = dir.get(tag);
+  if (!r || r.length < 20) return;
+  const store = new ItemVariationStore(dv, r.offset + dv.getUint32(r.offset + 4), r.offset + r.length, coords);
+  const mapOff = dv.getUint32(r.offset + 8);
+  for (let g = 0; g < numGlyphs; g++) {
+    const [outer, inner] = deltaSetIndex(dv, mapOff ? r.offset + mapOff : 0, g);
+    out[g] = Math.max(0, otRound(defOf(g) + store.delta(outer, inner)));
+  }
+}
+
+/** 書体全体の値に、実体の値を入れる: MVAR の差分と、太さ・幅・傾きの軸の値 (out の表を書き換える) */
+function applyFontWideVariations(out: Map<string, Uint8Array>, dv: DataView, dir: Map<string, TableRec>, info: VariationInfo, user: readonly number[], coords: readonly number[]) {
+  // MVAR: 書体全体の寸法
+  const mvar = dir.get('MVAR');
+  if (mvar && mvar.length >= 12) {
+    const b = mvar.offset;
+    const recSize = dv.getUint16(b + 6);
+    const count = dv.getUint16(b + 8);
+    const storeOff = dv.getUint16(b + 10);
+    if (storeOff && recSize >= 8) {
+      const store = new ItemVariationStore(dv, b + storeOff, b + mvar.length, coords);
+      for (let i = 0; i < count; i++) {
+        const o = b + 12 + i * recSize;
+        if (o + 8 > b + mvar.length) break;
+        const target = MVAR_TARGETS[tagAt(dv, o)];
+        const t = target && out.get(target[0]);
+        if (!t || target[1] + 2 > t.length) continue;
+        const d = store.delta(dv.getUint16(o + 4), dv.getUint16(o + 6));
+        const tv = new DataView(t.buffer, t.byteOffset, t.byteLength);
+        if (target[2]) tv.setInt16(target[1], clamp16(otRound(tv.getInt16(target[1]) + d)));
+        else tv.setUint16(target[1], Math.max(0, Math.min(65535, otRound(tv.getUint16(target[1]) + d))));
+      }
+    }
+  }
+  // 太さ・幅・傾きの値を、OS/2 と post に写す ('OS/2' の usWeightClass・usWidthClass、'post' の italicAngle。軸の定義は Design-variation axis tag registry)
+  const os2 = out.get('OS/2');
+  info.axes.forEach((ax, i) => {
+    const v = Math.min(ax.max, Math.max(ax.min, user[i]));
+    if (ax.tag === 'wght' && os2 && os2.length >= 6) new DataView(os2.buffer).setUint16(4, Math.max(1, Math.min(1000, otRound(v))));
+    if (ax.tag === 'wdth' && os2 && os2.length >= 8) {
+      // usWidthClass の 1〜9 (50・62.5・75・87.5・100・112.5・125・150・200 %) の、最も近いもの
+      const steps = [50, 62.5, 75, 87.5, 100, 112.5, 125, 150, 200];
+      let best = 0;
+      steps.forEach((s, k) => {
+        if (Math.abs(s - v) < Math.abs(steps[best] - v)) best = k;
+      });
+      new DataView(os2.buffer).setUint16(6, best + 1);
+    }
+    const post = out.get('post');
+    if (ax.tag === 'slnt' && post && post.length >= 8) new DataView(post.buffer).setInt32(4, otRound(v * 65536));
+  });
+}
+
+/** 位置合わせと、軸の値による機能の差し替えを、実体の値にする (out の GDEF・GPOS・GSUB を書き換える) */
+function applyLayoutVariations(out: Map<string, Uint8Array>, coords: readonly number[], notes: string[]) {
+  // GDEF の差分の表で GPOS の値を解く。GDEF からは差分の表への参照を外す (version 1.3 の itemVarStoreOffset)
+  const gdef = out.get('GDEF');
+  const gpos = out.get('GPOS');
+  if (gdef && gdef.length >= 18) {
+    const gd = new DataView(gdef.buffer);
+    const minor = gd.getUint16(2);
+    const storeOff = minor >= 3 ? gd.getUint32(14) : 0;
+    if (storeOff) {
+      const store = new ItemVariationStore(gd, storeOff, gdef.length, coords);
+      if (gpos) {
+        const skipped = instantiateGpos(gpos, store);
+        if (skipped) notes.push(`GPOS: ${skipped} variable values without a base field were left at the default`);
+      }
+      gd.setUint32(14, 0);
+    }
+  }
+  for (const tag of ['GSUB', 'GPOS']) {
+    const t = out.get(tag);
+    if (!t) continue;
+    const r = instantiateFeatureVariations(t, coords);
+    if (r) out.set(tag, r);
+    else notes.push(`${tag}: FeatureVariations could not be resolved (offset overflow); the default features are used`);
+  }
+}
+
+/** 表の集まりを sfnt にする (表は札の順、4 バイト境界。version は sfnt の版: TrueType の輪郭は 0x00010000、CFF は 'OTTO') */
+function assembleSfnt(out: Map<string, Uint8Array>, version: number): ArrayBuffer {
+  const tags = [...out.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const n = tags.length;
+  let size = 12 + n * 16;
+  for (const t of tags) size += (out.get(t)!.length + 3) & ~3;
+  const file = new Uint8Array(size);
+  const fd = new DataView(file.buffer);
+  fd.setUint32(0, version);
+  fd.setUint16(4, n);
+  const pow = 2 ** Math.floor(Math.log2(n));
+  fd.setUint16(6, pow * 16);
+  fd.setUint16(8, Math.floor(Math.log2(n)));
+  fd.setUint16(10, n * 16 - pow * 16);
+  let off = 12 + n * 16;
+  let headAt = 0;
+  tags.forEach((t, i) => {
+    const data = out.get(t)!;
+    const rec = 12 + i * 16;
+    for (let k = 0; k < 4; k++) file[rec + k] = t.charCodeAt(k);
+    fd.setUint32(rec + 4, checksum(data));
+    fd.setUint32(rec + 8, off);
+    fd.setUint32(rec + 12, data.length);
+    file.set(data, off);
+    if (t === 'head') headAt = off;
+    off += (data.length + 3) & ~3;
+  });
+  fd.setUint32(headAt + 8, (0xb1b0afba - checksum(file)) >>> 0);
+  return file.buffer;
+}
+
 /** 実体を作った結果 */
 export interface InstanceResult {
-  /** 静的な書体のファイル (TrueType) */
+  /** 静的な書体のファイル (TrueType の輪郭の書体は TrueType、CFF2 の書体は CFF の OpenType) */
   buffer: ArrayBuffer;
   /** 当てられなかったもの (利用者に知らせる文。無ければ空) */
   notes: string[];
 }
 
 /**
- * 可変フォント (TrueType の輪郭) の、軸の値 user (info.axes と同じ順。利用者の尺度) の実体を、静的な書体のファイルにする。
+ * 可変フォントの、軸の値 user (info.axes と同じ順。利用者の尺度) の実体を、静的な書体のファイルにする。
+ * 輪郭が CFF2 の書体は instantiateCff2Font (下)。TrueType の輪郭の書体は:
  *  - 'glyf'・'loca': gvar の差分を当てた輪郭 (座標は整数に丸める)。複合の字形は、部品の位置に差分を当てる
  *  - 'hmtx' (・'vmtx'): HVAR (・VVAR) があればその差分、無ければ gvar の幻影の点から
  *  - 'OS/2'・'hhea'・'vhea'・'post': MVAR の差分。usWeightClass・usWidthClass・italicAngle は、wght・wdth・slnt の値から
@@ -926,7 +1071,8 @@ export function instantiateFont(buffer: ArrayBuffer, info: VariationInfo, user: 
   const dv = new DataView(buffer);
   const dir = tableDirectory(dv);
   const notes: string[] = [];
-  if (!dir || info.cff2) throw new Error('not a TrueType variable font');
+  if (!dir || info.unsupported) throw new Error('not a variable font with glyf + gvar or CFF2 outlines');
+  if (info.cff2) return instantiateCff2Font(buffer, dir, info, user);
   const need = (tag: string) => {
     const r = dir.get(tag);
     if (!r) throw new Error(`missing table ${tag}`);
@@ -1207,18 +1353,8 @@ export function instantiateFont(buffer: ArrayBuffer, info: VariationInfo, user: 
   }
 
   // HVAR・VVAR があれば、送りはその差分で決める (組版 (HarfBuzz・ブラウザ) が使う値。'HVAR' の表の説明: 送りの差分は必須、空きの差分は任意)
-  const metricVar = (tag: string, defOf: (g: number) => number, out: Int32Array) => {
-    const r = dir.get(tag);
-    if (!r || r.length < 20) return;
-    const store = new ItemVariationStore(dv, r.offset + dv.getUint32(r.offset + 4), r.offset + r.length, coords);
-    const mapOff = dv.getUint32(r.offset + 8);
-    for (let g = 0; g < numGlyphs; g++) {
-      const [outer, inner] = deltaSetIndex(dv, mapOff ? r.offset + mapOff : 0, g);
-      out[g] = Math.max(0, otRound(defOf(g) + store.delta(outer, inner)));
-    }
-  };
-  metricVar('HVAR', advanceOf, advances);
-  if (hasVmtx) metricVar('VVAR', vAdvanceOf, vAdvances);
+  metricVariations(dv, dir, 'HVAR', coords, numGlyphs, advanceOf, advances);
+  if (hasVmtx) metricVariations(dv, dir, 'VVAR', coords, numGlyphs, vAdvanceOf, vAdvances);
 
   // glyf・loca (長い形式)
   let glyfSize = 0;
@@ -1254,15 +1390,6 @@ export function instantiateFont(buffer: ArrayBuffer, info: VariationInfo, user: 
   }
   headDv.setUint32(8, 0);
 
-  const longMetrics = (adv: Int32Array, sb: Int32Array) => {
-    const t = new Uint8Array(numGlyphs * 4);
-    const d = new DataView(t.buffer);
-    for (let g = 0; g < numGlyphs; g++) {
-      d.setUint16(g * 4, Math.min(65535, adv[g]));
-      d.setInt16(g * 4 + 2, clamp16(sb[g]));
-    }
-    return t;
-  };
   const out = new Map<string, Uint8Array>();
   for (const [tag, r] of dir) {
     if (['fvar', 'avar', 'gvar', 'cvar', 'HVAR', 'VVAR', 'MVAR', 'STAT', 'hdmx', 'LTSH', 'VDMX', 'DSIG', 'glyf', 'loca', 'hmtx', 'vmtx', 'head', 'hhea', 'vhea'].includes(tag)) continue;
@@ -1271,57 +1398,19 @@ export function instantiateFont(buffer: ArrayBuffer, info: VariationInfo, user: 
   out.set('glyf', newGlyf);
   out.set('loca', newLoca);
   out.set('head', head);
-  out.set('hmtx', longMetrics(advances, lsbs));
+  out.set('hmtx', longMetrics(numGlyphs, advances, lsbs));
   hheaDv.setUint16(34, numGlyphs);
   let advMax = 0;
   for (let g = 0; g < numGlyphs; g++) if (advances[g] > advMax) advMax = advances[g];
   hheaDv.setUint16(10, Math.min(65535, advMax));
   out.set('hhea', hhea);
   if (vhea && hasVmtx) {
-    out.set('vmtx', longMetrics(vAdvances, tsbs));
+    out.set('vmtx', longMetrics(numGlyphs, vAdvances, tsbs));
     new DataView(vhea.buffer).setUint16(34, numGlyphs);
     out.set('vhea', vhea);
   } else if (vhea) out.set('vhea', vhea);
 
-  // MVAR: 書体全体の寸法
-  const mvar = dir.get('MVAR');
-  if (mvar && mvar.length >= 12) {
-    const b = mvar.offset;
-    const recSize = dv.getUint16(b + 6);
-    const count = dv.getUint16(b + 8);
-    const storeOff = dv.getUint16(b + 10);
-    if (storeOff && recSize >= 8) {
-      const store = new ItemVariationStore(dv, b + storeOff, b + mvar.length, coords);
-      for (let i = 0; i < count; i++) {
-        const o = b + 12 + i * recSize;
-        if (o + 8 > b + mvar.length) break;
-        const target = MVAR_TARGETS[tagAt(dv, o)];
-        const t = target && out.get(target[0]);
-        if (!t || target[1] + 2 > t.length) continue;
-        const d = store.delta(dv.getUint16(o + 4), dv.getUint16(o + 6));
-        const tv = new DataView(t.buffer, t.byteOffset, t.byteLength);
-        if (target[2]) tv.setInt16(target[1], clamp16(otRound(tv.getInt16(target[1]) + d)));
-        else tv.setUint16(target[1], Math.max(0, Math.min(65535, otRound(tv.getUint16(target[1]) + d))));
-      }
-    }
-  }
-  // 太さ・幅・傾きの値を、OS/2 と post に写す ('OS/2' の usWeightClass・usWidthClass、'post' の italicAngle。軸の定義は Design-variation axis tag registry)
-  const os2 = out.get('OS/2');
-  info.axes.forEach((ax, i) => {
-    const v = Math.min(ax.max, Math.max(ax.min, user[i]));
-    if (ax.tag === 'wght' && os2 && os2.length >= 6) new DataView(os2.buffer).setUint16(4, Math.max(1, Math.min(1000, otRound(v))));
-    if (ax.tag === 'wdth' && os2 && os2.length >= 8) {
-      // usWidthClass の 1〜9 (50・62.5・75・87.5・100・112.5・125・150・200 %) の、最も近いもの
-      const steps = [50, 62.5, 75, 87.5, 100, 112.5, 125, 150, 200];
-      let best = 0;
-      steps.forEach((s, k) => {
-        if (Math.abs(s - v) < Math.abs(steps[best] - v)) best = k;
-      });
-      new DataView(os2.buffer).setUint16(6, best + 1);
-    }
-    const post = out.get('post');
-    if (ax.tag === 'slnt' && post && post.length >= 8) new DataView(post.buffer).setInt32(4, otRound(v * 65536));
-  });
+  applyFontWideVariations(out, dv, dir, info, user, coords);
 
   // cvar: ヒントの制御値
   const cvar = dir.get('cvar');
@@ -1341,56 +1430,192 @@ export function instantiateFont(buffer: ArrayBuffer, info: VariationInfo, user: 
     for (let i = 0; i < n; i++) if (sum[i]) cd.setInt16(i * 2, clamp16(otRound(cd.getInt16(i * 2) + sum[i])));
   }
 
-  // GDEF の差分の表で GPOS の値を解く。GDEF からは差分の表への参照を外す (version 1.3 の itemVarStoreOffset)
-  const gdef = out.get('GDEF');
-  const gpos = out.get('GPOS');
-  if (gdef && gdef.length >= 18) {
-    const gd = new DataView(gdef.buffer);
-    const minor = gd.getUint16(2);
-    const storeOff = minor >= 3 ? gd.getUint32(14) : 0;
-    if (storeOff) {
-      const store = new ItemVariationStore(gd, storeOff, gdef.length, coords);
-      if (gpos) {
-        const skipped = instantiateGpos(gpos, store);
-        if (skipped) notes.push(`GPOS: ${skipped} variable values without a base field were left at the default`);
-      }
-      gd.setUint32(14, 0);
-    }
-  }
-  for (const tag of ['GSUB', 'GPOS']) {
-    const t = out.get(tag);
-    if (!t) continue;
-    const r = instantiateFeatureVariations(t, coords);
-    if (r) out.set(tag, r);
-    else notes.push(`${tag}: FeatureVariations could not be resolved (offset overflow); the default features are used`);
+  applyLayoutVariations(out, coords, notes);
+
+  return { buffer: assembleSfnt(out, 0x00010000), notes };
+}
+
+/**
+ * 輪郭が CFF2 の可変フォントの実体を、静的な CFF (版 1) の OpenType にする。
+ *  - 'CFF ': 字形の差分 (blend) を計算した輪郭 (cff2Instancer.ts)。字形の幅は、実体の送り
+ *  - 'hmtx' (・'vmtx'): HVAR (・VVAR) の差分 (CFF2 の輪郭には幻影の点が無いので、送りの差分はこの表だけにある。'HVAR'・'VVAR' の表の説明)。
+ *    左の空きは、輪郭の左の端。上の空きは、縦書きの原点 ('VORG') から輪郭の上の端まで
+ *  - 'VORG': VVAR の vOrgMapping の差分 ('VVAR' の表の説明: 縦書きの原点の y の差分は、CFF2 の書体だけが持つ)
+ *  - 'OS/2'・'hhea'・'vhea'・'post'・'GPOS'・'GSUB' は、TrueType の輪郭の実体と同じ
+ *  - 可変フォントの表 (fvar・avar・HVAR・VVAR・MVAR・STAT)・'CFF2'・DSIG は入れない
+ */
+function instantiateCff2Font(buffer: ArrayBuffer, dir: Map<string, TableRec>, info: VariationInfo, user: readonly number[]): InstanceResult {
+  const src = new Uint8Array(buffer);
+  const dv = new DataView(buffer);
+  const notes: string[] = [];
+  const need = (tag: string) => {
+    const r = dir.get(tag);
+    if (!r) throw new Error(`missing table ${tag}`);
+    return r;
+  };
+  const copy = (tag: string) => {
+    const r = need(tag);
+    return src.slice(r.offset, r.offset + r.length);
+  };
+  const coords = normalizeCoords(buffer, info.axes, user);
+  const head = copy('head');
+  const hhea = copy('hhea');
+  const headDv = new DataView(head.buffer);
+  const hheaDv = new DataView(hhea.buffer);
+  const numGlyphs = dv.getUint16(need('maxp').offset + 4);
+  const hmtxRec = need('hmtx');
+  const cff2Rec = need('CFF2');
+  const numH = hheaDv.getUint16(34);
+  if (!numH || hmtxRec.length < numH * 4) throw new Error('bad hmtx');
+  const advanceOf = (g: number) => dv.getUint16(hmtxRec.offset + Math.min(g, numH - 1) * 4);
+  const vheaRec = dir.get('vhea');
+  const vmtxRec = vheaRec ? dir.get('vmtx') : undefined;
+  const vhea = vheaRec ? src.slice(vheaRec.offset, vheaRec.offset + vheaRec.length) : undefined;
+  const numV = vhea ? new DataView(vhea.buffer).getUint16(34) : 0;
+  const hasVmtx = !!vmtxRec && numV > 0 && vmtxRec.length >= numV * 4;
+  const vAdvanceOf = (g: number) => dv.getUint16(vmtxRec!.offset + Math.min(g, numV - 1) * 4);
+  const tsbOf = (g: number) => (g < numV ? dv.getInt16(vmtxRec!.offset + g * 4 + 2) : vmtxRec!.offset + numV * 4 + (g - numV) * 2 + 2 <= vmtxRec!.offset + vmtxRec!.length ? dv.getInt16(vmtxRec!.offset + numV * 4 + (g - numV) * 2) : 0);
+
+  // 送り: 既定の値に、HVAR・VVAR の差分
+  const advances = new Int32Array(numGlyphs);
+  const vAdvances = new Int32Array(numGlyphs);
+  for (let g = 0; g < numGlyphs; g++) advances[g] = advanceOf(g);
+  metricVariations(dv, dir, 'HVAR', coords, numGlyphs, advanceOf, advances);
+  if (hasVmtx) {
+    for (let g = 0; g < numGlyphs; g++) vAdvances[g] = vAdvanceOf(g);
+    metricVariations(dv, dir, 'VVAR', coords, numGlyphs, vAdvanceOf, vAdvances);
   }
 
-  // sfnt に組み立てる (表は札の順、4 バイト境界)
-  const tags = [...out.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const n = tags.length;
-  let size = 12 + n * 16;
-  for (const t of tags) size += (out.get(t)!.length + 3) & ~3;
-  const file = new Uint8Array(size);
-  const fd = new DataView(file.buffer);
-  fd.setUint32(0, 0x00010000);
-  fd.setUint16(4, n);
-  const pow = 2 ** Math.floor(Math.log2(n));
-  fd.setUint16(6, pow * 16);
-  fd.setUint16(8, Math.floor(Math.log2(n)));
-  fd.setUint16(10, n * 16 - pow * 16);
-  let off = 12 + n * 16;
-  let headAt = 0;
-  tags.forEach((t, i) => {
-    const data = out.get(t)!;
-    const rec = 12 + i * 16;
-    for (let k = 0; k < 4; k++) file[rec + k] = t.charCodeAt(k);
-    fd.setUint32(rec + 4, checksum(data));
-    fd.setUint32(rec + 8, off);
-    fd.setUint32(rec + 12, data.length);
-    file.set(data, off);
-    if (t === 'head') headAt = off;
-    off += (data.length + 3) & ~3;
-  });
-  fd.setUint32(headAt + 8, (0xb1b0afba - checksum(file)) >>> 0);
-  return { buffer: file.buffer, notes };
+  // 字形
+  const psName = nameString(dv, dir.get('name'), 6) || variationNamePrefix(buffer) || 'Font';
+  const scalarMemo = new Map<number, Float64Array | undefined>();
+  const made = instantiateCff2(
+    src.subarray(cff2Rec.offset, cff2Rec.offset + cff2Rec.length),
+    (at, length) => {
+      const store = new ItemVariationStore(dv, cff2Rec.offset + at, cff2Rec.offset + at + length, coords);
+      return (vsindex) => {
+        if (!scalarMemo.has(vsindex)) {
+          // 軸の無い書体 (可変でない CFF2) は、どの領域の重みも 0 (既定の値のまま)
+          const sc = store.regionScalars(vsindex);
+          scalarMemo.set(vsindex, sc && (info.axes.length ? Float64Array.from(sc) : new Float64Array(sc.length)));
+        }
+        return scalarMemo.get(vsindex);
+      };
+    },
+    advances,
+    psName,
+    headDv.getUint16(18),
+  );
+  const { boxes, hasOutline } = made;
+
+  // 書体全体の外接の箱 ('head')
+  let any = false;
+  let fx0 = 0;
+  let fy0 = 0;
+  let fx1 = 0;
+  let fy1 = 0;
+  const lsbs = new Int32Array(numGlyphs);
+  for (let g = 0; g < numGlyphs; g++) {
+    if (!hasOutline[g]) continue;
+    lsbs[g] = boxes[g * 4];
+    if (!any || boxes[g * 4] < fx0) fx0 = boxes[g * 4];
+    if (!any || boxes[g * 4 + 1] < fy0) fy0 = boxes[g * 4 + 1];
+    if (!any || boxes[g * 4 + 2] > fx1) fx1 = boxes[g * 4 + 2];
+    if (!any || boxes[g * 4 + 3] > fy1) fy1 = boxes[g * 4 + 3];
+    any = true;
+  }
+  if (any) {
+    headDv.setInt16(36, clamp16(fx0));
+    headDv.setInt16(38, clamp16(fy0));
+    headDv.setInt16(40, clamp16(fx1));
+    headDv.setInt16(42, clamp16(fy1));
+  }
+  headDv.setUint32(8, 0);
+
+  const out = new Map<string, Uint8Array>();
+  for (const [tag, r] of dir) {
+    if (['fvar', 'avar', 'gvar', 'cvar', 'HVAR', 'VVAR', 'MVAR', 'STAT', 'hdmx', 'LTSH', 'VDMX', 'DSIG', 'CFF2', 'hmtx', 'vmtx', 'head', 'hhea', 'vhea', 'VORG'].includes(tag)) continue;
+    out.set(tag, src.slice(r.offset, r.offset + r.length));
+  }
+  out.set('CFF ', made.cff);
+  out.set('head', head);
+  out.set('hmtx', longMetrics(numGlyphs, advances, lsbs));
+  hheaDv.setUint16(34, numGlyphs);
+  let advMax = 0;
+  for (let g = 0; g < numGlyphs; g++) if (advances[g] > advMax) advMax = advances[g];
+  hheaDv.setUint16(10, Math.min(65535, advMax));
+  out.set('hhea', hhea);
+
+  // 縦書きの原点 ('VORG'): 既定の値に、VVAR の vOrgMapping の差分。字形ごとの値を求めてから、最も多い値を既定の値にして書き直す
+  const vorgRec = dir.get('VORG');
+  let originOf: ((g: number) => number) | undefined;
+  if (vorgRec && vorgRec.length >= 8) {
+    const b = vorgRec.offset;
+    const def = dv.getInt16(b + 4);
+    const count = Math.min(dv.getUint16(b + 6), (vorgRec.length - 8) >> 2);
+    const ys = new Int32Array(numGlyphs).fill(def);
+    for (let i = 0; i < count; i++) {
+      const g = dv.getUint16(b + 8 + i * 4);
+      if (g < numGlyphs) ys[g] = dv.getInt16(b + 8 + i * 4 + 2);
+    }
+    const vvar = dir.get('VVAR');
+    const mapOff = vvar && vvar.length >= 24 ? dv.getUint32(vvar.offset + 20) : 0;
+    if (vvar && mapOff) {
+      const store = new ItemVariationStore(dv, vvar.offset + dv.getUint32(vvar.offset + 4), vvar.offset + vvar.length, coords);
+      for (let g = 0; g < numGlyphs; g++) {
+        const [outer, inner] = deltaSetIndex(dv, vvar.offset + mapOff, g);
+        ys[g] = clamp16(otRound(ys[g] + store.delta(outer, inner)));
+      }
+    }
+    const freq = new Map<number, number>();
+    let common = def;
+    let commonCount = 0;
+    for (let g = 0; g < numGlyphs; g++) {
+      const c = (freq.get(ys[g]) ?? 0) + 1;
+      freq.set(ys[g], c);
+      if (c > commonCount) {
+        common = ys[g];
+        commonCount = c;
+      }
+    }
+    const t = new Uint8Array(8 + (numGlyphs - commonCount) * 4);
+    const td = new DataView(t.buffer);
+    td.setUint16(0, 1);
+    td.setInt16(4, common);
+    td.setUint16(6, numGlyphs - commonCount);
+    let o = 8;
+    for (let g = 0; g < numGlyphs; g++) {
+      if (ys[g] === common) continue;
+      td.setUint16(o, g);
+      td.setInt16(o + 2, ys[g]);
+      o += 4;
+    }
+    out.set('VORG', t);
+    originOf = (g) => ys[g];
+  }
+  if (vhea && hasVmtx) {
+    // 上の空き: 縦書きの原点から、輪郭の上の端まで ('VORG' の表の説明)。原点の表が無い書体・輪郭の無い字形は、既定の値のまま
+    const tsbs = new Int32Array(numGlyphs);
+    for (let g = 0; g < numGlyphs; g++) tsbs[g] = originOf && hasOutline[g] ? originOf(g) - boxes[g * 4 + 3] : tsbOf(g);
+    out.set('vmtx', longMetrics(numGlyphs, vAdvances, tsbs));
+    new DataView(vhea.buffer).setUint16(34, numGlyphs);
+    out.set('vhea', vhea);
+  } else {
+    if (vhea) out.set('vhea', vhea);
+    if (vmtxRec) out.set('vmtx', src.slice(vmtxRec.offset, vmtxRec.offset + vmtxRec.length));
+  }
+
+  applyFontWideVariations(out, dv, dir, info, user, coords);
+  applyLayoutVariations(out, coords, notes);
+  return { buffer: assembleSfnt(out, 0x4f54544f), notes };
+}
+
+/**
+ * 可変でない CFF2 の書体 (輪郭が 'CFF2' の表で、'fvar' を持たない OpenType) を、静的な CFF (版 1) の OpenType に作り直す
+ * (CFF2 の輪郭は、可変でなくても PDF に埋め込めない)。そういう書体でなければ undefined。読めない書体は Error
+ */
+export function staticCff2ToCff(buffer: ArrayBuffer): ArrayBuffer | undefined {
+  const dir = tableDirectory(new DataView(buffer));
+  if (!dir || !dir.has('CFF2') || dir.has('fvar')) return undefined;
+  return instantiateCff2Font(buffer, dir, { axes: [], instances: [], cff2: true, unsupported: false }, []).buffer;
 }
