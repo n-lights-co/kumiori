@@ -58,7 +58,8 @@ function parseStops(items: string[], len: number, fontSize: number): Stop[] | un
   for (const it of items) {
     const parts = splitTop(it, ' ');
     if (parts.length === 1 && lenPct(parts[0], len, fontSize) !== undefined) continue; // 色の変わり目の指定は読み飛ばす
-    const c = parseColor(parts[0]);
+    // currentcolor は読まない (color-mix() の中のものも。止まりの色に、要素の color を渡していない)
+    const c = /currentcolor/i.test(parts[0]) ? undefined : parseColor(parts[0]);
     if (!c || c === 'current') return undefined;
     const ps = parts.slice(1).map((p) => lenPct(p, len, fontSize));
     if (ps.some((p) => p === undefined)) return undefined;

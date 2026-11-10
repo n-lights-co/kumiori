@@ -101,6 +101,11 @@ describe('文書の CSS を、文書の中の <svg> に渡す', () => {
     const r = out(`<svg viewBox="0 0 10 10"><path ${PATH}/></svg>`, 'path { opacity: 50%; fill-rule: evenodd; stroke-linecap: round; stroke-miterlimit: 2; stroke-dashoffset: 1pt; fill: url(#g) red }');
     expect(r.styled).toContain(`style="fill: url(#g) rgb(255, 0, 0); fill-rule: evenodd; stroke-linecap: round; stroke-miterlimit: 2; stroke-dashoffset: 1.3333; opacity: 0.5"`);
   });
+  it('色の関数 (CSS Color 4・5): 文書の CSS の値も、<svg> の属性・style 属性の値も、sRGB にして渡す', () => {
+    const body = `<div class="icon"><svg viewBox="0 0 10 10"><path class="a" ${PATH}/><path fill="color(srgb 0 0 1)" ${PATH}/><path style="fill: hwb(120 0% 0%)" ${PATH}/><path class="m" ${PATH}/></svg></div>`;
+    const css = '.icon { color: red } .a { fill: oklab(1 0 0) } .m { fill: color-mix(in srgb, currentColor, blue) }';
+    expect(shapes(body, css).map((s) => s.fill)).toEqual(['#ffffff', '#0000ff', '#00ff00', '#800080']);
+  });
   it('<svg> の中の style 要素の規則も、文書のスタイルシート (SVG 2 §6.4)', () => {
     const body = `<svg viewBox="0 0 10 10"><style>.x { fill: red }</style><path class="x" ${PATH}/></svg>`;
     expect(shapes(body, 'svg .x { fill: blue }')[0].fill).toBe('#0000ff');

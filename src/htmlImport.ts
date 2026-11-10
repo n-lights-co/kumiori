@@ -68,7 +68,7 @@ import type { FkFont, MathFont } from './mathFont';
 import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
-import { cssColor, cssColorAlpha, cssLen, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
+import { cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
 import { AH_ALIASES, counterText, isPagedDecl, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
@@ -362,7 +362,15 @@ export function constrainReplaced(w: number, h: number, minW: number, maxW: numb
 export function shadowsOf(boxShadow: string, filter = ''): BoxShadow[] {
   const one = (v0: string, drop: boolean): BoxShadow | undefined => {
     const inset = /\binset\b/i.test(v0);
-    const v = inset ? v0.replace(/\binset\b/gi, ' ') : v0;
+    let v = inset ? v0.replace(/\binset\b/gi, ' ') : v0;
+    // Color 4・5 の色の関数 (hwb()・lab()・color()・color-mix() など) は、先に rgb() の形にする (中の currentcolor は黒で近似する)
+    if (/\b(hwb|lab|lch|oklab|oklch|color|color-mix)\(/i.test(v))
+      v = splitWords(v)
+        .map((t) => {
+          const c = /^(hwb|lab|lch|oklab|oklch|color|color-mix)\(/i.test(t) ? parseCssColor(t) : undefined;
+          return c && c !== 'current' ? fmtColor(c) : t;
+        })
+        .join(' ');
     // 色: rgb()・hsl()・#…、無ければ英字だけの語 (色の名前)。無ければ黒 (currentColor の近似)
     const colorText = /(rgba?|hsla?)\([^)]*\)|#[0-9a-f]{3,8}\b/i.exec(v)?.[0] ?? v.split(/\s+/).find((t) => /^[a-z]+$/i.test(t)) ?? 'black';
     const lens = v

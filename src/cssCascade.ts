@@ -11,7 +11,7 @@
  * 百分率の幅・余白は、包含ブロックの幅を親から順に見積もって px にする。
  */
 import { MAX_VAR_LENGTH, parseCss, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
-import { fmtColor, parseColor, splitTop, UNIT_PX } from './cssText';
+import { fmtColor, parseColor, splitTop, UNIT_PX, type RGBA } from './cssText';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { asciiLower, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
@@ -519,6 +519,16 @@ export { parseColor } from './cssText';
 const fmtPx = (n: number) => `${+n.toFixed(4)}px`;
 
 /**
+ * 色を読む。color-mix() の中の currentcolor は、current (計算値の色。rgb() の形) にする。
+ * 計算値は混ぜた結果の色にする (Color 5 §10.1 では、currentcolor を含む color-mix() の計算値は関数のままで、継承先の color で決め直す。
+ * Kumiori は宣言した要素の色で決める)
+ */
+const parseColorWith = (raw: string, current: string | undefined) => {
+  const cur = current !== undefined && /color-mix\(/i.test(raw) && /currentcolor/i.test(raw) ? parseColor(current) : undefined;
+  return parseColor(raw, Array.isArray(cur) ? (cur as RGBA) : undefined);
+};
+
+/**
  * 宣言の無い、継承しないプロパティの初期値の計算値 (要素によらないもの)。プロパティごとに 1 度だけ求めて覚える。
  * 要素によるもの (currentcolor は要素の色、border-*-width は同じ要素の線種で決まる) と、初期値が読めないものは undefined (本来の経路で計算する)
  */
@@ -709,11 +719,11 @@ const SVG_ANIMATION = /^(animate|animatemotion|animatetransform|animatecolor|set
  *  - stroke-dasharray: none か、カンマか空白で区切った長さ・百分率・数の並び。負の値があれば不正 (§13.5.6)
  *  - stroke-miterlimit: 数。負の値は不正 (§13.5.5)
  */
-function svgStyleValue(prop: string, raw: string, ctx: LenCtx): string | undefined {
+function svgStyleValue(prop: string, raw: string, ctx: LenCtx, current?: string): string | undefined {
   const s = raw.trim();
   const l = s.toLowerCase();
   const color = (t: string) => {
-    const c = parseColor(t);
+    const c = parseColorWith(t, current);
     return c === undefined ? undefined : c === 'current' ? 'currentcolor' : fmtColor(c);
   };
   // 数 (利用者単位 = px)・長さ → px、百分率はそのまま
@@ -1707,7 +1717,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
 
     // 色 (currentcolor の基準)
     const colorRaw = valueOf('color');
-    const pc = parseColor(colorRaw);
+    // color の中の currentcolor は、継承した値 (Color 4 §15.5)
+    const pc = parseColorWith(colorRaw, pv('color'));
     let colorVal = pc === 'current' || pc === undefined ? (pv('color') ?? 'rgb(0, 0, 0)') : fmtColor(pc);
     // 互換モード: color の初期値は quirk-inherit。初期値になった table は、文書の body の色を使う (Quirks Mode §3.12)
     if (quirks && !pseudo && (el.localName ?? el.nodeName).toLowerCase() === 'table' && /^(initial|revert|revert-layer)$/i.test((cascaded.get('color') ?? '').trim())) {
@@ -1777,7 +1788,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       let val = raw;
       switch (kind) {
         case 'color': {
-          const c = parseColor(raw);
+          const c = parseColorWith(raw, colorVal);
           val = c === 'current' || c === undefined ? colorVal : fmtColor(c);
           break;
         }
@@ -1918,10 +1929,12 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   /**
    * SVG の表示の性質の計算値 (要素ごと。継承は HTML の要素も通る) と、文書のスタイルシートで決まった性質 (own)。
    * own に入れるのは、作成者のスタイルシートの規則が勝った性質と、style 属性の var() を含む宣言が勝った性質
-   * (表示の属性と、var() の無い style 属性は、単独の SVG でも同じに読めるので、書き足さない)
+   * (表示の属性と、var() の無い style 属性は、単独の SVG でも同じに読めるので、書き足さない)。
+   * 表示の属性・style 属性でも、Color 4・5 の色の関数 (SVG の読み込みは読まない) を使った値は、sRGB にした計算値を書き足す
    */
   const svgCache = new Map<Element, { v: Map<string, string>; own: string[] }>();
-  const fromSheet = (d: DeclaredValue | undefined) => !!d && (((d.rank === 1 || d.rank === 3) && d.spec >= 0) || ((d.rank === 2 || d.rank === 4) && /var\(/i.test(d.value)));
+  const SVG_UNREADABLE = /\b(hwb|lab|lch|oklab|oklch|color|color-mix)\(/i;
+  const fromSheet = (d: DeclaredValue | undefined) => !!d && (((d.rank === 1 || d.rank === 3) && d.spec >= 0) || ((d.rank === 2 || d.rank === 4) && /var\(/i.test(d.value)) || (d.rank >= 1 && d.rank <= 4 && SVG_UNREADABLE.test(d.value)));
   const svgOf = (el: Element): { v: Map<string, string>; own: string[] } => {
     const hit = svgCache.get(el);
     if (hit) return hit;
@@ -1940,7 +1953,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       else if (lv === 'inherit') val = inherited();
       else if (lv === 'initial') val = initial;
       else if (lv === 'unset' || lv === 'revert' || lv === 'revert-layer') val = inh ? inherited() : initial;
-      else val = svgStyleValue(p, raw!, ctx) ?? (inh ? inherited() : initial);
+      else val = svgStyleValue(p, raw!, ctx, c.v.get('color')) ?? (inh ? inherited() : initial);
       v.set(p, val);
       if (fromSheet(c.svgFrom?.get(p))) own.push(p);
     }
