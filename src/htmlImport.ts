@@ -1,8 +1,10 @@
 /**
  * htmlImport — HTML+CSS を Kumiori の論理ツリー (LDocument) に変換する。
  *
- * スタイルの確定 (継承・セレクタの優先順位・既定のスタイル・単位の換算) はブラウザに任せ、
- * 各要素の確定したスタイル (getComputedStyle) を読んで、論理ツリーへ写す (docs/html-css-plan.md)。
+ * スタイルの確定 (継承・セレクタの優先順位・既定のスタイル・単位の換算) はここでは行わず、
+ * 各要素の確定したスタイルを StyleSource から読んで、論理ツリーへ写す (docs/html-css-plan.md)。
+ * StyleSource は、既定では自前のカスケード (cssCascade.ts の cascadeStyles)。画面で「CSS の解釈: ブラウザ」を選んだとき (比較用) だけ、
+ * ブラウザの getComputedStyle と配置 (rect) を使う (htmlFrame.ts)。値の形はどちらも getComputedStyle と同じ。
  * ページの指定 (@page の size・margin) は、CSS の文字列から自前で読む。
  *
  * 第 1 段階の対応: 見出し・段落などのブロック、インラインの装飾、リスト、表、画像、改行、ルビ、縦中横、
@@ -14,7 +16,8 @@
  * text-combine-upright: digits、段組 (columns・column-span)、float (left / right / inside / outside / top)、position: absolute / fixed。
  * 第 4 段階の対応: flex・grid (ブラウザが置いた項目の位置と大きさを読み、上下に重なる項目を帯にまとめて、帯は 1 行の表、
  * 項目の間の空きは空の列にして、同じ配置を再現する)。
- * ブラウザが知らない指定 (string-set など) は CSS から自前で読み、セレクタで要素に当てはめる (詳細度は見ず、後に書いたものが勝つ)。
+ * ブラウザが知らない指定 (string-set など) は CSS から自前で読み、セレクタで要素に当てはめる (collectPaged。勝ち負けは通常のカスケード:
+ * !important・層 (@layer)・詳細度・書いた順。Cascade 5 §6)。
  */
 import { firstGradient } from './cssGradient';
 import { applyTextTransform } from './textTransform';
@@ -67,7 +70,6 @@ import { cssColor, cssColorAlpha, cssLen, parseRgbFn, rgbHex, splitTop, splitWor
 import { AH_ALIASES, counterText, isPagedDecl, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
-/** 確定したスタイルの読み取り (ブラウザでは getComputedStyle。テストでは差し替える) */
 /** ブロック水準の部品か (行内の並びを区切る) */
 const isBlockLevel = (n: unknown): boolean =>
   typeof n === 'object' && n !== null && /^(block|block-container|table)$/.test((n as { type: string }).type);
@@ -75,6 +77,7 @@ const isBlockLevel = (n: unknown): boolean =>
 /** 疑似要素 */
 export type PseudoSel = '::before' | '::after' | '::first-letter' | '::first-line' | '::marker';
 
+/** 確定したスタイルの読み取り (既定は自前のカスケード cascadeStyles。ブラウザ経由では getComputedStyle。テストでは差し替える) */
 export interface StyleSource {
   /** 要素 (と ::before / ::after) の確定したスタイル */
   style(el: Element, pseudo?: PseudoSel): { getPropertyValue(name: string): string };
@@ -1098,7 +1101,7 @@ class HtmlImporter {
     // 高さが決まっていれば、justify-content を中身の上下の揃えにする
     if (!isGrid && /^column/.test(c('flex-direction'))) {
       // 項目の要素 (display: contents の子は、その子。CSS Display 3 §2.5)
-      for (const k of (this.flexItemSources(el) ?? []).filter((x) => !x.ps).map((x) => x.el)) {
+      for (const k of this.flexItemSources(el).filter((x) => !x.ps).map((x) => x.el)) {
         const kc0 = this.cs(k);
         const kc = (n: string) => kc0(L(n));
         const al = kc('align-self') && kc('align-self') !== 'auto' ? kc('align-self') : c('align-items');
@@ -1113,7 +1116,6 @@ class HtmlImporter {
       return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     }
     const srcs = this.flexItemSources(el);
-    if (!srcs) return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     const extra: LBlockLevel[] = [];
     /** 項目: 子の要素か ::before・::after (ps)。node は組んだ中身 (文書の順に組む: カウンターの値が文書の順になるように) */
     type Item = { el: Element; ps?: '::before' | '::after'; anon?: boolean; node: LBlockLevel; text?: string; order: number; collapse?: boolean; fit?: boolean };
@@ -1480,11 +1482,11 @@ class HtmlImporter {
   /**
    * flex・grid の容器の項目の元 (文書の順): 子の要素と、中身のある ::before・::after (Flexbox 1 §4。疑似要素も項目になる)。
    * display: contents の子は自分の箱を作らないので、その子と疑似要素が項目になる (CSS Display 3 §2.5)。display: none は除く。
-   * display: contents の子の直下に文字があれば (無名の項目は扱わない) undefined
+   * 直下の続いた文字の並び (display: contents の子の直下のものも) は、無名の項目 (text) にする
    */
-  private flexItemSources(el: Element): Array<{ el: Element; ps?: '::before' | '::after'; text?: string; collapse?: boolean }> | undefined {
+  private flexItemSources(el: Element): Array<{ el: Element; ps?: '::before' | '::after'; text?: string; collapse?: boolean }> {
     const out: Array<{ el: Element; ps?: '::before' | '::after'; text?: string; collapse?: boolean }> = [];
-    const walk = (e: Element): boolean => {
+    const walk = (e: Element): void => {
       if (this.hasPseudoContent(e, '::before')) out.push({ el: e, ps: '::before' });
       // 続いた文字の並び (空白だけのものは除く) は、無名の項目 (Flexbox 1 §4)。el は文字の持ち主 (display: contents の子の中ならその要素)
       let run = '';
@@ -1502,15 +1504,14 @@ class HtmlImporter {
         const d = this.display(k);
         if (d === 'none') continue;
         flush();
-        if (d === 'contents') {
-          if (!walk(k)) return false;
-        } else out.push({ el: k, ...(this.cs(k)('visibility') === 'collapse' ? { collapse: true } : {}) });
+        if (d === 'contents') walk(k);
+        else out.push({ el: k, ...(this.cs(k)('visibility') === 'collapse' ? { collapse: true } : {}) });
       }
       flush();
       if (this.hasPseudoContent(e, '::after')) out.push({ el: e, ps: '::after' });
-      return true;
     };
-    return walk(el) ? out : undefined;
+    walk(el);
+    return out;
   }
 
   /** 無名の flex の項目の計算値: 受け継がない性質は初期値 (余白・枠・幅は無し。CSS Display 3 §2.6・Flexbox 1 §4) */
