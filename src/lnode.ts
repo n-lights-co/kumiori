@@ -5,7 +5,7 @@
  * toArea() で一度だけ物理座標 (x, y, width, height) の Area Tree に変換する。
  */
 import { zeroEdges } from './geometry';
-import type { BaseNode, BorderStyle, Edges, Rotation, TextAlign, WritingMode } from './types';
+import type { BaseNode, BorderStyle, Edges, Rotation, RubyAlign, TextAlign, WritingMode } from './types';
 
 export type LKind = 'region-body' | 'block' | 'line' | 'inline' | 'glyph' | 'ruby' | 'tcy' | 'table' | 'row' | 'cell' | 'image';
 
@@ -149,6 +149,7 @@ export interface ResolvedStyle {
   hyphenate?: boolean;
   language?: string;
   rubyOverhang?: boolean;
+  rubyAlign?: RubyAlign;
   kerning?: boolean;
   fontFeatures?: string[];
   textOrientation?: 'mixed' | 'upright' | 'sideways';
@@ -159,7 +160,7 @@ export interface ResolvedStyle {
   /** unicode-bidi (引き継がない) */
   unicodeBidi?: import('./types').TextStyle['unicodeBidi'];
   fontStretch?: number;
-  textDecoration?: { underline?: boolean; overline?: boolean; lineThrough?: boolean; colors?: { underline?: string; overline?: string; lineThrough?: string } };
+  textDecoration?: import('./types').TextStyle['textDecoration'];
   fontSize: number;
   lineHeight: number;
   /** 長さで指定された行送り (継承される)。lineHeight より優先 */
@@ -194,6 +195,28 @@ export interface ResolvedStyle {
 const NO_EDGES = Object.freeze(zeroEdges()) as Edges;
 const NO_BORDER = Object.freeze({}) as BorderStyle;
 const NO_CHILDREN = Object.freeze([]) as unknown as LNode[];
+
+type Decoration = NonNullable<import('./types').TextStyle['textDecoration']>;
+/**
+ * 飾りの線の指定を、親の指定に重ねる。線の種類・太さ・下線のずらしは、線を指定した要素のもの (CSS Text Decoration 3 §2.2・同 4 §2.4・§2.8:
+ * その要素から出た線にだけ効く) なので、子が指定し直した線には、子の値だけを使う (親の値を残さない)
+ */
+function mergeDecoration(p: Decoration | undefined, n: Decoration): Decoration {
+  const out: Decoration = { ...p, ...n, ...(p?.colors || n.colors ? { colors: { ...p?.colors, ...n.colors } } : {}) };
+  for (const key of ['styles', 'thickness'] as const) {
+    if (!p?.[key] && !n[key]) continue;
+    const m: Record<string, unknown> = { ...p?.[key] };
+    for (const k of ['underline', 'overline', 'lineThrough'] as const) {
+      if (n[k] === undefined) continue;
+      if (n[key]?.[k] !== undefined) m[k] = n[key]![k];
+      else delete m[k];
+    }
+    if (Object.keys(m).length) out[key] = m as never;
+    else delete out[key];
+  }
+  if (n.underline !== undefined && n.underlineOffset === undefined) delete out.underlineOffset;
+  return out;
+}
 
 export function newNode(kind: LKind, wm: WritingMode, extra: Partial<LNode> = {}): LNode {
   const leaf = kind === 'glyph';
@@ -249,6 +272,7 @@ export function resolveStyle(parent: ResolvedStyle, n: BaseNode): ResolvedStyle 
     hyphenate: n.hyphenate ?? parent.hyphenate,
     language: n.language ?? parent.language,
     rubyOverhang: n.rubyOverhang ?? parent.rubyOverhang,
+    rubyAlign: n.rubyAlign ?? parent.rubyAlign,
     kerning: n.kerning ?? parent.kerning,
     fontFeatures: n.fontFeatures ?? parent.fontFeatures,
     textOrientation: n.textOrientation ?? parent.textOrientation,
@@ -259,9 +283,7 @@ export function resolveStyle(parent: ResolvedStyle, n: BaseNode): ResolvedStyle 
     unicodeBidi: n.unicodeBidi,
     fontStretch: n.fontStretch ?? parent.fontStretch,
     // text-decoration は子の文字にも引き継がれる (§7.17.4)。子の指定は親の指定に重ねる
-    textDecoration: n.textDecoration
-      ? { ...parent.textDecoration, ...n.textDecoration, ...(parent.textDecoration?.colors || n.textDecoration.colors ? { colors: { ...parent.textDecoration?.colors, ...n.textDecoration.colors } } : {}) }
-      : parent.textDecoration,
+    textDecoration: n.textDecoration ? mergeDecoration(parent.textDecoration, n.textDecoration) : parent.textDecoration,
     fontSize: n.fontSize ?? parent.fontSize,
     lineHeight: n.lineHeight ?? parent.lineHeight,
     // 比で指定し直されたら長さの指定は解除、長さで指定されたらそれを継承

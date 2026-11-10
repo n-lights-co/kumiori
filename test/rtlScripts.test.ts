@@ -4,10 +4,10 @@ import { defaultFontBuffer, doc, extraTestFont, fontBuffer, FAMILY } from './hel
 import { FontManager } from '../src/fontManager';
 import { Measurer } from '../src/measurer';
 import { LayoutEngine } from '../src/layoutEngine';
-import { walkAreaTree } from '../src/areaTree';
 import { renderSheetToCanvas } from '../src/canvasRenderer';
 import { reorderArabicMarks } from '../src/arabicMarks';
 import { joiningUnits } from '../src/inlineLayout';
+import { PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import type { Area, GlyphArea } from '../src/types';
 
 /**
@@ -155,38 +155,40 @@ describe('縦書きの中のアラビア文字', () => {
 
 describe('PDF からの字の取り出し (右から左の文字)', () => {
   const contentOf = async (children: unknown[], extra: object = {}) => {
-    const { PDFDocument, PDFName, decodePDFRawStream } = await import('pdf-lib');
     const { renderPdf } = await import('../src/pdfRenderer');
     const tree = layout(children, extra);
     const pdf = await PDFDocument.load(await renderPdf(tree, fonts));
     const ref = pdf.getPages()[0].node.get(PDFName.of('Contents'));
     const st = ([pdf.context.lookup(ref)] as unknown[]).flatMap((o) => ((o as { asArray?: () => unknown[] }).asArray ? (o as { asArray: () => unknown[] }).asArray().map((r) => pdf.context.lookup(r as never)) : [o]));
-    return { tree, content: st.map((s) => new TextDecoder('latin1').decode(decodePDFRawStream(s as never).decode())).join('\n') };
+    return { tree, pdf, content: st.map((s) => new TextDecoder('latin1').decode(decodePDFRawStream(s as never).decode())).join('\n') };
   };
   const utf16 = (s: string) => 'FEFF' + Array.from({ length: s.length }, (_, i) => s.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0')).join('');
   const reversed = (s: string) => [...s].reverse().join('');
 
-  it('字形ごとの字 (glyphTexts): 字形は描く順 (左から右)、字はその字形が表す字。分けて描く点の字形は字を持たない', () => {
+  it('字形ごとの字 (ToUnicode): 字形は描く順 (左から右) で、字はその字形が表す字。分けて描く点の字形は字を持たない', async () => {
     const [{ g }] = glyphsOf([`بت${FATHA}`]);
     expect(names(g)).toEqual(['uni064E', 'twodotshorizontalabovear', 'uni066E.fina', 'dotbelowar', 'uni066E.init']);
-    expect(g.glyphTexts).toEqual([FATHA, '', 'ت', '', 'ب']);
-    // 字形と位置は同じ数 (PDF が字形を 1 つずつ置く)
-    expect(g.glyphPositions!.length).toBe(g.glyphIds!.length);
+    // 胴の字形 (語尾形・語頭形) は別の字形なので、ت・ب がそれぞれ登録される。Area Tree には字形ごとの字を持たせない
+    const { pdf } = await contentOf([`بت${FATHA}`]);
+    const cmaps = pdf.context.enumerateIndirectObjects().map(([, o]) => o).filter((o) => o instanceof PDFRawStream).map((o) => new TextDecoder('latin1').decode(decodePDFRawStream(o as never).decode())).filter((t) => t.includes('beginbfchar'));
+    const mapped = cmaps.join('\n').match(/<[0-9A-F]{4}> <([0-9A-F]+)>/g)!.map((x) => x.split(' ')[1]);
+    expect(mapped.sort()).toEqual(['<0628>', '<062A>', '<064E>']);
   });
   it('アラビア文字の語は、語ごとに ActualText で字を与える (字は描く順 = 逆順。字を取り出す側が読む順に直す)', async () => {
     const { content } = await contentOf(['كتاب بلا']);
     expect(content).toContain(`/Span <</ActualText <${utf16(reversed('كتاب'))}>>> BDC`);
     expect(content).toContain(`/Span <</ActualText <${utf16(reversed('بلا'))}>>> BDC`);
-    expect(content.match(/BDC/g)!.length).toBe(2);
-    expect(content.match(/EMC/g)!.length).toBe(2);
+    // 語ごとに、送りのある字形の区切り (語の字) と、送りの無い字形 (点) の区切り (空の ActualText) の 2 つ
+    expect(content.match(/BDC/g)!.length).toBe(4);
+    expect(content.match(/<<\/ActualText <FEFF>>> BDC/g)!.length).toBe(2);
+    expect(content.match(/EMC/g)!.length).toBe(4);
   });
   it('ヘブライ文字: 記号の無い字は 1 字 1 字形でそのまま書き、母音記号の付いた字 (クラスタ) は ActualText で字を与える', async () => {
     const { content } = await contentOf(['אבּג'], { fontFamily: HEBREW });
-    expect(content.match(/BDC/g)!.length).toBe(1);
+    // 送りのある字形 (ב) の区切りに字の並び、送りの無い字形 (ダゲシュ) は空の ActualText の区切り (区切りの範囲が ב の幅になる)
+    expect(content.match(/BDC/g)!.length).toBe(2);
     expect(content).toContain(`/Span <</ActualText <${utf16(reversed('בּ'))}>>> BDC`);
-    // 区切りの中は、送りのある字形 (ב) を先に書き、最後の送りの無い字形 (ダゲシュ) の後ろに、並びの終わりまでの字間 (Tc) を与える
-    const span = /BDC([\s\S]*?)EMC/.exec(content)![1];
-    expect(span).toMatch(/[\d.]+ Tc\n[\s\S]*Tj\n0 Tc/);
+    expect(content).toContain('/Span <</ActualText <FEFF>>> BDC');
   });
   it('同じ字形を別の字に使うとき (ی の単独形は ى と同じ字形): 字形に登録された字と違えば ActualText で字を与える', async () => {
     const f = fonts.get(ARABIC, 400);
@@ -196,11 +198,8 @@ describe('PDF からの字の取り出し (右から左の文字)', () => {
     expect(content).toContain(`/Span <</ActualText <${utf16('ی')}>>> BDC`);
   });
   it('左から右の文字のクラスタ (q + U+0301) には ActualText を付けない (これまでと同じ)', async () => {
-    const { content, tree } = await contentOf(['q́x'], { fontFamily: FAMILY });
+    const { content } = await contentOf(['q\u0301x'], { fontFamily: 'Arimo' });
     expect(content).not.toContain('BDC');
-    walkAreaTree(tree, (a) => {
-      if (a.type === 'glyph') expect(a.glyphTexts).toBeUndefined();
-    });
   });
 });
 

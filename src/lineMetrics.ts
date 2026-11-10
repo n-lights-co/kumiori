@@ -34,7 +34,8 @@ export function atomAboveBelow(a: Atom, wm: WritingMode): { above: number; below
   const fs = a.st.fontSize;
   if (a.box) return wm !== 'horizontal-tb' ? { above: a.box.cross / 2, below: a.box.cross / 2 } : { above: a.box.above, below: a.box.below };
   // 下側のルビは、親文字の下に張り出す
-  const under = a.r?.underExtent ?? 0;
+  // (ruby-position: under のルビ (roomExtent) は、上側のルビと同じく行の高さに数えない。CSS Ruby 1 §3.6)
+  const under = a.r?.roomExtent !== undefined ? 0 : (a.r?.underExtent ?? 0);
   if (wm !== 'horizontal-tb') return { above: fs / 2, below: fs / 2 + under };
   const br = a.primaryRatio ?? a.g?.font.baselineRatio ?? a.r?.baseGlyphs[0]?.font.baselineRatio ?? a.t?.font.baselineRatio ?? a.leader?.g?.font.baselineRatio ?? DEFAULT_BASELINE_RATIO;
   return { above: br * fs, below: (1 - br) * fs + under };
@@ -67,7 +68,7 @@ function lineMetricsXsl(pl: PositionedLine, wm: WritingMode, block: ResolvedStyl
   const nB = horiz ? (sf?.descent !== undefined ? sf.descent : 1 - (sf?.baselineRatio ?? DEFAULT_BASELINE_RATIO)) * fs : fs / 2;
   const hl = (lineHeightOf(block) - (nA + nB)) / 2;
   let rubyExtent = 0;
-  for (const a of all) if (a.r) rubyExtent = Math.max(rubyExtent, a.r.rubyExtent);
+  for (const a of all) if (a.r) rubyExtent = Math.max(rubyExtent, a.r.roomExtent ?? a.r.rubyExtent);
   const strategy = block.lineStackingStrategy ?? 'max-height';
   // 半行間は leading (上下に半分ずつ) で表す。負の半行間 (line-height が字より小さい) は、上下の矩形に含めて表す
   const withLeading = (a: number, b: number, h: number): LineMetrics =>
@@ -183,7 +184,7 @@ function scanLine(all: Atom[], wm: WritingMode, excludeBoxLineHeight: boolean): 
     above = Math.max(above, ab.above + bs);
     below = Math.max(below, ab.below - bs);
     if (!(excludeBoxLineHeight && isInlineBox(a) && a.box)) lh = Math.max(lh, lineHeightOf(a.st));
-    if (a.r) rubyExtent = Math.max(rubyExtent, a.r.rubyExtent);
+    if (a.r) rubyExtent = Math.max(rubyExtent, a.r.roomExtent ?? a.r.rubyExtent);
   }
   return { above, below, lh, rubyExtent };
 }

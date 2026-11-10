@@ -67,8 +67,16 @@ export const isInlineSvg = (el: Element) => el.localName === 'svg' && el.namespa
  * 「adjust foreign attributes」の表にあるのは xlink:*・xml:*・xmlns・xmlns:xlink だけ)、元の文書の書き手の宣言なので、そのまま宣言として書き出す。
  * 宣言の無い接頭辞の属性は落とし、宣言の無い接頭辞の要素は中身ごと落とす (どちらも SVG の描画には使われない)。
  * xlink は根元でいつも宣言し、xml は宣言なしで使える (同 §3)
+ *
+ * styleOf があれば、文書の CSS が決めた SVG の表示の性質 (fill・stroke・color など) を、要素の style 属性の終わりに書き足す。
+ * HTML の文書のスタイルシートは、文書の中の SVG の内容にも効く (SVG 2 §6.4)。表示の属性は詳細度 0 の作成者の規則なので
+ * (同 §6.6)、スタイルシートの規則が勝った性質は、属性より強い style 属性に書く (style 属性の同じ性質より後ろに書くので、
+ * !important の規則が style 属性に勝ったときも、書き足した値が使われる)。
+ * 根元の color (外から継承した値を含む) は、中で currentColor を使っているときだけ書く (color は、SVG では currentColor の値を決めるだけ。同 §13.3)。
+ * styleOf が何も返さない文書では、書き出す SVG は styleOf の無いときと同じ
  */
-export function serializeInlineSvg(root: Element): string {
+export type InlineSvgStyle = (el: Element, isRoot: boolean) => Array<[string, string]>;
+export function serializeInlineSvg(root: Element, styleOf?: InlineSvgStyle): string {
   const prefixOf = (name: string) => (name.includes(':') ? name.slice(0, name.indexOf(':')) : '');
   // 書ける接頭辞つきの名前か: 接頭辞と残りがどちらも空でなく、残りに : が無く、接頭辞の宣言が有効な範囲にある
   const usable = (name: string, scope: Set<string>) => {
@@ -116,24 +124,40 @@ export function serializeInlineSvg(root: Element): string {
       }
     }
     if (name.includes(':') && !usable(name, scope)) return '';
-    let attrs = '';
-    for (const a of all) {
-      if (a.name === 'xmlns' || a.name.startsWith('xmlns:')) continue;
-      if (a.name.includes(':') && !usable(a.name, scope)) continue;
-      attrs += ` ${a.name}="${escAttr(a.value)}"`;
-    }
-    attrs = (isRoot ? ` xmlns="${SVG_NS}" xmlns:xlink="${XLINK_NS}"` : '') + decls + attrs;
     const kids = Array.from(e.childNodes)
       .map((c) => walk(c, false, scope))
       .join('');
+    // 文書の CSS が決めた性質 (値に ; を含むものは、style 属性に書けないので渡さない)
+    let extra = styleOf && e.namespaceURI === SVG_NS ? styleOf(e, isRoot).filter(([, v]) => !v.includes(';')) : [];
+    if (isRoot && extra.some(([p]) => p === 'color')) {
+      const rest = extra.filter(([p]) => p !== 'color');
+      const uses = (t: string) => /currentcolor/i.test(t);
+      if (!uses(kids) && !rest.some(([, v]) => uses(v)) && !all.some((a) => uses(a.value))) extra = rest;
+    }
+    const added = extra.map(([p, v]) => `${p}: ${v}`).join('; ');
+    let attrs = '';
+    let styled = !added;
+    for (const a of all) {
+      if (a.name === 'xmlns' || a.name.startsWith('xmlns:')) continue;
+      if (a.name.includes(':') && !usable(a.name, scope)) continue;
+      let value = a.value;
+      if (added && a.name === 'style' && !styled) {
+        const own = value.trim().replace(/;\s*$/, '');
+        value = own ? `${own}; ${added}` : added;
+        styled = true;
+      }
+      attrs += ` ${a.name}="${escAttr(value)}"`;
+    }
+    if (!styled) attrs += ` style="${escAttr(added)}"`;
+    attrs = (isRoot ? ` xmlns="${SVG_NS}" xmlns:xlink="${XLINK_NS}"` : '') + decls + attrs;
     return kids ? `<${name}${attrs}>${kids}</${name}>` : `<${name}${attrs}/>`;
   };
   return walk(root, true, new Set(['xlink', 'xml']));
 }
 
 /** <svg> の要素 → data:image/svg+xml;base64,… */
-export function inlineSvgDataUri(root: Element): string {
-  const bytes = new TextEncoder().encode(serializeInlineSvg(root));
+export function inlineSvgDataUri(root: Element, styleOf?: InlineSvgStyle): string {
+  const bytes = new TextEncoder().encode(serializeInlineSvg(root, styleOf));
   let bin = '';
   for (let k = 0; k < bytes.length; k += 0x8000) bin += String.fromCharCode(...bytes.subarray(k, k + 0x8000));
   return `data:image/svg+xml;base64,${btoa(bin)}`;

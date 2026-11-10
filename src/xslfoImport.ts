@@ -19,7 +19,7 @@ import { countDroppedLink, judgeExternalLink, type DroppedLinks, type LinkPolicy
 import { evalExpr, evalLength } from './foExpr';
 import { FO_NS, serializeSvg, utf8Base64, type XEl, type XNode } from './foDom';
 import { WS_INITIAL, type Ctx, type WhiteSpace } from './foContext';
-import { readPageMaster, type MasterInfo } from './foPageMaster';
+import { DEFAULT_PAGE_HEIGHT, DEFAULT_PAGE_WIDTH, readPageMaster, type MasterInfo } from './foPageMaster';
 import { FoMathFallback } from './foMathFallback';
 // 最小 DOM の型は foDom.ts に移した (api.ts・main.ts・テストは従来どおりここから読める)
 export type { XNode } from './foDom';
@@ -386,7 +386,105 @@ class Importer {
       const v = n.getAttribute(k);
       return v === null ? undefined : v.trim();
     }
-    return undefined;
+    // 一括指定 (font・background・page-break-*・size) から決まる個別の性質。個別に書いた性質が勝つ (XSL 1.1 §5.2:
+    // “The individual properties are always more precise than any shorthand.”)
+    return this.shorthandsOf(n)?.[k];
+  }
+
+  /** 要素ごとの、一括指定を個別の性質に分けた結果 (一括指定の無い要素は null) */
+  private expanded = new WeakMap<XNode, Record<string, string> | null>();
+  private shorthandsOf(n: XNode): Record<string, string> | undefined {
+    let e = this.expanded.get(n);
+    if (e === undefined) {
+      e = this.expandShorthands(n);
+      this.expanded.set(n, e);
+    }
+    return e ?? undefined;
+  }
+
+  /**
+   * 一括指定を、個別の性質に分ける (XSL 1.1 §5.2 Shorthand Expansion)。読むのは font (§7.31.13)・background (§7.31.1)・
+   * page-break-after・page-break-before・page-break-inside (§7.31.16〜§7.31.18)・size (§7.31.21) と、position (§7.31.20) の relative-position。
+   * border・margin・padding・white-space などは、それぞれを読む所で分けている。
+   * 一括指定は、書いていない個別の性質を初期値に戻す。継承されない性質は、書かなければ初期値なので何も出さない
+   * (font だけは継承される性質なので、初期値を出して親の値を打ち消す)。
+   * inherit は、継承される性質 (font) では書かないのと同じ。ほかの読めない値は、何もせずに報告する
+   */
+  private expandShorthands(n: XNode): Record<string, string> | null {
+    if (!n.hasAttribute || !n.getAttribute || !this.isFo(n)) return null;
+    const own = (k: string) => (n.hasAttribute!(k) ? (n.getAttribute!(k) ?? '').trim() : undefined);
+    const out: Record<string, string> = {};
+    // font: [ [ <font-style> || <font-variant> || <font-weight> ]? <font-size> [ / <line-height> ]? <font-family> ] | caption | icon | … | inherit
+    const font = own('font');
+    if (font && font !== 'inherit') {
+      const toks = splitTopLevel(font, ' ');
+      const set: Record<string, string> = { 'font-style': 'normal', 'font-variant': 'normal', 'font-weight': 'normal', 'line-height': 'normal', 'font-stretch': 'normal' };
+      let k = 0;
+      for (; k < toks.length && k < 3; k++) {
+        const t = toks[k];
+        if (t === 'normal') continue;
+        if (t === 'italic' || t === 'oblique') set['font-style'] = t;
+        else if (t === 'small-caps') set['font-variant'] = t;
+        else if (t === 'bold' || t === 'bolder' || t === 'lighter' || /^[1-9]00$/.test(t)) set['font-weight'] = t;
+        else break;
+      }
+      // 残りは「大きさ [ / 行送り ] 書体の並び」。/ の前後の空白はあってもよい (CSS2 §15.2.5 の文法)
+      const rest = toks.slice(k).join(' ');
+      const m = /^(\S+)\s*\/\s*(\S+)\s+(\S.*)$/.exec(rest) ?? /^(\S+)()\s+(\S.*)$/.exec(rest);
+      if (m && !/^(caption|icon|menu|message-box|small-caption|status-bar)$/.test(font)) {
+        set['font-size'] = m[1];
+        if (m[2]) set['line-height'] = m[2];
+        set['font-family'] = m[3];
+        Object.assign(out, set);
+      } else this.miss(`font:${font.slice(0, 20)}`);
+    }
+    // background: [ <background-color> || <background-image> || <background-repeat> || <background-attachment> || <background-position> ] | inherit
+    const bg = own('background');
+    if (bg) {
+      const pos: string[] = [];
+      for (const t of splitTopLevel(bg, ' ')) {
+        if (/^url\(/i.test(t) || t === 'none') out['background-image'] = t;
+        else if (/^(repeat|repeat-x|repeat-y|no-repeat)$/.test(t)) out['background-repeat'] = t;
+        else if (t === 'scroll' || t === 'fixed') out['background-attachment'] = t;
+        else if (/^(top|bottom|left|right|center)$/.test(t) || /^[-+.\d]/.test(t)) pos.push(t);
+        else if (t === 'inherit' && bg === 'inherit') this.miss('background:inherit');
+        else out['background-color'] = t;
+      }
+      if (pos.length) out['background-position'] = pos.join(' ');
+    }
+    // page-break-before・page-break-after (§7.31.16・§7.31.17): always は break = page、left は even-page、right は odd-page、
+    // avoid は keep-with-previous・keep-with-next = always。page-break-inside (§7.31.18): avoid は keep-together = always
+    for (const [side, keep] of [['before', 'keep-with-previous'], ['after', 'keep-with-next']] as const) {
+      const v = own(`page-break-${side}`);
+      if (v === undefined) continue;
+      const brk = v === 'always' ? 'page' : v === 'left' ? 'even-page' : v === 'right' ? 'odd-page' : v === 'auto' || v === 'avoid' ? 'auto' : undefined;
+      if (brk === undefined) {
+        this.miss(`page-break-${side}:${v.slice(0, 20)}`);
+        continue;
+      }
+      out[`break-${side}`] = brk;
+      out[keep] = v === 'avoid' ? 'always' : 'auto';
+    }
+    // position (§7.31.20): relative は relative-position = relative、ほかは static (absolute・fixed の absolute-position は blockContainer が読む)
+    const position = own('position');
+    if (position === 'relative' || position === 'static' || position === 'absolute' || position === 'fixed') out['relative-position'] = position === 'relative' ? 'relative' : 'static';
+    const pbi = own('page-break-inside');
+    if (pbi === 'avoid' || pbi === 'auto') out['keep-together'] = pbi === 'avoid' ? 'always' : 'auto';
+    // inherit: keep-together は継承される性質 (§7.20.3) なので、書かないのと同じ
+    else if (pbi !== undefined && pbi !== 'inherit') this.miss(`page-break-inside:${pbi.slice(0, 20)}`);
+    // size (§7.31.21): page-width・page-height に写す。長さ 1 つは幅と高さの両方、2 つは幅・高さの順 (CSS2 §13.2.2 の例)。
+    // auto は用紙の大きさ (page-width・page-height の auto)、landscape・portrait は用紙の長い辺を横・縦にする
+    const size = own('size');
+    if (size !== undefined && this.name(n) === 'simple-page-master') {
+      const p = splitTopLevel(size, ' ');
+      const [short, long] = [Math.min(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT), Math.max(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT)];
+      if (size === 'auto') Object.assign(out, { 'page-width': 'auto', 'page-height': 'auto' });
+      else if (size === 'landscape') Object.assign(out, { 'page-width': `${long}pt`, 'page-height': `${short}pt` });
+      else if (size === 'portrait') Object.assign(out, { 'page-width': `${short}pt`, 'page-height': `${long}pt` });
+      else if ((p.length === 1 || p.length === 2) && p.every((t) => /^[-+.\d]/.test(t) || t.includes('('))) Object.assign(out, { 'page-width': p[0], 'page-height': p[1] ?? p[0] });
+      else this.miss(`size:${size.slice(0, 20)}`);
+    }
+    return Object.keys(out).length ? out : null;
   }
   /** 'name' と 'name.optimum' のうち存在する方 */
   attrOpt(n: XNode, k: string): string | undefined {
@@ -438,6 +536,19 @@ class Importer {
     return ((((n % 360) + 360) % 360) as Rotation);
   }
 
+  /**
+   * <angle> (§5.11: 符号・数・単位 deg / grad / rad。“The specified values are normalized to the range 0deg to 360deg.”) を、
+   * 0・90・180・270 度の最も近い値に丸める (§7.29.2・§7.29.3: “The User Agent shall round the value of the angle to the closest
+   * of the permitted values.”)。<angle> として読めなければ undefined
+   */
+  private angle90(v: string): 0 | 90 | 180 | 270 | undefined {
+    const m = /^([-+]?(?:\d+\.?\d*|\.\d+))(deg|grad|rad)$/.exec(v.trim());
+    if (!m) return undefined;
+    const deg = parseFloat(m[1]) * (m[2] === 'grad' ? 0.9 : m[2] === 'rad' ? 180 / Math.PI : 1);
+    const n = ((deg % 360) + 360) % 360;
+    return ((Math.round(n / 90) % 4) * 90) as 0 | 90 | 180 | 270;
+  }
+
   // ── 長さ・色 ──
   len(v: string | undefined, fs: number, pct?: number, lh?: number): number | undefined {
     if (!v) return undefined;
@@ -449,6 +560,18 @@ class Importer {
       if (fn) this.miss(`function:${fn[1]}()`);
     }
     return r;
+  }
+
+  /**
+   * 寸法の下限・上限の指定 (属性の値)。絶対の min-height・max-height・min-width・max-width (§7.15.8〜§7.15.11) は、書字方向で
+   * block-progression-dimension か inline-progression-dimension の .minimum・.maximum に当たる (XSL 1.1 §5.3.3: block の進む向きが
+   * 上下なら height の組が block、width の組が inline。左右なら逆)。絶対の指定があればそれを使い、無ければ相対の成分。
+   * max-* の none は上限なし (“if "max-height" is specified as "none", reset: block-progression-dimension.maximum=auto”)
+   */
+  private dimLimit(el: XEl, wm: WritingMode, axis: 'inline' | 'block', which: 'minimum' | 'maximum'): string | undefined {
+    const abs = this.attrInh(el, `${which === 'minimum' ? 'min' : 'max'}-${(wm === 'horizontal-tb') === (axis === 'block') ? 'height' : 'width'}`);
+    if (abs !== undefined) return abs === 'none' || abs === 'auto' ? undefined : abs;
+    return this.attr(el, `${axis}-progression-dimension.${which}`);
   }
 
   /** 包含ブロックの inline 方向の寸法 (百分率の基準) */
@@ -513,6 +636,79 @@ class Importer {
     }
   }
 
+  // ── ページ番号の前後の字 (fo:folio-prefix・fo:folio-suffix。XSL 1.1 §6.6.13・§6.6.14) ──
+  /** id → その id の要素を含む fo:page-sequence (最初と最後)。fo:folio-prefix・fo:folio-suffix のある文書でだけ作る */
+  private idSeqs?: Map<string, { first: XEl; last: XEl }>;
+  /** fo:folio-prefix・fo:folio-suffix の中身を読んでいる間の、その要素の名前 */
+  private inFolio?: string;
+  /** 読み込みの報告に数え終えた fo:folio-prefix・fo:folio-suffix (ページ番号ごとに読み直すので、2 度目からは数えない) */
+  private countedFolios = new Set<XEl>();
+
+  /** fo:page-sequence の子の fo:folio-prefix・fo:folio-suffix (それぞれ最初の 1 つ。内容モデルは folio-prefix?,folio-suffix? §6.4.5) */
+  private folioEls(seq: XEl): { prefix?: XEl; suffix?: XEl } {
+    const of = (name: string) => this.els(seq).find((e) => this.isFo(e) && this.name(e) === name);
+    return { prefix: of('folio-prefix'), suffix: of('folio-suffix') };
+  }
+
+  /** 文書の id と、それを含む fo:page-sequence の対応を作る (fo:folio-prefix・fo:folio-suffix が 1 つも無ければ作らない) */
+  private indexFolios(seqs: XEl[]) {
+    if (!seqs.some((ps) => this.folioEls(ps).prefix || this.folioEls(ps).suffix)) return;
+    const map = new Map<string, { first: XEl; last: XEl }>();
+    const note = (el: XEl, ps: XEl) => {
+      const id = this.attr(el, 'id');
+      if (!id) return;
+      const e = map.get(id);
+      if (e) e.last = ps;
+      else map.set(id, { first: ps, last: ps });
+    };
+    for (const ps of seqs) {
+      // fo:page-sequence を包む要素 (fo:root・fo:page-sequence-wrapper) の id は、中の最初・最後の page-sequence
+      for (let a = this.parents.get(ps); a; a = this.parents.get(a)) note(a, ps);
+      const todo: XEl[] = [ps];
+      for (let el = todo.pop(); el; el = todo.pop()) {
+        note(el, ps);
+        todo.push(...this.els(el));
+      }
+    }
+    this.idSeqs = map;
+  }
+
+  /**
+   * ページ番号の字の前後に、fo:folio-prefix・fo:folio-suffix の中身を付ける (XSL 1.1 §6.6.10: ページ番号の行内の領域の中身は、
+   * “the content of any fo:folio-prefix child of the reference-page-sequence, followed by fo:character flow objects; one for each
+   * character in the folio-number string …, followed by the content of any fo:folio-suffix child of the reference-page-sequence”)。
+   * seq は基準の page-sequence: fo:page-number はそれを含む page-sequence (§6.6.10)、fo:page-number-citation・-last は引いたページを
+   * 作った page-sequence (§6.6.11・§6.6.12)。中身は、ページ番号の位置の書式 (ctx) で読む。付けるものが無ければ undefined
+   */
+  private withFolio(num: LInlineLevel, seq: XEl | undefined, ctx: Ctx): LInlineLevel[] | undefined {
+    if (!this.idSeqs || !seq || this.inFolio) return undefined;
+    const { prefix, suffix } = this.folioEls(seq);
+    if (!prefix && !suffix) return undefined;
+    const read = (el: XEl | undefined): LInlineLevel[] => {
+      if (!el) return [];
+      const counted = this.countedFolios.has(el);
+      this.countedFolios.add(el);
+      const { counts, unsupported, droppedLinks, files } = this.report;
+      const kept = counted ? structuredClone({ counts, unsupported, droppedLinks, files }) : undefined;
+      this.inFolio = `fo:${this.name(el)}`;
+      try {
+        // 中身は字と行内の要素 (#PCDATA|%inline;)*。ブロックは element() が読まずに報告する
+        return this.children(el, ctx, false) as LInlineLevel[];
+      } finally {
+        this.inFolio = undefined;
+        if (kept) {
+          this.report.counts = kept.counts;
+          this.report.unsupported = kept.unsupported;
+          if (kept.droppedLinks) this.report.droppedLinks = kept.droppedLinks;
+          else delete this.report.droppedLinks;
+          if (kept.files) this.report.files = kept.files;
+          else delete this.report.files;
+        }
+      }
+    };
+    return [...read(prefix), num, ...read(suffix)];
+  }
+
   convert(root: XEl): LDocument {
     const doc: LDocument = { type: 'document', sequences: [], spaceResolution: 'xsl' };
     this.indexParents(root);
@@ -538,6 +734,7 @@ class Importer {
       if (key === 'title' && value) doc.title = value;
     };
     const sequencesOf = (el: XEl): XEl[] => this.els(el).flatMap((c) => (this.name(c) === 'page-sequence-wrapper' ? sequencesOf(c) : [c]));
+    this.indexFolios(sequencesOf(root).filter((c) => this.name(c) === 'page-sequence'));
     for (const c of sequencesOf(root)) {
       const n = this.name(c);
       if (n === 'page-sequence') {
@@ -645,7 +842,7 @@ class Importer {
     const wm = seqWm ?? def.bodyWm ?? 'horizontal-tb';
     // XSL-FO の既定値 (font-size=medium=10pt, line-height=normal, text-align=start。互換モードの値。既定では両端揃えにしない) を土台に、fo:root → page-sequence の順で重ねる。
     // Kumiori の既定 (10.5pt・行送り 1.7・両端揃え) をそのまま使うと、FO の文書が想定する文字の大きさ・行送り・字間とずれる。
-    const ctxRoot: Ctx = { fontSize: this.defaultFontSize, wm, startIndent: 0, endIndent: 0, refOrigin: def.bodyOrigin, refSize: def.bodySize, pageSize: { w: def.pageW, h: def.pageH }, cbH: def.bodySize.h, ws: WS_INITIAL, rtl: !seqWm && !!def.bodyRtl, flip: flipOf(this.attr(ps, 'writing-mode') ?? def.bodyWmAttr ?? '') };
+    const ctxRoot: Ctx = { seqEl: ps, fontSize: this.defaultFontSize, wm, startIndent: 0, endIndent: 0, refOrigin: def.bodyOrigin, refSize: def.bodySize, pageSize: { w: def.pageW, h: def.pageH }, cbH: def.bodySize.h, ws: WS_INITIAL, rtl: !seqWm && !!def.bodyRtl, flip: flipOf(this.attr(ps, 'writing-mode') ?? def.bodyWmAttr ?? '') };
     const rootStyle = this.textStyle(root, ctxRoot, true);
     const style = this.textStyle(ps, rootStyle.ctx, true);
     // fo:page-sequence に書いた継承される特性 (text-transform・font-family・color・xml:lang・relative-align・改訂バーなど) は、
@@ -691,11 +888,12 @@ class Importer {
 
     const statics = this.els(ps).filter((e) => this.name(e) === 'static-content');
     const flowEl = this.els(ps).find((e) => this.name(e) === 'flow');
-    // 読まずに捨てる子 (fo:title・fo:folio-prefix・fo:folio-suffix・2 つ目からの fo:flow など) は、読み込みの報告に数える。
-    // 約物のアキの宣言 (readPunctuationSpacing が読む) は除く
+    // 読まずに捨てる子 (fo:title・2 つ目からの fo:flow など) は、読み込みの報告に数える。
+    // 約物のアキの宣言 (readPunctuationSpacing が読む) は除く。fo:folio-prefix・fo:folio-suffix (最初の 1 つずつ) は、ページ番号の所で読む (withFolio)
+    const folio = this.folioEls(ps);
     for (const e of this.els(ps)) {
       const en = this.name(e);
-      if (en === 'static-content' || e === flowEl) continue;
+      if (en === 'static-content' || e === flowEl || e === folio.prefix || e === folio.suffix) continue;
       if (!this.isFo(e) && PUNCT_SPACING_ELEMENTS.has(en)) continue;
       this.missElement(e, en === 'flow' && this.isFo(e) ? `flow:${this.attr(e, 'flow-name') ?? ''}` : undefined);
     }
@@ -1121,11 +1319,42 @@ class Importer {
     if (ttAttr === 'capitalize' || ttAttr === 'uppercase' || ttAttr === 'lowercase') textTransform = ttAttr;
     else if (ttAttr === 'none') textTransform = undefined;
     else if (ttAttr) this.miss(`text-transform:${ttAttr}`);
-    // font-stretch は上で読む。font-variant と word-spacing は読まない
-    for (const k of ['font-variant', 'word-spacing']) {
-      const v = this.attr(el, k);
-      if (v && v !== 'normal' && v !== 'none' && v !== 'baseline') this.miss(`${k}`);
+    // font-variant (§7.9.8): small-caps は、字の並びに small caps の印を付けて運ぶ (children。字形を使うか、縮めた大文字で代えるかは組むときに
+    // 書体を見て決める: “If a genuine small-caps font is not available, user agents should simulate a small-caps font”)。継承される
+    let smallCaps = ctx.smallCaps;
+    const fv = this.attrInh(el, 'font-variant');
+    if (fv === 'small-caps') smallCaps = true;
+    else if (fv === 'normal') smallCaps = false;
+    else if (fv) this.miss(`font-variant:${fv.slice(0, 20)}`);
+    // word-spacing (§7.17.8): <length> は、語の間の空白の既定の幅に足す量 (“inter-word space in addition to the default space between words”)。
+    // <space> (.minimum・.optimum・.maximum) は optimum を使う (伸び縮みの幅は、両端揃えに任せる)。normal は足さない。継承される
+    let wordSpacing = ctx.wordSpacing;
+    const wsp = this.attrInh(el, 'word-spacing') ?? this.attrInh(el, 'word-spacing.optimum');
+    if (wsp !== undefined) {
+      const v = wsp === 'normal' ? 0 : this.len(wsp, fs);
+      if (v === undefined) this.miss(`word-spacing:${wsp.slice(0, 20)}`);
+      else if (v !== (ctx.wordSpacing ?? 0)) {
+        s.wordSpacing = v;
+        wordSpacing = v;
+      }
     }
+    // glyph-orientation-vertical (§7.29.3): 縦書きの字の向き。auto は全角の字を立てて、ほかの字を 90 度倒す (組版の mixed)。
+    // 0deg はすべての字を立てる (upright)、90deg はすべての字を時計回りに 90 度倒す (sideways)。180・270 度は組版に受け皿が無いので、
+    // 読まずに報告する。継承される
+    let textOrientation = ctx.textOrientation;
+    const gov = this.attrInh(el, 'glyph-orientation-vertical');
+    if (gov !== undefined) {
+      const deg = gov === 'auto' ? undefined : this.angle90(gov);
+      const to = gov === 'auto' ? ('mixed' as const) : deg === 0 ? ('upright' as const) : deg === 90 ? ('sideways' as const) : undefined;
+      if (!to) this.miss(`glyph-orientation-vertical:${gov.slice(0, 20)}`);
+      else if (to !== (ctx.textOrientation ?? 'mixed')) {
+        s.textOrientation = to;
+        textOrientation = to;
+      }
+    }
+    // glyph-orientation-horizontal (§7.29.2): 横書きの字の向き。0deg (初期値) のほかは、組版に受け皿が無いので、読まずに報告する
+    const goh = this.attrInh(el, 'glyph-orientation-horizontal');
+    if (goh !== undefined && this.angle90(goh) !== 0) this.miss(`glyph-orientation-horizontal:${goh.slice(0, 20)}`);
     // 空白・改行: white-space (略記) → 個別のプロパティの順に上書き
     const ws: WhiteSpace = { ...ctx.ws };
     const wsShort = this.attr(el, 'white-space');
@@ -1147,13 +1376,19 @@ class Importer {
     else if (wrap === 'wrap') s.noWrap = false;
     // keep-together.within-line="always" のブロックは、行を折り返さない
     if (this.attr(el, 'keep-together.within-line') && this.keepOf(el, 'keep-together', ['line']) && this.name(el) !== 'inline') s.noWrap = true;
+    // visibility (§7.30.17): 見えない要素は、字の色を transparent にして運ぶ (字・リーダー・画像を描かない。HTML の visibility と同じ受け皿)。
+    // 見えない親の中の visible の要素は、見えるときの色に戻す。子へ渡す color (ctx.color) は、見えるときの色のまま
+    const shownColor = s.color ?? ctx.color;
+    const hidden = this.hiddenOf(el, ctx.hidden);
+    if (hidden) s.color = 'transparent';
+    else if (ctx.hidden) s.color = shownColor ?? '#000000';
     const inh = { ...ctx.inh };
     for (const k of ['fontFamily', 'fontWeight', 'fontStyle', 'color', 'textAlign', 'lineHeight', 'lineHeightPt', 'fontStretch'] as const) if (s[k] !== undefined) (inh as Record<string, unknown>)[k] = s[k];
     if (s.lineHeight !== undefined && s.lineHeightPt === undefined) delete inh.lineHeightPt;
     // 書字方向の裏返し (bt-lr・lr-bt など): 自分の writing-mode があれば決め直し、無ければ親のまま
     const ownWm = this.attr(el, 'writing-mode');
     const flip = ownWm && !ownWm.startsWith('from-') ? flipOf(ownWm) : ctx.flip;
-    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: s.color ?? ctx.color, textTransform, ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
+    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: shownColor, textTransform, ...(hidden !== !!ctx.hidden ? { hidden } : {}), ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
   }
 
   phys(rel: 'before' | 'after' | 'start' | 'end', wm: WritingMode, rtl = false): 'top' | 'right' | 'bottom' | 'left' {
@@ -1223,7 +1458,8 @@ class Importer {
       const width = (wv ? this.len(wv, ctx.fontSize, undefined, lh) : undefined) ?? sh.width ?? (gWidth?.[i] ? this.len(nw(gWidth[i]), ctx.fontSize, undefined, lh) : undefined) ?? all.width;
       const colorAttr = this.attr(el, `border-${p}-color`) ?? this.attr(el, `border-${rel}-color`) ?? sh.color ?? gColor?.[i] ?? all.color;
       // transparent: 罫線の場所は取るが、線は見えない
-      const color = colorAttr?.trim() === 'transparent' ? 'transparent' : (this.color(colorAttr) ?? '#000000');
+      // 見えない要素 (visibility。§7.30.17) の罫線も、場所だけ取って描かない
+      const color = colorAttr?.trim() === 'transparent' || ctx.hidden ? 'transparent' : (this.color(colorAttr) ?? '#000000');
       if (style === 'hidden') {
         // hidden: 線は描かない。表の罫線の重ね合わせ (collapse) では、ほかのすべての罫線に勝って線を消す (§6.7.10)
         out[p] = { width: 0, color, style: 'hidden' };
@@ -1375,19 +1611,25 @@ class Importer {
     const w = this.len(this.attr(el, 'width'), fs, ctx.width);
     const h = this.len(this.attr(el, 'height'), fs, ctx.cbH);
     // 幅の上限 (inline-progression-dimension.maximum) だけの指定: 領域の幅が上限を超えるときは上限の幅にする
-    const ipdMax = this.len(this.attr(el, 'inline-progression-dimension.maximum'), fs, ctx.width);
+    const ipdMax = this.len(this.dimLimit(el, ctx.wm, 'inline', 'maximum'), fs, ctx.width);
     const ipdCapped = ipd ?? (ipdMax !== undefined && (ctx.width === undefined || ipdMax < ctx.width) ? ipdMax : undefined);
     // 幅の下限 (inline-progression-dimension.minimum) だけの指定: 領域の幅が下限より狭いときは下限の幅にする
     // (段組のページで、minimum="30em" の箱は段の幅より広くても 30em)
-    const ipdMin = this.len(this.attr(el, 'inline-progression-dimension.minimum'), fs, ctx.width);
+    const ipdMin = this.len(this.dimLimit(el, ctx.wm, 'inline', 'minimum'), fs, ctx.width);
     const ipdUsed = ipdCapped ?? (ipdMin !== undefined && ctx.width !== undefined && ipdMin > ctx.width ? ipdMin : undefined);
     const width = w ?? (horizontal ? ipdUsed : bpd);
     const height = h ?? (horizontal ? bpd : ipd);
     if (width !== undefined) o.width = width;
     if (height !== undefined) o.height = height;
     // 高さの下限 (block-progression-dimension.minimum): 中身が少なくても、この高さを取る
-    const bpdMin = horizontal && bpd === undefined && h === undefined ? this.len(this.attr(el, 'block-progression-dimension.minimum'), fs, ctx.cbH) : undefined;
+    const bpdMin = horizontal && bpd === undefined && h === undefined ? this.len(this.dimLimit(el, ctx.wm, 'block', 'minimum'), fs, ctx.cbH) : undefined;
     if (bpdMin !== undefined && bpdMin > 0) o.minBlockSize = bpdMin;
+    // 絶対の上限・下限 (min-height など) のうち、組版に受け皿の無いもの (block 方向の上限と、縦書きの箱の上限・下限) は、読まずに報告する。
+    // block-container の max-width は、blockContainer が読む (従来どおり)
+    for (const k of horizontal ? ['max-height'] : ['min-height', 'max-height', 'min-width', 'max-width']) {
+      const v = this.attrInh(el, k);
+      if (v !== undefined && v !== 'none' && v !== 'auto' && !(k === 'max-width' && this.name(el) === 'block-container')) this.miss(k);
+    }
     // FO の width・height (inline/block-progression-dimension) は内容の寸法 (§7.15: 枠・パディングは外側)
     // break-before / break-after (§7.20.2): page・column・odd-page・even-page
     const brk = (v: string | undefined) => (v === 'page' || v === 'column' || v === 'odd-page' || v === 'even-page' ? v : undefined);
@@ -1410,6 +1652,14 @@ class Importer {
     const ov = this.attr(el, 'overflow');
     if (ov === 'hidden' || ov === 'scroll' || ov === 'error-if-overflow') o.overflow = 'hidden';
     else if (ov && ov !== 'auto' && ov !== 'visible') this.miss(`overflow:${ov}`);
+    // 見えない要素 (visibility が hidden・collapse。§7.30.17) は、背景・影・対角罫を描かない (罫線は border() が transparent にする。場所は変えない)
+    if (ctx.hidden) {
+      delete o.backgroundColor;
+      delete o.backgroundImage;
+      delete o.boxShadow;
+      delete o.diagonalBorder;
+      delete o.reverseDiagonalBorder;
+    }
     return o;
   }
 
@@ -1445,6 +1695,77 @@ class Importer {
       punctuationTrimEnd: end,
       punctuationTrimEndExceptFullstop: !has('end') && has('end-except-fullstop'),
     };
+  }
+
+  /**
+   * visibility (§7.30.17): hidden・collapse は、場所を残して描かない (“The generated box is invisible (fully transparent), but still affects
+   * layout.”)。継承される (XSL は “made it an inherited property”)。collapse は、表の行・列のほかでは hidden と同じ
+   * (“If used on elements other than rows or columns, "collapse" has the same meaning as "hidden".”)。表の行・列を取り除く動き
+   * (CSS2 の dynamic row and column effects) は組まないので、hidden として扱って報告する。読めない値も報告する
+   */
+  private hiddenOf(el: XEl, inherited: boolean | undefined): boolean {
+    const v = this.attrInh(el, 'visibility');
+    if (v === undefined) return !!inherited;
+    if (v === 'visible') return false;
+    if (v === 'hidden' || v === 'collapse') {
+      if (v === 'collapse' && /^table-(row|column|header|footer|body)$/.test(this.name(el))) this.miss(`visibility:collapse (fo:${this.name(el)})`);
+      return true;
+    }
+    this.miss(`visibility:${v.slice(0, 20)}`);
+    return !!inherited;
+  }
+
+  /**
+   * relative-position="relative" (§7.13.5) のずらし (pt。右・下が正)。left・top をそのまま使い、left が無く right があれば −right、
+   * top が無く bottom があれば −bottom、どちらも無ければ 0 (§5.5.5)。組んだ後の箱を動かし、前後の配置は変えない
+   * (“Only during rendering is the area rendered offset relative to this position.”)。static (初期値) なら undefined
+   */
+  private relativeOffsetOf(el: XEl, ctx: Ctx): { x: number; y: number } | undefined {
+    const rp = this.attr(el, 'relative-position');
+    if (rp === undefined || rp === 'static') return undefined;
+    if (rp !== 'relative') {
+      this.miss(`relative-position:${rp.slice(0, 20)}`);
+      return undefined;
+    }
+    // left・right の百分率は包含ブロックの幅、top・bottom は包含ブロックの高さ (§7.6.2〜§7.6.5)
+    const off = (k: string, pct: number | undefined) => {
+      const v = this.attr(el, k);
+      return v === undefined || v === 'auto' ? undefined : this.len(v, ctx.fontSize, pct);
+    };
+    const l = off('left', this.cbW(ctx));
+    const r = off('right', this.cbW(ctx));
+    const t = off('top', ctx.cbH);
+    const b = off('bottom', ctx.cbH);
+    return { x: l ?? (r !== undefined ? -r : 0), y: t ?? (b !== undefined ? -b : 0) };
+  }
+
+  /**
+   * z-index (§7.30.18) の、親の値に足した値 (§5.4.5: “the refined value is the specified value plus the refined value of z-index of its
+   * parent formatting object, if any”)。auto は足さない
+   */
+  private zIndexOf(el: XEl): number {
+    let z = 0;
+    for (let e: XEl | undefined = el; e; e = this.parents.get(e)) {
+      const v = this.attr(e, 'z-index');
+      if (v !== undefined && /^[-+]?\d+$/.test(v)) z += parseInt(v, 10);
+      else if (v !== undefined && v !== 'auto' && e === el) this.miss(`z-index:${v.slice(0, 20)}`);
+    }
+    return z;
+  }
+
+  /**
+   * clear (§7.19.1): その側の先の fo:float (side-float) の下まで下げる。left は start、right は end と読む
+   * (“left Interpreted as "clear='start'". right Interpreted as "clear='end'".”)。
+   * 組版が受けられるのは fo:block の start・end・both だけ。inside・outside (ページの偶奇で側が決まる) と、ほかの要素
+   * (fo:float・fo:table・fo:block-container・fo:list-block など。supported = false) の clear は、読まずに報告する
+   */
+  private clearOf(n: XEl, supported = true): LBlock['clear'] | undefined {
+    const v = this.attr(n, 'clear');
+    if (!v || v === 'none') return undefined;
+    const side = v === 'both' ? 'both' : v === 'start' || v === 'left' ? 'start' : v === 'end' || v === 'right' ? 'end' : undefined;
+    if (!supported) this.miss(`clear (fo:${this.name(n)})`);
+    else if (!side) this.miss(`clear:${v.slice(0, 20)}`);
+    return supported ? side : undefined;
   }
 
   /** keep-* の値 (§7.20): always と 1 以上の整数を「保つ」とみなす (強さの大小は区別しない) */
@@ -1590,8 +1911,9 @@ class Importer {
         // ブロックの隣の、空白だけの文字列は消す (XML の空白だけ。改行しない空白 U+00A0 などは中身として残す)。
         // inline と inline の間の空白は、子にブロックがあっても語の間の空白として残す (§7.16.8・§7.16.12)
         if (hasBlock && isXmlSpaceOnly(t) && (!prev || prev.block || !next || next.block)) t = '';
-        if (t) out.push(...this.punctuationSpacing(t, ctx));
-      } else out.push(it.v);
+        if (t) out.push(...this.smallCapsOf(this.punctuationSpacing(t, ctx), ctx));
+      } else if (typeof it.v === 'string') out.push(...this.smallCapsOf([it.v], ctx));
+      else out.push(it.v);
     });
     // 行の先頭・末尾の空白だけを消す (§7.16.8)。inline の中の空白は、inline の端でも残し、
     // 段落の端に来る inline の中のものだけをここで消す
@@ -1600,6 +1922,11 @@ class Importer {
       this.trimInlineEdge(out, 'end');
     }
     return out;
+  }
+
+  /** font-variant="small-caps" の中の字の並びを、small caps の印を付けた inline に包む (LInline.smallCaps。HTML の font-variant と同じ受け皿) */
+  private smallCapsOf(kids: LInlineLevel[], ctx: Ctx): LInlineLevel[] {
+    return ctx.smallCaps ? [{ type: 'inline', smallCaps: 'small', children: kids } as LInline] : kids;
   }
 
   /** 段落の端 (最初または最後) にある inline の中の、端の空白を消す */
@@ -1667,6 +1994,15 @@ class Importer {
     }
     const tag = this.name(n);
     const one = (v: LBlockLevel | LInlineLevel, block: boolean) => [{ v, block }];
+    // fo:folio-prefix・fo:folio-suffix の中身は字と行内の要素で、ページ番号 (fo:page-number・fo:page-number-citation・-last) は置けない
+    // (XSL 1.1 §6.6.13・§6.6.14 の Contents)。ページ番号を読むと、その前後にまた中身を付けることになり終わらないので、読まずに報告する。
+    // ブロックの要素は、行内の領域の中に置けないので、同じく読まずに報告する
+    if (this.inFolio && /^(page-number|page-number-citation|page-number-citation-last|block|block-container|table|table-and-caption|list-block|float|footnote|marker|retrieve-marker)$/.test(tag)) {
+      this.miss(`fo:${tag} (${this.inFolio} の中)`);
+      return [];
+    }
+    // relative-position="relative" (§7.13.5): 組版が受けられるのは横書きの fo:block だけ (組んだ箱をずらす)。ほかの要素では読まずに報告する
+    if (tag !== 'block' && tag !== 'table-caption' && this.attr(n, 'relative-position') === 'relative') this.miss(`relative-position (fo:${tag})`);
     switch (tag) {
       // 表の見出し (table-caption) は、自身の書式 (文字の大きさ・揃え・余白) を持つブロックとして組む
       case 'table-caption':
@@ -1685,6 +2021,15 @@ class Importer {
         if (box.width !== undefined && c3.wm === 'horizontal-tb') c3.width = box.width;
         this.report.counts.blocks++;
         const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3) };
+        const clr = this.clearOf(n);
+        if (clr) blk.clear = clr;
+        // relative-position (§7.13.5): 組んだ箱をずらす。縦書きの箱と、負の z-index (背面に置く) は、組版に受け皿が無いので報告する
+        const rel = this.relativeOffsetOf(n, c2);
+        if (rel && ctx.wm !== 'horizontal-tb') this.miss('relative-position (縦書き)');
+        else if (rel) {
+          if (rel.x || rel.y) blk.relativeOffset = rel;
+          if (this.zIndexOf(n) < 0) this.miss('z-index (relative-position)');
+        }
         // 互換モード: 中身の無いブロック (空白だけ。枠・背景・寸法も無い) の space-before は、次のブロックの
         // space-before と重ならずに足し合わさる。その高さの空のブロックにする
         const bAxis = this.phys('before', ctx.wm, ctx.rtl);
@@ -1692,7 +2037,7 @@ class Importer {
         if (!this.spec && sb && sb > 0 && !blk.children.length && !box.border && !box.padding && !box.backgroundColor && box.width === undefined && box.height === undefined && !this.attr(n, 'id') && ctx.wm === 'horizontal-tb') {
           const { [bAxis]: _drop, ...restM } = box.margin as Record<string, number>;
           void _drop;
-          const spacer: LBlock = { type: 'block', ...style, ...box, margin: restM, height: sb, children: [] };
+          const spacer: LBlock = { type: 'block', ...style, ...box, margin: restM, height: sb, ...(clr ? { clear: clr } : {}), children: [] };
           delete spacer.retainSpaceBefore;
           return one(spacer, true);
         }
@@ -1720,7 +2065,7 @@ class Importer {
           this.trimInlineEdge(kids, 'end');
         }
         if (blockish) return one({ type: 'block', ...this.idOf(n), ...style, ...(link ? { link } : {}), children: kids } as LBlock, true);
-        const bg = this.color(this.attr(n, 'background-color'));
+        const bg = c2.hidden ? undefined : this.color(this.attr(n, 'background-color'));
         const inl: LInline = { type: 'inline', ...this.idOf(n), ...style, children: kids as LInlineLevel[] };
         if (bg) inl.backgroundColor = bg;
         // unicode-bidi (embed・bidi-override。§7.29.6): 中身の前後に双方向の制御文字を入れたものとして並べる (§5.8)
@@ -1761,9 +2106,9 @@ class Importer {
       case 'character': {
         // character の値は空白でもよい (前後を削らない)。字の書式 (色・書体など) も当てる (§6.6.3)
         const ch = n.getAttribute?.('character') ?? '';
-        const { style } = this.textStyle(n, ctx);
+        const { style, ctx: c2 } = this.textStyle(n, ctx);
         const id = this.idOf(n);
-        return one(Object.keys(style).length || Object.keys(id).length ? ({ type: 'inline', ...id, ...style, children: [ch] } as LInlineLevel) : ch, false);
+        return one(Object.keys(style).length || Object.keys(id).length || c2.smallCaps ? ({ type: 'inline', ...id, ...style, ...(c2.smallCaps ? { smallCaps: 'small' as const } : {}), children: [ch] } as LInlineLevel) : ch, false);
       }
       case 'inline-container':
         return this.inlineContainer(n, ctx);
@@ -1773,10 +2118,15 @@ class Importer {
         // static-content の中は、ページごとに置き換える印。本文の中は、その場所 (印を付けた行内) のページ番号の参照にする (XSL 1.1 §6.6.10:
         // 本文の fo:page-number は、それを含むページの番号)
         // 要素自身の字の書式 (color・font-weight など。§6.6.10 の共通フォント特性) は、page-number-citation と同じく行内の箱で当てる
-        const { style } = this.textStyle(n, ctx);
-        if (ctx.inStatic) return one(Object.keys(style).length ? ({ type: 'inline', ...style, children: ['{pageNumber}'] } as LInline) : '{pageNumber}', false);
+        // 番号の前後には、この page-sequence の fo:folio-prefix・fo:folio-suffix の中身を付ける (§6.6.10)
+        const { style, ctx: c2 } = this.textStyle(n, ctx);
+        if (ctx.inStatic) {
+          const parts = this.withFolio('{pageNumber}', ctx.seqEl, c2);
+          return one(Object.keys(style).length || parts ? ({ type: 'inline', ...style, children: parts ?? ['{pageNumber}'] } as LInline) : '{pageNumber}', false);
+        }
         const pid = `kumiori-page-number-${++this.pageNumberSeq}`;
-        return one({ type: 'inline', id: pid, ...style, children: [{ type: 'page-number-citation', refId: pid }] } as LInlineLevel, false);
+        const cit: LPageNumberCitation = { type: 'page-number-citation', refId: pid };
+        return one({ type: 'inline', id: pid, ...style, children: this.withFolio(cit, ctx.seqEl, c2) ?? [cit] } as LInlineLevel, false);
       }
       case 'page-number-citation':
       case 'page-number-citation-last':
@@ -1784,26 +2134,37 @@ class Importer {
         {
           const cit: LPageNumberCitation = { type: 'page-number-citation', refId: this.attr(n, 'ref-id') ?? '', ...(tag.endsWith('last') ? { last: true } : {}), ...(this.attr(n, 'axf:physical-page-number') === 'true' ? { physical: true } : {}) };
           // 要素自身の字の書式 (color・font-size など。§6.6.11 の共通フォント特性・color) は、行内の箱で包んで当てる
-          const { style } = this.textStyle(n, ctx);
-          return one(Object.keys(style).length ? ({ type: 'inline', ...style, children: [cit] } as LInline) : cit, false);
+          const { style, ctx: c2 } = this.textStyle(n, ctx);
+          // 番号の前後には、引いたページを作った page-sequence の fo:folio-prefix・fo:folio-suffix の中身を付ける (§6.6.11・§6.6.12:
+          // “using the cited page as the reference-page, and the fo:page-sequence that generated the cited-page as the reference-page-sequence”)。
+          // 引いた先は、ref-id の要素を含む page-sequence (-last は最後のもの)。物理的なページ番号 (axf:physical-page-number) には付けない
+          const cited = this.idSeqs?.get(cit.refId);
+          const parts = cit.physical ? undefined : this.withFolio(cit, cit.last ? cited?.last : cited?.first, c2);
+          return one(Object.keys(style).length || parts ? ({ type: 'inline', ...style, children: parts ?? [cit] } as LInline) : cit, false);
         }
       case 'external-graphic':
       case 'instream-foreign-object': {
         // 数式 (MathML) は、行内の要素 (上付き・下付き・分数の箱など) に組み替えて、本文と同じ書体で組む
         const fr = tag === 'instream-foreign-object' ? this.foreignRoot(n) : this.externalMath(n);
         const math = fr && this.name(fr) === 'math' ? fr : undefined;
+        // visibility (§7.30.17): 画像・数式そのものの指定が親と違うときは、字の色 (見えないときは transparent) を持つ行内の箱で包む
+        // (画像は、字の色が transparent なら描かない)
+        const hid = this.hiddenOf(n, ctx.hidden);
+        const shown = (v: LInlineLevel): LInlineLevel => (hid === !!ctx.hidden ? v : ({ type: 'inline', color: hid ? 'transparent' : (ctx.color ?? '#000000'), children: [v] } as LInline));
         if (math) {
           // 数式の図形は、周りの字の色で描く (mathcolor があれば、その中はその色)
           this.foMath.mathColor = ctx.color ?? '#000000';
           // 字の大きさ・色は、instream-foreign-object・external-graphic の font-size・color も見る
-          if (this.opts.mathFont) return one(this.mathFormula(math, this.textStyle(n, ctx).ctx, n), false);
-          return one(this.foMath.mathml(math, ctx.fontSize), false);
+          if (this.opts.mathFont) return one(shown(this.mathFormula(math, this.textStyle(n, ctx).ctx, n)), false);
+          return one(shown(this.foMath.mathml(math, ctx.fontSize)), false);
         }
-        return one(this.image(n, ctx, tag === 'external-graphic'), false);
+        return one(shown(this.image(n, hid === !!ctx.hidden ? ctx : { ...ctx, hidden: hid }, tag === 'external-graphic')), false);
       }
       case 'block-container':
+        this.clearOf(n, false);
         return one(this.blockContainer(n, ctx), true);
       case 'float': {
+        this.clearOf(n, false);
         // float="none" (初期値) は、浮動しない普通のブロックにする (§7.19.2 の float の none の説明)。互換モードは start の浮動
         if (this.spec && (this.attr(n, 'float') ?? 'none') === 'none') return this.children(n, this.textStyle(n, ctx).ctx).map((v) => ({ v, block: true }));
         return one(this.float(n, ctx), true);
@@ -1839,10 +2200,13 @@ class Importer {
         return one(r, true);
       }
       case 'table-and-caption':
+        this.clearOf(n, false);
         return this.tableAndCaption(n, ctx);
       case 'table':
+        this.clearOf(n, false);
         return one(this.table(n, ctx), true);
       case 'list-block':
+        this.clearOf(n, false);
         return one(this.listBlock(n, ctx), true);
       case 'multi-switch': {
         // fo:multi-switch は、見えている fo:multi-case のエリアだけを返す (XSL 1.1 §6.9.3)。最初に見えているのは、
@@ -2305,7 +2669,7 @@ class Importer {
   private blockContainer(n: XEl, ctx: Ctx): LBlockContainer {
     const { style, ctx: c2 } = this.textStyle(n, ctx);
     const box = this.boxStyle(n, c2, ctx);
-    // max-width (XSL 1.1 には無い CSS の属性。AH Formatter 向けに書かれた文書で使われる): 幅の指定が無ければ、使える幅と max-width の小さい方を内容の幅にする
+    // max-width (§7.15.9): 幅の指定が無ければ、使える幅と max-width の小さい方を内容の幅にする (横書きのコンテナは boxStyle が同じ値にしている)
     const maxW = this.len(this.attr(n, 'max-width'), c2.fontSize, ctx.width);
     if (maxW !== undefined && box.width === undefined && ctx.width !== undefined && maxW < ctx.width) box.width = maxW;
     // absolute-position (一括指定の position="absolute" / "fixed" も読む。§7.31.20)
@@ -2368,6 +2732,12 @@ class Importer {
       c.absolutePosition = true;
       // 祖先のブロックコンテナの中なら、その内容の箱を基準にする (位置は組むときに決める)
       if (ctx.inContainer && absPos === 'absolute') c.positionInContainer = true;
+      // z-index (§7.30.18): 親の値に足した値 (§5.4.5) が負の箱は、本文の背面に置く (HTML の負の z-index と同じ受け皿)。
+      // 0 以上の値どうしの重なりの順は、文書の順のまま。コンテナの中の絶対配置の箱は、背面に置けないので報告する
+      if (this.zIndexOf(n) < 0) {
+        if (c.positionInContainer) this.miss('z-index (コンテナの中の絶対配置)');
+        else c.layer = 'behind';
+      }
       const fs = c2.fontSize;
       // fixed はページを基準にする (§7.6.1「fixed with respect to the page」)。absolute は最も近い祖先の参照領域
       const fixedPage = absPos === 'fixed' && ctx.pageSize ? ctx.pageSize : undefined;
@@ -2744,7 +3114,7 @@ class Importer {
       this.placeByColumnNumber(out, columns.length);
       if (Object.keys(gs).length) out = out.map((r) => ({ ...gs, ...r }));
       // table-header / body / footer の背景色は、背景の無いセルへ引き継ぐ
-      const bg = this.color(this.attr(e, 'background-color'));
+      const bg = gc.hidden ? undefined : this.color(this.attr(e, 'background-color'));
       if (bg) for (const r of out) for (const c of r.cells) if (!c.backgroundColor) c.backgroundColor = bg;
       // table-header / body / footer の罫線: 罫線を重ねる表 (collapse。初期値) では、行グループの外周の罫線になる (§6.7.10)。
       // 重ね合わせは組むときに、セル・行・列・表の罫線と合わせて決める
@@ -2770,7 +3140,7 @@ class Importer {
   private row(r: XEl, ctx: Ctx, tw: number | undefined, inheritedAlign?: string): LTableRow {
     const rAlign = this.attr(r, 'display-align') ?? inheritedAlign;
     const { style, ctx: c2 } = this.textStyle(r, ctx);
-    const bg = this.color(this.attr(r, 'background-color'));
+    const bg = c2.hidden ? undefined : this.color(this.attr(r, 'background-color'));
     this.gridRowStart();
     const cells = this.els(r)
       .filter((c) => this.name(c) === 'table-cell')
@@ -2789,15 +3159,16 @@ class Importer {
     // block 方向の寸法: 横書きは height、縦書きは width (どちらも block-progression-dimension と同じ)
     const hv =
       this.attr(r, ctx.wm === 'horizontal-tb' ? 'height' : 'width') ??
-      this.attr(r, 'block-progression-dimension.minimum') ??
+      this.dimLimit(r, ctx.wm, 'block', 'minimum') ??
       this.attr(r, 'block-progression-dimension.optimum') ??
       this.attr(r, 'block-progression-dimension');
     if (this.spec) {
       // 仕様 (§7.15.3): 長さだけを書けば minimum = optimum = maximum。行は optimum の高さを目指し、minimum から maximum の間に収める
       const hAttr = ctx.wm === 'horizontal-tb' ? 'height' : 'width';
       const all = this.attr(r, 'block-progression-dimension') ?? this.attr(r, hAttr);
-      const comp = (k: string) => {
-        const v = this.attr(r, `block-progression-dimension.${k}`) ?? all;
+      // 絶対の min-height・max-height (縦書きは min-width・max-width) は、下限・上限の成分に当たる (§5.3.3)
+      const comp = (k: 'minimum' | 'optimum' | 'maximum') => {
+        const v = (k === 'optimum' ? this.attr(r, 'block-progression-dimension.optimum') : this.dimLimit(r, ctx.wm, 'block', k)) ?? all;
         return v && v !== 'auto' ? this.len(v, fs) : undefined;
       };
       const mn = comp('minimum');

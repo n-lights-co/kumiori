@@ -118,6 +118,13 @@ export interface RubyMetrics {
   /** 下側のルビ (2 段目) の字と、その張り出す厚さ */
   underGlyphs?: GlyphMetrics[];
   underExtent?: number;
+  /** 下側のルビの長さ (下側のルビがあるときだけ) */
+  underAdvance?: number;
+  /**
+   * 上側と下側のルビの厚さの合計。これがあるとき、下側のルビも行の高さに数えず (親文字の下の張り出しに入れない)、
+   * 行間がこの厚さより小さいときだけ、足りない分を行の上に足す (CSS Ruby 1 §3.6。ruby-position: under のルビ)
+   */
+  roomExtent?: number;
 }
 
 export interface TateChuYokoMetrics {
@@ -265,6 +272,38 @@ export class Measurer {
       v = 0;
     }
     pairs.set(k, v);
+    return v;
+  }
+
+  private contextSpaces = new Map<LoadedFont, Map<string, number>>();
+  /**
+   * 字 prev と字 next の間の空白 (U+0020) の送りが、書体の文脈の置き換え (OpenType の calt など) で変わる量 (em 比。変わらなければ 0)。
+   * ハングルの書体 (Noto Sans KR など) は、ハングルとハングルの間の空白を、幅の広い空白の字形に置き換える (calt)。字ごとに測ると
+   * この置き換えが当たらず、語間が書体の決めた幅より狭くなる。文脈の置き換えは既定で有効 (CSS Fonts 4 §6.4 の font-variant-ligatures:
+   * normal は contextual を含む)。3 字が同じ書体で描かれるときだけ。字の組の詰め (kern) は含めない (kern で別に足す)
+   */
+  contextSpaceDelta(prev: string, next: string, style: Pick<RunStyle, 'fontFamily' | 'fontWeight'>): number {
+    const w = style.fontWeight ?? 400;
+    const font = this.fonts.getForChar(style.fontFamily, w, ' ');
+    if (font !== this.fonts.getForChar(style.fontFamily, w, prev) || font !== this.fonts.getForChar(style.fontFamily, w, next)) return 0;
+    let m = this.contextSpaces.get(font);
+    if (!m) this.contextSpaces.set(font, (m = new Map()));
+    const k = prev + next;
+    let v = m.get(k);
+    if (v === undefined) {
+      v = 0;
+      try {
+        const off = { kern: false, liga: false, clig: false };
+        const run = font.fk.layout(`${prev} ${next}`, { ...off } as never);
+        const alone = font.fk.layout(' ', { ...off } as never);
+        // 字形が 3 つ (字・空白・字) のまま、空白の字形が替わったときだけ
+        if (run.glyphs.length === 3 && alone.glyphs.length === 1 && run.glyphs[1].id !== alone.glyphs[0].id) v = (run.positions[1].xAdvance - alone.positions[0].xAdvance) / font.unitsPerEm;
+      } catch {
+        v = 0;
+      }
+      if (m.size > 20000) m.clear();
+      m.set(k, v);
+    }
     return v;
   }
 
@@ -493,7 +532,7 @@ export class Measurer {
       rubySize,
       baseGlyphs,
       rubyGlyphs,
-      ...(underGlyphs ? { underGlyphs, underExtent: rubySize } : {}),
+      ...(underGlyphs ? { underGlyphs, underExtent: rubySize, underAdvance } : {}),
     };
   }
 

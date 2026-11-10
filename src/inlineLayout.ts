@@ -7,10 +7,10 @@
  *   5. buildLineNode : 行 → LNode (Line > Inline > Glyph/Ruby/TCY)
  * Atom と、その周りの型 (InlineFrame・BoxSpec・LeaderSpec・FlattenState・RawLine・PositionedLine) はここで定める
  */
-import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko } from './types';
+import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
 import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './measurer';
 import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
-import { lineBreakActions, type LineBreakOptions } from './lineBreak';
+import { complexContextBreaks, lineBreakActions, type LineBreakOptions } from './lineBreak';
 import { newNode, type LNode, type ResolvedStyle } from './lnode';
 import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, WritingMode } from './types';
 import { borderToLogicalWidths, toLogical } from './geometry';
@@ -54,8 +54,10 @@ export interface Atom {
   bg?: string;
   g?: GlyphMetrics;
   r?: RubyMetrics;
-  /** ルビの字の色 [1 段目, 2 段目] (LRuby.rubyColor・rubyColorUnder)。無ければ字の色 */
+  /** ルビの字の色 [上側, 下側] (LRuby.rubyColor・rubyColorUnder。rubyPosition: 'under' なら入れ替えたもの)。無ければ字の色 */
   rubyColors?: [string | undefined, string | undefined];
+  /** 字の配り方 [上側のルビ, 下側のルビ, 親文字] (LRuby.rubyAlign・rubyAlignUnder・rubyAlignBase)。無ければ、これまでの配り方 (distribute) */
+  rubyAligns?: [RubyAlign | undefined, RubyAlign | undefined, RubyAlign | undefined];
   t?: TateChuYokoMetrics;
   leader?: LeaderSpec;
   box?: BoxSpec;
@@ -65,6 +67,8 @@ export interface Atom {
   glue?: boolean;
   /** この atom の前で改行してよいか (UAX #14 で段落ごとに決めたもの。markLineBreaks) */
   lbBefore?: boolean;
+  /** lbBefore が、辞書で決めた語の境目 (タイ語など、語の間に空白を書かない用字。complexContextBreaks) による */
+  lbDict?: boolean;
   /** vertical-align: top・bottom の箱: 行の高さを決めてから、行の箱の上端・下端に揃える (lineMetrics) */
   lineAlign?: 'top' | 'bottom';
   /** 前で改行してよいが、ほかに改行できる位置が無いときだけ使う (斜線の後ろ。UAX #14 §5.1 SY の推奨。lineBreakActions の soft) */
@@ -204,7 +208,9 @@ function canBreakAtoms(a: Atom, b: Atom): boolean {
   // break-all は字を ID として扱う (Text 3 §5.1)。ID でも、行頭に置けない字 (小書きの仮名・長音記号など) の前では改行しない
   // 結合文字・異体字セレクタ (General_Category が M の字) の前は、字の単位 (基底の字 + 結合文字。UAX #29 GB9・GB9a) の中なので、break-all でも分けない
   // (break-all が ID として扱うのは字の単位。Text 3 §5.1)。UAX #14 の機会 (LB9: 結合文字の前は改行しない) に任せる
-  if (wb && wb !== 'normal' && a.kind === 'glyph' && b.kind === 'glyph' && !a.isSpace && !b.isSpace && LETTER.test(a.last) && LETTER.test(b.first) && !COMBINING.test(b.first))
+  // keep-all でも、辞書で決めた語の境目 (タイ語など) では改行してよい (Text 3 §5.1 の word-break の keep-all: 字と字の間の機会を無くすが、
+  // 辞書による改行の機会は残す)。break-all は、SA の字も ID と同じに扱う (字の単位の間で改行してよい)
+  if (wb && wb !== 'normal' && !(wb === 'keep-all' && b.lbDict) && a.kind === 'glyph' && b.kind === 'glyph' && !a.isSpace && !b.isSpace && LETTER.test(a.last) && LETTER.test(b.first) && !COMBINING.test(b.first))
     return wb === 'break-all' && !isLineHeadProhibited(b.first, b.st.looseLineStart) && !isLineEndProhibited(a.last);
   return b.lbBefore ?? false;
 }
@@ -225,6 +231,7 @@ function lineBreakOptionsOf(st: ResolvedStyle): LineBreakOptions {
 export function markLineBreaks(atoms: Atom[]): void {
   const cps: number[] = [];
   const optsOf: LineBreakOptions[] = [];
+  const langOf: Array<string | undefined> = [];
   const firstIdx: number[] = new Array(atoms.length).fill(-1);
   for (let i = 0; i < atoms.length; i++) {
     const a = atoms[i];
@@ -233,6 +240,7 @@ export function markLineBreaks(atoms: Atom[]): void {
     const push = (cp: number) => {
       cps.push(cp);
       optsOf.push(o);
+      langOf.push(a.st.language);
     };
     firstIdx[i] = cps.length;
     if (a.kind === 'break') push(0x0a);
@@ -254,6 +262,20 @@ export function markLineBreaks(atoms: Atom[]): void {
     const k = firstIdx[i];
     if (k > 0) atoms[i].lbBefore = act[k] !== '×';
     if (k > 0 && soft[k]) atoms[i].lbSoft = true;
+  }
+  // 語の間に空白を書かない用字 (タイ語など。UAX #14 の SA) の並びの中は、UAX #14 の既定 (AL) では改行の機会が無い。
+  // 辞書で決めた語の境目を、改行の機会に足す (UAX #14 §5.1 SA・CSS Text 3 §5)。atom の途中 (字の単位の中) の境目は使わない。
+  // SA の字が無ければ dict は null で、何もしない
+  const dict = complexContextBreaks(cps, (k) => langOf[k]);
+  if (dict) {
+    const at = new Set(dict);
+    for (let i = 0; i < atoms.length; i++) {
+      const k = firstIdx[i];
+      if (k > 0 && at.has(k) && act[k] === '×' && !atoms[i].lbBefore) {
+        atoms[i].lbBefore = true;
+        atoms[i].lbDict = true;
+      }
+    }
   }
 }
 
@@ -326,7 +348,7 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
     // 字の組の詰め (kern): 書式が同じなら、inline の境目をまたいでも詰める (CSS Text 3 §7.3: 書式の実際の変化が無い境目では、
     // 字形の処理を切ってはならない)。上げ下げ (vertical-align) の違う境目では切る。余白・枠のある境目は間に箱の atom が入るので、隣り合わない
     const sameBox = kernAh ? a.st === b.st : (a.shift ?? 0) === (b.shift ?? 0);
-    if (kern && a.st.kerning && b.st.kerning && fa === fb && sameBox && isLatinAlnumOrPunct(a.last) && isLatinAlnumOrPunct(b.first)) a.advance += kern(a, b);
+    if (kern && a.st.kerning && b.st.kerning && fa === fb && sameBox && ((isLatinAlnumOrPunct(a.last) && isLatinAlnumOrPunct(b.first)) || (isThaiLetter(a.last) && isThaiLetter(b.first)))) a.advance += kern(a, b);
     if (a.st.punctuationSqueeze !== false) {
       // 詰めたときの間隔 (axf:punctuation-spacing。既定は二分)
       const sp = a.st.punctuationSpacing;
@@ -377,9 +399,36 @@ function isPlainChar(a: Atom, ch: string): boolean {
 }
 
 /** ルビが掛けられる字 (仮名と約物。漢字・欧文には掛けない) */
+const HANGUL = /^\p{Script=Hangul}$/u;
+/**
+ * ハングルとハングルの間の空白 (U+0020) の送りを、書体が文脈で決める幅にする (Measurer.contextSpaceDelta)。
+ * ハングルの書体は、ハングルの語の間の空白を広い字形に置き換える (OpenType の calt)。空白は描かないので、送りだけを合わせる。
+ * 字の単位 (書記素クラスタ) の atom は、基底の字 (first・last) で引く
+ */
+export function adjustHangulWordSpaces(atoms: Atom[], delta: (prev: string, next: string, st: ResolvedStyle) => number) {
+  for (let k = 1; k + 1 < atoms.length; k++) {
+    const a = atoms[k];
+    if (a.kind !== 'glyph' || !a.isSpace || a.first !== ' ' || a.cluster) continue;
+    const p = atoms[k - 1];
+    const n = atoms[k + 1];
+    if (p.kind !== 'glyph' || n.kind !== 'glyph' || !HANGUL.test(p.last) || !HANGUL.test(n.first)) continue;
+    if (p.st.fontFamily !== a.st.fontFamily || n.st.fontFamily !== a.st.fontFamily || p.st.fontWeight !== a.st.fontWeight || n.st.fontWeight !== a.st.fontWeight || p.st.fontSize !== a.st.fontSize || n.st.fontSize !== a.st.fontSize) continue;
+    a.advance += delta(p.last, n.first, a.st) * a.st.fontSize;
+  }
+}
+
 function overhangable(a: Atom | undefined, ch: string | undefined): boolean {
   if (!a || a.kind !== 'glyph' || a.isSpace || a.frameOpen || a.frameClose || !ch) return false;
   return /[\u3041-\u309F\u30A1-\u30FA\u30FD-\u30FF]/u.test(ch) || isClosingPunct(ch) || isOpeningPunct(ch) || isMiddlePunct(ch);
+}
+
+/**
+ * タイ文字の字 (U+0E01〜U+0E5B)。タイ文字の書体は、前に置く母音 (เ แ โ ใ ไ) と子音の間などを詰める組 (kern) を持つ。
+ * 字の単位 (子音 + 上下の記号) の間の詰めは、基底の字の組で引く (書体の組の表は、記号を飛ばして引く指定)
+ */
+function isThaiLetter(ch: string): boolean {
+  const cp = ch.codePointAt(0) ?? 0;
+  return cp >= 0x0e01 && cp <= 0x0e5b;
 }
 
 /** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張、ギリシャ文字・キリル文字) */
@@ -393,7 +442,8 @@ function isLatinAlnumOrPunct(ch: string): boolean {
 
 function rubyOverhang(a: Atom, prev: Atom | undefined, next: Atom | undefined) {
   const r = a.r!;
-  const excess = r.rubyAdvance - r.baseAdvance;
+  // 下側のルビ (ruby-position: under・2 段目) も、親文字より長ければ掛ける
+  const excess = Math.max(r.rubyAdvance, r.underAdvance ?? 0) - r.baseAdvance;
   if (excess <= EPS) return;
   const lim = Math.min(excess / 2, r.rubySize);
   const ovL = overhangable(prev, prev?.last) ? Math.min(lim, prev!.advance / 2) : 0;
@@ -1129,6 +1179,42 @@ function distribute(advances: number[], total: number): number[] {
   return out;
 }
 
+/** ルビの字の間を空けてよい字 (和文の字: 漢字・仮名。CSS Ruby 1 §4.3 の text-justify: ruby の「CJK の字」。注音字母・欧文は含めない) */
+const isRubyJustifyChar = (ch: string): boolean => /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u30FC\u3005\u3007]/u.test(ch);
+
+/**
+ * 親文字・ルビの字を、長さ total の箱の中に置く位置 (CSS Ruby 1 §4.3 ruby-align)。
+ *  - 指定が無ければ、これまでの配り方 (distribute: どの字にも、前後に同じアキを付ける)
+ *  - start: 始めの端から詰めて置く。center: 中央に詰めて置く
+ *  - space-between: 字の間 (和文の字どうしの間だけ。§4.3 の例: 欧文・注音字母の字の間は空けない) を均等に空ける。空ける所が無ければ中央
+ *  - space-around: space-between の空ける所に、もう 1 つ分を足し、その半分ずつを前後に付ける
+ * 中身が箱より長いとき (余りが無いとき) は、どの値でも詰めて置く
+ */
+function rubyOffsets(glyphs: GlyphMetrics[], total: number, align: RubyAlign | undefined): number[] {
+  const advances = glyphs.map((g) => g.advance);
+  if (!align) return distribute(advances, total);
+  const extra = Math.max(total - advances.reduce((x, y) => x + y, 0), 0);
+  const opp = glyphs.map((g, k) => k > 0 && isRubyJustifyChar(glyphs[k - 1].ch) && isRubyJustifyChar(g.ch));
+  const n = opp.filter(Boolean).length;
+  let gap = 0;
+  let x = extra / 2;
+  if (align === 'start') x = 0;
+  else if (align === 'space-between' && n > 0) {
+    gap = extra / n;
+    x = 0;
+  } else if (align === 'space-around') {
+    gap = extra / (n + 1);
+    x = gap / 2;
+  }
+  const out: number[] = [];
+  advances.forEach((adv, k) => {
+    if (opp[k]) x += gap;
+    out.push(x);
+    x += adv;
+  });
+  return out;
+}
+
 /**
  * leader の描画ノード。
  *   dots: 行頭 (= インライン座標 0) 基準で pitch の倍数位置に点を置く → 複数行で点が縦に揃う
@@ -1186,9 +1272,11 @@ function leaderNode(a: Atom, off: number, gStart: number, w: number, bOff: numbe
 /**
  * 下線・上線・取り消し線を、inline の範囲いっぱいに引く (inline の子として、文字の上に描く)。
  * 横書き: 下線は基線の少し下、上線は字面の上端、取り消し線は x ハイト付近。
- * 縦書き: 下線は行の左 (block 方向の後ろ)、上線は右、取り消し線は字面の中央
+ * 縦書き: 下線は行の左 (block 方向の後ろ)、上線は右、取り消し線は字面の中央。
+ * 線の種類・太さ・下線のずらし (CSS の text-decoration-style・text-decoration-thickness・text-underline-offset) の指定が無ければ、
+ * 字の大きさの 6% (0.5pt 以上) の実線。font は、書体の下線の太さ (from-font) を引く書体
  */
-function addDecorations(inline: LNode, st: ResolvedStyle, lm: LineMetrics, span: number, wm: WritingMode) {
+function addDecorations(inline: LNode, st: ResolvedStyle, lm: LineMetrics, span: number, wm: WritingMode, font?: import('./fontManager').LoadedFont) {
   const d = st.textDecoration;
   if (!d || !(d.underline || d.overline || d.lineThrough) || span <= 0) return;
   const fs = st.fontSize;
@@ -1197,11 +1285,46 @@ function addDecorations(inline: LNode, st: ResolvedStyle, lm: LineMetrics, span:
   const base = lm.above; // inline の中での基線 (縦書きは字面の中央)
   const sign = wm === 'vertical-lr' ? -1 : 1; // vertical-lr は block 方向が左→右なので、下線 (左) は block の前側
   // 線の色: 線を指定した要素の色 (colors)。無ければ字の色
-  const lines: Array<[number, string]> = [];
-  if (d.underline) lines.push([vertical ? base + sign * fs * 0.58 : base + fs * 0.12, d.colors?.underline ?? st.color]);
-  if (d.overline) lines.push([vertical ? base - sign * fs * 0.58 : base - fs * 0.9, d.colors?.overline ?? st.color]);
-  if (d.lineThrough) lines.push([vertical ? base : base - fs * 0.3, d.colors?.lineThrough ?? st.color]);
-  for (const [y, color] of lines) inline.children.push(newNode('block', wm, { i: 0, b: y - t / 2, isize: span, bsize: t, bg: color }));
+  const lines: Array<[number, string, 'underline' | 'overline' | 'lineThrough']> = [];
+  if (d.underline) lines.push([vertical ? base + sign * fs * 0.58 : base + fs * 0.12, d.colors?.underline ?? st.color, 'underline']);
+  if (d.overline) lines.push([vertical ? base - sign * fs * 0.58 : base - fs * 0.9, d.colors?.overline ?? st.color, 'overline']);
+  if (d.lineThrough) lines.push([vertical ? base : base - fs * 0.3, d.colors?.lineThrough ?? st.color, 'lineThrough']);
+  if (!d.styles && !d.thickness && d.underlineOffset === undefined) {
+    for (const [y, color] of lines) inline.children.push(newNode('block', wm, { i: 0, b: y - t / 2, isize: span, bsize: t, bg: color }));
+    return;
+  }
+  // 罫線で描く線 (点線・破線・波線) の辺: 行の進む向きに沿う辺 (リーダーの罫線と同じ)
+  const side = wm === 'horizontal-tb' ? 'top' : wm === 'vertical-lr' ? 'left' : 'right';
+  for (const [y, color, kind] of lines) {
+    // 太さ (Text Decoration 4 §2.4): 長さ・百分率は指定の値 (装置の 1 画素を下限にする。印刷では画素が決まらないので、300dpi の 1 画素 = 0.24pt)。
+    // from-font は書体の下線の太さ (post の表の underlineThickness)。書体に無ければ auto と同じ
+    const th = d.thickness?.[kind];
+    const fromFont = th === 'from-font' && font ? ((font.fk as { underlineThickness?: number }).underlineThickness ?? 0) / font.unitsPerEm : 0;
+    const w = typeof th === 'number' ? Math.max(th, 0.24) : fromFont > 0 ? fromFont * fs : t;
+    // 字から離れる向き (block 方向の符号)。取り消し線は 0 (中心を保つ)
+    const out = kind === 'lineThrough' ? 0 : kind === 'underline' ? (vertical ? sign : 1) : vertical ? -sign : -1;
+    // 太さを変えても、字に近い側の端は動かさない (下線・上線は外へ太る)。取り消し線は中心を保つ
+    let centre = y + (out * (w - t)) / 2;
+    if (kind === 'underline' && d.underlineOffset !== undefined) {
+      // 下線のずらし (Text Decoration 4 §2.8.1): text-underline-position が auto のときの基準は欧文の基線で、正の値は字から離れる向き。
+      // 線は、その位置から外へ太さの分だけ引く。縦書きの欧文の基線は、字面の中央から下線の側へ (基線の比 − 0.5) em の所
+      const zero = vertical ? base + sign * (DEFAULT_BASELINE_RATIO - 0.5) * fs : base;
+      centre = zero + out * (d.underlineOffset + w / 2);
+    }
+    const style = d.styles?.[kind] ?? 'solid';
+    const bar = (c: number) => inline.children.push(newNode('block', wm, { i: 0, b: c - w / 2, isize: span, bsize: w, bg: color }));
+    if (style === 'double') {
+      // 二重線 (border-style の double と同じ意味。Backgrounds 3 §3.2: 2 本の線と、その間の空き)。同じ太さの線 2 本を、太さと同じだけ空けて引く。
+      // 2 本目は外側 (取り消し線は中心の両側)
+      if (out === 0) (bar(centre - w), bar(centre + w));
+      else (bar(centre), bar(centre + out * 2 * w));
+    } else if (style === 'dotted' || style === 'dashed') {
+      inline.children.push(newNode('block', wm, { i: 0, b: centre - w / 2, isize: span, bsize: w, border: { [side]: { width: w, color, style } } }));
+    } else if (style === 'wavy') {
+      // 波線: 太さ w の線が、実線の位置を中心に上下へ w ずつ振れる (幅 3w の帯)。周期は太さの 6 倍
+      inline.children.push(newNode('block', wm, { i: 0, b: centre - 1.5 * w, isize: span, bsize: 3 * w, border: { [side]: { width: 3 * w, color, style: 'wave', waveStroke: w, waveLength: 6 * w } } }));
+    } else bar(centre);
+  }
 }
 
 export function buildLineNode(
@@ -1276,14 +1399,14 @@ export function buildLineNode(
           ref: a.ref,
         });
         // 前後の字に掛けた分は、親文字を置かない (親文字はルビの範囲の内側 [ovL, advance - ovR] に均等に置く)
-        const baseOff = distribute(r.baseGlyphs.map((g) => g.advance), r.advance - ovL - ovR).map((x) => x + ovL);
+        const baseOff = rubyOffsets(r.baseGlyphs, r.advance - ovL - ovR, a.rubyAligns?.[2]).map((x) => x + ovL);
         r.baseGlyphs.forEach((g, idx) => {
           const gn = glyphNode(g, a.st, wm, g.ch, a.st.fontSize, a.st.color);
           gn.i = baseOff[idx];
           gn.b = r.rubyExtent;
           rn.children.push(gn);
         });
-        const rubyOff = distribute(r.rubyGlyphs.map((g) => g.advance), r.advance);
+        const rubyOff = rubyOffsets(r.rubyGlyphs, r.advance, a.rubyAligns?.[0]);
         r.rubyGlyphs.forEach((g, idx) => {
           const gn = glyphNode(g, a.st, wm, g.ch, r.rubySize, a.rubyColors?.[0] ?? a.st.color);
           gn.i = rubyOff[idx];
@@ -1292,7 +1415,7 @@ export function buildLineNode(
         });
         // 下側のルビ (2 段目): 親文字の下に置く
         if (r.underGlyphs) {
-          const underOff = distribute(r.underGlyphs.map((g) => g.advance), r.advance);
+          const underOff = rubyOffsets(r.underGlyphs, r.advance, a.rubyAligns?.[1]);
           r.underGlyphs.forEach((g, idx) => {
             const gn = glyphNode(g, a.st, wm, g.ch, r.rubySize, a.rubyColors?.[1] ?? a.st.color);
             gn.i = underOff[idx];
@@ -1345,7 +1468,7 @@ export function buildLineNode(
         inline.children.push(tn);
       }
     }
-    addDecorations(inline, group[0].a.st, lm, span, wm);
+    addDecorations(inline, group[0].a.st, lm, span, wm, group[0].a.st.textDecoration?.thickness ? group.find((g) => g.a.g)?.a.g?.font : undefined);
     line.children.push(inline);
     k = e;
   }

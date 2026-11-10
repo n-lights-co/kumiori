@@ -53,8 +53,8 @@ describe('未対応の CSS の数え上げ (cssUnsupported)', () => {
       'button { cursor: pointer; appearance: button } textarea { resize: vertical } a { transition: color .2s; animation-name: x; scroll-margin-top: 1em; touch-action: manipulation; user-select: none; pointer-events: none } svg { fill: currentColor }',
     );
     const r = unsupportedCssReport(css);
-    // fill は印刷にも効く (文書の CSS の fill は、文書の中の <svg> に効かない) ので、未対応のプロパティとして数える (綴りの誤りを疑う「知らないプロパティ」には入れない)
-    expect(r.unsupported).toEqual({ fill: 1 });
+    // fill は、文書の中の <svg> に効く (SVG の要素にだけ効く性質。未対応にも、知らないプロパティにも数えない)
+    expect(r.unsupported).toEqual({});
     expect(r.unknown).toEqual({});
   });
   it('印刷では意味のないプロパティの一覧は、対応仕様説明書の「印刷に関わらないプロパティ」の表を含む', () => {
@@ -84,6 +84,13 @@ describe('typeset の warnings', () => {
     expect(unknown).toBe('知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr');
     const clean = await typesetHtml('<!DOCTYPE html><html><head><title>t</title><style>p { margin: 1em; text-indent: 1em; hyphens: auto }</style></head><body><p>x</p></body></html>', { name: 't.html', loadFont });
     expect(clean.warnings.filter((w) => /未対応|知らない/.test(w))).toEqual([]);
+  });
+  it('HTML: ルビの配置 (ruby-position・ruby-align・ruby-merge・ruby-overhang) は未対応に数えない。横書きの inter-character と ruby-merge: auto は知らせる', async () => {
+    const page = (style: string) => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title><style>${style}</style></head><body><p><ruby><rb>無</rb><rb>常</rb><rt>む</rt><rt>じょう</rt></ruby></p></body></html>`;
+    const ok = await typesetHtml(page('ruby { ruby-position: under; ruby-align: center; ruby-merge: merge; ruby-overhang: auto }'), { name: 't.html', loadFont });
+    expect(ok.warnings.filter((w) => /未対応|知らない/.test(w))).toEqual([]);
+    const ng = await typesetHtml(page('ruby { ruby-position: inter-character; ruby-merge: auto }'), { name: 't.html', loadFont });
+    expect(ng.warnings.find((w) => w.startsWith('未対応の CSS を無視しました: '))).toBe('未対応の CSS を無視しました: ruby-position: inter-character (横書き) (2)、ruby-merge: auto');
   });
   it('XSL-FO: 読めない要素・プロパティを知らせる', async () => {
     const fo =

@@ -480,7 +480,15 @@ function flattenRuby(c: LRuby, cx: FlattenCtx): void {
   const runStyle = runStyleOf;
   const s2 = resolveStyle(st, { ...c, writingMode: undefined });
   state.run++;
-  const r = m.ruby(c.baseText, c.rubyText, runStyle(s2), wm, s2.rubyScale, c.rubyTextUnder);
+  // ruby-position: under (CSS Ruby 1 §4.1): rubyText を下側 (縦書きは左)、2 段目 (rubyTextUnder) を上側に置く
+  const under = c.rubyPosition === 'under';
+  const r = under ? m.ruby(c.baseText, c.rubyTextUnder ?? '', runStyle(s2), wm, s2.rubyScale, c.rubyText) : m.ruby(c.baseText, c.rubyText, runStyle(s2), wm, s2.rubyScale, c.rubyTextUnder);
+  // CSS の行の高さ (primaryFontMetrics) では、下側に置いたルビも行の高さに数えない (§3.6。上側と下側の厚さの合計が行間に収まらない分だけ空ける)
+  if (under && s2.primaryFontMetrics) r.roomExtent = r.rubyExtent + (r.underExtent ?? 0);
+  const colors = under ? [c.rubyColorUnder, c.rubyColor] : [c.rubyColor, c.rubyColorUnder];
+  // ruby-align (§4.3): 注釈・親文字ごとの値。無ければ、まわりから継承した値 (HTML の入力は space-around。XSL-FO の入力は無し = これまでの配り方)
+  const [a1, a2, ab] = [c.rubyAlign ?? st.rubyAlign, c.rubyAlignUnder ?? st.rubyAlign, c.rubyAlignBase ?? st.rubyAlign];
+  const aligns = under ? [a2, a1, ab] : [a1, a2, ab];
   const chars = [...c.baseText];
   // 親文字が代わりの書体の字なら、行の高さは最初に使える書体の上下で決める (字と同じ。CSS Inline 3 §5.3)
   const primary = s2.primaryFontMetrics ? m.glyph(primaryChar(s2), runStyle(s2), wm).font : undefined;
@@ -496,7 +504,8 @@ function flattenRuby(c: LRuby, cx: FlattenCtx): void {
     bg,
     r,
     src: c.id,
-    ...(c.rubyColor || c.rubyColorUnder ? { rubyColors: [c.rubyColor, c.rubyColorUnder] as [string | undefined, string | undefined] } : {}),
+    ...(c.rubyColor || c.rubyColorUnder ? { rubyColors: colors as [string | undefined, string | undefined] } : {}),
+    ...(aligns.some((x) => x) ? { rubyAligns: aligns as NonNullable<Atom['rubyAligns']> } : {}),
     ...(primary && baseFont && primary !== baseFont ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
   });
   state.run++;

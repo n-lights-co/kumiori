@@ -325,3 +325,71 @@ export function lineBreakActions(cps: number[], opts: LineBreakOptions | ((i: nu
   }
   return act.map((x) => x ?? '÷');
 }
+
+/**
+ * 語の間に空白を書かない用字 (UAX #14 の Line_Break が SA = Complex_Context の字: タイ・ラオ・クメール・ミャンマーなど) の、語の境目。
+ *
+ * UAX #14 §5.1 の SA: これらの字の並びの改行の機会は、形態の解析 (ふつうは辞書を引く) で決める。解析が無ければ AL として扱う
+ * (LB1 の既定。lineBreakActions はこの既定のままで、SA の字の並びの中に改行の機会を作らない)。
+ * CSS Text 3 §5 も、タイ・ラオ・クメールなどの折り返しの機会は、語の境目を辞書などで決めるとする。
+ *
+ * ここでは、実行環境の Intl.Segmenter (granularity: 'word'。ICU の辞書で、タイ・ラオ・クメール・ミャンマーの語を分ける) で語の境目を求める。
+ * 戻り値は、cps の中の位置 i (字 i-1 と字 i の間が語の境目) の並び。SA の字が無ければ null (Intl.Segmenter を呼ばない)。
+ *  - 辞書を持つ用字 (タイ・ラオ・クメール・ミャンマー) の字の並びだけを分ける。ほかの SA の用字 (タイ・ルー、タイ・タムなど) は分けない (AL のまま)
+ *  - Intl.Segmenter が無い環境・並びを 1 つも分けない環境 (その言語の辞書が無い) では、境目は無い (AL のまま。これまでと同じ)
+ *  - 結合文字 (SA の Mn・Mc。LB1 で CM) の前は、境目にしない (LB9)
+ *  - 語の境目は、ICU の版 (辞書) で変わりうる。同じ文書でも、実行環境 (Node・ブラウザの版) で改行の位置が変わりうる
+ * langAt は、字の位置の言語 (要素の lang)。無ければ、字の用字から決める
+ */
+export function complexContextBreaks(cps: number[], langAt: (i: number) => string | undefined): number[] | null {
+  let out: number[] | null = null;
+  const n = cps.length;
+  for (let i = 0; i < n; i++) {
+    const lang = dictionaryLanguage(cps[i]);
+    if (!lang) continue;
+    // 同じ用字の SA の字の並び [i, e)
+    let e = i + 1;
+    while (e < n && dictionaryLanguage(cps[e]) === lang) e++;
+    if (e - i > 1) {
+      // 要素の lang の札で作れなければ (札が正しくない)、用字から決めた言語で
+      const seg = wordSegmenter(langAt(i) || lang) ?? wordSegmenter(lang);
+      if (seg) {
+        const text = String.fromCodePoint(...cps.slice(i, e));
+        let k = i;
+        let off = 0;
+        for (const { index } of seg.segment(text)) {
+          // index は UTF-16 の位置。字の位置 k に直す
+          while (off < index) off += cps[k++] > 0xffff ? 2 : 1;
+          if (k > i && off === index && !/^M[nc]$/.test(gcOf(cps[k]))) (out ??= []).push(k);
+        }
+      }
+    }
+    i = e - 1;
+  }
+  return out;
+}
+
+/** Intl.Segmenter の辞書で語を分けられる SA の字の言語 (用字から決める既定の言語)。SA でない字・辞書の無い用字は undefined */
+function dictionaryLanguage(cp: number): string | undefined {
+  // SA の字はすべて U+0E01 以上。よくある字 (欧文・和文) は表を引かずに済ませる
+  if (cp < 0xe01 || (cp >= 0x2000 && cp < 0xa9e0) || cp > 0xaa7f) return undefined;
+  const lang = cp <= 0xe7f ? 'th' : cp <= 0xeff ? 'lo' : (cp >= 0x1000 && cp <= 0x109f) || cp >= 0xa9e0 ? 'my' : (cp >= 0x1780 && cp <= 0x17ff) || (cp >= 0x19e0 && cp <= 0x19ff) ? 'km' : undefined;
+  return lang && lineBreakClass(cp) === 'SA' ? lang : undefined;
+}
+
+type WordSegmenter = { segment(text: string): Iterable<{ index: number }> };
+const segmenters = new Map<string, WordSegmenter | null>();
+/** 言語ごとの Intl.Segmenter (語の単位)。無い環境・作れない言語の札では null */
+function wordSegmenter(lang: string): WordSegmenter | null {
+  let s = segmenters.get(lang);
+  if (s === undefined) {
+    try {
+      const I = (globalThis as { Intl?: { Segmenter?: new (locale: string, opts: { granularity: 'word' }) => WordSegmenter } }).Intl;
+      s = I?.Segmenter ? new I.Segmenter(lang, { granularity: 'word' }) : null;
+    } catch {
+      s = null;
+    }
+    segmenters.set(lang, s);
+  }
+  return s;
+}

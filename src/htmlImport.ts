@@ -47,11 +47,13 @@ import type {
   LPageSequence,
   LRetrieveMarker,
   LRuby,
+  RubyAlign,
   LTable,
   LTableCell,
   LTableColumn,
   LTableRow,
   PageMaster,
+  TextDecorationStyle,
   TextStyle,
   WritingMode,
 } from './types';
@@ -66,7 +68,7 @@ import type { FkFont, MathFont } from './mathFont';
 import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
-import { cssColor, cssColorAlpha, cssLen, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
+import { cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
 import { AH_ALIASES, counterText, isPagedDecl, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
@@ -76,6 +78,14 @@ const isBlockLevel = (n: unknown): boolean =>
 
 /** 疑似要素 */
 export type PseudoSel = '::before' | '::after' | '::first-letter' | '::first-line' | '::marker';
+
+/** ルビの性質の値 (CSS Ruby 1 §4.1〜§4.3・§5.1 の構文)。ほかの値 (initial・revert など) は、指定が無いものとして扱う */
+const RUBY_VALUES = {
+  'ruby-position': /^(alternate|over|under|alternate (over|under)|(over|under) alternate|inter-character)$/,
+  'ruby-align': /^(start|center|space-between|space-around)$/,
+  'ruby-merge': /^(separate|merge|auto)$/,
+  'ruby-overhang': /^(auto|none)$/,
+};
 
 /** 確定したスタイルの読み取り (既定は自前のカスケード cascadeStyles。ブラウザ経由では getComputedStyle。テストでは差し替える) */
 export interface StyleSource {
@@ -91,6 +101,12 @@ export interface StyleSource {
   rect?(el: Element): { x: number; y: number; width: number; height: number } | undefined;
   /** 要素の内容の幅 (px) の見積もり。ブラウザの配置 (rect) が無いとき、flex・grid の項目の幅を決める基準 */
   contentWidth?(el: Element): number | undefined;
+  /**
+   * 文書の中にじかに書いた <svg> の要素 (SVG の名前空間の要素) に、文書の CSS が決めた SVG の表示の性質 ([性質, 値] の並び。
+   * fill・stroke・color など)。isRoot は、その <svg> の根元の要素か (根元には、外の要素から継承した値も入れる)。
+   * 無ければ、<svg> を書かれたとおりの単独の SVG として扱う
+   */
+  svgStyle?(el: Element, isRoot: boolean): Array<[string, string]>;
 }
 
 export interface HtmlImportOptions {
@@ -346,7 +362,15 @@ export function constrainReplaced(w: number, h: number, minW: number, maxW: numb
 export function shadowsOf(boxShadow: string, filter = ''): BoxShadow[] {
   const one = (v0: string, drop: boolean): BoxShadow | undefined => {
     const inset = /\binset\b/i.test(v0);
-    const v = inset ? v0.replace(/\binset\b/gi, ' ') : v0;
+    let v = inset ? v0.replace(/\binset\b/gi, ' ') : v0;
+    // Color 4・5 の色の関数 (hwb()・lab()・color()・color-mix() など) は、先に rgb() の形にする (中の currentcolor は黒で近似する)
+    if (/\b(hwb|lab|lch|oklab|oklch|color|color-mix)\(/i.test(v))
+      v = splitWords(v)
+        .map((t) => {
+          const c = /^(hwb|lab|lch|oklab|oklch|color|color-mix)\(/i.test(t) ? parseCssColor(t) : undefined;
+          return c && c !== 'current' ? fmtColor(c) : t;
+        })
+        .join(' ');
     // 色: rgb()・hsl()・#…、無ければ英字だけの語 (色の名前)。無ければ黒 (currentColor の近似)
     const colorText = /(rgba?|hsla?)\([^)]*\)|#[0-9a-f]{3,8}\b/i.exec(v)?.[0] ?? v.split(/\s+/).find((t) => /^[a-z]+$/i.test(t)) ?? 'black';
     const lens = v
@@ -889,6 +913,16 @@ class HtmlImporter {
     const maxDigits = dg ? parseInt(dg[1] ?? '2', 10) : 0;
     const mark = this.emphasisMark(el, vertical);
     if (!maxDigits && !mark) return this.smallCaps(t, el);
+    // 圏点の側 (text-emphasis-position。Text Decoration 3 §3.4): 横書きは over (上)・under (下)、縦書きは right (右)・left (左。省略は right)。
+    // 圏点は、字ごとのルビとして置く (§3.4「as if each character was assigned the mark as its ruby annotation text」) ので、
+    // 下・左は 2 段目のルビの側に置く。vertical-lr は、ルビの 1 段目の側 (行の進む向きの手前) にだけ置ける
+    const cs = this.cs(el);
+    const wmv = cs('writing-mode');
+    const pos = mark ? cs('text-emphasis-position') : '';
+    const under = vertical ? /(^|\s)left(\s|$)/.test(pos) && !/vertical-lr/.test(wmv) : /(^|\s)under(\s|$)/.test(pos);
+    // 圏点の色 (text-emphasis-color。§3.2): 初期値 currentcolor は字の色 (色を付けない)。見えない要素 (visibility) の圏点には付けない
+    const ec = mark ? cs('text-emphasis-color') : '';
+    const markColor = ec && ec !== cs('color') && !/^(hidden|collapse)$/.test(cs('visibility')) ? cssColor(ec) : undefined;
     const out: LInlineLevel[] = [];
     let buf = '';
     const flush = () => {
@@ -906,7 +940,8 @@ class HtmlImporter {
         // 圏点は、空白・約物・記号には付けない
         if (mark && !/[\s\p{P}\p{S}]/u.test(ch)) {
           flush();
-          out.push({ type: 'ruby', baseText: ch, rubyText: mark });
+          if (under) out.push({ type: 'ruby', baseText: ch, rubyText: '', rubyTextUnder: mark, ...(markColor ? { rubyColorUnder: markColor } : {}) });
+          else out.push({ type: 'ruby', baseText: ch, rubyText: mark, ...(markColor ? { rubyColor: markColor } : {}) });
         } else buf += ch;
       }
     }
@@ -2403,6 +2438,20 @@ class HtmlImporter {
     return all ? printColor(all, this.opts.spotColors) : undefined;
   }
 
+  /**
+   * ルビの性質 (ruby-position・ruby-align・ruby-merge・ruby-overhang。どれも継承する。CSS Ruby 1 §4・§5.1) の、文書が指定した値。
+   * 自前で読んだ宣言 (pg) を、要素から祖先へたどる。指定が無ければ '' (これまでの組み方のまま)。
+   * ブラウザの確定値は使わない (指定が無くても初期値を返し、指定の有無が分からないため)
+   */
+  private rubyDecl(el: Element, prop: 'ruby-position' | 'ruby-align' | 'ruby-merge' | 'ruby-overhang'): string {
+    for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
+      const v = this.pg(e as Element)[prop]?.trim().toLowerCase().replace(/\s+/g, ' ');
+      if (!v || v === 'inherit' || v === 'unset') continue;
+      return RUBY_VALUES[prop].test(v) ? v : '';
+    }
+    return '';
+  }
+
   private miss(what: string) {
     this.report.unsupported[what] = (this.report.unsupported[what] ?? 0) + 1;
   }
@@ -2490,16 +2539,38 @@ class HtmlImporter {
       const v = c('text-decoration-color');
       return v === c('color') ? (pcol ?? cssColor(c('color'))) : cssColor(v);
     };
-    if (deco && deco !== 'none' && (!p || deco !== (p('text-decoration-line') || p('text-decoration')) || c('text-decoration-color') !== p('text-decoration-color'))) {
+    // 線の種類 (text-decoration-style。Text Decoration 3 §2.2)・太さ (text-decoration-thickness。同 4 §2.4)・下線のずらし
+    // (text-underline-offset。同 4 §2.8) は、線を指定したこの要素の値を、この要素から出る線に付ける。初期値 (solid・auto・auto) では何も付けない。
+    // 百分率は、この要素の 1em に対する割合
+    const decoShape = (cc: (n: string) => string) => {
+      const pct = /%/.test(`${cc('text-decoration-thickness')}${cc('text-underline-offset')}`) ? cc('font-size') : '';
+      return `${cc('text-decoration-style') || 'solid'}|${cc('text-decoration-thickness') || 'auto'}|${cc('text-underline-offset') || 'auto'}|${pct}`;
+    };
+    const decoExtras = (lines: string): Pick<NonNullable<TextStyle['textDecoration']>, 'styles' | 'thickness' | 'underlineOffset'> => {
+      const keys = [...(lines.includes('underline') ? ['underline' as const] : []), ...(lines.includes('overline') ? ['overline' as const] : []), ...(lines.includes('line-through') ? ['lineThrough' as const] : [])];
+      const each = <T,>(v: T) => Object.fromEntries(keys.map((k) => [k, v]));
+      const em = (v: string) => (/^[+-]?[\d.]+%$/.test(v) ? ((cssLen(c('font-size')) ?? 0) * parseFloat(v)) / 100 : cssLen(v));
+      const st = c('text-decoration-style');
+      const tv = c('text-decoration-thickness');
+      const th = tv === 'from-font' ? ('from-font' as const) : tv && tv !== 'auto' ? em(tv) : undefined;
+      const ov = c('text-underline-offset');
+      const off = lines.includes('underline') && ov && ov !== 'auto' ? em(ov) : undefined;
+      return {
+        ...(/^(double|dotted|dashed|wavy)$/.test(st) && keys.length ? { styles: each(st as TextDecorationStyle) } : {}),
+        ...(th !== undefined && (th === 'from-font' || th >= 0) && keys.length ? { thickness: each(th) } : {}),
+        ...(off !== undefined ? { underlineOffset: off } : {}),
+      };
+    };
+    if (deco && deco !== 'none' && (!p || deco !== (p('text-decoration-line') || p('text-decoration')) || c('text-decoration-color') !== p('text-decoration-color') || decoShape(c) !== decoShape(p))) {
       const dc = decoColor();
       const colors = dc ? { ...(deco.includes('underline') ? { underline: dc } : {}), ...(deco.includes('overline') ? { overline: dc } : {}), ...(deco.includes('line-through') ? { lineThrough: dc } : {}) } : undefined;
-      s.textDecoration = { ...(deco.includes('underline') ? { underline: true } : {}), ...(deco.includes('overline') ? { overline: true } : {}), ...(deco.includes('line-through') ? { lineThrough: true } : {}), ...(colors ? { colors } : {}) };
+      s.textDecoration = { ...(deco.includes('underline') ? { underline: true } : {}), ...(deco.includes('overline') ? { overline: true } : {}), ...(deco.includes('line-through') ? { lineThrough: true } : {}), ...(colors ? { colors } : {}), ...decoExtras(deco) };
     }
     // 互換モード: 祖先の飾り線は表に伝えない (表に自分の飾り線があれば、それだけ。Quirks Mode §3.11)
     if (!pseudo && isQuirksDoc(el.ownerDocument as Document | null) && /^(inline-)?table$/.test(c('display'))) {
       const own = deco && deco !== 'none' ? deco : '';
       const dc = own ? decoColor() : undefined;
-      s.textDecoration = { underline: own.includes('underline'), overline: own.includes('overline'), lineThrough: own.includes('line-through'), ...(dc ? { colors: { underline: dc, overline: dc, lineThrough: dc } } : {}) };
+      s.textDecoration = { underline: own.includes('underline'), overline: own.includes('overline'), lineThrough: own.includes('line-through'), ...(dc ? { colors: { underline: dc, overline: dc, lineThrough: dc } } : {}), ...(own ? decoExtras(own) : {}) };
     }
     // hyphens: auto だけが自動の分綴。子の none・manual で打ち消せる (Text 3 §5.3)
     if (diff('hyphens')) s.hyphenate = c('hyphens') === 'auto';
@@ -2520,9 +2591,9 @@ class HtmlImporter {
       if (sp.hangFirst !== (ps?.hangFirst ?? false)) s.hangFirst = sp.hangFirst;
     }
     // 字形を差し替える OpenType の機能: font-variant-numeric (oldstyle-nums など)・font-variant-position (super・sub)・
-    // font-variant-ligatures (discretionary・historical・contextual) と font-feature-settings。
+    // font-variant-ligatures (discretionary・historical・contextual)・font-variant-east-asian と font-feature-settings。
     // 字は 1 字ずつ字形を引くので、字の並びで決まる機能 (frac の分数・ordn の序数・calt) は書体が 1 字で差し替えるものだけ効く
-    if (diff('font-variant-numeric') || diff('font-variant-position') || diff('font-variant-ligatures') || diff('font-feature-settings')) {
+    if (diff('font-variant-numeric') || diff('font-variant-position') || diff('font-variant-ligatures') || diff('font-variant-east-asian') || diff('font-feature-settings')) {
       const NUM: Record<string, string> = {
         'oldstyle-nums': 'onum',
         'lining-nums': 'lnum',
@@ -2539,6 +2610,10 @@ class HtmlImporter {
       else if (pos === 'sub') feats.push('subs');
       const LIG: Record<string, string> = { 'discretionary-ligatures': 'dlig', 'historical-ligatures': 'hlig', contextual: 'calt' };
       for (const v of c('font-variant-ligatures').split(/\s+/)) if (LIG[v] && !feats.includes(LIG[v])) feats.push(LIG[v]);
+      // font-variant-east-asian (Fonts 4 §6.10): 字形の版 (JIS78・83・90・2004、簡体・繁体)・字の幅 (全角・プロポーショナル)・ルビ用の字形。
+      // 値ごとに決まった OpenType の機能を使う。書体にその機能が無ければ、何も変わらない (§7.2: 作り出さない)
+      const EA: Record<string, string> = { jis78: 'jp78', jis83: 'jp83', jis90: 'jp90', jis04: 'jp04', simplified: 'smpl', traditional: 'trad', 'full-width': 'fwid', 'proportional-width': 'pwid', ruby: 'ruby' };
+      for (const v of c('font-variant-east-asian').split(/\s+/)) if (EA[v] && !feats.includes(EA[v])) feats.push(EA[v]);
       for (const m of c('font-feature-settings').matchAll(/["']([a-z0-9]{4})["']\s*(on|off|\d+)?/gi)) {
         const on = m[2] === undefined || m[2] === 'on' || parseInt(m[2], 10) > 0;
         if (on && !feats.includes(m[1])) feats.push(m[1]);
@@ -4021,7 +4096,8 @@ class HtmlImporter {
       return [img];
     }
     // 文書の中に直接書いた <svg>: 単独の SVG 文書 (data URI) にして、<img> と同じ画像として組む
-    if (isInlineSvg(el)) return [this.image(el, inlineSvgDataUri(el))];
+    // 文書の CSS の fill・stroke・color など (と、外から継承した値) は、要素の style 属性に書き足して渡す (SVG 2 §6.4・§6.6)
+    if (isInlineSvg(el)) return [this.image(el, inlineSvgDataUri(el, this.src.svgStyle ? (e, root) => this.src.svgStyle!(e, root) : undefined))];
     // 数式 (MathML の math 要素): 数式用の書体があれば、組んだ図形にする
     if (this.opts.mathFont && this.isMath(el)) return [this.mathFormula(el)];
     if (name === 'ruby') {
@@ -4031,22 +4107,27 @@ class HtmlImporter {
       const isEl = (n: Node, nm: string) => n.nodeType === 1 && (n as Element).localName === nm;
       const txt = (n: Node) => n.textContent ?? '';
       const out: LInlineLevel[] = [];
-      // rtEl・underEl: 注釈の要素 (rt・rtc。ルビの字の色を取る)
-      const pairs: Array<{ base: string; rt: string; under?: string; rtEl?: Node; underEl?: Node }> = [];
+      // rtEl・underEl: 注釈の要素 (rt・rtc。ルビの字の色と ruby-align を取る)。con・underCon: 段の入れ物が rtc のとき、その要素
+      // (ruby-position・ruby-overhang を取る。無名の入れ物は ruby から継承する)。baseEl: 親文字の要素 (rb)。
+      // merged・underMerged: ruby-merge: merge でまとめた段 (ruby-align は入れ物の値を使う。CSS Ruby 1 §4.3)
+      const pairs: Array<{ base: string; rt: string; under?: string; rtEl?: Node; underEl?: Node; con?: Element; underCon?: Element; baseEl?: Element; merged?: boolean; underMerged?: boolean }> = [];
+      const conOf = (l: { con?: Element } | undefined) => l?.con ?? el;
       // rtc (ルビの段の入れ物): rt の後の rtc は 2 段目 (ruby-position: alternate で下側。Ruby 1 §4.1)。
       // それまでの組をまとめた親文字に掛ける (rt の無い最初の rtc は 1 段目)
       if (kids.some((n) => isEl(n, 'rb'))) {
         // rb を使う書き方は、CSS Ruby 1 §2.2 の無名の箱の作り方で組を作る: ruby の直下の、続いた字の並び (rb・rt・rtc の外) は
         // 無名の親文字にして、rb と同じ親文字の段に入れる (空白だけなら捨てる)。続いた rt は 1 つの段 (無名の段の入れ物)、rtc は 1 段。
         // 親文字の段と、その後の段が 1 つの区切り (ruby segment。§2.3.1)
-        type Level = { anon: boolean; items: string[]; nodes: Node[] };
-        const segs: Array<{ bases: string[]; levels: Level[] }> = [];
-        let seg: { bases: string[]; levels: Level[] } | undefined;
+        type Level = { anon: boolean; items: string[]; nodes: Node[]; con?: Element };
+        type Seg = { bases: string[]; baseEls: Array<Element | undefined>; levels: Level[] };
+        const segs: Seg[] = [];
+        let seg: Seg | undefined;
         let rtRun: Level | undefined;
         let text = '';
-        const addBase = (b: string) => {
-          if (!seg || seg.levels.length) segs.push((seg = { bases: [], levels: [] }));
+        const addBase = (b: string, rb?: Element) => {
+          if (!seg || seg.levels.length) segs.push((seg = { bases: [], baseEls: [], levels: [] }));
           seg.bases.push(b);
+          seg.baseEls.push(rb);
           rtRun = undefined;
         };
         const flushText = () => {
@@ -4056,10 +4137,10 @@ class HtmlImporter {
         for (const n of kids) {
           if (isEl(n, 'rb')) {
             flushText();
-            addBase(txt(n));
+            addBase(txt(n), n as Element);
           } else if (isEl(n, 'rt') || isEl(n, 'rtc')) {
             flushText();
-            if (!seg) segs.push((seg = { bases: [], levels: [] }));
+            if (!seg) segs.push((seg = { bases: [], baseEls: [], levels: [] }));
             if (isEl(n, 'rt')) {
               if (!rtRun) seg.levels.push((rtRun = { anon: false, items: [], nodes: [] }));
               rtRun.items.push(txt(n));
@@ -4067,7 +4148,7 @@ class HtmlImporter {
             } else {
               // rtc の中の rt はそれぞれの注釈、rt の無い rtc は 1 つの無名の注釈 (区切りの親文字すべてに掛かる。§2.3.2)
               const rts = Array.from((n as Element).childNodes).filter((k) => isEl(k, 'rt'));
-              seg.levels.push(rts.length ? { anon: false, items: rts.map(txt), nodes: rts } : { anon: true, items: [txt(n)], nodes: [n] });
+              seg.levels.push(rts.length ? { anon: false, items: rts.map(txt), nodes: rts, con: n as Element } : { anon: true, items: [txt(n)], nodes: [n], con: n as Element });
               rtRun = undefined;
             }
           } else if (n.nodeType === 3 || n.nodeType === 4 || n.nodeType === 1) text += txt(n);
@@ -4079,8 +4160,21 @@ class HtmlImporter {
           const [l1, l2] = sg.levels;
           const nb = sg.bases.length;
           const per = (l: Level | undefined, k: number) => (!l ? '' : k === nb - 1 ? l.items.slice(k).join('') : (l.items[k] ?? ''));
-          if (!nb || l1?.anon || l2?.anon) pairs.push({ base: sg.bases.join(''), rt: l1?.items.join('') ?? '', rtEl: l1?.nodes[0], ...(l2 ? { under: l2.items.join(''), underEl: l2.nodes[0] } : {}) });
-          else sg.bases.forEach((b, k) => pairs.push({ base: b, rt: per(l1, k), rtEl: l1?.nodes[Math.min(k, l1.nodes.length - 1)], ...(l2 ? { under: per(l2, k), underEl: l2.nodes[Math.min(k, l2.nodes.length - 1)] } : {}) }));
+          // ruby-merge: merge (CSS Ruby 1 §4.2): 区切りの中の注釈をつなげて、親文字すべてに掛かる 1 つの注釈にする (グループルビ)。
+          // 段の入れ物 (rtc。無名の入れ物は ruby) の値。2 つの段の片方だけが merge で、もう片方が親文字ごとの注釈のときは、
+          // 組を分けたまま (separate) にして、未対応として知らせる
+          const mergeOf = (l: Level | undefined) => !!l && !l.anon && nb > 1 && this.rubyDecl(conOf(l), 'ruby-merge') === 'merge';
+          let [m1, m2] = [mergeOf(l1), mergeOf(l2)];
+          if ((m1 && l2 && !l2.anon && !m2) || (m2 && l1 && !l1.anon && !m1)) {
+            this.miss('ruby-merge: merge (片方の段だけ)');
+            m1 = m2 = false;
+          }
+          if (!nb || l1?.anon || l2?.anon || m1 || m2)
+            pairs.push({ base: sg.bases.join(''), rt: l1?.items.join('') ?? '', rtEl: l1?.nodes[0], con: l1?.con, baseEl: sg.baseEls[0], ...(m1 ? { merged: true } : {}), ...(l2 ? { under: l2.items.join(''), underEl: l2.nodes[0], underCon: l2.con, ...(m2 ? { underMerged: true } : {}) } : {}) });
+          else
+            sg.bases.forEach((b, k) =>
+              pairs.push({ base: b, rt: per(l1, k), rtEl: l1?.nodes[Math.min(k, l1.nodes.length - 1)], con: l1?.con, baseEl: sg.baseEls[k], ...(l2 ? { under: per(l2, k), underEl: l2.nodes[Math.min(k, l2.nodes.length - 1)], underCon: l2.con } : {}) }),
+            );
         }
       } else {
         let base = '';
@@ -4089,11 +4183,11 @@ class HtmlImporter {
           if (isEl(n, 'rtc') && !base.trim() && sinceRtc > 0) {
             // 2 段目: 直前の rtc の後の組をまとめ、下側のルビにする
             const group = pairs.splice(pairs.length - sinceRtc, sinceRtc);
-            pairs.push({ base: group.map((g) => g.base).join(''), rt: group.map((g) => g.rt).join(''), rtEl: group[0]?.rtEl, under: txt(n), underEl: n });
+            pairs.push({ base: group.map((g) => g.base).join(''), rt: group.map((g) => g.rt).join(''), rtEl: group[0]?.rtEl, con: group[0]?.con, under: txt(n), underEl: n, underCon: n as Element });
             sinceRtc = 0;
             base = '';
           } else if (isEl(n, 'rt') || isEl(n, 'rtc')) {
-            pairs.push({ base, rt: txt(n), rtEl: n });
+            pairs.push({ base, rt: txt(n), rtEl: n, ...(isEl(n, 'rtc') ? { con: n as Element } : {}) });
             sinceRtc++;
             base = '';
           } else base += txt(n);
@@ -4125,6 +4219,29 @@ class HtmlImporter {
         this.report.counts.rubies++;
         const rc = t ? colorOf(pr.rtEl) : undefined;
         const uc = u ? colorOf(pr.underEl) : undefined;
+        // ruby-position (CSS Ruby 1 §4.1。段の入れ物の値): 1 段目は under を含めば下側、ほかは上側 (alternate だけ・over。
+        // inter-character は、縦書きでは over と同じ。横書きの inter-character は未対応で、over として組んで知らせる)。
+        // 2 段目は、alternate (初期値) なら 1 段目の逆の側。over・under を明示して 1 段目と同じ側になるとき (外へ重ねる) は未対応で、逆の側に置いて知らせる
+        const posOf = (c: Element) => {
+          const v = this.rubyDecl(c, 'ruby-position');
+          if (v === 'inter-character' && !/^(vertical|sideways)/.test(this.cs(el)('writing-mode'))) this.miss('ruby-position: inter-character (横書き)');
+          return v;
+        };
+        const isUnder = (v: string) => /\bunder\b/.test(v);
+        const p1 = t ? posOf(pr.con ?? el) : '';
+        const under1 = isUnder(p1);
+        if (t && u) {
+          const p2 = posOf(pr.underCon ?? el);
+          if (p2 && !/\balternate\b/.test(p2) && isUnder(p2) === under1) this.miss('ruby-position (同じ側の 2 段)');
+        }
+        // ruby-overhang (§5.1。段の入れ物の値): auto を明示したら前後の字に掛け、none なら掛けない。指定が無ければ、これまでどおり掛けない
+        // (初期値 auto は、掛けるかどうかを処理系に任せる)
+        const oh = this.rubyDecl(pr.con ?? el, 'ruby-overhang');
+        // ruby-align (§4.3。親文字・注釈の箱ごとの値。まとめた注釈 (ruby-merge: merge) は入れ物の値)
+        const alignOf = (n: Node | undefined) => (n && n.nodeType === 1 ? (this.rubyDecl(n as Element, 'ruby-align') as RubyAlign | '') : '');
+        const a1 = t ? alignOf(pr.merged ? (pr.con ?? el) : (pr.rtEl ?? el)) : '';
+        const a2 = u ? alignOf(pr.underMerged ? (pr.underCon ?? el) : (pr.underEl ?? el)) : '';
+        const ab = alignOf(pr.baseEl ?? el);
         out.push({
           type: 'ruby',
           baseText: b,
@@ -4133,6 +4250,11 @@ class HtmlImporter {
           ...(scale && Math.abs(scale - 0.5) > 1e-6 ? { rubyScale: scale } : {}),
           ...(rc ? { rubyColor: rc } : {}),
           ...(uc ? { rubyColorUnder: uc } : {}),
+          ...(under1 ? { rubyPosition: 'under' } : {}),
+          ...(a1 ? { rubyAlign: a1 } : {}),
+          ...(a2 ? { rubyAlignUnder: a2 } : {}),
+          ...(ab ? { rubyAlignBase: ab } : {}),
+          ...(oh ? { rubyOverhang: oh === 'auto' } : {}),
         } as LRuby);
       }
       return out;
@@ -5089,7 +5211,8 @@ class HtmlImporter {
     this.bodyEl = bodyEl;
     const rootFs = cssLen(this.cs(html)('font-size')) ?? 12;
     // 本文 (body) の書式は、ページシーケンスの書式にする
-    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
+    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
     // 互換モード・限定互換モードの行の高さ (Quirks Mode Standard §3.3・§3.4)
     if (documentModeOf(doc) !== 'no-quirks') Object.assign(rootStyle, { noStrut: true, lineHeightQuirk: true });
     // 和欧間アキの既定 (CSS Text 4 §8.4 の初期値 normal)。指定のある要素は、その指定 (spacing) で上書きする

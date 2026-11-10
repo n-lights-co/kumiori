@@ -22,6 +22,13 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `width` と `max-width` の両方がある `display: block` の画像で、包む箱を画像の幅にした
   - 名前付きページ: 流れの外の箱 (絶対配置・回り込みなど) だけの最初のページを作らない (CSS Page 3 §8.1)
   - 印刷に関わらないプロパティ (`cursor`・`transition-*` など) を、未対応の CSS の警告に出さない
+  - ルビの配置: `ruby-position` (`under` で親文字の下、縦書きは左。`alternate` との組)、`ruby-align` (`start`・`center`・`space-between`・`space-around`)、`ruby-overhang` (`auto` を明示すると前後の仮名・約物に掛ける)、`ruby-merge: merge` (グループルビ) に対応。指定の無いルビの置く側・掛け方は変わらない
+  - ルビの字の配り方の既定を、`ruby-align` の初期値 `space-around` (CSS Ruby 1 §4.3) にした。**欧文・注音字母のルビの既定の並べ方が変わる**: 字の間を空けずに、親文字の中央にそろえる (前は字ごとに間を空けていた)。和文 (漢字・仮名) のルビと親文字は前と同じ。XSL-FO のルビは変わらない
+  - `font-variant-east-asian` に対応 (`jis78`・`jis83`・`jis90`・`jis04`・`simplified`・`traditional`・`full-width`・`proportional-width`・`ruby`。フォントの OpenType の機能で字形と字の幅を選ぶ。一括指定の `font-variant` からも読む)
+  - 下線・上線・取り消し線の線の種類 (`text-decoration-style` の `double`・`dotted`・`dashed`・`wavy`)、太さ (`text-decoration-thickness`)、下線をずらす量 (`text-underline-offset`) に対応。一括指定の `text-decoration` に線の種類と太さを書ける。`title` のある `abbr` の下線は、ブラウザと同じ点線になる (これまでは実線)
+  - 圏点の色 (`text-emphasis-color`) と付ける側 (`text-emphasis-position`。横書きの `under`、縦書きの `left`) に対応。一括指定の `text-emphasis` に色を書ける
+  - 文書の CSS の `fill`・`stroke`・`color` など (`stroke-width`・`fill-opacity`・`stroke-opacity`・`opacity`・`fill-rule`・線の端・角・破線) が、文書の中にじかに書いた `<svg>` に効く。`currentColor` は、`<svg>` の外から継承した `color` になる (`svg { fill: currentColor }` と `.icon { color: red }` でアイコンに色が付く)。SVG の画像でも、`color` の属性と `currentColor`、`rgba()` の色の不透明度を読む
+  - 色の関数 `hwb()`・`lab()`・`lch()`・`oklab()`・`oklch()`・`color()` (CSS Color 4) と `color-mix()` (CSS Color 5) に対応。出力は sRGB で、sRGB の色域の外の色は、明るさと色相を保って彩度を下げて色域に収める (CSS Color 4 §14.2)。これまでは、これらの色を書いた宣言は捨てていた (色は初期値や継承した値になっていた)
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)
@@ -60,6 +67,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - EPUB: 章の `html`・`body` の属性を残す (`<html class="vrtl">` の縦書きなど)。単引用符の `container.xml`。`pre` の先頭の改行
   - CSS: HTML の属性による指定は、`@layer` の中の規則より弱い (CSS Cascade 5 §6.5)。ASCII でない名前のカスタム プロパティとカウンター (`var(--色)`・`counter(章)`)。`:has()` の相対セレクタの並び (`:has(> li, > p)`) と範囲 (Selectors 4 §4.5)。読めない `background` の一括指定・不正な色の成分・無効な `var()` (CSS Variables 1 §3.1)・循環する変数は、宣言を無効にする。`calc()` の入れ子の括弧を含む `@page` の `margin`。止まりが 1 つのグラデーション。`font-weight: 550.5`・`line-height: +1.5`・`font: 550.5 12px serif`・`columns: +3` などの数の書き方。`@supports` は、読まないプロパティ・値 (`transform`・`opacity`・`position: sticky` など) に偽を返す (CSS Conditional 3 §6.1)。用紙の大きさに依る `@media` (width・height・orientation など) の中の `@page` の `size` は読まない (CSS Paged Media 3 §7.1)。`@page` の中の `var(--余白)`、`@page 表紙`、`string(題)`、`running(柱)` などの ASCII でない名前
   - 行組み: 異体字セレクタ (IVS・SVS) を基底の字と 1 つの単位にし、書体の異体字の並びの字形を選ぶ (OpenType の cmap の Format 14 の非既定の表も引く。PDF と Canvas の輪郭描画)。`word-break: break-all` でも結合文字の前で分けない。字の単位を書記素クラスタ (UAX #29 の拡張書記素クラスタ。Unicode 18.0.0) にした: 基底の字 + 結合文字 (e + U+0301、か + U+3099)・絵文字の並び (肌の色・ZWJ・国旗・キーキャップ・タグ) は 1 つの字として、1 つの書体でまとめて組み (書体の GSUB・GPOS で、結合文字が基底の字に載る。CSS Fonts 4 §5.3)、途中に改行 (`overflow-wrap: anywhere` を含む)・字間・両端揃えの空きを入れない。拡張 B 以降の漢字・〇・〆 と欧字の間にも和欧間のアキを入れる (CSS Text 4 §8.4.1)
+  - タイ語・デーヴァナーガリー (ヒンディー語など)・韓国語: デーヴァナーガリーが組めなかった (fontkit の整形が落ちていた) のを直し、タイ文字の SARA AM・声調記号の字形と字の組の詰めを書体のとおりにした。空白の無いタイ語の文を、辞書 (実行環境の `Intl.Segmenter`) の語の境目で折り返す (語の境目は実行環境で変わりうる)。ハングルの語の間の空白を、書体が文脈で決める幅にした。PDF で、字形の並びが字の並びと対応しない字に元の字の並び (ActualText) を付けた (文字の取り出し)。これらの文字の書体は、既定の書体には無いので指定が要る
   - XSL-FO: `fo:page-sequence`・`fo:flow` の id を引く `fo:page-number-citation`・`-last` (「全 N ページ」の書き方) を解決する。`fo:page-sequence` に書いた継承される特性 (`text-transform`・`font-family` など) を子に伝える。表のセルの中の `start-indent`・`end-indent` (セルは参照領域。§5.3.2)。縦書き・回転した本文の百分率の基準。`fo:footnote`・`fo:footnote-body`・`fo:page-number` に書いた字の書式。`background-position` の 1 値・縦のキーワード先頭。`keep-*` の成分。`leader-pattern="dots"` の `rule-style="none"`。空の `number-columns-spanned`。数式の書体が無いときの、全体が 1 つの `mtable` の数式の下端揃えは、互換モードのときだけ。`fo:bookmark` の `external-destination` を、PDF のしおりの動作 (URI・GoToR・Launch) として書き出す
   - 数式: 部品から組み立てて伸ばす字 (大きな括弧・根号・横の波括弧) が、目標より大きくなっていたのを直した (部品の重なりの上限を、つなぐ端のコネクタの長さで決める。OpenType の MATH 表の定義。MathML Core §5.3.1 の文面とは向きが逆)
   - 画像: SVG の円弧のフラグを詰めて書いた path (`a1 1 0 01.71.29`。SVG 2 §9.3.9)。動く WebP は最初のコマを描く。CGM の大きさ (64 ビットの実数・32 ビットの整数の精度)。枠が逆向きの EMF
@@ -73,7 +81,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `engines` の Node を 20.19.0 以上にした (実行時の依存が求める版)
   - Node のコマンドの出力 (`dist-cli`) に、画面用の `public/` の中身 (favicon など) を入れない
 - **`@supports`**: 読めない値の宣言 (`display: foo`・`color: notacolor`・`width: 10` など。まだ対応していない `color-mix()`・`lab()` も) に偽を返す (CSS Conditional 3 §6.1)。未対応のプロパティ・値には、上の「結果の誤りの修正」のとおり偽を返す
-- **未対応の CSS の警告**: `text-decoration-thickness`・`text-underline-offset`・`text-decoration-skip-ink`・`text-wrap-mode`・`text-wrap-style`・`hyphenate-limit-zone`・`hyphenate-limit-lines`・`hyphenate-limit-last` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
+- **未対応の CSS の警告**: `text-decoration-skip-ink`・`text-wrap-mode`・`text-wrap-style`・`hyphenate-limit-zone`・`hyphenate-limit-lines`・`hyphenate-limit-last` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
 - **開発**: `scripts/compare-pdf.mjs --html` が、いまの画面で動くようにした (設定の引き出しを開いてから選ぶ)。テストが機械のロケール・機械に入っている書体・実行時間に頼らないようにした。テストの書体の取得を 1 か所にまとめ、並列でも壊れないようにした
 - **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
 - **公開**: 対応仕様説明書の PDF (日本語版と英語版の 4 冊) を、版ごとに GitHub のリリースに付ける。奥付の「組版」の欄は、組んだ Kumiori の版にする
@@ -82,6 +90,13 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - CSS GCPM 3 の付録 B から写した規則の表示を足した (10 節)
   - 出力する JS のファイルの先頭に、Kumiori の版・ライセンスと `THIRD_PARTY_NOTICES.md` の場所を書いた注釈を付ける (CDN からファイルを 1 つだけ読む場合のため)
   - 対応仕様説明書の PDF に埋め込む書体とそのライセンスを、説明書の README に書いた
+- **XSL-FO の性質** (読んで組版へ渡すようにしたもの。`--compat` によらない):
+  - 一括指定の `font`・`background`・`page-break-before`・`page-break-after`・`page-break-inside`・`size` と、寸法の上限・下限の `min-height`・`min-width`・`max-width` (表の行は `max-height` も) を読む (XSL 1.1 §7.31・§7.15)。これまでは無視していたので、`page-break-before="always"` などの改ページが効いていなかった
+  - `fo:block` の `clear` (`start`・`end`・`both`・`left`・`right`) を読み、その側の先の `fo:float` の下からブロックを始める (XSL 1.1 §7.19.1)
+  - `fo:folio-prefix`・`fo:folio-suffix` の中身を、ページ番号 (`fo:page-number`・`fo:page-number-citation`・`fo:page-number-citation-last`) の前後に付ける (「A-12」のような章ごとのノンブル。XSL 1.1 §6.6.13・§6.6.14)
+  - `font-variant="small-caps"` (スモールキャップ) と `word-spacing` (語の間の空白に足す長さ) を読む (XSL 1.1 §7.9.8・§7.17.8)
+  - `glyph-orientation-vertical` の `auto`・`0deg` (すべての字を立てる)・`90deg` (すべての字を横に倒す) を読む (XSL 1.1 §7.29.3)。180・270 度と `glyph-orientation-horizontal` の 0 度以外は、読まずに報告する
+  - `relative-position="relative"` (横書きの `fo:block` をずらして描く)、`visibility` の `hidden`・`collapse` (場所を残して描かない)、絶対配置の `fo:block-container` の負の `z-index` (本文の背面に描く) を読む (XSL 1.1 §7.13.5・§7.30.17・§7.30.18)
 - **欧文 (ベトナム語・ギリシャ文字・キリル文字)**: ラテン・ギリシャ・キリル文字の分解形 (NFD。`e` + U+0323 + U+0302、多調のギリシャ語など) を、書体が合成済みの字を持てばその字で組む (合成済みの字と同じ見た目・同じ幅。CSS Fonts 4 §5.3)。Latin Extended Additional (U+1E00〜1EFF。`ế`・`ệ`・`ṃ` など) を、語のほかの字と同じ欧文の書体で組み、和欧間のアキ・字の組の詰めの対象にする。ギリシャ文字・キリル文字の字の組を書体の kern で詰める
 - **右から左の文字 (アラビア文字・ヘブライ文字)**: アラビア文字の結合文字を UTR #53 の順で重ねる (シャッダの上にファトハが載る)。ゼロ幅非接合子 (U+200C) を語の中で幅 0 にし、単独の LRM・RLM・WJ などの描かない字を幅 0 にする (空白 1 つ分の幅になっていた)。縦書きの中のアラビア文字を、横倒しの語としてつなげて組む (CSS Writing Modes 3 §5.1.1)。PDF から字を読む順で取り出せるようにした (語・クラスタごとの ActualText。字が入れ替わる・別の語になるのを直した)。Canvas の輪郭の描画で、右から左のクラスタの記号の位置を直した
 
