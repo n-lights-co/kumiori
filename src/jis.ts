@@ -169,10 +169,20 @@ export const isClosingPunct = (ch: string) => CLOSING_PUNCT.has(ch);
 export const isOpeningPunct = (ch: string) => OPENING_PUNCT.has(ch);
 export const isMiddlePunct = (ch: string) => MIDDLE_PUNCT.has(ch);
 
-/** 和文 (仮名・漢字)。約物は含まない */
+/**
+ * 和文 (仮名・漢字)。約物は含まない。
+ * 範囲は CSS Text 4 §8.4.1 (text-autospace) の ideographs の定義による: U+3041〜30FF (約物 ゠・ を除く)・CJK の筆画 (U+31C0〜31EF)・
+ * 片仮名の拡張 (U+31F0〜31FF)・漢字の用字の字。漢字の用字は Script=Han (拡張 B 以降の漢字・互換漢字・部首・々・〇・蘇州数字を含む) と、
+ * 〆 (U+3006。Script は Common で、Script_Extensions が Han) で見る。Script_Extensions が Han の約物 (、。「」など) は入れない
+ * (この定義は見直し中と仕様にあり、約物には別のアキの決まりがある)
+ */
+const HAN_SCRIPT = /^\p{Script=Han}$/u;
 export function isIdeographicOrKana(ch: string): boolean {
   const cp = ch.codePointAt(0) ?? 0;
-  return (cp >= 0x3041 && cp <= 0x30ff && ch !== '・' && ch !== '゠') || (cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff) || ch === '々';
+  if (cp < 0x2e80) return false;
+  if ((cp >= 0x3041 && cp <= 0x30ff && ch !== '・' && ch !== '゠') || (cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff)) return true;
+  if (cp === 0x3006 || (cp >= 0x31c0 && cp <= 0x31ff)) return true;
+  return HAN_SCRIPT.test(String.fromCodePoint(cp));
 }
 /** 欧文の文字・数字 (和欧間アキの対象) */
 export const isLatinAlnum = (ch: string) => /^[A-Za-z0-9À-ÖØ-öø-ɏ]$/.test(ch);

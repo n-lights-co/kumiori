@@ -87,3 +87,54 @@ describe(':has() の相対セレクタ (CSS-04。Selectors 4 §4.5・§3.4)', ()
     expect(parseSelectorList('a:has(> )')).toEqual([]);
   });
 });
+
+describe('読めない background の一括指定 (CSS-07。Backgrounds 3 §2.10・CSS 2.1 §4.2)', () => {
+  it('どの種類にも当たらない語のある宣言は捨て、前の宣言を消さない', () => {
+    expect(styleOf('<p id="a">x</p>', '#a { background: red; background: -webkit-linear-gradient(top, red, blue) }')('background-color')).toBe(RED);
+    expect(styleOf('<p id="a">x</p>', 'p { background: red } #a { background: foo(1) }')('background-color')).toBe(RED);
+    expect(styleOf('<p id="a">x</p>', 'p { background: url(a.png) } #a { background: bogus-word }')('background-image')).toBe('url("a.png")');
+    expect(expand('background', '-webkit-linear-gradient(top, red, blue)')).toEqual([]);
+    // 色は最後の層だけ。大きさの無い / ・空の層も読めない
+    expect(expand('background', 'red url(a.png), url(b.png)')).toEqual([]);
+    expect(expand('background', 'url(a.png) left /')).toEqual([]);
+    expect(expand('background', 'url(a.png),')).toEqual([]);
+  });
+  it('読める一括指定は、今までどおりに分ける (固定・箱の語は読み飛ばす)', () => {
+    const st = styleOf('<p id="a">x</p>', '#a { background: url(a.png) no-repeat 10px 50% / 20px auto fixed padding-box content-box, linear-gradient(red, blue) #00f }');
+    expect(st('background-color')).toBe('rgb(0, 0, 255)');
+    expect(st('background-image')).toBe('url("a.png")');
+    expect(st('background-repeat')).toBe('no-repeat');
+    expect(st('background-position')).toBe('10px 50%');
+    expect(st('background-size')).toBe('20px auto');
+    expect(styleOf('<p id="a">x</p>', '#a { background: none }')('background-color')).toBe('rgba(0, 0, 0, 0)');
+    expect(styleOf('<p id="a">x</p>', 'p { background: red } #a { background: linear-gradient(red, blue) }')('background-color')).toBe('rgba(0, 0, 0, 0)');
+  });
+});
+
+describe('不正な成分・範囲の外の成分の色 (CSS-08。Color 4 §4.2・§5.1・§7)', () => {
+  it('数として読めない成分のある色は、色として読めない (宣言を捨てる)', () => {
+    expect(parseColor('rgb(1,2,3,foo)')).toBeUndefined();
+    expect(parseColor('rgb(1 2 3 / x%)')).toBeUndefined();
+    expect(parseColor('rgb(1 2 3 4 5)')).toBeUndefined();
+    expect(parseColor('rgb(1px 2 3)')).toBeUndefined();
+    expect(parseColor('hsl(0 a% 50%)')).toBeUndefined();
+    expect(parseColor('hsl(0 100% foo)')).toBeUndefined();
+    expect(styleOf('<p id="a">x</p>', '#a { color: red; color: rgb(1,2,3,foo) }')('color')).toBe(RED);
+    expect(styleOf('<p id="a">x</p>', '#a { color: red; color: hsl(0 100% bar) }')('color')).toBe(RED);
+  });
+  it('範囲の外の成分は、範囲に丸める', () => {
+    expect(parseColor('hsl(0 100% 150%)')).toEqual([255, 255, 255, 1]);
+    expect(parseColor('hsl(0 100% -50%)')).toEqual([0, 0, 0, 1]);
+    expect(parseColor('hsl(120 -50% 50%)')).toEqual([128, 128, 128, 1]);
+    expect(parseColor('hsl(0 200% 50%)')).toEqual([255, 0, 0, 1]);
+    expect(parseColor('rgb(300 -5 0 / 150%)')).toEqual([255, 0, 0, 1]);
+    expect(parseColor('rgba(1, 2, 3, -0.5)')).toEqual([1, 2, 3, 0]);
+    expect(parseColor('hsla(120, 100%, 25%, 2)')).toEqual([0, 128, 0, 1]);
+  });
+  it('読める色は今までどおり', () => {
+    expect(parseColor('rgb(10 20 30 / 50%)')).toEqual([10, 20, 30, 0.5]);
+    expect(parseColor('rgb(100%, 0%, 50%)')).toEqual([255, 0, 128, 1]);
+    expect(parseColor('hsl(0.5turn 100% 50% / .25)')).toEqual([0, 255, 255, 0.25]);
+    expect(parseColor('rgba(1e1, 2, 3, +.5)')).toEqual([10, 2, 3, 0.5]);
+  });
+});

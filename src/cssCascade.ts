@@ -752,32 +752,57 @@ const borderShorthand: Expander = (prop, v, global, ah) => {
   return sides.flatMap((s) => [[pre(s) + 'width', w], [pre(s) + 'style', st], [pre(s) + 'color', col]] as Longhands);
 };
 
+/**
+ * background の一括指定 (Backgrounds 3 §2.10: <bg-layer># , <final-bg-layer>)。使うのは最初の層の画像・繰り返し・位置・大きさと、最後の層の色。
+ * どの種類にも当たらない語 (-webkit-linear-gradient() など、読めない値) があれば、宣言ごと読めない (空を返す。前の宣言を消さない。
+ * CSS 2.1 §4.2: 読めない値の宣言は無視する)。色は最後の層にだけ書ける。固定 (attachment) と箱 (origin・clip。Backgrounds 4 の text を含む) の語は読み飛ばす
+ */
 const backgroundShorthand: Expander = (_prop, v, global) => {
   const props = ['background-color', 'background-image', 'background-repeat', 'background-position-x', 'background-position-y', 'background-size'];
   if (global) return each(props, v);
-  const layers = splitTop(v, ',');
-  const first = layers[0] ?? '';
-  const last = layers[layers.length - 1] ?? '';
+  const layers = splitTop(v, ',', { keepEmpty: true });
   let color = 'rgba(0, 0, 0, 0)';
-  for (const t of tokens(last)) if (isColorLike(t) && !/^(url|var)\(/i.test(t)) color = t;
   let image = 'none';
   let repeat = 'repeat';
-  const pos: string[] = [];
+  let pos: string[] = [];
   let size = 'auto';
-  // 位置と大きさを分ける / は、括弧 (url() など) の外のものだけ
-  let depth = 0;
-  const spaced = [...first].map((ch) => (ch === '(' ? (depth++, ch) : ch === ')' ? (depth--, ch) : ch === '/' && depth === 0 ? ' / ' : ch)).join('');
-  const ts = tokens(spaced);
-  for (let k = 0; k < ts.length; k++) {
-    const t = ts[k];
-    const tl = t.toLowerCase();
-    if (/^(url|(repeating-)?(linear|radial|conic)-gradient|image-set)\(/i.test(t) || tl === 'none') image = t;
-    else if (/^(repeat|no-repeat|repeat-x|repeat-y|space|round)$/.test(tl)) repeat = repeat === 'repeat' || !/^(repeat|no-repeat|space|round)$/.test(tl) ? tl : `${repeat} ${tl}`;
-    else if (t === '/') {
-      const sz: string[] = [];
-      while (k + 1 < ts.length && (isLenLike(ts[k + 1]) || /^(auto|cover|contain)$/i.test(ts[k + 1]))) sz.push(ts[++k]);
-      if (sz.length) size = sz.join(' ');
-    } else if (/^(left|right|top|bottom|center)$/.test(tl) || isLenLike(t)) pos.push(t);
+  for (let li = 0; li < layers.length; li++) {
+    const isFirst = li === 0;
+    const isLast = li === layers.length - 1;
+    // 位置と大きさを分ける / は、括弧 (url() など) の外のものだけ
+    let depth = 0;
+    const spaced = [...layers[li]].map((ch) => (ch === '(' ? (depth++, ch) : ch === ')' ? (depth--, ch) : ch === '/' && depth === 0 ? ' / ' : ch)).join('');
+    const ts = tokens(spaced);
+    if (!ts.length) return [];
+    let lImage: string | undefined;
+    let lRepeat: string | undefined;
+    const lPos: string[] = [];
+    let lSize: string | undefined;
+    for (let k = 0; k < ts.length; k++) {
+      const t = ts[k];
+      const tl = t.toLowerCase();
+      if (/^(url|(repeating-)?(linear|radial|conic)-gradient|image-set)\(/i.test(t) || tl === 'none') lImage = t;
+      else if (/^(repeat|no-repeat|repeat-x|repeat-y|space|round)$/.test(tl)) lRepeat = lRepeat === undefined || lRepeat === 'repeat' || !/^(repeat|no-repeat|space|round)$/.test(tl) ? tl : `${lRepeat} ${tl}`;
+      else if (t === '/') {
+        const sz: string[] = [];
+        while (k + 1 < ts.length && (isLenLike(ts[k + 1]) || /^(auto|cover|contain)$/i.test(ts[k + 1]))) sz.push(ts[++k]);
+        if (!sz.length) return [];
+        lSize = sz.join(' ');
+      } else if (/^(left|right|top|bottom|center)$/.test(tl) || isLenLike(t)) lPos.push(t);
+      else if (/^(scroll|fixed|local|border-box|padding-box|content-box|text)$/.test(tl)) continue;
+      else if (isColorLike(t)) {
+        // 色は最後の層だけ。var() は何になるか分からないので通す (色としては使わない)
+        if (/^var\(/i.test(t)) continue;
+        if (!isLast) return [];
+        color = t;
+      } else return [];
+    }
+    if (isFirst) {
+      image = lImage ?? image;
+      repeat = lRepeat ?? repeat;
+      pos = lPos;
+      size = lSize ?? size;
+    }
   }
   const [px, py] = positionXY(pos);
   return [['background-color', color], ['background-image', image], ['background-repeat', repeat], ['background-position-x', px], ['background-position-y', py], ['background-size', size]];

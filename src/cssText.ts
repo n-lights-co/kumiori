@@ -100,24 +100,31 @@ export function parseColor(v: string): RGBA | 'current' | undefined {
   const m = /^(rgba?|hsla?)\(\s*([^)]*)\)$/.exec(s);
   if (!m) return undefined;
   const parts = m[2].split(/[\s,/]+/).filter(Boolean);
-  if (parts.length < 3) return undefined;
-  const alpha = parts[3] === undefined ? 1 : parts[3].endsWith('%') ? parseFloat(parts[3]) / 100 : parseFloat(parts[3]);
+  if (parts.length < 3 || parts.length > 4) return undefined;
+  // 成分は数か百分率 (Color 4 §5.1・§7)。数として読めない成分 (rgb(1, 2, 3, foo) など) があれば、色として読めない
+  const NUM = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%?$/;
+  if (!parts.slice(1).every((p) => NUM.test(p))) return undefined;
+  // alpha は、範囲 [0, 1] の外でも不正ではなく、範囲に丸める (Color 4 §4.2)
+  const alpha = Math.min(1, Math.max(0, parts[3] === undefined ? 1 : parts[3].endsWith('%') ? parseFloat(parts[3]) / 100 : parseFloat(parts[3])));
   if (m[1].startsWith('rgb')) {
+    if (!NUM.test(parts[0])) return undefined;
     const ch = parts.slice(0, 3).map((p) => (p.endsWith('%') ? (parseFloat(p) * 255) / 100 : parseFloat(p)));
-    if (ch.some((x) => Number.isNaN(x))) return undefined;
     return [...ch.map((x) => Math.round(Math.min(255, Math.max(0, x)))), alpha] as RGBA;
   }
   // 色相の単位 (CSS Values 4 §7.1 の <angle>): deg (既定)・grad・rad・turn
   const hm = /^(-?[\d.]+(?:e[-+]?\d+)?)(deg|grad|rad|turn)?$/i.exec(parts[0]);
   if (!hm) return undefined;
   const hv = parseFloat(hm[1]) * ({ deg: 1, grad: 0.9, rad: 180 / Math.PI, turn: 360 }[(hm[2] ?? 'deg').toLowerCase() as 'deg'] ?? 1);
+  if (!Number.isFinite(hv)) return undefined;
   const h = ((hv % 360) + 360) % 360;
-  const sat = parseFloat(parts[1]) / 100;
+  // 彩度は 0% より小さければ 0% に丸める (Color 4 §7)。範囲の外の彩度・明度で sRGB の範囲を出た成分は、0〜255 に丸める
+  // (計算値は 8 ビットの rgb()。Color 4 §16.2)
+  const sat = Math.max(0, parseFloat(parts[1]) / 100);
   const l = parseFloat(parts[2]) / 100;
   const k = (n: number) => (n + h / 30) % 12;
   const a = sat * Math.min(l, 1 - l);
   const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
-  return [f(0), f(8), f(4)].map((x) => Math.round(x * 255)).concat(alpha) as RGBA;
+  return [f(0), f(8), f(4)].map((x) => Math.round(Math.min(255, Math.max(0, x * 255)))).concat(alpha) as RGBA;
 }
 
 /** RGBA → ブラウザの計算値の形 (rgb(r, g, b)、半透明なら rgba(r, g, b, a)) */
