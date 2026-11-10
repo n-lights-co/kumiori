@@ -1,13 +1,14 @@
 /**
  * XSL-FO の、読んで組版へ渡すだけの性質:
  *  - clear (§7.19.1)
+ *  - fo:folio-prefix・fo:folio-suffix (§6.6.13・§6.6.14): fo:page-number・fo:page-number-citation・fo:page-number-citation-last の番号の前後に付く (§6.6.10〜§6.6.12)
  *  - 一括指定 (font・background・page-break-before/after/inside・size。XSL 1.1 §7.31・§5.2) と、上限・下限 (min-height・max-height・min-width・max-width。§7.15.8〜§7.15.11・§5.3.3)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
 import { importXslFo } from '../src/xslfoImport';
-import { makeEngine } from './helpers';
-import type { LBlock, LBlockContainer, LTable } from '../src/types';
+import { makeEngine, walk } from './helpers';
+import type { Area, LBlock, LBlockContainer, LInline, LTable } from '../src/types';
 
 let E: Awaited<ReturnType<typeof makeEngine>>;
 beforeAll(async () => {
@@ -227,5 +228,63 @@ describe('XSL-FO の clear (§7.19.1)', () => {
     const r = imp(`${float('start')}<fo:block clear="inside">a</fo:block><fo:block-container clear="both"><fo:block>b</fo:block></fo:block-container>`);
     expect(r.report.unsupported['clear:inside']).toBe(1);
     expect(r.report.unsupported['clear (fo:block-container)']).toBe(1);
+  });
+});
+
+/** 領域の木の中の字を、順につないだ文字列 */
+const textOf = (areas: readonly unknown[]): string => {
+  const g: string[] = [];
+  for (const a of areas) walk(a as Area, (n) => n.type === 'glyph' && g.push(n.text));
+  return g.join('');
+};
+
+describe('fo:folio-prefix・fo:folio-suffix (§6.6.13・§6.6.14)', () => {
+  const PM = `<fo:layout-master-set><fo:simple-page-master master-name="m" page-width="100mm" page-height="100mm" margin="10mm"><fo:region-body margin-top="10mm"/><fo:region-before extent="8mm"/></fo:simple-page-master></fo:layout-master-set>`;
+  const seqXml = (attrs: string, folio: string, statics: string, flow: string) =>
+    `<fo:page-sequence master-reference="m" ${attrs}>${folio}${statics}<fo:flow flow-name="xsl-region-body">${flow}</fo:flow></fo:page-sequence>`;
+  const doc = (...seqs: string[]) => importXslFo(`<?xml version="1.0"?><fo:root ${NS}>${PM}${seqs.join('')}</fo:root>`, parse, { compat: 'spec' });
+  const head = `<fo:static-content flow-name="xsl-region-before"><fo:block><fo:page-number/></fo:block></fo:static-content>`;
+  const G = `<fo:folio-prefix>G-</fo:folio-prefix><fo:folio-suffix>頁</fo:folio-suffix>`;
+
+  it('static-content の fo:page-number の前後に付く (§6.6.10)', () => {
+    const r = doc(seqXml('initial-page-number="1"', G, head, `<fo:block>本文</fo:block><fo:block break-before="page">次</fo:block>`));
+    expect(r.report.unsupported['fo:folio-prefix']).toBeUndefined();
+    expect(r.report.unsupported['fo:folio-suffix']).toBeUndefined();
+    const tree = E.engine.layout(r.document);
+    expect(tree.sheets.map((s) => textOf(s.page.absoluteAreas))).toEqual(['G-1頁', 'G-2頁']);
+  });
+  it('本文の fo:page-number の前後に付く', () => {
+    const tree = E.engine.layout(doc(seqXml('', G, '', `<fo:block>ここは<fo:page-number/>です</fo:block>`)).document);
+    expect(textOf(tree.sheets[0].page.regionBody.children)).toBe('ここはG-1頁です');
+  });
+  it('fo:page-number-citation・-last には、引いたページを作った page-sequence のものが付く (§6.6.11・§6.6.12)', () => {
+    const r = doc(
+      seqXml('', '', '', `<fo:block>用語は<fo:page-number-citation ref-id="g"/>から<fo:page-number-citation-last ref-id="gs"/>まで。ここは<fo:page-number-citation ref-id="here"/></fo:block><fo:block id="here">x</fo:block>`),
+      seqXml('id="gs" initial-page-number="1"', G, '', `<fo:block id="g">用語</fo:block><fo:block break-before="page">続き</fo:block>`),
+    );
+    const tree = E.engine.layout(r.document);
+    // 引いた先 (用語の page-sequence) の前後の字が付く。接頭辞の無い page-sequence の中の id を引いたものには付かない
+    expect(textOf(tree.sheets[0].page.regionBody.children)).toBe('用語はG-1頁からG-2頁まで。ここは1x');
+  });
+  it('中身の行内の書式 (fo:inline) も読む。番号の書式は fo:page-number のもの', () => {
+    const r = doc(seqXml('', `<fo:folio-prefix><fo:inline font-weight="bold">A</fo:inline>-</fo:folio-prefix>`, '', `<fo:block><fo:page-number color="#ff0000"/></fo:block>`));
+    const inl = (r.document.sequences[0].flow.children[0] as LBlock).children[0] as LInline;
+    expect(inl.color).toBe('#ff0000');
+    expect((inl.children[0] as LInline).fontWeight).toBe(700);
+    expect((inl.children[0] as LInline).children).toEqual(['A']);
+    expect(inl.children[1]).toBe('-');
+    expect((inl.children[2] as { type: string }).type).toBe('page-number-citation');
+  });
+  it('fo:folio-prefix の中の fo:page-number・ブロックは、読まずに報告する (§6.6.13 の Contents)', () => {
+    const r = doc(seqXml('', `<fo:folio-prefix>P<fo:page-number/><fo:block>B</fo:block></fo:folio-prefix>`, head, `<fo:block>本文</fo:block>`));
+    expect(Object.keys(r.report.unsupported).some((k) => k.startsWith('fo:page-number (fo:folio-prefix'))).toBe(true);
+    expect(Object.keys(r.report.unsupported).some((k) => k.startsWith('fo:block (fo:folio-prefix'))).toBe(true);
+    const tree = E.engine.layout(r.document);
+    expect(textOf(tree.sheets[0].page.absoluteAreas)).toBe('P1');
+  });
+  it('fo:folio-prefix・fo:folio-suffix の無い文書は、これまでと同じ形 (番号だけ)', () => {
+    const r = doc(seqXml('', '', head, `<fo:block><fo:page-number/></fo:block>`));
+    const st = r.document.sequences[0].staticContent!.find((c) => c.children.length)!;
+    expect((st.children[0] as LBlock).children).toEqual(['{pageNumber}']);
   });
 });

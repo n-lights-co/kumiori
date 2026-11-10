@@ -620,6 +620,79 @@ class Importer {
     }
   }
 
+  // ── ページ番号の前後の字 (fo:folio-prefix・fo:folio-suffix。XSL 1.1 §6.6.13・§6.6.14) ──
+  /** id → その id の要素を含む fo:page-sequence (最初と最後)。fo:folio-prefix・fo:folio-suffix のある文書でだけ作る */
+  private idSeqs?: Map<string, { first: XEl; last: XEl }>;
+  /** fo:folio-prefix・fo:folio-suffix の中身を読んでいる間の、その要素の名前 */
+  private inFolio?: string;
+  /** 読み込みの報告に数え終えた fo:folio-prefix・fo:folio-suffix (ページ番号ごとに読み直すので、2 度目からは数えない) */
+  private countedFolios = new Set<XEl>();
+
+  /** fo:page-sequence の子の fo:folio-prefix・fo:folio-suffix (それぞれ最初の 1 つ。内容モデルは folio-prefix?,folio-suffix? §6.4.5) */
+  private folioEls(seq: XEl): { prefix?: XEl; suffix?: XEl } {
+    const of = (name: string) => this.els(seq).find((e) => this.isFo(e) && this.name(e) === name);
+    return { prefix: of('folio-prefix'), suffix: of('folio-suffix') };
+  }
+
+  /** 文書の id と、それを含む fo:page-sequence の対応を作る (fo:folio-prefix・fo:folio-suffix が 1 つも無ければ作らない) */
+  private indexFolios(seqs: XEl[]) {
+    if (!seqs.some((ps) => this.folioEls(ps).prefix || this.folioEls(ps).suffix)) return;
+    const map = new Map<string, { first: XEl; last: XEl }>();
+    const note = (el: XEl, ps: XEl) => {
+      const id = this.attr(el, 'id');
+      if (!id) return;
+      const e = map.get(id);
+      if (e) e.last = ps;
+      else map.set(id, { first: ps, last: ps });
+    };
+    for (const ps of seqs) {
+      // fo:page-sequence を包む要素 (fo:root・fo:page-sequence-wrapper) の id は、中の最初・最後の page-sequence
+      for (let a = this.parents.get(ps); a; a = this.parents.get(a)) note(a, ps);
+      const todo: XEl[] = [ps];
+      for (let el = todo.pop(); el; el = todo.pop()) {
+        note(el, ps);
+        todo.push(...this.els(el));
+      }
+    }
+    this.idSeqs = map;
+  }
+
+  /**
+   * ページ番号の字の前後に、fo:folio-prefix・fo:folio-suffix の中身を付ける (XSL 1.1 §6.6.10: ページ番号の行内の領域の中身は、
+   * “the content of any fo:folio-prefix child of the reference-page-sequence, followed by fo:character flow objects; one for each
+   * character in the folio-number string …, followed by the content of any fo:folio-suffix child of the reference-page-sequence”)。
+   * seq は基準の page-sequence: fo:page-number はそれを含む page-sequence (§6.6.10)、fo:page-number-citation・-last は引いたページを
+   * 作った page-sequence (§6.6.11・§6.6.12)。中身は、ページ番号の位置の書式 (ctx) で読む。付けるものが無ければ undefined
+   */
+  private withFolio(num: LInlineLevel, seq: XEl | undefined, ctx: Ctx): LInlineLevel[] | undefined {
+    if (!this.idSeqs || !seq || this.inFolio) return undefined;
+    const { prefix, suffix } = this.folioEls(seq);
+    if (!prefix && !suffix) return undefined;
+    const read = (el: XEl | undefined): LInlineLevel[] => {
+      if (!el) return [];
+      const counted = this.countedFolios.has(el);
+      this.countedFolios.add(el);
+      const { counts, unsupported, droppedLinks, files } = this.report;
+      const kept = counted ? structuredClone({ counts, unsupported, droppedLinks, files }) : undefined;
+      this.inFolio = `fo:${this.name(el)}`;
+      try {
+        // 中身は字と行内の要素 (#PCDATA|%inline;)*。ブロックは element() が読まずに報告する
+        return this.children(el, ctx, false) as LInlineLevel[];
+      } finally {
+        this.inFolio = undefined;
+        if (kept) {
+          this.report.counts = kept.counts;
+          this.report.unsupported = kept.unsupported;
+          if (kept.droppedLinks) this.report.droppedLinks = kept.droppedLinks;
+          else delete this.report.droppedLinks;
+          if (kept.files) this.report.files = kept.files;
+          else delete this.report.files;
+        }
+      }
+    };
+    return [...read(prefix), num, ...read(suffix)];
+  }
+
   convert(root: XEl): LDocument {
     const doc: LDocument = { type: 'document', sequences: [], spaceResolution: 'xsl' };
     this.indexParents(root);
@@ -645,6 +718,7 @@ class Importer {
       if (key === 'title' && value) doc.title = value;
     };
     const sequencesOf = (el: XEl): XEl[] => this.els(el).flatMap((c) => (this.name(c) === 'page-sequence-wrapper' ? sequencesOf(c) : [c]));
+    this.indexFolios(sequencesOf(root).filter((c) => this.name(c) === 'page-sequence'));
     for (const c of sequencesOf(root)) {
       const n = this.name(c);
       if (n === 'page-sequence') {
@@ -752,7 +826,7 @@ class Importer {
     const wm = seqWm ?? def.bodyWm ?? 'horizontal-tb';
     // XSL-FO の既定値 (font-size=medium=10pt, line-height=normal, text-align=start。互換モードの値。既定では両端揃えにしない) を土台に、fo:root → page-sequence の順で重ねる。
     // Kumiori の既定 (10.5pt・行送り 1.7・両端揃え) をそのまま使うと、FO の文書が想定する文字の大きさ・行送り・字間とずれる。
-    const ctxRoot: Ctx = { fontSize: this.defaultFontSize, wm, startIndent: 0, endIndent: 0, refOrigin: def.bodyOrigin, refSize: def.bodySize, pageSize: { w: def.pageW, h: def.pageH }, cbH: def.bodySize.h, ws: WS_INITIAL, rtl: !seqWm && !!def.bodyRtl, flip: flipOf(this.attr(ps, 'writing-mode') ?? def.bodyWmAttr ?? '') };
+    const ctxRoot: Ctx = { seqEl: ps, fontSize: this.defaultFontSize, wm, startIndent: 0, endIndent: 0, refOrigin: def.bodyOrigin, refSize: def.bodySize, pageSize: { w: def.pageW, h: def.pageH }, cbH: def.bodySize.h, ws: WS_INITIAL, rtl: !seqWm && !!def.bodyRtl, flip: flipOf(this.attr(ps, 'writing-mode') ?? def.bodyWmAttr ?? '') };
     const rootStyle = this.textStyle(root, ctxRoot, true);
     const style = this.textStyle(ps, rootStyle.ctx, true);
     // fo:page-sequence に書いた継承される特性 (text-transform・font-family・color・xml:lang・relative-align・改訂バーなど) は、
@@ -798,11 +872,12 @@ class Importer {
 
     const statics = this.els(ps).filter((e) => this.name(e) === 'static-content');
     const flowEl = this.els(ps).find((e) => this.name(e) === 'flow');
-    // 読まずに捨てる子 (fo:title・fo:folio-prefix・fo:folio-suffix・2 つ目からの fo:flow など) は、読み込みの報告に数える。
-    // 約物のアキの宣言 (readPunctuationSpacing が読む) は除く
+    // 読まずに捨てる子 (fo:title・2 つ目からの fo:flow など) は、読み込みの報告に数える。
+    // 約物のアキの宣言 (readPunctuationSpacing が読む) は除く。fo:folio-prefix・fo:folio-suffix (最初の 1 つずつ) は、ページ番号の所で読む (withFolio)
+    const folio = this.folioEls(ps);
     for (const e of this.els(ps)) {
       const en = this.name(e);
-      if (en === 'static-content' || e === flowEl) continue;
+      if (en === 'static-content' || e === flowEl || e === folio.prefix || e === folio.suffix) continue;
       if (!this.isFo(e) && PUNCT_SPACING_ELEMENTS.has(en)) continue;
       this.missElement(e, en === 'flow' && this.isFo(e) ? `flow:${this.attr(e, 'flow-name') ?? ''}` : undefined);
     }
@@ -1795,6 +1870,13 @@ class Importer {
     }
     const tag = this.name(n);
     const one = (v: LBlockLevel | LInlineLevel, block: boolean) => [{ v, block }];
+    // fo:folio-prefix・fo:folio-suffix の中身は字と行内の要素で、ページ番号 (fo:page-number・fo:page-number-citation・-last) は置けない
+    // (XSL 1.1 §6.6.13・§6.6.14 の Contents)。ページ番号を読むと、その前後にまた中身を付けることになり終わらないので、読まずに報告する。
+    // ブロックの要素は、行内の領域の中に置けないので、同じく読まずに報告する
+    if (this.inFolio && /^(page-number|page-number-citation|page-number-citation-last|block|block-container|table|table-and-caption|list-block|float|footnote|marker|retrieve-marker)$/.test(tag)) {
+      this.miss(`fo:${tag} (${this.inFolio} の中)`);
+      return [];
+    }
     switch (tag) {
       // 表の見出し (table-caption) は、自身の書式 (文字の大きさ・揃え・余白) を持つブロックとして組む
       case 'table-caption':
@@ -1903,10 +1985,15 @@ class Importer {
         // static-content の中は、ページごとに置き換える印。本文の中は、その場所 (印を付けた行内) のページ番号の参照にする (XSL 1.1 §6.6.10:
         // 本文の fo:page-number は、それを含むページの番号)
         // 要素自身の字の書式 (color・font-weight など。§6.6.10 の共通フォント特性) は、page-number-citation と同じく行内の箱で当てる
-        const { style } = this.textStyle(n, ctx);
-        if (ctx.inStatic) return one(Object.keys(style).length ? ({ type: 'inline', ...style, children: ['{pageNumber}'] } as LInline) : '{pageNumber}', false);
+        // 番号の前後には、この page-sequence の fo:folio-prefix・fo:folio-suffix の中身を付ける (§6.6.10)
+        const { style, ctx: c2 } = this.textStyle(n, ctx);
+        if (ctx.inStatic) {
+          const parts = this.withFolio('{pageNumber}', ctx.seqEl, c2);
+          return one(Object.keys(style).length || parts ? ({ type: 'inline', ...style, children: parts ?? ['{pageNumber}'] } as LInline) : '{pageNumber}', false);
+        }
         const pid = `kumiori-page-number-${++this.pageNumberSeq}`;
-        return one({ type: 'inline', id: pid, ...style, children: [{ type: 'page-number-citation', refId: pid }] } as LInlineLevel, false);
+        const cit: LPageNumberCitation = { type: 'page-number-citation', refId: pid };
+        return one({ type: 'inline', id: pid, ...style, children: this.withFolio(cit, ctx.seqEl, c2) ?? [cit] } as LInlineLevel, false);
       }
       case 'page-number-citation':
       case 'page-number-citation-last':
@@ -1914,8 +2001,13 @@ class Importer {
         {
           const cit: LPageNumberCitation = { type: 'page-number-citation', refId: this.attr(n, 'ref-id') ?? '', ...(tag.endsWith('last') ? { last: true } : {}), ...(this.attr(n, 'axf:physical-page-number') === 'true' ? { physical: true } : {}) };
           // 要素自身の字の書式 (color・font-size など。§6.6.11 の共通フォント特性・color) は、行内の箱で包んで当てる
-          const { style } = this.textStyle(n, ctx);
-          return one(Object.keys(style).length ? ({ type: 'inline', ...style, children: [cit] } as LInline) : cit, false);
+          const { style, ctx: c2 } = this.textStyle(n, ctx);
+          // 番号の前後には、引いたページを作った page-sequence の fo:folio-prefix・fo:folio-suffix の中身を付ける (§6.6.11・§6.6.12:
+          // “using the cited page as the reference-page, and the fo:page-sequence that generated the cited-page as the reference-page-sequence”)。
+          // 引いた先は、ref-id の要素を含む page-sequence (-last は最後のもの)。物理的なページ番号 (axf:physical-page-number) には付けない
+          const cited = this.idSeqs?.get(cit.refId);
+          const parts = cit.physical ? undefined : this.withFolio(cit, cit.last ? cited?.last : cited?.first, c2);
+          return one(Object.keys(style).length || parts ? ({ type: 'inline', ...style, children: parts ?? [cit] } as LInline) : cit, false);
         }
       case 'external-graphic':
       case 'instream-foreign-object': {

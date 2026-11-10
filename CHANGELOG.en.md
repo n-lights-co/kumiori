@@ -90,6 +90,7 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
 - **XSL-FO properties** (now read and passed to the typesetter, regardless of `--compat`):
   - the shorthands `font`, `background`, `page-break-before`, `page-break-after`, `page-break-inside` and `size`, and the size limits `min-height`, `min-width` and `max-width` (also `max-height` on table rows), are now read (XSL 1.1 §7.31, §7.15). They used to be ignored, so page breaks such as `page-break-before="always"` had no effect
   - `clear` on `fo:block` (`start`, `end`, `both`, `left`, `right`) is now read, and the block starts below the earlier `fo:float` on that side (XSL 1.1 §7.19.1)
+  - the contents of `fo:folio-prefix` and `fo:folio-suffix` are now placed before and after page numbers (`fo:page-number`, `fo:page-number-citation`, `fo:page-number-citation-last`), for per-chapter folios such as “A-12” (XSL 1.1 §6.6.13, §6.6.14)
 
 ## 0.1.1 (2026-11-09)
 

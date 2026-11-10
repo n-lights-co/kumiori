@@ -34,6 +34,8 @@ export interface Ctx {
   flip?: import('./types').WritingFlip;
   /** 言語 (xml:lang / language。継承される) */
   lang?: string;
+  /** この要素を含む fo:page-sequence (fo:page-number の番号の前後に付ける fo:folio-prefix・fo:folio-suffix を探す。XSL 1.1 §6.6.10) */
+  seqEl?: import('./foDom').XEl;
   /** static-content の中 (文字の「{pageNumber}」をページ番号の印にしない) */
   inStatic?: boolean;
   /** 外のリストの provisional-distance-between-starts・provisional-label-separation (pt。継承される) */
