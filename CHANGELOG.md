@@ -104,6 +104,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `font-variant="small-caps"` (スモールキャップ) と `word-spacing` (語の間の空白に足す長さ) を読む (XSL 1.1 §7.9.8・§7.17.8)
   - `glyph-orientation-vertical` の `auto`・`0deg` (すべての字を立てる)・`90deg` (すべての字を横に倒す) を読む (XSL 1.1 §7.29.3)。180・270 度と `glyph-orientation-horizontal` の 0 度以外は、読まずに報告する
   - `relative-position="relative"` (横書きの `fo:block` をずらして描く)、`visibility` の `hidden`・`collapse` (場所を残して描かない)、絶対配置の `fo:block-container` の負の `z-index` (本文の背面に描く) を読む (XSL 1.1 §7.13.5・§7.30.17・§7.30.18)
+  - `fo:initial-property-set` を読む (XSL 1.1 §6.6.4): `fo:block` の最初の行にだけ、フォント・`color`・`letter-spacing`・`word-spacing`・`text-decoration`・`background-color` を当てる。`text-transform`・`font-variant`・`line-height`・罫線・`padding` などは読まずに報告する
   - 変更バー (`fo:change-bar-begin`・`fo:change-bar-end`) を読む (XSL 1.1 §6.13.2・§6.13.3): 始まりから終わりまでの行の横に線を引く (入れ子・重なった範囲、段組、縦書き)。`change-bar-color`・`change-bar-offset`・`change-bar-placement` (`start`・`end`・`left`・`right`・`inside`・`outside`・`alternate`)・`change-bar-style`・`change-bar-width`
   - `fo:retrieve-table-marker` を読む (XSL 1.1 §6.13.7): 表の見出し・フッターの中に、その表のそのページ (段) の部分にある `fo:marker` の中身を出す (帳票の「前ページからの繰越」「小計」、表の「(続き)」)。`retrieve-position-within-table`・`retrieve-boundary-within-table` のすべての値。取り出した中身で見出し・フッターの高さが変われば、そのページに入る行の数も変わる。`fo:table` の子として書く形は未対応 (報告する)
 - **中国語 (繁体字) の句読点**: 字の枠の中央にある句読点 (繁体字の書体の `、。，．`) を、後ろの二分を詰めて次の字と重ねない (`。」`・`，」`・`、）` など)。句読点とコロン類 (`：；`) を終わり括弧類として詰めるか中点類として詰めるかは、書体の字形の墨の位置で決める (CSS Text 4 §8.5.3。簡体字の書体の、枠の左下のコロン類は終わり括弧類)。日本語の書体の結果は変わらない

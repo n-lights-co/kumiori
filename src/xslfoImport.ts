@@ -729,6 +729,46 @@ class Importer {
       if (Object.keys(variants).length) r.variants = variants;
     }
   }
+  /**
+   * fo:initial-property-set (XSL 1.1 §6.6.4): ブロックの最初の行に入った子を、この要素の書式の fo:inline で包んだものとして組む (Trait Derivation)。
+   * ブロックの最初の行内の並び (最初の fo:marker の後ろから、最初のブロックの子の前まで) を、最初の行にだけ書式を当てる inline (LInline.firstLine。
+   * CSS の ::first-line と同じ受け皿) で包む。当てるのは、字の書式 (書体・大きさ・太さ・傾き・幅、color、letter-spacing、word-spacing、
+   * text-decoration) と background-color。
+   * text-transform と font-variant は、読み込みのときに字を置き換えて作るので、最初の行にだけは当てられない。line-height は、行内の要素の
+   * line-height を行の高さに数える受け皿が組版に無い。罫線・余白 (行の途中で終わる箱)・相対位置・text-shadow・score-spaces とともに、読まずに報告する。em の長さは、ブロックの字の大きさが基準 (子が自分で持つ em の値は、
+   * 最初の行でもブロックの字の大きさが基準のまま)
+   */
+  private firstLineOf(blk: LBlock, ips: XEl, ctx: Ctx) {
+    const kids = blk.children;
+    const typeOf = (k: LBlockLevel | LInlineLevel | undefined) => (k === undefined ? undefined : typeof k === 'string' ? 'text' : (k as { type: string }).type);
+    let a = 0;
+    while (typeOf(kids[a]) === 'marker') a++;
+    let b = a;
+    const blockish = (k: LBlockLevel | LInlineLevel) => ['block', 'table', 'block-container', 'float', 'marker', 'retrieve-marker', 'retrieve-table-marker'].includes(typeOf(k)!);
+    while (b < kids.length && !blockish(kids[b])) b++;
+    // 最初の行内の並びが無い (ブロックの子から始まる)
+    if (b === a) return;
+    // 並びを分けない子 (回り込み・絶対配置の箱) が途中にあると、並びの全体を 1 つの inline で包めない
+    const next = kids[b] as { type?: string; absolutePosition?: boolean } | undefined;
+    if (next && (next.type === 'float' || next.type === 'marker' || (next.type === 'block-container' && next.absolutePosition))) {
+      this.miss('fo:initial-property-set (最初の行の並びの途中に fo:float・絶対配置の箱がある)');
+      return;
+    }
+    const has = (k: string) => ips.hasAttribute?.(k) ?? this.attr(ips, k) !== undefined;
+    for (const k of ['text-transform', 'font-variant', 'line-height', 'text-shadow', 'score-spaces', 'relative-position', 'position']) if (has(k)) this.miss(`${k} (fo:initial-property-set)`);
+    const names = Array.from(ips.attributes ?? []).map((x) => x.name);
+    if (names.some((k) => /^border(-|$)/.test(k))) this.miss('border (fo:initial-property-set)');
+    if (names.some((k) => /^padding(-|$)/.test(k))) this.miss('padding (fo:initial-property-set)');
+    if (names.some((k) => /^background-(image|repeat|position|attachment)/.test(k) || k === 'background')) this.miss('background-image (fo:initial-property-set)');
+    const { style, ctx: c2 } = this.textStyle(ips, { ...ctx, textTransform: undefined, smallCaps: undefined } as Ctx);
+    const wrap: LInline = { type: 'inline', firstLine: true, children: kids.slice(a, b) as LInlineLevel[] };
+    const st = style as Record<string, unknown>;
+    for (const k of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch', 'color', 'letterSpacing', 'letterSpacingStretch', 'fixedLetterSpacing', 'xslLetterSpacing', 'wordSpacing', 'textDecoration'])
+      if (st[k] !== undefined) (wrap as unknown as Record<string, unknown>)[k] = st[k];
+    const bg = c2.hidden ? undefined : this.color(this.attr(ips, 'background-color'));
+    if (bg) wrap.backgroundColor = bg;
+    kids.splice(a, b - a, wrap);
+  }
   /** fo:marker を読む (読んだ要素は markerEls に控える) */
   private marker(n: XEl, ctx: Ctx): LMarker {
     const { ctx: c2 } = this.textStyle(n, ctx);
@@ -2291,6 +2331,9 @@ class Importer {
         if (box.width !== undefined && c3.wm === 'horizontal-tb') c3.width = box.width;
         this.report.counts.blocks++;
         const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3) };
+        // fo:initial-property-set (§6.6.4): 最初の行の書式
+        const ips = this.els(n).find((e) => this.isFo(e) && this.name(e) === 'initial-property-set');
+        if (ips) this.firstLineOf(blk, ips, c3);
         const clr = this.clearOf(n);
         if (clr) blk.clear = clr;
         // relative-position (§7.13.5): 組んだ箱をずらす。縦書きの箱と、負の z-index (背面に置く) は、組版に受け皿が無いので報告する
@@ -2506,6 +2549,11 @@ class Importer {
         this.retrieves.push({ r, ctx });
         return one(r, true);
       }
+      case 'initial-property-set':
+        // fo:block の子は、ブロックを読む所で最初の行の書式にする (firstLineOf)。ほかの所には置けない (§6.6.4: fo:block の最初の行の書式)
+        if (this.parents.get(n) && this.isFo(this.parents.get(n)!) && this.name(this.parents.get(n)!) === 'block') return [];
+        this.miss('fo:initial-property-set (fo:block の子でない)');
+        return [];
       case 'change-bar-begin':
       case 'change-bar-end':
         // 変更バーの範囲は、先に文書の順にたどって決めてある (prepareChangeBars)。ここでは何も作らない
