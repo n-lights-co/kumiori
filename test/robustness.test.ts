@@ -29,11 +29,12 @@ describe('細工した入力への備え', () => {
   });
 
   it('PostScript: 空の手続きの repeat でも時間の上限で止まる', () => {
-    const t = Date.now();
+    // 上限 (時間。速い機械では、先に手数の上限に当たることもある) で打ち切られたことを、結果の error で確かめる。
+    // かかった時間そのものは比べない (混んだ機械で落ちる)。上限が効かずに回り続ければ、vitest の時限で落ちる
     const r = runEps(eps('2000000000 {} repeat'), { maxMillis: 300 })!;
     expect(r).toBeDefined();
-    expect(Date.now() - t).toBeLessThan(5000);
-  });
+    expect(r.error).toMatch(/^limit:(time|steps)$/);
+  }, 60_000);
 
   it('PostScript: 大きすぎる array は limitcheck のエラー (メモリを使い切らない)', () => {
     const r = runEps(eps('300000000 array pop'))!;
@@ -43,11 +44,12 @@ describe('細工した入力への備え', () => {
   });
 
   it('PostScript: save の後に同じ場所を書き換え続けても journal が伸びない (時間の上限で止まる)', () => {
-    const t = Date.now();
-    const r = runEps(eps('/a 1 array def { a 0 1 put /x 1 def } loop'), { maxMillis: 300 });
+    // journal (save の後の書き換えの記録) が伸びれば、その上限の limitcheck や VMerror で終わる。
+    // 伸びなければ、無限の loop は時間 (速い機械では手数) の上限で打ち切られる。どちらで終わったかを、結果の error で確かめる
+    const r = runEps(eps('/a 1 array def { a 0 1 put /x 1 def } loop'), { maxMillis: 300 })!;
     expect(r).toBeDefined();
-    expect(Date.now() - t).toBeLessThan(5000);
-  });
+    expect(r.error).toMatch(/^limit:(time|steps)$/);
+  }, 60_000);
 
   it('PostScript: { の深い入れ子はエラーにする (スタックを使い切らない)', () => {
     const r = runEps(eps('{'.repeat(100000)))!;

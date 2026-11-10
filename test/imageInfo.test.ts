@@ -533,15 +533,15 @@ describe('ネットワーク上の画像の取得 (AssetStore.addUrl)', () => {
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     const port = (server.address() as { port: number }).port;
     try {
-      const t0 = Date.now();
+      // 時限 (300ms) で取得をやめて、undefined で戻ること。戻るまでの時間そのものは比べない (混んだ機械で落ちる)。
+      // 時限が効かなければ、応答を待ち続けて、このテストの時限 (下の 30 秒) で落ちる
       const got = await new AssetStore().addUrl(`http://127.0.0.1:${port}/a.png`, 300);
       expect(got).toBeUndefined();
-      expect(Date.now() - t0).toBeLessThan(5000);
     } finally {
       server.closeAllConnections();
       server.close();
     }
-  });
+  }, 30_000);
 });
 
 describe('data URI の画像 (AssetStore.addDataUri)', () => {

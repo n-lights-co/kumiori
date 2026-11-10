@@ -122,10 +122,15 @@ describe('PostScript: JS の例外を PostScript のエラーに写す (EPS 全�
     const r = run('0 0 moveto gsave 10 10 lineto gsave 20 20 lineto grestore pathbbox grestore pathbbox');
     expect(r.error).toBeUndefined();
     expect(r.I.ostack.map((o) => (o.t === 'real' || o.t === 'int' ? o.v : NaN))).toEqual([0, 0, 10, 10, 0, 0, 0, 0]);
-    // 長いパスを作りながら gsave を繰り返しても、パスの長さ × gsave の回数の写しにならない
-    const t0 = Date.now();
-    expect(run('0 0 moveto 1 1 30000 { dup lineto gsave grestore } for pathbbox').error).toBeUndefined();
-    expect(Date.now() - t0).toBeLessThan(1500);
+    // 長いパスを作りながら gsave を繰り返しても、パスの長さ × gsave の回数の写しにならない。
+    // 時間でなく、数えた量で確かめる (混んだ機械でも変わらない): 作った点の数 (Graphics.pathPoints。パスの写しは 8 点で 1 と数える) が、
+    // moveto 1 + lineto 30000 のちょうど 30001 (写していれば、写した点の 1/8 が足されて数百万を超える)。
+    // 解釈器の手間 (Interp.steps。写しは点の数だけ数える) も、命令の数 (1 周 5 つほど) に比例する量に収まる
+    const I = new Interp({ maxMillis: 100_000 });
+    const G = new Graphics(I, { bbox: [0, 0, 100, 100] });
+    expect(I.run(latin1('0 0 moveto 1 1 30000 { dup lineto gsave grestore } for pathbbox'))).toBeUndefined();
+    expect(G.pathPoints).toBe(30001);
+    expect(I.steps).toBeLessThan(30000 * 10);
   });
 });
 
@@ -423,17 +428,34 @@ describe('壊れた画像・メタファイル (M-7・M-8)', () => {
     expect(svg).toContain('<clipPath id="kmMfRgn1"><path d="M25 25H50V50H25ZM50 50H75V75H50Z"/></clipPath>');
   });
   it('対角に並ぶ 900 矩形の領域に INTERSECTCLIPRECT を重ねても、格子 × 矩形数のループにならない', () => {
-    const rects: number[][] = [];
-    for (let i = 0; i < 900; i++) rects.push([2 * i, 2 * i, 2 * i + 1, 2 * i + 1]);
-    const recs = [region(5, rects)];
-    for (let k = 0; k < 3; k++) recs.push(rec(30, [k, k, 2000 - k, 2000 - k]));
-    recs.push(rec(43, [0, 0, 100, 100]));
-    const t0 = Date.now();
-    const svg = emfToSvg(emf(recs))!;
-    expect(Date.now() - t0).toBeLessThan(2000);
+    const build = (n: number) => {
+      const rects: number[][] = [];
+      for (let i = 0; i < n; i++) rects.push([2 * i, 2 * i, 2 * i + 1, 2 * i + 1]);
+      const recs = [region(5, rects)];
+      for (let k = 0; k < 3; k++) recs.push(rec(30, [k, k, 2000 - k, 2000 - k]));
+      recs.push(rec(43, [0, 0, 100, 100]));
+      return emf(recs);
+    };
+    const svg = emfToSvg(build(900))!;
     // 最初の 2 つ (0,0)-(1,1)・(2,2)-(3,3) は (2,2)-(1998,1998) との交わりで、(2,2)-(3,3) から
     expect(svg).toContain('<path d="M2 2H3V3H2ZM4 4H5V5H4Z');
-  });
+    // 手間の増え方を確かめる。領域の演算の中の回数は外から数えられないので、時間で確かめるが、時間そのものには上限を置かない
+    // (混んだ機械で落ちる)。矩形の数が 4 倍の入力との時間の比を、数回測った最小の値どうしで比べる
+    // (最小の値は、ほかの処理に割り込まれなかった回の時間に近い。test/reviewHtml2.test.ts の :first-child のテストと同じ形)。
+    // 矩形 n 個が対角に並ぶと、格子は (2n)² マス。行ごとに印を付ける今の作りは n² に比例 (4 倍で 16 倍)、
+    // マスごとに矩形を探す作りは n³ に比例 (4 倍で 64 倍) なので、間の 40 倍で分ける
+    const time = (n: number) => {
+      const data = build(n);
+      const t0 = performance.now();
+      emfToSvg(data);
+      return performance.now() - t0;
+    };
+    time(225); // 暖機
+    const best = (n: number) => Math.min(...Array.from({ length: 5 }, () => time(n)));
+    const t1 = best(225);
+    const t2 = best(900);
+    expect(t2).toBeLessThan(Math.max(t1, 1) * 40);
+  }, 300_000);
 });
 
 describe('CFF の部分書体 (L-4・L-5)', () => {

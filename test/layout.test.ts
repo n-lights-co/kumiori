@@ -3880,12 +3880,33 @@ describe('組版の規格どおりでない動き (全体のレビュー)', () =
     expect(t.sheets.map((s) => Math.round((s.page.height * 25.4) / 72))).toEqual([101, 102]);
   });
 
-  it('keep-with-next の見出しの入れ子が深くても、試し組みの手間が指数的に増えない', () => {
-    const nest = (d: number): unknown => (d === 0 ? { type: 'block', children: ['本文'.repeat(50)] } : { type: 'block', children: [{ type: 'block', keepWithNext: true, children: [`見出し${d}`] }, nest(d - 1), nest(d - 1)] });
-    const t0 = Date.now();
-    E.engine.layout(doc([nest(8)] as never));
-    expect(Date.now() - t0).toBeLessThan(10000);
-  }, 30000);
+  it('keep-with-next の見出しの入れ子が深くても、試し組みの手間が指数的に増えない', async () => {
+    const { vi } = await import('vitest');
+    const nest = (d: number, keep: boolean): unknown =>
+      d === 0 ? { type: 'block', children: ['本文'.repeat(50)] } : { type: 'block', children: [{ type: 'block', keepWithNext: keep, children: [`見出し${d}`] }, nest(d - 1, keep), nest(d - 1, keep)] };
+    // 時間でなく、回数で確かめる (混んだ機械でも変わらない)。keep-with-next の無い同じ文書と比べる:
+    //  - 字を測った回数 (Measurer.glyph) は同じ (試し組みは、覚えてある行分けの結果を使い、字を測り直さない)
+    //  - 段落の行分けを引いた・覚えた回数 (行分けの覚えが、引くとき・入れるときに 1 度ずつ Measurer.version を呼ぶ) は、
+    //    keep-with-next の無い文書の 3 倍まで (今は 2.4 倍ほど。試し組みの中でさらに試し組みをすると、入れ子の深さとともに増える。深さ 8 で 5 倍を超える)
+    const count = (keep: boolean) => {
+      const glyph = vi.spyOn(E.measurer, 'glyph');
+      const version = vi.spyOn(E.measurer, 'version');
+      try {
+        const t = E.engine.layout(doc([nest(8, keep)] as never));
+        return { glyph: glyph.mock.calls.length, version: version.mock.calls.length, sheets: t.sheets.length };
+      } finally {
+        glyph.mockRestore();
+        version.mockRestore();
+      }
+    };
+    const plain = count(false);
+    const kept = count(true);
+    expect(plain.glyph).toBeGreaterThan(10000);
+    expect(kept.glyph).toBe(plain.glyph);
+    expect(kept.version).toBeGreaterThan(plain.version); // 試し組みをしている (数えている量が、試し組みで増える量であること)
+    expect(kept.version).toBeLessThan(plain.version * 3);
+    expect(kept.sheets).toBeGreaterThanOrEqual(plain.sheets);
+  }, 120_000);
 });
 
 describe('行の組版の規格どおりでない動き (全体のレビュー)', () => {
