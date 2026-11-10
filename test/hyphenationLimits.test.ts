@@ -172,6 +172,27 @@ describe('分綴の制限 (組版)', () => {
     expect(hyphenated(lay(many, 44, { maxLines: 0 }, { hyphenate: false }))).toEqual([]);
   });
 
+  it('最後の行の終わりの端をずらす指定 (last-line-end-indent。XSL 1.1 §7.16.3) と一緒に指定しても、両方が効く', () => {
+    const base = lay(TEXT, 80);
+    expect(base.slice(-2)).toEqual(['ization require-', 'ments']);
+    // 最後の行を 30pt 短く (50pt に) する。「ments」は入るので、端をずらすだけなら行分けは変わらない
+    expect(lay(TEXT, 80, undefined, { lastLineEndIndent: 30 })).toEqual(base);
+    // 続けて分綴する行は 1 行まで: 「ization require-」をやめて語を送る。送った「requirements」は、ずらした幅 (50pt) に入らず、
+    // ほかに分けられる位置も無いので、分綴して最後の行へ送る (最後の行は、ずらした端を越えない)
+    const one = lay(TEXT, 80, { maxLines: 1 }, { lastLineEndIndent: 30 });
+    expect(one).toEqual(['Typesetting en-', 'gines must', 'balance typo-', 'graphic', 'considerations', 'such as justifica-', 'tion, hyphenation,', 'and international-', 'ization', 'require-', 'ments']);
+    // 最後の行を 40pt 長く (120pt に) する: 端をずらすだけなら「ization requirements」が最後の行に入る
+    const wide = lay(TEXT, 80, undefined, { lastLineEndIndent: -40 });
+    expect(wide.slice(-2)).toEqual(['and international-', 'ization requirements']);
+    // そこへ hyphenate-limit-last: always: 「残りが最後の 1 行に収まるか」を、ずらした幅 (120pt) で確かめるので、
+    // 最後の行の 1 つ前になる「and international-」は分綴しない
+    const last = lay(TEXT, 80, { noLast: true }, { lastLineEndIndent: -40 });
+    expect(last.slice(-3)).toEqual(['and', 'internationaliza-', 'tion requirements']);
+    expect(last.slice(0, 6)).toEqual(wide.slice(0, 6));
+    // どちらの指定も無い段落は変わらない
+    expect(lay(TEXT, 80, {}, {})).toEqual(base);
+  });
+
   it('縦書きでも同じに効く', () => {
     const v = (lim?: HyphenLimits) => linesOf(engine.layout(doc([{ type: 'block', height: 100, hyphenate: true, language: 'en', textAlign: 'start', ...(lim ? { hyphenLimits: lim } : {}), children: [TEXT] } as never], 'vertical-rl')));
     const base = v();

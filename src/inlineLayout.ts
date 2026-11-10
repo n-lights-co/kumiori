@@ -172,6 +172,8 @@ export interface LeaderSpec {
   css?: boolean;
   /** CSS の leader() の字を、リーダーの始めの端から並べる (LLeader.cssLeaderFromStart) */
   fromStart?: boolean;
+  /** 周期を合わせる格子の基準 (LLeader.alignment) */
+  align?: 'reference-area' | 'page';
 }
 
 export interface FlattenState {
@@ -299,6 +301,8 @@ export interface RawLine {
   indent: number;
   /** 分綴の位置 (自動の分綴・ソフトハイフン) で分けた行 */
   hyphenated?: boolean;
+  /** 行の終わりの端をずらす量 (正で内へ、負で外へ。XSL 1.1 §7.16.3 の last-line-end-indent を当てた最後の行) */
+  endIndent?: number;
 }
 
 /** breakOne に渡す、その行の分綴の扱い (breakOneLimited が決める) */
@@ -748,16 +752,16 @@ function unfilledAt(atoms: Atom[], start: number, j: number, k: number, x: numbe
  *  - hyphenate-limit-last: always (CSS Text 4 §6.3.5): 残りが 1 行に収まる (= この行が、最後の行の 1 つ前の行になる) なら、分綴しない
  *  - hyphenate-limit-zone (CSS Text 4 §6.3.3): 百分率は行の長さ L に対する割合
  * 分綴をやめた行は、語を次の行へ送る (breakOne の HyphenBreak)。state.run は、直前まで続けて分綴した行の数 (呼ぶたびに更新する)。
- * nextIndent は、次の行の字下げ (noLast の判定で、残りを 1 行に組んでみるのに使う)。制限が無ければ breakOne と同じ
+ * nextIndent は、次の行の字下げ (noLast の判定で、残りを 1 行に組んでみるのに使う)。nextL は、そのときの行の幅 (最後の行の端をずらす last-line-end-indent があるとき。無ければ L)。制限が無ければ breakOne と同じ
  */
-export function breakOneLimited(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, lim: HyphenLimits | undefined, state: { run: number }, nextIndent = 0): { line: RawLine; next: number } {
+export function breakOneLimited(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, lim: HyphenLimits | undefined, state: { run: number }, nextIndent = 0, nextL = L): { line: RawLine; next: number } {
   if (!lim || (lim.maxLines === undefined && !lim.noLast && !lim.zone && !lim.zoneRatio)) return breakOne(atoms, start, L, indent, hangingDefault);
   const zone = (lim.zone ?? 0) + (lim.zoneRatio ?? 0) * L;
   const hb: HyphenBreak | undefined = zone > 0 ? { zone } : undefined;
   let r = breakOne(atoms, start, L, indent, hangingDefault, hb);
   if (r.line.hyphenated) {
     let no = lim.maxLines !== undefined && state.run >= lim.maxLines;
-    if (!no && lim.noLast) no = breakOne(atoms, r.next, L, nextIndent, hangingDefault).next >= atoms.length;
+    if (!no && lim.noLast) no = breakOne(atoms, r.next, nextL, nextIndent, hangingDefault).next >= atoms.length;
     if (no) r = breakOne(atoms, start, L, indent, hangingDefault, { ...hb, noHyphen: true });
   }
   state.run = r.line.hyphenated ? state.run + 1 : 0;
@@ -951,10 +955,55 @@ export function lineIndent(st: { textIndent: number; textIndentHanging?: boolean
 }
 
 /**
+ * breakOne に、最後の行の終わりの端の字下げ (XSL 1.1 §7.16.3 の last-line-end-indent。lle) を足したもの。
+ * 残りの中身がすべて、終わりの端をずらした幅 (L − lle) の 1 行に入れば、その行が最後の行 (RawLine.endIndent を付ける)。
+ * 入らなければ、普通の幅で折り返す。ただし、普通の幅なら残りがすべて入る (最後の行になる) のに、ずらした幅 (狭い) には入らないときは、
+ * ずらした幅で折り返して、残りを次の行 (最後の行) に送る (最後の行が、ずらした端を越えないように)。
+ * hy を渡すと、それぞれの幅の行を、分綴の制限 (breakOneLimited) を当てて切り出す (外が最後の行の端、内が分綴の制限)。
+ * 試しに切り出した行では hy.state を進めず、採った行の分だけ進める。「残りが 1 行に収まるか」(hyphenate-limit-last: always) は、
+ * 最後の行の幅 (L − lle) で確かめる。lle も hy も無ければ breakOne と同じ
+ */
+export function breakOneLast(
+  atoms: Atom[],
+  start: number,
+  L: number,
+  indent: number,
+  hangingDefault: boolean,
+  lle: number | undefined,
+  hy?: { lim: HyphenLimits | undefined; state: { run: number }; nextIndent: number },
+): { line: RawLine; next: number } {
+  if (!hy?.lim) {
+    if (!lle) return breakOne(atoms, start, L, indent, hangingDefault);
+    const shifted = breakOne(atoms, start, L - lle, indent, hangingDefault);
+    if (shifted.next >= atoms.length) {
+      shifted.line.endIndent = lle;
+      return shifted;
+    }
+    const normal = breakOne(atoms, start, L, indent, hangingDefault);
+    return normal.next >= atoms.length ? shifted : normal;
+  }
+  if (!lle) return breakOneLimited(atoms, start, L, indent, hangingDefault, hy.lim, hy.state, hy.nextIndent);
+  const one = (w: number) => {
+    const state = { run: hy.state.run };
+    return { r: breakOneLimited(atoms, start, w, indent, hangingDefault, hy.lim, state, hy.nextIndent, L - lle), run: state.run };
+  };
+  const shifted = one(L - lle);
+  if (shifted.r.next >= atoms.length) {
+    shifted.r.line.endIndent = lle;
+    hy.state.run = shifted.run;
+    return shifted.r;
+  }
+  const normal = one(L);
+  const took = normal.r.next >= atoms.length ? shifted : normal;
+  hy.state.run = took.run;
+  return took.r;
+}
+
+/**
  * 行に切り分ける。firstIndent は 1 行目の字下げ。st を渡すと、行ごとの字下げを lineIndent で決める
  * (first: この並びの 1 行目が要素の最初の行か)
  */
-export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0]; first: boolean }, lim?: HyphenLimits): RawLine[] {
+export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0] & { lastLineEndIndent?: number }; first: boolean }, lim?: HyphenLimits): RawLine[] {
   const lines: RawLine[] = [];
   const hyState = { run: 0 };
   let start = 0;
@@ -969,7 +1018,7 @@ export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangin
     }
     const indent: number = indentOf ? lineIndent(indentOf.st, first && indentOf.first, afterForced) : first ? firstIndent : 0;
     // 分綴の制限 (行の数の上限・最後の行・行末の幅) は、段落のブロックの値で決める (CSS Text 4 §6.3.3・§6.3.5 の Applies to: block containers)
-    const { line, next } = lim ? breakOneLimited(atoms, start, L, indent, hangingDefault, lim, hyState, indentOf ? lineIndent(indentOf.st, false, false) : 0) : breakOne(atoms, start, L, indent, hangingDefault);
+    const { line, next } = breakOneLast(atoms, start, L, indent, hangingDefault, indentOf?.st.lastLineEndIndent, lim ? { lim, state: hyState, nextIndent: indentOf ? lineIndent(indentOf.st, false, false) : 0 } : undefined);
     first = false;
     // 強制改行で終わった行 (段落の最後の行は次が無いので問わない)
     afterForced = line.last;
@@ -1184,7 +1233,7 @@ function fillLeaders(items: Atom[], widths: number[], free: number) {
 
 export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): PositionedLine {
   const items = raw.items;
-  const avail = Math.max(L - raw.indent, 0);
+  const avail = Math.max(L - raw.indent - (raw.endIndent ?? 0), 0);
   const widths = items.map((t) => t.advance);
   // 行頭・行末のルビは、行の外の字には掛けない (はみ出し分を送りへ戻す)
   const ov = items.map((t, k) => (t.ovL || t.ovR ? [k === 0 ? 0 : (t.ovL ?? 0), k === items.length - 1 ? 0 : (t.ovR ?? 0)] : undefined));
@@ -1425,6 +1474,19 @@ function leaderNode(a: Atom, off: number, gStart: number, w: number, bOff: numbe
       for (let x = first - ld.pitch; x >= off - EPS; x -= ld.pitch) xs.unshift(x);
     }
     else for (let m = Math.ceil((off - EPS) / ld.pitch); m * ld.pitch + ld.pitch <= off + w + EPS; m++) xs.push(m * ld.pitch);
+    // leader-alignment (XSL 1.1 §7.22.1): 1 周期の字を控えておき、ページに置いた後で、参照領域・ページの端からの格子に並べ直す
+    if (ld.align && !ld.css) {
+      const cycle: LNode[] = [];
+      let dx = ld.gs ? 0 : (ld.pitch - ld.g.advance) / 2;
+      for (const g of ld.gs ?? [ld.g]) {
+        const gn = glyphNode(g, a.st, wm, g.ch, fs, a.st.color);
+        gn.i = dx;
+        gn.b = 0;
+        cycle.push(gn);
+        dx += g.advance;
+      }
+      node.leaderGrid = { align: ld.align, pitch: ld.pitch, cycle };
+    }
     for (const x of xs) {
       if (ld.gs) {
         // 文字列の繰り返し: 単位の中に字を順に並べる
@@ -1532,6 +1594,8 @@ export function buildLineNode(
   });
   // 改訂バー: この行の文字に付いたもの (同じ指定は 1 本)
   const revs = new Set(pl.raw.items.map((a) => a.st.revisionBar).filter((r) => r !== undefined));
+  // 変更バー (fo:change-bar-begin。入れ子・重なりで、1 つの字にいくつも付く)
+  for (const a of pl.raw.items) if (a.st.changeBars?.length) for (const r of a.st.changeBars) revs.add(r);
   if (revs.size) line.revs = [...revs];
 
   const entries: { a: Atom; off: number; w: number; ov?: number[]; dx?: number }[] = pl.raw.items.map((a, k) => ({ a, off: pl.offsets[k], w: pl.widths[k], ov: pl.overhang?.[k], dx: pl.shrinkDx?.[k] }));
@@ -1572,7 +1636,9 @@ export function buildLineNode(
         if (a.src && !a.box.node.src) a.box.node.src = a.src;
         inline.children.push(a.box.node);
       } else if (a.kind === 'leader' && a.leader) {
-        inline.children.push(leaderNode(a, off, gStart, w, bOff, wm, L));
+        const ln = leaderNode(a, off, gStart, w, bOff, wm, L);
+        if (ln.leaderGrid) line.hasLeaderGrid = true;
+        inline.children.push(ln);
       } else if (a.kind === 'ruby' && a.r) {
         const r = a.r;
         const [ovL, ovR] = ov ?? [0, 0];

@@ -37,6 +37,8 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 | `footnote` / `footnote-body` | `LFootnote` (参照記号のテキストをラベルに、本体は自前のラベルを持つとして `bodyLabel: false`) |
 | `leader` | `LLeader` (dots / rule / space / use-content、`leader-length.*`) |
 | `marker` / `retrieve-marker` | `LMarker` / `LRetrieveMarker` (`retrieve-position`, `retrieve-boundary`) |
+| `change-bar-begin` / `change-bar-end` | 範囲の中の要素・文字の `changeBars` (`RevisionBar` の並び。`changeBar: true`) |
+| `retrieve-table-marker` (表の header・footer の中) | `LRetrieveTableMarker` (`retrieve-position-within-table`, `retrieve-boundary-within-table`)。`fo:table-body` の子の `marker` は `LTableRow.bodyMarkers` |
 | `page-number` / `page-number-citation` | `{pageNumber}` トークン / `LPageNumberCitation` (組版を繰り返して収束) |
 | `index-key` / `index-range-begin`〜`-end` / `index-page-citation-list` | `LDocument.indexEntries` (`LIndexEntry`) / `LIndexPageCitationList` (索引のページ番号の並び。組版を繰り返して収束) |
 | `block-container` | `LBlockContainer` (`absolute-position`, `top/left/right/bottom`。本文領域の原点を足してページ基準に変換)。`width`・`height`・`inline/block-progression-dimension` は内容の寸法 (枠・パディングは外側)、`top`・`left` などは内容の端の位置 (枠はその外へ出る)。`inline-progression-dimension.maximum` だけの指定は、領域の幅が上限を超えるとき上限の幅。高さの指定の無いコンテナ (回転・段組・切り抜き・直交する書字方向を除く) は、あふれたらページをまたいで続く |
@@ -305,14 +307,19 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - `line-stacking-strategy="font-height"` (行送りはいつも line-height。§4.5)
 - leader の初期値: `rule-thickness` 1pt、`leader-length` 0pt / 12pt / 100%。`leader-pattern-width` は字の幅より狭くしない (§7.22)。rule の線は中心を基線に置き、太さを上下に等しく付ける (§7.22.6)
 - `white-space-treatment="preserve"`・`ignore-if-after-linefeed` の行末の空白は消さない (§7.16.8)
+- ページ番号の桁区切り (§7.26.2 `grouping-separator`・§7.26.3 `grouping-size`。XSLT 1.0 §7.7.1): `fo:page-sequence` に両方を書くと、10 進の書式の番号 (`fo:page-number`・ページ番号の参照・索引のページ番号) を、後ろから `grouping-size` 桁ごとに `grouping-separator` (1 字) で区切る。片方だけなら無視。1 字でない区切り・正の整数でない桁数は報告する。`letter-value` (§7.26.4) は値だけを確かめる (対応している書式トークンに、2 通りに読めるものが無い)
+- `last-line-end-indent` (§7.16.3。継承される): 行内の並びの最後の行 (ブロックの最後の行と、子のブロックの前で終わる行) の終わりの端をずらす (`lastLineEndIndent`)。残りの中身が、ずらした幅の 1 行に入ればその行が最後の行。ふだんの幅には入るが、ずらした幅 (狭い) に入らないときは、ずらした幅で折り返して残りを最後の行に送る。`text-align-last` の揃え・リーダーの伸びは、ずらした端まで。強制改行で終わる行には当てない。目次の行 (`text-align-last="justify"` + `end-indent` + 負の `last-line-end-indent`) で、ページ番号だけを端に出せる
+- `leader-alignment` (§7.22.1。継承される): `reference-area`・`page` のとき、点・中身の繰り返しの周期の始まりを、参照領域 (本文の領域・段・表のセル) の内容の始めの端・ページの始めの端からの `leader-pattern-width` ごとの格子に合わせる (`LLeader.alignment`。ページに置いた後で並べ直す)。`none` (初期値) は、いままでどおり行の始めからの格子。右から左の行は読まずに報告する。回した `fo:block-container` の中・`fo:static-content` の中では `none` と同じ。`fo:block-container` は参照領域に数えない (外の参照領域が基準)
+- `fo:initial-property-set` (§6.6.4): `fo:block` の最初の行内の並び (最初の `fo:marker` の後ろから、最初のブロックの子の前まで) を、最初の行にだけ書式を当てる inline (`LInline.firstLine`。CSS の `::first-line` と同じ受け皿) で包む。当てるのは、フォントの性質・`color`・`letter-spacing`・`word-spacing`・`text-decoration`・`background-color`。em の長さの基準はブロックの字の大きさ。`text-transform`・`font-variant` (読み込みのときに字を置き換えるので、行ごとには当てられない)、`line-height` (行内の要素の line-height を行の高さに数える受け皿が無い)、罫線・`padding`・`relative-position`・`text-shadow`・`score-spaces` は読まずに報告する。並びの途中に `fo:float`・絶対配置の箱があるとき、`fo:block` の子でないときも、読まずに報告する
+- 変更バー (`fo:change-bar-begin`・`fo:change-bar-end`。§6.13.2・§6.13.3・§6.4.5): 読み込みの最初に文書の順にたどって範囲を決め (同じ `change-bar-class` の、入れ子の深さの合うものが組。終わりの無い始まりは文書の終わりまで、始まりの無い終わりは無視して報告)、範囲の中の要素と文字に、効いている線の並びを付ける (`changeBars`。組版は、その字を含む行の横に引く。axf の改訂バーと同じ受け皿 `RevisionBar` に `changeBar: true`)。線の値は始まりの要素でのもの (`change-bar-color`・`-offset`・`-placement`・`-style`・`-width`。§7.30.2〜§7.30.6。どれも継承される)。`change-bar-offset` は段の端からバーの中心まで。`change-bar-placement` の `inside`・`outside` は、奇数ページの綴じる側を始めの端、偶数ページを終わりの端とする (§6.4.5 の注)。`alternate` は 2 段のとき 1 段めの始めと 2 段めの終わり、ほかは `outside`。縦書きの `left`・`right` は `start`・`end` として扱い報告する。`fo:static-content`・脚注の本体・前方の float・`fo:marker` の中には付けない。行を持たない領域には引かない。`z-index` は読まない (報告)
+- `fo:retrieve-table-marker` (§6.13.7): 表の header・footer のセルの中のものを、その表の断片 (ページ・段ごとの表の箱) の中のマーカーの中身に置き換える。マーカーは、本体のセルの子・セルの中のブロックの子・`fo:table-body` の子 (本体の領域に付く)。`retrieve-position-within-table` (§7.25.6) の 4 つの値と `retrieve-boundary-within-table` (§7.25.2) の `table`・`table-fragment`・`page` (同じページの前の段の断片まで)。is-first・is-last は、ページをまたいで分かれた行・本体の、最初・最後の断片で付く。header・footer は断片ごとに組む: 行の塊を 1 つ置くたびに、その塊までを入れたときの header と footer の高さで入るかを確かめ、入れば header をその中身に差し替える (高さが変われば、置いた行をずらす)。断片に入る行は前から順に決まるので、組み直しはしない。`fo:table` の子として書く形 (中身が `fo:table-header`・`fo:table-footer` になる書き方)、header・footer の外に置いたものは、読まずに報告する。入れ子の表の header の中のものは、入れ子の表のマーカーを取り出す。ページの `fo:retrieve-marker` は、`fo:table-body` の子のマーカーを取り出さない
 
 ### まだ仕様どおりでないもの
 
-- `last-line-end-indent` (§7.16.3)・`font-size-adjust` は読まない。`word-spacing` の `<space>` は `.optimum` だけを使う (伸び縮みの幅は使わない)
+- `font-size-adjust` は読まない。`word-spacing` の `<space>` は `.optimum` だけを使う (伸び縮みの幅は使わない)
 - `border-*-precedence` と `collapse-with-precedence` (collapse と同じに扱う)
 - 回転・縦書きのブロックコンテナの中の絶対配置の基準 (コンテナに切り替えない)
 - `simple-page-master` の `reference-orientation`
-- ページ番号の `grouping-separator`・`grouping-size`・`letter-value`
 
 ## その他の仕様対応 (S-12)
 
