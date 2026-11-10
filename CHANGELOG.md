@@ -32,6 +32,14 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)
+- **可変フォント** (OpenType Font Variations。TrueType の輪郭): 軸の値ごとの形 (実体) で組む。**可変フォントを使う文書の結果が変わる**: 前は、既定の形 (default instance) の 1 つの太さとして組み、太字は輪郭を太らせた擬似太字、`font-stretch` は字形の拡縮だった
+  - `font-weight` → 太さの軸 (wght。擬似太字にしない)、`font-stretch`・`font-width` → 幅の軸 (wdth。字形を拡縮しない)、`font-style` の `italic`・`oblique <角度>` → ital・slnt の軸 (あれば)、`font-optical-sizing` → 光学サイズの軸 (opsz。HTML は字の大きさの px の数、XSL-FO は pt)、`font-variation-settings` (任意の軸)。優先の順は CSS Fonts 4 §7.2
+  - `@font-face` の `font-weight: 100 900`・`font-stretch: 75% 125%`・`font-style: oblique 0deg 10deg` の範囲、`font-variation-settings`・`font-named-instance` の記述子。`font-weight` の記述子が無い可変フォントも、太さの軸が効く (既定の形の太さが 400 でない可変フォントは、標準の太さの字形も変わる)
+  - `--font`・`fonts`・XSL-FO と一緒に渡した可変フォントは、軸の範囲の全体を使う。XSL-FO では、可変フォントのファミリー名を name 表の nameID 16 (太さ・幅をまとめた名前) にした
+  - PDF には、使った軸の値の組ごとに、静的な書体にして埋め込む (字の送り HVAR、字の組の詰めと記号の位置 GPOS、書体全体の寸法 MVAR、軸の値による字形の差し替え FeatureVariations も、その軸の値のもの)。画面では、実体を静的な書体としてブラウザに登録して描く
+  - Area Tree: 実体を使う字の `fontFamily` に、太さ以外の軸の値の印 (`{;wdth=75}`) が付く。`resources.fonts` の実体の項目に `variation`・`sourceSha256` を足した。`TextStyle` に `fontVariationSettings`・`fontOpticalSizing`・`fontOpticalSizeUnit`・`fontObliqueAngle` を足した
+  - CFF2 の可変フォントは未対応 (警告を出して、既定の形で組む)
+  - `font-stretch` を 100% (normal) に戻す入れ子の指定が、親の幅を引き継いだままになっていたのを直した
 - **書体の並び** (HTML の `font-family`): 字 (結合文字・絵文字の並びは、その並び) ごとに、並びの前から順に、その字を持つ最初の書体で組む (CSS Fonts 4 §5.2・§5.3)。読み込んだ書体 (`--font`・`fonts`・`@font-face`) より前に総称・既定の書体の名前 (`"Noto Serif JP", "Noto Emoji", serif` など) がある並びと、読み込んだ書体が 2 つ以上ある並びで、組版の結果が変わる (前にある書体が持つ空白・数字・記号を、後ろの読み込んだ書体で組まない。3 つ目以降の書体も順に引く。和文の字は総称の書体で組む)
 - **PDF**: ToUnicode で、合字の字 (U+FB01 など) を元の字の並び (fi など) にする。PDF から取り出した字や検索で「confiance」などが見つかる
 - **API**:

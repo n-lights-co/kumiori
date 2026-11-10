@@ -76,6 +76,7 @@
 <li class="sec"><a href="#s-font-weight"><span class="num">5.3</span>字の太さと斜体 : <span class="nw">font-weight</span>・&#8203;<span class="nw">font-style</span></a></li>
 <li class="sec"><a href="#s-font-variant"><span class="num">5.4</span>字形の選び方 : <span class="nw">font-variant-caps</span>・&#8203;<span class="nw">font-variant-numeric</span>・&#8203;<span class="nw">font-variant-ligatures</span></a></li>
 <li class="sec"><a href="#s-font-feature"><span class="num">5.5</span>OpenType の機能 : <span class="nw">font-feature-settings</span>・&#8203;<span class="nw">font-kerning</span></a></li>
+<li class="sec"><a href="#s-font-variable"><span class="num">5.6</span>可変フォント : <span class="nw">font-variation-settings</span>・&#8203;<span class="nw">font-optical-sizing</span>・&#8203;<span class="nw">font-stretch</span></a></li>
 <li class="ch"><a href="#ch-text"><span class="num">6</span>文字と行</a></li>
 <li class="sec"><a href="#s-line-height"><span class="num">6.1</span>行の高さ : <span class="nw">line-height</span></a></li>
 <li class="sec"><a href="#s-text-align"><span class="num">6.2</span>行のそろえ : <span class="nw">text-align</span>・&#8203;<span class="nw">text-align-last</span></a></li>
@@ -530,6 +531,15 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <p style="text-indent: 0;">「括弧」と、句読点。（既定）</p>
 <p style="text-indent: 0; font-feature-settings: 'palt';">「括弧」と、句読点。（palt）</p>
 <!--/kumiori-sample-->
+<h2 id="s-font-variable"><span class="num">5.6</span>可変フォント : <code>font-variation-settings</code>・&#8203;<code>font-optical-sizing</code>・&#8203;<code>font-stretch</code><span class="nw">&nbsp;<span class="badge part">一部</span></span></h2>
+<p class="props" data-p="font-variation-settings"><span class="k">初期値</span> : <span class="v">normal</span> <span class="k">適用対象</span> : <span class="v">all elements and text</span> <span class="k">継承</span> : <span class="v">yes</span> <span class="src">(font-variation-settings — CSS Fonts 4)</span></p>
+<p>可変フォント (OpenType Font Variations。1 つのファイルに、太さ・幅などの軸を持つフォント) を、軸の値ごとのフォントとして使えます。@font-face で読み込んだフォントと、fonts の選択肢・--font で足したフォントのどちらでも使えます。対応するのは、TrueType の輪郭 (glyf と gvar の表) の可変フォントです。輪郭が CFF2 の可変フォントには対応していません (警告を出し、既定の形で組みます。軸の値は効きません)。</p>
+<p>軸の値は、CSS Fonts 4 §7.2 の順に決めます。まず font-weight・font-stretch (font-width)・font-style から太さ・幅・傾きの軸の値を決め、@font-face の記述子の範囲と、フォントが持つ範囲に収めます。次に、@font-face の font-named-instance (名前の付いたインスタンス)、@font-face の font-variation-settings、font-optical-sizing の順に当て、最後に font-variation-settings プロパティの値を当てます。フォントに無い軸の指定は無視します。</p>
+<p class="vals-h">プロパティと軸の対応 <span class="spec">(CSS Fonts 4 §2.2〜§2.4・§5.2・§8)</span></p>
+<table class="list vals"><thead><tr><th style="width: 34mm">プロパティ</th><th>軸の値の決め方</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>font-weight</code></td><td>太さの軸 (wght) の値にします。フォントの範囲の外の太さは、近い端の値にします。太字は、字の輪郭を太らせずに、フォントの太字の形で組みます。</td><td>対応</td></tr><tr><td><code>font-stretch</code>・<code>font-width</code></td><td>幅の軸 (wdth) の値にします (百分率。語は 50%〜200%)。幅の軸を持つフォントでは、字形を水平に拡縮しません。font-width は font-stretch の新しい名前です。</td><td>対応</td></tr><tr><td><code>font-style: italic</code></td><td>イタリックの軸 (ital) があれば 1 にします。無くて傾きの軸 (slnt) があれば、11deg 以上の最も小さい角度 (無ければ最も大きい角度) にします。どちらの軸も無いフォントは、字を傾けて描きます。</td><td>対応</td></tr><tr><td><code>font-style: oblique &lt;angle&gt;</code></td><td>傾きの軸 (slnt) の値にします (角度が無ければ 14deg。軸の値は角度の符号を逆にしたもの)。軸の無いフォントは、italic と同じに字を傾けて描きます。</td><td>一部: 傾きの軸のあるフォントだけ、角度が効きます</td></tr><tr><td><code>font-optical-sizing</code></td><td>auto は、光学サイズの軸 (opsz) を、フォントサイズの px の数にします。none は、軸の既定の値にします。</td><td>対応</td></tr><tr><td><code>font-variation-settings</code></td><td>軸の名前 (4 字) と値の並びで、軸の値を直接決めます。normal は何も変えません。</td><td>対応</td></tr></tbody></table>
+<p class="vals-h">@font-face の記述子 <span class="spec">(CSS Fonts 4 §4.4・§4.6・§4.7)</span></p>
+<table class="list vals"><thead><tr><th style="width: 34mm">記述子</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>font-weight: 100 900</code></td><td>フォントが受け持つ太さの範囲です。フォントを選ぶときに、この範囲で照合し (§5.2)、軸の値をこの範囲に収めます。値が 1 つのときは、その太さだけを受け持ちます (ほかの太さの太字は、輪郭を太らせて作ります)。記述子が無いときは、400 のフォントとして選び、軸の値は制限しません。</td><td>対応</td></tr><tr><td><code>font-stretch: 75% 125%</code>・<code>font-width</code></td><td>幅の軸の値を収める範囲です。</td><td>一部: 幅の違う @font-face どうしの選び分けはしません</td></tr><tr><td><code>font-style: oblique 0deg 10deg</code></td><td>傾きの軸の値を収める範囲です。範囲が 0deg を含む @font-face は、立体のフォントとして読み込みます。</td><td>一部: italic と、0deg を含まない oblique の @font-face は読み込みません</td></tr><tr><td><code>font-variation-settings</code></td><td>このフォントにいつも当てる軸の値です。</td><td>対応</td></tr><tr><td><code>font-named-instance</code></td><td>フォントの中の名前の付いたインスタンス (「Bold」など) の軸の値を当てます。名前が見つからないときは auto と同じです。</td><td>対応</td></tr></tbody></table>
+<p>PDF には、可変フォントのままでは埋め込めないので (PDF のフォントの種類に可変フォントはありません)、使った軸の値の組ごとに、その形の静的なフォントを作り、使った字だけの部分フォントとして埋め込みます。同じフォントの標準と太字を使えば、PDF のフォントは 2 つになります。字の送り (HVAR)・字の組の詰めと記号の位置 (GPOS)・フォント全体の寸法 (MVAR)・軸の値による字形の差し替え (FeatureVariations) も、その軸の値のものになります。可変フォントを読み込んでいない文書の結果は、変わりません。</p>
 </section>
 
 <!-- ================================================================ 6 文字と行 -->
@@ -1127,7 +1137,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <section class="chapter c16">
 <h1 class="chapter" id="ch-unsupported" data-no="16">対応していないプロパティ</h1>
 <p>第 1 章の確かめ方で、指定しても組版に何も渡らなかったプロパティを、仕様ごとに並べます。印刷に関わらないプロパティ (画面の操作・音声など) は、最後の表にまとめます。対応しているプロパティの中で対応していない値は、各節の値の表に書いています。そのうち、仕様の決まりが長く、表の 1 行では説明しきれないものを、2 つ目の表に取り出して説明しています。各項目には、どういうものか、どういう場面で使うかを書いています。説明は、取得した仕様書 (いずれも 2026-11-06 取得) の定義と、Kumiori のソースで確かめたことに基づきます。</p>
-<!--gen:unsupported--><h3>対応していないプロパティ (82 項目)</h3>
+<!--gen:unsupported--><h3>対応していないプロパティ (78 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>empty-cells</code><br><span class="spec">CSS 2.1 §17.6.1.1</span></td><td>罫線を分ける方式 (separated borders model) の表で、見える中身の無いセルのまわりに罫線と背景を描くかを指定します (show・hide)。空のセルの枠や背景を消して、表の見た目を整えたいときに使います。</td></tr>
 <tr><td><code>background-attachment</code><br><span class="spec">CSS Backgrounds 3 §2.5</span></td><td>背景画像を、ビューポートに固定するか (fixed)、ボックスと一緒に動かすか (scroll)、ボックスの中身と一緒に動かすか (local) を指定します。仕様は、ビューポートの無いページの媒体では fixed の背景がページボックスに固定され、どのページにも繰り返して描かれるとしています。背景画像をページごとに同じ位置に出したいときに使います。</td></tr>
@@ -1151,15 +1161,11 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>font-synthesis-position</code><br><span class="spec">CSS Fonts 4 §2.8.4</span></td><td>フォントに上付き・下付きの字形が無いとき、font-variant-position のために処理系がそれを作るかを指定します (auto・none)。上付き・下付きの字形の無いフォントで、作られた字形を使わせたくないときに使います。</td></tr>
 <tr><td><code>font-variant-alternates</code><br><span class="spec">CSS Fonts 4 §6.8</span></td><td>フォントが持つ別の字形 (飾り字形 swash など) のどれを使うかを指定します。どの別字形があるかはフォントごとに違い、名前は @font-feature-values の規則で決めます。フォントに入っている飾りの字形や別の字形を選んで使いたいときに使います。</td></tr>
 <tr><td><code>font-variant-emoji</code><br><span class="spec">CSS Fonts 4 §9.3</span></td><td>絵文字の一部の文字を、絵文字の表示 (emoji presentation) で出すか、文字の表示 (text presentation) で出すかを指定します。絵文字になりうる文字を、色付きの絵文字にするか、普通の文字にするかを決めたいときに使います。</td></tr>
-<tr><td><code>font-variation-settings</code><br><span class="spec">CSS Fonts 4 §8.2</span></td><td>OpenType・TrueType の可変フォントの軸を、軸の名前と値で直接指定します。仕様は、font-weight などで指定できる軸にはそちらを使うよう求めています。可変フォントの、ほかのプロパティでは指定できない軸の値を変えたいときに使います。</td></tr>
-<tr><td><code>font-optical-sizing</code><br><span class="spec">CSS Fonts 4 §8.1</span></td><td>文字サイズに合わせて、処理系が字形を変えてよいかを指定します (auto・none)。可変フォントでは opsz の軸を使うことが多いとしています。小さな文字を太めの字形にするなど、大きさに合った字形で組みたいときに使います。</td></tr>
 <tr><td><code>font-language-override</code><br><span class="spec">CSS Fonts 4 §6.13</span></td><td>フォントの言語の体系 (OpenType の language system) を、内容の言語とは別に、4 文字の名前で指定します。別の言語の組版の習慣にならって、言語ごとの字形の差し替えを選びたいときに使います。</td></tr>
 <tr><td><code>font-palette</code><br><span class="spec">CSS Fonts 4 §9.1</span></td><td>カラーフォントの、どのパレット (色の組) で描くかを指定します (normal・light・dark・@font-palette-values の名前など)。カラーフォントを、フォントに入っている別の色の組や、自分で決めた色で描きたいときに使います。</td></tr>
-<tr><td><code>font-width</code><br><span class="spec">CSS Fonts 4 §2.3</span></td><td>フォントファミリーから、普通・幅の狭い (condensed)・幅の広い (expanded) フォントを選びます。値はパーセントか、パーセントに対応するキーワードです。同じ家族の長体・平体のフォントを選んで使いたいときに使います。</td></tr>
 <tr><td><code>ascent-override</code><br><span class="spec">CSS Fonts 4 §4.11</span></td><td>@font-face の記述子で、フォントの上の高さ (ascent metric) を、文字サイズに対するパーセントで置き換えます。normal のときはフォントのファイルの値を使います。フォントの上の高さの値を変えて、行の組み方をほかのフォントとそろえたいときに使います。</td></tr>
 <tr><td><code>descent-override</code><br><span class="spec">CSS Fonts 4 §4.11</span></td><td>@font-face の記述子で、フォントの下の深さ (descent metric) を、文字サイズに対するパーセントで置き換えます。normal のときはフォントのファイルの値を使います。フォントの下の深さの値を変えて、行の組み方をほかのフォントとそろえたいときに使います。</td></tr>
 <tr><td><code>line-gap-override</code><br><span class="spec">CSS Fonts 4 §4.11</span></td><td>@font-face の記述子で、フォントの行間 (line gap metric) を、文字サイズに対するパーセントで置き換えます。normal のときはフォントのファイルの値を使います。フォントの行間の値を変えて、行の組み方をほかのフォントとそろえたいときに使います。</td></tr>
-<tr><td><code>font-named-instance</code><br><span class="spec">CSS Fonts 4 §4.7</span></td><td>@font-face の記述子で、可変フォントの中の名前の付いたインスタンスを名前で選び、その軸の値を使います。見つからないときは auto と同じです。可変フォントの「Bold」などの決まったインスタンスを、名前で使いたいときに使います。</td></tr>
 <tr><td><code>base-palette</code><br><span class="spec">CSS Fonts 4 §9.2.2</span></td><td>@font-palette-values の記述子で、もとにするカラーフォントのパレットを、番号か light・dark で選びます。自分で決める色の組を、フォントのどのパレットをもとに作るかを決めるときに使います。</td></tr>
 <tr><td><code>override-colors</code><br><span class="spec">CSS Fonts 4 §9.2.3</span></td><td>@font-palette-values の記述子で、パレットの番号と色の組の並びで、パレットの色を置き換えます。カラーフォントの一部の色だけを、別の色に変えて描きたいときに使います。</td></tr>
 <tr><td><code>box-decoration-break</code><br><span class="spec">CSS Fragmentation 3 §5.4</span></td><td>ページ・段・行でボックスが分かれたとき、分かれた端に罫線・内側の余白・外側の余白などを付けるか (clone)、付けずに切るか (slice) を指定します。背景をどう描くかも決めます。ページをまたぐ枠付きのボックスで、分かれたそれぞれの断片を枠で閉じたいときに使います。</td></tr>
