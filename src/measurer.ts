@@ -227,6 +227,21 @@ export class Measurer {
     return v;
   }
 
+  private vertFeatureCache = new WeakMap<LoadedFont, boolean>();
+  /** 書体が縦書き用の字形の機能 (OpenType の vert) を持つか (どの字を替えるかによらない) */
+  private hasVertFeature(font: LoadedFont): boolean {
+    let v = this.vertFeatureCache.get(font);
+    if (v === undefined) {
+      try {
+        v = ((font.fk as unknown as { availableFeatures?: string[] }).availableFeatures ?? []).includes('vert');
+      } catch {
+        v = false;
+      }
+      this.vertFeatureCache.set(font, v);
+    }
+    return v;
+  }
+
   private measureEm(font: LoadedFont, ch: string, features?: string[]): number {
     let w: number;
     if (features?.length) {
@@ -381,7 +396,7 @@ export class Measurer {
       if (k !== 1) return { ch, font, fontSize: fs, advance: natural * k, cross: fs, naturalWidth: natural * k, scaleX: k };
       return { ch, font, fontSize: fs, advance: natural, cross: fs, naturalWidth: natural };
     }
-    const t = verticalTreatment(ch, (c) => this.fonts.hasGlyph(font, c), style.orientation, (c) => this.hasVert(font, c));
+    const t = verticalTreatment(ch, (c) => this.fonts.hasGlyph(font, c), style.orientation, (c) => this.hasVert(font, c), this.hasVertFeature(font));
     // 横倒し字は 90° 回すので進行方向の長さは元の水平幅。正立の字は 1em 送り (text-orientation: upright の欧字・書体の縦書き用の字形も)
     const advance = t.mode === 'rotate' ? natural : isFullWidth(ch) || style.orientation === 'upright' || t.features ? fs : natural;
     const nat = t.features ? this.emAdvance(font, ch, t.features) * fs : t.glyph === ch ? natural : this.emAdvance(font, t.glyph) * fs;
@@ -483,7 +498,7 @@ export class Measurer {
   /** 縦書きで正立する字のクラスタを書体 font で組むと、送りのある字形が 2 つ以上になるか (1 字分の枠に収まらない) */
   private stacksWhenUpright(font: LoadedFont, unit: string, orientation: RunStyle['orientation']): boolean {
     const base = String.fromCodePoint(unit.codePointAt(0)!);
-    if (verticalTreatment(base, (c) => this.fonts.hasGlyph(font, c), orientation, (c) => this.hasVert(font, c)).mode !== 'upright') return false;
+    if (verticalTreatment(base, (c) => this.fonts.hasGlyph(font, c), orientation, (c) => this.hasVert(font, c), this.hasVertFeature(font)).mode !== 'upright') return false;
     let m = this.stackCache.get(font);
     if (!m) this.stackCache.set(font, (m = new Map()));
     let v = m.get(unit);
@@ -517,7 +532,7 @@ export class Measurer {
       if (k !== 1) return { ch: base, font, fontSize: fs, advance: natural * k, cross: fs, naturalWidth: natural * k, scaleX: k, draw: unit };
       return { ch: base, font, fontSize: fs, advance: natural, cross: fs, naturalWidth: natural, draw: unit };
     }
-    const t = verticalTreatment(base, (c) => this.fonts.hasGlyph(font, c), style.orientation, (c) => this.hasVert(font, c));
+    const t = verticalTreatment(base, (c) => this.fonts.hasGlyph(font, c), style.orientation, (c) => this.hasVert(font, c), this.hasVertFeature(font));
     // 基底の字を縦書き用の字 (VERTICAL_FORMS の字) に替えたときも、後ろの結合文字は残す
     const text = t.glyph === base ? unit : t.glyph + unit.slice(base.length);
     const advance = t.mode === 'rotate' ? natural : isFullWidth(base) || style.orientation === 'upright' || t.features ? fs : natural;

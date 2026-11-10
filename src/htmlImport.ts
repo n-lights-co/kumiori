@@ -2113,7 +2113,9 @@ class HtmlImporter {
 
   /**
    * open-quote・close-quote の字 (Content 3 §4.1)。入れ子の深さで quotes の組を選ぶ (深さが組の数以上なら最後の組)。
-   * close-quote で深さが負になるときは何も入れない。quotes: auto は言語に合う引用符 (日本語・中国語は「」『』、ほかは “” ‘’)
+   * close-quote で深さが負になるときは何も入れない。quotes: auto は言語に合う引用符 (日本語と繁体字の中国語は「」『』、ほかは “” ‘’)。
+   * 中国語は、繁体字 (zh-Hant と、台湾・香港・マカオ = zh-TW・zh-HK・zh-MO) が「」『』、簡体字 (それ以外の zh) が “” ‘’
+   * (Content 3 §4.1 の注が挙げる CLDR の引用符: zh は “ ” ‘ ’、zh_Hant は 「 」 『 』。clreq §5.2: 中国大陸は弯引号、台湾は直角引号)
    */
   private quote(el: Element, pseudo: '::before' | '::after' | undefined, kind: string): string {
     const v = (pseudo ? this.cs(el, pseudo) : this.cs(el))('quotes')?.trim() ?? 'auto';
@@ -2121,7 +2123,8 @@ class HtmlImporter {
     if (v === 'none') pairs = [];
     else if (v === 'auto' || !v) {
       const lang = (this.langOf(el) ?? '').toLowerCase();
-      pairs = /^(ja|zh)\b/.test(lang) ? [['「', '」'], ['『', '』']] : [['“', '”'], ['‘', '’']];
+      const corner = /^ja\b/.test(lang) || (/^zh\b/.test(lang) && /-(hant|tw|hk|mo)\b/.test(lang));
+      pairs = corner ? [['「', '」'], ['『', '』']] : [['“', '”'], ['‘', '’']];
     } else {
       const strs = parseContent(v).filter((x): x is { kind: 'str'; v: string } => x.kind === 'str').map((x) => x.v);
       pairs = [];
@@ -5228,6 +5231,14 @@ class HtmlImporter {
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
     const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
+    // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
+    // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、
+    // アンテナハウス互換の行の基準線) が、<html lang="…"> だけの文書でも効く
+    if (!rootStyle.language) {
+      const rootLang = this.langOf(bodyEl);
+      if (rootLang) rootStyle.language = rootLang;
+    }
     // 互換モード・限定互換モードの行の高さ (Quirks Mode Standard §3.3・§3.4)
     if (documentModeOf(doc) !== 'no-quirks') Object.assign(rootStyle, { noStrut: true, lineHeightQuirk: true });
     // 和欧間アキの既定 (CSS Text 4 §8.4 の初期値 normal)。指定のある要素は、その指定 (spacing) で上書きする
