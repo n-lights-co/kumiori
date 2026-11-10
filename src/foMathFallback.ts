@@ -21,8 +21,39 @@ export interface FoMathHost {
   addImage(src: string): void;
 }
 
+/**
+ * 要素の入れ子の深さの上限 (数式用の書体で組むときの mathLayout の MAX_MATH_NEST と同じ値)。JS の呼び出しの深さを使い切らないよう、
+ * これより深い要素は空にする。実在の数式の入れ子は数十段まで
+ */
+const MAX_MATH_NEST = 300;
+
+/** 最大値 (Math.max(...list) は、要素の数が引数の数の上限 (十数万) を超えると RangeError になる) */
+function maxOf(list: readonly number[], init: number): number {
+  let m = init;
+  for (const v of list) if (v > m) m = v;
+  return m;
+}
+
 export class FoMathFallback {
   constructor(private readonly fo: FoMathHost) {}
+  /** 組み替えている要素の入れ子の深さ */
+  private nest = 0;
+  /** 高さを見積もっている要素の入れ子の深さ */
+  private extentNest = 0;
+
+  /** MathML を行内の要素に組み替える。深すぎる入れ子 (MAX_MATH_NEST) は空にして、読み込みの報告に数える */
+  mathml(n: XEl, fs: number): LInlineLevel {
+    if (this.nest >= MAX_MATH_NEST) {
+      this.fo.miss('MathML の深すぎる入れ子');
+      return '';
+    }
+    this.nest++;
+    try {
+      return this.mathmlElement(n, fs);
+    } finally {
+      this.nest--;
+    }
+  }
 
   /**
    * MathML (Presentation) を行内の要素に組み替える。字の大きさ・上げ下げ・積み重ね (分数・上下の添え字) は Kumiori の行内の箱で表す。
@@ -30,7 +61,7 @@ export class FoMathFallback {
    * mover・munder・munderover・mfenced・mtable (行を積む)・semantics。伸縮する括弧 (中身の高さの見積もりで図形を描く)・
    * アクセントの矢印・根号は図形と罫線で描く。揃え (maligngroup) は扱わない
    */
-  mathml(n: XEl, fs: number): LInlineLevel {
+  private mathmlElement(n: XEl, fs: number): LInlineLevel {
     // 字の色・大きさ・太さ・字体の属性 (MathML 2 の mathcolor・mathsize と、古い color・fontsize・fontweight・fontstyle)
     const color = this.fo.color(this.fo.attr(n, 'mathcolor') ?? this.fo.attr(n, 'color'));
     const sizeAttr = this.fo.attr(n, 'mathsize') ?? this.fo.attr(n, 'fontsize');
@@ -84,7 +115,15 @@ export class FoMathFallback {
     let memo = this.extentMemo.get(n);
     const hit = memo?.get(key);
     if (hit !== undefined) return hit;
-    const v = this.measureMathExtent(n, fs);
+    // 深すぎる入れ子は測らない (字 1 つ分の高さにする)
+    if (this.extentNest >= MAX_MATH_NEST) return fs;
+    this.extentNest++;
+    let v: number;
+    try {
+      v = this.measureMathExtent(n, fs);
+    } finally {
+      this.extentNest--;
+    }
     if (!memo) this.extentMemo.set(n, (memo = new Map()));
     memo.set(key, v);
     return v;
@@ -94,7 +133,7 @@ export class FoMathFallback {
   private measureMathExtent(n: XEl, fs: number): number {
     const small = Math.max(fs * 0.71, 4);
     const els = this.fo.els(n);
-    const max = (size: number, list = els) => Math.max(fs, ...list.map((e) => this.mathExtent(e, size)));
+    const max = (size: number, list = els) => maxOf(list.map((e) => this.mathExtent(e, size)), fs);
     switch (this.fo.name(n)) {
       case 'mfrac': {
         const fsz = this.mathDisplay ? fs : small;
@@ -118,7 +157,7 @@ export class FoMathFallback {
         return (els[0] ? this.mathExtent(els[0], fs) : fs) + 2 * small * 1.15;
       case 'mtable': {
         const rows = els.filter((r) => /^(mtr|mlabeledtr)$/.test(this.fo.name(r)));
-        return rows.reduce((a, r) => a + Math.max(fs, ...this.fo.els(r).map((c) => this.mathExtent(c, fs))) + fs * 0.43, 0);
+        return rows.reduce((a, r) => a + maxOf(this.fo.els(r).map((c) => this.mathExtent(c, fs)), fs) + fs * 0.43, 0);
       }
       case 'semantics':
         return els[0] ? this.mathExtent(els[0], fs) : fs;
@@ -257,7 +296,7 @@ export class FoMathFallback {
   private mathRow(els: XEl[], fs: number): LInlineLevel[] {
     const isFence = (e: XEl) => this.fo.name(e) === 'mo' && FoMathFallback.FENCES.test((e.textContent ?? '').trim()) && this.fo.attr(e, 'stretchy') !== 'false';
     const others = els.filter((e) => !isFence(e));
-    const h = others.length ? Math.max(...others.map((e) => this.mathExtent(e, fs))) : fs;
+    const h = others.length ? maxOf(others.map((e) => this.mathExtent(e, fs)), -Infinity) : fs;
     return els.map((e) => (isFence(e) ? (this.stretchedFence((e.textContent ?? '').trim(), h, fs) ?? this.mathml(e, fs)) : this.mathml(e, fs)));
   }
 
@@ -393,7 +432,7 @@ export class FoMathFallback {
         const close = this.fo.attr(n, 'close') ?? ')';
         const sep = this.fo.attr(n, 'separators') ?? ',';
         // 括弧は中身の高さまで伸ばす
-        const h = els.length ? Math.max(...els.map((e) => this.mathExtent(e, fs))) : fs;
+        const h = els.length ? maxOf(els.map((e) => this.mathExtent(e, fs)), -Infinity) : fs;
         const parts: LInlineLevel[] = [this.stretchedFence(open, h, fs) ?? open];
         els.forEach((e, k) => {
           if (k > 0) parts.push(sep[Math.min(k - 1, sep.length - 1)] ?? '');
@@ -416,7 +455,7 @@ export class FoMathFallback {
           // 式番号は side="left" なら先頭の列、既定 (right) は末尾の列
           return /left/.test(this.fo.attr(n, 'side') ?? '') ? cs : [...cs.slice(1), ...cs.slice(0, 1)];
         };
-        const nCols = Math.max(1, ...rowsEl.map((r) => cellsOf(r).length));
+        const nCols = maxOf(rowsEl.map((r) => cellsOf(r).length), 1);
         // 行の間・列の間 (rowspacing 既定 1ex・columnspacing 既定 0.8em)。単位の無い数は em とみなす。セルの上下・左右の余白に半分ずつ配る
         const spacing = (name: string, def: number) => {
           const t = (this.fo.attr(n, name) ?? '').trim().split(/\s+/)[0];

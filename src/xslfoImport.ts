@@ -71,6 +71,14 @@ import { isAntennaCompat, type FoCompat } from './compat';
 
 /** 表の列の番号・数の上限 */
 const MAX_TABLE_COLUMNS = 1000;
+/**
+ * 要素の入れ子の深さ (fo:root から数える) の上限。読み込み・組版は、要素の入れ子を関数の再帰でたどるので、深すぎる文書は
+ * JS の呼び出しの深さを使い切る (RangeError)。測ったところ、fo:block だけの入れ子で 800〜1000 段、fo:block-container と
+ * fo:block の交互で 600〜800 段で切れるので、その 1/3 ほどにする。実在の文書の入れ子は数十段まで
+ */
+const MAX_FO_NEST = 250;
+/** 入れ子が深すぎる文書の誤り */
+const tooDeep = () => new Error(msg(`要素の入れ子が深すぎます (${MAX_FO_NEST} 段まで)`, `elements are nested too deeply (up to ${MAX_FO_NEST} levels)`));
 
 export interface ImportOptions {
   /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。rgb-icc(…, #Separation, '名前', 濃度) を特色 (PDF の Separation) にする */
@@ -153,6 +161,8 @@ class Importer {
   private markerEls: Array<{ el: XEl; mk: LMarker }> = [];
   /** 読んだ fo:retrieve-marker と、その位置の文脈 */
   private retrieves: Array<{ r: LRetrieveMarker; ctx: Ctx }> = [];
+  /** fo:marker の中身を読んでいる間の深さ (0 なら marker の外) */
+  private inMarker = 0;
   /** 文字列の XML (CDATA に入った MathML・SVG) を読むためのパーサ */
   parseXml?: (xml: string) => XNode;
 
@@ -386,10 +396,17 @@ class Importer {
 
   /** 要素の親 (convert で文書の木を一度たどって作る。継承しない性質の inherit を親の値にするのに使う) */
   private parents = new WeakMap<XEl, XEl>();
-  private indexParents(el: XEl) {
-    for (const c of this.els(el)) {
-      this.parents.set(c, el);
-      this.indexParents(c);
+  private indexParents(root: XEl) {
+    // 再帰でなく、積んだ一覧でたどる (深い入れ子でも呼び出しの深さを使わない)。深すぎる入れ子 (MAX_FO_NEST) は、ここで誤りにする
+    // fo:instream-foreign-object の中身 (MathML・SVG) は、FO の要素としては読まないので数えない (それぞれの読み方に深さの上限がある)
+    const todo: Array<{ el: XEl; depth: number; foreign: boolean }> = [{ el: root, depth: 0, foreign: false }];
+    for (let t = todo.pop(); t; t = todo.pop()) {
+      if (t.depth >= MAX_FO_NEST) throw tooDeep();
+      const foreign = t.foreign || (this.isFo(t.el) && this.name(t.el) === 'instream-foreign-object');
+      for (const c of this.els(t.el)) {
+        this.parents.set(c, t.el);
+        todo.push({ el: c, depth: foreign ? t.depth : t.depth + 1, foreign });
+      }
     }
   }
 
@@ -469,10 +486,22 @@ class Importer {
    * marker 自身とその祖先の性質は引き継がない (§6.13.5 の注)
    */
   private resolveMarkerVariants() {
-    for (const { r, ctx } of this.retrieves) {
+    // 回す範囲は先に控える (読み直しの途中で retrieves・markerEls が増えても、回す数は変わらない)
+    const retrieves = this.retrieves.slice();
+    const markers = this.markerEls.slice();
+    for (const { r, ctx } of retrieves) {
       const variants: Record<number, Array<LBlockLevel | LInlineLevel>> = {};
-      for (const { el, mk } of this.markerEls) if (mk.className === r.className && mk.key !== undefined) variants[mk.key] = this.children(el, ctx, true);
+      for (const { el, mk } of markers) if (mk.className === r.className && mk.key !== undefined) variants[mk.key] = this.markerChildren(el, ctx);
       if (Object.keys(variants).length) r.variants = variants;
+    }
+  }
+  /** fo:marker の中身を読む (中の fo:retrieve-marker・fo:marker は読まない。flowChild の marker・retrieve-marker の所を参照) */
+  private markerChildren(el: XEl, ctx: Ctx): Array<LBlockLevel | LInlineLevel> {
+    this.inMarker++;
+    try {
+      return this.children(el, ctx, true);
+    } finally {
+      this.inMarker--;
     }
   }
 
@@ -1749,12 +1778,25 @@ class Importer {
       case 'footnote':
         return one(this.footnote(n, ctx), false);
       case 'marker': {
+        // fo:marker の中の fo:marker: fo:marker は fo:flow の子孫で、fo:marker の子孫であってはならない (XSL 1.1 §6.13.5 の Constraints)。
+        // 読むと、外の marker を取り出すたびに中の marker が増えるので、読まずに読み込みの報告に数える
+        if (this.inMarker) {
+          this.miss('fo:marker (fo:marker の中)');
+          return [];
+        }
         const { ctx: c2 } = this.textStyle(n, ctx);
-        const mk: LMarker = { type: 'marker', className: this.attr(n, 'marker-class-name') ?? '', children: this.children(n, c2, true), key: this.markerEls.length };
+        const mk: LMarker = { type: 'marker', className: this.attr(n, 'marker-class-name') ?? '', children: this.markerChildren(n, c2), key: this.markerEls.length };
         this.markerEls.push({ el: n, mk });
         return one(mk, true);
       }
       case 'retrieve-marker': {
+        // fo:marker の中の fo:retrieve-marker: fo:retrieve-marker は fo:static-content の子孫に限られ (XSL 1.1 §6.13.6 の Constraints)、
+        // fo:marker は fo:flow の子孫に限られる (§6.13.5) ので、fo:marker の中には置けない。読むと、取り出した中身がまた marker を
+        // 取り出すことになり終わらないので、読まずに読み込みの報告に数える
+        if (this.inMarker) {
+          this.miss('fo:retrieve-marker (fo:marker の中)');
+          return [];
+        }
         const pos = this.attr(n, 'retrieve-position') ?? 'first-starting-within-page';
         const bd = this.attr(n, 'retrieve-boundary') ?? 'page-sequence';
         const r: LRetrieveMarker = { type: 'retrieve-marker', className: this.attr(n, 'retrieve-class-name') ?? '' };
@@ -2892,7 +2934,15 @@ export function importXslFo(xml: string, parse: (xml: string) => XNode, opts: Im
   const dom = parse(xml.replace(/^[\uFEFF\s]+/, ''));
   const root = dom.nodeType === 9 ? (Array.from(dom.childNodes).find((c) => c.nodeType === 1) as XEl) : dom;
   if (!root || (importer.name(root) !== 'root' && !root.nodeName.endsWith('root'))) throw new Error(msg('fo:root が見つかりません (XSL-FO ではないようです)', 'fo:root was not found (this does not look like XSL-FO)'));
-  const document = importer.convert(root);
+  let document: LDocument;
+  try {
+    document = importer.convert(root);
+  } catch (e) {
+    // 深さの上限 (MAX_FO_NEST) の中でも、呼び出しの深さを使い切ることがありうる (実行環境のスタックが小さいとき)。
+    // そのときも、何が起きたかの分かる誤りにする
+    if (e instanceof RangeError && /call stack|recursion/i.test(e.message)) throw tooDeep();
+    throw e;
+  }
   return { document, report: importer.report };
 }
 

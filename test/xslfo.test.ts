@@ -145,6 +145,22 @@ describe('XSL-FO 変換: 内容', () => {
     expect(tree.sheets.length).toBe(1);
   });
 
+  it('fo:marker の中の fo:retrieve-marker・fo:marker は読まずに報告する (読むと読み込みが終わらない)', { timeout: 20000 }, () => {
+    // XSL 1.1 §6.13.5・§6.13.6: retrieve-marker は static-content の子孫、marker は flow の子孫に限られる
+    const r = imp(
+      fo('<fo:block><fo:marker marker-class-name="c">章<fo:retrieve-marker retrieve-class-name="c"/><fo:marker marker-class-name="c">入れ子</fo:marker></fo:marker>本文</fo:block>', '',
+        '<fo:static-content flow-name="xsl-region-before"><fo:block><fo:retrieve-marker retrieve-class-name="c"/></fo:block></fo:static-content>'),
+    );
+    expect(r.report.unsupported['fo:retrieve-marker (fo:marker の中)']).toBeGreaterThanOrEqual(1);
+    expect(r.report.unsupported['fo:marker (fo:marker の中)']).toBeGreaterThanOrEqual(1);
+    const json = JSON.stringify(r.document.sequences[0].flow);
+    expect(json).not.toContain('retrieve-marker');
+    expect(json.match(/"type":"marker"/g)).toHaveLength(1);
+    // static-content の retrieve-marker は、marker の中身 (文字だけ) を読み直して持つ
+    expect(JSON.stringify(r.document.sequences[0].staticContent)).toContain('"variants":{"0":["章"]}');
+    expect(E.engine.layout(r.document).sheets.length).toBe(1);
+  });
+
   it('脚注・float・leader・marker・retrieve-marker・list-block', () => {
     const r = imp(
       fo(`<fo:block><fo:marker marker-class-name="c">章</fo:marker>本文<fo:footnote><fo:inline>*1</fo:inline><fo:footnote-body><fo:block>注</fo:block></fo:footnote-body></fo:footnote>

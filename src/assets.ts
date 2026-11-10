@@ -264,7 +264,13 @@ export class AssetStore {
   async addDataUri(uri: string): Promise<ImageAsset | undefined> {
     const m = /^data:([^;,]*)(;base64)?,(.*)$/is.exec(uri);
     if (!m) return undefined;
-    const bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]);
+    // 壊れた base64・不正な % の並びは、読めない画像として扱う (例外を外へ出さない。getFile と同じ)
+    let bin: string;
+    try {
+      bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]);
+    } catch {
+      return undefined;
+    }
     const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
     const asset = await this.addBlob(uri, new Blob([bytes], { type: m[1] }));
     return asset;

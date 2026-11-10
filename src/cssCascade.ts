@@ -10,7 +10,7 @@
  * レイアウトはしないので、幅・高さが auto の要素の寸法 (ブラウザが返す使用値) は返さない (auto のまま)。
  * 百分率の幅・余白は、包含ブロックの幅を親から順に見積もって px にする。
  */
-import { parseCss, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
+import { MAX_VAR_LENGTH, parseCss, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
 import { fmtColor, parseColor, splitTop, UNIT_PX } from './cssText';
 import { asciiLower, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
@@ -1245,12 +1245,18 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       else if (kw === 'inherit' || kw === 'unset') val = parent?.vars.get(name) ?? INVALID;
       else {
         let bad = false;
+        // 置き換えた値の長さの合計。上限 (MAX_VAR_LENGTH) を超えたら無効にする (Variables 1 §3.3: 多重参照で値を膨らませない)
+        let length = 0;
         const sub = (t: string, depth = 0): string =>
           depth > 20
             ? ((bad = true), '')
             : t.replace(VAR_RE, (_m, n: string, fb?: string) => {
                 const r = resolveOwn(n);
-                if (typeof r === 'string') return r;
+                if (typeof r === 'string') {
+                  if ((length += r.length) <= MAX_VAR_LENGTH) return r;
+                  bad = true;
+                  return '';
+                }
                 // 循環に入ると、fallback があっても無効 (Variables 1 §2.3)
                 if (r === INVALID && own.has(n) && state.get(n) === 'busy') {
                   bad = true;
@@ -1280,8 +1286,15 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   const cascadeDecls = (decls: DeclaredValue[], vars: Map<string, string>, fsCtx: () => LenCtx): { cascaded: Map<string, string>; rank: Map<string, number> } => {
     const cascaded = new Map<string, string>();
     const rank = new Map<string, number>();
-    const resolveVar = (v: string, depth = 0): string =>
-      depth > 10 || !/var\(/i.test(v) ? v : resolveVar(v.replace(VAR_RE, (_m, n: string, fb?: string) => vars.get(n) ?? fb ?? ''), depth + 1);
+    // 置き換えた値の長さの合計が上限 (MAX_VAR_LENGTH) を超えたら、空の値 (計算値の時点で無効な宣言) にする (Variables 1 §3.3)
+    const resolveVar = (v: string, depth = 0, budget = { left: MAX_VAR_LENGTH }): string => {
+      if (depth > 10 || !/var\(/i.test(v)) return v;
+      const out = v.replace(VAR_RE, (_m, n: string, fb?: string) => {
+        const r = vars.get(n) ?? fb ?? '';
+        return (budget.left -= r.length) < 0 ? '' : r;
+      });
+      return budget.left < 0 ? '' : resolveVar(out, depth + 1, budget);
+    };
     /** revert で既定のスタイルまで戻った性質 */
     const reverted = new Set<string>();
     for (const d of decls) {

@@ -3,7 +3,7 @@
  * 対応: ci・cn・csymbol・fn・lambda・apply (plus・minus・times・divide・power・root・abs・factorial・not・関係 (eq・lt など)・
  * 集合の演算・int・sum・product・関数の適用)。置き換えの形 (演算子の字・括弧の付け方) は Kumiori の決めたもの
  */
-import { attr, elements, nameOf, virtual, type MNode } from './mathLayout';
+import { attr, elements, nameOf, virtual, MAX_MATH_NEST, type MNode } from './mathLayout';
 
 const mo = (t: string, a: Record<string, string> = {}) => virtual('mo', a, [], t);
 const mi = (t: string, a: Record<string, string> = {}) => virtual('mi', a, [], t);
@@ -40,9 +40,25 @@ const QUAL = new Set(['bvar', 'lowlimit', 'uplimit', 'degree', 'condition', 'dom
 
 const CONTENT = new Set(['apply', 'ci', 'cn', 'csymbol', 'fn', 'lambda']);
 
+/**
+ * 置き換えの入れ子の深さ。組む側 (mathLayout の layout) と同じ上限 (MAX_MATH_NEST) を超えた所は、空の mrow にする
+ * (JS の呼び出しの深さを使い切らない。置き換えは apply の部分木を 1 度にたどるので、layout の上限では止まらない)
+ */
+let nest = 0;
+
 export function contentToPresentation(n: MNode): MNode {
   const nm = nameOf(n);
   if (!CONTENT.has(nm)) return n;
+  if (nest >= MAX_MATH_NEST) return mrow([]);
+  nest++;
+  try {
+    return convert(nm, n);
+  } finally {
+    nest--;
+  }
+}
+
+function convert(nm: string, n: MNode): MNode {
   const els = elements(n);
   switch (nm) {
     case 'ci':

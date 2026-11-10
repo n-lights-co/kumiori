@@ -16,6 +16,7 @@ import { apply, applyVector, invert, mul, transformSegs, type Matrix, type Seg }
 import { type Interp, type PSDict, type PSObj, PSError, arrItems, isProc, strBytes } from './psInterp';
 import type { Clip, DisplayItem, Graphics, RGB } from './psGraphics';
 import type { ColorSpace } from './psColorSpace';
+import { PS_TOTAL_IMAGE_PIXELS } from './imageLimits';
 
 type Fn = (x: number[]) => number[];
 const numOf = (o: PSObj | undefined, d = 0) => (o && (o.t === 'int' || o.t === 'real') ? o.v : d);
@@ -249,7 +250,10 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
   if (!inv) return undefined;
   const { w, h } = gridOf(box);
   G.I.charge((w * h) / 16);
+  // 網かけの画像も、文書の画像の画素の合計の上限に数える (網かけを描き続けるループで、メモリを使い切らない)
   G.imagePixels = (G.imagePixels ?? 0) + w * h;
+  if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
+  G.countItem();
   const rgba = new Uint8Array(w * h * 4);
   const sx = (box[2] - box[0]) / w;
   const sy = (box[3] - box[1]) / h;
@@ -359,6 +363,9 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
       const i1 = Math.min(w - 1, Math.ceil((Math.max(P[0][0], P[1][0], P[2][0]) - box[0]) / sx));
       const j0 = Math.max(0, Math.floor((box[3] - Math.max(P[0][1], P[1][1], P[2][1])) / sy));
       const j1 = Math.min(h - 1, Math.ceil((box[3] - Math.min(P[0][1], P[1][1], P[2][1])) / sy));
+      // 三角形ごとに見る画素も、手間として数える (面を塗る網かけと同じく 16 画素で 1 ステップ)。
+      // 三角形はいくつでも重ねられるので、数えないと、数千個の三角形が時間の上限の何十倍もかかる
+      if (i1 >= i0 && j1 >= j0) G.I.charge(((i1 - i0 + 1) * (j1 - j0 + 1)) / 16);
       for (let j = j0; j <= j1; j++)
         for (let i = i0; i <= i1; i++) {
           const x = box[0] + (i + 0.5) * sx;
@@ -596,6 +603,7 @@ export function patternFill(G: Graphics, segs: Seg[], evenOdd: boolean) {
     G.I.warn('模様の塗り');
     return;
   }
+  G.countItem(segs.length);
   const fillClip: Clip = { segs: segs.slice(), evenOdd, parent: G.g.clip };
   const region = intersect(intersect(segsBox(segs), segsBox(G.clipPathSegs())), G.opts.bbox);
   if (!(region[2] > region[0] && region[3] > region[1])) return;
@@ -707,6 +715,8 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
         if (!c || c === tile!.bboxClip) return tileClip;
         let m = memo.get(c);
         if (!m) {
+          G.countPoints(c.segs.length);
+          G.countItem(c.segs.length);
           m = { segs: c.segs.map((s) => moveSeg(s, dx, dy)), evenOdd: c.evenOdd, parent: clipOf(c.parent) };
           memo.set(c, m);
         }
@@ -714,6 +724,10 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
       };
       for (const it of tile.items) {
         budget--;
+        // 写しは点を作り直すので、点の合計の上限に数える
+        const n = it.k === 'fill' || it.k === 'stroke' ? it.segs.length : 0;
+        G.countPoints(n);
+        G.countItem(n);
         G.items.push(moveItem(it, dx, dy, clipOf(it.clip), color));
       }
     }

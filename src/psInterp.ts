@@ -6,7 +6,8 @@
  * ファイルの書き込みと名前付きファイルの読み込みも持たない (外から受け取ったプログラムが、手元のファイルに触れないように)。
  * 図形の演算子は psGraphics.ts が足す。
  */
-import { filterSource, type ByteSource } from './psFilters';
+import { FilterError, filterSource, type ByteSource } from './psFilters';
+import { PS_FILTER_MAX_BYTES, PS_MAX_VM_BYTES } from './imageLimits';
 
 // ───────────────────────── オブジェクト (PLRM §3.3) ─────────────────────────
 
@@ -89,7 +90,12 @@ export function latin1(s: string): Uint8Array {
 }
 export function strText(s: PSString): string {
   let r = '';
-  for (let i = 0; i < s.n; i++) r += String.fromCharCode(s.b[s.o + i]);
+  if (s.n <= 64) {
+    for (let i = 0; i < s.n; i++) r += String.fromCharCode(s.b[s.o + i]);
+    return r;
+  }
+  // 長い文字列は、まとめて文字にする (1 字ずつ足すと、100 万字の文字列を鍵・名前にするたびに数十ミリ秒かかる)
+  for (let i = 0; i < s.n; i += 8192) r += String.fromCharCode.apply(null, s.b.subarray(s.o + i, s.o + Math.min(s.n, i + 8192)) as unknown as number[]);
   return r;
 }
 export const strBytes = (s: PSString): Uint8Array => s.b.subarray(s.o, s.o + s.n);
@@ -121,6 +127,27 @@ export class QuitSignal {
 }
 
 // ───────────────────────── 辞書 (§3.3.9) ─────────────────────────
+
+/**
+ * VM に積む量 (Interp.vmAlloc)。PLRM 付録 B の §B.1 はオブジェクト 1 つを 8 バイトとしているので、配列は 1 要素 8 バイト、文字列は 1 字 1 バイト。
+ * 辞書の 1 項・save の記録 1 件・グラフィックス状態 1 つは、この実装が実際に使う量に近い値にする (少なく数えると、上限の前にメモリを使い切る)
+ */
+export const VM_ARRAY_ITEM = 8;
+const VM_DICT_ENTRY = 128;
+const VM_JOURNAL_ENTRY = 64;
+const VM_SAVE = 256;
+/** 辞書 1 つ (項は別に積む) */
+const VM_DICT = 256;
+/** フィルタ 1 つ。Flate (窓 32KB と符号の表)・LZW (表) は大きい */
+const VM_FILTER = 256;
+const VM_FILTER_BIG = 65536;
+/** グラフィックス状態 1 つ (gsave の段・gstate のオブジェクト・save が写す分) */
+export const VM_GSTATE = 512;
+/**
+ * この長さまでの名前は VM に積まない: 名前は表に 1 つだけ置かれるもの (§3.3.6) で、同じ名前を何度作っても増えない。
+ * 表 B.1 の名前の長さの上限 (127 字) を超える名前は、ここでは誤りにせずに受け付けるかわりに、作るたびに長さを積む
+ */
+const VM_NAME_FREE = 127;
 
 let dictSerial = 0;
 /** 辞書のキー: 名前と文字列は同じキー (§3.3.9)、整数と実数は値が等しければ同じキー */
@@ -175,6 +202,8 @@ export class PSDict {
     const key = typeof k === 'string' ? k : keyOf(k);
     const ko: PSObj = typeof k === 'string' ? name(k) : k.t === 'string' ? name(strText(k)) : k;
     const old = this.map.get(key);
+    // 新しい項は VM に積む (鍵が長い名前・文字列なら、その長さも)
+    if (!old) this.I?.vmAlloc(VM_DICT_ENTRY + (typeof key === 'string' && key.length > VM_NAME_FREE ? key.length : 0));
     this.I?.journalDict(this, key, old);
     this.map.set(key, { k: ko, v });
   }
@@ -282,13 +311,13 @@ export function scanToken(f: PSFile, opts: ScanOptions, I: Interp): PSObj | unde
       while (c >= 0 && c !== 10 && c !== 13 && c !== 12) c = f.read();
       continue;
     }
-    if (c === 0x28) return readLiteralString(f);
+    if (c === 0x28) return readLiteralString(f, I);
     if (c === 0x3c) {
       const d = f.read();
       if (d === 0x3c) return name('<<', true);
-      if (d === 0x7e) return readA85String(f);
+      if (d === 0x7e) return readA85String(f, I);
       f.unread(d);
-      return readHexString(f);
+      return readHexString(f, I);
     }
     if (c === 0x3e) {
       const d = f.read();
@@ -322,7 +351,10 @@ export function scanToken(f: PSFile, opts: ScanOptions, I: Interp): PSObj | unde
         const t = scanToken(f, opts, I);
         if (!t) throw new PSError('syntaxerror');
         items.push(t);
+        // 手続きの値は VM に置く (終わらない元から読む手続きが、メモリを使い切る前に VMerror にする)
+        if ((items.length & 4095) === 0) I.vmAlloc(4096 * VM_ARRAY_ITEM);
       }
+      I.vmAlloc((items.length & 4095) * VM_ARRAY_ITEM);
       const a = arr(items, true);
       if (opts.packing) a.packed = true;
       return a;
@@ -342,9 +374,11 @@ export function scanToken(f: PSFile, opts: ScanOptions, I: Interp): PSObj | unde
       let s = '';
       while (isRegular(d)) {
         s += String.fromCharCode(d);
+        if ((s.length & 4095) === 0) I.vmAlloc(4096);
         d = f.read();
       }
       f.unread(d);
+      if (s.length > VM_NAME_FREE) I.vmAlloc(s.length & 4095);
       if (imm) {
         const v = I?.lookup(s);
         if (!v) throw new PSError('undefined');
@@ -357,8 +391,14 @@ export function scanToken(f: PSFile, opts: ScanOptions, I: Interp): PSObj | unde
     let d = f.read();
     while (isRegular(d)) {
       s += String.fromCharCode(d);
+      // 長い字句 (名前・数) は、読むたびに VM と手間に積む (終わらない元・100 万字の字句の繰り返し)
+      if ((s.length & 4095) === 0) {
+        I.vmAlloc(4096);
+        I.charge(64);
+      }
       d = f.read();
     }
+    if (s.length > VM_NAME_FREE) I.vmAlloc(s.length & 4095);
     // 字句の後ろの空白は 1 字だけ読み捨てる (§8.2 token・currentfile と組み合わせて画像のデータを読むとき)
     if (!WS.has(d)) f.unread(d);
     else if (d === 13 && f.peek() === 10) f.read();
@@ -366,10 +406,29 @@ export function scanToken(f: PSFile, opts: ScanOptions, I: Interp): PSObj | unde
   }
 }
 
-function readLiteralString(f: PSFile): PSString {
+/**
+ * 字句の文字列を読みながら、その長さを VM に積む (64KB ごと。終わらない元から読む文字列が、メモリを使い切る前に VMerror にする)。
+ * 読み終わったら done で残りを積む
+ */
+function scanCharge(I: Interp) {
+  let charged = 0;
+  return {
+    grow(len: number) {
+      if (len - charged >= 65536) this.done(len);
+    },
+    done(len: number) {
+      I.vmAlloc(len - charged);
+      charged = len;
+    },
+  };
+}
+
+function readLiteralString(f: PSFile, I: Interp): PSString {
   const out: number[] = [];
+  const vm = scanCharge(I);
   let depth = 1;
   for (;;) {
+    vm.grow(out.length);
     let c = f.read();
     if (c < 0) throw new PSError('syntaxerror');
     if (c === 0x5c) {
@@ -403,6 +462,7 @@ function readLiteralString(f: PSFile): PSString {
     }
     out.push(c);
   }
+  vm.done(out.length);
   return str(Uint8Array.from(out));
 }
 
@@ -413,10 +473,12 @@ function hexVal(c: number): number {
   return -1;
 }
 
-function readHexString(f: PSFile): PSString {
+function readHexString(f: PSFile, I: Interp): PSString {
   const out: number[] = [];
+  const vm = scanCharge(I);
   let hi = -1;
   for (;;) {
+    vm.grow(out.length);
     const c = f.read();
     if (c < 0) throw new PSError('syntaxerror');
     if (c === 0x3e) break;
@@ -430,13 +492,19 @@ function readHexString(f: PSFile): PSString {
     }
   }
   if (hi >= 0) out.push(hi * 16);
+  vm.done(out.length);
   return str(Uint8Array.from(out));
 }
 
-function readA85String(f: PSFile): PSString {
+function readA85String(f: PSFile, I: Interp): PSString {
   const src = filterSource('ASCII85Decode', { read: () => f.read() }, undefined);
   const out: number[] = [];
-  for (let c = src.read(); c >= 0; c = src.read()) out.push(c);
+  const vm = scanCharge(I);
+  for (let c = src.read(); c >= 0; c = src.read()) {
+    out.push(c);
+    vm.grow(out.length);
+  }
+  vm.done(out.length);
   return str(Uint8Array.from(out));
 }
 
@@ -447,6 +515,8 @@ export interface SaveRec {
   gstates: unknown;
   valid: boolean;
   level: number;
+  /** この save の記録 (グラフィックス状態の写し) として VM に積んだ量。restore で戻す */
+  vm: number;
 }
 
 type Undo = () => void;
@@ -458,6 +528,10 @@ export interface InterpOptions {
   maxSteps?: number;
   /** 経過時間の上限 (ミリ秒) */
   maxMillis?: number;
+  /** VM の使用量 (配列・文字列・辞書などの確保の合計。バイト) の上限。超えれば VMerror。既定は PS_MAX_VM_BYTES */
+  maxVM?: number;
+  /** フィルタ (ReusableStreamDecode・DCTDecode) が元を読みためる量 (バイト) の上限。超えれば limitcheck。既定は PS_FILTER_MAX_BYTES */
+  maxFilterBytes?: number;
 }
 
 export class Interp {
@@ -484,10 +558,23 @@ export class Interp {
   steps = 0;
   maxSteps: number;
   deadline: number;
+  /**
+   * VM の使用量 (バイト)。確保 (array・string・dict の項・長い名前・字句の文字列と手続き・save の記録・フィルタの読みためなど) のたびに積む。
+   * restore で戻すのは、その save の記録 (グラフィックス状態の写しと、値を戻すための控え) の分だけ: save のあとに作ったオブジェクトの分は戻さない。
+   * PLRM §3.7.3 は「restore は、save のあとに local VM に作ったものを捨てる」とするが、ここでは捨てたはずのオブジェクトがスタックや
+   * global VM の辞書からまだ指されていないこと (invalidrestore の検査) を確かめていないので、戻すと、数えた量より多くのメモリを持ち続けられる
+   */
+  vmUsed = 0;
+  maxVM: number;
+  maxFilterBytes: number;
+  /** プログラムを実行し始めたか (組み込みの辞書を作る間は、VM の上限を確かめない) */
+  private started = false;
+  /** エラーを記録している間 (VM の上限を確かめない) */
+  private vmExempt = false;
   saves: SaveRec[] = [];
   private journal: Undo[] = [];
   /** 図形の状態 (psGraphics が持つ。save・gsave の対象) */
-  gfx: { saveForRestore(): unknown; restoreTo(s: unknown): void } | undefined;
+  gfx: { saveForRestore(): unknown; restoreTo(s: unknown): void; saveCost?(): number } | undefined;
   /** 警告 (描けなかったもの) */
   warnings = new Set<string>();
   /** 注意 (近似して描いたもの。例: 埋め込まれた書体を代わりの書体で描いた) */
@@ -497,6 +584,8 @@ export class Interp {
   constructor(opts: InterpOptions = {}) {
     this.maxSteps = opts.maxSteps ?? 50_000_000;
     this.deadline = Date.now() + (opts.maxMillis ?? 20_000);
+    this.maxVM = opts.maxVM ?? PS_MAX_VM_BYTES;
+    this.maxFilterBytes = opts.maxFilterBytes ?? PS_FILTER_MAX_BYTES;
     this.systemdict = new PSDict(this, 500);
     this.globaldict = new PSDict(this, 100);
     this.globaldict.global = true;
@@ -553,6 +642,8 @@ export class Interp {
     let set = m.get(o);
     if (!set) m.set(o, (set = new Set()));
     if (set.has(key)) return false;
+    // 控え 1 件も VM に積む (積めなければ、書き換える前に VMerror。restore で戻す)
+    this.vmAlloc(VM_JOURNAL_ENTRY);
     set.add(key);
     if (this.journal.length >= 5_000_000) throw new PSError('limitcheck');
     return true;
@@ -572,7 +663,10 @@ export class Interp {
     });
   }
   doSave(): SaveRec {
-    const s: SaveRec = { journal: this.journal.length, gstates: this.gfx?.saveForRestore(), valid: true, level: this.saves.length + 1 };
+    // save の記録 (グラフィックス状態のスタックの写し) も VM に置く ({ save pop } loop が、メモリを使い切る前に VMerror にする)
+    const vm = VM_SAVE + (this.gfx?.saveCost?.() ?? 0);
+    this.vmAlloc(vm);
+    const s: SaveRec = { journal: this.journal.length, gstates: this.gfx?.saveForRestore(), valid: true, level: this.saves.length + 1, vm };
     this.saves.push(s);
     this.journaled.push(new WeakMap());
     return s;
@@ -580,10 +674,18 @@ export class Interp {
   doRestore(s: SaveRec) {
     const k = this.saves.indexOf(s);
     if (k < 0 || !s.valid) throw new PSError('invalidrestore');
+    // 控えと save の記録は、ここで実際に手放すので、VM の使用量からも引く (save のあとに作ったオブジェクトの分は引かない。vmUsed の説明)
+    this.vmUsed -= (this.journal.length - s.journal) * VM_JOURNAL_ENTRY;
     while (this.journal.length > s.journal) this.journal.pop()!();
-    for (const t of this.saves.splice(k)) t.valid = false;
+    const gstates = s.gstates;
+    for (const t of this.saves.splice(k)) {
+      t.valid = false;
+      this.vmUsed -= t.vm;
+      // 無効になった save のオブジェクトがスタックに残っていても、写しは持ち続けない
+      t.gstates = undefined;
+    }
     this.journaled.splice(k);
-    if (s.gstates !== undefined) this.gfx?.restoreTo(s.gstates);
+    if (gstates !== undefined) this.gfx?.restoreTo(gstates);
   }
 
   // ── スタック ──
@@ -640,28 +742,53 @@ export class Interp {
 
   // ── 名前を探す (§3.3.9) ──
   lookup(k: string | PSObj): PSObj | undefined {
+    // 鍵は 1 度だけ作る (文字列の鍵を、辞書スタックの段ごとに文字にし直さない)
+    const key = typeof k === 'string' ? k : this.keyFor(k);
     for (let i = this.dstack.length - 1; i >= 0; i--) {
-      const v = this.dstack[i].get(k);
+      const v = this.dstack[i].map.get(key)?.v;
       if (v) return v;
     }
     return undefined;
   }
   where(k: PSObj): PSDict | undefined {
-    for (let i = this.dstack.length - 1; i >= 0; i--) if (this.dstack[i].has(k)) return this.dstack[i];
+    const key = this.keyFor(k);
+    for (let i = this.dstack.length - 1; i >= 0; i--) if (this.dstack[i].map.has(key)) return this.dstack[i];
     return undefined;
+  }
+  /** 辞書の鍵。長い文字列を鍵にする手間も数える */
+  private keyFor(k: PSObj): unknown {
+    if (k.t === 'string') this.work(k.n);
+    return keyOf(k);
   }
   get currentdict(): PSDict {
     return this.dstack[this.dstack.length - 1];
   }
 
   newDict(max = 0): PSDict {
+    this.vmAlloc(VM_DICT);
     const d = new PSDict(this, max);
     d.global = this.globalAlloc;
     return d;
   }
-  newArray(items: PSObj[], x = false): PSArray {
+  /** 配列のオブジェクトを作る。charged: 呼び手が、items を作る前に vmAlloc で積んである */
+  newArray(items: PSObj[], x = false, charged = false): PSArray {
+    if (!charged) this.vmAlloc(items.length * VM_ARRAY_ITEM);
     if (this.globalAlloc) this.globalArrays.add(items);
     return arr(items, x);
+  }
+
+  /**
+   * VM に n バイトを確保したと数える。上限 (maxVM) を超えるなら、確保する前に VMerror にする (§3.11.2・付録 B)。
+   * 呼ぶのは、実際にメモリを取る前
+   */
+  vmAlloc(n: number) {
+    if (!(n > 0)) return;
+    if (this.started && !this.vmExempt && this.vmUsed + n > this.maxVM) throw new PSError('VMerror');
+    this.vmUsed += n;
+  }
+  /** 演算子の中で、長さ n に比例して回るループの手間を数える (64 要素で 1 ステップ。短いものは数えない) */
+  work(n: number) {
+    if (n >= 4096) this.charge(n / 64);
   }
 
   // ── 実行 (§3.5) ──
@@ -751,10 +878,17 @@ export class Interp {
   /** 既定のエラーの手続き: $error に記録して stop (§3.11.2) */
   defaultErrorHandler(e: string) {
     const cmd = this.ostack.pop() ?? NULL;
-    this.$error.put('newerror', TRUE);
-    this.$error.put('errorname', name(e));
-    this.$error.put('command', cmd);
-    const top = this.ostack.slice(-4).map((o) => (o.t === 'name' ? '/' + o.v : o.t === 'int' || o.t === 'real' ? String(o.v) : o.t));
+    // エラーの記録は、VM が尽きていてもできるようにする (VMerror そのものを記録できなくならないように)
+    this.vmExempt = true;
+    try {
+      this.$error.put('newerror', TRUE);
+      this.$error.put('errorname', name(e));
+      this.$error.put('command', cmd);
+    } finally {
+      this.vmExempt = false;
+    }
+    // 名前は 100 字までを書く (100 万字の名前を、そのままエラーの文に入れない)
+    const top = this.ostack.slice(-4).map((o) => (o.t === 'name' ? '/' + (o.v.length > 100 ? o.v.slice(0, 100) + '…' : o.v) : o.t === 'int' || o.t === 'real' ? String(o.v) : o.t));
     this.lastError = `${e} (${cmd.t === 'name' || cmd.t === 'operator' ? (cmd.t === 'name' ? cmd.v : cmd.name) : cmd.t === 'file' ? 'file@' + cmd.f.pos : cmd.t}) [${top.join(' ')}]`;
     throw new StopSignal();
   }
@@ -851,6 +985,11 @@ export class Interp {
   run(program: Uint8Array): string | undefined {
     const f = new PSFile(bytesSource(program), 'program');
     this.lastError = '';
+    if (!this.started) {
+      // 組み込みの辞書・演算子の分は、プログラムの VM の使用量に入れない
+      this.started = true;
+      this.vmUsed = 0;
+    }
     try {
       this.call({ t: 'file', f, x: true });
       return undefined;
@@ -871,10 +1010,11 @@ export class Interp {
   }
 
   warn(w: string) {
-    this.warnings.add(w);
+    // 警告・注意の種類は 1000 までを覚える (名前を変えながら警告を出し続けるプログラムで、メモリを使い切らない)
+    if (this.warnings.size < 1000) this.warnings.add(w.length > 200 ? w.slice(0, 200) + '…' : w);
   }
   note(w: string) {
-    this.notes.add(w);
+    if (this.notes.size < 1000) this.notes.add(w.length > 200 ? w.slice(0, 200) + '…' : w);
   }
 }
 
@@ -1042,6 +1182,7 @@ function installCoreOperators(I: Interp) {
     const src = I.pop();
     if (src.t === 'array' && top.t === 'array') {
       if (top.n < src.n) throw new PSError('rangecheck');
+      I.work(src.n);
       for (let i = 0; i < src.n; i++) {
         I.journalArray(top.a, top.o + i);
         top.a[top.o + i] = src.a[src.o + i];
@@ -1051,11 +1192,13 @@ function installCoreOperators(I: Interp) {
     }
     if (src.t === 'string' && top.t === 'string') {
       if (top.n < src.n) throw new PSError('rangecheck');
+      I.work(src.n / 16);
       top.b.set(strBytes(src), top.o);
       I.push({ ...top, n: src.n });
       return;
     }
     if (src.t === 'dict' && top.t === 'dict') {
+      I.work(src.d.size * 4);
       for (const { k, v } of src.d.map.values()) top.d.put(k, v);
       I.push(top);
       return;
@@ -1193,7 +1336,8 @@ function installCoreOperators(I: Interp) {
     if (n < 0) throw new PSError('rangecheck');
     // 長さの上限 (PLRM 付録 B の表 B.1 は 65535。string と同じく、その 16 倍まで受け付ける。超えたら limitcheck)
     if (n > MAX_LEN) throw new PSError('limitcheck');
-    I.push(I.newArray(Array.from({ length: n }, () => NULL)));
+    I.vmAlloc(n * VM_ARRAY_ITEM);
+    I.push(I.newArray(Array.from({ length: n }, () => NULL), false, true));
   });
   d('length', (I) => {
     const o = I.pop();
@@ -1206,6 +1350,7 @@ function installCoreOperators(I: Interp) {
     const k = I.pop();
     const o = I.pop();
     if (o.t === 'dict') {
+      if (k.t === 'string') I.work(k.n);
       const v = o.d.get(k);
       if (!v) throw new PSError('undefined');
       I.push(v);
@@ -1226,6 +1371,7 @@ function installCoreOperators(I: Interp) {
     const o = I.pop();
     if (o.t === 'dict') {
       if (o.d.acc !== 'unlimited' && o.d !== I.systemdict) throw new PSError('invalidaccess');
+      if (k.t === 'string') I.work(k.n);
       o.d.put(k, v);
       return;
     }
@@ -1254,6 +1400,7 @@ function installCoreOperators(I: Interp) {
     const o = I.pop();
     if (o.t === 'array' && src.t === 'array') {
       if (i < 0 || i + src.n > o.n) throw new PSError('rangecheck');
+      I.work(src.n);
       for (let k = 0; k < src.n; k++) {
         I.journalArray(o.a, o.o + i + k);
         o.a[o.o + i + k] = src.a[src.o + k];
@@ -1302,6 +1449,7 @@ function installCoreOperators(I: Interp) {
         if (!I.loopBody(p)) break;
       }
     } else if (o.t === 'dict') {
+      I.work(o.d.size);
       for (const { k, v } of [...o.d.map.values()]) {
         I.push(k);
         I.push(v);
@@ -1334,6 +1482,7 @@ function installCoreOperators(I: Interp) {
     const k = I.pop();
     const cd = I.currentdict;
     if (cd === I.systemdict) throw new PSError('invalidaccess');
+    if (k.t === 'string') I.work(k.n);
     cd.put(k, v);
   });
   d('load', (I) => {
@@ -1349,10 +1498,12 @@ function installCoreOperators(I: Interp) {
   });
   d('undef', (I) => {
     const k = I.pop();
+    if (k.t === 'string') I.work(k.n);
     I.popDict().del(k);
   });
   d('known', (I) => {
     const k = I.pop();
+    if (k.t === 'string') I.work(k.n);
     I.push(bool(I.popDict().has(k)));
   });
   d('where', (I) => {
@@ -1378,6 +1529,7 @@ function installCoreOperators(I: Interp) {
     const n = I.popInt();
     if (n < 0) throw new PSError('rangecheck');
     if (n > MAX_LEN) throw new PSError('limitcheck');
+    I.vmAlloc(n);
     I.push(str(new Uint8Array(n)));
   });
   d('anchorsearch', (I) => {
@@ -1385,6 +1537,7 @@ function installCoreOperators(I: Interp) {
     const s = I.popString();
     const a = strBytes(s);
     const b = strBytes(seek);
+    I.work(Math.min(a.length, b.length));
     if (b.length <= a.length && b.every((c, k) => a[k] === c)) {
       I.push({ ...s, o: s.o + b.length, n: s.n - b.length });
       I.push({ ...s, n: b.length });
@@ -1399,16 +1552,36 @@ function installCoreOperators(I: Interp) {
     const s = I.popString();
     const a = strBytes(s);
     const b = strBytes(seek);
-    for (let i = 0; i + b.length <= a.length; i++) {
-      let ok = true;
-      for (let k = 0; k < b.length && ok; k++) ok = a[i + k] === b[k];
-      if (ok) {
-        I.push({ ...s, o: s.o + i + b.length, n: s.n - i - b.length });
-        I.push({ ...s, o: s.o + i, n: b.length });
-        I.push({ ...s, n: i });
-        I.push(TRUE);
-        return;
+    // 探す手間は、2 つの長さの和に比例させる (Knuth・Morris・Pratt の探し方。素朴な二重のループは長さの積に比例し、
+    // 10 万字の中から 5 万字を探すだけで数秒かかる)。その手間は、時間とステップの上限に数える
+    const n = a.length;
+    const m = b.length;
+    I.work(n + m);
+    let at = -1;
+    if (m === 0) at = 0;
+    else if (m <= n) {
+      // fail[i]: b の先頭 i + 1 字の、前と後ろで一致する最も長い部分 (全体を除く) の長さ
+      const fail = new Int32Array(m);
+      for (let i = 1, k = 0; i < m; i++) {
+        while (k > 0 && b[i] !== b[k]) k = fail[k - 1];
+        if (b[i] === b[k]) k++;
+        fail[i] = k;
       }
+      for (let i = 0, k = 0; i < n; i++) {
+        while (k > 0 && a[i] !== b[k]) k = fail[k - 1];
+        if (a[i] === b[k]) k++;
+        if (k === m) {
+          at = i - m + 1;
+          break;
+        }
+      }
+    }
+    if (at >= 0) {
+      I.push({ ...s, o: s.o + at + m, n: s.n - at - m });
+      I.push({ ...s, o: s.o + at, n: m });
+      I.push({ ...s, n: at });
+      I.push(TRUE);
+      return;
     }
     I.push(s);
     I.push(FALSE);
@@ -1432,13 +1605,22 @@ function installCoreOperators(I: Interp) {
   });
 
   // 比較・論理 (§8.2)
+  /** 文字列・名前どうしの比較の手間 (長さに比例する) を数える */
+  const cmpWork = (I: Interp, a: PSObj, b: PSObj) => {
+    if (a.t === 'string' && (b.t === 'string' || b.t === 'name')) I.work(a.n);
+    else if (b.t === 'string' && a.t === 'name') I.work(b.n);
+  };
   d('eq', (I) => {
     const b = I.pop();
-    I.push(bool(psEq(I.pop(), b)));
+    const a = I.pop();
+    cmpWork(I, a, b);
+    I.push(bool(psEq(a, b)));
   });
   d('ne', (I) => {
     const b = I.pop();
-    I.push(bool(!psEq(I.pop(), b)));
+    const a = I.pop();
+    cmpWork(I, a, b);
+    I.push(bool(!psEq(a, b)));
   });
   const cmp = (n: string, f: (c: number) => boolean) =>
     d(n, (I) => {
@@ -1447,6 +1629,7 @@ function installCoreOperators(I: Interp) {
       let c: number;
       if ((a.t === 'int' || a.t === 'real') && (b.t === 'int' || b.t === 'real')) c = a.v - b.v;
       else if (a.t === 'string' && b.t === 'string') {
+        cmpWork(I, a, b);
         const sa = strText(a);
         const sb = strText(b);
         c = sa < sb ? -1 : sa > sb ? 1 : 0;
@@ -1584,6 +1767,7 @@ function installCoreOperators(I: Interp) {
     if (o.t === 'int') return I.push(o);
     if (o.t === 'real') return I.push(int(Math.trunc(o.v)));
     if (o.t === 'string') {
+      I.work(o.n);
       const n = parseNumber(strText(o).trim());
       if (!n || (n.t !== 'int' && n.t !== 'real')) throw new PSError('syntaxerror');
       return I.push(int(Math.trunc(n.v)));
@@ -1594,6 +1778,7 @@ function installCoreOperators(I: Interp) {
     const o = I.pop();
     if (o.t === 'int' || o.t === 'real') return I.push(real(o.v));
     if (o.t === 'string') {
+      I.work(o.n);
       const n = parseNumber(strText(o).trim());
       if (!n || (n.t !== 'int' && n.t !== 'real')) throw new PSError('syntaxerror');
       return I.push(real(n.v));
@@ -1602,6 +1787,11 @@ function installCoreOperators(I: Interp) {
   });
   d('cvn', (I) => {
     const s = I.popString();
+    // 名前の表に置く分 (§3.3.6)。短い名前は積まない (VM_NAME_FREE の説明)
+    if (s.n > VM_NAME_FREE) {
+      I.work(s.n);
+      I.vmAlloc(s.n);
+    }
     I.push(name(strText(s), s.x));
   });
   d('cvs', (I) => {
@@ -1656,6 +1846,7 @@ function installCoreOperators(I: Interp) {
         hi = -1;
       }
     }
+    I.work(n);
     I.push({ ...s, n });
     I.push(bool(n === s.n));
   });
@@ -1668,6 +1859,7 @@ function installCoreOperators(I: Interp) {
       if (c < 0) break;
       s.b[s.o + n++] = c;
     }
+    I.work(n);
     I.push({ ...s, n });
     I.push(bool(n === s.n));
   });
@@ -1780,10 +1972,22 @@ function installCoreOperators(I: Interp) {
     if (src.t === 'file') {
       const f = src.f;
       read = { read: () => f.read() };
-    } else if (src.t === 'string') read = bytesSource(strBytes(src).slice());
-    else if (isProc(src) || src.t === 'operator') read = procSource(I, src);
+    } else if (src.t === 'string') {
+      I.vmAlloc(src.n);
+      read = bytesSource(strBytes(src).slice());
+    } else if (isProc(src) || src.t === 'operator') read = procSource(I, src);
     else throw new PSError('typecheck');
-    const fs = filterSource(fname.v, read, params, subfile);
+    // フィルタの持つ状態 (Flate の窓 32KB・LZW の表など) も VM に置く
+    I.vmAlloc(fname.v === 'FlateDecode' || fname.v === 'LZWDecode' ? VM_FILTER_BIG : VM_FILTER);
+    let fs: ByteSource;
+    try {
+      // 読みためるフィルタ (ReusableStreamDecode・DCTDecode) は、ためる分を VM に積みながら読む。上限を超えれば limitcheck
+      // (PLRM §8.2 filter のエラーの一覧にある、実装の限界を超えたときのエラー)
+      fs = filterSource(fname.v, read, params, subfile, { maxBytes: I.maxFilterBytes, alloc: (n) => I.vmAlloc(n) });
+    } catch (e) {
+      if (e instanceof FilterError) throw new PSError(e.message);
+      throw e;
+    }
     I.push({ t: 'file', f: new PSFile(fs, fname.v), x: false });
   });
 
@@ -1816,6 +2020,7 @@ function installCoreOperators(I: Interp) {
     const bindProc = (a: PSArray, depth: number) => {
       if (seen.has(a.a) || depth > 1000) return;
       seen.add(a.a);
+      I.work(a.n);
       for (let k = a.o; k < a.o + a.n; k++) {
         const o = a.a[k];
         if (o.t === 'name' && o.x) {

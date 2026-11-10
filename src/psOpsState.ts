@@ -2,7 +2,7 @@
  * psOpsState — グラフィックス状態の演算子 (§8.2: gsave・setlinewidth・setdash など)、色 (setgray・setrgbcolor・setcolorspace・setpattern など) と、
  * 機器に依存する色の変換 (§7。値は持つだけ)
  */
-import { type Interp, PSError, arr, arrItems, bool, dictObj, int, name, num, real } from './psInterp';
+import { type Interp, PSError, VM_ARRAY_ITEM, arr, arrItems, bool, dictObj, int, name, num, real } from './psInterp';
 import type { Graphics, GState } from './psGraphics';
 import { DEVICE_GRAY, DEVICE_RGB, DEVICE_CMYK, clamp01, type ColorSpace } from './psColorSpace';
 import { popMatrix } from './psOpsMatrix';
@@ -36,10 +36,15 @@ export function installStateOperators(I: Interp, G: Graphics) {
     g.clip = undefined;
     G.g = g;
   });
-  d('gstate', (I) => I.push({ t: 'gstate', g: G.copy(G.g) }));
+  // gstate のオブジェクトは VM に置く (§8.2 gstate)
+  d('gstate', (I) => {
+    I.vmAlloc(G.gstateCost(G.g));
+    I.push({ t: 'gstate', g: G.copy(G.g) });
+  });
   d('currentgstate', (I) => {
     const o = I.pop();
     if (o.t !== 'gstate') throw new PSError('typecheck');
+    I.vmAlloc(G.gstateCost(G.g));
     I.push({ t: 'gstate', g: G.copy(G.g) });
   });
   d('setgstate', (I) => {
@@ -78,6 +83,7 @@ export function installStateOperators(I: Interp, G: Graphics) {
     G.g.dash = { array, offset: off };
   });
   d('currentdash', (I) => {
+    I.vmAlloc(G.g.dash.array.length * VM_ARRAY_ITEM);
     I.push(arr(G.g.dash.array.map(num)));
     I.push(num(G.g.dash.offset));
   });

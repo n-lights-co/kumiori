@@ -8,7 +8,7 @@
  * ハッチの模様・模様のブラシ・描き先と混ぜるラスター演算・EMF+ (GDI コメント) は扱わない (描かずに飛ばす)。
  */
 import { decodeBmp, encodePngStored, expandRle, type Pixels } from './pixels';
-import { MAX_PIXELS } from './imageLimits';
+import { MAX_PIXELS, METAFILE_TOTAL_IMAGE_PIXELS } from './imageLimits';
 import { apply as applyXf, isIdentity, mul, type Matrix } from './matrix';
 import { base64 } from './base64';
 import { flattenPath, polyBool, ringsPath, type Rings } from './regionBool';
@@ -43,7 +43,7 @@ interface Brush {
    * 模様のブラシ (BS_PATTERN・BS_DIBPATTERNPT・モノクロの模様・BS_HATCHED): 使うときの状態 (パレット・背景) で、模様の画素を作る。
    * 不透明度 0 の画素は塗らない
    */
-  pattern?: (dc: Dc) => Pixels | undefined;
+  pattern?: (dc: Dc, out: SvgOut) => Pixels | undefined;
 }
 interface Font {
   kind: 'font';
@@ -221,6 +221,13 @@ class SvgOut {
   stack: Dc[] = [];
   /** パス (EMF の BEGINPATH〜ENDPATH) を集めている途中 */
   path: string | null = null;
+  /** この文書で画素にできる残りの数 (imageLimits.ts の METAFILE_TOTAL_IMAGE_PIXELS)。足りなければ false (その画像は描かない) */
+  private pixelsLeft = METAFILE_TOTAL_IMAGE_PIXELS;
+  takePixels(n: number): boolean {
+    if (n > this.pixelsLeft) return false;
+    this.pixelsLeft -= n;
+    return true;
+  }
   constructor() {
     this.dc = {
       pen: BLACK_PEN,
@@ -266,7 +273,7 @@ class SvgOut {
   paintOf(b: Brush): string | undefined {
     if (b.none) return undefined;
     if (!b.pattern) return b.color;
-    const px = b.pattern(this.dc);
+    const px = b.pattern(this.dc, this);
     if (!px) return undefined;
     // WMF: 写像モードから決まるなら、使うときの値で決める (MM_TEXT は 1 論理単位が 1 画素。[MS-WMF] 2.1.1.16)
     let size: [number, number] | undefined;
@@ -465,7 +472,18 @@ class SvgOut {
     );
   }
   // ── 出力の組 (切り抜き・世界変換) ──
-  private openKey = '';
+  // 開いている組の鍵は、切り抜き・世界変換の中身を文字列にしたもの。切り抜き (dc.clip) と世界変換 (dc.xf) は、変えるときに必ず
+  // 新しい値に置き換える (中身を書き換えない) ので、文字列は値ごとに 1 度だけ作って覚える (描くたびに作ると、矩形の多い切り抜きの下で
+  // 描く数 × 切り抜きの大きさの手間になる)。置き換えた後の中身が前と同じなら、鍵も同じなので、組は開き直さない (出力は変わらない)
+  private openClipKey = '';
+  private openXfKey = '';
+  private keys = new WeakMap<object, string>();
+  private keyOf(o: object | undefined): string {
+    if (!o) return '';
+    let k = this.keys.get(o);
+    if (k === undefined) this.keys.set(o, (k = JSON.stringify(o)));
+    return k;
+  }
   private openDepth = 0;
   private layerSeq = 0;
   /** 要素を出す。切り抜きか世界変換が前の要素と違えば、組 (g) を閉じて開き直す */
@@ -474,10 +492,12 @@ class SvgOut {
     const c = this.dc.clip;
     if (c?.rects && c.rects.length === 0) return; // 空の切り抜き: 何も見えない
     const xf = isIdentity(this.dc.xf) ? undefined : this.dc.xf;
-    const key = c || xf ? JSON.stringify([c ?? null, xf ?? null]) : '';
-    if (key !== this.openKey) {
+    const clipKey = this.keyOf(c);
+    const xfKey = this.keyOf(xf);
+    if (clipKey !== this.openClipKey || xfKey !== this.openXfKey) {
       this.closeGroups();
-      this.openKey = key;
+      this.openClipKey = clipKey;
+      this.openXfKey = xfKey;
       const layers: string[] = [];
       if (c?.rects) layers.push(`<path d="${rectsPath(c.rects)}"/>`);
       for (const l of c?.paths ?? []) {
@@ -512,7 +532,8 @@ class SvgOut {
   }
   closeGroups() {
     for (; this.openDepth > 0; this.openDepth--) this.parts.push('</g>');
-    this.openKey = '';
+    this.openClipKey = '';
+    this.openXfKey = '';
   }
 
   // ── 切り抜き ([MS-WMF] 2.3.5・[MS-EMF] 2.3.2) ──
@@ -721,8 +742,8 @@ interface DibSrc {
   palette?: Palette;
 }
 
-/** DIB → 画素 (上から下の行)、または JPEG・PNG の中身。読めなければ undefined */
-function dibImage(b: Uint8Array, s: DibSrc): { px: Pixels } | { mime: string; data: Uint8Array } | undefined {
+/** DIB → 画素 (上から下の行)、または JPEG・PNG の中身。読めなければ (文書の画素の合計の上限 out.takePixels を超えるときも) undefined */
+function dibImage(out: SvgOut, b: Uint8Array, s: DibSrc): { px: Pixels } | { mime: string; data: Uint8Array } | undefined {
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   if (s.bmi + 12 > s.end) return undefined;
   const hs = v.getUint32(s.bmi, true);
@@ -735,10 +756,15 @@ function dibImage(b: Uint8Array, s: DibSrc): { px: Pixels } | { mime: string; da
   const sizeImage = core ? 0 : v.getUint32(s.bmi + 20, true);
   const used = core ? 0 : v.getUint32(s.bmi + 32, true);
   // 色の表 ([MS-WMF] 2.1.1.3 BitCount): 8 ビット以下は ColorUsed (0 なら 2^bpp) 個、BI_BITFIELDS は 3 つの色の覆いが前に付く
-  const entries = core ? (bpp <= 8 ? 1 << bpp : 0) : used || (bpp <= 8 ? 1 << bpp : 0);
+  // ColorUsed ([MS-WMF] 2.2.2.3): 8 ビット以下では色の表の項の数で、2^bpp を超えない。どの深さでも、色の表は記録の中に収まる。
+  // 欄の値をそのまま信じると、小さな記録で巨大な色の表 (とそれを写す領域) を確保するので、2^bpp と記録の残りで切る
   const maskBytes = comp === 3 && hs === 40 ? 12 : 0;
   // DIB_PAL_COLORS は 16 ビットのパレットの番号、DIB_PAL_INDICES は色の表が無い ([MS-WMF] 2.1.1.6)
-  const colorBytes = maskBytes + entries * (core ? 3 : s.usage === 1 ? 2 : s.usage === 2 ? 0 : 4);
+  const entryBytes = core ? 3 : s.usage === 1 ? 2 : s.usage === 2 ? 0 : 4;
+  const maxEntries = bpp <= 8 ? 1 << bpp : 0;
+  const declared = core ? maxEntries : bpp <= 8 ? Math.min(used || maxEntries, maxEntries) : used;
+  const entries = entryBytes ? Math.min(declared, Math.max(0, Math.floor((s.end - (s.bmi + hs + maskBytes)) / entryBytes))) : declared;
+  const colorBytes = maskBytes + entries * entryBytes;
   const bits = s.bits ?? s.bmi + hs + colorBytes;
   if (comp === 4 || comp === 5) {
     // BI_JPEG・BI_PNG: 画素の場所に JPEG・PNG のファイルがそのまま入る
@@ -753,7 +779,7 @@ function dibImage(b: Uint8Array, s: DibSrc): { px: Pixels } | { mime: string; da
   const W = Math.abs(w);
   const rows = s.scans ?? Math.abs(h);
   // 画素の数の上限 (ヘッダの寸法だけで大量のメモリ・時間を使わない)
-  if (!W || !rows || W * rows > MAX_PIXELS) return undefined;
+  if (!W || !rows || W * rows > MAX_PIXELS || !out.takePixels(W * rows)) return undefined;
   const stride = Math.floor((bpp * W + 31) / 32) * 4;
   let pixels: Uint8Array;
   let newComp = comp;
@@ -886,7 +912,7 @@ function blendLayers(out: SvgOut, code: number, pat: [number, number, number], p
     if (!px) {
       // 元の無い演算 (DSTINVERT・PATINVERT など): 矩形を 1 色で
       out.fillRects([normRect(x, y, x + w, y + h)], `#${[0, 1, 2].map((k) => rgba[k].toString(16).padStart(2, '0')).join('')}`, mode);
-    } else out.image(x, y, w, h, `data:image/png;base64,${base64(encodePngStored({ width: W, height: H, rgba }))}`, mode);
+    } else if (out.takePixels(W * H)) out.image(x, y, w, h, `data:image/png;base64,${base64(encodePngStored({ width: W, height: H, rgba }))}`, mode); // (層ごとに 1 枚の画像になるので、画素の合計に数える)
   }
   return true;
 }
@@ -926,7 +952,7 @@ function blit(out: SvgOut, b: Uint8Array, rop: number, dst: [number, number, num
     return;
   }
   if (!src) return;
-  const img = dibImage(b, { ...src, palette: out.dc.palette });
+  const img = dibImage(out, b, { ...src, palette: out.dc.palette });
   if (!img) return;
   if ('data' in img) {
     if (code === 0xcc) out.image(x, y, w, h, `data:${img.mime};base64,${base64(img.data)}`);
@@ -974,7 +1000,7 @@ function blit(out: SvgOut, b: Uint8Array, rop: number, dst: [number, number, num
  * どちらも「元 × α + 描き先 × (1 − α)」なので、色を戻して不透明度付きの PNG にすれば、SVG のふつうの重ね方で同じになる
  */
 function alphaBlend(out: SvgOut, b: Uint8Array, dst: [number, number, number, number], src: DibSrc, sr: [number, number, number, number], constAlpha: number, perPixel: boolean) {
-  const img = dibImage(b, { ...src, alpha: perPixel, palette: out.dc.palette });
+  const img = dibImage(out, b, { ...src, alpha: perPixel, palette: out.dc.palette });
   if (!img || !('px' in img)) return;
   const px = cropPixels(img.px, sr[0], sr[1], Math.abs(sr[2]), Math.abs(sr[3]));
   if (!px) return;
@@ -989,10 +1015,11 @@ function alphaBlend(out: SvgOut, b: Uint8Array, dst: [number, number, number, nu
 }
 
 /** WMF の Palette オブジェクト (Start, NumberOfEntries, PaletteEntry (Red, Green, Blue, Values)…) の項 */
-function wmfPaletteEntries(b: Uint8Array, at: number): Array<[number, number, number, number]> {
+function wmfPaletteEntries(b: Uint8Array, at: number, end: number): Array<[number, number, number, number]> {
   const n = b[at + 2] | (b[at + 3] << 8);
   const out: Array<[number, number, number, number]> = [];
-  for (let k = 0; k < n && at + 4 + 4 * k + 4 <= b.length; k++) out.push([b[at + 4 + 4 * k], b[at + 5 + 4 * k], b[at + 6 + 4 * k], b[at + 7 + 4 * k]]);
+  // 項は記録の中にあるものだけ (end は記録の終わり。数の欄だけを信じると、短い記録を並べたファイルで、記録ごとに 65,535 個を読む)
+  for (let k = 0; k < n && at + 4 + 4 * k + 4 <= end; k++) out.push([b[at + 4 + 4 * k], b[at + 5 + 4 * k], b[at + 6 + 4 * k], b[at + 7 + 4 * k]]);
   return out;
 }
 
@@ -1029,8 +1056,8 @@ function patternBrush(b: Uint8Array, src: DibSrc): Brush {
     kind: 'brush',
     none: false,
     color: '#000000',
-    pattern: (dc) => {
-      const img = dibImage(b, { ...src, palette: dc.palette });
+    pattern: (dc, out) => {
+      const img = dibImage(out, b, { ...src, palette: dc.palette });
       if (!img || !('px' in img)) return undefined;
       // 模様の画素は不透明に (DIB の不透明度は使わない)
       const rgba = new Uint8Array(img.px.rgba);
@@ -1069,7 +1096,7 @@ function emfRegion(v: DataView, at: number, end: number): Rect[] {
  * 幅・高さで、画素は下から startScan 行目からの scans 行だけ。描き先の大きさは元の矩形と同じ
  */
 function setDibToDevice(out: SvgOut, b: Uint8Array, dst: [number, number, number, number], src: DibSrc, xSrc: number, ySrc: number, startScan: number) {
-  const img = dibImage(b, { ...src, palette: out.dc.palette });
+  const img = dibImage(out, b, { ...src, palette: out.dc.palette });
   if (!img || !('px' in img)) return;
   const { width, height: rows } = img.px;
   const [x, y, w, h] = dst;
@@ -1120,7 +1147,15 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
     const fn = v.getUint16(p + 4, true);
     const a = p + 6;
     if (fn === 0 || size < 6) break;
-    const pts = (at: number, n: number) => Array.from({ length: n }, (_, k) => [i16(at + k * 4), i16(at + k * 4 + 2)]);
+    // 記録の終わり (RecordSize: [MS-WMF] 2.3 の記録の長さ。ファイルの終わりを超えない)。点・字・番号の並びは記録の中にある
+    // ([MS-WMF] 2.3.3 の各記録) ので、数の欄が記録に入りきらなければ、途中で切れた記録と同じに扱う (そこで読むのをやめる)。
+    // 数の欄だけを信じると、短い記録を並べたファイルで、記録ごとにファイルの終わりまでを読み、出力が入力の 2 乗で増える
+    const end = Math.min(p + size, b.length);
+    const fit = (at: number, n: number, unit: number): number => {
+      if (n > 0 && at + n * unit > end) throw new RangeError('記録に入りきらない数');
+      return Math.max(0, n);
+    };
+    const pts = (at: number, n: number) => Array.from({ length: fit(at, n, 4) }, (_, k) => [i16(at + k * 4), i16(at + k * 4 + 2)]);
     // 途中で切れた記録 (ファイルの外を読む) は、そこで読むのをやめ、それまでに描いたものを出す
     try {
     switch (fn) {
@@ -1163,9 +1198,9 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         break;
       case 0x02fb: {
         // CREATEFONTINDIRECT
-        const nameBytes = b.subarray(a + 18, Math.min(a + 18 + 32, p + size));
+        const nameBytes = b.subarray(a + 18, Math.min(a + 18 + 32, end));
         const charset = b[a + 13];
-        const end = nameBytes.indexOf(0);
+        const nul = nameBytes.indexOf(0);
         add({
           kind: 'font',
           height: i16(a),
@@ -1174,12 +1209,12 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
           italic: !!b[a + 10],
           underline: !!b[a + 11],
           charset,
-          face: decoderFor(charset).decode(nameBytes.subarray(0, end < 0 ? undefined : end)),
+          face: decoderFor(charset).decode(nameBytes.subarray(0, nul < 0 ? undefined : nul)),
         });
         break;
       }
       case 0x00f7: // CREATEPALETTE (Palette オブジェクト: Start, NumberOfEntries, PaletteEntry (Red, Green, Blue, Values)…)
-        add({ kind: 'palette', entries: wmfPaletteEntries(b, a) });
+        add({ kind: 'palette', entries: wmfPaletteEntries(b, a, end) });
         break;
       case 0x0234: {
         // SELECTPALETTE
@@ -1190,14 +1225,14 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
       case 0x0037: {
         // SETPALENTRIES (Palette オブジェクト。Start から NumberOfEntries 個を置き換える)
         const pal = out.dc.palette;
-        if (pal) wmfPaletteEntries(b, a).forEach((e, k) => (pal.entries[v.getUint16(a, true) + k] = e));
+        if (pal) wmfPaletteEntries(b, a, end).forEach((e, k) => (pal.entries[v.getUint16(a, true) + k] = e));
         break;
       }
       case 0x0436: {
         // ANIMATEPALETTE: 今のパレットの、PC_RESERVED (0x01) の付いた項だけを置き換える ([MS-WMF] 2.3.5.1)
         const pal = out.dc.palette;
         if (pal)
-          wmfPaletteEntries(b, a).forEach((e, k) => {
+          wmfPaletteEntries(b, a, end).forEach((e, k) => {
             const at = v.getUint16(a, true) + k;
             if (pal.entries[at] && pal.entries[at][3] & 1) pal.entries[at] = e;
           });
@@ -1215,14 +1250,14 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
       case 0x0142: {
         // DIBCREATEPATTERNBRUSH (Style, ColorUsage, DIB)。BS_PATTERN (3) なら DIB_RGB_COLORS
         const usage = v.getUint16(a, true) === 3 ? 0 : v.getUint16(a + 2, true);
-        add(patternBrush(b, { bmi: a + 4, end: p + size, usage }));
+        add(patternBrush(b, { bmi: a + 4, end, usage }));
         break;
       }
       case 0x01f9: // CREATEPATTERNBRUSH (Bitmap16: 装置に依る形式で、画素の色の決まりが無いので描かない)
         add({ kind: 'other' });
         break;
       case 0x06ff: // CREATEREGION (Region オブジェクト: [MS-WMF] 2.2.1.5)
-        add({ kind: 'region', rects: wmfRegion(v, a + 22, p + size) });
+        add({ kind: 'region', rects: wmfRegion(v, a + 22, end) });
         break;
       case 0x0416: // INTERSECTCLIPRECT (bottom, right, top, left)
       case 0x0415: // EXCLUDECLIPRECT
@@ -1262,7 +1297,7 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         const k = noSrc ? 2 : 0;
         const w = i16(a + 10 + k);
         const h = i16(a + 8 + k);
-        const src = noSrc ? undefined : { bmi: a + 16, end: p + size, usage: 0 };
+        const src = noSrc ? undefined : { bmi: a + 16, end, usage: 0 };
         blit(out, b, v.getUint32(a, true), [i16(a + 14 + k), i16(a + 12 + k), w, h], src, [i16(a + 6), i16(a + 4), w, h]);
         break;
       }
@@ -1270,12 +1305,12 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         // DIBSTRETCHBLT (RasterOperation, srcHeight, srcWidth, ySrc, xSrc, [Reserved], destHeight, destWidth, yDest, xDest, [DIB])
         const noSrc = size / 2 === (fn >> 8) + 3;
         const k = noSrc ? 2 : 0;
-        const src = noSrc ? undefined : { bmi: a + 20, end: p + size, usage: 0 };
+        const src = noSrc ? undefined : { bmi: a + 20, end, usage: 0 };
         blit(out, b, v.getUint32(a, true), [i16(a + 18 + k), i16(a + 16 + k), i16(a + 14 + k), i16(a + 12 + k)], src, [i16(a + 10), i16(a + 8), i16(a + 6), i16(a + 4)]);
         break;
       }
       case 0x0f43: // STRETCHDIB (RasterOperation, ColorUsage, srcHeight, srcWidth, ySrc, xSrc, destHeight, destWidth, yDst, xDst, DIB)
-        blit(out, b, v.getUint32(a, true), [i16(a + 20), i16(a + 18), i16(a + 16), i16(a + 14)], { bmi: a + 22, end: p + size, usage: v.getUint16(a + 4, true) }, [
+        blit(out, b, v.getUint32(a, true), [i16(a + 20), i16(a + 18), i16(a + 16), i16(a + 14)], { bmi: a + 22, end, usage: v.getUint16(a + 4, true) }, [
           i16(a + 12),
           i16(a + 10),
           i16(a + 8),
@@ -1291,7 +1326,7 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
           out,
           b,
           [i16(a + 16), i16(a + 14), w, h],
-          { bmi: a + 18, end: p + size, usage: v.getUint16(a, true), scans },
+          { bmi: a + 18, end, usage: v.getUint16(a, true), scans },
           v.getUint16(a + 8, true),
           v.getUint16(a + 6, true),
           v.getUint16(a + 4, true),
@@ -1333,7 +1368,7 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         break;
       case 0x0538: {
         // POLYPOLYGON
-        const n = v.getUint16(a, true);
+        const n = fit(a + 2, v.getUint16(a, true), 2);
         let at = a + 2 + n * 2;
         let d = '';
         for (let k = 0; k < n; k++) {
@@ -1355,7 +1390,7 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         break;
       case 0x0521: {
         // TEXTOUT (count, string, y, x)
-        const n = i16(a);
+        const n = fit(a + 2, i16(a), 1);
         const s = decoderFor(out.dc.font.charset).decode(b.subarray(a + 2, a + 2 + n));
         const at = a + 2 + n + (n % 2);
         out.text(i16(at + 2), i16(at), s);
@@ -1363,14 +1398,14 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
       }
       case 0x0a32: {
         // EXTTEXTOUT (y, x, count, options, [rect], string)
-        const n = i16(a + 4);
         const opts = v.getUint16(a + 6, true);
         const at = a + 8 + (opts & 6 ? 8 : 0);
+        const n = fit(at, i16(a + 4), 1);
         const bytes = b.subarray(at, at + n);
         const str = decoderFor(out.dc.font.charset).decode(bytes);
         // Dx (任意): 文字列 (奇数の長さなら 1 バイト埋める) の後ろ、記録の終わりまで。字の数と同じ数の 16 ビットの符号付き整数
         const dxAt = at + n + (n % 2);
-        const cnt = Math.max(0, Math.floor((p + size - dxAt) / 2));
+        const cnt = Math.max(0, Math.floor((end - dxAt) / 2));
         let dx: number[] | undefined;
         if (cnt > 0) {
           const raw = Array.from({ length: cnt }, (_, k) => i16(dxAt + 2 * k));
@@ -1470,8 +1505,17 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
     const size = u32(p + 4);
     const a = p + 8;
     if (size < 8) break;
-    const pts16 = (at: number, n: number) => Array.from({ length: n }, (_, k) => [i16(at + k * 4), i16(at + k * 4 + 2)]);
-    const pts32 = (at: number, n: number) => Array.from({ length: n }, (_, k) => [i32(at + k * 8), i32(at + k * 8 + 4)]);
+    // 記録の終わり (Size: [MS-EMF] 2.3 の記録の長さ。ファイルの終わりを超えない)。点・字・番号の並びは記録の中にある
+    // ([MS-EMF] 2.3.5 の各記録の Count・aPoints、2.2.5 の EmrText の Chars・offString) ので、数の欄が記録に入りきらなければ、
+    // 途中で切れた記録と同じに扱う (そこで読むのをやめる)。数の欄だけを信じると、短い記録を並べたファイルで、記録ごとに
+    // ファイルの終わりまでを読み、出力が入力の 2 乗で増える
+    const end = Math.min(p + size, b.length);
+    const fit = (at: number, n: number, unit: number): number => {
+      if (n > 0 && at + n * unit > end) throw new RangeError('記録に入りきらない数');
+      return n;
+    };
+    const pts16 = (at: number, n: number) => Array.from({ length: fit(at, n, 4) }, (_, k) => [i16(at + k * 4), i16(at + k * 4 + 2)]);
+    const pts32 = (at: number, n: number) => Array.from({ length: fit(at, n, 8) }, (_, k) => [i32(at + k * 8), i32(at + k * 8 + 4)]);
     // 途中で切れた記録 (ファイルの外を読む)・点の無い記録は、そこで読むのをやめ、それまでに描いたものを出す
     try {
     switch (type) {
@@ -1512,7 +1556,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         // EXTCREATEPEN (ih, offBmi, cbBmi, offBits, cbBits, LogPenEx: PenStyle, Width, BrushStyle, ColorRef, BrushHatch, NumStyleEntries, StyleEntry)
         const style = u32(a + 20);
         const nStyle = u32(a + 40);
-        const dash = (style & 0x0f) === 7 && nStyle > 0 && a + 44 + nStyle * 4 <= p + size ? Array.from({ length: nStyle }, (_, k) => u32(a + 44 + 4 * k)) : undefined;
+        const dash = (style & 0x0f) === 7 && nStyle > 0 && a + 44 + nStyle * 4 <= end ? Array.from({ length: nStyle }, (_, k) => u32(a + 44 + 4 * k)) : undefined;
         objs.set(u32(a), {
           kind: 'pen',
           none: (style & 0xf) === 5,
@@ -1525,11 +1569,11 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
       }
       case 94: // CREATEDIBPATTERNBRUSHPT (ihBrush, Usage, offBmi, cbBmi, offBits, cbBits)
       case 93: // CREATEMONOBRUSH
-        objs.set(u32(a), patternBrush(b, { bmi: p + u32(a + 8), bits: p + u32(a + 16), end: Math.min(p + size, p + u32(a + 16) + u32(a + 20)), usage: u32(a + 4) }));
+        objs.set(u32(a), patternBrush(b, { bmi: p + u32(a + 8), bits: p + u32(a + 16), end: Math.min(end, p + u32(a + 16) + u32(a + 20)), usage: u32(a + 4) }));
         break;
       case 49: {
         // CREATEPALETTE (ihPal, LogPalette: Version, NumberOfEntries, LogPaletteEntry (Reserved, Blue, Green, Red)…)
-        const n = v.getUint16(a + 6, true);
+        const n = Math.min(v.getUint16(a + 6, true), Math.max(0, Math.floor((end - (a + 8)) / 4))); // (項は記録の中にあるものだけ)
         objs.set(u32(a), { kind: 'palette', entries: Array.from({ length: n }, (_, k) => [b[a + 8 + 4 * k + 3], b[a + 8 + 4 * k + 2], b[a + 8 + 4 * k + 1], 0] as [number, number, number, number]) });
         break;
       }
@@ -1543,7 +1587,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         // SETPALETTEENTRIES (ihPal, Start, NumberOfEntries, LogPaletteEntry…)
         const o = objs.get(u32(a));
         if (o?.kind === 'palette')
-          for (let k = 0; k < u32(a + 8) && a + 12 + 4 * k + 4 <= p + size; k++) o.entries[u32(a + 4) + k] = [b[a + 12 + 4 * k + 3], b[a + 12 + 4 * k + 2], b[a + 12 + 4 * k + 1], 0];
+          for (let k = 0; k < u32(a + 8) && a + 12 + 4 * k + 4 <= end; k++) o.entries[u32(a + 4) + k] = [b[a + 12 + 4 * k + 3], b[a + 12 + 4 * k + 2], b[a + 12 + 4 * k + 1], 0];
         break;
       }
       case 51: {
@@ -1638,7 +1682,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
       case 7: // POLYPOLYLINE
       case 90: {
         // POLYPOLYLINE16
-        const nPolys = u32(a + 16);
+        const nPolys = fit(a + 24, u32(a + 16), 4);
         const wide = type === 8 || type === 7;
         let at = a + 24 + nPolys * 4;
         let d = '';
@@ -1661,7 +1705,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         const nTri = u32(a + 20);
         const mode = u32(a + 24);
         const vat = a + 28;
-        if (nVer > 1e5 || nTri > 1e5 || vat + nVer * 16 > p + size) break;
+        if (nVer > 1e5 || nTri > 1e5 || vat + nVer * 16 > end) break;
         const vx = Array.from({ length: nVer }, (_, k) => {
           const o = vat + k * 16;
           return { x: i32(o), y: i32(o + 4), c: [v.getUint16(o + 8, true) >> 8, v.getUint16(o + 10, true) >> 8, v.getUint16(o + 12, true) >> 8] };
@@ -1670,7 +1714,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         const hex = (c: number[]) => `#${c.map((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0')).join('')}`;
         if (mode === 0 || mode === 1) {
           // 矩形: RECT_H は左から右、RECT_V は上から下へ色を変える
-          for (let k = 0; k < nTri && iat + k * 8 + 8 <= p + size; k++) {
+          for (let k = 0; k < nTri && iat + k * 8 + 8 <= end; k++) {
             const p0 = vx[u32(iat + k * 8)];
             const p1 = vx[u32(iat + k * 8 + 4)];
             if (!p0 || !p1) continue;
@@ -1679,7 +1723,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         } else if (mode === 2) {
           // 三角形: 各辺を 8 等分した小さな三角形に分け、それぞれを重心の色 (3 つの頂点の色の重み付きの平均) で塗る
           const N = 8;
-          for (let k = 0; k < nTri && iat + k * 12 + 12 <= p + size; k++) {
+          for (let k = 0; k < nTri && iat + k * 12 + 12 <= end; k++) {
             const t = [0, 4, 8].map((d) => vx[u32(iat + k * 12 + d)]);
             if (t.some((q) => !q)) continue;
             const at = (i: number, j: number) => {
@@ -1719,7 +1763,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
       case 75: {
         // EXTSELECTCLIPRGN (RgnDataSize, RegionMode, RgnData)。RGN_COPY で RgnData が無ければ、既定 (切り抜き無し) に戻す
         const mode = u32(a + 4);
-        if (u32(a) >= 32) out.clipRects(emfRegion(v, a + 8, p + size), mode);
+        if (u32(a) >= 32) out.clipRects(emfRegion(v, a + 8, end), mode);
         else if (mode === 5) out.combineClip(undefined, 5);
         break;
       }
@@ -1745,7 +1789,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         // PAINTRGN (Bounds, RgnDataSize, RgnData。今のブラシ)
         const ih = u32(a + 20);
         const br = type === 71 ? (ih & 0x80000000 ? stock(ih) : objs.get(ih)) : out.dc.brush;
-        if (br?.kind === 'brush') out.fillRects(emfRegion(v, type === 71 ? a + 24 : a + 20, p + size), out.paintOf(br));
+        if (br?.kind === 'brush') out.fillRects(emfRegion(v, type === 71 ? a + 24 : a + 20, end), out.paintOf(br));
         break;
       }
       case 45: // ARC (Box, Start, End)
@@ -1784,7 +1828,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
             ? {
                 bmi: p + u32(a + 76),
                 bits: p + u32(a + 84),
-                end: Math.min(p + size, p + u32(a + 84) + u32(a + 88)),
+                end: Math.min(end, p + u32(a + 84) + u32(a + 88)),
                 usage: u32(a + 72),
               }
             : undefined;
@@ -1799,7 +1843,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         const src = {
           bmi: p + u32(a + 76),
           bits: p + u32(a + 84),
-          end: Math.min(p + size, p + u32(a + 84) + u32(a + 88)),
+          end: Math.min(end, p + u32(a + 84) + u32(a + 88)),
           usage: u32(a + 72),
         };
         alphaBlend(out, b, [i32(a + 16), i32(a + 20), i32(a + 24), i32(a + 28)], src, [i32(a + 36), i32(a + 40), i32(a + 92), i32(a + 96)], b[a + 34], b[a + 35] === 1);
@@ -1814,7 +1858,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
           {
             bmi: p + u32(a + 40),
             bits: p + u32(a + 48),
-            end: Math.min(p + size, p + u32(a + 48) + u32(a + 52)),
+            end: Math.min(end, p + u32(a + 48) + u32(a + 52)),
             usage: u32(a + 56),
           },
           [i32(a + 24), i32(a + 28), i32(a + 32), i32(a + 36)],
@@ -1828,7 +1872,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
           {
             bmi: p + u32(a + 40),
             bits: p + u32(a + 48),
-            end: Math.min(p + size, p + u32(a + 48) + u32(a + 52)),
+            end: Math.min(end, p + u32(a + 48) + u32(a + 52)),
             usage: u32(a + 56),
             scans: u32(a + 64),
           },
@@ -1864,8 +1908,8 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         const t = a + 28;
         const x = i32(t);
         const y = i32(t + 4);
-        const n = u32(t + 8);
         const off = p + u32(t + 12);
+        const n = fit(off, u32(t + 8), type === 84 ? 2 : 1);
         const s = type === 84 ? new TextDecoder('utf-16le').decode(b.subarray(off, off + n * 2)) : decoderFor(out.dc.font.charset).decode(b.subarray(off, off + n));
         // EmrText ([MS-EMF] 2.2.5): Options の ETO_NO_RECT (0x100) が無ければ Rectangle (16 バイト) の後ろに offDx。
         // OutputDx は字の数 (ETO_PDY (0x2000) なら 2 倍: 横・縦の組) の 32 ビットの整数
@@ -1874,7 +1918,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
         let dx: number[] | undefined;
         let dy: number[] | undefined;
         const pdy = !!(eopts & 0x2000);
-        if (offDx > 0 && p + offDx + n * 4 * (pdy ? 2 : 1) <= p + size) {
+        if (offDx > 0 && p + offDx + n * 4 * (pdy ? 2 : 1) <= end) {
           const at = p + offDx;
           const vals = Array.from({ length: n * (pdy ? 2 : 1) }, (_, k) => i32(at + 4 * k));
           dx = pdy ? vals.filter((_, k) => k % 2 === 0) : vals;

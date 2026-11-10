@@ -801,6 +801,26 @@ describe('float (fo:float)', () => {
     expect(blocks[0].y).toBeGreaterThanOrEqual(100 - 0.01);
   });
 
+  it('狭い回り込みの横の、collapse の表の後の段落: 組版が止まらず、段落は float の下に来る', { timeout: 20000 }, () => {
+    // float の横が 2 字ぶんより狭いので、段落は float の下まで進める。collapse の表の外枠のはみ出し (保留の余白から引く分) が
+    // あっても、float の下端に届く (届かないと、同じ float に当たり続けて止まらない)
+    const cell = { type: 'table-cell', children: [{ type: 'block', children: ['a'] }] };
+    const table = { type: 'table', borderCollapse: 'collapse', border: { width: 1, color: '#000000' }, columns: [], body: { type: 'table-body', rows: [{ type: 'table-row', cells: [cell] }] } };
+    const t = E.engine.layout(doc([fl('start', { width: 215, height: 100 }) as never, table as never, { type: 'block', id: 'p', children: ['あいうえお'.repeat(3)] } as never]));
+    const ch = t.sheets[0].page.regionBody.children as BlockArea[];
+    const p = ch[ch.length - 1];
+    expect(p.y).toBeGreaterThanOrEqual(100 - 0.01);
+    expect((p.children as LineArea[])[0].width).toBeCloseTo(W, 0);
+  });
+
+  it('clear: collapse の表の後でも、float の下まで進める', () => {
+    const cell = { type: 'table-cell', children: [{ type: 'block', children: ['a'] }] };
+    const table = { type: 'table', borderCollapse: 'collapse', width: 100, margin: { left: 120 }, border: { width: 4, color: '#000000' }, columns: [], body: { type: 'table-body', rows: [{ type: 'table-row', cells: [cell] }] } };
+    const t = E.engine.layout(doc([fl('start', { height: 100 }) as never, table as never, { type: 'block', clear: 'start', children: ['次'] } as never]));
+    const ch = t.sheets[0].page.regionBody.children as BlockArea[];
+    expect(ch[ch.length - 1].y).toBeGreaterThanOrEqual(100 - 0.01);
+  });
+
   it('2 つの start float は重ならずに積まれる', () => {
     const t = E.engine.layout(doc([fl('start', { height: 40 }) as never, fl('start', { height: 40 }) as never, para() as never]));
     const { floats } = split(t);

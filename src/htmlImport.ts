@@ -269,13 +269,41 @@ function textIndentOf(v: string): Pick<TextStyle, 'textIndent' | 'textIndentHang
   return { textIndent: len, textIndentHanging: !!sp?.kws.includes('hanging'), textIndentEachLine: !!sp?.kws.includes('each-line') };
 }
 
+/**
+ * 表の列・行をまたぐ数の上限 (HTML Living Standard §4.9.12.1「Forming a table」: <col>・<colgroup> の span と colspan は
+ * 1000 を超えたら 1000、rowspan は 65534 を超えたら 65534 にする)
+ */
+const MAX_COL_SPAN = 1000;
+const MAX_ROW_SPAN = 65534;
+
+/**
+ * 名前の引数が要る関数 (attr()・counter()・counters()・target-counter()・target-text()) に、引数が無いもの。
+ * どれも文法で最初の引数が要る (attr( <attr-name> … ) は CSS Values 5 §7.7、counter( <counter-name> … )・counters() は
+ * CSS Lists 3 §4.6、target-counter()・target-text() は CSS GCPM 3 §4.1) ので、これを含む宣言は無効 (生成内容なし) として扱う
+ */
+function missingArgument(t: ContentToken): boolean {
+  return t.kind === 'fn' && /^(attr|counters?|target-counter|target-text)$/.test(t.name) && !t.args[0]?.trim();
+}
+
+/**
+ * grid-template-columns の列の数の上限。CSS Grid 1 §5.4 (Limiting Large Grids) は、実装がグリッドの大きさを実装の決めた上限に
+ * 切ってよいとし、その上限は [-10000, 10000] の線を収めるべきとする。repeat() の回数 (§7.2.3 の <integer [1,∞]>) が大きくても
+ * 宣言は有効のままなので、無効にはせず、列の数がこの上限に収まる回数に切る (ブラウザも repeat() の回数を自分の上限に切る)
+ */
+export const MAX_GRID_REPEAT = 10000;
+
 /** grid-template-columns → 列の幅 (pt)。px・%・fr・auto・minmax()・repeat(n, …) を読む (auto と minmax は残りを等分する) */
 export function gridTracks(v: string, W: number, gap: number): number[] {
   const src = (v ?? '').trim();
   if (!src || src === 'none') return [W];
   // repeat(n, a b) を展開する
-  const expanded = src.replace(/repeat\(\s*(\d+)\s*,\s*((?:[^()]|\([^()]*\))*)\)/g, (_m, n: string, body: string) => Array(parseInt(n, 10)).fill(body.trim()).join(' '));
-  const toks = expanded.match(/minmax\([^)]*\)|[^\s]+/g) ?? [];
+  // 回数は、中の列の数 × 回数が上限 (MAX_GRID_REPEAT) に収まる数に切る (巨大な回数で配列・文字列を作らない)
+  const trackTokens = (s: string) => s.match(/minmax\([^)]*\)|[^\s]+/g) ?? [];
+  const expanded = src.replace(/repeat\(\s*(\d+)\s*,\s*((?:[^()]|\([^()]*\))*)\)/g, (_m, n: string, body: string) => {
+    const times = Math.min(parseInt(n, 10), Math.max(1, Math.floor(MAX_GRID_REPEAT / Math.max(trackTokens(body).length, 1))));
+    return Array(times).fill(body.trim()).join(' ');
+  });
+  const toks = trackTokens(expanded).slice(0, MAX_GRID_REPEAT);
   const free0 = W - gap * Math.max(toks.length - 1, 0);
   const fixed = toks.map((t) => (/%$/.test(t) ? (parseFloat(t) * W) / 100 : /fr$|^auto$|^minmax/.test(t) ? undefined : cssLen(t)));
   const rest = Math.max(free0 - fixed.reduce<number>((a, x) => a + (x ?? 0), 0), 0);
@@ -1693,8 +1721,8 @@ class HtmlImporter {
         const kc = this.csA(cell);
         let w = this.maxContentWidth(cell);
         if (collapse) w -= ((cssLen(kc('border-left-width')) ?? 0) + (cssLen(kc('border-right-width')) ?? 0)) / 2;
-        const span = Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1);
-        const rs = Math.max(1, parseInt(cell.getAttribute('rowspan') ?? '1', 10) || 1);
+        const span = Math.min(MAX_COL_SPAN, Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1));
+        const rs = Math.min(MAX_ROW_SPAN, Math.max(1, parseInt(cell.getAttribute('rowspan') ?? '1', 10) || 1));
         if (span === 1) cols[col] = Math.max(cols[col] ?? 0, w);
         else spans.push([col, span, w]);
         for (let k = 0; k < span; k++) taken[col + k] = Math.max(taken[col + k] ?? 0, rs);
@@ -2068,6 +2096,7 @@ class HtmlImporter {
   /** content の値 (本文の中の ::before / ::after) を、行内の要素にする */
   private evalContent(el: Element, toks: ContentToken[], pseudo?: '::before' | '::after'): LInlineLevel[] {
     const out: LInlineLevel[] = [];
+    if (toks.some(missingArgument)) return [];
     // counter(名前 語 …): カウンタの名前の後に語が続くのは CSS の構文にない (アンテナハウスの拡張 physical だけ互換で読む)
     let physical = false;
     for (const t of toks) {
@@ -2244,8 +2273,10 @@ class HtmlImporter {
     const v = this.pg(el)['string-set'];
     if (!v || v === 'none') return [];
     const out: LMarker[] = [];
-    for (const part of v.split(/,(?![^(]*\))/)) {
-      const toks = parseContent(part);
+    const parts = v.split(/,(?![^(]*\))/).map((part) => parseContent(part));
+    // 引数の無い attr() などのある宣言は、全体が無効 (missingArgument)
+    if (parts.some((toks) => toks.some(missingArgument))) return [];
+    for (const toks of parts) {
       const name = toks[0]?.kind === 'ident' ? toks[0].v : undefined;
       if (!name) continue;
       out.push({ type: 'marker', className: `string:${name}`, children: [this.textValue(el, toks.slice(1))] });
@@ -4228,8 +4259,8 @@ class HtmlImporter {
           this.enterCounters(tc, tr);
           // セルの中の最初・最後のブロックの margin は捨てない (CSS 2.1 §17.5: セルは新しい整形文脈で、中の margin はセルの外と重ならない。<td><p> の上下の margin)
           const cell: LTableCell = { type: 'table-cell', keepEdgeSpace: true, ...this.textStyle(td, tr), ...this.paragraphStyle(td, tr), ...this.boxStyle(td), children: this.flowChildren(td) };
-          const cs = parseInt(td.getAttribute('colspan') ?? '1', 10);
-          const rs = parseInt(td.getAttribute('rowspan') ?? '1', 10);
+          const cs = Math.min(MAX_COL_SPAN, parseInt(td.getAttribute('colspan') ?? '1', 10));
+          const rs = Math.min(MAX_ROW_SPAN, parseInt(td.getAttribute('rowspan') ?? '1', 10));
           if (cs > 1) cell.colSpan = cs;
           if (rs > 1) cell.rowSpan = rs;
           const va = tc('vertical-align');
@@ -4277,7 +4308,7 @@ class HtmlImporter {
         else if (d === 'table-row-group' || ch.localName === 'tbody') group(ch, body);
         else if (d === 'table-column-group' || ch.localName === 'colgroup') walk(ch, body);
         else if (d === 'table-column' || ch.localName === 'col') {
-          const span = parseInt(ch.getAttribute('span') ?? '1', 10) || 1;
+          const span = Math.min(MAX_COL_SPAN, parseInt(ch.getAttribute('span') ?? '1', 10) || 1);
           // 幅の % (自前のカスケードは % のまま返す) は、比例の列幅にする (表の幅を % の比で分ける)
           const cw = this.cs(ch)('width');
           const w: LTableColumn['width'] | undefined =
@@ -5014,6 +5045,8 @@ export function importHtml(doc: Document, src: StyleSource, opts: HtmlImportOpti
   }
   const imp = new HtmlImporter(src, opts, sheet, lookup);
   const document = imp.run(doc);
+  // 同じ画像は 1 度だけ報告する (XSL-FO の読み込みの報告と同じ。同じ URL を何度も取りに行かせない)
+  imp.report.images = [...new Set(imp.report.images)];
   return { document, report: imp.report };
 }
 

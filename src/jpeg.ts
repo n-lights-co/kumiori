@@ -188,6 +188,13 @@ interface Component {
 
 class JpegError extends Error {}
 
+/**
+ * 1 枚の画像の走査 (SOS) の数の上限。走査は 1 つごとに画像の全部の区画をたどるので、データの無い SOS を並べた小さなファイルで、
+ * 走査の数 × 区画の数の手間になる。漸進 (progressive) の JPEG の実在の走査は、多くて十数個 (よく使われる走査の組み方で 10 個前後) なので、
+ * その数十倍をとる (libjpeg-turbo が走査の数に上限を置けるようにしている (走査の数の制限) のと同じ考え方)。超えれば読めない画像として扱う
+ */
+const MAX_SCANS = 500;
+
 /** JPEG の画素を読む。扱えない形式や壊れたデータなら undefined */
 export function decodeJpeg(b: Uint8Array): JpegPixels | undefined {
   try {
@@ -214,6 +221,7 @@ function decode(b: Uint8Array): JpegPixels | undefined {
   let restart = 0;
   let adobe: AdobeMarker | undefined;
   let framed = false;
+  let scans = 0;
   let p = 2;
   for (;;) {
     if (p + 2 > b.length) break;
@@ -292,6 +300,7 @@ function decode(b: Uint8Array): JpegPixels | undefined {
       }
     } else if (m === 0xda) {
       if (!framed) throw new JpegError('SOS before SOF');
+      if (++scans > MAX_SCANS) throw new JpegError('too many scans');
       const ns = seg[0];
       const sc: Component[] = [];
       for (let i = 0; i < ns; i++) {
@@ -421,6 +430,8 @@ function decodeScan(b: Uint8Array, start: number, sc: Component[], P: ScanParams
   let acc = 0;
   let nbits = 0;
   let marker = false;
+  /** acc に入れたビットのうち、データの無い所 (印の後・ファイルの終わりの後) を 0 で埋めた分 */
+  let padBits = 0;
   const fill = () => {
     while (nbits <= 24) {
       let byte = 0;
@@ -432,13 +443,16 @@ function decodeScan(b: Uint8Array, start: number, sc: Component[], P: ScanParams
           else {
             marker = true;
             byte = 0;
+            padBits += 8;
           }
         } else pos++;
-      }
+      } else padBits += 8;
       acc |= byte << (24 - nbits);
       nbits += 8;
     }
   };
+  /** 符号のデータが尽きた (埋めた 0 のビットまで読んだ) */
+  const starved = () => nbits < padBits;
   const consume = (k: number) => {
     acc <<= k;
     nbits -= k;
@@ -576,6 +590,7 @@ function decodeScan(b: Uint8Array, start: number, sc: Component[], P: ScanParams
     // 次の RSTn の印まで進む (F.2.1.3.1・E.2.4)
     acc = 0;
     nbits = 0;
+    padBits = 0;
     marker = false;
     while (pos + 1 < b.length && !(b[pos] === 0xff && b[pos + 1] >= 0xd0 && b[pos + 1] <= 0xd7)) pos++;
     pos += 2;
@@ -588,20 +603,32 @@ function decodeScan(b: Uint8Array, start: number, sc: Component[], P: ScanParams
     if (P.restart && units > 0 && units % P.restart === 0) nextRestart();
     units++;
   };
+  // 符号のデータが尽きた後の区画は読まない (0 のビットを符号として読み続けない。係数はそれまでの値のまま)。再開の間隔があれば、
+  // 次の再開の印から読み直す (E.2.4・F.2.1.3.1)。無ければ、または、もうファイルの終わりなら、この走査をそこで打ち切る
+  // (データの無い SOS を並べたファイルで、走査ごとに全部の区画をたどらない)
+  const ended = () => !P.restart || pos >= b.length;
   if (sc.length === 1) {
     // 1 成分の走査は区画ごと (A.2.2)。区画の数はその成分の標本の数から
     const c = sc[0];
     const cw = Math.ceil(Math.ceil((P.X * c.h) / P.hmax) / 8);
     const ch = Math.ceil(Math.ceil((P.Y * c.v) / P.vmax) / 8);
-    for (let by = 0; by < ch; by++)
+    blocks: for (let by = 0; by < ch; by++)
       for (let bx = 0; bx < cw; bx++) {
         restartCheck();
+        if (starved()) {
+          if (ended()) break blocks;
+          continue;
+        }
         decodeBlock(c, (by * c.bw + bx) * 64);
       }
   } else {
-    for (let my = 0; my < P.mcusY; my++)
+    mcus: for (let my = 0; my < P.mcusY; my++)
       for (let mx = 0; mx < P.mcusX; mx++) {
         restartCheck();
+        if (starved()) {
+          if (ended()) break mcus;
+          continue;
+        }
         for (const c of sc)
           for (let v = 0; v < c.v; v++)
             for (let h = 0; h < c.h; h++) decodeBlock(c, ((my * c.v + v) * c.bw + mx * c.h + h) * 64);

@@ -1073,9 +1073,11 @@ class Flow {
   private pendingValue() {
     // XSL (§4.3.1): 同じ優先度の中で最も大きい値 (負の値どうしなら 0 に近い方)。CSS: 正の最大と負の最小の和
     const v = this.pendForce !== null ? this.pendForce : this.host.xslSpace ? (this.pendPos > 0 ? this.pendPos : this.pendAny !== null && this.pendAny < 0 ? this.pendAny : 0) : this.pendPos + this.pendNeg;
-    const base = Math.max(v, this.pendMin);
     // はみ出しの分を引いても、余白を負にはしない (もともと負の余白はそのまま)
-    return this.pendAdjust ? Math.max(base + this.pendAdjust, Math.min(base, 0)) : base;
+    const adjusted = this.pendAdjust ? Math.max(v + this.pendAdjust, Math.min(v, 0)) : v;
+    // 回り込みの下までの空きは、位置の下限なので、はみ出しの分を引いた後に当てる (CSS 2.1 §9.5.2: clear は、箱の上端を float の
+    // 下端より下に置く。引く前に当てると、float の下端に届かず、回り込みを避ける行が同じ float に当たり続ける)
+    return Math.max(adjusted, this.pendMin);
   }
   private addMargin(m: number, prec: number | 'force' = 0) {
     if (prec === 'force') {
@@ -2340,9 +2342,10 @@ class Flow {
       const y0 = this.cursor + pv;
       const range = this.lineRange(y0, y0 + Math.max(lineHeightOf(st), st.fontSize));
       if (range.intruded && range.width < st.fontSize * 2) {
-        // 狭すぎて 1 字も置けない: 回り込みの下まで進める
+        // 狭すぎて 1 字も置けない: 回り込みの下まで進める。
+        // 進めても行の位置が下がらないとき (位置が数にならないなど) は、同じ float に当たり続けるので、狭いままここに組む
         this.pendMin = Math.max(this.pendMin, range.clearTo - this.cursor);
-        continue;
+        if (this.pendingValue() > pv + EPS) continue;
       }
       const { line, next } = breakOne(atoms, start, range.width, lineIndent(st, firstLine, startsAfterForcedBreak(atoms, start)), true);
       const pl = positionLine(line, range.width, st);

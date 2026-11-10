@@ -66,7 +66,8 @@ export function tiffInfo(b: Uint8Array): ImageInfo | undefined {
   const le = b[0] === 0x49 && b[1] === 0x49 && b[2] === 42 && b[3] === 0;
   const be = b[0] === 0x4d && b[1] === 0x4d && b[2] === 0 && b[3] === 42;
   if (!le && !be) return undefined;
-  const ifd = readIfd(b, view(b).getUint32(4, le), le);
+  // 使うのは各項の先頭の値だけ (ImageWidth・ImageLength・解像度・ResolutionUnit は、どれも値が 1 つ: TIFF 6.0 Section 8)
+  const ifd = readIfd(b, view(b).getUint32(4, le), le, 1);
   const w = ifd.get(256)?.[0];
   const h = ifd.get(257)?.[0];
   if (!w || !h) return undefined;
@@ -79,8 +80,12 @@ export function tiffInfo(b: Uint8Array): ImageInfo | undefined {
   return { mime: 'image/tiff', width: (w * 96) / dpi(282), height: (h * 96) / dpi(283) };
 }
 
-/** TIFF の IFD を読む (タグ → 値の並び。RATIONAL は割った値) */
-export function readIfd(b: Uint8Array, off: number, le: boolean): Map<number, number[]> {
+/**
+ * TIFF の IFD を読む (タグ → 値の並び。RATIONAL は割った値)。値は、項ごとに先頭から maxValues 個までで、ファイルの中にあるものだけ
+ * (値の位置がファイルの外なら、そこで打ち切る)。項の数 (65,535 まで) × 値の数を、数の欄のとおりに読むと、同じ所を指す項を
+ * 並べた小さなファイルで、項の数 × 65,536 個を読むことになる
+ */
+export function readIfd(b: Uint8Array, off: number, le: boolean, maxValues = 1 << 16): Map<number, number[]> {
   const v = view(b);
   const n = v.getUint16(off, le);
   const out = new Map<number, number[]>();
@@ -93,7 +98,9 @@ export function readIfd(b: Uint8Array, off: number, le: boolean): Map<number, nu
     const bytes = (size[type] ?? 1) * count;
     const at = bytes <= 4 ? e + 8 : v.getUint32(e + 8, le);
     const vals: number[] = [];
-    for (let i = 0; i < Math.min(count, 1 << 16); i++) {
+    const unit = type === 5 ? 8 : type === 3 || type === 8 ? 2 : type === 4 || type === 9 ? 4 : 1; // (下で 1 つの値として読むバイトの数)
+    const inFile = Math.max(0, Math.floor((b.length - at) / unit));
+    for (let i = 0; i < Math.min(count, maxValues, inFile); i++) {
       if (type === 3) vals.push(v.getUint16(at + i * 2, le));
       else if (type === 4) vals.push(v.getUint32(at + i * 4, le));
       else if (type === 5) vals.push(v.getUint32(at + i * 8, le) / (v.getUint32(at + i * 8 + 4, le) || 1));

@@ -48,15 +48,27 @@ export function epsBoundingBox(head: string): [number, number, number, number] |
   return m ? (m.slice(1).map(Number) as [number, number, number, number]) : undefined;
 }
 
+/** EPS を実行するときの上限 (どれも、超えたら PostScript のエラーで終わり、そこまでに描いたものを返す) */
+export interface EpsLimits {
+  /** 経過時間の上限 (ミリ秒)。既定は 20 秒 */
+  maxMillis?: number;
+  /** VM の使用量 (配列・文字列・辞書などの確保の合計。バイト) の上限。超えれば VMerror。既定は PS_MAX_VM_BYTES */
+  maxVM?: number;
+  /** パスの点の合計の上限。超えれば limitcheck。既定は PS_MAX_PATH_POINTS */
+  maxPathPoints?: number;
+  /** フィルタ (ReusableStreamDecode・DCTDecode) が元を読みためる量 (バイト) の上限。超えれば limitcheck。既定は PS_FILTER_MAX_BYTES */
+  maxFilterBytes?: number;
+}
+
 /** EPS を実行して、描いたものを返す */
 export function runEps(
   b: Uint8Array,
-  opts: { maxMillis?: number } = {},
+  opts: EpsLimits = {},
 ): { items: DisplayItem[]; bbox: [number, number, number, number]; warnings: string[]; notes: string[]; error?: string } | undefined {
   const prog = epsProgram(b);
   if (!prog) return undefined;
-  const I = new Interp({ maxMillis: opts.maxMillis ?? 20_000 });
-  const G = new Graphics(I, { bbox: prog.bbox });
+  const I = new Interp({ maxMillis: opts.maxMillis ?? 20_000, maxVM: opts.maxVM, maxFilterBytes: opts.maxFilterBytes });
+  const G = new Graphics(I, { bbox: prog.bbox, maxPathPoints: opts.maxPathPoints });
   // EPSF 3.0 §3.2: save で囲み、userdict を begin し、showpage を空にする (グラフィックス状態は初期値)
   const head = latin1('save userdict begin /showpage {} def 0 setgray 0 setlinecap 1 setlinewidth 0 setlinejoin 10 setmiterlimit [] 0 setdash newpath\n');
   const err0 = I.run(head);
@@ -105,7 +117,7 @@ export function fontFamilyOf(psName: string): { family: string; bold: boolean; i
 }
 
 /** EPS を SVG にする。読めない EPS なら undefined */
-export async function epsToSvg(b: Uint8Array, opts: { maxMillis?: number } = {}): Promise<EpsResult | undefined> {
+export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<EpsResult | undefined> {
   const r = runEps(b, opts);
   if (!r) return undefined;
   const [x0, y0, x1, y1] = r.bbox;

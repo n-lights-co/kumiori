@@ -9,6 +9,7 @@
  * Flate の展開は、zlib の形式 (RFC 1950) と deflate の形式 (RFC 1951) の説明どおりに書いた。
  */
 import type { PSDict, PSObj } from './psInterp';
+import { PS_FILTER_MAX_BYTES } from './imageLimits';
 
 export interface ByteSource {
   /** 次のバイト。終わりなら -1 */
@@ -21,7 +22,41 @@ export interface ByteSource {
   jpeg?: () => Uint8Array;
 }
 
-class FilterError extends Error {}
+/** フィルタの誤り。message は PostScript のエラーの名前 (ioerror・limitcheck) */
+export class FilterError extends Error {}
+
+/** フィルタを作るときの上限と、メモリの数え方 (filter 演算子が渡す) */
+export interface FilterContext {
+  /** 読みためる量 (バイト) の上限。超えれば limitcheck */
+  maxBytes?: number;
+  /** n バイトを確保する前に呼ぶ (VM の使用量に積む。上限を超えるなら、呼ばれた側が誤りを投げる) */
+  alloc?: (n: number) => void;
+}
+
+/** 元を読みためるバイト列。倍々に伸ばし、上限を超えたら limitcheck にする (数の配列にためると、1 バイトに 8 バイトを使う) */
+class ByteStore {
+  private buf = new Uint8Array(4096);
+  private n = 0;
+  private max: number;
+  constructor(private ctx: FilterContext | undefined) {
+    this.max = ctx?.maxBytes ?? PS_FILTER_MAX_BYTES;
+    ctx?.alloc?.(this.buf.length);
+  }
+  push(c: number) {
+    if (this.n === this.buf.length) {
+      if (this.n >= this.max) throw new FilterError('limitcheck');
+      const cap = Math.max(this.n + 1, Math.min(this.max, this.n * 2));
+      this.ctx?.alloc?.(cap - this.n);
+      const b = new Uint8Array(cap);
+      b.set(this.buf);
+      this.buf = b;
+    }
+    this.buf[this.n++] = c;
+  }
+  bytes(): Uint8Array {
+    return this.buf.slice(0, this.n);
+  }
+}
 
 const numParam = (d: PSDict | undefined, k: string, def: number): number => {
   const v = d?.get(k) as PSObj | undefined;
@@ -49,7 +84,7 @@ function pull(fill: (out: number[]) => boolean): ByteSource {
 }
 
 /** フィルタを作る。name はフィルタの名前、src はデータの元 */
-export function filterSource(fname: string, src: ByteSource, params?: PSDict, subfile?: { count: number; eod: Uint8Array }): ByteSource {
+export function filterSource(fname: string, src: ByteSource, params?: PSDict, subfile?: { count: number; eod: Uint8Array }, ctx?: FilterContext): ByteSource {
   switch (fname) {
     case 'ASCIIHexDecode':
       return asciiHex(src);
@@ -58,9 +93,9 @@ export function filterSource(fname: string, src: ByteSource, params?: PSDict, su
     case 'RunLengthDecode':
       return runLength(src);
     case 'LZWDecode':
-      return predict(lzw(src, numParam(params, 'EarlyChange', 1)), params);
+      return predict(lzw(src, numParam(params, 'EarlyChange', 1)), params, ctx);
     case 'FlateDecode':
-      return predict(inflate(src), params);
+      return predict(inflate(src), params, ctx);
     case 'SubFileDecode': {
       const count = subfile?.count ?? numParam(params, 'EODCount', 0);
       const eodObj = params?.get('EODString') as PSObj | undefined;
@@ -68,9 +103,9 @@ export function filterSource(fname: string, src: ByteSource, params?: PSDict, su
       return subFile(src, count, eod);
     }
     case 'ReusableStreamDecode':
-      return reusable(src);
+      return reusable(src, ctx);
     case 'DCTDecode':
-      return dct(src);
+      return dct(src, ctx);
     case 'NullEncode':
       return src;
     default:
@@ -167,17 +202,41 @@ function lzw(src: ByteSource, early: number): ByteSource {
   let bits = 0;
   let nbits = 0;
   let width = 9;
-  let table: number[][] = [];
-  let prev: number[] | undefined;
+  // 表は、符号ごとに「前の符号・最後の 1 字・最初の 1 字・長さ」で持つ (符号ごとに字の並びを持つと、同じ字の続くデータで
+  // 1 つのフィルタの表が数十 MB になる)。0〜255 は 1 字、256 (表の初期化) と 257 (終わり) は空
+  const prefix = new Int16Array(4096);
+  const suffix = new Uint8Array(4096);
+  const first = new Uint8Array(4096);
+  const len = new Uint16Array(4096);
+  for (let k = 0; k < 256; k++) {
+    prefix[k] = -1;
+    suffix[k] = k;
+    first[k] = k;
+    len[k] = 1;
+  }
+  const tmp = new Uint8Array(4096);
+  let size = 258;
+  let prev = -1;
   let done = false;
   const reset = () => {
-    table = [];
-    for (let k = 0; k < 256; k++) table.push([k]);
-    table.push([], []);
+    size = 258;
     width = 9;
-    prev = undefined;
+    prev = -1;
   };
-  reset();
+  /** 符号 p の並びに 1 字 c を足した並びを、表に足す */
+  const add = (p: number, c: number) => {
+    prefix[size] = p;
+    suffix[size] = c;
+    first[size] = first[p];
+    len[size] = len[p] + 1;
+    size++;
+  };
+  /** 符号 code の並びを出す (前の符号をたどって、後ろから作る) */
+  const emitCode = (out: number[], code: number) => {
+    const n = len[code];
+    for (let c = code, i = n - 1; i >= 0; i--, c = prefix[c]) tmp[i] = suffix[c];
+    for (let i = 0; i < n; i++) out.push(tmp[i]);
+  };
   return pull((out) => {
     if (done) return false;
     while (nbits < width) {
@@ -200,20 +259,22 @@ function lzw(src: ByteSource, early: number): ByteSource {
       done = true;
       return false;
     }
-    let entry: number[];
-    if (code < table.length) entry = table[code];
-    else if (prev && code === table.length) entry = [...prev, prev[0]];
-    else throw new FilterError('ioerror');
-    out.push(...entry);
-    if (prev && table.length < 4096) table.push([...prev, entry[0]]);
-    prev = entry;
-    if (table.length + early >= 1 << width && width < 12) width++;
+    if (code < size) {
+      emitCode(out, code);
+      if (prev >= 0 && size < 4096) add(prev, first[code]);
+    } else if (prev >= 0 && code === size) {
+      // まだ表に無い符号: 前の並びに、その最初の 1 字を足したもの (符号は 4095 までなので、表には必ず空きがある)
+      add(prev, first[prev]);
+      emitCode(out, code);
+    } else throw new FilterError('ioerror');
+    prev = code;
+    if (size + early >= 1 << width && width < 12) width++;
     return true;
   });
 }
 
 /** 予測関数を戻す (§3.13.3 Predictor Functions) */
-function predict(src: ByteSource, params: PSDict | undefined): ByteSource {
+function predict(src: ByteSource, params: PSDict | undefined, ctx?: FilterContext): ByteSource {
   const pred = numParam(params, 'Predictor', 1);
   if (pred <= 1) return src;
   const colors = numParam(params, 'Colors', 1);
@@ -221,6 +282,9 @@ function predict(src: ByteSource, params: PSDict | undefined): ByteSource {
   const cols = numParam(params, 'Columns', 1);
   const rowBytes = Math.ceil((colors * bpc * cols) / 8);
   const bpp = Math.max(1, Math.ceil((colors * bpc) / 8));
+  // 1 行の長さ (Columns・Colors・BitsPerComponent で決まる) にも上限を置く (行ごとにこの長さを確保する)
+  if (rowBytes > (ctx?.maxBytes ?? PS_FILTER_MAX_BYTES)) throw new FilterError('limitcheck');
+  ctx?.alloc?.(rowBytes * 2);
   let prior = new Uint8Array(rowBytes);
   return pull((out) => {
     const png = pred >= 10;
@@ -495,10 +559,14 @@ function subFile(src: ByteSource, count: number, eod: Uint8Array): ByteSource {
   });
 }
 
-function reusable(src: ByteSource): ByteSource {
-  const data: number[] = [];
+/**
+ * ReusableStreamDecode (§3.13.3): 元を終わりまで読んでためる。ためる量には上限を置く (元が終わらない手続きでも、メモリを使い切らない)。
+ * 上限を超えたら limitcheck (実装の限界を超えたときのエラー。§8.2 filter のエラーの一覧にある)
+ */
+function reusable(src: ByteSource, ctx?: FilterContext): ByteSource {
+  const data = new ByteStore(ctx);
   for (let c = src.read(); c >= 0; c = src.read()) data.push(c);
-  const b = Uint8Array.from(data);
+  const b = data.bytes();
   let i = 0;
   return {
     read: () => (i < b.length ? b[i++] : -1),
@@ -508,8 +576,9 @@ function reusable(src: ByteSource): ByteSource {
 }
 
 /** DCTDecode: JPEG の終わり (FFD9) まで読み、そのバイト列を渡す。読むと、JPEG のバイト列をそのまま返す */
-function dct(src: ByteSource): ByteSource {
-  const data: number[] = [];
+function dct(src: ByteSource, ctx?: FilterContext): ByteSource {
+  // 読みためる量の上限は ReusableStreamDecode と同じ (超えたら limitcheck)
+  const data = new ByteStore(ctx);
   let prev = -1;
   // SOI から EOI まで。区切りの中の FF D9 を誤って見ないよう、区間ごとに読み飛ばす
   for (;;) {
@@ -522,7 +591,8 @@ function dct(src: ByteSource): ByteSource {
       const hi = src.read();
       const lo = src.read();
       if (hi < 0 || lo < 0) break;
-      data.push(hi, lo);
+      data.push(hi);
+      data.push(lo);
       const len = (hi << 8) | lo;
       for (let k = 2; k < len; k++) {
         const d = src.read();
@@ -534,7 +604,7 @@ function dct(src: ByteSource): ByteSource {
     }
     prev = c;
   }
-  const b = Uint8Array.from(data);
+  const b = data.bytes();
   let i = 0;
   return { read: () => (i < b.length ? b[i++] : -1), jpeg: () => b };
 }
