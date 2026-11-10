@@ -652,7 +652,7 @@ export interface LFlow extends BaseNode {
   children: LBlockLevel[];
 }
 
-export type LBlockLevel = LBlock | LTable | LBlockContainer | LMarker | LRetrieveMarker | LFloat;
+export type LBlockLevel = LBlock | LTable | LBlockContainer | LMarker | LRetrieveMarker | LRetrieveTableMarker | LFloat;
 export type LInlineLevel = string | LInline | LRuby | LTateChuYoko | LLeader | LFootnote | LPageNumberCitation | LImage | LInlineContainer | LFootnoteCitation | LIndexPageCitationList;
 
 /** 脚注本体の中で、その脚注の番号 (自動連番のラベル) に置き換わる (アンテナハウスの axf:footnote-number-citation) */
@@ -1193,6 +1193,28 @@ export interface LRetrieveMarker {
 }
 
 /**
+ * fo:retrieve-table-marker 相当 (表の header・footer のセルの中でのみ有効。XSL 1.1 §6.13.7)。
+ * その表の断片 (ページ・段ごとの表の箱) の中のマーカー (本体のセル・セルの中のブロック・LTableRow.bodyMarkers) の children を、この位置へ展開する。
+ * header・footer は断片ごとに組み直すので、断片ごとに中身と高さが変わりうる
+ */
+export interface LRetrieveTableMarker {
+  type: 'retrieve-table-marker';
+  className: string;
+  /**
+   * retrieve-position-within-table (§7.25.6)。既定 first-starting。
+   * first-starting: この断片で始まる親のマーカーの最初。無ければこの断片の最初のマーカー (前の断片から続く親のもの)、それも無ければ範囲の中の最後
+   * first-including-carryover: この断片の最初のマーカー。無ければ範囲の中の最後
+   * last-starting: 範囲の中で、始まった親のマーカーの最後。無ければ範囲の中の最後
+   * last-ending: 範囲の中で、終わった親のマーカーの最後。無ければ範囲の中の最後
+   */
+  position?: 'first-starting' | 'first-including-carryover' | 'last-starting' | 'last-ending';
+  /** retrieve-boundary-within-table (§7.25.2)。探す範囲。table (既定): この断片と前の断片すべて・table-fragment: この断片だけ・page: この断片と、同じページの前の断片 */
+  boundary?: 'table' | 'table-fragment' | 'page';
+  /** marker の番号 (LMarker.key) ごとの、この位置の文脈で読んだ中身。あれば LMarker.children の代わりに使う */
+  variants?: Record<number, Array<LBlockLevel | LInlineLevel>>;
+}
+
+/**
  * fo:leader 相当。行内で「余白を埋める」伸縮要素 (目次の点線リーダー、罫線リーダー等)。
  * 行に含まれる leader は、その行の残り幅 (最大長まで) を等分して埋める。
  */
@@ -1392,6 +1414,11 @@ export interface LTableRow extends BaseNode {
   border?: BorderInput;
   /** 行グループ (table-header・table-body・table-footer) の罫線と、この行がグループの最初・最後か (collapse でだけ使う) */
   group?: { border: BorderInput; first: boolean; last: boolean };
+  /**
+   * この行を含む fo:table-body の子の fo:marker (XSL 1.1 §6.7.8) と、この行がその本体の最初・最後の行か。
+   * 同じ本体の行は、同じ markers の配列を持つ。LRetrieveTableMarker から取り出せる (本体の断片ごとの領域に付く)
+   */
+  bodyMarkers?: { markers: LMarker[]; first: boolean; last: boolean };
 }
 export interface LTableBody extends BaseNode {
   type: 'table-body';

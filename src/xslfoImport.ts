@@ -54,6 +54,7 @@ import type {
   LMarker,
   LPageSequence,
   LRetrieveMarker,
+  LRetrieveTableMarker,
   LRuby,
   LTable,
   LTableCell,
@@ -171,7 +172,9 @@ class Importer {
   /** 読んだ fo:marker (要素と番号)。retrieve-marker の位置の文脈で中身を読み直すのに使う */
   private markerEls: Array<{ el: XEl; mk: LMarker }> = [];
   /** 読んだ fo:retrieve-marker と、その位置の文脈 */
-  private retrieves: Array<{ r: LRetrieveMarker; ctx: Ctx }> = [];
+  private retrieves: Array<{ r: LRetrieveMarker | LRetrieveTableMarker; ctx: Ctx }> = [];
+  /** fo:table-header・fo:table-footer の中を読んでいる間の深さ (fo:retrieve-table-marker を置ける所。§6.13.7) */
+  private inTableHF = 0;
   /** fo:marker の中身を読んでいる間の深さ (0 なら marker の外) */
   private inMarker = 0;
   /** 文字列の XML (CDATA に入った MathML・SVG) を読むためのパーサ */
@@ -628,6 +631,13 @@ class Importer {
       for (const { el, mk } of markers) if (mk.className === r.className && mk.key !== undefined) variants[mk.key] = this.markerChildren(el, ctx);
       if (Object.keys(variants).length) r.variants = variants;
     }
+  }
+  /** fo:marker を読む (読んだ要素は markerEls に控える) */
+  private marker(n: XEl, ctx: Ctx): LMarker {
+    const { ctx: c2 } = this.textStyle(n, ctx);
+    const mk: LMarker = { type: 'marker', className: this.attr(n, 'marker-class-name') ?? '', children: this.markerChildren(n, c2), key: this.markerEls.length };
+    this.markerEls.push({ el: n, mk });
+    return mk;
   }
   /** fo:marker の中身を読む (中の fo:retrieve-marker・fo:marker は読まない。flowChild の marker・retrieve-marker の所を参照) */
   private markerChildren(el: XEl, ctx: Ctx): Array<LBlockLevel | LInlineLevel> {
@@ -2372,10 +2382,7 @@ class Importer {
           this.miss('fo:marker (fo:marker の中)');
           return [];
         }
-        const { ctx: c2 } = this.textStyle(n, ctx);
-        const mk: LMarker = { type: 'marker', className: this.attr(n, 'marker-class-name') ?? '', children: this.markerChildren(n, c2), key: this.markerEls.length };
-        this.markerEls.push({ el: n, mk });
-        return one(mk, true);
+        return one(this.marker(n, ctx), true);
       }
       case 'retrieve-marker': {
         // fo:marker の中の fo:retrieve-marker: fo:retrieve-marker は fo:static-content の子孫に限られ (XSL 1.1 §6.13.6 の Constraints)、
@@ -2390,6 +2397,22 @@ class Importer {
         const r: LRetrieveMarker = { type: 'retrieve-marker', className: this.attr(n, 'retrieve-class-name') ?? '' };
         if (pos === 'first-starting-within-page' || pos === 'first-including-carryover' || pos === 'last-starting-within-page' || pos === 'last-ending-within-page') r.position = pos;
         if (bd === 'page' || bd === 'page-sequence' || bd === 'document') r.boundary = bd;
+        this.retrieves.push({ r, ctx });
+        return one(r, true);
+      }
+      case 'retrieve-table-marker': {
+        // fo:retrieve-table-marker は fo:table-header・fo:table-footer の子孫に限る (XSL 1.1 §6.13.7 の Constraints)。fo:marker の中にも置けない (§6.13.5)
+        if (this.inMarker || !this.inTableHF) {
+          this.miss(this.inMarker ? 'fo:retrieve-table-marker (fo:marker の中)' : 'fo:retrieve-table-marker (fo:table-header・fo:table-footer の外)');
+          return [];
+        }
+        const pos = this.attr(n, 'retrieve-position-within-table') ?? 'first-starting';
+        const bd = this.attr(n, 'retrieve-boundary-within-table') ?? 'table';
+        const r: LRetrieveTableMarker = { type: 'retrieve-table-marker', className: this.attr(n, 'retrieve-class-name') ?? '' };
+        if (pos === 'first-starting' || pos === 'first-including-carryover' || pos === 'last-starting' || pos === 'last-ending') r.position = pos;
+        else this.miss(`retrieve-position-within-table="${pos}"`);
+        if (bd === 'table' || bd === 'table-fragment' || bd === 'page') r.boundary = bd;
+        else this.miss(`retrieve-boundary-within-table="${bd}"`);
         this.retrieves.push({ r, ctx });
         return one(r, true);
       }
@@ -3318,12 +3341,35 @@ class Importer {
       }
       return out;
     };
-    if (headerEl) tbl.header = { type: 'table-body', rows: rowsOf(headerEl) };
-    for (const b of bodies) tbl.body.rows.push(...rowsOf(b));
+    // fo:retrieve-table-marker は、表の header・footer の中でだけ読む (§6.13.7)
+    const hfRows = (e: XEl) => {
+      this.inTableHF++;
+      try {
+        return rowsOf(e);
+      } finally {
+        this.inTableHF--;
+      }
+    };
+    // fo:table の子の fo:retrieve-table-marker (取り出した fo:marker の中身が fo:table-header・fo:table-footer そのものになる書き方。§6.13.7) は未対応
+    if (els.some((e) => this.name(e) === 'retrieve-table-marker')) this.miss('fo:retrieve-table-marker (fo:table の子)');
+    if (headerEl) tbl.header = { type: 'table-body', rows: hfRows(headerEl) };
+    for (const b of bodies) {
+      // 本体の子の fo:marker (§6.7.8 の Contents): 本体の領域に付く。行に持たせて、表の header・footer から取り出せるようにする
+      const saved = this.inTableHF;
+      this.inTableHF = 0;
+      const rows = rowsOf(b);
+      const mkEls = this.els(b).filter((x) => this.name(x) === 'marker');
+      // fo:marker の中の表の fo:marker は読まない (flowChild の marker の所と同じ)
+      if (mkEls.length && this.inMarker) this.miss('fo:marker (fo:marker の中)');
+      const markers = this.inMarker ? [] : mkEls.map((x) => this.marker(x, c2));
+      this.inTableHF = saved;
+      if (markers.length) rows.forEach((r, k) => (r.bodyMarkers = { markers, first: k === 0, last: k === rows.length - 1 }));
+      tbl.body.rows.push(...rows);
+    }
     // table-body が無く、table-row が直接ある場合
     for (const r of els.filter((e) => this.name(e) === 'table-row')) tbl.body.rows.push(this.row(r, c2, tw, tAlign));
     // table-footer は各ページの末尾で繰り返す (table-omit-footer-at-break="true" なら表の末尾だけ)
-    if (footerEl) tbl.footer = { type: 'table-body', rows: rowsOf(footerEl) };
+    if (footerEl) tbl.footer = { type: 'table-body', rows: hfRows(footerEl) };
     if (this.attr(n, 'table-omit-header-at-break') === 'true') tbl.omitHeaderAtBreak = true;
     if (this.attr(n, 'table-omit-footer-at-break') === 'true') tbl.omitFooterAtBreak = true;
     this.columnsFromCellWidths(tbl);
