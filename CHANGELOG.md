@@ -31,6 +31,9 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `fetchStyles`: 文書が `http(s):` で参照する CSS (`@import` の先も) を取る (既定 `true`)
   - `kumiori/node`: `createFontLoader` (Node のコマンドと同じ既定の書体の読み込みとキャッシュ)、`createFileResolver` (`file:` の参照を読む)、`defaultFontCacheDir`・`looksLikeFont`
 - **Node のコマンド**: `file:` の URL の参照を読む。`--no-fetch-styles` で CSS を取らない
+- **flex の項目の中のページ番号の参照**: `target-counter(…, page)` を持つ flex の項目 (目次の行の `::after` など) の箱の幅を、組んだ番号の桁に合わせる。これまでは 1 桁分の幅で作られ、`word-break: break-word`・`overflow-wrap: anywhere` などがあると 2 桁の番号が「1 / 0」と割れて、目次が伸びていた
+- **`createFileResolver`** (`kumiori/node`): `root` に、いくつかのディレクトリの並びを渡せる。中にあるかは、シンボリックリンクをたどった実体のパスで見る (root の中のリンクから外のファイルを読めていたのを直した。Windows の別のドライブ、名前が `..` で始まるファイルの判定も直した)
+- **未対応の CSS の警告**: `clip` と `fill` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
 - **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
 - **公開**: 対応仕様説明書の PDF (日本語版と英語版の 4 冊) を、版ごとに GitHub のリリースに付ける。奥付の「組版」の欄は、組んだ Kumiori の版にする
 - **第三者の表示**:

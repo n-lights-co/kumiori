@@ -1094,7 +1094,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <section class="chapter c16">
 <h1 class="chapter" id="ch-unsupported" data-no="16">対応していないプロパティ</h1>
 <p>第 1 章の確かめ方で、指定しても組版に何も渡らなかったプロパティを、仕様ごとに並べます。印刷に関わらないプロパティ (画面の操作・音声など) は、最後の表にまとめます。対応しているプロパティの中で対応していない値は、各節の値の表に書いています。そのうち、仕様の決まりが長く、表の 1 行では説明しきれないものを、2 つ目の表に取り出して説明しています。各項目には、どういうものか、どういう場面で使うかを書いています。説明は、取得した仕様書 (いずれも 2026-11-06 取得) の定義と、Kumiori のソースで確かめたことに基づきます。</p>
-<!--gen:unsupported--><h3>対応していないプロパティ (83 項目)</h3>
+<!--gen:unsupported--><h3>対応していないプロパティ (85 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>empty-cells</code><br><span class="spec">CSS 2.1 §17.6.1.1</span></td><td>罫線を分ける方式 (separated borders model) の表で、見える中身の無いセルのまわりに罫線と背景を描くかを指定します (show・hide)。空のセルの枠や背景を消して、表の見た目を整えたいときに使います。</td></tr>
 <tr><td><code>background-attachment</code><br><span class="spec">CSS Backgrounds 3 §2.5</span></td><td>背景画像を、ビューポートに固定するか (fixed)、ボックスと一緒に動かすか (scroll)、ボックスの中身と一緒に動かすか (local) を指定します。仕様は、ビューポートの無いページの媒体では fixed の背景がページボックスに固定され、どのページにも繰り返して描かれるとしています。背景画像をページごとに同じ位置に出したいときに使います。</td></tr>
@@ -1131,6 +1131,8 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>base-palette</code><br><span class="spec">CSS Fonts 4 §9.2.2</span></td><td>@font-palette-values の記述子で、もとにするカラーフォントのパレットを、番号か light・dark で選びます。自分で決める色の組を、フォントのどのパレットをもとに作るかを決めるときに使います。</td></tr>
 <tr><td><code>override-colors</code><br><span class="spec">CSS Fonts 4 §9.2.3</span></td><td>@font-palette-values の記述子で、パレットの番号と色の組の並びで、パレットの色を置き換えます。カラーフォントの一部の色だけを、別の色に変えて描きたいときに使います。</td></tr>
 <tr><td><code>box-decoration-break</code><br><span class="spec">CSS Fragmentation 3 §5.4</span></td><td>ページ・段・行でボックスが分かれたとき、分かれた端に罫線・内側の余白・外側の余白などを付けるか (clone)、付けずに切るか (slice) を指定します。背景をどう描くかも決めます。ページをまたぐ枠付きのボックスで、分かれたそれぞれの断片を枠で閉じたいときに使います。</td></tr>
+<tr><td><code>clip</code><br><span class="spec">CSS 2.1 §11.1.2</span></td><td>絶対配置のボックスの、見える範囲の矩形を指定します (rect(…))。画面には出さずに読み上げにだけ残す要素の書き方 (clip: rect(0 0 0 0)) でよく使われます。</td></tr>
+<tr><td><code>fill</code><br><span class="spec">SVG 1.1 §11.3</span></td><td>SVG の図形と文字の塗りを指定します。HTML の文書の CSS から、文書の中にじかに書いた &lt;svg&gt; の塗りを決めるのに使います (svg { fill: currentColor } など)。Kumiori は文書の中の &lt;svg&gt; を単独の画像として描くので、文書の CSS の fill は効きません (SVG の中の属性と style の fill は効きます)。</td></tr>
 <tr><td><code>footnote-display</code><br><span class="spec">CSS GCPM 3 §2.3</span></td><td>脚注を、脚注の領域にブロックとして置くか (block)、行の中の要素として置くか (inline)、処理系に決めさせるか (compact) を指定します。短い脚注を、脚注の領域に 1 行に続けて並べたいときに使います。</td></tr>
 <tr><td><code>footnote-policy</code><br><span class="spec">CSS GCPM 3 §2.8</span></td><td>脚注の本文が今のページに入りきらないときの扱いを指定します。line は脚注の参照のある行の前で、block はその段落の前で改ページします。auto は処理系が決め、脚注の本文を後のページに置いてもよいとしています。脚注の参照とその本文を、必ず同じページに置きたいときに使います。</td></tr>
 <tr><td><code>grid</code><br><span class="spec">CSS Grid 1 §7.8</span></td><td>明示のグリッドのプロパティ (grid-template-rows・-columns・-areas) と暗黙のグリッドのプロパティ (grid-auto-rows・-columns・-flow) をまとめて指定する一括指定です。グリッドの行・列・領域と自動の配置を、1 つの宣言で決めたいときに使います。</td></tr>
