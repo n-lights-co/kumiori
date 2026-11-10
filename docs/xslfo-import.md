@@ -289,6 +289,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - `clear` (§7.19.1): `fo:block` の `start`・`end`・`both` (`left` は `start`、`right` は `end`) は、その側の先の float の下から始める (`LBlock.clear`)。`inside`・`outside` と、`fo:block` 以外の要素の `clear` は読まずに報告する
 - `fo:folio-prefix`・`fo:folio-suffix` (§6.6.13・§6.6.14): 中身 (字と行内の要素) を、ページ番号の前後に付ける。`fo:page-number` はそれを含む `fo:page-sequence` のもの (§6.6.10)、`fo:page-number-citation`・`-last` は `ref-id` の要素を含む `fo:page-sequence` (引いたページを作ったもの) のもの (§6.6.11・§6.6.12)。`axf:physical-page-number="true"` の参照には付けない。中の `fo:page-number`・ブロックの要素は読まずに報告する
 - `font-variant="small-caps"` (§7.9.8): 字の並びを small caps の印の付いた行内の箱にする (`LInline.smallCaps`。書体に smcp があればその字形、無ければ 0.7 倍の大文字)。`word-spacing` (§7.17.8): 長さ (`<space>` は `.optimum`) を `wordSpacing` にして、語の間の空白に足す
+- `glyph-orientation-vertical` (§7.29.3): `auto` は `textOrientation` の `mixed`、`0deg` は `upright`、`90deg` は `sideways` (角度は 90 度の倍数の近い方に丸める。単位は `deg`・`grad`・`rad`)。180・270 度と、`glyph-orientation-horizontal` (§7.29.2) の 0 度以外は、組版に受け皿が無いので読まずに報告する
 - ページマスターの em は fo:root から受け継いだ font-size が基準。ページ番号の書式は XSLT 1.0 §7.7.1 どおり (最初のトークンだけを使い、知らないトークンは 1)
 - `line-stacking-strategy="font-height"` (行送りはいつも line-height。§4.5)
 - leader の初期値: `rule-thickness` 1pt、`leader-length` 0pt / 12pt / 100%。`leader-pattern-width` は字の幅より狭くしない (§7.22)。rule の線は中心を基線に置き、太さを上下に等しく付ける (§7.22.6)

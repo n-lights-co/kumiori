@@ -533,6 +533,19 @@ class Importer {
     return ((((n % 360) + 360) % 360) as Rotation);
   }
 
+  /**
+   * <angle> (§5.11: 符号・数・単位 deg / grad / rad。“The specified values are normalized to the range 0deg to 360deg.”) を、
+   * 0・90・180・270 度の最も近い値に丸める (§7.29.2・§7.29.3: “The User Agent shall round the value of the angle to the closest
+   * of the permitted values.”)。<angle> として読めなければ undefined
+   */
+  private angle90(v: string): 0 | 90 | 180 | 270 | undefined {
+    const m = /^([-+]?(?:\d+\.?\d*|\.\d+))(deg|grad|rad)$/.exec(v.trim());
+    if (!m) return undefined;
+    const deg = parseFloat(m[1]) * (m[2] === 'grad' ? 0.9 : m[2] === 'rad' ? 180 / Math.PI : 1);
+    const n = ((deg % 360) + 360) % 360;
+    return ((Math.round(n / 90) % 4) * 90) as 0 | 90 | 180 | 270;
+  }
+
   // ── 長さ・色 ──
   len(v: string | undefined, fs: number, pct?: number, lh?: number): number | undefined {
     if (!v) return undefined;
@@ -1322,6 +1335,23 @@ class Importer {
         wordSpacing = v;
       }
     }
+    // glyph-orientation-vertical (§7.29.3): 縦書きの字の向き。auto は全角の字を立てて、ほかの字を 90 度倒す (組版の mixed)。
+    // 0deg はすべての字を立てる (upright)、90deg はすべての字を時計回りに 90 度倒す (sideways)。180・270 度は組版に受け皿が無いので、
+    // 読まずに報告する。継承される
+    let textOrientation = ctx.textOrientation;
+    const gov = this.attrInh(el, 'glyph-orientation-vertical');
+    if (gov !== undefined) {
+      const deg = gov === 'auto' ? undefined : this.angle90(gov);
+      const to = gov === 'auto' ? ('mixed' as const) : deg === 0 ? ('upright' as const) : deg === 90 ? ('sideways' as const) : undefined;
+      if (!to) this.miss(`glyph-orientation-vertical:${gov.slice(0, 20)}`);
+      else if (to !== (ctx.textOrientation ?? 'mixed')) {
+        s.textOrientation = to;
+        textOrientation = to;
+      }
+    }
+    // glyph-orientation-horizontal (§7.29.2): 横書きの字の向き。0deg (初期値) のほかは、組版に受け皿が無いので、読まずに報告する
+    const goh = this.attrInh(el, 'glyph-orientation-horizontal');
+    if (goh !== undefined && this.angle90(goh) !== 0) this.miss(`glyph-orientation-horizontal:${goh.slice(0, 20)}`);
     // 空白・改行: white-space (略記) → 個別のプロパティの順に上書き
     const ws: WhiteSpace = { ...ctx.ws };
     const wsShort = this.attr(el, 'white-space');
@@ -1349,7 +1379,7 @@ class Importer {
     // 書字方向の裏返し (bt-lr・lr-bt など): 自分の writing-mode があれば決め直し、無ければ親のまま
     const ownWm = this.attr(el, 'writing-mode');
     const flip = ownWm && !ownWm.startsWith('from-') ? flipOf(ownWm) : ctx.flip;
-    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: s.color ?? ctx.color, textTransform, ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
+    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: s.color ?? ctx.color, textTransform, ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
   }
 
   phys(rel: 'before' | 'after' | 'start' | 'end', wm: WritingMode, rtl = false): 'top' | 'right' | 'bottom' | 'left' {

@@ -51,6 +51,8 @@ export interface Ctx {
   smallCaps?: boolean;
   /** 受け継いだ word-spacing (pt。§7.17.8)。normal で 0 に戻すかどうかを決めるのに使う */
   wordSpacing?: number;
+  /** 受け継いだ glyph-orientation-vertical (§7.29.3) を写した字の向き。auto (mixed) に戻すかどうかを決めるのに使う */
+  textOrientation?: 'mixed' | 'upright' | 'sideways';
   /** text-transform (継承される。§7.17.6)。none は省略 */
   textTransform?: 'capitalize' | 'uppercase' | 'lowercase';
   /** 祖先の font-family の並び (太さだけを指定した要素で、書体を選び直すのに使う) */

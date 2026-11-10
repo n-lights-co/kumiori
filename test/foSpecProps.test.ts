@@ -2,6 +2,7 @@
  * XSL-FO の、読んで組版へ渡すだけの性質:
  *  - clear (§7.19.1)
  *  - font-variant (§7.9.8)・word-spacing (§7.17.8)
+ *  - glyph-orientation-vertical・glyph-orientation-horizontal (§7.29.3・§7.29.2)
  *  - fo:folio-prefix・fo:folio-suffix (§6.6.13・§6.6.14): fo:page-number・fo:page-number-citation・fo:page-number-citation-last の番号の前後に付く (§6.6.10〜§6.6.12)
  *  - 一括指定 (font・background・page-break-before/after/inside・size。XSL 1.1 §7.31・§5.2) と、上限・下限 (min-height・max-height・min-width・max-width。§7.15.8〜§7.15.11・§5.3.3)
  */
@@ -337,5 +338,41 @@ describe('font-variant (§7.9.8) と word-spacing (§7.17.8)', () => {
   it('word-spacing の読めない値は報告する。指定の無い文書には wordSpacing を付けない', () => {
     expect(imp(`<fo:block word-spacing="wide">a</fo:block>`).report.unsupported['word-spacing:wide']).toBe(1);
     expect(first(`<fo:block word-spacing="normal">a b</fo:block>`).wordSpacing).toBeUndefined();
+  });
+});
+
+describe('glyph-orientation-vertical・glyph-orientation-horizontal (§7.29.3・§7.29.2)', () => {
+  const v = (attrs: string, text = 'A漢') => `<fo:block-container writing-mode="tb-rl" height="40mm" ${attrs}><fo:block>${text}</fo:block></fo:block-container>`;
+  const rot = (attrs: string) => {
+    const out: Record<string, number> = {};
+    const tree = E.engine.layout(imp(v(attrs)).document);
+    walk(tree.sheets[0].page as unknown as Area, (g) => g.type === 'glyph' && (out[g.text] = g.rotation));
+    return out;
+  };
+  it('auto は欧字を横に倒し、0deg はすべての字を立て、90deg はすべての字を横に倒す', () => {
+    expect(rot('')).toEqual({ A: 90, 漢: 0 });
+    expect(rot('glyph-orientation-vertical="auto"')).toEqual({ A: 90, 漢: 0 });
+    expect(rot('glyph-orientation-vertical="0deg"')).toEqual({ A: 0, 漢: 0 });
+    expect(rot('glyph-orientation-vertical="90deg"')).toEqual({ A: 90, 漢: 90 });
+  });
+  it('角度は 0・90・180・270 度の近い方に丸める。grad・rad の単位も読む。継承され、auto で戻る', () => {
+    const bc = (attrs: string) => first(v(attrs)) as unknown as LBlockContainer;
+    expect(bc('glyph-orientation-vertical="10deg"').textOrientation).toBe('upright');
+    expect(bc('glyph-orientation-vertical="80deg"').textOrientation).toBe('sideways');
+    expect(bc('glyph-orientation-vertical="100grad"').textOrientation).toBe('sideways');
+    expect(bc('glyph-orientation-vertical="1.5708rad"').textOrientation).toBe('sideways');
+    expect(bc('glyph-orientation-vertical="-350deg"').textOrientation).toBe('upright');
+    expect(bc('glyph-orientation-vertical="auto"').textOrientation).toBeUndefined();
+    const inner = first(`<fo:block-container writing-mode="tb-rl" height="40mm" glyph-orientation-vertical="0deg"><fo:block>A<fo:inline glyph-orientation-vertical="auto">B</fo:inline></fo:block></fo:block-container>`) as unknown as LBlockContainer;
+    expect(((inner.children[0] as LBlock).children[1] as LInline).textOrientation).toBe('mixed');
+  });
+  it('受け皿の無い向き (180・270 度、横書きの 0 度以外)・単位の無い値は、読まずに報告する', () => {
+    const un = (attrs: string) => imp(v(attrs)).report.unsupported;
+    expect(un('glyph-orientation-vertical="180deg"')['glyph-orientation-vertical:180deg']).toBe(1);
+    expect(un('glyph-orientation-vertical="270deg"')['glyph-orientation-vertical:270deg']).toBe(1);
+    expect(un('glyph-orientation-vertical="90"')['glyph-orientation-vertical:90']).toBe(1);
+    expect(un('glyph-orientation-horizontal="90deg"')['glyph-orientation-horizontal:90deg']).toBe(1);
+    expect(un('glyph-orientation-horizontal="0deg" glyph-orientation-vertical="90deg"')).toEqual({});
+    expect((first(v('glyph-orientation-vertical="180deg"')) as unknown as LBlockContainer).textOrientation).toBeUndefined();
   });
 });

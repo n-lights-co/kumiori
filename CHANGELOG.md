@@ -92,6 +92,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `fo:block` の `clear` (`start`・`end`・`both`・`left`・`right`) を読み、その側の先の `fo:float` の下からブロックを始める (XSL 1.1 §7.19.1)
   - `fo:folio-prefix`・`fo:folio-suffix` の中身を、ページ番号 (`fo:page-number`・`fo:page-number-citation`・`fo:page-number-citation-last`) の前後に付ける (「A-12」のような章ごとのノンブル。XSL 1.1 §6.6.13・§6.6.14)
   - `font-variant="small-caps"` (スモールキャップ) と `word-spacing` (語の間の空白に足す長さ) を読む (XSL 1.1 §7.9.8・§7.17.8)
+  - `glyph-orientation-vertical` の `auto`・`0deg` (すべての字を立てる)・`90deg` (すべての字を横に倒す) を読む (XSL 1.1 §7.29.3)。180・270 度と `glyph-orientation-horizontal` の 0 度以外は、読まずに報告する
 
 ## 0.1.1 (2026-11-09)
 
