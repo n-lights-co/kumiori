@@ -712,6 +712,27 @@ class Importer {
       else if (fname === 'xsl-before-float-separator') bfSepEl = sc;
       else if (!known.has(fname)) this.miss(`static-content:${fname}`);
     }
+    // static-content は、リージョンの寸法・向きがマスターごとに違うので、マスターごとに読み直す。
+    // 読み込みの報告の数 (counts・unsupported・droppedLinks・files) は文書に書かれた要素の数なので、同じ static-content の 2 度目からは数えない
+    const countedStatics = new Set<XEl>();
+    const staticChildren = (sc: XEl, c: Ctx): Array<LBlockLevel | LInlineLevel> => {
+      if (!countedStatics.has(sc)) {
+        countedStatics.add(sc);
+        return this.children(sc, c, true);
+      }
+      const { counts, unsupported, droppedLinks, files } = this.report;
+      const kept = structuredClone({ counts, unsupported, droppedLinks, files });
+      try {
+        return this.children(sc, c, true);
+      } finally {
+        this.report.counts = kept.counts;
+        this.report.unsupported = kept.unsupported;
+        if (kept.droppedLinks) this.report.droppedLinks = kept.droppedLinks;
+        else delete this.report.droppedLinks;
+        if (kept.files) this.report.files = kept.files;
+        else delete this.report.files;
+      }
+    };
     const staticFor = (info: MasterInfo): LBlockContainer[] => {
       const out: LBlockContainer[] = info.regionBgs.map((b) => ({
         type: 'block-container' as const,
@@ -741,7 +762,7 @@ class Importer {
         const lh = odd ? r.w : r.h;
         // static-content 自身の継承される性質 (font-size など) は、中の要素へ引き継ぐ
         const scs = this.textStyle(sc, { ...ctx, inStatic: true, wm: rwm, refOrigin: { x: r.x, y: r.y }, refSize: { w: lw, h: lh }, width: rwm === 'horizontal-tb' ? lw : lh, cbW: rwm === 'horizontal-tb' ? lw : lh, cbH: lh });
-        const c = this.children(sc, scs.ctx, true);
+        const c = staticChildren(sc, scs.ctx);
         const cont: LBlockContainer = { type: 'block-container', absolutePosition: true, left: r.x, top: r.y, width: lw, height: lh, ...scs.style, writingMode: rwm, children: c };
         if (ro) cont.rotation = ro;
         if (r.clip) cont.overflow = 'hidden';
