@@ -642,7 +642,9 @@ class Importer {
     const ctxRoot: Ctx = { fontSize: this.defaultFontSize, wm, startIndent: 0, endIndent: 0, refOrigin: def.bodyOrigin, refSize: def.bodySize, pageSize: { w: def.pageW, h: def.pageH }, cbH: def.bodySize.h, ws: WS_INITIAL, rtl: !seqWm && !!def.bodyRtl, flip: flipOf(this.attr(ps, 'writing-mode') ?? def.bodyWmAttr ?? '') };
     const rootStyle = this.textStyle(root, ctxRoot, true);
     const style = this.textStyle(ps, rootStyle.ctx, true);
-    const ctx: Ctx = { ...rootStyle.ctx, fontSize: style.ctx.fontSize, wm: style.ctx.wm, ws: style.ctx.ws, rtl: style.ctx.rtl };
+    // fo:page-sequence に書いた継承される特性 (text-transform・font-family・color・xml:lang・relative-align・改訂バーなど) は、
+    // fo:root のものに重ねて中へ伝える (XSL 1.1 §5.1.4: 継承される特性はどの要素にも書け、親から子へ伝わる)
+    const ctx: Ctx = style.ctx;
     const baseStyle: TextStyle = {
       fontSize: this.defaultFontSize,
       lineHeight: this.defaultLineHeight,
@@ -1744,9 +1746,11 @@ class Importer {
       case 'page-number': {
         // static-content の中は、ページごとに置き換える印。本文の中は、その場所 (印を付けた行内) のページ番号の参照にする (XSL 1.1 §6.6.10:
         // 本文の fo:page-number は、それを含むページの番号)
-        if (ctx.inStatic) return one('{pageNumber}', false);
+        // 要素自身の字の書式 (color・font-weight など。§6.6.10 の共通フォント特性) は、page-number-citation と同じく行内の箱で当てる
+        const { style } = this.textStyle(n, ctx);
+        if (ctx.inStatic) return one(Object.keys(style).length ? ({ type: 'inline', ...style, children: ['{pageNumber}'] } as LInline) : '{pageNumber}', false);
         const pid = `kumiori-page-number-${++this.pageNumberSeq}`;
-        return one({ type: 'inline', id: pid, children: [{ type: 'page-number-citation', refId: pid }] } as LInlineLevel, false);
+        return one({ type: 'inline', id: pid, ...style, children: [{ type: 'page-number-citation', refId: pid }] } as LInlineLevel, false);
       }
       case 'page-number-citation':
       case 'page-number-citation-last':
@@ -2409,8 +2413,14 @@ class Importer {
     const refEl = els.find((e) => this.name(e) !== 'footnote-body');
     const body = els.find((e) => this.name(e) === 'footnote-body');
     const label = (refEl?.textContent ?? '').replace(/\s+/g, '').trim();
-    const { ctx: c2 } = this.textStyle(body ?? n, ctx);
-    const out: LFootnote = { type: 'footnote', bodyLabel: false, ...ctx.inh, children: body ? this.children(body, c2, true) : [] };
+    // fo:footnote・fo:footnote-body に書いた継承される特性 (font-weight・color・text-align・line-height など。§5.1.4) は、
+    // footnote → footnote-body の順に重ねて、本体へ伝える
+    const fnStyle = this.textStyle(n, ctx);
+    const bodyStyle = body ? this.textStyle(body, fnStyle.ctx) : fnStyle;
+    const c2 = bodyStyle.ctx;
+    const out: LFootnote = { type: 'footnote', bodyLabel: false, ...fnStyle.style, ...(body ? bodyStyle.style : {}), ...c2.inh, children: body ? this.children(body, c2, true) : [] };
+    // 数の line-height を書いたら、受け継いだ長さの line-height は残さない
+    if (c2.inh?.lineHeightPt === undefined) delete out.lineHeightPt;
     // 脚注本体の文字の大きさは、周りから受け継いだ値 (FO の継承。HTML 向けの既定の 0.8 倍は使わない)
     if (out.fontSize === undefined) out.fontSize = c2.fontSize;
     if (label) out.label = label;

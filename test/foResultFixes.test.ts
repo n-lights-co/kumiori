@@ -79,3 +79,70 @@ describe('FO-03: fo:page-sequence・fo:flow の id を引くページ番号の�
     expect(one('force-page-count="even"')).toEqual({ pages: 2, text: '本文1-1、全体2' });
   });
 });
+
+describe('FO-04: fo:page-sequence に書いた継承される特性 (§5.1.4)', () => {
+  it('text-transform が中の文字に効く', () => {
+    for (const compat of BOTH) expect(first<LBlock>(fo('<fo:block>abc</fo:block>', { seq: 'text-transform="uppercase"' }), compat).children).toEqual(['ABC']);
+  });
+  it('font-weight・color は、中の bolder / lighter・罫線の色などの「継承した値」になる', () => {
+    const b = first<LBlock>(fo('<fo:block><fo:inline font-weight="lighter">a</fo:inline></fo:block>', { seq: 'font-weight="bold"' }));
+    // 継承した太さ 700 の lighter は 400 (fo:root の 400 から決めると 100)
+    expect((b.children[0] as LInline).fontWeight).toBe(400);
+  });
+  it('fo:root の指定は、page-sequence が上書きしなければそのまま伝わる', () => {
+    const xml = `<fo:root ${NS} text-transform="uppercase">${PM()}${seqXml('<fo:block>abc</fo:block>')}</fo:root>`;
+    expect(first<LBlock>(xml).children).toEqual(['ABC']);
+  });
+});
+
+describe('FO-07: fo:footnote・fo:footnote-body に書いた字の書式 (継承される特性。§5.1.4)', () => {
+  const fn = (attrs: string, bodyAttrs: string, compat: Compat = 'spec') =>
+    (first<LBlock>(fo(`<fo:block font-weight="bold" color="#ff0000">x<fo:footnote ${attrs}><fo:inline>1</fo:inline><fo:footnote-body ${bodyAttrs}><fo:block>note</fo:block></fo:footnote-body></fo:footnote></fo:block>`), compat).children[1] as LFootnote);
+  it('指定が無ければ、周りから受け継いだ書式のまま', () => {
+    const f = fn('', '');
+    expect(f.fontWeight).toBe(700);
+    expect(f.color).toBe('#ff0000');
+  });
+  it('footnote-body の font-weight・color・text-align・line-height が本体に効く', () => {
+    for (const compat of BOTH) {
+      const f = fn('', 'font-weight="normal" color="#808080" text-align="end" line-height="1.1" font-size="8pt"', compat);
+      expect(f.fontWeight).toBe(400);
+      expect(f.color).toBe('#808080');
+      expect(f.textAlign).toBe('end');
+      expect(f.lineHeight).toBe(1.1);
+      expect(f.fontSize).toBe(8);
+    }
+  });
+  it('fo:footnote の指定も本体に伝わり、footnote-body の指定が勝つ', () => {
+    expect(fn('color="#0000ff" font-style="italic"', '').color).toBe('#0000ff');
+    expect(fn('color="#0000ff" font-style="italic"', '').fontStyle).toBe('italic');
+    expect(fn('color="#0000ff"', 'color="#808080"').color).toBe('#808080');
+    // 長さの line-height を受け継いだ上に、数の line-height を書いたら、長さの方は残さない
+    const f = fn('line-height="20pt"', 'line-height="1.5"');
+    expect(f.lineHeight).toBe(1.5);
+    expect(f.lineHeightPt).toBeUndefined();
+  });
+});
+
+describe('FO-08: fo:page-number 自身の字の書式 (§6.6.10 の共通フォント特性・color)', () => {
+  const statics = '<fo:static-content flow-name="xsl-region-before"><fo:block>H<fo:page-number font-weight="bold" color="#ff0000"/></fo:block></fo:static-content>';
+  const xml = fo('<fo:block>p<fo:page-number font-weight="bold" color="#ff0000"/></fo:block>', { statics });
+  it('本文・static-content のどちらでも、書式を持つ行内の箱で包む', () => {
+    for (const compat of BOTH) {
+      const s = seq(xml, compat);
+      const inFlow = (s.flow.children[0] as LBlock).children[1] as LInline;
+      expect(inFlow).toMatchObject({ type: 'inline', fontWeight: 700, color: '#ff0000' });
+      const inStatic = (s.staticContent![0].children[0] as LBlock).children[1] as LInline;
+      expect(inStatic).toMatchObject({ type: 'inline', fontWeight: 700, color: '#ff0000', children: ['{pageNumber}'] });
+    }
+  });
+  it('書式の無い fo:page-number は従来どおり (static-content では文字列の印)', () => {
+    const s = seq(fo('<fo:block>a</fo:block>', { statics: '<fo:static-content flow-name="xsl-region-before"><fo:block>H<fo:page-number/></fo:block></fo:static-content>' }));
+    expect((s.staticContent![0].children[0] as LBlock).children).toEqual(['H{pageNumber}']);
+  });
+  it('組んだ結果: ページ番号に置き換わる', () => {
+    const tree = E.engine.layout(imp(xml).document);
+    expect(textOf(tree.sheets[0].page.absoluteAreas)).toBe('H1');
+    expect(textOf(tree.sheets[0].page.regionBody.children)).toBe('p1');
+  });
+});
