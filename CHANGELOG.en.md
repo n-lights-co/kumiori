@@ -4,21 +4,40 @@
 
 Version numbers follow [Semantic Versioning](https://semver.org/). During 0.x, incompatible changes may also be released in a minor version (such as 0.2.0).
 
-## Unreleased
+## 0.2.0 (unreleased)
 
-Changes that will go into the next version. When it is released, the heading becomes the version number and the release date ([`docs/en/RELEASING.md`](docs/en/RELEASING.md)).
+A release that adds flex features, WOFF/WOFF2, an API for loading referenced files, and more. While in 0.x, it is a minor release because it includes fixes that change typesetting results.
 
-- **HTML+CSS typesetting**:
-  - Added support for flex shrinking (`flex-shrink`, automatic minimum size), reversed directions (`row-reverse`, `column-reverse`, `wrap-reverse`), baseline alignment (`align-items: baseline`, `last baseline`), cross-axis `margin: auto`, `order`, growing, shrinking and wrapping in column containers, and vertical-writing containers (Flexbox 1)
-  - Added support for `visibility: hidden` and `collapse`, `aspect-ratio`, `auto` left and right margins on boxes with a fixed width and right-to-left containing blocks, and page names chosen by `page` (absolutely positioned and floated boxes do not change the name)
-  - CSS referenced by the document over `http(s):` (`<link rel="stylesheet">`, `@import`) and the fonts of its `@font-face` rules are now fetched (only those whose `unicode-range` overlaps the characters of the document). This can be turned off with `fetchStyles` in the library and `--no-fetch-styles` in the command
-  - WOFF and WOFF2 can now be used as font files (`--font`, `files`, `fonts`, `@font-face`; converted back to sfnt and embedded)
-  - Properties that do not matter for print (`cursor`, `user-select`, `will-change`, etc.) are no longer reported as unsupported
-- **XSL-FO typesetting**: In collapsed-border tables, the borders between a table header or footer repeated after a page break and the first or last row on that page are now chosen again from the borders of the adjoining rows (XSL-FO 1.1 §6.7.3, §6.7.10)
-- **PDF**: The ToUnicode entries of ligature glyphs (such as fi) now map to the original sequence of characters (text search and copy give the original characters)
-- **Library**: Added `resolveResource` (a function that returns the contents of files referenced by the document or CSS that are not in `files`). Added the Node components `kumiori/node` (`createFontLoader`, `createFileResolver`, `defaultFontCacheDir`)
-- **Node command**: Files referenced by the document or CSS with a `file:` URL are now read even outside the input directory
-- **Publishing**: Added a workflow (`.github/workflows/conformance-pdf.yml`) that attaches the four PDFs of the conformance documents (Japanese and English) to a release when it is published
+- **flex** (Flexbox 1; the CLI and the default layout path):
+  - Shrinking (`flex-shrink`, the automatic minimum size of `min-width: auto`), the growth limit (stop at `max-width` and share the rest), growing when the sum of `flex-grow` is below 1
+  - Reversed directions (`row-reverse`, `column-reverse`, `wrap-reverse`), containers with `direction: rtl`, vertical-writing containers
+  - Alignment: `baseline` and `last baseline`, cross-axis `margin: auto`, `start`, `end`, `left`, `right`, `safe` and `unsafe` for `justify-content`, `align-content` for wrapping containers
+  - Column direction: `row-gap`, `flex-basis`, `flex-shrink`, `flex-wrap` (wrapping into columns), growing in containers with a definite height
+  - `order` also applies to `::before`, `::after` and children of `display: contents`; text directly inside a container becomes an anonymous item
+  - Percentages in `gap`, `min-content` and `fit-content` for `flex-basis`, items with `visibility: collapse` (struts)
+- **CSS**:
+  - Supports `visibility` (`hidden`, `collapse`) and `aspect-ratio`
+  - The horizontal margins of boxes with a definite width follow CSS 2.1 §10.3.3 (in a containing block with `direction: rtl`, boxes are placed from the right edge; a single `auto` margin takes the remaining space at layout time)
+  - Collapsing of the bottom margin of the last child of a box with `min-height` follows CSS 2.1 §8.3.1
+  - For a `display: block` image with both `width` and `max-width`, the wrapping box now has the width of the image
+  - Named pages: no first page is created for boxes outside the flow alone (absolutely positioned, floats, etc.) (CSS Page 3 §8.1)
+  - Properties that have no effect in print (`cursor`, `transition-*`, etc.) are no longer reported as unsupported CSS
+- **Links and bookmarks**: `<a href>` on blocks, flex containers and tables makes the whole box a link; relative-reference links (GoToR for PDFs, Launch for other files); `h1` to `h6` become bookmarks with every default style (CSS GCPM 3 Appendix B)
+- **Tables**: in tables with `border-collapse: collapse`, the border between a table header or footer repeated at a page break and the adjacent row is chosen again from the borders on both sides (XSL 1.1 §6.7.10, CSS 2.1 §17.6.2.1)
+- **Fonts**: reads WOFF and WOFF2 (including font collections) (`--font`, `fonts`, `@font-face`); fonts referenced by `@font-face` over `http(s):` are also fetched (only those whose `unicode-range` overlaps the characters of the document)
+- **PDF**: in ToUnicode, ligature characters (U+FB01 etc.) map to the original character sequences (fi etc.), so text extraction and search find words such as "confiance"
+- **API**:
+  - `resolveResource(url)`: asks for files referenced by the document or CSS that are not in `files`
+  - `fetchStyles`: fetches CSS referenced by the document over `http(s):` (including `@import` targets; default `true`)
+  - `kumiori/node`: `createFontLoader` (the same default-font loading and cache as the CLI), `createFileResolver` (reads `file:` references), `defaultFontCacheDir`, `looksLikeFont`
+- **CLI**: reads references given as `file:` URLs; `--no-fetch-styles` disables fetching CSS
+- **Documents**: corrected the line count and test count in the README, the step numbers in the release procedure, and statements in the Conformance Guides, plans and other documents that disagreed with the implementation or between the Japanese and English versions
+- **Publishing**: the PDFs of the Conformance Guides (four volumes, Japanese and English) are attached to the GitHub release of each version; the "Typesetting" row of the colophon shows the Kumiori version used to typeset them
+- **Third-party notices**:
+  - Added notices for code bundled in the @pdf-lib/fontkit distribution (Brotli decoding, base64-js, buffer, etc.)
+  - Added notices for the rules copied from CSS GCPM 3 Appendix B (section 10)
+  - Every output JS file starts with a comment giving the Kumiori version, its license and where `THIRD_PARTY_NOTICES.md` is (for loading a single file from a CDN)
+  - The README of the Conformance Guides states the fonts embedded in their PDFs and the fonts' licenses
 
 ## 0.1.1 (2026-11-09)
 

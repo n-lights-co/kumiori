@@ -153,7 +153,7 @@ result.renderPage(canvas, 0);                                  // draw page 1 on
 
   ```html
   <script type="module">
-    import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.1.1/dist-browser/kumiori.js';
+    import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.2.0/dist-browser/kumiori.js';
     const result = await typesetHtml(html, { name: 'a.html' });
     result.renderPage(document.querySelector('canvas'), 0);
   </script>
@@ -249,7 +249,7 @@ The fonts used are embedded in the PDF. Check the license terms of each font wit
 
 The code is under the [Apache License 2.0](LICENSE) (Copyright 2026 Northern Lights Co.; see [NOTICE](NOTICE)). The fonts for typesetting are not bundled in this repository (for the fonts and their licenses, see the "[Fonts](#fonts)" section).
 
-The licenses and copyright notices of the third-party software Kumiori uses (pdf-lib, pako, utif, hyphen, etc.) are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The output of `npm run build`, `npm run build:cli`, `npm run build:lib` and `npm run build:browser` (`dist/`, `dist-cli/`, `dist-lib/`, `dist-browser/`) also contains `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md`.
+The licenses and copyright notices of the third-party software Kumiori uses (pdf-lib, pako, utif, hyphen, etc.) are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The output of `npm run build`, `npm run build:cli`, `npm run build:lib` and `npm run build:browser` (`dist/`, `dist-cli/`, `dist-lib/`, `dist-browser/`) also contains `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md`. Every output JS file (including chunks) starts with a comment (`/*! … */`) giving the Kumiori version, its license and where `THIRD_PARTY_NOTICES.md` is (for when a single file is loaded from a CDN).
 
 ## Relationship to other companies' products
 

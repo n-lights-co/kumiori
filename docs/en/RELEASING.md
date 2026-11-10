@@ -40,7 +40,8 @@ main is protected by a ruleset, so version changes also go in through a PR. Publ
    npm publish --dry-run
    ```
 
-   `prepublishOnly` runs the type check, the tests and the three builds (`build:dist`), and the list of files that go into the tarball is printed. Check that `dist-lib`, `dist-cli`, `dist-browser`, README, LICENSE and so on are included, and that `src` and the tests are not
+   `prepublishOnly` runs the type check, the tests and the three builds (`build:dist`), and the list of files that go into the tarball is printed. Check that `dist-lib`, `dist-cli`, `dist-browser`, README, LICENSE and so on are included, and that `src` and the tests are not.
+   If the dependencies (`package-lock.json`) or the specifications and data copied into the source have changed since the previous version, update `THIRD_PARTY_NOTICES.md` to match. Check that the versions from `npm ls --omit=dev --all` match section 2, and that the packages bundled into the browser build (the `node_modules/…` entries in `sources` of the `.map` files from `npx vite build --config vite.browser.config.ts --sourcemap`) match section 1
 3. Open a PR, and merge it once CI passes
 4. Tag main after the merge and push the tag:
 

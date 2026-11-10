@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
 /**
@@ -29,7 +30,44 @@ function licenseFiles(): Plugin {
   };
 }
 
+const { version } = JSON.parse(readFileSync(new URL('package.json', import.meta.url), 'utf8')) as { version: string };
+
+/**
+ * 出力する JS のファイルの先頭に付ける表示。ブラウザ向けの 1 ファイル (dist-browser/kumiori.js) とそのチャンクは、
+ * pdf-lib・fontkit・pako などを取り込んでいて、CDN からファイル 1 つだけで配られることもあるので、
+ * Kumiori のライセンスと、取り込んだ第三者のソフトウェアの表示 (THIRD_PARTY_NOTICES.md) の場所をファイルの中に書いておく。
+ * 縮めた後に付ける (postBanner) ので、縮めるビルド (dist/) でも消えない
+ */
+const banner = [
+  `/*! Kumiori (組み織り) ${version} | Apache License 2.0 | Copyright 2026 Northern Lights Co.`,
+  ` * Third-party notices (第三者のソフトウェアの表示): THIRD_PARTY_NOTICES.md`,
+  ` * https://cdn.jsdelivr.net/npm/kumiori@${version}/THIRD_PARTY_NOTICES.md */`,
+].join('\n');
+
+/**
+ * 画面のビルド (dist/) の入口のチャンクには、Vite が表示の後から先頭に `const __vite__mapDeps=…` を足すので、表示が先頭から外れる。
+ * 書き出した後のファイルを見て、先頭に表示が無ければ先頭へ移す (このチャンクはソースマップを出さないので、行がずれても困らない)
+ */
+function bannerFirst(): Plugin {
+  return {
+    name: 'kumiori-banner-first',
+    apply: 'build',
+    writeBundle(options, bundle) {
+      if (!options.dir) return;
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== 'chunk' || chunk.map) continue;
+        const file = join(options.dir, chunk.fileName);
+        const code = readFileSync(file, 'utf8');
+        const shebang = code.match(/^#![^\n]*\n/)?.[0] ?? '';
+        const rest = code.slice(shebang.length);
+        if (rest.startsWith(banner)) continue;
+        writeFileSync(file, shebang + banner + '\n' + rest.replace(banner + '\n', ''));
+      }
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [licenseFiles()],
-  build: { target: 'es2022', chunkSizeWarningLimit: 1500 },
+  plugins: [licenseFiles(), bannerFirst()],
+  build: { target: 'es2022', chunkSizeWarningLimit: 1500, rolldownOptions: { output: { postBanner: banner } } },
 });

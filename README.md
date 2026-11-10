@@ -153,7 +153,7 @@ result.renderPage(canvas, 0);                                  // 1 ページ目
 
   ```html
   <script type="module">
-    import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.1.1/dist-browser/kumiori.js';
+    import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.2.0/dist-browser/kumiori.js';
     const result = await typesetHtml(html, { name: 'a.html' });
     result.renderPage(document.querySelector('canvas'), 0);
   </script>
@@ -249,7 +249,7 @@ Node のコマンドは、取った書体を OS のキャッシュ (`~/.cache/ku
 
 コードは [Apache License 2.0](LICENSE) (Copyright 2026 Northern Lights Co.。[NOTICE](NOTICE))。組版用の書体は、本リポジトリには同梱していません (書体とそのライセンスは「[フォント](#フォント)」の節)。
 
-Kumiori が使う第三者のソフトウェア (pdf-lib・pako・utif・hyphen など) のライセンスと著作権表示は、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にまとめています。`npm run build`・`npm run build:cli`・`npm run build:lib`・`npm run build:browser` の出力 (`dist/`・`dist-cli/`・`dist-lib/`・`dist-browser/`) にも、`LICENSE`・`NOTICE`・`THIRD_PARTY_NOTICES.md` が入ります。
+Kumiori が使う第三者のソフトウェア (pdf-lib・pako・utif・hyphen など) のライセンスと著作権表示は、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にまとめています。`npm run build`・`npm run build:cli`・`npm run build:lib`・`npm run build:browser` の出力 (`dist/`・`dist-cli/`・`dist-lib/`・`dist-browser/`) にも、`LICENSE`・`NOTICE`・`THIRD_PARTY_NOTICES.md` が入ります。出力する JS のファイル (チャンクを含む) の先頭には、Kumiori の版とライセンス、`THIRD_PARTY_NOTICES.md` の場所を書いた注釈 (`/*! … */`) が入ります (CDN からファイルを 1 つだけ読む場合のため)。
 
 ## 他社の製品との関係
 
