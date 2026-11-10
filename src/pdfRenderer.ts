@@ -1229,7 +1229,7 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
 
   // 使用フォントだけを埋め込む (サブセット)。OpenType の機能 (onum・vert など) を使う字も、同じ埋め込みの字形として書く
   // 色つきの表を持つ書体の字は、別に Type 3 書体として書く (ふつうの埋め込みを通さない)。色つきの書体を使わない文書では undefined
-  const colorGlyphs = await PdfColorGlyphs.create(pdf, tree, fonts, { cmyk: pdfxConverter(opts), warnings: opts.pdfx?.warnings });
+  const colorGlyphs = await PdfColorGlyphs.create(pdf, tree, fonts, { cmyk: pdfxConverter(opts), warnings: opts.pdfx?.warnings, parseXml: opts.parseXml });
   const used = new Set<string>();
   walkAreaTree(tree, (a) => {
     if (a.type === 'glyph' && !colorGlyphs?.handles(a)) used.add(fonts.get(a.fontFamily, a.fontWeight).key);

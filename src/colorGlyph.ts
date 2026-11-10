@@ -326,6 +326,78 @@ export function unrollStops(stops: readonly ColorStop[], extend: Extend, t0: num
   return { stops: out, lo: k0, hi: k1 };
 }
 
+/**
+ * 掃引 (sweep) のグラデーションの、角度ごとの色 (PDF の三角形の網・Canvas の createConicGradient の止まり点を作るのに使う)。
+ * 描くのは 0°〜360° (COLR の「Sweep gradients」: 0° から 360° の手前までを描く。色の線の、その外に当たる所は描かない)。
+ *  - angles: 色の変わり目の角度 (0 と 360、その間にある止まり点の角度。昇順)
+ *  - sample(deg, side): 角度 deg の色。side は、その角度のすぐ手前 (−1)・すぐ後 (+1) (色の段差の位置で、どちら側の色かを決める)
+ * 描かないグラデーション (止まり点が無い・角度の幅が 0) は undefined
+ */
+export function sweepSampler(fill: Extract<ColorFill, { kind: 'sweep' }>, fg: Rgb): { angles: number[]; sample(deg: number, side: number): { rgb: Rgb; a: number } } | undefined {
+  const span = fill.end - fill.start;
+  if (span === 0) return undefined;
+  const tAt = (deg: number) => (deg - fill.start) / span;
+  const { stops, lo, hi } = unrollStops(fill.stops, fill.extend, Math.min(tAt(0), tAt(360)), Math.max(tAt(0), tAt(360)));
+  const plain = plainStops(stops, fg);
+  if (!plain.length) return undefined;
+  const sample = (deg: number, side: number): { rgb: Rgb; a: number } => {
+    const t = Math.min(Math.max((tAt(deg) - lo) / (hi - lo), 0), 1);
+    // 角度が増える向きと、色の線の位置が増える向きが逆のとき (始まりの角度 > 終わりの角度) は、手前・後が入れ替わる
+    const dir = span > 0 ? side : -side;
+    let i = 0;
+    // t を含む区間 [i, i + 1] を探す。段差 (同じ位置の止まり点) では、dir の側の区間
+    while (i < plain.length - 2 && (dir > 0 ? plain[i + 1].offset <= t : plain[i + 1].offset < t)) i++;
+    const p = plain[i];
+    const q = plain[Math.min(i + 1, plain.length - 1)];
+    const u = q.offset > p.offset ? Math.min(Math.max((t - p.offset) / (q.offset - p.offset), 0), 1) : dir > 0 ? 1 : 0;
+    return { rgb: p.rgb.map((c, k) => c + (q.rgb[k] - c) * u) as Rgb, a: p.a + (q.a - p.a) * u };
+  };
+  const angles = new Set<number>([0, 360]);
+  for (const s of plain) {
+    const deg = fill.start + span * (lo + (hi - lo) * s.offset);
+    if (deg > 0 && deg < 360) angles.add(deg);
+  }
+  return { angles: [...angles].sort((p, q) => p - q), sample };
+}
+
+/**
+ * 字の領域の字形と位置 (書体の単位。u・v は、領域の描く原点からの字形の原点。v は上向き)。木に字形の番号があれば、それを使う
+ * (組版で測った字形と同じ)。無ければ、字を書体で組み直す (pdfRenderer.ts の drawGlyph と同じ決まり)。組めなければ空
+ */
+export function areaGlyphs(
+  g: { text: string; glyphIds?: number[]; glyphPositions?: Array<[number, number, number]>; features?: string[] },
+  font: { fk: unknown },
+): Array<{ id: number; adv: number; u: number; v: number }> {
+  const fk = font.fk as {
+    getGlyph(id: number): { advanceWidth: number };
+    layout(text: string, features?: object): { glyphs: Array<{ id: number }>; positions: Array<{ xAdvance: number; xOffset: number; yOffset: number }> };
+  };
+  const out: Array<{ id: number; adv: number; u: number; v: number }> = [];
+  let pen = 0;
+  try {
+    if (g.glyphIds?.length) {
+      const pos = g.glyphPositions && g.glyphPositions.length === g.glyphIds.length ? g.glyphPositions : undefined;
+      g.glyphIds.forEach((id, i) => {
+        const [adv, dx, dy] = pos ? pos[i] : [fk.getGlyph(id).advanceWidth, 0, 0];
+        out.push({ id, adv, u: pen + dx, v: dy });
+        pen += adv;
+      });
+    } else {
+      // 改行しない空白 (U+00A0) は、通常の空白の字形で描く。'-' で始まる印 (組版が足す印) は、書体の機能ではない
+      const text = g.text.replace(/ /g, ' ');
+      const run = fk.layout(text, Object.fromEntries((g.features ?? []).filter((f) => !f.startsWith('-')).map((f) => [f, true])));
+      run.glyphs.forEach((gl, i) => {
+        const p = run.positions[i];
+        out.push({ id: gl.id, adv: p.xAdvance, u: pen + p.xOffset, v: p.yOffset });
+        pen += p.xAdvance;
+      });
+    }
+  } catch {
+    return [];
+  }
+  return out;
+}
+
 /** 書体のファイル (sfnt) の表の一覧 */
 function tableDirectory(buf: ArrayBuffer): Map<string, { offset: number; length: number }> {
   const out = new Map<string, { offset: number; length: number }>();
@@ -395,7 +467,7 @@ export function hexColor(css: string): [number, number, number, number] | undefi
 }
 
 /** SVG の表の字形を、描画の命令にする関数 (colorGlyphSvg.ts。XML を読む関数が要るので、描く側が渡す) */
-export type SvgGlyphReader = (doc: Uint8Array, gid: number, unitsPerEm: number) => { ops: ColorOp[]; usesForeground?: boolean } | undefined;
+export type SvgGlyphReader = (doc: Uint8Array, gid: number, unitsPerEm: number, palette: ReadonlyArray<readonly [number, number, number, number]>) => { ops: ColorOp[] } | undefined;
 
 /**
  * 色つきの字形を持つ書体。colorFontOf で作る (書体ごとに 1 つ)
@@ -423,6 +495,12 @@ export class ColorFont {
     dir: Map<string, { offset: number; length: number }>,
   ) {
     this.unitsPerEm = fk.unitsPerEm || 1000;
+    const plain = Object.create(fk) as FkFont;
+    plain._glyphs = {};
+    plain.getGlyph = function (this: FkFont, id: number, codePoints?: number[]) {
+      return this._getBaseGlyph?.(id, codePoints) ?? null;
+    };
+    this.plain = plain;
     const reader = (tag: string) => {
       const t = dir.get(tag);
       return t ? new Reader(buf, t.offset, t.length) : undefined;
@@ -455,12 +533,19 @@ export class ColorFont {
     }
   }
 
+  /**
+   * 輪郭を読むための、書体の写し。fontkit は、COLR・sbix の書体の getGlyph で、輪郭を持たない型の字形 (COLRGlyph) を返し、
+   * それを字形の控え (_glyphs) に入れる。輪郭の字形を作る _getBaseGlyph も同じ控えを見るので、先に getGlyph で作られた字形は
+   * 輪郭が空になり、合成の字形 (部品を getGlyph で引く) は例外になる。控えを別に持ち、getGlyph が輪郭の字形を返す写しを通して読む
+   */
+  private plain: FkFont;
+
   /** 字形の輪郭 (glyf・CFF の表のもの。COLR の層・PaintGlyph の形、色つきでない字形) */
   outline(gid: number): Seg[] {
     let p = this.pathMemo.get(gid);
     if (!p) {
       try {
-        p = toSegs(this.fk._getBaseGlyph?.(gid)?.path.commands ?? []);
+        p = toSegs(this.plain._getBaseGlyph?.(gid)?.path.commands ?? []);
       } catch {
         // 字形のデータが壊れている (fontkit が読めない) ときは、空の形
         p = [];
@@ -532,7 +617,7 @@ export class ColorFont {
     const hit = this.glyphMemo.get(key);
     if (hit !== undefined) return hit ?? undefined;
     let g: ColorGlyph | undefined;
-    for (const read of [() => this.colrGlyph(gid, sel), () => this.svgGlyph(gid), () => this.cbdtGlyph(gid), () => this.sbixGlyph(gid)]) {
+    for (const read of [() => this.colrGlyph(gid, sel), () => this.svgGlyph(gid, sel), () => this.cbdtGlyph(gid), () => this.sbixGlyph(gid)]) {
       try {
         g = read();
       } catch {
@@ -883,12 +968,12 @@ export class ColorFont {
 
   // ---- SVG ----
 
-  private svgGlyph(gid: number): ColorGlyph | undefined {
+  private svgGlyph(gid: number, sel?: FontPalette): ColorGlyph | undefined {
     const svg = this.svg;
     if (!svg || !this.svgReader) return undefined;
     const doc = this.svgDocument(gid);
     if (!doc) return undefined;
-    const r = this.svgReader(doc, gid, this.unitsPerEm);
+    const r = this.svgReader(doc, gid, this.unitsPerEm, this.palette(sel));
     return r ? this.finish(r.ops, 'svg') : undefined;
   }
 

@@ -26,7 +26,9 @@ import { parseColor } from './color';
 import { ITALIC_SLANT } from './paint';
 import { invert, type Seg } from './matrix';
 import { embedCmykImage } from './pdfLibPatches';
-import { boxThrough, colorFontOf, COMPOSITE, paletteKey, plainStops, segsBox, unrollStops, type Box, type ColorFill, type ColorFont, type ColorOp, type ColorStop, type Rgb, type SvgGlyphReader } from './colorGlyph';
+import { areaGlyphs, boxThrough, colorFontOf, COMPOSITE, paletteKey, plainStops, segsBox, sweepSampler, unrollStops, type Box, type ColorFill, type ColorFont, type ColorOp, type ColorStop, type Rgb } from './colorGlyph';
+import { svgGlyphReader } from './colorGlyphSvg';
+import type { XmlNode } from './svg';
 import type { AreaTree, GlyphArea } from './types';
 
 /** RGB → CMYK の変換 (PDF/X の出力。icc.ts の CmykConverter と同じ形) */
@@ -37,8 +39,8 @@ export interface PdfColorGlyphOptions {
   cmyk?: ToCmyk;
   /** 警告を足す配列 (PDF/X の透明など) */
   warnings?: string[];
-  /** SVG の表の字形の読み方 (colorGlyphSvg.ts の svgGlyphReader。無ければ、SVG だけの字形は輪郭で描く) */
-  svgReader?: SvgGlyphReader;
+  /** XML を読む関数 (SVG の表の字形を読むのに使う。無ければブラウザの DOMParser。どちらも無ければ、SVG だけの字形は輪郭で描く) */
+  parseXml?: (xml: string) => XmlNode;
 }
 
 /** 1 つの Type 3 書体に入れる字形の符号: 0x21〜0xFF (空白 0x20 は、語の間隔 Tw が掛かるので使わない) */
@@ -121,7 +123,6 @@ export class PdfColorGlyphs {
   private names = 0;
   private gstates = new Map<string, string>();
   private images = new Map<string, PDFImage>();
-  private fontIds = new WeakMap<object, number>();
   private pageFonts = new WeakMap<PDFPage, Map<Type3Font, PDFName>>();
   private warned = new Set<string>();
   /** 透明 (不透明度・ソフトマスク・描画モード) を使ったか (PDF/X の確認用) */
@@ -143,6 +144,8 @@ export class PdfColorGlyphs {
   static async create(pdf: PDFDocument, tree: AreaTree, fonts: FontManager, opts: PdfColorGlyphOptions = {}): Promise<PdfColorGlyphs | undefined> {
     if (!fonts.all().some((f) => colorFontOf(f))) return undefined;
     const self = new PdfColorGlyphs(pdf, fonts, opts);
+    const xml = opts.parseXml ?? (typeof DOMParser !== 'undefined' ? (t: string) => new DOMParser().parseFromString(t, 'image/svg+xml') as unknown as XmlNode : undefined);
+    const svgReader = xml && svgGlyphReader(xml);
     const pending = new Map<string, { kind: 'png' | 'jpg'; data: Uint8Array }>();
     let any = false;
     walkAreaTree(tree, (a) => {
@@ -151,11 +154,16 @@ export class PdfColorGlyphs {
       const cf = colorFontOf(font);
       if (!cf) return;
       any = true;
-      if (opts.svgReader && !cf.svgReader) cf.svgReader = opts.svgReader;
-      if (!cf.tables.cbdt && !cf.tables.sbix) return;
-      for (const { id } of self.glyphsOf(a, font)) {
-        for (const o of cf.glyph(id, a.fontPalette)?.ops ?? []) if (o.op === 'image') pending.set(self.imageKey(cf, o.data), { kind: o.kind, data: o.data });
-      }
+      if (svgReader && !cf.svgReader) cf.svgReader = svgReader;
+      if (!cf.tables.cbdt && !cf.tables.sbix && !cf.tables.svg) return;
+      const collect = (ops: readonly ColorOp[]) => {
+        for (const o of ops) {
+          if (o.op === 'image') pending.set(self.imageKey(o.data), { kind: o.kind, data: o.data });
+          else if (o.op === 'clip' || o.op === 'transform') collect(o.ops);
+          else if (o.op === 'composite') (collect(o.source), collect(o.backdrop));
+        }
+      };
+      for (const { id } of areaGlyphs(a, font)) collect(cf.glyph(id, a.fontPalette)?.ops ?? []);
     });
     if (!any) return undefined;
     let alpha = false;
@@ -177,46 +185,13 @@ export class PdfColorGlyphs {
     return !!colorFontOf(this.fonts.get(g.fontFamily, g.fontWeight));
   }
 
-  private imageKey(cf: ColorFont, data: Uint8Array): string {
-    let id = this.fontIds.get(cf);
-    if (id === undefined) this.fontIds.set(cf, (id = this.names++));
-    return `${id}:${data.byteOffset}:${data.length}`;
+  /** 画像のバイト列ごとの鍵 (同じ画像の命令は、同じバイト列の物を指す。ColorFont が字形ごとに覚えている) */
+  private imageKey(data: Uint8Array): string {
+    let id = this.dataIds.get(data);
+    if (id === undefined) this.dataIds.set(data, (id = this.names++));
+    return String(id);
   }
-
-  /**
-   * 字の領域の字形と位置 (書体の単位。u・v は、領域の描く原点からの字形の原点)。木に字形の番号があれば、それを使う
-   * (組版で測った字形と同じ)。無ければ、字を書体で組み直す (pdfRenderer.ts の drawGlyph と同じ決まり)
-   */
-  private glyphsOf(g: GlyphArea, font: LoadedFont): Array<{ id: number; adv: number; u: number; v: number }> {
-    const fk = font.fk as unknown as {
-      getGlyph(id: number): { advanceWidth: number };
-      layout(text: string, features?: object): { glyphs: Array<{ id: number }>; positions: Array<{ xAdvance: number; xOffset: number; yOffset: number }> };
-    };
-    const out: Array<{ id: number; adv: number; u: number; v: number }> = [];
-    let pen = 0;
-    try {
-      if (g.glyphIds?.length) {
-        const pos = g.glyphPositions && g.glyphPositions.length === g.glyphIds.length ? g.glyphPositions : undefined;
-        g.glyphIds.forEach((id, i) => {
-          const [adv, dx, dy] = pos ? pos[i] : [fk.getGlyph(id).advanceWidth, 0, 0];
-          out.push({ id, adv, u: pen + dx, v: dy });
-          pen += adv;
-        });
-      } else {
-        const text = g.text.replace(/ /g, ' ');
-        const run = fk.layout(text, Object.fromEntries((g.features ?? []).filter((f) => !f.startsWith('-')).map((f) => [f, true])));
-        run.glyphs.forEach((gl, i) => {
-          const p = run.positions[i];
-          out.push({ id: gl.id, adv: p.xAdvance, u: pen + p.xOffset, v: p.yOffset });
-          pen += p.xAdvance;
-        });
-      }
-    } catch (e) {
-      console.warn(`PDF: ${g.fontFamily} の「${g.text}」を描けません`, e);
-      return [];
-    }
-    return out;
-  }
+  private dataIds = new WeakMap<Uint8Array, number>();
 
   /**
    * 字の領域 g (左上が Sheet の (x, y)) を描く命令。この描き手が描かない字 (色つきの表の無い書体) は undefined。
@@ -226,7 +201,7 @@ export class PdfColorGlyphs {
     const font = this.fonts.get(g.fontFamily, g.fontWeight);
     const cf = colorFontOf(font);
     if (!cf) return undefined;
-    const glyphs = this.glyphsOf(g, font);
+    const glyphs = areaGlyphs(g, font);
     if (!glyphs.length) return [];
     // 文字の色 (前景色)。字形の手続きの中のグラデーションに前景色を使う字形は、色ごとに手続きを分ける
     const pc = parseColor(g.color);
@@ -411,7 +386,7 @@ export class PdfColorGlyphs {
         s += `q\n${o.m.map(fine).join(' ')} cm\n${this.emit(o.ops, { ...st, box: boxThrough(st.box, inv) })}Q\n`;
       } else if (o.op === 'composite') s += this.composite(o, st);
       else if (o.op === 'image') {
-        const img = this.images.get(this.imageKey(st.cf, o.data));
+        const img = this.images.get(this.imageKey(o.data));
         if (!img) continue;
         // 画像の XObject は単位正方形 (左下が原点) なので、(幅, 高さ) に伸ばして左下 (x, y) に置く
         s += `q\n${num(o.w)} 0 0 ${num(o.h)} ${num(o.x)} ${num(o.y)} cm\n/${this.imageName(img)} Do\nQ\n`;
@@ -584,30 +559,11 @@ export class PdfColorGlyphs {
     }
     // 掃引 (sweep): PDF に同じ網かけが無いので、中心のまわりの細い三角形 (1° ごと。止まり点の角度でも区切る) の網 (ShadingType 4。
     // ISO 32000-1 §8.7.4.5.5) で近似する。三角形の外の 2 つの頂点に、その角度の色を置く。描くのは 0°〜360° (COLR の「Sweep gradients」)
-    const span = fill.end - fill.start;
-    if (span === 0) return '';
-    const tAt = (deg: number) => (deg - fill.start) / span;
-    const { stops, lo, hi } = unrollStops(fill.stops, fill.extend, Math.min(tAt(0), tAt(360)), Math.max(tAt(0), tAt(360)));
-    const plain = plainStops(stops, st.fg);
-    if (!plain.length) return '';
-    /** 角度 deg の色 (side: その角度のすぐ手前 −1・すぐ後 +1。色の段差の位置で、どちら側の色かを決める) */
-    const sample = (deg: number, side: number): { rgb: Rgb; a: number } => {
-      const t = Math.min(Math.max((tAt(deg) - lo) / (hi - lo), 0), 1);
-      const dir = span > 0 ? side : -side;
-      let i = 0;
-      // t を含む区間 [i, i + 1] を探す。段差 (同じ位置の止まり点) では、dir の側の区間
-      while (i < plain.length - 2 && (dir > 0 ? plain[i + 1].offset <= t : plain[i + 1].offset < t)) i++;
-      const p = plain[i];
-      const q = plain[Math.min(i + 1, plain.length - 1)];
-      const u = q.offset > p.offset ? Math.min(Math.max((t - p.offset) / (q.offset - p.offset), 0), 1) : dir > 0 ? 1 : 0;
-      return { rgb: p.rgb.map((c, k) => c + (q.rgb[k] - c) * u) as Rgb, a: p.a + (q.a - p.a) * u };
-    };
-    const angles = new Set<number>();
+    const sweep = sweepSampler(fill, st.fg);
+    if (!sweep) return '';
+    const { sample } = sweep;
+    const angles = new Set<number>(sweep.angles);
     for (let d = 0; d <= 360; d++) angles.add(d);
-    for (const s of plain) {
-      const deg = fill.start + span * (lo + (hi - lo) * s.offset);
-      if (deg > 0 && deg < 360) angles.add(deg);
-    }
     const sorted = [...angles].sort((p, q) => p - q);
     const radius = Math.max(...corners.map(([px, py]) => Math.hypot(px - fill.cx, py - fill.cy))) * 1.05 + 1;
     const lim = [fill.cx - radius, fill.cx + radius, fill.cy - radius, fill.cy + radius];
@@ -639,7 +595,7 @@ export class PdfColorGlyphs {
       );
     };
     const color = this.resource('Shading', 'S', mesh(space, (c) => this.colorValue(c.rgb)));
-    const alphas = plain.map((p) => p.a);
+    const alphas = sorted.flatMap((d) => [sample(d, -1).a, sample(d, 1).a]);
     let pre = '';
     if (Math.max(...alphas) <= 0) return '';
     if (Math.max(...alphas) - Math.min(...alphas) < 1e-4) {
