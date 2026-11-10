@@ -2522,6 +2522,7 @@ class HtmlImporter {
     // 字形を差し替える OpenType の機能: font-variant-numeric (oldstyle-nums など)・font-variant-position (super・sub)・
     // font-variant-ligatures (discretionary・historical・contextual) と font-feature-settings。
     // 字は 1 字ずつ字形を引くので、字の並びで決まる機能 (frac の分数・ordn の序数・calt) は書体が 1 字で差し替えるものだけ効く
+    // (合字の機能 liga・clig・dlig・hlig は、字の並びを 1 つの単位にまとめてから当てる: inlineFlatten.ts の ligatureUnits)
     if (diff('font-variant-numeric') || diff('font-variant-position') || diff('font-variant-ligatures') || diff('font-feature-settings')) {
       const NUM: Record<string, string> = {
         'oldstyle-nums': 'onum',
@@ -2559,6 +2560,20 @@ class HtmlImporter {
       let on = !/(^|\s)(none|no-common-ligatures)(\s|$)/.test(vl);
       if (liga) on = liga[1] === undefined || liga[1] === 'on' || parseInt(liga[1], 10) > 0;
       s.latinLigatures = on;
+      // font-feature-settings で明示して有効にした合字の機能: 字間 (letter-spacing) があっても当てる。
+      // 機能を決める順 (Fonts 4 §7.2) は、font-variant の機能 → ほかの性質が決める機能 (letter-spacing が 0 でなければ任意の合字を止める) →
+      // font-feature-settings なので、font-variant-ligatures の明示 (common-ligatures など) は字間で止まり、font-feature-settings の明示は止まらない
+      // (Text 3 §7.2 にも「font-feature-settings で指定した合字は、この決まりより優先する」とある)
+      const forced: string[] = [];
+      for (const m of c('font-feature-settings').matchAll(/["'](liga|clig|dlig|hlig)["']\s*(on|off|\d+)?/gi)) {
+        const tag = m[1].toLowerCase();
+        const fon = m[2] === undefined || m[2] === 'on' || parseInt(m[2], 10) > 0;
+        const at = forced.indexOf(tag);
+        // 同じ機能を 2 度書いたときは、後のものを使う (Fonts 4 §7.2)
+        if (at >= 0) forced.splice(at, 1);
+        if (fon) forced.push(tag);
+      }
+      if (forced.length || (parent && diff('font-feature-settings'))) s.forcedLigatures = forced;
     }
     // カーニング: auto (既定) も、ブラウザと同じく欧文にかける。none で止める
     const fk = c('font-kerning');

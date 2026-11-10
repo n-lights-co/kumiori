@@ -7,6 +7,7 @@
 import type { LFootnote, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, WritingMode } from './types';
 import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type Measurer } from './measurer';
 import { mayCluster } from './grapheme';
+import { LIGATURE_FEATURES, ligatureTable } from './ligature';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
 import { JT_DATA, JT_VALUES } from './unicodeData';
@@ -47,38 +48,101 @@ function fontLacksLigaButHasGlyphs(font: GlyphMetrics['font']): boolean {
   return v;
 }
 
-/** 書体の合字の表 (OpenType の liga) で、字の並び seq が 1 つの字形になるか。書体ごとに覚える */
+/**
+ * 書体の合字の表 (OpenType の liga。features を渡せば、その合字の機能: dlig・hlig など) で、字の並び seq が 1 つの字形になるか。
+ * 書体の整形 (fontkit の layout) の結果で確かめる。書体ごとに覚える
+ */
 const ligaCache = new WeakMap<GlyphMetrics['font'], Map<string, boolean>>();
-function fontLigates(font: GlyphMetrics['font'], seq: string): boolean {
+const STANDARD_LIGA: readonly string[] = ['liga'];
+function fontLigates(font: GlyphMetrics['font'], seq: string, features: readonly string[] = STANDARD_LIGA): boolean {
   let byFont = ligaCache.get(font);
   if (!byFont) ligaCache.set(font, (byFont = new Map()));
-  let v = byFont.get(seq);
+  const key = features === STANDARD_LIGA ? seq : `${features.join(',')}\u0000${seq}`;
+  let v = byFont.get(key);
   if (v === undefined) {
     try {
-      v = font.fk.layout(seq, { kern: false, liga: true } as never).glyphs.length === 1;
+      // 標準の合字 (liga) を使わないとき (任意の合字 dlig だけなど) は、liga・clig を切って、その機能だけで確かめる
+      const feats = features.includes('liga') ? { kern: false, liga: true } : { kern: false, liga: false, clig: false };
+      v = font.fk.layout(seq, { ...feats, ...Object.fromEntries(features.map((f) => [f, true])) } as never).glyphs.length === 1;
     } catch {
       v = false;
     }
-    byFont.set(seq, v);
+    if (byFont.size > 20000) byFont.clear();
+    byFont.set(key, v);
   }
   return v;
+}
+
+/** 書体の合字の表を引く機能の組: 有効な合字の機能に、clig (liga が有効なとき) と必須の合字 rlig を足す */
+function tableFeaturesOf(features: readonly string[]): string[] {
+  const out = [...features];
+  if (out.includes('liga') && !out.includes('clig')) out.push('clig');
+  if (!out.includes('rlig')) out.push('rlig');
+  return out;
+}
+
+/** 合字の並びに入れない字 (空白・改行・制御の字)。空白をまたぐ合字は作らない (行の折り返し・語間の処理は空白を 1 つの単位として扱う) */
+const NOT_IN_LIGATURE = /^[\s\u0000-\u001f\u00ad\u200b-\u200f\u2028-\u202e\u2066-\u2069]$/;
+
+/**
+ * 書体の合字の表 (ligature.ts) で、chars の i 字目から始まる合字の並びの字の数 (無ければ 1)。
+ * 表の合字を、書体が並べた順 (優先する順。長い並びが先) に見て、最初に合ったものを使う (書体の整形と同じ区切りになる)。
+ * 並びの字がみな同じ書体 font で描かれ、空白を含まず、書体の整形でも 1 つの字形になるときだけ
+ */
+function tableLigatureLength(chars: string[], i: number, font: GlyphMetrics['font'], fontAt: (k: number) => GlyphMetrics['font'] | null, features: readonly string[], tableFeatures: readonly string[]): number {
+  const table = ligatureTable(font, tableFeatures);
+  if (!table?.extended) return 1;
+  const fk = font.fk as unknown as { glyphForCodePoint(cp: number): { id: number } };
+  const gid = (k: number) => fk.glyphForCodePoint(chars[k].codePointAt(0)!).id;
+  const ligs = table.byFirst.get(gid(i));
+  if (!ligs) return 1;
+  // 並びに使える字の続く長さ (表のいちばん長い並びまで)
+  let run = 1;
+  while (run < table.maxLen && i + run < chars.length && !NOT_IN_LIGATURE.test(chars[i + run]) && fontAt(i + run) === font) run++;
+  if (run < 2) return 1;
+  const ids = [0];
+  for (let k = 1; k < run; k++) ids.push(gid(i + k));
+  for (const comps of ligs) {
+    const len = comps.length + 1;
+    if (len < 2 || len > run) continue;
+    let ok = true;
+    for (let k = 1; k < len && ok; k++) ok = ids[k] === comps[k - 1];
+    if (!ok) continue;
+    const seq = chars.slice(i, i + len).join('');
+    // 結合文字・ZWJ などを含む並び (書記素クラスタの道でまとめる) と、つながる字 (アラビア文字など。joiningUnits が並びごと書体に渡す) は、ここではまとめない
+    if (mayCluster(seq) || JOINING_HINT.test(seq)) continue;
+    if (fontLigates(font, seq, features)) return len;
+  }
+  return 1;
 }
 
 /**
  * 文字列を字の単位に分ける。合字にするときは、書体の liga で 1 つの字形になる欧文の字の並び (4〜2 字) を 1 単位にまとめる
  * (Unicode に合字の字の無い並び: fft・ffk など)。並びの字がみな同じ書体で描かれるときだけ。
- * fontOf は字を描く書体 (字ごとに 1 度だけ引く)
+ * fontOf は字を描く書体 (字ごとに 1 度だけ引く)。
+ * opts.features は有効な合字の機能 (既定は liga)。opts.extended を真にすると、書体の合字の表 (GSUB の LookupType 4) にある並びを、
+ * 字の種類・長さを限らずにまとめる (語をアイコンにする書体の twitter・arrow_back・3d_rotation など。空白はまたがない。BMP の字で始まる並びだけ)。
+ * 表に無い並びは、従来どおり欧文の字の 4〜2 字を書体の整形で確かめる (文脈依存の置き換えで合字を作る書体のため)
  */
-export function ligatureUnits(text: string, fontOf: (ch: string) => GlyphMetrics['font'] | null): string[] {
+export function ligatureUnits(text: string, fontOf: (ch: string) => GlyphMetrics['font'] | null, opts?: { features?: readonly string[]; extended?: boolean }): string[] {
   const chars = Array.from(text);
   const out: string[] = [];
   const LATIN = /^[A-Za-zﬀ-ﬄ]$/;
   const latin = chars.map((ch) => LATIN.test(ch));
   const fonts: Array<GlyphMetrics['font'] | null | undefined> = new Array(chars.length);
   const fontAt = (k: number) => (fonts[k] === undefined ? (fonts[k] = fontOf(chars[k])) : fonts[k]);
+  const features = opts?.features ?? STANDARD_LIGA;
+  // 表を引く機能: 標準の合字は liga と clig (Fonts 4 §6.4 の common-ligatures)。必須の合字 (rlig) はいつも
+  const tableFeatures = opts?.extended ? tableFeaturesOf(features) : null;
+  // 欧文の字の並びを書体の整形で確かめるのは、任意の合字 (liga・dlig など) が有効なとき (必須の合字だけのときは、表にある並びだけ)
+  const latinRule = features.some((f) => f !== 'rlig');
   for (let i = 0; i < chars.length; ) {
     let n = 1;
-    if (latin[i] && i + 1 < chars.length && latin[i + 1]) {
+    if (tableFeatures && i + 1 < chars.length && chars[i].length === 1 && !NOT_IN_LIGATURE.test(chars[i])) {
+      const f0 = fontAt(i);
+      if (f0) n = tableLigatureLength(chars, i, f0, fontAt, features, tableFeatures);
+    }
+    if (n === 1 && latinRule && latin[i] && i + 1 < chars.length && latin[i + 1]) {
       // 欧文の字が続く長さ (4 字まで) の中で、同じ書体で描く字の並び
       let run = 1;
       while (run < 4 && i + run < chars.length && latin[i + run]) run++;
@@ -86,7 +150,7 @@ export function ligatureUnits(text: string, fontOf: (ch: string) => GlyphMetrics
       let same = 1;
       while (same < run && f0 && fontAt(i + same) === f0) same++;
       for (let len = same; len >= 2; len--) {
-        if (fontLigates(f0!, chars.slice(i, i + len).join(''))) {
+        if (fontLigates(f0!, chars.slice(i, i + len).join(''), features)) {
           n = len;
           break;
         }
@@ -97,6 +161,57 @@ export function ligatureUnits(text: string, fontOf: (ch: string) => GlyphMetrics
   }
   return out;
 }
+
+/** 有効な合字の機能の組 (ligatureFeaturesOf の結果) */
+interface LigatureFeatures {
+  /** 有効な合字の機能 (書体の整形で並びを確かめるときに使う) */
+  active: readonly string[];
+  /** 書体の合字の表を引く機能 (active に clig・rlig を足したもの) と、その鍵 */
+  table: readonly string[];
+  tableKey: string;
+  /** 合字の字形を測り・描くときの機能の組 (無ければ、書式の fontFeatures のまま) */
+  style?: string[];
+  /** active の鍵 */
+  key: string;
+  /** liga だけ (従来の合字) か */
+  standard: boolean;
+}
+
+/**
+ * 書式 st で有効な、任意の合字の機能。無ければ null。
+ * ・標準の合字 (liga。font-variant-ligatures の既定・axf:ligature-mode) と、font-variant-ligatures・font-feature-settings で有効にした
+ *   任意の合字 (dlig)・歴史的な合字 (hlig)・clig (CSS Fonts 4 §6.4・§6.12)
+ * ・字間 (letter-spacing) が 0 でないときは、font-feature-settings で明示したもの (forcedLigatures) だけ
+ *   (CSS Text 3 §7.2: 字の間の空きが 0 でないときは任意の合字を当てない。ただし font-feature-settings の指定はこの決まりより優先する。
+ *   Fonts 4 §7.2 の順でも、letter-spacing による合字の無効化の後に font-feature-settings が当たる)
+ */
+function optionalLigaturesOf(st: ResolvedStyle): LigatureFeatures | null {
+  const own = st.fontFeatures;
+  if (st.letterSpacing) {
+    if (!st.forcedLigatures?.length) return null;
+    return ligFeatureSet(st.forcedLigatures, [...(own ?? []), ...st.forcedLigatures.filter((f) => !own?.includes(f))]);
+  }
+  const extra = own?.length ? own.filter((f) => f !== 'liga' && LIGATURE_FEATURES.includes(f)) : undefined;
+  if (!st.latinLigatures) return extra?.length ? ligFeatureSet(extra, own!) : null;
+  if (!extra?.length) return ligFeatureMemo.get(own ?? NO_FEATURES) ?? ligFeatureSet(STANDARD_LIGA, [...(own ?? []), 'liga'], own ?? NO_FEATURES);
+  return ligFeatureSet(['liga', ...extra], [...own!, 'liga']);
+}
+const NO_FEATURES: string[] = [];
+/** 標準の合字だけのときの結果 (書式の fontFeatures の配列ごと。文字列ごとに作り直さない) */
+const ligFeatureMemo = new WeakMap<string[], LigatureFeatures>();
+function ligFeatureSet(active0: readonly string[], style: string[], memoKey?: string[]): LigatureFeatures {
+  const active = [...new Set(active0)];
+  const table = tableFeaturesOf(active);
+  const r: LigatureFeatures = { active, table, tableKey: table.join(','), style, key: active.join(','), standard: active.length === 1 && active[0] === 'liga' };
+  if (memoKey) ligFeatureMemo.set(memoKey, r);
+  return r;
+}
+/**
+ * 必須の合字 (rlig) だけ。任意の合字が無効でも (font-variant-ligatures: none・字間のあるとき・axf:ligature-mode の無い XSL-FO)、必須の合字は当てる
+ * (Fonts 4 §6.4「Required ligatures … are not affected by the settings above, including none」・§7.1、Text 3 §7.2 の注: 必須の合字は rlig)。
+ * 語をアイコンにする書体には、名前の合字を rlig に入れたものがある (Material Icons 4.0.0)
+ */
+const REQUIRED_LIGATURES: LigatureFeatures = { active: ['rlig'], table: ['rlig'], tableKey: 'rlig', key: 'rlig', standard: false };
 
 /** ligatureUnits の結果 (測る仕組みごと。文字列と書体の指定で引く) */
 const ligatureUnitsCache = new WeakMap<object, Map<string, string[]>>();
@@ -165,12 +280,12 @@ export function flattenInline(
   for (const c0 of children) {
     const start0 = cx.out.length;
     // 欧文の合字 (axf:ligature-mode="latin")。書体が合字の字 (U+FB00〜U+FB04) を持つときはその字に置き換える (無い並びは、下で書体の liga を使う)
-    // 字間 (letter-spacing) のあるときは、合字にしない (Text 3 §7.2)
+    // 字間 (letter-spacing) のあるときは、合字にしない (Text 3 §7.2)。font-feature-settings で liga を明示したときは、字間があっても合字にする (同じ節)
     // 合字の字に置き換えるのは、書体の liga がその並びを合字にするとき (Fonts 4 §6.4: 標準の合字は書体の liga が定める) と、
     // 書体が liga を持たないが合字の字形 (U+FB01 など) を持つとき (Tinos・Arimo など。等幅の書体は除く: 字幅を保つため)。
     // liga を持つのにその並びを合字にしない書体 (Source Code Pro など) は、合字の字形があっても合字にしない
     const c =
-      typeof c0 === 'string' && st.latinLigatures && !st.letterSpacing && /f[fil]/.test(c0)
+      typeof c0 === 'string' && st.latinLigatures && (!st.letterSpacing || !!st.forcedLigatures?.includes('liga')) && /f[fil]/.test(c0)
         ? applyLatinLigatures(c0, (ch, seq) => {
             const f = m.glyph('f', runStyleOf(st), wm).font;
             return m.glyph(ch, runStyleOf(st), wm).font === f && (fontLigates(f, seq) || fontLacksLigaButHasGlyphs(f));
@@ -193,16 +308,20 @@ export function flattenInline(
 function flattenText(c: string, cx: FlattenCtx): void {
   const { st, m, state, bg, wm, out } = cx;
   const runStyle = runStyleOf;
-  // 合字: 書体の liga で 1 つの字形になる並びを 1 単位に (横書きで、字間を空けないときだけ)
-  const ligSt = st.latinLigatures && wm === 'horizontal-tb' && !st.letterSpacing && /[A-Za-zﬀ-ﬄ]{2}/.test(c) ? { ...st, fontFeatures: [...(st.fontFeatures ?? []), 'liga'] } : null;
+  // 合字: 書体の合字の機能 (liga。指定があれば dlig・hlig・clig も) で 1 つの字形になる並びを 1 単位に (横書きだけ)。
+  // 候補は欧文の字の並び。語をアイコンにする書体のように、それに収まらない合字を持つ書体が読み込まれているときは、書体の合字の表から引く
+  // 任意の合字が無効でも、必須の合字 (rlig) で語をアイコンにする書体が読み込まれていれば、その並びはまとめる
+  const ligFeats = wm === 'horizontal-tb' && c.length > 1 ? (optionalLigaturesOf(st) ?? (m.hasExtendedLigatures(REQUIRED_LIGATURES.table, 'rlig') ? REQUIRED_LIGATURES : null)) : null;
+  const ligExt = !!ligFeats && m.hasExtendedLigatures(ligFeats.table, ligFeats.tableKey);
+  const ligSt = ligFeats && (ligExt || /[A-Za-zﬀ-ﬄ]{2}/.test(c)) ? { ...st, fontFeatures: ligFeats.style ?? st.fontFeatures } : null;
   let units0: string | string[] = c;
-  if (ligSt) {
+  if (ligSt && ligFeats) {
     // 同じ文字列・同じ書体の指定なら、前に分けた結果を使う (試し組みで同じ段落を何度も組む)
     const rs = runStyle(st);
-    const key = `${rs.fontFamily}\u0000${rs.fontWeight}\u0000${rs.stretch ?? ''}\u0000${(rs.features ?? []).join(',')}\u0000${rs.orientation ?? ''}\u0000${c}`;
+    const key = `${rs.fontFamily}\u0000${rs.fontWeight}\u0000${rs.stretch ?? ''}\u0000${(rs.features ?? []).join(',')}\u0000${rs.orientation ?? ''}\u0000${ligFeats.key}${ligExt ? '+' : ''}\u0000${c}`;
     let hit = ligatureUnitsCache.get(m)?.get(key);
     if (!hit) {
-      hit = ligatureUnits(c, (x) => m.glyph(x, rs, wm).font);
+      hit = ligatureUnits(c, (x) => m.glyph(x, rs, wm).font, ligFeats.standard && !ligExt ? undefined : { features: ligFeats.active, extended: ligExt });
       let byM = ligatureUnitsCache.get(m);
       if (!byM) ligatureUnitsCache.set(m, (byM = new Map()));
       if (byM.size > 20000) byM.clear();
@@ -225,6 +344,9 @@ function flattenText(c: string, cx: FlattenCtx): void {
   const clusters = mayCluster(c) ? m.resolveClusters(units1, runStyle(st), wm) : null;
   const units = clusters ? clusters.units : units1;
   let ui = 0;
+  // クラスタに当てる任意の合字の機能と、その書式 (要るときに 1 度だけ作る)
+  let clusterLig: LigatureFeatures | null | undefined;
+  let clusterLigSt: ResolvedStyle | undefined;
   for (const ch0 of units) {
     const unitKind = clusters ? clusters.kinds[ui++] : 0;
     // まとめて組むクラスタと、基底の字と異体字セレクタの並び: 字の種類で決まる処理 (禁則・約物の詰め・和欧間のアキ・字間) は基底の字
@@ -242,7 +364,19 @@ function flattenText(c: string, cx: FlattenCtx): void {
     if (!variation && ligSt && ch.length > 1 && !/[\uD800-\uDBFF]/.test(ch[0])) {
       // 合字の字形: 字の並びをまとめて、liga を当てて測り、描く
       const g = { ...m.glyph(ch, runStyle(ligSt), wm), draw: ch };
-      out.push({ kind: 'glyph', first: ch[0], last: ch[ch.length - 1], advance: g.advance, isSpace: false, runId: state.run, st: ligSt, bg, g });
+      // 字間 (字間があっても合字になるのは、font-feature-settings で合字を明示したときと、必須の合字): 合字は 1 つの字の単位なので、
+      // その後ろに空ける (Text 3 §7.2)。XSL の字間は、Alphabetic の字で始まる合字の前後に半分ずつ (下の 1 字のときと同じ。XSL §7.17.2)
+      if (st.xslLetterSpacing && st.letterSpacing && ALPHABETIC.test(ch[0])) {
+        const h = st.letterSpacing / 2;
+        out.push({ kind: 'glyph', first: ch[0], last: ch[ch.length - 1], advance: g.advance + st.letterSpacing, isSpace: false, runId: state.run, st: ligSt, bg, g, dx: h, lsLead: h, lsTrail: h });
+        continue;
+      }
+      const ls = st.letterSpacing && !st.xslLetterSpacing ? st.letterSpacing : 0;
+      if (ls) {
+        g.advance += ls;
+        g.spacing = (g.spacing ?? 0) + ls;
+      }
+      out.push({ kind: 'glyph', first: ch[0], last: ch[ch.length - 1], advance: g.advance, isSpace: false, runId: state.run, st: ligSt, bg, g, ...(ls > 0 ? { lsTrail: ls } : {}) });
       continue;
     }
     if (ch === '\n') {
@@ -264,7 +398,14 @@ function flattenText(c: string, cx: FlattenCtx): void {
       out.push({ kind: 'box', first: ' ', last: ' ', advance: 0, isSpace: true, runId: state.run, st, bg, box: { node: newNode('block', wm, {}), adv: 0, cross: 0, above: 0, below: 0 } });
       continue;
     }
-    const g = whole ? m.clusterGlyph(ch0, runStyle(st), wm) : variation ? m.variationGlyph(ch0, runStyle(st), wm) : m.glyph(ch, runStyle(st), wm);
+    // まとめて組むクラスタ (絵文字の並びなど): 任意の合字の機能 (既定で有効な liga など) が有効で、書体のその機能が並びの字形を変えるときは、
+    // その機能を当てて測り、描く (絵文字の並びの字形を liga で作る書体。Fonts 4 §7.1: 標準の合字は既定で有効)。変えないときは、従来のまま
+    let ust = st;
+    if (whole && wm === 'horizontal-tb') {
+      if (clusterLig === undefined) clusterLig = optionalLigaturesOf(st);
+      if (clusterLig?.style && m.clusterLigates(ch0, runStyle(st), clusterLig.active)) ust = clusterLigSt ??= { ...st, fontFeatures: clusterLig.style };
+    }
+    const g = whole ? m.clusterGlyph(ch0, runStyle(ust), wm) : variation ? m.variationGlyph(ch0, runStyle(st), wm) : m.glyph(ch, runStyle(st), wm);
     // 分けたクラスタの 2 つ目以降の字 (どの書体も並び全体を持たないとき。字ごとに組む): 前の字と同じ字の単位なので、前の字との間で改行せず、字間も空けない
     const cont = unitKind === UNIT_CONT;
     // 結合文字 (Mn・Me) の前には字間を空けない (letter-spacing は字の単位 (書記素クラスタ) の間に空ける。CSS Text 3 §8.2)
@@ -289,7 +430,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       if (!cont && ALPHABETIC.test(ch)) {
         const h = st.letterSpacing / 2;
         // 字の箱 (g.advance) は字の幅のまま。送り (advance) にだけ前後の空きを足す
-        out.push({ kind: 'glyph', first: ch, last: ch, advance: g.advance + st.letterSpacing, isSpace: isWrapSpace(ch), runId: state.run, st, bg, g, dx: h, lsLead: h, lsTrail: h, ...clusterProps });
+        out.push({ kind: 'glyph', first: ch, last: ch, advance: g.advance + st.letterSpacing, isSpace: isWrapSpace(ch), runId: state.run, st: ust, bg, g, dx: h, lsLead: h, lsTrail: h, ...clusterProps });
         continue;
       }
     } else if (!mark && st.letterSpacing) {
@@ -312,7 +453,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       advance: g.advance,
       isSpace: isWrapSpace(ch),
       runId: state.run,
-      st,
+      st: ust,
       bg,
       g,
       ...clusterProps,
