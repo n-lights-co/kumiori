@@ -18,6 +18,10 @@ describe('XHTML: XML の構文で読み、HTML に書き直す', () => {
     expect(h).toContain('<script>if (1 < 2) {}</script>');
     expect(h).toContain('<p> &amp;<br><img src="x.png"></p>');
   });
+  it('pre・textarea の中身の先頭の改行を落とさない (改行を重ねて書く。HTML の構文では、開始タグの直後の改行は読み捨てられる)', () => {
+    const h = xhtmlToHtml('<html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title></head><body><pre>\na\n</pre><pre>b</pre><pre><![CDATA[\nc]]></pre><textarea>\nd</textarea><p>\ne</p></body></html>');
+    expect(h).toContain('<pre>\n\na\n</pre><pre>b</pre><pre>\n\nc</pre><textarea>\n\nd</textarea><p>\ne</p>');
+  });
   it('整形式でない文書は誤り', () => {
     expect(() => xhtmlToHtml('<html xmlns="http://www.w3.org/1999/xhtml"><body><p>a</body></html>')).toThrow();
   });

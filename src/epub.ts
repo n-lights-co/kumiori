@@ -91,7 +91,17 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml): Promise<Epub
   };
   const container = await text('META-INF/container.xml');
   if (!container) throw new Error('EPUB ではありません (META-INF/container.xml がありません)');
-  const opfPath = /full-path\s*=\s*"([^"]+)"/.exec(container)?.[1];
+  // container.xml は XML として読む (属性の値の引用符は " でも ' でもよい。XML 1.0 §2.3 の AttValue)。最初の rootfile が既定の版
+  // (EPUB 3.3 の OCF §4.2.6.3.1 の rootfile 要素)。XML として読めなければ、full-path の属性を文字として探す
+  let opfPath: string | undefined;
+  try {
+    const cdoc = parse(container, 'application/xml');
+    const rootfile = Array.from(cdoc.getElementsByTagName('*')).find((e) => e.localName === 'rootfile' && e.getAttribute('full-path'));
+    opfPath = rootfile?.getAttribute('full-path') ?? undefined;
+  } catch {
+    /* 下の文字の探し方へ */
+  }
+  opfPath ||= /full-path\s*=\s*(?:"([^"]+)"|'([^']+)')/.exec(container)?.slice(1).find(Boolean);
   const opfText = opfPath ? await text(opfPath) : undefined;
   if (!opfPath || !opfText) throw new Error('EPUB の OPF が読めません');
   const opf = parse(opfText, 'application/xml');
@@ -139,8 +149,13 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml): Promise<Epub
       if (s) img.setAttribute('href', resolvePath(dir, s));
     }
     const inner = Array.from(body.childNodes).map(toHtml).join('');
-    const cls = body.getAttribute('class');
-    sections.push(`<section${cls ? ` class="${escapeAttr(cls)}"` : ''}${k > 0 ? ' style="break-before: page"' : ''}>${inner}</section>`);
+    // 章の body の属性 (class・id・lang・dir・style など) は section に、html の属性は section を包む div に写す
+    // (章ごとの html・body はつないだ文書に残らないので、.vrtl { writing-mode: vertical-rl } のようなクラスの規則や、lang・dir・style の
+    // 指定を章の中身に効かせる。html と body を別の要素にして、子孫の結合子 (.a .b) の関係も残す)。章の改ページは section の style に足す
+    const bodyAttrs = wrapperAttrs(body, k > 0 ? 'break-before: page' : '');
+    const htmlAttrs = doc.documentElement ? wrapperAttrs(doc.documentElement, '') : '';
+    const section = `<section${bodyAttrs}>${inner}</section>`;
+    sections.push(htmlAttrs ? `<div${htmlAttrs}>${section}</div>` : section);
   }
   const images: EpubBook['images'] = [];
   for (const it of items.values()) {
@@ -150,6 +165,28 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml): Promise<Epub
   }
   const html = `<!doctype html><html${lang ? ` lang="${escapeAttr(lang)}"` : ''}><head><meta charset="utf-8"><title>${escapeText(title ?? '')}</title>${css.map((c) => `<style>${c}</style>`).join('')}</head><body>${sections.join('')}</body></html>`;
   return { html, images, ...(title ? { title } : {}) };
+}
+
+/**
+ * 章の html・body の属性を、包む要素の属性の並びにする。名前空間の宣言は写さない。
+ * xml:lang だけがあれば lang にする (HTML の構文の文書では、言語は lang 属性で決まる。HTML Living Standard §3.2.6.2)。
+ * style には extraStyle を足す
+ */
+function wrapperAttrs(el: Element, extraStyle: string): string {
+  let out = '';
+  let style = extraStyle;
+  let lang: string | undefined;
+  let xmlLang: string | undefined;
+  for (const a of Array.from(el.attributes)) {
+    if (a.name === 'xmlns' || a.name.startsWith('xmlns:')) continue;
+    if (a.name === 'style') style = a.value.trim() ? `${a.value.trim().replace(/;\s*$/, '')}${extraStyle ? `; ${extraStyle}` : ''}` : extraStyle;
+    else if (a.name === 'lang') lang = a.value;
+    else if (a.name === 'xml:lang') xmlLang = a.value;
+    else out += ` ${a.name}="${escapeAttr(a.value)}"`;
+  }
+  if ((lang ?? xmlLang) !== undefined) out += ` lang="${escapeAttr((lang ?? xmlLang)!)}"`;
+  if (style) out += ` style="${escapeAttr(style)}"`;
+  return out;
 }
 
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
@@ -166,7 +203,10 @@ function toHtml(n: Node): string {
     attrs += ` ${a.name}="${escapeAttr(a.value)}"`;
   }
   if (VOID.has(name)) return `<${name}${attrs}>`;
-  return `<${name}${attrs}>${Array.from(el.childNodes).map(toHtml).join('')}</${name}>`;
+  // pre・textarea・listing の開始タグの直後の改行は、HTML の構文では読み捨てられる (HTML Living Standard §13.2.6.4.7 の "pre"・"listing" と
+  // "textarea" の開始タグ)。中身が改行で始まるときは、改行をもう 1 つ書く (§13.3 の書き出しの注意)
+  const lead = /^(pre|textarea|listing)$/.test(name) && el.firstChild?.nodeType === 3 && (el.firstChild.textContent ?? '').startsWith('\n') ? '\n' : '';
+  return `<${name}${attrs}>${lead}${Array.from(el.childNodes).map(toHtml).join('')}</${name}>`;
 }
 
 /** 属性の値の逃がし (" も) */
