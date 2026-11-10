@@ -1019,8 +1019,9 @@ function paintBackgroundLayer(a: Area, layer: NonNullable<Area['backgroundImage'
   const minY = same ? 0 : clip0.y - by;
   const maxX = same ? W : clip0.x + clip0.width - bx;
   const maxY = same ? H : clip0.y + clip0.height - by;
-  const startX = rx ? ox - Math.ceil((ox - minX) / bi.width) * bi.width : ox;
-  const startY = ry ? oy - Math.ceil((oy - minY) / bi.height) * bi.height : oy;
+  // (1e-9: 描く範囲と基準の領域の端が同じとき、丸めの誤差で 1 枚余分に手前から並べない)
+  const startX = rx ? ox - Math.ceil((ox - minX) / bi.width - 1e-9) * bi.width : ox;
+  const startY = ry ? oy - Math.ceil((oy - minY) / bi.height - 1e-9) * bi.height : oy;
   const tile = { type: 'image', src: bi.src, missing: false, x: 0, y: 0, width: bi.width, height: bi.height, margin: a.margin, padding: a.padding, border: {}, writingMode: a.writingMode } as ImageArea;
   // 角丸の箱の背景画像は、描く範囲の箱の角丸 (padding の箱なら、外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §4.2・§5.3)
   if (a.borderRadius) p.clipPath(radiusShape(a.borderRadius, a.width, a.height)(clipR.x, clipR.y, clipR.width, clipR.height, clipK === 0 ? 0 : clipK === 1 ? bt : bt + a.padding.top));
@@ -1031,8 +1032,8 @@ function paintBackgroundLayer(a: Area, layer: NonNullable<Area['backgroundImage'
     p.restore();
     return;
   }
-  for (let ty = startY; ty < maxY; ty += bi.height) {
-    for (let tx = startX; tx < maxX; tx += bi.width) {
+  for (let ty = startY; ty < maxY - 1e-6; ty += bi.height) {
+    for (let tx = startX; tx < maxX - 1e-6; tx += bi.width) {
       p.drawImage(tile, bx + tx, by + ty);
       if (!rx) break;
     }
