@@ -183,6 +183,8 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
     return;
   }
   if (jp) I.warn('JPEG の画像 (CMYK など)');
+  // 画素 (RGBA) は、メモリの合計の勘定に積む (PS_MAX_MEMORY_BYTES。JPEG のまま持つ画像は、読みためた分を VM に積んである)
+  I.memAlloc(w * h * 4);
   const rgba = new Uint8Array(w * h * 4);
   const maxv = (1 << bpc) - 1;
   // 1 行の成分を読む
@@ -326,6 +328,7 @@ function isDefaultDecode(d: number[]): boolean {
 /** type 3 の画像の別の元のマスクを読む (1 ビット)。描く所は 255 */
 function readMask(I: Interp, w: number, h: number, src: PSObj, decode: number[]): Uint8Array {
   const rd = dataReader(I, src);
+  I.memAlloc(w * h);
   const out = new Uint8Array(w * h);
   const rb = Math.ceil(w / 8);
   const row = new Uint8Array(rb);

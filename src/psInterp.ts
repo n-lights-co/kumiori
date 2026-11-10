@@ -7,7 +7,7 @@
  * 図形の演算子は psGraphics.ts が足す。
  */
 import { FilterError, UnsupportedFilter, filterSource, type ByteSource } from './psFilters';
-import { PS_FILTER_MAX_BYTES, PS_MAX_VM_BYTES } from './imageLimits';
+import { PS_FILTER_MAX_BYTES, PS_MAX_MEMORY_BYTES, PS_MAX_VM_BYTES } from './imageLimits';
 
 // ───────────────────────── オブジェクト (PLRM §3.3) ─────────────────────────
 
@@ -149,6 +149,20 @@ export const VM_GSTATE = 512;
  */
 const VM_NAME_FREE = 127;
 
+/**
+ * メモリの合計の勘定 (Interp.memAlloc。PS_MAX_MEMORY_BYTES の説明) に積む量。VM の勘定 (上の VM_*) は PLRM の数え方 (1 要素 8 バイト) だが、
+ * こちらは、この処理系が実際に使う量 (Node 22 で、GC の後のヒープとヒープの外の増えを測った値) に近い、少し大きめの値にする:
+ *  - 配列の 1 要素: 入れ物の 8 バイトと、要素のオブジェクト (整数 48・実数 58・文字列や配列の一部 66・名前 74・長さ 0 の配列 98 バイト)
+ *  - 辞書の 1 項: 141〜189 バイト。辞書 1 つ: 298 バイト
+ *  - 文字列 1 つ: 中身のほかに、バイト列の入れ物が約 250 バイト (長さ 0 の文字列を詰めた配列は、1 要素 258 バイト)
+ */
+export const MEM_ARRAY_ITEM = 88;
+const MEM_DICT_ENTRY = 192;
+const MEM_DICT = 320;
+export const MEM_STRING = 256;
+/** save の後の書き換えの控え 1 件 (戻すための関数と、記録した鍵の表の 1 項。測った値は約 150 バイト) */
+const MEM_JOURNAL_ENTRY = 160;
+
 let dictSerial = 0;
 /** 辞書のキー: 名前と文字列は同じキー (§3.3.9)、整数と実数は値が等しければ同じキー */
 function keyOf(k: PSObj): unknown {
@@ -203,7 +217,10 @@ export class PSDict {
     const ko: PSObj = typeof k === 'string' ? name(k) : k.t === 'string' ? name(strText(k)) : k;
     const old = this.map.get(key);
     // 新しい項は VM に積む (鍵が長い名前・文字列なら、その長さも)
-    if (!old) this.I?.vmAlloc(VM_DICT_ENTRY + (typeof key === 'string' && key.length > VM_NAME_FREE ? key.length : 0));
+    if (!old) {
+      const long = typeof key === 'string' && key.length > VM_NAME_FREE ? key.length : 0;
+      this.I?.vmAlloc(VM_DICT_ENTRY + long, MEM_DICT_ENTRY + long);
+    }
     this.I?.journalDict(this, key, old);
     this.map.set(key, { k: ko, v });
   }
@@ -352,9 +369,9 @@ export function scanToken(f: PSFile, opts: ScanOptions, I: Interp): PSObj | unde
         if (!t) throw new PSError('syntaxerror');
         items.push(t);
         // 手続きの値は VM に置く (終わらない元から読む手続きが、メモリを使い切る前に VMerror にする)
-        if ((items.length & 4095) === 0) I.vmAlloc(4096 * VM_ARRAY_ITEM);
+        if ((items.length & 4095) === 0) I.vmAlloc(4096 * VM_ARRAY_ITEM, 4096 * MEM_ARRAY_ITEM);
       }
-      I.vmAlloc((items.length & 4095) * VM_ARRAY_ITEM);
+      I.vmAlloc((items.length & 4095) * VM_ARRAY_ITEM, (items.length & 4095) * MEM_ARRAY_ITEM);
       const a = arr(items, true);
       if (opts.packing) a.packed = true;
       return a;
@@ -412,6 +429,8 @@ export function scanToken(f: PSFile, opts: ScanOptions, I: Interp): PSObj | unde
  */
 function scanCharge(I: Interp) {
   let charged = 0;
+  // 文字列のオブジェクト 1 つの入れ物の分 (メモリの合計の勘定だけ。VM の勘定は中身の長さ)
+  I.memAlloc(MEM_STRING);
   return {
     grow(len: number) {
       if (len - charged >= 65536) this.done(len);
@@ -538,6 +557,8 @@ export interface InterpOptions {
   maxVM?: number;
   /** フィルタ (ReusableStreamDecode・DCTDecode) が元を読みためる量 (バイト) の上限。超えれば limitcheck。既定は PS_FILTER_MAX_BYTES */
   maxFilterBytes?: number;
+  /** メモリの合計 (VM・パスの点・描画の並び・画像を、実際に使う量に近いバイト数で積んだもの) の上限。超えれば VMerror。既定は PS_MAX_MEMORY_BYTES */
+  maxMemory?: number;
 }
 
 export class Interp {
@@ -573,6 +594,13 @@ export class Interp {
   vmUsed = 0;
   maxVM: number;
   maxFilterBytes: number;
+  /**
+   * メモリの合計の勘定 (バイト。PS_MAX_MEMORY_BYTES の説明)。VM に積むもの (vmAlloc) は、実際に使う量に近い重み (MEM_*) で、ここにも積む。
+   * パスの点・描画の並び・画像 (psGraphics・psOpsImage・psShading) も、同じ勘定に積む (memAlloc)。
+   * vmUsed と同じく、restore で戻すのは save の記録の分だけ (捨てたオブジェクトの分は戻さない)
+   */
+  memUsed = 0;
+  maxMemory: number;
   /** プログラムを実行し始めたか (組み込みの辞書を作る間は、VM の上限を確かめない) */
   private started = false;
   /** エラーを記録している間 (VM の上限を確かめない) */
@@ -592,6 +620,7 @@ export class Interp {
     this.deadline = Date.now() + (opts.maxMillis ?? 20_000);
     this.maxVM = opts.maxVM ?? PS_MAX_VM_BYTES;
     this.maxFilterBytes = opts.maxFilterBytes ?? PS_FILTER_MAX_BYTES;
+    this.maxMemory = opts.maxMemory ?? PS_MAX_MEMORY_BYTES;
     this.systemdict = new PSDict(this, 500);
     this.globaldict = new PSDict(this, 100);
     this.globaldict.global = true;
@@ -649,7 +678,7 @@ export class Interp {
     if (!set) m.set(o, (set = new Set()));
     if (set.has(key)) return false;
     // 控え 1 件も VM に積む (積めなければ、書き換える前に VMerror。restore で戻す)
-    this.vmAlloc(VM_JOURNAL_ENTRY);
+    this.vmAlloc(VM_JOURNAL_ENTRY, MEM_JOURNAL_ENTRY);
     set.add(key);
     if (this.journal.length >= 5_000_000) throw new PSError('limitcheck');
     return true;
@@ -682,11 +711,13 @@ export class Interp {
     if (k < 0 || !s.valid) throw new PSError('invalidrestore');
     // 控えと save の記録は、ここで実際に手放すので、VM の使用量からも引く (save のあとに作ったオブジェクトの分は引かない。vmUsed の説明)
     this.vmUsed -= (this.journal.length - s.journal) * VM_JOURNAL_ENTRY;
+    this.memUsed -= (this.journal.length - s.journal) * MEM_JOURNAL_ENTRY;
     while (this.journal.length > s.journal) this.journal.pop()!();
     const gstates = s.gstates;
     for (const t of this.saves.splice(k)) {
       t.valid = false;
       this.vmUsed -= t.vm;
+      this.memUsed -= t.vm;
       // 無効になった save のオブジェクトがスタックに残っていても、写しは持ち続けない
       t.gstates = undefined;
     }
@@ -771,26 +802,36 @@ export class Interp {
   }
 
   newDict(max = 0): PSDict {
-    this.vmAlloc(VM_DICT);
+    this.vmAlloc(VM_DICT, MEM_DICT);
     const d = new PSDict(this, max);
     d.global = this.globalAlloc;
     return d;
   }
   /** 配列のオブジェクトを作る。charged: 呼び手が、items を作る前に vmAlloc で積んである */
   newArray(items: PSObj[], x = false, charged = false): PSArray {
-    if (!charged) this.vmAlloc(items.length * VM_ARRAY_ITEM);
+    if (!charged) this.vmAlloc(items.length * VM_ARRAY_ITEM, items.length * MEM_ARRAY_ITEM);
     if (this.globalAlloc) this.globalArrays.add(items);
     return arr(items, x);
   }
 
   /**
    * VM に n バイトを確保したと数える。上限 (maxVM) を超えるなら、確保する前に VMerror にする (§3.11.2・付録 B)。
-   * 呼ぶのは、実際にメモリを取る前
+   * 呼ぶのは、実際にメモリを取る前。mem は、メモリの合計の勘定 (memUsed) に積む量 (実際に使う量に近いバイト数。省けば n と同じ)
    */
-  vmAlloc(n: number) {
+  vmAlloc(n: number, mem = n) {
     if (!(n > 0)) return;
     if (this.started && !this.vmExempt && this.vmUsed + n > this.maxVM) throw new PSError('VMerror');
+    this.memAlloc(mem);
     this.vmUsed += n;
+  }
+  /**
+   * メモリの合計の勘定に n バイトを積む。上限 (maxMemory) を超えるなら、確保する前に VMerror にする
+   * (PLRM 付録 B の冒頭: 仮想メモリを使い切る操作は VMerror。PS_MAX_MEMORY_BYTES の説明)
+   */
+  memAlloc(n: number) {
+    if (!(n > 0)) return;
+    if (this.started && !this.vmExempt && this.memUsed + n > this.maxMemory) throw new PSError('VMerror');
+    this.memUsed += n;
   }
   /** 演算子の中で、長さ n に比例して回るループの手間を数える (64 要素で 1 ステップ。短いものは数えない) */
   work(n: number) {
@@ -1000,6 +1041,7 @@ export class Interp {
       // 組み込みの辞書・演算子の分は、プログラムの VM の使用量に入れない
       this.started = true;
       this.vmUsed = 0;
+      this.memUsed = 0;
     }
     try {
       this.call({ t: 'file', f, x: true });
@@ -1353,7 +1395,7 @@ function installCoreOperators(I: Interp) {
     if (n < 0) throw new PSError('rangecheck');
     // 長さの上限 (PLRM 付録 B の表 B.1 は 65535。string と同じく、その 16 倍まで受け付ける。超えたら limitcheck)
     if (n > MAX_LEN) throw new PSError('limitcheck');
-    I.vmAlloc(n * VM_ARRAY_ITEM);
+    I.vmAlloc(n * VM_ARRAY_ITEM, n * MEM_ARRAY_ITEM);
     I.push(I.newArray(Array.from({ length: n }, () => NULL), false, true));
   });
   d('length', (I) => {
@@ -1546,6 +1588,7 @@ function installCoreOperators(I: Interp) {
     const n = I.popInt();
     if (n < 0) throw new PSError('rangecheck');
     if (n > MAX_LEN) throw new PSError('limitcheck');
+    I.memAlloc(MEM_STRING);
     I.vmAlloc(n);
     I.push(str(new Uint8Array(n)));
   });
