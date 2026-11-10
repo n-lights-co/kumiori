@@ -122,6 +122,18 @@ describe('アラビア文字の字形 (語頭・語中・語尾・独立形、�
   });
 });
 
+describe('ヘブライ文字の記号の位置 (fontkit の文脈の規則の補い。src/fontkitShaping.ts)', () => {
+  it('Tinos: 母音記号とカンティレーションが 1 つの字に付くとき、前の文脈が 2 字形の規則で互いによける (HarfBuzz と同じ位置)', async () => {
+    const f = new FontManager();
+    await f.registerBuffer('Tinos', 400, await defaultFontBuffer('Tinos-Regular.ttf'), false);
+    const fk = f.get('Tinos', 400).fk;
+    // וְאֵ֥ת: 描く順は ת・メルカー (U+05A5)・ツェレ・א・シュヴァ・ו
+    const run = fk.layout('וְאֵ֥ת', { kern: false, liga: false, clig: false } as never);
+    expect(run.glyphs.map((x) => (x as unknown as { name: string }).name)).toEqual(['tav', 'uni05A5', 'tsere', 'alef', 'sheva', 'vav']);
+    expect(run.positions.map((x) => x.xOffset)).toEqual([0, 340, 840, 0, 0, 0]);
+  });
+});
+
 describe('単独の描かない字 (LRM・RLM・ZWNJ など) は幅 0 で、字形を描かない', () => {
   it('欧文・和文・ヘブライ文字の中の LRM・RLM・WJ: 前後の字の位置は、その字が無いときと同じ。字 (GlyphArea) も作らない', () => {
     const xs = (s: string, family = FAMILY) => glyphsOf([s], { fontFamily: family }).map((e) => [e.g.text, Math.round(e.x * 1000)]);

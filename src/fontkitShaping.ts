@@ -35,7 +35,10 @@
  *    fontkit は、これを字の並びの順のまま比べるので、前の文脈が 2 字形以上の規則が当たらない (Noto Sans Thai: 上に伸びる字 ป・ฝ・ฟ +
  *    下の母音 + 声調記号 で、声調記号が、字の上に伸びた部分を避けて左へ寄せた字形に替わらない)。比べる前に、並びを逆にする。
  *
- * 3・4 は仕様どおりの動きだが、ほかの用字の文書の結果を変えないよう、いまはインド系の用字とタイ文字 (LOOKUP_FIX_TEXT) を組むときだけ効かせる。
+ * 3・4 は仕様どおりの動きだが、ほかの用字の文書の結果を変えないよう、いまはインド系の用字・タイ文字と、右から左の文字 (ヘブライ文字・
+ * アラビア文字など) (LOOKUP_FIX_TEXT) を組むときだけ効かせる。右から左の文字は、HarfBuzz の字形・位置との照合で確かめた: アラビア文字 65 語
+ * (Noto Naskh Arabic・Noto Sans Arabic) とヘブライ文字 27 語 (Noto Sans Hebrew・Noto Serif Hebrew・Arimo) は補いの有無で結果が変わらず、
+ * Tinos のヘブライ文字は、母音記号・カンティレーションの位置 (前の文脈が 2 字形以上の規則) が 5 語で HarfBuzz と同じになる (悪くなる語は無い)。
  */
 
 /** 差し替え済みの印 (fontkit の原型に付ける。pdfLibPatches.ts と同じ決まり) */
@@ -48,8 +51,11 @@ const MATCH_PATCHED = Symbol.for('kumiori.fontkitBacktrackPatched');
  * U+A800〜U+ABFF) と、第 1 面の古い用字など (U+10000〜U+1BFFF)。広めに取ってある (当たっても、代わりを置いて戻す手間が増えるだけ)
  */
 const MAY_SYLLABLE_SHAPE = /[ऀ-᳿ꠀ-꯿\u{10000}-\u{1BFFF}]/u;
-/** 上の 3・4 を効かせる文字列: インド系の用字 (U+0900〜U+0DFF) とタイ文字 (U+0E00〜U+0E7F) を含む */
-const LOOKUP_FIX_TEXT = /[ऀ-๿]/;
+/**
+ * 上の 3・4 を効かせる文字列: インド系の用字 (U+0900〜U+0DFF)・タイ文字 (U+0E00〜U+0E7F) か、右から左の文字 (ヘブライ文字・アラビア文字・
+ * シリア文字など U+0590〜U+08FF と、その提示形 U+FB1D〜U+FDFF・U+FE70〜U+FEFC) を含む
+ */
+const LOOKUP_FIX_TEXT = /[\u0590-\u08FF\u0900-\u0E7F\uFB1D-\uFDFF\uFE70-\uFEFC]/;
 /** タイ文字の SARA AM と、その前の上付きの記号の並び */
 const THAI_SARA_AM = /([ัิ-ื็-๎]*)ำ/g;
 
@@ -169,9 +175,9 @@ export function patchFontkitShaping(fk: unknown) {
   const layout = proto.layout;
   const g = globalThis as { regeneratorRuntime?: unknown };
   proto.layout = function (text0, ...rest) {
-    if (typeof text0 !== 'string' || !MAY_SYLLABLE_SHAPE.test(text0)) return layout.call(this, text0, ...rest);
+    if (typeof text0 !== 'string' || !(MAY_SYLLABLE_SHAPE.test(text0) || LOOKUP_FIX_TEXT.test(text0))) return layout.call(this, text0, ...rest);
     const text = text0.includes('ำ') ? text0.replace(THAI_SARA_AM, 'ํ$1า') : text0;
-    const setRuntime = !('regeneratorRuntime' in g);
+    const setRuntime = !('regeneratorRuntime' in g) && MAY_SYLLABLE_SHAPE.test(text0);
     const wasActive = lookupFixActive;
     if (LOOKUP_FIX_TEXT.test(text)) {
       prepareLookupFixes(this as FkFont);
