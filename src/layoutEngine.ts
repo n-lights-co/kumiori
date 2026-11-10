@@ -550,7 +550,19 @@ interface FlowInit {
   abs: () => LNode[];
   /** 祖先のブロックコンテナを基準にする絶対配置の箱 (positionInContainer) を集める所と、その内容の箱の大きさ */
   localAbs?: { list: Array<{ n: LNode; node: LBlockContainer }>; w: number; h: number | undefined };
-  pageSize: () => { width: number; height: number };
+  /** ページの大きさ。body は版面 (本文の領域) の、組む向きでの大きさ (width は横、height は縦。本文の領域を回すときは回す前) */
+  pageSize: () => PageSizeInfo;
+  /**
+   * この流れの包含ブロックの block 方向の内容の大きさ (決まっているとき。高さの決まったブロックコンテナの中身など)。
+   * 中の直交する箱の、行の向きに使える長さになる (CSS Writing Modes 3 §7.3.1)
+   */
+  cbBlock?: number;
+}
+
+interface PageSizeInfo {
+  width: number;
+  height: number;
+  body?: { width: number; height: number };
 }
 
 /**
@@ -592,7 +604,8 @@ class Flow {
   /** いちばん近い、絶対配置の基準になるブロック (localAbs より内側) */
   private cbAbs?: CbAbs;
   private abs: () => LNode[];
-  private pageSize: () => { width: number; height: number };
+  private pageSize: () => PageSizeInfo;
+  private cbBlock?: number;
   stack: Frame[] = [];
   readonly markerSink: PendingMarker[];
   private foot?: FootnoteCtx;
@@ -722,6 +735,7 @@ class Flow {
     this.pages = init.pages;
     this.abs = init.abs;
     this.pageSize = init.pageSize;
+    this.cbBlock = init.cbBlock;
     this.root = init.root ?? newNode('block', init.wm, { isize: init.rootI });
   }
 
@@ -898,11 +912,25 @@ class Flow {
       // 親と直交する書字方向の float (横書きの中の縦書きなど): 自身の行の長さ (親の block 方向) の既定は、ページの残りの高さ
       const own = describeBox(node, st.wm);
       if (own.isizeExplicit == null) {
-        const rest = Number.isFinite(this.limit) ? this.limit - this.cursor - this.pendingValue() - this.footReserve : this.rootI;
+        // CSS の float は、使える長さ (orthogonalAvail。Writing Modes 3 §7.3.1) の中の fit-content (§7.3.2・CSS 2.1 §10.3.5 の shrink-to-fit を
+        // 行の向きに当てる。§7.2)。max-height (縦書き)・max-width (横書き) は使える長さの上限。XSL-FO は従来どおり、ページの残り
+        const css = !!node.cssPlacement && !this.host.xslSpace;
+        const rest = css ? this.orthogonalAvail(st.wm) : Number.isFinite(this.limit) ? this.limit - this.cursor - this.pendingValue() - this.footReserve : this.rootI;
         src.boxSizing = 'content-box';
-        const len = Math.max(rest - own.m.is - own.m.ie - own.bpI, st.fontSize * 2);
+        let len = Math.max(rest - own.m.is - own.m.ie - own.bpI, st.fontSize * 2);
+        if (css) {
+          if (node.maxInlineSize !== undefined) len = Math.min(len, node.maxInlineSize);
+          len = this.fitContent(len, (rootI, min) => this.intrinsicWidth(node.children, st, rootI, min));
+          // min-height (縦書き)・min-width (横書き) は下限 (上限より強い。CSS 2.1 §10.7)
+          if (node.minInlineSize !== undefined) len = Math.max(len, node.minInlineSize);
+        }
         if (horizontal) src.height = len;
         else src.width = len;
+        // 幅を測るときに使った box-sizing (border-box) の指定は、もう一方の向きの大きさにも効いているので、内容の大きさに直す
+        if (node.boxSizing === 'border-box' && own.bsizeExplicit != null) {
+          if (horizontal) src.width = own.bsizeExplicit;
+          else src.height = own.bsizeExplicit;
+        }
       }
     } else if (desc.isizeExplicit == null && node.cssPlacement && (node.float === 'start' || node.float === 'end')) {
       // CSS: 幅の指定の無い float は shrink-to-fit (CSS 2.1 §10.3.5): min(max(最小の内容の幅, 使える幅), 内容の幅)
@@ -2842,7 +2870,17 @@ class Flow {
       m.finishAtomic();
       mc = maxLineLength(m.root, true, true);
     }
-    const fitLen = (len: number) => (mc > 0 && mc < len ? mc : len);
+    // max-height (縦書きの箱)・max-width (横書きの箱) は、行の長さの上限 (Writing Modes 3 §7.2。LBlock.maxInlineSize は内容の大きさ)
+    const od = describeBox(node, wmC);
+    const css = !this.host.xslSpace;
+    const sized = css && node.type === 'block' && !node.aspectRatio ? node : undefined;
+    let capI = sized?.maxInlineSize !== undefined ? sized.maxInlineSize + od.bpI + od.m.is + od.m.ie : Infinity;
+    // 包含ブロック (親のブロック) の高さが決まっていれば、それが使える長さ (§7.3.1。ページの残りより長ければ、ページの残り)
+    const cb = this.stack[this.stack.length - 1]?.desc.bsizeExplicit;
+    if (css && cb != null) capI = Math.min(capI, Math.max(cb, minLine));
+    // min-height (縦書きの箱)・min-width (横書きの箱) は、行の長さの下限 (上限より強い。CSS 2.1 §10.7)
+    const floorI = sized?.minInlineSize !== undefined ? sized.minInlineSize + od.bpI + od.m.is + od.m.ie : 0;
+    const fitLen = (len: number) => Math.max(Math.min(mc > 0 && mc < len ? mc : len, capI), floorI);
     let lineLen = fitLen(Math.max(avail, minLine));
     /** 最初の断片の行の長さを len にして組む。final でなければ試し組み (マーカー・警告を残さない) */
     const lay = (len: number, final: boolean) => {
@@ -2860,7 +2898,7 @@ class Flow {
           noteId: () => {},
           columnEnd: (u) => used.push(u),
           nextPage: () => {
-            const r = newNode('block', wmC, { isize: this.limit });
+            const r = newNode('block', wmC, { isize: Math.max(Math.min(this.limit, capI), floorI) });
             roots.push(r);
             return { root: r, limit: width, rootI: r.isize };
           },
@@ -2954,6 +2992,32 @@ class Flow {
     });
   }
 
+  /**
+   * 直交する書字方向の箱の、行の向き (この流れの block 方向) に使える長さ (CSS Writing Modes 3 §7.3.1・§7.3.2)。
+   * 包含ブロックのその向きの大きさが決まっていれば、それ (高さの決まったブロックの中・高さの決まったブロックコンテナの中)。
+   * 決まっていなければ、ページを持つ流れではページ (段) の残り、ページを持たない流れ (セル・箱の中) では版面の大きさ
+   * (§7.3.1 の代わりの大きさ: initial containing block の大きさ)
+   */
+  private orthogonalAvail(wmC: WritingMode): number {
+    const top = this.stack[this.stack.length - 1];
+    if (top) {
+      if (top.desc.bsizeExplicit != null) return top.desc.bsizeExplicit;
+    } else if (this.cbBlock !== undefined) return this.cbBlock;
+    if (Number.isFinite(this.limit)) return this.limit - this.cursor - this.pendingValue() - this.footReserve;
+    const body = this.pageSize().body;
+    return body ? (wmC === 'horizontal-tb' ? body.width : body.height) : this.rootI;
+  }
+
+  /**
+   * fit-content の大きさ (CSS Sizing 3 §5.1・Writing Modes 3 §7.3.2): min(max-content, max(min-content, 使える長さ))。
+   * widthAt は、行の長さを与えて中身のいちばん長い行の長さを返す (min が true なら min-content の計測)
+   */
+  private fitContent(avail: number, widthAt: (rootI: number, min: boolean) => number): number {
+    const pref = widthAt(Math.max(avail, 1) * 100, false);
+    if (pref <= avail) return pref;
+    return Math.min(Math.max(widthAt(1, true), avail), pref);
+  }
+
   /** 親と直交する書字方向を持つブロック/表 (例: 横書きフロー内の縦書きブロック) */
   private layoutOrthogonal(node: LBlock | LTable, st: ResolvedStyle, ps: ResolvedStyle) {
     // 段の先頭・末尾に寄せる float (before・after・inside・outside) を直下に持つ箱は、ブロックコンテナとして組む
@@ -2986,10 +3050,39 @@ class Flow {
     const outer = describeBox(node, this.wm);
     const bsSide = startSide(this.wm);
     const beSide = endSide(this.wm);
-    const inner = { ...node, margin: { ...outer.marginP, [bsSide]: 0, [beSide]: 0 } } as typeof node;
+    let inner = { ...node, margin: { ...outer.marginP, [bsSide]: 0, [beSide]: 0 } } as typeof node;
     const innerDesc = describeBox(inner, wmC);
-    const childI =
-      innerDesc.isizeExplicit != null ? innerDesc.isizeExplicit + innerDesc.bpI + innerDesc.m.is + innerDesc.m.ie : this.contentI();
+    // flex の項目 (fillOrthogonal): 箱の block の大きさ (親の行の向きの大きさ) を、置く場所 (列) の幅いっぱいにする (Flexbox 1 §9.7: 項目の主軸の
+    // 大きさは、伸ばし縮めた後の大きさ)。中身の幅を測る流れ (列の幅の計測) では、指定の大きさ・中身の大きさのまま
+    if (node.type === 'block' && node.fillOrthogonal && !this.intrinsic) {
+      const fill = Math.max(this.contentI() - innerDesc.m.bs - innerDesc.m.be - (node.boxSizing === 'border-box' ? 0 : innerDesc.bpStart + innerDesc.bpEnd), 0);
+      inner = { ...inner, [wmC === 'horizontal-tb' ? 'height' : 'width']: fill };
+    }
+    let childI: number;
+    if (innerDesc.isizeExplicit != null) childI = innerDesc.isizeExplicit + innerDesc.bpI + innerDesc.m.is + innerDesc.m.ie;
+    else if (this.host.xslSpace) childI = this.contentI();
+    else {
+      // CSS: 行の向きの大きさの指定が無ければ fit-content (Writing Modes 3 §7.3.2)。使える長さは orthogonalAvail。
+      // max-height (縦書きの箱) ・max-width (横書きの箱) は使える長さの上限 (§7.2: 高さ・幅の指定は物理の向き)
+      const edges = innerDesc.bpI + innerDesc.m.is + innerDesc.m.ie;
+      let avail = Math.max(this.orthogonalAvail(wmC), 0);
+      if (node.type === 'block' && node.maxInlineSize !== undefined && !node.aspectRatio) avail = Math.min(avail, node.maxInlineSize + edges);
+      const measured = inner;
+      // 箱そのもの (枠・余白を含む) を測る。同じ箱・同じ条件の計測は、同じ組版の中で 1 度だけ行う (memoMeasure。鍵は中身の並びと、
+      // 箱の大きさ・余白・枠の指定。直交する箱の深い入れ子で、外側を測るたびに内側を測り直さない)
+      const { children: _kids, ...boxOnly } = measured as LBlock;
+      void _kids;
+      const sig = node.type === 'block' ? JSON.stringify(boxOnly) : '';
+      const measure = (rootI: number, min: boolean) => {
+        const m = new Flow({ ...this.host, warn: () => {} }, { wm: wmC, rootI, abs: () => [], pageSize: this.pageSize, measure: true, intrinsic: true, ...(min ? { minContent: true } : {}), footnotes: this.foot });
+        m.layoutBlockLevel(measured, ps);
+        m.finishAtomic();
+        return maxLineLength(m.root, true, true);
+      };
+      childI = this.fitContent(avail, (rootI, min) => (node.type === 'block' ? this.memoMeasure('ortho', node.children, st, [rootI, min, sig], this.foot, () => measure(rootI, min)) : measure(rootI, min)));
+      // min-height (縦書きの箱)・min-width (横書きの箱) は下限 (上限より強い。CSS 2.1 §10.7)
+      if (node.type === 'block' && node.minInlineSize !== undefined && !node.aspectRatio) childI = Math.max(childI, node.minInlineSize + edges);
+    }
     const sub = new Flow(this.host, { wm: wmC, rootI: childI, abs: this.abs, pageSize: this.pageSize, markerSink: this.markerSink, footnotes: this.foot });
     sub.layoutBlockLevel(inner, ps);
     const bsize = sub.finishAtomic();
@@ -3261,6 +3354,12 @@ class Flow {
       const pref = widthAt(Math.max(availC, 1) * 100);
       const minC = pref <= availC ? pref : widthAt(1);
       contentI = Math.min(Math.max(minC, availC), pref);
+    }
+    // 縦書きの絶対配置の箱 (縦書きの文書の中でも、横書きの文書の中でも) で、行の向きの大きさ (高さ) が auto (top と bottom の両方の
+    // 指定は無い): shrink-to-fit (CSS 2.1 §10.3.7 を行の向きに当てる。CSS Writing Modes 3 §7.2・§7.3.2 の fit-content)。使える長さは、
+    // 包含ブロックの高さから top・bottom を引いたもの (fallbackI)
+    if (node.shrinkToFit && contentI == null && !horizontal && !rot && !(node.top != null && node.bottom != null) && node.children.length) {
+      contentI = this.fitContent(Math.max(fallbackI - desc.bpI, 0), (rootI, min) => this.intrinsicWidth(node.children, st, rootI, min));
     }
     const isize = (contentI ?? fallbackI - desc.bpI) + desc.bpI;
     // 親と直交する書字方向のコンテナ (fillOrthogonal): block 方向の寸法の指定が無ければ、親の内容の幅いっぱいにする
@@ -4561,7 +4660,7 @@ class Flow {
       if (extra > EPS && p.stretch && p.node.children.length === 1 && p.node.children[0].kind === 'block') {
         // max-height (stretchMax) を超えては伸ばさない
         const kid = p.node.children[0];
-        kid.bsize += p.stretchMax !== undefined ? Math.max(0, Math.min(extra, p.stretchMax - kid.bsize)) : extra;
+        stretchCellBlock(p.node, kid, p.stretchMax !== undefined ? Math.max(0, Math.min(extra, p.stretchMax - this.extentAlongBlock(kid))) : extra);
       }
     }
     rowNodes.forEach((r, j) => (r.bsize = heights[j] + sb));
@@ -4644,6 +4743,31 @@ function lineFootnotes(items: ReadonlyArray<{ fnRef?: LFootnote; box?: { node: L
 }
 
 /** 最も長い行の長さ (inline-container の shrink-to-fit 用) */
+/**
+ * セルの中の唯一のブロック kid を、セルの block 方向に add だけ伸ばす (flex の align-items: stretch)。書字方向がセルと直交する箱
+ * (横書きの行の中の縦書きの項目) は、セルの block 方向が箱の行の向きなので、箱の行の向きの大きさを伸ばす (箱を包む節と、その中の箱)
+ */
+function stretchCellBlock(cell: LNode, kid: LNode, add: number) {
+  if ((kid.wm === 'horizontal-tb') === (cell.wm === 'horizontal-tb')) {
+    kid.bsize += add;
+    return;
+  }
+  kid.isize += add;
+  if (kid.children.length === 1 && kid.children[0].kind === 'block' && kid.children[0].wm === kid.wm) kid.children[0].isize += add;
+}
+
+/** c は、n と書字方向が直交するブロック・表か (行の中の箱は、行の長さに入っているので見ない) */
+function isOrthogonalBox(n: LNode, c: LNode): boolean {
+  return (c.kind === 'block' || c.kind === 'table') && n.kind !== 'line' && (c.wm === 'horizontal-tb') !== (n.wm === 'horizontal-tb');
+}
+
+/** 直交する子 c が、n の行の向きに占める大きさ (子の block の大きさ + その向きの余白) */
+function orthogonalExtent(n: LNode, c: LNode): number {
+  const s = bboxOf(c);
+  const pos = (v: number) => Math.max(v, 0);
+  return n.wm === 'horizontal-tb' ? s.width + pos(c.margin.left) + pos(c.margin.right) : s.height + pos(c.margin.top) + pos(c.margin.bottom);
+}
+
 function maxLineLength(n: LNode, root = true, tableByColumns = false): number {
   if (n.kind === 'line') return n.contentLength ?? 0;
   // 表は表そのものの幅 (中の行の長さではない)。tableByColumns なら、列の幅の合計 + 表の左右の罫線・余白
@@ -4657,7 +4781,9 @@ function maxLineLength(n: LNode, root = true, tableByColumns = false): number {
     const margins = root ? 0 : h ? pos(n.margin.left) + pos(n.margin.right) : pos(n.margin.top) + pos(n.margin.bottom);
     return Math.min(n.isize, n.colSizes.reduce((a, b) => a + b, 0) + edges) + margins;
   }
-  const inner = n.children.reduce((a, c) => Math.max(a, maxLineLength(c, false, tableByColumns)), 0);
+  // 書字方向が直交する子 (横書きの中の縦書きの箱など) は、行の長さではなく、組んだ箱の block の大きさ (n の行の向きの大きさ) を数える
+  // (CSS Writing Modes 3 §7.3 の Note: 直交する子の、中身から決まった block の大きさが、親の行の向きの min-content・max-content の大きさに入る)
+  const inner = n.children.reduce((a, c) => Math.max(a, isOrthogonalBox(n, c) ? orthogonalExtent(n, c) : maxLineLength(c, false, tableByColumns)), 0);
   // 中のブロックの inline 方向の余白・罫線・margin (start-indent など) も足す
   // (外側の箱をその長さで組み直したとき、中の行が折り返さないように。負の margin ははみ出しなので数えない)
   if (root || !inner) return inner;
@@ -4684,7 +4810,8 @@ function growTableLine(table: LNode, add: number) {
     const a = cell.cellAlign;
     if (cell.cellStretch && cell.children.length === 1 && cell.children[0].kind === 'block') {
       const kid = cell.children[0];
-      kid.bsize += cell.cellStretchMax !== undefined ? Math.max(0, Math.min(add, cell.cellStretchMax - kid.bsize)) : add;
+      const have = cell.wm === 'horizontal-tb' ? bboxOf(kid).height : bboxOf(kid).width;
+      stretchCellBlock(cell, kid, cell.cellStretchMax !== undefined ? Math.max(0, Math.min(add, cell.cellStretchMax - have)) : add);
     } else if (a === 'center' || a === 'end' || a === 'last-baseline') for (const c of cell.children) c.b += a === 'center' ? add / 2 : add;
   }
 }
@@ -5067,7 +5194,7 @@ interface ColumnPassCtx {
   pageMode: boolean;
   geoAt: (abs: number) => ColumnGeo;
   ensurePage: (abs: number) => PageBuild;
-  sizeAt: (abs: number) => { width: number; height: number };
+  sizeAt: (abs: number) => PageSizeInfo;
   /** 偶奇合わせの白ページにする (blank-or-not-blank="blank" のマスターを選ぶ。§6.4.12) */
   markBlank: (abs: number) => void;
 }
@@ -6026,7 +6153,11 @@ export class LayoutEngine {
       }
       return pages[abs];
     };
-    const sizeAt = (abs: number) => ({ width: mm(geoAt(abs).m.width), height: mm(geoAt(abs).m.height) });
+    const sizeAt = (abs: number): PageSizeInfo => {
+      const g = geoAt(abs);
+      const h = wm === 'horizontal-tb';
+      return { width: mm(g.m.width), height: mm(g.m.height), body: { width: h ? g.rootI : g.limit, height: h ? g.limit : g.rootI } };
+    };
     /** abs のページを白ページにする。もう作ってあれば、マスターを選び直す */
     const markBlank = (abs: number) => {
       blankAbs.add(abs);
@@ -6245,7 +6376,11 @@ export class LayoutEngine {
     };
     const firstPage = mkPage();
     let cur = firstPage.p;
-    const pageSize = () => ({ width: mm(cur.master.width), height: mm(cur.master.height) });
+    const pageSize = (): PageSizeInfo => {
+      const r = cur.root;
+      const h = wm === 'horizontal-tb';
+      return { width: mm(cur.master.width), height: mm(cur.master.height), body: { width: h ? r.isize : r.bsize, height: h ? r.bsize : r.isize } };
+    };
     // 脚注本体: 脚注用スタイル (既定は本文の 0.8 倍・左/上揃え) で、本文領域の inline サイズいっぱいに組む
     const fo = seq.footnotes ?? {};
     const footSt = resolveStyle(flowSt, { textAlign: 'start', textIndent: 0, ...fo.style, fontSize: fo.style?.fontSize ?? flowSt.fontSize * 0.8 });

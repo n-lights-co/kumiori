@@ -1153,7 +1153,7 @@ class HtmlImporter {
     const srcs = this.flexItemSources(el);
     const extra: LBlockLevel[] = [];
     /** 項目: 子の要素か ::before・::after (ps)。node は組んだ中身 (文書の順に組む: カウンターの値が文書の順になるように) */
-    type Item = { el: Element; ps?: '::before' | '::after'; anon?: boolean; node: LBlockLevel; text?: string; order: number; collapse?: boolean; fit?: boolean };
+    type Item = { el: Element; ps?: '::before' | '::after'; anon?: boolean; node: LBlockLevel; text?: string; order: number; collapse?: boolean; fit?: boolean; ortho?: boolean };
     const items: Item[] = [];
     let pseudoSeen = false;
     for (const src of srcs) {
@@ -1189,7 +1189,9 @@ class HtmlImporter {
       const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.inline(k, el) } as LBlock);
       // visibility: collapse の flex の項目 (Flexbox 1 §4.4): 主軸の大きさを 0 にして、交差軸の大きさだけを支柱として残す (下の行の組み立て)。
       // grid の項目の collapse は hidden と同じ (場所を残す。CSS 2.1 §11.2)
-      items.push({ el: k, node, order: parseInt(kc('order'), 10) || 0, ...(src.collapse && !isGrid ? { collapse: true } : {}) });
+      // 書字方向が容器と直交する項目 (横書きの行の中の縦書きの箱など。block() が writingMode を付けたブロック): 主軸の大きさは項目の block の大きさ
+      const ortho = !isGrid && node.type === 'block' && !!node.writingMode && (node.writingMode === 'horizontal-tb') === vert;
+      items.push({ el: k, node, order: parseInt(kc('order'), 10) || 0, ...(src.collapse && !isGrid ? { collapse: true } : {}), ...(ortho ? { ortho: true } : {}) });
     }
     // ::before・::after のカウンターの範囲を閉じる (ふつうのブロックなら flowChildren が閉じる)
     if (pseudoSeen) this.leaveCounters(el);
@@ -1270,8 +1272,14 @@ class HtmlImporter {
         const max = len(kc('max-width'), W);
         const inner = basis === undefined ? undefined : max !== undefined ? Math.min(basis, max) : basis;
         // flex-basis も width も無い項目は、中身の幅 (max-content) の見積もり。flex: 1 (basis 0) の項目は 0 から伸びる
+        // 書字方向が容器と直交する項目の中身の幅 (max-content の主軸の大きさ) は、項目を組んだ後の block の大きさ (行の数の幅。
+        // CSS Writing Modes 3 §7.3 の Note・Flexbox 1 §9.2 の 3)。読み込みのときには分からないので、列の幅を組版エンジンに測らせる
+        // (LTableColumn.fitContent)。ここの見積もり (1 行の幅) は、行に分けるとき・縮めるときの目安にだけ使う
+        if (inner === undefined && k.ortho) k.fit = true;
         const est =
-          inner === undefined
+          inner === undefined && k.ortho
+            ? Math.min(this.orthogonalItemEstimate(k.el, kc, autoOf(k.el, 'height') !== false), max ?? Infinity, W)
+            : inner === undefined
             ? Math.min(k.anon ? measure(() => this.textWidth((k.text ?? '').replace(CSS_WS, ' '), k.el)) : k.ps ? measure(() => this.pseudoMaxContentWidth(k.el, k.ps!, k.text ?? '')) : measure(() => this.maxContentWidth(k.el)), max ?? Infinity, W)
             : undefined;
         // 見積もりは枠・内側の余白を含むので、足すのは外側の余白だけ
@@ -1443,7 +1451,12 @@ class HtmlImporter {
     /** 項目のセル: 行の中の縦の揃え・伸ばしを付ける */
     const itemCell = (item: Item): LTableCell => {
       const n = item.node;
-      delete (n as LBlock).width;
+      // 書字方向が容器と直交する項目: 主軸の大きさ (横書きの容器なら幅 = 項目の block の大きさ) は、組むときに列の幅にする (fillOrthogonal)。
+      // 指定の大きさは消さない (列の幅を測るときの大きさ)
+      if (item.ortho) (n as LBlock).fillOrthogonal = true;
+      // ほかの項目は、主軸の大きさの指定 (横書きの容器なら width、縦書きの容器なら height) を消す: 主軸の大きさは列の幅で決まる。
+      // 交差軸の大きさの指定 (縦書きの容器の項目の width) は残す
+      else delete (n as LBlock)[L('width') as 'width' | 'height'];
       // 行の中の縦の揃え (align-self、無ければ容器の align-items)。baseline は、同じ行の baseline の項目の最初の行の基線をそろえる
       // (Flexbox 1 §8.3。セルの vertical-align: baseline と同じ)。交差軸 (上下) の margin: auto は、揃えより先に空きを取る (§8.1)
       const ic = ics(item);
@@ -1456,6 +1469,13 @@ class HtmlImporter {
       // 交差軸の大きさ (高さ) の決まった項目は伸ばさない。max-height があれば、そこで止める (§8.3: 交差軸の大きさが auto の項目だけを伸ばす)
       const auto = item.ps || item.anon ? !/\d/.test(ic('height')) || ic('height') === 'auto' : autoOf(item.el, 'height') !== false;
       const stretch = x === 'stretch' && auto;
+      // 1 行の、交差軸の大きさの決まった容器の、伸ばす項目の交差軸の大きさは、容器の内側の大きさで、決まった大きさとして扱う (Flexbox 1 §9.8)。
+      // 書字方向が容器と直交する項目では、交差軸が項目の行の向きなので、その大きさで行を折り返す (ほかの項目は、組んだ後で行の高さまで伸ばす)
+      if (stretch && item.ortho && fullLine && innerH !== undefined) {
+        const q = (p: string) => cssLen(ic(p)) ?? 0;
+        const edges = (n as LBlock).boxSizing === 'border-box' ? 0 : q('padding-top') + q('padding-bottom') + q('border-top-width') + q('border-bottom-width');
+        (n as LBlock)[L('height') as 'height' | 'width'] = Math.max(0, innerH - q('margin-top') - q('margin-bottom') - edges);
+      }
       const mh = stretch ? cssLen(ic('max-height')) : undefined;
       const stretchMax = mh === undefined ? undefined : mh + (ic('box-sizing') === 'border-box' ? 0 : (cssLen(ic('padding-top')) ?? 0) + (cssLen(ic('padding-bottom')) ?? 0) + (cssLen(ic('border-top-width')) ?? 0) + (cssLen(ic('border-bottom-width')) ?? 0));
       return { type: 'table-cell', keepEdgeSpace: true, ...(blockAlign ? { blockAlign } : {}), ...(stretch ? { stretchContent: true } : {}), ...(stretchMax !== undefined ? { stretchMax } : {}), children: [n] };
@@ -1609,6 +1629,21 @@ class HtmlImporter {
       if (!parent || !/^(vertical|sideways|tb)/.test(this.cs(parent)('writing-mode'))) break;
     }
     return Math.max(0, this.area.height - used);
+  }
+
+  /**
+   * 書字方向が flex の容器と直交する項目の、主軸の大きさの見積もり (pt。枠・内側の余白を含む): 行の数 × 行の送り。行の数は、項目の行の向きの
+   * 大きさ (交差軸の大きさ) が決まっていれば、中身の字の長さをそれで割った数、決まっていなければ 1。
+   * kc は、容器の書字方向で読み替えた項目の指定 (横書きの容器なら、そのまま)、crossAuto は交差軸の大きさが auto か
+   */
+  private orthogonalItemEstimate(el: Element, kc: (n: string) => string, crossAuto: boolean): number {
+    const p = (n: string) => cssLen(kc(n)) ?? 0;
+    const fs = cssLen(this.cs(el)('font-size')) ?? 12;
+    const lh = cssLen(this.cs(el)('line-height')) ?? fs * 1.2;
+    const cross = crossAuto ? undefined : cssLen(kc('height'));
+    const inner = cross === undefined ? undefined : cross - (kc('box-sizing') === 'border-box' ? p('padding-top') + p('padding-bottom') + p('border-top-width') + p('border-bottom-width') : 0);
+    const lines = inner !== undefined && inner > 0 ? Math.max(1, Math.ceil(this.textWidth((el.textContent ?? '').replace(CSS_WS, ' ').trim(), el) / inner - 0.001)) : 1;
+    return lines * lh + p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width');
   }
 
   private pseudoMaxContentWidth(el: Element, which: '::before' | '::after', text: string): number {
@@ -1896,6 +1931,16 @@ class HtmlImporter {
       (f as unknown as Record<string, unknown>)[k] = inner[k];
       delete inner[k];
     }
+    // 書字方向が親と直交する float (横書きの中の縦書きの箱など): 書字方向は float の箱そのものが持つ。箱の大きさ (上で移した width・height) を
+    // その書字方向で読み、行の向きの大きさ (縦書きなら高さ) で折り返す (CSS Writing Modes 3 §7.3: 直交する流れを作る箱の大きさは、
+    // 箱自身の書字方向で決める)。中のブロックに残すと、横書きの箱の中に置いた、大きさの指定の無い縦書きのブロックになってしまう
+    if (inner.writingMode && (inner.writingMode === 'horizontal-tb') !== ((this.wm(this.cs(parent)('writing-mode')) ?? 'horizontal-tb') === 'horizontal-tb')) {
+      f.writingMode = inner.writingMode;
+      delete inner.writingMode;
+      const lim = this.orthogonalInlineLimits(e);
+      if (lim.max !== undefined) f.maxInlineSize = lim.max;
+      if (lim.min !== undefined) f.minInlineSize = lim.min;
+    }
     // -ah-display-align: 高さの決まった float は、中身を float の箱の中の上下の中央・末尾に寄せる (float は block-container として組む)
     const da = this.displayAlignOf(e);
     if (da && f.height !== undefined) f.blockAlign = da;
@@ -1936,6 +1981,25 @@ class HtmlImporter {
       }
     }
     return f;
+  }
+
+  /**
+   * 書字方向が親と直交する箱の、行の向きの大きさの上限・下限 (内容の大きさ。pt): 縦書きの箱は max-height・min-height、横書きの箱は
+   * max-width・min-width (CSS Writing Modes 3 §7.2: 高さ・幅の指定は物理の向き)。行の向きの大きさが auto のとき、fit-content の
+   * 使える長さの上限と、結果の下限にする (§7.3.2・CSS 2.1 §10.4・§10.7)。長さの指定だけを読む
+   */
+  private orthogonalInlineLimits(e: Element): { max?: number; min?: number } {
+    const c = this.cs(e);
+    const vertical = /^(vertical|sideways|tb)/.test(c('writing-mode'));
+    const p = (n: string) => cssLen(c(n)) ?? 0;
+    const edges = c('box-sizing') !== 'border-box' ? 0 : vertical ? p('padding-top') + p('padding-bottom') + p('border-top-width') + p('border-bottom-width') : p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width');
+    const lim = (prop: string) => {
+      const v = /px$/.test(c(prop)) ? cssLen(c(prop)) : undefined;
+      return v === undefined ? undefined : Math.max(0, v - edges);
+    };
+    const max = lim(vertical ? 'max-height' : 'max-width');
+    const min = lim(vertical ? 'min-height' : 'min-width');
+    return { ...(max !== undefined ? { max } : {}), ...(min ? { min } : {}) };
   }
 
   /** 位置の基準になる祖先 (position が static でない。html・body は除く) */
@@ -2021,6 +2085,8 @@ class HtmlImporter {
       if (w) cont.width = w;
       else cont.shrinkToFit = true;
     }
+    // 縦書きの箱は、行の向きの大きさが高さ: 高さの指定が無ければ shrink-to-fit (§10.3.7 を行の向きに当てる。CSS Writing Modes 3 §7.2)
+    if (cont.height === undefined && /^vertical/.test(this.wm(c('writing-mode')) ?? '')) cont.shrinkToFit = true;
     // 絶対配置の表 (table#total { position: absolute; width: 18cm; border-width: 2cm 3cm } など): CSS の表の width は罫線を含む幅
     // (CSS 2.1 §17.4 の表の箱。ブラウザ・WeasyPrint と同じ) なので、箱は border-box にし、中の表はその内側いっぱいに広げる
     if (e.localName === 'table' && cont.width !== undefined) {
@@ -3857,7 +3923,15 @@ class HtmlImporter {
     this.blockStack.pop();
     this.firstLetterLine(el, b);
     const wm = this.wm(c('writing-mode'));
-    if (wm && wm !== this.wm(this.cs(parent)('writing-mode'))) b.writingMode = wm;
+    const pwm = this.wm(this.cs(parent)('writing-mode'));
+    if (wm && wm !== pwm) b.writingMode = wm;
+    // 親と直交する箱で、行の向きの大きさ (縦書きなら高さ) が auto: max-height・min-height (横書きの箱は max-width・min-width) を、
+    // fit-content の使える長さの上限と、結果の下限にする
+    if (wm && (wm === 'horizontal-tb') !== ((pwm ?? 'horizontal-tb') === 'horizontal-tb') && !b.aspectRatio && b[wm === 'horizontal-tb' ? 'width' : 'height'] === undefined) {
+      const lim = this.orthogonalInlineLimits(el);
+      if (lim.max !== undefined) b.maxInlineSize = lim.max;
+      if (lim.min !== undefined) b.minInlineSize = lim.min;
+    }
     if (c('column-span') === 'all') b.span = 'all';
     // 縦に並べる flex の項目 (幅が中身で決まり、枠も背景も無いもの): 項目の揃えを文字の揃えにする
     const fa = this.flexItemAlign.get(el);

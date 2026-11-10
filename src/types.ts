@@ -663,6 +663,11 @@ export interface LFootnoteCitation {
 export interface LBlock extends BaseNode, BoxStyle {
   type: 'block';
   /**
+   * 親と書字方向が直交するブロック (横書きの flex の行の中の縦書きの項目など) の block の大きさ (親の行の向きの大きさ) を、
+   * 置く場所の幅いっぱいにする (flex の項目の主軸の大きさは、列の幅。Flexbox 1 §9.7)。中身の幅を測るときは効かない
+   */
+  fillOrthogonal?: boolean;
+  /**
    * 支柱だけの箱 (flex の項目の visibility: collapse。Flexbox 1 §4.4): 中身は描かず (字・リンク・しおりも出さない)、
    * 子 (畳む前の行を組んだ表) を測るだけ組んで、その block の大きさの空の箱を置く
    */
