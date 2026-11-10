@@ -17,7 +17,7 @@ import { Measurer } from './measurer';
 import { LayoutEngine } from './layoutEngine';
 import { renderPdf, type PdfRenderOptions } from './pdfRenderer';
 import { renderSheetToCanvas } from './canvasRenderer';
-import { AssetStore, mentionedFiles } from './assets';
+import { AssetStore, mentionedFiles, normalizeSrc } from './assets';
 import { SANS, SERIF } from './sampleData';
 import { importHtml } from './htmlImport';
 import { importXslFo, type ImportOptions, type XNode } from './xslfoImport';
@@ -474,7 +474,15 @@ async function typesetDocument(
   for (const f of images.filter((x) => /\.svg$/i.test(x.name) && mentioned.has(x.name.toLowerCase()))) {
     for (const n of mentionedFiles([await f.text()])) mentioned.add(n);
   }
-  for (const f of images.filter((x) => mentioned.has(x.name.toLowerCase()))) await assets.addBlob(f.path.split('\\').join('/'), new Blob([bytesOf(await f.data()) as BlobPart]));
+  for (const f of images.filter((x) => mentioned.has(x.name.toLowerCase()))) {
+    const asset = await assets.addBlob(f.path.split('\\').join('/'), new Blob([bytesOf(await f.data()) as BlobPart]));
+    // 参照から取った画像は、参照の URL の全体 (問い合わせの ?… を含む) でも登録する。画像は「完全一致 → ファイル名」の順に引くので、
+    // 問い合わせだけが違う 2 つの画像 (a.png?id=1 と a.png?id=2) が、それぞれの画像になる (名前だけだと、後に登録したものに両方が当たる)
+    if (asset && f.url !== undefined && normalizeSrc(f.url) !== asset.key) {
+      const { key: _key, ...rest } = asset;
+      assets.register(f.url, rest);
+    }
+  }
 
   const measurer = new Measurer(fonts, 'fontkit');
   // MathML のある文書なら、数式の書体を読み込む (読めなければ、本文の書体で組む。画面と同じ手順: documentResources)

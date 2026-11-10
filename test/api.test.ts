@@ -157,6 +157,38 @@ describe('公開 API: typeset', () => {
     expect(seen).toEqual({ a: [30, '#0000ff'], b: [40, '#0000ff'], c: [50, '#0000ff'], d: [60, '#0000ff'], e: [70, '#0000ff'], f: [80, '#0000ff'] });
     expect(r.warnings).toEqual([]);
   });
+  it('問い合わせ (?…) だけが違う画像は、別の画像として組む (参照の URL の全体を先に見て、無ければ名前で突き合わせる)', async () => {
+    const png = (w: number, h: number, c: number[]) => encodePngStored({ width: w, height: h, rgba: new Uint8Array(Array.from({ length: w * h }, () => c).flat()) });
+    for (const base of ['https://example.com/a.png', 'pic/a.png']) {
+      const store: Record<string, Uint8Array> = { [`${base}?id=1`]: png(10, 10, [255, 0, 0, 255]), [`${base}?id=2`]: png(20, 5, [0, 0, 255, 255]) };
+      const asked: string[] = [];
+      // 3 つ目の参照 (問い合わせなし) は中身が返らないので、今までどおり名前で突き合わせる (後に取った画像)
+      const r = await typeset(`<p><img src="${base}?id=1"></p><p><img src="${base}?id=2"></p><p><img src="${base}"></p>`, {
+        loadFont,
+        fetchImages: false,
+        resolveResource: (u) => (asked.push(u), store[u]),
+      });
+      expect(asked).toEqual([`${base}?id=1`, `${base}?id=2`, base]);
+      const got: Array<[string, boolean, number, number]> = [];
+      walkAreaTree(r.areaTree, (a) => void (a.type === 'image' && got.push([a.src, a.missing, a.width, a.height])));
+      // 10×10 px と 20×5 px (1px = 0.75pt)
+      expect(got).toEqual([
+        [`${base}?id=1`, false, 7.5, 7.5],
+        [`${base}?id=2`, false, 15, 3.75],
+        [base, false, 15, 3.75],
+      ]);
+      expect(r.warnings).toEqual([]);
+      // PDF にも 2 つの別の画像が入る (画像は参照ごとに埋め込む)
+      const pdf = await PDFDocument.load(await r.toPdf(), { updateMetadata: false });
+      const { PDFName: Name } = await import('pdf-lib');
+      const sizes = pdf.context
+        .enumerateIndirectObjects()
+        .map(([, o]) => (o as { dict?: import('pdf-lib').PDFDict }).dict)
+        .filter((d) => d && String(d.get(Name.of('Subtype'))) === '/Image')
+        .map((d) => `${d!.get(Name.of('Width'))}x${d!.get(Name.of('Height'))}`);
+      expect([...new Set(sizes)].sort()).toEqual(['10x10', '20x5']);
+    }
+  });
   it('ASCII でない名前のカウンターとカスタム プロパティ (counter(章)・var(--色)) が、通しで効く', async () => {
     const r = await typeset('<style>body { counter-reset: 章; --色: #ff0000 } p { counter-increment: 章; color: var(--色) } p::before { content: counter(章) "." }</style><p>a</p><p>b</p>', { loadFont });
     // 末尾は既定のノンブル

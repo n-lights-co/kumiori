@@ -3,6 +3,7 @@
  * typeset の files に無いものは、利用者の関数 (TypesetOptions.resolveResource) に問い合わせ、
  * それでも無い http(s) の CSS は、ネットワークから取る (TypesetOptions.fetchStyles)。
  * 取れたものは files に足し、ほかの処理 (CSS の集め方・画像・@font-face) は、これまでどおりファイルの名前で突き合わせる。
+ * ただし CSS と画像は、参照の URL の全体 (問い合わせの ?… を含む) を先に見る (名前が同じで問い合わせだけが違うものを取り違えない)。
  *
  * 参照の見つけ方 (HTML の仕様を読まない、文字の上の近似):
  *  - CSS: <link rel="stylesheet" href>、@import (HTML Living Standard §4.2.4・CSS Cascade 5 §2)
