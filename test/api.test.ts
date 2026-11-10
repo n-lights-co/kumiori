@@ -10,8 +10,8 @@ import { childrenOf } from '../src/areaTree';
 import { encodeJpeg } from '../src/jpeg';
 import { encodePngStored } from '../src/pixels';
 import { DEFAULT_FONTS, createTypesetter, typeset, typesetFo, typesetHtml, walkAreaTree, serializeAreaTree, parseAreaTree, type FontSpec, type GlyphArea } from '../src/index';
+import { ensureFonts, fontDir } from './helpers';
 
-const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
 const fileOf = (spec: FontSpec) => path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
 /** Arimo の OS/2 の typo の上下を 0.75em・−0.25em (ちょうど 1em。基準線の比 0.75) に書き換えた書体 (和文の書体と基準線の比が違う欧文の書体) */
 function typo1emArimo(): Uint8Array {
@@ -36,16 +36,8 @@ const loadFont = async (spec: FontSpec) => {
 };
 
 beforeAll(async () => {
-  fs.mkdirSync(fontDir, { recursive: true });
   // 基本の書体と、TTC のテストで読む等幅の書体 (Cousine)
-  for (const spec of [...DEFAULT_FONTS.base, ...DEFAULT_FONTS.mono.filter((m) => m.family === 'Cousine')]) {
-    const file = fileOf(spec);
-    if (fs.existsSync(file)) continue;
-    const url = spec.urls.find((u) => /^https:/.test(u))!;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`font download failed: ${res.status} ${url}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-  }
+  await ensureFonts([...DEFAULT_FONTS.base, ...DEFAULT_FONTS.mono.filter((m) => m.family === 'Cousine')]);
 }, 300_000);
 
 const textOf = (tree: Awaited<ReturnType<typeof typeset>>['areaTree']) => {

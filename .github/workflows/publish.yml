@@ -47,8 +47,11 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/fonts
-          # ci.yml と同じ (単体テストと Node のコマンドのテストが使う既定の書体)
-          key: fonts-defaults-v1
+          # ci.yml の build と同じ (テストが取得する書体。キーは、書体の一覧の載るファイルのハッシュ。ci.yml が保存したキャッシュを使える)
+          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts') }}
+          restore-keys: |
+            fonts-test-
+            fonts-defaults-v1
       # prepublishOnly と同じ検査とビルド (型検査・テスト・3 つのビルド)
       - run: npm run typecheck
       - run: npm test

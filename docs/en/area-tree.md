@@ -43,7 +43,7 @@ To walk the tree, use `walkAreas()` (from one node) or `walkAreaTree()` (all she
 
 - `serializeAreaTree(tree)` turns the tree into a JSON string. Fields that are `undefined` are not written.
 - `parseAreaTree(json)` reads a tree from a JSON string. It checks the version (`schemaVersion`) and the shape of the nodes (the type, that `x`, `y`, `width` and `height` are numbers, and the children fields), and throws `AreaTreeFormatError` if they do not match.
-- A re-read tree can be passed as is to the painting routines (`paintSheet`, `renderPdf`). Version 1 trees are converted to the version 2 shape before being returned. Fonts and images require the same FontManager and AssetStore as when the tree was written (`test/areaTree.test.ts` verifies that a round-tripped tree is painted identically).
+- A re-read tree can be passed as is to the painting routines (`paintSheet`, `renderPdf`). Note that these two, as well as FontManager and AssetStore, are internal functions and classes that are not exported from the package entry point (`kumiori`). The public API can only draw the result of `typeset` (`renderPage`, `toPdf`); for now there is no way to draw a tree re-read with `parseAreaTree` (a re-read tree is for inspecting, comparing and storing). Version 1 trees are converted to the version 2 shape before being returned. Fonts and images require the same FontManager and AssetStore as when the tree was written (`test/areaTree.test.ts` verifies that a round-tripped tree is painted identically).
 
 ## Border side fields
 

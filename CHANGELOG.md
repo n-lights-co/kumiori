@@ -62,6 +62,14 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - 画像: SVG の円弧のフラグを詰めて書いた path (`a1 1 0 01.71.29`。SVG 2 §9.3.9)。動く WebP は最初のコマを描く。CGM の大きさ (64 ビットの実数・32 ビットの整数の精度)。枠が逆向きの EMF
   - EPS (PostScript): `imagemask` の極性 (型紙の白黒が反転していた) と、ImageType 3 の画像のマスクの極性 (描く所と透明の所が逆だった。PLRM §4.10.6)。`SubFileDecode` の、EODCount・EODString を辞書に入れた形 (§3.13.3)。フィルタのエラーを PostScript のエラーにする (それまでに描いたものが残る)。`gsave … show grestore` の後のパス。`currentgstate`・`rectfill`・`rectstroke`
   - 参照・書体: 問い合わせ (`?…`) だけが違う CSS (`css2?family=A` と `css2?family=B`) と画像を、それぞれ別のものとして読む。`href` の `&amp;` を解いてから取る。base64 でない data URI の日本語と `;charset=` のパラメータ。`unicode-range` の絞り込みに、文字参照と CSS の文字列の字も数える。ディレクトリの違う同じ名前の書体のファイルを、`@font-face` の CSS の場所から見分ける。`lang` の違う呼び出しが重なっても、終われば元の言語に戻る。`--css "a.css, b.css"` の空白
+- **配布物**:
+  - `require('kumiori')`・`require('kumiori/node')` で読める (`exports` の条件を `default` にした。フラグ無しで使えるのは Node 20.19.0 以降と 22.12.0 以降)
+  - 型の宣言が、`moduleResolution` が `NodeNext`・`Node16` の利用者でも効く (宣言の相対の参照に `.js` を付けた。これまでは誤りになるか、型が any になっていた)
+  - `engines` の Node を 20.19.0 以上にした (実行時の依存が求める版)
+  - Node のコマンドの出力 (`dist-cli`) に、画面用の `public/` の中身 (favicon など) を入れない
+- **`@supports`**: 読めない値の宣言 (`display: foo`・`color: notacolor`・`width: 10` など。まだ対応していない `color-mix()`・`lab()` も) に偽を返す (CSS Conditional 3 §6.1)。未対応のプロパティ・値には、上の「結果の誤りの修正」のとおり偽を返す
+- **未対応の CSS の警告**: `text-decoration-thickness`・`text-underline-offset`・`text-decoration-skip-ink`・`text-wrap-mode`・`text-wrap-style`・`hyphenate-limit-zone`・`hyphenate-limit-lines`・`hyphenate-limit-last` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
+- **開発**: `scripts/compare-pdf.mjs --html` が、いまの画面で動くようにした (設定の引き出しを開いてから選ぶ)。テストが機械のロケール・機械に入っている書体・実行時間に頼らないようにした。テストの書体の取得を 1 か所にまとめ、並列でも壊れないようにした
 - **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
 - **公開**: 対応仕様説明書の PDF (日本語版と英語版の 4 冊) を、版ごとに GitHub のリリースに付ける。奥付の「組版」の欄は、組んだ Kumiori の版にする
 - **第三者の表示**:

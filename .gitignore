@@ -1,14 +1,14 @@
 node_modules
 dist
 *.log
-public/fonts/*.ttf
-public/fonts/*.otf
+public/fonts/
 .cache
 test-results/
 playwright-report/
 compare-pdf-out/
 dist-cli
 compare-view-out/
+compare-css-out/
 dist-lib
 docs/conformance/out
 dist-browser

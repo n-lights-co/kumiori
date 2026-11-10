@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deflateSync } from 'node:zlib';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { Interp, latin1, strText, type PSObj } from '../src/psInterp';
 import { filterSource, inflate } from '../src/psFilters';
 import { decryptCharstring, runType1Charstring } from '../src/psFonts';
@@ -8,6 +8,7 @@ import { cffGlyph, parseCff } from '../src/psCff';
 import { Graphics } from '../src/psGraphics';
 import { epsProgram, epsToSvg, runEps } from '../src/eps';
 import { epsPreview, imageInfo } from '../src/imageInfo';
+import { extraTestFont } from './helpers';
 
 /** プログラムを実行して、オペランドスタックを返す */
 function run(src: string): { stack: PSObj[]; error?: string } {
@@ -178,8 +179,8 @@ describe('Type 1 の書体 (Adobe Type 1 Font Format)', () => {
 });
 
 describe('CFF の書体 (The Compact Font Format Specification・The Type 2 Charstring Format)', () => {
-  const INTER = '/usr/share/fonts/opentype/inter/Inter-Regular.otf';
-  const UNIFONT = '/usr/share/fonts/opentype/unifont/unifont_jp.otf';
+  // 書体は、機械に入っているものに頼らず、ほかのテストと同じく置き場 (.cache/fonts) に取得して使う (PKG-12。前は /usr/share/fonts に無ければ黙って飛ばしていた)。
+  // 取得できなければ、テストは失敗する (飛ばさない)。書体と配信元は helpers の EXTRA_TEST_FONTS
   /** OpenType の CFF 表 */
   const cffTable = (file: string) => {
     const b = new Uint8Array(readFileSync(file));
@@ -201,8 +202,8 @@ describe('CFF の書体 (The Compact Font Format Specification・The Type 2 Char
     out.set(tail, head.length + cff.length);
     return out;
   };
-  it.skipIf(!existsSync(INTER))('FontType 2 の書体の字を描く (幅は字の送り)', () => {
-    const cff = cffTable(INTER);
+  it('FontType 2 の書体の字を描く (幅は字の送り)', async () => {
+    const cff = cffTable(await extraTestFont('SourceSans3-Regular-3.052R.otf'));
     const fname = parseCff(cff)[0].name;
     const r = runEps(withCff(cff, `/${fname} findfont 20 scalefont setfont 10 10 moveto (Hi) show currentpoint`))!;
     expect(r.error).toBeUndefined();
@@ -213,8 +214,10 @@ describe('CFF の書体 (The Compact Font Format Specification・The Type 2 Char
     const w = (cffGlyph(g, g.byName.get('H')!)!.wx + cffGlyph(g, g.byName.get('i')!)!.wx) * 0.02;
     expect(w).toBeGreaterThan(10);
   });
-  it.skipIf(!existsSync(UNIFONT))('CID の CFF を composefont の複合書体で描く (Identity-H)', () => {
-    const cff = cffTable(UNIFONT);
+  it('CID の CFF を composefont の複合書体で描く (Identity-H)', async () => {
+    const cff = cffTable(await extraTestFont('NotoSansJP-Regular-v25.otf'));
+    // CID で引く書体であること (名前で引く書体に替わっていたら、このテストは CID の経路を通らない)
+    expect(parseCff(cff)[0].cid).toBe(true);
     const cname = parseCff(cff)[0].name;
     const r = runEps(withCff(cff, `/U /Identity-H [/${cname}] composefont 16 scalefont setfont 10 10 moveto <0041 0042> show`))!;
     expect(r.error).toBeUndefined();

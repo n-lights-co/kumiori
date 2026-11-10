@@ -22,8 +22,13 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/fonts
-          # 単体テストの Noto Serif JP と、Node のコマンドのテスト (test/cli.test.ts) が使う既定の書体
-          key: fonts-defaults-v1
+          # テストが取得する書体 (既定の書体・数式の書体と、テスト用の WOFF2・OTF)。一覧は src/fontMapping.ts と test/helpers.ts にある。
+          # actions/cache は、同じキーのキャッシュを上書きしない。キーを固定にすると、最初に保存した後に増えた書体は、毎回ネットワークから取ることになるので、
+          # 一覧の載るファイルのハッシュをキーに入れる (一覧が変わればキーが変わり、古いキャッシュ (restore-keys) から始めて、増えた分を足して保存し直す)
+          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts') }}
+          restore-keys: |
+            fonts-test-
+            fonts-defaults-v1
       - run: npm run build
       # ライブラリとしてのビルド (dist-lib。ES モジュールと型の宣言) と、ブラウザで単体で動くバンドル (dist-browser)
       - run: npm run build:lib
@@ -34,6 +39,9 @@ jobs:
   # ブラウザでの結合テスト (画面の組版・XSL-FO の読み込み・PDF の出力)
   e2e:
     runs-on: ubuntu-latest
+    env:
+      # ブラウザが Google Fonts の配信元から取った書体を覚えておく場所 (e2e/fontCache.ts)。下の actions/cache で持ち越す
+      KUMIORI_E2E_FONT_CACHE: ${{ github.workspace }}/.cache/e2e-fonts
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -42,6 +50,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - uses: actions/cache@v5
+        with:
+          path: .cache/e2e-fonts
+          # 画面が取る書体は src/fontMapping.ts の一覧、ほかに e2e のテストが読ませる文書の書体。どちらかが変わればキーが変わり、
+          # 古いキャッシュ (restore-keys) から始めて、増えた分を足して保存し直す
+          key: fonts-e2e-${{ hashFiles('src/fontMapping.ts', 'e2e/**') }}
+          restore-keys: |
+            fonts-e2e-
       # ブラウザで単体で動くバンドル (dist-browser) も e2e で読んで試す
       - run: npm run build:browser
       - run: npm run e2e

@@ -156,19 +156,22 @@ describe('WebP の画素数の上限', () => {
 });
 
 describe('PostScript の停止性', () => {
-  const run = (src: string) => {
-    const I = new Interp();
-    new Graphics(I, { bbox: [0, 0, 100, 100] });
-    return I.run(latin1(src));
-  };
   it('arc・arcn の巨大な角度は 1 周に畳む (while が止まらなくならない・分割の数が爆発しない)', () => {
-    const t0 = Date.now();
-    expect(run('newpath 0 0 10 0 1e300 arc')).toBeUndefined();
-    expect(run('newpath 0 0 10 1e300 0 arc')).toBeUndefined();
-    expect(run('newpath 0 0 10 0 -1e300 arcn')).toBeUndefined();
-    expect(run('newpath 0 0 10 0 720 arc 50 50 10 90 0 arcn')).toBeUndefined();
-    expect(Date.now() - t0).toBeLessThan(2000);
-  });
+    // 時間でなく、できたパスの点の数で確かめる: 1 周に畳めば、円弧 1 つは始めの点 1 つと、90 度以下のベジェ 4 つまで。
+    // 畳まなければ、分割の数が角度 ÷ 90 (1e300 なら 1e298) になる。止まらない場合は、vitest の時限で落ちる
+    const points = (src: string) => {
+      const I = new Interp();
+      const G = new Graphics(I, { bbox: [0, 0, 100, 100] });
+      expect(I.run(latin1(src)), src).toBeUndefined();
+      return G.g.path.length;
+    };
+    for (const src of ['newpath 0 0 10 0 1e300 arc', 'newpath 0 0 10 1e300 0 arc', 'newpath 0 0 10 0 -1e300 arcn']) {
+      expect(points(src), src).toBeGreaterThanOrEqual(2);
+      expect(points(src), src).toBeLessThanOrEqual(5);
+    }
+    // 0→720 度は 1 周 (始めの点 + ベジェ 4 つ)。続く arcn の 90→0 度は、つなぐ線 1 つ + ベジェ 1 つ
+    expect(points('newpath 0 0 10 0 720 arc 50 50 10 90 0 arcn')).toBe(7);
+  }, 60_000);
   it('空の codespacerange の CMap で show しても進む (1 バイトずつ読む)', () => {
     const body = `/CIDInit /ProcSet findresource begin
 12 dict begin
@@ -195,10 +198,12 @@ end
 /F /Bad [ /CF ] composefont pop
 /F findfont 10 scalefont setfont
 10 10 moveto (abc) show`;
-    const t0 = Date.now();
-    expect(() => runEps(latin1(`%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n${body}\n`), { maxMillis: 3000 })).not.toThrow();
-    expect(Date.now() - t0).toBeLessThan(3000);
-  });
+    // 進まなければ、時間 (maxMillis) か手数の上限で打ち切られて、error が limit:time・limit:steps になる。
+    // かかった時間そのものは比べない (混んだ機械で落ちる)。上限に当たらずに終わったことを、結果で確かめる
+    const r = runEps(latin1(`%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n${body}\n`), { maxMillis: 60_000 })!;
+    expect(r).toBeDefined();
+    expect(r.error ?? '').not.toMatch(/^limit:/);
+  }, 100_000);
 });
 
 describe('FontManager.get の記憶', () => {

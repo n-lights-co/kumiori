@@ -314,8 +314,8 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - ページに入らない表の行は、セルの中身を行単位で次のページへ分ける (keep-together の既定 auto)。`keep-together` を指定した行は分けずに次ページへ送る。rowSpan を含む行の塊は、1 ページに入れば分けずに送り、入らなければ、またぐセルを行ごとに分けて行の境目でページをまたぐ。
 - inline の `border` / `padding` (文字を囲む枠)。行をまたぐときは、切れ目の側の罫線・余白を描かない。
 - 和文の字間: 約物の連続 (」「 は間を二分、。」 はベタ、（「 は後ろの括弧の前を詰める) と、和文と欧文・数字の間の四分アキ (全角の空白 U+3000 も和字として扱う)。互換モードでオン、仕様モード (既定) ではオフ。`axf:punctuation-trim="none"` / `axf:text-autospace="none"` で止める。
-  行頭の全角の始め括弧類 (（「『【 など) の前の二分アキも詰める (互換モードの既定。`axf:punctuation-trim` の start・both で詰め、none・end では詰めない)。
-  行末の全角の終わり括弧類・句読点 (」。、 など) の後ろの二分アキは捨てる (互換モードの既定。右寄せ・中央揃えの行では、行末の 。 の字面が行の端に来る。`axf:punctuation-trim` の end・both で捨て、none・start では捨てない。仕様モードでは捨てない)。
+  行頭の全角の始め括弧類 (（「『【 など) の前の二分アキも詰める (互換モードの既定。`axf:punctuation-trim` に start か start-except-first を含む指定で詰め、none と、end だけの指定では詰めない。値は空白で区切って組み合わせる (`start end` など。both という語は無い))。
+  行末の全角の終わり括弧類・句読点 (」。、 など) の後ろの二分アキは捨てる (互換モードの既定。右寄せ・中央揃えの行では、行末の 。 の字面が行の端に来る。`axf:punctuation-trim` に end か end-except-fullstop を含む指定で捨て、none と、start だけの指定では捨てない。仕様モードでは捨てない)。
 - 約物の詰めの間隔: `axf:punctuation-spacing` (初期値 0.5em)。終わり括弧類 (句読点を含む) の後ろ・始め括弧類の前のアキをこの値にする。終わり括弧類が続くとき (）、 など) は、そのアキからさらに二分詰める (0.5em ならベタ、0.25em なら 0.25em 重なる)。行に収めるときは、残っているアキを、字面の外のアキが無くなるまで (二分まで) 詰める。
 - 双方向のテキスト: 横書きの段落の字の並べ方は、UAX #9 (Unicode Bidirectional Algorithm、Unicode 18.0.0) の規則 (P2〜P3・X1〜X10・W1〜W7・N0〜N2・I1〜I2・L1・L2・L4) で決める (`src/bidi.ts`。Unicode の適合試験 BidiTest.txt・BidiCharacterTest.txt のすべての件と一致)。段落の向きは `direction` (rtl・ltr)。
   左から右の段落の中のヘブライ語・アラビア語の語も右から左に並べ、右から左の深さの括弧などは鏡像の字にする (L4)。字の中の制御文字 (U+202A〜U+202E・U+2066〜U+2069) も効く。`fo:inline`・`fo:bidi-override` などの `unicode-bidi` (embed・bidi-override) と `direction` は、中身の前後に制御文字を入れたものとして並べる (§5.8)。HTML の `unicode-bidi` (embed・isolate・bidi-override・isolate-override・plaintext) も同じ (Writing Modes 3 §2.4.2。block の bidi-override は中身の全体を上書きし、plaintext は段落の向きを最初の強い字で決める)。縦書きの行でも、行の中の右から左の字の並びを並べ替える (段落の向きは上から下として扱い、`direction` の rtl の縦書きの配置は扱わない)。

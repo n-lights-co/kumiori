@@ -10,31 +10,30 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { PDFDict, PDFDocument, PDFName, PDFRawStream } from 'pdf-lib';
-import { FONT_SPECS, LATIN_SPECS, MONO_SPECS } from '../src/fontMapping';
+import { FONT_SPECS, LATIN_SPECS, MATH_SPEC, MONO_SPECS } from '../src/fontMapping';
+import { ensureFonts, fontDir } from './helpers';
 
 const root = path.resolve(__dirname, '..');
-const fontDir = process.env.KUMIORI_FONT_DIR ?? path.join(root, '.cache/fonts');
 let work = '';
+/**
+ * コマンドの子プロセスに渡す環境。コマンドは文言の言語を --lang・KUMIORI_LANG・OS のロケール (LC_ALL・LC_MESSAGES・LANG) で決める
+ * (src/messages.ts の detectMessageLang) ので、テストを走らせる機械のロケールに頼らないように、日本語を明示する (PKG-05)。
+ * ロケールから言語を決める動きそのものは、下の「--lang en・KUMIORI_LANG・LANG で…」のテストが、LANG などを明示して確かめる
+ */
+const JA_ENV = { ...process.env, KUMIORI_LANG: 'ja' };
 
 /** コマンドを動かし、標準出力と PDF を返す */
 async function run(input: string, ...args: string[]) {
   const out = path.join(work, path.basename(input).replace(/\.\w+$/, '.pdf'));
-  const stdout = execFileSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), input, '-o', out, '--font-dir', fontDir, ...args], { encoding: 'utf8' });
+  const stdout = execFileSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), input, '-o', out, '--font-dir', fontDir, ...args], { encoding: 'utf8', env: JA_ENV });
   return { stdout, pdf: await PDFDocument.load(fs.readFileSync(out)) };
 }
 
 beforeAll(async () => {
   // Windows の npm は npm.cmd で、Node は .cmd・.bat をシェル無しでは起動しない (Node 18.20.2・20.12.2 からの変更) ので、Windows ではシェルを通す
   execFileSync('npm', ['run', '--silent', 'build:cli'], { cwd: root, stdio: 'ignore', shell: process.platform === 'win32' });
-  fs.mkdirSync(fontDir, { recursive: true });
-  for (const spec of [...FONT_SPECS, ...LATIN_SPECS, ...MONO_SPECS]) {
-    const url = spec.urls.find((u) => /^https:/.test(u))!;
-    const file = path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? url));
-    if (fs.existsSync(file)) continue;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`font download failed: ${res.status} ${url}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-  }
+  // 数式の書体も置いておく (無いと、MathML のテストでコマンドがネットワークから取り、利用者のキャッシュ (~/.cache/kumiori/fonts) に保存する)
+  await ensureFonts([...FONT_SPECS, ...LATIN_SPECS, ...MONO_SPECS, MATH_SPEC]);
   work = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-cli-'));
 }, 300_000);
 
@@ -203,7 +202,7 @@ describe('Node のコマンド', () => {
     fs.writeFileSync(path.join(dir, 'c.fo'), '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:block>');
     const out = path.join(dir, 'out');
     const cli = path.join(root, 'dist-cli/cli.js');
-    expect(() => execFileSync(process.execPath, [cli, 'a.html', 'b.html', 'c.fo', '-o', out, '--font-dir', fontDir], { cwd: dir, stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [cli, 'a.html', 'b.html', 'c.fo', '-o', out, '--font-dir', fontDir], { cwd: dir, stdio: 'pipe', env: JA_ENV })).toThrow();
     expect(fs.readdirSync(out).sort()).toEqual(['a.pdf', 'b.pdf']);
   }, 120_000);
 
@@ -211,7 +210,7 @@ describe('Node のコマンド', () => {
     const fo =
       '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
       '<fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block>あ</fo:block></fo:flow></fo:page-sequence></fo:root>';
-    const pdf = execFileSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), '-', '-o', '-', '--font-dir', fontDir, '--base', work], { input: fo, stdio: ['pipe', 'pipe', 'pipe'] });
+    const pdf = execFileSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), '-', '-o', '-', '--font-dir', fontDir, '--base', work], { input: fo, stdio: ['pipe', 'pipe', 'pipe'], env: JA_ENV });
     const doc = await PDFDocument.load(pdf);
     expect(Math.round(doc.getPage(0).getSize().width)).toBe(283); // 100mm
   }, 120_000);
@@ -220,7 +219,7 @@ describe('Node のコマンド', () => {
     const dir = fs.mkdtempSync(path.join(work, 'watch-'));
     const html = path.join(dir, 'w.html');
     fs.writeFileSync(html, '<p>一</p>');
-    const child = spawn(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '--watch', '--font-dir', fontDir], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '--watch', '--font-dir', fontDir], { stdio: ['ignore', 'pipe', 'pipe'], env: JA_ENV });
     let log = '';
     child.stdout.on('data', (d) => (log += d));
     child.stderr.on('data', (d) => (log += d));
@@ -239,13 +238,13 @@ describe('Node のコマンド', () => {
 
   it('--help は使い方を、--version は版 (package.json の version) を標準出力に書いて 0 で終わる', () => {
     const cli = path.join(root, 'dist-cli/cli.js');
-    const help = execFileSync(process.execPath, [cli, '--help'], { stdio: 'pipe', encoding: 'utf8' });
+    const help = execFileSync(process.execPath, [cli, '--help'], { stdio: 'pipe', encoding: 'utf8', env: JA_ENV });
     expect(help).toContain('使い方: kumiori');
     expect(help).toContain('--version');
-    const ver = execFileSync(process.execPath, [cli, '--version'], { stdio: 'pipe', encoding: 'utf8' }).trim();
+    const ver = execFileSync(process.execPath, [cli, '--version'], { stdio: 'pipe', encoding: 'utf8', env: JA_ENV }).trim();
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { version: string };
     expect(ver).toBe(pkg.version);
-    expect(execFileSync(process.execPath, [cli, '-v'], { stdio: 'pipe', encoding: 'utf8' }).trim()).toBe(pkg.version);
+    expect(execFileSync(process.execPath, [cli, '-v'], { stdio: 'pipe', encoding: 'utf8', env: JA_ENV }).trim()).toBe(pkg.version);
   });
 
   it('書体のキャッシュ: --font-dir に無い既定の書体はネットワークから取って --font-cache に保存し、次からはそこから読む。壊れたキャッシュは捨てて取り直す', () => {
@@ -258,18 +257,18 @@ describe('Node のコマンド', () => {
     const html = path.join(work, 'cache.html');
     fs.writeFileSync(html, '<!DOCTYPE html><html><head><title>t</title></head><body><p>キャッシュ <b>bold</b></p></body></html>');
     const out = path.join(work, 'cache.pdf');
-    const first = execFileSync(process.execPath, [cli, html, '-o', out, '--font-cache', cache], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const first = execFileSync(process.execPath, [cli, html, '-o', out, '--font-cache', cache], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: JA_ENV });
     expect(first).toContain('cache.pdf: 1 ページ');
     const saved = fs.readFileSync(path.join(cache, 'Tinos-Bold.ttf'));
     expect(saved.length).toBeGreaterThan(10_000);
     expect(saved.subarray(0, 4)).toEqual(Buffer.from([0, 1, 0, 0]));
     // 2 回目はネットワークに行かない (保存の知らせが出ない)。--no-font-cache はキャッシュを読まない (ネットワークから取るが保存しない)
-    const second = spawnSync(process.execPath, [cli, html, '-o', out, '--font-cache', cache], { encoding: 'utf8' });
+    const second = spawnSync(process.execPath, [cli, html, '-o', out, '--font-cache', cache], { encoding: 'utf8', env: JA_ENV });
     expect(second.status).toBe(0);
     expect(second.stderr).not.toContain('保存しました');
     // 書けない場所 (ファイル) をキャッシュにしても、変換は成功する (1 度だけ知らせる)
     fs.unlinkSync(path.join(cache, 'Tinos-Bold.ttf'));
-    const bad = spawnSync(process.execPath, [cli, html, '-o', out, '--font-cache', path.join(work, 'cache.html'), '--font-dir', cache], { encoding: 'utf8' });
+    const bad = spawnSync(process.execPath, [cli, html, '-o', out, '--font-cache', path.join(work, 'cache.html'), '--font-dir', cache], { encoding: 'utf8', env: JA_ENV });
     expect(bad.status).toBe(0);
     expect(bad.stderr).toContain('書体のキャッシュに書けません');
     expect(fs.existsSync(path.join(cache, 'Tinos-Bold.ttf'))).toBe(false);
@@ -277,11 +276,16 @@ describe('Node のコマンド', () => {
 
   it('--lang en・KUMIORI_LANG・LANG で、使い方・報告・警告・誤りの文が英語になる (既定と LANG=C は日本語)', () => {
     const cli = path.join(root, 'dist-cli/cli.js');
+    // 言語を決める環境変数は、すべてここで明示する (テストを走らせる機械の値を持ち込まない)
     const env = { ...process.env, LANG: 'C', LC_ALL: '', LC_MESSAGES: '', KUMIORI_LANG: '' };
     expect(execFileSync(process.execPath, [cli, '--help'], { encoding: 'utf8', env })).toMatch(/^使い方: kumiori/);
     expect(execFileSync(process.execPath, [cli, '--lang', 'en', '--help'], { encoding: 'utf8', env })).toMatch(/^Usage: kumiori/);
     expect(execFileSync(process.execPath, [cli, '--help'], { encoding: 'utf8', env: { ...env, LANG: 'en_US.UTF-8' } })).toMatch(/^Usage: kumiori/);
     expect(execFileSync(process.execPath, [cli, '--help'], { encoding: 'utf8', env: { ...env, LANG: 'en_US.UTF-8', KUMIORI_LANG: 'ja' } })).toMatch(/^使い方: kumiori/);
+    // LC_ALL は LC_MESSAGES・LANG より先、LC_MESSAGES は LANG より先。どれも無ければ日本語
+    expect(execFileSync(process.execPath, [cli, '--help'], { encoding: 'utf8', env: { ...env, LANG: 'ja_JP.UTF-8', LC_ALL: 'en_US.UTF-8' } })).toMatch(/^Usage: kumiori/);
+    expect(execFileSync(process.execPath, [cli, '--help'], { encoding: 'utf8', env: { ...env, LANG: 'en_US.UTF-8', LC_MESSAGES: 'ja_JP.UTF-8' } })).toMatch(/^使い方: kumiori/);
+    expect(execFileSync(process.execPath, [cli, '--help'], { encoding: 'utf8', env: { ...env, LANG: '' } })).toMatch(/^使い方: kumiori/);
     // 変換の報告と警告
     const html = path.join(work, 'lang.html');
     fs.writeFileSync(html, '<!DOCTYPE html><html><head><title>t</title><style>.g { display: grid; grid-template-areas: "a b" }</style></head><body><div class="g"><p>a</p></div></body></html>');
@@ -298,11 +302,18 @@ describe('Node のコマンド', () => {
     expect(badLang.status).toBe(1);
     expect(badLang.stderr).toContain('--lang の値 "fr" は使えません');
   });
+  it('dist-cli には、コマンドとライセンスの表示だけが入る (public/ の favicon・書体をコピーしない)', () => {
+    // dist-cli は npm の配布物に入る (package.json の files)。public/ は画面 (dist/) のためのもので、手元では public/fonts に書体も置く
+    const files = (fs.readdirSync(path.join(root, 'dist-cli'), { recursive: true }) as string[]).map((f) => f.split(path.sep).join('/'));
+    for (const f of ['cli.js', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']) expect(files).toContain(f);
+    expect(files.filter((f) => fs.existsSync(path.join(root, 'public', f)))).toEqual([]);
+    expect(files.filter((f) => /\.(ttf|otf|ttc|woff2?|ico|png|svg)$/i.test(f) || f.startsWith('fonts'))).toEqual([]);
+  });
   it('知らないオプション・値の無いオプションは、使い方を出してエラーで終わる (値を入力のファイルとして扱わない)', () => {
     const cli = path.join(root, 'dist-cli/cli.js');
     const fail = (...args: string[]) => {
       try {
-        execFileSync(process.execPath, [cli, ...args], { stdio: 'pipe', encoding: 'utf8' });
+        execFileSync(process.execPath, [cli, ...args], { stdio: 'pipe', encoding: 'utf8', env: JA_ENV });
         return '';
       } catch (e) {
         return String((e as { stderr?: string }).stderr);
@@ -320,6 +331,6 @@ describe('Node のコマンド', () => {
   it('XML として読めない FO はエラーで終わる', () => {
     const fo = path.join(work, 'broken.fo');
     fs.writeFileSync(fo, '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:block>');
-    expect(() => execFileSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), fo, '--font-dir', fontDir], { stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), fo, '--font-dir', fontDir], { stdio: 'pipe', env: JA_ENV })).toThrow();
   }, 120_000);
 });

@@ -22,7 +22,7 @@
     "url": "https://github.com/n-lights-co/kumiori/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "type": "module",
   "main": "./dist-lib/index.js",
@@ -30,11 +30,11 @@
   "exports": {
     ".": {
       "types": "./dist-lib/types/index.d.ts",
-      "import": "./dist-lib/index.js"
+      "default": "./dist-lib/index.js"
     },
     "./node": {
       "types": "./dist-lib/types/node.d.ts",
-      "import": "./dist-lib/node.js"
+      "default": "./dist-lib/node.js"
     },
     "./browser": {
       "types": "./dist-lib/types/index.d.ts",
@@ -62,8 +62,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "build:cli": "vite build --ssr src/cli.ts --outDir dist-cli --emptyOutDir",
-    "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
+    "build:cli": "vite build --config vite.cli.config.ts",
+    "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json && node scripts/fix-dts-extensions.mjs dist-lib/types",
     "build:browser": "vite build --config vite.browser.config.ts",
     "build:dist": "npm run build:lib && npm run build:cli && npm run build:browser",
     "docs:conformance": "node scripts/build-conformance.mjs",

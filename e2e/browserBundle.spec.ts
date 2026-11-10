@@ -7,11 +7,16 @@ import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { routeFontCache } from './fontCache';
 
 const dist = fileURLToPath(new URL('../dist-browser/', import.meta.url));
 
-/** KUMIORI_E2E_FONT_DIR があれば、Google Fonts の代わりにそのディレクトリのフォントを返す (app.spec.ts と同じ) */
+/**
+ * KUMIORI_E2E_FONT_DIR があれば、Google Fonts の代わりにそのディレクトリのフォントを返す (app.spec.ts と同じ)。
+ * 無くて KUMIORI_E2E_FONT_CACHE があれば、配信元から取った書体をそこに覚えておく (e2e/fontCache.ts)
+ */
 async function routeFonts(page: Page) {
+  await routeFontCache(page);
   const dir = process.env.KUMIORI_E2E_FONT_DIR;
   if (!dir) return;
   await page.route('**/fonts.gstatic.com/**', (route) => {
@@ -22,7 +27,13 @@ async function routeFonts(page: Page) {
 }
 
 test('dist-browser/kumiori.js を import して HTML を組み、PDF を作れる', async ({ page }) => {
-  test.skip(!fs.existsSync(path.join(dist, 'kumiori.js')), 'npm run build:browser を先に実行する');
+  const built = fs.existsSync(path.join(dist, 'kumiori.js'));
+  // CI では、バンドルが無ければ失敗にする (PKG-12: 黙って飛ばすと、ビルドの手順が抜けたときに、バンドルを 1 度も試さないまま通る)。
+  // 手元では飛ばすが、理由を出す (一覧の表示は、飛ばした理由を出さないので)
+  const reason = 'dist-browser/kumiori.js が無い: 先に npm run build:browser を実行する';
+  if (!built && process.env.CI) throw new Error(`${reason} (CI では、このテストを飛ばさずに失敗にする)`);
+  if (!built) console.warn(`[skip] ${test.info().title}: ${reason}`);
+  test.skip(!built, reason);
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // バンドルとその別ファイル (chunks/) を、開発サーバーを通さずにファイルの中身そのままで返す (CDN と同じ条件)

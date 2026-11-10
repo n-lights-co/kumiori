@@ -3,6 +3,7 @@
  *  - HTM-23 @media の width・height・orientation は、@page の無いときに選ばれる用紙で評価する。用紙の大きさに依る条件の中の @page の size は読まない
  *  - HTM-24 li の break-before・break-after・break-inside が、リストの行に効く
  *  - PKG-16 @supports・@import の supports() は、未対応の性質・値を偽にする
+ *  - PKG-18 @supports・@import の supports() は、読めない値 (カスケードが捨てる宣言) を偽にする
  *  - @page の中の、ASCII でない名前の var()・ページの名前・content の識別子
  *  - font・columns の一括指定の中の数の書き方
  */
@@ -214,6 +215,67 @@ describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
     expect(rules.map((r) => r.selector)).toEqual(['.nt', '.g', 'p']);
     const files = { 't.css': '.t { color: red }', 'g.css': '.g { color: red }', 's.css': '.s { color: red }' };
     expect(await selectors('<style>@import "t.css" supports(transform: rotate(5deg)); @import "g.css" supports(display: grid); @import "s.css" supports((position: sticky));</style>', A4, files)).toEqual(['.g']);
+  });
+});
+
+describe('PKG-18 @supports は、読めない値の宣言を偽にする (Conditional 3 §6.1: 宣言を構文の誤りとして捨てずに受け付けるときだけ、対応と答える)', () => {
+  /** p に当てた宣言が、カスケードで生き残るか (捨てられれば、先に書いた目印の値のまま) */
+  const accepted = (decl: string) => {
+    const prop = decl.slice(0, decl.indexOf(':')).trim().toLowerCase();
+    const d = new DOMParser().parseFromString('<html><body><p>a</p></body></html>', 'text/html') as unknown as Document;
+    const el = d.getElementsByTagName('p')[0] as unknown as Element;
+    const plain = cascadeStyles(d, 'p { }', { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }).style(el).getPropertyValue(prop);
+    const got = cascadeStyles(d, `p { ${decl} }`, { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }).style(el).getPropertyValue(prop);
+    return got !== plain;
+  };
+
+  it('読めない値は偽。読める値は真のまま (!important・大文字も同じ)', () => {
+    for (const c of [
+      'display: foo', 'color: notacolor', 'color: #12', 'color: rgb(1,2)', 'color: red blue', 'width: abc', 'width: 10', 'width: 10qq', 'font-weight: heavy', 'font-weight: 1001', 'font-size: big',
+      'line-height: -1', 'z-index: 1.5', 'order: 2.5', 'orphans: 0', 'column-count: 0', 'break-before: sometimes', 'break-inside: never', 'text-align: middle', 'text-align: left right',
+      'writing-mode: diagonal', 'visibility: gone', 'box-sizing: padding-box', 'content: foo(1)', 'content: counter(c d)', 'margin-top: 1px 2px', 'margin-inline-start: nope', 'inline-size: nope',
+      'display: foo !important', 'DISPLAY: FOO', 'display:', 'color: ',
+    ])
+      expect(matchSupports(`(${c})`), c).toBe(false);
+    for (const c of [
+      'display: block', 'color: red', 'color: RED', 'color: #123', 'color: rgb(1 2 3)', 'color: transparent', 'width: 10px', 'width: 0', 'width: calc(1px + 2px)', 'width: auto', 'width: 50%', 'font-weight: 700', 'font-size: larger',
+      'line-height: 1.5', 'z-index: auto', 'order: 2', 'orphans: 2', 'column-count: 2', 'break-before: always', 'text-align: justify', 'content: "a" counter(c, upper-roman)', 'content: counters(c, ".")',
+      'margin-inline-start: 1em', 'inline-size: 10em', 'display: block !important', 'DISPLAY: BLOCK',
+      // 広域の語は、どの性質でも読める
+      'color: inherit', 'display: initial', 'margin: unset', 'width: revert',
+    ])
+      expect(matchSupports(`(${c})`), c).toBe(true);
+  });
+
+  it('一括指定は、分けられない値・分けた性質のどれかが読めない値なら偽', () => {
+    for (const c of ['margin: 1px foo', 'padding: red', 'border: foo', 'border-color: nope', 'border-width: fat', 'columns: foo', 'column-rule: nope', 'inset: nope', 'margin-inline: nope', 'gap: nope', 'flex: nope'])
+      expect(matchSupports(`(${c})`), c).toBe(false);
+    for (const c of ['margin: 1em 2em', 'margin: auto', 'padding: 1px', 'border: 1px solid red', 'border-color: red blue', 'border-width: thin', 'columns: 2 10em', 'column-rule: 1px solid red', 'inset: 0', 'margin-inline: auto', 'gap: 1em', 'flex: 1', 'font: bold 12pt serif', 'background: url(a.png) no-repeat'])
+      expect(matchSupports(`(${c})`), c).toBe(true);
+  });
+
+  it('カスタム プロパティは何でも真 (Variables 1 §2.1)。var() を含む値は、置き換えるまで読めるか決まらないので真 (Variables 1 §3)', () => {
+    for (const c of ['--x: anything goes', '--x: foo(', '--x:', '--色: 1']) expect(matchSupports(`(${c})`), c).toBe(true);
+    for (const c of ['color: var(--c)', 'display: var(--d)', 'width: var(--w, 10px)', 'margin: var(--m) 1px', 'border: var(--b)', 'color: VAR(--c)']) expect(matchSupports(`(${c})`), c).toBe(true);
+    // var() があっても、知らない性質・未対応の性質は偽のまま
+    for (const c of ['foo: var(--x)', 'transform: var(--t)', 'cursor: var(--c)']) expect(matchSupports(`(${c})`), c).toBe(false);
+  });
+
+  it('@supports の答えは、カスケードが宣言を受け付けるかと同じ', () => {
+    for (const c of ['display: foo', 'color: notacolor', 'width: abc', 'width: 10', 'font-weight: heavy', 'text-align: middle', 'z-index: 1.5', 'margin-top: 1px 2px', 'display: flex', 'color: blue', 'width: 10px', 'font-weight: 700', 'text-align: justify', 'z-index: 3', 'margin-top: 1px'])
+      expect(matchSupports(`(${c})`), c).toBe(accepted(c));
+  });
+
+  it('アンテナハウスの拡張の値は、互換の指定が分からない所なので真のまま', () => {
+    for (const c of ['border-style: dot-dash', 'border-top-style: wave', 'column-rule-style: dot-dot-dash']) expect(matchSupports(`(${c})`), c).toBe(true);
+    expect(matchSupports('(border-top-style: zigzag)')).toBe(false);
+  });
+
+  it('@supports の規則・not・@import の supports() に効く', async () => {
+    const css = '@supports (display: foo) { .a { color: red } } @supports not (display: foo) { .b { color: red } } @supports (color: notacolor) or (display: block) { .c { color: red } } @supports (display: grid) and (width: abc) { .d { color: red } } @supports (color: var(--c)) { .e { color: red } } p { color: blue; @supports (color: notacolor) { margin: 0 } }';
+    expect(parseCss(css).rules.map((r) => r.selector)).toEqual(['.b', '.c', '.e', 'p']);
+    const files = { 'a.css': '.a { color: red }', 'b.css': '.b { color: red }' };
+    expect(await selectors('<style>@import "a.css" supports(display: foo); @import "b.css" supports(display: block);</style>', A4, files)).toEqual(['.b']);
   });
 });
 

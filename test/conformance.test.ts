@@ -10,11 +10,11 @@ import path from 'node:path';
 import { DEFAULT_FONTS, typesetFo, typesetHtml, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
 // @ts-expect-error 型の無い JavaScript のモジュール
 import { expand, extractSamples, standalone } from '../scripts/conformance-lib.mjs';
+import { ensureFonts, fontDir } from './helpers';
 
 type Sample = { id: string; raw: string; code: string };
 
 const root = path.resolve(__dirname, '..', 'docs', 'conformance');
-const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
 const fileOf = (spec: FontSpec) => path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
 const loadFont = async (spec: FontSpec) => {
   const f = fileOf(spec);
@@ -40,15 +40,7 @@ const textOf = (tree: Parameters<typeof walkAreaTree>[0]) => {
 };
 
 beforeAll(async () => {
-  fs.mkdirSync(fontDir, { recursive: true });
-  for (const spec of DEFAULT_FONTS.base) {
-    const file = fileOf(spec);
-    if (fs.existsSync(file)) continue;
-    const url = spec.urls.find((u) => /^https:/.test(u))!;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`font download failed: ${res.status} ${url}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-  }
+  await ensureFonts(DEFAULT_FONTS.base);
 }, 120_000);
 
 const docs = [

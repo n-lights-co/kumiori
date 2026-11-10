@@ -24,6 +24,7 @@ import { createFontMapping } from '../src/fontMapping';
 import { evalLength } from '../src/foExpr';
 import { UsageError, parseArgs, parseSpotColors, planJobs } from '../src/cli';
 import type { LBlockContainer, LPageSequence } from '../src/types';
+import { ensureFonts, fontDir } from './helpers';
 
 const parse = (s: string) => new DOMParser().parseFromString(s, 'text/xml') as never;
 const NS = 'xmlns:fo="http://www.w3.org/1999/XSL/Format"';
@@ -31,7 +32,6 @@ const imp = (xml: string, o: ImportOptions = {}) => importXslFo(xml, parse, { co
 const PM = `<fo:layout-master-set><fo:simple-page-master master-name="m" page-width="100mm" page-height="100mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>`;
 const fo = (flow: string, rootAttrs = '') => `<?xml version="1.0"?><fo:root ${NS} ${rootAttrs}>${PM}<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body">${flow}</fo:flow></fo:page-sequence></fo:root>`;
 
-const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
 const fileOf = (spec: FontSpec) => path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
 /** 書体を手元の置き場から読む (ネットワークを使わない) */
 const loadFont = async (spec: FontSpec) => {
@@ -53,15 +53,7 @@ const textOf = (tree: Awaited<ReturnType<typeof typeset>>['areaTree']) => {
 };
 
 beforeAll(async () => {
-  fs.mkdirSync(fontDir, { recursive: true });
-  for (const spec of DEFAULT_FONTS.base) {
-    const file = fileOf(spec);
-    if (fs.existsSync(file)) continue;
-    const url = spec.urls.find((u) => /^https:/.test(u))!;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`font download failed: ${res.status} ${url}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-  }
+  await ensureFonts(DEFAULT_FONTS.base);
 }, 300_000);
 
 describe('H3: page-sequence-master の既定のマスター', () => {

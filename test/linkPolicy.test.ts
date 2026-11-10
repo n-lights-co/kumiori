@@ -2,25 +2,21 @@
  * 文書の外へのリンクのうち、PDF に動作を書くもの (HTM-20。src/linkPolicy.ts)。
  * 既定では http・https・mailto・tel の URL と相対の PDF (GoToR) だけを書き、ほか (javascript: など・Launch) は字だけを組んで警告する。
  */
-import { describe, expect, it } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
 import { PDFDocument } from 'pdf-lib';
 import { cleanUrl, judgeExternalLink, urlScheme } from '../src/linkPolicy';
-import { parseAreaTree, serializeAreaTree, typeset, type FontSpec } from '../src/index';
+import { DEFAULT_FONTS, parseAreaTree, serializeAreaTree, typeset } from '../src/index';
 import { importXslFo } from '../src/xslfoImport';
 import { renderPdf } from '../src/pdfRenderer';
 import { parseArgs, UsageError } from '../src/cli';
-import { makeEngine } from './helpers';
+import { ensureFonts, loadCachedFont, makeEngine } from './helpers';
 
-const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
-const loadFont = async (spec: FontSpec) => {
-  const f = path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
-  if (!fs.existsSync(f)) return undefined;
-  const b = fs.readFileSync(f);
-  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
-};
+// 既定の書体は置き場 (.cache/fonts) から読む。無ければ、テストの前に 1 度だけ取得して置く (helpers の ensureFonts)
+const loadFont = loadCachedFont;
+beforeAll(async () => {
+  await ensureFonts(DEFAULT_FONTS.base);
+}, 300_000);
 /** PDF の中の動作 (/S /名前) の並び。圧縮していない PDF の文字から拾う */
 const actionsOf = async (bytes: Uint8Array) => {
   const pdf = await PDFDocument.load(bytes);

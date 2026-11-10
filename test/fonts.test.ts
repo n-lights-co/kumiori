@@ -1,14 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DOMParser } from '@xmldom/xmldom';
 import { countFonts, normalizeFamily, splitFontFile } from '../src/fontLoader';
 import { importXslFo } from '../src/xslfoImport';
-import { FAMILY, makeEngine } from './helpers';
+import { FAMILY, fontBuffer, fontDir, makeEngine } from './helpers';
 
+// 下の ttf() と、置き場のファイルを直に読むテストのために、Noto Serif JP を置き場に用意しておく (このファイルだけを走らせても、置き場が空でも通るように)
+beforeAll(async () => {
+  await fontBuffer();
+}, 300_000);
 const ttf = (): ArrayBuffer => {
-  const dir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
-  const b = fs.readFileSync(path.join(dir, 'NotoSerifJP-Regular.ttf'));
+  const b = fs.readFileSync(path.join(fontDir, 'NotoSerifJP-Regular.ttf'));
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
 };
 
@@ -93,7 +96,7 @@ describe('書体の並び (font-family) の扱い', () => {
     const m = createFontMapping(fonts);
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const b = fs.readFileSync(path.resolve(process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts'), 'NotoSerifJP-Regular.ttf'));
+    const b = fs.readFileSync(path.resolve(fontDir, 'NotoSerifJP-Regular.ttf'));
     const file = { name: 'face.ttf', arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer };
     await m.loadFontFaces('@font-face { font-family: source-sans-pro; src: url(face.ttf) }', [file]);
     expect(m.mapHtmlFont(['source-sans-pro', 'serif'], false)).toContain(`+${SERIF}`);

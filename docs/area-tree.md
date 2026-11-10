@@ -43,7 +43,7 @@
 
 - `serializeAreaTree(tree)` は、木を JSON の文字列にします。`undefined` の欄は書きません。
 - `parseAreaTree(json)` は、JSON の文字列から木を読みます。版 (`schemaVersion`) と、節の形 (種類・`x`・`y`・`width`・`height` が数であること・子の欄) を確かめ、合わなければ `AreaTreeFormatError` を投げます。
-- 読み直した木は、描く処理 (`paintSheet`・`renderPdf`) にそのまま渡せます。版 1 の木は、版 2 の形に直してから返します。書体と画像は、書き出したときと同じ FontManager・AssetStore が要ります (`test/areaTree.test.ts` で、往復した木の描き方が同じことを確かめています)。
+- 読み直した木は、描く処理 (`paintSheet`・`renderPdf`) にそのまま渡せます。ただし、この 2 つと FontManager・AssetStore は内部の関数・クラスで、パッケージの入口 (`kumiori`) からは出していません。公開 API で描けるのは、`typeset` の結果 (`renderPage`・`toPdf`) だけで、`parseAreaTree` で読み直した木を描く口は、いまはありません (読み直した木は、調べる・比べる・保存するために使います)。版 1 の木は、版 2 の形に直してから返します。書体と画像は、書き出したときと同じ FontManager・AssetStore が要ります (`test/areaTree.test.ts` で、往復した木の描き方が同じことを確かめています)。
 
 ## 罫線の辺の欄
 

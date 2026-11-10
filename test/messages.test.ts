@@ -4,19 +4,16 @@
  *  - withMessageLang: 呼び出しの間だけ切り替え、終わったら戻す
  *  - typeset の lang: 警告が英語になり、ほかの呼び出しには残らない
  */
-import { describe, expect, it } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { detectMessageLang, messageLang, msg, setMessageLang, withMessageLang } from '../src/messages';
-import { typesetHtml, type FontSpec } from '../src/index';
+import { DEFAULT_FONTS, typesetHtml } from '../src/index';
+import { ensureFonts, loadCachedFont } from './helpers';
 
-const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
-const loadFont = async (spec: FontSpec) => {
-  const f = path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
-  if (!fs.existsSync(f)) return undefined;
-  const b = fs.readFileSync(f);
-  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
-};
+// 既定の書体は置き場 (.cache/fonts) から読む。無ければ、テストの前に 1 度だけ取得して置く (helpers の ensureFonts)
+const loadFont = loadCachedFont;
+beforeAll(async () => {
+  await ensureFonts(DEFAULT_FONTS.base);
+}, 300_000);
 
 describe('文言の言語', () => {
   it('環境から決める: KUMIORI_LANG → LC_ALL → LC_MESSAGES → LANG。決まらなければ日本語', () => {

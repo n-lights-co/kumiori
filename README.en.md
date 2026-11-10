@@ -13,7 +13,7 @@ and outputs a Canvas preview and PDF.
 
 Kumiori is developed with an AI coding assistant ([Claude Code](https://claude.com/claude-code)) (see "[About the development method](#about-the-development-method)").
 
-- **About 58,000 lines of TypeScript, about 1,600 tests**: Each time a feature is added, the AI adds tests, and CI (type checking, unit tests, and 13 browser integration tests) passes
+- **About 60,000 lines of TypeScript, about 1,900 tests**: Each time a feature is added, the AI adds tests, and CI (type checking, unit tests, and 13 browser integration tests) passes
 - **Implemented from the standards and specifications**: Kumiori is implemented by reading the standards and specifications as thoroughly as possible, including XSL-FO 1.1, the CSS modules (Paged Media, GCPM, Writing Modes, Text, Ruby, Fragmentation and others), MathML Core, the Unicode UAX #9 (bidirectional text) and UAX #14 (line breaking), W3C's JLREQ (Requirements for Japanese Text Layout, based on JIS X 4051) and PDF (ISO 32000), and following their definitions. The fine details of Japanese typesetting, such as punctuation compression, hanging punctuation and ruby overhang, are also based on these standards. The support status of each property, with the specification's definition and how Kumiori handles it, is collected in the Conformance Guide ([`docs/en/conformance.md`](docs/en/conformance.md))
 - **Behaviour checked against published PDFs**: The interpretation of the specifications and the finer points of layout are checked by comparing Kumiori's output with sample PDFs that XSL-FO and CSS typesetting tools have published
 
@@ -51,7 +51,7 @@ npm run build    # type check + production build (dist/; the web app)
 npm run build:dist   # build the library (dist-lib), the Node CLI (dist-cli) and the single browser file (dist-browser) together
 ```
 
-Node 20 or later is required (CI tests with 22; recursive watching for `--watch` needs Node 20 or later). The release procedure is in [`docs/en/RELEASING.md`](docs/en/RELEASING.md), and the changes in each version are in [`CHANGELOG.en.md`](CHANGELOG.en.md).
+Node 20.19.0 or later is required (CI tests with 22; the dependencies used to read HTML, such as css-select used by linkedom, require Node 20.19.0 or later). The release procedure is in [`docs/en/RELEASING.md`](docs/en/RELEASING.md), and the changes in each version are in [`CHANGELOG.en.md`](CHANGELOG.en.md).
 
 ### Web app (browser)
 
@@ -150,7 +150,7 @@ result.renderPage(canvas, 0);                                  // draw page 1 on
   ```
 - The fonts used by default can be found in `DEFAULT_FONTS` (the `family`, `weight` and `urls` of the `spec` passed to `loadFont`)
 - Only what is exported from `src/index.ts` (and `src/node.ts` for Node) is public (the functions and types of other modules may change between versions)
-- `kumiori` (`dist-lib/index.js`) is an ES module that does not bundle its dependencies (pdf-lib, fontkit, xmldom, etc.). Use it with a bundler such as Vite or webpack, or load it from Node. Since it is ES module only, loading it with `require()` requires Node 22 or later
+- `kumiori` (`dist-lib/index.js`) is an ES module that does not bundle its dependencies (pdf-lib, fontkit, xmldom, etc.). Use it with a bundler such as Vite or webpack, or load it from Node. It is ES module only, but `require('kumiori')` also works (on Node 20.19.0 or later and 22.12.0 or later, which can load ES modules with `require()`; Node 22.0 to 22.11 needs `--experimental-require-module`)
 - In a browser without a bundler, use `kumiori/browser`, a single file with the dependencies bundled (`dist-browser/kumiori.js`; about 2.7MB, 0.9MB gzipped; the hyphenation dictionaries and the like are loaded as separate files only when used). The version published on npm can be loaded directly from the jsDelivr or unpkg CDN:
 
   ```html
@@ -217,7 +217,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 | `src/cssCascade.ts`, `src/cssSelector.ts`, `src/cssText.ts` | CSS interpretation without a browser (cascade, computed values, selectors), CSS lexical helpers (separators, lengths, colors) |
 | `src/xslfoImport.ts`, `src/foExpr.ts`, `src/foDom.ts`, `src/foContext.ts`, `src/foPageMaster.ts`, `src/foMathFallback.ts` | XSL-FO import (attributes → logical tree, expression evaluation, minimal DOM, page masters, MathML typesetting when no math font is available) |
 | `src/svg.ts`, `src/mathLayout.ts` | Converting SVG to shapes, MathML typesetting |
-| `src/jpeg.ts`, `src/webp.ts`, `src/vp8.ts`, `src/pixels.ts`, `src/ccitt.ts`, `src/imageLimits.ts`, `src/metafile.ts`, `src/cgm.ts`, `src/eps.ts`, `src/ps*.ts` (`psInterp`, `psGraphics`, `psOps*` per operator group, `psResources`, `psColorSpace`, `psFonts`, `psCff`, `psImage`, `psFilters`), `src/imageInfo.ts`, `src/base64.ts` | Image decoding (JPEG, WebP, GIF, BMP, TIFF) and limits, conversion of WMF/EMF, CGM and EPS (PostScript interpreter) to shapes, reading image dimensions |
+| `src/jpeg.ts`, `src/webp.ts`, `src/vp8.ts`, `src/pixels.ts`, `src/ccitt.ts`, `src/imageLimits.ts`, `src/metafile.ts`, `src/cgm.ts`, `src/eps.ts`, `src/ps*.ts` (`psInterp`, `psGraphics`, `psOps*` per operator group, `psResources`, `psColorSpace`, `psFonts`, `psCff`, `psEncodings`, `psShading`, `psFilters`), `src/imageInfo.ts`, `src/base64.ts` | Image decoding (JPEG, WebP, GIF, BMP, TIFF) and limits, conversion of WMF/EMF, CGM and EPS (PostScript interpreter) to shapes, reading image dimensions |
 | `src/epub.ts`, `src/xhtml.ts` | EPUB extraction, XHTML import |
 | `src/fontMapping.ts`, `src/compat.ts`, `src/documentResources.ts`, `src/documentText.ts`, `src/cli.ts` | Font assignment, compatibility mode settings, fetching the math font and images, character encoding detection (shared by the web app and Node); the Node CLI |
 
@@ -237,7 +237,7 @@ The fonts for typesetting are not included in this repository. They are fetched 
 | Noto Sans Symbols 2 | When the document contains symbols (such as ✈) found in none of the loaded fonts | SIL Open Font License 1.1 |
 
 The Node CLI saves the fetched fonts to the OS cache (`~/.cache/kumiori/fonts` etc.; can be changed with `--font-cache`) and does not use the network from the second run on. For offline use, in the web app (browser), TTFs with the same names placed in `public/fonts/` are used as a fallback (not tracked by git). With the Node CLI, either run once online to fill the cache, or specify the directory to read with `--font-dir`. The library's (`typeset`) default fetching tries only `https:` URLs, so pass local fonts via `loadFont`.
-Fonts placed in `public/fonts/` are also copied to the build output (`dist/fonts/`, `dist-cli/fonts/`). If you do not want them in what you distribute, remove them before building. The Node CLI does not read the copied `dist-cli/fonts/` automatically (it looks only at the directory passed, e.g. `--font-dir dist-cli/fonts`).
+Fonts placed in `public/fonts/` are also copied to the build output of the web app (`dist/fonts/`). If you do not want them in what you distribute, remove them before building. The contents of `public/` are not copied to the output distributed through npm (`dist-cli/`, `dist-lib/`, `dist-browser/`). The Node CLI looks only at the directory passed with `--font-dir`.
 
 The fonts used are embedded in the PDF. Check the license terms of each font with its distributor.
 
@@ -273,6 +273,9 @@ Third-party code and licenses are checked with tools before each release (see [T
 npm test          # unit tests (Node + fontkit; fetches Noto Serif JP into .cache/fonts)
 npm run e2e       # browser integration tests (Playwright; on first run, npx playwright install chromium)
 ```
+
+The fonts used by the tests are fetched on first run into `.cache/fonts` (changeable with `KUMIORI_FONT_DIR`). They come from Google Fonts (`fonts.gstatic.com`) and, for the PostScript font tests, Source Sans 3 (adobe-fonts/source-sans on `raw.githubusercontent.com`). Fetching is done in one place, `test/helpers.ts`; when a test needs another font, add it to the list there (the list is part of the CI cache key).
+For the integration tests, setting `KUMIORI_E2E_FONT_CACHE` to a directory makes the browser's fetched fonts be stored there, so later runs do not use the network (CI uses this). `KUMIORI_E2E_FONT_DIR` is for supplying fonts by hand under fixed file names.
 
 Comparison with sample PDFs (prepare the sample FO and PDF files yourself; they are not in the repository. poppler's pdftoppm is required):
 

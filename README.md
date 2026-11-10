@@ -13,7 +13,7 @@ Canvas のプレビューと PDF に出力します。
 
 Kumiori は、AI のコーディング支援 ([Claude Code](https://claude.com/claude-code)) を使って開発しています (「[開発の方法について](#開発の方法について)」)。
 
-- **TypeScript 約 5 万 8 千行・テスト約 1,600 件**: 機能を足すたびに AI がテストを書き足し、CI (型チェック・単体テスト・ブラウザでの結合テスト 13 件) を通しています
+- **TypeScript 約 6 万行・テスト約 1,900 件**: 機能を足すたびに AI がテストを書き足し、CI (型チェック・単体テスト・ブラウザでの結合テスト 13 件) を通しています
 - **規格・仕様書を読んで実装する**: XSL-FO 1.1、CSS の各モジュール (Paged Media・GCPM・Writing Modes・Text・Ruby・Fragmentation など)、MathML Core、Unicode の UAX #9 (双方向) と UAX #14 (改行)、W3C の JLREQ (日本語組版処理の要件。JIS X 4051 に基づく)、PDF (ISO 32000) などの規格・仕様書を可能な限り読み、その定義に沿って実装しています。約物の詰め・ぶら下げ・ルビのはみ出しなど、日本語組版の細部も規格に基づいています。プロパティごとの対応状況と、仕様の定義・Kumiori での扱いは、対応仕様説明書 ([`docs/conformance/`](docs/conformance/README.md)) にまとめています
 - **公開されている PDF と比べて仕様を把握**: XSL-FO や CSS の組版ソフトが公開している見本の PDF と、Kumiori で組んだ結果を見比べて、仕様の解釈や細かな組み方を確かめています
 
@@ -51,7 +51,7 @@ npm run build    # 型チェック + 本番ビルド (dist/。画面)
 npm run build:dist   # ライブラリ (dist-lib)・Node のコマンド (dist-cli)・ブラウザ用の 1 ファイル (dist-browser) をまとめて作る
 ```
 
-Node は 20 以上 (CI は 22 で確かめています。`--watch` の再帰的な監視に Node 20 以降が要ります)。公開の手順は [`docs/RELEASING.md`](docs/RELEASING.md)、版ごとの変更は [`CHANGELOG.md`](CHANGELOG.md) にあります。
+Node は 20.19.0 以上 (CI は 22 で確かめています。HTML を読むための依存パッケージ (linkedom の使う css-select など) が Node 20.19.0 以降を求めます)。公開の手順は [`docs/RELEASING.md`](docs/RELEASING.md)、版ごとの変更は [`CHANGELOG.md`](CHANGELOG.md) にあります。
 
 ### 画面 (ブラウザ)
 
@@ -150,7 +150,7 @@ result.renderPage(canvas, 0);                                  // 1 ページ目
   ```
 - 既定で使う書体は `DEFAULT_FONTS` で分かります (`loadFont` に渡される `spec` の `family`・`weight`・`urls`)
 - 公開しているのは `src/index.ts` (と Node 用の `src/node.ts`) から出しているものだけです (ほかのモジュールの関数・型は、版の間で変わることがあります)
-- `kumiori` (`dist-lib/index.js`) は依存パッケージ (pdf-lib・fontkit・xmldom など) を取り込んでいない ES モジュールです。Vite・webpack などのバンドラーで使うか、Node から読んでください。ES モジュールだけなので、`require()` で読むには Node 22 以降が要ります
+- `kumiori` (`dist-lib/index.js`) は依存パッケージ (pdf-lib・fontkit・xmldom など) を取り込んでいない ES モジュールです。Vite・webpack などのバンドラーで使うか、Node から読んでください。ES モジュールだけですが、`require('kumiori')` でも読めます (ES モジュールを `require()` で読める Node 20.19.0 以降・22.12.0 以降。Node 22.0〜22.11 では `--experimental-require-module` が要ります)
 - バンドラーを使わないブラウザでは、依存まで 1 つにまとめたファイル `kumiori/browser` (`dist-browser/kumiori.js`。約 2.7MB、gzip で 0.9MB。ハイフネーションの辞書などは使うときだけ別ファイルを読む) を使います。npm に公開したものは jsDelivr や unpkg の CDN からそのまま読めます:
 
   ```html
@@ -217,7 +217,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 | `src/cssCascade.ts`, `src/cssSelector.ts`, `src/cssText.ts` | ブラウザを使わない CSS の解釈 (カスケード・計算値・セレクタ)、CSS の字句の補助 (区切り・長さ・色) |
 | `src/xslfoImport.ts`, `src/foExpr.ts`, `src/foDom.ts`, `src/foContext.ts`, `src/foPageMaster.ts`, `src/foMathFallback.ts` | XSL-FO の読み込み (属性 → 論理ツリー、式の評価、最小 DOM、ページマスター、数式書体が無いときの MathML の組版) |
 | `src/svg.ts`, `src/mathLayout.ts` | SVG を図形にする、MathML の組版 |
-| `src/jpeg.ts`, `src/webp.ts`, `src/vp8.ts`, `src/pixels.ts`, `src/ccitt.ts`, `src/imageLimits.ts`, `src/metafile.ts`, `src/cgm.ts`, `src/eps.ts`, `src/ps*.ts` (`psInterp`・`psGraphics`・演算子ごとの `psOps*`・`psResources`・`psColorSpace`・`psFonts`・`psCff`・`psImage`・`psFilters`), `src/imageInfo.ts`, `src/base64.ts` | 画像の復号 (JPEG・WebP・GIF・BMP・TIFF) と上限、WMF/EMF・CGM・EPS (PostScript の解釈器) の図形化、画像の大きさの読み取り |
+| `src/jpeg.ts`, `src/webp.ts`, `src/vp8.ts`, `src/pixels.ts`, `src/ccitt.ts`, `src/imageLimits.ts`, `src/metafile.ts`, `src/cgm.ts`, `src/eps.ts`, `src/ps*.ts` (`psInterp`・`psGraphics`・演算子ごとの `psOps*`・`psResources`・`psColorSpace`・`psFonts`・`psCff`・`psEncodings`・`psShading`・`psFilters`), `src/imageInfo.ts`, `src/base64.ts` | 画像の復号 (JPEG・WebP・GIF・BMP・TIFF) と上限、WMF/EMF・CGM・EPS (PostScript の解釈器) の図形化、画像の大きさの読み取り |
 | `src/epub.ts`, `src/xhtml.ts` | EPUB の展開、XHTML の読み込み |
 | `src/fontMapping.ts`, `src/compat.ts`, `src/documentResources.ts`, `src/documentText.ts`, `src/cli.ts` | 書体の割り当て・互換モードの設定・数式書体と画像の取得・文字の符号化の判定 (画面と Node で共通)、Node のコマンド |
 
@@ -237,7 +237,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 | Noto Sans Symbols 2 | 読み込んだどの書体にも無い記号 (✈ など) が文書にあるとき | SIL Open Font License 1.1 |
 
 Node のコマンドは、取った書体を OS のキャッシュ (`~/.cache/kumiori/fonts` など。`--font-cache` で変えられます) に保存し、2 回目からはネットワークに行きません。オフラインで使うときは、画面 (ブラウザ) では同じ名前の TTF を `public/fonts/` に置けば後備として使われます（git 管理外）。Node のコマンドでは、一度オンラインで動かしてキャッシュに入れるか、`--font-dir` で読むディレクトリを指定します。ライブラリ (`typeset`) の既定の取得は `https:` の URL しか試さないので、手元の書体は `loadFont` で渡してください。
-`public/fonts/` に置いた書体は、ビルドの出力 (`dist/fonts/`・`dist-cli/fonts/`) にもコピーされます。配布物に含めない場合は、ビルドの前に取り除いてください。Node のコマンドは、コピーされた `dist-cli/fonts/` を自動では読みません (`--font-dir dist-cli/fonts` のように渡したディレクトリだけを見ます)。
+`public/fonts/` に置いた書体は、Web アプリのビルドの出力 (`dist/fonts/`) にもコピーされます。配布物に含めない場合は、ビルドの前に取り除いてください。npm で配る出力 (`dist-cli/`・`dist-lib/`・`dist-browser/`) には `public/` の中身をコピーしません。Node のコマンドは、`--font-dir` で渡したディレクトリだけを見ます。
 
 使った書体は PDF に埋め込まれます。書体のライセンスの条件は、各書体の配布元で確認してください。
 
@@ -273,6 +273,9 @@ Kumiori は、AI のコーディング支援 (Anthropic の Claude Code) を使�
 npm test          # 単体テスト (Node + fontkit。Noto Serif JP を .cache/fonts に取得)
 npm run e2e       # ブラウザでの結合テスト (Playwright。初回は npx playwright install chromium)
 ```
+
+テストが使う書体は、初回に取得して `.cache/fonts` (`KUMIORI_FONT_DIR` で変えられる) に置く。配信元は Google Fonts (`fonts.gstatic.com`) と、PostScript の書体のテスト用の Source Sans 3 (`raw.githubusercontent.com` の adobe-fonts/source-sans)。取得は `test/helpers.ts` の 1 か所にまとめてあり、テストに書体を足すときは、そこの一覧に足す (CI のキャッシュの鍵になる)。
+結合テストは、`KUMIORI_E2E_FONT_CACHE` にディレクトリを指定すると、ブラウザが取った書体をそこに覚えて、次からはネットワークに行かない (CI はこれを使う)。`KUMIORI_E2E_FONT_DIR` は、決まった名前の書体を手で用意して使うときの口。
 
 見本の PDF との比較 (比べる見本の FO と PDF は各自で用意する。リポジトリには入っていない。poppler の pdftoppm が必要):
 
