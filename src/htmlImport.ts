@@ -2032,7 +2032,8 @@ class HtmlImporter {
    */
   private enterCounters(c: (p: string) => string, owner: Element | null, li?: { value?: number; step?: number }) {
     const pairs = (v: string, def: number): Array<[string, number]> =>
-      !v || v === 'none' ? [] : [...v.matchAll(/([a-z_-][\w-]*)(?:\s+(-?\d+))?/gi)].map((m) => [m[1], m[2] !== undefined ? parseInt(m[2], 10) : def]);
+      // 名前は CSS の識別子 (CSS Syntax 3 §4.2: ASCII でない字 (U+0080 以上) も名前の字。counter(章) など)
+      !v || v === 'none' ? [] : [...v.matchAll(/([a-z_\u0080-\uffff-][\w\u0080-\uffff-]*)(?:\s+(-?\d+))?/gi)].map((m) => [m[1], m[2] !== undefined ? parseInt(m[2], 10) : def]);
     const top = (n: string) => {
       let st = this.counters.get(n);
       if (!st) this.counters.set(n, (st = []));

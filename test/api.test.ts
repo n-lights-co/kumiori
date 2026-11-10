@@ -157,6 +157,14 @@ describe('公開 API: typeset', () => {
     expect(seen).toEqual({ a: [30, '#0000ff'], b: [40, '#0000ff'], c: [50, '#0000ff'], d: [60, '#0000ff'], e: [70, '#0000ff'], f: [80, '#0000ff'] });
     expect(r.warnings).toEqual([]);
   });
+  it('ASCII でない名前のカウンターとカスタム プロパティ (counter(章)・var(--色)) が、通しで効く', async () => {
+    const r = await typeset('<style>body { counter-reset: 章; --色: #ff0000 } p { counter-increment: 章; color: var(--色) } p::before { content: counter(章) "." }</style><p>a</p><p>b</p>', { loadFont });
+    // 末尾は既定のノンブル
+    expect(textOf(r.areaTree)).toBe('1.a2.b1');
+    let g: GlyphArea | undefined;
+    walkAreaTree(r.areaTree, (x) => void (x.type === 'glyph' && (g ??= x as GlyphArea)));
+    expect(g!.color).toBe('#ff0000');
+  });
   it('flex の項目の中の target-counter(…, page): 箱の幅は組んだ番号の桁に合い、折り返しを許す指定があっても番号が割れない', async () => {
     // 目次の行: 題・点線 (::before、flex: 1)・ページ番号 (::after)。sanitize.css などが html に付ける word-break: break-word があると、
     // 1 桁分の幅の箱の中で「10」が「1 / 0」に折り返していた (番号の桁の数は、組むまで分からない)
