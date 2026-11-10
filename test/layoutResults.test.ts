@@ -223,3 +223,80 @@ describe('列定義の無い表の列数 (LAY-08)', () => {
     for (const c of cellsOf(t)) expect(c.width).toBeGreaterThan(1);
   });
 });
+
+describe('masterSequence だけにある段組・傍注のマスター (LAY-09)', () => {
+  const seqOf = (m: object) => ({ master: master(), masterSequence: [{ kind: 'repeatable', masters: [{ when: {}, master: m }] }] });
+  it('段組のマスターが masterSequence だけにあっても、段に組む', () => {
+    const t = E.engine.layout(doc([{ type: 'block', textAlign: 'start', linefeedTreatment: 'preserve', children: [lines(20)] }] as never, 'horizontal-tb', seqOf(master({ columns: { count: 2, gap: 10 } })) as never));
+    expect(t.sheets).toHaveLength(1);
+    const cols = kids(t, 0);
+    expect(cols).toHaveLength(2);
+    expect(cols[0].width).toBeCloseTo((pt(80) - pt(10)) / 2, 1);
+    expect(cols[1].x).toBeCloseTo(cols[0].width + pt(10), 1);
+  });
+  it('傍注のマスターが masterSequence だけにあっても、脚注を傍注の領域に置く', () => {
+    const t = E.engine.layout(doc([{ type: 'block', children: ['本文', fn('甲乙丙')] }] as never, 'horizontal-tb', seqOf(master({ sideNotes: { end: { x: 60, width: 15 } } })) as never));
+    // 傍注: 参照する行の上端から、領域の位置 (x) と幅で置く (ページの下端の脚注領域ではない)
+    const note = kids(t, 0).find((b) => Math.abs(b.x - pt(60)) < 0.5)!;
+    expect(note).toBeTruthy();
+    expect(note.width).toBeCloseTo(pt(15), 1);
+    expect(note.y).toBeCloseTo(0, 1);
+  });
+});
+
+describe('先頭の余白を捨てる状態での clear と、float の下へ送る行 (LAY-10)', () => {
+  const fl = { type: 'float', float: 'start', width: 60, children: [{ type: 'block', textAlign: 'start', linefeedTreatment: 'preserve', children: [lines(3, '浮')] }] };
+  it('discardLeadingSpace のページの先頭: float だけのブロックの後ろの clear: both のブロックは、float の下に置く', () => {
+    const body = [{ type: 'block', children: [fl] }, { type: 'block', clear: 'both', margin: { top: 5 }, children: ['後'] }];
+    const run = (seq: object) => {
+      const t = E.engine.layout(doc(body as never, 'horizontal-tb', seq as never));
+      const all = kids(t, 0);
+      const float = all.find((b) => Math.abs(b.width - 60) < 0.5)!;
+      let after: BlockArea | undefined;
+      for (const b of all) {
+        let s = '';
+        walk(b as Area, (a) => {
+          if (a.type === 'glyph') s += (a as GlyphArea).text;
+        });
+        if (s === '後') after = b;
+      }
+      return { float, after: after! };
+    };
+    const base = run({});
+    expect(base.after.y).toBeGreaterThanOrEqual(base.float.y + base.float.height - 0.01);
+    const discard = run({ discardLeadingSpace: true });
+    expect(discard.after.y).toBeGreaterThanOrEqual(discard.float.y + discard.float.height - 0.01);
+    expect(discard.after.y).toBeCloseTo(base.after.y, 1);
+  });
+  it('discardLeadingSpace のページの先頭: float の横が狭すぎる行は、float の下へ送る', () => {
+    // 本文の幅 226.77pt のうち 215pt を float が占める (残り 11.77pt は 2 字に足りない)
+    const wide = { ...fl, width: 215 };
+    const body = [{ type: 'block', textAlign: 'start', children: [wide, 'あいうえお'] }];
+    const lineY = (seq: object) => {
+      const t = E.engine.layout(doc(body as never, 'horizontal-tb', seq as never));
+      // 本文領域の先頭からの位置 (箱の y は親の箱の中の位置なので、たどりながら足す。この文書に罫線・padding は無い)
+      let y = -1;
+      let floatBottom = -1;
+      const visit = (a: Area, y0: number) => {
+        const b = a as unknown as BlockArea;
+        if (a.type === 'block' && Math.abs(b.width - 215) < 0.5 && floatBottom < 0) floatBottom = y0 + b.y + b.height;
+        if (a.type === 'line') {
+          let s = '';
+          walk(a, (g) => {
+            if (g.type === 'glyph') s += (g as GlyphArea).text;
+          });
+          if (s === 'あいうえお') y = y0 + b.y;
+          return;
+        }
+        for (const c of (b.children ?? []) as Area[]) visit(c, y0 + b.y);
+      };
+      for (const c of kids(t, 0)) visit(c as Area, 0);
+      return { y, floatBottom };
+    };
+    const base = lineY({});
+    expect(base.y).toBeGreaterThanOrEqual(base.floatBottom - 0.01);
+    const discard = lineY({ discardLeadingSpace: true });
+    expect(discard.y).toBeGreaterThanOrEqual(discard.floatBottom - 0.01);
+    expect(discard.y).toBeCloseTo(base.y, 1);
+  });
+});

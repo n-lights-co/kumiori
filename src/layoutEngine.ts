@@ -1210,7 +1210,9 @@ class Flow {
     // 残す余白からも、前の群の末尾の余白と相殺した分 (pendAdjust) を差し引く (段組の span の後の、強制の段区切りの段の頭。
     // 2 段目の頭の retain の余白が、見出しの space-after と二重に空かないように)
     const keep = (r: number) => (this.pendAdjust ? Math.max(r + this.pendAdjust, Math.min(r, 0)) : r);
-    const v = this.discardLeading && this.pendForce === null ? keep(retained()) : this.pendingValue();
+    // 捨てるのは余白 (XSL 1.1 §4.3.1 の conditionality="discard") だけ。回り込みの下までの空き (pendMin。clear と、float の横が
+    // 狭すぎる行の送り) は位置の下限なので残す (CSS 2.1 §9.5.2: clear の箱の上の罫線の端は、前の float の下の外の端より下)
+    const v = this.discardLeading && this.pendForce === null ? Math.max(keep(retained()), this.pendMin) : this.pendingValue();
     this.discardLeading = false;
     const from = this.cursor;
     this.cursor += v;
@@ -4817,6 +4819,16 @@ export function toArea(n: LNode, parentWm: WritingMode, PW: number): Area {
 
 // ───────────────────────── エンジン本体 ─────────────────────────
 
+/** page-sequence が使いうる、条件付きのページマスター: 条件で選ぶもの (masterAlternatives) と、部分列 (masterSequence。XSL 1.1 §6.4.8) のもの */
+function conditionalMasters(seq: LPageSequence): ConditionalPageMaster[] {
+  return [...(seq.masterAlternatives ?? []), ...(seq.masterSequence ?? []).flatMap((it) => it.masters)];
+}
+
+/** page-sequence が使いうるページマスターのすべて (既定のものと、条件付きのもの)。段組・傍注を使うかは、このどれかが持つかで決める */
+function sequenceMasters(seq: LPageSequence): PageMaster[] {
+  return [seq.master, ...conditionalMasters(seq).map((a) => a.master)];
+}
+
 interface PageBuild {
   seq: LPageSequence;
   markers: PendingMarker[];
@@ -5229,7 +5241,7 @@ export class LayoutEngine {
         flowPages = body.length;
         return this.forcePageCount(body, s, d, f, li, nextIpn);
       };
-      const conds = [...(seq.masterAlternatives ?? []), ...(seq.masterSequence ?? []).flatMap((it) => it.masters)];
+      const conds = conditionalMasters(seq);
       // rest も、最後のページかどうかで決まる (§7.27.14: 最初でも最後でもないページ)
       const needsLast = conds.some((a) => a.when.pagePosition === 'last' || a.when.pagePosition === 'only' || a.when.pagePosition === 'rest');
       // 'last' / 'only' は総ページ数が分からないと決まらない。仮に組み → 総数で確定 → 再度組み、を収束するまで (最大 3 回) 繰り返す。
@@ -5775,7 +5787,7 @@ export class LayoutEngine {
   }
 
   private layoutSequence(seq: LPageSequence, docStyle: ResolvedStyle, host: FlowHost, firstNumber: number, lastIndex: number | null): PageBuild[] {
-    if ([seq.master, ...(seq.masterAlternatives ?? []).map((a) => a.master)].some((m) => (m.columns?.count ?? 1) > 1)) {
+    if (sequenceMasters(seq).some((m) => (m.columns?.count ?? 1) > 1)) {
       return this.layoutColumnSequence(seq, docStyle, host, firstNumber, lastIndex);
     }
     const pages: PageBuild[] = [];
@@ -5834,7 +5846,7 @@ export class LayoutEngine {
       return (beforeSepEntry ??= foot.layoutBlocksPublic(seq.beforeFloatSeparator));
     };
     // 傍注 (axf:footnote-position="outside"): 奇数ページは end、偶数ページは start の領域に、その幅で組んで置く
-    const sideNotes = [seq.master, ...(seq.masterAlternatives ?? []).map((a) => a.master)].some((m) => m.sideNotes)
+    const sideNotes = sequenceMasters(seq).some((m) => m.sideNotes)
       ? {
           area: () => {
             const sn = cur.master.sideNotes;
