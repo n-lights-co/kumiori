@@ -145,6 +145,12 @@ export const EXTRA_TEST_FONTS = {
   'NotoSansThai-Regular-v29.ttf': 'https://fonts.gstatic.com/s/notosansthai/v29/iJWnBXeUZi_OHPqn4wq6hQ2_hbJ1xyN9wd43SofNWcd1MKVQt_So_9CdU5RtpzE.ttf',
   'NotoSansDevanagari-Regular-v33.ttf': 'https://fonts.gstatic.com/s/notosansdevanagari/v33/TuGoUUFzXI5FBtUq5a8bjKYTZjtRU6Sgv3NaV_SNmI0b8QQCQmHn6B2OHjbL_08AlXQly-A.ttf',
   'NotoSansKR-Regular-v40.ttf': 'https://fonts.gstatic.com/s/notosanskr/v40/PbyxFmXiEBPT4ITbgNA5Cgms3VYcOA-vvnIzzuoyeLQ.ttf',
+  // ラオ・クメール・ミャンマー・チベット・モンゴルの字 (test/seaScripts.test.ts): Google Fonts の配信元の、版の付いた TTF (1 つの太さ)
+  'NotoSansLao-Regular-v33.ttf': 'https://fonts.gstatic.com/s/notosanslao/v33/bx6lNx2Ol_ixgdYWLm9BwxM3NW6BOkuf763Clj73CiQ_J1Djx9pidOt4ccbdfw.ttf',
+  'NotoSansKhmer-Regular-v29.ttf': 'https://fonts.gstatic.com/s/notosanskhmer/v29/ijw3s5roRME5LLRxjsRb-gssOenAyendxrgV2c-Zw-9vbVUti_Z_dWgtWYuNAJz4.ttf',
+  'NotoSansMyanmar-Regular-v27.ttf': 'https://fonts.gstatic.com/s/notosansmyanmar/v27/AlZU_y1ZtY3ymOryg38hOCSdOnFq0FP9_gnYM_ME0QeqLzz8-kqmtY3KLEbEGTOZltU.ttf',
+  'NotoSerifTibetan-Regular-v24.ttf': 'https://fonts.gstatic.com/s/notoseriftibetan/v24/gokGH7nwAEdtF9N45n0Vaz7O-pk0wsvxHeDXMfqguoCmIrYcPS4.ttf',
+  'NotoSansMongolian-Regular-v23.ttf': 'https://fonts.gstatic.com/s/notosansmongolian/v23/VdGCAYADGIwE0EopZx8xQfHlgEAMsrToxLs.ttf',
   // 語をアイコンにする合字の書体 (test/iconLigatures.test.ts): Material Icons (Google。Apache-2.0)。配布元のリポジトリの、版のタグの付いたファイル。
   // 3.0.1 は名前の合字を liga (標準の合字) に、4.0.0 は rlig (必須の合字) に入れている
   'MaterialIcons-Regular-3.0.1.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/3.0.1/iconfont/MaterialIcons-Regular.ttf',

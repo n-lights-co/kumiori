@@ -7,6 +7,7 @@
 import type { LFootnote, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, WritingMode } from './types';
 import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type Measurer } from './measurer';
 import { mayCluster } from './grapheme';
+import { unitFeatures } from './orthographicSyllable';
 import { LIGATURE_FEATURES, ligatureTable } from './ligature';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
@@ -232,7 +233,9 @@ export function joiningUnits(units: string[], sameFont: (seq: string) => boolean
   for (let i = 0; i < units.length; ) {
     let j = i + 1;
     if (units[i].length === 1 || /^[\uD800-\uDBFF][\uDC00-\uDFFF]$/.test(units[i])) {
-      if (joins(units[i])) while (j < units.length && [...units[j]].length === 1 && attaches(units[j])) j++;
+      // モンゴル文字の並びは、母音分離子 (MVS U+180E) と、接尾辞の前の幅の狭い空白 (NNBSP U+202F) も含める (書体が、その前後の字の形を決める)
+      const mongolian = isMongolianLetter(units[i]);
+      if (joins(units[i])) while (j < units.length && [...units[j]].length === 1 && (attaches(units[j]) || (mongolian && (units[j] === '\u180E' || units[j] === '\u202F') && j + 1 < units.length && isMongolianLetter(units[j + 1])))) j++;
     }
     // つながる字が 2 つ以上あり、同じ書体で描けるときだけまとめる
     const seq = units.slice(i, j).join('');
@@ -242,6 +245,14 @@ export function joiningUnits(units: string[], sameFont: (seq: string) => boolean
     i = j;
   }
   return out;
+}
+
+/** モンゴル文字のブロック (U+1800〜U+18AF) の字を含む */
+const MONGOLIAN_TEXT = /[\u1800-\u18AF]/;
+/** モンゴル文字の字 (U+1820〜U+18AA。伝統的なモンゴル文字・トド・シベ・満洲) */
+function isMongolianLetter(u: string): boolean {
+  const c = u.charCodeAt(0);
+  return u.length === 1 && c >= 0x1820 && c <= 0x18aa;
 }
 
 /** Unicode の Alphabetic (letter-spacing を空ける字。XSL §7.17.2) */
@@ -330,9 +341,12 @@ function flattenText(c: string, cx: FlattenCtx): void {
     units0 = hit;
   }
   // つながる字 (アラビア文字など) の並びは 1 単位にする (横書き)
-  const joinable = wm === 'horizontal-tb' && JOINING_HINT.test(c);
+  // 縦書きでは、モンゴル文字の並びだけをまとめる (モンゴル文字は縦書きの用字。字は横倒し = UAX #50 の Vertical_Orientation が R で、
+  // 横書きの字形を 90 度回して上から下へつなぐ。CSS Writing Modes 3 §5.1 の text-orientation: mixed)。ほかのつながる字の縦書きは、これまでどおり字ごと
+  const joinable = JOINING_HINT.test(c) && (wm === 'horizontal-tb' || MONGOLIAN_TEXT.test(c));
   const units1 = joinable
     ? joiningUnits(Array.from(units0), (seq) => {
+        if (wm !== 'horizontal-tb' && !isMongolianLetter(seq[0])) return false;
         const fonts = Array.from(seq, (x) => m.glyph(x, runStyle(st), wm).font);
         return fonts.every((f) => f === fonts[0]);
       })
@@ -341,7 +355,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
   // 絵文字の並び (肌の色・ZWJ・国旗・キーキャップ・タグ) などは、1 単位 (1 つの atom) にする。改行・字間 (letter-spacing)・両端揃えの空きは
   // 字の単位の間にだけ入る (CSS Text 3 §1.3 の typographic character unit、§5.1・§8.2)。
   // 結合文字・ZWJ などを含みうる文字列だけ、クラスタにまとめる (含まなければ、字ごとにそのまま)
-  const clusters = mayCluster(c) ? m.resolveClusters(units1, runStyle(st), wm) : null;
+  const clusters = mayCluster(c) ? m.resolveClusters(units1, runStyle(st), wm, !!st.letterSpacing) : null;
   const units = clusters ? clusters.units : units1;
   let ui = 0;
   // クラスタに当てる任意の合字の機能と、その書式 (要るときに 1 度だけ作る)
@@ -356,7 +370,8 @@ function flattenText(c: string, cx: FlattenCtx): void {
     const ch = variation || whole ? String.fromCodePoint(ch0.codePointAt(0)!) : ch0;
     if (joinable && [...ch].length > 1 && JOINING_HINT.test(ch)) {
       // つながる字の並び: まとめて測り、描く (書体の字形の置き換えで、語頭・語中・語尾の形と必須の合字が決まる)
-      const g = { ...m.glyph(ch, runStyle(st), wm), draw: ch };
+      // 縦書き (モンゴル文字): 並びを横倒しの 1 つの単位として測る (字の単位のクラスタと同じ測り方。描く文字列は vertical.glyph)
+      const g = wm === 'horizontal-tb' ? { ...m.glyph(ch, runStyle(st), wm), draw: ch } : m.clusterGlyph(ch, runStyle(st), wm);
       const chars = [...ch];
       out.push({ kind: 'glyph', first: chars[0], last: chars[chars.length - 1], advance: g.advance, isSpace: false, runId: state.run, st, bg, g });
       continue;
@@ -404,6 +419,11 @@ function flattenText(c: string, cx: FlattenCtx): void {
     if (whole && wm === 'horizontal-tb') {
       if (clusterLig === undefined) clusterLig = optionalLigaturesOf(st);
       if (clusterLig?.style && m.clusterLigates(ch0, runStyle(st), clusterLig.active)) ust = clusterLigSt ??= { ...st, fontFeatures: clusterLig.style };
+    }
+    // 正書法の音節 (ミャンマー文字・ラオ文字) の中の字の組の詰め: その単位を書体に渡すときだけ、機能を足す (orthographicSyllable.ts)
+    if (whole && wm === 'horizontal-tb') {
+      const extra = unitFeatures(ch0, { kerning: st.kerning });
+      if (extra && !extra.every((f) => ust.fontFeatures?.includes(f))) ust = unitStyle(ust, extra);
     }
     const g = whole ? m.clusterGlyph(ch0, runStyle(ust), wm) : variation ? m.variationGlyph(ch0, runStyle(st), wm) : m.glyph(ch, runStyle(st), wm);
     // 分けたクラスタの 2 つ目以降の字 (どの書体も並び全体を持たないとき。字ごとに組む): 前の字と同じ字の単位なので、前の字との間で改行せず、字間も空けない
@@ -461,6 +481,29 @@ function flattenText(c: string, cx: FlattenCtx): void {
       ...(primary && primary !== g.font ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
     });
   }
+}
+
+/** 字の単位に機能を足した書式 (元の書式と足す機能ごとに 1 つ) と、その元の書式の機能 */
+const unitStyles = new WeakMap<ResolvedStyle, Map<string[], ResolvedStyle>>();
+const unitBaseFeatures = new WeakMap<ResolvedStyle, { features: string[] | undefined }>();
+function unitStyle(st: ResolvedStyle, extra: string[]): ResolvedStyle {
+  let by = unitStyles.get(st);
+  if (!by) unitStyles.set(st, (by = new Map()));
+  let hit = by.get(extra);
+  if (!hit) {
+    hit = { ...st, fontFeatures: [...(st.fontFeatures ?? []), ...extra.filter((f) => !st.fontFeatures?.includes(f))] };
+    by.set(extra, hit);
+    unitBaseFeatures.set(hit, unitBaseFeatures.get(st) ?? { features: st.fontFeatures });
+  }
+  return hit;
+}
+/**
+ * 書式の OpenType の機能のうち、字の単位の中だけのために足したもの (unitStyle) を除いたもの。隣の字との字の組の詰めは、これで比べ、これで引く
+ * (単位の中の合字・詰めの機能の有無で、隣の字と書式が違うことにしない)
+ */
+export function fontFeaturesBetweenUnits(st: ResolvedStyle): string[] | undefined {
+  const base = unitBaseFeatures.get(st);
+  return base ? base.features : st.fontFeatures;
 }
 
 /** inline: 中身を自分の書式で平らにし、small-caps・unicode-bidi・空の支柱・罫線と余白の枠・外側の空き・id の目印・改行の禁止・baseline-shift・固定の長さを当てる */
