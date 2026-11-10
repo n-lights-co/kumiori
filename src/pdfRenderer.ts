@@ -789,7 +789,7 @@ class PdfPainter implements Painter {
     // インド系の用字・タイ文字の字の単位は、字形が並べ替えられることがあり、1 対 1 に対応していても付ける (基底の字の送りの中へ戻して置く
     // 記号を、字を取り出す側が別の語と見て、空白を挟んだり順を入れ替えたりするのを防ぐ)。ほかの用字の字の単位は、字と字形の数が違うときだけ付ける
     // (数が同じなら、字形 i は字 i を置き換えたもの (縦書き用の字形など) として、これまでどおり字形ごとの ToUnicode にする)
-    const own = g.glyphIds && g.glyphIds.length > 1 ? reorderedGlyphChars(font, g.glyphIds, text, /^[\u0900-\u0E7F]/.test(text)) : undefined;
+    const own = g.glyphIds && g.glyphIds.length > 1 ? reorderedGlyphChars(font, g.glyphIds, text, /^[\u0900-\u0E7F]/.test(text) || ACTUAL_TEXT_SEA.test(text)) : undefined;
     let hex: PDFHexString;
     try {
       // 木に字形の番号があれば、それを書く (組版で測った字形と同じ)。無ければ、字を書体で組み直す
@@ -1751,3 +1751,10 @@ function num(v: number): string {
   const r = Math.round(v * 10000) / 10000;
   return Object.is(r, -0) ? '0' : String(r);
 }
+/**
+ * 字の単位に、いつも元の字の並び (ActualText) を付ける用字 (drawGlyph。インド系の用字・タイ文字と同じ扱い): ラオ文字・チベット文字
+ * (U+0E80〜U+0FFF)・ミャンマー文字 (U+1000〜U+109F と拡張)・クメール文字 (U+1780〜U+17FF)。前に置く母音記号・メディアルの RA などで、
+ * 字形の並びが字の並びと違う順になる
+ */
+const ACTUAL_TEXT_SEA = /^[\u0E80-\u0FFF\u1000-\u109F\u1780-\u17FF\uA9E0-\uA9FF\uAA60-\uAA7F]/;
+

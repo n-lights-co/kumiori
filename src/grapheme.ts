@@ -12,6 +12,7 @@
  * Intl.Segmenter は使わない (実行環境の Unicode の版で結果が変わり、ブラウザと Node で組版がずれうるため)。字の性質の表は unicodeData.ts
  */
 import { rangeTable } from './lineBreak';
+import { isOrthographicJoiner, mergeOrthographicSyllables } from './orthographicSyllable';
 import { EP_DATA, GCB_DATA, GCB_VALUES, INCB_DATA, INCB_VALUES } from './unicodeData';
 
 /** Grapheme_Cluster_Break の値 (UAX #29 Table 2。どれでもない字は XX = Other) */
@@ -125,7 +126,8 @@ let bmpJoiner: Uint8Array | undefined;
 const JOINER = new Set(['Extend', 'ZWJ', 'SpacingMark', 'Prepend', 'Regional_Indicator', 'L', 'V', 'T']);
 function loadBmpJoiner(): Uint8Array {
   const t = new Uint8Array(0x10000);
-  for (let cp = 0x300; cp < 0x10000; cp++) if (JOINER.has(graphemeClusterBreak(cp))) t[cp] = 1;
+  // ラオ文字・ミャンマー文字の、正書法の音節にまとめる字 (clusterUnits。UAX #29 ではつながらない字) も印を付ける
+  for (let cp = 0x300; cp < 0x10000; cp++) if (JOINER.has(graphemeClusterBreak(cp)) || isOrthographicJoiner(cp)) t[cp] = 1;
   return t;
 }
 
@@ -153,15 +155,18 @@ function isSpaceSeparator(cp: number): boolean {
 
 /**
  * 字の単位の並び (文字列なら字ごと) を、組版の字の単位 (クラスタ) にまとめる。まとめるものが無ければ null。
- * UAX #29 の拡張書記素クラスタと、次の 4 点だけが違う:
+ * UAX #29 の拡張書記素クラスタと、次の 5 点だけが違う:
  *  - インド系の文字の結合子音を、Indic_Conjunct_Break の無い文字 (グルムキー・カンナダ・タミル・シンハラ) でも 1 つの単位にする (aksaraBreak)。
  *  - CR と LF はまとめない (改行は字ごとに扱う)。
  *  - 空白 (Zs) を基底の字にしない。空白の後ろの結合文字は、その結合文字から新しい単位にする (UAX #14 の LB9 は、SP の後ろの結合文字を
  *    SP にまとめず、LB10 で独立の字 (AL) として扱う。空白は行末で捨てる・語間として伸縮するので、結合文字を載せない)。
  *  - 前の段階でまとめた 2 字以上の単位 (合字・つながる字の並び) は、そのまま 1 つの単位で、前後の字とはまとめない。
- * mergedAt を渡すと、戻り値の単位ごとに、ここでまとめた単位 (2 字以上のクラスタ) かを入れる
+ *  - ミャンマー文字・ラオ文字は、書体がクラスタをまたいで字形を決める並び (正書法の音節) を 1 つの単位にする
+ *    (orthographicSyllable.ts。CSS Text 3 §1.4 の、用字に合わせた字の単位)。
+ * mergedAt を渡すと、戻り値の単位ごとに、ここでまとめた単位 (2 字以上のクラスタ) かを入れる。spaced は、字間 (letter-spacing) が 0 でないか
+ * (ラオ文字の前に置く母音と子音をまとめない)
  */
-export function clusterUnits(units: string | string[], mergedAt?: boolean[]): string[] | null {
+export function clusterUnits(units: string | string[], mergedAt?: boolean[], spaced = false): string[] | null {
   const out: string[] = [];
   const s = newState();
   s.aksara = true;
@@ -187,5 +192,6 @@ export function clusterUnits(units: string | string[], mergedAt?: boolean[]): st
       if (mergedAt) mergedAt[out.length - 1] = true;
     }
   }
+  if (mergeOrthographicSyllables(out, mergedAt, spaced)) merged = true;
   return merged ? out : null;
 }

@@ -10,6 +10,7 @@
 import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
 import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './measurer';
 import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
+import { kernsAsSameScript } from './orthographicSyllable';
 import { complexContextBreaks, lineBreakActions, type LineBreakOptions } from './lineBreak';
 import { newNode, type LNode, type ResolvedStyle } from './lnode';
 import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, WritingMode } from './types';
@@ -346,7 +347,7 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
     // 字の組の詰め (kern): 書式が同じなら、inline の境目をまたいでも詰める (CSS Text 3 §7.3: 書式の実際の変化が無い境目では、
     // 字形の処理を切ってはならない)。上げ下げ (vertical-align) の違う境目では切る。余白・枠のある境目は間に箱の atom が入るので、隣り合わない
     const sameBox = kernAh ? a.st === b.st : (a.shift ?? 0) === (b.shift ?? 0);
-    if (kern && a.st.kerning && b.st.kerning && fa === fb && sameBox && ((isLatinAlnumOrPunct(a.last) && isLatinAlnumOrPunct(b.first)) || (isThaiLetter(a.last) && isThaiLetter(b.first)) || (isIndicLetter(a.last) && isIndicLetter(b.first)))) a.advance += kern(a, b);
+    if (kern && a.st.kerning && b.st.kerning && fa === fb && sameBox && ((isLatinAlnumOrPunct(a.last) && isLatinAlnumOrPunct(b.first)) || (isThaiLetter(a.last) && isThaiLetter(b.first)) || kernsAsSameScript(a.last, b.first))) a.advance += kern(a, b);
     if (a.st.punctuationSqueeze !== false) {
       // 詰めたときの間隔 (axf:punctuation-spacing。既定は二分)
       const sp = a.st.punctuationSpacing;
@@ -503,16 +504,6 @@ function overhangable(a: Atom | undefined, ch: string | undefined): boolean {
 function isThaiLetter(ch: string): boolean {
   const cp = ch.codePointAt(0) ?? 0;
   return cp >= 0x0e01 && cp <= 0x0e5b;
-}
-
-/**
- * インド系の文字の字 (U+0900 デーヴァナーガリー〜U+0DFF シンハラ)。インド系の書体は、字の単位 (音節) の間を詰める・空ける組
- * (GPOS の kern・dist) を持つ (Noto Sans Tamil の ன் と னை の間、Noto Serif Kannada の ಮೈ の後ろなど)。
- * 字の単位は 2 つ以上の字形になるので、組は字の単位の並び全体で引く (Measurer.clusterKern)
- */
-export function isIndicLetter(ch: string): boolean {
-  const cp = ch.codePointAt(0) ?? 0;
-  return cp >= 0x0900 && cp <= 0x0dff;
 }
 
 /** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張) */

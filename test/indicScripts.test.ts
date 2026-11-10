@@ -12,7 +12,7 @@ import type { Area, GlyphArea } from '../src/types';
  *  - 字の単位 (grapheme.ts の clusterUnits): UAX #29 の GB9c が効かない文字 (グルムキー・カンナダ・タミル・シンハラ) の結合子音を、
  *    1 つの単位にする (UAX #29 §3 の aksara のあつらえ・CSS Text 3 §1.4)
  *  - 書体の整形の補い (fontkitShaping.ts の 5〜10)
- *  - 字の単位の間の詰め (Measurer.clusterKern)
+ *  - 字の単位の間の詰め (Measurer.kernUnits)
  * 字形の番号と位置は、手元で HarfBuzz と照合して確かめたもの (ここでは、直した誤りが戻らないことを、字形の数・種類で固定する)。
  * 書体: Noto Sans の各文字と Noto Serif Bengali (テストが取得する。helpers.ts の EXTRA_TEST_FONTS)
  */
@@ -191,7 +191,7 @@ describe('fontkit の整形の補い (fontkitShaping.ts の 5〜10)', () => {
 
 describe('字の単位の間の詰め (書体の kern・dist) を、インド系の文字にも当てる', () => {
   it('タミル ன் と னை の間 (Noto Sans Tamil は 31/1000 em 詰める) が、字の位置に入る', () => {
-    const k = measurer.clusterKern('ன்', 'னை', { fontFamily: 'Taml', fontWeight: 400 });
+    const k = measurer.kernUnits('ன்', 'னை', 'ன', { fontFamily: 'Taml', fontWeight: 400 });
     expect(k).toBeCloseTo(-0.031, 6);
     const g = glyphAreas('ன்னை', 'Taml');
     expect(g.map((a) => a.text)).toEqual(['ன்', 'னை']);
@@ -202,8 +202,8 @@ describe('字の単位の間の詰め (書体の kern・dist) を、インド系
     expect(off[1].left - off[0].left).toBeCloseTo(alone, 6);
   });
   it('組の無い並び・別の書体の並びは 0', () => {
-    expect(measurer.clusterKern('க', 'க', { fontFamily: 'Taml', fontWeight: 400 })).toBe(0);
-    expect(measurer.clusterKern('ன்', 'あ', { fontFamily: 'Taml', fontWeight: 400 })).toBe(0);
+    expect(measurer.kernUnits('க', 'க', 'க', { fontFamily: 'Taml', fontWeight: 400 })).toBe(0);
+    expect(measurer.kernUnits('ன்', 'あ', 'ன', { fontFamily: 'Taml', fontWeight: 400 })).toBe(0);
   });
 });
 

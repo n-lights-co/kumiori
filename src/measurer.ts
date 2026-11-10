@@ -12,6 +12,7 @@ import type { FontManager, LoadedFont } from './fontManager';
 import type { WritingMode } from './types';
 import { isFullWidth, verticalTreatment, type VerticalTreatment } from './jis';
 import { clusterUnits, mayCluster } from './grapheme';
+import { NOT_WORD_INITIAL } from './fontkitShaping';
 import { ligatureTable } from './ligature';
 
 /** resolveClusters の単位の種類: ふつうの字 (と、前の段階の単位・異体字の並び)・まとめて組むクラスタ・分けたクラスタの 2 つ目以降の字 */
@@ -290,38 +291,40 @@ export class Measurer {
   }
 
   /**
-   * 字の単位 a の後ろに字の単位 b が続くとき、a の送りに足す量 (em 比)。a・b が 2 つ以上の字形になる単位 (インド系の文字の音節) のときの kern。
-   * a・b をつないで書体の kern を当てて組み、a の分の送りの合計が、a だけを組んだときからどれだけ変わるかを見る (書体の、字の単位の間の
-   * 組の詰め・空け。GPOS の kern・dist)。つないだときに字形が変わる組 (字の単位をまたぐ字形の置き換え) は、位置を比べられないので 0。
-   * a・b が別の書体で描かれるときも 0
+   * 字の単位 a の後ろに字の単位 b が続くときの、字の組の詰め (em 比。a の送りに足す量)。単位 (基底の字 + 記号、積み重ね、合字) を
+   * そのまま書体に渡して引く: 単位の字形が基底の字の字形と違う (チベット文字の積み重ねの合字、インド系の文字の結合子音・前に置く
+   * 母音記号など) と、基底の字の組では引けないため (書体の、字の単位の間の詰め・空け。GPOS の kern・dist)。
+   * 2 つの単位を続けて組んだ字形が、別々に組んだ字形の並びと同じとき、送りの合計の差を詰めとする (並びで字形が変わるときは、
+   * 基底の字の組 lastBase・b の最初の字で引く)。featuresA・featuresB は、それぞれの単位を組む機能
    */
-  clusterKern(a: string, b: string, style: Pick<RunStyle, 'fontFamily' | 'fontWeight'> & { features?: string[] }): number {
+  kernUnits(a: string, b: string, lastBase: string, style: Pick<RunStyle, 'fontFamily' | 'fontWeight'> & { featuresA?: string[]; featuresB?: string[]; features?: string[] }): number {
     const w = style.fontWeight ?? 400;
-    const fontOf = (u: string) => this.fonts.getForCluster(style.fontFamily, w, u) ?? this.fonts.getForChar(style.fontFamily, w, String.fromCodePoint(u.codePointAt(0)!));
-    const fa = fontOf(a);
-    if (fa !== fontOf(b)) return 0;
+    const fa = this.fonts.getForCluster(style.fontFamily, w, a) ?? this.fonts.getForChar(style.fontFamily, w, String.fromCodePoint(a.codePointAt(0)!));
+    const b0 = String.fromCodePoint(b.codePointAt(0)!);
+    if (fa !== (this.fonts.getForCluster(style.fontFamily, w, b) ?? this.fonts.getForChar(style.fontFamily, w, b0))) return 0;
     let pairs = this.kernPairs.get(fa);
     if (!pairs) this.kernPairs.set(fa, (pairs = new Map()));
-    const feats = style.features ?? [];
-    const k = a + '\u0000' + b + '\u0000' + feats.join(',') + '\u0000cl';
+    const fA = style.featuresA ?? [];
+    const fB = style.featuresB ?? [];
+    const k = `\u0001${a}\u0000${b}\u0000${fA.join(',')}\u0000${fB.join(',')}`;
     const hit = pairs.get(k);
     if (hit !== undefined) return hit;
-    let v = 0;
+    let v: number | undefined;
     try {
-      // 語頭の形 (init。ベンガル文字) は当てずに比べる: つないで組むと b は語頭でなくなり、別々に組んだ字形と食い違うため
-      const f = { kern: true, liga: false, clig: false, init: false, ...Object.fromEntries(feats.map((x) => [x, true])) };
-      const ta = this.clusterText(a, fa);
-      const ra = fa.fk.layout(ta, f as never);
-      const rb = fa.fk.layout(this.clusterText(b, fa), f as never);
-      const run = fa.fk.layout(ta + this.clusterText(b, fa), f as never);
-      const n = ra.glyphs.length;
-      if (run.glyphs.length === n + rb.glyphs.length && run.glyphs.every((g, i) => g.id === (i < n ? ra.glyphs[i] : rb.glyphs[i - n]).id)) {
-        const adv = (ps: Array<{ xAdvance: number }>) => ps.slice(0, n).reduce((x, p) => x + p.xAdvance, 0);
-        v = (adv(run.positions) - adv(ra.positions)) / fa.unitsPerEm;
-      }
+      // 語の途中の印 (ベンガル文字。fontkitShaping.ts の NOT_WORD_INITIAL) のある組は、3 つとも語頭の形 (init) を当てずに比べる:
+      // つないで組むと b は語頭でなくなり、a だけが語頭の形だと、別々に組んだ字形と食い違うため
+      const noInit = fA.includes(NOT_WORD_INITIAL) || fB.includes(NOT_WORD_INITIAL);
+      const on = (fs: string[]) => ({ liga: false, clig: false, ...Object.fromEntries(fs.filter((f) => f !== NOT_WORD_INITIAL).map((f) => [f, true])), ...(noInit ? { init: false } : {}), kern: true });
+      const run = fa.fk.layout(this.clusterText(a, fa) + this.clusterText(b, fa), on([...fA, ...fB]) as never);
+      const ra = fa.fk.layout(this.clusterText(a, fa), on(fA) as never);
+      const rb = fa.fk.layout(this.clusterText(b, fa), on(fB) as never);
+      const ids = (r: { glyphs: Array<{ id: number }> }) => r.glyphs.map((g) => g.id).join(',');
+      const adv = (r: { positions: Array<{ xAdvance: number }> }) => r.positions.reduce((s, p) => s + p.xAdvance, 0);
+      if (ids(run) === [ids(ra), ids(rb)].filter(Boolean).join(',')) v = (adv(run) - adv(ra) - adv(rb)) / fa.unitsPerEm;
     } catch {
-      v = 0;
+      v = undefined;
     }
+    v ??= this.kern(lastBase, b0, { fontFamily: style.fontFamily, fontWeight: style.fontWeight, features: style.features });
     if (pairs.size > 50000) pairs.clear();
     pairs.set(k, v);
     return v;
@@ -430,11 +433,12 @@ export class Measurer {
    *  - どれでもない: 基底の字の書体が持つ最も長い先頭の並びを 1 つの単位にし、残りの字は 1 字ずつ (UNIT_CONT。字ごとに書体を選ぶ。
    *    これまでと同じ字形になる。前の字との間では、改行せず、字間も空けない)
    * 縦書き (wm) の正立の字のクラスタで、書体が並びを 1 字分の字形にまとめないもの (送りのある字形が 2 つ以上残る: 書体に合字の無い
-   * 絵文字の ZWJ の並び、合成されないハングルの字母など) は、1 字分の枠に横に並べると行からはみ出すので、字ごとに分けて縦に並べる (UNIT_CONT)
+   * 絵文字の ZWJ の並び、合成されないハングルの字母など) は、1 字分の枠に横に並べると行からはみ出すので、字ごとに分けて縦に並べる (UNIT_CONT)。
+   * spaced は、字間 (letter-spacing) が 0 でないか (clusterUnits)
    */
-  resolveClusters(units: string | string[], style: Pick<RunStyle, 'fontFamily' | 'fontWeight' | 'orientation'>, wm: WritingMode = 'horizontal-tb'): { units: string[]; kinds: Uint8Array } | null {
+  resolveClusters(units: string | string[], style: Pick<RunStyle, 'fontFamily' | 'fontWeight' | 'orientation'>, wm: WritingMode = 'horizontal-tb', spaced = false): { units: string[]; kinds: Uint8Array } | null {
     const mergedAt: boolean[] = [];
-    const cl = clusterUnits(units, mergedAt);
+    const cl = clusterUnits(units, mergedAt, spaced);
     if (!cl) return null;
     const weight = style.fontWeight ?? 400;
     const out: string[] = [];

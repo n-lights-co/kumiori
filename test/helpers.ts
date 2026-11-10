@@ -154,6 +154,12 @@ export const EXTRA_TEST_FONTS = {
   'NotoSansKannada-Regular-v32.ttf': 'https://fonts.gstatic.com/s/notosanskannada/v32/8vIs7xs32H97qzQKnzfeXycxXZyUmySvZWItmf1fe6TVmgop9ndpS-BqHEyGrDvNzSI.ttf',
   'NotoSansMalayalam-Regular-v29.ttf': 'https://fonts.gstatic.com/s/notosansmalayalam/v29/sJoi3K5XjsSdcnzn071rL37lpAOsUThnDZIfPdbeSNzVakglNM-Qw8EaeB8Nss-_RuD9BA.ttf',
   'NotoSansSinhala-Regular-v36.ttf': 'https://fonts.gstatic.com/s/notosanssinhala/v36/yMJ2MJBya43H0SUF_WmcBEEf4rQVO2P524V5N_MxQzQtb-tf5dJbC30Fu9zUwg2a5lg.ttf',
+  // ラオ・クメール・ミャンマー・チベット・モンゴルの字 (test/seaScripts.test.ts): Google Fonts の配信元の、版の付いた TTF (1 つの太さ)
+  'NotoSansLao-Regular-v33.ttf': 'https://fonts.gstatic.com/s/notosanslao/v33/bx6lNx2Ol_ixgdYWLm9BwxM3NW6BOkuf763Clj73CiQ_J1Djx9pidOt4ccbdfw.ttf',
+  'NotoSansKhmer-Regular-v29.ttf': 'https://fonts.gstatic.com/s/notosanskhmer/v29/ijw3s5roRME5LLRxjsRb-gssOenAyendxrgV2c-Zw-9vbVUti_Z_dWgtWYuNAJz4.ttf',
+  'NotoSansMyanmar-Regular-v27.ttf': 'https://fonts.gstatic.com/s/notosansmyanmar/v27/AlZU_y1ZtY3ymOryg38hOCSdOnFq0FP9_gnYM_ME0QeqLzz8-kqmtY3KLEbEGTOZltU.ttf',
+  'NotoSerifTibetan-Regular-v24.ttf': 'https://fonts.gstatic.com/s/notoseriftibetan/v24/gokGH7nwAEdtF9N45n0Vaz7O-pk0wsvxHeDXMfqguoCmIrYcPS4.ttf',
+  'NotoSansMongolian-Regular-v23.ttf': 'https://fonts.gstatic.com/s/notosansmongolian/v23/VdGCAYADGIwE0EopZx8xQfHlgEAMsrToxLs.ttf',
   // 語をアイコンにする合字の書体 (test/iconLigatures.test.ts): Material Icons (Google。Apache-2.0)。配布元のリポジトリの、版のタグの付いたファイル。
   // 3.0.1 は名前の合字を liga (標準の合字) に、4.0.0 は rlig (必須の合字) に入れている
   'MaterialIcons-Regular-3.0.1.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/3.0.1/iconfont/MaterialIcons-Regular.ttf',

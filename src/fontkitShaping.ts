@@ -2,7 +2,7 @@
  * fontkitShaping — @pdf-lib/fontkit で、インド系の用字 (デーヴァナーガリーなど) とタイ文字を組めるようにする。
  *
  * fontkit の書体の layout (字の並びを字形の並びにする入口。測るとき (measurer.ts)・字形の番号と位置を決めるとき (areaResources.ts)・
- * 輪郭で描くとき (canvasRenderer.ts)・pdf-lib の埋め込みは、どれもここを通る) を 1 回差し替えて、次の 10 個を補う。
+ * 輪郭で描くとき (canvasRenderer.ts)・pdf-lib の埋め込みは、どれもここを通る) を 1 回差し替えて、次の 14 個を補う。
  * どれも、当てはまる字を含む文字列を組むときだけ働く (ほかの文字列は、これまでと同じ道を通り、同じ結果になる)。
  *
  * 1. 音節に分ける処理が落ちる (デーヴァナーガリーなどが組めない)
@@ -49,7 +49,7 @@
  *    位置 (Anchor) の表への参照を持ち、その参照は NULL でもよい (OpenType 仕様「GPOS」の BaseRecord・ComponentRecord・Mark2Record:
  *    「offsets may be NULL」。その種類の記号を載せる位置が無い字形)。fontkit は NULL を確かめずに座標を読むので、
  *    「Cannot read properties of null (reading 'xCoordinate')」で落ち、その字の並びを測れず描けない (Noto Sans Malayalam・Noto Serif Malayalam:
- *    ട് (U+0D1F U+0D4D) のような「子音 + ヴィラーマ」で終わる並び・സ്ത のような結合子音の多く)。位置が無いときは、その規則を
+ *    ട് (U+0D1F U+0D4D) のような「子音 + ヴィラーマ」で終わる並び・സ്ത のような結合子音の多く)、Noto Sans Khmer の NIKAHIT U+17C6・下に付く子音)。位置が無いときは、その規則を
  *    当たらなかったことにして、次の規則へ進む (HarfBuzz も同じ: Anchor が見つからなければ、その副表は当たらない)。
  *
  * 7. 汎用の整形 (UniversalShaper。シンハラ文字など) で、音節に入らない字形があると落ちる
@@ -82,13 +82,37 @@
  *    作った後、元のレフの字形を消す。র্কি・কার্তিক)。fontkit は、並びの最初の番号 (無い) を字形の番号にするので、番号の無い字形が
  *    並びに残り、その字の単位を描けない。番号の無い字形は描きようが無いので、並びから取り除く (HarfBuzz も、この規則を字形の削除として扱う)。
  *
- * 3・4 は仕様どおりの動きだが、ほかの用字の文書の結果を変えないよう、いまはインド系の用字とタイ文字 (LOOKUP_FIX_TEXT) を組むときだけ効かせる。
+ * 3・4 は仕様どおりの動きだが、ほかの用字の文書の結果を変えないよう、いまはインド系の用字とタイ文字 (LOOKUP_FIX_TEXT) と、
+ * 東南アジア大陸部の用字・チベット文字 (LOOKUP_FIX_TEXT_SEA: ラオ・チベット・ミャンマー・クメール) を組むときだけ効かせる。
+ *
+ * ラオ・クメール・ミャンマー・チベット・モンゴルの字のために、次も補う (11 は LOOKUP_FIX_TEXT_SEA の字を含む文字列を組むときだけ):
+ *
+ * 2'. ラオ文字の SARA AM (U+0EB3) も、タイ文字と同じに NIGGAHITA (U+0ECD) と AA (U+0EB2) に分け、NIGGAHITA を前の上付きの記号の前へ移す
+ *    (Microsoft「Developing OpenType Fonts for Lao Script」の Analyze Characters: 基底の字に声調記号が既にあれば、AM を分けて、
+ *    NIGGAHITA を基底の字と声調記号の間へ並べ替える)。
+ *
+ * 11. 字形を増やす置き換えの後、増えた字形に同じ Lookup をもう 1 度当てて、終わらないことがある
+ *    (Noto Sans Myanmar: 語頭の字形の前に空きの字形を入れる規則)。増えた分だけ先へ進める (patchGrowingSubstitution)。
+ *    インド系の文字にも効かせて HarfBuzz と照合したが、結果は変わらなかった (要る例が無い) ので、範囲は広げていない。
+ *
+ * 12. fontkit が読めない Lookup (GSUB の Reverse Chaining Contextual Single Substitution) を持つ書体 (Noto Sans Mongolian) は、
+ *    1 字も組めない。組むのに失敗した書体に限り、読めない Lookup を飛ばして組む (guardUnreadableLookups)。
+ *
+ * 13. ミャンマー文字は、fontkit に専用の整形が無く (既定の整形)、前に置く母音記号・メディアルの RA・キンジが元の字の順のままになる。
+ *    書体に渡す前に音節の中を並べ替え (reorderMyanmar)、整形の機能 (MYANMAR_FEATURES) を足す。
+ *
+ * 14. クメール文字の文脈の合字 clig は、整形に必須の機能 (Microsoft「Developing OpenType Fonts for Khmer Script」の Features の表)。
+ *    呼び出し側の「任意の合字を切る」指定 (clig: false) で止まらないようにする。
  */
+
+import { isMyanmarBase, isMyanmarDependent } from './orthographicSyllable';
 
 /** 差し替え済みの印 (fontkit の原型に付ける。pdfLibPatches.ts と同じ決まり) */
 const SHAPING_PATCHED = Symbol.for('kumiori.fontkitShapingPatched');
 const ITERATOR_PATCHED = Symbol.for('kumiori.fontkitMarkSetPatched');
 const MATCH_PATCHED = Symbol.for('kumiori.fontkitBacktrackPatched');
+const ANCHOR_PATCHED = Symbol.for('kumiori.fontkitNullAnchorPatched');
+const GROW_PATCHED = Symbol.for('kumiori.fontkitGrowPatched');
 
 /**
  * fontkit が音節に分けて組む用字の字を含みうるか: インド系・東南アジアの用字のブロック (U+0900 デーヴァナーガリー〜U+1CFF ヴェーダの拡張、
@@ -101,6 +125,76 @@ const LOOKUP_FIX_TEXT = /[ऀ-๿]/;
 const VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 /** タイ文字の SARA AM と、その前の上付きの記号の並び */
 const THAI_SARA_AM = /([ัิ-ื็-๎]*)ำ/g;
+/** ラオ文字の SARA AM (U+0EB3) と、その前の上付きの記号の並び (U+0EB1・U+0EB4〜0EB7・U+0EBB・U+0EC8〜0ECE。タイ文字の並びを U+0080 ずらしたもの) */
+const LAO_SARA_AM = /([\u0EB1\u0EB4-\u0EB7\u0EBB\u0EC8-\u0ECE]*)\u0EB3/g;
+/**
+ * 上の 3・4・11 を効かせる文字列 (東南アジア大陸部の用字とチベット文字): ラオ文字 (U+0E80〜U+0EFF)・チベット文字 (U+0F00〜U+0FFF)・
+ * ミャンマー文字 (U+1000〜U+109F と拡張 U+A9E0〜U+A9FF・U+AA60〜U+AA7F)・クメール文字 (U+1780〜U+17FF)
+ */
+const LOOKUP_FIX_TEXT_SEA = /[\u0E80-\u0FFF\u1000-\u109F\u1780-\u17FF\uA9E0-\uA9FF\uAA60-\uAA7F]/;
+/** クメール文字 (U+1780〜U+17FF) を含む */
+const KHMER_TEXT = /[\u1780-\u17FF]/;
+/** ミャンマー文字 (U+1000〜U+109F と拡張 A・B) を含む */
+const MYANMAR_TEXT = /[\u1000-\u109F\uA9E0-\uA9FF\uAA60-\uAA7F]/;
+/**
+ * ミャンマー文字の整形で当てる書体の機能 (Microsoft「Developing OpenType Fonts for Myanmar Script」の Shaping Engine の節:
+ * 基本の機能 rphf・pref・blwf・pstf と、表示の形の機能 pres・abvs・blws・psts)。fontkit の既定の整形は、これらを当てない
+ */
+const MYANMAR_FEATURES = ['rphf', 'pref', 'blwf', 'pstf', 'pres', 'abvs', 'blws', 'psts', 'dist', 'abvm', 'blwm'] as const;
+
+/**
+ * ミャンマー文字の音節の中の字を、書体に渡す順に並べ替える (字の数は変えない)。
+ * Microsoft「Developing OpenType Fonts for Myanmar Script」の Shaping Engine の節の並べ替え (HarfBuzz のミャンマー文字の整形も同じ):
+ *  - 前に置く母音記号 (U+1031・U+1084) と、メディアルの RA (U+103C。基底の字を囲む) を、基底の字の前へ (母音記号が先)
+ *  - キンジ (U+1004・U+101B・U+105A のどれか + ASAT U+103A + VIRAMA U+1039。次の子音の上に載る) を、基底の字 (次の子音) のすぐ後ろへ
+ *  - 下の母音記号 (U+102F・U+1030・U+1058・U+1059) の後ろのアヌスヴァーラ (U+1032・U+1036) を、下の母音記号の前へ
+ * 音節は、基底の字 (キンジがあればその後ろの子音) と、VIRAMA で積む子音、その後ろの「付く字」の並び。文法に合わない並び
+ * (HarfBuzz は点線の丸を補う) も同じ決まりで並べ替えるだけで、点線の丸は補わない
+ */
+export function reorderMyanmar(text: string): string {
+  const n = text.length;
+  let out = '';
+  for (let i = 0; i < n; ) {
+    const c = text.charCodeAt(i);
+    if (!isMyanmarBase(c)) {
+      out += text[i++];
+      continue;
+    }
+    const kinzi = (c === 0x1004 || c === 0x101b || c === 0x105a) && text.charCodeAt(i + 1) === 0x103a && text.charCodeAt(i + 2) === 0x1039 && isMyanmarBase(text.charCodeAt(i + 3)) ? 3 : 0;
+    const base = i + kinzi;
+    let j = base + 1;
+    for (;;) {
+      const d = text.charCodeAt(j);
+      if (d === 0x1039 && isMyanmarBase(text.charCodeAt(j + 1))) j += 2;
+      else if (isMyanmarDependent(d)) j++;
+      else break;
+    }
+    // 並べる位置: 前の母音記号・メディアルの RA・(基底の字・キンジ)・主・下の記号の前・下・下の記号の後ろ
+    const pre: string[] = ['', ''];
+    const post: string[] = ['', '', '', ''];
+    let pos = 0;
+    let last: { list: string[]; k: number } = { list: post, k: 0 };
+    for (let k = base + 1; k < j; k++) {
+      const d = text.charCodeAt(k);
+      const below = d === 0x102f || d === 0x1030 || d === 0x1058 || d === 0x1059;
+      const anusvara = d === 0x1032 || d === 0x1036;
+      let at: { list: string[]; k: number };
+      if (d === 0x103c) at = { list: pre, k: 1 };
+      else if (d === 0x1031 || d === 0x1084) at = { list: pre, k: 0 };
+      else if (d === 0xfe00) at = last;
+      else if (pos === 0 && below) at = { list: post, k: (pos = 2) };
+      else if (pos === 2 && anusvara) at = { list: post, k: 1 };
+      else if (pos === 2 && below) at = { list: post, k: 2 };
+      else if (pos === 2) at = { list: post, k: (pos = 3) };
+      else at = { list: post, k: pos };
+      at.list[at.k] += text[k];
+      last = at;
+    }
+    out += pre[0] + pre[1] + text[base] + text.slice(i, base) + post[0] + post[1] + post[2] + post[3];
+    i = j;
+  }
+  return out;
+}
 
 /**
  * StateMachine.match が使う、Babel の regenerator の実行時の部品の代わり。match の中身は「次の状態の番号を _context.next に入れて値を返す」
@@ -138,6 +232,15 @@ type Lookup = { flags?: LookupFlags; markFilteringSet?: number | null };
 type LayoutTable = { lookupList?: { length: number; get(i: number): Lookup | undefined } };
 type GlyphIteratorProto = { shouldIgnore?: (this: { options?: object }, glyph: { id: number; isMark: boolean }) => unknown; [ITERATOR_PATCHED]?: boolean };
 type Processor = { applyLookups(lookups: unknown[], glyphs: unknown[], positions: unknown[]): void; glyphIterator?: object };
+type GposProto = {
+  applyAnchor?: (this: unknown, markRecord: { markAnchor?: unknown } | null, baseAnchor: unknown, baseGlyphIndex: number) => unknown;
+  applyLookup?: (this: unknown, lookupType: number, table: unknown) => unknown;
+  [ANCHOR_PATCHED]?: boolean;
+};
+type GsubProto = {
+  applyLookup?: (this: { glyphs?: unknown[]; glyphIterator?: { index: number } }, lookupType: number, table: unknown) => unknown;
+  [GROW_PATCHED]?: boolean;
+};
 type ProcessorProto = { match?: (this: unknown, sequenceIndex: number, sequence: unknown[], ...rest: unknown[]) => unknown; [MATCH_PATCHED]?: boolean };
 type FkFont = {
   GSUB?: LayoutTable;
@@ -152,6 +255,42 @@ const markSets = new WeakMap<object, Set<number>>();
 const lookupFixReady = new WeakSet<object>();
 /** いま組んでいる文字列で、上の 3・4 を効かせるか (layout の呼び出しの間だけ true) */
 let lookupFixActive = false;
+/** いま組んでいる文字列で、上の 11 を効かせるか (LOOKUP_FIX_TEXT_SEA の字を含む文字列の layout の間だけ true) */
+let seaFixActive = false;
+/** いま組んでいる文字列で、上の 6〜8・10 を効かせるか (音節に分けて組む用字 = MAY_SYLLABLE_SHAPE の字を含む文字列の layout の間だけ true) */
+let nullAnchorActive = false;
+/** 上の 6: いま当てている規則 (Lookup の subtable) で、アンカーの無い組に当たった */
+let anchorMissing = false;
+
+/**
+ * 上の 6: 記号を基底の字・合字・記号に付ける規則 (GPOS の Lookup の種類 4・5・6) で、その組のアンカーが無い (オフセットが NULL) とき、
+ * fontkit は無いアンカーの座標を読んで落ちる。無い組には規則を当てず (位置を変えない)、同じ Lookup の次の subtable を試す
+ * (OpenType 仕様「GPOS」の BaseRecord・ComponentRecord・Mark2Record: アンカーの表へのオフセットは NULL でありうる。
+ * その種類の記号を付ける点が無いことを表す)。
+ * GPOS の処理 (GPOSProcessor) の原型に 1 回だけ
+ */
+function patchNullAnchor(gpos: object | null | undefined) {
+  let gp = Object.getPrototypeOf(gpos ?? null) as GposProto | null;
+  while (gp && !Object.prototype.hasOwnProperty.call(gp, 'applyAnchor')) gp = Object.getPrototypeOf(gp) as GposProto | null;
+  if (!gp || gp[ANCHOR_PATCHED] || typeof gp.applyAnchor !== 'function' || typeof gp.applyLookup !== 'function') return;
+  const applyAnchor = gp.applyAnchor;
+  const applyLookup = gp.applyLookup;
+  gp.applyAnchor = function (markRecord, baseAnchor, baseGlyphIndex) {
+    if ((seaFixActive || nullAnchorActive) && (!baseAnchor || !markRecord?.markAnchor)) {
+      anchorMissing = true;
+      return undefined;
+    }
+    return applyAnchor.call(this, markRecord, baseAnchor, baseGlyphIndex);
+  };
+  gp.applyLookup = function (lookupType, table) {
+    anchorMissing = false;
+    const r = applyLookup.call(this, lookupType, table);
+    if (!anchorMissing) return r;
+    anchorMissing = false;
+    return false;
+  };
+  gp[ANCHOR_PATCHED] = true;
+}
 
 /**
  * 書体ごとに 1 回: GSUB・GPOS の Lookup のうち USE_MARK_FILTERING_SET のものの記号の集合を作り (上の 3)、
@@ -160,6 +299,12 @@ let lookupFixActive = false;
 function prepareLookupFixes(font: FkFont) {
   if (lookupFixReady.has(font)) return;
   lookupFixReady.add(font);
+  try {
+    patchNullAnchor(font._layoutEngine?.engine?.GPOSProcessor);
+    patchGrowingSubstitution(font._layoutEngine?.engine?.GSUBProcessor);
+  } catch {
+    // 処理を取り出せない書体は、これまでと同じ
+  }
   try {
     const proc = font._layoutEngine?.engine?.GSUBProcessor ?? font._layoutEngine?.engine?.GPOSProcessor;
     if (!proc) return;
@@ -334,45 +479,6 @@ function prepareUseStrayFix(font: FkFont) {
   top[STRAY_PATCHED] = true;
 }
 
-const ANCHOR_PATCHED = Symbol.for('kumiori.fontkitNullAnchorPatched');
-/** いま組んでいる文字列で、上の 6〜8・10 を効かせるか (layout の呼び出しの間だけ true) */
-let nullAnchorActive = false;
-/** いまの applyLookup の中で、アンカーの無い組に当たったか */
-let anchorMissing = false;
-type GposProto = {
-  applyAnchor?: (this: unknown, markRecord: { markAnchor?: unknown } | null, baseAnchor: unknown, baseGlyphIndex: number) => unknown;
-  applyLookup?: (this: unknown, lookupType: number, table: unknown) => unknown;
-  [ANCHOR_PATCHED]?: boolean;
-};
-
-/**
- * 記号を載せる規則 (GPOS の MarkBasePos・MarkLigPos・MarkMarkPos) で、相手の字形にその種類の記号の位置 (Anchor) が無いとき、
- * 規則を「当たらなかった」ことにする (上の 6。GPOS の処理の原型に 1 回だけ)。
- * ラオ・クメールなどの担当 (ブランチ lang-sea) の同じ名前の関数と、同じ形 (効かせる条件の変数だけが違う。まとめるときは条件を「または」にする)
- */
-function patchNullAnchor(gpos: object | null | undefined) {
-  let gp = Object.getPrototypeOf(gpos ?? null) as GposProto | null;
-  while (gp && !Object.prototype.hasOwnProperty.call(gp, 'applyAnchor')) gp = Object.getPrototypeOf(gp) as GposProto | null;
-  if (!gp || gp[ANCHOR_PATCHED] || typeof gp.applyAnchor !== 'function' || typeof gp.applyLookup !== 'function') return;
-  const applyAnchor = gp.applyAnchor;
-  const applyLookup = gp.applyLookup;
-  gp.applyAnchor = function (markRecord, baseAnchor, baseGlyphIndex) {
-    if (nullAnchorActive && (!baseAnchor || !markRecord?.markAnchor)) {
-      anchorMissing = true;
-      return undefined;
-    }
-    return applyAnchor.call(this, markRecord, baseAnchor, baseGlyphIndex);
-  };
-  gp.applyLookup = function (lookupType, table) {
-    anchorMissing = false;
-    const r = applyLookup.call(this, lookupType, table);
-    if (!anchorMissing) return r;
-    anchorMissing = false;
-    return false;
-  };
-  gp[ANCHOR_PATCHED] = true;
-}
-
 /**
  * 文字列 → 書体の字形の並び (fontkit の glyphsForString と同じ、字と字形の 1 対 1 の対応) で、字形ごとに「その字形が表す字」を
  * 文字列の字のとおりに持たせたもの (上の 5)。異体字セレクタ (字と組で cmap を引く) を含む文字列・字形を引けないときは null (fontkit に任せる)。
@@ -409,7 +515,71 @@ function resolveWordInitial(features: unknown): unknown {
   return { ...rest, init: false };
 }
 
-/** fontkit の書体の layout を差し替える (上の 1〜10。fontkit の書体の原型に 1 回だけ) */
+/** 上の 11: いま当てている GSUB の規則の入れ子の深さ (文脈の規則・拡張の規則が、中で別の規則を当てる) */
+let gsubDepth = 0;
+
+/**
+ * 上の 11: 字形を増やす置き換え (GSUB の Multiple Substitution。じかに当てるものと、文脈の規則が中で当てるもの) の後、fontkit は
+ * 増えた字形へ進んで同じ Lookup をもう 1 度当てる。置き換えた結果に元の字形が含まれる規則 (字形の前に空きの字形を入れる規則など) では、
+ * これが終わらず止まる。Lookup は、置き換えた字形を飛ばして次へ進む決まり (OpenType 仕様「GSUB」の Table organization の節:
+ * 「次」の字形へ進むとき、その Lookup の処理に加わった字形 (置き換えた字形と、入力の並びの字形) をすべて飛ばす) なので、
+ * 増えた分だけ先へ進める。GSUB の処理の原型に 1 回だけ
+ */
+function patchGrowingSubstitution(gsub: object | null | undefined) {
+  let gp = Object.getPrototypeOf(gsub ?? null) as GsubProto | null;
+  while (gp && !Object.prototype.hasOwnProperty.call(gp, 'applyLookup')) gp = Object.getPrototypeOf(gp) as GsubProto | null;
+  if (!gp || gp[GROW_PATCHED] || typeof gp.applyLookup !== 'function') return;
+  const applyLookup = gp.applyLookup;
+  gp.applyLookup = function (lookupType, table) {
+    if (!seaFixActive || !this.glyphs || !this.glyphIterator) return applyLookup.call(this, lookupType, table);
+    const before = this.glyphs.length;
+    gsubDepth++;
+    let r: unknown;
+    try {
+      r = applyLookup.call(this, lookupType, table);
+    } finally {
+      gsubDepth--;
+    }
+    const grown = this.glyphs.length - before;
+    if (gsubDepth === 0 && r && grown > 0) this.glyphIterator.index += grown;
+    return r;
+  };
+  gp[GROW_PATCHED] = true;
+}
+
+/** 読めない Lookup の代わりを置いた書体 */
+const lookupGuarded = new WeakSet<object>();
+/**
+ * 上の 12: fontkit が読めない Lookup (GSUB の Reverse Chaining Contextual Single Substitution = 種類 8。fontkit の表の定義の誤りで、
+ * 読むと「Not a fixed size」で落ちる) を持つ書体は、その Lookup を使う機能 (Noto Sans Mongolian の calt・rclt) のある文字列を 1 つも組めない
+ * (欧字も)。組むのに失敗した書体に限り、読めない Lookup を「何も置き換えない Lookup」として読む (その規則だけが当たらない)。
+ * 代わりを置いたら true (呼び出し側が、もう 1 度組む)
+ */
+function guardUnreadableLookups(font: FkFont): boolean {
+  if (lookupGuarded.has(font)) return false;
+  lookupGuarded.add(font);
+  let any = false;
+  try {
+    for (const table of [font.GSUB, font.GPOS]) {
+      const list = table?.lookupList as (LayoutTable['lookupList'] & { get(i: number): unknown }) | undefined;
+      if (!list || typeof list.get !== 'function') continue;
+      const get = list.get.bind(list);
+      list.get = (i: number) => {
+        try {
+          return get(i);
+        } catch {
+          return { lookupType: 1, flags: {}, subTables: [] } as never;
+        }
+      };
+      any = true;
+    }
+  } catch {
+    return false;
+  }
+  return any;
+}
+
+/** fontkit の書体の layout を差し替える (上の 1〜14。fontkit の書体の原型に 1 回だけ) */
 export function patchFontkitShaping(fk: unknown) {
   type Proto = { layout?: (this: unknown, text: unknown, ...rest: unknown[]) => unknown; [SHAPING_PATCHED]?: boolean };
   // layout を持つ原型 (TTFFont。WOFF・WOFF2 の書体はそれを継ぐ)
@@ -419,13 +589,42 @@ export function patchFontkitShaping(fk: unknown) {
   const layout = proto.layout;
   const g = globalThis as { regeneratorRuntime?: unknown };
   proto.layout = function (text0, ...rest) {
-    if (typeof text0 !== 'string' || !MAY_SYLLABLE_SHAPE.test(text0)) return layout.call(this, text0, ...rest);
-    const text = text0.includes('ำ') ? text0.replace(THAI_SARA_AM, 'ํ$1า') : text0;
+    if (typeof text0 !== 'string' || !MAY_SYLLABLE_SHAPE.test(text0)) {
+      try {
+        return layout.call(this, text0, ...rest);
+      } catch (e) {
+        // 12: 読めない Lookup のある書体は、代わりを置いて組み直す
+        if (guardUnreadableLookups(this as FkFont)) return layout.call(this, text0, ...rest);
+        throw e;
+      }
+    }
+    let text = text0.includes('ำ') ? text0.replace(THAI_SARA_AM, 'ํ$1า') : text0;
+    if (text.includes('\u0EB3')) text = text.replace(LAO_SARA_AM, '\u0ECD$1\u0EB2');
     const setRuntime = !('regeneratorRuntime' in g);
     const wasActive = lookupFixActive;
-    if (LOOKUP_FIX_TEXT.test(text)) {
+    const wasSea = seaFixActive;
+    if (LOOKUP_FIX_TEXT.test(text) || LOOKUP_FIX_TEXT_SEA.test(text)) {
       prepareLookupFixes(this as FkFont);
       lookupFixActive = true;
+      seaFixActive = LOOKUP_FIX_TEXT_SEA.test(text);
+    }
+    if (MYANMAR_TEXT.test(text)) {
+      text = reorderMyanmar(text);
+      // 機能の指定 (字形の機能の名前 → 有効か) に、ミャンマー文字の整形の機能を足す (呼び出し側が明示したものはそのまま)
+      const f = rest[0];
+      if (f === undefined || f === null) rest[0] = Object.fromEntries(MYANMAR_FEATURES.map((x) => [x, true]));
+      else if (Array.isArray(f)) rest[0] = [...f, ...MYANMAR_FEATURES.filter((x) => !f.includes(x))];
+      else if (typeof f === 'object') rest[0] = { ...Object.fromEntries(MYANMAR_FEATURES.map((x) => [x, true])), ...f };
+    }
+    if (KHMER_TEXT.test(text)) {
+      // 14: クメール文字の文脈の合字 clig は、整形に必須の機能 (Microsoft「Developing OpenType Fonts for Khmer Script」の Features の表で
+      // Required。子音と母音記号 AA をつないだ字形「បា」など。HarfBuzz も、合字の指定によらず当てる)。fontkit のインド系の整形も clig を
+      // 当てるが、呼び出し側が任意の合字を切る指定 (clig: false) を渡すと当たらないので、その指定を外す
+      const f = rest[0];
+      if (f && typeof f === 'object' && !Array.isArray(f) && (f as { clig?: boolean }).clig === false) {
+        const { clig: _clig, ...others } = f as Record<string, boolean>;
+        rest[0] = others;
+      }
     }
     const wasAnchor = nullAnchorActive;
     patchNullAnchor((this as FkFont)._layoutEngine?.engine?.GPOSProcessor);
@@ -433,10 +632,18 @@ export function patchFontkitShaping(fk: unknown) {
     nullAnchorActive = true;
     if (setRuntime) g.regeneratorRuntime = syllableRuntime;
     try {
-      return layout.call(this, glyphsWithOwnCodePoints(this, text) ?? text, resolveWordInitial(rest[0]), ...rest.slice(1));
+      const glyphs = glyphsWithOwnCodePoints(this, text) ?? text;
+      const features = resolveWordInitial(rest[0]);
+      try {
+        return layout.call(this, glyphs, features, ...rest.slice(1));
+      } catch (e) {
+        if (guardUnreadableLookups(this as FkFont)) return layout.call(this, glyphs, features, ...rest.slice(1));
+        throw e;
+      }
     } finally {
       if (setRuntime) delete g.regeneratorRuntime;
       lookupFixActive = wasActive;
+      seaFixActive = wasSea;
       nullAnchorActive = wasAnchor;
     }
   };
