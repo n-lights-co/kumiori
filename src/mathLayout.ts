@@ -166,6 +166,31 @@ export function virtual(name: string, attrs: Record<string, string>, children: M
   return el;
 }
 
+/**
+ * 要素の入れ子の深さの上限。JS の呼び出しの深さを使い切らないよう、これより深い要素は空にする (layout・Content MathML の置き換え・
+ * mstack の行の読み取りに共通)。実在の数式の入れ子は数十段まで
+ */
+export const MAX_MATH_NEST = 300;
+/**
+ * math-depth (scriptlevel) の絶対値の上限。MathML Core 4.5 (The math-depth property) は、深さの差 1 つごとに字の大きさを
+ * 0.71 倍 (書体の scriptPercentScaleDown など) にするので、深さが数千になると、大きさが 0 や Infinity になる。
+ * 0.71^100 ≈ 1.3e-15 で、倍率は数として扱える範囲に収まる。実在の数式の深さは、添え字の入れ子の数 (数段) まで
+ */
+const MAX_MATH_DEPTH = 100;
+/** 破線の線 1 本の、線の切れ端の数の上限 (これを超える線は実線にする)。切れ端の周期は線の太さの 8 倍なので、太さ 0.5pt で 40m の線にあたる */
+const MAX_DASHES = 10000;
+
+/** 最大値 (Math.max(...list) は、要素の数が引数の数の上限 (十数万) を超えると RangeError になる) */
+function maxOf(list: readonly number[], init = -Infinity): number {
+  let m = init;
+  for (const v of list) if (v > m) m = v;
+  return m;
+}
+/** dst の末尾に src を足す (dst.push(...src) は、要素の数が引数の数の上限を超えると RangeError になる) */
+function pushAll<T>(dst: T[], src: readonly T[]): void {
+  for (const v of src) dst.push(v);
+}
+
 const ROW_LIKE = new Set(['math', 'mrow', 'mstyle', 'merror', 'mphantom', 'mpadded', 'mtd', 'menclose', 'msqrt', 'mlabeledtr']);
 const SCRIPTED = new Set(['msub', 'msup', 'msubsup', 'munder', 'mover', 'munderover', 'mmultiscripts']);
 
@@ -267,7 +292,10 @@ class MathLayouter {
   }
 
   /** math-depth を変えたときの字の大きさ (4.5 The math-depth property) */
-  private depthTo(ctx: Ctx, depth: number): Ctx {
+  private depthTo(ctx: Ctx, depth0: number): Ctx {
+    // 深さは上下限の中に収める (MAX_MATH_DEPTH)。数でない深さは変えない
+    if (Number.isNaN(depth0)) return ctx;
+    const depth = Math.min(Math.max(depth0, -MAX_MATH_DEPTH), MAX_MATH_DEPTH);
     let a = ctx.depth;
     let b = depth;
     if (a === b) return ctx;
@@ -293,7 +321,9 @@ class MathLayouter {
       }
     }
     s *= Math.pow(0.71, e);
-    return { ...ctx, depth, size: ctx.size * (invert ? 1 / s : s) };
+    const size = ctx.size * (invert ? 1 / s : s);
+    // 大きさが正の有限の数にならなければ (もとの大きさが極端なとき)、大きさは変えない
+    return { ...ctx, depth, size: size > 0 && Number.isFinite(size) ? size : ctx.size };
   }
 
   /** 添え字の文脈 (math-depth: add(1)・math-style: compact) */
@@ -308,7 +338,7 @@ class MathLayouter {
     const nm = nameOf(n);
     if (nm === 'mtext' || nm === 'mspace') return true;
     // 深すぎる入れ子は空白のようなものとみなさない (layout の深さの上限と同じ。JS の呼び出しの深さを使い切らない)
-    if (depth > 300) return false;
+    if (depth > MAX_MATH_NEST) return false;
     if (nm === 'mrow' || nm === 'mstyle' || nm === 'mphantom' || nm === 'mpadded') return elements(n).every((c) => this.spaceLike(c, depth + 1));
     return false;
   }
@@ -317,7 +347,7 @@ class MathLayouter {
   coreOp(n: MNode, depth = 0): MNode | undefined {
     const nm = nameOf(n);
     if (nm === 'mo') return n;
-    if (depth > 300) return undefined; // 深すぎる入れ子は追わない (JS の呼び出しの深さを使い切らない)
+    if (depth > MAX_MATH_NEST) return undefined; // 深すぎる入れ子は追わない (JS の呼び出しの深さを使い切らない)
     const els = this.flow(n);
     if (SCRIPTED.has(nm) || nm === 'mfrac') return els[0] ? this.coreOp(els[0], depth + 1) : undefined;
     if (nm === 'mrow' || nm === 'mstyle' || nm === 'mphantom' || nm === 'mpadded') {
@@ -467,7 +497,7 @@ class MathLayouter {
       out.d = Math.max(out.d, b.d - y);
       out.la = Math.max(out.la, b.la + y);
       out.ld = Math.max(out.ld, b.ld - y);
-      out.items.push(...this.moved(b, x, y));
+      pushAll(out.items, this.moved(b, x, y));
     }
     for (const key of ['a', 'd', 'la', 'ld'] as const) if (!Number.isFinite(out[key])) out[key] = 0;
     return { ...out, ...extra };
@@ -621,7 +651,7 @@ class MathLayouter {
   /** 要素の入れ子の深さ (JS の呼び出しの深さを使い切らないよう、深すぎる要素は空にする) */
   private nest = 0;
   layout(n: MNode, ctx0: Ctx, c?: Constraint): Box {
-    if (this.nest >= 300) return this.empty();
+    if (this.nest >= MAX_MATH_NEST) return this.empty();
     this.nest++;
     try {
       const ctx = this.enter(n, ctx0);
@@ -841,8 +871,8 @@ class MathLayouter {
       if (toStretch.length) {
         const laid = boxes.filter(Boolean);
         // antenna: 上のアクセントは、伸ばす高さに含めず、書体の行の上下 (ascent・descent) を下限にする
-        let ua = laid.length ? Math.max(...laid.map((b) => (this.antenna ? Math.max(b.na ?? b.a, 0) : b.a))) : 0;
-        let ud = laid.length ? Math.max(...laid.map((b) => b.d)) : 0;
+        let ua = laid.length ? maxOf(laid.map((b) => (this.antenna ? Math.max(b.na ?? b.a, 0) : b.a))) : 0;
+        let ud = laid.length ? maxOf(laid.map((b) => b.d)) : 0;
         if (this.antenna && laid.length) {
           ua = Math.max(ua, (this.f.fk.ascent * ctx.size) / this.upm);
           ud = Math.max(ud, (-this.f.fk.descent * ctx.size) / this.upm);
@@ -1163,7 +1193,7 @@ class MathLayouter {
     for (const it of items) if (!it.box && !toStretch.includes(it)) it.box = this.layout(it.el, it.ctx);
     if (toStretch.length) {
       const laid = items.filter((it) => it.box).map((it) => it.box!.w);
-      const T = laid.length ? Math.max(...laid) : 0;
+      const T = laid.length ? maxOf(laid) : 0;
       for (const it of toStretch) it.box = this.layout(it.el, it.ctx, { inline: T });
     }
     const base = items[0].box!;
@@ -1412,14 +1442,14 @@ class MathLayouter {
       });
       grid.push(row);
     });
-    const ncol = Math.max(0, ...grid.map((r) => r.length));
+    const ncol = maxOf(grid.map((r) => r.length), 0);
     // 揃えの組 (maligngroup) のある列: 組ごとに、印 (malignmark) の左右の幅の最大
     const groupW: Array<Array<{ l: number; r: number }> | undefined> = [];
     for (let ci = 0; ci < ncol; ci++) {
       const gs = grid.map((r) => r[ci]?.groups).filter(Boolean) as Array<Array<{ left: Box; right: Box }>>;
       if (!gs.length) continue;
-      const ng = Math.max(...gs.map((g) => g.length));
-      groupW[ci] = Array.from({ length: ng }, (_, gi) => ({ l: Math.max(0, ...gs.map((g) => g[gi]?.left.w ?? 0)), r: Math.max(0, ...gs.map((g) => g[gi]?.right.w ?? 0)) }));
+      const ng = maxOf(gs.map((g) => g.length));
+      groupW[ci] = Array.from({ length: ng }, (_, gi) => ({ l: maxOf(gs.map((g) => g[gi]?.left.w ?? 0), 0), r: maxOf(gs.map((g) => g[gi]?.right.w ?? 0), 0) }));
     }
     for (const row of grid)
       row.forEach((cell, ci) => {
@@ -1435,10 +1465,10 @@ class MathLayouter {
         cell.box = this.combine(x, parts);
         cell.align = 'left';
       });
-    const colW = Array.from({ length: ncol }, (_, ci) => Math.max(0, ...grid.map((r) => r[ci]?.box.w ?? 0)));
-    if (this.bool(n, 'equalcolumns', false) && ncol) colW.fill(Math.max(...colW));
-    const rowA = grid.map((r) => Math.max(0, ...r.map((c) => c.box.la)));
-    const rowD = grid.map((r) => Math.max(0, ...r.map((c) => c.box.ld)));
+    const colW = Array.from({ length: ncol }, (_, ci) => maxOf(grid.map((r) => r[ci]?.box.w ?? 0), 0));
+    if (this.bool(n, 'equalcolumns', false) && ncol) colW.fill(maxOf(colW));
+    const rowA = grid.map((r) => maxOf(r.map((c) => c.box.la), 0));
+    const rowD = grid.map((r) => maxOf(r.map((c) => c.box.ld), 0));
     // セルの中身は、行の高さを字の行の高さ以上にする (付録 A: mtd は表のセル)
     const strutA = (this.f.fk.ascent * ctx.size) / this.upm;
     const strutD = (-this.f.fk.descent * ctx.size) / this.upm;
@@ -1447,7 +1477,7 @@ class MathLayouter {
       rowD[ri] = Math.max(rowD[ri], strutD * 0.8);
     });
     if (this.bool(n, 'equalrows', false) && grid.length) {
-      const h = Math.max(...grid.map((_, ri) => rowA[ri] + rowD[ri]));
+      const h = maxOf(grid.map((_, ri) => rowA[ri] + rowD[ri]));
       grid.forEach((_, ri) => {
         rowD[ri] = h - rowA[ri];
       });
@@ -1506,25 +1536,27 @@ class MathLayouter {
       const v = this.pick(colLines, ci, 'none');
       if (v === 'none') continue;
       const lx = colX[ci] + colW[ci] + this.pickN(colSpacing, ci, 0.8 * ctx.size) / 2 - t / 2;
-      lines.push(...this.lineItems(lx, shift - height, t, height, true, dashed(v), ctx.color));
+      pushAll(lines, this.lineItems(lx, shift - height, t, height, true, dashed(v), ctx.color));
     }
     for (let r = 0; r < grid.length - 1; r++) {
       const v = this.pick(rowLines, r, 'none');
       if (v === 'none') continue;
       const ly = rBot(r) - this.pickN(rowSpacing, r, this.ex(ctx)) / 2 + shift - t / 2;
-      lines.push(...this.lineItems(0, ly, width, t, false, dashed(v), ctx.color));
+      pushAll(lines, this.lineItems(0, ly, width, t, false, dashed(v), ctx.color));
     }
     if (framed) {
       const d = dashed(frame);
-      lines.push(...this.lineItems(0, shift - t, width, t, false, d, ctx.color), ...this.lineItems(0, shift - height, width, t, false, d, ctx.color));
-      lines.push(...this.lineItems(0, shift - height, t, height, true, d, ctx.color), ...this.lineItems(width - t, shift - height, t, height, true, d, ctx.color));
+      pushAll(lines, this.lineItems(0, shift - t, width, t, false, d, ctx.color));
+      pushAll(lines, this.lineItems(0, shift - height, width, t, false, d, ctx.color));
+      pushAll(lines, this.lineItems(0, shift - height, t, height, true, d, ctx.color));
+      pushAll(lines, this.lineItems(width - t, shift - height, t, height, true, d, ctx.color));
     }
-    out.items.push(...lines);
+    pushAll(out.items, lines);
     // 式の番号 (mlabeledtr の最初の子): 表の右に置く
     const labeled = labels.map((b, k) => (b ? { b, k } : undefined)).filter(Boolean) as Array<{ b: Box; k: number }>;
     if (labeled.length) {
       const gap = ctx.size;
-      const lw = Math.max(...labeled.map((l) => l.b.w));
+      const lw = maxOf(labeled.map((l) => l.b.w));
       const full = rootTable && attr(p!, 'display') === 'block' && this.o.lineWidth && this.o.lineWidth > width + 2 * (gap + lw) ? this.o.lineWidth : undefined;
       if (full) {
         // 行の幅いっぱい: 表を中央に、式番号を右端 (side="left" なら左端) に
@@ -1549,6 +1581,9 @@ class MathLayouter {
     const len = vertical ? h : w;
     const th = vertical ? w : h;
     const dash = th * 4;
+    // 切れ端の長さが正の有限の数でない (太さが 0・数でない) と、下の繰り返しが進まない。切れ端が多すぎる線 (太さに比べて
+    // 極端に長い線) も含めて、実線にする
+    if (!(dash > 0) || !Number.isFinite(dash) || !(len / (dash * 2) <= MAX_DASHES)) return [this.rule(x, y, w, h, c)];
     const out: Item[] = [];
     for (let p = 0; p < len; p += dash * 2) {
       const l = Math.min(dash, len - p);
@@ -1590,10 +1625,11 @@ class MathLayouter {
     const kids = this.flow(n);
     const digitW = this.textBox('0', ctx).w;
     type Row = { cells: Box[]; shift: number; line?: number; cross?: Array<string | undefined> };
-    const cellsOf = (e: MNode, c: Ctx): Box[] => {
+    // msrow・mrow・msgroup の入れ子は、layout と同じ深さの上限 (MAX_MATH_NEST) まで読む (それより深い所は空)
+    const cellsOf = (e: MNode, c: Ctx, depth = 0): Box[] => {
       const nm = nameOf(e);
       if (nm === 'mn') return [...(e.textContent ?? '').trim()].map((ch) => this.textBox(ch, c));
-      if (nm === 'msrow' || nm === 'mrow') return this.flow(e).flatMap((k) => cellsOf(k, c));
+      if (nm === 'msrow' || nm === 'mrow') return depth >= MAX_MATH_NEST ? [] : this.flow(e).flatMap((k) => cellsOf(k, c, depth + 1));
       if (nm === 'none') return [this.empty()];
       return [this.layout(e, c)];
     };
@@ -1608,14 +1644,14 @@ class MathLayouter {
         shift: shift + (parseInt(attr(e, 'position') ?? '0', 10) || 0),
       };
     };
-    const addRow = (rows: Row[], e: MNode, shift: number) => {
+    const addRow = (rows: Row[], e: MNode, shift: number, depth = 0) => {
       const nm = nameOf(e);
       const pos = parseInt(attr(e, 'position') ?? '0', 10) || 0;
       if (nm === 'msline') rows.push({ cells: [], shift: shift + pos, line: parseInt(attr(e, 'length') ?? '0', 10) || 0 });
       else if (nm === 'mscarries') rows.push(carries(e, shift));
       else if (nm === 'msgroup') {
         const sh = parseInt(attr(e, 'shift') ?? '0', 10) || 0;
-        this.flow(e).forEach((k, i) => addRow(rows, k, shift + pos + i * sh));
+        if (depth < MAX_MATH_NEST) this.flow(e).forEach((k, i) => addRow(rows, k, shift + pos + i * sh, depth + 1));
       } else rows.push({ cells: cellsOf(e, ctx), shift: shift + pos });
     };
     // mlongdiv: 繰り上がりを除いた最初の 2 つが、割る数と商 (その前の繰り上がりは、それぞれに付く)
@@ -1633,17 +1669,17 @@ class MathLayouter {
           if (nameOf(k) !== 'mscarries') idx++;
         } else addRow(bodyRows, k, 0);
       }
-      rows.push(...resultRows);
+      pushAll(rows, resultRows);
       firstBody = rows.length;
-      rows.push(...bodyRows);
+      pushAll(rows, bodyRows);
     } else for (const k of kids) addRow(rows, k, 0);
 
     const gap = ctx.size * 0.15;
     const t = this.k('fractionRuleThickness', ctx) || ctx.size * 0.05;
     /** 行を積む。列は右端から数える。y は上から下へ (負)。各行の基線の位置を返す */
     const stack = (list: Row[]) => {
-      const cw = Math.max(digitW, ...list.flatMap((r) => (r.line === undefined ? r.cells.map((c) => c.w) : [])));
-      const ncols = Math.max(1, ...list.map((r) => (r.line !== undefined ? r.line : r.cells.length) + r.shift));
+      const cw = maxOf(list.flatMap((r) => (r.line === undefined ? r.cells.map((c) => c.w) : [])), digitW);
+      const ncols = maxOf(list.map((r) => (r.line !== undefined ? r.line : r.cells.length) + r.shift), 1);
       const W = ncols * cw;
       const parts: Array<{ b: Box; x: number; y: number }> = [];
       const items: Item[] = [];
@@ -1659,8 +1695,8 @@ class MathLayouter {
           continue;
         }
         const small = !!r.cross;
-        const a = Math.max(small ? 0 : ctx.size * 0.7, ...r.cells.map((c) => c.a));
-        const d = Math.max(small ? 0 : ctx.size * 0.2, ...r.cells.map((c) => c.d));
+        const a = maxOf(r.cells.map((c) => c.a), small ? 0 : ctx.size * 0.7);
+        const d = maxOf(r.cells.map((c) => c.d), small ? 0 : ctx.size * 0.2);
         y -= a;
         base.push(y);
         const colX = (k: number, len: number, shift: number) => W - (len - 1 - k + shift + 1) * cw;
@@ -1685,7 +1721,7 @@ class MathLayouter {
         y -= d + (small ? gap / 2 : gap);
       }
       const box = this.combine(W, parts);
-      box.items.push(...items);
+      pushAll(box.items, items);
       return { box, base, h: -y, W };
     };
     const main = stack(rows);

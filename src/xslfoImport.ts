@@ -71,6 +71,14 @@ import { isAntennaCompat, type FoCompat } from './compat';
 
 /** 表の列の番号・数の上限 */
 const MAX_TABLE_COLUMNS = 1000;
+/**
+ * 要素の入れ子の深さ (fo:root から数える) の上限。読み込み・組版は、要素の入れ子を関数の再帰でたどるので、深すぎる文書は
+ * JS の呼び出しの深さを使い切る (RangeError)。測ったところ、fo:block だけの入れ子で 800〜1000 段、fo:block-container と
+ * fo:block の交互で 600〜800 段で切れるので、その 1/3 ほどにする。実在の文書の入れ子は数十段まで
+ */
+const MAX_FO_NEST = 250;
+/** 入れ子が深すぎる文書の誤り */
+const tooDeep = () => new Error(msg(`要素の入れ子が深すぎます (${MAX_FO_NEST} 段まで)`, `elements are nested too deeply (up to ${MAX_FO_NEST} levels)`));
 
 export interface ImportOptions {
   /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。rgb-icc(…, #Separation, '名前', 濃度) を特色 (PDF の Separation) にする */
@@ -388,10 +396,17 @@ class Importer {
 
   /** 要素の親 (convert で文書の木を一度たどって作る。継承しない性質の inherit を親の値にするのに使う) */
   private parents = new WeakMap<XEl, XEl>();
-  private indexParents(el: XEl) {
-    for (const c of this.els(el)) {
-      this.parents.set(c, el);
-      this.indexParents(c);
+  private indexParents(root: XEl) {
+    // 再帰でなく、積んだ一覧でたどる (深い入れ子でも呼び出しの深さを使わない)。深すぎる入れ子 (MAX_FO_NEST) は、ここで誤りにする
+    // fo:instream-foreign-object の中身 (MathML・SVG) は、FO の要素としては読まないので数えない (それぞれの読み方に深さの上限がある)
+    const todo: Array<{ el: XEl; depth: number; foreign: boolean }> = [{ el: root, depth: 0, foreign: false }];
+    for (let t = todo.pop(); t; t = todo.pop()) {
+      if (t.depth >= MAX_FO_NEST) throw tooDeep();
+      const foreign = t.foreign || (this.isFo(t.el) && this.name(t.el) === 'instream-foreign-object');
+      for (const c of this.els(t.el)) {
+        this.parents.set(c, t.el);
+        todo.push({ el: c, depth: foreign ? t.depth : t.depth + 1, foreign });
+      }
     }
   }
 
@@ -2919,7 +2934,15 @@ export function importXslFo(xml: string, parse: (xml: string) => XNode, opts: Im
   const dom = parse(xml.replace(/^[\uFEFF\s]+/, ''));
   const root = dom.nodeType === 9 ? (Array.from(dom.childNodes).find((c) => c.nodeType === 1) as XEl) : dom;
   if (!root || (importer.name(root) !== 'root' && !root.nodeName.endsWith('root'))) throw new Error(msg('fo:root が見つかりません (XSL-FO ではないようです)', 'fo:root was not found (this does not look like XSL-FO)'));
-  const document = importer.convert(root);
+  let document: LDocument;
+  try {
+    document = importer.convert(root);
+  } catch (e) {
+    // 深さの上限 (MAX_FO_NEST) の中でも、呼び出しの深さを使い切ることがありうる (実行環境のスタックが小さいとき)。
+    // そのときも、何が起きたかの分かる誤りにする
+    if (e instanceof RangeError && /call stack|recursion/i.test(e.message)) throw tooDeep();
+    throw e;
+  }
   return { document, report: importer.report };
 }
 
