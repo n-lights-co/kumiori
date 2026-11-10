@@ -44,6 +44,16 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - JPEG・TIFF・CCITT: 走査の数 (500 まで)、IFD の値の数、2 次元の行の探索の手間を抑える
   - EPS (PostScript): VM の使用量 (512MB。超えれば VMerror)、パスの点の合計 (500 万点。超えれば limitcheck)、フィルタが読みためる量 (16MB)、画像のマスクの寸法、網かけの画素の手間、`resourceforall` の型紙の照合、`search`、`StartData` の長さに上限を置く
   - 出力: `renderPage` が、改行しない空白 (U+00A0) の字形を読めない書体のページで例外にならない。壊れた data URI・`@font-face` の URL 1 つで `typeset` 全体が失敗しない。Node のコマンドは、入力のディレクトリの下の読めないディレクトリを飛ばす
+- **結果の誤りの修正** (全体レビューで見つかったもの。どれも、該当する書き方の文書だけ結果が変わる):
+  - 組版: 高さの指定の無い段組のコンテナに強制の段区切りがあると中身が消える。段の釣り合わせの試し組みの後、表やコンテナの中の脚注の本体が消える。親と直交する書字方向のブロック・回したコンテナ・inline-container の中の脚注が消える。直交するブロック・表で `break-before`・`break-after`・`keep-together` が効かない (XSL 1.1 §7.20)。段組ページの長い脚注を分けて次のページへ続ける (§6.12.3)。ページをまたぐ段組のコンテナの id と左右の罫線。列の定義の無い表の列数 (rowSpan で埋まる列・表フッター。CSS 2.1 §17.5)
+  - HTML: リストの項目の間にコメント・`display: none` の li・ほかの子があっても番号を振り直さない。表の行・行グループのカウンター (セルで reset したカウンターは表の外へ漏れない) と `tr`・`tbody` の id。2 つ目以降の li と、表の行・セル・caption のしおり・`string-set`。1 字ずつ改行した和文に空白を入れない。範囲の外の番号 (`<ol start="0" type="i">` など) は 10 進 (CSS Counter Styles 3 §2)。`%` で符号化した `#fragment`。文書の中の `<svg>` の接頭辞つきの属性。題つきの `rel="alternate stylesheet"` は当てない (CSSOM 1 §6.2)
+  - EPUB: 章の `html`・`body` の属性を残す (`<html class="vrtl">` の縦書きなど)。単引用符の `container.xml`。`pre` の先頭の改行
+  - CSS: HTML の属性による指定は、`@layer` の中の規則より弱い (CSS Cascade 5 §6.5)。ASCII でない名前のカスタム プロパティとカウンター (`var(--色)`・`counter(章)`)。`:has()` の相対セレクタの並び (`:has(> li, > p)`) と範囲 (Selectors 4 §4.5)。読めない `background` の一括指定・不正な色の成分・無効な `var()` (CSS Variables 1 §3.1)・循環する変数は、宣言を無効にする。`calc()` の入れ子の括弧を含む `@page` の `margin`。止まりが 1 つのグラデーション。`font-weight: 550.5`・`line-height: +1.5` などの数の書き方
+  - 行組み: 異体字セレクタを基底の字と 1 つの単位にする (字形の選択は Canvas だけ。PDF は未対応)。`word-break: break-all` でも結合文字の前で分けない。拡張 B 以降の漢字・〇・〆 と欧字の間にも和欧間のアキを入れる (CSS Text 4 §8.4.1)
+  - XSL-FO: `fo:page-sequence`・`fo:flow` の id を引く `fo:page-number-citation`・`-last` (「全 N ページ」の書き方) を解決する。`fo:page-sequence` に書いた継承される特性 (`text-transform`・`font-family` など) を子に伝える。表のセルの中の `start-indent`・`end-indent` (セルは参照領域。§5.3.2)。縦書き・回転した本文の百分率の基準。`fo:footnote`・`fo:footnote-body`・`fo:page-number` に書いた字の書式。`background-position` の 1 値・縦のキーワード先頭。`keep-*` の成分。`leader-pattern="dots"` の `rule-style="none"`。空の `number-columns-spanned`。数式の書体が無いときの、全体が 1 つの `mtable` の数式の下端揃えは、互換モードのときだけ
+  - 画像: SVG の円弧のフラグを詰めて書いた path (`a1 1 0 01.71.29`。SVG 2 §9.3.9)。動く WebP は最初のコマを描く。CGM の大きさ (64 ビットの実数・32 ビットの整数の精度)。枠が逆向きの EMF
+  - EPS (PostScript): `imagemask` の極性 (型紙の白黒が反転していた)。フィルタのエラーを PostScript のエラーにする (それまでに描いたものが残る)。`gsave … show grestore` の後のパス。`currentgstate`・`rectfill`・`rectstroke`
+  - 参照・書体: 問い合わせ (`?…`) だけが違う CSS (`css2?family=A` と `css2?family=B`) を両方読む。`href` の `&amp;` を解いてから取る。base64 でない data URI の日本語と `;charset=` のパラメータ。`unicode-range` の絞り込みに、文字参照と CSS の文字列の字も数える。ディレクトリの違う同じ名前の書体のファイルを、`@font-face` の CSS の場所から見分ける。`lang` の違う呼び出しが重なっても、終われば元の言語に戻る。`--css "a.css, b.css"` の空白
 - **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
 - **公開**: 対応仕様説明書の PDF (日本語版と英語版の 4 冊) を、版ごとに GitHub のリリースに付ける。奥付の「組版」の欄は、組んだ Kumiori の版にする
 - **第三者の表示**:
