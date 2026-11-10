@@ -62,6 +62,7 @@ import type {
 } from './types';
 import { TOTAL_PAGES_ID } from './types';
 import type { FontManager } from './fontManager';
+import { NOT_WORD_INITIAL } from './fontkitShaping';
 import type { Measurer } from './measurer';
 import { DEFAULT_LINE_BREAK, lineHeightOf, newNode, resolveStyle, type LNode, type ResolvedStyle } from './lnode';
 import {
@@ -80,6 +81,7 @@ import {
   breakOne,
   buildLineNode,
   adjustJapaneseSpacing,
+  isIndicLetter,
   adjustHangulWordSpaces,
   markHyphenation,
   flattenInline,
@@ -2194,7 +2196,14 @@ class Flow {
       adjustJapaneseSpacing(
         atoms,
         this.wm === 'horizontal-tb'
-          ? (a, b) => (sameFeatures(a.st.fontFeatures, b.st.fontFeatures) ? ms.kern(a.last, b.first, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: a.st.fontFeatures, ...(kernAh ? { skipClass0: true } : {}) }) * a.st.fontSize : 0)
+          ? (a, b) =>
+              isIndicLetter(a.last)
+                ? sameFeatures(realFeatures(a.st.fontFeatures), realFeatures(b.st.fontFeatures))
+                  ? ms.clusterKern(a.cluster ?? a.last, b.cluster ?? b.first, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: realFeatures(a.st.fontFeatures) }) * a.st.fontSize
+                  : 0
+                : !sameFeatures(a.st.fontFeatures, b.st.fontFeatures)
+                  ? 0
+                  : ms.kern(a.last, b.first, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: a.st.fontFeatures, ...(kernAh ? { skipClass0: true } : {}) }) * a.st.fontSize
           : undefined,
         kernAh,
       );
@@ -6407,6 +6416,10 @@ function lineMemoSet(arr: object, at: number, run: InlineChild[], st: ResolvedSt
 }
 
 /** 字形を差し替える OpenType の機能の並びが同じか (違う機能の字の組には、カーニングを当てない) */
+/** 書体の機能の指定から、組版が足した「語頭の形にしない」印 (fontkitShaping.ts の NOT_WORD_INITIAL) を除いたもの */
+function realFeatures(a: string[] | undefined): string[] | undefined {
+  return a?.includes(NOT_WORD_INITIAL) ? a.filter((f) => f !== NOT_WORD_INITIAL) : a;
+}
 function sameFeatures(a: string[] | undefined, b: string[] | undefined): boolean {
   const x = a ?? [];
   const y = b ?? [];

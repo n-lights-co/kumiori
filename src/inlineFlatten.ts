@@ -7,6 +7,7 @@
 import type { LFootnote, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, WritingMode } from './types';
 import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type Measurer } from './measurer';
 import { mayCluster } from './grapheme';
+import { NOT_WORD_INITIAL } from './fontkitShaping';
 import { LIGATURE_FEATURES, ligatureTable } from './ligature';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
@@ -197,6 +198,21 @@ function optionalLigaturesOf(st: ResolvedStyle): LigatureFeatures | null {
   return ligFeatureSet(['liga', ...extra], [...own!, 'liga']);
 }
 const NO_FEATURES: string[] = [];
+
+/** 字・結合文字・書式の制御の字で終わる (その後ろは語の途中) */
+const WORD_INNER = /[\p{L}\p{M}\p{Cf}]$/u;
+/** ベンガル文字 (U+0980〜U+09FF) で始まる字の単位 */
+function isBengaliUnit(unit: string): boolean {
+  const c = unit.charCodeAt(0);
+  return c >= 0x0980 && c <= 0x09ff;
+}
+/** 書式 st に「語頭の形にしない」印を足した書式 (書式ごとに 1 つ作って使い回す) */
+const notInitialMemo = new WeakMap<ResolvedStyle, ResolvedStyle>();
+function notInitialStyle(st: ResolvedStyle): ResolvedStyle {
+  let r = notInitialMemo.get(st);
+  if (!r) notInitialMemo.set(st, (r = { ...st, fontFeatures: [...(st.fontFeatures ?? []), NOT_WORD_INITIAL] }));
+  return r;
+}
 /** 標準の合字だけのときの結果 (書式の fontFeatures の配列ごと。文字列ごとに作り直さない) */
 const ligFeatureMemo = new WeakMap<string[], LigatureFeatures>();
 function ligFeatureSet(active0: readonly string[], style: string[], memoKey?: string[]): LigatureFeatures {
@@ -347,7 +363,11 @@ function flattenText(c: string, cx: FlattenCtx): void {
   // クラスタに当てる任意の合字の機能と、その書式 (要るときに 1 度だけ作る)
   let clusterLig: LigatureFeatures | null | undefined;
   let clusterLigSt: ResolvedStyle | undefined;
+  // 前の字の単位 (同じ文字列の中)。語の途中かどうかを見る
+  let unitBefore = '';
   for (const ch0 of units) {
+    const before = unitBefore;
+    unitBefore = ch0;
     const unitKind = clusters ? clusters.kinds[ui++] : 0;
     // まとめて組むクラスタと、基底の字と異体字セレクタの並び: 字の種類で決まる処理 (禁則・約物の詰め・和欧間のアキ・字間) は基底の字
     // (並びの最初の字) で行い、描く文字列だけを並びにする
@@ -405,6 +425,9 @@ function flattenText(c: string, cx: FlattenCtx): void {
       if (clusterLig === undefined) clusterLig = optionalLigaturesOf(st);
       if (clusterLig?.style && m.clusterLigates(ch0, runStyle(st), clusterLig.active)) ust = clusterLigSt ??= { ...st, fontFeatures: clusterLig.style };
     }
+    // ベンガル文字の語の途中の単位: 前に置く母音記号を語頭の形にしない (fontkitShaping.ts の 9)。語の途中 = 前の単位が字・結合文字で終わる
+    // (HarfBuzz のインド系の整形と同じ見分け: 前の字が字 (L)・結合文字 (M)・書式の制御 (Cf) なら語頭でない)
+    if (whole && wm === 'horizontal-tb' && before && isBengaliUnit(ch0) && WORD_INNER.test(before)) ust = notInitialStyle(ust);
     const g = whole ? m.clusterGlyph(ch0, runStyle(ust), wm) : variation ? m.variationGlyph(ch0, runStyle(st), wm) : m.glyph(ch, runStyle(st), wm);
     // 分けたクラスタの 2 つ目以降の字 (どの書体も並び全体を持たないとき。字ごとに組む): 前の字と同じ字の単位なので、前の字との間で改行せず、字間も空けない
     const cont = unitKind === UNIT_CONT;

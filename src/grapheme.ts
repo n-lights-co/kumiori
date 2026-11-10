@@ -29,15 +29,60 @@ interface State {
   pict: 0 | 1 | 2;
   /** GB9c: InCB=Linker の後ろに InCB=Extend だけが続いている */
   linker: boolean;
+  /** 組版の字の単位 (clusterUnits) のときだけ: インド系の文字の結合子音を、UAX #29 の既定より広くまとめる (aksaraBreak) */
+  aksara?: boolean;
+  /** aksara のとき: 前の字 */
+  prevCp?: number;
+  /** aksara のとき: タミル文字で、つなぎ (ヴィラーマ) の前にあった子音 */
+  tamilBase?: number;
 }
 
 const newState = (): State => ({ prev: '', ri: 0, pict: 0, linker: false });
+
+/**
+ * 組版の字の単位での、結合子音のつなぎ (GB9c の Indic_Conjunct_Break) の読み替え。
+ *
+ * UAX #29 の GB9c が結合子音を 1 つにまとめるのは、Indic_Conjunct_Break を持つ文字だけ (Unicode 18.0 のインド系では、デーヴァナーガリー・
+ * ベンガル・グジャラート・オリヤー・テルグ・マラヤーラム)。それ以外の文字の結合子音は、既定では「子音 + ヴィラーマ」と次の子音に分かれる。
+ * 組版では、字の単位ごとに書体へ渡して字形を決めるので、分かれると、書体の結合の字形 (下に付く子音・合字) にならず、ヴィラーマが
+ * 見えたままの別々の字になる。UAX #29 §3 は、インド系の文字の正書法の音節 (aksara) を、既定の規則をあつらえる (tailoring) 例に挙げ、
+ * あつらえは文字ごと・言語ごとでありうるとしている。CSS Text 3 §1.4 (Characters and Letters) も、字の単位 (typographic character unit) を
+ * UAX #29 の拡張書記素クラスタを土台に、組版の習慣に合わせてあつらえるべきとし、音節全体が単位になる文字を例に挙げている。
+ * そこで、次の文字の結合子音を 1 つの単位にする (文字ごとの結合の形は、Unicode 標準 12・13 章の各文字の節):
+ *  - グルムキー: 子音 + ヴィラーマ (U+0A4D) + 子音 (下に付く ਰ・ਹ・ਵ・ਯ など)。
+ *  - カンナダ: 子音 + ヴィラーマ (U+0CCD) + 子音 (下に付く子音)。
+ *  - タミル: 合字になる 2 つだけ。க்ஷ (U+0B95 U+0BCD U+0BB7) と、ஸ்ரீ・ஶ்ரீ の「ஸ・ஶ + ヴィラーマ + ர」。ほかの「子音 + プッリ + 子音」は、
+ *    プッリ (ヴィラーマ) の見える別々の字なので、まとめない。
+ *  - シンハラ: 子音 + ヴィラーマ (U+0DCA) + ZWJ + 子音 (結合子音・ラカーランサヤ・ヤンサヤ・レパヤ) と、子音 + ZWJ + ヴィラーマ + 子音
+ *    (接する字)。ZWJ の無い「子音 + ヴィラーマ + 子音」は、ヴィラーマの見える別々の字なので、まとめない。
+ * どれも、ヴィラーマの後ろの ZWNJ (結合しない指定) では、既定どおり分かれる (ZWNJ は Indic_Conjunct_Break=Extend でない)。
+ * 戻り値は、字 cp の Indic_Conjunct_Break の読み替え (incb は表の値)。前の字までの状態 s を見る (s は変えない)
+ */
+function aksaraBreak(s: State, cp: number, incb: string): string {
+  if (cp === 0x200d) return s.prevCp === 0x0dca ? 'Linker' : incb;
+  if (cp < 0x0a00 || cp > 0x0dff) return incb;
+  if (cp <= 0x0a7f) return cp === 0x0a4d ? 'Linker' : (cp >= 0x0a15 && cp <= 0x0a39) || (cp >= 0x0a59 && cp <= 0x0a5e) ? 'Consonant' : incb;
+  if (cp >= 0x0b80 && cp <= 0x0bff) {
+    const p = s.prevCp;
+    if (cp === 0x0bcd) return p === 0x0b95 || p === 0x0bb8 || p === 0x0bb6 ? 'Linker' : incb;
+    if (s.linker && ((s.tamilBase === 0x0b95 && cp === 0x0bb7) || ((s.tamilBase === 0x0bb8 || s.tamilBase === 0x0bb6) && cp === 0x0bb0))) return 'Consonant';
+    return incb;
+  }
+  if (cp >= 0x0c80 && cp <= 0x0cff) return cp === 0x0ccd ? 'Linker' : (cp >= 0x0c95 && cp <= 0x0cb9) || cp === 0x0cdd || cp === 0x0cde ? 'Consonant' : incb;
+  if (cp >= 0x0d80) return cp === 0x0dca ? (s.prevCp === 0x200d ? 'Linker' : incb) : cp >= 0x0d9a && cp <= 0x0dc6 ? 'Consonant' : incb;
+  return incb;
+}
 
 /** 前の字 (状態 s) と字 cp の間が、クラスタの境目か (GB3〜GB999)。並びの始め (GB1) は境目。呼んだ後、s は cp まで進む */
 function boundaryBefore(s: State, cp: number): boolean {
   const a = s.prev;
   const b = graphemeClusterBreak(cp);
-  const incb = b === 'Extend' || b === 'ZWJ' || b === 'XX' ? indicConjunctBreak(cp) : 'None';
+  let incb = b === 'Extend' || b === 'ZWJ' || b === 'XX' ? indicConjunctBreak(cp) : 'None';
+  if (s.aksara) {
+    incb = aksaraBreak(s, cp, incb);
+    if (cp === 0x0bcd && incb === 'Linker') s.tamilBase = s.prevCp;
+    s.prevCp = cp;
+  }
   const ep = b === 'XX' && extPict(cp) === 'Y';
   let brk: boolean;
   if (a === '') brk = true; // GB1
@@ -108,7 +153,8 @@ function isSpaceSeparator(cp: number): boolean {
 
 /**
  * 字の単位の並び (文字列なら字ごと) を、組版の字の単位 (クラスタ) にまとめる。まとめるものが無ければ null。
- * UAX #29 の拡張書記素クラスタと、次の 3 点だけが違う:
+ * UAX #29 の拡張書記素クラスタと、次の 4 点だけが違う:
+ *  - インド系の文字の結合子音を、Indic_Conjunct_Break の無い文字 (グルムキー・カンナダ・タミル・シンハラ) でも 1 つの単位にする (aksaraBreak)。
  *  - CR と LF はまとめない (改行は字ごとに扱う)。
  *  - 空白 (Zs) を基底の字にしない。空白の後ろの結合文字は、その結合文字から新しい単位にする (UAX #14 の LB9 は、SP の後ろの結合文字を
  *    SP にまとめず、LB10 で独立の字 (AL) として扱う。空白は行末で捨てる・語間として伸縮するので、結合文字を載せない)。
@@ -118,6 +164,7 @@ function isSpaceSeparator(cp: number): boolean {
 export function clusterUnits(units: string | string[], mergedAt?: boolean[]): string[] | null {
   const out: string[] = [];
   const s = newState();
+  s.aksara = true;
   let merged = false;
   /** いまの単位が、空白 1 字だけ */
   let spaceOnly = false;
@@ -126,7 +173,7 @@ export function clusterUnits(units: string | string[], mergedAt?: boolean[]): st
     if (u.length > (cp > 0xffff ? 2 : 1)) {
       // 前の段階でまとめた単位: 前後とはまとめない
       out.push(u);
-      Object.assign(s, newState());
+      Object.assign(s, newState(), { prevCp: undefined, tamilBase: undefined });
       spaceOnly = false;
       continue;
     }

@@ -1493,7 +1493,10 @@ export interface GlyphArea extends AreaBase {
   italic?: boolean;
   /** 疑似太字 (太字を求めたが、書体に太字が無い。描画時に字の輪郭を太らせる) */
   fakeBold?: boolean;
-  /** 字形を差し替える OpenType の機能 (TextStyle.fontFeatures) */
+  /**
+   * 字形を差し替える OpenType の機能 (TextStyle.fontFeatures)。
+   * '-init' は機能の名前でなく、組版が足す印: ベンガル文字の語の途中の字の単位で、語頭の形 (init) を当てない (fontkitShaping.ts の NOT_WORD_INITIAL)
+   */
   features?: string[];
   /** 水平方向の拡縮 (縦中横の圧縮) */
   scaleX: number;

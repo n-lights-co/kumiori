@@ -274,6 +274,44 @@ export class Measurer {
     return v;
   }
 
+  /**
+   * 字の単位 a の後ろに字の単位 b が続くとき、a の送りに足す量 (em 比)。a・b が 2 つ以上の字形になる単位 (インド系の文字の音節) のときの kern。
+   * a・b をつないで書体の kern を当てて組み、a の分の送りの合計が、a だけを組んだときからどれだけ変わるかを見る (書体の、字の単位の間の
+   * 組の詰め・空け。GPOS の kern・dist)。つないだときに字形が変わる組 (字の単位をまたぐ字形の置き換え) は、位置を比べられないので 0。
+   * a・b が別の書体で描かれるときも 0
+   */
+  clusterKern(a: string, b: string, style: Pick<RunStyle, 'fontFamily' | 'fontWeight'> & { features?: string[] }): number {
+    const w = style.fontWeight ?? 400;
+    const fontOf = (u: string) => this.fonts.getForCluster(style.fontFamily, w, u) ?? this.fonts.getForChar(style.fontFamily, w, String.fromCodePoint(u.codePointAt(0)!));
+    const fa = fontOf(a);
+    if (fa !== fontOf(b)) return 0;
+    let pairs = this.kernPairs.get(fa);
+    if (!pairs) this.kernPairs.set(fa, (pairs = new Map()));
+    const feats = style.features ?? [];
+    const k = a + '\u0000' + b + '\u0000' + feats.join(',') + '\u0000cl';
+    const hit = pairs.get(k);
+    if (hit !== undefined) return hit;
+    let v = 0;
+    try {
+      // 語頭の形 (init。ベンガル文字) は当てずに比べる: つないで組むと b は語頭でなくなり、別々に組んだ字形と食い違うため
+      const f = { kern: true, liga: false, clig: false, init: false, ...Object.fromEntries(feats.map((x) => [x, true])) };
+      const ta = this.clusterText(a, fa);
+      const ra = fa.fk.layout(ta, f as never);
+      const rb = fa.fk.layout(this.clusterText(b, fa), f as never);
+      const run = fa.fk.layout(ta + this.clusterText(b, fa), f as never);
+      const n = ra.glyphs.length;
+      if (run.glyphs.length === n + rb.glyphs.length && run.glyphs.every((g, i) => g.id === (i < n ? ra.glyphs[i] : rb.glyphs[i - n]).id)) {
+        const adv = (ps: Array<{ xAdvance: number }>) => ps.slice(0, n).reduce((x, p) => x + p.xAdvance, 0);
+        v = (adv(run.positions) - adv(ra.positions)) / fa.unitsPerEm;
+      }
+    } catch {
+      v = 0;
+    }
+    if (pairs.size > 50000) pairs.clear();
+    pairs.set(k, v);
+    return v;
+  }
+
   private contextSpaces = new Map<LoadedFont, Map<string, number>>();
   /**
    * 字 prev と字 next の間の空白 (U+0020) の送りが、書体の文脈の置き換え (OpenType の calt など) で変わる量 (em 比。変わらなければ 0)。
