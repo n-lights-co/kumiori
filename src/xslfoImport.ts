@@ -153,6 +153,8 @@ class Importer {
   private markerEls: Array<{ el: XEl; mk: LMarker }> = [];
   /** 読んだ fo:retrieve-marker と、その位置の文脈 */
   private retrieves: Array<{ r: LRetrieveMarker; ctx: Ctx }> = [];
+  /** fo:marker の中身を読んでいる間の深さ (0 なら marker の外) */
+  private inMarker = 0;
   /** 文字列の XML (CDATA に入った MathML・SVG) を読むためのパーサ */
   parseXml?: (xml: string) => XNode;
 
@@ -469,10 +471,22 @@ class Importer {
    * marker 自身とその祖先の性質は引き継がない (§6.13.5 の注)
    */
   private resolveMarkerVariants() {
-    for (const { r, ctx } of this.retrieves) {
+    // 回す範囲は先に控える (読み直しの途中で retrieves・markerEls が増えても、回す数は変わらない)
+    const retrieves = this.retrieves.slice();
+    const markers = this.markerEls.slice();
+    for (const { r, ctx } of retrieves) {
       const variants: Record<number, Array<LBlockLevel | LInlineLevel>> = {};
-      for (const { el, mk } of this.markerEls) if (mk.className === r.className && mk.key !== undefined) variants[mk.key] = this.children(el, ctx, true);
+      for (const { el, mk } of markers) if (mk.className === r.className && mk.key !== undefined) variants[mk.key] = this.markerChildren(el, ctx);
       if (Object.keys(variants).length) r.variants = variants;
+    }
+  }
+  /** fo:marker の中身を読む (中の fo:retrieve-marker・fo:marker は読まない。flowChild の marker・retrieve-marker の所を参照) */
+  private markerChildren(el: XEl, ctx: Ctx): Array<LBlockLevel | LInlineLevel> {
+    this.inMarker++;
+    try {
+      return this.children(el, ctx, true);
+    } finally {
+      this.inMarker--;
     }
   }
 
@@ -1749,12 +1763,25 @@ class Importer {
       case 'footnote':
         return one(this.footnote(n, ctx), false);
       case 'marker': {
+        // fo:marker の中の fo:marker: fo:marker は fo:flow の子孫で、fo:marker の子孫であってはならない (XSL 1.1 §6.13.5 の Constraints)。
+        // 読むと、外の marker を取り出すたびに中の marker が増えるので、読まずに読み込みの報告に数える
+        if (this.inMarker) {
+          this.miss('fo:marker (fo:marker の中)');
+          return [];
+        }
         const { ctx: c2 } = this.textStyle(n, ctx);
-        const mk: LMarker = { type: 'marker', className: this.attr(n, 'marker-class-name') ?? '', children: this.children(n, c2, true), key: this.markerEls.length };
+        const mk: LMarker = { type: 'marker', className: this.attr(n, 'marker-class-name') ?? '', children: this.markerChildren(n, c2), key: this.markerEls.length };
         this.markerEls.push({ el: n, mk });
         return one(mk, true);
       }
       case 'retrieve-marker': {
+        // fo:marker の中の fo:retrieve-marker: fo:retrieve-marker は fo:static-content の子孫に限られ (XSL 1.1 §6.13.6 の Constraints)、
+        // fo:marker は fo:flow の子孫に限られる (§6.13.5) ので、fo:marker の中には置けない。読むと、取り出した中身がまた marker を
+        // 取り出すことになり終わらないので、読まずに読み込みの報告に数える
+        if (this.inMarker) {
+          this.miss('fo:retrieve-marker (fo:marker の中)');
+          return [];
+        }
         const pos = this.attr(n, 'retrieve-position') ?? 'first-starting-within-page';
         const bd = this.attr(n, 'retrieve-boundary') ?? 'page-sequence';
         const r: LRetrieveMarker = { type: 'retrieve-marker', className: this.attr(n, 'retrieve-class-name') ?? '' };
