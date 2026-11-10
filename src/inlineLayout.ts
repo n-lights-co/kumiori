@@ -7,7 +7,7 @@
  *   5. buildLineNode : 行 → LNode (Line > Inline > Glyph/Ruby/TCY)
  * Atom と、その周りの型 (InlineFrame・BoxSpec・LeaderSpec・FlattenState・RawLine・PositionedLine) はここで定める
  */
-import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko } from './types';
+import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
 import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './measurer';
 import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
 import { lineBreakActions, type LineBreakOptions } from './lineBreak';
@@ -54,8 +54,10 @@ export interface Atom {
   bg?: string;
   g?: GlyphMetrics;
   r?: RubyMetrics;
-  /** ルビの字の色 [1 段目, 2 段目] (LRuby.rubyColor・rubyColorUnder)。無ければ字の色 */
+  /** ルビの字の色 [上側, 下側] (LRuby.rubyColor・rubyColorUnder。rubyPosition: 'under' なら入れ替えたもの)。無ければ字の色 */
   rubyColors?: [string | undefined, string | undefined];
+  /** 字の配り方 [上側のルビ, 下側のルビ, 親文字] (LRuby.rubyAlign・rubyAlignUnder・rubyAlignBase)。無ければ、これまでの配り方 (distribute) */
+  rubyAligns?: [RubyAlign | undefined, RubyAlign | undefined, RubyAlign | undefined];
   t?: TateChuYokoMetrics;
   leader?: LeaderSpec;
   box?: BoxSpec;
@@ -389,7 +391,8 @@ function isLatinAlnumOrPunct(ch: string): boolean {
 
 function rubyOverhang(a: Atom, prev: Atom | undefined, next: Atom | undefined) {
   const r = a.r!;
-  const excess = r.rubyAdvance - r.baseAdvance;
+  // 下側のルビ (ruby-position: under・2 段目) も、親文字より長ければ掛ける
+  const excess = Math.max(r.rubyAdvance, r.underAdvance ?? 0) - r.baseAdvance;
   if (excess <= EPS) return;
   const lim = Math.min(excess / 2, r.rubySize);
   const ovL = overhangable(prev, prev?.last) ? Math.min(lim, prev!.advance / 2) : 0;
@@ -1125,6 +1128,42 @@ function distribute(advances: number[], total: number): number[] {
   return out;
 }
 
+/** ルビの字の間を空けてよい字 (和文の字: 漢字・仮名。CSS Ruby 1 §4.3 の text-justify: ruby の「CJK の字」。注音字母・欧文は含めない) */
+const isRubyJustifyChar = (ch: string): boolean => /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u30FC\u3005\u3007]/u.test(ch);
+
+/**
+ * 親文字・ルビの字を、長さ total の箱の中に置く位置 (CSS Ruby 1 §4.3 ruby-align)。
+ *  - 指定が無ければ、これまでの配り方 (distribute: どの字にも、前後に同じアキを付ける)
+ *  - start: 始めの端から詰めて置く。center: 中央に詰めて置く
+ *  - space-between: 字の間 (和文の字どうしの間だけ。§4.3 の例: 欧文・注音字母の字の間は空けない) を均等に空ける。空ける所が無ければ中央
+ *  - space-around: space-between の空ける所に、もう 1 つ分を足し、その半分ずつを前後に付ける
+ * 中身が箱より長いとき (余りが無いとき) は、どの値でも詰めて置く
+ */
+function rubyOffsets(glyphs: GlyphMetrics[], total: number, align: RubyAlign | undefined): number[] {
+  const advances = glyphs.map((g) => g.advance);
+  if (!align) return distribute(advances, total);
+  const extra = Math.max(total - advances.reduce((x, y) => x + y, 0), 0);
+  const opp = glyphs.map((g, k) => k > 0 && isRubyJustifyChar(glyphs[k - 1].ch) && isRubyJustifyChar(g.ch));
+  const n = opp.filter(Boolean).length;
+  let gap = 0;
+  let x = extra / 2;
+  if (align === 'start') x = 0;
+  else if (align === 'space-between' && n > 0) {
+    gap = extra / n;
+    x = 0;
+  } else if (align === 'space-around') {
+    gap = extra / (n + 1);
+    x = gap / 2;
+  }
+  const out: number[] = [];
+  advances.forEach((adv, k) => {
+    if (opp[k]) x += gap;
+    out.push(x);
+    x += adv;
+  });
+  return out;
+}
+
 /**
  * leader の描画ノード。
  *   dots: 行頭 (= インライン座標 0) 基準で pitch の倍数位置に点を置く → 複数行で点が縦に揃う
@@ -1270,14 +1309,14 @@ export function buildLineNode(
           ref: a.ref,
         });
         // 前後の字に掛けた分は、親文字を置かない (親文字はルビの範囲の内側 [ovL, advance - ovR] に均等に置く)
-        const baseOff = distribute(r.baseGlyphs.map((g) => g.advance), r.advance - ovL - ovR).map((x) => x + ovL);
+        const baseOff = rubyOffsets(r.baseGlyphs, r.advance - ovL - ovR, a.rubyAligns?.[2]).map((x) => x + ovL);
         r.baseGlyphs.forEach((g, idx) => {
           const gn = glyphNode(g, a.st, wm, g.ch, a.st.fontSize, a.st.color);
           gn.i = baseOff[idx];
           gn.b = r.rubyExtent;
           rn.children.push(gn);
         });
-        const rubyOff = distribute(r.rubyGlyphs.map((g) => g.advance), r.advance);
+        const rubyOff = rubyOffsets(r.rubyGlyphs, r.advance, a.rubyAligns?.[0]);
         r.rubyGlyphs.forEach((g, idx) => {
           const gn = glyphNode(g, a.st, wm, g.ch, r.rubySize, a.rubyColors?.[0] ?? a.st.color);
           gn.i = rubyOff[idx];
@@ -1286,7 +1325,7 @@ export function buildLineNode(
         });
         // 下側のルビ (2 段目): 親文字の下に置く
         if (r.underGlyphs) {
-          const underOff = distribute(r.underGlyphs.map((g) => g.advance), r.advance);
+          const underOff = rubyOffsets(r.underGlyphs, r.advance, a.rubyAligns?.[1]);
           r.underGlyphs.forEach((g, idx) => {
             const gn = glyphNode(g, a.st, wm, g.ch, r.rubySize, a.rubyColors?.[1] ?? a.st.color);
             gn.i = underOff[idx];

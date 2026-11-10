@@ -82,10 +82,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'overflow-inline',
   'overflow-clip-margin',
   'page-orientation',
-  'ruby-position',
-  'ruby-align',
-  'ruby-merge',
-  'ruby-overhang',
   'tab-size',
   'text-align-all',
   'text-justify',
@@ -158,6 +154,7 @@ export const UNSUPPORTED_CSS_VALUES: Readonly<Record<string, readonly string[]>>
   position: ['sticky'],
   display: ['run-in'],
   'writing-mode': ['sideways-lr'],
+  'ruby-merge': ['auto'],
 };
 
 export interface UnsupportedCssReport {

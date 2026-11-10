@@ -47,6 +47,7 @@ import type {
   LPageSequence,
   LRetrieveMarker,
   LRuby,
+  RubyAlign,
   LTable,
   LTableCell,
   LTableColumn,
@@ -76,6 +77,14 @@ const isBlockLevel = (n: unknown): boolean =>
 
 /** 疑似要素 */
 export type PseudoSel = '::before' | '::after' | '::first-letter' | '::first-line' | '::marker';
+
+/** ルビの性質の値 (CSS Ruby 1 §4.1〜§4.3・§5.1 の構文)。ほかの値 (initial・revert など) は、指定が無いものとして扱う */
+const RUBY_VALUES = {
+  'ruby-position': /^(alternate|over|under|alternate (over|under)|(over|under) alternate|inter-character)$/,
+  'ruby-align': /^(start|center|space-between|space-around)$/,
+  'ruby-merge': /^(separate|merge|auto)$/,
+  'ruby-overhang': /^(auto|none)$/,
+};
 
 /** 確定したスタイルの読み取り (既定は自前のカスケード cascadeStyles。ブラウザ経由では getComputedStyle。テストでは差し替える) */
 export interface StyleSource {
@@ -2403,6 +2412,20 @@ class HtmlImporter {
     return all ? printColor(all, this.opts.spotColors) : undefined;
   }
 
+  /**
+   * ルビの性質 (ruby-position・ruby-align・ruby-merge・ruby-overhang。どれも継承する。CSS Ruby 1 §4・§5.1) の、文書が指定した値。
+   * 自前で読んだ宣言 (pg) を、要素から祖先へたどる。指定が無ければ '' (これまでの組み方のまま)。
+   * ブラウザの確定値は使わない (指定が無くても初期値を返し、指定の有無が分からないため)
+   */
+  private rubyDecl(el: Element, prop: 'ruby-position' | 'ruby-align' | 'ruby-merge' | 'ruby-overhang'): string {
+    for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
+      const v = this.pg(e as Element)[prop]?.trim().toLowerCase().replace(/\s+/g, ' ');
+      if (!v || v === 'inherit' || v === 'unset') continue;
+      return RUBY_VALUES[prop].test(v) ? v : '';
+    }
+    return '';
+  }
+
   private miss(what: string) {
     this.report.unsupported[what] = (this.report.unsupported[what] ?? 0) + 1;
   }
@@ -4031,22 +4054,27 @@ class HtmlImporter {
       const isEl = (n: Node, nm: string) => n.nodeType === 1 && (n as Element).localName === nm;
       const txt = (n: Node) => n.textContent ?? '';
       const out: LInlineLevel[] = [];
-      // rtEl・underEl: 注釈の要素 (rt・rtc。ルビの字の色を取る)
-      const pairs: Array<{ base: string; rt: string; under?: string; rtEl?: Node; underEl?: Node }> = [];
+      // rtEl・underEl: 注釈の要素 (rt・rtc。ルビの字の色と ruby-align を取る)。con・underCon: 段の入れ物が rtc のとき、その要素
+      // (ruby-position・ruby-overhang を取る。無名の入れ物は ruby から継承する)。baseEl: 親文字の要素 (rb)。
+      // merged・underMerged: ruby-merge: merge でまとめた段 (ruby-align は入れ物の値を使う。CSS Ruby 1 §4.3)
+      const pairs: Array<{ base: string; rt: string; under?: string; rtEl?: Node; underEl?: Node; con?: Element; underCon?: Element; baseEl?: Element; merged?: boolean; underMerged?: boolean }> = [];
+      const conOf = (l: { con?: Element } | undefined) => l?.con ?? el;
       // rtc (ルビの段の入れ物): rt の後の rtc は 2 段目 (ruby-position: alternate で下側。Ruby 1 §4.1)。
       // それまでの組をまとめた親文字に掛ける (rt の無い最初の rtc は 1 段目)
       if (kids.some((n) => isEl(n, 'rb'))) {
         // rb を使う書き方は、CSS Ruby 1 §2.2 の無名の箱の作り方で組を作る: ruby の直下の、続いた字の並び (rb・rt・rtc の外) は
         // 無名の親文字にして、rb と同じ親文字の段に入れる (空白だけなら捨てる)。続いた rt は 1 つの段 (無名の段の入れ物)、rtc は 1 段。
         // 親文字の段と、その後の段が 1 つの区切り (ruby segment。§2.3.1)
-        type Level = { anon: boolean; items: string[]; nodes: Node[] };
-        const segs: Array<{ bases: string[]; levels: Level[] }> = [];
-        let seg: { bases: string[]; levels: Level[] } | undefined;
+        type Level = { anon: boolean; items: string[]; nodes: Node[]; con?: Element };
+        type Seg = { bases: string[]; baseEls: Array<Element | undefined>; levels: Level[] };
+        const segs: Seg[] = [];
+        let seg: Seg | undefined;
         let rtRun: Level | undefined;
         let text = '';
-        const addBase = (b: string) => {
-          if (!seg || seg.levels.length) segs.push((seg = { bases: [], levels: [] }));
+        const addBase = (b: string, rb?: Element) => {
+          if (!seg || seg.levels.length) segs.push((seg = { bases: [], baseEls: [], levels: [] }));
           seg.bases.push(b);
+          seg.baseEls.push(rb);
           rtRun = undefined;
         };
         const flushText = () => {
@@ -4056,10 +4084,10 @@ class HtmlImporter {
         for (const n of kids) {
           if (isEl(n, 'rb')) {
             flushText();
-            addBase(txt(n));
+            addBase(txt(n), n as Element);
           } else if (isEl(n, 'rt') || isEl(n, 'rtc')) {
             flushText();
-            if (!seg) segs.push((seg = { bases: [], levels: [] }));
+            if (!seg) segs.push((seg = { bases: [], baseEls: [], levels: [] }));
             if (isEl(n, 'rt')) {
               if (!rtRun) seg.levels.push((rtRun = { anon: false, items: [], nodes: [] }));
               rtRun.items.push(txt(n));
@@ -4067,7 +4095,7 @@ class HtmlImporter {
             } else {
               // rtc の中の rt はそれぞれの注釈、rt の無い rtc は 1 つの無名の注釈 (区切りの親文字すべてに掛かる。§2.3.2)
               const rts = Array.from((n as Element).childNodes).filter((k) => isEl(k, 'rt'));
-              seg.levels.push(rts.length ? { anon: false, items: rts.map(txt), nodes: rts } : { anon: true, items: [txt(n)], nodes: [n] });
+              seg.levels.push(rts.length ? { anon: false, items: rts.map(txt), nodes: rts, con: n as Element } : { anon: true, items: [txt(n)], nodes: [n], con: n as Element });
               rtRun = undefined;
             }
           } else if (n.nodeType === 3 || n.nodeType === 4 || n.nodeType === 1) text += txt(n);
@@ -4079,8 +4107,21 @@ class HtmlImporter {
           const [l1, l2] = sg.levels;
           const nb = sg.bases.length;
           const per = (l: Level | undefined, k: number) => (!l ? '' : k === nb - 1 ? l.items.slice(k).join('') : (l.items[k] ?? ''));
-          if (!nb || l1?.anon || l2?.anon) pairs.push({ base: sg.bases.join(''), rt: l1?.items.join('') ?? '', rtEl: l1?.nodes[0], ...(l2 ? { under: l2.items.join(''), underEl: l2.nodes[0] } : {}) });
-          else sg.bases.forEach((b, k) => pairs.push({ base: b, rt: per(l1, k), rtEl: l1?.nodes[Math.min(k, l1.nodes.length - 1)], ...(l2 ? { under: per(l2, k), underEl: l2.nodes[Math.min(k, l2.nodes.length - 1)] } : {}) }));
+          // ruby-merge: merge (CSS Ruby 1 §4.2): 区切りの中の注釈をつなげて、親文字すべてに掛かる 1 つの注釈にする (グループルビ)。
+          // 段の入れ物 (rtc。無名の入れ物は ruby) の値。2 つの段の片方だけが merge で、もう片方が親文字ごとの注釈のときは、
+          // 組を分けたまま (separate) にして、未対応として知らせる
+          const mergeOf = (l: Level | undefined) => !!l && !l.anon && nb > 1 && this.rubyDecl(conOf(l), 'ruby-merge') === 'merge';
+          let [m1, m2] = [mergeOf(l1), mergeOf(l2)];
+          if ((m1 && l2 && !l2.anon && !m2) || (m2 && l1 && !l1.anon && !m1)) {
+            this.miss('ruby-merge: merge (片方の段だけ)');
+            m1 = m2 = false;
+          }
+          if (!nb || l1?.anon || l2?.anon || m1 || m2)
+            pairs.push({ base: sg.bases.join(''), rt: l1?.items.join('') ?? '', rtEl: l1?.nodes[0], con: l1?.con, baseEl: sg.baseEls[0], ...(m1 ? { merged: true } : {}), ...(l2 ? { under: l2.items.join(''), underEl: l2.nodes[0], underCon: l2.con, ...(m2 ? { underMerged: true } : {}) } : {}) });
+          else
+            sg.bases.forEach((b, k) =>
+              pairs.push({ base: b, rt: per(l1, k), rtEl: l1?.nodes[Math.min(k, l1.nodes.length - 1)], con: l1?.con, baseEl: sg.baseEls[k], ...(l2 ? { under: per(l2, k), underEl: l2.nodes[Math.min(k, l2.nodes.length - 1)], underCon: l2.con } : {}) }),
+            );
         }
       } else {
         let base = '';
@@ -4089,11 +4130,11 @@ class HtmlImporter {
           if (isEl(n, 'rtc') && !base.trim() && sinceRtc > 0) {
             // 2 段目: 直前の rtc の後の組をまとめ、下側のルビにする
             const group = pairs.splice(pairs.length - sinceRtc, sinceRtc);
-            pairs.push({ base: group.map((g) => g.base).join(''), rt: group.map((g) => g.rt).join(''), rtEl: group[0]?.rtEl, under: txt(n), underEl: n });
+            pairs.push({ base: group.map((g) => g.base).join(''), rt: group.map((g) => g.rt).join(''), rtEl: group[0]?.rtEl, con: group[0]?.con, under: txt(n), underEl: n, underCon: n as Element });
             sinceRtc = 0;
             base = '';
           } else if (isEl(n, 'rt') || isEl(n, 'rtc')) {
-            pairs.push({ base, rt: txt(n), rtEl: n });
+            pairs.push({ base, rt: txt(n), rtEl: n, ...(isEl(n, 'rtc') ? { con: n as Element } : {}) });
             sinceRtc++;
             base = '';
           } else base += txt(n);
@@ -4125,6 +4166,29 @@ class HtmlImporter {
         this.report.counts.rubies++;
         const rc = t ? colorOf(pr.rtEl) : undefined;
         const uc = u ? colorOf(pr.underEl) : undefined;
+        // ruby-position (CSS Ruby 1 §4.1。段の入れ物の値): 1 段目は under を含めば下側、ほかは上側 (alternate だけ・over。
+        // inter-character は、縦書きでは over と同じ。横書きの inter-character は未対応で、over として組んで知らせる)。
+        // 2 段目は、alternate (初期値) なら 1 段目の逆の側。over・under を明示して 1 段目と同じ側になるとき (外へ重ねる) は未対応で、逆の側に置いて知らせる
+        const posOf = (c: Element) => {
+          const v = this.rubyDecl(c, 'ruby-position');
+          if (v === 'inter-character' && !/^(vertical|sideways)/.test(this.cs(el)('writing-mode'))) this.miss('ruby-position: inter-character (横書き)');
+          return v;
+        };
+        const isUnder = (v: string) => /\bunder\b/.test(v);
+        const p1 = t ? posOf(pr.con ?? el) : '';
+        const under1 = isUnder(p1);
+        if (t && u) {
+          const p2 = posOf(pr.underCon ?? el);
+          if (p2 && !/\balternate\b/.test(p2) && isUnder(p2) === under1) this.miss('ruby-position (同じ側の 2 段)');
+        }
+        // ruby-overhang (§5.1。段の入れ物の値): auto を明示したら前後の字に掛け、none なら掛けない。指定が無ければ、これまでどおり掛けない
+        // (初期値 auto は、掛けるかどうかを処理系に任せる)
+        const oh = this.rubyDecl(pr.con ?? el, 'ruby-overhang');
+        // ruby-align (§4.3。親文字・注釈の箱ごとの値。まとめた注釈 (ruby-merge: merge) は入れ物の値)
+        const alignOf = (n: Node | undefined) => (n && n.nodeType === 1 ? (this.rubyDecl(n as Element, 'ruby-align') as RubyAlign | '') : '');
+        const a1 = t ? alignOf(pr.merged ? (pr.con ?? el) : (pr.rtEl ?? el)) : '';
+        const a2 = u ? alignOf(pr.underMerged ? (pr.underCon ?? el) : (pr.underEl ?? el)) : '';
+        const ab = alignOf(pr.baseEl ?? el);
         out.push({
           type: 'ruby',
           baseText: b,
@@ -4133,6 +4197,11 @@ class HtmlImporter {
           ...(scale && Math.abs(scale - 0.5) > 1e-6 ? { rubyScale: scale } : {}),
           ...(rc ? { rubyColor: rc } : {}),
           ...(uc ? { rubyColorUnder: uc } : {}),
+          ...(under1 ? { rubyPosition: 'under' } : {}),
+          ...(a1 ? { rubyAlign: a1 } : {}),
+          ...(a2 ? { rubyAlignUnder: a2 } : {}),
+          ...(ab ? { rubyAlignBase: ab } : {}),
+          ...(oh ? { rubyOverhang: oh === 'auto' } : {}),
         } as LRuby);
       }
       return out;

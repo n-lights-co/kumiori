@@ -782,7 +782,27 @@ export interface LRuby extends BaseNode {
   rubyColor?: string;
   /** 2 段目のルビの字の色 (HTML の rtc の color) */
   rubyColorUnder?: string;
+  /**
+   * ルビを置く側 (CSS Ruby 1 §4.1 の ruby-position)。'under' は、rubyText を親文字の下側 (縦書きは左)、rubyTextUnder (2 段目) を
+   * 上側 (縦書きは右) に置く。無ければ、rubyText が上側 (縦書きは右)、rubyTextUnder が下側
+   */
+  rubyPosition?: 'under';
+  /**
+   * 親文字・ルビが、その箱 (親文字とルビのうち長いほうの長さ) より短いときの、字の配り方 (CSS Ruby 1 §4.3 の ruby-align)。
+   * rubyAlign は rubyText、rubyAlignUnder は rubyTextUnder、rubyAlignBase は親文字。
+   * 無ければ、これまでの配り方 (字ごとに、前後に同じアキを付ける。欧文の字の間も空ける)
+   */
+  rubyAlign?: RubyAlign;
+  rubyAlignUnder?: RubyAlign;
+  rubyAlignBase?: RubyAlign;
 }
+
+/**
+ * CSS Ruby 1 §4.3 の ruby-align の値。start: 箱の始めの端にそろえる。center: 中央。space-between: 字の間を均等に空けて両端をそろえる。
+ * space-around: 字の間のアキの半分を両端にも付ける。字の間を空けるのは、和文の字 (漢字・仮名) どうしの間だけで、
+ * 欧文の字の間は空けない (空ける所が無ければ中央にそろえる)
+ */
+export type RubyAlign = 'start' | 'center' | 'space-between' | 'space-around';
 
 /**
  * fo:page-number-citation 相当。refId の要素 (id を持つブロック・表) が置かれたページ番号に置き換わる (目次用)。

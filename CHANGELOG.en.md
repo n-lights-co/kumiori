@@ -22,6 +22,7 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - For a `display: block` image with both `width` and `max-width`, the wrapping box now has the width of the image
   - Named pages: no first page is created for boxes outside the flow alone (absolutely positioned, floats, etc.) (CSS Page 3 §8.1)
   - Properties that have no effect in print (`cursor`, `transition-*`, etc.) are no longer reported as unsupported CSS
+  - Ruby placement: supports `ruby-position` (`under` places ruby below the base, to the left in vertical writing; combinations with `alternate`), `ruby-align` (`start`, `center`, `space-between`, `space-around`), `ruby-overhang` (an explicit `auto` lets ruby overhang adjacent kana and punctuation) and `ruby-merge: merge` (group ruby). Ruby without these properties is typeset as before
 - **Links and bookmarks**: `<a href>` on blocks, flex containers and tables makes the whole box a link; relative-reference links (GoToR for PDFs, Launch for other files); `h1` to `h6` become bookmarks with every default style (CSS GCPM 3 Appendix B)
 - **Tables**: in tables with `border-collapse: collapse`, the border between a table header or footer repeated at a page break and the adjacent row is chosen again from the borders on both sides (XSL 1.1 §6.7.10, CSS 2.1 §17.6.2.1)
 - **Fonts**: reads WOFF and WOFF2 (including font collections) (`--font`, `fonts`, `@font-face`); fonts referenced by `@font-face` over `http(s):` are also fetched (only those whose `unicode-range` overlaps the characters of the document)
