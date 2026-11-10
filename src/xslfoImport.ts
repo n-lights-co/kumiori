@@ -6,9 +6,9 @@
  *  - ブロック: block, inline, character, wrapper, block-container, float, footnote, leader, marker, retrieve-marker, page-number
  *  - 表: table-and-caption / table (header/footer/body/row/cell, colspan/rowspan, 列幅の固定・比例)、list-block (2 列の表へ)
  *  - ルビ: XSL-FO に標準が無いので、AH Formatter 向けの文書の書き方「inline-container に小さい block + 親文字 block」を LRuby に変換
- *  - 画像・SVG・数式・フォーム等は変換できないため、プレースホルダにして報告する
+ *  - 画像 (external-graphic)・SVG・MathML (instream-foreign-object) は画像 (LImage) にする。MathML は、数式用の書体があれば
+ *    mathLayout.ts で組み、無ければ行内の要素に組み替える (foMathFallback.ts)。読めない中身は、指定の寸法のプレースホルダにして報告する
  *
-
  * DOM は最小限のインターフェース (foDom.ts の XNode) だけを使う。ブラウザの DOMParser でも @xmldom/xmldom でも動く。
  *
  * ファイルの分け方: 親から子へ渡す文脈 (Ctx) は foContext.ts、fo:simple-page-master の読み取りは foPageMaster.ts、
@@ -507,7 +507,7 @@ class Importer {
   private markerChildren(el: XEl, ctx: Ctx): Array<LBlockLevel | LInlineLevel> {
     this.inMarker++;
     try {
-      return this.children(el, ctx, true);
+      return this.children(el, ctx);
     } finally {
       this.inMarker--;
     }
@@ -528,8 +528,6 @@ class Importer {
       // fo:flow-map など、読まない子は読み込みの報告に数える
       else this.missElement(m);
     }
-    const lang = this.attr(root, 'xml:lang') ?? this.attr(root, 'language');
-    void lang;
     this.readPunctuationSpacing(root);
     // fo:page-sequence-wrapper (§6.4.6) は、中の page-sequence を順に組む (入れ子もよい)
     // axf:document-info (PDF の文書情報)
@@ -712,6 +710,27 @@ class Importer {
       else if (fname === 'xsl-before-float-separator') bfSepEl = sc;
       else if (!known.has(fname)) this.miss(`static-content:${fname}`);
     }
+    // static-content は、リージョンの寸法・向きがマスターごとに違うので、マスターごとに読み直す。
+    // 読み込みの報告の数 (counts・unsupported・droppedLinks・files) は文書に書かれた要素の数なので、同じ static-content の 2 度目からは数えない
+    const countedStatics = new Set<XEl>();
+    const staticChildren = (sc: XEl, c: Ctx): Array<LBlockLevel | LInlineLevel> => {
+      if (!countedStatics.has(sc)) {
+        countedStatics.add(sc);
+        return this.children(sc, c);
+      }
+      const { counts, unsupported, droppedLinks, files } = this.report;
+      const kept = structuredClone({ counts, unsupported, droppedLinks, files });
+      try {
+        return this.children(sc, c);
+      } finally {
+        this.report.counts = kept.counts;
+        this.report.unsupported = kept.unsupported;
+        if (kept.droppedLinks) this.report.droppedLinks = kept.droppedLinks;
+        else delete this.report.droppedLinks;
+        if (kept.files) this.report.files = kept.files;
+        else delete this.report.files;
+      }
+    };
     const staticFor = (info: MasterInfo): LBlockContainer[] => {
       const out: LBlockContainer[] = info.regionBgs.map((b) => ({
         type: 'block-container' as const,
@@ -741,7 +760,7 @@ class Importer {
         const lh = odd ? r.w : r.h;
         // static-content 自身の継承される性質 (font-size など) は、中の要素へ引き継ぐ
         const scs = this.textStyle(sc, { ...ctx, inStatic: true, wm: rwm, refOrigin: { x: r.x, y: r.y }, refSize: { w: lw, h: lh }, width: rwm === 'horizontal-tb' ? lw : lh, cbW: rwm === 'horizontal-tb' ? lw : lh, cbH: lh });
-        const c = this.children(sc, scs.ctx, true);
+        const c = staticChildren(sc, scs.ctx);
         const cont: LBlockContainer = { type: 'block-container', absolutePosition: true, left: r.x, top: r.y, width: lw, height: lh, ...scs.style, writingMode: rwm, children: c };
         if (ro) cont.rotation = ro;
         if (r.clip) cont.overflow = 'hidden';
@@ -787,8 +806,8 @@ class Importer {
       }));
     }
     const sepBodyW = def.pageW - (def.master.margins.left + def.master.margins.right) * PT_PER_MM;
-    if (bfSepEl) seq.beforeFloatSeparator = this.children(bfSepEl, { ...ctx, width: sepBodyW }, true);
-    // 区切りが線 (leader) だけでなく、文字・画像・背景・罫線を持つか
+    if (bfSepEl) seq.beforeFloatSeparator = this.children(bfSepEl, { ...ctx, width: sepBodyW });
+    // 区切りに、組む内容 (leader・文字・画像・背景・罫線) があるか
     const sepHasContent = (n: XEl): boolean =>
       (n.textContent ?? '').trim() !== '' ||
       !!this.attr(n, 'background-color') ||
@@ -801,29 +820,10 @@ class Importer {
     else if (sepHasContent(sepEl)) {
       // 区切りの内容 (leader の線・点線、文字、画像など) を、そのまま脚注領域の区切りとして組む。
       // leader の点はフォントの字 (.) で、区切りのブロックの行の中に置く
-      seq.footnotes = { separator: { content: this.children(sepEl, { ...ctx, width: sepBodyW }, true) } };
-    } else if (sepEl) {
-      const find = (n: XEl): XEl | undefined => {
-        for (const c of this.els(n)) if (this.name(c) === 'leader') return c; else { const r = find(c); if (r) return r; }
-        return undefined;
-      };
-      const ld = find(sepEl);
-      if (ld) {
-        const pat = this.attr(ld, 'leader-pattern');
-        const bodyW = def.pageW - (def.master.margins.left + def.master.margins.right) * PT_PER_MM;
-        const lc = ctx.fontSize;
-        const len = this.len(this.attr(ld, 'leader-length.optimum') ?? this.attr(ld, 'leader-length'), lc, bodyW);
-        const th = this.len(this.attr(ld, 'rule-thickness'), lc);
-        const color = this.color(this.attr(ld, 'color'));
-        const sep: { length?: number; pattern?: 'rule' | 'dots'; thickness?: number; color?: string } = {};
-        if (len !== undefined) sep.length = len;
-        if (pat === 'dots') {
-          sep.pattern = 'dots';
-          sep.thickness = 1;
-        } else if (th !== undefined) sep.thickness = th;
-        if (color) sep.color = color;
-        seq.footnotes = { separator: sep };
-      } else this.note(msg('footnote-separator の内容は、区切り線の既定書式で代用しました', 'the content of footnote-separator was replaced by the default separator rule'));
+      seq.footnotes = { separator: { content: this.children(sepEl, { ...ctx, width: sepBodyW }) } };
+    } else {
+      // 字・leader・画像・背景・罫線のどれも無い区切り (空のブロックだけなど): 区切りの指定を作らず、組むときの既定の区切り線に任せる
+      this.note(msg('footnote-separator の内容は、区切り線の既定書式で代用しました', 'the content of footnote-separator was replaced by the default separator rule'));
     }
     // 脚注どうしの間は、本体の space-before / space-after だけ (FO には Kumiori の既定の 2pt のアキは無い)
     seq.footnotes = { ...seq.footnotes, spacing: 0 };
@@ -866,7 +866,7 @@ class Importer {
       const bodyH = def.pageH - (def.master.margins.top + def.master.margins.bottom) * PT_PER_MM;
       const bodyIpd = (wm === 'horizontal-tb') !== turned ? bodyW : bodyH;
       const colW = cols && cols.count > 1 && wm === 'horizontal-tb' ? Math.max(0, (bodyW - (cols.gap ?? 12 / PT_PER_MM) * PT_PER_MM * (cols.count - 1)) / cols.count) : bodyIpd;
-      const flowKids = this.children(flowEl, { ...fst.ctx, wm, width: colW, cbW: colW, ...(colW !== bodyIpd ? { spanW: bodyW } : {}) }, false) as LBlockLevel[];
+      const flowKids = this.children(flowEl, { ...fst.ctx, wm, width: colW, cbW: colW, ...(colW !== bodyIpd ? { spanW: bodyW } : {}) }) as LBlockLevel[];
       // 入れ子のブロックの span="all" を効かせるのは互換モードだけ (仕様では fo:flow の直下のブロックにだけ効く。§7.21.4 の Note)
       seq.flow.children = this.spec ? flowKids : this.hoistSpans(flowKids, wm);
       // 本文の書字方向の裏返し (page-sequence か region-body の writing-mode)
@@ -882,8 +882,7 @@ class Importer {
   // ───────────────────────── スタイル ─────────────────────────
 
   /** font-size・色・太さなどのテキストスタイルと、子へ渡す Ctx */
-  private textStyle(el: XEl, ctx: Ctx, _isSeq = false): { style: TextStyle & { writingMode?: WritingMode }; ctx: Ctx } {
-    void _isSeq;
+  private textStyle(el: XEl, ctx: Ctx, isSeq = false): { style: TextStyle & { writingMode?: WritingMode }; ctx: Ctx } {
     const s: TextStyle & { writingMode?: WritingMode } = {};
     // 右から左の横組み: writing-mode (rl-tb / rl、lr-tb などで解除) と direction
     let rtl = ctx.rtl ?? false;
@@ -1034,14 +1033,14 @@ class Importer {
     const lss = this.attr(el, 'line-stacking-strategy');
     if (lss === 'line-height' || lss === 'max-height' || lss === 'font-height') s.lineStackingStrategy = lss;
     // 仕様モード: 行の高さを §4.5 の規則で決める
-    if (_isSeq && this.spec) s.xslLineStacking = true;
+    if (isSeq && this.spec) s.xslLineStacking = true;
     // 仕様モード: letter-spacing は §7.17.2 の規則 (Alphabetic の字の前後に半分ずつ、行頭・行末では捨てる)。
     // 互換モードは、句読点などを含むすべての字の後ろに空ける
-    if (_isSeq && this.spec) s.xslLetterSpacing = true;
+    if (isSeq && this.spec) s.xslLetterSpacing = true;
     // 行の高さを超える画像などの行にも、半行間を上下に空ける (§4.5)
-    if (_isSeq) s.boxLineHalfLeading = true;
+    if (isSeq) s.boxLineHalfLeading = true;
     // 互換モード: ブロックの字より大きい字のある行は、§4.5 の max-height の規則 (ブロックの半行間を上下に足す) で行の高さを決める
-    if (_isSeq && !this.spec) s.blockLeadingMaxHeight = true;
+    if (isSeq && !this.spec) s.blockLeadingMaxHeight = true;
     const lhsa = this.attr(el, 'line-height-shift-adjustment');
     if (lhsa === 'consider-shifts' || lhsa === 'disregard-shifts') s.lineHeightShiftAdjustment = lhsa;
     // line-height.conditionality: line-height を数・長さで指定すると retain (XSL §7.16.4)。conditionality だけの指定は、受け継いだ line-height の conditionality を変える
@@ -1554,7 +1553,7 @@ class Importer {
   // ───────────────────────── 子要素の変換 ─────────────────────────
 
   /** 子ノードを変換し、FO の空白規則 (連続空白の畳み込み・ブロック境界の除去) を適用する */
-  private children(el: XEl, ctx: Ctx, allowBlock: boolean, edgeTrim = true): Array<LBlockLevel | LInlineLevel> {
+  private children(el: XEl, ctx: Ctx, edgeTrim = true): Array<LBlockLevel | LInlineLevel> {
     type Item = { v: LBlockLevel | LInlineLevel; block: boolean };
     const items: Item[] = [];
     for (const n of Array.from(el.childNodes)) {
@@ -1572,7 +1571,6 @@ class Importer {
         for (const r of this.element(n, c as Ctx)) items.push(r);
       }
     }
-    void allowBlock;
     // 隣り合う文字列を連結
     const merged: Item[] = [];
     for (const it of items) {
@@ -1658,7 +1656,7 @@ class Importer {
       // 送り先の URL も、リンクと同じ決まりでスキームを見る (スキームの無い相対の送り先は、そのまま)
       const dest = url ? this.allowedSubmitUrl(url.replace(/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i, '$1')) : undefined;
       this.form = { ...(dest ? { url: dest } : {}), ...(method === 'get' || method === 'post' ? { method } : {}) };
-      const kids = this.children(n, ctx, true);
+      const kids = this.children(n, ctx);
       this.form = saved;
       return kids.map((v) => ({ v, block: typeof v !== 'string' && ['block', 'table', 'block-container', 'float'].includes((v as { type: string }).type) }));
     }
@@ -1686,7 +1684,7 @@ class Importer {
         c3.cbH = box.height;
         if (box.width !== undefined && c3.wm === 'horizontal-tb') c3.width = box.width;
         this.report.counts.blocks++;
-        const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3, true) };
+        const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3) };
         // 互換モード: 中身の無いブロック (空白だけ。枠・背景・寸法も無い) の space-before は、次のブロックの
         // space-before と重ならずに足し合わさる。その高さの空のブロックにする
         const bAxis = this.phys('before', ctx.wm, ctx.rtl);
@@ -1714,7 +1712,7 @@ class Importer {
       case 'basic-link':
       case 'wrapper': {
         const { style, ctx: c2 } = this.textStyle(n, ctx);
-        const kids = this.children(n, c2, tag === 'wrapper', false);
+        const kids = this.children(n, c2, false);
         const blockish = kids.some((k) => typeof k !== 'string' && ['block', 'table', 'block-container', 'float'].includes((k as { type: string }).type));
         const link = tag === 'basic-link' ? this.linkOf(n) : undefined;
         if (blockish) {
@@ -1807,7 +1805,7 @@ class Importer {
         return one(this.blockContainer(n, ctx), true);
       case 'float': {
         // float="none" (初期値) は、浮動しない普通のブロックにする (§7.19.2 の float の none の説明)。互換モードは start の浮動
-        if (this.spec && (this.attr(n, 'float') ?? 'none') === 'none') return this.children(n, this.textStyle(n, ctx).ctx, true).map((v) => ({ v, block: true }));
+        if (this.spec && (this.attr(n, 'float') ?? 'none') === 'none') return this.children(n, this.textStyle(n, ctx).ctx).map((v) => ({ v, block: true }));
         return one(this.float(n, ctx), true);
       }
       case 'footnote':
@@ -1854,11 +1852,11 @@ class Importer {
         const cases = this.els(n).filter((c) => this.isFo(c) && this.name(c) === 'multi-case').length;
         if (cases > 1 || !shown) this.note(msg('fo:multi-switch: starting-state が show の最初の fo:multi-case だけを組み、ほかの fo:multi-case は組みませんでした', 'fo:multi-switch: only the first fo:multi-case with starting-state="show" was typeset; the other fo:multi-case elements were skipped'));
         if (!shown) return [];
-        return this.children(shown, ctx, true).map((v) => ({ v, block: typeof v !== 'string' && (v as { type: string }).type === 'block' }));
+        return this.children(shown, ctx).map((v) => ({ v, block: typeof v !== 'string' && (v as { type: string }).type === 'block' }));
       }
       default:
         this.miss(`fo:${tag}`);
-        return this.children(n, ctx, true).map((v) => ({ v, block: typeof v !== 'string' && (v as { type: string }).type === 'block' }));
+        return this.children(n, ctx).map((v) => ({ v, block: typeof v !== 'string' && (v as { type: string }).type === 'block' }));
     }
   }
 
@@ -2148,7 +2146,7 @@ class Importer {
     const { style, ctx: c2 } = this.textStyle(n, ctx);
     const box = this.boxStyle(n, c2, ctx, false);
     const ro = this.refOrientation(n);
-    const ic: LInlineContainer = { type: 'inline-container', ...this.idOf(n), ...style, ...(box as object), children: this.children(n, { ...c2, width: box.width ?? ctx.width, cbW: box.width ?? ctx.width }, true) };
+    const ic: LInlineContainer = { type: 'inline-container', ...this.idOf(n), ...style, ...(box as object), children: this.children(n, { ...c2, width: box.width ?? ctx.width, cbW: box.width ?? ctx.width }) };
     if (ro) ic.rotation = ro;
     const da = this.attr(n, 'display-align');
     if (da === 'center' || da === 'after') ic.blockAlign = da === 'center' ? 'center' : 'end';
@@ -2344,11 +2342,11 @@ class Importer {
       const mr = this.len(this.attr(n, `margin-${endP}`), c2.fontSize, ctx.width);
       const si = ownStart ?? (ml !== undefined ? ml + edge(startP) : ctx.startIndent);
       const ei = ownEnd ?? (mr !== undefined ? mr + edge(endP) : ctx.endIndent);
-      const inner = this.children(n, { ...c2, startIndent: si, endIndent: ei, width: innerW, cbW: innerW, cbH: box.height }, true);
+      const inner = this.children(n, { ...c2, startIndent: si, endIndent: ei, width: innerW, cbW: innerW, cbH: box.height });
       kids = si || ei ? [{ type: 'block', margin: { [startP]: si, [endP]: ei }, children: inner }] : inner;
     } else {
       // 互換モード: コンテナの外の indent を中へ持ち込まない (従来どおり)
-      kids = this.children(n, { ...c2, width: innerW, cbW: innerW, cbH: box.height }, true);
+      kids = this.children(n, { ...c2, width: innerW, cbW: innerW, cbH: box.height });
     }
     const c: LBlockContainer = { type: 'block-container', ...this.idOf(n), ...style, ...(box as object), children: kids };
     // 書字方向の裏返し: 自分で writing-mode を決めたコンテナは、裏返さない値でも印 ({}) を付ける (外の裏返しを中へ持ち込まない)。
@@ -2434,7 +2432,7 @@ class Importer {
     const side: LFloat['float'] = f === 'before' ? 'before' : f === 'end' || f === 'right' ? 'end' : f === 'inside' || f === 'outside' ? f : 'start';
     if (f === 'none') this.note(msg('float="none" は start として扱いました', 'float="none" was treated as start'));
     const { style, ctx: c2 } = this.textStyle(n, ctx);
-    const kids = this.children(n, c2, true);
+    const kids = this.children(n, c2);
     const out: LFloat = { type: 'float', float: side, anchorIsContent: true, ...style, children: kids };
     // 幅は、内容の最初のブロックの寸法から拾う
     const first = kids.find((k) => typeof k !== 'string' && (k.type === 'block' || k.type === 'block-container')) as (LBlock | LBlockContainer) | undefined;
@@ -2469,7 +2467,7 @@ class Importer {
     const fnStyle = this.textStyle(n, ctx);
     const bodyStyle = body ? this.textStyle(body, fnStyle.ctx) : fnStyle;
     const c2 = bodyStyle.ctx;
-    const out: LFootnote = { type: 'footnote', bodyLabel: false, ...fnStyle.style, ...(body ? bodyStyle.style : {}), ...c2.inh, children: body ? this.children(body, c2, true) : [] };
+    const out: LFootnote = { type: 'footnote', bodyLabel: false, ...fnStyle.style, ...(body ? bodyStyle.style : {}), ...c2.inh, children: body ? this.children(body, c2) : [] };
     // 数の line-height を書いたら、受け継いだ長さの line-height は残さない
     if (c2.inh?.lineHeightPt === undefined) delete out.lineHeightPt;
     // 脚注本体の文字の大きさは、周りから受け継いだ値 (FO の継承。HTML 向けの既定の 0.8 倍は使わない)
@@ -2768,7 +2766,7 @@ class Importer {
     return tbl;
   }
 
-  /** 行グループ (table-header / body / footer) の罫線を、外周に接するセルの罫線に重ねる (太い方が勝つ) */
+  /** fo:table-row を読む: セル・行の背景 (セルに背景が無ければ引き継ぐ)・行の罫線・行の高さ */
   private row(r: XEl, ctx: Ctx, tw: number | undefined, inheritedAlign?: string): LTableRow {
     const rAlign = this.attr(r, 'display-align') ?? inheritedAlign;
     const { style, ctx: c2 } = this.textStyle(r, ctx);
@@ -2862,7 +2860,7 @@ class Importer {
     const cellW = this.gridPlace(colNum, Math.max(cs, 1), Math.max(rs, 1), box, c2.wm);
     // セルは参照領域 (§6.7.10) なので、中で明示した start-indent・end-indent は、セルの内容の端から測る (§7.11.7・§7.11.8)。
     // 外の字下げを引かない (引くと、外の字下げの分だけセルの外へはみ出す)。指定の無いブロックは従来どおりセルの端に置く
-    const cell: LTableCell = { type: 'table-cell', ...this.idOf(c), ...style, children: this.children(c, { ...c2, startIndent: 0, endIndent: 0, width: cellW ?? tw, cbW: undefined, cbH: undefined }, true) };
+    const cell: LTableCell = { type: 'table-cell', ...this.idOf(c), ...style, children: this.children(c, { ...c2, startIndent: 0, endIndent: 0, width: cellW ?? tw, cbW: undefined, cbH: undefined }) };
     if (box.padding) cell.padding = box.padding;
     // empty-cells="hide" (継承される。罫線を分ける表で): 中身の無いセルは、罫線と背景を描かない (§7.28.10・CSS2 §17.6.1.1)
     const ec = this.attr(c, 'empty-cells') ?? this.emptyCells;
@@ -2945,7 +2943,7 @@ class Importer {
       const mk = (e: XEl | undefined, extra: Partial<LTableCell> = {}): LTableCell => {
         if (!e) return { type: 'table-cell', ...extra, children: [] };
         const { style: es, ctx: ec } = this.textStyle(e, c3);
-        return { type: 'table-cell', ...this.idOf(e), ...es, ...extra, children: this.children(e, ec, true) };
+        return { type: 'table-cell', ...this.idOf(e), ...es, ...extra, children: this.children(e, ec) };
       };
       const labelCell = mk(label, { textAlign: 'start' });
       const endSide = this.phys('end', c3.wm, c3.rtl);
@@ -3021,7 +3019,6 @@ export const browserParse = (xml: string): XNode => {
   return d as unknown as XNode;
 };
 
-/** font-family の並びをカンマで分け、引用符を外す。引用符の中のカンマでは分けない (font-family="'A, B', serif" は 2 つ) */
 /**
  * writing-mode の値の裏返し (XSL 1.1 §7.29.7)。横・縦 (と右から左) で組めるもの (lr-tb・rl-tb・tb-rl・tb-lr と略記) は undefined
  */

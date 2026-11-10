@@ -4,6 +4,7 @@
  * レイアウトエンジンは inline/block の論理座標だけを扱い、サイズ確定後に
  * toArea() で一度だけ物理座標 (x, y, width, height) の Area Tree に変換する。
  */
+import { zeroEdges } from './geometry';
 import type { BaseNode, BorderStyle, Edges, Rotation, TextAlign, WritingMode } from './types';
 
 export type LKind = 'region-body' | 'block' | 'line' | 'inline' | 'glyph' | 'ruby' | 'tcy' | 'table' | 'row' | 'cell' | 'image';
@@ -186,13 +187,11 @@ export interface ResolvedStyle {
   wm: WritingMode;
 }
 
-export const zero = (): Edges => ({ top: 0, right: 0, bottom: 0, left: 0 });
-
 /**
  * 字のノードは余白・罫線・子を持たないので、変更できない共有の空のものを使う (字ごとに作らない。
  * 書き換えようとすれば例外になる)
  */
-const NO_EDGES = Object.freeze(zero()) as Edges;
+const NO_EDGES = Object.freeze(zeroEdges()) as Edges;
 const NO_BORDER = Object.freeze({}) as BorderStyle;
 const NO_CHILDREN = Object.freeze([]) as unknown as LNode[];
 
@@ -205,8 +204,8 @@ export function newNode(kind: LKind, wm: WritingMode, extra: Partial<LNode> = {}
     b: 0,
     isize: 0,
     bsize: 0,
-    margin: leaf ? NO_EDGES : zero(),
-    padding: leaf ? NO_EDGES : zero(),
+    margin: leaf ? NO_EDGES : zeroEdges(),
+    padding: leaf ? NO_EDGES : zeroEdges(),
     border: leaf ? NO_BORDER : {},
     children: leaf ? NO_CHILDREN : [],
     ...extra,

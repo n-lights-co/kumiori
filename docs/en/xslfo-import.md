@@ -84,13 +84,13 @@ Formats the browser cannot open are also read:
   Things for which the specifications ([MS-WMF], [MS-EMF]) fix no value, and which are therefore not guessed: dash lengths of PS_DASH etc., the initial background color (when there is no SETBKCOLOR),
   and the break character of SETTEXTJUSTIFICATION.
 - **EPS**: drawn by executing the PostScript (`src/psInterp.ts`, `src/psFilters.ts`, `src/psGraphics.ts`, `src/eps.ts`; written from the PostScript Language Reference, 3rd edition, and the EPSF 3.0 specification).
-  Supports fills, strokes, clipping, color spaces (DeviceGray, DeviceRGB, DeviceCMYK, Indexed, Separation, DeviceN; CIE-based spaces use the components as is), images (image, colorimage, imagemask, type 3 and 4) and filters (ASCIIHex, ASCII85, RunLength, LZW, Flate, SubFile, ReusableStream; DCT is kept as JPEG).
+  Supports fills, strokes, clipping, color spaces (DeviceGray, DeviceRGB, DeviceCMYK, Indexed, Separation, DeviceN; CIE-based spaces use the components as is), images (image, colorimage, imagemask, type 3 and 4) and filters (ASCIIHex, ASCII85, RunLength, LZW, Flate, SubFile, ReusableStream; DCT is kept as JPEG). The CCITTFaxDecode (fax coding) filter is not supported; using it raises the PostScript undefined error (what was drawn up to that point is still drawn).
   The result is turned into SVG and goes into the PDF as shapes. Colors defined in DeviceCMYK also go into the PDF as DeviceCMYK.
   Text is drawn with the glyph shapes of the embedded fonts (`src/psFonts.ts`, written from the Adobe Type 1 Font Format): Type 1 fonts (eexec, charstring encryption, flex, seac),
   Type 3 fonts (BuildGlyph, BuildChar), composite fonts via CMap and CIDFontType 0 (composefont, StartData, GlyphDirectory),
   and CFF fonts (StartData of FontSetInit; FontType 2 and CID-keyed CFF. `src/psCff.ts`, written from the CFF and Type 2 charstring specifications).
   Fonts without glyph shapes (not embedded) are drawn by choosing a family (gothic, mincho, monospace) from the available fonts based on the font name.
-  Shadings (shfill and PatternType 2 patterns; ShadingType 1 to 7, with FunctionType 0, 2 and 3 functions and procedures) are drawn as an image that divides the painted area into pixels. Tiling patterns (PatternType 1) draw the PaintProc once and place copies shifted by XStep and YStep, clipped to the painted path (PaintType 2 uses the current color). Pattern strokes are not drawn yet. An EPS that contains something undrawable and has a DOS-format preview (TIFF, WMF) is drawn from the preview.
+  Shadings (shfill and PatternType 2 patterns; ShadingType 1 to 7, with FunctionType 0, 2 and 3 functions and procedures) are drawn as an image that divides the painted area into pixels. Tiling patterns (PatternType 1) draw the PaintProc once and place copies shifted by XStep and YStep, clipped to the painted path (PaintType 2 uses the current color). Pattern strokes (stroke in the Pattern color space) compute the outline of the stroke (reflecting the width, caps, joins and dashes) and fill that shape with the pattern. An EPS that contains something undrawable and has a DOS-format preview (TIFF, WMF) is drawn from the preview.
   EPS written directly inside `fo:instream-foreign-object` (text starting with %!PS) is drawn too.
 - **CGM** (binary encoding): elements are read and turned into SVG (`src/cgm.ts`, written from the functional specification ISO/IEC 8632-1:1999 and the binary encoding 8632-3:1999).
   Draws the precision elements (integer, real, VDC, colour, index), METAFILE DEFAULTS REPLACEMENT, VDC EXTENT and SCALING MODE (metric gives the size in mm, abstract a width of 400px),
@@ -133,9 +133,11 @@ Since MS Mincho / MS Gothic themselves, as specified by the FO, are not bundled,
 
 ## Footnote Separator
 
-The `fo:leader` in `xsl-footnote-separator` is read: `leader-pattern="dots"` gives a dotted line (1pt square dots at a 3pt pitch),
-`rule` a solid line (reflecting `rule-thickness`), and `leader-length` is also interpreted as a percentage of the body width.
-When there is no leader, the default solid rule (1/3 of the body width) is used.
+The content of the `fo:static-content` for `xsl-footnote-separator` (`fo:leader`, text, images, blocks with a background color or borders) is
+laid out as it is, at the width of the footnote area, and used as the separator. A `fo:leader` is typeset as in body text: `leader-pattern="dots"` repeats the font's dot glyph,
+`rule` gives a solid line (reflecting `rule-thickness`), and a percentage `leader-length` is relative to the width of the footnote area.
+When there is no `fo:static-content` for `xsl-footnote-separator`, no separator is drawn.
+When there is one but it is empty (for example only an empty block), the default solid rule (1/3 of the body width) is used and this is noted in the import report.
 
 ## Multi-Column Layout
 

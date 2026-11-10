@@ -189,7 +189,7 @@ export class AssetStore {
     // ブラウザが描けない形式 (TIFF・WMF・EMF・EPS・CGM): 大きさだけ読んで登録する (仮の枠を正しい寸法で組む)
     const info = imageInfo(bytes);
     if (info) {
-      // EPS は PostScript を実行して描く (図形と画像。eps.ts)。まだ描けないもの (文字・模様) があり、プレビューを持つときは、プレビューで描く
+      // EPS は PostScript を実行して描く (図形と画像。eps.ts)。描けないもの (解釈系が warnings に入れる。CMYK の JPEG・一部の複合書体の文字など) があり、プレビューを持つときは、プレビューで描く
       let epsSvg: string | undefined;
       if (info.mime === 'application/postscript') {
         const r = await epsToSvg(bytes).catch(() => undefined);

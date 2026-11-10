@@ -1,8 +1,11 @@
 /**
  * psFilters — PostScript の読み出し用フィルタ (PLRM §3.13.3)。どれもデータの元から 1 バイトずつ読みながら解く。
  *
- *  ASCIIHexDecode・ASCII85Decode・RunLengthDecode・LZWDecode・FlateDecode (zlib の形式)・SubFileDecode・
- *  ReusableStreamDecode・NullEncode 以外の書き出し用フィルタは持たない。
+ *  持つのは読み出し用 (Decode) のフィルタ: ASCIIHexDecode・ASCII85Decode・RunLengthDecode・LZWDecode・FlateDecode (zlib の形式)・
+ *  SubFileDecode・ReusableStreamDecode・DCTDecode。
+ *  書き出し用 (Encode) のフィルタは、NullEncode (渡された元をそのまま返す) のほかは持たない。
+ *  標準のフィルタ (表 3.5) のうち CCITTFaxDecode (ファクシミリの符号。パラメータは表 3.21) は持たない: filter 演算子は undefined のエラーにする
+ *  (TIFF の CCITT の符号を解く ccitt.ts は、PostScript のフィルタにはつないでいない)。
  *  LZW と Flate の予測関数 (Predictor。TIFF の 2 と PNG の 10〜15) も解く (§3.13.3 Predictor Functions)。
  *  DCTDecode (JPEG) は、元の JPEG のバイト列をそのまま渡す (画像の演算子が JPEG として扱う)。
  *
@@ -113,7 +116,7 @@ export function filterSource(fname: string, src: ByteSource, params?: PSDict, su
   }
 }
 
-/** 持っていないフィルタの名前 (CCITTFaxDecode など。PostScript では undefined。PLRM §8.2 の filter のエラー) */
+/** 持っていないフィルタの名前 (CCITTFaxDecode と、NullEncode 以外の書き出し用のフィルタ。PostScript では undefined。PLRM §8.2 の filter のエラー) */
 export class UnsupportedFilter extends Error {}
 
 function asciiHex(src: ByteSource): ByteSource {
@@ -148,8 +151,8 @@ function ascii85(src: ByteSource): ByteSource {
     for (;;) {
       const c = src.read();
       if (c < 0 || c === 0x7e) {
-        // ~> (§3.13.3 ASCII85Decode)
-        if (c === 0x7e) src.read();
+        // ~> (§3.13.3 ASCII85Decode)。~ の次の字は > でなければならない (ほかの字・元の終わりは ioerror)
+        if (c === 0x7e && src.read() !== 0x3e) throw new FilterError('ioerror');
         done = true;
         if (g.length === 1) throw new FilterError('ioerror');
         if (g.length > 1) {

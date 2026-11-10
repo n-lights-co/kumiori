@@ -41,15 +41,6 @@ export function installMatrixOperators(I: Interp, G: Graphics) {
   d('defaultmatrix', () => writeMatrix(I, I.popArray(), [...IDENTITY] as Mat));
   d('currentmatrix', () => writeMatrix(I, I.popArray(), G.g.ctm));
   d('setmatrix', () => void (G.g.ctm = popMatrix(I)));
-  const withMatrix = (m: Mat) => {
-    // 最後の行列の引数: 行列を返す形 (例: tx ty matrix translate)
-    const top = I.ostack[I.ostack.length - 1];
-    if (isMatrix(top)) {
-      writeMatrix(I, I.popArray(), m);
-      return true;
-    }
-    return false;
-  };
   d('translate', (I) => {
     const top = I.ostack[I.ostack.length - 1];
     if (isMatrix(top)) {
@@ -115,5 +106,4 @@ export function installMatrixOperators(I: Interp, G: Graphics) {
   d('dtransform', xform(applyVector, false));
   d('itransform', xform(apply, true));
   d('idtransform', xform(applyVector, true));
-  void withMatrix;
 }

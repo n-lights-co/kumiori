@@ -394,13 +394,6 @@ function arcToCubics(x1: number, y1: number, rx: number, ry: number, rotDeg: num
   const step = dth / n;
   const k = (4 / 3) * Math.tan(step / 4);
   const out: Seg[] = [];
-  const pt = (t: number, ex: number, ey: number): [number, number] => {
-    // 楕円上の点 (t) を回転・平行移動
-    const px = rx * Math.cos(t);
-    const py = ry * Math.sin(t);
-    return [cp * px - sp * py + cx + ex, sp * px + cp * py + cy + ey];
-  };
-  void pt;
   let t = th1;
   for (let j = 0; j < n; j++) {
     const t2 = t + step;
