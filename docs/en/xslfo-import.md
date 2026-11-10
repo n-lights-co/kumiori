@@ -133,9 +133,11 @@ Since MS Mincho / MS Gothic themselves, as specified by the FO, are not bundled,
 
 ## Footnote Separator
 
-The `fo:leader` in `xsl-footnote-separator` is read: `leader-pattern="dots"` gives a dotted line (1pt square dots at a 3pt pitch),
-`rule` a solid line (reflecting `rule-thickness`), and `leader-length` is also interpreted as a percentage of the body width.
-When there is no leader, the default solid rule (1/3 of the body width) is used.
+The content of the `fo:static-content` for `xsl-footnote-separator` (`fo:leader`, text, images, blocks with a background color or borders) is
+laid out as it is, at the width of the footnote area, and used as the separator. A `fo:leader` is typeset as in body text: `leader-pattern="dots"` repeats the font's dot glyph,
+`rule` gives a solid line (reflecting `rule-thickness`), and a percentage `leader-length` is relative to the width of the footnote area.
+When there is no `fo:static-content` for `xsl-footnote-separator`, no separator is drawn.
+When there is one but it is empty (for example only an empty block), the default solid rule (1/3 of the body width) is used and this is noted in the import report.
 
 ## Multi-Column Layout
 

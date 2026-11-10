@@ -131,9 +131,11 @@ FO が指定する MS 明朝 / MS ゴシック自体は未搭載のため、完�
 
 ## 脚注の区切り線
 
-`xsl-footnote-separator` の `fo:leader` を読み取り、`leader-pattern="dots"` は点線 (1pt 角の点を 3pt ピッチ)、
-`rule` は実線 (`rule-thickness` 反映)、`leader-length` は本文幅に対する割合も解釈する。
-leader が無い場合は既定の実線 (本文幅の 1/3) を使う。
+`xsl-footnote-separator` の `fo:static-content` の中身 (`fo:leader`・文字・画像・背景色や罫線のあるブロック) を、
+そのまま脚注領域の幅で組んで区切りにする。`fo:leader` は本文の中と同じに組む: `leader-pattern="dots"` は書体の点の字を並べ、
+`rule` は実線 (`rule-thickness` 反映)、`leader-length` の百分率は脚注領域の幅に対する割合。
+`xsl-footnote-separator` の `fo:static-content` が無ければ、区切りを描かない。
+あっても中身が空 (空のブロックだけなど) のときは、既定の実線 (本文幅の 1/3) を使い、読み込みの報告に書く。
 
 ## 段組
 
