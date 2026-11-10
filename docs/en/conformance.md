@@ -2,7 +2,7 @@
 
 # Kumiori Conformance Guide
 
-For each element and property of XSL-FO 1.1, CSS and MathML, this document sets out side by side the definition and original text of the specification, how Kumiori handles it, an example typeset by Kumiori, and the code of that sample. Unsupported elements, properties and values are also listed by name. The documents themselves are written in their respective languages and typeset by Kumiori. Both documents are in Japanese; the source paths below are relative to `docs/conformance/`.
+For each element and property of XSL-FO 1.1, CSS and MathML, this document sets out side by side the definition and original text of the specification, how Kumiori handles it, an example typeset by Kumiori, and the code of that sample. Unsupported elements, properties and values are also listed by name. The documents themselves are written in their respective languages and typeset by Kumiori. The source paths below are relative to `docs/conformance/`.
 
 | Document | Source | Contents |
 | --- | --- | --- |
