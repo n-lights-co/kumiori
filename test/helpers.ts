@@ -22,12 +22,12 @@ const fetching = new Map<string, Promise<string>>();
 
 /**
  * テストの書体を置き場に用意して、その場所を返す。無ければ url から取得して置く。
- * テストの書体の取得は、すべてここを通す (PKG-06): vitest はテストのファイルごとに別のワーカーで並列に走るので、
+ * テストの書体の取得は、すべてここを通す (PKG-06。呼ぶのは下の fontBuffer・ensureFonts・defaultFontBuffer・extraTestFont・mathFontBuffer): vitest はテストのファイルごとに別のワーカーで並列に走るので、
  * 置き場へ直接書くと、書きかけのファイルを別のワーカーが「ある」と見て読んでしまう。
  * 一時ファイル (ワーカーごと・呼び出しごとに別の名前) に書き終えてから名前を変える (同じディレクトリの中の rename は、途中の状態が見えない) ので、
  * 置き場にある名前のファイルは、いつも全体が書かれている。2 つのワーカーが同時に取りに行ったときは、どちらも同じ中身を取り、後の rename が前のものを置き換えるだけ
  */
-export function cachedFont(name: string, url: string): Promise<string> {
+function cachedFont(name: string, url: string): Promise<string> {
   const file = path.join(fontDir, name);
   if (fs.existsSync(file)) return Promise.resolve(file);
   let p = fetching.get(file);
@@ -125,6 +125,25 @@ export const lines = (n: number, prefix = '行') => Array.from({ length: n }, (_
 export function walk(a: Area, f: (a: Area) => void) {
   walkAreas(a, (x) => void f(x as Area));
 }
+
+/**
+ * 既定の書体 (src/fontMapping.ts) のほかに、テストが取得して使う書体 (置き場でのファイルの名前 → 配信元)。どれも SIL Open Font License 1.1 で、リポジトリには入れない。
+ * テストが取得する書体は、fontMapping.ts の一覧とこの表ですべて (CI の書体のキャッシュのキーは、この 2 つのファイルから作る。.github/workflows/ci.yml)。
+ * テストに書体を足すときは、ここに足す (テストのファイルに URL を直に書かない)
+ */
+export const EXTRA_TEST_FONTS = {
+  // Google Fonts の配信の WOFF2 (glyf・loca を変換したもの)。Lobster の欧文 (latin) の部分 (test/webFont.test.ts)
+  'Lobster-latin.woff2': 'https://fonts.gstatic.com/s/lobster/v32/neILzCirqoswsqX9zoKmMw.woff2',
+  // 名前で引く CFF (PostScript の FontType 2。test/postscript.test.ts): Source Sans 3 の OTF (配布元のリポジトリの、版のタグ 3.052R のファイル)。
+  // 字の名前が H・i のような Adobe の標準の名前であることが要る ((Hi) show が、標準の符号化の名前で字を引くため。
+  // リポジトリから 1 つのファイルで取れる Inter の OTF (3.x) は、字の名前が uni0048 の形なので使えない)
+  'SourceSans3-Regular-3.052R.otf': 'https://raw.githubusercontent.com/adobe-fonts/source-sans/3.052R/OTF/SourceSans3-Regular.otf',
+  // CID で引く CFF (test/postscript.test.ts): Noto Sans JP の OTF (Google Fonts の配信元の、版の付いた URL。今の版は TrueType の輪郭なので、CFF だった版を指す)
+  'NotoSansJP-Regular-v25.otf': 'https://fonts.gstatic.com/s/notosansjp/v25/-F62fjtqLzI2JPCgQBnw7HFowAIO2lZ9hg.otf',
+} as const;
+
+/** EXTRA_TEST_FONTS の書体を置き場に用意して、その場所を返す (無ければ取得する。取得できなければ投げるので、テストは飛ばされずに失敗する) */
+export const extraTestFont = (name: keyof typeof EXTRA_TEST_FONTS): Promise<string> => cachedFont(name, EXTRA_TEST_FONTS[name]);
 
 /** 数式の書体 (STIX Two Math)。置き場に無ければ Google Fonts 配信元から取得する */
 export async function mathFontBuffer(): Promise<ArrayBuffer> {

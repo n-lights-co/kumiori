@@ -15,7 +15,7 @@ import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { toSfnt, webFontKind } from '../src/webFont';
 import { cssRefs, cssStringChars, documentChars, parseUnicodeRange, rebaseFontFaceUrls } from '../src/resources';
 import { collectionFaces } from '../src/fontLoader';
-import { defaultFontBuffer, cachedFont, ensureFonts, fontDir } from './helpers';
+import { defaultFontBuffer, ensureFonts, extraTestFont, fontDir } from './helpers';
 import { DEFAULT_FONTS, typeset, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
 
 
@@ -106,9 +106,8 @@ function glyphDiffs(a: ArrayBuffer | Uint8Array, b: ArrayBuffer | Uint8Array): n
 }
 
 /** Google Fonts の配信の WOFF2 (glyf・loca を変換したもの)。Lobster の欧文 (latin) の部分。.cache/fonts に無ければ取得する */
-const LOBSTER_WOFF2 = 'https://fonts.gstatic.com/s/lobster/v32/neILzCirqoswsqX9zoKmMw.woff2';
 async function lobsterWoff2(): Promise<Uint8Array> {
-  return new Uint8Array(fs.readFileSync(await cachedFont('Lobster-latin.woff2', LOBSTER_WOFF2)));
+  return new Uint8Array(fs.readFileSync(await extraTestFont('Lobster-latin.woff2')));
 }
 
 /** WOFF2 の表の目録の 1 つ (テストの組み立て用。flags・名前・長さ・変換した長さと、展開した中身) */

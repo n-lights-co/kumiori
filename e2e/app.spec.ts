@@ -3,9 +3,14 @@ import { makeZip } from '../test/makeZip';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
+import { routeFontCache } from './fontCache';
 
-/** KUMIORI_E2E_FONT_DIR があれば、Google Fonts の代わりにそのディレクトリのフォントを返す (ネットワークの無い環境用) */
+/**
+ * KUMIORI_E2E_FONT_DIR があれば、Google Fonts の代わりにそのディレクトリのフォントを返す (ネットワークの無い環境用)。
+ * 無くて KUMIORI_E2E_FONT_CACHE があれば、配信元から取った書体をそこに覚えておく (e2e/fontCache.ts)
+ */
 async function routeFonts(page: Page) {
+  await routeFontCache(page);
   const dir = process.env.KUMIORI_E2E_FONT_DIR;
   if (!dir) return;
   await page.route('**/fonts.gstatic.com/**', (route) => {
