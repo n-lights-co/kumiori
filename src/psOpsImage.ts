@@ -162,6 +162,14 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   I.charge((w * h) / 64);
   G.imagePixels = (G.imagePixels ?? 0) + w * h;
   if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
+  // 明示したマスク (Type 3 の画像の MaskDict。§4.10.6) の寸法にも、画像と同じ上限と手間を当てる。
+  // マスクの寸法は画像と別に指定でき (InterleaveType 1 は画像と同じ、2 は行の数が整数倍、3 は別の元で寸法も自由)、
+  // マスクの画素ごとにループと確保をする
+  const em0 = s.explicitMask;
+  if (em0) {
+    if (em0.w * em0.h > PS_IMAGE_MAX_PIXELS) throw new PSError('limitcheck');
+    I.charge((em0.w * em0.h) / 64);
+  }
   G.countItem();
   const inv = invert(s.mat);
   if (!inv) throw new PSError('undefinedresult');

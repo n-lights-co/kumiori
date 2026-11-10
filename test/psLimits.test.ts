@@ -216,3 +216,30 @@ describe('PostScript の上限: フィルタが読みためる量 (超えれば 
     expect(decode(mixed)).toEqual(mixed);
   });
 });
+
+describe('PostScript の上限: Type 3 の画像のマスク (MaskDict。PLRM §4.10.6)', () => {
+  const image3 = (il: number, w: number, h: number, mw: number, mh: number, src = true) =>
+    `/DeviceGray setcolorspace << /ImageType 3 /InterleaveType ${il} ` +
+    `/DataDict << /ImageType 1 /Width ${w} /Height ${h} /BitsPerComponent 8 /ImageMatrix [1 0 0 1 0 0] /DataSource (a) /Decode [0 1] >> ` +
+    `/MaskDict << /ImageType 1 /Width ${mw} /Height ${mh} /BitsPerComponent 1 /ImageMatrix [1 0 0 1 0 0] ${src ? '/DataSource (a) ' : ''}/Decode [0 1] >> >> image`;
+  it('マスクの画素の数が画像の上限を超えれば、どの InterleaveType でも limitcheck', () => {
+    expect(run(image3(3, 1, 1, 12000, 12000)).error).toMatch(/^limitcheck \(image\)/);
+    expect(run(image3(2, 1, 1, 8, 200000000, false)).error).toMatch(/^limitcheck \(image\)/);
+    expect(run(image3(1, 1, 1, 12000, 12000, false)).error).toMatch(/^limitcheck \(image\)/);
+  });
+  it('マスクの画素も手間として数える (ステップの上限に当たる)', () => {
+    // 4000 × 4000 のマスクは 64 画素で 1 ステップ = 25 万ステップ
+    for (const il of [2, 3]) {
+      const r = run(image3(il, 1, 1, 4000, 4000, il === 3), { maxSteps: 10000 });
+      expect(r.error).toBe('limit:steps');
+      expect(r.G.items.length).toBe(0);
+    }
+  });
+  it('小さなマスクの画像は、前と同じに描ける', () => {
+    const r = run(image3(3, 2, 2, 2, 2));
+    expect(r.error).toBeUndefined();
+    const it0 = r.G.items[0];
+    expect(it0.k).toBe('image');
+    if (it0.k === 'image') expect([it0.width, it0.height, it0.rgba!.length]).toEqual([2, 2, 16]);
+  });
+});
