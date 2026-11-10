@@ -280,6 +280,18 @@ describe('PostScript: 結果の誤りの修正', () => {
     }
   });
 
+  it('SubFileDecode は、EODCount・EODString を辞書に入れた形 (LanguageLevel 3) でも使える (PLRM §3.13.3。PS-13)', () => {
+    // 辞書の形: EODCount 0 は EODString の手前まで
+    expect(nums('(abcXdef) << /EODCount 0 /EODString (X) >> /SubFileDecode filter 10 string readstring')).toEqual(['abc', false]);
+    // EODCount 1 は 1 つめの EODString まで (EODString も含む)
+    expect(nums('(abcXdefXg) << /EODCount 1 /EODString (X) >> /SubFileDecode filter 20 string readstring')).toEqual(['abcX', false]);
+    // EODString が空なら EODCount バイト
+    expect(nums('(abcXdef) << /EODCount 5 /EODString () >> /SubFileDecode filter 10 string readstring')).toEqual(['abcXd', false]);
+    // これまでの形 (オペランドで渡す。辞書を前に置く形も) は同じ
+    expect(nums('(abcXdef) 0 (X) /SubFileDecode filter 10 string readstring')).toEqual(['abc', false]);
+    expect(nums('(abcXdef) << >> 0 (X) /SubFileDecode filter 10 string readstring')).toEqual(['abc', false]);
+  });
+
   it('フィルタのエラーは PostScript のエラーになり、stopped で受けられる (PLRM §8.2 filter・§3.13.3)', async () => {
     // 持っていないフィルタ: undefined (オペランドは元に戻る。§3.11.1)
     expect(nums('{currentfile /CCITTFaxDecode filter} stopped $error /errorname get')).toEqual(['file', '/CCITTFaxDecode', true, '/undefined']);
