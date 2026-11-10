@@ -210,7 +210,7 @@ describe('タイ語: 空白の無い文を、語の境目で折り返す (UAX #1
     // 正しくない言語の札でも落ちない
     check(linesOf(TEXT, 'Thai', W, { language: '!!' }), TEXT);
   });
-  it('word-break: keep-all でも、辞書の語の境目では折り返す (Text 3 §5.2)。break-all は字の単位の間で折り返す', () => {
+  it('word-break: keep-all でも、辞書の語の境目では折り返す (Text 3 §5.1)。break-all は字の単位の間で折り返す', () => {
     const normal = linesOf(TEXT, 'Thai', W);
     expect(linesOf(TEXT, 'Thai', W, { wordBreak: 'keep-all' }).map((l) => l.texts.join(''))).toEqual(normal.map((l) => l.texts.join('')));
     const all = linesOf(TEXT, 'Thai', W, { wordBreak: 'break-all' });

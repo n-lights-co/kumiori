@@ -206,7 +206,7 @@ function canBreakAtoms(a: Atom, b: Atom): boolean {
   // break-all は字を ID として扱う (Text 3 §5.1)。ID でも、行頭に置けない字 (小書きの仮名・長音記号など) の前では改行しない
   // 結合文字・異体字セレクタ (General_Category が M の字) の前は、字の単位 (基底の字 + 結合文字。UAX #29 GB9・GB9a) の中なので、break-all でも分けない
   // (break-all が ID として扱うのは字の単位。Text 3 §5.1)。UAX #14 の機会 (LB9: 結合文字の前は改行しない) に任せる
-  // keep-all でも、辞書で決めた語の境目 (タイ語など) では改行してよい (Text 3 §5.2 の keep-all: 字と字の間の機会を無くすが、
+  // keep-all でも、辞書で決めた語の境目 (タイ語など) では改行してよい (Text 3 §5.1 の word-break の keep-all: 字と字の間の機会を無くすが、
   // 辞書による改行の機会は残す)。break-all は、SA の字も ID と同じに扱う (字の単位の間で改行してよい)
   if (wb && wb !== 'normal' && !(wb === 'keep-all' && b.lbDict) && a.kind === 'glyph' && b.kind === 'glyph' && !a.isSpace && !b.isSpace && LETTER.test(a.last) && LETTER.test(b.first) && !COMBINING.test(b.first))
     return wb === 'break-all' && !isLineHeadProhibited(b.first, b.st.looseLineStart) && !isLineEndProhibited(a.last);
