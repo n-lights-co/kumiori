@@ -83,7 +83,8 @@ describe('アラビア文字の結合文字の順 (UTR #53 AMTRA)', () => {
   });
   it('組んだ結果: ファトハはシャッダの上に載る (シャッダを先に書体へ渡す)。カスラとシャッダは、書体の合字の字形になる', () => {
     const [{ g }] = glyphsOf([`مح${FATHA}${SHADDA}د`]);
-    expect(g.text).toBe(`مح${SHADDA}${FATHA}د`);
+    // 組版の字 (GlyphArea の text。PDF の文字の取り出し) は元の並びのまま。並べ替えるのは、書体に渡す文字列だけ
+    expect(g.text).toBe(`مح${FATHA}${SHADDA}د`);
     const n = names(g);
     // 描く順は左から右 (字の順の逆): …ファトハ・シャッダ・ح…
     const iS = n.indexOf('uni0651');
@@ -131,6 +132,52 @@ describe('ヘブライ文字の記号の位置 (fontkit の文脈の規則の補
     const run = fk.layout('וְאֵ֥ת', { kern: false, liga: false, clig: false } as never);
     expect(run.glyphs.map((x) => (x as unknown as { name: string }).name)).toEqual(['tav', 'uni05A5', 'tsere', 'alef', 'sheva', 'vav']);
     expect(run.positions.map((x) => x.xOffset)).toEqual([0, 340, 840, 0, 0, 0]);
+  });
+});
+
+describe('ヘブライ文字の点の順 (書体に渡す順。src/hebrewMarks.ts)', () => {
+  const DAGESH = '\u05BC';
+  const SHEVA = '\u05B0';
+  const QAMATS = '\u05B8';
+  const SHIN_DOT = '\u05C1';
+  const HOLAM = '\u05B9';
+  const MERKHA = '\u05A5';
+  it('シン/スィンの点・ダゲシュを母音記号の前へ出す。カンティレーションなど、ほかの結合文字は動かさない', async () => {
+    const { reorderHebrewMarks } = await import('../src/hebrewMarks');
+    expect(reorderHebrewMarks(`ב${SHEVA}${DAGESH}`)).toBe(`ב${DAGESH}${SHEVA}`);
+    expect(reorderHebrewMarks(`ש${QAMATS}${SHIN_DOT}`)).toBe(`ש${SHIN_DOT}${QAMATS}`);
+    expect(reorderHebrewMarks(`ש${QAMATS}${DAGESH}${SHIN_DOT}`)).toBe(`ש${SHIN_DOT}${DAGESH}${QAMATS}`);
+    expect(reorderHebrewMarks(`י${HOLAM}${DAGESH}${MERKHA}`)).toBe(`י${DAGESH}${HOLAM}${MERKHA}`);
+    // 既にその順・点が 1 つ・点の無い文字列は、そのまま。並べ替えた並びは元と正準等価
+    expect(reorderHebrewMarks(`ב${DAGESH}${SHEVA}`)).toBe(`ב${DAGESH}${SHEVA}`);
+    expect(reorderHebrewMarks('שלום abc')).toBe('שלום abc');
+    expect(reorderHebrewMarks(`ב${SHEVA}${DAGESH}`).normalize('NFC')).toBe(`ב${SHEVA}${DAGESH}`.normalize('NFC'));
+  });
+  it('Tinos・Arimo: 正準順 (子音・母音・ダゲシュ) でも、ダゲシュ・シンの点が合成済みの字形になる。組版の字は元のまま', async () => {
+    const f = new FontManager();
+    await f.registerBuffer('Tinos', 400, await defaultFontBuffer('Tinos-Regular.ttf'), false);
+    await f.registerBuffer('Arimo', 400, await defaultFontBuffer('Arimo-Regular.ttf'), false);
+    for (const fam of ['Tinos', 'Arimo']) {
+      const name = (t: string) => f.get(fam, 400).fk.layout(t, { kern: false, liga: false, clig: false } as never).glyphs.map((x) => (x as unknown as { name: string }).name);
+      // 描く順 (左から右): 記号・基底の字
+      expect(name(`ב${SHEVA}${DAGESH}`)).toEqual(['sheva', 'betdagesh']);
+      expect(name(`ש${QAMATS}${SHIN_DOT}`)).toEqual(['qamats', 'shinshindot']);
+    }
+    const e = new LayoutEngine(f, new Measurer(f, 'fontkit'), { defaultFontFamily: 'Tinos' });
+    const texts: string[] = [];
+    const visit = (a: Area) => {
+      if (a.type === 'glyph') texts.push(a.text);
+      for (const c of (a as unknown as { children?: Area[] }).children ?? []) visit(c);
+    };
+    for (const c of e.layout(doc([{ type: 'block', children: [`ב${SHEVA}${DAGESH}א`] }] as never)).sheets[0].page.regionBody.children) visit(c);
+    expect(texts).toEqual([`ב${SHEVA}${DAGESH}`, 'א']);
+  });
+  it('Noto Sans Hebrew: 点ごとに基底の字へ付ける書体では、字形の順が HarfBuzz と同じになり、点の位置は並べ替えの前と同じ', () => {
+    const fk = fonts.get(HEBREW, 400).fk;
+    const r = fk.layout(`ב${SHEVA}${DAGESH}`, { kern: false, liga: false, clig: false } as never);
+    // HarfBuzz の結果 (描く順): シュヴァ (ずらし 192)・ダゲシュ (126)・ב。並べ替えの前は ダゲシュ (126)・シュヴァ (192)・ב で、位置は同じ
+    expect(r.glyphs.map((g) => (g as unknown as { name: string }).name)).toEqual(['uni05B0', 'uni05BC', 'uni05D1']);
+    expect(r.positions.map((p) => [p.xAdvance, p.xOffset, p.yOffset])).toEqual([[0, 192, 0], [0, 126, 0], [572, 0, 0]]);
   });
 });
 

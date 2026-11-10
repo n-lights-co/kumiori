@@ -7,7 +7,6 @@
 import type { LFootnote, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, WritingMode } from './types';
 import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type Measurer } from './measurer';
 import { mayCluster } from './grapheme';
-import { reorderArabicMarks } from './arabicMarks';
 import { isGreekCyrillicLetter } from './fontManager';
 import { LIGATURE_FEATURES, ligatureTable } from './ligature';
 import { isWrapSpace } from './jis';
@@ -365,11 +364,9 @@ export function flattenInline(
 }
 
 /** 文字列: 字ごとの atom (合字・つながる字の並びは 1 単位。ソフトハイフン・ゼロ幅空白・改行は印)。字間 (letter-spacing)・word-spacing はここで送りに足す */
-function flattenText(c0: string, cx: FlattenCtx): void {
+function flattenText(c: string, cx: FlattenCtx): void {
   const { st, m, state, bg, wm, out } = cx;
   const runStyle = runStyleOf;
-  // アラビア文字の結合文字 (母音記号・シャッダなど) は、書体が内から外へ重ねる順に並べ替えて組む (UTR #53。元の並びと正準等価)
-  const c = reorderArabicMarks(c0);
   // 合字: 書体の合字の機能 (liga。指定があれば dlig・hlig・clig も) で 1 つの字形になる並びを 1 単位に (横書きだけ)。
   // 候補は欧文の字の並び。語をアイコンにする書体のように、それに収まらない合字を持つ書体が読み込まれているときは、書体の合字の表から引く
   // 任意の合字が無効でも、必須の合字 (rlig) で語をアイコンにする書体が読み込まれていれば、その並びはまとめる
