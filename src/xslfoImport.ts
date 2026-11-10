@@ -757,6 +757,8 @@ class Importer {
     };
     const seq: LPageSequence = {
       type: 'page-sequence',
+      // id (§7.30.8): ページ番号の参照 (§6.6.11・§6.6.12) では、この page-sequence の作った最初・最後のページを指す
+      ...this.idOf(ps),
       discardLeadingSpace: true,
       ...baseStyle,
       ...(style.style.writingMode ? { writingMode: style.style.writingMode } : {}),
@@ -841,7 +843,8 @@ class Importer {
       const bodyW = def.pageW - (def.master.margins.left + def.master.margins.right) * PT_PER_MM;
       // fo:flow の継承される性質 (font-family・axf:line-number-* など)
       const fst = this.textStyle(flowEl, ctx);
-      Object.assign(seq.flow, fst.style, { writingMode: wm });
+      // fo:flow の id は、本文の置かれた最初・最後のページを指す
+      Object.assign(seq.flow, this.idOf(flowEl), fst.style, { writingMode: wm });
       // 段組のページ: 中の要素の幅 (百分率の基準) は 1 段の幅 (段は参照領域。段組のページの
       // inline-progression-dimension="50%" は、段の幅の半分)。段をまたぐ (span="all") ブロックは本文の幅
       const cols = def.master.columns;

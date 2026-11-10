@@ -5151,8 +5151,13 @@ export class LayoutEngine {
       const idsBefore = this.snapshotIds();
       this.citeLog = new Map();
       const nextIpn = doc.sequences[si + 1]?.initialPageNumber;
-      const layoutSequence = (s: LPageSequence, d: ResolvedStyle, h: FlowHost, f: number, li: number | null) =>
-        this.forcePageCount(this.layoutSequence(s, d, h, f, li), s, d, f, li, nextIpn);
+      // 本文 (flow) の置かれたページの数 (force-page-count で末尾に足す白ページを含まない)
+      let flowPages = 0;
+      const layoutSequence = (s: LPageSequence, d: ResolvedStyle, h: FlowHost, f: number, li: number | null) => {
+        const body = this.layoutSequence(s, d, h, f, li);
+        flowPages = body.length;
+        return this.forcePageCount(body, s, d, f, li, nextIpn);
+      };
       const conds = [...(seq.masterAlternatives ?? []), ...(seq.masterSequence ?? []).flatMap((it) => it.masters)];
       // rest も、最後のページかどうかで決まる (§7.27.14: 最初でも最後でもないページ)
       const needsLast = conds.some((a) => a.when.pagePosition === 'last' || a.when.pagePosition === 'only' || a.when.pagePosition === 'rest');
@@ -5176,6 +5181,14 @@ export class LayoutEngine {
           if (k === 2) this.warnings.push(msg('最終ページ用ページマスターの適用でページ数が収束しませんでした', 'the page count did not converge while applying the last-page page master'));
         }
       }
+      // page-sequence・flow の id (XSL 1.1 §7.30.8) を引くページ番号の参照 (§6.6.11・§6.6.12): page-sequence の id は、
+      // その page-sequence の作った最初と最後のページ (「全 N ページ」の page-number-citation-last)。flow の id は、本文の置かれた最初と最後のページ
+      const noteSpan = (id: string | undefined, count: number) => {
+        if (!id || count <= 0) return;
+        for (const pb of [built[0], built[count - 1]]) this.noteIdPage(id, pb.number, seq.pageNumberFormat, pb);
+      };
+      noteSpan(seq.id, built.length);
+      noteSpan(seq.flow.id, Math.min(flowPages, built.length));
       pages.push(...built);
       pageNo = first + built.length;
       this.fnCarry = this.lastFoot?.lastNumber ?? this.fnCarry;
