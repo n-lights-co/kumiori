@@ -241,9 +241,12 @@ export class FontManager {
   private find(family: string | undefined, weight: number): LoadedFont {
     // 範囲つきの書体の組は、空白 (U+0020) を受け持つ face (後に定義したものから。Fonts 4 §5.2 の first available font)。
     // 字ごとの選び分けは getForChar
-    const loaded = family ? [...(this.ranged.get(family) ?? [])].reverse().filter((f) => [...this.fonts.values()].some((x) => x.family === f.family)) : [];
+    // 順の列を持つ組 (defineStack の list) は、その基本の書体 (別の組の名前・範囲つきの書体の組の名前のこともある) をもう 1 段たどる
+    const listed = family ? this.stacks.get(family) : undefined;
+    const target = listed?.list ? listed.base : family;
+    const loaded = target ? [...(this.ranged.get(target) ?? [])].reverse().filter((f) => [...this.fonts.values()].some((x) => x.family === f.family)) : [];
     const rangedFirst = (loaded.find((f) => !f.ranges || f.ranges.some(([a, b]) => a <= 0x20 && 0x20 <= b)) ?? loaded[loaded.length - 1])?.family;
-    const real = rangedFirst ?? (family ? (this.stacks.get(family)?.base ?? family) : family);
+    const real = rangedFirst ?? (target ? (this.stacks.get(target)?.base ?? target) : target);
     const fam = real && [...this.fonts.values()].some((f) => f.family === real) ? real : this.fallbackFamily;
     if (!fam) throw new Error(msg('フォントが 1 つも登録されていません', 'no font is registered'));
     const faces = [...this.fonts.values()].filter((f) => f.family === fam);
@@ -268,7 +271,7 @@ export class FontManager {
     this.generation++;
   }
 
-  private stacks = new Map<string, { base: string; latin?: string; first?: boolean; symbol?: string }>();
+  private stacks = new Map<string, { base: string; latin?: string; first?: boolean; symbol?: string; list?: readonly string[] }>();
 
   /**
    * 範囲つきの書体の組 (CSS の @font-face の unicode-range。Fonts 4 §4.5): 名前 → face の並び (登録した書体名と、受け持つ字の範囲)。
@@ -301,13 +304,20 @@ export class FontManager {
    * 欧文用と和文用で別のフォントを並べる指定を表す。latin を省けば、base のフォントだけで組む (欧文も base の字形)。
    * first を付けると、latin が持つ字は (欧文に限らず「…」なども) すべて latin で組む (CSS の font-family の並びの先頭の書体)。
    * symbol を付けると、latin が持たない記号 (● など。和文の字・全角の字を除く) を、base より先に symbol の書体で組む (欧文の文書)。
+   * list を付けると、順のある書体の列 (CSS の font-family の並び。CSS Fonts 4 §5.2) になる: 字ごとに、列の前から順に、その字を持つ最初の書体を使う (findInList)。
+   * 列の項目は、読み込んだ書体のファミリ・範囲つきの書体の組 (defineRanged)・別の組 (総称の写し先の、和文 + 欧文の組) の名前。
+   * このとき base は、組の基本の書体 (get が返す書体。行の基準などに使う) を決める名前で、latin は使わない
    */
-  defineStack(alias: string, base: string, latin?: string, opts: { first?: boolean; symbol?: string } = {}) {
+  defineStack(alias: string, base: string, latin?: string, opts: { first?: boolean; symbol?: string; list?: readonly string[] } = {}) {
+    // 同じ定義をもう 1 度しても、覚えた結果 (字ごとの書体・行分け) は消さない (HTML の取り込みは、要素ごとに同じ並びを定義し直す。
+    // 順の列は、項目の総称の組も一緒に定義し直すので、そのたびに消すと、取り込みの途中の字の幅の計算が毎回やり直しになる)
+    const old = this.stacks.get(alias);
+    if (old && old.base === base && old.latin === latin && !!old.first === !!opts.first && old.symbol === (opts.symbol || undefined) && (old.list?.join('\u0000') ?? null) === (opts.list?.join('\u0000') ?? null)) return;
     this.forCharMemo.clear();
     this.clusterMemo.clear();
     this.getMemo.clear();
     this.generation++;
-    this.stacks.set(alias, { base, latin, ...(opts.first ? { first: true } : {}), ...(opts.symbol ? { symbol: opts.symbol } : {}) });
+    this.stacks.set(alias, { base, latin, ...(opts.first ? { first: true } : {}), ...(opts.symbol ? { symbol: opts.symbol } : {}), ...(opts.list ? { list: [...opts.list] } : {}) });
   }
 
   /** その名前の書体 (読み込み済みのファミリ、または defineStack の別名) があるか */
@@ -333,6 +343,8 @@ export class FontManager {
   /** 書体の登録・欧文の書体・書体の組が変わるたびに増える (行分けの結果を覚えたものが古くなったかを見る) */
   generation = 0;
   private findForChar(family: string | undefined, weight: number, ch: string): LoadedFont {
+    const listed = family ? this.stacks.get(family)?.list : undefined;
+    if (listed) return this.findInList(family!, listed, weight, ch);
     if (family && this.ranged.has(family) && !/[\s\u0000-\u001f]/.test(ch)) {
       const r = this.pickRanged(family, weight, ch);
       if (r) return r;
@@ -373,11 +385,82 @@ export class FontManager {
   /** 基本の書体が持たない字の、代わりの書体 (null は、どの書体も持たない) */
   private charFallback = new Map<string, LoadedFont | null>();
 
+  /** そのファミリの書体が 1 つでも読み込まれているか */
+  private isLoaded(family: string): boolean {
+    for (const f of this.fonts.values()) if (f.family === family) return true;
+    return false;
+  }
+
+  /**
+   * 順のある書体の列 (defineStack の list) の 1 つの項目が、その字に使う書体 (その項目のどの書体も字を持たなければ undefined)。
+   * CSS Fonts 4 §5.2: 並びの名前ごとに、その字の字形があるかを見て、無ければ次の名前へ進む。
+   *  - 範囲つきの書体の組: 範囲に入り、字形を持つ face (pickRanged。§5.2 の composite face)
+   *  - 別の組・欧文の代わりの書体を持つ書体 (総称の写し先。§2.1.5: 総称は、字の範囲によって別の書体を組み合わせたものでよい):
+   *    その組の中の選び方 (欧文の字は欧文の書体、欧文の文書の記号は記号の書体、ほかは基本の書体。findForChar と同じ) で、字形を持つもの
+   *  - 読み込んだ書体のファミリ: その書体が字形を持てば、その書体
+   * 項目の外 (読み込み済みのほかの書体) へは探しに行かない
+   */
+  private pickInEntry(entry: string, weight: number, ch: string): LoadedFont | undefined {
+    const blank = /[\s\u0000-\u001f]/.test(ch);
+    if (this.ranged.has(entry)) {
+      if (!blank) return this.pickRanged(entry, weight, ch);
+      // 空白は、空白を受け持つ face (get)。face が 1 つも読み込まれていなければ、この項目は無い
+      if (!this.ranged.get(entry)!.some((f) => this.isLoaded(f.family))) return undefined;
+      const f = this.get(entry, weight);
+      return this.hasGlyph(f, ch) ? f : undefined;
+    }
+    const stack = this.stacks.get(entry);
+    const baseName = stack ? stack.base : entry;
+    const lf = stack ? stack.latin : this.latinFor.get(baseName);
+    if (lf && (isLatinForFallback(ch) || (stack?.first && !blank))) {
+      if (this.ranged.has(lf)) {
+        const r = this.pickRanged(lf, weight, ch);
+        if (r) return r;
+      } else if (this.isLoaded(lf)) {
+        const f = this.get(lf, weight);
+        if (this.hasGlyph(f, ch)) return f;
+      }
+    }
+    if (stack?.symbol && !isCjkChar(ch) && !/\s/.test(ch) && this.isLoaded(stack.symbol)) {
+      const f = this.get(stack.symbol, weight);
+      if (this.hasGlyph(f, ch)) return f;
+    }
+    if (this.isLoaded(baseName)) {
+      const f = this.get(baseName, weight);
+      if (this.hasGlyph(f, ch)) return f;
+    }
+    // 基本の書体が持たない字 (記号など) を、欧文の書体が持つとき
+    if (lf && !blank && !this.ranged.has(lf) && this.isLoaded(lf)) {
+      const f = this.get(lf, weight);
+      if (this.hasGlyph(f, ch)) return f;
+    }
+    return undefined;
+  }
+
+  /**
+   * 順のある書体の列 (CSS の font-family の並び) から、1 字の書体を選ぶ (CSS Fonts 4 §5.2)。
+   *  1. 列の前から順に、その字を持つ最初の項目の書体 (空白も同じ。§5.2 の手順に、空白の特別な扱いは無い)
+   *  2. 列のどの項目も持たない字: 読み込み済みのほかの書体 (列に無い書体。§5.2 の installed font fallback に当たる) から、太さの近い順
+   *  3. どの書体も持たない字と、どの項目も持たない空白・制御の字: 組の基本の書体 (その書体の「字が無い」しるしになる)
+   */
+  private findInList(family: string, list: readonly string[], weight: number, ch: string): LoadedFont {
+    for (const entry of list) {
+      const f = this.pickInEntry(entry, weight, ch);
+      if (f) return f;
+    }
+    if (!/[\s\u0000-\u001f]/.test(ch)) {
+      const hit = [...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight)).find((f) => this.hasGlyph(f, ch));
+      if (hit) return hit;
+    }
+    return this.get(family, weight);
+  }
+
   /**
    * 字の単位 (書記素クラスタ。基底の字 + 結合文字、絵文字の並びなど) をまとめて組む書体。クラスタは 1 つの書体で組む
    * (基底の字と結合文字を同じ書体で組まないと、結合文字の位置が合わない。CSS Fonts 4 §5.3 Cluster matching)。
    *  1. 基底の字の書体 (getForChar) が、並びの字をすべて持てば、その書体
-   *  2. 無ければ、並びのほかの字に選ばれる書体・読み込み済みのほかの書体の順に、並びの字をすべて持つ書体 (絵文字の並びを持つ書体など)
+   *  2. 無ければ、並びのほかの字に選ばれる書体・読み込み済みのほかの書体の順に、並びの字をすべて持つ書体 (絵文字の並びを持つ書体など)。
+   *     順のある書体の列 (defineStack の list。CSS の font-family の並び) では、その前に、列の前から順に探す (§5.3 の手順 1)
    *  3. どの書体も並び全体を持たなければ null (呼び出し側が、並びを分けて字ごとに組む)
    * 字形を持たなくてよい字 (描かない字: ZWJ・異体字セレクタ・タグなど。Default_Ignorable_Code_Point) は、持つかどうかを見ない
    */
@@ -391,7 +474,10 @@ export class FontManager {
     const base = this.getForChar(family, weight, chars[0]);
     let hit: LoadedFont | null = base;
     if (!covers(base)) {
-      const cands = [...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...[...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight))];
+      // 順のある書体の列 (defineStack の list) は、列の前から順に、並びの字をすべて持つ書体を探す (§5.3 の手順 1: For each family in the font list)
+      const list = family ? this.stacks.get(family)?.list : undefined;
+      const listed = list ? list.flatMap((e) => need.map((c) => this.pickInEntry(e, weight, c)).filter((f): f is LoadedFont => !!f)) : [];
+      const cands = [...listed, ...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...[...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight))];
       hit = cands.find((f) => f !== base && covers(f)) ?? null;
     }
     if (this.clusterMemo.size > 20000) this.clusterMemo.clear();

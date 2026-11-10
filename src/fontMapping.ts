@@ -303,6 +303,66 @@ export function createFontMapping(
     return hh ? (hh.ascent - hh.descent + hh.lineGap) / f.unitsPerEm : undefined;
   }
 
+  /**
+   * font-family の並びの中の位置で引く総称 (CSS Fonts 4 §2.1.5)。serif・sans-serif・monospace は、必ず書体に写す総称
+   * ("must always map to at least one matched font face")。ui-* は、同じ写し先にする。
+   * ほかの総称 (cursive・fantasy・system-ui・emoji・math・fangsong など) は、当たる書体を持たないので、読み込んでいない書体の名前と同じに飛ばす
+   */
+  const POSITIONED_GENERIC = /^(serif|sans-serif|monospace|ui-serif|ui-sans-serif|ui-monospace)$/i;
+  /**
+   * 既定の書体の名前と、その代わりに使う欧文の書体の別名 (§5.2: 名前は @font-face の書体、次に入っている書体から探す。入っている書体には別名を含めてよい)。
+   * 既定の和文の書体の名前は、総称と同じ写し先 (和文 + 欧文の組)。欧文の書体の名前 (Tinos・Arimo・Cousine) と、字幅を合わせてある相手の名前
+   * (Times New Roman・Arial・Courier New など) は、欧文の書体そのもの (和文の字は、並びの後ろの書体へ進む)
+   */
+  const knownLatinFamily = (n: string): string | undefined => {
+    const k = normalizeFamily(n);
+    if (k === 'tinos' || k === 'arimo') return k === 'tinos' ? 'Tinos' : 'Arimo';
+    if (k === 'timesnewroman' || k === 'times') return serifLatin();
+    if (k === 'arial' || k === 'helvetica') return sansLatin();
+    if (k === 'cousine' || k === 'couriernew' || k === 'courier') {
+      monoUsed = true;
+      return 'Cousine';
+    }
+    return undefined;
+  };
+  /** 総称・既定の和文の書体の名前か (その位置に、いまの写し先の和文 + 欧文の組を置く名前) */
+  const isGenericOrDefaultCjk = (n: string) => POSITIONED_GENERIC.test(n.trim()) || [SERIF, SANS].some((f) => normalizeFamily(f) === normalizeFamily(n));
+
+  /**
+   * font-family の並びを、順のある書体の列にする (CSS Fonts 4 §5.2: 並びの名前を前から順に見て、字ごとに、その字を持つ最初の書体を使う)。
+   *  - 読み込んだ書体 (@font-face・fonts / --font の書体) の名前: その書体
+   *  - 総称 (POSITIONED_GENERIC)・既定の和文の書体の名前: その位置に、いまの写し先 (和文 + 欧文の組。その名前だけを指定したときと同じ)
+   *  - 既定の欧文の書体の名前と別名 (knownLatinFamily): その位置に、欧文の書体
+   *  - ほかの名前 (読み込んでいない書体): 飛ばす (§5.2)
+   *  - 最後に、既定の書体 (並びの名前が尽きた後の後備。飛ばした名前がゴシック系・等幅なら、その写し先。無ければ、並びの名前から決める明朝・ゴシック)
+   * 並びのどれも持たない字は、その後に、並びに無い読み込み済みの書体 (FontManager.findInList)。
+   *
+   * この列を使うのは、読み込んだ書体より前に総称・既定の書体の名前があるときと、読み込んだ書体が 2 つ以上並ぶときだけ。
+   * 読み込んだ書体が先頭に 1 つのとき (と、読み込んだ書体が無いとき) は undefined を返し、今までの組 (先頭の書体 + 和文の書体) で組む
+   * (先頭の書体が持つ字はその書体、ほかは後ろの総称の和文の書体。これまでの文書の結果を変えない)
+   */
+  function htmlFontList(names: string[], bold: boolean, lang: string | undefined, fallback: string): string | undefined {
+    const entries: Array<{ name: string; kind: 'face' | 'pair' | 'latin' }> = [];
+    const skipped: string[] = [];
+    for (const n of names) {
+      const face = faceOf(n);
+      const pair = !face && isGenericOrDefaultCjk(n) ? mapHtmlFont([n], bold, lang) : undefined;
+      const name = face ?? pair ?? knownLatinFamily(n);
+      if (!name) skipped.push(n);
+      else if (!entries.some((e) => e.name === name)) entries.push({ name, kind: face ? 'face' : pair ? 'pair' : 'latin' });
+    }
+    const faces = entries.filter((e) => e.kind === 'face').length;
+    if (faces < 2 && !(faces === 1 && entries[0].kind !== 'face')) return undefined;
+    const last = mapHtmlFont(skipped.length ? skipped : [fallback], bold, lang) ?? SERIF;
+    const list = entries.map((e) => e.name);
+    if (!list.includes(last)) list.push(last);
+    // 組の基本の書体 (行の基準などに使う書体): 並びの中の最初の総称・既定の和文の書体の組 (読み込んだ書体 1 つ + 総称のときの「和文の書体」と同じ)
+    const base = entries.find((e) => e.kind === 'pair')?.name ?? last;
+    const alias = `list:${list.join('|')}`;
+    fonts.defineStack(alias, base, undefined, { list });
+    return alias;
+  }
+
   function mapHtmlFont(names: string[], bold: boolean, lang?: string): string | undefined {
     // 欧文の文書 (lang が日本語・中国語・韓国語でない) では、欧文の書体に無い記号 (● など) を和文の全角の字でなく、
     // 欧文の書体 (ゴシック系は Arimo、ほかは Tinos。アンテナハウスの Arial / Times と同じ字幅) で組む
@@ -310,6 +370,8 @@ export function createFontMapping(
     const sym = names.some((n) => GOTHIC.test(n) && !/serif/i.test(n.replace(/sans-serif/i, ''))) ? sansLatin() : serifLatin();
     const idx = names.findIndex((n) => faceOf(n));
     if (idx >= 0) {
+      const listed = htmlFontList(names, bold, lang, sym === sansLatin() ? 'sans-serif' : 'serif');
+      if (listed) return listed;
       const face = faceOf(names[idx])!;
       // 和文の字 (読み込んだ書体に無い字) は、並びの次の名前で組む (Fonts 4 の書体の選び方: 字の無い書体は飛ばして次の名前へ)。
       // 後に並ぶ名前で最初に見分けられるもの (sans-serif・serif・ゴシック・明朝・等幅) がゴシック系・等幅なら Noto Sans JP、
