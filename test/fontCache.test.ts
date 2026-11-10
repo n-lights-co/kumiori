@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { defaultFontCacheDir, localFont, looksLikeFont, parseArgs } from '../src/cli';
+import { cssOptionFiles, defaultFontCacheDir, localFont, looksLikeFont, parseArgs } from '../src/cli';
 import { FONT_SPECS } from '../src/fontMapping';
 
 describe('書体のキャッシュ', () => {
@@ -37,6 +37,12 @@ describe('書体のキャッシュ', () => {
     expect(parseArgs(['a.html']).noFontCache).toBe(false);
     expect(parseArgs(['a.html', '--no-font-cache']).noFontCache).toBe(true);
     expect(() => parseArgs(['a.html', '--font-cache'])).toThrow();
+  });
+  it('--css の値: カンマの前後の空白を捨て、空の項目は無いものとする ("a.css, b.css" の b.css も使う)', () => {
+    expect(cssOptionFiles('a.css,b.css')).toEqual(['a.css', 'b.css']);
+    expect(cssOptionFiles('a.css, b.css')).toEqual(['a.css', 'b.css']);
+    expect(cssOptionFiles(' css/a.css ,, ../b.css ,')).toEqual(['css/a.css', '../b.css']);
+    expect(cssOptionFiles(' ')).toEqual([]);
   });
   it('localFont: --font-dir の書体を使い、ネットワークから取れなければ理由を添えて投げる (時限 1ms で取れない状態にする)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-fc-'));
