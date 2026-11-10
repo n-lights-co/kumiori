@@ -23,9 +23,10 @@
   - `x`・`y` は回転後の外接矩形の左上です。
   - 子の座標は、回転前の局所座標です。
 - `GlyphArea.rotation` は字の回転 (時計回り) で、箱の回転 `orientation` とは別のものです。
+- 罫線の辺の色 (`border.*.color`) は、`transparent` なら描かず (太さは取る)、`#rrggbbaa` (半透明) なら、その濃さで下の背景に重ねて描きます。
 - 背景 (`backgroundColor`・`backgroundImage`):
   - `backgroundImage` は、いちばん手前の背景の画像です (大きさは解決済み)。`under` は、その後ろに重ねる画像の並び (手前のものから順) です。
-  - 画像ごとの `origin` は位置の基準の領域 (`border-box`・`content-box`。無ければ padding の箱)、`clip` は描く範囲 (`border-box`・`content-box`。無ければ padding の箱) です。
+  - 画像ごとの `origin` は位置の基準の領域 (`border-box`・`content-box`。無ければ padding の箱)、`clip` は描く範囲 (`border-box`・`content-box`。無ければ padding の箱) です。HTML の背景は、`background-clip` の初期値が `border-box` なので、ふつう `clip: "border-box"` を持ちます (罫線の下にも描く)。XSL-FO の背景は `clip` を持ちません (XSL 1.1 §4.9.4: 背景は padding の矩形に描く)。
   - `backgroundClip` は背景の色を塗る範囲 (`padding-box`・`content-box`) です。無ければ border-box (`width` × `height`) に塗ります。
 - 画像 (`image`) の `fit` (CSS の `object-fit` の `cover`・`contain`・`none`・`scale-down`) があるとき、`width` × `height` は枠の大きさで、画像は本来の大きさ (`naturalWidth` × `naturalHeight`) から大きさを決めて枠の中に置き、枠で切り抜きます。`fitPosition` (CSS の `object-position`) は枠の中での位置です (無ければ中央)。
 - `transform` (描くときの変換。CSS の `transform`) があるとき:

@@ -495,6 +495,24 @@ function closeArea(o: OpenBox, p: Painter) {
   const { a, x, y, box } = o;
   if (a.clip) p.restore();
   if (!box) return;
+  // 半透明の罫線 (色が #rrggbbaa。CSS の rgba() の border-color): 同じ濃さの辺をまとめて、不透明の色で描いたものを、その濃さで重ねる
+  // (Painter.group。角で辺が重なっても濃くならない)。濃さごとに、ほかの辺は描かない辺 (transparent) にして描く
+  const alphaOf = (sd: BorderSide | undefined) => (sd && /^#[0-9a-f]{8}$/i.test(sd.color) ? parseInt(sd.color.slice(7), 16) / 255 : 1);
+  const SIDES = ['top', 'right', 'bottom', 'left'] as const;
+  if (SIDES.some((k) => alphaOf(a.border[k]) < 1)) {
+    for (const alpha of [...new Set(SIDES.map((k) => alphaOf(a.border[k])))].sort((m, n) => n - m)) {
+      const border: Area['border'] = {};
+      for (const k of SIDES) {
+        const sd = a.border[k];
+        if (sd) border[k] = alphaOf(sd) === alpha ? { ...sd, color: sd.color.slice(0, alpha < 1 ? 7 : undefined) } : { ...sd, color: 'transparent' };
+      }
+      const draw = () => closeArea({ ...o, a: { ...a, clip: false, border, diagonals: undefined } as Area }, p);
+      if (alpha < 1 && p.group) p.group(alpha, draw);
+      else draw();
+    }
+    paintDiagonals(a, x, y, p);
+    return;
+  }
   const rad = a.borderRadius;
   const shape = radiusShape(rad, a.width, a.height);
   const bt = a.border.top?.width ?? 0;
@@ -505,6 +523,11 @@ function closeArea(o: OpenBox, p: Painter) {
   const sides = [a.border.top, a.border.right, a.border.bottom, a.border.left];
   const roundBorder = rad && bt > 0 && sides.every((b) => b && b.width === bt && (b.style ?? 'solid') === (a.border.top!.style ?? 'solid') && b.color === a.border.top!.color);
   // 罫線は子 (負の margin ではみ出した子の背景・罫線を含む) より前面に描く
+  if (roundBorder && a.border.top!.color === 'transparent') {
+    // 透明の罫線は描かない
+    paintDiagonals(a, x, y, p);
+    return;
+  }
   if (roundBorder) {
     const b = a.border.top!;
     const style = b.style ?? 'solid';
@@ -1019,8 +1042,9 @@ function paintBackgroundLayer(a: Area, layer: NonNullable<Area['backgroundImage'
   const minY = same ? 0 : clip0.y - by;
   const maxX = same ? W : clip0.x + clip0.width - bx;
   const maxY = same ? H : clip0.y + clip0.height - by;
-  const startX = rx ? ox - Math.ceil((ox - minX) / bi.width) * bi.width : ox;
-  const startY = ry ? oy - Math.ceil((oy - minY) / bi.height) * bi.height : oy;
+  // (1e-9: 描く範囲と基準の領域の端が同じとき、丸めの誤差で 1 枚余分に手前から並べない)
+  const startX = rx ? ox - Math.ceil((ox - minX) / bi.width - 1e-9) * bi.width : ox;
+  const startY = ry ? oy - Math.ceil((oy - minY) / bi.height - 1e-9) * bi.height : oy;
   const tile = { type: 'image', src: bi.src, missing: false, x: 0, y: 0, width: bi.width, height: bi.height, margin: a.margin, padding: a.padding, border: {}, writingMode: a.writingMode } as ImageArea;
   // 角丸の箱の背景画像は、描く範囲の箱の角丸 (padding の箱なら、外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §4.2・§5.3)
   if (a.borderRadius) p.clipPath(radiusShape(a.borderRadius, a.width, a.height)(clipR.x, clipR.y, clipR.width, clipR.height, clipK === 0 ? 0 : clipK === 1 ? bt : bt + a.padding.top));
@@ -1031,8 +1055,8 @@ function paintBackgroundLayer(a: Area, layer: NonNullable<Area['backgroundImage'
     p.restore();
     return;
   }
-  for (let ty = startY; ty < maxY; ty += bi.height) {
-    for (let tx = startX; tx < maxX; tx += bi.width) {
+  for (let ty = startY; ty < maxY - 1e-6; ty += bi.height) {
+    for (let tx = startX; tx < maxX - 1e-6; tx += bi.width) {
       p.drawImage(tile, bx + tx, by + ty);
       if (!rx) break;
     }
