@@ -23,7 +23,8 @@ import type { Atom, FlattenState, InlineChild, InlineFrame } from './inlineLayou
  * 分綴した行の終わりに出す字の atom の並び。字は hyphenate-character (CSS Text 4 §6.3.2)・hyphenation-character (XSL 1.1 §7.10.5) の
  * 文字列 (hyphenLimits.character)、無ければ U+002D。空の文字列なら空の並び (何も出さずに分ける)。
  * 書式は、その字を含む並びの書式 (XSL §7.10.5: “The styling properties of this character are those inherited from its containing flow object”)。
- * 書体に無い字は、ほかの字と同じく、字を持つ書体で代える (Measurer.glyph)
+ * 書体に無い字は、ほかの字と同じく、字を持つ書体で代える (Measurer.glyph)。和欧の混植の組では、U+2010 を、語の字と同じ欧文の書体から
+ * 取る (glyphOf に latinWord の印を付けて呼ぶ。印が無いと、U+2010 は和文の書体の全角の字になる)
  */
 export function hyphenAtoms(st: ResolvedStyle, glyphOf: (ch: string) => GlyphMetrics, runId: number, bg: Atom['bg']): Atom[] {
   return [...(st.hyphenLimits?.character ?? '-')].map((ch) => {
@@ -501,7 +502,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       const prev = out[out.length - 1];
       if (prev && prev.kind === 'glyph' && prev.g) {
         // 行末に出す字は hyphenate-character (CSS Text 4 §6.3.2 の注: ソフトハイフンで分けたときも同じ字を出す)
-        prev.hyphen = hyphenAtoms(st, (c) => m.glyph(c, runStyle(st), wm), prev.runId, bg);
+        prev.hyphen = hyphenAtoms(st, (c) => m.glyph(c, { ...runStyle(st), latinWord: true }, wm), prev.runId, bg);
         prev.softHyphen = true;
       }
       continue;

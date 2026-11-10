@@ -295,10 +295,63 @@ describe('分綴の制限 (CSS)', () => {
 describe('分綴の特性 (XSL-FO)', () => {
   const fo = (attrs: string, text = TEXT, width = '80pt') =>
     `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="300pt" page-height="400pt" margin="20pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body" font-family="Arimo" font-size="10pt"><fo:block width="${width}" xml:lang="en" hyphenate="true" text-align="start" ${attrs}>${text}</fo:block></fo:flow></fo:page-sequence></fo:root>`;
-  const run = async (attrs: string, text?: string, width?: string) => {
-    const r = await typesetFo(fo(attrs, text, width), { name: 't.fo', loadFont });
+  const run = async (attrs: string, text?: string, width?: string, compat?: 'spec' | 'antenna') => {
+    const r = await typesetFo(fo(attrs, text, width), { name: 't.fo', loadFont, ...(compat ? { compat } : {}) });
     return { lines: linesOf(r.areaTree), warnings: r.warnings };
   };
+  // 仕様モード (既定) の行末の字は U+2010 (hyphenation-character の初期値。§7.10.5)
+  const HY = '\u2010';
+  const hyphenated = (ls: string[], ch = HY) => ls.flatMap((l, k) => (l.endsWith(ch) ? [k] : []));
+
+  it('行末に出す字: 仕様モードは U+2010 (§7.10.5 の初期値)、アンテナハウス互換は U+002D。hyphenation-character の指定が勝つ', async () => {
+    const spec = (await run('')).lines;
+    expect(hyphenated(spec).length).toBeGreaterThan(1);
+    expect(spec.join('|')).not.toContain('-');
+    expect((await run('', TEXT, '80pt', 'spec')).lines).toEqual(spec);
+    const ah = (await run('', TEXT, '80pt', 'antenna')).lines;
+    expect(hyphenated(ah, '-').length).toBeGreaterThan(1);
+    expect(ah.join('|')).not.toContain(HY);
+    // 明示した値: どちらの流儀でも、その字
+    for (const compat of ['spec', 'antenna'] as const) {
+      const eq = (await run('hyphenation-character="="', TEXT, '80pt', compat)).lines;
+      expect(hyphenated(eq, '=').length).toBeGreaterThan(1);
+      expect(eq.join('|')).not.toMatch(/[-\u2010]/);
+      expect(hyphenated((await run('hyphenation-character="-"', TEXT, '80pt', compat)).lines, '-').length).toBeGreaterThan(1);
+      expect(hyphenated((await run('hyphenation-character="&#x2010;"', TEXT, '80pt', compat)).lines, HY).length).toBeGreaterThan(1);
+    }
+    // ほかの分綴の特性だけを指定しても、行末の字は初期値のまま
+    const ladder = (await run('hyphenation-ladder-count="1"')).lines;
+    expect(hyphenated(ladder).length).toBeGreaterThan(0);
+    expect(ladder.join('|')).not.toContain('-');
+    // ソフトハイフン (U+00AD) で分けた行も同じ字 (hyphenate="false" でも)
+    const soft = await typesetFo(fo('', 'inter&#xAD;national&#xAD;ization', '50pt').replace('hyphenate="true"', 'hyphenate="false"'), { name: 't.fo', loadFont });
+    expect(linesOf(soft.areaTree)[0]).toBe('inter' + HY);
+    // 行末の字の幅も、その字で測る: 行の字の箱は、行の幅 (80pt) を越えない。総称の書体 (和欧の混植の組) で確かめる
+    const r = await typesetFo(fo('font-family="serif"'), { name: 't.fo', loadFont });
+    let seen = 0;
+    walk(r.areaTree.sheets[0].page.regionBody as Area, (a) => {
+      if (a.type !== 'line') return;
+      let end = 0;
+      let text = '';
+      const fams: string[] = [];
+      let hyWidth = 0;
+      walk(a, (g) => {
+        if (g.type !== 'glyph') return;
+        const gl = g as unknown as { text: string; fontFamily: string };
+        text += gl.text;
+        fams.push(gl.fontFamily);
+        hyWidth = g.width;
+        end = Math.max(end, g.x + g.width);
+      });
+      if (!text.endsWith(HY)) return;
+      seen++;
+      // 字形は、語の字と同じ欧文の書体から取る (和文の書体の全角のハイフンにしない)
+      expect(fams[fams.length - 1]).toBe(fams[fams.length - 2]);
+      expect(hyWidth).toBeLessThan(5);
+      expect(end - a.x).toBeLessThanOrEqual(80 + 0.01);
+    });
+    expect(seen).toBeGreaterThan(1);
+  });
 
   it('指定が無いときと、初期値 (push・remain = 2、ladder = no-limit、keep = auto) を書いたときは、同じ行分け', async () => {
     const base = await run('');
@@ -310,16 +363,16 @@ describe('分綴の特性 (XSL-FO)', () => {
 
   it('hyphenation-character (§7.10.5)・push/remain-character-count (§7.10.6・§7.10.7)・ladder-count (§7.16.2)', async () => {
     const base = await run('');
-    const ch = (await run('hyphenation-character="&#x2010;"')).lines;
+    const ch = (await run('hyphenation-character="="')).lines;
     expect(hyphenated(base.lines).length).toBeGreaterThan(1);
-    expect(hyphenated(ch, '\u2010').length).toBeGreaterThan(1);
+    expect(hyphenated(ch, '=').length).toBeGreaterThan(1);
     expect(hyphenated(ch)).toEqual([]);
     // remain = 切れ目の前 (行に残す側)、push = 切れ目の後 (次の行へ送る側)
     const remain = (await run('hyphenation-remain-character-count="4"')).lines;
-    for (const l of remain.filter((x) => x.endsWith('-'))) expect(l.split(' ').pop()!.length - 1).toBeGreaterThanOrEqual(4);
-    expect(remain.join('|')).not.toMatch(/\ben-|\bbal-/);
+    for (const l of remain.filter((x) => x.endsWith(HY))) expect(l.split(' ').pop()!.length - 1).toBeGreaterThanOrEqual(4);
+    expect(remain.join('|')).not.toMatch(/\ben\u2010|\bbal\u2010/);
     const push = (await run('hyphenation-push-character-count="9"')).lines;
-    expect(push.join('|')).not.toMatch(/justifica-|international-/);
+    expect(push.join('|')).not.toMatch(/justifica\u2010|international\u2010/);
     const one = hyphenated((await run('hyphenation-ladder-count="1"')).lines);
     expect(one.length).toBeGreaterThan(0);
     for (let k = 1; k < one.length; k++) expect(one[k] - one[k - 1]).toBeGreaterThan(1);

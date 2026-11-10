@@ -852,7 +852,7 @@ export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: s
           const a = k === undefined ? undefined : word[k];
           if (a && k! < word.length - 1) {
             // 行末に出す字 (hyphenate-character。既定は U+002D) は、語ごとに 1 度だけ測る
-            hy ??= hyphenAtoms(st, (ch) => m.glyph(ch, { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch }, wm), a.runId, a.bg);
+            hy ??= hyphenAtoms(st, (ch) => m.glyph(ch, { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch, latinWord: true }, wm), a.runId, a.bg);
             a.hyphen = hy.map((h) => ({ ...h, runId: a.runId, bg: a.bg }));
           }
         }

@@ -163,6 +163,9 @@ const DEFAULT_FO_FONT_SIZE = 10;
 /** line-height=normal の代用 (倍率)。互換モードでは 10pt の行が 12pt、12pt の行が 14.4pt */
 const DEFAULT_FO_LINE_HEIGHT = 1.2;
 
+/** 仕様モードの分綴の初期値: 行末に出す字は U+2010 (XSL 1.1 §7.10.5 の hyphenation-character の初期値) */
+const SPEC_HYPHEN_LIMITS: HyphenLimits = { character: '\u2010' };
+
 class Importer {
   /** 本文の fo:page-number に付ける id の番号 */
   private pageNumberSeq = 0;
@@ -512,7 +515,8 @@ class Importer {
    *  - hyphenation-keep (§7.16.1): auto だけ。column・page (分綴した語の前後を同じ段・ページに置く) は読まず、未対応として報告する
    */
   private hyphenLimits(el: XEl, parent: HyphenLimits | undefined): HyphenLimits | undefined {
-    const o: HyphenLimits = { ...parent };
+    // 親から受け継いだ組が無ければ、流儀の初期値 (仕様モードは行末の字 U+2010) に重ねる
+    const o: HyphenLimits = { ...(parent ?? (this.spec ? SPEC_HYPHEN_LIMITS : undefined)) };
     let set = false;
     const count = (k: string): number | undefined => {
       const v = this.attrInh(el, k);
@@ -1221,6 +1225,9 @@ class Importer {
       // 繰返し記号は、normal でも行頭禁則 (UAX #14 の NS))
       looseLineStart: !this.spec,
       rubyOverhang: !this.spec,
+      // 分綴した行の終わりに出す字: 仕様モードは hyphenation-character の初期値 U+2010 (XSL 1.1 §7.10.5 “Initial: The Unicode hyphen
+      // character U+2010”)。互換モードは U+002D (組版の既定) のまま
+      ...(this.spec ? { hyphenLimits: { ...SPEC_HYPHEN_LIMITS } } : {}),
       ...(ctxRoot.rtl ? { direction: 'rtl' as const } : {}),
       ...rootStyle.style,
       ...style.style,
