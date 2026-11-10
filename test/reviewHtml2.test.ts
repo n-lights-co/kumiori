@@ -301,8 +301,10 @@ describe('P-1: 構造の疑似クラスの兄弟の一覧 (linkedom)', () => {
       return performance.now() - t0;
     };
     time(500); // 暖機
-    const t1 = time(1000);
-    const t2 = time(4000);
+    // 混んだ機械では 1 回の計測が揺れるので、数回測った最小の値で比べる (最小の値は、ほかの処理に割り込まれなかった回の時間に近い)
+    const best = (n: number) => Math.min(...Array.from({ length: 5 }, () => time(n)));
+    const t1 = best(1000);
+    const t2 = best(4000);
     // 線形なら 4 倍ほど。2 乗なら 16 倍 (余裕を見て 10 倍まで)
     expect(t2).toBeLessThan(Math.max(t1, 2) * 10);
   });
