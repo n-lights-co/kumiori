@@ -512,7 +512,7 @@ test('見本: 印刷プレビュー (examples/preview) で、編集すると組�
   await expect.poll(pageWidth, { timeout: 30_000 }).toBeCloseTo((a5 * 210) / 148, 0);
   // 対応していないプロパティを書くと、組んだページの上に警告が出る
   await expect(page.locator('#warnings')).toBeEmpty();
-  await page.locator('#css').fill(`${css}\np { opacity: 0.5 }`);
-  await expect(page.locator('#warnings')).toContainText('opacity', { timeout: 30_000 });
+  await page.locator('#css').fill(`${css}\np { outline: 1px solid red }`);
+  await expect(page.locator('#warnings')).toContainText('outline', { timeout: 30_000 });
   expect(errors).toEqual([]);
 });
