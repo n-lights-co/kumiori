@@ -211,7 +211,7 @@ export class PdfColorGlyphs {
     const sin = Math.sin(phi);
     const m = [g.scaleX * cos, g.scaleX * sin, (g.italic ? g.scaleX * cos * ITALIC_SLANT : 0) - sin, (g.italic ? g.scaleX * sin * ITALIC_SLANT : 0) + cos, x + g.baselineX, H - (y + g.baselineY)];
     const k = g.fontSize / cf.unitsPerEm;
-    const text = g.text.replace(/ /g, ' ');
+    const text = g.text.replace(/\u00A0/g, ' ');
     const chars = [...text];
     // 字形ごとの元の字 (ToUnicode): 字形と字が同じ数なら 1 対 1、字形が 1 つなら並びの全体、ほかは最初の字形に全体
     const textOf = (i: number) => (chars.length === glyphs.length ? chars[i] : i === 0 ? text : '');

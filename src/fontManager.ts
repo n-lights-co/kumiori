@@ -10,7 +10,7 @@ import { collectionFaces, isCollection } from './fontLoader';
 import { toSfnt } from './webFont';
 import { msg } from './messages';
 import { patchFontkitShaping } from './fontkitShaping';
-import { prepareColorFont } from './colorGlyph';
+import { colorFontOf, orderByPresentation, prepareColorFont, presentationOf } from './colorGlyph';
 import fontkit from '@pdf-lib/fontkit';
 import type { FontSpec } from './types';
 
@@ -389,7 +389,8 @@ export class FontManager {
           ...(lf && [...this.fonts.values()].some((x) => x.family === lf) ? [this.get(lf, weight)] : []),
           ...[...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight)),
         ];
-        hit = cands.find((f) => f !== base && this.hasGlyph(f, ch)) ?? null;
+        // 既定で絵文字の表示になる字 (UTS #51) は、色つきの書体を先に探す (色つきの書体が無ければ、順は変わらない)
+        hit = orderByPresentation(cands, ch).find((f) => f !== base && this.hasGlyph(f, ch)) ?? null;
         this.charFallback.set(key, hit);
       }
       if (hit) return hit;
@@ -477,7 +478,7 @@ export class FontManager {
       if (f) return f;
     }
     if (!/[\s\u0000-\u001f]/.test(ch)) {
-      const hit = [...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight)).find((f) => this.hasGlyph(f, ch));
+      const hit = orderByPresentation([...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight)), ch).find((f) => this.hasGlyph(f, ch));
       if (hit) return hit;
     }
     return this.get(family, weight);
@@ -501,7 +502,12 @@ export class FontManager {
     const covers = (f: LoadedFont) => need.every((c) => this.hasGlyph(f, c));
     const base = this.getForChar(family, weight, chars[0]);
     let hit: LoadedFont | null = base;
-    if (!covers(base)) {
+    // 異体字セレクタによる表示の指定 (U+FE0F = 絵文字の表示、U+FE0E = 文字の表示。UTS #51 ED-8・ED-9): 基底の字の書体が並びの字を持っていても、
+    // 指定と違う種類の書体 (絵文字の表示に、色つきの表の無い書体。文字の表示に、色つきの書体) なら、指定に合う書体をほかから探す
+    // (CSS Fonts 4 §5.3: 異体字セレクタの付いた並びは、その並びに合う字形を後備の書体から探してから、基底の字だけで選ぶ)
+    const shown = presentationOf(unit);
+    const suits = (f: LoadedFont) => !shown?.explicit || (shown.want === 'emoji') === !!colorFontOf(f);
+    if (!covers(base) || !suits(base)) {
       // 順のある書体の列 (defineStack の list) は、列の前から順に、並びの字をすべて持つ書体を探す (§5.3 の手順 1: For each family in the font list)
       const latinWord = !!family?.endsWith(LATIN_WORD);
       const plain = latinWord ? family!.slice(0, -LATIN_WORD.length) : family;
@@ -515,7 +521,8 @@ export class FontManager {
         this.latinWordNow = was;
       }
       const cands = [...listed, ...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...[...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight))];
-      hit = cands.find((f) => f !== base && covers(f)) ?? null;
+      const ordered = orderByPresentation(cands, unit);
+      hit = covers(base) ? (ordered.find((f) => f !== base && covers(f) && suits(f)) ?? base) : (ordered.find((f) => f !== base && covers(f)) ?? null);
     }
     if (this.clusterMemo.size > 20000) this.clusterMemo.clear();
     this.clusterMemo.set(key, hit);

@@ -89,6 +89,48 @@ export interface FontPalette {
   colors?: Array<[number, string]>;
 }
 
+/** @font-palette-values の規則 1 つ (CSS Fonts 4 §9.2)。families は font-family の記述子の名前 */
+export interface FontPaletteRule {
+  name: string;
+  families: string[];
+  base?: number | 'light' | 'dark';
+  colors?: Array<[number, string]>;
+}
+
+/**
+ * 書式の font-palette の値 (CSS Fonts 4 §9.1)。normal・light・dark か、名前 (--名前) に当たる @font-palette-values の規則の並び
+ * (書いた順。同じ名前の規則が、書体のファミリーごとにあってよい)
+ */
+export type FontPaletteStyle = 'normal' | 'light' | 'dark' | FontPaletteRule[];
+
+/** font-family の名前の照合用の形 (大文字小文字と前後の空白・引用符の違いを無視する) */
+const familyKey = (n: string) => n.trim().replace(/^["']|["']$/g, '').trim().toLowerCase();
+
+/**
+ * 書式の font-palette を、書体 font に当てたときのパレットの選び方。既定のパレットのまま (normal、パレットを持たない書体、
+ * その書体に当たる規則が無い、light・dark の印の付いたパレットが無い) なら undefined。
+ * 書体のファミリーの照合: @font-face の書体は「css:名前」(範囲つきは「css:名前#範囲」) で登録してあるので、その名前の部分で比べる
+ */
+export function paletteForFont(style: FontPaletteStyle | undefined, font: { family: string; fk: unknown; buffer: ArrayBuffer }): FontPalette | undefined {
+  if (!style || style === 'normal') return undefined;
+  const cf = colorFontOf(font);
+  if (!cf || !cf.paletteCount) return undefined;
+  let sel: FontPalette | undefined;
+  if (style === 'light' || style === 'dark') sel = { base: style };
+  else {
+    const own = familyKey(font.family.replace(/^css:/, '').replace(/#.*$/, ''));
+    // 同じ名前の規則が複数あれば、書いた順の最後のものが勝つ (§9.2)
+    const rule = [...style].reverse().find((r) => r.families.some((f) => familyKey(f) === own));
+    if (rule) sel = { ...(rule.base !== undefined ? { base: rule.base } : {}), ...(rule.colors?.length ? { colors: rule.colors } : {}) };
+  }
+  if (!sel) return undefined;
+  // 番号に直す (light・dark は、印の付いた最初のパレット。無い番号は 0。§9.2.2)。既定 (0 番で、差し替え無し) なら undefined
+  const index = cf.paletteIndex(sel.base);
+  const colors = sel.colors?.filter(([i]) => i >= 0 && i < cf.paletteEntries);
+  if (index === 0 && !colors?.length) return undefined;
+  return { ...(index ? { base: index } : {}), ...(colors?.length ? { colors } : {}) };
+}
+
 /** パレットの鍵 (覚えるときの名前)。既定のパレットは '' */
 export function paletteKey(p: FontPalette | undefined): string {
   if (!p || (p.base === undefined && !p.colors?.length)) return '';
@@ -384,7 +426,7 @@ export function areaGlyphs(
       });
     } else {
       // 改行しない空白 (U+00A0) は、通常の空白の字形で描く。'-' で始まる印 (組版が足す印) は、書体の機能ではない
-      const text = g.text.replace(/ /g, ' ');
+      const text = g.text.replace(/\u00A0/g, ' ');
       const run = fk.layout(text, Object.fromEntries((g.features ?? []).filter((f) => !f.startsWith('-')).map((f) => [f, true])));
       run.glyphs.forEach((gl, i) => {
         const p = run.positions[i];
@@ -508,10 +550,11 @@ export class ColorFont {
     this.tables = {};
     const colr = reader('COLR');
     const cpal = reader('CPAL');
+    // CPAL (色のパレット) は、COLR の色の番号と、SVG の表の var(--colorN) が引く
+    if (cpal && cpal.length >= 12) this.cpal = cpal;
     // COLR は CPAL と組で使う (色の番号は CPAL のパレットの中の番号)
-    if (colr && cpal && colr.length >= 14 && cpal.length >= 12) {
+    if (colr && this.cpal && colr.length >= 14) {
       this.colr = colr;
-      this.cpal = cpal;
       this.tables.colr = colr.u16(0) >= 1 && colr.length >= 34 ? 1 : 0;
     }
     const cblc = reader('CBLC');
@@ -563,6 +606,31 @@ export class ColorFont {
     return this.cpal ? this.cpal.u16(4) : 0;
   }
 
+  /** 1 つのパレットの色の数 */
+  get paletteEntries(): number {
+    return this.cpal ? this.cpal.u16(2) : 0;
+  }
+
+  /**
+   * パレットの番号。'light'・'dark' は、CPAL version 1 のパレットの種類 (USABLE_WITH_LIGHT_BACKGROUND = 0x0001・
+   * USABLE_WITH_DARK_BACKGROUND = 0x0002) の付いた最初のパレット。無い番号・印の付いたパレットが無いときは 0
+   * (CSS Fonts 4 §9.2.2: 「it behaves as if 0 were specified」)
+   */
+  paletteIndex(base: FontPalette['base']): number {
+    const cpal = this.cpal;
+    if (!cpal || base === undefined) return 0;
+    try {
+      const palettes = cpal.u16(4);
+      if (typeof base === 'number') return Number.isInteger(base) && base >= 0 && base < palettes ? base : 0;
+      const typesAt = cpal.u16(0) >= 1 ? cpal.u32(12 + palettes * 2) : 0;
+      const bit = base === 'light' ? 1 : 2;
+      if (typesAt) for (let i = 0; i < palettes; i++) if (cpal.u32(typesAt + i * 4) & bit) return i;
+    } catch {
+      return 0;
+    }
+    return 0;
+  }
+
   /** パレット (色の番号 → [r, g, b, a])。sel が無ければ 0 番 (既定) のパレット */
   palette(sel?: FontPalette): Array<[number, number, number, number]> {
     const key = paletteKey(sel);
@@ -572,21 +640,10 @@ export class ColorFont {
     const cpal = this.cpal;
     if (cpal) {
       try {
-        const version = cpal.u16(0);
         const entries = cpal.u16(2);
-        const palettes = cpal.u16(4);
         const records = cpal.u16(6);
         const recordsAt = cpal.u32(8);
-        let index = 0;
-        const base = sel?.base;
-        if (typeof base === 'number') index = base >= 0 && base < palettes ? base : 0;
-        else if (base === 'light' || base === 'dark') {
-          // CPAL version 1 のパレットの種類 (USABLE_WITH_LIGHT_BACKGROUND = 0x0001・USABLE_WITH_DARK_BACKGROUND = 0x0002) の付いた
-          // 最初のパレット。無ければ既定 (CSS Fonts 4 §9.1: 「If no palette is marked … this value behaves as normal」)
-          const typesAt = version >= 1 ? cpal.u32(12 + palettes * 2) : 0;
-          const bit = base === 'light' ? 1 : 2;
-          if (typesAt) for (let i = 0; i < palettes; i++) if (cpal.u32(typesAt + i * 4) & bit) { index = i; break; }
-        }
+        const index = this.paletteIndex(sel?.base);
         const first = cpal.u16(12 + index * 2);
         for (let i = 0; i < entries && first + i < records; i++) {
           const o = recordsAt + (first + i) * 4;
@@ -1158,6 +1215,35 @@ export class ColorFont {
     const box = segsBox(this.outline(gid));
     return { op: 'image', kind: size.kind, data, x: (box ? box[0] : 0) + ox * s, y: (box ? box[1] : 0) + oy * s, w: size.width * s, h: size.height * s };
   }
+}
+
+/** 既定で絵文字の表示になる字 (UTS #51 ED-6: default emoji presentation character = Emoji_Presentation の字) で始まるか */
+const EMOJI_DEFAULT = /^\p{Emoji_Presentation}/u;
+
+/**
+ * 字 (か字の単位) が求める表示 (UTS #51 の 4 章 Presentation Style):
+ *  - 'emoji': 絵文字の表示の指定 (U+FE0F VARIATION SELECTOR-16。ED-9) を含む。または、既定で絵文字の表示になる字 (ED-6) で始まる
+ *  - 'text': 文字の表示の指定 (U+FE0E VARIATION SELECTOR-15。ED-8) を含む
+ *  - undefined: どちらでもない (既定で文字の表示になる字だけ、絵文字でない字)
+ * explicit は、異体字セレクタで指定されているか
+ */
+export function presentationOf(unit: string): { want: 'emoji' | 'text'; explicit: boolean } | undefined {
+  if (unit.includes('\uFE0F')) return { want: 'emoji', explicit: true };
+  if (unit.includes('\uFE0E')) return { want: 'text', explicit: true };
+  return EMOJI_DEFAULT.test(unit) ? { want: 'emoji', explicit: false } : undefined;
+}
+
+/**
+ * 後備の書体の候補を、求める表示に合うものが先になるように並べ直す (同じ組の中の順は変えない): 絵文字の表示なら色つきの表を持つ書体、
+ * 文字の表示なら色つきの表を持たない書体を先にする (CSS Fonts 4 §9.3 の注: 絵文字の表示を求められたとき、色つきの表を持たない書体を
+ * 候補から外してよい)。候補に色つきの書体が無ければ、元の配列をそのまま返す (色つきの書体を読み込んでいない文書では、何も変わらない)
+ */
+export function orderByPresentation<T extends { fk: unknown; buffer: ArrayBuffer }>(fonts: T[], unit: string): T[] {
+  const p = presentationOf(unit);
+  if (!p || !fonts.some((f) => colorFontOf(f))) return fonts;
+  const color = fonts.filter((f) => colorFontOf(f));
+  const plain = fonts.filter((f) => !colorFontOf(f));
+  return p.want === 'emoji' ? [...color, ...plain] : [...plain, ...color];
 }
 
 /** 書体 (fontkit の書体) ごとの結果。色つきの表が無ければ null */

@@ -9,7 +9,8 @@
 
 import { parseSelectorList } from './cssSelector';
 import { spotColor } from './color';
-import { skipString, splitTop, splitWords, UNIT_PX } from './cssText';
+import { hex2, parseColor as parseCssColor, rgbHex, skipString, splitTop, splitWords, UNIT_PX } from './cssText';
+import type { FontPaletteRule } from './colorGlyph';
 import { MAX_COUNTER_LENGTH, parseCounterStyleRule, type CounterStyleRule } from './counterStyle';
 
 /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。PANTONE などの値は Kumiori は持たず、使う人が渡す */
@@ -125,6 +126,8 @@ export interface ParsedCss {
   rules: StyleRule[];
   fontFaces: FontFaceRule[];
   counterStyles: Map<string, CounterStyleRule>;
+  /** @font-palette-values の規則 (CSS Fonts 4 §9.2。書いた順)。無ければ undefined */
+  fontPaletteValues?: FontPaletteRule[];
   /** 根元 (:root・html・*) の規則に書かれたカスタム プロパティ (自前で読む宣言の var() の置き換え用)。無ければ undefined */
   rootVars?: Record<string, string>;
 }
@@ -146,6 +149,7 @@ export function concatCss(...sheets: ParsedCss[]): ParsedCss {
     rules: sheets.flatMap((s) => s.rules),
     fontFaces: sheets.flatMap((s) => s.fontFaces),
     counterStyles: new Map(sheets.flatMap((s) => [...s.counterStyles])),
+    ...(sheets.some((s) => s.fontPaletteValues) ? { fontPaletteValues: sheets.flatMap((s) => s.fontPaletteValues ?? []) } : {}),
     ...(rootVars ? { rootVars } : {}),
   };
 }
@@ -337,6 +341,7 @@ export function layerRanks(names: Iterable<string>): Map<string, number> {
 export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
   const pages: PageRule[] = [];
   const fontFaces: FontFaceRule[] = [];
+  const fontPaletteValues: FontPaletteRule[] = [];
   const counterStyles = new Map<string, CounterStyleRule>();
   const rules: StyleRule[] = [];
   // カスケードの層 (Cascade 5 §6.4): 名前 (入れ子は a.b)。初めて現れた順 (@layer a, b; の文も含む)。
@@ -398,6 +403,25 @@ export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
       else if (/^@counter-style\s/i.test(head)) {
         const name = head.slice(14).trim();
         if (name && !/^none$/i.test(name)) counterStyles.set(name, parseCounterStyleRule(splitDecls(body.replace(/\/\*[\s\S]*?\*\//g, '')).map(([k, v]) => [k, v])));
+      } else if (/^@font-palette-values\s/i.test(head)) {
+        // @font-palette-values --名前 { font-family; base-palette; override-colors } (CSS Fonts 4 §9.2)。
+        // 名前は <dashed-ident>。font-family の無い規則は無効 (§9.2: must be ignored entirely)。総称を含む並びは構文の誤り (§9.2.1)
+        const name = head.slice(20).trim();
+        const d = Object.fromEntries(splitDecls(body.replace(/\/\*[\s\S]*?\*\//g, '')));
+        const families = splitTop(d['font-family'] ?? '', ',').filter((t) => t.trim()).map((f) => unquote(f.trim())).filter(Boolean);
+        if (/^--[^\s]+$/.test(name) && families.length && !families.some((f) => /^(serif|sans-serif|monospace|cursive|fantasy|system-ui|math|ui-serif|ui-sans-serif|ui-monospace|ui-rounded)$/i.test(f))) {
+          const bp = (d['base-palette'] ?? '').trim().toLowerCase();
+          const base = bp === 'light' || bp === 'dark' ? bp : /^\d+$/.test(bp) ? parseInt(bp, 10) : undefined;
+          // override-colors: 「番号 色」の、カンマ区切りの並び (§9.2.3)。色は絶対の色 (currentcolor・読めない色があれば、記述子ごと無効)。
+          // 色は #rrggbb (半透明なら #rrggbbaa) にして持つ
+          const absolute = (v: string) => {
+            const c = parseCssColor(v);
+            return Array.isArray(c) ? `${rgbHex(c[0], c[1], c[2])}${c[3] < 1 ? hex2(c[3] * 255) : ''}` : undefined;
+          };
+          const pairs = splitTop(d['override-colors'] ?? '', ',').filter((t) => t.trim()).map((item) => /^\s*(\d+)\s+(.+?)\s*$/.exec(item)).map((m) => (m ? ([parseInt(m[1], 10), absolute(m[2])] as const) : undefined));
+          const colors = pairs.length && pairs.every((x) => x && x[1]) ? pairs.map((x) => [x![0], x![1]!] as [number, string]) : undefined;
+          fontPaletteValues.push({ name, families, ...(base !== undefined ? { base } : {}), ...(colors ? { colors } : {}) });
+        }
       } else if (/^@font-face\b/i.test(head)) {
         const d = Object.fromEntries(splitDecls(body));
         const family = unquote(d['font-family'] ?? '');
@@ -492,7 +516,7 @@ export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
   }
   const ranks = layerRanks(layers);
   for (const [r, name] of layered) r.layer = ranks.get(name);
-  return { pages, rules, fontFaces, counterStyles, ...(rootVars ? { rootVars } : {}) };
+  return { pages, rules, fontFaces, counterStyles, ...(fontPaletteValues.length ? { fontPaletteValues } : {}), ...(rootVars ? { rootVars } : {}) };
 }
 
 /**
