@@ -342,7 +342,18 @@ export class FontManager {
   private forCharMemo = new Map<string | undefined, Map<number, Map<string, LoadedFont>>>();
   /** 書体の登録・欧文の書体・書体の組が変わるたびに増える (行分けの結果を覚えたものが古くなったかを見る) */
   generation = 0;
-  private findForChar(family: string | undefined, weight: number, ch: string): LoadedFont {
+  private findForChar(family0: string | undefined, weight: number, ch: string): LoadedFont {
+    // 欧文の書体で組む語の字 (latinWordFamily の名前): 印を外して、ギリシャ文字・キリル文字も欧文の字として選ぶ
+    if (family0?.endsWith(LATIN_WORD)) {
+      const was = this.latinWordNow;
+      this.latinWordNow = true;
+      try {
+        return this.findForChar(family0.slice(0, -LATIN_WORD.length) || undefined, weight, ch);
+      } finally {
+        this.latinWordNow = was;
+      }
+    }
+    const family = family0;
     const listed = family ? this.stacks.get(family)?.list : undefined;
     if (listed) return this.findInList(family!, listed, weight, ch);
     if (family && this.ranged.has(family) && !/[\s\u0000-\u001f]/.test(ch)) {
@@ -353,11 +364,11 @@ export class FontManager {
     const stack = family ? this.stacks.get(family) : undefined;
     const lf = stack ? stack.latin : this.latinFor.get(base.family);
     // 欧文の書体が範囲つきの書体の組なら、字ごとに face を選ぶ
-    if (lf && this.ranged.has(lf) && (isLatinForFallback(ch) || (stack?.first && !/[\s\u0000-\u001f]/.test(ch)))) {
+    if (lf && this.ranged.has(lf) && (this.latinChar(ch) || (stack?.first && !/[\s\u0000-\u001f]/.test(ch)))) {
       const r = this.pickRanged(lf, weight, ch);
       if (r) return r;
     }
-    if (lf && (isLatinForFallback(ch) || (stack?.first && !/[\s\u0000-\u001f]/.test(ch)))) {
+    if (lf && (this.latinChar(ch) || (stack?.first && !/[\s\u0000-\u001f]/.test(ch)))) {
       const f = [...this.fonts.values()].some((x) => x.family === lf) ? this.get(lf, weight) : undefined;
       if (f && this.hasGlyph(f, ch)) return f;
     }
@@ -381,6 +392,20 @@ export class FontManager {
       if (hit) return hit;
     }
     return base;
+  }
+  /** いま選んでいる字が、欧文の書体で組む語 (ギリシャ文字・キリル文字が 2 字以上続く語) の字か (findForChar・getForCluster の呼び出しの間だけ) */
+  private latinWordNow = false;
+  /** 欧文の書体 (和欧の混植の組の欧文の側) で組む字か: 欧文の字と、欧文の書体で組む語の中のギリシャ文字・キリル文字 */
+  private latinChar(ch: string): boolean {
+    return isLatinForFallback(ch) || (this.latinWordNow && isGreekCyrillicLetter(ch));
+  }
+  /**
+   * 書体の名前 family の、「欧文の書体で組む語の字」用の名前。getForChar・getForCluster に渡すと、和欧の混植の組 (総称・既定の書体、
+   * font-family の並びの中のそれら) で、ギリシャ文字・キリル文字を欧文の字と同じに選ぶ (欧文の書体がその字を持てば欧文の書体。
+   * 持たなければ、これまでどおりの後備)。混植の組でない書体 (作者が指定した書体・読み込んだ書体) では、何も変わらない
+   */
+  latinWordFamily(family: string | undefined): string {
+    return (family ?? '') + LATIN_WORD;
   }
   /** 基本の書体が持たない字の、代わりの書体 (null は、どの書体も持たない) */
   private charFallback = new Map<string, LoadedFont | null>();
@@ -412,7 +437,7 @@ export class FontManager {
     const stack = this.stacks.get(entry);
     const baseName = stack ? stack.base : entry;
     const lf = stack ? stack.latin : this.latinFor.get(baseName);
-    if (lf && (isLatinForFallback(ch) || (stack?.first && !blank))) {
+    if (lf && (this.latinChar(ch) || (stack?.first && !blank))) {
       if (this.ranged.has(lf)) {
         const r = this.pickRanged(lf, weight, ch);
         if (r) return r;
@@ -475,8 +500,17 @@ export class FontManager {
     let hit: LoadedFont | null = base;
     if (!covers(base)) {
       // 順のある書体の列 (defineStack の list) は、列の前から順に、並びの字をすべて持つ書体を探す (§5.3 の手順 1: For each family in the font list)
-      const list = family ? this.stacks.get(family)?.list : undefined;
-      const listed = list ? list.flatMap((e) => need.map((c) => this.pickInEntry(e, weight, c)).filter((f): f is LoadedFont => !!f)) : [];
+      const latinWord = !!family?.endsWith(LATIN_WORD);
+      const plain = latinWord ? family!.slice(0, -LATIN_WORD.length) : family;
+      const list = plain ? this.stacks.get(plain)?.list : undefined;
+      const was = this.latinWordNow;
+      this.latinWordNow = latinWord;
+      let listed: LoadedFont[];
+      try {
+        listed = list ? list.flatMap((e) => need.map((c) => this.pickInEntry(e, weight, c)).filter((f): f is LoadedFont => !!f)) : [];
+      } finally {
+        this.latinWordNow = was;
+      }
       const cands = [...listed, ...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...[...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight))];
       hit = cands.find((f) => f !== base && covers(f)) ?? null;
     }
@@ -500,6 +534,18 @@ export class FontManager {
 
 /** 字形を持たなくても描ける字 (書体が組むときに隠す。ZWJ・ZWNJ・異体字セレクタ・タグなど) */
 const DEFAULT_IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
+
+/** latinWordFamily が書体の名前の後ろに付ける印 */
+const LATIN_WORD = '\u0001latin-word';
+
+/**
+ * ギリシャ文字・キリル文字の字 (General_Category が L の字): ギリシャ (U+0370〜03FF)・キリル (U+0400〜052F)・Greek Extended (U+1F00〜1FFF)。
+ * 字の組の詰め (kern) の対象 (inlineLayout.ts の isLatinAlnumOrPunct) と同じ範囲
+ */
+export function isGreekCyrillicLetter(ch: string): boolean {
+  const cp = ch.codePointAt(0)!;
+  return ((cp >= 0x370 && cp <= 0x52f) || (cp >= 0x1f00 && cp <= 0x1fff)) && /^\p{L}/u.test(ch);
+}
 
 /** sfnt ヘッダ (TrueType / OpenType / TTC) の簡易判定。SPA フォールバックの HTML を弾く */
 function looksLikeFont(buf: ArrayBuffer): boolean {

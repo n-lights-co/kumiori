@@ -61,6 +61,11 @@ export interface Atom {
   t?: TateChuYokoMetrics;
   leader?: LeaderSpec;
   box?: BoxSpec;
+  /**
+   * 欧文の書体で組む語の字: ギリシャ文字・キリル文字が 2 字以上続く語の字 (inlineFlatten.ts の markLatinWords)。書体・字の組の詰め・
+   * 和欧間のアキ・分綴を、ラテン文字の語と同じに扱う
+   */
+  latinWord?: boolean;
   /** 幅 0 で字形を描かない字 (単独の ZWNJ・LRM・RLM など。Default_Ignorable_Code_Point)。双方向の並べ替え・改行の決まりには加わる */
   hidden?: boolean;
   /** 直前と同じ語の一部 (脚注の参照記号など)。この atom の前では改行しない */
@@ -168,6 +173,8 @@ export interface LeaderSpec {
 
 export interface FlattenState {
   run: number;
+  /** ギリシャ文字・キリル文字の語を、欧文の書体に替えない (アンテナハウス互換) */
+  noLatinWords?: boolean;
   /** 脚注: ラベル取得と参照記号の縮小率。無ければ '*' だけ出して本体は捨てる */
   footnote?: { label(fn: LFootnote): string; scale: number };
   /** ページ番号参照 (fo:page-number-citation) の解決 */
@@ -377,7 +384,8 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
       // U+FF01〜FF5E) も和字として扱う (JLREQ の cl-22 漢字等。「Q1　情報…」・
       // 「　t」と「FrameMaker ＋ SGML」は四分アキ、「3.4％」「1～10」はベタ)
       const wa = (ch: string) => isIdeographicOrKana(ch) || ch === '\u3000' || (isFullwidthForm(ch) && !isOpeningPunct(ch) && !isClosingPunct(ch) && !isMiddlePunct(ch) && !/^[＃＄％～]$/.test(ch));
-      if ((wa(a.last) && isLatinAlnum(b.first)) || (isLatinAlnum(a.last) && wa(b.first))) {
+      // 欧文の書体で組む語 (ギリシャ文字・キリル文字が 2 字以上続く語) の字も、欧文の字と同じに空ける (単独の 1 字は空けない)
+      if ((wa(a.last) && (isLatinAlnum(b.first) || b.latinWord)) || ((isLatinAlnum(a.last) || a.latinWord) && wa(b.first))) {
         const s = Math.min(fa, fb) * (a.st.textAutospaceWidth ?? 0.25);
         a.advance += s;
         a.trail = (a.trail ?? 0) + s;

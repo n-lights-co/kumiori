@@ -64,6 +64,8 @@ export interface RunStyle {
   features?: string[];
   /** 縦書きの字の向き (text-orientation)。省略時は mixed */
   orientation?: 'mixed' | 'upright' | 'sideways';
+  /** 欧文の書体で組む語 (ギリシャ文字・キリル文字が 2 字以上続く語) の字。書体を、欧文の字と同じに選ぶ (FontManager.latinWordFamily) */
+  latinWord?: boolean;
 }
 
 export interface GlyphMetrics {
@@ -189,6 +191,11 @@ export class Measurer {
     return `${this.backend}:${this.fonts.generation}`;
   }
 
+  /** 字の書体を引く名前: 欧文の書体で組む語の字 (latinWord) は、その印の付いた名前 */
+  private familyOf(style: Pick<RunStyle, 'fontFamily' | 'latinWord'>): string | undefined {
+    return style.latinWord ? this.fonts.latinWordFamily(style.fontFamily) : style.fontFamily;
+  }
+
   font(style: Pick<RunStyle, 'fontFamily' | 'fontWeight'>): LoadedFont {
     return this.fonts.get(style.fontFamily, style.fontWeight ?? 400);
   }
@@ -267,10 +274,11 @@ export class Measurer {
    * フォントの kern / GPOS を fontkit で引く。a・b が別のフォントで描かれるときは 0。
    * features (smcp・onum など、字形を差し替える機能) は、差し替えた後の字形の組で引く (GSUB の後に GPOS を当てる。OpenType の処理の順)
    */
-  kern(a: string, b: string, style: Pick<RunStyle, 'fontFamily' | 'fontWeight'> & { features?: string[]; skipClass0?: boolean }): number {
+  kern(a: string, b: string, style: Pick<RunStyle, 'fontFamily' | 'fontWeight' | 'latinWord'> & { features?: string[]; skipClass0?: boolean }): number {
     const w = style.fontWeight ?? 400;
-    const fa = this.fonts.getForChar(style.fontFamily, w, a);
-    if (fa !== this.fonts.getForChar(style.fontFamily, w, b)) return 0;
+    const family = this.familyOf(style);
+    const fa = this.fonts.getForChar(family, w, a);
+    if (fa !== this.fonts.getForChar(family, w, b)) return 0;
     // 書体ごとに、2 字をつないだキーで覚える
     let pairs = this.kernPairs.get(fa);
     if (!pairs) this.kernPairs.set(fa, (pairs = new Map()));
@@ -345,7 +353,7 @@ export class Measurer {
    *  vertical-rl  : advance = 字の「高さ」(正立全角=em / 横倒し=水平幅), cross = 字の「幅」(= em 枠)
    */
   glyph(ch: string, style: RunStyle, wm: WritingMode): GlyphMetrics {
-    const font = this.fonts.getForChar(style.fontFamily, style.fontWeight ?? 400, ch);
+    const font = this.fonts.getForChar(this.familyOf(style), style.fontWeight ?? 400, ch);
     const fs = style.fontSize;
     // 書体が持たない特殊な空白 (U+2000〜U+200A・U+202F・U+205F): 決まった幅の、普通の空白の字形
     const special = SPECIAL_SPACE_EM[ch];
@@ -508,7 +516,7 @@ export class Measurer {
   clusterGlyph(unit0: string, style: RunStyle, wm: WritingMode): GlyphMetrics {
     const base = String.fromCodePoint(unit0.codePointAt(0)!);
     const weight = style.fontWeight ?? 400;
-    const font = this.fonts.getForCluster(style.fontFamily, weight, unit0) ?? this.fonts.getForChar(style.fontFamily, weight, base);
+    const font = this.fonts.getForCluster(this.familyOf(style), weight, unit0) ?? this.fonts.getForChar(this.familyOf(style), weight, base);
     const unit = this.clusterText(unit0, font);
     const fs = style.fontSize;
     const natural = this.emAdvance(font, unit, wm === 'horizontal-tb' ? style.features : undefined) * fs;
@@ -533,7 +541,7 @@ export class Measurer {
   clusterLigates(unit0: string, style: RunStyle, features: readonly string[]): boolean {
     const base = String.fromCodePoint(unit0.codePointAt(0)!);
     const weight = style.fontWeight ?? 400;
-    const font = this.fonts.getForCluster(style.fontFamily, weight, unit0) ?? this.fonts.getForChar(style.fontFamily, weight, base);
+    const font = this.fonts.getForCluster(this.familyOf(style), weight, unit0) ?? this.fonts.getForChar(this.familyOf(style), weight, base);
     let m = this.clusterLigCache.get(font);
     if (!m) {
       this.clusterLigCache.set(font, (m = new Map()));
