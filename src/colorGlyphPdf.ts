@@ -275,7 +275,9 @@ export class PdfColorGlyphs {
       const clip = glyph.clip ? `${num(box[0])} ${num(box[1])} ${num(box[2] - box[0])} ${num(box[3] - box[1])} re W n\n` : '';
       body = clip + this.emit(glyph.ops, { cf, fg, box: this.pad(box) });
     } else {
-      // 色つきでない字形: 輪郭を、文字の色 (置くときの塗りの色) で塗る
+      // 色つきでない字形: 輪郭を、文字の色 (置くときの塗りの色) で塗る。
+      // SVG の表に絵があるのに読めなかった字形 (XML を読む関数が無い、SVG の読み手が扱えない機能を使っている) は、書体ごとに 1 度知らせる
+      if (cf.tables.svg && cf.svgDocument(gid)) this.warnOnce(`svg:${font.key}`, `PDF: ${font.family} の SVG の表の字形に、図形にできないものがあります。その字は、輪郭を文字の色で描きます`);
       const outline = cf.outline(gid);
       box = segsBox(outline);
       body = outline.length ? `${pathOps(outline)}f\n` : '';
