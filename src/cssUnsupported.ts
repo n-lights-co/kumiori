@@ -69,7 +69,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'image-orientation',
   'image-rendering',
   'object-position',
-  'initial-letter',
   'list-style-image',
   'marker-side',
   'text-overflow',

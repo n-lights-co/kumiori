@@ -2,6 +2,7 @@
  * 箱の組版の CSS:
  *  - box-decoration-break: clone (CSS Fragmentation 3 §5.4): ページ・段・行で分かれた箱の断片ごとに、罫線・内側の余白を付け直す
  *  - 内容による大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content、CSS Sizing 4 §3.2 の fit-content(<長さ>))
+ *  - initial-letter (CSS Inline 3 §7): 段落の最初の字を大きくして、数行に沈める
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -289,6 +290,108 @@ describe('内容による大きさ (CSS Sizing 3 §3.2・§2.1)', () => {
     expect(t.pages).toBe(1);
     expect(t.glyphs('あ').length).toBe(8);
     expect(w(t.bg('#ff0000')[0])).toBe(101);
+  });
+});
+
+describe('initial-letter (CSS Inline 3 §7)', () => {
+  // ページの幅 200pt。字は 10pt、行の高さ 20pt (字の枠は、行の上端から 5pt 下)。段落は 70 字 (1 行に 20 字)
+  const TEXT = `漢${'あ'.repeat(69)}`;
+  const page = '@page { size: 200pt 300pt; margin: 0 }';
+  const css = (v: string, more = '') => `body { line-height: 20pt } p::first-letter { initial-letter: ${v}; ${more} }`;
+  const base = (g: Box) => r1(g.y + ((g.raw as { baselineY?: number }).baselineY ?? 0));
+  it('和文 (lang="ja" は ideographic): N 行の字は、最初の行の字の枠の上端から N 行目の字の枠の下端まで。N 行が回り込む', async () => {
+    const t = await lay(`<p>${TEXT}</p>`, css('3'), page);
+    const g = t.glyphs('漢')[0];
+    // 字の大きさ = (3 − 1) × 20 + 10 = 50pt。字の枠は 5pt〜55pt
+    expect([r1(g.fontSize!), r1(g.y), r1(g.x)]).toEqual([50, 5, 0]);
+    // 1〜3 行目は字の幅 (50pt) だけ右から、4 行目は左端から
+    const ls = t.boxes.filter((b) => b.type === 'line' && b.page === 1 && b.w > 60).map((l) => r1(l.y));
+    expect(ls.slice(0, 5)).toEqual([0, 20, 40, 60, 80]);
+    const xs = (y: number) => r1(Math.min(...t.glyphs('あ').filter((k) => k.y >= y && k.y < y + 20).map((k) => k.x)));
+    expect([xs(0), xs(20), xs(40), xs(60)]).toEqual([50, 50, 50, 0]);
+    expect(t.warnings.filter((x) => /未対応|知らない/.test(x))).toEqual([]);
+  });
+  it('沈める行の数: 「3 2」は 1 行分だけ上へ出て、最初の行を下げる。「3 1」「3 raise」は 2 行分。「2 3」は上をそろえて 3 行が回り込む', async () => {
+    const xs = (t: Awaited<ReturnType<typeof lay>>, y: number) => r1(Math.min(...t.glyphs('あ').filter((k) => k.y >= y && k.y < y + 20).map((k) => k.x)));
+    const a = await lay(`<p>${TEXT}</p>`, css('3 2'), page);
+    expect([r1(a.glyphs('漢')[0].fontSize!), r1(a.glyphs('漢')[0].y)]).toEqual([50, 5]);
+    // 最初の行は 20pt 下から。2 行 (20〜60) が回り込み、3 行目 (60〜) は左端から
+    expect(Math.min(...a.glyphs('あ').map((k) => r1(k.y)))).toBe(25);
+    expect([xs(a, 20), xs(a, 40), xs(a, 60)]).toEqual([50, 50, 0]);
+    for (const v of ['3 1', '3 raise', 'raise 3']) {
+      const b = await lay(`<p>${TEXT}</p>`, css(v), page);
+      expect([v, r1(b.glyphs('漢')[0].y), Math.min(...b.glyphs('あ').map((k) => r1(k.y))), xs(b, 40), xs(b, 60)]).toEqual([v, 5, 45, 50, 0]);
+    }
+    const c = await lay(`<p>${TEXT}</p>`, css('2 3'), page);
+    // 字の大きさ = 20 + 10 = 30pt。上を最初の行の字の枠にそろえ、3 行が回り込む
+    expect([r1(c.glyphs('漢')[0].fontSize!), r1(c.glyphs('漢')[0].y)]).toEqual([30, 5]);
+    expect([xs(c, 0), xs(c, 20), xs(c, 40), xs(c, 60)]).toEqual([30, 30, 30, 0]);
+    // 小数の大きさ: 「2.5」は 2 行沈める (drop は切り捨て)。字の大きさ = 1.5 × 20 + 10 = 40pt
+    const d = await lay(`<p>${TEXT}</p>`, css('2.5'), page);
+    expect(r1(d.glyphs('漢')[0].fontSize!)).toBe(40);
+    expect([xs(d, 10), xs(d, 30), xs(d, 50)]).toEqual([40, 40, 0]);
+  });
+  it('欧文 (alphabetic): 字の基線は N 行目の基線、大文字の高さの上端は最初の行の大文字の高さ', async () => {
+    const t = await lay('<p>Txxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx</p>', `${css('3', 'initial-letter-align: alphabetic')} html { font-family: 'Tinos' }`, page);
+    const T = t.glyphs('T')[0];
+    const x = t.glyphs('x');
+    const lines = [...new Set(x.map(base))].sort((p, q) => p - q);
+    // 3 行目の基線にそろう
+    expect(base(T)).toBe(lines[2]);
+    // 字の大きさ × 大文字の高さ = 2 行 + 本文の大文字の高さ (大文字の高さの比は書体の値。字の大きさから逆算して、妥当な範囲にあること)
+    const cap = 40 / (T.fontSize! - 10);
+    expect(cap).toBeGreaterThan(0.6);
+    expect(cap).toBeLessThan(0.75);
+    // 4 行目は左端から
+    expect(r1(Math.min(...x.filter((k) => base(k) === lines[3]).map((k) => k.x)))).toBe(0);
+    expect(r1(Math.min(...x.filter((k) => base(k) === lines[2]).map((k) => k.x)))).toBeGreaterThan(20);
+  });
+  it('initial-letter-align: leading は行の上端から N 行目の下端まで。alphabetic の和文の字は、字の枠を大文字の高さと基線に合わせる', async () => {
+    const t = await lay(`<p>${TEXT}</p>`, css('2', 'initial-letter-align: leading'), page);
+    expect([r1(t.glyphs('漢')[0].fontSize!), r1(t.glyphs('漢')[0].y)]).toEqual([40, 0]);
+    const u = await lay(`<p>${TEXT}</p>`, css('2', 'initial-letter-align: alphabetic'), page);
+    const g = u.glyphs('漢')[0];
+    // 字の枠の下端 = 2 行目の基線
+    const second = [...new Set(u.glyphs('あ').map(base))].sort((p, q) => p - q)[1];
+    expect(r1(g.y + g.fontSize!)).toBe(second);
+    expect(g.fontSize!).toBeLessThan(30);
+  });
+  it('字下げ (text-indent) は字の箱ごと下げる。余白 (margin) は回り込む範囲に入る。色などの書式は字に当たる', async () => {
+    const t = await lay(`<p style="text-indent: 10pt">${TEXT}</p>`, css('2', 'margin-right: 4pt; color: #ff0000'), page);
+    const g = t.glyphs('漢')[0];
+    expect([r1(g.x), r1(g.fontSize!), (g.raw as { color?: string }).color]).toEqual([10, 30, '#ff0000']);
+    // 1・2 行目は 10 + 30 + 4pt から (最初の行に、字下げを重ねて掛けない)
+    const xs = (y: number) => r1(Math.min(...t.glyphs('あ').filter((k) => k.y >= y && k.y < y + 20).map((k) => k.x)));
+    expect([xs(0), xs(20), xs(40)]).toEqual([44, 44, 0]);
+  });
+  it('縦書き: 字は行の進む向きの始め (上) に置き、N 行 (右から) が回り込む', async () => {
+    const t = await lay(`<p>${TEXT}</p>`, `${css('2')} html { writing-mode: vertical-rl }`, '@page { size: 300pt 200pt; margin: 0 }');
+    const g = t.glyphs('漢')[0];
+    // 字の大きさ 30pt。右の端から 5pt (最初の行の字の枠) 〜 35pt
+    expect([r1(g.fontSize!), r1(g.y), r1(g.x + g.w)]).toEqual([30, 0, 295]);
+    const ys = (x0: number) => r1(Math.min(...t.glyphs('あ').filter((k) => k.x >= x0 && k.x < x0 + 20).map((k) => k.y)));
+    expect([ys(280), ys(260), ys(240)]).toEqual([30, 30, 0]);
+  });
+  it('短い段落の字の箱は、続く段落へ回り込みが続く。続く段落も最初の字で始まるなら、前の字の下から', async () => {
+    const t = await lay(`<p class="d">漢あ</p><p>${'い'.repeat(40)}</p>`, 'body { line-height: 20pt } p.d::first-letter { initial-letter: 3 }', page);
+    const i = t.glyphs('い');
+    expect([r1(Math.min(...i.filter((k) => k.y < 40).map((k) => k.x))), r1(Math.min(...i.filter((k) => k.y > 60).map((k) => k.x)))]).toEqual([50, 0]);
+    const u = await lay('<p>漢あ</p><p>字い</p>', css('3'), page);
+    expect([r1(u.glyphs('漢')[0].y), r1(u.glyphs('字')[0].y)]).toEqual([5, 65]);
+  });
+  it('ページの残りに字の箱が入らなければ、段落ごと次のページへ送る', async () => {
+    const t = await lay(`${lines(13, 'い')}<p class="d">${TEXT}</p>`, 'body { line-height: 20pt } p.d::first-letter { initial-letter: 3 }', page);
+    expect([t.glyphs('漢')[0].page, Math.min(...t.glyphs('あ').map((k) => k.page))]).toEqual([2, 2]);
+  });
+  it('float のある ::first-letter は、ただの回り込み。読めない値・normal は効かない。::first-letter 以外への指定と未対応の合わせ方は知らせる', async () => {
+    const t = await lay(`<p>${TEXT}</p>`, css('3', 'float: left'), page);
+    expect(r1(t.glyphs('漢')[0].fontSize!)).toBe(10);
+    for (const v of ['normal', '0.5', '3 0', '3 1.5', '3 drop raise']) {
+      const u = await lay(`<p>${TEXT}</p>`, css(v), page);
+      expect([v, r1(u.glyphs('漢')[0].fontSize!)]).toEqual([v, 10]);
+    }
+    const w = await lay(`<p><span style="initial-letter: 2">漢</span>${'あ'.repeat(30)}</p><p class="h">${TEXT}</p>`, 'p.h::first-letter { initial-letter: 2; initial-letter-align: hanging }', page);
+    expect(w.warnings.find((x) => x.startsWith('未対応の CSS を無視しました: '))).toBe('未対応の CSS を無視しました: initial-letter (::first-letter 以外の箱)、initial-letter-align: hanging');
   });
 });
 

@@ -211,6 +211,11 @@ rtc, :not(rtc) > rt {
    言語ごとの圏点の位置: 中国語は字の下 (縦書きは右)、日本語・韓国語は字の上 (clreq §5.3.1 の着重号) */
 :root:lang(zh), [lang|=zh] { text-emphasis-position: under right; }
 [lang|=ja], [lang|=ko] { text-emphasis-position: over right; }
+/* CSS Inline 3 §7.4.1 (UA の既定のスタイルシート): 言語ごとの、最初の字 (initial-letter) を合わせる位置 */
+[lang]:lang(zh, ja, ko, ii) { initial-letter-align: ideographic; }
+[lang]:lang(hi, mr, ne, pi, kok, brx, mai, sd, sa) { initial-letter-align: hanging; }
+[lang]:lang('*-Latn', '*-Cyrl') { initial-letter-align: alphabetic; }
+[lang]:lang('*-Hani', '*-Hant', '*-Hans') { initial-letter-align: ideographic; }
 input, textarea, select, button { font-size: 13.3333px; }
 input { padding: 1px 2px; } textarea { padding: 2px; }
 input, textarea, select { background-color: white; }
@@ -358,6 +363,8 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'max-height': [false, 'none', 'len-none'],
   'box-sizing': [false, 'content-box', 'raw'],
   'box-decoration-break': [false, 'slice', 'raw'],
+  'initial-letter': [false, 'normal', 'raw'],
+  'initial-letter-align': [true, 'alphabetic', 'raw'],
   'margin-top': [false, '0px', 'len-auto'],
   'margin-right': [false, '0px', 'len-auto'],
   'margin-bottom': [false, '0px', 'len-auto'],
@@ -1117,6 +1124,8 @@ shorthand(['border-block-width', 'border-block-style', 'border-block-color', 'bo
 shorthand(['inset-block', 'inset-inline'], (prop, v, global) => startEnd(`${prop}-start`, `${prop}-end`, v, global));
 // アンテナハウスの拡張の -ah-border-radius (角の丸み)。border-radius と同じに読む
 shorthand(['-ah-border-radius'], (_p, v, _g, ah) => expand('border-radius', v, ah));
+// -webkit-initial-letter (接頭辞付きの古い書き方) は、initial-letter と同じに読む
+shorthand(['-webkit-initial-letter'], (_p, v) => [['initial-letter', v]]);
 // -webkit-box-decoration-break (接頭辞付きの古い書き方) は、box-decoration-break と同じに読む
 shorthand(['-webkit-box-decoration-break'], (_p, v) => [['box-decoration-break', v]]);
 // アンテナハウスの拡張の -ah-text-align・-ah-text-align-last (text-align・text-align-last と同じに読む)・角の丸み
@@ -2061,6 +2070,26 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
   }).map(([k, v]) => [k, new Set(v.split(' '))]),
 );
 
+/**
+ * initial-letter の値 (CSS Inline 3 §7.3) を、字の大きさ (行の数) と沈める行の数にする。normal・読めない値は undefined。
+ * 沈める行の数を省くと drop (大きさを切り捨てた整数)、raise は 1
+ */
+export function parseInitialLetter(v: string): { size: number; sink: number } | undefined {
+  const w = v.trim().toLowerCase().split(/\s+/);
+  if (w.length < 1 || w.length > 2) return undefined;
+  const num = (x: string) => (/^\+?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/.test(x) ? parseFloat(x) : undefined);
+  const kw = w.find((x) => x === 'drop' || x === 'raise');
+  const nums = w.filter((x) => x !== kw);
+  if (kw ? nums.length !== 1 : nums.length < 1) return undefined;
+  const size = num(nums[0]);
+  if (size === undefined || !(size >= 1)) return undefined;
+  if (kw) return { size, sink: kw === 'raise' ? 1 : Math.floor(size) };
+  if (nums.length === 1) return { size, sink: Math.floor(size) };
+  const sink = num(nums[1]);
+  if (sink === undefined || !Number.isInteger(sink) || sink < 1) return undefined;
+  return { size, sink };
+}
+
 /** 箱の大きさの性質 (内容による大きさの語を取る。CSS Sizing 3 §3.1) */
 const SIZING_PROPS = new Set(['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height']);
 
@@ -2090,6 +2119,10 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   // always (Fragmentation 4 §3.1: いちばん近い断片化の文脈で改ページ・改段) は、ページでは page と同じ
   if (/^break-(before|after)$/.test(prop)) return /^(auto|avoid|avoid-page|avoid-column|page|column|left|right|recto|verso|always)$/i.test(v.trim());
   if (prop === 'break-inside') return /^(auto|avoid|avoid-page|avoid-column)$/i.test(v.trim());
+  // initial-letter (CSS Inline 3 §7.3): normal | <数 1 以上> <整数 1 以上> | <数 1 以上> && [ drop | raise ]?
+  if (prop === 'initial-letter') return v.trim().toLowerCase() === 'normal' || parseInitialLetter(v) !== undefined;
+  // initial-letter-align (§7.4): [ border-box? [ alphabetic | ideographic | hanging | leading ]? ]!
+  if (prop === 'initial-letter-align') return /^(border-box(\s+(alphabetic|ideographic|hanging|leading))?|alphabetic|ideographic|hanging|leading)$/i.test(v.trim());
   if (prop === 'content') {
     // ブラウザが知らない関数 (leader()・target-counter() など) を含む content は読めない (自前の読み取り htmlPaged で扱う)
     const bare = v.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '"s"');

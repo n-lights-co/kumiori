@@ -62,7 +62,7 @@ import { TOTAL_PAGES_ID } from './types';
 import type { ImportReport, ImportResult } from './xslfoImport';
 import { normalizeSrc } from './assets';
 import { countDroppedLink, judgeExternalLink, type LinkPolicy } from './linkPolicy';
-import { expand, lengthPx, splitTextIndent } from './cssCascade';
+import { expand, lengthPx, parseInitialLetter, splitTextIndent } from './cssCascade';
 import { inlineSvgDataUri, isInlineSvg } from './htmlSvg';
 import { isColorName } from './color';
 import type { FkFont, MathFont } from './mathFont';
@@ -4078,7 +4078,29 @@ class HtmlImporter {
             const fc = this.cs(el, '::first-letter');
             const fl = fc('float');
             let node: LInlineLevel;
-            if (fl === 'left' || fl === 'right') {
+            // initial-letter (CSS Inline 3 §7.3): 最初の字を大きくして、数行に沈める。float の指定があれば、ただの回り込みの字
+            // (§7.3.1 の注: float が none でない箱には当たらない)
+            const il = fl === 'left' || fl === 'right' ? undefined : parseInitialLetter(fc('initial-letter'));
+            if (il) {
+              // 字の大きさ・行の高さの指定は当たらない (§7.5.1)。大きさは、組むときに行の数と書体の値から決める (§7.5.3)
+              const { fontSize: _fs, lineHeight: _lh, lineHeightPt: _lhp, ...ist } = st;
+              void [_fs, _lh, _lhp];
+              const inner: LBlock = { type: 'block', ...ist, ...this.boxStyle(el, '::first-letter'), textIndent: 0, textAlign: 'start', children: [letter] };
+              // 合わせる位置 (initial-letter-align。§7.4)。hanging・border-box は未対応 (alphabetic として組み、知らせる)
+              const av = (fc('initial-letter-align') || 'alphabetic').trim().toLowerCase();
+              if (/border-box|hanging/.test(av)) this.miss(`initial-letter-align: ${/border-box/.test(av) ? 'border-box' : 'hanging'}`);
+              const align = /border-box|hanging/.test(av) ? 'alphabetic' : (av as 'alphabetic' | 'ideographic' | 'leading');
+              const f: LFloat = { type: 'float', float: 'start', cssPlacement: true, initialLetter: { ...il, align }, children: [inner] };
+              // 余白・枠・背景は、字の箱 (回り込む範囲) が持つ (§7.5.2)。幅の指定は箱の幅 (§7.5.5)。高さは行の数で決まる
+              for (const key of ['margin', 'padding', 'border', 'backgroundColor', 'width', 'boxSizing'] as const) {
+                if (inner[key] === undefined) continue;
+                (f as unknown as Record<string, unknown>)[key] = inner[key];
+                delete inner[key];
+              }
+              delete inner.height;
+              delete inner.inlineSizing;
+              node = f as unknown as LInlineLevel;
+            } else if (fl === 'left' || fl === 'right') {
               const inner: LBlock = { type: 'block', ...st, ...this.boxStyle(el, '::first-letter'), children: [letter] };
               const f: LFloat = { type: 'float', float: fl === 'left' ? 'start' : 'end', cssPlacement: true, children: [inner] };
               for (const key of ['margin', 'padding', 'border', 'backgroundColor', 'width', 'height', 'boxSizing'] as const) {
@@ -4093,7 +4115,8 @@ class HtmlImporter {
               if (bg) inl.backgroundColor = bg;
               node = inl;
             }
-            const rest = k.slice(m[0].length);
+            // 沈めた最初の字と、続く内容の間の、詰める空白は消す (CSS Inline 3 §7.8.1: 回り込む行の頭をそろえる)
+            const rest = il && il.sink > 1 ? k.slice(m[0].length).replace(/^[ \t\n\r\f]+/, '') : k.slice(m[0].length);
             list.splice(i, 1, ...(m[1] ? [m[1]] : []), node, ...(rest ? [rest] : []));
             return true;
           }
@@ -4478,6 +4501,8 @@ class HtmlImporter {
     const box = this.boxStyle(el);
     if (box.border) inl.border = box.border;
     if (box.padding) inl.padding = box.padding;
+    // initial-letter は ::first-letter だけ (行の最初の行内の箱への指定 (CSS Inline 3 §7.3.1) は未対応。知らせる)
+    if (parseInitialLetter(c('initial-letter') || '')) this.miss('initial-letter (::first-letter 以外の箱)');
     // box-decoration-break: clone: 行で分かれた枠の断片のそれぞれを、罫線と内側の余白で包む (CSS Fragmentation 3 §5.4)
     if ((box.border || box.padding) && c('box-decoration-break') === 'clone') inl.boxDecorationBreak = 'clone';
     // 行の進む方向の margin は行内の空き (横書きは左右。右から左へ書く段落では入れ替わる。縦書きは上下)

@@ -11,6 +11,7 @@
  *  5. 表は行単位でページをまたぎ、ヘッダ行を各ページ先頭に複製する。
  */
 import { msg } from './messages';
+import type { LoadedFont } from './fontManager';
 import { gradientSvg } from './cssGradient';
 import { AREA_TREE_SCHEMA_VERSION, walkAreas, type AreaNode } from './areaTree';
 import { copySourceRef, indexDocument, sourceRef } from './sourceRef';
@@ -424,6 +425,8 @@ const KEEP_TRIAL_STOP = Symbol('keep-trial-stop');
 interface PlacedFloat {
   /** 置いた順の通し番号 (改ページで float の記録が空になっても、箱の中で置いたものを見分ける) */
   seq?: number;
+  /** 段落の最初の字 (initial-letter) の箱。次の段落の最初の字は、この下に置く (CSS Inline 3 §7.9.2) */
+  initialLetter?: boolean;
   side: 'start' | 'end';
   b0: number;
   b1: number;
@@ -656,6 +659,8 @@ class Flow {
   private carry: FootEntry[] = [];
   /** 現ページの回り込み・ページ先頭の float */
   private floats: PlacedFloat[] = [];
+  /** 次の行内の並びの、最初の行の字下げを掛けない (段落の最初の字 (initial-letter) の箱に移した) */
+  private skipIndent = false;
   private floatSeq = 0;
   private beforeNodes = new Set<LNode>();
   private beforeUsed = 0;
@@ -910,6 +915,16 @@ class Flow {
       // 最初の段では end、ほかの段では start (段の間に寄せる)
       node = { ...node, float: (this.pages?.columnIndex?.() ?? 0) === 0 ? 'end' : 'start' };
     }
+    // 段落の最初の字 (initial-letter。CSS Inline 3 §7): 字の大きさと箱の大きさを、行の数と書体の値から決めて、回り込みの箱として置く
+    const il = node.initialLetter && !ortho && !this.host.xslSpace ? this.initialLetterBox(node, st) : undefined;
+    if (il) {
+      node = il.node;
+      // 前の段落の最初の字の箱が残っていれば、その下に置く (§7.9.2: 最初の字で始まるブロックは、前のブロックの最初の字を避ける)
+      const prev = this.floats.filter((p) => p.initialLetter).reduce((a, p) => Math.max(a, p.b1), 0);
+      if (prev > this.cursor + this.pendingValue()) this.pendMin = Math.max(this.pendMin, prev - this.cursor);
+      // 字の箱がページ・段の残りに入らなければ、先に次へ送る (字だけを次のページへ送らない)
+      if (this.paginating && this.pageHasContent && this.cursor + this.pendingValue() + il.outerB + this.footReserve > this.room + EPS) this.breakPage();
+    }
     const desc = describeBox(node, this.wm);
     const horizontal = this.wm === 'horizontal-tb';
     const src: LBlockContainer = { ...node, type: 'block-container', absolutePosition: false };
@@ -990,6 +1005,79 @@ class Flow {
       ...(!node.cssPlacement && (node.float === 'start' || node.float === 'end') ? { edge: { off: this.contentIOffset(), width: this.contentI() } } : {}),
       ...(node.cssPlacement && node.clear ? { clear: node.clear } : {}),
     });
+    if (il) {
+      const placed = this.floats[this.floats.length - 1];
+      if (placed && placed.b1 - placed.b0 > EPS) {
+        placed.initialLetter = true;
+        // 字が最初の行より上へ突き出す分 (沈める行の数より大きい字) と、箱の上の余白・枠の分だけ、最初の行を下げる
+        // (§7.6.1: 字の箱の上端は、包含ブロックの内容の上端より下。最初の行とその後の内容を、その分だけ先へ送る)
+        if (il.raise > EPS) this.pendMin = Math.max(this.pendMin, placed.b0 + il.raise - this.cursor);
+        // 最初の行の字下げは、字の箱ごと行を下げる (§7.8.2)。字の箱の余白に移したので、続く行内の並びには掛けない
+        if (il.indent) this.skipIndent = true;
+      }
+    }
+  }
+
+  /**
+   * 段落の最初の字 (initial-letter。CSS Inline 3 §7) の箱を作る: 字の大きさ・箱の大きさ・箱の中の字の位置を決めた float の節を返す。
+   *  - まわりの文字の、合わせる 2 つの位置 (上と下。initial-letter-align。§7.4) を、最初の行の上端からの距離で求める。行の高さは包含ブロックの
+   *    line-height (§7.5.3: 行の中身による行の高さの違いは数えない)、字の枠 (em の箱) は行の中央、基線は字の枠の上端から書体の値だけ下:
+   *    alphabetic = 最初の行の大文字の高さと、N 行目の欧文の基線。ideographic = 最初の行の字の枠の上端と、N 行目の字の枠の下端
+   *    (ideographic-ink の位置は、字の枠で代える)。leading = 最初の行の上端と、N 行目の下端
+   *  - 字の側の 2 つの位置は、中身で決める (§7.4): 漢字・仮名・ハングル・彝文字を含めば字の枠の上端と下端、ほかは大文字の高さと基線。
+   *    縦書きでは、どちらも字の枠 (行の進む向きに直交する向きの、字の枠の両端)
+   *  - 字の大きさは、字の側の 2 つの位置の間が、まわりの 2 つの位置の間と同じになる大きさ (§7.5.3)
+   *  - 箱は、max(N, S) 行分の高さ。N が S より大きければ、(N − S) 行分だけ最初の行より上へ出る (raise。§7.6.1)。S が大きければ、上を合わせる
+   * 大文字の高さは、書体の OS/2 の値。無ければ 0.66em (付録 A.2 の代わりの値)
+   */
+  private initialLetterBox(node: LFloat, st: ResolvedStyle): { node: LFloat; raise: number; outerB: number; indent: boolean } | undefined {
+    const inner = node.children[0];
+    if (!node.initialLetter || typeof inner !== 'object' || inner.type !== 'block') return undefined;
+    const { size: N, sink: S } = node.initialLetter;
+    const text = inner.children.filter((k): k is string => typeof k === 'string').join('');
+    if (!text) return undefined;
+    const LH = lineHeightOf(st);
+    const f = st.fontSize;
+    const stL = resolveStyle(st, inner);
+    const vertical = this.wm !== 'horizontal-tb';
+    const fontOf = (ch: string, s: ResolvedStyle) => this.host.measurer.glyph(ch, { fontFamily: s.fontFamily, fontWeight: s.fontWeight, fontSize: s.fontSize, stretch: s.fontStretch }, 'horizontal-tb').font;
+    const capOf = (font: LoadedFont) => {
+      const cap = ((font.fk as unknown as { capHeight?: number }).capHeight ?? 0) / font.unitsPerEm;
+      return cap > 0.2 && cap < 1 ? cap : 0.66;
+    };
+    const core = /[\p{L}\p{N}\p{S}]/u.exec(text)?.[0] ?? text[0];
+    const fontL = fontOf(core, stL);
+    const fontP = fontOf('H', st);
+    // まわりの文字の位置 (最初の行の上端から)
+    const emTop = (LH - f) / 2;
+    const base = emTop + this.nominalRatio(st) * f;
+    const align = vertical && node.initialLetter.align !== 'leading' ? 'ideographic' : (node.initialLetter.align ?? 'alphabetic');
+    const over = align === 'leading' ? 0 : align === 'ideographic' ? emTop : base - capOf(fontP) * f;
+    const under = (N - 1) * LH + (align === 'leading' ? LH : align === 'ideographic' ? emTop + f : base);
+    // 字の側の位置と、字の大きさ
+    const ideographic = vertical || /[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Yi}]/u.test(text);
+    const capL = capOf(fontL);
+    const F = Math.max((under - over) / (ideographic ? 1 : capL), 0.01);
+    // 字の枠の上端 (箱の内容の上端から)
+    const top = ideographic ? over : over - (fontL.baselineRatio - capL) * F;
+    const lines = Math.max(N, S);
+    const d = describeBox(node, this.wm);
+    const horizontal = !vertical;
+    // 最初の行の字下げ (§7.8.2): 字の箱ごと下げる (箱の行頭の側の余白に足す)
+    const first = st.textIndent > 0 && !st.textIndentHanging ? st.textIndent : 0;
+    const marginP = first ? toPhysicalEdges({ ...d.m, is: d.m.is + first }, this.wm) : node.margin;
+    const sized: LFloat = {
+      ...node,
+      initialLetter: undefined,
+      ...(first ? { margin: marginP } : {}),
+      boxSizing: node.width !== undefined && horizontal ? node.boxSizing : 'content-box',
+      [horizontal ? 'height' : 'width']: lines * LH + (node.boxSizing === 'border-box' && node.width !== undefined && horizontal ? d.bpStart + d.bpEnd : 0),
+      children: [{ ...inner, fontSize: F, lineHeight: 1, lineHeightPt: F, noStrut: undefined, margin: toPhysicalEdges({ bs: top, be: 0, is: 0, ie: 0 }, this.wm) } as LBlock],
+    };
+    const raise = Math.max(N - S, 0) * LH + d.m.bs + d.bpStart;
+    // ページ・段の残りに入るかは、字の箱と、最初の行から orphans の行までで確かめる (行だけが次のページへ送られて、字が残らないように)
+    const need = Math.max(lines * LH + d.m.bs + d.m.be + d.bpStart + d.bpEnd, raise + (st.orphans ?? 2) * LH);
+    return { node: sized, raise, outerB: need, indent: first > 0 };
   }
 
   /** 傍注 (余白に置く float)。本文領域の幅で組み、いまの挿入点 (前の傍注の下) に置く。本文の行幅は変えない */
@@ -2238,6 +2326,11 @@ class Flow {
 
   private layoutInlineRun(run: InlineChild[], st: ResolvedStyle, first: boolean, from?: { arr: object; at: number }) {
     this.rootStyle ??= st;
+    // 段落の最初の字 (initial-letter) の箱に、最初の行の字下げを移した: 続く行内の並びには掛けない
+    if (this.skipIndent) {
+      this.skipIndent = false;
+      if (st.textIndent) st = { ...st, textIndent: 0 };
+    }
     // 索引のページ番号の並び (XSL 1.1 §6.10.7) は、ここで字と行内の箱に置き換える (索引を使う文書だけ)
     if (this.host.index) run = this.host.index(run);
     const L = this.contentI();

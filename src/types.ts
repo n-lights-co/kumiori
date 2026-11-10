@@ -1083,6 +1083,14 @@ export interface LFloat extends BaseNode, BoxStyle {
    */
   float: 'start' | 'end' | 'before' | 'after' | 'center' | 'alternate' | 'inside' | 'outside';
   /**
+   * 段落の最初の字を大きくして数行に沈める指定 (CSS の initial-letter。CSS Inline 3 §7.3)。float: 'start' と一緒に使い、子は、字を入れた
+   * ブロック 1 つ。size は字の大きさ (行の数)、sink は沈める行の数 (1 なら沈めず、上へ突き出す)。align は、まわりの文字のどこに
+   * 合わせるか (initial-letter-align。§7.4): alphabetic = 大文字の高さと欧文の基線、ideographic = 字の枠の上端と下端、
+   * leading = 行の上端と下端。字の大きさ・位置は、組むときに書体の値から決める (§7.5.3・§7.6.1)。字を入れたブロックの
+   * 字の大きさ・行の高さの指定は使わない (§7.5.1)
+   */
+  initialLetter?: { size: number; sink: number; align?: 'alphabetic' | 'ideographic' | 'leading' };
+  /**
    * 本文に食い込まない、余白に置く注 (傍注)。float の幅は本文領域の幅になり、中身は負の margin で余白へはみ出して置く。
    * 本文の行は短くならない。続けて置く傍注は、前の傍注の下へ積む
    */

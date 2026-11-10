@@ -853,6 +853,16 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 </style>
 <p class="drop" style="text-indent: 0;">最初の字を大きくして回り込ませ、最初の行を太字にした段落です。段落の始まりを目立たせるときに使います。2 行目からは普通の太さに戻ります。</p>
 <!--/kumiori-sample-->
+<p>initial-letter (CSS Inline 3 §7) は、::first-letter の字を、行の数で決めた大きさにして沈めます。initial-letter: 3 は 3 行分の大きさで 3 行に沈め (ドロップキャップ)、initial-letter: 3 2 は 3 行分の大きさで 2 行だけ沈めて 1 行分を上へ出し、initial-letter: 3 1 (3 raise) は沈めずに上へ出します。大きさは整数でなくてもかまいません。字の大きさは、font-size ではなく、段落の line-height と書体の値から決めます (§7.5.3): initial-letter-align が alphabetic (初期値) なら、字の大文字の高さの上端を最初の行の大文字の高さに、基線を N 行目の基線に合わせます。ideographic (lang が ja・zh・ko の文書の既定) なら、最初の行の字の枠の上端から N 行目の字の枠の下端までにします (ideographic-ink の位置は、字の枠で代えます)。leading は、最初の行の上端から N 行目の下端までです。漢字・仮名・ハングルの字は字の枠で、ほかの字は大文字の高さと基線で合わせます。大文字の高さは書体の OS/2 の表の値で、無ければ 0.66em です。縦書きでは、字を行の始め (上) に置き、字の枠で合わせます。最初の行の字下げ (text-indent) は字ごと下げ、字の余白 (margin)・枠・背景は回り込む範囲に入ります。短い段落の字は、続く段落まで回り込みが続きます。</p>
+<p>制限: ::first-letter への指定だけに対応します (行の最初の span・画像への指定は警告で知らせます)。initial-letter-align の hanging・border-box は未対応です (alphabetic として組み、警告で知らせます)。initial-letter-wrap は未対応で、行はいつも字の箱の端にそろえます (none)。字の箱は、字の送り幅 (字の枠) で、字形の輪郭には合わせません。float を指定した ::first-letter には効きません (§7.3.1 の注)。字の箱は 1 つの回り込みとして置くので、段落の最初の行だけがページの終わりに入るとき、行は widows・orphans の決まりで次のページへ送られても、字が前のページに残ることがあります (字の箱と orphans の行が入らなければ、段落ごと次のページへ送ります)。</p>
+<!--kumiori-sample id="initial-letter" mark="initial-letter: 2|initial-letter: 3 2"-->
+<style>
+  p.il2::first-letter { initial-letter: 2; margin-right: 2pt; color: #4f7a64; }
+  p.il32::first-letter { initial-letter: 3 2; margin-right: 2pt; color: #4f7a64; }
+</style>
+<p class="il2" style="text-indent: 0;">段落の最初の字を 2 行分の大きさにして、2 行に沈めた段落です。字の大きさは、行の高さと書体の値から決まります。字の枠の上端は 1 行目の字の枠の上端に、下端は 2 行目の字の枠の下端にそろいます。</p>
+<p class="il32" style="text-indent: 0;">3 行分の大きさの字を 2 行だけ沈めた段落です。字は 1 行分だけ上へ出て、最初の行はその分だけ下がります。回り込むのは 2 行で、3 行目からは左端から始まります。</p>
+<!--/kumiori-sample-->
 </section>
 
 <!-- ================================================================ 11 表 -->
@@ -1181,7 +1191,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>image-orientation</code><br><span class="spec">CSS Images 3 §5.1</span></td><td>文書で使う前に、画像を 90 度単位で回します。仕様は、横向きに撮った写真や、向きのずれたスキャンの画像を正しい向きにするためのものとしています。画像のデータの向きを直して載せたいときに使います。</td></tr>
 <tr><td><code>image-rendering</code><br><span class="spec">CSS Images 3 §5.2</span></td><td>画像を拡大・縮小するときに、何を保つことを重んじるかを処理系に伝え、縮尺の方法を選ばせます (auto・smooth など)。ドット絵などを、ぼかさずに拡大して見せたいときに使います。</td></tr>
 <tr><td><code>object-position</code><br><span class="spec">CSS Images 3 §4.6</span></td><td>置き換え要素 (画像など) を、そのボックスの中のどこに置くかを指定します。ボックスのうち画像で覆われない部分には要素の背景が見えます。object-fit で縮めた画像を、ボックスの左上など中央以外にそろえたいときに使います。</td></tr>
-<tr><td><code>initial-letter</code><br><span class="spec">CSS Inline 3 §7.3</span></td><td>段落の最初の字 (ドロップキャップなど) の大きさと沈め方を、何行分にわたるかで指定します。段落の初めの字を、数行分の大きさにして下に沈めて組みたいときに使います。</td></tr>
 <tr><td><code>list-style-image</code><br><span class="spec">CSS Lists 3 §3.3</span></td><td>リスト項目のマーカーに使う画像を指定します。画像が使えないときは画像の印を持ちません。リストのマーカーを、記号や番号の代わりに画像にしたいときに使います。</td></tr>
 <tr><td><code>marker-side</code><br><span class="spec">CSS Lists 3 §3.7</span></td><td>外側に置くマーカーボックスを、項目自身の文字の向きで置くか (match-self)、親 (リスト) の文字の向きで置くか (match-parent) を指定します。項目ごとに文字の向きが違うリストで、印を同じ側にそろえたいときに使います。</td></tr>
 <tr><td><code>text-overflow</code><br><span class="spec">CSS Overflow 3 §5.1</span></td><td>overflow が visible でないブロックで、行の中身が行の終わりからはみ出したときの描き方を指定します (切る clip、省略記号 U+2026 を出す ellipsis)。折り返さない 1 行の文がはみ出すとき、末尾を「…」にしたいときに使います。</td></tr>
