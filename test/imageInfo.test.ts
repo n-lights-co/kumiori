@@ -32,6 +32,16 @@ describe('imageInfo: 描けない形式の大きさ', () => {
     });
     const e = imageInfo(emf)!;
     expect([e.mime, Math.round(e.width), Math.round(e.height)]).toEqual(['image/emf', 96, 192]);
+    // 左右・上下が逆に書かれた枠 (rclFrame) でも、大きさは正の値。幅か高さが 0 の枠からは、大きさを決めない
+    const rev = bytes(100, (v) => {
+      v.setUint32(0, 1, true), v.setInt32(24, 2540, true), v.setInt32(28, 5080, true), v.setUint32(40, 0x464d4520, true);
+    });
+    const re = imageInfo(rev)!;
+    expect([re.mime, Math.round(re.width), Math.round(re.height)]).toEqual(['image/emf', 96, 192]);
+    const flat = bytes(100, (v) => {
+      v.setUint32(0, 1, true), v.setInt32(32, 2540, true), v.setUint32(40, 0x464d4520, true);
+    });
+    expect(imageInfo(flat)).toBeUndefined();
     const eps = new TextEncoder().encode('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 72 36\n');
     expect(imageInfo(eps)).toEqual({ mime: 'application/postscript', width: 96, height: 48 });
     expect(epsPreview(eps)).toBeUndefined();
