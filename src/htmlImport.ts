@@ -2771,10 +2771,16 @@ class HtmlImporter {
     const ta = c('text-align').replace(/^-(webkit|internal)-/, '');
     if (diff('text-align') || diff('direction')) {
       const rtl = c('direction') === 'rtl';
-      s.textAlign = ta === 'center' ? 'center' : ta === 'justify' ? 'justify' : ta === 'end' || ta === (rtl ? 'left' : 'right') ? 'end' : 'start';
+      s.textAlign = ta === 'center' ? 'center' : ta === 'justify' || ta === 'justify-all' ? 'justify' : ta === 'end' || ta === (rtl ? 'left' : 'right') ? 'end' : 'start';
     }
     // text-align-last の left・right も、text-align と同じく direction で start・end に読み替える (rtl では left が end)
     const tal = c('text-align-last');
+    // text-align: justify-all (CSS Text 3 §6.1): 最後の行 (と強制改行の前の行) も両端をそろえる。text-align-last の指定があれば、そちら。
+    // justify-all を受け継がない子 (text-align を指定し直した子) は、最後の行のそろえを auto の動き (§6.3) に戻す
+    if ((!tal || tal === 'auto') && diff('text-align')) {
+      if (ta === 'justify-all') s.textAlignLast = 'justify';
+      else if (p && p('text-align') === 'justify-all' && s.textAlign) s.textAlignLast = s.textAlign === 'justify' ? 'start' : s.textAlign;
+    }
     if ((diff('text-align-last') || diff('direction')) && tal && tal !== 'auto') {
       const rtl = c('direction') === 'rtl';
       s.textAlignLast = tal === 'center' ? 'center' : tal === 'justify' ? 'justify' : tal === 'end' || tal === (rtl ? 'left' : 'right') ? 'end' : 'start';
@@ -4496,6 +4502,13 @@ class HtmlImporter {
     if (va === 'super' && this.opts.superShiftAh) inl.baselineShift = (cssLen(this.cs(parent)('font-size')) ?? 12) / 3;
     else if (va === 'super' || va === 'sub') inl.baselineShift = va;
     else if (cssLen(va)) inl.baselineShift = cssLen(va);
+    else if (/^[+-]?(\d+\.?\d*|\.\d+)%$/.test(va)) {
+      // 百分率は、この要素の line-height に対する割合だけ上げ下げする (CSS 2.1 §10.8.1)。line-height: normal は、書体の値 (textStyle と同じ)
+      const fams = c('font-family').split(',').map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
+      const lh = cssLen(c('line-height')) ?? (this.opts.normalLineHeight?.(fams, (parseInt(c('font-weight'), 10) || 400) >= 600) ?? 1.2) * (cssLen(c('font-size')) ?? 12);
+      const shift = (parseFloat(va) / 100) * lh;
+      if (shift) inl.baselineShift = shift;
+    }
     const bg = this.printOf(this.pg(el), 'background-color', 'background') ?? cssColor(c('background-color'));
     if (bg) inl.backgroundColor = bg;
     const box = this.boxStyle(el);

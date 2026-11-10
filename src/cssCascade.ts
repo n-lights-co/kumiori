@@ -2052,7 +2052,7 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'column-rule-style': BORDER_STYLE,
     direction: 'ltr rtl',
     hyphens: 'none manual auto',
-    'text-align': 'start end left right center justify match-parent -webkit-center -webkit-left -webkit-right -internal-center',
+    'text-align': 'start end left right center justify justify-all match-parent -webkit-center -webkit-left -webkit-right -internal-center',
     'text-align-last': 'auto start end left right center justify match-parent',
     'white-space': 'normal pre nowrap pre-wrap pre-line break-spaces',
     'list-style-position': 'inside outside',

@@ -4,6 +4,8 @@
  *  - 内容による大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content、CSS Sizing 4 §3.2 の fit-content(<長さ>))
  *  - initial-letter (CSS Inline 3 §7): 段落の最初の字を大きくして、数行に沈める
  *  - empty-cells (CSS 2.1 §17.6.1.1)
+ *  - vertical-align の百分率 (CSS 2.1 §10.8.1)
+ *  - text-align: justify-all (CSS Text 3 §6.1)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -425,6 +427,45 @@ describe('empty-cells (CSS 2.1 §17.6.1.1)', () => {
     expect(cells(t).map((x) => r1(x.h))).toEqual([22, 22, 0, 0, 22, 22]);
     const show = await lay('<table><tr><td>あ</td><td>い</td></tr><tr><td></td><td> </td></tr><tr><td>う</td><td></td></tr></table>', CSS);
     expect(cells(show).map((x) => r1(x.h))).toEqual([22, 22, 12, 12, 22, 22]);
+  });
+});
+
+describe('vertical-align の百分率 (CSS 2.1 §10.8.1)', () => {
+  it('行内の箱を、その要素の line-height に対する割合だけ上げ下げする (長さの指定と同じ動き)', async () => {
+    // line-height 20pt の 25% = 5pt 上げる。-50% = 10pt 下げる
+    const t = await lay('<p style="line-height: 20pt">あ<span style="vertical-align: 25%">い</span><span style="vertical-align: -50%">う</span><span style="vertical-align: 5pt">え</span><span style="vertical-align: 0%">お</span></p>');
+    const y = (ch: string) => t.glyphs(ch)[0].y;
+    expect(r1(y('あ') - y('い'))).toBe(5);
+    expect(r1(y('う') - y('あ'))).toBe(10);
+    expect(r1(y('え'))).toBe(r1(y('い')));
+    expect(r1(y('お'))).toBe(r1(y('あ')));
+    // 要素自身の line-height (数の指定は、要素の字の大きさに掛ける)
+    const u = await lay('<p style="line-height: 20pt">あ<span style="vertical-align: 50%; font-size: 5pt; line-height: 2">い</span></p>');
+    const base = (g: Box) => g.y + ((g.raw as { baselineY?: number }).baselineY ?? 0);
+    expect(r1(base(u.glyphs('あ')[0]) - base(u.glyphs('い')[0]))).toBe(5);
+  });
+});
+
+describe('text-align: justify-all (CSS Text 3 §6.1)', () => {
+  // 幅 100pt の段落に、10pt の字を 13 字 (空白 2 つで 3 語)。最後の行は「ええええ おお」
+  const P = (style: string) => `<p style="width: 100pt; ${style}">ああああ いいいい うう ええええ おお</p>`;
+  /** 最後の行の最後の字の右端 */
+  const lastEnd = (t: Awaited<ReturnType<typeof lay>>) => {
+    const g = t.glyphs('お');
+    return r1(Math.max(...g.map((k) => k.x + k.w)));
+  };
+  it('最後の行も両端をそろえる。justify は最後の行を行頭にそろえる。text-align-last の指定があれば、そちら', async () => {
+    expect(lastEnd(await lay(P('text-align: justify-all')))).toBe(100);
+    expect(lastEnd(await lay(P('text-align: justify')))).toBeLessThan(100);
+    expect(lastEnd(await lay(P('text-align: justify-all; text-align-last: left')))).toBeLessThan(100);
+    const t = await lay(P('text-align: justify-all'));
+    expect(t.warnings.filter((x) => /未対応|知らない/.test(x))).toEqual([]);
+  });
+  it('justify-all の箱の中で text-align を指定し直した子は、最後の行を両端にそろえない', async () => {
+    const t = await lay(`<div style="text-align: justify-all">${P('text-align: left')}</div>`);
+    expect(lastEnd(t)).toBeLessThan(100);
+    const u = await lay(`<div style="text-align: justify-all">${P('text-align: inherit')}</div>`);
+    expect(lastEnd(u)).toBe(100);
   });
 });
 
