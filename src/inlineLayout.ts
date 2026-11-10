@@ -38,6 +38,13 @@ export interface Atom {
   intrinsic?: boolean;
   first: string;
   last: string;
+  /**
+   * 2 字以上の字の単位 (書記素クラスタ。UAX #29) をまとめた字: 並び全体 (基底の字 + 結合文字、絵文字の並びなど)。
+   * first・last は基底の字 (並びの最初の字) で、字の種類で決まる処理 (禁則・約物の詰め・和欧間のアキ) は基底の字で行う
+   */
+  cluster?: string;
+  /** 字ごとに分けて組んだクラスタの 2 つ目以降の字 (どの書体も並び全体を持たないとき)。前の字と同じ字の単位で、前では行を分けない (glue も付く) */
+  clusterCont?: boolean;
   advance: number;
   isSpace: boolean;
   runId: number;
@@ -231,7 +238,10 @@ export function markLineBreaks(atoms: Atom[]): void {
     else if (a.kind === 'box' || a.kind === 'leader') push(0xfffc);
     else {
       const f = a.first.codePointAt(0) ?? 0xfffc;
-      push(f);
+      // 字の単位 (書記素クラスタ) の atom は、並びの字をすべて並べる (atom の中の機会は使わない)。結合文字・ZWJ は UAX #14 の LB9 で
+      // 基底の字の性質になるので、前後の機会は基底の字で決まる。絵文字の並び・国旗の対 (LB30a・LB30b) も、規則どおりの並びで決まる
+      if (a.cluster) for (const c of a.cluster) push(c.codePointAt(0)!);
+      else push(f);
       // 合字・ルビなど、字の並びの atom は、最初と最後の字 (atom の中では改行しない)
       if (a.last && a.last !== a.first) push(a.last.codePointAt(0) ?? f);
     }
@@ -557,6 +567,10 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
       return { line: makeLine(atoms.slice(start, e), j2 >= n, indent), next: j2 };
     }
     j = k;
+    // 語の途中で分けるときも、字の単位 (書記素クラスタ) の途中では分けない (overflow-wrap が分けるのは字の単位の間。Text 3 §5.5)。
+    // 字ごとに分けて組んだクラスタの途中なら、クラスタの始めまで戻る (戻れなければ、クラスタの終わりまで進む)
+    while (j > lead && atoms[j].clusterCont) j--;
+    if (j <= lead) for (j = k; j < n && atoms[j].clusterCont; ) j++;
   }
   return { line: makeLine(atoms.slice(start, j), false, indent), next: j };
 }
@@ -783,7 +797,10 @@ export function markBidi(atoms: Atom[], rtl: boolean, m: Measurer, wm: WritingMo
       if (mc !== undefined) {
         const ch = String.fromCodePoint(mc);
         const st = a.st;
-        const g = m.glyph(ch, { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch, features: st.fontFeatures, orientation: st.textOrientation }, wm);
+        const rs = { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch, features: st.fontFeatures, orientation: st.textOrientation };
+        // 字の単位 (基底の字 + 結合文字) は、基底の字だけを鏡像の字に替える (結合文字は残す)
+        if (a.cluster) a.cluster = ch + a.cluster.slice(a.first.length);
+        const g = a.cluster ? m.clusterGlyph(a.cluster, rs, wm) : m.glyph(ch, rs, wm);
         // 字間・語間 (letter-spacing・word-spacing) は元の字の送りに足してあるので、鏡像の字にも同じだけ足す (送りの差は字形の分だけ)
         const spacing = a.g.spacing ?? 0;
         if (spacing) {

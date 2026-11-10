@@ -124,6 +124,7 @@ export class FontManager {
   adopt(lf: LoadedFont) {
     this.charFallback.clear();
     this.forCharMemo.clear();
+    this.clusterMemo.clear();
     this.getMemo.clear();
     this.generation++;
     this.fonts.set(lf.key, lf);
@@ -138,6 +139,7 @@ export class FontManager {
     if (isCollection(buffer)) buffer = collectionFaces(buffer)[0];
     this.charFallback.clear();
     this.forCharMemo.clear();
+    this.clusterMemo.clear();
     this.getMemo.clear();
     this.generation++;
     const fk = fontkit.create(new Uint8Array(buffer));
@@ -259,6 +261,7 @@ export class FontManager {
   setLatinFallback(family: string, latinFamily: string) {
     this.latinFor.set(family, latinFamily);
     this.forCharMemo.clear();
+    this.clusterMemo.clear();
     this.getMemo.clear();
     this.generation++;
   }
@@ -273,6 +276,7 @@ export class FontManager {
   defineRanged(name: string, faces: Array<{ family: string; ranges?: Array<[number, number]> }>) {
     this.ranged.set(name, faces);
     this.forCharMemo.clear();
+    this.clusterMemo.clear();
     this.getMemo.clear();
     this.generation++;
   }
@@ -298,6 +302,7 @@ export class FontManager {
    */
   defineStack(alias: string, base: string, latin?: string, opts: { first?: boolean; symbol?: string } = {}) {
     this.forCharMemo.clear();
+    this.clusterMemo.clear();
     this.getMemo.clear();
     this.generation++;
     this.stacks.set(alias, { base, latin, ...(opts.first ? { first: true } : {}), ...(opts.symbol ? { symbol: opts.symbol } : {}) });
@@ -366,6 +371,34 @@ export class FontManager {
   /** 基本の書体が持たない字の、代わりの書体 (null は、どの書体も持たない) */
   private charFallback = new Map<string, LoadedFont | null>();
 
+  /**
+   * 字の単位 (書記素クラスタ。基底の字 + 結合文字、絵文字の並びなど) をまとめて組む書体。クラスタは 1 つの書体で組む
+   * (基底の字と結合文字を同じ書体で組まないと、結合文字の位置が合わない。CSS Fonts 4 §5.3 Cluster matching)。
+   *  1. 基底の字の書体 (getForChar) が、並びの字をすべて持てば、その書体
+   *  2. 無ければ、並びのほかの字に選ばれる書体・読み込み済みのほかの書体の順に、並びの字をすべて持つ書体 (絵文字の並びを持つ書体など)
+   *  3. どの書体も並び全体を持たなければ null (呼び出し側が、並びを分けて字ごとに組む)
+   * 字形を持たなくてよい字 (描かない字: ZWJ・異体字セレクタ・タグなど。Default_Ignorable_Code_Point) は、持つかどうかを見ない
+   */
+  getForCluster(family: string | undefined, weight: number, unit: string): LoadedFont | null {
+    const key = `${family ?? ''}\u0000${weight}\u0000${unit}`;
+    const memo = this.clusterMemo.get(key);
+    if (memo !== undefined) return memo;
+    const chars = [...unit];
+    const need = chars.filter((c, k) => k === 0 || !DEFAULT_IGNORABLE.test(c));
+    const covers = (f: LoadedFont) => need.every((c) => this.hasGlyph(f, c));
+    const base = this.getForChar(family, weight, chars[0]);
+    let hit: LoadedFont | null = base;
+    if (!covers(base)) {
+      const cands = [...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...[...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight))];
+      hit = cands.find((f) => f !== base && covers(f)) ?? null;
+    }
+    if (this.clusterMemo.size > 20000) this.clusterMemo.clear();
+    this.clusterMemo.set(key, hit);
+    return hit;
+  }
+  /** getForCluster の結果 (書体名・太さ・並びごと)。forCharMemo と同時に消す */
+  private clusterMemo = new Map<string, LoadedFont | null>();
+
   /** Canvas の ctx.font に渡す文字列 */
   cssFont(font: LoadedFont, sizePx: number): string {
     return `${font.weight} ${sizePx}px "${font.family}"`;
@@ -376,6 +409,9 @@ export class FontManager {
     return font.fk.hasGlyphForCodePoint(cp);
   }
 }
+
+/** 字形を持たなくても描ける字 (書体が組むときに隠す。ZWJ・ZWNJ・異体字セレクタ・タグなど) */
+const DEFAULT_IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
 
 /** sfnt ヘッダ (TrueType / OpenType / TTC) の簡易判定。SPA フォールバックの HTML を弾く */
 function looksLikeFont(buf: ArrayBuffer): boolean {

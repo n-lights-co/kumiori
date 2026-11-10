@@ -11,10 +11,19 @@
 import type { FontManager, LoadedFont } from './fontManager';
 import type { WritingMode } from './types';
 import { isFullWidth, verticalTreatment, type VerticalTreatment } from './jis';
+import { clusterUnits, mayCluster } from './grapheme';
+
+/** resolveClusters の単位の種類: ふつうの字 (と、前の段階の単位・異体字の並び)・まとめて組むクラスタ・分けたクラスタの 2 つ目以降の字 */
+export const UNIT_PLAIN = 0;
+export const UNIT_CLUSTER = 1;
+export const UNIT_CONT = 2;
 
 /** 異体字セレクタ (字形を選ぶ U+FE00〜FE0F と、漢字の異体字の U+E0100〜E01EF) を含みうるか */
 const HAS_VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 const VARIATION_SELECTOR = /^[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]$/u;
+/** 描かない字 (Default_Ignorable_Code_Point。ZWJ・ZWNJ・異体字セレクタ・タグなど) */
+const IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
+const HAS_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
 /** 異体字セレクタを後ろに付けられる基底の字 (文字・数字・記号・約物。空白・制御の字・結合文字には付けない) */
 const VARIATION_BASE = /^[\p{L}\p{N}\p{S}\p{P}]$/u;
 
@@ -302,11 +311,134 @@ export class Measurer {
     return g;
   }
 
-  /** 文字列を 1 文字ずつ計測 (基底の字と異体字セレクタの並びは 1 つ) */
+  /**
+   * 字の単位の並びを、組版の字の単位 (書記素クラスタ。UAX #29 の拡張書記素クラスタ。grapheme.ts の clusterUnits) にまとめ、
+   * 単位ごとに組み方 (kinds) を決める。2 字以上の単位が 1 つも無ければ null (受け取った並びを、字ごとにそのまま使う)。
+   * 2 字以上のクラスタの書体は、CSS Fonts 4 §5.3 (Cluster matching) の順で決める:
+   *  - 基底の字と異体字セレクタだけの並び: UNIT_PLAIN のまま (variationGlyph で測る。これまでと同じ)
+   *  - 並びの字をすべて持つ書体がある (FontManager.getForCluster): UNIT_CLUSTER (clusterGlyph で、その書体でまとめて測る)
+   *  - 無いが、並びが 1 字に合成でき (NFC。e + U+0301 → é)、その字を持つ書体がある: 合成した 1 字に置き換える (UNIT_PLAIN)
+   *  - どれでもない: 基底の字の書体が持つ最も長い先頭の並びを 1 つの単位にし、残りの字は 1 字ずつ (UNIT_CONT。字ごとに書体を選ぶ。
+   *    これまでと同じ字形になる。前の字との間では、改行せず、字間も空けない)
+   * 縦書き (wm) の正立の字のクラスタで、書体が並びを 1 字分の字形にまとめないもの (送りのある字形が 2 つ以上残る: 書体に合字の無い
+   * 絵文字の ZWJ の並び、合成されないハングルの字母など) は、1 字分の枠に横に並べると行からはみ出すので、字ごとに分けて縦に並べる (UNIT_CONT)
+   */
+  resolveClusters(units: string | string[], style: Pick<RunStyle, 'fontFamily' | 'fontWeight' | 'orientation'>, wm: WritingMode = 'horizontal-tb'): { units: string[]; kinds: Uint8Array } | null {
+    const mergedAt: boolean[] = [];
+    const cl = clusterUnits(units, mergedAt);
+    if (!cl) return null;
+    const weight = style.fontWeight ?? 400;
+    const out: string[] = [];
+    const kinds: number[] = [];
+    for (let i = 0; i < cl.length; i++) {
+      const u = cl[i];
+      // 1 字、前の段階の単位 (合字・つながる字の並び。clusterUnits は中を見ない)、異体字の並び
+      if (!mergedAt[i] || isVariationSequence(u)) {
+        out.push(u);
+        kinds.push(UNIT_PLAIN);
+        continue;
+      }
+      const whole = this.fonts.getForCluster(style.fontFamily, weight, u);
+      if (whole && wm !== 'horizontal-tb' && this.stacksWhenUpright(whole, u, style.orientation)) {
+        const chars = [...u];
+        out.push(chars[0]);
+        kinds.push(UNIT_PLAIN);
+        for (const c of chars.slice(1)) {
+          out.push(c);
+          kinds.push(UNIT_CONT);
+        }
+        continue;
+      }
+      if (whole) {
+        out.push(u);
+        kinds.push(UNIT_CLUSTER);
+        continue;
+      }
+      const nfc = u.normalize('NFC');
+      if (nfc !== u && nfc.length === (nfc.codePointAt(0)! > 0xffff ? 2 : 1) && this.fonts.hasGlyph(this.fonts.getForChar(style.fontFamily, weight, nfc), nfc)) {
+        out.push(nfc);
+        kinds.push(UNIT_PLAIN);
+        continue;
+      }
+      // 基底の字の書体が持つ、最も長い先頭の並び (2 字以上なら 1 つの単位)。残りは 1 字ずつ
+      const chars = [...u];
+      let n = chars.length - 1;
+      while (n > 1 && this.fonts.getForCluster(style.fontFamily, weight, chars.slice(0, n).join('')) !== this.fonts.getForChar(style.fontFamily, weight, chars[0])) n--;
+      const head = chars.slice(0, n).join('');
+      out.push(head);
+      kinds.push(n > 1 && !isVariationSequence(head) ? UNIT_CLUSTER : UNIT_PLAIN);
+      for (const c of chars.slice(n)) {
+        out.push(c);
+        kinds.push(UNIT_CONT);
+      }
+    }
+    return { units: out, kinds: Uint8Array.from(kinds) };
+  }
+
+  /**
+   * 書体に渡すクラスタの文字列。書体が字形を持たない「描かない字」(ZWJ・ZWNJ・タグなど。Default_Ignorable_Code_Point) は、書体に渡さない:
+   * 字形が無いので書体の置き換えの規則にも現れず、渡すと「字形の無い字」(.notdef) になる (fontkit は .notdef を最初に作ったときの字で
+   * 覚えるので、隠れるか豆腐になるかが、それまでに組んだ字で変わってしまう)。異体字セレクタは、cmap が基底の字と組で引くので渡す
+   */
+  private clusterText(unit: string, font: LoadedFont): string {
+    if (!HAS_IGNORABLE.test(unit)) return unit;
+    return [...unit].filter((c, k) => k === 0 || VARIATION_SELECTOR.test(c) || !IGNORABLE.test(c) || this.fonts.hasGlyph(font, c)).join('');
+  }
+
+  private stackCache = new Map<LoadedFont, Map<string, boolean>>();
+  /** 縦書きで正立する字のクラスタを書体 font で組むと、送りのある字形が 2 つ以上になるか (1 字分の枠に収まらない) */
+  private stacksWhenUpright(font: LoadedFont, unit: string, orientation: RunStyle['orientation']): boolean {
+    const base = String.fromCodePoint(unit.codePointAt(0)!);
+    if (verticalTreatment(base, (c) => this.fonts.hasGlyph(font, c), orientation, (c) => this.hasVert(font, c)).mode !== 'upright') return false;
+    let m = this.stackCache.get(font);
+    if (!m) this.stackCache.set(font, (m = new Map()));
+    let v = m.get(unit);
+    if (v === undefined) {
+      try {
+        v = font.fk.layout(this.clusterText(unit, font), { kern: false, liga: false, clig: false } as never).positions.filter((p) => p.xAdvance > 0).length > 1;
+      } catch {
+        v = false;
+      }
+      if (m.size > 20000) m.clear();
+      m.set(unit, v);
+    }
+    return v;
+  }
+
+  /**
+   * 2 字以上のクラスタ (resolveClusters の UNIT_CLUSTER) のメトリクス。並びを 1 つの書体 (FontManager.getForCluster) にまとめて渡し、
+   * 書体の字形の置き換え (GSUB: 合成・絵文字の並びの字形) と位置合わせ (GPOS: 結合文字を基底の字に載せる) を通した送りの合計を測る。
+   * 描く文字列は並び全体 (横書きは draw、縦書きは vertical.glyph)。描く側も同じ書体で並びを組む (areaResources.ts の glyphIds・glyphPositions)。
+   * 字の種類で決まること (縦書きの向き・縦書き用の字形・全角の送り) は、基底の字 (並びの最初の字) で決める
+   */
+  clusterGlyph(unit0: string, style: RunStyle, wm: WritingMode): GlyphMetrics {
+    const base = String.fromCodePoint(unit0.codePointAt(0)!);
+    const weight = style.fontWeight ?? 400;
+    const font = this.fonts.getForCluster(style.fontFamily, weight, unit0) ?? this.fonts.getForChar(style.fontFamily, weight, base);
+    const unit = this.clusterText(unit0, font);
+    const fs = style.fontSize;
+    const natural = this.emAdvance(font, unit, wm === 'horizontal-tb' ? style.features : undefined) * fs;
+    if (wm === 'horizontal-tb') {
+      const k = style.stretch ?? 1;
+      if (k !== 1) return { ch: base, font, fontSize: fs, advance: natural * k, cross: fs, naturalWidth: natural * k, scaleX: k, draw: unit };
+      return { ch: base, font, fontSize: fs, advance: natural, cross: fs, naturalWidth: natural, draw: unit };
+    }
+    const t = verticalTreatment(base, (c) => this.fonts.hasGlyph(font, c), style.orientation, (c) => this.hasVert(font, c));
+    // 基底の字を縦書き用の字 (VERTICAL_FORMS の字) に替えたときも、後ろの結合文字は残す
+    const text = t.glyph === base ? unit : t.glyph + unit.slice(base.length);
+    const advance = t.mode === 'rotate' ? natural : isFullWidth(base) || style.orientation === 'upright' || t.features ? fs : natural;
+    const nat = t.features ? this.emAdvance(font, text, t.features) * fs : text === unit ? natural : this.emAdvance(font, text) * fs;
+    return { ch: base, font, fontSize: fs, advance, cross: fs, naturalWidth: nat, vertical: { ...t, glyph: text } };
+  }
+
+  /** 文字列を字の単位ごとに計測 (基底の字と異体字セレクタの並び・書記素クラスタは 1 つ) */
   glyphs(text: string, style: RunStyle, wm: WritingMode, letterSpacing = 0): GlyphMetrics[] {
     const out: GlyphMetrics[] = [];
-    for (const ch of variationUnits(text)) {
-      const g = isVariationSequence(ch) ? this.variationGlyph(ch, style, wm) : this.glyph(ch, style, wm);
+    // 2 字以上のクラスタを含みうるとき (結合文字・異体字セレクタ・ZWJ などがある) だけ、クラスタにまとめる
+    const r = mayCluster(text) ? this.resolveClusters(text, style, wm) : null;
+    let i = 0;
+    for (const ch of r ? r.units : text) {
+      const g = r?.kinds[i++] === UNIT_CLUSTER ? this.clusterGlyph(ch, style, wm) : isVariationSequence(ch) ? this.variationGlyph(ch, style, wm) : this.glyph(ch, style, wm);
       if (letterSpacing) {
         g.advance += letterSpacing;
         g.spacing = letterSpacing;
