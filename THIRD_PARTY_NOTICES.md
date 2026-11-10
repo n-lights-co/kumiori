@@ -1093,7 +1093,7 @@ This file and the 14 PostScript(R) AFM files it accompanies may be used, copied,
 
 Kumiori が読み込むのは `hyphen/en-us`・`hyphen/en-gb`・`hyphen/la`・`hyphen/ru`・`hyphen/uk`・`hyphen/el-monoton` だけです。hyphen の README.md (12 行目) には "Patterns for this library were taken from ctan.org and ported to Javascript." とあります (リンクの書式を除いて引用)。npm の hyphen@1.14.1 の `patterns/en-us.js`・`patterns/en-gb.js` には、ライセンスや著作権の表示は入っていません。
 
-下に、上流の hyph-utf8 のパターンのファイルの冒頭の表示を転記します。
+下に、上流の hyph-utf8 のパターンのファイルの冒頭の表示を転記します。パターンを取り込んだファイル (ブラウザ向けの配布物と画面の、言語ごとのチャンク) の先頭には、そのパターンの著作権の表示とライセンスの表示 (MIT は許諾の表示の全文、en-us は上流の表示、ru は LPPL の条件に従う注記) を入れています (`vite.config.ts` の `HYPHEN_NOTICES`)。
 
 - 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-en-us.tex と、同じ場所の hyph-en-gb.tex (master ブランチ。取得日 2026-10-31。コミットは特定していない)
 - hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
@@ -1418,7 +1418,13 @@ Kumiori が読み込むのは `hyphen/en-us`・`hyphen/en-gb`・`hyphen/la`・`h
 
 - 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-ru.tex (master ブランチ。取得日 2026-11-10。コミットは特定していない)
 - npm の hyphen@1.14.1 の `patterns/ru.js` には、ライセンスや著作権の表示は入っていません。hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
-- ライセンスは LPPL (LaTeX Project Public License) 1.2 かそれ以降 (下の表示の licence の欄)。本文は https://latex-project.org/lppl/ にあります。Kumiori は 1.3c の条件で配布します: 配布物に入るのは、上流のパターンを hyphen が JavaScript の形 (パターンの木のデータ) に変換したもの (hyphen@1.14.1 の `patterns/ru.js`) で、Kumiori は中身を変えていません (ビルドで 1 つのファイルにまとめるだけ)。変換する前のパターンは、上の取得元 (hyph-utf8 パッケージ。CTAN の hyph-utf8 にもあります) から入手できます。このパターンについて、元の作者・保守者は Kumiori の配布物のサポートに責任を負いません。
+- ライセンスは LPPL (LaTeX Project Public License) 1.2 かそれ以降 (下の表示の licence の欄)。Kumiori は 1.3c の条件で配布します (本文: https://latex-project.org/lppl/lppl-1-3c.txt )。LPPL 1.3c の「Conditions on Distribution and Modification」の、変更したもの (Derived Work) を配る条件 (第 6 項) に、次のように従います。
+  - **配るもの**: 上流のパターン (`hyph-ru.tex`) を、npm の hyphen が JavaScript のデータ (同じパターンを表す配列) に変換したもの (hyphen@1.14.1 の `patterns/ru.js`)。Kumiori は、これをビルドで 1 つのファイル (チャンク) にまとめ、ビルドによっては縮めます。パターンの中身は変えていません。元のファイルの TeX のコメントは入りません。これを取り込んだファイルが入るのは、ブラウザ向けの配布物 (`dist-browser/chunks/ru-*.js`) と画面 (`dist/assets/ru-*.js`) です。Node のコマンド (`dist-cli/`) とライブラリ (`dist-lib/`) は、hyphen を外部の依存として読み込むので、パターンを含みません。
+  - **第 6 項 a** (元の部品の代わりに使える部品は、変更したものと名乗る): JavaScript に変換したものは、LaTeX などの上で元の `hyph-ru.tex` の代わりに使える部品ではないので、当たりません。
+  - **第 6 項 b** (変更の内容を、部品ごとに目立つように書く): パターンを取り込んだファイルの先頭に、変更したものであることと変更の内容 (上の「配るもの」) を英語で書いています (`vite.config.ts` の `HYPHEN_NOTICES`)。この節にも書いています。
+  - **第 6 項 c** (元の作者などがサポートするかのように書かない): 元のパターンの作者・保守者は、この変換したものをサポートしません。不具合は Kumiori へ報告してください。
+  - **第 6 項 d** (元の Work の写しか、入手に十分な情報を付ける): 変更していない元のファイルは、hyph-utf8 パッケージ (https://ctan.org/pkg/hyph-utf8 の `tex/generic/hyph-utf8/patterns/tex/hyph-ru.tex`) と、上の取得元 (https://github.com/hyphenation/tex-hyphen ) から入手できます。
+  - LPPL 1.3c に、ライセンスの本文の写しを配布物に付けることを求める項はありません (第 1〜12 項を確かめました)。本文は上の URL にあります。
 
 ```text
 % title: Hyphenation patterns for Russian
