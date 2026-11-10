@@ -19,7 +19,7 @@ import { countDroppedLink, judgeExternalLink, type DroppedLinks, type LinkPolicy
 import { evalExpr, evalLength } from './foExpr';
 import { FO_NS, serializeSvg, utf8Base64, type XEl, type XNode } from './foDom';
 import { WS_INITIAL, type Ctx, type WhiteSpace } from './foContext';
-import { readPageMaster, type MasterInfo } from './foPageMaster';
+import { DEFAULT_PAGE_HEIGHT, DEFAULT_PAGE_WIDTH, readPageMaster, type MasterInfo } from './foPageMaster';
 import { FoMathFallback } from './foMathFallback';
 // 最小 DOM の型は foDom.ts に移した (api.ts・main.ts・テストは従来どおりここから読める)
 export type { XNode } from './foDom';
@@ -386,7 +386,102 @@ class Importer {
       const v = n.getAttribute(k);
       return v === null ? undefined : v.trim();
     }
-    return undefined;
+    // 一括指定 (font・background・page-break-*・size) から決まる個別の性質。個別に書いた性質が勝つ (XSL 1.1 §5.2:
+    // “The individual properties are always more precise than any shorthand.”)
+    return this.shorthandsOf(n)?.[k];
+  }
+
+  /** 要素ごとの、一括指定を個別の性質に分けた結果 (一括指定の無い要素は null) */
+  private expanded = new WeakMap<XNode, Record<string, string> | null>();
+  private shorthandsOf(n: XNode): Record<string, string> | undefined {
+    let e = this.expanded.get(n);
+    if (e === undefined) {
+      e = this.expandShorthands(n);
+      this.expanded.set(n, e);
+    }
+    return e ?? undefined;
+  }
+
+  /**
+   * 一括指定を、個別の性質に分ける (XSL 1.1 §5.2 Shorthand Expansion)。読むのは font (§7.31.13)・background (§7.31.1)・
+   * page-break-after・page-break-before・page-break-inside (§7.31.16〜§7.31.18)・size (§7.31.21)。
+   * border・margin・padding・position・white-space などは、それぞれを読む所で分けている。
+   * 一括指定は、書いていない個別の性質を初期値に戻す。継承されない性質は、書かなければ初期値なので何も出さない
+   * (font だけは継承される性質なので、初期値を出して親の値を打ち消す)。
+   * inherit は、継承される性質 (font) では書かないのと同じ。ほかの読めない値は、何もせずに報告する
+   */
+  private expandShorthands(n: XNode): Record<string, string> | null {
+    if (!n.hasAttribute || !n.getAttribute || !this.isFo(n)) return null;
+    const own = (k: string) => (n.hasAttribute!(k) ? (n.getAttribute!(k) ?? '').trim() : undefined);
+    const out: Record<string, string> = {};
+    // font: [ [ <font-style> || <font-variant> || <font-weight> ]? <font-size> [ / <line-height> ]? <font-family> ] | caption | icon | … | inherit
+    const font = own('font');
+    if (font && font !== 'inherit') {
+      const toks = splitTopLevel(font, ' ');
+      const set: Record<string, string> = { 'font-style': 'normal', 'font-variant': 'normal', 'font-weight': 'normal', 'line-height': 'normal', 'font-stretch': 'normal' };
+      let k = 0;
+      for (; k < toks.length && k < 3; k++) {
+        const t = toks[k];
+        if (t === 'normal') continue;
+        if (t === 'italic' || t === 'oblique') set['font-style'] = t;
+        else if (t === 'small-caps') set['font-variant'] = t;
+        else if (t === 'bold' || t === 'bolder' || t === 'lighter' || /^[1-9]00$/.test(t)) set['font-weight'] = t;
+        else break;
+      }
+      // 残りは「大きさ [ / 行送り ] 書体の並び」。/ の前後の空白はあってもよい (CSS2 §15.2.5 の文法)
+      const rest = toks.slice(k).join(' ');
+      const m = /^(\S+)\s*\/\s*(\S+)\s+(\S.*)$/.exec(rest) ?? /^(\S+)()\s+(\S.*)$/.exec(rest);
+      if (m && !/^(caption|icon|menu|message-box|small-caption|status-bar)$/.test(font)) {
+        set['font-size'] = m[1];
+        if (m[2]) set['line-height'] = m[2];
+        set['font-family'] = m[3];
+        Object.assign(out, set);
+      } else this.miss(`font:${font.slice(0, 20)}`);
+    }
+    // background: [ <background-color> || <background-image> || <background-repeat> || <background-attachment> || <background-position> ] | inherit
+    const bg = own('background');
+    if (bg) {
+      const pos: string[] = [];
+      for (const t of splitTopLevel(bg, ' ')) {
+        if (/^url\(/i.test(t) || t === 'none') out['background-image'] = t;
+        else if (/^(repeat|repeat-x|repeat-y|no-repeat)$/.test(t)) out['background-repeat'] = t;
+        else if (t === 'scroll' || t === 'fixed') out['background-attachment'] = t;
+        else if (/^(top|bottom|left|right|center)$/.test(t) || /^[-+.\d]/.test(t)) pos.push(t);
+        else if (t === 'inherit' && bg === 'inherit') this.miss('background:inherit');
+        else out['background-color'] = t;
+      }
+      if (pos.length) out['background-position'] = pos.join(' ');
+    }
+    // page-break-before・page-break-after (§7.31.16・§7.31.17): always は break = page、left は even-page、right は odd-page、
+    // avoid は keep-with-previous・keep-with-next = always。page-break-inside (§7.31.18): avoid は keep-together = always
+    for (const [side, keep] of [['before', 'keep-with-previous'], ['after', 'keep-with-next']] as const) {
+      const v = own(`page-break-${side}`);
+      if (v === undefined) continue;
+      const brk = v === 'always' ? 'page' : v === 'left' ? 'even-page' : v === 'right' ? 'odd-page' : v === 'auto' || v === 'avoid' ? 'auto' : undefined;
+      if (brk === undefined) {
+        this.miss(`page-break-${side}:${v.slice(0, 20)}`);
+        continue;
+      }
+      out[`break-${side}`] = brk;
+      out[keep] = v === 'avoid' ? 'always' : 'auto';
+    }
+    const pbi = own('page-break-inside');
+    if (pbi === 'avoid' || pbi === 'auto') out['keep-together'] = pbi === 'avoid' ? 'always' : 'auto';
+    // inherit: keep-together は継承される性質 (§7.20.3) なので、書かないのと同じ
+    else if (pbi !== undefined && pbi !== 'inherit') this.miss(`page-break-inside:${pbi.slice(0, 20)}`);
+    // size (§7.31.21): page-width・page-height に写す。長さ 1 つは幅と高さの両方、2 つは幅・高さの順 (CSS2 §13.2.2 の例)。
+    // auto は用紙の大きさ (page-width・page-height の auto)、landscape・portrait は用紙の長い辺を横・縦にする
+    const size = own('size');
+    if (size !== undefined && this.name(n) === 'simple-page-master') {
+      const p = splitTopLevel(size, ' ');
+      const [short, long] = [Math.min(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT), Math.max(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT)];
+      if (size === 'auto') Object.assign(out, { 'page-width': 'auto', 'page-height': 'auto' });
+      else if (size === 'landscape') Object.assign(out, { 'page-width': `${long}pt`, 'page-height': `${short}pt` });
+      else if (size === 'portrait') Object.assign(out, { 'page-width': `${short}pt`, 'page-height': `${long}pt` });
+      else if ((p.length === 1 || p.length === 2) && p.every((t) => /^[-+.\d]/.test(t) || t.includes('('))) Object.assign(out, { 'page-width': p[0], 'page-height': p[1] ?? p[0] });
+      else this.miss(`size:${size.slice(0, 20)}`);
+    }
+    return Object.keys(out).length ? out : null;
   }
   /** 'name' と 'name.optimum' のうち存在する方 */
   attrOpt(n: XNode, k: string): string | undefined {
@@ -449,6 +544,18 @@ class Importer {
       if (fn) this.miss(`function:${fn[1]}()`);
     }
     return r;
+  }
+
+  /**
+   * 寸法の下限・上限の指定 (属性の値)。絶対の min-height・max-height・min-width・max-width (§7.15.8〜§7.15.11) は、書字方向で
+   * block-progression-dimension か inline-progression-dimension の .minimum・.maximum に当たる (XSL 1.1 §5.3.3: block の進む向きが
+   * 上下なら height の組が block、width の組が inline。左右なら逆)。絶対の指定があればそれを使い、無ければ相対の成分。
+   * max-* の none は上限なし (“if "max-height" is specified as "none", reset: block-progression-dimension.maximum=auto”)
+   */
+  private dimLimit(el: XEl, wm: WritingMode, axis: 'inline' | 'block', which: 'minimum' | 'maximum'): string | undefined {
+    const abs = this.attrInh(el, `${which === 'minimum' ? 'min' : 'max'}-${(wm === 'horizontal-tb') === (axis === 'block') ? 'height' : 'width'}`);
+    if (abs !== undefined) return abs === 'none' || abs === 'auto' ? undefined : abs;
+    return this.attr(el, `${axis}-progression-dimension.${which}`);
   }
 
   /** 包含ブロックの inline 方向の寸法 (百分率の基準) */
@@ -1375,19 +1482,25 @@ class Importer {
     const w = this.len(this.attr(el, 'width'), fs, ctx.width);
     const h = this.len(this.attr(el, 'height'), fs, ctx.cbH);
     // 幅の上限 (inline-progression-dimension.maximum) だけの指定: 領域の幅が上限を超えるときは上限の幅にする
-    const ipdMax = this.len(this.attr(el, 'inline-progression-dimension.maximum'), fs, ctx.width);
+    const ipdMax = this.len(this.dimLimit(el, ctx.wm, 'inline', 'maximum'), fs, ctx.width);
     const ipdCapped = ipd ?? (ipdMax !== undefined && (ctx.width === undefined || ipdMax < ctx.width) ? ipdMax : undefined);
     // 幅の下限 (inline-progression-dimension.minimum) だけの指定: 領域の幅が下限より狭いときは下限の幅にする
     // (段組のページで、minimum="30em" の箱は段の幅より広くても 30em)
-    const ipdMin = this.len(this.attr(el, 'inline-progression-dimension.minimum'), fs, ctx.width);
+    const ipdMin = this.len(this.dimLimit(el, ctx.wm, 'inline', 'minimum'), fs, ctx.width);
     const ipdUsed = ipdCapped ?? (ipdMin !== undefined && ctx.width !== undefined && ipdMin > ctx.width ? ipdMin : undefined);
     const width = w ?? (horizontal ? ipdUsed : bpd);
     const height = h ?? (horizontal ? bpd : ipd);
     if (width !== undefined) o.width = width;
     if (height !== undefined) o.height = height;
     // 高さの下限 (block-progression-dimension.minimum): 中身が少なくても、この高さを取る
-    const bpdMin = horizontal && bpd === undefined && h === undefined ? this.len(this.attr(el, 'block-progression-dimension.minimum'), fs, ctx.cbH) : undefined;
+    const bpdMin = horizontal && bpd === undefined && h === undefined ? this.len(this.dimLimit(el, ctx.wm, 'block', 'minimum'), fs, ctx.cbH) : undefined;
     if (bpdMin !== undefined && bpdMin > 0) o.minBlockSize = bpdMin;
+    // 絶対の上限・下限 (min-height など) のうち、組版に受け皿の無いもの (block 方向の上限と、縦書きの箱の上限・下限) は、読まずに報告する。
+    // block-container の max-width は、blockContainer が読む (従来どおり)
+    for (const k of horizontal ? ['max-height'] : ['min-height', 'max-height', 'min-width', 'max-width']) {
+      const v = this.attrInh(el, k);
+      if (v !== undefined && v !== 'none' && v !== 'auto' && !(k === 'max-width' && this.name(el) === 'block-container')) this.miss(k);
+    }
     // FO の width・height (inline/block-progression-dimension) は内容の寸法 (§7.15: 枠・パディングは外側)
     // break-before / break-after (§7.20.2): page・column・odd-page・even-page
     const brk = (v: string | undefined) => (v === 'page' || v === 'column' || v === 'odd-page' || v === 'even-page' ? v : undefined);
@@ -2305,7 +2418,7 @@ class Importer {
   private blockContainer(n: XEl, ctx: Ctx): LBlockContainer {
     const { style, ctx: c2 } = this.textStyle(n, ctx);
     const box = this.boxStyle(n, c2, ctx);
-    // max-width (XSL 1.1 には無い CSS の属性。AH Formatter 向けに書かれた文書で使われる): 幅の指定が無ければ、使える幅と max-width の小さい方を内容の幅にする
+    // max-width (§7.15.9): 幅の指定が無ければ、使える幅と max-width の小さい方を内容の幅にする (横書きのコンテナは boxStyle が同じ値にしている)
     const maxW = this.len(this.attr(n, 'max-width'), c2.fontSize, ctx.width);
     if (maxW !== undefined && box.width === undefined && ctx.width !== undefined && maxW < ctx.width) box.width = maxW;
     // absolute-position (一括指定の position="absolute" / "fixed" も読む。§7.31.20)
@@ -2789,15 +2902,16 @@ class Importer {
     // block 方向の寸法: 横書きは height、縦書きは width (どちらも block-progression-dimension と同じ)
     const hv =
       this.attr(r, ctx.wm === 'horizontal-tb' ? 'height' : 'width') ??
-      this.attr(r, 'block-progression-dimension.minimum') ??
+      this.dimLimit(r, ctx.wm, 'block', 'minimum') ??
       this.attr(r, 'block-progression-dimension.optimum') ??
       this.attr(r, 'block-progression-dimension');
     if (this.spec) {
       // 仕様 (§7.15.3): 長さだけを書けば minimum = optimum = maximum。行は optimum の高さを目指し、minimum から maximum の間に収める
       const hAttr = ctx.wm === 'horizontal-tb' ? 'height' : 'width';
       const all = this.attr(r, 'block-progression-dimension') ?? this.attr(r, hAttr);
-      const comp = (k: string) => {
-        const v = this.attr(r, `block-progression-dimension.${k}`) ?? all;
+      // 絶対の min-height・max-height (縦書きは min-width・max-width) は、下限・上限の成分に当たる (§5.3.3)
+      const comp = (k: 'minimum' | 'optimum' | 'maximum') => {
+        const v = (k === 'optimum' ? this.attr(r, 'block-progression-dimension.optimum') : this.dimLimit(r, ctx.wm, 'block', k)) ?? all;
         return v && v !== 'auto' ? this.len(v, fs) : undefined;
       };
       const mn = comp('minimum');

@@ -87,6 +87,8 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - CSS GCPM 3 の付録 B から写した規則の表示を足した (10 節)
   - 出力する JS のファイルの先頭に、Kumiori の版・ライセンスと `THIRD_PARTY_NOTICES.md` の場所を書いた注釈を付ける (CDN からファイルを 1 つだけ読む場合のため)
   - 対応仕様説明書の PDF に埋め込む書体とそのライセンスを、説明書の README に書いた
+- **XSL-FO の性質** (読んで組版へ渡すようにしたもの。`--compat` によらない):
+  - 一括指定の `font`・`background`・`page-break-before`・`page-break-after`・`page-break-inside`・`size` と、寸法の上限・下限の `min-height`・`min-width`・`max-width` (表の行は `max-height` も) を読む (XSL 1.1 §7.31・§7.15)。これまでは無視していたので、`page-break-before="always"` などの改ページが効いていなかった
 
 ## 0.1.1 (2026-11-09)
 

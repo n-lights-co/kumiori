@@ -87,6 +87,8 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - Added notices for the rules copied from CSS GCPM 3 Appendix B (section 10)
   - Every output JS file starts with a comment giving the Kumiori version, its license and where `THIRD_PARTY_NOTICES.md` is (for loading a single file from a CDN)
   - The README of the Conformance Guides states the fonts embedded in their PDFs and the fonts' licenses
+- **XSL-FO properties** (now read and passed to the typesetter, regardless of `--compat`):
+  - the shorthands `font`, `background`, `page-break-before`, `page-break-after`, `page-break-inside` and `size`, and the size limits `min-height`, `min-width` and `max-width` (also `max-height` on table rows), are now read (XSL 1.1 §7.31, §7.15). They used to be ignored, so page breaks such as `page-break-before="always"` had no effect
 
 ## 0.1.1 (2026-11-09)
 
