@@ -48,6 +48,8 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'base-palette',
   'override-colors',
   'box-decoration-break',
+  'clip',
+  'fill',
   'footnote-display',
   'footnote-policy',
   'grid',

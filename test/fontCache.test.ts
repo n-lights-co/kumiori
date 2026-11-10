@@ -74,6 +74,41 @@ describe('kumiori/node の部品', () => {
     const inner = createFileResolver({ root: path.join(dir, 'sub') });
     expect(inner(url(path.join(dir, 'a.css')))).toBeUndefined();
   });
+  it('createFileResolver の root: 実体のパスで範囲を見る (中のリンクが外を指せば読まない)。root はいくつも渡せる。「..」で始まる名前のファイルは中', async () => {
+    const { createFileResolver } = await import('../src/node');
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-root-')));
+    const url = (p: string) => pathToFileURL(p).href;
+    const text = (b: Uint8Array | undefined) => (b ? new TextDecoder().decode(b) : undefined);
+    for (const d of ['a', 'b', 'out', 'a-other']) fs.mkdirSync(path.join(dir, d));
+    fs.writeFileSync(path.join(dir, 'a', 'in.css'), 'A');
+    fs.writeFileSync(path.join(dir, 'a', '..style.css'), 'DOTS');
+    fs.writeFileSync(path.join(dir, 'b', 'in.css'), 'B');
+    fs.writeFileSync(path.join(dir, 'out', 'secret.txt'), 'SECRET');
+    fs.writeFileSync(path.join(dir, 'a-other', 'x.css'), 'X');
+    // root の中のリンク → 外のファイル・外のディレクトリ、外のリンク → 中のファイル、リンクの root
+    fs.symlinkSync(path.join(dir, 'out', 'secret.txt'), path.join(dir, 'a', 'link.css'));
+    fs.symlinkSync(path.join(dir, 'out'), path.join(dir, 'a', 'outdir'));
+    fs.symlinkSync(path.join(dir, 'a', 'in.css'), path.join(dir, 'out', 'back.css'));
+    fs.symlinkSync(path.join(dir, 'a'), path.join(dir, 'a-link'));
+    const one = createFileResolver({ root: path.join(dir, 'a') });
+    expect(text(one(url(path.join(dir, 'a', 'in.css'))))).toBe('A');
+    expect(text(one(url(path.join(dir, 'a', '..style.css'))))).toBe('DOTS');
+    expect(one(url(path.join(dir, 'a', 'link.css')))).toBeUndefined();
+    expect(one(url(path.join(dir, 'a', 'outdir', 'secret.txt')))).toBeUndefined();
+    expect(one(url(path.join(dir, 'a', '..', 'out', 'secret.txt')))).toBeUndefined();
+    // 名前の頭が同じだけの隣のディレクトリは外。外にあるリンクでも、実体が中なら読む
+    expect(one(url(path.join(dir, 'a-other', 'x.css')))).toBeUndefined();
+    expect(text(one(url(path.join(dir, 'out', 'back.css'))))).toBe('A');
+    // root がリンクなら、その指す先が範囲
+    expect(text(createFileResolver({ root: path.join(dir, 'a-link') })(url(path.join(dir, 'a', 'in.css'))))).toBe('A');
+    // いくつもの root: どれかの中なら読む。無い root は何も含まない
+    const many = createFileResolver({ root: [path.join(dir, 'a'), path.join(dir, 'b'), path.join(dir, 'none')] });
+    expect([text(many(url(path.join(dir, 'a', 'in.css')))), text(many(url(path.join(dir, 'b', 'in.css'))))]).toEqual(['A', 'B']);
+    expect(many(url(path.join(dir, 'out', 'secret.txt')))).toBeUndefined();
+    expect(createFileResolver({ root: [] })(url(path.join(dir, 'a', 'in.css')))).toBeUndefined();
+    expect(createFileResolver({ root: path.join(dir, 'none') })(url(path.join(dir, 'a', 'in.css')))).toBeUndefined();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
   it('createFontLoader: fontDir の書体を読む (cacheDir: null ならキャッシュを使わない)', async () => {
     const { createFontLoader } = await import('../src/node');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-fd-'));

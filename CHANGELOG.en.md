@@ -31,6 +31,9 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - `fetchStyles`: fetches CSS referenced by the document over `http(s):` (including `@import` targets; default `true`)
   - `kumiori/node`: `createFontLoader` (the same default-font loading and cache as the CLI), `createFileResolver` (reads `file:` references), `defaultFontCacheDir`, `looksLikeFont`
 - **CLI**: reads references given as `file:` URLs; `--no-fetch-styles` disables fetching CSS
+- **Page number references inside flex items**: the box of a flex item that contains `target-counter(…, page)` (such as the `::after` of a table-of-contents line) now fits the digits of the number as typeset. It used to be one digit wide, so with `word-break: break-word`, `overflow-wrap: anywhere` and the like a two-digit number broke into "1 / 0" and the table of contents grew longer
+- **`createFileResolver`** (`kumiori/node`): `root` accepts a list of directories. Containment is checked on the real paths after resolving symbolic links (a link inside the root could be used to read a file outside it; the checks for another drive on Windows and for file names starting with `..` are also fixed)
+- **Warnings for unsupported CSS**: `clip` and `fill` are reported as unsupported properties rather than unknown properties (also added to chapter 16 of the Conformance Guide)
 - **Documents**: corrected the line count and test count in the README, the step numbers in the release procedure, and statements in the Conformance Guides, plans and other documents that disagreed with the implementation or between the Japanese and English versions
 - **Publishing**: the PDFs of the Conformance Guides (four volumes, Japanese and English) are attached to the GitHub release of each version; the "Typesetting" row of the colophon shows the Kumiori version used to typeset them
 - **Third-party notices**:

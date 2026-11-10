@@ -60,9 +60,9 @@ describe('未対応の CSS の数え上げ (cssUnsupported)', () => {
       'button { cursor: pointer; appearance: button } textarea { resize: vertical } a { transition: color .2s; animation-name: x; scroll-margin-top: 1em; touch-action: manipulation; user-select: none; pointer-events: none } svg { fill: currentColor }',
     );
     const r = unsupportedCssReport(css);
-    expect(r.unsupported).toEqual({});
-    // fill は印刷にも効く (Kumiori は読まない) ので、知らないプロパティとして残す
-    expect(r.unknown).toEqual({ fill: 1 });
+    // fill は印刷にも効く (文書の CSS の fill は、文書の中の <svg> に効かない) ので、未対応のプロパティとして数える (綴りの誤りを疑う「知らないプロパティ」には入れない)
+    expect(r.unsupported).toEqual({ fill: 1 });
+    expect(r.unknown).toEqual({});
   });
   it('印刷では意味のないプロパティの一覧は、対応仕様説明書の「印刷に関わらないプロパティ」の表を含む', () => {
     const doc = fs.readFileSync(path.resolve(__dirname, '../docs/conformance/html/kumiori-html-css.html'), 'utf8');

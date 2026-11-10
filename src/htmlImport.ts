@@ -1082,7 +1082,7 @@ class HtmlImporter {
     if (!srcs) return this.flexColumn(el, parent) ?? (this.block(el, parent, true) as LBlock | undefined);
     const extra: LBlockLevel[] = [];
     /** 項目: 子の要素か ::before・::after (ps)。node は組んだ中身 (文書の順に組む: カウンターの値が文書の順になるように) */
-    type Item = { el: Element; ps?: '::before' | '::after'; anon?: boolean; node: LBlockLevel; text?: string; order: number; collapse?: boolean };
+    type Item = { el: Element; ps?: '::before' | '::after'; anon?: boolean; node: LBlockLevel; text?: string; order: number; collapse?: boolean; fit?: boolean };
     const items: Item[] = [];
     let pseudoSeen = false;
     for (const src of srcs) {
@@ -1206,6 +1206,9 @@ class HtmlImporter {
         // 見積もりは枠・内側の余白を含むので、足すのは外側の余白だけ
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
         const shrink = parseFloat(kc('flex-shrink'));
+        // 中身の幅で決まる項目にページ番号の引用 (target-counter(…, page)) があれば、番号の桁の数は組むまで分からないので、
+        // 列の幅を組版エンジンに測らせる (LTableColumn.fitContent。ここの見積もりは、引用の字を数えていない)
+        if (inner === undefined && hasPageCitation(k.node)) k.fit = true;
         const own: Info = {
           el: k,
           w: inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined,
@@ -1397,7 +1400,7 @@ class HtmlImporter {
       return t;
     };
     lines.forEach((line, k) => {
-      const columns: LTableColumn[] = line.map((cell) => (cell.star ? { type: 'table-column', width: `${cell.star}*`, ...(cell.w ? { widthExtra: cell.w } : {}) } : { type: 'table-column', width: Math.max(cell.w, 0) }));
+      const columns: LTableColumn[] = line.map((cell) => (cell.star ? { type: 'table-column', width: `${cell.star}*`, ...(cell.w ? { widthExtra: cell.w } : {}) } : { type: 'table-column', width: Math.max(cell.w, 0), ...(cell.el?.fit ? { fitContent: true } : {}) }));
       const cells: LTableCell[] = line.map((cell) => {
         if (!cell.el) return { type: 'table-cell', children: [] };
         // collapse の項目の支柱: 幅 0 の列の中に、畳む前の行の高さの空の箱を置く (phantom。中身は描かない。伸ばさず、揃えない)。
@@ -4980,6 +4983,22 @@ class HtmlImporter {
     }
     return { type: 'document', ...(title ? { title } : {}), ...(roots.length ? { bookmarks: roots } : {}), sequences };
   }
+}
+
+/** 論理ツリーの部分木に、ページ番号の引用 (page-number-citation) があるか */
+function hasPageCitation(node: unknown): boolean {
+  const stack: unknown[] = [node];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n || typeof n !== 'object') continue;
+    if (Array.isArray(n)) {
+      for (const x of n) stack.push(x);
+      continue;
+    }
+    if ((n as { type?: string }).type === 'page-number-citation') return true;
+    for (const v of Object.values(n)) if (v && typeof v === 'object') stack.push(v);
+  }
+  return false;
 }
 
 /** HTML の文書 (スタイルを確定させたもの) を Kumiori の論理ツリーにする */
