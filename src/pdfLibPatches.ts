@@ -7,6 +7,8 @@
  *  3. PngEmbedder.prototype の上に作る、PNG の IDAT をそのまま FlateDecode の画像にする埋め込み部品 (embedPngAsIs)
  *  4. PDFFont の encodeText を結果を覚えるものに差し替え、fontkit の layout を一時的にすり替えて字形の番号から符号にする (memoEncode)
  *  5. PDFFlateStream の contentsCache を差し替えて、圧縮の関数を替える (useDeflate)
+ * (fontkit の異体字の並びの字形の引き方 (CmapProcessor.getVariationSelector) の差し替えは、PDF を作らないときの組版・描画にも
+ *  要るので、書体を読む fontManager.ts の patchFontkitVariationSelector にある)
  *
  * 前提 (差し替えるメソッドの存在) は、このモジュールを読み込んだときに assertPdfLibInternals で確かめる。
  * 「差し替え済み」の印はモジュールの変数でなく、差し替えた原型 (prototype) 自体に付ける (テストで同じ pdf-lib を複数回読み込んでも二重に包まない)
