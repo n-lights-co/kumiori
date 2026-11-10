@@ -140,6 +140,10 @@ export const EXTRA_TEST_FONTS = {
   'SourceSans3-Regular-3.052R.otf': 'https://raw.githubusercontent.com/adobe-fonts/source-sans/3.052R/OTF/SourceSans3-Regular.otf',
   // CID で引く CFF (test/postscript.test.ts): Noto Sans JP の OTF (Google Fonts の配信元の、版の付いた URL。今の版は TrueType の輪郭なので、CFF だった版を指す)
   'NotoSansJP-Regular-v25.otf': 'https://fonts.gstatic.com/s/notosansjp/v25/-F62fjtqLzI2JPCgQBnw7HFowAIO2lZ9hg.otf',
+  // 語をアイコンにする合字の書体 (test/iconLigatures.test.ts): Material Icons (Google。Apache-2.0)。配布元のリポジトリの、版のタグの付いたファイル。
+  // 3.0.1 は名前の合字を liga (標準の合字) に、4.0.0 は rlig (必須の合字) に入れている
+  'MaterialIcons-Regular-3.0.1.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/3.0.1/iconfont/MaterialIcons-Regular.ttf',
+  'MaterialIcons-Regular-4.0.0.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/4.0.0/font/MaterialIcons-Regular.ttf',
 } as const;
 
 /** EXTRA_TEST_FONTS の書体を置き場に用意して、その場所を返す (無ければ取得する。取得できなければ投げるので、テストは飛ばされずに失敗する) */

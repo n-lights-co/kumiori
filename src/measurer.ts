@@ -12,6 +12,7 @@ import type { FontManager, LoadedFont } from './fontManager';
 import type { WritingMode } from './types';
 import { isFullWidth, verticalTreatment, type VerticalTreatment } from './jis';
 import { clusterUnits, mayCluster } from './grapheme';
+import { ligatureTable } from './ligature';
 
 /** resolveClusters の単位の種類: ふつうの字 (と、前の段階の単位・異体字の並び)・まとめて組むクラスタ・分けたクラスタの 2 つ目以降の字 */
 export const UNIT_PLAIN = 0;
@@ -273,6 +274,23 @@ export class Measurer {
     return v;
   }
 
+  /** hasExtendedLigatures の結果 (機能の組ごと)。書体の登録が変わったら (FontManager.generation) 作り直す */
+  private extLig: { generation: number; byKey: Map<string, boolean> } | null = null;
+  /**
+   * 読み込んだ書体のどれかが、機能 features (liga・dlig など) で、欧文の字の 2〜4 字に収まらない合字 (語をアイコンにする書体の
+   * 長い名前、数字・記号を含む並びなど。ligature.ts の LigatureTable.extended) を持つか。
+   * 持つ書体が 1 つも無い文書では、合字の候補を従来どおり欧文の字の並びに限る (字ごとに書体を引かない)
+   */
+  hasExtendedLigatures(features: readonly string[], key = features.join(',')): boolean {
+    if (!this.extLig || this.extLig.generation !== this.fonts.generation) this.extLig = { generation: this.fonts.generation, byKey: new Map() };
+    let v = this.extLig.byKey.get(key);
+    if (v === undefined) {
+      v = this.fonts.all().some((f) => ligatureTable(f, features)?.extended);
+      this.extLig.byKey.set(key, v);
+    }
+    return v;
+  }
+
   /**
    * 1 文字のメトリクス。
    *  horizontal-tb: advance = 水平幅,           cross = em
@@ -436,6 +454,49 @@ export class Measurer {
     const advance = t.mode === 'rotate' ? natural : isFullWidth(base) || style.orientation === 'upright' || t.features ? fs : natural;
     const nat = t.features ? this.emAdvance(font, text, t.features) * fs : text === unit ? natural : this.emAdvance(font, text) * fs;
     return { ch: base, font, fontSize: fs, advance, cross: fs, naturalWidth: nat, vertical: { ...t, glyph: text } };
+  }
+
+  private clusterLigCache = new Map<LoadedFont, Map<string, boolean>>();
+  /**
+   * 2 字以上のクラスタ unit0 を組む書体の、合字の機能 features (liga・dlig など) が、その並びの字形を変えるか
+   * (絵文字の並びの字形を、合成 ccmp でなく合字 liga で作る書体)。書体がその機能を持たなければ、組まずに偽
+   */
+  clusterLigates(unit0: string, style: RunStyle, features: readonly string[]): boolean {
+    const base = String.fromCodePoint(unit0.codePointAt(0)!);
+    const weight = style.fontWeight ?? 400;
+    const font = this.fonts.getForCluster(style.fontFamily, weight, unit0) ?? this.fonts.getForChar(style.fontFamily, weight, base);
+    let m = this.clusterLigCache.get(font);
+    if (!m) {
+      this.clusterLigCache.set(font, (m = new Map()));
+      // 書体が持つ機能 (この鍵は字の並びにならない)
+      let has = false;
+      try {
+        has = ((font.fk as unknown as { availableFeatures?: string[] }).availableFeatures ?? []).some((f) => f === 'liga' || f === 'clig' || f === 'dlig' || f === 'hlig');
+      } catch {
+        has = false;
+      }
+      m.set('', has);
+    }
+    if (!m.get('')) return false;
+    const key = `${features.join(',')}\u0000${(style.features ?? []).join(',')}\u0000${unit0}`;
+    let v = m.get(key);
+    if (v === undefined) {
+      try {
+        const text = this.clusterText(unit0, font);
+        const own = Object.fromEntries((style.features ?? []).map((f) => [f, true]));
+        const ids = (feats: object) => font.fk.layout(text, feats as never).glyphs.map((g) => g.id).join(',');
+        v = ids({ kern: false, liga: false, clig: false, ...own }) !== ids({ kern: false, liga: false, clig: false, ...own, ...Object.fromEntries(features.map((f) => [f, true])) });
+      } catch {
+        v = false;
+      }
+      if (m.size > 20000) {
+        const has = m.get('')!;
+        m.clear();
+        m.set('', has);
+      }
+      m.set(key, v);
+    }
+    return v;
   }
 
   /** 文字列を字の単位ごとに計測 (基底の字と異体字セレクタの並び・書記素クラスタは 1 つ) */

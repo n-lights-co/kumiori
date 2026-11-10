@@ -154,8 +154,13 @@ export interface TextStyle {
   punctuationSpacing?: number;
   /** 小書き仮名・長音記号 (ー)・繰返し記号 (ゝゞヽヾ々) を行頭に置いてよい (axf:line-break="normal"。XSL-FO の互換モードの既定) */
   looseLineStart?: boolean;
-  /** 欧文の合字 (fi・fl など) を使う (axf:ligature-mode="latin")。書体が合字の字 (U+FB00〜U+FB04) を持てばその字に、無くても書体の合字の表 (OpenType の liga) で 1 つの字形になる並び (fft・ffk など) は合字にする (横書きで letter-spacing の無いとき) */
+  /** 欧文の合字 (fi・fl など) を使う (axf:ligature-mode="latin")。書体が合字の字 (U+FB00〜U+FB04) を持てばその字に、無くても書体の合字の表 (OpenType の liga) で 1 つの字形になる並び (fft・ffk など。語をアイコンにする書体の home・arrow_back なども) は合字にする (横書きで letter-spacing の無いとき) */
   latinLigatures?: boolean;
+  /**
+   * font-feature-settings で明示して有効にした合字の機能 (liga・clig・dlig・hlig)。字間 (letter-spacing) があっても合字にする
+   * (CSS Text 3 §7.2: font-feature-settings で指定した合字は、字間のあるときに任意の合字を当てない決まりより優先する。Fonts 4 §7.2 の順)
+   */
+  forcedLigatures?: string[];
   /**
    * 行の高さの決め方 (XSL-FO の line-stacking-strategy)。max-height (既定): 行の高さは line-height と字面の高さの大きい方。
    * line-height: 行の高さは line-height そのもの (字面より小さければ、字が行の外へはみ出す。数式のアクセントなどに使う)
