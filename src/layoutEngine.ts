@@ -125,6 +125,11 @@ export interface LayoutOptions {
    * 既定は CSS Text 3 §7.3 のとおり、書式が同じなら境目をまたいで詰め、OpenType のとおりクラス 0 の組も詰める
    */
   kernAh?: boolean;
+  /**
+   * false で、計測の覚え (Flow.memoMeasure。幅を中身で決める箱の中身の幅・段組の釣り合わせの高さを、同じ組版の中で使い回す) を切る。
+   * 覚えは組版の結果を変えない。切るのは、それを確かめるテストのためだけ (入れ子が深いと、組む回数が深さに対して指数的に増える)
+   */
+  measureMemo?: boolean;
 }
 
 const EPS = 0.01;
@@ -345,6 +350,47 @@ interface FlowHost {
    * keep-with-next の試し組みと本番で同じ表を 2 度組むとき、列の幅の計測を繰り返さない。組版 (layoutOnce) ごとに作り直す
    */
   cellMeasure?: WeakMap<LTableCell, Map<string, number>>;
+  /** 組んだ回数の数え上げ (LayoutEngine.stats。結果には効かない) */
+  stats?: LayoutStats;
+  /**
+   * 計測・試し組みで求めた値 (中身の幅・釣り合わせた段の高さなど) を、同じ組版の中で覚える (Flow.memoMeasure)。
+   * 中身の並び (子の配列) → 計測の条件 → 値。組版 (layoutOnce) ごとに作り直す (ページ番号の参照の値が変わる組み直しでは捨てる)
+   */
+  measureMemo?: WeakMap<object, Map<string, MeasureEntry[]>>;
+  /**
+   * 計測の覚え (measureMemo) のための記録。
+   *  - n: 覚えてはいけない計測の数え上げ。結果のほかに跡を残すこと (試し組みの中の絶対配置の箱) が起きるたびに増やす。
+   *    計測の前後で値が変わっていれば、その計測は覚えない
+   *  - active・cites: 覚える計測の途中 (active > 0) に引いたページ番号の参照 (cite の引数と返した値) を、引いた順に記録する
+   */
+  volatile?: { n: number; active: number; cites: CiteUse[] };
+}
+
+/** 計測の中で引いたページ番号の参照: cite の引数 (ページ番号を除く) と、返した値 */
+interface CiteUse {
+  args: [refId: string, last: boolean | undefined, format: string | undefined, physical: boolean | undefined, style: ResolvedStyle | undefined];
+  value: string;
+}
+
+/** 計測の覚えの 1 件: 値と、鍵の文字列に入れない条件 (中身に継がせるスタイル・脚注の番号付け・計測の中で引いたページ番号の参照の値) */
+interface MeasureEntry {
+  st: ResolvedStyle;
+  foot: FootnoteCtx | undefined;
+  cites: CiteUse[];
+  v: unknown;
+}
+
+/**
+ * 1 回の layout() の中で組んだ回数 (試し組み・計測も含む)。組版の結果には効かない。
+ * 入れ子の深い文書で、同じ中身を組む回数が深さに対して指数的に増えないことを、時間でなく回数で確かめるために使う
+ */
+export interface LayoutStats {
+  /** 作った流れ (Flow) の数。本番・計測 (幅を中身で決める箱の最小・最大の幅)・試し組み (keep・段の釣り合わせ) のすべて */
+  flows: number;
+  /** ブロック (layoutBlock) を組んだ回数 */
+  blocks: number;
+  /** 表 (layoutTable) を組んだ回数 */
+  tables: number;
 }
 
 /** keep-with-next の試し組みを、次のブロックの最初の行が置かれた時点で打ち切る合図 (Flow.onPlaced が投げる) */
@@ -536,6 +582,14 @@ class Flow {
     this.pageHasContent = true;
     this.onPlaced?.();
   }
+  /**
+   * 試し組みの Flow に渡す、絶対配置の箱の置き場: 置き場は本番と同じだが、試し組みが箱を置いたことを数える
+   * (跡を残す試し組みの結果は覚えない。FlowHost.volatile)
+   */
+  private trialAbs = (): LNode[] => {
+    if (this.host.volatile) this.host.volatile.n++;
+    return this.abs();
+  };
   private measureOnly: boolean;
   /** 組んでいる表のセルの間隔 (layoutTable が設定) */
   private spacing?: { i: number; b: number };
@@ -615,6 +669,7 @@ class Flow {
   private breakNext: BreakKind | null = null;
 
   constructor(private host: FlowHost, init: FlowInit) {
+    if (host.stats) host.stats.flows++;
     this.wm = init.wm;
     this.rootI = init.rootI;
     this.limit = init.limit ?? Infinity;
@@ -825,10 +880,7 @@ class Flow {
     } else if (desc.isizeExplicit == null && node.cssPlacement && (node.float === 'start' || node.float === 'end')) {
       // CSS: 幅の指定の無い float は shrink-to-fit (CSS 2.1 §10.3.5): min(max(最小の内容の幅, 使える幅), 内容の幅)
       const availC = Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0);
-      const widthAt = (rootI: number) => {
-        const sub = this.measureSub(node.children, st, Math.max(rootI, 1), { intrinsic: true }).sub;
-        return maxLineLength(sub.root);
-      };
+      const widthAt = (rootI: number) => this.intrinsicWidth(node.children, st, rootI);
       const pref = widthAt(Math.max(availC, 1) * 100);
       const minC = pref <= availC ? pref : widthAt(1);
       let content = Math.min(Math.max(minC, availC), pref);
@@ -844,9 +896,9 @@ class Flow {
       const fullWidth = node.float === 'before' || node.float === 'after';
       let outer = node.float === 'before' ? (this.pageLevel?.pageRootI() ?? this.rootI) : fullWidth ? this.rootI : this.rootI / 3;
       if (!fullWidth) {
-        const sub = this.measureSub(node.children, st, Math.max(this.rootI - desc.m.is - desc.m.ie - desc.bpI, 1)).sub;
+        const len = Math.max(this.rootI - desc.m.is - desc.m.ie - desc.bpI, 1);
         // 中の要素の罫線・余白は maxLineLength に含まれる
-        const longest = maxLineLength(sub.root) + desc.m.is + desc.m.ie + desc.bpI;
+        const longest = this.memoMeasure('float', node.children, st, [len], undefined, () => maxLineLength(this.measureSub(node.children, st, len).sub.root)) + desc.m.is + desc.m.ie + desc.bpI;
         if (longest <= this.rootI / 2) outer = longest;
       }
       const content = Math.max(outer - desc.m.is - desc.m.ie - desc.bpI, 0);
@@ -1698,8 +1750,71 @@ class Flow {
       return startPage >= 0 && firstGrown(before) === startPage;
     };
     const here = this.room - this.cursor - reserve;
-    if (kept(here, true)) return false;
-    return kept(Math.max(pageLimit - reserve, 1)); // 新しいページなら一緒に入る場合だけ、改ページする
+    // 試し組みの結果は、同じ条件なら覚えて使い回す (memoMeasure)。入れ子の表の行をページで分けるとき (splitRow)、外側の試し組みと本番が、
+    // 内側の同じ並びを同じ条件で試す (覚えないと、入れ子の 1 段ごとに 3 倍になる)。kept が読むものを、すべて鍵にする: 並び (children の
+    // i から end まで。次のブロックは end から決まる)・最初のページと次のページの上限・箱の幅・行グリッド・引き継ぐ保留中の余白
+    const g0 = this.currentGrid();
+    const seedState = (): Array<string | number> => [g0 ? this.cursor : 0, this.pendPos, this.pendNeg, this.pendAny ?? 'n', this.pendPrec, this.pendForce ?? 'n', this.pendMin, this.pendAdjust];
+    const keptM = (limit0: number, seed = false) =>
+      this.memoMeasure('keep', children, ps, [i, end, limit0, seed, pageLimit, reserve, this.contentI(), this.wm, JSON.stringify(g0 ?? null), ...(seed ? seedState() : [])], this.foot, () => kept(limit0, seed));
+    if (keptM(here, true)) return false;
+    return keptM(Math.max(pageLimit - reserve, 1)); // 新しいページなら一緒に入る場合だけ、改ページする
+  }
+
+  /**
+   * 計測・試し組みで求める値を、同じ組版の中で覚えて使い回す。幅を中身で決める箱 (表の auto の列・float・inline-block・絶対配置の箱) や
+   * 段組は、中身を「計測で 1〜2 回・本番で 1 回」組むので、覚えないと、入れ子の 1 段ごとに組む回数が 2〜5 倍になる (深さに対して指数的)。
+   *
+   * compute は、新しい Flow に中身 (arr = 子の配列) を組んで値を返すだけのもの (この Flow の位置・余白・float の状態を読まない。
+   * ページ・マーカー・脚注領域に何も残さない)。その値を決めるものを、すべて鍵にする:
+   *  - 中身の並び (arr。配列そのもの)・継がせるスタイル (st)・呼び出し元ごとの条件 (parts: 行の長さ・段数など)・計測の種類 (site)
+   *  - 脚注の番号付け (foot。参照記号の字が変わる)・ページの大きさ (絶対配置・ビューポートの単位)・ページ番号の偶奇
+   *    (float: inside / outside、text-align: inside / outside、偶数・奇数ページへの改ページ)
+   *  - ページ番号の参照の値: 計測の中で引いた参照 (引数と値) を覚えと一緒に残し、使い回す前に引き直して、すべて同じ値のときだけ使う
+   *    (1 回目の組版の仮の値は、いまのページ番号・置き済みの id で変わる。引き直すので、参照を引いた記録・見つからない id の警告も、
+   *    計測をやり直したときと同じに残る)
+   * 書体・ハイフネーション・互換の指定は、1 回の組版の中で変わらない。脚注の番号は最初に見た順に 1 度だけ振る (FootnoteCtx.label) ので、
+   * 2 度目の計測を省いても番号は変わらない。試し組みが絶対配置の箱を置いたとき (跡が残る) は覚えない (host.volatile.n)
+   */
+  private memoMeasure<T>(site: string, arr: object, st: ResolvedStyle, parts: ReadonlyArray<string | number | boolean | undefined>, foot: FootnoteCtx | undefined, compute: () => T): T {
+    const memo = this.host.measureMemo;
+    const vol = this.host.volatile;
+    if (!memo || !vol) return compute();
+    const page = this.pageSize();
+    const pn = this.host.pageNumber?.();
+    const key = `${site}|${parts.join('|')}|${page.width}|${page.height}|${pn === undefined ? '' : pn % 2}`;
+    let m = memo.get(arr);
+    const list = m?.get(key);
+    if (list) for (const e of list) if (e.foot === foot && sameStyle(e.st, st) && e.cites.every((c) => this.host.cite(...c.args, pn) === c.value)) return e.v as T;
+    const before = vol.n;
+    const from = vol.cites.length;
+    let v: T;
+    let cites: CiteUse[];
+    vol.active++;
+    try {
+      v = compute();
+    } finally {
+      // 同じ参照 (引数が同じ) は 1 つにまとめる (最後のもの。スタイルは、参照を引いた記録に残る最後のものと同じになる)
+      cites = [...new Map(vol.cites.slice(from).map((c) => [JSON.stringify(c.args.slice(0, 4)), c])).values()];
+      if (--vol.active === 0) vol.cites.length = 0;
+    }
+    if (vol.n !== before) return v;
+    if (!m) memo.set(arr, (m = new Map()));
+    const into = m.get(key);
+    if (into) into.push({ st, foot, cites, v });
+    else m.set(key, [{ st, foot, cites, v }]);
+    return v;
+  }
+
+  /**
+   * 中身の幅 (いちばん長い行の長さ) を、行の長さ rootI で測る (intrinsic の計測。表のセル・見出し・shrink-to-fit の箱の最小・最大の幅)。
+   * 同じ中身・同じ条件の計測は、同じ組版の中で 1 度だけ行う (memoMeasure)
+   */
+  private intrinsicWidth(children: LBlock['children'], st: ResolvedStyle, rootI: number, minContent = false): number {
+    const r = Math.max(rootI, 1);
+    return this.memoMeasure('iw', children, st, [r, minContent], undefined, () =>
+      maxLineLength(this.measureSub(children, st, r, { intrinsic: true, ...(minContent ? { minContent: true } : {}) }).sub.root),
+    );
   }
 
   /** 中身を、内容の inline の大きさ ci で測るだけ組んで、block の大きさを返す (先頭・末尾の子の余白も含める) */
@@ -1777,6 +1892,7 @@ class Flow {
   // ── ブロック ──
 
   layoutBlock(node: LBlock, ps: ResolvedStyle) {
+    if (this.host.stats) this.host.stats.blocks++;
     const st = resolveStyle(ps, node);
     if (st.wm !== this.wm) return this.layoutOrthogonal(node, st, ps);
     if (node.breakBefore) this.forceBreak(node.breakBefore);
@@ -2540,20 +2656,28 @@ class Flow {
     const st = resolveStyle(ps, c);
     const wmC = st.wm;
     const desc = describeBox(c, wmC);
-    const lay = (contentI: number) => {
+    const lay = (contentI: number, host: FlowHost = this.host) => {
       // 中の脚注は、中の行に持たせる (holdFootnotes)。この箱を含む行が、自分の脚注として積む (heldFootnotes)
-      const sub = new Flow(this.host, { wm: wmC, rootI: Math.max(contentI, 0), abs: () => [], pageSize: this.pageSize, measure: true, referenceArea: true, footnotes: this.foot, holdFootnotes: true });
+      const sub = new Flow(host, { wm: wmC, rootI: Math.max(contentI, 0), abs: () => [], pageSize: this.pageSize, measure: true, referenceArea: true, footnotes: this.foot, holdFootnotes: true });
       sub.layoutChildren(c.children, st);
       return { sub, used: sub.finishAtomic() };
     };
     let contentI = desc.isizeExplicit;
-    let r;
+    let r: ReturnType<typeof lay> | undefined;
     if (contentI == null) {
       const avail = Math.max(this.contentI() - desc.bpI - (lineWm === 'horizontal-tb' ? desc.marginP.left + desc.marginP.right : 0), 0);
-      r = lay(avail);
-      const widest = maxLineLength(r.sub.root);
-      contentI = Math.min(avail, Math.ceil(widest * 100) / 100 + 0.01);
-      if (contentI < avail - EPS) r = lay(contentI);
+      // 使える幅で組んで中身の幅を測り、それより狭ければ中身の幅で組み直す。測った幅は覚えて使い回す (memoMeasure): 同じ箱を同じ幅で
+      // もう一度組むとき (外側の箱が 2 度組まれるとき) は、測る組版を省いて、組み直しの 1 回だけにする。
+      // 測る組版が出した警告は、省いたときも同じ順で出す
+      const got: { first?: ReturnType<typeof lay> } = {};
+      const m = this.memoMeasure('ic', c.children, st, [avail, wmC], this.foot, () => {
+        const warns: string[] = [];
+        got.first = lay(avail, { ...this.host, warn: (w) => (warns.push(w), this.host.warn(w)) });
+        return { widest: maxLineLength(got.first.sub.root), warns };
+      });
+      if (!got.first) for (const w of m.warns) this.host.warn(w);
+      contentI = Math.min(avail, Math.ceil(m.widest * 100) / 100 + 0.01);
+      r = contentI < avail - EPS ? lay(contentI) : (got.first ?? lay(avail, { ...this.host, warn: () => {} }));
     } else r = lay(contentI);
     // 固定の高さの中での内容の配置 (display-align)
     const free = (desc.bsizeExplicit ?? 0) - r.used;
@@ -2740,8 +2864,8 @@ class Flow {
     // 回転した箱の局所の幅 (回転後のページの縦の長さ) は、中身の長さに合わせる (使える長さが上限。shrink-to-fit)。
     // 90°・270° の表は、表の幅 (列の幅の合計 + 字下げ) の長さで本文の上から置く
     const fit = (len: number) => {
-      const m = this.measureSub(node.children, st, Math.max(len, 1), { footnotes: this.foot }).sub;
-      const need = maxLineLength(m.root, true, true);
+      const r = Math.max(len, 1);
+      const need = this.memoMeasure('rotfit', node.children, st, [r], this.foot, () => maxLineLength(this.measureSub(node.children, st, r, { footnotes: this.foot }).sub.root, true, true));
       return need > 0 && need < len ? need : len;
     };
     avail = fit(Math.max(avail, minLine));
@@ -2947,7 +3071,7 @@ class Flow {
             return { root: r, limit: limitOf(roots.length - 1), rootI: colI };
           },
         },
-        abs: this.abs,
+        abs: final ? this.abs : this.trialAbs,
         pageSize: this.pageSize,
         footnotes: this.foot,
         holdFootnotes: true,
@@ -2960,7 +3084,10 @@ class Flow {
     };
     // 釣り合わせた 1 行 (段数で割った高さ) がページの残りに収まるなら、従来どおり
     // 釣り合わせた 1 行がその高さに収まるか (行は分けられないので、全体の高さ ÷ 段数ではなく、実際に段へ組んで調べる)
-    const fitsOneRow = (h: number) => run(() => h, false).roots.length <= n;
+    // 試し組みで決める値 (1 行に収まるか・行の数と最後の行の高さ) は、同じ条件なら覚えて使い回す (memoMeasure。入れ子の段組で、
+    // 外側の試し組みのたびに内側の試し組みをやり直さない)
+    const memoParts = [colI, n, !!cols.discardStartMargin, (node as { baselineGrid?: LBlock['baselineGrid'] }).baselineGrid];
+    const fitsOneRow = (h: number) => this.memoMeasure('colrow', node.children, st, [...memoParts, h], this.foot, () => run(() => h, false).roots.length <= n);
     if (fitsOneRow(avail + EPS)) return false;
     // ページの残りが 2 行に満たなければ、次のページから始める
     if (avail < st.fontSize * 2.5 && this.pageHasContent) {
@@ -2971,38 +3098,41 @@ class Flow {
       if (fitsOneRow(avail + EPS)) return false;
     }
     const rowOf = (col: number) => Math.floor(col / n);
-    const greedy = run((c) => (rowOf(c) === 0 ? avail : full), false);
-    const rows = Math.max(1, Math.ceil(greedy.roots.length / n));
-    // 最後の行を釣り合わせる (段数に収まる最小の高さ)
-    let lastLimit = rows === 1 ? avail : full;
-    if (rows > 1) {
-      let lo = 0;
-      let hi = full;
-      for (let k = 0; k < 14 && hi - lo > 0.5; k++) {
-        const mid = (lo + hi) / 2;
-        if (run((c) => (rowOf(c) === 0 ? avail : rowOf(c) < rows - 1 ? full : mid), false).roots.length <= rows * n) hi = mid;
-        else lo = mid;
-      }
-      lastLimit = hi;
-      // 最後の行も、最初の段をいちばん長くし、後の段ほど短くする (balanceColumns と同じ方針)
-      const limitOf = (h: number) => (c: number) => (rowOf(c) === 0 ? avail : rowOf(c) < rows - 1 ? full : h);
-      const ok = (h: number) => {
-        const r = run(limitOf(h), false);
-        if (r.roots.length > rows * n) return false;
-        const u = r.used.slice((rows - 1) * n, rows * n);
-        return u.every((x, k) => k === 0 || x <= u[k - 1] + 0.5);
-      };
-      if (!ok(lastLimit) && lastLimit < full) {
-        let a = lastLimit;
-        let b = full;
-        while (b - a > 0.5) {
-          const mid = (a + b) / 2;
-          if (ok(mid)) b = mid;
-          else a = mid;
+    const { rows, lastLimit } = this.memoMeasure('colpaged', node.children, st, [...memoParts, avail, full], this.foot, () => {
+      const greedy = run((c) => (rowOf(c) === 0 ? avail : full), false);
+      const rows = Math.max(1, Math.ceil(greedy.roots.length / n));
+      // 最後の行を釣り合わせる (段数に収まる最小の高さ)
+      let lastLimit = rows === 1 ? avail : full;
+      if (rows > 1) {
+        let lo = 0;
+        let hi = full;
+        for (let k = 0; k < 14 && hi - lo > 0.5; k++) {
+          const mid = (lo + hi) / 2;
+          if (run((c) => (rowOf(c) === 0 ? avail : rowOf(c) < rows - 1 ? full : mid), false).roots.length <= rows * n) hi = mid;
+          else lo = mid;
         }
-        if (ok(b)) lastLimit = b;
+        lastLimit = hi;
+        // 最後の行も、最初の段をいちばん長くし、後の段ほど短くする (balanceColumns と同じ方針)
+        const limitOf = (h: number) => (c: number) => (rowOf(c) === 0 ? avail : rowOf(c) < rows - 1 ? full : h);
+        const ok = (h: number) => {
+          const r = run(limitOf(h), false);
+          if (r.roots.length > rows * n) return false;
+          const u = r.used.slice((rows - 1) * n, rows * n);
+          return u.every((x, k) => k === 0 || x <= u[k - 1] + 0.5);
+        };
+        if (!ok(lastLimit) && lastLimit < full) {
+          let a = lastLimit;
+          let b = full;
+          while (b - a > 0.5) {
+            const mid = (a + b) / 2;
+            if (ok(mid)) b = mid;
+            else a = mid;
+          }
+          if (ok(b)) lastLimit = b;
+        }
       }
-    }
+      return { rows, lastLimit };
+    });
     const { roots, used, colMarkers } = run((c) => (rowOf(c) === 0 ? avail : rowOf(c) < rows - 1 ? full : lastLimit), true);
     // 段の行の箱は、コンテナ自身の断片: inline 方向の罫線と padding (block 方向のものは無い。呼ぶ側の条件)・id (page-number-citation の
     // 参照先)・元の入力の節を持つ。段は、その内容の箱 (padding と罫線の内側) の始めの端から並べる
@@ -3075,18 +3205,14 @@ class Flow {
     // 90° の表は、表の幅 (列の幅の合計 + 字下げ) の長さで本文の上から置く
     if (rotOdd && horizontal && pageH == null && contentI == null && node.children.length) {
       const avail = Math.max(fallbackI - desc.bpI, 1);
-      const sub = this.measureSub(node.children, st, avail, {}, wmC).sub;
-      const need = maxLineLength(sub.root, true, true);
+      const need = this.memoMeasure('rotlen', node.children, st, [avail], undefined, () => maxLineLength(this.measureSub(node.children, st, avail, {}, wmC).sub.root, true, true));
       if (need > 0 && need < avail) fallbackI = need + desc.bpI;
     }
     // CSS の絶対配置の箱で幅が auto (left と right の両方の指定は無い): shrink-to-fit (CSS 2.1 §10.3.7)。
     // min(max(最小の内容の幅, 使える幅), 内容の幅)。求め方は幅の指定の無い float と同じ
     if (node.shrinkToFit && contentI == null && horizontal && !rot && !(node.left != null && node.right != null) && node.children.length) {
       const availC = Math.max(fallbackI - desc.bpI, 0);
-      const widthAt = (rootI: number) => {
-        const sub = this.measureSub(node.children, st, Math.max(rootI, 1), { intrinsic: true }, wmC).sub;
-        return maxLineLength(sub.root);
-      };
+      const widthAt = (rootI: number) => this.intrinsicWidth(node.children, st, rootI);
       const pref = widthAt(Math.max(availC, 1) * 100);
       const minC = pref <= availC ? pref : widthAt(1);
       contentI = Math.min(Math.max(minC, availC), pref);
@@ -3422,7 +3548,7 @@ class Flow {
             return { root: r, limit, rootI: colI };
           },
         },
-        abs: this.abs,
+        abs: final ? this.abs : this.trialAbs,
         pageSize: this.pageSize,
         footnotes: this.foot,
         holdFootnotes: true,
@@ -3435,9 +3561,9 @@ class Flow {
       flow.finishPaginated();
       return { roots, used, after: flow.afterBelowUsed, broke: flow.brokeKeep, deferred: flow.deferredBefore };
     };
-    let limit: number;
-    if (contentB != null) limit = contentB;
-    else {
+    /** 釣り合わせた段の高さ (試し組みで探す) */
+    const balanced = (): number => {
+      let limit: number;
       // 1 段に組んだ高さを段数で割った値から、段数に収まる最小の高さを探す
       const one = run(1e7, false);
       // 強制の段区切り (Fragmentation 3 §3.1 の break-before: column など) があると、高さを限らなくても段が分かれる。
@@ -3486,7 +3612,13 @@ class Flow {
           limit = ok(b) ? b : hi;
         }
       }
-    }
+      return limit;
+    };
+    // 釣り合わせた高さは、同じ条件なら覚えて使い回す (memoMeasure。入れ子の段組で、外側の試し組みのたびに内側の釣り合わせをやり直さない)
+    const limit =
+      contentB != null
+        ? contentB
+        : this.memoMeasure('colbal', node.children, st, [colI, n, !!cols.discardEndMargin, !!cols.discardStartMargin, (node as { baselineGrid?: LBlock['baselineGrid'] }).baselineGrid], this.foot, balanced);
     const { roots, used } = run(limit, true);
     if (roots.length > n) this.host.warn(`段組のコンテナに内容が収まりません (${n} 段)`);
     const kids: LNode[] = [];
@@ -3626,8 +3758,7 @@ class Flow {
     for (const { cell, c: col, cs: span } of placeCells([rows]).placed) {
       if (span !== 1 || !table.columns[col]?.fitContent) continue;
       const cst = resolveStyle(st, cell);
-      const sub = this.measureSub(cell.children, cst, 1e5, { intrinsic: true }).sub;
-      const w = Math.ceil(maxLineLength(sub.root) * 100) / 100 + 0.01 + describeBox(cell, cst.wm).bpI;
+      const w = Math.ceil(this.intrinsicWidth(cell.children, cst, 1e5) * 100) / 100 + 0.01 + describeBox(cell, cst.wm).bpI;
       fit.set(col, Math.max(fit.get(col) ?? 0, w));
     }
     if (!fit.size) return table;
@@ -3648,8 +3779,8 @@ class Flow {
       const key = memo ? `${rootI}|${JSON.stringify(cst)}` : '';
       const hit = memo?.get(cell)?.get(key);
       if (hit !== undefined) return hit;
-      const sub = this.measureSub(cell.children, cst, Math.max(rootI, 1), { intrinsic: true, ...(rootI <= 1 ? { minContent: true } : {}) }).sub;
-      const w = Math.ceil(maxLineLength(sub.root) * 100) / 100 + 0.01;
+      // セルの節が違っても中身が同じなら使い回す (collapse の表は、組むたびにセルを写して罫線を決め直すので、セルの節では当たらない)
+      const w = Math.ceil(this.intrinsicWidth(cell.children, cst, rootI, rootI <= 1) * 100) / 100 + 0.01;
       if (memo) {
         let m = memo.get(cell);
         if (!m) memo.set(cell, (m = new Map()));
@@ -3771,8 +3902,7 @@ class Flow {
       for (const c of node.captions ?? []) {
         const cst = resolveStyle(st, c.block);
         const d = describeBox(c.block, cst.wm);
-        const sub = this.measureSub(c.block.children, cst, 1, { intrinsic: true }).sub;
-        w = Math.max(w, Math.ceil(maxLineLength(sub.root) * 100) / 100 + d.bpI + d.m.is + d.m.ie);
+        w = Math.max(w, Math.ceil(this.intrinsicWidth(c.block.children, cst, 1) * 100) / 100 + d.bpI + d.m.is + d.m.ie);
       }
       return Math.max(w - desc.bpI, 0);
     };
@@ -3914,6 +4044,7 @@ class Flow {
   }
 
   layoutTable(table: LTable, ps: ResolvedStyle) {
+    if (this.host.stats) this.host.stats.tables++;
     const st = resolveStyle(ps, table);
     if (st.wm !== this.wm) return this.layoutOrthogonal(table, st, ps);
     let node = collapseTableBorders(table, st.wm);
@@ -4918,6 +5049,8 @@ const DEFAULT_TRIM_MARK_MARGIN_MM = 10;
 
 export class LayoutEngine {
   private warnings: string[] = [];
+  /** 直前の layout() で組んだ回数 (試し組み・計測も含む。ページ番号の参照などで組み直した分も足す) */
+  readonly stats: LayoutStats = { flows: 0, blocks: 0, tables: 0 };
 
   constructor(
     private fonts: FontManager,
@@ -5130,6 +5263,7 @@ export class LayoutEngine {
   }
 
   layout(doc: LDocument): AreaTree {
+    this.stats.flows = this.stats.blocks = this.stats.tables = 0;
     const tree = this.layoutPasses(doc);
     // 使う書体・画像の一覧と、字の字形の番号を付ける (木だけで描くための情報)
     attachResources(tree, this.fonts, this.options.assets);
@@ -5177,7 +5311,10 @@ export class LayoutEngine {
     this.idPages = new Map();
     this.idPageBuild = new Map();
     this.idPageBuildLast = new Map();
+    const volatile: NonNullable<FlowHost['volatile']> = { n: 0, active: 0, cites: [] };
     const host: FlowHost = {
+      ...(this.options.measureMemo === false ? {} : { measureMemo: new WeakMap() }),
+      volatile,
       ...(doc.spaceResolution === 'xsl' ? { xslSpace: true } : {}),
       assets: this.options.assets,
       hyphenate: this.options.hyphenate,
@@ -5185,6 +5322,7 @@ export class LayoutEngine {
       warn: (m) => this.warnings.push(m),
       measurer: this.measurer,
       cellMeasure: new WeakMap(),
+      stats: this.stats,
       cite: (id, last, format, physical, style, pageNumber) => {
         this.citationUsed = true;
         let v: string | undefined;
@@ -5201,6 +5339,8 @@ export class LayoutEngine {
           }
         }
         this.citeLog?.set(JSON.stringify([id, last, format, physical]), { args: [id, last, format, physical], value: v, style });
+        // 覚える計測の途中なら、引いた参照と値を記録する (Flow.memoMeasure が、覚えを使い回す前に引き直して確かめる)
+        if (volatile.active > 0) volatile.cites.push({ args: [id, last, format, physical, style], value: v });
         return v;
       },
     };

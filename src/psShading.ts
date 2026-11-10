@@ -254,6 +254,7 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
   G.imagePixels = (G.imagePixels ?? 0) + w * h;
   if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
   G.countItem();
+  G.I.memAlloc(w * h * 4);
   const rgba = new Uint8Array(w * h * 4);
   const sx = (box[2] - box[0]) / w;
   const sy = (box[3] - box[1]) / h;

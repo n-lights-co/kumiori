@@ -403,3 +403,134 @@ describe('PostScript の上限: StartData の長さ (PLRM §8.2 StartData)', () 
     expect(r.I.vmUsed).toBeLessThanOrEqual(MB);
   });
 });
+
+describe('PS-18: PostScript のメモリの合計の上限 (PLRM 付録 B の冒頭。VM・パス・画像を 1 つの勘定に積み、超えれば VMerror)', () => {
+  // どの上限も、それぞれには届かない使い方を並べる: 合わせた量が合計の上限 (2MB) を超える所で止まる
+  const image = '/s 1000 string def 300 300 8 [1 0 0 1 0 0] { s } image'; // 9 万画素 = 360KB
+  const path = '0 0 moveto 1 1 6000 { dup lineto } for stroke'; // 6000 点 = 576KB
+  const strings = '0 1 9 { 100000 string def } for'; // 1MB
+  const array = '/a 5000 array def'; // 440KB
+  it('VM・パスの点・画像は、それぞれの上限に届かなくても、合計の上限で VMerror になる', () => {
+    const each = { maxVM: 2 * MB, maxPathPoints: 20000, maxMillis: 3000 };
+    // 1 つずつなら通る
+    for (const src of [image, path, strings, array]) expect(run(src, { ...each, maxMemory: 2 * MB }).error).toBeUndefined();
+    // 並べると、合計が 2MB を超える所 (文字列の途中) で止まる。合計の上限を上げれば通る
+    const all = `${image} ${path} ${array} ${strings}`;
+    const r = run(all, { ...each, maxMemory: 2 * MB });
+    expect(r.error).toMatch(/^VMerror \(string\)/);
+    expect(r.I.memUsed).toBeLessThanOrEqual(2 * MB);
+    expect(r.I.vmUsed).toBeLessThan(MB);
+    expect(r.G.pathPoints).toBeLessThan(7000);
+    expect(r.G.items.map((it) => it.k)).toEqual(['image', 'stroke']);
+    expect(run(all, { ...each, maxMemory: 4 * MB }).error).toBeUndefined();
+    // 並べる順を変えれば、止まる所 (演算子) が変わる: どの確保も同じ勘定に積んでいる
+    expect(run(`${strings} ${array} ${image} ${path}`, { ...each, maxMemory: 2 * MB }).error).toMatch(/^VMerror \(lineto\)/);
+    expect(run(`${strings} ${array} ${path} ${image}`, { ...each, maxMemory: 2 * MB }).error).toMatch(/^VMerror \(image\)/);
+  });
+  it('勘定に積む量は、実際に使う量に近い: 配列は 1 要素 88 バイト、辞書は 1 項 192 バイト、文字列は長さ + 256 バイト、パスは 1 点 96 バイト、画像は 1 画素 4 バイト', () => {
+    const used = (src: string) => {
+      const r = run(src);
+      expect(r.error).toBeUndefined();
+      return r.I.memUsed;
+    };
+    const base = used('');
+    expect(used('1000 array pop') - base).toBe(88000);
+    expect(used('1000 string pop') - base).toBe(1256);
+    expect(used('(abc) pop') - base).toBe(256 + 3);
+    // 辞書 1 つ (320 バイト) と 10 項、2 要素の手続き。save の外なので、書き換えの控えは積まない
+    expect(used('10 dict begin 1 1 10 { dup def } for end') - base).toBe(320 + 10 * 192 + 2 * 88);
+    expect(used('0 0 moveto 1 1 99 { dup lineto } for') - base).toBe(100 * 96 + 2 * 88);
+    // 画像: 画素の RGBA と、描画の並びの 1 件 (4 点ぶん)。行列 (6 要素) と手続き (1 要素) の配列
+    expect(used('/s 100 string def 10 10 8 [1 0 0 1 0 0] { s } image') - used('/s 100 string def')).toBe(400 + 4 * 96 + 7 * 88);
+    // VM の勘定 (PLRM の数え方。1 要素 8 バイト) は変えない
+    expect(run('1000 array pop').I.vmUsed - run('').I.vmUsed).toBe(8000);
+  });
+  it('別々の数を詰めた配列を作り続けるループは、VM の上限 (1 要素 8 バイト) より先に、合計の上限で止まる', () => {
+    // 直す前は、VM の勘定 8MB (100 万要素) まで作れて、実際には数十 MB を使った
+    const r = run('0 { dup [ 1 1 1000 { } for ] userdict 3 1 roll put 1 add } loop', { maxVM: 8 * MB, maxMemory: 2 * MB });
+    expect(r.error).toMatch(/^VMerror/);
+    expect(r.I.memUsed).toBeLessThanOrEqual(2 * MB);
+    expect(r.I.vmUsed).toBeLessThan(MB / 2);
+    expect(r.I.userdict.size).toBeLessThan(30);
+  });
+  it('restore は、save の記録と書き換えの控えの分を戻す (save と restore の組をくり返しても増えない)', () => {
+    const one = run('/a 10 array def 1 { save a 0 1 put a 1 2 put restore } repeat').I.memUsed;
+    const many = run('/a 10 array def 1000 { save a 0 1 put a 1 2 put restore } repeat').I.memUsed;
+    expect(many).toBe(one);
+    expect(vals('/a 10 array def 5000 { save a 0 1 put restore } repeat (done)', { maxMemory: MB })).toEqual(['done']);
+  });
+  it('VMerror は stopped で受けられる。エラーの記録は、合計が尽きていてもできる', () => {
+    expect(vals('{ { 1000 array } loop } stopped { clear (ok) } if', { maxMemory: MB })).toEqual(['ok']);
+    expect(run('{ 1000 array } loop', { maxMemory: MB }).I.$error.get('errorname')).toEqual({ t: 'name', v: 'VMerror', x: false });
+    // 組み込みの辞書を作る分は数えない (上限が小さくても、空のプログラムは通る)
+    expect(run('', { maxMemory: 1 }).error).toBeUndefined();
+  });
+  it('runEps・epsToSvg の maxMemory で差し替えられる。上限に当たった所までの絵とエラーを返す', async () => {
+    const b = eps(`${path} ${image} ${path}`);
+    const r = runEps(b, { maxMemory: 1.2 * MB, maxMillis: 3000 });
+    expect(r!.error).toMatch(/^VMerror \(lineto\)/);
+    expect(r!.items.map((it) => it.k)).toEqual(['stroke', 'image']);
+    const svg = await epsToSvg(b, { maxMemory: 1.2 * MB, maxMillis: 3000 });
+    expect(svg!.error).toMatch(/^VMerror \(lineto\)/);
+    expect(svg!.count).toBe(2);
+    expect(svg!.svg).toContain('<image ');
+    // 既定の上限 (512MB) なら、終わりまで描く
+    const full = await epsToSvg(b, { maxMillis: 3000 });
+    expect(full!.error).toBeUndefined();
+    expect(full!.count).toBe(3);
+  });
+  it('網かけの画像も、同じ勘定に積む', () => {
+    const sh = '<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >> shfill';
+    const one = run(sh);
+    expect(one.error).toBeUndefined();
+    const px = one.G.imagePixels!;
+    expect(px).toBeGreaterThan(1000);
+    expect(one.I.memUsed - run('').I.memUsed).toBeGreaterThanOrEqual(px * 4);
+    expect(run(`{ ${sh} } loop`, { maxMemory: px * 4 * 3 }).error).toMatch(/^VMerror \(shfill\)/);
+  });
+});
+
+describe('PS-18: epsToSvg の出力の長さの上限 (超えたら、そこまでを SVG にして limitcheck を返す)', () => {
+  it('上限を超える所で止め、閉じた SVG を返す (クリップの g も閉じる)', async () => {
+    // 入れ子のクリップ: 描くものごとに、クリップの g を外側から開き直すので、SVG は件数の 2 乗で伸びる
+    const b = eps('1 1 200 { pop 0 0 moveto 90 90 lineto 90 0 lineto closepath clip newpath 0 0 moveto 50 50 lineto stroke } for');
+    const full = await epsToSvg(b);
+    expect(full!.error).toBeUndefined();
+    expect(full!.svg.length).toBeGreaterThan(600_000);
+    const cut = await epsToSvg(b, { maxSvgChars: 100_000 });
+    expect(cut!.error).toMatch(/^limitcheck/);
+    expect(cut!.svg.length).toBeLessThanOrEqual(100_000 + 400);
+    expect(cut!.svg.length).toBeGreaterThan(90_000);
+    // 途中までの SVG は、全体の SVG の先頭と同じ並びで、タグが閉じている
+    expect(cut!.svg.endsWith('</g></svg>')).toBe(true);
+    expect((cut!.svg.match(/<g[ >]/g) ?? []).length).toBe((cut!.svg.match(/<\/g>/g) ?? []).length);
+    const body = (s: string) => s.slice(s.indexOf('<g transform='));
+    const head = body(cut!.svg).replace(/(<\/g>)+<\/svg>$/, '');
+    expect(body(full!.svg).startsWith(head)).toBe(true);
+    // 描いたものの数は、実行した分
+    expect(cut!.count).toBe(200);
+  });
+  it('画像は、base64 にする前に長さを確かめる。実行のエラーがあれば、そちらを返す', async () => {
+    const img = '/s 3000 string def 0 1 2999 { s exch dup 251 mod put } for 100 100 8 [1 0 0 1 0 0] { s } false 3 colorimage';
+    const b = eps(`0 0 moveto 9 9 lineto stroke ${img} 0 0 moveto 5 5 lineto stroke`);
+    const full = await epsToSvg(b);
+    expect(full!.error).toBeUndefined();
+    expect(full!.svg).toContain('<image ');
+    const cut = await epsToSvg(b, { maxSvgChars: 1000 });
+    expect(cut!.error).toMatch(/^limitcheck/);
+    expect(cut!.svg).not.toContain('<image ');
+    expect((cut!.svg.match(/<path /g) ?? []).length).toBe(1);
+    const both = await epsToSvg(eps(`0 0 moveto 9 9 lineto stroke ${img} foo`), { maxSvgChars: 1000 });
+    expect(both!.error).toMatch(/^undefined \(foo\)/);
+  });
+  it('ふつうの絵の SVG は、前と同じ (断片をまとめて持っても、並びは変わらない)', async () => {
+    const r = await epsToSvg(eps('10 10 moveto 90 10 lineto 90 90 lineto closepath clip newpath 1 0 0 setrgbcolor 0 0 100 100 rectfill 0 setgray 20 20 moveto 80 80 lineto stroke'));
+    expect(r!.error).toBeUndefined();
+    expect(r!.svg).toBe(
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100pt" height="100pt" viewBox="0 0 100 100" preserveAspectRatio="none">' +
+        '<defs><clipPath id="c0" clipPathUnits="userSpaceOnUse"><path d="M10 10L90 10L90 90Z" clip-rule="nonzero"/></clipPath></defs>' +
+        '<g transform="matrix(1 0 0 -1 0 100)"><g clip-path="url(#c0)"><path d="M0 0L100 0L100 100L0 100Z" fill="#ff0000"/>' +
+        '<path transform="matrix(1 0 0 1 0 0)" d="M20 20L80 80" fill="none" stroke="#000000" stroke-width="1" stroke-miterlimit="10"/></g></g></svg>',
+    );
+  });
+});

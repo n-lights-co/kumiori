@@ -21,7 +21,7 @@ import { AssetStore } from '../src/assets';
 import { CounterStyles, parseCounterStyleRule, MAX_COUNTER_LENGTH } from '../src/counterStyle';
 import { renderPdf } from '../src/pdfRenderer';
 import type { Area, LTable } from '../src/types';
-import { childrenOf } from '../src/areaTree';
+import { childrenOf, parseAreaTree, serializeAreaTree, walkAreaTree } from '../src/areaTree';
 
 let E: Awaited<ReturnType<typeof makeEngine>>;
 beforeAll(async () => {
@@ -215,9 +215,11 @@ describe('HTM-16: 深い入れ子', () => {
     リスト: (n) => '<ul><li>'.repeat(n / 2) + 'x' + '</li></ul>'.repeat(n / 2),
     flex: (n) => '<div class="f">'.repeat(n) + 'x' + '</div>'.repeat(n),
     grid: (n) => '<div class="g">'.repeat(n) + 'x' + '</div>'.repeat(n),
+    '縦並びの flex': (n) => '<div class="fc">'.repeat(n) + 'x' + '</div>'.repeat(n),
+    '表のセルの中の flex': (n) => '<table><tr><td><div class="f">'.repeat(n / 4) + 'x' + '</div></td></tr></table>'.repeat(n / 4),
     縦書きと横書きの入れ子: (n) => '<div class="v"><div class="h">'.repeat(n / 2) + 'x' + '</div></div>'.repeat(n / 2),
   };
-  const nestCss = '.f{display:flex} .g{display:grid;grid-template-columns:1fr} .v{writing-mode:vertical-rl} .h{writing-mode:horizontal-tb}';
+  const nestCss = '.f{display:flex} .fc{display:flex;flex-direction:column} .g{display:grid;grid-template-columns:1fr} .v{writing-mode:vertical-rl} .h{writing-mode:horizontal-tb}';
   for (const [name, f] of Object.entries(nest)) {
     it(`${name} の深い入れ子 (上限ちょうど・800 段・1200 段) を PDF まで作れる`, async () => {
       for (const n of [MAX_TREE_DEPTH - 2, 800, 1200]) {
@@ -227,6 +229,21 @@ describe('HTM-16: 深い入れ子', () => {
       }
     });
   }
+  // OUT-14: 描画 (paint.ts) と Area Tree をたどる所 (areaTree.ts) は、領域の入れ子を再帰でたどらない。上限の 2 倍の 256 段の flex・grid
+  // (領域は約 1000 段。以前は描画でスタックが切れた) も、PDF・描画の命令・直列化まで通る
+  it('上限の 2 倍 (256 段) の flex・grid の入れ子を、PDF と Area Tree の直列化まで作れる', async () => {
+    for (const kind of ['flex', 'grid']) {
+      const d = lk(page(nest[kind](300)));
+      limitTreeDepth(d, 2 * MAX_TREE_DEPTH);
+      const full = `@page { size: A5; margin: 10mm } body { margin: 0 } ${nestCss}`;
+      const tree = E.engine.layout(importHtml(d, cascadeStyles(d, full, { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }), { css: full }).document);
+      let depth = 0;
+      walkAreaTree(tree, (_a, _p, dep) => void (depth = Math.max(depth, dep)));
+      expect(depth).toBeGreaterThan(900);
+      expect((await renderPdf(tree, E.fonts)).length).toBeGreaterThan(100);
+      expect((await renderPdf(parseAreaTree(serializeAreaTree(tree)), E.fonts)).length).toBeGreaterThan(100);
+    }
+  });
   it('6000 段の入れ子を組める', () => {
     expect(texts(nest.div(6000))).toBe('x');
     expect(texts(nest.span(6000))).toBe('x');

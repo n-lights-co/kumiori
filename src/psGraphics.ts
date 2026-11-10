@@ -95,6 +95,15 @@ export interface GState {
   ucr: PSObj;
 }
 
+/**
+ * メモリの合計の勘定 (Interp.memAlloc。imageLimits.ts の PS_MAX_MEMORY_BYTES の説明) に積む、パスの 1 点の量。
+ * 実際に使う量 (Node 22 で測った値) は、lineto の 1 点で 60 バイト、curveto で 92 バイト。描画の並びの 1 件 (4 点と数える) は
+ * 2 点の stroke で 388 バイト・4 点の fill で 412 バイト (点の分を含む)、文字は 1 字 33 バイト
+ */
+export const MEM_PATH_POINT = 96;
+/** 描画の並び・クリップに写したパスの 1 点 (点の本体は共有し、並びだけを写す) */
+export const MEM_SHOWN_POINT = 8;
+
 export interface GraphicsOptions {
   /** 既定の座標 (EPS の外接矩形) */
   bbox: [number, number, number, number];
@@ -185,6 +194,8 @@ export class Graphics {
   countPoints(n: number) {
     this.pathPoints += n;
     if (this.pathPoints > this.maxPathPoints) throw new PSError('limitcheck');
+    // メモリの合計の勘定にも積む (超えれば VMerror)
+    this.I.memAlloc(n * MEM_PATH_POINT);
   }
   /** グラフィックス状態が持つ n 点のパスを写した (点の本体は共有する) と数える。写す手間も数える */
   countCopy(n: number) {
@@ -196,6 +207,7 @@ export class Graphics {
     this.countPoints(4);
     this.shownPoints += n;
     if (this.shownPoints > this.maxPathPoints * 2) throw new PSError('limitcheck');
+    this.I.memAlloc(n * MEM_SHOWN_POINT);
     this.I.work(n);
   }
 

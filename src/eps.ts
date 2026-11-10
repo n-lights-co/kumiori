@@ -12,6 +12,7 @@ import { Graphics, type Clip, type DisplayItem } from './psGraphics';
 import { encodePng } from './pixels';
 import { invert, type Matrix as Mat, type Seg } from './matrix';
 import { base64 } from './base64';
+import { PS_MAX_SVG_CHARS } from './imageLimits';
 
 export interface EpsResult {
   svg: string;
@@ -60,6 +61,16 @@ export interface EpsLimits {
   maxPathPoints?: number;
   /** フィルタ (ReusableStreamDecode・DCTDecode) が元を読みためる量 (バイト) の上限。超えれば limitcheck。既定は PS_FILTER_MAX_BYTES */
   maxFilterBytes?: number;
+  /**
+   * メモリの合計 (VM・パスの点・描画の並び・画像を、実際に使う量に近いバイト数で 1 つの勘定に積んだもの) の上限。超えれば VMerror。
+   * 既定は PS_MAX_MEMORY_BYTES (512MB)。ヒープの小さな環境では、これと maxSvgChars を下げる
+   */
+  maxMemory?: number;
+  /**
+   * SVG にした文字列の長さ (字) の上限 (epsToSvg だけ)。超えたら、そこまでに SVG にしたものを返し、error に limitcheck を入れる。
+   * 既定は PS_MAX_SVG_CHARS (128MB)
+   */
+  maxSvgChars?: number;
 }
 
 /** EPS を実行して、描いたものを返す */
@@ -69,7 +80,7 @@ export function runEps(
 ): { items: DisplayItem[]; bbox: [number, number, number, number]; warnings: string[]; notes: string[]; error?: string } | undefined {
   const prog = epsProgram(b);
   if (!prog) return undefined;
-  const I = new Interp({ maxMillis: opts.maxMillis ?? 20_000, maxVM: opts.maxVM, maxFilterBytes: opts.maxFilterBytes });
+  const I = new Interp({ maxMillis: opts.maxMillis ?? 20_000, maxVM: opts.maxVM, maxFilterBytes: opts.maxFilterBytes, maxMemory: opts.maxMemory });
   const G = new Graphics(I, { bbox: prog.bbox, maxPathPoints: opts.maxPathPoints });
   // EPSF 3.0 §3.2: save で囲み、userdict を begin し、showpage を空にする (グラフィックス状態は初期値)
   const head = latin1('save userdict begin /showpage {} def 0 setgray 0 setlinecap 1 setlinewidth 0 setlinejoin 10 setmiterlimit [] 0 setdash newpath\n');
@@ -118,6 +129,33 @@ export function fontFamilyOf(psName: string): { family: string; bold: boolean; i
   return { family, bold, italic };
 }
 
+/**
+ * SVG の断片をためる。短い断片を 1 つずつ配列に持つと、断片ごとの入れ物で文字の何倍ものメモリを使う (900 万個の断片で 1GB を超えた) ので、
+ * 64KB たまるごとに 1 つの文字列にまとめる
+ */
+class Pieces {
+  private chunks: string[] = [];
+  private buf: string[] = [];
+  private n = 0;
+  push(piece: string) {
+    this.buf.push(piece);
+    this.n += piece.length;
+    if (this.n >= 65536) this.flush();
+  }
+  private flush() {
+    if (this.buf.length) this.chunks.push(this.buf.join(''));
+    this.buf = [];
+    this.n = 0;
+  }
+  get empty(): boolean {
+    return !this.chunks.length && !this.buf.length;
+  }
+  join(): string {
+    this.flush();
+    return this.chunks.join('');
+  }
+}
+
 /** EPS を SVG にする。読めない EPS なら undefined */
 export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<EpsResult | undefined> {
   const r = runEps(b, opts);
@@ -125,15 +163,25 @@ export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<Eps
   const [x0, y0, x1, y1] = r.bbox;
   const W = x1 - x0;
   const H = y1 - y0;
-  const defs: string[] = [];
-  const body: string[] = [];
+  const defs = new Pieces();
+  const body = new Pieces();
+  // 出力の長さを数える (PS_MAX_SVG_CHARS の説明)。上限を超える断片は足さずに、そこで止める
+  const maxChars = opts.maxSvgChars ?? PS_MAX_SVG_CHARS;
+  let chars = 0;
+  const TOO_LONG = new Error('svg too long');
+  const emit = (to: Pieces, piece: string) => {
+    chars += piece.length;
+    if (chars > maxChars) throw TOO_LONG;
+    to.push(piece);
+  };
+  let tooLong = false;
   const clipIds = new Map<Clip, string>();
   const clipId = (c: Clip) => {
     let id = clipIds.get(c);
     if (!id) {
       id = `c${clipIds.size}`;
+      emit(defs, `<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${pathData(c.segs)}" clip-rule="${c.evenOdd ? 'evenodd' : 'nonzero'}"/></clipPath>`);
       clipIds.set(c, id);
-      defs.push(`<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${pathData(c.segs)}" clip-rule="${c.evenOdd ? 'evenodd' : 'nonzero'}"/></clipPath>`);
     }
     return id;
   };
@@ -145,53 +193,66 @@ export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<Eps
     for (; open > 0; open--) body.push('</g>');
     const chain: Clip[] = [];
     for (let k = c; k; k = k.parent) chain.unshift(k);
+    curClip = undefined;
     for (const k of chain) {
-      body.push(`<g clip-path="url(#${clipId(k)})">`);
+      // 閉じる </g> の分 (4 字) も数える
+      chars += 4;
+      emit(body, `<g clip-path="url(#${clipId(k)})">`);
       open++;
     }
     curClip = c;
   };
-  for (const it of r.items) {
-    setClip(it.clip);
-    if (it.k === 'fill') body.push(`<path d="${pathData(it.segs)}" ${paint('fill', it.color, it.cmyk)}${it.evenOdd ? ' fill-rule="evenodd"' : ''}/>`);
-    else if (it.k === 'stroke') {
-      // 線は、ユーザ空間の座標で CTM を掛けて描く (太さが CTM で変わる。§4.5.1)
-      const inv = invert(it.ctm);
-      const m = it.ctm;
-      const lw = it.lineWidth === 0 ? 0.25 / Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]) || 1) : it.lineWidth;
-      const attrs = [
-        `fill="none"`,
-        paint('stroke', it.color, it.cmyk),
-        `stroke-width="${f(lw)}"`,
-        it.cap ? `stroke-linecap="${it.cap === 1 ? 'round' : 'square'}"` : '',
-        it.join ? `stroke-linejoin="${it.join === 1 ? 'round' : 'bevel'}"` : '',
-        `stroke-miterlimit="${f(it.miter)}"`,
-        it.dash ? `stroke-dasharray="${it.dash.array.map(f).join(' ')}" stroke-dashoffset="${f(it.dash.offset)}"` : '',
-      ]
-        .filter(Boolean)
-        .join(' ');
-      if (inv) body.push(`<path transform="matrix(${m.map(f).join(' ')})" d="${pathData(it.segs, inv)}" ${attrs}/>`);
-      else body.push(`<path d="${pathData(it.segs)}" ${attrs}/>`);
-    } else if (it.k === 'text') {
-      // 文字: SVG の text (字の空間は y 下向きなので、y を反転してから文字の空間の行列を掛ける)
-      const m = it.mat;
-      const fam = fontFamilyOf(it.fontName);
-      body.push(
-        `<text transform="matrix(${[m[0], m[1], -m[2], -m[3], m[4], m[5]].map(f).join(' ')})" font-family="${fam.family}" font-size="1"${fam.bold ? ' font-weight="bold"' : ''}${fam.italic ? ' font-style="italic"' : ''} ${paint('fill', it.color, it.cmyk)} xml:space="preserve">${xmlText(it.text)}</text>`,
-      );
-    } else if (it.k === 'image') {
-      let uri: string;
-      if (it.jpeg) uri = `data:image/jpeg;base64,${base64(it.jpeg)}`;
-      else uri = `data:image/png;base64,${base64(await encodePng({ width: it.width, height: it.height, rgba: it.rgba! }))}`;
-      body.push(
-        `<image x="0" y="0" width="${it.width}" height="${it.height}" preserveAspectRatio="none" transform="matrix(${it.mat.map(f).join(' ')})"${it.interpolate ? '' : ' style="image-rendering:optimizeSpeed"'} href="${uri}"/>`,
-      );
+  try {
+    for (const it of r.items) {
+      setClip(it.clip);
+      if (it.k === 'fill') emit(body, `<path d="${pathData(it.segs)}" ${paint('fill', it.color, it.cmyk)}${it.evenOdd ? ' fill-rule="evenodd"' : ''}/>`);
+      else if (it.k === 'stroke') {
+        // 線は、ユーザ空間の座標で CTM を掛けて描く (太さが CTM で変わる。§4.5.1)
+        const inv = invert(it.ctm);
+        const m = it.ctm;
+        const lw = it.lineWidth === 0 ? 0.25 / Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]) || 1) : it.lineWidth;
+        const attrs = [
+          `fill="none"`,
+          paint('stroke', it.color, it.cmyk),
+          `stroke-width="${f(lw)}"`,
+          it.cap ? `stroke-linecap="${it.cap === 1 ? 'round' : 'square'}"` : '',
+          it.join ? `stroke-linejoin="${it.join === 1 ? 'round' : 'bevel'}"` : '',
+          `stroke-miterlimit="${f(it.miter)}"`,
+          it.dash ? `stroke-dasharray="${it.dash.array.map(f).join(' ')}" stroke-dashoffset="${f(it.dash.offset)}"` : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        if (inv) emit(body, `<path transform="matrix(${m.map(f).join(' ')})" d="${pathData(it.segs, inv)}" ${attrs}/>`);
+        else emit(body, `<path d="${pathData(it.segs)}" ${attrs}/>`);
+      } else if (it.k === 'text') {
+        // 文字: SVG の text (字の空間は y 下向きなので、y を反転してから文字の空間の行列を掛ける)
+        const m = it.mat;
+        const fam = fontFamilyOf(it.fontName);
+        emit(body, 
+          `<text transform="matrix(${[m[0], m[1], -m[2], -m[3], m[4], m[5]].map(f).join(' ')})" font-family="${fam.family}" font-size="1"${fam.bold ? ' font-weight="bold"' : ''}${fam.italic ? ' font-style="italic"' : ''} ${paint('fill', it.color, it.cmyk)} xml:space="preserve">${xmlText(it.text)}</text>`,
+        );
+      } else if (it.k === 'image') {
+        // base64 にする前に長さを確かめる (上限を超える画像を、文字列にしない)
+        const data = it.jpeg ?? (await encodePng({ width: it.width, height: it.height, rgba: it.rgba! }));
+        if (chars + Math.ceil(data.length / 3) * 4 > maxChars) throw TOO_LONG;
+        const uri = `data:image/${it.jpeg ? 'jpeg' : 'png'};base64,${base64(data)}`;
+        // 画素は、SVG にしたら手放す (描画の並びはこの関数の中だけのもの。画像の多い絵で、画素と PNG を 2 重に持ち続けない)
+        it.rgba = undefined;
+        emit(body, 
+          `<image x="0" y="0" width="${it.width}" height="${it.height}" preserveAspectRatio="none" transform="matrix(${it.mat.map(f).join(' ')})"${it.interpolate ? '' : ' style="image-rendering:optimizeSpeed"'} href="${uri}"/>`,
+        );
+      }
     }
+  } catch (e) {
+    if (e !== TOO_LONG) throw e;
+    tooLong = true;
   }
-  setClip(undefined);
+  // 開いたままのクリップの g を閉じる
+  for (; open > 0; open--) body.push('</g>');
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${f(W)}pt" height="${f(H)}pt" viewBox="0 0 ${f(W)} ${f(H)}" preserveAspectRatio="none">` +
-    (defs.length ? `<defs>${defs.join('')}</defs>` : '') +
-    `<g transform="matrix(1 0 0 -1 ${f(-x0)} ${f(y1)})">${body.join('')}</g></svg>`;
-  return { svg, bbox: r.bbox, count: r.items.length, warnings: r.warnings, notes: r.notes, error: r.error };
+    (defs.empty ? '' : `<defs>${defs.join()}</defs>`) +
+    `<g transform="matrix(1 0 0 -1 ${f(-x0)} ${f(y1)})">${body.join()}</g></svg>`;
+  // SVG が上限を超えたときは、PostScript の実装の限界のエラーの名前で知らせる (PLRM 付録 B: 限界を超える操作は limitcheck)
+  return { svg, bbox: r.bbox, count: r.items.length, warnings: r.warnings, notes: r.notes, error: r.error ?? (tooLong ? 'limitcheck (SVG の出力が長すぎます)' : undefined) };
 }
