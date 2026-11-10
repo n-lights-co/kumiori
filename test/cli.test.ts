@@ -298,6 +298,13 @@ describe('Node のコマンド', () => {
     expect(badLang.status).toBe(1);
     expect(badLang.stderr).toContain('--lang の値 "fr" は使えません');
   });
+  it('dist-cli には、コマンドとライセンスの表示だけが入る (public/ の favicon・書体をコピーしない)', () => {
+    // dist-cli は npm の配布物に入る (package.json の files)。public/ は画面 (dist/) のためのもので、手元では public/fonts に書体も置く
+    const files = (fs.readdirSync(path.join(root, 'dist-cli'), { recursive: true }) as string[]).map((f) => f.split(path.sep).join('/'));
+    for (const f of ['cli.js', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']) expect(files).toContain(f);
+    expect(files.filter((f) => fs.existsSync(path.join(root, 'public', f)))).toEqual([]);
+    expect(files.filter((f) => /\.(ttf|otf|ttc|woff2?|ico|png|svg)$/i.test(f) || f.startsWith('fonts'))).toEqual([]);
+  });
   it('知らないオプション・値の無いオプションは、使い方を出してエラーで終わる (値を入力のファイルとして扱わない)', () => {
     const cli = path.join(root, 'dist-cli/cli.js');
     const fail = (...args: string[]) => {

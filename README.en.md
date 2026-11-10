@@ -237,7 +237,7 @@ The fonts for typesetting are not included in this repository. They are fetched 
 | Noto Sans Symbols 2 | When the document contains symbols (such as ✈) found in none of the loaded fonts | SIL Open Font License 1.1 |
 
 The Node CLI saves the fetched fonts to the OS cache (`~/.cache/kumiori/fonts` etc.; can be changed with `--font-cache`) and does not use the network from the second run on. For offline use, in the web app (browser), TTFs with the same names placed in `public/fonts/` are used as a fallback (not tracked by git). With the Node CLI, either run once online to fill the cache, or specify the directory to read with `--font-dir`. The library's (`typeset`) default fetching tries only `https:` URLs, so pass local fonts via `loadFont`.
-Fonts placed in `public/fonts/` are also copied to the build output (`dist/fonts/`, `dist-cli/fonts/`). If you do not want them in what you distribute, remove them before building. The Node CLI does not read the copied `dist-cli/fonts/` automatically (it looks only at the directory passed, e.g. `--font-dir dist-cli/fonts`).
+Fonts placed in `public/fonts/` are also copied to the build output of the web app (`dist/fonts/`). If you do not want them in what you distribute, remove them before building. The contents of `public/` are not copied to the output distributed through npm (`dist-cli/`, `dist-lib/`, `dist-browser/`). The Node CLI looks only at the directory passed with `--font-dir`.
 
 The fonts used are embedded in the PDF. Check the license terms of each font with its distributor.
 

@@ -237,7 +237,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 | Noto Sans Symbols 2 | 読み込んだどの書体にも無い記号 (✈ など) が文書にあるとき | SIL Open Font License 1.1 |
 
 Node のコマンドは、取った書体を OS のキャッシュ (`~/.cache/kumiori/fonts` など。`--font-cache` で変えられます) に保存し、2 回目からはネットワークに行きません。オフラインで使うときは、画面 (ブラウザ) では同じ名前の TTF を `public/fonts/` に置けば後備として使われます（git 管理外）。Node のコマンドでは、一度オンラインで動かしてキャッシュに入れるか、`--font-dir` で読むディレクトリを指定します。ライブラリ (`typeset`) の既定の取得は `https:` の URL しか試さないので、手元の書体は `loadFont` で渡してください。
-`public/fonts/` に置いた書体は、ビルドの出力 (`dist/fonts/`・`dist-cli/fonts/`) にもコピーされます。配布物に含めない場合は、ビルドの前に取り除いてください。Node のコマンドは、コピーされた `dist-cli/fonts/` を自動では読みません (`--font-dir dist-cli/fonts` のように渡したディレクトリだけを見ます)。
+`public/fonts/` に置いた書体は、Web アプリのビルドの出力 (`dist/fonts/`) にもコピーされます。配布物に含めない場合は、ビルドの前に取り除いてください。npm で配る出力 (`dist-cli/`・`dist-lib/`・`dist-browser/`) には `public/` の中身をコピーしません。Node のコマンドは、`--font-dir` で渡したディレクトリだけを見ます。
 
 使った書体は PDF に埋め込まれます。書体のライセンスの条件は、各書体の配布元で確認してください。
 

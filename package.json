@@ -62,7 +62,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "build:cli": "vite build --ssr src/cli.ts --outDir dist-cli --emptyOutDir",
+    "build:cli": "vite build --config vite.cli.config.ts",
     "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json && node scripts/fix-dts-extensions.mjs dist-lib/types",
     "build:browser": "vite build --config vite.browser.config.ts",
     "build:dist": "npm run build:lib && npm run build:cli && npm run build:browser",
