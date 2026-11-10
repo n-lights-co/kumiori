@@ -3,6 +3,7 @@
  *  - clear (§7.19.1)
  *  - font-variant (§7.9.8)・word-spacing (§7.17.8)
  *  - glyph-orientation-vertical・glyph-orientation-horizontal (§7.29.3・§7.29.2)
+ *  - relative-position (§7.13.5・§5.5.5)・visibility (§7.30.17)・z-index (§7.30.18・§5.4.5)
  *  - fo:folio-prefix・fo:folio-suffix (§6.6.13・§6.6.14): fo:page-number・fo:page-number-citation・fo:page-number-citation-last の番号の前後に付く (§6.6.10〜§6.6.12)
  *  - 一括指定 (font・background・page-break-before/after/inside・size。XSL 1.1 §7.31・§5.2) と、上限・下限 (min-height・max-height・min-width・max-width。§7.15.8〜§7.15.11・§5.3.3)
  */
@@ -10,7 +11,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
 import { importXslFo } from '../src/xslfoImport';
 import { makeEngine, walk } from './helpers';
-import type { Area, LBlock, LBlockContainer, LInline, LTable } from '../src/types';
+import type { Area, GlyphArea, LBlock, LBlockContainer, LInline, LTable } from '../src/types';
 
 let E: Awaited<ReturnType<typeof makeEngine>>;
 beforeAll(async () => {
@@ -374,5 +375,113 @@ describe('glyph-orientation-vertical・glyph-orientation-horizontal (§7.29.3・
     expect(un('glyph-orientation-horizontal="90deg"')['glyph-orientation-horizontal:90deg']).toBe(1);
     expect(un('glyph-orientation-horizontal="0deg" glyph-orientation-vertical="90deg"')).toEqual({});
     expect((first(v('glyph-orientation-vertical="180deg"')) as unknown as LBlockContainer).textOrientation).toBeUndefined();
+  });
+});
+
+describe('relative-position (§7.13.5・§5.5.5)', () => {
+  it('relative: left・top (無ければ right・bottom の逆) だけ、組んだ箱をずらす。前後の配置は変えない', () => {
+    const b = (attrs: string) => first(`<fo:block ${attrs}>a</fo:block>`).relativeOffset;
+    expect(b('relative-position="relative" left="3pt" top="4pt"')).toEqual({ x: 3, y: 4 });
+    expect(b('relative-position="relative" right="3pt" bottom="4pt"')).toEqual({ x: -3, y: -4 });
+    expect(b('relative-position="relative" left="1pt" right="9pt" top="2pt" bottom="9pt"')).toEqual({ x: 1, y: 2 });
+    // 一括指定の position="relative" (§7.31.20)
+    expect(b('position="relative" left="3pt"')).toEqual({ x: 3, y: 0 });
+    // static (初期値) では left・top を使わない
+    expect(b('left="3pt" top="4pt"')).toBeUndefined();
+    expect(b('relative-position="static" left="3pt"')).toBeUndefined();
+    const pos = (attrs: string) => {
+      const t = E.engine.layout(imp(`<fo:block ${attrs}>a</fo:block><fo:block>b</fo:block>`).document).sheets[0];
+      return { a: glyphPos(t, 'a')!, b: glyphPos(t, 'b')! };
+    };
+    const p0 = pos('');
+    const p1 = pos('relative-position="relative" left="10pt" top="5pt"');
+    expect(p1.a.x - p0.a.x).toBeCloseTo(10, 6);
+    expect(p1.a.y - p0.a.y).toBeCloseTo(5, 6);
+    expect(p1.b).toEqual(p0.b);
+  });
+  it('fo:block のほかの要素・縦書きのブロックの relative は、読まずに報告する', () => {
+    const r = imp(`<fo:block><fo:inline relative-position="relative" top="2pt">a</fo:inline></fo:block><fo:block-container writing-mode="tb-rl" height="30mm"><fo:block relative-position="relative" top="2pt">b</fo:block></fo:block-container>`);
+    expect(r.report.unsupported['relative-position (fo:inline)']).toBe(1);
+    expect(r.report.unsupported['relative-position (縦書き)']).toBe(1);
+  });
+});
+
+describe('visibility (§7.30.17)', () => {
+  const glyphColors = (body: string) => {
+    const out: Record<string, string | undefined> = {};
+    const tree = E.engine.layout(imp(body).document);
+    walk(tree.sheets[0].page as unknown as Area, (g) => g.type === 'glyph' && (out[g.text] = (g as GlyphArea).color));
+    return out;
+  };
+  it('hidden・collapse: 場所を残して描かない (字は transparent、背景は無し、罫線は transparent)。継承され、visible で戻る', () => {
+    const b = first(`<fo:block visibility="hidden" color="#ff0000" background-color="#00ff00" border="1pt solid #0000ff">a<fo:inline visibility="visible">b</fo:inline><fo:inline background-color="#eeeeee">c</fo:inline></fo:block>`);
+    expect(b.color).toBe('transparent');
+    expect(b.backgroundColor).toBeUndefined();
+    expect(b.border).toMatchObject({ top: { width: 1, color: 'transparent' } });
+    // visible の子は、受け継いだ字の色に戻る
+    expect((b.children[1] as LInline).color).toBe('#ff0000');
+    expect((b.children[2] as LInline).backgroundColor).toBeUndefined();
+    expect(first(`<fo:block visibility="collapse">a</fo:block>`).color).toBe('transparent');
+    expect(first(`<fo:block visibility="visible" color="#ff0000">a</fo:block>`).color).toBe('#ff0000');
+  });
+  it('見えないブロックは、高さを取ったまま字を描かない', () => {
+    const c = glyphColors(`<fo:block visibility="hidden">a</fo:block><fo:block>b</fo:block>`);
+    expect(c.a).toBe('transparent');
+    expect(c.b).not.toBe('transparent');
+    const y = (attrs: string) => glyphPos(E.engine.layout(imp(`<fo:block ${attrs}>a</fo:block><fo:block>b</fo:block>`).document).sheets[0], 'b')!.y;
+    expect(y('visibility="hidden"')).toBeCloseTo(y(''), 6);
+  });
+  it('見えない画像は、場所を残して描かない', () => {
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    const hiddenImages = (attrs: string) => {
+      const tree = E.engine.layout(imp(`<fo:block><fo:external-graphic src="url(${png})" content-width="10mm" content-height="10mm" ${attrs}/></fo:block>`).document);
+      const flat = JSON.stringify(tree.sheets[0].page.regionBody);
+      // 画像の場所 (10mm 四方) は残る
+      expect(flat).toContain('"type":"image"');
+      return flat.split('"hidden":true').length - 1;
+    };
+    expect(hiddenImages('')).toBe(0);
+    expect(hiddenImages('visibility="hidden"')).toBe(1);
+  });
+  it('表の行・列の collapse (行・列を取り除く動き) は hidden として扱い、報告する。読めない値も報告する', () => {
+    const r = imp(`<fo:table table-layout="fixed" width="50mm"><fo:table-column column-width="50mm"/><fo:table-body><fo:table-row visibility="collapse" background-color="#ff0000"><fo:table-cell><fo:block>x</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table><fo:block visibility="maybe">a</fo:block>`);
+    expect(r.report.unsupported['visibility:collapse (fo:table-row)']).toBe(1);
+    expect(r.report.unsupported['visibility:maybe']).toBe(1);
+    const t = r.document.sequences[0].flow.children[0] as LTable;
+    expect(t.body.rows[0].color).toBe('transparent');
+    expect(t.body.rows[0].cells[0].backgroundColor).toBeUndefined();
+  });
+});
+
+describe('z-index (§7.30.18・§5.4.5)', () => {
+  const abs = (attrs: string, wrap = '') => {
+    const body = `<fo:block-container ${wrap}><fo:block-container absolute-position="fixed" top="0mm" left="0mm" width="10mm" height="10mm" ${attrs}><fo:block>a</fo:block></fo:block-container></fo:block-container>`;
+    const r = imp(body);
+    return { c: (r.document.sequences[0].flow.children[0] as LBlockContainer).children[0] as LBlockContainer, un: r.report.unsupported };
+  };
+  it('絶対配置の箱の z-index が負なら、本文の背面に置く', () => {
+    expect(abs('z-index="-1"').c.layer).toBe('behind');
+    expect(abs('z-index="0"').c.layer).toBeUndefined();
+    expect(abs('z-index="2"').c.layer).toBeUndefined();
+    expect(abs('z-index="auto"').c.layer).toBeUndefined();
+    expect(abs('').c.layer).toBeUndefined();
+  });
+  it('値は親の z-index に足した値で比べる (§5.4.5)', () => {
+    expect(abs('z-index="1"', 'z-index="-3"').c.layer).toBe('behind');
+    expect(abs('z-index="-1"', 'z-index="3"').c.layer).toBeUndefined();
+    expect(abs('', 'z-index="-3"').c.layer).toBe('behind');
+  });
+  it('背面の箱は、本文より先に描かれる', () => {
+    const tree = E.engine.layout(imp(`<fo:block>b</fo:block><fo:block-container absolute-position="absolute" z-index="-1" top="0mm" left="0mm" width="10mm" height="10mm"><fo:block>a</fo:block></fo:block-container>`).document);
+    const page = tree.sheets[0].page;
+    expect(textOf(page.behindAreas)).toBe('a');
+    expect(textOf(page.absoluteAreas)).toBe('');
+    // 指定の無い箱は、本文の前面
+    const front = E.engine.layout(imp(`<fo:block>b</fo:block><fo:block-container absolute-position="absolute" top="0mm" left="0mm" width="10mm" height="10mm"><fo:block>a</fo:block></fo:block-container>`).document).sheets[0].page;
+    expect(textOf(front.behindAreas)).toBe('');
+    expect(textOf(front.absoluteAreas)).toBe('a');
+  });
+  it('整数でない値は報告する', () => {
+    expect(abs('z-index="top"').un['z-index:top']).toBe(1);
   });
 });

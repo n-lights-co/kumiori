@@ -93,6 +93,7 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - the contents of `fo:folio-prefix` and `fo:folio-suffix` are now placed before and after page numbers (`fo:page-number`, `fo:page-number-citation`, `fo:page-number-citation-last`), for per-chapter folios such as “A-12” (XSL 1.1 §6.6.13, §6.6.14)
   - `font-variant="small-caps"` and `word-spacing` (a length added to inter-word spaces) are now read (XSL 1.1 §7.9.8, §7.17.8)
   - `auto`, `0deg` (all glyphs upright) and `90deg` (all glyphs rotated sideways) of `glyph-orientation-vertical` are now read (XSL 1.1 §7.29.3). 180 and 270 degrees, and values other than 0 degrees of `glyph-orientation-horizontal`, are not read and are reported
+  - `relative-position="relative"` (an `fo:block` in horizontal writing is drawn shifted), `hidden` and `collapse` of `visibility` (the space is kept but nothing is drawn) and a negative `z-index` on an absolutely positioned `fo:block-container` (drawn behind the body text) are now read (XSL 1.1 §7.13.5, §7.30.17, §7.30.18)
 
 ## 0.1.1 (2026-11-09)
 

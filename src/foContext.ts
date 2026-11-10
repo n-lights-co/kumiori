@@ -53,6 +53,8 @@ export interface Ctx {
   wordSpacing?: number;
   /** 受け継いだ glyph-orientation-vertical (§7.29.3) を写した字の向き。auto (mixed) に戻すかどうかを決めるのに使う */
   textOrientation?: 'mixed' | 'upright' | 'sideways';
+  /** visibility が hidden・collapse (継承される。§7.30.17)。字の色を transparent にし、背景・罫線を描かない。color は見えるときの色のまま持つ */
+  hidden?: boolean;
   /** text-transform (継承される。§7.17.6)。none は省略 */
   textTransform?: 'capitalize' | 'uppercase' | 'lowercase';
   /** 祖先の font-family の並び (太さだけを指定した要素で、書体を選び直すのに使う) */

@@ -404,8 +404,8 @@ class Importer {
 
   /**
    * 一括指定を、個別の性質に分ける (XSL 1.1 §5.2 Shorthand Expansion)。読むのは font (§7.31.13)・background (§7.31.1)・
-   * page-break-after・page-break-before・page-break-inside (§7.31.16〜§7.31.18)・size (§7.31.21)。
-   * border・margin・padding・position・white-space などは、それぞれを読む所で分けている。
+   * page-break-after・page-break-before・page-break-inside (§7.31.16〜§7.31.18)・size (§7.31.21) と、position (§7.31.20) の relative-position。
+   * border・margin・padding・white-space などは、それぞれを読む所で分けている。
    * 一括指定は、書いていない個別の性質を初期値に戻す。継承されない性質は、書かなければ初期値なので何も出さない
    * (font だけは継承される性質なので、初期値を出して親の値を打ち消す)。
    * inherit は、継承される性質 (font) では書かないのと同じ。ほかの読めない値は、何もせずに報告する
@@ -465,6 +465,9 @@ class Importer {
       out[`break-${side}`] = brk;
       out[keep] = v === 'avoid' ? 'always' : 'auto';
     }
+    // position (§7.31.20): relative は relative-position = relative、ほかは static (absolute・fixed の absolute-position は blockContainer が読む)
+    const position = own('position');
+    if (position === 'relative' || position === 'static' || position === 'absolute' || position === 'fixed') out['relative-position'] = position === 'relative' ? 'relative' : 'static';
     const pbi = own('page-break-inside');
     if (pbi === 'avoid' || pbi === 'auto') out['keep-together'] = pbi === 'avoid' ? 'always' : 'auto';
     // inherit: keep-together は継承される性質 (§7.20.3) なので、書かないのと同じ
@@ -1373,13 +1376,19 @@ class Importer {
     else if (wrap === 'wrap') s.noWrap = false;
     // keep-together.within-line="always" のブロックは、行を折り返さない
     if (this.attr(el, 'keep-together.within-line') && this.keepOf(el, 'keep-together', ['line']) && this.name(el) !== 'inline') s.noWrap = true;
+    // visibility (§7.30.17): 見えない要素は、字の色を transparent にして運ぶ (字・リーダー・画像を描かない。HTML の visibility と同じ受け皿)。
+    // 見えない親の中の visible の要素は、見えるときの色に戻す。子へ渡す color (ctx.color) は、見えるときの色のまま
+    const shownColor = s.color ?? ctx.color;
+    const hidden = this.hiddenOf(el, ctx.hidden);
+    if (hidden) s.color = 'transparent';
+    else if (ctx.hidden) s.color = shownColor ?? '#000000';
     const inh = { ...ctx.inh };
     for (const k of ['fontFamily', 'fontWeight', 'fontStyle', 'color', 'textAlign', 'lineHeight', 'lineHeightPt', 'fontStretch'] as const) if (s[k] !== undefined) (inh as Record<string, unknown>)[k] = s[k];
     if (s.lineHeight !== undefined && s.lineHeightPt === undefined) delete inh.lineHeightPt;
     // 書字方向の裏返し (bt-lr・lr-bt など): 自分の writing-mode があれば決め直し、無ければ親のまま
     const ownWm = this.attr(el, 'writing-mode');
     const flip = ownWm && !ownWm.startsWith('from-') ? flipOf(ownWm) : ctx.flip;
-    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: s.color ?? ctx.color, textTransform, ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
+    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: shownColor, textTransform, ...(hidden !== !!ctx.hidden ? { hidden } : {}), ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
   }
 
   phys(rel: 'before' | 'after' | 'start' | 'end', wm: WritingMode, rtl = false): 'top' | 'right' | 'bottom' | 'left' {
@@ -1449,7 +1458,8 @@ class Importer {
       const width = (wv ? this.len(wv, ctx.fontSize, undefined, lh) : undefined) ?? sh.width ?? (gWidth?.[i] ? this.len(nw(gWidth[i]), ctx.fontSize, undefined, lh) : undefined) ?? all.width;
       const colorAttr = this.attr(el, `border-${p}-color`) ?? this.attr(el, `border-${rel}-color`) ?? sh.color ?? gColor?.[i] ?? all.color;
       // transparent: 罫線の場所は取るが、線は見えない
-      const color = colorAttr?.trim() === 'transparent' ? 'transparent' : (this.color(colorAttr) ?? '#000000');
+      // 見えない要素 (visibility。§7.30.17) の罫線も、場所だけ取って描かない
+      const color = colorAttr?.trim() === 'transparent' || ctx.hidden ? 'transparent' : (this.color(colorAttr) ?? '#000000');
       if (style === 'hidden') {
         // hidden: 線は描かない。表の罫線の重ね合わせ (collapse) では、ほかのすべての罫線に勝って線を消す (§6.7.10)
         out[p] = { width: 0, color, style: 'hidden' };
@@ -1642,6 +1652,14 @@ class Importer {
     const ov = this.attr(el, 'overflow');
     if (ov === 'hidden' || ov === 'scroll' || ov === 'error-if-overflow') o.overflow = 'hidden';
     else if (ov && ov !== 'auto' && ov !== 'visible') this.miss(`overflow:${ov}`);
+    // 見えない要素 (visibility が hidden・collapse。§7.30.17) は、背景・影・対角罫を描かない (罫線は border() が transparent にする。場所は変えない)
+    if (ctx.hidden) {
+      delete o.backgroundColor;
+      delete o.backgroundImage;
+      delete o.boxShadow;
+      delete o.diagonalBorder;
+      delete o.reverseDiagonalBorder;
+    }
     return o;
   }
 
@@ -1677,6 +1695,62 @@ class Importer {
       punctuationTrimEnd: end,
       punctuationTrimEndExceptFullstop: !has('end') && has('end-except-fullstop'),
     };
+  }
+
+  /**
+   * visibility (§7.30.17): hidden・collapse は、場所を残して描かない (“The generated box is invisible (fully transparent), but still affects
+   * layout.”)。継承される (XSL は “made it an inherited property”)。collapse は、表の行・列のほかでは hidden と同じ
+   * (“If used on elements other than rows or columns, "collapse" has the same meaning as "hidden".”)。表の行・列を取り除く動き
+   * (CSS2 の dynamic row and column effects) は組まないので、hidden として扱って報告する。読めない値も報告する
+   */
+  private hiddenOf(el: XEl, inherited: boolean | undefined): boolean {
+    const v = this.attrInh(el, 'visibility');
+    if (v === undefined) return !!inherited;
+    if (v === 'visible') return false;
+    if (v === 'hidden' || v === 'collapse') {
+      if (v === 'collapse' && /^table-(row|column|header|footer|body)$/.test(this.name(el))) this.miss(`visibility:collapse (fo:${this.name(el)})`);
+      return true;
+    }
+    this.miss(`visibility:${v.slice(0, 20)}`);
+    return !!inherited;
+  }
+
+  /**
+   * relative-position="relative" (§7.13.5) のずらし (pt。右・下が正)。left・top をそのまま使い、left が無く right があれば −right、
+   * top が無く bottom があれば −bottom、どちらも無ければ 0 (§5.5.5)。組んだ後の箱を動かし、前後の配置は変えない
+   * (“Only during rendering is the area rendered offset relative to this position.”)。static (初期値) なら undefined
+   */
+  private relativeOffsetOf(el: XEl, ctx: Ctx): { x: number; y: number } | undefined {
+    const rp = this.attr(el, 'relative-position');
+    if (rp === undefined || rp === 'static') return undefined;
+    if (rp !== 'relative') {
+      this.miss(`relative-position:${rp.slice(0, 20)}`);
+      return undefined;
+    }
+    // left・right の百分率は包含ブロックの幅、top・bottom は包含ブロックの高さ (§7.6.2〜§7.6.5)
+    const off = (k: string, pct: number | undefined) => {
+      const v = this.attr(el, k);
+      return v === undefined || v === 'auto' ? undefined : this.len(v, ctx.fontSize, pct);
+    };
+    const l = off('left', this.cbW(ctx));
+    const r = off('right', this.cbW(ctx));
+    const t = off('top', ctx.cbH);
+    const b = off('bottom', ctx.cbH);
+    return { x: l ?? (r !== undefined ? -r : 0), y: t ?? (b !== undefined ? -b : 0) };
+  }
+
+  /**
+   * z-index (§7.30.18) の、親の値に足した値 (§5.4.5: “the refined value is the specified value plus the refined value of z-index of its
+   * parent formatting object, if any”)。auto は足さない
+   */
+  private zIndexOf(el: XEl): number {
+    let z = 0;
+    for (let e: XEl | undefined = el; e; e = this.parents.get(e)) {
+      const v = this.attr(e, 'z-index');
+      if (v !== undefined && /^[-+]?\d+$/.test(v)) z += parseInt(v, 10);
+      else if (v !== undefined && v !== 'auto' && e === el) this.miss(`z-index:${v.slice(0, 20)}`);
+    }
+    return z;
   }
 
   /**
@@ -1927,6 +2001,8 @@ class Importer {
       this.miss(`fo:${tag} (${this.inFolio} の中)`);
       return [];
     }
+    // relative-position="relative" (§7.13.5): 組版が受けられるのは横書きの fo:block だけ (組んだ箱をずらす)。ほかの要素では読まずに報告する
+    if (tag !== 'block' && tag !== 'table-caption' && this.attr(n, 'relative-position') === 'relative') this.miss(`relative-position (fo:${tag})`);
     switch (tag) {
       // 表の見出し (table-caption) は、自身の書式 (文字の大きさ・揃え・余白) を持つブロックとして組む
       case 'table-caption':
@@ -1947,6 +2023,13 @@ class Importer {
         const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3) };
         const clr = this.clearOf(n);
         if (clr) blk.clear = clr;
+        // relative-position (§7.13.5): 組んだ箱をずらす。縦書きの箱と、負の z-index (背面に置く) は、組版に受け皿が無いので報告する
+        const rel = this.relativeOffsetOf(n, c2);
+        if (rel && ctx.wm !== 'horizontal-tb') this.miss('relative-position (縦書き)');
+        else if (rel) {
+          if (rel.x || rel.y) blk.relativeOffset = rel;
+          if (this.zIndexOf(n) < 0) this.miss('z-index (relative-position)');
+        }
         // 互換モード: 中身の無いブロック (空白だけ。枠・背景・寸法も無い) の space-before は、次のブロックの
         // space-before と重ならずに足し合わさる。その高さの空のブロックにする
         const bAxis = this.phys('before', ctx.wm, ctx.rtl);
@@ -1982,7 +2065,7 @@ class Importer {
           this.trimInlineEdge(kids, 'end');
         }
         if (blockish) return one({ type: 'block', ...this.idOf(n), ...style, ...(link ? { link } : {}), children: kids } as LBlock, true);
-        const bg = this.color(this.attr(n, 'background-color'));
+        const bg = c2.hidden ? undefined : this.color(this.attr(n, 'background-color'));
         const inl: LInline = { type: 'inline', ...this.idOf(n), ...style, children: kids as LInlineLevel[] };
         if (bg) inl.backgroundColor = bg;
         // unicode-bidi (embed・bidi-override。§7.29.6): 中身の前後に双方向の制御文字を入れたものとして並べる (§5.8)
@@ -2064,14 +2147,18 @@ class Importer {
         // 数式 (MathML) は、行内の要素 (上付き・下付き・分数の箱など) に組み替えて、本文と同じ書体で組む
         const fr = tag === 'instream-foreign-object' ? this.foreignRoot(n) : this.externalMath(n);
         const math = fr && this.name(fr) === 'math' ? fr : undefined;
+        // visibility (§7.30.17): 画像・数式そのものの指定が親と違うときは、字の色 (見えないときは transparent) を持つ行内の箱で包む
+        // (画像は、字の色が transparent なら描かない)
+        const hid = this.hiddenOf(n, ctx.hidden);
+        const shown = (v: LInlineLevel): LInlineLevel => (hid === !!ctx.hidden ? v : ({ type: 'inline', color: hid ? 'transparent' : (ctx.color ?? '#000000'), children: [v] } as LInline));
         if (math) {
           // 数式の図形は、周りの字の色で描く (mathcolor があれば、その中はその色)
           this.foMath.mathColor = ctx.color ?? '#000000';
           // 字の大きさ・色は、instream-foreign-object・external-graphic の font-size・color も見る
-          if (this.opts.mathFont) return one(this.mathFormula(math, this.textStyle(n, ctx).ctx, n), false);
-          return one(this.foMath.mathml(math, ctx.fontSize), false);
+          if (this.opts.mathFont) return one(shown(this.mathFormula(math, this.textStyle(n, ctx).ctx, n)), false);
+          return one(shown(this.foMath.mathml(math, ctx.fontSize)), false);
         }
-        return one(this.image(n, ctx, tag === 'external-graphic'), false);
+        return one(shown(this.image(n, hid === !!ctx.hidden ? ctx : { ...ctx, hidden: hid }, tag === 'external-graphic')), false);
       }
       case 'block-container':
         this.clearOf(n, false);
@@ -2645,6 +2732,12 @@ class Importer {
       c.absolutePosition = true;
       // 祖先のブロックコンテナの中なら、その内容の箱を基準にする (位置は組むときに決める)
       if (ctx.inContainer && absPos === 'absolute') c.positionInContainer = true;
+      // z-index (§7.30.18): 親の値に足した値 (§5.4.5) が負の箱は、本文の背面に置く (HTML の負の z-index と同じ受け皿)。
+      // 0 以上の値どうしの重なりの順は、文書の順のまま。コンテナの中の絶対配置の箱は、背面に置けないので報告する
+      if (this.zIndexOf(n) < 0) {
+        if (c.positionInContainer) this.miss('z-index (コンテナの中の絶対配置)');
+        else c.layer = 'behind';
+      }
       const fs = c2.fontSize;
       // fixed はページを基準にする (§7.6.1「fixed with respect to the page」)。absolute は最も近い祖先の参照領域
       const fixedPage = absPos === 'fixed' && ctx.pageSize ? ctx.pageSize : undefined;
@@ -3021,7 +3114,7 @@ class Importer {
       this.placeByColumnNumber(out, columns.length);
       if (Object.keys(gs).length) out = out.map((r) => ({ ...gs, ...r }));
       // table-header / body / footer の背景色は、背景の無いセルへ引き継ぐ
-      const bg = this.color(this.attr(e, 'background-color'));
+      const bg = gc.hidden ? undefined : this.color(this.attr(e, 'background-color'));
       if (bg) for (const r of out) for (const c of r.cells) if (!c.backgroundColor) c.backgroundColor = bg;
       // table-header / body / footer の罫線: 罫線を重ねる表 (collapse。初期値) では、行グループの外周の罫線になる (§6.7.10)。
       // 重ね合わせは組むときに、セル・行・列・表の罫線と合わせて決める
@@ -3047,7 +3140,7 @@ class Importer {
   private row(r: XEl, ctx: Ctx, tw: number | undefined, inheritedAlign?: string): LTableRow {
     const rAlign = this.attr(r, 'display-align') ?? inheritedAlign;
     const { style, ctx: c2 } = this.textStyle(r, ctx);
-    const bg = this.color(this.attr(r, 'background-color'));
+    const bg = c2.hidden ? undefined : this.color(this.attr(r, 'background-color'));
     this.gridRowStart();
     const cells = this.els(r)
       .filter((c) => this.name(c) === 'table-cell')
