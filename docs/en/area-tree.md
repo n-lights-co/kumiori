@@ -23,6 +23,18 @@ This document collects the rules for the `AreaTree` returned by `LayoutEngine.la
   - `x` and `y` are the top left of the bounding rectangle after rotation.
   - The children's coordinates are local coordinates before rotation.
 - `GlyphArea.rotation` is the rotation of the glyph (clockwise) and is distinct from the box rotation `orientation`.
+- Background (`backgroundColor`, `backgroundImage`):
+  - `backgroundImage` is the top-most background image (its size is resolved). `under` is the list of images stacked behind it (nearest first).
+  - Per image, `origin` is the positioning area (`border-box`, `content-box`; the padding box when absent) and `clip` is the painting area (`border-box`, `content-box`; the padding box when absent).
+  - `backgroundClip` is the area the background color is painted in (`padding-box`, `content-box`). When absent, the border-box (`width` × `height`) is painted.
+- When an image (`image`) has `fit` (`cover`, `contain`, `none` or `scale-down` of CSS `object-fit`), `width` × `height` is the size of the box; the image is sized from its natural size (`naturalWidth` × `naturalHeight`), placed inside the box and clipped to it. `fitPosition` (CSS `object-position`) is its position inside the box (the center when absent).
+- When `transform` (a paint-time transform; CSS `transform`) is present:
+  - The value is a matrix `[a, b, c, d, e, f]`, with x' = a·x + c·y + e and y' = b·x + d·y + f (y points down).
+  - The origin of the matrix coordinates is the point `x`, `y` of this Area (the top left of its border-box).
+  - It is applied only when painting this Area and its descendants. `x`, `y`, `width`, `height` and the children's coordinates are those from before the transform (layout does not know about the transform).
+- When `opacity` (CSS `opacity`; 0 or more and less than 1) is present, this Area and its descendants are rendered as one image and then blended with that opacity (overlapping parts inside do not become darker). When `transform` is also present, the transformed image is blended.
+- An Area with `transform` or `opacity` is painted as a whole in the inline-content phase, without being split into background and content, even where there are floats (`float`).
+- When an inline element (such as a `span` with a border) has `opacity` or `transform`, an `inline` Area (without `sourceRef`) that groups its frame and content is created and carries them.
 
 ## Nodes and children
 
@@ -73,6 +85,7 @@ To walk the tree, use `walkAreas()` (from one node) or `walkAreaTree()` (all she
 - `GlyphArea.text` is the string of one unit of text. It is usually a single character, but a grapheme cluster (the extended grapheme cluster of UAX #29: a base character with combining marks or variation selectors, an emoji sequence and so on), a sequence that forms a ligature, and a run of joining characters (such as Arabic) become one `GlyphArea` with two or more characters. `advance` is the sum of the advances of that sequence shaped with a single font.
 - `GlyphArea.glyphIds` are the IDs of the glyphs to draw. They are the result of shaping `text` with the font's OpenType features (`features`), in left-to-right drawing order (the same way as when writing the PDF).
 - `GlyphArea.glyphPositions` is [advance, horizontal offset, vertical offset] per glyph (in font units; `unitsPerEm` is 1 em). These are positions adjusted by the font's GPOS, and are present only when there are two or more glyphs and either an advance differs from the font's advance width or there is an offset (e.g. the positioning of Arabic marks, or of combining marks placed on their base character). If present, the PDF is written with the position of each glyph set individually.
+- `GlyphArea.fontPalette` is the palette selection for colored glyphs (the OpenType COLR/CPAL and SVG tables): the result of applying the CSS `font-palette` and `@font-palette-values` to the font of that character. `base` is the palette index, and `colors` is the list of color overrides ([color index, `#rrggbb` or `#rrggbbaa`]). It is absent for the default palette (palette 0 with no overrides) and for characters in fonts without palettes. The colored glyphs themselves (layers, gradients, images) are not stored in the tree; they are read from the font file when drawing.
 - Glyph IDs and positions are shaped with the same set of features as when measuring during typesetting (kerning between characters and optional ligatures are not applied, since typesetting handles them separately).
 - SHA-256 is computed in `src/sha256.ts` (FIPS 180-4). Tests verify that it gives the same values as Node's crypto.
 

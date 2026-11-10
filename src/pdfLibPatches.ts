@@ -7,6 +7,7 @@
  *  3. PngEmbedder.prototype の上に作る、PNG の IDAT をそのまま FlateDecode の画像にする埋め込み部品 (embedPngAsIs)
  *  4. PDFFont の encodeText を結果を覚えるものに差し替え、fontkit の layout を一時的にすり替えて字形の番号から符号にする (memoEncode)
  *  5. PDFFlateStream の contentsCache を差し替えて、圧縮の関数を替える (useDeflate)
+ *  6. PDFPage の内容の流れ (getContentStream) の命令の並び (operators) をじかに読み書きする (pageOperators。描いた命令を Form XObject に移す)
  * (fontkit の異体字の並びの字形の引き方 (CmapProcessor.getVariationSelector) の差し替えは、PDF を作らないときの組版・描画にも
  *  要るので、書体を読む fontManager.ts の patchFontkitVariationSelector にある)
  *
@@ -14,6 +15,7 @@
  * 「差し替え済み」の印はモジュールの変数でなく、差し替えた原型 (prototype) 自体に付ける (テストで同じ pdf-lib を複数回読み込んでも二重に包まない)
  */
 import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFDocument, PDFFlateStream, PDFFont, PDFHexString, PDFImage, PDFRef, PngEmbedder } from 'pdf-lib';
+import type { PDFOperator, PDFPage } from 'pdf-lib';
 import type { FontManager } from './fontManager';
 import { decodeJpeg } from './jpeg';
 import { cffGidToCid, cffTable, subsetCff } from './cff';
@@ -35,6 +37,17 @@ function assertPdfLibInternals() {
   need(Cache, ['populatedBy'], 'Cache');
 }
 assertPdfLibInternals();
+
+/**
+ * ページの内容の流れの、命令の並び (page.pushOperators が足していく配列そのもの)。後ろを切り取れば、描いた命令を取り出せる
+ * (PdfPainter.group が、不透明度のグループの中身を Form XObject に移すのに使う)
+ */
+export function pageOperators(page: PDFPage): PDFOperator[] {
+  const p = page as unknown as { getContentStream?: () => { operators?: PDFOperator[] } };
+  const ops = typeof p.getContentStream === 'function' ? p.getContentStream().operators : undefined;
+  if (!Array.isArray(ops)) throw new Error('pdf-lib の PDFPage.getContentStream().operators が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)');
+  return ops;
+}
 
 /** 埋め込む書体の区別 (書体の key に付ける、OpenType の機能の組) */
 export const featureKey = (f: string[] | undefined) => (f?.length ? '|' + [...f].sort().join(',') : '');

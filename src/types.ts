@@ -82,6 +82,26 @@ export interface BorderStyle {
 }
 
 /** 継承されるテキストスタイル */
+/** 分綴の制限 (TextStyle.hyphenLimits)。どれも無ければ既定 */
+export interface HyphenLimits {
+  /** 分綴した行の終わりに出す文字列 (空の文字列なら何も出さない)。無ければ既定の字 (U+002D)。ソフトハイフンで分けた行にも使う */
+  character?: string;
+  /** 分綴する語の最小の字数 (無ければ 5)。ソフトハイフンには、指定したときだけ効く */
+  minWord?: number;
+  /** 切れ目の前に残す最小の字数 (無ければ 2)。ソフトハイフンには、指定したときだけ効く */
+  minBefore?: number;
+  /** 切れ目の後 (次の行) に送る最小の字数 (無ければ 2)。ソフトハイフンには、指定したときだけ効く */
+  minAfter?: number;
+  /** 続けて分綴してよい行の数の上限 (無ければ上限なし。0 は分綴しない)。段落のブロックの値を使う */
+  maxLines?: number;
+  /** 段落の最後の行の 1 つ前の行 (最後の、行長いっぱいの行) を分綴しない (hyphenate-limit-last: always)。段落のブロックの値を使う */
+  noLast?: boolean;
+  /** 分綴せずに語を次の行へ送ったときの行末の空きがこの長さ (pt) 以下なら、分綴しない (hyphenate-limit-zone)。段落のブロックの値を使う */
+  zone?: number;
+  /** zone を行の長さに対する割合 (0〜1) で指定したもの (hyphenate-limit-zone の百分率) */
+  zoneRatio?: number;
+}
+
 export interface TextStyle {
   fontFamily?: string;
   /** pt */
@@ -225,6 +245,12 @@ export interface TextStyle {
   hyphenate?: boolean;
   /** 言語 (xml:lang / language。分綴の規則を選ぶ)。例 en, en-US */
   language?: string;
+  /**
+   * 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5 の hyphenate-character・hyphenate-limit-*、XSL 1.1 §7.10.5〜§7.10.7・§7.16.2 の
+   * hyphenation-character・hyphenation-push/remain-character-count・hyphenation-ladder-count)。継承される (指定した組がまるごと子へ伝わる)。
+   * 無ければ既定 (行末の字は U+002D、語は 5 字以上・切れ目の前後は 2 字以上、行の数の上限なし)
+   */
+  hyphenLimits?: HyphenLimits;
   /** ルビが親文字より長いとき、前後の仮名・約物に掛ける (ルビ文字 1 字分まで。JLREQ §3.3.8)。既定 false */
   rubyOverhang?: boolean;
   /**
@@ -245,6 +271,11 @@ export interface TextStyle {
    * 字ごとに書体の機能を当てた字形で測り、描く (画面は字形の輪郭、PDF は機能を付けて埋め込んだ書体)
    */
   fontFeatures?: string[];
+  /**
+   * 色つきの字形のパレット (CSS の font-palette。CSS Fonts 4 §9.1)。normal (既定のパレット)・light・dark か、
+   * 名前に当たる @font-palette-values の規則の並び (colorGlyph.ts の FontPaletteStyle)。子へ引き継がれる
+   */
+  fontPalette?: import('./colorGlyph').FontPaletteStyle;
   /** 縦書きの字の向き (CSS の text-orientation。Writing Modes 3 §5.1)。mixed は UAX #50 の Vertical_Orientation で決める */
   textOrientation?: 'mixed' | 'upright' | 'sideways';
   /** 行の中の向き。rtl は右から左 (writing-mode="rl-tb")。欧文・数字の並びは左から右のまま。子へ引き継がれる */
@@ -257,6 +288,11 @@ export interface TextStyle {
   unicodeBidi?: 'embed' | 'isolate' | 'bidi-override' | 'isolate-override' | 'plaintext';
   /** 改訂バー (アンテナハウスの axf:revision-bar-*)。この要素の文字を含む行の脇に線を引く。子へ引き継がれる */
   revisionBar?: RevisionBar;
+  /**
+   * 変更バー (XSL 1.1 の fo:change-bar-begin〜fo:change-bar-end。§6.13.2)。この要素の文字を含む行の脇に、並びのすべての線を引く
+   * (入れ子・重なった変更バー)。子へ引き継がれる。空の並びは、親から引き継いだものを消す
+   */
+  changeBars?: RevisionBar[];
   /** 行番号 (アンテナハウスの axf:line-number-*)。子へ引き継がれ、子の指定は親の指定に重ねる */
   lineNumber?: LineNumbering;
   /**
@@ -315,6 +351,12 @@ export interface TextStyle {
   breakClear?: 'start' | 'end' | 'both';
   /** 字下げ (pt)。1 行目の inline-start 側 */
   textIndent?: number;
+  /**
+   * 最後の行の、行の終わりの端の字下げ (pt。XSL 1.1 §7.16.3 の last-line-end-indent)。行内の並びの最後の行 (ブロックの最後の行と、
+   * 子のブロックの前で終わる行) の終わりの端を、正の値で内へ、負の値で外へずらす。子へ引き継がれる。
+   * 目次の行で、折り返した行は end-indent の手前で終え、ページ番号のある最後の行だけを端まで伸ばすのに使う
+   */
+  lastLineEndIndent?: number;
   /** 字下げを掛ける行を逆にする (1 行目以外を字下げする。CSS の text-indent の hanging。Text 3 §8.1) */
   textIndentHanging?: boolean;
   /** 強制改行の後の行も、1 行目と同じに扱う (CSS の text-indent の each-line。Text 3 §8.1) */
@@ -346,6 +388,37 @@ export type BreakKind = 'page' | 'column' | 'odd-page' | 'even-page';
 export interface BaseNode extends TextStyle {
   id?: string;
   writingMode?: WritingMode;
+  /**
+   * 描くときだけに効く効果 (CSS の transform・opacity)。組版 (箱の位置・大きさ・ページ分け) には関わらない。
+   * 組んだ後で、この節から作った Area に transform・opacity として付ける (paintEffect.ts)
+   */
+  paintEffect?: PaintEffect;
+}
+
+/** 変換の長さ: pt か、基準の箱の幅 (横)・高さ (縦) に対する百分率 */
+export type TransformLength = number | `${number}%`;
+
+/**
+ * 変換の関数 1 つ (CSS Transforms 1 §9.1 の 2D の関数)。translateX・scaleY などは、translate・scale にして持つ (§9.2)。
+ * 角度は度 (時計回りが正。y は下向き)。matrix の e・f は pt
+ */
+export type TransformFunction =
+  | { fn: 'matrix'; m: [number, number, number, number, number, number] }
+  | { fn: 'translate'; x: TransformLength; y: TransformLength }
+  | { fn: 'scale'; x: number; y: number }
+  | { fn: 'rotate'; deg: number }
+  | { fn: 'skew'; x: number; y: number };
+
+/** 描くときだけに効く効果 (BaseNode.paintEffect) */
+export interface PaintEffect {
+  /**
+   * 変換 (CSS の transform と、translate・rotate・scale)。functions は左から掛ける (§3)。origin は変換の原点 (transform-origin。
+   * 基準の箱の左上から。無ければ中央 50% 50%)。box は基準の箱 (transform-box。無ければ border の箱)。
+   * ページ・段で分かれた箱は、断片ごとに、その断片の箱を基準に変換する (CSS Fragmentation 3 §5.5)
+   */
+  transform?: { functions: TransformFunction[]; origin?: [TransformLength, TransformLength]; box?: 'content-box' };
+  /** 不透明度 (CSS の opacity。0〜1)。箱とその中身をまとめて 1 枚の絵にしてから、この濃さで重ねる (CSS Color 4 §3.3) */
+  opacity?: number;
 }
 
 /**
@@ -393,6 +466,29 @@ export interface BackgroundImage {
   gradient?: string;
   /** グラデーションの em の基準 (pt) */
   gradientFontSize?: number;
+  /**
+   * 位置の基準の領域 (CSS の background-origin。Backgrounds 3 §2.8)。無ければ padding の箱。位置・百分率の大きさ・繰り返しの始まりを、
+   * この領域で決める
+   */
+  origin?: 'border-box' | 'content-box';
+  /**
+   * 描く範囲 (CSS の background-clip。Backgrounds 3 §2.7)。無ければ padding の箱 (罫線の下には描かない)。border-box は border の箱 (罫線の下も)、
+   * content-box は内容の箱。角丸の箱では、その箱の角丸で切り抜く
+   */
+  clip?: 'border-box' | 'content-box';
+  /** この画像の後ろに重ねる画像 (CSS の複数の背景。Backgrounds 3 §2.1)。手前のものから順。それぞれが位置・大きさ・繰り返し・origin・clip を持つ */
+  under?: BackgroundImage[];
+}
+
+/**
+ * 枠の中での画像の位置 (CSS の object-position。<position>)。x・y は、長さ (pt。枠の左・上の端から画像の左・上の端まで) か、
+ * 百分率 ((枠の大きさ − 画像の大きさ) に対する割合。50% は中央)。xFromEnd・yFromEnd は、長さを右・下の端からの距離とする
+ */
+export interface ObjectPosition {
+  x: number | `${number}%`;
+  y: number | `${number}%`;
+  xFromEnd?: boolean;
+  yFromEnd?: boolean;
 }
 
 /** 角丸 (アンテナハウスの axf:border-radius)。四隅を半径 rx (水平)・ry (垂直) の楕円で丸める */
@@ -434,6 +530,11 @@ export interface BoxStyle {
   border?: BorderInput;
   backgroundColor?: string;
   backgroundImage?: BackgroundImage;
+  /**
+   * 背景の色を塗る範囲 (CSS の background-clip のうち、いちばん後ろの層の値。Backgrounds 3 §2.2)。無ければ border の箱。
+   * ブロック・表・セル・絶対配置の箱で効く (行内の箱の背景には効かない)
+   */
+  backgroundClip?: 'padding-box' | 'content-box';
   borderRadius?: BorderRadius;
   /** 影。複数なら、先のものが上に描かれる (CSS と同じ) */
   boxShadow?: BoxShadow | BoxShadow[];
@@ -476,7 +577,19 @@ export interface BoxStyle {
   /** inline 方向の内容の寸法の最小値・最大値 (pt。横書きの min-width・max-width。aspect-ratio の箱でだけ使う。CSS Sizing 4 §5.1) */
   minInlineSize?: number;
   maxInlineSize?: number;
+  /**
+   * 内容による inline 方向の大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content)。size は大きさ (横書きの width・縦書きの height)、
+   * min・max はその下限・上限 (min-width・max-width)。組むときに、中身の幅を測って決める (§2.1・§5.1)。これがある箱では、長さで指定した
+   * 下限・上限 (minInlineSize・maxInlineSize) も、組むときに当てる
+   */
+  inlineSizing?: { size?: ContentSizeKeyword; min?: ContentSizeKeyword; max?: ContentSizeKeyword };
 }
+
+/**
+ * 内容による大きさ (CSS Sizing 3 §3.2 の語)。{ fit } は fit-content(<長さ>) (CSS Sizing 4 §3.2: fit-content の式の「使える長さ」を、
+ * この長さ (pt。内容の箱の大きさ) に置き換える)
+ */
+export type ContentSizeKeyword = 'min-content' | 'max-content' | 'fit-content' | { fit: number };
 
 // ───────────────────────── ページ設定 ─────────────────────────
 
@@ -657,7 +770,10 @@ export interface LPageSequence extends BaseNode {
   /** 1 ページ目のページ番号 (既定 1) */
   /** 先頭ページの番号。auto-odd / auto-even: 前の続きの番号が偶数 / 奇数なら 1 足す (白ページは挟まない) */
   initialPageNumber?: number | 'auto-odd' | 'auto-even';
-  /** ページ番号の書式 (fo の format。"1" "01" "i" "I" "a" "A" "１" "一" と前後の文字)。既定は 10 進数 */
+  /**
+   * ページ番号の書式 (fo の format。"1" "01" "i" "I" "a" "A" "１" "一" と前後の文字)。既定は 10 進数。
+   * 桁区切り (fo の grouping-separator・grouping-size) は、withGrouping (pageNumber.ts) で書式に付ける
+   */
   pageNumberFormat?: string;
   /** ページ番号の前後の字 (fo:folio-prefix・fo:folio-suffix) を持つ page-sequence の番号。索引のページ番号 (LIndexKeyReference.folios) が引く */
   folioKey?: number;
@@ -673,7 +789,7 @@ export interface LFlow extends BaseNode {
   children: LBlockLevel[];
 }
 
-export type LBlockLevel = LBlock | LTable | LBlockContainer | LMarker | LRetrieveMarker | LFloat;
+export type LBlockLevel = LBlock | LTable | LBlockContainer | LMarker | LRetrieveMarker | LRetrieveTableMarker | LFloat;
 export type LInlineLevel = string | LInline | LRuby | LTateChuYoko | LLeader | LFootnote | LPageNumberCitation | LImage | LInlineContainer | LFootnoteCitation | LIndexPageCitationList;
 
 /** 脚注本体の中で、その脚注の番号 (自動連番のラベル) に置き換わる (アンテナハウスの axf:footnote-number-citation) */
@@ -784,6 +900,8 @@ export interface LInline extends BaseNode {
   /** 文字を囲む罫線・内側の余白 (fo:inline の border / padding)。行をまたぐときは、切れ目の辺は描かない */
   border?: BorderInput;
   padding?: EdgesInput;
+  /** 行をまたぐ枠の切れ目にも、罫線・内側の余白を付ける (CSS の box-decoration-break: clone。CSS Fragmentation 3 §5.4) */
+  boxDecorationBreak?: 'clone';
   /** 角丸 (CSS の border-radius)。枠の罫線と背景を丸め、中の画像も内側の角丸で切り抜く */
   borderRadius?: BorderRadius;
   /** 外側の空き (pt)。行の進む方向の始端 (start) と終端 (end) に、枠の外の空白を置く (CSS の inline 要素の左右の margin) */
@@ -829,9 +947,20 @@ export interface RevisionBar {
   style?: BorderLineStyle;
   /** 線の太さ (pt) */
   width?: number;
-  /** 段の端からの間隔 (pt) */
+  /** 段の端からの間隔 (pt)。changeBar のときは、段の端からバーの中心まで */
   offset?: number;
-  position?: 'start' | 'end' | 'both' | 'alternate';
+  /**
+   * 引く側。start・end は段の行の始め・終わりの端。both は両側、alternate は段の番号で交互 (アンテナハウスの axf:revision-bar-position)。
+   * changeBar のときは change-bar-placement (XSL 1.1 §7.30.4): left・right は段の左・右の端 (縦書きでは start・end として扱う)、
+   * inside・outside は綴じる側とその反対 (横書き: 奇数ページの綴じる側は始めの端、偶数ページは終わりの端。縦書き: inside は始め、outside は終わり)、
+   * alternate は 2 段のとき 1 段めの始めと 2 段めの終わり、ほかの段数では outside
+   */
+  position?: 'start' | 'end' | 'both' | 'alternate' | 'left' | 'right' | 'inside' | 'outside';
+  /**
+   * XSL 1.1 の変更バー (fo:change-bar-begin。§6.13.2・§6.4.5 の change bar area)。offset をバーの中心までの距離にし (§7.30.3)、
+   * position を change-bar-placement として読む。隣り合うセルの行は、高い方の下まで 1 本にまとめる
+   */
+  changeBar?: boolean;
 }
 
 /** リンクの飛び先 (fo:basic-link)。internal は文書内の id、external は URI */
@@ -997,10 +1126,13 @@ export interface LImage extends BaseNode {
   /** uniform (既定): width × height に収まるよう縦横比を保って縮尺 / non-uniform: 指定寸法へ引き伸ばす */
   scaling?: 'uniform' | 'non-uniform';
   /**
-   * width × height の枠への画像の収め方 (CSS の object-fit)。cover: 枠を覆うように拡大して、はみ出しを切り抜く /
-   * contain: 枠に収まる大きさで中央に置く / fill: 枠へ引き伸ばす。指定すると scaling より優先
+   * width × height の枠への画像の収め方 (CSS の object-fit。CSS Images 3 §4.5)。cover: 枠を覆うように拡大して、はみ出しを切り抜く /
+   * contain: 枠に収まる大きさで置く / fill: 枠へ引き伸ばす / none: 画像本来の大きさのまま置いて、はみ出しを切り抜く /
+   * scale-down: none と contain のうち、小さくなるほう。指定すると scaling より優先
    */
-  fit?: 'cover' | 'contain' | 'fill';
+  fit?: 'cover' | 'contain' | 'fill' | 'none' | 'scale-down';
+  /** 枠の中での画像の位置 (CSS の object-position。CSS Images 3 §4.6)。無ければ中央 (50% 50%)。fit が fill のときは使わない */
+  fitPosition?: ObjectPosition;
   /**
    * 枠に合わせる倍率の制限 (fo の content-width / content-height の scale-down-to-fit・scale-up-to-fit)。down: 1 倍を超えない
    * (本来の大きさが枠以下なら本来の大きさ) / up: 1 倍を下回らない (本来の大きさが枠以上なら本来の大きさ)
@@ -1089,6 +1221,14 @@ export interface LFloat extends BaseNode, BoxStyle {
    * alternate: 最初の段では end、ほかの段では start (段の間に寄せる。アンテナハウスの float: alternate)
    */
   float: 'start' | 'end' | 'before' | 'after' | 'center' | 'alternate' | 'inside' | 'outside';
+  /**
+   * 段落の最初の字を大きくして数行に沈める指定 (CSS の initial-letter。CSS Inline 3 §7.3)。float: 'start' と一緒に使い、子は、字を入れた
+   * ブロック 1 つ。size は字の大きさ (行の数)、sink は沈める行の数 (1 なら沈めず、上へ突き出す)。align は、まわりの文字のどこに
+   * 合わせるか (initial-letter-align。§7.4): alphabetic = 大文字の高さと欧文の基線、ideographic = 字の枠の上端と下端、
+   * leading = 行の上端と下端。字の大きさ・位置は、組むときに書体の値から決める (§7.5.3・§7.6.1)。字を入れたブロックの
+   * 字の大きさ・行の高さの指定は使わない (§7.5.1)
+   */
+  initialLetter?: { size: number; sink: number; align?: 'alphabetic' | 'ideographic' | 'leading' };
   /**
    * 本文に食い込まない、余白に置く注 (傍注)。float の幅は本文領域の幅になり、中身は負の margin で余白へはみ出して置く。
    * 本文の行は短くならない。続けて置く傍注は、前の傍注の下へ積む
@@ -1214,6 +1354,28 @@ export interface LRetrieveMarker {
 }
 
 /**
+ * fo:retrieve-table-marker 相当 (表の header・footer のセルの中でのみ有効。XSL 1.1 §6.13.7)。
+ * その表の断片 (ページ・段ごとの表の箱) の中のマーカー (本体のセル・セルの中のブロック・LTableRow.bodyMarkers) の children を、この位置へ展開する。
+ * header・footer は断片ごとに組み直すので、断片ごとに中身と高さが変わりうる
+ */
+export interface LRetrieveTableMarker {
+  type: 'retrieve-table-marker';
+  className: string;
+  /**
+   * retrieve-position-within-table (§7.25.6)。既定 first-starting。
+   * first-starting: この断片で始まる親のマーカーの最初。無ければこの断片の最初のマーカー (前の断片から続く親のもの)、それも無ければ範囲の中の最後
+   * first-including-carryover: この断片の最初のマーカー。無ければ範囲の中の最後
+   * last-starting: 範囲の中で、始まった親のマーカーの最後。無ければ範囲の中の最後
+   * last-ending: 範囲の中で、終わった親のマーカーの最後。無ければ範囲の中の最後
+   */
+  position?: 'first-starting' | 'first-including-carryover' | 'last-starting' | 'last-ending';
+  /** retrieve-boundary-within-table (§7.25.2)。探す範囲。table (既定): この断片と前の断片すべて・table-fragment: この断片だけ・page: この断片と、同じページの前の断片 */
+  boundary?: 'table' | 'table-fragment' | 'page';
+  /** marker の番号 (LMarker.key) ごとの、この位置の文脈で読んだ中身。あれば LMarker.children の代わりに使う */
+  variants?: Record<number, Array<LBlockLevel | LInlineLevel>>;
+}
+
+/**
  * fo:leader 相当。行内で「余白を埋める」伸縮要素 (目次の点線リーダー、罫線リーダー等)。
  * 行に含まれる leader は、その行の残り幅 (最大長まで) を等分して埋める。
  */
@@ -1236,6 +1398,12 @@ export interface LLeader extends BaseNode {
    * length の同じ成分より優先する。中身の長さを測るとき (表の自動レイアウト) は決められないので、minimum を使う
    */
   lengthPct?: { minimum?: number; optimum?: number; maximum?: number };
+  /**
+   * 点・文字列の繰り返しの周期の始まりを合わせる格子の基準 (XSL 1.1 §7.22.1 の leader-alignment)。
+   * reference-area: 参照領域 (本文の領域・段・表のセル) の内容の始めの端、page: ページの始めの端。
+   * 指定が無ければ (none)、行の始めからピッチの倍数の位置に置く。右から左の行・回したコンテナの中では、指定が無いのと同じ
+   */
+  alignment?: 'reference-area' | 'page';
   /**
    * CSS の leader() (Content 3 §2.5)。繰り返す字を少なくとも 1 回は見せ、入らなければ前の内容の後で改行して次の行に置く。
    * 後ろの内容とは同じ行に置く
@@ -1413,6 +1581,11 @@ export interface LTableRow extends BaseNode {
   border?: BorderInput;
   /** 行グループ (table-header・table-body・table-footer) の罫線と、この行がグループの最初・最後か (collapse でだけ使う) */
   group?: { border: BorderInput; first: boolean; last: boolean };
+  /**
+   * この行を含む fo:table-body の子の fo:marker (XSL 1.1 §6.7.8) と、この行がその本体の最初・最後の行か。
+   * 同じ本体の行は、同じ markers の配列を持つ。LRetrieveTableMarker から取り出せる (本体の断片ごとの領域に付く)
+   */
+  bodyMarkers?: { markers: LMarker[]; first: boolean; last: boolean };
 }
 export interface LTableBody extends BaseNode {
   type: 'table-body';
@@ -1537,8 +1710,10 @@ export interface AreaBase {
   padding: Edges;
   border: BorderStyle;
   backgroundColor?: string;
-  /** 背景画像 (大きさは解決済み) */
+  /** 背景画像 (大きさは解決済み。後ろに重ねる画像 under も、それぞれ大きさは解決済み) */
   backgroundImage?: BackgroundImage & { width: number; height: number };
+  /** 背景の色を塗る範囲 (CSS の background-clip)。無ければ border の箱 (width × height) */
+  backgroundClip?: 'padding-box' | 'content-box';
   writingMode: WritingMode;
   /**
    * 箱の回転 (反時計回り。reference-orientation)。width / height は回転前の局所サイズ、x / y は回転後の外接矩形の左上。
@@ -1546,6 +1721,17 @@ export interface AreaBase {
    * (GlyphArea.rotation は「文字」の回転なので別物。名前を分けている)
    */
   orientation?: Rotation;
+  /**
+   * 描くときの変換 (CSS の transform)。[a, b, c, d, e, f] は x' = a·x + c·y + e、y' = b·x + d·y + f (y は下向き、pt)。
+   * 座標の原点は、この Area の x・y の点 (border-box の左上。orientation があれば回転後の外接矩形の左上)。
+   * この Area とその子孫を描くときだけに掛ける。x・y・width・height と子の座標は、変換の前のまま (組版は変換を知らない)
+   */
+  transform?: [number, number, number, number, number, number];
+  /**
+   * 不透明度 (CSS の opacity。0 以上 1 未満。1 のときは欄が無い)。この Area とその子孫をまとめて 1 枚の絵にしてから、この濃さで重ねる
+   * (中の重なりは濃くならない)。transform と両方あれば、変換した絵を重ねる
+   */
+  opacity?: number;
   /** 内容を padding の外端で切り抜く (overflow="hidden" 等) */
   clip?: boolean;
   /** CSS の回り込み (float) の箱。親の流れの中のブロックの背景より手前、行内の中身より奥に描く (CSS 2.1 §9.5) */
@@ -1614,6 +1800,11 @@ export interface GlyphArea extends AreaBase {
    * 字形が 2 つ以上あり、送りが書体の送り幅と違うか、ずらしがあるときだけ付く (アラビア文字の記号の位置など)
    */
   glyphPositions?: Array<[number, number, number]>;
+  /**
+   * 色つきの字形のパレットの選び方 (CSS の font-palette と @font-palette-values の結果。colorGlyph.ts の FontPalette)。
+   * 既定のパレット (font-palette: normal) のときは付かない。色つきの表 (COLR/CPAL) を持つ書体の字だけに効く
+   */
+  fontPalette?: { base?: number | 'light' | 'dark'; colors?: Array<[number, string]> };
 }
 
 export interface InlineArea extends BlockLikeArea {
@@ -1626,10 +1817,15 @@ export interface ImageArea extends AreaBase {
   /** 画像データが無い (プレースホルダを描く) */
   missing: boolean;
   alt?: string;
-  /** 枠への収め方 (LImage.fit の cover / contain)。描く時に、画像本来の縦横比 (naturalWidth / naturalHeight) で、枠の中に置いて切り抜く */
-  fit?: 'cover' | 'contain';
+  /**
+   * 枠への収め方 (LImage.fit の cover・contain・none・scale-down)。描く時に、画像本来の大きさ (naturalWidth × naturalHeight。pt) から
+   * 大きさを決め (none は本来の大きさ、scale-down は none と contain の小さいほう)、枠の中に置いて切り抜く
+   */
+  fit?: 'cover' | 'contain' | 'none' | 'scale-down';
   naturalWidth?: number;
   naturalHeight?: number;
+  /** 枠の中での画像の位置 (CSS の object-position)。無ければ中央 */
+  fitPosition?: ObjectPosition;
   /** 枠へ引き伸ばす (XSL の scaling="non-uniform")。SVG は preserveAspectRatio を none として描く */
   stretch?: boolean;
   /** 描かない (CSS の visibility: hidden。場所は残す) */

@@ -52,9 +52,10 @@ import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Paint
 import { AssetStore } from './assets';
 import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, referencePath, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { iccRgbToCmyk, type CmykConverter } from './icc';
-import { embedCmykImage, embedPngAsIs, markCffSubset, memoEncode, patchCffEmbedding, patchFontkitSubset, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
+import { embedCmykImage, embedPngAsIs, markCffSubset, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
 import { shrinkJpeg } from './jpeg';
-import { mul, type Seg } from './matrix';
+import { PdfColorGlyphs } from './colorGlyphPdf';
+import { apply, invert, mul, type Seg } from './matrix';
 import { parseSvg, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type TextChars, type XmlNode } from './svg';
 import type { Annotation, Area, AreaTree, BookmarkArea, FormField, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea } from './types';
 
@@ -496,7 +497,7 @@ class PdfPainter implements Painter {
     pushOps(this.page, ops);
     // マスクの Form XObject の範囲 (SVG の座標): viewBox の周りを広めに
     const bbox: [number, number, number, number] = [vx - vw * 10, vy - vh * 10, vx + vw * 11, vy + vh * 11];
-    const outer = mul(this.ctm, svgCm);
+    const outer = mul(this.patternCtm, svgCm);
     for (const sh of v.shapes) pushOps(this.page, this.shapeOps(sh, outer, bbox));
     this.page.pushOperators(popGraphicsState());
   }
@@ -518,6 +519,68 @@ class PdfPainter implements Painter {
     this.flushText();
     this.ctm = saved;
     this.page.pushOperators(popGraphicsState());
+  }
+
+  /**
+   * 不透明度の付いた箱 (CSS の opacity。Color 4 §3.3): 中身を、透明のグループ (Group の S が Transparency) の Form XObject に描き、
+   * 塗り・線の不透明度 (ExtGState の ca・CA) を掛けて 1 度に置く (ISO 32000-1 §11.4.5・§11.6.6)。グループの中の重なりは、
+   * グループの中で不透明に重ねてから全体に不透明度が掛かるので、濃くならない。
+   * 中身はいまの座標のまま描く (Form の行列は単位行列)。資源 (書体・画像・ExtGState・模様) はページと同じ辞書を使う
+   */
+  group(opacity: number, draw: () => void) {
+    if (!this.ctx) return draw();
+    this.flushText();
+    const ops = pageOperators(this.page);
+    const start = ops.length;
+    // 模様の行列は、Form の中では Form の座標から (ISO 32000-1 §8.7.3.1): いまの変換を、Form の始まりの変換からの分にする
+    const savedBase = this.formBase;
+    this.formBase = this.ctm;
+    try {
+      draw();
+      this.flushText();
+    } finally {
+      this.formBase = savedBase;
+    }
+    const body = ops.splice(start);
+    if (!body.length) return;
+    const ctx = this.ctx.context;
+    // Form の範囲 (BBox): ページの全体を、いまの座標で表した外接矩形 (中身はページの外には描かれない)
+    const inv = invert(this.ctm);
+    const W = this.page.getWidth();
+    const pts = inv ? [apply(inv, 0, 0), apply(inv, W, 0), apply(inv, 0, this.H), apply(inv, W, this.H)] : [[0, 0], [W, this.H]];
+    const xs = pts.map((q) => q[0]);
+    const ys = pts.map((q) => q[1]);
+    const form = ctx.register(
+      ctx.contentStream(body, {
+        Type: 'XObject',
+        Subtype: 'Form',
+        BBox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+        Group: { S: 'Transparency', CS: this.spots.cmyk ? 'DeviceCMYK' : 'DeviceRGB' },
+        Resources: this.sharedResources(),
+      }),
+    );
+    const name = this.page.node.newXObject('KmG', form);
+    this.page.pushOperators(pushGraphicsState(), ...this.alphaOps(opacity, opacity), PDFOperator.of(Ops.DrawObject, [name]), popGraphicsState());
+  }
+  /**
+   * ページの資源の辞書を、間接オブジェクトにして返す (ページと、不透明度のグループの Form XObject が同じ辞書を参照する。
+   * グループの数だけ辞書の写しを書かない)
+   */
+  private sharedResources(): PDFRef {
+    const node = this.page.node;
+    node.normalize();
+    const cur = node.get(PDFName.of('Resources'));
+    if (cur instanceof PDFRef) return cur;
+    const ref = this.ctx!.context.register(node.Resources()!);
+    node.set(PDFName.of('Resources'), ref);
+    return ref;
+  }
+  /** いま描いている Form XObject (group) の始まりの変換 (ページの既定の座標へ)。ページにじかに描いているときは undefined */
+  private formBase?: Matrix;
+  /** 模様 (pattern) の行列の基準へのいまの変換: ページにじかに描くときは ctm、Form の中では Form の座標への変換 */
+  private get patternCtm(): Matrix {
+    const inv = this.formBase && invert(this.formBase);
+    return inv ? mul(inv, this.ctm) : this.ctm;
   }
 
   /** Sheet 座標 (y 下向き) の輪郭を、PDF の座標 (y → H − y) の経路の命令にする */
@@ -752,7 +815,7 @@ class PdfPainter implements Painter {
       BBox: [0, 0, a.width, a.height],
       XStep: a.width,
       YStep: a.height,
-      Matrix: mul(this.ctm, [1, 0, 0, 1, x, this.H - y - a.height]),
+      Matrix: mul(this.patternCtm, [1, 0, 0, 1, x, this.H - y - a.height]),
       Resources: { XObject: { KmI: img.ref } },
     });
     const name = this.addPattern(ctx.register(stream));
@@ -785,7 +848,17 @@ class PdfPainter implements Painter {
   /** ページの資源の書体の名前 (書体ごとに 1 つ) */
   private fontKeys = new Map<PDFFont, PDFName>();
 
+  /** 色つきの字形を持つ書体の字の描き手 (colorGlyphPdf.ts)。色つきの書体を使わない文書では undefined */
+  colorGlyphs?: PdfColorGlyphs;
+
   drawGlyph(g: GlyphArea, x: number, y: number) {
+    // 色つきの表 (COLR・CBDT・sbix・SVG) を持つ書体の字は、Type 3 書体の字として描く
+    const colored = this.colorGlyphs?.draw(g, x, y, this.page, this.H, (css) => colorOps(css, true, this.spots));
+    if (colored) {
+      this.flushText();
+      pushOps(this.page, colored);
+      return;
+    }
     const font = this.fontOf(g);
     // 改行しない空白 (U+00A0) は、通常の空白の字形で描く (Arimo の U+00A0 の字形は、fontkit が読めない壊れたデータ)
     const text = g.text.replace(/\u00A0/g, ' ');
@@ -1127,6 +1200,8 @@ async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager,
     // 背景画像も埋め込む
     const bgi = a.backgroundImage;
     if (bgi) use(bgi.src, bgi.width, bgi.height);
+    // 後ろに重ねる背景の画像 (複数の背景) も
+    for (const l of bgi?.under ?? []) use(l.src, l.width ?? 0, l.height ?? 0);
   });
   const images = new Map<string, PDFImage>();
   const vectors = new Map<string, SvgDoc>();
@@ -1217,9 +1292,11 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   setDocumentInfo(pdf, tree, opts);
 
   // 使用フォントだけを埋め込む (サブセット)。OpenType の機能 (onum・vert など) を使う字も、同じ埋め込みの字形として書く
+  // 色つきの表を持つ書体の字は、別に Type 3 書体として書く (ふつうの埋め込みを通さない)。色つきの書体を使わない文書では undefined
+  const colorGlyphs = await PdfColorGlyphs.create(pdf, tree, fonts, { cmyk: pdfxConverter(opts), warnings: opts.pdfx?.warnings, parseXml: opts.parseXml });
   const used = new Set<string>();
   walkAreaTree(tree, (a) => {
-    if (a.type === 'glyph') used.add(fonts.get(a.fontFamily, a.fontWeight).key);
+    if (a.type === 'glyph' && !colorGlyphs?.handles(a)) used.add(fonts.get(a.fontFamily, a.fontWeight).key);
   });
   const embedded = new Map<string, PDFFont>();
   /**
@@ -1261,6 +1338,7 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     setBoxes(page, sheet);
     const painter = new PdfPainter(page, sheet.height, fontOf, (src) => images.get(src), (src) => vectors.get(src), pdf, svgFontOf, svgImages);
     if (cmykOf) painter.cmykOutput = cmykOf;
+    painter.colorGlyphs = colorGlyphs;
     paintSheet(sheet, painter);
     painter.flushText();
     painters.push(painter);
@@ -1274,6 +1352,7 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     }
     return undefined;
   };
+  colorGlyphs?.finish();
   if (opts.pdfx) markPdfX(pdf, opts.pdfx, painters);
   // ファイルの識別子 (trailer の ID)。PDF 2.0 では必須、それより前の版では任意 (ISO 32000-2 §7.5.5 の Table 15・§14.4)
   if (!pdf.context.trailerInfo.ID) {

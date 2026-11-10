@@ -7,6 +7,8 @@ import { uprightPositions } from './areaResources';
 import { toCss } from './color';
 import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
 import type { AssetStore } from './assets';
+import { colorFontOf } from './colorGlyph';
+import { drawColorGlyphArea } from './colorGlyphCanvas';
 import type { Area, GlyphArea, ImageArea, Rect, SheetArea } from './types';
 
 export interface CanvasRenderOptions {
@@ -49,7 +51,11 @@ class CanvasPainter implements Painter {
     private fonts: FontManager,
     private assets?: AssetStore,
     private outlines = false,
-  ) {}
+  ) {
+    this.colorFonts = fonts.all().some((f) => colorFontOf(f));
+  }
+  /** 色つきの表 (COLR・CBDT・sbix・SVG) を持つ書体を読み込んでいるか (無ければ、色つきの字形の処理を通らない) */
+  private colorFonts: boolean;
   /** 書体 f で text を組んだ字形の輪郭 (OpenType の機能 features を当てる) */
   private outlineOf(f: ReturnType<FontManager['get']>, text0: string, features: string[]): Outline {
     // 改行しない空白 (U+00A0) は、通常の空白の字形で描く (Arimo の U+00A0 の字形は、fontkit が読めない壊れたデータ。PDF の drawGlyph と同じ)
@@ -90,6 +96,30 @@ class CanvasPainter implements Painter {
     this.ctx.transform(...m);
     draw();
     this.ctx.restore();
+  }
+  /**
+   * 不透明度の付いた箱 (CSS の opacity): 中身を同じ大きさの別の canvas に描いてから、不透明度を掛けて重ねる
+   * (Color 4 §3.3: 要素とその中身を 1 枚の絵にしてから重ねる。中の重なりは濃くならない)。切り抜きは、重ねるときに元の canvas のものが効く
+   */
+  group(opacity: number, draw: () => void) {
+    const main = this.ctx;
+    const { width, height } = main.canvas;
+    const off: HTMLCanvasElement | OffscreenCanvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(width, height) : Object.assign(document.createElement('canvas'), { width, height });
+    const octx = off.getContext('2d') as CanvasRenderingContext2D | null;
+    if (!octx || !width || !height) return draw();
+    octx.setTransform(main.getTransform());
+    octx.fontKerning = main.fontKerning;
+    this.ctx = octx;
+    try {
+      draw();
+    } finally {
+      this.ctx = main;
+    }
+    main.save();
+    main.setTransform(1, 0, 0, 1, 0, 0);
+    main.globalAlpha = opacity;
+    main.drawImage(off, 0, 0);
+    main.restore();
   }
   drawImage(a: ImageArea, x: number, y: number) {
     const asset = this.assets?.get(a.src);
@@ -134,6 +164,11 @@ class CanvasPainter implements Painter {
     ctx.font = this.fonts.cssFont(f, g.fontSize);
     ctx.fillStyle = toCss(g.color);
     ctx.textBaseline = 'alphabetic';
+    // 色つきの書体の字を、輪郭から描くとき・パレットを指定したとき・ブラウザが色つきに描けない表のときは、PDF と同じ図形・画像で描く
+    if (this.colorFonts && drawColorGlyphArea(ctx, this.fonts, g, !!g.features?.length || this.outlines)) {
+      ctx.restore();
+      return;
+    }
     if (g.features?.length || this.outlines || (f.instanceOf && !f.face)) {
       // OpenType の機能を当てた字形 (Canvas では指定できない)、または書体をブラウザに登録していないとき: 字形の輪郭を描く。
       // 可変フォントの実体は、ブラウザへの登録 (静的な書体にしたもの) が終わるまで、輪郭で描く

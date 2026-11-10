@@ -61,6 +61,8 @@ export function attachResources(tree: AreaTree, fonts: FontManager, assets?: Ass
   walkAreaTree(tree, (a) => {
     if (a.type === 'image' && a.src) addImage(a.src);
     if (a.backgroundImage?.src) addImage(a.backgroundImage.src);
+    // 後ろに重ねる背景の画像 (複数の背景)
+    for (const l of a.backgroundImage?.under ?? []) if (l.src) addImage(l.src);
     if (a.type !== 'glyph') return;
     const f = fonts.get(a.fontFamily, a.fontWeight);
     if (!f) return;

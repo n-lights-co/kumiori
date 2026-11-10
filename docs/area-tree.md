@@ -23,6 +23,18 @@
   - `x`・`y` は回転後の外接矩形の左上です。
   - 子の座標は、回転前の局所座標です。
 - `GlyphArea.rotation` は字の回転 (時計回り) で、箱の回転 `orientation` とは別のものです。
+- 背景 (`backgroundColor`・`backgroundImage`):
+  - `backgroundImage` は、いちばん手前の背景の画像です (大きさは解決済み)。`under` は、その後ろに重ねる画像の並び (手前のものから順) です。
+  - 画像ごとの `origin` は位置の基準の領域 (`border-box`・`content-box`。無ければ padding の箱)、`clip` は描く範囲 (`border-box`・`content-box`。無ければ padding の箱) です。
+  - `backgroundClip` は背景の色を塗る範囲 (`padding-box`・`content-box`) です。無ければ border-box (`width` × `height`) に塗ります。
+- 画像 (`image`) の `fit` (CSS の `object-fit` の `cover`・`contain`・`none`・`scale-down`) があるとき、`width` × `height` は枠の大きさで、画像は本来の大きさ (`naturalWidth` × `naturalHeight`) から大きさを決めて枠の中に置き、枠で切り抜きます。`fitPosition` (CSS の `object-position`) は枠の中での位置です (無ければ中央)。
+- `transform` (描くときの変換。CSS の `transform`) があるとき:
+  - 値は行列 `[a, b, c, d, e, f]` で、x' = a·x + c·y + e、y' = b·x + d·y + f です (y は下向き)。
+  - 行列の座標の原点は、この Area の `x`・`y` の点 (border-box の左上) です。
+  - この Area とその子孫を描くときだけに掛けます。`x`・`y`・`width`・`height` と子の座標は、変換の前のままです (組版は変換を知りません)。
+- `opacity` (不透明度。CSS の `opacity`。0 以上 1 未満) があるとき、この Area とその子孫をまとめて 1 枚の絵にしてから、その濃さで重ねます (中の重なりは濃くなりません)。`transform` と両方あれば、変換した絵を重ねます。
+- `transform`・`opacity` の付いた Area は、回り込み (`float`) のある所でも、背景と中身に分けずに、行内の中身の段でまるごと描きます。
+- 行の中の要素 (枠の付いた `span` など) に `opacity`・`transform` が付くと、その枠と中身をまとめた `inline` の Area (`sourceRef` は無し) を作り、そこに付けます。
 
 ## 節と子
 
@@ -73,6 +85,7 @@
 - `GlyphArea.text` は、字の単位 1 つ分の文字列です。ふつうは 1 字ですが、書記素クラスタ (UAX #29 の拡張書記素クラスタ: 基底の字 + 結合文字・異体字セレクタ、絵文字の並びなど)、合字にする字の並び、つながる字 (アラビア文字など) の並びは、2 字以上が 1 つの `GlyphArea` になります。`advance` は、その並びを 1 つの書体で組んだ送りの合計です。
 - `GlyphArea.glyphIds` は、描く字形の番号です。`text` を書体の OpenType の機能 (`features`) で組んだ結果で、左から右へ描く順です (PDF に書くときと同じやり方)。
 - `GlyphArea.glyphPositions` は、字形ごとの [送り, 横のずらし, 縦のずらし] です (書体の単位。`unitsPerEm` で 1 em)。書体の GPOS で調整した位置で、字形が 2 つ以上あり、送りが書体の送り幅と違うか、ずらしがあるときだけ付きます (アラビア文字の記号の位置、基底の字に載せる結合文字の位置など)。PDF は、これがあれば字形ごとに位置を決めて書きます。
+- `GlyphArea.fontPalette` は、色の付いた字形 (OpenType の COLR/CPAL・SVG の表) のパレットの選び方です (CSS の `font-palette` と `@font-palette-values` を、その字の書体に当てた結果)。`base` はパレットの番号、`colors` は色の差し替え ([色の番号, `#rrggbb` か `#rrggbbaa`] の並び)。既定のパレット (0 番で、差し替え無し) のときと、パレットを持たない書体の字には付きません。色の付いた字形そのもの (層・グラデーション・画像) は木に入れず、描くときに書体のファイルから読みます。
 - 字形の番号と位置は、組版で測るときと同じ機能の組で組みます (字の間の kern と任意の合字は、組版が別に扱うので当てません)。
 - SHA-256 は `src/sha256.ts` (FIPS 180-4) で計算します。試験で Node の crypto と同じ値になることを確かめています。
 

@@ -34,6 +34,12 @@ export interface Ctx {
   flip?: import('./types').WritingFlip;
   /** 言語 (xml:lang / language。継承される) */
   lang?: string;
+  /** language・xml:lang に書いたままの言語 (country を足す前。継承される) */
+  langBase?: string;
+  /** 国 (country。XSL 1.1 §7.10.1。継承される) */
+  country?: string;
+  /** 分綴の制限 (hyphenation-character などをまとめたもの。継承される) */
+  hyph?: import('./types').HyphenLimits;
   /** この要素を含む fo:page-sequence (fo:page-number の番号の前後に付ける fo:folio-prefix・fo:folio-suffix を探す。XSL 1.1 §6.6.10) */
   seqEl?: import('./foDom').XEl;
   /** static-content の中 (文字の「{pageNumber}」をページ番号の印にしない) */

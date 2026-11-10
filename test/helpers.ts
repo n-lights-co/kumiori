@@ -168,6 +168,13 @@ export const EXTRA_TEST_FONTS = {
   // 3.0.1 は名前の合字を liga (標準の合字) に、4.0.0 は rlig (必須の合字) に入れている
   'MaterialIcons-Regular-3.0.1.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/3.0.1/iconfont/MaterialIcons-Regular.ttf',
   'MaterialIcons-Regular-4.0.0.ttf': 'https://raw.githubusercontent.com/google/material-design-icons/4.0.0/font/MaterialIcons-Regular.ttf',
+  // 色つきの字形の書体 (test/colorGlyph.test.ts)。表の形を 1 つずつ確かめる書体は、テストの中で組み立てる (test/colorFontBuilder.ts)。
+  // ここは、実物でしか確かめられないもの: COLR version 0 の欧文の書体 (Bungee Color。配布元のリポジトリの、版のタグ 1.0.0。約 75KB)、
+  // COLR version 0 の絵文字の書体 (Twemoji の COLR 版 = Mozilla の twemoji-colr 0.7.0。肌の色・ZWJ・国旗の並び。約 1.5MB。
+  // プログラムは Apache-2.0、絵は CC-BY 4.0)、COLR version 1 でパレットを 7 つ持つ書体 (Nabla。Google Fonts の配信元の、版の付いた TTF。約 1.4MB)
+  'BungeeColor-Regular_colr-1.0.0.ttf': 'https://raw.githubusercontent.com/djrrb/Bungee/1.0.0/fonts/Bungee_Color_Fonts/BungeeColor-Regular_colr_Windows.ttf',
+  'TwemojiMozilla-colr-0.7.0.ttf': 'https://github.com/mozilla/twemoji-colr/releases/download/v0.7.0/Twemoji.Mozilla.ttf',
+  'Nabla-v17.ttf': 'https://fonts.gstatic.com/s/nabla/v17/j8_D6-LI0Lvpe7Makz5UhJt9C3uqg_X_75gyGS4jAxsNIjrRNRA.ttf',
   // 可変フォント (test/variableFonts.test.ts): Anybody (欧文。幅 wdth 50〜150 と太さ wght 100〜900 の 2 軸。TrueType の輪郭。約 200KB)。
   // 配布元 (google/fonts) のリポジトリの、コミットを決めた URL。比べる相手は、同じ書体の静的な書体 (Google Fonts の配信元が可変フォントから
   // 取り出したもの。版の付いた URL。各約 60KB): 幅 150・太さ 900、幅 75・太さ 400、幅 100・太さ 700
