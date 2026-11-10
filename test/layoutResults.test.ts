@@ -185,3 +185,41 @@ describe('ページをまたぐ段組のコンテナの id と左右の罫線 (L
     expect(count(allText(tr), 'あ')).toBe(900);
   });
 });
+
+describe('列定義の無い表の列数 (LAY-08)', () => {
+  const cellsOf = (t: Tree) => {
+    const out: BlockArea[] = [];
+    walk(t.sheets[0].page.regionBody, (a) => {
+      if (a.type === 'table-cell') out.push(a as unknown as BlockArea);
+    });
+    return out;
+  };
+  const tableOf = (t: Tree) => kids(t, 0)[0] as unknown as { columnSizes: number[] };
+  it('上の行から rowSpan で埋まる列も数える: 3 列目のセルの幅が 0 にならない', () => {
+    const rows = [
+      { type: 'table-row', cells: [{ ...cell(['A']), rowSpan: 2 }] },
+      { type: 'table-row', cells: [cell(['B']), cell(['CCCCCC'])] },
+    ];
+    const t = E.engine.layout(doc([{ type: 'table', columns: [], body: { type: 'table-body', rows } }] as never));
+    expect(tableOf(t).columnSizes).toHaveLength(3);
+    const cs = cellsOf(t);
+    expect(cs).toHaveLength(3);
+    for (const c of cs) expect(c.width).toBeCloseTo(pt(80) / 3, 1);
+  });
+  it('表フッターだけ列の多い表: フッターの列も数える', () => {
+    const t = E.engine.layout(
+      doc([{ type: 'table', columns: [], body: { type: 'table-body', rows: [{ type: 'table-row', cells: [cell(['A'])] }] }, footer: { type: 'table-body', rows: [{ type: 'table-row', cells: [cell(['F']), cell(['G'])] }] } }] as never),
+    );
+    expect(tableOf(t).columnSizes).toHaveLength(2);
+    for (const c of cellsOf(t)) expect(c.width).toBeGreaterThan(1);
+  });
+  it('列定義より多くの列を rowSpan で使う行があれば、足りない列を補う', () => {
+    const rows = [
+      { type: 'table-row', cells: [{ ...cell(['A']), rowSpan: 2 }, cell(['x'])] },
+      { type: 'table-row', cells: [cell(['B']), cell(['C'])] },
+    ];
+    const t = E.engine.layout(doc([{ type: 'table', columns: [{ type: 'table-column', width: 50 }, { type: 'table-column', width: 50 }], body: { type: 'table-body', rows } }] as never));
+    expect(tableOf(t).columnSizes).toHaveLength(3);
+    for (const c of cellsOf(t)) expect(c.width).toBeGreaterThan(1);
+  });
+});

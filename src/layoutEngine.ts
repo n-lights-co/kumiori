@@ -4631,12 +4631,11 @@ function columnChildren(node: LBlockContainer): LBlockContainer['children'] {
 
 function columnSizes(table: LTable, avail: number): number[] {
   let cols = table.columns;
-  if (!cols.length) {
-    const nCols = Math.max(1, ...[...(table.header?.rows ?? []), ...table.body.rows].map((r) => r.cells.reduce((a, c) => a + (c.colSpan ?? 1), 0)));
-    cols = Array.from({ length: nCols }, () => ({ type: 'table-column' as const }));
-  }
+  // 表の使う列の数: セルをグリッドに割り付けて数える (行をまたぐセルが占める列は、下の行のセルが飛ばす。CSS 2.1 §17.5)。
+  // 表ヘッダー・本体・表フッターのどの行も数える (行ごとの colSpan の合計では、上の行から伸びてきたセルの列が抜ける)
+  const used = placeCells([table.header?.rows ?? [], table.body.rows, table.footer?.rows ?? []]).nCols;
+  if (!cols.length) cols = Array.from({ length: Math.max(1, used) }, () => ({ type: 'table-column' as const }));
   // 列定義より多くの列を使う行があれば、足りない分は auto 列として補う
-  const used = Math.max(0, ...[...(table.header?.rows ?? []), ...table.body.rows].map((r) => r.cells.reduce((a, c) => a + (c.colSpan ?? 1), 0)));
   if (cols.length < used) cols = [...cols, ...Array.from({ length: used - cols.length }, () => ({ type: 'table-column' as const }))];
   let fixed = 0;
   let stars = 0;
