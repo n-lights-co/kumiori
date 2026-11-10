@@ -84,6 +84,9 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - The README of the Conformance Guides states the fonts embedded in their PDFs and the fonts' licenses
 - **Chinese (Traditional) punctuation**: punctuation drawn in the centre of the character frame (`、。，．` in Traditional Chinese fonts) is no longer trimmed by half an em and overlapped by the next character (`。」`, `，」`, `、）` and so on). Whether full stops, commas and colons (`：；`) are trimmed as closing punctuation or as middle dots is now decided from where the font draws the glyph (CSS Text 4 §8.5.3; colons at the lower left in Simplified Chinese fonts are closing punctuation). Results with Japanese fonts do not change
 - **Vertical punctuation (Traditional Chinese fonts)**: when a font has `vert` but does not substitute the comma or full stop, the default (centred) glyph is used as is (it is not replaced by the Unicode vertical form, which sits at the upper right)
+- **Emphasis mark position**: `text-emphasis-position` supports `under` (below the characters in horizontal text) and `left` (to the left in vertical text). The default for Chinese (`lang` is `zh`) is below the characters (the default style sheet in CSS Text Decoration 3, Appendix B)
+- **Bopomofo and pinyin ruby**: Bopomofo and its tone marks are kept together and centred over the base. Pinyin (Latin letters) is kept together in Chinese ruby (`lang` is `zh`) (CSS Ruby 1 §4.3)
+- **`<html lang="zh-…">`**: in Chinese documents the `lang` of `html` becomes the language of the text (the Chinese rules of `line-break: normal` and `loose` apply even when there is no `lang` inside `body`)
 
 ## 0.1.1 (2026-11-09)
 

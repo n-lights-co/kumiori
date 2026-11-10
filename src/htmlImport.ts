@@ -888,6 +888,9 @@ class HtmlImporter {
     const dg = vertical ? /digits(?:\s+(\d))?/.exec(this.inh(el, 'text-combine-upright', true)) : null;
     const maxDigits = dg ? parseInt(dg[1] ?? '2', 10) : 0;
     const mark = this.emphasisMark(el, vertical);
+    // 圏点の位置 (text-emphasis-position。CSS Text Decoration 3 §3.4): 横書きは over (上)・under (下)、縦書きは right (右)・left (左)。
+    // 下・左は、2 段目のルビ (親文字の下側・縦書きは左側) の位置に置く (圏点は、その位置のルビと同じに描く)
+    const markUnder = mark ? new RegExp(`(^|\\s)${vertical ? 'left' : 'under'}(\\s|$)`).test(this.cs(el)('text-emphasis-position')) : false;
     if (!maxDigits && !mark) return this.smallCaps(t, el);
     const out: LInlineLevel[] = [];
     let buf = '';
@@ -906,7 +909,7 @@ class HtmlImporter {
         // 圏点は、空白・約物・記号には付けない
         if (mark && !/[\s\p{P}\p{S}]/u.test(ch)) {
           flush();
-          out.push({ type: 'ruby', baseText: ch, rubyText: mark });
+          out.push(markUnder ? { type: 'ruby', baseText: ch, rubyText: '', rubyTextUnder: mark } : { type: 'ruby', baseText: ch, rubyText: mark });
         } else buf += ch;
       }
     }
@@ -5090,6 +5093,14 @@ class HtmlImporter {
     const rootFs = cssLen(this.cs(html)('font-size')) ?? 12;
     // 本文 (body) の書式は、ページシーケンスの書式にする
     const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    // 文書の言語: body に lang が無ければ、html の lang を受け継ぐ (HTML Living Standard §3.2.6.2: 言語は、lang を持つ最も近い祖先のもの)。
+    // いまは中国語 (zh) のときだけ: 字の言語 (TextStyle.language) で決まる動き (line-break の normal・loose の中国語・日本語だけの決まり =
+    // CSS Text 3 §5.2、拼音のルビをまとめて置くこと) を、<html lang="zh-…"> の文書でも効かせる。ほかの言語 (<html lang="ja"> など) は、
+    // 今までどおり body より内側の lang だけを見る (同じに直すと、〜 の前の折り返しなど、いまの組版の結果が変わる)
+    if (!rootStyle.language) {
+      const rootLang = this.langOf(bodyEl);
+      if (rootLang && /^zh\b/i.test(rootLang)) rootStyle.language = rootLang;
+    }
     // 互換モード・限定互換モードの行の高さ (Quirks Mode Standard §3.3・§3.4)
     if (documentModeOf(doc) !== 'no-quirks') Object.assign(rootStyle, { noStrut: true, lineHeightQuirk: true });
     // 和欧間アキの既定 (CSS Text 4 §8.4 の初期値 normal)。指定のある要素は、その指定 (spacing) で上書きする

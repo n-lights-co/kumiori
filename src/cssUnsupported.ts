@@ -94,6 +94,8 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'text-wrap',
   'text-decoration-style',
   'text-emphasis-color',
+  // text-emphasis-position は under・left に対応した (htmlImport の decorateText)。この一覧は対応仕様説明書 16 章の表と同じにしてあるので
+  // (test/unsupportedWarnings.test.ts)、説明書の表から外すときに、ここからも外す
   'text-emphasis-position',
   'text-underline-position',
   'text-shadow',

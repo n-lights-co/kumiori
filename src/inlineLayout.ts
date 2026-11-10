@@ -1187,18 +1187,47 @@ export function glyphNode(
   return newNode('glyph', wm, { isize: g.advance, bsize: fontSize, src, glyph, ...(cite ? { cite } : {}) });
 }
 
-/** 親文字・ルビを均等割り (space-around) で配置する */
-function distribute(advances: number[], total: number): number[] {
+/**
+ * 親文字・ルビを均等割り (space-around) で配置する。
+ * joined[k] が真なら、k 番目の字は前の字とひとまとまり (間を空けない)。まとまりを 1 つの単位として割る
+ */
+function distribute(advances: number[], total: number, joined?: boolean[]): number[] {
   const sum = advances.reduce((a, b) => a + b, 0);
-  const n = advances.length;
+  const n = advances.reduce((c, _a, k) => c + (k > 0 && joined?.[k] ? 0 : 1), 0);
   const gap = n > 0 ? (total - sum) / n : 0;
   const out: number[] = [];
   let x = gap / 2;
-  for (const a of advances) {
+  advances.forEach((a, k) => {
+    if (k > 0 && joined?.[k]) x -= gap;
     out.push(x);
     x += a + gap;
-  }
+  });
   return out;
+}
+
+/** 注音符号 (ボポモフォ) の字と、その声調の記号 (ˉ ˊ ˇ ˋ ˙ と、方言の ˪ ˫) */
+const BOPOMOFO = /^[\p{Script=Bopomofo}\u02C7\u02C9-\u02CB\u02D9\u02EA\u02EB]$/u;
+const BOPOMOFO_LETTER = /^\p{Script=Bopomofo}$/u;
+/** ラテン文字 (声調の記号つきの拼音など)・結合文字・語の間の空白 */
+const LATIN_RUBY = /^[\p{Script=Latin}\p{M}\u0020\u00A0'’·-]$/u;
+/**
+ * ルビの字の並びで、前の字との間を空けない字 (CSS Ruby 1 §4.3: ルビの注釈には text-justify: ruby が掛かり、ラテン文字どうし・
+ * 注音符号どうしの間には、割るための空きを入れない (その並びは、まとまりのまま中央に置かれる)。CSS Text 4 §7.5 の text-justify: ruby:
+ * 語の区切りと、注音符号の字の間では空けない)。
+ * 注音符号の並び (声調の記号を含む) は、いつもまとめる。ラテン文字の並び (拼音) は、中国語 (lang が zh) のルビだけまとめる
+ * (ほかの言語のルビの欧字は、今までどおり字ごとに割る)
+ */
+function rubyJoined(glyphs: GlyphMetrics[], lang: string | undefined): boolean[] | undefined {
+  const zh = /^zh\b/i.test(lang ?? '');
+  let any = false;
+  const out = glyphs.map((g, k) => {
+    if (k === 0) return false;
+    const p = glyphs[k - 1].ch;
+    const j = (BOPOMOFO.test(p) && BOPOMOFO.test(g.ch) && (BOPOMOFO_LETTER.test(p) || BOPOMOFO_LETTER.test(g.ch))) || (zh && LATIN_RUBY.test(p) && LATIN_RUBY.test(g.ch));
+    if (j) any = true;
+    return j;
+  });
+  return any ? out : undefined;
 }
 
 /**
@@ -1353,7 +1382,7 @@ export function buildLineNode(
           gn.b = r.rubyExtent;
           rn.children.push(gn);
         });
-        const rubyOff = distribute(r.rubyGlyphs.map((g) => g.advance), r.advance);
+        const rubyOff = distribute(r.rubyGlyphs.map((g) => g.advance), r.advance, rubyJoined(r.rubyGlyphs, a.st.language));
         r.rubyGlyphs.forEach((g, idx) => {
           const gn = glyphNode(g, a.st, wm, g.ch, r.rubySize, a.rubyColors?.[0] ?? a.st.color);
           gn.i = rubyOff[idx];
@@ -1362,7 +1391,7 @@ export function buildLineNode(
         });
         // 下側のルビ (2 段目): 親文字の下に置く
         if (r.underGlyphs) {
-          const underOff = distribute(r.underGlyphs.map((g) => g.advance), r.advance);
+          const underOff = distribute(r.underGlyphs.map((g) => g.advance), r.advance, rubyJoined(r.underGlyphs, a.st.language));
           r.underGlyphs.forEach((g, idx) => {
             const gn = glyphNode(g, a.st, wm, g.ch, r.rubySize, a.rubyColors?.[1] ?? a.st.color);
             gn.i = underOff[idx];

@@ -207,6 +207,10 @@ rtc, rt {
   line-height: 1; }
 rtc, :not(rtc) > rt {
   font-size: 50%; }
+/* CSS Text Decoration 3 の付録 B (UA の既定のスタイルシート。https://www.w3.org/TR/css-text-decor-3/#default-stylesheet) のうち、
+   言語ごとの圏点の位置: 中国語は字の下 (縦書きは右)、日本語・韓国語は字の上 (clreq §5.3.1 の着重号) */
+:root:lang(zh), [lang|=zh] { text-emphasis-position: under right; }
+[lang|=ja], [lang|=ko] { text-emphasis-position: over right; }
 input, textarea, select, button { font-size: 13.3333px; }
 input { padding: 1px 2px; } textarea { padding: 2px; }
 input, textarea, select { background-color: white; }

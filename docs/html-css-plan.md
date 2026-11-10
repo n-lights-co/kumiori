@@ -121,7 +121,7 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 **実装の状況 (第 3 段階)**: 対応済み。
 
 - `text-autospace`・`text-spacing-trim`・`text-spacing` → 和欧間のアキ・約物の詰め。和欧間のアキは CSS Text 4 どおり 1/8 em (互換のスタイル (`--style ah`) では 1/4 em。`-ah-text-autospace-width` も読む)。`hanging-punctuation` → ぶら下げ (CSS の既定は none なので、ブラウザの既定ではぶら下げない。本の組版向けの既定では allow-end)。
-- `text-emphasis` (圏点) は、字ごとのルビ (記号をルビ文字にする) にする。空白・約物・記号には付けない。`text-emphasis-position`・色は未対応。
+- `text-emphasis` (圏点) は、字ごとのルビ (記号をルビ文字にする) にする。空白・約物・記号には付けない。`text-emphasis-position` の `under` (横書きは字の下)・`left` (縦書きは字の左) は、2 段目のルビの位置に置く (中国語 = `lang` が `zh` の既定は `under right`)。色は未対応。
 - ルビの既定のスタイルは CSS Ruby 1 の付録 A.1 (rt・rtc の字は 50%、line-height: 1、white-space: nowrap など)。ルビの字の大きさは、最初の rt (無ければ rtc) の計算値の font-size の、ruby の font-size に対する比にする。付録 A.1 の注音 (bopomofo) の 30% の規則は、セレクタの並びの終わりに , があって無効なので入れない。
 - `text-combine-upright: digits N` は、縦書きの中の N 桁以下の数字を縦中横にする (ブラウザが知らないので CSS から読む)。
 - 段組: body (か html) の `columns` はページの段組、ほかのブロックは段組のコンテナ。`column-span: all` は段抜き。`column-fill: auto` 以外は末尾を釣り合わせる。
