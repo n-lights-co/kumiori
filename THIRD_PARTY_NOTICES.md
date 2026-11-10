@@ -2529,3 +2529,13 @@ https://www.w3.org/copyright/software-license-2015/
 Changes since the previous document
 The 2023 version updates identification of the copyright holder.
 ```
+
+## 11. Kumiori のコードに写した W3C の文書の値と式 (CSS Color 4 の色の変換の見本のコード)
+
+`src/cssColorFunctions.ts` の色の変換 (色空間と CIE XYZ の間の行列、伝達関数、白色点、Bradford の色順応の行列、HSL・HWB・Lab・LCH・Oklab・OkLCh の変換の式、力の無い成分を欠けた成分にする決まり、ΔEOK) は、W3C の文書 CSS Color Module Level 4 の本文の見本のコード (7.1・7.2・8.1・8.2 節、19 節「Sample code for Color Conversions」、20.3 節) の値と式を、TypeScript に書き直したものです (行列と定数の値は変えていません)。色域に収める手順は、同じ文書の 14.2.2 節の擬似コードに従って書いたものです。
+
+This software includes material copied from or derived from CSS Color Module Level 4 (https://www.w3.org/TR/2026/CRD-css-color-4-20261103/). Copyright © 2026 World Wide Web Consortium. https://www.w3.org/copyright/software-license-2023/
+
+- 文書の取得元: https://www.w3.org/TR/css-color-4/ (取得日 2026-11-10。取得した版は W3C Candidate Recommendation Draft、https://www.w3.org/TR/2026/CRD-css-color-4-20261103/)
+- 文書の著作権表示 (原文): 「Copyright © 2026 World Wide Web Consortium. W3C® liability, trademark and permissive document license rules apply.」。permissive document license のリンク先は https://www.w3.org/copyright/software-license/ (2026-11-10 の時点で https://www.w3.org/copyright/software-license-2023/ に転送される)
+- ライセンスの本文は、上の 4 節に写した Software and Document license - 2023 version と同じです。

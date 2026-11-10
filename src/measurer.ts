@@ -117,6 +117,13 @@ export interface RubyMetrics {
   /** 下側のルビ (2 段目) の字と、その張り出す厚さ */
   underGlyphs?: GlyphMetrics[];
   underExtent?: number;
+  /** 下側のルビの長さ (下側のルビがあるときだけ) */
+  underAdvance?: number;
+  /**
+   * 上側と下側のルビの厚さの合計。これがあるとき、下側のルビも行の高さに数えず (親文字の下の張り出しに入れない)、
+   * 行間がこの厚さより小さいときだけ、足りない分を行の上に足す (CSS Ruby 1 §3.6。ruby-position: under のルビ)
+   */
+  roomExtent?: number;
 }
 
 export interface TateChuYokoMetrics {
@@ -531,7 +538,7 @@ export class Measurer {
       rubySize,
       baseGlyphs,
       rubyGlyphs,
-      ...(underGlyphs ? { underGlyphs, underExtent: rubySize } : {}),
+      ...(underGlyphs ? { underGlyphs, underExtent: rubySize, underAdvance } : {}),
     };
   }
 

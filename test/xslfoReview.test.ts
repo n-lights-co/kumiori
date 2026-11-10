@@ -263,7 +263,8 @@ describe('読み込みの報告 (no 26)', () => {
       `<fo:page-sequence master-reference="m"><fo:title>TITLEX</fo:title><fo:folio-prefix>PFX</fo:folio-prefix><fo:folio-suffix>SFX</fo:folio-suffix>` +
       `<fo:flow flow-name="xsl-region-body"><fo:block>a</fo:block></fo:flow><fo:flow flow-name="other"><fo:block>b</fo:block></fo:flow></fo:page-sequence></fo:root>`;
     const r = imp(xml);
-    expect(r.report.unsupported).toEqual({ 'fo:flow-map': 1, 'fo:color-profile': 1, 'fo:title': 1, 'fo:folio-prefix': 1, 'fo:folio-suffix': 1, 'flow:other': 1 });
+    // fo:folio-prefix・fo:folio-suffix は、ページ番号の前後に付けるものとして読む (§6.6.13・§6.6.14) ので、数えない
+    expect(r.report.unsupported).toEqual({ 'fo:flow-map': 1, 'fo:color-profile': 1, 'fo:title': 1, 'flow:other': 1 });
     // fo:declarations の子の axf:document-info (拡張の置き場所) は読む
     expect(r.document.title).toBe('T');
   });

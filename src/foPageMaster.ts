@@ -70,6 +70,10 @@ export interface FoPageHost {
   refOrientation(el: XEl): Rotation;
 }
 
+/** page-width・page-height が auto (初期値) のときの用紙の大きさ (pt。A4 縦) */
+export const DEFAULT_PAGE_WIDTH = 595.28;
+export const DEFAULT_PAGE_HEIGHT = 841.89;
+
 /** fo:simple-page-master を読む。root・lms (fo:root・fo:layout-master-set) は、継承される font-size (em の基準) のため */
 export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): MasterInfo {
   const name = fo.attr(m, 'master-name') ?? 'master';
@@ -81,8 +85,8 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
     return pct ? (base * parseFloat(pct[1])) / 100 : (fo.len(v, base) ?? base);
   };
   const fs = fsOf(m, fsOf(lms, fsOf(root, fo.defaultFontSize)));
-  const W = fo.len(fo.attr(m, 'page-width'), fs) ?? 595.28;
-  const H = fo.len(fo.attr(m, 'page-height'), fs) ?? 841.89;
+  const W = fo.len(fo.attr(m, 'page-width'), fs) ?? DEFAULT_PAGE_WIDTH;
+  const H = fo.len(fo.attr(m, 'page-height'), fs) ?? DEFAULT_PAGE_HEIGHT;
   // margin の略記は 1〜4 値 (上 右 下 左)
   const side4 = (el: XEl, p: string) => fo.box4(el, 'margin')?.[['top', 'right', 'bottom', 'left'].indexOf(p)];
   // margin の百分率は、包含ブロックの幅に対する割合 (simple-page-master はページの幅)

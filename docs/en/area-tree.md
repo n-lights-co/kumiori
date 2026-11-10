@@ -48,6 +48,7 @@ To walk the tree, use `walkAreas()` (from one node) or `walkAreaTree()` (all she
 ## Border side fields
 
 - `BorderSide.symmetric`: places the dashed, dotted or dash-dot pattern symmetrically about the center of each side (CSS borders). If absent, the pattern continues around the sides clockwise.
+- `BorderSide.waveStroke`, `BorderSide.waveLength`: the stroke thickness and the length of one period (pt) of a wavy line (`style` is `wave`). They are set on wavy underlines, overlines and line-throughs (CSS `text-decoration-style: wavy`). If absent, they are derived from the border width (the stroke is 1/8 of the width and the period is about six times the width).
 - `BorderSide.collapse`: how a cell's side is painted, as decided by table border collapsing (`CollapsedSide`).
   - `paintWidth`: a line shared half-and-half with the neighboring cell is painted at this thickness (`width` is the space the cell takes, half the line thickness).
   - `noPaint`: takes the space only and paints no line (the neighboring cell paints it).

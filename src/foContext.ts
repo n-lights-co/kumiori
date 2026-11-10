@@ -34,6 +34,8 @@ export interface Ctx {
   flip?: import('./types').WritingFlip;
   /** 言語 (xml:lang / language。継承される) */
   lang?: string;
+  /** この要素を含む fo:page-sequence (fo:page-number の番号の前後に付ける fo:folio-prefix・fo:folio-suffix を探す。XSL 1.1 §6.6.10) */
+  seqEl?: import('./foDom').XEl;
   /** static-content の中 (文字の「{pageNumber}」をページ番号の印にしない) */
   inStatic?: boolean;
   /** 外のリストの provisional-distance-between-starts・provisional-label-separation (pt。継承される) */
@@ -45,6 +47,14 @@ export interface Ctx {
   relAlign?: 'before' | 'baseline';
   /** 祖先で指定した axf:revision-bar-* の値 (どれも継承される) */
   revBar?: Partial<Record<'style' | 'color' | 'width' | 'offset' | 'position', string>>;
+  /** font-variant="small-caps" (継承される。§7.9.8)。字の並びに small caps の印を付ける */
+  smallCaps?: boolean;
+  /** 受け継いだ word-spacing (pt。§7.17.8)。normal で 0 に戻すかどうかを決めるのに使う */
+  wordSpacing?: number;
+  /** 受け継いだ glyph-orientation-vertical (§7.29.3) を写した字の向き。auto (mixed) に戻すかどうかを決めるのに使う */
+  textOrientation?: 'mixed' | 'upright' | 'sideways';
+  /** visibility が hidden・collapse (継承される。§7.30.17)。字の色を transparent にし、背景・罫線を描かない。color は見えるときの色のまま持つ */
+  hidden?: boolean;
   /** text-transform (継承される。§7.17.6)。none は省略 */
   textTransform?: 'capitalize' | 'uppercase' | 'lowercase';
   /** 祖先の font-family の並び (太さだけを指定した要素で、書体を選び直すのに使う) */

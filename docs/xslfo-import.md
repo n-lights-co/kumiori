@@ -54,7 +54,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 
 ## 未対応 (レポートに件数を出す)
 
-知らない要素 (`fo:*`・MathML・`instream-foreign-object` の中身)・知らないリージョン名、`reference-orientation` の 90 の倍数以外の値 (0 として組む)、長さの式の知らない関数、読めない色、`font-variant`・`word-spacing` (と `font-stretch`。読んで組むが、同じ所で報告もする)、`text-decoration`・`text-transform`・`baseline-shift` の読めない値、`overflow` の auto・visible 以外、`axf:punctuation-trim`・`axf:field-type`・`axf:field-checked-style`・`axf:field-font-size`・`axf:annotation-type`・`axf:annotation-flags` の知らない値、`axf:printer-marks` の画像、添付するファイルの無い FileAttachment の注釈 (テキスト注釈にする)。
+知らない要素 (`fo:*`・MathML・`instream-foreign-object` の中身)・知らないリージョン名、`reference-orientation` の 90 の倍数以外の値 (0 として組む)、長さの式の知らない関数、読めない色、`font-variant`・`word-spacing`・`font-stretch` の読めない値、`text-decoration`・`text-transform`・`baseline-shift` の読めない値、`overflow` の auto・visible 以外、`axf:punctuation-trim`・`axf:field-type`・`axf:field-checked-style`・`axf:field-font-size`・`axf:annotation-type`・`axf:annotation-flags` の知らない値、`axf:printer-marks` の画像、添付するファイルの無い FileAttachment の注釈 (テキスト注釈にする)。
 数式の書体が読めないときの後備の組み方では、数式の細部 (Content MathML・maligngroup・mlabeledtr) は、件数には出さずに描けないまま (`BACKLOG.md` の I-02。数式の書体で組むときは対応する)。
 
 未対応の一覧と優先度は [BACKLOG.md](BACKLOG.md) に記録している。
@@ -284,6 +284,15 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - 百分率の基準: margin・padding・text-indent は包含ブロック (親の内容) の幅 (§7.11.1)、height・block-progression-dimension は高さの決まった包含ブロックの高さ (§7.15.6)、ページ・region-body の margin はページ (page-reference-area) の幅、region の extent はページの寸法 (§7.27.4。負の値は 0)、baseline-shift は親の line-height (em はその inline の font-size。§7.14.3)、leader-length は置く領域の寸法 (§7.22.4)
 - 罫線・余白の `.conditionality="retain"`: ページ・段で分かれた断片の切れ目でも残す
 - 絶対配置 (§7.6.1): `right`・`bottom` は基準の領域 (本文領域・リージョン) の端から測る。`absolute-position="fixed"` はページが基準。一括指定 `position` も読む (§7.31.20)
+- 一括指定 (§5.2・§7.31): `font`・`background`・`page-break-before`・`page-break-after`・`page-break-inside`・`size` を個別の性質に分けて読む (個別に書いた性質が勝つ)。`page-break-*` は §7.31.16〜§7.31.18 の表のとおり (`always` → `break-*="page"`、`left` → `even-page`、`right` → `odd-page`、`avoid` → `keep-with-previous`・`keep-with-next`・`keep-together` の `always`)。`font` のシステムの書体の語 (`caption` など) は読まずに報告する。`size` の `landscape`・`portrait` は、用紙 (A4) の向き
+- 寸法の上限・下限 (§7.15.8〜§7.15.11・§5.3.3): `min-height`・`max-height`・`min-width`・`max-width` は、書字方向で block / inline の `.minimum`・`.maximum` に当てる。横書きの箱の `min-height` (高さの下限)・`max-width`・`min-width` (幅の上限・下限) と、表の行の block 方向の下限・上限を読む。横書きの箱の `max-height` と、縦書きの箱の上限・下限は、組版に受け皿が無いので読まずに報告する
+- `clear` (§7.19.1): `fo:block` の `start`・`end`・`both` (`left` は `start`、`right` は `end`) は、その側の先の float の下から始める (`LBlock.clear`)。`inside`・`outside` と、`fo:block` 以外の要素の `clear` は読まずに報告する
+- `fo:folio-prefix`・`fo:folio-suffix` (§6.6.13・§6.6.14): 中身 (字と行内の要素) を、ページ番号の前後に付ける。`fo:page-number` はそれを含む `fo:page-sequence` のもの (§6.6.10)、`fo:page-number-citation`・`-last` は `ref-id` の要素を含む `fo:page-sequence` (引いたページを作ったもの) のもの (§6.6.11・§6.6.12)。`axf:physical-page-number="true"` の参照には付けない。中の `fo:page-number`・ブロックの要素は読まずに報告する
+- `font-variant="small-caps"` (§7.9.8): 字の並びを small caps の印の付いた行内の箱にする (`LInline.smallCaps`。書体に smcp があればその字形、無ければ 0.7 倍の大文字)。`word-spacing` (§7.17.8): 長さ (`<space>` は `.optimum`) を `wordSpacing` にして、語の間の空白に足す
+- `glyph-orientation-vertical` (§7.29.3): `auto` は `textOrientation` の `mixed`、`0deg` は `upright`、`90deg` は `sideways` (角度は 90 度の倍数の近い方に丸める。単位は `deg`・`grad`・`rad`)。180・270 度と、`glyph-orientation-horizontal` (§7.29.2) の 0 度以外は、組版に受け皿が無いので読まずに報告する
+- `relative-position="relative"` (§7.13.5・§5.5.5。一括指定 `position="relative"` も): 横書きの `fo:block` を、`left`・`top` (無ければ `right`・`bottom` の逆) だけずらす (`LBlock.relativeOffset`)。ほかの要素・縦書きでは読まずに報告する
+- `visibility` (§7.30.17): `hidden`・`collapse` は、字の色を `transparent` にして運び、背景・影を外し、罫線を `transparent` にする (場所は残す。継承され、`visible` で戻る)。表の行・列の `collapse` は `hidden` として扱い、報告する
+- `z-index` (§7.30.18・§5.4.5): 絶対配置の `fo:block-container` で、親の値に足した値が負なら本文の背面 (`layer: 'behind'`)。コンテナの中の絶対配置の箱と、relative の `fo:block` の負の値は報告する。0 以上の値の重なりの順は文書の順のまま
 - ページマスターの em は fo:root から受け継いだ font-size が基準。ページ番号の書式は XSLT 1.0 §7.7.1 どおり (最初のトークンだけを使い、知らないトークンは 1)
 - `line-stacking-strategy="font-height"` (行送りはいつも line-height。§4.5)
 - leader の初期値: `rule-thickness` 1pt、`leader-length` 0pt / 12pt / 100%。`leader-pattern-width` は字の幅より狭くしない (§7.22)。rule の線は中心を基線に置き、太さを上下に等しく付ける (§7.22.6)
@@ -291,7 +300,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 
 ### まだ仕様どおりでないもの
 
-- `last-line-end-indent` (§7.16.3)・`word-spacing`・`font-size-adjust` は読まない
+- `last-line-end-indent` (§7.16.3)・`font-size-adjust` は読まない。`word-spacing` の `<space>` は `.optimum` だけを使う (伸び縮みの幅は使わない)
 - `border-*-precedence` と `collapse-with-precedence` (collapse と同じに扱う)
 - 回転・縦書きのブロックコンテナの中の絶対配置の基準 (コンテナに切り替えない)
 - `simple-page-master` の `reference-orientation`

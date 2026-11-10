@@ -22,6 +22,13 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `width` と `max-width` の両方がある `display: block` の画像で、包む箱を画像の幅にした
   - 名前付きページ: 流れの外の箱 (絶対配置・回り込みなど) だけの最初のページを作らない (CSS Page 3 §8.1)
   - 印刷に関わらないプロパティ (`cursor`・`transition-*` など) を、未対応の CSS の警告に出さない
+  - ルビの配置: `ruby-position` (`under` で親文字の下、縦書きは左。`alternate` との組)、`ruby-align` (`start`・`center`・`space-between`・`space-around`)、`ruby-overhang` (`auto` を明示すると前後の仮名・約物に掛ける)、`ruby-merge: merge` (グループルビ) に対応。指定の無いルビの置く側・掛け方は変わらない
+  - ルビの字の配り方の既定を、`ruby-align` の初期値 `space-around` (CSS Ruby 1 §4.3) にした。**欧文・注音字母のルビの既定の並べ方が変わる**: 字の間を空けずに、親文字の中央にそろえる (前は字ごとに間を空けていた)。和文 (漢字・仮名) のルビと親文字は前と同じ。XSL-FO のルビは変わらない
+  - `font-variant-east-asian` に対応 (`jis78`・`jis83`・`jis90`・`jis04`・`simplified`・`traditional`・`full-width`・`proportional-width`・`ruby`。フォントの OpenType の機能で字形と字の幅を選ぶ。一括指定の `font-variant` からも読む)
+  - 下線・上線・取り消し線の線の種類 (`text-decoration-style` の `double`・`dotted`・`dashed`・`wavy`)、太さ (`text-decoration-thickness`)、下線をずらす量 (`text-underline-offset`) に対応。一括指定の `text-decoration` に線の種類と太さを書ける。`title` のある `abbr` の下線は、ブラウザと同じ点線になる (これまでは実線)
+  - 圏点の色 (`text-emphasis-color`) と付ける側 (`text-emphasis-position`。横書きの `under`、縦書きの `left`) に対応。一括指定の `text-emphasis` に色を書ける
+  - 文書の CSS の `fill`・`stroke`・`color` など (`stroke-width`・`fill-opacity`・`stroke-opacity`・`opacity`・`fill-rule`・線の端・角・破線) が、文書の中にじかに書いた `<svg>` に効く。`currentColor` は、`<svg>` の外から継承した `color` になる (`svg { fill: currentColor }` と `.icon { color: red }` でアイコンに色が付く)。SVG の画像でも、`color` の属性と `currentColor`、`rgba()` の色の不透明度を読む
+  - 色の関数 `hwb()`・`lab()`・`lch()`・`oklab()`・`oklch()`・`color()` (CSS Color 4) と `color-mix()` (CSS Color 5) に対応。出力は sRGB で、sRGB の色域の外の色は、明るさと色相を保って彩度を下げて色域に収める (CSS Color 4 §14.2)。これまでは、これらの色を書いた宣言は捨てていた (色は初期値や継承した値になっていた)
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)
@@ -74,7 +81,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `engines` の Node を 20.19.0 以上にした (実行時の依存が求める版)
   - Node のコマンドの出力 (`dist-cli`) に、画面用の `public/` の中身 (favicon など) を入れない
 - **`@supports`**: 読めない値の宣言 (`display: foo`・`color: notacolor`・`width: 10` など。まだ対応していない `color-mix()`・`lab()` も) に偽を返す (CSS Conditional 3 §6.1)。未対応のプロパティ・値には、上の「結果の誤りの修正」のとおり偽を返す
-- **未対応の CSS の警告**: `text-decoration-thickness`・`text-underline-offset`・`text-decoration-skip-ink`・`text-wrap-mode`・`text-wrap-style`・`hyphenate-limit-zone`・`hyphenate-limit-lines`・`hyphenate-limit-last` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
+- **未対応の CSS の警告**: `text-decoration-skip-ink`・`text-wrap-mode`・`text-wrap-style`・`hyphenate-limit-zone`・`hyphenate-limit-lines`・`hyphenate-limit-last` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
 - **開発**: `scripts/compare-pdf.mjs --html` が、いまの画面で動くようにした (設定の引き出しを開いてから選ぶ)。テストが機械のロケール・機械に入っている書体・実行時間に頼らないようにした。テストの書体の取得を 1 か所にまとめ、並列でも壊れないようにした
 - **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
 - **公開**: 対応仕様説明書の PDF (日本語版と英語版の 4 冊) を、版ごとに GitHub のリリースに付ける。奥付の「組版」の欄は、組んだ Kumiori の版にする
@@ -83,6 +90,13 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - CSS GCPM 3 の付録 B から写した規則の表示を足した (10 節)
   - 出力する JS のファイルの先頭に、Kumiori の版・ライセンスと `THIRD_PARTY_NOTICES.md` の場所を書いた注釈を付ける (CDN からファイルを 1 つだけ読む場合のため)
   - 対応仕様説明書の PDF に埋め込む書体とそのライセンスを、説明書の README に書いた
+- **XSL-FO の性質** (読んで組版へ渡すようにしたもの。`--compat` によらない):
+  - 一括指定の `font`・`background`・`page-break-before`・`page-break-after`・`page-break-inside`・`size` と、寸法の上限・下限の `min-height`・`min-width`・`max-width` (表の行は `max-height` も) を読む (XSL 1.1 §7.31・§7.15)。これまでは無視していたので、`page-break-before="always"` などの改ページが効いていなかった
+  - `fo:block` の `clear` (`start`・`end`・`both`・`left`・`right`) を読み、その側の先の `fo:float` の下からブロックを始める (XSL 1.1 §7.19.1)
+  - `fo:folio-prefix`・`fo:folio-suffix` の中身を、ページ番号 (`fo:page-number`・`fo:page-number-citation`・`fo:page-number-citation-last`) の前後に付ける (「A-12」のような章ごとのノンブル。XSL 1.1 §6.6.13・§6.6.14)
+  - `font-variant="small-caps"` (スモールキャップ) と `word-spacing` (語の間の空白に足す長さ) を読む (XSL 1.1 §7.9.8・§7.17.8)
+  - `glyph-orientation-vertical` の `auto`・`0deg` (すべての字を立てる)・`90deg` (すべての字を横に倒す) を読む (XSL 1.1 §7.29.3)。180・270 度と `glyph-orientation-horizontal` の 0 度以外は、読まずに報告する
+  - `relative-position="relative"` (横書きの `fo:block` をずらして描く)、`visibility` の `hidden`・`collapse` (場所を残して描かない)、絶対配置の `fo:block-container` の負の `z-index` (本文の背面に描く) を読む (XSL 1.1 §7.13.5・§7.30.17・§7.30.18)
 
 ## 0.1.1 (2026-11-09)
 
