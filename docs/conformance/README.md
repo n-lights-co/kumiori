@@ -43,7 +43,7 @@ npm run docs:conformance
 
 ## 画像
 
-`fo/images/` と `html/images/` の画像は、`scripts/make-conformance-images.py` で描いた自作の絵です。同じ絵を、Kumiori が読む 12 の形式で書き出しています。
+`fo/images/` と `html/images/` の画像のうち、`woven.*` と `checker.png` は、`scripts/make-conformance-images.py` で描いた自作の絵です (`woven.*` は、同じ絵を Kumiori が読む 12 の形式で書き出したもの)。`kumiori-logo.svg` は `assets/logo/` のロゴの写し、`arabic-sample.png` は Kumiori で組んだアラビア語の例 (HTML と CSS 編の 8.4 節) で、このスクリプトでは作りません。
 
 - ラスター: PNG・JPEG・GIF・BMP・TIFF・WebP (非可逆と可逆)
 - ベクター: SVG・EPS・WMF・EMF・CGM

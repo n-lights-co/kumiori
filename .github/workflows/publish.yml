@@ -24,11 +24,11 @@ jobs:
     # 環境 npm: リポジトリの Settings → Environments で「Required reviewers」を付けると、公開の前に人の承認を挟める
     environment: npm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # タグが main の上にあるかを確かめるため、main の履歴も取る
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -47,7 +47,7 @@ jobs:
             exit 1
           fi
       - run: npm ci
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .cache/fonts
           # ci.yml と同じ (単体テストと Node のコマンドのテストが使う既定の書体)

@@ -31,6 +31,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `fetchStyles`: 文書が `http(s):` で参照する CSS (`@import` の先も) を取る (既定 `true`)
   - `kumiori/node`: `createFontLoader` (Node のコマンドと同じ既定の書体の読み込みとキャッシュ)、`createFileResolver` (`file:` の参照を読む)、`defaultFontCacheDir`・`looksLikeFont`
 - **Node のコマンド**: `file:` の URL の参照を読む。`--no-fetch-styles` で CSS を取らない
+- **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
 - **公開**: 対応仕様説明書の PDF (日本語版と英語版の 4 冊) を、版ごとに GitHub のリリースに付ける。奥付の「組版」の欄は、組んだ Kumiori の版にする
 - **第三者の表示**:
   - @pdf-lib/fontkit の配布物に取り込まれたもの (Brotli の展開・base64-js・buffer など) の表示を足した

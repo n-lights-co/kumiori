@@ -31,16 +31,16 @@ jobs:
       # 既定の書体 (Noto Serif JP・Noto Sans JP・Tinos・Arimo・Cousine・STIX Two Math) を取得して置く場所
       KUMIORI_FONT_CACHE: ${{ github.workspace }}/.cache/conformance-fonts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # リリースのタグのコミットで組む (タグが無ければ、動かしたブランチ)
           ref: ${{ env.TAG || github.ref }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .cache/conformance-fonts
           key: fonts-conformance-v1
@@ -61,7 +61,7 @@ jobs:
           done
           ls -l release-pdf
           test "$(ls release-pdf | wc -l)" -eq 4
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: conformance-pdf
           path: release-pdf/*.pdf

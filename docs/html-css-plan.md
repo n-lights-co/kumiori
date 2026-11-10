@@ -140,7 +140,7 @@ node scripts/compare-pdf.mjs --html <見本>.html --ref <見本>.pdf --out <出�
 
 確かめる中で足したもの:
 
-- `@font-face` (一緒に選んだ TTF / OTF を、src の url のファイル名で突き合わせて読み込む。斜体の書体は読まない)。PDF には、CFF の OpenType は 'CFF ' の表を、使わない字の字形を空にした部分書体 (字の番号は変えない。`src/cff.ts`) にして埋め込む (FontFile3 の CIDFontType0C)。CID 方式の CFF では、本文の字の符号・W・ToUnicode を CID で書く (ISO 32000-2 §9.7.4.2)。OpenType の機能 (onum・vert など) を使う字も、同じ書体の 1 つの埋め込みの字形として書く (機能の組ごとに埋め込み直さない)
+- `@font-face` (一緒に選んだ TTF / OTF / WOFF / WOFF2 (WOFF・WOFF2 は sfnt に戻す。`src/webFont.ts`) を、src の url のファイル名で突き合わせて読み込む。斜体の書体は読まない)。PDF には、CFF の OpenType は 'CFF ' の表を、使わない字の字形を空にした部分書体 (字の番号は変えない。`src/cff.ts`) にして埋め込む (FontFile3 の CIDFontType0C)。CID 方式の CFF では、本文の字の符号・W・ToUnicode を CID で書く (ISO 32000-2 §9.7.4.2)。OpenType の機能 (onum・vert など) を使う字も、同じ書体の 1 つの埋め込みの字形として書く (機能の組ごとに埋め込み直さない)
 - 印刷向けの既定: body の余白 (画面の 8px) を付けない。`@media print` の規則を使い、screen だけの CSS は使わない (`@media` の並びの中の screen の条件は、条件ごと `not all` にする。`<style media>`・`<link media>` の条件は、印刷の媒体 (ページの大きさ) で評価する)。`vh` はページの領域の高さに対して決める
 - `@layer` の入れ子 (Cascade 5 §6.4): 入れ子の層は親の層の中に並び、親の層に直接書いた宣言はその入れ子の層のどれよりも強い (`@layer a.x` を後から書いても `a` の中)
 - `target-counter()` の任意のカウンター・`target-text()` (2 回変換して、参照先の番号・文字を集める)、`attr(href url)`
@@ -165,7 +165,7 @@ node scripts/compare-pdf.mjs --html <見本>.html --ref <見本>.pdf --out <出�
 - 互換のスタイル (`--style ah`、`footnoteCallLineHeightFromParent`): 参照番号の行の高さは、置く所の要素から受け継ぐ (置く所の line-height が数値なら参照番号の字の大きさに掛け、絶対値ならそのまま)。置く所が 1.3 なら行は広がらず、13pt なら 6pt の参照番号の箱が支柱の下へはみ出して行が 0.875pt 広がる
 - 両端揃えで、欧文のハイフンの後ろ (`border-*` の `-` と `*` の間など) は、和字が続くとき以外は広げない (CSS Text 3 §7.1: 欧文の両端揃えで広げるのは語の区切り)。以前は、ハイフンの後ろが文字・数字のときだけ広げなかった
 - 行グリッド (`-ah-baseline-grid`) の中の、背景・罫線のある箱 (目次の章の行など) は、箱の中に字の大きさの範囲 (基線の上の字の上端から字の下端まで) だけを入れ、上下の半行間などは箱の外にする (文字の位置は変わらない)
-- 互換のスタイル (`--style ah`、`columnsLongFirst`): 段組の箱の段を釣り合わせるとき、最初の段に、全体 (1 段に組んだ高さ) の段数分の 1 に届くまで中身を入れる (真ん中にまたがる行は最初の段へ)。既定は段数に収まる最小の高さ。CSS Multi-column 1 の `column-fill: balance` は「できるだけ均等に」で、決め方は定めていない。段の下端に float がある段組と行グリッドの中の段組は、互換のスタイルでも最小の高さにする
+- 段組の箱の段の釣り合わせ (互換のスタイルに限らない): 最初の段をいちばん長くし、後の段ほど短くする (どの段も前の段より高くしない)。段数に収まる最小の高さでそうなっていればそれを使い、なっていなければ、そうなる最小の高さまで伸ばす (`layoutEngine.ts`)。CSS Multi-column 1 の `column-fill: balance` は「できるだけ均等に」で、決め方は定めていない。段の下端に float がある段組は調整せず、最小の高さにする
 - 互換のスタイル (`--style ah`、`leaderFromStart`): `leader()` の点を始めの端 (前の内容のすぐ後) から並べ、`dotted` を `leader(". ")` とする (CSS Content 3 §5.3 は終わりの端にそろえる)
 - 互換のスタイル (`--style ah`、`columnsDiscardEndMargin`): 段組の箱で、最後の子の下の余白を段の高さに数えない
 - 互換のスタイル (`--style ah`): `bolder`・`lighter` を CSS 2.1 §15.6 のとおり、`@font-face` で定義した書体の太さのうち次の太さにする (Semibold (600) があれば、太字の th はそれになる)。既定のスタイルに CSS 2.1 付録 D の `th { font-weight: bolder }` を足し、`figure` の左右の余白を 0 にする (付録 D に figure は無い。図は本文の幅いっぱいに置く)

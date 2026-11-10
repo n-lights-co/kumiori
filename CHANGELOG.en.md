@@ -31,6 +31,7 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - `fetchStyles`: fetches CSS referenced by the document over `http(s):` (including `@import` targets; default `true`)
   - `kumiori/node`: `createFontLoader` (the same default-font loading and cache as the CLI), `createFileResolver` (reads `file:` references), `defaultFontCacheDir`, `looksLikeFont`
 - **CLI**: reads references given as `file:` URLs; `--no-fetch-styles` disables fetching CSS
+- **Documents**: corrected the line count and test count in the README, the step numbers in the release procedure, and statements in the Conformance Guides, plans and other documents that disagreed with the implementation or between the Japanese and English versions
 - **Publishing**: the PDFs of the Conformance Guides (four volumes, Japanese and English) are attached to the GitHub release of each version; the "Typesetting" row of the colophon shows the Kumiori version used to typeset them
 - **Third-party notices**:
   - Added notices for code bundled in the @pdf-lib/fontkit distribution (Brotli decoding, base64-js, buffer, etc.)
@@ -59,5 +60,5 @@ The first public release.
 - **Pages**: page masters, running heads and page numbers (folios), footnotes, multi-column layout, floats, tables (splitting, repeated headers, automatic column width), page number references, bookmarks, links, annotations, forms
 - **Output**: Canvas preview, PDF (subset font embedding, trim marks, PDF/X-3 marking)
 - **Other scripts**: right-to-left scripts such as Arabic and Hebrew (UAX #9, joined forms of Arabic letters), Latin hyphenation
-- **Usage**: the browser web app, the Node CLI `kumiori` (`--help`, `--version`, `--lang ja|en` and `KUMIORI_LANG` for English messages, a cache for the default fonts, warnings for unsupported CSS and XSL-FO), the library (`kumiori`: ES module; `kumiori/browser`: a single file for browsers with the dependencies bundled)
+- **Usage**: the browser web app, the Node CLI `kumiori` (`--help`, `--version`, `--lang ja|en` and `KUMIORI_LANG` for English messages, a cache for the default fonts, warnings for unsupported CSS and XSL-FO), the library (`kumiori`: ES module; `kumiori/browser`: a single file for browsers with the dependencies bundled; the `lang` option for English warnings)
 - **Documentation**: the Conformance Guide (HTML and CSS volume, XSL-FO volume; Japanese and English editions), the Area Tree JSON specification, and English versions of the README and docs (README.en.md, docs/en/)

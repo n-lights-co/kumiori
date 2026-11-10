@@ -13,7 +13,7 @@ and outputs a Canvas preview and PDF.
 
 Kumiori is developed with an AI coding assistant ([Claude Code](https://claude.com/claude-code)) (see "[About the development method](#about-the-development-method)").
 
-- **About 54,000 lines of TypeScript, about 1,500 tests**: Each time a feature is added, the AI adds tests, and CI (type checking, unit tests, and 13 browser integration tests) passes
+- **About 58,000 lines of TypeScript, about 1,600 tests**: Each time a feature is added, the AI adds tests, and CI (type checking, unit tests, and 13 browser integration tests) passes
 - **Implemented from the standards and specifications**: Kumiori is implemented by reading the standards and specifications as thoroughly as possible, including XSL-FO 1.1, the CSS modules (Paged Media, GCPM, Writing Modes, Text, Ruby, Fragmentation and others), MathML Core, the Unicode UAX #9 (bidirectional text) and UAX #14 (line breaking), W3C's JLREQ (Requirements for Japanese Text Layout, based on JIS X 4051) and PDF (ISO 32000), and following their definitions. The fine details of Japanese typesetting, such as punctuation compression, hanging punctuation and ruby overhang, are also based on these standards. The support status of each property, with the specification's definition and how Kumiori handles it, is collected in the Conformance Guide ([`docs/en/conformance.md`](docs/en/conformance.md))
 - **Behaviour checked against published PDFs**: The interpretation of the specifications and the finer points of layout are checked by comparing Kumiori's output with sample PDFs that XSL-FO and CSS typesetting tools have published
 

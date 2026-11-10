@@ -22,7 +22,7 @@ Kumiori is released in three forms.
 1. In the repository's **Settings → Pages**, set **Source** to "**GitHub Actions**"
 2. On a push to main, `.github/workflows/pages.yml` builds `dist/` and deploys it. The URL is `https://<account>.github.io/kumiori/` (it is also shown in the result of the "Pages" run under Actions)
 3. While the repository is private, the deploy step is skipped (on the free plan, Pages cannot be enabled for a private repository). The build still runs every time. Once the repository is public and step 1 is done, the next push deploys it (to deploy right away, run the "Pages" workflow with "Run workflow" under Actions)
-3. Write that URL in the "Web app (browser)" section of the README
+4. Write that URL in the "Web app (browser)" section of the README
 
 ### If the repository is moved to another account (organization)
 
@@ -54,7 +54,7 @@ main is protected by a ruleset, so version changes also go in through a PR. Publ
    publish.yml checks that the tag matches the version in `package.json` and that the tagged commit is on main, then runs `npm publish`. See the result in the "Publish" run under Actions.
    A published version can be unpublished, but the same number can never be reused
 5. Create a release for the tag under Releases on GitHub, with the CHANGELOG entry (Japanese and English) as its body.
-   When the release is published, `.github/workflows/conformance-pdf.yml` typesets the Conformance Guide at the tagged commit and attaches the four PDFs (`kumiori-xsl-fo-v0.1.1.pdf`, `kumiori-html-css-v0.1.1.pdf` and their `.en.pdf` versions) to the release. Check the result in the "Conformance PDF" run under Actions.
+   When the release is published, `.github/workflows/conformance-pdf.yml` typesets the Conformance Guide at the tagged commit and attaches the four PDFs (for v0.1.1, `kumiori-xsl-fo-v0.1.1.pdf`, `kumiori-html-css-v0.1.1.pdf` and their `.en.pdf` versions) to the release. Check the result in the "Conformance PDF" run under Actions.
    If it fails, or to attach them again, run "Conformance PDF" with "Run workflow" and enter the tag (files with the same names are replaced)
 6. Verify: in another directory, `npx kumiori@<version> --version` works, `https://cdn.jsdelivr.net/npm/kumiori@<version>/dist-browser/kumiori.js` can be opened, and the GitHub Pages web app has been updated
 
