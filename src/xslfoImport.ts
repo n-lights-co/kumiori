@@ -2766,7 +2766,7 @@ class Importer {
     return tbl;
   }
 
-  /** 行グループ (table-header / body / footer) の罫線を、外周に接するセルの罫線に重ねる (太い方が勝つ) */
+  /** fo:table-row を読む: セル・行の背景 (セルに背景が無ければ引き継ぐ)・行の罫線・行の高さ */
   private row(r: XEl, ctx: Ctx, tw: number | undefined, inheritedAlign?: string): LTableRow {
     const rAlign = this.attr(r, 'display-align') ?? inheritedAlign;
     const { style, ctx: c2 } = this.textStyle(r, ctx);
