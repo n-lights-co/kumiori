@@ -6685,7 +6685,12 @@ export class LayoutEngine {
     hits.forEach((h, k) => {
       for (const rb of h.line.revs ?? []) {
         const r = runs.find((x) => x.rb === rb && x.last === k - 1 && x.col.k === h.col.k);
-        if (r) {
+        if (r && rb.changeBar) {
+          // 変更バー: 隣り合うセルの行 (前の行より上に戻る) も含めて、いちばん上からいちばん下まで
+          r.b0 = Math.min(r.b0, h.b);
+          r.b1 = Math.max(r.b1, h.b + h.line.bsize);
+          r.last = k;
+        } else if (r) {
           r.b1 = h.b + h.line.bsize;
           r.last = k;
         } else runs.push({ rb, col: h.col, b0: h.b, b1: h.b + h.line.bsize, last: k });
@@ -6696,10 +6701,13 @@ export class LayoutEngine {
       // 段の端からバーまでの間隔 (既定 0。指定が無ければ、バーは段の端に接する)
       const off = rb.offset ?? 0;
       const pos = rb.position ?? 'start';
-      const sides = pos === 'both' ? ['start', 'end'] : pos === 'alternate' ? [col.k % 2 === 0 ? 'start' : 'end'] : [pos];
+      const sides = rb.changeBar
+        ? [changeBarSide(pos, { wm, rtl: sst.direction === 'rtl', odd: p.number % 2 === 1, col: col.k, columns: p.master.columns?.count ?? 1 })]
+        : pos === 'both' ? ['start', 'end'] : pos === 'alternate' ? [col.k % 2 === 0 ? 'start' : 'end'] : [pos];
       for (const side of sides) {
         const bar = newNode('block', wm, {
-          i: side === 'start' ? col.i - off - w : col.i + col.isize + off,
+          // 変更バーは、段の端から offset だけ離れた所がバーの中心 (XSL 1.1 §7.30.3)
+          i: rb.changeBar ? (side === 'start' ? col.i - off - w / 2 : col.i + col.isize + off - w / 2) : side === 'start' ? col.i - off - w : col.i + col.isize + off,
           b: b0,
           isize: w,
           bsize: b1 - b0,
@@ -6848,6 +6856,37 @@ export class LayoutEngine {
         : {}),
       ...(m.backgroundArea === 'content' ? { backgroundBox: { x: ex.left + rx, y: ex.top + ry, width: regionW, height: regionH } } : {}),
     };
+  }
+}
+
+/**
+ * 変更バー (XSL 1.1 §7.30.4 change-bar-placement) を、段の行の向きの前 (start) と後ろ (end) のどちらの端に置くか。
+ * 段の箱の位置は左 (縦書きは上) からなので、横書きの右から左の文書では、始めの端が後ろになる。
+ * inside・outside: 綴じる側は、奇数ページでは始めの端、偶数ページでは終わりの端とする (§6.4.5 の注の “Commonly …”)。縦書きでは綴じる側が
+ * 始めの端 (上) でも終わりの端 (下) でもないので、inside は始めの端、outside は終わりの端。
+ * left・right は、縦書きでは段の端 (上・下) に当たらないので、start・end として扱う (読み込みが報告する)
+ */
+function changeBarSide(pos: NonNullable<RevisionBar['position']>, o: { wm: WritingMode; rtl: boolean; odd: boolean; col: number; columns: number }): 'start' | 'end' {
+  const horizontal = o.wm === 'horizontal-tb';
+  const flip = horizontal && o.rtl;
+  const logical = (side: 'start' | 'end'): 'start' | 'end' => (flip ? (side === 'start' ? 'end' : 'start') : side);
+  const inside = horizontal ? (o.odd ? 'start' : 'end') : 'start';
+  const outside = inside === 'start' ? 'end' : 'start';
+  switch (pos) {
+    case 'end':
+      return logical('end');
+    case 'left':
+      return 'start';
+    case 'right':
+      return 'end';
+    case 'inside':
+      return logical(inside);
+    case 'outside':
+      return logical(outside);
+    case 'alternate':
+      return logical(o.columns === 2 ? (o.col === 0 ? 'start' : 'end') : outside);
+    default:
+      return logical('start');
   }
 }
 

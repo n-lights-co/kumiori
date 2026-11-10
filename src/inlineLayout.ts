@@ -1441,6 +1441,8 @@ export function buildLineNode(
   });
   // 改訂バー: この行の文字に付いたもの (同じ指定は 1 本)
   const revs = new Set(pl.raw.items.map((a) => a.st.revisionBar).filter((r) => r !== undefined));
+  // 変更バー (fo:change-bar-begin。入れ子・重なりで、1 つの字にいくつも付く)
+  for (const a of pl.raw.items) if (a.st.changeBars?.length) for (const r of a.st.changeBars) revs.add(r);
   if (revs.size) line.revs = [...revs];
 
   const entries: { a: Atom; off: number; w: number; ov?: number[]; dx?: number }[] = pl.raw.items.map((a, k) => ({ a, off: pl.offsets[k], w: pl.widths[k], ov: pl.overhang?.[k], dx: pl.shrinkDx?.[k] }));

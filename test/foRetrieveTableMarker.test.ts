@@ -16,10 +16,10 @@ beforeAll(async () => {
 
 const parse = (s: string) => new DOMParser().parseFromString(s, 'text/xml') as never;
 const NS = 'xmlns:fo="http://www.w3.org/1999/XSL/Format"';
-const page = (body: string, attrs = '', region = '') =>
+const page = (body: string, attrs = '', region = '', seq = '') =>
   `<?xml version="1.0"?><fo:root ${NS} xml:lang="ja"><fo:layout-master-set>` +
   `<fo:simple-page-master master-name="m" page-width="80mm" page-height="60mm" margin="5mm"><fo:region-body ${region}/></fo:simple-page-master>` +
-  `</fo:layout-master-set><fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body" font-size="10pt" line-height="14pt" ${attrs}>${body}</fo:flow></fo:page-sequence></fo:root>`;
+  `</fo:layout-master-set><fo:page-sequence master-reference="m" ${seq}><fo:flow flow-name="xsl-region-body" font-size="10pt" line-height="14pt" ${attrs}>${body}</fo:flow></fo:page-sequence></fo:root>`;
 const rtm = (cls: string, pos?: string, bd?: string) => `<fo:retrieve-table-marker retrieve-class-name="${cls}"${pos ? ` retrieve-position-within-table="${pos}"` : ''}${bd ? ` retrieve-boundary-within-table="${bd}"` : ''}/>`;
 const cell = (s: string) => `<fo:table-cell>${s}</fo:table-cell>`;
 /** 行: 1 列めのセルにマーカー (mk) と字 */
@@ -145,11 +145,14 @@ describe('fo:retrieve-table-marker', () => {
   });
 
   it('縦書きの表でも取り出す', () => {
-    const ps = texts(page(table(`H[${rtm('m')}]`, `F[${rtm('m', 'last-ending')}]`, rows(12, (k) => marker('m', `m${k}`))), 'writing-mode="tb-rl"'));
-    expect(ps.length).toBeGreaterThan(1);
+    const ps = texts(page(table(`H[${rtm('m')}]`, `F[${rtm('m', 'last-ending')}]`, rows(20, (k) => marker('m', `m${k}`))), '', '', 'writing-mode="tb-rl"'));
+    // 縦書き: 本文の幅 70mm ≒ 198pt に 14 行。見出し・フッターを除いて 12 行
+    expect(ps.length).toBe(2);
+    expect(ps[0]).toContain('F[m12]');
+    expect(ps[1]).toContain('H[m13]');
     expect(ps[0]).toContain('H[m1]');
     expect(ps[1]).toMatch(/H\[m\d+\]/);
-    expect(ps[ps.length - 1]).toContain('F[m12]');
+    expect(ps[ps.length - 1]).toContain('F[m20]');
   });
 
   it('表の header・footer の外の fo:retrieve-table-marker は、読み込みの報告に数える', () => {

@@ -157,6 +157,7 @@ export interface ResolvedStyle {
   wordSpaceShrink?: boolean;
   lineNumber?: import('./types').LineNumbering;
   revisionBar?: import('./types').RevisionBar;
+  changeBars?: import('./types').RevisionBar[];
   direction?: 'ltr' | 'rtl';
   /** unicode-bidi (引き継がない) */
   unicodeBidi?: import('./types').TextStyle['unicodeBidi'];
@@ -281,6 +282,7 @@ export function resolveStyle(parent: ResolvedStyle, n: BaseNode): ResolvedStyle 
     wordSpaceShrink: n.wordSpaceShrink ?? parent.wordSpaceShrink,
     lineNumber: n.lineNumber ? { ...parent.lineNumber, ...n.lineNumber } : parent.lineNumber,
     revisionBar: n.revisionBar ?? parent.revisionBar,
+    changeBars: n.changeBars ?? parent.changeBars,
     direction: n.direction ?? parent.direction,
     unicodeBidi: n.unicodeBidi,
     fontStretch: n.fontStretch ?? parent.fontStretch,

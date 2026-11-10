@@ -508,6 +508,102 @@ class Importer {
 
   /** 要素の親 (convert で文書の木を一度たどって作る。継承しない性質の inherit を親の値にするのに使う) */
   private parents = new WeakMap<XEl, XEl>();
+  /** 文書に fo:change-bar-begin・fo:change-bar-end がある (indexParents が見つける) */
+  private hasChangeBars = false;
+  /**
+   * 変更バー (XSL 1.1 §6.13.2): fo:flow の中の要素・文字 → その始まりの所で効いている変更バーの並び (効いているものがある所だけ)。
+   * 変更バーのある文書でだけ作る (prepareChangeBars)
+   */
+  private barsAt?: WeakMap<XNode, RevisionBar[]>;
+  /**
+   * 変更バーの範囲を、文書の順にたどって決める。fo:change-bar-begin と fo:change-bar-end は、fo:flow・fo:static-content の子孫のどこにでも置ける
+   * 「点」(§6.2) で、同じ change-bar-class の、入れ子の深さの合うものどうしが組になる (§6.13.2 の Constraints)。組になる終わりの無い始まりは
+   * 文書の終わりまで (§6.13.2)、組になる始まりの無い終わりは無視する (§6.13.3)。
+   * 線の色・太さ・間隔・側・線種は、始まりの要素での値 (§7.30.2〜§7.30.6 の注。どれも継承される)。
+   * バーを引くのは、region-body の、条件の付かない参照領域の中の領域 (§6.13.2): fo:static-content・脚注の本体・前方の float・fo:marker の中には付けない
+   */
+  private prepareChangeBars(root: XEl) {
+    const map = new WeakMap<XNode, RevisionBar[]>();
+    this.barsAt = map;
+    let active: RevisionBar[] = NO_BARS;
+    // class ごとの、開いている始まり (内側が後ろ)。線を引かない始まり (change-bar-style="none") は undefined
+    const open = new Map<string, Array<RevisionBar | undefined>>();
+    const inh = (el: XEl, k: string): string | undefined => {
+      for (let e: XEl | undefined = el; e; e = this.parents.get(e)) {
+        const v = this.attrInh(e, k);
+        if (v !== undefined) return v;
+      }
+      return undefined;
+    };
+    const todo: Array<{ n: XNode; on: boolean }> = [{ n: root, on: false }];
+    for (let t = todo.pop(); t; t = todo.pop()) {
+      const { n } = t;
+      if (n.nodeType !== 1) {
+        if (t.on && active.length && (n.nodeType === 3 || n.nodeType === 4)) map.set(n, active);
+        continue;
+      }
+      const el = n as XEl;
+      const fo = this.isFo(el);
+      const name = this.name(el);
+      if (fo && name === 'instream-foreign-object') continue;
+      if (fo && name === 'change-bar-begin') {
+        const cls = this.attr(el, 'change-bar-class') ?? '';
+        if (!this.attr(el, 'change-bar-class')) this.miss('fo:change-bar-begin (change-bar-class が無い)');
+        if (this.attr(el, 'z-index') !== undefined) this.miss('z-index (fo:change-bar-begin)');
+        const bar = this.changeBarOf(inh, el);
+        const list = open.get(cls) ?? [];
+        open.set(cls, list);
+        list.push(bar);
+        if (bar) active = [...active, bar];
+        continue;
+      }
+      if (fo && name === 'change-bar-end') {
+        const list = open.get(this.attr(el, 'change-bar-class') ?? '');
+        if (!list?.length) {
+          this.miss('fo:change-bar-end (組になる fo:change-bar-begin が無い)');
+          continue;
+        }
+        const bar = list.pop();
+        if (bar) active = active.filter((b) => b !== bar);
+        if (!active.length) active = NO_BARS;
+        continue;
+      }
+      const on = fo && name === 'flow' ? true : fo && (name === 'static-content' || name === 'footnote-body' || name === 'marker' || (name === 'float' && this.attr(el, 'float') === 'before')) ? false : t.on;
+      if (on && active.length) map.set(el, active);
+      const kids = Array.from(el.childNodes);
+      for (let k = kids.length - 1; k >= 0; k--) todo.push({ n: kids[k], on });
+    }
+  }
+  /** fo:change-bar-begin の線 (§7.30.2〜§7.30.6)。change-bar-style が none・hidden (初期値は none) なら引かない */
+  private changeBarOf(inh: (el: XEl, k: string) => string | undefined, el: XEl): RevisionBar | undefined {
+    const style = inh(el, 'change-bar-style') ?? 'none';
+    if (style === 'none' || style === 'hidden') return undefined;
+    const rb: RevisionBar = { color: this.color(inh(el, 'change-bar-color')) ?? this.color(inh(el, 'color')) ?? '#000000', changeBar: true };
+    if (['dotted', 'dashed', 'double', 'groove', 'ridge', 'inset', 'outset'].includes(style)) rb.style = style as RevisionBar['style'];
+    else if (style !== 'solid') this.miss(`change-bar-style="${style}"`);
+    // 太さと間隔に、相対の長さ (百分率・em) は書けない (§7.30.3・§7.30.6 の注)。書いてあれば、初期値にして報告する
+    const abs = (k: string, v: string | undefined) => {
+      if (v === undefined) return undefined;
+      if (/%|em\b/.test(v)) {
+        this.miss(`${k}="${v}"`);
+        return undefined;
+      }
+      return this.len(v, 0);
+    };
+    const w = inh(el, 'change-bar-width') ?? 'medium';
+    const kw = this.borderKeywords;
+    rb.width = w === 'thin' || w === 'medium' || w === 'thick' ? kw[w] : (abs('change-bar-width', w) ?? kw.medium);
+    rb.offset = abs('change-bar-offset', inh(el, 'change-bar-offset')) ?? 6;
+    const pl = inh(el, 'change-bar-placement') ?? 'start';
+    if (pl === 'start' || pl === 'end' || pl === 'left' || pl === 'right' || pl === 'inside' || pl === 'outside' || pl === 'alternate') rb.position = pl;
+    else this.miss(`change-bar-placement="${pl}"`);
+    // 縦書きでは、段の左・右の端はバーを引く端 (行の始め・終わり = 上・下) に当たらない。始め・終わりの端として扱う
+    if (rb.position === 'left' || rb.position === 'right') {
+      const wm = this.wmOf(inh(el, 'writing-mode') ?? '');
+      if (wm && wm !== 'horizontal-tb') this.miss(`change-bar-placement="${pl}" (縦書き)`);
+    }
+    return rb;
+  }
   private indexParents(root: XEl) {
     // 再帰でなく、積んだ一覧でたどる (深い入れ子でも呼び出しの深さを使わない)。深すぎる入れ子 (MAX_FO_NEST) は、ここで誤りにする
     // fo:instream-foreign-object の中身 (MathML・SVG) は、FO の要素としては読まないので数えない (それぞれの読み方に深さの上限がある)
@@ -517,6 +613,7 @@ class Importer {
       const foreign = t.foreign || (this.isFo(t.el) && this.name(t.el) === 'instream-foreign-object');
       for (const c of this.els(t.el)) {
         this.parents.set(c, t.el);
+        if (!this.hasChangeBars && (c.localName === 'change-bar-begin' || c.localName === 'change-bar-end') && this.isFo(c)) this.hasChangeBars = true;
         todo.push({ el: c, depth: foreign ? t.depth : t.depth + 1, foreign });
       }
     }
@@ -870,6 +967,7 @@ class Importer {
   convert(root: XEl): LDocument {
     const doc: LDocument = { type: 'document', sequences: [], spaceResolution: 'xsl' };
     this.indexParents(root);
+    if (this.hasChangeBars) this.prepareChangeBars(root);
     const lms = this.els(root).find((e) => this.name(e) === 'layout-master-set');
     const masters = new Map<string, MasterInfo>();
     const seqMasters = new Map<string, XEl>();
@@ -1447,6 +1545,9 @@ class Importer {
       if (!rb.width && (!this.spec || rb.style === 'groove' || rb.style === 'ridge' || rb.style === 'double')) rb.width = 3;
       s.revisionBar = rb;
     }
+    // 変更バー (fo:change-bar-begin〜fo:change-bar-end。§6.13.2): この要素の始まりで効いているものを付ける。効いているものが無ければ、
+    // 親から引き継いだ分を消す (前の兄弟・祖先の中で終わったもの)
+    if (this.barsAt) s.changeBars = this.barsAt.get(el) ?? NO_BARS;
     const hp = this.attr(el, 'axf:hanging-punctuation');
     if (hp) s.hangingPunctuation = hp !== 'none' && hp !== 'false';
     const wmv = this.attrInh(el, 'writing-mode');
@@ -2047,7 +2148,12 @@ class Importer {
         let t = applyTextTransform(this.refineText(n.textContent ?? '', ctx.ws), ctx.textTransform, { lowerRest: !this.spec });
         // static-content の文字の中の「{pageNumber}」「{totalPages}」は、ページ番号の印ではなく文字 (組むときに置き換えない印にする)
         if (ctx.inStatic) t = t.replace(/\{(pageNumber|totalPages)\}/g, '\u0000$1\u0000');
-        if (t) items.push({ v: t, block: false });
+        // 変更バー: この文字の所で効いているものが、親の要素の始まりと違えば (親の中で始まった・終わった)、その並びを付けた inline に包む
+        const cb = this.barsAt ? (this.barsAt.get(n) ?? NO_BARS) : undefined;
+        if (t && cb && cb !== (this.barsAt!.get(el) ?? NO_BARS) && !isXmlSpaceOnly(t)) {
+          const kids = this.smallCapsOf(ctx.ws.treatment !== 'preserve' ? this.punctuationSpacing(t, ctx) : [t], ctx);
+          items.push({ v: { type: 'inline', changeBars: cb, children: kids } as LInline, block: false });
+        } else if (t) items.push({ v: t, block: false });
       } else if (n.nodeType === 1) {
         // 段をまたぐブロックは、本文の幅で組む。その中の要素は段組の外と同じ
         const span = ctx.spanW !== undefined && this.attr(n as XEl, 'span') === 'all';
@@ -2400,6 +2506,10 @@ class Importer {
         this.retrieves.push({ r, ctx });
         return one(r, true);
       }
+      case 'change-bar-begin':
+      case 'change-bar-end':
+        // 変更バーの範囲は、先に文書の順にたどって決めてある (prepareChangeBars)。ここでは何も作らない
+        return [];
       case 'retrieve-table-marker': {
         // fo:retrieve-table-marker は fo:table-header・fo:table-footer の子孫に限る (XSL 1.1 §6.13.7 の Constraints)。fo:marker の中にも置けない (§6.13.5)
         if (this.inMarker || !this.inTableHF) {
@@ -3710,6 +3820,9 @@ function isEmptyContent(kids: Array<LBlockLevel | LInlineLevel>): boolean {
 }
 
 /** XML の空白 (スペース・タブ・改行・CR) だけの文字列か。String.prototype.trim と違い、U+00A0 などは空白とみなさない */
+/** 効いている変更バーが無い (XSL 1.1 §6.13.2)。要素に付けると、親から引き継いだ変更バーを消す */
+const NO_BARS: RevisionBar[] = [];
+
 function isXmlSpaceOnly(t: string): boolean {
   return /^[ \t\n\r]*$/.test(t);
 }

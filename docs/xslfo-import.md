@@ -37,6 +37,7 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 | `footnote` / `footnote-body` | `LFootnote` (参照記号のテキストをラベルに、本体は自前のラベルを持つとして `bodyLabel: false`) |
 | `leader` | `LLeader` (dots / rule / space / use-content、`leader-length.*`) |
 | `marker` / `retrieve-marker` | `LMarker` / `LRetrieveMarker` (`retrieve-position`, `retrieve-boundary`) |
+| `change-bar-begin` / `change-bar-end` | 範囲の中の要素・文字の `changeBars` (`RevisionBar` の並び。`changeBar: true`) |
 | `retrieve-table-marker` (表の header・footer の中) | `LRetrieveTableMarker` (`retrieve-position-within-table`, `retrieve-boundary-within-table`)。`fo:table-body` の子の `marker` は `LTableRow.bodyMarkers` |
 | `page-number` / `page-number-citation` | `{pageNumber}` トークン / `LPageNumberCitation` (組版を繰り返して収束) |
 | `index-key` / `index-range-begin`〜`-end` / `index-page-citation-list` | `LDocument.indexEntries` (`LIndexEntry`) / `LIndexPageCitationList` (索引のページ番号の並び。組版を繰り返して収束) |
@@ -306,6 +307,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - `line-stacking-strategy="font-height"` (行送りはいつも line-height。§4.5)
 - leader の初期値: `rule-thickness` 1pt、`leader-length` 0pt / 12pt / 100%。`leader-pattern-width` は字の幅より狭くしない (§7.22)。rule の線は中心を基線に置き、太さを上下に等しく付ける (§7.22.6)
 - `white-space-treatment="preserve"`・`ignore-if-after-linefeed` の行末の空白は消さない (§7.16.8)
+- 変更バー (`fo:change-bar-begin`・`fo:change-bar-end`。§6.13.2・§6.13.3・§6.4.5): 読み込みの最初に文書の順にたどって範囲を決め (同じ `change-bar-class` の、入れ子の深さの合うものが組。終わりの無い始まりは文書の終わりまで、始まりの無い終わりは無視して報告)、範囲の中の要素と文字に、効いている線の並びを付ける (`changeBars`。組版は、その字を含む行の横に引く。axf の改訂バーと同じ受け皿 `RevisionBar` に `changeBar: true`)。線の値は始まりの要素でのもの (`change-bar-color`・`-offset`・`-placement`・`-style`・`-width`。§7.30.2〜§7.30.6。どれも継承される)。`change-bar-offset` は段の端からバーの中心まで。`change-bar-placement` の `inside`・`outside` は、奇数ページの綴じる側を始めの端、偶数ページを終わりの端とする (§6.4.5 の注)。`alternate` は 2 段のとき 1 段めの始めと 2 段めの終わり、ほかは `outside`。縦書きの `left`・`right` は `start`・`end` として扱い報告する。`fo:static-content`・脚注の本体・前方の float・`fo:marker` の中には付けない。行を持たない領域には引かない。`z-index` は読まない (報告)
 - `fo:retrieve-table-marker` (§6.13.7): 表の header・footer のセルの中のものを、その表の断片 (ページ・段ごとの表の箱) の中のマーカーの中身に置き換える。マーカーは、本体のセルの子・セルの中のブロックの子・`fo:table-body` の子 (本体の領域に付く)。`retrieve-position-within-table` (§7.25.6) の 4 つの値と `retrieve-boundary-within-table` (§7.25.2) の `table`・`table-fragment`・`page` (同じページの前の段の断片まで)。is-first・is-last は、ページをまたいで分かれた行・本体の、最初・最後の断片で付く。header・footer は断片ごとに組む: 行の塊を 1 つ置くたびに、その塊までを入れたときの header と footer の高さで入るかを確かめ、入れば header をその中身に差し替える (高さが変われば、置いた行をずらす)。断片に入る行は前から順に決まるので、組み直しはしない。`fo:table` の子として書く形 (中身が `fo:table-header`・`fo:table-footer` になる書き方)、header・footer の外に置いたものは、読まずに報告する。入れ子の表の header の中のものは、入れ子の表のマーカーを取り出す。ページの `fo:retrieve-marker` は、`fo:table-body` の子のマーカーを取り出さない
 
 ### まだ仕様どおりでないもの
