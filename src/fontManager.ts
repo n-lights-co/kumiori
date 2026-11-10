@@ -222,7 +222,7 @@ export class FontManager {
     const fk = fontkit.create(new Uint8Array(buffer));
     patchFontkitVariationSelector(fk);
     patchFontkitShaping(fk);
-    // CFF の字形の hflex・hflex1 の読みを正す (輪郭で描くとき・字形の外接枠を使うとき。CFF の表の無い書体には何もしない)
+    // CFF の字形の読みを正す: hflex・hflex1 と、CID 方式の書体の FDSelect の範囲 (輪郭で描くとき・字形の外接枠を使うとき。CFF・CFF2 の表の無い書体には何もしない)
     patchFontkitCffFlex(fk);
     // 輪郭の表を持たない、ビットマップだけの色つきの書体 (CBDT の絵文字) を組めるようにする (ほかの書体には何もしない)
     prepareColorFont(fk);

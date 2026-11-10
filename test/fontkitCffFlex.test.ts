@@ -10,13 +10,16 @@
 import fs from 'node:fs';
 import fontkit from '@pdf-lib/fontkit';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { instantiateFont, readVariationInfo, staticCff2ToCff } from '../src/fontInstancer';
 import { FontManager } from '../src/fontManager';
 import { patchFontkitCffFlex } from '../src/fontkitCffFlex';
+import { buildCff2Font } from './cff2TestFont';
 import { extraTestFont, fontBuffer } from './helpers';
 
 type Cmd = { command: string; args: number[] };
 type FkGlyph = { path: { commands: Cmd[] }; bbox: { minX: number; minY: number; maxX: number; maxY: number }; cbox: { minY: number; maxY: number } };
-type Fk = { getGlyph(gid: number): FkGlyph; numGlyphs: number };
+type FkCff = { fdForGlyph(gid: number): number | null };
+type Fk = { getGlyph(gid: number): FkGlyph; numGlyphs: number; 'CFF '?: FkCff; CFF2?: FkCff };
 
 const PATCHED = Symbol.for('kumiori.fontkitCffFlexPatched');
 
@@ -98,15 +101,47 @@ function makeCff(): number[] {
   return [...header, ...name, ...index([top(csAt, pvAt)]), ...strings, ...gsubrs, ...charStrings, ...priv(privLen), ...subrs];
 }
 
+/**
+ * CID 方式の CFF: FD が 2 つで、局所の部分の命令の 0 番が FD ごとに違う (FD 0 は右へ 50、FD 1 は上へ 70 の線)。
+ * どの字形も「(100, 200) へ動いて、局所の 0 番を呼ぶ」だけなので、線の向きで、どの FD の Private DICT で読まれたかが分かる。
+ * FDSelect は形式 3: GID 0〜1 は FD 0、2〜3 は FD 1、4 は FD 0 (GID 2 と 4 が、範囲の最初の字)
+ */
+const CID_GLYPHS: number[][] = [[ENDCHAR], ...[1, 2, 3, 4].map(() => [...nums(100, 200), RMOVETO, ...nums(-107), CALLSUBR, ENDCHAR])];
+const CID_FD = [0, 0, 1, 1, 0];
+
+function makeCidCff(): number[] {
+  const header = [1, 0, 4, 1];
+  const name = index([[...'FlexCid'].map((c) => c.charCodeAt(0))]);
+  const strings = index([[...'Adobe'].map((c) => c.charCodeAt(0)), [...'Identity'].map((c) => c.charCodeAt(0))]);
+  const gsubrs = index([]);
+  const charStrings = index(CID_GLYPHS);
+  const fdSelect = [3, ...u16(3), ...u16(0), 0, ...u16(2), 1, ...u16(4), 0, ...u16(CID_GLYPHS.length)];
+  const subrs = [index([[...nums(50), HLINETO, RETURN]]), index([[...nums(0, 70), RLINETO, RETURN]])];
+  const priv = (subrsOff: number) => [...dictInt(subrsOff), 19];
+  const privLen = priv(0).length;
+  // Top DICT: ROS (SID 391 = Adobe、392 = Identity、0)、CharStrings (17)、FDArray (12 36)、FDSelect (12 37)
+  const top = (o: { cs: number; fdArray: number; fdSelect: number }) => [...dictInt(391), ...dictInt(392), ...dictInt(0), 12, 30, ...dictInt(o.cs), 17, ...dictInt(o.fdArray), 12, 36, ...dictInt(o.fdSelect), 12, 37];
+  const fd = (privAt: number) => [...dictInt(privLen), ...dictInt(privAt), 18];
+  let at = header.length + name.length + index([top({ cs: 0, fdArray: 0, fdSelect: 0 })]).length + strings.length + gsubrs.length;
+  const fdSelectAt = at;
+  at += fdSelect.length;
+  const csAt = at;
+  at += charStrings.length;
+  const fdArrayAt = at;
+  at += index([fd(0), fd(0)]).length;
+  // Private DICT と、そのすぐ後ろの局所の部分の命令 (FD ごと)
+  const privAt = [at, at + privLen + subrs[0].length];
+  return [...header, ...name, ...index([top({ cs: csAt, fdArray: fdArrayAt, fdSelect: fdSelectAt })]), ...strings, ...gsubrs, ...fdSelect, ...charStrings, ...index(privAt.map(fd)), ...priv(privLen), ...subrs[0], ...priv(privLen), ...subrs[1]];
+}
+
 /** CFF の表を持つ、最小の OpenType の書体 (fontkit が字形の輪郭を読むのに要る表だけ) */
-function makeOtf(): Uint8Array {
-  const n = GLYPHS.length;
+function makeOtf(cff = makeCff(), n = GLYPHS.length): Uint8Array {
   const head = [...u32(0x00010000), ...u32(0), ...u32(0), ...u32(0x5f0f3cf5), ...u16(0), ...u16(1000), ...new Array(16).fill(0), ...u16(0), ...u16(0), ...u16(1000), ...u16(1000), ...u16(0), ...u16(8), ...u16(2), ...u16(0), ...u16(0)];
   const hhea = [...u32(0x00010000), ...u16(800), ...u16(0x10000 - 200), ...u16(0), ...u16(1000), ...new Array(22).fill(0), ...u16(0), ...u16(n)];
   const maxp = [...u32(0x00005000), ...u16(n)];
-  const hmtx = GLYPHS.flatMap(() => [...u16(500), ...u16(0)]);
+  const hmtx = Array.from({ length: n }, () => [...u16(500), ...u16(0)]).flat();
   const tables: Array<[string, number[]]> = [
-    ['CFF ', makeCff()],
+    ['CFF ', cff],
     ['head', head],
     ['hhea', hhea],
     ['hmtx', hmtx],
@@ -140,6 +175,17 @@ describe('fontkit の CFF の字形の hflex・hflex1 (fontkitCffFlex.ts)', () =
   let sourceSans: Uint8Array;
   let sourceSansBefore: string[];
   let fk: Fk;
+  const cidOtf = makeOtf(makeCidCff(), CID_GLYPHS.length);
+  let cidBefore: string[];
+  /** CFF2 の書体から作った静的な CFF (既定の形の実体・太さ 700 の実体・可変でない CFF2 を CFF にしたもの) */
+  const cff2 = buildCff2Font();
+  const cff2Info = readVariationInfo(cff2)!;
+  const fromCff2 = [
+    instantiateFont(cff2, cff2Info, cff2Info.axes.map((a) => a.default)).buffer,
+    instantiateFont(cff2, cff2Info, cff2Info.axes.map((a) => (a.tag === 'wght' ? 700 : a.default))).buffer,
+    staticCff2ToCff(buildCff2Font({ noVariations: true }))!,
+  ].map((b) => new Uint8Array(b));
+  let fromCff2Before: string[][];
 
   beforeAll(async () => {
     // 差し替えは原型 (prototype) に当たるので、当てる前の読みを先に取っておく (字形は読んだ輪郭を覚えるので、後で書体を作り直す)
@@ -149,6 +195,8 @@ describe('fontkit の CFF の字形の hflex・hflex1 (fontkitCffFlex.ts)', () =
     sourceSans = new Uint8Array(fs.readFileSync(await extraTestFont('SourceSans3-Regular-3.052R.otf')));
     const ss = open(sourceSans);
     sourceSansBefore = allCommands(ss, ss.numGlyphs);
+    cidBefore = allCommands(open(cidOtf), CID_GLYPHS.length);
+    fromCff2Before = fromCff2.map((b) => allCommands(open(b), open(b).numGlyphs));
     fk = open(otf);
     patchFontkitCffFlex(fk);
   });
@@ -204,6 +252,36 @@ describe('fontkit の CFF の字形の hflex・hflex1 (fontkitCffFlex.ts)', () =
     const after = allCommands(ss, ss.numGlyphs);
     const differ = after.flatMap((s, gid) => (s === sourceSansBefore[gid] ? [] : [gid]));
     expect(differ).toEqual([]);
+  });
+
+  it('FDSelect (形式 3): 範囲の最初の字も、その範囲の FD の Private DICT (局所の部分の命令) で読む', () => {
+    // OpenType 仕様「CFF2」の「Range3 record」: 範囲は、その first の字から、次の範囲の first の手前の字まで。
+    // 直す前の fontkit は、範囲の最初の字を、前の範囲の FD で読むことがある (二分探索が前の範囲に当たったとき。ここでは GID 4)
+    const right = [M(100, 200), L(150, 200), Z];
+    const up = [M(100, 200), L(100, 270), Z];
+    expect(cidBefore.map((s) => JSON.parse(s))).toEqual([[], right, up, up, up]);
+    const cid = open(cidOtf);
+    expect(CID_FD.map((_, gid) => cid['CFF ']!.fdForGlyph(gid))).toEqual(CID_FD);
+    expect([1, 2, 3, 4].map((gid) => commands(cid, gid))).toEqual([right, up, up, right]);
+  });
+
+  it('FDSelect の無い書体・形式 3 でない引き方は、fontkit の元のまま', () => {
+    expect(fk['CFF ']!.fdForGlyph(1)).toBeNull();
+  });
+
+  it('CFF2 の書体の FDSelect も、範囲の最初の字を正しく引く (CFF2 の字形の輪郭の読み方は変えない)', () => {
+    // test/cff2TestFont.ts の FDSelect: GID 0〜1 は FD 0、2〜4 は FD 1、5 は FD 0
+    const master = open(new Uint8Array(cff2));
+    expect([0, 1, 2, 3, 4, 5].map((gid) => master.CFF2!.fdForGlyph(gid))).toEqual([0, 0, 1, 1, 1, 0]);
+  });
+
+  it('CFF2 から作った静的な CFF (実体・可変でない CFF2 を CFF にしたもの) は、全字の輪郭が差し替えの前と同じ', () => {
+    fromCff2.forEach((b, k) => {
+      const f = open(b);
+      expect(f.numGlyphs).toBe(6);
+      expect(cffProto(f)[PATCHED]).toBe(true);
+      expect(allCommands(f, f.numGlyphs), `書体 ${k}`).toEqual(fromCff2Before[k]);
+    });
   });
 
   it('TrueType の字形の読みは差し替えない。書体を登録すると、CFF の字形の読みが差し替わる', async () => {

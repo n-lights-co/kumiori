@@ -10,7 +10,7 @@
  *  6. PDFPage の内容の流れ (getContentStream) の命令の並び (operators) をじかに読み書きする (pageOperators。描いた命令を Form XObject に移す)
  * (fontkit の異体字の並びの字形の引き方 (CmapProcessor.getVariationSelector) の差し替えは、PDF を作らないときの組版・描画にも
  *  要るので、書体を読む fontManager.ts の patchFontkitVariationSelector にある。同じ理由で、CFF の字形の輪郭の読み
- *  (CFFGlyph の _getPath。hflex・hflex1) の差し替えは fontkitCffFlex.ts にある)
+ *  (CFFGlyph の _getPath の hflex・hflex1 と、CFFFont の fdForGlyph の FDSelect の範囲) の差し替えは fontkitCffFlex.ts にある)
  *
  * 前提 (差し替えるメソッドの存在) は、このモジュールを読み込んだときに assertPdfLibInternals で確かめる。
  * 「差し替え済み」の印はモジュールの変数でなく、差し替えた原型 (prototype) 自体に付ける (テストで同じ pdf-lib を複数回読み込んでも二重に包まない)
