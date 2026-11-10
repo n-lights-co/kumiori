@@ -269,9 +269,13 @@ export function applyPaintEffects(sheets: readonly SheetArea[], entries: readonl
     }
   };
   const done = new WeakSet<object>();
+  const settled = new WeakSet<object>();
   const stack: Array<{ a: Area | SheetArea; active: Active }> = sheets.map((s) => ({ a: s, active: [] }));
   /** c に、当たる効果を外のものから順にすべて付けて、中をたどる */
   const settle = (c: Area, first: PaintEffectEntry, active: Active) => {
+    // 2 つのシートが同じ Area の物を持つときも、効果は 1 度だけ付ける
+    if (settled.has(c)) return;
+    settled.add(c);
     let act = active;
     for (let m: PaintEffectEntry | undefined = first; m; m = match(c, act)) {
       set(c, m);
@@ -288,12 +292,13 @@ export function applyPaintEffects(sheets: readonly SheetArea[], entries: readonl
     }
     // 行の中: 同じ効果に当たる Area (枠と中身) をまとめる。枠 (印の付いた、行内の箱の罫線・背景の Area) は行の子の先頭に
     // あるので、まとめた Area は最初の中身の位置に置く
-    const groups = new Map<PaintEffectEntry, number[]>();
-    if (inLine) eff.forEach((e, i) => e && groups.set(e, [...(groups.get(e) ?? []), i]));
+    // (同じ要素から作った 2 つの節は、別の PaintEffectEntry でも同じ効果の物 fx を持つので、fx でまとめる)
+    const groups = new Map<PaintEffect, number[]>();
+    if (inLine) eff.forEach((e, i) => e && groups.set(e.fx, [...(groups.get(e.fx) ?? []), i]));
     const out: Area[] = [];
     kids.forEach((c, i) => {
       const e = eff[i];
-      const members = e && groups.get(e);
+      const members = e && groups.get(e.fx);
       if (!e) {
         out.push(c);
         stack.push({ a: c, active });
