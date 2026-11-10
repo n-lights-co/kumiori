@@ -218,8 +218,14 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   }
   const maskRGB = s.mask ? G.currentRGB() : undefined;
   const colorCache = new Map<string, RGB>();
-  // 明示したマスク (interleave 1: 標本ごとに、マスクの成分が色の前に付く)
+  // 明示したマスク (interleave 1: 標本ごとに、マスクの成分が色の前に付く)。
+  // マスクの極性は imagemask と同じ: MaskDict の Decode が [0 1] (既定) ならマスクの標本の 0 の所を描き、1 の所を透明にする。
+  // [1 0] なら逆 (PLRM §4.10.6 Explicit Masking。PLRM の本文は手元で確かめられなかったので、次の出どころの一致による:
+  // Ghostscript の base/gximage3.c は MaskDict を Decode ごと imagemask の画像 (gs_image_t_init_mask) として描いて切り抜きにする。
+  // poppler の PSOutputDev.cc は、PDF の明示したマスク (標本の 0 を描く) を、反転なしなら /Decode [0 1] の MaskDict で出す。
+  // cairo の cairo-ps-surface.c は、不透明の所を 1 にしたマスクを /Decode [1 0] の MaskDict で出す)
   const il = s.explicitMask?.interleave;
+  const maskOne = s.explicitMask?.decode[0] === 1;
   const compsInRow = ncomp + (il === 1 ? 1 : 0);
   const single = new Uint8Array(rowBits(compsInRow));
   const multiRows = s.multi ? readers.map(() => new Uint8Array(rowBits(1))) : [];
@@ -253,14 +259,15 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
       else {
         const base = x * compsInRow;
         if (il === 1) {
-          if (sample(single, base) === 0) alpha = 0;
+          // マスクの成分は画像と同じビット数で、0 か最大の値
+          if ((sample(single, base) !== 0) !== maskOne) alpha = 0;
           for (let k = 0; k < ncomp; k++) comps.push(sample(single, base + 1 + k));
         } else for (let k = 0; k < ncomp; k++) comps.push(sample(single, base + k));
       }
       if (curMask && em) {
         const mx = Math.min(em.w - 1, Math.floor((x * em.w) / w));
         const bit = (curMask[mx >> 3] >> (7 - (mx & 7))) & 1;
-        const paint = em.decode[0] === 1 ? bit === 0 : bit === 1;
+        const paint = maskOne ? bit === 1 : bit === 0;
         if (!paint) alpha = 0;
       }
       if (maskAlpha && em) {
@@ -333,7 +340,8 @@ function readMask(I: Interp, w: number, h: number, src: PSObj, decode: number[])
     }
     for (let x = 0; x < w; x++) {
       const bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
-      const paint = decode[0] === 1 ? bit === 0 : bit === 1;
+      // imagemask と同じ極性: Decode [0 1] は標本の 0 を、[1 0] は 1 を描く
+      const paint = decode[0] === 1 ? bit === 1 : bit === 0;
       out[y * w + x] = paint ? 255 : 0;
     }
   }

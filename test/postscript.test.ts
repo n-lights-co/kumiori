@@ -255,6 +255,31 @@ describe('PostScript: 結果の誤りの修正', () => {
     expect(dictAlpha('0 1')).toEqual([0, 255]);
   });
 
+  it('ImageType 3 のマスクの極性は imagemask と同じ: Decode [0 1] は標本の 0 を描き、[1 0] は 1 を描く (PLRM §4.10.6。PS-17)', () => {
+    // 8×2 の灰色の画像。マスクは 1 行めが 0F (左の 4 つが 0、右の 4 つが 1)、2 行めが FF (全部 1)
+    const alphaOf = (il: number, decode: string) => {
+      const dataDict = (src: string) => `/DataDict << /ImageType 1 /Width 8 /Height 2 /BitsPerComponent 8 /ImageMatrix [8 0 0 2 0 0] /Decode [0 1] /DataSource ${src} >>`;
+      const maskDict = (src: string) => `/MaskDict << /ImageType 1 /Width 8 /Height 2 /BitsPerComponent 1 /ImageMatrix [8 0 0 2 0 0] /Decode [${decode}] ${src} >>`;
+      const g = '80'.repeat(8);
+      let body: string;
+      if (il === 3) body = `${dataDict(`<${g}${g}>`)} ${maskDict('/DataSource <0FFF>')}`;
+      // 行ごとの組: マスクの行 (1 ビット) のあとに画像の行
+      else if (il === 2) body = `${dataDict(`<0F${g}FF${g}>`)} ${maskDict('')}`;
+      // 標本ごとの組: マスクの成分 (画像と同じ 8 ビット。0 か 255) が色の前に付く
+      else body = `${dataDict(`<${'0080'.repeat(4)}${'FF80'.repeat(12)}>`)} ${maskDict('')}`;
+      const r = draw(`/DeviceGray setcolorspace << /ImageType 3 /InterleaveType ${il} ${body} >> image`);
+      expect(r.error).toBeUndefined();
+      const it = r.G.items[0];
+      if (it.k !== 'image' || !it.rgba) throw new Error('画像でない');
+      // 1 行めの左・1 行めの右・2 行めの左
+      return [0, 7, 8].map((i) => it.rgba![i * 4 + 3]);
+    };
+    for (const il of [1, 2, 3]) {
+      expect(alphaOf(il, '0 1'), `InterleaveType ${il}`).toEqual([255, 0, 0]);
+      expect(alphaOf(il, '1 0'), `InterleaveType ${il} の Decode [1 0]`).toEqual([0, 255, 255]);
+    }
+  });
+
   it('フィルタのエラーは PostScript のエラーになり、stopped で受けられる (PLRM §8.2 filter・§3.13.3)', async () => {
     // 持っていないフィルタ: undefined (オペランドは元に戻る。§3.11.1)
     expect(nums('{currentfile /CCITTFaxDecode filter} stopped $error /errorname get')).toEqual(['file', '/CCITTFaxDecode', true, '/undefined']);
