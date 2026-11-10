@@ -23,6 +23,8 @@ const HAS_VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 const VARIATION_SELECTOR = /^[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]$/u;
 /** 描かない字 (Default_Ignorable_Code_Point。ZWJ・ZWNJ・異体字セレクタ・タグなど) */
 const IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
+/** 分解形を合成済みの字 (NFC) で組む並びの、基底の字 (ラテン・ギリシャ・キリル文字) */
+const COMPOSABLE_BASE = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}]/u;
 const HAS_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
 /** 異体字セレクタを後ろに付けられる基底の字 (文字・数字・記号・約物。空白・制御の字・結合文字には付けない) */
 const VARIATION_BASE = /^[\p{L}\p{N}\p{S}\p{P}]$/u;
@@ -337,6 +339,27 @@ export class Measurer {
         out.push(u);
         kinds.push(UNIT_PLAIN);
         continue;
+      }
+      // ラテン・ギリシャ・キリル文字の分解形 (NFD。ベトナム語の e + U+0323 + U+0302、多調のギリシャ語など): 合成済みの字 (NFC) を
+      // 書体が持てば、その字で組む。正準等価な並びは同じ見た目にする (Unicode の適合性 C6・Unicode 標準 §5.13)。CSS Fonts 4 §5.3 の
+      // クラスタの照合も、並びが 1 字に正準等価でその字を書体が持てば、その字形を使うと定める。書体の位置合わせ (GPOS の mark) に
+      // 頼ると、欧文の結合文字の位置を持たない書体 (Tinos の標準の太さなど) で、記号が基底の字からずれる
+      if (COMPOSABLE_BASE.test(u)) {
+        const nfc = u.normalize('NFC');
+        if (nfc !== u) {
+          if (nfc.length === (nfc.codePointAt(0)! > 0xffff ? 2 : 1)) {
+            if (this.fonts.hasGlyph(this.fonts.getForChar(style.fontFamily, weight, nfc), nfc)) {
+              out.push(nfc);
+              kinds.push(UNIT_PLAIN);
+              continue;
+            }
+          } else if (this.fonts.getForCluster(style.fontFamily, weight, nfc)) {
+            // 一部だけ合成できる並び (合成済みの字 + 残りの結合文字): 合成した並びを、書体でまとめて組む
+            out.push(nfc);
+            kinds.push(UNIT_CLUSTER);
+            continue;
+          }
+        }
       }
       const whole = this.fonts.getForCluster(style.fontFamily, weight, u);
       if (whole && wm !== 'horizontal-tb' && this.stacksWhenUpright(whole, u, style.orientation)) {

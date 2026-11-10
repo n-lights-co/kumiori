@@ -380,11 +380,13 @@ function overhangable(a: Atom | undefined, ch: string | undefined): boolean {
   return /[\u3041-\u309F\u30A1-\u30FA\u30FD-\u30FF]/u.test(ch) || isClosingPunct(ch) || isOpeningPunct(ch) || isMiddlePunct(ch);
 }
 
-/** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張) */
+/** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張、ギリシャ文字・キリル文字) */
 function isLatinAlnumOrPunct(ch: string): boolean {
   // 一般句読点 (U+2010〜U+2027・U+2030〜U+205E。引用符 ‘’“”・ダッシュ・…) も含める (欧文の書体の kern の組に入っている。
-  // element’s・‘a・r’ などの組を書体の kern の値で詰める)
-  return /^[\u0021-\u007E\u00C0-\u024F\u2010-\u2027\u2030-\u205E]$/u.test(ch);
+  // element’s・‘a・r’ などの組を書体の kern の値で詰める)。
+  // ギリシャ文字 (U+0370〜03FF・U+1F00〜1FFF)・キリル文字 (U+0400〜052F)・Latin Extended Additional (U+1E00〜1EFF。ベトナム語など) も、
+  // 書体の kern の組で詰める (CSS Fonts 4 §6.3: font-kerning の初期値 auto。ГА・Те・Αυ などの組)
+  return /^[\u0021-\u007E\u00C0-\u024F\u0370-\u052F\u1E00-\u1FFF\u2010-\u2027\u2030-\u205E]$/u.test(ch);
 }
 
 function rubyOverhang(a: Atom, prev: Atom | undefined, next: Atom | undefined) {

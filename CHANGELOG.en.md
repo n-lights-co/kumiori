@@ -82,6 +82,7 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - Added notices for the rules copied from CSS GCPM 3 Appendix B (section 10)
   - Every output JS file starts with a comment giving the Kumiori version, its license and where `THIRD_PARTY_NOTICES.md` is (for loading a single file from a CDN)
   - The README of the Conformance Guides states the fonts embedded in their PDFs and the fonts' licenses
+- **Latin-script text (Vietnamese), Greek and Cyrillic**: decomposed sequences (NFD, such as `e` + U+0323 + U+0302 or polytonic Greek) of Latin, Greek and Cyrillic letters are set with the precomposed character when the font has it (same appearance and width as the precomposed form; CSS Fonts 4 §5.3). Latin Extended Additional (U+1E00–1EFF: `ế`, `ệ`, `ṃ` and so on) is set in the same Latin font as the rest of the word and takes part in Japanese–Latin spacing and pair kerning. Greek and Cyrillic pairs are kerned with the font's kern data
 
 ## 0.1.1 (2026-11-09)
 

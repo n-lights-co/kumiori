@@ -426,10 +426,13 @@ export function isCjkChar(ch: string): boolean {
   return (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7af) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xffef) || cp >= 0x20000;
 }
 
-/** 欧文フォントで組む文字: ASCII・Latin-1 補助・Latin Extended-A/B (全角で組まれる記号 × ÷ § ¶ ° ± ¨ ´ は除く) */
+/** 欧文フォントで組む文字: ASCII・Latin-1 補助・Latin Extended-A/B・Latin Extended Additional (全角で組まれる記号 × ÷ § ¶ ° ± ¨ ´ は除く) */
 export function isLatinForFallback(ch: string): boolean {
   const cp = ch.codePointAt(0)!;
   if ((cp >= 0x20 && cp <= 0x7e) || (cp >= 0xa0 && cp <= 0xff) || (cp >= 0x100 && cp <= 0x24f)) return !'§¨°±´¶×÷'.includes(ch);
+  // Latin Extended Additional (ベトナム語の ế・ệ など、ローマ字の ṃ・ḥ など): 語のほかの字 (ASCII・Latin-1) と同じ欧文の書体で組む
+  // (和文の書体がこの範囲の字を持つと、1 つの語の中で書体が混ざる)
+  if (cp >= 0x1e00 && cp <= 0x1eff) return true;
   // 欧文の合字 (ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ)
   if (cp >= 0xfb00 && cp <= 0xfb06) return true;
   return false;

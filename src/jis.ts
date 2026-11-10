@@ -149,5 +149,5 @@ export function isIdeographicOrKana(ch: string): boolean {
   if (cp === 0x3006 || (cp >= 0x31c0 && cp <= 0x31ff)) return true;
   return HAN_SCRIPT.test(String.fromCodePoint(cp));
 }
-/** 欧文の文字・数字 (和欧間アキの対象) */
-export const isLatinAlnum = (ch: string) => /^[A-Za-z0-9À-ÖØ-öø-ɏ]$/.test(ch);
+/** 欧文の文字・数字 (和欧間アキの対象)。ラテン文字は U+024F までと Latin Extended Additional (U+1E00〜1EFF。ベトナム語の ế など) */
+export const isLatinAlnum = (ch: string) => /^[A-Za-z0-9À-ÖØ-öø-ɏḀ-ỿ]$/.test(ch);

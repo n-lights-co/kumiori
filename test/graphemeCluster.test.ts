@@ -55,7 +55,9 @@ const lineTexts = (children: unknown[], extra: object = {}) => {
   });
 };
 
-const E_ACUTE = 'é';
+const E_ACUTE = 'e\u0301';
+/** 合成済みの字の無い並び (q + U+0301)。書体の位置合わせ (GPOS の mark) で組む */
+const Q_ACUTE = 'q\u0301';
 const KA_DAKUTEN = 'が';
 const FAMILY_EMOJI = '👨‍👩‍👧';
 const THUMB = '👍🏽';
@@ -63,18 +65,32 @@ const FLAG_JP = '🇯🇵';
 const KEYCAP = '1️⃣';
 
 describe('基底の字 + 結合文字は 1 つの字になり、1 つの書体でまとめて組む (UAX #29 GB9・CSS Fonts 4 §5.3)', () => {
-  it('e + U+0301 は 1 つの字。幅は合成済みの é と同じで、後ろの字の位置も同じ', () => {
-    expect(texts(`${E_ACUTE}x${E_ACUTE}`)).toEqual([E_ACUTE, 'x', E_ACUTE]);
+  it('e + U+0301 (分解形) は、合成済みの é を書体が持てば、その字で組む (正準等価な並びは同じ見た目。CSS Fonts 4 §5.3)', () => {
+    expect(texts(`${E_ACUTE}x${E_ACUTE}`)).toEqual(['é', 'x', 'é']);
     expect(xs(`${E_ACUTE}x${E_ACUTE}`)).toEqual(xs('éxé'));
+    // ベトナム語の 2 段の記号 (e + U+0323 + U+0302 → ệ)・多調のギリシャ語 (α + U+0313 + U+0301 → ἄ)・キリル文字 (и + U+0306 → й)
+    expect(texts('e\u0323\u0302x')).toEqual(['ệ', 'x']);
+    expect(texts('e\u0302\u0323x')).toEqual(['ệ', 'x']);
+    expect(texts('\u03b1\u0313\u0301x')).toEqual(['ἄ', 'x']);
+    expect(texts('\u0438\u0306x')).toEqual(['й', 'x']);
+    // 一部だけ合成できる並び (ệ + U+0301): 合成した字 + 残りの結合文字を、1 つの字として書体でまとめて組む
+    expect(texts('e\u0323\u0302\u0301x')).toEqual(['ệ\u0301', 'x']);
+  });
+  it('合成済みの字の無い並び (q + U+0301) は 1 つの字。送りは基底の字と同じ', () => {
+    expect(texts(`${Q_ACUTE}x${Q_ACUTE}`)).toEqual([Q_ACUTE, 'x', Q_ACUTE]);
+    expect(xs(`${Q_ACUTE}x${Q_ACUTE}`)).toEqual(xs('qxq'));
+  });
+  it('和文の分解形 (か + U+3099) は、合成せずに、書体でまとめて組む (ラテン・ギリシャ・キリル文字だけを合成する)', () => {
+    expect(texts(`${KA_DAKUTEN}x`)).toEqual([KA_DAKUTEN, 'x']);
   });
   it('結合文字は基底の字と同じ書体 (欧文の書体) で組み、書体の位置合わせ (GPOS の mark) で基底の字の上に載る', () => {
-    const [{ g }] = glyphsOf([E_ACUTE]);
+    const [{ g }] = glyphsOf([Q_ACUTE]);
     const arimo = fonts.get('Arimo', 400);
     expect(g.fontFamily).toBe('Arimo');
-    expect(g.glyphIds).toEqual([arimo.fk.glyphForCodePoint(0x65).id, arimo.fk.glyphForCodePoint(0x301).id]);
+    expect(g.glyphIds).toEqual([arimo.fk.glyphForCodePoint(0x71).id, arimo.fk.glyphForCodePoint(0x301).id]);
     // 送りは基底の字の分だけ。結合文字は送り 0 で、基底の字の送りの中 (左) へずらして置く
     const pos = g.glyphPositions!;
-    expect(pos[0][0]).toBe(arimo.fk.glyphForCodePoint(0x65).advanceWidth);
+    expect(pos[0][0]).toBe(arimo.fk.glyphForCodePoint(0x71).advanceWidth);
     expect(pos[1][0]).toBe(0);
     expect(pos[1][1]).toBeLessThan(0);
     expect(g.advance).toBeCloseTo((pos[0][0] / arimo.unitsPerEm) * 10, 6);
@@ -86,9 +102,9 @@ describe('基底の字 + 結合文字は 1 つの字になり、1 つの書体�
     expect(g[0].g.fontFamily).toBe(FAMILY);
     expect(g[0].g.glyphIds?.length).toBe(2);
   });
-  it('結合文字が 2 つ続いても 1 つの字 (a + U+0308 + U+0301)', () => {
-    expect(texts('ä́b')).toEqual(['ä́', 'b']);
-    expect(xs('ä́b')).toEqual(xs('ab'));
+  it('結合文字が 2 つ続いても 1 つの字 (a + U+0308 + U+0301。合成できる分 (ä) は合成済みの字にする)', () => {
+    expect(texts('a\u0308\u0301b')).toEqual(['ä\u0301', 'b']);
+    expect(xs('a\u0308\u0301b')).toEqual(xs('ab'));
   });
   it('ZWJ でつないだ絵文字の並び (GB11) は 1 つの字。書体が ZWJ の字形を持たなければ、ZWJ は書体に渡さない (豆腐にしない)', () => {
     // 手元の書体が持つ Extended_Pictographic の字 (♥ U+2665) で確かめる
@@ -103,14 +119,14 @@ describe('基底の字 + 結合文字は 1 つの字になり、1 つの書体�
 
 describe('字の単位の途中に、改行・字間・両端揃えの空きを入れない (CSS Text 3 §1.3・§5.1・§5.5・§8.2)', () => {
   it('字間 (letter-spacing) は、字の単位の後ろに 1 度だけ', () => {
-    const w = xs(`${E_ACUTE}x`)[1];
-    expect(xs(`${E_ACUTE}x`, { letterSpacing: 2 })[1]).toBeCloseTo(w + 2, 6);
+    const w = xs(`${Q_ACUTE}x`)[1];
+    expect(xs(`${Q_ACUTE}x`, { letterSpacing: 2 })[1]).toBeCloseTo(w + 2, 6);
     expect(xs(`${KA_DAKUTEN}き${KA_DAKUTEN}く`, { letterSpacing: 2 })).toEqual([0, 12, 24, 36]);
   });
   it('狭い幅 + word-break: break-all・overflow-wrap: anywhere でも、字の単位の途中で分けない', () => {
     for (const extra of [{ wordBreak: 'break-all' }, { overflowWrap: 'anywhere' }, { wordBreak: 'break-all', overflowWrap: 'anywhere' }]) {
       expect(lineTexts([`${KA_DAKUTEN}${KA_DAKUTEN}${KA_DAKUTEN}`], { width: 15, ...extra })).toEqual([KA_DAKUTEN, KA_DAKUTEN, KA_DAKUTEN]);
-      expect(lineTexts([`${E_ACUTE}${E_ACUTE}${E_ACUTE}`], { width: 3, ...extra })).toEqual([E_ACUTE, E_ACUTE, E_ACUTE]);
+      expect(lineTexts([`${Q_ACUTE}${Q_ACUTE}${Q_ACUTE}`], { width: 3, ...extra })).toEqual([Q_ACUTE, Q_ACUTE, Q_ACUTE]);
       expect(lineTexts(['♥‍♥♥‍♥'], { width: 5, ...extra })).toEqual(['♥♥', '♥♥']);
     }
   });
@@ -143,22 +159,22 @@ describe('字の単位の途中に、改行・字間・両端揃えの空きを�
 describe('字の種類で決まる処理は、基底の字で決める (UAX #14 LB9)', () => {
   it('和欧間のアキ: 結合文字の付いた欧字と和字の間にも入る', () => {
     const gap = (t: string) => xs(t, { textAutospace: true })[1] - xs(t)[1];
-    expect(gap(`${E_ACUTE}漢`)).toBeCloseTo(2.5, 1);
-    expect(gap(`漢${E_ACUTE}`)).toBeCloseTo(2.5, 1);
+    expect(gap(`${Q_ACUTE}漢`)).toBeCloseTo(2.5, 1);
+    expect(gap(`漢${Q_ACUTE}`)).toBeCloseTo(2.5, 1);
     expect(gap(`${KA_DAKUTEN}A`)).toBeCloseTo(2.5, 1);
   });
   it('改行の機会: 結合文字の付いた字の前後は、基底の字と同じ (欧文の語の中では分けず、和字の間では分ける)', () => {
-    expect(lineTexts([`caf${E_ACUTE} caf${E_ACUTE}`], { width: 25 })).toEqual([`c|a|f|${E_ACUTE}`, `c|a|f|${E_ACUTE}`]);
+    expect(lineTexts([`caf${Q_ACUTE} caf${Q_ACUTE}`], { width: 25 })).toEqual([`c|a|f|${Q_ACUTE}`, `c|a|f|${Q_ACUTE}`]);
     expect(lineTexts([`あ${KA_DAKUTEN}あ${KA_DAKUTEN}`], { width: 25 })).toEqual([`あ|${KA_DAKUTEN}`, `あ|${KA_DAKUTEN}`]);
     // 行頭禁則の字 (小書きの仮名) は、結合文字が付いても行頭に来ない
     expect(lineTexts([`ああっ゙あ`], { width: 20 })).toEqual(['あ', `あ|っ゙`, 'あ']);
   });
   it('縦書き: 向きと送りは基底の字で決まる (和字は正立で全角送り、欧字は横倒し)', () => {
-    const v = glyphsOf([`あ${KA_DAKUTEN}${E_ACUTE}い`], {}, 'vertical-rl');
-    expect(v.map((e) => e.g.text)).toEqual(['あ', KA_DAKUTEN, E_ACUTE, 'い']);
+    const v = glyphsOf([`あ${KA_DAKUTEN}${Q_ACUTE}い`], {}, 'vertical-rl');
+    expect(v.map((e) => e.g.text)).toEqual(['あ', KA_DAKUTEN, Q_ACUTE, 'い']);
     expect(v.map((e) => e.g.rotation)).toEqual([0, 0, 90, 0]);
     expect(v[2].y - v[1].y).toBe(10);
-    const eWidth = xs(`${E_ACUTE}x`)[1];
+    const eWidth = xs(`${Q_ACUTE}x`)[1];
     expect(v[3].y - v[2].y).toBeCloseTo(eWidth, 6);
   });
   it('縦書きの正立の字: 字形は縦書き用 (vert) のまま、結合文字の位置は横書きと同じ (書体の GPOS の vert のずらしを使わない)', () => {
@@ -224,7 +240,7 @@ describe('結合文字も絵文字の並びも含まない文字列は、クラ�
 });
 
 describe('PDF に出る字形 (クラスタの字形の番号と位置)', () => {
-  it('e + U+0301 は、基底の字と結合文字の 2 つの字形を、結合文字を基底の字の送りの中へずらして書く', async () => {
+  it('q + U+0301 は、基底の字と結合文字の 2 つの字形を、結合文字を基底の字の送りの中へずらして書く', async () => {
     const { PDFDocument, PDFName, decodePDFRawStream } = await import('pdf-lib');
     const { renderPdf } = await import('../src/pdfRenderer');
     // 欧文の書体は Source Sans 3 (GPOS の mark を持つ。Arimo は、すべての字形を埋め込むと fontkit が読めない字形がある)
@@ -233,9 +249,9 @@ describe('PDF に出る字形 (クラスタの字形の番号と位置)', () => 
     const buf = fs.readFileSync(await extraTestFont('SourceSans3-Regular-3.052R.otf'));
     await fonts.registerBuffer('Source Sans 3', 400, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer, false);
     fonts.setLatinFallback(FAMILY, 'Source Sans 3');
-    const tree = new LayoutEngine(fonts, new Measurer(fonts, 'fontkit'), { defaultFontFamily: FAMILY }).layout(doc([{ type: 'block', textAlign: 'start', children: [`${E_ACUTE}x`] }] as never));
+    const tree = new LayoutEngine(fonts, new Measurer(fonts, 'fontkit'), { defaultFontFamily: FAMILY }).layout(doc([{ type: 'block', textAlign: 'start', children: [`${Q_ACUTE}x`] }] as never));
     const latin = fonts.get('Source Sans 3', 400);
-    const [idE, idAcute, idX] = [0x65, 0x301, 0x78].map((c) => latin.fk.glyphForCodePoint(c).id);
+    const [idE, idAcute, idX] = [0x71, 0x301, 0x78].map((c) => latin.fk.glyphForCodePoint(c).id);
     const seen: number[][] = [];
     walkAreaTree(tree, (a) => {
       if (a.type === 'glyph') seen.push(a.glyphIds ?? []);
@@ -250,7 +266,7 @@ describe('PDF に出る字形 (クラスタの字形の番号と位置)', () => 
     const tj = new RegExp(`\\[<${hex(idE)}>([\\d.]+)<${hex(idAcute)}>(-[\\d.]+)<${hex(idX)}>\\] TJ`, 'i').exec(c);
     expect(tj).not.toBeNull();
     const back = Number(tj![1]);
-    const adv = (latin.fk.glyphForCodePoint(0x65).advanceWidth / latin.unitsPerEm) * 1000;
+    const adv = (latin.fk.glyphForCodePoint(0x71).advanceWidth / latin.unitsPerEm) * 1000;
     // 結合文字の原点は、基底の字の原点と、その送りの終わりの間。x の原点は、e の送りの終わり (結合文字は送りを足さない)
     expect(back).toBeGreaterThan(0);
     expect(back).toBeLessThan(adv);
@@ -276,18 +292,18 @@ describe('Canvas に描く字形 (クラスタ)', () => {
     return calls;
   };
   it('書体をブラウザに登録しているとき: クラスタの文字列を 1 度の fillText で描く (ブラウザが同じ書体でまとめて組む)', () => {
-    const texts = draw([`${E_ACUTE}x${KA_DAKUTEN}`], false).filter((c) => c[0] === 'fillText').map((c) => c[1]);
-    expect(texts).toEqual([E_ACUTE, 'x', KA_DAKUTEN]);
+    const texts = draw([`${Q_ACUTE}x${KA_DAKUTEN}`], false).filter((c) => c[0] === 'fillText').map((c) => c[1]);
+    expect(texts).toEqual([Q_ACUTE, 'x', KA_DAKUTEN]);
   });
   it('輪郭で描くとき: 基底の字と結合文字の 2 つの輪郭を、PDF と同じ位置 (結合文字は基底の字の送りの中) に描く', () => {
     const arimo = fonts.get('Arimo', 400);
-    const calls = draw([E_ACUTE], true);
+    const calls = draw([Q_ACUTE], true);
     const fills = calls.map((c, k) => (c[0] === 'fill' ? k : -1)).filter((k) => k >= 0);
     expect(fills.length).toBe(2);
     // 輪郭ごとの translate (fill の 2 つ前: translate → scale → fill)
     const at = fills.map((k) => calls[k - 2]);
     expect(at.map((c) => c[0])).toEqual(['translate', 'translate']);
-    const pos = arimo.fk.layout(E_ACUTE, { kern: false, liga: false, clig: false } as never).positions;
+    const pos = arimo.fk.layout(Q_ACUTE, { kern: false, liga: false, clig: false } as never).positions;
     const k = 10 / arimo.unitsPerEm;
     expect(at[0].slice(1)).toEqual([0, -0]);
     expect(at[1][1] as number).toBeCloseTo((pos[0].xAdvance + pos[1].xOffset) * k, 6);
