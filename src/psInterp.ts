@@ -1006,7 +1006,6 @@ export class Interp {
 
   /** stopped の中で実行する。stop されたら true */
   stopped(o: PSObj): boolean {
-    const dl = this.dstack.length;
     try {
       this.call(o);
       return false;
@@ -1014,7 +1013,6 @@ export class Interp {
       if (e instanceof StopSignal) {
         this.lastError = '';
         if (this.dstack.length < 3) this.dstack.length = 3;
-        void dl;
         return true;
       }
       if (e instanceof PSError) return true;
@@ -2206,7 +2204,6 @@ function installCoreOperators(I: Interp) {
   d('undefineuserobject', (I) => void I.pop());
   d('execuserobject', (I) => void I.pop());
   d('UserObjects', (I) => I.push(I.newArray([])));
-  d('cleardictstack', (I) => void (I.dstack.length = 3));
   // internaldict (§8.2): 合言葉 1183615869 で、内部の辞書を返す
   const internal = new PSDict(I, 10);
   internal.global = true;

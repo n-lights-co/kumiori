@@ -244,7 +244,7 @@ export function installResources(I: Interp, fontProcSets: FontProcSets) {
     const ins = instancesOf(I, d);
     for (const k of list) ins.global.put(k, k);
   }
-  // 標準の手続き集 (表 3.10)。CIDInit の CMap の演算子は、範囲・対応の指定を読み捨てる (文字はまだ描かない)
+  // 標準の手続き集 (表 3.10)。CIDInit の CMap の演算子 (符号の範囲と CID の対応を覚える) と FontSetInit (CFF の StartData) は psOpsFont が作る
   const procImpl = (cats.get('ProcSet') as { d: PSDict }).d;
   const cidInit = fontProcSets.makeCIDInit(I);
   const procs = instancesOf(I, procImpl).global;
