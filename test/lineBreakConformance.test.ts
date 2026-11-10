@@ -2,33 +2,13 @@
  * UAX #14 の公式の試験 (LineBreakTest.txt。Unicode 18.0.0) を、調整なしの lineBreakActions に通す。
  *
  * 試験のデータは他の人の著作物なのでリポジトリには入れない。.cache/unicode に無ければ unicode.org から取得して置く
- * (KUMIORI_UCD_DIR で場所を上書きできる)。取得できない環境では、公式の試験の代わりに、下の手書きの小さな並びだけを確かめる。
+ * (test/ucdTestData.ts。KUMIORI_UCD_DIR で場所を上書きできる)。取得できない環境では、公式の試験の代わりに、下の手書きの小さな並びだけを確かめる。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { lineBreakActions } from '../src/lineBreak';
-
-const URL_18 = 'https://www.unicode.org/Public/18.0.0/ucd/auxiliary/LineBreakTest.txt';
-
-/** 試験のデータ。取得できなければ undefined */
-async function lineBreakTestData(): Promise<string | undefined> {
-  const dir = process.env.KUMIORI_UCD_DIR ?? path.resolve(__dirname, '../.cache/unicode');
-  const file = path.join(dir, 'LineBreakTest-18.0.0.txt');
-  if (!fs.existsSync(file)) {
-    try {
-      const res = await fetch(URL_18);
-      if (!res.ok) return undefined;
-      fs.mkdirSync(dir, { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
-      fs.renameSync(tmp, file);
-    } catch {
-      return undefined;
-    }
-  }
-  return fs.readFileSync(file, 'utf8');
-}
+import { UCD_VERSION, ucdTestData } from './ucdTestData';
 
 /** 試験の 1 行 (× 0061 ÷ 0020 ÷ # 注記) を、字の並びと、字の間ごとの期待 (true = 改行してよい) に */
 function parseLine(line: string): { cps: number[]; brk: boolean[] } | undefined {
@@ -65,7 +45,7 @@ const HAND_WRITTEN = [
 
 describe('UAX #14 の公式の試験 (LineBreakTest.txt)', () => {
   it('公式の試験の行 (取得できなければ手書きの並び) が、規則どおりの改行の機会になる', async () => {
-    const data = await lineBreakTestData();
+    const data = await ucdTestData('auxiliary/LineBreakTest.txt');
     const lines = (data ?? HAND_WRITTEN.join('\n')).split('\n');
     const failed: string[] = [];
     let total = 0;
@@ -77,5 +57,12 @@ describe('UAX #14 の公式の試験 (LineBreakTest.txt)', () => {
     }
     expect(total).toBeGreaterThan(data ? 19000 : HAND_WRITTEN.length - 1);
     expect(failed).toEqual([]);
+  });
+
+  it('試験のデータの版は、字の性質の表 (src/unicodeData.ts) を作った UCD の版と同じ', () => {
+    // 版が違うと、試験の期待と表の字の性質が食い違う (新しい字・性質の変わった字)。表を作り直したら UCD_VERSION も合わせる
+    const head = fs.readFileSync(path.resolve(__dirname, '../src/unicodeData.ts'), 'utf8').slice(0, 400);
+    expect(head).toContain(`(UCD ${UCD_VERSION})`);
+    expect(head).toContain(`https://www.unicode.org/Public/${UCD_VERSION}/ucd/`);
   });
 });
