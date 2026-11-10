@@ -169,7 +169,7 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 `LFootnote{children, label?}`（インライン）。`PageSequence.footnotes`（`FootnoteOptions`）で書式を指定する。実装は `footnotes.ts` と `Flow`。
 
 - **番号**: `FootnoteCtx.label()` が文書順に 1 度だけ採番（`WeakMap` で冪等）。`numberFormat`: decimal / circled / kanji / asterisk、`startNumber`、`labelPrefix/Suffix`、`label` で個別上書き。ページごとのリセット (`reset: 'page'`) は、前回の組版で脚注が置かれたページの中の順番で振り直し、置き場所が変わらなくなるまで組み直す (§7.13 と同じ二相目)。
-- **参照記号**: 本文より `referenceScale`（既定 0.7）小さい文字を、block-start 方向へ `0.35em` 持ち上げて出力（横書きは上、縦書きは右）。記号の前では改行しない（`glue`）。
+- **参照記号**: 本文より `referenceScale`（既定 0.7）小さい文字を、block-start 方向へ本文の字の大きさの `0.35em` 持ち上げて出力（横書きは上、縦書きは右。`inlineFlatten.ts` の `flattenFootnoteRef`）。持ち上げ方は `LFootnote.referenceShift` で変えられる（XSL-FO の参照の `baseline-shift`、`--style ah` の HTML では親の字の大きさの 1/3）。記号の前では改行しない（`glue`）。
 - **領域の確保**: 脚注領域は region-body の block 方向末尾（横書き=下端 / 縦書き=左端）。確保量 `footReserve = 区切り線 + Σ高さ + 間隔×(n−1)`。本文の改ページ判定は `limit − footReserve` を使う（`room`）。
 - **参照行ごと送る**: 行の収まり判定に「その行の脚注の追加分」を含める（`c + h + tail + resv + inc ≤ limit`）。入らなければ行が次ページへ送られ、脚注も一緒に移る。widows/orphans とも整合する。
 - **長すぎる脚注**: ページ先頭に強制配置された行の脚注、または 1 つで入りきらない脚注は、行単位で分割（`splitEntry`）し、続きを次ページの脚注領域の先頭へ回す（本文用に 4 割を残す）。最後に残れば脚注だけのページを足す。
@@ -195,7 +195,7 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 
 - `adv` = inline 方向の送り、`cross` = block 方向の厚み、`above/below` = 横書きでの、箱の上端/下端から基線までの距離。
 - **画像**: 自然なサイズ = 画像の px × 0.75 (96dpi → pt)。片方だけ指定なら縦横比で補い、両方指定なら `min(w/W, h/H)` で枠に収める (`uniform`)。
-  横書きは `above = h, below = 0` (下端が基線)。縦書きは `above = below = cross/2` (字面の中央)。画像データが無ければ 60×40pt のプレースホルダ。
+  横書きは `above = h, below = 0` (下端が基線)。縦書きは `above = below = cross/2` (字面の中央)。画像データが無ければプレースホルダ。大きさは、幅も高さも指定が無ければ 60×40pt、一方だけなら幅:高さ = 3:2 でもう一方を決める（`layoutEngine.ts` の `imageBox`）。
 - **inline-container**: `inline-progression-dimension` があればその幅、無ければ shrink-to-fit
   (行幅で組む → 最も長い行 `max(contentLength)` を測る → その幅で組み直す)。内部は独立した Flow (`writing-mode` が親と違ってもよい)。
   横書き同士なら `firstBaseline()` で最初の文字の基線までの距離を求め `above = fb` として、周囲の基線に揃える。
