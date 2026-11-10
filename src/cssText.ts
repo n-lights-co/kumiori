@@ -57,11 +57,14 @@ export function splitTop(s: string, sep: string, opts: SplitTopOptions = {}): st
   return out;
 }
 
-/** 括弧の外の空白 (split に使う。url(a b) の中では分けない) */
-export const WS_OUTSIDE_PARENS = /\s+(?![^(]*\))/;
-
-/** 値を、括弧の外の空白で語に分ける */
-export const splitWords = (v: string): string[] => v.trim().split(WS_OUTSIDE_PARENS);
+/**
+ * 値を、括弧・文字列の外の空白で語に分ける (url(a b)・入れ子の括弧 calc(1mm + (2mm * 2)) の中では分けない。括弧の深さを数える)。
+ * 空の値は、空の語 1 つを返す
+ */
+export const splitWords = (v: string): string[] => {
+  const out = splitTop(v, ' ');
+  return out.length ? out : [''];
+};
 
 // ───────────────────────── 長さ ─────────────────────────
 
