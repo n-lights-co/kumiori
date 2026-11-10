@@ -40,7 +40,8 @@ main はルールセットで守っているので、版の変更も PR で入�
    npm publish --dry-run
    ```
 
-   `prepublishOnly` が型検査・テスト・3 つのビルド (`build:dist`) を走らせ、tarball に入るファイルの一覧が出る。`dist-lib`・`dist-cli`・`dist-browser`・README・LICENSE などが入っていること、`src` やテストが入っていないことを見る
+   `prepublishOnly` が型検査・テスト・3 つのビルド (`build:dist`) を走らせ、tarball に入るファイルの一覧が出る。`dist-lib`・`dist-cli`・`dist-browser`・README・LICENSE などが入っていること、`src` やテストが入っていないことを見る。
+   前の版から依存パッケージ (`package-lock.json`) や、ソースに写した仕様書・データが変わっていれば、`THIRD_PARTY_NOTICES.md` を合わせる。`npm ls --omit=dev --all` の版が 2 節と、ブラウザ向けのビルドに取り込まれたパッケージ (`npx vite build --config vite.browser.config.ts --sourcemap` の `.map` の `sources` の `node_modules/…`) が 1 節と合っていることを見る
 3. PR を作り、CI が通ったらマージする
 4. マージした後の main にタグを付けて push する:
 

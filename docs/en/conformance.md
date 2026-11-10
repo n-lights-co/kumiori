@@ -23,6 +23,7 @@ The typeset PDFs are attached to each GitHub release (publishing a release makes
 
 - The XSL-FO volume is typeset with the CLI's default `--compat spec` (XSL-FO 1.1 initial values).
 - The fonts are Kumiori's defaults: Noto Serif JP and Noto Sans JP for Japanese, Tinos and Arimo for Latin, Cousine for monospace, and STIX Two Math for formulas. Kumiori fetches them from the distribution host.
+- The typeset PDFs embed subsets of these fonts (only the glyphs used). Noto Serif JP, Noto Sans JP and STIX Two Math are licensed under the SIL Open Font License 1.1, and Tinos, Arimo and Cousine under the Apache License 2.0 (see "Fonts" in the README). The copyright in each font belongs to its copyright holders.
 
 ## How samples are written
 
