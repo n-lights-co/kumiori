@@ -307,6 +307,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - `line-stacking-strategy="font-height"` (行送りはいつも line-height。§4.5)
 - leader の初期値: `rule-thickness` 1pt、`leader-length` 0pt / 12pt / 100%。`leader-pattern-width` は字の幅より狭くしない (§7.22)。rule の線は中心を基線に置き、太さを上下に等しく付ける (§7.22.6)
 - `white-space-treatment="preserve"`・`ignore-if-after-linefeed` の行末の空白は消さない (§7.16.8)
+- ページ番号の桁区切り (§7.26.2 `grouping-separator`・§7.26.3 `grouping-size`。XSLT 1.0 §7.7.1): `fo:page-sequence` に両方を書くと、10 進の書式の番号 (`fo:page-number`・ページ番号の参照・索引のページ番号) を、後ろから `grouping-size` 桁ごとに `grouping-separator` (1 字) で区切る。片方だけなら無視。1 字でない区切り・正の整数でない桁数は報告する。`letter-value` (§7.26.4) は値だけを確かめる (対応している書式トークンに、2 通りに読めるものが無い)
 - `last-line-end-indent` (§7.16.3。継承される): 行内の並びの最後の行 (ブロックの最後の行と、子のブロックの前で終わる行) の終わりの端をずらす (`lastLineEndIndent`)。残りの中身が、ずらした幅の 1 行に入ればその行が最後の行。ふだんの幅には入るが、ずらした幅 (狭い) に入らないときは、ずらした幅で折り返して残りを最後の行に送る。`text-align-last` の揃え・リーダーの伸びは、ずらした端まで。強制改行で終わる行には当てない。目次の行 (`text-align-last="justify"` + `end-indent` + 負の `last-line-end-indent`) で、ページ番号だけを端に出せる
 - `leader-alignment` (§7.22.1。継承される): `reference-area`・`page` のとき、点・中身の繰り返しの周期の始まりを、参照領域 (本文の領域・段・表のセル) の内容の始めの端・ページの始めの端からの `leader-pattern-width` ごとの格子に合わせる (`LLeader.alignment`。ページに置いた後で並べ直す)。`none` (初期値) は、いままでどおり行の始めからの格子。右から左の行は読まずに報告する。回した `fo:block-container` の中・`fo:static-content` の中では `none` と同じ。`fo:block-container` は参照領域に数えない (外の参照領域が基準)
 - `fo:initial-property-set` (§6.6.4): `fo:block` の最初の行内の並び (最初の `fo:marker` の後ろから、最初のブロックの子の前まで) を、最初の行にだけ書式を当てる inline (`LInline.firstLine`。CSS の `::first-line` と同じ受け皿) で包む。当てるのは、フォントの性質・`color`・`letter-spacing`・`word-spacing`・`text-decoration`・`background-color`。em の長さの基準はブロックの字の大きさ。`text-transform`・`font-variant` (読み込みのときに字を置き換えるので、行ごとには当てられない)、`line-height` (行内の要素の line-height を行の高さに数える受け皿が無い)、罫線・`padding`・`relative-position`・`text-shadow`・`score-spaces` は読まずに報告する。並びの途中に `fo:float`・絶対配置の箱があるとき、`fo:block` の子でないときも、読まずに報告する
@@ -319,7 +320,6 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - `border-*-precedence` と `collapse-with-precedence` (collapse と同じに扱う)
 - 回転・縦書きのブロックコンテナの中の絶対配置の基準 (コンテナに切り替えない)
 - `simple-page-master` の `reference-orientation`
-- ページ番号の `grouping-separator`・`grouping-size`・`letter-value`
 
 ## その他の仕様対応 (S-12)
 

@@ -647,7 +647,10 @@ export interface LPageSequence extends BaseNode {
   /** 1 ページ目のページ番号 (既定 1) */
   /** 先頭ページの番号。auto-odd / auto-even: 前の続きの番号が偶数 / 奇数なら 1 足す (白ページは挟まない) */
   initialPageNumber?: number | 'auto-odd' | 'auto-even';
-  /** ページ番号の書式 (fo の format。"1" "01" "i" "I" "a" "A" "１" "一" と前後の文字)。既定は 10 進数 */
+  /**
+   * ページ番号の書式 (fo の format。"1" "01" "i" "I" "a" "A" "１" "一" と前後の文字)。既定は 10 進数。
+   * 桁区切り (fo の grouping-separator・grouping-size) は、withGrouping (pageNumber.ts) で書式に付ける
+   */
   pageNumberFormat?: string;
   /** ページ番号の前後の字 (fo:folio-prefix・fo:folio-suffix) を持つ page-sequence の番号。索引のページ番号 (LIndexKeyReference.folios) が引く */
   folioKey?: number;

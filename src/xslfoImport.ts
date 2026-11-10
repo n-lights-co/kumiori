@@ -68,6 +68,7 @@ import type {
   WritingFlip,
 } from './types';
 import { PT_PER_MM } from './units';
+import { withGrouping } from './pageNumber';
 import { isColorName, spotColor, toCss } from './color';
 import { normalizeSrc } from './assets';
 import type { FkFont, MathFont } from './mathFont';
@@ -1337,6 +1338,21 @@ class Importer {
     // ページ番号の書式 (§7.26.1)
     const fmt = this.attr(ps, 'format');
     if (fmt && fmt !== '1') seq.pageNumberFormat = fmt;
+    // 桁区切り (§7.26.2 grouping-separator・§7.26.3 grouping-size。XSLT 1.0 §7.7.1): 10 進の番号を、後ろから grouping-size 桁ごとに
+    // grouping-separator (1 字) で区切る。片方だけの指定は無視する (“If only one of the grouping-separator and grouping-size attributes
+    // is specified, then it is ignored.”)
+    const gSep = ps.getAttribute?.('grouping-separator') ?? undefined;
+    const gSizeAttr = this.attr(ps, 'grouping-size');
+    if (gSep !== undefined && gSep !== '' && gSizeAttr !== undefined) {
+      const gSize = Number(gSizeAttr);
+      if ([...gSep].length !== 1) this.miss(`grouping-separator="${gSep}"`);
+      else if (!Number.isInteger(gSize) || gSize < 1) this.miss(`grouping-size="${gSizeAttr}"`);
+      else seq.pageNumberFormat = withGrouping(seq.pageNumberFormat, gSep, gSize);
+    }
+    // letter-value (§7.26.4): 字を使う番号の並びが 2 通りある言語で、どちらかを選ぶ (XSLT 1.0 §7.7.1)。対応している書式トークン
+    // (a・A・i・I・一 など) には、同じトークンで 2 通りに読めるものが無いので、どの値でも結果は同じ。値だけを確かめる
+    const lv = this.attr(ps, 'letter-value');
+    if (lv !== undefined && lv !== 'auto' && lv !== 'alphabetic' && lv !== 'traditional') this.miss(`letter-value="${lv}"`);
     const fpc = this.attr(ps, 'force-page-count');
     if (fpc === 'auto' || fpc === 'even' || fpc === 'odd' || fpc === 'end-on-even' || fpc === 'end-on-odd' || fpc === 'no-force') seq.forcePageCount = fpc;
     // 数値 (アンテナハウスの拡張): そのページ数になるまで、末尾に白ページを足す
