@@ -131,11 +131,14 @@ const bufferOf = (d: KumioriFileData): ArrayBuffer => {
   return b.byteOffset === 0 && b.byteLength === b.buffer.byteLength ? (b.buffer as ArrayBuffer) : (b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
 };
 const textOf = (d: KumioriFileData) => (typeof d === 'string' ? d : new TextDecoder().decode(bytesOf(d)));
-/** 中の処理が使う形 (ブラウザの File と同じ: 名前はファイル名、読み出しは text・arrayBuffer)。関数の中身は 1 度だけ読む */
-const toFile = (f: KumioriFile, css = false) => {
+/**
+ * 中の処理が使う形 (ブラウザの File と同じ: 名前はファイル名、読み出しは text・arrayBuffer)。関数の中身は 1 度だけ読む。
+ * url: 参照から取ったファイルの、参照の URL の全体 (問い合わせの ?… も含む。名前が同じでも URL の違うものを取り違えないため)
+ */
+const toFile = (f: KumioriFile, css = false, url?: string) => {
   let got: Promise<KumioriFileData> | undefined;
   const data = () => (got ??= typeof f.data === 'function' ? f.data() : Promise.resolve(f.data));
-  return { name: f.name.split(/[\\/]/).pop()!, path: f.name, css, data, text: async () => textOf(await data()), arrayBuffer: async () => bufferOf(await data()) };
+  return { name: f.name.split(/[\\/]/).pop()!, path: f.name, css, ...(url !== undefined ? { url } : {}), data, text: async () => textOf(await data()), arrayBuffer: async () => bufferOf(await data()) };
 };
 /** CSS として読むファイル (拡張子 .css か、参照から CSS として取ったもの) */
 const isCss = (f: { name: string; css?: boolean }) => !!f.css || /\.css$/i.test(f.name);
@@ -427,7 +430,7 @@ async function typesetDocument(
       timeoutMs: timeout,
     });
     for (const f of got.files) {
-      files.push(toFile({ name: f.name, data: f.data }, f.css));
+      files.push(toFile({ name: f.name, data: f.data }, f.css, f.url));
       names.add(f.name);
     }
     for (const w of got.warnings) {

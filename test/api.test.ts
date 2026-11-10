@@ -132,6 +132,31 @@ describe('公開 API: typeset', () => {
     expect(g!.color).toBe('#ff0000');
     expect(g!.fontSize).toBeCloseTo(30, 3);
   });
+  it('問い合わせ (?…) だけが違う CSS は、別の CSS として両方が効く (<link> と @import)', async () => {
+    const store: Record<string, string> = {
+      'https://fonts.googleapis.com/css2?family=A': 'p { color: #ff0000 } .a { font-size: 30pt }',
+      'https://fonts.googleapis.com/css2?family=B': 'p { color: #0000ff } .b { font-size: 40pt }',
+      'https://fonts.googleapis.com/css2?family=C': '@import "css2?family=D"; .c { font-size: 50pt }',
+      'https://fonts.googleapis.com/css2?family=D': '.d { font-size: 60pt }',
+      // 属性の値の文字参照 (&amp;) は解いてから問い合わせる (HTML Living Standard §13.2.5.36 の属性の値の中の文字参照)
+      'https://fonts.googleapis.com/css2?family=E&display=swap': '.e { font-size: 70pt }',
+      'https://fonts.googleapis.com/css2?family=F&display=swap': '.f { font-size: 80pt }',
+    };
+    const asked: string[] = [];
+    const r = await typeset(
+      `<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=A"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=B">
+       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=E&amp;display=swap"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=F&#38;display=swap">
+       <style>@import url("https://fonts.googleapis.com/css2?family=C");</style>
+       <p class="a">a</p><p class="b">b</p><p class="c">c</p><p class="d">d</p><p class="e">e</p><p class="f">f</p>`,
+      { loadFont, fetchStyles: false, resolveResource: (u) => (asked.push(u), store[u]) },
+    );
+    expect(asked.sort()).toEqual(Object.keys(store));
+    const seen: Record<string, [number, string]> = {};
+    walkAreaTree(r.areaTree, (a) => void (a.type === 'glyph' && /^[a-f]$/.test((a as GlyphArea).text) && (seen[(a as GlyphArea).text] = [Math.round((a as GlyphArea).fontSize), (a as GlyphArea).color])));
+    // 後の <link> (family=B) の色が勝つ (文書の順)。どの CSS も 1 度だけ使う (利用者のスタイルシートとして足し直さない)
+    expect(seen).toEqual({ a: [30, '#0000ff'], b: [40, '#0000ff'], c: [50, '#0000ff'], d: [60, '#0000ff'], e: [70, '#0000ff'], f: [80, '#0000ff'] });
+    expect(r.warnings).toEqual([]);
+  });
   it('flex の項目の中の target-counter(…, page): 箱の幅は組んだ番号の桁に合い、折り返しを許す指定があっても番号が割れない', async () => {
     // 目次の行: 題・点線 (::before、flex: 1)・ページ番号 (::after)。sanitize.css などが html に付ける word-break: break-word があると、
     // 1 桁分の幅の箱の中で「10」が「1 / 0」に折り返していた (番号の桁の数は、組むまで分からない)

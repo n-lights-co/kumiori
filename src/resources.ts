@@ -42,11 +42,29 @@ function skip(u: string): boolean {
   return !u || u.startsWith('#') || /^(data|javascript|mailto|about|blob):/i.test(u);
 }
 
+/** XML で決まっている実体 (XML 1.0 §4.6)。HTML でも同じ字 */
+const BASIC_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
+/**
+ * 文字参照を解く: 数値の文字参照 (&#38;・&#x26;) と、&amp;・&lt;・&gt;・&quot;・&apos;。ほかの名前の文字参照 (&nbsp; など) はそのまま残す。
+ * 属性の値 (href="…css2?family=A&amp;display=swap") は、文字参照を解いたものが参照の URL
+ * (HTML Living Standard §13.2.5.36〜38 の属性の値の状態から §13.2.5.77 の文字参照の状態へ。XML 1.0 §4.1)。
+ * ; で終わるものだけを解く (属性の値では、; の無い名前の後ろに = や英数字が続くものは文字参照にしない。§13.2.5.78)
+ */
+export function decodeCharRefs(s: string): string {
+  if (!s.includes('&')) return s;
+  return s.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));/g, (all, dec?: string, hex?: string, name?: string) => {
+    if (name) return BASIC_ENTITIES[name];
+    const cp = dec ? parseInt(dec, 10) : parseInt(hex!, 16);
+    return cp > 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff) ? String.fromCodePoint(cp) : all;
+  });
+}
+
 /** HTML・XSL-FO・SVG の文字から参照を拾う */
 export function documentRefs(text: string): ResourceRef[] {
   const out: ResourceRef[] = [];
   const attr = (tag: string, name: string) => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag);
-  const val = (m: RegExpExecArray | null) => (m ? (m[1] ?? m[2] ?? m[3] ?? '').trim() : undefined);
+  const val = (m: RegExpExecArray | null) => (m ? decodeCharRefs(m[1] ?? m[2] ?? m[3] ?? '').trim() : undefined);
   for (const m of text.matchAll(/<link\b[^>]*>/gi)) {
     const rel = (val(attr(m[0], 'rel')) ?? '').toLowerCase().split(/\s+/);
     const href = val(attr(m[0], 'href'));

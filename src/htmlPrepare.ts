@@ -2,13 +2,14 @@
  * htmlPrepare — HTML と一緒に選んだ CSS から、組む文書と文書の CSS を用意する (ブラウザと Node で共通。DOM のパーサーは渡す)。
  *
  *  - <script> は取り除く
- *  - <link rel="stylesheet"> は、一緒に選んだ CSS ファイルの中身を <style> にする (ファイル名で突き合わせる)。@import も中身に置き換える
+ *  - <link rel="stylesheet"> は、一緒に選んだ CSS ファイルの中身を <style> にする (ファイル名で突き合わせる。参照から取った CSS は URL の全体で)。@import も中身に置き換える
  *  - 参照されていない CSS ファイルは、利用者のスタイルシートとして文書の CSS の後に足す (weasyprint -s と同じ)
  *  - 印刷の媒体として読む: screen だけの CSS は使わず、@media print の規則は常に効く
  *  - 既定のスタイル (HtmlDefaults) を作成者スタイルシート より前に入れる
  */
 import { parsePageRule } from './htmlImport';
 import { concatCss, matchMedia, matchSupports, parseCss, type ParsedCss } from './htmlPaged';
+import { resolveRef } from './resources';
 
 /** 本の組版向けの既定のスタイル (作成者スタイルシート で上書きできる) */
 export const KUMIORI_BOOK_CSS = `
@@ -126,6 +127,13 @@ export interface CssFile {
   text(): Promise<string>;
   /** 拡張子が .css でなくても CSS として読む (参照から取った CSS。https://fonts.googleapis.com/css2?family=… など) */
   css?: boolean;
+  /**
+   * 参照から取った CSS の、参照の URL の全体 (問い合わせの ?… も含む)。あれば、文書の <link>・@import とは、ファイル名でなくこの URL で突き合わせる
+   * (css2?family=A と css2?family=B は、ファイル名は同じ css2 でも別の CSS)
+   */
+  url?: string;
+  /** 文書からの相対パス (css/a.css)。CSS の中の相対の @import を、この CSS の場所を基準に解決するのに使う (CSS Values 4 §4.5.1) */
+  path?: string;
 }
 
 export interface PreparedHtml {
@@ -223,8 +231,27 @@ export async function prepareHtml(
   const parsed = parse(html);
   parsed.querySelectorAll('script').forEach((s) => s.remove());
   if (parsed.documentElement) limitTreeDepth(parsed);
+  // CSS の表。鍵は、参照から取った CSS (url あり) は参照の URL の全体、ほか (一緒に渡したファイル) はファイル名 (小文字)
   const cssFiles = new Map<string, string>();
-  for (const f of files) if (f.css || /\.css$/i.test(f.name)) cssFiles.set(f.name.toLowerCase(), await f.text());
+  /** 鍵 → その CSS の場所 (中の相対の @import を解決する基準)。分からなければ無い */
+  const cssBases = new Map<string, string>();
+  /** 参照から取った CSS のファイル名 → 鍵 (URL の全体で当たらない参照を、これまでどおりファイル名で探すため。同じ名前なら先のもの) */
+  const cssByName = new Map<string, string>();
+  for (const f of files) {
+    if (!(f.css || /\.css$/i.test(f.name))) continue;
+    const key = f.url ?? f.name.toLowerCase();
+    cssFiles.set(key, await f.text());
+    const at = f.url ?? f.path;
+    if (at) cssBases.set(key, at);
+    if (f.url !== undefined && !cssByName.has(basename(f.url))) cssByName.set(basename(f.url), key);
+  }
+  /** 参照 href (base: それを書いた CSS の場所) に当たる CSS の鍵: URL の全体が同じもの、無ければファイル名が同じもの */
+  const cssKey = (href: string, base?: string) => {
+    const full = resolveRef(href.trim(), base);
+    if (cssFiles.has(full)) return full;
+    const name = basename(href);
+    return cssFiles.has(name) ? name : (cssByName.get(name) ?? name);
+  };
   const cssTexts: string[] = [];
   const linked = new Set<string>();
   // 印刷の媒体として読む: screen だけの CSS は使わず、@media print の規則は iframe (画面) でも効くようにする。
@@ -253,7 +280,7 @@ export async function prepareHtml(
   // (仕様に循環の決まりは無い。ブラウザも、祖先の鎖にある URL の @import は読み込まない)。
   // 読み込んだ CSS の長さ・回数の合計が上限 (MAX_IMPORTED_CSS_LENGTH・MAX_IMPORTS) を超える @import は、捨てて警告する
   const budget = { length: MAX_IMPORTED_CSS_LENGTH, count: MAX_IMPORTS, warned: false };
-  const inlineImports = (css: string, reading: string[] = [], depth = 0): string =>
+  const inlineImports = (css: string, reading: string[] = [], depth = 0, base?: string): string =>
     depth > 8
       ? css
       : css.replace(/@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?([^;]*);/gi, (_m, href: string, cond: string) => {
@@ -262,7 +289,7 @@ export async function prepareHtml(
           if (sup && !matchSupports(sup[1])) return '';
           const media = cond.replace(/layer(\([^)]*\))?/i, '').replace(/supports\((?:[^()]|\([^()]*\))*\)/i, '').trim();
           if (media && !matchMedia(media)) return '';
-          const name = basename(href);
+          const name = cssKey(href, base);
           const t = cssFiles.get(name);
           if (t === undefined) return '';
           linked.add(name);
@@ -274,16 +301,16 @@ export async function prepareHtml(
           }
           budget.length -= t.length;
           budget.count--;
-          return inlineImports(t, [...reading, name], depth + 1);
+          return inlineImports(t, [...reading, name], depth + 1, cssBases.get(name));
         });
-  for (const [name, text] of cssFiles) cssFiles.set(name, inlineImports(text, [name]));
+  for (const [name, text] of cssFiles) cssFiles.set(name, inlineImports(text, [name], 0, cssBases.get(name)));
   parsed.querySelectorAll('style').forEach((s) => {
     s.textContent = inlineImports(s.textContent ?? '');
   });
   // <link rel="stylesheet" href="x.css"> → <style>
   parsed.querySelectorAll('link[rel~="stylesheet"]').forEach((l) => {
-    linked.add(basename(l.getAttribute('href') ?? ''));
-    const text = cssFiles.get(basename(l.getAttribute('href') ?? ''));
+    linked.add(cssKey(l.getAttribute('href') ?? ''));
+    const text = cssFiles.get(cssKey(l.getAttribute('href') ?? ''));
     if (text === undefined || screenOnly(l.getAttribute('media'))) {
       l.remove();
       return;
