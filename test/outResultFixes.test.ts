@@ -1,11 +1,13 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import fontkit from '@pdf-lib/fontkit';
 import { inflateSync } from 'node:zlib';
-import { PDFDocument } from 'pdf-lib';
+import { DOMParser } from '@xmldom/xmldom';
+import { PDFDocument, PDFName, type PDFDict } from 'pdf-lib';
 import { attachResources } from '../src/areaResources';
-import { walkAreaTree } from '../src/areaTree';
+import { parseAreaTree, serializeAreaTree, walkAreaTree } from '../src/areaTree';
 import { renderPdf } from '../src/pdfRenderer';
 import type { GlyphArea } from '../src/types';
+import { importXslFo } from '../src/xslfoImport';
 import { doc, fontBuffer, makeEngine } from './helpers';
 
 /** 全体のレビューで見つけた、出力まわりの結果の誤り (OUT-15・FO-16・OUT-05 の残り) */
@@ -101,5 +103,69 @@ describe('異体字の並び (IVS) の字形 (OUT-15。OpenType cmap format 14)'
     const content = all.find((s) => /\bTj\b|\bTJ\b/.test(s))!;
     expect(content.toUpperCase()).toContain(seq![1].toUpperCase());
     expect(content.toUpperCase()).toContain(plain![1].toUpperCase());
+  });
+});
+
+describe('fo:bookmark の external-destination を PDF のしおりに出す (FO-16。XSL 1.1 §6.11.2・§7.23.6)', () => {
+  const NS = 'xmlns:fo="http://www.w3.org/1999/XSL/Format"';
+  const bm = (attrs: string, title: string, kids = '') => `<fo:bookmark ${attrs}><fo:bookmark-title>${title}</fo:bookmark-title>${kids}</fo:bookmark>`;
+  const xml = `<?xml version="1.0"?><fo:root ${NS}>
+    <fo:layout-master-set><fo:simple-page-master master-name="m" page-width="100mm" page-height="100mm"><fo:region-body margin="10mm"/></fo:simple-page-master></fo:layout-master-set>
+    <fo:bookmark-tree>${bm('internal-destination="c1"', '中', bm('external-destination="url(other.pdf#page=3)"', '別の PDF'))}${bm(`external-destination="url('https://example.com/a?x=1#f')"`, '外')}${bm(
+      'internal-destination="c1" external-destination="url(https://example.com/both)"',
+      '両方',
+    )}${bm('external-destination="notes/memo.txt"', 'ファイル')}${bm('', '無し')}</fo:bookmark-tree>
+    <fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block id="c1">章</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+
+  it('組版の結果のしおりが外への飛び先を持ち、Area Tree の直列化で落ちない', async () => {
+    const { engine } = await makeEngine();
+    const r = importXslFo(xml, (s) => new DOMParser().parseFromString(s, 'text/xml') as never);
+    expect(Object.keys(r.report.unsupported).join()).not.toContain('bookmark');
+    const tree = engine.layout(r.document);
+    const flat = (t: typeof tree) => t.bookmarks!.map((b) => [b.title, b.sheet, b.external]);
+    expect(flat(tree)).toEqual([
+      ['中', 0, undefined],
+      ['外', -1, 'https://example.com/a?x=1#f'],
+      // internal-destination もあれば、そちらを使う (§6.11.2)
+      ['両方', 0, undefined],
+      ['ファイル', -1, 'notes/memo.txt'],
+      ['無し', -1, undefined],
+    ]);
+    expect(tree.bookmarks![0].children[0]).toMatchObject({ title: '別の PDF', sheet: -1, external: 'other.pdf#page=3' });
+    const back = parseAreaTree(serializeAreaTree(tree));
+    expect(back.bookmarks).toEqual(JSON.parse(JSON.stringify(tree.bookmarks)));
+    expect(flat(back)).toEqual(flat(tree));
+  });
+
+  it('PDF のしおり: URL は URI の動作、相対の PDF は GoToR、ほかのファイルは Launch (リンクの注釈と同じ決まり)。中の飛び先は Dest のまま', async () => {
+    const { fonts, engine } = await makeEngine();
+    const r = importXslFo(xml, (s) => new DOMParser().parseFromString(s, 'text/xml') as never);
+    const pdf = await PDFDocument.load(await renderPdf(engine.layout(r.document), fonts));
+    const N = (n: string) => PDFName.of(n);
+    const items: PDFDict[] = [];
+    const root = pdf.context.lookup(pdf.catalog.get(N('Outlines'))) as PDFDict;
+    for (let ref = root.get(N('First')); ref; ) {
+      const d = pdf.context.lookup(ref) as PDFDict;
+      items.push(d);
+      ref = d.get(N('Next'));
+    }
+    expect(items.length).toBe(5);
+    const action = (d: PDFDict) => d.lookup(N('A')) as PDFDict | undefined;
+    const [inner, outer, both, file, none] = items;
+    expect(inner.get(N('Dest'))).toBeDefined();
+    expect(action(inner)).toBeUndefined();
+    expect(String(action(outer)!.get(N('S')))).toBe('/URI');
+    expect(String(action(outer)!.get(N('URI')))).toBe('(https://example.com/a?x=1#f)');
+    expect(outer.get(N('Dest'))).toBeUndefined();
+    expect(both.get(N('Dest'))).toBeDefined();
+    expect(action(both)).toBeUndefined();
+    expect(String(action(file)!.get(N('S')))).toBe('/Launch');
+    expect(String(action(file)!.get(N('F')))).toBe('(notes/memo.txt)');
+    expect(none.get(N('Dest'))).toBeUndefined();
+    expect(action(none)).toBeUndefined();
+    const child = pdf.context.lookup(inner.get(N('First'))) as PDFDict;
+    expect(String(action(child)!.get(N('S')))).toBe('/GoToR');
+    expect(String(action(child)!.get(N('F')))).toBe('(other.pdf)');
+    expect(String(action(child)!.get(N('D')))).toBe('[ 2 /Fit ]');
   });
 });

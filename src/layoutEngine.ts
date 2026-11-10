@@ -5288,7 +5288,8 @@ export class LayoutEngine {
       (bs ?? []).map((b) => {
         const pb = this.idPageBuild.get(b.ref);
         if (!pb && b.ref) this.warnings.push(msg(`しおりの飛び先 id="${b.ref}" が見つかりません`, `bookmark destination id="${b.ref}" was not found`));
-        return { title: b.title, sheet: pb ? pages.indexOf(pb) : -1, open: b.open ?? true, children: resolve(b.children) };
+        // 文書の外への飛び先 (fo:bookmark の external-destination。XSL 1.1 §6.11.2・§7.23.6) は、文書の中の飛び先 (ref) が無いときだけ通す
+        return { title: b.title, sheet: pb ? pages.indexOf(pb) : -1, ...(!b.ref && b.href ? { external: b.href } : {}), open: b.open ?? true, children: resolve(b.children) };
       });
     // 文書内リンクの飛び先: id → シートの番号
     const pageIndex = new Map(pages.map((p, k) => [p, k]));

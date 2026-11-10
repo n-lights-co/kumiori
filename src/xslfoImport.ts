@@ -1457,12 +1457,9 @@ class Importer {
         const titleEl = this.els(b).find((e) => this.name(e) === 'bookmark-title');
         const bm: LBookmark = { title: (titleEl?.textContent ?? '').replace(/\s+/g, ' ').trim(), ref: this.attr(b, 'internal-destination') ?? '' };
         // external-destination (§7.23.6): 文書の外への飛び先。internal-destination もあれば、そちらを使う (§6.11.2)。
-        // 外への飛び先は、まだ PDF のしおりに出せないので、href に残して読み込みの報告に数える (黙って捨てない)
+        // 外への飛び先は href に入れる (PDF のしおりの動作になる。fo:basic-link の external-destination と同じ扱い)
         const ext = this.attr(b, 'external-destination');
-        if (!bm.ref && ext) {
-          bm.href = ext.replace(/^url\(\s*['"]?(.*?)['"]?\s*\)$/i, '$1');
-          this.miss('fo:bookmark external-destination');
-        }
+        if (!bm.ref && ext) bm.href = ext.replace(/^url\(\s*['"]?(.*?)['"]?\s*\)$/i, '$1');
         if (this.attr(b, 'starting-state') === 'hide') bm.open = false;
         const kids = this.bookmarks(b);
         if (kids.length) bm.children = kids;
