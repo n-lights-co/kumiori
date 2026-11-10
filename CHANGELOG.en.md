@@ -4,7 +4,7 @@
 
 Version numbers follow [Semantic Versioning](https://semver.org/). During 0.x, incompatible changes may also be released in a minor version (such as 0.2.0).
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-10)
 
 A release that adds flex features, WOFF/WOFF2, an API for loading referenced files, and more. While in 0.x, it is a minor release because it includes fixes that change typesetting results.
 
