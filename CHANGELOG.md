@@ -33,6 +33,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)
 - **書体の並び** (HTML の `font-family`): 字 (結合文字・絵文字の並びは、その並び) ごとに、並びの前から順に、その字を持つ最初の書体で組む (CSS Fonts 4 §5.2・§5.3)。読み込んだ書体 (`--font`・`fonts`・`@font-face`) より前に総称・既定の書体の名前 (`"Noto Serif JP", "Noto Emoji", serif` など) がある並びと、読み込んだ書体が 2 つ以上ある並びで、組版の結果が変わる (前にある書体が持つ空白・数字・記号を、後ろの読み込んだ書体で組まない。3 つ目以降の書体も順に引く。和文の字は総称の書体で組む)
+- **色の付いた字形のフォント** (カラーの絵文字など): OpenType の COLR/CPAL (version 0・1。グラデーション・変形・合成)、CBDT/CBLC、sbix、SVG の表の字形を、色の付いたまま組む。PDF には Type 3 フォントとして書く (取り出す文字は元の絵文字。同じ字形の定義は文書に 1 つ)。画面 (Canvas) にも同じ図形で描ける。`font-palette` と `@font-palette-values` (`base-palette`・`override-colors`) でパレットを選べる。字 + U+FE0F は色の付いたフォント、字 + U+FE0E は色の付いていないフォントで組む。Area Tree の `GlyphArea` に `fontPalette` (既定のパレットでないときだけ) を足した。**これまで、COLR のフォント (Noto Color Emoji・Twemoji) を使うと PDF の書き出しで落ち、輪郭の表を持たない CBDT のフォントは組めなかった**
 - **PDF**: ToUnicode で、合字の字 (U+FB01 など) を元の字の並び (fi など) にする。PDF から取り出した字や検索で「confiance」などが見つかる
 - **API**:
   - `resolveResource(url)`: 文書・CSS が参照するファイルのうち、`files` に無いものを問い合わせる
