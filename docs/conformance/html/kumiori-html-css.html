@@ -1096,7 +1096,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <section class="chapter c16">
 <h1 class="chapter" id="ch-unsupported" data-no="16">対応していないプロパティ</h1>
 <p>第 1 章の確かめ方で、指定しても組版に何も渡らなかったプロパティを、仕様ごとに並べます。印刷に関わらないプロパティ (画面の操作・音声など) は、最後の表にまとめます。対応しているプロパティの中で対応していない値は、各節の値の表に書いています。そのうち、仕様の決まりが長く、表の 1 行では説明しきれないものを、2 つ目の表に取り出して説明しています。各項目には、どういうものか、どういう場面で使うかを書いています。説明は、取得した仕様書 (いずれも 2026-11-06 取得) の定義と、Kumiori のソースで確かめたことに基づきます。</p>
-<!--gen:unsupported--><h3>対応していないプロパティ (85 項目)</h3>
+<!--gen:unsupported--><h3>対応していないプロパティ (93 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>empty-cells</code><br><span class="spec">CSS 2.1 §17.6.1.1</span></td><td>罫線を分ける方式 (separated borders model) の表で、見える中身の無いセルのまわりに罫線と背景を描くかを指定します (show・hide)。空のセルの枠や背景を消して、表の見た目を整えたいときに使います。</td></tr>
 <tr><td><code>background-attachment</code><br><span class="spec">CSS Backgrounds 3 §2.5</span></td><td>背景画像を、ビューポートに固定するか (fixed)、ボックスと一緒に動かすか (scroll)、ボックスの中身と一緒に動かすか (local) を指定します。仕様は、ビューポートの無いページの媒体では fixed の背景がページボックスに固定され、どのページにも繰り返して描かれるとしています。背景画像をページごとに同じ位置に出したいときに使います。</td></tr>
@@ -1168,11 +1168,19 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>text-justify</code><br><span class="spec">CSS Text 3 §6.4</span></td><td>両端そろえ (justify) のときに、アキをどう配るか (auto・none・inter-word・inter-character) を選びます。欧文は語の間で、和文は字の間でアキを広げるなど、両端そろえの方法を選びたいときに使います。</td></tr>
 <tr><td><code>hyphenate-character</code><br><span class="spec">CSS Text 4 §6.3.2</span></td><td>ハイフンで分けた語の、分け目に出す文字列を指定します。auto のときは内容の言語の習慣で決めます。分け目の記号を、言語に合った別の記号にしたいときに使います。</td></tr>
 <tr><td><code>hyphenate-limit-chars</code><br><span class="spec">CSS Text 4 §6.3.4</span></td><td>ハイフンで分ける語の最小の文字数を、語全体・分け目の前・分け目の後の 3 つで指定します。足りない語は分けません。短い語や、分け目の前後が短くなる分け方を避けたいときに使います。</td></tr>
+<tr><td><code>hyphenate-limit-zone</code><br><span class="spec">CSS Text 4 §6.3.3</span></td><td>行の終わりに残してよい空きの幅を指定します。この幅より空きが狭い行では、語をハイフンで分けません。行末をそろえない組み方で、ハイフンの多さを抑えたいときに使います。</td></tr>
+<tr><td><code>hyphenate-limit-lines</code><br><span class="spec">CSS Text 4 §6.3.5</span></td><td>ハイフンで終わる行が続いてよい数の上限を指定します。ハイフンの行が何行も続くのを避けたいときに使います。</td></tr>
+<tr><td><code>hyphenate-limit-last</code><br><span class="spec">CSS Text 4 §6.3.5</span></td><td>段落・段・ページなどの最後の行の手前で、語をハイフンで分けないようにします。分かれた語の後半だけが次のページに送られるのを避けたいときに使います。</td></tr>
 <tr><td><code>text-wrap</code><br><span class="spec">CSS Text 4 §5.5</span></td><td>text-wrap-mode と text-wrap-style をまとめて指定する一括指定です。省いた個別のプロパティは初期値になります。行を折り返すかどうかと、折り返しの方法 (バランスなど) を一度に決めたいときに使います。</td></tr>
+<tr><td><code>text-wrap-mode</code><br><span class="spec">CSS Text 4 §5.1</span></td><td>行を折り返すか (wrap)、折り返さないか (nowrap) を指定します。white-space の一括指定の一部です。</td></tr>
+<tr><td><code>text-wrap-style</code><br><span class="spec">CSS Text 4 §5.4</span></td><td>行の折り返し方を指定します (auto・balance・stable・pretty)。見出しの行の長さをそろえたいとき (balance) などに使います。</td></tr>
 <tr><td><code>text-decoration-style</code><br><span class="spec">CSS Text Decoration 3 §2.2</span></td><td>下線などの線の形を指定します。値は border-style と同じ意味で、ほかに波線 (wavy) があります。下線を二重線・点線・波線にしたいときに使います。</td></tr>
 <tr><td><code>text-emphasis-color</code><br><span class="spec">CSS Text Decoration 3 §3.2</span></td><td>圏点の色を指定します。初期値の currentcolor は、文字の色と同じになります。圏点の色を、文字の色と別にしたいときに使います。</td></tr>
 <tr><td><code>text-emphasis-position</code><br><span class="spec">CSS Text Decoration 3 §3.4</span></td><td>圏点を置く側を指定します。横書きでは over・under、縦書きでは right・left です。仕様は、圏点を、文字ごとにその点をルビとして中央にそろえて付けたように描くとしています。圏点を文字の下や、縦書きの左側に付けたいときに使います。</td></tr>
 <tr><td><code>text-underline-position</code><br><span class="spec">CSS Text Decoration 3 §2.5</span></td><td>要素に付けた下線の位置を指定します (祖先の要素が付けた下線には効きません)。仕様の例は、日本語などの横書き・縦書きでの下線の位置を、この指定で決めています。縦書きの傍線を左右のどちらに付けるかを決めたいとき、下線を字の下に下げたいときに使います。</td></tr>
+<tr><td><code>text-decoration-thickness</code><br><span class="spec">CSS Text Decoration 4 §2.4</span></td><td>下線・上線・取り消し線の太さを指定します (auto・from-font・長さ・百分率)。</td></tr>
+<tr><td><code>text-underline-offset</code><br><span class="spec">CSS Text Decoration 4 §2.8</span></td><td>下線を、本来の位置からどれだけずらすかを指定します。</td></tr>
+<tr><td><code>text-decoration-skip-ink</code><br><span class="spec">CSS Text Decoration 4 §2.10.5</span></td><td>下線・上線が字の形と重なる所で、線を切るかどうかを指定します (auto・none・all)。Kumiori は線を切らずに引きます。</td></tr>
 <tr><td><code>text-shadow</code><br><span class="spec">CSS Text Decoration 3 §4</span></td><td>文字に付ける影を、カンマ区切りの並びで指定します。値は box-shadow と同じ書き方です (広げる値と inset は使えません)。影は文字とその線の両方に付きます。見出しの文字に影を付けて目立たせたいときに使います。</td></tr>
 <tr><td><code>transform</code><br><span class="spec">CSS Transforms 1 §4</span></td><td>要素に、回転・拡大縮小・傾け・移動などの変換 (transform-function の並び) をかけます。none 以外の値は、包含ブロックと重なりの文脈を作ります。要素を回したり、傾けたりして描きたいときに使います。</td></tr>
 <tr><td><code>transform-origin</code><br><span class="spec">CSS Transforms 1 §5</span></td><td>transform の変換の原点の位置を指定します。要素を、中心ではなく角などを軸にして回したいときに使います。</td></tr>
