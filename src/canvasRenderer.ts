@@ -3,6 +3,7 @@
  * ctx を scale(px/pt) して pt 単位のまま描くため、レイアウトと画素の対応が崩れない。
  */
 import type { FontManager } from './fontManager';
+import { uprightPositions } from './areaResources';
 import { toCss } from './color';
 import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
 import type { AssetStore } from './assets';
@@ -56,7 +57,10 @@ class CanvasPainter implements Painter {
     const key = `${f.key}\u0000${features.join(',')}\u0000${text}`;
     const hit = this.outlineCache.get(key);
     if (hit) return hit;
-    const run = f.fk.layout(text, Object.fromEntries(features.map((t) => [t, true])) as never);
+    const feats = Object.fromEntries(features.map((t) => [t, true]));
+    const run = f.fk.layout(text, feats as never);
+    // 縦書き用の字形の並び (正立の字のクラスタ) の位置は、横書きの位置 (PDF と同じ。areaResources.ts)
+    const positions = uprightPositions(f.fk, text, feats, run);
     const paths: Path2D[] = [];
     const offsets: { x: number; y: number }[] = [];
     let x0 = 0;
@@ -70,8 +74,8 @@ class CanvasPainter implements Painter {
       }
       paths.push(new Path2D(d));
       // 最初の字の位置のずれは、組版で描く原点に入れてある
-      offsets.push({ x: x0 + (i ? run.positions[i].xOffset : 0), y: i ? run.positions[i].yOffset : 0 });
-      x0 += run.positions[i].xAdvance;
+      offsets.push({ x: x0 + (i ? positions[i].xOffset : 0), y: i ? positions[i].yOffset : 0 });
+      x0 += positions[i].xAdvance;
     }
     const o = { paths, offsets };
     if (this.outlineCache.size > 20000) this.outlineCache.clear();

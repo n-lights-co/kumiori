@@ -1,5 +1,5 @@
 /**
- * Unicode の公式の適合試験のデータ (UCD の LineBreakTest.txt・BidiTest.txt・BidiCharacterTest.txt) を用意する。
+ * Unicode の公式の適合試験のデータ (UCD の LineBreakTest.txt・GraphemeBreakTest.txt・BidiTest.txt・BidiCharacterTest.txt) を用意する。
  *
  * 試験のデータは他の人の著作物なのでリポジトリには入れない。.cache/unicode に無ければ unicode.org から取得して置く
  * (KUMIORI_UCD_DIR で場所を上書きできる)。版は、src/unicodeData.ts の表を作った UCD の版 (scripts/gen-unicode-data.mjs) に合わせる。

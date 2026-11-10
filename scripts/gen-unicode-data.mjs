@@ -1,8 +1,9 @@
-// Unicode の文字データ (UCD) から、改行 (UAX #14)・縦書きの字の向き (UAX #50)・双方向のテキスト (UAX #9) に使う性質の表を作る。
+// Unicode の文字データ (UCD) から、改行 (UAX #14)・縦書きの字の向き (UAX #50)・双方向のテキスト (UAX #9)・書記素クラスタ (UAX #29) に使う性質の表を作る。
 // 使い方: node scripts/gen-unicode-data.mjs <UCD のファイルを置いたディレクトリ> > src/unicodeData.ts
 // ディレクトリに置くファイル (Unicode 18.0.0。https://www.unicode.org/Public/18.0.0/ucd/ から取得):
 //   LineBreak.txt・EastAsianWidth.txt・VerticalOrientation.txt・emoji-data.txt (emoji/)・DerivedGeneralCategory.txt (extracted/)・
-//   DerivedBidiClass.txt (extracted/)・BidiMirroring.txt・BidiBrackets.txt・DerivedJoiningType.txt (extracted/)
+//   DerivedBidiClass.txt (extracted/)・BidiMirroring.txt・BidiBrackets.txt・DerivedJoiningType.txt (extracted/)・
+//   GraphemeBreakProperty.txt (auxiliary/)・DerivedCoreProperties.txt
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -88,10 +89,24 @@ const brackets = pairs(read('BidiBrackets.txt')).map(([a, b, t]) => `${parseInt(
 const jt = parse(read('DerivedJoiningType.txt'));
 const JT_VALUES = ['U', 'D', 'R', 'L', 'C', 'T'];
 
-const files = ['LineBreak.txt', 'EastAsianWidth.txt', 'VerticalOrientation.txt', 'DerivedGeneralCategory.txt', 'emoji-data.txt', 'DerivedBidiClass.txt', 'BidiMirroring.txt', 'BidiBrackets.txt', 'DerivedJoiningType.txt'].map((f) => ` *   ${header(f)}`).join('\n');
+// Grapheme_Cluster_Break (UAX #29 の Table 2。既定は Other = XX) と Indic_Conjunct_Break (InCB。GB9c が使う。既定は None)
+const gcb = parse(read('GraphemeBreakProperty.txt'));
+const GCB_VALUES = ['XX', 'CR', 'LF', 'Control', 'Extend', 'ZWJ', 'Regional_Indicator', 'Prepend', 'SpacingMark', 'L', 'V', 'T', 'LV', 'LVT'];
+const INCB_VALUES = ['None', 'Linker', 'Consonant', 'Extend'];
+// DerivedCoreProperties.txt の InCB の行は「範囲 ; InCB; 値」(3 つの欄)
+const incb = [];
+for (const line of read('DerivedCoreProperties.txt').split('\n')) {
+  const f = line.replace(/#.*/, '').split(';').map((x) => x.trim());
+  if (f.length !== 3 || f[1] !== 'InCB') continue;
+  const [a, b] = f[0].split('..');
+  incb.push([parseInt(a, 16), parseInt(b ?? a, 16), f[2]]);
+}
+if (!incb.length) throw new Error('DerivedCoreProperties.txt に InCB の行が無い');
+
+const files = ['LineBreak.txt', 'EastAsianWidth.txt', 'VerticalOrientation.txt', 'DerivedGeneralCategory.txt', 'emoji-data.txt', 'DerivedBidiClass.txt', 'BidiMirroring.txt', 'BidiBrackets.txt', 'DerivedJoiningType.txt', 'GraphemeBreakProperty.txt', 'DerivedCoreProperties.txt'].map((f) => ` *   ${header(f)}`).join('\n');
 const out = `/**
  * Unicode の文字データ (UCD 18.0.0) から作った、文字の性質の表。scripts/gen-unicode-data.mjs で作る (手で書き換えない)。
- * 元のファイル (https://www.unicode.org/Public/18.0.0/ucd/ 、2026-11-04 取得。DerivedJoiningType は 2026-11-05 取得):
+ * 元のファイル (https://www.unicode.org/Public/18.0.0/ucd/ 、2026-11-04 取得。DerivedJoiningType は 2026-11-05 取得、GraphemeBreakProperty・DerivedCoreProperties は 2026-11-10 取得):
 ${files}
  * Copyright © 1991-2026 Unicode, Inc. Unicode License v3 (THIRD_PARTY_NOTICES.md の 6 節)。
  *
@@ -121,5 +136,11 @@ export const BRACKET_DATA = ${JSON.stringify(brackets.join(';'))};
 export const JT_VALUES = ${JSON.stringify(JT_VALUES)};
 /** Joining_Type (既定は U。アラビア文字などのつながり方) */
 export const JT_DATA = ${JSON.stringify(encode(jt, JT_VALUES, 'U'))};
+export const GCB_VALUES = ${JSON.stringify(GCB_VALUES)};
+/** Grapheme_Cluster_Break (既定は XX = Other。UAX #29 の書記素クラスタの境目) */
+export const GCB_DATA = ${JSON.stringify(encode(gcb, GCB_VALUES, 'XX'))};
+export const INCB_VALUES = ${JSON.stringify(INCB_VALUES)};
+/** Indic_Conjunct_Break (既定は None。UAX #29 の GB9c) */
+export const INCB_DATA = ${JSON.stringify(encode(incb, INCB_VALUES, 'None'))};
 `;
 process.stdout.write(out);

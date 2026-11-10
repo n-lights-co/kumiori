@@ -5,7 +5,8 @@
  * inline の種類ごとの処理は flattenText・flattenInlineElement・… に分かれ、flattenInline がそれらを順に呼ぶ
  */
 import type { LFootnote, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, WritingMode } from './types';
-import { isVariationSequence, variationUnits, type GlyphMetrics, type Measurer } from './measurer';
+import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type Measurer } from './measurer';
+import { mayCluster } from './grapheme';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
 import { JT_DATA, JT_VALUES } from './unicodeData';
@@ -217,12 +218,20 @@ function flattenText(c: string, cx: FlattenCtx): void {
         return fonts.every((f) => f === fonts[0]);
       })
     : units0;
-  // 基底の字の直後の異体字セレクタ (U+FE00〜FE0F・U+E0100〜E01EF) は、基底の字と 1 単位 (別の atom にしない)
-  const units = variationUnits(units1);
+  // 字の単位 (書記素クラスタ。UAX #29 の拡張書記素クラスタ): 基底の字と、その後ろの結合文字・異体字セレクタ (U+FE00〜FE0F・U+E0100〜E01EF)、
+  // 絵文字の並び (肌の色・ZWJ・国旗・キーキャップ・タグ) などは、1 単位 (1 つの atom) にする。改行・字間 (letter-spacing)・両端揃えの空きは
+  // 字の単位の間にだけ入る (CSS Text 3 §1.3 の typographic character unit、§5.1・§8.2)。
+  // 結合文字・ZWJ などを含みうる文字列だけ、クラスタにまとめる (含まなければ、字ごとにそのまま)
+  const clusters = mayCluster(c) ? m.resolveClusters(units1, runStyle(st), wm) : null;
+  const units = clusters ? clusters.units : units1;
+  let ui = 0;
   for (const ch0 of units) {
-    // 基底の字と異体字セレクタの並び: 字の種類で決まる処理 (禁則・約物の詰め・和欧間のアキ・字間) は基底の字で行い、描く文字列だけを並びにする
-    const variation = ch0.length > 1 && isVariationSequence(ch0);
-    const ch = variation ? String.fromCodePoint(ch0.codePointAt(0)!) : ch0;
+    const unitKind = clusters ? clusters.kinds[ui++] : 0;
+    // まとめて組むクラスタと、基底の字と異体字セレクタの並び: 字の種類で決まる処理 (禁則・約物の詰め・和欧間のアキ・字間) は基底の字
+    // (並びの最初の字) で行い、描く文字列だけを並びにする
+    const whole = unitKind === UNIT_CLUSTER;
+    const variation = !whole && ch0.length > 1 && isVariationSequence(ch0);
+    const ch = variation || whole ? String.fromCodePoint(ch0.codePointAt(0)!) : ch0;
     if (joinable && [...ch].length > 1 && JOINING_HINT.test(ch)) {
       // つながる字の並び: まとめて測り、描く (書体の字形の置き換えで、語頭・語中・語尾の形と必須の合字が決まる)
       const g = { ...m.glyph(ch, runStyle(st), wm), draw: ch };
@@ -255,9 +264,12 @@ function flattenText(c: string, cx: FlattenCtx): void {
       out.push({ kind: 'box', first: ' ', last: ' ', advance: 0, isSpace: true, runId: state.run, st, bg, box: { node: newNode('block', wm, {}), adv: 0, cross: 0, above: 0, below: 0 } });
       continue;
     }
-    const g = variation ? m.variationGlyph(ch0, runStyle(st), wm) : m.glyph(ch, runStyle(st), wm);
+    const g = whole ? m.clusterGlyph(ch0, runStyle(st), wm) : variation ? m.variationGlyph(ch0, runStyle(st), wm) : m.glyph(ch, runStyle(st), wm);
+    // 分けたクラスタの 2 つ目以降の字 (どの書体も並び全体を持たないとき。字ごとに組む): 前の字と同じ字の単位なので、前の字との間で改行せず、字間も空けない
+    const cont = unitKind === UNIT_CONT;
     // 結合文字 (Mn・Me) の前には字間を空けない (letter-spacing は字の単位 (書記素クラスタ) の間に空ける。CSS Text 3 §8.2)
-    const mark = /^[\p{Mn}\p{Me}]$/u.test(ch);
+    const mark = cont || (!whole && /^[\p{Mn}\p{Me}]$/u.test(ch));
+    const clusterProps = whole ? { cluster: ch0 } : cont ? { clusterCont: true, glue: true } : undefined;
     // 前の字の後ろの字間を、結合文字の後ろへ移す (字の単位の後ろに空ける)
     let movedLs = false;
     if (mark) {
@@ -274,10 +286,10 @@ function flattenText(c: string, cx: FlattenCtx): void {
     }
     if (st.xslLetterSpacing && st.letterSpacing) {
       // XSL: Alphabetic の字の前後に letter-spacing の半分ずつ (字面は前の半分だけ後ろへ)。それ以外の字には空けない
-      if (ALPHABETIC.test(ch)) {
+      if (!cont && ALPHABETIC.test(ch)) {
         const h = st.letterSpacing / 2;
         // 字の箱 (g.advance) は字の幅のまま。送り (advance) にだけ前後の空きを足す
-        out.push({ kind: 'glyph', first: ch, last: ch, advance: g.advance + st.letterSpacing, isSpace: isWrapSpace(ch), runId: state.run, st, bg, g, dx: h, lsLead: h, lsTrail: h });
+        out.push({ kind: 'glyph', first: ch, last: ch, advance: g.advance + st.letterSpacing, isSpace: isWrapSpace(ch), runId: state.run, st, bg, g, dx: h, lsLead: h, lsTrail: h, ...clusterProps });
         continue;
       }
     } else if (!mark && st.letterSpacing) {
@@ -303,6 +315,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       st,
       bg,
       g,
+      ...clusterProps,
       ...(st.letterSpacing > 0 && !st.xslLetterSpacing && (!mark || movedLs) ? { lsTrail: st.letterSpacing } : {}),
       ...(primary && primary !== g.font ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
     });
