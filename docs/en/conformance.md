@@ -41,7 +41,7 @@ The section numbers, the table of contents, the property definition lines (the o
 
 ## Images
 
-The images in `fo/images/` and `html/images/` are original drawings made with `scripts/make-conformance-images.py`. The same drawing is written out in the 12 formats Kumiori reads.
+Of the images in `fo/images/` and `html/images/`, `woven.*` and `checker.png` are original drawings made with `scripts/make-conformance-images.py` (`woven.*` is the same drawing written out in the 12 formats Kumiori reads). `kumiori-logo.svg` is a copy of the logo in `assets/logo/`, and `arabic-sample.png` is an example of Arabic typeset by Kumiori (Section 8.4 of the HTML and CSS volume); the script does not make them.
 
 - Raster: PNG, JPEG, GIF, BMP, TIFF, WebP (lossy and lossless)
 - Vector: SVG, EPS, WMF, EMF, CGM

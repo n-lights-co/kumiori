@@ -5,23 +5,23 @@
 Kumiori にまだ無い機能・既知の制限の一覧。着手したら「状態」を更新し、完了したら「状態」を「完了」にする (行は履歴として残す)。
 出典: 公開されている XSL-FO の見本での変換レポート、各機能の実装時メモ。仕様の項目ごとの対応・未対応は対応仕様説明書 (`docs/conformance/`) にある。
 
-**いまも未対応・一部のもの (要約)**: PDF/X の規格 (ISO 15930) への適合の確認 (O-03)。CGM の GDP・POLYSYMBOL は、登録された中身が無いので描かない (I-09)。詳しくは各行のメモ。
+**いまも未対応・一部のもの (要約)**: PDF/X の規格 (ISO 15930) への適合の確認 (O-03)。CGM の GDP・POLYSYMBOL は、登録された中身が無いので描かない (I-09)。ほかに、状態が「ほぼ完了」「一部完了」の行にも残りがある。詳しくは各行のメモ。
 優先度: **高** = 見本・実文書で頻出 / **中** = 時々出る / **低** = まれ・回避策あり。
 
 ## 組版エンジン
 
 | ID | 項目 | 優先度 | 状態 | メモ |
 |----|------|--------|------|------|
-| E-01 | `keep-with-next` / `keep-with-previous` | 高 | 完了 | 並びの先頭が試し組みし、次のブロックの先頭が同じページに載らないときだけ改ページする。値は always と 1 以上の整数 (強さの違いは区別しない)。次が inline (字・画像) のときは、続く inline をまとめた無名のブロックの先頭と同じページに置く。表・コンテナの keep、段 (column) 単位の判定は未対応 |
+| E-01 | `keep-with-next` / `keep-with-previous` | 高 | 完了 | 並びの先頭が試し組みし、次のブロックの先頭が同じページに載らないときだけ改ページする。値は always と 1 以上の整数 (強さの違いは区別しない)。次が inline (字・画像) のときは、続く inline をまとめた無名のブロックの先頭と同じページに置く。表の keep は S-08。段 (column) 単位の判定は未対応 |
 | E-02 | `text-align-last` | 高 | 完了 | start / center / end / justify。`relative` と未指定は従来どおり |
 | E-03 | 罫線の種類 (点線・破線・二重線) | 高 | 完了 | dotted / dashed / double / groove / ridge / inset / outset (立体の罫線と色の違う実線の角は斜めに突き合わせる。破線・点線の模様 (線と間の長さ) は罫線の太さから決める) |
-| E-04 | 下線・取り消し線 (`text-decoration`) | 中 | 完了 | `TextStyle.textDecoration` (underline / overline / line-through と no-*)。縦書きは下線が行の左。inline の罫線 (文字を囲む枠) は未対応 |
+| E-04 | 下線・取り消し線 (`text-decoration`) | 中 | 完了 | `TextStyle.textDecoration` (underline / overline / line-through と no-*)。縦書きは下線が行の左。inline の罫線 (文字を囲む枠) は `inlineFlatten.ts` で組む (行をまたぐときは、切れ目の側の罫線を描かない) |
 | E-05 | `baseline-shift` を行の高さ・行間に反映 | 低 | 完了 | super / sub / 長さ。ずらした字の行の高さの領域 (字の上下 + その字の line-height による半行間) をずらして、行からはみ出す分だけ行を広げる (line-height-shift-adjustment="consider-shifts"。半行間まで含めるので、上付き・下付きの行はずらした量だけ広がる) |
 | E-06 | マージン領域へ張り出す float (`marginal-notes-*`) | 中 | 完了 | 傍注: 負の start/end-indent で余白へはみ出す float は、本文に食い込ませずに余白へ置く (`LFloat.marginal`)。float の inside / outside はページの偶奇で決め、次ページへ送られたら組み直す。ついでに page master / region-body の margin の略記 (2〜4 値) を修正 |
 | E-07 | ページごとの脚注番号リセット | 中 | 完了 | `FootnoteOptions.reset: 'page'` (axf:footnote-number-reset="page")。前回の組版で脚注が置かれたページの中の順番で振り直し、置き場所が変わらなくなるまで組み直す。自動脚注番号の拡張 (axf:footnote-number / -citation / -format / -initial) にも対応 |
 | E-08 | 脚注: 表・コンテナ内の脚注本体の出力 | 中 | 完了 | セル・ブロックコンテナ・float の中の行が脚注を持ち、親がその箱をページに置いたときに、そのページの脚注領域へ積む (繰り返す表の見出しの脚注は 1 度だけ)。行が入るかの判定には脚注の高さを含めない (入らなければ脚注を分割・次ページへ) |
 | E-09 | 脚注: 複数ページにまたがる入れ子ブロックを含む脚注の分割 | 低 | 完了 | 入れ子のブロックの中まで降りて行で分ける (分けたブロックは切れ目の側の罫線・余白を落とす) |
-| E-10 | 段組: ブロックコンテナ内の段組 (`axf:column-count`) | 中 | 完了 | `LBlockContainer.columns` (axf:column-count / column-gap / column-rule-* / column-rule-display)。高さの指定があれば段を順に埋め、無ければ段の高さを釣り合わせる。コンテナはページをまたがない (中の脚注の本体は出さない) |
+| E-10 | 段組: ブロックコンテナ内の段組 (`axf:column-count`) | 中 | 完了 | `LBlockContainer.columns` (axf:column-count / column-gap / column-rule-* / column-rule-display)。高さの指定があれば段を順に埋め、無ければ段の高さを釣り合わせる。高さの指定・枠・回転の無いコンテナは、ページに収まらなければページをまたいで段を続ける (`layoutColumnsPaged`)。それ以外のコンテナはページをまたがない (中の脚注の本体は出さない) |
 | E-11 | 段組: 段罫 (`axf:column-rule`) | 低 | 完了 | `PageMaster.columns.rule` (axf:column-rule-width/style/color) |
 | E-12 | 段組: 前方 float・脚注を全段を貫く領域に置く | 高 | 完了 | 既定はページ単位 (全幅)。`axf:footnote-position="column"` で段ごと。float は span="all" の見出しの下ではなくページ上端に置く |
 | E-13 | 段組: フロー末尾の段の釣り合わせ指定 | 低 | 完了 | `PageMaster.columns.fill: 'balance'` (region-body の `axf:column-fill` / `column-fill="balance"`) でフローの末尾の段も釣り合わせる。既定は span の直前だけ |
@@ -38,7 +38,7 @@ Kumiori にまだ無い機能・既知の制限の一覧。着手したら「状
 | ID | 項目 | 優先度 | 状態 | メモ |
 |----|------|--------|------|------|
 | I-01 | `page-sequence` の数値の `reference-orientation`、90 の倍数以外 | 低 | 完了 | page-sequence の数値は本文 (region-body) の向きを上書きする (from-page-master-region() は region-body の指定)。90 の倍数以外は仕様で許されない値なので、0 として報告する |
-| I-02 | `fo:instream-foreign-object` (インライン SVG・MathML) | 中 | ほぼ完了 | SVG は data URI の画像 (PDF はベクタ)。MathML (Presentation) は行内の要素に組み替える (上付き・下付き・分数・根号・上下の添え字・mfenced・mtable は行を積む)。CDATA に入った MathML・SVG も読む。伸縮する括弧は中身の高さの見積もりで図形を描く (見積もりなので、実際の高さと少しずれることがある)。アクセントの矢印・根号も図形と罫線で描く。表 (mtable) は列の揃え (columnalign)・行の間隔 (rowspacing。ex の単位も読む) に対応し、式の全体が表なら表の下端を文字の下端に揃える。揃えの記号 (maligngroup)・式番号 (mlabeledtr) を行の端に寄せる配置・Content MathML は未対応 (Content MathML は中の字を並べる)。画像の枠 (width / height) の中の揃え (display-align / text-align) にも対応 |
+| I-02 | `fo:instream-foreign-object` (インライン SVG・MathML) | 中 | ほぼ完了 | SVG は data URI の画像 (PDF はベクタ)。MathML (Presentation) は行内の要素に組み替える (上付き・下付き・分数・根号・上下の添え字・mfenced・mtable は行を積む)。CDATA に入った MathML・SVG も読む。伸縮する括弧は中身の高さの見積もりで図形を描く (見積もりなので、実際の高さと少しずれることがある)。アクセントの矢印・根号も図形と罫線で描く。表 (mtable) は列の揃え (columnalign)・行の間隔 (rowspacing。ex の単位も読む) に対応し、式の全体が表なら表の下端を文字の下端に揃える。揃えの記号 (maligngroup)・式番号 (mlabeledtr) を行の端に寄せる配置・Content MathML は未対応 (Content MathML は中の字を並べる)。ここまでは数式の書体が読めないときの後備 (`foMathFallback.ts`) のことで、数式の書体 (STIX Two Math) で組むとき (`mathLayout.ts`) は、maligngroup・mlabeledtr・Content MathML にも対応する。画像の枠 (width / height) の中の揃え (display-align / text-align) にも対応 |
 | I-03 | WMF / EMF / EPS 画像 | 低 | 完了 | WMF・EMF は SVG にして描く (切り抜き・世界変換・弧・DIB・ALPHABLEND・パレット・模様のブラシ、描き先と混ぜるラスター演算は白黒の元なら描画モードで。ハッチは利用者の指定の 8 画素間隔)。EPS は PostScript を実行して SVG にする (図形・画像・色・文字。文字は埋め込まれた書体の字の形: Type 1・Type 3・CIDFontType 0・CFF)。網かけ (shfill・PatternType 2。ShadingType 1〜7、FunctionType 0・2・3 と手続き) は画素の画像、並べる模様 (PatternType 1) は PaintProc の絵の写しで描く。模様の線 (Pattern の色空間で stroke) は、線の輪郭 (太さ・端の形・つなぎ・破線・miter の上限を反映した形) を求めて、その形を模様で塗る。網かけ・関数・並べる模様は、定義が PDF と共通なので ISO 32000-2:2020 の §7.10・§8.7.3・§8.7.4 の本文で確かめた (標本の関数の Order 3 は、入力が 1 つで標本が 4 つ以上なら 3 次の自然スプライン、ほかは 1 次の補間) |
 | I-04 | `axf:*` 拡張 (背景画像・フォーム・行番号・注釈など) | 中 | 完了 | axf:document-info、しおり、背景画像、段罫、リンク (fo:basic-link)、注釈 (Text・FreeText・Stamp)、行番号 (axf:line-number-*)、角丸 (axf:border-radius。四隅共通) と影 (axf:box-shadow。ずれ・ぼかし・広がり・色) に対応。改訂バー (axf:revision-bar-*)、対角罫・逆対角罫 (axf:diagonal-border-* / axf:reverse-diagonal-border-*)、フォーム (axf:form / axf:form-field。PDF の AcroForm の欄) にも対応。隅ごとの角丸 (axf:border-top-left-radius など) と listbox の top-index (axf:field-top-index) にも対応。添付ファイルの注釈 (axf:annotation-type="FileAttachment"。axf:annotation-file-attachment のファイルを PDF に埋め込み、axf:annotation-icon-name の印。ISO 32000-2 §12.5.6.15・§7.11.4)、プッシュボタンの指を乗せた時 (R) と押した時 (D) の見た目 (§12.5.5) にも対応 |
 | I-05 | `fo:footnote-separator` 内の leader 以外 (テキスト・画像) | 低 | 完了 | 文字・画像 (external-graphic / instream-foreign-object)・背景色・罫線を持つ区切りは、内容として脚注領域の幅で組む。leader だけのものは区切り線 (実線・点線・長さ・太さ) |

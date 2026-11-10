@@ -55,7 +55,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 ## 未対応 (レポートに件数を出す)
 
 知らない要素 (`fo:*`・MathML・`instream-foreign-object` の中身)・知らないリージョン名、`reference-orientation` の 90 の倍数以外の値 (0 として組む)、長さの式の知らない関数、読めない色、`font-variant`・`word-spacing` (と `font-stretch`。読んで組むが、同じ所で報告もする)、`text-decoration`・`text-transform`・`baseline-shift` の読めない値、`overflow` の auto・visible 以外、`axf:punctuation-trim`・`axf:field-type`・`axf:field-checked-style`・`axf:field-font-size`・`axf:annotation-type`・`axf:annotation-flags` の知らない値、`axf:printer-marks` の画像、添付するファイルの無い FileAttachment の注釈 (テキスト注釈にする)。
-数式の細部 (Content MathML・maligngroup・mlabeledtr) は、件数には出さずに描けないまま (`BACKLOG.md` の I-02)。
+数式の書体が読めないときの後備の組み方では、数式の細部 (Content MathML・maligngroup・mlabeledtr) は、件数には出さずに描けないまま (`BACKLOG.md` の I-02。数式の書体で組むときは対応する)。
 
 未対応の一覧と優先度は [BACKLOG.md](BACKLOG.md) に記録している。
 
@@ -99,12 +99,12 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
   文字の大文字の高さは 0.72em とする。線種 2〜5 の線と隙間の長さは線の太さの倍数。RESTRICTED TEXT (basic) は、文字の高さを箱の高さまでに縮め、幅を超えるときだけ横に縮める。
   scaled・mm の線・辺の太さと印の大きさは、表示装置の上の大きさとして、絵を拡大縮小しても変えない (`vector-effect="non-scaling-stroke"`・`"non-scaling-size"`。PDF の描画で、絵を置く拡大率の逆数を掛ける。scaled の印の大きさの基準は 1.34pt)。fractional (表示面に対する割合) は絵と一緒に拡大縮小する。
   閉じた図形 (BEGIN FIGURE 〜 END FIGURE・NEW REGION) は、中の線・塗りの要素をつないで領域にし、END FIGURE で内側の塗り方に従って 1 つの塗りとして描き、辺は辺の属性で描く。
-  まだ描かないもの: CELL ARRAY・模様 (pattern)・ESCAPE (透明度など、登録された中身)・三角形の色の補間 (3 色の平均で塗る)・TEXT PATH (right 以外)・最初より後の絵。
+  CELL ARRAY・模様 (pattern)・ESCAPE 22・45 (透明度)・三角形の色の補間・TEXT PATH (left・up・down) も描く (`BACKLOG.md` の I-09)。まだ描かないもの: GDP・POLYSYMBOL・ほかの ESCAPE (登録された中身が無い)・最初より後の絵。
 - **.svgz** (gzip の SVG) は展開して SVG として読む。
 
 言語ごとの約物のアキ: `fo:declarations` の `axf:space-before-punctuation`・`axf:space-after-punctuation`・`axf:space-between-punctuation-and-digit`・`axf:space-between-digit-and-punctuation` (code・space・language) を読み、言語 (`xml:lang` / `language`) が合う文字列で、記号の前後に行内の余白でアキを入れる。space の百分率は字の大きさに対する割合、`thin` は 1/6em。記号の隣が空白なら入れない。
 
-分綴: `hyphenate="true"` の欧文の語は、分綴の位置で行末にハイフンを付けて分ける。分綴の規則は hyphen (ISC、TeX のパターン) で、今は英語 (`xml:lang` / `language` が en・en-US・en-GB、指定が無ければ英語) だけ。規則は分綴を使う文書を開いたときだけ読み込む。5 字未満の語は分けない。
+分綴: `hyphenate="true"` の欧文の語は、分綴の位置で行末にハイフンを付けて分ける。分綴の規則は hyphen (ISC、TeX のパターン) で、今は英語 (`xml:lang` / `language` が en・en-US・en-GB、指定が無ければ英語) とラテン語 (la) だけ。規則は分綴を使う文書を開いたときだけ読み込む。5 字未満の語は分けない。
 
 描けない形式でも、大きさはファイルの先頭から読む (`src/imageInfo.ts`) ので、仮の枠は正しい寸法になる。`fo:external-graphic` の `border`・`padding`・`background-color` は、画像 (width / height の枠があれば枠) の外側に描く。
 
@@ -335,9 +335,9 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - 背景画像: `background-image`・`background-repeat`・`background-position(-horizontal/-vertical)`、大きさは `axf:background-content-width/height` (無ければ画像本来の大きさ)。ブロック・セル・ブロックコンテナ・リージョンに対応。PDF にも埋め込む (SVG はベクタのまま)。
 - 段罫: `region-body` の `axf:column-rule-width/style/color`。
 - リンク: `fo:basic-link` の `external-destination` (URI) と `internal-destination` (その id が置かれたページ) を、PDF のリンク注釈にする。行をまたぐリンクは行ごとの範囲。
-- 注釈: `axf:annotation-type` (Text・FreeText・Stamp。FileAttachment は添付ファイルを持たないのでテキスト注釈にする) と `axf:annotation-contents/title/color/text-color/font-size/icon-name/open/position-horizontal/position-vertical/width/height`。inline は最初の行、block は最初の断片の左上が基準。FreeText は埋め込み済みの書体で表示 (appearance) を作る。画面には注釈の目印を描く。
+- 注釈: `axf:annotation-type` (Text・FreeText・Stamp。FileAttachment は `axf:annotation-file-attachment` のファイルを添付する。ファイルが無ければテキスト注釈にする) と `axf:annotation-contents/title/color/text-color/font-size/icon-name/open/position-horizontal/position-vertical/width/height`。inline は最初の行、block は最初の断片の左上が基準。FreeText は埋め込み済みの書体で表示 (appearance) を作る。画面には注釈の目印を描く。
 - 行番号: `axf:line-number` (show / hide / none) と `axf:line-number-format/initial/interval/start/reset/position/offset/font-family/font-size/font-weight/font-style/color`。page-sequence・flow・ブロックのどこに書いても子へ引き継ぐ。番号は段の端の外側に、行の基線をそろえて置く (縦書きは、本文の欧文と同じく時計回りに 90° 寝かせて、行の中央をそろえて段の上に)。段の端から番号までの間隔 (`offset`) の既定は 0。最初に出す番号 (`start`) の既定は数え始めの番号 (`initial`) で、`interval="2"` なら 1, 3, 5…と出す。番号の字の大きさの既定は、互換モードでは 10pt (本文の大きさによらない)。
-- 角丸と影: `axf:border-radius` (水平半径・垂直半径。四隅共通) と `axf:box-shadow` (横・縦のずれと色。ぼかしは描かない)。角丸の罫線は、4 辺が同じ太さ・線種・色のときだけ丸めて描く。
+- 角丸と影: `axf:border-radius` (水平半径・垂直半径。四隅共通) と角ごとの `axf:border-top-left-radius` など、`axf:box-shadow` (横・縦のずれ・ぼかし・広がり・色・inset。カンマで並べた複数の影)。角丸の罫線は、4 辺が同じ太さ・線種・色のときだけ丸めて描く。
 - 斜めの罫線: `axf:diagonal-border-style/width/color` (対角罫。before-start の角から after-end の角へ) と `axf:reverse-diagonal-border-*` (逆対角罫。before-end の角から after-start の角へ)。一括指定 (`axf:diagonal-border="1pt solid black"`) も読む。表のセル・ブロック・ブロックコンテナに引く。
 - 表の行の `height` / `block-progression-dimension`: 互換モードは行の高さの最小値 (中身が多ければ広がる)。仕様モードは minimum = optimum = maximum (§7.15.3)。
 - フォーム: `axf:form` (`external-destination`・`axf:field-submit-method`) の中の `axf:form-field` を、PDF の AcroForm の欄にする。`axf:field-type` は text (password・multiline・maxlen・required)・checkbox・radio (同じ名前が 1 組)・listbox・combobox (`axf:form-field-option`)・button (`axf:action-type` の submit / reset、`axf:field-button-face`)。罫線・余白・大きさは FO の指定で Kumiori が描き、欄自身は透明。画面には欄の見本を描く。
