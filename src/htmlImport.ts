@@ -288,6 +288,16 @@ function objectPositionOf(v: string): ObjectPosition | undefined {
 }
 
 /**
+ * 罫線の色の計算値 → 罫線の色。透明 (alpha が 0) は 'transparent' (太さは取り、描かない)、半透明は #rrggbbaa (描くときに、その濃さで
+ * 下の背景に重ねる。CSS Backgrounds 3 §2.7: 背景は罫線の下まで描くので、半透明の罫線の下に背景が見える)。読めない色は黒
+ */
+function borderColorOf(v: string): string {
+  const rgba = parseRgbFn(v.trim());
+  if ((rgba && rgba.a <= 0) || v.trim().toLowerCase() === 'transparent') return 'transparent';
+  return cssColorAlpha(v) ?? '#000000';
+}
+
+/**
  * 背景の層 (CSS Backgrounds 3 §2.1): 層の数は background-image のコンマ区切りの値の数 (none も 1 層)。ほかの性質の値は、前から順に対にし、
  * 足りなければ値の並びを繰り返して使う。余った値は使わない
  */
@@ -2994,7 +3004,7 @@ class HtmlImporter {
       if (!style || style === 'none' || style === 'hidden' || w <= 0) continue;
       border[sd] = {
         width: w,
-        color: (pseudo ? undefined : this.borderPrint(this.pg(el), sd)) ?? cssColor(c(`border-${sd}-color`)) ?? '#000000',
+        color: (pseudo ? undefined : this.borderPrint(this.pg(el), sd)) ?? borderColorOf(c(`border-${sd}-color`)),
         ...(style !== 'solid' ? { style: style as BorderSide['style'], symmetric: true } : {}),
       };
     }

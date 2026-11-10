@@ -23,6 +23,7 @@
   - `x`・`y` は回転後の外接矩形の左上です。
   - 子の座標は、回転前の局所座標です。
 - `GlyphArea.rotation` は字の回転 (時計回り) で、箱の回転 `orientation` とは別のものです。
+- 罫線の辺の色 (`border.*.color`) は、`transparent` なら描かず (太さは取る)、`#rrggbbaa` (半透明) なら、その濃さで下の背景に重ねて描きます。
 - 背景 (`backgroundColor`・`backgroundImage`):
   - `backgroundImage` は、いちばん手前の背景の画像です (大きさは解決済み)。`under` は、その後ろに重ねる画像の並び (手前のものから順) です。
   - 画像ごとの `origin` は位置の基準の領域 (`border-box`・`content-box`。無ければ padding の箱)、`clip` は描く範囲 (`border-box`・`content-box`。無ければ padding の箱) です。HTML の背景は、`background-clip` の初期値が `border-box` なので、ふつう `clip: "border-box"` を持ちます (罫線の下にも描く)。XSL-FO の背景は `clip` を持ちません (XSL 1.1 §4.9.4: 背景は padding の矩形に描く)。

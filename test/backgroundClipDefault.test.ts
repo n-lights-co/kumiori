@@ -127,6 +127,57 @@ describe('HTML: background-clip の初期値 border-box', () => {
   });
 });
 
+describe('HTML: 透明・半透明の罫線 (背景が罫線の下に見える)', () => {
+  /** 罫線を描く呼び出し (色が c のもの) と、それを囲む不透明度のグループ */
+  function borderCalls(tree: AreaTree) {
+    const log: Array<{ name: string; color?: string; group: number[] }> = [];
+    const groups: number[] = [];
+    const p = new Proxy({} as Painter, {
+      get: (_t, name) => {
+        if (name === 'drawImageTiled' || name === 'mark') return undefined;
+        if (name === 'group')
+          return (op: number, draw: () => void) => {
+            groups.push(op);
+            draw();
+            groups.pop();
+          };
+        return (...args: unknown[]) => void log.push({ name: String(name), color: args.find((x) => typeof x === 'string' && /^#|^transparent$/.test(x)) as string | undefined, group: [...groups] });
+      },
+    });
+    paintSheet(tree.sheets[0], p);
+    return log;
+  }
+  const box = (st: string) => typesetHtml(page(`<div class="b" style="border-style: solid; background-color: #00ff00; ${st}"></div>`), { name: 't.html', loadFont, files });
+  it('border-color: transparent の罫線は描かない (場所は取る)。これまでは黒で描いていた', async () => {
+    const r = await box('border-color: transparent');
+    const calls = borderCalls(r.areaTree);
+    // 描くのは背景の色だけ (border の箱。罫線の太さの分も塗る)
+    expect(calls.filter((c) => c.color && c.color !== '#ffffff').map((c) => c.color)).toEqual(['#00ff00']);
+    let b: Area | undefined;
+    walkAreaTree(r.areaTree, (a) => void (!b && (a as Area).backgroundColor === '#00ff00' && (b = a as Area)));
+    expect([b!.border.top?.width, b!.border.top?.color, b!.width]).toEqual([6, 'transparent', 120]);
+  });
+  it('半透明の罫線 (rgba() の border-color) は、その濃さで背景に重ねる (4 辺をまとめて 1 つのグループ。角は濃くならない)', async () => {
+    const r = await box('border-color: rgba(255, 0, 0, 0.5)');
+    const calls = borderCalls(r.areaTree).filter((c) => c.color === '#ff0000');
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    // (濃さは 8 ビットで運ぶ: 0.5 は 128/255)
+    for (const c of calls) expect(c.group.map((g) => +g.toFixed(2))).toEqual([0.5]);
+    // 背景の色は、グループの外 (不透明)
+    expect(borderCalls(r.areaTree).find((c) => c.color === '#00ff00')!.group).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+  it('不透明の罫線は、これまでどおり (グループを使わない)。辺ごとに濃さが違えば、濃さごとに重ねる', async () => {
+    const plain = borderCalls((await box('border-color: #ff0000')).areaTree).filter((c) => c.color === '#ff0000');
+    expect(plain.length).toBeGreaterThanOrEqual(1);
+    for (const c of plain) expect(c.group).toEqual([]);
+    const mixed = borderCalls((await box('border-color: #ff0000; border-top-color: rgba(0, 0, 255, 0.25)')).areaTree);
+    expect(mixed.filter((c) => c.color === '#0000ff').every((c) => c.group.length === 1 && Math.abs(c.group[0] - 0.25) < 0.01)).toBe(true);
+    expect(mixed.filter((c) => c.color === '#0000ff').length).toBeGreaterThanOrEqual(1);
+    expect(mixed.filter((c) => c.color === '#ff0000').every((c) => c.group.length === 0)).toBe(true);
+  });
+});
+
 describe('XSL-FO: 背景の画像は、これまでどおり padding の矩形まで (XSL 1.1 §4.9.4)', () => {
   it('罫線のある箱の background-image は、padding の箱で切り抜く (clip の欄は付かない)。色は、これまでどおり border の箱', async () => {
     const fo =

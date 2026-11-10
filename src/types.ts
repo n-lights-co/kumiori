@@ -40,6 +40,7 @@ export type BorderLineStyle = 'solid' | 'dashed' | 'dotted' | 'double' | 'groove
 
 export interface BorderSide {
   width: number;
+  /** 色。'transparent' は描かない (太さは取る)。#rrggbbaa (半透明) は、その濃さで下の背景に重ねて描く */
   color: string;
   /** 線種。省略は solid */
   style?: BorderLineStyle;
