@@ -487,6 +487,8 @@ export interface LBookmark {
   title: string;
   /** 飛び先の要素の id */
   ref: string;
+  /** 文書の外への飛び先 (XSL-FO の fo:bookmark の external-destination)。いまは取り込むだけで、PDF のしおりには出さない */
+  href?: string;
   /** 子のしおりを開いた状態で表示する (既定 true) */
   open?: boolean;
   children?: LBookmark[];

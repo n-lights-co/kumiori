@@ -287,3 +287,18 @@ describe('FO-14: number-columns-spanned・number-rows-spanned が空・数でな
     }
   });
 });
+
+describe('FO-16: fo:bookmark の external-destination (§6.11.2・§7.23.6)', () => {
+  const tree = (b: string) => imp(fo('<fo:block id="a">x</fo:block>', { pre: `<fo:bookmark-tree>${b}</fo:bookmark-tree>` }));
+  it('文書の外への飛び先は、しおりの href に入れ、PDF に出せないことを読み込みの報告に数える (黙って捨てない)', () => {
+    const r = tree('<fo:bookmark external-destination="url(\'http://example.com/a\')"><fo:bookmark-title>T</fo:bookmark-title></fo:bookmark>');
+    const bm = r.document.bookmarks![0] as LBookmark;
+    expect(bm).toMatchObject({ title: 'T', ref: '', href: 'http://example.com/a' });
+    expect(Object.keys(r.report.unsupported).join()).toContain('fo:bookmark external-destination');
+  });
+  it('internal-destination もあれば、そちらを使う (§6.11.2)。報告には数えない', () => {
+    const r = tree('<fo:bookmark internal-destination="a" external-destination="url(http://example.com/)"><fo:bookmark-title>T</fo:bookmark-title></fo:bookmark>');
+    expect(r.document.bookmarks![0]).toEqual({ title: 'T', ref: 'a' });
+    expect(Object.keys(r.report.unsupported).join()).not.toContain('bookmark');
+  });
+});
