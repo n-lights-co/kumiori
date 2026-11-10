@@ -1243,7 +1243,9 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   const embedFont = async (f: ReturnType<FontManager['all']>[number]) => {
     const cff = new Uint8Array(f.buffer, 0, 4).every((b, i) => b === 'OTTO'.charCodeAt(i));
     const wantSubset = opts.subset ?? true;
-    const ps = String((f.fk as { postscriptName?: string }).postscriptName ?? f.family).replace(/[^!-~]|[()<>[\]{}/%#]/g, '');
+    // 可変フォントの実体は、軸の値の入った名前 (fontManager.ts の instance)。実体ごとに、静的な書体として埋める
+    // (PDF の書体の種類に可変フォントは無い。ISO 32000-2 §9.6・§9.7)
+    const ps = String((f.instanceOf ? f.postscriptName : undefined) ?? (f.fk as { postscriptName?: string }).postscriptName ?? f.family).replace(/[^!-~]|[()<>[\]{}/%#]/g, '');
     const customName = wantSubset ? `${subsetTag(embedded.size)}+${ps}` : undefined;
     const pf = await pdf.embedFont(new Uint8Array(f.buffer), { subset: !cff && wantSubset, ...(customName ? { customName } : {}) });
     if (cff && wantSubset) markCffSubset(pf);

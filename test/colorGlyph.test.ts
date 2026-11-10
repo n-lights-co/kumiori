@@ -23,6 +23,7 @@ import { parseCss } from '../src/htmlPaged';
 import { encodePngStored } from '../src/pixels';
 import { COMPOSITE, areaGlyphs, colorFontOf, orderByPresentation, paletteForFont, plainStops, prepareColorFont, presentationOf, sweepSampler, unrollStops, type ColorFill, type ColorFont, type ColorOp, type ColorStop } from '../src/colorGlyph';
 import { svgGlyphReader } from '../src/colorGlyphSvg';
+import { variationSuffix } from '../src/fontVariation';
 import { decodePng } from '../src/colorGlyphCanvas';
 import { DEFAULT_FONTS, typesetHtml, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
 import type { XmlNode } from '../src/svg';
@@ -682,6 +683,37 @@ describe('実物の書体', () => {
   });
 });
 
+describe('可変フォントで、色つきの表も持つ書体', () => {
+  it('軸の値を決めた実体 (静的な書体に作り直したもの) でも、色つきの表が読め、PDF に Type 3 書体として書ける (輪郭は実体のもの、色は既定の値)', async () => {
+    const b = fs.readFileSync(await extraTestFont('Anybody-wdth-wght-5bb2873.ttf'));
+    const anybody = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+    const fk = fontkit.create(new Uint8Array(anybody)) as unknown as { glyphForCodePoint(cp: number): { id: number } };
+    const id = (ch: string) => fk.glyphForCodePoint(ch.codePointAt(0)!).id;
+    const color = withTables(anybody, { COLR: colr0([{ gid: id('A'), layers: [[id('H'), 0]] }]), CPAL: PALETTE });
+    const { fonts, layout, glyphs } = await setup({ Var: color });
+    const master = fonts.get('Var', 400);
+    const narrow = fonts.get(`Var${variationSuffix({ wdth: 50 })}`, 400);
+    // どちらも、同じ元の書体の実体 (既定の形も、軸の値が既定の実体)。物どうしを expect で比べると、違ったときの表示が書体のバイト列を並べて終わらないので、真偽で比べる
+    expect(!!narrow.instanceOf && narrow !== master && narrow.instanceOf.master === (master.instanceOf?.master ?? master)).toBe(true);
+    // 実体の書体にも COLR・CPAL が写っていて、色つきの字形が読める。層の輪郭は、実体の (幅の狭い) 輪郭
+    const width = (f: typeof master) => {
+      const xs = (colorFontOf(f)!.glyph(id('A'))!.ops[0] as Extract<ColorOp, { op: 'fill' }>).path.flatMap((p) => (p.op === 'Z' ? [] : [p.x]));
+      return Math.max(...xs) - Math.min(...xs);
+    };
+    expect(width(narrow)).toBeLessThan(width(master) * 0.9);
+    // @font-palette-values の規則は、元の書体のファミリーで当たる
+    expect(paletteForFont([{ name: '--p', families: ['Var'], colors: [[0, '#00ff00']] }], narrow)).toEqual({ colors: [[0, '#00ff00']] });
+    const tree = layout([{ fontFamily: 'Var', children: ['AZ'] }, { fontFamily: 'Var', fontVariationSettings: { wdth: 50 }, children: ['AZ'] }]);
+    const [a0, , a1] = glyphs(tree);
+    expect(a1.advance).toBeLessThan(a0.advance);
+    const pdf = await PDFDocument.load(await renderPdf(tree, fonts));
+    // 既定の形と実体で、別の Type 3 書体。どちらも、赤い層を持つ手続きがある
+    const t3 = type3Fonts(pdf);
+    expect(t3).toHaveLength(2);
+    for (const f of t3) expect([...charProcs(pdf, f).values()].filter((proc) => /\b1 0 0 rg\b/.test(proc))).toHaveLength(1);
+  });
+});
+
 describe('@font-palette-values (CSS Fonts 4 §9.2)', () => {
   it('名前・font-family・base-palette・override-colors を読む。font-family の無い規則・総称を含む規則は無効', () => {
     const css = `@font-palette-values --a { font-family: "X Y", Z; base-palette: 3; override-colors: 0 red, 2 rgba(0, 0, 255, 0.5) }
@@ -707,6 +739,8 @@ describe('@font-palette-values (CSS Fonts 4 §9.2)', () => {
     ];
     expect(paletteForFont(rules, font)).toEqual({ base: 2, colors: [[1, '#000000']] });
     expect(paletteForFont(rules.slice(0, 2), font)).toEqual({ base: 1 });
+    // 可変フォントの実体 (名前の後ろに軸の印が付く) は、元の書体のファミリーで規則を探す
+    expect(paletteForFont(rules.slice(0, 2), { ...font, family: 'css:My Font{;EDPT=30}', instanceOf: { master: { family: 'css:My Font' } } })).toEqual({ base: 1 });
     expect(paletteForFont(rules.slice(1, 2), font)).toBeUndefined();
     expect(paletteForFont('light', font)).toEqual({ base: 1 });
     expect(paletteForFont('dark', font)).toEqual({ base: 2 });

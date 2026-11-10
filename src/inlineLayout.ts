@@ -1251,7 +1251,8 @@ export function glyphNode(
     scaleX: g.scaleX ?? 1,
     advance: g.advance,
   };
-  if (st.italic) glyph.italic = true;
+  // 可変フォントの傾きの軸 (slnt・ital) で傾けた実体は、描くときに傾けない
+  if (st.italic && !g.font.instanceOf?.slanted) glyph.italic = true;
   if (st.fontWeight >= 600 && g.font.weight < 600) glyph.fakeBold = true;
   if (st.fontFeatures?.length && wm === 'horizontal-tb') glyph.features = st.fontFeatures;
   // 縦書き: 書体の縦書き用の字形 (vert) で描く

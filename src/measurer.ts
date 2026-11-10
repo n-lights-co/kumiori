@@ -9,6 +9,7 @@
  * 計測は 1000px の基準サイズで行い、実サイズへ線形スケールする（ヒンティングの影響を受けない）。
  */
 import type { FontManager, LoadedFont } from './fontManager';
+import { withOpticalSize } from './fontVariation';
 import type { WritingMode } from './types';
 import { isFullWidth, verticalTreatment, type VerticalTreatment } from './jis';
 import { clusterUnits, mayCluster } from './grapheme';
@@ -61,6 +62,8 @@ export interface RunStyle {
   fontSize: number;
   /** 字幅の伸縮 (font-stretch。横書きだけ、字形を水平に拡縮する)。既定 1 */
   stretch?: number;
+  /** 可変フォントの光学サイズの軸に渡す字の大きさの単位 (ルビを小さく組むときに、書体の名前の印の opsz を決め直す) */
+  opticalSizeUnit?: 'pt' | 'px';
   /** 字形を差し替える OpenType の機能 (横書きだけ) */
   features?: string[];
   /** 縦書きの字の向き (text-orientation)。省略時は mixed */
@@ -162,6 +165,15 @@ function hmtxAdvance(fk: LoadedFont['fk'], text: string): number {
   return [...text].reduce((a, c) => a + (m.get(Math.min(f.glyphForCodePoint(c.codePointAt(0)!).id, m.length - 1))?.advance ?? 0), 0);
 }
 
+/**
+ * 字形を水平に拡縮する比 (font-stretch)。幅の軸 (wdth) を持つ可変フォントは、軸の値で幅を変えるので、拡縮しない (CSS Fonts 4 §2.3:
+ * 可変フォントでは wdth の軸で幅を変える。書体の範囲の外の幅は、最も近い値になる)
+ */
+function stretchOf(font: LoadedFont, style: Pick<RunStyle, 'stretch'>): number {
+  const master = font.instanceOf?.master ?? font;
+  return master.variable?.info.axes.some((a) => a.tag === 'wdth') ? 1 : (style.stretch ?? 1);
+}
+
 export class Measurer {
   private ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;
   /** 字の送り (em 比) を、書体ごとに字 (と OpenType の機能) で覚える。測り方 (backend) を変えたら消す */
@@ -259,7 +271,8 @@ export class Measurer {
       // 送りは、機能で調整した後の値 (palt などの位置の機能も効く)
       const run = font.fk.layout(ch, { kern: false, liga: false, clig: false, ...Object.fromEntries(features.map((f) => [f, true])) } as never);
       w = run.positions.reduce((a, p) => a + p.xAdvance, 0) / font.unitsPerEm;
-    } else if (this.backend === 'canvas' && this.ctx) {
+    } else if (this.backend === 'canvas' && this.ctx && !font.instanceOf) {
+      // 可変フォントの実体は、いつも fontkit で測る (ブラウザへの登録は後で終わるので、測り方を途中で変えない)
       this.ctx.font = this.fonts.cssFont(font, REF_SIZE);
       w = this.ctx.measureText(ch).width / REF_SIZE;
     } else {
@@ -405,7 +418,7 @@ export class Measurer {
     }
     const natural = this.emAdvance(font, ch, wm === 'horizontal-tb' ? style.features : undefined) * fs;
     if (wm === 'horizontal-tb') {
-      const k = style.stretch ?? 1;
+      const k = stretchOf(font, style);
       if (k !== 1) return { ch, font, fontSize: fs, advance: natural * k, cross: fs, naturalWidth: natural * k, scaleX: k };
       return { ch, font, fontSize: fs, advance: natural, cross: fs, naturalWidth: natural };
     }
@@ -569,7 +582,7 @@ export class Measurer {
     const fs = style.fontSize;
     const natural = this.emAdvance(font, unit, wm === 'horizontal-tb' ? style.features : undefined) * fs;
     if (wm === 'horizontal-tb') {
-      const k = style.stretch ?? 1;
+      const k = stretchOf(font, style);
       if (k !== 1) return { ch: base, font, fontSize: fs, advance: natural * k, cross: fs, naturalWidth: natural * k, scaleX: k, draw: unit };
       return { ch: base, font, fontSize: fs, advance: natural, cross: fs, naturalWidth: natural, draw: unit };
     }
@@ -648,7 +661,7 @@ export class Measurer {
    */
   ruby(baseText: string, rubyText: string, style: RunStyle, wm: WritingMode, rubyScale = 0.5, underText?: string): RubyMetrics {
     const rubySize = style.fontSize * rubyScale;
-    const rubyStyle: RunStyle = { ...style, fontSize: rubySize };
+    const rubyStyle: RunStyle = { ...style, fontSize: rubySize, ...(style.fontFamily ? { fontFamily: withOpticalSize(style.fontFamily, rubySize, style.opticalSizeUnit) } : {}) };
     const baseGlyphs = this.glyphs(baseText, style, wm);
     const rubyGlyphs = this.glyphs(rubyText, rubyStyle, wm);
     const baseAdvance = baseGlyphs.reduce((a, g) => a + g.advance, 0);

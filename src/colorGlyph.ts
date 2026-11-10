@@ -111,14 +111,15 @@ const familyKey = (n: string) => n.trim().replace(/^["']|["']$/g, '').trim().toL
  * その書体に当たる規則が無い、light・dark の印の付いたパレットが無い) なら undefined。
  * 書体のファミリーの照合: @font-face の書体は「css:名前」(範囲つきは「css:名前#範囲」) で登録してあるので、その名前の部分で比べる
  */
-export function paletteForFont(style: FontPaletteStyle | undefined, font: { family: string; fk: unknown; buffer: ArrayBuffer }): FontPalette | undefined {
+export function paletteForFont(style: FontPaletteStyle | undefined, font: { family: string; fk: unknown; buffer: ArrayBuffer; instanceOf?: { master: { family: string } } }): FontPalette | undefined {
   if (!style || style === 'normal') return undefined;
   const cf = colorFontOf(font);
   if (!cf || !cf.paletteCount) return undefined;
   let sel: FontPalette | undefined;
   if (style === 'light' || style === 'dark') sel = { base: style };
   else {
-    const own = familyKey(font.family.replace(/^css:/, '').replace(/#.*$/, ''));
+    // 可変フォントの実体 (軸の値を決めた書体。名前の後ろに軸の印が付く) は、元の書体のファミリーで比べる
+    const own = familyKey((font.instanceOf?.master.family ?? font.family).replace(/^css:/, '').replace(/#.*$/, ''));
     // 同じ名前の規則が複数あれば、書いた順の最後のものが勝つ (§9.2)
     const rule = [...style].reverse().find((r) => r.families.some((f) => familyKey(f) === own));
     if (rule) sel = { ...(rule.base !== undefined ? { base: rule.base } : {}), ...(rule.colors?.length ? { colors: rule.colors } : {}) };

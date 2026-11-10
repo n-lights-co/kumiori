@@ -12,6 +12,7 @@
  */
 import { MAX_VAR_LENGTH, parseCss, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
 import { fmtColor, parseColor, splitTop, UNIT_PX, type RGBA } from './cssText';
+import { parseVariationSettings } from './fontVariation';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { asciiLower, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
@@ -388,6 +389,9 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'font-weight': [true, '400', 'raw'],
   'font-style': [true, 'normal', 'raw'],
   'font-stretch': [true, '100%', 'raw'],
+  // 可変フォントの軸の値 (Fonts 4 §8.1・§8.2)
+  'font-optical-sizing': [true, 'auto', 'raw'],
+  'font-variation-settings': [true, 'normal', 'raw'],
   'font-variant': [true, 'normal', 'raw'],
   'font-variant-caps': [true, 'normal', 'raw'],
   'font-variant-numeric': [true, 'normal', 'raw'],
@@ -824,6 +828,8 @@ const FONT_RESET_ONLY: Array<[string, string]> = [
   ['font-variant-position', 'normal'],
   ['font-kerning', 'auto'],
   ['font-feature-settings', 'normal'],
+  ['font-optical-sizing', 'auto'],
+  ['font-variation-settings', 'normal'],
 ];
 
 /** Kumiori の知っているプロパティか: PROPS にある (論理のプロパティは物理に直して)、または一括指定を分けた性質がすべて PROPS にある */
@@ -1182,6 +1188,8 @@ shorthand(['break-before', 'break-after'], (prop, v) => [[prop, v], [`page-break
 shorthand(['break-inside'], (prop, v) => [[prop, v], ['page-break-inside', /avoid/.test(v) ? 'avoid' : 'auto']]);
 shorthand(['white-space-collapse'], (_p, v) => [['white-space', v === 'preserve' ? 'pre-wrap' : v === 'collapse' ? 'normal' : v]]);
 shorthand(['word-wrap'], (_p, v) => [['overflow-wrap', v]]);
+// font-width (Fonts 4 §2.3)。font-stretch は、その古い名前 (legacy name alias)。計算値は font-stretch に持つ
+shorthand(['font-width'], (_p, v) => [['font-stretch', v]]);
 
 /** 一括指定を個別の性質に分ける (分けないものはそのまま)。ah はアンテナハウスの拡張の読み方 (線種) */
 export function expand(prop: string, value: string, ah: AhFlags = NO_AH): Longhands {
@@ -2108,6 +2116,12 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   switch (prop) {
     case 'font-weight':
       return /^(normal|bold|bolder|lighter)$/.test(s0) || (num.test(s0) && parseFloat(s0) >= 1 && parseFloat(s0) <= 1000);
+    case 'font-optical-sizing':
+      // auto | none (Fonts 4 §8.1)
+      return s0 === 'auto' || s0 === 'none';
+    case 'font-variation-settings':
+      // normal | [ <opentype-tag> <number> ]# (Fonts 4 §8.2。札は大文字小文字を区別する 4 字)
+      return parseVariationSettings(v) !== undefined;
     case 'opacity':
       return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
     case 'z-index':
