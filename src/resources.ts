@@ -34,6 +34,39 @@ export function parseUnicodeRange(v: string): Array<[number, number]> | undefine
   return out.length ? out : undefined;
 }
 
+/**
+ * 文書の文字に出てくる字の番号 (タグや CSS の字も含む、多めの見積もり): 書かれたままの字と、数値の文字参照 (&#x65E5;) の字、
+ * CSS の逃がし (\65E5。<style>・style 属性の content の文字列など) の字。名前の文字参照 (&alpha; など) は、呼ぶ側が HTML の解析で解いて足す。
+ * @font-face の書体のうち、unicode-range がこれと重ならないものは取らない (CSS Fonts 4 §4.5: 範囲の外の字のために書体を取らない・使わない)
+ */
+export function documentChars(text: string): Set<number> {
+  const chars = new Set<number>();
+  for (const ch of text) chars.add(ch.codePointAt(0)!);
+  if (text.includes('&#')) for (const m of text.matchAll(/&#(?:(\d{1,7})|[xX]([0-9a-fA-F]{1,6}))/g)) chars.add(m[1] ? parseInt(m[1], 10) : parseInt(m[2], 16));
+  if (text.includes('\\')) for (const m of text.matchAll(/\\([0-9a-fA-F]{1,6})/g)) chars.add(parseInt(m[1], 16));
+  return chars;
+}
+
+/**
+ * CSS の文字列 ("…"・'…'。content の値など) の字の番号を into に足す。逃がしは解く (CSS Syntax 3 §4.3.7: \ の後ろの 16 進の 1〜6 桁と、
+ * その後ろの空白 1 つ。0・代用符号・U+10FFFF より大きい番号は U+FFFD。ほかは次の字そのもの。§4.3.5: \ の後ろの改行は何も表さない)。
+ * 注釈の中は見ない。content に限らず、すべての文字列を見る (書体名・url("…") も入る、多めの見積もり)
+ */
+export function cssStringChars(css: string, into: Set<number>): void {
+  for (const m of css.replace(/\/\*[\s\S]*?\*\//g, ' ').matchAll(/"((?:[^"\\\n]|\\[\s\S])*)"|'((?:[^'\\\n]|\\[\s\S])*)'/g)) {
+    const body = m[1] ?? m[2] ?? '';
+    const text = body.includes('\\')
+      ? body.replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|(\r\n|[\n\r\f])|([\s\S]))/gu, (_all, hex?: string, nl?: string, ch?: string) => {
+          if (nl) return '';
+          if (!hex) return ch ?? '';
+          const cp = parseInt(hex, 16);
+          return cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? '�' : String.fromCodePoint(cp);
+        })
+      : body;
+    for (const ch of text) into.add(ch.codePointAt(0)!);
+  }
+}
+
 /** URL のスキーム (RFC 3986 §3.1) */
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
@@ -160,7 +193,10 @@ export interface CollectOptions {
   /** http(s) の CSS と、その @font-face の書体を取るか (TypesetOptions.fetchStyles) */
   fetchStyle: (url: string) => boolean;
   timeoutMs: number;
-  /** 文書に出てくる字の番号。@font-face の書体のうち、unicode-range がこれと重ならないものは取らない (Google Fonts の分けた書体など) */
+  /**
+   * 文書に出てくる字の番号 (documentChars)。@font-face の書体のうち、unicode-range がこれと重ならないものは取らない (Google Fonts の分けた書体など)。
+   * CSS (cssTexts と、取った CSS) の文字列の字は、ここで足して見る (content: "第" の字は、文書の文字には出てこない)
+   */
   chars?: ReadonlySet<number>;
 }
 
@@ -189,13 +225,20 @@ export async function collectResources(text: string, o: CollectOptions): Promise
   const seen = new Set<string>();
   type Item = ResourceRef & { depth: number };
   const queue: Item[] = documentRefs(text).map((r) => ({ ...r, depth: 0 }));
-  for (const f of o.cssTexts) for (const r of cssRefs(f.text)) queue.push({ ...r, url: resolveRef(r.url, f.name), depth: 1 });
+  // 使う字: 文書の字に、CSS の文字列 (content の値など) の字を足す
+  const chars = o.chars ? new Set(o.chars) : undefined;
+  for (const f of o.cssTexts) {
+    for (const r of cssRefs(f.text)) queue.push({ ...r, url: resolveRef(r.url, f.name), depth: 1 });
+    if (chars) cssStringChars(f.text, chars);
+  }
+  /** 中身の取れた参照 */
+  const have = new Set<string>();
   // 1 つの参照を処理する: files にあれば何もしない。resolveResource に問い合わせ、無ければ http(s) の CSS・書体を取る
   const one = async (it: Item) => {
     const url = it.url;
     if (o.has(url)) return;
-    // unicode-range が文書の字と重ならない書体は使われないので、取らない
-    if (it.kind === 'font' && it.ranges && o.chars && !it.ranges.some(([a, b]) => [...o.chars!].some((c) => c >= a && c <= b))) return;
+    // unicode-range が使う字と重ならない書体は使われないので、取らない (CSS Fonts 4 §4.5)
+    if (it.kind === 'font' && it.ranges && chars && !it.ranges.some(([a, b]) => [...chars].some((c) => c >= a && c <= b))) return;
     let data = toBytes(o.resolve ? await o.resolve(url) : undefined);
     if (!data && (it.kind === 'css' || it.kind === 'font') && /^https?:/i.test(url)) {
       if (o.fetchStyle(url)) {
@@ -204,22 +247,38 @@ export async function collectResources(text: string, o: CollectOptions): Promise
       } else warnings.push(`${it.kind}-not-fetched\t${url}`);
     }
     if (!data) return;
+    have.add(url);
     files.push({ name: url.split(/[?#]/)[0], url, data, css: it.kind === 'css' });
-    if (it.kind === 'css' && it.depth < MAX_DEPTH) {
+    if (it.kind === 'css') {
       const css = new TextDecoder().decode(data);
-      for (const r of cssRefs(css)) queue.push({ ...r, url: resolveRef(r.url, url), depth: it.depth + 1 });
+      if (chars) cssStringChars(css, chars);
+      if (it.depth < MAX_DEPTH) for (const r of cssRefs(css)) queue.push({ ...r, url: resolveRef(r.url, url), depth: it.depth + 1 });
     }
   };
-  while (queue.length && seen.size < MAX_REFS) {
-    // 同時に PARALLEL 個まで (Google Fonts の CSS は、字の範囲で分けた書体をたくさん参照する)
-    const batch: Item[] = [];
-    while (queue.length && batch.length < PARALLEL && seen.size < MAX_REFS) {
-      const it = queue.shift()!;
-      if (skip(it.url) || seen.has(it.url)) continue;
-      seen.add(it.url);
-      batch.push(it);
+  // 書体は、CSS をすべて集めてから取る (使う字は、後から読む CSS の content の字でも増えるので、先には決まらない)
+  const fonts: Item[] = [];
+  const seenFonts = new Set<string>();
+  for (let fontPass = false; ; fontPass = true) {
+    while (queue.length && seen.size < MAX_REFS) {
+      // 同時に PARALLEL 個まで (Google Fonts の CSS は、字の範囲で分けた書体をたくさん参照する)
+      const batch: Item[] = [];
+      while (queue.length && batch.length < PARALLEL && seen.size < MAX_REFS) {
+        const it = queue.shift()!;
+        if (skip(it.url)) continue;
+        if (it.kind === 'font' && !fontPass) {
+          fonts.push(it);
+          continue;
+        }
+        // 書体は、書体でない参照として先に見ていても、中身が取れていなければ書体として取りに行く
+        if (it.kind === 'font' ? seenFonts.has(it.url) || have.has(it.url) : seen.has(it.url)) continue;
+        if (it.kind === 'font') seenFonts.add(it.url);
+        seen.add(it.url);
+        batch.push(it);
+      }
+      await Promise.all(batch.map(one));
     }
-    await Promise.all(batch.map(one));
+    if (fontPass || !fonts.length) break;
+    queue.push(...fonts);
   }
   return { files, warnings };
 }

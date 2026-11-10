@@ -32,7 +32,7 @@ import { AH_HTML_IMPORT_OPTIONS, FO_COMPATS, HTML_STYLES, ahCascadeOptions, comp
 import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, setupDefaultFonts } from './fontMapping';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
-import { collectResources, refBasename } from './resources';
+import { collectResources, documentChars, refBasename } from './resources';
 
 export type { HtmlDefaults } from './htmlPrepare';
 export type { FontSpec } from './types';
@@ -419,8 +419,11 @@ async function typesetDocument(
   {
     const names = new Set(files.flatMap((f) => [f.path.split('\\').join('/').replace(/^\.\//, ''), f.name.toLowerCase()]));
     // 文書に出てくる字 (タグや CSS の字も含む、多めの見積もり)。@font-face の書体のうち、unicode-range がこれと重ならないものは取らない
-    const chars = new Set<number>();
-    for (const ch of text) chars.add(ch.codePointAt(0)!);
+    // (CSS Fonts 4 §4.5)。数値の文字参照と CSS の逃がしの字も入る (documentChars)。CSS の content の文字列の字は collectResources が足す
+    const chars = documentChars(text);
+    // 名前の文字参照 (&alpha;・&hellip; など) は、HTML の解析に解かせる (名前の表を持たない)。XML で決まっている 5 つは ASCII の字
+    const named = new Set((text.match(/&[A-Za-z][A-Za-z0-9]*;?/g) ?? []).filter((n) => !/^&(amp|lt|gt|quot|apos);?$/.test(n)));
+    if (named.size) for (const ch of (await parsers()).html(`<p>${[...named].join(' ')}</p>`).body?.textContent ?? '') chars.add(ch.codePointAt(0)!);
     const got = await collectResources(text, {
       chars,
       has: (u) => names.has(u) || names.has(refBasename(u)),

@@ -13,7 +13,7 @@ import { brotliCompressSync, brotliDecompressSync, deflateSync } from 'node:zlib
 import fontkit from '@pdf-lib/fontkit';
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { toSfnt, webFontKind } from '../src/webFont';
-import { cssRefs, parseUnicodeRange } from '../src/resources';
+import { cssRefs, cssStringChars, documentChars, parseUnicodeRange } from '../src/resources';
 import { collectionFaces } from '../src/fontLoader';
 import { defaultFontBuffer } from './helpers';
 import { DEFAULT_FONTS, typeset, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
@@ -365,6 +365,51 @@ describe('@font-face の WOFF・WOFF2 で組む', () => {
       server.close();
     }
   }, 120_000);
+});
+
+describe('unicode-range の絞り込みに使う字 (CSS Fonts 4 §4.5)', () => {
+  const fileOf = (spec: FontSpec) => path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
+  const loadFont = async (spec: FontSpec) => {
+    const b = fs.readFileSync(fileOf(spec));
+    return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+  };
+  // 日 (U+65E5)・第 (U+7B2C)・α (U+03B1)・… (U+2026) のそれぞれだけに使う書体
+  const faces = ['65E5', '7B2C', '03B1', '2026', '0-7F'].map((r) => `@font-face { font-family: W; src: url(https://example.test/u${r}.woff2); unicode-range: U+${r} }`).join('\n');
+  /** 問い合わせた書体 (u65E5 など) */
+  const asked = async (body: string, css = '', more: Record<string, string> = {}) => {
+    const urls: string[] = [];
+    await typeset(`<html><head><link rel="stylesheet" href="s.css"></head><body>${body}</body></html>`, {
+      loadFont,
+      fetchImages: false,
+      fetchStyles: false,
+      files: [{ name: 's.css', data: `${faces}\n${css}` }],
+      resolveResource: (u) => (urls.push(u), more[u]),
+    });
+    return urls.filter((u) => /\.woff2$/.test(u)).map((u) => u.replace(/^.*\/u|\.woff2$/g, '')).sort();
+  };
+  it('書かれたままの字と、文字参照 (数値・名前) を解いた字を見る', async () => {
+    expect(await asked('<h1>日</h1>')).toEqual(['0-7F', '65E5']);
+    expect(await asked('<h1>x</h1>')).toEqual(['0-7F']);
+    expect(await asked('<h1>&#x65E5;&#31532;</h1>')).toEqual(['0-7F', '65E5', '7B2C']);
+    expect(await asked('<h1>&alpha;&hellip;</h1>')).toEqual(['0-7F', '03B1', '2026']);
+  }, 120_000);
+  it('CSS の content の文字列の字 (逃がしも解く) を見る。一緒に渡した CSS・<style>・後から取った CSS のどれでも', async () => {
+    expect(await asked('<h1>x</h1>', 'h1::before { content: "第" }')).toEqual(['0-7F', '7B2C']);
+    expect(await asked('<h1>x</h1>', "h1::before { content: '\\65E5 \\7b2c' }")).toEqual(['0-7F', '65E5', '7B2C']);
+    expect(await asked('<style>h1::before { content: "\\0003B1" }</style><h1>x</h1>')).toEqual(['0-7F', '03B1']);
+    // 注釈の中の字は使う字ではない
+    expect(await asked('<h1>x</h1>', '/* 日 "第" */ h1 { color: red }')).toEqual(['0-7F']);
+    // 書体の参照より後に読む CSS (@import で取ったもの) の content の字でも、書体を取る
+    expect(await asked('<h1>x</h1>', '', { 'https://example.test/late.css': 'h1::after { content: "日" }' })).toEqual(['0-7F']);
+    expect(await asked('<link rel="stylesheet" href="https://example.test/late.css"><h1>x</h1>', '', { 'https://example.test/late.css': 'h1::after { content: "日" }' })).toEqual(['0-7F', '65E5']);
+  }, 120_000);
+  it('documentChars・cssStringChars', () => {
+    expect([...documentChars('a&#x65E5;&#31532;\\7b2c')].sort((p, q) => p - q).filter((c) => c > 0x7f)).toEqual([0x65e5, 0x7b2c]);
+    const s = new Set<number>();
+    cssStringChars('a::before { content: "A\\42  \\"\\\n\\0\\d800 " } /* "Z" */ b { font-family: \'C\' }', s);
+    // A・B (\\42 と後ろの空白 1 つ)・空白・"・(\\ と改行は無し)・U+FFFD (\\0 と代用符号)・C
+    expect([...s].sort((p, q) => p - q)).toEqual([0x20, 0x22, 0x41, 0x42, 0x43, 0xfffd]);
+  });
 });
 
 describe('CSS の書体の参照', () => {
