@@ -92,6 +92,8 @@ describe('HTM-05: @import の循環と var() の多重参照', () => {
     const r = await prep(files);
     expect(r.authorCss.length).toBeLessThanOrEqual(MAX_IMPORTED_CSS_LENGTH * 2);
     expect(r.authorCss).toContain('--k:0');
+    // 捨てたことは、警告で 1 度だけ知らせる
+    expect(r.warnings.filter((w) => w.includes('@import'))).toHaveLength(1);
   });
   it('ふつうの入れ子の @import は今までどおり', async () => {
     const r = await prep({ 'a.css': '@import "b.css"; p{color:red}', 'b.css': '@import url(c.css); p{color:blue}', 'c.css': 'p{color:green}' });
@@ -199,6 +201,11 @@ describe('HTM-16: 深い入れ子', () => {
   it('prepareHtml が深さを抑える', async () => {
     const r = await prepareHtml(page('<div>'.repeat(3000) + 'x' + '</div>'.repeat(3000)), [], 'browser', DEF, lk);
     expect(depthOf(r.doc)).toBeLessThanOrEqual(MAX_TREE_DEPTH);
+    // 木の形が変わるので、黙って進めずに警告する (上限に届かない文書では出さない)
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0]).toContain(`${MAX_TREE_DEPTH} 段`);
+    const shallow = await prepareHtml(page('<div>'.repeat(MAX_TREE_DEPTH - 3) + 'x' + '</div>'.repeat(MAX_TREE_DEPTH - 3)), [], 'browser', DEF, lk);
+    expect(shallow.warnings).toEqual([]);
   });
   // 上限の深さ (と、それを大きく超える深さ) の入れ子を、PDF まで作ってもスタックが切れない。
   // flex・grid は 1 段ごとに領域が何重にもなり、描画の再帰がいちばん深くなる

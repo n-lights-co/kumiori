@@ -52,7 +52,9 @@ export async function loadHtml(
   defaultPage = { width: 210, height: 297, margin: 20 },
   opts: { noFrame?: boolean } = {},
 ): Promise<LoadedHtml> {
-  const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageHeightPx } = await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html'));
+  const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageHeightPx, warnings } = await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html'));
+  // 用意の途中の警告 (深すぎる入れ子など) は、画面ではコンソールに出す
+  for (const w of warnings) console.warn(w);
   // @font-face の書体のファイルは、一緒に選んだファイルの blob URL にする (iframe の中でも書体を読み、その字幅で flex・grid などを置かせる)
   const fontFiles = new Map(files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)).map((f) => [f.name.toLowerCase(), f]));
   const fontUrls = new Map<string, string>();
