@@ -27,6 +27,16 @@ export interface CounterStyleRule {
   fallback?: string;
 }
 
+/**
+ * 数の表記の長さの上限 (Unicode の符号位置の数)。Counter Styles 3 §2「Counter Styles」: symbolic・additive の書式と pad の記述子は、
+ * 作成者の書いた数に比例する長さの表記を作れるので、実装は 60 符号位置までの表記には対応しなければならないが、それより長くなる
+ * 表記は代わりの書式 (fallback) にしてよい。60 よりずっと大きく取り、ふつうの文書の表記は変えない
+ */
+export const MAX_COUNTER_LENGTH = 1000;
+
+/** 符号位置の数 */
+const cpLength = (s: string) => [...s].length;
+
 /** 定義済みの数え方の名前 (Kumiori が表記を持つもの。counterText) */
 export type BuiltinText = (type: string, n: number) => string | undefined;
 
@@ -322,7 +332,7 @@ export class CounterStyles {
         );
       const base =
         this.builtinText(r.builtin, neg ? -n : n) ?? String(neg ? -n : n);
-      return this.padNegative(r, base, neg);
+      return this.padNegative(r, base, neg) ?? this.viaFallback(r, n, depth);
     }
     // 範囲 (§3.1.5): auto は書式ごと (cyclic・numeric・fixed は全部、alphabetic・symbolic は 1 以上、additive は 0 以上)
     const inRange =
@@ -344,24 +354,38 @@ export class CounterStyles {
     const v = usesNegative ? -n : n;
     const initial = this.algorithm(r, v);
     if (initial === undefined) return this.viaFallback(r, n, depth);
-    return this.padNegative(r, initial, usesNegative);
+    return (
+      this.padNegative(r, initial, usesNegative) ??
+      this.viaFallback(r, n, depth)
+    );
   }
 
-  /** 詰め物 (§3.1.6): 字の数 (負の記号を含む) が足りなければ、前に pad の記号を足す。負の数は negative で囲む (§3.1.2) */
+  /**
+   * 詰め物 (§3.1.6): 字の数 (負の記号を含む) が足りなければ、前に pad の記号を足す。負の数は negative で囲む (§3.1.2)。
+   * 詰めた表記が長すぎる (MAX_COUNTER_LENGTH を超える) ときは undefined (呼ぶ側が代わりの書式にする。§2)
+   */
   private padNegative(
     r: Resolved,
     initial: string,
     usesNegative: boolean,
-  ): string {
+  ): string | undefined {
     const negLen = usesNegative
       ? [...r.negative[0]].length + [...r.negative[1]].length
       : 0;
     const short = r.pad[0] - ([...initial].length + negLen);
+    if (
+      short > 0 &&
+      cpLength(initial) + negLen + short * cpLength(r.pad[1]) > MAX_COUNTER_LENGTH
+    )
+      return undefined;
     const padded = short > 0 ? r.pad[1].repeat(short) + initial : initial;
     return usesNegative ? r.negative[0] + padded + r.negative[1] : padded;
   }
 
-  /** 書式ごとの表記の作り方 (§3.1.1)。作れないときは undefined */
+  /**
+   * 書式ごとの表記の作り方 (§3.1.1)。作れないときは undefined。
+   * symbolic・additive の表記が長すぎる (MAX_COUNTER_LENGTH を超える) ときも undefined (代わりの書式にする。§2)
+   */
   private algorithm(r: Resolved, n: number): string | undefined {
     const s = r.symbols;
     const len = s.length;
@@ -372,7 +396,10 @@ export class CounterStyles {
         return n >= r.first && n < r.first + len ? s[n - r.first] : undefined;
       case "symbolic": {
         if (n < 1) return undefined;
-        return s[(n - 1) % len].repeat(Math.ceil(n / len));
+        const sym = s[(n - 1) % len];
+        const reps = Math.ceil(n / len);
+        if (reps * cpLength(sym) > MAX_COUNTER_LENGTH) return undefined;
+        return sym.repeat(reps);
       }
       case "alphabetic": {
         if (n < 1) return undefined;
@@ -395,9 +422,12 @@ export class CounterStyles {
         if (n === 0) return r.additive.find(([w]) => w === 0)?.[1];
         let out = "";
         let x = n;
+        let length = 0;
         for (const [w, sym] of r.additive) {
           if (w === 0 || w > x) continue;
           const reps = Math.floor(x / w);
+          length += reps * cpLength(sym);
+          if (length > MAX_COUNTER_LENGTH) return undefined;
           out += sym.repeat(reps);
           x -= w * reps;
           if (x === 0) break;

@@ -158,6 +158,60 @@ const safeDecode = (s: string) => {
 };
 const basename = (s: string) => safeDecode(s.split(/[?#]/)[0].split('/').pop() ?? s).toLowerCase();
 
+/**
+ * @import で読み込む CSS の長さの合計の上限 (字の数。1 つの文書の、すべてのスタイルシートの @import の合計) と、@import の回数の上限。
+ * CSS の仕様 (Cascade 5 §2) は @import の循環や回数を決めていない (§2.2 は、同じスタイルシートを何か所から読んでも、それぞれ別の
+ * スタイルシートとして扱うとするだけ) ので、実装の上限として置く。循環していなくても、段ごとに同じファイルを何度も読めば、展開した
+ * CSS は段の数の累乗で膨らむ。ふつうの文書の CSS (大きな枠組みの CSS でも数十万字) がまず届かない値にする
+ */
+export const MAX_IMPORTED_CSS_LENGTH = 8 * 1024 * 1024;
+const MAX_IMPORTS = 10000;
+
+/**
+ * 要素の入れ子の深さの上限 (html 要素を 1 と数える)。HTML Living Standard §13.2.6「Tree construction」は、実装が実用上の理由から
+ * 入れ子の深さに制限を置くことになるだろうと認めている (数は決めていない。Chromium・WebKit の HTML の構文解析器は 512 段)。
+ * カスケード・読み込み・組版・描画は要素 (とそこから作る領域) の入れ子を再帰でたどるので、深い文書はスタックを使い切る。
+ * Node の既定のスタックで、1100 段の入れ子の文書をこの関数で抑えて PDF まで作って測ると、div・span・リスト・表は 512 段でも通るが、
+ * flex・grid の入れ子 (1 段ごとに領域が何重にもなる) は 256 段で描画 (paint) のスタックが切れ、192 段では通った。
+ * 余裕を見て、ブラウザの 512 段より小さい 128 段にする (ふつうの文書の入れ子は数十段まで)
+ */
+export const MAX_TREE_DEPTH = 128;
+
+/**
+ * 入れ子の深さを上限 (max) に抑える: 上限の深さの要素の子の要素 (と、その後ろの兄弟) を、その要素のすぐ後ろへ出す
+ * (上限より深い要素は、上限の深さの祖先の兄弟になる。要素は残り、文字の順も変わらない。Chromium の構文解析器が、上限を超えた
+ * 要素を上限の深さの要素の子にせず、その親に付けるのと同じ考え方)。上限までの深さの文書は変えない。再帰を使わない
+ */
+export function limitTreeDepth(doc: Document, max = MAX_TREE_DEPTH): void {
+  const root = doc.documentElement;
+  let node: Node | null = root;
+  let depth = 1;
+  while (node) {
+    if (depth >= max && node.nodeType === 1) {
+      let c: Node | null = node.firstChild;
+      while (c && c.nodeType !== 1) c = c.nextSibling;
+      const parent = node.parentNode;
+      if (c && parent) {
+        const ref = node.nextSibling;
+        while (c) {
+          const next: Node | null = c.nextSibling;
+          parent.insertBefore(c, ref);
+          c = next;
+        }
+      }
+    } else if (node.firstChild) {
+      node = node.firstChild;
+      depth++;
+      continue;
+    }
+    while (node && node !== root && !node.nextSibling) {
+      node = node.parentNode;
+      depth--;
+    }
+    node = !node || node === root ? null : node.nextSibling;
+  }
+}
+
 /** 文書を用意する。parse: HTML の文字列 → Document (ブラウザは DOMParser、Node は linkedom) */
 export async function prepareHtml(
   html: string,
@@ -168,6 +222,7 @@ export async function prepareHtml(
 ): Promise<PreparedHtml> {
   const parsed = parse(html);
   parsed.querySelectorAll('script').forEach((s) => s.remove());
+  if (parsed.documentElement) limitTreeDepth(parsed);
   const cssFiles = new Map<string, string>();
   for (const f of files) if (f.css || /\.css$/i.test(f.name)) cssFiles.set(f.name.toLowerCase(), await f.text());
   const cssTexts: string[] = [];
@@ -193,8 +248,12 @@ export async function prepareHtml(
     const q = (m ?? '').trim();
     return forPrint(!q || /^(all|print)$/i.test(q) ? css : `@media ${q} {\n${css}\n}`);
   };
-  // @import は、一緒に選んだ CSS ファイルの中身に置き換える (入れ子もたどる。読み込まれた CSS は、参照された CSS として扱う)
-  const inlineImports = (css: string, depth = 0): string =>
+  // @import は、一緒に選んだ CSS ファイルの中身に置き換える (入れ子もたどる。読み込まれた CSS は、参照された CSS として扱う)。
+  // reading は読んでいる途中のファイル (@import の鎖の祖先): その中のファイルを読む @import は循環なので読まない
+  // (仕様に循環の決まりは無い。ブラウザも、祖先の鎖にある URL の @import は読み込まない)。
+  // 読み込んだ CSS の長さ・回数の合計が上限 (MAX_IMPORTED_CSS_LENGTH・MAX_IMPORTS) を超える @import は、捨てて警告する
+  const budget = { length: MAX_IMPORTED_CSS_LENGTH, count: MAX_IMPORTS, warned: false };
+  const inlineImports = (css: string, reading: string[] = [], depth = 0): string =>
     depth > 8
       ? css
       : css.replace(/@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?([^;]*);/gi, (_m, href: string, cond: string) => {
@@ -207,9 +266,17 @@ export async function prepareHtml(
           const t = cssFiles.get(name);
           if (t === undefined) return '';
           linked.add(name);
-          return inlineImports(t, depth + 1);
+          if (reading.includes(name)) return '';
+          if (t.length > budget.length || budget.count <= 0) {
+            if (!budget.warned) console.warn(`@import ${name}: 読み込む CSS が多すぎる (合計 ${MAX_IMPORTED_CSS_LENGTH} 字・${MAX_IMPORTS} 回まで) ので、これ以上の @import は読みません`);
+            budget.warned = true;
+            return '';
+          }
+          budget.length -= t.length;
+          budget.count--;
+          return inlineImports(t, [...reading, name], depth + 1);
         });
-  for (const [name, text] of cssFiles) cssFiles.set(name, inlineImports(text));
+  for (const [name, text] of cssFiles) cssFiles.set(name, inlineImports(text, [name]));
   parsed.querySelectorAll('style').forEach((s) => {
     s.textContent = inlineImports(s.textContent ?? '');
   });

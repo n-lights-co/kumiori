@@ -10,7 +10,7 @@
 import { parseSelectorList } from './cssSelector';
 import { spotColor } from './color';
 import { skipString, splitTop, splitWords, UNIT_PX } from './cssText';
-import { parseCounterStyleRule, type CounterStyleRule } from './counterStyle';
+import { MAX_COUNTER_LENGTH, parseCounterStyleRule, type CounterStyleRule } from './counterStyle';
 
 /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。PANTONE などの値は Kumiori は持たず、使う人が渡す */
 export type SpotColors = Record<string, [number, number, number, number]>;
@@ -462,13 +462,29 @@ export function parseCss(css: string): ParsedCss {
   return { pages, rules, fontFaces, counterStyles, ...(rootVars ? { rootVars } : {}) };
 }
 
-/** var(--名前, 既定値) を、変数の値に置き換える (変数の中の var() も、深さ 10 まで) */
-export function resolveVars(v: string, vars: Record<string, string>, depth = 0): string {
+/**
+ * var() を置き換えた値の長さの上限 (字の数)。CSS Variables 1 §3.3「Safely Handling Overly-Long Variables」: 変数を何重にも参照して
+ * 値を指数的に膨らませる攻撃を避けるため、実装は var() の展開後の長さに上限を置かなければならず、超える var() は、その宣言を
+ * 計算値の時点で無効にする。数は実装が決める。Chromium の上限 (2097152 バイト) と同じにする (data URI を入れた変数も収まる)
+ */
+export const MAX_VAR_LENGTH = 2 * 1024 * 1024;
+
+/**
+ * var(--名前, 既定値) を、変数の値に置き換える (変数の中の var() も、深さ 10 まで)。
+ * 置き換えた値の長さの合計 (と置き換えの回数) が上限 (MAX_VAR_LENGTH) を超えたら、宣言を無効として空の値を返す
+ * (未定義の変数だけの値と同じ扱い。Variables 1 §3.3)。budget は、入れ子の置き換えで共有する残りの長さ
+ */
+export function resolveVars(v: string, vars: Record<string, string>, depth = 0, budget: { left: number } = { left: MAX_VAR_LENGTH }): string {
   if (depth > 10) return v;
-  return v.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_m, name: string, fb: string | undefined) => {
+  const out = v.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_m, name: string, fb: string | undefined) => {
+    if (budget.left < 0) return '';
     const val = vars[name] ?? fb ?? '';
-    return /var\(/.test(val) ? resolveVars(val, vars, depth + 1) : val;
+    // 空の値の置き換えも 1 と数える (長さが増えない置き換えを、指数的な回数だけ繰り返させない)
+    budget.left -= val.length + 1;
+    if (budget.left < 0) return '';
+    return /var\(/.test(val) ? resolveVars(val, vars, depth + 1, budget) : val;
   });
+  return budget.left < 0 ? '' : out;
 }
 
 /** 宣言の並びの中の、入れ子の規則の { の位置 (文字列・括弧の中は除く)。無ければ -1 */
@@ -749,6 +765,8 @@ export function counterText(type: string, n: number): string {
   };
   const roman = (k: number) => {
     const t: Array<[number, string]> = [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']];
+    // 千の位の m を並べた表記が長すぎる数は、10 進で書く (Counter Styles 3 §2: 長すぎる表記は代わりの書式にしてよい。MAX_COUNTER_LENGTH)
+    if (k / 1000 > MAX_COUNTER_LENGTH - 12) return String(k);
     let s = '';
     let x = k;
     for (const [v, r] of t) while (x >= v) (s += r), (x -= v);
