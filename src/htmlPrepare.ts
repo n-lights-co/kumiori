@@ -8,6 +8,7 @@
  *  - 既定のスタイル (HtmlDefaults) を作成者スタイルシート より前に入れる
  */
 import { parsePageRule } from './htmlImport';
+import { msg } from './messages';
 import { concatCss, matchMedia, matchSupports, mediaDependsOnPageSize, mediaPageOf, parseCss, type ParsedCss } from './htmlPaged';
 import { rebaseFontFaceUrls, resolveRef } from './resources';
 
@@ -137,6 +138,8 @@ export interface CssFile {
 }
 
 export interface PreparedHtml {
+  /** 用意の途中で出した警告 (深すぎる入れ子・多すぎる @import)。typeset の warnings と、画面のコンソールに出す */
+  warnings: string[];
   /** <style> に置き換えた文書 (既定のスタイルも先頭の <style>) */
   doc: Document;
   /** 文書の CSS の文字列 (既定のスタイル + <style> + 差し込んだ CSS ファイル)。@page・@font-face の読み取りに使う */
@@ -189,17 +192,20 @@ export const MAX_TREE_DEPTH = 128;
  * 入れ子の深さを上限 (max) に抑える: 上限の深さの要素の子の要素 (と、その後ろの兄弟) を、その要素のすぐ後ろへ出す
  * (上限より深い要素は、上限の深さの祖先の兄弟になる。要素は残り、文字の順も変わらない。Chromium の構文解析器が、上限を超えた
  * 要素を上限の深さの要素の子にせず、その親に付けるのと同じ考え方)。上限までの深さの文書は変えない。再帰を使わない
+ * 戻り値: 上限を超えた要素があって、木の形を変えたか (呼び出し側が警告を出す)
  */
-export function limitTreeDepth(doc: Document, max = MAX_TREE_DEPTH): void {
+export function limitTreeDepth(doc: Document, max = MAX_TREE_DEPTH): boolean {
   const root = doc.documentElement;
   let node: Node | null = root;
   let depth = 1;
+  let moved = false;
   while (node) {
     if (depth >= max && node.nodeType === 1) {
       let c: Node | null = node.firstChild;
       while (c && c.nodeType !== 1) c = c.nextSibling;
       const parent = node.parentNode;
       if (c && parent) {
+        moved = true;
         const ref = node.nextSibling;
         while (c) {
           const next: Node | null = c.nextSibling;
@@ -218,6 +224,7 @@ export function limitTreeDepth(doc: Document, max = MAX_TREE_DEPTH): void {
     }
     node = !node || node === root ? null : node.nextSibling;
   }
+  return moved;
 }
 
 /** link の rel の語 (空白で区切り、大文字小文字を区別せずに比べる。HTML Living Standard §4.6.8) */
@@ -248,7 +255,10 @@ export async function prepareHtml(
 ): Promise<PreparedHtml> {
   const parsed = parse(html);
   parsed.querySelectorAll('script').forEach((s) => s.remove());
-  if (parsed.documentElement) limitTreeDepth(parsed);
+  const warnings: string[] = [];
+  // 上限を超えた入れ子は、木の形 (と組版の結果) が変わるので、黙って進めずに知らせる
+  if (parsed.documentElement && limitTreeDepth(parsed))
+    warnings.push(msg(`要素の入れ子が深すぎます。${MAX_TREE_DEPTH} 段より深い要素は、${MAX_TREE_DEPTH} 段目の要素の後ろに並べて組みます`, `elements are nested too deeply; elements deeper than ${MAX_TREE_DEPTH} levels are laid out after their ancestor at level ${MAX_TREE_DEPTH}`));
   // CSS の表。鍵は、参照から取った CSS (url あり) は参照の URL の全体、ほか (一緒に渡したファイル) はファイル名 (小文字)
   const cssFiles = new Map<string, string>();
   /** 鍵 → その CSS の場所 (中の相対の @import を解決する基準)。分からなければ無い */
@@ -318,7 +328,8 @@ export async function prepareHtml(
           if (t === undefined) return '';
           if (reading.includes(name)) return '';
           if (t.length > budget.length || budget.count <= 0) {
-            if (!budget.warned) console.warn(`@import ${name}: 読み込む CSS が多すぎる (合計 ${MAX_IMPORTED_CSS_LENGTH} 字・${MAX_IMPORTS} 回まで) ので、これ以上の @import は読みません`);
+            if (!budget.warned)
+              warnings.push(msg(`@import ${name}: 読み込む CSS が多すぎる (合計 ${MAX_IMPORTED_CSS_LENGTH} 字・${MAX_IMPORTS} 回まで) ので、これ以上の @import は読みません`, `@import ${name}: too much imported CSS (up to ${MAX_IMPORTED_CSS_LENGTH} characters and ${MAX_IMPORTS} imports in total); further @import rules are ignored`));
             budget.warned = true;
             return '';
           }
@@ -380,7 +391,7 @@ export async function prepareHtml(
   const page = parsePageRule(sheet, defaultPage);
   const bodyWidthPx = ((page.width - page.margins.left - page.margins.right) / 25.4) * 96;
   const pageHeightPx = ((page.height - page.margins.top - page.margins.bottom) / 25.4) * 96;
-  return { doc: parsed, css, authorCss, uaCss: base, uaSheet, authorSheet, sheet, bodyWidthPx, pageHeightPx };
+  return { doc: parsed, css, authorCss, uaCss: base, uaSheet, authorSheet, sheet, bodyWidthPx, pageHeightPx, warnings };
 }
 
 /** 互換モード (quirks mode) にする公開識別子 (HTML Living Standard §13.2.6.4.1。2026-11-04 取得。大文字小文字を区別しない) */

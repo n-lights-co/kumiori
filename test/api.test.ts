@@ -229,6 +229,14 @@ describe('公開 API: typeset', () => {
     const right = (gs: Array<{ right: number }>) => gs[gs.length - 1].right;
     for (const gs of toc8) expect(right(gs)).toBeCloseTo(right(toc8[4]), 1);
   });
+  it('入れ子が上限より深い HTML は、警告を出して組む (typeset の warnings)', async () => {
+    const r = await typeset('<div>'.repeat(300) + '<p>x</p>' + '</div>'.repeat(300), { loadFont });
+    expect(r.pageCount).toBe(1);
+    expect(r.warnings.some((w) => w.includes('入れ子が深すぎます'))).toBe(true);
+    const en = await typeset('<div>'.repeat(300) + '<p>x</p>' + '</div>'.repeat(300), { loadFont, lang: 'en' });
+    expect(en.warnings.some((w) => w.includes('nested too deeply'))).toBe(true);
+    expect((await typeset('<div><p>x</p></div>', { loadFont })).warnings.some((w) => w.includes('入れ子'))).toBe(false);
+  });
   it('http(s) の CSS は取りに行く (fetchStyles。既定 true)。false なら取らずに警告。拡張子の無い CSS (css2?family=…) も CSS として読む', async () => {
     const http = await import('node:http');
     const server = http.createServer((req, res) => {

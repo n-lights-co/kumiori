@@ -492,6 +492,7 @@ async function typesetDocument(
   const res = isFo ? await importFo(text, options, compat, mapping, assets, mathOpts) : await importHtmlText(html, options, style, files, mapping, assets, measurer, mathOpts, kind === 'xhtml');
   // ネットワーク上の画像・data URI の画像 (画面と同じ手順: documentResources)。http(s) の画像は fetchImages (既定 true) で取るかどうかを決める
   const allowFetch = (url: string) => (typeof options.fetchImages === 'function' ? options.fetchImages(url) : options.fetchImages !== false);
+  warnings.push(...(res.warnings ?? []));
   for (const src of await fetchReportedImages(assets, res.report.images, allowFetch, timeout)) warnings.push(msg(`画像を取りません (fetchImages): ${src.slice(0, 200)}`, `image not fetched (fetchImages): ${src.slice(0, 200)}`));
   // 未対応の指定 (黙って無視しない): XSL-FO は読めなかった要素・プロパティ、HTML は未対応・知らない CSS (ブラウザの画面の変換レポートと同じ数え方)
   const miss = summarizeCounts(res.report.unsupported);
@@ -551,7 +552,7 @@ export const typesetHtml = (html: string, options: Omit<TypesetOptions, 'kind'> 
 export const typesetFo = (fo: string, options: Omit<TypesetOptions, 'kind'> = {}) => typeset(fo, { ...options, kind: 'fo' });
 
 type Mapping = ReturnType<typeof createFontMapping>;
-type Imported = { document: LDocument; report: { images: string[]; unsupported?: Record<string, number>; unknownCss?: Record<string, number> } };
+type Imported = { document: LDocument; report: { images: string[]; unsupported?: Record<string, number>; unknownCss?: Record<string, number> }; /** 文書の用意の途中の警告 (深すぎる入れ子など) */ warnings?: string[] };
 type MathOpts = MathOptions;
 
 /** XSL-FO を論理ツリーにする (画面の XSL-FO の読み込みと同じ) */
@@ -642,6 +643,6 @@ async function importHtmlText(
   });
   const unsupported = { ...imported.report.unsupported };
   for (const [k, n] of Object.entries(cssRep.unsupported)) unsupported[k] = (unsupported[k] ?? 0) + n;
-  return { ...imported, report: { ...imported.report, unsupported, unknownCss: cssRep.unknown } };
+  return { ...imported, report: { ...imported.report, unsupported, unknownCss: cssRep.unknown }, warnings: prepared.warnings };
 }
 
