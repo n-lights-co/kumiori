@@ -51,7 +51,7 @@ npm run build    # type check + production build (dist/; the web app)
 npm run build:dist   # build the library (dist-lib), the Node CLI (dist-cli) and the single browser file (dist-browser) together
 ```
 
-Node 20 or later is required (CI tests with 22; recursive watching for `--watch` needs Node 20 or later). The release procedure is in [`docs/en/RELEASING.md`](docs/en/RELEASING.md), and the changes in each version are in [`CHANGELOG.en.md`](CHANGELOG.en.md).
+Node 20.19.0 or later is required (CI tests with 22; the dependencies used to read HTML, such as css-select used by linkedom, require Node 20.19.0 or later). The release procedure is in [`docs/en/RELEASING.md`](docs/en/RELEASING.md), and the changes in each version are in [`CHANGELOG.en.md`](CHANGELOG.en.md).
 
 ### Web app (browser)
 
@@ -150,7 +150,7 @@ result.renderPage(canvas, 0);                                  // draw page 1 on
   ```
 - The fonts used by default can be found in `DEFAULT_FONTS` (the `family`, `weight` and `urls` of the `spec` passed to `loadFont`)
 - Only what is exported from `src/index.ts` (and `src/node.ts` for Node) is public (the functions and types of other modules may change between versions)
-- `kumiori` (`dist-lib/index.js`) is an ES module that does not bundle its dependencies (pdf-lib, fontkit, xmldom, etc.). Use it with a bundler such as Vite or webpack, or load it from Node. Since it is ES module only, loading it with `require()` requires Node 22 or later
+- `kumiori` (`dist-lib/index.js`) is an ES module that does not bundle its dependencies (pdf-lib, fontkit, xmldom, etc.). Use it with a bundler such as Vite or webpack, or load it from Node. It is ES module only, but `require('kumiori')` also works (on Node 20.19.0 or later and 22.12.0 or later, which can load ES modules with `require()`; Node 22.0 to 22.11 needs `--experimental-require-module`)
 - In a browser without a bundler, use `kumiori/browser`, a single file with the dependencies bundled (`dist-browser/kumiori.js`; about 2.7MB, 0.9MB gzipped; the hyphenation dictionaries and the like are loaded as separate files only when used). The version published on npm can be loaded directly from the jsDelivr or unpkg CDN:
 
   ```html

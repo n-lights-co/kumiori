@@ -51,7 +51,7 @@ npm run build    # 型チェック + 本番ビルド (dist/。画面)
 npm run build:dist   # ライブラリ (dist-lib)・Node のコマンド (dist-cli)・ブラウザ用の 1 ファイル (dist-browser) をまとめて作る
 ```
 
-Node は 20 以上 (CI は 22 で確かめています。`--watch` の再帰的な監視に Node 20 以降が要ります)。公開の手順は [`docs/RELEASING.md`](docs/RELEASING.md)、版ごとの変更は [`CHANGELOG.md`](CHANGELOG.md) にあります。
+Node は 20.19.0 以上 (CI は 22 で確かめています。HTML を読むための依存パッケージ (linkedom の使う css-select など) が Node 20.19.0 以降を求めます)。公開の手順は [`docs/RELEASING.md`](docs/RELEASING.md)、版ごとの変更は [`CHANGELOG.md`](CHANGELOG.md) にあります。
 
 ### 画面 (ブラウザ)
 
@@ -150,7 +150,7 @@ result.renderPage(canvas, 0);                                  // 1 ページ目
   ```
 - 既定で使う書体は `DEFAULT_FONTS` で分かります (`loadFont` に渡される `spec` の `family`・`weight`・`urls`)
 - 公開しているのは `src/index.ts` (と Node 用の `src/node.ts`) から出しているものだけです (ほかのモジュールの関数・型は、版の間で変わることがあります)
-- `kumiori` (`dist-lib/index.js`) は依存パッケージ (pdf-lib・fontkit・xmldom など) を取り込んでいない ES モジュールです。Vite・webpack などのバンドラーで使うか、Node から読んでください。ES モジュールだけなので、`require()` で読むには Node 22 以降が要ります
+- `kumiori` (`dist-lib/index.js`) は依存パッケージ (pdf-lib・fontkit・xmldom など) を取り込んでいない ES モジュールです。Vite・webpack などのバンドラーで使うか、Node から読んでください。ES モジュールだけですが、`require('kumiori')` でも読めます (ES モジュールを `require()` で読める Node 20.19.0 以降・22.12.0 以降。Node 22.0〜22.11 では `--experimental-require-module` が要ります)
 - バンドラーを使わないブラウザでは、依存まで 1 つにまとめたファイル `kumiori/browser` (`dist-browser/kumiori.js`。約 2.7MB、gzip で 0.9MB。ハイフネーションの辞書などは使うときだけ別ファイルを読む) を使います。npm に公開したものは jsDelivr や unpkg の CDN からそのまま読めます:
 
   ```html

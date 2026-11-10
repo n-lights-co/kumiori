@@ -77,5 +77,5 @@ npm の Trusted Publishing では、GitHub Actions が OIDC で npm に認証す
 ## 補足
 
 - 書体は npm のパッケージにも Pages にも入れていない。初回の実行時に Google Fonts から取る (Node のコマンドはキャッシュに保存する)
-- ライブラリは ES モジュールだけ。`require()` で読むには Node 22 以降が要る
+- ライブラリは ES モジュールだけ。`require()` でも読める (ES モジュールを `require()` で読める Node 20.19.0 以降・22.12.0 以降。`exports` の条件は `types` と `default`)。動かせる Node は 20.19.0 以降 (`engines`。依存パッケージの求める版)
 - Trusted Publishing の仕組みと条件 (npm 11.5.1 以上・Node 22.14.0 以上・GitHub のホストのランナー) は npm の説明 ([Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers)) にある

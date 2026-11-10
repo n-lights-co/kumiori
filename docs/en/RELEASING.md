@@ -77,5 +77,5 @@ Publishing locally (`npm login`, then `npm publish`) is still possible, as a fal
 ## Notes
 
 - The fonts are included neither in the npm package nor in Pages. They are fetched from Google Fonts on first run (the Node CLI saves them to a cache)
-- The library is ES module only. Loading it with `require()` requires Node 22 or later
+- The library is ES module only. It can also be loaded with `require()` (on Node 20.19.0 or later and 22.12.0 or later, which can load ES modules with `require()`; the conditions in `exports` are `types` and `default`). Node 20.19.0 or later is required (`engines`; the version the dependencies require)
 - How Trusted Publishing works and what it requires (npm 11.5.1 or later, Node 22.14.0 or later, GitHub-hosted runners) is described by npm ([Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers))
