@@ -64,6 +64,8 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - 数式: 部品から組み立てて伸ばす字 (大きな括弧・根号・横の波括弧) が、目標より大きくなっていたのを直した (部品の重なりの上限を、つなぐ端のコネクタの長さで決める。OpenType の MATH 表の定義。MathML Core §5.3.1 の文面とは向きが逆)
   - 画像: SVG の円弧のフラグを詰めて書いた path (`a1 1 0 01.71.29`。SVG 2 §9.3.9)。動く WebP は最初のコマを描く。CGM の大きさ (64 ビットの実数・32 ビットの整数の精度)。枠が逆向きの EMF
   - EPS (PostScript): `imagemask` の極性 (型紙の白黒が反転していた) と、ImageType 3 の画像のマスクの極性 (描く所と透明の所が逆だった。PLRM §4.10.6)。`SubFileDecode` の、EODCount・EODString を辞書に入れた形 (§3.13.3)。フィルタのエラーを PostScript のエラーにする (それまでに描いたものが残る)。`gsave … show grestore` の後のパス。`currentgstate`・`rectfill`・`rectstroke`
+  - EPS (PostScript): 幅と高さの符号が違う矩形 (`rectfill`・`rectstroke`・`rectclip`) も反時計まわりにたどる (向きの違う矩形が 1 回の `rectfill` で重なると、重なりに穴が空いていた。PLRM §4.6.5)。`resourceforall` が、local と global の両方にある実例を 2 度渡さず、名前でも文字列でもない鍵をそのまま渡す。`defineresource` で定義した実例の `resourcestatus` の status は 0 (§8.2)。`ASCII85Decode` の `~` の次が `>` でなければ ioerror (§3.13.3)
+  - XSL-FO: 複数のページのマスターが同じ `fo:static-content` を使うとき、読み込みの報告 (ブロック・表の数、未対応の指定) を、マスターの数だけ重ねて数えていたのを直した
   - 参照・書体: 問い合わせ (`?…`) だけが違う CSS (`css2?family=A` と `css2?family=B`) と画像を、それぞれ別のものとして読む。`href` の `&amp;` を解いてから取る。base64 でない data URI の日本語と `;charset=` のパラメータ。`unicode-range` の絞り込みに、文字参照と CSS の文字列の字も数える。ディレクトリの違う同じ名前の書体のファイルを、`@font-face` の CSS の場所から見分ける。`lang` の違う呼び出しが重なっても、終われば元の言語に戻る。`--css "a.css, b.css"` の空白
 - **配布物**:
   - `require('kumiori')`・`require('kumiori/node')` で読める (`exports` の条件を `default` にした。フラグ無しで使えるのは Node 20.19.0 以降と 22.12.0 以降)
