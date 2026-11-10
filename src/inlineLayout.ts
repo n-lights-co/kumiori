@@ -722,7 +722,7 @@ export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: s
   // 合字の字 (U+FB00〜U+FB04、または liga でまとめた字の並び) は、元の字の並びとして語に数える
   const LIG: Record<string, string> = { '\uFB00': 'ff', '\uFB01': 'fi', '\uFB02': 'fl', '\uFB03': 'ffi', '\uFB04': 'ffl' };
   const textOf = (a: Atom) => (a.g?.draw && a.g.draw.length > 1 ? a.g.draw : (LIG[a.first] ?? a.first));
-  // 語の字: ラテン文字。ロシア語・ウクライナ語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字も (その言語の規則があるときだけ。
+  // 語の字: ラテン文字。ウクライナ語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字も (その言語の規則があるときだけ。
   // CSS Text 3 §5.3: 自動の分綴は、文の言語が分かり、その言語に合う分綴の資源があるときだけ行う)
   const isLetter = (a: Atom | undefined) => {
     if (!a || a.kind !== 'glyph' || !a.g || a.st.hyphenate !== true) return false;

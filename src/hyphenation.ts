@@ -2,7 +2,7 @@
  * hyphenation — 欧文の分綴の位置 (hyphen パッケージ、ISC。TeX の分綴パターン)。
  *
  * パターンは大きいので、分綴を使う文書を開いたときだけ読み込む (loadHyphenator)。
- * 英語 (en・en-US・en-GB)・ラテン語 (la)・ロシア語 (ru)・ウクライナ語 (uk)・現代ギリシャ語 (el。単調の綴りの規則) の規則を読み込む (LOADERS)。
+ * 英語 (en・en-US・en-GB)・ラテン語 (la)・ウクライナ語 (uk)・現代ギリシャ語 (el。単調の綴りの規則) の規則を読み込む (LOADERS)。
  * ほかの言語は分綴しない (CSS Text 3 §5.3: 自動の分綴は、文の言語が分かり、その言語に合う分綴の資源があるときだけ)。
  * 多調の綴りのギリシャ語 (el-polyton など)・古典ギリシャ語 (grc) は、規則を入れていないので分綴しない。
  */
@@ -17,7 +17,6 @@ const LOADERS: Record<string, () => Promise<unknown>> = {
   'en-us': () => import('hyphen/en-us/index.js'),
   'en-gb': () => import('hyphen/en-gb/index.js'),
   la: () => import('hyphen/la/index.js'),
-  ru: () => import('hyphen/ru/index.js'),
   uk: () => import('hyphen/uk/index.js'),
   el: () => import('hyphen/el-monoton/index.js'),
 };
@@ -67,12 +66,12 @@ export async function loadDocumentHyphenators(doc: Document, css: string): Promi
 }
 
 /**
- * その言語の分綴で、語の字に数える字 (ラテン文字のほかに)。ロシア語・ウクライナ語はキリル文字、現代ギリシャ語はギリシャ文字。
+ * その言語の分綴で、語の字に数える字 (ラテン文字のほかに)。ウクライナ語はキリル文字、現代ギリシャ語はギリシャ文字。
  * 規則を持たない言語・ラテン文字の言語は undefined (語の字はラテン文字だけ)
  */
 export function hyphenationLetters(language: string | undefined): RegExp | undefined {
   const key = language ? keyOf(language) : undefined;
-  return key === 'ru' || key === 'uk' ? CYRILLIC_WORD : key === 'el' ? GREEK_WORD : undefined;
+  return key === 'uk' ? CYRILLIC_WORD : key === 'el' ? GREEK_WORD : undefined;
 }
 const CYRILLIC_WORD = /^[\u0400-\u052F]+$/;
 const GREEK_WORD = /^[\u0370-\u03FF\u1F00-\u1FFF]+$/;
