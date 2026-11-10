@@ -320,6 +320,7 @@ margin boxes inheriting the font size, font, line pitch etc. written in `@page`,
 
 - Part of flex and grid (one-per-page layouts such as covers and title pages)
 - Loading `@font-face`, nested numbering with `counter-reset` / `counter-increment`
+- Floats (`float`), absolute positioning (`position: absolute`) and footnotes (`float: footnote`) on table cells and captions: under CSS 2.1 §9.7 such a `td` stops being a cell and becomes a block, but for now these declarations are not read and the cell is laid out as an ordinary cell (a known limitation; it requires changing how rows are built). These declarations on list items (li), and bookmarks and `string-set` on cells and captions, are supported
 
 ### CSS interpretation without going through the browser (Stage 6; the default)
 
