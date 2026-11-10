@@ -99,6 +99,11 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `font-variant="small-caps"` (スモールキャップ) と `word-spacing` (語の間の空白に足す長さ) を読む (XSL 1.1 §7.9.8・§7.17.8)
   - `glyph-orientation-vertical` の `auto`・`0deg` (すべての字を立てる)・`90deg` (すべての字を横に倒す) を読む (XSL 1.1 §7.29.3)。180・270 度と `glyph-orientation-horizontal` の 0 度以外は、読まずに報告する
   - `relative-position="relative"` (横書きの `fo:block` をずらして描く)、`visibility` の `hidden`・`collapse` (場所を残して描かない)、絶対配置の `fo:block-container` の負の `z-index` (本文の背面に描く) を読む (XSL 1.1 §7.13.5・§7.30.17・§7.30.18)
+- **中国語 (繁体字) の句読点**: 字の枠の中央にある句読点 (繁体字の書体の `、。，．`) を、後ろの二分を詰めて次の字と重ねない (`。」`・`，」`・`、）` など)。句読点とコロン類 (`：；`) を終わり括弧類として詰めるか中点類として詰めるかは、書体の字形の墨の位置で決める (CSS Text 4 §8.5.3。簡体字の書体の、枠の左下のコロン類は終わり括弧類)。日本語の書体の結果は変わらない
+- **縦書きの句読点 (繁体字の書体)**: 書体に `vert` があるのに句読点を替えないとき、既定の字形 (枠の中央) のまま置く (Unicode の縦書き用字形 = 右上に寄った字形に替えない)
+- **中国語の圏点の位置の既定**: 中国語 (`lang` が `zh`) の圏点は、指定が無ければ字の下 (縦書きは右) に付ける (CSS Text Decoration 3 の付録 B の既定のスタイルシート: `:root:lang(zh), [lang|=zh] { text-emphasis-position: under right; }`)
+- **`<html lang>`**: `html` の `lang` を、文書の字の言語として body 以下に受け継ぐ (HTML Standard §3.2.6.2。今までは body より内側の `lang` だけを見ていた)。`<html lang="ja">`・`<html lang="zh-…">` だけの文書でも、`line-break` の `normal` (初期値 `auto` も同じ)・`loose` の日本語・中国語だけの決まり (`〜`・`゠` の前で折り返せる、など。CSS Text 3 §5.2) が効く。**結果が変わる**: そういう文書で、`〜` の前が折り返しの位置・両端揃えで空ける位置になる。`hyphens: auto` の分綴の言語も `html` の `lang` で決まる (英語・ラテン語でない言語の文書は、英語の規則で分綴しなくなる)。`--style ah` の行の基準線の決め方 (和文の文書かどうか) も `html` の `lang` を見る
+- **`quotes: auto` の中国語の引用符** (`q` 要素など): 簡体字 (`zh`・`zh-Hans`・`zh-CN` など) は `“ ” ‘ ’` にする。繁体字 (`zh-Hant`・`zh-TW`・`zh-HK`・`zh-MO`) は今までどおり `「 」 『 』` (CSS Content 3 §4.1 の挙げる CLDR の引用符)
 
 ## 0.1.1 (2026-11-09)
 
