@@ -271,6 +271,11 @@ export interface TextStyle {
    * 字ごとに書体の機能を当てた字形で測り、描く (画面は字形の輪郭、PDF は機能を付けて埋め込んだ書体)
    */
   fontFeatures?: string[];
+  /**
+   * 色つきの字形のパレット (CSS の font-palette。CSS Fonts 4 §9.1)。normal (既定のパレット)・light・dark か、
+   * 名前に当たる @font-palette-values の規則の並び (colorGlyph.ts の FontPaletteStyle)。子へ引き継がれる
+   */
+  fontPalette?: import('./colorGlyph').FontPaletteStyle;
   /** 縦書きの字の向き (CSS の text-orientation。Writing Modes 3 §5.1)。mixed は UAX #50 の Vertical_Orientation で決める */
   textOrientation?: 'mixed' | 'upright' | 'sideways';
   /** 行の中の向き。rtl は右から左 (writing-mode="rl-tb")。欧文・数字の並びは左から右のまま。子へ引き継がれる */
@@ -1795,6 +1800,11 @@ export interface GlyphArea extends AreaBase {
    * 字形が 2 つ以上あり、送りが書体の送り幅と違うか、ずらしがあるときだけ付く (アラビア文字の記号の位置など)
    */
   glyphPositions?: Array<[number, number, number]>;
+  /**
+   * 色つきの字形のパレットの選び方 (CSS の font-palette と @font-palette-values の結果。colorGlyph.ts の FontPalette)。
+   * 既定のパレット (font-palette: normal) のときは付かない。色つきの表 (COLR/CPAL) を持つ書体の字だけに効く
+   */
+  fontPalette?: { base?: number | 'light' | 'dark'; colors?: Array<[number, string]> };
 }
 
 export interface InlineArea extends BlockLikeArea {
