@@ -151,8 +151,8 @@ function ascii85(src: ByteSource): ByteSource {
     for (;;) {
       const c = src.read();
       if (c < 0 || c === 0x7e) {
-        // ~> (§3.13.3 ASCII85Decode)
-        if (c === 0x7e) src.read();
+        // ~> (§3.13.3 ASCII85Decode)。~ の次の字は > でなければならない (ほかの字・元の終わりは ioerror)
+        if (c === 0x7e && src.read() !== 0x3e) throw new FilterError('ioerror');
         done = true;
         if (g.length === 1) throw new FilterError('ioerror');
         if (g.length > 1) {

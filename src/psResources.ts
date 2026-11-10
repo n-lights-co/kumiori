@@ -152,7 +152,9 @@ export function installResources(I: Interp, fontProcSets: FontProcSets) {
         const ins = instancesOf(I, impl());
         const local = ins.local.has(key);
         if (local || ins.global.has(key)) {
-          I.push(int(local ? 1 : 1));
+          // status は 0 (defineresource で VM に定義したもの。PLRM §8.2 resourcestatus)。大きさは分からないが、
+          // 実例が暗に決まっている分類 (VM を使わない) と同じ 0 を返す
+          I.push(int(0));
           I.push(int(0));
           I.push(TRUE);
         } else I.push(FALSE);
@@ -170,13 +172,22 @@ export function installResources(I: Interp, fontProcSets: FontProcSets) {
         I.work(template.n);
         const pat = parseTemplate(strText(template));
         const work = () => I.charge(64);
-        const keys = [...ins.local.map.values(), ...ins.global.map.values()].map((e) => e.k);
+        // 同じ実例は 1 度だけ渡す (local と global の両方に定義があれば local のもの。PLRM §8.2 resourceforall)
+        const keys = [...ins.local.map.values(), ...[...ins.global.map.values()].filter((e) => !ins.local.has(e.k))].map((e) => e.k);
+        const starOnly = pat.length === 1 && pat[0] === T_STAR;
         // 実装の辞書を辞書スタックから外して、手続きを呼ぶ (表 3.11 ResourceForAll)
         const top = I.dstack.pop()!;
         try {
           for (const k of keys) {
-            const t = k.t === 'name' ? k.v : k.t === 'string' ? strText(k) : k.t === 'int' || k.t === 'real' ? String(k.v) : '';
             I.tick();
+            if (k.t !== 'name' && k.t !== 'string') {
+              // 名前でも文字列でもない鍵は、型紙 (*) だけに合い、scratch に写さずに鍵をそのまま渡す (PLRM §8.2 resourceforall)
+              if (!starOnly) continue;
+              I.push(k);
+              if (!I.loopBody(proc)) break;
+              continue;
+            }
+            const t = k.t === 'name' ? k.v : strText(k);
             if (!matchTemplate(pat, t, work)) continue;
             const b = new TextEncoder().encode(t);
             scratch.b.set(b.subarray(0, scratch.n), scratch.o);

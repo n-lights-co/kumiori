@@ -13,11 +13,21 @@ export function appendRects(G: Graphics, rs: Array<[number, number, number, numb
   for (const [x, y, w, h] of rs) {
     G.moveTo(x, y);
     const m = G.g.ctm;
-    for (const [px, py] of [
-      [x + w, y],
-      [x + w, y + h],
-      [x, y + h],
-    ]) {
+    // 矩形は、幅・高さの符号によらず、ユーザ空間で反時計まわりに描く (PLRM §4.6.5 Rectangles。重なった矩形の内側が、
+    // 非ゼロ規則でどれも内側になる)。幅と高さの符号が違うときは、(x, y) から縦の辺を先にたどる
+    const corners =
+      w * h < 0
+        ? [
+            [x, y + h],
+            [x + w, y + h],
+            [x + w, y],
+          ]
+        : [
+            [x + w, y],
+            [x + w, y + h],
+            [x, y + h],
+          ];
+    for (const [px, py] of corners) {
       const [dx, dy] = apply(m, px, py);
       G.lineToDev(dx, dy);
     }
