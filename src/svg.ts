@@ -257,9 +257,11 @@ export function parsePathData(d: string): Seg[] | null {
     return n;
   };
   const flag = () => {
-    // A のフラグは "10" のように詰めて書かれることがある
+    // A のフラグは 1 字の "0" か "1" (SVG 2 §9.3.9 の文法: flag::= ("0" | "1")) で、後の区切りは省ける。
+    // "10"・"01.71" のように詰めて書かれると、数の字句が後の数とつながっているので、頭の 1 字だけを取り、残りを次の字句にする
+    // (例: "0 01.71.29" は フラグ 0・フラグ 1・.71・.29。SVGO の出力でふつうの書き方)
     const t = tokens[i];
-    if (t && /^[01]/.test(t) && t.length > 1 && !t.includes('.')) {
+    if (t && /^[01]./.test(t)) {
       tokens[i] = t.slice(1);
       return Number(t[0]);
     }

@@ -32,6 +32,21 @@ describe('SVG → ベクタ', () => {
     expect(c[0]).toMatchObject({ x: 18, y: 18 }); // z 後の現在点は (10,10) → m5 5 → (15,15)、c の終点 (18,18)
   });
 
+  it('円弧のフラグを詰めて書いた後が小数でも読む (SVG 2 §9.3.9: flag は 1 字)', () => {
+    // SVGO の出力の書き方。空白で分けた同じ path と同じ結果になる
+    expect(parsePathData('M0 0a1 1 0 01.71.29')).toEqual(parsePathData('M0 0 a1 1 0 0 1 .71 .29'));
+    expect(parsePathData('M0 0a1 1 0 01.71.29')).not.toBeNull();
+    expect(parsePathData('M10 10a2 2 0 011.5 3')).toEqual(parsePathData('M10 10 a2 2 0 0 1 1.5 3'));
+    expect(parsePathData('M10 10a2 2 0 111.5 3')).toEqual(parsePathData('M10 10 a2 2 0 1 1 1.5 3'));
+    // フラグの後の区切りを省いた小数・指数、続けて書いた 2 つ目の円弧
+    expect(parsePathData('M0 0a1 1 0 1 0.5.5')).toEqual(parsePathData('M0 0 a1 1 0 1 0 .5 .5'));
+    expect(parsePathData('M0 0a1 1 0 011e1 2')).toEqual(parsePathData('M0 0 a1 1 0 0 1 10 2'));
+    expect(parsePathData('M0 0a1 1 0 01.5.5 1 1 0 10.5.5')).toEqual(parsePathData('M0 0 a1 1 0 0 1 .5 .5 a1 1 0 1 0 .5 .5'));
+    // これまでどおり
+    expect(parsePathData('M0 0A10 10 0 0120 0')).toEqual(parsePathData('M0 0 A10 10 0 0 1 20 0'));
+    expect(parsePathData('M0 0A10 10 0 0,1,20 0')).toEqual(parsePathData('M0 0 A10 10 0 0 1 20 0'));
+  });
+
   it('円弧は 90° 以下の三次ベジエに変換され、終点が一致する', () => {
     const s = parsePathData('M0 0 A10 10 0 0 1 20 0')!;
     const cs = s.filter((x) => x.op === 'C');
