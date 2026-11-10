@@ -1,6 +1,6 @@
 {
   "name": "kumiori",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Kumiori (組み織り) — Japanese typesetting engine for browsers and Node: HTML+CSS / XSL-FO -> Area Tree -> Canvas / PDF",
   "keywords": [
     "typesetting",
