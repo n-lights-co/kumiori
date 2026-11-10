@@ -7,7 +7,7 @@
  *   5. buildLineNode : 行 → LNode (Line > Inline > Glyph/Ruby/TCY)
  * Atom と、その周りの型 (InlineFrame・BoxSpec・LeaderSpec・FlattenState・RawLine・PositionedLine) はここで定める
  */
-import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
+import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LIndexPageCitationList, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
 import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './measurer';
 import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
 import { kernsAsSameScript } from './orthographicSyllable';
@@ -26,7 +26,8 @@ export { bidiControls, flattenInline, joiningUnits, ligatureUnits, primaryChar, 
 // 行の高さ (lineMetrics.ts) は、ほかのファイルからは従来どおりここから使える
 export { DEFAULT_BASELINE_RATIO, lineMetrics, type LineMetrics };
 
-export type InlineChild = string | LInline | LRuby | LTateChuYoko | LLeader | LFootnote | LPageNumberCitation | LImage | LInlineContainer | LFootnoteCitation;
+// LIndexPageCitationList (索引のページ番号の並び) は、組版 (layoutEngine の layoutInlineRun) が、字と行内の箱に置き換えてから平らにする
+export type InlineChild = string | LInline | LRuby | LTateChuYoko | LLeader | LFootnote | LPageNumberCitation | LImage | LInlineContainer | LFootnoteCitation | LIndexPageCitationList;
 
 export interface Atom {
   kind: 'glyph' | 'ruby' | 'tcy' | 'leader' | 'box' | 'break';
@@ -193,7 +194,7 @@ export interface FlattenState {
 export function isInlineChild(c: unknown): c is InlineChild {
   if (typeof c === 'string') return true;
   const t = (c as { type?: string }).type;
-  return t === 'inline' || t === 'ruby' || t === 'tate-chu-yoko' || t === 'leader' || t === 'footnote' || t === 'page-number-citation' || t === 'image' || t === 'inline-container' || t === 'footnote-citation';
+  return t === 'inline' || t === 'ruby' || t === 'tate-chu-yoko' || t === 'leader' || t === 'footnote' || t === 'page-number-citation' || t === 'image' || t === 'inline-container' || t === 'footnote-citation' || t === 'index-page-citation-list';
 }
 
 // ───────────────────────── 行分割 ─────────────────────────
