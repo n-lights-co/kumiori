@@ -48,3 +48,40 @@ export const PS_MAX_PATH_POINTS = 5_000_000;
  * 網かけのデータの元 (psShading) の上限と同じ値
  */
 export const PS_FILTER_MAX_BYTES = 16 << 20;
+
+/**
+ * ネットワークから取る資源 (文書が http(s) の URL で参照する CSS・書体・画像) の、1 件の大きさの上限 (バイト) と、転送 (redirect) をたどる回数の上限。
+ * 取得 (resources.ts の fetchGuarded) がここの値を見る。値を書き換えられる入れ物にしてあるのは、テストが小さな値で試すため (利用者向けの設定ではない)。
+ *  - cssBytes: 16MB。実在の大きな CSS (CSS の枠組みをまとめたもの・書体を data URI で埋め込んだもの) は数 MB なので、それを弾かない
+ *  - fontBytes: 128MB。和文・CJK の書体は 1 書体で 5〜25MB、いくつもの書体をまとめた集まり (TTC・OTC。CJK の全ウェイトを入れたもの) は
+ *    数十 MB から 100MB ほどなので、それを弾かない
+ *  - imageBytes: 256MB。ファイルとして渡した画像の上限 (assets.ts の MAX_FILE_BYTES) と同じ
+ *  - redirects: 20。ブラウザが転送をたどる回数の上限 (Fetch Standard の HTTP-redirect fetch の redirect count。Node の fetch も同じ 20)
+ */
+export const fetchLimits = {
+  cssBytes: 16 * 1024 * 1024,
+  fontBytes: 128 * 1024 * 1024,
+  imageBytes: 256 * 1024 * 1024,
+  redirects: 20,
+};
+
+/**
+ * EPUB (zip) の 1 つの項目の、展開した後の大きさの上限 (256MB。超えた項目は読めないものとして扱う)。
+ * zip の中央ディレクトリに書かれた大きさは信じず、展開しながら数える (小さな deflate のデータが、約 1000 倍に膨らむ)。
+ * 実在の EPUB の項目で大きいのは画像 (高解像度の見開きで数十 MB) と書体 (和文の書体で 20MB ほど) なので、それを弾かない大きさにした。
+ * 256MB は、MAX_PIXELS の画像を RGB で持つ量 (300MB) に近い
+ */
+export const EPUB_MAX_ENTRY_BYTES = 256 * 1024 * 1024;
+
+/**
+ * 1 つの EPUB から展開する量の合計の上限 (1GB。超えたら、その EPUB は読まない)。同じ項目を何度も展開すれば、その回数だけ数える
+ * (spine に同じ章を何度も書いた EPUB)。画像の多い本 (漫画・写真集) は展開して数百 MB なので、それを弾かない大きさにした。
+ * 章の文字と画像は読み終わるまでメモリに置くので、PS_MAX_VM_BYTES (512MB) と同じ桁にとどめる
+ */
+export const EPUB_MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * 1 つの EPUB の項目の数 (zip の項目・spine の章の並び) の上限。zip の中央ディレクトリの終わりの記録は項目の数を 16 ビットで持つ
+ * (ZIP64 は読まない) ので、zip の項目はもともと 65,535 まで。spine に同じ章を何度でも並べられるので、章の並びにも同じ上限を当てる
+ */
+export const EPUB_MAX_ENTRIES = 65_535;

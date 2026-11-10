@@ -108,6 +108,8 @@ describe('異体字の並び (IVS) の字形 (OUT-15。OpenType cmap format 14)'
 
 describe('fo:bookmark の external-destination を PDF のしおりに出す (FO-16。XSL 1.1 §6.11.2・§7.23.6)', () => {
   const NS = 'xmlns:fo="http://www.w3.org/1999/XSL/Format"';
+  /** すべての飛び先を通す設定 (既定では、ファイルを開く動作のしおりは書かない。test/linkPolicy.test.ts) */
+  const LEGACY_LINKS = { schemes: ['*'], launch: true };
   const bm = (attrs: string, title: string, kids = '') => `<fo:bookmark ${attrs}><fo:bookmark-title>${title}</fo:bookmark-title>${kids}</fo:bookmark>`;
   const xml = `<?xml version="1.0"?><fo:root ${NS}>
     <fo:layout-master-set><fo:simple-page-master master-name="m" page-width="100mm" page-height="100mm"><fo:region-body margin="10mm"/></fo:simple-page-master></fo:layout-master-set>
@@ -119,7 +121,7 @@ describe('fo:bookmark の external-destination を PDF のしおりに出す (FO
 
   it('組版の結果のしおりが外への飛び先を持ち、Area Tree の直列化で落ちない', async () => {
     const { engine } = await makeEngine();
-    const r = importXslFo(xml, (s) => new DOMParser().parseFromString(s, 'text/xml') as never);
+    const r = importXslFo(xml, (s) => new DOMParser().parseFromString(s, 'text/xml') as never, { links: LEGACY_LINKS });
     expect(Object.keys(r.report.unsupported).join()).not.toContain('bookmark');
     const tree = engine.layout(r.document);
     const flat = (t: typeof tree) => t.bookmarks!.map((b) => [b.title, b.sheet, b.external]);
@@ -139,8 +141,8 @@ describe('fo:bookmark の external-destination を PDF のしおりに出す (FO
 
   it('PDF のしおり: URL は URI の動作、相対の PDF は GoToR、ほかのファイルは Launch (リンクの注釈と同じ決まり)。中の飛び先は Dest のまま', async () => {
     const { fonts, engine } = await makeEngine();
-    const r = importXslFo(xml, (s) => new DOMParser().parseFromString(s, 'text/xml') as never);
-    const pdf = await PDFDocument.load(await renderPdf(engine.layout(r.document), fonts));
+    const r = importXslFo(xml, (s) => new DOMParser().parseFromString(s, 'text/xml') as never, { links: LEGACY_LINKS });
+    const pdf = await PDFDocument.load(await renderPdf(engine.layout(r.document), fonts, { links: LEGACY_LINKS }));
     const N = (n: string) => PDFName.of(n);
     const items: PDFDict[] = [];
     const root = pdf.context.lookup(pdf.catalog.get(N('Outlines'))) as PDFDict;

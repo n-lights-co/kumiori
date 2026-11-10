@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+# 検査だけなので、リポジトリを読む権限だけにする (GITHUB_TOKEN の権限を、リポジトリの既定に任せない)
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest

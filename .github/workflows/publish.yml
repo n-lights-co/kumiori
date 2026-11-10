@@ -9,20 +9,19 @@ on:
   push:
     tags: ['v*']
 
+# 既定は読むだけ。npm へ公開する権限 (id-token) は、公開するジョブ (publish) だけに渡す
 permissions:
   contents: read
-  # GitHub Actions の OIDC のトークンを npm へ渡すのに要る
-  id-token: write
 
 concurrency:
   group: publish
   cancel-in-progress: false
 
 jobs:
-  publish:
+  # 検査とビルドをして、公開する tarball を作る。依存の install スクリプトや開発用の依存 (テスト) が走るので、
+  # このジョブには公開の権限を渡さない
+  build:
     runs-on: ubuntu-latest
-    # 環境 npm: リポジトリの Settings → Environments で「Required reviewers」を付けると、公開の前に人の承認を挟める
-    environment: npm
     steps:
       - uses: actions/checkout@v6
         with:
@@ -32,8 +31,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@^11.5.1
       # タグ (v0.1.1 など) が package.json の version と同じで、main に入ったコミットを指していること
       - name: タグと版の確認
         run: |
@@ -52,5 +49,38 @@ jobs:
           path: .cache/fonts
           # ci.yml と同じ (単体テストと Node のコマンドのテストが使う既定の書体)
           key: fonts-defaults-v1
-      # prepublishOnly が型検査・テスト・3 つのビルド (build:dist) を走らせる
-      - run: npm publish
+      # prepublishOnly と同じ検査とビルド (型検査・テスト・3 つのビルド)
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:dist
+      # 公開する tarball。スクリプトは走らせない (上で済ませた)
+      - run: npm pack --ignore-scripts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package
+          path: kumiori-*.tgz
+          if-no-files-found: error
+
+  # tarball を npm に公開するだけ。リポジトリを取り出さず、依存も入れず、スクリプトも走らせない
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # 環境 npm: リポジトリの Settings → Environments で「Required reviewers」を付けると、公開の前に人の承認を挟める
+    environment: npm
+    permissions:
+      # build ジョブの成果物 (tarball) を取るのに要る
+      actions: read
+      # GitHub Actions の OIDC のトークンを npm へ渡すのに要る
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@^11.5.1
+      - name: tarball を取る
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name package
+      # prepublishOnly (検査とビルド) は build ジョブで済ませたので、スクリプトは走らせない
+      - run: npm publish ./kumiori-*.tgz --ignore-scripts

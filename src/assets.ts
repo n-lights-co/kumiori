@@ -6,6 +6,8 @@ import { parseSvg, type XmlNode } from './svg';
 import { decodeBmp, decodeGif, encodePng, MAX_PIXELS, type Pixels } from './pixels';
 import { decodeWebp } from './webp';
 import { decodeModifiedHuffman } from './ccitt';
+import { fetchGuarded } from './resources';
+import { fetchLimits } from './imageLimits';
 
 /**
  * assets — 画像データの登録所。レイアウト (自然なサイズの取得)・Canvas 描画・PDF 埋め込みが共有する。
@@ -278,15 +280,15 @@ export class AssetStore {
     return asset;
   }
 
-  /** 絶対 URL から取得 (CORS で拒否されることがある)。timeoutMs を過ぎたら取得をやめる (画像は描かない) */
-  async addUrl(url: string, timeoutMs?: number): Promise<ImageAsset | undefined> {
+  /**
+   * 絶対 URL から取得 (CORS で拒否されることがある)。timeoutMs を過ぎたら取得をやめる (画像は描かない。時限は本体を読み終えるまで効く)。
+   * allow: 取ってよい URL か。転送 (redirect) の先の URL にも聞く (fetchGuarded)。大きすぎる本体 (fetchLimits.imageBytes) は、読むのを途中でやめる
+   */
+  async addUrl(url: string, timeoutMs?: number, allow?: (url: string) => boolean): Promise<ImageAsset | undefined> {
+    const got = await fetchGuarded(url, { timeoutMs, maxBytes: fetchLimits.imageBytes, ...(allow ? { allow } : {}) });
+    if (!got) return undefined;
     try {
-      const res = await fetch(url, timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined);
-      if (!res.ok) return undefined;
-      // 大きすぎるファイルは取らない (Content-Length で分かるとき。分からなければ addBlob の上限で落とす)
-      const len = Number(res.headers.get('content-length') ?? 0);
-      if (len > MAX_FILE_BYTES) return undefined;
-      return await this.addBlob(url, await res.blob());
+      return await this.addBlob(url, new Blob([got.bytes as BlobPart], { type: got.type }));
     } catch {
       return undefined;
     }

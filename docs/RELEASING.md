@@ -51,7 +51,7 @@ main はルールセットで守っているので、版の変更も PR で入�
    git push origin v0.1.1
    ```
 
-   publish.yml が、タグと `package.json` の版が同じで、タグのコミットが main に入っていることを確かめてから `npm publish` する。Actions の「Publish」の実行で結果を見る。
+   publish.yml が、タグと `package.json` の版が同じで、タグのコミットが main に入っていることを確かめ、型検査・テスト・3 つのビルドをして tarball を作る (build ジョブ)。その tarball を、別のジョブ (publish) が `npm publish` する。npm へ公開する権限 (OIDC) を持つのは publish ジョブだけで、そこでは依存を入れず、スクリプトも走らせない。Actions の「Publish」の実行で結果を見る。
    一度公開した版は取り消せても同じ番号を使い直せない
 5. GitHub の Releases で、そのタグのリリースを作り、CHANGELOG の項目 (日本語と英語) を本文にする。
    リリースを公開すると、`.github/workflows/conformance-pdf.yml` がそのタグのコミットで対応仕様説明書を組み、PDF 4 冊 (v0.1.1 なら `kumiori-xsl-fo-v0.1.1.pdf`・`kumiori-html-css-v0.1.1.pdf` と、それぞれの `.en.pdf`) をリリースに付ける。Actions の「Conformance PDF」の実行で結果を見る。

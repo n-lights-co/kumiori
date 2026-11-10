@@ -50,6 +50,7 @@ import { walkAreaTree } from './areaTree';
 import { SANS } from './sampleData';
 import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
 import { AssetStore } from './assets';
+import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, referencePath, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { iccRgbToCmyk, type CmykConverter } from './icc';
 import { embedCmykImage, embedPngAsIs, markCffSubset, memoEncode, patchCffEmbedding, patchFontkitSubset, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
 import { shrinkJpeg } from './jpeg';
@@ -99,6 +100,13 @@ export interface PdfRenderOptions {
    * Node のコマンドでは、組み込みの zlib (ネイティブで速い) を渡す。展開した中身は同じ
    */
   deflate?: (data: Uint8Array) => Uint8Array;
+  /**
+   * 文書の外への飛び先 (リンクの注釈・しおり・フォームの送り先) のうち、PDF に動作を書いてよいもの (linkPolicy.ts)。
+   * 既定では、http・https・mailto・tel の URL と相対の PDF (GoToR) だけを書く。ほかは動作を書かない
+   */
+  links?: LinkPolicy;
+  /** 動作を書かなかった飛び先があれば、その警告の文を足す配列 */
+  linkWarnings?: string[];
 }
 
 /** 部分書体の名前の印 (大文字 6 字。n 番目の部分書体ごとに違う) */
@@ -232,23 +240,25 @@ export function hasUriScheme(u: string): boolean {
 /**
  * 外へのリンクの動作。スキームのある URL と、ネットワークパスの参照 (//host/…) は URI 動作 (ISO 32000-1 §12.6.4.7)。
  * 相対参照 (RFC 3986 §4.2) は、PDF の場所からの相対のファイル (§7.11.2 の相対のファイル指定): PDF なら別の PDF へ飛ぶ動作 (GoToR。§12.6.4.3。
- * #page=N はそのページ、#名前 は名前付きの飛び先、無ければ 1 ページ目)、ほかのファイルは開く動作 (Launch。§12.6.4.5)
+ * #page=N はそのページ、#名前 は名前付きの飛び先、無ければ 1 ページ目)、ほかのファイルは開く動作 (Launch。§12.6.4.5)。
+ * 動作を書いてよいかは linkPolicy の judgeExternalLink が決める (既定では、http・https・mailto・tel の URL と相対の PDF だけ)。
+ * 書かない飛び先は undefined を返し、dropped に数える。Area Tree をそのまま渡された (取り込みを通らない) 木も、ここで必ず判定する
  */
-function externalAction(u: string): Record<string, unknown> {
-  if (hasUriScheme(u) || u.startsWith('//')) return { S: 'URI', URI: pdfUri(u) };
-  const hash = u.indexOf('#');
-  const q = u.search(/[?#]/);
-  const path = q < 0 ? u : u.slice(0, q);
-  const frag = hash < 0 ? '' : u.slice(hash + 1);
-  let file = path;
-  try {
-    file = decodeURIComponent(path);
-  } catch {
-    // 正しくない %xx はそのまま
+function externalAction(raw: string, policy: LinkPolicy | undefined, dropped: DroppedLinks): Record<string, unknown> | undefined {
+  const j = judgeExternalLink(raw, policy);
+  if (!j.allowed) {
+    countDroppedLink(dropped, j);
+    return undefined;
   }
+  // 判定に使った文字列 (前後の空白・制御文字と、タブ・改行を取り除いたもの) を書く
+  const u = j.url;
+  if (j.kind === 'uri') return { S: 'URI', URI: pdfUri(u) };
+  const hash = u.indexOf('#');
+  const path = referencePath(u);
+  const frag = hash < 0 ? '' : u.slice(hash + 1);
   // ファイル指定の文字列 (§7.11.2): 区切りは /。( ) \ は逃がす (PDFString)
-  const F = PDFString.of(file.replace(/[\\()]/g, (c) => '\\' + c));
-  if (/\.pdf$/i.test(path)) {
+  const F = PDFString.of(decodePath(path).replace(/[\\()]/g, (c) => '\\' + c));
+  if (j.kind === 'gotor') {
     const page = /(?:^|&)page=(\d+)/.exec(frag);
     const D = page ? [Math.max(0, parseInt(page[1], 10) - 1), PDFName.of('Fit')] : frag && !/=/.test(frag) ? PDFString.of(frag) : [0, PDFName.of('Fit')];
     return { S: 'GoToR', F, D };
@@ -1137,9 +1147,18 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     const id = PDFHexString.of(Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''));
     pdf.context.trailerInfo.ID = pdf.context.obj([id, id]);
   }
-  addAnnotations(pdf, painters, tree.destinations ?? {}, textFont, (src) => (opts.assets ?? new AssetStore()).getFile(src));
-  await addFormFields(pdf, painters, textFont);
-  if (tree.bookmarks?.length) addOutline(pdf, tree.bookmarks);
+  const droppedLinks: DroppedLinks = {};
+  const linkAction = (u: string) => externalAction(u, opts.links, droppedLinks);
+  addAnnotations(pdf, painters, tree.destinations ?? {}, textFont, (src) => (opts.assets ?? new AssetStore()).getFile(src), linkAction);
+  await addFormFields(pdf, painters, textFont, (u) => {
+    // 送り先の URL も、リンクと同じ決まりでスキームを見る (スキームの無い相対の送り先は、そのまま書く)
+    const j = judgeExternalLink(u, opts.links);
+    if (j.kind === 'uri' && !j.allowed) countDroppedLink(droppedLinks, j);
+    return j.kind !== 'uri' || j.allowed;
+  });
+  if (tree.bookmarks?.length) addOutline(pdf, tree.bookmarks, linkAction);
+  const droppedSummary = summarizeDroppedLinks(droppedLinks);
+  if (droppedSummary) opts.linkWarnings?.push(droppedLinkWarning(droppedSummary));
   // 書体のストリーム (FontFile・ToUnicode) は save の中の flush で作られるので、先に flush してから圧縮の仕方を差し替える
   // (しないと、いちばん大きい書体のストリームが pako のまま圧縮される)
   if (opts.deflate) {
@@ -1266,7 +1285,7 @@ function outlineText(fonts: FontManager, text: string, family: string | undefine
  * フォームの欄 (axf:form-field) を、PDF の AcroForm の欄にする (pdf-lib の form)。
  * 欄の背景・枠は Kumiori が描くので、欄自身は透明・枠なし。表示の書体は、欧文だけなら Helvetica、それ以外は埋め込み済みの書体
  */
-async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont: (text: string) => PDFFont | undefined) {
+async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont: (text: string) => PDFFont | undefined, submitAllowed: (url: string) => boolean = () => true) {
   const all = painters.flatMap((p, k) => p.marks.filter((m) => m.form).map((m) => ({ ...m, page: k })));
   if (!all.length) return;
   const form = pdf.getForm();
@@ -1364,7 +1383,7 @@ async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont:
         if (f.fontSize === 'auto') autoFontSize(b.acroField);
         // 送信・取り消しの動作
         const action =
-          f.action === 'submit' && f.submitUrl
+          f.action === 'submit' && f.submitUrl && submitAllowed(f.submitUrl)
             ? { S: 'SubmitForm', F: pdfUri(f.submitUrl), Flags: f.submitMethod === 'get' ? 12 : 4 } // 4: HTML の書式で送る、8: GET
             : f.action === 'reset'
               ? { S: 'ResetForm' }
@@ -1509,6 +1528,9 @@ function annotColor(css: string): number[] {
   return c.mode === 'rgb' ? [c.r, c.g, c.b] : [(1 - c.c) * (1 - c.k), (1 - c.m) * (1 - c.k), (1 - c.y) * (1 - c.k)];
 }
 
+/** 外への飛び先を PDF の動作にする。書かないものは undefined (externalAction) */
+type LinkAction = (url: string) => Record<string, unknown> | undefined;
+
 /** リンク (fo:basic-link) と注釈 (axf:annotation-*) を、各ページの /Annots に足す */
 function addAnnotations(
   pdf: PDFDocument,
@@ -1516,6 +1538,7 @@ function addAnnotations(
   destinations: Record<string, number>,
   textFont: (text: string) => PDFFont | undefined,
   fileOf: (src: string) => Uint8Array | undefined = () => undefined,
+  linkAction: LinkAction = () => undefined,
 ) {
   const ctx = pdf.context;
   const pages = pdf.getPages();
@@ -1527,8 +1550,12 @@ function addAnnotations(
       const base = { Type: 'Annot', Rect: m.rect, P: pages[k].ref };
       if (m.link) {
         const dict: Record<string, unknown> = { ...base, Subtype: 'Link', Border: [0, 0, 0] };
-        if (m.link.external) dict.A = externalAction(m.link.external);
-        else if (m.link.internal !== undefined) {
+        if (m.link.external) {
+          // 書いてよくない動作 (linkPolicy) のリンクは、注釈を作らない (字はそのまま)
+          const action = linkAction(m.link.external);
+          if (!action) continue;
+          dict.A = action;
+        } else if (m.link.internal !== undefined) {
           const page = pages[destinations[m.link.internal] ?? -1];
           if (!page) continue;
           dict.Dest = ctx.obj([page.ref, PDFName.of('XYZ'), null, page.getHeight(), null]);
@@ -1603,7 +1630,7 @@ function addAnnotations(
 const asciiName = (s: string) => s.replace(/[^\x20-\x7e]/g, '_');
 
 /** しおり (PDF のアウトライン)。飛び先はシートの上端 (見つからないしおりは飛び先なし) */
-function addOutline(pdf: PDFDocument, items: BookmarkArea[]) {
+function addOutline(pdf: PDFDocument, items: BookmarkArea[], linkAction: LinkAction = () => undefined) {
   const ctx = pdf.context;
   const pages = pdf.getPages();
   const rootRef = ctx.nextRef();
@@ -1623,7 +1650,11 @@ function addOutline(pdf: PDFDocument, items: BookmarkArea[]) {
       if (page) dict.Dest = ctx.obj([page.ref, PDFName.of('XYZ'), null, page.getHeight(), null]);
       // 文書の外への飛び先 (fo:bookmark の external-destination。XSL 1.1 §6.11.2・§7.23.6): しおりの動作 (A。ISO 32000-1 §12.3.3。
       // Dest とは同時に書かない)。URL は URI 動作、相対の PDF は GoToR、と、リンクの注釈の外への飛び先と同じ決まり (externalAction)
-      else if (b.external) dict.A = ctx.obj(externalAction(b.external) as never);
+      // 書いてよくない動作 (linkPolicy) は書かない (題だけのしおりになる)
+      else if (b.external) {
+        const action = linkAction(b.external);
+        if (action) dict.A = ctx.obj(action as never);
+      }
       const kids = build(b.children, refs[k]);
       if (kids) {
         dict.First = kids[0];

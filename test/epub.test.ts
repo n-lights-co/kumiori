@@ -118,4 +118,112 @@ describe('EPUB', () => {
     const book = await twoChapters('<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><pre>\na\n</pre><pre>b</pre><textarea>\nc</textarea></body></html>');
     expect(book.html).toContain('<pre>\n\na\n</pre><pre>b</pre><textarea>\n\nc</textarea>');
   });
+
+  describe('展開の上限 (HTM-13。小さな zip から巨大な展開をさせない)', () => {
+    const parse = (t: string, type: 'application/xml' | 'text/html') => new DOMParser().parseFromString(t, type) as unknown as Document;
+    const CONTAINER = { name: 'META-INF/container.xml', text: '<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>' };
+    const opf = (manifest: string, spine: string) => ({ name: 'content.opf', text: `<package xmlns="http://www.idpf.org/2007/opf"><manifest>${manifest}</manifest><spine>${spine}</spine></package>` });
+    const chapter = (body: string, head = '') => `<html xmlns="http://www.w3.org/1999/xhtml"><head>${head}</head><body>${body}</body></html>`;
+    const CH = '<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/>';
+
+    it('1 つの項目: 展開しながら数え、上限を超えたら止める (中央ディレクトリに書いた大きさは見ない)', async () => {
+      const zip = makeZip([
+        { name: 'big.txt', text: 'a'.repeat(200_000), deflate: true },
+        { name: 'small.txt', text: 'b'.repeat(1000), deflate: true },
+        { name: 'stored.txt', text: 'c'.repeat(5000) },
+      ]);
+      // 圧縮した大きさは小さい (よく縮むデータ)
+      expect(zip.length).toBeLessThan(8000);
+      // 中央ディレクトリ・ローカルヘッダーの「展開後の大きさ」を 1 に偽っても、展開した量で判定する
+      const v = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+      for (let i = 0; i + 4 <= zip.length; i++) {
+        if (v.getUint32(i, true) === 0x02014b50) v.setUint32(i + 24, 1, true);
+        else if (v.getUint32(i, true) === 0x04034b50) v.setUint32(i + 22, 1, true);
+      }
+      const [big, small, stored] = readZip(zip, { maxEntryBytes: 4096 });
+      await expect(big.data()).rejects.toMatchObject({ name: 'ZipLimitError', scope: 'entry' });
+      await expect(big.data()).rejects.toThrow(/big\.txt/);
+      expect((await small.data()).length).toBe(1000);
+      // 無圧縮の項目も同じ上限
+      await expect(stored.data()).rejects.toMatchObject({ scope: 'entry' });
+      // 既定の上限では読める
+      expect((await readZip(zip)[0].data()).length).toBe(200_000);
+    });
+
+    it('合計: 展開した量の合計が上限を超えたら止める (同じ項目を何度も展開すれば、その回数だけ数える)', async () => {
+      const zip = makeZip([{ name: 'a.txt', text: 'a'.repeat(3000), deflate: true }]);
+      const [a] = readZip(zip, { maxTotalBytes: 7000 });
+      expect((await a.data()).length).toBe(3000);
+      expect((await a.data()).length).toBe(3000);
+      await expect(a.data()).rejects.toMatchObject({ name: 'ZipLimitError', scope: 'total' });
+    });
+
+    it('項目の数: 上限より多い zip は読まない', () => {
+      const zip = makeZip([1, 2, 3, 4].map((k) => ({ name: `${k}.txt`, text: 'x' })));
+      expect(() => readZip(zip, { maxEntries: 3 })).toThrow(/多すぎ/);
+      expect(readZip(zip, { maxEntries: 4 })).toHaveLength(4);
+    });
+
+    it('EPUB: 上限を超えた章・CSS・画像は飛ばして警告し、ほかは組む', async () => {
+      const zip = makeZip([
+        { name: 'mimetype', text: 'application/epub+zip' },
+        CONTAINER,
+        opf(`${CH}<item id="c3" href="ch3.xhtml" media-type="application/xhtml+xml"/><item id="i1" href="big.png" media-type="image/png"/><item id="i2" href="ok.png" media-type="image/png"/><item id="i3" href="ok.png" media-type="image/png"/>`, '<itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/>'),
+        { name: 'ch1.xhtml', text: chapter('<p>一</p>', '<link rel="stylesheet" href="big.css"/><link rel="stylesheet" href="ok.css"/>') },
+        { name: 'ch2.xhtml', text: chapter(`<p>巨大${'あ'.repeat(20_000)}</p>`), deflate: true },
+        { name: 'ch3.xhtml', text: chapter('<p>三</p>') },
+        { name: 'big.css', text: `.big { color: red } ${'/* x */'.repeat(5000)}`, deflate: true },
+        { name: 'ok.css', text: '.ok { color: blue }' },
+        { name: 'big.png', text: 'P'.repeat(50_000), deflate: true },
+        { name: 'ok.png', text: 'PNG' },
+      ]);
+      const book = await readEpub(zip, parse, { maxEntryBytes: 10_000 });
+      expect(book.html).toContain('<p>一</p>');
+      expect(book.html).toContain('<p>三</p>');
+      expect(book.html).not.toContain('巨大');
+      expect(book.html).toContain('.ok { color: blue }');
+      expect(book.html).not.toContain('.big');
+      // 同じファイルを指す item は 1 度だけ
+      expect(book.images.map((i) => i.name)).toEqual(['ok.png']);
+      expect(book.warnings).toHaveLength(3);
+      expect(book.warnings!.join('\n')).toMatch(/big\.css[\s\S]*ch2\.xhtml[\s\S]*big\.png/);
+      // 既定の上限なら、すべて読めて、警告は無い
+      const all = await readEpub(zip, parse);
+      expect(all.html).toContain('巨大');
+      expect(all.images.map((i) => i.name)).toEqual(['big.png', 'ok.png']);
+      expect(all.warnings).toBeUndefined();
+    });
+
+    it('EPUB: 合計の上限を超えたら、誤りで止める (spine に同じ章を何度も書いた EPUB も)', async () => {
+      const zip = makeZip([
+        CONTAINER,
+        opf('<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>', '<itemref idref="c1"/>'.repeat(50)),
+        { name: 'ch1.xhtml', text: chapter(`<p>${'a'.repeat(2000)}</p>`), deflate: true },
+      ]);
+      await expect(readEpub(zip, parse, { maxTotalBytes: 30_000 })).rejects.toThrow(/合計が上限/);
+      // 章の並びの長さの上限
+      await expect(readEpub(zip, parse, { maxEntries: 20 })).rejects.toThrow(/spine/);
+      expect((await readEpub(zip, parse)).html.match(/<section/g)).toHaveLength(50);
+    });
+
+    it('EPUB: OPF が上限を超えるときは、誤りで止める', async () => {
+      const zip = makeZip([CONTAINER, { ...opf(CH + '<!-- x -->'.repeat(5000), ''), deflate: true }]);
+      await expect(readEpub(zip, parse, { maxEntryBytes: 10_000 })).rejects.toThrow(/content\.opf/);
+    });
+
+    it('項目の名前の ../ は、ほかの項目の突き合わせに影響しない (名前は表の鍵にするだけ)', async () => {
+      const zip = makeZip([
+        CONTAINER,
+        opf('<item id="c1" href="t/ch1.xhtml" media-type="application/xhtml+xml"/><item id="i1" href="../../img/a.png" media-type="image/png"/><item id="i2" href="t/../../b.png" media-type="image/png"/>', '<itemref idref="c1"/>'),
+        { name: 't/ch1.xhtml', text: chapter('<img src="../../../img/a.png"/>') },
+        { name: '../../img/a.png', text: 'OUTSIDE' },
+        { name: 'img/a.png', text: 'INSIDE' },
+        { name: '../b.png', text: 'OUTSIDE' },
+      ]);
+      const book = await readEpub(zip, parse);
+      // 参照は .. を解いた zip の中のパスになり (根より上へは出ない)、../ で始まる名前の項目には当たらない
+      expect(book.html).toContain('src="img/a.png"');
+      expect(book.images.map((i) => [i.name, new TextDecoder().decode(i.data)])).toEqual([['img/a.png', 'INSIDE']]);
+    });
+  });
 });

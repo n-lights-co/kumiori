@@ -11,6 +11,7 @@
  *  - XSL-FO: src の url()、CSS と同じ url()
  * CSS の中の相対参照は、その CSS の URL を基準に解決する (CSS Values 4 §4.5.1: url() の相対 URL は、スタイルシートの URL が基準)
  */
+import { fetchLimits } from './imageLimits';
 
 /**
  * 参照の種類: css は CSS として読む (拡張子が .css でなくても。https://fonts.googleapis.com/css2?family=… など)。
@@ -209,7 +210,7 @@ export interface CollectOptions {
   cssTexts: Array<{ name: string; text: string }>;
   /** 利用者の関数 (TypesetOptions.resolveResource) */
   resolve?: (url: string) => unknown;
-  /** http(s) の CSS と、その @font-face の書体を取るか (TypesetOptions.fetchStyles) */
+  /** http(s) の CSS と、その @font-face の書体を取るか (TypesetOptions.fetchStyles)。転送 (redirect) の先の URL にも聞く */
   fetchStyle: (url: string) => boolean;
   timeoutMs: number;
   /**
@@ -261,7 +262,8 @@ export async function collectResources(text: string, o: CollectOptions): Promise
     let data = toBytes(o.resolve ? await o.resolve(url) : undefined);
     if (!data && (it.kind === 'css' || it.kind === 'font') && /^https?:/i.test(url)) {
       if (o.fetchStyle(url)) {
-        data = await fetchBytes(url, o.timeoutMs);
+        // 転送の先も fetchStyle に聞く。大きさの上限は種類ごと (fetchLimits)
+        data = (await fetchGuarded(url, { timeoutMs: o.timeoutMs, maxBytes: it.kind === 'css' ? fetchLimits.cssBytes : fetchLimits.fontBytes, allow: o.fetchStyle }))?.bytes;
         if (!data) warnings.push(`${it.kind}-fetch-failed\t${url}`);
       } else warnings.push(`${it.kind}-not-fetched\t${url}`);
     }
@@ -310,12 +312,121 @@ function toBytes(d: unknown): Uint8Array | undefined {
   return undefined;
 }
 
-async function fetchBytes(url: string, timeoutMs: number): Promise<Uint8Array | undefined> {
+/** 取得の結果: 中身と、応答の Content-Type (無ければ空) */
+export interface FetchedResource {
+  bytes: Uint8Array;
+  type: string;
+}
+
+export interface GuardedFetchOptions {
+  /** 時限 (ミリ秒)。転送をたどる間と、本体を読み終えるまでの全体に効く。省けば時限なし */
+  timeoutMs?: number;
+  /** 本体の大きさの上限 (バイト)。超えたら読むのをやめる */
+  maxBytes: number;
+  /** 取ってよい URL か (TypesetOptions.fetchImages・fetchStyles の関数)。転送の先の URL にも聞く。省けば、すべて許す */
+  allow?: (url: string) => boolean;
+}
+
+/** 転送の応答の状態コード (Fetch Standard の redirect status: 301・302・303・307・308) */
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+
+/** ブラウザの中か (転送の先の Location をスクリプトから読めない実行環境。ほかの所と同じく document の有無で見分ける) */
+const inBrowser = () => typeof document !== 'undefined';
+
+/**
+ * 文書に書かれた http(s) の URL を、転送の先と大きさを確かめながら取る。取れない・許されない・大きすぎるものは undefined (投げない)。
+ *
+ * 転送 (OUT-01): 許可の関数 allow には、文書に書かれた URL だけでなく、転送の先の URL も聞く (許したホストが 302 で内部のアドレスを返しても、
+ * そこへ要求を出さない)。
+ *  - Node など、転送の応答の Location を読める実行環境: redirect: 'manual' で取り、Location を今の URL に対して解決し (RFC 9110 §10.2.2)、
+ *    allow に聞き直してから次の要求を出す。たどるのは fetchLimits.redirects 回まで (ブラウザの上限と同じ 20。Fetch Standard の HTTP-redirect fetch)。
+ *    http(s) でないスキームへの転送は断る (同じく HTTP-redirect fetch)。https から http への格下げも断る (これは Kumiori の決まり。暗号化した経路で
+ *    許したものを、平文の経路で取り直さない)。
+ *  - ブラウザ: redirect: 'manual' の応答は中身の見えない opaqueredirect になり、Location を読めない (Fetch Standard の opaque-redirect filtered response)。
+ *    転送の先を確かめずにたどるのはブラウザ自身なので、allow があるときは、たどった後の最後の URL (res.url) を allow に聞き、許されなければ応答を捨てる。
+ *    このとき、要求そのものは転送の先に届いている (中身を使わないだけ)。allow が無ければ、これまでどおりブラウザに任せる。
+ * allow は URL の文字列を見るだけなので、名前の解決の結果 (内部のアドレスに解決されるホスト名) までは、ここでは防げない。
+ *
+ * 大きさ (OUT-11): Content-Length が上限を超えていれば本体を読まずに断り、本体は少しずつ読んで、上限を超えた所で読むのをやめる
+ * (Content-Length の無い応答・偽った応答でも、上限より多くは持たない)。本体を少しずつ読めない実行環境 (res.body が無い) では、全部を読んでから大きさを見る。
+ */
+export async function fetchGuarded(url: string, o: GuardedFetchOptions): Promise<FetchedResource | undefined> {
+  // 時限は 1 つの合図で、転送の連なりの全体と本体の読み取りに効かせる (fetch に渡した合図は、本体を読んでいる間も効く)
+  const signal = o.timeoutMs ? AbortSignal.timeout(o.timeoutMs) : undefined;
+  const init = (redirect: RequestRedirect): RequestInit => ({ redirect, ...(signal ? { signal } : {}) });
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok) return undefined;
-    return new Uint8Array(await res.arrayBuffer());
+    let res: Response;
+    if (inBrowser()) res = await fetch(url, init('follow'));
+    else {
+      let cur = url;
+      for (let n = 0; ; n++) {
+        res = await fetch(cur, init('manual'));
+        // Location を読めない実行環境 (ブラウザと同じ扱いの所): たどり直して、最後の URL を確かめる (下)
+        if (res.type === 'opaqueredirect') {
+          res = await fetch(url, init('follow'));
+          break;
+        }
+        const loc = REDIRECT_STATUS.has(res.status) ? res.headers.get('location') : null;
+        if (loc === null) break;
+        // 転送の応答の本体は使わない (接続を放す)
+        await res.body?.cancel().catch(() => undefined);
+        if (n >= fetchLimits.redirects) return undefined;
+        const next = new URL(loc, cur);
+        if (!/^https?:$/.test(next.protocol)) return undefined;
+        if (next.protocol === 'http:' && /^https:/i.test(cur)) return undefined;
+        if (o.allow && !o.allow(next.href)) return undefined;
+        cur = next.href;
+      }
+    }
+    // 転送の先を前もって確かめられなかったとき: 最後の URL を確かめて、許されないものは使わない
+    if (res.redirected) {
+      const ok = /^https?:/i.test(res.url) && !(/^http:/i.test(res.url) && /^https:/i.test(url)) && (!o.allow || o.allow(res.url));
+      if (!ok) {
+        await res.body?.cancel().catch(() => undefined);
+        return undefined;
+      }
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return undefined;
+    }
+    const bytes = await readLimited(res, o.maxBytes);
+    return bytes ? { bytes, type: res.headers.get('content-type') ?? '' } : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** 応答の本体を、上限 max バイトまで読む。超えたら読むのをやめて undefined */
+async function readLimited(res: Response, max: number): Promise<Uint8Array | undefined> {
+  // Content-Length は、送られてくる (圧縮されたままの) 本体の長さ。それだけで上限を超えていれば、読まない
+  if (Number(res.headers.get('content-length') ?? 0) > max) {
+    await res.body?.cancel().catch(() => undefined);
+    return undefined;
+  }
+  if (!res.body) {
+    const all = new Uint8Array(await res.arrayBuffer());
+    return all.length > max ? undefined : all;
+  }
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    parts.push(value);
+  }
+  if (parts.length === 1) return parts[0];
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
 }

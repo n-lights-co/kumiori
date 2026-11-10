@@ -55,6 +55,7 @@ import type {
 import { TOTAL_PAGES_ID } from './types';
 import type { ImportReport, ImportResult } from './xslfoImport';
 import { normalizeSrc } from './assets';
+import { countDroppedLink, judgeExternalLink, type LinkPolicy } from './linkPolicy';
 import { expand, lengthPx, splitTextIndent } from './cssCascade';
 import { inlineSvgDataUri, isInlineSvg } from './htmlSvg';
 import { isColorName } from './color';
@@ -90,6 +91,11 @@ export interface StyleSource {
 }
 
 export interface HtmlImportOptions {
+  /**
+   * 文書の外への飛び先のうち、通すもの (linkPolicy.ts)。既定では、http・https・mailto・tel の URL と相対の PDF だけをリンクにする。
+   * 通さない飛び先はリンクにせず (字はそのまま組む)、report.droppedLinks に数える
+   */
+  links?: LinkPolicy;
   /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。rgb-icc(…, #Separation, '名前', 濃度) を特色 (PDF の Separation) にする */
   spotColors?: SpotColors;
   /**
@@ -3649,14 +3655,20 @@ class HtmlImporter {
   /** ブロック要素 */
   /**
    * <a href> の飛び先 (HTML Living Standard §4.6.1)。#id は文書の中、スキームのある URL (RFC 3986 §3.1 の形:
-   * 英字の後に英字・数字・+・-・.) と相対参照 (§4.2。file.pdf・../a/b.html など) は外。相対参照は PDF の場所からの相対として書き出す
+   * 英字の後に英字・数字・+・-・.) と相対参照 (§4.2。file.pdf・../a/b.html など) は外。相対参照は PDF の場所からの相対として書き出す。
+   * 外への飛び先は、通してよいもの (linkPolicy の judgeExternalLink。既定では http・https・mailto・tel の URL と相対の PDF) だけをリンクにする。
+   * 通さないもの (javascript: など) はリンクにせず (字はそのまま組む)、report.droppedLinks に数える。
+   * スキームは、ブラウザと同じ前処理 (前後の空白・制御文字と、タブ・改行を取り除く。WHATWG URL §4.4) の後の文字列で読む
    */
   private linkOf(el: Element): LinkTarget | undefined {
     if (el.localName !== 'a') return undefined;
     const href = (el.getAttribute('href') ?? '').trim();
     if (!href) return undefined;
     if (href.startsWith('#')) return href.length > 1 ? { internal: this.fragmentId(el, href.slice(1)) } : undefined;
-    return { external: href };
+    const j = judgeExternalLink(href, this.opts.links);
+    if (j.allowed) return { external: j.url };
+    countDroppedLink((this.report.droppedLinks ??= {}), j);
+    return undefined;
   }
 
   /** ブロックの箱を組む。<a href> なら箱にリンクを付ける (ブロック・flex・表の <a> も、箱の全体が飛び先へのリンクになる) */

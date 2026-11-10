@@ -51,7 +51,7 @@ main is protected by a ruleset, so version changes also go in through a PR. Publ
    git push origin v0.1.1
    ```
 
-   publish.yml checks that the tag matches the version in `package.json` and that the tagged commit is on main, then runs `npm publish`. See the result in the "Publish" run under Actions.
+   publish.yml checks that the tag matches the version in `package.json` and that the tagged commit is on main, runs the type check, the tests and the three builds, and packs a tarball (the build job). A separate job (publish) then runs `npm publish` on that tarball. Only the publish job holds the permission to publish to npm (OIDC); it installs no dependencies and runs no scripts. See the result in the "Publish" run under Actions.
    A published version can be unpublished, but the same number can never be reused
 5. Create a release for the tag under Releases on GitHub, with the CHANGELOG entry (Japanese and English) as its body.
    When the release is published, `.github/workflows/conformance-pdf.yml` typesets the Conformance Guide at the tagged commit and attaches the four PDFs (for v0.1.1, `kumiori-xsl-fo-v0.1.1.pdf`, `kumiori-html-css-v0.1.1.pdf` and their `.en.pdf` versions) to the release. Check the result in the "Conformance PDF" run under Actions.
