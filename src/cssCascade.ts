@@ -1891,6 +1891,16 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
     case 'z-index':
       return s0 === 'auto' || int.test(s0);
+    case 'font-variant-east-asian': {
+      // normal | [ <east-asian-variant-values> || <east-asian-width-values> || ruby ] (Fonts 4 §6.10): 組ごとに 1 つまで
+      if (s0 === 'normal') return true;
+      const ws = tokens(s0);
+      const n = (re: RegExp) => ws.filter((w) => re.test(w)).length;
+      const variant = n(/^(jis78|jis83|jis90|jis04|simplified|traditional)$/);
+      const width = n(/^(full-width|proportional-width)$/);
+      const ruby = n(/^ruby$/);
+      return ws.length > 0 && variant <= 1 && width <= 1 && ruby <= 1 && variant + width + ruby === ws.length;
+    }
     // order は整数だけ (2.5 などの宣言は捨てる。Flexbox 1 §5.4)
     case 'order':
       return int.test(s0);

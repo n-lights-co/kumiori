@@ -34,7 +34,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'font-synthesis-small-caps',
   'font-synthesis-position',
   'font-variant-alternates',
-  'font-variant-east-asian',
   'font-variant-emoji',
   'font-variation-settings',
   'font-optical-sizing',

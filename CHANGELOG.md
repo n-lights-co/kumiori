@@ -24,6 +24,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - 印刷に関わらないプロパティ (`cursor`・`transition-*` など) を、未対応の CSS の警告に出さない
   - ルビの配置: `ruby-position` (`under` で親文字の下、縦書きは左。`alternate` との組)、`ruby-align` (`start`・`center`・`space-between`・`space-around`)、`ruby-overhang` (`auto` を明示すると前後の仮名・約物に掛ける)、`ruby-merge: merge` (グループルビ) に対応。指定の無いルビの置く側・掛け方は変わらない
   - ルビの字の配り方の既定を、`ruby-align` の初期値 `space-around` (CSS Ruby 1 §4.3) にした。**欧文・注音字母のルビの既定の並べ方が変わる**: 字の間を空けずに、親文字の中央にそろえる (前は字ごとに間を空けていた)。和文 (漢字・仮名) のルビと親文字は前と同じ。XSL-FO のルビは変わらない
+  - `font-variant-east-asian` に対応 (`jis78`・`jis83`・`jis90`・`jis04`・`simplified`・`traditional`・`full-width`・`proportional-width`・`ruby`。フォントの OpenType の機能で字形と字の幅を選ぶ。一括指定の `font-variant` からも読む)
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)

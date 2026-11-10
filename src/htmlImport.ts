@@ -2543,9 +2543,9 @@ class HtmlImporter {
       if (sp.hangFirst !== (ps?.hangFirst ?? false)) s.hangFirst = sp.hangFirst;
     }
     // 字形を差し替える OpenType の機能: font-variant-numeric (oldstyle-nums など)・font-variant-position (super・sub)・
-    // font-variant-ligatures (discretionary・historical・contextual) と font-feature-settings。
+    // font-variant-ligatures (discretionary・historical・contextual)・font-variant-east-asian と font-feature-settings。
     // 字は 1 字ずつ字形を引くので、字の並びで決まる機能 (frac の分数・ordn の序数・calt) は書体が 1 字で差し替えるものだけ効く
-    if (diff('font-variant-numeric') || diff('font-variant-position') || diff('font-variant-ligatures') || diff('font-feature-settings')) {
+    if (diff('font-variant-numeric') || diff('font-variant-position') || diff('font-variant-ligatures') || diff('font-variant-east-asian') || diff('font-feature-settings')) {
       const NUM: Record<string, string> = {
         'oldstyle-nums': 'onum',
         'lining-nums': 'lnum',
@@ -2562,6 +2562,10 @@ class HtmlImporter {
       else if (pos === 'sub') feats.push('subs');
       const LIG: Record<string, string> = { 'discretionary-ligatures': 'dlig', 'historical-ligatures': 'hlig', contextual: 'calt' };
       for (const v of c('font-variant-ligatures').split(/\s+/)) if (LIG[v] && !feats.includes(LIG[v])) feats.push(LIG[v]);
+      // font-variant-east-asian (Fonts 4 §6.10): 字形の版 (JIS78・83・90・2004、簡体・繁体)・字の幅 (全角・プロポーショナル)・ルビ用の字形。
+      // 値ごとに決まった OpenType の機能を使う。書体にその機能が無ければ、何も変わらない (§7.2: 作り出さない)
+      const EA: Record<string, string> = { jis78: 'jp78', jis83: 'jp83', jis90: 'jp90', jis04: 'jp04', simplified: 'smpl', traditional: 'trad', 'full-width': 'fwid', 'proportional-width': 'pwid', ruby: 'ruby' };
+      for (const v of c('font-variant-east-asian').split(/\s+/)) if (EA[v] && !feats.includes(EA[v])) feats.push(EA[v]);
       for (const m of c('font-feature-settings').matchAll(/["']([a-z0-9]{4})["']\s*(on|off|\d+)?/gi)) {
         const on = m[2] === undefined || m[2] === 'on' || parseInt(m[2], 10) > 0;
         if (on && !feats.includes(m[1])) feats.push(m[1]);

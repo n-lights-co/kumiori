@@ -176,7 +176,7 @@ describe('HTM-24 li の改ページの指定 (Fragmentation 3 §3.1)', () => {
 
 describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   it('名前は読むが組版に使わない性質は、対応していないと答える', () => {
-    for (const c of ['transform: rotate(5deg)', 'opacity: .5', 'font-variant-east-asian: jis78', 'object-position: top', 'text-decoration-style: wavy', 'text-emphasis-position: over', 'list-style-image: url(a.png)', 'text-shadow: 1px 1px red', 'outline: 1px solid'])
+    for (const c of ['transform: rotate(5deg)', 'opacity: .5', 'font-variant-alternates: historical-forms', 'object-position: top', 'text-decoration-style: wavy', 'text-emphasis-position: over', 'list-style-image: url(a.png)', 'text-shadow: 1px 1px red', 'outline: 1px solid'])
       expect(matchSupports(`(${c})`), c).toBe(false);
     // 未対応の一覧の性質は、どれも偽
     expect([...UNSUPPORTED_CSS_PROPERTIES].filter((p) => matchSupports(`(${p}: initial)`))).toEqual([]);
