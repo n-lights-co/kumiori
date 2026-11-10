@@ -13,7 +13,7 @@ Canvas のプレビューと PDF に出力します。
 
 Kumiori は、AI のコーディング支援 ([Claude Code](https://claude.com/claude-code)) を使って開発しています (「[開発の方法について](#開発の方法について)」)。
 
-- **TypeScript 約 5 万 8 千行・テスト約 1,600 件**: 機能を足すたびに AI がテストを書き足し、CI (型チェック・単体テスト・ブラウザでの結合テスト 13 件) を通しています
+- **TypeScript 約 6 万行・テスト約 1,900 件**: 機能を足すたびに AI がテストを書き足し、CI (型チェック・単体テスト・ブラウザでの結合テスト 13 件) を通しています
 - **規格・仕様書を読んで実装する**: XSL-FO 1.1、CSS の各モジュール (Paged Media・GCPM・Writing Modes・Text・Ruby・Fragmentation など)、MathML Core、Unicode の UAX #9 (双方向) と UAX #14 (改行)、W3C の JLREQ (日本語組版処理の要件。JIS X 4051 に基づく)、PDF (ISO 32000) などの規格・仕様書を可能な限り読み、その定義に沿って実装しています。約物の詰め・ぶら下げ・ルビのはみ出しなど、日本語組版の細部も規格に基づいています。プロパティごとの対応状況と、仕様の定義・Kumiori での扱いは、対応仕様説明書 ([`docs/conformance/`](docs/conformance/README.md)) にまとめています
 - **公開されている PDF と比べて仕様を把握**: XSL-FO や CSS の組版ソフトが公開している見本の PDF と、Kumiori で組んだ結果を見比べて、仕様の解釈や細かな組み方を確かめています
 
@@ -273,6 +273,9 @@ Kumiori は、AI のコーディング支援 (Anthropic の Claude Code) を使�
 npm test          # 単体テスト (Node + fontkit。Noto Serif JP を .cache/fonts に取得)
 npm run e2e       # ブラウザでの結合テスト (Playwright。初回は npx playwright install chromium)
 ```
+
+テストが使う書体は、初回に取得して `.cache/fonts` (`KUMIORI_FONT_DIR` で変えられる) に置く。配信元は Google Fonts (`fonts.gstatic.com`) と、PostScript の書体のテスト用の Source Sans 3 (`raw.githubusercontent.com` の adobe-fonts/source-sans)。取得は `test/helpers.ts` の 1 か所にまとめてあり、テストに書体を足すときは、そこの一覧に足す (CI のキャッシュの鍵になる)。
+結合テストは、`KUMIORI_E2E_FONT_CACHE` にディレクトリを指定すると、ブラウザが取った書体をそこに覚えて、次からはネットワークに行かない (CI はこれを使う)。`KUMIORI_E2E_FONT_DIR` は、決まった名前の書体を手で用意して使うときの口。
 
 見本の PDF との比較 (比べる見本の FO と PDF は各自で用意する。リポジトリには入っていない。poppler の pdftoppm が必要):
 
