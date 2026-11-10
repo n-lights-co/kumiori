@@ -77,7 +77,13 @@ export interface TypesetOptions {
   /**
    * 文書が http(s) の URL で参照する画像 (external-graphic・img・background-image など) をネットワークから取るか。
    * 既定 true (取る)。false なら取らない (読めない画像として組む)。関数なら、URL ごとに取るかどうかを決める。
-   * 他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする (内部のホストへの要求を防ぐ)
+   * 他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする (内部のホストへの要求を防ぐ)。
+   * 関数には、文書に書かれた URL のほか、転送 (redirect) の先の URL も聞く (Node では、許されない先へは要求を出さない。たどるのは 20 回まで。
+   * https から http への転送と、http(s) でない先への転送は断る)。ブラウザでは転送の先を前もって読めないので、たどった後の最後の URL を聞いて、
+   * 許されなければ応答を使わない (要求そのものは転送の先に届く)。
+   * 関数が見るのは URL の文字列だけなので、内部のアドレスに解決されるホスト名 (DNS rebinding を含む) は、この関数では防げない。
+   * 内部の網を守るには、実行環境の側 (外向きの通信の制限・プロキシ) でも絞ること。
+   * 取るものの大きさには上限がある (画像 256MB・CSS 16MB・書体 128MB。超えたものは読めない資源として扱う)
    */
   fetchImages?: boolean | ((url: string) => boolean);
   /**
@@ -90,7 +96,8 @@ export interface TypesetOptions {
   /**
    * 文書が http(s) の URL で参照する CSS (<link rel="stylesheet">・@import) と、CSS の @font-face が http(s) で参照する書体 (WOFF2 など。
    * unicode-range が文書の字と重なるものだけ) をネットワークから取るか。既定 true (取る)。
-   * 関数なら、URL ごとに決める。他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする
+   * 関数なら、URL ごとに決める。他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする。
+   * 転送の先の URL の扱い・関数で防げないもの (名前の解決)・大きさの上限は、fetchImages と同じ
    */
   fetchStyles?: boolean | ((url: string) => boolean);
   /** PDF の圧縮 (zlib の deflate)。Node なら zlib.deflateSync を渡すと速い。既定は pdf-lib の圧縮 */

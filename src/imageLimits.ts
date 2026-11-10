@@ -48,3 +48,19 @@ export const PS_MAX_PATH_POINTS = 5_000_000;
  * 網かけのデータの元 (psShading) の上限と同じ値
  */
 export const PS_FILTER_MAX_BYTES = 16 << 20;
+
+/**
+ * ネットワークから取る資源 (文書が http(s) の URL で参照する CSS・書体・画像) の、1 件の大きさの上限 (バイト) と、転送 (redirect) をたどる回数の上限。
+ * 取得 (resources.ts の fetchGuarded) がここの値を見る。値を書き換えられる入れ物にしてあるのは、テストが小さな値で試すため (利用者向けの設定ではない)。
+ *  - cssBytes: 16MB。実在の大きな CSS (CSS の枠組みをまとめたもの・書体を data URI で埋め込んだもの) は数 MB なので、それを弾かない
+ *  - fontBytes: 128MB。和文・CJK の書体は 1 書体で 5〜25MB、いくつもの書体をまとめた集まり (TTC・OTC。CJK の全ウェイトを入れたもの) は
+ *    数十 MB から 100MB ほどなので、それを弾かない
+ *  - imageBytes: 256MB。ファイルとして渡した画像の上限 (assets.ts の MAX_FILE_BYTES) と同じ
+ *  - redirects: 20。ブラウザが転送をたどる回数の上限 (Fetch Standard の HTTP-redirect fetch の redirect count。Node の fetch も同じ 20)
+ */
+export const fetchLimits = {
+  cssBytes: 16 * 1024 * 1024,
+  fontBytes: 128 * 1024 * 1024,
+  imageBytes: 256 * 1024 * 1024,
+  redirects: 20,
+};

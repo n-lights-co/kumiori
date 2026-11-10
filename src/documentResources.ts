@@ -28,7 +28,7 @@ export async function mathOptionsFor(text: string, fonts: FontManager, load: () 
 
 /**
  * 読み込みの報告にある画像 (report.images) のうち、まだ assets に無いものを取り込む: data URI はその場で、http(s) の URL は allow が許すものだけ
- * ネットワークから (timeoutMs の時限つき。省けば時限なし)。相対パスの画像は、文書と一緒に渡したファイルから既に入っているので触らない。
+ * ネットワークから (timeoutMs の時限つき。省けば時限なし。転送の先の URL も allow に聞く)。相対パスの画像は、文書と一緒に渡したファイルから既に入っているので触らない。
  * 同じ URL は 1 度だけ試す (取れなかったものを取り直さない)。許さなかった URL を返す (呼ぶ側が警告にする。同じ URL は 1 つ)
  */
 export async function fetchReportedImages(assets: AssetStore, images: readonly string[], allow: (url: string) => boolean, timeoutMs?: number): Promise<string[]> {
@@ -38,7 +38,7 @@ export async function fetchReportedImages(assets: AssetStore, images: readonly s
     if (assets.get(src)) continue;
     if (src.startsWith('data:')) await assets.addDataUri(src);
     else if (/^https?:/i.test(src)) {
-      if (allow(src)) await assets.addUrl(src, timeoutMs);
+      if (allow(src)) await assets.addUrl(src, timeoutMs, allow);
       else refused.push(src);
     }
   }

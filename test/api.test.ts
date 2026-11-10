@@ -270,6 +270,51 @@ describe('公開 API: typeset', () => {
       server.close();
     }
   });
+  it('fetchStyles・fetchImages の関数には、転送 (redirect) の先の URL も聞く。許されない先へは要求を出さない', async () => {
+    const http = await import('node:http');
+    const hits: string[] = [];
+    const png = encodePngStored({ width: 1, height: 1, rgba: new Uint8Array([255, 0, 0, 255]) });
+    const server = http.createServer((req, res) => {
+      hits.push(req.url ?? '');
+      if (req.url === '/public/a.css' || req.url === '/public/a.png') {
+        // 許したパスが、許していないパス (内部のアドレスの代わり) へ転送する
+        res.writeHead(302, { location: req.url.replace('/public/', '/internal/') });
+        res.end();
+      } else if (req.url === '/internal/a.css') {
+        res.writeHead(200, { 'content-type': 'text/css' });
+        res.end('h1 { color: #00ff00 }');
+      } else if (req.url === '/internal/a.png') {
+        res.writeHead(200, { 'content-type': 'image/png' });
+        res.end(png);
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    try {
+      const html = `<link rel="stylesheet" href="${base}/public/a.css"><h1>H</h1><img src="${base}/public/a.png">`;
+      const color = (r: Awaited<ReturnType<typeof typeset>>) => {
+        let g: GlyphArea | undefined;
+        walkAreaTree(r.areaTree, (a) => void (a.type === 'glyph' && (g ??= a as GlyphArea)));
+        return g!.color;
+      };
+      const allow = (u: string) => u.startsWith(`${base}/public/`);
+      const guarded = await typeset(html, { loadFont, fetchStyles: allow, fetchImages: allow });
+      expect(hits.filter((u) => u.startsWith('/internal/'))).toEqual([]);
+      expect(color(guarded)).not.toBe('#00ff00');
+      // 取れなかった CSS は、これまでの警告の経路で知らせる
+      expect(guarded.warnings.some((w) => w.includes(`${base}/public/a.css`))).toBe(true);
+      // 真偽の true (既定) なら、転送をたどって取る (これまでどおり)
+      hits.length = 0;
+      const open = await typeset(html, { loadFont });
+      expect(color(open)).toBe('#00ff00');
+      expect(hits.filter((u) => u.startsWith('/internal/')).sort()).toEqual(['/internal/a.css', '/internal/a.png']);
+    } finally {
+      server.close();
+    }
+  });
   it('XSL-FO を中身で見分けて組む (kind を省略)。typesetFo と同じ結果', async () => {
     const fo = `<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set>
       <fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>
