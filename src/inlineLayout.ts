@@ -1221,9 +1221,11 @@ function leaderNode(a: Atom, off: number, gStart: number, w: number, bOff: numbe
 /**
  * 下線・上線・取り消し線を、inline の範囲いっぱいに引く (inline の子として、文字の上に描く)。
  * 横書き: 下線は基線の少し下、上線は字面の上端、取り消し線は x ハイト付近。
- * 縦書き: 下線は行の左 (block 方向の後ろ)、上線は右、取り消し線は字面の中央
+ * 縦書き: 下線は行の左 (block 方向の後ろ)、上線は右、取り消し線は字面の中央。
+ * 線の種類・太さ・下線のずらし (CSS の text-decoration-style・text-decoration-thickness・text-underline-offset) の指定が無ければ、
+ * 字の大きさの 6% (0.5pt 以上) の実線。font は、書体の下線の太さ (from-font) を引く書体
  */
-function addDecorations(inline: LNode, st: ResolvedStyle, lm: LineMetrics, span: number, wm: WritingMode) {
+function addDecorations(inline: LNode, st: ResolvedStyle, lm: LineMetrics, span: number, wm: WritingMode, font?: import('./fontManager').LoadedFont) {
   const d = st.textDecoration;
   if (!d || !(d.underline || d.overline || d.lineThrough) || span <= 0) return;
   const fs = st.fontSize;
@@ -1232,11 +1234,46 @@ function addDecorations(inline: LNode, st: ResolvedStyle, lm: LineMetrics, span:
   const base = lm.above; // inline の中での基線 (縦書きは字面の中央)
   const sign = wm === 'vertical-lr' ? -1 : 1; // vertical-lr は block 方向が左→右なので、下線 (左) は block の前側
   // 線の色: 線を指定した要素の色 (colors)。無ければ字の色
-  const lines: Array<[number, string]> = [];
-  if (d.underline) lines.push([vertical ? base + sign * fs * 0.58 : base + fs * 0.12, d.colors?.underline ?? st.color]);
-  if (d.overline) lines.push([vertical ? base - sign * fs * 0.58 : base - fs * 0.9, d.colors?.overline ?? st.color]);
-  if (d.lineThrough) lines.push([vertical ? base : base - fs * 0.3, d.colors?.lineThrough ?? st.color]);
-  for (const [y, color] of lines) inline.children.push(newNode('block', wm, { i: 0, b: y - t / 2, isize: span, bsize: t, bg: color }));
+  const lines: Array<[number, string, 'underline' | 'overline' | 'lineThrough']> = [];
+  if (d.underline) lines.push([vertical ? base + sign * fs * 0.58 : base + fs * 0.12, d.colors?.underline ?? st.color, 'underline']);
+  if (d.overline) lines.push([vertical ? base - sign * fs * 0.58 : base - fs * 0.9, d.colors?.overline ?? st.color, 'overline']);
+  if (d.lineThrough) lines.push([vertical ? base : base - fs * 0.3, d.colors?.lineThrough ?? st.color, 'lineThrough']);
+  if (!d.styles && !d.thickness && d.underlineOffset === undefined) {
+    for (const [y, color] of lines) inline.children.push(newNode('block', wm, { i: 0, b: y - t / 2, isize: span, bsize: t, bg: color }));
+    return;
+  }
+  // 罫線で描く線 (点線・破線・波線) の辺: 行の進む向きに沿う辺 (リーダーの罫線と同じ)
+  const side = wm === 'horizontal-tb' ? 'top' : wm === 'vertical-lr' ? 'left' : 'right';
+  for (const [y, color, kind] of lines) {
+    // 太さ (Text Decoration 4 §2.4): 長さ・百分率は指定の値 (装置の 1 画素を下限にする。印刷では画素が決まらないので、300dpi の 1 画素 = 0.24pt)。
+    // from-font は書体の下線の太さ (post の表の underlineThickness)。書体に無ければ auto と同じ
+    const th = d.thickness?.[kind];
+    const fromFont = th === 'from-font' && font ? ((font.fk as { underlineThickness?: number }).underlineThickness ?? 0) / font.unitsPerEm : 0;
+    const w = typeof th === 'number' ? Math.max(th, 0.24) : fromFont > 0 ? fromFont * fs : t;
+    // 字から離れる向き (block 方向の符号)。取り消し線は 0 (中心を保つ)
+    const out = kind === 'lineThrough' ? 0 : kind === 'underline' ? (vertical ? sign : 1) : vertical ? -sign : -1;
+    // 太さを変えても、字に近い側の端は動かさない (下線・上線は外へ太る)。取り消し線は中心を保つ
+    let centre = y + (out * (w - t)) / 2;
+    if (kind === 'underline' && d.underlineOffset !== undefined) {
+      // 下線のずらし (Text Decoration 4 §2.8.1): text-underline-position が auto のときの基準は欧文の基線で、正の値は字から離れる向き。
+      // 線は、その位置から外へ太さの分だけ引く。縦書きの欧文の基線は、字面の中央から下線の側へ (基線の比 − 0.5) em の所
+      const zero = vertical ? base + sign * (DEFAULT_BASELINE_RATIO - 0.5) * fs : base;
+      centre = zero + out * (d.underlineOffset + w / 2);
+    }
+    const style = d.styles?.[kind] ?? 'solid';
+    const bar = (c: number) => inline.children.push(newNode('block', wm, { i: 0, b: c - w / 2, isize: span, bsize: w, bg: color }));
+    if (style === 'double') {
+      // 二重線 (border-style の double と同じ意味。Backgrounds 3 §3.2: 2 本の線と、その間の空き)。同じ太さの線 2 本を、太さと同じだけ空けて引く。
+      // 2 本目は外側 (取り消し線は中心の両側)
+      if (out === 0) (bar(centre - w), bar(centre + w));
+      else (bar(centre), bar(centre + out * 2 * w));
+    } else if (style === 'dotted' || style === 'dashed') {
+      inline.children.push(newNode('block', wm, { i: 0, b: centre - w / 2, isize: span, bsize: w, border: { [side]: { width: w, color, style } } }));
+    } else if (style === 'wavy') {
+      // 波線: 太さ w の線が、実線の位置を中心に上下へ w ずつ振れる (幅 3w の帯)。周期は太さの 6 倍
+      inline.children.push(newNode('block', wm, { i: 0, b: centre - 1.5 * w, isize: span, bsize: 3 * w, border: { [side]: { width: 3 * w, color, style: 'wave', waveStroke: w, waveLength: 6 * w } } }));
+    } else bar(centre);
+  }
 }
 
 export function buildLineNode(
@@ -1378,7 +1415,7 @@ export function buildLineNode(
         inline.children.push(tn);
       }
     }
-    addDecorations(inline, group[0].a.st, lm, span, wm);
+    addDecorations(inline, group[0].a.st, lm, span, wm, group[0].a.st.textDecoration?.thickness ? group.find((g) => g.a.g)?.a.g?.font : undefined);
     line.children.push(inline);
     k = e;
   }

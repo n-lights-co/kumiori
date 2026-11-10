@@ -176,7 +176,7 @@ describe('HTM-24 li の改ページの指定 (Fragmentation 3 §3.1)', () => {
 
 describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   it('名前は読むが組版に使わない性質は、対応していないと答える', () => {
-    for (const c of ['transform: rotate(5deg)', 'opacity: .5', 'font-variant-alternates: historical-forms', 'object-position: top', 'text-decoration-style: wavy', 'text-emphasis-position: over', 'list-style-image: url(a.png)', 'text-shadow: 1px 1px red', 'outline: 1px solid'])
+    for (const c of ['transform: rotate(5deg)', 'opacity: .5', 'font-variant-alternates: historical-forms', 'object-position: top', 'text-decoration-skip-ink: none', 'text-underline-position: under', 'list-style-image: url(a.png)', 'text-shadow: 1px 1px red', 'outline: 1px solid'])
       expect(matchSupports(`(${c})`), c).toBe(false);
     // 未対応の一覧の性質は、どれも偽
     expect([...UNSUPPORTED_CSS_PROPERTIES].filter((p) => matchSupports(`(${p}: initial)`))).toEqual([]);
@@ -188,9 +188,9 @@ describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   });
 
   it('一括指定は、未対応の性質に初期値でない値を入れるものだけ偽にする', () => {
-    expect(matchSupports('(text-decoration: underline wavy)')).toBe(false);
     expect(matchSupports('(list-style: url(a.png) inside)')).toBe(false);
     expect(matchSupports('(text-decoration: underline)')).toBe(true);
+    expect(matchSupports('(text-decoration: underline wavy)')).toBe(true);
     expect(matchSupports('(list-style: none)')).toBe(true);
     expect(matchSupports('(list-style: square inside)')).toBe(true);
     // font の一括指定は、font-variant-east-asian などを初期値に戻すだけ

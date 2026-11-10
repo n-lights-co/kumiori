@@ -850,12 +850,13 @@ function paintBorderSide(
       // 波線 (アンテナハウスの拡張): 太さの 1/8 の細い線が、罫線の幅の中で上下する。周期は太さの約 6 倍。
       // 角では、隣の辺の中心線との交わり (罫線の幅の中ほど) から、波の中ほどの高さで始まる。辺の長さに半波がちょうど収まるように
       // 周期を伸び縮みさせ、横の辺は上へ、縦の辺は内側へ振れて始まる (上下の辺は同じ形、左右の辺は鏡に映した形)
-      const sw = Math.max(t / 8, 0.25);
+      // 線の太さ・周期の指定 (BorderSide.waveStroke・waveLength。飾りの線の波線) があれば、それを使う
+      const sw = s.waveStroke ?? Math.max(t / 8, 0.25);
       const amp = Math.max((t - sw) / 2, 0);
       const a0 = m0 / 2;
       const a1 = Math.max(len - m1 / 2, a0);
       const span = a1 - a0;
-      const half = Math.max(1, Math.round(span / (3 * Math.max(t, 0.5))));
+      const half = Math.max(1, Math.round(span / (s.waveLength ? s.waveLength / 2 : 3 * Math.max(t, 0.5))));
       // 振れの向き: +1 で座標の増える向き (下・右)
       const dir = horizontal ? -1 : edge === 'left' ? 1 : -1;
       const steps = Math.max(8, half * 16);

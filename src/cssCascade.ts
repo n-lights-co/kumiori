@@ -305,6 +305,8 @@ interface Computed {
   lh?: number;
   /** 字の大きさが既定の大きさ (medium など) から来たか (monospace は 13px にする: Chrome と同じ) */
   fsKeyword: boolean;
+  /** text-emphasis-color が currentcolor か (受け継いだ先の字の色にする。Text Decoration 3 §3.2)。偽のときだけ色が決まっている */
+  emphasisCurrent?: boolean;
   /** 内容の幅の見積もり (px。百分率の基準) */
   cw: number;
   /** 絶対配置の子の包含ブロックの幅 (位置の基準の祖先の padding box の幅。無ければページの領域の幅) */
@@ -398,6 +400,10 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'text-decoration-line': [false, 'none', 'raw'],
   'text-decoration-style': [false, 'solid', 'raw'],
   'text-decoration-color': [false, 'currentcolor', 'color'],
+  // 線の太さ (Text Decoration 4 §2.4: auto | from-font | <length> | <percentage>。百分率は 1em に対する割合で、計算値は % のまま)
+  'text-decoration-thickness': [false, 'auto', 'len-auto'],
+  // 下線をずらす量 (Text Decoration 4 §2.8: auto | <length> | <percentage>。受け継ぐ。百分率は % のまま受け継ぎ、線を指定した要素の 1em で決める)
+  'text-underline-offset': [true, 'auto', 'len-auto'],
   'white-space': [true, 'normal', 'raw'],
   'word-break': [true, 'normal', 'raw'],
   'overflow-wrap': [true, 'normal', 'raw'],
@@ -926,17 +932,34 @@ const listStyleShorthand: Expander = (_prop, v, global) => {
 };
 
 const textDecorationShorthand: Expander = (_prop, v, global) => {
-  if (global) return each(['text-decoration-line', 'text-decoration-style', 'text-decoration-color'], v);
+  // 一括指定 (Text Decoration 3 §2.4 の <line> || <style> || <color> に、Text Decoration 4 §2.6 で太さが加わった)。
+  // 書いていないものは初期値に戻す。text-underline-position・text-underline-offset は含まない (戻さない)
+  if (global) return each(['text-decoration-line', 'text-decoration-style', 'text-decoration-color', 'text-decoration-thickness'], v);
   const lines: string[] = [];
   let style = 'solid';
   let color = 'currentcolor';
+  let thickness = 'auto';
   for (const t of tokens(v)) {
     const tl = t.toLowerCase();
     if (/^(underline|overline|line-through|blink)$/.test(tl)) lines.push(tl);
     else if (/^(solid|double|dotted|dashed|wavy)$/.test(tl)) style = tl;
+    else if (tl === 'auto' || tl === 'from-font' || lengthPx(tl, { ...ANY_CTX, pct: 100 }) !== undefined) thickness = tl;
     else if (tl !== 'none' && isColorLike(t)) color = t;
   }
-  return [['text-decoration-line', lines.join(' ') || 'none'], ['text-decoration-style', style], ['text-decoration-color', color]];
+  return [['text-decoration-line', lines.join(' ') || 'none'], ['text-decoration-style', style], ['text-decoration-color', color], ['text-decoration-thickness', thickness]];
+};
+
+/** 圏点の一括指定 (Text Decoration 3 §3.3: <'text-emphasis-style'> || <'text-emphasis-color'>)。書いていないものは初期値に戻す。位置は含まない */
+const textEmphasisShorthand: Expander = (_prop, v, global) => {
+  if (global) return each(['text-emphasis-style', 'text-emphasis-color'], v);
+  const style: string[] = [];
+  let color = 'currentcolor';
+  for (const t of tokens(v)) {
+    // 圏点にする文字列 ('＊' など) と形の語は style、それ以外で色として読めるものは color
+    if (!/^["']/.test(t) && !/^(none|filled|open|dot|circle|double-circle|triangle|sesame)$/i.test(t) && isColorLike(t)) color = t;
+    else style.push(t);
+  }
+  return [['text-emphasis-style', style.join(' ') || 'none'], ['text-emphasis-color', color]];
 };
 
 const flexShorthand: Expander = (_prop, v, global) => {
@@ -1022,7 +1045,7 @@ shorthand(['columns'], (_p, v, global) => {
   return [['column-width', width], ['column-count', count]];
 });
 shorthand(['text-decoration'], textDecorationShorthand);
-shorthand(['text-emphasis'], (_p, v) => [['text-emphasis-style', v]]);
+shorthand(['text-emphasis'], textEmphasisShorthand);
 shorthand(['overflow'], (_p, v) => {
   const [a, b = a] = tokens(v);
   return [['overflow', v], ['overflow-x', a], ['overflow-y', b]];
@@ -1597,6 +1620,25 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       if (bc) colorVal = bc;
     }
     out.v.set('color', colorVal);
+    // 圏点の色 (Text Decoration 3 §3.2): currentcolor は語のまま受け継ぎ、受け継いだ要素の字の色になる
+    // (「currentcolor keyword computes to itself and is resolved to the value of color after inheritance」)。
+    // 返す値は色 (この要素の字の色) にし、currentcolor であることは別に覚えて子へ渡す
+    {
+      const ecRaw = cascaded.get('text-emphasis-color');
+      const lv = ecRaw?.trim().toLowerCase();
+      let current: boolean;
+      let ec = colorVal;
+      if (lv === undefined || /^(inherit|unset|revert|revert-layer)$/.test(lv)) {
+        current = parent ? parent.emphasisCurrent !== false : true;
+        if (!current) ec = pv('text-emphasis-color') ?? colorVal;
+      } else {
+        const c = lv === 'initial' ? 'current' : parseColor(ecRaw!);
+        current = c === 'current' || c === undefined;
+        if (!current) ec = fmtColor(c as Exclude<typeof c, 'current' | undefined>);
+      }
+      out.emphasisCurrent = current;
+      out.v.set('text-emphasis-color', ec);
+    }
 
     // 行の高さ (数値は数値のまま継承する)
     const lhRaw = cascaded.get('line-height');
@@ -1672,6 +1714,14 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap') && /%/.test(raw)) {
             val = raw.trim();
             break;
+          }
+          // 飾りの線の太さ・下線のずらし (Text Decoration 4 §2.4・§2.8): 百分率は 1em に対する割合。% のまま返し (受け継ぐ先の字の大きさで変わる)、
+          // htmlImport が、線を指定した要素の字の大きさで決める。from-font は語のまま
+          if (p === 'text-decoration-thickness' || p === 'text-underline-offset') {
+            if (lv === 'from-font' || /%/.test(raw)) {
+              val = lv;
+              break;
+            }
           }
           const cbVertical = /^(vertical|tb|sideways)/.test(parent?.v.get('writing-mode') ?? '');
           // 高さの百分率: 包含ブロックの高さが決まっていればその高さ、根元の要素は初期包含ブロック (ページの領域) の高さ (CSS 2.1 §10.5)。
@@ -1891,6 +1941,22 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
     case 'z-index':
       return s0 === 'auto' || int.test(s0);
+    case 'text-decoration-style':
+      // solid | double | dotted | dashed | wavy (Text Decoration 3 §2.2)
+      return /^(solid|double|dotted|dashed|wavy)$/.test(s0);
+    case 'text-decoration-thickness':
+      // auto | from-font | <length> | <percentage> (Text Decoration 4 §2.4)
+      return s0 === 'auto' || s0 === 'from-font' || lengthPx(s0, { ...ctx, pct: 100 }) !== undefined;
+    case 'text-underline-offset':
+      // auto | <length> | <percentage> (Text Decoration 4 §2.8)
+      return s0 === 'auto' || lengthPx(s0, { ...ctx, pct: 100 }) !== undefined;
+    case 'text-emphasis-position': {
+      // [ over | under ] && [ right | left ]? (Text Decoration 3 §3.4)
+      const ws = tokens(s0);
+      const ou = ws.filter((w) => w === 'over' || w === 'under').length;
+      const rl = ws.filter((w) => w === 'right' || w === 'left').length;
+      return ou === 1 && rl <= 1 && ou + rl === ws.length;
+    }
     case 'font-variant-east-asian': {
       // normal | [ <east-asian-variant-values> || <east-asian-width-values> || ruby ] (Fonts 4 §6.10): 組ごとに 1 つまで
       if (s0 === 'normal') return true;

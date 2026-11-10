@@ -32,6 +32,9 @@ export interface Edges {
 /** 入力用: 数値 1 つなら 4 辺共通 */
 export type EdgesInput = number | Partial<Edges>;
 
+/** 下線・上線・取り消し線の線の種類 (CSS の text-decoration-style) */
+export type TextDecorationStyle = 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
+
 /** 線種。dot-dash (一点鎖線)・dot-dot-dash (二点鎖線)・wave (波線) はアンテナハウスの拡張 */
 export type BorderLineStyle = 'solid' | 'dashed' | 'dotted' | 'double' | 'groove' | 'ridge' | 'inset' | 'outset' | 'hidden' | 'dot-dash' | 'dot-dot-dash' | 'wave';
 
@@ -46,6 +49,12 @@ export interface BorderSide {
    * 無ければ、辺を時計回りにたどり、模様を角をまたいで続ける (XSL-FO の文書)
    */
   symmetric?: boolean;
+  /**
+   * 波線 (style が wave) の、線の太さと波の 1 周期の長さ (pt)。下線などの飾りの線の波線 (CSS の text-decoration-style: wavy) が付ける。
+   * 無ければ、罫線の幅から決める (線は幅の 1/8、周期は幅の約 6 倍)
+   */
+  waveStroke?: number;
+  waveLength?: number;
   /** 表の罫線の重ね合わせ (collapse) で決めた、セルの辺の描き方 (Area Tree の版 2。組版が付ける) */
   collapse?: CollapsedSide;
 }
@@ -83,7 +92,24 @@ export interface TextStyle {
    * 下線・上線・取り消し線。colors は線ごとの色 (線を指定した要素の text-decoration-color。CSS Text Decoration 3 §2.3:
    * 子孫の字の色が違っても、同じ要素から出た線の色は変えない)。無ければ字の色で引く
    */
-  textDecoration?: { underline?: boolean; overline?: boolean; lineThrough?: boolean; colors?: { underline?: string; overline?: string; lineThrough?: string } };
+  textDecoration?: {
+    underline?: boolean;
+    overline?: boolean;
+    lineThrough?: boolean;
+    colors?: { underline?: string; overline?: string; lineThrough?: string };
+    /** 線ごとの線の種類 (CSS の text-decoration-style。CSS Text Decoration 3 §2.2)。無ければ実線 */
+    styles?: { underline?: TextDecorationStyle; overline?: TextDecorationStyle; lineThrough?: TextDecorationStyle };
+    /**
+     * 線ごとの太さ (pt。CSS の text-decoration-thickness の長さ・百分率。CSS Text Decoration 4 §2.4)。'from-font' は書体の下線の太さ
+     * (書体に無ければ、指定の無いときと同じ)。無ければ字の大きさから決める
+     */
+    thickness?: { underline?: number | 'from-font'; overline?: number | 'from-font'; lineThrough?: number | 'from-font' };
+    /**
+     * 下線を、基線から外 (字から離れる向き) へずらす量 (pt。CSS の text-underline-offset の長さ・百分率。CSS Text Decoration 4 §2.8)。
+     * 線は、その位置から外へ太さの分だけ引く。無ければ字の大きさから決めた位置
+     */
+    underlineOffset?: number;
+  };
   /** 和文と欧文・数字の間にアキを入れる (アンテナハウスの axf:text-autospace・CSS の text-autospace 相当)。既定 false */
   textAutospace?: boolean;
   /** 和欧間のアキの大きさ (字の大きさに対する比)。既定 0.25 (四分)。CSS の text-autospace は 0.125 (CSS Text 4) */

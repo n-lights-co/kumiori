@@ -53,6 +53,7 @@ import type {
   LTableColumn,
   LTableRow,
   PageMaster,
+  TextDecorationStyle,
   TextStyle,
   WritingMode,
 } from './types';
@@ -898,6 +899,16 @@ class HtmlImporter {
     const maxDigits = dg ? parseInt(dg[1] ?? '2', 10) : 0;
     const mark = this.emphasisMark(el, vertical);
     if (!maxDigits && !mark) return this.smallCaps(t, el);
+    // 圏点の側 (text-emphasis-position。Text Decoration 3 §3.4): 横書きは over (上)・under (下)、縦書きは right (右)・left (左。省略は right)。
+    // 圏点は、字ごとのルビとして置く (§3.4「as if each character was assigned the mark as its ruby annotation text」) ので、
+    // 下・左は 2 段目のルビの側に置く。vertical-lr は、ルビの 1 段目の側 (行の進む向きの手前) にだけ置ける
+    const cs = this.cs(el);
+    const wmv = cs('writing-mode');
+    const pos = mark ? cs('text-emphasis-position') : '';
+    const under = vertical ? /(^|\s)left(\s|$)/.test(pos) && !/vertical-lr/.test(wmv) : /(^|\s)under(\s|$)/.test(pos);
+    // 圏点の色 (text-emphasis-color。§3.2): 初期値 currentcolor は字の色 (色を付けない)。見えない要素 (visibility) の圏点には付けない
+    const ec = mark ? cs('text-emphasis-color') : '';
+    const markColor = ec && ec !== cs('color') && !/^(hidden|collapse)$/.test(cs('visibility')) ? cssColor(ec) : undefined;
     const out: LInlineLevel[] = [];
     let buf = '';
     const flush = () => {
@@ -915,7 +926,8 @@ class HtmlImporter {
         // 圏点は、空白・約物・記号には付けない
         if (mark && !/[\s\p{P}\p{S}]/u.test(ch)) {
           flush();
-          out.push({ type: 'ruby', baseText: ch, rubyText: mark });
+          if (under) out.push({ type: 'ruby', baseText: ch, rubyText: '', rubyTextUnder: mark, ...(markColor ? { rubyColorUnder: markColor } : {}) });
+          else out.push({ type: 'ruby', baseText: ch, rubyText: mark, ...(markColor ? { rubyColor: markColor } : {}) });
         } else buf += ch;
       }
     }
@@ -2513,16 +2525,38 @@ class HtmlImporter {
       const v = c('text-decoration-color');
       return v === c('color') ? (pcol ?? cssColor(c('color'))) : cssColor(v);
     };
-    if (deco && deco !== 'none' && (!p || deco !== (p('text-decoration-line') || p('text-decoration')) || c('text-decoration-color') !== p('text-decoration-color'))) {
+    // 線の種類 (text-decoration-style。Text Decoration 3 §2.2)・太さ (text-decoration-thickness。同 4 §2.4)・下線のずらし
+    // (text-underline-offset。同 4 §2.8) は、線を指定したこの要素の値を、この要素から出る線に付ける。初期値 (solid・auto・auto) では何も付けない。
+    // 百分率は、この要素の 1em に対する割合
+    const decoShape = (cc: (n: string) => string) => {
+      const pct = /%/.test(`${cc('text-decoration-thickness')}${cc('text-underline-offset')}`) ? cc('font-size') : '';
+      return `${cc('text-decoration-style') || 'solid'}|${cc('text-decoration-thickness') || 'auto'}|${cc('text-underline-offset') || 'auto'}|${pct}`;
+    };
+    const decoExtras = (lines: string): Pick<NonNullable<TextStyle['textDecoration']>, 'styles' | 'thickness' | 'underlineOffset'> => {
+      const keys = [...(lines.includes('underline') ? ['underline' as const] : []), ...(lines.includes('overline') ? ['overline' as const] : []), ...(lines.includes('line-through') ? ['lineThrough' as const] : [])];
+      const each = <T,>(v: T) => Object.fromEntries(keys.map((k) => [k, v]));
+      const em = (v: string) => (/^[+-]?[\d.]+%$/.test(v) ? ((cssLen(c('font-size')) ?? 0) * parseFloat(v)) / 100 : cssLen(v));
+      const st = c('text-decoration-style');
+      const tv = c('text-decoration-thickness');
+      const th = tv === 'from-font' ? ('from-font' as const) : tv && tv !== 'auto' ? em(tv) : undefined;
+      const ov = c('text-underline-offset');
+      const off = lines.includes('underline') && ov && ov !== 'auto' ? em(ov) : undefined;
+      return {
+        ...(/^(double|dotted|dashed|wavy)$/.test(st) && keys.length ? { styles: each(st as TextDecorationStyle) } : {}),
+        ...(th !== undefined && (th === 'from-font' || th >= 0) && keys.length ? { thickness: each(th) } : {}),
+        ...(off !== undefined ? { underlineOffset: off } : {}),
+      };
+    };
+    if (deco && deco !== 'none' && (!p || deco !== (p('text-decoration-line') || p('text-decoration')) || c('text-decoration-color') !== p('text-decoration-color') || decoShape(c) !== decoShape(p))) {
       const dc = decoColor();
       const colors = dc ? { ...(deco.includes('underline') ? { underline: dc } : {}), ...(deco.includes('overline') ? { overline: dc } : {}), ...(deco.includes('line-through') ? { lineThrough: dc } : {}) } : undefined;
-      s.textDecoration = { ...(deco.includes('underline') ? { underline: true } : {}), ...(deco.includes('overline') ? { overline: true } : {}), ...(deco.includes('line-through') ? { lineThrough: true } : {}), ...(colors ? { colors } : {}) };
+      s.textDecoration = { ...(deco.includes('underline') ? { underline: true } : {}), ...(deco.includes('overline') ? { overline: true } : {}), ...(deco.includes('line-through') ? { lineThrough: true } : {}), ...(colors ? { colors } : {}), ...decoExtras(deco) };
     }
     // 互換モード: 祖先の飾り線は表に伝えない (表に自分の飾り線があれば、それだけ。Quirks Mode §3.11)
     if (!pseudo && isQuirksDoc(el.ownerDocument as Document | null) && /^(inline-)?table$/.test(c('display'))) {
       const own = deco && deco !== 'none' ? deco : '';
       const dc = own ? decoColor() : undefined;
-      s.textDecoration = { underline: own.includes('underline'), overline: own.includes('overline'), lineThrough: own.includes('line-through'), ...(dc ? { colors: { underline: dc, overline: dc, lineThrough: dc } } : {}) };
+      s.textDecoration = { underline: own.includes('underline'), overline: own.includes('overline'), lineThrough: own.includes('line-through'), ...(dc ? { colors: { underline: dc, overline: dc, lineThrough: dc } } : {}), ...(own ? decoExtras(own) : {}) };
     }
     // hyphens: auto だけが自動の分綴。子の none・manual で打ち消せる (Text 3 §5.3)
     if (diff('hyphens')) s.hyphenate = c('hyphens') === 'auto';

@@ -48,6 +48,7 @@
 ## 罫線の辺の欄
 
 - `BorderSide.symmetric`: 破線・点線・鎖線の模様を、辺ごとに辺の中央に対して対称に置きます (CSS の罫線)。無ければ、辺を時計回りにたどって模様を続けます。
+- `BorderSide.waveStroke`・`BorderSide.waveLength`: 波線 (`style` が `wave`) の線の太さと、波の 1 周期の長さ (pt) です。下線・上線・取り消し線の波線 (CSS の `text-decoration-style: wavy`) に付きます。無ければ、罫線の幅から決めます (線は幅の 1/8、周期は幅の約 6 倍)。
 - `BorderSide.collapse`: 表の罫線の重ね合わせ (collapse) で決めた、セルの辺の描き方です (`CollapsedSide`)。
   - `paintWidth`: 隣のセルと半分ずつ持つ線を、この太さで描きます (`width` はセルが取る場所で、線の太さの半分)。
   - `noPaint`: 場所だけ取り、線は描きません (隣のセルが描きます)。
