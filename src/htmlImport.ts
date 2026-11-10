@@ -2113,7 +2113,9 @@ class HtmlImporter {
 
   /**
    * open-quote・close-quote の字 (Content 3 §4.1)。入れ子の深さで quotes の組を選ぶ (深さが組の数以上なら最後の組)。
-   * close-quote で深さが負になるときは何も入れない。quotes: auto は言語に合う引用符 (日本語・中国語は「」『』、ほかは “” ‘’)
+   * close-quote で深さが負になるときは何も入れない。quotes: auto は言語に合う引用符 (日本語と繁体字の中国語は「」『』、ほかは “” ‘’)。
+   * 中国語は、繁体字 (zh-Hant と、台湾・香港・マカオ = zh-TW・zh-HK・zh-MO) が「」『』、簡体字 (それ以外の zh) が “” ‘’
+   * (Content 3 §4.1 の注が挙げる CLDR の引用符: zh は “ ” ‘ ’、zh_Hant は 「 」 『 』。clreq §5.2: 中国大陸は弯引号、台湾は直角引号)
    */
   private quote(el: Element, pseudo: '::before' | '::after' | undefined, kind: string): string {
     const v = (pseudo ? this.cs(el, pseudo) : this.cs(el))('quotes')?.trim() ?? 'auto';
@@ -2121,7 +2123,8 @@ class HtmlImporter {
     if (v === 'none') pairs = [];
     else if (v === 'auto' || !v) {
       const lang = (this.langOf(el) ?? '').toLowerCase();
-      pairs = /^(ja|zh)\b/.test(lang) ? [['「', '」'], ['『', '』']] : [['“', '”'], ['‘', '’']];
+      const corner = /^ja\b/.test(lang) || (/^zh\b/.test(lang) && /-(hant|tw|hk|mo)\b/.test(lang));
+      pairs = corner ? [['「', '」'], ['『', '』']] : [['“', '”'], ['‘', '’']];
     } else {
       const strs = parseContent(v).filter((x): x is { kind: 'str'; v: string } => x.kind === 'str').map((x) => x.v);
       pairs = [];
@@ -2593,6 +2596,7 @@ class HtmlImporter {
     // 字形を差し替える OpenType の機能: font-variant-numeric (oldstyle-nums など)・font-variant-position (super・sub)・
     // font-variant-ligatures (discretionary・historical・contextual)・font-variant-east-asian と font-feature-settings。
     // 字は 1 字ずつ字形を引くので、字の並びで決まる機能 (frac の分数・ordn の序数・calt) は書体が 1 字で差し替えるものだけ効く
+    // (合字の機能 liga・clig・dlig・hlig は、字の並びを 1 つの単位にまとめてから当てる: inlineFlatten.ts の ligatureUnits)
     if (diff('font-variant-numeric') || diff('font-variant-position') || diff('font-variant-ligatures') || diff('font-variant-east-asian') || diff('font-feature-settings')) {
       const NUM: Record<string, string> = {
         'oldstyle-nums': 'onum',
@@ -2634,6 +2638,20 @@ class HtmlImporter {
       let on = !/(^|\s)(none|no-common-ligatures)(\s|$)/.test(vl);
       if (liga) on = liga[1] === undefined || liga[1] === 'on' || parseInt(liga[1], 10) > 0;
       s.latinLigatures = on;
+      // font-feature-settings で明示して有効にした合字の機能: 字間 (letter-spacing) があっても当てる。
+      // 機能を決める順 (Fonts 4 §7.2) は、font-variant の機能 → ほかの性質が決める機能 (letter-spacing が 0 でなければ任意の合字を止める) →
+      // font-feature-settings なので、font-variant-ligatures の明示 (common-ligatures など) は字間で止まり、font-feature-settings の明示は止まらない
+      // (Text 3 §7.2 にも「font-feature-settings で指定した合字は、この決まりより優先する」とある)
+      const forced: string[] = [];
+      for (const m of c('font-feature-settings').matchAll(/["'](liga|clig|dlig|hlig)["']\s*(on|off|\d+)?/gi)) {
+        const tag = m[1].toLowerCase();
+        const fon = m[2] === undefined || m[2] === 'on' || parseInt(m[2], 10) > 0;
+        const at = forced.indexOf(tag);
+        // 同じ機能を 2 度書いたときは、後のものを使う (Fonts 4 §7.2)
+        if (at >= 0) forced.splice(at, 1);
+        if (fon) forced.push(tag);
+      }
+      if (forced.length || (parent && diff('font-feature-settings'))) s.forcedLigatures = forced;
     }
     // カーニング: auto (既定) も、ブラウザと同じく欧文にかける。none で止める
     const fk = c('font-kerning');
@@ -5213,6 +5231,14 @@ class HtmlImporter {
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
     const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
+    // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
+    // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、
+    // アンテナハウス互換の行の基準線) が、<html lang="…"> だけの文書でも効く
+    if (!rootStyle.language) {
+      const rootLang = this.langOf(bodyEl);
+      if (rootLang) rootStyle.language = rootLang;
+    }
     // 互換モード・限定互換モードの行の高さ (Quirks Mode Standard §3.3・§3.4)
     if (documentModeOf(doc) !== 'no-quirks') Object.assign(rootStyle, { noStrut: true, lineHeightQuirk: true });
     // 和欧間アキの既定 (CSS Text 4 §8.4 の初期値 normal)。指定のある要素は、その指定 (spacing) で上書きする

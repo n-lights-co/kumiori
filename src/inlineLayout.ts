@@ -329,11 +329,11 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
     // 半角にした約物は、後の約物の連続の詰め・行頭行末の詰め (字幅が全角のときだけ詰める) の対象にならない
     if (a.kind === 'glyph' && a.st.punctuationTrimAll && a.first === a.last && a.advance > a.st.fontSize * 0.9) {
       const fs = a.st.fontSize;
-      if (isClosingPunct(a.first)) a.advance -= fs / 2;
+      if (closingAt(a, a.first)) a.advance -= fs / 2;
       else if (isOpeningPunct(a.first)) {
         a.advance -= fs / 2;
         a.dx = (a.dx ?? 0) - fs / 2;
-      } else if (isMiddlePunct(a.first)) {
+      } else if (middleAt(a, a.first)) {
         a.advance -= fs / 2;
         a.dx = (a.dx ?? 0) - fs / 4;
       }
@@ -352,18 +352,18 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
     if (a.st.punctuationSqueeze !== false) {
       // 詰めたときの間隔 (axf:punctuation-spacing。既定は二分)
       const sp = a.st.punctuationSpacing;
-      if (isClosingPunct(a.last) && (isOpeningPunct(b.first) || isClosingPunct(b.first) || isMiddlePunct(b.first)) && a.advance > fa * 0.9) {
+      if (closingAt(a, a.last) && (isOpeningPunct(b.first) || closingAt(b, b.first) || middleAt(b, b.first)) && a.advance > fa * 0.9) {
         // 既定 (二分) では 」「 の間は二分、。」 などはベタ。axf:punctuation-spacing の指定があれば、終わり括弧類の後ろのアキを
         // 間隔の分にしてから二分詰める (0.75em なら ）、 は 0.25em 空き、0.25em なら 0.25em 重なる)
-        a.advance -= sp !== undefined && !isMiddlePunct(b.first) ? fa - sp * fa : fa / 2;
-      } else if ((isOpeningPunct(a.last) || isMiddlePunct(a.last)) && isOpeningPunct(b.first) && b.advance > fb * 0.9) {
+        a.advance -= sp !== undefined && !middleAt(b, b.first) ? fa - sp * fa : fa / 2;
+      } else if ((isOpeningPunct(a.last) || middleAt(a, a.last)) && isOpeningPunct(b.first) && b.advance > fb * 0.9) {
         // 始め括弧類どうし、中点類の後ろの始め括弧類 (JLREQ 3.1.4: 中点類の後ろに始め括弧類が連続する場合は、前の中点類の後ろを四分アキ)
         // は、後ろの始め括弧類の前の二分アキを詰める
         b.advance -= fb / 2;
         b.dx = (b.dx ?? 0) - fb / 2;
       } else if (sp !== undefined && b.st.punctuationSqueeze !== false) {
         // 約物と約物でない字の間 (二分のアキ) を、間隔の分にする
-        if (isClosingPunct(a.last) && isPlainChar(b, b.first) && a.advance > fa * 0.9) {
+        if (closingAt(a, a.last) && isPlainChar(b, b.first) && a.advance > fa * 0.9) {
           a.advance -= fa / 2 - sp * fa;
         } else if (isPlainChar(a, a.last) && isOpeningPunct(b.first) && b.advance > fb * 0.9) {
           const d = fb / 2 - (b.st.punctuationSpacing ?? 0.5) * fb;
@@ -385,6 +385,82 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
     }
   }
 }
+
+/** 句読点 (、。，．) とコロン類 (：；): 字形の墨の位置で、終わり括弧類の仲間か中点類の仲間かが変わる字 (CSS Text 4 §8.5.3 の fullwidth dot punctuation・fullwidth colon punctuation) */
+const DOT_PUNCT = new Set([...'、。，．']);
+const COLON_PUNCT = new Set([...'：；']);
+/** 墨が字の枠の前半に収まっているとみなす余裕・中央にあるとみなす前後の空き (字の枠に対する比) */
+const INK_HALF_TOLERANCE = 0.05;
+const INK_MIDDLE_MARGIN = 0.2;
+/** 書体ごとの、字 (と縦書きの字形の選び方) の墨の範囲 (字の進む方向。字の枠に対する比。null は分からない) */
+const inkSpanMemo = new WeakMap<object, Map<string, [number, number] | null>>();
+
+/**
+ * 字形の墨 (輪郭の外接枠) が、字の枠 (全角) の中で字の進む方向のどこにあるか: [始まり, 終わり] (0 が枠の前の端、1 が後ろの端)。
+ * 横書きと、縦書きで横倒しにする字は、字形の左右。縦書きで正立にする字は、縦書き用の字形 (書体の vert・Unicode の縦書き用字形) の上下
+ * (枠の上端は、基線から baselineRatio だけ上)。書体の字形が引けない字・位置をずらして代える字 (verticalTreatment の dx・dy) は undefined
+ */
+function inkSpan(g: GlyphMetrics): [number, number] | undefined {
+  const font = g.font;
+  const v = g.vertical;
+  if (!font?.fk || (v && (v.dx !== 0 || v.dy !== 0))) return undefined;
+  const upright = !!v && v.mode === 'upright';
+  const key = `${upright ? (v!.features?.length ? 'v:' : 'u:') + v!.glyph : 'h:' + g.ch}`;
+  let memo = inkSpanMemo.get(font);
+  if (!memo) inkSpanMemo.set(font, (memo = new Map()));
+  let hit = memo.get(key);
+  if (hit === undefined) {
+    hit = null;
+    try {
+      const run = font.fk.layout(upright ? v!.glyph : g.ch, { kern: false, liga: false, clig: false, ...(upright && v!.features?.length ? Object.fromEntries(v!.features.map((f) => [f, true])) : {}) } as never);
+      const gl = run.glyphs.length === 1 ? run.glyphs[0] : undefined;
+      const b = gl && gl.id !== 0 ? gl.bbox : undefined;
+      const upm = font.unitsPerEm;
+      if (b && Number.isFinite(b.minX) && b.maxX > b.minX && b.maxY > b.minY) {
+        if (!upright) {
+          // 全角の送りの字形だけ (プロポーショナルの字形は、詰める・空けるの対象でない。CSS Text 4 §8.5.1)
+          if (Math.abs(gl!.advanceWidth - upm) <= upm * 0.01) hit = [b.minX / upm, b.maxX / upm];
+        } else {
+          const top = font.baselineRatio * upm;
+          hit = [(top - b.maxY) / upm, (top - b.minY) / upm];
+        }
+      }
+    } catch {
+      hit = null;
+    }
+    memo.set(key, hit);
+  }
+  return hit ?? undefined;
+}
+
+/**
+ * 約物の詰めの字の種類: 始め括弧類 (前に二分のアキ)・終わり括弧類と句読点 (後ろに二分のアキ)・中点類 (前後に四分のアキ)・どれでもない。
+ * 句読点 (、。，．) とコロン類 (：；) は、字形の墨が字の枠のどこにあるかで決める (CSS Text 4 §8.5.3: 中央にあれば中点類、
+ * 片側に寄っていて残りの半分が空いていれば終わり括弧類として詰める。UA は書体の情報で決めてよい)。
+ *  - 句読点: 日本語・簡体字の書体は枠の前半 (横書きは左下、縦書きは右上) にあり、終わり括弧類と同じに詰める。繁体字の書体は枠の中央にあり、
+ *    後ろの二分を詰めると次の字と重なるので、中点類として扱う (clreq §5.1・§6.3.2.1: 台湾・香港の句読点は字の枠の中央)
+ *  - コロン類: 日本語・繁体字の書体は枠の中央 (中点類)。簡体字の書体は枠の前半にあり、終わり括弧類として扱う
+ *  - 墨が枠の前半にも中央にも収まらない字形 (簡体字の書体の縦書きのコロンなど。clreq §6.3.2.1 の「固定」の約物) は、詰めない (字形が欠ける・重なる
+ *    詰めはしなくてよい。CSS Text 4 §8.5.1)
+ * 字形の分からない字 (書体を引いていない atom・全角でない字形) は、字で決まる既定 (日本語の約物の種類。jis.ts) のまま
+ */
+type PunctKind = 'open' | 'close' | 'middle' | 'none';
+function punctKind(a: Atom, ch: string): PunctKind {
+  if (isOpeningPunct(ch)) return 'open';
+  const dflt: PunctKind = isClosingPunct(ch) ? 'close' : isMiddlePunct(ch) ? 'middle' : 'none';
+  const dot = DOT_PUNCT.has(ch);
+  if ((!dot && !COLON_PUNCT.has(ch)) || a.kind !== 'glyph' || !a.g || a.g.ch !== ch) return dflt;
+  const span = inkSpan(a.g);
+  if (!span) return dflt;
+  const [s, e] = span;
+  if (e <= 0.5 + INK_HALF_TOLERANCE) return 'close';
+  if (s >= INK_MIDDLE_MARGIN && e <= 1 - INK_MIDDLE_MARGIN) return 'middle';
+  return 'none';
+}
+/** 終わり括弧類・句読点として詰める字か (後ろの二分のアキ) */
+const closingAt = (a: Atom, ch: string) => punctKind(a, ch) === 'close';
+/** 中点類として詰める字か (前後の四分のアキ) */
+const middleAt = (a: Atom, ch: string) => punctKind(a, ch) === 'middle';
 
 /** 全角形 (U+FF01〜FF5E: ASCII の全角の英数字・記号・約物) */
 function isFullwidthForm(ch: string): boolean {
@@ -471,7 +547,7 @@ function startTrimOf(a: Atom | undefined): number {
 
 /** 行末の全角の終わり括弧類・句読点の後ろのアキを捨てる量 (punctuationTrimEnd。字面の外に残っているアキの分、最大で二分) */
 function endTrimOf(a: Atom | undefined): number {
-  if (!a || a.kind !== 'glyph' || !a.st.punctuationTrimEnd || !isClosingPunct(a.last)) return 0;
+  if (!a || a.kind !== 'glyph' || !a.st.punctuationTrimEnd || !closingAt(a, a.last)) return 0;
   // axf:punctuation-trim="end-except-fullstop": 句点 (。．) は除く
   if (a.st.punctuationTrimEndExceptFullstop && isFullStop(a.last)) return 0;
   const fs = a.st.fontSize;
@@ -724,12 +800,12 @@ function squeezeParts(a: Atom, tail: boolean, head: boolean): number[] {
   if (a.kind !== 'glyph') return out;
   out[0] = wordSpaceSqueeze(a);
   const fs = a.st.fontSize;
-  if (isClosingPunct(a.last)) {
+  if (closingAt(a, a.last)) {
     const aki = punctAki(a);
     if (tail) out[1] = Math.max(aki - endTrimOf(a), 0);
     else if (!isFullStop(a.last)) out[4] = aki;
   } else if (isOpeningPunct(a.first)) out[4] = head ? 0 : punctAki(a);
-  else if (isMiddlePunct(a.first)) out[tail ? 2 : 3] = punctAki(a);
+  else if (middleAt(a, a.first)) out[tail ? 2 : 3] = punctAki(a);
   if (a.trail && !tail) out[5] = Math.max(a.trail - fs / 8, 0);
   return out;
 }
@@ -1041,7 +1117,7 @@ export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): Pos
         widths[k] -= c;
         if (lv === 4 && isOpeningPunct(a.first)) (shrinkDx ??= items.map(() => 0))[k] -= c;
         // 中点類は前後の四分アキを同じだけ詰めるので、字面を詰めた量の半分だけ前へ寄せる (字面を詰めた幅の中央に置く)
-        else if ((lv === 2 || lv === 3) && isMiddlePunct(a.first)) (shrinkDx ??= items.map(() => 0))[k] -= c / 2;
+        else if ((lv === 2 || lv === 3) && middleAt(a, a.first)) (shrinkDx ??= items.map(() => 0))[k] -= c / 2;
       });
       over -= total * r;
     }
@@ -1165,17 +1241,21 @@ export function glyphNode(
   return newNode('glyph', wm, { isize: g.advance, bsize: fontSize, src, glyph, ...(cite ? { cite } : {}) });
 }
 
-/** 親文字・ルビを均等割り (space-around) で配置する */
-function distribute(advances: number[], total: number): number[] {
+/**
+ * 親文字・ルビを均等割り (space-around) で配置する。
+ * joined[k] が真なら、k 番目の字は前の字とひとまとまり (間を空けない)。まとまりを 1 つの単位として割る
+ */
+function distribute(advances: number[], total: number, joined?: boolean[]): number[] {
   const sum = advances.reduce((a, b) => a + b, 0);
-  const n = advances.length;
+  const n = advances.reduce((c, _a, k) => c + (k > 0 && joined?.[k] ? 0 : 1), 0);
   const gap = n > 0 ? (total - sum) / n : 0;
   const out: number[] = [];
   let x = gap / 2;
-  for (const a of advances) {
+  advances.forEach((a, k) => {
+    if (k > 0 && joined?.[k]) x -= gap;
     out.push(x);
     x += a + gap;
-  }
+  });
   return out;
 }
 

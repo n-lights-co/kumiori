@@ -129,6 +129,7 @@ export interface ResolvedStyle {
   punctuationTrimEndExceptFullstop?: boolean;
   punctuationTrimAll?: boolean;
   latinLigatures?: boolean;
+  forcedLigatures?: string[];
   looseLineStart?: boolean;
   punctuationSpacing?: number;
   lineStackingStrategy?: 'max-height' | 'line-height' | 'font-height';
@@ -252,6 +253,7 @@ export function resolveStyle(parent: ResolvedStyle, n: BaseNode): ResolvedStyle 
     punctuationTrimEndExceptFullstop: n.punctuationTrimEndExceptFullstop ?? parent.punctuationTrimEndExceptFullstop,
     punctuationTrimAll: n.punctuationTrimAll ?? parent.punctuationTrimAll,
     latinLigatures: n.latinLigatures ?? parent.latinLigatures,
+    forcedLigatures: n.forcedLigatures ?? parent.forcedLigatures,
     looseLineStart: n.looseLineStart ?? parent.looseLineStart,
     punctuationSpacing: n.punctuationSpacing ?? parent.punctuationSpacing,
     lineStackingStrategy: n.lineStackingStrategy ?? parent.lineStackingStrategy,
