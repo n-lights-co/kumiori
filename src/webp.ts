@@ -374,38 +374,89 @@ function decodeAlpha(a: Uint8Array, width: number, height: number): Uint8Array |
   return alpha;
 }
 
-/** WebP の画素 (可逆・非可逆。非可逆の透明度 (ALPH) も)。読めなければ undefined */
-export function decodeWebp(b: Uint8Array): Pixels | undefined {
-  if (b.length < 21 || String.fromCharCode(b[0], b[1], b[2], b[3], b[8], b[9], b[10], b[11]) !== 'RIFFWEBP') return undefined;
-  // チャンク (VP8X の拡張形式の中にあっても)
+/** RIFF のチャンクの並びを読む (同じ名前は最初のものだけ。RFC 9649 §2.3: 奇数の長さの後に詰めの 1 バイト) */
+function readChunks(b: Uint8Array, from: number): Map<string, Uint8Array> {
   const chunks = new Map<string, Uint8Array>();
-  for (let p = 12; p + 8 <= b.length; ) {
+  for (let p = from; p + 8 <= b.length; ) {
     const id = String.fromCharCode(b[p], b[p + 1], b[p + 2], b[p + 3]);
     const size = (b[p + 4] | (b[p + 5] << 8) | (b[p + 6] << 16) | (b[p + 7] << 24)) >>> 0;
     if (!chunks.has(id)) chunks.set(id, b.subarray(p + 8, p + 8 + size));
     p += 8 + size + (size & 1);
   }
+  return chunks;
+}
+
+/** 1 枚の画像 (VP8L か、VP8 と ALPH) の画素。読めなければ undefined */
+function decodeStill(chunks: Map<string, Uint8Array>): Pixels | undefined {
+  const vp8l = chunks.get('VP8L');
+  if (vp8l) {
+    if (vp8l[0] !== 0x2f) return undefined;
+    const br = new Bits(vp8l.subarray(1));
+    const width = br.read(14) + 1;
+    const height = br.read(14) + 1;
+    // 頭に書かれた大きさで画素の配列を作るので、ほかの形式と同じ上限で止める (28 バイトのファイルで数 GB を要求できる)
+    if (width * height > MAX_PIXELS) return undefined;
+    br.read(1); // 透明を使うか (画素の値のまま使う)
+    if (br.read(3) !== 0) return undefined;
+    return argbToRgba(decodeImage(br, width, height, true), width, height);
+  }
+  const vp8 = chunks.get('VP8 ');
+  if (!vp8) return undefined;
+  const px = decodeVp8(vp8);
+  if (!px) return undefined;
+  const alph = chunks.get('ALPH');
+  const alpha = alph && decodeAlpha(alph, px.width, px.height);
+  if (alpha) for (let i = 0; i < alpha.length; i++) px.rgba[i * 4 + 3] = alpha[i];
+  return px;
+}
+
+/**
+ * 動く WebP の最初のコマを、canvas の大きさの画素にする (印刷では最初のコマを描く)。RFC 9649 §2.7.1.1 (ANIM・ANMF)・§2.7.2 (canvas の組み立て)。
+ *  - canvas は VP8X の大きさ (幅・高さは 24 ビットで、それぞれ 1 を引いた値)。
+ *  - canvas の初めの色は「ANIM の背景の色か、アプリケーションの決めた色」(§2.7.2)。背景の色は目安で、使わなくてよい (§2.7.1.1) ので、
+ *    透明にする (libwebp の動画の復号やブラウザと同じ)。
+ *  - コマは (2 × Frame X, 2 × Frame Y) を左上にして置く。コマの大きさは Frame Width / Height Minus One + 1。
+ *  - 重ね方 (B): 0 は透明度で混ぜる、1 は矩形を置き換える。透明な canvas の上では、混ぜた結果はコマの画素と同じ
+ *    (blend.A = src.A。blend.A が 0 なら RGB は 0) なので、違いは透明な画素の RGB だけ。
+ *  - コマの中身 (Frame Data) は、ALPH (あれば) と VP8 / VP8L のチャンクの並び。
+ */
+function decodeFirstFrame(vp8x: Uint8Array, anmf: Uint8Array): Pixels | undefined {
+  if (vp8x.length < 10 || anmf.length < 16) return undefined;
+  const u24 = (a: Uint8Array, o: number) => a[o] | (a[o + 1] << 8) | (a[o + 2] << 16);
+  const cw = u24(vp8x, 4) + 1;
+  const ch = u24(vp8x, 7) + 1;
+  if (cw * ch > MAX_PIXELS) return undefined;
+  const fx = u24(anmf, 0) * 2;
+  const fy = u24(anmf, 3) * 2;
+  const fw = u24(anmf, 6) + 1;
+  const fh = u24(anmf, 9) + 1;
+  // コマは canvas に収まらなければならない (§2.7.2 の擬似コードの MUST)
+  if (fx + fw > cw || fy + fh > ch) return undefined;
+  const blend = (anmf[15] & 2) === 0;
+  const px = decodeStill(readChunks(anmf, 16));
+  // ビット列の大きさは、コマの大きさと同じはず
+  if (!px || px.width !== fw || px.height !== fh) return undefined;
+  const rgba = new Uint8Array(cw * ch * 4);
+  for (let y = 0; y < fh; y++) {
+    const src = px.rgba.subarray(y * fw * 4, (y + 1) * fw * 4);
+    const o = ((fy + y) * cw + fx) * 4;
+    rgba.set(src, o);
+    if (blend) for (let x = 0; x < fw; x++) if (src[x * 4 + 3] === 0) rgba[o + x * 4] = rgba[o + x * 4 + 1] = rgba[o + x * 4 + 2] = 0;
+  }
+  return { width: cw, height: ch, rgba };
+}
+
+/** WebP の画素 (可逆・非可逆。非可逆の透明度 (ALPH) も。動く WebP は最初のコマ)。読めなければ undefined */
+export function decodeWebp(b: Uint8Array): Pixels | undefined {
+  if (b.length < 21 || String.fromCharCode(b[0], b[1], b[2], b[3], b[8], b[9], b[10], b[11]) !== 'RIFFWEBP') return undefined;
+  // チャンク (VP8X の拡張形式の中にあっても)
+  const chunks = readChunks(b, 12);
   try {
-    const vp8l = chunks.get('VP8L');
-    if (vp8l) {
-      if (vp8l[0] !== 0x2f) return undefined;
-      const br = new Bits(vp8l.subarray(1));
-      const width = br.read(14) + 1;
-      const height = br.read(14) + 1;
-      // 頭に書かれた大きさで画素の配列を作るので、ほかの形式と同じ上限で止める (28 バイトのファイルで数 GB を要求できる)
-      if (width * height > MAX_PIXELS) return undefined;
-      br.read(1); // 透明を使うか (画素の値のまま使う)
-      if (br.read(3) !== 0) return undefined;
-      return argbToRgba(decodeImage(br, width, height, true), width, height);
-    }
-    const vp8 = chunks.get('VP8 ');
-    if (!vp8) return undefined;
-    const px = decodeVp8(vp8);
-    if (!px) return undefined;
-    const alph = chunks.get('ALPH');
-    const alpha = alph && decodeAlpha(alph, px.width, px.height);
-    if (alpha) for (let i = 0; i < alpha.length; i++) px.rgba[i * 4 + 3] = alpha[i];
-    return px;
+    // 動く WebP: VP8X の Animation の旗 (0x02) が立ち、コマは ANMF の中にある (RFC 9649 §2.7・§2.7.1.1)
+    const vp8x = chunks.get('VP8X');
+    const anmf = chunks.get('ANMF');
+    if (vp8x && anmf && vp8x[0] & 0x02) return decodeFirstFrame(vp8x, anmf);
+    return decodeStill(chunks);
   } catch {
     return undefined;
   }
