@@ -106,6 +106,8 @@ import {
   runStyleOf,
   DEFAULT_BASELINE_RATIO,
 } from './inlineLayout';
+import { kernScript, lastBaseOfUnit } from './orthographicSyllable';
+import { fontFeaturesBetweenUnits } from './inlineFlatten';
 import { mm } from './units';
 import type { AssetStore } from './assets';
 import { FootnoteCtx, splitEntry, withLabel, type FootEntry } from './footnotes';
@@ -2228,7 +2230,13 @@ class Flow {
       adjustJapaneseSpacing(
         atoms,
         this.wm === 'horizontal-tb'
-          ? (a, b) => (sameFeatures(a.st.fontFeatures, b.st.fontFeatures) ? ms.kern(a.last, b.first, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: a.st.fontFeatures, ...(kernAh ? { skipClass0: true } : {}), ...(a.latinWord || b.latinWord ? { latinWord: true } : {}) }) * a.st.fontSize : 0)
+          ? (a, b) => {
+              if (!sameFeatures(fontFeaturesBetweenUnits(a.st), fontFeaturesBetweenUnits(b.st))) return 0;
+              // インド系・ラオ・チベット・ミャンマー・クメールの字の単位 (2 字以上) は、単位のまま書体に渡して引く
+              if ((a.cluster || b.cluster) && kernScript(a.last))
+                return ms.kernUnits(a.cluster ?? a.last, b.cluster ?? b.first, a.cluster ? lastBaseOfUnit(a.cluster) : a.last, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: fontFeaturesBetweenUnits(a.st), featuresA: a.st.fontFeatures, featuresB: b.st.fontFeatures }) * a.st.fontSize;
+              return ms.kern(a.last, b.first, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: a.st.fontFeatures, ...(kernAh ? { skipClass0: true } : {}), ...(a.latinWord || b.latinWord ? { latinWord: true } : {}) }) * a.st.fontSize;
+            }
           : undefined,
         kernAh,
       );

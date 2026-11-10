@@ -797,7 +797,7 @@ class PdfPainter implements Painter {
     // 右から左の文字 (アラビア文字・ヘブライ文字など) の 2 つ以上の字形の並びにも、いつも付ける: 字形は描く順 (左から右。字の順の逆) に並び、
     // 字と字形が同じ数でも対応しない (アラビア文字の語、ヘブライ文字の字 + 母音記号)
     const rtl = RTL_TEXT.test(text);
-    const own = g.glyphIds && g.glyphIds.length > 1 ? (rtl ? rtlGlyphChars(font, g.glyphIds, text, g.features) : reorderedGlyphChars(font, g.glyphIds, text, /^[\u0900-\u0E7F]/.test(text))) : undefined;
+    const own = g.glyphIds && g.glyphIds.length > 1 ? (rtl ? rtlGlyphChars(font, g.glyphIds, text, g.features) : reorderedGlyphChars(font, g.glyphIds, text, /^[\u0900-\u0E7F]/.test(text) || ACTUAL_TEXT_SEA.test(text))) : undefined;
     // ActualText に書く字の並び。右から左の文字の並びは、描く順 (左から右。text の字の逆順) で書く。
     // ISO 32000-1 §14.9.4 (置き換えの文字列)・§14.8.2.3 (タグ付き PDF の、内容の読む順) の考え方では読む順の文字列だが、字を取り出す側は、
     // ActualText の字にも「ページの内容は字を左から右に置いたもの」として右から左の字の並びを逆順にする処理を掛ける。語 1 つを 1 つの
@@ -1822,3 +1822,10 @@ function num(v: number): string {
   const r = Math.round(v * 10000) / 10000;
   return Object.is(r, -0) ? '0' : String(r);
 }
+/**
+ * 字の単位に、いつも元の字の並び (ActualText) を付ける用字 (drawGlyph。インド系の用字・タイ文字と同じ扱い): ラオ文字・チベット文字
+ * (U+0E80〜U+0FFF)・ミャンマー文字 (U+1000〜U+109F と拡張)・クメール文字 (U+1780〜U+17FF)。前に置く母音記号・メディアルの RA などで、
+ * 字形の並びが字の並びと違う順になる
+ */
+const ACTUAL_TEXT_SEA = /^[\u0E80-\u0FFF\u1000-\u109F\u1780-\u17FF\uA9E0-\uA9FF\uAA60-\uAA7F]/;
+
