@@ -6,7 +6,7 @@
  * ファイルの書き込みと名前付きファイルの読み込みも持たない (外から受け取ったプログラムが、手元のファイルに触れないように)。
  * 図形の演算子は psGraphics.ts が足す。
  */
-import { FilterError, filterSource, type ByteSource } from './psFilters';
+import { FilterError, UnsupportedFilter, filterSource, type ByteSource } from './psFilters';
 import { PS_FILTER_MAX_BYTES, PS_MAX_VM_BYTES } from './imageLimits';
 
 // ───────────────────────── オブジェクト (PLRM §3.3) ─────────────────────────
@@ -500,9 +500,15 @@ function readA85String(f: PSFile, I: Interp): PSString {
   const src = filterSource('ASCII85Decode', { read: () => f.read() }, undefined);
   const out: number[] = [];
   const vm = scanCharge(I);
-  for (let c = src.read(); c >= 0; c = src.read()) {
-    out.push(c);
-    vm.grow(out.length);
+  try {
+    for (let c = src.read(); c >= 0; c = src.read()) {
+      out.push(c);
+      vm.grow(out.length);
+    }
+  } catch (e) {
+    // 壊れた ASCII85 の文字列の字句は syntaxerror (§3.2.2)
+    if (e instanceof FilterError) throw new PSError('syntaxerror');
+    throw e;
   }
   vm.done(out.length);
   return str(Uint8Array.from(out));
@@ -941,6 +947,11 @@ export class Interp {
             this.error(e.ps, { t: 'file', f, x: true });
             continue;
           }
+          // フィルタを通したファイルを実行していて、データが壊れていた: ioerror (§3.13.3)。壊れた先は読めないので、このファイルの実行は終える
+          if (e instanceof FilterError) {
+            this.error(e.message === 'limitcheck' ? 'limitcheck' : 'ioerror', { t: 'file', f, x: true });
+            break;
+          }
           throw e;
         }
         if (!t) break;
@@ -1024,6 +1035,12 @@ export class Interp {
  * それ以外 (QuitSignal・StopSignal など解釈器の信号を含む) は undefined を返し、呼び手がそのまま投げ直す
  */
 function jsErrorToPS(e: unknown): string | undefined {
+  // フィルタ (psFilters) の例外: 読み出し中に符号化されたデータが壊れていれば ioerror、持っていないフィルタの名前は undefined
+  // (PLRM §8.2 の filter のエラーの一覧: invalidaccess・ioerror・limitcheck・rangecheck・stackunderflow・typecheck・undefined)。
+  // PostScript のエラーにするので、stopped で受けられ、受けなくても、それまでに描いたものは残る
+  // 読みためる量の上限 (PS_FILTER_MAX_BYTES) を超えたときだけは limitcheck (FilterError の message が、その名前)
+  if (e instanceof FilterError) return e.message === 'limitcheck' ? 'limitcheck' : 'ioerror';
+  if (e instanceof UnsupportedFilter) return 'undefined';
   if (e instanceof RangeError) return /call stack/i.test(e.message) ? 'execstackoverflow' : 'limitcheck';
   if (e instanceof TypeError) return 'typecheck';
   return undefined;

@@ -113,6 +113,7 @@ export function filterSource(fname: string, src: ByteSource, params?: PSDict, su
   }
 }
 
+/** 持っていないフィルタの名前 (CCITTFaxDecode など。PostScript では undefined。PLRM §8.2 の filter のエラー) */
 export class UnsupportedFilter extends Error {}
 
 function asciiHex(src: ByteSource): ByteSource {
