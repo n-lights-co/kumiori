@@ -421,7 +421,8 @@ interface PageHost {
 /** 段組のページで、脚注・前方 float を「全段を貫く」ページ単位の領域に集めるための窓口 */
 interface PageLevelHost {
   pageRootI(): number;
-  addFootnote(e: FootEntry): void;
+  /** at: 脚注を参照する行 (または行を含む箱) の終わりの位置 (この Flow の段の先頭から) */
+  addFootnote(e: FootEntry, at: number): void;
   addBeforeFloat(f: FloatBox): void;
 }
 
@@ -685,7 +686,7 @@ class Flow {
   /** 脚注を現ページの脚注領域へ積む。収まらなければ行単位で分割し、残りを次ページへ続ける */
   private pushFootnote(e: FootEntry, cap = Infinity) {
     if (this.pageLevel) {
-      this.pageLevel.addFootnote(e);
+      this.pageLevel.addFootnote(e, this.cursor);
       return;
     }
     const first = this.footnotes.length === 0;
@@ -4848,6 +4849,16 @@ interface ColumnGeo {
   colI: number;
 }
 
+/**
+ * 段組のページの、ページ単位の領域に置くもの: 前方 float と脚注。footEnds は foots と同じ並びで、その脚注の参照までの本文を
+ * 段に収めるのに要る、本文領域の先頭からの高さ (脚注領域は、その下に置ける)
+ */
+interface ColumnPageItems {
+  floats: FloatBox[];
+  foots: FootEntry[];
+  footEnds: number[];
+}
+
 /** 段組の 1 回の組版 (layoutColumnPass) の中で、群を組む runColumnGroup が使う文脈 */
 interface ColumnPassCtx {
   seq: LPageSequence;
@@ -4856,7 +4867,7 @@ interface ColumnPassCtx {
   /** ページごとの、本文領域の上 (前方 float) と下 (脚注) に空ける高さ */
   reserves: { top: Map<number, number>; bot: Map<number, number> };
   /** ページごとの、前方 float と脚注 */
-  pageItems: Map<number, { floats: FloatBox[]; foots: FootEntry[] }>;
+  pageItems: Map<number, ColumnPageItems>;
   wm: WritingMode;
   flowSt: ResolvedStyle;
   foot: FootnoteCtx;
@@ -5429,14 +5440,17 @@ export class LayoutEngine {
     let top = Math.max(startTop, reserves.top.get(startAbs) ?? 0);
     const itemsAt = (a: number) => {
       let v = pageItems.get(a);
-      if (!v) pageItems.set(a, (v = { floats: [], foots: [] }));
+      if (!v) pageItems.set(a, (v = { floats: [], foots: [], footEnds: [] }));
       return v;
     };
     const usedOn = new Map<number, number>();
+    /** いまの段の高さ (脚注の参照までの本文の量を数える) */
+    let colLimit = 0;
     const colRoot = () => {
       const g = geoAt(abs);
       let limit = g.limit - top - (reserves.bot.get(abs) ?? 0);
       if (o.lastLimit && o.lastLimit.abs === abs) limit = Math.min(limit, o.lastLimit.h);
+      colLimit = limit;
       const single = o.span || g.n === 1;
       const node = newNode('block', wm, { i: single ? 0 : col * (g.colI + g.gap), b: top, isize: single ? g.rootI : g.colI, bsize: limit });
       if (!single) node.colIndex = col;
@@ -5501,8 +5515,14 @@ export class LayoutEngine {
       pageLevel: pageMode
         ? {
             pageRootI: () => geoAt(abs).rootI,
-            addFootnote: (e) => {
-              if (!o.trial) itemsAt(abs).foots.push(e);
+            addFootnote: (e, at) => {
+              if (o.trial) return;
+              const it = itemsAt(abs);
+              it.foots.push(e);
+              // 参照までの本文 (前の段の全部と、この段の at まで) を、このページの段に分けて収めるのに要る高さ。
+              // 行は分けられないので、1 行の高さの余裕を足す (段組でなければ、参照する行の終わりまで)
+              const n = o.span ? 1 : geoAt(abs).n;
+              it.footEnds.push(top + (n === 1 ? at : (col * Math.max(colLimit, 0) + at) / n + lineHeightOf(flowSt)));
             },
             addBeforeFloat: (f) => {
               if (!o.trial) itemsAt(abs).floats.push(f);
@@ -5533,7 +5553,7 @@ export class LayoutEngine {
     const mark = this.warnings.length;
     const idKeys = new Set(this.idPages.keys());
     const needs = new Map<number, { top: number; bot: number }>();
-    const pageItems = new Map<number, { floats: FloatBox[]; foots: FootEntry[] }>();
+    const pageItems = new Map<number, ColumnPageItems>();
     const pages: PageBuild[] = [];
     const flowSt = resolveStyle(resolveStyle(docStyle, seq), seq.flow);
     const wm = flowSt.wm;
@@ -5665,8 +5685,16 @@ export class LayoutEngine {
       carry = r.trailing;
       if (blocks[blocks.length - 1] === g.items[g.items.length - 1]) forceNew = blocks[blocks.length - 1]?.breakAfter ?? null;
     });
-    // ページ単位の領域: 前方 float は本文領域の上端、脚注は下端に、全段を貫いて置く。必要な高さは呼び出し側へ返す
-    for (const [a, it] of pageItems) {
+    // ページ単位の領域: 前方 float は本文領域の上端、脚注は下端に、全段を貫いて置く。必要な高さは呼び出し側へ返す。
+    // 本文領域に収まらない脚注は、行の単位で分けて、残りを次のページの脚注領域の先頭へ続ける (XSL 1.1 §6.12.3: 脚注の 2 つ目からの
+    // 領域は、続くページに、ほかの内容より先に置く。1 段のページの Flow.pushFootnote と同じ決まり)
+    const queue = [...pageItems.keys()].sort((x, y) => x - y);
+    const contentPages = pages.length;
+    /** 前のページから続く脚注 (分けた残りと、その後ろの脚注) */
+    let carried: FootEntry[] = [];
+    for (let qi = 0; qi < queue.length; qi++) {
+      const a = queue[qi];
+      const it = pageItems.get(a) ?? { floats: [], foots: [], footEnds: [] };
       const pg = ensurePage(a);
       const g = geoAt(a);
       let y = 0;
@@ -5685,24 +5713,60 @@ export class LayoutEngine {
         }
       }
       let botH = 0;
-      if (it.foots.length) {
-        let b = foot.sepHeight;
+      // 偶奇合わせの白ページには、続きを置かない (1 段のページと同じ)
+      const conts = blankAbs.has(a) ? [] : carried.splice(0);
+      if (it.foots.length || conts.length) {
+        let b = 0;
+        const placed: FootEntry[] = [];
+        const put = (e: FootEntry) => {
+          b += foot.gapAfter(placed[placed.length - 1]);
+          e.node.i = 0;
+          e.node.b = b;
+          placed.push(e);
+          b += e.height;
+        };
+        /** e を、脚注領域の高さが budget を超えない所で分けて置き、残りを次のページへ送る。分けられなければ false */
+        const splitPut = (e: FootEntry, budget: number): boolean => {
+          const sp = splitEntry(e, budget - b - foot.gapAfter(placed[placed.length - 1]));
+          if (!sp) return false;
+          put(sp.head);
+          carried.push(sp.rest);
+          return true;
+        };
+        /** このページの本文領域で、脚注領域に使える高さ (前方 float の下から) */
+        const room = g.limit - topH;
+        const over = (e: FootEntry, cap: number) => b + foot.gapAfter(placed[placed.length - 1]) + e.height > cap + EPS;
+        // 前のページからの続き: 脚注領域の先頭に置く。本文領域の 6 割まで (1 段のページと同じ上限)
+        for (const e of conts) {
+          if (carried.length) carried.push(e);
+          else if (!over(e, Math.min(room, g.limit * 0.6)) || !splitPut(e, Math.min(room, g.limit * 0.6))) put(e);
+        }
+        it.foots.forEach((e, k) => {
+          // 前の脚注を分けて送ったら、後ろの脚注も順に次のページへ送る (脚注の順を保つ。§6.12.4)
+          if (carried.length) carried.push(e);
+          // 本文領域に収まらないときだけ分ける。分ける位置は、参照までの本文を段に収めた残り (もう空けてある高さがあれば、そこまで)
+          else if (!over(e, room) || !splitPut(e, Math.min(room, Math.max(g.limit - it.footEnds[k], reserves.bot.get(a) ?? 0)))) {
+            if (over(e, room)) host.warn('脚注がページに収まらないため溢れます');
+            put(e);
+          }
+        });
         const area = newNode('block', wm, { isize: g.rootI, bsize: 0, i: 0, b: 0 });
         const sepNode = foot.makeSeparator(wm, g.rootI);
         if (sepNode) area.children.push(sepNode);
-        it.foots.forEach((e, k) => {
-          if (k > 0) b += foot.gapAfter(it.foots[k - 1]);
-          e.node.i = 0;
-          e.node.b = b;
-          area.children.push(e.node);
-          b += e.height;
-        });
+        for (const e of placed) area.children.push(e.node);
         botH = b;
         area.bsize = b;
         area.b = g.limit - b;
         pg.root.children.push(area);
       }
       needs.set(a, { top: topH, bot: botH });
+      // 続きが残っていて、次のページに脚注・前方 float が無ければ、次のページも見る (本文の終わりより後ろなら、脚注だけのページを足す)
+      if (carried.length && queue[qi + 1] !== a + 1) {
+        if (a + 1 >= contentPages + 50) {
+          host.warn('脚注・float の続きが 50 ページを超えるため、残りを置きません');
+          carried = [];
+        } else queue.splice(qi + 1, 0, a + 1);
+      }
     }
     return { pages, needs, mark, idKeys };
   }

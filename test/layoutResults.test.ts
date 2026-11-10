@@ -2,7 +2,7 @@
  * 組版エンジンの結果の誤りの確かめ (全体のレビューの LAY-02〜LAY-10)。LDocument を直接組む
  */
 import { beforeAll, describe, expect, it } from 'vitest';
-import { doc, lines, makeEngine, master, walk } from './helpers';
+import { doc, lines, makeEngine, master, pt, walk } from './helpers';
 import type { Area, BlockArea, GlyphArea } from '../src/types';
 
 let E: Awaited<ReturnType<typeof makeEngine>>;
@@ -113,5 +113,43 @@ describe('親と直交する書字方向のブロック・表の break-before / 
     expect(kept.sheets).toHaveLength(2);
     expect(count(text(kept, 0), '縦')).toBe(0);
     expect(count(text(kept, 1), '縦')).toBe(200);
+  });
+});
+
+describe('段組ページ: ページ単位の長い脚注を分けて次のページへ続ける (LAY-06)', () => {
+  const m = master({ columns: { count: 2, gap: 10 } });
+  /** ページの本文領域の中の、全段を貫く脚注領域 (本文領域の幅の箱) */
+  const areas = (t: Tree, sheet: number) => kids(t, sheet).filter((b) => Math.abs(b.width - pt(80)) < 0.5);
+  const check = (t: Tree) => {
+    expect(count(allText(t), '注')).toBe(900);
+    expect(count(text(t, 0), '注')).toBeGreaterThan(0); // 参照のあるページから始まる (XSL 1.1 §6.12.3)
+    expect(text(t, 0)).toContain('本文');
+    t.sheets.forEach((sh, k) => {
+      const rb = sh.page.regionBody;
+      for (const a of areas(t, k)) {
+        expect(a.y).toBeGreaterThanOrEqual(-0.01); // 本文領域の上へはみ出さない
+        expect(a.y + a.height).toBeLessThanOrEqual(rb.height + 0.01);
+        // 段 (脚注領域でない箱) は、脚注領域の上で終わる
+        for (const c of kids(t, k)) if (c !== a) expect(c.y + c.height).toBeLessThanOrEqual(a.y + 0.5);
+      }
+    });
+    expect(t.warnings.filter((w) => w.includes('脚注'))).toEqual([]);
+  };
+  it('本文領域より長い脚注: 参照のあるページに入る分だけ置き、残りを次のページの脚注領域へ続ける', () => {
+    const t = E.engine.layout(doc([{ type: 'block', textAlign: 'start', children: ['本文', fn('注'.repeat(900))] }] as never, 'horizontal-tb', { master: m }));
+    expect(t.sheets.length).toBeGreaterThan(1);
+    check(t);
+  });
+  it('参照が 2 段目にあるとき: 参照までの本文が段に収まる高さを残す', () => {
+    const t = E.engine.layout(doc([{ type: 'block', textAlign: 'start', linefeedTreatment: 'preserve', children: [lines(17), '本文', fn('注'.repeat(900)), lines(40, '続')] }] as never, 'horizontal-tb', { master: m }));
+    check(t);
+    // 続きのページでは、脚注の続きが本文より先 (脚注領域の先頭) に来て、本文も進む
+    expect(text(t, t.sheets.length - 1)).toContain('続40');
+  });
+  it('ページに収まる脚注は、これまでどおり分けない', () => {
+    const t = E.engine.layout(doc([{ type: 'block', textAlign: 'start', children: ['本文', fn('注'.repeat(60))] }] as never, 'horizontal-tb', { master: m }));
+    expect(t.sheets).toHaveLength(1);
+    expect(count(text(t, 0), '注')).toBe(60);
+    expect(areas(t, 0)).toHaveLength(1);
   });
 });
