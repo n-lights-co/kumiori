@@ -1,5 +1,6 @@
 /**
  * XSL-FO の、読んで組版へ渡すだけの性質:
+ *  - clear (§7.19.1)
  *  - 一括指定 (font・background・page-break-before/after/inside・size。XSL 1.1 §7.31・§5.2) と、上限・下限 (min-height・max-height・min-width・max-width。§7.15.8〜§7.15.11・§5.3.3)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -175,5 +176,56 @@ describe('XSL-FO の寸法の上限・下限 (§7.15.8〜§7.15.11・§5.3.3)', 
     const r = imp(`<fo:block max-height="20mm">a</fo:block>`);
     expect(r.report.unsupported['max-height']).toBe(1);
     expect((r.document.sequences[0].flow.children[0] as LBlock).height).toBeUndefined();
+  });
+});
+
+/** 字 (1 字) の絶対位置 */
+function glyphPos(tree: unknown, ch: string): { x: number; y: number } | undefined {
+  let found: { x: number; y: number } | undefined;
+  const visit = (n: unknown, ox: number, oy: number) => {
+    if (found || !n || typeof n !== 'object') return;
+    if (Array.isArray(n)) return n.forEach((c) => visit(c, ox, oy));
+    const a = n as { type?: string; x?: number; y?: number; text?: string };
+    const x = ox + (a.x ?? 0);
+    const y = oy + (a.y ?? 0);
+    if (a.type === 'glyph' && a.text === ch) {
+      found = { x, y };
+      return;
+    }
+    for (const [k, v] of Object.entries(a)) if (v && typeof v === 'object' && k !== 'margin' && k !== 'padding' && k !== 'border') visit(v, x, y);
+  };
+  visit(tree, 0, 0);
+  return found;
+}
+
+describe('XSL-FO の clear (§7.19.1)', () => {
+  const float = (side: string) => `<fo:float float="${side}"><fo:block-container width="20mm" height="30mm"><fo:block>F</fo:block></fo:block-container></fo:float>`;
+  it('start・end・both と left (= start)・right (= end) を読む', () => {
+    const of = (v: string) => (kids(`${float('start')}<fo:block clear="${v}">a</fo:block>`).find((k) => (k as LBlock).type === 'block') as LBlock).clear;
+    expect(of('start')).toBe('start');
+    expect(of('left')).toBe('start');
+    expect(of('end')).toBe('end');
+    expect(of('right')).toBe('end');
+    expect(of('both')).toBe('both');
+    expect(of('none')).toBeUndefined();
+  });
+  it('clear のブロックは、その側の先の float の下から始まる', () => {
+    const y = (attrs: string) => glyphPos(E.engine.layout(imp(`${float('start')}<fo:block ${attrs}>a</fo:block>`).document).sheets[0], 'a')!.y;
+    const beside = y('');
+    // float (高さ 30mm) の下まで下がる
+    expect(y('clear="both"') - beside).toBeGreaterThan(25 * MM);
+    expect(y('clear="start"') - beside).toBeGreaterThan(25 * MM);
+    // 反対側の float しか無ければ下がらない
+    expect(y('clear="end"')).toBeCloseTo(beside, 6);
+  });
+  it('縦書きでも、clear のブロックは float の先 (左) から始まる', () => {
+    const vfloat = `<fo:float float="start"><fo:block-container width="30mm" height="20mm"><fo:block>F</fo:block></fo:block-container></fo:float>`;
+    const x = (attrs: string) => glyphPos(E.engine.layout(imp(`${vfloat}<fo:block ${attrs}>a</fo:block>`, 'spec', undefined, 'writing-mode="tb-rl"').document).sheets[0], 'a')!.x;
+    expect(x('') - x('clear="both"')).toBeGreaterThan(25 * MM);
+  });
+  it('inside・outside と、fo:block 以外の要素の clear は、読まずに報告する', () => {
+    const r = imp(`${float('start')}<fo:block clear="inside">a</fo:block><fo:block-container clear="both"><fo:block>b</fo:block></fo:block-container>`);
+    expect(r.report.unsupported['clear:inside']).toBe(1);
+    expect(r.report.unsupported['clear (fo:block-container)']).toBe(1);
   });
 });

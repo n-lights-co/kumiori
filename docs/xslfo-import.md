@@ -286,6 +286,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - 絶対配置 (§7.6.1): `right`・`bottom` は基準の領域 (本文領域・リージョン) の端から測る。`absolute-position="fixed"` はページが基準。一括指定 `position` も読む (§7.31.20)
 - 一括指定 (§5.2・§7.31): `font`・`background`・`page-break-before`・`page-break-after`・`page-break-inside`・`size` を個別の性質に分けて読む (個別に書いた性質が勝つ)。`page-break-*` は §7.31.16〜§7.31.18 の表のとおり (`always` → `break-*="page"`、`left` → `even-page`、`right` → `odd-page`、`avoid` → `keep-with-previous`・`keep-with-next`・`keep-together` の `always`)。`font` のシステムの書体の語 (`caption` など) は読まずに報告する。`size` の `landscape`・`portrait` は、用紙 (A4) の向き
 - 寸法の上限・下限 (§7.15.8〜§7.15.11・§5.3.3): `min-height`・`max-height`・`min-width`・`max-width` は、書字方向で block / inline の `.minimum`・`.maximum` に当てる。横書きの箱の `min-height` (高さの下限)・`max-width`・`min-width` (幅の上限・下限) と、表の行の block 方向の下限・上限を読む。横書きの箱の `max-height` と、縦書きの箱の上限・下限は、組版に受け皿が無いので読まずに報告する
+- `clear` (§7.19.1): `fo:block` の `start`・`end`・`both` (`left` は `start`、`right` は `end`) は、その側の先の float の下から始める (`LBlock.clear`)。`inside`・`outside` と、`fo:block` 以外の要素の `clear` は読まずに報告する
 - ページマスターの em は fo:root から受け継いだ font-size が基準。ページ番号の書式は XSLT 1.0 §7.7.1 どおり (最初のトークンだけを使い、知らないトークンは 1)
 - `line-stacking-strategy="font-height"` (行送りはいつも line-height。§4.5)
 - leader の初期値: `rule-thickness` 1pt、`leader-length` 0pt / 12pt / 100%。`leader-pattern-width` は字の幅より狭くしない (§7.22)。rule の線は中心を基線に置き、太さを上下に等しく付ける (§7.22.6)

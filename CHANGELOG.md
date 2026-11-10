@@ -89,6 +89,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - 対応仕様説明書の PDF に埋め込む書体とそのライセンスを、説明書の README に書いた
 - **XSL-FO の性質** (読んで組版へ渡すようにしたもの。`--compat` によらない):
   - 一括指定の `font`・`background`・`page-break-before`・`page-break-after`・`page-break-inside`・`size` と、寸法の上限・下限の `min-height`・`min-width`・`max-width` (表の行は `max-height` も) を読む (XSL 1.1 §7.31・§7.15)。これまでは無視していたので、`page-break-before="always"` などの改ページが効いていなかった
+  - `fo:block` の `clear` (`start`・`end`・`both`・`left`・`right`) を読み、その側の先の `fo:float` の下からブロックを始める (XSL 1.1 §7.19.1)
 
 ## 0.1.1 (2026-11-09)
 

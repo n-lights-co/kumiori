@@ -1560,6 +1560,21 @@ class Importer {
     };
   }
 
+  /**
+   * clear (§7.19.1): その側の先の fo:float (side-float) の下まで下げる。left は start、right は end と読む
+   * (“left Interpreted as "clear='start'". right Interpreted as "clear='end'".”)。
+   * 組版が受けられるのは fo:block の start・end・both だけ。inside・outside (ページの偶奇で側が決まる) と、ほかの要素
+   * (fo:float・fo:table・fo:block-container・fo:list-block など。supported = false) の clear は、読まずに報告する
+   */
+  private clearOf(n: XEl, supported = true): LBlock['clear'] | undefined {
+    const v = this.attr(n, 'clear');
+    if (!v || v === 'none') return undefined;
+    const side = v === 'both' ? 'both' : v === 'start' || v === 'left' ? 'start' : v === 'end' || v === 'right' ? 'end' : undefined;
+    if (!supported) this.miss(`clear (fo:${this.name(n)})`);
+    else if (!side) this.miss(`clear:${v.slice(0, 20)}`);
+    return supported ? side : undefined;
+  }
+
   /** keep-* の値 (§7.20): always と 1 以上の整数を「保つ」とみなす (強さの大小は区別しない) */
   private keepOf(el: XEl, k: string, which: Array<'page' | 'column' | 'line' | ''> = ['page', 'column', '']): boolean {
     // 成分は別々の指定なので、どれかが保つ指定なら保つ (先に見た成分が auto でも、ほかの成分を見る)
@@ -1798,6 +1813,8 @@ class Importer {
         if (box.width !== undefined && c3.wm === 'horizontal-tb') c3.width = box.width;
         this.report.counts.blocks++;
         const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3) };
+        const clr = this.clearOf(n);
+        if (clr) blk.clear = clr;
         // 互換モード: 中身の無いブロック (空白だけ。枠・背景・寸法も無い) の space-before は、次のブロックの
         // space-before と重ならずに足し合わさる。その高さの空のブロックにする
         const bAxis = this.phys('before', ctx.wm, ctx.rtl);
@@ -1805,7 +1822,7 @@ class Importer {
         if (!this.spec && sb && sb > 0 && !blk.children.length && !box.border && !box.padding && !box.backgroundColor && box.width === undefined && box.height === undefined && !this.attr(n, 'id') && ctx.wm === 'horizontal-tb') {
           const { [bAxis]: _drop, ...restM } = box.margin as Record<string, number>;
           void _drop;
-          const spacer: LBlock = { type: 'block', ...style, ...box, margin: restM, height: sb, children: [] };
+          const spacer: LBlock = { type: 'block', ...style, ...box, margin: restM, height: sb, ...(clr ? { clear: clr } : {}), children: [] };
           delete spacer.retainSpaceBefore;
           return one(spacer, true);
         }
@@ -1915,8 +1932,10 @@ class Importer {
         return one(this.image(n, ctx, tag === 'external-graphic'), false);
       }
       case 'block-container':
+        this.clearOf(n, false);
         return one(this.blockContainer(n, ctx), true);
       case 'float': {
+        this.clearOf(n, false);
         // float="none" (初期値) は、浮動しない普通のブロックにする (§7.19.2 の float の none の説明)。互換モードは start の浮動
         if (this.spec && (this.attr(n, 'float') ?? 'none') === 'none') return this.children(n, this.textStyle(n, ctx).ctx).map((v) => ({ v, block: true }));
         return one(this.float(n, ctx), true);
@@ -1952,10 +1971,13 @@ class Importer {
         return one(r, true);
       }
       case 'table-and-caption':
+        this.clearOf(n, false);
         return this.tableAndCaption(n, ctx);
       case 'table':
+        this.clearOf(n, false);
         return one(this.table(n, ctx), true);
       case 'list-block':
+        this.clearOf(n, false);
         return one(this.listBlock(n, ctx), true);
       case 'multi-switch': {
         // fo:multi-switch は、見えている fo:multi-case のエリアだけを返す (XSL 1.1 §6.9.3)。最初に見えているのは、

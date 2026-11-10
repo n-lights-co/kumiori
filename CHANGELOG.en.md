@@ -89,6 +89,7 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
   - The README of the Conformance Guides states the fonts embedded in their PDFs and the fonts' licenses
 - **XSL-FO properties** (now read and passed to the typesetter, regardless of `--compat`):
   - the shorthands `font`, `background`, `page-break-before`, `page-break-after`, `page-break-inside` and `size`, and the size limits `min-height`, `min-width` and `max-width` (also `max-height` on table rows), are now read (XSL 1.1 §7.31, §7.15). They used to be ignored, so page breaks such as `page-break-before="always"` had no effect
+  - `clear` on `fo:block` (`start`, `end`, `both`, `left`, `right`) is now read, and the block starts below the earlier `fo:float` on that side (XSL 1.1 §7.19.1)
 
 ## 0.1.1 (2026-11-09)
 
