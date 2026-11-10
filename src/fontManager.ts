@@ -857,22 +857,24 @@ export function matchWeightRange(ranges: ReadonlyArray<readonly [number, number]
 
 /**
  * 可変フォントの実体 (静的な書体にしたもの) を、ブラウザの document.fonts に登録する (Canvas の fillText で描くため)。
- * 読み込みは後で終わる (FontFace.load は非同期)。終わるまでは face が無いので、字の輪郭で描く (canvasRenderer.ts)。
+ * Canvas では、可変フォントの軸の値を自由には選べない: ctx.font で選べるのは太さだけで、幅は ctx.fontStretch の語 (9 段) だけ、
+ * ctx.fontVariationSettings は無い (HTML の CanvasTextDrawingStyles)。そこで、測るのと同じ実体のバイト列を、別の名前の書体として登録する。
+ * 読み込みが後で終わるブラウザでは (FontFace.load は非同期)、終わるまで face が無いので、字の輪郭で描く (canvasRenderer.ts)。
  * 測るのは、どちらのときも fontkit の実体 (measurer.ts)。登録する書体も同じバイト列なので、幅は食い違わない
  */
 function registerInstanceFace(lf: LoadedFont) {
   if (typeof FontFace === 'undefined' || typeof document === 'undefined') return;
   try {
     const cssFamily = lf.key;
-    const face = new FontFace(cssFamily, lf.buffer.slice(0), { weight: String(lf.weight) });
-    face
-      .load()
-      .then(() => {
-        document.fonts.add(face);
-        lf.cssFamily = cssFamily;
-        lf.face = face;
-      })
-      .catch(() => undefined);
+    const face = new FontFace(cssFamily, lf.buffer.slice(0), { weight: String(Math.min(1000, Math.max(1, lf.weight))) });
+    const ready = () => {
+      document.fonts.add(face);
+      lf.cssFamily = cssFamily;
+      lf.face = face;
+    };
+    // バイト列から作った FontFace は、作った時点で読み込みが済んでいるブラウザがある (Chromium)。そのときは、すぐに使う
+    if (face.status === 'loaded') ready();
+    else face.load().then(ready, () => undefined);
   } catch {
     // 登録できなければ、輪郭で描く
   }

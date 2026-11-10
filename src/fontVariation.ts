@@ -113,3 +113,13 @@ export const FONT_WIDTH_KEYWORDS: Readonly<Record<string, number>> = {
   'extra-expanded': 150,
   'ultra-expanded': 200,
 };
+
+/**
+ * 字の大きさだけを変えたスタイルの、書体の名前 (スタイルを解決し直さずに、ルビ・注の合印などを小さく組むとき)。
+ * 名前の印に光学サイズ (opsz) の指定があれば、新しい字の大きさ (pt) に替える。無ければ名前のまま
+ */
+export function withOpticalSize(family: string, fontSize: number): string {
+  if (family.charCodeAt(family.length - 1) !== 125) return family;
+  const [plain, req] = splitVariation(family);
+  return req?.opsz === undefined ? family : plain + variationSuffix({ ...req, opsz: fontSize });
+}

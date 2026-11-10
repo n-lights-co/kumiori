@@ -15,7 +15,8 @@ const FONT_URL = 'https://fonts.gstatic.com/s/notoserifjp/v34/xn71YHs72GKoTvER4G
 export const FAMILY = 'Noto Serif JP';
 
 /** テストの書体の置き場 (.cache/fonts。KUMIORI_FONT_DIR で上書き可) */
-export const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(__dirname, '../.cache/fonts');
+// e2e (Playwright。ES モジュールとして読むので __dirname が無い) からも読めるように、どちらかで自分の場所を決める
+export const fontDir = process.env.KUMIORI_FONT_DIR ?? path.resolve(typeof __dirname !== 'undefined' ? __dirname : import.meta.dirname, '../.cache/fonts');
 
 /** 同じワーカーの中で、同じファイルを 2 度取りに行かないための控え (ファイルの場所 → 取得の約束) */
 const fetching = new Map<string, Promise<string>>();

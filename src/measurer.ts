@@ -9,6 +9,7 @@
  * 計測は 1000px の基準サイズで行い、実サイズへ線形スケールする（ヒンティングの影響を受けない）。
  */
 import type { FontManager, LoadedFont } from './fontManager';
+import { withOpticalSize } from './fontVariation';
 import type { WritingMode } from './types';
 import { isFullWidth, verticalTreatment, type VerticalTreatment } from './jis';
 import { clusterUnits, mayCluster } from './grapheme';
@@ -652,7 +653,7 @@ export class Measurer {
    */
   ruby(baseText: string, rubyText: string, style: RunStyle, wm: WritingMode, rubyScale = 0.5, underText?: string): RubyMetrics {
     const rubySize = style.fontSize * rubyScale;
-    const rubyStyle: RunStyle = { ...style, fontSize: rubySize };
+    const rubyStyle: RunStyle = { ...style, fontSize: rubySize, ...(style.fontFamily ? { fontFamily: withOpticalSize(style.fontFamily, rubySize) } : {}) };
     const baseGlyphs = this.glyphs(baseText, style, wm);
     const rubyGlyphs = this.glyphs(rubyText, rubyStyle, wm);
     const baseAdvance = baseGlyphs.reduce((a, g) => a + g.advance, 0);
