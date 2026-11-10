@@ -2370,11 +2370,11 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-## 6. Kumiori のコードに写した Unicode の文字データ (改行・縦書きの字の向き・双方向のテキスト・字のつながり)
+## 6. Kumiori のコードに写した Unicode の文字データ (改行・縦書きの字の向き・双方向のテキスト・字のつながり・書記素クラスタ)
 
-`src/unicodeData.ts` の表は、Unicode の文字データベース (UCD) 18.0.0 の LineBreak.txt・EastAsianWidth.txt・VerticalOrientation.txt・extracted/DerivedGeneralCategory.txt (Mn・Mc・Pi・Pf・Cn だけ)・emoji/emoji-data.txt (Extended_Pictographic だけ)・extracted/DerivedBidiClass.txt・BidiMirroring.txt・BidiBrackets.txt・extracted/DerivedJoiningType.txt の値を、`scripts/gen-unicode-data.mjs` で範囲の並びに書き写したものです (値は変えていません)。
+`src/unicodeData.ts` の表は、Unicode の文字データベース (UCD) 18.0.0 の LineBreak.txt・EastAsianWidth.txt・VerticalOrientation.txt・extracted/DerivedGeneralCategory.txt (Mn・Mc・Pi・Pf・Cn だけ)・emoji/emoji-data.txt (Extended_Pictographic だけ)・extracted/DerivedBidiClass.txt・BidiMirroring.txt・BidiBrackets.txt・extracted/DerivedJoiningType.txt・auxiliary/GraphemeBreakProperty.txt・DerivedCoreProperties.txt (Indic_Conjunct_Break だけ) の値を、`scripts/gen-unicode-data.mjs` で範囲の並びに書き写したものです (値は変えていません)。
 
-- データの取得元: https://www.unicode.org/Public/18.0.0/ucd/ (取得日 2026-11-04。extracted/DerivedJoiningType.txt は 2026-11-05)
+- データの取得元: https://www.unicode.org/Public/18.0.0/ucd/ (取得日 2026-11-04。extracted/DerivedJoiningType.txt は 2026-11-05、auxiliary/GraphemeBreakProperty.txt・DerivedCoreProperties.txt は 2026-11-10)
 - 各ファイルの著作権表示 (原文): 「© 2026 Unicode®, Inc.」
 - 下は Unicode License v3 の本文です。取得元: https://www.unicode.org/license.txt (取得日 2026-11-04)。書き換えずに写しています。
 
