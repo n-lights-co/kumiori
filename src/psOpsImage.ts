@@ -219,11 +219,8 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   const maskRGB = s.mask ? G.currentRGB() : undefined;
   const colorCache = new Map<string, RGB>();
   // 明示したマスク (interleave 1: 標本ごとに、マスクの成分が色の前に付く)。
-  // マスクの極性は imagemask と同じ: MaskDict の Decode が [0 1] (既定) ならマスクの標本の 0 の所を描き、1 の所を透明にする。
-  // [1 0] なら逆 (PLRM §4.10.6 Explicit Masking。PLRM の本文は手元で確かめられなかったので、次の出どころの一致による:
-  // Ghostscript の base/gximage3.c は MaskDict を Decode ごと imagemask の画像 (gs_image_t_init_mask) として描いて切り抜きにする。
-  // poppler の PSOutputDev.cc は、PDF の明示したマスク (標本の 0 を描く) を、反転なしなら /Decode [0 1] の MaskDict で出す。
-  // cairo の cairo-ps-surface.c は、不透明の所を 1 にしたマスクを /Decode [1 0] の MaskDict で出す)
+  // マスクの極性は imagemask と同じ: MaskDict の Decode で復号した値が 0 の標本の所を描き、1 の所は描かない
+  // (PLRM §4.10.6 Explicit Masking の表 4.24 の Decode)。Decode [0 1] (既定) なら標本の 0 を、[1 0] なら 1 を描く
   const il = s.explicitMask?.interleave;
   const maskOne = s.explicitMask?.decode[0] === 1;
   const compsInRow = ncomp + (il === 1 ? 1 : 0);
@@ -259,7 +256,7 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
       else {
         const base = x * compsInRow;
         if (il === 1) {
-          // マスクの成分は画像と同じビット数で、0 か最大の値
+          // マスクの成分は画像と同じビット数で、全部のビットが 0 か 1。ほかの値は 1 として扱う (表 4.22 の InterleaveType 1)
           if ((sample(single, base) !== 0) !== maskOne) alpha = 0;
           for (let k = 0; k < ncomp; k++) comps.push(sample(single, base + 1 + k));
         } else for (let k = 0; k < ncomp; k++) comps.push(sample(single, base + k));

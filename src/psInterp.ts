@@ -1975,10 +1975,7 @@ function installCoreOperators(I: Interp) {
     let params: PSDict | undefined;
     let subfile: { count: number; eod: Uint8Array } | undefined;
     // SubFileDecode のオペランドの形は 3 つ: 「元 EODCount EODString」「元 辞書 EODCount EODString」と、
-    // LanguageLevel 3 の「元 辞書」(EODCount・EODString を辞書に入れる。PLRM §3.13.3 SubFileDecode。
-    // PLRM の本文は手元で確かめられなかったので、次の出どころの一致による: Ghostscript の psi/zfilter.c の zSFD
-    // (LanguageLevel 3 で一番上が辞書なら、辞書から EODCount・EODString を取る)、eps2pgf の FilterManager.java の
-    // getParametersSubFileDecode (同じ 3 つの形を PostScript の手引きから写している))。
+    // LanguageLevel 3 の「元 辞書」(EODCount・EODString を辞書に入れる。PLRM §3.13.3 SubFileDecode Filter・表 3.23)。
     // 一番上が辞書なら、辞書の形 (下の「パラメータの辞書」で取り、filterSource が辞書から読む)
     const top = I.ostack[I.ostack.length - 1];
     if (fname.v === 'SubFileDecode' && top?.t !== 'dict') {
