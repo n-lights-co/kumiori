@@ -3002,8 +3002,9 @@ class Flow {
       }
     }
     const { roots, used, colMarkers } = run((c) => (rowOf(c) === 0 ? avail : rowOf(c) < rows - 1 ? full : lastLimit), true);
-    // 段の並びの始まり: コンテナの始めの側の padding と罫線の内側 (左右の padding が違うこともある)
-    const start = toLogical(desc.paddingP, wm).is + desc.bw.is;
+    // 段の行の箱は、コンテナ自身の断片: inline 方向の罫線と padding (block 方向のものは無い。呼ぶ側の条件)・id (page-number-citation の
+    // 参照先)・元の入力の節を持つ。段は、その内容の箱 (padding と罫線の内側) の始めの端から並べる
+    let placedRow = false;
     for (let r = 0; r * n < roots.length; r++) {
       const kids: LNode[] = [];
       const filled = (k: number) => k < roots.length && roots[k].children.length > 0;
@@ -3011,7 +3012,7 @@ class Flow {
       for (let k = 0; k < n && r * n + k < roots.length; k++) {
         const c = r * n + k;
         height = Math.max(height, used[c] ?? 0);
-        kids.push(newNode('block', wm, { i: start + k * (colI + gap), b: 0, isize: colI, bsize: used[c] ?? 0, children: roots[c].children }));
+        kids.push(newNode('block', wm, { i: k * (colI + gap), b: 0, isize: colI, bsize: used[c] ?? 0, children: roots[c].children }));
       }
       if (!kids.some((k) => k.children.length)) continue;
       const rule = cols.rule;
@@ -3019,7 +3020,7 @@ class Flow {
         for (let k = 1; k < n; k++) {
           const c = r * n + k;
           if (cols.ruleDisplay !== 'all' && !(filled(c - 1) && filled(c))) continue;
-          const ruleNode = newNode('block', wm, { i: start + k * (colI + gap) - gap / 2 - rule.width / 2, b: 0, isize: rule.width, bsize: height });
+          const ruleNode = newNode('block', wm, { i: k * (colI + gap) - gap / 2 - rule.width / 2, b: 0, isize: rule.width, bsize: height });
           if (rule.style && rule.style !== 'solid') ruleNode.border = wm === 'horizontal-tb' ? { left: rule } : { top: rule };
           else ruleNode.bg = rule.color;
           kids.push(ruleNode);
@@ -3028,8 +3029,11 @@ class Flow {
       if (r > 0) this.breakPage();
       // この行の段のマーカーは、この行を置くページに記録する (placeBox が記録する)
       for (let k = 0; k < n; k++) this.markerSink.push(...(colMarkers[r * n + k] ?? []));
-      const row = newNode('block', wm, { isize, bsize: height, bg: desc.bg, children: kids });
       const last = (r + 1) * n >= roots.length;
+      const row = newNode('block', wm, { isize, bsize: height, padding: { ...desc.paddingP }, border: { ...desc.borderP }, bg: desc.bg, src: desc.src, ref: desc.ref, children: kids });
+      if (placedRow) row.cont = true;
+      if (!last) row.contNext = true;
+      placedRow = true;
       this.placeBox(row, r === 0 ? desc.m.bs : 0, last ? desc.m.be : 0, desc.m.is, this.extentAlongBlock(row), r === 0 ? desc.precBs : 0, last ? desc.precBe : 0);
     }
     return true;

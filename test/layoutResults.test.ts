@@ -153,3 +153,35 @@ describe('段組ページ: ページ単位の長い脚注を分けて次のペ�
     expect(areas(t, 0)).toHaveLength(1);
   });
 });
+
+describe('ページをまたぐ段組のコンテナの id と左右の罫線 (LAY-07)', () => {
+  const side = { width: 2, color: '#f00', style: 'solid' as const };
+  const container = { type: 'block-container', id: 'c1', border: { left: side, right: side }, padding: { left: 3, right: 5 }, columns: { count: 2, gap: 10 }, children: [{ type: 'block', textAlign: 'start', children: ['あ'.repeat(900)] }] };
+  const t = () => E.engine.layout(doc([{ type: 'block', children: ['参照 ', { type: 'page-number-citation', refId: 'c1' }] }, container] as never));
+  const rowsOf = (tr: Tree) => tr.sheets.map((_, k) => kids(tr, k).filter((b) => b.border?.left));
+  it('コンテナの id を page-number-citation で参照できる', () => {
+    const tr = t();
+    expect(tr.sheets.length).toBeGreaterThan(1);
+    expect(text(tr, 0)).toContain('参照 1');
+    expect(tr.warnings.filter((w) => w.includes('c1'))).toEqual([]);
+  });
+  it('どのページの断片も左右の罫線を持ち、段は罫線と padding の内側に並ぶ', () => {
+    const tr = t();
+    const rows = rowsOf(tr);
+    rows.forEach((r) => {
+      expect(r).toHaveLength(1);
+      expect(r[0].border.left).toMatchObject({ width: 2, color: '#f00' });
+      expect(r[0].border.right).toMatchObject({ width: 2, color: '#f00' });
+      expect(r[0].width).toBeCloseTo(pt(80), 1);
+      const cols = (r[0].children as BlockArea[]).filter((c) => c.type === 'block');
+      // 段の幅: (本文の幅 - 罫線 4 - padding 8 - 段間 10) / 2。段は、断片の内容の箱 (罫線と padding の内側) の端から端まで並ぶ
+      const colW = (pt(80) - 4 - 8 - 10) / 2;
+      expect(r[0].padding).toMatchObject({ left: 3, right: 5 });
+      expect(cols[0].x).toBeCloseTo(0, 1);
+      expect(cols[0].width).toBeCloseTo(colW, 1);
+      expect(cols[1].x + cols[1].width).toBeCloseTo(pt(80) - 4 - 8, 1);
+    });
+    expect(rows.map((r) => r[0].isContinuation)).toEqual(rows.map((_, k) => k > 0));
+    expect(count(allText(tr), 'あ')).toBe(900);
+  });
+});
