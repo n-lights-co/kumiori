@@ -133,14 +133,16 @@ describe('複数の背景 (§2.1)', () => {
   it('後ろの層から順に描く。位置は、それぞれの層の値', async () => {
     const { layers } = await paintLog(page('<div class="b" style="background: url(a.png) no-repeat right bottom, url(b.png) no-repeat 3pt 5pt"></div>'));
     expect(layers.map((l) => l.images.map((i) => i[0]))).toEqual([['b.png'], ['a.png']]);
-    near(layers[0].clip, [21, 21, 108, 60]);
+    // 描く範囲は border の箱 (background-clip の初期値)。位置の基準は padding の箱 (21, 21) から 108×60
+    near(layers[0].clip, [15, 15, 120, 72]);
     near(layers[0].images[0].slice(1) as number[], [21 + 3, 21 + 5, 6, 6]);
     near(layers[1].images[0].slice(1) as number[], [21 + 108 - 12, 21 + 60 - 12, 12, 12]);
   });
-  it('1 枚だけの背景は、これまでと同じ形 (under・origin・clip・backgroundClip の欄は無い)', async () => {
+  it('1 枚だけの背景は、under・origin・backgroundClip の欄を持たない (clip は、background-clip の初期値の border-box)', async () => {
     const r = await set(page('<div class="b" style="background: url(a.png) no-repeat 10pt 10pt #eee"></div>'));
     const b = boxOf(r.areaTree);
-    expect(Object.keys(b.backgroundImage!).sort()).toEqual(['height', 'repeat', 'src', 'width', 'x', 'y']);
+    expect(Object.keys(b.backgroundImage!).sort()).toEqual(['clip', 'height', 'repeat', 'src', 'width', 'x', 'y']);
+    expect(b.backgroundImage!.clip).toBe('border-box');
     expect(b.backgroundClip).toBeUndefined();
     expect(serializeAreaTree(r.areaTree)).not.toMatch(/"under"|"origin"|"backgroundClip"/);
   });
@@ -166,10 +168,10 @@ describe('background-origin と background-clip (§2.7・§2.8)', () => {
     const one = async (st: string) => (await paintLog(page(`<div class="b" style="background: url(a.png) no-repeat; ${st}"></div>`))).layers[0];
     // 初期値: padding の箱の左上
     near((await one('')).images[0].slice(1) as number[], [21, 21, 12, 12]);
-    // content-box: 内容の箱の右下に寄せる。切り抜きは padding の箱のまま
+    // content-box: 内容の箱の右下に寄せる。切り抜きは border の箱 (background-clip の初期値) のまま
     const c = await one('background-origin: content-box; background-position: right bottom');
     near(c.images[0].slice(1) as number[], [27 + 96 - 12, 27 + 48 - 12, 12, 12]);
-    near(c.clip, [21, 21, 108, 60]);
+    near(c.clip, [15, 15, 120, 72]);
     // border-box: border の箱の左上。百分率の大きさは border の箱 (120×72) に対して。描く範囲も border の箱
     const b = await one('background-origin: border-box; background-size: 50% 50%');
     near(b.images[0].slice(1) as number[], [15, 15, 60, 36]);

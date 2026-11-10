@@ -23,9 +23,10 @@ This document collects the rules for the `AreaTree` returned by `LayoutEngine.la
   - `x` and `y` are the top left of the bounding rectangle after rotation.
   - The children's coordinates are local coordinates before rotation.
 - `GlyphArea.rotation` is the rotation of the glyph (clockwise) and is distinct from the box rotation `orientation`.
+- A border side color (`border.*.color`) of `transparent` is not drawn (it still takes up its width); `#rrggbbaa` (translucent) is blended over the background beneath it with that opacity.
 - Background (`backgroundColor`, `backgroundImage`):
   - `backgroundImage` is the top-most background image (its size is resolved). `under` is the list of images stacked behind it (nearest first).
-  - Per image, `origin` is the positioning area (`border-box`, `content-box`; the padding box when absent) and `clip` is the painting area (`border-box`, `content-box`; the padding box when absent).
+  - Per image, `origin` is the positioning area (`border-box`, `content-box`; the padding box when absent) and `clip` is the painting area (`border-box`, `content-box`; the padding box when absent). HTML backgrounds normally carry `clip: "border-box"`, because the initial value of `background-clip` is `border-box` (they are painted under the border as well). XSL-FO backgrounds have no `clip` (XSL 1.1 §4.9.4: the background is rendered in the padding-rectangle).
   - `backgroundClip` is the area the background color is painted in (`padding-box`, `content-box`). When absent, the border-box (`width` × `height`) is painted.
 - When an image (`image`) has `fit` (`cover`, `contain`, `none` or `scale-down` of CSS `object-fit`), `width` × `height` is the size of the box; the image is sized from its natural size (`naturalWidth` × `naturalHeight`), placed inside the box and clipped to it. `fitPosition` (CSS `object-position`) is its position inside the box (the center when absent).
 - When `transform` (a paint-time transform; CSS `transform`) is present:

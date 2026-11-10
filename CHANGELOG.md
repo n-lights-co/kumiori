@@ -42,6 +42,8 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - 複数の背景 (`background-image`・`background` のカンマ区切りの層。層ごとの位置・大きさ・繰り返し)、`background-clip`・`background-origin` (`border-box`・`padding-box`・`content-box`。背景の色を塗る範囲にも効く) に対応。`background-attachment: fixed` と `background-clip: text` は未対応として知らせる
   - `object-fit` の `none`・`scale-down` と `object-position` (画像の枠の中での位置)、`list-style-image` (リストの記号の画像) に対応
   - ハイフネーションの制限 (CSS Text 4 §6.3): `hyphenate-character` (行末に出す字。ソフトハイフンで分けた行にも)、`hyphenate-limit-chars` (語・分け目の前後の最小の字数)、`hyphenate-limit-lines` (ハイフンで終わる行が続く数の上限)、`hyphenate-limit-last: always` (段落の最後の行の手前を分けない)、`hyphenate-limit-zone` に対応。`hyphenate-limit-last` の `column`・`page`・`spread` は未対応 (警告に出す)
+  - 背景の画像を、`background-clip` の初期値 (`border-box`) では罫線の下まで描く (CSS Backgrounds 3 §2.7)。**組版の結果 (見た目) が変わる**: HTML の、罫線のある箱の背景の画像・グラデーションが、罫線の下にも描かれる。破線・点線・二重線や透明・半透明の罫線では、線のすき間に背景の画像が見えるようになる (繰り返す画像は、padding の箱の左上から罫線の下へも並ぶ。繰り返さない画像の位置は変わらない)。不透明の実線の罫線では、罫線に隠れるので変わらない。これまでどおり罫線の内側だけに描くには `background-clip: padding-box` を指定する。XSL-FO の背景は変わらない (XSL 1.1 §4.9.4)
+  - 透明・半透明の罫線の色 (HTML)。**組版の結果 (見た目) が変わる**: `border-color: transparent` の罫線が黒い線で描かれていたのを、描かないようにした (太さの分の場所は取る)。半透明の色 (`rgba()` など) の罫線は、白に混ぜた不透明の色ではなく、その濃さで下の背景に重ねて描く (PDF は透明のグループを使う。PDF/X-3 では警告が出る)
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)
