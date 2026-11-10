@@ -2663,40 +2663,55 @@ class Flow {
     const width = this.contentI(); // 子の block 方向に積める長さ (親の幅)
     // CSS: 行の長さは fit-content (中身の最も長い行。ページの残りより長ければページの残り。Writing Modes 3 §7.3)。
     // XSL-FO は従来どおりページの残り
-    let lineLen = Math.max(avail, minLine);
+    let mc = 0;
     if (!this.host.xslSpace) {
-      const m = new Flow({ ...this.host, warn: () => {} }, { wm: wmC, rootI: lineLen * 100, abs: () => [], pageSize: this.pageSize, measure: true, intrinsic: true, footnotes: this.foot });
+      const m = new Flow({ ...this.host, warn: () => {} }, { wm: wmC, rootI: Math.max(avail, minLine) * 100, abs: () => [], pageSize: this.pageSize, measure: true, intrinsic: true, footnotes: this.foot });
       m.layoutBlockLevel(node, ps);
       m.finishAtomic();
-      const mc = maxLineLength(m.root, true, true);
-      if (mc > 0 && mc < lineLen) lineLen = mc;
+      mc = maxLineLength(m.root, true, true);
     }
-    const roots: LNode[] = [newNode('block', wmC, { isize: lineLen })];
-    const used: number[] = [];
-    const sub = new Flow(this.host, {
-      wm: wmC,
-      rootI: roots[0].isize,
-      root: roots[0],
-      limit: width,
-      pages: {
-        addMarkers: (list) => this.markerSink.push(...list),
-        noteId: () => {},
-        columnEnd: (u) => used.push(u),
-        nextPage: () => {
-          const r = newNode('block', wmC, { isize: this.limit });
-          roots.push(r);
-          return { root: r, limit: width, rootI: r.isize };
+    const fitLen = (len: number) => (mc > 0 && mc < len ? mc : len);
+    let lineLen = fitLen(Math.max(avail, minLine));
+    /** 最初の断片の行の長さを len にして組む。final でなければ試し組み (マーカー・警告を残さない) */
+    const lay = (len: number, final: boolean) => {
+      const roots: LNode[] = [newNode('block', wmC, { isize: len })];
+      const used: number[] = [];
+      const sub = new Flow(final ? this.host : { ...this.host, warn: () => {} }, {
+        wm: wmC,
+        rootI: roots[0].isize,
+        root: roots[0],
+        limit: width,
+        pages: {
+          addMarkers: (list) => {
+            if (final) this.markerSink.push(...list);
+          },
+          noteId: () => {},
+          columnEnd: (u) => used.push(u),
+          nextPage: () => {
+            const r = newNode('block', wmC, { isize: this.limit });
+            roots.push(r);
+            return { root: r, limit: width, rootI: r.isize };
+          },
         },
-      },
-      abs: this.abs,
-      pageSize: this.pageSize,
-      markerSink: this.markerSink,
-      // 中の脚注は、行に持たせて、断片を置くページの脚注領域に積む (placeBox の placeHeldFootnotes。表のセルと同じ)
-      footnotes: this.foot,
-      holdFootnotes: true,
-    });
-    sub.layoutBlockLevel(node, ps);
-    sub.finishPaginated();
+        abs: final ? this.abs : () => [],
+        pageSize: this.pageSize,
+        markerSink: final ? this.markerSink : [],
+        // 中の脚注は、行に持たせて、断片を置くページの脚注領域に積む (placeBox の placeHeldFootnotes。表のセルと同じ)
+        footnotes: this.foot,
+        holdFootnotes: true,
+      });
+      sub.layoutBlockLevel(node, ps);
+      sub.finishPaginated();
+      return { roots, used };
+    };
+    const pieces = (r: { roots: LNode[] }) => r.roots.filter((x) => x.children.length).length;
+    // keep-together (XSL 1.1 §7.20.3。CSS の break-inside: avoid = Fragmentation 3 §3.2): ページの残りでは分かれ、
+    // 次のページなら 1 つに収まるなら、次のページから始める (書字方向の同じブロックの keepTogetherCheck と同じ決まり)
+    if (node.keepTogether && this.pageHasContent && Number.isFinite(this.limit) && pieces(lay(lineLen, false)) > 1 && pieces(lay(fitLen(this.limit), false)) === 1) {
+      this.breakPage();
+      lineLen = fitLen(Math.max(this.room - this.cursor - this.pendingValue(), minLine));
+    }
+    const { roots, used } = lay(lineLen, true);
     roots.forEach((r, k) => {
       if (!r.children.length) return;
       if (k > 0) this.breakPage();
@@ -2781,11 +2796,18 @@ class Flow {
       return;
     }
     const wmC = st.wm;
+    // 強制の区切り (break-before・break-after) は、書字方向が親と違っても、親の流れの中の箱として効く
+    // (XSL 1.1 §7.20.1・§7.20.2: この箱の最初の領域・次の箱の最初の領域を、ページ・段の最初に置く。書字方向による例外は無い。
+    // CSS Fragmentation 3 §3.1: 通常の流れの block-level の箱に当てる)。中の Flow には渡さない (ここで済ませる)
+    if (node.breakBefore) this.forceBreak(node.breakBefore);
+    const after = node.breakAfter;
+    if (node.breakBefore || after) node = { ...node, breakBefore: undefined, breakAfter: undefined };
     const desc = describeBox(node, wmC);
     // ページ分割: inline 方向の寸法の指定が無ければ、行の長さをページの残りの高さ (親の block 方向) にして、
     // 子の block 方向 (親の inline 方向) に親の幅まで積み、入りきらない行は次ページへ続ける
     if (desc.isizeExplicit == null && this.paginating && !this.measureOnly) {
       this.layoutOrthogonalPaged(node, st, ps);
+      if (after) this.breakNext = after;
       return;
     }
     // 親の block 方向の余白 (横書きの親なら上下) は、箱の外に出して前後の余白と相殺する (CSS と同じ)。箱の中には含めない
@@ -2801,6 +2823,7 @@ class Flow {
     const bsize = sub.finishAtomic();
     const wrap = newNode('block', wmC, { isize: childI, bsize, children: sub.root.children });
     this.placeBox(wrap, outer.m.bs, outer.m.be, 0, this.extentAlongBlock(wrap), outer.precBs, outer.precBe);
+    if (after) this.breakNext = after;
   }
 
   /** fo:block-container 相当 */

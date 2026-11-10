@@ -2,7 +2,7 @@
  * 組版エンジンの結果の誤りの確かめ (全体のレビューの LAY-02〜LAY-10)。LDocument を直接組む
  */
 import { beforeAll, describe, expect, it } from 'vitest';
-import { doc, makeEngine, master, walk } from './helpers';
+import { doc, lines, makeEngine, master, walk } from './helpers';
 import type { Area, BlockArea, GlyphArea } from '../src/types';
 
 let E: Awaited<ReturnType<typeof makeEngine>>;
@@ -77,5 +77,41 @@ describe('段組ページ: 段の釣り合わせの試し組みと脚注 (LAY-03
   it('脚注を段ごとに置く (footnotePosition: column) ときも同じ', () => {
     const t = E.engine.layout(doc(body as never, 'horizontal-tb', { master: master({ columns: { count: 2, gap: 10, footnotePosition: 'column' } }) }));
     expect(text(t, 0)).toContain('甲乙丙');
+  });
+});
+
+describe('親と直交する書字方向のブロック・表の break-before / break-after / keep-together (LAY-05)', () => {
+  const pages = (t: Tree) => t.sheets.map((_, k) => text(t, k));
+  it('縦書きのブロックの breakBefore / breakAfter: page (ページに分けて組む経路)', () => {
+    const t = E.engine.layout(doc([{ type: 'block', children: ['前'] }, { type: 'block', writingMode: 'vertical-rl', breakBefore: 'page', breakAfter: 'page', children: ['縦'] }, { type: 'block', children: ['後'] }] as never));
+    expect(pages(t)).toEqual(['前', '縦', '後']);
+  });
+  it('行の長さを指定した縦書きのブロック (1 つの箱で置く経路) も同じ', () => {
+    const t = E.engine.layout(doc([{ type: 'block', children: ['前'] }, { type: 'block', writingMode: 'vertical-rl', height: 60, breakBefore: 'page', breakAfter: 'page', children: ['縦'] }, { type: 'block', children: ['後'] }] as never));
+    expect(pages(t)).toEqual(['前', '縦', '後']);
+  });
+  it('縦書きの表の breakBefore / breakAfter: page', () => {
+    const table = { type: 'table', writingMode: 'vertical-rl', breakBefore: 'page', breakAfter: 'page', columns: [{ type: 'table-column', width: 40 }], body: { type: 'table-body', rows: [{ type: 'table-row', cells: [cell(['縦'])] }] } };
+    const t = E.engine.layout(doc([{ type: 'block', children: ['前'] }, table, { type: 'block', children: ['後'] }] as never));
+    expect(pages(t)).toEqual(['前', '縦', '後']);
+  });
+  it('2 段のページでの breakBefore: column は、次の段へ送る', () => {
+    const t = E.engine.layout(doc([{ type: 'block', children: ['前'] }, { type: 'block', writingMode: 'vertical-rl', breakBefore: 'column', children: ['縦'] }] as never, 'horizontal-tb', { master: master({ columns: { count: 2, gap: 10 } }) }));
+    expect(t.sheets).toHaveLength(1);
+    const cols = kids(t, 0);
+    expect(cols).toHaveLength(2);
+    expect(cols[1].x).toBeGreaterThan(cols[0].x + cols[0].width);
+  });
+  it('keepTogether: ページの残りで分かれ、次のページなら 1 つに収まる縦書きのブロックは、次のページへ送る', () => {
+    // 20 字 (200pt) × 10 行の縦書きの段落。ページの残り (約 77pt) では行が短くなって本文の幅に収まらず、2 ページに分かれる
+    const v = (extra: object) => ({ type: 'block', writingMode: 'vertical-rl', textAlign: 'start', children: [Array.from({ length: 10 }, () => '縦'.repeat(20)).join('\n')], linefeedTreatment: 'preserve', ...extra });
+    const fill = { type: 'block', textAlign: 'start', linefeedTreatment: 'preserve', children: [lines(10)] };
+    const free = E.engine.layout(doc([fill, v({})] as never));
+    expect(free.sheets).toHaveLength(2);
+    expect(count(text(free, 0), '縦')).toBeGreaterThan(0);
+    const kept = E.engine.layout(doc([fill, v({ keepTogether: true })] as never));
+    expect(kept.sheets).toHaveLength(2);
+    expect(count(text(kept, 0), '縦')).toBe(0);
+    expect(count(text(kept, 1), '縦')).toBe(200);
   });
 });
