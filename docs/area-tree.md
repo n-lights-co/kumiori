@@ -23,6 +23,10 @@
   - `x`・`y` は回転後の外接矩形の左上です。
   - 子の座標は、回転前の局所座標です。
 - `GlyphArea.rotation` は字の回転 (時計回り) で、箱の回転 `orientation` とは別のものです。
+- 背景 (`backgroundColor`・`backgroundImage`):
+  - `backgroundImage` は、いちばん手前の背景の画像です (大きさは解決済み)。`under` は、その後ろに重ねる画像の並び (手前のものから順) です。
+  - 画像ごとの `origin` は位置の基準の領域 (`border-box`・`content-box`。無ければ padding の箱)、`clip` は描く範囲 (`border-box`・`content-box`。無ければ padding の箱) です。
+  - `backgroundClip` は背景の色を塗る範囲 (`padding-box`・`content-box`) です。無ければ border-box (`width` × `height`) に塗ります。
 - `transform` (描くときの変換。CSS の `transform`) があるとき:
   - 値は行列 `[a, b, c, d, e, f]` で、x' = a·x + c·y + e、y' = b·x + d·y + f です (y は下向き)。
   - 行列の座標の原点は、この Area の `x`・`y` の点 (border-box の左上) です。
