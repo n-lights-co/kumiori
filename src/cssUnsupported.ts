@@ -54,7 +54,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'text-wrap-style',
   'text-decoration-skip-ink',
   'clip',
-  'fill',
   'footnote-display',
   'footnote-policy',
   'grid',

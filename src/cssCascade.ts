@@ -317,6 +317,8 @@ interface Computed {
   vars: Map<string, string>;
   /** 明示した性質 (auto かどうか) */
   specified: Map<string, string>;
+  /** SVG の表示の性質 (と color・opacity) の、勝った宣言 (文書の中の <svg> に渡すかを決める) */
+  svgFrom?: Map<string, DeclaredValue>;
   /** style() が返す読み手 (1 度作って使い回す) */
   view?: { getPropertyValue(name: string): string };
 }
@@ -670,6 +672,92 @@ const tokens = (v: string) => splitTop(v, ' ');
 const CSS_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
 const CSS_INTEGER = /^[+-]?\d+$/;
 
+// ───────────────────────── SVG の表示の性質 ─────────────────────────
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/**
+ * 文書の中にじかに書いた <svg> に渡す、SVG の表示の性質: [継承するか, 初期値 (計算値の形)]。
+ * 値の定義・初期値・継承は SVG 2 の 13 章 (https://www.w3.org/TR/SVG2/painting.html 、2026-11-10 取得): fill・fill-rule・fill-opacity は §13.4、
+ * stroke・stroke-opacity・stroke-width・stroke-linecap・stroke-linejoin・stroke-miterlimit・stroke-dasharray・stroke-dashoffset は §13.5。
+ * HTML の要素の箱には効かない (継承して、中の <svg> に届くだけ)。color と opacity は PROPS にある
+ */
+const SVG_STYLE_PROPS: Record<string, [boolean, string]> = {
+  fill: [true, 'rgb(0, 0, 0)'],
+  stroke: [true, 'none'],
+  'stroke-width': [true, '1px'],
+  'fill-opacity': [true, '1'],
+  'stroke-opacity': [true, '1'],
+  'fill-rule': [true, 'nonzero'],
+  'stroke-linecap': [true, 'butt'],
+  'stroke-linejoin': [true, 'miter'],
+  'stroke-miterlimit': [true, '4'],
+  'stroke-dasharray': [true, 'none'],
+  'stroke-dashoffset': [true, '0px'],
+};
+const SVG_STYLE_PROP_NAMES = Object.keys(SVG_STYLE_PROPS);
+const SVG_PRESENTATION_ATTRS = [...SVG_STYLE_PROP_NAMES, 'color', 'opacity'];
+const SVG_STYLE_KEYWORDS: Record<string, RegExp> = { 'fill-rule': /^(nonzero|evenodd)$/, 'stroke-linecap': /^(butt|round|square)$/, 'stroke-linejoin': /^(miter|round|bevel)$/ };
+/** fill の属性が別の意味を持つ要素 (アニメーションの要素。SVG 2 §6.6 の表) */
+const SVG_ANIMATION = /^(animate|animatemotion|animatetransform|animatecolor|set)$/;
+
+/**
+ * SVG の表示の性質の値 → 計算値。読めない値は undefined (宣言を捨てる)。
+ *  - <paint> (SVG 2 §13.2): none | <color> | <url> [none | <color>]? | context-fill | context-stroke。色は計算値にし、currentcolor は語のまま
+ *    (CSS Color 4 §15.5: currentcolor の計算値はそれ自身)
+ *  - 不透明度 (<'opacity'> = 数か百分率): 数にして [0, 1] に丸める (SVG 2 §13.4.3)
+ *  - stroke-width・stroke-dashoffset (<length-percentage> | <number>): 数は利用者単位 (px)。計算値は絶対の長さか百分率。stroke-width の負の値は不正 (§13.5.3)
+ *  - stroke-dasharray: none か、カンマか空白で区切った長さ・百分率・数の並び。負の値があれば不正 (§13.5.6)
+ *  - stroke-miterlimit: 数。負の値は不正 (§13.5.5)
+ */
+function svgStyleValue(prop: string, raw: string, ctx: LenCtx): string | undefined {
+  const s = raw.trim();
+  const l = s.toLowerCase();
+  const color = (t: string) => {
+    const c = parseColor(t);
+    return c === undefined ? undefined : c === 'current' ? 'currentcolor' : fmtColor(c);
+  };
+  // 数 (利用者単位 = px)・長さ → px、百分率はそのまま
+  const len = (t: string, nonNegative: boolean) => {
+    if (/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?%$/.test(t)) return nonNegative && parseFloat(t) < 0 ? undefined : `${parseFloat(t)}%`;
+    const px = CSS_NUMBER.test(t) ? parseFloat(t) : lengthPx(t, { ...ctx, pct: undefined });
+    return px === undefined || !Number.isFinite(px) || (nonNegative && px < 0) ? undefined : fmtPx(px);
+  };
+  switch (prop) {
+    case 'fill':
+    case 'stroke': {
+      if (l === 'none' || l === 'context-fill' || l === 'context-stroke') return l;
+      const u = /^(url\((?:"[^"]*"|'[^']*'|[^()"']*)\))\s*(.*)$/i.exec(s);
+      if (!u) return color(s);
+      if (!u[2]) return u[1];
+      const fb = u[2].toLowerCase() === 'none' ? 'none' : color(u[2]);
+      return fb === undefined ? undefined : `${u[1]} ${fb}`;
+    }
+    case 'fill-opacity':
+    case 'stroke-opacity': {
+      const n = CSS_NUMBER.test(l) ? parseFloat(l) : /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(l) ? parseFloat(l) / 100 : NaN;
+      return Number.isFinite(n) ? String(+Math.min(1, Math.max(0, n)).toFixed(4)) : undefined;
+    }
+    case 'stroke-width':
+      return len(l, true);
+    case 'stroke-dashoffset':
+      return len(l, false);
+    case 'stroke-miterlimit':
+      return CSS_NUMBER.test(l) && parseFloat(l) >= 0 ? String(parseFloat(l)) : undefined;
+    case 'stroke-dasharray': {
+      if (l === 'none') return l;
+      const parts = splitTop(l, ',', { keepEmpty: true }).map((g) => tokens(g));
+      if (!parts.length || parts.some((g) => !g.length)) return undefined;
+      const out = parts.flat().map((t) => len(t, true));
+      return out.every((x) => x !== undefined) ? out.join(' ') : undefined;
+    }
+    default:
+      return SVG_STYLE_KEYWORDS[prop]?.test(l) ? l : undefined;
+  }
+}
+/** 計算値 → 書き出す SVG の値 (px の長さは利用者単位の数。currentcolor は SVG の書き方) */
+const svgStyleText = (prop: string, v: string) =>
+  prop === 'stroke-width' || prop === 'stroke-dashoffset' || prop === 'stroke-dasharray' ? v.replace(/px\b/g, '') : v.replace(/\bcurrentcolor\b/g, 'currentColor');
+
 /**
  * text-indent の値を、長さ (百分率) の部分と hanging・each-line の語に分ける (CSS Text 3 §8.1:
  * [ <length-percentage> ] && hanging? && each-line?)。構文に合わなければ undefined
@@ -724,7 +812,7 @@ const FONT_RESET_ONLY: Array<[string, string]> = [
 
 /** Kumiori の知っているプロパティか: PROPS にある (論理のプロパティは物理に直して)、または一括指定を分けた性質がすべて PROPS にある */
 export function isKnownCssProperty(prop: string, value = ''): boolean {
-  const known = (p: string) => !!PROPS[p] || !!PROPS[logicalToPhysical(p, 'horizontal-tb', 'ltr') ?? ''];
+  const known = (p: string) => !!PROPS[p] || !!SVG_STYLE_PROPS[p] || !!PROPS[logicalToPhysical(p, 'horizontal-tb', 'ltr') ?? ''];
   if (known(prop)) return true;
   const parts = expand(prop, value);
   return parts.length > 0 && parts.every(([p]) => p !== prop && known(p));
@@ -1327,6 +1415,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       // (author presentational hint origin) なので、作成者の規則には、層 (@layer) の中のものにも負ける。
       // revert では作成者の出どころの一部なので、出どころは作成者のまま、どの層よりも前 (弱い) 層に置く
       presentational(el, quirks).forEach(([p, v], k) => push(p, v, false, 1, -1, -1 + k / 1e6, -Infinity));
+      // SVG の表示の属性 (fill="…" など) も同じ扱い: 作成者の出どころの、詳細度 0 の規則で、ほかの作成者のスタイルシートより前 (SVG 2 §6.6)
+      if (el.namespaceURI === SVG_NS) svgPresentation(el).forEach(([p, v], k) => push(p, v, false, 1, -1, -1 + k / 1e6, -Infinity));
       const st = el.getAttribute('style');
       if (st) splitDecls(st).forEach(([p, v, imp], k) => push(p, v, !!imp, 2, 0, order + 1 + k / 1e4));
     }
@@ -1422,9 +1512,13 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
    * どれか 1 つでも読めなければ宣言ごと捨てる。revert は既定のスタイルの宣言まで戻す。
    * 返す rank は、性質ごとの、決まった宣言の強さの順 (小さいほど強い)
    */
-  const cascadeDecls = (decls: DeclaredValue[], vars: Map<string, string>, fsCtx: () => LenCtx): { cascaded: Map<string, string>; rank: Map<string, number> } => {
+  const cascadeDecls = (decls: DeclaredValue[], vars: Map<string, string>, fsCtx: () => LenCtx): { cascaded: Map<string, string>; rank: Map<string, number>; svgFrom?: Map<string, DeclaredValue> } => {
     const cascaded = new Map<string, string>();
     const rank = new Map<string, number>();
+    let svgFrom: Map<string, DeclaredValue> | undefined;
+    const noteSvg = (p: string, d: DeclaredValue) => {
+      if (SVG_STYLE_PROPS[p] || p === 'color' || p === 'opacity') (svgFrom ??= new Map()).set(p, d);
+    };
     // 値の無い (必ず無効な値の) カスタム プロパティを fallback なしで参照した宣言は、計算値の時点で無効 (Variables 1 §3・§3.1)。
     // 残りの語だけで読める値になっても、有効な宣言にしない
     let invalidVar = false;
@@ -1452,6 +1546,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           if (!cascaded.has(p) && !(reverted.has(p) && !isUa(d.rank))) {
             cascaded.set(p, 'unset');
             rank.set(p, rank.size);
+            noteSvg(p, d);
           }
         continue;
       }
@@ -1470,9 +1565,10 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
         }
         cascaded.set(p, v);
         rank.set(p, rank.size);
+        noteSvg(p, d);
       }
     }
-    return { cascaded, rank };
+    return { cascaded, rank, ...(svgFrom ? { svgFrom } : {}) };
   };
 
   /** ③ 論理→物理: 論理的な性質を、この要素の書字方向で物理的な性質に写す。同じ辺の物理的な性質と両方あれば、強い (先に決まった) 方 */
@@ -1556,9 +1652,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     const rootFs = cache.get(rootEl)?.fs ?? 16;
     const vars = resolveCustomProps(decls, parent);
     const fsCtx = (): LenCtx => ({ fs: parent?.fs ?? 16, rootFs: isRoot ? 16 : rootFs, vw, vh, pct: parent?.fs ?? 16 });
-    const { cascaded, rank } = cascadeDecls(decls, vars, fsCtx);
+    const { cascaded, rank, svgFrom } = cascadeDecls(decls, vars, fsCtx);
     mapLogical(cascaded, rank, parent);
-    const out: Computed = { v: new Map(), fs: 16, fsKeyword: true, cw: parent?.cw ?? vw, pcw: parent?.pcw ?? vw, vars, specified: cascaded };
+    const out: Computed = { v: new Map(), fs: 16, fsKeyword: true, cw: parent?.cw ?? vw, pcw: parent?.pcw ?? vw, vars, specified: cascaded, ...(svgFrom ? { svgFrom } : {}) };
     const pv = (p: string) => parent?.v.get(p);
     const valueOf = (p: string): string => {
       const def = PROPS[p];
@@ -1819,8 +1915,64 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     return view(getPseudo(el, which));
   };
 
+  /**
+   * SVG の表示の性質の計算値 (要素ごと。継承は HTML の要素も通る) と、文書のスタイルシートで決まった性質 (own)。
+   * own に入れるのは、作成者のスタイルシートの規則が勝った性質と、style 属性の var() を含む宣言が勝った性質
+   * (表示の属性と、var() の無い style 属性は、単独の SVG でも同じに読めるので、書き足さない)
+   */
+  const svgCache = new Map<Element, { v: Map<string, string>; own: string[] }>();
+  const fromSheet = (d: DeclaredValue | undefined) => !!d && (((d.rank === 1 || d.rank === 3) && d.spec >= 0) || ((d.rank === 2 || d.rank === 4) && /var\(/i.test(d.value)));
+  const svgOf = (el: Element): { v: Map<string, string>; own: string[] } => {
+    const hit = svgCache.get(el);
+    if (hit) return hit;
+    const parent = el.parentNode && el.parentNode.nodeType === 1 ? svgOf(el.parentNode as Element) : undefined;
+    const c = get(el);
+    const ctx: LenCtx = { fs: c.fs, rootFs: cache.get(rootEl)?.fs ?? 16, vw, vh };
+    const v = new Map<string, string>();
+    const own: string[] = [];
+    for (const p of SVG_STYLE_PROP_NAMES) {
+      const [inh, initial] = SVG_STYLE_PROPS[p];
+      const raw = c.specified.get(p);
+      const lv = raw?.trim().toLowerCase();
+      const inherited = () => parent?.v.get(p) ?? initial;
+      let val: string | undefined;
+      if (lv === undefined) val = inh ? inherited() : initial;
+      else if (lv === 'inherit') val = inherited();
+      else if (lv === 'initial') val = initial;
+      else if (lv === 'unset' || lv === 'revert' || lv === 'revert-layer') val = inh ? inherited() : initial;
+      else val = svgStyleValue(p, raw!, ctx) ?? (inh ? inherited() : initial);
+      v.set(p, val);
+      if (fromSheet(c.svgFrom?.get(p))) own.push(p);
+    }
+    const out = { v, own };
+    svgCache.set(el, out);
+    return out;
+  };
+  /** opacity の計算値 (数か百分率) → 数 ([0, 1] に丸める。Color 4 §4.2) */
+  const opacityNumber = (t: string) => {
+    const n = parseFloat(t) / (/%\s*$/.test(t) ? 100 : 1);
+    return String(+Math.min(1, Math.max(0, Number.isFinite(n) ? n : 1)).toFixed(4));
+  };
+  const svgStyle = (el: Element, isRoot: boolean): Array<[string, string]> => {
+    const s = svgOf(el);
+    const c = get(el);
+    const out: Array<[string, string]> = s.own.map((p) => [p, svgStyleText(p, s.v.get(p)!)]);
+    if (isRoot) {
+      // <svg> の外の要素から継承した値 (<svg> に宣言・属性が無く、初期値でないもの)。単独の SVG には外が無いので、根元に書く
+      for (const p of SVG_STYLE_PROP_NAMES) if (SVG_STYLE_PROPS[p][0] && !c.svgFrom?.has(p) && s.v.get(p) !== SVG_STYLE_PROPS[p][1]) out.push([p, svgStyleText(p, s.v.get(p)!)]);
+      out.sort((a, b) => SVG_STYLE_PROP_NAMES.indexOf(a[0]) - SVG_STYLE_PROP_NAMES.indexOf(b[0]));
+    }
+    // color (currentcolor の基準。Color 4 §15.5): 根元では継承した値も書く (初期値の黒は書かない)
+    const cf = c.svgFrom?.get('color');
+    const color = c.v.get('color') ?? 'rgb(0, 0, 0)';
+    if (fromSheet(cf) || (isRoot && !cf && color !== 'rgb(0, 0, 0)')) out.push(['color', color]);
+    if (fromSheet(c.svgFrom?.get('opacity'))) out.push(['opacity', opacityNumber(c.v.get('opacity') ?? '1')]);
+    return out;
+  };
+
   let selIndex: ((text: string) => Element[]) | undefined;
   return {
+    svgStyle,
     style: (el, pseudo) => (pseudo ? pseudoView(el, pseudo.slice(2) as PseudoName) : view(get(el))),
     hasPseudo: (el, pseudo) => hasRules(el, pseudo.slice(2)),
     isAuto: (el, prop) => {
@@ -1983,7 +2135,7 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   }
   // 論理的な性質 (margin-inline-start・inline-size など。表には無い) は、対応する物理的な性質 (横書き・ltr のとき) の値として調べる
   const def = PROPS[prop] ?? PROPS[logicalToPhysical(prop, 'horizontal-tb', 'ltr') ?? ''];
-  if (!def) return true;
+  if (!def) return SVG_STYLE_PROPS[prop] ? svgStyleValue(prop, v, ctx) !== undefined : true;
   const kind = def[2];
   if (kind === 'color') return parseColor(v) !== undefined;
   if (prop === 'font-size') return /^(xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger)$/i.test(v.trim()) || lengthPx(v, { ...ctx, pct: 16 }) !== undefined;
@@ -2148,6 +2300,19 @@ function bodyOf(doc: Document | null | undefined): Element | null {
   let b = BODY_OF.get(doc);
   if (b === undefined) BODY_OF.set(doc, (b = doc.getElementsByTagName('body')[0] ?? null));
   return b;
+}
+/**
+ * SVG の表示の属性のうち、文書の中の <svg> に渡す性質のもの (SVG 2 §6.6 の表: SVG の名前空間のどの要素にも書ける。
+ * fill は、アニメーションの要素では別の意味の属性なので除く)。値は性質の値として読む (!important の付いた値は読めない値)
+ */
+function svgPresentation(el: Element): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  const anim = SVG_ANIMATION.test((el.localName ?? el.nodeName).toLowerCase());
+  for (const p of SVG_PRESENTATION_ATTRS) {
+    const v = el.getAttribute(p);
+    if (v !== null && v.trim() && !(anim && p === 'fill')) out.push([p, v]);
+  }
+  return out;
 }
 function presentational(el: Element, quirks = false): Array<[string, string]> {
   const n = (el.localName ?? el.nodeName).toLowerCase();

@@ -27,6 +27,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `font-variant-east-asian` に対応 (`jis78`・`jis83`・`jis90`・`jis04`・`simplified`・`traditional`・`full-width`・`proportional-width`・`ruby`。フォントの OpenType の機能で字形と字の幅を選ぶ。一括指定の `font-variant` からも読む)
   - 下線・上線・取り消し線の線の種類 (`text-decoration-style` の `double`・`dotted`・`dashed`・`wavy`)、太さ (`text-decoration-thickness`)、下線をずらす量 (`text-underline-offset`) に対応。一括指定の `text-decoration` に線の種類と太さを書ける。`title` のある `abbr` の下線は、ブラウザと同じ点線になる (これまでは実線)
   - 圏点の色 (`text-emphasis-color`) と付ける側 (`text-emphasis-position`。横書きの `under`、縦書きの `left`) に対応。一括指定の `text-emphasis` に色を書ける
+  - 文書の CSS の `fill`・`stroke`・`color` など (`stroke-width`・`fill-opacity`・`stroke-opacity`・`opacity`・`fill-rule`・線の端・角・破線) が、文書の中にじかに書いた `<svg>` に効く。`currentColor` は、`<svg>` の外から継承した `color` になる (`svg { fill: currentColor }` と `.icon { color: red }` でアイコンに色が付く)。SVG の画像でも、`color` の属性と `currentColor`、`rgba()` の色の不透明度を読む
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)

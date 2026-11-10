@@ -101,6 +101,12 @@ export interface StyleSource {
   rect?(el: Element): { x: number; y: number; width: number; height: number } | undefined;
   /** 要素の内容の幅 (px) の見積もり。ブラウザの配置 (rect) が無いとき、flex・grid の項目の幅を決める基準 */
   contentWidth?(el: Element): number | undefined;
+  /**
+   * 文書の中にじかに書いた <svg> の要素 (SVG の名前空間の要素) に、文書の CSS が決めた SVG の表示の性質 ([性質, 値] の並び。
+   * fill・stroke・color など)。isRoot は、その <svg> の根元の要素か (根元には、外の要素から継承した値も入れる)。
+   * 無ければ、<svg> を書かれたとおりの単独の SVG として扱う
+   */
+  svgStyle?(el: Element, isRoot: boolean): Array<[string, string]>;
 }
 
 export interface HtmlImportOptions {
@@ -4082,7 +4088,8 @@ class HtmlImporter {
       return [img];
     }
     // 文書の中に直接書いた <svg>: 単独の SVG 文書 (data URI) にして、<img> と同じ画像として組む
-    if (isInlineSvg(el)) return [this.image(el, inlineSvgDataUri(el))];
+    // 文書の CSS の fill・stroke・color など (と、外から継承した値) は、要素の style 属性に書き足して渡す (SVG 2 §6.4・§6.6)
+    if (isInlineSvg(el)) return [this.image(el, inlineSvgDataUri(el, this.src.svgStyle ? (e, root) => this.src.svgStyle!(e, root) : undefined))];
     // 数式 (MathML の math 要素): 数式用の書体があれば、組んだ図形にする
     if (this.opts.mathFont && this.isMath(el)) return [this.mathFormula(el)];
     if (name === 'ruby') {

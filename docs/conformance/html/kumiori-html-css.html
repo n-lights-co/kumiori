@@ -1069,6 +1069,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 
 <h2 id="s-svg-inline"><span class="num">15.3</span>HTML の中の SVG<span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
 <p>HTML の中に直に書いた svg 要素を、画像のファイルの SVG (15.1 節) と同じに解釈し、PDF にベクターのまま描きます。大きさは svg 要素の width・height 属性で決め、行の中では画像と同じに置きます。下の例は、折り返すグラデーション (spreadMethod="reflect") と字を描いた SVG です。</p>
+<p>文書の CSS は、svg 要素とその中の要素にも効きます <span class="spec">(SVG 2 §6.4)</span>。対応するプロパティは、fill・stroke・stroke-width・fill-opacity・stroke-opacity・opacity・fill-rule・stroke-linecap・stroke-linejoin・stroke-miterlimit・stroke-dasharray・stroke-dashoffset と color です (これらは SVG の要素にだけ効きます。HTML の要素の箱には効かず、継承して中の svg 要素に届くだけです)。SVG の属性 (fill="…" など) は詳細度 0 の規則として扱うので、文書の CSS の規則が属性に勝ちます <span class="spec">(SVG 2 §6.6)</span>。currentColor は、その要素の color の値で、svg 要素の外の color も継承します <span class="spec">(CSS Color 4 §6.4)</span>。sanitize.css の svg:not([fill]) { fill: currentColor } のように、アイコンの色を文書の CSS で決める書き方ができます。文書の CSS のほかのプロパティ (transform・display・font など) は、svg 要素の中の要素には届きません。</p>
 <!--kumiori-sample id="svg-inline" mark="&lt;svg|spreadMethod=&quot;reflect&quot;"-->
 <p style="text-align: center; text-indent: 0;">
   <svg xmlns="http://www.w3.org/2000/svg" width="60mm" height="22mm" viewBox="0 0 120 44">
@@ -1146,7 +1147,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>override-colors</code><br><span class="spec">CSS Fonts 4 §9.2.3</span></td><td>@font-palette-values の記述子で、パレットの番号と色の組の並びで、パレットの色を置き換えます。カラーフォントの一部の色だけを、別の色に変えて描きたいときに使います。</td></tr>
 <tr><td><code>box-decoration-break</code><br><span class="spec">CSS Fragmentation 3 §5.4</span></td><td>ページ・段・行でボックスが分かれたとき、分かれた端に罫線・内側の余白・外側の余白などを付けるか (clone)、付けずに切るか (slice) を指定します。背景をどう描くかも決めます。ページをまたぐ枠付きのボックスで、分かれたそれぞれの断片を枠で閉じたいときに使います。</td></tr>
 <tr><td><code>clip</code><br><span class="spec">CSS 2.1 §11.1.2</span></td><td>絶対配置のボックスの、見える範囲の矩形を指定します (rect(…))。画面には出さずに読み上げにだけ残す要素の書き方 (clip: rect(0 0 0 0)) でよく使われます。</td></tr>
-<tr><td><code>fill</code><br><span class="spec">SVG 1.1 §11.3</span></td><td>SVG の図形と文字の塗りを指定します。HTML の文書の CSS から、文書の中にじかに書いた &lt;svg&gt; の塗りを決めるのに使います (svg { fill: currentColor } など)。Kumiori は文書の中の &lt;svg&gt; を単独の画像として描くので、文書の CSS の fill は効きません (SVG の中の属性と style の fill は効きます)。</td></tr>
 <tr><td><code>footnote-display</code><br><span class="spec">CSS GCPM 3 §2.3</span></td><td>脚注を、脚注の領域にブロックとして置くか (block)、行の中の要素として置くか (inline)、処理系に決めさせるか (compact) を指定します。短い脚注を、脚注の領域に 1 行に続けて並べたいときに使います。</td></tr>
 <tr><td><code>footnote-policy</code><br><span class="spec">CSS GCPM 3 §2.8</span></td><td>脚注の本文が今のページに入りきらないときの扱いを指定します。line は脚注の参照のある行の前で、block はその段落の前で改ページします。auto は処理系が決め、脚注の本文を後のページに置いてもよいとしています。脚注の参照とその本文を、必ず同じページに置きたいときに使います。</td></tr>
 <tr><td><code>grid</code><br><span class="spec">CSS Grid 1 §7.8</span></td><td>明示のグリッドのプロパティ (grid-template-rows・-columns・-areas) と暗黙のグリッドのプロパティ (grid-auto-rows・-columns・-flow) をまとめて指定する一括指定です。グリッドの行・列・領域と自動の配置を、1 つの宣言で決めたいときに使います。</td></tr>
