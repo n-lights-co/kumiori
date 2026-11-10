@@ -209,40 +209,114 @@ export function rotationMatrix(rot: 90 | 180 | 270, x: number, y: number, w: num
  */
 export type PaintPhase = 'all' | 'bg' | 'fg';
 
-/** 子を描く。回り込みの子があれば、上の段の順に分けて描く */
-function paintChildren(kids: Area[], cx: number, cy: number, p: Painter, phase: PaintPhase) {
-  if (phase === 'all' && !kids.some((c) => c.float)) {
-    for (const c of kids) paintArea(c, cx, cy, p);
-    return;
-  }
-  if (phase !== 'fg') {
-    for (const c of kids) if (!c.float) paintArea(c, cx, cy, p, 'bg');
-    for (const c of kids) if (c.float) paintArea(c, cx, cy, p);
-  }
-  if (phase !== 'bg') for (const c of kids) if (!c.float) paintArea(c, cx, cy, p, 'fg');
+/**
+ * 描いている途中の箱 (子を持つ領域)。Area Tree の入れ子は、呼び出しの入れ子 (再帰) ではなく、この物の並び (明示のスタック) でたどる
+ * (OUT-14)。再帰でたどると、入れ子の 1 段ごとに、局所変数の多い paintArea と paintChildren の 2 つの枠を積み、Node の既定の
+ * スタック (984KB) では、領域の入れ子が約 1000 段 (flex・grid の入れ子は要素の 1 段で領域が 4 段になるので、要素の約 250 段) で
+ * スタックを使い切った。描く順 (Painter の呼び出しの並び) は、再帰でたどっていたときと同じ
+ */
+interface OpenBox {
+  a: Area;
+  /** 箱の border-box の左上 (Sheet 座標) */
+  x: number;
+  y: number;
+  /** 箱の影・背景・罫線を描くか (中身の段 'fg' では描かない) */
+  box: boolean;
+  /** 子の原点 (content-box の左上) */
+  cx: number;
+  cy: number;
+  /** 子を描く順に並べたもの。phases は子ごとの描く段 (無ければ、どの子も 'all') */
+  kids: Area[];
+  phases: PaintPhase[] | undefined;
+  /** 次に描く子の位置 */
+  i: number;
 }
 
+/**
+ * 回転した箱 (orientation) の入れ子の上限。回転した箱だけは、Painter.transform(m, draw) が「draw の中で描く」形なので、
+ * 再帰でたどる (1 つの回転で、paintArea・openArea・transform・draw の 4 枠と、Painter の中の枠)。組版が回転した領域を作るのは
+ * 回転した箱 1 つにつき 1 つで、XSL-FO の入れ子は 250 段 (xslfoImport.ts の MAX_FO_NEST)、HTML の入れ子は MAX_TREE_DEPTH
+ * までなので、読み込んだ文書はここに届かない。外から渡された Area Tree (parseAreaTree で読んだ木) がこれより深く回転を重ねていたら、
+ * スタックを使い切る前に誤りで止める (Node の既定のスタック (984KB) で、PDF の描画は 900 段まで通り、1000 段で切れると測った。その 1/3)
+ */
+export const MAX_NESTED_ORIENTATIONS = 300;
+let orientationDepth = 0;
+
+/** 子を、描く順に並べる。回り込みの子があれば、上の段の順に分けて描く */
+function childOrder(kids: Area[], phase: PaintPhase): { kids: Area[]; phases: PaintPhase[] | undefined } {
+  if (phase === 'all' && !kids.some((c) => c.float)) return { kids, phases: undefined };
+  const order: Area[] = [];
+  const phases: PaintPhase[] = [];
+  if (phase !== 'fg') {
+    for (const c of kids)
+      if (!c.float) {
+        order.push(c);
+        phases.push('bg');
+      }
+    for (const c of kids)
+      if (c.float) {
+        order.push(c);
+        phases.push('all');
+      }
+  }
+  if (phase !== 'bg')
+    for (const c of kids)
+      if (!c.float) {
+        order.push(c);
+        phases.push('fg');
+      }
+  return { kids: order, phases };
+}
+
+/** 領域 a (とその子孫) を描く。(ox, oy) は a の親の content-box の左上 (Sheet 座標) */
 export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase = 'all') {
+  const first = openArea(a, ox, oy, p, phase);
+  if (!first) return;
+  const stack: OpenBox[] = [first];
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    if (top.i >= top.kids.length) {
+      stack.pop();
+      closeArea(top, p);
+      continue;
+    }
+    const k = top.i++;
+    const child = openArea(top.kids[k], top.cx, top.cy, p, top.phases ? top.phases[k] : 'all');
+    if (child) stack.push(child);
+  }
+}
+
+/**
+ * 領域の、子より前に描くもの (影・背景・切り抜きの始まり) を描く。子を持つ領域なら、続き (子と、子より後に描く罫線) のための
+ * OpenBox を返す。子の無い領域 (字・画像) と、この段では描かない領域は、ここで描き終えて undefined を返す
+ */
+function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase): OpenBox | undefined {
   if (a.orientation) {
     // 局所座標系 (原点 = 箱の左上) へ移って、回転なしの箱として描く
     const m = rotationMatrix(a.orientation as 90 | 180 | 270, ox + a.x, oy + a.y, a.width, a.height);
-    p.transform(m, () => paintArea({ ...a, x: 0, y: 0, orientation: undefined } as Area, 0, 0, p, phase));
-    return;
+    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(`回転した領域 (orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`);
+    orientationDepth++;
+    try {
+      p.transform(m, () => paintArea({ ...a, x: 0, y: 0, orientation: undefined } as Area, 0, 0, p, phase));
+    } finally {
+      orientationDepth--;
+    }
+    return undefined;
   }
   const x = ox + a.x;
   const y = oy + a.y;
   // 行と行内の中身 (字・画像・ルビ・縦中横) は、背景の段では描かず、中身の段でまるごと描く
   const inlineLevel = a.type === 'glyph' || a.type === 'image' || a.type === 'line' || a.type === 'inline' || a.type === 'ruby' || a.type === 'tate-chu-yoko';
-  if (inlineLevel && phase === 'bg') return;
+  if (inlineLevel && phase === 'bg') return undefined;
   if (inlineLevel) phase = 'all';
   // 中身の段では、箱の影・背景・罫線は描かない (背景の段で描いた)
   const box = phase !== 'fg';
   if (a.type === 'glyph') {
     // 見えない字 (CSS の visibility: hidden。色が transparent) は描かない
     if (a.color !== 'transparent') p.drawGlyph(a, x, y);
-    return;
+    return undefined;
   }
-  if (a.type === 'image' && a.hidden) return;
+  if (a.type === 'image' && a.hidden) return undefined;
   if (a.type === 'image') {
     // 角丸 (border-radius): 画像 (置換要素の中身) も角丸で切り抜く (CSS Backgrounds 3 §5.3)
     const round = a.borderRadius && !a.missing;
@@ -258,7 +332,7 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
       p.restore();
     } else p.drawImage(a, x, y);
     if (round) p.restore();
-    return;
+    return undefined;
   }
   if (box && (a.link || a.annotation || a.formField)) p.mark?.(a, x, y);
   // 角丸 (axf:border-radius)
@@ -342,9 +416,6 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
       p.restore();
     }
   }
-  // 角丸の罫線は、4 辺が同じ (太さ・線種・色) ときだけ輪郭として描く。辺ごとに違えば角を丸めない
-  const sides = [a.border.top, a.border.right, a.border.bottom, a.border.left];
-  const roundBorder = rad && bt > 0 && sides.every((b) => b && b.width === bt && (b.style ?? 'solid') === (a.border.top!.style ?? 'solid') && b.color === a.border.top!.color);
   // 子の原点 = border + padding の内側 (content-box 左上)
   const cx = x + bl + a.padding.left;
   const cy = y + bt + a.padding.top;
@@ -352,26 +423,41 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
   // 角丸の箱は、padding の箱の角丸 (外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §5.3)
   if (a.clip && rad) p.clipPath(shape(x + bl, y + bt, Math.max(a.width - bl - br, 0), Math.max(a.height - bt - bb, 0), bt));
   else if (a.clip) p.clipRect({ x: x + bl, y: y + bt, width: Math.max(a.width - bl - br, 0), height: Math.max(a.height - bt - bb, 0) });
+  // 子は、paintArea の繰り返しが描く (描く順は areaTree.ts の childrenOf と同じ)
+  let order: { kids: Area[]; phases: PaintPhase[] | undefined };
   switch (a.type) {
     case 'page':
-      for (const b of a.behindAreas) paintArea(b, cx, cy, p);
-      paintArea(a.regionBody, cx, cy, p);
-      for (const abs of a.absoluteAreas) paintArea(abs, cx, cy, p);
+      order = { kids: [...a.behindAreas, a.regionBody, ...a.absoluteAreas], phases: undefined };
       break;
     case 'ruby':
-      for (const g of a.base) paintArea(g, cx, cy, p);
-      for (const g of a.ruby) paintArea(g, cx, cy, p);
+      order = { kids: [...a.base, ...a.ruby], phases: undefined };
       break;
     case 'tate-chu-yoko':
-      for (const g of a.glyphs) paintArea(g, cx, cy, p);
+      order = { kids: a.glyphs, phases: undefined };
       break;
     case 'sheet':
+      order = { kids: [], phases: undefined };
       break;
     default:
-      paintChildren(a.children, cx, cy, p, phase);
+      order = childOrder(a.children, phase);
   }
+  return { a, x, y, box, cx, cy, kids: order.kids, phases: order.phases, i: 0 };
+}
+
+/** 領域の、子より後に描くもの (切り抜きの終わり・罫線・斜めの罫線) を描く */
+function closeArea(o: OpenBox, p: Painter) {
+  const { a, x, y, box } = o;
   if (a.clip) p.restore();
   if (!box) return;
+  const rad = a.borderRadius;
+  const shape = radiusShape(rad, a.width, a.height);
+  const bt = a.border.top?.width ?? 0;
+  const br = a.border.right?.width ?? 0;
+  const bb = a.border.bottom?.width ?? 0;
+  const bl = a.border.left?.width ?? 0;
+  // 角丸の罫線は、4 辺が同じ (太さ・線種・色) ときだけ輪郭として描く。辺ごとに違えば角を丸めない
+  const sides = [a.border.top, a.border.right, a.border.bottom, a.border.left];
+  const roundBorder = rad && bt > 0 && sides.every((b) => b && b.width === bt && (b.style ?? 'solid') === (a.border.top!.style ?? 'solid') && b.color === a.border.top!.color);
   // 罫線は子 (負の margin ではみ出した子の背景・罫線を含む) より前面に描く
   if (roundBorder) {
     const b = a.border.top!;
