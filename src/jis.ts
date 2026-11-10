@@ -96,16 +96,27 @@ export interface VerticalTreatment {
  * (vert は縦書きで既定で使う機能。OpenType の機能の一覧の 'vert'、https://learn.microsoft.com/en-us/typography/opentype/spec/features_uz 、2026-11-04 取得)。
  * 正立にする字 (UAX #50 の U・Tu、text-orientation: upright の字) と、Tr の字で vert の字形があるものに使う (Tr は Writing Modes 3 §5.1 の mixed)。
  * vert の字形が無ければ、Unicode の縦書き用字形か、位置の補正で代える
+ * 書体に vert があるのに、句読点 (、。，．) を替えないときは、既定の字形をそのまま正立で置く: 縦書きの字形の差し替えは書体の vert で行い
+ * (Writing Modes 3 §5.1.1)、vert が替えない字は、既定の字形が縦書きにも使える形 (繁体字の書体の、字の枠の中央の句読点。clreq §5.1) なので、
+ * Unicode の縦書き用字形 (右上に寄った字形) への差し替えも、位置の補正もしない
  * @param hasGlyph フォントが指定字形を持つか (縦書き用字形の存在確認)
  * @param hasVert 書体の vert がこの字を別の字形に替えるか
+ * @param fontHasVert 書体が vert の機能を持つか (どの字かによらない)
  */
-export function verticalTreatment(ch: string, hasGlyph: (c: string) => boolean, orientation: 'mixed' | 'upright' | 'sideways' = 'mixed', hasVert: (c: string) => boolean = () => false): VerticalTreatment {
+export function verticalTreatment(
+  ch: string,
+  hasGlyph: (c: string) => boolean,
+  orientation: 'mixed' | 'upright' | 'sideways' = 'mixed',
+  hasVert: (c: string) => boolean = () => false,
+  fontHasVert = false,
+): VerticalTreatment {
   // text-orientation: sideways はすべて横倒し、upright はすべて正立 (Writing Modes 3 §5.1)
   if (orientation === 'sideways') return { glyph: ch, mode: 'rotate', dx: 0, dy: 0 };
   const vo = verticalOrientation(ch.codePointAt(0)!);
   const upright = orientation === 'upright' || vo === 'U' || vo === 'Tu' || vo === 'Tr';
   if (upright && hasVert(ch)) return { glyph: ch, mode: 'upright', dx: 0, dy: 0, features: ['vert'] };
   if (orientation !== 'upright' && !isUprightInVertical(ch)) return { glyph: ch, mode: 'rotate', dx: 0, dy: 0 };
+  if (fontHasVert && PUNCT_SHIFT.has(ch)) return { glyph: ch, mode: 'upright', dx: 0, dy: 0 };
   const vf = VERTICAL_FORMS[ch];
   if (vf && hasGlyph(vf)) return { glyph: vf, mode: 'upright', dx: 0, dy: 0 };
   if (BRACKET_ROTATE.has(ch)) return { glyph: ch, mode: 'rotate', dx: 0, dy: 0 };
