@@ -72,10 +72,10 @@ PDF では色材名 All の Separation（レジストレーション色。すべ
 2. `k` がスペース → 行末に吸収（行末スペースは捨てる）。
 3. `k` が 、。 かつ ぶら下げ有効 かつ `k+1` との間が禁則でない → **ぶら下げ**（`k` を行の最後の字のすぐ後ろ (両端揃えの行では版面端) に置き、版面幅は変えない）。
 4. **追込み** (JLREQ §3.8.2。詰める処理を空ける処理より優先する): `k` から次の分割点までを、詰めてよい箇所 (欧文の語間 → 行末の約物の後ろのアキ → 中点類の前後 → 行中の括弧・読点のアキ → 和欧間のアキ。§3.8.3 の順と限界、`squeezeParts`。互換モードでは 1 行に二分まで) を詰めて行に収まるなら、そこまでを 1 行にする。
-5. それ以外は **追い出し**: `j = k` から `canBreakBetween(atoms[j-1], atoms[j])` が真になるまで後退 (戻った分割点より後ろに、ハイフンを付けて収まる分綴の位置があれば、そこで分ける)。後退しきれないとき (行頭に立てられない約物の長い連続) は、先の分割点 (12 字以内) までを約物のアキを詰めて押し込み、それでも入らなければ禁則違反を承知で強制分割。
-`canBreakBetween(a,b)`: `b` が行頭禁則 → 不可 / `a` が行末禁則 → 不可 / 分離禁止 `――` `……` → 不可 / 欧文語内 → 不可 / それ以外 → 可。
+5. それ以外は **追い出し**: `j = k` から `canBreakAtoms(atoms[j-1], atoms[j])` が真になるまで後退 (戻った分割点より後ろに、ハイフンを付けて収まる分綴の位置があれば、そこで分ける)。後退しきれないとき (行頭に立てられない約物の長い連続) は、先の分割点 (12 字以内) までを約物のアキを詰めて押し込み、それでも入らなければ禁則違反を承知で強制分割。
+`canBreakAtoms(a,b)` (`inlineLayout.ts`): 改行の機会は UAX #14 の規則 (`markLineBreaks` が `lineBreak.ts` の規則で字ごとに付ける `lbBefore`。行頭禁則・行末禁則・分離禁止・欧文の語の中を含む) で決め、`white-space: nowrap`・`word-break`・leader の扱いをその前に見る。
 
-**行内配置**: `justify` は「段落の最終行でも強制改行の行でもない行」(最終行は `textAlignLast` があればその揃え。`justify` なら最終行も伸ばす) で、`stretchable(gap) = canBreakBetween(a,b) ∨ a がスペース` な隙間数 `slots` に余白 `free/slots` を等分配（欧文語内は伸ばさない）。`center/end` は先頭オフセット。
+**行内配置**: `justify` は「段落の最終行でも強制改行の行でもない行」(最終行は `textAlignLast` があればその揃え。`justify` なら最終行も伸ばす) で、伸ばしてよい字間 (`stretchable`。欧文語内は伸ばさない) に余白を JLREQ §3.8.4 の順に配る (`expandGaps`: 欧文の語間を二分まで → 和欧間を二分まで → ほかの字間を四分まで → それでも余れば均等に。配る量は字の大きさに比例)。`center/end` は先頭オフセット。
 
 **行ボックス**（`lineMetrics`）: 横書きは **ベースライン揃え**（`above = baselineRatio·fs`）、縦書きは **字面中央揃え**（`above = below = fs/2`）。
 `baselineRatio` は OS/2 の `typoAscender/upm`（Noto CJK は 0.88）。`em = max(above) + max(below)`、`leading = max(lh − em, 0)`、上下に `leading/2` ずつ配分。
@@ -169,7 +169,7 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 `LFootnote{children, label?}`（インライン）。`PageSequence.footnotes`（`FootnoteOptions`）で書式を指定する。実装は `footnotes.ts` と `Flow`。
 
 - **番号**: `FootnoteCtx.label()` が文書順に 1 度だけ採番（`WeakMap` で冪等）。`numberFormat`: decimal / circled / kanji / asterisk、`startNumber`、`labelPrefix/Suffix`、`label` で個別上書き。ページごとのリセット (`reset: 'page'`) は、前回の組版で脚注が置かれたページの中の順番で振り直し、置き場所が変わらなくなるまで組み直す (§7.13 と同じ二相目)。
-- **参照記号**: 本文より `referenceScale`（既定 0.7）小さい文字を、block-start 方向へ `0.35em` 持ち上げて出力（横書きは上、縦書きは右）。記号の前では改行しない（`glue`）。
+- **参照記号**: 本文より `referenceScale`（既定 0.7）小さい文字を、block-start 方向へ本文の字の大きさの `0.35em` 持ち上げて出力（横書きは上、縦書きは右。`inlineFlatten.ts` の `flattenFootnoteRef`）。持ち上げ方は `LFootnote.referenceShift` で変えられる（XSL-FO の参照の `baseline-shift`、`--style ah` の HTML では親の字の大きさの 1/3）。記号の前では改行しない（`glue`）。
 - **領域の確保**: 脚注領域は region-body の block 方向末尾（横書き=下端 / 縦書き=左端）。確保量 `footReserve = 区切り線 + Σ高さ + 間隔×(n−1)`。本文の改ページ判定は `limit − footReserve` を使う（`room`）。
 - **参照行ごと送る**: 行の収まり判定に「その行の脚注の追加分」を含める（`c + h + tail + resv + inc ≤ limit`）。入らなければ行が次ページへ送られ、脚注も一緒に移る。widows/orphans とも整合する。
 - **長すぎる脚注**: ページ先頭に強制配置された行の脚注、または 1 つで入りきらない脚注は、行単位で分割（`splitEntry`）し、続きを次ページの脚注領域の先頭へ回す（本文用に 4 割を残す）。最後に残れば脚注だけのページを足す。
@@ -195,7 +195,7 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 
 - `adv` = inline 方向の送り、`cross` = block 方向の厚み、`above/below` = 横書きでの、箱の上端/下端から基線までの距離。
 - **画像**: 自然なサイズ = 画像の px × 0.75 (96dpi → pt)。片方だけ指定なら縦横比で補い、両方指定なら `min(w/W, h/H)` で枠に収める (`uniform`)。
-  横書きは `above = h, below = 0` (下端が基線)。縦書きは `above = below = cross/2` (字面の中央)。画像データが無ければ 60×40pt のプレースホルダ。
+  横書きは `above = h, below = 0` (下端が基線)。縦書きは `above = below = cross/2` (字面の中央)。画像データが無ければプレースホルダ。大きさは、幅も高さも指定が無ければ 60×40pt、一方だけなら幅:高さ = 3:2 でもう一方を決める（`layoutEngine.ts` の `imageBox`）。
 - **inline-container**: `inline-progression-dimension` があればその幅、無ければ shrink-to-fit
   (行幅で組む → 最も長い行 `max(contentLength)` を測る → その幅で組み直す)。内部は独立した Flow (`writing-mode` が親と違ってもよい)。
   横書き同士なら `firstBaseline()` で最初の文字の基線までの距離を求め `above = fb` として、周囲の基線に揃える。

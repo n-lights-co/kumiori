@@ -4,6 +4,22 @@
 
 版の番号は [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。0.x の間は、互換の無い変更も minor の版 (0.2.0 など) で出すことがあります。
 
+## 未公開
+
+次の版に入る変更。公開するときに、見出しを版の番号と公開の日付にする ([`docs/RELEASING.md`](docs/RELEASING.md))。
+
+- **HTML+CSS の組版**:
+  - flex の縮め方 (`flex-shrink`・自動の最小の大きさ)、逆向き (`row-reverse`・`column-reverse`・`wrap-reverse`)、基線の揃え (`align-items: baseline`・`last baseline`)、交差軸の `margin: auto`、`order`、縦並びの伸び縮み・折り返し、縦書きの容器に対応した (Flexbox 1)
+  - `visibility: hidden`・`collapse`、`aspect-ratio`、幅の決まった箱の左右の auto の余白と rtl の包含ブロック、`page` で決めるページの名前 (絶対配置・回り込みの箱は名前を変えない) に対応した
+  - 文書が `http(s):` で参照する CSS (`<link rel="stylesheet">`・`@import`) と、その `@font-face` の書体を取るようにした (`unicode-range` が文書の字と重なるものだけ)。ライブラリの `fetchStyles`、コマンドの `--no-fetch-styles` で止められる
+  - 書体のファイルに WOFF・WOFF2 を使えるようにした (`--font`・`files`・`fonts`・`@font-face`。sfnt に戻して埋め込む)
+  - 印刷に関わらないプロパティ (`cursor`・`user-select`・`will-change` など) は、未対応の警告に出さないようにした
+- **XSL-FO の組版**: collapse の表で、改ページで繰り返す表ヘッダー・表フッターと、そのページの最初・最後の行の境目の罫線を、接する行どうしの線から選び直すようにした (XSL-FO 1.1 §6.7.3・§6.7.10)
+- **PDF**: 合字 (fi など) の字の ToUnicode を、元の字の並びにした (文字の検索・写しで元の字になる)
+- **ライブラリ**: `resolveResource` (文書・CSS が参照するファイルのうち `files` に無いものの中身を返す関数) を足した。Node 用の部品 `kumiori/node` (`createFontLoader`・`createFileResolver`・`defaultFontCacheDir`) を足した
+- **Node のコマンド**: 文書・CSS が `file:` の URL で参照するファイルを、入力のディレクトリの外でも読むようにした
+- **公開**: リリースを公開すると、対応仕様説明書の PDF 4 冊 (日本語版・英語版) をリリースに付けるワークフロー (`.github/workflows/conformance-pdf.yml`) を足した
+
 ## 0.1.1 (2026-11-09)
 
 第三者のソフトウェアと文書の表示を補った版。組版の動きと API は 0.1.0 と同じです。
