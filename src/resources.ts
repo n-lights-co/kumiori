@@ -173,6 +173,24 @@ export function resolveRef(ref: string, base?: string): string {
   return parts.join('/');
 }
 
+/**
+ * CSS の @font-face の中の相対の url() を、その CSS の場所 (base: URL か、文書からの相対パス css/a.css) を基準に解決した参照に書き換える
+ * (CSS Fonts 4 §4.3: src の url() は、@font-face の規則のあるスタイルシートの場所を基準に解決する。CSS Values 4 §4.5.1)。
+ * CSS の中身を文書の <style> に差し込むと、どの CSS に書かれていたかが分からなくなるので、差し込む前に書き換えておく。
+ * 解決しても変わらない参照と、引用符の中に書けない字のある参照は、そのまま
+ */
+export function rebaseFontFaceUrls(css: string, base: string): string {
+  if (!/@font-face/i.test(css)) return css;
+  return css.replace(/@font-face\s*\{[^}]*\}/gi, (rule) =>
+    rule.replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s]*))\s*\)/gi, (all, a?: string, b?: string, c?: string) => {
+      const ref = (a ?? b ?? c ?? '').trim();
+      if (skip(ref)) return all;
+      const to = resolveRef(ref, base);
+      return to === ref || /["\\\n\r\f]/.test(to) ? all : `url("${to}")`;
+    }),
+  );
+}
+
 /** ファイルの名前 (問い合わせの ? # を除いた、最後の / の後ろ。%xx は戻す) */
 export function refBasename(u: string): string {
   const s = u.split(/[?#]/)[0].split('/').pop() ?? u;

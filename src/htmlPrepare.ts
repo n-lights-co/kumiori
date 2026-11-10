@@ -9,7 +9,7 @@
  */
 import { parsePageRule } from './htmlImport';
 import { concatCss, matchMedia, matchSupports, parseCss, type ParsedCss } from './htmlPaged';
-import { resolveRef } from './resources';
+import { rebaseFontFaceUrls, resolveRef } from './resources';
 
 /** 本の組版向けの既定のスタイル (作成者スタイルシート で上書きできる) */
 export const KUMIORI_BOOK_CSS = `
@@ -240,8 +240,9 @@ export async function prepareHtml(
   for (const f of files) {
     if (!(f.css || /\.css$/i.test(f.name))) continue;
     const key = f.url ?? f.name.toLowerCase();
-    cssFiles.set(key, await f.text());
-    const at = f.url ?? f.path;
+    const at = f.url ?? f.path?.split('\\').join('/');
+    // @font-face の相対の url() は、この CSS の場所を基準に解決した参照にしておく (CSS Fonts 4 §4.3。<style> に差し込むと、どの CSS に書かれていたかが分からなくなる)
+    cssFiles.set(key, at ? rebaseFontFaceUrls(await f.text(), at) : await f.text());
     if (at) cssBases.set(key, at);
     if (f.url !== undefined && !cssByName.has(basename(f.url))) cssByName.set(basename(f.url), key);
   }
