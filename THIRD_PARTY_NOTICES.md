@@ -234,7 +234,7 @@ SOFTWARE.
 
 - package.json の license: `ISC`
 - 場所: `node_modules/hyphen`
-- 必要なときだけ読み込む (別のチャンク)。英語の分綴のパターン (en-us・en-gb) の表示は下の 1.4。
+- 必要なときだけ読み込む (別のチャンク)。分綴のパターン (en-us・en-gb・la・ru・uk・el-monoton) の表示は下の 1.4。
 
 `node_modules/hyphen/LICENSE` の本文:
 
@@ -1089,11 +1089,11 @@ This file and the 14 PostScript(R) AFM files it accompanies may be used, copied,
 - Symbol: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated. All rights reserved.`
 - ZapfDingbats: `Copyright (c) 1985, 1987, 1988, 1989, 1997 Adobe Systems Incorporated. All Rights Reserved.ITC Zapf Dingbats is a registered trademark of International Typeface Corporation.`
 
-### 1.4 hyphen の英語とラテン語の分綴のパターン
+### 1.4 hyphen の分綴のパターン (英語・ラテン語・ロシア語・ウクライナ語・現代ギリシャ語)
 
-Kumiori が読み込むのは `hyphen/en-us`・`hyphen/en-gb`・`hyphen/la` だけです。hyphen の README.md (12 行目) には "Patterns for this library were taken from ctan.org and ported to Javascript." とあります (リンクの書式を除いて引用)。npm の hyphen@1.14.1 の `patterns/en-us.js`・`patterns/en-gb.js` には、ライセンスや著作権の表示は入っていません。
+Kumiori が読み込むのは `hyphen/en-us`・`hyphen/en-gb`・`hyphen/la`・`hyphen/ru`・`hyphen/uk`・`hyphen/el-monoton` だけです。hyphen の README.md (12 行目) には "Patterns for this library were taken from ctan.org and ported to Javascript." とあります (リンクの書式を除いて引用)。npm の hyphen@1.14.1 の `patterns/en-us.js`・`patterns/en-gb.js` には、ライセンスや著作権の表示は入っていません。
 
-下に、上流の hyph-utf8 のパターンのファイルの冒頭の表示を転記します。
+下に、上流の hyph-utf8 のパターンのファイルの冒頭の表示を転記します。パターンを取り込んだファイル (ブラウザ向けの配布物と画面の、言語ごとのチャンク) の先頭には、そのパターンの著作権の表示とライセンスの表示 (MIT は許諾の表示の全文、en-us は上流の表示、ru は LPPL の条件に従う注記) を入れています (`vite.config.ts` の `HYPHEN_NOTICES`)。
 
 - 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-en-us.tex と、同じ場所の hyph-en-gb.tex (master ブランチ。取得日 2026-10-31。コミットは特定していない)
 - hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
@@ -1412,6 +1412,221 @@ Kumiori が読み込むのは `hyphen/en-us`・`hyphen/en-gb`・`hyphen/la` だ�
 %
 % Happy Latin and multilingual typesetting!
 %
+```
+
+#### Russian (ru): `hyph-ru.tex` の 1〜44 行目 (パターンの前のコメントすべて)
+
+- 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-ru.tex (master ブランチ。取得日 2026-11-10。コミットは特定していない)
+- npm の hyphen@1.14.1 の `patterns/ru.js` には、ライセンスや著作権の表示は入っていません。hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
+- ライセンスは LPPL (LaTeX Project Public License) 1.2 かそれ以降 (下の表示の licence の欄)。Kumiori は 1.3c の条件で配布します (本文: https://latex-project.org/lppl/lppl-1-3c.txt )。LPPL 1.3c の「Conditions on Distribution and Modification」の、変更したもの (Derived Work) を配る条件 (第 6 項) に、次のように従います。
+  - **配るもの**: 上流のパターン (`hyph-ru.tex`) を、npm の hyphen が JavaScript のデータ (同じパターンを表す配列) に変換したもの (hyphen@1.14.1 の `patterns/ru.js`)。Kumiori は、これをビルドで 1 つのファイル (チャンク) にまとめ、ビルドによっては縮めます。パターンの中身は変えていません。元のファイルの TeX のコメントは入りません。これを取り込んだファイルが入るのは、ブラウザ向けの配布物 (`dist-browser/chunks/ru-*.js`) と画面 (`dist/assets/ru-*.js`) です。Node のコマンド (`dist-cli/`) とライブラリ (`dist-lib/`) は、hyphen を外部の依存として読み込むので、パターンを含みません。
+  - **第 6 項 a** (元の部品の代わりに使える部品は、変更したものと名乗る): JavaScript に変換したものは、LaTeX などの上で元の `hyph-ru.tex` の代わりに使える部品ではないので、当たりません。
+  - **第 6 項 b** (変更の内容を、部品ごとに目立つように書く): パターンを取り込んだファイルの先頭に、変更したものであることと変更の内容 (上の「配るもの」) を英語で書いています (`vite.config.ts` の `HYPHEN_NOTICES`)。この節にも書いています。
+  - **第 6 項 c** (元の作者などがサポートするかのように書かない): 元のパターンの作者・保守者は、この変換したものをサポートしません。不具合は Kumiori へ報告してください。
+  - **第 6 項 d** (元の Work の写しか、入手に十分な情報を付ける): 変更していない元のファイルは、hyph-utf8 パッケージ (https://ctan.org/pkg/hyph-utf8 の `tex/generic/hyph-utf8/patterns/tex/hyph-ru.tex`) と、上の取得元 (https://github.com/hyphenation/tex-hyphen ) から入手できます。
+  - LPPL 1.3c に、ライセンスの本文の写しを配布物に付けることを求める項はありません (第 1〜12 項を確かめました)。本文は上の URL にあります。
+
+```text
+% title: Hyphenation patterns for Russian
+% copyright: Copyright (C) 1999-2003 Alexander I. Lebedev
+% notice:
+%     This file is part of the hyph-utf8 package.
+%     See http://www.hyphenation.org/tex for more information.
+% language:
+%     name: Russian
+%     tag: ru
+% version: 2003/03/10
+% authors:
+%     -
+%         name: Alexander I. Lebedev
+%         contact: swan (at) scon155.phys.msu.su
+% licence:
+%     name: LPPL
+%     version: 1.2
+%     or_later: true
+%     url: https://latex-project.org/lppl/
+% hyphenmins:
+%     typesetting:
+%         left: 2
+%         right: 2
+% texlive:
+%     encoding: t2a
+%     babelname: russian
+%     use_old_patterns_comment: The old system allows choosing patterns and encodings manually. That mechanism needs to be implemented first in this package, so we still fall back on old system.
+%     legacy_patterns: ruhyphen.tex
+%     message: Russian hyphenation patterns
+%     description: |-
+%         Hyphenation patterns for Russian in T2A and UTF-8 encodings.
+%         For 8-bit engines, the 'ruhyphen' package provides a number of
+%         different pattern sets, as well as different (8-bit) encodings, that
+%         can be chosen at format-generation time.  The UTF-8 version only
+%         provides the default pattern set.  A mechanism similar to the one used
+%         for 8-bit patterns may be implemented in the future.
+% ==========================================
+% Patterns were generated with patgen from a 990,000-word list and then
+% manually corrected.
+%
+% The program consists of the files ruhyphal.tex, cyryoal.tex and two
+% document files README.ruhyphal and hyphen.rules.  The file cyryoal.tex
+% can be regenerated using mkcyryo script (a part of ruhyphen package)
+% and the latest release of rus-ispell dictionaries
+% <ftp://scon155.phys.msu.su/pub/russian/ispell/>.
+```
+
+#### Ukrainian (uk): `hyph-uk.tex` の 1〜38 行目 (パターンの前のコメントすべて)
+
+- 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-uk.tex (master ブランチ。取得日 2026-11-10。コミットは特定していない)
+- npm の hyphen@1.14.1 の `patterns/uk.js` には、ライセンスや著作権の表示は入っていません。hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
+- ライセンスは MIT か LPPL のどちらか (下の表示の licence の欄)。Kumiori は MIT で配布します。
+
+```text
+% title: Hyphenation patterns for Ukrainian
+% copyright: Copyright (C) 1998-2001 Maksym Polyakov
+% notice: This file is part of the hyph-utf8 package.
+%     See http://www.hyphenation.org/tex for more information.
+% language:
+%     name: Ukrainian
+%     tag: uk
+% version: 2001/05/10
+% authors:
+%   -
+%     name: Maksym Polyakov
+%     contact: polyama (at) auburn.edu, mpoliak (at) i.com.ua
+% licence:
+%     - This file is available under any of the following licences:
+%     -
+%         name: MIT
+%         url: https://opensource.org/licenses/MIT
+%     -
+%         name: LPPL
+%         url: https://latex-project.org/lppl/
+% hyphenmins:
+%     typesetting:
+%         left: 2
+%         right: 2
+% texlive:
+%     encoding: t2a
+%     babelname: ukrainian
+%     use_old_patterns_comment: The old system allows choosing patterns and encodings manually. That mechanism needs to be implemented first in this package, so we still fall back on old system.
+%     legacy_patterns: ukrhyph.tex
+%     message: Ukrainian hyphenation patterns
+%     description: |-
+%         Hyphenation patterns for Ukrainian in T2A and UTF-8 encodings.
+%         For 8-bit engines, the 'ukrhyph' package provides a number of
+%         different pattern sets, as well as different (8-bit) encodings, that
+%         can be chosen at format-generation time.  The UTF-8 version only
+%         provides the default pattern set.  A mechanism similar to the one used
+%         for 8-bit patterns may be implemented in the future.
+%
+```
+
+```text
+MIT License
+
+Copyright (C) 1998-2001 Maksym Polyakov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+#### Modern Greek, monotonic (el-monoton): `hyph-el-monoton.tex` の 1〜52 行目 (パターンの前のコメントすべて)
+
+- 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-el-monoton.tex (master ブランチ。取得日 2026-11-10。コミットは特定していない)
+- npm の hyphen@1.14.1 の `patterns/el-monoton.js` には、ライセンスや著作権の表示は入っていません。hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
+- ライセンスは LPPL か MIT のどちらか (下の表示の licence の欄)。Kumiori は MIT で配布します。`lang` が `el` の文に使います (多調の綴り el-polyton・古典ギリシャ語 grc のパターンは読み込みません)。
+
+```text
+% title: Hyphenation patterns for Modern Greek, monotonic
+% copyright: Copyright (C) 2008-2011 Dimitrios Filippou
+% notice: This file is part of the hyph-utf8 package.
+%     See http://www.hyphenation.org/tex for more information.
+% language:
+%     name: Modern Greek, monotonic spelling
+%     tag: el-monoton
+% version: 5.0
+% authors:
+%   -
+%     name: Dimitrios Filippou
+%     contact: dimitrios.ap.filippou (at) gmail.com
+% licence:
+%     - This file is available under any of the following licences:
+%     -
+%         name: LPPL
+%         url: https://latex-project.org/lppl/
+%     -
+%         name: MIT
+%         url: https://opensource.org/licenses/MIT
+% hyphenmins:
+%     typesetting:
+%         left: 1
+%         right: 1
+% changes:
+%     - Created:       June 6, 2008
+%     - Last modified: Sept. 12, 2011
+% texlive:
+%     babelname: monogreek
+%     use_old_patterns_comment: Old patterns work in a different way, one-to-one conversion from UTF-8 is not possible.
+%     legacy_patterns: grmhyph5.tex
+%     message: Hyphenation patterns for uni-accent (monotonic) Modern Greek
+%     package: greek
+% ==========================================
+% This file was first created by mechanical translation from
+% GRMhyph5.tex via "elhyph-utf8 -m -c" (version 0.1 by Peter
+% Heslin -- p.j.heslin at durham dot ac dot uk). Some additions
+% were also made by hand.
+%
+% Created by Dimitrios Filippou with some ideas borrowed from
+% Yannis Haralambous, Kostis Dryllerakis and Claudio Beccari.
+% Mojca Miklavec adapted it for the "hyph-utf8" package.
+%
+% These hyphenation patterns are explained in "modern.pdf", which
+% can be found in the "elhyphen" or "hyphenation-greek" package.
+%
+% Documentation in English can be found in: D. Filippou,
+% "Hyphenation patterns for Ancient and Modern Greek," in
+% "TeX, XML, and Digital Typography" (A. Syropoulos et al.,
+% eds.), Lecture Notes in Computer Science 3130, Springer-Verlag
+% Berlin-Heidelberg, 2004. ISBN 3-540-22801-2.
+%
+```
+
+```text
+MIT License
+
+Copyright (C) 2008-2011 Dimitrios Filippou
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### 1.5 Apache License 2.0 の本文

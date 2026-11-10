@@ -16,6 +16,7 @@ import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, WritingMode } f
 import { borderToLogicalWidths, toLogical } from './geometry';
 import { mirrorChar, resolveLevels, visualOrder } from './bidi';
 import { atomAboveBelow, DEFAULT_BASELINE_RATIO, lineMetrics, type LineMetrics } from './lineMetrics';
+import { hyphenationLetters } from './hyphenation';
 import { bidiControls, flattenInline, joiningUnits, ligatureUnits, primaryChar, runStyleOf } from './inlineFlatten';
 
 // inline の木を atom に平らにする処理 (inlineFlatten.ts) も、ほかのファイルからは従来どおりここから使える
@@ -62,6 +63,13 @@ export interface Atom {
   t?: TateChuYokoMetrics;
   leader?: LeaderSpec;
   box?: BoxSpec;
+  /**
+   * 欧文の書体で組む語の字: ギリシャ文字・キリル文字が 2 字以上続く語の字 (inlineFlatten.ts の markLatinWords)。書体・字の組の詰め・
+   * 和欧間のアキ・分綴を、ラテン文字の語と同じに扱う
+   */
+  latinWord?: boolean;
+  /** 幅 0 で字形を描かない字 (単独の ZWNJ・LRM・RLM など。Default_Ignorable_Code_Point)。双方向の並べ替え・改行の決まりには加わる */
+  hidden?: boolean;
   /** 直前と同じ語の一部 (脚注の参照記号など)。この atom の前では改行しない */
   glue?: boolean;
   /** この atom の前で改行してよいか (UAX #14 で段落ごとに決めたもの。markLineBreaks) */
@@ -167,6 +175,8 @@ export interface LeaderSpec {
 
 export interface FlattenState {
   run: number;
+  /** ギリシャ文字・キリル文字の語を、欧文の書体に替えない (アンテナハウス互換) */
+  noLatinWords?: boolean;
   /** 脚注: ラベル取得と参照記号の縮小率。無ければ '*' だけ出して本体は捨てる */
   footnote?: { label(fn: LFootnote): string; scale: number };
   /** ページ番号参照 (fo:page-number-citation) の解決 */
@@ -376,7 +386,8 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
       // U+FF01〜FF5E) も和字として扱う (JLREQ の cl-22 漢字等。「Q1　情報…」・
       // 「　t」と「FrameMaker ＋ SGML」は四分アキ、「3.4％」「1～10」はベタ)
       const wa = (ch: string) => isIdeographicOrKana(ch) || ch === '\u3000' || (isFullwidthForm(ch) && !isOpeningPunct(ch) && !isClosingPunct(ch) && !isMiddlePunct(ch) && !/^[＃＄％～]$/.test(ch));
-      if ((wa(a.last) && isLatinAlnum(b.first)) || (isLatinAlnum(a.last) && wa(b.first))) {
+      // 欧文の書体で組む語 (ギリシャ文字・キリル文字が 2 字以上続く語) の字も、欧文の字と同じに空ける (単独の 1 字は空けない)
+      if ((wa(a.last) && (isLatinAlnum(b.first) || b.latinWord)) || ((isLatinAlnum(a.last) || a.latinWord) && wa(b.first))) {
         const s = Math.min(fa, fb) * (a.st.textAutospaceWidth ?? 0.25);
         a.advance += s;
         a.trail = (a.trail ?? 0) + s;
@@ -506,11 +517,13 @@ function isThaiLetter(ch: string): boolean {
   return cp >= 0x0e01 && cp <= 0x0e5b;
 }
 
-/** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張) */
+/** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張、ギリシャ文字・キリル文字) */
 function isLatinAlnumOrPunct(ch: string): boolean {
   // 一般句読点 (U+2010〜U+2027・U+2030〜U+205E。引用符 ‘’“”・ダッシュ・…) も含める (欧文の書体の kern の組に入っている。
-  // element’s・‘a・r’ などの組を書体の kern の値で詰める)
-  return /^[\u0021-\u007E\u00C0-\u024F\u2010-\u2027\u2030-\u205E]$/u.test(ch);
+  // element’s・‘a・r’ などの組を書体の kern の値で詰める)。
+  // ギリシャ文字 (U+0370〜03FF・U+1F00〜1FFF)・キリル文字 (U+0400〜052F)・Latin Extended Additional (U+1E00〜1EFF。ベトナム語など) も、
+  // 書体の kern の組で詰める (CSS Fonts 4 §6.3: font-kerning の初期値 auto。ГА・Те・Αυ などの組)
+  return /^[\u0021-\u007E\u00C0-\u024F\u0370-\u052F\u1E00-\u1FFF\u2010-\u2027\u2030-\u205E]$/u.test(ch);
 }
 
 function rubyOverhang(a: Atom, prev: Atom | undefined, next: Atom | undefined) {
@@ -710,7 +723,13 @@ export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: s
   // 合字の字 (U+FB00〜U+FB04、または liga でまとめた字の並び) は、元の字の並びとして語に数える
   const LIG: Record<string, string> = { '\uFB00': 'ff', '\uFB01': 'fi', '\uFB02': 'fl', '\uFB03': 'ffi', '\uFB04': 'ffl' };
   const textOf = (a: Atom) => (a.g?.draw && a.g.draw.length > 1 ? a.g.draw : (LIG[a.first] ?? a.first));
-  const isLetter = (a: Atom | undefined) => !!a && a.kind === 'glyph' && !!a.g && a.st.hyphenate === true && /^[A-Za-zÀ-ɏ]+$/u.test(textOf(a));
+  // 語の字: ラテン文字。ロシア語・ウクライナ語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字も (その言語の規則があるときだけ。
+  // CSS Text 3 §5.3: 自動の分綴は、文の言語が分かり、その言語に合う分綴の資源があるときだけ行う)
+  const isLetter = (a: Atom | undefined) => {
+    if (!a || a.kind !== 'glyph' || !a.g || a.st.hyphenate !== true) return false;
+    const t = textOf(a);
+    return /^[A-Za-zÀ-ɏ]+$/u.test(t) || !!hyphenationLetters(a.st.language)?.test(t);
+  };
   for (let i = 0; i < atoms.length; ) {
     if (!isLetter(atoms[i])) {
       i++;
@@ -1446,7 +1465,9 @@ export function buildLineNode(
       // 字は、その字の書体の基線の位置で置く (代わりの書体の字も、行の基線にそろえる)
       const ab = atomAboveBelow(a.primaryRatio === undefined ? a : { ...a, primaryRatio: undefined }, wm);
       const bOff = lm.above - ab.above; // 行の em ボックス内でのこの atom の block 方向位置
-      if (a.kind === 'glyph' && a.g) {
+      if (a.kind === 'glyph' && a.g && a.hidden) {
+        // 描かない字 (単独の ZWNJ・LRM など): 字形を置かない
+      } else if (a.kind === 'glyph' && a.g) {
         const gn = glyphNode(a.g, a.st, wm, a.first, a.st.fontSize, a.st.color, a.src, a.cite);
         if (a.ref !== undefined) gn.ref = a.ref;
         gn.i = off - gStart + (a.dx ?? 0) + (dx ?? 0);
