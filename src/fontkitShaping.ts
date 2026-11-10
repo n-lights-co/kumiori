@@ -218,6 +218,7 @@ type UseGlyph = { codePoints: number[]; features: Record<string, boolean>; shape
 /**
  * 汎用の整形で、どの音節にも入らなかった字形 (情報 shaperInfo が無い) を、前の音節に入れる (上の 7)。
  * ヴィラーマの後ろの ZWJ を入れたときは、次の音節も同じ音節にまとめる (子音 + ヴィラーマ + ZWJ + 子音 は 1 つの結合)。
+ * 母音記号の後ろのヴィラーマを入れたときは、続く記号だけの音節 (アヌスヴァーラなど) をまとめる (කෝං。まとめないと、記号の前に点線の丸が入る)。
  * 手を入れた音節は、先頭の 3 つの字形にレフの機能 (rphf) を付け直す (fontkit は音節の長さで付けるので、後から入った字形に付いていない)
  */
 function adoptUseStrays(glyphs: UseGlyph[]) {
@@ -232,11 +233,13 @@ function adoptUseStrays(glyphs: UseGlyph[]) {
   /** 前の音節にまとめる途中の、次の音節の番号 (-1 = 次に出てきた音節、0 = まとめない) と、まとめる先 */
   let joinFrom = 0;
   let joinTo: UseInfo | null = null;
+  /** 次の音節が「基底の字の無い音節」(記号だけ。broken_cluster) のときだけまとめる */
+  let joinMarksOnly = false;
   const touched = new Set<number>();
   for (const g of glyphs) {
     const info = g.shaperInfo;
     if (info) {
-      if (joinTo && joinFrom === -1) joinFrom = info.syllable;
+      if (joinTo && joinFrom === -1) joinFrom = joinMarksOnly && info.syllableType !== 'broken_cluster' ? 0 : info.syllable;
       if (joinTo && info.syllable === joinFrom) {
         info.syllable = joinTo.syllable;
         info.syllableType = joinTo.syllableType;
@@ -254,6 +257,12 @@ function adoptUseStrays(glyphs: UseGlyph[]) {
     if (cp === 0x200d && prev.category === 'H') {
       joinFrom = -1;
       joinTo = prev;
+      joinMarksOnly = false;
+    } else if (cp === 0x0dca) {
+      // 母音記号の後ろのヴィラーマ (分かれる母音記号の後ろの部分) で音節が切れた: 続くアヌスヴァーラ・ヴィサルガ (記号だけの音節) も同じ音節
+      joinFrom = -1;
+      joinTo = prev;
+      joinMarksOnly = true;
     }
     prev = g.shaperInfo;
   }

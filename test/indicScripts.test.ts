@@ -142,6 +142,8 @@ describe('fontkit の整形の補い (fontkitShaping.ts の 5〜10)', () => {
     expect(koo[0]).toBe(nominal('Sinh', 'ෙ'));
     expect(koo[1]).toBe(nominal('Sinh', 'ක'));
     expect(ids('ක්‍', 'Sinh').every((id) => typeof id === 'number')).toBe(true);
+    // 分かれる母音記号の後ろのアヌスヴァーラ: 点線の丸が入らない
+    expect(ids('කෝං', 'Sinh')).toEqual([...koo, nominal('Sinh', '\u0d82')]);
     // ラカーランサヤ: ක + 下に付く ර の字形 (ヴィラーマも ර の字形も残らない)
     const kra = ids('ක්‍ර', 'Sinh');
     expect(kra).toHaveLength(2);
