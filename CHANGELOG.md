@@ -87,6 +87,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
 - **圏点の位置**: `text-emphasis-position` の `under` (横書きは字の下)・`left` (縦書きは字の左) に対応。中国語 (`lang` が `zh`) の既定は字の下 (CSS Text Decoration 3 の付録 B の既定のスタイルシート)
 - **ルビの注音符号・拼音**: 注音符号 (ボポモフォ) と声調の記号は、間を空けずにまとめて親文字の中央に置く。拼音 (ラテン文字) は、中国語 (`lang` が `zh`) のルビでまとめて置く (CSS Ruby 1 §4.3)
 - **`<html lang="zh-…">`**: 中国語の文書は、`html` の `lang` を字の言語にする (`line-break` の `normal`・`loose` の中国語の決まりが、`body` より内側に `lang` が無くても効く)
+- **`quotes: auto` の中国語の引用符** (`q` 要素など): 簡体字 (`zh`・`zh-Hans`・`zh-CN` など) は `“ ” ‘ ’` にする。繁体字 (`zh-Hant`・`zh-TW`・`zh-HK`・`zh-MO`) は今までどおり `「 」 『 』` (CSS Content 3 §4.1 の挙げる CLDR の引用符)
 
 ## 0.1.1 (2026-11-09)
 

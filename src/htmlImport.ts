@@ -2081,7 +2081,9 @@ class HtmlImporter {
 
   /**
    * open-quote・close-quote の字 (Content 3 §4.1)。入れ子の深さで quotes の組を選ぶ (深さが組の数以上なら最後の組)。
-   * close-quote で深さが負になるときは何も入れない。quotes: auto は言語に合う引用符 (日本語・中国語は「」『』、ほかは “” ‘’)
+   * close-quote で深さが負になるときは何も入れない。quotes: auto は言語に合う引用符 (日本語と繁体字の中国語は「」『』、ほかは “” ‘’)。
+   * 中国語は、繁体字 (zh-Hant と、台湾・香港・マカオ = zh-TW・zh-HK・zh-MO) が「」『』、簡体字 (それ以外の zh) が “” ‘’
+   * (Content 3 §4.1 の注が挙げる CLDR の引用符: zh は “ ” ‘ ’、zh_Hant は 「 」 『 』。clreq §5.2: 中国大陸は弯引号、台湾は直角引号)
    */
   private quote(el: Element, pseudo: '::before' | '::after' | undefined, kind: string): string {
     const v = (pseudo ? this.cs(el, pseudo) : this.cs(el))('quotes')?.trim() ?? 'auto';
@@ -2089,7 +2091,8 @@ class HtmlImporter {
     if (v === 'none') pairs = [];
     else if (v === 'auto' || !v) {
       const lang = (this.langOf(el) ?? '').toLowerCase();
-      pairs = /^(ja|zh)\b/.test(lang) ? [['「', '」'], ['『', '』']] : [['“', '”'], ['‘', '’']];
+      const corner = /^ja\b/.test(lang) || (/^zh\b/.test(lang) && /-(hant|tw|hk|mo)\b/.test(lang));
+      pairs = corner ? [['「', '」'], ['『', '』']] : [['“', '”'], ['‘', '’']];
     } else {
       const strs = parseContent(v).filter((x): x is { kind: 'str'; v: string } => x.kind === 'str').map((x) => x.v);
       pairs = [];

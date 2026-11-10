@@ -9,6 +9,8 @@
  *   Latin or Bopomofo characters. Thus, the space-around and space-between values will nevertheless result in Latin or Bopomofo characters centered」)。
  *   ラテン文字は、中国語 (lang が zh) のルビだけ (ほかの言語のルビの欧字は、今までどおり字ごとに割る)
  * - <html lang="zh-…"> の言語を、文書の字の言語にする (HTML Living Standard §3.2.6.2)。ほかの言語は今までどおり
+ * - quotes: auto の引用符 (q 要素): 簡体字の中国語は “ ” ‘ ’、繁体字は 「 」 『 』 (CSS Content 3 §4.1 https://drafts.csswg.org/css-content-3/
+ *   2026-11-10 取得: auto は言語に合う引用符を UA が選ぶ。注は CLDR を挙げる。CLDR 46 の zh は親 (root) の “ ” ‘ ’、zh_Hant は 「 」 『 』)
  */
 import { describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
@@ -109,5 +111,15 @@ describe('ルビの注音符号・拼音の置き方 (CSS Ruby 1 §4.3)', () => 
     }
     const k = await rubyGlyphs('かん', '漢字字', 'zh-Hans');
     expect(gaps(k)[0]).toBeCloseTo(10, 5);
+  });
+});
+
+describe('quotes: auto の中国語の引用符 (CSS Content 3 §4.1)', () => {
+  const text = (lang: string) => JSON.stringify(conv(`<html><head></head><body><p lang="${lang}"><q>甲<q>乙</q></q></p></body></html>`).flow);
+  it('簡体字 (zh・zh-Hans・zh-CN・zh-SG) は “ ” ‘ ’', () => {
+    for (const l of ['zh', 'zh-Hans', 'zh-CN', 'zh-SG', 'zh-Hans-CN']) expect(text(l), l).toMatch(/“.*甲.*‘.*乙.*’.*”/);
+  });
+  it('繁体字 (zh-Hant・zh-TW・zh-HK・zh-MO) は 「 」 『 』。日本語は今までどおり 「 」 『 』', () => {
+    for (const l of ['zh-Hant', 'zh-TW', 'zh-HK', 'zh-MO', 'zh-Hant-TW', 'ja']) expect(text(l), l).toMatch(/「.*甲.*『.*乙.*』.*」/);
   });
 });

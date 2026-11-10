@@ -87,6 +87,7 @@ A release that adds flex features, WOFF/WOFF2, an API for loading referenced fil
 - **Emphasis mark position**: `text-emphasis-position` supports `under` (below the characters in horizontal text) and `left` (to the left in vertical text). The default for Chinese (`lang` is `zh`) is below the characters (the default style sheet in CSS Text Decoration 3, Appendix B)
 - **Bopomofo and pinyin ruby**: Bopomofo and its tone marks are kept together and centred over the base. Pinyin (Latin letters) is kept together in Chinese ruby (`lang` is `zh`) (CSS Ruby 1 §4.3)
 - **`<html lang="zh-…">`**: in Chinese documents the `lang` of `html` becomes the language of the text (the Chinese rules of `line-break: normal` and `loose` apply even when there is no `lang` inside `body`)
+- **Chinese quotation marks for `quotes: auto`** (the `q` element and so on): Simplified Chinese (`zh`, `zh-Hans`, `zh-CN` and so on) uses `“ ” ‘ ’`. Traditional Chinese (`zh-Hant`, `zh-TW`, `zh-HK`, `zh-MO`) keeps `「 」 『 』` (the CLDR quotation marks that CSS Content 3 §4.1 refers to)
 
 ## 0.1.1 (2026-11-09)
 
