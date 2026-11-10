@@ -416,24 +416,28 @@ test('可変フォント: 太さ・幅の実体を、測った幅のまま canva
     };
     walk(k.tree.sheets[0].page.regionBody as never);
     const hs = glyphs.filter((g) => g.text === 'H').map((g) => ({ family: g.fontFamily, weight: g.fontWeight, fakeBold: !!g.fakeBold, scaleX: g.scaleX }));
-    // 実体ごとに、ブラウザに登録した書体で測った幅 (描く幅) と、fontkit の実体で測った幅 (組んだ幅) を比べる (100px の字)
+    // 実体ごとに、ブラウザに登録した書体で測った幅 (描く幅) と、fontkit の実体で測った幅 (組んだ幅) を比べる。
+    // 字の大きさは 1000px (Measurer が Canvas で測るときの大きさと同じ): 字の送りを整数の画素に丸める環境 (下の説明) でも、丸めが幅に比べて小さくなる。
+    // master は、可変フォントの既定の形 (太さ 100・幅 100) を fontkit で測った幅 (実体が既定の形のまま描かれていないかを見分ける)
     const ctx = document.createElement('canvas').getContext('2d')!;
     ctx.fontKerning = 'none';
+    const PX = 1000;
+    const laidOf = (f: Lf) => (f.fk.layout('Hamburg', { kern: false, liga: false, clig: false }).glyphs.reduce((a, g) => a + g.advanceWidth, 0) / f.unitsPerEm) * PX;
+    const master = laidOf(k.fonts.all().find((f) => !f.instanceOf && f.family === 'css:Any')!);
     const instances = k.fonts
       .all()
       .filter((f) => f.instanceOf)
       .map((f) => {
-        ctx.font = k.fonts.cssFont(f, 100);
+        ctx.font = k.fonts.cssFont(f, PX);
         const drawn = ctx.measureText('Hamburg').width;
-        const laid = (f.fk.layout('Hamburg', { kern: false, liga: false, clig: false }).glyphs.reduce((a, g) => a + g.advanceWidth, 0) / f.unitsPerEm) * 100;
-        return { coords: f.instanceOf!.coords, registered: !!f.face && f.face.status === 'loaded' && !!f.cssFamily, drawn, laid };
+        return { coords: f.instanceOf!.coords, registered: !!f.face && f.face.status === 'loaded' && !!f.cssFamily, drawn, laid: laidOf(f) };
       });
     // 字が描かれているか (濃い画素)
     const canvas = document.querySelector('#sheets canvas') as HTMLCanvasElement;
     const d = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
     let dark = 0;
     for (let i = 0; i < d.length; i += 4) if (d[i] < 128 && d[i + 1] < 128 && d[i + 2] < 128) dark++;
-    return { hs, instances, dark };
+    return { hs, instances, dark, master };
   });
   // 太字は本物の太字 (擬似太字にしない)。幅は軸の値 (字形を拡縮しない)
   expect(info.hs).toEqual([
@@ -446,12 +450,23 @@ test('可変フォント: 太さ・幅の実体を、測った幅のまま canva
     { wdth: 100, wght: 700 },
     { wdth: 75, wght: 400 },
   ]);
+  // 描く幅 (ブラウザに登録した実体) と、組んだ幅 (fontkit の実体) が合う。許す差は、字の数 × 0.5px:
+  // Chromium は、書体のヒンティングが medium・full の環境 (Linux の fontconfig の設定で決まる。GitHub Actions の ubuntu がそう。
+  // 起動の指定 --font-render-hinting=full で再現できる) では、字の送りを字ごとに整数の画素に丸める (subpixel positioning を使わない) ので、
+  // 字ごとに最大 0.5px ずれる。可変フォントでない書体 (Arimo など) でも同じだけずれる、ブラウザの側の丸め。
+  // Kumiori は、字 (字の単位) ごとに、組んだ位置を指定して描く (canvasRenderer.ts の drawGlyph) ので、この丸めは字の位置に積もらない。
+  // ヒンティングの無い環境では、差は 0.01px より小さい
+  const tolerance = [...'Hamburg'].length * 0.5 + 0.01;
   for (const i of info.instances) {
     expect(i.registered).toBe(true);
-    expect(Math.abs(i.drawn - i.laid)).toBeLessThan(0.05);
+    expect(Math.abs(i.drawn - i.laid)).toBeLessThan(tolerance);
+    // 既定の形 (太さ 100・幅 100) のまま描かれてはいない: 既定の形の幅とは、丸めの幅よりずっと大きく違う
+    expect(Math.abs(i.drawn - info.master)).toBeGreaterThan(20 * tolerance);
   }
-  // 3 つの実体は幅が違う
-  expect(new Set(info.instances.map((i) => Math.round(i.laid))).size).toBe(3);
+  // 3 つの実体は、描く幅が互いに違う (丸めの幅より大きく)
+  const widths = info.instances.map((i) => i.drawn).sort((a, b) => a - b);
+  expect(widths[1] - widths[0]).toBeGreaterThan(20 * tolerance);
+  expect(widths[2] - widths[1]).toBeGreaterThan(20 * tolerance);
   expect(info.dark).toBeGreaterThan(500);
   // PDF には、実体ごとに静的な書体が埋まる
   const pdf = await downloadPdf(page);
