@@ -1189,6 +1189,8 @@ async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager,
     // 背景画像も埋め込む
     const bgi = a.backgroundImage;
     if (bgi) use(bgi.src, bgi.width, bgi.height);
+    // 後ろに重ねる背景の画像 (複数の背景) も
+    for (const l of bgi?.under ?? []) use(l.src, l.width ?? 0, l.height ?? 0);
   });
   const images = new Map<string, PDFImage>();
   const vectors = new Map<string, SvgDoc>();

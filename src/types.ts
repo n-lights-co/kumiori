@@ -403,6 +403,18 @@ export interface BackgroundImage {
   gradient?: string;
   /** グラデーションの em の基準 (pt) */
   gradientFontSize?: number;
+  /**
+   * 位置の基準の領域 (CSS の background-origin。Backgrounds 3 §2.8)。無ければ padding の箱。位置・百分率の大きさ・繰り返しの始まりを、
+   * この領域で決める
+   */
+  origin?: 'border-box' | 'content-box';
+  /**
+   * 描く範囲 (CSS の background-clip。Backgrounds 3 §2.7)。無ければ padding の箱 (罫線の下には描かない)。border-box は border の箱 (罫線の下も)、
+   * content-box は内容の箱。角丸の箱では、その箱の角丸で切り抜く
+   */
+  clip?: 'border-box' | 'content-box';
+  /** この画像の後ろに重ねる画像 (CSS の複数の背景。Backgrounds 3 §2.1)。手前のものから順。それぞれが位置・大きさ・繰り返し・origin・clip を持つ */
+  under?: BackgroundImage[];
 }
 
 /** 角丸 (アンテナハウスの axf:border-radius)。四隅を半径 rx (水平)・ry (垂直) の楕円で丸める */
@@ -444,6 +456,11 @@ export interface BoxStyle {
   border?: BorderInput;
   backgroundColor?: string;
   backgroundImage?: BackgroundImage;
+  /**
+   * 背景の色を塗る範囲 (CSS の background-clip のうち、いちばん後ろの層の値。Backgrounds 3 §2.2)。無ければ border の箱。
+   * ブロック・表・セル・絶対配置の箱で効く (行内の箱の背景には効かない)
+   */
+  backgroundClip?: 'padding-box' | 'content-box';
   borderRadius?: BorderRadius;
   /** 影。複数なら、先のものが上に描かれる (CSS と同じ) */
   boxShadow?: BoxShadow | BoxShadow[];
@@ -1547,8 +1564,10 @@ export interface AreaBase {
   padding: Edges;
   border: BorderStyle;
   backgroundColor?: string;
-  /** 背景画像 (大きさは解決済み) */
+  /** 背景画像 (大きさは解決済み。後ろに重ねる画像 under も、それぞれ大きさは解決済み) */
   backgroundImage?: BackgroundImage & { width: number; height: number };
+  /** 背景の色を塗る範囲 (CSS の background-clip)。無ければ border の箱 (width × height) */
+  backgroundClip?: 'padding-box' | 'content-box';
   writingMode: WritingMode;
   /**
    * 箱の回転 (反時計回り。reference-orientation)。width / height は回転前の局所サイズ、x / y は回転後の外接矩形の左上。

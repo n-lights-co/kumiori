@@ -341,6 +341,10 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'background-position-x': [false, '0%', 'raw'],
   'background-position-y': [false, '0%', 'raw'],
   'background-size': [false, 'auto', 'raw'],
+  // 層ごとの、位置の基準の領域・描く範囲・固定 (Backgrounds 3 §2.8・§2.7・§2.5)。背景の性質は、どれも層ごとの値のコンマ区切りの並び (§2.1)
+  'background-origin': [false, 'padding-box', 'raw'],
+  'background-clip': [false, 'border-box', 'raw'],
+  'background-attachment': [false, 'scroll', 'raw'],
   display: [false, 'inline', 'raw'],
   position: [false, 'static', 'raw'],
   float: [false, 'none', 'raw'],
@@ -865,6 +869,8 @@ export function supportsCssDeclaration(prop: string, value: string): boolean {
     if (UNSUPPORTED_CSS_PROPERTIES.has(lp)) return !longhandOfShorthand || !(t === (PROPS[lp]?.[1] ?? '').toLowerCase() || /^(inherit|initial|unset|revert|revert-layer)$/.test(t));
     // 3D の変換 (transform の 3D の関数など) は読まない
     if (is3dTransformValue(lp, t)) return true;
+    // ページに固定する背景 (background-attachment: fixed) は、箱に付く背景として描く (読まない値)
+    if (lp === 'background-attachment' && /\bfixed\b/.test(t)) return true;
     return !!UNSUPPORTED_CSS_VALUES[lp]?.includes(t);
   };
   if (unsupported(p, v, false)) return false;
@@ -920,21 +926,26 @@ const borderShorthand: Expander = (prop, v, global, ah) => {
 };
 
 /**
- * background の一括指定 (Backgrounds 3 §2.10: <bg-layer># , <final-bg-layer>)。使うのは最初の層の画像・繰り返し・位置・大きさと、最後の層の色。
+ * background の一括指定 (Backgrounds 3 §2.10: <bg-layer># , <final-bg-layer>)。層ごとの画像・繰り返し・位置・大きさ・基準の領域・描く範囲・
+ * 固定を、それぞれの性質のコンマ区切りの並びにする (§2.1)。色は最後の層にだけ書ける。
+ * 箱の語 (<visual-box>) は、1 つなら background-origin と background-clip の両方、2 つなら 1 つ目が origin、2 つ目が clip (§2.10)。
  * どの種類にも当たらない語 (-webkit-linear-gradient() など、読めない値) があれば、宣言ごと読めない (空を返す。前の宣言を消さない。
- * CSS 2.1 §4.2: 読めない値の宣言は無視する)。色は最後の層にだけ書ける。固定 (attachment) と箱 (origin・clip。Backgrounds 4 の text を含む) の語は読み飛ばす
+ * CSS 2.1 §4.2: 読めない値の宣言は無視する)。Backgrounds 4 の text (描く範囲) は読み飛ばす
  */
 const backgroundShorthand: Expander = (_prop, v, global) => {
-  const props = ['background-color', 'background-image', 'background-repeat', 'background-position-x', 'background-position-y', 'background-size'];
+  const props = ['background-color', 'background-image', 'background-repeat', 'background-position-x', 'background-position-y', 'background-size', 'background-origin', 'background-clip', 'background-attachment'];
   if (global) return each(props, v);
   const layers = splitTop(v, ',', { keepEmpty: true });
   let color = 'rgba(0, 0, 0, 0)';
-  let image = 'none';
-  let repeat = 'repeat';
-  let pos: string[] = [];
-  let size = 'auto';
+  const images: string[] = [];
+  const repeats: string[] = [];
+  const xs: string[] = [];
+  const ys: string[] = [];
+  const sizes: string[] = [];
+  const origins: string[] = [];
+  const clips: string[] = [];
+  const attachments: string[] = [];
   for (let li = 0; li < layers.length; li++) {
-    const isFirst = li === 0;
     const isLast = li === layers.length - 1;
     // 位置と大きさを分ける / は、括弧 (url() など) の外のものだけ
     let depth = 0;
@@ -945,6 +956,8 @@ const backgroundShorthand: Expander = (_prop, v, global) => {
     let lRepeat: string | undefined;
     const lPos: string[] = [];
     let lSize: string | undefined;
+    let lAttachment: string | undefined;
+    const lBoxes: string[] = [];
     for (let k = 0; k < ts.length; k++) {
       const t = ts[k];
       const tl = t.toLowerCase();
@@ -956,7 +969,9 @@ const backgroundShorthand: Expander = (_prop, v, global) => {
         if (!sz.length) return [];
         lSize = sz.join(' ');
       } else if (/^(left|right|top|bottom|center)$/.test(tl) || isLenLike(t)) lPos.push(t);
-      else if (/^(scroll|fixed|local|border-box|padding-box|content-box|text)$/.test(tl)) continue;
+      else if (/^(scroll|fixed|local)$/.test(tl)) lAttachment = tl;
+      else if (/^(border-box|padding-box|content-box)$/.test(tl)) lBoxes.push(tl);
+      else if (tl === 'text') continue;
       else if (isColorLike(t)) {
         // 色は最後の層だけ。var() は何になるか分からないので通す (色としては使わない)
         if (/^var\(/i.test(t)) continue;
@@ -964,15 +979,29 @@ const backgroundShorthand: Expander = (_prop, v, global) => {
         color = t;
       } else return [];
     }
-    if (isFirst) {
-      image = lImage ?? image;
-      repeat = lRepeat ?? repeat;
-      pos = lPos;
-      size = lSize ?? size;
-    }
+    if (lBoxes.length > 2) return [];
+    const [px, py] = positionXY(lPos);
+    images.push(lImage ?? 'none');
+    repeats.push(lRepeat ?? 'repeat');
+    xs.push(px);
+    ys.push(py);
+    sizes.push(lSize ?? 'auto');
+    origins.push(lBoxes[0] ?? 'padding-box');
+    clips.push(lBoxes[1] ?? lBoxes[0] ?? 'border-box');
+    attachments.push(lAttachment ?? 'scroll');
   }
-  const [px, py] = positionXY(pos);
-  return [['background-color', color], ['background-image', image], ['background-repeat', repeat], ['background-position-x', px], ['background-position-y', py], ['background-size', size]];
+  const list = (a: string[]) => a.join(', ');
+  return [
+    ['background-color', color],
+    ['background-image', list(images)],
+    ['background-repeat', list(repeats)],
+    ['background-position-x', list(xs)],
+    ['background-position-y', list(ys)],
+    ['background-size', list(sizes)],
+    ['background-origin', list(origins)],
+    ['background-clip', list(clips)],
+    ['background-attachment', list(attachments)],
+  ];
 };
 
 const fontVariantShorthand: Expander = (_prop, v, global) => {
@@ -1138,8 +1167,10 @@ shorthand(['border-radius'], (_p, v, global) => {
 shorthand(['background'], backgroundShorthand);
 shorthand(['background-position'], (_p, v, global) => {
   if (global) return each(['background-position-x', 'background-position-y'], v);
-  const [px, py] = positionXY(tokens(splitTop(v, ',')[0] ?? ''));
-  return [['background-position-x', px], ['background-position-y', py]];
+  // 層ごとの位置 (コンマ区切り。Backgrounds 3 §2.1・§2.6)
+  const pairs = splitTop(v, ',').map((layer) => positionXY(tokens(layer)));
+  if (!pairs.length) pairs.push(positionXY([]));
+  return [['background-position-x', pairs.map((q) => q[0]).join(', ')], ['background-position-y', pairs.map((q) => q[1]).join(', ')]];
 });
 shorthand(['font-variant'], fontVariantShorthand);
 shorthand(['font'], fontShorthand);
@@ -1906,7 +1937,12 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     // font-variant は個別の性質から (ligatures が none で、ほかが normal なら none)
     const fv = ['font-variant-ligatures', 'font-variant-caps', 'font-variant-numeric', 'font-variant-east-asian', 'font-variant-position'].map((p) => out.v.get(p)!);
     out.v.set('font-variant', fv[0] === 'none' && fv.slice(1).every((x) => x === 'normal') ? 'none' : fv.filter((x) => x !== 'normal' && x !== 'none').join(' ') || 'normal');
-    out.v.set('background-position', `${out.v.get('background-position-x')} ${out.v.get('background-position-y')}`);
+    {
+      // 層ごと (コンマ区切り) に、x と y を組にする
+      const bx = splitTop(out.v.get('background-position-x')!, ',');
+      const by = splitTop(out.v.get('background-position-y')!, ',');
+      out.v.set('background-position', bx.length <= 1 && by.length <= 1 ? `${out.v.get('background-position-x')} ${out.v.get('background-position-y')}` : Array.from({ length: Math.max(bx.length, by.length) }, (_, k) => `${bx[k % bx.length]} ${by[k % by.length]}`).join(', '));
+    }
     if (pseudo && !cascaded.has('content')) out.v.set('content', 'none');
     return out;
   };
@@ -2117,6 +2153,13 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       return /^(normal|bold|bolder|lighter)$/.test(s0) || (num.test(s0) && parseFloat(s0) >= 1 && parseFloat(s0) <= 1000);
     case 'opacity':
       return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
+    case 'background-origin':
+    case 'background-clip':
+      // <visual-box># (Backgrounds 3 §2.7・§2.8: border-box | padding-box | content-box)
+      return splitTop(s0, ',').every((t) => /^(border-box|padding-box|content-box)$/.test(t.trim()));
+    case 'background-attachment':
+      // <attachment># (Backgrounds 3 §2.5: scroll | fixed | local)
+      return splitTop(s0, ',').every((t) => /^(scroll|fixed|local)$/.test(t.trim()));
     case 'transform':
       // none | <transform-function>+ (Transforms 1 §4。関数の名前は 2D と 3D (Transforms 2 §12)。引数の中身は読み込みのときに調べる)
       return s0 === 'none' || /^(\s*(matrix|matrix3d|translate|translatex|translatey|translatez|translate3d|scale|scalex|scaley|scalez|scale3d|rotate|rotatex|rotatey|rotatez|rotate3d|skew|skewx|skewy|perspective)\([^()]*(\([^()]*\)[^()]*)*\))+\s*$/.test(s0);
@@ -2208,6 +2251,9 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
     }
     case 'background-position-x':
     case 'background-position-y': {
+      // 層ごとの値 (コンマ区切り。Backgrounds 3 §2.1) は、層ごとに計算値にする
+      const layers = splitTop(raw, ',');
+      if (layers.length > 1) return layers.map((l) => computeKeyword(p, l, parent, ctx)).join(', ');
       const kw: Record<string, string> = { left: '0%', top: '0%', center: '50%', right: '100%', bottom: '100%' };
       if (kw[lv]) return kw[lv];
       if (/%$/.test(lv)) return lv;
@@ -2273,6 +2319,9 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       return raw.trim().replace(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g, (_m, a?: string, b?: string) => JSON.stringify(unescapeCss(a ?? b ?? '')));
     }
     case 'background-size': {
+      // 層ごとの値 (コンマ区切り。Backgrounds 3 §2.1) は、層ごとに計算値にする
+      const layers = splitTop(raw, ',');
+      if (layers.length > 1) return layers.map((l) => computeKeyword(p, l, parent, ctx)).join(', ');
       // 1 つだけの大きさは、高さが auto (Chrome は「125% auto」と返す)
       const ts = tokens(raw);
       return ts.length === 1 && !/^(auto|cover|contain)$/i.test(ts[0]) ? `${ts[0]} auto` : raw.trim();

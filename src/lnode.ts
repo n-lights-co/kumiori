@@ -42,6 +42,8 @@ export interface LNode {
   bg?: string;
   /** 背景画像 (大きさは解決済み) */
   bgImage?: import('./types').BackgroundImage & { width: number; height: number };
+  /** 背景の色を塗る範囲 (Area の backgroundClip) */
+  bgClip?: 'padding-box' | 'content-box';
   children: LNode[];
   src?: string;
   /** page-number-citation の字 (参照の引数の鍵)。2 回目の組版で、番号の幅が同じなら字だけ差し替える */

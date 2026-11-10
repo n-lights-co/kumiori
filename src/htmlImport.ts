@@ -264,6 +264,27 @@ function collectIds(n: unknown, out: string[] = []): string[] {
   return out;
 }
 
+/**
+ * 背景の層 (CSS Backgrounds 3 §2.1): 層の数は background-image のコンマ区切りの値の数 (none も 1 層)。ほかの性質の値は、前から順に対にし、
+ * 足りなければ値の並びを繰り返して使う。余った値は使わない
+ */
+function backgroundLayers(c: (p: string) => string): Array<{ image: string; repeat: string; x: string; y: string; size: string; origin: string; clip: string; attachment: string }> {
+  const list = (p: string, initial: string) => {
+    const v = splitTop(c(p), ',').map((t) => t.trim());
+    return v.length && v[0] ? v : [initial];
+  };
+  const images = list('background-image', 'none');
+  const repeat = list('background-repeat', 'repeat');
+  const x = list('background-position-x', '0%');
+  const y = list('background-position-y', '0%');
+  const size = list('background-size', 'auto');
+  const origin = list('background-origin', 'padding-box');
+  const clip = list('background-clip', 'border-box');
+  const attachment = list('background-attachment', 'scroll');
+  const at = (a: string[], k: number) => a[k % a.length];
+  return images.map((image, k) => ({ image, repeat: at(repeat, k), x: at(x, k), y: at(y, k), size: at(size, k), origin: at(origin, k).toLowerCase(), clip: at(clip, k).toLowerCase(), attachment: at(attachment, k).toLowerCase() }));
+}
+
 function setBackgroundPosition(img: BackgroundImage, px: string, py: string) {
   const one = (v: string, far: string): [number | `${number}%` | undefined, boolean] => {
     const t = v.split(',')[0].trim();
@@ -1929,7 +1950,7 @@ class HtmlImporter {
     // 偶奇で左右に読み替える (float: sidenote を outside の側に置くときも、箱の内側の余白の内に置く)
     const f: LFloat = { type: 'float', float: side, children: [inner], ...(side === 'start' || side === 'end' || side === 'inside' || side === 'outside' ? { cssPlacement: true } : {}) };
     // 箱の寸法・余白・枠・背景は float に移す (外側の余白は本文との間隔、幅は回り込みの幅になる)
-    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'borderRadius', 'boxShadow', 'paintEffect', 'width', 'height', 'boxSizing', 'clear'] as const) {
+    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'backgroundClip', 'borderRadius', 'boxShadow', 'paintEffect', 'width', 'height', 'boxSizing', 'clear'] as const) {
       if (inner[k] === undefined) continue;
       (f as unknown as Record<string, unknown>)[k] = inner[k];
       delete inner[k];
@@ -2872,19 +2893,23 @@ class HtmlImporter {
     if (Object.keys(border).length) o.border = border;
     const bg = (pseudo ? undefined : this.printOf(this.pg(el), 'background-color', 'background')) ?? cssColorAlpha(c('background-color'));
     if (bg) o.backgroundColor = bg;
-    // 背景画像 (最初の 1 枚。位置は百分率・長さ・キーワード、大きさは長さだけ)。グラデーションは組版で箱の大きさから画像にする
-    const bimg = c('background-image');
-    const bi = /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(bimg);
-    const grad = !bi || bimg.search(/(linear|radial)-gradient\(/i) < bimg.search(/url\(/i) ? firstGradient(bimg) : undefined;
-    if (bi || grad) {
+    // 背景画像 (位置は百分率・長さ・キーワード、大きさは長さ・百分率・cover・contain)。グラデーションは組版で箱の大きさから画像にする。
+    // 複数の背景 (CSS Backgrounds 3 §2.1) は、層ごとに画像・繰り返し・位置・大きさ・基準の領域 (origin)・描く範囲 (clip) を持つ
+    const layers = backgroundLayers(c);
+    const imgs: BackgroundImage[] = [];
+    for (const L of layers) {
+      const bimg = L.image;
+      const bi = /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(bimg);
+      const grad = !bi || bimg.search(/(linear|radial)-gradient\(/i) < bimg.search(/url\(/i) ? firstGradient(bimg) : undefined;
+      if (!bi && !grad) continue;
       const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(c('font-size')) ?? 12 } : { src: normalizeSrc(bi![1]) };
-      const rep = c('background-repeat').split(',')[0].trim();
+      const rep = L.repeat;
       if (rep === 'no-repeat' || rep === 'repeat-x' || rep === 'repeat-y') img.repeat = rep;
       else if (rep === 'no-repeat no-repeat') img.repeat = 'no-repeat';
       else if (rep === 'repeat no-repeat') img.repeat = 'repeat-x';
       else if (rep === 'no-repeat repeat') img.repeat = 'repeat-y';
-      setBackgroundPosition(img, c('background-position-x'), c('background-position-y'));
-      const bsz = c('background-size').split(',')[0].trim();
+      setBackgroundPosition(img, L.x, L.y);
+      const bsz = L.size;
       if (bsz === 'cover' || bsz === 'contain') img.size = bsz;
       // 百分率は、背景の領域 (padding box) の大きさに対して (ブラウザが置いた箱の大きさから)
       const r = /%/.test(bsz) ? this.src.rect?.(el) : undefined;
@@ -2901,9 +2926,21 @@ class HtmlImporter {
         if (img.widthPct !== undefined && (parts[1] ?? 'auto') === 'auto') img.pctAuto = 'height';
         else if (img.heightPct !== undefined && parts[0] === 'auto') img.pctAuto = 'width';
       }
-      o.backgroundImage = img;
+      // 位置の基準の領域 (background-origin。§2.8。初期値は padding の箱) と、描く範囲 (background-clip。§2.7)。
+      // 描く範囲の初期値 border-box は、これまでどおり padding の箱で切り抜く (罫線の下には描かない)。基準の領域も border-box のときだけ、
+      // border の箱まで描く
+      if (L.origin === 'border-box' || L.origin === 'content-box') img.origin = L.origin;
+      if (L.clip === 'content-box') img.clip = 'content-box';
+      else if (L.clip === 'border-box' && L.origin === 'border-box') img.clip = 'border-box';
+      // ページに固定する背景 (background-attachment: fixed。§2.5) は、箱に付く背景 (scroll) として描き、未対応として知らせる
+      if (L.attachment === 'fixed') this.miss('background-attachment: fixed');
+      imgs.push(img);
       if (!grad) this.report.images.push(img.src);
     }
+    if (imgs.length) o.backgroundImage = imgs.length > 1 ? { ...imgs[0], under: imgs.slice(1) } : imgs[0];
+    // 背景の色を塗る範囲は、いちばん後ろの層の background-clip (§2.2)。初期値 border-box は border の箱 (これまでどおり)
+    const colorClip = layers[layers.length - 1]?.clip;
+    if (bg && (colorClip === 'padding-box' || colorClip === 'content-box')) o.backgroundClip = colorClip;
     for (const prop of ['width', 'height'] as const) {
       if (pseudo ? c(prop) === 'auto' || !c(prop) : this.src.isAuto?.(el, prop) !== false) continue;
       const v = cssLen(c(prop));
@@ -3068,6 +3105,7 @@ class HtmlImporter {
     if (/^(hidden|collapse)$/.test(c('visibility'))) {
       delete o.backgroundColor;
       delete o.backgroundImage;
+      delete o.backgroundClip;
       delete o.boxShadow;
       if (o.border) for (const sd of Object.values(o.border)) if (sd) sd.color = 'transparent';
     }
@@ -3752,11 +3790,13 @@ class HtmlImporter {
             if (hh) img.height = hh;
           }
           setBackgroundPosition(img, c('background-position-x'), c('background-position-y'));
-          if (/no-repeat/.test(c('background-repeat'))) img.repeat = 'no-repeat';
+          if (/no-repeat/.test(c('background-repeat').split(',')[0])) img.repeat = 'no-repeat';
           boxC.backgroundImage = img;
           this.report.images.push(img.src);
         }
         if (bgrad) boxC.backgroundImage = { src: '', gradient: bgrad, gradientFontSize: cssLen(c('font-size')) ?? 12 };
+        // (回り込みの ::before・::after の背景は 1 枚目だけ)
+        if (backgroundLayers(c).filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss('background-image: 2 枚目以降 (::before・::after)');
         const mg: Record<string, number> = {};
         for (const sd of ['top', 'right', 'bottom', 'left']) {
           const v = cssLen(c(`margin-${sd}`));
@@ -3850,12 +3890,14 @@ class HtmlImporter {
       const bsz = c('background-size').split(',')[0].trim();
       if (bsz === 'cover' || bsz === 'contain') img.size = bsz;
       setBackgroundPosition(img, c('background-position-x'), c('background-position-y'));
-      if (/no-repeat/.test(c('background-repeat')) || img.size) img.repeat = 'no-repeat';
+      if (/no-repeat/.test(c('background-repeat').split(',')[0]) || img.size) img.repeat = 'no-repeat';
       cont.backgroundImage = img;
       this.report.images.push(img.src);
     }
     const cgrad = bi ? undefined : firstGradient(c('background-image'));
     if (cgrad) cont.backgroundImage = { src: '', gradient: cgrad, gradientFontSize: cssLen(c('font-size')) ?? 12 };
+    // (絶対配置の ::before・::after の背景は 1 枚目だけ)
+    if (backgroundLayers(c).filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss('background-image: 2 枚目以降 (::before・::after)');
     if ((parseInt(c('z-index'), 10) || 0) < 0) cont.layer = 'behind';
     const rad = this.radiusOf(c);
     if (rad) cont.borderRadius = rad;
@@ -5365,11 +5407,13 @@ class HtmlImporter {
       const col = cssColor(rc('background-color'));
       const imgv = rc('background-image');
       if (!col && !/url\(/.test(imgv)) continue;
+      // ページの背景にするのは、最初の画像の層だけ (層ごとの値は、その層のもの)。2 枚目以降は未対応として知らせる
+      const rl = backgroundLayers(rc);
+      const first = rl.find((l) => /url\(/.test(l.image));
+      if (rl.filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss('background-image: 2 枚目以降 (html・body)');
       this.rootBackground = {
         ...(col ? { 'background-color': col } : {}),
-        ...(/url\(/.test(imgv)
-          ? { 'background-image': imgv, 'background-size': rc('background-size'), 'background-repeat': rc('background-repeat'), 'background-position': `${rc('background-position-x')} ${rc('background-position-y')}` }
-          : {}),
+        ...(first ? { 'background-image': first.image, 'background-size': first.size, 'background-repeat': first.repeat, 'background-position': `${first.x} ${first.y}` } : {}),
       };
       rootFromBody = e === bodyEl && e !== html;
       break;

@@ -162,6 +162,7 @@ interface BoxDesc {
   bw: LEdges;
   bg?: string;
   bgImage?: BackgroundImage;
+  bgClip?: 'padding-box' | 'content-box';
   /** content-box の inline / block サイズ (明示指定) */
   isizeExplicit?: number;
   bsizeExplicit?: number;
@@ -269,6 +270,7 @@ function describeBox(node: BoxStyle & { id?: string; link?: LinkTarget; annotati
     bw,
     bg: node.backgroundColor,
     bgImage: node.backgroundImage,
+    bgClip: node.backgroundClip,
     isizeExplicit: adj(horizontal ? node.width : node.height, bpI),
     bsizeExplicit: adj(horizontal ? node.height : node.width, bpB),
     minB: node.minBlockSize,
@@ -1370,14 +1372,24 @@ class Flow {
   }
 
   /** 箱の飾り (背景画像・斜めの罫線) を LNode へ渡す */
-  private decorOf(desc: BoxDesc): { bgImage?: LNode['bgImage']; diag?: LNode['diag']; fx?: LNode['fx'] } {
-    return { ...this.bgImageOf(desc), ...(desc.diag ? { diag: desc.diag } : {}), ...(desc.fx ? { fx: desc.fx } : {}) };
+  private decorOf(desc: BoxDesc): { bgImage?: LNode['bgImage']; bgClip?: LNode['bgClip']; diag?: LNode['diag']; fx?: LNode['fx'] } {
+    return { ...this.bgImageOf(desc), ...(desc.bgClip ? { bgClip: desc.bgClip } : {}), ...(desc.diag ? { diag: desc.diag } : {}), ...(desc.fx ? { fx: desc.fx } : {}) };
   }
 
   /** 背景画像の大きさを決める (指定が無ければ画像本来の大きさ。画像が無ければ描かない) */
   private bgImageOf(desc: BoxDesc): { bgImage?: LNode['bgImage'] } {
     const bi = desc.bgImage;
     if (!bi) return {};
+    if (!bi.under) return this.bgLayerOf(bi);
+    // 複数の背景 (Backgrounds 3 §2.1): 層ごとに大きさを決める。描けない層 (読めない画像) は、層として数えるが何も描かない (§2.3) ので除く
+    const layers = [bi, ...bi.under].map((l) => this.bgLayerOf({ ...l, under: undefined }).bgImage).filter((l): l is NonNullable<LNode['bgImage']> => !!l);
+    if (!layers.length) return {};
+    const [top, ...rest] = layers.map(({ under: _u, ...l }) => l);
+    return { bgImage: rest.length ? { ...top, under: rest } : top };
+  }
+
+  /** 背景の画像 1 枚の、画像本来の大きさを決める */
+  private bgLayerOf(bi: BackgroundImage): { bgImage?: LNode['bgImage'] } {
     // グラデーションは、箱の大きさが決まってから画像にする (toArea と組版の終わり)
     if (bi.gradient) return { bgImage: { ...bi, width: bi.width ?? 0, height: bi.height ?? 0 } };
     const asset = this.host.assets?.get(bi.src);
@@ -4991,6 +5003,22 @@ function gradientImage(bi: BackgroundImage, W: number, H: number): BackgroundIma
   return { ...rest, width: Math.max(w, 0), height: Math.max(h, 0) };
 }
 
+/**
+ * 箱の大きさが決まったところで、背景の画像 (と、後ろに重ねる画像) の大きさを決める: 百分率の大きさとグラデーションの大きさは、
+ * 位置の基準の領域 (background-origin。無ければ padding の箱) の大きさに対して (CSS Backgrounds 3 §2.8・§2.9)
+ */
+function areaBackground(bi: NonNullable<LNode['bgImage']>, width: number, height: number, bw: Edges, pad: Edges): NonNullable<LNode['bgImage']> {
+  const one = (l: BackgroundImage & { width: number; height: number }) => {
+    const ex = l.origin === 'border-box' ? 0 : 1;
+    const ey = l.origin === 'content-box' ? 1 : 0;
+    const W = Math.max(width - ex * (bw.left + bw.right) - ey * (pad.left + pad.right), 0);
+    const H = Math.max(height - ex * (bw.top + bw.bottom) - ey * (pad.top + pad.bottom), 0);
+    return l.gradient ? gradientImage(l, W, H) : percentImage(l, W, H);
+  };
+  if (!bi.under) return one(bi);
+  return { ...one(bi), under: bi.under.map((l) => one(l as BackgroundImage & { width: number; height: number })) };
+}
+
 function toGlyphArea(n: LNode, base: Omit<GlyphArea, 'type' | 'text' | 'fontFamily' | 'fontWeight' | 'fontSize' | 'color' | 'baselineX' | 'baselineY' | 'rotation' | 'scaleX' | 'advance'>): GlyphArea {
   const g = n.glyph!;
   return { ...base, type: 'glyph', ...g };
@@ -5072,7 +5100,8 @@ export function toArea(n: LNode, parentWm: WritingMode, PW: number): Area {
     padding: n.padding,
     border: n.border,
     backgroundColor: n.bg,
-    ...(n.bgImage ? { backgroundImage: n.bgImage.gradient ? gradientImage(n.bgImage, width - bw.left - bw.right, height - bw.top - bw.bottom) : percentImage(n.bgImage, width - bw.left - bw.right, height - bw.top - bw.bottom) } : {}),
+    ...(n.bgImage ? { backgroundImage: areaBackground(n.bgImage, width, height, bw, n.padding) } : {}),
+    ...(n.bgClip ? { backgroundClip: n.bgClip } : {}),
     writingMode: n.wm,
     sourceId: n.src,
     ...(n.ref !== undefined ? { sourceRef: n.ref } : {}),
@@ -5615,6 +5644,17 @@ export class LayoutEngine {
     // 背景画像を持つのは領域 (Area) と用紙 (SheetArea) だけなので、領域の木の節をたどる (childrenOf が page・regionBody・absoluteAreas・children などを知っている)
     const visit = (a: { backgroundImage?: BackgroundImage }) => {
       const bi = a.backgroundImage;
+      // 後ろに重ねる画像 (複数の背景) のグラデーションも、同じように画像にする (作れなければ、その層を除く)
+      if (bi?.under) {
+        const under: BackgroundImage[] = [];
+        for (const l of bi.under) {
+          const h = { backgroundImage: l };
+          visit(h);
+          if (h.backgroundImage) under.push(h.backgroundImage);
+        }
+        bi.under = under;
+        if (!under.length) delete bi.under;
+      }
       if (bi?.gradient) {
         const w = bi.width ?? 0;
         const h = bi.height ?? 0;
@@ -5629,6 +5669,10 @@ export class LayoutEngine {
         if (src) {
           const { gradient: _g, gradientFontSize: _f, ...rest } = bi;
           a.backgroundImage = { ...rest, src };
+        } else if (bi.under?.length) {
+          // いちばん手前のグラデーションが作れないとき: 後ろの層を手前に繰り上げる
+          const [top, ...rest] = bi.under;
+          a.backgroundImage = rest.length ? { ...top, under: rest } : top;
         } else delete a.backgroundImage;
       }
     };
