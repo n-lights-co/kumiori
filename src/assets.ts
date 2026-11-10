@@ -262,17 +262,19 @@ export class AssetStore {
   }
 
   async addDataUri(uri: string): Promise<ImageAsset | undefined> {
-    const m = /^data:([^;,]*)(;base64)?,(.*)$/is.exec(uri);
+    // RFC 2397 §3: dataurl := "data:" [ mediatype ] [ ";base64" ] "," data、mediatype := [ type "/" subtype ] *( ";" parameter )。
+    // 種類の後ろのパラメータ (;charset=utf-8 など) は読み飛ばす
+    const m = /^data:([^;,]*)(?:;[^;,]*)*?(;base64)?,(.*)$/is.exec(uri);
     if (!m) return undefined;
-    // 壊れた base64・不正な % の並びは、読めない画像として扱う (例外を外へ出さない。getFile と同じ)
-    let bin: string;
+    // base64 でなければ、中身はバイトの並びを %xx で書いたもの (RFC 2397 §2)。字の番号をそのまま 1 バイトにしない (日本語の SVG が化ける)。
+    // 壊れた base64 は、読めない画像として扱う (例外を外へ出さない。getFile と同じ)
+    let bytes: Uint8Array;
     try {
-      bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]);
+      bytes = m[2] ? Uint8Array.from(atob(m[3]), (c) => c.charCodeAt(0)) : percentDecodeBytes(m[3]);
     } catch {
       return undefined;
     }
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    const asset = await this.addBlob(uri, new Blob([bytes], { type: m[1] }));
+    const asset = await this.addBlob(uri, new Blob([bytes as BlobPart], { type: m[1] }));
     return asset;
   }
 
@@ -317,6 +319,26 @@ export class AssetStore {
       return undefined;
     }
   }
+}
+
+/**
+ * %xx で書いたバイトの並びを戻す (RFC 3986 §2.1: %xx は 1 つのオクテット)。% で書いていない字は UTF-8 のバイトにする
+ * (data URI にじかに書いた ASCII 以外の字)。16 進の 2 桁が続かない % は、そのままの字として残す (投げない)
+ */
+export function percentDecodeBytes(s: string): Uint8Array {
+  const src = new TextEncoder().encode(s);
+  const out = new Uint8Array(src.length);
+  const hex = (c: number) => (c >= 0x30 && c <= 0x39 ? c - 0x30 : c >= 0x41 && c <= 0x46 ? c - 0x37 : c >= 0x61 && c <= 0x66 ? c - 0x57 : -1);
+  let n = 0;
+  for (let k = 0; k < src.length; k++) {
+    const hi = src[k] === 0x25 && k + 2 < src.length ? hex(src[k + 1]) : -1;
+    const lo = hi >= 0 ? hex(src[k + 2]) : -1;
+    if (lo >= 0) {
+      out[n++] = hi * 16 + lo;
+      k += 2;
+    } else out[n++] = src[k];
+  }
+  return out.subarray(0, n);
 }
 
 function mimeFromName(name: string): string {
