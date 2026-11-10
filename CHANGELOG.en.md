@@ -4,6 +4,40 @@
 
 Version numbers follow [Semantic Versioning](https://semver.org/). During 0.x, incompatible changes may also be released in a minor version (such as 0.2.0).
 
+## 0.2.0 (unreleased)
+
+A release that adds flex features, WOFF/WOFF2, an API for loading referenced files, and more. While in 0.x, it is a minor release because it includes fixes that change typesetting results.
+
+- **flex** (Flexbox 1; the CLI and the default layout path):
+  - Shrinking (`flex-shrink`, the automatic minimum size of `min-width: auto`), the growth limit (stop at `max-width` and share the rest), growing when the sum of `flex-grow` is below 1
+  - Reversed directions (`row-reverse`, `column-reverse`, `wrap-reverse`), containers with `direction: rtl`, vertical-writing containers
+  - Alignment: `baseline` and `last baseline`, cross-axis `margin: auto`, `start`, `end`, `left`, `right`, `safe` and `unsafe` for `justify-content`, `align-content` for wrapping containers
+  - Column direction: `row-gap`, `flex-basis`, `flex-shrink`, `flex-wrap` (wrapping into columns), growing in containers with a definite height
+  - `order` also applies to `::before`, `::after` and children of `display: contents`; text directly inside a container becomes an anonymous item
+  - Percentages in `gap`, `min-content` and `fit-content` for `flex-basis`, items with `visibility: collapse` (struts)
+- **CSS**:
+  - Supports `visibility` (`hidden`, `collapse`) and `aspect-ratio`
+  - The horizontal margins of boxes with a definite width follow CSS 2.1 §10.3.3 (in a containing block with `direction: rtl`, boxes are placed from the right edge; a single `auto` margin takes the remaining space at layout time)
+  - Collapsing of the bottom margin of the last child of a box with `min-height` follows CSS 2.1 §8.3.1
+  - For a `display: block` image with both `width` and `max-width`, the wrapping box now has the width of the image
+  - Named pages: no first page is created for boxes outside the flow alone (absolutely positioned, floats, etc.) (CSS Page 3 §8.1)
+  - Properties that have no effect in print (`cursor`, `transition-*`, etc.) are no longer reported as unsupported CSS
+- **Links and bookmarks**: `<a href>` on blocks, flex containers and tables makes the whole box a link; relative-reference links (GoToR for PDFs, Launch for other files); `h1` to `h6` become bookmarks with every default style (CSS GCPM 3 Appendix B)
+- **Tables**: in tables with `border-collapse: collapse`, the border between a table header or footer repeated at a page break and the adjacent row is chosen again from the borders on both sides (XSL 1.1 §6.7.10, CSS 2.1 §17.6.2.1)
+- **Fonts**: reads WOFF and WOFF2 (including font collections) (`--font`, `fonts`, `@font-face`); fonts referenced by `@font-face` over `http(s):` are also fetched (only those whose `unicode-range` overlaps the characters of the document)
+- **PDF**: in ToUnicode, ligature characters (U+FB01 etc.) map to the original character sequences (fi etc.), so text extraction and search find words such as "confiance"
+- **API**:
+  - `resolveResource(url)`: asks for files referenced by the document or CSS that are not in `files`
+  - `fetchStyles`: fetches CSS referenced by the document over `http(s):` (including `@import` targets; default `true`)
+  - `kumiori/node`: `createFontLoader` (the same default-font loading and cache as the CLI), `createFileResolver` (reads `file:` references), `defaultFontCacheDir`, `looksLikeFont`
+- **CLI**: reads references given as `file:` URLs; `--no-fetch-styles` disables fetching CSS
+- **Publishing**: the PDFs of the Conformance Guides (four volumes, Japanese and English) are attached to the GitHub release of each version; the "Typesetting" row of the colophon shows the Kumiori version used to typeset them
+- **Third-party notices**:
+  - Added notices for code bundled in the @pdf-lib/fontkit distribution (Brotli decoding, base64-js, buffer, etc.)
+  - Added notices for the rules copied from CSS GCPM 3 Appendix B (section 10)
+  - Every output JS file starts with a comment giving the Kumiori version, its license and where `THIRD_PARTY_NOTICES.md` is (for loading a single file from a CDN)
+  - The README of the Conformance Guides states the fonts embedded in their PDFs and the fonts' licenses
+
 ## 0.1.1 (2026-11-09)
 
 A release that completes the notices for third-party software and documents. Typesetting behaviour and the API are the same as in 0.1.0.

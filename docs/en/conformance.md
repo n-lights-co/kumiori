@@ -21,6 +21,7 @@ The PDFs are produced in `docs/conformance/out/` (not kept in the repository; tw
 
 The typeset PDFs are attached to each GitHub release (publishing a release makes `.github/workflows/conformance-pdf.yml` typeset and attach them; see "For every release" in [`RELEASING.md`](RELEASING.md)).
 
+- The version in the "Typesetting" row of the colophon is not written in the sources; the version in `package.json` is filled in when the documents are typeset (the `<?kumiori-version?>` and `<!--kumiori-version-->` marks in the sources). The PDFs attached to a release therefore show that release's version.
 - The XSL-FO volume is typeset with the CLI's default `--compat spec` (XSL-FO 1.1 initial values).
 - The fonts are Kumiori's defaults: Noto Serif JP and Noto Sans JP for Japanese, Tinos and Arimo for Latin, Cousine for monospace, and STIX Two Math for formulas. Kumiori fetches them from the distribution host.
 - The typeset PDFs embed subsets of these fonts (only the glyphs used). Noto Serif JP, Noto Sans JP and STIX Two Math are licensed under the SIL Open Font License 1.1, and Tinos, Arimo and Cousine under the Apache License 2.0 (see "Fonts" in the README). The copyright in each font belongs to its copyright holders.

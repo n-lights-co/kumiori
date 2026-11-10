@@ -21,6 +21,7 @@ npm run docs:conformance
 
 組んだ PDF は、版ごとに GitHub のリリースに付けます (リリースを公開すると `.github/workflows/conformance-pdf.yml` が組んで付ける。[`docs/RELEASING.md`](../RELEASING.md) の「版を出すたびに」)。
 
+- 奥付の「組版」の欄の版は、原稿には書かず、組むときに `package.json` の版を入れます (原稿の `<?kumiori-version?>`・`<!--kumiori-version-->` の印)。リリースに付ける PDF は、そのリリースの版になります。
 - XSL-FO 編は、コマンドの既定の `--compat spec` (XSL-FO 1.1 の初期値) で組みます。
 - 書体は Kumiori の既定です。和文は Noto Serif JP・Noto Sans JP、欧文は Tinos・Arimo、等幅は Cousine、数式は STIX Two Math を使います。Kumiori が配信元から取得します。
 - 組んだ PDF には、使った字だけを取り出した書体 (部分集合) が埋め込まれます。書体のライセンスは、Noto Serif JP・Noto Sans JP・STIX Two Math が SIL Open Font License 1.1、Tinos・Arimo・Cousine が Apache License 2.0 です (README の「フォント」)。書体の著作権は、それぞれの著作権者にあります。
