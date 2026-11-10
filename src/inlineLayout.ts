@@ -196,7 +196,7 @@ function canBreakAtoms(a: Atom, b: Atom): boolean {
   if (a.kind === 'leader' || b.kind === 'leader' || b.glue) return false;
   // 折り返さない (white-space: nowrap・pre) 字どうしの間では改行しない (Text 3 §3)。はみ出すのが nowrap の外の字 (後ろのバッジや空白) でも、
   // nowrap の中のハイフンなどで折り返さない
-  if (a.st.noWrap && b.st.noWrap && !(a.isSpace && !a.st.noWrap)) return false;
+  if (a.st.noWrap && b.st.noWrap) return false;
   // word-break (Text 3 §5.2): break-all は字と字の間でも改行してよい。keep-all は字と字の間では改行しない
   const wb = b.st.wordBreak ?? a.st.wordBreak;
   // break-all は字を ID として扱う (Text 3 §5.1)。ID でも、行頭に置けない字 (小書きの仮名・長音記号など) の前では改行しない

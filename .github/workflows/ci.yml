@@ -29,6 +29,14 @@ jobs:
           restore-keys: |
             fonts-test-
             fonts-defaults-v1
+      - uses: actions/cache@v5
+        with:
+          path: .cache/unicode
+          # テストが取得する Unicode の公式の適合試験 (LineBreakTest.txt・BidiTest.txt・BidiCharacterTest.txt)。版と取得は test/ucdTestData.ts にある。
+          # 版が変わればキーが変わり、古いキャッシュ (restore-keys) から始めて、新しい版の分を足して保存し直す
+          key: unicode-test-${{ hashFiles('test/ucdTestData.ts') }}
+          restore-keys: |
+            unicode-test-
       - run: npm run build
       # ライブラリとしてのビルド (dist-lib。ES モジュールと型の宣言) と、ブラウザで単体で動くバンドル (dist-browser)
       - run: npm run build:lib

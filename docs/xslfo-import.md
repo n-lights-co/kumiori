@@ -82,13 +82,13 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
   仕様書 ([MS-WMF]・[MS-EMF]) に値の決まりが無いので推し量らないもの: PS_DASH などの破線の長さ、背景色の初期値 (SETBKCOLOR が無いとき)、
   SETTEXTJUSTIFICATION の区切りの字。
 - **EPS**: PostScript を実行して描く (`src/psInterp.ts`・`src/psFilters.ts`・`src/psGraphics.ts`・`src/eps.ts`。PostScript Language Reference 第 3 版と EPSF 3.0 の仕様から書いた)。
-  塗り・線・クリップ・色空間 (DeviceGray・DeviceRGB・DeviceCMYK・Indexed・Separation・DeviceN。CIE ベースは成分をそのまま使う)・画像 (image・colorimage・imagemask・type 3・4)・フィルタ (ASCIIHex・ASCII85・RunLength・LZW・Flate・SubFile・ReusableStream。DCT は JPEG のまま) に対応。
+  塗り・線・クリップ・色空間 (DeviceGray・DeviceRGB・DeviceCMYK・Indexed・Separation・DeviceN。CIE ベースは成分をそのまま使う)・画像 (image・colorimage・imagemask・type 3・4)・フィルタ (ASCIIHex・ASCII85・RunLength・LZW・Flate・SubFile・ReusableStream。DCT は JPEG のまま) に対応。CCITTFaxDecode (ファクシミリの符号) のフィルタは未対応で、使うと PostScript の undefined のエラーになる (そこまでに描いたものは描く)。
   描いたものは SVG にし、PDF には図形のまま入れる。DeviceCMYK で決まる色は、PDF にも DeviceCMYK で入れる。
   文字は、埋め込まれた書体の字の形で描く (`src/psFonts.ts`。Adobe Type 1 Font Format から書いた): Type 1 の書体 (eexec・字形の命令の暗号・flex・seac)、
   Type 3 の書体 (BuildGlyph・BuildChar)、CMap と CIDFontType 0 による複合書体 (composefont・StartData・GlyphDirectory)、
   CFF の書体 (FontSetInit の StartData。FontType 2 と CID の CFF。`src/psCff.ts`。CFF と Type 2 の字形の仕様から書いた)。
   字の形を持たない書体 (埋め込まれていない書体) は、書体の名前から手持ちの書体の系統 (ゴシック・明朝・等幅) を選んで描く。
-  網かけ (shfill と、PatternType 2 の模様。ShadingType 1〜7、関数は FunctionType 0・2・3 と手続き) は、塗る範囲を画素に分けた画像にして描く。並べる模様 (PatternType 1) は、PaintProc の絵を 1 度描いて覚え、XStep・YStep ずつずらした写しを塗るパスで切り抜いて並べる (PaintType 2 は塗るときの色で)。模様の線 (stroke) はまだ描かない。描けないものがあって、DOS 形式のプレビュー (TIFF・WMF) を持つ EPS は、プレビューで描く。
+  網かけ (shfill と、PatternType 2 の模様。ShadingType 1〜7、関数は FunctionType 0・2・3 と手続き) は、塗る範囲を画素に分けた画像にして描く。並べる模様 (PatternType 1) は、PaintProc の絵を 1 度描いて覚え、XStep・YStep ずつずらした写しを塗るパスで切り抜いて並べる (PaintType 2 は塗るときの色で)。模様の線 (Pattern の色空間で stroke) は、線の輪郭 (太さ・端の形・つなぎ・破線を反映した形) を求めて、その形を模様で塗る。描けないものがあって、DOS 形式のプレビュー (TIFF・WMF) を持つ EPS は、プレビューで描く。
   `fo:instream-foreign-object` の中に直接書いた EPS (%!PS で始まる文字) も描く。
 - **CGM** (2 進符号化): 要素を読んで SVG にする (`src/cgm.ts`。ISO/IEC 8632-1:1999 の機能仕様と 8632-3:1999 の 2 進符号化から書いた)。
   精度の要素 (整数・実数・VDC・色・番号)、METAFILE DEFAULTS REPLACEMENT、VDC EXTENT・SCALING MODE (metric なら mm の大きさ、abstract なら幅 400px)、
@@ -131,9 +131,11 @@ FO が指定する MS 明朝 / MS ゴシック自体は未搭載のため、完�
 
 ## 脚注の区切り線
 
-`xsl-footnote-separator` の `fo:leader` を読み取り、`leader-pattern="dots"` は点線 (1pt 角の点を 3pt ピッチ)、
-`rule` は実線 (`rule-thickness` 反映)、`leader-length` は本文幅に対する割合も解釈する。
-leader が無い場合は既定の実線 (本文幅の 1/3) を使う。
+`xsl-footnote-separator` の `fo:static-content` の中身 (`fo:leader`・文字・画像・背景色や罫線のあるブロック) を、
+そのまま脚注領域の幅で組んで区切りにする。`fo:leader` は本文の中と同じに組む: `leader-pattern="dots"` は書体の点の字を並べ、
+`rule` は実線 (`rule-thickness` 反映)、`leader-length` の百分率は脚注領域の幅に対する割合。
+`xsl-footnote-separator` の `fo:static-content` が無ければ、区切りを描かない。
+あっても中身が空 (空のブロックだけなど) のときは、既定の実線 (本文幅の 1/3) を使い、読み込みの報告に書く。
 
 ## 段組
 

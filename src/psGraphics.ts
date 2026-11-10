@@ -3,7 +3,8 @@
  *
  *  グラフィックス状態 (§4.2)・座標変換 (§4.3)・パス (§4.4)・塗りと線 (§4.5)・クリップ・色空間 (§4.8)・画像 (§4.10)
  *  色は描くときに RGB にする (DeviceCMYK → DeviceRGB は §7.2.4 の式。CIE ベースの色空間は、成分をそのまま RGB・グレー・CMYK とみなす)。
- *  文字 (第 5 章) は、書体の名前と行列だけを使い、代わりの書体で描く (埋め込まれた書体の字の形はまだ使わない)。
+ *  文字 (第 5 章) は、埋め込まれた書体の字の形で描く (Type 1・Type 3・CIDFontType 0・CFF。psOpsFont・psFonts・psCff)。
+ *  字の形を持たない書体 (埋め込まれていない書体) は、書体の名前から代わりの書体で描く。
  *  模様 (§4.9) と網かけ (shfill) は psShading で描く (網かけは画素の画像、並べる模様は PaintProc の絵の写し)。模様の線 (stroke) は、線の輪郭を模様で塗る。
  */
 import { apply, IDENTITY, invert, mul, type Matrix, type Seg } from './matrix';
@@ -609,7 +610,7 @@ function installGraphicsOperators(I: Interp, G: Graphics) {
   d('resourcestatus', (I) => resourceOp(I, 'ResourceStatus', 1));
   d('resourceforall', (I) => resourceOp(I, 'ResourceForAll', 3));
 
-  // 書体 (第 5 章)。いまは字を描かず、送りだけを進める
+  // 書体 (第 5 章)。演算子と、埋め込まれた書体の字の形の取り出しは psOpsFont
   installFontStubs(I, G);
   installResources(I, { makeCIDInit, makeFontSetInit });
 

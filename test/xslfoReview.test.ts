@@ -268,3 +268,46 @@ describe('読み込みの報告 (no 26)', () => {
     expect(r.document.title).toBe('T');
   });
 });
+
+describe('読み込みの報告: 複数のページのマスターが同じ static-content を使うとき (全体レビュー FO-18)', () => {
+  // fo:static-content は、リージョンの寸法・向きがマスターごとに違うので、マスターごとに読み直す。
+  // 報告の数 (counts・unsupported) は文書に書かれた要素の数なので、読み直しても 1 回だけ数える
+  const spm = (name: string) => `<fo:simple-page-master master-name="${name}" page-width="100mm" page-height="100mm" margin="10mm"><fo:region-body margin-top="10mm"/><fo:region-before extent="10mm"/></fo:simple-page-master>`;
+  const HEAD =
+    '<fo:static-content flow-name="xsl-region-before"><fo:block color="bogus">見出し</fo:block>' +
+    '<fo:table><fo:table-body><fo:table-row><fo:table-cell><fo:block>セル</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table></fo:static-content>';
+  const xml = (lms: string, ref: string) =>
+    `<fo:root ${NS}><fo:layout-master-set>${lms}</fo:layout-master-set><fo:page-sequence master-reference="${ref}">${HEAD}<fo:flow flow-name="xsl-region-body"><fo:block>本文</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+  const single = xml(spm('a'), 'a');
+  const multi = xml(
+    spm('a') + spm('b') + spm('c') +
+      '<fo:page-sequence-master master-name="s"><fo:repeatable-page-master-alternatives>' +
+      '<fo:conditional-page-master-reference master-reference="a" page-position="first"/>' +
+      '<fo:conditional-page-master-reference master-reference="b" odd-or-even="even"/>' +
+      '<fo:conditional-page-master-reference master-reference="c" odd-or-even="odd"/>' +
+      '</fo:repeatable-page-master-alternatives></fo:page-sequence-master>',
+    's',
+  );
+
+  it('マスターが 1 つのとき: ブロック 3 (見出し・セルの中・本文)、表 1、未対応の色 1', () => {
+    const r = imp(single);
+    expect(r.report.counts).toMatchObject({ sequences: 1, blocks: 3, tables: 1 });
+    expect(r.report.unsupported).toEqual({ 'color:bogus': 1 });
+  });
+
+  it('マスターが 3 つでも、数は 1 つのときと同じ', () => {
+    const r = imp(multi);
+    expect(r.report.counts).toEqual(imp(single).report.counts);
+    expect(r.report.unsupported).toEqual({ 'color:bogus': 1 });
+  });
+
+  it('static-content の中身は、どのマスターにも入る (組版の結果は変えない)', () => {
+    const s = seq(multi);
+    const all = [s.staticContent ?? [], ...(s.masterAlternatives ?? []).map((a) => a.staticContent ?? []), ...(s.masterSequence ?? []).flatMap((it) => it.masters.map((m) => m.staticContent ?? []))];
+    expect(all.length).toBeGreaterThanOrEqual(3);
+    for (const sc of all) {
+      expect(sc.length).toBe(1);
+      expect(sc[0].children.map((c) => (typeof c === 'string' ? 'text' : c.type))).toEqual(['block', 'table']);
+    }
+  });
+});

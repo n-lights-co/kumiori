@@ -275,6 +275,7 @@ npm run e2e       # browser integration tests (Playwright; on first run, npx pla
 ```
 
 The fonts used by the tests are fetched on first run into `.cache/fonts` (changeable with `KUMIORI_FONT_DIR`). They come from Google Fonts (`fonts.gstatic.com`) and, for the PostScript font tests, Source Sans 3 (adobe-fonts/source-sans on `raw.githubusercontent.com`). Fetching is done in one place, `test/helpers.ts`; when a test needs another font, add it to the list there (the list is part of the CI cache key).
+The official Unicode conformance tests (`LineBreakTest.txt` for UAX #14, `BidiTest.txt` and `BidiCharacterTest.txt` for UAX #9) are likewise fetched on first run from `unicode.org` (`https://www.unicode.org/Public/<version>/ucd/`) into `.cache/unicode` (changeable with `KUMIORI_UCD_DIR`). Fetching is done in one place, `test/ucdTestData.ts`, and the version follows the UCD version the tables in `src/unicodeData.ts` were generated from. Where they cannot be fetched, the tests check only a small hand-written set of sequences in place of the official data.
 For the integration tests, setting `KUMIORI_E2E_FONT_CACHE` to a directory makes the browser's fetched fonts be stored there, so later runs do not use the network (CI uses this). `KUMIORI_E2E_FONT_DIR` is for supplying fonts by hand under fixed file names.
 
 Comparison with sample PDFs (prepare the sample FO and PDF files yourself; they are not in the repository. poppler's pdftoppm is required):

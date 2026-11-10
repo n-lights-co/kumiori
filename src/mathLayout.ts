@@ -590,12 +590,12 @@ class MathLayouter {
     return this.glyphBox(fk, last, ctx.size, ctx.color);
   }
 
+  /** 組み立てに使える部品か: 繰り返す部品があり、1 つ足すごとに (最小の重なりを引いても) 長さが増えること。部品ごとのつなぎの長さ (start・end) は確かめない */
   private validAssembly(parts: Array<{ start: number; end: number; full: number; extender: boolean }>): boolean {
     const omin = this.f.minConnectorOverlap;
     const ext = parts.filter((p) => p.extender);
     if (!ext.length) return false;
-    if (ext.reduce((a, p) => a + p.full, 0) - omin * ext.length <= 0) return false;
-    return parts.every((p) => p.start >= omin && p.end >= omin) || true;
+    return ext.reduce((a, p) => a + p.full, 0) - omin * ext.length > 0;
   }
 
   /** 部品を組み立てる (5.3.1 The GlyphAssembly table) */
@@ -1249,7 +1249,7 @@ class MathLayouter {
         shift += under.a;
         extraD = k('underbarExtraDescender');
       }
-      parts.push({ b: under, x: -m - under.w / 2 - loIc / 2, y: -(base.d + shift) + (largeop || baseStretchInline ? 0 : 0) });
+      parts.push({ b: under, x: -m - under.w / 2 - loIc / 2, y: -(base.d + shift) });
     }
     if (over) {
       let shift: number;
@@ -1310,7 +1310,7 @@ class MathLayouter {
     out.d += extraD;
     out.ld += extraD;
     if (base.op) out.op = base.op;
-    out.ic = base.op?.largeop ? 0 : 0;
+    out.ic = 0;
     return out;
   }
 
@@ -1358,7 +1358,7 @@ class MathLayouter {
     const t = this.k('overbarRuleThickness', ctx) || ctx.size * 0.05;
     const has = (k: string) => notation.includes(k);
     const sides = {
-      l: has('box') || has('roundedbox') || has('left') || has('madruwb') === false && has('longdiv'),
+      l: has('box') || has('roundedbox') || has('left') || (!has('madruwb') && has('longdiv')),
       r: has('box') || has('roundedbox') || has('right') || has('actuarial') || has('madruwb'),
       t: has('box') || has('roundedbox') || has('top') || has('actuarial') || has('longdiv'),
       b: has('box') || has('roundedbox') || has('bottom') || has('madruwb'),

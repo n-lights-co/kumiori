@@ -308,5 +308,3 @@ function regionBorderOf(fo: FoPageHost, r: XEl, fs: number): BorderInput | undef
   if (!b || !Object.values(b).some((v) => v && v.width > 0)) return undefined;
   return b;
 }
-
-/** writing-mode (§7.29.7)。lr / tb は lr-tb / tb-rl の略。右から左の横書き・下から上は未対応 (報告して既定に任せる) */

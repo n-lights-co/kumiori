@@ -36,7 +36,7 @@ type PseudoName = 'before' | 'after' | 'first-letter' | 'first-line' | 'marker';
  * 後半は、仕様に値の決まりの無い部分の既定 (Chrome の既定のうち組版に効くもの): フォームの部品の字の大きさ・書体・余白・背景、
  * ルビの注釈の字の大きさなど。
  *
- * 後半のうちルビの規則 (rbc・rtc・rb と、rtc・rt の字の大きさなど) は、CSS Ruby 1 の付録 A.1 の既定のスタイルシートを写したもの
+ * 後半のうちルビの規則 (rb の white-space と、rtc・rt の字の大きさなど) は、CSS Ruby 1 の付録 A.1 の既定のスタイルシートを写したもの
  * (https://www.w3.org/TR/css-ruby-1/#default-stylesheet 、取得した版は https://www.w3.org/TR/2022/WD-css-ruby-1-20221231/ )。
  * This software includes material copied from or derived from CSS Ruby Annotation Layout Module Level 1 (https://www.w3.org/TR/2022/WD-css-ruby-1-20221231/).
  * Copyright © 2022 W3C® (MIT, ERCIM, Keio, Beihang).
@@ -194,10 +194,10 @@ select { display: inline-block; }
 ruby { text-indent: 0; } rt { text-align: start; }
 
 /* CSS Ruby 1 の付録 A.1 (ルビを組む UA の既定のスタイルシート。https://www.w3.org/TR/css-ruby-1/#default-stylesheet)。
-   台湾の注音 (bopomofo) の 30% の規則は、セレクタの並びの終わりに , があって無効な規則なので入れない */
-rbc  { display: ruby-base-container; }
-rtc  { display: ruby-text-container; }
-rb   { display: ruby-base; white-space: nowrap; }
+   台湾の注音 (bopomofo) の 30% の規則は、セレクタの並びの終わりに , があって無効な規則なので入れない。
+   rbc・rtc・rb の display (ruby-base-container・ruby-text-container・ruby-base) も入れない: Kumiori の読める display の語 (KEYWORDS) に無く、
+   書いても宣言ごと捨てられる (3 つとも inline のまま。ルビの組み立ては htmlImport が要素の名前 rb・rt・rtc で行う) */
+rb   { white-space: nowrap; }
 ruby, rb, rt, rbc, rtc { unicode-bidi: isolate; }
 rtc, rt {
   font-variant-east-asian: ruby;

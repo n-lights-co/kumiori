@@ -92,7 +92,7 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 
 **実装の状況 (第 2 段階)**: 対応済み。
 
-- ブラウザが知らない指定 (`string-set`・`position: running()`・`float: footnote`・`page`、`content` の `target-counter()`・`leader()`・`string()`・`element()`) は、CSS を自前で読み (`src/htmlPaged.ts`)、セレクタで要素に当てはめる。詳細度は見ず、後に書いた規則が勝つ。
+- ブラウザが知らない指定 (`string-set`・`position: running()`・`float: footnote`・`page`、`content` の `target-counter()`・`leader()`・`string()`・`element()`) は、CSS を自前で読み (`src/htmlPaged.ts`)、セレクタで要素に当てはめる。勝ち負けは通常のカスケード (`!important`・層 (`@layer`)・詳細度・書いた順。Cascade 5 §6) で決める。
 - 拡張の `-ah-linefeed-treatment: ignore` (XSL §7.16.7 の linefeed-treatment。継承する) は、字の中の改行を捨てる (空白にもしない)。
 - 互換のスタイル「アンテナハウス互換」(`--style ah`。以下、互換のスタイル): `名前:first` の @page 規則を、ページの組 (`page` と強制改ページを持つ要素 1 つが作るページの並び。GCPM 3 §3.2) ごとの最初のページに当てる (`pageGroupFirst`。CSS Paged Media 3 §4.2.2 の `:first` は文書の最初のページだけで、GCPM 3 も定義し直さない。既定では、ページの名前が変わるところで分けた並びの最初のページに当てる)。
 - 行に収まらない中身は、`text-align` が中央・終わりでも行の始めにそろえて終わり側へはみ出す (CSS Text 3 §6.1)。互換のスタイルでも同じ (以前は互換のスタイルで中央にそろえていた (`alignOverflowing`) が、取り除いた)。

@@ -420,6 +420,16 @@ describe('XSL-FO 変換: footnote-separator', () => {
     const border = seq(fo('<fo:block>a</fo:block>', '', '<fo:static-content flow-name="xsl-footnote-separator"><fo:block border-top="1pt dashed red" width="30mm"/></fo:static-content>')).footnotes!.separator as { content?: unknown[] };
     expect(border.content?.length).toBe(1);
   });
+
+  it('中身が空の区切り (空のブロックだけ) は、区切りの指定を作らず (既定の区切り線)、読み込みの報告に書く', () => {
+    const r = imp(fo('<fo:block>a</fo:block>', '', '<fo:static-content flow-name="xsl-footnote-separator"><fo:block/></fo:static-content>'));
+    expect(r.document.sequences[0].footnotes).toEqual({ spacing: 0 });
+    expect(r.report.notes.some((n) => /footnote-separator/.test(n))).toBe(true);
+    // static-content が無ければ、区切りを描かない (報告にも書かない)
+    const none = imp(fo('<fo:block>a</fo:block>'));
+    expect(none.document.sequences[0].footnotes).toEqual({ separator: false, spacing: 0 });
+    expect(none.report.notes.some((n) => /footnote-separator/.test(n))).toBe(false);
+  });
 });
 
 describe('XSL-FO 変換: 段組', () => {
