@@ -80,6 +80,11 @@ export interface Painter {
   drawImageTiled?(a: ImageArea, x: number, y: number, region: Rect): boolean;
   /** 座標変換 m = [a,b,c,d,e,f] (局所 → Sheet 座標, x' = a·x + c·y + e, y' = b·x + d·y + f) の中で draw を実行する */
   transform(m: Matrix, draw: () => void): void;
+  /**
+   * draw で描くものをまとめて 1 枚の絵にしてから、不透明度 opacity で重ねる (CSS の opacity。Color 4 §3.3: 中の重なりは濃くならない)。
+   * 実装しない描画先では、paint は draw をそのまま (不透明のまま) 描く
+   */
+  group?(opacity: number, draw: () => void): void;
   strokeLine(l: Line, width: number, color?: string): void;
   clipRect(r: Rect): void;
   restore(): void;
@@ -291,6 +296,29 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
  * OpenBox を返す。子の無い領域 (字・画像) と、この段では描かない領域は、ここで描き終えて undefined を返す
  */
 function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase): OpenBox | undefined {
+  if (a.transform || a.opacity !== undefined) {
+    // 変換・不透明度の付いた箱 (CSS の transform・opacity) は、重ね合わせの文脈を作る (Transforms 1 §3・Color 4 §3.3):
+    // 背景の段と中身の段に分けず、中身の段でまるごと描く (位置指定の箱と同じく、回り込みと行内の中身より後)
+    if (phase === 'bg') return undefined;
+    const { transform: t, opacity, ...rest } = a;
+    const plain = rest as Area;
+    // 逆行列の無い変換 (scale(0) など) の箱と中身は描かない (Transforms 1 §10)。不透明度 0 の箱も見えない
+    if ((t && Math.abs(t[0] * t[3] - t[1] * t[2]) < 1e-12) || (opacity !== undefined && opacity <= 0)) return undefined;
+    const body = () => (opacity !== undefined && opacity < 1 && p.group ? p.group(opacity, () => paintArea(plain, ox, oy, p, 'all')) : paintArea(plain, ox, oy, p, 'all'));
+    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(`変換・回転した領域 (transform・opacity・orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`);
+    orientationDepth++;
+    try {
+      if (t) {
+        // 行列の原点は箱の左上 (X, Y): Sheet の座標では T(X, Y)·t·T(−X, −Y)
+        const X = ox + a.x;
+        const Y = oy + a.y;
+        p.transform([t[0], t[1], t[2], t[3], t[4] + X - t[0] * X - t[2] * Y, t[5] + Y - t[1] * X - t[3] * Y], body);
+      } else body();
+    } finally {
+      orientationDepth--;
+    }
+    return undefined;
+  }
   if (a.orientation) {
     // 局所座標系 (原点 = 箱の左上) へ移って、回転なしの箱として描く
     const m = rotationMatrix(a.orientation as 90 | 180 | 270, ox + a.x, oy + a.y, a.width, a.height);
@@ -323,12 +351,19 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
     if (round) p.clipPath(radiusShape(a.borderRadius, a.width, a.height)(x, y, a.width, a.height));
     if (a.missing) paintPlaceholder(a, x, y, p);
     else if (a.fit && a.naturalWidth && a.naturalHeight) {
-      // object-fit: 縦横比を保って、枠を覆う (cover) / 枠に収める (contain) 大きさで中央に置き、枠で切り抜く
-      const s = (a.fit === 'cover' ? Math.max : Math.min)(a.width / a.naturalWidth, a.height / a.naturalHeight);
+      // object-fit (CSS Images 3 §4.5): 縦横比を保って、枠を覆う (cover) / 枠に収める (contain) 大きさ、画像本来の大きさ (none)、
+      // none と contain の小さいほう (scale-down) で置き、枠で切り抜く。位置は object-position (§4.6。無ければ中央)
+      const contain = Math.min(a.width / a.naturalWidth, a.height / a.naturalHeight);
+      const s = a.fit === 'cover' ? Math.max(a.width / a.naturalWidth, a.height / a.naturalHeight) : a.fit === 'none' ? 1 : a.fit === 'scale-down' ? Math.min(1, contain) : contain;
       const w = a.naturalWidth * s;
       const h = a.naturalHeight * s;
+      // 位置: 百分率は (枠 − 画像) に対する割合、長さは左・上の端 (FromEnd なら右・下の端) からの距離
+      const fp = a.fitPosition;
+      const at = (v: number | string, room: number, fromEnd?: boolean) => (typeof v === 'number' ? (fromEnd ? room - v : v) : (room * parseFloat(v)) / 100);
+      const dx = fp ? at(fp.x, a.width - w, fp.xFromEnd) : (a.width - w) / 2;
+      const dy = fp ? at(fp.y, a.height - h, fp.yFromEnd) : (a.height - h) / 2;
       p.clipRect({ x, y, width: a.width, height: a.height });
-      p.drawImage({ ...a, width: w, height: h }, x + (a.width - w) / 2, y + (a.height - h) / 2);
+      p.drawImage({ ...a, width: w, height: h }, x + dx, y + dy);
       p.restore();
     } else p.drawImage(a, x, y);
     if (round) p.restore();
@@ -374,7 +409,18 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
   }
   // 半透明の背景 (#rrggbbaa): 下の色と重ねて塗る
   const bgA = a.backgroundColor && /^#[0-9a-f]{8}$/i.test(a.backgroundColor) ? parseInt(a.backgroundColor.slice(7), 16) / 255 : undefined;
-  if (box && a.backgroundColor && bgA !== undefined) {
+  if (box && a.backgroundColor && a.backgroundClip && a.backgroundColor !== 'transparent') {
+    // 背景の色を塗る範囲 (background-clip。CSS Backgrounds 3 §2.2・§2.7): padding の箱か内容の箱。角丸は、その箱の角丸 (§4.2)
+    const k = a.backgroundClip === 'content-box' ? 1 : 0;
+    const l = (a.border.left?.width ?? 0) + k * a.padding.left;
+    const t = (a.border.top?.width ?? 0) + k * a.padding.top;
+    const w = a.width - l - (a.border.right?.width ?? 0) - k * a.padding.right;
+    const h = a.height - t - (a.border.bottom?.width ?? 0) - k * a.padding.bottom;
+    if (w > 0 && h > 0) {
+      if (rad || bgA !== undefined) p.fillPath(shape(x + l, y + t, w, h, t), bgA !== undefined ? a.backgroundColor.slice(0, 7) : a.backgroundColor, false, bgA ?? 1);
+      else p.fillRect(x + l, y + t, w, h, a.backgroundColor);
+    }
+  } else if (box && a.backgroundColor && bgA !== undefined) {
     p.fillPath(shape(x, y, a.width, a.height), a.backgroundColor.slice(0, 7), false, bgA);
   } else if (box && a.backgroundColor && a.backgroundColor !== 'transparent') {
     if (rad) p.fillPath(shape(x, y, a.width, a.height), a.backgroundColor);
@@ -905,24 +951,49 @@ function paintBorderSide(
   }
 }
 
-/** 背景画像: padding の外端 (border の内側) の範囲に、位置と繰り返しの指定どおりに並べる */
+/**
+ * 背景画像。複数の背景 (CSS Backgrounds 3 §2.1) は、後ろの層 (under の後ろのもの) から順に描く (最初の画像がいちばん手前)
+ */
 function paintBackgroundImage(a: Area, x: number, y: number, p: Painter) {
-  const bi = { ...a.backgroundImage! };
+  const top = a.backgroundImage!;
+  if (top.under) for (let k = top.under.length - 1; k >= 0; k--) paintBackgroundLayer(a, top.under[k] as NonNullable<Area['backgroundImage']>, x, y, p);
+  paintBackgroundLayer(a, top, x, y, p);
+}
+
+/**
+ * 背景画像 1 枚: 位置の基準の領域 (background-origin。無ければ padding の箱) に、位置と繰り返しの指定どおりに並べ、
+ * 描く範囲 (background-clip。無ければ padding の箱) で切り抜く (CSS Backgrounds 3 §2.7・§2.8)
+ */
+function paintBackgroundLayer(a: Area, layer: NonNullable<Area['backgroundImage']>, x: number, y: number, p: Painter) {
+  const bi = { ...layer };
   const bl = a.border.left?.width ?? 0;
   const br = a.border.right?.width ?? 0;
   const bt = a.border.top?.width ?? 0;
   const bb = a.border.bottom?.width ?? 0;
-  const W0 = Math.max(a.width - bl - br, 0);
-  const H0 = Math.max(a.height - bt - bb, 0);
-  if (W0 <= 0 || H0 <= 0) return;
+  /** 箱の領域: border の箱 (0)・padding の箱 (1)・内容の箱 (2) */
+  const boxOf = (k: 0 | 1 | 2): Rect => {
+    const l = (k >= 1 ? bl : 0) + (k >= 2 ? a.padding.left : 0);
+    const t = (k >= 1 ? bt : 0) + (k >= 2 ? a.padding.top : 0);
+    const r = (k >= 1 ? br : 0) + (k >= 2 ? a.padding.right : 0);
+    const b = (k >= 1 ? bb : 0) + (k >= 2 ? a.padding.bottom : 0);
+    return { x: x + l, y: y + t, width: Math.max(a.width - l - r, 0), height: Math.max(a.height - t - b, 0) };
+  };
+  const posK = bi.origin === 'border-box' ? 0 : bi.origin === 'content-box' ? 2 : 1;
+  const clipK = bi.clip === 'border-box' ? 0 : bi.clip === 'content-box' ? 2 : 1;
+  const posR = boxOf(posK);
+  const clip0 = boxOf(clipK);
+  const W0 = posR.width;
+  const H0 = posR.height;
+  if (W0 <= 0 || H0 <= 0 || clip0.width <= 0 || clip0.height <= 0) return;
   // 紙の端に接する箱は、切り抜きと繰り返しの範囲を端の外へ少し伸ばす (端の画素が薄く見えないように)。
   // cover の画像は、伸ばした範囲を覆う大きさ・位置にする
-  const clipR = snapToEdge({ x: x + bl, y: y + bt, width: W0, height: H0 });
+  const clipR = snapToEdge(clip0);
   const cover = bi.size === 'cover';
-  const bx = cover ? clipR.x : x + bl;
-  const by = cover ? clipR.y : y + bt;
-  const W = cover ? clipR.width : W0;
-  const H = cover ? clipR.height : H0;
+  const posS = cover ? snapToEdge(posR) : posR;
+  const bx = posS.x;
+  const by = posS.y;
+  const W = posS.width;
+  const H = posS.height;
   const pos = (v: unknown, room: number) => {
     if (typeof v === 'number') return v;
     if (v === 'center') return room / 2;
@@ -942,11 +1013,17 @@ function paintBackgroundImage(a: Area, x: number, y: number, p: Painter) {
   const oy = bi.yFromEnd && typeof bi.y === 'number' ? H - bi.height - bi.y : pos(bi.y, H - bi.height);
   const rx = bi.repeat === undefined || bi.repeat === 'repeat' || bi.repeat === 'repeat-x';
   const ry = bi.repeat === undefined || bi.repeat === 'repeat' || bi.repeat === 'repeat-y';
-  const startX = rx ? ox - Math.ceil(ox / bi.width) * bi.width : ox;
-  const startY = ry ? oy - Math.ceil(oy / bi.height) * bi.height : oy;
+  // 並べる範囲 (位置の基準の領域の左上から): 描く範囲が基準の領域と違うとき (origin・clip の指定) は、描く範囲を覆うまで並べる
+  const same = posK === 1 && clipK === 1;
+  const minX = same ? 0 : clip0.x - bx;
+  const minY = same ? 0 : clip0.y - by;
+  const maxX = same ? W : clip0.x + clip0.width - bx;
+  const maxY = same ? H : clip0.y + clip0.height - by;
+  const startX = rx ? ox - Math.ceil((ox - minX) / bi.width) * bi.width : ox;
+  const startY = ry ? oy - Math.ceil((oy - minY) / bi.height) * bi.height : oy;
   const tile = { type: 'image', src: bi.src, missing: false, x: 0, y: 0, width: bi.width, height: bi.height, margin: a.margin, padding: a.padding, border: {}, writingMode: a.writingMode } as ImageArea;
-  // 角丸の箱の背景画像は、padding の箱の角丸 (外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §5.3)
-  if (a.borderRadius) p.clipPath(radiusShape(a.borderRadius, a.width, a.height)(clipR.x, clipR.y, clipR.width, clipR.height, bt));
+  // 角丸の箱の背景画像は、描く範囲の箱の角丸 (padding の箱なら、外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §4.2・§5.3)
+  if (a.borderRadius) p.clipPath(radiusShape(a.borderRadius, a.width, a.height)(clipR.x, clipR.y, clipR.width, clipR.height, clipK === 0 ? 0 : clipK === 1 ? bt : bt + a.padding.top));
   else p.clipRect(clipR);
   // 繰り返す方向だけ箱いっぱいに、繰り返さない方向は 1 枚の幅だけの範囲を、1 つの模様で埋める (タイルの数だけ命令を出さない)
   const region: Rect = { x: rx ? clipR.x : bx + startX, y: ry ? clipR.y : by + startY, width: rx ? clipR.width : bi.width, height: ry ? clipR.height : bi.height };
@@ -954,8 +1031,8 @@ function paintBackgroundImage(a: Area, x: number, y: number, p: Painter) {
     p.restore();
     return;
   }
-  for (let ty = startY; ty < H; ty += bi.height) {
-    for (let tx = startX; tx < W; tx += bi.width) {
+  for (let ty = startY; ty < maxY; ty += bi.height) {
+    for (let tx = startX; tx < maxX; tx += bi.width) {
       p.drawImage(tile, bx + tx, by + ty);
       if (!rx) break;
     }

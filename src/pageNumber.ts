@@ -63,18 +63,52 @@ export function circledNumber(n: number): string | undefined {
  */
 export function formatPageNumber(n: number, fmt?: string): string {
   if (!fmt) return String(n);
+  // 桁区切りの付いた書式 (withGrouping)
+  const gi = fmt.indexOf(GROUPING_MARK);
+  let grouping: Grouping | undefined;
+  if (gi >= 0) {
+    const [sep, size] = fmt.slice(gi + 1).split(GROUPING_MARK);
+    grouping = { sep, size: Number(size) };
+    fmt = fmt.slice(0, gi);
+  }
   const toks = [...fmt.matchAll(/[\p{L}\p{N}]+/gu)];
-  if (!toks.length) return fmt + String(n);
+  if (!toks.length) return fmt + formatToken(n, '1', grouping);
   const first = toks[0];
   const last = toks[toks.length - 1];
   const prefix = fmt.slice(0, first.index);
   const suffix = fmt.slice(last.index! + last[0].length);
-  return prefix + formatToken(n, first[0]) + suffix;
+  return prefix + formatToken(n, first[0], grouping) + suffix;
 }
 
-function formatToken(n: number, tok: string): string {
-  if (/^[0-9]+$/.test(tok)) return String(n).padStart(tok.length, '0');
-  if (/^[０-９]+$/.test(tok)) return String(n).padStart(tok.length, '0').replace(/[0-9]/g, (d) => String.fromCharCode(0xff10 + Number(d)));
+interface Grouping {
+  sep: string;
+  size: number;
+}
+/** 書式の文字列の中で、桁区切りの指定を分ける印 (書式には現れない字) */
+const GROUPING_MARK = '\u0000';
+
+/**
+ * 書式 fmt に、桁区切り (XSL 1.1 §7.26.2 grouping-separator・§7.26.3 grouping-size。XSLT 1.0 §7.7.1) を付けた書式を返す。
+ * 10 進の数 (書式トークンが数字のもの) を、後ろから size 桁ごとに sep で区切る (“grouping-separator="," and grouping-size="3" would produce
+ * numbers of the form 1,000,000”)。書式の文字列の後ろに「印・区切りの字・印・桁数」を足した形で、formatPageNumber が読む
+ * (ページ番号の書式は文字列 1 つで運ぶので、その中に入れる)
+ */
+export function withGrouping(fmt: string | undefined, sep: string, size: number): string {
+  return `${fmt || '1'}${GROUPING_MARK}${sep}${GROUPING_MARK}${size}`;
+}
+
+/** 数字の並びを、後ろから size 桁ごとに sep で区切る */
+function group(digits: string, g: Grouping | undefined): string {
+  if (!g || !(g.size >= 1)) return digits;
+  const cs = [...digits];
+  const out: string[] = [];
+  for (let e = cs.length; e > 0; e -= g.size) out.unshift(cs.slice(Math.max(0, e - g.size), e).join(''));
+  return out.join(g.sep);
+}
+
+function formatToken(n: number, tok: string, grouping?: Grouping): string {
+  if (/^[0-9]+$/.test(tok)) return group(String(n).padStart(tok.length, '0'), grouping);
+  if (/^[０-９]+$/.test(tok)) return group(String(n).padStart(tok.length, '0').replace(/[0-9]/g, (d) => String.fromCharCode(0xff10 + Number(d))), grouping);
   if (tok === 'i') return roman(n);
   if (tok === 'I') return roman(n).toUpperCase();
   if (tok === 'a') return alpha(n);
@@ -86,5 +120,5 @@ function formatToken(n: number, tok: string): string {
   // 丸数字 (①〜⑳・㉑〜㊿)
   if (tok === '①') return circledNumber(n) ?? String(n);
   // 知らないトークンは "1" (10 進数) とみなす (XSLT 1.0 §7.7.1)
-  return String(n);
+  return group(String(n), grouping);
 }

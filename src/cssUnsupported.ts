@@ -13,10 +13,6 @@ import { isPagedDecl, type ParsedCss } from './htmlPaged';
 
 /** 対応していないプロパティ (対応仕様説明書 HTML と CSS 編 16 章) */
 export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
-  'empty-cells',
-  'background-attachment',
-  'background-clip',
-  'background-origin',
   'border-image',
   'border-image-source',
   'border-image-slice',
@@ -26,7 +22,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'justify-items',
   'justify-self',
   'place-items',
-  'opacity',
   'font-size-adjust',
   'font-synthesis',
   'font-synthesis-weight',
@@ -39,10 +34,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'ascent-override',
   'descent-override',
   'line-gap-override',
-  'box-decoration-break',
-  'hyphenate-limit-zone',
-  'hyphenate-limit-lines',
-  'hyphenate-limit-last',
   'text-wrap-mode',
   'text-wrap-style',
   'text-decoration-skip-ink',
@@ -62,9 +53,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'grid-auto-columns',
   'image-orientation',
   'image-rendering',
-  'object-position',
-  'initial-letter',
-  'list-style-image',
   'marker-side',
   'text-overflow',
   'overflow-block',
@@ -74,14 +62,9 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'tab-size',
   'text-align-all',
   'text-justify',
-  'hyphenate-character',
-  'hyphenate-limit-chars',
   'text-wrap',
   'text-underline-position',
   'text-shadow',
-  'transform',
-  'transform-origin',
-  'transform-box',
   'outline',
   'outline-color',
   'outline-style',
@@ -141,6 +124,9 @@ export const UNSUPPORTED_CSS_VALUES: Readonly<Record<string, readonly string[]>>
   display: ['run-in'],
   'writing-mode': ['sideways-lr'],
   'ruby-merge': ['auto'],
+  // 描く範囲の text は CSS Backgrounds 4 の値 (Backgrounds 3 §2.7 の <visual-box> は border-box・padding-box・content-box)
+  'background-clip': ['text'],
+  'hyphenate-limit-last': ['column', 'page', 'spread'],
 };
 
 export interface UnsupportedCssReport {

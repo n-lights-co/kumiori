@@ -97,6 +97,30 @@ class CanvasPainter implements Painter {
     draw();
     this.ctx.restore();
   }
+  /**
+   * 不透明度の付いた箱 (CSS の opacity): 中身を同じ大きさの別の canvas に描いてから、不透明度を掛けて重ねる
+   * (Color 4 §3.3: 要素とその中身を 1 枚の絵にしてから重ねる。中の重なりは濃くならない)。切り抜きは、重ねるときに元の canvas のものが効く
+   */
+  group(opacity: number, draw: () => void) {
+    const main = this.ctx;
+    const { width, height } = main.canvas;
+    const off: HTMLCanvasElement | OffscreenCanvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(width, height) : Object.assign(document.createElement('canvas'), { width, height });
+    const octx = off.getContext('2d') as CanvasRenderingContext2D | null;
+    if (!octx || !width || !height) return draw();
+    octx.setTransform(main.getTransform());
+    octx.fontKerning = main.fontKerning;
+    this.ctx = octx;
+    try {
+      draw();
+    } finally {
+      this.ctx = main;
+    }
+    main.save();
+    main.setTransform(1, 0, 0, 1, 0, 0);
+    main.globalAlpha = opacity;
+    main.drawImage(off, 0, 0);
+    main.restore();
+  }
   drawImage(a: ImageArea, x: number, y: number) {
     const asset = this.assets?.get(a.src);
     const el = asset?.element;

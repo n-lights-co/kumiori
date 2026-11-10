@@ -638,7 +638,8 @@ export class FontManager {
   private latinWordNow = false;
   /** 欧文の書体 (和欧の混植の組の欧文の側) で組む字か: 欧文の字と、欧文の書体で組む語の中のギリシャ文字・キリル文字 */
   private latinChar(ch: string): boolean {
-    return isLatinForFallback(ch) || (this.latinWordNow && isGreekCyrillicLetter(ch));
+    // 欧文の語に付く分綴の字 U+2010 (HYPHEN) も、語の字と同じ欧文の書体で (和文の書体の全角のハイフンにしない。inlineFlatten の hyphenAtoms)
+    return isLatinForFallback(ch) || (this.latinWordNow && (isGreekCyrillicLetter(ch) || ch === '\u2010'));
   }
   /**
    * 書体の名前 family の、「欧文の書体で組む語の字」用の名前。getForChar・getForCluster に渡すと、和欧の混植の組 (総称・既定の書体、

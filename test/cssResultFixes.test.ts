@@ -101,13 +101,19 @@ describe('読めない background の一括指定 (CSS-07。Backgrounds 3 §2.10
     expect(expand('background', 'url(a.png) left /')).toEqual([]);
     expect(expand('background', 'url(a.png),')).toEqual([]);
   });
-  it('読める一括指定は、今までどおりに分ける (固定・箱の語は読み飛ばす)', () => {
+  it('読める一括指定は、層ごとの値の並びに分ける (Backgrounds 3 §2.1・§2.10。固定・箱の語も、層ごとの値にする)', () => {
     const st = styleOf('<p id="a">x</p>', '#a { background: url(a.png) no-repeat 10px 50% / 20px auto fixed padding-box content-box, linear-gradient(red, blue) #00f }');
     expect(st('background-color')).toBe('rgb(0, 0, 255)');
-    expect(st('background-image')).toBe('url("a.png")');
-    expect(st('background-repeat')).toBe('no-repeat');
-    expect(st('background-position')).toBe('10px 50%');
-    expect(st('background-size')).toBe('20px auto');
+    expect(st('background-image')).toBe('url("a.png"), linear-gradient(red, blue)');
+    expect(st('background-repeat')).toBe('no-repeat, repeat');
+    expect(st('background-position')).toBe('10px 50%, 0% 0%');
+    expect(st('background-size')).toBe('20px auto, auto');
+    expect(st('background-attachment')).toBe('fixed, scroll');
+    expect(st('background-origin')).toBe('padding-box, padding-box');
+    expect(st('background-clip')).toBe('content-box, border-box');
+    // 1 層だけの一括指定は、並びにならない (これまでと同じ値)
+    const one = styleOf('<p id="a">x</p>', '#a { background: url(a.png) no-repeat 10px 50% / 20px auto #00f }');
+    expect([one('background-image'), one('background-repeat'), one('background-position'), one('background-size')]).toEqual(['url("a.png")', 'no-repeat', '10px 50%', '20px auto']);
     expect(styleOf('<p id="a">x</p>', '#a { background: none }')('background-color')).toBe('rgba(0, 0, 0, 0)');
     expect(styleOf('<p id="a">x</p>', 'p { background: red } #a { background: linear-gradient(red, blue) }')('background-color')).toBe('rgba(0, 0, 0, 0)');
   });

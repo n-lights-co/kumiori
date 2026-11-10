@@ -14,6 +14,7 @@ import { MAX_VAR_LENGTH, parseCss, setSupportsDecl, splitDecls, unescapeCss, typ
 import { fmtColor, parseColor, splitTop, UNIT_PX, type RGBA } from './cssText';
 import { parseVariationSettings } from './fontVariation';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
+import { is3dTransformValue } from './cssTransform';
 import { asciiLower, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
 
@@ -212,6 +213,11 @@ rtc, :not(rtc) > rt {
    言語ごとの圏点の位置: 中国語は字の下 (縦書きは右)、日本語・韓国語は字の上 (clreq §5.3.1 の着重号) */
 :root:lang(zh), [lang|=zh] { text-emphasis-position: under right; }
 [lang|=ja], [lang|=ko] { text-emphasis-position: over right; }
+/* CSS Inline 3 §7.4.1 (UA の既定のスタイルシート): 言語ごとの、最初の字 (initial-letter) を合わせる位置 */
+[lang]:lang(zh, ja, ko, ii) { initial-letter-align: ideographic; }
+[lang]:lang(hi, mr, ne, pi, kok, brx, mai, sd, sa) { initial-letter-align: hanging; }
+[lang]:lang('*-Latn', '*-Cyrl') { initial-letter-align: alphabetic; }
+[lang]:lang('*-Hani', '*-Hant', '*-Hans') { initial-letter-align: ideographic; }
 input, textarea, select, button { font-size: 13.3333px; }
 input { padding: 1px 2px; } textarea { padding: 2px; }
 input, textarea, select { background-color: white; }
@@ -341,6 +347,10 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'background-position-x': [false, '0%', 'raw'],
   'background-position-y': [false, '0%', 'raw'],
   'background-size': [false, 'auto', 'raw'],
+  // 層ごとの、位置の基準の領域・描く範囲・固定 (Backgrounds 3 §2.8・§2.7・§2.5)。背景の性質は、どれも層ごとの値のコンマ区切りの並び (§2.1)
+  'background-origin': [false, 'padding-box', 'raw'],
+  'background-clip': [false, 'border-box', 'raw'],
+  'background-attachment': [false, 'scroll', 'raw'],
   display: [false, 'inline', 'raw'],
   position: [false, 'static', 'raw'],
   float: [false, 'none', 'raw'],
@@ -358,6 +368,9 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'max-width': [false, 'none', 'len-none'],
   'max-height': [false, 'none', 'len-none'],
   'box-sizing': [false, 'content-box', 'raw'],
+  'box-decoration-break': [false, 'slice', 'raw'],
+  'initial-letter': [false, 'normal', 'raw'],
+  'initial-letter-align': [true, 'alphabetic', 'raw'],
   'margin-top': [false, '0px', 'len-auto'],
   'margin-right': [false, '0px', 'len-auto'],
   'margin-bottom': [false, '0px', 'len-auto'],
@@ -382,6 +395,7 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'border-spacing': [true, '0px 0px', 'raw'],
   'table-layout': [false, 'auto', 'raw'],
   'caption-side': [true, 'top', 'raw'],
+  'empty-cells': [true, 'show', 'raw'],
   'vertical-align': [false, 'baseline', 'raw'],
   // Chrome の既定の書体 (標準の書体の設定)
   'font-family': [true, '"Times New Roman"', 'raw'],
@@ -421,6 +435,12 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'overflow-wrap': [true, 'normal', 'raw'],
   'line-break': [true, 'auto', 'raw'],
   hyphens: [true, 'manual', 'raw'],
+  // 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5。どれも受け継ぐ)。hyphenate-limit-zone の百分率は行の長さに対する割合なので、% のまま受け継ぐ
+  'hyphenate-character': [true, 'auto', 'raw'],
+  'hyphenate-limit-chars': [true, 'auto', 'raw'],
+  'hyphenate-limit-lines': [true, 'no-limit', 'raw'],
+  'hyphenate-limit-last': [true, 'none', 'raw'],
+  'hyphenate-limit-zone': [true, '0px', 'len'],
   direction: [true, 'ltr', 'raw'],
   'unicode-bidi': [false, 'normal', 'raw'],
   'writing-mode': [true, 'horizontal-tb', 'raw'],
@@ -487,6 +507,12 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'box-shadow': [false, 'none', 'raw'],
   filter: [false, 'none', 'raw'],
   transform: [false, 'none', 'raw'],
+  // 変換の原点・基準の箱 (CSS Transforms 1 §5・§6) と、個別の変換 (CSS Transforms 2 §5)
+  'transform-origin': [false, '50% 50%', 'raw'],
+  'transform-box': [false, 'view-box', 'raw'],
+  translate: [false, 'none', 'raw'],
+  rotate: [false, 'none', 'raw'],
+  scale: [false, 'none', 'raw'],
   'string-set': [false, 'none', 'raw'],
 };
 /** 計算値を決めるプロパティの名前 (要素ごとに Object.keys を作らない) */
@@ -845,8 +871,8 @@ export function isKnownCssProperty(prop: string, value = ''): boolean {
  * 宣言を、規則の中で (構文の誤りとして捨てずに) 受け付けるときに対応しているとし、性質と値の両方を「使える水準で」実装していなければ、
  * 受け付けても対応していると答えてもいけない。値の一部だけを実装しているものも、対応しているとは答えない。
  *  - 名前を知らない性質は偽 (印刷に関わらない性質 (animation-*・cursor など) も、読まないので偽)
- *  - 名前は読むが組版に使わない性質 (cssUnsupported の UNSUPPORTED_CSS_PROPERTIES。transform・opacity など) は偽
- *  - 対応している性質の、読まない値 (UNSUPPORTED_CSS_VALUES。position: sticky など) は偽
+ *  - 名前は読むが組版に使わない性質 (cssUnsupported の UNSUPPORTED_CSS_PROPERTIES。text-shadow・outline など) は偽
+ *  - 対応している性質の、読まない値 (UNSUPPORTED_CSS_VALUES。position: sticky など。3D の変換 (transform: rotateX() など) も) は偽
  *  - 一括指定は、分けた性質のどれかが上の 2 つに当たれば偽 (未対応の性質を初期値に戻すだけの一括指定は真)
  *  - 値が読めない宣言は偽 (display: foo・color: notacolor など)。カスケードが宣言を構文の誤りとして捨てるかの検査
  *    (cascadeDecls の、一括指定を分けて valid で調べる検査) と同じ判定を通す: 一括指定は、分けられない値・分けた性質のどれかが読めない値なら偽。
@@ -864,6 +890,10 @@ export function supportsCssDeclaration(prop: string, value: string): boolean {
   const unsupported = (lp: string, lv: string, longhandOfShorthand: boolean) => {
     const t = lv.trim().toLowerCase();
     if (UNSUPPORTED_CSS_PROPERTIES.has(lp)) return !longhandOfShorthand || !(t === (PROPS[lp]?.[1] ?? '').toLowerCase() || /^(inherit|initial|unset|revert|revert-layer)$/.test(t));
+    // 3D の変換 (transform の 3D の関数など) は読まない
+    if (is3dTransformValue(lp, t)) return true;
+    // ページに固定する背景 (background-attachment: fixed) は、箱に付く背景として描く (読まない値)
+    if (lp === 'background-attachment' && /\bfixed\b/.test(t)) return true;
     return !!UNSUPPORTED_CSS_VALUES[lp]?.includes(t);
   };
   if (unsupported(p, v, false)) return false;
@@ -919,21 +949,26 @@ const borderShorthand: Expander = (prop, v, global, ah) => {
 };
 
 /**
- * background の一括指定 (Backgrounds 3 §2.10: <bg-layer># , <final-bg-layer>)。使うのは最初の層の画像・繰り返し・位置・大きさと、最後の層の色。
+ * background の一括指定 (Backgrounds 3 §2.10: <bg-layer># , <final-bg-layer>)。層ごとの画像・繰り返し・位置・大きさ・基準の領域・描く範囲・
+ * 固定を、それぞれの性質のコンマ区切りの並びにする (§2.1)。色は最後の層にだけ書ける。
+ * 箱の語 (<visual-box>) は、1 つなら background-origin と background-clip の両方、2 つなら 1 つ目が origin、2 つ目が clip (§2.10)。
  * どの種類にも当たらない語 (-webkit-linear-gradient() など、読めない値) があれば、宣言ごと読めない (空を返す。前の宣言を消さない。
- * CSS 2.1 §4.2: 読めない値の宣言は無視する)。色は最後の層にだけ書ける。固定 (attachment) と箱 (origin・clip。Backgrounds 4 の text を含む) の語は読み飛ばす
+ * CSS 2.1 §4.2: 読めない値の宣言は無視する)。Backgrounds 4 の text (描く範囲) は読み飛ばす
  */
 const backgroundShorthand: Expander = (_prop, v, global) => {
-  const props = ['background-color', 'background-image', 'background-repeat', 'background-position-x', 'background-position-y', 'background-size'];
+  const props = ['background-color', 'background-image', 'background-repeat', 'background-position-x', 'background-position-y', 'background-size', 'background-origin', 'background-clip', 'background-attachment'];
   if (global) return each(props, v);
   const layers = splitTop(v, ',', { keepEmpty: true });
   let color = 'rgba(0, 0, 0, 0)';
-  let image = 'none';
-  let repeat = 'repeat';
-  let pos: string[] = [];
-  let size = 'auto';
+  const images: string[] = [];
+  const repeats: string[] = [];
+  const xs: string[] = [];
+  const ys: string[] = [];
+  const sizes: string[] = [];
+  const origins: string[] = [];
+  const clips: string[] = [];
+  const attachments: string[] = [];
   for (let li = 0; li < layers.length; li++) {
-    const isFirst = li === 0;
     const isLast = li === layers.length - 1;
     // 位置と大きさを分ける / は、括弧 (url() など) の外のものだけ
     let depth = 0;
@@ -944,6 +979,8 @@ const backgroundShorthand: Expander = (_prop, v, global) => {
     let lRepeat: string | undefined;
     const lPos: string[] = [];
     let lSize: string | undefined;
+    let lAttachment: string | undefined;
+    const lBoxes: string[] = [];
     for (let k = 0; k < ts.length; k++) {
       const t = ts[k];
       const tl = t.toLowerCase();
@@ -955,7 +992,9 @@ const backgroundShorthand: Expander = (_prop, v, global) => {
         if (!sz.length) return [];
         lSize = sz.join(' ');
       } else if (/^(left|right|top|bottom|center)$/.test(tl) || isLenLike(t)) lPos.push(t);
-      else if (/^(scroll|fixed|local|border-box|padding-box|content-box|text)$/.test(tl)) continue;
+      else if (/^(scroll|fixed|local)$/.test(tl)) lAttachment = tl;
+      else if (/^(border-box|padding-box|content-box)$/.test(tl)) lBoxes.push(tl);
+      else if (tl === 'text') continue;
       else if (isColorLike(t)) {
         // 色は最後の層だけ。var() は何になるか分からないので通す (色としては使わない)
         if (/^var\(/i.test(t)) continue;
@@ -963,15 +1002,29 @@ const backgroundShorthand: Expander = (_prop, v, global) => {
         color = t;
       } else return [];
     }
-    if (isFirst) {
-      image = lImage ?? image;
-      repeat = lRepeat ?? repeat;
-      pos = lPos;
-      size = lSize ?? size;
-    }
+    if (lBoxes.length > 2) return [];
+    const [px, py] = positionXY(lPos);
+    images.push(lImage ?? 'none');
+    repeats.push(lRepeat ?? 'repeat');
+    xs.push(px);
+    ys.push(py);
+    sizes.push(lSize ?? 'auto');
+    origins.push(lBoxes[0] ?? 'padding-box');
+    clips.push(lBoxes[1] ?? lBoxes[0] ?? 'border-box');
+    attachments.push(lAttachment ?? 'scroll');
   }
-  const [px, py] = positionXY(pos);
-  return [['background-color', color], ['background-image', image], ['background-repeat', repeat], ['background-position-x', px], ['background-position-y', py], ['background-size', size]];
+  const list = (a: string[]) => a.join(', ');
+  return [
+    ['background-color', color],
+    ['background-image', list(images)],
+    ['background-repeat', list(repeats)],
+    ['background-position-x', list(xs)],
+    ['background-position-y', list(ys)],
+    ['background-size', list(sizes)],
+    ['background-origin', list(origins)],
+    ['background-clip', list(clips)],
+    ['background-attachment', list(attachments)],
+  ];
 };
 
 const fontVariantShorthand: Expander = (_prop, v, global) => {
@@ -1124,6 +1177,10 @@ shorthand(['border-block-width', 'border-block-style', 'border-block-color', 'bo
 shorthand(['inset-block', 'inset-inline'], (prop, v, global) => startEnd(`${prop}-start`, `${prop}-end`, v, global));
 // アンテナハウスの拡張の -ah-border-radius (角の丸み)。border-radius と同じに読む
 shorthand(['-ah-border-radius'], (_p, v, _g, ah) => expand('border-radius', v, ah));
+// -webkit-initial-letter (接頭辞付きの古い書き方) は、initial-letter と同じに読む
+shorthand(['-webkit-initial-letter'], (_p, v) => [['initial-letter', v]]);
+// -webkit-box-decoration-break (接頭辞付きの古い書き方) は、box-decoration-break と同じに読む
+shorthand(['-webkit-box-decoration-break'], (_p, v) => [['box-decoration-break', v]]);
 // アンテナハウスの拡張の -ah-text-align・-ah-text-align-last (text-align・text-align-last と同じに読む)・角の丸み
 shorthand(['-ah-text-align', '-ah-text-align-last', '-ah-border-top-left-radius', '-ah-border-top-right-radius', '-ah-border-bottom-right-radius', '-ah-border-bottom-left-radius'], (prop, v) => [[prop.slice(4), v]]);
 shorthand(['border-radius'], (_p, v, global) => {
@@ -1137,8 +1194,10 @@ shorthand(['border-radius'], (_p, v, global) => {
 shorthand(['background'], backgroundShorthand);
 shorthand(['background-position'], (_p, v, global) => {
   if (global) return each(['background-position-x', 'background-position-y'], v);
-  const [px, py] = positionXY(tokens(splitTop(v, ',')[0] ?? ''));
-  return [['background-position-x', px], ['background-position-y', py]];
+  // 層ごとの位置 (コンマ区切り。Backgrounds 3 §2.1・§2.6)
+  const pairs = splitTop(v, ',').map((layer) => positionXY(tokens(layer)));
+  if (!pairs.length) pairs.push(positionXY([]));
+  return [['background-position-x', pairs.map((q) => q[0]).join(', ')], ['background-position-y', pairs.map((q) => q[1]).join(', ')]];
 });
 shorthand(['font-variant'], fontVariantShorthand);
 shorthand(['font'], fontShorthand);
@@ -1832,7 +1891,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           }
           // row-gap・column-gap の %: 基準は自分の内容の箱 (包含ブロックではない) で、計算値は % のまま (CSS Box Alignment 3 §8.1)。
           // htmlImport が、flex・grid の容器の幅・高さから求める
-          if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap') && /%/.test(raw)) {
+          if ((p === 'text-indent' || p === 'row-gap' || p === 'column-gap' || p === 'hyphenate-limit-zone') && /%/.test(raw)) {
             val = raw.trim();
             break;
           }
@@ -1850,6 +1909,15 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           const heightBase = isRoot ? vh : parent?.ch;
           const base = /^(height|min-height|max-height)$/.test(p) ? heightBase : /^(top|bottom)$/.test(p) ? undefined : cbVertical && /^(margin|padding)-/.test(p) ? vh : cbw;
           const px = lengthPx(raw, ctx(base));
+          // 内容による大きさの語 (CSS Sizing 3 §3.2 の min-content・max-content・fit-content) は、語のまま。fit-content(<長さ>)
+          // (CSS Sizing 4 §3.2) は、引数を長さにして残す (百分率は、長さ・百分率だけの値と同じ基準)
+          if (px === undefined && SIZING_PROPS.has(p)) {
+            const fc = /^fit-content\(\s*([^()]+?)\s*\)$/.exec(lv);
+            const arg = fc ? lengthPx(fc[1], ctx(base)) : undefined;
+            if (fc) val = arg !== undefined && arg >= 0 ? `fit-content(${fmtPx(arg)})` : initial;
+            else val = /^(min-content|max-content|fit-content)$/.test(lv) ? lv : p === 'width' || p === 'min-width' || p === 'max-width' ? raw : initial;
+            break;
+          }
           val = px !== undefined ? fmtPx(px) : p === 'height' || p === 'min-height' || p === 'max-height' ? initial : raw;
           break;
         }
@@ -1907,7 +1975,12 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     // font-variant は個別の性質から (ligatures が none で、ほかが normal なら none)
     const fv = ['font-variant-ligatures', 'font-variant-caps', 'font-variant-numeric', 'font-variant-east-asian', 'font-variant-position'].map((p) => out.v.get(p)!);
     out.v.set('font-variant', fv[0] === 'none' && fv.slice(1).every((x) => x === 'normal') ? 'none' : fv.filter((x) => x !== 'normal' && x !== 'none').join(' ') || 'normal');
-    out.v.set('background-position', `${out.v.get('background-position-x')} ${out.v.get('background-position-y')}`);
+    {
+      // 層ごと (コンマ区切り) に、x と y を組にする
+      const bx = splitTop(out.v.get('background-position-x')!, ',');
+      const by = splitTop(out.v.get('background-position-y')!, ',');
+      out.v.set('background-position', bx.length <= 1 && by.length <= 1 ? `${out.v.get('background-position-x')} ${out.v.get('background-position-y')}` : Array.from({ length: Math.max(bx.length, by.length) }, (_, k) => `${bx[k % bx.length]} ${by[k % by.length]}`).join(', '));
+    }
     if (pseudo && !cascaded.has('content')) out.v.set('content', 'none');
     return out;
   };
@@ -2040,15 +2113,18 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'column-rule-style': BORDER_STYLE,
     direction: 'ltr rtl',
     hyphens: 'none manual auto',
-    'text-align': 'start end left right center justify match-parent -webkit-center -webkit-left -webkit-right -internal-center',
+    'hyphenate-limit-last': 'none always column page spread',
+    'text-align': 'start end left right center justify justify-all match-parent -webkit-center -webkit-left -webkit-right -internal-center',
     'text-align-last': 'auto start end left right center justify match-parent',
     'white-space': 'normal pre nowrap pre-wrap pre-line break-spaces',
     'list-style-position': 'inside outside',
     'box-sizing': 'content-box border-box',
+    'box-decoration-break': 'slice clone',
     visibility: 'visible hidden collapse',
     'content-visibility': 'visible auto hidden',
     'border-collapse': 'collapse separate',
     'table-layout': 'auto fixed',
+    'empty-cells': 'show hide',
     'column-span': 'none all',
     'column-fill': 'auto balance',
     'text-autospace': 'normal no-autospace auto ideograph-alpha ideograph-numeric punctuation insert replace',
@@ -2058,12 +2134,35 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
   }).map(([k, v]) => [k, new Set(v.split(' '))]),
 );
 
+/**
+ * initial-letter の値 (CSS Inline 3 §7.3) を、字の大きさ (行の数) と沈める行の数にする。normal・読めない値は undefined。
+ * 沈める行の数を省くと drop (大きさを切り捨てた整数)、raise は 1
+ */
+export function parseInitialLetter(v: string): { size: number; sink: number } | undefined {
+  const w = v.trim().toLowerCase().split(/\s+/);
+  if (w.length < 1 || w.length > 2) return undefined;
+  const num = (x: string) => (/^\+?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/.test(x) ? parseFloat(x) : undefined);
+  const kw = w.find((x) => x === 'drop' || x === 'raise');
+  const nums = w.filter((x) => x !== kw);
+  if (kw ? nums.length !== 1 : nums.length < 1) return undefined;
+  const size = num(nums[0]);
+  if (size === undefined || !(size >= 1)) return undefined;
+  if (kw) return { size, sink: kw === 'raise' ? 1 : Math.floor(size) };
+  if (nums.length === 1) return { size, sink: Math.floor(size) };
+  const sink = num(nums[1]);
+  if (sink === undefined || !Number.isInteger(sink) || sink < 1) return undefined;
+  return { size, sink };
+}
+
+/** 箱の大きさの性質 (内容による大きさの語を取る。CSS Sizing 3 §3.1) */
+const SIZING_PROPS = new Set(['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height']);
+
 /** 値が読めるかを調べるための、仮の長さの基準 */
 const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 
 /** 1 語だけを取るキーワードの性質 */
 const SINGLE_KEYWORD = new Set([
-  'float', 'clear', 'position', 'visibility', 'box-sizing', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens',
+  'float', 'clear', 'position', 'visibility', 'box-sizing', 'box-decoration-break', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens', 'hyphenate-limit-last',
   'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'text-spacing-trim', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style',
 ]);
 
@@ -2084,6 +2183,10 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   // always (Fragmentation 4 §3.1: いちばん近い断片化の文脈で改ページ・改段) は、ページでは page と同じ
   if (/^break-(before|after)$/.test(prop)) return /^(auto|avoid|avoid-page|avoid-column|page|column|left|right|recto|verso|always)$/i.test(v.trim());
   if (prop === 'break-inside') return /^(auto|avoid|avoid-page|avoid-column)$/i.test(v.trim());
+  // initial-letter (CSS Inline 3 §7.3): normal | <数 1 以上> <整数 1 以上> | <数 1 以上> && [ drop | raise ]?
+  if (prop === 'initial-letter') return v.trim().toLowerCase() === 'normal' || parseInitialLetter(v) !== undefined;
+  // initial-letter-align (§7.4): [ border-box? [ alphabetic | ideographic | hanging | leading ]? ]!
+  if (prop === 'initial-letter-align') return /^(border-box(\s+(alphabetic|ideographic|hanging|leading))?|alphabetic|ideographic|hanging|leading)$/i.test(v.trim());
   if (prop === 'content') {
     // ブラウザが知らない関数 (leader()・target-counter() など) を含む content は読めない (自前の読み取り htmlPaged で扱う)
     const bare = v.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '"s"');
@@ -2124,6 +2227,19 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       return parseVariationSettings(v) !== undefined;
     case 'opacity':
       return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
+    case 'background-origin':
+    case 'background-clip':
+      // <visual-box># (Backgrounds 3 §2.7・§2.8: border-box | padding-box | content-box)
+      return splitTop(s0, ',').every((t) => /^(border-box|padding-box|content-box)$/.test(t.trim()));
+    case 'background-attachment':
+      // <attachment># (Backgrounds 3 §2.5: scroll | fixed | local)
+      return splitTop(s0, ',').every((t) => /^(scroll|fixed|local)$/.test(t.trim()));
+    case 'transform':
+      // none | <transform-function>+ (Transforms 1 §4。関数の名前は 2D と 3D (Transforms 2 §12)。引数の中身は読み込みのときに調べる)
+      return s0 === 'none' || /^(\s*(matrix|matrix3d|translate|translatex|translatey|translatez|translate3d|scale|scalex|scaley|scalez|scale3d|rotate|rotatex|rotatey|rotatez|rotate3d|skew|skewx|skewy|perspective)\([^()]*(\([^()]*\)[^()]*)*\))+\s*$/.test(s0);
+    case 'transform-box':
+      // content-box | border-box | fill-box | stroke-box | view-box (Transforms 1 §6)
+      return /^(content-box|border-box|fill-box|stroke-box|view-box)$/.test(s0);
     case 'z-index':
       return s0 === 'auto' || int.test(s0);
     case 'text-decoration-style':
@@ -2158,6 +2274,17 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
     case 'orphans':
     case 'widows':
       return int.test(s0) && parseInt(s0, 10) >= 1;
+    case 'hyphenate-character':
+      // auto | <string> (Text 4 §6.3.2)
+      return s0 === 'auto' || /^("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')$/.test(v.trim());
+    case 'hyphenate-limit-chars': {
+      // [ auto | <integer [0,∞]> ]{1,3} (Text 4 §6.3.4)
+      const ws = tokens(s0);
+      return ws.length >= 1 && ws.length <= 3 && ws.every((w) => w === 'auto' || (int.test(w) && parseInt(w, 10) >= 0));
+    }
+    case 'hyphenate-limit-lines':
+      // no-limit | <integer [0,∞]> (Text 4 §6.3.5)
+      return s0 === 'no-limit' || (int.test(s0) && parseInt(s0, 10) >= 0);
     case 'column-count':
       return s0 === 'auto' || (int.test(s0) && parseInt(s0, 10) >= 1);
     case 'line-height':
@@ -2179,6 +2306,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   if (kind === 'len' || kind === 'len-auto' || kind === 'len-none' || kind === 'len-normal' || kind === 'border-width') {
     const s = v.trim().toLowerCase();
     if (/^(auto|none|normal|thin|medium|thick|fit-content|min-content|max-content)$/.test(s)) return true;
+    // fit-content(<長さ・百分率>) (CSS Sizing 4 §3.2): 大きさの性質だけ。負の値は読めない
+    const fc = SIZING_PROPS.has(prop) ? /^fit-content\(\s*([^()]+?)\s*\)$/.exec(s) : null;
+    if (fc) return (lengthPx(fc[1], { ...ctx, pct: 100 }) ?? -1) >= 0;
     return lengthPx(s, { ...ctx, pct: 100 }) !== undefined;
   }
   return true;
@@ -2209,6 +2339,9 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
     }
     case 'background-position-x':
     case 'background-position-y': {
+      // 層ごとの値 (コンマ区切り。Backgrounds 3 §2.1) は、層ごとに計算値にする
+      const layers = splitTop(raw, ',');
+      if (layers.length > 1) return layers.map((l) => computeKeyword(p, l, parent, ctx)).join(', ');
       const kw: Record<string, string> = { left: '0%', top: '0%', center: '50%', right: '100%', bottom: '100%' };
       if (kw[lv]) return kw[lv];
       if (/%$/.test(lv)) return lv;
@@ -2223,6 +2356,39 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       }
       const px = lengthPx(raw, ctx);
       return px !== undefined ? `${+px.toFixed(4)}px` : raw;
+    }
+    case 'object-position': {
+      // <position> (CSS Images 3 §4.6。計算値は background-position と同じ): 横と縦の組にし、長さは px に。右・下の端からの距離は
+      // calc(100% - 距離) (Chrome の計算値と同じ形)
+      const [x, y] = positionXY(tokens(raw));
+      const one = (v: string, axis: string) => {
+        const c = computeKeyword(axis, v, parent, ctx);
+        const far = /^(right|bottom)\s+(.+)$/.exec(c);
+        return far ? `calc(100% - ${far[2]})` : c;
+      };
+      return `${one(x, 'background-position-x')} ${one(y, 'background-position-y')}`;
+    }
+    case 'transform': {
+      // 計算値は、指定のまま、長さだけを絶対の長さにする (Transforms 1 §4)。translate 系の関数の引数の長さを px に (百分率はそのまま)
+      if (lv === 'none') return 'none';
+      return raw.trim().replace(/\b(translate[xy]?)\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_m, fn: string, body: string) => {
+        const as = splitTop(body, ',').map((a) => {
+          const px = /%\s*$/.test(a) ? undefined : lengthPx(a, { ...ctx, pct: undefined });
+          return px !== undefined ? `${+px.toFixed(4)}px` : a.trim();
+        });
+        return `${fn.toLowerCase()}(${as.join(', ')})`;
+      });
+    }
+    case 'translate':
+    case 'transform-origin': {
+      // 長さは px に (百分率と語はそのまま。Transforms 1 §5・Transforms 2 §5)
+      if (lv === 'none') return 'none';
+      return tokens(raw)
+        .map((t) => {
+          const px = /%$/.test(t) ? undefined : lengthPx(t, { ...ctx, pct: undefined });
+          return px !== undefined ? `${+px.toFixed(4)}px` : t.toLowerCase();
+        })
+        .join(' ');
     }
     case 'border-top-left-radius':
     case 'border-top-right-radius':
@@ -2252,6 +2418,9 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       return raw.trim().replace(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g, (_m, a?: string, b?: string) => JSON.stringify(unescapeCss(a ?? b ?? '')));
     }
     case 'background-size': {
+      // 層ごとの値 (コンマ区切り。Backgrounds 3 §2.1) は、層ごとに計算値にする
+      const layers = splitTop(raw, ',');
+      if (layers.length > 1) return layers.map((l) => computeKeyword(p, l, parent, ctx)).join(', ');
       // 1 つだけの大きさは、高さが auto (Chrome は「125% auto」と返す)
       const ts = tokens(raw);
       return ts.length === 1 && !/^(auto|cover|contain)$/i.test(ts[0]) ? `${ts[0]} auto` : raw.trim();

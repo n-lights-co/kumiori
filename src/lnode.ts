@@ -6,7 +6,7 @@
  */
 import { opticalSize, splitVariation, variationSuffix, type VariationRequest } from './fontVariation';
 import { zeroEdges } from './geometry';
-import type { BaseNode, BorderStyle, Edges, Rotation, RubyAlign, TextAlign, WritingMode } from './types';
+import type { BaseNode, BorderStyle, Edges, HyphenLimits, Rotation, RubyAlign, TextAlign, WritingMode } from './types';
 
 export type LKind = 'region-body' | 'block' | 'line' | 'inline' | 'glyph' | 'ruby' | 'tcy' | 'table' | 'row' | 'cell' | 'image';
 
@@ -45,6 +45,8 @@ export interface LNode {
   bg?: string;
   /** 背景画像 (大きさは解決済み) */
   bgImage?: import('./types').BackgroundImage & { width: number; height: number };
+  /** 背景の色を塗る範囲 (Area の backgroundClip) */
+  bgClip?: 'padding-box' | 'content-box';
   children: LNode[];
   src?: string;
   /** page-number-citation の字 (参照の引数の鍵)。2 回目の組版で、番号の幅が同じなら字だけ差し替える */
@@ -53,6 +55,8 @@ export interface LNode {
   ref?: number;
   /** 物理座標を直接指定 (縦中横の内部横組みグリフ用) */
   phys?: { x: number; y: number };
+  /** 中身の幅を測る組版 (Flow の intrinsic) で、inline 方向の大きさの指定のある箱 (内容による大きさの計測で、箱の幅そのものを数える) */
+  fixedI?: boolean;
   // fragmentation
   cont?: boolean;
   contNext?: boolean;
@@ -72,7 +76,7 @@ export interface LNode {
   /** 書字方向を決め直した参照領域 (block-container)。外の書字方向の裏返し (WritingFlip) は、この中へ持ち込まない */
   flipRoot?: boolean;
   // image
-  image?: { src: string; missing: boolean; alt?: string; fit?: 'cover' | 'contain'; naturalWidth?: number; naturalHeight?: number; stretch?: boolean; hidden?: boolean };
+  image?: { src: string; missing: boolean; alt?: string; fit?: 'cover' | 'contain' | 'none' | 'scale-down'; naturalWidth?: number; naturalHeight?: number; fitPosition?: import('./types').ObjectPosition; stretch?: boolean; hidden?: boolean };
   /** cell: 表の行の中の揃え (LTableCell の blockAlign・stretchContent・stretchMax)。flex の行の表を後から伸ばすときに当て直す */
   cellAlign?: string;
   cellStretch?: boolean;
@@ -83,12 +87,23 @@ export interface LNode {
   /** 斜めの罫線 (Area の diagonals と同じ) */
   diag?: Array<{ kind: 'tlbr' | 'trbl'; side: import('./types').BorderSide }>;
   shadow?: import('./types').BoxShadow | import('./types').BoxShadow[];
+  /** 描くときだけの効果 (transform・opacity)。toArea が Area に印を付け、組み終えてから Area の transform・opacity にする (paintEffect.ts) */
+  fx?: import('./types').PaintEffect;
+  /** 字の背景の箱: 字を作った入力の節の番号 (効果を付けるときにだけ使う。Area の sourceRef にはしない) */
+  fxRef?: number;
   /** line: ページを持たない Flow (セル・コンテナの中) で組んだ行の脚注。親が置いたときに、そのページの脚注領域へ積む */
   fns?: import('./types').LFootnote[];
   /** 段組の段 (0 始まり)。行番号の数え直し・置く側の判定に使う */
   colIndex?: number;
   /** line: 行番号の指定と、行の中での基線の位置 (block 方向。縦書きは字面の中央) */
   lnum?: import('./types').LineNumbering;
+  /** line: 中に、格子に合わせ直すリーダー (leaderGrid) がある */
+  hasLeaderGrid?: boolean;
+  /**
+   * リーダーの箱: 点・文字列の繰り返しを、参照領域・ページの始めの端からの格子に合わせ直す (XSL 1.1 §7.22.1 の leader-alignment)。
+   * cycle は 1 周期の字 (i は周期の始まりから)。ページに置いた後で、箱の位置から並べ直す (Paginator の addLineMarks)
+   */
+  leaderGrid?: { align: 'reference-area' | 'page'; pitch: number; cycle: LNode[] };
   /** line: この行に引く改訂バー */
   revs?: import('./types').RevisionBar[];
   baseline?: number;
@@ -165,6 +180,7 @@ export interface ResolvedStyle {
   fontLineMetrics?: boolean;
   hyphenate?: boolean;
   language?: string;
+  hyphenLimits?: HyphenLimits;
   rubyOverhang?: boolean;
   rubyAlign?: RubyAlign;
   kerning?: boolean;
@@ -174,6 +190,7 @@ export interface ResolvedStyle {
   wordSpaceShrink?: boolean;
   lineNumber?: import('./types').LineNumbering;
   revisionBar?: import('./types').RevisionBar;
+  changeBars?: import('./types').RevisionBar[];
   direction?: 'ltr' | 'rtl';
   /** unicode-bidi (引き継がない) */
   unicodeBidi?: import('./types').TextStyle['unicodeBidi'];
@@ -194,6 +211,7 @@ export interface ResolvedStyle {
   breakClear?: 'start' | 'end' | 'both';
   textIndent: number;
   textIndentHanging?: boolean;
+  lastLineEndIndent?: number;
   textIndentEachLine?: boolean;
   letterSpacing: number;
   wordSpacing?: number;
@@ -327,6 +345,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     fontLineMetrics: n.fontLineMetrics ?? parent.fontLineMetrics,
     hyphenate: n.hyphenate ?? parent.hyphenate,
     language: n.language ?? parent.language,
+    hyphenLimits: n.hyphenLimits ?? parent.hyphenLimits,
     rubyOverhang: n.rubyOverhang ?? parent.rubyOverhang,
     rubyAlign: n.rubyAlign ?? parent.rubyAlign,
     kerning: n.kerning ?? parent.kerning,
@@ -336,6 +355,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     wordSpaceShrink: n.wordSpaceShrink ?? parent.wordSpaceShrink,
     lineNumber: n.lineNumber ? { ...parent.lineNumber, ...n.lineNumber } : parent.lineNumber,
     revisionBar: n.revisionBar ?? parent.revisionBar,
+    changeBars: n.changeBars ?? parent.changeBars,
     direction: n.direction ?? parent.direction,
     unicodeBidi: n.unicodeBidi,
     fontStretch: n.fontStretch ?? parent.fontStretch,
@@ -356,6 +376,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     breakClear: n.breakClear,
     textIndent: n.textIndent ?? parent.textIndent,
     textIndentHanging: n.textIndentHanging ?? parent.textIndentHanging,
+    lastLineEndIndent: n.lastLineEndIndent ?? parent.lastLineEndIndent,
     textIndentEachLine: n.textIndentEachLine ?? parent.textIndentEachLine,
     letterSpacing: n.letterSpacing ?? parent.letterSpacing,
     wordSpacing: n.wordSpacing ?? parent.wordSpacing,

@@ -23,6 +23,18 @@
   - `x`・`y` は回転後の外接矩形の左上です。
   - 子の座標は、回転前の局所座標です。
 - `GlyphArea.rotation` は字の回転 (時計回り) で、箱の回転 `orientation` とは別のものです。
+- 背景 (`backgroundColor`・`backgroundImage`):
+  - `backgroundImage` は、いちばん手前の背景の画像です (大きさは解決済み)。`under` は、その後ろに重ねる画像の並び (手前のものから順) です。
+  - 画像ごとの `origin` は位置の基準の領域 (`border-box`・`content-box`。無ければ padding の箱)、`clip` は描く範囲 (`border-box`・`content-box`。無ければ padding の箱) です。
+  - `backgroundClip` は背景の色を塗る範囲 (`padding-box`・`content-box`) です。無ければ border-box (`width` × `height`) に塗ります。
+- 画像 (`image`) の `fit` (CSS の `object-fit` の `cover`・`contain`・`none`・`scale-down`) があるとき、`width` × `height` は枠の大きさで、画像は本来の大きさ (`naturalWidth` × `naturalHeight`) から大きさを決めて枠の中に置き、枠で切り抜きます。`fitPosition` (CSS の `object-position`) は枠の中での位置です (無ければ中央)。
+- `transform` (描くときの変換。CSS の `transform`) があるとき:
+  - 値は行列 `[a, b, c, d, e, f]` で、x' = a·x + c·y + e、y' = b·x + d·y + f です (y は下向き)。
+  - 行列の座標の原点は、この Area の `x`・`y` の点 (border-box の左上) です。
+  - この Area とその子孫を描くときだけに掛けます。`x`・`y`・`width`・`height` と子の座標は、変換の前のままです (組版は変換を知りません)。
+- `opacity` (不透明度。CSS の `opacity`。0 以上 1 未満) があるとき、この Area とその子孫をまとめて 1 枚の絵にしてから、その濃さで重ねます (中の重なりは濃くなりません)。`transform` と両方あれば、変換した絵を重ねます。
+- `transform`・`opacity` の付いた Area は、回り込み (`float`) のある所でも、背景と中身に分けずに、行内の中身の段でまるごと描きます。
+- 行の中の要素 (枠の付いた `span` など) に `opacity`・`transform` が付くと、その枠と中身をまとめた `inline` の Area (`sourceRef` は無し) を作り、そこに付けます。
 
 ## 節と子
 

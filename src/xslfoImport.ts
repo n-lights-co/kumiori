@@ -54,6 +54,7 @@ import type {
   LMarker,
   LPageSequence,
   LRetrieveMarker,
+  LRetrieveTableMarker,
   LRuby,
   LTable,
   LTableCell,
@@ -63,10 +64,12 @@ import type {
   Rotation,
   ConditionalPageMaster,
   TextStyle,
+  HyphenLimits,
   WritingMode,
   WritingFlip,
 } from './types';
 import { PT_PER_MM } from './units';
+import { withGrouping } from './pageNumber';
 import { isColorName, spotColor, toCss } from './color';
 import { normalizeSrc } from './assets';
 import type { FkFont, MathFont } from './mathFont';
@@ -160,6 +163,9 @@ const DEFAULT_FO_FONT_SIZE = 10;
 /** line-height=normal の代用 (倍率)。互換モードでは 10pt の行が 12pt、12pt の行が 14.4pt */
 const DEFAULT_FO_LINE_HEIGHT = 1.2;
 
+/** 仕様モードの分綴の初期値: 行末に出す字は U+2010 (XSL 1.1 §7.10.5 の hyphenation-character の初期値) */
+const SPEC_HYPHEN_LIMITS: HyphenLimits = { character: '\u2010' };
+
 class Importer {
   /** 本文の fo:page-number に付ける id の番号 */
   private pageNumberSeq = 0;
@@ -171,7 +177,9 @@ class Importer {
   /** 読んだ fo:marker (要素と番号)。retrieve-marker の位置の文脈で中身を読み直すのに使う */
   private markerEls: Array<{ el: XEl; mk: LMarker }> = [];
   /** 読んだ fo:retrieve-marker と、その位置の文脈 */
-  private retrieves: Array<{ r: LRetrieveMarker; ctx: Ctx }> = [];
+  private retrieves: Array<{ r: LRetrieveMarker | LRetrieveTableMarker; ctx: Ctx }> = [];
+  /** fo:table-header・fo:table-footer の中を読んでいる間の深さ (fo:retrieve-table-marker を置ける所。§6.13.7) */
+  private inTableHF = 0;
   /** fo:marker の中身を読んでいる間の深さ (0 なら marker の外) */
   private inMarker = 0;
   /** 文字列の XML (CDATA に入った MathML・SVG) を読むためのパーサ */
@@ -498,6 +506,54 @@ class Importer {
    * それが inherit の意味 (XSL 1.1 §5.9.10.1: 親の計算値) になる。inherit を知らない値として既定に落としたり報告したりしないための共通の層。
    * 継承されない性質 (reference-orientation など) の inherit は親の計算値を取らないと誤るので、refOrientation のように別に親を見る
    */
+  /**
+   * 分綴の特性を、親から受け継いだ組 (parent) に重ねる。この要素に指定が無ければ undefined (親の組をそのまま受け継ぐ)。
+   *  - hyphenation-character (XSL 1.1 §7.10.5): 行末に出す字 (1 字)
+   *  - hyphenation-push-character-count (§7.10.6): 切れ目の後 (次の行へ送る側) の最小の字数。hyphenation-remain-character-count (§7.10.7): 前の最小の字数。
+   *    どちらも 1 以上の整数に丸める (“rounded to the nearest integer value greater than or equal to 1”)
+   *  - hyphenation-ladder-count (§7.16.2): 続けて分綴する行の数の上限 (no-limit か、1 以上の整数に丸めた数)
+   *  - hyphenation-keep (§7.16.1): auto だけ。column・page (分綴した語の前後を同じ段・ページに置く) は読まず、未対応として報告する
+   */
+  private hyphenLimits(el: XEl, parent: HyphenLimits | undefined): HyphenLimits | undefined {
+    // 親から受け継いだ組が無ければ、流儀の初期値 (仕様モードは行末の字 U+2010) に重ねる
+    const o: HyphenLimits = { ...(parent ?? (this.spec ? SPEC_HYPHEN_LIMITS : undefined)) };
+    let set = false;
+    const count = (k: string): number | undefined => {
+      const v = this.attrInh(el, k);
+      const n = v === undefined ? NaN : parseFloat(v);
+      return Number.isFinite(n) ? Math.max(1, Math.round(n)) : undefined;
+    };
+    const ch = this.attrInh(el, 'hyphenation-character');
+    if (ch) {
+      o.character = [...ch][0];
+      set = true;
+    }
+    const push = count('hyphenation-push-character-count');
+    if (push !== undefined) {
+      o.minAfter = push;
+      set = true;
+    }
+    const remain = count('hyphenation-remain-character-count');
+    if (remain !== undefined) {
+      o.minBefore = remain;
+      set = true;
+    }
+    const ladder = this.attrInh(el, 'hyphenation-ladder-count');
+    if (ladder === 'no-limit') {
+      delete o.maxLines;
+      set = true;
+    } else {
+      const n = count('hyphenation-ladder-count');
+      if (n !== undefined) {
+        o.maxLines = n;
+        set = true;
+      }
+    }
+    const keep = this.attrInh(el, 'hyphenation-keep');
+    if (keep && keep !== 'auto') this.miss(`hyphenation-keep:${keep}`);
+    return set ? o : undefined;
+  }
+
   attrInh(n: XNode, k: string): string | undefined {
     const v = this.attr(n, k);
     return v === 'inherit' ? undefined : v;
@@ -505,6 +561,96 @@ class Importer {
 
   /** 要素の親 (convert で文書の木を一度たどって作る。継承しない性質の inherit を親の値にするのに使う) */
   private parents = new WeakMap<XEl, XEl>();
+  /** 文書に fo:change-bar-begin・fo:change-bar-end がある (indexParents が見つける) */
+  private hasChangeBars = false;
+  /**
+   * 変更バー (XSL 1.1 §6.13.2): fo:flow の中の要素・文字 → その始まりの所で効いている変更バーの並び (効いているものがある所だけ)。
+   * 変更バーのある文書でだけ作る (prepareChangeBars)
+   */
+  private barsAt?: WeakMap<XNode, RevisionBar[]>;
+  /**
+   * 変更バーの範囲を、文書の順にたどって決める。fo:change-bar-begin と fo:change-bar-end は、fo:flow・fo:static-content の子孫のどこにでも置ける
+   * 「点」(§6.2) で、同じ change-bar-class の、入れ子の深さの合うものどうしが組になる (§6.13.2 の Constraints)。組になる終わりの無い始まりは
+   * 文書の終わりまで (§6.13.2)、組になる始まりの無い終わりは無視する (§6.13.3)。
+   * 線の色・太さ・間隔・側・線種は、始まりの要素での値 (§7.30.2〜§7.30.6 の注。どれも継承される)。
+   * バーを引くのは、region-body の、条件の付かない参照領域の中の領域 (§6.13.2): fo:static-content・脚注の本体・前方の float・fo:marker の中には付けない
+   */
+  private prepareChangeBars(root: XEl) {
+    const map = new WeakMap<XNode, RevisionBar[]>();
+    this.barsAt = map;
+    let active: RevisionBar[] = NO_BARS;
+    // class ごとの、開いている始まり (内側が後ろ)。線を引かない始まり (change-bar-style="none") は undefined
+    const open = new Map<string, Array<RevisionBar | undefined>>();
+    const inh = (el: XEl, k: string) => this.inheritedAttr(el, k);
+    const todo: Array<{ n: XNode; on: boolean }> = [{ n: root, on: false }];
+    for (let t = todo.pop(); t; t = todo.pop()) {
+      const { n } = t;
+      if (n.nodeType !== 1) {
+        if (t.on && active.length && (n.nodeType === 3 || n.nodeType === 4)) map.set(n, active);
+        continue;
+      }
+      const el = n as XEl;
+      const fo = this.isFo(el);
+      const name = this.name(el);
+      if (fo && name === 'instream-foreign-object') continue;
+      if (fo && name === 'change-bar-begin') {
+        const cls = this.attr(el, 'change-bar-class') ?? '';
+        if (!this.attr(el, 'change-bar-class')) this.miss('fo:change-bar-begin (change-bar-class が無い)');
+        if (this.attr(el, 'z-index') !== undefined) this.miss('z-index (fo:change-bar-begin)');
+        const bar = this.changeBarOf(inh, el);
+        const list = open.get(cls) ?? [];
+        open.set(cls, list);
+        list.push(bar);
+        if (bar) active = [...active, bar];
+        continue;
+      }
+      if (fo && name === 'change-bar-end') {
+        const list = open.get(this.attr(el, 'change-bar-class') ?? '');
+        if (!list?.length) {
+          this.miss('fo:change-bar-end (組になる fo:change-bar-begin が無い)');
+          continue;
+        }
+        const bar = list.pop();
+        if (bar) active = active.filter((b) => b !== bar);
+        if (!active.length) active = NO_BARS;
+        continue;
+      }
+      const on = fo && name === 'flow' ? true : fo && (name === 'static-content' || name === 'footnote-body' || name === 'marker' || (name === 'float' && this.attr(el, 'float') === 'before')) ? false : t.on;
+      if (on && active.length) map.set(el, active);
+      const kids = Array.from(el.childNodes);
+      for (let k = kids.length - 1; k >= 0; k--) todo.push({ n: kids[k], on });
+    }
+  }
+  /** fo:change-bar-begin の線 (§7.30.2〜§7.30.6)。change-bar-style が none・hidden (初期値は none) なら引かない */
+  private changeBarOf(inh: (el: XEl, k: string) => string | undefined, el: XEl): RevisionBar | undefined {
+    const style = inh(el, 'change-bar-style') ?? 'none';
+    if (style === 'none' || style === 'hidden') return undefined;
+    const rb: RevisionBar = { color: this.color(inh(el, 'change-bar-color')) ?? this.color(inh(el, 'color')) ?? '#000000', changeBar: true };
+    if (['dotted', 'dashed', 'double', 'groove', 'ridge', 'inset', 'outset'].includes(style)) rb.style = style as RevisionBar['style'];
+    else if (style !== 'solid') this.miss(`change-bar-style="${style}"`);
+    // 太さと間隔に、相対の長さ (百分率・em) は書けない (§7.30.3・§7.30.6 の注)。書いてあれば、初期値にして報告する
+    const abs = (k: string, v: string | undefined) => {
+      if (v === undefined) return undefined;
+      if (/%|em\b/.test(v)) {
+        this.miss(`${k}="${v}"`);
+        return undefined;
+      }
+      return this.len(v, 0);
+    };
+    const w = inh(el, 'change-bar-width') ?? 'medium';
+    const kw = this.borderKeywords;
+    rb.width = w === 'thin' || w === 'medium' || w === 'thick' ? kw[w] : (abs('change-bar-width', w) ?? kw.medium);
+    rb.offset = abs('change-bar-offset', inh(el, 'change-bar-offset')) ?? 6;
+    const pl = inh(el, 'change-bar-placement') ?? 'start';
+    if (pl === 'start' || pl === 'end' || pl === 'left' || pl === 'right' || pl === 'inside' || pl === 'outside' || pl === 'alternate') rb.position = pl;
+    else this.miss(`change-bar-placement="${pl}"`);
+    // 縦書きでは、段の左・右の端はバーを引く端 (行の始め・終わり = 上・下) に当たらない。始め・終わりの端として扱う
+    if (rb.position === 'left' || rb.position === 'right') {
+      const wm = this.wmOf(inh(el, 'writing-mode') ?? '');
+      if (wm && wm !== 'horizontal-tb') this.miss(`change-bar-placement="${pl}" (縦書き)`);
+    }
+    return rb;
+  }
   private indexParents(root: XEl) {
     // 再帰でなく、積んだ一覧でたどる (深い入れ子でも呼び出しの深さを使わない)。深すぎる入れ子 (MAX_FO_NEST) は、ここで誤りにする
     // fo:instream-foreign-object の中身 (MathML・SVG) は、FO の要素としては読まないので数えない (それぞれの読み方に深さの上限がある)
@@ -514,6 +660,7 @@ class Importer {
       const foreign = t.foreign || (this.isFo(t.el) && this.name(t.el) === 'instream-foreign-object');
       for (const c of this.els(t.el)) {
         this.parents.set(c, t.el);
+        if (!this.hasChangeBars && (c.localName === 'change-bar-begin' || c.localName === 'change-bar-end') && this.isFo(c)) this.hasChangeBars = true;
         todo.push({ el: c, depth: foreign ? t.depth : t.depth + 1, foreign });
       }
     }
@@ -628,6 +775,53 @@ class Importer {
       for (const { el, mk } of markers) if (mk.className === r.className && mk.key !== undefined) variants[mk.key] = this.markerChildren(el, ctx);
       if (Object.keys(variants).length) r.variants = variants;
     }
+  }
+  /**
+   * fo:initial-property-set (XSL 1.1 §6.6.4): ブロックの最初の行に入った子を、この要素の書式の fo:inline で包んだものとして組む (Trait Derivation)。
+   * ブロックの最初の行内の並び (最初の fo:marker の後ろから、最初のブロックの子の前まで) を、最初の行にだけ書式を当てる inline (LInline.firstLine。
+   * CSS の ::first-line と同じ受け皿) で包む。当てるのは、字の書式 (書体・大きさ・太さ・傾き・幅、color、letter-spacing、word-spacing、
+   * text-decoration) と background-color。
+   * text-transform と font-variant は、読み込みのときに字を置き換えて作るので、最初の行にだけは当てられない。line-height は、行内の要素の
+   * line-height を行の高さに数える受け皿が組版に無い。罫線・余白 (行の途中で終わる箱)・相対位置・text-shadow・score-spaces とともに、読まずに報告する。em の長さは、ブロックの字の大きさが基準 (子が自分で持つ em の値は、
+   * 最初の行でもブロックの字の大きさが基準のまま)
+   */
+  private firstLineOf(blk: LBlock, ips: XEl, ctx: Ctx) {
+    const kids = blk.children;
+    const typeOf = (k: LBlockLevel | LInlineLevel | undefined) => (k === undefined ? undefined : typeof k === 'string' ? 'text' : (k as { type: string }).type);
+    let a = 0;
+    while (typeOf(kids[a]) === 'marker') a++;
+    let b = a;
+    const blockish = (k: LBlockLevel | LInlineLevel) => ['block', 'table', 'block-container', 'float', 'marker', 'retrieve-marker', 'retrieve-table-marker'].includes(typeOf(k)!);
+    while (b < kids.length && !blockish(kids[b])) b++;
+    // 最初の行内の並びが無い (ブロックの子から始まる)
+    if (b === a) return;
+    // 並びを分けない子 (回り込み・絶対配置の箱) が途中にあると、並びの全体を 1 つの inline で包めない
+    const next = kids[b] as { type?: string; absolutePosition?: boolean } | undefined;
+    if (next && (next.type === 'float' || next.type === 'marker' || (next.type === 'block-container' && next.absolutePosition))) {
+      this.miss('fo:initial-property-set (最初の行の並びの途中に fo:float・絶対配置の箱がある)');
+      return;
+    }
+    const has = (k: string) => ips.hasAttribute?.(k) ?? this.attr(ips, k) !== undefined;
+    for (const k of ['text-transform', 'font-variant', 'line-height', 'text-shadow', 'score-spaces', 'relative-position', 'position']) if (has(k)) this.miss(`${k} (fo:initial-property-set)`);
+    const names = Array.from(ips.attributes ?? []).map((x) => x.name);
+    if (names.some((k) => /^border(-|$)/.test(k))) this.miss('border (fo:initial-property-set)');
+    if (names.some((k) => /^padding(-|$)/.test(k))) this.miss('padding (fo:initial-property-set)');
+    if (names.some((k) => /^background-(image|repeat|position|attachment)/.test(k) || k === 'background')) this.miss('background-image (fo:initial-property-set)');
+    const { style, ctx: c2 } = this.textStyle(ips, { ...ctx, textTransform: undefined, smallCaps: undefined } as Ctx);
+    const wrap: LInline = { type: 'inline', firstLine: true, children: kids.slice(a, b) as LInlineLevel[] };
+    const st = style as Record<string, unknown>;
+    for (const k of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch', 'color', 'letterSpacing', 'letterSpacingStretch', 'fixedLetterSpacing', 'xslLetterSpacing', 'wordSpacing', 'textDecoration'])
+      if (st[k] !== undefined) (wrap as unknown as Record<string, unknown>)[k] = st[k];
+    const bg = c2.hidden ? undefined : this.color(this.attr(ips, 'background-color'));
+    if (bg) wrap.backgroundColor = bg;
+    kids.splice(a, b - a, wrap);
+  }
+  /** fo:marker を読む (読んだ要素は markerEls に控える) */
+  private marker(n: XEl, ctx: Ctx): LMarker {
+    const { ctx: c2 } = this.textStyle(n, ctx);
+    const mk: LMarker = { type: 'marker', className: this.attr(n, 'marker-class-name') ?? '', children: this.markerChildren(n, c2), key: this.markerEls.length };
+    this.markerEls.push({ el: n, mk });
+    return mk;
   }
   /** fo:marker の中身を読む (中の fo:retrieve-marker・fo:marker は読まない。flowChild の marker・retrieve-marker の所を参照) */
   private markerChildren(el: XEl, ctx: Ctx): Array<LBlockLevel | LInlineLevel> {
@@ -860,6 +1054,7 @@ class Importer {
   convert(root: XEl): LDocument {
     const doc: LDocument = { type: 'document', sequences: [], spaceResolution: 'xsl' };
     this.indexParents(root);
+    if (this.hasChangeBars) this.prepareChangeBars(root);
     const lms = this.els(root).find((e) => this.name(e) === 'layout-master-set');
     const masters = new Map<string, MasterInfo>();
     const seqMasters = new Map<string, XEl>();
@@ -1030,6 +1225,9 @@ class Importer {
       // 繰返し記号は、normal でも行頭禁則 (UAX #14 の NS))
       looseLineStart: !this.spec,
       rubyOverhang: !this.spec,
+      // 分綴した行の終わりに出す字: 仕様モードは hyphenation-character の初期値 U+2010 (XSL 1.1 §7.10.5 “Initial: The Unicode hyphen
+      // character U+2010”)。互換モードは U+002D (組版の既定) のまま
+      ...(this.spec ? { hyphenLimits: { ...SPEC_HYPHEN_LIMITS } } : {}),
       ...(ctxRoot.rtl ? { direction: 'rtl' as const } : {}),
       ...rootStyle.style,
       ...style.style,
@@ -1195,6 +1393,21 @@ class Importer {
     // ページ番号の書式 (§7.26.1)
     const fmt = this.attr(ps, 'format');
     if (fmt && fmt !== '1') seq.pageNumberFormat = fmt;
+    // 桁区切り (§7.26.2 grouping-separator・§7.26.3 grouping-size。XSLT 1.0 §7.7.1): 10 進の番号を、後ろから grouping-size 桁ごとに
+    // grouping-separator (1 字) で区切る。片方だけの指定は無視する (“If only one of the grouping-separator and grouping-size attributes
+    // is specified, then it is ignored.”)
+    const gSep = ps.getAttribute?.('grouping-separator') ?? undefined;
+    const gSizeAttr = this.attr(ps, 'grouping-size');
+    if (gSep !== undefined && gSep !== '' && gSizeAttr !== undefined) {
+      const gSize = Number(gSizeAttr);
+      if ([...gSep].length !== 1) this.miss(`grouping-separator="${gSep}"`);
+      else if (!Number.isInteger(gSize) || gSize < 1) this.miss(`grouping-size="${gSizeAttr}"`);
+      else seq.pageNumberFormat = withGrouping(seq.pageNumberFormat, gSep, gSize);
+    }
+    // letter-value (§7.26.4): 字を使う番号の並びが 2 通りある言語で、どちらかを選ぶ (XSLT 1.0 §7.7.1)。対応している書式トークン
+    // (a・A・i・I・一 など) には、同じトークンで 2 通りに読めるものが無いので、どの値でも結果は同じ。値だけを確かめる
+    const lv = this.attr(ps, 'letter-value');
+    if (lv !== undefined && lv !== 'auto' && lv !== 'alphabetic' && lv !== 'traditional') this.miss(`letter-value="${lv}"`);
     const fpc = this.attr(ps, 'force-page-count');
     if (fpc === 'auto' || fpc === 'even' || fpc === 'odd' || fpc === 'end-on-even' || fpc === 'end-on-odd' || fpc === 'no-force') seq.forcePageCount = fpc;
     // 数値 (アンテナハウスの拡張): そのページ数になるまで、末尾に白ページを足す
@@ -1336,6 +1549,9 @@ class Importer {
       s.textAlignLast = tal === 'center' ? 'center' : tal === 'justify' ? 'justify' : toEnd(tal) ? 'end' : this.spec && (tal === 'inside' || tal === 'outside') ? tal : 'start';
     const ti = this.len(this.attr(el, 'text-indent'), fs, this.cbW(ctx));
     if (ti !== undefined) s.textIndent = ti;
+    // last-line-end-indent (§7.16.3。継承される。百分率は、いちばん近い祖先のブロックの領域の行の向きの寸法に対する値)
+    const lle = this.len(this.attrInh(el, 'last-line-end-indent'), fs, this.cbW(ctx));
+    if (lle !== undefined) s.lastLineEndIndent = lle;
     const lsAttr = this.attr(el, 'letter-spacing') ?? this.attr(el, 'letter-spacing.optimum');
     const ls = this.len(lsAttr, fs);
     if (ls !== undefined) {
@@ -1382,6 +1598,17 @@ class Importer {
     if (hy === 'true' || hy === 'false') s.hyphenate = hy === 'true';
     const lang = this.attr(el, 'xml:lang') ?? this.attr(el, 'language');
     if (lang && lang !== 'none') s.language = lang;
+    // country (§7.10.1: 言語と組で、分綴などの規則を選ぶ): 地域の付いていない言語に足して、言語の名前にする (language="en" country="GB" → en-GB。
+    // 英語の分綴は GB だけ英国式)。xml:lang="en-GB" のように地域まで書いた言語は、そのまま。script (§7.10.3) は、規則の選び分けには使わない
+    const countryAttr = this.attrInh(el, 'country');
+    const country = countryAttr === undefined ? ctx.country : /^([A-Za-z]{2,3}|\d{3})$/.test(countryAttr) ? countryAttr : undefined;
+    const langBase = (lang && lang !== 'none' ? lang : undefined) ?? ctx.langBase ?? ctx.lang;
+    if (countryAttr !== undefined || (country && lang && lang !== 'none')) {
+      if (langBase && !langBase.includes('-')) s.language = country ? `${langBase}-${country}` : langBase;
+    }
+    // 分綴の特性 (§7.10.5〜§7.10.7・§7.16.1・§7.16.2)。CSS の hyphenate-character・hyphenate-limit-* と同じ受け皿 (hyphenLimits) に写す
+    const hyph = this.hyphenLimits(el, ctx.hyph);
+    if (hyph) s.hyphenLimits = hyph;
     const lss = this.attr(el, 'line-stacking-strategy');
     if (lss === 'line-height' || lss === 'max-height' || lss === 'font-height') s.lineStackingStrategy = lss;
     // 仕様モード: 行の高さを §4.5 の規則で決める
@@ -1439,6 +1666,9 @@ class Importer {
       if (!rb.width && (!this.spec || rb.style === 'groove' || rb.style === 'ridge' || rb.style === 'double')) rb.width = 3;
       s.revisionBar = rb;
     }
+    // 変更バー (fo:change-bar-begin〜fo:change-bar-end。§6.13.2): この要素の始まりで効いているものを付ける。効いているものが無ければ、
+    // 親から引き継いだ分を消す (前の兄弟・祖先の中で終わったもの)
+    if (this.barsAt) s.changeBars = this.barsAt.get(el) ?? NO_BARS;
     const hp = this.attr(el, 'axf:hanging-punctuation');
     if (hp) s.hangingPunctuation = hp !== 'none' && hp !== 'false';
     const wmv = this.attrInh(el, 'writing-mode');
@@ -1542,7 +1772,7 @@ class Importer {
     // 書字方向の裏返し (bt-lr・lr-bt など): 自分の writing-mode があれば決め直し、無ければ親のまま
     const ownWm = this.attr(el, 'writing-mode');
     const flip = ownWm && !ownWm.startsWith('from-') ? flipOf(ownWm) : ctx.flip;
-    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, color: shownColor, textTransform, ...(hidden !== !!ctx.hidden ? { hidden } : {}), ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
+    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, ...(langBase !== ctx.langBase ? { langBase } : {}), ...(country !== ctx.country ? { country } : {}), ...(hyph ? { hyph } : {}), color: shownColor, textTransform, ...(hidden !== !!ctx.hidden ? { hidden } : {}), ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
   }
 
   phys(rel: 'before' | 'after' | 'start' | 'end', wm: WritingMode, rtl = false): 'top' | 'right' | 'bottom' | 'left' {
@@ -2039,7 +2269,12 @@ class Importer {
         let t = applyTextTransform(this.refineText(n.textContent ?? '', ctx.ws), ctx.textTransform, { lowerRest: !this.spec });
         // static-content の文字の中の「{pageNumber}」「{totalPages}」は、ページ番号の印ではなく文字 (組むときに置き換えない印にする)
         if (ctx.inStatic) t = t.replace(/\{(pageNumber|totalPages)\}/g, '\u0000$1\u0000');
-        if (t) items.push({ v: t, block: false });
+        // 変更バー: この文字の所で効いているものが、親の要素の始まりと違えば (親の中で始まった・終わった)、その並びを付けた inline に包む
+        const cb = this.barsAt ? (this.barsAt.get(n) ?? NO_BARS) : undefined;
+        if (t && cb && cb !== (this.barsAt!.get(el) ?? NO_BARS) && !isXmlSpaceOnly(t)) {
+          const kids = this.smallCapsOf(ctx.ws.treatment !== 'preserve' ? this.punctuationSpacing(t, ctx) : [t], ctx);
+          items.push({ v: { type: 'inline', changeBars: cb, children: kids } as LInline, block: false });
+        } else if (t) items.push({ v: t, block: false });
       } else if (n.nodeType === 1) {
         // 段をまたぐブロックは、本文の幅で組む。その中の要素は段組の外と同じ
         const span = ctx.spanW !== undefined && this.attr(n as XEl, 'span') === 'all';
@@ -2177,6 +2412,9 @@ class Importer {
         if (box.width !== undefined && c3.wm === 'horizontal-tb') c3.width = box.width;
         this.report.counts.blocks++;
         const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3) };
+        // fo:initial-property-set (§6.6.4): 最初の行の書式
+        const ips = this.els(n).find((e) => this.isFo(e) && this.name(e) === 'initial-property-set');
+        if (ips) this.firstLineOf(blk, ips, c3);
         const clr = this.clearOf(n);
         if (clr) blk.clear = clr;
         // relative-position (§7.13.5): 組んだ箱をずらす。縦書きの箱と、負の z-index (背面に置く) は、組版に受け皿が無いので報告する
@@ -2374,10 +2612,7 @@ class Importer {
           this.miss('fo:marker (fo:marker の中)');
           return [];
         }
-        const { ctx: c2 } = this.textStyle(n, ctx);
-        const mk: LMarker = { type: 'marker', className: this.attr(n, 'marker-class-name') ?? '', children: this.markerChildren(n, c2), key: this.markerEls.length };
-        this.markerEls.push({ el: n, mk });
-        return one(mk, true);
+        return one(this.marker(n, ctx), true);
       }
       case 'retrieve-marker': {
         // fo:marker の中の fo:retrieve-marker: fo:retrieve-marker は fo:static-content の子孫に限られ (XSL 1.1 §6.13.6 の Constraints)、
@@ -2392,6 +2627,31 @@ class Importer {
         const r: LRetrieveMarker = { type: 'retrieve-marker', className: this.attr(n, 'retrieve-class-name') ?? '' };
         if (pos === 'first-starting-within-page' || pos === 'first-including-carryover' || pos === 'last-starting-within-page' || pos === 'last-ending-within-page') r.position = pos;
         if (bd === 'page' || bd === 'page-sequence' || bd === 'document') r.boundary = bd;
+        this.retrieves.push({ r, ctx });
+        return one(r, true);
+      }
+      case 'initial-property-set':
+        // fo:block の子は、ブロックを読む所で最初の行の書式にする (firstLineOf)。ほかの所には置けない (§6.6.4: fo:block の最初の行の書式)
+        if (this.parents.get(n) && this.isFo(this.parents.get(n)!) && this.name(this.parents.get(n)!) === 'block') return [];
+        this.miss('fo:initial-property-set (fo:block の子でない)');
+        return [];
+      case 'change-bar-begin':
+      case 'change-bar-end':
+        // 変更バーの範囲は、先に文書の順にたどって決めてある (prepareChangeBars)。ここでは何も作らない
+        return [];
+      case 'retrieve-table-marker': {
+        // fo:retrieve-table-marker は fo:table-header・fo:table-footer の子孫に限る (XSL 1.1 §6.13.7 の Constraints)。fo:marker の中にも置けない (§6.13.5)
+        if (this.inMarker || !this.inTableHF) {
+          this.miss(this.inMarker ? 'fo:retrieve-table-marker (fo:marker の中)' : 'fo:retrieve-table-marker (fo:table-header・fo:table-footer の外)');
+          return [];
+        }
+        const pos = this.attr(n, 'retrieve-position-within-table') ?? 'first-starting';
+        const bd = this.attr(n, 'retrieve-boundary-within-table') ?? 'table';
+        const r: LRetrieveTableMarker = { type: 'retrieve-table-marker', className: this.attr(n, 'retrieve-class-name') ?? '' };
+        if (pos === 'first-starting' || pos === 'first-including-carryover' || pos === 'last-starting' || pos === 'last-ending') r.position = pos;
+        else this.miss(`retrieve-position-within-table="${pos}"`);
+        if (bd === 'table' || bd === 'table-fragment' || bd === 'page') r.boundary = bd;
+        else this.miss(`retrieve-boundary-within-table="${bd}"`);
         this.retrieves.push({ r, ctx });
         return one(r, true);
       }
@@ -2858,6 +3118,15 @@ class Importer {
     if (length.maximum === undefined && pct.maximum === undefined) pct.maximum = 1;
     if (Object.keys(length).length) l.length = length;
     if (Object.keys(pct).length) l.lengthPct = pct;
+    // leader-alignment (§7.22.1。継承される): 点・中身の繰り返しの周期を、参照領域・ページの始めの端からの格子に合わせる
+    // (“For fo:leaders where the "leader-pattern" property is specified as "dot" or as "use-content", this property will be honored.”)
+    const la = this.inheritedAttr(n, 'leader-alignment');
+    if (la === 'reference-area' || la === 'page') {
+      if (l.pattern !== 'dots') {
+        /* 線・空白には効かない */
+      } else if (ctx.rtl) this.miss(`leader-alignment="${la}" (右から左の行)`);
+      else l.alignment = la;
+    } else if (la !== undefined && la !== 'none') this.miss(`leader-alignment="${la}"`);
     return l;
   }
 
@@ -3320,12 +3589,35 @@ class Importer {
       }
       return out;
     };
-    if (headerEl) tbl.header = { type: 'table-body', rows: rowsOf(headerEl) };
-    for (const b of bodies) tbl.body.rows.push(...rowsOf(b));
+    // fo:retrieve-table-marker は、表の header・footer の中でだけ読む (§6.13.7)
+    const hfRows = (e: XEl) => {
+      this.inTableHF++;
+      try {
+        return rowsOf(e);
+      } finally {
+        this.inTableHF--;
+      }
+    };
+    // fo:table の子の fo:retrieve-table-marker (取り出した fo:marker の中身が fo:table-header・fo:table-footer そのものになる書き方。§6.13.7) は未対応
+    if (els.some((e) => this.name(e) === 'retrieve-table-marker')) this.miss('fo:retrieve-table-marker (fo:table の子)');
+    if (headerEl) tbl.header = { type: 'table-body', rows: hfRows(headerEl) };
+    for (const b of bodies) {
+      // 本体の子の fo:marker (§6.7.8 の Contents): 本体の領域に付く。行に持たせて、表の header・footer から取り出せるようにする
+      const saved = this.inTableHF;
+      this.inTableHF = 0;
+      const rows = rowsOf(b);
+      const mkEls = this.els(b).filter((x) => this.name(x) === 'marker');
+      // fo:marker の中の表の fo:marker は読まない (flowChild の marker の所と同じ)
+      if (mkEls.length && this.inMarker) this.miss('fo:marker (fo:marker の中)');
+      const markers = this.inMarker ? [] : mkEls.map((x) => this.marker(x, c2));
+      this.inTableHF = saved;
+      if (markers.length) rows.forEach((r, k) => (r.bodyMarkers = { markers, first: k === 0, last: k === rows.length - 1 }));
+      tbl.body.rows.push(...rows);
+    }
     // table-body が無く、table-row が直接ある場合
     for (const r of els.filter((e) => this.name(e) === 'table-row')) tbl.body.rows.push(this.row(r, c2, tw, tAlign));
     // table-footer は各ページの末尾で繰り返す (table-omit-footer-at-break="true" なら表の末尾だけ)
-    if (footerEl) tbl.footer = { type: 'table-body', rows: rowsOf(footerEl) };
+    if (footerEl) tbl.footer = { type: 'table-body', rows: hfRows(footerEl) };
     if (this.attr(n, 'table-omit-header-at-break') === 'true') tbl.omitHeaderAtBreak = true;
     if (this.attr(n, 'table-omit-footer-at-break') === 'true') tbl.omitFooterAtBreak = true;
     this.columnsFromCellWidths(tbl);
@@ -3666,6 +3958,9 @@ function isEmptyContent(kids: Array<LBlockLevel | LInlineLevel>): boolean {
 }
 
 /** XML の空白 (スペース・タブ・改行・CR) だけの文字列か。String.prototype.trim と違い、U+00A0 などは空白とみなさない */
+/** 効いている変更バーが無い (XSL 1.1 §6.13.2)。要素に付けると、親から引き継いだ変更バーを消す */
+const NO_BARS: RevisionBar[] = [];
+
 function isXmlSpaceOnly(t: string): boolean {
   return /^[ \t\n\r]*$/.test(t);
 }
