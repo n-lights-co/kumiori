@@ -3,7 +3,8 @@ import { FAMILY, doc, lines, makeEngine, master, mathFontBuffer, pt, walk } from
 import { AssetStore } from '../src/assets';
 import { LayoutEngine } from '../src/layoutEngine';
 import { ligatureUnits } from '../src/inlineLayout';
-import { canBreakBetween, isLineEndProhibited, isLineHeadProhibited } from '../src/jis';
+import { isLineEndProhibited, isLineHeadProhibited } from '../src/jis';
+import { lineBreakActions } from '../src/lineBreak';
 import type { Area, BlockArea, GlyphArea, ImageArea, LineArea } from '../src/types';
 
 let E: Awaited<ReturnType<typeof makeEngine>>;
@@ -33,32 +34,6 @@ describe('measurer', () => {
 });
 
 describe('禁則', () => {
-  it('行頭禁則・行末禁則・分離禁止', () => {
-    expect(canBreakBetween('あ', '。')).toBe(false);
-    expect(canBreakBetween('2', '、')).toBe(false);
-    expect(canBreakBetween('「', 'あ')).toBe(false);
-    expect(canBreakBetween('…', '…')).toBe(false);
-    expect(canBreakBetween('あ', 'い')).toBe(true);
-  });
-
-  it('URL: 斜線の後ろは欧文字の前で改行してよい。コロンの後ろ (「http:」と「//」の間) は改行しない', () => {
-    expect(canBreakBetween('/', 'X')).toBe(true);
-    expect(canBreakBetween('/', '/')).toBe(false);
-    expect(canBreakBetween('/', '2')).toBe(false);
-    expect(canBreakBetween(':', '/')).toBe(false);
-    expect(canBreakBetween(':', 'a')).toBe(false);
-  });
-
-  it('行頭禁則を緩める (axf:line-break="normal"): 小書き仮名・長音記号は行頭に置いてよい。繰返し記号・閉じ括弧・句読点は不可', () => {
-    expect(canBreakBetween('キ', 'ュ')).toBe(false);
-    expect(canBreakBetween('キ', 'ュ', true)).toBe(true);
-    expect(canBreakBetween('ペ', 'ー', true)).toBe(true);
-    expect(canBreakBetween('時', '々', true)).toBe(false);
-    expect(canBreakBetween('あ', '。', true)).toBe(false);
-    expect(canBreakBetween('あ', '」', true)).toBe(false);
-    expect(canBreakBetween('あ', '・', true)).toBe(false);
-  });
-
   it('両端揃えで、欧文のハイフンの後ろ (border-* の - と * の間) は広げない (CSS Text 3 §7.1)', () => {
     const t = E.engine.layout(doc([{ type: 'block', width: 120, textAlign: 'justify', children: ['ab cd-* ef gh ij kl mn op qr st uv wx yz ab cd ef gh ij kl'] } as never]));
     const gs: GlyphArea[] = [];
@@ -2380,9 +2355,8 @@ describe('改行しない特殊な空白 (U+202F・U+2007)', () => {
     // U+2005 (4 分の 1 em)・U+200A (髪の毛ほどの空白) も、書体が持たなければ決まった幅
     expect(E.measurer.glyph('\u2005', st, 'horizontal-tb').advance).toBeCloseTo(2.5);
     expect(E.measurer.glyph('\u200A', st, 'horizontal-tb').advance).toBeCloseTo(1);
-    const { canBreakBetween } = await import('../src/jis');
-    expect(canBreakBetween('a', '\u202F')).toBe(false);
-    expect(canBreakBetween('\u202F', 'b')).toBe(false);
+    // U+202F は UAX #14 の GL (前後で改行しない。LB12)
+    expect(lineBreakActions([0x61, 0x202f, 0x62]).slice(1)).toEqual(['×', '×']);
   });
 });
 
@@ -2832,9 +2806,10 @@ describe('行分割・コンテナ: ハイフン・語間・和欧間アキ・�
   };
 
   it('語の中のハイフンの後ろは改行してよい (数字の前は除く)', () => {
-    expect(canBreakBetween('-', 'd')).toBe(true);
-    expect(canBreakBetween('-', '5')).toBe(false);
-    expect(canBreakBetween('a', '-')).toBe(false);
+    // UAX #14: HY の前では改行しない (LB21)。後ろは、欧文字の前なら改行してよく、数字の前では改行しない (LB25)
+    const act = (s: string) => lineBreakActions(Array.from(s, (c) => c.codePointAt(0)!)).slice(1);
+    expect(act('a-d')).toEqual(['×', '÷']);
+    expect(act('a-5')).toEqual(['×', '×']);
   });
 
   it('欧文の語が僅かに溢れるときは、語間を詰めて同じ行に収める', () => {
