@@ -41,6 +41,55 @@ describe('文言の言語', () => {
     expect(msg('あ', 'a')).toBe('a');
     setMessageLang('ja');
   });
+  it('lang の違う呼び出しが重なっても、すべて終われば元の言語に戻る (終わる順によらない)', async () => {
+    // 呼び出しの重なりを、手で進める約束 (Promise) で作る (時間に頼らない)
+    const gate = () => {
+      let open!: () => void;
+      const p = new Promise<void>((ok) => (open = ok));
+      return { p, open };
+    };
+    for (const firstToEnd of ['a', 'b'] as const) {
+      const ga = gate();
+      const gb = gate();
+      const seen: string[] = [];
+      expect(messageLang()).toBe('ja');
+      const a = withMessageLang('en', async () => {
+        seen.push(`a:${msg('あ', 'a')}`);
+        await ga.p;
+        seen.push(`a:${msg('あ', 'a')}`);
+      });
+      const b = withMessageLang('ja', async () => {
+        seen.push(`b:${msg('あ', 'a')}`);
+        await gb.p;
+        seen.push(`b:${msg('あ', 'a')}`);
+      });
+      if (firstToEnd === 'a') {
+        ga.open();
+        await a;
+        // 残っている呼び出し (ja) の言語
+        expect(messageLang()).toBe('ja');
+        gb.open();
+        await b;
+        // 重なっている間は、進行中のうち最後に始まった呼び出しの言語 (a の後半は ja)
+        expect(seen).toEqual(['a:a', 'b:あ', 'a:あ', 'b:あ']);
+      } else {
+        gb.open();
+        await b;
+        // 残っている呼び出し (en) の言語に戻る
+        expect(messageLang()).toBe('en');
+        ga.open();
+        await a;
+        expect(seen).toEqual(['a:a', 'b:あ', 'b:あ', 'a:a']);
+      }
+      expect(messageLang()).toBe('ja');
+      expect(msg('あ', 'a')).toBe('あ');
+    }
+    // 同じ言語どうしの重なりでも、外の既定には触らない
+    setMessageLang('en');
+    await Promise.all([withMessageLang('ja', async () => undefined), withMessageLang('en', async () => undefined)]);
+    expect(messageLang()).toBe('en');
+    setMessageLang('ja');
+  });
   it('typeset の lang: 警告が英語になり、次の呼び出し (lang 無し) は日本語のまま', async () => {
     const html = '<!DOCTYPE html><html><head><title>t</title><style>.g { display: grid; grid-template-areas: "a b" } p { colr: red }</style></head><body><div class="g"><p>a</p></div></body></html>';
     const en = await typesetHtml(html, { name: 't.html', loadFont, lang: 'en' });
