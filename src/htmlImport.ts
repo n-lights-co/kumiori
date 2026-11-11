@@ -2388,7 +2388,7 @@ class HtmlImporter {
             break;
           }
           case 'url': {
-            const img: LImage = { type: 'image', src: normalizeSrc(unquote(a[0] ?? '')) };
+            const img: LImage = { type: 'image', src: normalizeSrc(unquote(a[0] ?? '')), decorateBox: false };
             // ::before / ::after の寸法 (ブラウザは、生成した画像の寸法を確定させない)
             const pd = pseudo ? this.pagedPseudo.get(el)?.[pseudo] : undefined;
             const fs = cssLen(this.cs(el)('font-size')) ?? 12;
@@ -2815,8 +2815,11 @@ class HtmlImporter {
       const colors = dc ? { ...(deco.includes('underline') ? { underline: dc } : {}), ...(deco.includes('overline') ? { overline: dc } : {}), ...(deco.includes('line-through') ? { lineThrough: dc } : {}) } : undefined;
       s.textDecoration = { ...(deco.includes('underline') ? { underline: true } : {}), ...(deco.includes('overline') ? { overline: true } : {}), ...(deco.includes('line-through') ? { lineThrough: true } : {}), ...(colors ? { colors } : {}), ...decoExtras(deco) };
     }
-    // 互換モード: 祖先の飾り線は表に伝えない (表に自分の飾り線があれば、それだけ。Quirks Mode §3.11)
-    if (!pseudo && isQuirksDoc(el.ownerDocument as Document | null) && /^(inline-)?table$/.test(c('display'))) {
+    // 互換モード: 祖先の飾り線は表に伝えない (表に自分の飾り線があれば、それだけ。Quirks Mode §3.11)。
+    // inline-block・inline-table (行の中の、分けられない箱) の中身にも、祖先の飾り線は伝わらない (CSS Text Decoration 3 §2:
+    // "text decorations are not propagated to ... the contents of atomic inline-level descendants such as inline blocks and inline tables")。
+    // 箱に自分の飾り線があれば、それだけを中身に引く
+    if ((!pseudo && isQuirksDoc(el.ownerDocument as Document | null) && /^(inline-)?table$/.test(c('display'))) || /^inline-(block|table)$/.test(c('display'))) {
       const own = deco && deco !== 'none' ? deco : '';
       const dc = own ? decoColor() : undefined;
       s.textDecoration = { underline: own.includes('underline'), overline: own.includes('overline'), lineThrough: own.includes('line-through'), ...(dc ? { colors: { underline: dc, overline: dc, lineThrough: dc } } : {}), ...(own ? decoExtras(own) : {}) };
@@ -4038,6 +4041,7 @@ class HtmlImporter {
       }
       const ic: LInlineContainer = {
         type: 'inline-container',
+        decorateBox: false,
         ...style,
         ...(this.paintEffectOf(el, which) ? { paintEffect: this.paintEffectOf(el, which) } : {}),
         width: cssLen(c('width')),
@@ -4384,7 +4388,7 @@ class HtmlImporter {
   private image(el: Element, src: string): LImage {
     const key = normalizeSrc(src);
     this.report.images.push(key);
-    const img: LImage = { type: 'image', src: key };
+    const img: LImage = { type: 'image', src: key, decorateBox: false };
     const alt = el.getAttribute('alt') ?? el.getAttribute('title');
     if (alt) img.alt = alt;
     const c = this.cs(el);
@@ -4692,7 +4696,7 @@ class HtmlImporter {
     // ("inline-table uses its first baseline by default." CSS Box Alignment 3 §4.2、https://www.w3.org/TR/css-align-3/ 2026-11-06 取得)
     if (c('display') === 'inline-table') {
       const t = this.table(el, parent) as LBlockLevel & { margin?: LInlineContainer['margin'] };
-      const ic: LInlineContainer = { type: 'inline-container', ...this.textStyle(el, parent), children: [t] };
+      const ic: LInlineContainer = { type: 'inline-container', decorateBox: false, ...this.textStyle(el, parent), children: [t] };
       // 表の外側の余白は、行内の箱の余白にする (中身に合わせた箱の幅に余白を含める)
       if (t.margin) {
         ic.margin = t.margin;
@@ -4712,6 +4716,7 @@ class HtmlImporter {
       delete box.breakAfter;
       const ic: LInlineContainer = {
         type: 'inline-container',
+        decorateBox: false,
         ...this.textStyle(el, parent),
         ...this.paragraphStyle(el, parent),
         ...(box as Omit<LInlineContainer, 'type' | 'children'>),
