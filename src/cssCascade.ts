@@ -831,11 +831,13 @@ const AH_BORDER_STYLES = /^(dot-dash|dot-dot-dash|wave)$/;
 export interface AhFlags {
   ahBorderStyles: boolean;
   ahCounterFlags: boolean;
+  /** 数の式 (calc() など) の中の、型の無い attr() を数として読む (resolveAttrFunctions)。省けば読まない */
+  ahAttrNumber?: boolean;
 }
 /** 拡張を読まない (ブラウザと同じ) */
 const NO_AH: AhFlags = { ahBorderStyles: false, ahCounterFlags: false };
 /** 拡張をすべて読む (アンテナハウス互換。compat.ts の ahCascadeOptions と、prepareHtml の @supports の読み方) */
-export const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true };
+export const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true, ahAttrNumber: true };
 const isBorderStyle = (t: string, ah: AhFlags) => BORDER_STYLES.test(t) || (ah.ahBorderStyles && AH_BORDER_STYLES.test(t));
 const isLenLike = (t: string) => /^(-?(?:\d+\.?\d*|\.\d+)[a-z%]*|calc\(.*\)|min\(.*\)|max\(.*\)|clamp\(.*\)|var\(.*\))$/i.test(t);
 const isColorLike = (t: string) => parseColor(t) !== undefined || /^var\(/i.test(t);
@@ -902,7 +904,8 @@ export function supportsCssDeclaration(prop: string, value: string, ah: AhFlags 
   };
   if (unsupported(p, v, false)) return false;
   // var() を含む値は、性質を知っているかを、var() の無い仮の値で見る (一括指定は、値が無いと分けられない)
-  const hasVar = /var\(/i.test(v);
+  // attr() を含む値も、置き換えた後に構文を調べるので、ここでは有効とみなす (CSS Values 5 §7.7。content などは attr() を自前で読むので除く)
+  const hasVar = /var\(/i.test(v) || (substitutesAttr(p) && ATTR_FN_RE.test(v));
   if (!isKnownCssProperty(p, v, ah) && !(hasVar && isKnownCssProperty(p, 'initial'))) return false;
   if (hasVar) return true;
   const parts = expand(p, v, ah);
@@ -1379,6 +1382,13 @@ export interface CascadeOptions {
   ahBorderStyles?: boolean;
   /** content の counter() の名前に続く physical・reverse (アンテナハウスの拡張: counter(<ident> [physical || reverse]?, …)) を読む */
   ahCounterFlags?: boolean;
+  /**
+   * 数の式 (calc()・min()・max()・clamp() など) の中の、型の無い attr() を、属性の値が数なら数として読む (アンテナハウス互換。
+   * margin-top: calc(attr(data-n) * 20mm) のような書き方)。既定では CSS Values 5 §7.7 のとおり文字列で、その宣言は計算値の時点で無効
+   */
+  ahAttrNumber?: boolean;
+  /** attr() を置き換えた結果、計算値の時点で無効になった宣言 (その性質は unset) を知らせる。prop・value は書かれたままの宣言 */
+  onInvalidAttr?: (prop: string, value: string) => void;
 }
 
 /** 宣言の強さ (rank) が既定のスタイル (UA) の出どころか */
@@ -1400,6 +1410,195 @@ interface DeclaredValue {
  */
 const NAME_CHAR = String.raw`[-\w\u0080-\uffff]`;
 const NAME_START = String.raw`[a-zA-Z_\u0080-\uffff]`;
+
+/**
+ * attr() を自前で読む性質 (属性の値を文字として使う。htmlImport の content・string-set・bookmark-label の読み方)。カスケードでは置き換えない
+ */
+const ATTR_OWN_PROPS = new Set(['content', 'string-set', 'bookmark-label']);
+/** カスケードが attr() を置き換える性質か。拡張の性質 (-ah- など、- で始まる名前) は、値をそのまま読む側 (htmlImport) に任せる */
+const substitutesAttr = (prop: string) => !ATTR_OWN_PROPS.has(prop) && !prop.startsWith('-');
+/** 値の中の attr( (-ah-attr-img( などの、名前の一部が attr の関数は除く) */
+const ATTR_FN_RE = new RegExp(String.raw`(?<!${NAME_CHAR})attr\(`, 'i');
+const ATTR_NUM = String.raw`[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?`;
+const ATTR_NUM_RE = new RegExp(`^${ATTR_NUM}$`, 'i');
+const ATTR_LEN_UNITS = 'px|pt|pc|mm|cm|q|in|em|rem|ex|ch|ic|cap|lh|rlh|vw|vh|vi|vb|vmin|vmax';
+/** <attr-unit> として受け付ける単位の名前 (CSS の寸法の単位) と % */
+const ATTR_UNIT_RE = new RegExp(`^(?:${ATTR_LEN_UNITS}|deg|grad|rad|turn|s|ms|hz|khz|dpi|dpcm|dppx|x|fr|%)$`, 'i');
+const ATTR_IDENT_RE = new RegExp(String.raw`^-?(?:${NAME_START}|--?${NAME_START})${NAME_CHAR}*$|^--${NAME_CHAR}*$`);
+
+/** 値 v の中の位置 at から始まる「(」に対応する「)」の位置 (引用符の中の括弧は数えない)。無ければ -1 */
+function closingParen(v: string, at: number): number {
+  let depth = 0;
+  let quote = '';
+  for (let i = at; i < v.length; i++) {
+    const c = v[i];
+    if (quote) {
+      if (c === '\\') i++;
+      else if (c === quote) quote = '';
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === '(') depth++;
+    else if (c === ')' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** 引数の並びを、一番外側の最初のカンマで 2 つに分ける (カンマが無ければ 2 つ目は undefined) */
+function splitFirstComma(v: string): [string, string | undefined] {
+  let depth = 0;
+  let quote = '';
+  for (let i = 0; i < v.length; i++) {
+    const c = v[i];
+    if (quote) {
+      if (c === '\\') i++;
+      else if (c === quote) quote = '';
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === ',' && depth === 0) return [v.slice(0, i), v.slice(i + 1)];
+  }
+  return [v, undefined];
+}
+
+/** 値 v の位置 at が、数の式の関数 (calc()・min()・max()・clamp() など。CSS Values 4 §10) の中か */
+function insideMathFunction(v: string, at: number): boolean {
+  const stack: string[] = [];
+  let quote = '';
+  let name = '';
+  for (let i = 0; i < at; i++) {
+    const c = v[i];
+    if (quote) {
+      if (c === '\\') i++;
+      else if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === '(') {
+      stack.push(name.toLowerCase());
+      name = '';
+    } else if (c === ')') stack.pop();
+    else if (/[-\w]/.test(c)) name += c;
+    else name = '';
+  }
+  return stack.some((n) => /^(calc|min|max|clamp|round|mod|rem|abs|sign|sin|cos|tan|asin|acos|atan|atan2|pow|sqrt|hypot|log|exp)$/.test(n));
+}
+
+/**
+ * 属性の値 raw を <syntax> (CSS Values 5 §3.3 の一部: '*'、<型の名前>、識別子、それらを | でつないだもの) として読む。
+ * 合えば置き換える字、合わなければ undefined。繰り返しの記号 (+・#) の付いたもの、<url>・<image>・<transform-function>・<transform-list> は
+ * 読まない (合わないものとして fallback に回す。<url> は §7.7 で attr() に使えない)
+ */
+function attrBySyntax(raw: string, syntax: string): string | undefined {
+  const v = raw.trim();
+  const syn = syntax.trim().replace(/^(["'])(.*)\1$/, '$2');
+  if (syn === '*') return v;
+  const dim = (units: string) => new RegExp(`^${ATTR_NUM}(?:${units})$`, 'i').test(v);
+  for (const comp of syn.split('|').map((c) => c.trim())) {
+    const m = /^<([a-z-]+)>$/i.exec(comp);
+    if (!m) {
+      // 識別子: 属性の値がその識別子のとき
+      if (ATTR_IDENT_RE.test(comp) && v === comp) return v;
+      continue;
+    }
+    const zero = /^[+-]?0+(?:\.0+)?$/.test(v);
+    switch (m[1].toLowerCase()) {
+      case 'number':
+        if (ATTR_NUM_RE.test(v)) return v;
+        break;
+      case 'integer':
+        if (/^[+-]?\d+$/.test(v)) return v;
+        break;
+      case 'length':
+        if (dim(ATTR_LEN_UNITS) || zero) return v;
+        break;
+      case 'percentage':
+        if (dim('%')) return v;
+        break;
+      case 'length-percentage':
+        if (dim(`${ATTR_LEN_UNITS}|%`) || zero) return v;
+        break;
+      case 'angle':
+        if (dim('deg|grad|rad|turn') || zero) return v;
+        break;
+      case 'time':
+        if (dim('s|ms')) return v;
+        break;
+      case 'resolution':
+        if (dim('dpi|dpcm|dppx|x')) return v;
+        break;
+      case 'color':
+        if (parseColor(v) !== undefined) return v;
+        break;
+      case 'custom-ident':
+        if (ATTR_IDENT_RE.test(v) && !/^(inherit|initial|unset|revert|revert-layer|default)$/i.test(v)) return v;
+        break;
+      case 'string':
+        if (/^(["']).*\1$/s.test(v)) return v;
+        break;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 値の中の attr() を、要素 el の属性の値に置き換える (CSS Values 5 §7.7・§7.7.1: attr() は var() と同じく、計算値の時点で置き換える)。
+ * 文法は、2024-11-11 の草案の attr( <attr-name> <syntax>? , <declaration-value>? ) と、編集者の草案の
+ * attr( <attr-name> <attr-type>? , <declaration-value>? )、<attr-type> = type( <syntax> ) | raw-string | number | <attr-unit> の両方を読む。
+ * CSS Values 3 の 2013-07-30 の勧告候補 (§8.3) の <type-or-unit> の名前のうち string・color・integer・length・angle・time も読む
+ * (number と単位は編集者の草案と同じ書き方。url・frequency は読まず、fallback に回す)。
+ *  - 型が無い・raw-string: 属性の値をそのまま CSS の文字列にする (字の解釈をしない)。属性が無ければ fallback、fallback も無ければ空の文字列
+ *  - number: 前後の空白を除いて数として読む。<attr-unit> (px・mm・% など): 数として読み、その単位の寸法・百分率にする
+ *  - type(<syntax>)・<syntax>: その型として読めた字に置き換える (attrBySyntax)
+ *  - 属性が無い・型に合わない・知らない単位は fallback。fallback が無ければ、必ず無効な値 (invalid() を呼ぶ。その宣言は計算値の時点で無効)
+ *  - asNumber (アンテナハウス互換): 数の式の関数の中の型の無い attr() は、属性の値が数なら数にする (数でなければ文字列のまま)
+ * 名前空間つきの名前 (ns|name) は読まない (HTML に名前空間つきの属性は無い)。置き換えは深さ 10 まで (fallback の中の attr())
+ */
+export function resolveAttrFunctions(value: string, attrOf: (name: string) => string | null | undefined, invalid: () => void, asNumber = false, depth = 0): string {
+  let v = value;
+  let from = 0;
+  for (let guard = 0; guard < 100; guard++) {
+    const m = ATTR_FN_RE.exec(v.slice(from));
+    if (!m) break;
+    const start = from + m.index;
+    const open = start + m[0].length - 1;
+    const close = closingParen(v, open);
+    if (close < 0) break;
+    const [head, fb] = splitFirstComma(v.slice(open + 1, close));
+    const hm = new RegExp(String.raw`^\s*(${NAME_START}${NAME_CHAR}*|-${NAME_START}${NAME_CHAR}*)\s*(.*)$`, 's').exec(head);
+    const fallback = (): string => {
+      if (fb === undefined || depth >= 10) {
+        invalid();
+        return '';
+      }
+      return resolveAttrFunctions(fb.trim(), attrOf, invalid, asNumber, depth + 1);
+    };
+    let out: string;
+    if (!hm) {
+      invalid();
+      out = '';
+    } else {
+      const raw = attrOf(hm[1]);
+      const type = hm[2].trim();
+      const lower = type.toLowerCase();
+      // string は、CSS Values 3 の 2013 年の勧告候補の <type-or-unit> の名前 (型の無いときと同じ)。color・integer・length・angle・time も
+      // その名前で、いまの type(<color>) などと同じに読む
+      const old = /^(color|integer|length|angle|time)$/.exec(lower);
+      if (!type || lower === 'raw-string' || lower === 'string') {
+        if (raw == null) out = fb !== undefined ? fallback() : '""';
+        else if (asNumber && !type && ATTR_NUM_RE.test(raw.trim()) && insideMathFunction(v, start)) out = raw.trim();
+        else out = `"${raw.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\a ')}"`;
+      } else if (raw == null) out = fallback();
+      else if (lower === 'number') out = ATTR_NUM_RE.test(raw.trim()) ? raw.trim() : fallback();
+      else if (old) out = attrBySyntax(raw, `<${old[1]}>`) ?? fallback();
+      else if (/^type\(/i.test(type) && type.endsWith(')')) out = attrBySyntax(raw, type.slice(type.indexOf('(') + 1, -1)) ?? fallback();
+      else if (type.startsWith('<') || type === '*') out = attrBySyntax(raw, type) ?? fallback();
+      else if (ATTR_UNIT_RE.test(type)) out = ATTR_NUM_RE.test(raw.trim()) ? `${raw.trim()}${lower}` : fallback();
+      else out = fallback();
+    }
+    v = v.slice(0, start) + out + v.slice(close + 1);
+    from = start + out.length;
+  }
+  return v;
+}
 
 /** var(--名前[, fallback]) (fallback は括弧の入れ子 2 段まで) */
 /** var( に続く名前 (値の中の参照を、fallback の中のものも含めて拾う) */
@@ -1425,7 +1624,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   const vw = opts.viewport?.width ?? 794;
   const vh = opts.viewport?.height ?? 1123;
   // アンテナハウスの拡張の読み方 (expand・valid に渡す。この StyleSource の計算にだけ効く)
-  const ah: AhFlags = { ahBorderStyles: !!opts.ahBorderStyles, ahCounterFlags: !!opts.ahCounterFlags };
+  const ah: AhFlags = { ahBorderStyles: !!opts.ahBorderStyles, ahCounterFlags: !!opts.ahCounterFlags, ahAttrNumber: !!opts.ahAttrNumber };
   const rules: RuleEntry[] = [];
   const selCache = new Map<string, Selector[]>();
   let order = 0;
@@ -1609,7 +1808,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
    * どれか 1 つでも読めなければ宣言ごと捨てる。revert は既定のスタイルの宣言まで戻す。
    * 返す rank は、性質ごとの、決まった宣言の強さの順 (小さいほど強い)
    */
-  const cascadeDecls = (decls: DeclaredValue[], vars: Map<string, string>, fsCtx: () => LenCtx): { cascaded: Map<string, string>; rank: Map<string, number>; svgFrom?: Map<string, DeclaredValue> } => {
+  const cascadeDecls = (decls: DeclaredValue[], vars: Map<string, string>, fsCtx: () => LenCtx, el: Element): { cascaded: Map<string, string>; rank: Map<string, number>; svgFrom?: Map<string, DeclaredValue> } => {
     const cascaded = new Map<string, string>();
     const rank = new Map<string, number>();
     let svgFrom: Map<string, DeclaredValue> | undefined;
@@ -1632,19 +1831,26 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     const reverted = new Set<string>();
     for (const d of decls) {
       if (d.prop.startsWith('--')) continue;
-      const hasVar = /var\(/i.test(d.value);
+      // attr() も var() と同じく、計算値を決めるときに置き換え、置き換えた後に構文を調べる (CSS Values 5 §7.7.1)。
+      // content など、属性の値を文字として自前で読む性質 (ATTR_OWN_PROPS) は置き換えない
+      const hasAttr = substitutesAttr(d.prop) && ATTR_FN_RE.test(d.value);
+      const hasVar = hasAttr || /var\(/i.test(d.value);
       invalidVar = false;
-      const resolved = resolveVar(d.value);
+      const resolvedVar = resolveVar(d.value);
+      const resolved = hasAttr && ATTR_FN_RE.test(resolvedVar) ? resolveAttrFunctions(resolvedVar, (n) => el.getAttribute(n), () => (invalidVar = true), !!ah.ahAttrNumber) : resolvedVar;
       const parts = expand(d.prop, resolved, ah);
       const bad = invalidVar || !resolved.trim() || !parts.length || (parts.length > 1 ? parts.some(([p, v]) => !valid(p, v, ANY_CTX, ah)) : parts.some(([p, v]) => !valid(p, v, fsCtx(), ah)));
       // var() を含む宣言は、置き換えた結果が読めなくても捨てない: 計算値の時点で無効な宣言として unset にする (Variables 1 §3.1)
       if (bad && hasVar) {
+        let won = false;
         for (const [p] of expand(d.prop, 'unset', ah))
           if (!cascaded.has(p) && !(reverted.has(p) && !isUa(d.rank))) {
             cascaded.set(p, 'unset');
             rank.set(p, rank.size);
             noteSvg(p, d);
+            won = true;
           }
+        if (won && hasAttr) opts.onInvalidAttr?.(d.prop, d.value);
         continue;
       }
       // 一括指定は、どれか 1 つでも読めなければ宣言ごと捨てる
@@ -1749,7 +1955,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     const rootFs = cache.get(rootEl)?.fs ?? 16;
     const vars = resolveCustomProps(decls, parent);
     const fsCtx = (): LenCtx => ({ fs: parent?.fs ?? 16, rootFs: isRoot ? 16 : rootFs, vw, vh, pct: parent?.fs ?? 16 });
-    const { cascaded, rank, svgFrom } = cascadeDecls(decls, vars, fsCtx);
+    const { cascaded, rank, svgFrom } = cascadeDecls(decls, vars, fsCtx, el);
     mapLogical(cascaded, rank, parent);
     const out: Computed = { v: new Map(), fs: 16, fsKeyword: true, cw: parent?.cw ?? vw, pcw: parent?.pcw ?? vw, vars, specified: cascaded, ...(svgFrom ? { svgFrom } : {}) };
     const pv = (p: string) => parent?.v.get(p);
