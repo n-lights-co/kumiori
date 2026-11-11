@@ -399,6 +399,15 @@
 <fo:block font-size="14pt" font-weight="bold">14pt の太字</fo:block>
 <fo:block font-style="italic">斜体 (italic) の Italic text</fo:block>
 <?kumiori-sample-end?>
+      <fo:block text-indent="1em" space-before="2mm">次の見本は、色の付いた絵文字のフォント Noto Color Emoji (COLR version 1。Google Fonts が字の範囲で分けて配る WOFF2 のうち、顔と手の絵文字を持つもの) を、Node のコマンドの --font で渡して組んだものです。XSL-FO には、フォントのファイルを指す書き方が無いので、フォントは文書の外から渡し、font-family には、フォントの家族の名前を書きます。見本のコードでは、絵文字を数値文字参照で書いています。絵文字のフォントに空白の字が無いときは、絵文字の間に空白を入れずに書きます。</fo:block>
+<?kumiori-sample id="emoji" mark="font-family=&quot;Noto Color Emoji&quot;"?>
+<fo:block>色の付いた絵文字 <fo:inline font-family="Noto Color Emoji" font-size="14pt">&#x1F600;&#x1F642;&#x1F44D;&#x1F44D;&#x1F3FD;&#x1F44B;&#x1F3FF;&#x263A;&#xFE0F;&#x270C;&#xFE0F;</fo:inline></fo:block>
+<?kumiori-sample-end?>
+      <fo:block text-indent="1em" space-before="2mm">次の見本は、可変フォント Roboto Flex (太さ wght 100〜1000、幅 wdth 25〜151、傾き slnt -10〜0、光学サイズ opsz 8〜144) を --font で渡して組んだものです。font-weight・font-stretch・font-style の値が、太さ・幅・傾きの軸の値になります。</fo:block>
+<?kumiori-sample id="variable-font" mark="font-family=&quot;Roboto Flex&quot;|font-weight=&quot;100&quot;|font-weight=&quot;900&quot;|font-stretch=&quot;25%&quot;|font-stretch=&quot;151%&quot;|font-style=&quot;italic&quot;"?>
+<fo:block font-family="Roboto Flex" font-size="12pt" line-height="1.5" text-align="start"><fo:inline font-weight="100">Aa100</fo:inline> <fo:inline font-weight="200">Aa200</fo:inline> <fo:inline font-weight="300">Aa300</fo:inline> <fo:inline font-weight="400">Aa400</fo:inline> <fo:inline font-weight="500">Aa500</fo:inline> <fo:inline font-weight="600">Aa600</fo:inline> <fo:inline font-weight="700">Aa700</fo:inline> <fo:inline font-weight="800">Aa800</fo:inline> <fo:inline font-weight="900">Aa900</fo:inline></fo:block>
+<fo:block font-family="Roboto Flex" font-size="12pt" line-height="1.5" text-align="start"><fo:inline font-stretch="25%">Width 25%</fo:inline> <fo:inline font-stretch="100%">Width 100%</fo:inline> <fo:inline font-stretch="151%">Width 151%</fo:inline> <fo:inline font-style="italic">italic</fo:inline></fo:block>
+<?kumiori-sample-end?>
 
       <fo:block id="s-5-2" role="section" font-family="sans-serif" font-weight="bold" font-size="10.5pt" line-height="1.45" color="#23313a" space-before="8mm" space-after="1.5mm" keep-with-next.within-page="always"><fo:inline role="num">5.2　</fo:inline>text-align・text-align-last<fo:inline space-start="0.8em" background-color="#4f7a64" color="#ffffff" font-size="6.5pt" padding="0.3pt 4pt" font-weight="normal" axf:border-radius="2pt">対応</fo:inline></fo:block>
       <fo:block role="props" font-family="sans-serif" font-size="7.3pt" line-height="1.6" color="#3b4245" space-after="1mm" keep-with-next.within-page="always" text-align="start"><fo:inline color="#4f7a64">● 値</fo:inline> : start | center | end | justify | inside | outside | left | right | &lt;string&gt; | inherit　<fo:inline color="#4f7a64">● 初期値</fo:inline> : start　<fo:inline color="#4f7a64">● 継承</fo:inline> : yes　<fo:inline color="#8c9396">(text-align — XSL 1.1 §7.16.9)</fo:inline></fo:block>
@@ -484,6 +493,52 @@
       <fo:block font-size="7.8pt" color="#3b4245" space-before="1.5mm" start-indent="1.2em" text-indent="-1.2em" text-align="start"><fo:inline color="#b08132">※ </fo:inline>分綴 (<fo:inline font-family="monospace" font-size="0.92em">hyphenate="true"</fo:inline>) の規則を持つ言語は、英語 (en・en-US・en-GB)、ラテン語 (la)、ロシア語 (ru)、ウクライナ語 (uk)、現代ギリシャ語 (el。単調の綴り) です。ほかの言語の語は分けません (5.4 節)。</fo:block>
       <fo:block font-size="7.8pt" color="#3b4245" space-before="1.5mm" start-indent="1.2em" text-indent="-1.2em" text-align="start"><fo:inline color="#b08132">※ </fo:inline>可変フォント (1 つのファイルに、太さなどの軸を持つフォント) は、TrueType の輪郭のものも、輪郭が CFF2 のもの (OTF の可変フォント) も使えます。<fo:inline font-family="monospace" font-size="0.92em">font-weight</fo:inline> が太さの軸、<fo:inline font-family="monospace" font-size="0.92em">font-stretch</fo:inline> が幅の軸の値になります (5.1 節)。</fo:block>
       <fo:block font-size="7.8pt" color="#3b4245" space-before="1.5mm" start-indent="1.2em" text-indent="-1.2em" text-align="start"><fo:inline color="#b08132">※ </fo:inline>タイ文字・ラオ文字・クメール文字・ミャンマー文字・チベット文字・モンゴル文字、デーヴァナーガリー以外のインド系の文字、アラビア文字・ヘブライ文字の字形と位置は、同じフォントを HarfBuzz で組んだ結果と比べています。</fo:block>
+      <fo:block font-family="sans-serif" font-weight="bold" font-size="8.8pt" color="#23313a" space-before="4mm" keep-with-next.within-page="always">文字ごとの見本</fo:block>
+      <fo:block text-indent="1em" space-before="2mm">表の文字を、それぞれのフォントで組んだ見本です。文は、世界人権宣言の第 1 条の、それぞれの言語の訳です (Unicode コンソーシアムの「UDHR in Unicode」に収められた文)。既定のフォントに無い文字のフォントは、Node のコマンドの --font で渡し、font-family に、フォントの家族の名前を書いています。HTML と CSS 編の 5.8 節に、ほかの文字 (グルムキー文字・グジャラート文字・テルグ文字・カンナダ文字・マラヤーラム文字・シンハラ文字、ラオ文字・クメール文字・ミャンマー文字) の見本もあります。</fo:block>
+      <fo:block space-before="2mm" keep-with-next.within-page="always">上から、日本語 (既定のフォント)、中国語の簡体字 (Noto Sans SC)・繁体字 (Noto Sans TC)、韓国語 (Noto Sans KR) :</fo:block>
+<?kumiori-sample id="lang-cjk" mark="font-family=&quot;Noto Sans SC&quot;|font-family=&quot;Noto Sans TC&quot;|font-family=&quot;Noto Sans KR&quot;"?>
+<fo:block xml:lang="ja" space-after="1.5mm">すべての人間は、生まれながらにして自由であり、かつ、尊厳と権利とについて平等である。人間は、理性と良心とを授けられており、互いに同胞の精神をもって行動しなければならない。</fo:block>
+<fo:block xml:lang="zh-Hans" font-family="Noto Sans SC" space-after="1.5mm">人人生而自由，在尊严和权利上一律平等。他们赋有理性和良心，并应以兄弟关系的精神相对待。</fo:block>
+<fo:block xml:lang="zh-Hant" font-family="Noto Sans TC" space-after="1.5mm">人人生而自由，在尊嚴和權利上一律平等。他們賦有理性和良心，並應以兄弟關係的精神相對待。</fo:block>
+<fo:block xml:lang="ko" font-family="Noto Sans KR" space-after="1.5mm">모든 인간은 태어날 때부터 자유로우며 그 존엄과 권리에 있어 동등하다. 인간은 천부적으로 이성과 양심을 부여받았으며 서로 형제애의 정신으로 행동하여야 한다.</fo:block>
+<?kumiori-sample-end?>
+      <fo:block space-before="2mm" keep-with-next.within-page="always">上から、ベトナム語、現代ギリシャ語、ロシア語。hyphenate="true" で、ギリシャ語 (xml:lang が el) とロシア語 (ru) の語を分綴しています。フォントは、既定の欧文のフォント Tinos を名前で指定しています (既定のフォントの組では、ロシア語の и・в のような 1 字だけの語が、和文のフォントになるためです) :</fo:block>
+<?kumiori-sample id="lang-european" mark="hyphenate=&quot;true&quot;"?>
+<fo:block-container width="70mm" font-size="8pt" line-height="1.5" hyphenate="true">
+  <fo:block xml:lang="vi" font-family="Tinos" space-after="1.5mm">Tất cả mọi người sinh ra đều được tự do và bình đẳng về nhân phẩm và quyền. Mọi con người đều được tạo hoá ban cho lý trí và lương tâm và cần phải đối xử với nhau trong tình bằng hữu.</fo:block>
+  <fo:block xml:lang="el" font-family="Tinos" space-after="1.5mm">Όλοι οι άνθρωποι γεννιούνται ελεύθεροι και ίσοι στην αξιοπρέπεια και τα δικαιώματα. Είναι προικισμένοι με λογική και συνείδηση, και οφείλουν να συμπεριφέρονται μεταξύ τους με πνεύμα αδελφοσύνης.</fo:block>
+  <fo:block xml:lang="ru" font-family="Tinos" space-after="1.5mm">Все люди рождаются свободными и равными в своем достоинстве и правах. Они наделены разумом и совестью и должны поступать в отношении друг друга в духе братства.</fo:block>
+</fo:block-container>
+<?kumiori-sample-end?>
+      <fo:block space-before="2mm" keep-with-next.within-page="always">上から、ヘブライ語 (Noto Sans Hebrew)、アラビア語、ペルシャ語 (Noto Sans Arabic)。writing-mode="rl-tb" で、行を右から組みます :</fo:block>
+<?kumiori-sample id="lang-rtl" mark="writing-mode=&quot;rl-tb&quot;"?>
+<fo:block-container writing-mode="rl-tb">
+  <fo:block xml:lang="he" font-family="Noto Sans Hebrew" space-after="1.5mm">
+כל בני אדם נולדו בני חורין ושווים בערכם ובזכויותיהם. כולם חוננו בתבונה ובמצפון, לפיכך חובה עליהם לנהוג איש ברעהו ברוח של אחוה.
+  </fo:block>
+  <fo:block xml:lang="ar" font-family="Noto Sans Arabic" space-after="1.5mm">
+يولد جميع الناس أحرارًا متساوين في الكرامة والحقوق. وقد وهبوا عقلاً وضميرًا وعليهم أن يعامل بعضهم بعضًا بروح الإخاء.
+  </fo:block>
+  <fo:block xml:lang="fa" font-family="Noto Sans Arabic" space-after="1.5mm">
+تمام افراد بشر آزاد بدنیا میایند و از لحاظ حیثیت و حقوق با هم برابرند. همه دارای عقل و وجدان میباشند و باید نسبت بیکدیگر با روح برادری رفتار کنند.
+  </fo:block>
+</fo:block-container>
+<?kumiori-sample-end?>
+      <fo:block space-before="2mm" keep-with-next.within-page="always">上から、ヒンディー語 (Noto Sans Devanagari)、ベンガル語 (Noto Sans Bengali)、タミル語 (Noto Sans Tamil)、タイ語 (Noto Sans Thai)、チベット語 (Noto Serif Tibetan)。タイ語は語の境目で、チベット語はツェク (音節の区切りの点) の後ろで折り返します :</fo:block>
+<?kumiori-sample id="lang-indic"?>
+<fo:block xml:lang="hi" font-family="Noto Sans Devanagari" space-after="1.5mm">सभी मनुष्यों को गौरव और अधिकारों के मामले में जन्मजात स्वतन्त्रता और समानता प्राप्त है । उन्हें बुद्धि और अन्तरात्मा की देन प्राप्त है और परस्पर उन्हें भाईचारे के भाव से बर्ताव करना चाहिए ।</fo:block>
+<fo:block xml:lang="bn" font-family="Noto Sans Bengali" space-after="1.5mm">সমস্ত মানুষ স্বাধীনভাবে সমান মর্যাদা এবং অধিকার নিয়ে জন্মগ্রহণ করে। তাঁদের বিবেক এবং বুদ্ধি আছে; সুতরাং সকলেরই একে অপরের প্রতি ভ্রাতৃত্বসুলভ মনোভাব নিয়ে আচরণ করা উচিত।</fo:block>
+<fo:block xml:lang="ta" font-family="Noto Sans Tamil" space-after="1.5mm">மனிதப் பிறிவியினர் சகலரும் சுதந்திரமாகவே பிறக்கின்றனர்; அவர்கள் மதிப்பிலும், உரிமைகளிலும் சமமானவர்கள், அவர்கள் நியாயத்தையும் மனச்சாட்சியையும் இயற்பண்பாகப் பெற்றவர்கள். அவர்கள் ஒருவருடனொருவர் சகோதர உணர்வுப் பாங்கில் நடந்துகொள்ளல் வேண்டும்.</fo:block>
+<fo:block xml:lang="th" font-family="Noto Sans Thai" line-height="2" space-after="1.5mm">มนุษย์ทั้งปวงเกิดมามีอิสระและเสมอภาคกันในศักดิ์ศรีและสิทธิ ต่างในตนมีเหตุผลและมโนธรรม และควรปฏิบัติต่อกันด้วยจิตวิญญาณแห่งภราดรภาพ</fo:block>
+<fo:block xml:lang="bo" font-family="Noto Serif Tibetan" line-height="2" space-after="1.5mm">འགྲོ་བ་མིའི་རིགས་རྒྱུད་ཡོངས་ལ་སྐྱེས་ཙམ་ཉིད་ནས་ཆེ་མཐོངས་དང༌། ཐོབ་ཐངགི་རང་དབང་འདྲ་མཉམ་དུ་ཡོད་ལ། ཁོང་ཚོར་རང་བྱུང་གི་བློ་རྩལ་དང་བསམ་ཚུལ་བཟང་པོ་འདོན་པའི་འོས་བབས་ཀྱང་ཡོད། དེ་བཞིན་ཕན་ཚུན་གཅིག་གིས་གཅིག་ལ་བུ་སྤུན་གྱི་འདུ་ཤེས་འཛིན་པའི་བྱ་སྤྱོད་ཀྱང་ལག་ལེན་བསྟར་དགོས་པ་ཡིན༎</fo:block>
+<?kumiori-sample-end?>
+      <fo:block space-before="2mm" keep-with-next.within-page="always">モンゴル文字 (Noto Sans Mongolian)。writing-mode="tb-lr" の縦書きで、行は左から右へ進みます :</fo:block>
+<?kumiori-sample id="lang-mongolian" mark="writing-mode=&quot;tb-lr&quot;"?>
+<fo:block-container writing-mode="tb-lr" height="42mm" width="100%">
+  <fo:block xml:lang="mn-Mong" font-family="Noto Sans Mongolian" line-height="1.6">ᠬᠦᠮᠦᠨ ᠪᠦᠷ ᠲᠥᠷᠥᠵᠦ ᠮᠡᠨᠳᠡᠯᠡᠬᠦ ᠡᠷᠬᠡ ᠴᠢᠯᠥᠭᠡ ᠲᠡᠢ᠂ ᠠᠳᠠᠯᠢᠬᠠᠨ ᠨᠡᠷ᠎ᠡ ᠲᠥᠷᠥ ᠲᠡᠢ᠂ ᠢᠵᠢᠯ ᠡᠷᠬᠡ ᠲᠡᠢ ᠪᠠᠢᠠᠭ᠃ ᠣᠶᠤᠨ ᠤᠬᠠᠭᠠᠨ᠂ ᠨᠠᠨᠳᠢᠨ ᠴᠢᠨᠠᠷ ᠵᠠᠶᠠᠭᠠᠰᠠᠨ ᠬᠦᠮᠦᠨ ᠬᠡᠭᠴᠢ ᠥᠭᠡᠷ᠎ᠡ ᠬᠣᠭᠣᠷᠣᠨᠳᠣ᠎ᠨ ᠠᠬᠠᠨ ᠳᠡᠭᠦᠦ ᠢᠨ ᠦᠵᠢᠯ ᠰᠠᠨᠠᠭᠠ ᠥᠠᠷ ᠬᠠᠷᠢᠴᠠᠬᠥ ᠤᠴᠢᠷ ᠲᠠᠢ᠃</fo:block>
+</fo:block-container>
+<?kumiori-sample-end?>
+      <fo:block font-size="7.8pt" color="#3b4245" space-before="1.5mm" start-indent="1.2em" text-indent="-1.2em" text-align="start"><fo:inline color="#b08132">※ </fo:inline>見本に使ったフォント : Noto Sans SC・Noto Sans TC・Noto Sans KR、Noto Sans Hebrew、Noto Sans Arabic、Noto Sans の Devanagari・Bengali・Tamil・Thai・Mongolian、Noto Serif Tibetan (この節)、Noto Color Emoji・Roboto Flex (5.1 節)。どれも、SIL Open Font License 1.1 で配られているフォントです。フォントのファイルは、この文書の原稿と一緒には配らず、組むときに Google Fonts の配信元から取得しています。</fo:block>
 
       <!-- ──────────────── 6 表 -->
       <fo:index-range-begin id="ixr-table" index-key="doc:table"/>
