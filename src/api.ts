@@ -59,6 +59,11 @@ export interface TypesetOptions {
   /** 入力と一緒に使うファイル。CSS は、文書から参照されていなければ利用者のスタイルシートとして足す。FO では、書体のファイルを FO の font-family の名前で使う */
   files?: KumioriFile[];
   /**
+   * 文書 (HTML) から参照されていない CSS のファイル (files) の扱い。'user-stylesheet' (既定): 利用者のスタイルシートとして足す。
+   * 'ignore': 足さずに、警告に出す (コマンドの既定。入力のディレクトリのファイルを全部渡すので、文書と関係の無い CSS が当たらないように)
+   */
+  unreferencedCss?: 'user-stylesheet' | 'ignore';
+  /**
    * 足す書体のファイル (TTF・OTF・TTC・WOFF・WOFF2。システムに入れた書体のように、書体のファミリー名・太さ・幅・傾きで使う)。
    * 斜体の書体は font-style: italic の字に、幅の違う書体 (Arial Narrow など) は font-stretch の指定かその書体の名前で選ぶ (CSS Fonts 4 §5.2)
    */
@@ -721,7 +726,7 @@ async function importHtmlText(
   // @page の無いときに選ばれる用紙 (既定は A4。TypesetOptions.pageSize で変える) と余白 20mm。@media の width・height・orientation も、この用紙で評価する
   // (CSS Paged Media 3 §7.1: Media queries do not honor size: they assume the paper size that would be chosen if no @page rules were specified)
   const defaultPage = { ...((o.pageSize !== undefined ? parsePageSize(o.pageSize) : undefined) ?? { width: 210, height: 297 }), margin: 20 };
-  const prepared = await prepareHtml(html, files.filter(isCss), style, defaultPage, parseHtml);
+  const prepared = await prepareHtml(html, files.filter(isCss), style, defaultPage, parseHtml, { unreferencedCss: o.unreferencedCss });
   // 画像は data-kumiori-src に元のパスを残す (画面と同じ)
   prepared.doc.querySelectorAll('img[src]').forEach((img) => img.setAttribute('data-kumiori-src', img.getAttribute('src') ?? ''));
   // 既定のスタイル (style) は、作成者スタイルシート ではなく既定のスタイルシート (UA) として当てる (作成者スタイルシート に詳細度で勝たない)

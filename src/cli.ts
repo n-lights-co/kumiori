@@ -280,6 +280,8 @@ async function convert(input: string, output: string, args: Args, text: string) 
   const res = await typeset(text, {
     ...(kind ? { kind } : {}),
     files,
+    // 入力のディレクトリの CSS のうち、文書が参照していないものは当てない (--css で名指ししたものは、参照していなくても利用者のスタイルシートとして足す)
+    ...(cssNames ? {} : { unreferencedCss: 'ignore' as const }),
     fonts: args.fontFiles.map((f) => lazy(f, path.basename(f))),
     genericFonts: args.genericFonts,
     style: args.style,
@@ -325,7 +327,7 @@ export const USAGE_JA = [
   '  -o, --output <PDF>        出力の PDF (入力が複数なら出力先のディレクトリ。- は標準出力)',
   '  --style <名前>            HTML の既定のスタイル (kumiori・browser・browser-margin・ah・vivliostyle・weasyprint。既定 kumiori)',
   '  --page-size <用紙>        HTML の既定の用紙 (@page で size を指定していない文書の用紙。A5・"A5 landscape"・148mm,210mm など。既定 A4)',
-  '  --css a.css,b.css         使う CSS (HTML から参照されていないものは利用者のスタイルシートとして足す)',
+  '  --css a.css,b.css         使う CSS (HTML から参照されていないものは利用者のスタイルシートとして足す。指定が無ければ、HTML が参照する CSS だけを使う)',
   '  --font-dir <dir>          既定の書体 (NotoSerifJP-Regular.ttf など) を読むディレクトリ (無ければキャッシュ、次に Google Fonts から取る)',
   '  --font-cache <dir>        Google Fonts から取った既定の書体を保存して使い回すディレクトリ (既定は環境変数 KUMIORI_FONT_CACHE か OS のキャッシュ:',
   '                            Linux は ~/.cache/kumiori/fonts、macOS は ~/Library/Caches/kumiori/fonts、Windows は %LOCALAPPDATA%\\kumiori\\fonts)',
@@ -359,7 +361,7 @@ export const USAGE_EN = [
   '  -o, --output <PDF>        output PDF (a directory when there are several inputs; - is standard output)',
   '  --style <name>            default style sheet for HTML (kumiori, browser, browser-margin, ah, vivliostyle, weasyprint; default kumiori)',
   '  --page-size <size>        default paper for HTML (used when the document has no @page size; A5, "A5 landscape", 148mm,210mm, etc.; default A4)',
-  '  --css a.css,b.css         CSS files to use (ones not referenced by the HTML are added as user style sheets)',
+  '  --css a.css,b.css         CSS files to use (ones not referenced by the HTML are added as user style sheets; without it, only CSS referenced by the HTML is used)',
   '  --font-dir <dir>          directory of the default fonts (NotoSerifJP-Regular.ttf etc.; otherwise the cache, then Google Fonts)',
   '  --font-cache <dir>        directory where default fonts fetched from Google Fonts are saved and reused (default: KUMIORI_FONT_CACHE or the OS cache:',
   '                            ~/.cache/kumiori/fonts on Linux, ~/Library/Caches/kumiori/fonts on macOS, %LOCALAPPDATA%\\kumiori\\fonts on Windows)',

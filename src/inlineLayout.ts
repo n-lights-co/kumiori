@@ -1956,7 +1956,8 @@ export function buildLineNode(
     bsize: extraBefore + lm.base,
     hasRuby: lm.rubyExtent > 0,
     contentLength: pl.contentLength,
-    ...(pl.raw.indent > 0 ? { lineIndent: pl.raw.indent } : {}),
+    // 負の字下げも記録する (中身の幅から行の箱を決めるとき、行の長さから引く。Chromium も負の text-indent の分だけ inline-block を狭める)
+    ...(pl.raw.indent !== 0 ? { lineIndent: pl.raw.indent } : {}),
     baseline: emTop + lm.above,
   });
   // 改訂バー: この行の文字に付いたもの (同じ指定は 1 本)

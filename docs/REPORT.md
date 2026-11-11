@@ -187,7 +187,7 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 - **before**: 置き済みの本文を `shiftContent(h)`（root の子・開いている Frame の `startB/contentStartB`・float の `b0/b1`・`cursor` を h だけずらす）で押し下げ、`b = beforeUsed + margin.bs` に積む。縦書きでは block-start = 右端。
 - **入らないとき**: 現ページの残りに収まらない float は `deferredFloats` に積み、**次ページの先頭**（`breakPage` の最後）に置く。本文は止まらず先へ進む。ページ先頭でも入らなければ警告して溢れさせる。最後に残れば float だけのページを足す。
 - **経路の切替**: 回り込みが有効な間は、行を 1 本ずつ組む経路（`layoutInlineRunFloating`）に入る。ページ跨ぎは行単位で判定し、次のページへ行く行が widows より少なければ、置き済みの行を送り直して widows / orphans を守る (`widowShift`。残りの行数は回り込みの無い幅で数える)。回り込みが無ければ従来の高速経路。
-- **制限**: float の位置は入れ子ブロックではなく本文領域（ページ）の端基準。親と直交する書字方向の float (横書きの中の縦書きなど) は、自身の行の長さをページの残りの高さにして組む。float を含む行の脚注、ルビは通常どおり扱う。
+- **制限**: float の位置は入れ子ブロックではなく本文領域（ページ）の端基準。親と直交する書字方向の float (横書きの中の縦書きなど) は、行の長さの既定を、CSS (HTML) の float では使える長さの中の fit-content (CSS Writing Modes 3 §7.3)、XSL-FO の float ではページの残りの高さにして組む。float を含む行の脚注、ルビは通常どおり扱う。
 
 ## 7.10 行内の箱: 画像 (`LImage`) と `LInlineContainer`
 

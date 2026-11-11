@@ -890,6 +890,13 @@ export const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true, ahA
 const isBorderStyle = (t: string, ah: AhFlags) => BORDER_STYLES.test(t) || (ah.ahBorderStyles && AH_BORDER_STYLES.test(t));
 const isLenLike = (t: string) => /^(-?(?:\d+\.?\d*|\.\d+)[a-z%]*|calc\(.*\)|min\(.*\)|max\(.*\)|clamp\(.*\)|var\(.*\))$/i.test(t);
 const isColorLike = (t: string) => parseColor(t) !== undefined || /^var\(/i.test(t);
+/**
+ * 印刷の色の関数: device-cmyk() (CSS Color 5 §12.1 の <color>)。互換の指定のときは、アンテナハウスの cmyk()・rgb-icc() も (htmlPaged の compatOnlyValue)。
+ * カスケードは画面の色として読まないので、一括指定 (border・background) の中では色の値として受け、分けた性質の色は既定の色にする。
+ * 印刷の色そのものは、読み込みが自前で読んだ宣言から拾う (htmlImport の borderPrint・printOf)。受けないと、一括指定の宣言ごと読めない
+ * 宣言として捨てられ、罫線の幅・線種や背景の画像まで消える (PKG-21 (1))
+ */
+const isPrintColor = (t: string, ah: AhFlags) => /^device-cmyk\(.*\)$/i.test(t) || (!!ah.ahPagedValues && /^(?:cmyk|rgb-icc)\(.*\)$/i.test(t));
 
 function fourSides(v: string): [string, string, string, string] {
   const t = tokens(v);
@@ -1008,6 +1015,7 @@ const borderShorthand: Expander = (prop, v, global, ah) => {
   for (const t of tokens(v)) {
     if (isBorderStyle(t.toLowerCase(), ah)) st = t.toLowerCase();
     else if (/^(thin|medium|thick)$/i.test(t) || isLenLike(t)) w = t;
+    else if (isPrintColor(t, ah)) col = 'currentcolor';
     else col = t;
   }
   return sides.flatMap((s) => [[pre(s) + 'width', w], [pre(s) + 'style', st], [pre(s) + 'color', col]] as Longhands);
@@ -1020,7 +1028,7 @@ const borderShorthand: Expander = (prop, v, global, ah) => {
  * どの種類にも当たらない語 (-webkit-linear-gradient() など、読めない値) があれば、宣言ごと読めない (空を返す。前の宣言を消さない。
  * CSS 2.1 §4.2: 読めない値の宣言は無視する)。Backgrounds 4 の text (描く範囲) は読み飛ばす
  */
-const backgroundShorthand: Expander = (_prop, v, global) => {
+const backgroundShorthand: Expander = (_prop, v, global, ah) => {
   const props = ['background-color', 'background-image', 'background-repeat', 'background-position-x', 'background-position-y', 'background-size', 'background-origin', 'background-clip', 'background-attachment'];
   if (global) return each(props, v);
   const layers = splitTop(v, ',', { keepEmpty: true });
@@ -1065,6 +1073,9 @@ const backgroundShorthand: Expander = (_prop, v, global) => {
         if (/^var\(/i.test(t)) continue;
         if (!isLast) return [];
         color = t;
+      } else if (isPrintColor(t, ah)) {
+        // 印刷の色 (上の isPrintColor)。色は最後の層だけ。分けた background-color は透明のまま
+        if (!isLast) return [];
       } else return [];
     }
     if (lBoxes.length > 2) return [];
@@ -1515,6 +1526,11 @@ export interface CascadeOptions {
    * margin-top: calc(attr(data-n) * 20mm) のような書き方)。既定では CSS Values 5 §7.7 のとおり文字列で、その宣言は計算値の時点で無効
    */
   ahAttrNumber?: boolean;
+  /**
+   * 接頭辞の無い名前に書いたアンテナハウスの拡張の値を読む (AhFlags.ahPagedValues)。カスケードでは、一括指定 (border・background) の中の
+   * 印刷の色 cmyk()・rgb-icc() を色の値として受ける (device-cmyk() は CSS Color 5 の値なので、この指定によらず受ける)
+   */
+  ahPagedValues?: boolean;
   /** attr() を置き換えた結果、計算値の時点で無効になった宣言 (その性質は unset) を知らせる。prop・value は書かれたままの宣言 */
   onInvalidAttr?: (prop: string, value: string) => void;
 }
@@ -1752,7 +1768,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   const vw = opts.viewport?.width ?? 794;
   const vh = opts.viewport?.height ?? 1123;
   // アンテナハウスの拡張の読み方 (expand・valid に渡す。この StyleSource の計算にだけ効く)
-  const ah: AhFlags = { ahBorderStyles: !!opts.ahBorderStyles, ahCounterFlags: !!opts.ahCounterFlags, ahAttrNumber: !!opts.ahAttrNumber };
+  const ah: AhFlags = { ahBorderStyles: !!opts.ahBorderStyles, ahCounterFlags: !!opts.ahCounterFlags, ahAttrNumber: !!opts.ahAttrNumber, ahPagedValues: !!opts.ahPagedValues };
   const rules: RuleEntry[] = [];
   const selCache = new Map<string, Selector[]>();
   let order = 0;

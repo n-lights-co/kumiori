@@ -9,7 +9,7 @@ import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { expand, supportsCssDeclaration } from '../src/cssCascade';
 import { paintSheet, type Painter } from '../src/paint';
 import { encodePngStored } from '../src/pixels';
-import { DEFAULT_FONTS, serializeAreaTree, typesetHtml, walkAreaTree, type FontSpec } from '../src/index';
+import { childrenOf, DEFAULT_FONTS, serializeAreaTree, typesetHtml, walkAreaTree, type FontSpec } from '../src/index';
 import type { Area, AreaTree } from '../src/types';
 import { ensureFonts, fontDir } from './helpers';
 
@@ -154,6 +154,15 @@ describe('複数の背景 (§2.1)', () => {
     near([bi.width!, bi.height!], [108, 60]);
     expect(bi.under!.map((l) => l.src)).toEqual(['b.png']);
   });
+  it('conic-gradient も背景のグラデーションにする (これまでは描かれず、警告も出なかった。CSS Images 4 §3.3)', async () => {
+    for (const bg of ['conic-gradient(red, blue)', 'url(a.png) no-repeat, repeating-conic-gradient(#000 0 15deg, #fff 15deg 30deg)']) {
+      const r = await set(page(`<div class="b" style="background: ${bg}"></div>`));
+      const bi = boxOf(r.areaTree).backgroundImage!;
+      const srcs = [bi.src, ...(bi.under ?? []).map((l) => l.src)];
+      expect(srcs.some((s) => /^kumiori-gradient-\d+\.svg$/.test(s))).toBe(true);
+      expect(r.warnings).toEqual([]);
+    }
+  });
   it('PDF: 後ろの層の画像も埋め込む', async () => {
     const r = await set(page('<div class="b" style="background: url(a.png) no-repeat, url(b.png) no-repeat 20pt 20pt"></div>'));
     expect(r.areaTree.resources?.images?.map((i) => i.src).sort()).toEqual(['a.png', 'b.png']);
@@ -235,5 +244,21 @@ describe('対応しない値は知らせる', () => {
   it('background-clip: text (Backgrounds 4 の値) は未対応として知らせる。html・body の背景の 2 枚目以降も', async () => {
     const r = await set(page('<p style="background-clip: text">x</p>', 'body { background: url(a.png) no-repeat, url(b.png) }'));
     expect(r.warnings.filter((w) => /未対応|知らない/.test(w))).toEqual(['未対応の CSS を無視しました: background-clip: text、background-image: 2 枚目以降 (html・body)']);
+  });
+});
+
+describe('行内ブロック (inline-block) の角丸・影 (HTM-64)', () => {
+  it('border-radius と box-shadow を、ブロックの箱と同じく行内ブロックの箱に付ける (背景・罫線・背景のグラデーションを角丸で切り抜く。CSS Backgrounds 3 §5.3)', async () => {
+    const r = await set(page('<p><span style="display: inline-block; width: 60pt; height: 60pt; border-radius: 30pt; box-shadow: 4pt 4pt 0 #888; background: linear-gradient(red, blue)">x</span></p>'));
+    const found: Array<{ borderRadius?: unknown; boxShadow?: unknown }> = [];
+    const rec = (a: Area) => {
+      const b = a as unknown as { borderRadius?: unknown; boxShadow?: unknown; backgroundImage?: unknown };
+      if (b.backgroundImage) found.push(b);
+      for (const c of childrenOf(a)) rec(c);
+    };
+    for (const s of r.areaTree.sheets) rec(s.page);
+    expect(found).toHaveLength(1);
+    expect(found[0].borderRadius).toBeDefined();
+    expect(found[0].boxShadow).toBeDefined();
   });
 });

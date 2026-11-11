@@ -3502,7 +3502,7 @@ class HtmlImporter {
     for (const L of layers) {
       const bimg = L.image;
       const bi = /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(bimg);
-      const grad = !bi || bimg.search(/(linear|radial)-gradient\(/i) < bimg.search(/url\(/i) ? firstGradient(bimg) : undefined;
+      const grad = !bi || bimg.search(/(linear|radial|conic)-gradient\(/i) < bimg.search(/url\(/i) ? firstGradient(bimg) : undefined;
       if (!bi && !grad) continue;
       const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(c('font-size')) ?? 12 } : { src: normalizeSrc(bi![1]) };
       const rep = L.repeat;
@@ -4293,6 +4293,41 @@ class HtmlImporter {
     Object.assign(fn, this.footnoteCallStyle(e, parent));
     items.push({ v: fn, block: false });
     return true;
+  }
+
+  /**
+   * 行内の置換要素 (img・行内の svg・画像の object) の箱の書式: 罫線・内側の余白・背景色と、4 辺の margin を、画像の箱そのものに付ける
+   * (組版が包んで、行の中の送りと行の高さに入れる。CSS 2.1 §8.3・§10.8)
+   */
+  private replacedBox(el: Element, img: LImage): LImage {
+    // 要素そのものがブロック・回り込みとして置かれる (display: block・float) ときは、その箱 (ブロックの画像の箱・回り込みの箱) が
+    // 罫線・余白・margin を持つので、画像には付けない (二重にしない)
+    const disp = this.display(el);
+    if (!/^inline/.test(disp) || this.floatSideOf(el, this.pg(el))) return img;
+    // 画像の罫線・内側の余白・背景色 (img { border: … }): 画像の箱に付ける (下)。
+    // 角丸 (border-radius) は罫線の箱に付け、画像は内側の角丸 (外側の半径 − 罫線と余白) で切り抜く (CSS Backgrounds 3 §5.1・§5.3)
+    const bs = this.boxStyle(el);
+    // 外側の余白 (margin): 行内の置換要素には 4 辺とも効く (CSS 2.1 §8.3。上下の margin が効かないのは、置換要素でない行内の箱だけ)。
+    // auto は 0 (§10.3.2)。百分率は、包含ブロックの幅に対する値として、カスケードで解いた長さ (§8.3)
+    const c = this.cs(el);
+    const mg = { top: cssLen(c('margin-top')) ?? 0, right: cssLen(c('margin-right')) ?? 0, bottom: cssLen(c('margin-bottom')) ?? 0, left: cssLen(c('margin-left')) ?? 0 };
+    const hasMargin = !!(mg.top || mg.right || mg.bottom || mg.left);
+    if (bs.border || bs.padding || bs.backgroundColor) {
+      // 罫線・内側の余白・背景色は、画像の箱そのものに付ける (組版が、画像をそれらを持つ箱で包み、行の中の送りと行の高さに入れる。
+      // 置換要素の行内の箱の高さは margin の箱の高さ: CSS 2.1 §10.8・§10.6.2。これまでは画像を囲む行内の枠にしていて、罫線と padding が
+      // 行の高さに入らず、前後の行に重なっていた)
+      const rad = img.borderRadius;
+      if (rad) {
+        img.boxRadius = rad;
+        img.borderRadius = innerRadius(rad, bs.border, bs.padding);
+      }
+      if (bs.border) img.border = bs.border;
+      if (bs.padding) img.padding = bs.padding;
+      if (bs.backgroundColor) img.backgroundColor = bs.backgroundColor;
+      // 変換・不透明度は、画像の節に付いたもの (image() が付ける) を、包んだ箱ごと掛ける
+    }
+    if (hasMargin) img.margin = mg;
+    return img;
   }
 
   /** 回り込みの側 (flowFloat の説明を参照)。回り込みでなければ undefined */
@@ -5104,44 +5139,16 @@ class HtmlImporter {
     if (name === 'object') {
       const data = el.getAttribute('data') ?? '';
       const isImage = /^image\//i.test(el.getAttribute('type') ?? '') || /\.(svgz?|png|jpe?g|gif|webp|bmp|tiff?)$/i.test(data);
-      if (data && isImage && this.opts.hasAsset?.(normalizeSrc(data)) !== false) return [this.image(el, data)];
+      if (data && isImage && this.opts.hasAsset?.(normalizeSrc(data)) !== false) return [this.replacedBox(el, this.image(el, data))];
     }
     if (name === 'img') {
       const src = el.getAttribute('data-kumiori-src') ?? el.getAttribute('src') ?? '';
       if (!src) return [];
-      const img = this.image(el, src);
-      // 画像の罫線・内側の余白・背景色 (img { border: … }): 画像を囲む行内の箱に付ける。
-      // 角丸 (border-radius) は枠に付け、画像は枠の内側の角丸 (外側の半径 − 罫線と余白) で切り抜く (CSS Backgrounds 3 §5.1・§5.3)
-      const bs = this.boxStyle(el);
-      // 外側の余白 (margin): 行内の置換要素には 4 辺とも効く (CSS 2.1 §8.3。上下の margin が効かないのは、置換要素でない行内の箱だけ)。
-      // auto は 0 (§10.3.2)。百分率は読まない
-      const c = this.cs(el);
-      const mg = { top: cssLen(c('margin-top')) ?? 0, right: cssLen(c('margin-right')) ?? 0, bottom: cssLen(c('margin-bottom')) ?? 0, left: cssLen(c('margin-left')) ?? 0 };
-      const hasMargin = !!(mg.top || mg.right || mg.bottom || mg.left);
-      if (bs.border || bs.padding || bs.backgroundColor) {
-        const rad = img.borderRadius;
-        if (rad) img.borderRadius = innerRadius(rad, bs.border, bs.padding);
-        // 変換・不透明度は、枠ごとに掛ける (基準の箱は border の箱)
-        delete img.paintEffect;
-        // (この箱は置換要素の箱そのものなので、字の内容の領域 (inlineBoxFontMetrics) でなく、画像を囲む。CSS 2.1 §10.6.2)
-        const frame = { type: 'inline', inlineBoxFontMetrics: false, ...(bs.paintEffect ? { paintEffect: bs.paintEffect } : {}), ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline;
-        // 枠のある画像の余白は、枠の外に付ける: 行の進む方向の余白だけ (行内の空き。行内の要素の margin と同じ)。
-        // 行の幅の方向の余白 (横書きの上下) は、枠を行内の枠として描いているので付けられない (知らせる)
-        if (hasMargin) {
-          const vert = /^(vertical|sideways)/.test(c('writing-mode'));
-          const [ms, me, cross] = vert ? [mg.top, mg.bottom, mg.left || mg.right] : [mg.left, mg.right, mg.top || mg.bottom];
-          const rtl = !vert && c('direction') === 'rtl';
-          if (ms || me) frame.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me, bound: true };
-          if (cross) this.miss(vert ? 'margin-left・margin-right (罫線・内側の余白・背景色のある行内の画像)' : 'margin-top・margin-bottom (罫線・内側の余白・背景色のある行内の画像)');
-        }
-        return [frame];
-      }
-      if (hasMargin) img.margin = mg;
-      return [img];
+      return [this.replacedBox(el, this.image(el, src))];
     }
     // 文書の中に直接書いた <svg>: 単独の SVG 文書 (data URI) にして、<img> と同じ画像として組む
     // 文書の CSS の fill・stroke・color など (と、外から継承した値) は、要素の style 属性に書き足して渡す (SVG 2 §6.4・§6.6)
-    if (isInlineSvg(el)) return [this.image(el, inlineSvgDataUri(el, this.src.svgStyle ? (e, root) => this.src.svgStyle!(e, root) : undefined))];
+    if (isInlineSvg(el)) return [this.replacedBox(el, this.image(el, inlineSvgDataUri(el, this.src.svgStyle ? (e, root) => this.src.svgStyle!(e, root) : undefined)))];
     // 数式 (MathML の math 要素): 数式用の書体があれば、組んだ図形にする
     if (this.opts.mathFont && this.isMath(el)) return [this.mathFormula(el)];
     if (name === 'ruby') {
@@ -5560,6 +5567,20 @@ class HtmlImporter {
     return out;
   }
 
+  /**
+   * 表のセル td に効く行グリッドの指定 (-ah-baseline-grid。継承する): セルから表の要素 table までさかのぼって、最初に見つかった
+   * new・root・none の指定 (normal は行グリッドを変えないので、その先を見る)。new・root でなければ undefined
+   */
+  private tableCellGrid(td: Element, table: Element): 'new' | 'root' | undefined {
+    for (let e: Node | null = td; e && e.nodeType === 1; e = e.parentNode) {
+      const v = this.pg(e as Element)['-ah-baseline-grid']?.trim().toLowerCase();
+      if (v === 'new' || v === 'root') return v;
+      if (v === 'none') return undefined;
+      if (e === table) break;
+    }
+    return undefined;
+  }
+
   /** 表 (<table> / display: table) */
   /**
    * 表 (<table> / display: table)。anon を渡すと、el の子のうち anon の要素 (表の外で続くセル・行など) を包む匿名の表
@@ -5675,6 +5696,12 @@ class HtmlImporter {
           // セルの中の最初・最後のブロックの margin は捨てない (CSS 2.1 §17.5: セルは新しい整形文脈で、中の margin はセルの外と重ならない。<td><p> の上下の margin)
           const cell: LTableCell = { type: 'table-cell', keepEdgeSpace: true, ...this.textStyle(td, tr), ...this.paragraphStyle(td, tr), ...this.boxStyle(td), children: this.flowChildren(td) };
           if (pre.length) cell.children.unshift(...pre);
+          // アンテナハウスの行グリッド (-ah-baseline-grid。継承する): セル・行・行グループ・表に new・root の指定があれば、セルの中身も
+          // 行グリッドの領域にする (中身を、その指定のブロックで包む)。行グリッドの領域では、最初の行の前と最後の行の後ろに半行間を
+          // 付けない (AH Formatter の「XSL/CSS 拡張仕様」の axf:baseline-grid。見本の PDF: CSS-Print 第 4 版の表は
+          // table { -ah-baseline-grid: new } で、行の高さが字の大きさ + padding + 罫線 = line-height 1 つ分)
+          const cellGrid = this.tableCellGrid(td, el);
+          if (cellGrid) cell.children = [{ type: 'block', baselineGrid: cellGrid, children: cell.children } as LBlock];
           // position が static でないセル・変換の付いたセルは、中の絶対配置の箱の基準 (CSS 2.1 §10.1)
           if (this.makesCb(td)) cell.containingBlock = true;
           const cs = Math.min(MAX_COL_SPAN, parseInt(td.getAttribute('colspan') ?? '1', 10));

@@ -1263,6 +1263,11 @@ export interface LImage extends BaseNode {
   src: string;
   /** 角丸 (CSS の border-radius): 画像を角丸で切り抜く (CSS Backgrounds 3 §5.3)。百分率は画像の箱の大きさに対して */
   borderRadius?: BorderRadius;
+  /**
+   * 画像の罫線・内側の余白 (border・padding。BaseNode) のある画像の、罫線の箱の角丸 (外側の半径)。borderRadius は、その内側で画像を
+   * 切り抜く半径 (外側の半径 − 罫線と余白。CSS Backgrounds 3 §5.1)
+   */
+  boxRadius?: BorderRadius;
   width?: number;
   height?: number;
   /** 画像本来の大きさに対する倍率 (fo の content-width / content-height の百分率)。width / height があればそちらを優先 */

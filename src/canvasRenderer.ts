@@ -203,6 +203,22 @@ class CanvasPainter implements Painter {
     }
     ctx.beginPath();
     ctx.rect(0, 0, g.width, g.height);
+    if (g.kind === 'wedges') {
+      // conic: 箱で切り抜いて、三角形をそれぞれの色で塗る (PDF と同じ図形)
+      ctx.clip();
+      for (const w of g.wedges) {
+        const c = parseInt(w.color.slice(1), 16);
+        ctx.fillStyle = `rgba(${c >> 16}, ${(c >> 8) & 255}, ${c & 255}, ${w.opacity})`;
+        ctx.beginPath();
+        ctx.moveTo(w.pts[0], w.pts[1]);
+        ctx.lineTo(w.pts[2], w.pts[3]);
+        ctx.lineTo(w.pts[4], w.pts[5]);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
     if (g.kind === 'solid') ctx.fillStyle = g.color;
     else {
       let cg: CanvasGradient;

@@ -92,7 +92,7 @@ cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
 - `--help` (`-h`) で使い方、`--version` (`-v`) で版を出す
 - 未対応の CSS のプロパティ・値 (対応仕様説明書の 16 章の一覧) と、Kumiori の知らないプロパティ (綴りの誤りか未対応)、XSL-FO の読めない要素・プロパティ、読めない画像などは、黙って無視せずに「警告:」として知らせる (ライブラリでは `result.warnings`)
 
-- HTML と同じディレクトリ (と下のディレクトリ) の CSS・画像・書体を使う (画面で一緒に選ぶのと同じ)。画像は、文書と CSS に名前が出てくるものだけを読む。`--css a.css,b.css` で使う CSS を選ぶ (カンマ区切りで複数。`@import` 先も使う。HTML から参照されていない CSS は利用者のスタイルシートとして足す)
+- HTML と同じディレクトリ (と下のディレクトリ) の CSS・画像・書体を使う (画面で一緒に選ぶのと同じ)。画像は、文書と CSS に名前が出てくるものだけを読む。CSS は、HTML が参照するもの (`<link>`・`@import`) だけを使う (参照していない CSS は当てずに、警告で知らせる)。`--css a.css,b.css` で使う CSS を選ぶ (カンマ区切りで複数。`@import` 先も使う。HTML から参照されていない CSS も、名指ししたものは利用者のスタイルシートとして足す)
 - `--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint`: 既定のスタイル (画面の「設定」の「既定のスタイル」と同じ。既定は kumiori)
 - `--page-size <用紙>`: HTML の既定の用紙 (`@page` で `size` を指定していない文書の用紙。既定は A4)。CSS の `size` と同じ書き方で、用紙の名前 (`A5`・`JIS-B5`・`letter` など)、向きを付けたもの (`"A5 landscape"`)、幅と高さ (`148mm,210mm`。区切りは空白かカンマ) を書く。文書の `@page { size: … }` があれば、そちらが勝つ。`@media` の `width`・`height` も、この用紙で評価する。XSL-FO では使わない
 - `--font-dir <dir>`: 既定の書体 (`NotoSerifJP-Regular.ttf`・`NotoSerifJP-Bold.ttf`・`NotoSansJP-Regular.ttf`・`NotoSansJP-Bold.ttf`・`Tinos-*.ttf`・`Arimo-*.ttf`、等幅の指定があれば `Cousine-*.ttf`、MathML があれば `STIXTwoMath-Regular.ttf`、どの書体にも無い記号があれば `NotoSansSymbols2-Regular.ttf`) を読むディレクトリ。無ければ書体のキャッシュ、次に Google Fonts から読む。太字のファイル (`-Bold`) に、同じ書体の `-Regular` と同じ中身のファイルを置くと、太字の書体は無いものとして、太字の字は Regular を太らせて描く (太字を持たない書体に入れ替えるとき)。既定の書体を手元の書体に入れ替えるときは、太字のファイル (`NotoSerifJP-Bold.ttf`・`NotoSansJP-Bold.ttf` など) も置く: 置かなかったファイルは、キャッシュかネットワークの既定の書体になり、入れ替えた書体と混ざる

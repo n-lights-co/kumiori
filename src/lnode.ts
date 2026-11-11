@@ -63,7 +63,7 @@ export interface LNode {
   // line
   hasRuby?: boolean;
   contentLength?: number;
-  /** 行: 行頭の字下げ (text-indent・start-indent で、行の箱の始めの端に付く空き。正の値だけ)。中身から箱の幅を決めるとき、中身の長さに足す */
+  /** 行: 行頭の字下げ (text-indent・start-indent で、行の箱の始めの端に付く空き。負の値は行の箱の外へ出す分)。中身から箱の幅を決めるとき、中身の長さに足す */
   lineIndent?: number;
   // glyph
   glyph?: GlyphPayload;

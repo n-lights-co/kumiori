@@ -254,7 +254,7 @@ The comparison uses the "WeasyPrint compatible" default style sheet (`compare-pd
 
 Added through the comparison (this table and the items below are for the route via the browser. The results with our own cascade are in the Stage 6 table):
 
-- CSS files not referenced from the HTML are added after the document's CSS as user style sheets
+- CSS files not referenced from the HTML are added after the document's CSS as user style sheets (with the API's `unreferencedCss: 'ignore'` they are not added and a warning is shown; the command does this unless `--css` is given)
 - Inside the iframe, `@font-face` fonts and `<img>` images are loaded from blob URLs of the files chosen along with the document (the browser's layout is then determined with those font and image sizes)
 - CSS nesting (`&`, descendant rules), `@page` background colour
 - Images: `object-fit` (cover / contain), `background-size: cover / contain`, the size the browser placed when there are upper or lower bounds such as max-width, absolutely positioned `<img>`, behind the content when `z-index` is negative

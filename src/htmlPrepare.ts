@@ -295,6 +295,7 @@ export async function prepareHtml(
   defaults: HtmlDefaults,
   defaultPage: { width: number; height: number; margin: number },
   parse: (html: string) => Document,
+  opts: { unreferencedCss?: 'user-stylesheet' | 'ignore' } = {},
 ): Promise<PreparedHtml> {
   // アンテナハウス互換: 接頭辞の付いた MathML・SVG の要素 (<m:math xmlns:m="…/MathML">) を、名前空間に従って読む
   const parsed = parse(defaults === 'ah' ? prefixedForeignToHtml(html) : html);
@@ -404,13 +405,26 @@ export async function prepareHtml(
     st.textContent = withMedia(l.getAttribute('media'), text);
     l.replaceWith(st);
   });
-  // HTML から参照されていない CSS ファイルは、利用者のスタイルシートとして文書の CSS の後に足す (weasyprint -s と同じ)
+  // HTML から参照されていない CSS ファイルは、利用者のスタイルシートとして文書の CSS の後に足す (weasyprint -s と同じ)。
+  // unreferencedCss: 'ignore' (コマンドの既定) なら足さずに知らせる
+  const ignored: string[] = [];
   for (const [name, text] of cssFiles) {
     if (linked.has(name)) continue;
+    if (opts.unreferencedCss === 'ignore') {
+      ignored.push(name);
+      continue;
+    }
     const st = parsed.createElement('style');
     st.textContent = forPrint(text);
     (parsed.head ?? parsed.documentElement).append(st);
   }
+  if (ignored.length)
+    warnings.push(
+      msg(
+        `文書から参照されていない CSS は当てません: ${ignored.join('、')} (--css で名指しすれば、利用者のスタイルシートとして足します)`,
+        `CSS not referenced from the document is not applied: ${ignored.join(', ')} (name it with --css to add it as a user stylesheet)`,
+      ),
+    );
   parsed.querySelectorAll('style').forEach((s) => {
     if (screenOnly(s.getAttribute('media'))) s.remove();
     else {

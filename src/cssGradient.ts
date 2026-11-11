@@ -5,6 +5,8 @@
  * - linear-gradient: 角度 (deg・rad・grad・turn) か to <辺・角>。グラデーションの線の長さは |W sin θ| + |H cos θ| (§3.1.1)。
  *   to <角> は、隣り合う 2 つの角を結ぶ線に垂直な向き (§3.1.1)
  * - radial-gradient: circle・ellipse、大きさ (closest-side・farthest-side・closest-corner・farthest-corner・長さ)、at <位置> (§3.2)
+ * - conic-gradient (CSS Images 4 §3.3): from <角度>、at <位置>、角度・百分率の止まり。SVG に円すい形のグラデーションが無いので、
+ *   中心から出る細い扇形 (1° 以下) を、その中央の角度の色で塗って並べる (PDF は SVG の図形として、Canvas は readGradientSvg で読み戻して描く)
  * - 色の止まり (§3.4): 位置の無い最初と最後は 0%・100%、前の位置より小さい位置は前の位置にし、位置の無い止まりは前後の間を等分する。
  *   色の変わり目の指定 (transition hint) は読み飛ばす (前後の色を線形に補間する)
  */
@@ -17,7 +19,7 @@ export function isCssGradient(v: string): boolean {
 
 /** 最初のグラデーションの関数の文字列 (background-image の最初の層)。無ければ undefined */
 export function firstGradient(v: string): string | undefined {
-  const m = /(repeating-)?(linear|radial)-gradient\(/i.exec(v);
+  const m = /(repeating-)?(linear|radial|conic)-gradient\(/i.exec(v);
   if (!m) return undefined;
   let depth = 0;
   for (let i = m.index + m[0].length - 1; i < v.length; i++) {
@@ -192,8 +194,9 @@ function position(tokens: string[], W: number, H: number, fontSize: number): [nu
  * fontSize: em の基準
  */
 export function gradientSvg(text: string, W: number, H: number, fontSize = 12): string | undefined {
-  const m = /^\s*(repeating-)?(linear|radial)-gradient\(([\s\S]*)\)\s*$/i.exec(text);
+  const m = /^\s*(repeating-)?(linear|radial|conic)-gradient\(([\s\S]*)\)\s*$/i.exec(text);
   if (!m || W <= 0 || H <= 0) return undefined;
+  if (m[2].toLowerCase() === 'conic') return conicSvg(!!m[1], splitTop(m[3], ','), W, H, fontSize);
   const repeating = !!m[1];
   const args = splitTop(m[3], ',');
   if (!args.length) return undefined;
@@ -336,12 +339,97 @@ export function gradientSvg(text: string, W: number, H: number, fontSize = 12): 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${n(W)}pt" height="${n(H)}pt" viewBox="0 0 ${n(W)} ${n(H)}"><defs>${body}</defs><rect width="${n(W)}" height="${n(H)}" fill="url(#g)"/></svg>`;
 }
 
+/**
+ * conic-gradient([from <角度>]? [at <位置>]?, <止まり>…) (CSS Images 4 §3.3)。角度は上から時計回り (0deg = 上)。止まりの位置は角度か
+ * 百分率 (1 周 = 360deg に対する)。1 周の外の止まりは、その範囲で切る (§3.3.1)。repeating- は 1 周を覆うまで繰り返す (§3.5)
+ */
+function conicSvg(repeating: boolean, args: string[], W: number, H: number, fontSize: number): string | undefined {
+  if (!args.length) return undefined;
+  let from = 0;
+  let pos: [number, number] = [W / 2, H / 2];
+  let stopItems = args;
+  const toks = splitTop(args[0], ' ');
+  if (toks.length && /^(from|at)$/i.test(toks[0])) {
+    stopItems = args.slice(1);
+    const atIdx = toks.findIndex((t) => t.toLowerCase() === 'at');
+    const fromIdx = toks.findIndex((t) => t.toLowerCase() === 'from');
+    if (fromIdx >= 0) {
+      const a = angleDeg(toks[fromIdx + 1] ?? '');
+      if (a === undefined) return undefined;
+      from = a;
+    }
+    if (atIdx >= 0) {
+      const p = position(toks.slice(atIdx + 1), W, H, fontSize);
+      if (!p) return undefined;
+      pos = p;
+    }
+  }
+  // 止まりの角度は、度の数 (pt の長さの形) に直して、線形の止まりと同じ補正 (§3.4.3) を通す (1 周 = 360)
+  const items = stopItems.map((it) =>
+    splitTop(it, ' ')
+      .map((t) => {
+        const a = angleDeg(t);
+        return a !== undefined ? `${a}pt` : t;
+      })
+      .join(' '),
+  );
+  const stops = parseStops(items, 360, fontSize);
+  if (!stops) return undefined;
+  let all: Stop[];
+  if (repeating) {
+    // 繰り返しの長さが 0: 最後の色で塗る (§3.5)
+    if (stops[stops.length - 1].pos! - stops[0].pos! <= 1e-6) return `<svg xmlns="http://www.w3.org/2000/svg" width="${n(W)}" height="${n(H)}" viewBox="0 0 ${n(W)} ${n(H)}"><rect width="${n(W)}" height="${n(H)}" fill="${hex(stops[stops.length - 1].color)}"/></svg>`;
+    all = repeatStops(stops, 0, 360);
+  } else all = clipStops(stops, 0, 360);
+  const [cx, cy] = pos;
+  // 扇形の半径: 中心から一番遠い角より外
+  const R = Math.max(...[[0, 0], [W, 0], [0, H], [W, H]].map(([x, y]) => Math.hypot(x - cx, y - cy))) + 1;
+  const colorAt = (deg: number): Stop['color'] => {
+    for (let i = 0; i + 1 < all.length; i++) {
+      const s0 = all[i];
+      const s1 = all[i + 1];
+      if (deg >= s0.pos! && deg <= s1.pos!) {
+        const t = s1.pos! - s0.pos! > 1e-9 ? (deg - s0.pos!) / (s1.pos! - s0.pos!) : 1;
+        return s0.color.map((v, k) => v + (s1.color[k] - v) * t) as Stop['color'];
+      }
+    }
+    return all[all.length - 1].color;
+  };
+  // 三角形で扇形を覆う: 2 つの頂点の距離を、半径 R の円の弧の外に出るように伸ばす (開き Δ の三角形の辺の中ほどは、中心から rr × cos(Δ/2))
+  const pt = (deg: number, rr: number) => {
+    const r = ((deg + from) * Math.PI) / 180;
+    return `${n(cx + rr * Math.sin(r))} ${n(cy - rr * Math.cos(r))}`;
+  };
+  // 止まりの間を 1° 以下の扇形に分ける (同じ色の止まりの間は、まとめて 1 つ。ただし 1 つの扇形は 90° まで)
+  const paths: string[] = [];
+  for (let i = 0; i + 1 < all.length; i++) {
+    const a = all[i].pos!;
+    const b = all[i + 1].pos!;
+    if (b - a <= 1e-9) continue;
+    const same = all[i].color.every((v, k) => Math.abs(v - all[i + 1].color[k]) < 1e-6);
+    const k = Math.max(1, Math.ceil((b - a) / (same ? 90 : 1)));
+    for (let j = 0; j < k; j++) {
+      const a0 = a + ((b - a) * j) / k;
+      const a1 = a + ((b - a) * (j + 1)) / k;
+      const c = colorAt((a0 + a1) / 2);
+      // 隣の扇形と少し重ねる (描くときの縁のぼかしで、扇形の間に筋が出ないように。最後の扇形は重ねない)
+      const a1o = Math.min(a1 + 0.25, 360);
+      const rr = R / Math.cos((((a1o - a0) / 2) * Math.PI) / 180);
+      paths.push(`<path d="M${n(cx)} ${n(cy)} L${pt(a0, rr)} L${pt(a1o, rr)} Z" fill="${hex(c)}"${c[3] < 1 ? ` fill-opacity="${n(c[3])}"` : ''}/>`);
+    }
+  }
+  if (!paths.length) return undefined;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${n(W)}pt" height="${n(H)}pt" viewBox="0 0 ${n(W)} ${n(H)}">${paths.join('')}</svg>`;
+}
+
 /** gradientSvg が作った SVG の中身 (Canvas に、ブラウザの画像の読み込みを待たずに描くための形。位置は SVG の座標 = pt) */
 export type GradientPaint =
   | { kind: 'solid'; width: number; height: number; color: string }
   | { kind: 'linear'; width: number; height: number; coords: [number, number, number, number]; stops: Array<{ offset: number; color: string; opacity: number }> }
   /** radial: 中心 (cx, cy)・半径 r の円を、中心のまわりに縦へ scaleY 倍した楕円 */
-  | { kind: 'radial'; width: number; height: number; cx: number; cy: number; r: number; scaleY: number; stops: Array<{ offset: number; color: string; opacity: number }> };
+  | { kind: 'radial'; width: number; height: number; cx: number; cy: number; r: number; scaleY: number; stops: Array<{ offset: number; color: string; opacity: number }> }
+  /** conic: 中心から出る三角形 (扇形を細かく分けたもの) を、それぞれの色で塗る */
+  | { kind: 'wedges'; width: number; height: number; wedges: Array<{ pts: [number, number, number, number, number, number]; color: string; opacity: number }> };
 
 /**
  * gradientSvg が作った SVG を読み戻す (この関数が読むのは、gradientSvg の出す決まった形だけ。ふつうの SVG は読まない。読めなければ undefined)。
@@ -357,6 +445,14 @@ export function readGradientSvg(svg: string): GradientPaint | undefined {
   const rest = svg.slice(root[0].length);
   const solid = /^<rect width="[^"]*" height="[^"]*" fill="(#[0-9a-f]{6})"\/><\/svg>$/.exec(rest);
   if (solid) return { kind: 'solid', width, height, color: solid[1] };
+  if (rest.startsWith('<path d="M')) {
+    const wedges = [...rest.matchAll(/<path d="M(\S+) (\S+) L(\S+) (\S+) L(\S+) (\S+) Z" fill="(#[0-9a-f]{6})"(?: fill-opacity="([^"]*)")?\/>/g)].map((m) => ({
+      pts: m.slice(1, 7).map(parseFloat) as [number, number, number, number, number, number],
+      color: m[7],
+      opacity: m[8] === undefined ? 1 : parseFloat(m[8]),
+    }));
+    return wedges.length && wedges.every((w) => w.pts.every(Number.isFinite) && Number.isFinite(w.opacity)) ? { kind: 'wedges', width, height, wedges } : undefined;
+  }
   const stops = [...rest.matchAll(/<stop offset="([^"]*)" stop-color="(#[0-9a-f]{6})"(?: stop-opacity="([^"]*)")?\/>/g)].map((m) => ({ offset: parseFloat(m[1]), color: m[2], opacity: m[3] === undefined ? 1 : parseFloat(m[3]) }));
   if (!stops.length || stops.some((s) => !Number.isFinite(s.offset) || !Number.isFinite(s.opacity))) return undefined;
   const lin = /^<defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="([^"]*)" y1="([^"]*)" x2="([^"]*)" y2="([^"]*)">/.exec(rest);
