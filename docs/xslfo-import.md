@@ -22,8 +22,8 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 | `page-sequence-master` (single / repeatable / alternatives) | `masterAlternatives` (`page-position`, `odd-or-even`) と、マスターごとの `staticContent` |
 | `page-sequence` / `flow` | `LPageSequence` / `LFlow` (`initial-page-number`, `writing-mode`) |
 | `block`, `inline`, `wrapper`, `basic-link`, `character` | `LBlock`, `LInline`, 文字 |
-| `inline-container` (小さい block + 親文字 block) | `LRuby` (inline-container で書いたルビ) |
-| 上記以外の `inline-container` | `LInlineContainer` (行内の箱。中に block を持てる。shrink-to-fit、最初の行の基線揃え、`writing-mode` の違いも可) |
+| `inline-container` (小さい block + 親文字 block)。互換モード (`antenna`) だけ | `LRuby` (inline-container で書いたルビ。仕様モードでは、下の行内の箱として組む) |
+| 上記以外の `inline-container` (仕様モードでは、すべての `inline-container`) | `LInlineContainer` (行内の箱。中に block を持てる。shrink-to-fit、最初の行の基線揃え、`writing-mode` の違いも可) |
 | `external-graphic` | `LImage` (`url()` の包みを外す、`content-width/height`、`scale-to-fit` は `width/height` を枠に縦横比を保つ)。画像データは `AssetStore` から |
 | `instream-foreign-object` | SVG は単独の SVG 文書に書き戻して data URI の画像 (`LImage`) にする (画面はブラウザが描き、PDF はベクタのまま)。MathML は、数式の書体 (STIX Two Math。MathML のある文書のときだけ読み込む) があれば、その書体の OpenType の MATH 表の値で組み、字の輪郭の図形 (SVG) の画像にして、数式の基線を行の基線に合わせて置く (`src/mathLayout.ts`)。組み方は MathML Core の算法 (mo の伸ばし方・大きな演算子、mrow の字の間のアキ、mfrac・msqrt・mroot・msub・msup・msubsup・munder・mover・munderover・mmultiscripts、添え字の字の大きさ) に従い、演算子のプロパティは MathML Core の演算子辞書 (`src/mathOperators.ts`) で決める。MathML Core に無い要素 (mtable の属性・mlabeledtr・maligngroup・malignmark・mfenced・menclose・mstack・mlongdiv) と Content MathML (apply など。見た目の記法に置き換える) にも対応する。`<mo>-</mo>` はマイナス記号 (−) で組む。数式は 1 つの画像なので、行の途中では折り返さない。数式の書体を読めないときは、行内の要素 (上付き・下付き・分数や上下の添え字の箱・根号・mtable の行の積み重ね) に組み替えて本文の書体で組む。伸縮する括弧 (stretchy="false" 以外の ( ) [ ] { } | など) は、中身の高さを見積もって図形 (SVG) で伸ばす。アクセントの矢印 (→ など) は下の字の幅の細い図形、根号は上と左に罫線のある箱と左下のはねの図形、⎴ ⎵ は図形で描く。負の rowspacing は行を詰める。CDATA に入った MathML・SVG も読む。それ以外は指定サイズの灰色のプレースホルダ |
 | `background-color` (block / inline / inline-container / table / row / cell / table-header・body・footer / block-container) | `backgroundColor` (ヘッダ・本体・フッタの背景は、背景の無いセルへ引き継ぐ) |
@@ -274,6 +274,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 | ブロックの字より大きい字のある行 (max-height) | §4.5 の規則 | 字の大きさの箱を囲み、ブロックの半行間を上下に足す (§4.5 と同じ考え方) | 見本の PDF との比較 |
 | top だけを指定した絶対配置のコンテナ | 中身の高さ (CSS2 の絶対配置) | bottom を 0 として基準の領域の下端まで伸ばす | 見本の PDF との比較 |
 | 横書きの行の中の、縦書きを回した inline-container | 基線にそろえる | 箱の中央を字の中央の線にそろえる | 見本の PDF との比較 |
+| inline-container の中に block が 2 つだけあり、1 つ目の字がまわりの字の 0.8 倍より小さく、2 つ目が 0.8 倍以上で、どちらも字だけのとき | 行内の箱として組む: 2 つの block を積み、1 つ目の block の行の基線を、まわりの行の基線にそろえる (§6.6.8)。2 つ目の block はその下の行になる | ルビとして組む (1 つ目の block がルビ、2 つ目が親文字) | AH Formatter 向けの文書のルビの書き方 (XSL-FO にルビの要素は無い)。推測の読み替えなので、互換モードだけにした |
 | 分綴した行の終わりの字 (`hyphenation-character` の指定が無いとき) | U+2010 (§7.10.5 の初期値) | U+002D | 従来のまま (見本の PDF との比較はしていない) |
 | 回転した block-container (90°・270°) がページをまたぐとき | 横幅は中身の大きさ | 本文の幅いっぱい (270° は右に寄る) | 見本の PDF との比較 |
 

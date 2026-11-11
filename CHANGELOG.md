@@ -113,6 +113,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - Node のコマンドの出力 (`dist-cli`) に、画面用の `public/` の中身 (favicon など) を入れない
 - **`@supports`**: 読めない値の宣言 (`display: foo`・`color: notacolor`・`width: 10` など。まだ対応していない `color-mix()`・`lab()` も) に偽を返す (CSS Conditional 3 §6.1)。未対応のプロパティ・値には、上の「結果の誤りの修正」のとおり偽を返す
 - **`@supports` とアンテナハウスの拡張の値 (結果が変わる)**: **アンテナハウスの拡張の値 (罫線の線種 `dot-dash`・`dot-dot-dash`・`wave`、`counter(page physical)`) への `@supports`・`@import` の `supports()` は、`--style ah` のときだけ真を返す。ほかのスタイルでは偽を返す** (これまでは、どのスタイルでも真。この値を読むのは、もともと `--style ah` のときだけ。CSS Conditional 3 §6.1)。`--style ah` でも組版に使わない書き方 (`counter(c reverse)` など) には偽を返す
+- **XSL-FO の `fo:inline-container` で書いたルビ (結果が変わる)**: **`fo:inline-container` の中の「小さな字の `fo:block` + 本文の `fo:block`」をルビとして組むのは、`--compat antenna` のときだけにした。既定の `--compat spec` では、仕様どおりの行内の箱として組む (2 つのブロックを積み、1 つ目のブロックの行の基線を、まわりの行の基線にそろえる。XSL 1.1 §6.6.8)。小さな字がまわりの字と同じ行に並び、本文の字はその下の行になる**。この書き方は AH Formatter 向けの文書のルビの表し方で、XSL-FO にルビの要素は無い。ルビとして組むには `--compat antenna` を使う
 - **未対応の CSS の警告**: `text-decoration-skip-ink`・`text-wrap-mode`・`text-wrap-style`・`hyphenate-limit-zone`・`hyphenate-limit-lines`・`hyphenate-limit-last` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
 - **開発**: `scripts/compare-pdf.mjs --html` が、いまの画面で動くようにした (設定の引き出しを開いてから選ぶ)。テストが機械のロケール・機械に入っている書体・実行時間に頼らないようにした。テストの書体の取得を 1 か所にまとめ、並列でも壊れないようにした
 - **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
