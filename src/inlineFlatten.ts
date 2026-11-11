@@ -959,7 +959,7 @@ function flattenFootnoteRef(c: LFootnote, cx: FlattenCtx): void {
   const base = c.referenceStyle ? resolveStyle(st, c.referenceStyle) : st;
   const refSize = st.fontSize * (c.referenceScale ?? state.footnote?.scale ?? 0.7);
   // 可変フォントの光学サイズ (書体の名前の印の opsz) は、小さくした字の大きさに合わせる
-  const s2 = { ...base, fontSize: refSize, ...(base.varAxes ? { fontFamily: withOpticalSize(base.fontFamily, refSize, base.fontOpticalSizeUnit) } : {}), ...(c.referenceWeight ? { fontWeight: c.referenceWeight } : {}), ...(c.referenceLineHeight ? { lineHeightPt: c.referenceLineHeight } : {}) };
+  const s2 = { ...base, fontSize: refSize, ...(base.varAxes ? { fontFamily: withOpticalSize(base.fontFamily, refSize, base.fontOpticalSizeUnit) } : {}), ...(c.referenceWeight ? { fontWeight: c.referenceWeight } : {}), ...(c.referenceLineHeight ? { lineHeightPt: c.referenceLineHeight } : {}), ...(c.referenceAutospace !== undefined ? { textAutospace: c.referenceAutospace } : {}) };
   const rs = c.referenceShift;
   const shift = rs === 'none' ? 0 : rs === 'sub' ? -st.fontSize * 0.2 : typeof rs === 'number' ? rs : st.fontSize * 0.35;
   state.run++;

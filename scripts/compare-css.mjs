@@ -79,7 +79,7 @@ if (args['web-fonts']) {
           ? 'arimo700.ttf'
           : 'arimo400.ttf'
         : u.includes('notoserifjp')
-          ? 'notoserif.ttf'
+          ? (u.includes('zWPebA') && fs.existsSync(path.join(dir, 'notoserif700.ttf')) ? 'notoserif700.ttf' : 'notoserif.ttf')
           : u.includes('VFPYk75s')
             ? 'notosans700.ttf'
             : 'notosans.ttf';

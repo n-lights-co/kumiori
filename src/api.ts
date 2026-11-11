@@ -362,16 +362,6 @@ export async function createTypesetter(setup: TypesetterOptions = {}): Promise<T
   };
 }
 
-/** 2 つのバイト列の中身が同じか */
-function sameBytes(a: ArrayBuffer | undefined, b: ArrayBuffer): boolean {
-  if (!a || a.byteLength !== b.byteLength) return false;
-  if (a === b) return true;
-  const x = new Uint8Array(a);
-  const y = new Uint8Array(b);
-  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
-  return true;
-}
-
 /** 書体を読み込み、文書を組む関数を返す (createTypesetter と typeset の中身) */
 async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string, options: DocumentOptions) => Promise<TypesetResult>> {
   checkOptions(setup);
@@ -387,17 +377,11 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
   base.onNotice = (m) => baseWarnings.push(m);
   /** 書体の名前 → ファミリー名の表 (fontMapping の FontNameTable)。ここには fonts で足した書体 (installed) を登録し、文書ごとの書体は文書を組むときに写しへ足す */
   const fontNames = new FontNameTable();
-  // 既定の書体。太字の枠 (weight 600 以上) に、同じファミリーの標準の太さと同じ中身のファイルが渡されたときは、太字の書体は無いものとして
-  // 登録しない (太字の指定の字は、標準の太さの書体を太らせて描く。inlineLayout の fakeBold)。--font-dir・loadFont で既定の書体を、
-  // 太字を持たない書体 (MS ゴシックなど) に入れ替えるときに、同じファイルを両方の名前で置ける
-  const regular = new Map<string, ArrayBuffer>();
-  for (const spec of [...FONT_SPECS, ...LATIN_SPECS]) {
-    const buf = await bufferOfSpec(spec);
-    const weight = spec.weight ?? 400;
-    if (weight < 600) regular.set(spec.family, buf);
-    else if (sameBytes(regular.get(spec.family), buf)) continue;
-    await base.registerBuffer(spec.family, weight, buf, false);
-  }
+  // 既定の書体 (明朝・ゴシックの標準と太字、欧文の標準と太字)。太字の枠に、同じファミリーの標準の太さと同じ中身のファイルが渡されたときは、
+  // 太字の書体は無いものとして登録しない (FontManager.registerDefaults。太字の字は、標準の太さの書体を太らせて描く)
+  const defaults: Array<{ spec: FontSpec; buf: ArrayBuffer }> = [];
+  for (const spec of [...FONT_SPECS, ...LATIN_SPECS]) defaults.push({ spec, buf: await bufferOfSpec(spec) });
+  await base.registerDefaults(defaults, false);
   setupDefaultFonts(base);
   // 足す書体: name 表のファミリー名 (nameID 16、無ければ 1) と OS/2 の太さ・幅 (usWidthClass)・傾き (fsSelection) で登録する。
   // 同じファミリー名・太さでも、幅・傾きの違う書体は別の書体で、font-stretch・font-style の指定で選ばれる (CSS Fonts 4 §5.2: 幅 → 傾き → 太さの順)

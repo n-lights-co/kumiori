@@ -460,6 +460,10 @@ export class FontManager {
 
   /** URL (複数ならフォールバック順) から fetch して登録 */
   async load(spec: FontSpec, onProgress?: (msg: string) => void): Promise<LoadedFont> {
+    return this.registerBuffer(spec.family, spec.weight ?? 400, await this.fetchSpec(spec, onProgress));
+  }
+  /** spec の書体のファイルを取る (urls を順に試す。書体のファイルらしくないものは飛ばす) */
+  private async fetchSpec(spec: FontSpec, onProgress?: (msg: string) => void): Promise<ArrayBuffer> {
     const weight = spec.weight ?? 400;
     let lastErr: unknown;
     for (const url of spec.urls) {
@@ -469,7 +473,7 @@ export class FontManager {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const buf = await res.arrayBuffer();
         if (!looksLikeFont(buf)) throw new Error(msg('フォントファイルではありません', 'not a font file'));
-        return await this.registerBuffer(spec.family, weight, buf);
+        return buf;
       } catch (e) {
         lastErr = e;
         onProgress?.(`  失敗 (${String(e)}) → 次の候補へ`);
@@ -478,8 +482,29 @@ export class FontManager {
     throw new Error(msg(`フォント ${spec.family}@${weight} を取得できませんでした: ${String(lastErr)}`, `could not fetch the font ${spec.family}@${weight}: ${String(lastErr)}`));
   }
 
+  /**
+   * いくつかの書体を取って登録する (画面の既定の書体)。取得は並行に、登録は specs の順に行う (登録の順は、字の無いときに探す書体の順
+   * (fallbackOrder) を決めるので、取得の終わった順にしない)。太字の枠の扱いは registerDefaults (API の既定の書体と同じ)
+   */
   async loadAll(specs: FontSpec[], onProgress?: (msg: string) => void): Promise<void> {
-    await Promise.all(specs.map((s) => this.load(s, onProgress)));
+    const bufs = await Promise.all(specs.map((s) => this.fetchSpec(s, onProgress)));
+    await this.registerDefaults(specs.map((spec, i) => ({ spec, buf: bufs[i] })));
+  }
+
+  /**
+   * 既定の書体を、渡した順に登録する。太字の枠 (weight 600 以上) に、同じファミリーの標準の太さと同じ中身のファイルが渡されたときは、
+   * 太字の書体は無いものとして登録しない (太字の指定の字は、標準の太さの書体を太らせて描く。inlineLayout の fakeBold。
+   * CSS Fonts 4 §2.2.2: 太い書体の無いファミリーの太字は、処理系が作る)。--font-dir・loadFont・public/fonts で既定の書体を、
+   * 太字を持たない書体 (MS 明朝・MS ゴシックなど) に入れ替えるときに、同じファイルを両方の名前で置ける
+   */
+  async registerDefaults(list: ReadonlyArray<{ spec: FontSpec; buf: ArrayBuffer }>, canvas = true): Promise<void> {
+    const regular = new Map<string, ArrayBuffer>();
+    for (const { spec, buf } of list) {
+      const weight = spec.weight ?? 400;
+      if (weight < 600) regular.set(spec.family, buf);
+      else if (sameBytes(regular.get(spec.family), buf)) continue;
+      await this.registerBuffer(spec.family, weight, buf, canvas);
+    }
   }
 
   /**
@@ -1158,6 +1183,16 @@ export function isGreekCyrillicLetter(ch: string): boolean {
 }
 
 /** sfnt ヘッダ (TrueType / OpenType / TTC) の簡易判定。SPA フォールバックの HTML を弾く */
+/** 2 つのバイト列の中身が同じか */
+function sameBytes(a: ArrayBuffer | undefined, b: ArrayBuffer): boolean {
+  if (!a || a.byteLength !== b.byteLength) return false;
+  if (a === b) return true;
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+  return true;
+}
+
 function looksLikeFont(buf: ArrayBuffer): boolean {
   if (buf.byteLength < 12) return false;
   const tag = new TextDecoder('latin1').decode(new Uint8Array(buf, 0, 4));

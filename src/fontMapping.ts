@@ -7,12 +7,22 @@ import { SANS, SERIF } from './sampleData';
 import { normalizeFamily } from './fontLoader';
 import { parseCss, type ParsedCss } from './htmlPaged';
 
-/** 組版用フォント: Google Fonts の gstatic (TTF) を ArrayBuffer として取得。ローカル /fonts を後備に。 */
+/**
+ * 組版用フォント (和文): Google Fonts の gstatic (TTF) を ArrayBuffer として取得。ローカル /fonts を後備に。
+ * 明朝・ゴシックのそれぞれに、標準 (400) と太字 (700)。同じファミリーは、標準を先に並べる (太字の枠が標準と同じ中身かを見る: FontManager.registerDefaults)
+ */
 export const FONT_SPECS: FontSpec[] = [
   {
     family: SERIF,
     weight: 400,
     urls: ['https://fonts.gstatic.com/s/notoserifjp/v34/xn71YHs72GKoTvER4Gn3b5eMRtWGkp6o7MjQ2bwxOubA.ttf', '/fonts/NotoSerifJP-Regular.ttf'],
+  },
+  // 明朝の太字。太字の指定の字は、同じファミリーの太い書体で組む (CSS Fonts 4 §5.2 の font-weight の照合・XSL 1.1 §7.9.9。別のファミリーに替えない: mapFont)。
+  // URL は Google Fonts の CSS (family=Noto+Serif+JP:wght@700) が返したもの (Regular と同じ v34。2026-11-11 に確認)
+  {
+    family: SERIF,
+    weight: 700,
+    urls: ['https://fonts.gstatic.com/s/notoserifjp/v34/xn71YHs72GKoTvER4Gn3b5eMRtWGkp6o7MjQ2bzWPebA.ttf', '/fonts/NotoSerifJP-Bold.ttf'],
   },
   {
     family: SANS,
@@ -70,9 +80,6 @@ export const MATH_SPEC: FontSpec = {
 export const MATHML_HINT = /<([\w-]+:)?math[\s>]|http:\/\/www\.w3\.org\/1998\/Math\/MathML|\.mml\b/;
 
 export const GOTHIC = /ゴシック|gothic|sans|arial|helvetica|verdana|meiryo|メイリオ|yu ?gothic|游ゴシック/i;
-
-/** 明朝系・未指定の太字の書体の別名 (欧文は明朝系の欧文の代わりの書体 (既定は Tinos) の太字、和文は Noto Sans JP の太字) */
-export const BOLD_SERIF = 'Kumiori Bold Serif';
 
 /**
  * 文書の文字のうち、読み込み済みのどの書体も字形を持たない字と、その数 (字形の無い字の形 = 豆腐で出る字)。min より小さい符号位置の字は見ない。
@@ -244,12 +251,13 @@ export function createFontMapping(
       return stack;
     }
     if (GOTHIC.test(first)) return SANS;
-    if (bold) {
-      // 明朝系・未指定の太字: 欧文は Tinos の太字 (アンテナハウスの Times New Roman Bold と同じ字幅)、
-      // 和文は太字のある Noto Sans JP (明朝の太字・擬似太字は持たない。和文の字幅は変わらない)
-      fonts.defineStack(BOLD_SERIF, SANS, serifLatin());
-      return BOLD_SERIF;
-    }
+    // 明朝系・未指定の太字: 同じファミリーの太い書体で組む。和文は Noto Serif JP の太字、欧文は明朝系の欧文の書体 (既定は Tinos) の太字。
+    // ゴシック (Noto Sans JP) には替えない。CSS Fonts 4 §5.2: 太さは、font-family の並びで選んだファミリーの書体の中で照合する
+    // ("font-weight is matched next")。§2.2.2: 太い書体の無いファミリーの太字は、処理系が作り、そのファミリーにあるものとして扱う
+    // ("bold faces are often synthesized by user agents for families that lack actual bold faces") = inlineLayout の fakeBold。
+    // XSL 1.1 §7.9.9 も、太さの値を同じファミリーの書体に割り当てる (無い太さは、同じファミリーの近い太さの書体)。
+    // 太字のときは、いつも明朝を名指しで返す (親がゴシックでも、明朝系の太字の指定は明朝にする)
+    if (bold) return SERIF;
     // 読み込んだ書体があるときは、親が MS 明朝でも明朝系の指定は Noto Serif に戻す
     return table.has(DOCUMENT_SOURCES) && names.length ? SERIF : undefined;
   }

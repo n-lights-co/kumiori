@@ -10,8 +10,17 @@ import { buildCff2Font } from '../test/cff2TestFont';
 
 /**
  * KUMIORI_E2E_FONT_DIR があれば、Google Fonts の代わりにそのディレクトリのフォントを返す (ネットワークの無い環境用)。
+ * 置き場のファイルの名前: notoserif.ttf・notoserif700.ttf (無ければ notoserif.ttf)・notosans.ttf・notosans700.ttf・tinos400.ttf・tinos700.ttf・
+ * arimo400.ttf・arimo700.ttf (あれば notosanssymbols2.ttf)。
  * 無くて KUMIORI_E2E_FONT_CACHE があれば、配信元から取った書体をそこに覚えておく (e2e/fontCache.ts)
  */
+/**
+ * KUMIORI_E2E_FONT_DIR の明朝の書体: 標準の太さは notoserif.ttf、太字 (URL の末尾が …zWPebA.ttf) は notoserif700.ttf。
+ * notoserif700.ttf が無ければ、太字にも notoserif.ttf を返す (前からの置き場のままでも走る。同じ中身なので、画面は太字の書体を登録せず、
+ * 太字の字は標準の太さの書体を太らせて描く: FontManager.registerDefaults)
+ */
+const serifFile = (dir: string, url: string) => (url.includes('zWPebA') && fs.existsSync(path.join(dir, 'notoserif700.ttf')) ? 'notoserif700.ttf' : 'notoserif.ttf');
+
 async function routeFonts(page: Page) {
   await routeFontCache(page);
   const dir = process.env.KUMIORI_E2E_FONT_DIR;
@@ -27,7 +36,7 @@ async function routeFonts(page: Page) {
           ? 'arimo700.ttf'
           : 'arimo400.ttf'
         : u.includes('notoserifjp')
-          ? 'notoserif.ttf'
+          ? serifFile(dir, u)
           : u.includes('notosanssymbols2') && fs.existsSync(path.join(dir, 'notosanssymbols2.ttf'))
             ? 'notosanssymbols2.ttf'
             : u.includes('VFPYk75s')

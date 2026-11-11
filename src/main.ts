@@ -315,7 +315,7 @@ async function loadFo(text: string, name: string) {
     const compat: FoCompat = foSpec.checked ? 'spec' : 'antenna';
     const res = importXslFo(text, browserParse, {
       ...mathOpts,
-      // ゴシック・サンセリフ系は Noto Sans JP、それ以外 (明朝・serif・未指定) は Noto Serif JP。明朝系の太字は欧文が Tinos の太字 (読み込んでいるフォントだけで組む)
+      // ゴシック・サンセリフ系は Noto Sans JP、それ以外 (明朝・serif・未指定) は Noto Serif JP。太字は、同じ書体の Bold (明朝系は和文が Noto Serif JP の Bold、欧文が Tinos の Bold。読み込んでいるフォントだけで組む)
       mapFont,
       compat,
       bleedMm: foPrint.checked ? 3 : 0,
