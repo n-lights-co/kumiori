@@ -142,6 +142,12 @@ export interface TextStyle {
    * 既定は無制限 (JLREQ §3.8.3)。アンテナハウス互換は 0.5 (二分: 約物 1 つ分までしか追い込まない)
    */
   lineSqueezeMax?: number;
+  /**
+   * 行の調整 (追込み) で、欧文の語間と、和字と欧字・数字の間の四分アキを詰めない (アンテナハウス互換。XSL-FO の互換モードの既定)。
+   * 語間・和欧間のアキは本来の幅より狭くせず (両端揃えの行は広げるだけ)、詰めれば入る字・語は次の行へ送る。
+   * 約物のアキの追込みは行う。既定 false (詰める)
+   */
+  noSpaceSqueeze?: boolean;
   /** 行頭の全角の始め括弧類の前の二分アキを詰める (アンテナハウスの axf:punctuation-trim の start)。既定 false */
   punctuationTrimStart?: boolean;
   /**

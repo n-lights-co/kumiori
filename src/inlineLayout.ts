@@ -1048,10 +1048,18 @@ function pushBySpaces(atoms: Atom[], start: number, k: number, x: number, avail:
   return undefined;
 }
 
+/**
+ * 追込みで、欧文の語間と和欧間の四分アキを詰めない字か (noSpaceSqueeze: アンテナハウス互換。ブロックの揃えによらない)。
+ * 根拠は見本の組版結果 (xslfoImport.ts の noSpaceSqueeze の所)。約物のアキの追込み (squeezeParts の 1〜4) は止めない
+ */
+function noSpaceSqueeze(a: Atom): boolean {
+  return !!a.st.noSpaceSqueeze;
+}
+
 /** 欧文の語間で詰めてよい量: 空白の字そのものの幅の 1/3 (letter-spacing の分は詰めない) */
 function wordSpaceSqueeze(a: Atom): number {
   // 残す空白 (pre・pre-wrap・white-space-collapse="false") は詰めない (コードの表示の字下げが縮まない)
-  if (a.kind !== 'glyph' || a.first !== ' ' || a.st.wordSpaceShrink === false || a.st.collapseSpaces === false) return 0;
+  if (a.kind !== 'glyph' || a.first !== ' ' || a.st.wordSpaceShrink === false || a.st.collapseSpaces === false || noSpaceSqueeze(a)) return 0;
   return Math.max(a.advance - (a.lsLead ?? 0) - (a.lsTrail ?? 0), 0) / 3;
 }
 
@@ -1071,7 +1079,8 @@ function punctAki(a: Atom): number {
  *  5. 和字と欧字・数字の間の四分アキ (八分アキまで)
  * 語間の限界は、欧文の行の調整と同じ空白の 1/3 のまま (JLREQ の「最小で四分アキまで」は、和文に混ぜた欧文の語間の目安)。
  * tail は行末の atom、head は行頭の atom (行頭の始め括弧類の前のアキは「行中」ではないので詰めない。捨てるかどうかは startTrimOf)。
- * 行末で捨てたアキ (endTrimOf・和欧間・letter-spacing) は、もう詰められないので数えない
+ * 行末で捨てたアキ (endTrimOf・和欧間・letter-spacing) は、もう詰められないので数えない。
+ * アンテナハウス互換 (noSpaceSqueeze) では、0 (語間) と 5 (和欧間) は詰めない
  */
 const SQUEEZE_LEVELS = 6;
 function squeezeParts(a: Atom, tail: boolean, head: boolean): number[] {
@@ -1085,7 +1094,7 @@ function squeezeParts(a: Atom, tail: boolean, head: boolean): number[] {
     else if (!isFullStop(a.last)) out[4] = aki;
   } else if (isOpeningPunct(a.first)) out[4] = head ? 0 : punctAki(a);
   else if (middleAt(a, a.first)) out[tail ? 2 : 3] = punctAki(a);
-  if (a.trail && !tail) out[5] = Math.max(a.trail - fs / 8, 0);
+  if (a.trail && !tail && !noSpaceSqueeze(a)) out[5] = Math.max(a.trail - fs / 8, 0);
   return out;
 }
 

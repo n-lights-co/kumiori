@@ -4,6 +4,7 @@
  *  - HTM-28 I 行内の箱の負の margin は、行分けの幅に数える
  *  - HTM-29 (3) 受け継いだ font-family でも、要素の言語 (lang) で書体を選ぶ (自分に指定したときと同じ)
  *  - HTM-29 (4) 空白の字を持たない書体を指定した XSL-FO で、空白を、字を持つ書体で組む
+ *  - text-align: inside・outside (アンテナハウスの拡張の値。--style ah のときだけ)
  *  - HTM-28 J ページの余白の箱に、font-variant・font・text-transform・text-decoration・word-spacing などが効く
  */
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -265,5 +266,73 @@ describe('HTM-29 (3) 受け継いだ font-family と、自分に指定した fon
   it('lang の無い要素・日本語の要素は、これまでどおり (単独の 1 字は和文の書体)', async () => {
     expect(await fontsOf(`<div style="font-family: Tinos"><p>${RU}</p></div>`)).toMatch(/и:Noto Serif JP в:Noto Serif JP у:Noto Serif JP$/);
     expect(await fontsOf(`<div lang="ru" style="font-family: Tinos"><p lang="ja">${RU}</p></div>`)).toMatch(/и:Noto Serif JP в:Noto Serif JP у:Noto Serif JP$/);
+  });
+});
+
+describe('text-align: inside・outside (アンテナハウスの拡張の値。XSL 1.1 §7.16.9 の値を、--style ah の HTML で読む)', () => {
+  // 本文は 20pt〜380pt。1 ページ目 (右ページ) のノドは左、2 ページ目 (左ページ) のノドは右
+  const css = 'p { text-align: left } .b { break-before: page }';
+  const pages = async (body: string, style?: 'ah', extra = '') => {
+    const t = (await typesetHtml(doc(body, `${css} ${extra}`), { loadFont: loadCachedFont, ...(style ? { style } : {}) })).areaTree;
+    return [0, 1].map((k) => {
+      const g = scan(t, k).glyphs.filter((x) => '一二三'.includes(x.text));
+      return { left: Math.min(...g.map((x) => x.x)), right: Math.max(...g.map((x) => x.x + x.w)) };
+    });
+  };
+  const two = (decl: string) => `<p style="${decl}">一二三</p><p class="b" style="${decl}">一二三</p>`;
+
+  it('--style ah: inside はノドの側 (右ページは左、左ページは右)、outside は小口の側', async () => {
+    const i = await pages(two('text-align: inside'), 'ah');
+    expect(i[0].left).toBeCloseTo(20, 0);
+    expect(i[1].right).toBeCloseTo(380, 0);
+    const o = await pages(two('text-align: outside'), 'ah');
+    expect(o[0].right).toBeCloseTo(380, 0);
+    expect(o[1].left).toBeCloseTo(20, 0);
+    // -ah-text-align でも同じ
+    const a = await pages(two('-ah-text-align: outside'), 'ah');
+    expect(a[0].right).toBeCloseTo(380, 0);
+    expect(a[1].left).toBeCloseTo(20, 0);
+  });
+  it('--style ah: 規則の宣言・継承・打ち消し', async () => {
+    // 規則で指定した親から受け継ぐ
+    const inh = await pages('<div class="o"><p>一二三</p><p class="b">一二三</p></div>', 'ah', 'p { text-align: inherit } .o { text-align: outside }');
+    expect(inh[0].right).toBeCloseTo(380, 0);
+    expect(inh[1].left).toBeCloseTo(20, 0);
+    // 子が別の値を指定すれば、その値
+    const over = await pages('<div style="text-align: outside"><p style="text-align: left">一二三</p><p class="b" style="text-align: right">一二三</p></div>', 'ah');
+    expect(over[0].left).toBeCloseTo(20, 0);
+    expect(over[1].right).toBeCloseTo(380, 0);
+    // 後の (強い) 宣言が CSS の値なら、そちら
+    const later = await pages('<p class="x">一二三</p><p class="b x">一二三</p>', 'ah', '.x { text-align: outside } p.x { text-align: left }');
+    expect(later[0].left).toBeCloseTo(20, 0);
+    expect(later[1].left).toBeCloseTo(20, 0);
+  });
+  it('縦書きの行: ノド・小口は行の向き (上下) に無いので、どのページでも inside は行の始め (上)、outside は行の終わり (下)。XSL-FO も同じ', async () => {
+    const tops = async (v: string) => {
+      const t = (await typesetHtml(doc(`<p style="text-align: ${v}">一二三</p><p class="b" style="text-align: ${v}">一二三</p>`, 'html { writing-mode: vertical-rl } .b { break-before: page }'), { loadFont: loadCachedFont, style: 'ah' })).areaTree;
+      return [0, 1].map((k) => Math.min(...scan(t, k).glyphs.filter((x) => '一二三'.includes(x.text)).map((x) => x.y)));
+    };
+    const i = await tops('inside');
+    expect(i[0]).toBeCloseTo(20, 0);
+    expect(i[1]).toBeCloseTo(20, 0);
+    const o = await tops('outside');
+    expect(o[0]).toBeCloseTo(380 - 60, 0);
+    expect(o[1]).toBeCloseTo(380 - 60, 0);
+    const fo = (v: string) =>
+      `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja" font-size="20pt"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="400pt" page-height="400pt" margin="20pt"><fo:region-body writing-mode="tb-rl"/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block text-align="${v}">一二三</fo:block><fo:block break-before="page" text-align="${v}">一二三</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const foTops = async (v: string) => {
+      const t = (await typesetFo(fo(v), { loadFont: loadCachedFont })).areaTree;
+      return [0, 1].map((k) => Math.min(...scan(t, k).glyphs.filter((x) => '一二三'.includes(x.text)).map((x) => x.y)));
+    };
+    expect((await foTops('inside')).map(Math.round)).toEqual([20, 20]);
+    expect((await foTops('outside')).map(Math.round)).toEqual([320, 320]);
+  });
+  it('標準のスタイルでは、無効の値として捨てる (CSS Text 3 §6.1 の text-align に無い値)', async () => {
+    for (const v of ['inside', 'outside']) {
+      const s = await pages(two(`text-align: ${v}`));
+      // p { text-align: left } のまま
+      expect(s[0].left).toBeCloseTo(20, 0);
+      expect(s[1].left).toBeCloseTo(20, 0);
+    }
   });
 });

@@ -826,6 +826,8 @@ export const AH_ALIASES: Record<string, { prop: string; value: (v: string) => st
   '-ah-text-autospace-width': { prop: 'text-autospace-width', value: (v) => v.trim().toLowerCase() },
   // XSL の linefeed-treatment (§7.16.7。ignore は改行を捨てる。継承する)
   '-ah-linefeed-treatment': { prop: 'linefeed-treatment', value: (v) => v.trim().toLowerCase() },
+  // text-align の inside・outside (アンテナハウスの拡張の値。下の isPagedDecl) を、-ah-text-align でも読む
+  '-ah-text-align': { prop: 'text-align', value: (v) => v.trim().toLowerCase() },
 };
 
 /** 宣言のうち、ブラウザが確定させない (知らない) 値を持つもの。要素に当てはめて読む */
@@ -834,6 +836,10 @@ export function isPagedDecl(prop: string, value: string): boolean {
   // アンテナハウスの拡張の長さの単位 gr (段組の段・段の間の幅。float: multicol の幅) は、ブラウザが読めないので自前で読む
   if (prop === 'width' && /\dgr\b/i.test(value)) return true;
   if (prop === 'position') return /running\(/i.test(value);
+  // text-align の inside・outside: アンテナハウスの拡張の値 (ページのノドの側・小口の側にそろえる。XSL 1.1 §7.16.9 の値)。
+  // CSS Text 3 §6.1 の text-align には無いので、カスケードは無効の値として捨てる。自前で読み、アンテナハウス互換のスタイルのときだけ使う
+  // (HtmlImportOptions.textAlignInsideOutsideAh)
+  if (prop === 'text-align') return /^(inside|outside)$/i.test(value.trim());
   // float は left / right / none 以外 (footnote・アンテナハウスの top / bottom / center / alternate など) を自前で読む
   if (prop === 'float') return !/^(left|right|none|inline-start|inline-end)$/i.test(value.trim());
   // 和文組版の指定 (ブラウザによっては知らない。継承するので、祖先をたどって読む)
@@ -852,6 +858,8 @@ export function isPagedDecl(prop: string, value: string): boolean {
   if (prop === '-ah-baseline-grid') return true;
   // アンテナハウスの -ah-display-align (XSL 1.1 §7.14.4 の display-align: 高さの決まった箱の中での内容の上下の揃え)
   if (prop === '-ah-display-align') return true;
+  // アンテナハウスのフロートの拡張のうち、横の位置 (-ah-float-x) と、それを読むかを決める縦の位置 (-ah-float-y)
+  if (prop === '-ah-float-x' || prop === '-ah-float-y') return true;
   // アンテナハウスの段間罫の長さ・揃え・表示
   if (prop === '-ah-column-rule-length' || prop === '-ah-column-rule-align' || prop === '-ah-column-rule-display') return true;
   // 行の中の揃え (CSS Inline 3 の alignment-baseline・アンテナハウスの -ah-alignment-baseline)
