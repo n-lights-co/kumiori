@@ -78,6 +78,7 @@ import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
 import { UNIT_PT, cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
+import { parseTextJustifyTrim } from './textJustifyTrim';
 import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
@@ -3344,6 +3345,17 @@ class HtmlImporter {
       const lss = this.inh(el, 'line-stacking-strategy', true);
       const plss = parent ? this.inh(parent, 'line-stacking-strategy', true) : '';
       if ((lss === 'font-height' || lss === 'max-height' || lss === 'line-height') && lss !== plss) s.lineStackingStrategy = lss;
+      // -ah-text-justify-trim (アンテナハウスの拡張。どのスタイルでも読む。継承する): 追込みで詰めてよいアキ (textJustifyTrim.ts)
+      const jtv = this.inh(el, 'text-justify-trim', true);
+      if (jtv && jtv !== (parent ? this.inh(parent, 'text-justify-trim', true) : '')) {
+        const jt = parseTextJustifyTrim(jtv);
+        if (jt.invalid) this.miss(`-ah-text-justify-trim: ${jtv}`);
+        else {
+          for (const u of jt.unsupported) this.miss(`-ah-text-justify-trim: ${u}`);
+          // auto は既定の詰め方 (AUTO_JUSTIFY_TRIM。祖先の指定を打ち消す)
+          if (jt.trim) s.textJustifyTrim = jt.trim;
+        }
+      }
     }
     if (diff('font-stretch')) {
       const fsr = parseFloat(c('font-stretch'));

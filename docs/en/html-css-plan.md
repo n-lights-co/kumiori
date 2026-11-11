@@ -203,7 +203,7 @@ Added while checking:
 - The reference of the line grid (from the top of the glyphs to the baseline) is, in HTML, the value of the first available font (previously, when the document language was unknown, the value of the Japanese font was used, and Latin table-of-contents lines were too low)
 - Inside a line grid, the half-leading after the last line is not counted when judging whether the content fits on the page
 - `-ah-baseline-grid` on a list box is attached to the box that wraps the table used to typeset the list
-- Translation of `-ah-` extensions: `-ah-text-autospace`, `-ah-punctuation-trim`, `-ah-hanging-punctuation`, `-ah-image-resolution`, `-ah-line-height-shift-adjustment` (do not expand the line for superscripts/subscripts. Also added to the layout engine and to line-height-shift-adjustment in XSL-FO)
+- Translation of `-ah-` extensions: `-ah-text-autospace`, `-ah-punctuation-trim`, `-ah-hanging-punctuation`, `-ah-image-resolution`, `-ah-line-height-shift-adjustment` (do not expand the line for superscripts/subscripts. Also added to the layout engine and to line-height-shift-adjustment in XSL-FO), `-ah-text-justify-trim` (the spacing that line adjustment may compress; the same as `axf:text-justify-trim` in XSL-FO; `kana` and `ideograph` are not supported)
 
 Added afterwards:
 

@@ -15,6 +15,7 @@
  * ファイルの分け方: 親から子へ渡す文脈 (Ctx) は foContext.ts、fo:simple-page-master の読み取りは foPageMaster.ts、
  * 数式用の書体が無いときの MathML の組み替えは foMathFallback.ts。どちらも Importer の読み方 (attr・len・color など) を借りて動く
  */
+import { parseTextJustifyTrim } from './textJustifyTrim';
 import { msg } from './messages';
 import { countDroppedLink, judgeExternalLink, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { evalExpr, evalLength } from './foExpr';
@@ -1744,6 +1745,16 @@ class Importer {
     }
     const pt = this.attrInh(el, 'axf:punctuation-trim');
     if (pt) Object.assign(s, this.punctuationTrim(pt));
+    // axf:text-justify-trim (アンテナハウスの拡張。どのモードでも読む。継承する): 追込みで詰めてよいアキ (textJustifyTrim.ts)
+    const jtv = this.attrInh(el, 'axf:text-justify-trim');
+    if (jtv) {
+      const jt = parseTextJustifyTrim(jtv);
+      if (jt.invalid) this.miss(`axf:text-justify-trim:${jtv}`);
+      else {
+        for (const u of jt.unsupported) this.miss(`axf:text-justify-trim:${u}`);
+        if (jt.trim) s.textJustifyTrim = jt.trim;
+      }
+    }
     // line-stacking-strategy (§7.16.6): line-height は行の高さを line-height そのものに。font-height・max-height は従来どおり
     // 分綴 (hyphenate) と言語 (xml:lang・language。分綴の規則を選ぶ)
     const hy = this.attr(el, 'hyphenate');

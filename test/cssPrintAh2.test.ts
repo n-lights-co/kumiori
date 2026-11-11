@@ -320,3 +320,36 @@ describe('脚注の参照記号の行の高さ (代わりの書体の字。CSS I
     expect(ys[1] - ys[0]).toBeCloseTo(33.8, 1);
   });
 });
+
+describe('-ah-text-justify-trim・axf:text-justify-trim (追込みで詰めてよいアキ。アンテナハウスの拡張)', () => {
+  /** 1 行目の字 (行の基線が最初の 'あ' と同じ字) */
+  const firstLine = (tree: AreaTree): string => {
+    const gs: { y: number; t: string; x: number }[] = [];
+    const rec = (a: Area, x: number, y: number) => {
+      const ax = x + (a.x ?? 0);
+      const ay = y + (a.y ?? 0);
+      const g = a as unknown as { text?: string; baselineY?: number };
+      if (a.type === 'glyph' && g.text) gs.push({ y: Math.round(ay + (g.baselineY ?? 0)), t: g.text, x: ax });
+      for (const c of childrenOf(a)) rec(c as Area, ax, ay);
+    };
+    rec(tree.sheets[0].page as unknown as Area, 0, 0);
+    const y0 = Math.min(...gs.map((g) => g.y));
+    return gs.filter((g) => g.y === y0).sort((a, b) => a.x - b.x).map((g) => g.t).join('');
+  };
+  it('punctuation: 行中の句点の後ろも詰めて、字を行に収める (既定は JLREQ §3.8.3 のとおり詰めない)', async () => {
+    // 幅 9.5em (と少し) に 10 字: 句点「。」の後ろの二分を詰めれば入る
+    const body = (v: string) => `<p style="width: 190.5pt; text-align: justify; text-indent: 0${v}">あいうえお。かきくけ</p>`;
+    expect(firstLine((await typesetHtml(doc(body('')), { loadFont: loadCachedFont, style: 'ah' })).areaTree)).toBe('あいうえお。かきく');
+    expect(firstLine((await typesetHtml(doc(body('; -ah-text-justify-trim: punctuation')), { loadFont: loadCachedFont, style: 'ah' })).areaTree)).toBe('あいうえお。かきくけ');
+    // 句点を除く指定は既定と同じ。接頭辞の付いた拡張なので、--style ah でなくても読む
+    expect(firstLine((await typesetHtml(doc(body('; -ah-text-justify-trim: punctuation-except-fullstop')), { loadFont: loadCachedFont, style: 'ah' })).areaTree)).toBe('あいうえお。かきく');
+    expect(firstLine((await typesetHtml(doc(body('; -ah-text-justify-trim: punctuation')), { loadFont: loadCachedFont })).areaTree)).toBe('あいうえお。かきくけ');
+  });
+  it('none: 約物のアキを詰めない (axf:text-justify-trim。見本の axf-text-justify-trim-1 と同じ行分け)', async () => {
+    const fo = (v: string) =>
+      `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="300pt" page-height="300pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block-container width="10em" font-size="13pt"${v}><fo:block text-align="justify">（あいうえお。かき・くけこ）</fo:block></fo:block-container></fo:flow></fo:page-sequence></fo:root>`;
+    // 互換モードの既定 (auto) は、中点の前後のアキを詰めて「く」まで入れる
+    expect(firstLine((await typesetFo(fo(''), { loadFont: loadCachedFont, compat: 'antenna' })).areaTree)).toBe('（あいうえお。かき・く');
+    expect(firstLine((await typesetFo(fo(' axf:text-justify-trim="none"'), { loadFont: loadCachedFont, compat: 'antenna' })).areaTree)).toBe('（あいうえお。かき・');
+  });
+});

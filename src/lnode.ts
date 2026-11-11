@@ -6,7 +6,7 @@
  */
 import { opticalSize, splitVariation, variationSuffix, type VariationRequest } from './fontVariation';
 import { zeroEdges } from './geometry';
-import type { BaseNode, BorderStyle, Edges, HyphenLimits, Rotation, RubyAlign, TextAlign, WritingMode } from './types';
+import type { BaseNode, BorderStyle, Edges, HyphenLimits, Rotation, RubyAlign, TextAlign, TextJustifyTrim, WritingMode } from './types';
 
 export type LKind = 'region-body' | 'block' | 'line' | 'inline' | 'glyph' | 'ruby' | 'tcy' | 'table' | 'row' | 'cell' | 'image';
 
@@ -169,6 +169,7 @@ export interface ResolvedStyle {
   punctuationSqueeze?: boolean;
   lineSqueezeMax?: number;
   noSpaceSqueeze?: boolean;
+  textJustifyTrim?: TextJustifyTrim;
   wordSqueezeJustifiedOnly?: boolean;
   punctuationTrimStart?: boolean;
   hangFirst?: boolean;
@@ -358,6 +359,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     punctuationSqueeze: n.punctuationSqueeze ?? parent.punctuationSqueeze,
     lineSqueezeMax: n.lineSqueezeMax ?? parent.lineSqueezeMax,
     noSpaceSqueeze: n.noSpaceSqueeze ?? parent.noSpaceSqueeze,
+    textJustifyTrim: n.textJustifyTrim ?? parent.textJustifyTrim,
     wordSqueezeJustifiedOnly: n.wordSqueezeJustifiedOnly ?? parent.wordSqueezeJustifiedOnly,
     punctuationTrimStart: n.punctuationTrimStart ?? parent.punctuationTrimStart,
     hangFirst: n.hangFirst ?? parent.hangFirst,

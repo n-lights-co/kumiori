@@ -103,6 +103,14 @@ export interface HyphenLimits {
   zoneRatio?: number;
 }
 
+/** 追込みで詰めてよいアキ (TextStyle.textJustifyTrim) */
+export interface TextJustifyTrim {
+  punctuation: boolean;
+  fullStop: boolean;
+  middleDot: boolean;
+  interWord: boolean;
+}
+
 export interface TextStyle {
   fontFamily?: string;
   /** pt */
@@ -158,6 +166,15 @@ export interface TextStyle {
    * 約物のアキの追込みは行う。既定 false (詰める)
    */
   noSpaceSqueeze?: boolean;
+  /**
+   * 行の調整 (追込み) で詰めてよいアキ (アンテナハウスの拡張 -ah-text-justify-trim・axf:text-justify-trim。継承する)。
+   * 無ければ既定 (auto): JLREQ §3.8.3 のとおり、行中の句点類の後ろは詰めない。
+   *  - punctuation: 全角の括弧類・中点類・句読点類のアキを詰める。行中の句点類の後ろも詰める (fullStop)
+   *  - punctuation-except-fullstop: 句点類 (。．) を除く。punctuation-except-middledot: 中点類 (・：；) を除く (middleDot: false)
+   *  - inter-word: 欧文の語間を詰める (アンテナハウス互換の noSpaceSqueeze でも)
+   *  - none、または約物の語の無い値: 約物のアキを詰めない (punctuation: false)
+   */
+  textJustifyTrim?: TextJustifyTrim;
   /**
    * 行の調整 (追込み) で、欧文の語間 (空白) を詰めるのを、両端揃えで組む行だけにする (XSL-FO の仕様モードの既定)。
    * 両端揃えで組まない行 (textAlign が justify でないブロックの行、両端揃えのブロックの最後の行・改行で終わる行で textAlignLast が
