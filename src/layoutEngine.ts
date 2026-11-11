@@ -15,7 +15,7 @@ import { msg } from './messages';
 import type { LoadedFont } from './fontManager';
 import { gradientSvg } from './cssGradient';
 import { AREA_TREE_SCHEMA_VERSION, walkAreas, type AreaNode } from './areaTree';
-import { copySourceRef, indexDocument, sourceRef } from './sourceRef';
+import { copySourceRef, documentNodes, indexDocument, sourceRef } from './sourceRef';
 import { applyPaintEffects, collectPaintEffects, PAINT_EFFECT_MARK, PAINT_REF_MARK, paintEffectState, type PaintEffectEntry } from './paintEffect';
 import type { PaintEffect } from './types';
 import { attachResources } from './areaResources';
@@ -358,7 +358,20 @@ interface Frame {
 /** CSS の絶対配置の基準になるブロック (LBlock.containingBlock) と、その中で見つけた絶対配置の箱 (箱を組み終えてから組んで置く) */
 interface CbAbs {
   frame: Frame;
-  items: Array<{ node: LBlockContainer; st: ResolvedStyle; sy: number; frag: number }>;
+  items: CbItem[];
+}
+
+/**
+ * 基準の箱の中で見つけた絶対配置の箱。sy は見つけた所 (static position) の block 方向の位置、frag は見つけた断片の番号。
+ * anchor は、別の流れ (表のセルの中) で見つけたときの、その流れの中身を持つ節 (セルの箱): sy・frag はその節の内容の箱の中の値で、
+ * 基準の箱の断片の中から anchor を探して、基準の箱の中の位置に直す。組み直して捨てたセルで見つけたもの (anchor が断片の中に無い) は置かない
+ */
+interface CbItem {
+  node: LBlockContainer;
+  st: ResolvedStyle;
+  sy: number;
+  frag: number;
+  anchor?: LNode;
 }
 
 interface FlowHost {
@@ -384,6 +397,8 @@ interface FlowHost {
   measurer: Measurer;
   /** いま組んでいるページの番号 (text-align の inside / outside の判定用)。無ければ 1 */
   pageNumber?: () => number;
+  /** 絶対配置の基準になる行内の箱 (LInline.cbKey) の、入力の節の番号の範囲 [その節, 子孫の次) */
+  inlineCbRange?: (key: number) => [number, number] | undefined;
   /** 余白の解決を XSL 1.1 §4.3.1 の規則で行う (LDocument.spaceResolution) */
   xslSpace?: boolean;
   /**
@@ -491,7 +506,7 @@ type SplitMarkers = Array<{ marker: LMarker; start: number; end: number }>;
 /** fo:retrieve-table-marker のある表の、本体の行の配置 (layoutTableRows) への差し込み (layoutTableWithMarkers) */
 interface TableMarkerHooks {
   /** 行の塊を置く (見出し・フッターを、その塊までの中身で決める) */
-  place(grp: LNode[], forceNewPage?: boolean): void;
+  place(grp: LNode[], forceNewPage?: boolean | BreakKind): void;
   /** 組んだ行の塊と、組む間に出てきたセルの中のマーカーを控える */
   note(grp: LNode[], rows: LTableRow[], sink: PendingMarker[]): void;
   /** ページをまたいで分けた行の断片ごとのマーカーを控える */
@@ -537,6 +552,11 @@ interface PageHost {
   nextLimit?(): number;
   /** 段・ページを離れる直前に、その段で使った block 方向の長さ (保留マージン込み。脚注があれば全長) を知らせる */
   columnEnd?(used: number): void;
+  /**
+   * 次の nextPage が、強制の区切り (break-before・break-after) によるものであることと、その種類を知らせる
+   * (表のセルの中の流れ。行を分けた断片を置く側が、その種類の区切り = 白ページ・段かページか、を行う)
+   */
+  forcedBreak?(kind: BreakKind): void;
 }
 
 /** 段組のページで、脚注・前方 float を「全段を貫く」ページ単位の領域に集めるための窓口 */
@@ -603,6 +623,11 @@ interface FlowInit {
   limit?: number;
   pages?: PageHost;
   abs: () => LNode[];
+  /**
+   * 表のセルの中の流れ: 中で見つけた、基準の箱 (cbAbs・localAbs) の無い絶対配置の箱 (positionInContainer) を、その場で置かずに
+   * foreignAbs に集める (基準の箱はセルか、その外にある。セルを組む側が受け取る)
+   */
+  collectAbs?: boolean;
   /** 祖先のブロックコンテナを基準にする絶対配置の箱 (positionInContainer) を集める所と、その内容の箱の大きさ */
   localAbs?: { list: Array<{ n: LNode; node: LBlockContainer }>; w: number; h: number | undefined };
   /** ページの大きさ。body は版面 (本文の領域) の、組む向きでの大きさ (width は横、height は縦。本文の領域を回すときは回す前) */
@@ -671,6 +696,11 @@ class Flow {
   private localAbs?: FlowInit['localAbs'];
   /** いちばん近い、絶対配置の基準になるブロック (localAbs より内側) */
   private cbAbs?: CbAbs;
+  /** この流れ (表のセルの中) で見つけた、基準の箱がこの流れの外にある絶対配置の箱 (FlowInit.collectAbs) */
+  private collectAbs: boolean;
+  foreignAbs: CbItem[] = [];
+  /** 基準になるセル (LTableCell.containingBlock) の箱 → 中で見つけた絶対配置の箱 (行の高さが決まってから置く) */
+  private cellAbs = new WeakMap<LNode, CbItem[]>();
   private abs: () => LNode[];
   private pageSize: () => PageSizeInfo;
   private cbBlock?: number;
@@ -810,6 +840,8 @@ class Flow {
     this.areaEnd = !!init.areaEnd;
     if (init.initialSpace) this.pendAdjust = -init.initialSpace;
     this.localAbs = init.localAbs;
+    // XSL-FO の絶対配置の箱 (祖先の参照領域が基準) は、これまでどおりその場で置く
+    this.collectAbs = !!init.collectAbs && !host.xslSpace;
     this.pages = init.pages;
     this.abs = init.abs;
     this.pageSize = init.pageSize;
@@ -1688,6 +1720,7 @@ class Flow {
     if (!this.paginating) return;
     if (kind === 'column') {
       if (this.pageHasContent) {
+        this.pages!.forcedBreak?.(kind);
         this.breakPage('column');
         if (this.discardAfterForced) this.discardLeading = true;
       }
@@ -1699,6 +1732,7 @@ class Flow {
     if (this.pageHasContent || !(this.pages!.atPageStart?.() ?? true)) {
       // 次のページの偶奇が合わなければ、白ページ (blank-or-not-blank="blank" のマスター) を挟む
       if (n !== undefined && !parityOk(n + 1)) this.breakPage('blank');
+      this.pages!.forcedBreak?.(kind);
       this.breakPage('page');
       // CSS: 強制改ページの後の余白は残す (Fragmentation 3 §5.2)。改ページの後にある、まだ開いていない祖先の上の余白を足し直す
       // (改ページの前の要素の下の余白は捨てる)
@@ -1851,11 +1885,18 @@ class Flow {
     let run: InlineChild[] = [];
     let runAt = 0;
     let firstRun = true;
+    // 行内の箱を基準にする絶対配置の箱 (LBlockContainer.inlineCb): 行の並びを組んでから、その行内の箱の断片を探して置く
+    let runAbs: LBlockContainer[] = [];
     const flushRun = () => {
-      if (!run.length) return;
-      this.layoutInlineRun(run, style, firstRun, { arr: children, at: runAt });
-      firstRun = false;
-      run = [];
+      if (run.length) {
+        this.layoutInlineRun(run, style, firstRun, { arr: children, at: runAt });
+        firstRun = false;
+        run = [];
+      }
+      if (runAbs.length) {
+        this.placeInlineAbs(runAbs, style);
+        runAbs = [];
+      }
     };
     for (let ci = 0; ci < children.length; ci++) {
       const c = children[ci];
@@ -1868,8 +1909,12 @@ class Flow {
       } else if (typeof c !== 'string' && c.type === 'float') {
         // マーカーと同様、段落 (run) を分断せずにその場へ固定する
         this.placeFloat(c, style);
-      } else if (typeof c !== 'string' && c.type === 'block-container' && c.absolutePosition && c.positionInContainer && this.cbAbs) {
-        // 絶対配置の基準になるブロックの中の絶対配置の箱: 段落 (run) を分断しない。上下の位置の指定が無ければ、段落の頭の高さ (static position)
+      } else if (typeof c !== 'string' && c.type === 'block-container' && c.absolutePosition && c.inlineCb !== undefined) {
+        // 行内の箱を基準にする絶対配置の箱: 段落 (run) を分断しない。行を組んだ後で置く
+        runAbs.push(c);
+      } else if (typeof c !== 'string' && c.type === 'block-container' && c.absolutePosition && ((c.positionInContainer && (this.cbAbs || (this.collectAbs && !this.localAbs))) || (run.length > 0 && !this.host.xslSpace))) {
+        // 絶対配置の基準になるブロックの中の絶対配置の箱: 段落 (run) を分断しない。上下の位置の指定が無ければ、段落の頭の高さ (static position)。
+        // CSS の絶対配置の箱は、流れの外 (CSS 2.1 §9.3.1): 字の並びの途中にあっても、行を分けない (ページの上に置く箱も)
         this.layoutContainer(c, style);
       } else if (typeof c !== 'string' && c.type === 'retrieve-marker') {
         this.host.warn('retrieve-marker は PageSequence.staticContent 内でのみ使えます');
@@ -2267,9 +2312,9 @@ class Flow {
       if (desc.isizeExplicit !== was) desc = this.rtlEdge(autoMargins(desc), node, ps);
     }
     const frame = this.openFrame(desc);
-    // 中の絶対配置の箱の基準になる箱 (CSS の position が static でない箱。横書きだけ)・position: relative でずらす箱は、断片を集める
+    // 中の絶対配置の箱の基準になる箱 (CSS の position が static でない箱)・position: relative でずらす箱は、断片を集める
     const outerCb = this.cbAbs;
-    const cb = node.containingBlock && this.wm === 'horizontal-tb' ? (this.cbAbs = { frame, items: [] }) : undefined;
+    const cb = node.containingBlock ? (this.cbAbs = { frame, items: [] }) : undefined;
     if (cb || node.relativeOffset) frame.frags = frame.opened ? [frame.node] : [];
     // 行グリッド (アンテナハウスの baseline-grid): new はこの箱の字の大きさと line-height、root は根元の書式で作る。none は解除。
     // baseline-block-snap は扱わない
@@ -2331,8 +2376,14 @@ class Flow {
     // position: relative: 組んだ箱 (断片) を動かす。前後の配置は変えない (CSS 2.1 §9.4.3)
     if (node.relativeOffset)
       for (const n of frame.frags ?? []) {
-        n.i += node.relativeOffset.x;
-        n.b += node.relativeOffset.y;
+        // ずらしは物理の向き (右・下が正)。縦書きの流れでは、行の向きが縦、block 方向が横 (vertical-rl は右から左)
+        if (this.wm === 'horizontal-tb') {
+          n.i += node.relativeOffset.x;
+          n.b += node.relativeOffset.y;
+        } else {
+          n.i += node.relativeOffset.y;
+          n.b += this.wm === 'vertical-rl' ? -node.relativeOffset.x : node.relativeOffset.x;
+        }
       }
     if (node.breakAfter) this.breakNext = node.breakAfter;
   }
@@ -2342,21 +2393,110 @@ class Flow {
    * top があれば最初の断片、bottom があれば最後の断片、どちらも無ければ見つけた所 (static position) の断片の子にする
    */
   private placeCbAbs(cb: CbAbs) {
-    const frags = cb.frame.frags ?? [];
+    this.placeAbsIn(cb.frame.frags ?? [], cb.items, true);
+  }
+
+  /**
+   * 絶対配置の箱 items を組み、基準の箱の断片 frags (ブロック・表・セルの箱) の内容の箱を基準に置く (CSS 2.1 §10.1 の 4: 基準は、
+   * position が static でない最も近い祖先の padding の箱。読み込みが、位置の指定を内容の箱からの距離に直してある)。
+   * 位置は物理の向き (left・top・right・bottom) なので、縦書きの基準の箱では、内容の箱の左上からの物理の位置 (LNode.phys) で置く。
+   * note: 置いた箱の id を、いまのページのものとして控える (セルの中に置くときは、行を置くときに控えるので false)
+   */
+  private placeAbsIn(frags: LNode[], items: CbItem[], note: boolean) {
     if (!frags.length) return;
-    for (const it of cb.items) {
+    const done = new Set<LBlockContainer>();
+    for (const it of items) {
       const { node } = it;
-      const f = node.top != null ? frags[0] : node.bottom != null ? frags[frags.length - 1] : frags[Math.min(it.frag, frags.length - 1)];
+      if (done.has(node)) continue;
+      // 別の流れ (セルの中) で見つけた箱: 見つけた所を、基準の箱の断片の中の位置に直す
+      let frag = it.frag;
+      let sx = 0;
+      let sy = it.sy;
+      if (it.anchor) {
+        const at = locateNode(frags, it.anchor);
+        if (!at) continue;
+        frag = at.k;
+        sx = at.i;
+        sy += at.b;
+      }
+      done.add(node);
+      const f = node.top != null ? frags[0] : node.bottom != null ? frags[frags.length - 1] : frags[Math.min(frag, frags.length - 1)];
       const bw = (e: 'top' | 'right' | 'bottom' | 'left') => f.border[e]?.width ?? 0;
-      const w = Math.max(f.isize - f.padding.left - f.padding.right - bw('left') - bw('right'), 0);
-      const h = Math.max(f.bsize - f.padding.top - f.padding.bottom - bw('top') - bw('bottom'), 0);
+      const size = physSize(f.isize, f.bsize, f.wm);
+      const w = Math.max(size.width - f.padding.left - f.padding.right - bw('left') - bw('right'), 0);
+      const h = Math.max(size.height - f.padding.top - f.padding.bottom - bw('top') - bw('bottom'), 0);
       const n = this.buildContainer(node, it.st, w, h);
       const at = n.phys ?? { x: 0, y: 0 };
       delete n.phys;
-      n.i = at.x;
-      n.b = node.top == null && node.bottom == null ? it.sy + (node.staticOffset ?? 0) : at.y;
+      const staticB = sy + (node.staticOffset ?? 0);
+      if (f.wm === 'horizontal-tb') {
+        // 左右の位置の指定が無ければ、見つけた流れの行の頭 (static position。CSS 2.1 §10.3.7)
+        n.i = node.left == null && node.right == null ? at.x + sx : at.x;
+        n.b = node.top == null && node.bottom == null ? staticB : at.y;
+      } else {
+        // 縦書きの基準の箱: static position は、block 方向 (横) が見つけた所、行の向き (縦) が行の頭
+        const nb = bboxOf(n);
+        const x = node.left == null && node.right == null ? (f.wm === 'vertical-rl' ? w - staticB - nb.width : staticB) : at.x;
+        const y = node.top == null && node.bottom == null ? sx : at.y;
+        n.phys = { x, y };
+      }
       f.children.push(n);
+      if (note) this.noteIds(n);
+    }
+  }
+
+  /**
+   * 行内の箱を基準にする絶対配置の箱 (LBlockContainer.inlineCb) を、行の並びを組んだ後で置く (CSS 2.1 §10.1 の 4)。
+   * 基準の矩形は、行内の箱の最初の断片の頭 (横書きは左上) と、最後の断片の末尾の側の端 (行の向きは、断片のうちいちばん端のもの) を
+   * 結んだ矩形 (padding の箱。行をまたいだ行内の箱の基準は CSS 2.1 では未定義で、CSS Position 3 §2.1 の決め方による)。
+   * 行を置いた箱 (ページをまたいだ並びでは、最後の断片) の子にする。行内の箱の断片が見つからなければ (中身の無い箱・前のページで終わった箱)、
+   * いまの位置の、大きさの無い矩形を基準にする
+   */
+  private placeInlineAbs(nodes: LBlockContainer[], ps: ResolvedStyle) {
+    this.flush();
+    const host = this.containerNode();
+    const e = logicalEdges(host);
+    const horiz = host.wm === 'horizontal-tb';
+    // host の内容の箱の、物理の幅 (vertical-rl は右から積むので、位置の変換に使う)
+    const hostW = horiz ? host.isize - e.is - e.ie : host.bsize - e.bs - e.be;
+    for (const node of nodes) {
+      const range = this.host.inlineCbRange?.(node.inlineCb!);
+      const r = (range && inlineBoxRect(host, range[0], range[1])) ?? { i0: 0, b0: Math.max(this.cursor - this.contentStartB(), 0), i1: 0, b1: Math.max(this.cursor - this.contentStartB(), 0) };
+      // 論理の矩形 → 物理の矩形 (host の内容の箱の左上から)
+      const w = horiz ? r.i1 - r.i0 : r.b1 - r.b0;
+      const h = horiz ? r.b1 - r.b0 : r.i1 - r.i0;
+      const x = horiz ? r.i0 : host.wm === 'vertical-rl' ? hostW - r.b1 : r.b0;
+      const y = horiz ? r.b0 : r.i0;
+      const n = this.buildContainer(node, resolveStyle(ps, node), Math.max(w, 0), Math.max(h, 0));
+      const at = n.phys ?? { x: 0, y: 0 };
+      delete n.phys;
+      if (horiz) {
+        n.i = x + at.x;
+        n.b = y + at.y;
+      } else n.phys = { x: x + at.x, y: y + at.y };
+      host.children.push(n);
       this.noteIds(n);
+    }
+  }
+
+  /**
+   * セルの中の流れで見つけた絶対配置の箱 (Flow.foreignAbs) を、セルを組んだ流れで受け取る。cell はセルの箱 (見つけた所の基準)。
+   * いちばん近い基準のブロック・表 (cbAbs) があればそこへ、この流れもセルの中なら更に外へ渡す。
+   * どちらでもなければ (読み込みは、基準の箱を組版が置けるときだけ positionInContainer にするので、ふつうは起きない)、ページの上に置く
+   */
+  private handOffAbs(items: CbItem[], cell: LNode) {
+    for (const it of items) {
+      const item: CbItem = it.anchor ? it : { ...it, anchor: cell };
+      if (this.cbAbs) this.cbAbs.items.push(item);
+      else if (this.collectAbs && !this.localAbs) this.foreignAbs.push(item);
+      else {
+        const page = this.pageSize();
+        const la = this.localAbs;
+        const n = this.buildContainer(it.node, it.st, la ? la.w : page.width, la ? (la.h ?? page.height) : page.height);
+        if (la) la.list.push({ n, node: it.node });
+        else this.abs().push(n);
+        this.noteIds(n);
+      }
     }
   }
 
@@ -3466,6 +3606,7 @@ class Flow {
 
   /** fo:block-container 相当 */
   private layoutContainer(node: LBlockContainer, ps: ResolvedStyle) {
+    if (node.absolutePosition && node.inlineCb !== undefined) return this.placeInlineAbs([node], ps);
     const st = resolveStyle(ps, node);
     const page = this.pageSize();
     if (node.absolutePosition && node.positionInContainer && this.cbAbs) {
@@ -3474,6 +3615,12 @@ class Flow {
       const sy = f.opened ? Math.max(this.cursor + this.pendingValue() - f.contentStartB, 0) : 0;
       const frag = f.opened ? Math.max((f.frags?.length ?? 1) - 1, 0) : (f.frags?.length ?? 0);
       this.cbAbs.items.push({ node, st, sy, frag });
+      return;
+    }
+    if (node.absolutePosition && node.positionInContainer && this.collectAbs && !this.localAbs) {
+      // 表のセルの中の流れで、基準のブロックがこの流れの中に無い: 基準の箱はセルか、その外 (表・表を含むブロック)。
+      // 見つけた所 (セルの内容の箱の中の static position) を覚えて、セルを組む側に渡す
+      this.foreignAbs.push({ node, st, sy: Math.max(this.cursor + this.pendingValue(), 0), frag: this.breakCount });
       return;
     }
     if (node.absolutePosition && node.positionInContainer && this.localAbs) {
@@ -4524,7 +4671,7 @@ class Flow {
     // rowSpan で結びついた行は 1 つの塊 (グループ) として配置する
     let rows = node.body.rows;
     const bst = resolveStyle(st, node.body);
-    const place = tm ? tm.place : (grp: LNode[], forceNewPage = false) => this.placeRows(grp, false, () => placeHeader(true), { reserve, beforeBreak: placeFooterAtBreak, forceNewPage });
+    const place = tm ? tm.place : (grp: LNode[], forceNewPage: boolean | BreakKind = false) => this.placeRows(grp, false, () => placeHeader(true), { reserve, beforeBreak: placeFooterAtBreak, forceNewPage });
     // 続きのページで繰り返す見出しの高さ (fo:retrieve-table-marker のある表では、grp で始まる断片の見出しの高さ)
     const repeatedHeaderH = (grp: LNode[]) => (tm ? tm.nextHeaderH(grp) : height(headerRows.length && !node.omitHeaderAtBreak ? headerRows : []));
     const height = (ns: LNode[]) => ns.reduce((a, r) => a + r.bsize, 0);
@@ -4542,10 +4689,21 @@ class Flow {
       const sinkAt = this.markerSink.length;
       const grp = this.layoutRowGroup(rows.slice(i, end + 1), sizes, bst);
       tm?.note(grp, rows.slice(i, end + 1), this.markerSink.slice(sinkAt));
-      // 行の前の強制改ページ (CSS の tr の break-before)
-      if ((rows[i].breakBefore || rows[i - 1]?.breakAfter) && i > 0 && this.paginating) {
+      // 行の前の強制の区切り (CSS の tr・li の break-before、前の行の break-after。CSS Fragmentation 3 §4.3: 同じ区切りに当たる値は合わせる)
+      const lead = i > 0 && this.paginating ? combineBreaks(rows[i - 1].breakAfter, rows[i].breakBefore) : undefined;
+      // セルの中の強制の区切り (セルの中のブロック・入れ子の表の行の break-before・break-after): 行を、その所で分ける。
+      // セルの中身は、並んだ流れとして別々に区切る (CSS Fragmentation 3 §2.1・§4.3)。リストの項目 (記号のセルと本文のセル) の中のブロックも同じ
+      if (this.paginating && end === i && hasInnerForcedBreak(rows[i])) {
         flushPending();
-        place(grp, true);
+        if (this.placeRowWithInnerBreaks(rows[i], grp, sizes, bst, lead, place, repeatedHeaderH(grp) + (tm ? tm.nextReserve(grp) : reserve), tm ? tm.reserveNow(grp) : reserve, tm)) {
+          pendingLinked = false;
+          i = end + 1;
+          continue;
+        }
+      }
+      if (lead) {
+        flushPending();
+        place(grp, lead);
         pendingLinked = !!rows[end].keepWithNext;
         i = end + 1;
         continue;
@@ -4582,6 +4740,53 @@ class Flow {
       i = end + 1;
     }
     flushPending();
+  }
+
+  /**
+   * セルの中に強制の区切りのある行を、その所で分けて置く (CSS Fragmentation 3 §2.1・§4.3)。分けた断片を置いたら true。
+   * 区切りが実際には起きなかった (段組の外の column だけ、など)・分けられないときは false (呼び出し側が、ふつうの行として置く)。
+   * lead は行の前の強制の区切り。fixed は続きのページで行の前後に要る高さ (繰り返す見出し・フッター)、reserveNow はいまのページのフッターの高さ。
+   * 制限: 区切りは行の断片の境目にするので、左右のページの指定で挟む白ページは、同じ行のほかのセルの続きも越える
+   */
+  private placeRowWithInnerBreaks(
+    row: LTableRow,
+    grp: LNode[],
+    sizes: number[],
+    bst: ResolvedStyle,
+    lead: true | BreakKind | undefined,
+    place: (grp: LNode[], forceNewPage?: boolean | BreakKind) => void,
+    fixed: number,
+    reserveNow: number,
+    tm?: TableMarkerHooks,
+  ): boolean {
+    const closeBorder = this.stack.reduce((a, f) => a + (f.node.kind === 'table' ? f.desc.bw.be : 0), 0);
+    const nextAvail = this.limit - fixed - closeBorder;
+    const attempt = (fresh: boolean) => {
+      const kinds: Array<BreakKind | undefined> = [];
+      const splitMk: SplitMarkers | undefined = tm ? [] : undefined;
+      const avail = fresh ? nextAvail : this.room - this.cursor - this.pendingValue() - closeBorder - reserveNow;
+      const frags = this.splitRow(row, sizes, bst, avail, nextAvail, splitMk, { kinds, ...(fresh ? { atPageStart: true } : {}) });
+      return { frags, kinds, splitMk };
+    };
+    // 行の前で区切るなら、行は次のページ (段) の先頭から始まる
+    let first = lead;
+    let r = attempt(!!lead && this.pageHasContent);
+    if (!r.frags && !lead && this.pageHasContent && r.kinds.some((k) => k)) {
+      // 最初の断片に何も置けない (セルの先頭の強制の区切り、記号だけが残る項目など): 行ごと次のページへ送ってから分ける
+      first = r.kinds.find((k) => k);
+      r = attempt(true);
+    }
+    if (!r.frags) {
+      if (first === lead) return false;
+      // 分けられない行: 行ごと、区切りの後ろへ送る
+      place(grp, first);
+      return true;
+    }
+    if (!r.kinds.some((k) => k) && first === lead) return false;
+    const { frags, kinds, splitMk } = r;
+    if (splitMk) tm?.noteSplit(frags, row, splitMk);
+    frags.forEach((f, k) => place([f], k === 0 ? (first ?? false) : (kinds[k] ?? true)));
+    return true;
   }
 
   layoutTable(table: LTable, ps: ResolvedStyle) {
@@ -4648,6 +4853,10 @@ class Flow {
     desc = this.rtlEdge(desc, node, ps);
     const frame = this.openFrame(desc, 'table');
     if (this.host.xslSpace && !node.collapseSpillAh && out.bs > 0) frame.spillBs = out.bs;
+    // 中の絶対配置の箱の基準になる表 (CSS の position が static でない表): 断片を集め、セルの中で見つけた箱を、表を組み終えてから置く
+    const outerCb = this.cbAbs;
+    const cb = node.containingBlock ? (this.cbAbs = { frame, items: [] }) : undefined;
+    if (cb) frame.frags = frame.opened ? [frame.node] : [];
     // 罫線を分ける表のセルの間隔 (border-separation / border-spacing): 列の幅は、間隔を除いた幅で決める
     const sp = node.borderCollapse !== 'collapse' && node.borderSpacing && (node.borderSpacing.i > 0 || node.borderSpacing.b > 0) ? node.borderSpacing : undefined;
     const nC = columnSizes(node, frame.contentI).length;
@@ -4698,6 +4907,10 @@ class Flow {
     this.rowspanMiddleAh = savedRowspanAh;
     this.tableBreak = savedTableBreak;
     this.closeFrame();
+    if (cb) {
+      this.cbAbs = outerCb;
+      this.placeCbAbs(cb);
+    }
     if (this.host.xslSpace && !node.collapseSpillAh) this.pendSpill -= out.be;
     else if (!node.collapseSpillAh) this.pendAdjust -= out.be;
     if (bottomCaptions) {
@@ -4804,7 +5017,7 @@ class Flow {
           this.placeRowsRaw(clones);
         }
       : undefined;
-    const place = (grp: LNode[], forceNewPage = false) => {
+    const place = (grp: LNode[], forceNewPage: boolean | BreakKind = false) => {
       // この塊までを断片に入れたときの見出しとフッター
       const areas = withGroup(scope.areas, grp);
       const head = placed.length ? headerOf(areas) : shown;
@@ -4851,9 +5064,25 @@ class Flow {
     group: LNode[],
     isHeader: boolean,
     afterBreak: () => void,
-    opts: { reserve?: number; beforeBreak?: () => void; forceNewPage?: boolean; /** 改ページした直後に呼ぶ (見出しの行でも) */ onBreak?: () => void } = {},
+    opts: {
+      reserve?: number;
+      beforeBreak?: () => void;
+      /**
+       * 行の前で区切る。true は次の段・ページへ送るだけ (ページに入らず分けた行の続き、XSL-FO の行の break)。
+       * 種類は強制の区切り (CSS Fragmentation 3 §3.1・§4.3): page は段組の中でもページを改め、odd-page・even-page は
+       * 偶奇が合うまで白ページを挟む (forceBreak と同じ)。column は次の段
+       */
+      forceNewPage?: boolean | BreakKind;
+      /** 改ページした直後に呼ぶ (見出しの行でも) */
+      onBreak?: () => void;
+    } = {},
   ) {
     this.applyPendingBreak();
+    const forcedKind = typeof opts.forceNewPage === 'string' ? opts.forceNewPage : undefined;
+    // 左右のページの指定の偶奇 (forceBreak と同じ。ページ番号の分からない流れ = セルの中などでは、白ページは外の流れが挟む)
+    const wantOdd = forcedKind === 'odd-page' ? true : forcedKind === 'even-page' ? false : undefined;
+    const pageNo = wantOdd === undefined ? undefined : this.host.pageNumber?.();
+    const parityOk = (k: number) => wantOdd === undefined || pageNo === undefined || (k % 2 === 1) === wantOdd;
     // 行の前の余白 (list-item の space-before): 保留中の余白と重ね合わせる (ページの先頭では捨てる)
     const sbRow = group[0]?.rowSpace?.before ?? 0;
     if (sbRow) this.addMargin(sbRow);
@@ -4870,7 +5099,15 @@ class Flow {
           // 行の境目で改ページするとき、このページの最後の行の後ろ側の罫線を引く (表フッターを置かない場合。セルの中の切れ目は除く)
           if (!isHeader && !opts.beforeBreak && !opts.forceNewPage) this.closeRowAtBreak(group[0]);
           opts.beforeBreak?.();
-          this.breakPage();
+          if (forcedKind && forcedKind !== 'column') {
+            // 次のページの偶奇が合わなければ、白ページを挟む (表の枠・見出しは、白ページには置かない: 空の断片は breakPage が外す)
+            if (pageNo !== undefined && !parityOk(pageNo + 1)) this.breakPage('blank');
+            this.pages!.forcedBreak?.(forcedKind);
+            this.breakPage('page');
+          } else {
+            if (forcedKind) this.pages!.forcedBreak?.(forcedKind);
+            this.breakPage();
+          }
           opts.onBreak?.();
           if (!isHeader) {
             afterBreak();
@@ -4880,6 +5117,9 @@ class Flow {
         } else {
           this.host.warn('表の行がページ高さを超えているため溢れます');
         }
+      } else if (pageNo !== undefined && !parityOk(pageNo) && !this.pageHasContent && (this.pages!.atPageStart?.() ?? true)) {
+        // まだ何も置いていないページの偶奇が合わない: このページを白ページとして残し、次へ (forceBreak と同じ)
+        this.breakPage('page');
       }
     }
     this.flush();
@@ -5024,19 +5264,28 @@ class Flow {
    * ページに入らない 1 行を、セルごとにページを持つ Flow で組み直して、ページごとの断片 (行) に分ける。
    * 最初の断片は avail、以降は nextAvail の高さに収める。最初の断片に何も入らなければ null (行ごと次ページへ送る)
    */
-  private splitRow(row: LTableRow, sizes: number[], st: ResolvedStyle, avail: number, nextAvail: number, mk?: SplitMarkers): LNode[] | null {
+  private splitRow(
+    row: LTableRow,
+    sizes: number[],
+    st: ResolvedStyle,
+    avail: number,
+    nextAvail: number,
+    mk?: SplitMarkers,
+    /** kinds[k]: k 番目の断片の前が強制の区切りなら、その種類 (分けられず null を返すときも入れる)。atPageStart: 行をページの先頭に置くものとして組む */
+    forced?: { kinds: Array<BreakKind | undefined>; atPageStart?: boolean },
+  ): LNode[] | null {
     const rst = resolveStyle(st, row);
     // 罫線を分ける表のセルの間隔 (layoutRowGroup と同じ置き方): 列の間と表の端に si、行の前に sb
     const si = this.spacing?.i ?? 0;
     const sb = this.spacing?.b ?? 0;
     const nCols = sizes.length;
     const total = sizes.reduce((a, b) => a + b, 0) + si * (nCols + 1);
-    interface CellFrags { cell: LTableCell; desc: BoxDesc; i: number; w: number; c: number; cs: number; roots: LNode[]; used: number[] }
+    interface CellFrags { cell: LTableCell; desc: BoxDesc; i: number; w: number; c: number; cs: number; roots: LNode[]; used: number[]; abs: CbItem[]; nodes: LNode[] }
     const cells: CellFrags[] = [];
     let col = 0;
     let brokeFirst = false;
     // 行を置くページに、すでに中身があるか (セルの中の keep の判定で、セルの先頭をページの先頭と見なさないため)
-    const outerHas = this.pageHasContent;
+    const outerHas = this.pageHasContent && !forced?.atPageStart;
     for (const cell of row.cells) {
       const cs = Math.max(1, cell.colSpan ?? 1);
       const w = sizes.slice(col, col + cs).reduce((a, b) => a + b, 0) + si * (Math.min(cs, nCols - col) - 1);
@@ -5049,8 +5298,11 @@ class Flow {
       const used: number[] = [];
       // セルの中のマーカーの、親の始まる断片と終わる断片 (fo:retrieve-table-marker のある表でだけ控える)
       const cellMk: Array<{ pm: PendingMarker; start: number; end?: number }> = [];
-      // 試し組みを兼ねるので、警告は出さない (分けられないときは、行ごと次ページへ送る通常の処理に戻る)
-      const flow = new Flow({ ...this.host, warn: () => {} }, {
+      // 次の nextPage の前に知らされた、強制の区切りの種類
+      let forcedNext: BreakKind | undefined;
+      // 試し組みを兼ねるので、警告は出さない (分けられないときは、行ごと次ページへ送る通常の処理に戻る)。
+      // セルの中の流れは、ページ番号を持たない: 左右のページの指定の白ページは、行の断片を置く側 (placeRows) が挟む
+      const flow = new Flow({ ...this.host, warn: () => {}, ...(forced ? { pageNumber: undefined } : {}) }, {
         wm: this.wm,
         rootI: contentI,
         root: roots[0],
@@ -5071,8 +5323,11 @@ class Flow {
           columnEnd: (u) => used.push(u),
           atPageStart: () => roots.length > 1 || !outerHas,
           nextLimit: () => Math.max(nextAvail - bp - sb, 1),
+          ...(forced ? { forcedBreak: (kind: BreakKind) => void (forcedNext = kind) } : {}),
           nextPage: () => {
             const r = newNode('block', this.wm, { isize: contentI });
+            if (forced && forcedNext) forced.kinds[roots.length] = combineBreaks(forced.kinds[roots.length], forcedNext) as BreakKind;
+            forcedNext = undefined;
             roots.push(r);
             return { root: r, limit: Math.max(nextAvail - bp - sb, 1), rootI: contentI };
           },
@@ -5082,13 +5337,14 @@ class Flow {
         // セルの中の脚注は、行に持たせて、行を置くページの脚注領域に積む (placeRows の placeHeldFootnotes)
         footnotes: this.foot,
         holdFootnotes: true,
+        collectAbs: true,
       });
       flow.layoutChildren(cell.children, resolveStyle(rst, cell));
       flow.finishPaginated();
       // 親の箱の無いマーカー (セルの子) は、セルの最後の断片で終わる
       if (mk) for (const e of cellMk) mk.push({ marker: e.pm.marker, start: e.start, end: e.end ?? roots.length - 1 });
       if (flow.brokeKeepPage === 0) brokeFirst = true;
-      cells.push({ cell, desc, i, w, c: col - cs, cs, roots, used });
+      cells.push({ cell, desc, i, w, c: col - cs, cs, roots, used, abs: flow.foreignAbs, nodes: [] });
     }
     // 最初の断片に何も入らない、または入りきらない (1 行も置けない)、または widows / orphans を守れない (CSS Fragmentation 3 §3.3)
     // なら分けない
@@ -5132,10 +5388,18 @@ class Flow {
         if (cutS) cutStart(cn, c.desc.keepStart.border, c.desc.keepStart.padding);
         if (cutE) cutEnd(cn, c.desc.keepEnd.border, c.desc.keepEnd.padding);
         rn.children.push(cn);
+        c.nodes.push(cn);
       }
       for (const cn of rn.children) cn.bsize = h;
       rn.bsize = h + sb;
       out.push(rn);
+    }
+    // セルの中で見つけた絶対配置の箱 (layoutCell と同じ): 基準になるセルなら、セルの断片の中に置く。そうでなければ外の基準の箱へ渡す
+    // (見つけた断片のセルの箱を目印にする)
+    for (const c of cells) {
+      if (!c.abs.length) continue;
+      if (c.cell.containingBlock) this.placeAbsIn(c.nodes, c.abs, false);
+      else this.handOffAbs(c.abs.map((it) => (it.anchor ? it : { ...it, anchor: c.nodes[Math.min(it.frag, c.nodes.length - 1)] })), c.nodes[0]);
     }
     if (rst.direction === 'rtl' && this.wm === 'horizontal-tb') mirrorCells(out, total);
     return out;
@@ -5223,6 +5487,11 @@ class Flow {
       }
     }
     rowNodes.forEach((r, j) => (r.bsize = heights[j] + sb));
+    // 基準になるセルの中の絶対配置の箱: セルの大きさ (行の高さ) が決まったので、セルの内容の箱を基準に置く (CSS 2.1 §10.1)
+    for (const p of placed) {
+      const items = this.cellAbs.get(p.node);
+      if (items) this.placeAbsIn([p.node], items, false);
+    }
     rows.forEach((r, j) => (r.spaceBefore || r.spaceAfter) && (rowNodes[j].rowSpace = { before: r.spaceBefore ?? 0, after: r.spaceAfter ?? 0 }));
     if (st.direction === 'rtl' && this.wm === 'horizontal-tb') mirrorCells(rowNodes, total);
     return rowNodes;
@@ -5233,7 +5502,7 @@ class Flow {
     const desc = describeBox(cell, this.wm);
     const contentI = Math.max(width - desc.bpI, 0);
     // セルは参照領域: 先頭の余白 (space-before) は捨てる (XSL §4.3.1)。CSS のセル (keepEdgeSpace) は残す
-    const sub = new Flow(this.host, { wm: this.wm, rootI: contentI, abs: this.abs, pageSize: this.pageSize, markerSink: this.markerSink, footnotes: this.foot, ...(cell.keepEdgeSpace ? {} : { discardLeading: true }), referenceArea: true });
+    const sub = new Flow(this.host, { wm: this.wm, rootI: contentI, abs: this.abs, pageSize: this.pageSize, markerSink: this.markerSink, footnotes: this.foot, ...(cell.keepEdgeSpace ? {} : { discardLeading: true }), referenceArea: true, collectAbs: true });
     sub.layoutChildren(cell.children, cst);
     // 末尾の内容の後ろの余白 (space-after) も捨てる (keepTrailingSpace・keepEdgeSpace のセルは残す)
     const fin = sub.finishWithTrailing();
@@ -5241,7 +5510,7 @@ class Flow {
     const bsize = Math.max(used, desc.bsizeExplicit ?? 0) + desc.bpStart + desc.bpEnd;
     // 中身が行で終わり、その下に余白・枠が無ければ、その行の下の半行間 (行グリッドの中の表で、改ページの判定に数えない分)
     const trailLead = Math.abs(sub.lastLead.end - used) < EPS && !desc.bpEnd && bsize - desc.bpStart - used < EPS ? sub.lastLead.half : 0;
-    return newNode('cell', this.wm, {
+    const cn = newNode('cell', this.wm, {
       ...(trailLead ? { trailLead } : {}),
       isize: width,
       bsize,
@@ -5253,7 +5522,131 @@ class Flow {
       ref: desc.ref,
       children: sub.root.children,
     });
+    // セルの中で見つけた絶対配置の箱: セルが基準 (position が static でないセル) なら、行の高さが決まってからセルの中に置く
+    // (layoutRowGroup)。そうでなければ、外の基準の箱 (表・表を含むブロック) へ渡す
+    if (sub.foreignAbs.length) {
+      if (cell.containingBlock) this.cellAbs.set(cn, sub.foreignAbs);
+      else this.handOffAbs(sub.foreignAbs, cn);
+    }
+    return cn;
   }
+}
+
+/**
+ * host の中の行から、入力の節の番号が [k, end) の行内の箱 (行内の要素とその子孫) の断片を探し、基準の矩形を返す
+ * (host の内容の箱の頭からの、行の向き i・block 方向 b。無ければ undefined)。
+ * 行ごとの断片は、その行内の箱そのものの箱 (罫線・背景の箱、行内のブロックの箱。番号が k) があればその padding の箱、無ければ字・画像の
+ * 並びを囲む矩形。矩形は、最初の断片の頭 (i0・b0) と、最後の断片の block 方向の末尾 (b1)、断片の行の向きの末尾のうちいちばん端 (i1)
+ */
+function inlineBoxRect(host: LNode, k: number, end: number): { i0: number; b0: number; i1: number; b1: number } | undefined {
+  type R = { i0: number; b0: number; i1: number; b1: number };
+  const frags: R[] = [];
+  const refOf = (n: LNode) => n.ref ?? n.fxRef;
+  const inRange = (n: LNode) => {
+    const r = refOf(n);
+    return r !== undefined && r >= k && r < end;
+  };
+  const join = (a: R | undefined, b: R): R => (a ? { i0: Math.min(a.i0, b.i0), b0: Math.min(a.b0, b.b0), i1: Math.max(a.i1, b.i1), b1: Math.max(a.b1, b.b1) } : b);
+  // 行の中: 行の内容の箱の頭からの位置で、当たる節を集める (own: その行内の箱そのものの箱、any: 中の字・箱)
+  const inLine = (n: LNode, i: number, b: number, acc: { own?: R; any?: R }) => {
+    for (const c of n.children) {
+      if (c.phys) continue;
+      const ci = i + c.i;
+      const cb = b + c.b;
+      if (inRange(c)) {
+        const box: R = { i0: ci, b0: cb, i1: ci + c.isize, b1: cb + c.bsize };
+        if (refOf(c) === k && c.kind !== 'glyph') {
+          const bw = borderWidths(c.border);
+          // padding の箱: 罫線の分だけ内へ (論理の向き)
+          const bs = c.wm === 'horizontal-tb' ? bw.top : c.wm === 'vertical-rl' ? bw.right : bw.left;
+          const be = c.wm === 'horizontal-tb' ? bw.bottom : c.wm === 'vertical-rl' ? bw.left : bw.right;
+          const is = c.wm === 'horizontal-tb' ? bw.left : bw.top;
+          const ie = c.wm === 'horizontal-tb' ? bw.right : bw.bottom;
+          acc.own = join(acc.own, { i0: box.i0 + is, b0: box.b0 + bs, i1: box.i1 - ie, b1: box.b1 - be });
+        } else acc.any = join(acc.any, box);
+        continue;
+      }
+      if (c.kind === 'glyph' || c.kind === 'image') continue;
+      const ed = logicalEdges(c);
+      inLine(c, ci + ed.is, cb + ed.bs, acc);
+    }
+  };
+  const walk = (n: LNode, i: number, b: number) => {
+    for (const c of n.children) {
+      if (c.kind === 'glyph' || c.kind === 'image' || c.phys || c.wm !== host.wm || c.rot) continue;
+      const ed = logicalEdges(c);
+      const ci = i + c.i + ed.is;
+      const cb = b + c.b + ed.bs;
+      if (c.kind === 'line') {
+        const acc: { own?: R; any?: R } = {};
+        inLine(c, ci, cb, acc);
+        const f = acc.own ?? acc.any;
+        if (f) frags.push(f);
+      } else walk(c, ci, cb);
+    }
+  };
+  walk(host, 0, 0);
+  if (!frags.length) return undefined;
+  const first = frags[0];
+  const last = frags[frags.length - 1];
+  return { i0: first.i0, b0: first.b0, i1: Math.max(first.i0, ...frags.map((f) => f.i1)), b1: Math.max(last.b1, first.b0) };
+}
+
+/**
+ * 断片 frags の木の中から節 target を探し、断片の番号 k と、target の内容の箱の頭の、断片の内容の箱の頭からの位置
+ * (行の向き i・block 方向 b。途中の箱の罫線・余白を足す) を返す。無ければ undefined
+ */
+function locateNode(frags: readonly LNode[], target: LNode): { k: number; i: number; b: number } | undefined {
+  const find = (n: LNode, i: number, b: number): { i: number; b: number } | undefined => {
+    for (const c of n.children) {
+      if (c.kind === 'glyph' || c.kind === 'image') continue;
+      const e = logicalEdges(c);
+      const ci = i + c.i + e.is;
+      const cb = b + c.b + e.bs;
+      if (c === target) return { i: ci, b: cb };
+      const hit = find(c, ci, cb);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  for (let k = 0; k < frags.length; k++) {
+    const hit = find(frags[k], 0, 0);
+    if (hit) return { k, ...hit };
+  }
+  return undefined;
+}
+
+/**
+ * 同じ区切りに当たる 2 つの強制の区切りの値を合わせる (CSS Fragmentation 3 §4.3: すべての種類の区切りを満たす。左右のページの指定は、
+ * 流れの中で後ろの要素の値が勝つ)。a は前の要素の break-after、b は後ろの要素の break-before。true は XSL-FO の行の区切り (種類を持たない)
+ */
+function combineBreaks(a: boolean | BreakKind | undefined, b: boolean | BreakKind | undefined): true | BreakKind | undefined {
+  const side = (k: boolean | BreakKind | undefined) => k === 'odd-page' || k === 'even-page';
+  if (side(b)) return b as BreakKind;
+  if (side(a)) return a as BreakKind;
+  if (a === 'page' || b === 'page') return 'page';
+  if (a === 'column' || b === 'column') return 'column';
+  return a || b ? true : undefined;
+}
+
+/** 行のセルの中 (通常の流れのブロック・入れ子の表の行) に、強制の区切りの指定があるか (行ごとに 1 度だけ調べる) */
+const innerForcedCache = new WeakMap<LTableRow, boolean>();
+function hasInnerForcedBreak(row: LTableRow): boolean {
+  let v = innerForcedCache.get(row);
+  if (v === undefined) {
+    v = row.cells.some((c) => c.children.some(holdsForcedBreak));
+    innerForcedCache.set(row, v);
+  }
+  return v;
+}
+
+function holdsForcedBreak(n: LBlockLevel | LInlineLevel): boolean {
+  if (typeof n === 'string') return false;
+  if (n.type === 'block') return !!(n.breakBefore || n.breakAfter) || n.children.some(holdsForcedBreak);
+  // 絶対配置の箱には効かない (§3.1)。大きさの決まった箱の中は、箱ごと置くので見ない
+  if (n.type === 'block-container') return !n.absolutePosition && (!!(n.breakBefore || n.breakAfter) || n.children.some(holdsForcedBreak));
+  if (n.type === 'table') return !!(n.breakBefore || n.breakAfter) || n.body.rows.some((r) => !!(r.breakBefore || r.breakAfter) || hasInnerForcedBreak(r));
+  return false;
 }
 
 /**
@@ -5345,7 +5738,9 @@ function maxLineLength(n: LNode, root = true, tableByColumns = false, countFixed
     const edges = h ? n.padding.left + n.padding.right + bw('left') + bw('right') : n.padding.top + n.padding.bottom + bw('top') + bw('bottom');
     const pos = (v: number) => Math.max(v, 0);
     const margins = root ? 0 : h ? pos(n.margin.left) + pos(n.margin.right) : pos(n.margin.top) + pos(n.margin.bottom);
-    return Math.min(n.isize, n.colSizes.reduce((a, b) => a + b, 0) + edges) + margins;
+    // 罫線を分ける表は、列の間と表の端のセルの間隔 (border-spacing) も表の幅に入る (CSS 2.1 §17.6.1)。行の箱は、間隔を含む幅
+    const cols = Math.max(n.colSizes.reduce((a, b) => a + b, 0), n.children.find((r) => r.kind === 'row')?.isize ?? 0);
+    return Math.min(n.isize, cols + edges) + margins;
   }
   // 書字方向が直交する子 (横書きの中の縦書きの箱など) は、行の長さではなく、組んだ箱の block の大きさ (n の行の向きの大きさ) を数える
   // (CSS Writing Modes 3 §7.3 の Note: 直交する子の、中身から決まった block の大きさが、親の行の向きの min-content・max-content の大きさに入る)
@@ -6253,11 +6648,28 @@ export class LayoutEngine {
 
   /** 描くときだけの効果 (transform・opacity) を持つ入力の節 (layoutPasses が集め、組み終えた Area に付ける) */
   private paintEffects: PaintEffectEntry[] | undefined;
+  /** 入力の節 (番号の順) と、絶対配置の基準になる行内の箱の番号の範囲 (使うときに 1 度だけ作る) */
+  private docNodes: readonly object[] = [];
+  private inlineCbRanges: Map<number, [number, number]> | undefined;
+  private inlineCbRange(key: number): [number, number] | undefined {
+    if (!this.inlineCbRanges) {
+      this.inlineCbRanges = new Map();
+      this.docNodes.forEach((n, k) => {
+        const ck = (n as { cbKey?: unknown }).cbKey;
+        // 子孫の節は、番号の順で、その節のすぐ後ろに並ぶ (深さ優先・前順)
+        if (typeof ck === 'number' && !this.inlineCbRanges!.has(ck)) this.inlineCbRanges!.set(ck, [k, k + documentNodes(n as LDocument).length]);
+      });
+    }
+    return this.inlineCbRanges.get(key);
+  }
 
   private layoutPasses(doc: LDocument): AreaTree {
     // 入力の節に通し番号を付ける (Area の sourceRef)
     // 描くときだけの効果 (transform・opacity) を持つ節 (無い文書では undefined。組んだ後で Area に付ける)
-    this.paintEffects = collectPaintEffects(indexDocument(doc));
+    const docNodes = indexDocument(doc);
+    this.paintEffects = collectPaintEffects(docNodes);
+    this.docNodes = docNodes;
+    this.inlineCbRanges = undefined;
     paintEffectState.on = !!this.paintEffects;
     this.seqMemo = [];
     this.citations = undefined;
@@ -6335,6 +6747,7 @@ export class LayoutEngine {
       measurer: this.measurer,
       cellMeasure: new WeakMap(),
       stats: this.stats,
+      inlineCbRange: (key) => this.inlineCbRange(key),
       cite: (id, last, format, physical, style, pageNumber) => {
         this.citationUsed = true;
         let v: string | undefined;

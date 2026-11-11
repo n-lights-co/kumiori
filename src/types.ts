@@ -895,6 +895,8 @@ export interface LBlock extends BaseNode, BoxStyle {
 export interface LInline extends BaseNode {
   type: 'inline';
   children: LInlineLevel[];
+  /** 絶対配置の箱 (LBlockContainer.inlineCb が同じ番号のもの) の基準になる行内の箱の番号 */
+  cbKey?: number;
   /** 行を分ける改行 (children は '\n')。行頭 (空の行になるとき) では無視する (行内の要素のブロックの ::before / ::after) */
   softBreak?: boolean;
   /**
@@ -1223,6 +1225,8 @@ export interface FormField {
 
 export interface LInlineContainer extends BaseNode, BoxStyle {
   type: 'inline-container';
+  /** 絶対配置の箱 (LBlockContainer.inlineCb が同じ番号のもの) の基準になる行内の箱の番号 (LInline.cbKey と同じ) */
+  cbKey?: number;
   /** 回転 (反時計回り)。回した後の外接矩形が行内の箱の寸法になる (下端を基線に揃える) */
   rotation?: Rotation;
   /** この箱を PDF のフォームの欄にする (中身は空にして、画面には欄の見本を描く) */
@@ -1491,6 +1495,12 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
    */
   positionInContainer?: boolean;
   /**
+   * absolutePosition の基準を、行内の箱 (同じ番号の cbKey を持つ LInline・LInlineContainer) にする (CSS の position が static でない
+   * 行内の要素。CSS 2.1 §10.1 の 4)。箱は、その行内の箱と同じ行の並びの中 (行内の箱の後ろ) に置く。基準の矩形は、行内の箱の最初の断片の
+   * 左上と、最後の断片の右下 (padding の箱)。left・top・right・bottom は、その矩形からの距離 (どれも無ければ、矩形の左上)
+   */
+  inlineCb?: number;
+  /**
    * 幅の指定が無く、left と right の片方しか無いとき、幅を中身に合わせて縮める (CSS の絶対配置の shrink-to-fit。CSS 2.1 §10.3.7):
    * min(max(最小の内容の幅, 使える幅), 内容の幅)。指定が無ければ、使える幅いっぱい (XSL-FO の absolute-position)
    */
@@ -1578,6 +1588,11 @@ export interface LTableColumn {
 export interface LTableCell extends BaseNode, BoxStyle {
   type: 'table-cell';
   /**
+   * 中の絶対配置の箱 (positionInContainer) の基準になる (CSS の position が static でないセル。CSS 2.1 §10.1)。
+   * 中の箱は、行の高さが決まってから、セルの内容の箱の左上・右下からの距離で置く (LBlock.containingBlock と同じ)
+   */
+  containingBlock?: boolean;
+  /**
    * セルの高さの中での内容の block 方向の配置 (display-align)。既定 start。baseline は同じ行の baseline のセルの最初の行の基線をそろえる。
    * last-baseline は同じ行の last-baseline のセルの最後の行の基線をそろえ、行の下端に寄せる (CSS の flex の align-items: last baseline)
    */
@@ -1618,9 +1633,13 @@ export interface LTableRow extends BaseNode {
   /** 行の前後の余白 (pt。fo:list-item の space-before / space-after)。隣の行・表の前後の余白と重ね合わせる */
   spaceBefore?: number;
   spaceAfter?: number;
-  /** この行の前・後で改ページする (CSS の tr の break-before・break-after: page など) */
-  breakBefore?: boolean;
-  breakAfter?: boolean;
+  /**
+   * この行の前・後の強制の区切り。区切りの種類 (CSS の tr・li の break-before・break-after。CSS Fragmentation 3 §3.1: page はページ、
+   * column は段、odd-page・even-page は白ページを挟んで奇数・偶数ページから) か、true (XSL-FO の fo:table-row・fo:list-item の
+   * break-before・break-after。次の段・ページへ送るだけ)
+   */
+  breakBefore?: boolean | BreakKind;
+  breakAfter?: boolean | BreakKind;
   /** 次の行と同じページに置く */
   keepWithNext?: boolean;
   /** 前の行と同じページに置く */
@@ -1642,6 +1661,11 @@ export interface LTableBody extends BaseNode {
 
 export interface LTable extends BaseNode, BoxStyle {
   type: 'table';
+  /**
+   * セルの中の絶対配置の箱 (positionInContainer) の基準になる (CSS の position が static でない表。CSS 2.1 §10.1)。
+   * 中の箱は、表を組み終えてから、表の内容の箱の左上・右下からの距離で置く (LBlock.containingBlock と同じ)
+   */
+  containingBlock?: boolean;
   /** 高さの決まった箱の子として、余った高さを分けてもらう比 (flex の折り返しの容器の align-content: stretch の行。LBlock.flexGrow と同じ) */
   flexGrow?: number;
   columns: LTableColumn[];

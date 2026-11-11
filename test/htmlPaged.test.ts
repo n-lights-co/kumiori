@@ -445,15 +445,19 @@ describe('HTML: WeasyPrint のポスター・チケットの見本との比較�
     const r = load(
       `<div data-css="direction: rtl"><span data-css="direction: rtl" class="s">始</span>本文</div>
        <div data-css="position: relative"><h1 data-css="position: absolute; right: 20px">右</h1>本文</div>
-       <div data-css="position: relative; writing-mode: vertical-rl"><h1 data-css="position: absolute; right: 20px">右</h1>本文</div>`,
+       <div data-css="position: relative; writing-mode: vertical-rl"><h1 data-css="position: absolute; right: 20px">右</h1>本文</div>
+       <div data-css="position: relative; column-count: 2"><h1 data-css="position: absolute; right: 20px">右</h1>本文</div>`,
       '.s { float: start }',
     );
-    const [a, b, c] = r.document.sequences[0].flow.children as LBlock[];
+    const [a, b, v, c] = r.document.sequences[0].flow.children as LBlock[];
     expect((a.children[0] as LFloat).float).toBe('end');
     // 親 (position: relative のブロック) の内容の箱を基準にする
     const abs = b.children[0] as LBlockContainer;
     expect([b.containingBlock, abs.type, abs.positionInContainer, abs.right, abs.top]).toEqual([true, 'block-container', true, 15, undefined]);
-    // 縦書きの親は基準にできない: 上下の指定が無ければ、左右の回り込みで近づける
+    // 縦書きの親も基準にする (NC-14)
+    const vabs = v.children[0] as LBlockContainer;
+    expect([v.containingBlock, vabs.type, vabs.positionInContainer, vabs.right]).toEqual([true, 'block-container', true, 15]);
+    // 段組の親は基準にできない: 上下の指定が無ければ、左右の回り込みで近づける
     const f = c.children[0] as LFloat;
     expect([f.type, f.float, (f.margin as { right: number }).right]).toEqual(['float', 'end', 15]);
   });
