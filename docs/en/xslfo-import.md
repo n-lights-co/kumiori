@@ -60,6 +60,7 @@ Fonts such as MS Mincho and MS Gothic specified by the FO cannot be bundled (the
 ## Unsupported (counted in the report)
 
 Unknown elements (`fo:*`, MathML, the contents of `instream-foreign-object`), unknown region names, `reference-orientation` values that are not multiples of 90 (typeset as 0), unknown functions in length expressions, unreadable colors, unreadable values of `font-variant`, `word-spacing` and `font-stretch`, unreadable values of `text-decoration`, `text-transform` and `baseline-shift`, `overflow` other than auto and visible, unknown values of `axf:punctuation-trim`, `axf:field-type`, `axf:field-checked-style`, `axf:field-font-size`, `axf:annotation-type` and `axf:annotation-flags`, images in `axf:printer-marks`, and FileAttachment annotations without a file to attach (turned into text annotations).
+AH Formatter float extensions (`axf:float-x`, `axf:float-y`, `axf:float-reference`, `axf:float-move` and so on; floats placed relative to the page or column) are not read and are counted by attribute name (`fo:float` is typeset with the values of `float` only: before, start, end, left, right, inside and outside; I-11 in `BACKLOG.md`).
 In the fallback used when the math font cannot be loaded, fine points of math (Content MathML, maligngroup, mlabeledtr) remain undrawn without being counted (I-02 in `BACKLOG.md`; they are supported when typesetting with the math font).
 
 The list of unsupported items and their priorities is recorded in [BACKLOG.md](BACKLOG.md).
