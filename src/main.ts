@@ -129,6 +129,8 @@ function showWarnings(list: string[]): number {
   return counts.size;
 }
 let currentReport: ImportReport | null = null;
+/** 表示している変換レポートの文書の種類 (画像だけを足して出し直すときに使う) */
+let currentReportKind: DocKind = 'fo';
 let tree: AreaTree | null = null;
 let engine: LayoutEngine | null = null;
 let currentDoc: LDocument | null = null;
@@ -221,9 +223,10 @@ function showDocument(doc: LDocument, name: string, compat?: { kind: DocKind; ah
 
 let measurerRef: Measurer | null = null;
 
-/** 変換レポートの表示 */
-function showReport(name: string, r: ImportReport | null) {
+/** 変換レポートの表示。kind: 文書の種類 (見出しと文言を、XSL-FO か HTML (EPUB を含む) かに合わせる。省略時は前と同じ種類) */
+function showReport(name: string, r: ImportReport | null, kind: DocKind = currentReportKind) {
   currentReport = r;
+  currentReportKind = kind;
   if (!r) {
     reportEl.hidden = true;
     return;
@@ -232,10 +235,15 @@ function showReport(name: string, r: ImportReport | null) {
   const miss = Object.entries(r.unsupported).sort((a, b) => b[1] - a[1]);
   const c = r.counts;
   const esc = (s: string) => s.replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[ch]!);
-  reportEl.innerHTML = `<summary>XSL-FO 変換レポート: ${esc(name)}（未対応 ${miss.length} 種）</summary>
+  const fo = kind === 'fo';
+  // 見出し・文言は、文書の種類に合わせる (HTML の文書を「XSL-FO 変換レポート」と出さない)
+  const title = fo ? msg('XSL-FO 変換レポート', 'XSL-FO conversion report') : msg('HTML 変換レポート', 'HTML conversion report');
+  const withDoc = fo ? msg('FO と一緒に', 'together with the FO file') : msg('HTML と一緒に', 'together with the HTML file');
+  const none = fo ? msg('未対応の要素・属性はありません', 'No unsupported elements or attributes') : msg('未対応の CSS はありません', 'No unsupported CSS');
+  reportEl.innerHTML = `<summary>${title}: ${esc(name)}${msg(`（未対応 ${miss.length} 種）`, ` (${miss.length} unsupported)`)}</summary>
     <div>page-sequence ${c.sequences} / block ${c.blocks} / 表 ${c.tables} / 脚注 ${c.footnotes} / float ${c.floats} / ルビ ${c.rubies}</div>
-    ${r.images.length ? `<div>画像: ${r.images.length - missingImgs.length} / ${r.images.length} 個を読み込み済み${missingImgs.length ? `。見つからない画像 (灰色の枠で表示): ${missingImgs.map(esc).join(', ')} — FO と一緒に画像ファイルも選択してください (複数選択できます)` : ''}</div>` : ''}
-    ${miss.length ? `<table>${miss.map(([k, v]) => `<tr><td>${v}</td><td>${esc(k)}</td></tr>`).join('')}</table>` : '<div>未対応の要素・属性はありません</div>'}
+    ${r.images.length ? `<div>画像: ${r.images.length - missingImgs.length} / ${r.images.length} 個を読み込み済み${missingImgs.length ? `。見つからない画像 (灰色の枠で表示): ${missingImgs.map(esc).join(', ')} — ${withDoc}画像ファイルも選択してください (複数選択できます)` : ''}</div>` : ''}
+    ${miss.length ? `<table>${miss.map(([k, v]) => `<tr><td>${v}</td><td>${esc(k)}</td></tr>`).join('')}</table>` : `<div>${none}</div>`}
     ${r.notes.length ? `<ul>${r.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}`;
   reportEl.hidden = false;
 }
@@ -318,7 +326,7 @@ async function loadFo(text: string, name: string) {
     // data URI / 絶対 URL の画像は、ここで読み込む (相対パスは、ユーザーが選んだファイルから解決する。API と同じ手順: documentResources)
     noteNotFetched(await fetchReportedImages(assets, res.report.images, allowRemoteImage));
     noteReport(res.report, true);
-    showReport(name, res.report);
+    showReport(name, res.report, 'fo');
     await ensureSymbolFont(res.document);
     showDocument(res.document, name, { kind: 'fo', ah: isAntennaCompat(compat) });
     resetBtn.hidden = false;
@@ -374,7 +382,7 @@ async function loadHtmlFile(text: string, name: string, files: File[], warnings:
       for (const [k, n] of Object.entries(cssRep.unsupported)) unsupported[k] = (unsupported[k] ?? 0) + n;
       const report = { ...res.report, unsupported };
       noteReport(report, false, cssRep.unknown);
-      showReport(name, report);
+      showReport(name, report, 'html');
       await ensureSymbolFont(res.document);
       showDocument(res.document, name, { kind: 'html', ah: v === 'ah' });
       resetBtn.hidden = false;
