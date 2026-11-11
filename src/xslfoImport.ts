@@ -167,6 +167,19 @@ const DEFAULT_FO_LINE_HEIGHT = 1.2;
 /** 仕様モードの分綴の初期値: 行末に出す字は U+2010 (XSL 1.1 §7.10.5 の hyphenation-character の初期値) */
 const SPEC_HYPHEN_LIMITS: HyphenLimits = { character: '\u2010' };
 
+/** 字だけを読む要素 (属性を尋ねずに読む。reportUnreadAttributes は、その属性を 1 つずつ報告する) */
+const TEXT_ONLY_FO = new Set(['fo:bookmark-title']);
+/**
+ * 属性を尋ねずに扱う要素で、属性が要らないもの (reportUnreadAttributes は報告しない)。axf:footnote-number・axf:footnote-number-citation は
+ * 脚注の自動の番号に置き換える (id・ref-id での対応づけは、脚注の中の位置で決まるので使わない)
+ */
+const HANDLED_WITHOUT_ATTRS = new Set(['axf:footnote-number', 'axf:footnote-number-citation']);
+/**
+ * 組版に効かない性質 (読まなくても結果は変わらないので、報告しない)。role・source-document は、視覚でない媒体のための手がかり
+ * (XSL 1.1 §7.5 Common Accessibility Properties。§7.5.2 role: “provides a hint for alternate renderers (aural readers, etc.)”)
+ */
+const NO_FORMATTING_EFFECT = new Set(['role', 'source-document']);
+
 class Importer {
   /** 本文の fo:page-number に付ける id の番号 */
   private pageNumberSeq = 0;
@@ -353,6 +366,63 @@ class Importer {
   /** 読まずに捨てる要素を、読み込みの報告に数える (FO の要素は fo:名前、ほかは書いたとおりの名前) */
   missElement(el: XEl, label?: string) {
     this.miss(label ?? (this.isFo(el) ? `fo:${this.name(el)}` : el.nodeName));
+    this.skipped.add(el);
+  }
+  /** 要素ごと捨てた (missElement で報告した) 要素。その属性と中の要素は、重ねて報告しない */
+  private skipped = new WeakSet<XNode>();
+  /** 知らない要素として報告し、中身だけを読んだ要素。その属性は、重ねて報告しない (中の要素は見る) */
+  private reported = new WeakSet<XNode>();
+  /** 読み込みが 1 度でも値を尋ねた属性の名前 (どの要素かを問わない) */
+  private askedNames = new Set<string>();
+  /**
+   * 読まずに捨てた属性・要素を、読み込みの報告 (未対応) に数える。読み込みが値を 1 度も尋ねなかった属性は、効かない
+   * (未対応の性質・綴りの誤り・その要素では読まない性質)。黙って捨てずに知らせる:
+   *  - 読んだ要素の、尋ねなかった属性: どの要素でも読まない性質は「属性の名前」、ほかの要素では読む性質は「属性の名前 (要素の名前)」
+   *  - 中の要素ごと読まなかった要素 (自分も子孫も、属性を 1 つも尋ねていない): 「要素の名前 (親の要素の名前 の中)」。中は重ねて数えない
+   *  - 子の要素を持たない、読まなかった要素 (字だけを読む fo:bookmark-title など): その属性を「属性の名前 (要素の名前)」
+   * 見るのは、FO の要素と axf: の要素。要素ごと捨てたもの (missElement で報告済み) の中と、ほかの名前空間の要素 (SVG・MathML) の中は見ない。
+   * 名前空間の宣言 (xmlns)・xml: の属性は見ない
+   */
+  reportUnreadAttributes(root: XEl) {
+    const own = (el: XEl) => this.isFo(el) || el.nodeName.startsWith('axf:');
+    const qn = (el: XEl) => (this.isFo(el) ? `fo:${this.name(el)}` : el.nodeName);
+    // 自分か子孫が読まれた要素 (後ろから前へたどって、親へ伝える)
+    const order: Array<{ el: XEl; parent?: XEl }> = [{ el: root }];
+    for (let k = 0; k < order.length; k++) {
+      const { el } = order[k];
+      if (own(el) && !this.skipped.has(el)) for (const c of this.els(el)) order.push({ el: c, parent: el });
+    }
+    const live = new WeakSet<XNode>();
+    for (let k = order.length - 1; k >= 0; k--) {
+      const { el, parent } = order[k];
+      if (this.asked.has(el)) live.add(el);
+      if (live.has(el) && parent) live.add(parent);
+    }
+    const dead = new WeakSet<XNode>();
+    for (const { el, parent } of order) {
+      if (!own(el) || this.skipped.has(el) || (parent && dead.has(parent))) {
+        if (parent && dead.has(parent)) dead.add(el);
+        continue;
+      }
+      if (this.reported.has(el) || HANDLED_WITHOUT_ATTRS.has(qn(el))) continue;
+      // どのページマスターにも領域が無くて組まれなかった fo:static-content は、捨てたのではなく使われないだけ (§6.4.1.4: 流れは、同じ名前の
+      // 領域に割り当てる。その領域が無いページでは、置く所が無い) なので数えない。名前を知らないものは、読む所で「static-content:名前」として報告している
+      if (qn(el) === 'fo:static-content' && !this.els(el).some((c) => live.has(c))) {
+        dead.add(el);
+        continue;
+      }
+      const asked = this.asked.get(el);
+      if (!live.has(el) && !TEXT_ONLY_FO.has(qn(el))) {
+        this.miss(parent ? `${qn(el)} (${qn(parent)} の中)` : qn(el));
+        dead.add(el);
+        continue;
+      }
+      for (const a of Array.from(el.attributes ?? [])) {
+        const k = a.name;
+        if (k === 'xmlns' || k.startsWith('xmlns:') || k.startsWith('xml:') || NO_FORMATTING_EFFECT.has(k) || asked?.has(k)) continue;
+        this.miss(asked && !this.askedNames.has(k) ? k : `${k} (${qn(el)})`);
+      }
+    }
   }
   /**
    * 「正の整数」の <number> の値 (column-count・column-number・number-columns-repeated・number-columns-spanned・number-rows-spanned)。
@@ -393,7 +463,16 @@ class Importer {
   els(n: XNode): XEl[] {
     return Array.from(n.childNodes).filter((c) => c.nodeType === 1);
   }
+  /** 要素ごとの、読み込みが値を尋ねた属性の名前 (尋ねなかった属性は、読まずに捨てている: reportUnreadAttributes) */
+  private asked = new WeakMap<XNode, Set<string>>();
+  private markAsked(n: XNode, k: string) {
+    this.askedNames.add(k);
+    const s = this.asked.get(n);
+    if (s) s.add(k);
+    else this.asked.set(n, new Set([k]));
+  }
   attr(n: XNode, k: string): string | undefined {
+    this.markAsked(n, k);
     if (n.hasAttribute && n.getAttribute && n.hasAttribute(k)) {
       const v = n.getAttribute(k);
       return v === null ? undefined : v.trim();
@@ -424,7 +503,10 @@ class Importer {
    */
   private expandShorthands(n: XNode): Record<string, string> | null {
     if (!n.hasAttribute || !n.getAttribute || !this.isFo(n)) return null;
-    const own = (k: string) => (n.hasAttribute!(k) ? (n.getAttribute!(k) ?? '').trim() : undefined);
+    const own = (k: string) => {
+      this.markAsked(n, k);
+      return n.hasAttribute!(k) ? (n.getAttribute!(k) ?? '').trim() : undefined;
+    };
     const out: Record<string, string> = {};
     // font: [ [ <font-style> || <font-variant> || <font-weight> ]? <font-size> [ / <line-height> ]? <font-family> ] | caption | icon | … | inherit
     const font = own('font');
@@ -802,9 +884,14 @@ class Importer {
       this.miss('fo:initial-property-set (最初の行の並びの途中に fo:float・絶対配置の箱がある)');
       return;
     }
-    const has = (k: string) => ips.hasAttribute?.(k) ?? this.attr(ips, k) !== undefined;
+    const has = (k: string) => {
+      this.markAsked(ips, k);
+      return ips.hasAttribute?.(k) ?? this.attr(ips, k) !== undefined;
+    };
     for (const k of ['text-transform', 'font-variant', 'line-height', 'text-shadow', 'score-spaces', 'relative-position', 'position']) if (has(k)) this.miss(`${k} (fo:initial-property-set)`);
     const names = Array.from(ips.attributes ?? []).map((x) => x.name);
+    // 下で報告する罫線・余白・背景の属性は、読まずに捨てた属性として重ねて報告しない
+    for (const k of names) if (/^(border|padding)(-|$)/.test(k) || /^background(-(image|repeat|position|attachment)|$)/.test(k)) this.markAsked(ips, k);
     if (names.some((k) => /^border(-|$)/.test(k))) this.miss('border (fo:initial-property-set)');
     if (names.some((k) => /^padding(-|$)/.test(k))) this.miss('padding (fo:initial-property-set)');
     if (names.some((k) => /^background-(image|repeat|position|attachment)/.test(k) || k === 'background')) this.miss('background-image (fo:initial-property-set)');
@@ -1037,7 +1124,10 @@ class Importer {
     for (let el = todo.pop(); el; el = todo.pop()) {
       const e = this.indexEls.get(el);
       if (e) order.set(e, order.size);
-      else if (this.isFo(el) && el.hasAttribute?.('index-key')) this.miss(`index-key (fo:${this.name(el)})`);
+      else if (this.isFo(el) && el.hasAttribute?.('index-key')) {
+        this.miss(`index-key (fo:${this.name(el)})`);
+        this.markAsked(el, 'index-key'); // ここで報告したので、読まずに捨てた属性として重ねて数えない
+      }
       const kids = this.els(el);
       for (let k = kids.length - 1; k >= 0; k--) todo.push(kids[k]);
     }
@@ -1102,7 +1192,7 @@ class Importer {
         docInfo(c);
       } else if (n === 'bookmark-tree') {
         doc.bookmarks = [...(doc.bookmarks ?? []), ...this.bookmarks(c)];
-      } else if (this.isFo(c)) this.miss(`fo:${n}`);
+      } else if (this.isFo(c)) this.missElement(c, `fo:${n}`);
     }
     // axf:outline-level のついたブロックから作るしおり (outline-group ごとに別の木)
     if (this.outlines.length) doc.bookmarks = [...(doc.bookmarks ?? []), ...this.outlineTree()];
@@ -1240,6 +1330,9 @@ class Importer {
 
     const statics = this.els(ps).filter((e) => this.name(e) === 'static-content');
     const flowEl = this.els(ps).find((e) => this.name(e) === 'flow');
+    // 最初の fo:flow は、flow-name に関わらず本文の領域に流す。本文の領域の名前でない flow-name は、読まずに捨てた属性として報告に出る
+    this.askedNames.add('flow-name');
+    if (flowEl && [def, ...alts.map((a) => a.info)].some((i) => i.bodyName === flowEl.getAttribute?.('flow-name'))) this.markAsked(flowEl, 'flow-name');
     // 読まずに捨てる子 (fo:title・2 つ目からの fo:flow など) は、読み込みの報告に数える。
     // 約物のアキの宣言 (readPunctuationSpacing が読む) は除く。fo:folio-prefix・fo:folio-suffix (最初の 1 つずつ) は、ページ番号の所で読む (withFolio)
     const folio = this.folioEls(ps);
@@ -1258,7 +1351,7 @@ class Importer {
       const fname = this.attr(sc, 'flow-name') ?? '';
       if (fname === 'xsl-footnote-separator') sepEl = sc;
       else if (fname === 'xsl-before-float-separator') bfSepEl = sc;
-      else if (!known.has(fname)) this.miss(`static-content:${fname}`);
+      else if (!known.has(fname)) this.missElement(sc, `static-content:${fname}`);
     }
     // static-content は、リージョンの寸法・向きがマスターごとに違うので、マスターごとに読み直す。
     // 読み込みの報告の数 (counts・unsupported・droppedLinks・files) は文書に書かれた要素の数なので、同じ static-content の 2 度目からは数えない
@@ -1398,6 +1491,7 @@ class Importer {
     // 桁区切り (§7.26.2 grouping-separator・§7.26.3 grouping-size。XSLT 1.0 §7.7.1): 10 進の番号を、後ろから grouping-size 桁ごとに
     // grouping-separator (1 字) で区切る。片方だけの指定は無視する (“If only one of the grouping-separator and grouping-size attributes
     // is specified, then it is ignored.”)
+    this.markAsked(ps, 'grouping-separator');
     const gSep = ps.getAttribute?.('grouping-separator') ?? undefined;
     const gSizeAttr = this.attr(ps, 'grouping-size');
     if (gSep !== undefined && gSep !== '' && gSizeAttr !== undefined) {
@@ -1434,6 +1528,10 @@ class Importer {
       const flowKids = this.children(flowEl, { ...fst.ctx, wm, width: colW, cbW: colW, ...(colW !== bodyIpd ? { spanW: bodyW } : {}) }) as LBlockLevel[];
       // 入れ子のブロックの span="all" を効かせるのは互換モードだけ (仕様では fo:flow の直下のブロックにだけ効く。§7.21.4 の Note)
       seq.flow.children = this.spec ? flowKids : this.hoistSpans(flowKids, wm);
+      // span="all" のブロックと、そうでないブロックは、別の span-reference-area に入る (§6.4.14)。段組の本文では、組む側がいつも領域を分ける。
+      // 1 段の本文は、仕様では領域が 1 つで足りる (「precisely enough」) ので分けない。互換モードでは、1 段でも span の切り替わりで分ける
+      // (アンテナハウスの組み方: span="all" の囲みの後の見出しの space-before が、領域の先頭の余白として捨てられる)
+      if (!this.spec && seq.flow.children.some((c) => typeof c !== 'string' && c.type === 'block' && c.span === 'all')) seq.spanAreas = true;
       // 本文の書字方向の裏返し (page-sequence か region-body の writing-mode)
       const sf = flipOf(this.attr(ps, 'writing-mode') ?? def.bodyWmAttr ?? '');
       if (sf) {
@@ -1543,6 +1641,9 @@ class Importer {
     // right Interpreted as "text-align='end'".”)。右から左の書字方向でも、left は start (右) に寄る。
     // 互換モード: left / right は物理の向き (左から右の横組み・縦書きでは start / end、右から左では end / start)
     const toEnd = (v: string) => v === 'end' || v === (this.spec || !rtl ? 'right' : 'left');
+    // 文字列の値 (§7.16.9 の <string>: 表の列のセルを、その文字列の位置でそろえる) には対応していない。start として組み、報告する
+    // (継承した値は、指定した要素で 1 度だけ数える)
+    if (ta && /^(['"]).*\1$/.test(ta)) this.miss('text-align:<string>');
     if (ta) s.textAlign = ta === 'center' ? 'center' : ta === 'justify' ? 'justify' : toEnd(ta) ? 'end' : ta === 'inside' || ta === 'outside' ? ta : 'start';
     const tal = this.attrInh(el, 'text-align-last');
     // text-align-last の inside・outside (§7.16.10): 仕様モードでは text-align の inside・outside と同じく、組むページの綴じ側で start か end かを決める
@@ -2382,7 +2483,7 @@ class Importer {
     }
     if (axf === 'form-field') return [{ v: this.formField(n, ctx), block: false }];
     if (!this.isFo(n)) {
-      this.miss(`${n.nodeName}`);
+      this.missElement(n, `${n.nodeName}`);
       return [];
     }
     const tag = this.name(n);
@@ -2391,7 +2492,7 @@ class Importer {
     // (XSL 1.1 §6.6.13・§6.6.14 の Contents)。ページ番号を読むと、その前後にまた中身を付けることになり終わらないので、読まずに報告する。
     // ブロックの要素は、行内の領域の中に置けないので、同じく読まずに報告する
     if (this.inFolio && /^(page-number|page-number-citation|page-number-citation-last|block|block-container|table|table-and-caption|list-block|float|footnote|marker|retrieve-marker)$/.test(tag)) {
-      this.miss(`fo:${tag} (${this.inFolio} の中)`);
+      this.missElement(n, `fo:${tag} (${this.inFolio} の中)`);
       return [];
     }
     // relative-position="relative" (§7.13.5): 組版が受けられるのは横書きの fo:block だけ (組んだ箱をずらす)。ほかの要素では読まずに報告する
@@ -2414,6 +2515,9 @@ class Importer {
         if (box.width !== undefined && c3.wm === 'horizontal-tb') c3.width = box.width;
         this.report.counts.blocks++;
         const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3) };
+        // 行グリッド (axf:baseline-grid。HTML の -ah-baseline-grid と同じ受け皿)
+        const grid = this.baselineGridOf(n);
+        if (grid) blk.baselineGrid = grid;
         // fo:initial-property-set (§6.6.4): 最初の行の書式
         const ips = this.els(n).find((e) => this.isFo(e) && this.name(e) === 'initial-property-set');
         if (ips) this.firstLineOf(blk, ips, c3);
@@ -2481,6 +2585,9 @@ class Importer {
         const ip = this.padding(n, c2);
         if (ib) inl.border = ib;
         if (ip) inl.padding = ip;
+        // 角丸 (axf:border-radius="水平半径 垂直半径"。ブロックと同じ書き方)
+        const ir = this.attr(n, 'axf:border-radius')?.split(/\s+/).map((v) => this.len(v, c2.fontSize));
+        if (ir?.[0] !== undefined && ir[0] > 0) inl.borderRadius = { rx: ir[0], ry: ir[1] ?? ir[0] };
         // 行の進む方向の外側の空き: space-start・space-end (§7.12.5・§7.12.6)。無ければ、その辺の margin (§7.11.4 の対応)
         {
           const sSide = this.phys('start', c2.wm, c2.rtl);
@@ -2510,6 +2617,7 @@ class Importer {
       }
       case 'character': {
         // character の値は空白でもよい (前後を削らない)。字の書式 (色・書体など) も当てる (§6.6.3)
+        this.markAsked(n, 'character');
         const ch = n.getAttribute?.('character') ?? '';
         const { style, ctx: c2 } = this.textStyle(n, ctx);
         const id = this.idOf(n);
@@ -2611,7 +2719,7 @@ class Importer {
         // fo:marker の中の fo:marker: fo:marker は fo:flow の子孫で、fo:marker の子孫であってはならない (XSL 1.1 §6.13.5 の Constraints)。
         // 読むと、外の marker を取り出すたびに中の marker が増えるので、読まずに読み込みの報告に数える
         if (this.inMarker) {
-          this.miss('fo:marker (fo:marker の中)');
+          this.missElement(n, 'fo:marker (fo:marker の中)');
           return [];
         }
         return one(this.marker(n, ctx), true);
@@ -2621,7 +2729,7 @@ class Importer {
         // fo:marker は fo:flow の子孫に限られる (§6.13.5) ので、fo:marker の中には置けない。読むと、取り出した中身がまた marker を
         // 取り出すことになり終わらないので、読まずに読み込みの報告に数える
         if (this.inMarker) {
-          this.miss('fo:retrieve-marker (fo:marker の中)');
+          this.missElement(n, 'fo:retrieve-marker (fo:marker の中)');
           return [];
         }
         const pos = this.attr(n, 'retrieve-position') ?? 'first-starting-within-page';
@@ -2635,7 +2743,7 @@ class Importer {
       case 'initial-property-set':
         // fo:block の子は、ブロックを読む所で最初の行の書式にする (firstLineOf)。ほかの所には置けない (§6.6.4: fo:block の最初の行の書式)
         if (this.parents.get(n) && this.isFo(this.parents.get(n)!) && this.name(this.parents.get(n)!) === 'block') return [];
-        this.miss('fo:initial-property-set (fo:block の子でない)');
+        this.missElement(n, 'fo:initial-property-set (fo:block の子でない)');
         return [];
       case 'change-bar-begin':
       case 'change-bar-end':
@@ -2678,6 +2786,7 @@ class Importer {
       }
       default:
         this.miss(`fo:${tag}`);
+        this.reported.add(n);
         return this.children(n, ctx).map((v) => ({ v, block: typeof v !== 'string' && (v as { type: string }).type === 'block' }));
     }
   }
@@ -2814,12 +2923,24 @@ class Importer {
     };
   }
 
+  /**
+   * 行グリッド (axf:baseline-grid): new はこの箱の字の大きさと line-height で作る。root は根元の書式で作る。none は解除する。
+   * normal (既定) は何もしない。ほかの値は読まずに報告する。axf:baseline-block-snap (箱をグリッドに合わせる) は読まない (報告に出る)
+   */
+  private baselineGridOf(el: XEl): LBlock['baselineGrid'] | undefined {
+    const v = this.attr(el, 'axf:baseline-grid')?.toLowerCase();
+    if (v === 'new' || v === 'root' || v === 'none') return v;
+    if (v !== undefined && v !== 'normal') this.miss(`axf:baseline-grid:${v.slice(0, 20)}`);
+    return undefined;
+  }
+
   /** 行番号 (axf:line-number-*)。この要素で指定されたものだけ (子へは resolveStyle で重ねて引き継ぐ) */
   private lineNumbering(el: XEl, fs: number): LineNumbering | undefined {
     const a = (k: string) => this.attr(el, `axf:line-number${k}`);
     const ln: LineNumbering = {};
     const mode = a('');
     if (mode === 'show' || mode === 'hide' || mode === 'none') ln.mode = mode;
+    else if (mode !== undefined && mode !== 'inherit') this.miss(`axf:line-number:${mode.slice(0, 20)}`);
     const int = (k: string) => {
       const v = parseInt(a(k) ?? '', 10);
       return Number.isFinite(v) ? v : undefined;
@@ -3182,6 +3303,10 @@ class Importer {
       // 互換モード: コンテナの外の indent を中へ持ち込まない (従来どおり)
       kids = this.children(n, { ...c2, width: innerW, cbW: innerW, cbH: box.height });
     }
+    // 行グリッド (axf:baseline-grid): コンテナの中身は別の流れなので、中身を、その指定を持つブロックで包む (new・root)。
+    // コンテナの中へは外の行グリッドが届かないので、none は何もしなくてよい
+    const grid = this.baselineGridOf(n);
+    if (grid === 'new' || grid === 'root') kids = [{ type: 'block', baselineGrid: grid, children: kids }];
     const c: LBlockContainer = { type: 'block-container', ...this.idOf(n), ...style, ...(box as object), children: kids };
     // 書字方向の裏返し: 自分で writing-mode を決めたコンテナは、裏返さない値でも印 ({}) を付ける (外の裏返しを中へ持ち込まない)。
     // 受け継いだ裏返しも、参照領域ごとに当てる
@@ -3234,6 +3359,9 @@ class Importer {
       const fillH = ref?.h !== undefined && t !== undefined && b !== undefined && c.height === undefined;
       const fillW = ref?.w !== undefined && l !== undefined && r !== undefined && c.width === undefined;
       if (t !== undefined) c.top = t + refOrigin.y - (fillH ? 0 : edge('top'));
+      // 本文の流れの中の箱の top は、最も近い祖先の参照領域から測る (§7.6.1)。本文の領域が span の切り替わりで分かれていれば、
+      // 分かれた領域の先頭が基準 (組むときに、その分をずらす)。fixed はページが基準なので、ずらさない
+      if (t !== undefined && !inLocal && !fixedPage) c.areaOffset = fillH ? 'fill' : 'top';
       if (l !== undefined) c.left = l + refOrigin.x - (fillW ? 0 : edge('left'));
       // right・bottom は基準の領域の右端・下端から測る (§7.6.1)。組むときはページの端から測るので、領域の外の余白を足す
       // (コンテナの中の絶対配置は、コンテナの内容の箱がそのまま基準)
@@ -3802,6 +3930,8 @@ class Importer {
       const c3: Ctx = { ...c30, listPdbs: pdbs, listSep: sepL };
       const label = this.els(it).find((e) => this.name(e) === 'list-item-label');
       const body = this.els(it).find((e) => this.name(e) === 'list-item-body');
+      // 本体の start-indent="body-start()" は、いつもその位置に置くので読んだことにする (ほかの値は、最初の項目の本体のものだけを読む)
+      if (body && /^\s*body-start\(\s*\)\s*$/.test(body.getAttribute?.('start-indent') ?? '')) this.markAsked(body, 'start-indent');
       const itemBox = this.boxStyle(it, c3, c2);
       // ラベル・本体自身の書式 (継承される性質) と id も、セルに載せる
       const mk = (e: XEl | undefined, extra: Partial<LTableCell> = {}): LTableCell => {
@@ -3866,6 +3996,7 @@ export function importXslFo(xml: string, parse: (xml: string) => XNode, opts: Im
   let document: LDocument;
   try {
     document = importer.convert(root);
+    importer.reportUnreadAttributes(root);
   } catch (e) {
     // 深さの上限 (MAX_FO_NEST) の中でも、呼び出しの深さを使い切ることがありうる (実行環境のスタックが小さいとき)。
     // そのときも、何が起きたかの分かる誤りにする

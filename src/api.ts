@@ -30,7 +30,7 @@ import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
 import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
 import { MESSAGE_LANGS, msg, withMessageLang, type MessageLang } from './messages';
 import { AH_HTML_IMPORT_OPTIONS, FO_COMPATS, HTML_STYLES, ahCascadeOptions, compatLayoutOptions, compatPdfOptions, isAhCompat, loadFoHyphenators, type FoCompat } from './compat';
-import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, setupDefaultFonts } from './fontMapping';
+import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, missingGlyphChars, setupDefaultFonts } from './fontMapping';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
 import { collectResources, documentChars, refBasename } from './resources';
@@ -563,6 +563,14 @@ async function typesetDocument(
   };
   if (mapping.usesMono() || (await svgMono())) for (const spec of MONO_SPECS) await loadSpec(fonts, spec).catch((e) => warnings.push(String(e instanceof Error ? e.message : e)));
   if (hasMissingGlyphs(fonts, res.document)) await loadSpec(fonts, SYMBOL_SPEC).catch((e) => warnings.push(String(e instanceof Error ? e.message : e)));
+  // 読み込んだどの書体にも字形の無い字 (字形の無い字の形 = 豆腐で出る) を知らせる: 字と数。多ければ、多い順の先頭と残りの数
+  const tofu = [...missingGlyphChars(fonts, res.document)].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
+  if (tofu.length) {
+    const cp = (ch: string) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`;
+    const head = tofu.slice(0, 20).map(([ch, n]) => `${ch} (${cp(ch)}${n > 1 ? ` ×${n}` : ''})`).join('、');
+    const rest = tofu.length > 20 ? msg(` …ほか ${tofu.length - 20} 種`, ` … and ${tofu.length - 20} more`) : '';
+    warnings.push(msg(`読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます): ${head}${rest}`, `no loaded font has a glyph for these characters (they are drawn as the missing-glyph box): ${head}${rest}`));
+  }
 
   const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah) });
   const t0 = Date.now();
