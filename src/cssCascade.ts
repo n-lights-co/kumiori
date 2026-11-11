@@ -834,8 +834,8 @@ export interface AhFlags {
 }
 /** 拡張を読まない (ブラウザと同じ) */
 const NO_AH: AhFlags = { ahBorderStyles: false, ahCounterFlags: false };
-/** 拡張をすべて読む (@supports の答え。互換の指定が分からない所で、拡張の値を読めるものとして扱う) */
-const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true };
+/** 拡張をすべて読む (アンテナハウス互換。compat.ts の ahCascadeOptions と、prepareHtml の @supports の読み方) */
+export const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true };
 const isBorderStyle = (t: string, ah: AhFlags) => BORDER_STYLES.test(t) || (ah.ahBorderStyles && AH_BORDER_STYLES.test(t));
 const isLenLike = (t: string) => /^(-?(?:\d+\.?\d*|\.\d+)[a-z%]*|calc\(.*\)|min\(.*\)|max\(.*\)|clamp\(.*\)|var\(.*\))$/i.test(t);
 const isColorLike = (t: string) => parseColor(t) !== undefined || /^var\(/i.test(t);
@@ -859,10 +859,10 @@ const FONT_RESET_ONLY: Array<[string, string]> = [
 ];
 
 /** Kumiori の知っているプロパティか: PROPS にある (論理のプロパティは物理に直して)、または一括指定を分けた性質がすべて PROPS にある */
-export function isKnownCssProperty(prop: string, value = ''): boolean {
+export function isKnownCssProperty(prop: string, value = '', ah: AhFlags = NO_AH): boolean {
   const known = (p: string) => !!PROPS[p] || !!SVG_STYLE_PROPS[p] || !!PROPS[logicalToPhysical(p, 'horizontal-tb', 'ltr') ?? ''];
   if (known(prop)) return true;
-  const parts = expand(prop, value);
+  const parts = expand(prop, value, ah);
   return parts.length > 0 && parts.every(([p]) => p !== prop && known(p));
 }
 
@@ -880,11 +880,15 @@ export function isKnownCssProperty(prop: string, value = ''): boolean {
  *  - var() を含む値は、性質が上の 3 つに当たらなければ真 (Variables 1 §3: var() を含む値は、構文を調べる時点では有効とみなし、
  *    置き換えた後の計算値の時点で調べる。@supports は置き換える前に答えるので、読めるかは決まらない)
  *  - カスタム プロパティ (--x: 何でも) は、ここへ来る前に真 (htmlPaged の matchSupports。Variables 1 §2.1: 値の構文はほぼ何でも受け付ける)
- * アンテナハウスの拡張の値 (線種 dot-dash など・counter() の physical・reverse) は、互換の指定のときだけカスケードが読むが、
- * @supports を読む時点では互換の指定が分からないので、真のままにする (これまでと同じ)。
+ * アンテナハウスの拡張の値 (線種 dot-dash など・counter() の physical・reverse) は、互換の指定 (--style ah) のときだけカスケードが読むので、
+ * @supports もそのときだけ真にする (ah = カスケードに渡すのと同じ読み方。省けば拡張を読まない)。§6.1 の注記: 機能を入り切りする
+ * 開発者向けの設定は、対応の定義に効く (「a developer-facing preference whose purpose is to enable or disable support for
+ * an experimental CSS feature does affect this definition of support」)。
+ * 互換の指定によらず読む拡張 (-ah- の付いたプロパティなど) は、どちらのときも受け付けるので、どちらのときも真。
+ * counter() の拡張は、互換の指定のときも、使える書き方 (counter(page physical)) だけを真にする。
  * display: grid のように、性質と値は読み、働きの一部が未対応のものも真のまま
  */
-export function supportsCssDeclaration(prop: string, value: string): boolean {
+export function supportsCssDeclaration(prop: string, value: string, ah: AhFlags = NO_AH): boolean {
   const p = prop.toLowerCase();
   const v = value.replace(/\s*!\s*important\s*$/i, '').trim();
   const unsupported = (lp: string, lv: string, longhandOfShorthand: boolean) => {
@@ -899,13 +903,22 @@ export function supportsCssDeclaration(prop: string, value: string): boolean {
   if (unsupported(p, v, false)) return false;
   // var() を含む値は、性質を知っているかを、var() の無い仮の値で見る (一括指定は、値が無いと分けられない)
   const hasVar = /var\(/i.test(v);
-  if (!isKnownCssProperty(p, v) && !(hasVar && isKnownCssProperty(p, 'initial'))) return false;
+  if (!isKnownCssProperty(p, v, ah) && !(hasVar && isKnownCssProperty(p, 'initial'))) return false;
   if (hasVar) return true;
-  const parts = expand(p, v);
+  const parts = expand(p, v, ah);
   if (parts.some(([lp, lv]) => lp !== p && unsupported(lp, lv, true))) return false;
   // 値が読めるか (カスケードが宣言を捨てるかの検査と同じ。cascadeDecls)
   if (!v || !parts.length) return false;
-  return parts.every(([lp, lv]) => valid(lp, lv, ANY_CTX, NO_AH) || valid(lp, lv, ANY_CTX, ALL_AH));
+  // counter() の拡張のうち、使えるのは counter(page physical) だけ (htmlImport の evalContent)。ほかの書き方 (reverse・page でない
+  // カウンタの physical) は、互換のカスケードが宣言として受け付けても何も出さないので、対応しているとは答えない (§6.1: 使える水準)
+  if (p === 'content' && ah.ahCounterFlags) {
+    const bare = v.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '"s"');
+    for (const m of bare.matchAll(/\bcounter\(([^(),]*)/gi)) {
+      const words = m[1].trim().toLowerCase().split(/\s+/);
+      if (words.length > 1 && !(words.length === 2 && words[0] === 'page' && words[1] === 'physical')) return false;
+    }
+  }
+  return parts.every(([lp, lv]) => valid(lp, lv, ANY_CTX, ah));
 }
 setSupportsDecl(supportsCssDeclaration);
 
@@ -1395,9 +1408,10 @@ const VAR_RE = new RegExp(String.raw`var\(\s*(--${NAME_CHAR}+)\s*(?:,\s*((?:[^()
 
 /** 組み込みの既定のスタイルシート (HTML_UA_CSS・QUIRKS_UA_CSS) を読んだもの (文書ごとに読み直さない。parseCss の結果は書き換えない) */
 const BUILTIN_UA_SHEETS = new Map<string, ParsedCss>();
-const sheetOf = (css: string | ParsedCss): ParsedCss => {
+const sheetOf = (css: string | ParsedCss, ah?: AhFlags): ParsedCss => {
   if (typeof css !== 'string') return css;
-  if (css !== HTML_UA_CSS && css !== QUIRKS_UA_CSS) return parseCss(css);
+  // 文字列の CSS は、このカスケードの拡張の読み方で @supports を読む (読んだものを渡されたときは、読んだ側の読み方)
+  if (css !== HTML_UA_CSS && css !== QUIRKS_UA_CSS) return parseCss(css, undefined, ah);
   let hit = BUILTIN_UA_SHEETS.get(css);
   if (!hit) BUILTIN_UA_SHEETS.set(css, (hit = parseCss(css)));
   return hit;
@@ -1416,7 +1430,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   const selCache = new Map<string, Selector[]>();
   let order = 0;
   const addSheet = (css: string | ParsedCss, origin: Origin) => {
-    for (const r of sheetOf(css).rules) {
+    for (const r of sheetOf(css, ah).rules) {
       let sels = selCache.get(r.selector);
       if (!sels) selCache.set(r.selector, (sels = parseSelectorList(r.selector)));
       // 書いた順の宣言 (list)。同じ性質が並ぶときは、それぞれの !important で比べる

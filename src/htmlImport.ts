@@ -67,7 +67,7 @@ import { parseIndividualTransform, parseTransformList, parseTransformOrigin } fr
 import type { ImportReport, ImportResult } from './xslfoImport';
 import { normalizeSrc } from './assets';
 import { countDroppedLink, judgeExternalLink, type LinkPolicy } from './linkPolicy';
-import { expand, lengthPx, parseInitialLetter, splitTextIndent } from './cssCascade';
+import { ALL_AH, expand, lengthPx, parseInitialLetter, splitTextIndent } from './cssCascade';
 import { parseVariationSettings } from './fontVariation';
 import { inlineSvgDataUri, isInlineSvg } from './htmlSvg';
 import { isColorName } from './color';
@@ -235,6 +235,12 @@ export interface HtmlImportOptions {
    * 字は、その古い仕様 (CSS3 Lists の 2002 年 11 月 7 日の草案 §4.1) が例に挙げる字の最初のもの (OBSOLETE_LIST_GLYPHS)
    */
   ahObsoleteListStyles?: boolean;
+  /**
+   * css の文字列をここで読むとき (sheet を渡さないとき) の @supports に、アンテナハウスの拡張の値 (線種 dot-dash など・counter() の
+   * physical・reverse) を対応していると答える (アンテナハウス互換。その値をカスケードが受け付けるのは、互換の指定のときだけ。
+   * Conditional 3 §6.1)。sheet を渡すときは、sheet を読んだ側 (prepareHtml) の読み方に従う
+   */
+  ahCssExtensions?: boolean;
   /** 幅が auto の表の列が入りきらないときの列の幅の配り方を互換の規則にする (アンテナハウス互換。LTable.fitContentRule の 'ah-html') */
   tableAutoWidthAh?: boolean;
   /** 表の上の見出しと表ヘッダーを、本体の最初の行と同じページに置く (アンテナハウス互換。LTable.keepHeaderWithBodyAh) */
@@ -5836,7 +5842,7 @@ function hasPageCitation(node: unknown): boolean {
 /** HTML の文書 (スタイルを確定させたもの) を Kumiori の論理ツリーにする */
 export function importHtml(doc: Document, src: StyleSource, opts: HtmlImportOptions = {}): ImportResult {
   // 文書の CSS は 1 度だけ読む (prepareHtml が読んであれば、それを使う)
-  const sheet = opts.sheet ?? parseCss(opts.css ?? '', opts.defaultPage ? mediaPageOf(opts.defaultPage) : undefined);
+  const sheet = opts.sheet ?? parseCss(opts.css ?? '', opts.defaultPage ? mediaPageOf(opts.defaultPage) : undefined, opts.ahCssExtensions ? ALL_AH : undefined);
   // target-counter() / target-text() を使う文書は、2 回変換する (1 回目で、参照先の番号・文字を集める)
   let lookup: Map<string, TargetInfo> | undefined;
   if (/target-(counter|text)\(/.test(opts.css ?? '')) {

@@ -4,6 +4,7 @@
  *  - HTM-24 li の break-before・break-after・break-inside が、リストの行に効く
  *  - PKG-16 @supports・@import の supports() は、未対応の性質・値を偽にする
  *  - PKG-18 @supports・@import の supports() は、読めない値 (カスケードが捨てる宣言) を偽にする
+ *  - PKG-19 (2) @supports・@import の supports() は、アンテナハウスの拡張の値を、互換の指定 (--style ah) のときだけ真にする
  *  - @page の中の、ASCII でない名前の var()・ページの名前・content の識別子
  *  - font・columns の一括指定の中の数の書き方
  */
@@ -273,9 +274,78 @@ describe('PKG-18 @supports は、読めない値の宣言を偽にする (Condit
       expect(matchSupports(`(${c})`), c).toBe(accepted(c));
   });
 
-  it('アンテナハウスの拡張の値は、互換の指定が分からない所なので真のまま', () => {
-    for (const c of ['border-style: dot-dash', 'border-top-style: wave', 'column-rule-style: dot-dot-dash']) expect(matchSupports(`(${c})`), c).toBe(true);
-    expect(matchSupports('(border-top-style: zigzag)')).toBe(false);
+  // PKG-19 の (2): Conditional 3 §6.1 は「宣言を (構文の誤りとして捨てずに) 受け付けるとき」を対応とし、その注記で、機能を入り切りする
+  // 開発者向けの設定は対応の定義に効くとする。アンテナハウスの拡張の値は、互換の指定 (--style ah) のときだけカスケードが受け付ける
+  const AH = { ahBorderStyles: true, ahCounterFlags: true };
+  const AH_VALUES = ['border-style: dot-dash', 'border-top-style: wave', 'column-rule-style: dot-dot-dash', 'border: 2px dot-dash', 'border-left: wave', 'column-rule: 1px dot-dot-dash', 'content: counter(page physical)', 'content: "a" counter(page physical, decimal)'];
+  it('アンテナハウスの拡張の値 (線種 dot-dash・dot-dot-dash・wave、counter() の physical・reverse) は、互換の指定の無いときは偽、あるときは真', () => {
+    for (const c of AH_VALUES) {
+      expect(matchSupports(`(${c})`), c).toBe(false);
+      expect(matchSupports(`(${c})`, AH), `${c} (ah)`).toBe(true);
+      expect(matchSupports(`not (${c})`), `not ${c}`).toBe(true);
+    }
+    // counter() の拡張のうち、互換の指定のときも組版に使わない書き方 (reverse・page でないカウンタの physical) は、どちらのときも偽 (§6.1: 使える水準)
+    for (const c of ['content: counter(c reverse)', 'content: counter(page reverse)', 'content: counter(c physical)', 'content: counter(page physical reverse)', 'content: "(physical)" counter(c reverse, decimal)'])
+      expect([matchSupports(`(${c})`), matchSupports(`(${c})`, AH)], c).toEqual([false, false]);
+    expect(matchSupports('(content: "counter(c reverse)" counter(page physical))', AH)).toBe(true);
+    const [prop, value] = ['border-style', 'dot-dash'];
+    expect([supportsCssDeclaration(prop, value), supportsCssDeclaration(prop, value, AH)]).toEqual([false, true]);
+    // どちらのときも読めない値は偽、標準の値は真のまま
+    for (const ah of [undefined, AH]) {
+      expect(matchSupports('(border-top-style: zigzag)', ah)).toBe(false);
+      expect(matchSupports('(content: counter(c d))', ah)).toBe(false);
+      expect(matchSupports('(border-style: dashed)', ah)).toBe(true);
+      expect(matchSupports('(content: counter(c, upper-roman))', ah)).toBe(true);
+    }
+  });
+
+  it('アンテナハウスの拡張の値への @supports の答えは、どちらのときも、カスケードが宣言を受け付けるかと同じ', () => {
+    const d = new DOMParser().parseFromString('<html><body><p>a</p></body></html>', 'text/html') as unknown as Document;
+    const el = d.getElementsByTagName('p')[0] as unknown as Element;
+    const takes = (decl: string, ah: boolean) => {
+      const prop = decl.startsWith('content') ? 'content' : decl.startsWith('column-rule') ? 'column-rule-style' : decl.startsWith('border-left') ? 'border-left-style' : 'border-top-style';
+      const sel = prop === 'content' ? 'p::before' : 'p';
+      const o = { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 }, ...(ah ? AH : {}) };
+      const get = (css: string) => cascadeStyles(d, css, o).style(el, prop === 'content' ? '::before' : undefined).getPropertyValue(prop);
+      return get(`${sel} { ${decl} }`) !== get(`${sel} { }`);
+    };
+    for (const c of AH_VALUES) for (const ah of [false, true]) expect(matchSupports(`(${c})`, ah ? AH : undefined), `${c} ${ah}`).toBe(takes(c, ah));
+  });
+
+  it('@supports の規則と @import の supports() は、互換の指定 (--style ah) のときだけ、拡張の値の規則を読む', async () => {
+    const css = '@supports (border-style: dot-dash) { .a { color: red } } @supports not (border-style: dot-dash) { .b { color: red } } @supports (content: counter(page physical)) { .c { color: red } }';
+    expect(parseCss(css).rules.map((r) => r.selector)).toEqual(['.b']);
+    expect(parseCss(css, undefined, AH).rules.map((r) => r.selector)).toEqual(['.a', '.c']);
+    // 文字列の CSS を渡した cascadeStyles は、その設定で @supports を読む
+    const d = new DOMParser().parseFromString('<html><body><p>a</p></body></html>', 'text/html') as unknown as Document;
+    const el = d.getElementsByTagName('p')[0] as unknown as Element;
+    const top = (o: object) => cascadeStyles(d, '@supports (border-style: wave) { p { border-top-style: wave } } @supports not (border-style: wave) { p { border-top-style: dotted } }', { uaCss: HTML_UA_CSS, ...o }).style(el).getPropertyValue('border-top-style');
+    expect([top({}), top(AH)]).toEqual(['dotted', 'wave']);
+    // prepareHtml: 既定のスタイルが ah のときだけ
+    const files = { 'a.css': '.ia { color: red }', 'b.css': '.ib { color: red }' };
+    const head = `<style>@import "a.css" supports(border-style: dot-dash); @import "b.css" supports(not (border-style: dot-dash)); ${css}</style>`;
+    const sels = async (style: 'kumiori' | 'browser' | 'ah' | 'vivliostyle' | 'weasyprint') =>
+      (await prepareHtml(`<!doctype html><html><head>${head}</head><body><p>a</p></body></html>`, Object.entries(files).map(([name, text]) => ({ name, text: async () => text })) as never, style, A4, (t) => parseHTML(t).document as never)).authorSheet.rules.map((r) => r.selector);
+    for (const st of ['kumiori', 'browser', 'vivliostyle', 'weasyprint'] as const) expect(await sels(st), st).toEqual(['.ib', '.b']);
+    expect(await sels('ah')).toEqual(['.ia', '.a', '.c']);
+  });
+
+  it('importHtml が css の文字列を読むとき (sheet を渡さないとき) も、互換の設定 (ahCssExtensions) で @supports を読む', () => {
+    const run = (o: object) => {
+      const { document: d } = parseHTML('<!doctype html><html><head></head><body><p>a</p></body></html>');
+      const css = '@supports (border-style: dot-dash) { @page { size: 100mm 120mm } } @supports not (border-style: dot-dash) { @page { size: 90mm 110mm } }';
+      const r = importHtml(d as never, cascadeStyles(d as never, css, { uaCss: HTML_UA_CSS }), { css, ...o });
+      return Math.round(r.document.sequences[0].master.width);
+    };
+    expect([run({}), run({ ahCssExtensions: true })]).toEqual([90, 100]);
+  });
+
+  it('互換の指定によらず効く拡張 (-ah- の付いたプロパティ・float の拡張の値など) は、どちらのときも真 (効くものを偽にしない)', () => {
+    for (const ah of [undefined, AH])
+      for (const c of ['-ah-display-align: center', '-ah-border-radius: 6pt', '-ah-text-autospace: none', '-ah-column-rule-length: 60%', '-ah-margin-start: 1em', 'float: top', 'color: cmyk(0, 0, 0, 1)'])
+        expect(matchSupports(`(${c})`, ah), c).toBe(true);
+    // 解釈しない -ah- のプロパティは偽
+    expect(matchSupports('(-ah-kerning-mode: pair)')).toBe(false);
   });
 
   it('@supports の規則・not・@import の supports() に効く', async () => {
