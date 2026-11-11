@@ -4516,13 +4516,29 @@ class HtmlImporter {
       // 画像の罫線・内側の余白・背景色 (img { border: … }): 画像を囲む行内の箱に付ける。
       // 角丸 (border-radius) は枠に付け、画像は枠の内側の角丸 (外側の半径 − 罫線と余白) で切り抜く (CSS Backgrounds 3 §5.1・§5.3)
       const bs = this.boxStyle(el);
+      // 外側の余白 (margin): 行内の置換要素には 4 辺とも効く (CSS 2.1 §8.3。上下の margin が効かないのは、置換要素でない行内の箱だけ)。
+      // auto は 0 (§10.3.2)。百分率は読まない
+      const c = this.cs(el);
+      const mg = { top: cssLen(c('margin-top')) ?? 0, right: cssLen(c('margin-right')) ?? 0, bottom: cssLen(c('margin-bottom')) ?? 0, left: cssLen(c('margin-left')) ?? 0 };
+      const hasMargin = !!(mg.top || mg.right || mg.bottom || mg.left);
       if (bs.border || bs.padding || bs.backgroundColor) {
         const rad = img.borderRadius;
         if (rad) img.borderRadius = innerRadius(rad, bs.border, bs.padding);
         // 変換・不透明度は、枠ごとに掛ける (基準の箱は border の箱)
         delete img.paintEffect;
-        return [{ type: 'inline', ...(bs.paintEffect ? { paintEffect: bs.paintEffect } : {}), ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline];
+        const frame = { type: 'inline', ...(bs.paintEffect ? { paintEffect: bs.paintEffect } : {}), ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline;
+        // 枠のある画像の余白は、枠の外に付ける: 行の進む方向の余白だけ (行内の空き。行内の要素の margin と同じ)。
+        // 行の幅の方向の余白 (横書きの上下) は、枠を行内の枠として描いているので付けられない (知らせる)
+        if (hasMargin) {
+          const vert = /^(vertical|sideways)/.test(c('writing-mode'));
+          const [ms, me, cross] = vert ? [mg.top, mg.bottom, mg.left || mg.right] : [mg.left, mg.right, mg.top || mg.bottom];
+          const rtl = !vert && c('direction') === 'rtl';
+          if (ms || me) frame.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me };
+          if (cross) this.miss(vert ? 'margin-left・margin-right (罫線・内側の余白・背景色のある行内の画像)' : 'margin-top・margin-bottom (罫線・内側の余白・背景色のある行内の画像)');
+        }
+        return [frame];
       }
+      if (hasMargin) img.margin = mg;
       return [img];
     }
     // 文書の中に直接書いた <svg>: 単独の SVG 文書 (data URI) にして、<img> と同じ画像として組む
