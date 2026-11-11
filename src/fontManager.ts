@@ -6,7 +6,7 @@
  * を同一バイト列から作る。Canvas と PDF が「同じフォントファイル」を見るため、
  * 文字幅の食い違いが原理的に発生しない。
  */
-import { collectionFaces, isCollection } from './fontLoader';
+import { extractFromCollection, isCollection } from './fontLoader';
 import { toSfnt } from './webFont';
 import { msg } from './messages';
 import { patchFontkitShaping } from './fontkitShaping';
@@ -203,7 +203,7 @@ export function fontFileStyle(buffer: ArrayBuffer): { sfnt: ArrayBuffer; weight?
   const none = { sfnt, italic: false, variable: false };
   try {
     sfnt = toSfnt(buffer);
-    if (isCollection(sfnt)) sfnt = collectionFaces(sfnt)[0];
+    if (isCollection(sfnt)) sfnt = extractFromCollection(sfnt, 0);
     const v = new DataView(sfnt);
     const tables = new Map<string, number>();
     for (let i = 0, n = v.getUint16(4); i < n; i++) {
@@ -360,7 +360,7 @@ export class FontManager {
     // WOFF・WOFF2 は、ふつうの書体のファイル (TTF・OTF) に戻してから登録する (PDF にはそのまま埋め込めない。webFont.ts)。
     // 書体の集まり (TTC と、WOFF2 の書体の集まりを戻したもの) は、最初の書体を使う (@font-face で集まりを指したとき)
     buffer = toSfnt(buffer);
-    if (isCollection(buffer)) buffer = collectionFaces(buffer)[0];
+    if (isCollection(buffer)) buffer = extractFromCollection(buffer, 0);
     // 可変でない CFF2 の書体 (fvar の無い、輪郭が CFF2 の OpenType) は、静的な CFF に作り直して登録する (CFF2 の輪郭は PDF に埋め込めない)
     try {
       buffer = staticCff2ToCff(buffer) ?? buffer;
@@ -670,7 +670,18 @@ export class FontManager {
         try {
           r = instantiateFont(master.buffer, v.info, coords);
         } catch (e) {
-          if (!v.info.cff2) throw e;
+          if (!v.info.cff2) {
+            // 表が壊れていて実体を作れない可変フォント (gvar・glyf の位置が範囲の外など): 文書の全体を誤りにせず、既定の形のまま使って知らせる
+            v.failed = true;
+            const why = e instanceof Error ? e.message : String(e);
+            this.onNotice(
+              msg(
+                `${master.family}: 可変フォントの実体を作れません (${why})。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
+                `${master.family}: cannot instantiate the variable font (${why}); the default instance is used and the weight, width and other axes have no effect`,
+              ),
+            );
+            return master;
+          }
           // CFF2 の表・字形が読めない書体: 実体を作らず、既定の形のまま使う (CFF2 の輪郭は PDF に埋め込める形にできていない)
           v.failed = true;
           const why = e instanceof Error ? e.message : String(e);

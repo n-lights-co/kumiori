@@ -208,7 +208,7 @@ const NO_FORMATTING_EFFECT = new Set(['role', 'source-document']);
 class Importer {
   /** 本文の fo:page-number に付ける id の番号 */
   private pageNumberSeq = 0;
-  report: ImportReport = { unsupported: {}, notes: [], images: [], counts: { sequences: 0, blocks: 0, tables: 0, footnotes: 0, floats: 0, rubies: 0 } };
+  report: ImportReport = { unsupported: Object.create(null), notes: [], images: [], counts: { sequences: 0, blocks: 0, tables: 0, footnotes: 0, floats: 0, rubies: 0 } };
 
   constructor(readonly opts: ImportOptions) {}
   /** 数式用の書体が無いときの MathML の組み替え (foMathFallback.ts) */
@@ -2086,7 +2086,7 @@ class Importer {
       // 絶対 (border-top-style) と相対 (border-before-style) を両方書いたら、絶対が勝つ (§5.3.1)。一括指定から来た絶対の値は、相対に負ける
       const style = styleAttr(`border-${p}-style`) ?? styleAttr(`border-${rel}-style`) ?? sh.style ?? gStyle?.[i] ?? all.style;
       const kw = this.borderKeywords;
-      const named: Record<string, string> = { thin: `${kw.thin}pt`, medium: `${kw.medium}pt`, thick: `${kw.thick}pt` };
+      const named = { __proto__: null, thin: `${kw.thin}pt`, medium: `${kw.medium}pt`, thick: `${kw.thick}pt` } as unknown as Record<string, string>;
       const nw = (v: string | undefined) => (v && named[v] ? named[v] : v);
       const wv = nw(this.attr(el, `border-${p}-width`)) ?? nw(this.attr(el, `border-${rel}-width`));
       const lh = this.lineHeightOf(ctx);

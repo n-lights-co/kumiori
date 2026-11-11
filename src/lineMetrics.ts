@@ -316,8 +316,13 @@ function fontLineMetricsOf(
     A = Math.max(A, strut.above);
     B = Math.max(B, strut.below);
   }
-  const asc = Math.max(...fontGlyphs.map((a) => (a.g!.font.ascent ?? a.g!.font.baselineRatio) * a.st.fontSize), 0);
-  const desc = Math.max(...fontGlyphs.map((a) => (a.g!.font.descent ?? 1 - a.g!.font.baselineRatio) * a.st.fontSize), 0);
+  // 最小・最大はループで取る (Math.min(...配列) は、要素を 1 つずつ引数に積むので、1 行に 12 万を超える字があるとスタックを使い切る)
+  let asc = 0;
+  let desc = 0;
+  for (const a of fontGlyphs) {
+    asc = Math.max(asc, (a.g!.font.ascent ?? a.g!.font.baselineRatio) * a.st.fontSize);
+    desc = Math.max(desc, (a.g!.font.descent ?? 1 - a.g!.font.baselineRatio) * a.st.fontSize);
+  }
   return { above: A, below: B, em: A + B, leading: 0, rubyExtent: sc.rubyExtent, base: A + B, topLeading: Math.max(A - asc, 0), bottomLeading: Math.max(B - desc, 0) };
 }
 

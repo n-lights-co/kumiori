@@ -945,7 +945,7 @@ function edges4(v: string, fs: number): { top: number; right: number; bottom: nu
 const CJK = /[　-ヿ㐀-鿿豈-﫿＀-￯]/u;
 
 class HtmlImporter {
-  report: ImportReport = { unsupported: {}, notes: [], images: [], counts: { sequences: 1, blocks: 0, tables: 0, footnotes: 0, floats: 0, rubies: 0 } };
+  report: ImportReport = { unsupported: Object.create(null), notes: [], images: [], counts: { sequences: 1, blocks: 0, tables: 0, footnotes: 0, floats: 0, rubies: 0 } };
   /** ブラウザが確定させない指定 (要素ごと、::before / ::after ごと) */
   private paged = new Map<Element, Record<string, string>>();
   private pagedPseudo = new Map<Element, Partial<Record<'::before' | '::after' | '::marker', Record<string, string>>>>();
@@ -6791,3 +6791,7 @@ function innerRadius(rad: BorderRadius, border?: BorderInput, padding?: EdgesInp
   const out = corners.map(([h, v], k) => [sub(h, hs[k]), sub(v, vs[k])] as [number | `${number}%`, number | `${number}%`]);
   return { rx: 0, ry: 0, corners: out };
 }
+
+// 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
+// Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
+for (const t of [PAGE_SIZES]) Object.setPrototypeOf(t, null);

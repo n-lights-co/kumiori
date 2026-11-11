@@ -74,7 +74,7 @@ function readDict(b: Uint8Array): Map<number, number[]> {
 const bias = (n: number, type: number) => (type === 1 ? 0 : n < 1240 ? 107 : n < 33900 ? 1131 : 32768);
 
 /** CFF のデータを読み、書体の並びを返す */
-export function parseCff(data: Uint8Array): CffFont[] {
+export function parseCff(data: Uint8Array, cost?: (glyphs: number) => void): CffFont[] {
   const r = new Reader(data);
   if (r.u8(0) !== 1) return [];
   const hdrSize = r.u8(2);
@@ -91,6 +91,9 @@ export function parseCff(data: Uint8Array): CffFont[] {
     const csType = g(1206, [2])[0];
     const cs = r.index(g(17, [0])[0]).items;
     const n = cs.length;
+    // 書体 1 つの字の数を、呼ぶ側の勘定に積む (cost)。壊れた INDEX (lenient) は、データが無くても count (65535 まで) どおりの項目を作るので、
+    // 数バイトの CharStrings を多くの Top DICT が指す CFF で、書体ごとに 10MB ほどを使う
+    cost?.(n);
     const cid = top.has(1230);
     // 文字集合 (§13): 0 は ISOAdobe (GID i = SID i)
     const charset: number[] = [0];

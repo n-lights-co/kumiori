@@ -330,6 +330,11 @@ function splitTopWord(s: string, word: string): string[] {
   return out.map((x) => x.trim()).filter(Boolean);
 }
 
+/** @layer の名前の、点で区切った段の数の上限 (layerRanks) */
+const MAX_LAYER_DEPTH = 32;
+/** 入れ子の規則を展開したセレクタの数の上限 (styleRule) */
+const MAX_NESTED_SELECTORS = 10_000;
+
 /**
  * カスケードの層の順位 (Cascade 5 §6.4)。名前 (入れ子は a.b) の集まり (初めて現れた順) → 0 からの順位 (大きいほど強い)。
  * 入れ子の層は親の層の中に並び、親の層に直接書いた宣言は、その入れ子の層のどれよりも強い。
@@ -340,8 +345,13 @@ export function layerRanks(names: Iterable<string>): Map<string, number> {
   // 親 ('' は最上位) → 子の名前 (現れた順)。a.x だけが現れた a も層として数える
   const children = new Map<string, string[]>();
   const all = new Set<string>();
-  for (const name of names) {
-    const parts = name.split('.');
+  // 点で区切った段の数は MAX_LAYER_DEPTH まで見る (それより深い名前は、MAX_LAYER_DEPTH 段目の層と同じ順位にする)。段ごとに、そこまでの名前を
+  // 作って並べるので、5000 段の名前 1 つ (10KB) で、段の数の 3 乗の手間になり、1 分を超えていた
+  const deep = new Map<string, string>();
+  for (const full of names) {
+    const fullParts = full.split('.');
+    const parts = fullParts.length > MAX_LAYER_DEPTH ? fullParts.slice(0, MAX_LAYER_DEPTH) : fullParts;
+    if (parts !== fullParts) deep.set(full, parts.join('.'));
     for (let i = 1; i <= parts.length; i++) {
       const parent = parts.slice(0, i - 1).join('.');
       all.add(parts.slice(0, i).join('.'));
@@ -363,7 +373,9 @@ export function layerRanks(names: Iterable<string>): Map<string, number> {
     }
     return 0;
   });
-  return new Map(sorted.map((n, i) => [n, i]));
+  const ranks = new Map(sorted.map((n, i) => [n, i]));
+  for (const [full, cut] of deep) ranks.set(full, ranks.get(cut)!);
+  return ranks;
 }
 
 /**
@@ -546,6 +558,9 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
       }
       if (head.startsWith('@')) continue; // ほかの入れ子の @ 規則は読まない
       const nested = splitTop(head, ',');
+      // 入れ子の規則のセレクタは、親の並び × 子の並びに展開する (CSS Nesting 1 §3.1) ので、並びを入れ子にすると掛け算で増える
+      // (4 つの並びを 5 段で 4^5 × … 。316 バイトの CSS でヒープを使い切った)。展開した数が上限を超える規則は読まない
+      if (selectors.length * nested.length > MAX_NESTED_SELECTORS) continue;
       const full = selectors.flatMap((p) => nested.map((n) => (n.includes('&') ? n.replace(/&/g, p) : `${p} ${n}`)));
       later.push(() => styleRule(full, inner));
     }
@@ -1157,3 +1172,7 @@ export function pageNumberFormatOf(type: string | undefined): string | undefined
       return undefined;
   }
 }
+
+// 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
+// Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
+for (const t of [AH_ALIASES]) Object.setPrototypeOf(t, null);

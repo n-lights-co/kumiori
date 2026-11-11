@@ -283,6 +283,17 @@ export function cliResourceResolver(dir: string, readFile: (url: string) => Uint
   };
 }
 
+/**
+ * 端末に書く文 (警告・誤りの文) の制御文字を、見える形 (\\x1b など) にする。警告には、文書に書かれた字 (画像の URL・CSS のプロパティの名前など) が
+ * そのまま入るので、他人の書いた文書が、エスケープ シーケンス (ECMA-48 §5.4 の ESC・CSI・OSC: 画面を消す・題名を書き換える・色を変えるなど) や
+ * 改行 (偽の報告の行) を、組む人の端末や記録に書けないようにする。置き換えるのは C0 (U+0000〜U+001F。タブは残す)・DEL・C1 (U+0080〜U+009F。
+ * 8 ビットの CSI など)。警告は 1 件を 1 行に書く決まりなので、改行も置き換える
+ */
+export function printable(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+}
+
 /** 1 つの入力を PDF にする。input が '-' なら標準入力 (text に中身)、output が '-' なら標準出力 */
 async function convert(input: string, output: string, args: Args, text: string) {
   const stdin = input === '-';
@@ -338,7 +349,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
   const log = output === '-' ? console.error : console.log;
   const target = output === '-' ? msg('(標準出力)', '(stdout)') : path.basename(output);
   log(msg(`${target}: ${res.pageCount} ページ (組版 ${res.layoutMs}ms)`, `${target}: ${res.pageCount} page${res.pageCount === 1 ? '' : 's'} (layout ${res.layoutMs}ms)`));
-  for (const w of res.warnings) console.warn(msg(`  警告: ${w}`, `  warning: ${w}`));
+  for (const w of res.warnings) console.warn(msg(`  警告: ${printable(w)}`, `  warning: ${printable(w)}`));
 }
 
 /** --watch で見張るファイル */
@@ -503,7 +514,7 @@ async function main() {
       await convert(job.input, job.output, args, text);
       return true;
     } catch (e) {
-      console.error(`${job.input === '-' ? msg('(標準入力)', '(stdin)') : path.basename(job.input)}: ${e instanceof Error ? e.message : String(e)}`);
+      console.error(`${job.input === '-' ? msg('(標準入力)', '(stdin)') : path.basename(job.input)}: ${printable(e instanceof Error ? e.message : String(e))}`);
       return false;
     }
   };

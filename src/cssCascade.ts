@@ -282,10 +282,14 @@ function marginQuirks(el: Element): Array<[string, string]> {
   const parent = el.parentNode as Element | null;
   const pn = (parent?.nodeType === 1 ? ((parent.localName ?? parent.nodeName) as string) : '').toLowerCase();
   if (!/^(body|td|th)$/.test(pn)) return [];
-  const sibs = Array.from(parent!.childNodes);
-  const at = sibs.indexOf(el as unknown as ChildNode);
-  const noBefore = !sibs.slice(0, at).some(isSubstantial);
-  const noAfter = !sibs.slice(at + 1).some(isSubstantial);
+  // 前・後ろの兄弟は、中身のあるものに当たるまでだけ見る (兄弟の並びの全体を要素ごとに作ると、兄弟の数の 2 乗の手間になり、
+  // DOCTYPE の無い 2 万段落の文書 (160KB) で 50 秒あまり掛かっていた)
+  const some = (from: Node | null, next: (n: Node) => Node | null) => {
+    for (let k = from; k; k = next(k)) if (isSubstantial(k)) return true;
+    return false;
+  };
+  const noBefore = !some(el.previousSibling, (k) => k.previousSibling);
+  const noAfter = !some(el.nextSibling, (k) => k.nextSibling);
   const blank = !Array.from(el.childNodes).some(isSubstantial);
   const cell = pn === 'td' || pn === 'th';
   const out: Array<[string, string]> = [];
@@ -3227,7 +3231,7 @@ function presentational(el: Element, quirks = false): Array<[string, string]> {
       if (align === 'left' || align === 'right') out.push(['float', align]);
       else {
         // center・middle は「要素の中央を親の基線に」(CSS の値に無いので middle で代える)
-        const VA: Record<string, string> = { top: 'top', baseline: 'baseline', texttop: 'text-top', absmiddle: 'middle', abscenter: 'middle', bottom: 'bottom', center: 'middle', middle: 'middle' };
+        const VA = { __proto__: null, top: 'top', baseline: 'baseline', texttop: 'text-top', absmiddle: 'middle', abscenter: 'middle', bottom: 'bottom', center: 'middle', middle: 'middle' } as unknown as Record<string, string>;
         if (VA[align]) out.push(['vertical-align', VA[align]]);
       }
     } else if (n === 'hr') {
@@ -3259,7 +3263,7 @@ function presentational(el: Element, quirks = false): Array<[string, string]> {
     }
     const rules = ci('rules');
     if (rules && /^(none|groups|rows|cols|all)$/.test(rules)) out.push(['border-style', 'hidden'], ['border-collapse', 'collapse']);
-    const FRAME: Record<string, string> = { void: 'hidden', above: 'outset hidden hidden hidden', below: 'hidden hidden outset hidden', hsides: 'outset hidden outset hidden', lhs: 'hidden hidden hidden outset', rhs: 'hidden outset hidden hidden', vsides: 'hidden outset', box: 'outset', border: 'outset' };
+    const FRAME = { __proto__: null, void: 'hidden', above: 'outset hidden hidden hidden', below: 'hidden hidden outset hidden', hsides: 'outset hidden outset hidden', lhs: 'hidden hidden hidden outset', rhs: 'hidden outset hidden hidden', vsides: 'hidden outset', box: 'outset', border: 'outset' } as unknown as Record<string, string>;
     const frame = ci('frame');
     if (frame && FRAME[frame]) out.push(['border-style', FRAME[frame]]);
   }
@@ -3365,7 +3369,7 @@ function presentational(el: Element, quirks = false): Array<[string, string]> {
   // リストの type (ol と li の数の種類は大文字小文字を区別する)
   const type = at('type')?.trim();
   if (type !== undefined && (n === 'ol' || n === 'li')) {
-    const OL: Record<string, string> = { '1': 'decimal', a: 'lower-alpha', A: 'upper-alpha', i: 'lower-roman', I: 'upper-roman' };
+    const OL = { __proto__: null, '1': 'decimal', a: 'lower-alpha', A: 'upper-alpha', i: 'lower-roman', I: 'upper-roman' } as unknown as Record<string, string>;
     if (OL[type]) out.push(['list-style-type', OL[type]]);
   }
   if (type !== undefined && (n === 'ul' || n === 'li') && /^(none|disc|circle|square)$/i.test(type)) out.push(['list-style-type', type.toLowerCase()]);
@@ -3394,3 +3398,7 @@ export function fontFaceWeights(css: string | ParsedCss): Map<string, number[]> 
   }
   return out;
 }
+
+// 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
+// Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
+for (const t of [PROPS, SVG_STYLE_PROPS, SVG_STYLE_KEYWORDS, KEYWORDS]) Object.setPrototypeOf(t, null);

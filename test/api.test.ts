@@ -250,6 +250,61 @@ describe('公開 API: typeset', () => {
     expect(got).toEqual([[false, 12, 12]]);
     expect(r.warnings).toEqual([]);
   });
+  it('Object.prototype の名前 (constructor・__proto__・toString) を、プロパティ・値・属性に書いた文書も組める', async () => {
+    // 入力の名前で引く定数の表が原型を持つと、Object.prototype の関数を拾って TypeError になり、文書の全体が組めなかった
+    const html = `<style>p { constructor: 1; __proto__: 2; toString: 3 } @page { size: constructor } @supports (constructor: x) { p { color: red } }
+      i { color: color(constructor 1 0 0); background: color-mix(in constructor, red, blue) }</style>
+      <p style="constructor: 1; __proto__: x">a</p><ol type="constructor"><li type="__proto__">x<li type="toString">y</ol><img align="constructor"><table frame="constructor"><tr><td>z</table>
+      <math><mi mathvariant="constructor">x</mi><mi mathvariant="__proto__">y</mi></math><i id="constructor">i</i><a href="#constructor">l</a><a href="#__proto__">m</a>`;
+    const r = await typeset(html, { loadFont });
+    expect(r.pageCount).toBe(1);
+    expect(r.warnings.some((w) => /constructor/.test(w) && /__proto__/.test(w))).toBe(true);
+    expect((await r.toPdf()).length).toBeGreaterThan(1000);
+    const fo = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>
+      <fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block border-top-width="constructor" border-top-style="solid" font-size="constructor" constructor="1" color="rgb(1e999,0,0)">x</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const f = await typesetFo(fo, { loadFont });
+    // 有限でない色の成分 (rgb(1e999,…)) でも PDF になる
+    expect((await f.toPdf()).length).toBeGreaterThan(1000);
+  });
+  it('細工した CSS・長い文書が、すぐに組み終わる (入れ子のセレクタの掛け算・@layer の深い名前・極小の字のリーダー・DOCTYPE の無い長い文書・長い 1 語)', async () => {
+    const cases = [
+      `<style>${'.a, .b, .c, .d { & .e, & .f, .g &, .h & {'.repeat(5)}color: red${'}'.repeat(5)}</style><p class=a>x</p>`,
+      `<style>@layer ${'a.'.repeat(5000)}a { p { color: red } }</style><p>x</p>`,
+      '<style>a::after { content: leader(".") "x"; font-size: 0.001px }</style><p><a>t</a></p>',
+      '<p>x</p>'.repeat(5000),
+      `<p>${'x'.repeat(150_000)}</p>`,
+    ];
+    for (const html of cases) {
+      const t0 = Date.now();
+      const r = await typeset(html, { loadFont });
+      expect(r.pageCount).toBeGreaterThan(0);
+      expect(Date.now() - t0).toBeLessThan(20_000);
+    }
+  }, 120_000);
+  it('添付ファイルの注釈: 添付するのは files に渡したものだけ。参照をたどって集めたもの (resolveResource・ネットワーク) は添付しない', async () => {
+    // 他人の書いた文書が、組む側の機械のファイルや内部のネットワークの応答を、別の参照 (注釈の中の <link>・external-graphic) で集めさせて、
+    // 添付の注釈で出力の PDF に写し取れないこと
+    const fo = (src: string) => `<?xml version="1.0"?><!-- <link rel="stylesheet" href="http://169.254.169.254/latest/meta-data/"> -->
+      <fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm"><fo:region-body margin="10mm"/></fo:simple-page-master></fo:layout-master-set>
+      <fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block><fo:external-graphic src="url(file:///etc/passwd)"/>
+      <fo:inline axf:annotation-type="FileAttachment" axf:annotation-file-attachment="${src}">a</fo:inline></fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const secret = 'root:x:0:0:secret';
+    const asked: string[] = [];
+    const resolveResource = (u: string) => (asked.push(u), secret);
+    const embedded = async (bytes: Uint8Array) => (await PDFDocument.load(bytes)).context.enumerateIndirectObjects().some(([, o]) => /\/EmbeddedFile/.test(String((o as { dict?: unknown }).dict ?? '')));
+    for (const src of ['file:///etc/passwd', 'url(file:///etc/passwd)', 'http://169.254.169.254/latest/meta-data/', 'passwd']) {
+      const r = await typesetFo(fo(src), { loadFont, fetchImages: false, resolveResource });
+      // 参照そのものは問い合わせている (集めた中身がある) が、添付にはしない
+      expect(asked).toContain('file:///etc/passwd');
+      expect(asked).toContain('http://169.254.169.254/latest/meta-data/');
+      expect(r.warnings.some((w) => /添付するファイルが見つかりません/.test(w))).toBe(true);
+      expect(await embedded(await r.toPdf())).toBe(false);
+    }
+    // files に渡したファイルは、これまでどおり添付する
+    const ok = await typesetFo(fo('data/passwd'), { loadFont, fetchImages: false, resolveResource, files: [{ name: 'data/passwd', data: 'given' }] });
+    expect(ok.warnings.some((w) => /添付するファイル/.test(w))).toBe(false);
+    expect(await embedded(await ok.toPdf())).toBe(true);
+  });
   it('拡張子の無い URL の画像: 中身が返らなければ、これまでどおり fetchImages の判定でネットワークから取る (種類は中身の先頭と Content-Type で決める)', async () => {
     const png = encodePngStored({ width: 8, height: 8, rgba: new Uint8Array(Array.from({ length: 64 }, () => [0, 0, 0, 255]).flat()) });
     // 根の <svg> が先頭の 512 バイトより後ろにある SVG: 中身の先頭では見分けられないので、Content-Type で決まる

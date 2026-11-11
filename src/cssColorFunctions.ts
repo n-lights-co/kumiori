@@ -676,3 +676,7 @@ export function parseColorFunction(s: string, legacy: (v: string) => Rgba8 | 'cu
  * 欠けた成分は、色を描くときは 0 にする (§4.4.1「treat it as zero」)
  */
 export const hasNoneComponent = (s: string) => /^(rgba?|hsla?)\(/.test(s) && /(^|[\s(/])none([\s)/]|$)/.test(s);
+
+// 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
+// Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
+for (const t of [COLOR_SPACES, MIX_SPACES]) Object.setPrototypeOf(t, null);

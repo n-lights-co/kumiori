@@ -124,6 +124,9 @@ export interface SvgDoc {
 
 type M = Matrix;
 
+/** 繰り返し・折り返しのグラデーション (spreadMethod) を並べた後の、stop の数の上限 */
+const MAX_SPREAD_STOPS = 100_000;
+
 /**
  * spreadMethod の repeat・reflect (SVG 1.1 §13.2.2)。PDF のシェーディングは端の色を延ばす (pad) しか持たないので、
  * 図形を覆う範囲まで stop を繰り返して並べ、座標をその範囲に広げる。pts は図形の外接矩形の角 (グラデーションの空間)
@@ -141,7 +144,8 @@ function spreadGradient(g: SvgGradient, spread: 'repeat' | 'reflect', pts: numbe
     const ts = pts.map(([x, y]) => ((x - x1) * dx + (y - y1) * dy) / len2);
     t0 = Math.floor(Math.min(...ts));
     t1 = Math.ceil(Math.max(...ts));
-    if (t1 - t0 > 2000) return;
+    // 繰り返しの数は 2000 まで、並べた stop の合計は MAX_SPREAD_STOPS まで (stop の多いグラデーションを繰り返して、数千万の stop を作らせない)
+    if (t1 - t0 > 2000 || (t1 - t0) * g.stops.length > MAX_SPREAD_STOPS) return;
     g.coords = [x1 + dx * t0, y1 + dy * t0, x1 + dx * t1, y1 + dy * t1];
   } else {
     // 円は t の関数: 中心 f + t (c - f)、半径 fr + t (r - fr)。焦点が円の中にあれば、t を大きくすると円は図形を覆う
@@ -153,7 +157,8 @@ function spreadGradient(g: SvgGradient, spread: 'repeat' | 'reflect', pts: numbe
     t1 = Math.max(1, Math.ceil((far - fr) / (dr - off)));
     // 半径が 0 になる t まで内側にも繰り返す (fr が 0 なら t0 = 0)
     t0 = fr > 0 ? -Math.ceil(fr / dr) : 0;
-    if (t1 - t0 > 2000) return;
+    // 繰り返しの数は 2000 まで、並べた stop の合計は MAX_SPREAD_STOPS まで (stop の多いグラデーションを繰り返して、数千万の stop を作らせない)
+    if (t1 - t0 > 2000 || (t1 - t0) * g.stops.length > MAX_SPREAD_STOPS) return;
     const tz = fr > 0 ? -fr / dr : 0;
     const at = (t: number) => [fx + (cx - fx) * t, fy + (cy - fy) * t, fr + dr * t];
     const [ax, ay] = at(tz);

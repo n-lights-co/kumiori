@@ -2570,14 +2570,20 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
           warn(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の次数か制御点の数が読めないので描きません`);
           break;
         }
+        // 制御点・節点・重みは、残りの引数に入る数まで読む (引数の外は 0 と読めるので、数の欄だけを信じると、10 バイトの要素 1 つで
+        // 30 万回あまり読む)。数の欄のとおりに揃わなければ描かない
         const ctrl: Pt[] = [];
-        for (let i = 0; i < n; i++) ctrl.push(p.P());
+        for (let i = 0; i < n && p.left > 0; i++) ctrl.push(p.P());
         const knots: number[] = [];
-        for (let i = 0; i < n + k; i++) knots.push(p.R());
+        for (let i = 0; i < n + k && p.left > 0; i++) knots.push(p.R());
         const tmin = p.R();
         const tmax = p.R();
         const wts: number[] = [];
-        if (id === 25) for (let i = 0; i < n; i++) wts.push(p.R());
+        if (id === 25) for (let i = 0; i < n && p.left > 0; i++) wts.push(p.R());
+        if (ctrl.length !== n || knots.length !== n + k || (id === 25 && wts.length !== n)) {
+          warn(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の制御点・節点が足りないので描きません`);
+          break;
+        }
         const v = bspline(k, ctrl, knots, Math.max(tmin, knots[k - 1]), Math.min(tmax, knots[n]), id === 25 ? wts : undefined);
         if (v.length >= 2) line(pathOf(v, false), false);
         break;

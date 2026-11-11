@@ -34,6 +34,32 @@ export interface FilterContext {
   maxBytes?: number;
   /** n バイトを確保する前に呼ぶ (VM の使用量に積む。上限を超えるなら、呼ばれた側が誤りを投げる) */
   alloc?: (n: number) => void;
+  /** フィルタが n バイトを出すたびに呼ぶ (手間の勘定。時間の上限もここで確かめる) */
+  work?: (n: number) => void;
+}
+
+/** 手間を数える単位 (バイト) */
+const WORK_CHUNK = 4096;
+
+/**
+ * フィルタの出力を数える: WORK_CHUNK バイトを出すたびに ctx.work を呼ぶ。フィルタを重ねた展開 (Flate の中の Flate) は、小さなデータから
+ * いくらでも長い出力を作れ、読む側 (字句の注釈・空白の読み飛ばし、16 進の文字列の空白など) は、演算子を 1 つも実行せずに読み続けるので、
+ * 出力の量そのものを手間に数えないと、時間の上限が効かない
+ */
+function counted(src: ByteSource, ctx?: FilterContext): ByteSource {
+  const work = ctx?.work;
+  if (!work) return src;
+  let n = 0;
+  // 元のオブジェクトの read を差し替える (reset・jpeg などのほかの口は、そのまま使えるように)
+  const read = src.read.bind(src);
+  src.read = () => {
+    if (++n >= WORK_CHUNK) {
+      n = 0;
+      work(WORK_CHUNK);
+    }
+    return read();
+  };
+  return src;
 }
 
 /** 元を読みためるバイト列。倍々に伸ばし、上限を超えたら limitcheck にする (数の配列にためると、1 バイトに 8 バイトを使う) */
@@ -88,6 +114,10 @@ function pull(fill: (out: number[]) => boolean): ByteSource {
 
 /** フィルタを作る。name はフィルタの名前、src はデータの元 */
 export function filterSource(fname: string, src: ByteSource, params?: PSDict, subfile?: { count: number; eod: Uint8Array }, ctx?: FilterContext): ByteSource {
+  return counted(rawFilterSource(fname, src, params, subfile, ctx), ctx);
+}
+
+function rawFilterSource(fname: string, src: ByteSource, params?: PSDict, subfile?: { count: number; eod: Uint8Array }, ctx?: FilterContext): ByteSource {
   switch (fname) {
     case 'ASCIIHexDecode':
       return asciiHex(src);

@@ -4,6 +4,7 @@ import { epsToSvg } from './eps';
 import { cgmToSvg } from './cgm';
 import { parseSvg, type XmlNode } from './svg';
 import { decodeBmp, decodeGif, encodePng, MAX_PIXELS, pngWithinLimits, type Pixels } from './pixels';
+import { lzwBytes } from './psFilters';
 import { decodeWebp } from './webp';
 import { ccittFits, decodeModifiedHuffman } from './ccitt';
 import { fetchGuarded } from './resources';
@@ -72,10 +73,22 @@ export function mentionedFiles(texts: string[]): Set<string> {
   };
   const quoted = new RegExp(`["']([^"'<>]*?\\.${IMAGE_EXT})(?=[?#"'])`, 'gi');
   // 拡張子の後ろに英数字・ハイフン・「.英数字」が続くもの (a.png.bak など) は、名前が続いているので拾わない
-  const bare = new RegExp(`[^\\s"'()<>=,;\\\\]+?\\.${IMAGE_EXT}(?![\\w-]|\\.\\w)`, 'gi');
+  const bare = new RegExp(`\\.${IMAGE_EXT}(?![\\w-]|\\.\\w)`, 'gi');
+  // 引用符の外の名前は、拡張子を先に探して、そこから前へ、区切りの字 (か、前の名前の終わり) までたどる。名前の先頭から拡張子を探す形
+  // (区切りでない字の並び + 拡張子) は、区切りの無い長い並び (data: の URL の base64 など) で、並びの長さの 2 乗の手間になり、
+  // 書体を data: で埋め込んだ 700KB ほどの文書 (細工の無いもの) で 1 分を超えていた
+  const isDelim = (c: string) => /[\s"'()<>=,;\\]/.test(c);
   for (const t of texts) {
     for (const m of t.matchAll(quoted)) add(m[1]);
-    for (const m of t.matchAll(bare)) add(m[0]);
+    let prevEnd = 0;
+    for (const m of t.matchAll(bare)) {
+      const end = m.index + m[0].length;
+      let start = m.index;
+      while (start > prevEnd && !isDelim(t[start - 1])) start--;
+      // 名前の部分 (拡張子の前) が空のものは拾わない (前の形と同じ: 1 字以上)
+      if (start < m.index) add(t.slice(start, end));
+      prevEnd = end;
+    }
   }
   return out;
 }
@@ -481,7 +494,10 @@ export function ccittPixels(ifd: { [k: string]: unknown }, buf: ArrayBuffer): Pi
     // タイル (TIFF 6.0 Section 15): 左から右、上から下の順。各タイルは TileWidth × TileLength で、別々に符号化されている
     const across = Math.ceil(width / tw);
     const tlens = tag(325) ?? [];
-    for (let k = 0; k < toffs.length; k++) {
+    // タイルの数は、画像を覆う数まで (TIFF 6.0 Section 15: TilesPerImage = TilesAcross × TilesDown)。TileOffsets の項目の数だけ回すと、
+    // 同じデータを指す項目を並べて、1 項目 (8 バイト) ごとにタイル 1 枚ぶんを展開させられる
+    const count = Math.min(toffs.length, across * Math.ceil(height / tl));
+    for (let k = 0; k < count; k++) {
       if (!segment(toffs[k], tlens[k] ?? 0, tw, tl, (k % across) * tw, Math.floor(k / across) * tl)) return undefined;
     }
     return { width, height, rgba };
@@ -496,10 +512,66 @@ export function ccittPixels(ifd: { [k: string]: unknown }, buf: ArrayBuffer): Pi
   return { width, height, rgba };
 }
 
+/**
+ * TIFF の IFD の並び (TIFF 6.0 Section 2) を、utif に渡してよいか。utif (3.1.0) の読み取りは、次の IFD の位置の輪・項目の値の数・
+ * 値の位置を確かめないので、次の IFD が自分自身を指す 122 バイトのファイルや、値の数が何千万もの項目で、メモリを使い切るまで読み続ける。
+ * utif と同じ順 (IFD の鎖と、SubIFDs (330)・Exif IFD (34665)・DNGPrivateData (50740) の下の IFD) にたどって、次を確かめる:
+ *  - 同じ位置の IFD を 2 度読まない (輪)。IFD の数は TIFF_MAX_IFDS まで、下の IFD の入れ子は 4 段まで
+ *  - IFD と、項目の値 (型の大きさ × 数。Section 2 の Types) が、ファイルの中に収まる
+ * 普通の TIFF (42) だけを読む (utif は BigTIFF を読めない)
+ */
+const TIFF_MAX_IFDS = 256;
+export function tiffStructureOk(b: Uint8Array): boolean {
+  if (b.length < 8) return false;
+  const le = b[0] === 0x49 && b[1] === 0x49;
+  if (!le && !(b[0] === 0x4d && b[1] === 0x4d)) return false;
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (dv.getUint16(2, le) !== 42) return false;
+  // 型の大きさ (1 BYTE・2 ASCII・3 SHORT・4 LONG・5 RATIONAL・6 SBYTE・7 UNDEFINED・8 SSHORT・9 SLONG・10 SRATIONAL・11 FLOAT・12 DOUBLE・13 IFD)
+  const SIZE = [0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4];
+  const seen = new Set<number>();
+  /** 位置 at の IFD を確かめ、次の IFD の位置を返す (読めなければ -1) */
+  const walk = (at: number, depth: number): number => {
+    if (seen.has(at) || seen.size >= TIFF_MAX_IFDS || depth > 4 || at + 2 > b.length) return -1;
+    seen.add(at);
+    const n = dv.getUint16(at, le);
+    if (at + 2 + n * 12 + 4 > b.length) return -1;
+    for (let i = 0; i < n; i++) {
+      const e = at + 2 + i * 12;
+      const tag = dv.getUint16(e, le);
+      const type = dv.getUint16(e + 2, le);
+      const num = dv.getUint32(e + 4, le);
+      const bytes = (SIZE[type] ?? 1) * num;
+      if (bytes > b.length) return -1;
+      const voff = bytes > 4 ? dv.getUint32(e + 8, le) : e + 8;
+      if (voff + bytes > b.length) return -1;
+      if (tag === 330 || tag === 34665 || tag === 50740) {
+        // 下の IFD の位置 (LONG・IFD の並び。50740 は、utif と同じく、値の先頭の 4 バイトを位置として読む)
+        if (tag !== 50740 && type !== 4 && type !== 13) return -1;
+        const count = tag === 50740 ? (bytes >= 4 ? 1 : 0) : num;
+        for (let j = 0; j < count; j++) {
+          const sub = dv.getUint32(voff + j * 4, le);
+          // 50740 は、utif が IFD と見るとき (項目の数が 300 未満) だけ
+          if (tag === 50740 && !(sub + 2 <= b.length && dv.getUint16(sub, le) < 300)) continue;
+          if (walk(sub, depth + 1) < 0) return -1;
+        }
+      }
+    }
+    return dv.getUint32(at + 2 + n * 12, le);
+  };
+  for (let at = dv.getUint32(4, le); at !== 0; ) {
+    at = walk(at, 0);
+    if (at < 0) return false;
+  }
+  return seen.size > 0;
+}
+
 /** TIFF の最初の画像の画素 (utif で読む)。読めなければ undefined */
 async function tiffPixels(bytes: Uint8Array): Promise<Pixels | undefined> {
   try {
     const UTIF = (await import('utif')).default;
+    // utif は IFD の並びを確かめないので、渡す前に確かめる (tiffStructureOk)
+    if (!tiffStructureOk(bytes)) return undefined;
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     const ifds = UTIF.decode(buf);
     if (!ifds.length) return undefined;
@@ -513,6 +585,25 @@ async function tiffPixels(bytes: Uint8Array): Promise<Pixels | undefined> {
     // CCITT の符号は、自前の復号 (ccittPixels) で読めなかったときも、データの大きさの上限 (ccittWithinLimits) を超えれば utif に渡さない
     // (utif も寸法のとおりに確保する。IMG-19)
     if (!ccittWithinLimits(ifds[0], buf)) return undefined;
+    // ストリップ・タイルの長さ (StripByteCounts 279・TileByteCounts 325) は、ファイルに残っている長さまで、RowsPerStrip (278) は画像の高さまでにする
+    // (TIFF 6.0 Section 8: RowsPerStrip の既定は 2^32 − 1 で、「画像の全体が 1 つのストリップ」の意味)。utif は、書かれた値のとおりに回る
+    const ifd0 = ifds[0] as unknown as Record<string, number[] | undefined>;
+    for (const [offTag, lenTag] of [[273, 279], [324, 325]] as const) {
+      const offs = ifd0[`t${offTag}`];
+      const lens = ifd0[`t${lenTag}`];
+      if (!offs || !lens) continue;
+      // 位置の数は、画素の数まで (1 つのストリップ・タイルは 1 画素以上)
+      if (offs.length > tagOf(256) * tagOf(257)) return undefined;
+      ifd0[`t${lenTag}`] = Array.from(lens, (v, k) => Math.max(0, Math.min(v, buf.byteLength - (offs[k] ?? 0))));
+    }
+    if (ifd0.t278?.length) ifd0.t278 = [Math.max(1, Math.min(ifd0.t278[0], tagOf(257)))];
+    // LZW (Compression=5) は、自前の展開 (psFilters の lzwBytes。TIFF 6.0 Section 13 の形) に差し替える。utif の展開は、EOI の符号が出るまで、
+    // データの終わりを越えても回り続けるので、EOI の無い (途中で切れた・壊れた) データで止まらない。自前の展開は、データの終わりか、
+    // 出力の領域の終わりで止まる
+    (UTIF.decode as unknown as { _decodeLZW: (data: Uint8Array, off: number, tgt: Uint8Array, toff: number) => void })._decodeLZW = (data, off, tgt, toff) => {
+      if (off >= data.length || toff >= tgt.length) return;
+      tgt.set(lzwBytes(data.subarray(off), tgt.length - toff), toff);
+    };
     UTIF.decodeImage(buf, ifds[0], ifds);
     const rgba = paletteWithExtra(ifds[0], buf) ?? UTIF.toRGBA8(ifds[0]);
     const { width, height } = ifds[0];

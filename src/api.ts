@@ -586,11 +586,16 @@ async function typesetDocument(
   // 未対応の指定 (黙って無視しない): XSL-FO は読めなかった要素・プロパティ、HTML は未対応・知らない CSS (ブラウザの画面の変換レポートと同じ数え方)
   const miss = summarizeCounts(res.report.unsupported);
   if (miss) warnings.push(msg(`${isFo ? '未対応の XSL-FO の要素・プロパティを' : '未対応の CSS を'}無視しました: ${miss}`, `ignored unsupported ${isFo ? 'XSL-FO elements/properties' : 'CSS'}: ${miss}`));
-  // 添付ファイルの注釈が参照するファイル (files の中から、パスか名前で探す)
+  // 添付ファイルの注釈が参照するファイル (files の中から、パスか名前で探す)。
+  // 探すのは、呼ぶ側が files に渡したものだけ。参照をたどって集めたもの (resolveResource の返した file: のファイル・ネットワークから取った
+  // CSS や書体。url を持つ) は添付しない: 添付はファイルの中身をそのまま PDF に入れるので、集めたものまで添付できると、他人の書いた文書が、
+  // 組む側の機械のファイル (file:///etc/passwd) や内部のネットワークの応答 (http://169.254.169.254/…) を、別の参照 (<link>・url()) で
+  // 集めさせた上で、出力の PDF に写し取れる。画像・書体・CSS は、その形式として読めた中身しか出力に現れないが、添付は形式を問わない
+  const attachable = files.filter((x) => x.url === undefined);
   for (const src of (res.report as { files?: string[] }).files ?? []) {
     const norm = src.split('\\').join('/').replace(/^\.\//, '');
     const base = norm.split('/').pop()!.toLowerCase();
-    const f = files.find((x) => x.path.split('\\').join('/') === norm) ?? files.find((x) => x.name.split('/').pop()!.toLowerCase() === base);
+    const f = attachable.find((x) => x.path.split('\\').join('/') === norm) ?? attachable.find((x) => x.name.split('/').pop()!.toLowerCase() === base);
     if (f) assets.registerFile(src, bytesOf(await f.data()));
     else warnings.push(msg(`添付するファイルが見つかりません: ${src}`, `attachment file not found: ${src}`));
   }

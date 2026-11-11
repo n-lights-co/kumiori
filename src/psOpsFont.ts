@@ -36,6 +36,9 @@ import { cffGlyph, parseCff, type CffFont } from './psCff';
 //  - 複合書体 (FontType 0、FMapType 9): CMap で CID にし、CIDFontType 0 の字形の命令を使う (§5.11)
 // 字の形を持たない書体 (findfont で見つからない書体の代わりの辞書) は、書体の名前から代わりの書体で描く (SVG の text)。
 
+/** CMap の範囲・字の数の上限 (usecmap) */
+const MAX_CMAP_ENTRIES = 200_000;
+
 /** CMap の辞書ごとの対応 (CIDInit の演算子で作る) */
 const CMAPS = new WeakMap<PSDict, CMapData>();
 
@@ -130,9 +133,16 @@ export function makeCIDInit(I: Interp): PSDict {
       const src = other && other.t === 'dict' ? CMAPS.get(other.d) : key.t === 'name' && /^Identity-[HV]$/.test(key.v) ? identityCMap() : undefined;
       if (!src) return;
       const cm = cmapOf(I);
-      cm.space.push(...src.space);
-      cm.ranges.push(...src.ranges);
-      for (const [k, v] of src.chars) cm.chars.set(k, v);
+      // 足した後の範囲・字の数に上限を置く (自分自身を usecmap すると倍々に増え、VM の勘定の外で GB の単位まで積める)。
+      // 実在の CMap は、大きいもの (UniJIS-UTF16-H など) でも範囲が 2 万ほど
+      if (cm.space.length + src.space.length > MAX_CMAP_ENTRIES || cm.ranges.length + src.ranges.length > MAX_CMAP_ENTRIES || cm.chars.size + src.chars.size > MAX_CMAP_ENTRIES) throw new PSError('limitcheck');
+      I.work(src.space.length + src.ranges.length + src.chars.size);
+      // 足した分は、メモリの勘定に積む (1 件 100 バイトほど。上限いっぱいの CMap を、いくつも作らせない)
+      I.memAlloc((src.space.length + src.ranges.length + src.chars.size) * 100);
+      // 自分自身を足すときに、足しながら伸びる配列をたどらないよう、長さを先に取る (push(...src) は、長い配列でスタックを使い切る)
+      for (let k = 0, n = src.space.length; k < n; k++) cm.space.push(src.space[k]);
+      for (let k = 0, n = src.ranges.length; k < n; k++) cm.ranges.push(src.ranges[k]);
+      for (const [k, v] of [...src.chars]) cm.chars.set(k, v);
     }),
   );
   cidInit.put('usefont', op('usefont', (I) => void I.pop()));
@@ -265,7 +275,12 @@ export function makeFontSetInit(I: Interp): PSDict {
       if (!f) throw new PSError('ioerror');
       const data = readStartData(I, f, n, false);
       const set = I.newDict(10);
-      for (const cf of parseCff(data)) {
+      // 字 1 つは、INDEX の項目・文字集合・字の名前で 200 バイトほど
+      const cost = (glyphs: number) => {
+        I.charge(glyphs / 8);
+        I.memAlloc(glyphs * 200);
+      };
+      for (const cf of parseCff(data, cost)) {
         const fd = I.newDict(12);
         fd.put('FontMatrix', arr(cf.fontMatrix.map(real)));
         fd.put('FontBBox', arr(cf.fontBBox.map(real)));

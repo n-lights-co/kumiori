@@ -154,6 +154,9 @@ function dataReader(I: Interp, src: PSObj): ByteSource {
 
 function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   const { w, h, bpc } = s;
+  // Width・Height は整数 (PLRM 第 3 版 §4.10.5 の表 4.20。値が整数の実数 100.0 は通す)。辞書の形は実数も受け取るので、ここで確かめる:
+  // Width 2.4e10・Height 0.001 のように、積 (画素の数) は上限の内でも、1 行が何 GB にもなる寸法を通さない
+  if (!Number.isInteger(w) || !Number.isInteger(h)) throw new PSError('typecheck');
   if (w <= 0 || h <= 0) return;
   if (![1, 2, 4, 8, 12, 16].includes(bpc)) throw new PSError('rangecheck');
   if (w * h > PS_IMAGE_MAX_PIXELS) throw new PSError('limitcheck');

@@ -380,4 +380,18 @@ describe('Node のコマンド', () => {
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('@font-face の書体のファイルが見つかりません: X (../fx/none.ttf)');
   }, 120_000);
+  it('警告の中の制御文字 (文書に書かれたエスケープ シーケンス・改行) は、見える形にして書く', () => {
+    const dir = path.join(work, 'ctl');
+    fs.mkdirSync(dir, { recursive: true });
+    const h = path.join(dir, 'c.html');
+    // 画像の URL に、題名を書き換える OSC・画面を消す CSI・8 ビットの CSI (U+009B)・改行 (偽の報告の行) を入れた文書
+    fs.writeFileSync(h, '<p>x</p><img src="a\x1b]0;T\x07\x1b[2J\u009b31m&#10;b.pdf: 1 ページ.png">');
+    const r = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), h, '-o', path.join(dir, 'c.pdf'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r.status).toBe(0);
+    // eslint-disable-next-line no-control-regex
+    expect(r.stderr).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+    expect(r.stderr).toContain('a\\x1b]0;T\\x07\\x1b[2J\\x9b31m\\x0ab.pdf: 1 ページ.png');
+    // 警告は 1 件が 1 行のまま (改行で行を増やせない)
+    expect(r.stderr.split('\n').filter((l) => /^b\.pdf/.test(l))).toEqual([]);
+  }, 120_000);
 });

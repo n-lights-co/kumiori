@@ -48,7 +48,11 @@ export function epsProgram(b: Uint8Array): { ps: Uint8Array; bbox: [number, numb
 /** DSC の注釈の外接矩形 [x0, y0, x1, y1] (pt)。%%HiResBoundingBox を優先し、無ければ %%BoundingBox。どちらも無ければ undefined */
 export function epsBoundingBox(head: string): [number, number, number, number] | undefined {
   const m = /%%HiResBoundingBox:\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/.exec(head) ?? /%%BoundingBox:\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/.exec(head);
-  return m ? (m.slice(1).map(Number) as [number, number, number, number]) : undefined;
+  if (!m) return undefined;
+  // 数として読めない値 (1.2.3 は NaN) と、有限でない値 (何百桁もの数は Infinity) の外接矩形は、無いものとして扱う (EPS として読まない)。
+  // そのまま通すと、幅・高さが NaN・Infinity の画像になり、PDF を書く所で文書の全体が誤りになる
+  const box = m.slice(1).map(Number) as [number, number, number, number];
+  return box.every(Number.isFinite) ? box : undefined;
 }
 
 /** EPS を実行するときの上限 (どれも、超えたら PostScript のエラーで終わり、そこまでに描いたものを返す) */
@@ -192,7 +196,9 @@ export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<Eps
     if (c === curClip) return;
     for (; open > 0; open--) body.push('</g>');
     const chain: Clip[] = [];
-    for (let k = c; k; k = k.parent) chain.unshift(k);
+    // 内側から外側へたどって、最後に逆順にする (unshift で前に足すと、クリップの入れ子の深さの 2 乗の手間になる)
+    for (let k = c; k; k = k.parent) chain.push(k);
+    chain.reverse();
     curClip = undefined;
     for (const k of chain) {
       // 閉じる </g> の分 (4 字) も数える

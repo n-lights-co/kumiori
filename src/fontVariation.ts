@@ -128,3 +128,7 @@ export function withOpticalSize(family: string, fontSize: number, unit?: 'pt' | 
 export function opticalSize(fontSize: number, unit?: 'pt' | 'px'): number {
   return unit === 'px' ? +((fontSize * 96) / 72).toFixed(4) : fontSize;
 }
+
+// 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
+// Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
+for (const t of [FONT_WIDTH_KEYWORDS]) Object.setPrototypeOf(t, null);

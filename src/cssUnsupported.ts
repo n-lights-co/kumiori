@@ -226,7 +226,7 @@ function count(rep: UnsupportedCssReport, prop: string, value: string, svg = fal
  * 読まずに捨てた規則・書き方 (@namespace・@page :nth()。parseCss の ignored) も数える
  */
 export function unsupportedCssReport(sheet: ParsedCss | undefined, doc?: Document): UnsupportedCssReport {
-  const rep: UnsupportedCssReport = { unsupported: {}, unknown: {} };
+  const rep: UnsupportedCssReport = { unsupported: Object.create(null), unknown: Object.create(null) };
   const add = (k: string) => (rep.unsupported[k] = (rep.unsupported[k] ?? 0) + 1);
   for (const k of sheet?.ignored ?? []) add(k);
   for (const pg of sheet?.pages ?? []) {
@@ -255,3 +255,7 @@ export function summarizeCounts(counts: Record<string, number> | undefined, max 
   const head = items.slice(0, max).map(([k, n]) => (n > 1 ? `${k} (${n})` : k));
   return head.join('、') + (items.length > max ? ` …ほか ${items.length - max} 種` : '');
 }
+
+// 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
+// Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
+for (const t of [UNSUPPORTED_CSS_VALUES, UNSUPPORTED_CSS_VALUE_WORDS, UNSUPPORTED_CSS_FUNCTIONS]) Object.setPrototypeOf(t, null);

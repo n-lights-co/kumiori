@@ -3,7 +3,7 @@
  * 行列 (6 要素の配列) をオペランドから読む・書く補助 (ほかの演算子の節も使う)
  */
 import { apply, applyVector, IDENTITY, invert, mul } from './matrix';
-import { type Interp, type PSArray, type PSObj, PSError, arr, arrItems, real } from './psInterp';
+import { type Interp, type PSArray, type PSObj, PSError, arrItems, real } from './psInterp';
 import type { Graphics, Mat } from './psGraphics';
 
 /** オペランドスタックの上の行列 (6 要素の配列) を取る */
@@ -35,7 +35,8 @@ export const isMatrix = (o: PSObj | undefined) => !!o && o.t === 'array' && o.n 
 export function installMatrixOperators(I: Interp, G: Graphics) {
   const d = (n: string, fn: (I: Interp) => void) => I.def(n, fn);
   // 座標 (§8.2)
-  d('matrix', (I) => I.push(arr(IDENTITY.map(real))));
+  // 新しい配列は VM に数える (newArray)。数えないと、配列の 1 枠ごとに、勘定の無い行列を詰めて、上限を超える量を確保できる
+  d('matrix', (I) => I.push(I.newArray(IDENTITY.map(real))));
   d('initmatrix', () => void (G.g.ctm = [...IDENTITY] as Mat));
   d('identmatrix', () => writeMatrix(I, I.popArray(), [...IDENTITY] as Mat));
   d('defaultmatrix', () => writeMatrix(I, I.popArray(), [...IDENTITY] as Mat));
