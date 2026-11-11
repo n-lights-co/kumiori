@@ -65,6 +65,8 @@
       .notes { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
       #warnings { color: var(--warn); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
       #warnings:empty { display: none; }
+      #warnings summary { cursor: pointer; font-weight: 700; }
+      #warnings ul { margin: 4px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; }
       #report { font-size: 12px; color: #cfd8e6; }
       #report summary { cursor: pointer; font-weight: 700; }
       #report table { border-collapse: collapse; margin-top: 6px; }
@@ -82,7 +84,8 @@
       fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
       legend { color: var(--muted); font-size: 12px; letter-spacing: .06em; margin-bottom: 4px; padding: 0; }
       .field { display: flex; flex-direction: column; gap: 4px; }
-      .field select { width: 100%; height: 32px; border-radius: 6px; border: 1px solid var(--line); background: var(--desk); padding: 0 8px; }
+      .field select, .field input[type="text"] { width: 100%; height: 32px; border-radius: 6px; border: 1px solid var(--line); background: var(--desk); padding: 0 8px; }
+      .field input[aria-invalid="true"] { border-color: var(--warn); }
       .check { display: flex; gap: 8px; align-items: flex-start; line-height: 1.45; cursor: pointer; }
       .check input { margin-top: 3px; accent-color: var(--accent); }
       .hint { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
@@ -136,6 +139,10 @@
           <legend>HTML</legend>
           <label class="field" title="HTML を組むときの既定のスタイル (作者の CSS で上書きできる)">既定のスタイル
             <select id="htmlstyle"><option value="kumiori">本の組版向け</option><option value="browser">ブラウザの既定</option><option value="browser-margin">ブラウザの既定 (body の余白を残す。WeasyPrint と同じ)</option><option value="ah">アンテナハウス互換 (CSS 2.1 の既定)</option><option value="vivliostyle">Vivliostyle 互換 (見出しの後ろで改ページしない)</option><option value="weasyprint">WeasyPrint 互換 (body の余白を残し、フォームの部品は WeasyPrint の既定)</option></select>
+          </label>
+          <label class="field" title="@page で size を指定していない HTML の用紙 (コマンドの --page-size、API の pageSize と同じ)">既定の用紙
+            <select id="pagesize"><option value="A4">A4 (210×297mm)</option><option value="A5">A5 (148×210mm)</option><option value="B5">B5 (ISO。176×250mm)</option><option value="JIS-B5">JIS-B5 (182×257mm)</option><option value="letter">letter (8.5×11in)</option><option value="custom">自由入力…</option></select>
+            <input type="text" id="pagesizecustom" hidden placeholder="A5 landscape、148mm 210mm など" aria-label="既定の用紙 (自由入力)" />
           </label>
           <label class="field">CSS の解釈
             <select id="cssengine"><option value="kumiori">Kumiori</option><option value="browser">ブラウザ (比較用)</option></select>
