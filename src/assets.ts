@@ -478,6 +478,11 @@ async function tiffPixels(bytes: Uint8Array): Promise<Pixels | undefined> {
     if (!ifds.length) return undefined;
     const fax = ccittPixels(ifds[0], buf);
     if (fax) return fax;
+    // 画素の数の上限 (imageLimits.ts の MAX_PIXELS)。utif は、IFD に書かれた寸法 (ImageWidth × ImageLength。TIFF 6.0 Section 8) のとおりに
+    // 画素の領域を確保してから展開する。PackBits・LZW・Deflate はデータの長さで縛れないので、寸法を先に確かめる
+    // (124 バイトの PackBits の TIFF で、寸法どおりの領域と RGBA を確保し、常駐のメモリを 1.6GB 使っていた。IMG-18)
+    const tagOf = (k: number) => Number((ifds[0][`t${k}`] as number[] | undefined)?.[0] ?? 0);
+    if (!(tagOf(256) > 0 && tagOf(257) > 0) || tagOf(256) * tagOf(257) > MAX_PIXELS) return undefined;
     UTIF.decodeImage(buf, ifds[0], ifds);
     const rgba = paletteWithExtra(ifds[0], buf) ?? UTIF.toRGBA8(ifds[0]);
     const { width, height } = ifds[0];

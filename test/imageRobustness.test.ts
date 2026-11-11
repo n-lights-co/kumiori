@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { AssetStore } from '../src/assets';
 import { decodeModifiedHuffman } from '../src/ccitt';
 import { imageInfo } from '../src/imageInfo';
+import { MAX_PIXELS } from '../src/imageLimits';
 import { decodeJpeg } from '../src/jpeg';
 
 /**
@@ -82,5 +84,54 @@ describe('JPEG・TIFF・CCITT: 細工した入力 (IMG-09・IMG-10・IMG-14)', (
     for (let i = 0; i < bits.length; i++) if (bits[i] === '1') data[i >> 3] |= 0x80 >> (i & 7);
     const out = decodeModifiedHuffman(data, { width: 8, rows: 3, compression: 4 })!;
     expect(Array.from(out).join('')).toBe('00111000' + '00010000' + '00000110');
+  });
+});
+
+describe('TIFF: 寸法だけが大きい小さなファイル (IMG-18)', () => {
+  /** 8 ビットのグレー・PackBits (TIFF 6.0 Section 9) の W × H の TIFF。ストリップは 1 つで、データは「0 を 128 個」の 2 バイトだけ */
+  const packBitsTiff = (W: number, H: number) => {
+    const tags: Array<[number, number, number]> = [
+      [256, 4, W],
+      [257, 4, H],
+      [258, 3, 8],
+      [259, 3, 32773],
+      [262, 3, 1],
+      [273, 4, 0],
+      [277, 3, 1],
+      [278, 4, H],
+      [279, 4, 2],
+    ];
+    const dataOff = 8 + 2 + tags.length * 12 + 4;
+    tags[5][2] = dataOff;
+    const b = new Uint8Array(dataOff + 2);
+    const v = new DataView(b.buffer);
+    b.set([0x49, 0x49, 42, 0]);
+    v.setUint32(4, 8, true);
+    v.setUint16(8, tags.length, true);
+    tags.forEach(([t, ty, val], k) => {
+      const o = 10 + k * 12;
+      v.setUint16(o, t, true);
+      v.setUint16(o + 2, ty, true);
+      v.setUint32(o + 4, 1, true);
+      if (ty === 3) v.setUint16(o + 8, val, true);
+      else v.setUint32(o + 8, val, true);
+    });
+    b.set([0x81, 0x00], dataOff);
+    return b;
+  };
+  it('1 枚の画像の画素の数の上限 (1 億画素) を超える TIFF は、画素を確保せずに、描けない画像として扱う', { timeout: 300_000 }, async () => {
+    // 10,001 × 10,000 画素 (124 バイト)。直す前は、復号のライブラリが寸法どおりに 1 億バイトを確保し、RGBA (4 億バイト) にして PNG にしていた
+    // (寸法がもっと大きければ、その分だけ確保する。20,000 × 20,000 なら RGBA で 16 億バイト)
+    const big = packBitsTiff(10_001, 10_000);
+    expect(big.length).toBeLessThan(200);
+    expect(10_001 * 10_000).toBeGreaterThan(MAX_PIXELS);
+    const a = await new AssetStore().addBlob('big.tif', new Blob([big]));
+    expect(a).toMatchObject({ mime: 'image/tiff', drawable: false });
+    const huge = await new AssetStore().addBlob('huge.tif', new Blob([packBitsTiff(60_000, 60_000)]));
+    expect(huge).toMatchObject({ mime: 'image/tiff', drawable: false });
+    // 上限の中の画像は、これまでどおり読む (PNG にして持つ)
+    const ok = await new AssetStore().addBlob('ok.tif', new Blob([packBitsTiff(100, 50)]));
+    expect(ok).toMatchObject({ mime: 'image/png', width: 100, height: 50 });
+    expect(ok!.drawable).toBeUndefined();
   });
 });

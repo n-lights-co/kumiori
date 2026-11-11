@@ -19,7 +19,7 @@
 import { base64 } from './base64';
 import { decodeModifiedHuffman } from './ccitt';
 import { fontFamilyOf } from './eps';
-import { MAX_PIXELS, METAFILE_TOTAL_IMAGE_PIXELS } from './imageLimits';
+import { MAX_PIXELS, metafilePixelBudget } from './imageLimits';
 import { decodeJpeg } from './jpeg';
 import { encodePngStored } from './pixels';
 import { inflateBytes, lzwBytes } from './psFilters';
@@ -1410,11 +1410,15 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   const imageEl = (rgba: Uint8Array, w: number, h: number, m: number[], cells = true) =>
     `<image x="0" y="0" width="1" height="1" preserveAspectRatio="none"${cells ? ' style="image-rendering:pixelated"' : ''} transform="matrix(${m.map((v) => String(Math.round(v * 10000) / 10000)).join(' ')})" href="data:image/png;base64,${base64(encodePngStored({ width: w, height: h, rgba }))}"/>`;
 
-  /** この文書で画素にできる残りの数 (imageLimits.ts の METAFILE_TOTAL_IMAGE_PIXELS)。足りなければ警告して false (その画像は描かない) */
-  let pixelsLeft = METAFILE_TOTAL_IMAGE_PIXELS;
+  /**
+   * この文書で画素にできる残りの数 (imageLimits.ts の metafilePixelBudget: 合計の上限と、ファイルの大きさに応じた上限の小さい方)。
+   * 足りなければ警告して false (その画像は描かない)
+   */
+  const pixelBudget = metafilePixelBudget(bytes.length);
+  let pixelsLeft = pixelBudget;
   const takePixels = (n: number, what: string): boolean => {
     if (n > pixelsLeft) {
-      warn(`${what} は、文書の画像の画素の合計が上限 (${METAFILE_TOTAL_IMAGE_PIXELS} 画素) を超えるので描きません`);
+      warn(`${what} は、文書の画像の画素の合計が上限 (${bytes.length} バイトのファイルでは ${pixelBudget} 画素) を超えるので描きません`);
       return false;
     }
     pixelsLeft -= n;
