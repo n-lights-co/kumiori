@@ -73,16 +73,25 @@ class CanvasPainter implements Painter {
   /** 色つきの表 (COLR・CBDT・sbix・SVG) を持つ書体を読み込んでいるか (無ければ、色つきの字形の処理を通らない) */
   private colorFonts: boolean;
   /** 書体 f で text を組んだ字形の輪郭 (OpenType の機能 features を当てる) */
-  private outlineOf(f: ReturnType<FontManager['get']>, text0: string, features: string[]): Outline {
+  private outlineOf(f: ReturnType<FontManager['get']>, text0: string, features: string[]): Outline | undefined {
     // 改行しない空白 (U+00A0) は、通常の空白の字形で描く (Arimo の U+00A0 の字形は、fontkit が読めない壊れたデータ。PDF の drawGlyph と同じ)
     const text = text0.replace(/\u00A0/g, ' ');
     const key = `${f.key}\u0000${features.join(',')}\u0000${text}`;
     const hit = this.outlineCache.get(key);
     if (hit) return hit;
     const feats = Object.fromEntries(features.map((t) => [t, true]));
-    const run = f.fk.layout(text, feats as never);
-    // 縦書き用の字形の並び (正立の字のクラスタ) の位置は、横書きの位置 (PDF と同じ。areaResources.ts)
-    const positions = uprightPositions(f.fk, text, feats, run);
+    let run: ReturnType<typeof f.fk.layout>;
+    let positions: ReturnType<typeof uprightPositions>;
+    try {
+      run = f.fk.layout(text, feats as never);
+      // 縦書き用の字形の並び (正立の字のクラスタ) の位置は、横書きの位置 (PDF と同じ。areaResources.ts)
+      positions = uprightPositions(f.fk, text, feats, run);
+    } catch (e) {
+      // 字の並びを組めない書体・字 (fontkit が字形のデータを読めない) は、輪郭にできない。1 つの並びのために、ページの残りを失わない
+      // (呼び出し元は、ブラウザの fillText で描く)
+      console.warn(`Canvas: ${f.key} の「${text}」を輪郭にできません`, e);
+      return undefined;
+    }
     const paths: Path2D[] = [];
     const offsets: { x: number; y: number }[] = [];
     let x0 = 0;
@@ -239,7 +248,7 @@ class CanvasPainter implements Painter {
       // 可変フォントの実体は、ブラウザへの登録 (静的な書体にしたもの) が終わるまで、輪郭で描く
       const o = this.outlineOf(f, g.text, g.features ?? []);
       const k = g.fontSize / f.unitsPerEm;
-      for (let i = 0; i < o.paths.length; i++) {
+      for (let i = 0; o && i < o.paths.length; i++) {
         ctx.save();
         ctx.translate(o.offsets[i].x * k, -o.offsets[i].y * k);
         ctx.scale(k, -k);
@@ -251,8 +260,10 @@ class CanvasPainter implements Painter {
         }
         ctx.restore();
       }
-      ctx.restore();
-      return;
+      if (o) {
+        ctx.restore();
+        return;
+      }
     }
     ctx.fillText(g.text, 0, 0);
     if (g.fakeBold) {

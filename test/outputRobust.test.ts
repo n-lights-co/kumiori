@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { typeset, type FontSpec } from '../src/index';
 import { AssetStore } from '../src/assets';
+import { FontManager } from '../src/fontManager';
 import { listFiles } from '../src/cli';
 import { defaultFontBuffer } from './helpers';
 
@@ -41,6 +42,66 @@ describe('OUT-03: renderPage の読めない字形', () => {
     }
     // a・b の輪郭 (中身のあるパス) を描いている
     expect(fills.filter((d) => d.length > 0).length).toBeGreaterThanOrEqual(2);
+  });
+  it('U+00A0 を含むいろいろな字の並び (OpenType の機能つき・太字・字間・縦書き・表のセル) のページを、例外なく描ける', async () => {
+    // 直す前は、font-feature-settings を付けた並び (U+00A0 を空白に置き換えない経路) で「Trying to access beyond buffer length」になった
+    const cases = [
+      '<p style="font-family:sans-serif;font-feature-settings:\'kern\'">A&nbsp;V</p>',
+      '<p style="font-family:sans-serif;font-feature-settings:\'liga\' 0">fi&nbsp;fl&nbsp;</p>',
+      '<p style="font-family:sans-serif;font-weight:bold;letter-spacing:1px">a&nbsp;b</p>',
+      '<table><tr><td style="font-family:sans-serif">&nbsp;</td></tr></table>',
+      '<div style="writing-mode:vertical-rl;font-family:sans-serif">a&nbsp;b 日本</div>',
+      '<p style="font-family:sans-serif">日本&nbsp;語 abc&nbsp;</p>',
+    ];
+    const ctx = new Proxy({} as Record<string, unknown>, { get: (_t, k) => (typeof k === 'string' ? () => ({ width: 1 }) : undefined), set: () => true });
+    const canvas = { getContext: () => ctx, style: {} } as unknown as HTMLCanvasElement;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const html of cases) {
+        for (const style of ['kumiori', 'browser'] as const) {
+          const r = await typeset(`<html><body>${html}</body></html>`, { ...noNet, style });
+          for (let i = 0; i < r.pageCount; i++) expect(() => r.renderPage(canvas, i), html).not.toThrow();
+        }
+      }
+      // 字形を読めない、という知らせも出ない (読めるようになった)
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('fontkit: 輪郭の無い TrueType の字形 (空白) の外枠', () => {
+  it('Arimo の U+0020 (途中の字形) と U+00A0 (最後の字形) の外枠は空で、送りは hmtx の値 (例外にならない)', async () => {
+    const fonts = new FontManager();
+    await fonts.registerBuffer('Arimo', 400, await defaultFontBuffer('Arimo-Regular.ttf'), false);
+    const fk = fonts.get('Arimo', 400).fk as unknown as {
+      glyphForCodePoint(cp: number): { id: number; cbox: { minX: number; minY: number; maxX: number; maxY: number }; advanceWidth: number };
+      loca: { offsets: number[] };
+      hmtx: { metrics: { get(i: number): { advance: number } } };
+      layout(s: string): { glyphs: unknown[]; positions: Array<{ xAdvance: number }> };
+    };
+    for (const cp of [0x20, 0xa0]) {
+      const g = fk.glyphForCodePoint(cp);
+      // 前提: どちらも輪郭の無い字形 (loca の続く 2 つの値が同じ)
+      expect(fk.loca.offsets[g.id]).toBe(fk.loca.offsets[g.id + 1]);
+      // 直す前: U+0020 は隣の字形の見出しを読んだでたらめな外枠 (185, 0, 383, 1409)、U+00A0 は表の外を読んで例外
+      expect({ ...g.cbox }).toEqual({ minX: 0, minY: 0, maxX: 0, maxY: 0 });
+      expect(g.advanceWidth).toBe(fk.hmtx.metrics.get(g.id).advance);
+    }
+    // 空白と改行しない空白は、同じ送り。U+00A0 を含む並びを、そのまま組める
+    expect(fk.glyphForCodePoint(0xa0).advanceWidth).toBe(fk.glyphForCodePoint(0x20).advanceWidth);
+    const run = fk.layout('a\u00a0b');
+    expect(run.glyphs).toHaveLength(3);
+    expect(run.positions[1].xAdvance).toBe(fk.glyphForCodePoint(0x20).advanceWidth);
+  });
+  it('輪郭のある字形の外枠は、今までどおり glyf の見出しの値', async () => {
+    const fonts = new FontManager();
+    await fonts.registerBuffer('Arimo', 400, await defaultFontBuffer('Arimo-Regular.ttf'), false);
+    const fk = fonts.get('Arimo', 400).fk as unknown as { glyphForCodePoint(cp: number): { cbox: { minX: number; maxX: number; maxY: number }; path: { cbox: { maxY: number } } } };
+    const a = fk.glyphForCodePoint(0x41);
+    expect(a.cbox.maxX).toBeGreaterThan(a.cbox.minX);
+    expect(a.cbox.maxY).toBeCloseTo(a.path.cbox.maxY, 0);
   });
 });
 
