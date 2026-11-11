@@ -71,6 +71,8 @@ export const AH_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   primaryFontByLangAh: true,
   superShiftAh: true,
   pseudoInlineBoxAh: true,
+  textAlignInsideOutsideAh: true,
+  runningFontFromPageContextAh: true,
   jaDefaultsAh: true,
   footnoteCallLineHeightFromParent: true,
   leaderFromStart: true,

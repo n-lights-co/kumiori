@@ -154,6 +154,7 @@ export interface ResolvedStyle {
   textAutospaceWidth?: number;
   punctuationSqueeze?: boolean;
   lineSqueezeMax?: number;
+  noSpaceSqueeze?: boolean;
   punctuationTrimStart?: boolean;
   hangFirst?: boolean;
   punctuationTrimEnd?: boolean;
@@ -320,6 +321,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     textAutospaceWidth: n.textAutospaceWidth ?? parent.textAutospaceWidth,
     punctuationSqueeze: n.punctuationSqueeze ?? parent.punctuationSqueeze,
     lineSqueezeMax: n.lineSqueezeMax ?? parent.lineSqueezeMax,
+    noSpaceSqueeze: n.noSpaceSqueeze ?? parent.noSpaceSqueeze,
     punctuationTrimStart: n.punctuationTrimStart ?? parent.punctuationTrimStart,
     hangFirst: n.hangFirst ?? parent.hangFirst,
     punctuationTrimEnd: n.punctuationTrimEnd ?? parent.punctuationTrimEnd,

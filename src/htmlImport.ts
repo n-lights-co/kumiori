@@ -212,6 +212,12 @@ export interface HtmlImportOptions {
    */
   superShiftAh?: boolean;
   /**
+   * text-align の inside・outside を読む (アンテナハウス互換。アンテナハウスの拡張の値で、CSS Text 3 §6.1 の text-align には無い。
+   * 既定は、無効の値として捨てる)。inside はページのノドの側、outside は小口の側にそろえる (XSL 1.1 §7.16.9 の inside・outside と同じ。
+   * 左右のページは @page :left・:right と同じ判定: 横書きは、奇数ページが右ページでノドは左)
+   */
+  textAlignInsideOutsideAh?: boolean;
+  /**
    * ::before・::after の中身を、書式が親と同じでも inline の箱として渡す (アンテナハウス互換。LayoutOptions.kernAh で、
    * 要素の境目では字の組を詰めないため。::before の ‘ と続く字の間を詰めない)
    */
@@ -242,6 +248,13 @@ export interface HtmlImportOptions {
    * Conditional 3 §6.1)。sheet を渡すときは、sheet を読んだ側 (prepareHtml) の読み方に従う
    */
   ahCssExtensions?: boolean;
+  /**
+   * position: running() の要素の書体 (font-family) を、要素に指定が無ければ、その要素を出す余白の箱 (content: element(…)) から受け継ぐ
+   * (アンテナハウス互換。その余白の箱の font-family、無ければページ文脈 (@page) の font-family)。既定は、文書の中の元の場所から受け継ぐ
+   * (CSS GCPM 3 §1.2.1: "The element inherits from its original position in the document")。
+   * 余白の箱の指定が箱ごとに違う・無いときは、既定と同じ
+   */
+  runningFontFromPageContextAh?: boolean;
   /** 幅が auto の表の列が入りきらないときの列の幅の配り方を互換の規則にする (アンテナハウス互換。LTable.fitContentRule の 'ah-html') */
   tableAutoWidthAh?: boolean;
   /** 表の上の見出しと表ヘッダーを、本体の最初の行と同じページに置く (アンテナハウス互換。LTable.keepHeaderWithBodyAh) */
@@ -2935,7 +2948,10 @@ class HtmlImporter {
         .filter(Boolean);
     const ownLang = !pseudo && !!parent && !!(el.getAttribute?.('lang') ?? el.getAttribute?.('xml:lang'));
     if (diff('font-family') || diff('font-weight')) {
-      const mapped = this.opts.mapFont?.(famNames(c), bold, this.langOf(el));
+      // 余白の箱から書体を受け継ぐ running() の要素の中 (runningFamily。アンテナハウス互換): 元の場所から受け継いだままの font-family は、
+      // 余白の箱の font-family に読み替える (太さだけを変えた要素を、元の場所の書体の太字にしない)
+      const rf = this.runningFamily;
+      const mapped = this.opts.mapFont?.(rf && c('font-family') === rf.from ? rf.names : famNames(c), bold, this.langOf(el));
       if (mapped) s.fontFamily = mapped;
     } else if (ownLang && p && this.langOf(el) !== this.langOf(parent!)) {
       const mapped = this.opts.mapFont?.(famNames(c), bold, this.langOf(el));
@@ -3174,6 +3190,22 @@ class HtmlImporter {
     return undefined;
   }
 
+  /**
+   * text-align の inside・outside (アンテナハウスの拡張の値。opts.textAlignInsideOutsideAh のときだけ)。カスケードは CSS に無い値として
+   * 捨てるので、自前で読んだ宣言 (pg。カスケードの勝ち負けは collectPaged が決めている) から取る。text-align は受け継ぐので、祖先をたどる:
+   * 祖先との間で text-align の計算値が変わっていれば、間の要素が別の値を指定しているので、受け継がない
+   */
+  private insideOutsideAlign(el: Element): 'inside' | 'outside' | undefined {
+    if (!this.opts.textAlignInsideOutsideAh) return undefined;
+    const own = this.cs(el)('text-align');
+    for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
+      if (this.cs(e as Element)('text-align') !== own) return undefined;
+      const v = this.pg(e as Element)['text-align']?.trim().toLowerCase();
+      if (v === 'inside' || v === 'outside') return v;
+    }
+    return undefined;
+  }
+
   /** 段落の書式 (揃え・字下げ・孤立行) */
   private paragraphStyle(el: Element, parent: Element | undefined): TextStyle {
     const c = this.cs(el);
@@ -3186,6 +3218,10 @@ class HtmlImporter {
       const rtl = c('direction') === 'rtl';
       s.textAlign = ta === 'center' ? 'center' : ta === 'justify' || ta === 'justify-all' ? 'justify' : ta === 'end' || ta === (rtl ? 'left' : 'right') ? 'end' : 'start';
     }
+    // text-align: inside・outside (アンテナハウスの拡張の値。アンテナハウス互換のスタイルのときだけ): ページのノドの側・小口の側にそろえる。
+    // どちらの端かは、組むページで決まる (組版エンジンの TextAlign の inside・outside。XSL 1.1 §7.16.9)
+    const io = this.insideOutsideAlign(el);
+    if (io && (io !== (parent ? this.insideOutsideAlign(parent) : undefined) || s.textAlign !== undefined)) s.textAlign = io;
     // text-align-last の left・right も、text-align と同じく direction で start・end に読み替える (rtl では left が end)
     const tal = c('text-align-last');
     // text-align: justify-all (CSS Text 3 §6.1): 最後の行 (と強制改行の前の行) も両端をそろえる。text-align-last の指定があれば、そちら。
@@ -3969,11 +4005,52 @@ class HtmlImporter {
     const run = /running\(\s*([-\w\u0080-\uffff]+)\s*\)/.exec(pg.position ?? '');
     if (!run) return false;
     this.inRunning = true;
-    const content = this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', children: this.inline(e, parent) } as LBlock);
+    // アンテナハウス互換: 要素に font-family の指定が無ければ (親と同じ値なら)、書体は、この要素を出す余白の箱から受け継ぐ
+    // (指定の有無は、計算値が親と同じかどうかで見る。親と同じ書体を自分に指定した要素は、指定の無いものと見分けない)
+    const ctxFamily = this.opts.runningFontFromPageContextAh && this.cs(e)('font-family') === this.cs(parent)('font-family') ? this.runningContextFamily(run[1]) : undefined;
+    if (ctxFamily) this.runningFamily = { from: this.cs(e)('font-family'), names: ctxFamily };
+    // 横へ寄せる指定 (-ah-float-x の left・right・start・end・inside・outside。ahFloatX) のある要素は、余白の箱の中でも回り込みの箱として置く:
+    // 余白の箱の内容の端 (inside はノドの側、outside は小口の側。ページの偶奇で決まる) に寄り、余白の箱より幅の広い箱は、反対の側へはみ出す
+    // (CSS 2.1 §9.5.1 の規則 1 と、その右の float への読み替え: 右の float の右の外端は、包含ブロックの右端より右に出ない。箱が広くて入らない分は、
+    // 左へ出る)。ページの外へ出た分は、塗り足しの端で切れる。
+    // 小口の余白に置く章の印 (ツメ) を、左右のページで対称に出す書き方 (-ah-float-x: inside)
+    const side = this.ahFloatX(pg, true);
+    const content = side ? this.float(e, parent, side) : this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', children: this.inline(e, parent) } as LBlock);
     this.inRunning = false;
+    this.runningFamily = undefined;
     const m: LMarker = { type: 'marker', className: `running:${run[1]}`, children: content ? [content] : [] };
     this.pushMarker(m, inline, items);
     return true;
+  }
+
+  /** 余白の箱から書体を受け継ぐ running() の要素を組んでいる間の、読み替え (from: 元の場所から受け継いだ font-family の計算値、names: 余白の箱の書体の名前) */
+  private runningFamily?: { from: string; names: string[] };
+
+  /**
+   * running(name) の要素を出す余白の箱 (content に element(name) を持つ箱) の font-family の名前の並び: 箱の宣言、無ければ、その箱のページの
+   * ページ文脈 (@page) の宣言 (CSS Page 3 §6: 余白の箱はページ文脈から受け継ぐ)。どの箱でも同じ指定のときだけ返す (違う・無い箱があれば undefined)
+   */
+  private runningContextFamily(name: string): string[] | undefined {
+    const found = new Set<string>();
+    // 名前は識別子の字 (英数字・_・-・非 ASCII) だけなので、正規表現にそのまま入れられる
+    const uses = new RegExp(`element\\(\\s*${name}\\s*[,)]`);
+    for (const pageName of new Set<string | undefined>([undefined, ...this.pageRules.map((r) => r.name)]))
+      for (const first of [false, true])
+        for (const side of [undefined, 'left', 'right'] as const) {
+          const r = resolvePageRules(this.pageRules, { name: pageName, first, side }, ...this.pageWm);
+          const ctx = marginTextDecls(r.decls)['font-family'];
+          for (const box of Object.values(r.boxes)) {
+            if (!uses.test(box.content ?? '')) continue;
+            const fam = marginTextDecls(box)['font-family'] ?? ctx;
+            if (!fam) return undefined;
+            found.add(fam.trim());
+          }
+        }
+    if (found.size !== 1) return undefined;
+    return [...found][0]
+      .split(',')
+      .map((n) => n.replace(/['"]/g, '').trim())
+      .filter(Boolean);
   }
 
   /** float: footnote: 脚注 (参照記号は自動の連番)。扱ったら true */
@@ -3993,7 +4070,28 @@ class HtmlImporter {
   /** 回り込みの側 (flowFloat の説明を参照)。回り込みでなければ undefined */
   private floatSideOf(e: Element, pg: Record<string, string>): string | undefined {
     const fl = (pg.float && /\bsidenote\b/i.test(pg.float) ? this.sidenoteSide() : pg.float && pg.float !== 'footnote' ? floatSide(pg.float) : this.cs(e)('float')).replace(/^inline-(start|end)$/, '$1');
-    return /^(left|right|inside|outside|top|bottom|before|after|center|alternate|start|end)$/.test(fl) ? fl : undefined;
+    if (/^(left|right|inside|outside|top|bottom|before|after|center|alternate|start|end)$/.test(fl)) return fl;
+    return pg.float === 'footnote' ? undefined : this.ahFloatX(pg);
+  }
+
+  /**
+   * アンテナハウスのフロートの拡張の -ah-float-x (横の位置) のうち、CSS の回り込みと同じ置き方になるもの: left・right・start・end と、
+   * inside (ノドの側: 右ページでは左、左ページでは右)・outside (小口の側)。値の意味は、アンテナハウスの公開の説明による
+   * (AH Formatter のオンラインマニュアル「フロート拡張」の axf:float-x・axf:float-y。https://www.antenna.co.jp/AHF/help/ja/ahf-float.html 、
+   * 2026-11-11 取得)。縦の位置 (-ah-float-y) が none (初期値) のときは、要素のある所で横へ寄せ、本文を回り込ませる置き方なので、
+   * float: left などと同じに組める。float の指定 (none 以外) があれば、そちらを使う。
+   * 縦の位置の指定があるもの (ページの上・下へ動かす) と、center・alternate・column-outside・縦書き用の top・bottom は読まない
+   * (未対応として知らせ、指定の無いときと同じに組む)
+   */
+  private ahFloatX(pg: Record<string, string>, report = false): string | undefined {
+    const x = (pg['-ah-float-x'] ?? '').trim().toLowerCase();
+    if (!x || x === 'none') return undefined;
+    const y = (pg['-ah-float-y'] ?? '').trim().toLowerCase();
+    if (!/^(left|right|start|end|inside|outside)$/.test(x) || (y && y !== 'none')) {
+      if (report) this.miss(y && y !== 'none' ? `-ah-float-y: ${y}` : `-ah-float-x: ${x}`);
+      return undefined;
+    }
+    return x;
   }
 
   /** 流れの外に出す要素か (flowChildren の前処理の flowRunning・flowFootnote・flowFloat・絶対配置・固定配置のどれかに当たる) */
@@ -4010,6 +4108,8 @@ class HtmlImporter {
    */
   private flowFloat(e: Element, parent: Element, pg: Record<string, string>, items: FlowItem[]): boolean {
     const fl = this.floatSideOf(e, pg);
+    // 読まない -ah-float-x・-ah-float-y の値は、未対応として知らせる (ahFloatX)
+    if (!fl && pg['-ah-float-x'] && pg.float !== 'footnote') this.ahFloatX(pg, true);
     if (!fl) return false;
     const fv = this.float(e, parent, fl, !!pg.float && /\bsidenote\b/i.test(pg.float));
     if (pg.float && /\bmulticol\b/i.test(pg.float) && (fl === 'top' || fl === 'before')) {

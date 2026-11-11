@@ -1450,8 +1450,10 @@ class Flow {
     const align = lastIO ? st.textAlignLast : st.textAlign;
     if (align !== 'inside' && align !== 'outside') return;
     const even = (this.host.pageNumber?.() ?? 1) % 2 === 0;
-    // 綴じ側は、奇数ページが start 側・偶数ページが end 側。inside は綴じ側、outside は小口側
-    const toEnd = (align === 'inside') === even;
+    // 綴じ側は、奇数ページが start 側・偶数ページが end 側。inside は綴じ側、outside は小口側。
+    // 縦書きの行では、綴じる側 (左右) が行の始めの端 (上) でも終わりの端 (下) でもないので、inside は始めの端、outside は終わりの端
+    // (XSL 1.1 §7.16.9: "If neither, use start alignment." / "If neither, use end alignment.")
+    const toEnd = st.wm !== 'horizontal-tb' ? align === 'outside' : (align === 'inside') === even;
     if (!toEnd) return;
     const free = node.isize - pl.raw.indent - pl.contentLength;
     if (free > 0.01) for (const c of node.children) c.i += pl.rtl ? -free : free; // 右から左の行では end は左
