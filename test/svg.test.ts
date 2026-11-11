@@ -410,6 +410,14 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
       { op: 'M', x: 0, y: 10 },
       { op: 'M', x: 0, y: 25 },
     ]);
+    // text の x・y は、最初の字が子の tspan の中にあっても効く (SVG 1.1 §10.5: tspan に x・y が無ければ、先祖の指定がその字に当たる)。
+    // tspan の空の y=""・dy="" は指定の無いものとして読む (描画ソフトの書き出す形)
+    const f = parseSvg(svg('<text x="10" y="40" font-size="10"><tspan>a</tspan></text><text x="10" y="30" font-size="10"><tspan x="20" y="" dy="">b</tspan>c</text>'), parse, { outline })!;
+    expect(f.shapes.map((x) => x.segs[0])).toEqual([
+      { op: 'M', x: 10, y: 30 },
+      { op: 'M', x: 20, y: 20 },
+      { op: 'M', x: 25, y: 20 },
+    ]);
     // 輪郭を作れなければラスタライズ
     expect(parseSvg(svg('<text x="0" y="10">hi</text>'), parse)).toBeNull();
   });

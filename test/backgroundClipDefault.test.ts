@@ -178,8 +178,8 @@ describe('HTML: 透明・半透明の罫線 (背景が罫線の下に見える)'
   });
 });
 
-describe('XSL-FO: 背景の画像は、これまでどおり padding の矩形まで (XSL 1.1 §4.9.4)', () => {
-  it('罫線のある箱の background-image は、padding の箱で切り抜く (clip の欄は付かない)。色は、これまでどおり border の箱', async () => {
+describe('XSL-FO: 背景は padding の矩形まで (XSL 1.1 §4.9.4)', () => {
+  it('罫線のある箱の background-image は、padding の箱で切り抜く (clip の欄は付かない)。色も、罫線の下が見える線種 (破線) の箱では padding の箱まで', async () => {
     const fo =
       '<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="200pt" page-height="200pt"><fo:region-body margin="15pt"/></fo:simple-page-master></fo:layout-master-set>' +
       '<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block border="6pt dashed #000000" padding="6pt" background-image="url(a.png)" background-color="#00ff00" font-size="8pt">x</fo:block></fo:flow></fo:page-sequence></fo:root>';
@@ -192,8 +192,9 @@ describe('XSL-FO: 背景の画像は、これまでどおり padding の矩形�
       // XSL-FO のブロックは、行の向きの罫線と padding が内容の箱 (15 から) の外へ出る: border の箱の左上は (3, 15)、padding の箱は (9, 21)
       near(layer.clip.slice(0, 2), [9, 21]);
       expect([layer.xs[0], layer.ys[0]]).toEqual([9, 21]);
+      // 背景の色も padding の箱 (§4.9.4: The background, if any, is rendered in the padding-rectangle。test/foBackgroundPaddingRect.test.ts)
       const fill = log.find((l) => l[0] === 'fillRect' && l[5] === '#00ff00')!;
-      near(fill.slice(1, 3) as number[], [3, 15]);
+      near(fill.slice(1, 3) as number[], [9, 21]);
     }
   });
 });

@@ -73,6 +73,8 @@ import { PT_PER_MM } from './units';
 import { withGrouping } from './pageNumber';
 import { isColorName, spotColor, toCss } from './color';
 import { normalizeSrc } from './assets';
+import { gradientSvg, isCssGradient } from './cssGradient';
+import { normBorder } from './geometry';
 import type { FkFont, MathFont } from './mathFont';
 import { layoutMathML, type MNode } from './mathLayout';
 import { isAntennaCompat, type FoCompat } from './compat';
@@ -541,7 +543,8 @@ class Importer {
     if (bg) {
       const pos: string[] = [];
       for (const t of splitTopLevel(bg, ' ')) {
-        if (/^url\(/i.test(t) || t === 'none') out['background-image'] = t;
+        // グラデーションの関数 (拡張の値) も画像の指定として分ける。読む・読まないは backgroundImage が決める (互換モードだけ読む)
+        if (/^url\(/i.test(t) || t === 'none' || isCssGradient(t)) out['background-image'] = t;
         else if (/^(repeat|repeat-x|repeat-y|no-repeat)$/.test(t)) out['background-repeat'] = t;
         else if (t === 'scroll' || t === 'fixed') out['background-attachment'] = t;
         else if (/^(top|bottom|left|right|center)$/.test(t) || /^[-+.\d]/.test(t)) pos.push(t);
@@ -1353,10 +1356,24 @@ class Importer {
       baseStyle.lineNumber = { fontSize: this.defaultFontSize, ...rootStyle.style.lineNumber, ...style.style.lineNumber };
 
     const statics = this.els(ps).filter((e) => this.name(e) === 'static-content');
-    const flowEl = this.els(ps).find((e) => this.name(e) === 'flow');
-    // 最初の fo:flow は、flow-name に関わらず本文の領域に流す。本文の領域の名前でない flow-name は、読まずに捨てた属性として報告に出る
+    // fo:flow は、flow-name と同じ名前の領域へ流す (XSL 1.1 §6.4.1.4: flow-map-reference が無ければ、flow-name と同じ region-name の領域。
+    // region-body の既定の名前は xsl-region-body)。本文の領域 (使うページマスターのどれかの region-body) と名前の合う fo:flow を本文へ流す。
+    // 合うものが無いときは、仕様ではどの領域にも流れないが、flow-name を省いた・間違えた文書を空にしないよう、最初の fo:flow を本文へ流して
+    // 注意に出す (§7.27.5: 名前が空のときは誤りを報告し、処理は続けてよい)。本文でない領域 (region-before など) へ流す fo:flow は未対応
+    const flowEls = this.els(ps).filter((e) => this.name(e) === 'flow');
+    const usedMasters = [def, ...alts.map((a) => a.info)];
+    const flowEl = flowEls.find((e) => usedMasters.some((i) => i.bodyName === e.getAttribute?.('flow-name'))) ?? flowEls[0];
     this.askedNames.add('flow-name');
-    if (flowEl && [def, ...alts.map((a) => a.info)].some((i) => i.bodyName === flowEl.getAttribute?.('flow-name'))) this.markAsked(flowEl, 'flow-name');
+    if (flowEl) {
+      this.markAsked(flowEl, 'flow-name');
+      const fname = flowEl.getAttribute?.('flow-name') ?? undefined;
+      if (!fname) this.note(msg('fo:flow に flow-name が無いので、本文の領域へ流しました', 'fo:flow has no flow-name; its content was flowed into the body region'));
+      else if (usedMasters.some((i) => i.bodyName === fname)) {
+        // 本文の領域と名前が合う: 注意は要らない
+      } else if (usedMasters.some((i) => i.regionRects.has(fname)))
+        this.note(msg(`fo:flow を本文でない領域 "${fname}" へ流すことには未対応なので、本文の領域へ流しました`, `flowing an fo:flow into the non-body region "${fname}" is not supported; its content was flowed into the body region`));
+      else this.note(msg(`flow-name "${fname}" に合う領域が無いので、本文の領域へ流しました`, `no region matches flow-name "${fname}"; its content was flowed into the body region`));
+    }
     // 読まずに捨てる子 (fo:title・2 つ目からの fo:flow など) は、読み込みの報告に数える。
     // 約物のアキの宣言 (readPunctuationSpacing が読む) は除く。fo:folio-prefix・fo:folio-suffix (最初の 1 つずつ) は、ページ番号の所で読む (withFolio)
     const folio = this.folioEls(ps);
@@ -1413,6 +1430,8 @@ class Importer {
         ...(b.border ? { border: b.border, boxSizing: 'border-box' as const } : {}),
         children: [],
       }));
+      // 領域の背景も、罫線 (互換モードだけ) の内側までに塗る (§4.9.4)
+      for (const c of out) this.clipBackground(c);
       for (const sc of statics) {
         const fname = this.attr(sc, 'flow-name') ?? '';
         const r = info.regionRects.get(fname);
@@ -1445,7 +1464,9 @@ class Importer {
     // ページの背景画像 (アンテナハウス拡張: page-sequence の axf:background-image など)
     const seqBg = this.backgroundImage(ps, ctx, 'axf:');
     const rotated = (m0: PageMaster): PageMaster => {
-      const m = seqBg ? { ...m0, backgroundImage: seqBg } : m0;
+      // fo:simple-page-master に背景の画像があれば (互換モード)、そちらを使う (アンテナハウスの「背景の拡張」の説明: simple-page-master に
+      // 背景の指定があれば、page-sequence への背景の指定は使わない)
+      const m = seqBg && !m0.backgroundImage ? { ...m0, backgroundImage: seqBg } : m0;
       if (seqRo === undefined) return m;
       const { bodyRotation: _r, ...rest } = m;
       void _r;
@@ -2203,7 +2224,29 @@ class Importer {
       delete o.diagonalBorder;
       delete o.reverseDiagonalBorder;
     }
+    this.clipBackground(o);
     return o;
+  }
+
+  /**
+   * 背景を塗る範囲 (XSL 1.1 §4.9.4 Border, Padding, and Background: “The background, if any, is rendered in the padding-rectangle”。
+   * 罫線は border-rectangle と padding-rectangle の間に描く。§7.8.5・§7.8.6 の背景の位置の百分率も padding-rectangle が基準)。
+   * 互換の指定によらない (アンテナハウスの組版結果も padding の矩形まで)。
+   * 不透明の、すき間の無い罫線 (実線と、立体の線種 groove・ridge・inset・outset) は下の背景を隠すので、どちらの矩形まで塗っても見た目は同じ:
+   * そのときは塗る範囲を付けず、今までどおりに塗る (背景と罫線の境に、描画のすき間を作らない)。罫線の下が見える箱 (すき間のある線種 =
+   * 破線・点線・鎖線・二重線・波線か、半透明や透明の色の辺がある) の背景の色に、
+   * 塗る範囲 = padding の箱 (backgroundClip) を付ける。背景の画像は、組版がいつも padding の箱に置いて切り抜く (BackgroundImage.clip の既定)
+   */
+  private clipBackground(o: { backgroundColor?: string; border?: BorderInput; backgroundClip?: 'padding-box' | 'content-box' }) {
+    if (!o.backgroundColor || !o.border) return;
+    const b = normBorder(o.border);
+    const seeThrough = (['top', 'right', 'bottom', 'left'] as const).some((k) => {
+      const side = b[k];
+      if (!side || !(side.width > 0)) return false;
+      const gaps = side.style !== undefined && !['solid', 'groove', 'ridge', 'inset', 'outset'].includes(side.style);
+      return gaps || side.color === 'transparent' || /^#[0-9a-f]{6}(?!ff)[0-9a-f]{2}$/i.test(side.color);
+    });
+    if (seeThrough) o.backgroundClip = 'padding-box';
   }
 
   /**
@@ -2371,16 +2414,34 @@ class Importer {
     return out;
   }
 
-  /** background-image / background-repeat / background-position (§7.8.3-7.8.7) と、大きさの axf:background-content-width/height */
+  /**
+   * background-image / background-repeat / background-position (§7.8.3-7.8.7) と、大きさの axf:background-content-width/height・axf:background-size。
+   * background-image の値は <uri-specification> | none | inherit (XSL 1.1 §7.8.3)。グラデーションの関数 (linear-gradient()・radial-gradient() と
+   * repeating- の付いたもの。CSS Images 3 §3) は、接頭辞の無い名前に足された拡張の値 (アンテナハウスの「値の拡張」。
+   * https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html の linear-gradient() の項) なので、互換モードのときだけ読んで、HTML と同じ
+   * グラデーションの背景 (BackgroundImage.gradient。組版で箱の大きさの画像にする) として渡す。仕様モードでは無効の値として報告する。
+   * axf:background-image (prefix が 'axf:') は、名前が拡張なので、どのモードでも読む
+   */
   backgroundImage(el: XEl, ctx: Ctx, prefix = ''): BackgroundImage | undefined {
     // prefix: 'axf:' なら、アンテナハウス拡張の名前 (axf:background-image など) を読む
     const at = (k: string) => this.attr(el, prefix + k);
     const v = this.attrInh(el, prefix + 'background-image');
     if (!v || v === 'none') return undefined;
-    const src = normalizeSrc(v);
-    if (!src) return undefined;
-    this.addImage(src);
-    const bi: BackgroundImage = { src };
+    let bi: BackgroundImage;
+    if (isCssGradient(v)) {
+      const fn = `${prefix}background-image:${/^\s*([a-z-]+)\(/i.exec(v)![1].toLowerCase()}()`;
+      // 仕様モード・読めない書き方 (試しに 100pt 角の画像にしてみる) は、描かずに報告する
+      if ((this.spec && !prefix) || gradientSvg(v, 100, 100, ctx.fontSize) === undefined) {
+        this.miss(fn);
+        return undefined;
+      }
+      bi = { src: '', gradient: v.trim(), gradientFontSize: ctx.fontSize };
+    } else {
+      const src = normalizeSrc(v);
+      if (!src) return undefined;
+      this.addImage(src);
+      bi = { src };
+    }
     const rep = at('background-repeat');
     if (rep === 'repeat' || rep === 'no-repeat' || rep === 'repeat-x' || rep === 'repeat-y') bi.repeat = rep;
     // background-position (一括指定。§7.31.2・CSS2 §14.2.1): 長さ・百分率は「横 縦」の順で、1 つだけなら横の位置 (縦は 50%)。
@@ -2406,7 +2467,42 @@ class Importer {
     const h = this.len(this.attr(el, 'axf:background-content-height') ?? this.attr(el, 'background-content-height'), ctx.fontSize);
     if (w !== undefined) bi.width = w;
     if (h !== undefined) bi.height = h;
+    this.backgroundSize(el, bi, ctx.fontSize);
     return bi;
+  }
+
+  /**
+   * axf:background-size (アンテナハウスの拡張。CSS Backgrounds 3 §3.9 の background-size と同じ値:
+   * [ <length> | <percentage> | auto ]{1,2} | cover | contain)。axf: の付いた名前なので、どのモードでも読む。
+   * 参照: https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html の axf:background-size。読むのは最初の層だけ (複数の背景は未対応)。
+   * 百分率は、背景を置く領域 (padding の箱) の幅・高さに対する割合で、組版で箱の大きさが決まってから長さにする
+   */
+  private backgroundSize(el: XEl, bi: BackgroundImage, fs: number) {
+    const v = this.attr(el, 'axf:background-size')?.trim();
+    if (!v || v === 'auto' || v === 'auto auto') return;
+    const bad = () => this.miss(`axf:background-size:${v.slice(0, 20)}`);
+    if (v === 'cover' || v === 'contain') {
+      bi.size = v;
+      return;
+    }
+    const parts = v.split(/\s+/);
+    if (parts.length > 2 || v.includes(',')) return bad();
+    const read = (t: string): { len?: number; pct?: number } | undefined => {
+      if (t === 'auto') return {};
+      if (/^\d*\.?\d+%$/.test(t)) return { pct: parseFloat(t) / 100 };
+      const n = this.len(t, fs);
+      return n !== undefined && n >= 0 ? { len: n } : undefined;
+    };
+    const a = read(parts[0]);
+    const b = read(parts[1] ?? 'auto');
+    if (!a || !b) return bad();
+    if (a.len !== undefined) bi.width = a.len;
+    if (b.len !== undefined) bi.height = b.len;
+    if (a.pct !== undefined) bi.widthPct = a.pct;
+    if (b.pct !== undefined) bi.heightPct = b.pct;
+    // 片方だけが百分率で、もう片方が auto: auto の側は画像の縦横比で決める
+    if (a.pct !== undefined && b.len === undefined && b.pct === undefined) bi.pctAuto = 'height';
+    else if (b.pct !== undefined && a.len === undefined && a.pct === undefined) bi.pctAuto = 'width';
   }
 
   private idOf(n: XEl): { id?: string } {
@@ -2529,7 +2625,8 @@ class Importer {
     if (axf === 'form') {
       const saved = this.form;
       const url = this.attr(n, 'external-destination');
-      const method = this.attr(n, 'axf:field-submit-method');
+      // axf:form・axf:form-field の属性は、接頭辞の無い名前でも読む (formField の注を参照)
+      const method = this.attr(n, 'axf:field-submit-method') ?? this.attr(n, 'field-submit-method');
       // 送り先の URL も、リンクと同じ決まりでスキームを見る (スキームの無い相対の送り先は、そのまま)
       const dest = url ? this.allowedSubmitUrl(url.replace(/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i, '$1')) : undefined;
       this.form = { ...(dest ? { url: dest } : {}), ...(method === 'get' || method === 'post' ? { method } : {}) };
@@ -2891,12 +2988,19 @@ class Importer {
   private form?: { url?: string; method?: 'get' | 'post' };
   private fieldSeq = 0;
 
-  /** axf:form-field: 罫線・余白・大きさを持つ行内の箱 (中身は空) と、PDF のフォームの欄 */
+  /**
+   * axf:form-field: 罫線・余白・大きさを持つ行内の箱 (中身は空) と、PDF のフォームの欄。
+   * 欄の性質は、axf:field-type・axf:field-name など axf: の付いた名前 (アンテナハウスの公開の説明での性質の名前) と、接頭辞の無い名前
+   * (field-type・field-name・action-type。説明の書き方の例と V6 の見本は、axf:form・axf:form-field の上にこの形で書く) のどちらでも読む。
+   * どちらも axf: の要素の属性 = 作成者が拡張と分かって書いたものなので、互換の指定によらない。両方あれば axf: の付いた方。
+   * 参照: https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html の「フォーム」(フォームフィールド・フォームアクション)。
+   * スクリプトの動作 (axf:form-field-event・action-type="javascript") は PDF に書かない (読まずに報告する)
+   */
   private formField(n: XEl, ctx: Ctx): LInlineContainer {
     const { style, ctx: c2 } = this.textStyle(n, ctx);
     // 行内の箱なので、start-indent・end-indent による余白の調整はしない (罫線・パディングは内容の外に足す)
     const box = this.boxStyle(n, c2, ctx, false);
-    const a = (k: string) => this.attr(n, `axf:field-${k}`);
+    const a = (k: string) => this.attr(n, `axf:field-${k}`) ?? this.attr(n, `field-${k}`);
     const bool = (k: string) => a(k) === 'true';
     const type = a('type') ?? 'text';
     const kinds: Record<string, FormField['kind']> = { text: 'text', checkbox: 'checkbox', radio: 'radio', listbox: 'listbox', combobox: 'combobox', button: 'button' };
@@ -2922,7 +3026,7 @@ class Importer {
     if (opts.length) {
       field.options = opts.map((o) => {
         const label = (o.textContent ?? '').trim();
-        const v = this.attr(o, 'field-value') ?? this.attr(o, 'axf:field-value') ?? label;
+        const v = this.attr(o, 'axf:field-value') ?? this.attr(o, 'field-value') ?? label;
         return { value: v, label, ...(this.attr(o, 'selected') === 'true' || this.attr(o, 'axf:field-selected') === 'true' ? { selected: true } : {}) };
       });
       // 最初の選択項目 (axf:field-top-index。先頭は 1、範囲の外は 1。axf:field-selected の指定があればそちらが優先)
@@ -2937,10 +3041,17 @@ class Importer {
       if (cs && (styles as readonly string[]).includes(cs)) field.checkStyle = cs as FormField['checkStyle'];
       else if (cs) this.miss(`axf:field-checked-style="${cs}"`);
     }
+    // イベントごとの動作 (axf:form-field-event) は、中身がスクリプト。PDF にスクリプトを書かないので、読まずに報告する
+    for (const e of this.els(n)) if (this.name(e) === 'form-field-event' && !this.isFo(e)) this.missElement(e, 'axf:form-field-event');
     if (kind === 'button') {
       field.caption = a('button-face') ?? '';
-      const act = this.attr(n, 'axf:action-type');
+      const act = this.attr(n, 'axf:action-type') ?? this.attr(n, 'action-type');
       if (act === 'submit' || act === 'reset') field.action = act;
+      // ほかの動作 (javascript・uri・goto・gotor・launch など) は未対応: 欄に動作を付けずに報告する (飛び先の属性は、重ねて報告しない)
+      else if (act !== undefined) {
+        this.miss(`axf:action-type="${act.slice(0, 20)}" (axf:form-field)`);
+        for (const k of ['external-destination', 'internal-destination']) this.markAsked(n, k);
+      }
       if (act === 'submit') {
         if (this.form?.url) field.submitUrl = this.form.url;
         if (this.form?.method) field.submitMethod = this.form.method;
@@ -3769,7 +3880,13 @@ class Importer {
       if (Object.keys(gs).length) out = out.map((r) => ({ ...gs, ...r }));
       // table-header / body / footer の背景色は、背景の無いセルへ引き継ぐ
       const bg = gc.hidden ? undefined : this.color(this.attr(e, 'background-color'));
-      if (bg) for (const r of out) for (const c of r.cells) if (!c.backgroundColor) c.backgroundColor = bg;
+      if (bg)
+        for (const r of out)
+          for (const c of r.cells)
+            if (!c.backgroundColor) {
+              c.backgroundColor = bg;
+              this.clipBackground(c);
+            }
       // table-header / body / footer の罫線: 罫線を重ねる表 (collapse。初期値) では、行グループの外周の罫線になる (§6.7.10)。
       // 重ね合わせは組むときに、セル・行・列・表の罫線と合わせて決める
       if (tbl.borderCollapse === 'collapse') {
@@ -3824,7 +3941,10 @@ class Importer {
       .map((c) => {
         const cell = this.cell(c, c2, tw, rAlign);
         // 行の背景は、セルに背景が無ければ引き継ぐ
-        if (bg && !cell.backgroundColor) cell.backgroundColor = bg;
+        if (bg && !cell.backgroundColor) {
+          cell.backgroundColor = bg;
+          this.clipBackground(cell);
+        }
         return cell;
       });
     const row: LTableRow = { type: 'table-row', ...this.idOf(r), ...style, cells };
@@ -3915,6 +4035,7 @@ class Importer {
     const hide = ec === 'hide' && this.separateTable && isEmptyContent(cell.children);
     if (box.border && !hide) cell.border = box.border;
     if (box.backgroundColor && !hide) cell.backgroundColor = box.backgroundColor;
+    if (box.backgroundClip && !hide) cell.backgroundClip = box.backgroundClip;
     if (box.diagonalBorder) cell.diagonalBorder = box.diagonalBorder;
     if (box.reverseDiagonalBorder) cell.reverseDiagonalBorder = box.reverseDiagonalBorder;
     // display-align は継承される (表・行グループ・行の指定をセルが引き継ぐ)
@@ -4010,6 +4131,17 @@ class Importer {
       if (labelStart !== undefined) labelCell.padding = { ...(labelCell.padding as object), [startSide]: Math.min(labelStart, dist) };
       const bodyCell = mk(body);
       if (bodyEnd !== undefined) bodyCell.padding = { [endSide]: bodyEnd };
+      // 2 つ目からの本体に長さで書いた start-indent (§7.11.7: 本体の始端の、参照領域の始端からの距離)。本体の列の始端 (dist) と同じなら
+      // そのまま、それより大きければ、差をセルの始端の余白にする。小さい値 (列の始端より手前) は置けないので、読まずに報告に出る
+      const bsiRaw = body && body !== firstBody ? (body.getAttribute?.('start-indent') ?? '') : '';
+      if (body && bsiRaw && !/\(/.test(bsiRaw)) {
+        const x = this.len(bsiRaw, this.textStyle(body, c3).ctx.fontSize, ctx.width);
+        const over = x === undefined ? NaN : x - listStart - dist;
+        if (over > -0.005) {
+          this.markAsked(body, 'start-indent');
+          if (over > 0.005) bodyCell.padding = { ...(bodyCell.padding as object), [startSide]: over };
+        }
+      }
       // relative-align="baseline" の項目 (§7.14.6): ラベルと本体の 1 行目の基線をそろえる
       if (c3.relAlign === 'baseline') labelCell.blockAlign = bodyCell.blockAlign = 'baseline';
       const row: LTableRow = { type: 'table-row', ...this.idOf(it), ...s2, cells: [labelCell, bodyCell] };
