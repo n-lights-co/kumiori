@@ -58,6 +58,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 ## 未対応 (レポートに件数を出す)
 
 知らない要素 (`fo:*`・MathML・`instream-foreign-object` の中身)・知らないリージョン名、`reference-orientation` の 90 の倍数以外の値 (0 として組む)、長さの式の知らない関数、読めない色、`font-variant`・`word-spacing`・`font-stretch` の読めない値、`text-decoration`・`text-transform`・`baseline-shift` の読めない値、`overflow` の auto・visible 以外、`axf:punctuation-trim`・`axf:field-type`・`axf:field-checked-style`・`axf:field-font-size`・`axf:annotation-type`・`axf:annotation-flags` の知らない値、`axf:printer-marks` の画像、添付するファイルの無い FileAttachment の注釈 (テキスト注釈にする)。
+アンテナハウスのフロートの拡張 (`axf:float-x`・`axf:float-y`・`axf:float-reference`・`axf:float-move` など。ページ・段を基準に置く回り込み) は読まず、属性の名前で件数に出す (`fo:float` は `float` の値 (before・start・end・left・right・inside・outside) だけで組む。`BACKLOG.md` の I-11)。
 数式の書体が読めないときの後備の組み方では、数式の細部 (Content MathML・maligngroup・mlabeledtr) は、件数には出さずに描けないまま (`BACKLOG.md` の I-02。数式の書体で組むときは対応する)。
 
 未対応の一覧と優先度は [BACKLOG.md](BACKLOG.md) に記録している。
