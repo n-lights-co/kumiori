@@ -5,6 +5,7 @@
  *  - CSS Text Decoration 4 §3.4: text-emphasis-position の縦書きの側は right・left (物理の向き。省略は right)
  *  - CSS Ruby 1 §3.6: line-height が、上の注釈の上端から下の注釈の下端までより小さいとき、同じ行を重ねても注釈が重ならないだけの空きを、
  *    注釈のある側に足す
+ *  - 指定の無い 2 段目のルビと、下側 (横書き)・左側 (vertical-rl) の圏点も、同じ決まり (CSS Text Decoration 4 §3.4: 圏点の行の高さへの効き方はルビと同じ)
  * 横書き・vertical-rl の結果と、XSL-FO の tb-lr のルビ (fo:inline-container からの読み替え。前の側 = 左) は変わらない
  */
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -139,6 +140,47 @@ describe('下側のルビの行の空き (CSS Ruby 1 §3.6: 注釈のある側�
     expect(lr.lines[0].width).toBeCloseTo(15, 1);
     // vertical-lr の 1 行目の親文字は、左の端から (左には空けない)
     expect(lr.rubies[0].base[0].x).toBeCloseTo(lr.lines[0].x, 1);
+  });
+});
+
+describe('2 段目のルビ (指定なし) と、下側 (横書き)・左側 (vertical-rl) の圏点の行の空き (CSS Ruby 1 §3.6・CSS Text Decoration 4 §3.4)', () => {
+  // 字 10pt・注釈 5pt
+  const two = '<ruby>東<rt>とう</rt><rtc>T</rtc></ruby>';
+  const dots = (pos: string) => `<span style="text-emphasis: dot; text-emphasis-position: ${pos}">強調</span>`;
+  it('行間に収まれば、行を高くしない (line-height: 2 は 20pt のまま)', () => {
+    const lh2 = 'p { line-height: 2 }';
+    expect(laid(`<p>あ${two}</p><p>次</p>`, lh2).lines.map((l) => l.height)).toEqual([20, 20].map((v) => expect.closeTo(v, 1)));
+    expect(laid(`<p>あ${dots('under right')}</p><p>次</p>`, lh2).lines.map((l) => l.height)).toEqual([20, 20].map((v) => expect.closeTo(v, 1)));
+    // 字の位置も、注釈の無い行と同じ
+    const plain = laid('<p>あ強調</p><p>次</p>', lh2);
+    const under = laid(`<p>あ${dots('under right')}</p><p>次</p>`, lh2);
+    expect(under.glyphs.find((g) => g.text === 'あ')!.y).toBeCloseTo(plain.glyphs.find((g) => g.text === 'あ')!.y, 2);
+    expect(under.glyphs.find((g) => g.text === '次')!.y).toBeCloseTo(plain.glyphs.find((g) => g.text === '次')!.y, 2);
+    // vertical-rl の左の圏点: 行の幅は 20pt のまま
+    expect(laid(V('vertical-rl', `<p>あ${dots('over left')}</p><p>次</p>`), lh2).lines.map((l) => l.width)).toEqual([20, 20].map((v) => expect.closeTo(v, 1)));
+  });
+  it('行間に収まらない分だけ、注釈のある側に空ける', () => {
+    const lh1 = 'p { line-height: 1 }';
+    // 下側の圏点 (5pt): 行の下に 5pt。字は行の上端から
+    const d = laid(`<p>あ${dots('under right')}</p><p>次</p>`, lh1);
+    expect(d.lines[0].height).toBeCloseTo(15, 1);
+    expect(d.glyphs.find((g) => g.text === 'あ')!.y).toBeCloseTo(d.lines[0].y, 1);
+    // 2 段のルビ (上 5pt・下 5pt): 上と下に 5pt ずつ
+    const t = laid(`<p>前</p><p>${two}</p><p>次</p>`, lh1);
+    expect(t.lines[1].height).toBeCloseTo(20, 1);
+    expect(t.rubies[0].base[0].y).toBeCloseTo(t.lines[1].y + 5, 1);
+    // 行間 4pt (line-height: 1.4) に 5pt の圏点: 足りない 1pt だけ
+    expect(laid(`<p>あ${dots('under right')}</p>`, 'p { line-height: 1.4 }').lines[0].height).toBeCloseTo(15, 1);
+    // vertical-rl の左の圏点: 行の左 (後ろ側) に 5pt
+    const v = laid(V('vertical-rl', `<p>あ${dots('over left')}</p><p>次</p>`), lh1);
+    expect(v.lines[0].width).toBeCloseTo(15, 1);
+  });
+  it('上側のルビ・圏点 (日本語の横書きの既定) は、これまでどおり', () => {
+    const lh2 = 'p { line-height: 2 }';
+    expect(laid(`<p>あ${dots('over right')}</p><p>次</p>`, lh2).lines.map((l) => l.height)).toEqual([20, 20].map((v) => expect.closeTo(v, 1)));
+    const lh1 = laid(`<p>前</p><p>あ${dots('over right')}</p>`, 'p { line-height: 1 }');
+    expect(lh1.lines[1].height).toBeCloseTo(15, 1);
+    expect(lh1.glyphs.find((g) => g.text === 'あ')!.y).toBeCloseTo(lh1.lines[1].y + 5, 1);
   });
 });
 

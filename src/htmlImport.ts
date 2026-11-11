@@ -2924,13 +2924,22 @@ class HtmlImporter {
     }
     const bold = (parseInt(c('font-weight'), 10) || 400) >= 600;
     if (diff('font-weight')) s.fontWeight = parseInt(c('font-weight'), 10) || 400;
-    if (diff('font-family') || diff('font-weight')) {
-      const names = c('font-family')
+    // 書体の組は、font-family の名前の並び・太さと、要素の言語 (lang) で決まる (欧文の文書・要素では、記号と、単独のギリシャ文字・
+    // キリル文字も欧文の書体で組む)。font-family を受け継いだ要素でも、lang が付いていれば、その言語で選び直す
+    // (font-family の計算値は名前の並びで、字に使う書体は、その字のある要素ごとに選ぶ。CSS Fonts 4 §5.2。
+    // 自分に font-family を指定した要素と、同じ指定を受け継いだ要素とで、結果を同じにする)
+    const famNames = (cc: (n: string) => string) =>
+      cc('font-family')
         .split(',')
         .map((n) => n.replace(/['"]/g, '').trim())
         .filter(Boolean);
-      const mapped = this.opts.mapFont?.(names, bold, this.langOf(el));
+    const ownLang = !pseudo && !!parent && !!(el.getAttribute?.('lang') ?? el.getAttribute?.('xml:lang'));
+    if (diff('font-family') || diff('font-weight')) {
+      const mapped = this.opts.mapFont?.(famNames(c), bold, this.langOf(el));
       if (mapped) s.fontFamily = mapped;
+    } else if (ownLang && p && this.langOf(el) !== this.langOf(parent!)) {
+      const mapped = this.opts.mapFont?.(famNames(c), bold, this.langOf(el));
+      if (mapped && mapped !== this.opts.mapFont?.(famNames(p), (parseInt(p('font-weight'), 10) || 400) >= 600, this.langOf(parent!))) s.fontFamily = mapped;
     }
     // direction: 行の中の向き (右から左の段落。Writing Modes 3 §2.1)。text-align の left・right は paragraphStyle で start・end に読み替える
     if (!pseudo && diff('direction')) s.direction = c('direction') === 'rtl' ? 'rtl' : 'ltr';

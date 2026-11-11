@@ -780,8 +780,11 @@ function flattenRuby(c: LRuby, cx: FlattenCtx): void {
   // ruby-position: under (CSS Ruby 1 §4.1): rubyText を下側 (縦書きは左)、2 段目 (rubyTextUnder) を上側に置く
   const under = c.rubyPosition === 'under';
   const r = under ? m.ruby(c.baseText, c.rubyTextUnder ?? '', runStyle(s2), wm, s2.rubyScale, c.rubyText) : m.ruby(c.baseText, c.rubyText, runStyle(s2), wm, s2.rubyScale, c.rubyTextUnder);
-  // CSS の行の高さ (primaryFontMetrics) では、下側に置いたルビも行の高さに数えない (§3.6。上側と下側の厚さの合計が行間に収まらない分だけ空ける)
-  if (under && s2.primaryFontMetrics) r.roomExtent = r.rubyExtent + (r.underExtent ?? 0);
+  // CSS の行の高さ (primaryFontMetrics) では、下側に置いた注釈も行の高さに数えない (§3.6: 注釈の箱は行の中身の高さに数えず、
+  // 上側と下側の厚さの合計が行間に収まらない分だけ空ける)。ruby-position: under のルビのほか、指定の無い 2 段目のルビ (下側) と、
+  // 下側 (横書き)・左側 (vertical-rl) の圏点 (字ごとの 2 段目のルビとして置く。CSS Text Decoration 4 §3.4: 圏点の行の高さへの
+  // 効き方はルビと同じ) も同じ
+  if ((under || r.underExtent) && s2.primaryFontMetrics) r.roomExtent = r.rubyExtent + (r.underExtent ?? 0);
   const colors = under ? [c.rubyColorUnder, c.rubyColor] : [c.rubyColor, c.rubyColorUnder];
   // ruby-align (§4.3): 注釈・親文字ごとの値。無ければ、まわりから継承した値 (HTML の入力は space-around。XSL-FO の入力は無し = これまでの配り方)
   const [a1, a2, ab] = [c.rubyAlign ?? st.rubyAlign, c.rubyAlignUnder ?? st.rubyAlign, c.rubyAlignBase ?? st.rubyAlign];
