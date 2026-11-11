@@ -199,7 +199,7 @@ node scripts/compare-pdf.mjs --html <見本>.html --ref <見本>.pdf --out <出�
 - 行グリッドの基準 (字の上端から基線まで) は、HTML では最初に使える書体の値 (これまでは文書の言語が分からないと和字の書体の値を使い、欧文の目次の行が下にずれていた)
 - 行グリッドの中では、最後の行の後ろの半行間を、ページに入るかの判定に数えない
 - リストの箱の `-ah-baseline-grid` は、リストを組む表を包む箱に付ける
-- `-ah-` の拡張の読み替え: `-ah-text-autospace`・`-ah-punctuation-trim`・`-ah-hanging-punctuation`・`-ah-image-resolution`・`-ah-line-height-shift-adjustment` (上付き・下付きで行を広げない。組版エンジンと XSL-FO の line-height-shift-adjustment にも足した)
+- `-ah-` の拡張の読み替え: `-ah-text-autospace`・`-ah-punctuation-trim`・`-ah-hanging-punctuation`・`-ah-image-resolution`・`-ah-line-height-shift-adjustment` (上付き・下付きで行を広げない。組版エンジンと XSL-FO の line-height-shift-adjustment にも足した)・`-ah-text-justify-trim` (追込みで詰めてよいアキ。XSL-FO の `axf:text-justify-trim` と同じ。`kana`・`ideograph` は未対応)
 
 その後に足したもの:
 

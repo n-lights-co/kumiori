@@ -837,6 +837,8 @@ export const AH_ALIASES: Record<string, { prop: string; value: (v: string) => st
   '-ah-image-resolution': { prop: 'image-resolution', value: (v) => v },
   '-ah-punctuation-trim': { prop: 'text-spacing-trim', value: ahPunctuationTrim },
   '-ah-text-autospace-width': { prop: 'text-autospace-width', value: (v) => v.trim().toLowerCase() },
+  // 追込みで詰めてよいアキ (アンテナハウスの axf:text-justify-trim と同じ。継承する。htmlImport の textStyle・textJustifyTrim.ts)
+  '-ah-text-justify-trim': { prop: 'text-justify-trim', value: (v) => v.trim().toLowerCase() },
   // XSL の linefeed-treatment (§7.16.7。ignore は改行を捨てる。継承する)
   '-ah-linefeed-treatment': { prop: 'linefeed-treatment', value: (v) => v.trim().toLowerCase() },
   // text-align の inside・outside (アンテナハウスの拡張の値。下の isPagedDecl) を、-ah-text-align でも読む

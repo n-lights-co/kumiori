@@ -1198,7 +1198,8 @@ export function markWordSqueeze(atoms: Atom[], st: { wordSqueezeJustifiedOnly?: 
  */
 function wordSpaceSqueeze(a: Atom, last: boolean): number {
   // 残す空白 (pre・pre-wrap・white-space-collapse="false") は詰めない (コードの表示の字下げが縮まない)
-  if (a.kind !== 'glyph' || a.first !== ' ' || a.st.wordSpaceShrink === false || a.st.collapseSpaces === false || noSpaceSqueeze(a)) return 0;
+  // アンテナハウス互換 (noSpaceSqueeze) でも、-ah-text-justify-trim の inter-word の指定があれば詰める
+  if (a.kind !== 'glyph' || a.first !== ' ' || a.st.wordSpaceShrink === false || a.st.collapseSpaces === false || (noSpaceSqueeze(a) && !a.st.textJustifyTrim?.interWord)) return 0;
   // 両端揃えで組まない行の語間は詰めない (markWordSqueeze)
   if (a.noWordSqueeze && a.noWordSqueeze & (last ? WSQ_LAST : WSQ_BODY)) return 0;
   return Math.max(a.advance - (a.lsLead ?? 0) - (a.lsTrail ?? 0), 0) / 3;
@@ -1230,12 +1231,17 @@ function squeezeParts(a: Atom, tail: boolean, head: boolean, last: boolean): num
   if (a.kind !== 'glyph') return out;
   out[0] = wordSpaceSqueeze(a, last);
   const fs = a.st.fontSize;
-  if (closingAt(a, a.last)) {
+  // -ah-text-justify-trim (アンテナハウスの拡張。textJustifyTrim.ts): 約物のアキを詰めない指定 (none など) と、句点類・中点類を除く指定
+  const jt = a.st.textJustifyTrim;
+  if (jt && !jt.punctuation) {
+    // 約物のアキは詰めない
+  } else if (closingAt(a, a.last)) {
     const aki = punctAki(a);
     if (tail) out[1] = Math.max(aki - endTrimOf(a), 0);
-    else if (!isFullStop(a.last)) out[4] = aki;
+    // 行中の句点類の後ろは詰めない (JLREQ §3.8.3 の注)。-ah-text-justify-trim: punctuation は句点類も詰める (fullStop。見本の PDF)
+    else if (!isFullStop(a.last) || jt?.fullStop) out[4] = aki;
   } else if (isOpeningPunct(a.first)) out[4] = head ? 0 : punctAki(a);
-  else if (middleAt(a, a.first)) out[tail ? 2 : 3] = punctAki(a);
+  else if (middleAt(a, a.first) && jt?.middleDot !== false) out[tail ? 2 : 3] = punctAki(a);
   if (a.trail && !tail && !noSpaceSqueeze(a)) out[5] = Math.max(a.trail - fs / 8, 0);
   return out;
 }
