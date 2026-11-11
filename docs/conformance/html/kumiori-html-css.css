@@ -402,6 +402,14 @@ blockquote cite {
   break-after: avoid;
   break-inside: avoid;
 }
+/* 見本の前の、見本の説明の文 (次の組版例と同じページに置く) */
+p.cap {
+  text-indent: 0;
+  margin-top: 2mm;
+}
+p.cap + .kumiori-result {
+  break-before: avoid;
+}
 pre.kumiori-listing {
   margin: 0 0 4mm;
   padding: 5pt 7pt;
