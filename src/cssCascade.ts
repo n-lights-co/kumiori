@@ -1199,6 +1199,12 @@ shorthand(['-webkit-initial-letter'], (_p, v) => [['initial-letter', v]]);
 shorthand(['-webkit-box-decoration-break'], (_p, v) => [['box-decoration-break', v]]);
 // アンテナハウスの拡張の -ah-text-align・-ah-text-align-last (text-align・text-align-last と同じに読む)・角の丸み
 shorthand(['-ah-text-align', '-ah-text-align-last', '-ah-border-top-left-radius', '-ah-border-top-right-radius', '-ah-border-bottom-right-radius', '-ah-border-bottom-left-radius'], (prop, v) => [[prop.slice(4), v]]);
+// アンテナハウスの拡張の飾り線 (-ah-text-decoration-line・-style・-color と、線の太さの -ah-text-line-width) は、CSS Text Decoration の
+// text-decoration-line・-style・-color・-thickness と同じに読む。線の種類の wave は wavy (Text Decoration 3 §2.2)。
+// CSS に無い線の種類 (dot-dash・dot-dot-dash・groove など) は、無効の値として捨てる
+shorthand(['-ah-text-decoration-line', '-ah-text-decoration-color'], (prop, v) => [[prop.slice(4), v]]);
+shorthand(['-ah-text-decoration-style'], (_p, v) => [['text-decoration-style', /^\s*wave\s*$/i.test(v) ? 'wavy' : v]]);
+shorthand(['-ah-text-line-width'], (_p, v) => [['text-decoration-thickness', v]]);
 shorthand(['border-radius'], (_p, v, global) => {
   if (global) return each(['border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius'], v);
   // 水平の半径 / 垂直の半径 (/ が無ければ同じ)
