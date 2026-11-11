@@ -763,6 +763,13 @@ export interface LPageSequence extends BaseNode {
    * 参照領域の先頭の space は、最初のページでも捨てる。CSS は最初のページの先頭の余白を残すので、HTML では使わない
    */
   discardLeadingSpace?: boolean;
+  /**
+   * 1 段の本文でも、流れの直下のブロックの span (LBlock.span) が切り替わる所で、参照領域を分ける (アンテナハウス互換)。
+   * 境では、前のブロックの space-after と次のブロックの space-before を相殺せず、参照領域の端の余白として解決する (XSL 1.1 §4.3.1:
+   * conditionality="discard" の余白は捨て、retain の余白は残す)。絶対配置の箱 (LBlockContainer.areaOffset) は、分けた領域の先頭を基準にする。
+   * 段組の本文 (PageMaster.columns) は、discardLeadingSpace のとき、いつも span の切り替わりで領域を分ける (§6.4.14)
+   */
+  spanAreas?: boolean;
   /** 既定のページマスター (alternatives のどれにも一致しないページで使う) */
   master: PageMaster;
   /** ページマスターの部分列 (page-sequence-master)。指定すると masterAlternatives より優先 */
@@ -1471,6 +1478,13 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
   writingFlip?: WritingFlip;
   /** true: 通常フローから切り離し、PageArea 原点 (仕上がり左上) 基準で配置 */
   absolutePosition?: boolean;
+  /**
+   * absolutePosition の箱の top を、本文の中の「いまの参照領域」(段をまたぐブロックの切り替わりで分かれた領域。LPageSequence.spanAreas と
+   * 段組の本文) の先頭から測る (XSL 1.1 §7.6.1: 基準は、最も近い祖先の参照領域)。top の値は本文の領域の先頭を基準にした値のままにし、
+   * 組むときに、領域の先頭までの距離を足す。'fill' は、高さを領域の下端までの長さから決めた箱 (領域が短いぶん、高さも縮める)。
+   * 横書きの本文でだけ効く
+   */
+  areaOffset?: 'top' | 'fill';
   /**
    * absolutePosition の基準を、ページではなく、いちばん近い祖先のブロックコンテナの内容の箱にする
    * (left・top・right・bottom はその箱の左上・右下からの距離)。横書きのコンテナの中だけで効く

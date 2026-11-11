@@ -74,19 +74,29 @@ export const GOTHIC = /ゴシック|gothic|sans|arial|helvetica|verdana|meiryo|�
 /** 明朝系・未指定の太字の書体の別名 (欧文は明朝系の欧文の代わりの書体 (既定は Tinos) の太字、和文は Noto Sans JP の太字) */
 export const BOLD_SERIF = 'Kumiori Bold Serif';
 
-/** 文書の文字に、読み込み済みのどの書体も持たない字 (記号など) があるか。あれば記号の書体 (SYMBOL_SPEC) を読み込む */
-export function hasMissingGlyphs(fonts: FontManager, doc: LDocument): boolean {
+/**
+ * 文書の文字のうち、読み込み済みのどの書体も字形を持たない字と、その数 (字形の無い字の形 = 豆腐で出る字)。min より小さい符号位置の字は見ない。
+ * 空白・制御文字・書式の文字 (ゼロ幅の字・双方向の制御・異体字セレクタなど、字形が無くても見えない字) は数えない
+ */
+export function missingGlyphChars(fonts: FontManager, doc: LDocument, min = 0): Map<string, number> {
   const TEXT = new Set(['children', 'text', 'baseText', 'rubyText', 'rubyTextUnder', 'label']);
-  const chars = new Set<string>();
+  const chars = new Map<string, number>();
+  const invisible = /[\s\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/u;
   const walk = (v: unknown, key: string) => {
     if (typeof v === 'string') {
-      if (TEXT.has(key)) for (const ch of v) if (ch.codePointAt(0)! >= 0x2000 && !/\s/.test(ch)) chars.add(ch);
+      if (TEXT.has(key)) for (const ch of v) if (ch.codePointAt(0)! >= min && !invisible.test(ch)) chars.set(ch, (chars.get(ch) ?? 0) + 1);
     } else if (Array.isArray(v)) for (const x of v) walk(x, key);
     else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, k);
   };
   walk(doc, '');
   const all = fonts.all();
-  return [...chars].some((ch) => !all.some((f) => fonts.hasGlyph(f, ch)));
+  for (const ch of [...chars.keys()]) if (all.some((f) => fonts.hasGlyph(f, ch))) chars.delete(ch);
+  return chars;
+}
+
+/** 文書の文字に、読み込み済みのどの書体も持たない字 (記号など) があるか。あれば記号の書体 (SYMBOL_SPEC) を読み込む */
+export function hasMissingGlyphs(fonts: FontManager, doc: LDocument): boolean {
+  return missingGlyphChars(fonts, doc, 0x2000).size > 0;
 }
 
 /** 既定の書体を読み込んだ後の設定: 欧文の代わりの書体と、MS 明朝・MS ゴシックの上下の高さ */

@@ -347,6 +347,8 @@ interface Frame {
   usedB?: number;
   /** 行グリッド (アンテナハウスの baseline-grid)。null は解除、undefined は親のものを使う */
   grid?: { pitch: number; ascent: number } | null;
+  /** XSL の、罫線をつぶした表の、前の側の外へ出る罫線の半分 (Flow.pendSpill)。次の段・ページへ続く断片の頭でも、同じだけ外へ出す */
+  spillBs?: number;
   /** 開いたときの、前の余白を足す前の位置 (中身を置かずに次のページへ送り直すとき、ここまで戻す) */
   openFrom?: number;
   /** ページに置いた断片 (順に)。絶対配置の基準になる箱・position: relative の箱だけが集める */
@@ -384,6 +386,12 @@ interface FlowHost {
   pageNumber?: () => number;
   /** 余白の解決を XSL 1.1 §4.3.1 の規則で行う (LDocument.spaceResolution) */
   xslSpace?: boolean;
+  /**
+   * いま組んでいる参照領域 (段をまたぐブロックの切り替わりで分かれた、本文の中の領域。XSL 1.1 §6.4.14 の span-reference-area の中の
+   * normal-flow-reference-area) の先頭の、本文の領域の先頭からの block 方向の距離。絶対配置の箱 (LBlockContainer.areaOffset) の基準に使う。
+   * 無ければ 0 (本文の領域の先頭)
+   */
+  areaOrigin?: () => number;
   /**
    * 表のセルの中身の最小・最大の長さ (measureColumns の measure) を、同じ組版の中で覚える (セル → 計測の条件 → 長さ)。
    * keep-with-next の試し組みと本番で同じ表を 2 度組むとき、列の幅の計測を繰り返さない。組版 (layoutOnce) ごとに作り直す
@@ -583,6 +591,13 @@ interface FlowInit {
   discardAfterForced?: boolean;
   /** 前の群の末尾の余白 (使った高さに含めてある)。先頭の space-before からその分を差し引く (XSL の相殺: 大きい方) */
   initialSpace?: number;
+  /**
+   * 流れの直下のブロックの span (LBlock.span) が切り替わる所で、参照領域を分ける (LPageSequence.spanAreas。1 段の本文)。
+   * 境では、前の領域の終わりの余白と、次の領域の先頭の余白を、参照領域の端の余白として解決する (XSL 1.1 §4.3.1)
+   */
+  spanAreas?: boolean;
+  /** 流れの終わりを参照領域の終わりとして扱い、末尾の余白のうち、捨てる指定 (conditionality="discard") のものを使った高さに数えない (§4.3.1) */
+  areaEnd?: boolean;
   rootI: number;
   root?: LNode;
   limit?: number;
@@ -635,6 +650,19 @@ class Flow {
   private discardAfterForced: boolean;
   /** 最後の段の終わりに残った余白 */
   trailingSpace = 0;
+  /** FlowInit.spanAreas */
+  private spanAreas: boolean;
+  /** FlowInit.areaEnd */
+  private areaEnd: boolean;
+  /** 流れの直下の、直前のブロックが span="all" だったか (spanAreas のとき。まだ無ければ undefined) */
+  private prevSpan: boolean | undefined;
+  /** いまの参照領域 (span の切り替わりで分けた領域) の先頭の位置 (ページの中。ページが変われば 0) */
+  areaTop = 0;
+  /**
+   * 保留中の余白のうち、参照領域の終わりでも残る分 (XSL 1.1 §4.3.1: 領域の終わりの conditional な余白と、その前に続く conditional な余白は
+   * 捨てる。残すのは、最後の retain の余白までの並びを解決した値)。retain の space-after を足した時点の保留の値を覚える。無ければ null
+   */
+  private pendKeep: number | null = null;
   readonly wm: WritingMode;
   rootI: number;
   root: LNode;
@@ -743,6 +771,12 @@ class Flow {
   private pendMin = -Infinity;
   /** 相殺 (畳み込み) の後に足す量 (collapse の表の外枠の罫線が、余白の側へはみ出す分を引く) */
   private pendAdjust = 0;
+  /**
+   * 余白の量に関わらず、次の箱を block 方向の前へずらす量 (0 以下)。XSL の、罫線をつぶした表 (border-collapse="collapse") の外側の罫線の
+   * 外へ出る半分: 表の箱の端は罫線の中央にあり、外の半分は余白の領域に重なる (CSS2 §17.6.2「the other half of these two borders lies in
+   * the margin area」)。余白が半分より小さくても、表の箱の位置は変わらない (罫線の外の半分が、前後の内容の側へ出る)
+   */
+  private pendSpill = 0;
   /** 挿入点の直上にある「空き」(前行の下側ハーフレディング + 保留マージン)。ルビの張り出しに使う */
   private adjacent = 0;
   private pageHasContent = false;
@@ -772,6 +806,8 @@ class Flow {
     this.intrinsic = !!init.intrinsic;
     this.minContent = !!init.minContent;
     this.discardAfterForced = !!(init.discardAfterForced ?? init.discardLeading);
+    this.spanAreas = !!init.spanAreas;
+    this.areaEnd = !!init.areaEnd;
     if (init.initialSpace) this.pendAdjust = -init.initialSpace;
     this.localAbs = init.localAbs;
     this.pages = init.pages;
@@ -1310,7 +1346,7 @@ class Flow {
     const adjusted = this.pendAdjust ? Math.max(v + this.pendAdjust, Math.min(v, 0)) : v;
     // 回り込みの下までの空きは、位置の下限なので、はみ出しの分を引いた後に当てる (CSS 2.1 §9.5.2: clear は、箱の上端を float の
     // 下端より下に置く。引く前に当てると、float の下端に届かず、回り込みを避ける行が同じ float に当たり続ける)
-    return Math.max(adjusted, this.pendMin);
+    return Math.max(adjusted, this.pendMin) + this.pendSpill;
   }
   private addMargin(m: number, prec: number | 'force' = 0) {
     if (prec === 'force') {
@@ -1337,6 +1373,29 @@ class Flow {
     this.pendForce = null;
     this.pendMin = -Infinity;
     this.pendAdjust = 0;
+    this.pendSpill = 0;
+    this.pendKeep = null;
+  }
+  /** retain の space-after を足した後に呼ぶ: ここまでの保留の値は、参照領域の終わりでも残る (§4.3.1) */
+  private keepPending(retain: boolean) {
+    if (retain) this.pendKeep = this.pendingValue();
+  }
+  /** 参照領域の終わりで残る、保留中の余白 (§4.3.1。回り込みの下までの空きは位置の下限なので残す) */
+  private keptPending(): number {
+    return Math.max(this.pendKeep ?? 0, this.pendMin, 0);
+  }
+  /**
+   * 参照領域の境 (流れの直下のブロックの span の切り替わり。XSL 1.1 §6.4.14: span="all" のブロックと、そうでないブロックは、別の
+   * span-reference-area の中の normal-flow-reference-area に入る)。参照領域は余白の並びを断つ (§4.2.5 の fence) ので、前の領域の終わりの
+   * 余白は retain の分だけを残して確定し、次の領域の先頭の余白は retain の分だけを残す (§4.3.1)
+   */
+  private areaBoundary() {
+    const keep = this.keptPending();
+    this.cursor += keep;
+    this.resetPending();
+    this.adjacent = keep;
+    this.discardLeading = true;
+    this.areaTop = this.cursor;
   }
   private top(): Frame | undefined {
     return this.stack[this.stack.length - 1];
@@ -1444,7 +1503,8 @@ class Flow {
     const keep = (r: number) => (this.pendAdjust ? Math.max(r + this.pendAdjust, Math.min(r, 0)) : r);
     // 捨てるのは余白 (XSL 1.1 §4.3.1 の conditionality="discard") だけ。回り込みの下までの空き (pendMin。clear と、float の横が
     // 狭すぎる行の送り) は位置の下限なので残す (CSS 2.1 §9.5.2: clear の箱の上の罫線の端は、前の float の下の外の端より下)
-    const v = this.discardLeading && this.pendForce === null ? Math.max(keep(retained()), this.pendMin) : this.pendingValue();
+    // 表の外側の罫線の外へ出る半分 (pendSpill) は、余白ではないので、参照領域の先頭でも外へ出す (表の箱の端は罫線の中央。CSS2 §17.6.2)
+    const v = this.discardLeading && this.pendForce === null ? Math.max(keep(retained()), this.pendMin) + this.pendSpill : this.pendingValue();
     this.discardLeading = false;
     const from = this.cursor;
     this.cursor += v;
@@ -1552,6 +1612,7 @@ class Flow {
         // 内容が無い (高さ 0) ブロック: 上下マージンが内部で相殺される。id は挿入点のあるページのものとして記録する
         if (d.src) this.pages?.noteId(d.src);
         this.addMargin(d.m.be, d.precBe);
+        this.keepPending(d.retainBe);
         this.stack.pop();
         return;
       }
@@ -1616,6 +1677,7 @@ class Flow {
     if (d.bpEnd > 0) this.adjacent = 0;
     f.node.bsize = this.cursor - f.startB;
     this.addMargin(d.m.be, d.precBe);
+    this.keepPending(d.retainBe);
     this.stack.pop();
   }
 
@@ -1718,6 +1780,7 @@ class Flow {
     for (const f of this.stack) if (!f.opened && f.desc.retainBs) this.pendPos = Math.max(this.pendPos, f.desc.m.bs);
     this.pendPos = Math.max(this.pendPos, gapTop);
     if (np.credit) this.pendAdjust = -np.credit;
+    this.areaTop = 0;
     this.pageHasContent = false;
     this.pageItems = 0;
     this.refStartItems = -1; // 参照領域の途中でページ・段が変わったら、その先頭はページ・段の先頭として扱う
@@ -1760,6 +1823,8 @@ class Flow {
       // 前側の罫線・余白を残す指定 (conditionality="retain") なら、続きの断片にも付ける
       const ks = clone ? undefined : f.desc.keepStart;
       cutStart(node, clone || !!ks?.border, !!ks?.padding);
+      // 続きの断片の頭でも、表の外側の罫線の外の半分は表の箱の外 (最初の断片と同じ位置。段の頭がそろう)
+      if (f.spillBs) cur -= f.spillBs;
       node.i = f.desc.m.is;
       node.b = cur - parentContent;
       f.node = node;
@@ -1820,6 +1885,12 @@ class Flow {
           if (this.keepWithNextBreak([anon, ...children.slice(ci)], 0, style)) this.breakPage();
         }
         flushRun();
+        // 流れの直下のブロックの span の切り替わりは、参照領域の境 (絶対配置の箱は流れの外なので、境を作らない)
+        if (this.spanAreas && !this.stack.length && !(c.type === 'block-container' && c.absolutePosition)) {
+          const sp = c.type === 'block' && c.span === 'all';
+          if (this.prevSpan !== undefined && sp !== this.prevSpan) this.areaBoundary();
+          this.prevSpan = sp;
+        }
         if (this.keepWithNextBreak(children, ci, style)) {
           this.breakPage();
           // 送ったブロックの先頭の余白は、強制でない改ページに接するので捨てる (ふだんの改ページと同じ。retain の余白は残す)
@@ -1906,6 +1977,7 @@ class Flow {
         trial.pendForce = this.pendForce;
         trial.pendMin = this.pendMin;
         trial.pendAdjust = this.pendAdjust;
+        trial.pendSpill = this.pendSpill;
       }
       let count = lineCount;
       /** 直前の状態から、新しく行 (箱) が置かれた最初のページ番号 (置かれなければ -1) */
@@ -1959,7 +2031,7 @@ class Flow {
     // 内側の同じ並びを同じ条件で試す (覚えないと、入れ子の 1 段ごとに 3 倍になる)。kept が読むものを、すべて鍵にする: 並び (children の
     // i から end まで。次のブロックは end から決まる)・最初のページと次のページの上限・箱の幅・行グリッド・引き継ぐ保留中の余白
     const g0 = this.currentGrid();
-    const seedState = (): Array<string | number> => [g0 ? this.cursor : 0, this.pendPos, this.pendNeg, this.pendAny ?? 'n', this.pendPrec, this.pendForce ?? 'n', this.pendMin, this.pendAdjust];
+    const seedState = (): Array<string | number> => [g0 ? this.cursor : 0, this.pendPos, this.pendNeg, this.pendAny ?? 'n', this.pendPrec, this.pendForce ?? 'n', this.pendMin, this.pendAdjust, this.pendSpill];
     const keptM = (limit0: number, seed = false) =>
       this.memoMeasure('keep', children, ps, [i, end, limit0, seed, pageLimit, reserve, this.contentI(), this.wm, JSON.stringify(g0 ?? null), ...(seed ? seedState() : [])], this.foot, () => kept(limit0, seed));
     if (keptM(here, true)) return false;
@@ -3124,7 +3196,7 @@ class Flow {
   // ── 原子的ボックス (直交する書字方向 / ブロックコンテナ) の配置 ──
 
   /** ブロック方向に extent を消費する葉ボックスを現在位置に置く */
-  private placeBox(node: LNode, mbs: number, mbe: number, mis: number, extent: number, precBs: number | 'force' = 0, precBe: number | 'force' = 0) {
+  private placeBox(node: LNode, mbs: number, mbe: number, mis: number, extent: number, precBs: number | 'force' = 0, precBe: number | 'force' = 0, retainBe = false) {
     this.applyPendingBreak();
     this.addMargin(mbs, precBs);
     if (this.paginating && this.pageHasContent && this.cursor + this.pendingValue() + extent + this.heldFootCost([node]) > this.room + EPS) this.breakPage();
@@ -3143,6 +3215,7 @@ class Flow {
     this.pageItems++;
     this.headerOnly = false;
     this.addMargin(mbe, precBe);
+    this.keepPending(retainBe);
   }
 
   private extentAlongBlock(node: LNode): number {
@@ -3387,7 +3460,7 @@ class Flow {
     sub.layoutBlockLevel(inner, ps);
     const bsize = sub.finishAtomic();
     const wrap = newNode('block', wmC, { isize: childI, bsize, children: sub.root.children });
-    this.placeBox(wrap, outer.m.bs, outer.m.be, 0, this.extentAlongBlock(wrap), outer.precBs, outer.precBe);
+    this.placeBox(wrap, outer.m.bs, outer.m.be, 0, this.extentAlongBlock(wrap), outer.precBs, outer.precBe, outer.retainBe);
     if (after) this.breakNext = after;
   }
 
@@ -3412,7 +3485,14 @@ class Flow {
       return;
     }
     if (node.absolutePosition) {
-      const n = this.buildContainer(node, st, page.width, page.height);
+      // 基準は、最も近い祖先の参照領域 (XSL 1.1 §7.6.1)。span の切り替わりで分かれた領域の中では、その領域の先頭から測る
+      // (top は領域の先頭からの距離。下端までの高さは、領域が短いぶん短い)
+      const off = node.areaOffset && this.wm === 'horizontal-tb' ? (this.host.areaOrigin?.() ?? 0) : 0;
+      const src: LBlockContainer =
+        off > EPS && node.top != null
+          ? { ...node, top: node.top + off, ...(node.areaOffset === 'fill' && node.height != null ? { height: Math.max(node.height - off, 0) } : {}) }
+          : node;
+      const n = this.buildContainer(src, st, page.width, page.height);
       this.abs().push(n);
       this.noteIds(n);
       this.placeHeldFootnotes(n);
@@ -3466,7 +3546,7 @@ class Flow {
     // 箱自身の縦書きで読むと inline-start になり、箱が右にずれる)。
     // XSL-FO は、space-before などを箱自身の書字方向で物理の辺に読み替えている (xslfoImport) ので、箱自身の向きで読む
     const outer = st.wm === this.wm || this.host.xslSpace ? desc : describeBox(node, this.wm);
-    this.placeBox(n, outer.m.bs, outer.m.be, outer.m.is, this.extentAlongBlock(n), outer.precBs, outer.precBe);
+    this.placeBox(n, outer.m.bs, outer.m.be, outer.m.is, this.extentAlongBlock(n), outer.precBs, outer.precBe, outer.retainBe);
     if (node.breakAfter) this.breakNext = node.breakAfter;
   }
 
@@ -4156,13 +4236,15 @@ class Flow {
   /** atBreak: 段・ページの区切りで閉じる (区切りに接する保留中の余白は捨てる。CSS Fragmentation 3 §5.2) */
   private reportColumnEnd(atBreak = false) {
     if (!this.pages?.columnEnd) return;
-    this.trailingSpace = this.footReserve <= 0 ? Math.max(this.pendingValue(), 0) : 0;
+    // 参照領域の終わり (areaEnd) では、残す指定 (retain) の余白までを数える (§4.3.1)
+    const trailing = () => (this.areaEnd ? this.keptPending() : this.pendingValue());
+    this.trailingSpace = this.footReserve <= 0 ? Math.max(trailing(), 0) : 0;
     // 段・ページの最後の行の下の半行間は、line-height.conditionality="discard" なら捨てる (XSL §7.16.4)
     // 行グリッドの中の最後の行の下の半行間 (字の下端より下) も、段の高さに入れない (アンテナハウスの baseline-grid:
     // 行グリッドの段組の箱の下端は、最後の行の字の下端 + padding)
     const gt = this.gridTrail.trail > 0 && Math.abs(this.gridTrail.end - this.cursor) < EPS ? this.gridTrail.trail : 0;
     const end = gt ? this.cursor - gt : this.endAfterLastLine();
-    const pend = atBreak && !this.host.xslSpace ? 0 : this.pendingValue();
+    const pend = atBreak && !this.host.xslSpace ? 0 : trailing();
     this.pages.columnEnd(this.footReserve > 0 ? this.limit : Math.max(end + pend, this.floatBottom('both'), this.beforeUsed, this.afterEnd));
     this.afterEnd = 0;
   }
@@ -4559,9 +4641,13 @@ class Flow {
     }
     // block 方向は、前後の余白を畳んだ後から引く (前後の表のはみ出しは、どちらも余白に重なる)
     // アンテナハウス互換: 始めの側も余白に重ねない (表全体を内側に置く)
-    this.pendAdjust -= node.collapseSpillAh ? 0 : out.bs;
+    // XSL: 外へ出る半分は、余白の量に関わらず外へ出す (pendSpill。CSS2 §17.6.2: 表の幅・高さに入るのは外側の罫線の半分で、残りの半分は
+    // 余白の領域にある)。CSS の表は、余白の範囲でだけ重ねる (pendAdjust)
+    if (this.host.xslSpace && !node.collapseSpillAh) this.pendSpill -= out.bs;
+    else this.pendAdjust -= node.collapseSpillAh ? 0 : out.bs;
     desc = this.rtlEdge(desc, node, ps);
     const frame = this.openFrame(desc, 'table');
+    if (this.host.xslSpace && !node.collapseSpillAh && out.bs > 0) frame.spillBs = out.bs;
     // 罫線を分ける表のセルの間隔 (border-separation / border-spacing): 列の幅は、間隔を除いた幅で決める
     const sp = node.borderCollapse !== 'collapse' && node.borderSpacing && (node.borderSpacing.i > 0 || node.borderSpacing.b > 0) ? node.borderSpacing : undefined;
     const nC = columnSizes(node, frame.contentI).length;
@@ -4612,7 +4698,8 @@ class Flow {
     this.rowspanMiddleAh = savedRowspanAh;
     this.tableBreak = savedTableBreak;
     this.closeFrame();
-    if (!node.collapseSpillAh) this.pendAdjust -= out.be;
+    if (this.host.xslSpace && !node.collapseSpillAh) this.pendSpill -= out.be;
+    else if (!node.collapseSpillAh) this.pendAdjust -= out.be;
     if (bottomCaptions) {
       // 表の箱の左右の余白は、外枠の罫線の外へ出る分を引く前の値に戻す
       desc = { ...desc, m: { ...desc.m, is: desc.m.is + out.is, ie: desc.m.ie + out.ie } };
@@ -6530,7 +6617,10 @@ export class LayoutEngine {
    */
   private runColumnGroup(cx: ColumnPassCtx, items: Array<LBlockLevel | LInlineLevel>, startAbs: number, startTop: number, o: RunOpts) {
     const { seq, host, firstNumber, reserves, pageItems, wm, flowSt, foot, beforeSep, pageMode, geoAt, ensurePage, sizeAt } = cx;
-    const H: FlowHost = { ...host, ...(o.trial ? { warn: () => {} } : {}), pageNumber: () => firstNumber + abs };
+    // 絶対配置の箱の基準 (§7.6.1) は、いまの群の領域 (span の切り替わりで分かれた参照領域) の先頭
+    const H: FlowHost = { ...host, ...(o.trial ? { warn: () => {} } : {}), pageNumber: () => firstNumber + abs, areaOrigin: () => top };
+    /** XSL の余白 (§4.3.1): 群 (span の切り替わりで分けた参照領域) の境で、余白の並びを断つ */
+    const xslAreas = !!seq.discardLeadingSpace;
     let abs = startAbs;
     let col = 0;
     let top = Math.max(startTop, reserves.top.get(startAbs) ?? 0);
@@ -6575,10 +6665,14 @@ export class LayoutEngine {
       footnotes: foot,
       beforeSep,
       // ページの先頭から始まる段組の本文は、先頭の余白を捨てる (段組でない本文と同じ)
-      discardLeading: !!seq.discardLeadingSpace && col === 0 && top <= (reserves.top.get(abs) ?? 0) + EPS,
-      discardAfterForced: !!seq.discardLeadingSpace,
-      // span の切り替えでは、群の終わりの space-after を、次の群の先頭の space-before と相殺する (大きい方)
-      initialSpace: o.carry ?? 0,
+      // XSL: span の切り替わりで始まる群は、新しい参照領域 (§6.4.14 の span-reference-area) の先頭なので、ページの途中でも先頭の余白を捨てる
+      // (§4.3.1: 参照領域の先頭の conditional な余白は捨てる。retain の余白は残る)
+      discardLeading: xslAreas,
+      discardAfterForced: xslAreas,
+      // XSL でない本文: span の切り替えでは、群の終わりの余白を、次の群の先頭の余白と相殺する (大きい方)。
+      // XSL では相殺しない (参照領域の境は余白の並びを断つ。§4.2.5): 前の群の終わりの余白は、retain の分だけが使った高さに入っている
+      initialSpace: xslAreas ? 0 : (o.carry ?? 0),
+      areaEnd: xslAreas,
       rootI: first.rootI,
       root: first.root,
       limit: first.limit,
@@ -6605,7 +6699,7 @@ export class LayoutEngine {
             // 偶奇合わせの白ページに入る
             if (level === 'blank' && !o.trial) cx.markBlank(abs);
           }
-          return { ...colRoot(), ...(col > 0 && abs === startAbs && topGap > 0 ? { gap: topGap } : {}), ...(col > 0 && abs === startAbs && o.carry ? { credit: o.carry } : {}) };
+          return { ...colRoot(), ...(col > 0 && abs === startAbs && topGap > 0 ? { gap: topGap } : {}), ...(col > 0 && abs === startAbs && o.carry && !xslAreas ? { credit: o.carry } : {}) };
         },
       },
       pageLevel: pageMode
@@ -6732,7 +6826,9 @@ export class LayoutEngine {
     for (const c of seq.flow.children) {
       const sp = typeof c !== 'string' && c.type === 'block' && c.span === 'all';
       const last = groups[groups.length - 1];
-      if (sp) groups.push({ span: true, items: [c] });
+      // XSL: 続く span="all" のブロックは、同じ参照領域 (span-reference-area) に入る (§6.4.14)。間の余白は、ふつうに相殺する
+      if (sp && last?.span && seq.discardLeadingSpace) last.items.push(c);
+      else if (sp) groups.push({ span: true, items: [c] });
       else if (last && !last.span) last.items.push(c);
       else groups.push({ span: false, items: [c] });
     }
@@ -6955,12 +7051,13 @@ export class LayoutEngine {
           },
         }
       : undefined;
-    const flow = new Flow({ ...host, pageNumber: () => cur.number }, {
+    const flow: Flow = new Flow({ ...host, pageNumber: () => cur.number, ...(seq.spanAreas ? { areaOrigin: () => flow.areaTop } : {}) }, {
       wm,
       footnotes: foot,
       ...(sideNotes ? { sideNotes } : {}),
       beforeSep,
       discardLeading: !!seq.discardLeadingSpace,
+      ...(seq.spanAreas ? { spanAreas: true } : {}),
       rootI: firstPage.rootI,
       root: cur.root,
       limit: firstPage.limit,

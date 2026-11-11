@@ -64,6 +64,10 @@ In the fallback used when the math font cannot be loaded, fine points of math (C
 
 The list of unsupported items and their priorities is recorded in [BACKLOG.md](BACKLOG.md).
 
+Attributes and elements that are dropped without being read are also counted (nothing is dropped silently). For each element the importer records the attributes whose values it asked for, and after reading it counts the attributes it never asked for: a property that no element reads (an unsupported `axf:` extension, a misspelling) is counted as "attribute name", and a property that other elements read as "attribute name (element name)". An element that was not read together with its contents is counted once as "element name (parent element name の中)". Not counted: the contents of elements already reported as dropped, an `fo:static-content` that is not laid out because no page master has its region (XSL 1.1 §6.4.1.4), and `role` / `source-document`, which do not affect formatting (§7.5). A string value of `text-align` (the `<string>` of §7.16.9, which aligns the cells of a table column on the string) is unsupported: it is typeset as `start` and counted as `text-align:<string>`.
+
+Characters for which no loaded font has a glyph (drawn as the missing-glyph box) are listed in a warning with their counts (most frequent first; beyond 20 kinds only the number is given; the same for HTML). Whitespace, control characters and format characters (zero-width characters, bidi controls, variation selectors) are not counted.
+
 ## Loading Images
 
 From "XSL-FO・画像を読み込む" (Load XSL-FO / images) in the web app, select **the FO file and the image files together (multiple selection)**. `src="url('img/a.png')"` in the FO is matched by file name (`a.png`).
@@ -149,6 +153,12 @@ When there is one but it is empty (for example only an empty block), the default
 The columns just before a `span="all"` are balanced by trial typesetting while shrinking the column height on the last page by binary search. However, when the span block starts with a page break (or the preceding block ends with one), the columns on the preceding page are not balanced. Hoisting a nested block's `span="all"` to directly under the flow so it takes effect is done only in compatibility mode (per the spec it applies only to blocks directly under the flow, §7.21.4).
 Columns at the end of the flow (when nothing follows the span) are not balanced. Multi-column layout inside a block-container (`axf:column-count` / `axf:column-gap` / `axf:column-rule-*` / `axf:column-rule-display`) is also supported (columns are filled in order when a height is specified, balanced otherwise).
 
+A change of `span="all"` is a reference-area boundary: blocks with `span="all"` and blocks without it go into normal-flow-reference-areas of different span-reference-areas (XSL 1.1 §6.4.14). A reference area breaks the sequence of spaces (§4.2.5), so the `space-after` and `space-before` around the change are not merged: those with `conditionality="discard"` (the default) are discarded and only those with `retain` remain (§4.3.1). Consecutive `span="all"` blocks share one area and merge as usual. The `top` of an absolutely positioned `fo:block-container` is measured from the nearest ancestor reference area (§7.6.1), so a box after a span is positioned from the top of the area after the span (`LBlockContainer.areaOffset`; the inline position and width still refer to the body region, not the column).
+For a single-column body (`column-count` of 1) one area is enough by the specification ("precisely enough", §6.4.14), so spec mode does not split the area (the spaces merge). Compatibility mode splits the area at a change of span even in a single column, as Antenna House does (`LPageSequence.spanAreas`).
+
+For a table with collapsed borders (`border-collapse="collapse"`), only half of the outer border counts in the width and height of the table and the other half lies in the margin area (CSS2 §17.6.2). The outer half stays outside even when the surrounding space is smaller than half the border (also at the start of a reference area).
+
+Line grid: `new`, `root` and `none` of `axf:baseline-grid` are read into the same slot as `-ah-baseline-grid` in HTML (`LBlock.baselineGrid`; for `fo:block-container` with `new` or `root`, the contents are wrapped in a block with that value). `axf:baseline-block-snap` is not supported.
 
 ## SVG
 
