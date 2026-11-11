@@ -704,7 +704,10 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     const feats = (m.glyph('a', runStyle(s2), wm).font as { fk?: { availableFeatures?: string[] } }).fk?.availableFeatures ?? [];
     if (feats.includes('smcp') && (!all || feats.includes('c2sc')) && wm === 'horizontal-tb')
       s2 = { ...s2, fontFeatures: [...(s2.fontFeatures ?? []), 'smcp', ...(all ? ['c2sc'] : [])] };
-    else
+    // font-synthesis-small-caps: none (CSS Fonts 4 §2.8.3): 書体に字形が無ければ、作らずにそのままの字で組む
+    else if (s2.synthesizeSmallCaps === false) {
+      // (そのまま)
+    } else
       children = children.flatMap((k): InlineChild[] => {
         if (typeof k !== 'string') return [k];
         const out: InlineChild[] = [];

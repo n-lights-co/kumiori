@@ -843,6 +843,8 @@ export const AH_ALIASES: Record<string, { prop: string; value: (v: string) => st
   '-ah-linefeed-treatment': { prop: 'linefeed-treatment', value: (v) => v.trim().toLowerCase() },
   // text-align の inside・outside (アンテナハウスの拡張の値。下の isPagedDecl) を、-ah-text-align でも読む
   '-ah-text-align': { prop: 'text-align', value: (v) => v.trim().toLowerCase() },
+  // text-align-last の inside・outside も、-ah-text-align-last でも読む
+  '-ah-text-align-last': { prop: 'text-align-last', value: (v) => v.trim().toLowerCase() },
   // float の拡張の値 (top・bottom・inside・outside・center・alternate・multicol など。下の isPagedDecl) を、-ah-float でも読む。
   // 接頭辞の付いた名前なので、どのスタイルでも読む (接頭辞の無い float に書いた拡張の値は、互換の指定のときだけ。compatOnlyValue)
   '-ah-float': { prop: 'float', value: (v) => v.trim().toLowerCase() },
@@ -876,7 +878,7 @@ export function compatOnlyValue(prop: string, value: string): string | undefined
   const v = value.replace(/\s*!\s*important\s*$/i, '').trim().toLowerCase();
   if (prop === 'float') return isAhFloatValue(v) && !CSS_FLOAT_VALUE.test(v) ? `float: ${v.replace(/\s+/g, ' ')}` : undefined;
   if (prop === 'width') return /\dgr\b/.test(v) ? 'width: <数>gr' : undefined;
-  if (prop === 'text-align') return /^(inside|outside)$/.test(v) ? `text-align: ${v}` : undefined;
+  if (prop === 'text-align' || prop === 'text-align-last') return /^(inside|outside)$/.test(v) ? `${prop}: ${v}` : undefined;
   if (prop === 'text-autospace') return v === 'none' ? 'text-autospace: none' : undefined;
   // 前の宣言に隠れた印刷の色 (splitDecls が -kumiori-print-<性質> に残したもの) も、元は接頭辞の無い性質に書いた値
   const cp = prop.startsWith('-kumiori-print-') ? prop.slice(15) : prop;
@@ -975,7 +977,8 @@ export function isPagedDecl(prop: string, value: string): boolean {
   // text-align の inside・outside: アンテナハウスの拡張の値 (ページのノドの側・小口の側にそろえる。XSL 1.1 §7.16.9 の値)。
   // CSS Text 3 §6.1 の text-align には無いので、カスケードは無効の値として捨てる。自前で読み、-ah-text-align に書いたものと、
   // アンテナハウス互換のスタイルのときの text-align に書いたものだけ使う (compatOnlyValue・HtmlImportOptions.textAlignInsideOutsideAh)
-  if (prop === 'text-align') return /^(inside|outside)$/i.test(value.trim());
+  // text-align-last も同じ (XSL 1.1 §7.16.10 の text-align-last の inside・outside)
+  if (prop === 'text-align' || prop === 'text-align-last') return /^(inside|outside)$/i.test(value.trim());
   // float は left / right / none 以外 (footnote・アンテナハウスの top / bottom / center / alternate など) を自前で読む。
   // アンテナハウスの拡張の値は、-ah-float に書いたものと、アンテナハウス互換のスタイルのときの float に書いたものだけ使う (compatOnlyValue)
   // (知らない語を含む値 (float: zzz) は読まない。@supports にも対応していないと答える)

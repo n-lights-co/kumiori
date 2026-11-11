@@ -42,6 +42,20 @@ export const METAFILE_TOTAL_IMAGE_PIXELS = 64_000_000;
 export const METAFILE_FREE_PIXELS = 512 * 512;
 export const METAFILE_PIXELS_PER_BYTE = 1024;
 
+/**
+ * GIF の画素の数を、ファイルの大きさでも縛る値 (gifPixelBudget。IMG-19 (2))。GIF の頭の寸法 (論理画面と画像の幅・高さ) は 16 ビットなので、
+ * 34 バイトのファイルで 10000 × 10000 画素を指定でき、画素の配列 (RGBA で 400MB) と PNG を作るのに 12 秒・2.1GB を使った。
+ * GIF の画素は LZW で符号化する (GIF89a 仕様の付録 F)。符号は 12 ビットまでで、1 つの符号が表す字の並び (画素) は、符号の表の項目の数
+ * (4,096) より長くならない。表がいっぱいになった後の符号は 12 ビット (1.5 バイト) なので、正当な GIF の密度は 1 バイトで約 2,730 画素が上限
+ * (全体が 1 色の画像)。そこで、1 バイトあたり 4,096 画素 (その上限より大きい) と、ファイルの大きさに依らない分 (1024 × 1024 画素) までにする。
+ * 10000 × 10000 画素の GIF は、約 24KB 以上でなければ読まない (正当な GIF は、1 色でも約 37KB になる)
+ */
+export const GIF_FREE_PIXELS = 1024 * 1024;
+export const GIF_PIXELS_PER_BYTE = 4096;
+
+/** fileBytes バイトの GIF が、画素にできる数 (論理画面と、画像の画素の数の、それぞれの上限) */
+export const gifPixelBudget = (fileBytes: number): number => Math.min(MAX_PIXELS, GIF_FREE_PIXELS + GIF_PIXELS_PER_BYTE * fileBytes);
+
 /** fileBytes バイトのメタファイル・CGM が、画素にできる数 (その文書の画像の画素の合計の上限) */
 export const metafilePixelBudget = (fileBytes: number): number => Math.min(METAFILE_TOTAL_IMAGE_PIXELS, METAFILE_FREE_PIXELS + METAFILE_PIXELS_PER_BYTE * fileBytes);
 

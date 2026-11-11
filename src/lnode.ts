@@ -209,6 +209,9 @@ export interface ResolvedStyle {
   rubyOverhang?: boolean;
   rubyAlign?: RubyAlign;
   kerning?: boolean;
+  synthesizeWeight?: boolean;
+  synthesizeStyle?: boolean;
+  synthesizeSmallCaps?: boolean;
   fontFeatures?: string[];
   fontPalette?: import('./colorGlyph').FontPaletteStyle;
   textOrientation?: 'mixed' | 'upright' | 'sideways';
@@ -399,6 +402,9 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     rubyOverhang: n.rubyOverhang ?? parent.rubyOverhang,
     rubyAlign: n.rubyAlign ?? parent.rubyAlign,
     kerning: n.kerning ?? parent.kerning,
+    synthesizeWeight: n.synthesizeWeight ?? parent.synthesizeWeight,
+    synthesizeStyle: n.synthesizeStyle ?? parent.synthesizeStyle,
+    synthesizeSmallCaps: n.synthesizeSmallCaps ?? parent.synthesizeSmallCaps,
     fontFeatures: n.fontFeatures ?? parent.fontFeatures,
     fontPalette: n.fontPalette ?? parent.fontPalette,
     textOrientation: n.textOrientation ?? parent.textOrientation,

@@ -45,7 +45,7 @@ describe('未対応の CSS の数え上げ (cssUnsupported)', () => {
     const i = doc.indexOf('対応していないプロパティ (');
     const j = doc.indexOf('<h3', i + 10);
     const props = [...doc.slice(i, j).matchAll(/<tr><td><code>([^<]+)<\/code>/g)].map((m) => m[1]);
-    expect(props.length).toBeGreaterThan(50);
+    expect(props.length).toBeGreaterThan(40);
     expect(new Set(props)).toEqual(UNSUPPORTED_CSS_PROPERTIES);
   });
   it('印刷では意味のないプロパティ (cursor・resize・appearance・アニメーション・スクロールなど) は数えない。sanitize.css の書き方', () => {

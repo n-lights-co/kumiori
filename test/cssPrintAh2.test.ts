@@ -471,3 +471,56 @@ describe('XSL-FO の行内の箱の角丸 (HTM-64)', () => {
     expect(await radiusOf('border-radius="5pt"', 'spec')).toBeUndefined();
   });
 });
+
+describe('ページの余白の箱の counter(page) (HTM-31 (4))', () => {
+  it('箱ごとの数の書式で数を字にし、その箱の text-transform を当てる (文書の最初の counter(page) の書式を全部の箱に使わない)', async () => {
+    const html = '<!DOCTYPE html><html><head><style>@page { size: 200pt 100pt; margin: 30pt; @top-left { content: "p" counter(page) } @bottom-center { content: counter(page, lower-roman) "abc"; text-transform: uppercase } }</style></head><body><p>x</p><p style="break-before: page">y</p></body></html>';
+    const tree = (await typesetHtml(html, { loadFont: loadCachedFont })).areaTree;
+    const texts = tree.sheets.map((sh) => {
+      let t = '';
+      const rec = (a: Area) => {
+        const g = a as unknown as { text?: string };
+        if (a.type === 'glyph' && g.text) t += g.text;
+        for (const c of childrenOf(a)) rec(c);
+      };
+      rec(sh.page as unknown as Area);
+      return t;
+    });
+    expect(texts[0]).toContain('p1');
+    expect(texts[0]).toContain('IABC');
+    expect(texts[1]).toContain('p2');
+    expect(texts[1]).toContain('IIABC');
+  });
+});
+
+describe('--style ah の幅が auto の表の列の幅 (HTM-32 (2))', () => {
+  it('入りきらない表は、最大の長さが均等割りの半分を超える短い列も、最大の長さの比で縮める (CSS-Print の「PDF/A の大きな特徴」の表)', async () => {
+    const th = Array.from({ length: 8 }, (_, k) => `<th>PDF/A-${k}a</th>`).join('');
+    const td = Array.from({ length: 8 }, () => '<td>○</td>').join('');
+    const html = doc(
+      `<table><tr><th>要件</th>${th}</tr><tr><td>${'あ'.repeat(40)}</td>${td}</tr></table>`,
+      '@page { size: 437pt 400pt; margin: 20pt } body { margin: 0; font-size: 8.5pt } table { border-collapse: collapse; margin: 0 auto } td, th { padding: 3pt; border: 0.5pt solid }',
+    );
+    const r = scan((await typesetHtml(html, { loadFont: loadCachedFont, style: 'ah' })).areaTree);
+    // 「PDF/」の行の左端 (列の始まり) の間隔 = 列の幅
+    const xs = r.glyphs.filter((g) => g.text === 'P').map((g) => g.x).sort((a, b) => a - b);
+    expect(xs.length).toBeGreaterThanOrEqual(8);
+    const colW = xs[1] - xs[0];
+    // 列の最大の長さ (「PDF/A-0a」+ padding) の比: 均等割り (397 / 9 ≒ 44pt) 以下でも、最大の長さ (約 39pt) のままにしない
+    expect(colW).toBeLessThan(34);
+    // 1 列目は、その分だけ広い (最大の長さの比で配った幅)
+    expect(xs[0]).toBeGreaterThan(160);
+  });
+});
+
+describe('行グリッドの表のセルの行の送り (HTM-32 (2))', () => {
+  it('-ah-baseline-grid: new の表のセルの中の行は、格子 (line-height) に載せず、em の箱を積む', async () => {
+    const cellText = 'あ'.repeat(12);
+    const html = doc(`<table><tr><td>${cellText}</td></tr></table>`, 'table { font-size: 10pt; line-height: 20pt; -ah-baseline-grid: new; border-collapse: collapse } td { width: 50pt; padding: 0 }');
+    const r = scan((await typesetHtml(html, { loadFont: loadCachedFont })).areaTree);
+    const ys = [...new Set(r.glyphs.filter((g) => g.text === 'あ').map((g) => Math.round(g.y * 10) / 10))].sort((a, b) => a - b);
+    expect(ys.length).toBeGreaterThanOrEqual(2);
+    // 行の送りは字の大きさ (10pt)。line-height (20pt) の格子に載せない
+    expect(ys[1] - ys[0]).toBeCloseTo(10, 0);
+  });
+});

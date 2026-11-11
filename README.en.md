@@ -291,7 +291,7 @@ Comparison with sample PDFs (prepare the sample FO and PDF files yourself; they 
 node scripts/compare-pdf.mjs --fo <FO directory> --ref <sample PDF directory> --img <image directory> --out compare-pdf-out
 ```
 
-Each FO is paired with the PDF of the same name. `compare-pdf-out/report.md` lists the page count of each sample and the difference of each page (largest differences first). Add `--compat antenna` when comparing with Antenna House samples (the default is spec mode). To typeset with the same fonts as the samples, pass the font files with `--fonts <directory>`, and replace the default fonts used for the generic families (`serif`, `sans-serif`) with `--web-fonts <directory>` (put MS Mincho, MS Gothic, Times New Roman and Arial under names such as `notoserif.ttf`, `notosans.ttf`, `tinos400.ttf` and `arimo400.ttf`; extract the first font of a TTC as a TTF).
+Each FO is paired with the PDF of the same name. `compare-pdf-out/report.md` lists the page count of each sample and the difference of each page (largest differences first). Add `--compat antenna` when comparing with Antenna House samples (the default is spec mode). To typeset with the same fonts as the samples, pass the font files with `--fonts <directory>`, and replace the default fonts used for the generic families (`serif`, `sans-serif`) with `--web-fonts <directory>` (put MS Mincho, MS Gothic, Times New Roman, Arial and Courier New under names such as `notoserif.ttf`, `notosans.ttf`, `tinos400.ttf`, `arimo400.ttf` and `cousine400.ttf`; extract the first font of a TTC as a TTF; fonts not in the directory are fetched from their source).
 
 To build a page for comparing the samples and Kumiori's output by eye (the sample PDFs and Kumiori's PDFs are paired by the same name):
 

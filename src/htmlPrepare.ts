@@ -121,11 +121,13 @@ pre, tt, code, kbd, samp { text-spacing: none; }
 `;
 
 /**
- * WeasyPrint の既定のスタイルのうち、ブラウザ (Chrome) の既定と違うもの: フォームの部品と fieldset。
+ * WeasyPrint の既定のスタイルのうち、ブラウザ (Chrome) の既定と違うもの: ページの余白、フォームの部品と fieldset。
+ * ページの余白は 75px (56.25pt。Kumiori の既定の 20mm = 56.69pt でなく)。文書の @page の margin があれば、そちらが勝つ (作成者のスタイルシートの方が後)。
  * フォームの部品は書体を親から受け継ぎ、字は 0.85 倍、罫線は 1px の黒、背景は無し。fieldset の罫線は文字の色の groove。
  * (WeasyPrint 65.1 の css/html5_ua.css で確かめた。PyPI の weasyprint 65.1)
  */
 export const WEASYPRINT_UA_CSS = `
+@page { margin: 75px; }
 button, input, select, textarea { font-family: inherit; font-size: .85em; border: 1px solid black; padding: .2em; height: 1.2em; width: 20em; background-color: transparent; }
 textarea { height: 3em; margin: .1em 0; }
 fieldset { border: 2px groove currentColor; padding: .35em .625em .75em; }

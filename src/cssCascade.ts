@@ -413,6 +413,11 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'font-variant-ligatures': [true, 'normal', 'raw'],
   'font-variant-position': [true, 'normal', 'raw'],
   'font-kerning': [true, 'auto', 'raw'],
+  // 書体に無い字形を作ってよいか (Fonts 4 §2.8.1〜§2.8.4。auto | none。継承する)
+  'font-synthesis-weight': [true, 'auto', 'raw'],
+  'font-synthesis-style': [true, 'auto', 'raw'],
+  'font-synthesis-small-caps': [true, 'auto', 'raw'],
+  'font-synthesis-position': [true, 'auto', 'raw'],
   'font-feature-settings': [true, 'normal', 'raw'],
   // font-palette (CSS Fonts 4 §9.1): 継承する。font の一括指定では戻らない (§3.7 の「Cascaded Independently」)
   'font-palette': [true, 'normal', 'raw'],
@@ -1240,6 +1245,16 @@ const shorthand = (props: string[], f: Expander) => props.forEach((p) => SHORTHA
 // all: direction・unicode-bidi とカスタム プロパティのほかのすべて。値は大域のキーワードだけ (Cascade 5 §3.2)
 shorthand(['all'], (_p, v, global) => (global ? each(Object.keys(PROPS).filter((p) => p !== 'direction' && p !== 'unicode-bidi'), v) : []));
 shorthand(['margin', 'padding'], fourSideShorthand((prop, s) => `${prop}-${s}`));
+// font-synthesis (Fonts 4 §2.8.5): none | [weight || style || small-caps || position]。書いた語の性質は auto、書かなかった語の性質は none
+shorthand(['font-synthesis'], (_p, v, global) => {
+  const LONG = ['weight', 'style', 'small-caps', 'position'];
+  if (global) return each(LONG.map((k) => `font-synthesis-${k}`), v);
+  const ws = v.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!ws.length) return [];
+  if (ws.length === 1 && ws[0] === 'none') return LONG.map((k): [string, string] => [`font-synthesis-${k}`, 'none']);
+  if (ws.some((w) => !LONG.includes(w)) || new Set(ws).size !== ws.length) return [];
+  return LONG.map((k): [string, string] => [`font-synthesis-${k}`, ws.includes(k) ? 'auto' : 'none']);
+});
 shorthand(['inset'], fourSideShorthand((_prop, s) => s));
 shorthand(['border-width', 'border-style', 'border-color'], fourSideShorthand((prop, s) => `border-${s}-${prop.split('-')[1]}`));
 // アンテナハウスの拡張の -ah-padding-start などは、XSL の padding-start などに当たる (論理的な余白・内側の余白)
@@ -2520,6 +2535,11 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'flex-wrap': 'nowrap wrap wrap-reverse',
     // font-kerning・font-variant-caps・font-variant-position (Fonts 4 §6.3・§6.5・§6.6)
     'font-kerning': 'auto normal none',
+    // font-synthesis-* (Fonts 4 §2.8.1〜§2.8.4)
+    'font-synthesis-weight': 'auto none',
+    'font-synthesis-style': 'auto none oblique-only',
+    'font-synthesis-small-caps': 'auto none',
+    'font-synthesis-position': 'auto none',
     'font-variant-caps': 'normal small-caps all-small-caps petite-caps all-petite-caps unicase titling-caps',
     'font-variant-position': 'normal sub super',
     // line-break・overflow-wrap・word-break (Text 3 §5.3・§5.5・§5.2。word-break の manual・auto-phrase は Text 4 §6.1)

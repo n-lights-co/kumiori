@@ -295,7 +295,7 @@ export interface HtmlImportOptions {
    * 余白の箱の指定が箱ごとに違う・無いときは、既定と同じ
    */
   runningFontFromPageContextAh?: boolean;
-  /** 幅が auto の表の列が入りきらないときの列の幅の配り方を互換の規則にする (アンテナハウス互換。LTable.fitContentRule の 'ah-html') */
+  /** 幅が auto の表の列が入りきらないときの列の幅の配り方を互換の規則にする (アンテナハウス互換。LTable.fitContentRule の 'max-ratio') */
   tableAutoWidthAh?: boolean;
   /** 表の上の見出しと表ヘッダーを、本体の最初の行と同じページに置く (アンテナハウス互換。LTable.keepHeaderWithBodyAh) */
   tableHeaderWithBodyAh?: boolean;
@@ -1107,7 +1107,7 @@ class HtmlImporter {
   private dropCompatOnly(prop: string, value: string): boolean {
     if (this.opts.ahCssExtensions) return false;
     const what = compatOnlyValue(prop, value);
-    if (what && ((prop === 'text-align' && this.opts.textAlignInsideOutsideAh) || (prop === 'text-autospace' && this.opts.jaDefaultsAh))) return false;
+    if (what && (((prop === 'text-align' || prop === 'text-align-last') && this.opts.textAlignInsideOutsideAh) || (prop === 'text-autospace' && this.opts.jaDefaultsAh))) return false;
     // 値の文法に合わない宣言 (text-spacing-trim: zzz など) は、ふつうの無効の宣言として黙って捨てる (CSS 2.1 §4.2。htmlPaged の validPagedValue)
     if (!what) return !validPagedValue(prop, value);
     this.miss(`${what} (--style ah のときだけ解釈する値)`);
@@ -3333,6 +3333,15 @@ class HtmlImporter {
       if (fk === 'normal' || fk === 'auto') s.kerning = true;
       else if (fk === 'none') s.kerning = false;
     }
+    // 書体に無い字形を作ってよいか (font-synthesis-weight・-style・-small-caps。CSS Fonts 4 §2.8.1〜§2.8.3。継承する)。
+    // -position は読むだけ (上付き・下付きの字形は書体の sups・subs だけを使い、作らない)
+    if (!parent || diff('font-synthesis-weight')) s.synthesizeWeight = c('font-synthesis-weight') !== 'none';
+    // oblique-only (§2.8.2): 斜め (font-style: oblique) のときだけ傾けて作り、italic のときは作らない
+    if (!parent || diff('font-synthesis-style') || diff('font-style')) {
+      const fss = c('font-synthesis-style');
+      s.synthesizeStyle = fss !== 'none' && !(fss === 'oblique-only' && !c('font-style').startsWith('oblique'));
+    }
+    if (!parent || diff('font-synthesis-small-caps')) s.synthesizeSmallCaps = c('font-synthesis-small-caps') !== 'none';
     // font-feature-settings の "kern" 0・off でもカーニングを止める
     if (diff('font-feature-settings')) {
       const kern = /["']kern["']\s*(on|off|\d+)?/i.exec(c('font-feature-settings'));
@@ -3390,11 +3399,11 @@ class HtmlImporter {
    * 捨てるので、自前で読んだ宣言 (pg。カスケードの勝ち負けは collectPaged が決めている) から取る。text-align は受け継ぐので、祖先をたどる:
    * 祖先との間で text-align の計算値が変わっていれば、間の要素が別の値を指定しているので、受け継がない
    */
-  private insideOutsideAlign(el: Element): 'inside' | 'outside' | undefined {
-    const own = this.cs(el)('text-align');
+  private insideOutsideAlign(el: Element, prop: 'text-align' | 'text-align-last' = 'text-align'): 'inside' | 'outside' | undefined {
+    const own = this.cs(el)(prop);
     for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
-      if (this.cs(e as Element)('text-align') !== own) return undefined;
-      const v = this.pg(e as Element)['text-align']?.trim().toLowerCase();
+      if (this.cs(e as Element)(prop) !== own) return undefined;
+      const v = this.pg(e as Element)[prop]?.trim().toLowerCase();
       if (v === 'inside' || v === 'outside') return v;
     }
     return undefined;
@@ -3450,6 +3459,10 @@ class HtmlImporter {
       const rtl = c('direction') === 'rtl';
       s.textAlignLast = tal === 'center' ? 'center' : tal === 'justify' ? 'justify' : tal === 'end' || tal === (rtl ? 'left' : 'right') ? 'end' : 'start';
     }
+    // text-align-last: inside・outside (text-align と同じ扱いの、アンテナハウスの拡張の値。-ah-text-align-last か、アンテナハウス互換の
+    // スタイルの text-align-last): 最後の行を、ページのノドの側・小口の側にそろえる (XSL 1.1 §7.16.10)
+    const iol = this.insideOutsideAlign(el, 'text-align-last');
+    if (iol && (iol !== (parent ? this.insideOutsideAlign(parent, 'text-align-last') : undefined) || s.textAlignLast !== undefined)) s.textAlignLast = iol;
     if (diff('text-indent')) Object.assign(s, textIndentOf(c('text-indent')));
     // アンテナハウスの -ah-last-line-end-indent (XSL 1.1 §7.16.3 の last-line-end-indent と同じ。受け継ぐ): 最後の行の終わりの端の字下げ
     // (正で内へ、負で外へ)。接頭辞の付いた拡張なので、どのスタイルでも読む
@@ -5701,7 +5714,9 @@ class HtmlImporter {
           // 付けない (AH Formatter の「XSL/CSS 拡張仕様」の axf:baseline-grid。見本の PDF: CSS-Print 第 4 版の表は
           // table { -ah-baseline-grid: new } で、行の高さが字の大きさ + padding + 罫線 = line-height 1 つ分)
           const cellGrid = this.tableCellGrid(td, el);
-          if (cellGrid) cell.children = [{ type: 'block', baselineGrid: cellGrid, children: cell.children } as LBlock];
+          // new の格子では、セルの中の行を格子に載せず、em の箱を積む (LBlock.baselineGridStack。
+          // 見本の PDF: CSS-Print 第 4 版の「PDF/A の大きな特徴」の表の、折り返したセルの行の送りは字の大きさ (8.5pt) で、21q の格子に載せない)
+          if (cellGrid) cell.children = [{ type: 'block', baselineGrid: cellGrid, ...(cellGrid === 'new' ? { baselineGridStack: true } : {}), children: cell.children } as LBlock];
           // position が static でないセル・変換の付いたセルは、中の絶対配置の箱の基準 (CSS 2.1 §10.1)
           if (this.makesCb(td)) cell.containingBlock = true;
           const cs = Math.min(MAX_COL_SPAN, parseInt(td.getAttribute('colspan') ?? '1', 10));
@@ -5945,7 +5960,9 @@ class HtmlImporter {
     }
     else if (t.width !== undefined && c('table-layout') !== 'fixed' && noStar) t.fillContent = true;
     if (t.fitContent || t.fillContent) t.columnWidthsAsMinimum = true;
-    if (t.fitContent && this.opts.tableAutoWidthAh) t.fitContentRule = 'ah-html';
+    // アンテナハウス互換: 入りきらない列の幅の配り方は、XSL-FO の表と同じ 'max-ratio' (最大の長さが均等割りの半分以下の列は
+    // 最大の長さのまま、残りの列は最大の長さの比で)。CSS-Print の「PDF/A の大きな特徴」の表 (9 列) などの見本の列の幅に合う
+    if (t.fitContent && this.opts.tableAutoWidthAh) t.fitContentRule = 'max-ratio';
     return t;
   }
 
@@ -5974,8 +5991,13 @@ class HtmlImporter {
       if (t.kind === 'str') out.push(...(plain ? [t.v] : this.marginText(t.v, tt, sc)));
       else if (t.kind !== 'fn') continue;
       else if (t.name === 'counter' && t.args[0] === 'page') {
-        out.push('{pageNumber}');
-        if (this.pageFormat === null) this.pageFormat = pageNumberFormatOf(t.args[1]) ?? '1';
+        const fmt = pageNumberFormatOf(t.args[1]) ?? '1';
+        if (this.pageFormat === null) this.pageFormat = fmt;
+        // 箱ごとの数の書式 (counter(page, lower-roman) など) と text-transform は、印に持たせて、組むときに当てる
+        // (文書の最初の counter(page) の書式だけを全部の箱に使わない。数を字にした後に text-transform を当てる: CSS Text 3 §2.1)
+        const ttx = tt && tt !== 'none' ? tt : '';
+        const mark = fmt === this.pageFormat && !ttx ? '{pageNumber}' : `{pageNumber|${fmt}|${ttx}}`;
+        out.push(sc ? ({ type: 'inline', smallCaps: sc, children: [mark] } as LInline) : mark);
       } else if (t.name === 'counter' && t.args[0] === 'pages') out.push('{totalPages}');
       else if (t.name === 'env') {
         // env(doc-title): 文書の題 (<title>)。env(url) などは空
@@ -6021,7 +6043,7 @@ class HtmlImporter {
         const items = this.boxContent(content, (decls['text-transform'] ?? 'none').trim().toLowerCase() || 'none');
         if (items.some((x) => typeof x !== 'string')) unknown = true;
         // ページ番号の印は、3 桁の数の幅とみなす
-        const text = items.map((x) => (typeof x === 'string' ? x.replace(/\{(pageNumber|totalPages)\}/g, '000') : '')).join('');
+        const text = items.map((x) => (typeof x === 'string' ? x.replace(/\{(pageNumber|totalPages)(\|[^}]*)?\}/g, '000') : '')).join('');
         const weight = /bold/.test(decls['font-weight'] ?? '') ? 700 : parseInt(decls['font-weight'] ?? '', 10) || 400;
         const names2 = (decls['font-family'] ?? '').split(',').map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
         const family = names2.length ? this.opts.mapFont?.(names2, weight >= 600) : undefined;

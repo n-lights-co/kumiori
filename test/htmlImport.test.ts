@@ -147,7 +147,7 @@ describe('HTML: 論理ツリーへの変換', () => {
     // 本文 (a・b・c) は包まない
     expect(inl.some((o) => /^[abc]$/.test(String((o.children as string[])[0])))).toBe(false);
   });
-  it('アンテナハウス互換: list-style-type の check などを古い仕様の記号にする。互換でなければ decimal。表の列の幅の配り方を ah-html にする', () => {
+  it('アンテナハウス互換: list-style-type の check などを古い仕様の記号にする。互換でなければ decimal。表の列の幅の配り方を max-ratio にする', () => {
     const conv = (ah: boolean) => {
       const doc = new DOMParser().parseFromString(
         '<html><head></head><body><ul><li style="list-style-type: check">a</li><li style="list-style-type: box">b</li><li style="list-style-type: diamond">c</li><li style="list-style-type: hyphen">d</li></ul><table><tr><td>x</td></tr></table></body></html>',
@@ -157,7 +157,7 @@ describe('HTML: 論理ツリーへの変換', () => {
     };
     const ah = JSON.stringify(conv(true).document.sequences[0].flow);
     for (const ch of ['\u2713', '\u25A1', '\u25C6', '\u2043']) expect(ah).toContain(ch);
-    expect(ah).toContain('"fitContentRule":"ah-html"');
+    expect(ah).toContain('"fitContentRule":"max-ratio"');
     const std = JSON.stringify(conv(false).document.sequences[0].flow);
     expect(std).not.toContain('\u2713');
     expect(std).toContain('"1."');
