@@ -1,0 +1,12 @@
+# GitHub Actions の Action は、コミットの SHA で固定している (.github/workflows/*.yml の `uses: owner/name@<SHA> # vX.Y.Z`)。
+# タグは後から別のコミットへ付け替えられるので、公開の権限を持つワークフローで別のコードが動かないようにするため。
+# 新しい版が出たら、Dependabot が SHA と版のコメントを一緒に上げる PR を作る。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

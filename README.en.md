@@ -51,7 +51,7 @@ npm run build    # type check + production build (dist/; the web app)
 npm run build:dist   # build the library (dist-lib), the Node CLI (dist-cli) and the single browser file (dist-browser) together
 ```
 
-Node 20.19.0 or later is required (CI tests with 22; the dependencies used to read HTML, such as css-select used by linkedom, require Node 20.19.0 or later). The release procedure is in [`docs/en/RELEASING.md`](docs/en/RELEASING.md), and the changes in each version are in [`CHANGELOG.en.md`](CHANGELOG.en.md).
+Node 20.19.0 or later in the 20 line, or 22.12.0 or later, is required (CI tests with 20.19.0 and 22; the dependencies used to read HTML, such as css-select used by linkedom, require Node 20.19.0 or later. 22.0 to 22.11 are excluded because they cannot load ES modules with `require()`). The release procedure is in [`docs/en/RELEASING.md`](docs/en/RELEASING.md), and the changes in each version are in [`CHANGELOG.en.md`](CHANGELOG.en.md).
 
 ### Web app (browser)
 
