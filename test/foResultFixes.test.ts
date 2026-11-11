@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
 import { importXslFo, type ImportOptions } from '../src/xslfoImport';
 import { makeEngine, walk } from './helpers';
+import { childrenOf } from '../src/areaTree';
 import type { Area, LBlock, LBookmark, LFootnote, LInline, LInlineContainer, LLeader, LPageSequence, LTable } from '../src/types';
 
 let E: Awaited<ReturnType<typeof makeEngine>>;
@@ -203,6 +204,37 @@ describe('FO-09: 数式の後備の「全体が 1 つの mtable なら下端を�
   it('仕様モードは表の中央を軸に (式の中の表と同じ)、互換モードは下端', () => {
     expect(align('spec')).toBe('central');
     expect(align('antenna')).toBe('after-edge');
+  });
+});
+
+describe('FO-20: inline-container の中の「小さな字のブロック + 本文のブロック」をルビとして読むのは互換モードだけ (§6.6.8)', () => {
+  const ruby = '<fo:block font-size="12pt">XMLとは<fo:inline-container><fo:block font-size="0.5em">じょうほう</fo:block><fo:block>情報</fo:block></fo:inline-container>です</fo:block>';
+  it('互換モードは LRuby、仕様モードは inline-container のまま (ブロックを 2 つ積んだ行内の箱)', () => {
+    const a = imp(fo(ruby), { compat: 'antenna' });
+    expect(a.report.counts.rubies).toBe(1);
+    expect(JSON.stringify(a.document)).toContain('"type":"ruby","baseText":"情報","rubyText":"じょうほう"');
+    const s = imp(fo(ruby));
+    expect(s.report.counts.rubies).toBe(0);
+    expect(JSON.stringify(s.document)).not.toContain('"type":"ruby"');
+    const ic = (s.document.sequences[0].flow.children[0] as LBlock).children[1] as LInlineContainer;
+    expect(ic.type).toBe('inline-container');
+    expect(ic.children.map((b) => [(b as LBlock).type, (b as LBlock).children.join('')])).toEqual([['block', 'じょうほう'], ['block', '情報']]);
+  });
+  it('仕様モードで組んだ結果: 箱の基線は、中の最初の行 (小さな字の行) の基線 (§6.6.8: the dominant-baseline of the first descendant line-area)。本文のブロックはその下に積む', () => {
+    const tree = E.engine.layout(imp(fo(ruby)).document);
+    // 字の基線 (本文の領域の上からの位置。子の座標は親の箱からの位置)
+    const glyphs: Array<{ text: string; y: number; size: number }> = [];
+    const visit = (a: Area, oy: number) => {
+      if (a.type === 'glyph') glyphs.push({ text: a.text, y: oy + a.y + a.baselineY, size: a.fontSize });
+      for (const c of childrenOf(a)) visit(c, oy + a.y);
+    };
+    for (const a of tree.sheets[0].page.regionBody.children) visit(a, 0);
+    const at = (t: string) => glyphs.find((g) => g.text === t)!;
+    const [outer, small, base] = [at('と'), at('じ'), at('情')];
+    expect(small.size).toBeCloseTo(6, 3);
+    // 小さな字の行の基線 = まわりの字の基線。本文のブロックの字の基線は、それより下 (1 行ぶん下)
+    expect(small.y).toBeCloseTo(outer.y, 2);
+    expect(base.y - outer.y).toBeGreaterThan(10);
   });
 });
 
