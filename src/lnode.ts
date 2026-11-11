@@ -152,6 +152,8 @@ export interface ResolvedStyle {
   fontOpticalSizeUnit?: 'pt' | 'px';
   textAutospace?: boolean;
   textAutospaceWidth?: number;
+  textAutospaceIdeographicSpace?: boolean;
+  justifyPunctuationAh?: boolean;
   punctuationSqueeze?: boolean;
   lineSqueezeMax?: number;
   noSpaceSqueeze?: boolean;
@@ -322,6 +324,8 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     italic: n.fontStyle ? n.fontStyle === 'italic' : parent.italic,
     textAutospace: n.textAutospace ?? parent.textAutospace,
     textAutospaceWidth: n.textAutospaceWidth ?? parent.textAutospaceWidth,
+    textAutospaceIdeographicSpace: n.textAutospaceIdeographicSpace ?? parent.textAutospaceIdeographicSpace,
+    justifyPunctuationAh: n.justifyPunctuationAh ?? parent.justifyPunctuationAh,
     punctuationSqueeze: n.punctuationSqueeze ?? parent.punctuationSqueeze,
     lineSqueezeMax: n.lineSqueezeMax ?? parent.lineSqueezeMax,
     noSpaceSqueeze: n.noSpaceSqueeze ?? parent.noSpaceSqueeze,

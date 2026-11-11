@@ -425,10 +425,11 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
       }
     }
     if (a.st.textAutospace && b.st.textAutospace && !a.isSpace && !b.isSpace) {
-      // 全角の空白 (U+3000) と、約物・前置省略記号 (＃ ＄)・後置省略記号 (％)・ハイフン類 (～) でない全角形 (全角の英数字・＋ ＝ などの記号。
-      // U+FF01〜FF5E) も和字として扱う (JLREQ の cl-22 漢字等。「Q1　情報…」・
-      // 「　t」と「FrameMaker ＋ SGML」は四分アキ、「3.4％」「1～10」はベタ)
-      const wa = (ch: string) => isIdeographicOrKana(ch) || ch === '\u3000' || (isFullwidthForm(ch) && !isOpeningPunct(ch) && !isClosingPunct(ch) && !isMiddlePunct(ch) && !/^[＃＄％～]$/.test(ch));
+      // 約物・前置省略記号 (＃ ＄)・後置省略記号 (％)・ハイフン類 (～) でない全角形 (全角の英数字・＋ ＝ などの記号。
+      // U+FF01〜FF5E) も和字として扱う (JLREQ の cl-22 漢字等。「FrameMaker ＋ SGML」は四分アキ、「3.4％」「1～10」はベタ)。
+      // 全角の空白 (U+3000) は、XSL-FO (アンテナハウスの axf:text-autospace。「Q1　情報…」・「　t」は四分アキ) だけ和字として扱う。
+      // CSS の text-autospace では扱わない (CSS Text 4 §8.4.1。見本の PDF: CSS-Print 第 4 版の目次「第 1 章　Web」は、空白と W の間を空けない)
+      const wa = (ch: string) => isIdeographicOrKana(ch) || (ch === '\u3000' && !!a.st.textAutospaceIdeographicSpace) || (isFullwidthForm(ch) && !isOpeningPunct(ch) && !isClosingPunct(ch) && !isMiddlePunct(ch) && !/^[＃＄％～]$/.test(ch));
       // 欧文の書体で組む語 (ギリシャ文字・キリル文字が 2 字以上続く語) の字も、欧文の字と同じに空ける (単独の 1 字は空けない)
       if ((wa(a.last) && (isLatinAlnum(b.first) || b.latinWord)) || ((isLatinAlnum(a.last) || a.latinWord) && wa(b.first))) {
         const s = Math.min(fa, fb) * (a.st.textAutospaceWidth ?? 0.25);
@@ -1349,7 +1350,23 @@ function stretchable(a: Atom, b: Atom): boolean {
   // 欧文どうしの間は、分割できても (ハイフン・スラッシュの後ろなど) 広げない。CSS Text 3 §7.1: 欧文の両端揃えで広げるのは
   // 語の区切り (空白) だけ。字間を広げるのは、和字 (漢字・仮名・ハングルと和文の約物) の前後
   if (!isCjkJustify(a.last) && !isCjkJustify(b.first)) return false;
+  // アンテナハウス互換: 約物の前後も空ける (改行できない字間でも。見本の PDF: CSS-Print 第 4 版は「き、」「す。」・括弧の前後も空ける)。
+  // 分離禁止の字の並び (…… ‥‥ ―― —— の同じ字の間。JLREQ §3.1.10) は空けない
+  if (a.st.justifyPunctuationAh) return !(a.last === b.first && INSEPARABLE_REPEAT.has(a.last));
+  // JLREQ §3.1.11: 括弧類・句読点・中点類・区切り約物・ハイフン類・和字間隔 (全角の空白) の前後は、行の調整で字間を空けない
+  if (noExpandPunct(a.last) || noExpandPunct(b.first)) return false;
   return canBreakAtoms(a, b);
+}
+
+/** 分離禁止で、同じ字が続く間を空けない字 (JLREQ §3.1.10: 二倍ダーシ ――・二点リーダー ‥‥・三点リーダー ……) */
+const INSEPARABLE_REPEAT = new Set(['\u2014', '\u2015', '\u2025', '\u2026']);
+
+/**
+ * JLREQ §3.1.11 で、行の調整で前後の字間を空けない字: 始め括弧類 (cl-01)・終わり括弧類 (cl-02)・ハイフン類 (cl-03)・区切り約物 (cl-04)・
+ * 中点類 (cl-05)・句点類 (cl-06)・読点類 (cl-07)・和字間隔 (全角の空白)
+ */
+function noExpandPunct(ch: string): boolean {
+  return isOpeningPunct(ch) || isClosingPunct(ch) || isMiddlePunct(ch) || /^[\u2010\u2013\u301c\u30a0？！‼⁇⁈⁉\u3000]$/u.test(ch);
 }
 /**
  * 空ける処理 (JLREQ §3.8.4 の優先順位): 行の余り free を、字間ごとに配る。

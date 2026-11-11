@@ -102,6 +102,7 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 - CSS の罫線の破線・点線・鎖線は、辺ごとに辺の中央に対して対称に置く (両端の角が同じ形になり、上と下、左と右の辺は同じ模様。CSS Backgrounds 3 §3.2 の注記が勧める置き方。破線は空きの中央、一点鎖線は点の中央、二点鎖線は線の中央が辺の中央。点線は両端の角に点。1 周期に満たない短い辺は実線)。XSL-FO の罫線は、これまでどおり時計回りに模様を続ける。
 - 立体の罫線 (groove・ridge・inset・outset) の色が CMYK なら、RGB (R = (1 − C)(1 − K) など) に直してから明るく・暗くする (CSS Backgrounds 3 §3.2 は作り方を決めていない)。
 - 罫線の色も印刷の色 (`device-cmyk()`・拡張の `cmyk()`・`rgb-icc()`) を読む (`border`・`border-color`・`border-<辺>`・`border-<辺>-color`)。
+- 接頭辞の無い名前 (標準のプロパティ) に書いたアンテナハウスの拡張の値は、互換のスタイル (`--style ah`) のときだけ読む: `float` の `top`・`bottom`・`start`・`end`・`inside`・`outside`・`center`・`alternate`・`multicol`・`sidenote` など、`width` の単位 `gr`、`text-align` の `inside`・`outside`、色の `cmyk()`・`rgb-icc()` (`htmlPaged.ts` の `compatOnlyValue`・`HtmlImportOptions.ahCssExtensions`)。ほかのスタイルでは、読めない値として宣言ごと捨て (前の宣言を打ち消さない。CSS 2.1 §4.2)、警告に出す。`@supports` にも、互換のスタイルのときだけ真と答える。接頭辞の付いた名前 (`-ah-float`・`-ah-text-align`) に書いた値は、どのスタイルでも読む。以下の節の「拡張の値」の説明は、この決まりの上での動き。
 - SVG の字の `font-family` が読み込んでいない Courier・monospace の名前なら、字幅が Courier New と同じ Cousine で描く (名前が Bold などなら太字)。
 - 余白の箱の角丸 (`border-radius`・`border-*-radius`) も描く (Paged Media 3 §6 は、CSS 2.1 に無いプロパティの余白の箱での振る舞いを決めていない)。
 - 余白の箱は 16 か所すべて。上下の辺の箱は本文の幅いっぱいに置き、揃え (左・中央・右) で位置を分ける (CSS の箱の幅の配分は行わない)。

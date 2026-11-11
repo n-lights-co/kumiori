@@ -287,7 +287,9 @@ describe("縦書きの float (CSS Page Floats 3 §3.2)", () => {
       walk(o.children);
     };
     walk(
-      load(html, "div.v { writing-mode: vertical-rl; height: 8em }").document
+      load(html, "div.v { writing-mode: vertical-rl; height: 8em }", {
+        ahCssExtensions: true,
+      }).document
         .sequences[0].flow.children,
     );
     return out;
@@ -398,6 +400,7 @@ describe("float: multicol top (アンテナハウスの拡張)", () => {
     const r = load(
       '<div class="m"><p>a</p><div style="float: multicol top; width: 1gr; box-sizing: border-box">F</div><p>b</p></div>',
       "div.m { column-count: 3; column-gap: 10pt; width: 320pt }",
+      { ahCssExtensions: true },
     );
     type B = {
       type: string;

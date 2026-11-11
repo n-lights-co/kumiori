@@ -5,11 +5,16 @@
  *  - -ah-baseline-grid: root の格子は、ページの本文の領域の上端から、根元の書式で引く
  *  - -ah-last-line-end-indent (XSL 1.1 §7.16.3 の last-line-end-indent) を HTML で読む (::before の指定も)
  *  - 横書きの中の、幅が中身で決まる縦書きの箱の、左右の auto の余白 (CSS 2.1 §10.3.3)
+ *  - CSS の text-autospace は、全角の空白 (U+3000) と欧字の間を空けない (XSL-FO の axf:text-autospace は空ける)
+ *  - -ah-lang (要素・::marker などの言語) を読む
+ *  - 両端揃えで、約物の前後は字間を空けない (JLREQ §3.1.11)。--style ah は空ける (アンテナハウス互換)
+ *  - --style ah: 接頭辞の付いた MathML (<m:math xmlns:m=…>) を MathML として組む
  */
 import { beforeAll, describe, expect, it } from 'vitest';
-import { DEFAULT_FONTS, typesetHtml, childrenOf } from '../src/index';
+import { DEFAULT_FONTS, typesetFo, typesetHtml, childrenOf } from '../src/index';
 import type { Area, AreaTree } from '../src/types';
 import { ensureFonts, loadCachedFont } from './helpers';
+import { prefixedForeignToHtml } from '../src/htmlPrepare';
 import { DOMParser } from '@xmldom/xmldom';
 import { cascadeStyles } from '../src/cssCascade';
 
@@ -135,5 +140,83 @@ describe('-ah-text-decoration-*', () => {
     expect(s.getPropertyValue('text-decoration-style').trim()).toBe('wavy');
     expect(s.getPropertyValue('text-decoration-color').trim()).toMatch(/255, 0, 0|red/);
     expect(s.getPropertyValue('text-decoration-thickness').trim()).toMatch(/^(2pt|2\.6+7px)$/);
+  });
+});
+
+describe('和欧間のアキと全角の空白', () => {
+  const gap = (r: ReturnType<typeof scan>) => {
+    const sp = r.glyphs.find((g) => g.text === '\u3000')!;
+    const w = r.glyphs.find((g) => g.text === 'W')!;
+    return w.x - sp.x;
+  };
+  it('CSS の text-autospace: 全角の空白と W の間は空けない (CSS Text 4 §8.4.1。--style ah でも)', async () => {
+    const r = scan((await typesetHtml(doc('<p>章\u3000Web</p>', 'p { -ah-text-autospace: ideograph-alpha; -ah-text-autospace-width: 25% }'), { loadFont: loadCachedFont, style: 'ah' })).areaTree);
+    expect(gap(r)).toBeCloseTo(20, 1);
+  });
+  it('XSL-FO の axf:text-autospace (互換モード): 全角の空白も和字として、W との間を四分空ける', async () => {
+    const fo = `<?xml version="1.0" encoding="UTF-8"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="400pt" page-height="400pt"><fo:region-body margin="20pt"/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block font-size="20pt">章\u3000Web</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const r = scan((await typesetFo(fo, { loadFont: loadCachedFont, compat: 'antenna' })).areaTree);
+    expect(gap(r)).toBeCloseTo(25, 1);
+  });
+});
+
+describe('-ah-lang', () => {
+  it('::marker の -ah-lang: en で、記号を欧文の書体で組む (日本語の文書の中でも)', async () => {
+    const body = '<ul><li>あいう</li></ul>';
+    const font = async (css: string) => {
+      const t = (await typesetHtml(doc(body, `ul { list-style: circle } ${css}`), { loadFont: loadCachedFont })).areaTree;
+      const fonts: string[] = [];
+      const rec = (a: Area) => {
+        const g = a as unknown as { text?: string; fontId?: string };
+        if (a.type === 'glyph' && g.text === '◦') fonts.push((g.fontId ?? '').replace(/@.*$/, ''));
+        for (const c of childrenOf(a)) rec(c as Area);
+      };
+      rec(t.sheets[0].page as unknown as Area);
+      return fonts[0] ?? '';
+    };
+    const ja = await font('li::marker { font-family: sans-serif }');
+    const en = await font('li::marker { font-family: sans-serif; -ah-lang: en }');
+    expect(ja).not.toBe(en);
+    expect(en).toMatch(/Arimo/);
+  });
+});
+
+describe('両端揃えで字間を空けない箇所 (JLREQ §3.1.11)', () => {
+  // 1 行目を両端揃えにするため、2 行に折れる長さにする。行は 285pt。1 行目に「あいうえお、かきくけこさしす」(280pt) が入り、余り 5pt を字間に配る
+  const body = '<p style="width: 285pt; text-align: justify">あいうえお、かきくけこさしすせそたちつてと</p>';
+  const gaps = (r: ReturnType<typeof scan>) => {
+    const line = r.glyphs.filter((g) => Math.abs(g.y - r.glyphs[0].y) < 1);
+    const at = (ch: string) => line.findIndex((g) => g.text === ch);
+    const adv = (k: number) => line[k + 1].x - line[k].x;
+    return { beforeComma: adv(at('お')) - 20, afterComma: adv(at('、')) - 20, kana: adv(at('あ')) - 20 };
+  };
+  it('既定: 読点の前と後ろは空けず、仮名どうしの字間に配る', async () => {
+    const g = gaps(await html(body));
+    expect(g.kana).toBeGreaterThan(0.1);
+    expect(g.beforeComma).toBeCloseTo(0, 1);
+    expect(g.afterComma).toBeCloseTo(0, 1);
+  });
+  it('--style ah: 読点の前と後ろも空ける (アンテナハウス互換)', async () => {
+    const g = gaps(await html(body, '', 'ah'));
+    expect(g.beforeComma).toBeGreaterThan(0.1);
+  });
+});
+
+describe('接頭辞の付いた MathML (--style ah)', () => {
+  const body = '<p>式 <m:math xmlns:m="http://www.w3.org/1998/Math/MathML"><m:mi>x</m:mi><m:mo>=</m:mo><m:mn>1</m:mn></m:math></p><pre>\n&lt;m:math xmlns:m="http://www.w3.org/1998/Math/MathML"&gt;</pre>';
+  const texts = async (style?: 'ah') => {
+    const r = await html(body, '', style);
+    return { lines: r.lines.map((l) => l.text), glyphs: r.glyphs.map((g) => g.text).join('') };
+  };
+  it('prefixedForeignToHtml: タグだけを書き直し、本文の文字 (&lt;m:math …&gt;) は変えない', () => {
+    expect(prefixedForeignToHtml(body)).toBe('<p>式 <math><mi>x</mi><mo>=</mo><mn>1</mn></math></p><pre>\n&lt;m:math xmlns:m="http://www.w3.org/1998/Math/MathML"&gt;</pre>');
+  });
+  it('--style ah: <m:math> を MathML として組む。ほかのスタイルは HTML の構文どおり (知らない要素の中の字)', async () => {
+    const ah = await texts('ah');
+    expect(ah.lines.some((t) => t.includes('<m:math xmlns:m="http://www.w3.org/1998/Math/MathML">'))).toBe(true);
+    const def = await texts();
+    // MathML で組むと、数式は 1 つの図 (画像の領域) になり、x=1 は字として並ばない。HTML の構文どおりなら、知らない要素の中の字のまま
+    expect(ah.glyphs).not.toContain('x=1');
+    expect(def.glyphs).toContain('x=1');
   });
 });

@@ -77,7 +77,7 @@ import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
 import { UNIT_PT, cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
-import { AH_ALIASES, counterText, isPagedDecl, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
+import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
 /** ブロック水準の部品か (行内の並びを区切る) */
@@ -214,7 +214,8 @@ export interface HtmlImportOptions {
   /**
    * text-align の inside・outside を読む (アンテナハウス互換。アンテナハウスの拡張の値で、CSS Text 3 §6.1 の text-align には無い。
    * 既定は、無効の値として捨てる)。inside はページのノドの側、outside は小口の側にそろえる (XSL 1.1 §7.16.9 の inside・outside と同じ。
-   * 左右のページは @page :left・:right と同じ判定: 横書きは、奇数ページが右ページでノドは左)
+   * 左右のページは @page :left・:right と同じ判定: 横書きは、奇数ページが右ページでノドは左)。
+   * 接頭辞の付いた -ah-text-align に書いた inside・outside は、この設定によらず読む
    */
   textAlignInsideOutsideAh?: boolean;
   /**
@@ -248,9 +249,14 @@ export interface HtmlImportOptions {
    */
   ahObsoleteListStyles?: boolean;
   /**
-   * css の文字列をここで読むとき (sheet を渡さないとき) の @supports に、アンテナハウスの拡張の値 (線種 dot-dash など・counter() の
-   * physical・reverse) を対応していると答える (アンテナハウス互換。その値をカスケードが受け付けるのは、互換の指定のときだけ。
-   * Conditional 3 §6.1)。sheet を渡すときは、sheet を読んだ側 (prepareHtml) の読み方に従う
+   * 接頭辞の無い名前 (標準のプロパティ) に書いた、アンテナハウスの拡張の値を読む (アンテナハウス互換)。既定は、無効の値として捨てて
+   * 報告する (標準の名前の意味を変えるため。CSS 2.1 §4.2: 読めない値の宣言は無視する):
+   *  - float の top・bottom・start・end・inside・outside・center・alternate・multicol・sidenote など (CSS の float の値は left・right・none・
+   *    inline-start・inline-end と GCPM の footnote)、width の <数>gr、色の cmyk()・rgb-icc() (CSS の関数は device-cmyk())。
+   *    一覧は htmlPaged の compatOnlyValue。接頭辞の付いた名前 (-ah-float・-ah-text-align) に書いた値は、この設定によらず読む
+   *  - css の文字列をここで読むとき (sheet を渡さないとき) の @supports に、これらの値と、線種 dot-dash など・counter() の physical・reverse を
+   *    対応していると答える (その値を受け付けるのは、互換の指定のときだけ。Conditional 3 §6.1)。sheet を渡すときは、sheet を読んだ側
+   *    (prepareHtml) の読み方に従う
    */
   ahCssExtensions?: boolean;
   /**
@@ -564,12 +570,17 @@ export function parsePageSize(value: string, def: { width: number; height: numbe
   return orient(w, h, orients[0]);
 }
 
+/** @page と余白の箱の宣言のうち、印刷の色 (printColor) を読む性質 */
+const PAGE_COLOR_PROP = /^(color|background-color|background|border(-(top|right|bottom|left))?(-color)?)$/;
+
 /** @page の宣言 (size・margin・bleed・marks) から、用紙の大きさと余白 (mm) を読む */
 function pageBox(
   decls: Record<string, string>,
   def: { width: number; height: number; margin: number },
   rootFsPx = 16,
   spots?: SpotColors,
+  /** 色の cmyk()・rgb-icc() (アンテナハウスの拡張の書き方) を読む (互換の指定のときだけ。printColor) */
+  ahColorFunctions = true,
 ): Pick<PageMaster, 'width' | 'height' | 'margins'> & { bleed?: number; marks?: boolean; cropOffset?: number; background?: string } {
   // ページの文脈は根元の要素から継ぐ (Paged Media 3 §9)。em は @page の font-size、rem は根元の要素の字の大きさ
   const fsDecl = decls['font-size'] ? lengthPx(decls['font-size'], { fs: rootFsPx, rootFs: rootFsPx, vw: 0, vh: 0, pct: rootFsPx }) : undefined;
@@ -611,7 +622,7 @@ function pageBox(
     } else if (prop === 'marks') out.marks = /crop|cross/.test(val);
     else if (prop === 'background' || prop === 'background-color') {
       // ページの背景色 (塗り足しまで届く)。background の一括指定は、色だけ読む
-      const col = printColor(raw, spots) ?? splitWords(raw).map(cssColor).find((c) => c && (/^#/.test(c) || isColorName(c)));
+      const col = printColor(raw, spots, ahColorFunctions) ?? splitWords(raw).map(cssColor).find((c) => c && (/^#/.test(c) || isColorName(c)));
       if (col) out.background = col;
     } else if (prop === '-ah-crop-offset') {
       // 仕上がりの端から用紙の端までの幅 (アンテナハウスの拡張)
@@ -919,7 +930,7 @@ class HtmlImporter {
   private areaOf(name: string) {
     if (!name) return this.area;
     const PT = 72 / 25.4;
-    const b = pageBox(resolvePageRules(this.pageRules, { name }, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors);
+    const b = pageBox(resolvePageRules(this.pageRules, { name }, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions);
     return { top: b.margins.top * PT, right: b.margins.right * PT, bottom: b.margins.bottom * PT, left: b.margins.left * PT, width: (b.width - b.margins.left - b.margins.right) * PT, height: (b.height - b.margins.top - b.margins.bottom) * PT };
   }
   /** position: fixed の箱 (全ページに出す) */
@@ -959,11 +970,14 @@ class HtmlImporter {
       // 書いた順の宣言 (list) を、それぞれの !important で比べる (color: red !important; color: blue で blue を !important と取り違えない)。
       // 根元の var() は置き換えて読む (自前で読む宣言は要素ごとのカスタム プロパティを追わない)。
       // 自前で読むかは元の名前で決め (アンテナハウスの別名 -ah-* など)、当てるときは別名を CSS の名前に読み替える
-      const decls = r.list.map(([p, v0, imp]) => {
+      // 接頭辞の無い名前に書いたアンテナハウスの拡張の値 (float: top など) は、互換の指定の無いときは無効の値なので、宣言ごと除いて
+      // 報告する (前の宣言を打ち消さない。CSS 2.1 §4.2)
+      const decls = r.list.flatMap(([p, v0, imp]) => {
         const v = substituteRootVars(v0, rootVars);
+        if (this.dropCompatOnly(p, v)) return [];
         const al = AH_ALIASES[p];
         const ok = wanted(p, v, !!pseudo);
-        return al ? { p: al.prop, v: al.value(v), imp: !!imp, ok } : { p, v, imp: !!imp, ok };
+        return [al ? { p: al.prop, v: al.value(v), imp: !!imp, ok } : { p, v, imp: !!imp, ok }];
       });
       for (const d of decls) if (d.ok) (pseudo ? tracked.pseudo : tracked.el).add(d.p);
       const spec = parseSelectorList(r.selector)[0]?.specificity ?? 0;
@@ -1024,7 +1038,7 @@ class HtmlImporter {
       if (attr) {
         // アンテナハウスの別名 (-ah-line-height-shift-adjustment など) は、規則と同じく CSS の名前に読み替える
         const own = splitDecls(attr)
-          .filter(([p, val]) => isPagedDecl(p, val) || p === 'content')
+          .filter(([p, val]) => !this.dropCompatOnly(p, val) && (isPagedDecl(p, val) || p === 'content'))
           .map(([p, val]): [string, string] => (AH_ALIASES[p] ? [AH_ALIASES[p].prop, AH_ALIASES[p].value(val)] : [p, val]));
         if (own.length) this.paged.set(el, (v = { ...v, ...Object.fromEntries(own) }));
       }
@@ -1032,6 +1046,21 @@ class HtmlImporter {
     return v ?? {};
   }
   private styleAttrRead = new WeakSet<Element>();
+
+  /**
+   * 接頭辞の無い名前に書いた、アンテナハウスの拡張の値の宣言を捨てるか (htmlPaged の compatOnlyValue)。互換の指定 (opts.ahCssExtensions。
+   * text-align の inside・outside は opts.textAlignInsideOutsideAh、text-autospace の none は opts.jaDefaultsAh) の無いときは、無効の値として
+   * 捨て、報告する (警告に出る)。値の文法に合わない宣言も捨てる (報告はしない)
+   */
+  private dropCompatOnly(prop: string, value: string): boolean {
+    if (this.opts.ahCssExtensions) return false;
+    const what = compatOnlyValue(prop, value);
+    if (what && ((prop === 'text-align' && this.opts.textAlignInsideOutsideAh) || (prop === 'text-autospace' && this.opts.jaDefaultsAh))) return false;
+    // 値の文法に合わない宣言 (text-spacing-trim: zzz など) は、ふつうの無効の宣言として黙って捨てる (CSS 2.1 §4.2。htmlPaged の validPagedValue)
+    if (!what) return !validPagedValue(prop, value);
+    this.miss(`${what} (--style ah のときだけ解釈する値)`);
+    return true;
+  }
 
   /** 継承する指定を、ブラウザの確定値 → 自前で読んだ指定 (祖先をたどる) の順に読む */
   private inh(el: Element, prop: string, pagedFirst = false): string {
@@ -2508,7 +2537,11 @@ class HtmlImporter {
       const words = (t.args[0] ?? '').trim().split(/\s+/);
       if (words.length === 1) continue;
       if (this.opts.ahCounterPagePhysical && words.length === 2 && words[0] === 'page' && words[1] === 'physical') physical = true;
-      else return [];
+      else {
+        // アンテナハウス互換のカスケードが受け付ける counter(page reverse) (残りのページ数) などは、未対応として知らせる (何も出さない)
+        if (this.opts.ahCounterPagePhysical && words[0] === 'page') this.miss(`content: counter(${words.join(' ')})`);
+        return [];
+      }
     }
     for (const t of toks) {
       if (t.kind === 'str') out.push(t.v);
@@ -2808,10 +2841,10 @@ class HtmlImporter {
   private printOf(decls: Record<string, string>, prop: string, alt?: string): string | undefined {
     const hidden = decls[`-kumiori-print-${prop}`] ?? (alt ? decls[`-kumiori-print-${alt}`] : undefined);
     if (hidden && this.opts.spotColors) {
-      const c = printColor(hidden, this.opts.spotColors);
+      const c = printColor(hidden, this.opts.spotColors, !!this.opts.ahCssExtensions);
       if (c?.startsWith('spot(')) return c;
     }
-    return printColor(decls[prop] ?? (alt ? decls[alt] : undefined) ?? '', this.opts.spotColors);
+    return printColor(decls[prop] ?? (alt ? decls[alt] : undefined) ?? '', this.opts.spotColors, !!this.opts.ahCssExtensions);
   }
 
   /**
@@ -2822,17 +2855,17 @@ class HtmlImporter {
     const fn = /(?:device-cmyk|rgb-icc|(?<![\w-])cmyk)\([^)]*\)/gi;
     const one = (v: string | undefined) => (v ? (v.match(fn) ?? [])[0] : undefined);
     const own = one(decls[`border-${sd}-color`]) ?? one(decls[`border-${sd}`]);
-    if (own) return printColor(own, this.opts.spotColors);
+    if (own) return printColor(own, this.opts.spotColors, !!this.opts.ahCssExtensions);
     const bc = decls['border-color'];
     if (bc) {
       // 1〜4 個の値 (上・右・下・左)
       const vals = splitTop(bc, ' ');
       const [t, r = t, b = t, l = r] = vals;
       const v = { top: t, right: r, bottom: b, left: l }[sd];
-      if (one(v)) return printColor(one(v)!, this.opts.spotColors);
+      if (one(v)) return printColor(one(v)!, this.opts.spotColors, !!this.opts.ahCssExtensions);
     }
     const all = one(decls.border);
-    return all ? printColor(all, this.opts.spotColors) : undefined;
+    return all ? printColor(all, this.opts.spotColors, !!this.opts.ahCssExtensions) : undefined;
   }
 
   /**
@@ -2951,12 +2984,12 @@ class HtmlImporter {
         .split(',')
         .map((n) => n.replace(/['"]/g, '').trim())
         .filter(Boolean);
-    const ownLang = !pseudo && !!parent && !!(el.getAttribute?.('lang') ?? el.getAttribute?.('xml:lang'));
+    const ownLang = !pseudo && !!parent && !!(el.getAttribute?.('lang') ?? el.getAttribute?.('xml:lang') ?? this.pg(el)['-ah-lang']);
     if (diff('font-family') || diff('font-weight')) {
       // 余白の箱から書体を受け継ぐ running() の要素の中 (runningFamily。アンテナハウス互換): 元の場所から受け継いだままの font-family は、
       // 余白の箱の font-family に読み替える (太さだけを変えた要素を、元の場所の書体の太字にしない)
       const rf = this.runningFamily;
-      const mapped = this.opts.mapFont?.(rf && c('font-family') === rf.from ? rf.names : famNames(c), bold, this.langOf(el));
+      const mapped = this.opts.mapFont?.(rf && c('font-family') === rf.from ? rf.names : famNames(c), bold, this.langOf(el, pseudo));
       if (mapped) s.fontFamily = mapped;
     } else if (ownLang && p && this.langOf(el) !== this.langOf(parent!)) {
       const mapped = this.opts.mapFont?.(famNames(c), bold, this.langOf(el));
@@ -3185,25 +3218,33 @@ class HtmlImporter {
     }
     const lang = el.getAttribute?.('lang') ?? el.getAttribute?.('xml:lang');
     if (lang && !pseudo) s.language = lang;
+    // アンテナハウスの -ah-lang (要素・::before・::after・::marker の言語)
+    const ahLang = pdecl?.['-ah-lang']?.trim();
+    if (ahLang) s.language = ahLang;
     return s;
   }
 
-  /** 要素が属する言語 (自身か祖先の lang / xml:lang) */
-  private langOf(el: Element): string | undefined {
+  /**
+   * 要素が属する言語 (自身か祖先の lang / xml:lang)。アンテナハウスの拡張の -ah-lang (CSS で言語を指定する。XSL 1.1 §7.9.2 の language と同じ。
+   * 受け継ぐ) も読み、同じ要素では lang 属性より優先する。pseudo を渡すと、その擬似要素 (::before・::after・::marker) の -ah-lang も見る
+   */
+  private langOf(el: Element, pseudo?: string): string | undefined {
+    const own = pseudo === '::before' || pseudo === '::after' || pseudo === '::marker' ? this.pagedPseudo.get(el)?.[pseudo]?.['-ah-lang']?.trim() : undefined;
+    if (own) return own;
     for (let e: Element | null = el; e && e.getAttribute; e = e.parentNode as Element | null) {
-      const v = e.getAttribute('lang') || e.getAttribute('xml:lang');
+      const v = this.pg(e)['-ah-lang']?.trim() || e.getAttribute('lang') || e.getAttribute('xml:lang');
       if (v) return v;
     }
     return undefined;
   }
 
   /**
-   * text-align の inside・outside (アンテナハウスの拡張の値。opts.textAlignInsideOutsideAh のときだけ)。カスケードは CSS に無い値として
+   * text-align の inside・outside (アンテナハウスの拡張の値。-ah-text-align に書いたものと、互換の指定のときの text-align に
+   * 書いたもの。互換の指定の無いときの text-align の inside・outside は、collectPaged が捨てている)。カスケードは CSS に無い値として
    * 捨てるので、自前で読んだ宣言 (pg。カスケードの勝ち負けは collectPaged が決めている) から取る。text-align は受け継ぐので、祖先をたどる:
    * 祖先との間で text-align の計算値が変わっていれば、間の要素が別の値を指定しているので、受け継がない
    */
   private insideOutsideAlign(el: Element): 'inside' | 'outside' | undefined {
-    if (!this.opts.textAlignInsideOutsideAh) return undefined;
     const own = this.cs(el)('text-align');
     for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
       if (this.cs(e as Element)('text-align') !== own) return undefined;
@@ -3247,7 +3288,7 @@ class HtmlImporter {
       const rtl = c('direction') === 'rtl';
       s.textAlign = ta === 'center' ? 'center' : ta === 'justify' || ta === 'justify-all' ? 'justify' : ta === 'end' || ta === (rtl ? 'left' : 'right') ? 'end' : 'start';
     }
-    // text-align: inside・outside (アンテナハウスの拡張の値。アンテナハウス互換のスタイルのときだけ): ページのノドの側・小口の側にそろえる。
+    // text-align: inside・outside (アンテナハウスの拡張の値。-ah-text-align か、アンテナハウス互換のスタイルの text-align): ページのノドの側・小口の側にそろえる。
     // どちらの端かは、組むページで決まる (組版エンジンの TextAlign の inside・outside。XSL 1.1 §7.16.9)
     const io = this.insideOutsideAlign(el);
     if (io && (io !== (parent ? this.insideOutsideAlign(parent) : undefined) || s.textAlign !== undefined)) s.textAlign = io;
@@ -5718,7 +5759,7 @@ class HtmlImporter {
   /** ページマスター (@page の宣言から) */
   private masterOf(decls: Record<string, string>): PageMaster {
     const def = this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 };
-    const pb = pageBox(decls, def, this.rootFsPx, this.opts.spotColors);
+    const pb = pageBox(decls, def, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions);
     return {
       width: pb.width,
       height: pb.height,
@@ -6229,6 +6270,8 @@ class HtmlImporter {
     const bodyEl = doc.body ?? (doc.getElementsByTagName('body')[0] as HTMLElement | undefined) ?? html;
     const { pages, rules, counterStyles, rootVars } = this.sheet;
     this.pageRules = pages;
+    // @page と余白の箱の宣言の色に書いた cmyk()・rgb-icc() (アンテナハウスの拡張の書き方) は、互換の指定の無いときは読まない (printColor)。報告する
+    for (const pr of pages) for (const ds of [pr.decls, ...Object.values(pr.boxes)]) for (const [p, v] of Object.entries(ds)) if (PAGE_COLOR_PROP.test(p)) this.dropCompatOnly(p, v);
     this.obsoleteGlyphs = this.opts.ahObsoleteListStyles ? OBSOLETE_LIST_GLYPHS : undefined;
     // 定義済みの数え方 (CSS Counter Styles 3 §6・§7.1.1・§7.1.2 の規則)。Kumiori が表記を持つ名前 (decimal など) は除く。文書の規則が優先する
     const predefined = [...predefinedCounterStyles()].filter(([k]) => !BUILTIN_COUNTER.test(k));
@@ -6277,6 +6320,8 @@ class HtmlImporter {
     if (this.opts.lineBreakAutoAh) rootStyle.lineBreakAutoAh = true;
     if (this.opts.jaDefaultsAh) {
       rootStyle.punctuationTrimParagraphStart = true;
+      // 両端揃えで、約物の前後も字間を空ける (見本の PDF: CSS-Print 第 4 版は「き、」「す。」の間なども空ける)
+      rootStyle.justifyPunctuationAh = true;
       // 追込みで詰める量は 1 行に二分まで (XSL-FO のアンテナハウス互換と同じ)
       rootStyle.lineSqueezeMax = 0.5;
     }
@@ -6293,7 +6338,7 @@ class HtmlImporter {
     }
     // 本文領域 (名前の無い @page) の余白と幅 (pt)
     const PT = 72 / 25.4;
-    const base = pageBox(resolvePageRules(pages, {}, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors);
+    const base = pageBox(resolvePageRules(pages, {}, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions);
     const bm = base.margins;
     this.area = { top: bm.top * PT, right: bm.right * PT, bottom: bm.bottom * PT, left: bm.left * PT, width: (base.width - bm.left - bm.right) * PT, height: (base.height - bm.top - bm.bottom) * PT };
     // body (か html) の段組は、ページの段組にする

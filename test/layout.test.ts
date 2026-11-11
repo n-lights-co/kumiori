@@ -2273,8 +2273,9 @@ describe('約物の連続の詰め・和欧間アキ (E-17)', () => {
     expect(a[1] - b[1]).toBeCloseTo(2.5, 1);
     // アキの大きさ (textAutospaceWidth。CSS の text-autospace は 1/8)
     expect(xs('あA', { textAutospace: true, textAutospaceWidth: 0.125 })[1] - b[1]).toBeCloseTo(1.25, 1);
-    // 全角の空白 (U+3000) も和字として扱う
-    expect(xs('1\u3000', { textAutospace: true })[1] - xs('1\u3000')[1]).toBeCloseTo(2.5, 1);
+    // 全角の空白 (U+3000) は、textAutospaceIdeographicSpace (XSL-FO の axf:text-autospace) のときだけ和字として扱う
+    expect(xs('1\u3000', { textAutospace: true, textAutospaceIdeographicSpace: true })[1] - xs('1\u3000')[1]).toBeCloseTo(2.5, 1);
+    expect(xs('1\u3000', { textAutospace: true })[1] - xs('1\u3000')[1]).toBeCloseTo(0, 1);
   });
   it('textAutospace: 追込みでは和欧間の四分アキを八分アキまで詰める (JLREQ §3.8.3)', () => {
     const x = xs('あ1あ', { textAutospace: true });

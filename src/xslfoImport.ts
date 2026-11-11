@@ -159,6 +159,10 @@ const PUNCT_SPACING_KINDS: Record<string, 'before' | 'after' | 'punct-digit' | '
 const PUNCT_SPACING_ELEMENTS = new Set(Object.keys(PUNCT_SPACING_KINDS));
 
 
+/** 罫線の線種 (XSL 1.1 §7.8.20 の <border-style>。CSS2 §8.5.3 と同じ値) */
+const CSS2_BORDER_STYLE = /^(none|hidden|dotted|dashed|solid|double|groove|ridge|inset|outset)$/;
+/** アンテナハウスの拡張の線種 (XSL 1.1 の <border-style> に無い値)。互換モードと、axf: の付いた属性でだけ読む */
+const AH_BORDER_STYLE = /^(dot-dash|dot-dot-dash|wave)$/;
 /** FO で font-size を指定しないときの大きさ (pt)。互換モードでは 10pt */
 const DEFAULT_FO_FONT_SIZE = 10;
 /** line-height=normal の代用 (倍率)。互換モードでは 10pt の行が 12pt、12pt の行が 14.4pt */
@@ -1303,6 +1307,10 @@ class Importer {
       ...(this.spec ? { primaryFontMetrics: true } : {}),
       // 和欧間アキ・約物の連続の詰め (互換モードの既定。仕様モードでは行わない)
       textAutospace: !this.spec,
+      // 和欧間のアキで、全角の空白も和字として扱う (アンテナハウスの axf:text-autospace。見本の「Q1　情報…」「　t」は四分アキ)
+      textAutospaceIdeographicSpace: true,
+      // 両端揃えで、約物の前後も字間を空ける (互換モード。アンテナハウスの組版結果に合わせる。仕様モードは JLREQ §3.1.11 のとおり空けない)
+      ...(this.spec ? {} : { justifyPunctuationAh: true }),
       punctuationSqueeze: !this.spec,
       // 追込みで詰める量 (語間・約物・和欧間のアキの合計) は 1 行に二分 (約物 1 つ分) まで (互換モード。inlineLayout の squeezeCap)
       ...(this.spec ? {} : { lineSqueezeMax: 0.5 }),
@@ -1513,8 +1521,12 @@ class Importer {
     if (lv !== undefined && lv !== 'auto' && lv !== 'alphabetic' && lv !== 'traditional') this.miss(`letter-value="${lv}"`);
     const fpc = this.attr(ps, 'force-page-count');
     if (fpc === 'auto' || fpc === 'even' || fpc === 'odd' || fpc === 'end-on-even' || fpc === 'end-on-odd' || fpc === 'no-force') seq.forcePageCount = fpc;
-    // 数値 (アンテナハウスの拡張): そのページ数になるまで、末尾に白ページを足す
-    else if (fpc && /^\d+$/.test(fpc.trim())) seq.forcePageCount = parseInt(fpc, 10);
+    // 数値 (アンテナハウスの拡張): そのページ数になるまで、末尾に白ページを足す。XSL 1.1 §7.27.6 の値 (auto・even・odd・end-on-even・
+    // end-on-odd・no-force) に無い、標準の属性に足された値なので、互換モードのときだけ読む。仕様モードでは、書かなかったものとして報告する
+    else if (fpc && /^\d+$/.test(fpc.trim())) {
+      if (this.spec) this.miss(`force-page-count="${fpc.trim()}" (--compat antenna のときだけ解釈する値)`);
+      else seq.forcePageCount = parseInt(fpc, 10);
+    }
     if (flowEl) {
       const bodyW = def.pageW - (def.master.margins.left + def.master.margins.right) * PT_PER_MM;
       // fo:flow の継承される性質 (font-family・axf:line-number-* など)
@@ -1919,12 +1931,36 @@ class Importer {
     return Object.keys(out).length ? out : undefined;
   }
 
-  /** 罫線の一括指定 (「1pt solid red」など) を、線種・太さ・色に振り分ける */
-  private borderShorthand(s: string | undefined, fs: number, lh?: number): { style?: string; width?: number; color?: string } {
+  /**
+   * 罫線の線種の値 (XSL 1.1 §7.8.20 の <border-style> = CSS2 §8.5.3: none・hidden・dotted・dashed・solid・double・groove・ridge・inset・outset)。
+   * アンテナハウスの拡張の線種 (dot-dash・dot-dot-dash・wave) は、標準の属性に足された値なので、互換モードのときだけ読む
+   * (axf: の付いた属性 (axf:diagonal-border-style など) に書いたものは、どちらのモードでも読む: ah = true)。
+   * 読めない値は、書かなかったものとして扱い (undefined)、報告する。inherit は、書かなかったものとして扱う (報告しない)
+   */
+  private borderStyleValue(v: string | undefined, attr: string, ah = !this.spec): string | undefined {
+    if (v === undefined) return undefined;
+    const t = v.trim();
+    if (CSS2_BORDER_STYLE.test(t) || (ah && AH_BORDER_STYLE.test(t))) return t;
+    if (t && t !== 'inherit') this.miss(AH_BORDER_STYLE.test(t) ? `${attr}="${t}" (--compat antenna のときだけ解釈する値)` : `${attr}="${t.slice(0, 20)}"`);
+    return undefined;
+  }
+
+  /**
+   * 罫線の一括指定 (「1pt solid red」など) を、線種・太さ・色に振り分ける。attr は属性の名前 (報告に使う)。
+   * アンテナハウスの拡張の線種 (ah が偽なら読まない。borderStyleValue) を含む値は、仕様モードでは無効の値なので、一括指定ごと
+   * 書かなかったものとして扱い、報告する (CSS2 §4.2: 値が不正な宣言は無視する)
+   */
+  private borderShorthand(s: string | undefined, fs: number, lh?: number, attr = 'border', ah = !this.spec): { style?: string; width?: number; color?: string } {
     const o: { style?: string; width?: number; color?: string } = {};
     for (const t of splitTopLevel(s ?? '', ' ')) {
-      if (/^(none|solid|dashed|dotted|double|groove|ridge|inset|outset|hidden)$/.test(t)) o.style = t;
-      else if (t === 'thin' || t === 'medium' || t === 'thick') o.width = this.borderKeywords[t];
+      if (CSS2_BORDER_STYLE.test(t)) o.style = t;
+      else if (AH_BORDER_STYLE.test(t)) {
+        if (ah) o.style = t;
+        else {
+          this.miss(`${attr}="… ${t} …" (--compat antenna のときだけ解釈する値)`);
+          return {};
+        }
+      } else if (t === 'thin' || t === 'medium' || t === 'thick') o.width = this.borderKeywords[t];
       else if (this.len(t, fs, undefined, lh) !== undefined) o.width = this.len(t, fs, undefined, lh);
       else o.color = t;
     }
@@ -1933,17 +1969,20 @@ class Importer {
 
   border(el: XEl, ctx: Ctx): Partial<Record<'top' | 'right' | 'bottom' | 'left', BorderSide>> | undefined {
     const sides = ['top', 'right', 'bottom', 'left'] as const;
-    const gStyle = this.box4(el, 'border-style');
+    // (同じ値を 4 辺に配っても、読めない値の報告は 1 回)
+    const gSeen = new Map<string, string | undefined>();
+    const gStyle = this.box4(el, 'border-style')?.map((v) => (gSeen.has(v) ? gSeen.get(v) : (gSeen.set(v, this.borderStyleValue(v, 'border-style')), gSeen.get(v))));
     const gWidth = this.box4(el, 'border-width');
     const gColor = this.box4(el, 'border-color');
-    const shorthand = (s: string | undefined) => this.borderShorthand(s, ctx.fontSize, this.lineHeightOf(ctx));
-    const all = shorthand(this.attr(el, 'border'));
+    const shorthand = (k: string) => this.borderShorthand(this.attr(el, k), ctx.fontSize, this.lineHeightOf(ctx), k);
+    const all = shorthand('border');
+    const styleAttr = (k: string) => this.borderStyleValue(this.attr(el, k), k);
     const out: Partial<Record<(typeof sides)[number], BorderSide>> = {};
     sides.forEach((p, i) => {
       const rel = (['before', 'after', 'start', 'end'] as const).find((r) => this.phys(r, ctx.wm, ctx.rtl) === p) as string;
-      const sh = shorthand(this.attr(el, `border-${p}`) ?? this.attr(el, `border-${rel}`));
+      const sh = this.attr(el, `border-${p}`) !== undefined ? shorthand(`border-${p}`) : shorthand(`border-${rel}`);
       // 絶対 (border-top-style) と相対 (border-before-style) を両方書いたら、絶対が勝つ (§5.3.1)。一括指定から来た絶対の値は、相対に負ける
-      const style = this.attr(el, `border-${p}-style`) ?? this.attr(el, `border-${rel}-style`) ?? sh.style ?? gStyle?.[i] ?? all.style;
+      const style = styleAttr(`border-${p}-style`) ?? styleAttr(`border-${rel}-style`) ?? sh.style ?? gStyle?.[i] ?? all.style;
       const kw = this.borderKeywords;
       const named: Record<string, string> = { thin: `${kw.thin}pt`, medium: `${kw.medium}pt`, thick: `${kw.thick}pt` };
       const nw = (v: string | undefined) => (v && named[v] ? named[v] : v);
@@ -2089,8 +2128,9 @@ class Importer {
     }
     // 対角罫・逆対角罫 (axf:diagonal-border-* / axf:reverse-diagonal-border-*。線種・太さ・色。一括指定も読む)
     for (const [k, key] of [['axf:diagonal-border', 'diagonalBorder'], ['axf:reverse-diagonal-border', 'reverseDiagonalBorder']] as const) {
-      const all = this.borderShorthand(this.attr(el, k), fs);
-      const style = this.attr(el, `${k}-style`) ?? all.style;
+      // (axf: の付いた属性なので、拡張の線種もどちらのモードでも読む)
+      const all = this.borderShorthand(this.attr(el, k), fs, undefined, k, true);
+      const style = this.borderStyleValue(this.attr(el, `${k}-style`), `${k}-style`, true) ?? all.style;
       if (!style || style === 'none' || style === 'hidden') continue;
       const kw = this.borderKeywords as Record<string, number>;
       const wv = this.attr(el, `${k}-width`);

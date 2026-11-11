@@ -833,11 +833,16 @@ export interface AhFlags {
   ahCounterFlags: boolean;
   /** 数の式 (calc() など) の中の、型の無い attr() を数として読む (resolveAttrFunctions)。省けば読まない */
   ahAttrNumber?: boolean;
+  /**
+   * 自前で読む宣言 (htmlPaged の isPagedDecl) のうち、接頭辞の無い名前に書いた拡張の値 (float: top など・width: <数>gr・text-align: inside・
+   * cmyk()・rgb-icc()。htmlPaged の compatOnlyValue) を読む。@supports の答えに使う (読み込みは HtmlImportOptions.ahCssExtensions)。省けば読まない
+   */
+  ahPagedValues?: boolean;
 }
 /** 拡張を読まない (ブラウザと同じ) */
 const NO_AH: AhFlags = { ahBorderStyles: false, ahCounterFlags: false };
 /** 拡張をすべて読む (アンテナハウス互換。compat.ts の ahCascadeOptions と、prepareHtml の @supports の読み方) */
-export const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true, ahAttrNumber: true };
+export const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true, ahAttrNumber: true, ahPagedValues: true };
 const isBorderStyle = (t: string, ah: AhFlags) => BORDER_STYLES.test(t) || (ah.ahBorderStyles && AH_BORDER_STYLES.test(t));
 const isLenLike = (t: string) => /^(-?(?:\d+\.?\d*|\.\d+)[a-z%]*|calc\(.*\)|min\(.*\)|max\(.*\)|clamp\(.*\)|var\(.*\))$/i.test(t);
 const isColorLike = (t: string) => parseColor(t) !== undefined || /^var\(/i.test(t);
@@ -1099,13 +1104,17 @@ const listStyleShorthand: Expander = (_prop, v, global) => {
   let position = 'outside';
   let image = 'none';
   let nones = 0;
+  // <'list-style-position'> || <'list-style-image'> || <'list-style-type'> (Lists 3 §3.6): それぞれ 1 つまで。none は、書いていない
+  // type と image の両方に当たるので 2 つまで。合わなければ宣言ごと読めない (以前は、後の語で上書きしていた。PKG-19)
+  const seen = { position: 0, image: 0, type: 0 };
   for (const t of tokens(v)) {
     const tl = t.toLowerCase();
-    if (tl === 'inside' || tl === 'outside') position = tl;
-    else if (/^url\(/.test(tl)) image = t;
+    if (tl === 'inside' || tl === 'outside') (position = tl), seen.position++;
+    else if (/^url\(/.test(tl)) (image = t), seen.image++;
     else if (tl === 'none') nones++;
-    else type = t;
+    else (type = t), seen.type++;
   }
+  if (seen.position > 1 || seen.image > 1 || seen.type > 1 || nones + seen.image + seen.type > 2) return [];
   if (nones && type === 'disc') type = 'none';
   return [['list-style-type', type], ['list-style-position', position], ['list-style-image', image]];
 };
@@ -1118,13 +1127,20 @@ const textDecorationShorthand: Expander = (_prop, v, global) => {
   let style = 'solid';
   let color = 'currentcolor';
   let thickness = 'auto';
+  // どの種類にも当たらない語・同じ種類の 2 つ目の語があれば、宣言ごと読めない (空を返す。CSS 2.1 §4.2。以前は読み飛ばしていた。PKG-19)
+  const seen = { style: 0, color: 0, thickness: 0, none: 0 };
   for (const t of tokens(v)) {
     const tl = t.toLowerCase();
     if (/^(underline|overline|line-through|blink)$/.test(tl)) lines.push(tl);
-    else if (/^(solid|double|dotted|dashed|wavy)$/.test(tl)) style = tl;
-    else if (tl === 'auto' || tl === 'from-font' || lengthPx(tl, { ...ANY_CTX, pct: 100 }) !== undefined) thickness = tl;
-    else if (tl !== 'none' && isColorLike(t)) color = t;
+    // spelling-error・grammar-error (Text Decoration 4 §2.1) は線を引かない (これまでどおり、線は none として分ける)
+    else if (/^(spelling-error|grammar-error)$/.test(tl)) seen.none++;
+    else if (/^(solid|double|dotted|dashed|wavy)$/.test(tl)) (style = tl), seen.style++;
+    else if (tl === 'auto' || tl === 'from-font' || lengthPx(tl, { ...ANY_CTX, pct: 100 }) !== undefined) (thickness = tl), seen.thickness++;
+    else if (tl === 'none') seen.none++;
+    else if (isColorLike(t)) (color = t), seen.color++;
+    else return [];
   }
+  if (seen.style > 1 || seen.color > 1 || seen.thickness > 1 || seen.none > 1 || (seen.none && lines.length) || new Set(lines).size !== lines.length) return [];
   return [['text-decoration-line', lines.join(' ') || 'none'], ['text-decoration-style', style], ['text-decoration-color', color], ['text-decoration-thickness', thickness]];
 };
 
@@ -1148,10 +1164,14 @@ const flexShorthand: Expander = (_prop, v, global) => {
   if (lv === 'auto') return [['flex-grow', '1'], ['flex-shrink', '1'], ['flex-basis', 'auto']];
   const nums: string[] = [];
   let basis = '0%';
+  let bases = 0;
   for (const t of tokens(v)) {
     if (/^-?[\d.]+$/.test(t)) nums.push(t);
-    else basis = t;
+    else (basis = t), bases++;
   }
+  // none | [ <'flex-grow'> <'flex-shrink'>? || <'flex-basis'> ] (Flexbox 1 §7.1): 数は 2 つまで (3 つ目の単位の無い 0 は flex-basis)、
+  // flex-basis は 1 つまで。合わなければ宣言ごと読めない (以前は、余りの語を読み飛ばしていた。PKG-19)
+  if (bases > 1 || nums.length > 3 || (nums.length === 3 && (bases > 0 || parseFloat(nums[2]) !== 0))) return [];
   return [['flex-grow', nums[0] ?? '1'], ['flex-shrink', nums[1] ?? '1'], ['flex-basis', basis]];
 };
 
@@ -1228,11 +1248,17 @@ shorthand(['columns'], (_p, v, global) => {
   if (global) return each(['column-width', 'column-count'], v);
   let width = 'auto';
   let count = 'auto';
-  for (const t of tokens(v)) {
+  // <'column-width'> || <'column-count'> (Multi-column 1 §3.3): 語は 2 つまでで、幅・数はそれぞれ 1 つまで。合わなければ宣言ごと読めない
+  // (以前は、後の語で上書きしていた。PKG-19)
+  const ts = tokens(v);
+  let widths = 0;
+  let counts = 0;
+  for (const t of ts) {
     // 段の数は整数 (Multi-column 1 §3.2 の column-count: auto | <integer [1,∞]>。column-count の宣言と同じ読み方: +2 も整数)
-    if (CSS_INTEGER.test(t)) count = t;
-    else if (t !== 'auto') width = t;
+    if (CSS_INTEGER.test(t)) (count = t), counts++;
+    else if (t.toLowerCase() !== 'auto') (width = t), widths++;
   }
+  if (ts.length > 2 || widths > 1 || counts > 1) return [];
   return [['column-width', width], ['column-count', count]];
 });
 shorthand(['text-decoration'], textDecorationShorthand);
@@ -2353,10 +2379,30 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'empty-cells': 'show hide',
     'column-span': 'none all',
     'column-fill': 'auto balance',
-    'text-autospace': 'normal no-autospace auto ideograph-alpha ideograph-numeric punctuation insert replace',
     'text-spacing-trim': 'normal space-all space-first trim-start trim-both trim-all auto',
     'writing-mode': 'horizontal-tb vertical-rl vertical-lr sideways-rl sideways-lr lr lr-tb rl rl-tb tb tb-rl',
     'text-transform': 'none capitalize uppercase lowercase full-width full-size-kana math-auto',
+    // 以下は、値の検査が無かった性質 (PKG-19。読めない値でも受け付けていた)。語は、それぞれの仕様の値の定義のとおり
+    // caption-side (CSS 2.1 §17.4.1 の top・bottom、Logical 1 §2.1 の inline-start・inline-end)
+    'caption-side': 'top bottom inline-start inline-end',
+    // flex-direction・flex-wrap (Flexbox 1 §5.1・§5.2)
+    'flex-direction': 'row row-reverse column column-reverse',
+    'flex-wrap': 'nowrap wrap wrap-reverse',
+    // font-kerning・font-variant-caps・font-variant-position (Fonts 4 §6.3・§6.5・§6.6)
+    'font-kerning': 'auto normal none',
+    'font-variant-caps': 'normal small-caps all-small-caps petite-caps all-petite-caps unicase titling-caps',
+    'font-variant-position': 'normal sub super',
+    // line-break・overflow-wrap・word-break (Text 3 §5.3・§5.5・§5.2。word-break の manual・auto-phrase は Text 4 §6.1)
+    'line-break': 'auto loose normal strict anywhere',
+    'overflow-wrap': 'normal break-word anywhere',
+    'word-break': 'normal keep-all break-all break-word manual auto-phrase',
+    // overflow-x・overflow-y (Overflow 3 §3.1。overlay は auto の古い別名: “UAs must also support the overlay keyword as a legacy value alias of auto”)
+    'overflow-x': 'visible hidden clip scroll auto overlay',
+    'overflow-y': 'visible hidden clip scroll auto overlay',
+    // text-orientation (Writing Modes 4 §5.1。sideways-right は sideways の古い別名: “UAs may accept sideways-right as a value that computes to sideways”)
+    'text-orientation': 'mixed upright sideways sideways-right',
+    // unicode-bidi (Writing Modes 4 §2.2)
+    'unicode-bidi': 'normal embed isolate bidi-override isolate-override plaintext',
   }).map(([k, v]) => [k, new Set(v.split(' '))]),
 );
 
@@ -2390,7 +2436,161 @@ const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 const SINGLE_KEYWORD = new Set([
   'float', 'clear', 'position', 'visibility', 'box-sizing', 'box-decoration-break', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens', 'hyphenate-limit-last',
   'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'text-spacing-trim', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style',
+  'flex-direction', 'flex-wrap', 'font-kerning', 'font-variant-caps', 'font-variant-position', 'line-break', 'text-orientation', 'unicode-bidi',
 ]);
+
+/**
+ * || でつないだ組の値 (CSS Values 4 §2.3: どれか 1 つ以上を、順不同で、組ごとに 1 つまで)。語のすべてがどれかの組に当たり、同じ組の語が
+ * 2 つ無ければ真
+ */
+function oneOfEachGroup(words: string[], groups: RegExp[]): boolean {
+  const used = new Set<number>();
+  for (const w of words) {
+    const k = groups.findIndex((g, i) => !used.has(i) && g.test(w));
+    if (k < 0) return false;
+    used.add(k);
+  }
+  return words.length > 0;
+}
+/** 数の式 (calc() など) を含む値か。中身は調べずに、読めるものとする */
+const HAS_MATH_FUNCTION = /\b(calc|min|max|clamp|round|mod|rem|abs|sign)\(/i;
+
+/**
+ * 値の検査が無かった性質の、値の文法 (PKG-19)。どれも、それぞれの仕様の値の定義のとおり。この関数が扱わない性質は undefined
+ * (lv は小文字にした値、ws はその語)
+ */
+function validByGrammar(prop: string, lv: string, ws: string[], ctx: LenCtx): boolean | undefined {
+  const lenPct = (t: string, nonNegative: boolean) => {
+    if (HAS_MATH_FUNCTION.test(t)) return true;
+    const px = lengthPx(t, { ...ctx, pct: 100 });
+    return px !== undefined && !(nonNegative && /^-/.test(t.trim()) && px !== 0);
+  };
+  switch (prop) {
+    case 'font-variant-ligatures':
+      // normal | none | [ <common-lig-values> || <discretionary-lig-values> || <historical-lig-values> || <contextual-alt-values> ] (Fonts 4 §6.4)
+      return lv === 'normal' || lv === 'none' || oneOfEachGroup(ws, [/^(no-)?common-ligatures$/, /^(no-)?discretionary-ligatures$/, /^(no-)?historical-ligatures$/, /^(no-)?contextual$/]);
+    case 'font-variant-numeric':
+      // normal | [ <numeric-figure-values> || <numeric-spacing-values> || <numeric-fraction-values> || ordinal || slashed-zero ] (Fonts 4 §6.7)
+      return lv === 'normal' || oneOfEachGroup(ws, [/^(lining|oldstyle)-nums$/, /^(proportional|tabular)-nums$/, /^(diagonal|stacked)-fractions$/, /^ordinal$/, /^slashed-zero$/]);
+    case 'font-style':
+      // normal | italic | left | right | oblique <angle [-90deg,90deg]>? (Fonts 4 §2.4)
+      return /^(normal|italic|left|right|oblique)$/.test(lv) || (ws.length === 2 && ws[0] === 'oblique' && (HAS_MATH_FUNCTION.test(ws[1]) || /^[+-]?(\d+\.?\d*|\.\d+)(deg|grad|rad|turn)$/.test(ws[1])));
+    case 'font-stretch':
+      // normal | <percentage [0,∞]> | ultra-condensed | … | ultra-expanded (Fonts 4 §2.3 の font-width。font-stretch はその古い名前)
+      return /^(normal|(ultra|extra|semi)-(condensed|expanded)|condensed|expanded)$/.test(lv) || HAS_MATH_FUNCTION.test(lv) || /^\+?(\d+\.?\d*|\.\d+)%$/.test(lv);
+    case 'object-fit':
+      // fill | none | [ contain | cover ] || scale-down (Images 4 §4.5。Images 3 §5.5 は 1 語だけ)
+      return lv === 'fill' || lv === 'none' || oneOfEachGroup(ws, [/^(contain|cover)$/, /^scale-down$/]);
+    case 'text-decoration-line':
+      // none | [ underline || overline || line-through || blink ] | spelling-error | grammar-error (Text Decoration 4 §2.1)
+      return /^(none|spelling-error|grammar-error)$/.test(lv) || oneOfEachGroup(ws, [/^underline$/, /^overline$/, /^line-through$/, /^blink$/]);
+    case 'text-emphasis-style':
+      // none | [ [ filled | open ] || [ dot | circle | double-circle | triangle | sesame ] ] | <string> (Text Decoration 3 §3.1)
+      return lv === 'none' || /^("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')$/.test(lv) || oneOfEachGroup(ws, [/^(filled|open)$/, /^(dot|circle|double-circle|triangle|sesame)$/]);
+    case 'text-combine-upright':
+      // none | all | [ digits <integer [2,4]>? ] (Writing Modes 4 §9.1)
+      return lv === 'none' || lv === 'all' || (ws[0] === 'digits' && (ws.length === 1 || (ws.length === 2 && /^\+?[234]$/.test(ws[1]))));
+    case 'vertical-align': {
+      // CSS 2.1 §10.8.1: baseline | sub | super | top | text-top | middle | bottom | text-bottom | <percentage> | <length>。
+      // Inline 3 §4.1: [ first | last ] || <'alignment-baseline'> || <'baseline-shift'> (alignment-baseline は §4.2.2、baseline-shift は §4.2.3)
+      const align = /^(baseline|text-bottom|alphabetic|ideographic|middle|central|mathematical|text-top)$/;
+      const shift = (t: string) => /^(sub|super|top|center|bottom)$/.test(t) || lenPct(t, false);
+      const used = { fl: 0, al: 0, sh: 0 };
+      for (const w of ws) {
+        if (/^(first|last)$/.test(w)) used.fl++;
+        else if (align.test(w)) used.al++;
+        else if (shift(w)) used.sh++;
+        else return false;
+      }
+      return ws.length > 0 && used.fl <= 1 && used.al <= 1 && used.sh <= 1;
+    }
+    case 'border-top-left-radius':
+    case 'border-top-right-radius':
+    case 'border-bottom-right-radius':
+    case 'border-bottom-left-radius':
+      // <length-percentage [0,∞]>{1,2} (Backgrounds 3 §4.1: 負の値は不正)
+      return ws.length >= 1 && ws.length <= 2 && ws.every((w) => lenPct(w, true));
+    case 'border-spacing':
+      // <length>{1,2} (CSS 2.1 §17.6.1: “Lengths may not be negative.”。百分率は取らない)
+      return ws.length >= 1 && ws.length <= 2 && ws.every((w) => !/%$/.test(w) && lenPct(w, true));
+    case 'flex-grow':
+    case 'flex-shrink':
+      // <number [0,∞]> (Flexbox 1 §7.2・§7.3: 負の値は不正)
+      return HAS_MATH_FUNCTION.test(lv) || (CSS_NUMBER.test(lv) && parseFloat(lv) >= 0);
+    case 'aspect-ratio': {
+      // auto || <ratio> (Sizing 4 §5.1)。<ratio> = <number [0,∞]> [ / <number [0,∞]> ]? (Values 4 §5.7)
+      const rest = lv.replace(/(^|\s)auto(\s|$)/, ' ').trim();
+      if (!rest) return lv === 'auto';
+      if (/(^|\s)auto(\s|$)/.test(rest)) return false;
+      const nums = rest.split('/').map((x) => x.trim());
+      return nums.length <= 2 && nums.every((n) => HAS_MATH_FUNCTION.test(n) || (CSS_NUMBER.test(n) && parseFloat(n) >= 0));
+    }
+    case 'align-content':
+    case 'justify-content':
+    case 'align-items':
+    case 'align-self': {
+      // Box Alignment 3 §4〜§6。<baseline-position> = [ first | last ]? && baseline、<content-distribution> = space-between | space-around |
+      // space-evenly | stretch、<overflow-position> = unsafe | safe、<content-position> = center | start | end | flex-start | flex-end、
+      // <self-position> = center | start | end | self-start | self-end | flex-start | flex-end
+      const baseline = ws.includes('baseline') && ws.length <= 2 && ws.every((w) => /^(baseline|first|last)$/.test(w)) && ws.filter((w) => w === 'baseline').length === 1;
+      const [ovf, pos] = ws.length === 2 && /^(safe|unsafe)$/.test(ws[0]) ? [true, ws[1]] : [false, ws.length === 1 ? ws[0] : ''];
+      const content = /^(center|start|end|flex-start|flex-end)$/;
+      const self = /^(center|start|end|self-start|self-end|flex-start|flex-end)$/;
+      const distribution = /^(space-between|space-around|space-evenly|stretch)$/;
+      switch (prop) {
+        case 'align-content':
+          // normal | <baseline-position> | <content-distribution> | <overflow-position>? <content-position>
+          return baseline || content.test(pos) || (!ovf && (pos === 'normal' || distribution.test(pos)));
+        case 'justify-content':
+          // normal | <content-distribution> | <overflow-position>? [ <content-position> | left | right ]
+          return content.test(pos) || /^(left|right)$/.test(pos) || (!ovf && (pos === 'normal' || distribution.test(pos)));
+        case 'align-items':
+          // normal | stretch | <baseline-position> | <overflow-position>? <self-position>
+          return baseline || self.test(pos) || (!ovf && /^(normal|stretch)$/.test(pos));
+        default:
+          // auto | <overflow-position>? [ normal | <self-position> ] | stretch | <baseline-position>
+          return baseline || self.test(pos) || pos === 'normal' || (!ovf && /^(auto|stretch)$/.test(pos));
+      }
+    }
+    case 'text-autospace':
+      // normal | <autospace> | auto (Text 4 §8.4)。<autospace> = no-autospace | [ ideograph-alpha || ideograph-numeric || punctuation ] || [ insert | replace ]
+      // (以前は、語の組み合わせを調べなかった: no-autospace ideograph-alpha も受け付けていた)
+      return lv === 'normal' || lv === 'auto' || lv === 'no-autospace' || oneOfEachGroup(ws, [/^ideograph-alpha$/, /^ideograph-numeric$/, /^punctuation$/, /^(insert|replace)$/]);
+    case 'page':
+      // auto | <custom-ident> (Paged Media 3 §10.1)
+      return ws.length === 1 && new RegExp(`^(--|-?${NAME_START})${NAME_CHAR}*$`).test(ws[0]);
+    case 'ruby-position':
+      // [ alternate || [ over | under ] ] | inter-character (Ruby 1 §4.1)
+      return lv === 'inter-character' || oneOfEachGroup(ws, [/^alternate$/, /^(over|under)$/]);
+    case 'list-style-type':
+      // <counter-style> | <string> | none (Lists 3 §3.4)。<counter-style> = <counter-style-name> | symbols() (Counter Styles 3 §6)
+      return (ws.length === 1 && new RegExp(`^(--|-?${NAME_START})${NAME_CHAR}*$`).test(ws[0])) || /^("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|symbols\(.*\))$/.test(lv);
+    case 'quotes':
+      // auto | none | match-parent | [ <string> <string> ]+ (Content 3 §4.1)
+      return /^(auto|none|match-parent)$/.test(lv) || (ws.length > 0 && ws.length % 2 === 0 && ws.every((w) => /^("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')$/.test(w)));
+    case 'font-family':
+      // [ <family-name> | <generic-family> ]# (Fonts 4 §2.1)。<family-name> = <string> | <custom-ident>+: 引用符の無い名前は、識別子の並び
+      return splitTop(lv, ',', { keepEmpty: true }).every((f) => {
+        const t = f.trim();
+        return /^("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')$/.test(t) || (t !== '' && t.split(/\s+/).every((w) => new RegExp(`^(--|-?(${NAME_START}|\\\\.))(${NAME_CHAR}|\\\\.)*$`).test(w)));
+      });
+    case 'counter-reset':
+    case 'counter-increment':
+    case 'counter-set': {
+      // [ <counter-name> <integer>? ]+ | none (Lists 3 §4.1〜§4.3。counter-reset は reversed(<counter-name>) も: §4.1)
+      if (lv === 'none') return true;
+      const ident = new RegExp(`^(--|-?${NAME_START})${NAME_CHAR}*$`);
+      let needName = true;
+      for (const w of ws) {
+        if (ident.test(w) || (prop === 'counter-reset' && /^reversed\(\s*[^()\s]+\s*\)$/.test(w))) needName = false;
+        else if (!needName && (CSS_INTEGER.test(w) || HAS_MATH_FUNCTION.test(w))) needName = true;
+        else return false;
+      }
+      return ws.length > 0;
+    }
+  }
+  return undefined;
+}
 
 /** 読める値か (読めない宣言は捨てて、次に強い宣言を使う) */
 /** valid の結果 (同じ規則の宣言を、当たる要素ごとに検査し直さない。読めるかは長さの基準の値にはよらない。モードの旗には左右されるので鍵に入れる) */
@@ -2406,6 +2606,9 @@ function valid(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boolean {
 }
 function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boolean {
   if (/^(inherit|initial|unset|revert|revert-layer)$/i.test(v.trim())) return true;
+  // 論理的な罫線の線種 (border-inline-start-style など。表には無い) は、対応する物理的な性質の値として調べる (Logical 1 §4.4: 値は同じ。
+  // 以前は、語の検査を通らずに、どの値も受け付けていた。PKG-19)
+  if (/^border-(block|inline)-(start|end)-style$/.test(prop)) return validUncached('border-top-style', v, ctx, ah);
   // always (Fragmentation 4 §3.1: いちばん近い断片化の文脈で改ページ・改段) は、ページでは page と同じ
   if (/^break-(before|after)$/.test(prop)) return /^(auto|avoid|avoid-page|avoid-column|page|column|left|right|recto|verso|always)$/i.test(v.trim());
   if (prop === 'break-inside') return /^(auto|avoid|avoid-page|avoid-column)$/i.test(v.trim());
@@ -2419,10 +2622,13 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
     const fns = [...bare.matchAll(/([a-z-]+)\(/gi)].map((m) => m[1].toLowerCase());
     if (!fns.every((f) => /^(counter|counters|attr|url|image-set|(repeating-)?(linear|radial|conic)-gradient)$/.test(f))) return false;
     // counter(名前[, 書式])・counters(名前, 文字列[, 書式]) の引数。カンマの無い counter(page physical) は CSS の構文に無い (読めない)。
-    // アンテナハウス互換 (ahCounterFlags) では、その拡張 counter(<ident> [physical || reverse]?, …) として通す
+    // アンテナハウス互換 (ahCounterFlags) では、その拡張 counter(<ident> [physical || reverse]?, …) として通す。physical・reverse を
+    // 書けるのは、カウンタが page のときだけ (アンテナハウスの公開の説明「関数の拡張」の CSS counter()。ほかのカウンタに書いた
+    // counter(c reverse) は、互換のときも読めない宣言として捨てる。以前は受け付けて、何も出さなかった)
     // 名前は識別子 (CSS Syntax 3 §4.2。ASCII でない字も使える)
     const ident = new RegExp(`^-?${NAME_START}${NAME_CHAR}*$`);
-    const counterName = ah.ahCounterFlags ? new RegExp(String.raw`^-?${NAME_START}${NAME_CHAR}*(\s+(physical|reverse)){0,2}$`, 'i') : ident;
+    const ahPage = /^page(\s+(physical|reverse)|\s+physical\s+reverse|\s+reverse\s+physical)$/i;
+    const counterName = ah.ahCounterFlags ? { test: (x: string) => ident.test(x) || ahPage.test(x) } : ident;
     for (const m of bare.matchAll(/\b(counters?)\(([^()]*)\)/gi)) {
       const args = m[2].split(',').map((x) => x.trim());
       const ok =
@@ -2438,6 +2644,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   // 1 語だけを取る性質 (float: left right などは読めない)
   if (kw && SINGLE_KEYWORD.has(prop) && tokens(v.toLowerCase()).length !== 1) return false;
   if (kw) return tokens(v.toLowerCase()).every((t) => kw.has(t));
+  // 値の文法を調べる性質 (PKG-19)
+  const byGrammar = validByGrammar(prop, v.trim().toLowerCase(), tokens(v.trim().toLowerCase()), ctx);
+  if (byGrammar !== undefined) return byGrammar;
   // 数・整数の性質 (Cascade 5 §5: 読めない宣言は捨てる)
   const s0 = v.trim().toLowerCase();
   const num = CSS_NUMBER;

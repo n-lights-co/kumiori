@@ -98,15 +98,17 @@ describe('Node のコマンド', () => {
         return a.asArray().slice(0, 3).map(String);
       });
     };
-    expect(seps((await run(html, '--spot-colors', spots)).pdf)).toContainEqual(['/Separation', '/Ink#20A', '/DeviceCMYK']);
+    // HTML の rgb-icc() はアンテナハウスの拡張の書き方 (CSS の色の関数に無い) なので、--style ah のときだけ読む。XSL-FO では XSL 1.1 §5.10.2 の関数
+    expect(seps((await run(html, '--style', 'ah', '--spot-colors', spots)).pdf)).toContainEqual(['/Separation', '/Ink#20A', '/DeviceCMYK']);
+    expect(seps((await run(html, '--spot-colors', spots)).pdf)).toEqual([]);
     expect(seps((await run(fo, '--spot-colors', spots)).pdf)).toContainEqual(['/Separation', '/Ink#20B', '/DeviceCMYK']);
     // 渡さなければ、これまでどおり (Separation は無い)
-    expect(seps((await run(html)).pdf)).toEqual([]);
+    expect(seps((await run(html, '--style', 'ah')).pdf)).toEqual([]);
     // 名前の字は UTF-8 で書く (ISO 32000-2 §7.3.5)。トンボは色材名 All の Separation (§8.6.6.4)。ファイルの識別子 (ID) を書く
     fs.writeFileSync(spots, JSON.stringify({ 特色: [0, 1, 0, 0] }));
     const ja = path.join(dir, 'ja.html');
     fs.writeFileSync(ja, `<!doctype html><style>@page { size: A6; marks: crop; bleed: 3mm } p { color: rgb-icc(255, 0, 255, #Separation, '特色') }</style><p>特色</p>`);
-    const out = (await run(ja, '--spot-colors', spots)).pdf;
+    const out = (await run(ja, '--style', 'ah', '--spot-colors', spots)).pdf;
     expect(seps(out)).toContainEqual(['/Separation', '/#E7#89#B9#E8#89#B2', '/DeviceCMYK']);
     expect(seps(out)).toContainEqual(['/Separation', '/All', '/DeviceCMYK']);
     expect(String(out.context.trailerInfo.ID)).toMatch(/^\[ <[0-9a-f]{32}> <[0-9a-f]{32}> \]$/);
