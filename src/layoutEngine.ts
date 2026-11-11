@@ -487,6 +487,22 @@ interface FloatBox {
   edge?: { off: number; width: number };
   /** CSS の clear: その側の先の float の下に置く */
   clear?: 'start' | 'end' | 'both';
+  /**
+   * 前方 float: 内容の末尾の余白 (最後のブロックの space-after)。box と outerB には含めない。前方 float の領域の中で、続く前方 float
+   * との間に空ける (XSL 1.1 §4.3.1: 余白は、参照領域の境・枠・パディングの無い所で隣の余白と解決する。float の領域は参照領域ではない
+   * ので、続く float の内容の前まで残る)。領域の終わりでは、keepTrail のときだけ残す (アンテナハウス互換。LFloat.keepTrailingSpace)
+   */
+  trail?: number;
+  keepTrail?: boolean;
+}
+
+/**
+ * 前方 float を前方 float の領域に積むときの、前の float との間 (gap) と、自分の後ろに空ける長さ (tail)。
+ * 間は、前の float の内容の末尾の余白 (XSL 1.1 §4.3.1。前の float が自分の後ろに空けた分 (keepTrail) は、もう数えてある)。
+ * 後ろは、領域の終わりでも余白を残す (keepTrail。アンテナハウス互換) ときだけ
+ */
+function beforeFloatSpacing(prev: FloatBox | undefined, f: FloatBox): { gap: number; tail: number } {
+  return { gap: prev && !prev.keepTrail ? (prev.trail ?? 0) : 0, tail: f.keepTrail ? (f.trail ?? 0) : 0 };
 }
 
 interface PendingMarker {
@@ -787,6 +803,8 @@ class Flow {
   private floatSeq = 0;
   private beforeNodes = new Set<LNode>();
   private beforeUsed = 0;
+  /** このページ (段) に最後に置いた前方 float (続く前方 float との間の余白に使う) */
+  private beforeLast?: FloatBox;
   /**
    * 段・ページの下端に積む float (float: after)。置いた分だけ block 方向の上限 (limit) を上げ (本文の判定がすべて避ける)、
    * 段・ページを離れるときに元の上限 (afterBase) に戻して、脚注の領域の上に積む
@@ -843,6 +861,10 @@ class Flow {
   /** 挿入点の直上にある「空き」(前行の下側ハーフレディング + 保留マージン)。ルビの張り出しに使う */
   private adjacent = 0;
   private pageHasContent = false;
+  /** ページ (段) を改めるたびに増やす番号 (同じページの上か、を見分ける) */
+  private pageSerial = 0;
+  /** keepOverflow のブロックを、改ページせずに置く (holdKeepTogether が立てる。keepTogetherCheck は改ページしない) */
+  private keepHold = false;
   private pageItems = 0;
   private headerOnly = false;
   private breakNext: BreakKind | null = null;
@@ -1115,8 +1137,10 @@ class Flow {
       if (horizontal) src.width = content;
       else src.height = content;
     }
-    // float の内容の末尾の space-after は、領域の端なので捨てる (前方 float を並べても隙間が空かない)
-    const box = this.buildContainer(src, st, undefined, undefined, true);
+    // float の内容の末尾の space-after は、float の箱には含めない (start・end の float では、回り込みの範囲の端なので捨てる)。
+    // 前方 float では、続く前方 float との間に空ける (FloatBox.trail)
+    const trailing = { after: 0 };
+    const box = this.buildContainer(src, st, undefined, undefined, true, trailing);
     // アンカーを中身として扱う (XSL-FO): 保留中の余白をここで確定し、後ろの余白と相殺させない
     // (直前のブロックの break-after が保留中なら、先に改ページする。行を置くときと同じ順)
     if (original.anchorIsContent && (node.float === 'start' || node.float === 'end')) {
@@ -1133,6 +1157,8 @@ class Flow {
       outerI: inl + desc.m.is + desc.m.ie,
       outerB: blk + desc.m.bs + desc.m.be,
       m: desc.m,
+      // 箱の末尾に枠・パディング・margin があれば、余白は箱の中で終わる (続く float の余白と隣り合わない)
+      ...(node.float === 'before' && trailing.after > EPS && desc.bpEnd <= EPS && desc.m.be <= EPS ? { trail: trailing.after, ...(node.keepTrailingSpace ? { keepTrail: true } : {}) } : {}),
       ...(original.float === 'inside' || original.float === 'outside' || original.float === 'alternate' ? { redo: { node: original, st: ps } } : {}),
       ...(node.cssPlacement && (node.float === 'start' || node.float === 'end') ? { cb: { off: this.contentIOffset(), width: this.contentI() } } : {}),
       // XSL-FO の start・end の float も、包含ブロック (アンカーのあるブロック) の内容の端に寄せる (XSL 1.1 §6.12.2 は CSS 2.1 §9.5 の規則を使う)
@@ -1249,7 +1275,8 @@ class Flow {
       // 本文との間に区切りの内容があれば、最初の前方 float のときに高さを確保する (以後は float の下に動かす)
       const sep = this.beforeSepNode ? undefined : this.beforeSep?.();
       const sepH = sep?.height ?? 0;
-      const need = f.outerB + sepH;
+      const { gap, tail } = beforeFloatSpacing(this.beforeLast, f);
+      const need = gap + f.outerB + tail + sepH;
       if (this.paginating && this.pageHasContent && this.cursor + need + this.footReserve > this.limit + EPS) {
         this.deferredFloats.push(f);
         this.deferredBefore = true;
@@ -1261,11 +1288,12 @@ class Flow {
       // すでに置かれた本文を float の高さだけ押し下げ、ページ先頭側へ積む
       this.shiftContent(need);
       f.box.i = f.m.is + Math.max(this.rootI - f.outerI, 0) / 2;
-      f.box.b = this.beforeUsed - this.beforeSepH + f.m.bs;
+      f.box.b = this.beforeUsed - this.beforeSepH + gap + f.m.bs;
       this.root.children.push(f.box);
       this.noteIds(f.box);
       this.placeHeldFootnotes(f.box);
       this.beforeNodes.add(f.box);
+      this.beforeLast = f;
       if (sep) {
         this.beforeSepNode = { ...structuredClone(sep.node), i: 0, b: 0 };
         this.beforeSepH = sepH;
@@ -1863,6 +1891,7 @@ class Flow {
     if (np.credit) this.pendAdjust = -np.credit;
     this.areaTop = 0;
     this.pageHasContent = false;
+    this.pageSerial++;
     this.pageItems = 0;
     this.refStartItems = -1; // 参照領域の途中でページ・段が変わったら、その先頭はページ・段の先頭として扱う
     this.edgeBlocked = false;
@@ -1870,6 +1899,7 @@ class Flow {
     this.floats = [];
     this.beforeNodes = new Set();
     this.beforeUsed = 0;
+    this.beforeLast = undefined;
     this.afterFloats = [];
     this.afterUsed = 0;
     this.afterBase = undefined;
@@ -1945,6 +1975,9 @@ class Flow {
         runAbs = [];
       }
     };
+    /** ページの先頭に置いたブロックの位置 (children の添字) と、そのページ (keepOverflow の判定に使う) */
+    let topAt = -1;
+    let topPage = -1;
     for (let ci = 0; ci < children.length; ci++) {
       const c = children[ci];
       if (!run.length) runAt = ci;
@@ -1988,7 +2021,22 @@ class Flow {
           // 送ったブロックの先頭の余白は、強制でない改ページに接するので捨てる (ふだんの改ページと同じ。retain の余白は残す)
           if (!(c as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
         }
-        this.layoutBlockLevel(c, style);
+        if (this.paginating && (!this.pageHasContent || (c.type === 'block' && c.breakBefore))) {
+          topAt = ci;
+          topPage = this.pageSerial + (this.pageHasContent ? 1 : 0); // break-before で改めた次のページ
+        }
+        const hold = c.type === 'block' && c.keepOverflow && c.keepTogether ? this.holdKeepTogether(children, ci, topAt, topPage, style) : undefined;
+        if (hold !== undefined) {
+          // 並びの後ろに、分けずに置く: 置く間だけ、ページの上限をブロックの終わりまで延ばす (はみ出す)
+          this.limit += hold;
+          this.keepHold = true;
+          try {
+            this.layoutBlockLevel(c, style);
+          } finally {
+            this.keepHold = false;
+            this.limit -= hold;
+          }
+        } else this.layoutBlockLevel(c, style);
       }
     }
     flushRun();
@@ -2551,8 +2599,46 @@ class Flow {
     }
   }
 
+  /**
+   * keep-together="always" のブロック (keepOverflow。アンテナハウス互換) を、前の keep-with-next の並びの後ろに、分けずに置くか。
+   * 並び (children の topAt から ci の前まで、keep-with-next・keep-with-previous でつながる) がページの先頭から始まり、まだ同じページにあり、
+   * ブロックがいまのページの残りに入らない (けれど、1 ページには入る) ときは、ブロックを次のページへ送っても並びとつながらない
+   * (並びごと送っても同じ所で入らない)。そのとき、ページの上限を延ばす長さ (はみ出す長さ) を返す。それ以外は undefined
+   * (keepTogetherCheck がふだんどおり、入らなければ次のページへ送る)
+   */
+  private holdKeepTogether(children: Array<LBlockLevel | LInlineLevel>, ci: number, topAt: number, topPage: number, ps: ResolvedStyle): number | undefined {
+    if (!this.paginating || this.keepTrial || topAt < 0 || topAt >= ci || topPage !== this.pageSerial || !this.pageHasContent) return undefined;
+    const blockAt = (k: number): LBlock | LTable | LBlockContainer | undefined => {
+      const c = children[k];
+      return typeof c !== 'string' && (c?.type === 'block' || c?.type === 'table' || (c?.type === 'block-container' && !c.absolutePosition)) ? c : undefined;
+    };
+    for (let k = topAt; k < ci; k++) if (!blockAt(k)?.keepWithNext && !blockAt(k + 1)?.keepWithPrevious) return undefined;
+    const { need, h } = this.keepTogetherNeed(children[ci] as LBlock, ps);
+    const over = this.cursor + need - this.room;
+    if (over <= EPS || h > this.room + EPS) return undefined;
+    this.host.warn('keep-together・keep-with-next を保つため、ブロックをページの下へはみ出させました (--compat antenna)');
+    return over;
+  }
+
+  /** keep-together のブロックの高さ (h。末尾の space-after を除く) と、いまの位置から置くのに要る長さ (need。前の余白との相殺を含む) */
+  private keepTogetherNeed(node: LBlock | LTable, ps: ResolvedStyle): { need: number; h: number } {
+    const sub = new Flow(this.host, {
+      wm: this.wm,
+      rootI: this.contentI(),
+      abs: () => [],
+      pageSize: this.pageSize,
+      footnotes: this.foot,
+      measure: true,
+    });
+    sub.layoutBlockLevel({ ...node, keepTogether: false, breakBefore: undefined, breakAfter: undefined } as LBlock | LTable, ps);
+    const h = sub.finishAtomicContent();
+    const lead = Math.max(describeBox(node, this.wm).m.bs, 0);
+    return { need: Math.max(this.pendingValue(), lead) + Math.max(h - lead, 0), h };
+  }
+
   /** 直列化して高さを測り、現ページに収まらなければ先に改ページする */
   private keepTogetherCheck(node: LBlock | LTable, ps: ResolvedStyle) {
+    if (this.keepHold) return; // holdKeepTogether: 並びの後ろに置く (改ページしない)
     const sub = new Flow(this.host, {
       wm: this.wm,
       rootI: this.contentI(),
@@ -3929,7 +4015,8 @@ class Flow {
   }
 
   /** ブロックコンテナ自身を固定ボックスとしてレイアウト (内部は独立した無改ページ Flow) */
-  buildContainer(node: LBlockContainer, st: ResolvedStyle, pageW: number | undefined, pageH: number | undefined, dropTrailing = false): LNode {
+  /** trailing: dropTrailing のとき、捨てた末尾の余白 (内容の最後の space-after) の長さを after に入れて返す */
+  buildContainer(node: LBlockContainer, st: ResolvedStyle, pageW: number | undefined, pageH: number | undefined, dropTrailing = false, trailing?: { after: number }): LNode {
     const wmC = st.wm;
     const desc = describeBox(node, wmC);
     // 物理サイズの決定 (left+right / top+bottom 併用時は逆算)。border-box 指定は describeBox で content-box に換算済み。
@@ -4012,7 +4099,11 @@ class Flow {
         ...(contentB != null && !this.host.xslSpace ? { afterAt: contentB } : {}),
       });
       sub.layoutChildren(node.children, st);
-      used = dropTrailing ? sub.finishWithTrailing().height : sub.finishAtomic();
+      if (dropTrailing) {
+        const fin = sub.finishWithTrailing();
+        used = fin.height;
+        if (trailing) trailing.after = fin.after;
+      } else used = sub.finishAtomic();
       kids = sub.root.children;
       // 内容の箱の中の位置 (buildContainer が phys に入れた値) を、子の位置にする
       for (const { n: a, node: an } of localAbs?.list ?? []) {
@@ -4821,11 +4912,14 @@ class Flow {
         }
       }
       if (!(linkedToPrev && pending.length && height(pending) + height(grp) <= maxKeep)) flushPending();
-      // ページに入らない 1 行 (rowSpan 無し・keep-together 無し) は、セルの中身を行単位で分けてページをまたぐ (§7.20.3 の既定 auto)
-      if (this.paginating && end === i && !pending.length && !rows[i].keepTogether && !rows[i].keepWithNext) {
+      // ページに入らない 1 行 (rowSpan 無し・keep-together 無し) は、セルの中身を行単位で分けてページをまたぐ (§7.20.3 の既定 auto)。
+      // keep-together の行でも、緩めてよい強さ (keepTogetherYields) で、新しいページ (段) にも入らない高さなら、送らずにいまの位置から分ける
+      const nextFull = () => this.limit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
+      const yields = !!rows[i].keepTogetherYields && grp[0].bsize > nextFull() + EPS;
+      if (this.paginating && end === i && !pending.length && (!rows[i].keepTogether || yields) && !rows[i].keepWithNext) {
         const avail = this.room - this.cursor - this.pendingValue() - closeBorder() - (tm ? tm.reserveNow(grp) : reserve);
         if (grp[0].bsize > avail + EPS) {
-          const nextAvail = this.limit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
+          const nextAvail = nextFull();
           const splitMk: SplitMarkers | undefined = tm ? [] : undefined;
           const frags = this.splitRow(rows[i], sizes, bst, avail, nextAvail, splitMk);
           if (frags) {
@@ -4899,6 +4993,13 @@ class Flow {
     // アンテナハウス互換 (collapse): 行の高さの指定は、罫線の中心から中心まで (trimEdgeRowHeights)
     if (node.collapseToAfterCell) node = trimEdgeRowHeights(node, st.wm);
     if (node.breakBefore) this.forceBreak(node.breakBefore);
+    // clear: その側の回り込みの下まで下げる (CSS 2.1 §9.5.2。ブロックの clear (layoutBlock) と同じく、保留の余白の下限として扱う)。
+    // 表は読み込みで clear を持つ (HTML の table の clear) が、これまで読まず、回り込みの範囲に重ねて置いていた (OUT-22 (4))
+    const clr = (node as { clear?: 'start' | 'end' | 'both' }).clear;
+    if (clr) {
+      const y = this.floatBottom(clr);
+      if (y > this.cursor + this.pendingValue()) this.pendMin = Math.max(this.pendMin, y - this.cursor);
+    }
     if (node.keepTogether && this.paginating) this.keepTogetherCheck(table, ps);
     else if (this.paginating && table.body.rows.length && (table.header?.rows.length || (node.keepHeaderWithBodyAh && table.captions?.some((c) => c.side === 'top')))) {
       // 上の見出し・表ヘッダー・本体の最初の行の塊を、まとめて置けるか調べる (表ヘッダーだけをページ末に残さない。
@@ -7450,12 +7551,13 @@ export class LayoutEngine {
       const pg = ensurePage(a);
       const g = geoAt(a);
       let y = 0;
-      for (const f of it.floats) {
+      it.floats.forEach((f, k) => {
+        const { gap, tail } = beforeFloatSpacing(it.floats[k - 1], f);
         f.box.i = f.m.is + Math.max(g.rootI - f.outerI, 0) / 2;
-        f.box.b = y + f.m.bs;
+        f.box.b = y + gap + f.m.bs;
         pg.root.children.push(f.box);
-        y += f.outerB;
-      }
+        y += gap + f.outerB + tail;
+      });
       let topH = y;
       if (it.floats.length) {
         const sep = beforeSep();

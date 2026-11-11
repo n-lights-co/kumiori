@@ -40,6 +40,15 @@ describe('改行の機会 (UAX #14)', () => {
     // anywhere: 字ごと
     expect(show('abc', { strictness: 'anywhere' })).toBe('a|b|c');
   });
+  it('あいまいな字 (AI): 日本語・中国語の文脈で全角に組むものは ID、ほかは AL (UAX #14 の AI・LB1、UAX #11)', () => {
+    // 見本 table-keep-together-overflow-1: 和文の書体で全角に組む「fo:table-body≧fo:table-row」の ≧ の前後で改行してよい (FO-30)
+    expect(show('body≧fo', { cjk: true, aiWide: true })).toBe('body|≧|fo');
+    expect(show('body≧fo')).toBe('body≧fo');
+    // 丸数字も、全角に組めば和字と同じ
+    expect(show('①と②', { cjk: true, aiWide: true })).toBe('①|と|②');
+    // 欧文の書体で半角に組む § は、日本語の文でも後ろの数とつなぐ (「(§7.20.2)」を分けない)
+    expect(show('(§7.20.2)', { cjk: true })).toBe('(§7.20.2)');
+  });
   it('強制改行', () => {
     expect(show('a\nb')).toBe('a\n!b');
   });

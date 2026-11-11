@@ -334,3 +334,182 @@ describe('FO-16: fo:bookmark の external-destination (§6.11.2・§7.23.6)', ()
     expect(Object.keys(r.report.unsupported).join()).not.toContain('bookmark');
   });
 });
+
+describe('FO-28: 前方 float の内容の space-after (XSL 1.1 §4.3.1)', () => {
+  // 背景の色ごとに、ページの上端からの位置 (pt) と高さを集める
+  const boxes = (compat: Compat, after = '8pt') => {
+    const xml = fo(
+      '<fo:block>本文' +
+        `<fo:float float="before"><fo:block space-after="${after}" background-color="#ff0000">A</fo:block></fo:float>` +
+        `<fo:float float="before"><fo:block space-after="${after}" background-color="#00ff00">B</fo:block></fo:float>` +
+        '</fo:block><fo:block background-color="#0000ff">本文の 2 つ目</fo:block>',
+    );
+    const tree = E.engine.layout(imp(xml, { compat }).document);
+    const found: Record<string, { y: number; h: number }> = {};
+    const visit = (a: Area, oy: number) => {
+      const y = oy + ((a as { y?: number }).y ?? 0);
+      const bg = (a as { backgroundColor?: string }).backgroundColor;
+      if (bg && !found[bg]) found[bg] = { y, h: (a as { height: number }).height };
+      for (const c of childrenOf(a)) visit(c as Area, y);
+    };
+    for (const c of tree.sheets[0].page.regionBody.children) visit(c as Area, 0);
+    return found;
+  };
+  /** 2 つ目の float の下端から、本文の 2 つ目のブロックまで */
+  const below = (f: Record<string, { y: number; h: number }>) => f['#0000ff'].y - (f['#00ff00'].y + f['#00ff00'].h);
+  it('続く前方 float との間には、前の float の内容の space-after を空ける (float の領域は参照領域ではない)', () => {
+    for (const compat of BOTH) {
+      const f = boxes(compat);
+      expect(f['#00ff00'].y - (f['#ff0000'].y + f['#ff0000'].h)).toBeCloseTo(8, 1);
+    }
+  });
+  it('前方 float の領域の終わりの余白は、仕様どおりなら捨て、互換モードでは残す (アンテナハウスの見本 region-2)', () => {
+    expect(below(boxes('spec')) - below(boxes('spec', '0pt'))).toBeCloseTo(0, 1);
+    expect(below(boxes('antenna')) - below(boxes('antenna', '0pt'))).toBeCloseTo(8, 1);
+  });
+});
+
+describe('FO-29・FO-31: 表の行・リストの項目の keep-together で、新しいページにも入らない行', () => {
+  // 1 行で本文 (180mm) に入らない高さのセル
+  const tall = Array.from({ length: 60 }, (_, i) => `<fo:block>行${i + 1}</fo:block>`).join('');
+  const table = (keep: string) =>
+    fo(
+      `<fo:block>前の段落</fo:block><fo:table><fo:table-body><fo:table-row keep-together.within-column="${keep}"><fo:table-cell><fo:block>短い行</fo:block></fo:table-cell></fo:table-row>` +
+        `<fo:table-row keep-together.within-column="${keep}"><fo:table-cell>${tall}</fo:table-cell></fo:table-row></fo:table-body></fo:table>`,
+    );
+  it('入らなければ緩める印: 互換モードは数値の強さだけ (always には付けない)、仕様どおりのときは強さによらず付ける', () => {
+    const rowOf = (keep: string, compat: Compat) => (seq(table(keep), compat).flow.children[1] as LTable).body.rows[1];
+    expect(rowOf('1', 'antenna')).toMatchObject({ keepTogether: true, keepTogetherYields: true });
+    expect(rowOf('always', 'antenna').keepTogetherYields).toBeUndefined();
+    expect(rowOf('1', 'spec')).toMatchObject({ keepTogether: true, keepTogetherYields: true });
+    expect(rowOf('always', 'spec')).toMatchObject({ keepTogether: true, keepTogetherYields: true });
+    const l = first<LTable>(fo('<fo:list-block><fo:list-item keep-together.within-page="5"><fo:list-item-label><fo:block>1</fo:block></fo:list-item-label><fo:list-item-body><fo:block>a</fo:block></fo:list-item-body></fo:list-item></fo:list-block>'), 'antenna');
+    expect(l.body.rows[0]).toMatchObject({ keepTogether: true, keepTogetherYields: true });
+  });
+  it('新しいページにも入らない行は、送らずにいまのページから分ける。互換モードの always の行は次のページへ送り、分けない', () => {
+    /** ページごとの字 */
+    const pages = (keep: string, compat: Compat = 'antenna') =>
+      E.engine.layout(imp(table(keep), { compat }).document).sheets.map((s) => {
+        const t: string[] = [];
+        walk(s.page.regionBody as unknown as Area, (a) => {
+          if (a.type === 'glyph') t.push((a as { text: string }).text);
+        });
+        return t.join('');
+      });
+    const yields = pages('1');
+    expect(yields[0]).toContain('行1');
+    expect(yields.length).toBeGreaterThan(1);
+    expect(yields.slice(1).join('')).toContain('行60');
+    const always = pages('always');
+    expect(always[0]).not.toContain('行1');
+    expect(always[1]).toContain('行60');
+    // 仕様どおりのときは、always の行も分ける (ブロックの keep-together と同じ。はみ出させない)
+    const spec = pages('always', 'spec');
+    expect(spec[0]).toContain('行1');
+    expect(spec.slice(1).join('')).toContain('行60');
+  });
+});
+
+describe('FO-27: keep-with-next の並びと keep-together="always" のブロックが 1 ページに入らないとき (XSL 1.1 §4.8)', () => {
+  // 本文は 170mm (約 482pt)。見出し (30pt) + 23 行 (460pt) は入らないが、ブロックだけなら入る
+  const body = Array.from({ length: 23 }, (_, i) => `<fo:block>本文${i + 1}</fo:block>`).join('');
+  const xml = fo(
+    `<fo:block>前のページ</fo:block><fo:block break-before="page" line-height="30pt" keep-with-next.within-page="always">見出し</fo:block>` +
+      `<fo:block line-height="20pt" keep-together.within-page="always">${body}</fo:block><fo:block>後ろ</fo:block>`,
+  );
+  const pages = (compat: Compat) => {
+    const tree = E.engine.layout(imp(xml, { compat }).document);
+    return {
+      texts: tree.sheets.map((s) => {
+        const t: string[] = [];
+        walk(s.page.regionBody as unknown as Area, (a) => {
+          if (a.type === 'glyph') t.push((a as { text: string }).text);
+        });
+        return t.join('');
+      }),
+    };
+  };
+  it('互換モードは、見出しの後ろに分けずに置き、ページの下へはみ出させる (アンテナハウスと同じ)', () => {
+    const { texts } = pages('antenna');
+    expect(texts[1]).toContain('見出し');
+    expect(texts[1]).toContain('本文1');
+    expect(texts[1]).toContain('本文23');
+    expect(texts[2]).toContain('後ろ');
+  });
+  it('仕様モードは、ブロックを次のページへ送る (見出しの keep-with-next を破る。これまでどおり)', () => {
+    const { texts } = pages('spec');
+    expect(texts[1]).toContain('見出し');
+    expect(texts[1]).not.toContain('本文1');
+    expect(texts[2]).toContain('本文23');
+  });
+});
+
+describe('FO-30: 全角で組むあいまいな字 (≧ など) の前後の改行は、互換モードだけ', () => {
+  it('互換モードは ambiguousWideBreak を立て、仕様モードは立てない', () => {
+    const xml = fo('<fo:block>fo:table-body≧fo:table-row</fo:block>');
+    expect(seq(xml, 'antenna').ambiguousWideBreak).toBe(true);
+    expect(seq(xml, 'spec').ambiguousWideBreak).toBeUndefined();
+  });
+});
+
+describe('FO-21 (1): fo:static-content の中の axf:outline-level', () => {
+  it('しおりを作らず、未対応として 1 度だけ報告する (マスターごとの読み直しで重ならない)', () => {
+    const NSX = 'xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"';
+    const masters =
+      '<fo:layout-master-set>' +
+      '<fo:simple-page-master master-name="F" page-width="100mm" page-height="100mm" margin="10mm"><fo:region-body margin-top="10mm"/><fo:region-before extent="10mm"/></fo:simple-page-master>' +
+      '<fo:simple-page-master master-name="R" page-width="100mm" page-height="100mm" margin="12mm"><fo:region-body margin-top="10mm"/><fo:region-before extent="10mm"/></fo:simple-page-master>' +
+      '<fo:page-sequence-master master-name="S"><fo:repeatable-page-master-alternatives><fo:conditional-page-master-reference master-reference="F" page-position="first"/>' +
+      '<fo:conditional-page-master-reference master-reference="R" page-position="rest"/></fo:repeatable-page-master-alternatives></fo:page-sequence-master></fo:layout-master-set>';
+    const xml =
+      `<?xml version="1.0"?><fo:root ${NSX}>${masters}<fo:page-sequence master-reference="S">` +
+      '<fo:static-content flow-name="xsl-region-before"><fo:block axf:outline-level="1">Header</fo:block></fo:static-content>' +
+      '<fo:flow flow-name="xsl-region-body"><fo:block axf:outline-level="1">Body</fo:block><fo:block break-before="page">p2</fo:block></fo:flow></fo:page-sequence></fo:root>';
+    const r = imp(xml);
+    expect((r.document.bookmarks ?? []).map((b) => (b as LBookmark).title)).toEqual(['Body']);
+    expect(r.report.unsupported['axf:outline-level (fo:static-content の中)']).toBe(1);
+  });
+});
+
+describe('FO-25 別件: 接頭辞の無い background-content-width・-height は互換モードだけ読む', () => {
+  const NSA = 'xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"';
+  const xml = (attrs: string) =>
+    `<?xml version="1.0"?><fo:root ${NSA}>${PM()}${seqXml(`<fo:block background-image="url(a.png)" ${attrs}>a</fo:block>`)}</fo:root>`;
+  it('仕様モードは読まずに報告し、互換モードは読む。axf: の付いた名前はどちらでも読む', () => {
+    const spec = imp(xml('background-content-width="20pt"'), { compat: 'spec' });
+    expect((spec.document.sequences[0].flow.children[0] as LBlock).backgroundImage?.width).toBeUndefined();
+    expect(Object.keys(spec.report.unsupported).some((k) => k.startsWith('background-content-width'))).toBe(true);
+    const ah = imp(xml('background-content-width="20pt"'), { compat: 'antenna' });
+    expect((ah.document.sequences[0].flow.children[0] as LBlock).backgroundImage?.width).toBe(20);
+    for (const compat of BOTH) {
+      const r = imp(xml('axf:background-content-width="20pt"'), { compat });
+      expect((r.document.sequences[0].flow.children[0] as LBlock).backgroundImage?.width).toBe(20);
+    }
+  });
+});
+
+describe('PKG-21 (2)(3): 読めない値の報告と、使わないマスターの並び', () => {
+  it('値の表に無い値と、知らない単位の長さを、無視したことを報告する', () => {
+    const r = imp(
+      fo(
+        '<fo:block-container height="30mm" display-align="justify"><fo:block>a</fo:block></fo:block-container>' +
+          '<fo:block hyphenate="none">b</fo:block><fo:block white-space="pre-wrap">c</fo:block><fo:block font-size="2rem">d</fo:block><fo:block font-size="5q">e</fo:block>',
+      ),
+    );
+    const keys = Object.keys(r.report.unsupported);
+    for (const k of ['display-align="justify"', 'hyphenate="none"', 'white-space="pre-wrap"']) expect(keys).toContain(k);
+    expect(keys.some((k) => k.startsWith('単位 rem'))).toBe(true);
+    expect(keys.some((k) => k.startsWith('単位 q'))).toBe(true);
+    // 値の表にある値・inherit・知っている単位は報告しない
+    const ok = imp(fo('<fo:block hyphenate="true" white-space="inherit" font-size="2em">a</fo:block>'));
+    expect(Object.keys(ok.report.unsupported).filter((k) => /hyphenate|white-space|単位/.test(k))).toEqual([]);
+  });
+  it('どの fo:page-sequence からも参照されない fo:page-sequence-master は、未対応として報告しない', () => {
+    const NSX = 'xmlns:fo="http://www.w3.org/1999/XSL/Format"';
+    const xml =
+      `<?xml version="1.0"?><fo:root ${NSX}><fo:layout-master-set><fo:simple-page-master master-name="A" page-width="100mm" page-height="100mm"><fo:region-body/></fo:simple-page-master>` +
+      '<fo:page-sequence-master master-name="unused"><fo:repeatable-page-master-alternatives><fo:conditional-page-master-reference master-reference="A" odd-or-even="odd"/></fo:repeatable-page-master-alternatives></fo:page-sequence-master>' +
+      '</fo:layout-master-set><fo:page-sequence master-reference="A"><fo:flow flow-name="xsl-region-body"><fo:block>a</fo:block></fo:flow></fo:page-sequence></fo:root>';
+    expect(Object.keys(imp(xml).report.unsupported)).toEqual([]);
+  });
+});

@@ -100,7 +100,8 @@ export interface ImportOptions {
   /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。rgb-icc(…, #Separation, '名前', 濃度) を特色 (PDF の Separation) にする */
   spotColors?: Record<string, [number, number, number, number]>;
   /** FO の font-family (カンマ区切りの並び) と太字かどうかから、使う書体 (ファミリ名) を決める。undefined なら親から継承 */
-  mapFont?: (families: string[], bold: boolean) => string | undefined;
+  /** 書体の割り当て。lang は要素の言語 (xml:lang・language。言語が日本語・中国語・韓国語でなければ、記号と単独のギリシャ文字・キリル文字も欧文の書体で組む) */
+  mapFont?: (families: string[], bold: boolean, lang?: string, explicit?: boolean) => string | undefined;
   /** external-graphic が指す文字のファイル (MathML) の中身を返す。無ければ undefined (画像として扱う) */
   readText?: (src: string) => string | undefined;
   /** 仕上がり・塗り足し・トンボ (FO に無い印刷設定) */
@@ -181,6 +182,23 @@ const TEXT_ONLY_FO = new Set(['fo:bookmark-title']);
  * 脚注の自動の番号に置き換える (id・ref-id での対応づけは、脚注の中の位置で決まるので使わない)
  */
 const HANDLED_WITHOUT_ATTRS = new Set(['axf:footnote-number', 'axf:footnote-number-citation']);
+/**
+ * 決まった値 (キーワード) しか取らない性質と、その値 (inherit を除く)。読み込みが読んだ属性の値がこの中に無ければ、無視したことを報告する
+ * (reportUnreadAttributes)。値は XSL 1.1 の各節の Value の行: display-align §7.14.4、table-omit-header-at-break・-footer-at-break §7.28.14・
+ * §7.28.13、force-page-count §7.27.6、hyphenate §7.10.4、white-space §7.16.8、page-position §7.27.11、odd-or-even §7.27.10、
+ * blank-or-not-blank §7.27.1
+ */
+const ENUMERATED_VALUES: Record<string, readonly string[]> = {
+  'display-align': ['auto', 'before', 'center', 'after'],
+  'table-omit-header-at-break': ['true', 'false'],
+  'table-omit-footer-at-break': ['true', 'false'],
+  'force-page-count': ['auto', 'even', 'odd', 'end-on-even', 'end-on-odd', 'no-force'],
+  hyphenate: ['true', 'false'],
+  'white-space': ['normal', 'pre', 'nowrap'],
+  'page-position': ['first', 'last', 'rest', 'any', 'only'],
+  'odd-or-even': ['odd', 'even', 'any'],
+  'blank-or-not-blank': ['blank', 'not-blank', 'any'],
+};
 /**
  * 組版に効かない性質 (読まなくても結果は変わらないので、報告しない)。role・source-document は、視覚でない媒体のための手がかり
  * (XSL 1.1 §7.5 Common Accessibility Properties。§7.5.2 role: “provides a hint for alternate renderers (aural readers, etc.)”)
@@ -377,6 +395,9 @@ class Importer {
   }
   /** 要素ごと捨てた (missElement で報告した) 要素。その属性と中の要素は、重ねて報告しない */
   private skipped = new WeakSet<XNode>();
+  /** fo:page-sequence-master と、fo:page-sequence から参照されたもの (参照されないものは、読み込みの報告に数えない) */
+  private allSeqMasters: XEl[] = [];
+  private usedSeqMasters = new Set<XEl>();
   /** 知らない要素として報告し、中身だけを読んだ要素。その属性は、重ねて報告しない (中の要素は見る) */
   private reported = new WeakSet<XNode>();
   /** 読み込みが 1 度でも値を尋ねた属性の名前 (どの要素かを問わない) */
@@ -391,6 +412,9 @@ class Importer {
    * 名前空間の宣言 (xmlns)・xml: の属性は見ない
    */
   reportUnreadAttributes(root: XEl) {
+    // 未使用の fo:page-sequence-master: どの fo:page-sequence からも参照されないので中身を読まないが、捨てたのではない
+    // (未対応の要素として報告しない。PKG-21 (3))
+    for (const m of this.allSeqMasters) if (!this.usedSeqMasters.has(m)) this.skipped.add(m);
     const own = (el: XEl) => this.isFo(el) || el.nodeName.startsWith('axf:');
     const qn = (el: XEl) => (this.isFo(el) ? `fo:${this.name(el)}` : el.nodeName);
     // 自分か子孫が読まれた要素 (後ろから前へたどって、親へ伝える)
@@ -426,7 +450,15 @@ class Importer {
       }
       for (const a of Array.from(el.attributes ?? [])) {
         const k = a.name;
-        if (k === 'xmlns' || k.startsWith('xmlns:') || k.startsWith('xml:') || NO_FORMATTING_EFFECT.has(k) || asked?.has(k)) continue;
+        if (k === 'xmlns' || k.startsWith('xmlns:') || k.startsWith('xml:') || NO_FORMATTING_EFFECT.has(k)) continue;
+        if (asked?.has(k)) {
+          // 読んだ属性でも、決まった値しか取らない性質の値が、値の表に無いもの (綴りの誤り・他の組版ソフトの値) は、無視したことを報告する
+          // (読む所は知らない値を初期値・継承した値のままにする。PKG-21 (2))
+          const ok = ENUMERATED_VALUES[k];
+          const v = a.value.trim();
+          if (ok && v !== 'inherit' && !ok.includes(v) && !(k === 'force-page-count' && /^\d+$/.test(v))) this.miss(`${k}="${v.slice(0, 30)}"`);
+          continue;
+        }
         this.miss(asked && !this.askedNames.has(k) ? k : `${k} (${qn(el)})`);
       }
     }
@@ -799,6 +831,9 @@ class Importer {
     if (r === undefined) {
       const fn = /\b(from-parent|inherited-property-value|from-nearest-specified-value|from-table-column|merge-property-values)\s*\(/.exec(v);
       if (fn) this.miss(`function:${fn[1]}()`);
+      // XSL 1.1 §5.9.13 に無い単位 (CSS の rem・ch・vw、アンテナハウスの q・jpt など) の長さも、黙って捨てずに報告する (PKG-21 (2))
+      const unit = /^[+-]?(?:\d+\.?\d*|\.\d+)([a-z]+)$/i.exec(v.trim());
+      if (unit) this.miss(`単位 ${unit[1].toLowerCase()} (長さ "${v.trim().slice(0, 20)}")`);
     }
     return r;
   }
@@ -1162,7 +1197,10 @@ class Importer {
       if (n === 'simple-page-master') {
         const info = readPageMaster(this, m, root, lms);
         masters.set(info.name, info);
-      } else if (n === 'page-sequence-master') seqMasters.set(this.attr(m, 'master-name') ?? '', m);
+      } else if (n === 'page-sequence-master') {
+        seqMasters.set(this.attr(m, 'master-name') ?? '', m);
+        this.allSeqMasters.push(m);
+      }
       // fo:flow-map など、読まない子は読み込みの報告に数える
       else this.missElement(m);
     }
@@ -1232,6 +1270,7 @@ class Importer {
     let def = masters.get(ref);
     const alts: { when: ConditionalPageMaster['when']; info: MasterInfo }[] = [];
     const sm = seqMasters.get(ref);
+    if (sm) this.usedSeqMasters.add(sm);
     // page-sequence-master の部分列 (§6.4.8-6.4.11): 順序・maximum-repeats・条件 (blank-or-not-blank を含む) をそのまま保つ
     const seqItems: Array<{ kind: 'single' | 'repeatable' | 'alternatives'; maxRepeats?: number; entries: { when: ConditionalPageMaster['when']; info: MasterInfo }[] }> = [];
     if (!def && sm) {
@@ -1325,6 +1364,9 @@ class Importer {
       // 伸びる)。詰めれば入る字・語は次の行へ送っている。行中の約物のアキを詰めた行 (読点・括弧の後ろが全角より狭い行) はあるので、
       // 約物の追込みは止めない
       noSpaceSqueeze: !this.spec,
+      // 全角で組むあいまいな字 (≧・① など) の前後で改行してよい (互換モード。lineBreak.ts の aiWide)。見本 table-keep-together-overflow-1
+      // で、アンテナハウスは MS 明朝で組んだ「fo:table-body≧fo:table-row」を ≧ の後ろで改行する。仕様モードは UAX #14 の既定 (AL)
+      ...(this.spec ? {} : { ambiguousWideBreak: true }),
       // 仕様モード: 追込みで欧文の語間 (空白) を詰めるのは、両端揃えで組む行だけ (inlineLayout の markWordSqueeze)。
       // XSL 1.1 §7.17.8: word-spacing="normal" の語間 (空白の字の前後の space-start・space-end) は “.maximum = .optimum, .minimum = .optimum”
       // で、縮める幅が無い。§7.16.9: 字の並びに手を入れてよいのは justify のとき (“In the case of 'justify', the UA may stretch the inline
@@ -1627,15 +1669,25 @@ class Importer {
     if (fwN !== undefined) s.fontWeight = fwN;
     const bold = fwN !== undefined && fwN >= 600;
     let families = ctx.families;
+    // 要素の言語 (xml:lang・language。自分に無ければ受け継いだ言語): 書体の組を、言語で選ぶ (mapFont の lang)
+    const ownLang = this.attr(el, 'xml:lang') ?? this.attr(el, 'language');
+    const elLang = ownLang ?? ctx.lang;
+    // 言語の符号は 2 字 (ISO 639-1) と 3 字 (ISO 639-2。§7.10.1 の language は 3 字でもよい) の両方
+    const latinLang = (l?: string) => !!l && l !== 'none' && !/^(ja|jpn|zh|zho|chi|ko|kor)\b/i.test(l);
     if (ff) {
       // 引用符の中のカンマ ('A, B' のような名前) では分けない
       const list = splitFontFamily(ff);
       families = list;
-      const mapped = this.opts.mapFont?.(list, bold);
+      const mapped = this.opts.mapFont?.(list, bold, elLang);
       if (mapped) s.fontFamily = mapped;
-    } else if (fw && this.opts.mapFont && (bold || families?.length)) {
+    } else if (fw && this.opts.mapFont && (bold || families?.length || latinLang(elLang))) {
       // 太さだけの指定: 祖先の font-family の並びで、その太さの書体を選び直す (MS ゴシックの中の太字は、ゴシックの太字)
-      const mapped = this.opts.mapFont(families ?? [], bold);
+      const mapped = this.opts.mapFont(families ?? [], bold, elLang);
+      if (mapped) s.fontFamily = mapped;
+    } else if (ownLang && this.opts.mapFont && latinLang(ownLang) !== latinLang(ctx.lang)) {
+      // font-family を受け継いだ要素でも、言語が欧文と和文で切り替われば、その言語で書体の組を選び直す (HTML の textStyle と同じ。
+      // 自分に font-family を書いた要素と、同じ指定を受け継いだ要素とで、結果を同じにする)
+      const mapped = this.opts.mapFont(families ?? [], (ctx.inh?.fontWeight ?? 400) >= 600, ownLang, true);
       if (mapped) s.fontFamily = mapped;
     }
     const col = this.color(this.attr(el, 'color'));
@@ -2219,6 +2271,10 @@ class Importer {
     // 仕様モード: keep の強さの整数 (§5.11 の <keep>) も、1 以上なら always と同じに「保つ」とみなす (表の行・リストの項目と同じ。強さの大小は比べない)。
     // 互換モードは always だけ (従来どおり)
     if (keepVals('keep-together').some((kt) => kt === 'always' || (this.spec && keepInt(kt)))) o.keepTogether = true;
+    // 互換モード: keep-together="always" のブロックが、ページの先頭から始まる keep-with-next の並びと同じページに入らなければ、
+    // 並びの後ろに置いてページの下へはみ出させる (アンテナハウスの見本 page-number-1 など。XSL 1.1 §4.8 は、領域に入らないことを
+    // keep を緩める理由に挙げていない)。仕様モードは、ブロックを次のページへ送る (前の並びの keep-with-next を破る)
+    if (o.keepTogether && !this.spec) o.keepOverflow = true;
     if (this.attr(el, 'span') === 'all') o.span = 'all';
     const keep = (k: string) => keepVals(k).some((v) => v === 'always' || keepInt(v));
     if (keep('keep-with-next')) o.keepWithNext = true;
@@ -2366,6 +2422,21 @@ class Importer {
   }
 
   /** keep-* の値 (§7.20): always と 1 以上の整数を「保つ」とみなす (強さの大小は区別しない) */
+  /**
+   * 表の行・リストの項目の keep-together (within-page・within-column)。行が次のページ (段) にも入らない高さなら、keep を効かせずに
+   * 行を分ける (keepTogetherYields) かどうか:
+   * - 仕様どおりのとき: 強さによらず分ける。仕様 (XSL 1.1 §4.8) は、領域に入らないことを keep を緩める理由に挙げていないが、
+   *   仕様モードでは、入らない keep は緩めてはみ出させない (ブロックの keep-together も、ページより高ければ分ける。keep-with-next の
+   *   並びと keep-together のブロックが入らなければ、ブロックを送って keep-with-next を破る) ので、表の行も同じにする
+   * - アンテナハウス互換のとき: 数値の強さ (always でない) だけ分け、always の行は分けずにはみ出させる (アンテナハウスの見本
+   *   table-keep-together-overflow-1 の説明と出力)
+   */
+  private rowKeepTogether(el: XEl, row: LTableRow) {
+    if (!this.keepOf(el, 'keep-together', ['page', 'column', ''])) return;
+    row.keepTogether = true;
+    if (this.spec || !['page', 'column', ''].some((w) => this.attr(el, w ? `keep-together.within-${w}` : 'keep-together') === 'always')) row.keepTogetherYields = true;
+  }
+
   private keepOf(el: XEl, k: string, which: Array<'page' | 'column' | 'line' | ''> = ['page', 'column', '']): boolean {
     // 成分は別々の指定なので、どれかが保つ指定なら保つ (先に見た成分が auto でも、ほかの成分を見る)
     return which.some((w) => {
@@ -2474,8 +2545,21 @@ class Importer {
     const y = posOf(pv, ['top', 'center', 'bottom']) as BackgroundImage['y'] | undefined;
     if (x !== undefined) bi.x = x;
     if (y !== undefined) bi.y = y;
-    const w = this.len(this.attr(el, 'axf:background-content-width') ?? this.attr(el, 'background-content-width'), ctx.fontSize);
-    const h = this.len(this.attr(el, 'axf:background-content-height') ?? this.attr(el, 'background-content-height'), ctx.fontSize);
+    // 背景の画像の大きさ: axf:background-content-width・-height (アンテナハウスの拡張。どのモードでも読む)。接頭辞の無い
+    // background-content-width・-height は XSL 1.1 に無い名前で、アンテナハウス互換のときだけ読み、仕様モードは未対応として報告する
+    // (CLAUDE.md: 接頭辞の無い名前の拡張は、互換の指定のときだけ読む)
+    const bgContent = (k: 'width' | 'height'): string | undefined => {
+      const ext = this.attr(el, `axf:background-content-${k}`);
+      if (ext !== undefined) return ext;
+      const bare = this.attr(el, `background-content-${k}`);
+      if (bare !== undefined && this.spec) {
+        this.miss(`background-content-${k} (--compat antenna のときだけ読む名前。axf:background-content-${k} はどのモードでも読む)`);
+        return undefined;
+      }
+      return bare;
+    };
+    const w = this.len(bgContent('width'), ctx.fontSize);
+    const h = this.len(bgContent('height'), ctx.fontSize);
     if (w !== undefined) bi.width = w;
     if (h !== undefined) bi.height = h;
     this.backgroundSize(el, bi, ctx.fontSize);
@@ -2709,7 +2793,11 @@ class Importer {
         if (ban) blk.annotation = ban;
         // axf:outline-level: しおりの項目にする (飛び先の id が無ければ付ける)
         const ol = parseInt(this.attr(n, 'axf:outline-level') ?? '', 10);
-        if (Number.isFinite(ol) && ol > 0) {
+        // fo:static-content の中のしおりは作らない (未対応として報告する)。static-content はページのマスターごとに読み直し、
+        // 中の id はページに記録しないので、作るとしおりが重なり、どれも飛び先の無いしおりになる (FO-21)。全ページに出る内容の
+        // どのページを指すかは、XSL-FO の仕様にもアンテナハウスの公開の説明にも見当たらない
+        if (Number.isFinite(ol) && ol > 0 && ctx.inStatic) this.miss('axf:outline-level (fo:static-content の中)');
+        else if (Number.isFinite(ol) && ol > 0) {
           blk.id ??= `kumiori-outline-${++this.outlineSeq}`;
           const title = this.attr(n, 'axf:outline-title') ?? (n.textContent ?? '').replace(/\s+/g, ' ').trim();
           this.outlines.push({ level: ol, title, id: blk.id, group: this.attr(n, 'axf:outline-group') });
@@ -2749,6 +2837,8 @@ class Importer {
         const ip = this.padding(n, c2);
         if (ib) inl.border = ib;
         if (ip) inl.padding = ip;
+        // 背景の色は padding の矩形までに塗る (XSL 1.1 §4.9.4。ブロックの背景と同じく、罫線の下が見える箱だけ。OUT-22)
+        this.clipBackground(inl);
         // 角丸 (axf:border-radius="水平半径 垂直半径"。ブロックと同じ書き方)
         const ir = this.attr(n, 'axf:border-radius')?.split(/\s+/).map((v) => this.len(v, c2.fontSize));
         if (ir?.[0] !== undefined && ir[0] > 0) inl.borderRadius = { rx: ir[0], ry: ir[1] ?? ir[0] };
@@ -3580,6 +3670,9 @@ class Importer {
     const { style, ctx: c2 } = this.textStyle(n, ctx);
     const kids = this.children(n, c2);
     const out: LFloat = { type: 'float', float: side, anchorIsContent: true, ...style, children: kids };
+    // アンテナハウス互換: 前方 float の領域の終わりでも、最後の float の内容の space-after を残す (見本の region-2 で、
+    // 最後の前方 float と xsl-before-float-separator の間が空く)。仕様どおりのときは捨てる (XSL 1.1 §4.3.1)
+    if (side === 'before' && !this.spec) out.keepTrailingSpace = true;
     // 幅は、内容の最初のブロックの寸法から拾う
     const first = kids.find((k) => typeof k !== 'string' && (k.type === 'block' || k.type === 'block-container')) as (LBlock | LBlockContainer) | undefined;
     // 内容のブロックが負の start-indent / end-indent で本文の外へはみ出す形は、余白に置く傍注
@@ -3989,7 +4082,7 @@ class Importer {
       const mh = hv && hv !== 'auto' ? this.len(hv, fs) : undefined;
       if (mh !== undefined && mh > 0) row.minHeight = mh;
     }
-    if (this.keepOf(r, 'keep-together', ['page', 'column', ''])) row.keepTogether = true;
+    this.rowKeepTogether(r, row);
     this.rowBreaks(r, row);
     if (this.keepOf(r, 'keep-with-next')) row.keepWithNext = true;
     if (this.keepOf(r, 'keep-with-previous')) row.keepWithPrevious = true;
@@ -4165,7 +4258,7 @@ class Importer {
       }
       if (this.keepOf(it, 'keep-with-next')) row.keepWithNext = true;
       if (this.keepOf(it, 'keep-with-previous')) row.keepWithPrevious = true;
-      if (this.keepOf(it, 'keep-together', ['page', 'column', ''])) row.keepTogether = true;
+      this.rowKeepTogether(it, row);
       this.rowBreaks(it, row);
       rows.push(row);
     }

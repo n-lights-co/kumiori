@@ -268,6 +268,18 @@ describe('先頭の余白を捨てる状態での clear と、float の下へ送
     expect(discard.after.y).toBeGreaterThanOrEqual(discard.float.y + discard.float.height - 0.01);
     expect(discard.after.y).toBeCloseTo(base.after.y, 1);
   });
+  it('clear: both の表は、float の下に置く (CSS 2.1 §9.5.2。OUT-22 (4))', () => {
+    const table = { type: 'table', clear: 'both', columns: [{ type: 'table-column', width: 100 }], body: { type: 'table-body', rows: [{ type: 'table-row', cells: [cell(['表'])] }] } };
+    const t = E.engine.layout(doc([{ type: 'block', children: [fl] }, table] as never));
+    const all = kids(t, 0);
+    const float = all.find((b) => Math.abs(b.width - 60) < 0.5)!;
+    let tableY = -1;
+    for (const b of all)
+      walk(b as Area, (a) => {
+        if (a.type === 'glyph' && (a as GlyphArea).text === '表' && tableY < 0) tableY = b.y;
+      });
+    expect(tableY).toBeGreaterThanOrEqual(float.y + float.height - 0.01);
+  });
   it('discardLeadingSpace のページの先頭: float の横が狭すぎる行は、float の下へ送る', () => {
     // 本文の幅 226.77pt のうち 215pt を float が占める (残り 11.77pt は 2 字に足りない)
     const wide = { ...fl, width: 215 };

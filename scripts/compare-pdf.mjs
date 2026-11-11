@@ -16,6 +16,7 @@
  *  - --pdf <PDF ファイル>: 画面で組まず、出来ている PDF を --ref の PDF と比べる (Node のコマンド dist-cli/cli.js の出力など)
  *  - --no-text 1: 字を描かずに比べる (罫線・塗り・画像だけ)。書体の置き換えが差の主な原因の見本で、書体以外の違いを見つけるため。
  *    両方の PDF を pdftocairo で SVG にし、字形の描画 (<use xlink:href="#glyph-…">) を除いてから、Chromium で画像にする
+ *  - --compat spec|antenna: XSL-FO の互換モード (画面の「仕様どおりの既定値で組む」。既定 spec)。アンテナハウスの見本と比べるときは antenna。
  *  - --fonts: MS 明朝などの書体 (TTF / OTF / TTC) を、画面の「書体を読み込む」で読み込んでから組む (見本と同じ書体で比べる)。
  *    見本の PDF が書体を埋め込んでいないときは、同じ書体を OS (fontconfig) にも入れておくと pdftoppm が描ける。
  *  - --web-fonts: 既定の Web フォント (Noto Serif JP など) を、ネットワークではなくこのディレクトリから読む (e2e テストと同じファイル名)。
@@ -62,8 +63,24 @@ if (args.pdf) {
 }
 
 const port = 5175;
-const server = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { stdio: 'ignore' });
-const stop = () => server.kill();
+// 前の実行のサーバーが残っていると、strictPort の起動は失敗し、そのサーバー (別の作業ツリー・古いコードのこともある) で組んでしまう。
+// 気付かずに違うコードで比べないよう、ポートが使われていれば止める
+try {
+  await fetch(`http://127.0.0.1:${port}/`);
+  console.error(`ポート ${port} で別のサーバーが動いています。止めてから、やり直してください`);
+  process.exit(1);
+} catch {
+  /* 空いている */
+}
+// npx の子の vite も一緒に止めるため、プロセスのグループを作って、グループごと止める
+const server = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { stdio: 'ignore', detached: true });
+const stop = () => {
+  try {
+    process.kill(-server.pid);
+  } catch {
+    /* もう止まっている */
+  }
+};
 process.on('exit', stop);
 
 async function waitServer() {
@@ -171,6 +188,9 @@ if (args.fonts) {
 if (await page.locator('#settings').isHidden()) await page.click('#settingsbtn');
 // トンボ・塗り足し無し (見本の PDF と同じ大きさにする)
 await page.uncheck('#foprint');
+// XSL-FO の互換モード (--compat antenna: 画面の「仕様どおりの既定値で組む」を外す)
+if (args.compat !== undefined && args.compat !== 'spec' && args.compat !== 'antenna') throw new Error(`--compat は spec か antenna: ${args.compat}`);
+if (args.compat === 'antenna') await page.uncheck('#fospec');
 if (args.img) {
   for (const f of fs.readdirSync(args.img)) {
     const b64 = fs.readFileSync(path.join(args.img, f)).toString('base64');

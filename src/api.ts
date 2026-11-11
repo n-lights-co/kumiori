@@ -648,7 +648,7 @@ async function importFo(text: string, o: TypesetOptions, compat: FoCompat, mappi
   // 分綴 (hyphenate="true") を使う文書なら、文書に出てくる言語の分綴の規則を先に読み込む
   await loadFoHyphenators(text);
   return importXslFo(text, xmlParse, {
-    mapFont: mapping.mapFont,
+    mapFont: mapping.mapFoFont,
     compat,
     bleedMm: o.print ? 3 : 0,
     trimMarks: !!o.print,

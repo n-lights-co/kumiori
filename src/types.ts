@@ -167,6 +167,12 @@ export interface TextStyle {
    */
   noSpaceSqueeze?: boolean;
   /**
+   * 日本語・中国語の文で、全角の字として組むあいまいな字 (Line_Break が AI: ≧・①・※ など) の前後で改行してよい
+   * (アンテナハウス互換。XSL-FO の互換モードの既定)。UAX #14 の AI は、東アジアの古い処理系との互換のために ID として扱える。
+   * 既定 false (UAX #14 の LB1 の既定どおり AL として扱い、前後の欧字・数字とつなぐ)
+   */
+  ambiguousWideBreak?: boolean;
+  /**
    * 行の調整 (追込み) で詰めてよいアキ (アンテナハウスの拡張 -ah-text-justify-trim・axf:text-justify-trim。継承する)。
    * 無ければ既定 (auto): JLREQ §3.8.3 のとおり、行中の句点類の後ろは詰めない。
    *  - punctuation: 全角の括弧類・中点類・句読点類のアキを詰める。行中の句点類の後ろも詰める (fullStop)
@@ -644,7 +650,7 @@ export interface BoxStyle {
   backgroundImage?: BackgroundImage;
   /**
    * 背景の色を塗る範囲 (CSS の background-clip のうち、いちばん後ろの層の値。Backgrounds 3 §2.2)。無ければ border の箱。
-   * ブロック・表・セル・絶対配置の箱で効く (行内の箱の背景には効かない)
+   * ブロック・表・セル・絶対配置の箱と、罫線・余白を持つ行内の箱 (inline) の背景で効く
    */
   backgroundClip?: 'padding-box' | 'content-box';
   borderRadius?: BorderRadius;
@@ -977,6 +983,12 @@ export interface LBlock extends BaseNode, BoxStyle {
   span?: 'all';
   /** ブロック内の改ページを禁止 (可能な限り) */
   keepTogether?: boolean;
+  /**
+   * keepTogether のブロックが、前の keep-with-next の並び (ページの先頭から始まる) と同じページに入らないとき、次のページへ送らずに
+   * 並びの後ろに置き、分けずにページの下へはみ出させる (アンテナハウス互換)。省略時は、ブロックだけを次のページへ送る
+   * (前の並びとの keep-with-next を破る)
+   */
+  keepOverflow?: boolean;
   /** 次のブロックの先頭と同じページに置く (見出しの孤立防止)。次が先頭行だけでも同じページに入ればよい */
   keepWithNext?: boolean;
   /** 直前のブロックの末尾と同じページに置く (直前のブロックに keepWithNext を付けるのと同じ) */
@@ -1006,6 +1018,8 @@ export interface LInline extends BaseNode {
   smallCaps?: 'small' | 'all';
   /** インライン背景 (ハイライト) */
   backgroundColor?: string;
+  /** 背景の色を塗る範囲 (無ければ border の箱。BoxStyle.backgroundClip と同じ。XSL-FO の fo:inline は、罫線の下が見える箱だけ padding の箱) */
+  backgroundClip?: 'padding-box' | 'content-box';
   /**
    * 中身の無い行内要素 (CSS)。幅 0 で、自分の字の大きさと line-height の高さを行の箱に入れる (CSS 2.1 §10.8)。
    * 字も余白・罫線も無い行だけになるときは、行を作らない (§9.4.2)
@@ -1405,6 +1419,12 @@ export interface LFloat extends BaseNode, BoxStyle {
   /** CSS の min-width・max-width (pt。内容の幅。cssPlacement で幅の指定が無いとき、shrink-to-fit の幅を抑える。下限が勝つ) */
   minWidth?: number;
   maxWidth?: number;
+  /**
+   * 前方 float (float: 'before') の内容の末尾の余白 (space-after) を、前方 float の領域の終わり (区切りの内容・本文の上) でも残す
+   * (アンテナハウス互換)。省略時は XSL 1.1 §4.3.1 のとおり、参照領域の終わりの conditional な余白として捨てる
+   * (続く前方 float との間の余白は、どちらでも残す)
+   */
+  keepTrailingSpace?: boolean;
   children: Array<LBlockLevel | LInlineLevel>;
 }
 
@@ -1755,6 +1775,12 @@ export interface LTableRow extends BaseNode {
   listMarkerRow?: boolean;
   /** 行をページの途中で分割しない (既定では、ページに入らない行はセルの中身を行単位で次ページへ分ける) */
   keepTogether?: boolean;
+  /**
+   * keepTogether の行が、新しいページ (段) にも入らない高さなら、分割しないことをやめ、いまの位置から行単位で分ける
+   * (XSL-FO の仕様モードの keep-together と、アンテナハウス互換の数値の強さの keep-together。省略時は、入らなくても分けずに
+   * はみ出させる: アンテナハウス互換の always と、HTML の break-inside: avoid)
+   */
+  keepTogetherYields?: boolean;
   /** 行の高さの最小値 (pt。fo:table-row の height / block-progression-dimension、CSS の tr の height) */
   minHeight?: number;
   /** 行の高さの最大値 (pt。block-progression-dimension.maximum)。中身はそれを超えてもはみ出して描く */
