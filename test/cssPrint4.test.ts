@@ -75,8 +75,19 @@ describe('CSS のルビと行の高さ (CSS Ruby 1 §3.6)', () => {
     const page = '<style>@page { size: A6; margin: 10mm } p { line-height: 2; margin: 0; font-size: 10pt }</style>';
     const a = await typesetHtml(`${page}<p>吾輩は猫である</p>`, { loadFont });
     const b = await typesetHtml(`${page}<p><ruby>吾輩<rt>わがはい</rt></ruby>は猫である</p>`, { loadFont });
-    const ya = glyphs(a.areaTree, 0).find((g) => g.text.includes('は'))!;
-    const yb = glyphs(b.areaTree, 0).find((g) => g.text.includes('は'))!;
-    expect(yb.y).toBeCloseTo(ya.y, 1);
+    // ページの中の位置 (親の箱からの位置を足し合わせたもの) で比べる。字は、本文の「猫」(ルビの字に無い字) で探す
+    // (GlyphArea.y は親の箱からの位置で、「は」で探すとルビの字「わがはい」の「は」が先に当たり、ルビの箱の上端からの位置 0 と比べてしまう)
+    const top = (tree: typeof a.areaTree) => {
+      let y = NaN;
+      const rec = (n: AreaNode, oy: number) => {
+        const ny = oy + ((n as { y?: number }).y ?? 0);
+        if (n.type === 'glyph' && (n as GlyphArea).text === '猫') y = ny;
+        for (const c of childrenOf(n)) rec(c, ny);
+      };
+      rec(tree.sheets[0].page as unknown as AreaNode, 0);
+      return y;
+    };
+    expect(top(a.areaTree)).not.toBeNaN();
+    expect(top(b.areaTree)).toBeCloseTo(top(a.areaTree), 2);
   });
 });

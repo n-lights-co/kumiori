@@ -29,7 +29,7 @@ import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
 import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
 import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
 import { MESSAGE_LANGS, msg, withMessageLang, type MessageLang } from './messages';
-import { AH_HTML_IMPORT_OPTIONS, FO_COMPATS, HTML_STYLES, ahCascadeOptions, compatLayoutOptions, compatPdfOptions, isAhCompat, loadFoHyphenators, type FoCompat } from './compat';
+import { FO_COMPATS, HTML_STYLES, ahCascadeOptions, compatLayoutOptions, compatPdfOptions, htmlImportCompatOptions, isAhCompat, loadFoHyphenators, type FoCompat } from './compat';
 import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, missingGlyphChars, setupDefaultFonts } from './fontMapping';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
@@ -575,7 +575,13 @@ async function typesetDocument(
   const mathOpts = await mathOptionsFor(text, fonts, () => loadSpec(fonts, MATH_SPEC).catch((e) => warnings.push(String(e instanceof Error ? e.message : e))));
   // XHTML は XML の構文で読み、名前空間に従って HTML に書き直してから組む
   const html = kind === 'xhtml' ? xhtmlToHtml(text) : text;
-  const res = isFo ? await importFo(text, options, compat, mapping, assets, mathOpts) : await importHtmlText(html, options, style, files, mapping, assets, measurer, mathOpts, kind === 'xhtml');
+  let res = isFo ? await importFo(text, options, compat, mapping, assets, mathOpts) : await importHtmlText(html, options, style, files, mapping, assets, measurer, mathOpts, kind === 'xhtml');
+  // ブラウザの既定のスタイル (line-height: normal を既定の書体の値でも決める。compat.ts の BROWSER_HTML_IMPORT_OPTIONS): 等幅の書体 (Cousine) は、
+  // 読み込みの中で等幅の指定が分かってから読むので、読み込みの時点では normal の値を引けない (和文の書体の値になる)。読んでから読み込み直す
+  if (!isFo && htmlImportCompatOptions(style).normalLineHeightAllFonts && mapping.usesMono() && !fonts.has('Cousine')) {
+    for (const spec of MONO_SPECS) await loadSpec(fonts, spec).catch((e) => warnings.push(String(e instanceof Error ? e.message : e)));
+    if (fonts.has('Cousine')) res = await importHtmlText(html, options, style, files, mapping, assets, measurer, mathOpts, kind === 'xhtml');
+  }
   // ネットワーク上の画像・data URI の画像 (画面と同じ手順: documentResources)。http(s) の画像は fetchImages (既定 true) で取るかどうかを決める
   const allowFetch = (url: string) => (typeof options.fetchImages === 'function' ? options.fetchImages(url) : options.fetchImages !== false);
   warnings.push(...(res.warnings ?? []));
@@ -747,11 +753,12 @@ async function importHtmlText(
   const cssRep = unsupportedCssReport(prepared.authorSheet, prepared.doc);
   const imported = importHtml(prepared.doc, styles, {
     mapFont: mapping.mapHtmlFont,
-    measureText: (t, st) => measurer.glyphs(t, st, 'horizontal-tb').reduce((a, g) => a + g.advance, 0),
+    measureText: (t, st) => measurer.textAdvance(t, st, { kerning: st.kerning, features: st.features }),
     hasAsset: (src) => !!assets.get(src),
     imageSize: (src) => assets.get(src),
     normalLineHeight: mapping.htmlNormalLineHeight,
-    ...(style === 'ah' ? AH_HTML_IMPORT_OPTIONS : {}),
+    // 既定のスタイルごとの互換の設定 (アンテナハウス互換・ブラウザ。compat.ts。画面と同じ)
+    ...htmlImportCompatOptions(style),
     css: prepared.css,
     sheet: prepared.sheet,
     defaultPage,

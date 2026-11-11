@@ -14,7 +14,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_FONTS, typesetFo, typesetHtml, childrenOf } from '../src/index';
 import type { Area, AreaTree } from '../src/types';
-import { ensureFonts, loadCachedFont } from './helpers';
+import fs from 'node:fs';
+import path from 'node:path';
+import { ensureFonts, extraTestFont, fontDir, loadCachedFont } from './helpers';
 import { prefixedForeignToHtml } from '../src/htmlPrepare';
 import { DOMParser } from '@xmldom/xmldom';
 import { cascadeStyles } from '../src/cssCascade';
@@ -235,5 +237,86 @@ describe('リストの外側の記号は、本文の最初の行の箱に入る 
     // 記号の行の箱 (60pt) は、本文の行 (30pt) より基線の上も下も 15pt ずつ大きい。最初の行は上 (基線そろえ) と下の両方へ伸び、合わせて 30pt 下がる
     // (直す前は、基線そろえの上の 15pt だけだった)
     expect(tall - plain).toBeCloseTo(30, 0);
+  });
+});
+
+/** Arimo の OS/2 の typo の上下を 0.75em・−0.25em (ちょうど 1em。基準線の比 0.75) に書き換えた書体 (和文の書体と基準線の比が違う欧文の書体。見本の source-sans-pro に当たる) */
+function typo1emArimo(): Uint8Array {
+  const buf = new Uint8Array(fs.readFileSync(path.join(fontDir, 'Arimo-Regular.ttf')));
+  const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  for (let k = 0; k < v.getUint16(4); k++) {
+    const at = 12 + 16 * k;
+    if (String.fromCharCode(...buf.slice(at, at + 4)) !== 'OS/2') continue;
+    const off = v.getUint32(at + 8);
+    v.setInt16(off + 68, Math.round(2048 * 0.75));
+    v.setInt16(off + 70, -Math.round(2048 * 0.25));
+  }
+  return buf;
+}
+
+describe('-ah-alignment-baseline: text-after-edge の画像 (--style ah の和文の行)', () => {
+  it("画像の下端を、和文の書体の em の箱の下端 (基線の 0.12em 下) にそろえる (先頭の欧文の書体の下の部分ではない)", async () => {
+    const svg = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20"/></svg>');
+    const css = `@font-face { font-family: lat; src: url(Arimo-Regular.ttf) } p { font-family: lat, sans-serif } p::after { content: url("${svg}"); -ah-alignment-baseline: text-after-edge; height: 1em }`;
+    const files = [{ name: 'c.css', data: css }, { name: 'Arimo-Regular.ttf', data: typo1emArimo() }];
+    const tree = (await typesetHtml(doc('<p>あいう</p>'), { loadFont: loadCachedFont, style: 'ah', files })).areaTree;
+    let img: { y: number; h: number } | undefined;
+    let base: number | undefined;
+    const rec = (a: Area, y: number) => {
+      const ay = y + (a.y ?? 0);
+      const g = a as unknown as { text?: string; baselineY?: number };
+      if (a.type === 'image') img = { y: ay, h: a.height };
+      if (a.type === 'glyph' && g.text === 'あ' && base === undefined) base = ay + (g.baselineY ?? 0);
+      for (const c of childrenOf(a)) rec(c as Area, ay);
+    };
+    rec(tree.sheets[0].page as unknown as Area, 0);
+    expect(img).toBeDefined();
+    // 字の大きさ 20pt。和文の書体の em の箱の下端は基線の 0.12em (2.4pt) 下
+    expect(img!.y + img!.h - base!).toBeCloseTo(2.4, 0);
+  });
+});
+
+describe('合字の字形の行の高さ (代わりの書体の字。CSS Inline 3 §5.3)', () => {
+  it('和文の行の欧文の合字 (ft) も、1 字の字と同じく、最初に使える書体 (和文の書体) の上下で行の高さを決める', async () => {
+    // Source Sans 3 (見本の source-sans-pro の後継。OS/2 の typo の上下がちょうど 1em で、基準線の比が和文の書体と違う。ft・fi の合字を持つ)
+    const css = '@font-face { font-family: lat; src: url(ss3.otf) } p { font-family: lat, sans-serif }';
+    const files = [{ name: 'c.css', data: css }, { name: 'ss3.otf', data: fs.readFileSync(await extraTestFont('SourceSans3-Regular-3.052R.otf')) }];
+    const pitch = async (word: string) => {
+      const tree = (await typesetHtml(doc(`<p>${word}あ</p><p>あ</p>`, 'body { line-height: normal }'), { loadFont: loadCachedFont, style: 'ah', files })).areaTree;
+      const ys: number[] = [];
+      const rec = (a: Area, y: number) => {
+        const ay = y + (a.y ?? 0);
+        const g = a as unknown as { text?: string; baselineY?: number };
+        if (a.type === 'glyph' && g.text === 'あ') ys.push(ay + (g.baselineY ?? 0));
+        for (const c of childrenOf(a)) rec(c as Area, ay);
+      };
+      rec(tree.sheets[0].page as unknown as Area, 0);
+      return ys[1] - ys[0];
+    };
+    // line-height: normal の行。合字にならない並び (fa) と同じ行送り (和文の書体の上下で決まる)。
+    // これまでは合字の字形だけ代わりの書体の扱いにならず、欧文の書体の上下 (和文の書体より浅い) で行が決まり、行送りが 2pt 狭くなった
+    const fa = await pitch('fa');
+    expect(await pitch('ft')).toBeCloseTo(fa, 1);
+  });
+});
+
+describe('脚注の参照記号の行の高さ (代わりの書体の字。CSS Inline 3 §5.3)', () => {
+  it('参照記号の字も、最初に使える書体 (和文の書体) の上下で、その字の行内の箱を決める', async () => {
+    // 先頭の欧文の書体 (基準線の比 0.75) に参照記号の字 (数字) があり、和文の書体 (比 0.88) とは下の部分が違う
+    const css = '@font-face { font-family: lat; src: url(Arimo-Regular.ttf) } p { font-family: lat, sans-serif; -ah-line-height-shift-adjustment: disregard-shifts } .fn { float: footnote } ::footnote-call { font-size: 10pt }';
+    const files = [{ name: 'c.css', data: css }, { name: 'Arimo-Regular.ttf', data: typo1emArimo() }];
+    const tree = (await typesetHtml(doc('<p>あいう<span class="fn">注</span></p><p>あ</p>'), { loadFont: loadCachedFont, style: 'ah', files })).areaTree;
+    const ys: number[] = [];
+    const rec = (a: Area, y: number) => {
+      const ay = y + (a.y ?? 0);
+      const g = a as unknown as { text?: string; baselineY?: number };
+      if (a.type === 'glyph' && g.text === 'あ') ys.push(ay + (g.baselineY ?? 0));
+      for (const c of childrenOf(a)) rec(c as Area, ay);
+    };
+    rec(tree.sheets[0].page as unknown as Area, 0);
+    // 見本 (CSS-Print 第 4 版) と同じく、持ち上げた参照記号を、持ち上げる前の位置で行の高さに数える (disregard-shifts)。
+    // 字の大きさ 20pt・行の高さ 30pt。本文の行内の箱の下は 0.12em + 半行間 5pt = 7.4pt。参照記号 (10pt) の箱の下は、和文の書体の
+    // 0.12em (1.2pt) + 半行間 10pt = 11.2pt で、行は 3.8pt 下に伸びる (欧文の書体の 0.25em で数えると 5.1pt 伸びる)
+    expect(ys[1] - ys[0]).toBeCloseTo(33.8, 1);
   });
 });

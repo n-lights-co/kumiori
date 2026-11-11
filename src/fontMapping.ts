@@ -411,8 +411,21 @@ export function createFontMapping(
    * line-height: normal: 最初に使える書体 (CSS Inline 3 §5.3 の first available font) が @font-face で読み込んだ書体なら、その書体の上下の高さと
    * 行間 (hhea) から。ほかは undefined (1.2)。並びの中で、読み込んだ書体より前に総称・既定の書体の名前があるときは、最初に使える書体は
    * 既定の書体 (htmlFontList の並びの先頭) なので undefined。後ろに並ぶ書体の字は、組まれた行でその書体の上下を数える (fontManager.ts の normalLineBounds)
+   *
+   * opts.defaultFonts (ブラウザの既定のスタイル。HtmlImportOptions.normalLineHeightAllFonts): 既定の書体 (Noto Serif JP・Tinos・Cousine など) が
+   * 最初に使える書体のときも、その書体の hhea の ascent + descent + lineGap にする (CSS Inline 3 §5.3・§6.4: normal は最初に使える書体の値。
+   * CSS 2.1 §10.8.1。Chromium と同じ)。最初に使える書体は、並びのうち空白の字 (U+0020) を持つ最初の書体 (CSS Fonts 4 §5.4 の first available font)。
+   * 等幅の書体 (Cousine) は、等幅の指定が分かってから読み込む (api.ts) ので、まだ無ければ undefined (1.2。空白の字の書体は和文の書体になり、
+   * その値 1.448 は、お手本の等幅の書体の値より遠い)。api.ts は、読み込んでから組み直す
    */
-  function htmlNormalLineHeight(names: string[], bold: boolean): number | undefined {
+  function htmlNormalLineHeight(names: string[], bold: boolean, opts?: { defaultFonts?: boolean }): number | undefined {
+    if (opts?.defaultFonts) {
+      const fam = mapHtmlFont(names, bold);
+      if (!fam || ((fam === MONO_STACK || fam === MONO_SERIF_STACK) && !fonts.has('Cousine'))) return undefined;
+      const f = fonts.getForChar(fam, bold ? 700 : 400, ' ');
+      const hh = (f.fk as unknown as { hhea?: { ascent: number; descent: number; lineGap: number } }).hhea;
+      return hh ? (hh.ascent - hh.descent + hh.lineGap) / f.unitsPerEm : undefined;
+    }
     const idx = names.findIndex((n) => faceOf(n));
     if (idx < 0) return undefined;
     if (names.slice(0, idx).some((n) => isGenericOrDefaultCjk(n) || knownLatinFamily(n))) return undefined;

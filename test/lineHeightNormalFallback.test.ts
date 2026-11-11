@@ -135,21 +135,35 @@ describe('line-height が normal でないときは、代わりの書体の字�
   });
 });
 
-describe('既定の書体 (読み込んだ書体でないもの) の line-height: normal は、これまでどおり 1.2。代わりの書体として使われたときは数えない', () => {
+describe('既定の書体 (読み込んだ書体でないもの) の line-height: normal は、これまでどおり 1.2。代わりの書体として使われたときは数えない (--style browser・browser-margin のほか)', () => {
+  // --style browser・browser-margin は、既定の書体も書体の値で決め、代わりの書体としても数える (compat.ts の BROWSER_HTML_IMPORT_OPTIONS。
+  // Chromium と同じ。htmlNormalBrowser.test.ts)。ここでは、ほかのスタイルの代表の kumiori で、これまでの値を、browser で新しい値を確かめる
   it('総称の書体 (serif = 欧文 Tinos + 和文 Noto Serif JP) の和欧の混じる行・和文だけの行・欧文だけの行は、どれも 1.2 × 字の大きさ', async () => {
-    const ls = await html('<p style="font-family: serif; line-height: normal">abc 漢字<br>漢字<br>abc</p>', 'browser');
+    const ls = await html('<p style="font-family: serif; line-height: normal">abc 漢字<br>漢字<br>abc</p>');
     for (const l of ls) expect(l.h).toBeCloseTo(1.2 * FS, 2);
+    // browser: 和文の字のある行は Noto Serif JP の上下を囲み、欧文だけの行は Tinos の値
+    const b = await html('<p style="font-family: serif; line-height: normal">abc 漢字<br>漢字<br>abc</p>', 'browser');
+    expect(b[0].h).toBeCloseTo(mixed(TINOS, JP), 1);
+    expect(b[1].h).toBeCloseTo(mixed(TINOS, JP), 1);
+    expect(b[2].h).toBeCloseTo((TINOS.a + TINOS.d + TINOS.gap) * FS, 2);
   });
 
   it('総称の書体の後ろに読み込んだ書体を並べた指定 (font-family: serif, M): 最初に使える書体は既定の書体なので、ミャンマー文字の無い行は 1.2、ある行はその書体の上下を囲む', async () => {
-    const ls = await html(`<p style="font-family: serif, M; line-height: normal">abc 漢字<br>${MY} 漢字</p>`, 'browser');
+    const ls = await html(`<p style="font-family: serif, M; line-height: normal">abc 漢字<br>${MY} 漢字</p>`);
     // 直す前は、並びの中の読み込んだ書体 (M) の値 (2.184) を、最初に使える書体でないのに段落の全部の行に当てていた
     expect(ls[0].h).toBeCloseTo(1.2 * FS, 1);
     expect(ls[1].h).toBeCloseTo((MYANMAR.a + MYANMAR.d) * FS, 1);
+    const b = await html(`<p style="font-family: serif, M; line-height: normal">abc 漢字<br>${MY} 漢字</p>`, 'browser');
+    expect(b[0].h).toBeCloseTo(mixed(TINOS, JP), 1);
+    expect(b[1].h).toBeCloseTo(mixed(TINOS, JP, MYANMAR), 1);
   });
 
   it('読み込んだ欧文の書体 (行の高さ 1.149) の後備として既定の和文の書体で組まれた字は、行の高さに数えない (行は最初に使える書体の高さのまま)', async () => {
-    const ls = await html('<p style="font-family: T; line-height: normal">abc<br>abc 漢字</p>', 'browser');
+    const ls = await html('<p style="font-family: T; line-height: normal">abc<br>abc 漢字</p>');
     for (const l of ls) expect(l.h).toBeCloseTo((TINOS.a + TINOS.d + TINOS.gap) * FS, 1);
+    // browser: 後備の和文の書体 (既定の書体) の上下も囲む
+    const b = await html('<p style="font-family: T; line-height: normal">abc<br>abc 漢字</p>', 'browser');
+    expect(b[0].h).toBeCloseTo((TINOS.a + TINOS.d + TINOS.gap) * FS, 1);
+    expect(b[1].h).toBeCloseTo(mixed(TINOS, JP), 1);
   });
 });

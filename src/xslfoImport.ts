@@ -1321,6 +1321,15 @@ class Importer {
       // 伸びる)。詰めれば入る字・語は次の行へ送っている。行中の約物のアキを詰めた行 (読点・括弧の後ろが全角より狭い行) はあるので、
       // 約物の追込みは止めない
       noSpaceSqueeze: !this.spec,
+      // 仕様モード: 追込みで欧文の語間 (空白) を詰めるのは、両端揃えで組む行だけ (inlineLayout の markWordSqueeze)。
+      // XSL 1.1 §7.17.8: word-spacing="normal" の語間 (空白の字の前後の space-start・space-end) は “.maximum = .optimum, .minimum = .optimum”
+      // で、縮める幅が無い。§7.16.9: 字の並びに手を入れてよいのは justify のとき (“In the case of 'justify', the UA may stretch the inline
+      // boxes in addition to adjusting their positions.”)。start・end・center・inside・outside (left・right) は、行の中身を寄せるだけ。
+      // CSS Text 3 §6.1 (“In the case of justify, the UA may stretch or shrink any inline boxes by adjusting their text.”)・§6.4.1・
+      // §7.1 (word-spacing: normal は “No additional spacing is applied.”) も同じ。
+      // 両端揃えで組む行で語間を詰める動き (JLREQ §3.8.3 の詰める順の最初) と、約物のアキの追込みは、今までどおり。
+      // 互換モードは、揃えによらず語間・和欧間を詰めない (上の noSpaceSqueeze) ので、この指定は要らない
+      ...(this.spec ? { wordSqueezeJustifiedOnly: true } : {}),
       // 行頭の始め括弧類の前のアキ: axf:punctuation-trim の指定が無ければ、段落の 1 行目の先頭だけ詰める。
       // 段落の途中で折り返した行の先頭は詰めない (互換モードの既定)
       punctuationTrimParagraphStart: !this.spec,

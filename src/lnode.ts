@@ -167,6 +167,7 @@ export interface ResolvedStyle {
   punctuationSqueeze?: boolean;
   lineSqueezeMax?: number;
   noSpaceSqueeze?: boolean;
+  wordSqueezeJustifiedOnly?: boolean;
   punctuationTrimStart?: boolean;
   hangFirst?: boolean;
   punctuationTrimEnd?: boolean;
@@ -187,6 +188,9 @@ export interface ResolvedStyle {
   boxLineHalfLeading?: boolean;
   primaryFontMetrics?: boolean;
   inlineBoxFontMetrics?: boolean;
+  fontBaseline?: boolean;
+  /** line-height: normal の行で、既定の書体の上下も数える (TextStyle.normalLineHeightAllFonts。ブラウザの既定のスタイル) */
+  normalLineHeightAllFonts?: boolean;
   primaryFontByLang?: boolean;
   noStrut?: boolean;
   lineHeightQuirk?: boolean;
@@ -350,6 +354,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     punctuationSqueeze: n.punctuationSqueeze ?? parent.punctuationSqueeze,
     lineSqueezeMax: n.lineSqueezeMax ?? parent.lineSqueezeMax,
     noSpaceSqueeze: n.noSpaceSqueeze ?? parent.noSpaceSqueeze,
+    wordSqueezeJustifiedOnly: n.wordSqueezeJustifiedOnly ?? parent.wordSqueezeJustifiedOnly,
     punctuationTrimStart: n.punctuationTrimStart ?? parent.punctuationTrimStart,
     hangFirst: n.hangFirst ?? parent.hangFirst,
     punctuationTrimEnd: n.punctuationTrimEnd ?? parent.punctuationTrimEnd,
@@ -370,6 +375,8 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     boxLineHalfLeading: n.boxLineHalfLeading ?? parent.boxLineHalfLeading,
     primaryFontMetrics: n.primaryFontMetrics ?? parent.primaryFontMetrics,
     inlineBoxFontMetrics: n.inlineBoxFontMetrics ?? parent.inlineBoxFontMetrics,
+    fontBaseline: n.fontBaseline ?? parent.fontBaseline,
+    normalLineHeightAllFonts: n.normalLineHeightAllFonts ?? parent.normalLineHeightAllFonts,
     primaryFontByLang: n.primaryFontByLang ?? parent.primaryFontByLang,
     noStrut: n.noStrut ?? parent.noStrut,
     lineHeightQuirk: n.lineHeightQuirk ?? parent.lineHeightQuirk,

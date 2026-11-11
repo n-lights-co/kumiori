@@ -297,7 +297,10 @@ describe('内容による大きさ (CSS Sizing 3 §3.2・§2.1)', () => {
 });
 
 describe('initial-letter (CSS Inline 3 §7)', () => {
-  // ページの幅 200pt。字は 10pt、行の高さ 20pt (字の枠は、行の上端から 5pt 下)。段落は 70 字 (1 行に 20 字)
+  // ページの幅 200pt。字は 10pt、行の高さ 20pt。段落は 70 字 (1 行に 20 字)。
+  // 行の基線は、最初に使える書体 (既定の serif の欧文の書体 Tinos。hhea の ascent 0.891・descent 0.216) の値で決まり、行の上端から
+  // (20 + (0.891 − 0.216) × 10) / 2 = 13.375pt (CSS Inline 3 §5.3)。和文の字の枠 (em の箱) の上端は、基線から 0.88em 上なので、
+  // 行の上端から 13.375 − 8.8 = 4.575pt 下 (基線を em の箱の 0.88 の所に置いていたときは 5pt)
   const TEXT = `漢${'あ'.repeat(69)}`;
   const page = '@page { size: 200pt 300pt; margin: 0 }';
   const css = (v: string, more = '') => `body { line-height: 20pt } p::first-letter { initial-letter: ${v}; ${more} }`;
@@ -305,8 +308,12 @@ describe('initial-letter (CSS Inline 3 §7)', () => {
   it('和文 (lang="ja" は ideographic): N 行の字は、最初の行の字の枠の上端から N 行目の字の枠の下端まで。N 行が回り込む', async () => {
     const t = await lay(`<p>${TEXT}</p>`, css('3'), page);
     const g = t.glyphs('漢')[0];
-    // 字の大きさ = (3 − 1) × 20 + 10 = 50pt。字の枠は 5pt〜55pt
-    expect([r1(g.fontSize!), r1(g.y), r1(g.x)]).toEqual([50, 5, 0]);
+    // 字の大きさ = (3 − 1) × 20 + 10 = 50pt。字の枠は、最初の行の字の枠の上端 (4.575pt) から 3 行目の字の枠の下端 (54.575pt) まで
+    expect([r1(g.fontSize!), r1(g.y), r1(g.x)]).toEqual([50, 4.6, 0]);
+    // まわりの字の枠の上端・下端とそろう
+    const around = t.glyphs('あ').map((k) => k.y);
+    expect(g.y).toBeCloseTo(Math.min(...around), 2);
+    expect(g.y + g.fontSize!).toBeCloseTo(Math.min(...around) + 40 + 10, 2);
     // 1〜3 行目は字の幅 (50pt) だけ右から、4 行目は左端から
     const ls = t.boxes.filter((b) => b.type === 'line' && b.page === 1 && b.w > 60).map((l) => r1(l.y));
     expect(ls.slice(0, 5)).toEqual([0, 20, 40, 60, 80]);
@@ -317,17 +324,17 @@ describe('initial-letter (CSS Inline 3 §7)', () => {
   it('沈める行の数: 「3 2」は 1 行分だけ上へ出て、最初の行を下げる。「3 1」「3 raise」は 2 行分。「2 3」は上をそろえて 3 行が回り込む', async () => {
     const xs = (t: Awaited<ReturnType<typeof lay>>, y: number) => r1(Math.min(...t.glyphs('あ').filter((k) => k.y >= y && k.y < y + 20).map((k) => k.x)));
     const a = await lay(`<p>${TEXT}</p>`, css('3 2'), page);
-    expect([r1(a.glyphs('漢')[0].fontSize!), r1(a.glyphs('漢')[0].y)]).toEqual([50, 5]);
-    // 最初の行は 20pt 下から。2 行 (20〜60) が回り込み、3 行目 (60〜) は左端から
-    expect(Math.min(...a.glyphs('あ').map((k) => r1(k.y)))).toBe(25);
+    expect([r1(a.glyphs('漢')[0].fontSize!), r1(a.glyphs('漢')[0].y)]).toEqual([50, 4.6]);
+    // 最初の行は 20pt 下から (字の枠は 24.575pt から)。2 行 (20〜60) が回り込み、3 行目 (60〜) は左端から
+    expect(Math.min(...a.glyphs('あ').map((k) => r1(k.y)))).toBe(24.6);
     expect([xs(a, 20), xs(a, 40), xs(a, 60)]).toEqual([50, 50, 0]);
     for (const v of ['3 1', '3 raise', 'raise 3']) {
       const b = await lay(`<p>${TEXT}</p>`, css(v), page);
-      expect([v, r1(b.glyphs('漢')[0].y), Math.min(...b.glyphs('あ').map((k) => r1(k.y))), xs(b, 40), xs(b, 60)]).toEqual([v, 5, 45, 50, 0]);
+      expect([v, r1(b.glyphs('漢')[0].y), Math.min(...b.glyphs('あ').map((k) => r1(k.y))), xs(b, 40), xs(b, 60)]).toEqual([v, 4.6, 44.6, 50, 0]);
     }
     const c = await lay(`<p>${TEXT}</p>`, css('2 3'), page);
     // 字の大きさ = 20 + 10 = 30pt。上を最初の行の字の枠にそろえ、3 行が回り込む
-    expect([r1(c.glyphs('漢')[0].fontSize!), r1(c.glyphs('漢')[0].y)]).toEqual([30, 5]);
+    expect([r1(c.glyphs('漢')[0].fontSize!), r1(c.glyphs('漢')[0].y)]).toEqual([30, 4.6]);
     expect([xs(c, 0), xs(c, 20), xs(c, 40), xs(c, 60)]).toEqual([30, 30, 30, 0]);
     // 小数の大きさ: 「2.5」は 2 行沈める (drop は切り捨て)。字の大きさ = 1.5 × 20 + 10 = 40pt
     const d = await lay(`<p>${TEXT}</p>`, css('2.5'), page);
@@ -380,7 +387,7 @@ describe('initial-letter (CSS Inline 3 §7)', () => {
     const i = t.glyphs('い');
     expect([r1(Math.min(...i.filter((k) => k.y < 40).map((k) => k.x))), r1(Math.min(...i.filter((k) => k.y > 60).map((k) => k.x)))]).toEqual([50, 0]);
     const u = await lay('<p>漢あ</p><p>字い</p>', css('3'), page);
-    expect([r1(u.glyphs('漢')[0].y), r1(u.glyphs('字')[0].y)]).toEqual([5, 65]);
+    expect([r1(u.glyphs('漢')[0].y), r1(u.glyphs('字')[0].y)]).toEqual([4.6, 64.6]);
   });
   it('ページの残りに字の箱が入らなければ、段落ごと次のページへ送る', async () => {
     const t = await lay(`${lines(13, 'い')}<p class="d">${TEXT}</p>`, 'body { line-height: 20pt } p.d::first-letter { initial-letter: 3 }', page);

@@ -10,7 +10,7 @@
 import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LIndexPageCitationList, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
 import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './measurer';
 import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
-import { kernsAsSameScript } from './orthographicSyllable';
+import { kernablePair } from './orthographicSyllable';
 import { complexContextBreaks, lineBreakActions, type LineBreakOptions } from './lineBreak';
 import { newNode, type LNode, type ResolvedStyle } from './lnode';
 import { paletteForFont } from './colorGlyph';
@@ -19,7 +19,7 @@ import { borderToLogicalWidths, toLogical } from './geometry';
 import { mirrorChar, resolveLevels, visualOrder } from './bidi';
 import { atomAboveBelow, DEFAULT_BASELINE_RATIO, lineMetrics, type LineMetrics } from './lineMetrics';
 import { hyphenationLetters } from './hyphenation';
-import { bidiControls, flattenInline, hyphenAtoms, joiningUnits, ligatureUnits, primaryChar, runStyleOf } from './inlineFlatten';
+import { bidiControls, flattenInline, fontBaselineRatio, hyphenAtoms, joiningUnits, ligatureUnits, primaryChar, runStyleOf } from './inlineFlatten';
 
 // inline の木を atom に平らにする処理 (inlineFlatten.ts) も、ほかのファイルからは従来どおりここから使える
 export { bidiControls, flattenInline, joiningUnits, ligatureUnits, primaryChar, runStyleOf };
@@ -32,7 +32,10 @@ export type InlineChild = string | LInline | LRuby | LTateChuYoko | LLeader | LF
 
 export interface Atom {
   kind: 'glyph' | 'ruby' | 'tcy' | 'leader' | 'box' | 'break';
-  /** 代わりの書体の字のとき、最初に使える書体の基線の比 (primaryFontMetrics の行の高さに使う) */
+  /**
+   * 行の高さの計算に使う基線の比 (字の大きさの箱の上端から基線まで)。代わりの書体の字のとき、最初に使える書体の値 (primaryFontMetrics)。
+   * HTML の行 (fontBaseline) では、どの atom にも、その書式の最初に使える書体の上の高さ・下の深さから決めた値 (inlineFlatten.ts の fontBaselineRatio)
+   */
   primaryRatio?: number;
   /** 代わりの書体の字のとき、最初に使える書体の上下 (ascent・descent) と基線の比 (XSL の行の高さに使う: 和文の代わりの書体の字で基線を動かさない) */
   primaryFont?: { ascent?: number; descent?: number; baselineRatio: number };
@@ -41,6 +44,11 @@ export interface Atom {
    * 行の高さに求める基線の上・下 (pt。fontManager.ts の normalLineBounds)。CSS の行の高さ (lineMetrics.ts の lineMetricsCss) が、行の上下の下限に入れる (CSS Inline 3 §5.3)
    */
   fallbackNormal?: { above: number; below: number };
+  /**
+   * 語間 (空白) を追込みで詰めない行の種類 (markWordSqueeze が付ける。ブロックの wordSqueezeJustifiedOnly)。
+   * WSQ_BODY = 途中の行 (text-align で組む行)、WSQ_LAST = 最後の行・改行で終わる行 (text-align-last で組む行) では詰めない。無ければどの行でも詰めてよい
+   */
+  noWordSqueeze?: number;
   /** 中身の無い inline の目印 (id の位置だけを記録する幅 0 の箱) */
   idMark?: boolean;
   /**
@@ -436,7 +444,7 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
     // 字の組の詰め (kern): 書式が同じなら、inline の境目をまたいでも詰める (CSS Text 3 §7.3: 書式の実際の変化が無い境目では、
     // 字形の処理を切ってはならない)。上げ下げ (vertical-align) の違う境目では切る。余白・枠のある境目は間に箱の atom が入るので、隣り合わない
     const sameBox = kernAh ? a.st === b.st : (a.shift ?? 0) === (b.shift ?? 0);
-    if (kern && a.st.kerning && b.st.kerning && fa === fb && sameBox && ((isLatinAlnumOrPunct(a.last) && isLatinAlnumOrPunct(b.first)) || (isThaiLetter(a.last) && isThaiLetter(b.first)) || kernsAsSameScript(a.last, b.first))) a.advance += kern(a, b);
+    if (kern && a.st.kerning && b.st.kerning && fa === fb && sameBox && kernablePair(a.last, b.first)) a.advance += kern(a, b);
     if (a.st.punctuationSqueeze !== false) {
       // 詰めたときの間隔 (axf:punctuation-spacing。既定は二分)
       const sp = a.st.punctuationSpacing;
@@ -588,23 +596,6 @@ function overhangable(a: Atom | undefined, ch: string | undefined): boolean {
   return /[\u3041-\u309F\u30A1-\u30FA\u30FD-\u30FF]/u.test(ch) || isClosingPunct(ch) || isOpeningPunct(ch) || isMiddlePunct(ch);
 }
 
-/**
- * タイ文字の字 (U+0E01〜U+0E5B)。タイ文字の書体は、前に置く母音 (เ แ โ ใ ไ) と子音の間などを詰める組 (kern) を持つ。
- * 字の単位 (子音 + 上下の記号) の間の詰めは、基底の字の組で引く (書体の組の表は、記号を飛ばして引く指定)
- */
-function isThaiLetter(ch: string): boolean {
-  const cp = ch.codePointAt(0) ?? 0;
-  return cp >= 0x0e01 && cp <= 0x0e5b;
-}
-
-/** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張、ギリシャ文字・キリル文字) */
-function isLatinAlnumOrPunct(ch: string): boolean {
-  // 一般句読点 (U+2010〜U+2027・U+2030〜U+205E。引用符 ‘’“”・ダッシュ・…) も含める (欧文の書体の kern の組に入っている。
-  // element’s・‘a・r’ などの組を書体の kern の値で詰める)。
-  // ギリシャ文字 (U+0370〜03FF・U+1F00〜1FFF)・キリル文字 (U+0400〜052F)・Latin Extended Additional (U+1E00〜1EFF。ベトナム語など) も、
-  // 書体の kern の組で詰める (CSS Fonts 4 §6.3: font-kerning の初期値 auto。ГА・Те・Αυ などの組)
-  return /^[\u0021-\u007E\u00C0-\u024F\u0370-\u052F\u1E00-\u1FFF\u2010-\u2027\u2030-\u205E]$/u.test(ch);
-}
 
 function rubyOverhang(a: Atom, prev: Atom | undefined, next: Atom | undefined) {
   const r = a.r!;
@@ -759,6 +750,9 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
   // 欧文の語が僅かに溢れるときは、行の中の語間を詰めて語を行に収める (詰める順の最初の段階。JLREQ §3.8.3)
   const pushed = pushBySpaces(atoms, start, k, x, avail);
   if (pushed !== undefined) {
+    // 改行の手前まで収めた: 改行で終わる行 (最後の行と同じ揃え) にして、改行を読み飛ばす。pushBySpaces は、この行を最後の行として
+    // 詰めてよい量を決めている。改行を次の行へ残すと、行の種類が食い違い、空の行が 1 つ余分にできる
+    if (pushed < n && atoms[pushed].kind === 'break') return { line: makeLine(atoms.slice(start, pushed), true, indent), next: afterForcedBreak(atoms, pushed) };
     let j = pushed;
     while (j < n && atoms[j].isSpace) j++;
     return { line: makeLine(atoms.slice(start, pushed), j >= n, indent), next: j };
@@ -791,11 +785,14 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
       const items = atoms.slice(start, end);
       // 行末で捨てるアキ (和欧間・letter-spacing・行末の約物の後ろ) を除いた長さ
       const w = x2 - (a.trail ?? 0) - (a.lsTrail ?? 0) - endTrimOf(a) + (a.ovR ?? 0);
-      if (w - lineSqueezable(items) <= avail + FIT_EPS) {
-        let j2 = end;
-        if (j2 < n && atoms[j2].kind === 'break') return { line: makeLine(items, true, indent), next: afterForcedBreak(atoms, j2) };
-        while (j2 < n && atoms[j2].isSpace) j2++;
-        return { line: makeLine(items, j2 >= n, indent), next: j2 };
+      // この行が最後の行 (改行で終わる行も) になるか: 語間を詰めてよいかが、行の揃え (text-align か text-align-last か) で変わる
+      let j2 = end;
+      const forced = j2 < n && atoms[j2].kind === 'break';
+      if (!forced) while (j2 < n && atoms[j2].isSpace) j2++;
+      const last = forced || j2 >= n;
+      if (w - lineSqueezable(items, last) <= avail + FIT_EPS) {
+        if (forced) return { line: makeLine(items, true, indent), next: afterForcedBreak(atoms, j2) };
+        return { line: makeLine(items, last, indent), next: j2 };
       }
       break;
     }
@@ -829,7 +826,7 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
       const end = j2 + 1;
       if (end < n && atoms[end].kind !== 'break' && !canBreakAtoms(atoms[j2], atoms[end])) continue;
       const items = atoms.slice(start, end);
-      if (x2 - lineSqueezable(items) <= avail + FIT_EPS) return { line: makeLine(items, end >= n, indent), next: end };
+      if (x2 - lineSqueezable(items, end >= n) <= avail + FIT_EPS) return { line: makeLine(items, end >= n, indent), next: end };
       break;
     }
     // 控えた斜線の後ろの改行の機会 (lbSoft): ほかに改行できる位置が無ければ使う (表の列の最小の幅の「PDF/A-1a」など)
@@ -930,6 +927,7 @@ export function breakOneBoxed(
       // 字の並びとは別の並びにする (字の背景を、この空きまで延ばさない)
       runId: --edgeRunSeq,
       st: like.st,
+      ...(like.primaryRatio !== undefined ? { primaryRatio: like.primaryRatio } : {}),
       box: { node: newNode('block', wm, { isize: adv, bsize: 0 }), adv, cross: 0, above: 0, below: 0 },
       frames,
       frameEdge: true,
@@ -1076,7 +1074,7 @@ export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: s
           const a = k === undefined ? undefined : word[k];
           if (a && k! < word.length - 1) {
             // 行末に出す字 (hyphenate-character。既定は U+002D) は、語ごとに 1 度だけ測る
-            hy ??= hyphenAtoms(st, (ch) => m.glyph(ch, { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch, latinWord: true }, wm), a.runId, a.bg);
+            hy ??= hyphenAtoms(st, (ch) => m.glyph(ch, { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch, latinWord: true }, wm), a.runId, a.bg, fontBaselineRatio(st, m, wm));
             a.hyphen = hy.map((h) => ({ ...h, runId: a.runId, bg: a.bg, ...(a.bgArea ? { bgArea: a.bgArea } : {}) }));
           }
         }
@@ -1086,19 +1084,35 @@ export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: s
   }
 }
 
-/** atoms[k] から次の分割点までを、行の中の語間 (空白) を詰めて収められれば、その分割点を返す (和欧間のアキは詰めない) */
+/**
+ * atoms[k] から次の分割点までを、行の中の語間 (空白) を詰めて収められれば、その分割点を返す (和欧間のアキは詰めない)。
+ * 語間を詰めてよい量は、その分割点で切った行が途中の行か、最後の行 (段落の終わり・改行で終わる行) かで変わる (noWordSqueeze)
+ */
 function pushBySpaces(atoms: Atom[], start: number, k: number, x: number, avail: number): number | undefined {
-  let room = 0;
-  for (let i = start; i < k; i++) room += wordSpaceSqueeze(atoms[i]);
-  if (room <= EPS) return undefined;
+  let body = 0;
+  let last = 0;
+  for (let i = start; i < k; i++) {
+    body += wordSpaceSqueeze(atoms[i], false);
+    last += wordSpaceSqueeze(atoms[i], true);
+  }
+  const most = Math.max(body, last);
+  if (most <= EPS) return undefined;
+  const n = atoms.length;
+  /** j で切った行に使える詰めの量: 後ろが改行か、空白を除いて何も残らなければ、最後の行 */
+  const room = (j: number): number => {
+    if (body === last) return body;
+    if (j < n && atoms[j].kind === 'break') return last;
+    let e = j;
+    while (e < n && atoms[e].isSpace) e++;
+    return e >= n ? last : body;
+  };
   let x2 = x;
-  for (let j = k; j < Math.min(atoms.length, k + 40); j++) {
+  for (let j = k; j < Math.min(n, k + 40); j++) {
     const a = atoms[j];
-    if (a.kind === 'break' || (a.isSpace && !a.glue)) return x2 - room <= avail + FIT_EPS ? j : undefined;
+    if (a.kind === 'break' || (a.isSpace && !a.glue)) return x2 - room(j) <= avail + FIT_EPS ? j : undefined;
     x2 += a.advance;
-    if (x2 - room > avail + FIT_EPS) return undefined;
-    if (j + 1 >= atoms.length) return j + 1;
-    if (canBreakAtoms(a, atoms[j + 1])) return j + 1;
+    if (x2 - most > avail + FIT_EPS) return undefined;
+    if (j + 1 >= n || canBreakAtoms(a, atoms[j + 1])) return x2 - room(j + 1) <= avail + FIT_EPS ? j + 1 : undefined;
   }
   return undefined;
 }
@@ -1111,10 +1125,40 @@ function noSpaceSqueeze(a: Atom): boolean {
   return !!a.st.noSpaceSqueeze;
 }
 
-/** 欧文の語間で詰めてよい量: 空白の字そのものの幅の 1/3 (letter-spacing の分は詰めない) */
-function wordSpaceSqueeze(a: Atom): number {
+/** 語間を詰めない行の種類 (Atom.noWordSqueeze): 途中の行 (text-align で組む行) */
+const WSQ_BODY = 1;
+/** 語間を詰めない行の種類 (Atom.noWordSqueeze): 最後の行・改行で終わる行 (text-align-last で組む行) */
+const WSQ_LAST = 2;
+
+/**
+ * 段落の字の並びの空白に、語間を追込みで詰めない行の種類の印を付ける (ブロックの wordSqueezeJustifiedOnly: XSL-FO の仕様モード)。
+ * 語間を詰めるのは、両端揃えで組む行だけ:
+ *  - XSL 1.1 §7.17.8: word-spacing="normal" の語間は “.maximum = .optimum, .minimum = .optimum” (縮める幅も伸ばす幅も無い)
+ *  - XSL 1.1 §7.16.9: “In the case of 'justify', the UA may stretch the inline boxes in addition to adjusting their positions.”
+ *    start・end・center・inside・outside は、行の中身を寄せるだけ
+ *  - CSS Text 3 §6.1: “In the case of justify, the UA may stretch or shrink any inline boxes by adjusting their text.”、
+ *    §6.4.1: 字の間に手を入れるのは “When justifying text”、§7.1: word-spacing: normal は “No additional spacing is applied.”
+ * どの行が両端揃えで組まれるかは、positionLine と同じ: 途中の行は text-align が justify のとき、最後の行と改行 (U+000A) で終わる行は
+ * text-align-last が justify のとき (XSL 1.1 §7.16.10。relative は、text-align が justify でも start)。
+ * 揃えは、行を持つブロック (st) の値で決める (行内の要素に書いた text-align は、中のブロックへ継承するための値で、この行の揃えではない)。
+ * 互換モードの「揃えによらず語間・和欧間を詰めない」(noSpaceSqueeze) とは別の指定 (こちらは語間だけ・両端揃えで組まない行だけ)
+ */
+export function markWordSqueeze(atoms: Atom[], st: { wordSqueezeJustifiedOnly?: boolean; textAlign?: string; textAlignLast?: string }): void {
+  if (!st.wordSqueezeJustifiedOnly) return;
+  const no = (st.textAlign === 'justify' ? 0 : WSQ_BODY) | (st.textAlignLast === 'justify' ? 0 : WSQ_LAST);
+  if (!no) return;
+  for (const a of atoms) if (a.kind === 'glyph' && a.first === ' ') a.noWordSqueeze = no;
+}
+
+/**
+ * 欧文の語間で詰めてよい量: 空白の字そのものの幅の 1/3 (letter-spacing の分は詰めない)。
+ * last は、その行が最後の行 (段落の終わり・改行で終わる行。RawLine.last) かどうか
+ */
+function wordSpaceSqueeze(a: Atom, last: boolean): number {
   // 残す空白 (pre・pre-wrap・white-space-collapse="false") は詰めない (コードの表示の字下げが縮まない)
   if (a.kind !== 'glyph' || a.first !== ' ' || a.st.wordSpaceShrink === false || a.st.collapseSpaces === false || noSpaceSqueeze(a)) return 0;
+  // 両端揃えで組まない行の語間は詰めない (markWordSqueeze)
+  if (a.noWordSqueeze && a.noWordSqueeze & (last ? WSQ_LAST : WSQ_BODY)) return 0;
   return Math.max(a.advance - (a.lsLead ?? 0) - (a.lsTrail ?? 0), 0) / 3;
 }
 
@@ -1135,13 +1179,14 @@ function punctAki(a: Atom): number {
  * 語間の限界は、欧文の行の調整と同じ空白の 1/3 のまま (JLREQ の「最小で四分アキまで」は、和文に混ぜた欧文の語間の目安)。
  * tail は行末の atom、head は行頭の atom (行頭の始め括弧類の前のアキは「行中」ではないので詰めない。捨てるかどうかは startTrimOf)。
  * 行末で捨てたアキ (endTrimOf・和欧間・letter-spacing) は、もう詰められないので数えない。
- * アンテナハウス互換 (noSpaceSqueeze) では、0 (語間) と 5 (和欧間) は詰めない
+ * アンテナハウス互換 (noSpaceSqueeze) では、0 (語間) と 5 (和欧間) は詰めない。
+ * XSL-FO の仕様モード (wordSqueezeJustifiedOnly) では、両端揃えで組まない行の 0 (語間) は詰めない (markWordSqueeze。last = 最後の行か)
  */
 const SQUEEZE_LEVELS = 6;
-function squeezeParts(a: Atom, tail: boolean, head: boolean): number[] {
+function squeezeParts(a: Atom, tail: boolean, head: boolean, last: boolean): number[] {
   const out = new Array<number>(SQUEEZE_LEVELS).fill(0);
   if (a.kind !== 'glyph') return out;
-  out[0] = wordSpaceSqueeze(a);
+  out[0] = wordSpaceSqueeze(a, last);
   const fs = a.st.fontSize;
   if (closingAt(a, a.last)) {
     const aki = punctAki(a);
@@ -1158,11 +1203,11 @@ function isFullStop(ch: string): boolean {
   return ch === '。' || ch === '．';
 }
 
-/** 追込みで、行 (items) の中で詰めてよい量の合計 (squeezeCap まで) */
-function lineSqueezable(items: Atom[]): number {
+/** 追込みで、行 (items) の中で詰めてよい量の合計 (squeezeCap まで)。last は、その行が最後の行 (RawLine.last) になるか */
+function lineSqueezable(items: Atom[], last: boolean): number {
   let t = 0;
   items.forEach((a, k) => {
-    for (const v of squeezeParts(a, k === items.length - 1, k === 0)) t += v;
+    for (const v of squeezeParts(a, k === items.length - 1, k === 0, last)) t += v;
   });
   return Math.min(t, squeezeCap(items));
 }
@@ -1519,7 +1564,7 @@ export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): Pos
   let shrinkDx: number[] | undefined;
   let over = widths.reduce((a, b) => a + b, 0) - avail;
   if (over > EPS) {
-    const parts = items.map((a, k) => squeezeParts(a, k === tail && !raw.hang, k === 0));
+    const parts = items.map((a, k) => squeezeParts(a, k === tail && !raw.hang, k === 0, raw.last));
     // 詰める量の合計は squeezeCap まで (アンテナハウス互換)
     let left = squeezeCap(items);
     for (let lv = 0; lv < SQUEEZE_LEVELS && over > EPS && left > EPS; lv++) {
