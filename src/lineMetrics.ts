@@ -67,7 +67,8 @@ function lineMetricsXsl(pl: PositionedLine, wm: WritingMode, block: ResolvedStyl
     return atomAboveBelow(a, wm);
   };
   // ブロックの字の上下: ブロックと同じ書体の字があればその書体の値、無ければ em の箱
-  const same = all.find((a) => a.kind === 'glyph' && a.g && a.st.fontFamily === block.fontFamily && !a.isSpace);
+  // 書体の指定は、斜体の書体・幅の違う書体を指す印 (ResolvedStyle.fontFamilySpec) を外した名前で比べる
+  const same = all.find((a) => a.kind === 'glyph' && a.g && (a.st.fontFamilySpec ?? a.st.fontFamily) === (block.fontFamilySpec ?? block.fontFamily) && !a.isSpace);
   const fs = block.fontSize;
   const sf = same?.primaryFont ?? same?.g?.font;
   const horiz = wm === 'horizontal-tb';
@@ -302,7 +303,7 @@ function fontLineMetricsOf(
   }
   for (const a of fontGlyphs) {
     // nominal: ブロックと同じ書体の指定の字は、字形を取った書体 (欧文の代わりの書体など) ではなく、ブロックの nominal-font の上下で割り振る
-    const d = (nominal && a.st.fontFamily === nominal.family ? nominal.diff : a.g!.font.ascentMinusDescent) * a.st.fontSize;
+    const d = (nominal && (a.st.fontFamilySpec ?? a.st.fontFamily) === nominal.family ? nominal.diff : a.g!.font.ascentMinusDescent) * a.st.fontSize;
     const l = lineHeightOf(a.st);
     A = Math.max(A, (l + d) / 2);
     B = Math.max(B, (l - d) / 2);
@@ -454,7 +455,7 @@ function lineMetricsAh(pl: PositionedLine, wm: WritingMode, fallback: ResolvedSt
   }
   // 字だけの行で line-height が字の上下より小さいときは、半行間を負にして行を line-height にする (boxLineHalfLeading のとき)
   const leading = isTextOnlyLine(all) && fallback.boxLineHalfLeading ? sc.lh - (sc.above + sc.below) : Math.max(sc.lh - (sc.above + sc.below), 0);
-  const byFont = fontLineMetricsOf(all, wm, sc, leading, strut, nominalDiff === undefined ? undefined : { family: fallback.fontFamily, diff: nominalDiff });
+  const byFont = fontLineMetricsOf(all, wm, sc, leading, strut, nominalDiff === undefined ? undefined : { family: fallback.fontFamilySpec ?? fallback.fontFamily, diff: nominalDiff });
   if (byFont) return byFont;
   addShiftedExtents(sc, all, wm, leading);
   // 行の高さを超える箱 (画像など) のある行も、ブロックの半行間 (line-height と字の大きさの差の半分) を上下に空ける

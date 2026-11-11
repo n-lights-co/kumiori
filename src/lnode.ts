@@ -145,6 +145,16 @@ export interface ResolvedStyle {
   varAxes?: ReadonlySet<string>;
   /** 印を付ける前の書体の名前 */
   fontFamilyBase?: string;
+  /**
+   * 傾き・幅の印のうち、斜体の書体・幅の違う書体 (静的な書体) のためだけに付けるもの (FontManager.staticShapeMarks。根のスタイルから引き継ぐ)。
+   * あるときは、その印を外した書体の名前 fontFamilySpec も作る
+   */
+  shapeMarks?: { ital: boolean; wdth: boolean };
+  /**
+   * 「同じ書体の指定か」を比べるための書体の名前: fontFamily から、静的な書体のためだけの傾き・幅の印を外したもの
+   * (斜体の書体・幅の違う書体を読み込んでいない文書の fontFamily と同じ)。無ければ fontFamily で比べる
+   */
+  fontFamilySpec?: string;
   /** font-style: oblique の角度 (italic のときは undefined) */
   obliqueAngle?: number;
   fontVariationSettings?: Record<string, number>;
@@ -315,6 +325,17 @@ function applyVariation(st: ResolvedStyle, parent: ResolvedStyle, n: BaseNode) {
     for (const [tag, v] of Object.entries(st.fontVariationSettings)) if (axes.has(tag)) (req.settings ??= {})[tag] = v;
   }
   st.fontFamily = st.fontFamilyBase + variationSuffix(req);
+  const marks = parent.shapeMarks;
+  if (marks) {
+    st.shapeMarks = marks;
+    const spec: VariationRequest = { ...req };
+    if (marks.wdth) delete spec.wdth;
+    if (marks.ital) {
+      delete spec.ital;
+      delete spec.slnt;
+    }
+    st.fontFamilySpec = st.fontFamilyBase + variationSuffix(spec);
+  }
 }
 
 function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {

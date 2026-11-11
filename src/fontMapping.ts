@@ -2,7 +2,7 @@
  * fontMapping — 既定の書体の指定と、CSS / XSL-FO の font-family から組版の書体を決める処理 (画面と Node のコマンドで共通)。
  */
 import type { FontSpec, LDocument } from './types';
-import { fontFileStyle, type FontManager, type RangedFace } from './fontManager';
+import { fontFileStyle, type FaceStyle, type FontManager, type RangedFace } from './fontManager';
 import { SANS, SERIF } from './sampleData';
 import { normalizeFamily } from './fontLoader';
 import { parseCss, type ParsedCss } from './htmlPaged';
@@ -216,6 +216,10 @@ export function createFontMapping(
     if (table.has(DOCUMENT_SOURCES)) {
       const idx = names.findIndex((n) => userFamilyFor(n));
       if (idx >= 0) {
+        // 読み込んだ書体が 2 つ以上並ぶ指定 (Times New Roman, MS Mincho など): 順のある書体の列にして、字ごとに、並びの前から順に
+        // その字を持つ書体を使う (XSL 1.1 §7.9.2: 並びの書体を、字ごとに順に試す。CSS Fonts 4 §5.2 と同じ)
+        const listed = foFontList(names, bold, monoCjk);
+        if (listed) return listed;
         const base = userFamilyFor(names[idx])!;
         if (idx === 0) return base;
         // 手前に等幅の指定 (monospace など) があれば、欧文は等幅の Cousine (Courier New と字幅互換)。
@@ -250,6 +254,32 @@ export function createFontMapping(
     return table.has(DOCUMENT_SOURCES) && names.length ? SERIF : undefined;
   }
 
+  /**
+   * XSL-FO の font-family の並びを、順のある書体の列にする (読み込んだ書体が 2 つ以上並ぶときだけ。ほかは undefined で、今までの組)。
+   * XSL 1.1 §7.9.2 ("a list of fonts ... that are tried in sequence to see if they contain a glyph for a certain character")。
+   * 並びの項目の決め方は HTML (htmlFontList) と同じ: 読み込んだ書体はその書体、総称 (serif・sans-serif・monospace) と既定の和文の書体の名前は
+   * その位置に写し先の組、既定の欧文の書体の名前と別名 (Times New Roman → Tinos など) はその位置に欧文の書体、ほかの名前は飛ばす。
+   * 最後に既定の書体 (飛ばした名前から決める明朝・ゴシック・等幅。無ければ、並びにゴシック系の名前があればゴシック、ほかは明朝)。
+   * 組の基本の書体 (行の基準に使う書体) は、並びの先頭の項目 (最初に使える書体)
+   */
+  function foFontList(names: string[], bold: boolean, monoCjk: string): string | undefined {
+    const entries: Array<{ name: string; face: boolean }> = [];
+    const skipped: string[] = [];
+    for (const n of names) {
+      const face = userFamilyFor(n);
+      const name = face ?? (isGenericOrDefaultCjk(n) ? mapFont([n], bold, monoCjk) : undefined) ?? knownLatinFamily(n);
+      if (!name) skipped.push(n);
+      else if (!entries.some((e) => e.name === name)) entries.push({ name, face: !!face });
+    }
+    if (entries.filter((e) => e.face).length < 2) return undefined;
+    const last = mapFont(skipped.length ? skipped : [names.some((n) => GOTHIC.test(n)) ? 'sans-serif' : 'serif'], bold, monoCjk) ?? SERIF;
+    const list = entries.map((e) => e.name);
+    if (!list.includes(last)) list.push(last);
+    const alias = `folist:${list.join('|')}`;
+    fonts.defineStack(alias, list[0], undefined, { list });
+    return alias;
+  }
+
   /** HTML の @font-face で読み込んだ書体 (loadFontFaces が table の face に登録する)。無ければ fonts で足した書体 */
   const faceOf = (n: string) => table.familyFor(n, FACE_SOURCES);
   /** 読み込み済みの face (「書体名@太さ」) と、そのファイル (ファイルで決まる face だけ。ほかは undefined) */
@@ -257,7 +287,10 @@ export function createFontMapping(
 
   /**
    * @font-face の書体を、一緒に選んだファイル (src の url のパスで突き合わせ、無ければファイル名で突き合わせる) から読み込む。
-   * 斜体の書体は読まない (斜体は、立体を傾けて描く)。
+   * 斜体・斜めの書体の face (font-style の記述子が italic・oblique) は、同じファミリーの傾きの違う書体として登録し、font-style の指定で選ぶ
+   * (CSS Fonts 4 §5.2 の font-style の照合: italic は 斜体 → 斜め → 立体。斜体・斜めの face が無いファミリーは、立体を傾けて描く)。
+   * font-width (font-stretch) の記述子のある静的な書体の face も、幅の違う書体として登録し、font-stretch の指定で選ぶ (§5.2 の font-width の照合)。
+   * 記述子が範囲のときは、標準の幅 (100%) に最も近い値の書体として扱う。記述子の無い face は、標準の幅 (書体のファイルの幅は見ない。§4.4 の auto)
    *
    * 同じ font-family で、記述子の組 (太さ・unicode-range) が同じ face が並ぶとき (CSS Fonts 4):
    *  - §4.4: font-weight の記述子が無い (auto) face は、選ぶときは normal (400) として扱う (書体のファイルの太さでは選ばない)
@@ -269,7 +302,9 @@ export function createFontMapping(
    * アンテナハウスの出力では、同じ名前で記述子の無い @font-face に Regular・Bold・Heavy のファイルを並べた文書 (『CSS ページ組版入門』第 4 版の
    * source-han-sans・source-han-serif) の太字が、それぞれの太さのファイルで組まれる (公開の説明 https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html#axf.font-face
    * は font-weight の初期値を normal としているが、出力の PDF に埋め込まれた書体は、ファイルの太さで使い分けたもの)。
-   * 可変フォントと、太さの読めない書体は、標準と同じ (400)。傾き (font-style の記述子の無い、斜体のファイル) は、見本で確かめられないので標準と同じ (立体の face)
+   * 可変フォントと、太さの読めない書体は、標準と同じ (400)。
+   * 同じ考えで、font-style の記述子の無い face は、書体のファイルの傾き (OS/2 の fsSelection の ITALIC・OBLIQUE) で登録する
+   * (記述子なしで斜体のファイルを指した face は、斜体の書体として font-style: italic の字に使う。標準では立体の face: §4.4 の auto は、選ぶときは normal)
    */
   async function loadFontFaces(css: string | ParsedCss, files: FontFile[], opts: { ahFaceWeight?: boolean } = {}) {
     table.clear('face');
@@ -289,7 +324,6 @@ export function createFontMapping(
     // この文書で定義した face (「書体名@太さ」) ごとの、定義に使ったファイルの並び (書いた順)
     const defined = new Map<string, FontFile[]>();
     for (const ff of (typeof css === 'string' ? parseCss(css) : css).fontFaces) {
-      if (ff.italic) continue;
       const file = ff.srcs.map(fileOf).find(Boolean);
       if (!file) continue;
       const rangeKey = ff.ranges ? ff.ranges.map(([a, b]) => `${a}-${b}`).join(',') : '';
@@ -298,21 +332,30 @@ export function createFontMapping(
         // アンテナハウス互換: font-weight の記述子の無い face は、書体のファイルの太さで登録する (可変フォント・太さの読めない書体は 400 のまま)
         let weight = ff.weight;
         let sfnt: ArrayBuffer | undefined;
-        if (opts.ahFaceWeight && !ff.weightRange) {
+        // 書体そのものの傾き (font-style の記述子) と幅 (font-width の記述子。範囲は、100% に最も近い値)
+        let style: FaceStyle | undefined = ff.italic ? (ff.oblique ? 'oblique' : 'italic') : undefined;
+        let width = ff.widthRange ? Math.min(ff.widthRange[1], Math.max(ff.widthRange[0], 100)) : undefined;
+        if (width === 100) width = undefined;
+        if (opts.ahFaceWeight && (!ff.weightRange || ff.styleAuto)) {
           const st = fontFileStyle(await file.arrayBuffer());
           sfnt = st.sfnt;
-          if (!st.variable && st.weight !== undefined) weight = st.weight;
+          if (!ff.weightRange && !st.variable && st.weight !== undefined) weight = st.weight;
+          // アンテナハウス互換: font-style の記述子の無い face は、書体のファイルの傾きで登録する
+          if (ff.styleAuto && !st.variable && st.style) style = st.style;
         }
+        // 可変フォントの幅は、軸と記述子の範囲で決まる (FontManager の instance)。静的な書体だけ、幅の違う書体として登録する
+        if (width !== undefined && (sfnt ? fontFileStyle(sfnt).variable : fontFileStyle(await file.arrayBuffer()).variable)) width = undefined;
+        const shapeKey = `${style ? `/${style}` : ''}${width !== undefined ? `/w${width}` : ''}`;
         // 記述子の組 (太さ・範囲) が同じ face の 2 つ目からは、別の名前 (…~2・…~3) で登録し、先の定義の face に重ねる (§4.5・§5.2)。
         // 同じファイルの繰り返しは、足さない
-        const slot = `${first}@${weight}`;
+        const slot = `${first}@${weight}${shapeKey}`;
         const earlier = defined.get(slot) ?? [];
         if (earlier.includes(file)) continue;
         defined.set(slot, [...earlier, file]);
         const family = earlier.length ? `${first}~${earlier.length + 1}` : first;
         // 読み込み済みなら読み直さない (最初の定義は「書体名@太さ」だけで見る: 今までと同じ)。ファイルで決まるもの
         // (後の定義・ファイルの太さで登録したもの) は、同じファイルのときだけ
-        const key = `${family}@${weight}`;
+        const key = `${family}@${weight}${shapeKey}`;
         const fileId = earlier.length || sfnt ? (file.url ?? file.path ?? file.name) : undefined;
         if (!registeredFaces.has(key) || (fileId !== undefined && registeredFaces.get(key) !== fileId)) {
           // 可変フォントの記述子 (Fonts 4 §4.4: 記述子が無い (auto) ときは、選ぶときは normal、軸の値は制限しない)
@@ -322,14 +365,14 @@ export function createFontMapping(
             ...(ff.obliqueRange ? { oblique: ff.obliqueRange } : {}),
             ...(ff.variationSettings ? { settings: ff.variationSettings } : {}),
             ...(ff.namedInstance ? { namedInstance: ff.namedInstance } : {}),
-          });
+          }, style || width !== undefined ? { ...(style ? { style } : {}), ...(width !== undefined ? { width } : {}) } : undefined);
           // line-height: normal の行の高さを、書体の値から決める書体 (htmlNormalLineHeight と同じ。代わりの書体として使われたときも)
           lf.metricsLineHeight = true;
           registeredFaces.set(key, fileId);
         }
         const g = groups.get(ff.family) ?? [];
-        const same = earlier.length ? { family: first, weight } : undefined;
-        if (!g.some((x) => x.family === family && x.same?.weight === same?.weight)) g.push({ family, ...(ff.ranges ? { ranges: ff.ranges } : {}), ...(same ? { same } : {}) });
+        const same = earlier.length ? { family: first, weight, ...(style ? { style } : {}), ...(width !== undefined ? { width } : {}) } : undefined;
+        if (!g.some((x) => x.family === family && x.same?.weight === same?.weight && x.same?.style === same?.style && x.same?.width === same?.width)) g.push({ family, ...(ff.ranges ? { ranges: ff.ranges } : {}), ...(same ? { same } : {}) });
         groups.set(ff.family, g);
       } catch (e) {
         console.warn(`@font-face ${ff.family}: ${String(e)}`);

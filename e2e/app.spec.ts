@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { routeFontCache } from './fontCache';
-import { extraTestFont } from '../test/helpers';
+import { ensureFonts, extraTestFont, fontDir } from '../test/helpers';
+import { LATIN_SPECS, MONO_SPECS } from '../src/fontMapping';
 import { buildCff2Font } from '../test/cff2TestFont';
 
 /**
@@ -604,6 +605,75 @@ test('可変フォント: 太さ・幅の実体を、測った幅のまま canva
   }
   expect(names.filter((n) => n.startsWith('Anybody')).sort()).toEqual(['Anybody_400wght', 'Anybody_700wght', 'Anybody_75wdth_400wght']);
   await page.locator('#sheets canvas').first().screenshot({ path: test.info().outputPath('variable.png') });
+  expect(errors).toEqual([]);
+});
+
+test('斜体の @font-face: 斜体の字を斜体の書体で、測った幅のまま canvas に描く (傾けて描かない)', async ({ page }) => {
+  const errors = await open(page);
+  // 立体は Arimo、斜体は Cousine (どちらも既定の欧文の書体のファイル。斜体の書体のファイルの代わりに、字の送りの違う書体を斜体の face に使う)
+  await ensureFonts([...LATIN_SPECS, ...MONO_SPECS]);
+  const b64 = (name: string) => fs.readFileSync(path.join(fontDir, name)).toString('base64');
+  await page.evaluate(
+    ([regular, italic]) => {
+      const html =
+        '<!doctype html><html lang="en"><head><style>@page { size: A6; margin: 10mm } @font-face { font-family: F; src: url(r.ttf) } @font-face { font-family: F; src: url(i.ttf); font-style: italic } p { font-family: F; font-size: 18pt; margin: 0 }</style></head>' +
+        '<body><p>Hamburg</p><p><em>Hamburg</em></p></body></html>';
+      const dt = new DataTransfer();
+      const bytes = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+      dt.items.add(new File([html], 'italic.html', { type: 'text/html' }));
+      dt.items.add(new File([bytes(regular)], 'r.ttf', { type: 'font/ttf' }));
+      dt.items.add(new File([bytes(italic)], 'i.ttf', { type: 'font/ttf' }));
+      window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt }));
+      window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, cancelable: true }));
+    },
+    [b64('Arimo-Regular.ttf'), b64('Cousine-Regular.ttf')],
+  );
+  await expect(page.locator('#status')).toContainText('italic.html');
+  await expect(page.locator('#sheets canvas')).toHaveCount(1);
+  const info = await page.evaluate(() => {
+    type Lf = { key: string; family: string; weight: number; unitsPerEm: number; style?: string; face?: FontFace; fk: { layout(t: string, f: object): { glyphs: Array<{ advanceWidth: number }> } } };
+    const k = (window as unknown as { __kumiori: { tree: { sheets: Array<{ page: { regionBody: unknown } }> }; fonts: { all(): Lf[]; get(family: string, weight: number): Lf; cssFont(f: Lf, px: number): string } } }).__kumiori;
+    const glyphs: Array<{ text: string; fontFamily: string; fontWeight: number; italic?: boolean }> = [];
+    const walk = (a: { type?: string; children?: unknown[] }) => {
+      if (a.type === 'glyph') glyphs.push(a as never);
+      for (const c of a.children ?? []) walk(c as never);
+    };
+    walk(k.tree.sheets[0].page.regionBody as never);
+    const hs = glyphs.filter((g) => g.text === 'H').map((g) => ({ family: g.fontFamily, weight: g.fontWeight, slant: !!g.italic }));
+    // ブラウザに登録した書体で測った幅 (描く幅) と、fontkit で測った幅 (組んだ幅)
+    const ctx = document.createElement('canvas').getContext('2d')!;
+    ctx.fontKerning = 'none';
+    const PX = 1000;
+    const faces = hs.map((h) => {
+      const f = k.fonts.get(h.family, h.weight);
+      ctx.font = k.fonts.cssFont(f, PX);
+      const laid = (f.fk.layout('Hamburg', { kern: false, liga: false, clig: false }).glyphs.reduce((a, g) => a + g.advanceWidth, 0) / f.unitsPerEm) * PX;
+      return { style: f.style ?? 'normal', registered: !!f.face && f.face.status === 'loaded', drawn: ctx.measureText('Hamburg').width, laid };
+    });
+    return { hs, faces };
+  });
+  // 斜体の字は、斜体の face (名前の後ろに、その書体を指す印) で組み、傾けて描く印は付かない
+  expect(info.hs).toEqual([
+    { family: 'css:F', weight: 400, slant: false },
+    { family: 'css:F{ital=1}', weight: 400, slant: false },
+  ]);
+  expect(info.faces.map((f) => f.style)).toEqual(['normal', 'italic']);
+  // 描く幅 (ブラウザに登録した書体) と、組んだ幅 (fontkit) が合う (許す差は、可変フォントのテストと同じ: 字の数 × 0.5px)。
+  // 斜体の face は、立体の書体 (Arimo) とは違う書体 (Cousine) の幅で描かれる
+  const tolerance = [...'Hamburg'].length * 0.5 + 0.01;
+  for (const f of info.faces) {
+    expect(f.registered).toBe(true);
+    expect(Math.abs(f.drawn - f.laid)).toBeLessThan(tolerance);
+  }
+  expect(Math.abs(info.faces[0].drawn - info.faces[1].drawn)).toBeGreaterThan(20 * tolerance);
+  // PDF には、立体と斜体の 2 つの書体が埋まる
+  const pdf = await downloadPdf(page);
+  const names: string[] = [];
+  for (const [, obj] of pdf.context.enumerateIndirectObjects()) {
+    if (obj instanceof PDFDict && obj.get(PDFName.of('Subtype')) === PDFName.of('Type0')) names.push(String(obj.get(PDFName.of('BaseFont'))).replace(/^\/[A-Z]{6}\+/, ''));
+  }
+  expect(names).toContain('Arimo-Regular');
+  expect(names).toContain('Cousine-Regular');
   expect(errors).toEqual([]);
 });
 

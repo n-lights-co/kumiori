@@ -248,8 +248,9 @@ const fontNames = new FontNameTable();
 const { mapFont, mapHtmlFont, htmlNormalLineHeight, loadFontFaces, usesMono } = createFontMapping(fonts, fontNames);
 
 async function registerUserFont(f: UserFont): Promise<boolean> {
-  if (userFonts.some((u) => u.family === f.family && u.weight === f.weight)) return false;
-  await fonts.registerBuffer(f.family, f.weight, f.buffer, true);
+  if (userFonts.some((u) => u.family === f.family && u.weight === f.weight && u.style === f.style)) return false;
+  // 斜体・斜めの書体は、同じファミリーの傾きの違う書体として登録する (font-style の指定で選ばれる。CSS Fonts 4 §5.2)
+  await fonts.registerBuffer(f.family, f.weight, f.buffer, true, undefined, f.style ? { style: f.style } : undefined);
   userFonts.push(f);
   // FO の font-family 名 (和名・全角・空白の違いは吸収) から引けるようにする
   fontNames.add('document', f.names, f.family);

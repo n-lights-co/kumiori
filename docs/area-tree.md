@@ -81,7 +81,7 @@
 - `AreaTree.resources` は、木が使う書体と画像の一覧です (`src/areaResources.ts`。組版の終わりに付けます)。
   - `fonts`: `id` (`GlyphArea.fontId` が指す名前)・`family`・`weight`・`postscriptName`・`unitsPerEm` と、書体のファイルのバイト列の `sha256`。
     - 可変フォント (OpenType Font Variations) は、使った軸の値の組ごとに「実体」(その形の静的な書体) を作って組むので、実体ごとに 1 項目になります。実体の項目には、`variation` (軸の値。札 → 値。書体のすべての軸) と `sourceSha256` (元の可変フォントのファイルのバイト列の SHA-256) が付きます。`sha256` は、実体にした静的な書体のバイト列のものです (`glyphIds`・`glyphPositions` は、その書体での値。字形の番号は元の可変フォントと同じ)。輪郭が CFF2 の可変フォントは、既定の形も実体 (静的な CFF の書体) になります。
-    - 実体を使う字の `GlyphArea.fontFamily` は、書体の名前の後ろに、太さ以外の軸の値の印が付きます (`css:Inter{;opsz=20,wdth=75}`。`{;` の後ろは、札 = 値の並び。`font-variation-settings` と同じ意味)。`fontWeight` は、太さの軸の値 (書体の範囲に収めた太さ) です。この名前と太さで、同じ実体が引けます。可変フォントを読み込んでいない文書の `fontFamily` には、印は付きません。
+    - 実体を使う字の `GlyphArea.fontFamily` は、書体の名前の後ろに、太さ以外の軸の値の印が付きます (`css:Inter{;opsz=20,wdth=75}`。`{;` の後ろは、札 = 値の並び。`font-variation-settings` と同じ意味)。`fontWeight` は、太さの軸の値 (書体の範囲に収めた太さ) です。この名前と太さで、同じ実体が引けます。斜体の書体・幅の違う書体 (書体のファイルそのものが傾き・幅を持つもの) で組んだ字の `fontFamily` にも、その書体を指す印が付きます (`Arial{ital=1}`・`Arial{wdth=75}`・`Arial{wdth=75,ital=1}`。斜めの書体は `{slnt=14}`。`;` の前に書きます)。この字には `italic` (傾けて描く印) は付きません。可変フォントも、斜体・幅の違う書体も読み込んでいない文書の `fontFamily` には、印は付きません。
   - `images`: `src`・`mime`・自然な大きさ (`width`・`height`。CSS px) と、画像のファイルのバイト列の `sha256` (バイト列があるとき)。
 - `GlyphArea.text` は、字の単位 1 つ分の文字列です。ふつうは 1 字ですが、書記素クラスタ (UAX #29 の拡張書記素クラスタ: 基底の字 + 結合文字・異体字セレクタ、絵文字の並びなど)、合字にする字の並び、つながる字 (アラビア文字など) の並びは、2 字以上が 1 つの `GlyphArea` になります。`advance` は、その並びを 1 つの書体で組んだ送りの合計です。
 - `GlyphArea.glyphIds` は、描く字形の番号です。`text` を書体の OpenType の機能 (`features`) で組んだ結果で、左から右へ描く順です (PDF に書くときと同じやり方)。

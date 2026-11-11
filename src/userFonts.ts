@@ -38,7 +38,8 @@ export async function saveUserFont(f: UserFont): Promise<void> {
       (db) =>
         new Promise<void>((res, rej) => {
           const tx = db.transaction(STORE, 'readwrite');
-          tx.objectStore(STORE).put({ key: `${f.family}|${f.weight}`, ...f });
+          // 斜体・斜めの書体は、同じファミリー・太さの立体と別に保存する
+          tx.objectStore(STORE).put({ key: `${f.family}|${f.weight}${f.style ? `|${f.style}` : ''}`, ...f });
           tx.oncomplete = () => res();
           tx.onerror = () => rej(tx.error);
           tx.onabort = () => rej(tx.error);

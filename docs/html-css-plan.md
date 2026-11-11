@@ -143,7 +143,7 @@ node scripts/compare-pdf.mjs --html <見本>.html --ref <見本>.pdf --out <出�
 
 確かめる中で足したもの:
 
-- `@font-face` (一緒に選んだ TTF / OTF / WOFF / WOFF2 (WOFF・WOFF2 は sfnt に戻す。`src/webFont.ts`) を、src の url のファイル名で突き合わせて読み込む。斜体の書体は読まない)。PDF には、CFF の OpenType は 'CFF ' の表を、使わない字の字形を空にした部分書体 (字の番号は変えない。`src/cff.ts`) にして埋め込む (FontFile3 の CIDFontType0C)。CID 方式の CFF では、本文の字の符号・W・ToUnicode を CID で書く (ISO 32000-2 §9.7.4.2)。OpenType の機能 (onum・vert など) を使う字も、同じ書体の 1 つの埋め込みの字形として書く (機能の組ごとに埋め込み直さない)
+- `@font-face` (一緒に選んだ TTF / OTF / WOFF / WOFF2 (WOFF・WOFF2 は sfnt に戻す。`src/webFont.ts`) を、src の url のファイル名で突き合わせて読み込む。`font-style: italic`・`oblique` の face は斜体・斜めの書体として、`font-stretch` の記述子のある静的な書体の face は幅の違う書体として登録し、CSS Fonts 4 §5.2 の順 (幅 → 傾き → 太さ) で選ぶ)。PDF には、CFF の OpenType は 'CFF ' の表を、使わない字の字形を空にした部分書体 (字の番号は変えない。`src/cff.ts`) にして埋め込む (FontFile3 の CIDFontType0C)。CID 方式の CFF では、本文の字の符号・W・ToUnicode を CID で書く (ISO 32000-2 §9.7.4.2)。OpenType の機能 (onum・vert など) を使う字も、同じ書体の 1 つの埋め込みの字形として書く (機能の組ごとに埋め込み直さない)
 - 印刷向けの既定: body の余白 (画面の 8px) を付けない。`@media print` の規則を使い、screen だけの CSS は使わない (`@media` の並びの中の screen の条件は、条件ごと `not all` にする。`<style media>`・`<link media>` の条件は、印刷の媒体 (ページの大きさ) で評価する)。`vh` はページの領域の高さに対して決める
 - 既定の用紙 (`@page` で `size` を指定していない文書の用紙): A4・余白 20mm。公開 API の `pageSize`・Node のコマンドの `--page-size` で用紙の大きさを変えられる (CSS の `size` と同じ書き方: `A5`・`A5 landscape`・`148mm 210mm`。CSS Paged Media 3 §7.1)。文書の `@page { size }` があればそちらが勝ち、向きだけの `size: landscape` は既定の用紙を横置きにする。`@media` の `width`・`height`・`orientation` は、この既定の用紙で評価する (同 §7.1: メディアクエリは `size` を見ず、`@page` の規則が無いときに選ばれる用紙で評価する)。既定のスタイル (`--style`) は用紙を決めない (どのスタイルでも同じ)
 - `@layer` の入れ子 (Cascade 5 §6.4): 入れ子の層は親の層の中に並び、親の層に直接書いた宣言はその入れ子の層のどれよりも強い (`@layer a.x` を後から書いても `a` の中)

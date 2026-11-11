@@ -203,7 +203,8 @@ describe('HTML: 印刷の色・target-counter()・脚注・アンテナハウス
     const { fontFaces } = parseCss(`@font-face { font-family: "my sans"; src: url(fonts/My-Bold.otf) format("opentype"); font-weight: bold } @font-face { font-family: x; src: url('x-It.otf'); font-style: italic }`);
     expect(fontFaces).toEqual([
       // weightRange: font-weight の記述子の範囲 (1 つの値は両端が同じ。可変フォントの軸の値を収める範囲。NC-15)
-      { family: 'my sans', weight: 700, italic: false, srcs: ['fonts/My-Bold.otf'], weightRange: [700, 700] },
+      // styleAuto: font-style の記述子が無い face (--style ah は、書体のファイルの傾きで登録する。NC-27)
+      { family: 'my sans', weight: 700, italic: false, styleAuto: true, srcs: ['fonts/My-Bold.otf'], weightRange: [700, 700] },
       { family: 'x', weight: 400, italic: true, srcs: ['x-It.otf'] },
     ]);
     // unicode-range と太さの範囲 (Fonts 4 §4.4・§4.5)

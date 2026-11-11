@@ -6259,14 +6259,18 @@ export class LayoutEngine {
   ) {}
 
   private baseStyle(): ResolvedStyle {
-    const fam = this.options.defaultFontFamily ?? this.fonts.all()[0]?.family ?? 'sans-serif';
+    // 既定の書体名は、ファミリー名 (最初に登録した書体が斜体・幅の狭い書体でも、その書体だけを指す印は付けない)
+    const first = this.fonts.all()[0];
+    const fam = this.options.defaultFontFamily ?? first?.baseFamily ?? first?.family ?? 'sans-serif';
     // 可変フォントを読み込んでいれば、その軸の札 (子のスタイルの解決で、書体の名前に軸の値の指定を付ける。lnode.ts の applyVariation)
     const varAxes = this.fonts.variationAxes();
+    const shapeMarks = varAxes ? this.fonts.staticShapeMarks() : undefined;
     return {
       fontFamily: fam,
       fontWeight: 400,
       italic: false,
       ...(varAxes ? { varAxes } : {}),
+      ...(shapeMarks ? { shapeMarks } : {}),
       fontSize: this.options.defaultFontSize ?? 10.5,
       lineHeight: this.options.defaultLineHeight ?? 1.7,
       color: '#000000',
