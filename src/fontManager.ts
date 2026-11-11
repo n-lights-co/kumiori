@@ -136,7 +136,48 @@ export interface FaceDescriptors {
   namedInstance?: string;
 }
 
+/**
+ * 範囲つきの書体の組 (FontManager.defineRanged) の face の 1 つ: 登録した書体名と、受け持つ字の範囲 (無ければすべての字)。
+ * same は、記述子の組 (太さ・範囲) が同じ @font-face の、後の定義に付ける (CSS Fonts 4 §4.5・§5.2: 同じ記述子の face は 1 つの組
+ * (composite face) になり、後に定義したものから字ごとに調べる): family は先の定義の書体名、weight はその太さ。
+ * 太さの照合 (§5.2) は先の定義のファミリーの中で行い、その太さが選ばれる指定のときだけ、この face を調べる
+ */
+export interface RangedFace {
+  family: string;
+  ranges?: Array<[number, number]>;
+  same?: { family: string; weight: number };
+}
+
 const keyOf = (family: string, weight: number) => `${family}@${weight}`;
+
+/**
+ * 書体のファイルそのものの太さ・傾き (OpenType の OS/2 の表の usWeightClass と fsSelection の斜体の印。OS/2 が無ければ head の macStyle)。
+ * WOFF・WOFF2 は sfnt に戻し、書体の集まりは最初の書体を読む (registerBuffer と同じ)。sfnt は、戻した書体のファイル (登録にそのまま渡せる)。
+ * weight は 1〜1000 の値だけ (CSS Fonts 4 §2.2 の font-weight の範囲。外の値・表の無い書体・読めないファイルは undefined)。
+ * variable は、可変フォント (fvar の表を持つ) か
+ */
+export function fontFileStyle(buffer: ArrayBuffer): { sfnt: ArrayBuffer; weight?: number; italic: boolean; variable: boolean } {
+  let sfnt = buffer;
+  const none = { sfnt, italic: false, variable: false };
+  try {
+    sfnt = toSfnt(buffer);
+    if (isCollection(sfnt)) sfnt = collectionFaces(sfnt)[0];
+    const v = new DataView(sfnt);
+    const tables = new Map<string, number>();
+    for (let i = 0, n = v.getUint16(4); i < n; i++) {
+      const rec = 12 + i * 16;
+      tables.set(String.fromCharCode(v.getUint8(rec), v.getUint8(rec + 1), v.getUint8(rec + 2), v.getUint8(rec + 3)), v.getUint32(rec + 8));
+    }
+    const os2 = tables.get('OS/2');
+    const head = tables.get('head');
+    const w = os2 !== undefined ? v.getUint16(os2 + 4) : undefined;
+    // fsSelection (OS/2 の 62 バイト目) のビット 0 が ITALIC。OS/2 が無ければ、head の macStyle (44 バイト目) のビット 1
+    const italic = os2 !== undefined ? (v.getUint16(os2 + 62) & 1) !== 0 : head !== undefined ? (v.getUint16(head + 44) & 2) !== 0 : false;
+    return { sfnt, ...(w !== undefined && w >= 1 && w <= 1000 ? { weight: w } : {}), italic, variable: tables.has('fvar') };
+  } catch {
+    return { ...none, sfnt };
+  }
+}
 
 /** OS/2 の typo の上下 (sTypoAscender − sTypoDescender) が、ちょうど 1em を成す書体か (Noto CJK などの和文の書体: 字の枠 = em の箱) */
 function typoSpansEm(fk: LoadedFont['fk']): { typoAscender: number; typoDescender: number } | undefined {
@@ -534,7 +575,7 @@ export class FontManager {
       // 順の列を持つ組 (defineStack の list) は、その基本の書体 (別の組の名前・範囲つきの書体の組の名前のこともある) をもう 1 段たどる
       const listed = family ? this.stacks.get(family) : undefined;
       const target = listed?.list ? listed.base : family;
-      const loaded = target ? [...(this.ranged.get(target) ?? [])].reverse().filter((f) => [...this.fonts.values()].some((x) => x.family === f.family)) : [];
+      const loaded = target ? [...(this.ranged.get(target) ?? [])].reverse().filter((f) => [...this.fonts.values()].some((x) => x.family === f.family) && (!f.same || this.sameApplies(f.same, weight))) : [];
       const rangedFirst = (loaded.find((f) => !f.ranges || f.ranges.some(([a, b]) => a <= 0x20 && 0x20 <= b)) ?? loaded[loaded.length - 1])?.family;
       const real = rangedFirst ?? (target ? (this.stacks.get(target)?.base ?? target) : target);
       const fam = real && [...this.fonts.values()].some((f) => f.family === real) ? real : this.fallbackFamily;
@@ -570,13 +611,22 @@ export class FontManager {
    * 範囲つきの書体の組 (CSS の @font-face の unicode-range。Fonts 4 §4.5): 名前 → face の並び (登録した書体名と、受け持つ字の範囲)。
    * 字ごとに、範囲に入り、その字形を持つ最初の face を使う
    */
-  private ranged = new Map<string, Array<{ family: string; ranges?: Array<[number, number]> }>>();
-  defineRanged(name: string, faces: Array<{ family: string; ranges?: Array<[number, number]> }>) {
+  private ranged = new Map<string, RangedFace[]>();
+  defineRanged(name: string, faces: RangedFace[]) {
     this.ranged.set(name, faces);
     this.forCharMemo.clear();
     this.clusterMemo.clear();
     this.getMemo.clear();
     this.generation++;
+  }
+  /**
+   * 記述子の組が同じ face の、後の定義 (RangedFace.same) を、その太さの指定で使うか: 先の定義のファミリーで太さを照合した結果 (Fonts 4 §5.2) が、
+   * その face の太さのとき。先の定義の書体が読み込まれていなければ、後の定義だけがその組
+   */
+  private sameApplies(same: NonNullable<RangedFace['same']>, weight: number): boolean {
+    if (!this.isLoaded(same.family)) return true;
+    const hit = this.get(same.family, weight);
+    return (hit.instanceOf?.master ?? hit).weight === same.weight;
   }
   private pickRanged(name: string, weight: number, ch: string): LoadedFont | undefined {
     const faces = this.ranged.get(name);
@@ -586,6 +636,7 @@ export class FontManager {
     for (const f of [...faces].reverse()) {
       if (f.ranges && !f.ranges.some(([a, b]) => cp >= a && cp <= b)) continue;
       if (![...this.fonts.values()].some((x) => x.family === f.family)) continue;
+      if (f.same && !this.sameApplies(f.same, weight)) continue;
       const lf = this.get(f.family, weight);
       if (this.hasGlyph(lf, ch)) return lf;
     }

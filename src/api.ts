@@ -359,6 +359,16 @@ export async function createTypesetter(setup: TypesetterOptions = {}): Promise<T
   };
 }
 
+/** 2 つのバイト列の中身が同じか */
+function sameBytes(a: ArrayBuffer | undefined, b: ArrayBuffer): boolean {
+  if (!a || a.byteLength !== b.byteLength) return false;
+  if (a === b) return true;
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+  return true;
+}
+
 /** 書体を読み込み、文書を組む関数を返す (createTypesetter と typeset の中身) */
 async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string, options: DocumentOptions) => Promise<TypesetResult>> {
   checkOptions(setup);
@@ -374,7 +384,17 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
   base.onNotice = (m) => baseWarnings.push(m);
   /** 書体の名前 → ファミリー名の表 (fontMapping の FontNameTable)。ここには fonts で足した書体 (installed) を登録し、文書ごとの書体は文書を組むときに写しへ足す */
   const fontNames = new FontNameTable();
-  for (const spec of [...FONT_SPECS, ...LATIN_SPECS]) await base.registerBuffer(spec.family, spec.weight ?? 400, await bufferOfSpec(spec), false);
+  // 既定の書体。太字の枠 (weight 600 以上) に、同じファミリーの標準の太さと同じ中身のファイルが渡されたときは、太字の書体は無いものとして
+  // 登録しない (太字の指定の字は、標準の太さの書体を太らせて描く。inlineLayout の fakeBold)。--font-dir・loadFont で既定の書体を、
+  // 太字を持たない書体 (MS ゴシックなど) に入れ替えるときに、同じファイルを両方の名前で置ける
+  const regular = new Map<string, ArrayBuffer>();
+  for (const spec of [...FONT_SPECS, ...LATIN_SPECS]) {
+    const buf = await bufferOfSpec(spec);
+    const weight = spec.weight ?? 400;
+    if (weight < 600) regular.set(spec.family, buf);
+    else if (sameBytes(regular.get(spec.family), buf)) continue;
+    await base.registerBuffer(spec.family, weight, buf, false);
+  }
   setupDefaultFonts(base);
   // 足す書体: name 表のファミリー名 (nameID 16、無ければ 1) と OS/2 の太さで登録する。斜体は登録しない (@font-face の書体と同じ。斜体の選び分けは無い)
   for (const f of (setup.fonts ?? []).map((f) => toFile(f))) {
@@ -686,7 +706,8 @@ async function importHtmlText(
   const invalidAttr: Record<string, number> = {};
   const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.sheet) : {}), onInvalidAttr: (p, v) => (invalidAttr[`${p}: ${v}`] = (invalidAttr[`${p}: ${v}`] ?? 0) + 1) });
   // @font-face の書体 (TTF・OTF と、ふつうの書体のファイルに戻して使う WOFF・WOFF2)
-  await mapping.loadFontFaces(prepared.sheet, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)));
+  // アンテナハウス互換 (style ah) では、font-weight の記述子の無い face を、書体のファイルの太さで登録する (fontMapping.loadFontFaces)
+  await mapping.loadFontFaces(prepared.sheet, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)), { ahFaceWeight: style === 'ah' });
   // 分綴を使う文書なら、文書に出てくる言語の分綴の規則を読み込む
   await loadDocumentHyphenators(prepared.doc, prepared.css);
   // 作成者スタイルシート と style 属性のうち、読まない宣言 (未対応・知らないプロパティ) を数える

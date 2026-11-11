@@ -2,7 +2,7 @@
  * fontMapping — 既定の書体の指定と、CSS / XSL-FO の font-family から組版の書体を決める処理 (画面と Node のコマンドで共通)。
  */
 import type { FontSpec, LDocument } from './types';
-import type { FontManager } from './fontManager';
+import { fontFileStyle, type FontManager, type RangedFace } from './fontManager';
 import { SANS, SERIF } from './sampleData';
 import { normalizeFamily } from './fontLoader';
 import { parseCss, type ParsedCss } from './htmlPaged';
@@ -252,13 +252,26 @@ export function createFontMapping(
 
   /** HTML の @font-face で読み込んだ書体 (loadFontFaces が table の face に登録する)。無ければ fonts で足した書体 */
   const faceOf = (n: string) => table.familyFor(n, FACE_SOURCES);
-  const registeredFaces = new Set<string>();
+  /** 読み込み済みの face (「書体名@太さ」) と、そのファイル (ファイルで決まる face だけ。ほかは undefined) */
+  const registeredFaces = new Map<string, string | undefined>();
 
   /**
    * @font-face の書体を、一緒に選んだファイル (src の url のパスで突き合わせ、無ければファイル名で突き合わせる) から読み込む。
-   * 斜体の書体は読まない (斜体は、立体を傾けて描く)
+   * 斜体の書体は読まない (斜体は、立体を傾けて描く)。
+   *
+   * 同じ font-family で、記述子の組 (太さ・unicode-range) が同じ face が並ぶとき (CSS Fonts 4):
+   *  - §4.4: font-weight の記述子が無い (auto) face は、選ぶときは normal (400) として扱う (書体のファイルの太さでは選ばない)
+   *  - §4.5・§5.2: 記述子の同じ face は 1 つの組 (composite face) になり、字ごとに、後に定義したものから調べる
+   *    (後の定義の書体が持たない字は、先の定義の書体)。太らせて描くかどうかも、記述子の太さで決まる (§4.4)
+   * 同じファイルを指す繰り返しは、1 つの face として扱う。
+   *
+   * opts.ahFaceWeight (アンテナハウス互換。--style ah): font-weight の記述子の無い face を、書体のファイルの太さ (OS/2 の usWeightClass) で登録する。
+   * アンテナハウスの出力では、同じ名前で記述子の無い @font-face に Regular・Bold・Heavy のファイルを並べた文書 (『CSS ページ組版入門』第 4 版の
+   * source-han-sans・source-han-serif) の太字が、それぞれの太さのファイルで組まれる (公開の説明 https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html#axf.font-face
+   * は font-weight の初期値を normal としているが、出力の PDF に埋め込まれた書体は、ファイルの太さで使い分けたもの)。
+   * 可変フォントと、太さの読めない書体は、標準と同じ (400)。傾き (font-style の記述子の無い、斜体のファイル) は、見本で確かめられないので標準と同じ (立体の face)
    */
-  async function loadFontFaces(css: string | ParsedCss, files: FontFile[]) {
+  async function loadFontFaces(css: string | ParsedCss, files: FontFile[], opts: { ahFaceWeight?: boolean } = {}) {
     table.clear('face');
     const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
     // src の url() は、CSS の場所を基準に解決した参照 (CSS Fonts 4 §4.3。CSS のファイルの中の相対参照は、prepareHtml が解決済みにしている)。
@@ -272,28 +285,49 @@ export function createFontMapping(
     }
     const fileOf = (u: string) => byUrl.get(u) ?? byPath.get(normalizePath(safeDecode(u.split(/[?#]/)[0]))) ?? byName.get(safeDecode(u.split(/[?#]/)[0].split('/').pop() ?? '').toLowerCase());
     // ファミリごとの face の並び。unicode-range の違う face は、別の名前で登録し、範囲つきの書体の組にまとめる (Fonts 4 §4.5)
-    const groups = new Map<string, Array<{ family: string; ranges?: Array<[number, number]> }>>();
+    const groups = new Map<string, RangedFace[]>();
+    // この文書で定義した face (「書体名@太さ」) ごとの、定義に使ったファイルの並び (書いた順)
+    const defined = new Map<string, FontFile[]>();
     for (const ff of (typeof css === 'string' ? parseCss(css) : css).fontFaces) {
       if (ff.italic) continue;
       const file = ff.srcs.map(fileOf).find(Boolean);
       if (!file) continue;
       const rangeKey = ff.ranges ? ff.ranges.map(([a, b]) => `${a}-${b}`).join(',') : '';
-      const family = rangeKey ? `css:${ff.family}#${rangeKey}` : `css:${ff.family}`;
-      const key = `${family}@${ff.weight}`;
+      const first = rangeKey ? `css:${ff.family}#${rangeKey}` : `css:${ff.family}`;
       try {
-        if (!registeredFaces.has(key)) {
+        // アンテナハウス互換: font-weight の記述子の無い face は、書体のファイルの太さで登録する (可変フォント・太さの読めない書体は 400 のまま)
+        let weight = ff.weight;
+        let sfnt: ArrayBuffer | undefined;
+        if (opts.ahFaceWeight && !ff.weightRange) {
+          const st = fontFileStyle(await file.arrayBuffer());
+          sfnt = st.sfnt;
+          if (!st.variable && st.weight !== undefined) weight = st.weight;
+        }
+        // 記述子の組 (太さ・範囲) が同じ face の 2 つ目からは、別の名前 (…~2・…~3) で登録し、先の定義の face に重ねる (§4.5・§5.2)。
+        // 同じファイルの繰り返しは、足さない
+        const slot = `${first}@${weight}`;
+        const earlier = defined.get(slot) ?? [];
+        if (earlier.includes(file)) continue;
+        defined.set(slot, [...earlier, file]);
+        const family = earlier.length ? `${first}~${earlier.length + 1}` : first;
+        // 読み込み済みなら読み直さない (最初の定義は「書体名@太さ」だけで見る: 今までと同じ)。ファイルで決まるもの
+        // (後の定義・ファイルの太さで登録したもの) は、同じファイルのときだけ
+        const key = `${family}@${weight}`;
+        const fileId = earlier.length || sfnt ? (file.url ?? file.path ?? file.name) : undefined;
+        if (!registeredFaces.has(key) || (fileId !== undefined && registeredFaces.get(key) !== fileId)) {
           // 可変フォントの記述子 (Fonts 4 §4.4: 記述子が無い (auto) ときは、選ぶときは normal、軸の値は制限しない)
-          await fonts.registerBuffer(family, ff.weight, await file.arrayBuffer(), canvas, {
+          await fonts.registerBuffer(family, weight, sfnt ?? (await file.arrayBuffer()), canvas, {
             weight: ff.weightRange ?? 'auto',
             width: ff.widthRange ?? 'auto',
             ...(ff.obliqueRange ? { oblique: ff.obliqueRange } : {}),
             ...(ff.variationSettings ? { settings: ff.variationSettings } : {}),
             ...(ff.namedInstance ? { namedInstance: ff.namedInstance } : {}),
           });
-          registeredFaces.add(key);
+          registeredFaces.set(key, fileId);
         }
         const g = groups.get(ff.family) ?? [];
-        if (!g.some((x) => x.family === family)) g.push({ family, ...(ff.ranges ? { ranges: ff.ranges } : {}) });
+        const same = earlier.length ? { family: first, weight } : undefined;
+        if (!g.some((x) => x.family === family && x.same?.weight === same?.weight)) g.push({ family, ...(ff.ranges ? { ranges: ff.ranges } : {}), ...(same ? { same } : {}) });
         groups.set(ff.family, g);
       } catch (e) {
         console.warn(`@font-face ${ff.family}: ${String(e)}`);
