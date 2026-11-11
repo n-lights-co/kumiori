@@ -23,12 +23,13 @@ const fetching = new Map<string, Promise<string>>();
 
 /**
  * テストの書体を置き場に用意して、その場所を返す。無ければ url から取得して置く。
- * テストの書体の取得は、すべてここを通す (PKG-06。呼ぶのは下の fontBuffer・ensureFonts・defaultFontBuffer・extraTestFont・mathFontBuffer): vitest はテストのファイルごとに別のワーカーで並列に走るので、
+ * テストの書体の取得は、すべてここを通す (PKG-06。呼ぶのは下の fontBuffer・ensureFonts・defaultFontBuffer・extraTestFont・mathFontBuffer と、
+ * 対応仕様説明書の見本の書体を用意する test/conformance.test.ts。その一覧は scripts/conformance-fonts.mjs): vitest はテストのファイルごとに別のワーカーで並列に走るので、
  * 置き場へ直接書くと、書きかけのファイルを別のワーカーが「ある」と見て読んでしまう。
  * 一時ファイル (ワーカーごと・呼び出しごとに別の名前) に書き終えてから名前を変える (同じディレクトリの中の rename は、途中の状態が見えない) ので、
  * 置き場にある名前のファイルは、いつも全体が書かれている。2 つのワーカーが同時に取りに行ったときは、どちらも同じ中身を取り、後の rename が前のものを置き換えるだけ
  */
-function cachedFont(name: string, url: string): Promise<string> {
+export function cachedFont(name: string, url: string): Promise<string> {
   const file = path.join(fontDir, name);
   if (fs.existsSync(file)) return Promise.resolve(file);
   let p = fetching.get(file);
@@ -129,7 +130,8 @@ export function walk(a: Area, f: (a: Area) => void) {
 
 /**
  * 既定の書体 (src/fontMapping.ts) のほかに、テストが取得して使う書体 (置き場でのファイルの名前 → 配信元)。どれも SIL Open Font License 1.1 で、リポジトリには入れない。
- * テストが取得する書体は、fontMapping.ts の一覧とこの表ですべて (CI の書体のキャッシュのキーは、この 2 つのファイルから作る。.github/workflows/ci.yml)。
+ * テストが取得する書体は、fontMapping.ts の一覧とこの表と、対応仕様説明書の見本の書体 (scripts/conformance-fonts.mjs。説明書を組むスクリプトと共用) ですべて
+ * (CI の書体のキャッシュのキーは、この 3 つのファイルから作る。.github/workflows/ci.yml)。
  * テストに書体を足すときは、ここに足す (テストのファイルに URL を直に書かない)
  */
 export const EXTRA_TEST_FONTS = {

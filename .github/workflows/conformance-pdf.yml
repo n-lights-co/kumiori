@@ -28,7 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
-      # 既定の書体 (Noto Serif JP・Noto Sans JP・Tinos・Arimo・Cousine・STIX Two Math) を取得して置く場所
+      # 既定の書体 (Noto Serif JP・Noto Sans JP・Tinos・Arimo・Cousine・STIX Two Math) と、見本の書体 (scripts/conformance-fonts.mjs。
+      # 言語ごとの見本・絵文字・可変フォント。合わせて約 29MB) を、Google Fonts の配信元 (fonts.gstatic.com) から取得して置く場所
       KUMIORI_FONT_CACHE: ${{ github.workspace }}/.cache/conformance-fonts
     steps:
       - uses: actions/checkout@v6
@@ -43,7 +44,10 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/conformance-fonts
-          key: fonts-conformance-v1
+          # 見本の書体の一覧が変わればキーが変わり、古いキャッシュ (restore-keys) から始めて、増えた分を足して保存し直す (ci.yml の書体のキャッシュと同じ考え方)
+          key: fonts-conformance-${{ hashFiles('src/fontMapping.ts', 'scripts/conformance-fonts.mjs') }}
+          restore-keys: |
+            fonts-conformance-
       # dist-cli を作り、日本語版 2 冊と英語版 2 冊を docs/conformance/out/ に組む
       - run: npm run build:cli
       - run: npm run docs:conformance
