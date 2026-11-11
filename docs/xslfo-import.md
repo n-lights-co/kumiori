@@ -22,8 +22,8 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 | `page-sequence-master` (single / repeatable / alternatives) | `masterAlternatives` (`page-position`, `odd-or-even`) と、マスターごとの `staticContent` |
 | `page-sequence` / `flow` | `LPageSequence` / `LFlow` (`initial-page-number`, `writing-mode`) |
 | `block`, `inline`, `wrapper`, `basic-link`, `character` | `LBlock`, `LInline`, 文字 |
-| `inline-container` (小さい block + 親文字 block) | `LRuby` (inline-container で書いたルビ) |
-| 上記以外の `inline-container` | `LInlineContainer` (行内の箱。中に block を持てる。shrink-to-fit、最初の行の基線揃え、`writing-mode` の違いも可) |
+| `inline-container` (小さい block + 親文字 block)。互換モード (`antenna`) だけ | `LRuby` (inline-container で書いたルビ。仕様モードでは、下の行内の箱として組む) |
+| 上記以外の `inline-container` (仕様モードでは、すべての `inline-container`) | `LInlineContainer` (行内の箱。中に block を持てる。shrink-to-fit、最初の行の基線揃え、`writing-mode` の違いも可) |
 | `external-graphic` | `LImage` (`url()` の包みを外す、`content-width/height`、`scale-to-fit` は `width/height` を枠に縦横比を保つ)。画像データは `AssetStore` から |
 | `instream-foreign-object` | SVG は単独の SVG 文書に書き戻して data URI の画像 (`LImage`) にする (画面はブラウザが描き、PDF はベクタのまま)。MathML は、数式の書体 (STIX Two Math。MathML のある文書のときだけ読み込む) があれば、その書体の OpenType の MATH 表の値で組み、字の輪郭の図形 (SVG) の画像にして、数式の基線を行の基線に合わせて置く (`src/mathLayout.ts`)。組み方は MathML Core の算法 (mo の伸ばし方・大きな演算子、mrow の字の間のアキ、mfrac・msqrt・mroot・msub・msup・msubsup・munder・mover・munderover・mmultiscripts、添え字の字の大きさ) に従い、演算子のプロパティは MathML Core の演算子辞書 (`src/mathOperators.ts`) で決める。MathML Core に無い要素 (mtable の属性・mlabeledtr・maligngroup・malignmark・mfenced・menclose・mstack・mlongdiv) と Content MathML (apply など。見た目の記法に置き換える) にも対応する。`<mo>-</mo>` はマイナス記号 (−) で組む。数式は 1 つの画像なので、行の途中では折り返さない。数式の書体を読めないときは、行内の要素 (上付き・下付き・分数や上下の添え字の箱・根号・mtable の行の積み重ね) に組み替えて本文の書体で組む。伸縮する括弧 (stretchy="false" 以外の ( ) [ ] { } | など) は、中身の高さを見積もって図形 (SVG) で伸ばす。アクセントの矢印 (→ など) は下の字の幅の細い図形、根号は上と左に罫線のある箱と左下のはねの図形、⎴ ⎵ は図形で描く。負の rowspacing は行を詰める。CDATA に入った MathML・SVG も読む。それ以外は指定サイズの灰色のプレースホルダ |
 | `background-color` (block / inline / inline-container / table / row / cell / table-header・body・footer / block-container) | `backgroundColor` (ヘッダ・本体・フッタの背景は、背景の無いセルへ引き継ぐ) |
@@ -51,7 +51,7 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 ## 既定値と書体
 
 FO で指定が無いときの値は、Kumiori の HTML の既定 (10pt・行送り 1.75・両端揃え・ぶら下げ組み) ではなく **XSL-FO の既定** を使う。既定値の流儀は `compat` (コマンドの `--compat`) で選ぶ: 仕様モード `spec` (既定) は XSL-FO 1.1 の初期値どおり (`font-size` = medium = 12pt・行送り 1.2・start・ぶら下げ無し)、互換モード `antenna` は AH Formatter 向けに書かれた文書も組めるようにするための既定値 (以下は互換モードの値)。
-`fo:root` → `fo:page-sequence` の順に重ねる: `font-size` = 10pt (medium。XSL-FO の仕様では処理系依存)、`line-height` = 1.2 (normal の代用。10pt の行は 12pt、12pt の行は 14.4pt の行送り。和欧混在の行で字ごとに半行間を変えることはしない。`defaultLineHeight` で変更可)、`text-align` = start (XSL-FO の初期値と同じ。指定の無い段落は両端揃えにしない)、行末の 、。 はぶら下げない (`axf:hanging-punctuation` の初期値 none。`end` などで有効)。行の調整は、日本語組版処理の要件 (JLREQ。https://www.w3.org/TR/jlreq/) §3.8 に従う (互換モード・仕様モードとも): 行があふれるときは、追い出す前に、次の分割点までを詰めて行に収められるか試す (追込みを優先する。§3.8.2)。詰める順と限界は §3.8.3 のとおりで、欧文の語間 (空白の 1/3 まで) → 行末の終わり括弧類・読点類・句点類の後ろの二分アキ → 行末の中点類の前後の四分アキ → 行中の中点類の前後の四分アキ → 行中の始め括弧類の前・終わり括弧類と読点類の後ろの二分アキ → 和字と欧字・数字の間の四分アキ (八分まで)。行中の句点類の後ろのアキと、行頭の始め括弧類の前のアキは詰めない。和字どうしの字間 (ベタ組) は詰めない。互換モードでは、追込みで詰める量の合計 (語間・約物のアキ・和欧間のアキ) を 1 行に二分 (約物 1 つ分) までに限る (`lineSqueezeMax` = 0.5。たとえば、読点 2 つを詰めれば入る 1 字や、和欧間のアキを多くの所で少しずつ詰めれば入る 1 字は、追い込まずに次の行へ送り、読点 1 つで足りる分は追い込む。仕様モードでは JLREQ のとおり限らない)。
+`fo:root` → `fo:page-sequence` の順に重ねる: `font-size` = 10pt (medium。XSL-FO の仕様では処理系依存)、`line-height` = 1.2 (normal の代用。10pt の行は 12pt、12pt の行は 14.4pt の行送り。和欧混在の行も行送りは line-height のまま。行の中の字の基線は、ブロックの nominal-font (§5.5.7。日本語の文書の `serif`・`sans-serif` は和文の書体) の上下の高さに line-height を割り振った位置で、和文だけ・欧文だけ・混在の行で変わらない。`defaultLineHeight` で変更可)、`text-align` = start (XSL-FO の初期値と同じ。指定の無い段落は両端揃えにしない)、行末の 、。 はぶら下げない (`axf:hanging-punctuation` の初期値 none。`end` などで有効)。行の調整は、日本語組版処理の要件 (JLREQ。https://www.w3.org/TR/jlreq/) §3.8 に従う (互換モード・仕様モードとも): 行があふれるときは、追い出す前に、次の分割点までを詰めて行に収められるか試す (追込みを優先する。§3.8.2)。詰める順と限界は §3.8.3 のとおりで、欧文の語間 (空白の 1/3 まで) → 行末の終わり括弧類・読点類・句点類の後ろの二分アキ → 行末の中点類の前後の四分アキ → 行中の中点類の前後の四分アキ → 行中の始め括弧類の前・終わり括弧類と読点類の後ろの二分アキ → 和字と欧字・数字の間の四分アキ (八分まで)。行中の句点類の後ろのアキと、行頭の始め括弧類の前のアキは詰めない。和字どうしの字間 (ベタ組) は詰めない。互換モードでは、追込みで詰める量の合計 (語間・約物のアキ・和欧間のアキ) を 1 行に二分 (約物 1 つ分) までに限る (`lineSqueezeMax` = 0.5。たとえば、読点 2 つを詰めれば入る 1 字や、和欧間のアキを多くの所で少しずつ詰めれば入る 1 字は、追い込まずに次の行へ送り、読点 1 つで足りる分は追い込む。仕様モードでは JLREQ のとおり限らない)。
 書体は、画面側で `mapFont` に与える規則で決める: 太字・ゴシック系・sans-serif は Noto Sans JP (Regular / Bold)、それ以外 (明朝・serif・未指定) は Noto Serif JP。
 FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できない (Microsoft の書体)。画面の「書体を読み込む」から、お使いの PC の書体ファイルを選ぶと使える (次節)。読み込まない場合は、欧文の字幅などが元の組版結果と少しずれる。
 
@@ -268,12 +268,13 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 |---|---|---|---|
 | 表の罫線を重ねるとき (collapse) の内側の線 | 隣り合うセルが半分ずつ持つ (§6.7.10) | 後ろ (右・下) のセルが全体の太さで持つ | 見本の PDF との比較 (文字の位置) |
 | letter-spacing | Alphabetic の字の前後に半分ずつ。行頭・行末の分は捨てる (§7.17.2) | 句読点を含むすべての字の後ろ | 見本の PDF との比較 (行の分かれ方) |
-| 行の高さ (max-height・line-height) | §4.5 の規則。字の上下は書体の ascent・descent | 従来の決め方 (書体の上下の高さと em の箱を使い分ける) | 見本の PDF との比較 (§4.5 の規則に書体の ascent・descent を使うと差が増えた) |
+| 行の高さ (max-height・line-height) | §4.5 の規則。字の上下は書体の ascent・descent | 従来の決め方 (書体の上下の高さと em の箱を使い分ける)。同じ大きさの字の行は、ブロックの nominal-font の上下の高さに line-height を割り振る (和文と欧文の混じる行も行送りは line-height。欧文だけの行の基線も和文の行と同じ) | 見本の PDF との比較 (§4.5 の規則に書体の ascent・descent を使うと差が増えた。同じ大きさの字の行の行送りと基線は、公開の見本 151 点の行の基線の位置との比較) |
 | 表の行の height | minimum = optimum = maximum (§7.15.3) | 最小の高さ (中身が多ければ広がる) | 従来の比較 |
 | capitalize | 語の残りの字を変えない (§7.17.6) | 語の残りの字を小文字にする | 見本の PDF との比較 |
 | ブロックの字より大きい字のある行 (max-height) | §4.5 の規則 | 字の大きさの箱を囲み、ブロックの半行間を上下に足す (§4.5 と同じ考え方) | 見本の PDF との比較 |
 | top だけを指定した絶対配置のコンテナ | 中身の高さ (CSS2 の絶対配置) | bottom を 0 として基準の領域の下端まで伸ばす | 見本の PDF との比較 |
 | 横書きの行の中の、縦書きを回した inline-container | 基線にそろえる | 箱の中央を字の中央の線にそろえる | 見本の PDF との比較 |
+| inline-container の中に block が 2 つだけあり、1 つ目の字がまわりの字の 0.8 倍より小さく、2 つ目が 0.8 倍以上で、どちらも字だけのとき | 行内の箱として組む: 2 つの block を積み、1 つ目の block の行の基線を、まわりの行の基線にそろえる (§6.6.8)。2 つ目の block はその下の行になる | ルビとして組む (1 つ目の block がルビ、2 つ目が親文字) | AH Formatter 向けの文書のルビの書き方 (XSL-FO にルビの要素は無い)。推測の読み替えなので、互換モードだけにした |
 | 分綴した行の終わりの字 (`hyphenation-character` の指定が無いとき) | U+2010 (§7.10.5 の初期値) | U+002D | 従来のまま (見本の PDF との比較はしていない) |
 | 回転した block-container (90°・270°) がページをまたぐとき | 横幅は中身の大きさ | 本文の幅いっぱい (270° は右に寄る) | 見本の PDF との比較 |
 

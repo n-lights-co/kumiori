@@ -2467,7 +2467,8 @@ class Flow {
       const wm = this.wm;
       const nominal = this.nominalRatio(st);
       const strut = this.strutOf(st);
-      lms = pls.map((pl) => lineMetrics(pl, wm, st, nominal, strut));
+      const nominalDiff = this.nominalDiff(st);
+      lms = pls.map((pl) => lineMetrics(pl, wm, st, nominal, strut, nominalDiff));
       if (from) lineMemoSet(from.arr, from.at, run, st, L, first, wm, this.host, this.intrinsic, this.minContent, { atoms, raws, pls, lms });
     }
     // 行ごとの脚注 (ページを持つ Flow だけが本体を積む)
@@ -2666,6 +2667,18 @@ class Flow {
   }
 
   /**
+   * XSL-FO の互換モードのブロック (字ごとの書体の上下で行の高さを決める fontLineMetrics と、互換モードの行の印の両方を持つ) の、
+   * nominal-font (nominalRatio と同じ決め方) の上下の高さの差 (ascent − descent。em の比)。行の高さの計算で、ブロックと同じ書体の指定の字に使う
+   * (和文と欧文の混じる行を広げない。lineMetrics.ts の fontLineMetricsOf)。それ以外のブロック (HTML・仕様モード・API から直接組む LNode) は undefined
+   */
+  private nominalDiff(st: ResolvedStyle): number | undefined {
+    if (!st.fontLineMetrics || st.primaryFontMetrics || st.xslLineStacking || !(st.boxLineHalfLeading || st.blockLeadingMaxHeight)) return undefined;
+    const latinDoc = !!st.language && !/^(ja|zh|ko)\b/i.test(st.language);
+    const run = { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch };
+    return this.host.measurer.glyph(latinDoc ? 'x' : '\u56FD', run, 'horizontal-tb').font.ascentMinusDescent;
+  }
+
+  /**
    * line-height.conditionality="discard": 参照領域 (ページ・段・ブロックコンテナ) にまだ何も置いていないとき、
    * 最初の行の上の半行間を捨てる量 (XSL §7.16.4)。それ以外は 0
    */
@@ -2745,7 +2758,7 @@ class Flow {
       });
       const pl = positionLine(line, range.width, st);
       reorderLine(pl, range.width, this.wm === 'horizontal-tb' && st.direction === 'rtl');
-      const lm = lineMetrics(pl, this.wm, st, this.nominalRatio(st), this.strutOf(st));
+      const lm = lineMetrics(pl, this.wm, st, this.nominalRatio(st), this.strutOf(st), this.nominalDiff(st));
       const refs = lineFootnotes(pl.raw.items);
       const { inc } = this.footCostOfRefs(refs, useFoot, this.footnotes.length);
       // 同じページに置いた、この段落の前の行との半行間の重ね合わせ (line-height.precedence)

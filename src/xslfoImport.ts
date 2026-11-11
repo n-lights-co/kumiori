@@ -6,6 +6,7 @@
  *  - ブロック: block, inline, character, wrapper, block-container, float, footnote, leader, marker, retrieve-marker, page-number
  *  - 表: table-and-caption / table (header/footer/body/row/cell, colspan/rowspan, 列幅の固定・比例)、list-block (2 列の表へ)
  *  - ルビ: XSL-FO に標準が無いので、AH Formatter 向けの文書の書き方「inline-container に小さい block + 親文字 block」を LRuby に変換
+ *    (アンテナハウス互換のときだけ。仕様モードでは、仕様どおりの inline-container として組む)
  *  - 画像 (external-graphic)・SVG・MathML (instream-foreign-object) は画像 (LImage) にする。MathML は、数式用の書体があれば
  *    mathLayout.ts で組み、無ければ行内の要素に組み替える (foMathFallback.ts)。読めない中身は、指定の寸法のプレースホルダにして報告する
  *
@@ -1204,7 +1205,8 @@ class Importer {
       hangingPunctuation: false,
       // 行番号の字の大きさの既定は medium (互換モードでは本文の大きさによらず 10pt)
       ...(this.spec ? {} : { lineNumber: { fontSize: this.defaultFontSize } }),
-      // 行の高さは、字ごとの書体の上下の高さに line-height を割り振って決める (互換モード。和欧混在の行が少し広がる)
+      // 行の高さは、書体の上下の高さに line-height を割り振って決める (互換モード)。ブロックと同じ書体の指定の字は、ブロックの nominal-font の
+      // 上下で割り振るので、和欧混在の行も行送りは line-height のまま (layoutEngine の nominalDiff・lineMetrics.ts の fontLineMetricsOf)
       fontLineMetrics: !this.spec,
       // 仕様モード: 代わりの書体 (和文の書体で組んだ字) の行の高さ・基線は、最初に使える書体の上下で決める
       // (欧文だけの行と和文を含む行で、表の隣のセルの基線がそろう)
@@ -2949,7 +2951,10 @@ class Importer {
         .replace(/\s+/g, ' ')
         .trim()
         .replace(/ (?=[^\x21-\x7e])|(?<=[^\x21-\x7e]) /g, '');
-    if (blocks.length === 2) {
+    // ルビとして読む (アンテナハウス互換だけ): XSL-FO にルビの要素は無く、AH Formatter 向けの文書は「小さな字のブロック + 親文字のブロック」を
+    // inline-container に積んでルビを表す。これは推測の読み替えで、仕様どおりの組み方 (§6.6.8: 中のブロックを積んだ行内の参照領域。
+    // 基線は、中の最初の行の基線) ではないので、仕様モードでは当てずに、下の行内の箱として組む
+    if (!this.spec && blocks.length === 2) {
       const fsRel = (e: XEl) => {
         const v = this.attr(e, 'font-size');
         if (!v) return 1;

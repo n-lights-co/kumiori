@@ -866,9 +866,9 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <p class="vals-h">Values of <code>text-align-last</code> <span class="spec">(CSS Text 3 §6.3)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">Value</th><th>Meaning</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>auto</code></td><td>Aligns the last line according to text-align-all. If text-align-all is justify, aligns it to start.</td><td>Supported</td></tr><tr><td><code>start, end, left, right, center, justify</code></td><td>Aligns the last line (and lines before a forced break) in the respective direction.</td><td>Supported</td></tr><tr><td><code>match-parent</code></td><td>Uses the parent's value, reinterpreted according to the parent's direction.</td><td>Partial: treated as start</td></tr></tbody></table><!--/gen:vals-s-text-align-->
 <!--kumiori-sample id="align" mark="text-align: justify|text-align: center|text-align: right|text-align-last: justify"-->
 <p style="text-align: justify; text-indent: 1em; border: 0.4pt solid #cfd4d2; padding: 3pt;">両端そろえ (justify) の段落です。行の終わりがそろうように、字の間を調整します。最後の行は行頭にそろいます。</p>
-<p style="text-align: center;">中央そろえ (center)</p>
+<p style="text-align: center; text-indent: 0;">中央そろえ (center)</p>
 <p style="text-align: right;">右そろえ (right)</p>
-<p style="text-align: justify; text-align-last: justify;">最後の行も両端にそろえる</p>
+<p style="text-align: justify; text-align-last: justify; text-indent: 0;">最後の行も両端にそろえる</p>
 <!--/kumiori-sample-->
 
 <h2 id="s-text-indent"><span class="num">6.3</span>Indentation : <code>text-indent</code><span class="nw">&nbsp;<span class="badge ok">Supported</span></span></h2>

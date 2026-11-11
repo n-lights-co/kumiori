@@ -118,6 +118,8 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `engines` の Node を 20.19.0 以上にした (実行時の依存が求める版)
   - Node のコマンドの出力 (`dist-cli`) に、画面用の `public/` の中身 (favicon など) を入れない
 - **`@supports`**: 読めない値の宣言 (`display: foo`・`color: notacolor`・`width: 10` など。まだ対応していない `color-mix()`・`lab()` も) に偽を返す (CSS Conditional 3 §6.1)。未対応のプロパティ・値には、上の「結果の誤りの修正」のとおり偽を返す
+- **`@supports` とアンテナハウスの拡張の値 (結果が変わる)**: **アンテナハウスの拡張の値 (罫線の線種 `dot-dash`・`dot-dot-dash`・`wave`、`counter(page physical)`) への `@supports`・`@import` の `supports()` は、`--style ah` のときだけ真を返す。ほかのスタイルでは偽を返す** (これまでは、どのスタイルでも真。この値を読むのは、もともと `--style ah` のときだけ。CSS Conditional 3 §6.1)。`--style ah` でも組版に使わない書き方 (`counter(c reverse)` など) には偽を返す
+- **XSL-FO の `fo:inline-container` で書いたルビ (結果が変わる)**: **`fo:inline-container` の中の「小さな字の `fo:block` + 本文の `fo:block`」をルビとして組むのは、`--compat antenna` のときだけにした。既定の `--compat spec` では、仕様どおりの行内の箱として組む (2 つのブロックを積み、1 つ目のブロックの行の基線を、まわりの行の基線にそろえる。XSL 1.1 §6.6.8)。小さな字がまわりの字と同じ行に並び、本文の字はその下の行になる**。この書き方は AH Formatter 向けの文書のルビの表し方で、XSL-FO にルビの要素は無い。ルビとして組むには `--compat antenna` を使う
 - **未対応の CSS の警告**: `text-decoration-skip-ink`・`text-wrap-mode`・`text-wrap-style`・`hyphenate-limit-zone`・`hyphenate-limit-lines`・`hyphenate-limit-last` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
 - **開発**: `scripts/compare-pdf.mjs --html` が、いまの画面で動くようにした (設定の引き出しを開いてから選ぶ)。テストが機械のロケール・機械に入っている書体・実行時間に頼らないようにした。テストの書体の取得を 1 か所にまとめ、並列でも壊れないようにした
 - **文書**: README の行数・テストの件数、公開の手順の番号、対応仕様説明書・計画などの文書の、実装と食い違う記述と日英の食い違いを直した
@@ -127,6 +129,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - CSS GCPM 3 の付録 B から写した規則の表示を足した (10 節)
   - 出力する JS のファイルの先頭に、Kumiori の版・ライセンスと `THIRD_PARTY_NOTICES.md` の場所を書いた注釈を付ける (CDN からファイルを 1 つだけ読む場合のため)
   - 対応仕様説明書の PDF に埋め込む書体とそのライセンスを、説明書の README に書いた
+- **XSL-FO の互換モード (`--compat antenna`・`compat: 'antenna'`) の行送り**: **互換モードで組む XSL-FO の文書の結果が変わります。** 和文と欧文の混じる行の行送りが、`line-height` より少し大きくなっていたのを直した (10pt・`line-height="1.6"` の本文で、混じる行だけ 16pt ではなく 16.22pt。行送りの約 1.35% で、1 ページに 40 行あれば 8pt ほど下へ延びていた)。直した後は、和文だけ・欧文だけ・混じる行のどれも、行送りは `line-height` どおり。あわせて、欧文だけの行の基線が和文の行より少し上 (10pt の字で 0.22pt) にあったのを、和文の行と同じ位置にした (表の同じ行の、和文のセルと数字だけのセルの基線がそろう)。行の中の字の位置は、ブロックの書体の指定の最初の書体 (日本語の文書の `serif`・`sans-serif` は和文の書体) の上下の高さで決める。ブロックの字より大きい字のある行、ルビ・上付き・下付きのある行、`fo:inline` で書体を変えた字の扱い、仕様モード (`--compat spec`。既定)、HTML+CSS の結果は変わらない
 - **XSL-FO の性質** (読んで組版へ渡すようにしたもの。`--compat` によらない):
   - 一括指定の `font`・`background`・`page-break-before`・`page-break-after`・`page-break-inside`・`size` と、寸法の上限・下限の `min-height`・`min-width`・`max-width` (表の行は `max-height` も) を読む (XSL 1.1 §7.31・§7.15)。これまでは無視していたので、`page-break-before="always"` などの改ページが効いていなかった
   - `fo:block` の `clear` (`start`・`end`・`both`・`left`・`right`) を読み、その側の先の `fo:float` の下からブロックを始める (XSL 1.1 §7.19.1)

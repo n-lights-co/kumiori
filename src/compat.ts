@@ -2,7 +2,7 @@
  * 互換モード (アンテナハウス互換など) の設定を 1 か所にまとめる。
  * 画面 (main.ts・htmlFrame.ts) と API・CLI (api.ts) は、どちらもここから設定を取り、同じ設定で組む
  */
-import { AH_BORDER_KEYWORDS, fontFaceWeights, relativeWeightCss21, type CascadeOptions } from './cssCascade';
+import { AH_BORDER_KEYWORDS, ALL_AH, fontFaceWeights, relativeWeightCss21, type CascadeOptions } from './cssCascade';
 import type { ParsedCss } from './htmlPaged';
 import type { HtmlDefaults } from './htmlPrepare';
 import type { HtmlImportOptions } from './htmlImport';
@@ -41,7 +41,7 @@ export function isAhCompat(kind: DocKind, mode: { compat?: FoCompat; style?: Htm
  * 罫の太さの丸め無し・thin/medium/thick の太さ・アンテナハウスの線種・counter() の拡張・bolder/lighter を @font-face の太さから決める
  */
 export function ahCascadeOptions(css: string | ParsedCss): Pick<CascadeOptions, 'noBorderSnap' | 'borderKeywords' | 'ahBorderStyles' | 'ahCounterFlags' | 'relativeWeight'> {
-  return { noBorderSnap: true, borderKeywords: AH_BORDER_KEYWORDS, ahBorderStyles: true, ahCounterFlags: true, relativeWeight: ahRelativeWeight(css) };
+  return { noBorderSnap: true, borderKeywords: AH_BORDER_KEYWORDS, ...ALL_AH, relativeWeight: ahRelativeWeight(css) };
 }
 
 /**
@@ -78,6 +78,7 @@ export const AH_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   tableAutoWidthAh: true,
   tableHeaderWithBodyAh: true,
   ahCounterPagePhysical: true,
+  ahCssExtensions: true,
 };
 
 /** 組版 (LayoutEngine) の互換の設定: アンテナハウス互換では、字の組の詰め方 (kernAh) */
