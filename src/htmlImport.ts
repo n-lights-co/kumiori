@@ -22,6 +22,7 @@
 import { firstGradient } from './cssGradient';
 import { applyTextTransform } from './textTransform';
 import type {
+  BreakKind,
   LinkTarget,
   BorderInput,
   EdgesInput,
@@ -2022,6 +2023,25 @@ class HtmlImporter {
     return false;
   }
 
+  /**
+   * 強制の区切りの値 (break-before・break-after、古い page-break-*) → 区切りの種類 (CSS Fragmentation 3 §3.1)。
+   * recto (右から左へ進む本では左ページ) は奇数ページ、verso は偶数ページ。left・right は、ページが右から左へ進む文書では
+   * 左ページが奇数ページなので入れ替える (:left・:right の選び方と同じ)。
+   * column は段組の文脈の中だけで効く (§3.1 の Column Break Values・§4.3: 合う種類の区切りの文脈の中に無い強制の区切りは効かない)
+   */
+  private forcedBreak(v: string, el: Element): BreakKind | undefined {
+    const rtlPages = this.pagesRtl;
+    return v === 'page' || v === 'always'
+      ? 'page'
+      : v === 'verso' || v === (rtlPages ? 'right' : 'left')
+        ? 'even-page'
+        : v === 'recto' || v === (rtlPages ? 'left' : 'right')
+          ? 'odd-page'
+          : v === 'column' && this.inMulticol(el)
+            ? 'column'
+            : undefined;
+  }
+
   /** float (left / right / inside / outside / top) → LFloat */
   private float(e: Element, parent: Element, fl: string, sidenote = false): LFloat {
     this.report.counts.floats++;
@@ -2144,42 +2164,112 @@ class HtmlImporter {
   }
 
   /**
-   * そのまま 1 つのブロック (LBlock) に組む要素か (表・flex・grid・回り込み・段組・置換要素・縦書きでない、display: block の要素)。
+   * そのまま 1 つのブロック (LBlock) に組む要素か (表・flex・grid・回り込み・段組・置換要素でない、display: block の要素)。
    * 絶対配置の基準になる祖先と、その間の要素を調べる
    */
   private plainBlock(p: Element): boolean {
     const c = this.cs(p);
     if (!/^(block|flow-root)$/.test(c('display')) || (c('float') || 'none') !== 'none' || /^(img|svg|object|math|table)$/.test(p.localName)) return false;
-    if (/vertical|sideways/.test(c('writing-mode'))) return false;
+    if (/sideways/.test(c('writing-mode'))) return false;
     if ((c('column-count') && c('column-count') !== 'auto') || (c('column-width') && c('column-width') !== 'auto')) return false;
     const pg = this.pg(p);
     return !pg.float && !/running\(/.test(pg.position ?? '');
   }
 
+  /** 表の行にして組んだリストの項目 (li。記号のあるリスト)。項目の箱は、本文のセル */
+  private liRows = new WeakSet<Element>();
+
   /**
-   * position: absolute の箱の基準 (containing block) にする祖先 (CSS 2.1 §10.1): start から上へ、position が static でない、いちばん近い祖先。
-   * Kumiori が祖先の箱を基準に置けるもの (祖先は position: relative・sticky のそのまま組むブロックか、絶対配置の箱。
-   * 間の要素も、そのまま組むブロック) だけを返す。それ以外は undefined (本文領域を基準にする)
+   * 絶対配置の基準の箱を探すときの、祖先の要素の種類: 'block' はそのまま組むブロック (plainBlock と、ブロックとして組むリストの項目)、
+   * 'cell' は表のセル (と、表の行にして組んだリストの項目の本文)、'table' は表、'pass' は表の行・行グループ (箱を作らず、中のセルが表の行に並ぶ)。
+   * どれでもなければ undefined (組版が、その中の絶対配置の箱を外の基準の箱へ運べない: flex・grid・行内の箱・回り込み・段組など)
+   */
+  private cbPart(p: Element): 'block' | 'cell' | 'table' | 'pass' | undefined {
+    if (this.plainBlock(p)) return 'block';
+    const c = this.cs(p);
+    if ((c('float') || 'none') !== 'none' || /sideways/.test(c('writing-mode'))) return undefined;
+    const pg = this.pg(p);
+    if (pg.float || /running\(/.test(pg.position ?? '')) return undefined;
+    const d = c('display');
+    if (d === 'list-item') return this.liRows.has(p) ? 'cell' : 'block';
+    if (d === 'table-cell') return 'cell';
+    if (d === 'table' && p.localName !== 'img') return 'table';
+    if (/^table-(row|row-group|header-group|footer-group)$/.test(d)) return 'pass';
+    return undefined;
+  }
+
+  /** 中の絶対配置の箱の基準になる要素か: position が relative・sticky か、変換の付いた箱 (CSS 2.1 §10.1・Transforms 1 §3) */
+  private makesCb(p: Element): boolean {
+    const pos = this.cs(p)('position');
+    return pos === 'relative' || pos === 'sticky' || ((!pos || pos === 'static') && !!this.paintEffectOf(p)?.transform);
+  }
+
+  /**
+   * position: absolute の箱の基準 (containing block) にする祖先 (CSS 2.1 §10.1 の 4・CSS Position 3 §2.1): start から上へ、position が
+   * static でない、いちばん近い祖先 (その padding の箱が基準)。Kumiori が祖先の箱を基準に置けるものだけを返す: 祖先は、position: relative・sticky
+   * (か変換の付いた) ブロック・表・表のセル・リストの項目 (cbPart の block・cell・table) か、絶対配置の箱。間の要素も、ブロック・表の部分
+   * (表・行グループ・行・セル)・リストの項目 (縦書きでもよい)。それ以外は undefined (本文領域を基準にする)
    */
   private localCb(start: Element | null): Element | undefined {
+    // 位置を指定していない行内の要素は通り抜ける (中の絶対配置の箱は、行内の要素を含むブロックの流れに置く。flowPositioned)
+    while (start && this.plainInline(start) && !this.positionedBox(start)) start = start.parentElement;
     for (let p = start; p && p !== this.bodyEl && p.localName !== 'html'; p = p.parentElement) {
       const pos = this.cs(p)('position');
+      const part = this.cbPart(p);
       // 変換の付いた箱は、中の絶対配置・固定配置の箱の基準になる (Transforms 1 §3: containing block for all descendants)
-      if ((!pos || pos === 'static') && this.paintEffectOf(p)?.transform) return this.plainBlock(p) ? p : undefined;
+      if ((!pos || pos === 'static') && this.paintEffectOf(p)?.transform) return part && part !== 'pass' ? p : undefined;
       if (pos && pos !== 'static') {
-        if (/^(relative|sticky)$/.test(pos)) return this.plainBlock(p) ? p : undefined;
+        if (/^(relative|sticky)$/.test(pos)) return part && part !== 'pass' ? p : undefined;
         if (/^(absolute|fixed)$/.test(pos)) return p.localName !== 'img' && !/vertical|sideways/.test(this.cs(p)('writing-mode')) ? p : undefined;
         return undefined;
       }
-      if (!this.plainBlock(p)) return undefined;
+      if (!part) return undefined;
     }
     return undefined;
   }
 
+  /** 置換要素でない行内の箱を作る要素か (display: inline。ルビの部分は除く) */
+  private plainInline(p: Element): boolean {
+    return this.display(p) === 'inline' && !/^(img|svg|object|video|canvas|iframe|embed|input|textarea|select|button|math|br|wbr|ruby|rt|rtc|rb|rp)$/.test(p.localName) && p !== this.bodyEl;
+  }
+
+  /** position が static でない要素か */
+  private positionedBox(p: Element): boolean {
+    const pos = this.cs(p)('position');
+    return !!pos && pos !== 'static';
+  }
+
+  /**
+   * position: absolute の箱の基準が、行内の箱のとき、その要素 (CSS 2.1 §10.1 の 4: 祖先が行内の要素なら、基準は、その要素の最初と最後の
+   * 行内の箱の padding の箱を囲む矩形)。置けるのは次の 2 つ (ほかは undefined):
+   *  - position: relative・sticky の行内の要素 (display: inline)。間の要素は、位置を指定していない行内の要素だけ
+   *  - position: relative・sticky (か変換の付いた) display: inline-block の要素。間の要素は、位置を指定していない行内の要素と、そのまま組むブロック
+   * localCb が基準を見つけなかったときに使う (間に、より近い基準のブロックがあれば、localCb がそれを返す)
+   */
+  private inlineCbOf(start: Element | null): Element | undefined {
+    let p = start;
+    while (p && this.plainInline(p) && !this.positionedBox(p)) p = p.parentElement;
+    if (!p || p === this.bodyEl) return undefined;
+    if (this.plainInline(p)) return /^(relative|sticky)$/.test(this.cs(p)('position')) ? p : undefined;
+    for (; p && p !== this.bodyEl && p.localName !== 'html'; p = p.parentElement) {
+      if (this.display(p) === 'inline-block') return this.makesCb(p) && !/vertical|sideways/.test(this.cs(p)('writing-mode')) && (this.cs(p)('float') || 'none') === 'none' ? p : undefined;
+      if (this.positionedBox(p) || this.paintEffectOf(p)?.transform || !this.plainBlock(p)) return undefined;
+    }
+    return undefined;
+  }
+
+  /** 絶対配置の基準になる行内の箱の番号 (要素 → LInline.cbKey・LBlockContainer.inlineCb) */
+  private inlineCbKeys = new Map<Element, number>();
+  /** 行内の箱を基準にする絶対配置の箱 → その基準の要素 (箱を、基準の要素を出た所の行の並びに置く。flowChildren) */
+  private inlineCbEl = new WeakMap<LBlockContainer, Element>();
+  /** 行内の要素の中で見つけた絶対配置の箱 (行内の要素を出た所の行の並びに置く) */
+  private pendingAbs: LBlockContainer[] = [];
+
   /** 絶対配置の箱の位置 (left・top・right・bottom) を、基準の祖先 cb の内容の箱からの距離にする (CSS の基準は padding の箱なので、padding を引く) */
   private placeInCb(cont: LBlockContainer, cb: Element, off: { top?: number; right?: number; bottom?: number; left?: number }) {
     const pc = this.cs(cb);
-    const pad = (side: string) => cssLen(pc(`padding-${side}`)) ?? 0;
+    // 表の行にして組んだリストの項目は、本文のセルの内容の箱が項目の箱 (項目の padding は組んでいない)
+    const pad = (side: string) => (this.liRows.has(cb) ? 0 : (cssLen(pc(`padding-${side}`)) ?? 0));
     cont.positionInContainer = true;
     if (off.left !== undefined) cont.left = off.left - pad('left');
     if (off.right !== undefined && (off.left === undefined || cont.width === undefined)) cont.right = off.right - pad('right');
@@ -2255,8 +2345,24 @@ class HtmlImporter {
       }
     }
     const cb = c('position') === 'absolute' ? this.localCb(e.parentElement) : undefined;
+    const icb = c('position') === 'absolute' && !cb ? this.inlineCbOf(e.parentElement) : undefined;
     if (cb) this.placeInCb(cont, cb, { top, right, bottom, left: staticI ? staticI : left });
-    else {
+    else if (icb) {
+      // 行内の箱が基準: 位置は、その箱の padding の箱を囲む矩形からの距離 (組版が、行を組んだ後で矩形を求める)
+      let key = this.inlineCbKeys.get(icb);
+      if (key === undefined) this.inlineCbKeys.set(icb, (key = this.inlineCbKeys.size + 1));
+      cont.inlineCb = key;
+      this.inlineCbEl.set(cont, icb);
+      // 行内の要素 (display: inline) の断片は、組版では内容の箱 (字の並び) で求まるので、padding の分を引く (placeInCb と同じ)。
+      // inline-block は、組版が箱の padding の箱を求める
+      const ic = this.cs(icb);
+      const pad = (side: string) => (this.plainInline(icb) ? (cssLen(ic(`padding-${side}`)) ?? 0) : 0);
+      if (left !== undefined) cont.left = left - pad('left');
+      else if (staticI) cont.left = staticI;
+      if (right !== undefined && (left === undefined || cont.width === undefined)) cont.right = right - pad('right');
+      if (top !== undefined) cont.top = top - pad('top');
+      if (bottom !== undefined && (top === undefined || cont.height === undefined)) cont.bottom = bottom - pad('bottom');
+    } else {
       const a = this.areaOf(this.curPage ?? '');
       if (left !== undefined) cont.left = a.left + left;
       else if (right !== undefined) cont.right = a.right + right;
@@ -3288,22 +3394,9 @@ class HtmlImporter {
     // box-decoration-break: clone (CSS Fragmentation 3 §5.4): ページ・段で分かれた断片のそれぞれを、罫線と内側の余白で包み直す
     // (初期値 slice は、切れ目に罫線も余白も入れない)。余白 (margin) は、ブロックの箱では切れ目で 0 に切り詰める (§5.4 の注)
     if (c('box-decoration-break') === 'clone') o.edgeRetain = { borderBefore: true, paddingBefore: true, borderAfter: true, paddingAfter: true };
-    // 改ページ (break-before / after。left・right・recto・verso は偶数・奇数ページ)。
-    // recto (右から左へ進む本では左ページ) は奇数ページ、verso は偶数ページ。left・right は、ページが右から左へ進む文書では
-    // 左ページが奇数ページなので入れ替える (:left・:right の選び方と同じ。CSS Fragmentation 3 §3.1 の left・right・recto・verso)
-    const rtlPages = this.pagesRtl;
-    const brk = (v: string): LBlock['breakBefore'] =>
-      v === 'page' || v === 'always'
-        ? 'page'
-        : v === 'verso' || v === (rtlPages ? 'right' : 'left')
-          ? 'even-page'
-          : v === 'recto' || v === (rtlPages ? 'left' : 'right')
-            ? 'odd-page'
-            : v === 'column'
-              ? 'column'
-              : undefined;
-    const bb = brk(c('break-before') || c('page-break-before'));
-    const ba = brk(c('break-after') || c('page-break-after'));
+    // 改ページ (break-before / after。left・right・recto・verso は偶数・奇数ページ。column は段組の文脈の中だけ。forcedBreak)
+    const bb = this.forcedBreak(c('break-before') || c('page-break-before'), el);
+    const ba = this.forcedBreak(c('break-after') || c('page-break-after'), el);
     if (bb) o.breakBefore = bb;
     if (ba) o.breakAfter = ba;
     // 分けるのを避ける値。avoid-column は段組の文脈の中だけで効く (CSS Fragmentation 3 §3.1 の Column Break Values は
@@ -3578,7 +3671,11 @@ class HtmlImporter {
   }
 
   /** 流し込む項目 (ブロックか行の中のもの) */
-  private flowChildren(el: Element, inline = false): Array<LBlockLevel | LInlineLevel> {
+  /**
+   * part を渡すと、el の子のうち part の節だけを流し込む (表・行の直下の、表の部分でない中身を包む無名のセル。CSS 2.1 §17.2.1)。
+   * el そのものに付くもの (::before・::after、content での置き換え、参照先の記録、カウンターの有効範囲の終わり) は扱わない
+   */
+  private flowChildren(el: Element, inline = false, part?: Node[]): Array<LBlockLevel | LInlineLevel> {
     const items: FlowItem[] = [];
     // flex・grid の容器をふつうのブロックとして組むとき (縦並びの flex など) も、項目は order の順 (order-modified document order。
     // CSS Flexbox 1 §5.4) に並べる。::before・::after も項目 (§4)。項目ごとに items の区切り (at) と order を覚え、最後に並べ替える。
@@ -3588,12 +3685,12 @@ class HtmlImporter {
     const orderOf = (e: Element, ps?: '::before' | '::after') => (!ps && /^(absolute|fixed)$/.test(this.cs(e)('position')) ? 0 : parseInt(this.cs(e, ps)('order'), 10) || 0);
     if (flexBox) marks.push({ at: 0, order: orderOf(el, '::before') });
     this.lastPseudoText['::before'] = '';
-    this.pseudo(el, '::before', items);
+    if (!part) this.pseudo(el, '::before', items);
     const before = this.lastPseudoText['::before'];
     // 参照先の番号は、要素 (と ::before) のカウンターを当てた直後の値
     let snap: Record<string, number> | undefined;
     const elId = el.getAttribute?.('id');
-    if (elId && !this.lookup) {
+    if (elId && !this.lookup && !part) {
       snap = {};
       for (const [n, st] of this.counters) if (st.length) snap[n] = st[st.length - 1].v;
     }
@@ -3605,10 +3702,10 @@ class HtmlImporter {
       return !!v && v !== 'none' && v !== 'normal';
     };
     const emptyOwn = own !== undefined && /^\s*(''|"")\s*$/.test(own) && !pseudoContent('::before') && !pseudoContent('::after');
-    const replaced = own !== undefined && own !== 'normal' && own !== 'none' && !emptyOwn;
+    const replaced = own !== undefined && own !== 'normal' && own !== 'none' && !emptyOwn && !part;
     if (flexBox && replaced) marks.push({ at: items.length, order: 0 });
     if (replaced) for (const v of this.evalContent(el, parseContent(own))) items.push({ v, block: false });
-    let kids = replaced ? [] : Array.from(el.childNodes);
+    let kids = replaced ? [] : (part ?? Array.from(el.childNodes));
     // content-visibility: hidden は中身 (子孫の字と要素) を組まない (Contain 2 §4)
     if (this.cs(el)('content-visibility') === 'hidden') kids = [];
     // 閉じた details は、最初の summary の子だけを出す。ほかの中身は、content-visibility: hidden の slot に入る (HTML Living Standard §15.5.5)
@@ -3664,7 +3761,10 @@ class HtmlImporter {
         }
         continue;
       }
-      if (this.flowPositioned(e, el, pos, items)) continue;
+      if (this.flowPositioned(e, el, pos, items, inline)) {
+        this.flushPendingAbs(el, inline, items);
+        continue;
+      }
       if (/^table-(row|cell|row-group|header-group|footer-group|caption|column|column-group)$/.test(d)) {
         // 表の外の表の部分 (セル・行など): 続くものをまとめて、匿名の表で包む (CSS 2.1 §17.2.1)
         const parts = this.siblingRun(kids, i, (x) => /^table-(row|cell|row-group|header-group|footer-group|caption|column|column-group)$/.test(this.display(x)));
@@ -3697,10 +3797,11 @@ class HtmlImporter {
         for (const v of this.inline(e, el)) items.push({ v, block: false });
       }
       if (!inline) for (const m of this.pendingMarkers.splice(0)) items.push({ v: m, block: false });
+      this.flushPendingAbs(el, inline, items);
     }
     if (flexBox) marks.push({ at: items.length, order: orderOf(el, '::after') });
     this.lastPseudoText['::after'] = '';
-    this.pseudo(el, '::after', items);
+    if (!part) this.pseudo(el, '::after', items);
     // column-reverse は項目を逆の順に積む (Flexbox 1 §5.1。row-reverse は flexNoRect で並べ替える)
     const reverse = flexBox && /flex$/.test(this.display(el)) && this.cs(el)('flex-direction') === 'column-reverse';
     // 縦並びの flex の項目の間の空き (row-gap。CSS Box Alignment 3 §8: % は容器の高さが決まっていればその割合、決まらなければ 0)
@@ -3729,8 +3830,25 @@ class HtmlImporter {
       items.splice(0, items.length, ...out);
     }
     if (snap && elId) this.record.set(elId, { counters: snap, text: this.wantText ? this.plainText(el) : '', before, after: this.lastPseudoText['::after'] });
-    this.leaveCounters(el);
+    if (!part) this.leaveCounters(el);
     return this.collapseFlowWhitespace(items, /^pre/.test(this.cs(el)('white-space')));
+  }
+
+  /**
+   * 行内の要素の中で見つけた絶対配置の箱 (pendingAbs) を、el の中身の並びに置く。行内の要素の中 (inline) では置かない。
+   * 行内の箱を基準にする箱は、基準の要素の外に出てから置く (el が基準の要素か、その中なら、まだ置かない)
+   */
+  private flushPendingAbs(el: Element, inline: boolean, items: FlowItem[]) {
+    if (inline || !this.pendingAbs.length) return;
+    const keep: LBlockContainer[] = [];
+    for (const a of this.pendingAbs) {
+      const cbEl = this.inlineCbEl.get(a);
+      let inside = false;
+      for (let p: Element | null = el; cbEl && p; p = p.parentElement) if (p === cbEl) inside = true;
+      if (inside) keep.push(a);
+      else items.push({ v: a, block: false });
+    }
+    this.pendingAbs = keep;
   }
 
   /** マーカー (string-set・running) を置く: インラインの中なら段落の外へ出す (pendingMarkers)、ブロックの中ならその場所に */
@@ -3826,8 +3944,8 @@ class HtmlImporter {
    * 位置の基準になる親 (position: relative など) を基準に置けない (localCb が無い) とき、上下の位置の指定が無い絶対配置の要素は、
    * 左右の回り込みにする (ページを基準にする代わりに、親の中の位置を回り込みで近づける)。ほかの absolute は本文領域を基準にそのページへ、fixed は全ページに置く
    */
-  private flowPositioned(e: Element, parent: Element, pos: string, items: FlowItem[]): boolean {
-    if (pos === 'absolute' && !this.localCb(e.parentElement) && this.positionedAncestor(e) && this.src.isAuto?.(e, 'top') !== false && this.src.isAuto?.(e, 'bottom') !== false) {
+  private flowPositioned(e: Element, parent: Element, pos: string, items: FlowItem[], inline = false): boolean {
+    if (pos === 'absolute' && !this.localCb(e.parentElement) && !this.inlineCbOf(e.parentElement) && this.positionedAncestor(e) && this.src.isAuto?.(e, 'top') !== false && this.src.isAuto?.(e, 'bottom') !== false) {
       const right = this.src.isAuto?.(e, 'right') === false;
       const left = this.src.isAuto?.(e, 'left') === false;
       if (right || left) {
@@ -3844,6 +3962,8 @@ class HtmlImporter {
     if (pos !== 'absolute' && pos !== 'fixed') return false;
     const cont = this.positioned(e, parent);
     if (pos === 'fixed') this.fixed.push(cont);
+    // 行内の要素の中の箱・行内の箱を基準にする箱は、行内の要素 (基準の要素) を出た所の行の並びに置く (行内の節の中には置けない)
+    else if (inline || this.inlineCbEl.has(cont)) this.pendingAbs.push(cont);
     else items.push({ v: cont, block: false });
     return true;
   }
@@ -4529,6 +4649,24 @@ class HtmlImporter {
 
   /** インライン要素 */
   private inline(el: Element, parent: Element): LInlineLevel[] {
+    const out = this.inlineBox(el, parent);
+    // position: relative の行内の箱 (CSS 2.1 §9.4.3): 組んだ箱を left・top (無ければ right・bottom の逆) だけずらす。ずらしは、まわりの
+    // 配置を変えない (後に続く字は、ずらす前の位置のまま)。組版には関わらないので、描くときだけの移動 (PaintEffect の translate) にする。
+    // 行内の箱は、行ごとの断片とその中の箱がそれぞれ別の領域になるので、中の行内の節のそれぞれに同じ移動を付ける
+    const c = this.cs(el);
+    if (c('position') === 'relative') {
+      const off = (p: 'top' | 'right' | 'bottom' | 'left') => (this.src.isAuto?.(el, p) === false ? cssLen(c(p)) : undefined);
+      const x = off('left') ?? (off('right') !== undefined ? -off('right')! : 0);
+      const y = off('top') ?? (off('bottom') !== undefined ? -off('bottom')! : 0);
+      if (x || y) for (const n of out) shiftInline(n, x, y);
+    }
+    // 中の絶対配置の箱の基準になる行内の箱 (positioned が番号を振ったもの): 番号を節に付ける
+    const key = this.inlineCbKeys.get(el);
+    if (key !== undefined) for (const n of out) if (typeof n !== 'string' && (n.type === 'inline' || n.type === 'inline-container') && n.cbKey === undefined) n.cbKey = key;
+    return out;
+  }
+
+  private inlineBox(el: Element, parent: Element): LInlineLevel[] {
     const name = el.localName;
     if (name === 'br') {
       // clear のある br: 改行の後の行を、回り込みの下から始める
@@ -4888,28 +5026,28 @@ class HtmlImporter {
     const indent = (cssLen(c(`padding-${startSide}`)) ?? 0) + (cssLen(c(`margin-${startSide}`)) ?? 0);
     let n = reversed ? start + lis.length - 1 : start;
     // 項目の改ページの指定 (CSS Fragmentation 3 §3.1: break-before・break-after・break-inside は、通常の流れの block-level の箱に当たる。
-    // list-item の箱も block-level)。項目は表の行にして組むので、行の指定にする (表の tr と同じ。left・right・recto・verso は、行の間では
-    // ページを改めるだけ)。最初の項目の前・最後の項目の後ろの強制の区切りは、リストの箱の前後の区切りと同じ所なので
-    // (§3.1 の区切りの値の伝播)、リストを組む表の前後の指定にする (左右のページの指定もそのまま効く)
-    const rtlPages = this.pagesRtl;
-    const forced = (v: string): LBlock['breakBefore'] =>
-      v === 'page' || v === 'always' ? 'page' : v === 'verso' || v === (rtlPages ? 'right' : 'left') ? 'even-page' : v === 'recto' || v === (rtlPages ? 'left' : 'right') ? 'odd-page' : v === 'column' ? 'column' : undefined;
+    // list-item の箱も block-level)。項目は表の行にして組むので、行の指定にする (表の tr と同じ。区切りの種類 = ページ・段・左右のページを
+    // そのまま渡す)。最初の項目の前・最後の項目の後ろの強制の区切りは、リストの箱の前後の区切りと同じ所なので
+    // (§3.1.1 の区切りの値の伝播)、リストを組む表の前後の指定にする。
+    // 項目の最初の子の break-before・最後の子の break-after も、項目の前後の区切りと同じ所 (§3.1.1): 項目の値と合わせる (§4.3)
     let listBefore: LBlock['breakBefore'];
     let listAfter: LBlock['breakBefore'];
-    const rowBreaks = (li: Element, k: number): Pick<LTableRow, 'breakBefore' | 'breakAfter' | 'keepTogether' | 'keepWithNext' | 'keepWithPrevious'> => {
+    const rowBreaks = (li: Element, k: number, body: LTableCell): Pick<LTableRow, 'breakBefore' | 'breakAfter' | 'keepTogether' | 'keepWithNext' | 'keepWithPrevious'> => {
       const lc = this.cs(li);
       const bb = lc('break-before') || lc('page-break-before');
       const ba = lc('break-after') || lc('page-break-after');
       const bi = lc('break-inside') || lc('page-break-inside');
       let multicol: boolean | undefined;
       const avoids = (v: string) => v === 'avoid' || v === 'avoid-page' || (v === 'avoid-column' && (multicol ??= this.inMulticol(li)));
-      const fb = forced(bb);
-      const fa = forced(ba);
+      const edge = edgeBreaks(body.children);
+      // 項目とその最初の子は同じ区切りに当たる。左右のページの指定は、流れの中で後ろの要素 (子) の値、break-after は項目の値が後ろ
+      const fb = mergeBreaks(this.forcedBreak(bb, li), edge.before);
+      const fa = mergeBreaks(edge.after, this.forcedBreak(ba, li));
       const o: ReturnType<typeof rowBreaks> = {};
       if (k === 0) listBefore = fb;
-      else if (fb && fb !== 'column') o.breakBefore = true;
+      else if (fb) o.breakBefore = fb;
       if (k === lis.length - 1) listAfter = fa;
-      else if (fa && fa !== 'column') o.breakAfter = true;
+      else if (fa) o.breakAfter = fa;
       if (avoids(bi)) o.keepTogether = true;
       if (avoids(ba)) o.keepWithNext = true;
       if (avoids(bb)) o.keepWithPrevious = true;
@@ -4940,7 +5078,10 @@ class HtmlImporter {
       const marker: LInlineLevel = mnode && !inside ? mnode : styled(outsideText);
       n += reversed ? -1 : 1;
       const fs = cssLen(lc('font-size')) ?? 12;
+      this.liRows.add(li);
       const body: LTableCell = { type: 'table-cell', ...this.textStyle(li, container), ...this.paragraphStyle(li, container), children: this.flowChildren(li) };
+      // position が static でない項目は、中の絶対配置の箱の基準 (項目の箱 = 本文のセル)
+      if (this.makesCb(li)) body.containingBlock = true;
       // 記号は li の内容の先頭の行内の字 (最初の子がブロックなら、その前の行になる。Lists 3 §3.5)
       if (insideMarker) (body.children as Array<LBlockLevel | LInlineLevel>).unshift(insideMarker);
       if (marks.length) (body.children as Array<LBlockLevel | LInlineLevel>).unshift(...marks);
@@ -4953,7 +5094,7 @@ class HtmlImporter {
         type: 'table-row',
         // 描くときだけの効果 (li の transform・opacity): 項目の行 (記号と本文) に掛ける
         ...(box.paintEffect ? { paintEffect: box.paintEffect } : {}),
-        ...rowBreaks(li, k),
+        ...rowBreaks(li, k, body),
         // 記号・番号は、本文の最初の行の基線にそろえる (CSS Lists: 外側の記号は最初の行の箱に置く)
         // 本文の最後の子の下の余白は、li の外へ抜けて次の項目との間に残る (CSS 2.1 §8.3.1)。セルの高さに含める
         cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', keepTrailingSpace: true }],
@@ -5012,7 +5153,31 @@ class HtmlImporter {
       marks.push(...this.stringSet(e));
     };
     const takeMarks = (): LMarker[] => marks.splice(0);
-    const rowOf = (tr: Element, anonCells?: Element[], owner: Element = el): LTableRow => {
+    // 行のセルの並びの 1 つ: セルの要素か、無名のセルに包む中身 (表の部分でない節の並び。CSS 2.1 §17.2.1 の「欠けた子を包む」:
+    // 表・行グループの直下の、表の子でない節の並びは無名の行に、行の直下の、セルでない節の並びは無名のセルに包む)
+    type CellPart = Element | Node[];
+    const isCell = (e: Element) => /^table-cell$/.test(this.display(e)) || /^t[dh]$/.test(e.localName);
+    /** 行 tr の子を、セルと、無名のセルに包む並びに分ける (セルの間の、空白だけの文字は捨てる。§17.2.1 の「関係の無い箱を除く」) */
+    const rowParts = (tr: Element): CellPart[] => {
+      const out: CellPart[] = [];
+      let loose: Node[] | undefined;
+      for (const n of Array.from(tr.childNodes)) {
+        if (n.nodeType === 3 || n.nodeType === 4) {
+          if (loose) loose.push(n);
+          else if ((n.textContent ?? '').trim()) out.push((loose = [n]));
+        } else if (n.nodeType === 1) {
+          const e = n as Element;
+          if (this.display(e) === 'none') continue;
+          if (isCell(e)) {
+            out.push(e);
+            loose = undefined;
+          } else if (loose) loose.push(n);
+          else out.push((loose = [n]));
+        }
+      }
+      return out;
+    };
+    const rowOf = (tr: Element, anonCells?: CellPart[], owner: Element = el): LTableRow => {
       if (!anonCells) enter(tr, owner);
       const row = rowOf0(tr, anonCells);
       // 匿名の行 (行の無いセルを包む行) は、書式を持たない
@@ -5027,17 +5192,20 @@ class HtmlImporter {
       const bb = rc('break-before') || rc('page-break-before');
       const ba = rc('break-after') || rc('page-break-after');
       if (/avoid/.test(rc('break-inside') || rc('page-break-inside'))) row.keepTogether = true;
-      if (/^(page|always|left|right|recto|verso)$/.test(bb)) row.breakBefore = true;
+      // 強制の区切りは、種類 (ページ・段・左右のページ) をそのまま渡す (§3.1・§4.3)
+      const fb = this.forcedBreak(bb, tr);
+      const fa = this.forcedBreak(ba, tr);
+      if (fb) row.breakBefore = fb;
       if (/avoid/.test(bb)) row.keepWithPrevious = true;
       if (/avoid/.test(ba)) row.keepWithNext = true;
-      if (/^(page|always|left|right|recto|verso)$/.test(ba)) row.breakAfter = true;
+      if (fa) row.breakAfter = fa;
       paintCells(row, bgOf(tr));
       // 行の罫線は、罫線を重ねる表でだけ使う (CSS 2.1 §17.6.1: 罫線を分ける表の行・行グループには罫線が無い)
       const rb = collapse ? this.boxStyle(tr).border : undefined;
       if (rb) row.border = rb;
       return row;
     };
-    const rowOf0 = (tr: Element, anonCells?: Element[]): LTableRow => ({
+    const rowOf0 = (tr: Element, anonCells?: CellPart[]): LTableRow => ({
       type: 'table-row',
       // 行の書式 (表との差分)。セルの書式は行との差分なので、行に付けた font-size などをセルへ受け継がせる
       ...(anonCells ? {} : this.textStyle(tr, el)),
@@ -5050,15 +5218,22 @@ class HtmlImporter {
         const v = /%$/.test(h) ? undefined : cssLen(h);
         return v ? { minHeight: v } : {};
       })(),
-      cells: (anonCells ?? Array.from(tr.children))
-        .filter((td) => this.display(td) !== 'none' && (/^table-cell$/.test(this.display(td)) || /^t[dh]$/.test(td.localName)))
+      cells: (anonCells ?? rowParts(tr))
+        .filter((td) => Array.isArray(td) || (this.display(td) !== 'none' && isCell(td)))
         .map((td): LTableCell => {
+          // 無名のセル: 書式を持たず、行から継承する値だけで組む。中身は、包んだ節の並び
+          if (Array.isArray(td)) {
+            const pre = takeMarks();
+            return { type: 'table-cell', keepEdgeSpace: true, children: [...pre, ...this.flowChildren(tr, false, td)] };
+          }
           const tc = this.cs(td);
           enter(td, tr);
           const pre = takeMarks();
           // セルの中の最初・最後のブロックの margin は捨てない (CSS 2.1 §17.5: セルは新しい整形文脈で、中の margin はセルの外と重ならない。<td><p> の上下の margin)
           const cell: LTableCell = { type: 'table-cell', keepEdgeSpace: true, ...this.textStyle(td, tr), ...this.paragraphStyle(td, tr), ...this.boxStyle(td), children: this.flowChildren(td) };
           if (pre.length) cell.children.unshift(...pre);
+          // position が static でないセル・変換の付いたセルは、中の絶対配置の箱の基準 (CSS 2.1 §10.1)
+          if (this.makesCb(td)) cell.containingBlock = true;
           const cs = Math.min(MAX_COL_SPAN, parseInt(td.getAttribute('colspan') ?? '1', 10));
           const rs = Math.min(MAX_ROW_SPAN, parseInt(td.getAttribute('rowspan') ?? '1', 10));
           if (cs > 1) cell.colSpan = cs;
@@ -5102,19 +5277,37 @@ class HtmlImporter {
       if (gb) rows.forEach((r, k) => (r.group = { border: gb, first: k === 0, last: k === rows.length - 1 }));
     };
     const walk = (n: Element, into: LTableRow[], list?: Element[]) => {
-      // 表・行グループの直下のセルは、続くものをまとめて匿名の行で包む (CSS 2.1 §17.2.1)
-      let pend: Element[] = [];
+      // 表・行グループの直下の、表の子でないもの (セル・文字・ほかの要素) は、続くものをまとめて匿名の行で包む (CSS 2.1 §17.2.1)。
+      // その中の、セルでない節の並び (文字・ほかの要素) は、無名のセルに包む
+      let pend: CellPart[] = [];
+      let loose: Node[] | undefined;
       const flushCells = () => {
         if (pend.length) into.push(rowOf(n, pend));
         pend = [];
+        loose = undefined;
       };
-      for (const ch of list ?? Array.from(n.children)) {
+      for (const node of list ?? Array.from(n.childNodes)) {
+        if (node.nodeType === 3 || node.nodeType === 4) {
+          // 表の部分の間の、空白だけの文字は捨てる (§17.2.1)
+          if (loose) loose.push(node);
+          else if ((node.textContent ?? '').trim()) pend.push((loose = [node]));
+          continue;
+        }
+        if (node.nodeType !== 1) continue;
+        const ch = node as Element;
         const d = this.display(ch);
         if (d === 'none') continue;
         // visibility: collapse の行・行グループは、表から除く (CSS 2.1 §17.5.5)
         if (/^table-(row|row-group|header-group|footer-group)$/.test(d) && this.cs(ch)('visibility') === 'collapse') continue;
-        if (d === 'table-cell' || /^t[dh]$/.test(ch.localName)) {
+        if (isCell(ch)) {
           pend.push(ch);
+          loose = undefined;
+          continue;
+        }
+        // 表の子 (行・行グループ・列・列グループ・caption) でない要素は、無名のセルの中身
+        if (!/^table-(row|row-group|header-group|footer-group|column|column-group|caption)$/.test(d) && !/^(tr|thead|tbody|tfoot|col|colgroup|caption)$/.test(ch.localName)) {
+          if (loose) loose.push(ch);
+          else pend.push((loose = [ch]));
           continue;
         }
         flushCells();
@@ -5126,7 +5319,8 @@ class HtmlImporter {
         }
         else if (d === 'table-footer-group' || ch.localName === 'tfoot') group(ch, footer, n);
         else if (d === 'table-row-group' || ch.localName === 'tbody') group(ch, body, n);
-        else if (d === 'table-column-group' || ch.localName === 'colgroup') walk(ch, body);
+        // 列グループの子は、列だけ (ほかの子は display: none と同じ。§17.2.1)
+        else if (d === 'table-column-group' || ch.localName === 'colgroup') walk(ch, body, Array.from(ch.children).filter((k) => this.display(k) === 'table-column' || k.localName === 'col'));
         else if (d === 'table-column' || ch.localName === 'col') {
           const span = Math.min(MAX_COL_SPAN, parseInt(ch.getAttribute('span') ?? '1', 10) || 1);
           // 幅の % (自前のカスケードは % のまま返す) は、比例の列幅にする (表の幅を % の比で分ける)
@@ -5184,6 +5378,18 @@ class HtmlImporter {
       body: { type: 'table-body', rows: body },
       borderCollapse: c('border-collapse') === 'collapse' ? 'collapse' : 'separate',
     } as LTable;
+    // 字下げ (text-indent) は継承する値 (CSS Text 3 §8.1): 表の値が親と違えば、表に付けてセルへ受け継がせる。表に指定した字下げがセルの
+    // 行に効き、HTML の既定のスタイル (table { text-indent: initial }。HTML Standard §15.3.10 Tables) で、表の外の字下げは表の中へ入らない
+    if (!anon && c('text-indent') !== this.cs(parent)('text-indent')) Object.assign(t, textIndentOf(c('text-indent')));
+    // position が static でない表・変換の付いた表は、中 (セルの中) の絶対配置の箱の基準 (CSS 2.1 §10.1)
+    if (!anon && this.makesCb(el)) t.containingBlock = true;
+    // 表の書字方向が親と違う (横書きの文書の中の、writing-mode を指定した表など): 表をその書字方向で組む (CSS Writing Modes 3 §2.1:
+    // writing-mode は表にも当たる。CSS 2.1 §17 の行・列は、表の書字方向の block・inline の向きに並ぶ = 縦書きの表では、行が右から左へ、
+    // セルが上から下へ並ぶ)。組版は、親と直交する表を、直交する箱 (§7.3) として置く
+    if (!anon) {
+      const twm = this.wm(c('writing-mode'));
+      if (twm && twm !== (this.wm(this.cs(parent)('writing-mode')) ?? 'horizontal-tb')) t.writingMode = twm;
+    }
     // border-spacing (罫線を分ける表のセルの間隔。計算値は "横 縦" の px)
     if (t.borderCollapse === 'separate') {
       const bs = (c('border-spacing') ?? '').trim().split(/\s+/).map((v) => (parseFloat(v) || 0) * PT_PER_PX);
@@ -5878,6 +6084,48 @@ class HtmlImporter {
     }
     return { type: 'document', ...(title ? { title } : {}), ...(roots.length ? { bookmarks: roots } : {}), sequences };
   }
+}
+
+/**
+ * 行内の節 n と、その中の行内の節に、(x, y) の移動 (描くときだけの効果) を足す。すでにある変換の前に掛ける (移動は、変換の原点によらない)。
+ * 効果の物は節ごとに作り直す (同じ物を持つ節は 1 つの効果としてまとめられるので、別々に動かす節には別の物を持たせる)
+ */
+function shiftInline(n: LInlineLevel | LBlockLevel, x: number, y: number) {
+  if (typeof n === 'string') return;
+  if (!/^(inline|image|inline-container|ruby|tate-chu-yoko|leader|page-number-citation)$/.test(n.type)) return;
+  const node = n as { paintEffect?: PaintEffect; children?: unknown };
+  const t = node.paintEffect?.transform;
+  node.paintEffect = { ...node.paintEffect, transform: { ...t, functions: [{ fn: 'translate', x, y }, ...(t?.functions ?? [])] } };
+  if (n.type === 'inline') for (const k of n.children) shiftInline(k, x, y);
+}
+
+/**
+ * 同じ区切りに当たる 2 つの強制の区切りの値を合わせる (CSS Fragmentation 3 §4.3: すべての種類の区切りを満たす。左右のページの指定は、
+ * 流れの中で後ろの要素の値が勝つ)。a が流れの中で前の要素の値、b が後ろの要素の値
+ */
+function mergeBreaks(a: BreakKind | undefined, b: BreakKind | undefined): BreakKind | undefined {
+  const side = (k: BreakKind | undefined) => k === 'odd-page' || k === 'even-page';
+  if (side(b)) return b;
+  if (side(a)) return a;
+  return a === 'page' || b === 'page' ? 'page' : (a ?? b);
+}
+
+/**
+ * 箱の中身の、最初の通常の流れの子の break-before と、最後の子の break-after (子の最初・最後の子へたどる)。
+ * 箱の前後の区切りに伝わる値 (CSS Fragmentation 3 §3.1.1)。子の前 (後ろ) に行内の中身があれば、伝わらない
+ */
+function edgeBreaks(children: ReadonlyArray<LBlockLevel | LInlineLevel>): { before?: BreakKind; after?: BreakKind } {
+  const inFlow = children.filter((c) => typeof c === 'string' || (c.type !== 'marker' && c.type !== 'float' && !(c.type === 'block-container' && c.absolutePosition)));
+  const edge = (c: LBlockLevel | LInlineLevel | undefined, side: 'before' | 'after'): BreakKind | undefined => {
+    if (!c || typeof c === 'string' || (c.type !== 'block' && c.type !== 'table' && c.type !== 'block-container')) return undefined;
+    const own = side === 'before' ? c.breakBefore : c.breakAfter;
+    const inner = c.type === 'block' ? edgeBreaks(c.children)[side] : undefined;
+    // 子 (内側) は、before では流れの中で後ろ、after では前
+    return side === 'before' ? mergeBreaks(own, inner) : mergeBreaks(inner, own);
+  };
+  const before = edge(inFlow[0], 'before');
+  const after = edge(inFlow[inFlow.length - 1], 'after');
+  return { ...(before ? { before } : {}), ...(after ? { after } : {}) };
 }
 
 /** 論理ツリーの部分木に、ページ番号の引用 (page-number-citation) があるか */
