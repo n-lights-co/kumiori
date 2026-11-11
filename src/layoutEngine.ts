@@ -117,6 +117,7 @@ import {
   runStyleOf,
   DEFAULT_BASELINE_RATIO,
 } from './inlineLayout';
+import { atomAboveBelow } from './lineMetrics';
 import { kernScript, lastBaseOfUnit } from './orthographicSyllable';
 import { fontFeaturesBetweenUnits } from './inlineFlatten';
 import { mm } from './units';
@@ -1555,6 +1556,14 @@ class Flow {
         return;
       }
     }
+    // 行グリッドを作った箱 (baseline-grid: new・root) の終わり: 最後の行の後ろに半行間は空けず、字の仮想ボディ (em の箱) の下端を
+    // 内容の下端にする (アンテナハウスの baseline-grid。先頭の行の前と同じ扱い)。箱のすぐ上が、行グリッドの中で置いた行のときだけ
+    if (f.grid && f.opened && this.wm === 'horizontal-tb' && this.gridTrail.trail > 0 && Math.abs(this.gridTrail.end - this.cursor) < EPS) {
+      this.cursor -= this.gridTrail.trail;
+      this.gridTrail = { end: -1, trail: 0 };
+      this.gridPrev = { end: -1, trail: 0 };
+      this.adjacent = 0;
+    }
     // CSS: 高さが auto の箱の最後の子の下の margin は、箱の下の margin と畳む (CSS 2.1 §8.3.1)。min-height・max-height (aspect-ratio の
     // min・max も) が効いて、箱の高さが中身の高さと変わるときは畳まず、その margin は箱の高さに数えない (ブラウザと同じ: 下限で伸びた分・
     // 上限で切った分に吸われる)。aspect-ratio で高さの決まる箱は、中身で伸びたときも畳まない (ブラウザと同じ)。XSL-FO の block-progression-dimension.minimum の箱と、ページで分かれた箱は、margin を中に置く
@@ -2327,7 +2336,45 @@ class Flow {
     return this.outerGrid;
   }
 
-  private gridDelta(lineTop: number, lm: LineMetrics, st: ResolvedStyle, simOrigin?: number): number {
+  /**
+   * 行グリッドの中の行の、字の仮想ボディ (em の箱) の基線の上・下の長さ。ブロックの字 (nominal-font) の値を下限に、行の中の字 (空白を除く。
+   * 持ち上げた字はその位置) の最大。行内の画像などの箱は数えない (行の位置は字で決める)
+   */
+  private gridEmOf(pl: PositionedLine | undefined, st: ResolvedStyle): { above: number; below: number } {
+    const r = this.nominalRatio(st);
+    let above = r * st.fontSize;
+    let below = (1 - r) * st.fontSize;
+    for (const a of pl ? (pl.raw.hang ? [...pl.raw.items, pl.raw.hang] : pl.raw.items) : []) {
+      if (a.kind !== 'glyph' || a.isSpace || !a.g) continue;
+      const ab = atomAboveBelow(a, this.wm);
+      const sh = a.shift ?? 0;
+      above = Math.max(above, ab.above + sh);
+      below = Math.max(below, ab.below - sh);
+    }
+    return { above, below };
+  }
+
+  /** 行グリッドの中の行の、字の em の箱の下端から行の下端まで (半行間など)。すぐ次の行は、この分を数えずに em の箱を続ける */
+  private gridEmTrailOf(lm: LineMetrics, emBelow: number): number {
+    return Math.max(0, lm.base - (lm.topLeading ?? lm.leading / 2) - lm.above - emBelow);
+  }
+
+  /** 行グリッドの中で最後に置いた行の下端と、その行の em の箱の下端から行の下端までの長さ (gridEmTrailOf)。グリッドの外で置いた行は end = -1 */
+  private gridPrev = { end: -1, trail: 0 };
+
+  /** lineTop (保留中の余白を足す前の位置 at) のすぐ上が、行グリッドの中で置いた行なら、その行の em の箱より下の長さ。そうでなければ 0 */
+  private gridPrevTrail(at: number): number {
+    return Math.abs(this.gridPrev.end - at) < EPS ? this.gridPrev.trail : 0;
+  }
+
+  /**
+   * 行グリッドの中の行の積み方 (アンテナハウスの baseline-grid): 行グリッドの中では行の前後に半行間を空けず、字の仮想ボディ (em の箱) を
+   * 積む。行の基線は、em の箱の上端が「すぐ上の行の em の箱の下端」(prevTrail でその行の下の半行間を除く。上が行でなければ lineTop) より
+   * 上に出ない、最初の格子に載せる。box: この行の em の箱の上 (gridEmOf) と prevTrail。
+   * 見本の PDF の基線の位置との比較による (字の小さい行の後ろの行は次の格子、字の大きい見出しの行は em の箱が入る格子、
+   * その次の本文の行は次の格子。行の高さ (line-height) の大きさでは送らない)
+   */
+  private gridDelta(lineTop: number, lm: LineMetrics, st: ResolvedStyle, simOrigin?: number, box?: { above: number; prevTrail: number }): number {
     let f: Frame | undefined;
     for (let k = this.stack.length - 1; k >= 0; k--)
       if (this.stack[k].grid !== undefined) {
@@ -2342,7 +2389,7 @@ class Flow {
     // 箱がまだ開いていなければ、最初の行の上端 (箱が開く位置。行数を見積もるときは simOrigin) が基準
     const origin = f ? (f.opened ? f.contentStartB : (simOrigin ?? lineTop)) : this.outerGrid!.origin;
     const em = lineTop + lm.leading / 2 + lm.above;
-    const cand = lineTop + this.nominalRatio(st) * st.fontSize;
+    const cand = lineTop - (box?.prevTrail ?? 0) + (box?.above ?? this.nominalRatio(st) * st.fontSize);
     const steps = Math.max(0, Math.ceil((cand - origin - ascent - 0.5) / pitch));
     return origin + ascent + steps * pitch - em;
   }
@@ -2494,11 +2541,19 @@ class Flow {
       let resv = this.footReserve;
       let nFoot = this.footnotes.length;
       let simOrigin: number | undefined;
+      const inGrid = this.inGrid();
       for (let k = idx; k < n; k++) {
         const lm = lms[k];
         const extra0 = this.rubyRoom(lm, st, above) - (k === idx ? this.discardTopLeading(lm, st) : precedenceCut(lms[k - 1], lm, st));
         if (k === idx) simOrigin = c + extra0;
-        const extra = extra0 + this.gridDelta(c + extra0, lm, st, simOrigin);
+        // 行グリッドの中: すぐ上の行は、この段落の前の行、または (保留中の余白が無ければ) 直前に置いた行
+        const gbox = inGrid
+          ? {
+              above: this.gridEmOf(pls[k], st).above,
+              prevTrail: k === idx ? (pv ? 0 : this.gridPrevTrail(this.cursor)) : this.gridEmTrailOf(lms[k - 1], this.gridEmOf(pls[k - 1], st).below),
+            }
+          : undefined;
+        const extra = extra0 + this.gridDelta(c + extra0, lm, st, simOrigin, gbox);
         const h = extra + lm.base;
         const tail = k === n - 1 ? reserve + retainAfter : keepRetain;
         // 行グリッドの中では、最後の行の後ろの半行間は空けない (アンテナハウスの baseline-grid)。入るかの判定に数えない
@@ -2583,13 +2638,15 @@ class Flow {
     o: { cut: number; firstOnPage: boolean; last: boolean; width: number; shift: number; refs: LFootnote[]; useFoot: boolean; holdFoot: boolean },
   ): LNode {
     const extra0 = this.rubyRoom(lm, st, this.adjacent) - o.cut;
-    let gd = this.gridDelta(this.cursor + extra0, lm, st);
+    const gem = this.inGrid() ? this.gridEmOf(pl, st) : undefined;
+    const gemArg = gem ? { above: gem.above, prevTrail: this.gridPrevTrail(this.cursor) } : undefined;
+    let gd = this.gridDelta(this.cursor + extra0, lm, st, undefined, gemArg);
     // 行グリッドの中の、背景・罫線のある空の箱は、字の上端 (基線から nominal の上端) が内容の上端になるまで箱ごと下げる
     // (行の上の半行間などは箱の外)
     const gridTop = this.inGrid() ? Math.max(0, lm.leading / 2 + lm.above - this.nominalRatio(st) * st.fontSize) : 0;
     let shifted = false;
     if (o.firstOnPage && gd + gridTop > EPS && this.shiftEmptyBoxes(gd + gridTop)) {
-      gd = this.gridDelta(this.cursor + extra0 - gridTop, lm, st) - gridTop;
+      gd = this.gridDelta(this.cursor + extra0 - gridTop, lm, st, undefined, gemArg) - gridTop;
       shifted = true;
     }
     const node = buildLineNode(pl, lm, extra0 + gd, this.wm, o.width);
@@ -2603,8 +2660,11 @@ class Flow {
     this.cursor += node.bsize;
     // 行グリッドの中の、背景・罫線のある箱の最後の行: 字の下端より下 (半行間など) は箱に入れない (次の行はグリッドに揃うので位置は変わらない)
     const trail = this.gridTrailOf(lm, st);
+    const emTrail = gem ? this.gridEmTrailOf(lm, gem.below) : 0;
     if (shifted && o.last) this.cursor -= trail;
     else this.gridTrail = { end: this.cursor, trail };
+    // 次の行が em の箱を続けるための控え (行グリッドの中で置いた行だけ)
+    this.gridPrev = gem ? { end: this.cursor, trail: shifted && o.last ? Math.max(0, emTrail - trail) : emTrail } : { end: -1, trail: 0 };
     this.adjacent = lm.leading / 2;
     this.noteLineEnd(lm, st);
     this.notePlaced();
@@ -2769,7 +2829,7 @@ class Flow {
       const extra0 = this.rubyRoom(lm, st, this.adjacent + pv) - cut;
       const tail = next >= n ? reserve() : 0;
       // 行グリッド: 回り込みの無い経路 (layoutInlineRun) と同じく、行の基線をグリッドに揃える分を足し、最後の行の下の部分は入るかの判定に数えない
-      const gdSim = this.gridDelta(y0 + extra0, lm, st, y0 + extra0);
+      const gdSim = this.gridDelta(y0 + extra0, lm, st, y0 + extra0, this.inGrid() ? { above: this.gridEmOf(pl, st).above, prevTrail: pv ? 0 : this.gridPrevTrail(this.cursor) } : undefined);
       const gridTrail = this.gridTrailOf(lm, st);
       if (this.paginating && this.cursor + pv + extra0 + gdSim + lm.base - gridTrail + tail + this.footReserve + inc > this.limit + EPS) {
         if (this.pageHasContent) {
@@ -3424,7 +3484,10 @@ class Flow {
     const colI = Math.max((isize - desc.bpI - gap * (n - 1)) / n, 1);
     const wm = st.wm;
     let avail = this.room - this.cursor - this.pendingValue() - desc.m.bs;
-    let full = this.room;
+    // 続くページの段の高さ: 次のページの上限 (セルの中の流れ (箇条の項目など) では、いまのページの残りではなく、次のページで使える高さ)。
+    // 脚注の領域・断片の末尾に残す罫線の分 (limit と room の差) は、いまのページと同じだけ引く
+    const fullRoom = () => (this.pages?.nextLimit ? this.pages.nextLimit() - (this.limit - this.room) : this.room);
+    let full = fullRoom();
     /** 段の高さを、段の番号ごとに決めて組む */
     const run = (limitOf: (col: number) => number, final: boolean) => {
       const roots: LNode[] = [newNode('block', wm, { isize: colI })];
@@ -3472,7 +3535,7 @@ class Flow {
       this.breakPage();
       // 新しいページの高さで決め直す (段の高さの上限も新しいページのもの)。釣り合わせた 1 行が収まるなら、従来どおり
       avail = this.room - this.cursor - this.pendingValue() - desc.m.bs;
-      full = this.room;
+      full = fullRoom();
       if (fitsOneRow(avail + EPS)) return false;
     }
     const rowOf = (col: number) => Math.floor(col / n);

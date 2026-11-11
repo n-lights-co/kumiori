@@ -674,7 +674,9 @@ async function importHtmlText(
   // 画像は data-kumiori-src に元のパスを残す (画面と同じ)
   prepared.doc.querySelectorAll('img[src]').forEach((img) => img.setAttribute('data-kumiori-src', img.getAttribute('src') ?? ''));
   // 既定のスタイル (style) は、作成者スタイルシート ではなく既定のスタイルシート (UA) として当てる (作成者スタイルシート に詳細度で勝たない)
-  const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.sheet) : {}) });
+  // attr() を置き換えた結果、読めない値になって無効にした宣言 (CSS Values 5 §7.7.1。警告に出す)
+  const invalidAttr: Record<string, number> = {};
+  const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.sheet) : {}), onInvalidAttr: (p, v) => (invalidAttr[`${p}: ${v}`] = (invalidAttr[`${p}: ${v}`] ?? 0) + 1) });
   // @font-face の書体 (TTF・OTF と、ふつうの書体のファイルに戻して使う WOFF・WOFF2)
   await mapping.loadFontFaces(prepared.sheet, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)));
   // 分綴を使う文書なら、文書に出てくる言語の分綴の規則を読み込む
@@ -699,6 +701,15 @@ async function importHtmlText(
   });
   const unsupported = { ...imported.report.unsupported };
   for (const [k, n] of Object.entries(cssRep.unsupported)) unsupported[k] = (unsupported[k] ?? 0) + n;
-  return { ...imported, report: { ...imported.report, unsupported, unknownCss: cssRep.unknown }, warnings: prepared.warnings };
+  const badAttr = summarizeCounts(invalidAttr);
+  const attrWarnings = badAttr
+    ? [
+        msg(
+          `attr() を置き換えた値が読めない宣言を無視しました (型の無い attr() は文字列です。数や長さとして使うには attr(名前 number)・attr(名前 px) のように型を書きます): ${badAttr}`,
+          `ignored declarations whose value is invalid after attr() substitution (an attr() without a type is a string; write a type such as attr(name number) or attr(name px) to use it as a number or a length): ${badAttr}`,
+        ),
+      ]
+    : [];
+  return { ...imported, report: { ...imported.report, unsupported, unknownCss: cssRep.unknown }, warnings: [...prepared.warnings, ...attrWarnings] };
 }
 

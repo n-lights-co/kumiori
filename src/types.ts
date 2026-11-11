@@ -878,7 +878,9 @@ export interface LBlock extends BaseNode, BoxStyle {
   clear?: 'start' | 'end' | 'both';
   /**
    * 行グリッド (アンテナハウスの axf:baseline-grid / -ah-baseline-grid)。new: この箱の字の大きさと line-height で作る。
-   * root: 根元の書式で作る。none: 解除する。中の行のベースラインを行グリッドの位置に揃える
+   * root: 根元の書式で作る。none: 解除する。中の行のベースラインを行グリッドの位置に揃える。
+   * 行グリッドの中では行の前後に半行間を空けず、字の仮想ボディ (em の箱) を前の行の em の箱に続けて、基線を次の格子に載せる。
+   * 行グリッドを作った箱の内容の上端・下端は、最初・最後の行の em の箱の端 (最後の行の後ろに半行間を空けない)
    */
   baselineGrid?: 'new' | 'root' | 'none';
 }

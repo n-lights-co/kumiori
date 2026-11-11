@@ -526,6 +526,35 @@ describe("コードレビューの修正", () => {
   });
 });
 
+describe("箇条の項目の中の段組がページをまたぐとき", () => {
+  it("続きのページの段は、ページの高さいっぱいに使う (最初のページの残りの高さで切らない)", () => {
+    // ページの下に 3 行ぶんほど残った所から始まる、箇条の項目の中の 3 段の箇条 (90 項目)
+    const css = `@page { size: 100mm 120mm; margin: 10mm } body { margin: 0; font-size: 9pt; line-height: 14pt } p { margin: 0 } ul { margin: 0 } ul.c { column-count: 3 }`;
+    const fill = Array.from({ length: 17 }, (_, k) => `<p>line ${k}</p>`).join("");
+    const items = Array.from({ length: 90 }, (_, k) => `<li>item${k + 1}</li>`).join("");
+    const r = load(`${fill}<ul><li>numeric<ul class="c">${items}</ul></li><li>next</li></ul><p>after</p>`, css);
+    const t = E.engine.layout(r.document);
+    const perPage = t.sheets.map((sh) => {
+      let n = 0;
+      let cur = "";
+      walk(sh.page.regionBody as unknown as Area, (x) => {
+        if (x.type === "line") cur = "";
+        if (x.type === "glyph") {
+          cur += (x as unknown as { text: string }).text;
+          if (cur === "item") n++;
+        }
+      });
+      return n;
+    });
+    expect(perPage.reduce((a, b) => a + b, 0)).toBe(90);
+    // 1 ページ目は残りの高さの分だけ。2 ページ目は、ページの高さ (20 行 × 3 段 = 60 項目) を使う
+    expect(perPage[0]).toBeGreaterThan(0);
+    expect(perPage[0]).toBeLessThan(15);
+    expect(perPage[1]).toBeGreaterThanOrEqual(54);
+    expect(t.sheets.length).toBe(3);
+  });
+});
+
 describe("ページをまたぐ段組と行グリッド (-ah-baseline-grid)", () => {
   it("ページに収まる段組でも、段組の箱の行グリッドは段の中に効き、どの段の行も同じグリッドに載る (見出しのある段も)", () => {
     const css = `@page { size: A5; margin: 20mm } div.B { column-count: 2; column-gap: 5mm; -ah-baseline-grid: new; font-size: 9pt; line-height: 13pt } h4 { font-size: 14pt; margin: 0 0 4pt }`;
