@@ -600,6 +600,53 @@ function endTrimOf(a: Atom | undefined): number {
   return a.advance > fs / 2 + EPS ? Math.min(fs / 2, a.advance - fs / 2) : 0;
 }
 
+/** 負の幅の箱 (行内の箱の負の margin の空き) の位置 (昇順) と、その位置から後ろの負の幅の合計 (絶対値)。並びごとに 1 度だけ数える */
+const negativeBoxes = new WeakMap<Atom[], { n: number; idx: number[]; rest: number[] }>();
+function negativeAhead(atoms: Atom[], k: number): number {
+  let c = negativeBoxes.get(atoms);
+  if (!c || c.n !== atoms.length) {
+    const idx: number[] = [];
+    atoms.forEach((a, i) => {
+      if (a.kind === 'box' && a.advance < 0) idx.push(i);
+    });
+    const rest = idx.map(() => 0);
+    for (let i = idx.length - 1, sum = 0; i >= 0; i--) rest[i] = sum -= atoms[idx[i]].advance;
+    c = { n: atoms.length, idx, rest };
+    negativeBoxes.set(atoms, c);
+  }
+  for (let i = 0; i < c.idx.length; i++) if (c.idx[i] >= k) return c.rest[i];
+  return 0;
+}
+
+/**
+ * atoms[k] が行からあふれるとき、その先の負の幅の箱 (行内の箱の負の margin) まで数えれば行に収まる、いちばん手前の分割点を返す
+ * (無ければ undefined)。行内の箱の左右の margin は、負の値も、行の箱の幅の計算に入る (CSS 2.1 §8.3: margin は負にできる。
+ * §9.4.2: 行の箱に入る行内の箱の幅の合計が、行の箱の幅より大きいときに箱を分ける。§10.3.1: 行内の箱の左右の margin の計算値は
+ * 指定の値)。字を順に足してあふれた所で行を分けるだけでは、後ろの負の margin で戻る分を数え落とす。
+ * x は atoms[start..k) の長さ。先に負の幅の箱が無い行 (ふつうの行) では、何もしない
+ */
+function fitWithNegativeMargin(atoms: Atom[], k: number, x: number, avail: number): number | undefined {
+  let neg = negativeAhead(atoms, k);
+  if (neg <= 0) return undefined;
+  const n = atoms.length;
+  let x2 = x;
+  for (let e = k; e < n; e++) {
+    const a = atoms[e];
+    if (a.kind === 'break' || a.kind === 'leader') return undefined;
+    x2 += a.advance;
+    if (a.kind === 'box' && a.advance < 0) neg += a.advance;
+    // 行末で捨てるアキ (和欧間・letter-spacing・行末の約物の後ろ) を除いた長さ
+    const tail = (a.trail ?? 0) + (a.lsTrail ?? 0) + endTrimOf(a) - (a.ovR ?? 0);
+    if (x2 - tail <= avail + FIT_EPS) {
+      const end = e + 1;
+      if (end >= n || atoms[end].kind === 'break' || (atoms[end].isSpace && !atoms[end].glue) || canBreakAtoms(a, atoms[end])) return end;
+    }
+    // 残りの負の幅をすべて引いても収まらなければ、やめる
+    else if (x2 - tail - neg > avail + FIT_EPS) return undefined;
+  }
+  return undefined;
+}
+
 export function breakOne(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, hb?: HyphenBreak): { line: RawLine; next: number } {
   const n = atoms.length;
   const avail = Math.max(L - indent, 0);
@@ -619,11 +666,18 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
   // 行頭の字の前の letter-spacing (XSL) も捨てる
   let x = (atoms[start]?.ovL ?? 0) - startTrimOf(atoms[start]) - (atoms[start]?.lsLead ?? 0);
   let k = start;
+  // 後ろの負の幅の箱 (行内の箱の負の margin) まで数えれば収まると分かった範囲の終わり (この手前の字は、あふれても行に入れる)
+  let fitUntil = start;
   while (k < n && atoms[k].kind !== 'break') {
     const w = atoms[k].advance;
     // 和欧間アキ・字の後ろの letter-spacing は行末なら捨てるので、それを除いて収まれば行に入れる
     // 行末の終わり括弧類・句読点の後ろのアキも、行末なら捨てる
-    if (x + w - (atoms[k].trail ?? 0) - (atoms[k].lsTrail ?? 0) - endTrimOf(atoms[k]) + (atoms[k].ovR ?? 0) > avail + FIT_EPS && k > start) {
+    if (k >= fitUntil && x + w - (atoms[k].trail ?? 0) - (atoms[k].lsTrail ?? 0) - endTrimOf(atoms[k]) + (atoms[k].ovR ?? 0) > avail + FIT_EPS && k > start) {
+      const fit = fitWithNegativeMargin(atoms, k, x, avail);
+      if (fit !== undefined) {
+        fitUntil = fit;
+        continue;
+      }
       if (!atoms[k].st.noWrap) break;
       // 折り返さない (nowrap・pre) 字があふれる: その前の、折り返してよい位置 (white-space が折り返す側の空白・和文の字の間など。
       // 両側が折り返さない字の間は除く) まで戻って改行する (Text 3 §3・§5)。無ければ、折り返さずにはみ出す
