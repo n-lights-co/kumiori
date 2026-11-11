@@ -203,6 +203,8 @@ export interface ResolvedStyle {
   textDecoration?: import('./types').TextStyle['textDecoration'];
   fontSize: number;
   lineHeight: number;
+  /** lineHeight が line-height: normal から決めた値か (TextStyle.lineHeightNormal) */
+  lineHeightNormal?: boolean;
   /** 長さで指定された行送り (継承される)。lineHeight より優先 */
   lineHeightPt?: number;
   color: string;
@@ -371,6 +373,8 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     textDecoration: n.textDecoration ? mergeDecoration(parent.textDecoration, n.textDecoration) : parent.textDecoration,
     fontSize: n.fontSize ?? parent.fontSize,
     lineHeight: n.lineHeight ?? parent.lineHeight,
+    // normal の印: 行送りを指定し直したら (比でも長さでも)、指定の側に従う
+    lineHeightNormal: n.lineHeightNormal ?? (n.lineHeight !== undefined || n.lineHeightPt !== undefined ? undefined : parent.lineHeightNormal),
     // 比で指定し直されたら長さの指定は解除、長さで指定されたらそれを継承
     lineHeightPt: n.lineHeightPt ?? (n.lineHeight !== undefined ? undefined : parent.lineHeightPt),
     color: n.color ?? parent.color,

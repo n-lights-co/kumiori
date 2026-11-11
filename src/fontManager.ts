@@ -98,6 +98,15 @@ export interface LoadedFont {
   /** 書体の上の高さ・下の深さ (hhea の ascent・descent の大きさ) / em。XSL の text-altitude・text-depth (use-font-metrics) */
   ascent?: number;
   descent?: number;
+  /** 書体の勧める行間 (hhea の lineGap) / em。負の値は 0 にする (CSS Inline 3 §3.2.2)。line-height: normal の行の高さに使う */
+  lineGap?: number;
+  /**
+   * line-height: normal の行の高さを、書体の上下と行間 (ascent + descent + lineGap) から決める書体: HTML の @font-face で読み込んだ書体と、
+   * fonts の選択肢・CLI の --font で足した書体 (fontMapping.ts の htmlNormalLineHeight が値を返す書体)。
+   * 付いていない書体 (既定の書体) の normal は、書体の値を使わず、字の大きさの 1.2 倍 (htmlImport.ts)。代わりの書体として使われたときも、
+   * 行の高さに数えない (normalLineBounds)
+   */
+  metricsLineHeight?: boolean;
   /** name 表の PostScript 名 (nameID 6)・完全な名前 (nameID 4)。uniqueName で探す */
   postscriptName?: string;
   fullName?: string;
@@ -199,7 +208,7 @@ export function inlineAreaMetrics(font: Pick<LoadedFont, 'fk' | 'baselineRatio' 
 }
 
 /** fontkit で読んだ書体から、組版で使う寸法 (registerBuffer と、可変フォントの実体で同じ計算) */
-function fontMetricsOf(fk: LoadedFont['fk']): Pick<LoadedFont, 'unitsPerEm' | 'baselineRatio' | 'ascentMinusDescent' | 'ascent' | 'descent'> {
+function fontMetricsOf(fk: LoadedFont['fk']): Pick<LoadedFont, 'unitsPerEm' | 'baselineRatio' | 'ascentMinusDescent' | 'ascent' | 'descent' | 'lineGap'> {
   const upm = fk.unitsPerEm || 1000;
   // OS/2 typo メトリクスが ちょうど 1em を成すフォント (Noto CJK 等) は ideographic em ボックスと一致する
   const os2 = (fk as unknown as { 'OS/2'?: { typoAscender: number; typoDescender: number } })['OS/2'];
@@ -213,7 +222,44 @@ function fontMetricsOf(fk: LoadedFont['fk']): Pick<LoadedFont, 'unitsPerEm' | 'b
   }
   const asc = Math.abs(fk.ascent ?? upm * 0.88) / upm;
   const desc = Math.abs(fk.descent ?? upm * 0.12) / upm;
-  return { unitsPerEm: upm, baselineRatio, ascentMinusDescent: asc - desc, ascent: asc, descent: desc };
+  // 行間 (line gap) は 0 を下限にする (CSS Inline 3 §3.2.2: "UAs must floor the line gap metric at zero")
+  const gap = Math.max((fk as unknown as { lineGap?: number }).lineGap ?? 0, 0) / upm;
+  return { unitsPerEm: upm, baselineRatio, ascentMinusDescent: asc - desc, ascent: asc, descent: desc, lineGap: gap };
+}
+
+/**
+ * line-height: normal の行内の箱の中の、代わりの書体 (最初に使える書体でない書体) の字が、行の高さに求める基線の上・下 (em に対する比)。
+ *
+ * CSS Inline 3 §5.3 (Working Draft 2024-12-18): 計算値が normal の行内の箱の layout bounds は、中の字すべてを囲む
+ * ("the layout bounds of an inline box encloses all its glyphs, going from the highest A to the deepest D. (Note that glyphs in a single box
+ * can come from different fonts and thus might not all have the same A and D.)")。A・D は、その字の書体の上の高さ・下の深さ。
+ * normal のときは、書体の行間 (line gap) を半分ずつ A・D に足してよい (同じ節)。§5.1 の注・§6.4 の注も、代わりの書体の値が
+ * normal の行の箱の大きさに効くと書く。CSS 2.1 §10.8.1 も、字ごとに A・D を決めるとする。
+ * normal でないときは、最初に使える書体の値だけで決める (§5.3) ので、この関数は使わない。
+ *
+ *  - font が書体の値から決める書体 (metricsLineHeight): 上 = ascent + lineGap / 2、下 = descent + lineGap / 2 (hhea の値。fontMapping.ts の
+ *    htmlNormalLineHeight が、最初に使える書体の normal を決めるのと同じ値)。
+ *    行の中の基線は、最初に使える書体の em の箱の比 (primary.baselineRatio) で置いていて、その書体の ascent・descent の位置とは
+ *    ずれている ((ascent − descent) / 2 と baselineRatio − 0.5 の差)。同じずれを代わりの書体の上下にも足し引きして、
+ *    行の高さ (上の最大 + 下の最大) が、書体の ascent・descent どうしを基線でそろえて囲んだ高さと同じになるようにする
+ *  - 既定の書体 (metricsLineHeight の無い書体): undefined (数えない)。既定の書体の normal は、書体の値でなく字の大きさの 1.2 倍と決めてあり
+ *    (CSS 2.1 §10.8.1 の勧める 1.0〜1.2。最初に使える書体が既定の書体のとき)、書体の値 (Noto Serif JP は 1.437) を持ち込むと、
+ *    読み込んだ欧文の書体 + 既定の和文の書体で組む文書の行送りが広く変わる。行は、最初に使える書体の高さのまま (これまでと同じ)
+ *  - 縦書き (vertical): 字は中央の基線にそろう (CSS Writing Modes 4 §4.2) ので、行の高さ (ascent + descent + lineGap) を半分ずつ
+ */
+export function normalLineBounds(
+  font: Pick<LoadedFont, 'ascent' | 'descent' | 'lineGap' | 'baselineRatio' | 'metricsLineHeight' | 'instanceOf'>,
+  primary: Pick<LoadedFont, 'ascent' | 'descent' | 'baselineRatio'>,
+  vertical: boolean,
+): { above: number; below: number } | undefined {
+  if (!(font.instanceOf?.master ?? font).metricsLineHeight || font.ascent === undefined || font.descent === undefined) return undefined;
+  const gap = font.lineGap ?? 0;
+  const a = font.ascent + gap / 2;
+  const d = font.descent + gap / 2;
+  if (vertical) return { above: (a + d) / 2, below: (a + d) / 2 };
+  // 最初に使える書体の、em の箱で置いた基線と、ascent・descent で置いた基線のずれ (書体の上下が分からなければ 0)
+  const shift = primary.ascent !== undefined && primary.descent !== undefined ? primary.baselineRatio - 0.5 - (primary.ascent - primary.descent) / 2 : 0;
+  return { above: a + shift, below: d - shift };
 }
 
 /** 実体を作れない可変フォントを知らせたか (書体のファイルごとに 1 度) */
@@ -476,7 +522,7 @@ export class FontManager {
       const slanted = (coordMap.slnt ?? 0) !== 0 || (coordMap.ital ?? 0) >= 0.5;
       let buffer = master.buffer;
       let fk = master.fk;
-      let metrics: ReturnType<typeof fontMetricsOf> = { unitsPerEm: master.unitsPerEm, baselineRatio: master.baselineRatio, ascentMinusDescent: master.ascentMinusDescent, ascent: master.ascent, descent: master.descent };
+      let metrics: ReturnType<typeof fontMetricsOf> = { unitsPerEm: master.unitsPerEm, baselineRatio: master.baselineRatio, ascentMinusDescent: master.ascentMinusDescent, ascent: master.ascent, descent: master.descent, lineGap: master.lineGap };
       if (rebuild) {
         let r: ReturnType<typeof instantiateFont>;
         try {

@@ -9,7 +9,7 @@ import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type M
 import { mayCluster } from './grapheme';
 import { NOT_WORD_INITIAL } from './fontkitShaping';
 import { unitFeatures } from './orthographicSyllable';
-import { inlineAreaMetrics, isGreekCyrillicLetter } from './fontManager';
+import { inlineAreaMetrics, isGreekCyrillicLetter, normalLineBounds, type LoadedFont } from './fontManager';
 import { LIGATURE_FEATURES, ligatureTable } from './ligature';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
@@ -591,8 +591,24 @@ function flattenText(c: string, cx: FlattenCtx): void {
       ...(inLatinWord ? { latinWord: true } : {}),
       ...(st.letterSpacing > 0 && !st.xslLetterSpacing && (!mark || movedLs) ? { lsTrail: st.letterSpacing } : {}),
       ...(primary && primary !== g.font ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
+      ...(primary && primary !== g.font && st.lineHeightNormal ? fallbackNormalOf([g.font], primary, st.fontSize, wm) : {}),
     });
   }
+}
+
+/**
+ * line-height: normal の字が代わりの書体 (fonts のうち、最初に使える書体 primary でないもの) で組まれたとき、それらの書体が
+ * 行の高さに求める基線の上・下 (pt) を、Atom.fallbackNormal として返す (数える書体が無ければ、項目なし)。
+ * CSS Inline 3 §5.3: normal の行内の箱は、中の字すべての書体の上下を囲む (fontManager.ts の normalLineBounds)
+ */
+function fallbackNormalOf(fonts: LoadedFont[], primary: LoadedFont, fontSize: number, wm: WritingMode): { fallbackNormal?: { above: number; below: number } } {
+  let out: { above: number; below: number } | undefined;
+  for (const f of fonts) {
+    if (f === primary) continue;
+    const b = normalLineBounds(f, primary, wm !== 'horizontal-tb');
+    if (b) out = { above: Math.max(out?.above ?? 0, b.above * fontSize), below: Math.max(out?.below ?? 0, b.below * fontSize) };
+  }
+  return out ? { fallbackNormal: out } : {};
 }
 
 /** 字の単位に機能を足した書式 (元の書式と足す機能ごとに 1 つ) と、その元の書式の機能 */
@@ -807,6 +823,8 @@ function flattenRuby(c: LRuby, cx: FlattenCtx): void {
     ...(c.rubyColor || c.rubyColorUnder ? { rubyColors: colors as [string | undefined, string | undefined] } : {}),
     ...(aligns.some((x) => x) ? { rubyAligns: aligns as NonNullable<Atom['rubyAligns']> } : {}),
     ...(primary && baseFont && primary !== baseFont ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
+    // line-height: normal の親文字が代わりの書体の字のとき、その書体の上下も行の高さに数える (字と同じ。CSS Inline 3 §5.3)
+    ...(primary && s2.lineHeightNormal ? fallbackNormalOf(r.baseGlyphs.map((g) => g.font), primary, s2.fontSize, wm) : {}),
   });
   state.run++;
 }

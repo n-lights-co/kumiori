@@ -3001,6 +3001,8 @@ class HtmlImporter {
         // normal: 書体の値 (読み込んだ書体なら ascent・descent・lineGap から)、分からなければ 1.2
         const fams = c('font-family').split(',').map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
         s.lineHeight = this.opts.normalLineHeight?.(fams, (parseInt(c('font-weight'), 10) || 400) >= 600) ?? 1.2;
+        // normal の印: 代わりの書体で組まれた字は、その書体の上下も行の高さに数える (CSS Inline 3 §5.3。lineMetrics.ts の lineMetricsCss)
+        s.lineHeightNormal = true;
       }
     }
     // letter-spacing・word-spacing の normal は 0 (Text 3 §7.1・§7.2)。親の値を打ち消せるように、変わったら必ず設定する
@@ -4703,8 +4705,8 @@ class HtmlImporter {
             const il = fl === 'left' || fl === 'right' ? undefined : parseInitialLetter(fc('initial-letter'));
             if (il) {
               // 字の大きさ・行の高さの指定は当たらない (§7.5.1)。大きさは、組むときに行の数と書体の値から決める (§7.5.3)
-              const { fontSize: _fs, lineHeight: _lh, lineHeightPt: _lhp, ...ist } = st;
-              void [_fs, _lh, _lhp];
+              const { fontSize: _fs, lineHeight: _lh, lineHeightNormal: _lhn, lineHeightPt: _lhp, ...ist } = st;
+              void [_fs, _lh, _lhn, _lhp];
               const inner: LBlock = { type: 'block', ...ist, ...this.boxStyle(el, '::first-letter'), textIndent: 0, textAlign: 'start', children: [letter] };
               // 合わせる位置 (initial-letter-align。§7.4)。hanging・border-box は未対応 (alphabetic として組み、知らせる)
               const av = (fc('initial-letter-align') || 'alphabetic').trim().toLowerCase();
@@ -6154,7 +6156,7 @@ class HtmlImporter {
     };
     const s = this.textStyle(body, body, undefined, c);
     // 字の大きさ・色・行送りは、marginBoxes が決める
-    for (const k of ['fontSize', 'color', 'lineHeight', 'lineHeightPt', 'fontFamily', 'fontWeight', 'fontStyle', 'letterSpacing'] as const) delete s[k];
+    for (const k of ['fontSize', 'color', 'lineHeight', 'lineHeightNormal', 'lineHeightPt', 'fontFamily', 'fontWeight', 'fontStyle', 'letterSpacing'] as const) delete s[k];
     return s;
   }
 

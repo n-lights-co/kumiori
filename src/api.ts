@@ -420,7 +420,8 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
         baseWarnings.push(msg(`${f.name} の書体のファミリー名が読めません`, `cannot read the family name of the font file ${f.name}`));
         continue;
       }
-      await base.registerBuffer(family, fk['OS/2']?.usWeightClass ?? 400, buf, false);
+      // 足した書体は、HTML の line-height: normal の行の高さを書体の値から決める (@font-face の書体と同じ。fontMapping.ts の htmlNormalLineHeight)
+      (await base.registerBuffer(family, fk['OS/2']?.usWeightClass ?? 400, buf, false)).metricsLineHeight = true;
       // name 表のファミリー名 (各言語の nameID 16・1。「ＭＳ ゴシック」と「MS Gothic」など) のどれでも引けるようにする
       const recs = fk.name?.records;
       fontNames.add('installed', [family, fk.familyName, ...Object.values(recs?.preferredFamily ?? {}), ...Object.values(recs?.fontFamily ?? {})], family);

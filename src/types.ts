@@ -346,6 +346,12 @@ export interface TextStyle {
   /** 行送り比 (fontSize × lineHeight が 1 行の block 方向サイズ)。比のまま継承される */
   lineHeight?: number;
   /**
+   * lineHeight が、CSS の line-height: normal から決めた値か (HTML の入力が付ける。lineHeight には、最初に使える書体の normal の比を入れる)。
+   * true の字のうち、代わりの書体 (最初に使える書体でない、読み込んだ書体) で組まれた字は、その書体の上下も行の高さに数える (CSS Inline 3 §5.3)。
+   * 子へ引き継がれ、子が lineHeight・lineHeightPt を指定し直すと外れる
+   */
+  lineHeightNormal?: boolean;
+  /**
    * 行送りの長さ (pt)。指定すると lineHeight より優先し、子の文字サイズが違っても同じ長さのまま継承される
    * (XSL 1.1 §7.16.4: 長さ・百分率で指定した line-height は計算済みの長さで継承される)
    */
