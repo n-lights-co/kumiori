@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { routeFontCache } from './fontCache';
-import { ensureFonts, extraTestFont, fontDir } from '../test/helpers';
+import { defaultFontBuffer, ensureFonts, extraTestFont, fontDir } from '../test/helpers';
 import { LATIN_SPECS, MONO_SPECS } from '../src/fontMapping';
 import { buildCff2Font } from '../test/cff2TestFont';
 
@@ -75,6 +75,8 @@ test('XSL-FO の読み込み: 段組・脚注・表・ページ番号の書式�
     await (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'basic.fo');
   }, fo);
   await expect(page.locator('#sheets canvas')).toHaveCount(2);
+  // 変換レポートの見出しは、文書の種類 (XSL-FO) に合わせる
+  await expect(page.locator('#report summary')).toContainText('XSL-FO 変換レポート: basic.fo');
   // ヘッダーのページ番号はローマ数字
   const header = await page.evaluate(() => {
     const k = (window as unknown as { __kumiori: { tree: { sheets: Array<{ page: { absoluteAreas: unknown[] } }> } } }).__kumiori;
@@ -285,6 +287,9 @@ test('HTML の読み込み: @page の用紙・改ページ・リスト・表・�
   }, html);
   // break-before: page で 2 ページ
   await expect(page.locator('#sheets canvas')).toHaveCount(2);
+  // 変換レポートの見出しは、文書の種類 (HTML) に合わせる (HTML の文書を「XSL-FO 変換レポート」と出さない。HTM-31 の (6))
+  await expect(page.locator('#report summary')).toContainText('HTML 変換レポート: sample.html');
+  await expect(page.locator('#report summary')).not.toContainText('XSL-FO');
   const info = () =>
     page.evaluate(() => {
       const k = (window as unknown as { __kumiori: { tree: { sheets: Array<{ page: { regionBody: unknown } }> } } }).__kumiori;
@@ -674,6 +679,65 @@ test('斜体の @font-face: 斜体の字を斜体の書体で、測った幅の�
   }
   expect(names).toContain('Arimo-Regular');
   expect(names).toContain('Cousine-Regular');
+  expect(errors).toEqual([]);
+});
+
+test('@font-face: 前に開いた文書の書体が、同じ font-family の名前の次の文書に残らない (HTM-32 の (4))', async ({ page }) => {
+  const errors = await open(page);
+  const b64 = async (name: string) => Buffer.from(await defaultFontBuffer(name)).toString('base64');
+  // 1 つ目の文書: F = 等幅の書体 (Cousine。どの字も 0.6em)。標準の太さと太字の face
+  // 2 つ目の文書: 同じ名前 F で、別の書体 (Arimo。W は広く、i は狭い)。太字の face は無い
+  const mono = await b64('Cousine-Regular.ttf');
+  const monoBold = await b64('Cousine-Bold.ttf');
+  const sans = await b64('Arimo-Regular.ttf');
+  const drop = (name: string, html: string, fontFiles: Array<[string, string]>) =>
+    page.evaluate(
+      ([n, h, fs2]) => {
+        const dt = new DataTransfer();
+        dt.items.add(new File([h as string], n as string, { type: 'text/html' }));
+        for (const [fname, data] of fs2 as Array<[string, string]>) dt.items.add(new File([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], fname, { type: 'font/ttf' }));
+        window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt }));
+        window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, cancelable: true }));
+      },
+      [name, html, fontFiles] as const,
+    );
+  const doc = (faces: string) =>
+    `<!doctype html><html lang="en"><head><style>@page { size: A6; margin: 10mm } ${faces} p { font-family: F; font-size: 20pt; margin: 0 }</style></head><body><p>Wi</p><p><b>Wi</b></p></body></html>`;
+  /** 字ごとの [字, 幅 (pt), 太らせて描くか] (1 行目が標準の太さ、2 行目が太字) */
+  const glyphs = () =>
+    page.evaluate(() => {
+      const k = (window as unknown as { __kumiori: { tree: { sheets: Array<{ page: { regionBody: unknown } }> } } }).__kumiori;
+      const out: Array<[string, number, boolean]> = [];
+      const walk = (a: { type?: string; text?: string; width?: number; fakeBold?: boolean; children?: unknown[] }) => {
+        if (a.type === 'glyph') out.push([a.text ?? '', Math.round((a.width ?? 0) * 100) / 100, !!a.fakeBold]);
+        for (const c of a.children ?? []) walk(c as never);
+      };
+      walk(k.tree.sheets[0].page.regionBody as never);
+      return out;
+    });
+  await drop('first.html', doc('@font-face { font-family: F; src: url(a.ttf) } @font-face { font-family: F; src: url(abold.ttf); font-weight: 700 }'), [['a.ttf', mono], ['abold.ttf', monoBold]]);
+  await expect(page.locator('#status')).toContainText('first.html');
+  const first = await glyphs();
+  // 等幅: W も i も 12pt (0.6em)。太字は太字の face (太らせて描かない)
+  expect(first.map((g) => g[1])).toEqual([12, 12, 12, 12]);
+  expect(first.map((g) => g[2])).toEqual([false, false, false, false]);
+  await drop('second.html', doc('@font-face { font-family: F; src: url(b.ttf) }'), [['b.ttf', sans]]);
+  await expect(page.locator('#status')).toContainText('second.html');
+  const second = await glyphs();
+  // 2 つ目の文書の書体 (Arimo) で組む: W は i より広い (前の文書の等幅の書体が残っていれば、どちらも 12pt)
+  expect(second[0][1]).toBeGreaterThan(16);
+  expect(second[1][1]).toBeLessThan(6);
+  // 太字の face はこの文書に無いので、この文書の標準の太さの書体を太らせて描く (前の文書の太字の face を使わない)
+  expect(second[2][1]).toBeCloseTo(second[0][1], 1);
+  expect(second[3][1]).toBeCloseTo(second[1][1], 1);
+  expect(second.slice(2).map((g) => g[2])).toEqual([true, true]);
+  // ブラウザに登録した書体 (Canvas が描くのに使う) も、この文書の 1 つだけ (前の文書の同じ名前の書体・太字の書体が残っていない)
+  const faces = await page.evaluate(() => [...document.fonts].filter((f) => f.family.replace(/["']/g, '') === 'css:F').map((f) => f.weight));
+  expect(faces).toEqual(['400']);
+  // 1 つ目の文書に戻しても、1 つ目の書体で組む
+  await drop('first.html', doc('@font-face { font-family: F; src: url(a.ttf) } @font-face { font-family: F; src: url(abold.ttf); font-weight: 700 }'), [['a.ttf', mono], ['abold.ttf', monoBold]]);
+  await expect(page.locator('#status')).toContainText('first.html');
+  expect(await glyphs()).toEqual(first);
   expect(errors).toEqual([]);
 });
 

@@ -283,7 +283,11 @@ export function createFontMapping(
   /** HTML の @font-face で読み込んだ書体 (loadFontFaces が table の face に登録する)。無ければ fonts で足した書体 */
   const faceOf = (n: string) => table.familyFor(n, FACE_SOURCES);
   /** 読み込み済みの face (「書体名@太さ」) と、そのファイル (ファイルで決まる face だけ。ほかは undefined) */
-  const registeredFaces = new Map<string, string | undefined>();
+  /**
+   * 登録した face (「登録の名前@太さ」) → 登録に使ったファイルと、ファイルで決まる登録のときのファイルの印。
+   * 同じ割り当てで文書を続けて読む画面では、前の文書の face が残っているので、読み直すか・外すかを、これで決める (loadFontFaces)
+   */
+  const registeredFaces = new Map<string, { family: string; weight: number; file: FontFile; id: string | undefined }>();
 
   /**
    * @font-face の書体を、一緒に選んだファイル (src の url のパスで突き合わせ、無ければファイル名で突き合わせる) から読み込む。
@@ -323,6 +327,8 @@ export function createFontMapping(
     const groups = new Map<string, RangedFace[]>();
     // この文書で定義した face (「書体名@太さ」) ごとの、定義に使ったファイルの並び (書いた順)
     const defined = new Map<string, FontFile[]>();
+    // この文書が使う、登録した face (registeredFaces の鍵)。終わりに、ここに無い face (前の文書だけにあったもの) を外す
+    const used = new Set<string>();
     for (const ff of (typeof css === 'string' ? parseCss(css) : css).fontFaces) {
       const file = ff.srcs.map(fileOf).find(Boolean);
       if (!file) continue;
@@ -353,11 +359,14 @@ export function createFontMapping(
         if (earlier.includes(file)) continue;
         defined.set(slot, [...earlier, file]);
         const family = earlier.length ? `${first}~${earlier.length + 1}` : first;
-        // 読み込み済みなら読み直さない (最初の定義は「書体名@太さ」だけで見る: 今までと同じ)。ファイルで決まるもの
-        // (後の定義・ファイルの太さで登録したもの) は、同じファイルのときだけ
+        // 読み込み済みなら読み直さない: 同じファイル (同じ File・同じ渡されたファイルそのもの。設定を変えて同じ文書を組み直すとき) のときだけ。
+        // 同じ「書体名@太さ (と傾き・幅)」でも、別のファイルなら読み直す (画面で、同じ font-family の名前で別の書体を指す文書を続けて
+        // 開いたとき、前の文書の書体で組まない)。ファイルで決まるもの (後の定義・ファイルの太さで登録したもの) は、ファイルの印も同じとき
         const key = `${family}@${weight}${shapeKey}`;
         const fileId = earlier.length || sfnt ? (file.url ?? file.path ?? file.name) : undefined;
-        if (!registeredFaces.has(key) || (fileId !== undefined && registeredFaces.get(key) !== fileId)) {
+        const had = registeredFaces.get(key);
+        used.add(key);
+        if (!had || had.file !== file || (fileId !== undefined && had.id !== fileId)) {
           // 可変フォントの記述子 (Fonts 4 §4.4: 記述子が無い (auto) ときは、選ぶときは normal、軸の値は制限しない)
           const lf = await fonts.registerBuffer(family, weight, sfnt ?? (await file.arrayBuffer()), canvas, {
             weight: ff.weightRange ?? 'auto',
@@ -368,7 +377,8 @@ export function createFontMapping(
           }, style || width !== undefined ? { ...(style ? { style } : {}), ...(width !== undefined ? { width } : {}) } : undefined);
           // line-height: normal の行の高さを、書体の値から決める書体 (htmlNormalLineHeight と同じ。代わりの書体として使われたときも)
           lf.metricsLineHeight = true;
-          registeredFaces.set(key, fileId);
+          // 外すとき (fonts.remove) は、登録された名前 (傾き・幅を持つ書体は、印の付いた名前) で引く
+          registeredFaces.set(key, { family: lf.family, weight, file, id: fileId });
         }
         const g = groups.get(ff.family) ?? [];
         const same = earlier.length ? { family: first, weight, ...(style ? { style } : {}), ...(width !== undefined ? { width } : {}) } : undefined;
@@ -377,6 +387,13 @@ export function createFontMapping(
       } catch (e) {
         console.warn(`@font-face ${ff.family}: ${String(e)}`);
       }
+    }
+    // 前の文書だけにあった face を外す (画面は、書体の組と割り当てを 1 つだけ作って使い回す。前の文書の太字の face が、
+    // 太字の face の無い次の文書の太字に使われないように。API は文書ごとに書体の組の写しを作るので、外すものは無い)
+    for (const [key, r] of registeredFaces) {
+      if (used.has(key)) continue;
+      fonts.remove(r.family, r.weight);
+      registeredFaces.delete(key);
     }
     for (const [fam, faces] of groups) {
       // face が 1 つで範囲も無ければ、その書体そのもの。複数か範囲つきなら、範囲つきの書体の組

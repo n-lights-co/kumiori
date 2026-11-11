@@ -179,3 +179,34 @@ describe('公開の API: 同じ名前で記述子の無い @font-face を並べ�
     expect(await glyphs('kumiori')).toEqual({ 標: 'css:shs~2@400', 太: 'css:shs~2@400:太らせる' });
   });
 });
+
+describe('同じ割り当てで文書を続けて読む (画面): 前の文書の @font-face の書体を、次の文書に残さない (HTM-32 の (4))', () => {
+  it('同じ font-family の名前で別のファイルを指す文書は、その文書の書体で組む。前の文書だけにあった太さの face は外す', async () => {
+    const { fonts, m, pick } = await setup();
+    // 1 つ目の文書: F = Cousine (標準の太さと太字)
+    await m.loadFontFaces('@font-face { font-family: F; src: url(a.ttf) } @font-face { font-family: F; src: url(ab.ttf); font-weight: 700 }', [file('a.ttf', () => cached('Cousine-Regular.ttf')), file('ab.ttf', () => cached('Cousine-Bold.ttf'))]);
+    expect(pick(['F', 'sans-serif'], 'a')).toEqual(['Cousine-Regular@400']);
+    expect(pick(['F', 'sans-serif'], 'a', 700)).toEqual(['Cousine-Bold@700']);
+    // 2 つ目の文書: 同じ名前 F で Arimo (標準の太さだけ)。前の文書の Cousine で組まない。太字は、この文書の標準の太さの書体 (太らせて描く)
+    await m.loadFontFaces('@font-face { font-family: F; src: url(b.ttf) }', [file('b.ttf', () => cached('Arimo-Regular.ttf'))]);
+    expect(pick(['F', 'sans-serif'], 'a')).toEqual(['Arimo-Regular@400']);
+    expect(pick(['F', 'sans-serif'], 'a', 700)).toEqual(['Arimo-Regular@400']);
+    expect(fonts.all().some((f) => f.family === 'css:F' && f.weight === 700)).toBe(false);
+    // 3 つ目の文書: @font-face が無い。F は、前の文書の書体ではなく、並びの次 (総称の書体)
+    await m.loadFontFaces('p { color: red }', []);
+    expect(pick(['F', 'sans-serif'], 'a')[0]).not.toMatch(/^(Arimo|Cousine)-Regular@/);
+    expect(fonts.all().some((f) => f.family.startsWith('css:'))).toBe(false);
+  });
+
+  it('同じファイル (同じ文書の組み直し) は、読み直さない', async () => {
+    const { fonts, m } = await setup();
+    let reads = 0;
+    const f = { name: 'a.ttf', arrayBuffer: async () => (reads++, cached('Cousine-Regular.ttf')) };
+    const css = '@font-face { font-family: F; src: url(a.ttf) }';
+    await m.loadFontFaces(css, [f]);
+    const first = fonts.get('css:F', 400);
+    await m.loadFontFaces(css, [f]);
+    expect(reads).toBe(1);
+    expect(fonts.get('css:F', 400)).toBe(first);
+  });
+});

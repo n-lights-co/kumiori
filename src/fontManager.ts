@@ -395,6 +395,10 @@ export class FontManager {
     if (baseFamily !== undefined) family = baseFamily + variationSuffix({ ...(width !== undefined ? { wdth: width } : {}), ...(style === 'italic' ? { ital: true } : style === 'oblique' ? { slnt: OBLIQUE_FACE_ANGLE } : {}) });
     let fontFace: FontFace | undefined;
     if (canvas && typeof FontFace !== 'undefined' && typeof document !== 'undefined') {
+      // 同じ名前・太さの書体を登録し直すとき (画面で、同じ font-family の名前で別のファイルを指す文書を続けて開いたとき) は、
+      // 前の書体をブラウザから外す (同じ名前の FontFace が 2 つ残ると、Canvas が前の書体で描くことがある)
+      const old = this.fonts.get(keyOf(family, weight));
+      if (old) dropBrowserFaces(old);
       // ブラウザには、印の付いた名前のまま、立体の書体として登録する (ctx.font にその名前を書いて選ぶ。ブラウザの側で傾き・幅を照合させない)
       fontFace = new FontFace(family, buffer.slice(0), { weight: String(weight) });
       await fontFace.load();
@@ -421,6 +425,23 @@ export class FontManager {
     this.getMemo.clear(); // face.load() の await の間に get が呼ばれていることがある
     if (!this.fallbackFamily) this.fallbackFamily = family;
     return lf;
+  }
+  /**
+   * 登録した書体 (ファミリー名と太さ) を外す。ブラウザに登録した FontFace (可変フォントの実体のものも) も外す。
+   * 画面で、前に開いた文書の @font-face の書体を、次の文書に残さないために使う (API は、文書ごとの写し (fork) に登録するので要らない)。
+   * 外したら true
+   */
+  remove(family: string, weight: number): boolean {
+    const lf = this.fonts.get(keyOf(family, weight));
+    if (!lf) return false;
+    this.fonts.delete(lf.key);
+    dropBrowserFaces(lf);
+    this.charFallback.clear();
+    this.forCharMemo.clear();
+    this.clusterMemo.clear();
+    this.getMemo.clear();
+    this.generation++;
+    return true;
   }
   /** 可変フォントの実体も、ブラウザ (document.fonts) に登録するか (可変フォントを canvas: true で登録したとき) */
   private canvasInstances = false;
@@ -1246,6 +1267,16 @@ export function matchWeightRange(ranges: ReadonlyArray<readonly [number, number]
   const order = weight >= 400 && weight <= 500 ? [above(weight, 500), below(weight), above(500)] : weight < 400 ? [below(weight), above(weight)] : [above(weight), below(weight)];
   const hit = order.find((i) => i >= 0);
   return hit ?? 0;
+}
+
+/** 書体と、その可変フォントの実体の FontFace を、ブラウザ (document.fonts) から外す (ブラウザの外では何もしない) */
+function dropBrowserFaces(lf: LoadedFont) {
+  if (typeof document === 'undefined') return;
+  for (const f of [lf, ...(lf.variable?.instances.values() ?? [])]) {
+    if (!f.face) continue;
+    document.fonts.delete(f.face);
+    f.face = undefined;
+  }
 }
 
 /**
