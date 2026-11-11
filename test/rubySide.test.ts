@@ -142,10 +142,11 @@ describe('下側のルビの行の空き (CSS Ruby 1 §3.6: 注釈のある側�
   });
 });
 
-describe('XSL-FO の tb-lr のルビ (fo:inline-container からの読み替え) は、これまでどおり前の側 (左)', () => {
+// この読み替えは、互換モード (compat: 'antenna') のときだけ行う (仕様モードでは fo:inline-container として組む。XSL 1.1 §6.6.8)
+describe('XSL-FO の tb-lr のルビ (互換モードの、fo:inline-container からの読み替え) は、これまでどおり前の側 (左)', () => {
   it('ルビのブロックが親文字のブロックの前 (左) に積まれる入力なので、左に置く', () => {
     const fo = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="200pt" page-height="200pt" margin="20pt"><fo:region-body writing-mode="tb-lr"/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p" writing-mode="tb-lr"><fo:flow flow-name="xsl-region-body"><fo:block font-size="10pt" line-height="2">あ<fo:inline-container alignment-baseline="central" text-indent="0mm" last-line-end-indent="0mm" start-indent="0mm" end-indent="0mm" text-align="center" text-align-last="center"><fo:block font-size="5pt" line-height="1">かん</fo:block><fo:block line-height="1">漢</fo:block></fo:inline-container></fo:block></fo:flow></fo:page-sequence></fo:root>`;
-    const a = scan(importXslFo(fo, parse).document);
+    const a = scan(importXslFo(fo, parse, { compat: 'antenna' }).document);
     expect(a.rubies.length).toBe(1);
     expect(rightOf(a.rubies[0])).toBe(false);
   });
