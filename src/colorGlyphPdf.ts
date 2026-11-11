@@ -180,10 +180,23 @@ export class PdfColorGlyphs {
     return self;
   }
 
-  /** 字の領域 g を、この描き手が描くか (書体が色つきの表を持つか) */
+  /**
+   * 字の領域 g を、この描き手が描くか: 書体が色つきの表を持ち、並びに色つきの絵のある字形がある。
+   * 色つきの絵の無い字形だけの並びは、ふつうの書体の字として書く (部分書体として埋め込む。Type 3 にしない):
+   * 一部の字形にだけ絵を持つ書体 (Source Code Pro の SVG の表は 13 字形だけ) の本文の字が、すべて Type 3 になっていた
+   * (ヒントの無い輪郭になって太く見え、字の取り出しも書体の名前も失う)。色つきの字形の混じる並びは、Type 3 で書く
+   */
   handles(g: GlyphArea): boolean {
-    return !!colorFontOf(this.fonts.get(g.fontFamily, g.fontWeight));
+    let hit = this.handled.get(g);
+    if (hit === undefined) {
+      const font = this.fonts.get(g.fontFamily, g.fontWeight);
+      const cf = colorFontOf(font);
+      hit = !!cf && !areaGlyphs(g, font).every((gl) => cf.isPlain(gl.id, g.fontPalette));
+      this.handled.set(g, hit);
+    }
+    return hit;
   }
+  private handled = new WeakMap<GlyphArea, boolean>();
 
   /** 画像のバイト列ごとの鍵 (同じ画像の命令は、同じバイト列の物を指す。ColorFont が字形ごとに覚えている) */
   private imageKey(data: Uint8Array): string {
@@ -200,7 +213,7 @@ export class PdfColorGlyphs {
   draw(g: GlyphArea, x: number, y: number, page: PDFPage, H: number, fillOps: (css: string) => PDFOperator[]): PDFOperator[] | undefined {
     const font = this.fonts.get(g.fontFamily, g.fontWeight);
     const cf = colorFontOf(font);
-    if (!cf) return undefined;
+    if (!cf || !this.handles(g)) return undefined;
     const glyphs = areaGlyphs(g, font);
     if (!glyphs.length) return [];
     // 文字の色 (前景色)。字形の手続きの中のグラデーションに前景色を使う字形は、色ごとに手続きを分ける

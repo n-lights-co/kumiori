@@ -519,6 +519,8 @@ export class ColorFont {
   readonly unitsPerEm: number;
   /** 持っている色つきの表 */
   readonly tables: { colr?: 0 | 1; svg?: boolean; cbdt?: boolean; sbix?: boolean };
+  /** 輪郭の表 (glyf・CFF・CFF2) を持つ (色つきでない字を、ふつうの書体の字として描ける) */
+  readonly hasOutlines: boolean;
   private colr?: Reader;
   private cpal?: Reader;
   private cblc?: Reader;
@@ -549,6 +551,7 @@ export class ColorFont {
       return t ? new Reader(buf, t.offset, t.length) : undefined;
     };
     this.tables = {};
+    this.hasOutlines = dir.has('glyf') || dir.has('CFF ') || dir.has('CFF2');
     const colr = reader('COLR');
     const cpal = reader('CPAL');
     // CPAL (色のパレット) は、COLR の色の番号と、SVG の表の var(--colorN) が引く
@@ -670,6 +673,20 @@ export class ColorFont {
    * 字形 gid の色つきの描き方 (パレット sel で)。色つきの字形でなければ undefined (ふつうの輪郭を、文字の色で描く)。
    * 同じ字形に複数の表があるときは、COLR (version 1 → version 0) → SVG → CBDT → sbix の順に、最初に見つかったもの
    */
+  /**
+   * 字形 gid を、ふつうの書体の字 (輪郭を文字の色で塗る字) として描いてよい: 色つきの描き方が無く、SVG の表にも絵が無い
+   * (SVG の表に絵があるのに読めなかった字形は、描く側が知らせるので、ここでは「ふつう」としない)。
+   * 色つきの表は、書体の一部の字形にだけ絵を持つことがある (OpenType の SVG の表の「SVG Document List」は字形の範囲ごと。
+   * COLR の BaseGlyph の一覧も同じ)。絵の無い字形は、色つきの表の無い書体の字と同じに描く。
+   * 色つきの表が SVG だけの書体に限る: COLR・sbix・CBDT の書体は、fontkit がその表の字形の型を返し、部分書体を作る所で
+   * 落ちることがあるので (「glyph._decode is not a function」)、ふつうの埋め込みを通さない
+   */
+  isPlain(gid: number, sel?: FontPalette): boolean {
+    if (!this.hasOutlines || this.tables.colr !== undefined || this.tables.cbdt || this.tables.sbix) return false;
+    if (this.glyph(gid, sel)) return false;
+    return !(this.tables.svg && this.svgDocument(gid));
+  }
+
   glyph(gid: number, sel?: FontPalette): ColorGlyph | undefined {
     const key = `${gid}|${paletteKey(sel)}`;
     const hit = this.glyphMemo.get(key);
