@@ -28,3 +28,7 @@ export function mathVariantChar(cp: number, variant: string): number {
   for (const [b, m, n] of runs) if (cp >= b && cp < b + n) return m + cp - b;
   return cp;
 }
+
+// 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
+// Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
+for (const t of [MATH_VARIANTS]) Object.setPrototypeOf(t, null);

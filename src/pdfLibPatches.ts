@@ -19,7 +19,7 @@ import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFDocument, PDFFl
 import type { PDFOperator, PDFPage } from 'pdf-lib';
 import type { FontManager } from './fontManager';
 import { decodeJpeg } from './jpeg';
-import { pngWithinLimits } from './pixels';
+import { pngDataComplete, pngWithinLimits } from './pixels';
 import { cffGidToCid, cffTable, subsetCff } from './cff';
 
 /** 差し替え済みの印 (原型に付ける) */
@@ -84,6 +84,48 @@ export function patchFontkitSubset(font: FontManager) {
       this.offset += pad;
     }
     return r;
+  };
+  proto[PATCHED] = true;
+  patchSubsetSerialize(any.createSubset() as unknown as SubsetLike);
+}
+
+type EncodeStreamLike = { on(ev: string, fn: (v: never) => void): EncodeStreamLike; end(): void };
+type SubsetLike = { encode(s: EncodeStreamLike): void; encodeStream(): EncodeStreamLike };
+
+/**
+ * 部分書体の書き出し (pdf-lib の CustomFontSubsetEmbedder.serializeFont) を、例外を受けられる形に差し替える。
+ * 元の形は、fontkit の encodeStream が、書き出し (encode) を次の周回 (nextTick) のコールバックの中で走らせる。壊れた書体 (glyf・loca・head の
+ * 位置が範囲の外など) で encode が投げると、その例外は、どの Promise にも届かず、プロセスの uncaughtException になる (toPdf を囲んだ
+ * try/catch では受けられず、Node のプロセスが落ちる)。同じ流れ (EncodeStream) を自分で作り、encode を try の中で呼んで、例外は Promise の拒否にする
+ */
+function patchSubsetSerialize(sample: SubsetLike) {
+  const proto = CustomFontSubsetEmbedder.prototype as unknown as { serializeFont(this: { subset: SubsetLike }): Promise<Uint8Array>; [PATCHED]?: boolean };
+  if (proto[PATCHED]) return;
+  if (typeof sample.encodeStream !== 'function' || typeof sample.encode !== 'function') throw new Error('@pdf-lib/fontkit の部分書体の encodeStream が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)');
+  // 流れの型 (restructure の EncodeStream) は、fontkit の外からは見えないので、何も書かない encode で 1 つ作らせて、その型を取る
+  const Stream = sample.encodeStream.call({ encode() {} } as unknown as SubsetLike).constructor as new () => EncodeStreamLike;
+  proto.serializeFont = function () {
+    return new Promise<Uint8Array>((resolve, reject) => {
+      const parts: Uint8Array[] = [];
+      const s = new Stream();
+      s.on('data', ((bytes: Uint8Array) => void parts.push(bytes)) as never)
+        .on('end', (() => {
+          const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+          let at = 0;
+          for (const p of parts) {
+            out.set(p, at);
+            at += p.length;
+          }
+          resolve(out);
+        }) as never)
+        .on('error', ((err: unknown) => reject(err)) as never);
+      try {
+        this.subset.encode(s);
+        s.end();
+      } catch (e) {
+        reject(e);
+      }
+    });
   };
   proto[PATCHED] = true;
 }
@@ -250,7 +292,11 @@ export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array): Promise<P
  */
 export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array): Promise<PDFImage> {
   if (!pngWithinLimits(png)) throw new Error('PNG: 画素の数か展開の大きさが上限を超えます');
-  return (await embedPngAsIs(pdf, png)) ?? (await pdf.embedPng(png));
+  const asIs = await embedPngAsIs(pdf, png);
+  if (asIs) return asIs;
+  // 展開して埋め込む前に、画素のデータが終わりまで展開できることを確かめる (壊れたデータで、pdf-lib の展開が止まらなくなる。pngDataComplete)
+  if (!pngDataComplete(png)) throw new Error('PNG: 画素のデータが壊れています');
+  return pdf.embedPng(png);
 }
 
 /**
@@ -275,7 +321,7 @@ export async function embedCmykImage(
     rgb = px.data;
   } else {
     // 上限を超える PNG は展開しない (呼ぶ側のふつうの埋め込み (embedPngChecked) も断る)
-    if (!pngWithinLimits(bytes)) return undefined;
+    if (!pngWithinLimits(bytes) || !pngDataComplete(bytes)) return undefined;
     let e: PngEmbedder;
     try {
       e = await PngEmbedder.for(bytes);

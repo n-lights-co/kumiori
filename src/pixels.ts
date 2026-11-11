@@ -11,6 +11,7 @@ export interface Pixels {
   rgba: Uint8Array;
 }
 
+import { inflateBytes } from './psFilters';
 import { BMP_RLE_PIXELS_PER_BYTE, DEFLATE_MAX_RATIO, MAX_PIXELS, gifPixelBudget, pixelBudget } from './imageLimits';
 
 /** 画素の数の上限 (imageLimits.ts。ここからも引けるようにしてある) */
@@ -161,10 +162,28 @@ export function pngWithinLimits(b: Uint8Array): boolean {
   let pixelBits = 0;
   let pixels = 0;
   let idat = 0;
+  let width = 0;
+  let height = 0;
+  let framePixels = 0;
   for (let at = 8; at + 12 <= b.length; ) {
     const len = dv.getUint32(at);
     const type = String.fromCharCode(b[at + 4], b[at + 5], b[at + 6], b[at + 7]);
+    // IHDR は、最初のチャンクで、長さ 13、1 つだけ (PNG の仕様 §5.6・§11.2.2)。そうでない IHDR のある PNG は読まない: 展開する側 (pdf-lib の UPNG) は、
+    // 長さも位置も見ずに、最後に出てきた IHDR の寸法を使うので、ここで見た寸法と違う寸法 (2 つ目の IHDR の 10000 × 10000) で配列を作らせられる
+    if (type === 'IHDR' && (at !== 8 || len !== 13)) return false;
+    // 動く PNG (APNG) のコマ (fcTL: 連番 4 バイト、幅・高さ、位置 x・y …。APNG の仕様の「fcTL」): コマの矩形は画像の中に収まること。
+    // 展開する側は、コマごとに、矩形の大きさの配列と画像の全体の写しを作るので、コマの画素と画像の画素の合計を、上限の内にする
+    if (type === 'fcTL') {
+      if (len < 26 || at + 8 + 20 > b.length) return false;
+      const fw = dv.getUint32(at + 12);
+      const fh = dv.getUint32(at + 16);
+      if (!fw || !fh || fw + dv.getUint32(at + 20) > width || fh + dv.getUint32(at + 24) > height) return false;
+      framePixels += fw * fh + width * height;
+      if (framePixels > MAX_PIXELS) return false;
+    }
     if (type === 'IHDR' && len >= 13 && at + 21 <= b.length) {
+      width = dv.getUint32(at + 8);
+      height = dv.getUint32(at + 12);
       pixels = dv.getUint32(at + 8) * dv.getUint32(at + 12);
       // 1 画素のビット数 = 標本の数 × ビットの深さ (PNG の仕様 §11.2.2 の Table 11.1: 色の型 0 灰・2 RGB・3 色の表・4 灰と α・6 RGBA)
       const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[b[at + 17]] ?? 0;
@@ -174,6 +193,36 @@ export function pngWithinLimits(b: Uint8Array): boolean {
     at += 12 + len;
   }
   return pixels > 0 && pixelBits > 0 && pixels <= MAX_PIXELS && (pixels * pixelBits) / 8 <= DEFLATE_MAX_RATIO * idat;
+}
+
+/**
+ * PNG の画素のデータ (IDAT をつないだ zlib の列) が、終わりまで展開できるか。pdf-lib の embedPng (UPNG) の展開は、壊れたデータ
+ * (割り当ての無い符号) に当たると、読む位置が進まないまま回り続けて止まらない。UPNG に渡す前に、誤りで止まる自前の展開
+ * (psFilters の inflateBytes。壊れた所までを返す) で、走査線の大きさ (飛び越しでない並びの「(1 行のバイト数 + フィルタの 1 バイト) × 高さ」。
+ * PNG の仕様 §7.2・§9.1。飛び越しの並びはこれより大きい) まで出ることを確かめる。pngWithinLimits を通った PNG に使う
+ */
+export function pngDataComplete(b: Uint8Array): boolean {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const parts: Uint8Array[] = [];
+  let need = 0;
+  for (let at = 8; at + 12 <= b.length; ) {
+    const len = dv.getUint32(at);
+    const type = String.fromCharCode(b[at + 4], b[at + 5], b[at + 6], b[at + 7]);
+    if (type === 'IHDR' && len === 13) {
+      const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[b[at + 17]] ?? 0;
+      need = (Math.ceil((dv.getUint32(at + 8) * channels * b[at + 16]) / 8) + 1) * dv.getUint32(at + 12);
+    } else if (type === 'IDAT') parts.push(b.subarray(at + 8, Math.min(at + 8 + len, b.length)));
+    else if (type === 'IEND') break;
+    at += 12 + len;
+  }
+  if (!need || !parts.length) return false;
+  const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    all.set(p, at);
+    at += p.length;
+  }
+  return inflateBytes(all, need).length >= need;
 }
 
 /** BMP の画素 (圧縮なし、16・32 ビットのビットフィールド、または RLE8・RLE4)。読めなければ undefined */
@@ -192,6 +241,9 @@ export function decodeBmp(b: Uint8Array): Pixels | undefined {
   const W = Math.abs(w);
   const H = Math.abs(h);
   if (!W || !H || W * H > MAX_PIXELS) return undefined;
+  // 1 画素のビット数は 1・4・8・16・24・32 だけ ([MS-WMF] 2.1.1.3 の BitCount。0 は JPEG・PNG を入れる形で、ここでは読まない)。
+  // 0 を通すと、1 行のバイト数が 0 になって、下のファイルの大きさの検査を、54 バイトのファイルの 10000 × 10000 が通る
+  if (![1, 4, 8, 16, 24, 32].includes(bpp)) return undefined;
   // RLE8 (BI_RLE8 = 1、8 ビット) と RLE4 (BI_RLE4 = 2、4 ビット) は、メタファイルの DIB と同じ符号 ([MS-WMF] 2.1.1.7 の Compression・3.1.6 の
   // Bitmap Compression) なので、expandRle で圧縮しない行に戻してから読む (IMG-19 (5))。指定の無い画素 (行の終わり・画像の終わり・ずれで飛ばした所) は
   // 色の表の 0 番 (expandRle と同じ、仕様書の例のとおり)

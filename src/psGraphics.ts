@@ -33,7 +33,17 @@ export interface Clip {
   segs: Seg[];
   evenOdd: boolean;
   parent?: Clip;
+  /** 外側のクリップの数 (入れ子の深さ。無ければ 0) */
+  depth?: number;
 }
+
+/**
+ * クリップの入れ子の深さの上限 (超えれば limitcheck)。clip は、今のクリップの中に新しいクリップを重ねるので、gsave・grestore で戻さずに
+ * 繰り返すと、いくらでも深くなる。描く側 (eps.ts の setClip) は、クリップが変わるたびに、深さに比例した手間で入れ子の g を開き直すので、
+ * 62 万段の入れ子 (183 バイトの EPS) では、図形 1 つに何十秒も掛かった。gsave の入れ子の上限 (1000) と同じ値にする
+ * (PLRM 第 3 版の付録 B には、クリップの入れ子の限界の項目は無い。実在の EPS の入れ子は、多くて十数段)
+ */
+const MAX_CLIP_DEPTH = 1000;
 
 export type DisplayItem =
   | { k: 'fill'; segs: Seg[]; evenOdd: boolean; color: RGB; cmyk?: number[]; clip?: Clip }
@@ -550,7 +560,9 @@ export class Graphics {
     // クリップは描いたあとも現在のパスを残す (§8.2 clip)
     this.countItem(this.g.path.length);
     const segs = this.g.path.slice();
-    this.g.clip = { segs, evenOdd, parent: this.g.clip };
+    const depth = this.g.clip ? (this.g.clip.depth ?? 0) + 1 : 0;
+    if (depth >= MAX_CLIP_DEPTH) throw new PSError('limitcheck');
+    this.g.clip = { segs, evenOdd, parent: this.g.clip, depth };
   }
   /** 現在のクリップのパス (無ければ外接矩形) */
   clipPathSegs(): Seg[] {

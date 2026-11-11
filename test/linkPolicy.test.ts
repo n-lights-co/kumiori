@@ -4,7 +4,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFHexString, PDFName } from 'pdf-lib';
 import { cleanUrl, judgeExternalLink, urlScheme } from '../src/linkPolicy';
 import { DEFAULT_FONTS, parseAreaTree, serializeAreaTree, typeset } from '../src/index';
 import { importXslFo } from '../src/xslfoImport';
@@ -78,6 +78,24 @@ describe('リンクの動作を安全なものに限る (HTM-20)', () => {
     '<p><a href="https://example.com/a">ok</a> <a href="javascript:alert(1)">js</a> <a href="java&#9;script:alert(2)">js2</a> <a href=" JAVASCRIPT:alert(3)">js3</a> <a href="data:text/html,x">d</a> ' +
     '<a href="x.exe">exe</a> <a href="other.pdf#page=3">pdf</a> <a href="mailto:a@example.com">m</a> <a href="//example.com/x">n</a> <a href="#t">in</a></p><a style="display: block" href="file:///etc/passwd">blk</a><p id="t">t</p>';
 
+  it('相対の PDF の名前・# の後ろの字で、動作の辞書に項目を足せない (括弧と、下位 8 ビットが括弧になる字。ISO 32000-2 §7.3.4.2)', async () => {
+    // ) で文字列を閉じて /S /JavaScript を書き足す形 (辞書の同じ名前の項目は、後のものを読む実装が多い)。
+    // 2 つ目は、逃がされる ( ) の代わりに、下位 8 ビットが 0x28・0x29 になる字 (U+0128・U+0129) を使う形
+    const r = await typeset('<p><a href="a.pdf#x)/S/JavaScript/JS(app.alert(1)">a</a> <a href="aĩ/S/JavaScript/JSĨapp.alertĨ1ĩĩ/XĨ.pdf">b</a> <a href="資料.pdf#第1章">c</a></p>', { loadFont });
+    const pdf = await PDFDocument.load(await r.toPdf());
+    const acts: PDFDict[] = [];
+    for (const [, o] of pdf.context.enumerateIndirectObjects()) if (o instanceof PDFDict && o.get(PDFName.of('A'))) acts.push(o.lookup(PDFName.of('A'), PDFDict));
+    // 読み戻した動作は、どれも GoToR で、項目は S・F・D だけ
+    expect(acts.map((a) => [String(a.get(PDFName.of('S'))), a.keys().map(String).sort().join(' ')])).toEqual(Array.from({ length: 3 }, () => ['/GoToR', '/D /F /S']));
+    expect(String(acts[0].get(PDFName.of('D')))).toBe('(x\\)/S/JavaScript/JS\\(app.alert\\(1\\))');
+    // ASCII でない字のある名前は、ファイル指定の辞書 (§7.11.3 Table 43): UF に Unicode の名前、F は ASCII の代わりの名前
+    const spec = (a: PDFDict) => a.lookup(PDFName.of('F'), PDFDict);
+    expect((spec(acts[1]).lookup(PDFName.of('UF')) as PDFHexString).decodeText()).toBe('aĩ/S/JavaScript/JSĨapp.alertĨ1ĩĩ/XĨ.pdf');
+    expect(String(spec(acts[1]).get(PDFName.of('F')))).toBe('(a_/S/JavaScript/JS_app.alert_1__/X_.pdf)');
+    expect((spec(acts[2]).lookup(PDFName.of('UF')) as PDFHexString).decodeText()).toBe('資料.pdf');
+    // 名前付きの飛び先の名前は、UTF-8 のバイト列 (16 進の文字列)
+    expect(String(acts[2].get(PDFName.of('D')))).toBe(`<${Buffer.from('第1章').toString('hex')}>`);
+  });
   it('HTML: 既定では javascript:・data:・file:・Launch・//host の動作を書かず、字は組み、警告に件数と理由を出す', async () => {
     const r = await typeset(HTML, { loadFont });
     const acts = await actionsOf(await r.toPdf());

@@ -8,6 +8,9 @@ import { DEVICE_GRAY, DEVICE_RGB, DEVICE_CMYK, clamp01, type ColorSpace } from '
 import { popMatrix } from './psOpsMatrix';
 import { patternToDevice } from './psShading';
 
+/** 破線の配列 (setdash) の長さの上限 */
+const MAX_DASH = 1024;
+
 /** グラフィックス状態・色の演算子を登録する */
 export function installStateOperators(I: Interp, G: Graphics) {
   const d = (n: string, fn: (I: Interp) => void) => I.def(n, fn);
@@ -82,6 +85,9 @@ export function installStateOperators(I: Interp, G: Graphics) {
   d('setdash', (I) => {
     const off = I.popNum();
     const a = I.popArray();
+    // 破線の配列の長さの上限 (PLRM 第 3 版の付録 B の表 B.1 の dash は 11。それより長い配列を書く文書もあるので、余裕を見た値にする)。
+    // 配列は、stroke の 1 件ごと・gsave の 1 段ごとに写すので、上限が無いと、100 万要素の配列 1 つで、数 GB を使わせられる
+    if (a.n > MAX_DASH) throw new PSError('limitcheck');
     const array = arrItems(a).map((o) => {
       if (o.t !== 'int' && o.t !== 'real') throw new PSError('typecheck');
       return o.v;

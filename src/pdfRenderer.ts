@@ -156,13 +156,19 @@ function pdfxConverter(opts: PdfRenderOptions): CmykConverter | undefined {
 /** CSS の色を PDF の色にする。toCmyk なら RGB を CMYK にする (PDF/X。灰色 (R = G = B) は DeviceGray のまま) */
 function toPdfColor(input: string, toCmyk?: CmykConverter): Color {
   const c = parseColor(input);
+  // 成分は 0〜1 に収める (有限でない値は、正の無限大なら 1、ほかは 0)。XSL-FO の rgb(1e999,0,0) のような値が Infinity のまま届くと、
+  // pdf-lib の色の検査が投げて、文書の全体が PDF にならない
+  const u = (v: number) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : v === Infinity ? 1 : 0);
   if (c.mode === 'rgb') {
+    c.r = u(c.r);
+    c.g = u(c.g);
+    c.b = u(c.b);
     if (!toCmyk) return rgb(c.r, c.g, c.b);
     if (c.r === c.g && c.g === c.b) return grayscale(c.r);
     const [cc, m, y, k] = toCmyk(c.r, c.g, c.b);
     return cmyk(cc, m, y, k);
   }
-  return c.gray ? grayscale(1 - c.k) : cmyk(c.c, c.m, c.y, c.k);
+  return c.gray ? grayscale(1 - u(c.k)) : cmyk(u(c.c), u(c.m), u(c.y), u(c.k));
 }
 
 /**
@@ -234,6 +240,31 @@ function pdfUri(u: string): PDFString {
   return PDFString.of(ascii.replace(/[\\()]/g, (c) => '\\' + c));
 }
 
+/**
+ * バイト列の文字列 (名前付きの飛び先の名前など、テキスト文字列でないもの)。0x20〜0x7E の字だけなら、括弧と \ を逃がした字句の文字列
+ * (ISO 32000-2 §7.3.4.2)、ほかの字があれば、UTF-8 のバイト列を 16 進の文字列 (§7.3.4.3) にする。
+ * pdf-lib の PDFString.of は、値をそのまま ( ) で囲み、字の番号の下位 8 ビットだけを書く。文書に書かれた字をそのまま渡すと、括弧で文字列を
+ * 閉じて、続きを辞書の項目 (/S /JavaScript /JS (…) など) として書ける。逃がした括弧の代わりに、下位 8 ビットが括弧になる字 (U+0128・U+0129) を
+ * 使っても同じ。辞書の同じ名前の項目は、後のものを読む実装が多いので、リンクの動作を、許していない動作 (linkPolicy) に書き換えられる
+ */
+function pdfByteString(s: string): PDFString | PDFHexString {
+  if (/^[\x20-\x7e]*$/.test(s)) return PDFString.of(s.replace(/[\\()]/g, (c) => '\\' + c));
+  return PDFHexString.of(Array.from(new TextEncoder().encode(s), (b) => b.toString(16).padStart(2, '0')).join(''));
+}
+
+/** ASCII (0x20〜0x7E) でない字を _ にした名前 (ファイル指定の辞書の F。Unicode の名前は UF に書く) */
+const asciiName = (s: string) => s.replace(/[^\x20-\x7e]/g, '_');
+
+/**
+ * ファイルの指定 (ISO 32000-2 §7.11)。0x20〜0x7E の字だけの名前は、ファイル指定の文字列 (§7.11.2)。ほかの字 (日本語の名前など) があれば、
+ * ファイル指定の辞書 (§7.11.3 Table 43) にして、UF に Unicode のテキスト文字列で名前を書く (F は、UF を読まない実装のための ASCII の代わりの名前。
+ * 添付ファイルの注釈の FS と同じ書き方)。文字列のままでは、ASCII でない字の符号化が決まらず、pdf-lib は字の番号の下位 8 ビットを書く (pdfByteString)
+ */
+function pdfFileSpec(file: string): PDFString | PDFHexString | Record<string, unknown> {
+  if (/^[\x20-\x7e]*$/.test(file)) return pdfByteString(file);
+  return { Type: 'Filespec', F: pdfByteString(asciiName(file)), UF: PDFHexString.fromText(file) };
+}
+
 /** URL のスキーム (RFC 3986 §3.1: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )) があるか */
 export function hasUriScheme(u: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(u);
@@ -258,11 +289,11 @@ function externalAction(raw: string, policy: LinkPolicy | undefined, dropped: Dr
   const hash = u.indexOf('#');
   const path = referencePath(u);
   const frag = hash < 0 ? '' : u.slice(hash + 1);
-  // ファイル指定の文字列 (§7.11.2): 区切りは /。( ) \ は逃がす (PDFString)
-  const F = PDFString.of(decodePath(path).replace(/[\\()]/g, (c) => '\\' + c));
+  // ファイルの指定 (§7.11.2): 区切りは /。( ) \ は逃がし、ASCII でない字のある名前は辞書にする (pdfFileSpec)
+  const F = pdfFileSpec(decodePath(path));
   if (j.kind === 'gotor') {
     const page = /(?:^|&)page=(\d+)/.exec(frag);
-    const D = page ? [Math.max(0, parseInt(page[1], 10) - 1), PDFName.of('Fit')] : frag && !/=/.test(frag) ? PDFString.of(frag) : [0, PDFName.of('Fit')];
+    const D = page ? [Math.max(0, parseInt(page[1], 10) - 1), PDFName.of('Fit')] : frag && !/=/.test(frag) ? pdfByteString(frag) : [0, PDFName.of('Fit')];
     return { S: 'GoToR', F, D };
   }
   return { S: 'Launch', F };
@@ -449,7 +480,7 @@ class PdfPainter implements Painter {
       const img = this.svgImages.get(sh.image);
       if (!img) return [];
       const out: PDFOperator[] = [pushGraphicsState()];
-      for (const c of sh.clips ?? []) out.push(...segOps(c.segs), PDFOperator.of(c.evenOdd ? Ops.ClipEvenOdd : Ops.ClipNonZero), PDFOperator.of(Ops.EndPath));
+      for (const c of sh.clips ?? []) (pushAll(out, segOps(c.segs)), out.push(PDFOperator.of(c.evenOdd ? Ops.ClipEvenOdd : Ops.ClipNonZero), PDFOperator.of(Ops.EndPath)));
       for (const mk of sh.masks ?? []) out.push(...this.maskOps(mk, bbox));
       out.push(...this.alphaOps(sh.fillOpacity, 1, sh.blend));
       out.push(concatTransformationMatrix(...sh.image.matrix), PDFOperator.of(Ops.DrawObject, [this.imageName(img)]), popGraphicsState());
@@ -467,7 +498,7 @@ class PdfPainter implements Painter {
       ];
     const out: PDFOperator[] = [pushGraphicsState()];
     // 切り抜き (clipPath): 形を作って W n
-    for (const c of sh.clips ?? []) out.push(...segOps(c.segs), PDFOperator.of(c.evenOdd ? Ops.ClipEvenOdd : Ops.ClipNonZero), PDFOperator.of(Ops.EndPath));
+    for (const c of sh.clips ?? []) (pushAll(out, segOps(c.segs)), out.push(PDFOperator.of(c.evenOdd ? Ops.ClipEvenOdd : Ops.ClipNonZero), PDFOperator.of(Ops.EndPath)));
     // マスク: ExtGState のソフトマスク (外側のマスクから。重ねると後のものに置き換わるので、内側のマスクだけが効く近似)
     for (const mk of sh.masks ?? []) out.push(...this.maskOps(mk, bbox));
     out.push(...this.alphaOps(sh.fillOpacity, sh.strokeOpacity, sh.blend));
@@ -495,7 +526,7 @@ class PdfPainter implements Painter {
       out.push(...textOps, popGraphicsState());
       return out;
     }
-    out.push(...segOps(sh.segs));
+    pushAll(out, segOps(sh.segs));
     const paint = fill && stroke ? (sh.evenOdd ? Ops.FillEvenOddAndStroke : Ops.FillNonZeroAndStroke) : fill ? (sh.evenOdd ? Ops.FillEvenOdd : Ops.FillNonZero) : stroke ? Ops.StrokePath : Ops.EndPath;
     out.push(PDFOperator.of(paint), popGraphicsState());
     return out;
@@ -732,7 +763,7 @@ class PdfPainter implements Painter {
         if (sh.lineJoin === 0) ops.push(PDFOperator.of(Ops.SetLineMiterLimit, [N(sh.miterLimit ?? 4)]));
         ops.push(setDashPattern(sh.dash ?? [], sh.dash ? (sh.dashOffset ?? 0) : 0));
       }
-      ops.push(...segOps(sh.segs));
+      pushAll(ops, segOps(sh.segs));
       ops.push(PDFOperator.of(fill && stroke ? (sh.evenOdd ? Ops.FillEvenOddAndStroke : Ops.FillNonZeroAndStroke) : fill ? (sh.evenOdd ? Ops.FillEvenOdd : Ops.FillNonZero) : stroke ? Ops.StrokePath : Ops.EndPath));
     }
     // タイルの中身は SVG のルート座標ではなくタイルの座標で描いてあるので、タイル → ルートの変換を前に掛ける。
@@ -1380,6 +1411,14 @@ function colorOps(css: string, fill: boolean, spots?: SpotPage): PDFOperator[] {
  * 輪郭 (M・L・C・Z) を経路の命令 (m・l・c・h) にする。flipH を渡すと y を flipH − y にする (Sheet 座標 → PDF 座標)。
  * SVG の座標・模様の座標 (y 下向きのまま cm で写す) では渡さない
  */
+/**
+ * 配列 to の末尾に from の要素を足す。to.push(...from) は、要素を 1 つずつ引数として積むので、長いパス (数十万の点) では
+ * 「Maximum call stack size exceeded」になり、図形 1 つのせいで文書の全体が PDF にならない
+ */
+function pushAll<T>(to: T[], from: readonly T[]) {
+  for (let i = 0; i < from.length; i++) to.push(from[i]);
+}
+
 function segOps(segs: readonly Seg[], flipH?: number): PDFOperator[] {
   const N = (v: number) => PDFNumber.of(v);
   const Y = flipH === undefined ? (y: number) => y : (y: number) => flipH - y;
@@ -2058,7 +2097,7 @@ function addAnnotations(
         const name = an.file.name ?? 'attachment';
         const ef = ctx.register(ctx.flateStream(bytes, { Type: 'EmbeddedFile', Params: { Size: bytes.length } }));
         dict.Subtype = 'FileAttachment';
-        dict.FS = { Type: 'Filespec', F: PDFString.of(asciiName(name)), UF: PDFHexString.fromText(name), EF: { F: ef } };
+        dict.FS = { Type: 'Filespec', F: pdfByteString(asciiName(name)), UF: PDFHexString.fromText(name), EF: { F: ef } };
         const icons = ['Graph', 'PushPin', 'Paperclip', 'Tag'];
         dict.Name = PDFName.of(icons.find((i) => i.toLowerCase() === (an.icon ?? '').toLowerCase()) ?? 'PushPin');
       } else {
@@ -2078,9 +2117,6 @@ function addAnnotations(
     if (refs.length) pages[k].node.set(PDFName.of('Annots'), ctx.obj(refs));
   });
 }
-
-/** ファイル指定の F (バイトの文字列) に使う名前: ASCII でない字は _ にする (正しい名前は UF の文字列に書く。ISO 32000-2 §7.11.2) */
-const asciiName = (s: string) => s.replace(/[^\x20-\x7e]/g, '_');
 
 /** しおり (PDF のアウトライン)。飛び先はシートの上端 (見つからないしおりは飛び先なし) */
 function addOutline(pdf: PDFDocument, items: BookmarkArea[], linkAction: LinkAction = () => undefined) {

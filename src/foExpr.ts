@@ -239,3 +239,7 @@ export function evalLength(src: string, o: ExprOptions): number | undefined {
   if (!v || v.prop !== 0 || !Number.isFinite(v.pt)) return undefined;
   return v.pt;
 }
+
+// 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
+// Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
+for (const t of [UNIT]) Object.setPrototypeOf(t, null);

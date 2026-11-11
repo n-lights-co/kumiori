@@ -71,6 +71,8 @@ export function extractFromCollection(buf: ArrayBuffer, index: number): ArrayBuf
   const headLen = 12 + numTables * 16;
   let total = headLen;
   for (const r of recs) total += (r.length + 3) & ~3;
+  // 1 つの書体の表の合計は、ファイルの大きさより大きくならない (表が重なっているのは壊れた・細工したファイル。同じ場所を指す表を並べて、写しを増やせる)
+  if (total - headLen > buf.byteLength + numTables * 3) throw new FontFileError(msg('TTC の書体の表が重なっています', 'tables of a font in the TTC overlap'));
   const out = new Uint8Array(total);
   const ov = new DataView(out.buffer);
   out.set(new Uint8Array(buf, off, 12));
@@ -102,6 +104,9 @@ export function countFonts(buf: ArrayBuffer): number {
   return n;
 }
 
+/** 書体の集まりから取り出す書体の、合計の大きさの上限 (1GB。実在の大きな集まり: 100MB ほどの和文の書体 × 数個までは入る) */
+const COLLECTION_MAX_BYTES = 1024 * 1024 * 1024;
+
 /**
  * ファイルの中の書体を 1 つずつの sfnt にする (TTF・OTF はそのまま 1 つ、TTC は中の書体をすべて取り出す)。
  * 壊れたファイルは FontFileError (書体の中身の解釈はしない)
@@ -110,7 +115,18 @@ export function collectionFaces(buf: ArrayBuffer): ArrayBuffer[] {
   // WOFF・WOFF2 は、ふつうの書体のファイルに戻してから読む (webFont.ts)
   buf = toSfnt(buf);
   const n = countFonts(buf);
-  return isCollection(buf) ? Array.from({ length: n }, (_, i) => extractFromCollection(buf, i)) : [buf];
+  if (!isCollection(buf)) return [buf];
+  // 取り出す書体の合計の大きさに上限を置く。集まりの書体は表を共有でき (同じ glyf を指す書体が並ぶのがふつう)、取り出しは書体ごとに表を写すので、
+  // 「書体の数 × 表の数 × 表の長さ」だけ使う。同じ場所を指す表を並べた 3KB の WOFF2 (戻した集まり) で、3GB を使えた
+  const faces: ArrayBuffer[] = [];
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const face = extractFromCollection(buf, i);
+    total += face.byteLength;
+    if (total > COLLECTION_MAX_BYTES) throw new FontFileError(msg('TTC の書体の合計が大きすぎます', 'the fonts in the TTC are too large in total'));
+    faces.push(face);
+  }
+  return faces;
 }
 
 /** ファイルから使える書体をすべて取り出す。読めない書体 (壊れたファイルを含む) は黙って飛ばす */

@@ -7294,7 +7294,7 @@ export class LayoutEngine {
       });
     // 文書内リンクの飛び先: id → シートの番号
     const pageIndex = new Map(pages.map((p, k) => [p, k]));
-    const destinations: Record<string, number> = {};
+    const destinations: Record<string, number> = Object.create(null);
     for (const [id, pb] of this.idPageBuild) {
       const k = pageIndex.get(pb);
       if (k !== undefined) destinations[id] = k;

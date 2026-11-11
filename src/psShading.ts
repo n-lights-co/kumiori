@@ -57,11 +57,16 @@ class Bits {
   }
 }
 
+/** 関数の配列の長さの上限 */
+const MAX_FUNCTIONS = 32;
+
 /** 関数 (辞書・その配列・手続き) を、JavaScript の関数にする。nOut は出力の数 (手続きのとき) */
 export function makeFunction(G: Graphics, o: PSObj | undefined, nOut: number, depth = 0): Fn | undefined {
   if (!o || depth > 8) return undefined;
   if (o.t === 'array' && !isProc(o)) {
     // 関数の配列: それぞれ 1 出力の関数を、成分ごとに呼ぶ
+    // 関数の数は、色の成分の数まで (DeviceN の成分は 32 まで。PLRM 第 3 版の付録 B)。上限が無いと、大きな関数を何個でも並べられる
+    if (arrItems(o).length > MAX_FUNCTIONS) return undefined;
     const fs = arrItems(o).map((f) => makeFunction(G, f, 1, depth + 1));
     if (fs.some((f) => !f)) return undefined;
     return (x) => fs.flatMap((f) => f!(x));
@@ -115,6 +120,10 @@ export function makeFunction(G: Graphics, o: PSObj | undefined, nOut: number, de
     if (!data || !m || m > 8 || ![1, 2, 4, 8, 12, 16, 24, 32].includes(bps)) return undefined;
     const total = size.reduce((a, v) => a * v, 1);
     if (!(total > 0) || total * nOutS > 1 << 24) return undefined;
+    // 標本の配列 (1 つ 8 バイト。Order 3 のスプラインは、さらに 4 本の配列を作る) は、作る前に、手間とメモリの勘定に積む。
+    // 積まないと、Size [16777216] の関数 1 つ (数十バイトの辞書) で 128MB を取り、網かけを繰り返して、上限の外でいくらでも使える
+    G.I.charge((total * nOutS) / 16);
+    G.I.memAlloc(total * nOutS * (numOf(d.get('Order'), 1) === 3 ? 40 : 8));
     const bits = new Bits(data);
     const max = 2 ** bps - 1;
     const samples = new Float64Array(total * nOutS);

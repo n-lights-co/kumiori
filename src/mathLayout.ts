@@ -142,8 +142,10 @@ export function nameOf(n: MNode): string {
 /** 要素の子 (要素だけ) */
 export function elements(n: MNode): MNode[] {
   const out: MNode[] = [];
-  for (let k = 0; k < n.childNodes.length; k++) {
-    const c = n.childNodes[k];
+  // 子の並びは 1 度だけ取る (linkedom の childNodes は、読むたびに並びを作り直すので、ループの中で読むと、子の数の 2 乗の手間になる)
+  const kids = n.childNodes;
+  for (let k = 0; k < kids.length; k++) {
+    const c = kids[k];
     if (c.nodeType === 1) out.push(c);
   }
   return out;

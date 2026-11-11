@@ -453,6 +453,8 @@ export interface HyphenBreak {
 }
 
 const EPS = 1e-6;
+/** 1 つのリーダーに並べる字の数の上限 (A4 の行に 1pt の間隔で並べても 500 個ほど) */
+const MAX_LEADER_REPEATS = 20_000;
 /**
  * 行に入るかの判定の許容差 (pt)。CSS の計算値は px で小数 4 桁に丸めるので、9.5pt の字は 9.500025pt、16em の幅は 152.000025pt になり、
  * ぴったり入るはずの 16 字がわずかに溢れる。1/1000 pt までは入るとみなす
@@ -1527,7 +1529,8 @@ export function reorderLine(pl: PositionedLine, L: number, rtl: boolean, paraLev
     else trailing = false;
   }
   const off = rtl ? o.map((x, k) => L - x - w[k]) : o.slice();
-  let x = n ? Math.min(...off) : 0;
+  // 最小・最大はループで取る (Math.min(...配列) は、要素を 1 つずつ引数に積むので、1 行に 12 万を超える字があるとスタックを使い切る)
+  let x = n ? off.reduce((m, v) => (v < m ? v : m), Infinity) : 0;
   const order = visualOrder(lv);
   // 並びが変わらない左から右の行は、位置もそのまま
   if (!rtl && order.every((v, k) => v === k)) return;
@@ -1888,7 +1891,8 @@ function leaderNode(a: Atom, off: number, gStart: number, w: number, bOff: numbe
   const ld = a.leader!;
   const fs = a.st.fontSize;
   const node = newNode('block', wm, { i: off - gStart, b: bOff, isize: w, bsize: fs, src: a.src });
-  if (ld.pattern === 'dots' && ld.g && ld.pitch > 0) {
+  // 繰り返しの数が上限を超えるリーダー (極端に小さな字・極端に長い行。0.001px の字で 1 行に何千万個) は、字を並べない (空きだけにする)
+  if (ld.pattern === 'dots' && ld.g && ld.pitch > 0 && w / ld.pitch <= MAX_LEADER_REPEATS) {
     // 置く位置: 行頭からピッチの倍数の位置 (複数行で縦に揃う)。CSS の leader() は、終わり側の端から始め側へ並べる (Content 3 §2.5.3。
     // 終わり側が揃う行どうしで縦に揃う)
     const xs: number[] = [];
@@ -2037,8 +2041,14 @@ export function buildLineNode(
     while (e < entries.length && entries[e].a.runId === entries[k].a.runId) e++;
     const group = entries.slice(k, e);
     // 右から左の行では、続く atom ほど左にある。範囲は位置の最小・最大で取る
-    const gStart = Math.min(...group.map((g) => g.off));
-    const span = Math.max(...group.map((g) => g.off + g.w)) - gStart;
+    // 最小・最大はループで取る (Math.min(...配列) は、要素を 1 つずつ引数に積むので、1 行に 12 万を超える字があるとスタックを使い切る)
+    let gStart = Infinity;
+    let gEnd = -Infinity;
+    for (const g of group) {
+      if (g.off < gStart) gStart = g.off;
+      if (g.off + g.w > gEnd) gEnd = g.off + g.w;
+    }
+    const span = gEnd - gStart;
     // 字の背景は、字の大きさの箱 (em の箱) に塗る (行送りの高さには塗らない)。字の並びの箱は動かさず、背景は別の箱で描く
     const bg = group[0].a.bg;
     if (bg) {

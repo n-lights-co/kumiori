@@ -2045,7 +2045,7 @@ function installCoreOperators(I: Interp) {
     try {
       // 読みためるフィルタ (ReusableStreamDecode・DCTDecode) は、ためる分を VM に積みながら読む。上限を超えれば limitcheck
       // (PLRM §8.2 filter のエラーの一覧にある、実装の限界を超えたときのエラー)
-      fs = filterSource(fname.v, read, params, subfile, { maxBytes: I.maxFilterBytes, alloc: (n) => I.vmAlloc(n) });
+      fs = filterSource(fname.v, read, params, subfile, { maxBytes: I.maxFilterBytes, alloc: (n) => I.vmAlloc(n), work: (n) => I.charge(n / 64) });
     } catch (e) {
       if (e instanceof FilterError) throw new PSError(e.message);
       throw e;
