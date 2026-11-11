@@ -2221,6 +2221,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     const abs = /^(absolute|fixed)$/.test(out.v.get('position')!);
     if ((floated || abs || isRoot) && BLOCKIFY[disp] && disp !== 'contents') out.v.set('display', BLOCKIFY[disp]);
     if (abs) out.v.set('float', 'none');
+    // 絶対配置の箱の height の百分率: 基準は包含ブロック (位置の基準の祖先) の padding の箱の高さで、その高さが中身で決まるときも決まる
+    // (CSS 2.1 §10.5)。組版で決めるので、百分率そのものも渡す (上で親の高さから見積もった値は、中の箱の百分率の基準に使う)
+    if (abs && /^\+?[\d.]+%$/.test(valueOf('height').trim())) out.v.set('-kumiori-height-percent', valueOf('height').trim());
     estimateBoxSizes(out, cbw, parent, isRoot, floated, abs, rootFs);
     // 一括指定の値 (htmlImport が読むもの)
     out.v.set('text-decoration', out.v.get('text-decoration-line')!);

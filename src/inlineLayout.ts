@@ -43,6 +43,14 @@ export interface Atom {
   fallbackNormal?: { above: number; below: number };
   /** 中身の無い inline の目印 (id の位置だけを記録する幅 0 の箱) */
   idMark?: boolean;
+  /**
+   * 行内の箱の外側の空き (CSS の margin。LInline.inlineMargin の bound) の箱: 箱の始まりの側 (start) か終わりの側 (end)。
+   * 改行の機会の計算 (markLineBreaks) では字の並びに入れず、前後の字の間の機会を、箱の margin の端の外に付ける
+   * (終わりの側の空きの後ろ・始まりの側の空きの前。CSS Text 3 §5.5)
+   */
+  edgeGap?: 'start' | 'end';
+  /** 折り返した行の先頭に来たら捨てる空き (アンテナハウス互換の、行内の箱の始まりの側の margin。LInline.inlineMargin の dropStartAtWrap) */
+  dropAtWrap?: boolean;
   /** 最小の幅を測る組み方 (min-content) の字。overflow-wrap: break-word の語の途中を分割点に数えない (Text 3 §5.5) */
   intrinsic?: boolean;
   first: string;
@@ -164,6 +172,11 @@ export interface InlineFrame {
   box: boolean;
   /** 行で分かれた断片のそれぞれを、罫線・余白で包む (box-decoration-break: clone。CSS Fragmentation 3 §5.4) */
   clone?: boolean;
+  /**
+   * clone の枠の外側の空き (CSS の margin。行の進む向きの始まり・終わり)。行で分かれた断片のそれぞれに付け直す
+   * (CSS Fragmentation 3 §5.4: 断片のそれぞれを、border・padding・margin で包む)
+   */
+  cloneMargin?: { start: number; end: number };
   link?: LinkTarget;
   annot?: Annotation;
   /** 枠の最初の atom (注釈は、これを含む行にだけ付ける) */
@@ -275,7 +288,7 @@ export function markLineBreaks(atoms: Atom[]): void {
   const firstIdx: number[] = new Array(atoms.length).fill(-1);
   for (let i = 0; i < atoms.length; i++) {
     const a = atoms[i];
-    if (a.idMark) continue;
+    if (a.idMark || a.edgeGap) continue;
     const o = lineBreakOptionsOf(a.st);
     const push = (cp: number) => {
       cps.push(cp);
@@ -316,6 +329,29 @@ export function markLineBreaks(atoms: Atom[]): void {
         atoms[i].lbDict = true;
       }
     }
+  }
+  moveBreaksOutsideEdgeGaps(atoms, firstIdx);
+}
+
+/**
+ * 行内の箱の外側の空き (edgeGap。CSS の margin) の前後の改行の機会を、箱の margin の端の外に付け直す (CSS Text 3 §5.5: 箱の最初の字の前・
+ * 最後の字の後ろの改行の機会では、箱のすぐ前・すぐ後ろ (margin の端) で分け、箱の内容の端と内容の間では分けない)。
+ * 空きは字の並びに入れていないので、空きを挟む 2 つの字の間の機会は、後ろの字に付いている。終わりの側の空きは、前では分けない
+ * (lbBefore が無い) ので、そのままでよい。始まりの側の空きが字のすぐ前に並んでいれば、機会を、並びの最初の空きへ移す
+ * (字の前では分けない)。firstIdx: 字の並びに入れた atom の、並びの中の位置 (入れていなければ -1)
+ */
+function moveBreaksOutsideEdgeGaps(atoms: Atom[], firstIdx: number[]): void {
+  for (let i = 1; i < atoms.length; i++) {
+    if (firstIdx[i] < 0 || atoms[i - 1].edgeGap !== 'start') continue;
+    let j = i - 1;
+    while (j > 0 && atoms[j - 1].edgeGap === 'start') j--;
+    const [a, g] = [atoms[i], atoms[j]];
+    if (a.lbBefore !== undefined) g.lbBefore = a.lbBefore;
+    if (a.lbSoft) g.lbSoft = true;
+    if (a.lbDict) g.lbDict = true;
+    a.lbBefore = false;
+    delete a.lbSoft;
+    delete a.lbDict;
   }
 }
 
@@ -658,6 +694,8 @@ function fitWithNegativeMargin(atoms: Atom[], k: number, x: number, avail: numbe
 export function breakOne(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, hb?: HyphenBreak): { line: RawLine; next: number } {
   const n = atoms.length;
   const avail = Math.max(L - indent, 0);
+  // 折り返した行 (強制改行の後でない行) の先頭に来た、捨てる空き (dropAtWrap。アンテナハウス互換) は、行に入れない
+  if (start > 0 && atoms[start]?.dropAtWrap && atoms[start - 1].kind !== 'break') while (start < n - 1 && atoms[start].dropAtWrap) start++;
   // 強制改行の直後の行の先頭の字に印を付ける (afterForcedBreak が飛ばす空白の手前に、改行がある)
   if (start > 0 && atoms[start]) {
     let p = start - 1;
@@ -824,6 +862,8 @@ function frameEdgeSize(f: InlineFrame, wm: WritingMode, start: boolean): number 
   const bl = borderToLogicalWidths(f.border, wm);
   return start ? pl.is + bl.is : pl.ie + bl.ie;
 }
+/** 行の切れ目で、枠 f の外に付け直す margin (clone の枠だけ。CSS Fragmentation 3 §5.4) */
+const frameEdgeMargin = (f: InlineFrame, start: boolean): number => (start ? f.cloneMargin?.start : f.cloneMargin?.end) ?? 0;
 
 /**
  * breakOne に、box-decoration-break: clone の inline の枠 (InlineFrame.clone) の扱いを足したもの (CSS Fragmentation 3 §5.4:
@@ -849,7 +889,7 @@ export function breakOneBoxed(
   const head = atoms[start];
   // 前の行から続く clone の枠 (この行で始まる枠は除く)
   const startFrames = (head?.frames ?? []).filter((f) => f.clone && head.frameOpen !== f);
-  const S = startFrames.reduce((t, f) => t + frameEdgeSize(f, wm, true), 0);
+  const S = startFrames.reduce((t, f) => t + frameEdgeSize(f, wm, true) + frameEdgeMargin(f, true), 0);
   let res = brk(L - S, hangingDefault);
   /** 行末の字 (分綴した行では、行末に足したハイフンの字の前の、語の字) */
   const tailOf = (line: RawLine): Atom | undefined => {
@@ -866,13 +906,13 @@ export function breakOneBoxed(
   };
   let endFrames = endFramesOf(res);
   if (!S && !endFrames.length) return res;
-  let E = endFrames.reduce((t, f) => t + frameEdgeSize(f, wm, false), 0);
+  let E = endFrames.reduce((t, f) => t + frameEdgeSize(f, wm, false) + frameEdgeMargin(f, false), 0);
   // 行末の空きの分を空けて切り直す。切る位置が変わって、続く枠が増えたら、もう一度 (多くて数回)。
   // 枠の中の行末の句読点は、ぶら下げない (ぶら下げた字が、枠の終端の罫線の外へ出てしまう)
   for (let guard = 0; E > 0 && guard < 4; guard++) {
     res = brk(L - S - E, false);
     endFrames = endFramesOf(res);
-    const e2 = endFrames.reduce((t, f) => t + frameEdgeSize(f, wm, false), 0);
+    const e2 = endFrames.reduce((t, f) => t + frameEdgeSize(f, wm, false) + frameEdgeMargin(f, false), 0);
     if (e2 <= E + EPS) break;
     E = e2;
   }
@@ -897,14 +937,21 @@ export function breakOneBoxed(
       ...(like.bidiLevel !== undefined ? { bidiLevel: like.bidiLevel } : {}),
     };
   };
-  // 行頭は外側の枠から、行末は内側の枠から並べる
+  // 枠の外の margin の空き (枠 f より外側の枠の中にある。字の並びとは別の並び)
+  const marginGap = (f: InlineFrame, startSide: boolean, like: Atom): Atom[] => {
+    const adv = frameEdgeMargin(f, startSide);
+    if (!adv) return [];
+    const frames = like.frames!.slice(0, like.frames!.indexOf(f));
+    return [{ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: adv, isSpace: false, runId: --edgeRunSeq, st: like.st, box: { node: newNode('block', wm, { isize: adv, bsize: 0 }), adv, cross: 0, above: 0, below: 0 }, ...(frames.length ? { frames } : {}), ...(like.bidiLevel !== undefined ? { bidiLevel: like.bidiLevel } : {}) }];
+  };
+  // 行頭は外側の枠から、行末は内側の枠から並べる (margin は、その枠のすぐ外)
   const first = items[0];
   const last = tailOf(res.line)!;
-  const lead = startFrames.map((f) => edge(f, true, first));
+  const lead = startFrames.flatMap((f) => [...marginGap(f, true, first), edge(f, true, first)]);
   const trail = endFrames
     .filter((f) => last.frames?.includes(f))
     .reverse()
-    .map((f) => edge(f, false, last));
+    .flatMap((f) => [edge(f, false, last), ...marginGap(f, false, last)]);
   res.line.items = [...lead, ...items, ...trail];
   return res;
 }

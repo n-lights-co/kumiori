@@ -73,6 +73,7 @@ export const AH_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   pseudoInlineBoxAh: true,
   textAlignInsideOutsideAh: true,
   lineBreakAutoAh: true,
+  inlineMarginStartAtWrapAh: true,
   runningFontFromPageContextAh: true,
   jaDefaultsAh: true,
   footnoteCallLineHeightFromParent: true,

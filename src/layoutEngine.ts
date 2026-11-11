@@ -607,6 +607,11 @@ interface FlowInit {
   minContent?: boolean;
   /** 先頭の内容の前の余白 (space-before) を捨てる (表のセルの中) */
   discardLeading?: boolean;
+  /**
+   * 最初の行の、基線より下の深さの下限 (pt)。HTML のリストの項目の本文のセル: 外側の記号は本文の最初の行の箱に置く (CSS Lists 3 §3.5) ので、
+   * 記号の行の基線より下の深さ (記号の字の書体の下の部分と半行間) まで、最初の行の箱を下に伸ばす
+   */
+  firstLineMinBelow?: number;
   /** 参照領域 (ブロックコンテナ・インラインコンテナ・表のセル) の中身: 閉じるとき、最後の行の下の半行間を line-height.conditionality に従って捨てる */
   referenceArea?: boolean;
   /** 強制改ページの後の、ページ・段の先頭の余白を捨てる (XSL。省略時は discardLeading と同じ) */
@@ -631,7 +636,13 @@ interface FlowInit {
    */
   collectAbs?: boolean;
   /** 祖先のブロックコンテナを基準にする絶対配置の箱 (positionInContainer) を集める所と、その内容の箱の大きさ */
-  localAbs?: { list: Array<{ n: LNode; node: LBlockContainer }>; w: number; h: number | undefined };
+  localAbs?: {
+    list: Array<{ n: LNode; node: LBlockContainer }>;
+    w: number;
+    h: number | undefined;
+    /** 百分率の top・bottom・height (cbPercent) のある箱で、コンテナの高さが中身で決まるもの: コンテナを組み終えてから組む */
+    late?: Array<{ node: LBlockContainer; st: ResolvedStyle }>;
+  };
   /** ページの大きさ。body は版面 (本文の領域) の、組む向きでの大きさ (width は横、height は縦。本文の領域を回すときは回す前) */
   pageSize: () => PageSizeInfo;
   /**
@@ -645,6 +656,23 @@ interface PageSizeInfo {
   width: number;
   height: number;
   body?: { width: number; height: number };
+}
+
+/**
+ * 絶対配置の箱の百分率の top・bottom・height (LBlockContainer.cbPercent) を、基準の箱の高さから長さにした節を返す (無ければ元の節)。
+ * cbH は、基準の箱の内容の高さ (cbPercent.pad を足して padding の箱の高さにする。CSS 2.1 §10.1 の 4・§10.5、CSS Position 3 §3.1)。
+ * top・bottom に入っている長さ (内容の箱からの距離に直した分・margin) に、割合の分を足す
+ */
+function withCbPercent(node: LBlockContainer, cbH: number): LBlockContainer {
+  const p = node.cbPercent;
+  if (!p) return node;
+  const H = Math.max(cbH + p.pad, 0);
+  return {
+    ...node,
+    ...(p.top !== undefined ? { top: (node.top ?? 0) + p.top * H } : {}),
+    ...(p.bottom !== undefined ? { bottom: (node.bottom ?? 0) + p.bottom * H } : {}),
+    ...(p.height !== undefined ? { height: p.height * H } : {}),
+  };
 }
 
 /**
@@ -834,6 +862,7 @@ class Flow {
     this.pageLevel = init.pageLevel;
     this.measureOnly = !!init.measure;
     this.discardLeading = !!init.discardLeading;
+    this.firstLineMinBelow = init.firstLineMinBelow;
     this.referenceArea = !!init.referenceArea;
     this.intrinsic = !!init.intrinsic;
     this.minContent = !!init.minContent;
@@ -2432,7 +2461,7 @@ class Flow {
       const size = physSize(f.isize, f.bsize, f.wm);
       const w = Math.max(size.width - f.padding.left - f.padding.right - bw('left') - bw('right'), 0);
       const h = Math.max(size.height - f.padding.top - f.padding.bottom - bw('top') - bw('bottom'), 0);
-      const n = this.buildContainer(node, it.st, w, h);
+      const n = this.buildContainer(withCbPercent(node, h), it.st, w, h);
       const at = n.phys ?? { x: 0, y: 0 };
       delete n.phys;
       const staticB = sy + (node.staticOffset ?? 0);
@@ -2474,7 +2503,7 @@ class Flow {
       const h = horiz ? r.b1 - r.b0 : r.i1 - r.i0;
       const x = horiz ? r.i0 : host.wm === 'vertical-rl' ? hostW - r.b1 : r.b0;
       const y = horiz ? r.b0 : r.i0;
-      const n = this.buildContainer(node, resolveStyle(ps, node), Math.max(w, 0), Math.max(h, 0));
+      const n = this.buildContainer(withCbPercent(node, Math.max(h, 0)), resolveStyle(ps, node), Math.max(w, 0), Math.max(h, 0));
       const at = n.phys ?? { x: 0, y: 0 };
       delete n.phys;
       if (horiz) {
@@ -2499,7 +2528,11 @@ class Flow {
       else {
         const page = this.pageSize();
         const la = this.localAbs;
-        const n = this.buildContainer(it.node, it.st, la ? la.w : page.width, la ? (la.h ?? page.height) : page.height);
+        if (la && la.h == null && it.node.cbPercent) {
+          (la.late ??= []).push({ node: it.node, st: it.st });
+          continue;
+        }
+        const n = this.buildContainer(la ? withCbPercent(it.node, la.h ?? page.height) : it.node, it.st, la ? la.w : page.width, la ? (la.h ?? page.height) : page.height);
         if (la) la.list.push({ n, node: it.node });
         else this.abs().push(n);
         this.noteIds(n);
@@ -2881,6 +2914,13 @@ class Flow {
     this.alignByPage(node, pl, st);
     node.i = o.shift;
     node.b = this.cursor - this.contentStartB();
+    // リストの項目の本文の最初の行: 記号の行の基線より下の深さまで、行の箱を下に伸ばす (FlowInit.firstLineMinBelow)
+    if (this.firstLineMinBelow !== undefined) {
+      const base = firstBaseline(node);
+      const extra = base === undefined ? 0 : this.firstLineMinBelow - (node.bsize - base);
+      if (extra > EPS) node.bsize += extra;
+      this.firstLineMinBelow = undefined;
+    }
     this.containerNode().children.push(node);
     this.noteIds(node);
     this.cursor += node.bsize;
@@ -2980,6 +3020,8 @@ class Flow {
   }
   /** 最後に置いた行の下端と、その行の下の部分 (行グリッドの中の行で、字の下端より下。段の終わりでは数えない) */
   private gridTrail: { end: number; trail: number; raw?: number } = { end: -1, trail: 0 };
+  /** 最初の行の基線より下の深さの下限 (FlowInit.firstLineMinBelow)。最初の行を置いたら undefined にする */
+  private firstLineMinBelow?: number;
   /** 最後に置いた行の下端と、その行の下の半行間 */
   lastLead = { end: -1, half: 0 };
   /** 中身の終わり: 最後に置いたのが行で、その行の下の半行間を捨てるなら、捨てた位置 */
@@ -3643,7 +3685,12 @@ class Flow {
     if (node.absolutePosition && node.positionInContainer && this.localAbs) {
       // 祖先のブロックコンテナの内容の箱を基準に置く (位置はコンテナを組み終えてから、コンテナの子にする)
       const la = this.localAbs;
-      const n = this.buildContainer(node, st, la.w, la.h ?? page.height);
+      // 百分率の top・bottom・height で、コンテナの高さが中身で決まる: 高さが決まってから組む (CSS 2.1 §10.5)
+      if (la.h == null && node.cbPercent) {
+        (la.late ??= []).push({ node, st });
+        return;
+      }
+      const n = this.buildContainer(withCbPercent(node, la.h ?? page.height), st, la.w, la.h ?? page.height);
       la.list.push({ n, node });
       this.noteIds(n);
       return;
@@ -3955,6 +4002,15 @@ class Flow {
         a.i = at.x;
         // 高さの指定の無いコンテナの中で下端から置く箱は、組み終えた内容の高さの下端から
         a.b = localAbs!.h == null && an.top == null && an.bottom != null ? used - an.bottom - bboxOf(a).height : at.y;
+        kids.push(a);
+      }
+      // 百分率の top・bottom・height の箱: 組み終えた内容の高さ (+ padding = padding の箱の高さ) を基準に組んで置く
+      for (const { node: an, st: ast } of localAbs?.late ?? []) {
+        const a = this.buildContainer(withCbPercent(an, used), ast, localAbs!.w, used);
+        const at = a.phys ?? { x: 0, y: 0 };
+        delete a.phys;
+        a.i = at.x;
+        a.b = at.y;
         kids.push(a);
       }
     }
@@ -5329,10 +5385,14 @@ class Flow {
       let forcedNext: BreakKind | undefined;
       // 試し組みを兼ねるので、警告は出さない (分けられないときは、行ごと次ページへ送る通常の処理に戻る)。
       // セルの中の流れは、ページ番号を持たない: 左右のページの指定の白ページは、行の断片を置く側 (placeRows) が挟む
+      // リストの項目の行: 本文のセルの最初の行を、記号のセルの最初の行の基線より下の深さまで伸ばす (layoutRowGroup と同じ)
+      const markerRoot = row.listMarkerRow && cells.length === 1 ? cells[0].roots[0] : undefined;
+      const minBelow = markerRoot ? markerBelow(markerRoot) : undefined;
       const flow = new Flow({ ...this.host, warn: () => {}, ...(forced ? { pageNumber: undefined } : {}) }, {
         wm: this.wm,
         rootI: contentI,
         root: roots[0],
+        ...(minBelow !== undefined ? { firstLineMinBelow: minBelow } : {}),
         limit: Math.max(avail - bp - sb, 1),
         pages: {
           addMarkers: (list) => {
@@ -5453,7 +5513,9 @@ class Flow {
     // グリッドへの割り付け (placeCells): 上の行から伸びてきたセルが占める列は飛ばす。rowSpan はこの行グループの末尾で切る
     for (const { cell, r: j, c: col, rs, cs } of placeCells([rows]).placed) {
       const w = sizes.slice(col, col + cs).reduce((a, b) => a + b, 0) + si * (Math.min(cs, nCols - col) - 1);
-      const cn = this.layoutCell(cell, w, rowStyles[j]);
+      // リストの項目の行 (listMarkerRow): 本文のセル (2 つ目) の最初の行を、記号のセル (1 つ目) の最初の行の基線より下の深さまで伸ばす
+      const markerNode = rows[j].listMarkerRow && rowNodes[j].children.length === 1 ? rowNodes[j].children[0] : undefined;
+      const cn = this.layoutCell(cell, w, rowStyles[j], markerNode ? markerBelow(markerNode) : undefined);
       cn.i = sizes.slice(0, col).reduce((a, b) => a + b, 0) + si * (col + 1);
       this.cellCols.set(cn, { c: col, cs, ...cell.breakEdges });
       rowNodes[j].children.push(cn);
@@ -5524,12 +5586,12 @@ class Flow {
     return rowNodes;
   }
 
-  private layoutCell(cell: LTableCell, width: number, rst: ResolvedStyle): LNode {
+  private layoutCell(cell: LTableCell, width: number, rst: ResolvedStyle, firstLineMinBelow?: number): LNode {
     const cst = resolveStyle(rst, cell);
     const desc = describeBox(cell, this.wm);
     const contentI = Math.max(width - desc.bpI, 0);
     // セルは参照領域: 先頭の余白 (space-before) は捨てる (XSL §4.3.1)。CSS のセル (keepEdgeSpace) は残す
-    const sub = new Flow(this.host, { wm: this.wm, rootI: contentI, abs: this.abs, pageSize: this.pageSize, markerSink: this.markerSink, footnotes: this.foot, ...(cell.keepEdgeSpace ? {} : { discardLeading: true }), referenceArea: true, collectAbs: true });
+    const sub = new Flow(this.host, { wm: this.wm, rootI: contentI, abs: this.abs, pageSize: this.pageSize, markerSink: this.markerSink, footnotes: this.foot, ...(cell.keepEdgeSpace ? {} : { discardLeading: true }), referenceArea: true, collectAbs: true, ...(firstLineMinBelow !== undefined ? { firstLineMinBelow } : {}) });
     sub.layoutChildren(cell.children, cst);
     // 末尾の内容の後ろの余白 (space-after) も捨てる (keepTrailingSpace・keepEdgeSpace のセルは残す)
     const fin = sub.finishWithTrailing();
@@ -5813,6 +5875,26 @@ function lastBaseline(n: LNode): number | undefined {
     if (r !== undefined && (best === undefined || off + c.b + r > best)) best = off + c.b + r;
   }
   return best;
+}
+
+/** リストの記号のセル (の中身) の、最初の行の基線より下の深さ (行が無ければ undefined) */
+function markerBelow(n: LNode): number | undefined {
+  const m = firstLineBox(n);
+  return m ? m.bottom - m.base : undefined;
+}
+
+/** 最初の行の箱の上端・下端・基線 (n の外枠の上端から。行が無ければ undefined) */
+function firstLineBox(n: LNode): { top: number; bottom: number; base: number } | undefined {
+  if (n.kind === 'line') {
+    const base = firstBaseline(n);
+    return base === undefined ? undefined : { top: 0, bottom: n.bsize, base };
+  }
+  const off = n.padding.top + (n.border.top?.width ?? 0);
+  for (const c of n.children) {
+    const r = firstLineBox(c);
+    if (r) return { top: off + c.b + r.top, bottom: off + c.b + r.bottom, base: off + c.b + r.base };
+  }
+  return undefined;
 }
 
 function firstBaseline(n: LNode): number | undefined {

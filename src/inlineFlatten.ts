@@ -700,6 +700,8 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     if (c.link) frame.link = c.link;
     if (c.annotation) frame.annot = c.annotation;
     if (area) frame.area = area;
+    // clone の枠の margin (CSS の margin = bound) は、行で分かれた断片のそれぞれに付け直す (CSS Fragmentation 3 §5.4)
+    if (frame.clone && c.inlineMargin?.bound && (c.inlineMargin.start || c.inlineMargin.end)) frame.cloneMargin = { start: c.inlineMargin.start ?? 0, end: c.inlineMargin.end ?? 0 };
     if (hasBox) {
       const pl = toLogical(frame.padding, wm);
       const bl = borderToLogicalWidths(frame.border, wm);
@@ -725,9 +727,19 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
   // 外側の空き (margin): 枠の外に、空白の箱を置く
   const im = c.inlineMargin;
   if (im && kids.length) {
-    const gap = (adv: number): Atom => ({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: adv, isSpace: false, runId: ++state.run, st: s2, box: { node: newNode('block', wm, { isize: adv, bsize: 0 }), adv, cross: 0, above: 0, below: 0 } });
-    if (im.start) kids.unshift(gap(im.start));
-    if (im.end) kids.push(gap(im.end));
+    // CSS の margin (bound) は、箱の最初・最後の字と分けない: 行を分ける位置は、箱の margin の端の外 (CSS Text 3 §5.5: 箱の最初の字の前・
+    // 最後の字の後ろの改行の機会では、箱のすぐ前・すぐ後ろ (margin の端) で分ける。CSS 2.1 §9.4.2: 行内の箱を分けた所では、margin・
+    // border・padding は見えない = 分けていない端には付く)。改行の機会は markLineBreaks が edgeGap を見て付け直す。
+    // 中身の無い箱 (支柱・目印だけ) は、これまでどおり (字が無いので、どちらの行に置くかは決まらない)。箱の端が空白のとき
+    // (<span>五 </span> の終わりの側など) も、これまでどおり: 行を分けるのは箱の中の空白の所で、箱が分かれる
+    const content = kids.filter((k) => !k.idMark && !k.frameOpen && !k.frameClose);
+    const bound = (edge: Atom | undefined) => !!im.bound && !!edge && !edge.isSpace;
+    const gap = (adv: number, edge: 'start' | 'end', on: boolean): Atom => ({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: adv, isSpace: false, runId: ++state.run, st: s2, ...(on ? { edgeGap: edge } : {}), box: { node: newNode('block', wm, { isize: adv, bsize: 0 }), adv, cross: 0, above: 0, below: 0 } });
+    if (im.start) {
+      const on = bound(content[0]);
+      kids.unshift({ ...gap(im.start, 'start', on), ...(on && im.dropStartAtWrap ? { dropAtWrap: true } : {}) });
+    }
+    if (im.end) kids.push(gap(im.end, 'end', bound(content[content.length - 1])));
     state.run++;
   }
   // inline の id は、最初の atom に付けて、その行が置かれたページで記録する (page-number-citation の参照先)

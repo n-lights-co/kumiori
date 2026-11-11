@@ -9,6 +9,7 @@
  *  - -ah-lang (要素・::marker などの言語) を読む
  *  - 両端揃えで、約物の前後は字間を空けない (JLREQ §3.1.11)。--style ah は空ける (アンテナハウス互換)
  *  - --style ah: 接頭辞の付いた MathML (<m:math xmlns:m=…>) を MathML として組む
+ *  - リストの外側の記号は本文の最初の行の箱に入る (記号の行が深ければ最初の行を下に伸ばす)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_FONTS, typesetFo, typesetHtml, childrenOf } from '../src/index';
@@ -218,5 +219,21 @@ describe('接頭辞の付いた MathML (--style ah)', () => {
     // MathML で組むと、数式は 1 つの図 (画像の領域) になり、x=1 は字として並ばない。HTML の構文どおりなら、知らない要素の中の字のまま
     expect(ah.glyphs).not.toContain('x=1');
     expect(def.glyphs).toContain('x=1');
+  });
+});
+
+describe('リストの外側の記号は、本文の最初の行の箱に入る (CSS Lists 3 §3.5)', () => {
+  it('記号の字の下の部分が本文の字より深ければ、最初の行が下に伸び、入れ子のリストが下がる', async () => {
+    // 記号だけ line-height を大きくして、記号の行を本文の行より深くする
+    const body = '<ul><li>あいう<ul><li>えお</li></ul></li></ul>';
+    const y = async (css: string) => {
+      const r = await html(body, `ul { margin: 0; padding-left: 40pt } ${css}`);
+      return r.glyphs.find((g) => g.text === 'え')!.y - r.glyphs.find((g) => g.text === 'あ')!.y;
+    };
+    const plain = await y('');
+    const tall = await y('li::marker { line-height: 60pt }');
+    // 記号の行の箱 (60pt) は、本文の行 (30pt) より基線の上も下も 15pt ずつ大きい。最初の行は上 (基線そろえ) と下の両方へ伸び、合わせて 30pt 下がる
+    // (直す前は、基線そろえの上の 15pt だけだった)
+    expect(tall - plain).toBeCloseTo(30, 0);
   });
 });

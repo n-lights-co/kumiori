@@ -328,3 +328,150 @@ describe('NC-14 行内の箱を基準にする絶対配置 (CSS 2.1 §10.1 の 4
     expect(x.y).toBeCloseTo(cb.pad.y0, 3);
   });
 });
+
+describe('NC-28 絶対配置の top・bottom・height の百分率 (CSS 2.1 §10.1 の 4・§10.5・§10.6.4、CSS Position 3 §3.1: 基準は包含ブロックの padding の箱の高さ)', () => {
+  /** 字が text で、幅が w の箱 (基準の箱) */
+  const cbOf = (bs: Box[], text: string, w: number) => {
+    const hit = bs.find((b) => norm(b.text) === norm(text) && Math.abs(b.w - w) < 0.01);
+    if (!hit) throw new Error(`基準の箱が無い: ${text}`);
+    return hit;
+  };
+
+  it('top: 50%・left: 50% は、高さの決まった基準の箱のまん中から', () => {
+    const bs = boxes('<p>p</p><div style="position: relative; height: 100pt; width: 200pt">A<div class="abs" style="top: 50%; left: 50%">X</div></div>');
+    const cb = cbOf(bs, 'AX', 200);
+    const x = find(bs, 'X');
+    expect(x.x).toBeCloseTo(cb.pad.x0 + 100, 3);
+    expect(x.y).toBeCloseTo(cb.pad.y0 + 50, 3);
+  });
+
+  it('top: 100% は、高さが中身で決まる基準の箱の padding の箱の下端 (ドロップダウンの形)', () => {
+    const bs = boxes('<p>p</p><div style="position: relative; width: 200pt; padding: 5pt 7pt; border: 3pt solid">menu<div class="abs" style="top: 100%; left: 0">X</div></div>');
+    const cb = cbOf(bs, 'menuX', 220);
+    const x = find(bs, 'X');
+    expect(cb.pad.y1 - cb.pad.y0).toBeCloseTo(22, 3);
+    expect(x.y).toBeCloseTo(cb.pad.y1, 3);
+    expect(x.x).toBeCloseTo(cb.pad.x0, 3);
+  });
+
+  it('bottom: 10% は padding の箱の高さの 1 割だけ下端から上。margin は足す', () => {
+    const bs = boxes('<div style="position: relative; height: 100pt; width: 200pt; padding: 10pt">A<div class="abs" style="bottom: 10%; right: 10%">X</div><div class="abs" style="top: 50%; left: 0; margin-top: -5pt">Y</div></div>');
+    const cb = cbOf(bs, 'AXY', 220);
+    const x = find(bs, 'X');
+    const y = find(bs, 'Y');
+    expect(x.y + x.h).toBeCloseTo(cb.pad.y1 - 12, 3);
+    expect(x.x + x.w).toBeCloseTo(cb.pad.x1 - 22, 3);
+    expect(y.y).toBeCloseTo(cb.pad.y0 + 60 - 5, 3);
+  });
+
+  it('height: 50% は padding の箱の高さの半分 (box-sizing: border-box なら枠を含む)', () => {
+    const bs = boxes(
+      '<div style="position: relative; height: 100pt; width: 200pt; padding: 10pt">A<div style="position: absolute; top: 0; left: 0; width: 20pt; height: 50%">X</div>' +
+        '<div style="position: absolute; top: 0; left: 30pt; width: 20pt; height: 50%; padding: 3pt; border: 1pt solid; box-sizing: border-box">Y</div>' +
+        '<div style="position: absolute; bottom: 20%; left: 60pt; width: 20pt; height: 25%">Z</div></div>',
+    );
+    const cb = cbOf(bs, 'AXYZ', 220);
+    expect(find(bs, 'X').h).toBeCloseTo(60, 3);
+    expect(find(bs, 'Y').h).toBeCloseTo(60, 3);
+    const z = find(bs, 'Z');
+    expect(z.h).toBeCloseTo(30, 3);
+    expect(z.y + z.h).toBeCloseTo(cb.pad.y1 - 24, 3);
+  });
+
+  it('inset: 10% は 4 辺とも (上下は高さ、左右は幅の 1 割)。高さは top と bottom から決まる', () => {
+    const bs = boxes('<div style="position: relative; height: 100pt; width: 200pt; padding: 10pt">A<div style="position: absolute; inset: 10%">X</div></div>');
+    const cb = cbOf(bs, 'AX', 220);
+    const x = find(bs, 'X');
+    expect(x.x).toBeCloseTo(cb.pad.x0 + 22, 3);
+    expect(x.y).toBeCloseTo(cb.pad.y0 + 12, 3);
+    expect(x.w).toBeCloseTo(176, 3);
+    expect(x.h).toBeCloseTo(96, 3);
+  });
+
+  it('基準の箱の高さが auto (中身で決まる) でも、組んだ後の高さに対する割合', () => {
+    const bs = boxes(
+      '<div style="position: relative; width: 200pt"><p>a</p><p>b</p><p>c</p><p>d</p><div class="abs" style="top: 50%; left: 0">X</div>' +
+        '<div style="position: absolute; right: 0; bottom: 25%; width: 20pt; height: 50%">Y</div></div>',
+      'p { margin: 0 }',
+    );
+    const cb = cbOf(bs, 'abcdXY', 200);
+    expect(cb.h).toBeCloseTo(48, 3);
+    const x = find(bs, 'X');
+    const y = find(bs, 'Y');
+    expect(x.y).toBeCloseTo(cb.pad.y0 + 24, 3);
+    expect(y.h).toBeCloseTo(24, 3);
+    expect(y.y + y.h).toBeCloseTo(cb.pad.y1 - 12, 3);
+  });
+
+  it('絶対配置の箱が基準 (高さが auto・高さの指定あり) のとき', () => {
+    const auto = boxes(
+      '<div style="position: relative; width: 200pt; height: 200pt"><div style="position: absolute; left: 10pt; top: 20pt; width: 100pt; padding: 4pt"><p>a</p><p>b</p>' +
+        '<div class="abs" style="top: 100%; left: 0">X</div><div style="position: absolute; top: 50%; right: 0; width: 20pt; height: 50%">Y</div></div></div>',
+      'p { margin: 0 }',
+    );
+    const cb = cbOf(auto, 'abXY', 108);
+    expect(cb.h).toBeCloseTo(32, 3);
+    expect(find(auto, 'X').y).toBeCloseTo(cb.pad.y1, 3);
+    const y = find(auto, 'Y');
+    expect(y.y).toBeCloseTo(cb.pad.y0 + 16, 3);
+    expect(y.h).toBeCloseTo(16, 3);
+    const fixed = boxes(
+      '<div style="position: relative; width: 200pt; height: 200pt"><div style="position: absolute; left: 10pt; top: 20pt; width: 100pt; height: 80pt; padding: 4pt">a' +
+        '<div class="abs" style="top: 50%; left: 0">X</div><div class="abs" style="bottom: 25%; right: 0">Y</div></div></div>',
+    );
+    const cb2 = cbOf(fixed, 'aXY', 108);
+    expect(find(fixed, 'X').y).toBeCloseTo(cb2.pad.y0 + 44, 3);
+    const y2 = find(fixed, 'Y');
+    expect(y2.y + y2.h).toBeCloseTo(cb2.pad.y1 - 22, 3);
+  });
+
+  it('表のセル・リストの項目が基準のとき', () => {
+    const bs = boxes('<table><tr><td style="position: relative; width: 100pt; height: 50pt; padding: 5pt; border: 2pt solid">A<div class="abs" style="top: 50%; left: 0">X</div><div class="abs" style="bottom: 20%; right: 0">Y</div></td></tr></table>');
+    const cell = find(bs, 'AXY', 'table-cell');
+    const x = find(bs, 'X');
+    const y = find(bs, 'Y');
+    expect(cell.pad.y1 - cell.pad.y0).toBeCloseTo(60, 3);
+    expect(x.y).toBeCloseTo(cell.pad.y0 + 30, 3);
+    expect(y.y + y.h).toBeCloseTo(cell.pad.y1 - 12, 3);
+    // リストの項目 (高さは中身の 2 行 = 24pt)
+    const li = boxes('<ul><li style="position: relative">A<br>B<div class="abs" style="top: 50%; left: 0">X</div></li></ul>');
+    const item = find(li, 'ABX', 'table-cell');
+    expect(item.h).toBeCloseTo(24, 3);
+    expect(find(li, 'X').y).toBeCloseTo(item.y + 12, 3);
+  });
+
+  it('行内の箱・inline-block が基準のとき (padding の箱の高さ)', () => {
+    const body = '<p style="margin: 20pt">前<span style="position: relative; padding: 3pt">基準<span class="abs" style="top: 100%; left: 0">X</span></span>後</p>';
+    const x = find(boxes(body), 'X');
+    const zero = find(boxes(body.replace('top: 100%', 'top: 0')), 'X');
+    // 行内の箱の内容の高さは字の上下 (書体の値) で決まる。その高さ + 上下の padding だけ下がる
+    const bottom = find(boxes(body.replace('top: 100%', 'bottom: 0')), 'X');
+    expect(x.y).toBeCloseTo(bottom.y + bottom.h, 3);
+    expect(x.y - zero.y).toBeGreaterThan(6 + 9);
+    const bs = boxes('<p style="margin: 20pt">前<span style="display: inline-block; position: relative; padding: 3pt; height: 40pt; width: 60pt">基準<span class="abs" style="top: 50%; left: 0">X</span></span>後</p>');
+    const ib = bs.find((b) => Math.abs(b.pad.x1 - b.pad.x0 - 66) < 0.01 && Math.abs(b.pad.y1 - b.pad.y0 - 46) < 0.01)!;
+    expect(ib).toBeTruthy();
+    expect(find(bs, 'X').y).toBeCloseTo(ib.pad.y0 + 23, 3);
+  });
+
+  it('基準の祖先が無ければ、本文領域 (初期包含ブロック) の高さに対する割合。position: fixed も', () => {
+    const mm = 72 / 25.4;
+    const areaH = (210 - 20) * mm;
+    for (const pos of ['absolute', 'fixed']) {
+      const bs = boxes(`<p>p</p><div style="position: ${pos}; top: 50%; left: 10pt; width: 20pt; height: 10%">X</div><div style="position: ${pos}; bottom: 10%; right: 0; width: 20pt; height: 10pt">Y</div>`);
+      const x = find(bs, 'X');
+      const y = find(bs, 'Y');
+      expect(x.y).toBeCloseTo(10 * mm + areaH / 2, 3);
+      expect(x.h).toBeCloseTo(areaH / 10, 3);
+      expect(y.y + y.h).toBeCloseTo(10 * mm + areaH * 0.9, 3);
+    }
+  });
+
+  it('百分率でない top・bottom・height は、これまでと同じ', () => {
+    const bs = boxes('<div style="position: relative; height: 100pt; width: 200pt; padding: 10pt">A<div class="abs" style="top: 7pt; left: 6pt">X</div><div class="abs" style="bottom: 4pt; right: 3pt">Y</div></div>');
+    const cb = cbOf(bs, 'AXY', 220);
+    expect(find(bs, 'X').y).toBeCloseTo(cb.pad.y0 + 7, 3);
+    const y = find(bs, 'Y');
+    expect(y.y + y.h).toBeCloseTo(cb.pad.y1 - 4, 3);
+  });
+});

@@ -491,7 +491,7 @@ describe('HTML: inline-block の ::before・clear・根元の要素の背景', (
     const ic = h1.children[0] as LInlineContainer;
     expect([ic.type, ic.width, ic.baselineFrom]).toEqual(['inline-container', 33.75, 'last']);
     expect(texts(ic.children as never).join('')).toBe('1.2');
-    expect((p.children[1] as LInline).inlineMargin).toEqual({ start: 12, end: 0 });
+    expect((p.children[1] as LInline).inlineMargin).toEqual({ start: 12, end: 0, bound: true });
   });
 
   it('clear: left / right / both は、行の始端・終端・両側の回り込みの下まで下げる (右から左へ書く段落では左右が入れ替わる)', () => {
