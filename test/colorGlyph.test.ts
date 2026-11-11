@@ -540,7 +540,28 @@ describe('PDF: 色つきの書体の字は、Type 3 書体の字として書く'
     const noXml = await PDFDocument.load(await renderPdf(layout2([{ fontFamily: 'Svg', children: ['AB'] }]), fonts2));
     const procs = type3Fonts(noXml).flatMap((f) => [...charProcs(noXml, f).values()]);
     expect(procs.some((p) => /\brg\b/.test(p))).toBe(false);
-    expect(procs.filter((p) => /^f$/m.test(p))).toHaveLength(2);
+    // Type 3 になるのは、SVG の表に絵のある A だけ。絵の無い B は、ふつうの書体の字として書く
+    expect(procs.filter((p) => /^f$/m.test(p))).toHaveLength(1);
+  });
+  it('SVG の表が一部の字形にだけ絵を持つ書体 (Source Code Pro など): 絵の無い字形だけの並びは、ふつうの埋め込みの書体の字として書く (Type 3 にしない)', async () => {
+    const svg = withTables(tinos, { 'SVG ': svgTable([{ start: gid('A'), end: gid('A'), doc: `<svg xmlns="http://www.w3.org/2000/svg" id="glyph${gid('A')}"><rect x="0" y="-500" width="400" height="500" fill="#00ff00"/></svg>` }]) });
+    const { fonts, layout } = await setup({ Svg: svg });
+    // 絵の無い字だけ: Type 3 書体は作らず、書体を部分書体として埋め込む (直す前は、B・C も Type 3 の字形の手続きになった)
+    const plain = await PDFDocument.load(await renderPdf(layout([{ fontFamily: 'Svg', children: ['BCB'] }]), fonts, { parseXml: xml }));
+    expect(type3Fonts(plain)).toHaveLength(0);
+    const embeddedNames = (pdf: PDFDocument) =>
+      pdf.context
+        .enumerateIndirectObjects()
+        .map(([, o]) => (o instanceof PDFDict && o.get(PDFName.of('Subtype')) === PDFName.of('Type0') ? String(o.get(PDFName.of('BaseFont'))) : ''))
+        .filter(Boolean);
+    expect(embeddedNames(plain).some((n) => /Tinos/.test(n))).toBe(true);
+    // 絵のある字 (A) は、これまでどおり Type 3 の色つきの字形になる
+    const mixed = await PDFDocument.load(await renderPdf(layout([{ fontFamily: 'Svg', children: ['A'] }, { fontFamily: 'Svg', children: ['BC'] }]), fonts, { parseXml: xml }));
+    const procs = type3Fonts(mixed).flatMap((f) => [...charProcs(mixed, f).values()]);
+    // 絵を描く手続きは A の 1 つだけ (B・C の輪郭を塗る手続きは無い)
+    expect(procs.filter((p) => /^f$/m.test(p))).toHaveLength(1);
+    expect(procs.some((p) => /\b0 1 0 rg\b/.test(p))).toBe(true);
+    expect(embeddedNames(mixed).some((n) => /Tinos/.test(n))).toBe(true);
   });
   it('COLR version 1: グラデーションは網かけ (sh)、止まり点の不透明度はソフトマスク、合成は透明のグループと描画モードになる', async () => {
     const b = gid('B');

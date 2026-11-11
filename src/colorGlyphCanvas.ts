@@ -391,6 +391,8 @@ export function drawColorGlyphArea(ctx: Ctx, fonts: FontManager, g: GlyphArea, o
   if (!outlines && !g.fontPalette && browser) return false;
   if (!cf.svgReader && typeof DOMParser !== 'undefined') cf.svgReader = svgGlyphReader((t) => new DOMParser().parseFromString(t, 'image/svg+xml') as never);
   const glyphs = areaGlyphs(g, font);
+  // 色つきの絵の無い字形だけの並びは、ブラウザの fillText に任せる (書体をブラウザに登録しているとき。PDF の側と同じ分け方)
+  if (!outlines && glyphs.every((gl) => cf.isPlain(gl.id, g.fontPalette))) return false;
   const k = g.fontSize / cf.unitsPerEm;
   const pc = parseColor(g.color);
   const fg: Rgb = pc.mode === 'rgb' ? [pc.r, pc.g, pc.b] : [(1 - pc.c) * (1 - pc.k), (1 - pc.m) * (1 - pc.k), (1 - pc.y) * (1 - pc.k)];
