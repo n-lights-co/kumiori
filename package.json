@@ -22,7 +22,7 @@
     "url": "https://github.com/n-lights-co/kumiori/issues"
   },
   "engines": {
-    "node": ">=20.19.0"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "type": "module",
   "main": "./dist-lib/index.js",

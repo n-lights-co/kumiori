@@ -32,16 +32,16 @@ jobs:
       # 言語ごとの見本・絵文字・可変フォント。合わせて約 29MB) を、Google Fonts の配信元 (fonts.gstatic.com) から取得して置く場所
       KUMIORI_FONT_CACHE: ${{ github.workspace }}/.cache/conformance-fonts
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # リリースのタグのコミットで組む (タグが無ければ、動かしたブランチ)
           ref: ${{ env.TAG || github.ref }}
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - uses: actions/cache@v5
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: .cache/conformance-fonts
           # 見本の書体の一覧が変わればキーが変わり、古いキャッシュ (restore-keys) から始めて、増えた分を足して保存し直す (ci.yml の書体のキャッシュと同じ考え方)
@@ -65,7 +65,7 @@ jobs:
           done
           ls -l release-pdf
           test "$(ls release-pdf | wc -l)" -eq 4
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: conformance-pdf
           path: release-pdf/*.pdf

@@ -51,7 +51,7 @@ npm run build    # 型チェック + 本番ビルド (dist/。画面)
 npm run build:dist   # ライブラリ (dist-lib)・Node のコマンド (dist-cli)・ブラウザ用の 1 ファイル (dist-browser) をまとめて作る
 ```
 
-Node は 20.19.0 以上 (CI は 22 で確かめています。HTML を読むための依存パッケージ (linkedom の使う css-select など) が Node 20.19.0 以降を求めます)。公開の手順は [`docs/RELEASING.md`](docs/RELEASING.md)、版ごとの変更は [`CHANGELOG.md`](CHANGELOG.md) にあります。
+Node は 20.19.0 以上の 20 系か、22.12.0 以上 (CI は 20.19.0 と 22 で確かめています。HTML を読むための依存パッケージ (linkedom の使う css-select など) が Node 20.19.0 以降を求めます。22.0〜22.11 は、ES モジュールを `require()` で読めないので対象から外しています)。公開の手順は [`docs/RELEASING.md`](docs/RELEASING.md)、版ごとの変更は [`CHANGELOG.md`](CHANGELOG.md) にあります。
 
 ### 画面 (ブラウザ)
 
