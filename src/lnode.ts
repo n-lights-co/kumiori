@@ -172,6 +172,7 @@ export interface ResolvedStyle {
   collapseSpaces?: boolean;
   boxLineHalfLeading?: boolean;
   primaryFontMetrics?: boolean;
+  inlineBoxFontMetrics?: boolean;
   primaryFontByLang?: boolean;
   noStrut?: boolean;
   lineHeightQuirk?: boolean;
@@ -337,6 +338,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     collapseSpaces: n.collapseSpaces ?? parent.collapseSpaces,
     boxLineHalfLeading: n.boxLineHalfLeading ?? parent.boxLineHalfLeading,
     primaryFontMetrics: n.primaryFontMetrics ?? parent.primaryFontMetrics,
+    inlineBoxFontMetrics: n.inlineBoxFontMetrics ?? parent.inlineBoxFontMetrics,
     primaryFontByLang: n.primaryFontByLang ?? parent.primaryFontByLang,
     noStrut: n.noStrut ?? parent.noStrut,
     lineHeightQuirk: n.lineHeightQuirk ?? parent.lineHeightQuirk,

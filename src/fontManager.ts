@@ -138,14 +138,33 @@ export interface FaceDescriptors {
 
 const keyOf = (family: string, weight: number) => `${family}@${weight}`;
 
+/** OS/2 の typo の上下 (sTypoAscender − sTypoDescender) が、ちょうど 1em を成す書体か (Noto CJK などの和文の書体: 字の枠 = em の箱) */
+function typoSpansEm(fk: LoadedFont['fk']): { typoAscender: number; typoDescender: number } | undefined {
+  const upm = fk.unitsPerEm || 1000;
+  const os2 = (fk as unknown as { 'OS/2'?: { typoAscender: number; typoDescender: number } })['OS/2'];
+  return os2 && Math.abs(os2.typoAscender - os2.typoDescender - upm) < upm * 0.02 ? os2 : undefined;
+}
+
+/**
+ * 行内の箱の内容の領域 (CSS 2.1 §10.6.1・CSS Inline 3 §6.4) に使う、書体の上の高さ・下の深さ (em に対する比)。
+ * CSS Inline 3 §3.2.1 は、書体の ascent・descent の出どころを決めていない (注記は OS/2 の sTypoAscender・sTypoDescender を勧める)。
+ *  - OS/2 の typo の上下が 1em を成す書体 (和文の書体): その値 (字の枠 = em の箱。行の中の基線の位置 baselineRatio と同じ決め方)
+ *  - ほかの書体: hhea の ascent・descent (USE_TYPO_METRICS の書体では OS/2 の typo の値と同じ。Chromium が使う値)。
+ *    typo の値が字の上下より小さい書体 (Tinos は 0.693・0.216 で、和文の字の枠より低い) があるので、typo の値は使わない
+ */
+export function inlineAreaMetrics(font: Pick<LoadedFont, 'fk' | 'baselineRatio' | 'ascent' | 'descent'>): { ascent: number; descent: number } {
+  if (typoSpansEm(font.fk)) return { ascent: font.baselineRatio, descent: 1 - font.baselineRatio };
+  return { ascent: font.ascent ?? font.baselineRatio, descent: font.descent ?? 1 - font.baselineRatio };
+}
+
 /** fontkit で読んだ書体から、組版で使う寸法 (registerBuffer と、可変フォントの実体で同じ計算) */
 function fontMetricsOf(fk: LoadedFont['fk']): Pick<LoadedFont, 'unitsPerEm' | 'baselineRatio' | 'ascentMinusDescent' | 'ascent' | 'descent'> {
   const upm = fk.unitsPerEm || 1000;
   // OS/2 typo メトリクスが ちょうど 1em を成すフォント (Noto CJK 等) は ideographic em ボックスと一致する
   const os2 = (fk as unknown as { 'OS/2'?: { typoAscender: number; typoDescender: number } })['OS/2'];
   let baselineRatio = 0.88;
-  if (os2 && Math.abs(os2.typoAscender - os2.typoDescender - upm) < upm * 0.02) {
-    baselineRatio = os2.typoAscender / upm;
+  if (typoSpansEm(fk)) {
+    baselineRatio = os2!.typoAscender / upm;
   } else if (typeof os2?.typoAscender !== 'number' && typeof fk.ascent === 'number' && typeof fk.descent === 'number' && fk.ascent > 0) {
     // OS/2 の表 (typo の値) の無い書体 (古い TrueType): hhea の上下 (A・D) で、CSS 2.1 §10.8.1 と同じ基準線の位置にする。
     // 行の上端から基準線までは 半行間 + A = LH/2 + (A − D)/2 なので、em の箱では比 0.5 + (A − D)/2 (em) に当たる

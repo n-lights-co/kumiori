@@ -4559,7 +4559,8 @@ class HtmlImporter {
         if (rad) img.borderRadius = innerRadius(rad, bs.border, bs.padding);
         // 変換・不透明度は、枠ごとに掛ける (基準の箱は border の箱)
         delete img.paintEffect;
-        const frame = { type: 'inline', ...(bs.paintEffect ? { paintEffect: bs.paintEffect } : {}), ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline;
+        // (この箱は置換要素の箱そのものなので、字の内容の領域 (inlineBoxFontMetrics) でなく、画像を囲む。CSS 2.1 §10.6.2)
+        const frame = { type: 'inline', inlineBoxFontMetrics: false, ...(bs.paintEffect ? { paintEffect: bs.paintEffect } : {}), ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline;
         // 枠のある画像の余白は、枠の外に付ける: 行の進む方向の余白だけ (行内の空き。行内の要素の margin と同じ)。
         // 行の幅の方向の余白 (横書きの上下) は、枠を行内の枠として描いているので付けられない (知らせる)
         if (hasMargin) {
@@ -5757,7 +5758,7 @@ class HtmlImporter {
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
     // fontOpticalSizeUnit: CSS の font-optical-sizing: auto は、font-size の CSS px の数を opsz にする (CSS Fonts 4 §8.1 の試験 variable-opsz.html)
-    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, inlineBoxFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
     // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
     // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
     // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、
