@@ -655,6 +655,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <h2 id="s-text-indent"><span class="num">6.3</span>字下げ : <code>text-indent</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
 <p class="props" data-p="text-indent"><span class="k">初期値</span> : <span class="v">0</span> <span class="k">適用対象</span> : <span class="v">block containers</span> <span class="k">継承</span> : <span class="v">yes</span> <span class="src">(text-indent — CSS Text 3)</span></p>
 <p>段落の 1 行目の字下げです。負の値でぶら下げ (2 行目以降を下げる) にできます。</p>
+<p>text-indent は受け継がれるので、字下げのある段落の中の inline-block・回り込み・絶対配置の箱の最初の行も字下げされます。中身に合わせた幅の箱では、字下げの分も幅に入れます (字下げで中の行が折り返すことはありません)。箱の中を字下げしたくないときは、箱に text-indent: 0 を指定します <span class="spec">(CSS Text 3 §8.1)</span>。</p>
 <!--gen:vals-s-text-indent--><p class="vals-h"><code>text-indent</code> の値の意味 <span class="spec">(CSS Text 3 §8.1)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>&lt;length&gt;</code></td><td>字下げの量を絶対の長さで指定します。</td><td>対応</td></tr><tr><td><code>&lt;percentage&gt;</code></td><td>字下げの量を、ブロックコンテナ自身の論理の幅に対する割合で指定します。</td><td>対応</td></tr><tr><td><code>each-line</code></td><td>最初の行に加え、強制改行の後の行も字下げします (自動の改行の後の行はしません)。</td><td>対応</td></tr><tr><td><code>hanging</code></td><td>字下げする行を逆にします (最初の行以外を字下げします)。</td><td>対応</td></tr></tbody></table><!--/gen:vals-s-text-indent-->
 <!--kumiori-sample id="text-indent" mark="text-indent: 2em|text-indent: -2em"-->
 <div style="width: 64mm;">

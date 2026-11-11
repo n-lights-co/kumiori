@@ -5151,7 +5151,9 @@ function orthogonalExtent(n: LNode, c: LNode): number {
 }
 
 function maxLineLength(n: LNode, root = true, tableByColumns = false, countFixed = false): number {
-  if (n.kind === 'line') return n.contentLength ?? 0;
+  // 行の長さには、行頭の字下げも入れる (CSS Text 3 §8.1: "The indent is treated as a margin applied to the start edge of the line box."
+  // 字下げを受け継いだ inline-block・回り込みの箱の幅 (CSS 2.1 §10.3.5・§10.3.9 の shrink-to-fit) が字下げの分だけ足りず、中の行が折り返すのを防ぐ)
+  if (n.kind === 'line') return (n.contentLength ?? 0) + (n.lineIndent ?? 0);
   // 大きさの指定のある箱は、中身によらず、箱の外側の大きさ (内容による大きさの計測。CSS Sizing 3 §5.1)
   if (countFixed && !root && n.fixedI) {
     const pos = (v: number) => Math.max(v, 0);
