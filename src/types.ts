@@ -1099,6 +1099,12 @@ export interface LIndexKeyReference {
  */
 export interface LImage extends BaseNode {
   /**
+   * false: この箱 (行の中の、分けられない箱) そのものには、飾りの線 (下線・上線・取り消し線) を引かない
+   * (CSS Text Decoration 3 §2: Atomic inlines, such as images and inline blocks, are not decorated)。HTML の読み込みが付ける。
+   * 既定は、まわりの字と同じ線を箱にも引く (XSL-FO。XSL 1.1 §7.17.4)
+   */
+  decorateBox?: false;
+  /**
    * 行の中での揃え: after-edge は画像の下端を字面の下端に、before-edge は上端を字面の上端に揃える
    * (アンテナハウスの -ah-alignment-baseline: text-after-edge など。字面はその行の最初に使える書体の上下。既定は下端を基線に)
    */
@@ -1151,6 +1157,12 @@ export interface LImage extends BaseNode {
   border?: BorderInput;
   padding?: EdgesInput;
   backgroundColor?: string;
+  /**
+   * 行の中の画像の外側の余白 (CSS の margin。上下左右の向き)。画像 (罫線・余白があればその外) のまわりを空け、行の中の送りと行の高さに入れる
+   * (置換要素の行内の箱の高さは margin の箱の高さ。CSS 2.1 §10.8)。基線に揃える画像は、下の余白の外側の端を基線に置く (同 §10.8.1)。
+   * ブロックとして置く画像では使わない (包むブロックの margin を使う)
+   */
+  margin?: EdgesInput;
 }
 
 /**
@@ -1201,6 +1213,12 @@ export interface LInlineContainer extends BaseNode, BoxStyle {
   alignmentBaseline?: 'baseline' | 'central' | 'before-edge' | 'after-edge';
   /** baseline で揃えるときの、箱の基線。既定 first (中の最初の行)。last は最後の行 (CSS の inline-block。切り抜く箱・行の無い箱は下端) */
   baselineFrom?: 'first' | 'last';
+  /**
+   * false: この箱 (行の中の、分けられない箱) そのものには、飾りの線 (下線・上線・取り消し線) を引かない
+   * (CSS Text Decoration 3 §2: Atomic inlines, such as images and inline blocks, are not decorated)。HTML の読み込みが付ける。
+   * 既定は、まわりの字と同じ線を箱にも引く (XSL-FO。XSL 1.1 §7.17.4)
+   */
+  decorateBox?: false;
   children: Array<LBlockLevel | LInlineLevel>;
 }
 

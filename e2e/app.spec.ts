@@ -391,6 +391,52 @@ test('公開 API: typeset した結果を renderPage で canvas に描く (書�
   expect(errors).toEqual([]);
 });
 
+test('公開 API: CSS のグラデーションの背景を renderPage で canvas に描く (線形・放射・繰り返し・複数の層・background-clip)', async ({ page }) => {
+  const errors = await open(page);
+  const px = await page.evaluate(async () => {
+    const entry = '/src/index.ts';
+    const k = (await import(/* @vite-ignore */ entry)) as typeof import('../src/index');
+    // 箱はどれも幅 200pt・高さ 20pt。上から 30pt ごとに並べる (用紙の端から 20pt 離す)
+    const boxes = [
+      'background: linear-gradient(to right, #f00, #00f)',
+      'background: radial-gradient(circle closest-side, #fff, #000)',
+      'background: repeating-linear-gradient(to right, #f00 0 20pt, #00f 20pt 40pt)',
+      'background: linear-gradient(to right, #f00 50%, transparent 50%), linear-gradient(#00f, #00f)',
+      'box-sizing: border-box; padding: 0 50pt; background: linear-gradient(to right, #f00, #f00); background-clip: content-box',
+    ];
+    const html = `<!doctype html><html><head><style>@page { size: 240pt 200pt; margin: 20pt } body { margin: 0 } div { width: 200pt; height: 20pt; margin-bottom: 10pt }</style></head><body>${boxes.map((b) => `<div style="${b}"></div>`).join('')}</body></html>`;
+    const r = await k.typeset(html, { kind: 'html' });
+    const canvas = document.createElement('canvas');
+    r.renderPage(canvas, 0, { scale: 2, devicePixelRatio: 1 });
+    const ctx = canvas.getContext('2d')!;
+    /** n 番目の箱の、左から x (pt) の所の、高さの中央の色 */
+    const at = (n: number, x: number) => Array.from(ctx.getImageData(Math.round((20 + x) * 2), Math.round((20 + 30 * n + 10) * 2), 1, 1).data.slice(0, 3));
+    return { linear: [at(0, 10), at(0, 100), at(0, 190)], radial: [at(1, 100), at(1, 91), at(1, 50)], repeat: [at(2, 10), at(2, 30), at(2, 50), at(2, 190)], layers: [at(3, 50), at(3, 150)], clip: [at(4, 25), at(4, 100), at(4, 175)] };
+  });
+  const near = (got: number[], want: number[], tol = 8) => got.forEach((v, i) => expect(Math.abs(v - want[i]), `${got} ≈ ${want}`).toBeLessThanOrEqual(tol));
+  // 線形 (CSS Images 3 §3.1): 左から 5%・50%・95% の色
+  near(px.linear[0], [242, 0, 13]);
+  near(px.linear[1], [128, 0, 128]);
+  near(px.linear[2], [13, 0, 242]);
+  // 放射 (§3.2): closest-side の円の半径は 10pt (高さの半分)。中心は白、半径の 9 割の所はほぼ黒、その外は最後の色
+  near(px.radial[0], [255, 255, 255], 16);
+  near(px.radial[1], [26, 26, 26], 16);
+  near(px.radial[2], [0, 0, 0]);
+  // 繰り返し (§3.5): 40pt ごとに赤・青
+  near(px.repeat[0], [255, 0, 0]);
+  near(px.repeat[1], [0, 0, 255]);
+  near(px.repeat[2], [255, 0, 0]);
+  near(px.repeat[3], [0, 0, 255]);
+  // 複数の層 (CSS Backgrounds 3 §2.1): 手前の層の透明な所に、後ろの層が見える
+  near(px.layers[0], [255, 0, 0]);
+  near(px.layers[1], [0, 0, 255]);
+  // background-clip: content-box (§2.7): padding の所には描かない
+  near(px.clip[0], [255, 255, 255]);
+  near(px.clip[1], [255, 0, 0]);
+  near(px.clip[2], [255, 255, 255]);
+  expect(errors).toEqual([]);
+});
+
 test('可変フォント: 太さ・幅の実体を、測った幅のまま canvas に描く (実体を静的な書体としてブラウザに登録する)', async ({ page }) => {
   const errors = await open(page);
   // 可変フォント (Anybody。幅と太さの 2 軸) は、テストの書体の置き場から (test/helpers.ts の EXTRA_TEST_FONTS)

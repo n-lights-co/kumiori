@@ -44,6 +44,10 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - ハイフネーションの制限 (CSS Text 4 §6.3): `hyphenate-character` (行末に出す字。ソフトハイフンで分けた行にも)、`hyphenate-limit-chars` (語・分け目の前後の最小の字数)、`hyphenate-limit-lines` (ハイフンで終わる行が続く数の上限)、`hyphenate-limit-last: always` (段落の最後の行の手前を分けない)、`hyphenate-limit-zone` に対応。`hyphenate-limit-last` の `column`・`page`・`spread` は未対応 (警告に出す)
   - 背景の画像を、`background-clip` の初期値 (`border-box`) では罫線の下まで描く (CSS Backgrounds 3 §2.7)。**組版の結果 (見た目) が変わる**: HTML の、罫線のある箱の背景の画像・グラデーションが、罫線の下にも描かれる。破線・点線・二重線や透明・半透明の罫線では、線のすき間に背景の画像が見えるようになる (繰り返す画像は、padding の箱の左上から罫線の下へも並ぶ。繰り返さない画像の位置は変わらない)。不透明の実線の罫線では、罫線に隠れるので変わらない。これまでどおり罫線の内側だけに描くには `background-clip: padding-box` を指定する。XSL-FO の背景は変わらない (XSL 1.1 §4.9.4)
   - 透明・半透明の罫線の色 (HTML)。**組版の結果 (見た目) が変わる**: `border-color: transparent` の罫線が黒い線で描かれていたのを、描かないようにした (太さの分の場所は取る)。半透明の色 (`rgba()` など) の罫線は、白に混ぜた不透明の色ではなく、その濃さで下の背景に重ねて描く (PDF は透明のグループを使う。PDF/X-3 では警告が出る)
+  - CSS のグラデーションの背景 (`linear-gradient()`・`radial-gradient()` と `repeating-` の付いたもの) を、画面 (Canvas。`renderPage` と画面の表示) にも描く。**前は PDF にだけ描かれ、画面には出なかった** (PDF の結果は変わらない)
+  - 飾りの線 (下線など) と、行の中の分けられない箱 (CSS Text Decoration 3 §2)。**組版の結果 (見た目) が変わる**: `display: inline-block` にしたリンクの下線が 2 本出ていた (中の字の下と、箱の下端) のを、中の字の下の 1 本にした。下線の付いた要素の中の画像・inline-block の箱そのものには線を引かず (リンクの中の画像の下の線が消える)、inline-block・inline-table の中身には祖先の線を伝えない (前後の字には引く。ブラウザと同じ)。XSL-FO の結果は変わらない
+  - 字下げ (`text-indent`) を受け継いだ、中身に合わせた幅の箱 (`inline-block`・回り込み・絶対配置など) の幅に、字下げの分を入れる (CSS Text 3 §8.1)。**組版の結果が変わる**: 前は、箱の幅が字下げの分だけ足りず、中の最初の行が折り返したり、字が箱の外に出たりした (既定のスタイルは段落を 1 字下げるので、段落の中の `inline-block` がこれに当たる)。直した後は、箱が字下げの分だけ広くなり、中身は 1 行に収まる。箱の中を字下げしたくないときは、箱に `text-indent: 0` を指定する
+  - 行内の画像 (`img`) の `margin` (4 辺。CSS 2.1 §8.3・§10.8)。**組版の結果が変わる**: 前は、行内の画像の `margin` が読まれず、画像が前後の字や隣の画像に詰まって並んだ (ブロックの画像・回り込みの画像の `margin` は前から効いている)。直した後は、左右の余白の分だけ前後が空き、上下の余白は行の高さに入る (`hspace`・`vspace` 属性も同じ)。罫線・内側の余白・背景色のある行内の画像は、左右の余白だけが効く (上下は警告で知らせる)
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)
@@ -65,7 +69,9 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `resolveResource(url)`: 文書・CSS が参照するファイルのうち、`files` に無いものを問い合わせる
   - `fetchStyles`: 文書が `http(s):` で参照する CSS (`@import` の先も) を取る (既定 `true`)
   - `kumiori/node`: `createFontLoader` (Node のコマンドと同じ既定の書体の読み込みとキャッシュ)、`createFileResolver` (`file:` の参照を読む)、`defaultFontCacheDir`・`looksLikeFont`
-- **Node のコマンド**: `file:` の URL の参照を読む。`--no-fetch-styles` で CSS を取らない
+  - `resolveResource` が返した画像を、URL に拡張子が無くても使う (`<img src="https://example.com/img?id=1">` など。`background-image`・`list-style-image`・`content: url()`、XSL-FO の `external-graphic` も)。中身の先頭のバイト列で画像と見分ける。**前は、拡張子の無い URL では返した中身が使われず、ネットワークから取り直していた** (`fetchImages: false` なら読めない画像になった)。ネットワークから取るかどうかの判定 (`fetchImages`) は変わらない
+  - `pageSize`: HTML の既定の用紙 (`@page` で `size` を指定していない文書の用紙。これまでは A4 に固定) を変える。CSS の `size` と同じ書き方 (`"A5"`・`"A5 landscape"`・`"148mm 210mm"`。CSS Paged Media 3 §7.1)。文書の `@page { size }` があればそちらが勝ち、`@media` の `width`・`height`・`orientation` もこの用紙で評価する。指定しなければ、今までと同じ A4
+- **Node のコマンド**: `file:` の URL の参照を読む。`--no-fetch-styles` で CSS を取らない。`--page-size <用紙>` で HTML の既定の用紙を変える (`A5`・`"A5 landscape"`・`148mm,210mm`。API の `pageSize` と同じ)
 - **flex の項目の中のページ番号の参照**: `target-counter(…, page)` を持つ flex の項目 (目次の行の `::after` など) の箱の幅を、組んだ番号の桁に合わせる。これまでは 1 桁分の幅で作られ、`word-break: break-word`・`overflow-wrap: anywhere` などがあると 2 桁の番号が「1 / 0」と割れて、目次が伸びていた
 - **`createFileResolver`** (`kumiori/node`): `root` に、いくつかのディレクトリの並びを渡せる。中にあるかは、シンボリックリンクをたどった実体のパスで見る (root の中のリンクから外のファイルを読めていたのを直した。Windows の別のドライブ、名前が `..` で始まるファイルの判定も直した)
 - **未対応の CSS の警告**: `clip` と `fill` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
