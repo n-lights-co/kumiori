@@ -335,3 +335,40 @@ export function gradientSvg(text: string, W: number, H: number, fontSize = 12): 
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${n(W)}pt" height="${n(H)}pt" viewBox="0 0 ${n(W)} ${n(H)}"><defs>${body}</defs><rect width="${n(W)}" height="${n(H)}" fill="url(#g)"/></svg>`;
 }
+
+/** gradientSvg が作った SVG の中身 (Canvas に、ブラウザの画像の読み込みを待たずに描くための形。位置は SVG の座標 = pt) */
+export type GradientPaint =
+  | { kind: 'solid'; width: number; height: number; color: string }
+  | { kind: 'linear'; width: number; height: number; coords: [number, number, number, number]; stops: Array<{ offset: number; color: string; opacity: number }> }
+  /** radial: 中心 (cx, cy)・半径 r の円を、中心のまわりに縦へ scaleY 倍した楕円 */
+  | { kind: 'radial'; width: number; height: number; cx: number; cy: number; r: number; scaleY: number; stops: Array<{ offset: number; color: string; opacity: number }> };
+
+/**
+ * gradientSvg が作った SVG を読み戻す (この関数が読むのは、gradientSvg の出す決まった形だけ。ふつうの SVG は読まない。読めなければ undefined)。
+ * Canvas の描画 (canvasRenderer.ts) が、PDF に描くのと同じ線・同じ止まりで描くために使う:
+ * グラデーションの画像は組版の中で作る (同期) ので、ブラウザの画像 (読み込みが非同期) にできない
+ */
+export function readGradientSvg(svg: string): GradientPaint | undefined {
+  const root = /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" width="[^"]*" height="[^"]*" viewBox="0 0 (\S+) (\S+)">/.exec(svg);
+  if (!root) return undefined;
+  const width = parseFloat(root[1]);
+  const height = parseFloat(root[2]);
+  if (!(width > 0) || !(height > 0)) return undefined;
+  const rest = svg.slice(root[0].length);
+  const solid = /^<rect width="[^"]*" height="[^"]*" fill="(#[0-9a-f]{6})"\/><\/svg>$/.exec(rest);
+  if (solid) return { kind: 'solid', width, height, color: solid[1] };
+  const stops = [...rest.matchAll(/<stop offset="([^"]*)" stop-color="(#[0-9a-f]{6})"(?: stop-opacity="([^"]*)")?\/>/g)].map((m) => ({ offset: parseFloat(m[1]), color: m[2], opacity: m[3] === undefined ? 1 : parseFloat(m[3]) }));
+  if (!stops.length || stops.some((s) => !Number.isFinite(s.offset) || !Number.isFinite(s.opacity))) return undefined;
+  const lin = /^<defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="([^"]*)" y1="([^"]*)" x2="([^"]*)" y2="([^"]*)">/.exec(rest);
+  if (lin) {
+    const coords = lin.slice(1, 5).map(parseFloat) as [number, number, number, number];
+    return coords.every(Number.isFinite) ? { kind: 'linear', width, height, coords, stops } : undefined;
+  }
+  const rad = /^<defs><radialGradient id="g" gradientUnits="userSpaceOnUse" cx="([^"]*)" cy="([^"]*)" r="([^"]*)"(?: gradientTransform="translate\([^)]*\) scale\(1 ([^)]*)\) translate\([^)]*\)")?>/.exec(rest);
+  if (rad) {
+    const [cx, cy, r] = rad.slice(1, 4).map(parseFloat);
+    const scaleY = rad[4] === undefined ? 1 : parseFloat(rad[4]);
+    return [cx, cy, r, scaleY].every(Number.isFinite) && r > 0 && scaleY > 0 ? { kind: 'radial', width, height, cx, cy, r, scaleY, stops } : undefined;
+  }
+  return undefined;
+}
