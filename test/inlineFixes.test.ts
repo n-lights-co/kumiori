@@ -356,6 +356,26 @@ describe('HTM-29 (3) 受け継いだ font-family と、自分に指定した fon
     // 総称 (既定の書体) を受け継いだときも、自分に指定したときと同じ
     expect(await fontsOf(`<p lang="ru">${RU}</p>`)).toBe(await fontsOf(`<p lang="ru" style="font-family: serif">${RU}</p>`));
   });
+  it('XSL-FO でも同じ: xml:lang="ru" の要素は、font-family を受け継いでも自分に書いても、1 字の語を欧文の書体で組む', async () => {
+    const foOf = async (flow: string) =>
+      scan(
+        (
+          await typesetFo(
+            `<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja"><fo:layout-master-set><fo:simple-page-master master-name="A" page-width="148mm" page-height="210mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="A"><fo:flow flow-name="xsl-region-body">${flow}</fo:flow></fo:page-sequence></fo:root>`,
+            { loadFont: loadCachedFont },
+          )
+        ).areaTree,
+      )
+        .glyphs.filter((g) => /[\u0400-\u04ff]/.test(g.text))
+        .map((g) => `${g.text}:${g.font}`)
+        .join(' ');
+    const own = await foOf(`<fo:block font-family="Tinos" xml:lang="ru">${RU}</fo:block>`);
+    expect(own).toMatch(/и:Tinos в:Tinos у:Tinos$/);
+    expect(await foOf(`<fo:block font-family="Tinos"><fo:block xml:lang="ru">${RU}</fo:block></fo:block>`)).toBe(own);
+    // 言語の無い要素と、欧文の要素の中の日本語の要素は、これまでどおり和文の書体
+    expect(await foOf(`<fo:block font-family="Tinos">${RU}</fo:block>`)).toMatch(/и:Noto Serif JP в:Noto Serif JP у:Noto Serif JP$/);
+    expect(await foOf(`<fo:block xml:lang="ru"><fo:block xml:lang="ja">${RU}</fo:block></fo:block>`)).toMatch(/и:Noto Serif JP в:Noto Serif JP у:Noto Serif JP$/);
+  });
   it('lang の無い要素・日本語の要素は、これまでどおり (単独の 1 字は和文の書体)', async () => {
     expect(await fontsOf(`<div style="font-family: Tinos"><p>${RU}</p></div>`)).toMatch(/и:Noto Serif JP в:Noto Serif JP у:Noto Serif JP$/);
     expect(await fontsOf(`<div lang="ru" style="font-family: Tinos"><p lang="ja">${RU}</p></div>`)).toMatch(/и:Noto Serif JP в:Noto Serif JP у:Noto Serif JP$/);

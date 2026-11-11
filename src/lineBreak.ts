@@ -60,6 +60,12 @@ export interface LineBreakOptions {
   strictness?: LineBreakStrictness;
   /** 日本語・中国語の文書 (CSS Text 3 §5.2 の normal・loose の決まりの一部は、日本語・中国語だけ) */
   cjk?: boolean;
+  /**
+   * あいまいな字 (Line_Break が AI) を、全角の字として組み、和字として前後で改行してよい (アンテナハウス互換の ambiguousWideBreak で、
+   * 字の送りが字の大きさに近い字)。cjk の文脈でこれが立つ字だけ ID に解決する (UAX #11 の East Asian Width A: 東アジアの文脈で
+   * 全角に解決される字。欧文の書体で半角に組む字は AL のまま)
+   */
+  aiWide?: boolean;
   /** アンテナハウス互換: 小書き仮名・長音記号の前で改行してよい (axf:line-break="normal") */
   looseLineStart?: boolean;
   /** アンテナハウス互換の HTML の line-break: auto: 繰返し記号 (々〻ゝゞヽヾ) の前でも改行してよい */
@@ -101,7 +107,13 @@ function resolveClass(cp: number, o: LineBreakOptions): string {
   const raw = lineBreakClass(cp);
   const s = o.strictness ?? 'normal';
   let c = raw;
-  if (raw === 'AI' || raw === 'SG' || raw === 'XX') c = 'AL';
+  // AI (East_Asian_Width が A の記号: ≧・①・※・§・∞ など): 東アジアの文脈 (日本語・中国語の文) で、全角の字として組むもの
+  // (aiWide。アンテナハウス互換のときだけ立てる) は ID、ほかは AL (UAX #14 §5.1 の AI: "treated like ideographs (line breaking class ID) in certain
+  // East Asian legacy contexts ... In the absence of appropriate context information, they are treated as class AL"。LB1 は、AI の
+  // 解決をアルゴリズムの外の判断に任せる。UAX #11: A の字の幅は文脈で決まる)。全角で組む字は和字 (JLREQ 付録 A の cl-19) で、
+  // 前後で改行してよい。欧文の書体で半角に組む字 (§7.20.2 の § など) は、欧文の字として前後の字とつなぐ
+  if (raw === 'AI') c = o.cjk && o.aiWide ? 'ID' : 'AL';
+  else if (raw === 'SG' || raw === 'XX') c = 'AL';
   else if (raw === 'SA') c = /^M[nc]$/.test(gcOf(cp)) ? 'CM' : 'AL';
   else if (raw === 'CJ') c = s === 'loose' || o.looseLineStart ? 'ID' : 'NS';
   // CSS Text 3 §5.2: 繰返し記号の前は loose だけ改行してよい

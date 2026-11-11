@@ -748,7 +748,7 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
   // (場所を取らないので、空きは置かない。CSS UI 4 §3)
   const hasBox = !!(c.border || c.padding);
   if ((hasBox || c.link || c.annotation || c.outline) && kids.length) {
-    const frame: InlineFrame = { id: ++frameSeq, border: normBorder(c.border), padding: normEdges(c.padding), bg: c.backgroundColor, box: hasBox, ...(c.borderRadius ? { radius: c.borderRadius } : {}), ...(hasBox && c.boxDecorationBreak === 'clone' ? { clone: true } : {}), ...(hasBox && c.paintEffect ? { fx: c.paintEffect } : {}) };
+    const frame: InlineFrame = { id: ++frameSeq, border: normBorder(c.border), padding: normEdges(c.padding), bg: c.backgroundColor, ...(c.backgroundClip ? { bgClip: c.backgroundClip } : {}), box: hasBox, ...(c.borderRadius ? { radius: c.borderRadius } : {}), ...(hasBox && c.boxDecorationBreak === 'clone' ? { clone: true } : {}), ...(hasBox && c.paintEffect ? { fx: c.paintEffect } : {}) };
     if (c.link) frame.link = c.link;
     if (c.annotation) frame.annot = c.annotation;
     if (c.outline) {

@@ -253,7 +253,7 @@ const userFonts: UserFont[] = [];
 /** 書体の名前 (FO の font-family に書く和名・英名など) → 読み込んだ書体のファミリ名の表 (利用者が読み込んだ書体は document、@font-face は face) */
 const fontNames = new FontNameTable();
 /** 書体の割り当て (利用者が読み込んだ書体を含む) */
-const { mapFont, mapHtmlFont, htmlNormalLineHeight, loadFontFaces, usesMono } = createFontMapping(fonts, fontNames);
+const { mapFoFont, mapHtmlFont, htmlNormalLineHeight, loadFontFaces, usesMono } = createFontMapping(fonts, fontNames);
 
 async function registerUserFont(f: UserFont): Promise<boolean> {
   if (userFonts.some((u) => u.family === f.family && u.weight === f.weight && u.style === f.style)) return false;
@@ -316,7 +316,7 @@ async function loadFo(text: string, name: string) {
     const res = importXslFo(text, browserParse, {
       ...mathOpts,
       // ゴシック・サンセリフ系は Noto Sans JP、それ以外 (明朝・serif・未指定) は Noto Serif JP。太字は、同じ書体の Bold (明朝系は和文が Noto Serif JP の Bold、欧文が Tinos の Bold。読み込んでいるフォントだけで組む)
-      mapFont,
+      mapFont: mapFoFont,
       compat,
       bleedMm: foPrint.checked ? 3 : 0,
       trimMarks: foPrint.checked,

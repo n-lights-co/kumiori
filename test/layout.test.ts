@@ -1599,7 +1599,9 @@ describe('段組: 脚注・前方 float は全段を貫くページ単位の領�
 });
 
 describe('float の末尾の space-after', () => {
-  it('前方 float を 2 つ並べても、内容の space-after ぶんの隙間は空かない', () => {
+  // 前方 float の内容の末尾の space-after は、続く前方 float との間に空ける (XSL 1.1 §4.3.1: float の領域は参照領域ではない。
+  // CSS 2.1 §10.6.7: float の高さは、最後の子の下の margin までを含む)
+  it('前方 float を 2 つ並べると、内容の space-after ぶんの隙間が空く', () => {
     const fl = (c: string) => ({ type: 'float', float: 'before', children: [{ type: 'block', backgroundColor: c, margin: { bottom: 8 }, children: ['前方'] }] });
     const t = E.engine.layout(doc([{ type: 'block', children: ['本文', fl('#ff0000'), fl('#00ff00'), '本文'] }] as never));
     const found: Array<{ bg: string; y: number; h: number }> = [];
@@ -1611,7 +1613,7 @@ describe('float の末尾の space-after', () => {
     for (const c of t.sheets[0].page.regionBody.children as BlockArea[]) visit(c, 0);
     const r = found.find((f) => f.bg === '#ff0000')!;
     const g = found.find((f) => f.bg === '#00ff00')!;
-    expect(g.y - (r.y + r.h)).toBeCloseTo(0, 1);
+    expect(g.y - (r.y + r.h)).toBeCloseTo(8, 1);
   });
 });
 

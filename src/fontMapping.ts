@@ -537,5 +537,25 @@ export function createFontMapping(
     return fam;
   }
 
-  return { mapFont, mapHtmlFont, htmlNormalLineHeight, loadFontFaces, usesMono: () => monoUsed };
+  /**
+   * XSL-FO の font-family の並びと、要素の言語 (xml:lang・language) から書体を決める。言語が日本語・中国語・韓国語でない要素では、
+   * 既定の書体の組 (和文の書体 + 欧文の書体) を、記号と、単独のギリシャ文字・キリル文字 (ロシア語の и・в・у など) も欧文の書体で組む組に
+   * する (HTML の mapHtmlFont と同じ。CSS Fonts 4 §5.2: 字に使う書体は、その字のある要素ごとに選ぶ。XSL 1.1 §7.9.2 の font-selection-strategy
+   * の auto は、処理系が字ごとに書体を選ぶ)。読み込んだ書体 (MS 明朝など) を名指しした並びは、言語によらず今までどおり
+   */
+  function mapFoFont(names: string[], bold: boolean, lang?: string, explicit = false): string | undefined {
+    const fam = mapFont(names, bold);
+    // 言語の符号は 2 字 (ISO 639-1) と 3 字 (ISO 639-2。XSL 1.1 §7.10.1 の language は 3 字でもよい) の両方
+    const latinDoc = !!lang && lang !== 'none' && !/^(ja|jpn|zh|zho|chi|ko|kor)\b/i.test(lang);
+    // explicit: 既定の組も名指しで返す (欧文の要素の中の、和文の要素で、親の欧文の組を受け継がないように)
+    if (!latinDoc) return fam ?? (explicit ? (names.some((n) => GOTHIC.test(n)) ? SANS : SERIF) : undefined);
+    const base = fam ?? (names.some((n) => GOTHIC.test(n)) ? SANS : SERIF);
+    if (base !== SERIF && base !== SANS) return fam;
+    const latin = base === SANS ? sansLatin() : serifLatin();
+    const alias = `${base}+${latin}`;
+    fonts.defineStack(alias, base, latin, { symbol: latin });
+    return alias;
+  }
+
+  return { mapFont, mapFoFont, mapHtmlFont, htmlNormalLineHeight, loadFontFaces, usesMono: () => monoUsed };
 }

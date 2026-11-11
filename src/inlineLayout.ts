@@ -177,6 +177,8 @@ export interface InlineFrame {
   border: BorderStyle;
   padding: Edges;
   bg?: string;
+  /** 背景の色を塗る範囲 (無ければ border の箱。LInline.backgroundClip) */
+  bgClip?: 'padding-box' | 'content-box';
   /** 角丸 (border-radius)。枠の罫線と背景を丸め、中の画像も丸めて切り抜く */
   radius?: BorderRadius;
   /** 描くときだけの効果 (transform・opacity)。枠の Area に印を付け、組み終えてから中身とまとめて付ける (paintEffect.ts) */
@@ -308,7 +310,10 @@ export function markLineBreaks(atoms: Atom[]): void {
   for (let i = 0; i < atoms.length; i++) {
     const a = atoms[i];
     if (a.idMark || a.edgeGap) continue;
-    const o = lineBreakOptionsOf(a.st);
+    let o = lineBreakOptionsOf(a.st);
+    // アンテナハウス互換 (ambiguousWideBreak): 字の送りが字の大きさの 9 割以上の字は、全角の字として組む
+    // (あいまいな字 (AI) を ID にする目安。lineBreak.ts の aiWide)
+    if (a.st.ambiguousWideBreak && a.kind === 'glyph' && o.cjk && a.st.fontSize > 0 && a.advance >= a.st.fontSize * 0.9) o = { ...o, aiWide: true };
     const push = (cp: number) => {
       cps.push(cp);
       optsOf.push(o);
@@ -2185,6 +2190,7 @@ function drawInlineFrames(line: LNode, entries: { a: Atom; off: number; w: numbe
         bsize: ext.size + pl.bs + pl.be + bl.bs + bl.be,
         border,
         bg: f.bg,
+        ...(f.bgClip ? { bgClip: f.bgClip } : {}),
         ...(f.radius ? { radius: f.radius } : {}),
         ...(f.fx ? { fx: f.fx } : {}),
       }),

@@ -198,3 +198,19 @@ describe('XSL-FO: 背景は padding の矩形まで (XSL 1.1 §4.9.4)', () => {
     }
   });
 });
+
+describe('XSL-FO: fo:inline の背景も padding の矩形まで (XSL 1.1 §4.9.4。OUT-22)', () => {
+  const fo = (border: string) =>
+    '<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="200pt" page-height="200pt"><fo:region-body margin="15pt"/></fo:simple-page-master></fo:layout-master-set>' +
+    `<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block font-size="8pt">a<fo:inline border="${border}" padding="2pt" background-color="#00ff00">xyz</fo:inline>b</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+  const fillOf = async (border: string) => {
+    const r = await typesetFo(fo(border), { name: 't.fo', loadFont, files });
+    return paintOf(r.areaTree).find((l) => l[0] === 'fillRect' && l[5] === '#00ff00')!.slice(1, 5) as number[];
+  };
+  it('罫線の下が見える線種 (破線) の行内の箱は、背景の色を罫線の内側 (padding の箱) までに塗る。不透明の実線は、これまでどおり', async () => {
+    const dashed = await fillOf('3pt dashed #000000');
+    const solid = await fillOf('3pt solid #000000');
+    // 実線の箱は border の箱に塗る。破線の箱は、4 辺の罫線 (3pt) の分だけ内側
+    near([dashed[0] - solid[0], dashed[1] - solid[1], solid[2] - dashed[2], solid[3] - dashed[3]], [3, 3, 6, 6]);
+  });
+});

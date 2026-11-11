@@ -169,6 +169,7 @@ export interface ResolvedStyle {
   punctuationSqueeze?: boolean;
   lineSqueezeMax?: number;
   noSpaceSqueeze?: boolean;
+  ambiguousWideBreak?: boolean;
   textJustifyTrim?: TextJustifyTrim;
   wordSqueezeJustifiedOnly?: boolean;
   punctuationTrimStart?: boolean;
@@ -359,6 +360,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     punctuationSqueeze: n.punctuationSqueeze ?? parent.punctuationSqueeze,
     lineSqueezeMax: n.lineSqueezeMax ?? parent.lineSqueezeMax,
     noSpaceSqueeze: n.noSpaceSqueeze ?? parent.noSpaceSqueeze,
+    ambiguousWideBreak: n.ambiguousWideBreak ?? parent.ambiguousWideBreak,
     textJustifyTrim: n.textJustifyTrim ?? parent.textJustifyTrim,
     wordSqueezeJustifiedOnly: n.wordSqueezeJustifiedOnly ?? parent.wordSqueezeJustifiedOnly,
     punctuationTrimStart: n.punctuationTrimStart ?? parent.punctuationTrimStart,
