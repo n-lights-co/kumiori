@@ -98,7 +98,12 @@ export interface FontFaceRule {
   family: string;
   /** 登録する太さ (font-weight の記述子が 1 つの値ならその値。範囲は 400 を含めば 400、含まなければ下の端。無ければ 400) */
   weight: number;
+  /** font-style の記述子が italic か oblique (0deg を含まない角度の範囲も)。斜体・斜めの書体の face (font-style の指定で選ばれる。CSS Fonts 4 §5.2) */
   italic: boolean;
+  /** italic のうち、記述子が oblique のもの (斜めの書体の face。§5.2: @font-face の中では、italic と oblique を記述子の値で分ける) */
+  oblique?: boolean;
+  /** font-style の記述子が無い (auto) face */
+  styleAuto?: boolean;
   srcs: string[];
   /** font-weight の記述子の範囲 (1 つの値は、両端が同じ範囲。CSS Fonts 4 §4.4)。記述子が無い (auto) ときは undefined */
   weightRange?: [number, number];
@@ -483,6 +488,8 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
             family,
             weight,
             italic: /italic|oblique/i.test(d['font-style'] ?? '') && !obliqueRange,
+            ...(/oblique/i.test(d['font-style'] ?? '') && !obliqueRange ? { oblique: true } : {}),
+            ...(d['font-style'] === undefined || /^\s*auto\s*$/i.test(d['font-style']) ? { styleAuto: true } : {}),
             srcs,
             ...(ranges.length ? { ranges } : {}),
             ...(obliqueRange ? { obliqueRange } : {}),

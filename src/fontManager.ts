@@ -127,7 +127,36 @@ export interface LoadedFont {
   instanceOf?: { master: LoadedFont; coords: Record<string, number>; slanted?: boolean };
   /** Canvas の ctx.font に書くファミリー名 (実体をブラウザに登録したとき。無ければ family) */
   cssFamily?: string;
+  /**
+   * 書体そのものの傾き (斜体・斜めの書体のファイル。立体は undefined)。CSS Fonts 4 §5.2 の font-style の照合で選ぶ。
+   * この書体で組んだ字は、描くときに傾けない (字の送りも、この書体のもの)
+   */
+  style?: FaceStyle;
+  /** 書体そのものの幅 (百分率。CSS Fonts 4 §2.3 の表。標準の幅 100 は undefined)。§5.2 の font-width (font-stretch) の照合で選ぶ */
+  width?: number;
+  /**
+   * 傾き・幅を持つ書体の、ファミリー名 (照合のときの名前)。このとき family は、ファミリー名に、その書体だけを指す印
+   * (fontVariation.ts の variationSuffix: `{wdth=75,ital=1}`) を付けた名前で、family と weight で引き直すと同じ書体になる
+   * (組んだ結果の GlyphArea.fontFamily に入る名前)
+   */
+  baseFamily?: string;
 }
+
+/** 書体そのものの傾き: 斜体 (italic) か、立体を傾けた形の書体 (oblique) */
+export type FaceStyle = 'italic' | 'oblique';
+
+/** 書体の登録のときに渡す、書体そのものの形 (傾き・幅)。省いたものは、立体・標準の幅 */
+export interface FaceShape {
+  style?: FaceStyle;
+  /** 幅 (百分率。100 は標準) */
+  width?: number;
+}
+
+/** 書体の、照合のときのファミリー名 (傾き・幅の印を外した名前) */
+const groupOf = (f: Pick<LoadedFont, 'family' | 'baseFamily'>) => f.baseFamily ?? f.family;
+
+/** OS/2 の usWidthClass (1〜9) → 幅の百分率 (CSS Fonts 4 §2.3 の表の値。OpenType の OS/2 の usWidthClass の表と同じ) */
+const WIDTH_CLASS_PERCENT = [50, 62.5, 75, 87.5, 100, 112.5, 125, 150, 200];
 
 /**
  * 書体の登録のときに渡す、@font-face の記述子 (CSS Fonts 4 §4.4・§4.7・§4.6 の、可変フォントに関わるもの)。
@@ -155,7 +184,7 @@ export interface FaceDescriptors {
 export interface RangedFace {
   family: string;
   ranges?: Array<[number, number]>;
-  same?: { family: string; weight: number };
+  same?: { family: string; weight: number; style?: FaceStyle; width?: number };
 }
 
 const keyOf = (family: string, weight: number) => `${family}@${weight}`;
@@ -164,9 +193,12 @@ const keyOf = (family: string, weight: number) => `${family}@${weight}`;
  * 書体のファイルそのものの太さ・傾き (OpenType の OS/2 の表の usWeightClass と fsSelection の斜体の印。OS/2 が無ければ head の macStyle)。
  * WOFF・WOFF2 は sfnt に戻し、書体の集まりは最初の書体を読む (registerBuffer と同じ)。sfnt は、戻した書体のファイル (登録にそのまま渡せる)。
  * weight は 1〜1000 の値だけ (CSS Fonts 4 §2.2 の font-weight の範囲。外の値・表の無い書体・読めないファイルは undefined)。
- * variable は、可変フォント (fvar の表を持つ) か
+ * variable は、可変フォント (fvar の表を持つ) か。
+ * style は、書体そのものの傾き: fsSelection のビット 9 (OBLIQUE) があれば oblique、ビット 0 (ITALIC) があれば italic。
+ * OS/2 の無い書体は、head の macStyle の斜体の印か、post の italicAngle が 0 でないとき italic。立体は undefined。
+ * width は、幅の百分率 (OS/2 の usWidthClass を CSS Fonts 4 §2.3 の表で読み替えた値。標準の幅 (5)・表の無い書体は undefined)
  */
-export function fontFileStyle(buffer: ArrayBuffer): { sfnt: ArrayBuffer; weight?: number; italic: boolean; variable: boolean } {
+export function fontFileStyle(buffer: ArrayBuffer): { sfnt: ArrayBuffer; weight?: number; italic: boolean; variable: boolean; style?: FaceStyle; width?: number } {
   let sfnt = buffer;
   const none = { sfnt, italic: false, variable: false };
   try {
@@ -183,7 +215,14 @@ export function fontFileStyle(buffer: ArrayBuffer): { sfnt: ArrayBuffer; weight?
     const w = os2 !== undefined ? v.getUint16(os2 + 4) : undefined;
     // fsSelection (OS/2 の 62 バイト目) のビット 0 が ITALIC。OS/2 が無ければ、head の macStyle (44 バイト目) のビット 1
     const italic = os2 !== undefined ? (v.getUint16(os2 + 62) & 1) !== 0 : head !== undefined ? (v.getUint16(head + 44) & 2) !== 0 : false;
-    return { sfnt, ...(w !== undefined && w >= 1 && w <= 1000 ? { weight: w } : {}), italic, variable: tables.has('fvar') };
+    const post = tables.get('post');
+    // fsSelection のビット 9 が OBLIQUE (OS/2 の版 4 から)。post の italicAngle (4 バイト目からの 16.16 の固定小数) は、OS/2 の無い書体のときだけ見る
+    const oblique = os2 !== undefined && (v.getUint16(os2 + 62) & 0x200) !== 0;
+    const slanted = italic || (os2 === undefined && post !== undefined && v.getInt32(post + 4) !== 0);
+    const style: FaceStyle | undefined = oblique ? 'oblique' : slanted ? 'italic' : undefined;
+    const wc = os2 !== undefined ? v.getUint16(os2 + 6) : 5;
+    const width = wc >= 1 && wc <= 9 && wc !== 5 ? WIDTH_CLASS_PERCENT[wc - 1] : undefined;
+    return { sfnt, ...(w !== undefined && w >= 1 && w <= 1000 ? { weight: w } : {}), italic, variable: tables.has('fvar'), ...(style ? { style } : {}), ...(width !== undefined ? { width } : {}) };
   } catch {
     return { ...none, sfnt };
   }
@@ -283,6 +322,7 @@ export class FontManager {
     f.latinFor = new Map(this.latinFor);
     f.stacks = new Map(this.stacks);
     f.ranged = new Map(this.ranged);
+    f.aliases = new Map([...this.aliases].map(([k, v]) => [k, new Set(v)]));
     f.canvasInstances = this.canvasInstances;
     return f;
   }
@@ -302,9 +342,11 @@ export class FontManager {
    * 既に読み込み済みの ArrayBuffer を登録 (Node テストやローカルファイル用)。
    * 可変フォント (fvar を持つ書体) は、既定の形をこの書体として登録し、ほかの軸の値は、引くときに実体を作る (find・instance)。
    * 輪郭が CFF2 の可変フォントは、既定の形も、引くときに実体 (静的な CFF にしたもの) を作る (CFF2 のままでは PDF に埋め込めない)。
-   * face: @font-face の記述子 (省くと、入っている書体として軸の範囲の全体を使う)
+   * face: @font-face の記述子 (省くと、入っている書体として軸の範囲の全体を使う)。
+   * shape: 書体そのものの傾き・幅 (斜体の書体・幅の狭い書体など)。同じファミリー名・太さでも、傾き・幅の違う書体は別に登録され、
+   * font-style・font-stretch の指定で選ばれる (CSS Fonts 4 §5.2)。省くと、立体・標準の幅の書体として登録する (今までと同じ)
    */
-  async registerBuffer(family: string, weight: number, buffer: ArrayBuffer, canvas = true, face?: FaceDescriptors): Promise<LoadedFont> {
+  async registerBuffer(family: string, weight: number, buffer: ArrayBuffer, canvas = true, face?: FaceDescriptors, shape?: FaceShape): Promise<LoadedFont> {
     // WOFF・WOFF2 は、ふつうの書体のファイル (TTF・OTF) に戻してから登録する (PDF にはそのまま埋め込めない。webFont.ts)。
     // 書体の集まり (TTC と、WOFF2 の書体の集まりを戻したもの) は、最初の書体を使う (@font-face で集まりを指したとき)
     buffer = toSfnt(buffer);
@@ -346,8 +388,14 @@ export class FontManager {
         ),
       );
     }
+    // 傾き・幅を持つ書体は、その書体だけを指す印を付けた名前で登録する (名前と太さで引き直すと、同じ書体になる)
+    const style = shape?.style;
+    const width = shape?.width !== undefined && shape.width !== 100 && shape.width > 0 ? shape.width : undefined;
+    const baseFamily = style || width !== undefined ? family : undefined;
+    if (baseFamily !== undefined) family = baseFamily + variationSuffix({ ...(width !== undefined ? { wdth: width } : {}), ...(style === 'italic' ? { ital: true } : style === 'oblique' ? { slnt: OBLIQUE_FACE_ANGLE } : {}) });
     let fontFace: FontFace | undefined;
     if (canvas && typeof FontFace !== 'undefined' && typeof document !== 'undefined') {
+      // ブラウザには、印の付いた名前のまま、立体の書体として登録する (ctx.font にその名前を書いて選ぶ。ブラウザの側で傾き・幅を照合させない)
       fontFace = new FontFace(family, buffer.slice(0), { weight: String(weight) });
       await fontFace.load();
       document.fonts.add(fontFace);
@@ -364,6 +412,9 @@ export class FontManager {
       ...(names.postscriptName ? { postscriptName: names.postscriptName } : {}),
       ...(names.fullName ? { fullName: names.fullName } : {}),
       ...(info && !info.unsupported ? { variable: { info, face: face ?? {}, instances: new Map<string, LoadedFont>() } } : {}),
+      ...(style ? { style } : {}),
+      ...(width !== undefined ? { width } : {}),
+      ...(baseFamily !== undefined ? { baseFamily } : {}),
     };
     if (lf.variable) this.canvasInstances = this.canvasInstances || canvas;
     this.fonts.set(lf.key, lf);
@@ -423,16 +474,46 @@ export class FontManager {
    */
   private handed = new Map<string, LoadedFont>();
 
-  /** 読み込んだ可変フォントの軸の札 (すべての書体の分)。可変フォントが無ければ undefined */
+  /**
+   * 読み込んだ可変フォントの軸の札 (すべての書体の分)。可変フォントが無ければ undefined。
+   * 傾きを持つ書体 (斜体の書体) があれば ital、幅を持つ書体があれば wdth も入る (スタイルの解決が、その指定を書体の名前の印に付ける。lnode.ts)
+   */
   variationAxes(): ReadonlySet<string> | undefined {
     if (this.axesMemo?.[0] !== this.generation) {
       const tags = new Set<string>();
-      for (const f of this.fonts.values()) for (const a of f.variable?.info.axes ?? []) tags.add(a.tag);
+      for (const f of this.fonts.values()) {
+        for (const a of f.variable?.info.axes ?? []) tags.add(a.tag);
+        // 傾き・幅を持つ書体 (斜体の書体・幅の狭い書体): font-style・font-stretch の指定を、書体を引く名前の印で渡してもらう
+        if (f.style) tags.add('ital');
+        if (f.width !== undefined) tags.add('wdth');
+      }
       this.axesMemo = [this.generation, tags.size ? tags : undefined];
     }
     return this.axesMemo[1];
   }
   private axesMemo?: [number, ReadonlySet<string> | undefined];
+  /**
+   * variationAxes の ital・wdth のうち、可変フォントの軸ではなく、傾き・幅を持つ静的な書体 (斜体の書体・幅の狭い書体) のためだけに入っているもの。
+   * スタイルの解決が、その印を外した書体の名前 (ResolvedStyle.fontFamilySpec) も作る: 「同じ書体の指定か」を名前で比べる所 (行の高さの計算) が、
+   * 斜体の書体・幅の違う書体を読み込んだかどうかで結果を変えないようにする
+   */
+  staticShapeMarks(): { ital: boolean; wdth: boolean } | undefined {
+    let ital = false;
+    let wdth = false;
+    let varSlant = false;
+    let varWidth = false;
+    for (const f of this.fonts.values()) {
+      if (f.style) ital = true;
+      if (f.width !== undefined) wdth = true;
+      for (const a of f.variable?.info.axes ?? []) {
+        if (a.tag === 'ital' || a.tag === 'slnt') varSlant = true;
+        if (a.tag === 'wdth') varWidth = true;
+      }
+    }
+    ital = ital && !varSlant;
+    wdth = wdth && !varWidth;
+    return ital || wdth ? { ital, wdth } : undefined;
+  }
 
   /**
    * 可変フォント master の、太さ weight・軸の値の指定 req の形。CSS Fonts 4 §7.2 (Feature and variation precedence) の順に軸の値を決める:
@@ -516,7 +597,9 @@ export class FontManager {
     if (isDefault && effW === master.weight && !rebuild) lf = master;
     else {
       // 実体の名前: 元の名前 + 「太さだけから決まる値」と違う軸の値 (font-variation-settings の形の印)。この名前と太さで引き直すと、同じ実体になる
-      const plain = resolve(undefined);
+      // 傾き・幅の印を持つ元の書体 (斜体の可変フォントなど) は、その印だけの指定から決まる値と比べる (名前には、元の書体の印も残す)
+      const own = master.baseFamily !== undefined ? splitVariation(master.family)[1] : undefined;
+      const plain = resolve(own);
       const extra: Record<string, number> = {};
       axes.forEach((a, i) => {
         if (coords[i] !== plain[i]) extra[a.tag] = coords[i];
@@ -558,7 +641,7 @@ export class FontManager {
       const ps = isDefault ? (master.postscriptName ?? prefix) : prefix + axes.map((a, i) => (coords[i] !== a.default ? `_${num(coords[i])}${a.tag.replace(/[^A-Za-z0-9]/g, '')}` : '')).join('');
       lf = {
         key: `${master.key}{${axes.map((a, i) => `${a.tag}=${num(coords[i])}`).join(',')}}`,
-        family: master.family + variationSuffix({ settings: extra }),
+        family: groupOf(master) + variationSuffix({ ...own, settings: extra }),
         weight: effW,
         buffer,
         fk,
@@ -625,16 +708,87 @@ export class FontManager {
       // 順の列を持つ組 (defineStack の list) は、その基本の書体 (別の組の名前・範囲つきの書体の組の名前のこともある) をもう 1 段たどる
       const listed = family ? this.stacks.get(family) : undefined;
       const target = listed?.list ? listed.base : family;
-      const loaded = target ? [...(this.ranged.get(target) ?? [])].reverse().filter((f) => [...this.fonts.values()].some((x) => x.family === f.family) && (!f.same || this.sameApplies(f.same, weight))) : [];
+      const loaded = target ? [...(this.ranged.get(target) ?? [])].reverse().filter((f) => this.isLoaded(f.family) && (!f.same || this.sameApplies(f.same, weight))) : [];
       const rangedFirst = (loaded.find((f) => !f.ranges || f.ranges.some(([a, b]) => a <= 0x20 && 0x20 <= b)) ?? loaded[loaded.length - 1])?.family;
       const real = rangedFirst ?? (target ? (this.stacks.get(target)?.base ?? target) : target);
-      const fam = real && [...this.fonts.values()].some((f) => f.family === real) ? real : this.fallbackFamily;
+      const fam = real && this.isLoaded(real) ? real : this.fallbackFamily;
       if (!fam) throw new Error(msg('フォントが 1 つも登録されていません', 'no font is registered'));
-      const faces = [...this.fonts.values()].filter((f) => f.family === fam);
+      // 幅 → 傾き → 太さの順に絞る (Fonts 4 §5.2)。傾き・幅を持つ書体の無いファミリーは、太さだけ (今までと同じ)
+      const faces = this.matchShape(this.facesOf(fam));
       // 可変フォントのあるファミリーは、太さの範囲で選ぶ (Fonts 4 §5.2)。選んだ書体が可変フォントなら、その太さ・指定の実体
       if (faces.some((f) => f.variable)) return this.use(faces[matchWeightRange(faces.map(weightRangeOf), weight)], weight);
       return faces.find((f) => f.weight === weight) ?? faces[nearestWeightIndex(faces.map((f) => f.weight), weight)];
     });
+  }
+
+  /**
+   * ファミリー名 name の書体 (照合のときの名前 = 傾き・幅の印を外した名前が name の書体と、name が別名 (addFamilyAlias) の書体)。登録の順
+   */
+  private facesOf(name: string): LoadedFont[] {
+    const alias = this.aliases.get(name);
+    const out: LoadedFont[] = [];
+    for (const f of this.fonts.values()) if (groupOf(f) === name || alias?.has(f.key)) out.push(f);
+    return out;
+  }
+  /**
+   * ファミリーの別名 (別名 → その名前で指す書体の key)。幅の違う書体が 1 つのファミリーにまとまっているとき
+   * (Arial Narrow は、ファミリー名 (name 表の nameID 16) が Arial で、幅 (OS/2 の usWidthClass) が condensed の書体)、
+   * その書体だけを指す元の名前 (nameID 1 の "Arial Narrow") を別名として覚える。CSS Fonts 4 §5.2: ファミリー名は、入っている書体から探す
+   * ("this may include font aliases")。別名で引いたときは、その書体の中だけで傾き・太さを照合する
+   */
+  private aliases = new Map<string, Set<string>>();
+  addFamilyAlias(alias: string, font: LoadedFont) {
+    let set = this.aliases.get(alias);
+    if (!set) this.aliases.set(alias, (set = new Set()));
+    set.add(font.key);
+    this.forCharMemo.clear();
+    this.clusterMemo.clear();
+    this.getMemo.clear();
+    this.generation++;
+  }
+  /**
+   * 幅 → 傾きの順に、書体の並びを絞る (CSS Fonts 4 §5.2 の font-width・font-style の照合。その後の太さの照合は find)。
+   * 指定は、いま引いている名前の印 (varNow: wdth・ital・slnt)。傾き・幅を持つ書体が 1 つも無ければ、並びのまま返す。
+   *  - 幅: 求める幅を含む書体があれば、それら。無ければ、求める幅が 100% 以下なら狭い方 (近い順) → 広い方 (近い順)、100% を超えるなら逆
+   *  - 傾き: italic は 斜体 → 斜め → 立体。oblique (11deg 以上) は 斜め → 斜体 → 立体。normal と、11deg より小さい・負の oblique は
+   *    立体 → 斜め → 斜体 (§5.2: 11deg より小さい角度は、0 に向かって探すので、立体が先)。斜体と斜めの角度の細かい照合はしない
+   *    (静的な書体は、角度を持たない 1 つの斜体・斜めとして扱う。可変フォントの slnt・ital の軸は instance が決める)
+   */
+  private matchShape(faces: LoadedFont[]): LoadedFont[] {
+    if (!faces.some((f) => f.style || f.width !== undefined)) return faces;
+    const req = this.varNow;
+    const ranges = faces.map(widthRangeOf);
+    const w = matchWidth(ranges, req?.wdth ?? 100);
+    let set = faces.filter((_, i) => ranges[i][0] <= w && w <= ranges[i][1]);
+    const order: Array<FaceStyle | undefined> = req?.ital ? ['italic', 'oblique', undefined] : req?.slnt !== undefined && req.slnt >= 11 ? ['oblique', 'italic', undefined] : [undefined, 'oblique', 'italic'];
+    for (const s of order) {
+      const hit = set.filter((f) => f.style === s);
+      if (hit.length) {
+        set = hit;
+        break;
+      }
+    }
+    return set;
+  }
+  /**
+   * 字を持つ書体を、読み込み済みのすべての書体から探すとき (並びのどの書体も持たない字。§5.2 の installed font fallback) の順:
+   * 太さの近い順 (今までと同じ)。同じ近さの中では、ファミリーの登録の順で、同じファミリーの中は、いまの指定の傾き・幅に合う書体が先
+   * (立体の指定の字に、先に登録した斜体の書体・幅の狭い書体を使わない)。傾き・幅を持つ書体が無ければ、今までと同じ順
+   */
+  private fallbackOrder(weight: number): LoadedFont[] {
+    const all = [...this.fonts.values()];
+    const byWeight = (a: LoadedFont, b: LoadedFont) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight);
+    if (!all.some((f) => f.style || f.width !== undefined)) return all.sort(byWeight);
+    const groupIndex = new Map<string, number>();
+    all.forEach((f, i) => {
+      if (!groupIndex.has(groupOf(f))) groupIndex.set(groupOf(f), i);
+    });
+    const req = this.varNow;
+    const wantStyle: FaceStyle | undefined = req?.ital ? 'italic' : req?.slnt !== undefined && req.slnt >= 11 ? 'oblique' : undefined;
+    const wantWidth = req?.wdth ?? 100;
+    const styleCost = (f: LoadedFont) => (f.style === wantStyle ? 0 : f.style && wantStyle ? 1 : 2);
+    const widthCost = (f: LoadedFont) => Math.abs((f.width ?? 100) - wantWidth);
+    return all.sort((a, b) => byWeight(a, b) || groupIndex.get(groupOf(a))! - groupIndex.get(groupOf(b))! || styleCost(a) - styleCost(b) || widthCost(a) - widthCost(b));
   }
 
   /**
@@ -676,7 +830,9 @@ export class FontManager {
   private sameApplies(same: NonNullable<RangedFace['same']>, weight: number): boolean {
     if (!this.isLoaded(same.family)) return true;
     const hit = this.get(same.family, weight);
-    return (hit.instanceOf?.master ?? hit).weight === same.weight;
+    const face = hit.instanceOf?.master ?? hit;
+    // 傾き・幅の記述子も同じ face のときだけ (記述子の組が同じ face どうしを重ねる)
+    return face.weight === same.weight && face.style === same.style && face.width === same.width;
   }
   private pickRanged(name: string, weight: number, ch: string): LoadedFont | undefined {
     const faces = this.ranged.get(name);
@@ -685,7 +841,7 @@ export class FontManager {
     // 範囲が重なるときは、後に定義した face から調べる (Fonts 4 §4.5.1)
     for (const f of [...faces].reverse()) {
       if (f.ranges && !f.ranges.some(([a, b]) => cp >= a && cp <= b)) continue;
-      if (![...this.fonts.values()].some((x) => x.family === f.family)) continue;
+      if (!this.isLoaded(f.family)) continue;
       if (f.same && !this.sameApplies(f.same, weight)) continue;
       const lf = this.get(f.family, weight);
       if (this.hasGlyph(lf, ch)) return lf;
@@ -717,7 +873,7 @@ export class FontManager {
   /** その名前の書体 (読み込み済みのファミリ、または defineStack の別名) があるか */
   has(family0: string): boolean {
     const family = splitVariation(family0)[0];
-    return this.stacks.has(family) || [...this.fonts.values()].some((f) => f.family === family);
+    return this.stacks.has(family) || this.isLoaded(family);
   }
 
   /** 1 文字のためのフォント (欧文フォントの指定があり、その字形があればそちら) */
@@ -760,18 +916,18 @@ export class FontManager {
     }
     const base = this.get(family, weight);
     const stack = family ? this.stacks.get(family) : undefined;
-    const lf = stack ? stack.latin : this.latinFor.get(base.family);
+    const lf = stack ? stack.latin : this.latinFor.get(groupOf(base));
     // 欧文の書体が範囲つきの書体の組なら、字ごとに face を選ぶ
     if (lf && this.ranged.has(lf) && (this.latinChar(ch) || (stack?.first && !/[\s\u0000-\u001f]/.test(ch)))) {
       const r = this.pickRanged(lf, weight, ch);
       if (r) return r;
     }
     if (lf && (this.latinChar(ch) || (stack?.first && !/[\s\u0000-\u001f]/.test(ch)))) {
-      const f = [...this.fonts.values()].some((x) => x.family === lf) ? this.get(lf, weight) : undefined;
+      const f = this.isLoaded(lf) ? this.get(lf, weight) : undefined;
       if (f && this.hasGlyph(f, ch)) return f;
     }
     // 欧文の文書の記号: 欧文の書体が持たなければ、和文の書体より先に記号用の欧文の書体で
-    if (stack?.symbol && !isCjkChar(ch) && !/\s/.test(ch) && [...this.fonts.values()].some((x) => x.family === stack.symbol)) {
+    if (stack?.symbol && !isCjkChar(ch) && !/\s/.test(ch) && this.isLoaded(stack.symbol)) {
       const f = this.get(stack.symbol, weight);
       if (this.hasGlyph(f, ch)) return f;
     }
@@ -780,12 +936,13 @@ export class FontManager {
     // 空白を「字が無い」しるしにしない (CSS Fonts 4 §5.2 の書体の選び方に、空白の特別な扱いは無い。HTML の font-family の並び
     // (findInList) と同じ)。改行・タブなどの制御の字は、字形を探さない
     if ((!/[\s\u0000-\u001f]/.test(ch) || WIDE_SPACE.test(ch)) && !this.hasGlyph(base, ch)) {
-      const key = `${base.key}|${ch}`;
+      // 探す順は、いまの指定の傾き・幅にもよる (fallbackOrder) ので、指定の印 (varKey) ごとに覚える
+      const key = `${base.key}|${this.varKey}|${ch}`;
       let hit = this.charFallback.get(key);
       if (hit === undefined) {
         const cands = [
-          ...(lf && [...this.fonts.values()].some((x) => x.family === lf) ? [this.get(lf, weight)] : []),
-          ...[...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight)),
+          ...(lf && this.isLoaded(lf) ? [this.get(lf, weight)] : []),
+          ...this.fallbackOrder(weight),
         ];
         // 既定で絵文字の表示になる字 (UTS #51) は、色つきの書体を先に探す (色つきの書体が無ければ、順は変わらない)
         hit = orderByPresentation(cands, ch).find((f) => f !== base && f !== base.instanceOf?.master && this.hasGlyph(f, ch)) ?? null;
@@ -815,7 +972,8 @@ export class FontManager {
 
   /** そのファミリの書体が 1 つでも読み込まれているか */
   private isLoaded(family: string): boolean {
-    for (const f of this.fonts.values()) if (f.family === family) return true;
+    const alias = this.aliases.get(family);
+    for (const f of this.fonts.values()) if (groupOf(f) === family || alias?.has(f.key)) return true;
     return false;
   }
 
@@ -877,7 +1035,7 @@ export class FontManager {
       if (f) return f;
     }
     if (!/[\s\u0000-\u001f]/.test(ch)) {
-      const hit = orderByPresentation([...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight)), ch).find((f) => this.hasGlyph(f, ch));
+      const hit = orderByPresentation(this.fallbackOrder(weight), ch).find((f) => this.hasGlyph(f, ch));
       if (hit) return this.use(hit, weight);
     }
     return this.get(family, weight);
@@ -920,7 +1078,7 @@ export class FontManager {
         } finally {
           this.latinWordNow = was;
         }
-        const cands = [...listed, ...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...[...this.fonts.values()].sort((a, b) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight))];
+        const cands = [...listed, ...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...this.fallbackOrder(weight)];
         const other = (f: LoadedFont) => f !== base && f !== base.instanceOf?.master;
         const ordered = orderByPresentation(cands, unit);
         // 基底の字の書体が並びを持つのにここへ来るのは、表示の指定 (U+FE0F・U+FE0E) と書体の種類が合わないとき: 合う書体が無ければ、基底の字の書体のまま
@@ -1027,6 +1185,39 @@ function weightRangeOf(f: LoadedFont): [number, number] {
   const wg = v.info.axes.find((a) => a.tag === 'wght');
   return v.face.weight === 'auto' || !wg ? [f.weight, f.weight] : [wg.min, wg.max];
 }
+
+/**
+ * 書体が選ばれる幅の範囲 (百分率。Fonts 4 §4.4・§5.2): 静的な書体は、その幅 (標準は 100)。可変フォントは、font-width の記述子の範囲
+ * (記述子の無い、入っている書体は wdth の軸の範囲。'auto' は、選ぶときは書体の幅 = 標準)
+ */
+function widthRangeOf(f: LoadedFont): [number, number] {
+  const v = f.variable;
+  if (v) {
+    if (Array.isArray(v.face.width)) return v.face.width;
+    const wd = v.info.axes.find((a) => a.tag === 'wdth');
+    if (wd && v.face.width !== 'auto') return [wd.min, wd.max];
+  }
+  const w = f.width ?? 100;
+  return [w, w];
+}
+
+/**
+ * 幅の照合 (CSS Fonts 4 §5.2 の font-width)。書体の幅の範囲の並び (空でない) から、選ぶ幅の値を返す:
+ *  - 求める幅を含む範囲があれば、求める幅
+ *  - 無ければ: 求める幅が 100% 以下なら、狭い方を近い順 → 広い方を近い順。100% を超えるなら、広い方を近い順 → 狭い方を近い順
+ */
+export function matchWidth(ranges: ReadonlyArray<readonly [number, number]>, width: number): number {
+  if (ranges.some(([a, b]) => a <= width && width <= b)) return width;
+  // 範囲は求める幅を含まないので、丸ごと狭い方か広い方にある: 狭い方は上の端、広い方は下の端が最も近い値
+  const below = ranges.filter(([, b]) => b < width).map(([, b]) => b);
+  const above = ranges.filter(([a]) => a > width).map(([a]) => a);
+  const narrower = below.length ? Math.max(...below) : undefined;
+  const wider = above.length ? Math.min(...above) : undefined;
+  return (width <= 100 ? (narrower ?? wider) : (wider ?? narrower)) ?? width;
+}
+
+/** 斜めの書体 (oblique) を指す印に書く角度 (度)。静的な書体は角度で照合しないので、斜めの書体と分かる値 (CSS の oblique の既定の角度) であればよい */
+const OBLIQUE_FACE_ANGLE = 14;
 
 /**
  * 太さの照合 (CSS Fonts 4 §5.2 の font-weight)。太さの範囲 (可変フォント) を持つ face を含む並びから、選ぶものの添え字を返す。

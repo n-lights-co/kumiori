@@ -23,7 +23,7 @@ import { SANS, SERIF } from './sampleData';
 import { importHtml, parsePageSize } from './htmlImport';
 import { importXslFo, type ImportOptions, type XNode } from './xslfoImport';
 import { fetchReportedImages, mathOptionsFor, type MathOptions } from './documentResources';
-import { collectionFaces, splitFontFile, type UserFont } from './fontLoader';
+import { collectionFaces, faceShapeOf, normalizeFamily, splitFontFile, type FaceTables, type UserFont } from './fontLoader';
 import type { AreaTree, FontSpec, LDocument } from './types';
 import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
 import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
@@ -58,7 +58,10 @@ export interface TypesetOptions {
   name?: string;
   /** 入力と一緒に使うファイル。CSS は、文書から参照されていなければ利用者のスタイルシートとして足す。FO では、書体のファイルを FO の font-family の名前で使う */
   files?: KumioriFile[];
-  /** 足す書体のファイル (TTF・OTF・TTC・WOFF・WOFF2。システムに入れた書体のように、書体のファミリー名・太さで使う。斜体の書体は登録しない) */
+  /**
+   * 足す書体のファイル (TTF・OTF・TTC・WOFF・WOFF2。システムに入れた書体のように、書体のファミリー名・太さ・幅・傾きで使う)。
+   * 斜体の書体は font-style: italic の字に、幅の違う書体 (Arial Narrow など) は font-stretch の指定かその書体の名前で選ぶ (CSS Fonts 4 §5.2)
+   */
   fonts?: KumioriFile[];
   /** 総称の書体 (serif・sans-serif) の欧文に使う書体のファミリー名 (fonts で渡した書体) */
   genericFonts?: Partial<Record<'serif' | 'sans-serif', string>>;
@@ -396,7 +399,8 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
     await base.registerBuffer(spec.family, weight, buf, false);
   }
   setupDefaultFonts(base);
-  // 足す書体: name 表のファミリー名 (nameID 16、無ければ 1) と OS/2 の太さで登録する。斜体は登録しない (@font-face の書体と同じ。斜体の選び分けは無い)
+  // 足す書体: name 表のファミリー名 (nameID 16、無ければ 1) と OS/2 の太さ・幅 (usWidthClass)・傾き (fsSelection) で登録する。
+  // 同じファミリー名・太さでも、幅・傾きの違う書体は別の書体で、font-stretch・font-style の指定で選ばれる (CSS Fonts 4 §5.2: 幅 → 傾き → 太さの順)
   for (const f of (setup.fonts ?? []).map((f) => toFile(f))) {
     // TTC (書体の集まり) は、中の書体を一つずつ取り出して登録する。壊れた・短いファイルは警告にして、ほかの書体は登録する
     let faces: ArrayBuffer[];
@@ -407,24 +411,33 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
       continue;
     }
     for (const buf of faces) {
-      let fk: { familyName?: string; name?: { records?: { preferredFamily?: Record<string, string>; fontFamily?: Record<string, string> } }; 'OS/2'?: { usWeightClass?: number; fsSelection?: { italic?: boolean } } };
+      let fk: { familyName?: string; name?: { records?: { preferredFamily?: Record<string, string>; fontFamily?: Record<string, string> } } } & FaceTables;
       try {
         fk = fontkit.create(new Uint8Array(buf)) as unknown as typeof fk;
       } catch {
         baseWarnings.push(msg(`${f.name} の書体を読めません`, `cannot read the font file ${f.name}`));
         continue;
       }
-      if (fk['OS/2']?.fsSelection?.italic) continue;
+      const shape = faceShapeOf(fk);
       const family = fk.name?.records?.preferredFamily?.en ?? fk.familyName;
       if (!family) {
         baseWarnings.push(msg(`${f.name} の書体のファミリー名が読めません`, `cannot read the family name of the font file ${f.name}`));
         continue;
       }
       // 足した書体は、HTML の line-height: normal の行の高さを書体の値から決める (@font-face の書体と同じ。fontMapping.ts の htmlNormalLineHeight)
-      (await base.registerBuffer(family, fk['OS/2']?.usWeightClass ?? 400, buf, false)).metricsLineHeight = true;
+      const lf = await base.registerBuffer(family, fk['OS/2']?.usWeightClass ?? 400, buf, false, undefined, shape);
+      lf.metricsLineHeight = true;
       // name 表のファミリー名 (各言語の nameID 16・1。「ＭＳ ゴシック」と「MS Gothic」など) のどれでも引けるようにする
       const recs = fk.name?.records;
-      fontNames.add('installed', [family, fk.familyName, ...Object.values(recs?.preferredFamily ?? {}), ...Object.values(recs?.fontFamily ?? {})], family);
+      const legacy = fk.name?.records?.fontFamily?.en ?? fk.familyName;
+      if (shape.width !== undefined && legacy && normalizeFamily(legacy) !== normalizeFamily(family)) {
+        // 幅の違う書体が 1 つのファミリーにまとまっている書体 (Arial Narrow: nameID 16 は "Arial"、nameID 1 は "Arial Narrow"、幅は condensed):
+        // nameID 16 の名前はファミリー (font-stretch の指定で、幅の違う書体から選ぶ)。nameID 1 の名前は、その幅の書体だけを指す別名
+        // (CSS Fonts 4 §5.2: ファミリー名は、入っている書体から探す。別名を含めてよい)
+        base.addFamilyAlias(legacy, lf);
+        fontNames.add('installed', [family, ...Object.values(recs?.preferredFamily ?? {})], family);
+        fontNames.add('installed', [legacy, ...Object.values(recs?.fontFamily ?? {})], legacy);
+      } else fontNames.add('installed', [family, fk.familyName, ...Object.values(recs?.preferredFamily ?? {}), ...Object.values(recs?.fontFamily ?? {})], family);
     }
   }
   // 総称の書体 (既定の和文書体) の欧文を、指定の書体にする
@@ -515,8 +528,9 @@ async function typesetDocument(
     const cands: UserFont[] = [];
     for (const f of files.filter((x) => /\.(ttf|otf|ttc|otc|woff2?)$/i.test(x.name))) cands.push(...splitFontFile(await f.arrayBuffer()));
     for (const u of cands) {
-      if (userFonts.some((x) => x.family === u.family && x.weight === u.weight)) continue;
-      await fonts.registerBuffer(u.family, u.weight, u.buffer, false);
+      if (userFonts.some((x) => x.family === u.family && x.weight === u.weight && x.style === u.style)) continue;
+      // 斜体・斜めの書体は、同じファミリーの傾きの違う書体として登録する (font-style の指定で選ばれる。XSL 1.1 §7.9.7・CSS Fonts 4 §5.2)
+      await fonts.registerBuffer(u.family, u.weight, u.buffer, false, undefined, u.style ? { style: u.style } : undefined);
       userFonts.push(u);
       fontNames.add('document', u.names, u.family);
     }

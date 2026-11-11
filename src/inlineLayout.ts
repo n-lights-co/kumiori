@@ -1602,8 +1602,9 @@ export function glyphNode(
     scaleX: g.scaleX ?? 1,
     advance: g.advance,
   };
-  // 可変フォントの傾きの軸 (slnt・ital) で傾けた実体は、描くときに傾けない
-  if (st.italic && !g.font.instanceOf?.slanted) glyph.italic = true;
+  // 可変フォントの傾きの軸 (slnt・ital) で傾けた実体と、斜体・斜めの書体 (書体そのものが傾いている。CSS Fonts 4 §5.2 の font-style の照合で
+  // 選ばれたもの) は、描くときに傾けない。傾けるのは、立体の書体しか無いときだけ (§2.4: 斜体・斜めの書体の無いファミリーは、立体を傾けてよい)
+  if (st.italic && !g.font.instanceOf?.slanted && !(g.font.instanceOf?.master ?? g.font).style) glyph.italic = true;
   if (st.fontWeight >= 600 && g.font.weight < 600) glyph.fakeBold = true;
   if (st.fontFeatures?.length && wm === 'horizontal-tb') glyph.features = st.fontFeatures;
   // 縦書き: 書体の縦書き用の字形 (vert) で描く

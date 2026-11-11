@@ -18,6 +18,29 @@ export interface UserFont {
   buffer: ArrayBuffer;
   /** 書体の usWeightClass (OS/2)。以前の版 (weight を 400・700 の 2 段にしていた) との互換のために残す。今は weight と同じ */
   weightClass?: number;
+  /** 書体そのものの傾き (斜体・斜めの書体。立体は無い)。font-style の指定で選ぶ (CSS Fonts 4 §5.2・XSL 1.1 §7.9.7) */
+  style?: 'italic' | 'oblique';
+}
+
+/** fontkit で読んだ書体の、形を読むのに使う表 */
+export interface FaceTables {
+  'OS/2'?: { usWeightClass?: number; usWidthClass?: number; fsSelection?: { italic?: boolean; oblique?: boolean } };
+  head?: { macStyle?: { italic?: boolean } };
+  italicAngle?: number;
+}
+
+/**
+ * 書体そのものの傾きと幅 (fontkit で読んだ書体から。fontManager.ts の fontFileStyle と同じ決め方)。
+ *  - 傾き: OS/2 の fsSelection の OBLIQUE (ビット 9) があれば oblique、ITALIC (ビット 0) があれば italic。OS/2 の無い書体は、
+ *    head の macStyle の斜体の印か、post の italicAngle が 0 でないとき italic
+ *  - 幅: OS/2 の usWidthClass (1〜9) を、CSS Fonts 4 §2.3 の表の百分率に読み替える (標準の幅 5 = 100% は undefined)
+ */
+export function faceShapeOf(fk: FaceTables): { style?: 'italic' | 'oblique'; width?: number } {
+  const os2 = fk['OS/2'];
+  const style = os2 ? (os2.fsSelection?.oblique ? 'oblique' : os2.fsSelection?.italic ? 'italic' : undefined) : fk.head?.macStyle?.italic || (fk.italicAngle ?? 0) !== 0 ? 'italic' : undefined;
+  const wc = os2?.usWidthClass ?? 5;
+  const width = wc >= 1 && wc <= 9 && wc !== 5 ? [50, 62.5, 75, 87.5, 100, 112.5, 125, 150, 200][wc - 1] : undefined;
+  return { ...(style ? { style } : {}), ...(width !== undefined ? { width } : {}) };
 }
 
 const tagOf = (v: DataView, o: number) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
@@ -104,23 +127,22 @@ export function splitFontFile(buf: ArrayBuffer): UserFont[] {
       const fk = fontkit.create(new Uint8Array(single)) as unknown as {
         familyName?: string;
         name?: { records?: { fontFamily?: Record<string, string>; preferredFamily?: Record<string, string> } };
-        'OS/2'?: { usWeightClass?: number; fsSelection?: { italic?: boolean } };
         directory?: { tables?: Record<string, unknown> };
-      };
+      } & FaceTables;
       // 可変フォント (fvar を持つ) は、太さ・幅をまとめたファミリー名 (nameID 16。無ければ nameID 1) で登録する
       // (nameID 1 は、既定の形の名前 (「Anybody Thin」など) のことがある。太さ・幅は、軸の値で選ぶ)
       const variable = !!fk.directory?.tables?.fvar;
       const typographic = variable ? fk.name?.records?.preferredFamily : undefined;
       const fam = typographic?.en ?? fk.familyName;
       if (!fam) continue;
-      // 斜体の書体は、標準の書体の代わりにしない (Kumiori の斜体は字を傾けて描く)
-      if (fk['OS/2']?.fsSelection?.italic) continue;
+      // 斜体・斜めの書体は、同じファミリーの傾きの違う書体として取り出す (font-style の指定で選ぶ。立体の書体の代わりにはしない)
+      const { style } = faceShapeOf(fk);
       const names = new Set<string>([fam]);
       for (const v of Object.values(typographic ?? {})) if (typeof v === 'string' && v) names.add(v);
       for (const v of Object.values(fk.name?.records?.fontFamily ?? {})) if (typeof v === 'string' && v) names.add(v);
       // 太さは OS/2 の usWeightClass そのまま (公開 API の fonts・CLI の --font と同じ持ち方。Medium (500) は 500 で登録する)。無ければ 400
       const wc = fk['OS/2']?.usWeightClass;
-      out.push({ family: fam, names: [...names], weight: wc || 400, buffer: single, ...(wc ? { weightClass: wc } : {}) });
+      out.push({ family: fam, names: [...names], weight: wc || 400, buffer: single, ...(wc ? { weightClass: wc } : {}), ...(style ? { style } : {}) });
     } catch {
       /* 読めない書体は無視 */
     }

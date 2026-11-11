@@ -167,11 +167,13 @@ function hmtxAdvance(fk: LoadedFont['fk'], text: string): number {
 
 /**
  * 字形を水平に拡縮する比 (font-stretch)。幅の軸 (wdth) を持つ可変フォントは、軸の値で幅を変えるので、拡縮しない (CSS Fonts 4 §2.3:
- * 可変フォントでは wdth の軸で幅を変える。書体の範囲の外の幅は、最も近い値になる)
+ * 可変フォントでは wdth の軸で幅を変える。書体の範囲の外の幅は、最も近い値になる)。
+ * 幅を持つ書体 (幅の狭い・広い書体のファイル。LoadedFont.width) も、font-stretch の指定で選ばれた書体そのものの幅で組むので、拡縮しない
+ * (§2.3・§5.2: font-stretch は、ファミリーの中の幅の違う書体を選ぶ)
  */
 function stretchOf(font: LoadedFont, style: Pick<RunStyle, 'stretch'>): number {
   const master = font.instanceOf?.master ?? font;
-  return master.variable?.info.axes.some((a) => a.tag === 'wdth') ? 1 : (style.stretch ?? 1);
+  return master.width !== undefined || master.variable?.info.axes.some((a) => a.tag === 'wdth') ? 1 : (style.stretch ?? 1);
 }
 
 export class Measurer {
