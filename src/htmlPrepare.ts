@@ -11,6 +11,7 @@ import { parsePageRule } from './htmlImport';
 import { msg } from './messages';
 import { concatCss, matchMedia, matchSupports, mediaDependsOnPageSize, mediaPageOf, parseCss, type ParsedCss } from './htmlPaged';
 import { rebaseFontFaceUrls, resolveRef } from './resources';
+import { ALL_AH } from './cssCascade';
 
 /** 本の組版向けの既定のスタイル (作成者スタイルシート で上書きできる) */
 export const KUMIORI_BOOK_CSS = `
@@ -293,6 +294,9 @@ export async function prepareHtml(
   // メディアクエリの width・height・orientation は、@page の規則が無いときに選ばれる用紙 (利用者の既定の用紙) の page box で評価する
   // (CSS Paged Media 3 §7.1・Media Queries 4 §4.1)
   const mediaPage = mediaPageOf(defaultPage);
+  // @supports・@import の supports() に、アンテナハウスの拡張の値を対応していると答えるのは、アンテナハウス互換 (既定のスタイルが ah) のときだけ
+  // (その値をカスケードが受け付けるのは、互換の指定のときだけ。Conditional 3 §6.1。カスケードの設定は compat.ts の ahCascadeOptions)
+  const ah = defaults === 'ah' ? ALL_AH : undefined;
   // 印刷の媒体として読む: screen だけの CSS は使わず、@media print の規則は iframe (画面) でも効くようにする。
   // 媒体の種類は、@media の並び (カンマ区切り) のそれぞれで置き換える: print → all、screen (とその後の条件) → not all。
   // screen and (max-width: 600px) は条件ごと not all にする (not all and (…) だと、not が条件にも掛かり、印刷で真になりうる)
@@ -328,7 +332,7 @@ export async function prepareHtml(
           const name = cssKey(href, base);
           if (cssFiles.has(name)) linked.add(name);
           const sup = /supports\(((?:[^()]|\([^()]*\))*)\)/i.exec(cond);
-          if (sup && !matchSupports(sup[1])) return '';
+          if (sup && !matchSupports(sup[1], ah)) return '';
           const media = cond.replace(/layer(\([^)]*\))?/i, '').replace(/supports\((?:[^()]|\([^()]*\))*\)/i, '').trim();
           if (media && !matchMedia(media, mediaPage)) return '';
           const t = cssFiles.get(name);
@@ -392,7 +396,7 @@ export async function prepareHtml(
   const authorCss = cssTexts.join('\n');
   // CSS はここで 1 度だけ読む (既定のスタイルと作成者スタイルシート は、カスケードの出どころが違うので別々に読み、全体はその並び)
   const uaSheet = parseCss(base, mediaPage);
-  const authorSheet = parseCss(authorCss, mediaPage);
+  const authorSheet = parseCss(authorCss, mediaPage, ah);
   const sheet = concatCss(uaSheet, authorSheet);
   // 本文の幅 (px) で組ませる。高さはページの領域 (余白を除く) の高さ (CSS の印刷では、vh はページの領域の高さに対して決まる)
   const page = parsePageRule(sheet, defaultPage);

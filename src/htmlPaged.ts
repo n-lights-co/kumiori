@@ -13,6 +13,7 @@ import { hex2, parseColor as parseCssColor, rgbHex, skipString, splitTop, splitW
 import type { FontPaletteRule } from './colorGlyph';
 import { MAX_COUNTER_LENGTH, parseCounterStyleRule, type CounterStyleRule } from './counterStyle';
 import { FONT_WIDTH_KEYWORDS, parseVariationSettings } from './fontVariation';
+import type { AhFlags } from './cssCascade';
 
 /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。PANTONE などの値は Kumiori は持たず、使う人が渡す */
 export type SpotColors = Record<string, [number, number, number, number]>;
@@ -259,17 +260,21 @@ export function matchMedia(list: string, page: MediaPage = { width: 793.7, heigh
 
 /**
  * @supports の宣言 (prop: value) を読めるか。cssCascade が、知っている性質と値で判定する関数を入れる
- * (入れる前は、すべて読めるものとする)
+ * (入れる前は、すべて読めるものとする)。ah は、アンテナハウスの拡張の値の読み方 (互換の指定のときだけ渡す)
  */
-let supportsDecl: (prop: string, value: string) => boolean = () => true;
-export function setSupportsDecl(f: (prop: string, value: string) => boolean) {
+let supportsDecl: (prop: string, value: string, ah?: AhFlags) => boolean = () => true;
+export function setSupportsDecl(f: (prop: string, value: string, ah?: AhFlags) => boolean) {
   supportsDecl = f;
 }
 
-/** @supports の条件 (Conditional 3 §6)。not・and・or を評価する。宣言は、読める性質と値のときだけ真 */
-export function matchSupports(cond: string): boolean {
+/**
+ * @supports の条件 (Conditional 3 §6)。not・and・or を評価する。宣言は、読める性質と値のときだけ真。
+ * ah は、アンテナハウスの拡張の値の読み方 (互換の指定 (--style ah) のときだけ渡す。カスケード (cascadeStyles) に渡すものと同じ。
+ * 省けば、拡張の値は読まないものとして答える。§6.1: 対応していると答えるのは、宣言を受け付けるときだけ)
+ */
+export function matchSupports(cond: string, ah?: AhFlags): boolean {
   const c = cond.trim();
-  if (/^not\s/i.test(c)) return !matchSupports(c.slice(4));
+  if (/^not\s/i.test(c)) return !matchSupports(c.slice(4), ah);
   // 外側の括弧を外す
   if (c.startsWith('(') && c.endsWith(')')) {
     let depth = 0;
@@ -282,17 +287,17 @@ export function matchSupports(cond: string): boolean {
         break;
       }
     }
-    if (whole) return matchSupports(c.slice(1, -1));
+    if (whole) return matchSupports(c.slice(1, -1), ah);
   }
   const or = splitTopWord(c, 'or');
-  if (or.length > 1) return or.some(matchSupports);
+  if (or.length > 1) return or.some((x) => matchSupports(x, ah));
   const and = splitTopWord(c, 'and');
-  if (and.length > 1) return and.every(matchSupports);
+  if (and.length > 1) return and.every((x) => matchSupports(x, ah));
   // 宣言 (prop: value)
   const d = /^([-\w\u0080-\uffff]+)\s*:\s*([\s\S]*)$/.exec(c);
   if (d) {
     const prop = d[1].startsWith('--') ? d[1] : d[1].toLowerCase();
-    return prop.startsWith('--') || isPagedDecl(prop, d[2].trim()) || supportsDecl(prop, d[2].trim());
+    return prop.startsWith('--') || isPagedDecl(prop, d[2].trim()) || supportsDecl(prop, d[2].trim(), ah);
   }
   return true;
 }
@@ -351,9 +356,10 @@ export function layerRanks(names: Iterable<string>): Map<string, number> {
 
 /**
  * CSS の規則を読む。@media は印刷の媒体として条件を評価する (matchMedia。mediaPage は、@page の無いときに選ばれる用紙の大きさ (px)。
- * 無ければ A4)。@supports・@layer の中も読む
+ * 無ければ A4)。@supports・@layer の中も読む。ah は、@supports の条件に使う、アンテナハウスの拡張の値の読み方 (matchSupports。
+ * 互換の指定のときだけ渡す)
  */
-export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
+export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): ParsedCss {
   const pages: PageRule[] = [];
   const fontFaces: FontFaceRule[] = [];
   const fontPaletteValues: FontPaletteRule[] = [];
@@ -403,7 +409,7 @@ export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
         }
       }
       else if (/^@supports\b/i.test(head)) {
-        if (matchSupports(head.slice(9))) walk(body);
+        if (matchSupports(head.slice(9), ah)) walk(body);
       }
       // @layer の塊: 中の規則を、その層の規則として読む (名前の無い層は、それぞれ別の層)
       else if (/^@layer\b/i.test(head)) {
@@ -516,7 +522,7 @@ export function parseCss(css: string, mediaPage?: MediaPage): ParsedCss {
         continue;
       }
       if (/^@supports\b/i.test(head)) {
-        if (matchSupports(head.slice(9))) later.push(() => styleRule(selectors, inner));
+        if (matchSupports(head.slice(9), ah)) later.push(() => styleRule(selectors, inner));
         continue;
       }
       if (head.startsWith('@')) continue; // ほかの入れ子の @ 規則は読まない

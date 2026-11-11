@@ -6,6 +6,7 @@
  *  - ブロック: block, inline, character, wrapper, block-container, float, footnote, leader, marker, retrieve-marker, page-number
  *  - 表: table-and-caption / table (header/footer/body/row/cell, colspan/rowspan, 列幅の固定・比例)、list-block (2 列の表へ)
  *  - ルビ: XSL-FO に標準が無いので、AH Formatter 向けの文書の書き方「inline-container に小さい block + 親文字 block」を LRuby に変換
+ *    (アンテナハウス互換のときだけ。仕様モードでは、仕様どおりの inline-container として組む)
  *  - 画像 (external-graphic)・SVG・MathML (instream-foreign-object) は画像 (LImage) にする。MathML は、数式用の書体があれば
  *    mathLayout.ts で組み、無ければ行内の要素に組み替える (foMathFallback.ts)。読めない中身は、指定の寸法のプレースホルダにして報告する
  *
@@ -2950,7 +2951,10 @@ class Importer {
         .replace(/\s+/g, ' ')
         .trim()
         .replace(/ (?=[^\x21-\x7e])|(?<=[^\x21-\x7e]) /g, '');
-    if (blocks.length === 2) {
+    // ルビとして読む (アンテナハウス互換だけ): XSL-FO にルビの要素は無く、AH Formatter 向けの文書は「小さな字のブロック + 親文字のブロック」を
+    // inline-container に積んでルビを表す。これは推測の読み替えで、仕様どおりの組み方 (§6.6.8: 中のブロックを積んだ行内の参照領域。
+    // 基線は、中の最初の行の基線) ではないので、仕様モードでは当てずに、下の行内の箱として組む
+    if (!this.spec && blocks.length === 2) {
       const fsRel = (e: XEl) => {
         const v = this.attr(e, 'font-size');
         if (!v) return 1;
