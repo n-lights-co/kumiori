@@ -672,12 +672,25 @@ async function importFo(text: string, o: TypesetOptions, compat: FoCompat, mappi
 /**
  * linkedom の読み取りを、HTML の仕様の読み取り (ブラウザ) に合わせる:
  *  - 書かれていない <head>・<body> を補う。html の直下に並んだ要素と文字を、メタデータ (meta・title・link・style・script・base) は head へ、ほかは body へ順に移す
+ *  - </html> の後ろに書かれた要素と文字 (linkedom は、html 要素の後ろの、文書の直下の兄弟にする) を、body の終わりへ順に移す
+ *    (HTML Living Standard §13.2.6.4.17「after body」・§13.2.6.4.20「after after body」の挿入モード。2026-11-11 取得: コメントのほかは、
+ *    「in body」の挿入モードに戻して処理する = body の続きになる)。コメントは文書の直下に残す。空白だけの文字は、後ろに移す内容が
+ *    続くときだけ移す (移す内容の間の空白を残す。文書の終わりの空白は動かさない)
  *  - <pre>・<textarea>・<listing> の開始タグの直後の改行を捨てる
  */
 export function fixImplicitStructure(doc: Document) {
   const html = doc.documentElement;
   const head = doc.head ?? html.insertBefore(doc.createElement('head'), html.firstChild);
   const body = doc.body ?? html.appendChild(doc.createElement('body'));
+  {
+    const after: ChildNode[] = [];
+    for (let n = html.nextSibling; n; n = n.nextSibling) after.push(n);
+    const content = (n: ChildNode) => n.nodeType === 1 || (n.nodeType === 3 && /[^ \t\n\f\r]/.test(n.nodeValue ?? ''));
+    let last = after.length - 1;
+    while (last >= 0 && !content(after[last])) last--;
+    // html の直下の終わりへ移す (下の振り分けが、</body> と </html> の間の内容と同じに body へ入れる)
+    for (const n of after.slice(0, last + 1)) if (n.nodeType === 1 || n.nodeType === 3) html.appendChild(n);
+  }
   for (const n of Array.from(html.childNodes)) {
     if (n === head || n === body) continue;
     const meta = n.nodeType === 1 && /^(meta|title|link|style|script|base|noscript|template)$/i.test((n as Element).localName);

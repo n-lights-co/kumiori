@@ -289,6 +289,22 @@ describe('公開 API: typeset', () => {
       globalThis.fetch = orig;
     }
   });
+  it('</body></html> の後ろに書いた内容は、body の続きとして組む (HTML Standard の after body・after after body の挿入モード。NC-28 の (6))', async () => {
+    // 末尾の「1」は既定のノンブル
+    const tail = await typeset('<html><body><p>a</p></body></html><p>b</p><p>c</p>', { loadFont });
+    expect(textOf(tail.areaTree)).toBe('abc1');
+    // 字だけ・</body> と </html> の間・行内の要素の間の空白 (b と c の間に空きが残る)
+    const mixed = await typeset('<html><head><title>t</title></head><body><p>a</p></body>x</html>y<b>b</b> <i>c</i>', { loadFont });
+    expect(textOf(mixed.areaTree)).toBe('axyb c1');
+    // 後ろのコメント・空白だけなら、何も足さない。後ろの内容にも文書のスタイルが当たる
+    const plain = await typeset('<html><body><p>a</p></body></html>\n<!-- c -->\n', { loadFont });
+    expect(textOf(plain.areaTree)).toBe('a1');
+    const styled = await typeset('<html><head><style>p { color: #ff0000 }</style></head><body><p>a</p></body></html><!-- c --><p>b</p>\n', { loadFont });
+    expect(textOf(styled.areaTree)).toBe('ab1');
+    const colors: string[] = [];
+    walkAreaTree(styled.areaTree, (x) => void (x.type === 'glyph' && (x as GlyphArea).text === 'b' && colors.push((x as GlyphArea).color ?? '')));
+    expect(colors).toEqual(['#ff0000']);
+  });
   it('ASCII でない名前のカウンターとカスタム プロパティ (counter(章)・var(--色)) が、通しで効く', async () => {
     const r = await typeset('<style>body { counter-reset: 章; --色: #ff0000 } p { counter-increment: 章; color: var(--色) } p::before { content: counter(章) "." }</style><p>a</p><p>b</p>', { loadFont });
     // 末尾は既定のノンブル

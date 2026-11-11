@@ -956,8 +956,13 @@ export interface LInline extends BaseNode {
   boxDecorationBreak?: 'clone';
   /** 角丸 (CSS の border-radius)。枠の罫線と背景を丸め、中の画像も内側の角丸で切り抜く */
   borderRadius?: BorderRadius;
-  /** 外側の空き (pt)。行の進む方向の始端 (start) と終端 (end) に、枠の外の空白を置く (CSS の inline 要素の左右の margin) */
-  inlineMargin?: { start?: number; end?: number };
+  /**
+   * 外側の空き (pt)。行の進む方向の始端 (start) と終端 (end) に、枠の外の空白を置く (CSS の inline 要素の左右の margin)。
+   * bound: 空きを、箱の最初の字・最後の字と分けない (CSS の margin。行を分けるのは箱の margin の端の外。CSS 2.1 §9.4.2・CSS Text 3 §5.5)。
+   * 無ければ、空きと字の間でも行を分けられる (XSL-FO の space-start・space-end のこれまでの扱い)。
+   * dropStartAtWrap: 折り返した行の先頭に来た、始まりの側の空きを捨てる (アンテナハウス互換。HtmlImportOptions.inlineMarginStartAtWrapAh)
+   */
+  inlineMargin?: { start?: number; end?: number; bound?: boolean; dropStartAtWrap?: boolean };
   /** 行内の固定の長さ (pt。fo:inline の inline-progression-dimension)。内容がこれより短いときは、余りを空白 (背景色つき) で埋める */
   width?: number;
   /** リンク (fo:basic-link)。行ごとの領域が PDF のリンク注釈になる */
@@ -1530,6 +1535,13 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
    */
   inlineCb?: number;
   /**
+   * CSS の絶対配置の箱 (positionInContainer・inlineCb) の top・bottom・height のうち、百分率で指定したもの (0.5 = 50%)。
+   * 基準は、包含ブロックの padding の箱の高さ (CSS 2.1 §10.1 の 4・§10.5、CSS Position 3 §3.1)。高さが中身で決まる箱も基準になるので、
+   * 組版が、基準の箱を組み終えてから、top・bottom には足し (top・bottom に入っている長さは、百分率に足す分)、height には入れる。
+   * pad は、組版が求める基準の箱の高さ (内容の箱) に足して、padding の箱の高さにする量 (pt)
+   */
+  cbPercent?: { top?: number; bottom?: number; height?: number; pad: number };
+  /**
    * 幅の指定が無く、left と right の片方しか無いとき、幅を中身に合わせて縮める (CSS の絶対配置の shrink-to-fit。CSS 2.1 §10.3.7):
    * min(max(最小の内容の幅, 使える幅), 内容の幅)。指定が無ければ、使える幅いっぱい (XSL-FO の absolute-position)
    */
@@ -1653,6 +1665,11 @@ export interface LTableCell extends BaseNode, BoxStyle {
 export interface LTableRow extends BaseNode {
   type: 'table-row';
   cells: LTableCell[];
+  /**
+   * HTML のリストの項目の行 (1 つ目のセルが外側の記号、2 つ目のセルが本文)。外側の記号は本文の最初の行の箱に置く (CSS Lists 3 §3.5:
+   * ::marker は最初の行の行内の箱)。記号の行の、基線より下の部分が本文の最初の行より深ければ、最初の行より後ろの本文をその分だけ下げる
+   */
+  listMarkerRow?: boolean;
   /** 行をページの途中で分割しない (既定では、ページに入らない行はセルの中身を行単位で次ページへ分ける) */
   keepTogether?: boolean;
   /** 行の高さの最小値 (pt。fo:table-row の height / block-progression-dimension、CSS の tr の height) */

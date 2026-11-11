@@ -224,6 +224,13 @@ export interface HtmlImportOptions {
    */
   lineBreakAutoAh?: boolean;
   /**
+   * 行内の箱の始まりの側の margin (横書きの margin-left) が、折り返した行の先頭に来たとき、その空きを捨てる (アンテナハウス互換)。
+   * CSS では、分けていない箱の端の margin は行頭でも効く (CSS 2.1 §9.4.2。ブラウザも同じ)。アンテナハウスの出力では、行頭に来た
+   * margin-left の空きが出ない (『CSS ページ組版入門』第 4 版の 42 ページ: div.Properties span.Property { margin-left: 1em } の
+   * 「●値の継承」が、折り返した行の左端から始まる。XSL の space-start の条件付きの空き (XSL 1.1 §4.3.1) と同じ扱いに見える)
+   */
+  inlineMarginStartAtWrapAh?: boolean;
+  /**
    * ::before・::after の中身を、書式が親と同じでも inline の箱として渡す (アンテナハウス互換。LayoutOptions.kernAh で、
    * 要素の境目では字の組を詰めないため。::before の ‘ と続く字の間を詰めない)
    */
@@ -818,6 +825,8 @@ function flexCross(v: string, reverse: boolean): 'start' | 'end' | 'center' | 'b
 /** 名前付きページの切り替えの印 (flowChildren が body の直下に置き、run で分ける) */
 /** 流し込みの途中の項目 (block は、ブロックの箱として並ぶもの) */
 type FlowItem = { v: LBlockLevel | LInlineLevel; block: boolean };
+/** 絶対配置の箱の、百分率で指定した top・bottom・height (0.5 = 50%) */
+type AbsPercent = { top?: number; bottom?: number; height?: number };
 
 interface PageSwitch {
   type: 'page-switch';
@@ -2344,7 +2353,7 @@ class HtmlImporter {
   private pendingAbs: LBlockContainer[] = [];
 
   /** 絶対配置の箱の位置 (left・top・right・bottom) を、基準の祖先 cb の内容の箱からの距離にする (CSS の基準は padding の箱なので、padding を引く) */
-  private placeInCb(cont: LBlockContainer, cb: Element, off: { top?: number; right?: number; bottom?: number; left?: number }) {
+  private placeInCb(cont: LBlockContainer, cb: Element, off: { top?: number; right?: number; bottom?: number; left?: number }, pct?: AbsPercent) {
     const pc = this.cs(cb);
     // 表の行にして組んだリストの項目は、本文のセルの内容の箱が項目の箱 (項目の padding は組んでいない)
     const pad = (side: string) => (this.liRows.has(cb) ? 0 : (cssLen(pc(`padding-${side}`)) ?? 0));
@@ -2353,12 +2362,50 @@ class HtmlImporter {
     if (off.right !== undefined && (off.left === undefined || cont.width === undefined)) cont.right = off.right - pad('right');
     if (off.top !== undefined) cont.top = off.top - pad('top');
     if (off.bottom !== undefined && (off.top === undefined || cont.height === undefined)) cont.bottom = off.bottom - pad('bottom');
+    this.setCbPercent(cont, pct, pad('top') + pad('bottom'));
+  }
+
+  /**
+   * 絶対配置の箱の top・bottom・height の百分率 (0.5 = 50%)。基準は、包含ブロックの padding の箱の高さ (CSS 2.1 §10.1 の 4・§10.5:
+   * 絶対配置の箱の包含ブロックの高さは、その箱の大きさによらないので、高さが中身で決まるときも百分率は決まる。CSS Position 3 §3.1:
+   * inset の百分率は、包含ブロックの、同じ軸の大きさに対する割合)。カスケードは top・bottom の百分率を % のまま、height の百分率を
+   * -kumiori-height-percent で渡す。calc() の中の百分率は読まない
+   */
+  private absPercent(c: (p: string) => string, isAuto: (p: 'top' | 'bottom') => boolean): AbsPercent {
+    const num = (v: string) => {
+      const m = /^([-+]?[\d.]+)%$/.exec((v ?? '').trim());
+      return m && Number.isFinite(parseFloat(m[1])) ? parseFloat(m[1]) / 100 : undefined;
+    };
+    const out: AbsPercent = {};
+    for (const p of ['top', 'bottom'] as const) {
+      const v = isAuto(p) ? undefined : num(c(p));
+      if (v !== undefined) out[p] = v;
+    }
+    const h = num(c('-kumiori-height-percent'));
+    if (h !== undefined) out.height = h;
+    return out;
+  }
+
+  /**
+   * 百分率の top・bottom・height を、組版に渡す (LBlockContainer.cbPercent)。基準の箱の高さは組んでから決まるので、組版が決める。
+   * pad: 組版が求める基準の箱の高さ (内容の箱) に足して、padding の箱の高さにする量
+   */
+  private setCbPercent(cont: LBlockContainer, pct: AbsPercent | undefined, pad: number) {
+    if (!pct) return;
+    const out: NonNullable<LBlockContainer['cbPercent']> = { pad };
+    if (pct.top !== undefined && cont.top !== undefined) out.top = pct.top;
+    if (pct.bottom !== undefined && cont.bottom !== undefined) out.bottom = pct.bottom;
+    if (pct.height !== undefined) out.height = pct.height;
+    if (out.top !== undefined || out.bottom !== undefined || out.height !== undefined) cont.cbPercent = out;
   }
 
   /** position: absolute / fixed → 絶対配置の箱 (基準の祖先 (localCb) の箱、無ければ本文領域を基準にする) */
   private positioned(e: Element, parent: Element): LBlockContainer {
     const c = this.cs(e);
-    const off = (p: 'top' | 'right' | 'bottom' | 'left') => (this.src.isAuto?.(e, p) === false ? cssLen(c(p)) : undefined);
+    // 百分率の top・bottom・height (基準は包含ブロックの padding の箱の高さ。CSS 2.1 §10.5・CSS Position 3 §3.1): 位置の指定としては
+    // 「ある」(長さの分は 0) と数え、割合は、基準の箱が決まる所 (組版か、下の本文領域の枝) で足す
+    const pct = this.absPercent(c, (p) => this.src.isAuto?.(e, p) !== false);
+    const off = (p: 'top' | 'right' | 'bottom' | 'left') => (this.src.isAuto?.(e, p) === false ? (cssLen(c(p)) ?? ((p === 'top' || p === 'bottom') && pct[p] !== undefined ? 0 : undefined)) : undefined);
     const box = this.boxStyle(e);
     // 余白 (margin) は、位置の指定 (top・left など) に足す (CSS 2.1 §10.3.7・§10.6.4: 絶対配置の箱の margin は基準からの距離に加わる)。
     // top も bottom も無ければ、static position を margin-top だけ下げる
@@ -2379,6 +2426,8 @@ class HtmlImporter {
     };
     // z-index が負の箱は、本文の背面に置く
     if ((parseInt(c('z-index'), 10) || 0) < 0) cont.layer = 'behind';
+    // 百分率の height: 高さの指定は「ある」。値は、基準の箱の高さが決まってから入れる (親の高さから見積もった値は使わない)
+    if (pct.height !== undefined) cont.height = 0;
     const add = (v: number | undefined, m: number | undefined) => (v === undefined ? undefined : v + (m ?? 0));
     const [top, right, bottom, left] = [add(off('top'), mg.top), add(off('right'), mg.right), add(off('bottom'), mg.bottom), add(off('left'), mg.left)];
     if (top === undefined && bottom === undefined && mg.top) cont.staticOffset = mg.top;
@@ -2424,7 +2473,7 @@ class HtmlImporter {
     }
     const cb = c('position') === 'absolute' ? this.localCb(e.parentElement) : undefined;
     const icb = c('position') === 'absolute' && !cb ? this.inlineCbOf(e.parentElement) : undefined;
-    if (cb) this.placeInCb(cont, cb, { top, right, bottom, left: staticI ? staticI : left });
+    if (cb) this.placeInCb(cont, cb, { top, right, bottom, left: staticI ? staticI : left }, pct);
     else if (icb) {
       // 行内の箱が基準: 位置は、その箱の padding の箱を囲む矩形からの距離 (組版が、行を組んだ後で矩形を求める)
       let key = this.inlineCbKeys.get(icb);
@@ -2440,14 +2489,18 @@ class HtmlImporter {
       if (right !== undefined && (left === undefined || cont.width === undefined)) cont.right = right - pad('right');
       if (top !== undefined) cont.top = top - pad('top');
       if (bottom !== undefined && (top === undefined || cont.height === undefined)) cont.bottom = bottom - pad('bottom');
+      this.setCbPercent(cont, pct, pad('top') + pad('bottom'));
     } else {
+      // 基準の祖先が無い (初期包含ブロック) か position: fixed: 基準は本文領域 (ページの領域。CSS 2.1 §10.1 の 1・3)。
+      // 高さが分かっているので、百分率はここで長さにする
       const a = this.areaOf(this.curPage ?? '');
       if (left !== undefined) cont.left = a.left + left;
       else if (right !== undefined) cont.right = a.right + right;
       else cont.left = a.left + staticI;
-      if (top !== undefined) cont.top = a.top + top;
-      else if (bottom !== undefined) cont.bottom = a.bottom + bottom;
+      if (top !== undefined) cont.top = a.top + top + (pct.top ?? 0) * a.height;
+      else if (bottom !== undefined) cont.bottom = a.bottom + bottom + (pct.bottom ?? 0) * a.height;
       else cont.top = a.top;
+      if (pct.height !== undefined) cont.height = pct.height * a.height;
     }
     const wm = this.wm(c('writing-mode'));
     if (wm) cont.writingMode = wm;
@@ -4493,18 +4546,22 @@ class HtmlImporter {
     const h = len('height');
     if (w) cont.width = w;
     if (h) cont.height = h;
-    const [top, left, right, bottom] = [len('top'), len('left'), len('right'), len('bottom')];
+    // 百分率の top・bottom・height (positioned と同じ。基準は包含ブロックの padding の箱の高さ)
+    const pct = this.absPercent(c, () => false);
+    if (pct.height !== undefined) cont.height = 0;
+    const [top, left, right, bottom] = [len('top') ?? (pct.top !== undefined ? 0 : undefined), len('left'), len('right'), len('bottom') ?? (pct.bottom !== undefined ? 0 : undefined)];
     if (!w) cont.shrinkToFit = true;
     const pfx = this.paintEffectOf(el, which);
     if (pfx) cont.paintEffect = pfx;
     // 基準は、要素自身 (position が static でなければ) か、その祖先
     const cb = c('position') === 'absolute' ? this.localCb(el) : undefined;
-    if (cb) this.placeInCb(cont, cb, { top, right, bottom, left });
+    if (cb) this.placeInCb(cont, cb, { top, right, bottom, left }, pct);
     else {
       if (left !== undefined) cont.left = a.left + left;
       else if (right !== undefined) cont.right = a.right + right;
-      if (top !== undefined) cont.top = a.top + top;
-      else if (bottom !== undefined) cont.bottom = a.bottom + bottom;
+      if (top !== undefined) cont.top = a.top + top + (pct.top ?? 0) * a.height;
+      else if (bottom !== undefined) cont.bottom = a.bottom + bottom + (pct.bottom ?? 0) * a.height;
+      if (pct.height !== undefined) cont.height = pct.height * a.height;
     }
     const bg = cssColor(c('background-color'));
     if (bg) cont.backgroundColor = bg;
@@ -4981,7 +5038,7 @@ class HtmlImporter {
           const vert = /^(vertical|sideways)/.test(c('writing-mode'));
           const [ms, me, cross] = vert ? [mg.top, mg.bottom, mg.left || mg.right] : [mg.left, mg.right, mg.top || mg.bottom];
           const rtl = !vert && c('direction') === 'rtl';
-          if (ms || me) frame.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me };
+          if (ms || me) frame.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me, bound: true };
           if (cross) this.miss(vert ? 'margin-left・margin-right (罫線・内側の余白・背景色のある行内の画像)' : 'margin-top・margin-bottom (罫線・内側の余白・背景色のある行内の画像)');
         }
         return [frame];
@@ -5245,7 +5302,7 @@ class HtmlImporter {
     const [ms, me] = vert ? [cssLen(c('margin-top')) ?? 0, cssLen(c('margin-bottom')) ?? 0] : [cssLen(c('margin-left')) ?? 0, cssLen(c('margin-right')) ?? 0];
     if (ms || me) {
       const rtl = !vert && c('direction') === 'rtl';
-      inl.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me };
+      inl.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me, bound: true, ...(this.opts.inlineMarginStartAtWrapAh ? { dropStartAtWrap: true } : {}) };
     }
     // 不透明度 (opacity は行内の箱にも効く。変換は、置換要素でない行内の箱には効かない)
     if (box.paintEffect) inl.paintEffect = box.paintEffect;
@@ -5376,6 +5433,7 @@ class HtmlImporter {
         // 描くときだけの効果 (li の transform・opacity): 項目の行 (記号と本文) に掛ける
         ...(box.paintEffect ? { paintEffect: box.paintEffect } : {}),
         ...rowBreaks(li, k, body),
+        ...(marker ? { listMarkerRow: true } : {}),
         // 記号・番号は、本文の最初の行の基線にそろえる (CSS Lists: 外側の記号は最初の行の箱に置く)
         // 本文の最後の子の下の余白は、li の外へ抜けて次の項目との間に残る (CSS 2.1 §8.3.1)。セルの高さに含める
         cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', keepTrailingSpace: true }],

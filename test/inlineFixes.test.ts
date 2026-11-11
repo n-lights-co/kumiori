@@ -164,6 +164,99 @@ describe('HTM-28 I 行内の箱の負の margin は、行の幅の計算に入�
   });
 });
 
+describe('HTM-31 (2) 行内の箱の左右の margin は、箱の最初・最後の字と分けない (CSS 2.1 §9.4.2・CSS Text 3 §5.5: 行を分けるのは箱の margin の端の外)', () => {
+  // 幅 100pt の箱に、20pt の字 (1 行に 5 字)。行ごとの「字@行の左端からの位置」
+  const lines = async (body: string, css = '') => {
+    const f = await html(`<div class="w">${body}</div>`, `.w { width: 100pt; text-align: left } ${css}`);
+    return f.lines.slice(0, -1).map((l) => f.glyphs.filter((g) => Math.abs(g.y - l.y) < l.h && g.y >= l.y - 0.01 && g.y < l.y + l.h).map((g) => `${g.text}${Math.round(g.x - 20)}`).join(' '));
+  };
+
+  it('終わりの側の正の margin は、次の行の先頭に残らない: 最後の字ごと次の行へ送る', async () => {
+    // 一二三四五 + 30pt は入らないので、五 は margin といっしょに次の行 (前は「一二三四五／六七」で、六 が 30pt 右にずれた)
+    expect(await lines('一二三四<span style="margin-right: 30pt">五</span>六七')).toEqual(['一0 二20 三40 四60', '五0 六50 七70']);
+    expect(await lines('一二三四<span style="margin-right: 10pt">五</span>六七')).toEqual(['一0 二20 三40 四60', '五0 六30 七50']);
+    // 行に入る margin は、その行に置く
+    expect(await lines('一二三<span style="margin-right: 20pt">四</span>五六七')).toEqual(['一0 二20 三40 四60', '五0 六20 七40']);
+    // 箱が行をまたぐとき: 最後の断片の字と分けない
+    expect(await lines('一二<span style="margin-right: 30pt">三四五</span>六七')).toEqual(['一0 二20 三40 四60', '五0 六50 七70']);
+    expect(await lines('一<span style="margin-right: 30pt">二三四五六七八</span>九')).toEqual(['一0 二20 三40 四60 五80', '六0 七20 八40', '九0']);
+    // 段落の終わり: 字だけの行ができて、空の行は作らない (前は、空の行が 1 つ増えた)
+    expect(await lines('一二三四<span style="margin-right: 30pt">五</span>')).toEqual(['一0 二20 三40 四60', '五0']);
+    // 行頭に置けない字 (句点) を、margin の後ろの行頭に送らない
+    expect(await lines('一二三四<span style="margin-right: 30pt">五</span>。六')).toEqual(['一0 二20 三40 四60', '五0 。50 六70']);
+  });
+
+  it('始まりの側の正の margin は、前の行の終わりに残らず、行頭でも効く', async () => {
+    expect(await lines('一二三四五<span style="margin-left: 30pt">六</span>七')).toEqual(['一0 二20 三40 四60 五80', '六30 七50']);
+    // margin だけが前の行に入っても、字は入らない: margin ごと次の行へ (前は、margin が行末に残り、字は次の行の左端から)
+    expect(await lines('一二三四<span style="margin-left: 20pt">五</span>六七')).toEqual(['一0 二20 三40 四60', '五20 六40 七60']);
+    expect(await lines('一二三四<span style="margin: 0 20pt">五</span>六七')).toEqual(['一0 二20 三40 四60', '五20 六60 七80']);
+    expect(await lines('一二三<span style="margin: 0 20pt">四</span>五六七')).toEqual(['一0 二20 三40', '四20 五60 六80', '七0']);
+    // 開き括弧の後ろ (行末に置けない字) では分けない
+    expect(await lines('一二三四「<span style="margin-left: 30pt">五</span>六')).toEqual(['一0 二20 三40 四60', '「0 五50 六70']);
+  });
+
+  it('入れ子・並んだ箱・padding や border との組', async () => {
+    expect(await lines('一二三四<span style="margin-right: 15pt"><b style="margin-right: 15pt; font-weight: normal">五</b></span>六七')).toEqual(['一0 二20 三40 四60', '五0 六50 七70']);
+    expect(await lines('一二三四五<span style="margin-left: 15pt"><b style="margin-left: 15pt; font-weight: normal">六</b></span>七')).toEqual(['一0 二20 三40 四60 五80', '六30 七50']);
+    // 箱と箱の間 (前の箱の終わりの margin と、次の箱の始まりの margin の間) では分けられる
+    expect(await lines('一二三<span style="margin-right: 15pt">四</span><span style="margin-right: 15pt">五</span>六七')).toEqual(['一0 二20 三40 四60', '五0 六35 七55']);
+    expect(await lines('一二三四<span style="margin-right: 10pt; padding-right: 10pt; border-right: 10pt solid #ccc">五</span>六七')).toEqual(['一0 二20 三40 四60', '五0 六50 七70']);
+    expect(await lines('一二三<span style="padding-right: 10pt"><b style="margin-right: 20pt; font-weight: normal">四</b></span>五六七')).toEqual(['一0 二20 三40', '四0 五50 六70', '七0']);
+    // 欧文の語の途中の箱の境目では分けない (箱の境目は、改行の機会を作らない)
+    expect(await lines('abcd efg<span style="margin-right: 30pt">hi</span>jk lm')).toEqual(['a0 b9 c19 d28', 'e0 f9 g16 h26 i36 j71 k77', 'l0 m6']);
+  });
+
+  it('行をまたぐ箱の切れ目: slice (初期値) では margin を付けず、clone では断片ごとに margin・border・padding を付ける (CSS Fragmentation 3 §5.4)', async () => {
+    const box = 'margin: 0 10pt; padding: 0 5pt; background: #ccc';
+    expect(await lines(`一二<span style="${box}">三四五六七八</span>九`)).toEqual(['一0 二20 三55 四75', '五0 六20 七40 八60', '九0']);
+    // clone: 1 行目は 一二 + (10 + 5) + 三 + (5 + 10) = 90pt (四 は入らない)、2 行目からは (15) + 3 字 + (15) = 90pt
+    expect(await lines(`一二<span style="${box}; box-decoration-break: clone">三四五六七八</span>九`)).toEqual(['一0 二20 三55', '四15 五35 六55', '七15 八35 九70']);
+    // margin の無い clone は、これまでどおり
+    expect(await lines('一二<span style="padding: 0 10pt; box-decoration-break: clone">三四五六七八</span>九')).toEqual(['一0 二20 三50 四70', '五10 六30 七50 八70', '九0']);
+  });
+
+  it('縦書き・右から左の段落でも、終わりの側の margin は最後の字と分けない', async () => {
+    const v = await html('<div class="w">一二三四<span style="margin-bottom: 30pt">五</span>六七</div>', '.w { writing-mode: vertical-rl; height: 100pt }');
+    const at = (ch: string) => v.glyphs.find((g) => g.text === ch)!;
+    // 五 は次の行 (左の列) の先頭、六 は 五 + 30pt の下
+    expect(at('五').x).toBeLessThan(at('四').x - 1);
+    expect(at('五').y).toBeCloseTo(at('一').y, 1);
+    expect(at('六').y - at('五').y).toBeCloseTo(50, 1);
+    const r = await html('<div class="w" dir="rtl">אבגד הוזח <span style="margin-left: 60pt">טי</span> כל</div>', '.w { width: 100pt; font-size: 10pt }');
+    const rt = (ch: string) => r.glyphs.find((g) => g.text === ch)!;
+    // 終わりの側 (rtl では左) の margin 60pt は טי の左に付き、כל はその左に続く (2 行目)
+    expect(rt('ט').y).toBeGreaterThan(rt('א').y + 1);
+    expect(rt('כ').y).toBeCloseTo(rt('ט').y, 1);
+    expect(rt('ט').x - rt('כ').x).toBeGreaterThan(60);
+  });
+
+  it('アンテナハウス互換 (--style ah) だけ: 折り返した行の先頭に来た始まりの側の margin は捨てる (見本の動き。標準では行頭でも効く)', async () => {
+    const body = '<div class="w">一二三四五<span style="margin-left: 30pt">六</span>七</div><div class="w"><span style="margin-left: 30pt">壱</span>弐<br><span style="margin-left: 30pt">参</span></div>';
+    const css = '.w { width: 100pt; text-align: left; text-indent: 0; font-size: 20pt; line-height: 2 }';
+    const of = async (opts: Record<string, unknown>) => {
+      const f = await html(body, css, opts);
+      const x = (ch: string) => Math.round(f.glyphs.find((g) => g.text === ch)!.x - f.glyphs.find((g) => g.text === '一')!.x);
+      return { 六: x('六'), 七: x('七'), 壱: x('壱'), 参: x('参'), sameLine: Math.abs(f.glyphs.find((g) => g.text === '六')!.y - f.glyphs.find((g) => g.text === '五')!.y) < 1 };
+    };
+    // 標準: 折り返した行の先頭でも 30pt 空く
+    expect(await of({})).toEqual({ 六: 30, 七: 50, 壱: 30, 参: 30, sameLine: false });
+    // アンテナハウス互換: 折り返した行の先頭 (六) は左端から。段落の最初の行 (壱)・強制改行の後の行 (参) は空く
+    expect(await of({ style: 'ah' })).toEqual({ 六: 0, 七: 20, 壱: 30, 参: 30, sameLine: false });
+  });
+
+  it('これまでどおりのもの: 負の margin、中身の無い箱、XSL-FO の space-end', async () => {
+    expect(await lines('一二三四<span style="margin-right: -10pt">五</span>六七')).toEqual(['一0 二20 三40 四60 五80', '六0 七20']);
+    expect(await lines('一二三四五<span style="margin-right: 30pt"></span>六七')).toEqual(['一0 二20 三40 四60 五80', '六30 七50']);
+    // XSL-FO の space-end は、条件付きの空き (.conditionality の初期値は discard。XSL 1.1 §4.3.1・§7.12.5) で、CSS の margin と決まりが違う。
+    // この直しでは変えない (字と空きの間で行を分けられる、これまでの扱いのまま)
+    const fo = (attr: string) =>
+      `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja" font-size="20pt"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="140pt" page-height="200pt" margin="20pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block>一二三四<fo:inline ${attr}>五</fo:inline>六七</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const of = async (attr: string) => scan((await typesetFo(fo(attr), { loadFont: loadCachedFont })).areaTree).lines.map((l) => l.text);
+    expect(await of('space-end="30pt"')).toEqual(['一二三四五', '六七']);
+  });
+});
+
 describe('HTM-28 J ページの余白の箱の字の書式 (CSS Page 3 §6・付録 A)', () => {
   // 上の余白 60pt。html の字の大きさ 20pt (余白の箱が受け継ぐ)
   const mdoc = (pageCss: string, body = '<p>x</p>', css = '') =>
