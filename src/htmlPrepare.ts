@@ -139,7 +139,7 @@ export interface CssFile {
 }
 
 export interface PreparedHtml {
-  /** 用意の途中で出した警告 (深すぎる入れ子・多すぎる @import)。typeset の warnings と、画面のコンソールに出す */
+  /** 用意の途中で出した警告 (深すぎる入れ子・多すぎる @import)。typeset の warnings と、画面の警告の欄に出す */
   warnings: string[];
   /** <style> に置き換えた文書 (既定のスタイルも先頭の <style>) */
   doc: Document;

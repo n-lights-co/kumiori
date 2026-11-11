@@ -16,6 +16,7 @@
  *  - ブラウザ経由のとき、iframe の幅は本文の幅にする (百分率の幅などを、ページに合わせて確定させる。自前のカスケードでは viewport の幅)
  */
 import type { StyleSource } from './htmlImport';
+import type { ParsedCss } from './htmlPaged';
 import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
 import { ahCascadeOptions } from './compat';
 import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
@@ -27,6 +28,10 @@ export interface LoadedHtml {
   styles: StyleSource;
   /** 文書の CSS の文字列 (既定のスタイル + <style> + 差し込んだ CSS ファイル)。@page を読むのに使う */
   css: string;
+  /** 読んだ作成者スタイルシート (未対応・知らない CSS の宣言を数えるのに使う。cssUnsupported.ts) */
+  authorSheet: ParsedCss;
+  /** 用意の途中の警告 (深すぎる入れ子・多すぎる @import)。画面の警告の欄に出す */
+  warnings: string[];
   /** 使い終わったら iframe を消す */
   dispose(): void;
 }
@@ -53,8 +58,6 @@ export async function loadHtml(
   opts: { noFrame?: boolean } = {},
 ): Promise<LoadedHtml> {
   const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageHeightPx, warnings } = await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html'));
-  // 用意の途中の警告 (深すぎる入れ子など) は、画面ではコンソールに出す
-  for (const w of warnings) console.warn(w);
   // @font-face の書体のファイルは、一緒に選んだファイルの blob URL にする (iframe の中でも書体を読み、その字幅で flex・grid などを置かせる)
   const fontFiles = new Map(files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)).map((f) => [f.name.toLowerCase(), f]));
   const fontUrls = new Map<string, string>();
@@ -93,6 +96,8 @@ export async function loadHtml(
       doc: parsed,
       styles: cascadeStyles(parsed, authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: uaSheet, quirksMode: documentMode(parsed), viewport: { width: Math.max(bodyWidthPx, 100), height: pageHeightPx }, ...(defaults === 'ah' ? ahCascadeOptions(css) : {}) }),
       css,
+      authorSheet,
+      warnings,
       dispose: () => {
         for (const u of fontUrls.values()) URL.revokeObjectURL(u);
       },
@@ -147,6 +152,8 @@ export async function loadHtml(
     doc,
     styles,
     css,
+    authorSheet,
+    warnings,
     dispose: () => {
       frame.remove();
       for (const u of fontUrls.values()) URL.revokeObjectURL(u);

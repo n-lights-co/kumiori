@@ -359,6 +359,87 @@ test('画面: ファイルをドラッグ&ドロップして開き、左の一�
   expect(errors).toEqual([]);
 });
 
+test('画面: 読み込みの警告を左の欄に出す (落としたリンク・未対応と知らない CSS・深すぎる入れ子)。多ければ畳む', async ({ page }) => {
+  const errors = await open(page);
+  await expect(page.locator('#warnings')).toBeEmpty();
+  const drop = (html: string, name: string) =>
+    page.evaluate(
+      ([h, n]) => {
+        const dt = new DataTransfer();
+        dt.items.add(new File([h], n, { type: 'text/html' }));
+        window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt }));
+        window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, cancelable: true }));
+      },
+      [html, name],
+    );
+  // 警告が少ない (3 件まで) ときは、開いた形で出す。帯の状態の欄にも件数が出る
+  await drop('<!doctype html><p><a href="javascript:alert(1)">危ないリンク</a></p>', 'link.html');
+  await expect(page.locator('#status')).toContainText('link.html');
+  await expect(page.locator('#status')).toContainText('警告 1 件');
+  await expect(page.locator('#warnings summary')).toHaveText('⚠ 警告 1 件');
+  await expect(page.locator('#warnings details')).toHaveAttribute('open', '');
+  await expect(page.locator('#warnings li')).toHaveCount(1);
+  await expect(page.locator('#warnings li')).toBeVisible();
+  await expect(page.locator('#warnings li')).toContainText('javascript:');
+  // 多いときは畳む (見出しに件数。開けば読める)
+  const deep = '<div>'.repeat(300) + '<p>深い</p>' + '</div>'.repeat(300);
+  await drop(`<!doctype html><style>p { outline: 1px solid red; colr: red }</style><p><a href="javascript:alert(1)">危ないリンク</a></p>${deep}`, 'many.html');
+  await expect(page.locator('#status')).toContainText('many.html');
+  await expect(page.locator('#status')).toContainText('警告 4 件');
+  await expect(page.locator('#warnings summary')).toHaveText('⚠ 警告 4 件');
+  await expect(page.locator('#warnings details')).not.toHaveAttribute('open', '');
+  await expect(page.locator('#warnings li').first()).toBeHidden();
+  await page.click('#warnings summary');
+  await expect(page.locator('#warnings li')).toHaveCount(4);
+  await expect(page.locator('#warnings li').first()).toBeVisible();
+  const text = (await page.locator('#warnings').textContent()) ?? '';
+  expect(text).toContain('javascript:');
+  expect(text).toContain('未対応の CSS を無視しました: outline');
+  expect(text).toContain('知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr');
+  expect(text).toContain('入れ子が深すぎます');
+  // 警告の無い文書を開けば、欄は空に戻る
+  await drop('<!doctype html><p>警告の無い文書</p>', 'clean.html');
+  await expect(page.locator('#status')).toContainText('clean.html');
+  await expect(page.locator('#warnings')).toBeEmpty();
+  await expect(page.locator('#status')).not.toContainText('警告');
+  expect(errors).toEqual([]);
+});
+
+test('画面: 既定の用紙 (@page で size を指定していない HTML の用紙) を、設定の引き出しで選ぶ', async ({ page }) => {
+  const errors = await open(page);
+  const load = (html: string, name: string) => page.evaluate(([h, n]) => (window as unknown as { __kumioriLoadHtml: (t: string, n: string) => Promise<void> }).__kumioriLoadHtml(h, n), [html, name]);
+  const caption = page.locator('#sheets figcaption').first();
+  await load('<!doctype html><p>用紙を指定していない文書</p>', 'nosize.html');
+  await expect(caption).toContainText('仕上がり 210×297mm');
+  await openSettings(page);
+  // 選ぶと、すぐ組み直す
+  await page.selectOption('#pagesize', 'A5');
+  await expect(caption).toContainText('仕上がり 148×210mm');
+  await page.selectOption('#pagesize', 'JIS-B5');
+  await expect(caption).toContainText('仕上がり 182×257mm');
+  // 自由入力: CSS の size の書き方 (用紙の名前と向き、幅と高さ)
+  await expect(page.locator('#pagesizecustom')).toBeHidden();
+  await page.selectOption('#pagesize', 'custom');
+  await expect(page.locator('#pagesizecustom')).toBeVisible();
+  await page.fill('#pagesizecustom', 'A5 landscape');
+  await page.locator('#pagesizecustom').press('Enter');
+  await expect(caption).toContainText('仕上がり 210×148mm');
+  await page.fill('#pagesizecustom', '100mm,150mm');
+  await page.locator('#pagesizecustom').press('Enter');
+  await expect(caption).toContainText('仕上がり 100×150mm');
+  // 読めない値は、欄に印を付けて知らせ、組み直さない
+  await page.fill('#pagesizecustom', 'でたらめ');
+  await page.locator('#pagesizecustom').press('Enter');
+  await expect(page.locator('#pagesizecustom')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#status')).toContainText('読めません');
+  await expect(caption).toContainText('仕上がり 100×150mm');
+  // @page で size を指定した文書の用紙は変わらない
+  await page.selectOption('#pagesize', 'A5');
+  await load('<!doctype html><style>@page { size: A6 }</style><p>用紙を指定した文書</p>', 'sized.html');
+  await expect(caption).toContainText('仕上がり 105×148mm');
+  expect(errors).toEqual([]);
+});
+
 test('公開 API: typeset した結果を renderPage で canvas に描く (書体はブラウザに登録しない)', async ({ page }) => {
   const errors = await open(page);
   const info = await page.evaluate(async () => {

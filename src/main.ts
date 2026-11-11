@@ -13,7 +13,10 @@ import { decodeDocumentText } from './documentText';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { AH_HTML_IMPORT_OPTIONS, compatLayoutOptions, compatPdfOptions, isAntennaCompat, loadFoHyphenators, type DocKind, type FoCompat } from './compat';
 import { fetchReportedImages, mathOptionsFor } from './documentResources';
-import { importHtml } from './htmlImport';
+import { importHtml, parsePageSize } from './htmlImport';
+import { droppedLinkWarning, summarizeDroppedLinks } from './linkPolicy';
+import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
+import { msg } from './messages';
 import { loadHtml } from './htmlFrame';
 import { readEpub } from './epub';
 import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, setupDefaultFonts } from './fontMapping';
@@ -29,14 +32,14 @@ async function ensureSymbolFont(doc: LDocument) {
   // 等幅の指定があれば、等幅の書体を読み込む (1 度だけ。取れなければ和文の書体で組む)
   if (!monoTried && usesMono()) {
     monoTried = true;
-    for (const spec of MONO_SPECS) await fonts.load(spec, setStatus).catch((e) => console.warn(String(e)));
+    for (const spec of MONO_SPECS) await fonts.load(spec, setStatus).catch(noteError);
   }
   if (symbolsTried || !hasMissingGlyphs(fonts, doc)) return;
   symbolsTried = true;
   try {
     await fonts.load(SYMBOL_SPEC, setStatus);
   } catch (e) {
-    console.warn(String(e));
+    noteError(e);
   }
 }
 
@@ -54,6 +57,8 @@ const clearFontsBtn = $<HTMLButtonElement>('clearfonts');
 const foPrint = $<HTMLInputElement>('foprint');
 const foSpec = $<HTMLInputElement>('fospec');
 const htmlStyle = $<HTMLSelectElement>('htmlstyle');
+const pageSizeEl = $<HTMLSelectElement>('pagesize');
+const pageSizeCustom = $<HTMLInputElement>('pagesizecustom');
 const cssEngine = $<HTMLSelectElement>('cssengine');
 const saveJsonBtn = $<HTMLButtonElement>('savejson');
 const resetBtn = $<HTMLButtonElement>('resetsample');
@@ -72,6 +77,57 @@ const setStatus = (s: string) => {
 
 const fonts = new FontManager();
 const assets = new AssetStore();
+
+/**
+ * 画面に出している文書の、読み込みの途中の警告 (組版の警告 = tree.warnings の前に出す)。公開 API の typeset が warnings に入れるものと同じ:
+ * 用意の途中の警告 (深すぎる入れ子・多すぎる @import)、EPUB の飛ばした項目、未対応・知らない CSS、未対応の XSL-FO、動作を書かなかったリンク、
+ * 取らなかった画像、書体の知らせ (取得できなかった書体・可変フォントの軸など)。文書を読み始めるときに空にする
+ */
+let loadWarnings: string[] = [];
+/** PDF を書き出したときの警告 (動作を書かなかったリンク)。文書を組み直したら空にする */
+let pdfWarnings: string[] = [];
+const noteError = (e: unknown) => {
+  loadWarnings.push(String(e instanceof Error ? e.message : e));
+};
+// 書体の知らせ (既定はコンソール) を、画面の警告に出す
+fonts.onNotice = (m) => loadWarnings.push(m);
+
+/** 警告をこの数まで、開いた形で出す。多ければ畳んで、件数だけを見せる (開けば読める) */
+const WARNINGS_OPEN_MAX = 3;
+/** 一覧に並べる警告の種類の上限 (残りは件数だけ) */
+const WARNINGS_LIST_MAX = 100;
+/** 警告の件数の文 (帯の状態の欄と、警告の欄の見出しに使う) */
+const warningCountText = (n: number) => msg(`⚠ 警告 ${n} 件`, `⚠ ${n} warning${n === 1 ? '' : 's'}`);
+
+/**
+ * 警告を、左の欄 (#warnings) に出す。同じ文は 1 つにまとめて数を添える。WARNINGS_OPEN_MAX 件より多ければ畳む。
+ * 警告が無ければ欄を空にする (空の欄は見えない)。戻り値は警告の種類の数
+ */
+function showWarnings(list: string[]): number {
+  const counts = new Map<string, number>();
+  for (const w of list) counts.set(w, (counts.get(w) ?? 0) + 1);
+  warnEl.replaceChildren();
+  if (!counts.size) return 0;
+  const details = document.createElement('details');
+  details.open = counts.size <= WARNINGS_OPEN_MAX;
+  const summary = document.createElement('summary');
+  summary.textContent = warningCountText(counts.size);
+  const ul = document.createElement('ul');
+  const items = [...counts];
+  for (const [w, n] of items.slice(0, WARNINGS_LIST_MAX)) {
+    const li = document.createElement('li');
+    li.textContent = n > 1 ? `${w} (×${n})` : w;
+    ul.append(li);
+  }
+  if (items.length > WARNINGS_LIST_MAX) {
+    const li = document.createElement('li');
+    li.textContent = msg(`…ほか ${items.length - WARNINGS_LIST_MAX} 件`, `…and ${items.length - WARNINGS_LIST_MAX} more`);
+    ul.append(li);
+  }
+  details.append(summary, ul);
+  warnEl.append(details);
+  return counts.size;
+}
 let currentReport: ImportReport | null = null;
 let tree: AreaTree | null = null;
 let engine: LayoutEngine | null = null;
@@ -153,10 +209,11 @@ function showDocument(doc: LDocument, name: string, compat?: { kind: DocKind; ah
   const t0 = performance.now();
   tree = engine.layout(doc);
   const ms = performance.now() - t0;
-  const uniq = [...new Set(tree.warnings)];
-  warnEl.textContent = uniq.length ? `⚠ 警告 ${uniq.length} 件: ${uniq.join(' / ')}` : '';
+  pdfWarnings = [];
+  const warned = showWarnings([...loadWarnings, ...tree.warnings]);
   render();
-  setStatus(`${name}: ${tree.sheets.length} ページ / 組版 ${ms.toFixed(0)}ms`);
+  // 警告の件数は、帯の状態の欄にも出す (左の欄をたたんでいても、狭い画面でも気付けるように)
+  setStatus(`${name}: ${tree.sheets.length} ページ / 組版 ${ms.toFixed(0)}ms${warned ? ` / ${warningCountText(warned)}` : ''}`);
   downloadBtn.disabled = false;
   saveJsonBtn.disabled = false;
   (window as unknown as { __kumiori: unknown }).__kumiori = { tree, fonts, measurer: engine ? measurerRef : null, engine, renderPdf, doc, assets };
@@ -201,13 +258,37 @@ async function registerUserFont(f: UserFont): Promise<boolean> {
 
 /** 数式用の書体 (MATH_SPEC) を 1 度だけ読み込む (取れなければそのまま。数式は本文の書体で組む) */
 const loadMathFont = async () => {
-  if (!fonts.has(MATH_SPEC.family)) await fonts.load(MATH_SPEC, setStatus).catch((e) => console.warn(String(e)));
+  if (!fonts.has(MATH_SPEC.family)) await fonts.load(MATH_SPEC, setStatus).catch(noteError);
 };
 /** 文書が参照する http(s) の画像を取るか: 自分の計算機 (localhost) の URL は取らない */
 const allowRemoteImage = (url: string) => !/^https?:\/\/(127\.0\.0\.1|localhost)/.test(url);
 
 /** 文書のファイルを読む。文字の符号化は BOM・XML 宣言の encoding・<meta charset> で決める (File.text() の UTF-8 固定にしない) */
 const readDocument = async (f: File) => decodeDocumentText(new Uint8Array(await f.arrayBuffer()));
+
+/** 取らなかった画像 (自分の計算機の URL) を、警告に足す (typeset の「画像を取りません」と同じ文) */
+function noteNotFetched(srcs: string[]) {
+  for (const src of srcs) loadWarnings.push(msg(`画像を取りません: ${src.slice(0, 200)}`, `image not fetched: ${src.slice(0, 200)}`));
+}
+/** 読み込みの報告のうち、黙って無視しないもの (未対応の指定・動作を書かなかったリンク) を、警告に足す (typeset の warnings と同じ文) */
+function noteReport(report: ImportReport, isFo: boolean, unknownCss?: Record<string, number>) {
+  const miss = summarizeCounts(report.unsupported);
+  if (miss) loadWarnings.push(msg(`${isFo ? '未対応の XSL-FO の要素・プロパティを' : '未対応の CSS を'}無視しました: ${miss}`, `ignored unsupported ${isFo ? 'XSL-FO elements/properties' : 'CSS'}: ${miss}`));
+  const dropped = summarizeDroppedLinks(report.droppedLinks);
+  if (dropped) loadWarnings.push(droppedLinkWarning(dropped));
+  const unknown = summarizeCounts(unknownCss);
+  if (unknown) loadWarnings.push(msg(`知らない CSS のプロパティを無視しました (綴りの誤りか未対応): ${unknown}`, `ignored unknown CSS properties (misspelled or unsupported): ${unknown}`));
+}
+
+/**
+ * HTML の既定の用紙 (@page で size を指定していない文書の用紙。API の pageSize・コマンドの --page-size と同じ。既定 A4) と余白 20mm。
+ * 自由入力は CSS の size の書き方 (A5 landscape・148mm 210mm。語の区切りはカンマでもよい)。読めない値なら undefined
+ */
+function defaultPageOf(): { width: number; height: number; margin: number } | undefined {
+  const v = pageSizeEl.value === 'custom' ? pageSizeCustom.value.split(/[\s,]+/).filter(Boolean).join(' ') : pageSizeEl.value;
+  const size = parsePageSize(v);
+  return size ? { ...size, margin: 20 } : undefined;
+}
 
 let lastFo: { text: string; name: string } | null = null;
 /** 画面に出している文書の元 (読み込んだ XSL-FO・HTML。サンプルなら null)。設定を変えたら、これを組み直す */
@@ -216,6 +297,7 @@ let lastSource: 'fo' | 'html' | null = null;
 async function loadFo(text: string, name: string) {
   lastFo = { text, name };
   lastSource = 'fo';
+  loadWarnings = [];
   try {
     // 分綴 (hyphenate="true") を使う文書なら、文書に出てくる言語の分綴の規則を先に読み込む (組版は同期で行うため)
     await loadFoHyphenators(text);
@@ -233,7 +315,8 @@ async function loadFo(text: string, name: string) {
       readText: (src) => assets.getText(src),
     });
     // data URI / 絶対 URL の画像は、ここで読み込む (相対パスは、ユーザーが選んだファイルから解決する。API と同じ手順: documentResources)
-    await fetchReportedImages(assets, res.report.images, allowRemoteImage);
+    noteNotFetched(await fetchReportedImages(assets, res.report.images, allowRemoteImage));
+    noteReport(res.report, true);
     showReport(name, res.report);
     await ensureSymbolFont(res.document);
     showDocument(res.document, name, { kind: 'fo', ah: isAntennaCompat(compat) });
@@ -244,17 +327,20 @@ async function loadFo(text: string, name: string) {
   }
 }
 
-let lastHtml: { text: string; name: string; files: File[] } | null = null;
+let lastHtml: { text: string; name: string; files: File[]; warnings: string[] } | null = null;
 
-/** HTML を組む: 見えない iframe でスタイルを確定させ、論理ツリーに変換する */
-async function loadHtmlFile(text: string, name: string, files: File[]) {
-  lastHtml = { text, name, files };
+/** HTML を組む: 見えない iframe でスタイルを確定させ、論理ツリーに変換する。warnings は、HTML にする前の警告 (EPUB の飛ばした項目) */
+async function loadHtmlFile(text: string, name: string, files: File[], warnings: string[] = []) {
+  lastHtml = { text, name, files, warnings };
   lastSource = 'html';
+  loadWarnings = [...warnings];
   try {
     const v = htmlStyle.value;
+    // 既定の用紙 (読めない自由入力のときは A4。入力の欄で知らせてある)
+    const defaultPage = defaultPageOf() ?? { width: 210, height: 297, margin: 20 };
     // CSS の解釈: Kumiori (既定) なら、iframe を使わず、自前のカスケードの計算値で組む (ブラウザの計算値・配置 rect を使わない)。
     // ブラウザ (比較用) なら、見えない iframe に読み込んで、ブラウザの計算値と配置を使う
-    const loaded = await loadHtml(text, files, v === 'browser' || v === 'browser-margin' || v === 'ah' || v === 'vivliostyle' || v === 'weasyprint' ? v : 'kumiori', undefined, { noFrame: cssEngine.value === 'kumiori' });
+    const loaded = await loadHtml(text, files, v === 'browser' || v === 'browser-margin' || v === 'ah' || v === 'vivliostyle' || v === 'weasyprint' ? v : 'kumiori', defaultPage, { noFrame: cssEngine.value === 'kumiori' });
     try {
       // 検証用: 読み込んだ文書 (iframe を消す前) を渡す (scripts/compare-css.mjs がブラウザの計算値と自前のカスケードを比べる)
       await (window as unknown as { __kumioriOnHtmlLoaded?: (l: typeof loaded) => unknown }).__kumioriOnHtmlLoaded?.(loaded);
@@ -274,12 +360,20 @@ async function loadHtmlFile(text: string, name: string, files: File[]) {
         // アンテナハウス互換の読み込みの設定 (compat.ts。API と同じ)
         ...(v === 'ah' ? AH_HTML_IMPORT_OPTIONS : {}),
         css: loaded.css,
+        defaultPage,
         bleedMm: foPrint.checked ? 3 : 0,
         trimMarks: foPrint.checked,
       });
       // ネットワーク上の画像 (絶対 URL)・data URI の画像は、ここで読み込む (相対パスは、一緒に選んだファイルから。API と同じ手順: documentResources)
-      await fetchReportedImages(assets, res.report.images, allowRemoteImage);
-      showReport(name, res.report);
+      noteNotFetched(await fetchReportedImages(assets, res.report.images, allowRemoteImage));
+      // 用意の途中の警告 (深すぎる入れ子・多すぎる @import) と、作成者スタイルシート・style 属性の、読まない宣言 (未対応・知らないプロパティ。API と同じ数え方)
+      loadWarnings.push(...loaded.warnings);
+      const cssRep = unsupportedCssReport(loaded.authorSheet, loaded.doc);
+      const unsupported = { ...res.report.unsupported };
+      for (const [k, n] of Object.entries(cssRep.unsupported)) unsupported[k] = (unsupported[k] ?? 0) + n;
+      const report = { ...res.report, unsupported };
+      noteReport(report, false, cssRep.unknown);
+      showReport(name, report);
       await ensureSymbolFont(res.document);
       showDocument(res.document, name, { kind: 'html', ah: v === 'ah' });
       resetBtn.hidden = false;
@@ -333,7 +427,8 @@ async function openFiles(files: File[]) {
     try {
       const book = await readEpub(new Uint8Array(await epub.arrayBuffer()), (t, type) => new DOMParser().parseFromString(t, type));
       for (const im of book.images) await assets.addBlob(im.name, new Blob([im.data as BlobPart]));
-      await loadHtmlFile(book.html, epub.name, []);
+      // 上限を超えて飛ばした章・CSS・画像 (EpubBook.warnings) も、警告に出す
+      await loadHtmlFile(book.html, epub.name, [], book.warnings ?? []);
     } catch (e) {
       console.error(e);
       setStatus(`エラー: ${String(e)}`);
@@ -472,7 +567,7 @@ clearFontsBtn.addEventListener('click', async () => {
 /** 設定を変えたら、画面に出している文書 (読み込んだ XSL-FO・HTML) をすぐ組み直す */
 function reloadCurrent() {
   if (lastSource === 'fo' && lastFo) void loadFo(lastFo.text, lastFo.name);
-  else if (lastSource === 'html' && lastHtml) void loadHtmlFile(lastHtml.text, lastHtml.name, lastHtml.files);
+  else if (lastSource === 'html' && lastHtml) void loadHtmlFile(lastHtml.text, lastHtml.name, lastHtml.files, lastHtml.warnings);
 }
 // XSL-FO の既定値の流儀は XSL-FO に、トンボと塗り足しは XSL-FO と HTML の両方に効く
 foSpec.addEventListener('change', () => {
@@ -481,6 +576,7 @@ foSpec.addEventListener('change', () => {
 foPrint.addEventListener('change', reloadCurrent);
 resetBtn.addEventListener('click', () => {
   lastSource = null;
+  loadWarnings = [];
   showReport('', null);
   showDocument(buildSampleDocument(), 'Kumiori サンプル', null);
   resetBtn.hidden = true;
@@ -501,6 +597,20 @@ for (const sel of [htmlStyle, cssEngine])
   sel.addEventListener('change', () => {
     if (lastSource === 'html') reloadCurrent();
   });
+// 既定の用紙を切り替えたら、読み込んだ HTML をすぐ組み直す。自由入力は、読める値になったときだけ組み直す
+const pageSizeChanged = () => {
+  const custom = pageSizeEl.value === 'custom';
+  pageSizeCustom.hidden = !custom;
+  const ok = !!defaultPageOf();
+  pageSizeCustom.setAttribute('aria-invalid', String(custom && !ok));
+  if (!ok) {
+    if (pageSizeCustom.value.trim()) setStatus(msg(`既定の用紙 "${pageSizeCustom.value}" は読めません (A5 landscape・148mm 210mm のように、用紙の名前か幅と高さ)`, `cannot read the default page size "${pageSizeCustom.value}" (a paper name or a width and a height, like "A5 landscape" or "148mm 210mm")`));
+    return;
+  }
+  if (lastSource === 'html') reloadCurrent();
+};
+pageSizeEl.addEventListener('change', pageSizeChanged);
+pageSizeCustom.addEventListener('change', pageSizeChanged);
 // ブラウザ検証用: window.__kumioriLoadHtml(text, name)
 (window as unknown as { __kumioriLoadHtml: (t: string, n: string) => Promise<void> }).__kumioriLoadHtml = (t, n) => loadHtmlFile(t, n, []);
 // ブラウザ検証用: window.__kumioriLoadFo(text, name)
@@ -511,7 +621,11 @@ downloadBtn.addEventListener('click', async () => {
   downloadBtn.disabled = true;
   setStatus('PDF 生成中（フォント埋め込み）…');
   try {
-    const bytes = await renderPdf(tree, fonts, { assets, ...(currentCompat ? compatPdfOptions(currentCompat.kind, currentCompat.ah) : {}) });
+    // PDF に動作を書かなかったリンク (安全のため落としたもの) は、警告に足す
+    const linkWarnings: string[] = [];
+    const bytes = await renderPdf(tree, fonts, { assets, ...(currentCompat ? compatPdfOptions(currentCompat.kind, currentCompat.ah) : {}), linkWarnings });
+    pdfWarnings = linkWarnings;
+    showWarnings([...loadWarnings, ...tree.warnings, ...pdfWarnings]);
     const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/pdf' }));
     const a = document.createElement('a');
     a.href = url;
