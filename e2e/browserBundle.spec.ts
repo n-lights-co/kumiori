@@ -7,6 +7,7 @@ import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { routeFontCache } from './fontCache';
 
 const dist = fileURLToPath(new URL('../dist-browser/', import.meta.url));
@@ -26,7 +27,11 @@ async function routeFonts(page: Page) {
   });
 }
 
-test('dist-browser/kumiori.js を import して HTML を組み、PDF を作れる', async ({ page }) => {
+/**
+ * バンドルを読める状態にする: バンドルとその別ファイル (chunks/) を、開発サーバーを通さずにファイルの中身そのままで返し (CDN と同じ条件)、
+ * 書体の取り方を決めて、ページを開く。返すのは、ページで起きた誤りの一覧
+ */
+async function openWithBundle(page: Page): Promise<string[]> {
   const built = fs.existsSync(path.join(dist, 'kumiori.js'));
   // CI では、バンドルが無ければ失敗にする (PKG-12: 黙って飛ばすと、ビルドの手順が抜けたときに、バンドルを 1 度も試さないまま通る)。
   // 手元では飛ばすが、理由を出す (一覧の表示は、飛ばした理由を出さないので)
@@ -36,7 +41,6 @@ test('dist-browser/kumiori.js を import して HTML を組み、PDF を作れ�
   test.skip(!built, reason);
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  // バンドルとその別ファイル (chunks/) を、開発サーバーを通さずにファイルの中身そのままで返す (CDN と同じ条件)
   await page.route('**/dist-browser/**', (route) => {
     const rel = decodeURIComponent(new URL(route.request().url()).pathname.replace(/^.*\/dist-browser\//, ''));
     const file = path.join(dist, rel);
@@ -45,6 +49,11 @@ test('dist-browser/kumiori.js を import して HTML を組み、PDF を作れ�
   });
   await routeFonts(page);
   await page.goto('/');
+  return errors;
+}
+
+test('dist-browser/kumiori.js を import して HTML を組み、PDF を作れる', async ({ page }) => {
+  const errors = await openWithBundle(page);
   const r = await page.evaluate(async () => {
     const url = '/dist-browser/kumiori.js';
     const mod = (await import(/* @vite-ignore */ url)) as typeof import('../src/index');
@@ -59,5 +68,43 @@ test('dist-browser/kumiori.js を import して HTML を組み、PDF を作れ�
   expect(r.pdfLength).toBeGreaterThan(1000);
   // 既定の書体の数 (Noto Serif JP の Regular・Bold、Noto Sans JP の Regular・Bold、Tinos・Arimo の Regular・Bold)
   expect(r.defaults).toBe(8);
+  expect(errors).toEqual([]);
+});
+
+test("dist-browser/kumiori.js でも、links の relative: 'uri' で相対のリンクを URI の動作に書く (既定は GoToR)", async ({ page }) => {
+  const errors = await openWithBundle(page);
+  const enc = 'Bluetooth%E3%82%B9%E3%83%94%E3%83%BC%E3%82%AB%E3%83%BC%20%E5%8F%96%E6%89%B1%E8%AA%AC%E6%98%8E%E6%9B%B8.pdf';
+  const hrefs = ['001-sibutomo.mp3', enc, './a.pdf', 'https://example.com/a.pdf', '#sec'];
+  const r = await page.evaluate(async (hrefs) => {
+    const url = '/dist-browser/kumiori.js';
+    const mod = (await import(/* @vite-ignore */ url)) as typeof import('../src/index');
+    const html = `<!DOCTYPE html><html><body>${hrefs.map((h) => `<p><a href="${h}">link</a></p>`).join('')}<h2 id="sec">sec</h2></body></html>`;
+    const out: Record<string, { pdf: number[]; warnings: string[] }> = {};
+    for (const [key, links] of [['uri', { relative: 'uri' }], ['default', undefined]] as const) {
+      const res = await mod.typesetHtml(html, { name: 't.html', style: 'browser', ...(links ? { links } : {}) });
+      out[key] = { pdf: Array.from(await res.toPdf()), warnings: res.warnings };
+    }
+    return out;
+  }, hrefs);
+  /** リンクの注釈を、文書の順に、動作の文字か "Dest" にする (ブラウザで作った PDF を、こちらで読む) */
+  const linksOf = async (bytes: number[]) => {
+    const pdf = await PDFDocument.load(Uint8Array.from(bytes));
+    const out: string[] = [];
+    for (const p of pdf.getPages())
+      for (const ref of p.node.Annots()?.asArray() ?? []) {
+        const annot = pdf.context.lookup(ref, PDFDict);
+        const a = annot.lookup(PDFName.of('A'));
+        out.push(a ? String(a).replace(/\s+/g, ' ') : annot.get(PDFName.of('Dest')) ? 'Dest' : '?');
+      }
+    return out;
+  };
+  expect(await linksOf(r.uri.pdf)).toEqual(['<< /S /URI /URI (001-sibutomo.mp3) >>', `<< /S /URI /URI (${enc}) >>`, '<< /S /URI /URI (./a.pdf) >>', '<< /S /URI /URI (https://example.com/a.pdf) >>', 'Dest']);
+  expect(r.uri.warnings.filter((w) => w.includes('リンクの動作') || w.includes('link actions'))).toEqual([]);
+  // 既定: 相対の PDF は GoToR (ASCII でない名前は、ファイル指定の辞書)、PDF でない相対のファイル (Launch) は書かずに警告する
+  const def = await linksOf(r.default.pdf);
+  expect(def).toHaveLength(4);
+  expect(def[0]).toMatch(/^<< \/S \/GoToR \/F << \/Type \/Filespec \/F <[0-9a-f]+> \/UF <FEFF[0-9A-F]+> >> \/D \[ 0 \/Fit \] >>$/);
+  expect(def.slice(1)).toEqual(['<< /S /GoToR /F (./a.pdf) /D [ 0 /Fit ] >>', '<< /S /URI /URI (https://example.com/a.pdf) >>', 'Dest']);
+  expect(r.default.warnings.some((w) => w.includes('Launch ×1'))).toBe(true);
   expect(errors).toEqual([]);
 });
