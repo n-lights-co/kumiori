@@ -615,8 +615,11 @@ describe('公開 API: typeset', () => {
     };
     const plain = await baseline();
     const ah = await baseline('ah');
-    // 既定: 最初に使える書体 (lat、比 0.75)。互換: 和文の字の書体 (Noto Sans JP、比 0.88) で、基準線が 1.3pt 下がる
-    expect(ah - plain).toBeCloseTo((0.88 - 0.75) * 10, 1);
+    // 既定: 行の基線は、最初に使える書体 (lat = Arimo) の上の高さ A・下の深さ D (hhea の 1854・−434 / 2048) から、行内の箱の上端 +
+    // (line-height + (A − D) × 字の大きさ) / 2 (CSS Inline 3 §5.3)。字の大きさの箱の上端からは (0.5 + (A − D) / 2) em = 0.847em。
+    // 互換: 和文の字の書体 (Noto Sans JP) の字の枠の位置 (OS/2 の typo の上下が 1em を成す書体の比 0.88) で、基準線が (0.88 − 0.847) × 10 = 0.33pt 下がる
+    // (既定の基線も em の箱の比で置いていたときは、lat の typo の値 0.75 から (0.88 − 0.75) × 10 = 1.3pt)
+    expect(ah - plain).toBeCloseTo((0.88 - (0.5 + (1854 - 434) / 2048 / 2)) * 10, 2);
   });
 
   it('ルビの親文字が代わりの書体の字でも、行の高さは最初に使える書体の上下で決める (字と同じ。CSS Inline 3 §5.3)', async () => {
@@ -862,11 +865,13 @@ describe('公開 API: typeset', () => {
     const top = async (style: 'browser' | 'ah') => {
       const css = '@page { size: A6; margin: 10mm } body { margin: 0; font-size: 10pt; line-height: 12pt } div { columns: 2; column-fill: auto; height: 100pt } p { margin: 10pt 0 0 }';
       const r = await typesetHtml('<div><p>A</p></div>', { style, files: [{ name: 'c.css', data: css }], loadFont });
+      // 字「A」のある行の上端 (行の中の基線の位置は、既定とアンテナハウス互換で決め方が違うので、行の箱の位置で比べる)
       let y: number | undefined;
-      const go = (a: { type: string; y?: number; text?: string; baselineY?: number; children?: unknown[] }, oy: number) => {
+      const go = (a: { type: string; y?: number; text?: string; children?: unknown[] }, oy: number, line?: number) => {
         const ny = oy + (a.y ?? 0);
-        if (a.type === 'glyph' && a.text === 'A' && y === undefined) y = ny + (a.baselineY ?? 0);
-        for (const c of (a.children ?? []) as (typeof a)[]) go(c, ny);
+        const ln = a.type === 'line' ? ny : line;
+        if (a.type === 'glyph' && a.text === 'A' && y === undefined) y = ln;
+        for (const c of (a.children ?? []) as (typeof a)[]) go(c, ny, ln);
       };
       go(r.areaTree.sheets[0].page.regionBody as never, 0);
       return y!;

@@ -15,6 +15,7 @@ import { isFullWidth, verticalTreatment, type VerticalTreatment } from './jis';
 import { clusterUnits, mayCluster } from './grapheme';
 import { NOT_WORD_INITIAL } from './fontkitShaping';
 import { ligatureTable } from './ligature';
+import { kernablePair } from './orthographicSyllable';
 
 /** resolveClusters の単位の種類: ふつうの字 (と、前の段階の単位・異体字の並び)・まとめて組むクラスタ・分けたクラスタの 2 つ目以降の字 */
 export const UNIT_PLAIN = 0;
@@ -637,6 +638,26 @@ export class Measurer {
       m.set(key, v);
     }
     return v;
+  }
+
+  /**
+   * 横書きの 1 行の文字列の送りの合計 (pt。字間・語間は含めない)。kerning なら、行を組むとき (inlineLayout.ts の adjustJapaneseSpacing と
+   * layoutEngine.ts の kern の関数) と同じ字の組に、同じ値 (書体の kern・GPOS を features の後で引いた値 × 字の大きさ) のカーニングを足す。
+   * 中身の幅 (max-content・min-content。CSS Sizing 3 §5.1) の見積もりに使う。行を組むときの幅と食い違うと、見積もった幅に字が入りきらない
+   * (カーニングで広がる組の字が、overflow-wrap: break-word で割れる)。CSS Fonts 4 §6.3: font-kerning の auto・normal は、組むときも測るときも同じに掛ける
+   */
+  textAdvance(text: string, style: RunStyle, opts: { kerning?: boolean; features?: string[] } = {}): number {
+    const gs = this.glyphs(text, style, 'horizontal-tb');
+    let w = 0;
+    for (let i = 0; i < gs.length; i++) {
+      w += gs[i].advance;
+      if (!opts.kerning || i + 1 >= gs.length) continue;
+      const a = [...gs[i].ch].pop()!;
+      const b = [...gs[i + 1].ch][0];
+      if (!kernablePair(a, b)) continue;
+      w += this.kern(a, b, { fontFamily: style.fontFamily, fontWeight: style.fontWeight, ...(opts.features?.length ? { features: opts.features } : {}) }) * style.fontSize;
+    }
+    return w;
   }
 
   /** 文字列を字の単位ごとに計測 (基底の字と異体字セレクタの並び・書記素クラスタは 1 つ) */

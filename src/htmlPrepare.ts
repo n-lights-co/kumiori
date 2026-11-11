@@ -13,7 +13,19 @@ import { concatCss, matchMedia, matchSupports, mediaDependsOnPageSize, mediaPage
 import { rebaseFontFaceUrls, resolveRef } from './resources';
 import { ALL_AH } from './cssCascade';
 
-/** 本の組版向けの既定のスタイル (作成者スタイルシート で上書きできる) */
+/**
+ * 本の組版向けの既定のスタイル (作成者スタイルシート で上書きできる)。
+ *
+ * 行内の等幅の要素 (code・kbd・samp・tt) の line-height: 1: HTML の横書きの行は、行の中身ごとの箱 (A′ = A + L/2・D′ = D + L/2、
+ * L = line-height − (A + D)) を基線でそろえて囲む (CSS 2.1 §10.8.1・CSS Inline 3 §5.3)。本文の最初に使える書体 (総称の serif・sans-serif は
+ * Tinos・Arimo。A − D = 0.675em) と、等幅の書体 (Cousine。A − D = 0.532em) は、上の高さと下の深さの釣り合いが違うので、同じ line-height を
+ * 受け継いだ等幅の要素の箱は、本文の支柱より下に出て、行が高くなる (本文 1.75 の行で、同じ大きさの字なら 0.071em)。
+ * 等幅の要素の line-height を 1 (箱の高さは字の大きさ) にすると、箱の下は (1 − 0.532) f / 2、支柱の下は (L − 0.675 F) / 2 なので、
+ * L ≥ 0.468 f + 0.675 F (F・f は本文・要素の字の大きさ。同じ大きさなら line-height 1.15 以上) の行では、行を高くしない。
+ * 行内の箱の背景・罫線 (内容の領域) は line-height に関わらず書体の上下で決まる (CSS 2.1 §10.6.1) ので、見た目は変わらない。
+ * pre などの中は、ブロック全体が等幅なので、規則の無いときと同じく親の line-height を受け継ぐ (pre の中の display: block の code の行を詰めない)。
+ * 既定のスタイルのときだけ (browser・ah などは、それぞれのお手本の既定のまま)
+ */
 export const KUMIORI_BOOK_CSS = `
 html { font-size: 10pt; line-height: 1.75; hanging-punctuation: allow-end; }
 body { margin: 0; font-family: serif; text-align: justify; }
@@ -29,6 +41,8 @@ blockquote { margin: 1em 2em; }
 table { border-collapse: collapse; margin: 1em 0; }
 th, td { border: 0.5pt solid #000; padding: 0.2em 0.5em; }
 pre { font-size: 0.9em; line-height: 1.5; text-align: start; }
+code, kbd, samp, tt { line-height: 1; }
+:is(pre, listing, xmp, plaintext) :is(code, kbd, samp, tt) { line-height: inherit; }
 img { max-width: 100%; }
 @page { @bottom-center { content: counter(page); font-size: 9pt; } }
 `;

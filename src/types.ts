@@ -158,6 +158,14 @@ export interface TextStyle {
    * 約物のアキの追込みは行う。既定 false (詰める)
    */
   noSpaceSqueeze?: boolean;
+  /**
+   * 行の調整 (追込み) で、欧文の語間 (空白) を詰めるのを、両端揃えで組む行だけにする (XSL-FO の仕様モードの既定)。
+   * 両端揃えで組まない行 (textAlign が justify でないブロックの行、両端揃えのブロックの最後の行・改行で終わる行で textAlignLast が
+   * justify でないもの) の語間は本来の幅のままにし、詰めれば入る字・語は次の行へ送る
+   * (XSL 1.1 §7.17.8: word-spacing="normal" の語間は optimum = maximum = minimum。§7.16.9: 字の並びを伸ばしてよいのは justify のとき)。
+   * 約物のアキの追込みは、揃えによらず行う。既定 false (どの行でも詰める。wordSpaceShrink が false なら、どの行でも詰めない)
+   */
+  wordSqueezeJustifiedOnly?: boolean;
   /** 行頭の全角の始め括弧類の前の二分アキを詰める (アンテナハウスの axf:punctuation-trim の start)。既定 false */
   punctuationTrimStart?: boolean;
   /**
@@ -234,6 +242,21 @@ export interface TextStyle {
    * 無ければ、中の字の大きさの箱 (em の箱) を囲む (XSL-FO の文書・API から直接組む文書)
    */
   inlineBoxFontMetrics?: boolean;
+  /**
+   * 横書きの行の中の基線を、最初に使える書体の上の高さ・下の深さ (hhea の ascent・descent) で置く: 行内の箱 (高さ = line-height) の上端から
+   * 基線までは (line-height + A − D) / 2 (CSS Inline 3 §5.3 の A′ = A + L/2、L = line-height − (A + D)。CSS 2.1 §10.8.1。
+   * fontManager.ts の cssBaselineRatio)。行の高さ (行送り) は変わらない。縦書きの行は、中央の基線 (行の中央) のまま。HTML の文書。
+   * 無ければ、書体の em の箱の比 (LoadedFont.baselineRatio。OS/2 の表のある書体は 0.88、typo の上下が 1em の和文の書体はその値) で置く
+   * (XSL-FO の文書・API から直接組む文書・アンテナハウス互換の HTML の文書 (htmlImport.ts の emBoxBaselineAh))
+   */
+  fontBaseline?: boolean;
+  /**
+   * line-height: normal の行で、既定の書体 (読み込んでいない書体: Noto Serif JP・Tinos・Cousine など) が代わりの書体として使われたときも、
+   * その書体の上下 (hhea の ascent・descent と行間) を行の高さに数える (CSS Inline 3 §5.3。fontManager.ts の normalLineBounds)。
+   * ブラウザの既定のスタイル (--style browser・browser-margin) の HTML の文書 (HtmlImportOptions.normalLineHeightAllFonts)。
+   * 無ければ、読み込んだ書体 (LoadedFont.metricsLineHeight) だけを数える
+   */
+  normalLineHeightAllFonts?: boolean;
   /**
    * アンテナハウス互換 (primaryFontMetrics の行): 最初に使える書体を、空白の字の書体でなく、言語 (lang) が日本語・中国語・韓国語なら
    * 和文の字 (国) の書体とする (font-family: source-sans-pro, … の lang="ja" の行の基準線は、和文の書体の上下で決まる)

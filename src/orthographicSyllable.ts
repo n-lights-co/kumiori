@@ -168,6 +168,32 @@ export function kernScript(ch: string): number {
   return 0;
 }
 /** 2 つの字が、字の組の詰めを足す同じ用字 (kernScript) の字か */
+/**
+ * タイ文字の字 (U+0E01〜U+0E5B)。タイ文字の書体は、前に置く母音 (เ แ โ ใ ไ) と子音の間などを詰める組 (kern) を持つ。
+ * 字の単位 (子音 + 上下の記号) の間の詰めは、基底の字の組で引く (書体の組の表は、記号を飛ばして引く指定)
+ */
+function isThaiLetter(ch: string): boolean {
+  const cp = ch.codePointAt(0) ?? 0;
+  return cp >= 0x0e01 && cp <= 0x0e5b;
+}
+
+/** 横書きでカーニングを掛ける字 (ASCII の英数字・記号と、ラテン文字の拡張、ギリシャ文字・キリル文字) */
+function isLatinAlnumOrPunct(ch: string): boolean {
+  // 一般句読点 (U+2010〜U+2027・U+2030〜U+205E。引用符 ‘’“”・ダッシュ・…) も含める (欧文の書体の kern の組に入っている。
+  // element’s・‘a・r’ などの組を書体の kern の値で詰める)。
+  // ギリシャ文字 (U+0370〜03FF・U+1F00〜1FFF)・キリル文字 (U+0400〜052F)・Latin Extended Additional (U+1E00〜1EFF。ベトナム語など) も、
+  // 書体の kern の組で詰める (CSS Fonts 4 §6.3: font-kerning の初期値 auto。ГА・Те・Αυ などの組)
+  return /^[\u0021-\u007E\u00C0-\u024F\u0370-\u052F\u1E00-\u1FFF\u2010-\u2027\u2030-\u205E]$/u.test(ch);
+}
+
+/**
+ * 横書きで、字 a の後ろに b が続く組に、書体のカーニングを掛けるか (欧文の英数字・記号どうし、タイ文字どうし、同じ用字系の
+ * 字の単位どうし)。行を組むとき (inlineLayout.ts の adjustJapaneseSpacing) と、中身の幅を見積もるとき (Measurer.textAdvance) で同じ判定を使う
+ */
+export function kernablePair(a: string, b: string): boolean {
+  return (isLatinAlnumOrPunct(a) && isLatinAlnumOrPunct(b)) || (isThaiLetter(a) && isThaiLetter(b)) || kernsAsSameScript(a, b);
+}
+
 export function kernsAsSameScript(a: string, b: string): boolean {
   const k = kernScript(a);
   return k !== 0 && k === kernScript(b);

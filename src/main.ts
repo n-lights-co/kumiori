@@ -11,7 +11,7 @@ import { splitFontFile, type UserFont } from './fontLoader';
 import { clearUserFonts, loadUserFonts, saveUserFont } from './userFonts';
 import { decodeDocumentText } from './documentText';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
-import { AH_HTML_IMPORT_OPTIONS, compatLayoutOptions, compatPdfOptions, isAntennaCompat, loadFoHyphenators, type DocKind, type FoCompat } from './compat';
+import { compatLayoutOptions, htmlImportCompatOptions, compatPdfOptions, isAntennaCompat, loadFoHyphenators, type DocKind, type FoCompat } from './compat';
 import { fetchReportedImages, mathOptionsFor } from './documentResources';
 import { importHtml, parsePageSize } from './htmlImport';
 import { droppedLinkWarning, summarizeDroppedLinks } from './linkPolicy';
@@ -349,7 +349,8 @@ async function loadHtmlFile(text: string, name: string, files: File[], warnings:
     const defaultPage = defaultPageOf() ?? { width: 210, height: 297, margin: 20 };
     // CSS の解釈: Kumiori (既定) なら、iframe を使わず、自前のカスケードの計算値で組む (ブラウザの計算値・配置 rect を使わない)。
     // ブラウザ (比較用) なら、見えない iframe に読み込んで、ブラウザの計算値と配置を使う
-    const loaded = await loadHtml(text, files, v === 'browser' || v === 'browser-margin' || v === 'ah' || v === 'vivliostyle' || v === 'weasyprint' ? v : 'kumiori', defaultPage, { noFrame: cssEngine.value === 'kumiori' });
+    const defaults = v === 'browser' || v === 'browser-margin' || v === 'ah' || v === 'vivliostyle' || v === 'weasyprint' ? v : 'kumiori';
+    const loaded = await loadHtml(text, files, defaults, defaultPage, { noFrame: cssEngine.value === 'kumiori' });
     try {
       // 検証用: 読み込んだ文書 (iframe を消す前) を渡す (scripts/compare-css.mjs がブラウザの計算値と自前のカスケードを比べる)
       await (window as unknown as { __kumioriOnHtmlLoaded?: (l: typeof loaded) => unknown }).__kumioriOnHtmlLoaded?.(loaded);
@@ -364,10 +365,10 @@ async function loadHtmlFile(text: string, name: string, files: File[], warnings:
         hasAsset: (src) => !!assets.get(src),
         imageSize: (src) => assets.get(src),
         // flex の項目の中身の幅 (ブラウザの配置が無いとき) は、組版と同じ字幅で測る
-        measureText: (t, st) => (measurerRef ? measurerRef.glyphs(t, st, 'horizontal-tb').reduce((a, g) => a + g.advance, 0) : t.length * st.fontSize * 0.55),
+        measureText: (t, st) => (measurerRef ? measurerRef.textAdvance(t, st, { kerning: st.kerning, features: st.features }) : t.length * st.fontSize * 0.55),
         normalLineHeight: htmlNormalLineHeight,
-        // アンテナハウス互換の読み込みの設定 (compat.ts。API と同じ)
-        ...(v === 'ah' ? AH_HTML_IMPORT_OPTIONS : {}),
+        // 既定のスタイルごとの読み込みの設定 (アンテナハウス互換・ブラウザ。compat.ts。API と同じ)
+        ...htmlImportCompatOptions(defaults),
         css: loaded.css,
         defaultPage,
         bleedMm: foPrint.checked ? 3 : 0,

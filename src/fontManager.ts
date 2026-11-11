@@ -268,6 +268,22 @@ function fontMetricsOf(fk: LoadedFont['fk']): Pick<LoadedFont, 'unitsPerEm' | 'b
 }
 
 /**
+ * CSS の行の中の基線の位置: 行内の箱 (高さ = line-height) の中で、字の大きさの箱 (高さ 1em。上下に半行間 (line-height − 1em) / 2 ずつ) の
+ * 上端から基線までの長さ (em に対する比)。HTML の行 (ResolvedStyle.fontBaseline) が、最初に使える書体の値で使う。
+ *
+ * CSS Inline 3 §5.3 (Working Draft 2024-12-18。https://www.w3.org/TR/2024/WD-css-inline-3-20241218/ 、2026-11-11 取得):
+ * 行間 L = line-height − (A + D) の半分ずつを、最初に使える書体の A の上と D の下に足す (A′ = A + L/2、D′ = D + L/2。L は負にもなる)。
+ * 行内の箱の上端から基線までは A′ = (line-height + A − D) / 2 = 半行間 (line-height − 1em) / 2 + (0.5 + (A − D) / 2) em。
+ * CSS 2.1 §10.8.1 も同じ式 (A′ = A + L/2)。A・D は書体の ascent・descent (§3.2.1: 書体全体の値で、出どころは決めていない。
+ * 注記は OS/2 の sTypoAscender・sTypoDescender を勧め、無ければ hhea)。ここでは hhea の ascent・descent を使う: line-height: normal の
+ * 行の高さ (fontMapping.ts の htmlNormalLineHeight・下の normalLineBounds) と同じ値で、ブラウザー (Chromium) もこの値で基線を置く。
+ * 書体の上下が分からなければ、em の箱の比 (baselineRatio)
+ */
+export function cssBaselineRatio(font: Pick<LoadedFont, 'ascent' | 'descent' | 'baselineRatio'>): number {
+  return font.ascent !== undefined && font.descent !== undefined ? 0.5 + (font.ascent - font.descent) / 2 : font.baselineRatio;
+}
+
+/**
  * line-height: normal の行内の箱の中の、代わりの書体 (最初に使える書体でない書体) の字が、行の高さに求める基線の上・下 (em に対する比)。
  *
  * CSS Inline 3 §5.3 (Working Draft 2024-12-18): 計算値が normal の行内の箱の layout bounds は、中の字すべてを囲む
@@ -278,28 +294,22 @@ function fontMetricsOf(fk: LoadedFont['fk']): Pick<LoadedFont, 'unitsPerEm' | 'b
  * normal でないときは、最初に使える書体の値だけで決める (§5.3) ので、この関数は使わない。
  *
  *  - font が書体の値から決める書体 (metricsLineHeight): 上 = ascent + lineGap / 2、下 = descent + lineGap / 2 (hhea の値。fontMapping.ts の
- *    htmlNormalLineHeight が、最初に使える書体の normal を決めるのと同じ値)。
- *    行の中の基線は、最初に使える書体の em の箱の比 (primary.baselineRatio) で置いていて、その書体の ascent・descent の位置とは
- *    ずれている ((ascent − descent) / 2 と baselineRatio − 0.5 の差)。同じずれを代わりの書体の上下にも足し引きして、
- *    行の高さ (上の最大 + 下の最大) が、書体の ascent・descent どうしを基線でそろえて囲んだ高さと同じになるようにする
+ *    htmlNormalLineHeight が、最初に使える書体の normal を決めるのと同じ値)。行の中の基線も、最初に使える書体の同じ値 (ascent・descent) で
+ *    置いてある (cssBaselineRatio) ので、そのまま基線の上・下になる (基線を字の枠の位置に置くアンテナハウス互換の行では、
+ *    呼ぶ側が、基線のずれの分を足し引きする: inlineFlatten.ts の fallbackNormalOf)
  *  - 既定の書体 (metricsLineHeight の無い書体): undefined (数えない)。既定の書体の normal は、書体の値でなく字の大きさの 1.2 倍と決めてあり
  *    (CSS 2.1 §10.8.1 の勧める 1.0〜1.2。最初に使える書体が既定の書体のとき)、書体の値 (Noto Serif JP は 1.437) を持ち込むと、
- *    読み込んだ欧文の書体 + 既定の和文の書体で組む文書の行送りが広く変わる。行は、最初に使える書体の高さのまま (これまでと同じ)
+ *    読み込んだ欧文の書体 + 既定の和文の書体で組む文書の行送りが広く変わる。行は、最初に使える書体の高さのまま (これまでと同じ)。
+ *    ただし allFonts (ブラウザの既定のスタイル。TextStyle.normalLineHeightAllFonts) のときは、既定の書体も書体の値で数える
+ *    (既定の書体の normal も書体の値で決めるので。Chromium と同じ)
  *  - 縦書き (vertical): 字は中央の基線にそろう (CSS Writing Modes 4 §4.2) ので、行の高さ (ascent + descent + lineGap) を半分ずつ
  */
-export function normalLineBounds(
-  font: Pick<LoadedFont, 'ascent' | 'descent' | 'lineGap' | 'baselineRatio' | 'metricsLineHeight' | 'instanceOf'>,
-  primary: Pick<LoadedFont, 'ascent' | 'descent' | 'baselineRatio'>,
-  vertical: boolean,
-): { above: number; below: number } | undefined {
-  if (!(font.instanceOf?.master ?? font).metricsLineHeight || font.ascent === undefined || font.descent === undefined) return undefined;
+export function normalLineBounds(font: Pick<LoadedFont, 'ascent' | 'descent' | 'lineGap' | 'metricsLineHeight' | 'instanceOf'>, vertical: boolean, allFonts = false): { above: number; below: number } | undefined {
+  if ((!allFonts && !(font.instanceOf?.master ?? font).metricsLineHeight) || font.ascent === undefined || font.descent === undefined) return undefined;
   const gap = font.lineGap ?? 0;
   const a = font.ascent + gap / 2;
   const d = font.descent + gap / 2;
-  if (vertical) return { above: (a + d) / 2, below: (a + d) / 2 };
-  // 最初に使える書体の、em の箱で置いた基線と、ascent・descent で置いた基線のずれ (書体の上下が分からなければ 0)
-  const shift = primary.ascent !== undefined && primary.descent !== undefined ? primary.baselineRatio - 0.5 - (primary.ascent - primary.descent) / 2 : 0;
-  return { above: a + shift, below: d - shift };
+  return vertical ? { above: (a + d) / 2, below: (a + d) / 2 } : { above: a, below: d };
 }
 
 /** 実体を作れない可変フォントを知らせたか (書体のファイルごとに 1 度) */

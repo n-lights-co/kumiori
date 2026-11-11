@@ -7,6 +7,8 @@
  *    字ごとの書体の上下 fontLineMetrics)
  *  - CSS モデル (lineMetricsCss): CSS 2.1 §10.8 の支柱 (strut) と、最初に使える書体の上下 (primaryFontMetrics)。
  *    互換の印の無い入力 (API から直接組むときなど) も、この入口で組む (CSS 固有の分岐が働かないだけ)
+ *    HTML の横書きの行 (fontBaseline) は、行の中身ごとの上下 (最初に使える書体の A・D と半行間) を基線でそろえて囲む (layoutBoundsMetrics。
+ *    CSS Inline 3 §5.3)
  * 3 つのモデルで共通の段階 (行の中身の走査・line-height 戦略・字ごとの書体の上下・持ち上げた字の広がり) は、下の補助関数で共有する。
  */
 import type { WritingMode } from './types';
@@ -359,6 +361,8 @@ function finishLine(sc: LineScan, lead: number, needA: number, needB: number): L
  *    line-height: normal の字が代わりの書体で組まれたときは、その書体の上下も行の上下の下限に入れる (CSS Inline 3 §5.3。Atom.fallbackNormal)
  *  - 行には支柱 (strut) があり、行の上下は支柱と、字ごとの行内の箱 (字の上下 + その字の半行間) を下回らない
  *  - 字だけの行の半行間は負にもなる (行の高さは line-height そのもの。primaryFontMetrics のときだけ)
+ *  - HTML の横書きの行 (fontBaseline): 基線の位置が書体ごとに違うので、字の大きさの箱の最大と line-height の最大からではなく、
+ *    行の中身ごとの上下を基線でそろえて囲む (layoutBoundsMetrics)
  */
 function lineMetricsCss(pl: PositionedLine, wm: WritingMode, fallback: ResolvedStyle, nominalRatio?: number, strut?: { above: number; below: number }): LineMetrics {
   const { atoms, all } = lineAtoms(pl, fallback);
@@ -372,6 +376,9 @@ function lineMetricsCss(pl: PositionedLine, wm: WritingMode, fallback: ResolvedS
   const leading = isTextOnlyLine(all) && fallback.primaryFontMetrics ? sc.lh - (sc.above + sc.below) : Math.max(sc.lh - (sc.above + sc.below), 0);
   const byFont = fontLineMetricsOf(all, wm, sc, leading, strut);
   if (byFont) return byFont;
+  // HTML の横書きの行 (fontBaseline): 行内の箱ごとの上下 (A′・D′) を基線でそろえて囲む
+  const byBounds = fallback.fontBaseline && wm === 'horizontal-tb' ? layoutBoundsMetrics(all, sc, leading, strut, nominalRatio) : undefined;
+  if (byBounds) return byBounds;
   addShiftedExtents(sc, all, wm, leading);
   // 半行間はそのまま使う (負なら負のまま: 字だけの行の行の高さは line-height)
   const lead = leading;
@@ -403,6 +410,56 @@ function lineMetricsCss(pl: PositionedLine, wm: WritingMode, fallback: ResolvedS
     }
   }
   return finishLine(sc, lead, needA, needB);
+}
+
+/**
+ * HTML の横書きの行 (ResolvedStyle.fontBaseline) の行の高さ: 行の中身それぞれの、基線の上・下の広がり (layout bounds) を基線でそろえ、
+ * いちばん高い上端からいちばん深い下端までを行の箱にする (CSS 2.1 §10.8・§10.8.1、CSS Inline 3 §5.1・§5.3)。
+ *  - 字・ルビ・leader・改行の印: その字の書式の最初に使える書体の A・D (em の箱に置き換えた値。atomAboveBelow) に、その書式の line-height に
+ *    なるだけの半行間を上下に足す (A′ = A + L/2、D′ = D + L/2、L = line-height − (A + D)。L は負にもなる)。
+ *    書体が違えば A′・D′ の割合が違うので、別の書体を名指しした inline (本文の中の等幅の字など) のある行は、line-height より高くなる
+ *    (§10.8.1 の例・Inline 3 §5.3)。ずらした字 (上付き・下付き・vertical-align の長さ) は、ずらした位置で数える
+ *    (ずらしを数えない指定 (disregard-shifts) のときは、ずらす前の位置)
+ *  - line-height: normal の字が代わりの書体で組まれたとき: その書体の上下 (Atom.fallbackNormal。Inline 3 §5.3)
+ *  - 罫線・余白つきの inline の両端の空き: その inline の支柱 (最初に使える書体の A′・D′。中の字が代わりの書体だけでも数える。Inline 3 §5.3)
+ *  - 画像・inline-block などの箱: 箱の上下 (margin の箱。line-height は使わない。CSS 2.1 §10.8.1)。ずらした箱は、ずらした位置
+ *  - 支柱 (strut): ブロックの最初に使える書体と line-height (CSS 2.1 §10.8.1)
+ * 返す値は、行の上端から基線までが above + leading / 2、基線から下端までが below + leading / 2 になるように分ける
+ * (leading は、行の中の line-height の最大から字の大きさの箱を引いた量。ルビを行間に収める計算に使う)。
+ * どの中身も数えない行 (支柱が無く、中身も無い) は undefined
+ */
+function layoutBoundsMetrics(all: Atom[], sc: LineScan, leading: number, strut: { above: number; below: number } | undefined, nominalRatio: number | undefined): LineMetrics | undefined {
+  let A = strut?.above ?? -Infinity;
+  let D = strut?.below ?? -Infinity;
+  const add = (above: number, below: number) => {
+    A = Math.max(A, above);
+    D = Math.max(D, below);
+  };
+  for (const a of all) {
+    // 互換モード (Quirks Mode §3.3): 中身の無い行内の箱と空白だけの字は数えない (scanLine と同じ)
+    if (a.st.lineHeightQuirk && ((a.kind === 'box' && a.idMark) || (a.kind === 'glyph' && a.isSpace))) continue;
+    if (a.kind === 'box') {
+      if (a.frameOpen || a.frameClose) {
+        const fs = a.st.fontSize;
+        const r = a.primaryRatio ?? nominalRatio ?? DEFAULT_BASELINE_RATIO;
+        const half = (lineHeightOf(a.st) - fs) / 2;
+        add(r * fs + half, (1 - r) * fs + half);
+      } else if (a.box && (a.box.above || a.box.below)) {
+        const sh = a.shift ?? 0;
+        add(a.box.above + sh, a.box.below - sh);
+      }
+      continue;
+    }
+    const ab = atomAboveBelow(a, 'horizontal-tb');
+    const half = (lineHeightOf(a.st) - (ab.above + ab.below)) / 2;
+    const sh = a.shift && a.st.lineHeightShiftAdjustment !== 'disregard-shifts' ? a.shift : 0;
+    add(ab.above + half + sh, ab.below + half - sh);
+    if (a.fallbackNormal && (a.kind === 'glyph' || a.kind === 'ruby')) add(a.fallbackNormal.above + sh, a.fallbackNormal.below - sh);
+  }
+  if (!Number.isFinite(A) || !Number.isFinite(D)) return undefined;
+  const above = A - leading / 2;
+  const below = D - leading / 2;
+  return { above, below, em: above + below, leading, rubyExtent: sc.rubyExtent, base: A + D };
 }
 
 // ───────────────────────── 互換 (AH) モデル ─────────────────────────

@@ -9,7 +9,7 @@ import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type M
 import { mayCluster } from './grapheme';
 import { NOT_WORD_INITIAL } from './fontkitShaping';
 import { unitFeatures } from './orthographicSyllable';
-import { inlineAreaMetrics, isGreekCyrillicLetter, normalLineBounds, type LoadedFont } from './fontManager';
+import { cssBaselineRatio, inlineAreaMetrics, isGreekCyrillicLetter, normalLineBounds, type LoadedFont } from './fontManager';
 import { LIGATURE_FEATURES, ligatureTable } from './ligature';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
@@ -27,11 +27,35 @@ import type { Atom, FlattenState, InlineChild, InlineContentArea, InlineFrame } 
  * 書体に無い字は、ほかの字と同じく、字を持つ書体で代える (Measurer.glyph)。和欧の混植の組では、U+2010 を、語の字と同じ欧文の書体から
  * 取る (glyphOf に latinWord の印を付けて呼ぶ。印が無いと、U+2010 は和文の書体の全角の字になる)
  */
-export function hyphenAtoms(st: ResolvedStyle, glyphOf: (ch: string) => GlyphMetrics, runId: number, bg: Atom['bg']): Atom[] {
+export function hyphenAtoms(st: ResolvedStyle, glyphOf: (ch: string) => GlyphMetrics, runId: number, bg: Atom['bg'], primaryRatio?: number): Atom[] {
   return [...(st.hyphenLimits?.character ?? '-')].map((ch) => {
     const g = glyphOf(ch);
-    return { kind: 'glyph', first: ch, last: ch, advance: g.advance, isSpace: false, runId, st, bg, g };
+    return { kind: 'glyph', first: ch, last: ch, advance: g.advance, isSpace: false, runId, st, bg, g, ...(primaryRatio !== undefined ? { primaryRatio } : {}) };
   });
+}
+
+/**
+ * HTML の行 (ResolvedStyle.fontBaseline) の、書式 st の字の基線の位置 (字の大きさの箱の上端からの比): st の最初に使える書体
+ * (空白の字の書体。CSS Inline 3 §5.3) の上の高さ・下の深さから決める (fontManager.ts の cssBaselineRatio)。ほかの文書は undefined
+ */
+export function fontBaselineRatio(st: ResolvedStyle, m: Measurer, wm: WritingMode): number | undefined {
+  return st.fontBaseline ? cssBaselineRatio(m.glyph(primaryChar(st), runStyleOf(st), wm).font) : undefined;
+}
+
+/**
+ * HTML の行 (fontBaseline): 行の高さの計算 (lineMetrics.ts の atomAboveBelow) で、どの atom (字・ルビ・leader・改行の印) も、その書式の
+ * 最初に使える書体の基線の位置を使うようにする。行内の箱 (画像・inline-block など) は箱の上下 (box.above・below) を使うが、
+ * 罫線・余白つきの inline の両端の空きは、その inline の支柱の位置に使う (lineMetrics.ts の layoutBoundsMetrics)
+ */
+function applyFontBaseline(out: Atom[], m: Measurer, wm: WritingMode): void {
+  let memo: Map<ResolvedStyle, number> | undefined;
+  for (const a of out) {
+    if (!a.st.fontBaseline) continue;
+    memo ??= new Map();
+    let r = memo.get(a.st);
+    if (r === undefined) memo.set(a.st, (r = fontBaselineRatio(a.st, m, wm)!));
+    a.primaryRatio = r;
+  }
 }
 
 /** 欧文の合字の字 (Unicode の互換用の合字) */
@@ -402,6 +426,7 @@ export function flattenInline(
     else if (c.type === 'tate-chu-yoko') flattenTateChuYoko(c, cx);
     if (typeof c0 === 'object') markRef(cx.out, c0, start0);
   }
+  applyFontBaseline(cx.out, m, wm);
   return cx.out;
 }
 
@@ -456,6 +481,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
   // クラスタに当てる任意の合字の機能と、その書式 (要るときに 1 度だけ作る)
   let clusterLig: LigatureFeatures | null | undefined;
   let clusterLigSt: ResolvedStyle | undefined;
+  const primaryProps = (st: ResolvedStyle, g: { font: LoadedFont }) => primaryPropsOf(m, wm, st, g);
   // 前の字の単位 (同じ文字列の中)。語の途中かどうかを見る
   let unitBefore = '';
   for (const ch0 of units) {
@@ -473,7 +499,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       // 縦書き: 並びを 1 つの書体でまとめて組み、横倒しにする (clusterGlyph。基底の字の向きで決まる: アラビア文字・モンゴル文字は横倒し)
       const g = wm === 'horizontal-tb' ? { ...m.glyph(ch, runStyle(st), wm), draw: ch } : m.clusterGlyph(ch, runStyle(st), wm);
       const chars = [...ch];
-      out.push({ kind: 'glyph', first: chars[0], last: chars[chars.length - 1], advance: g.advance, isSpace: false, runId: state.run, st, bg, g });
+      out.push({ kind: 'glyph', first: chars[0], last: chars[chars.length - 1], advance: g.advance, isSpace: false, runId: state.run, st, bg, g, ...primaryProps(st, g) });
       continue;
     }
     if (!variation && ligSt && ch.length > 1 && !/[\uD800-\uDBFF]/.test(ch[0])) {
@@ -483,7 +509,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       // その後ろに空ける (Text 3 §7.2)。XSL の字間は、Alphabetic の字で始まる合字の前後に半分ずつ (下の 1 字のときと同じ。XSL §7.17.2)
       if (st.xslLetterSpacing && st.letterSpacing && ALPHABETIC.test(ch[0])) {
         const h = st.letterSpacing / 2;
-        out.push({ kind: 'glyph', first: ch[0], last: ch[ch.length - 1], advance: g.advance + st.letterSpacing, isSpace: false, runId: state.run, st: ligSt, bg, g, dx: h, lsLead: h, lsTrail: h });
+        out.push({ kind: 'glyph', first: ch[0], last: ch[ch.length - 1], advance: g.advance + st.letterSpacing, isSpace: false, runId: state.run, st: ligSt, bg, g, dx: h, lsLead: h, lsTrail: h, ...primaryProps(st, g) });
         continue;
       }
       const ls = st.letterSpacing && !st.xslLetterSpacing ? st.letterSpacing : 0;
@@ -491,7 +517,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
         g.advance += ls;
         g.spacing = (g.spacing ?? 0) + ls;
       }
-      out.push({ kind: 'glyph', first: ch[0], last: ch[ch.length - 1], advance: g.advance, isSpace: false, runId: state.run, st: ligSt, bg, g, ...(ls > 0 ? { lsTrail: ls } : {}) });
+      out.push({ kind: 'glyph', first: ch[0], last: ch[ch.length - 1], advance: g.advance, isSpace: false, runId: state.run, st: ligSt, bg, g, ...(ls > 0 ? { lsTrail: ls } : {}), ...primaryProps(st, g) });
       continue;
     }
     if (ch === '\n') {
@@ -503,7 +529,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       const prev = out[out.length - 1];
       if (prev && prev.kind === 'glyph' && prev.g) {
         // 行末に出す字は hyphenate-character (CSS Text 4 §6.3.2 の注: ソフトハイフンで分けたときも同じ字を出す)
-        prev.hyphen = hyphenAtoms(st, (c) => m.glyph(c, { ...runStyle(st), latinWord: true }, wm), prev.runId, bg);
+        prev.hyphen = hyphenAtoms(st, (c) => m.glyph(c, { ...runStyle(st), latinWord: true }, wm), prev.runId, bg, fontBaselineRatio(st, m, wm));
         prev.softHyphen = true;
       }
       continue;
@@ -575,8 +601,6 @@ function flattenText(c: string, cx: FlattenCtx): void {
       g.spacing = (g.spacing ?? 0) + st.wordSpacing;
     }
     // 字の後ろの letter-spacing は、行末では捨てる (行に入るかの判定と行の幅に数えない)
-    // 代わりの書体の字: 行の高さは、最初に使える書体 (空白の字の書体) の上下で決める (CSS Inline 3 §5.3)
-    const primary = st.primaryFontMetrics ? m.glyph(primaryChar(st), runStyle(st), wm).font : undefined;
     out.push({
       kind: 'glyph',
       first: ch,
@@ -590,8 +614,7 @@ function flattenText(c: string, cx: FlattenCtx): void {
       ...clusterProps,
       ...(inLatinWord ? { latinWord: true } : {}),
       ...(st.letterSpacing > 0 && !st.xslLetterSpacing && (!mark || movedLs) ? { lsTrail: st.letterSpacing } : {}),
-      ...(primary && primary !== g.font ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
-      ...(primary && primary !== g.font && st.lineHeightNormal ? fallbackNormalOf([g.font], primary, st.fontSize, wm) : {}),
+      ...primaryProps(st, g),
     });
   }
 }
@@ -601,12 +624,17 @@ function flattenText(c: string, cx: FlattenCtx): void {
  * 行の高さに求める基線の上・下 (pt) を、Atom.fallbackNormal として返す (数える書体が無ければ、項目なし)。
  * CSS Inline 3 §5.3: normal の行内の箱は、中の字すべての書体の上下を囲む (fontManager.ts の normalLineBounds)
  */
-function fallbackNormalOf(fonts: LoadedFont[], primary: LoadedFont, fontSize: number, wm: WritingMode): { fallbackNormal?: { above: number; below: number } } {
+function fallbackNormalOf(fonts: LoadedFont[], primary: LoadedFont, fontSize: number, wm: WritingMode, fontBaseline: boolean | undefined, allFonts?: boolean): { fallbackNormal?: { above: number; below: number } } {
+  // 行の基線を字の枠 (em の箱) の位置に置く横書きの行 (アンテナハウス互換。fontBaseline の無い HTML の行): 行の基線は、最初に使える書体の
+  // ascent・descent で置いた位置から (baselineRatio − cssBaselineRatio) em だけずれているので、代わりの書体の上下にも同じずれを足し引きする
+  // (行の高さが、書体の上下どうしを基線でそろえて囲んだ高さと同じになる)
+  const shift = fontBaseline || wm !== 'horizontal-tb' ? 0 : primary.baselineRatio - cssBaselineRatio(primary);
   let out: { above: number; below: number } | undefined;
   for (const f of fonts) {
     if (f === primary) continue;
-    const b = normalLineBounds(f, primary, wm !== 'horizontal-tb');
-    if (b) out = { above: Math.max(out?.above ?? 0, b.above * fontSize), below: Math.max(out?.below ?? 0, b.below * fontSize) };
+    // allFonts (ブラウザの既定のスタイル): 既定の書体 (読み込んでいない書体) も、その書体の値で数える (TextStyle.normalLineHeightAllFonts)
+    const b = normalLineBounds(f, wm !== 'horizontal-tb', allFonts);
+    if (b) out = { above: Math.max(out?.above ?? 0, (b.above + shift) * fontSize), below: Math.max(out?.below ?? 0, (b.below - shift) * fontSize) };
   }
   return out ? { fallbackNormal: out } : {};
 }
@@ -686,7 +714,7 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
   }
   // 中身の無い CSS の行内要素: 幅 0 の箱に、自分の字の大きさと line-height の高さ (支柱) を持たせる (CSS 2.1 §10.8)
   if (c.emptyStrut && !kids.length && wm === 'horizontal-tb') {
-    const br = m.glyph(' ', runStyle(s2), wm).font.baselineRatio;
+    const br = fontBaselineRatio(s2, m, wm) ?? m.glyph(' ', runStyle(s2), wm).font.baselineRatio;
     const half = (lineHeightOf(s2) - s2.fontSize) / 2;
     const above = br * s2.fontSize + half;
     const below = (1 - br) * s2.fontSize + half;
@@ -767,7 +795,7 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     const used = kids.reduce((a, k) => a + k.advance, 0);
     if (c.width > used + 0.01) {
       const fs = s2.fontSize;
-      const br = m.glyph(' ', runStyle(s2), wm).font.baselineRatio;
+      const br = fontBaselineRatio(s2, m, wm) ?? m.glyph(' ', runStyle(s2), wm).font.baselineRatio;
       const w = c.width - used;
       out.push({
         kind: 'box',
@@ -836,7 +864,7 @@ function flattenRuby(c: LRuby, cx: FlattenCtx): void {
     ...(aligns.some((x) => x) ? { rubyAligns: aligns as NonNullable<Atom['rubyAligns']> } : {}),
     ...(primary && baseFont && primary !== baseFont ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
     // line-height: normal の親文字が代わりの書体の字のとき、その書体の上下も行の高さに数える (字と同じ。CSS Inline 3 §5.3)
-    ...(primary && s2.lineHeightNormal ? fallbackNormalOf(r.baseGlyphs.map((g) => g.font), primary, s2.fontSize, wm) : {}),
+    ...(primary && s2.lineHeightNormal ? fallbackNormalOf(r.baseGlyphs.map((g) => g.font), primary, s2.fontSize, wm, s2.fontBaseline, s2.normalLineHeightAllFonts) : {}),
   });
   state.run++;
 }
@@ -850,7 +878,9 @@ function flattenInlineBox(c: LImage | LInlineContainer, cx: FlattenCtx): void {
   // 画像の下端・上端を字面の下端・上端に揃える (字面は最初に使える書体の上下)
   const lineAlign = c.type === 'image' && wm === 'horizontal-tb' ? (c.alignmentBaseline === 'line-bottom' ? 'bottom' : c.alignmentBaseline === 'line-top' ? 'top' : undefined) : undefined;
   if (spec && c.type === 'image' && c.alignmentBaseline && !lineAlign && wm === 'horizontal-tb') {
-    const br = m.glyph(' ', runStyle(s2), wm).font.baselineRatio;
+    // 字面は、行の基準の書体 (最初に使える書体。アンテナハウス互換の和文の行は和文の書体 = primaryChar) の em の箱。
+    // XSL 1.1 §7.9.1: text-after-edge は em の箱の下端で、和文の書体では ideographic の基線 (見本の PDF: CSS-Print 第 4 版の目次のアイコン)
+    const br = m.glyph(primaryChar(s2), runStyle(s2), wm).font.baselineRatio;
     const h = spec.above + spec.below;
     // central: 画像の中央を、字の em の箱の中央 (中央の基線。CSS Inline 3 §4.2.1・XSL §7.9.1) に揃える
     const below = c.alignmentBaseline === 'after-edge' ? (1 - br) * s2.fontSize : c.alignmentBaseline === 'central' ? h / 2 - (br - 0.5) * s2.fontSize : h - br * s2.fontSize;
@@ -876,6 +906,20 @@ function flattenCitation(c: LPageNumberCitation, cx: FlattenCtx): void {
   for (const a of cited) a.cite = key;
   out.push(...cited);
   state.run++;
+}
+
+/**
+ * 代わりの書体の字: 行の高さは、最初に使える書体 (空白の字の書体) の上下で決める (CSS Inline 3 §5.3)。
+ * 1 字の字形と同じく、合字・つながる字の並びの字形と、脚注の参照記号の字にも当てる
+ */
+function primaryPropsOf(m: FlattenCtx['m'], wm: WritingMode, st: ResolvedStyle, g: { font: LoadedFont }): Partial<Atom> {
+  const primary = st.primaryFontMetrics ? m.glyph(primaryChar(st), runStyleOf(st), wm).font : undefined;
+  if (!primary || primary === g.font) return {};
+  return {
+    primaryRatio: primary.baselineRatio,
+    primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio },
+    ...(st.lineHeightNormal ? fallbackNormalOf([g.font], primary, st.fontSize, wm, st.fontBaseline, st.normalLineHeightAllFonts) : {}),
+  };
 }
 
 /** 脚注の参照記号: ラベルの字を小さく持ち上げて組む (先頭の字が本体への参照 fnRef を持つ) */
@@ -905,6 +949,7 @@ function flattenFootnoteRef(c: LFootnote, cx: FlattenCtx): void {
       glue: true,
       shift,
       fnRef: k === 0 ? c : undefined,
+      ...primaryPropsOf(m, wm, s2, g),
     });
   });
   state.run++;

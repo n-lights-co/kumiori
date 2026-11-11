@@ -3,7 +3,7 @@
  *  - 欧文の語間と、和文と欧文の間の四分アキを詰めない。ブロックの揃えによらない (両端揃えの行も)
  *    (アンテナハウスの組版結果では、語間・和欧間のアキは、どれも本来の幅以上。詰めれば入る字・語は次の行へ送る)
  *  - 約物のアキ (行中の読点・括弧) の追込みは行う (同じ組版結果に、詰めた行がある)
- *  - 仕様モード (compat: 'spec') の結果は変えない
+ *  - 仕様モード (compat: 'spec') は、両端揃えで組む行でだけ語間を詰める (foSpecWordSpaceSqueeze.test.ts)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
@@ -86,7 +86,7 @@ describe('XSL-FO 互換モード: 語間・和欧間のアキを詰めない (�
     expect(run(block(mixed + mixed, 'justify'), mixedLen - 2, 'antenna')[0]).not.toBe(mixed);
     expect(mixed.startsWith(run(block(mixed + mixed, 'justify'), mixedLen - 2, 'antenna')[0])).toBe(true);
     expect(run(block(`${latin} ${latin}`, 'justify'), latinLen - 2, 'antenna')[0]).toBe('aaaa bbbb cccc dddd eeee');
-    // 仕様モードの両端揃えは、これまでどおり詰めて収める
+    // 仕様モードの両端揃えで組む行は、語間を詰めて収める
     expect(run(block(`${latin} ${latin}`, 'justify'), latinLen - 2, 'spec')[0]).toBe(latin);
   });
 
@@ -95,7 +95,7 @@ describe('XSL-FO 互換モード: 語間・和欧間のアキを詰めない (�
     expect(run(block('あ、いうえおかきくけ'), 97, 'antenna')).toEqual(['あ、いうえおかきくけ']);
   });
 
-  it('仕様モード (compat: spec) は変えない: 両端揃えでない行でも語間を詰めて収める', () => {
-    expect(run(block(latin), latinLen - 2, 'spec')).toEqual([latin]);
+  it('仕様モード (compat: spec) も、両端揃えでない行では語間を詰めない (XSL 1.1 §7.17.8・§7.16.9。詳しくは foSpecWordSpaceSqueeze.test.ts)', () => {
+    expect(run(block(latin), latinLen - 2, 'spec')).toEqual(['aaaa bbbb cccc dddd eeee', 'ffff']);
   });
 });

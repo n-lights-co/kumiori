@@ -161,15 +161,26 @@ export interface HtmlImportOptions {
    * 文字列の幅 (pt) を、組版と同じ書体の字幅で測る。ブラウザの配置 (rect) が無いとき、flex の項目の中身の幅に使う。
    * 無ければ、字数 × 字の大きさで見積もる
    */
-  measureText?: (text: string, style: { fontFamily?: string; fontWeight: number; fontSize: number }) => number;
+  /** 1 行の文字列の幅 (pt)。kerning なら、行を組むときと同じカーニングを足す (features は、カーニングを引く前に当てる OpenType の機能) */
+  measureText?: (text: string, style: { fontFamily?: string; fontWeight: number; fontSize: number; kerning?: boolean; features?: string[] }) => number;
   /** 読み込んだ画像の本来の大きさ (CSS px)。ブラウザの配置 (rect) が無いとき、画像の大きさを max-width などの上限から決めるのに使う */
   imageSize?: (src: string) => { width: number; height: number } | undefined;
   /** 欧文の語間を、行に収めるために本来の幅より詰めてよいか。既定 false (ブラウザ・CSS と同じ。アンテナハウス互換でも詰めない) */
   wordSpaceShrink?: boolean;
   /** 和欧間のアキ (text-autospace) の大きさ (字の大きさに対する比)。既定 0.125 (CSS Text 4 の 1/8ic)。アンテナハウス互換では 0.25 */
   autospaceWidth?: number;
-  /** line-height: normal の行送りの比 (font-family の並びと太さから)。分からなければ undefined (1.2 にする) */
-  normalLineHeight?: (families: string[], bold: boolean) => number | undefined;
+  /**
+   * line-height: normal の行送りの比 (font-family の並びと太さから)。分からなければ undefined (1.2 にする)。
+   * opts.defaultFonts は normalLineHeightAllFonts のときに付ける (既定の書体も書体の値にする。fontMapping.ts の htmlNormalLineHeight)
+   */
+  normalLineHeight?: (families: string[], bold: boolean, opts?: { defaultFonts?: boolean }) => number | undefined;
+  /**
+   * line-height: normal を、既定の書体 (読み込んでいない書体: Noto Serif JP・Tinos・Cousine など) でも、書体の値
+   * (hhea の ascent + descent + lineGap) で決め、代わりの書体として使われた既定の書体の上下も行の高さに数える
+   * (CSS Inline 3 §5.3・§6.4、CSS 2.1 §10.8.1。Chromium と同じ)。ブラウザの既定のスタイル (--style browser・browser-margin。compat.ts の
+   * BROWSER_HTML_IMPORT_OPTIONS)。無ければ、読み込んだ書体 (@font-face・fonts の選択肢) だけ書体の値で、既定の書体は字の大きさの 1.2 倍
+   */
+  normalLineHeightAllFonts?: boolean;
   /**
    * 左右の改ページで入る白ページの、ページの名前 (@page の名前付きの規則を選ぶ)。next (既定): 次のページの名前 (CSS の仕様・WeasyPrint)、
    * previous: 前のページの名前 (アンテナハウス互換)
@@ -206,6 +217,15 @@ export interface HtmlImportOptions {
   tableRowspanMiddleAh?: boolean;
   /** アンテナハウス互換: lang が日本語・中国語・韓国語の行は、和文の字の書体の上下で行の基準線を決める (TextStyle.primaryFontByLang) */
   primaryFontByLangAh?: boolean;
+  /**
+   * アンテナハウス互換: 横書きの行の中の基線を、書体の上の高さ・下の深さ (CSS Inline 3 §5.3。既定) でなく、字の枠 (em の箱) の位置に置く
+   * (LoadedFont.baselineRatio: OS/2 の typo の上下が 1em を成す和文の書体はその値、ほかは上から 0.88em)。行の高さも、字の大きさの箱と
+   * line-height から決め、別の書体の inline があっても行を高くしない (TextStyle.fontBaseline を付けない)。
+   * 根拠: アンテナハウスの公開の見本 (『CSS ページ組版入門』の PDF。本文は源ノ明朝: typo 0.88・−0.12、hhea 1.151・−0.286) と、同じ書体で
+   * 組み比べると、字の枠の位置に置いたときは 6110 行のうち 1520 行の基線が 0.1pt 以内で合い、書体の ascent・descent で置くと 39 行に減る
+   * (本文の 11pt の行で 0.58pt = 0.0525em 下がる)
+   */
+  emBoxBaselineAh?: boolean;
   /**
    * vertical-align: super の上げ幅を、親の字の大きさの 1/3 にする (アンテナハウス互換。既定は 0.35)。
    * 上付き (sup・::footnote-call) は、本文の字の大きさによらず親の字の大きさの 1/3 上げる
@@ -910,6 +930,10 @@ class HtmlImporter {
   /** position: running() の要素を組んでいる */
   private inRunning = false;
   private autoId = 0;
+  /** line-height: normal の値を引くときの指定 (ブラウザの既定のスタイルでは、既定の書体も書体の値。HtmlImportOptions.normalLineHeightAllFonts) */
+  private get normalOpts(): { defaultFonts?: boolean } | undefined {
+    return this.opts.normalLineHeightAllFonts ? { defaultFonts: true } : undefined;
+  }
   /** 直前に組んだ ::before / ::after の文字 (target-text の before / after) */
   private lastPseudoText: Record<'::before' | '::after', string> = { '::before': '', '::after': '' };
   /** 組んだ ::before / ::after の文字 (要素ごと。target-text() の子孫の生成した内容を、組んだときのカウンターの値で取る) */
@@ -2056,7 +2080,9 @@ class HtmlImporter {
       .map((n) => n.replace(/['"]/g, '').trim())
       .filter(Boolean);
     const fontFamily = this.opts.mapFont?.(names, weight >= 600, this.langOf(el));
-    return this.opts.measureText(s, { fontFamily, fontWeight: weight, fontSize: fs }) + ls * [...s].length;
+    // カーニングと、それより先に当てる機能は、行を組むときの書式 (textStyle の kerning・fontFeatures) と同じものを使う
+    const ts = this.textStyle(el, undefined, pseudo);
+    return this.opts.measureText(s, { fontFamily, fontWeight: weight, fontSize: fs, kerning: ts.kerning !== false, ...(ts.fontFeatures?.length ? { features: ts.fontFeatures } : {}) }) + ls * [...s].length;
   }
 
   /** 段組 (column-count・column-width・column-gap・column-rule)。avail: 段組する幅 (pt) */
@@ -3086,7 +3112,7 @@ class HtmlImporter {
       else if (lh === 'normal') {
         // normal: 書体の値 (読み込んだ書体なら ascent・descent・lineGap から)、分からなければ 1.2
         const fams = c('font-family').split(',').map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
-        s.lineHeight = this.opts.normalLineHeight?.(fams, (parseInt(c('font-weight'), 10) || 400) >= 600) ?? 1.2;
+        s.lineHeight = this.opts.normalLineHeight?.(fams, (parseInt(c('font-weight'), 10) || 400) >= 600, this.normalOpts) ?? 1.2;
         // normal の印: 代わりの書体で組まれた字は、その書体の上下も行の高さに数える (CSS Inline 3 §5.3。lineMetrics.ts の lineMetricsCss)
         s.lineHeightNormal = true;
       }
@@ -5284,7 +5310,7 @@ class HtmlImporter {
     else if (/^[+-]?(\d+\.?\d*|\.\d+)%$/.test(va)) {
       // 百分率は、この要素の line-height に対する割合だけ上げ下げする (CSS 2.1 §10.8.1)。line-height: normal は、書体の値 (textStyle と同じ)
       const fams = c('font-family').split(',').map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
-      const lh = cssLen(c('line-height')) ?? (this.opts.normalLineHeight?.(fams, (parseInt(c('font-weight'), 10) || 400) >= 600) ?? 1.2) * (cssLen(c('font-size')) ?? 12);
+      const lh = cssLen(c('line-height')) ?? (this.opts.normalLineHeight?.(fams, (parseInt(c('font-weight'), 10) || 400) >= 600, this.normalOpts) ?? 1.2) * (cssLen(c('font-size')) ?? 12);
       const shift = (parseFloat(va) / 100) * lh;
       if (shift) inl.baselineShift = shift;
     }
@@ -5891,7 +5917,7 @@ class HtmlImporter {
         const names2 = (decls['font-family'] ?? '').split(',').map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
         const family = names2.length ? this.opts.mapFont?.(names2, weight >= 600) : undefined;
         const measure = (s: string) =>
-          this.opts.measureText ? this.opts.measureText(s, { fontFamily: family, fontWeight: weight, fontSize: fs }) : [...s].reduce((a, ch) => a + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55), 0) * fs;
+          this.opts.measureText ? this.opts.measureText(s, { fontFamily: family, fontWeight: weight, fontSize: fs, kerning: (decls['font-kerning'] ?? '').trim() !== 'none' }) : [...s].reduce((a, ch) => a + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55), 0) * fs;
         const max = measure(text);
         const min = Math.max(0, ...text.split(/\s+/).map(measure));
         const len = (k: string) => (decls[k] === undefined || decls[k] === 'auto' ? 0 : (lenEm(decls[k], fs) ?? 0));
@@ -6362,7 +6388,7 @@ class HtmlImporter {
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
     // fontOpticalSizeUnit: CSS の font-optical-sizing: auto は、font-size の CSS px の数を opsz にする (CSS Fonts 4 §8.1 の試験 variable-opsz.html)
-    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, inlineBoxFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, inlineBoxFontMetrics: true, ...(this.opts.emBoxBaselineAh ? {} : { fontBaseline: true }), ...(this.opts.normalLineHeightAllFonts ? { normalLineHeightAllFonts: true } : {}), rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
     // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
     // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
     // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、

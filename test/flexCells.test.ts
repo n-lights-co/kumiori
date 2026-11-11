@@ -42,14 +42,18 @@ function boxes(root: Area): Box[] {
 }
 
 const PAGE = '@page { size: 400pt 400pt; margin: 0 } body { margin: 0 } p, div { font-size: 10pt; line-height: 12pt }';
+/** 10pt・line-height 12pt の行の上端から、Noto Serif JP の字の枠 (em の箱) の上端まで (下の最初のテストの説明) */
+const EM_TOP = (12 + (1.151 - 0.286) * 10) / 2 - 0.88 * 10;
 
 describe('表のセルと flex の項目の余白', () => {
   it('<td><p> の上下の margin はセルの中に残る (ブラウザと同じ)', () => {
     const r = load('<table style="border-collapse: collapse"><tr><td style="padding: 0"><p style="margin: 20pt 0">x</p></td></tr></table>', PAGE);
     const b = boxes(E.engine.layout(r.document).sheets[0] as unknown as Area);
     const g = b.find((a) => a.type === 'glyph' && a.text === 'x')!;
-    // margin 20pt + 半行間 1pt ((12 − 10) / 2)
-    expect(g.y).toBeCloseTo(21, 1);
+    // margin 20pt + 行の上端から字の枠 (em の箱) の上端まで。行の基線は、最初に使える書体 (このテストの書体は Noto Serif JP だけ。
+    // hhea の ascent 1.151・descent 0.286) の値で、行の上端から (12 + (1.151 − 0.286) × 10) / 2 = 10.325pt (CSS Inline 3 §5.3)。
+    // 字の枠の上端は基線から 0.88em 上なので 10.325 − 8.8 = 1.525pt (基線を em の箱の 0.88 の所に置いていたときは、半行間の 1pt)
+    expect(g.y).toBeCloseTo(20 + EM_TOP, 1);
     const cell = b.find((a) => a.type === 'table-cell' || a.type === 'cell')!;
     expect(cell.h).toBeCloseTo(20 + 12 + 20, 1);
   });
@@ -60,7 +64,7 @@ describe('表のセルと flex の項目の余白', () => {
     );
     const b = boxes(E.engine.layout(r.document).sheets[0] as unknown as Area);
     const g = b.find((a) => a.type === 'glyph' && a.text === 'a')!;
-    expect(g.y).toBeCloseTo(31, 1);
+    expect(g.y).toBeCloseTo(30 + EM_TOP, 1);
     const red = b.find((a) => a.bg === '#ff0000')!;
     const blue = b.find((a) => a.bg === '#0000ff')!;
     // 青は 3 行 (36pt)。赤は margin 30pt + 1 行 = 42pt の行の高さに、青が伸びる

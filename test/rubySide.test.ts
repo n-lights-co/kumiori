@@ -49,6 +49,13 @@ const scan = (document: ReturnType<typeof imp>): Laid => {
   return out;
 };
 const laid = (body: string, css = '') => scan(imp(body, css));
+/**
+ * 横書きの行の、字の行 (半行間を除いた 1em) の上端から、字の枠 (em の箱) の上端まで (pt。字は 10pt)。行の基線は、最初に使える書体
+ * (このテストの書体は Noto Serif JP だけ。hhea の ascent 1.151・descent 0.286) の値で、行内の箱の上端から
+ * (line-height + (1.151 − 0.286) × 10) / 2 (CSS Inline 3 §5.3)。字の枠の上端は基線から 0.88em 上なので、
+ * ((1.151 − 0.286) / 2 − (0.88 − 0.5)) × 10 = 0.525pt (基線を em の箱の 0.88 の所に置いていたときは 0)
+ */
+const EM = ((1.151 - 0.286) / 2 - (0.88 - 0.5)) * 10;
 const V = (wm: string, inner: string, style = '') => `<div style="writing-mode: ${wm}; height: 60mm; ${style}">${inner}</div>`;
 /** ルビの字が親文字の右にあるか (字の箱の中央どうしを比べる) */
 const rightOf = (r: { base: GlyphArea[]; ruby: GlyphArea[] }, k = 0) => r.ruby[k].x + r.ruby[k].width / 2 > r.base[0].x + r.base[0].width / 2;
@@ -110,14 +117,14 @@ describe('下側のルビの行の空き (CSS Ruby 1 §3.6: 注釈のある側�
     expect(ruby.y).toBeCloseTo(a.rubies[0].base[0].y + 10, 1);
     // ルビの下端 ≦ 次の行の字の上端
     expect(next.y).toBeGreaterThanOrEqual(ruby.y + 5 - 0.01);
-    // 行の高さは 字 10 + ルビ 5。字は行の上端から (上には空けない)
+    // 行の高さは 字 10 + ルビ 5。字の行は行の上端から (上には空けない)
     expect(a.lines[0].height).toBeCloseTo(15, 1);
-    expect(a.rubies[0].base[0].y).toBeCloseTo(a.lines[0].y, 1);
+    expect(a.rubies[0].base[0].y).toBeCloseTo(a.lines[0].y + EM, 1);
   });
   it('横書き: 上側のルビは、これまでどおり行の上に空ける (下側と対称)', () => {
     const a = laid('<p>前</p><p>あ<ruby>漢<rt>かん</rt></ruby></p>', css);
     expect(a.lines[1].height).toBeCloseTo(15, 1);
-    expect(a.rubies[0].base[0].y).toBeCloseTo(a.lines[1].y + 5, 1);
+    expect(a.rubies[0].base[0].y).toBeCloseTo(a.lines[1].y + 5 + EM, 1);
     expect(a.rubies[0].ruby[0].y).toBeGreaterThanOrEqual(a.glyphs.find((g) => g.text === '前')!.y + 10 - 0.01);
   });
   it('line-height に余裕があれば、下側のルビでも行の高さは変わらない', () => {
@@ -127,7 +134,7 @@ describe('下側のルビの行の空き (CSS Ruby 1 §3.6: 注釈のある側�
   it('上下の 2 段のルビ (ruby-position: under と 2 段目): 足りない分を、上と下に、それぞれの厚さの割合で分ける', () => {
     const a = laid('<p>前</p><p style="ruby-position: under"><ruby>東<rt>とう</rt><rtc>T</rtc></ruby></p><p>次</p>', css);
     expect(a.lines[1].height).toBeCloseTo(20, 1);
-    expect(a.rubies[0].base[0].y).toBeCloseTo(a.lines[1].y + 5, 1);
+    expect(a.rubies[0].base[0].y).toBeCloseTo(a.lines[1].y + 5 + EM, 1);
   });
   it('縦書き (vertical-rl) の左のルビ: 行の左に空ける。vertical-lr の右のルビ (over): 行の右に空ける', () => {
     const rl = laid(V('vertical-rl', '<p style="ruby-position: under">あ<ruby>漢<rt>かん</rt></ruby></p><p>次</p>'), css);
@@ -164,11 +171,11 @@ describe('2 段目のルビ (指定なし) と、下側 (横書き)・左側 (ve
     // 下側の圏点 (5pt): 行の下に 5pt。字は行の上端から
     const d = laid(`<p>あ${dots('under right')}</p><p>次</p>`, lh1);
     expect(d.lines[0].height).toBeCloseTo(15, 1);
-    expect(d.glyphs.find((g) => g.text === 'あ')!.y).toBeCloseTo(d.lines[0].y, 1);
+    expect(d.glyphs.find((g) => g.text === 'あ')!.y).toBeCloseTo(d.lines[0].y + EM, 1);
     // 2 段のルビ (上 5pt・下 5pt): 上と下に 5pt ずつ
     const t = laid(`<p>前</p><p>${two}</p><p>次</p>`, lh1);
     expect(t.lines[1].height).toBeCloseTo(20, 1);
-    expect(t.rubies[0].base[0].y).toBeCloseTo(t.lines[1].y + 5, 1);
+    expect(t.rubies[0].base[0].y).toBeCloseTo(t.lines[1].y + 5 + EM, 1);
     // 行間 4pt (line-height: 1.4) に 5pt の圏点: 足りない 1pt だけ
     expect(laid(`<p>あ${dots('under right')}</p>`, 'p { line-height: 1.4 }').lines[0].height).toBeCloseTo(15, 1);
     // vertical-rl の左の圏点: 行の左 (後ろ側) に 5pt
@@ -180,7 +187,7 @@ describe('2 段目のルビ (指定なし) と、下側 (横書き)・左側 (ve
     expect(laid(`<p>あ${dots('over right')}</p><p>次</p>`, lh2).lines.map((l) => l.height)).toEqual([20, 20].map((v) => expect.closeTo(v, 1)));
     const lh1 = laid(`<p>前</p><p>あ${dots('over right')}</p>`, 'p { line-height: 1 }');
     expect(lh1.lines[1].height).toBeCloseTo(15, 1);
-    expect(lh1.glyphs.find((g) => g.text === 'あ')!.y).toBeCloseTo(lh1.lines[1].y + 5, 1);
+    expect(lh1.glyphs.find((g) => g.text === 'あ')!.y).toBeCloseTo(lh1.lines[1].y + 5 + EM, 1);
   });
 });
 

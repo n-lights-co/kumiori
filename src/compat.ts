@@ -69,6 +69,7 @@ export const AH_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   tableCollapseSpillAh: true,
   tableRowspanMiddleAh: true,
   primaryFontByLangAh: true,
+  emBoxBaselineAh: true,
   superShiftAh: true,
   pseudoInlineBoxAh: true,
   textAlignInsideOutsideAh: true,
@@ -84,6 +85,20 @@ export const AH_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   ahCounterPagePhysical: true,
   ahCssExtensions: true,
 };
+
+/**
+ * HTML の読み込み (importHtml) の、ブラウザの既定のスタイル (--style browser・browser-margin) の設定: line-height: normal を、既定の書体でも
+ * 書体の値 (hhea の ascent + descent + lineGap) で決め、代わりの書体として使われた既定の書体の上下も行の高さに数える
+ * (CSS Inline 3 §5.3・§6.4、CSS 2.1 §10.8.1。お手本の Chromium と同じ)。ほかのスタイルは、既定の書体の normal を字の大きさの 1.2 倍にする
+ */
+export const BROWSER_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
+  normalLineHeightAllFonts: true,
+};
+
+/** 既定のスタイル (style) ごとの、HTML の読み込みの互換の設定 (画面 (main.ts) と API (api.ts) で同じものを使う) */
+export function htmlImportCompatOptions(style: HtmlDefaults): Readonly<Partial<HtmlImportOptions>> {
+  return style === 'ah' ? AH_HTML_IMPORT_OPTIONS : style === 'browser' || style === 'browser-margin' ? BROWSER_HTML_IMPORT_OPTIONS : {};
+}
 
 /** 組版 (LayoutEngine) の互換の設定: アンテナハウス互換では、字の組の詰め方 (kernAh) */
 export function compatLayoutOptions(ah: boolean): Pick<LayoutOptions, 'kernAh'> {

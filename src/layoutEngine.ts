@@ -12,7 +12,7 @@
  */
 import { TableMarkerScope, collectTableRetrieves, extendAreas, replaceRetrieves, type GroupMarkers, type MarkerArea } from './tableMarkers';
 import { msg } from './messages';
-import type { LoadedFont } from './fontManager';
+import { cssBaselineRatio, type LoadedFont } from './fontManager';
 import { gradientSvg } from './cssGradient';
 import { AREA_TREE_SCHEMA_VERSION, walkAreas, type AreaNode } from './areaTree';
 import { copySourceRef, documentNodes, indexDocument, sourceRef } from './sourceRef';
@@ -99,6 +99,7 @@ import {
   flattenInline,
   glueAfterCssLeaders,
   markLineBreaks,
+  markWordSqueeze,
   glyphNode,
   isInlineChild,
   lineMetrics,
@@ -1152,7 +1153,8 @@ class Flow {
   /**
    * 段落の最初の字 (initial-letter。CSS Inline 3 §7) の箱を作る: 字の大きさ・箱の大きさ・箱の中の字の位置を決めた float の節を返す。
    *  - まわりの文字の、合わせる 2 つの位置 (上と下。initial-letter-align。§7.4) を、最初の行の上端からの距離で求める。行の高さは包含ブロックの
-   *    line-height (§7.5.3: 行の中身による行の高さの違いは数えない)、字の枠 (em の箱) は行の中央、基線は字の枠の上端から書体の値だけ下:
+   *    line-height (§7.5.3: 行の中身による行の高さの違いは数えない)、基線は行の中の基線の位置 (nominalRatio。HTML は最初に使える書体の
+   *    上の高さ・下の深さから)、和文の字の枠 (em の箱) は、その基線から和文の字の書体の値だけ上と下:
    *    alphabetic = 最初の行の大文字の高さと、N 行目の欧文の基線。ideographic = 最初の行の字の枠の上端と、N 行目の字の枠の下端
    *    (ideographic-ink の位置は、字の枠で代える)。leading = 最初の行の上端と、N 行目の下端
    *  - 字の側の 2 つの位置は、中身で決める (§7.4): 漢字・仮名・ハングル・彝文字を含めば字の枠の上端と下端、ほかは大文字の高さと基線。
@@ -1183,14 +1185,21 @@ class Flow {
     const emTop = (LH - f) / 2;
     const base = emTop + this.nominalRatio(st) * f;
     const align = vertical && node.initialLetter.align !== 'leading' ? 'ideographic' : (node.initialLetter.align ?? 'alphabetic');
-    const over = align === 'leading' ? 0 : align === 'ideographic' ? emTop : base - capOf(fontP) * f;
-    const under = (N - 1) * LH + (align === 'leading' ? LH : align === 'ideographic' ? emTop + f : base);
+    // まわりの和文の字の枠 (em の箱) の上端・下端: 横書きは、行の基線から、和文の字の書体の値だけ上・下 (行の基線は最初に使える書体の値で
+    // 置くので、字の枠は行の中央とは限らない)。縦書きは、字が行の中央にそろうので、行の中央の 1em
+    const ideoP = fontOf('\u56FD', st).baselineRatio;
+    const emOver = vertical ? emTop : base - ideoP * f;
+    const over = align === 'leading' ? 0 : align === 'ideographic' ? emOver : base - capOf(fontP) * f;
+    const under = (N - 1) * LH + (align === 'leading' ? LH : align === 'ideographic' ? emOver + f : base);
     // 字の側の位置と、字の大きさ
     const ideographic = vertical || /[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Yi}]/u.test(text);
     const capL = capOf(fontL);
     const F = Math.max((under - over) / (ideographic ? 1 : capL), 0.01);
-    // 字の枠の上端 (箱の内容の上端から)
-    const top = ideographic ? over : over - (fontL.baselineRatio - capL) * F;
+    // 箱の中の字の行 (高さ F) の上端から、字の合わせる位置 (字の枠の上端・大文字の高さの上端) まで: 行の基線は nominalRatio の位置で、
+    // 字の枠の上端は、そこから字の書体の値 (baselineRatio) だけ上、大文字の高さの上端は capL だけ上。縦書きは、字の枠が行の中央
+    const brL = this.nominalRatio(stL);
+    // 字の行の上端 (箱の内容の上端から)
+    const top = vertical ? over : over - (brL - (ideographic ? fontL.baselineRatio : capL)) * F;
     const lines = Math.max(N, S);
     const d = describeBox(node, this.wm);
     const horizontal = !vertical;
@@ -2715,6 +2724,8 @@ class Flow {
       if (blockRef !== undefined) for (const a of atoms) a.ref ??= blockRef;
       glueAfterCssLeaders(atoms);
       markLineBreaks(atoms);
+      // 語間を追込みで詰めない行 (XSL-FO の仕様モード: 両端揃えで組まない行) の印。揃えは、この行を持つブロックの値
+      markWordSqueeze(atoms, st);
       // 互換モードのセルの最小の幅: 印の付いた img の前後は改行の機会にしない (Quirks Mode Standard §3.8)
       if (this.minContent)
         atoms.forEach((a, i) => {
@@ -2981,14 +2992,20 @@ class Flow {
       return { above: (lh + d) / 2, below: (lh - d) / 2 };
     }
     const half = (lh - fs) / 2;
-    return { above: font.baselineRatio * fs + half, below: (1 - font.baselineRatio) * fs + half };
+    // HTML (fontBaseline): 基線は、書体の上の高さ・下の深さで置く (上 = A + L/2、下 = D + L/2。CSS Inline 3 §5.3。行の字と同じ)
+    const br = st.fontBaseline ? cssBaselineRatio(font) : font.baselineRatio;
+    return { above: br * fs + half, below: (1 - br) * fs + half };
   }
 
   private nominalRatio(st: ResolvedStyle): number {
     const latinDoc = !!st.language && !/^(ja|zh|ko)\b/i.test(st.language);
     const run = { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch };
-    // HTML (primaryFontMetrics): 最初に使える書体 (空白の字の書体) の値 (CSS Inline 3 §5.3)
-    if (st.primaryFontMetrics) return this.host.measurer.glyph(primaryChar(st), run, 'horizontal-tb').font.baselineRatio;
+    // HTML (primaryFontMetrics): 最初に使える書体 (空白の字の書体) の値 (CSS Inline 3 §5.3)。
+    // fontBaseline なら、書体の上の高さ・下の深さで置いた基線の位置 (行の字と同じ。fontManager.ts の cssBaselineRatio)
+    if (st.primaryFontMetrics) {
+      const font = this.host.measurer.glyph(primaryChar(st), run, 'horizontal-tb').font;
+      return st.fontBaseline ? cssBaselineRatio(font) : font.baselineRatio;
+    }
     return this.host.measurer.glyph(latinDoc ? 'x' : '\u56FD', run, 'horizontal-tb').font.baselineRatio;
   }
 
