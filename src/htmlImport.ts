@@ -820,6 +820,37 @@ function lenEm(v: string, fs: number): number | undefined {
   return cssLen(v);
 }
 
+/**
+ * ページ文脈・余白の箱の宣言 (書いたままの値) のうち、字の書式の一括指定 (font・font-variant・text-decoration) を、個別の性質に分ける
+ * (書いた順のまま。後の宣言が勝つ)。inherit・unset の宣言は捨てる (受け継いだ値を使う)。ほかの宣言はそのまま
+ */
+function marginTextDecls(d: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(d)) {
+    const longs = /^(font|font-variant|text-decoration)$/.test(k) ? expand(k, v) : [[k, v] as [string, string]];
+    for (const [lk, lv] of longs) {
+      delete out[lk];
+      if (MARGIN_TEXT_PROPS.test(lk) && /^(inherit|unset)$/i.test(lv.trim())) continue;
+      out[lk] = lv;
+    }
+  }
+  return out;
+}
+/**
+ * 余白の箱に効かせる字の書式の性質。CSS Page 3 §6・付録 A の、余白の箱に効く CSS 2.1 の性質 (font-variant・font・text-decoration・
+ * text-transform・letter-spacing・word-spacing・white-space) と、その CSS 3 以降の個別の性質。CSS 2.1 に無い性質の振る舞いは
+ * §6 が決めていない (CSS3 の性質を足していけるように、と注記する) ので、本文と同じに読む
+ */
+const MARGIN_TEXT_PROPS =
+  /^(font-size|font-family|font-weight|font-style|color|line-height|letter-spacing|word-spacing|text-transform|white-space|font-variant|font-variant-(caps|numeric|east-asian|ligatures|position)|font-feature-settings|font-kerning|font-stretch|font-optical-sizing|font-variation-settings|font-palette|hyphens|line-break|word-break|overflow-wrap|text-decoration-(line|style|color|thickness)|text-underline-offset)$/;
+/** そのうち、受け継がない性質 (ページ文脈から余白の箱へ渡さない) */
+const MARGIN_TEXT_NOT_INHERITED = /^(text-decoration-(line|style|color|thickness))$/;
+
+/** font-variant-caps の値 → small caps の種類 (small-caps・all-small-caps。ほかは無し) */
+function marginSmallCaps(v: string): '' | 'small' | 'all' {
+  return /all-small-caps/i.test(v) ? 'all' : /small-caps/i.test(v) ? 'small' : '';
+}
+
 /** 1〜4 個の値の一括指定 (margin・padding) */
 function edges4(v: string, fs: number): { top: number; right: number; bottom: number; left: number } {
   const n = v.trim().split(/\s+/).map((x) => lenEm(x, fs) ?? 0);
@@ -2676,10 +2707,46 @@ class HtmlImporter {
     for (const toks of parts) {
       const name = toks[0]?.kind === 'ident' ? toks[0].v : undefined;
       if (!name) continue;
-      out.push({ type: 'marker', className: `string:${name}`, children: [this.textValue(el, toks.slice(1))] });
+      const text = this.textValue(el, toks.slice(1));
+      out.push({ type: 'marker', className: `string:${name}`, children: [text] });
+      // 余白の箱の text-transform・font-variant-caps を当てた字 (余白の箱ごとに、その書式の変種を取り出す。marginBoxes)
+      for (const v of this.marginStringVariants()) out.push({ type: 'marker', className: `string:${name}|${v.tt}|${v.sc}`, children: this.marginText(text, v.tt, v.sc) });
     }
     return out;
   }
+
+  /** 余白の箱の字: text-transform を当て、small caps の印を付ける (本文の transformText・smallCaps と同じ) */
+  private marginText(t: string, tt: string, sc: '' | 'small' | 'all'): LInlineLevel[] {
+    const s = tt && tt !== 'none' ? applyTextTransform(t, tt) : t;
+    return sc ? [{ type: 'inline', smallCaps: sc, children: [s] } as LInline] : [s];
+  }
+
+  /**
+   * 文書の @page の規則 (ページ文脈と余白の箱) に書かれた text-transform・font-variant-caps の組 (何も変えない組を除く)。
+   * string-set の値は字の並びなので、余白の箱の書式を当てた変種を、文書を読むときに作っておく。そういう指定の無い文書では空
+   */
+  private marginStringVariants(): Array<{ tt: string; sc: '' | 'small' | 'all' }> {
+    if (this.marginVariants) return this.marginVariants;
+    const tts = new Set(['none']);
+    const scs = new Set<'' | 'small' | 'all'>(['']);
+    const root = (this.bodyEl?.ownerDocument as Document | undefined)?.documentElement;
+    const rootC = root ? this.cs(root) : undefined;
+    const see = (d: Record<string, string>) => {
+      const x = marginTextDecls(d);
+      if (x['text-transform']) tts.add(x['text-transform'].trim().toLowerCase());
+      if (x['font-variant-caps']) scs.add(marginSmallCaps(x['font-variant-caps']));
+    };
+    // 根の要素の値は、ページ文脈を通して余白の箱が受け継ぐ (Page 3 §6)
+    if (rootC) see({ 'text-transform': rootC('text-transform') || 'none', 'font-variant-caps': rootC('font-variant-caps') || 'normal' });
+    for (const r of this.sheet.pages) {
+      see(r.decls);
+      for (const b of Object.values(r.boxes)) see(b);
+    }
+    const out: Array<{ tt: string; sc: '' | 'small' | 'all' }> = [];
+    for (const tt of tts) for (const sc of scs) if (tt !== 'none' || sc) out.push({ tt, sc });
+    return (this.marginVariants = out);
+  }
+  private marginVariants?: Array<{ tt: string; sc: '' | 'small' | 'all' }>;
 
   /** 文字の値 (string-set・bookmark-label): 文字列・content() / content(before|after)・attr()・counter() をつなぐ */
   private textValue(el: Element, toks: ContentToken[]): string {
@@ -2841,8 +2908,13 @@ class HtmlImporter {
   }
 
   /** 文字の書式: 親と違うものだけ (CSS の継承は Kumiori の resolveStyle と同じく子へ引き継ぐ) */
-  private textStyle(el: Element, parent: Element | undefined, pseudo?: PseudoSel): TextStyle {
-    const c = this.cs(el, pseudo);
+  /**
+   * over: ページの余白の箱の書式を読むときの、値の取り出し口 (marginBoxes。el・parent は、受け継ぐ元の要素)。
+   * 要素の属性・要素ごとの拡張の指定は見ない (擬似要素と同じ扱い)
+   */
+  private textStyle(el: Element, parent: Element | undefined, pseudo0?: PseudoSel, over?: (name: string) => string): TextStyle {
+    const pseudo: PseudoSel | '@margin' | undefined = over ? '@margin' : pseudo0;
+    const c = over ?? this.cs(el, pseudo0);
     const p = parent ? this.cs(parent) : undefined;
     const diff = (prop: string) => !p || c(prop) !== p(prop);
     const s: TextStyle = {};
@@ -4185,31 +4257,39 @@ class HtmlImporter {
       if (pd === 'flow-root' || pd === 'table') pb.bfc = true;
       items.push({ v: pb, block: true });
     }
-    else if (c('display') === 'inline-block' && cssLen(c('width'))) {
-      // 幅のある inline-block (見出しの番号を 12mm の箱に入れるなど): その幅の行内の箱。中は字下げしない
-      // 中の揃え・字下げは、::before / ::after 自身の text-align・text-indent。padding も箱に付ける
+    else if (c('display') === 'inline-block') {
+      // inline-block: 行内の、分けられない箱 (見出しの番号を 12mm の箱に入れるなど)。幅の指定が無ければ中身に合わせた幅。
+      // 箱の書式 (margin・padding・border・背景・寸法・不透明度) は、ふつうの要素の inline-block と同じ道 (boxStyle) で付ける
+      // (CSS Pseudo 4 §4.1: ::before・::after の箱は、その要素の直下の子のように振る舞い、効く性質に制限が無い。負の margin-left で左へ出すこともできる)。
+      // 中の揃え・字下げは、::before / ::after 自身の text-align・text-indent。中は字下げしない
       const ta = c('text-align').replace(/^-webkit-/, '');
       // left・right は書く向きで start・end に読み替える (右から左へ書くなら right が start)
       const rtlTa = c('direction') === 'rtl';
       const align = ta === 'end' || ta === (rtlTa ? 'left' : 'right') ? 'end' : ta === 'center' ? 'center' : ta === 'justify' ? 'justify' : 'start';
-      const pad: Record<string, number> = {};
-      for (const sd of ['top', 'right', 'bottom', 'left']) {
-        const v = cssLen(c(`padding-${sd}`));
-        if (v) pad[sd] = v;
-      }
+      const box = this.boxStyle(el, which);
+      delete box.breakBefore;
+      delete box.breakAfter;
       const ic: LInlineContainer = {
         type: 'inline-container',
         decorateBox: false,
         ...style,
-        ...(this.paintEffectOf(el, which) ? { paintEffect: this.paintEffectOf(el, which) } : {}),
-        width: cssLen(c('width')),
-        ...(Object.keys(pad).length ? { padding: pad } : {}),
+        ...(box as Omit<LInlineContainer, 'type' | 'children'>),
         baselineFrom: 'last',
         children: [{ type: 'block', textIndent: 0, ...textIndentOf(c('text-indent')), textAlign: align, children: parts } as LBlock],
       };
+      const iva = c('vertical-align');
+      if (iva === 'middle') ic.alignmentBaseline = 'central';
+      else if (iva === 'top' || iva === 'text-top') ic.alignmentBaseline = 'before-edge';
+      else if (iva === 'bottom' || iva === 'text-bottom') ic.alignmentBaseline = 'after-edge';
       items.push({ v: ic, block: false });
-    } else if (Object.keys(style).length || this.opts.pseudoInlineBoxAh || this.paintEffectOf(el, which)) items.push({ v: { type: 'inline', ...style, ...(this.paintEffectOf(el, which) ? { paintEffect: this.paintEffectOf(el, which) } : {}), children: parts } as LInline, block: false });
-    else for (const v of parts) items.push({ v, block: false });
+    } else {
+      // 行内の箱 (display: inline): ふつうの行内の要素と同じ道で、背景・罫線・内側の余白・左右の margin・vertical-align・不透明度を付ける
+      const inl: LInline = { type: 'inline', children: parts };
+      this.inlineBoxInto(inl, el, el, which);
+      const boxed = Object.keys(inl).length > 2;
+      if (Object.keys(style).length || this.opts.pseudoInlineBoxAh || boxed) items.push({ v: { ...inl, ...style, children: parts } as LInline, block: false });
+      else for (const v of parts) items.push({ v, block: false });
+    }
   }
 
   /** 絶対配置の ::before / ::after → 絶対配置の箱 (大きさ・位置・背景はブラウザが確定させた値) */
@@ -4932,6 +5012,23 @@ class HtmlImporter {
     // display: contents (CSS Display 3 §2.5): 箱を作らないので、罫線・背景・内側と外側の余白・vertical-align は付けず、受け継ぐ書式だけを中身に渡す
     if (c('display') === 'contents') return [{ type: 'inline', ...this.textStyle(el, parent), children: this.flowChildren(el, true) as LInlineLevel[] }];
     const inl: LInline = { type: 'inline', ...this.textStyle(el, parent), children: this.flowChildren(el, true) as LInlineLevel[] };
+    this.inlineBoxInto(inl, el, parent);
+    const inlId = el.getAttribute('id');
+    if (inlId) inl.id = inlId;
+    // 中身の無い行内要素も、字の大きさと行の高さを行の箱に入れる (CSS 2.1 §10.8)
+    if (!inl.children.length) inl.emptyStrut = true;
+    const link = this.linkOf(el);
+    if (link) inl.link = link;
+    return [inl];
+  }
+
+  /**
+   * 行内の箱 (display: inline) の書式を inl に付ける: vertical-align・背景・罫線・内側の余白・box-decoration-break・行の進む方向の margin・
+   * 不透明度。要素の箱と、その ::before・::after の箱 (pseudo) とで同じ道を通す (CSS Pseudo 4 §4.1: 生成される箱は、その要素の直下の子の
+   * ように振る舞う。§4・§4.1: ::before・::after は fully styleable で、実際の要素に効く性質はすべて効く)。parent は、vertical-align: super の基準の字の大きさを持つ親 (擬似要素では el)
+   */
+  private inlineBoxInto(inl: LInline, el: Element, parent: Element, pseudo?: '::before' | '::after') {
+    const c = this.cs(el, pseudo);
     const va = c('vertical-align');
     if (va === 'super' && this.opts.superShiftAh) inl.baselineShift = (cssLen(this.cs(parent)('font-size')) ?? 12) / 3;
     else if (va === 'super' || va === 'sub') inl.baselineShift = va;
@@ -4943,9 +5040,9 @@ class HtmlImporter {
       const shift = (parseFloat(va) / 100) * lh;
       if (shift) inl.baselineShift = shift;
     }
-    const bg = this.printOf(this.pg(el), 'background-color', 'background') ?? cssColor(c('background-color'));
+    const bg = (pseudo ? undefined : this.printOf(this.pg(el), 'background-color', 'background')) ?? cssColor(c('background-color'));
     if (bg) inl.backgroundColor = bg;
-    const box = this.boxStyle(el);
+    const box = this.boxStyle(el, pseudo);
     if (box.border) inl.border = box.border;
     if (box.padding) inl.padding = box.padding;
     // initial-letter は ::first-letter だけ (行の最初の行内の箱への指定 (CSS Inline 3 §7.3.1) は未対応。知らせる)
@@ -4959,15 +5056,8 @@ class HtmlImporter {
       const rtl = !vert && c('direction') === 'rtl';
       inl.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me };
     }
-    const inlId = el.getAttribute('id');
-    if (inlId) inl.id = inlId;
     // 不透明度 (opacity は行内の箱にも効く。変換は、置換要素でない行内の箱には効かない)
     if (box.paintEffect) inl.paintEffect = box.paintEffect;
-    // 中身の無い行内要素も、字の大きさと行の高さを行の箱に入れる (CSS 2.1 §10.8)
-    if (!inl.children.length) inl.emptyStrut = true;
-    const link = this.linkOf(el);
-    if (link) inl.link = link;
-    return [inl];
   }
 
   /**
@@ -5493,10 +5583,11 @@ class HtmlImporter {
   }
 
   /** 余白の箱の content → 行内の要素 (ページ番号・総ページ数・string()・element()) */
-  private boxContent(v: string): Array<LInlineLevel | LRetrieveMarker> {
+  private boxContent(v: string, tt = 'none', sc: '' | 'small' | 'all' = ''): Array<LInlineLevel | LRetrieveMarker> {
     const out: Array<LInlineLevel | LRetrieveMarker> = [];
+    const plain = tt === 'none' && !sc;
     for (const t of parseContent(v)) {
-      if (t.kind === 'str') out.push(t.v);
+      if (t.kind === 'str') out.push(...(plain ? [t.v] : this.marginText(t.v, tt, sc)));
       else if (t.kind !== 'fn') continue;
       else if (t.name === 'counter' && t.args[0] === 'page') {
         out.push('{pageNumber}');
@@ -5504,10 +5595,13 @@ class HtmlImporter {
       } else if (t.name === 'counter' && t.args[0] === 'pages') out.push('{totalPages}');
       else if (t.name === 'env') {
         // env(doc-title): 文書の題 (<title>)。env(url) などは空
-        if (t.args[0] === 'doc-title') out.push(this.docTitle);
+        if (t.args[0] === 'doc-title') out.push(...(plain ? [this.docTitle] : this.marginText(this.docTitle, tt, sc)));
       } else if (t.name === 'string' || t.name === 'element') {
         const pos = t.args[1] ?? 'first';
-        out.push({ type: 'retrieve-marker', className: `${t.name === 'string' ? 'string' : 'running'}:${t.args[0]}`, position: MARKER_POS[pos] ?? 'first-including-carryover', boundary: 'document' });
+        // string() の値には、この箱の text-transform・small caps を当てた変種を取り出す (stringSet が作る)。
+        // element() の中身は、元の要素の書式のまま
+        const variant = t.name === 'string' && !plain ? `|${tt}|${sc}` : '';
+        out.push({ type: 'retrieve-marker', className: `${t.name === 'string' ? 'string' : 'running'}:${t.args[0]}${variant}`, position: MARKER_POS[pos] ?? 'first-including-carryover', boundary: 'document' });
       } else this.miss(`@page content:${t.name}()`);
     }
     return out;
@@ -5539,7 +5633,8 @@ class HtmlImporter {
           continue;
         }
         const fs = lenEm(decls['font-size'] ?? '', rootFs) ?? rootFs;
-        const items = this.boxContent(content);
+        // 幅は、text-transform を当てた字で見積もる (small caps の字の幅は、元の字で見積もる)
+        const items = this.boxContent(content, (decls['text-transform'] ?? 'none').trim().toLowerCase() || 'none');
         if (items.some((x) => typeof x !== 'string')) unknown = true;
         // ページ番号の印は、3 桁の数の幅とみなす
         const text = items.map((x) => (typeof x === 'string' ? x.replace(/\{(pageNumber|totalPages)\}/g, '000') : '')).join('');
@@ -5734,10 +5829,13 @@ class HtmlImporter {
 
   /** ページ余白の箱 (@top-center など) → 静的コンテンツ (ページの左上を原点に、pt で置く) */
   private marginBoxes(master: PageMaster, boxes: Record<string, Record<string, string>>, rootFs: number, pageDecls: Record<string, string> = {}): LBlockContainer[] {
-    // 余白の箱は、@page に書いた受け継ぐ性質 (字の大きさ・書体・行送りなど) を受け継ぐ
-    const inherited = Object.fromEntries(
-      Object.entries(pageDecls).filter(([k]) => /^(font-size|font-family|font-weight|font-style|color|line-height|letter-spacing)$/.test(k)),
-    );
+    // 余白の箱は、@page (ページ文脈) に書いた受け継ぐ性質 (字の大きさ・書体・行送り・font-variant・text-transform など) を受け継ぐ
+    // (CSS Page 3 §6: "page-margin boxes inherit from the page context. The page context inherits from the root element.")。
+    // 字の書式の一括指定 (font・font-variant・text-decoration) は、個別の性質に分けてから読む
+    const inherited = Object.fromEntries(Object.entries(marginTextDecls(pageDecls)).filter(([k]) => MARGIN_TEXT_PROPS.test(k) && !MARGIN_TEXT_NOT_INHERITED.test(k)));
+    boxes = Object.fromEntries(Object.entries(boxes).map(([k, d]) => [k, marginTextDecls(d)]));
+    const rootEl = (this.bodyEl?.ownerDocument as Document | undefined)?.documentElement ?? this.bodyEl;
+    const rootC = rootEl ? this.cs(rootEl) : undefined;
     const PT = 72 / 25.4;
     const W = master.width * PT;
     const H = master.height * PT;
@@ -5808,7 +5906,10 @@ class HtmlImporter {
         const n = parseInt(col.slice(1), 16);
         return `#${[(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => Math.round(255 - opacity * (255 - c)).toString(16).padStart(2, '0')).join('')}`;
       };
-      const ts: TextStyle = { fontSize: fs, textIndent: 0, textAlign: align };
+      const ts: TextStyle = { ...this.marginTextStyle(decls, fs), fontSize: fs, textIndent: 0, textAlign: align };
+      // text-transform・font-variant-caps は、字の並びに当てる (本文と同じ)。指定が無ければ、根の要素の値 (ページ文脈を通して受け継ぐ)
+      const tt = (decls['text-transform'] ?? rootC?.('text-transform') ?? 'none').trim().toLowerCase() || 'none';
+      const sc = marginSmallCaps(decls['font-variant-caps'] ?? rootC?.('font-variant-caps') ?? '');
       if (decls['font-weight']) ts.fontWeight = /bold/.test(decls['font-weight']) ? 700 : parseInt(decls['font-weight'], 10) || 400;
       if (decls['font-style']) ts.fontStyle = /italic|oblique/.test(decls['font-style']) ? 'italic' : 'normal';
       if (decls['font-family'] || ts.fontWeight) {
@@ -5833,7 +5934,7 @@ class HtmlImporter {
         boxSizing: 'border-box',
         blockAlign,
         writingMode: this.wm(decls['writing-mode'] ?? '') ?? 'horizontal-tb',
-        children: [{ type: 'block', ...ts, children: this.boxContent(content) as LInlineLevel[] }],
+        children: [{ type: 'block', ...ts, children: this.boxContent(content, tt, sc) as LInlineLevel[] }],
       };
       // z-index が負の余白の箱 (本文の絵の下に隠れるノンブルなど) は、本文の背面に置く
       if ((parseInt(decls['z-index'] ?? '', 10) || 0) < 0) box.layer = 'behind';
@@ -5869,6 +5970,44 @@ class HtmlImporter {
       out.push(box);
     }
     return out;
+  }
+
+  /**
+   * 余白の箱の字の書式のうち、marginBoxes が自分で読むもの (字の大きさ・書体・太さ・傾き・色・行送り・字間) のほか:
+   * word-spacing・white-space・text-decoration・font-variant-*・font-feature-settings・font-kerning・font-stretch・
+   * font-variation-settings・font-optical-sizing・font-palette・hyphens・line-break・word-break・overflow-wrap。
+   * 本文と同じ所 (textStyle) で読む。宣言の無い性質は、静的コンテンツが受け継ぐ本文の根の書式 (body) のままにする
+   * (decls は、ページ文脈から受け継いだ宣言と、余白の箱の宣言。fs は箱の字の大きさ (pt))
+   */
+  private marginTextStyle(decls: Record<string, string>, fs: number): TextStyle {
+    const body = this.bodyEl;
+    if (!body) return {};
+    const READ = /^(word-spacing|white-space|font-variant-(numeric|east-asian|ligatures|position)|font-feature-settings|font-kerning|font-stretch|font-optical-sizing|font-variation-settings|font-palette|hyphens|line-break|word-break|overflow-wrap|text-decoration-(line|style|color|thickness)|text-underline-offset)$/;
+    if (!Object.keys(decls).some((k) => READ.test(k))) return {};
+    const bodyC = this.cs(body);
+    // em の長さは、箱の字の大きさで pt にする (textStyle は計算値を読む)
+    const len = (v: string) => {
+      const n = lenEm(v, fs);
+      return n === undefined ? v : `${n}pt`;
+    };
+    const c = (name: string): string => {
+      if (name === 'display') return 'block';
+      if (name === 'font-size') return `${fs}pt`;
+      // 線の色の初期値 currentcolor は、字の色 (計算値では color と同じ値)
+      if (name === 'text-decoration-color') {
+        const v = decls[name]?.trim();
+        return !v || /^currentcolor$/i.test(v) ? c('color') : v;
+      }
+      if (name === 'color') return decls.color?.trim() ?? bodyC('color');
+      const v = READ.test(name) ? decls[name] : undefined;
+      if (v === undefined) return bodyC(name);
+      if (/^(word-spacing|text-decoration-thickness|text-underline-offset)$/.test(name)) return len(v.trim().toLowerCase());
+      return /^(font-feature-settings|font-variation-settings|font-palette)$/.test(name) ? v.trim() : v.trim().toLowerCase();
+    };
+    const s = this.textStyle(body, body, undefined, c);
+    // 字の大きさ・色・行送りは、marginBoxes が決める
+    for (const k of ['fontSize', 'color', 'lineHeight', 'lineHeightPt', 'fontFamily', 'fontWeight', 'fontStyle', 'letterSpacing'] as const) delete s[k];
+    return s;
   }
 
   /** 名前付きページ 1 つ分のページシーケンス (:first / :left / :right / :blank を条件付きのマスターにする) */
