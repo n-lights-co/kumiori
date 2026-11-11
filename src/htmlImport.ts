@@ -75,7 +75,7 @@ import type { FkFont, MathFont } from './mathFont';
 import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
-import { cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
+import { UNIT_PT, cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
 import { AH_ALIASES, counterText, isPagedDecl, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
@@ -517,6 +517,33 @@ const PAGE_SIZES: Record<string, [number, number]> = {
   legal: [215.9, 355.6],
   ledger: [279.4, 431.8],
 };
+
+/**
+ * 用紙の大きさの値 (CSS Paged Media 3 §7.1 の size の値: <length>{1,2} | auto | [ <page-size> || [ portrait | landscape ] ]) → 幅・高さ (mm)。
+ * @page の無い文書の用紙 (公開 API の pageSize・Node のコマンドの --page-size) を読むのに使う。値の全体が文法に合わなければ undefined
+ * (@page の中の size と違い、合わない語を読み飛ばさない)。
+ *  - 用紙の名前 (A5・A4・A3・B5・B4・JIS-B5・JIS-B4・letter・legal・ledger と、Kumiori が足している A6) は、大文字・小文字を区別しない
+ *  - 長さは、絶対の単位 (mm・cm・Q・in・pt・pc・px) の正の値。1 つなら正方形 (§7.1 の <length>)。em・ex (ページの文脈の書体に対する長さ) と百分率は読まない
+ *  - auto と、向きだけの値 (portrait・landscape) は、def (既定は A4) の用紙に対して (§7.1: 用紙は UA が選ぶ)
+ */
+export function parsePageSize(value: string, def: { width: number; height: number } = { width: 210, height: 297 }): { width: number; height: number } | undefined {
+  const parts = value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!parts.length || parts.length > 2) return undefined;
+  const orient = (w: number, h: number, o?: string) => ((o === 'landscape' && w < h) || (o === 'portrait' && w > h) ? { width: h, height: w } : { width: w, height: h });
+  if (parts.length === 1 && parts[0] === 'auto') return { width: def.width, height: def.height };
+  const lens = parts.map((t) => {
+    const m = /^\+?(\d+\.?\d*|\.\d+)(mm|cm|q|in|pt|pc|px)$/.exec(t);
+    const n = m ? parseFloat(m[1]) * UNIT_PT[m[2]] * MM_PER_PT : undefined;
+    return n !== undefined && n > 0 && Number.isFinite(n) ? n : undefined;
+  });
+  if (lens.every((n) => n !== undefined)) return { width: lens[0]!, height: lens[1] ?? lens[0]! };
+  if (lens.some((n) => n !== undefined)) return undefined;
+  const names = parts.filter((t) => PAGE_SIZES[t]);
+  const orients = parts.filter((t) => t === 'portrait' || t === 'landscape');
+  if (names.length + orients.length !== parts.length || names.length > 1 || orients.length > 1) return undefined;
+  const [w, h] = names.length ? PAGE_SIZES[names[0]] : [def.width, def.height];
+  return orient(w, h, orients[0]);
+}
 
 /** @page の宣言 (size・margin・bleed・marks) から、用紙の大きさと余白 (mm) を読む */
 function pageBox(
@@ -2399,7 +2426,7 @@ class HtmlImporter {
             break;
           }
           case 'url': {
-            const img: LImage = { type: 'image', src: normalizeSrc(unquote(a[0] ?? '')) };
+            const img: LImage = { type: 'image', src: normalizeSrc(unquote(a[0] ?? '')), decorateBox: false };
             // ::before / ::after の寸法 (ブラウザは、生成した画像の寸法を確定させない)
             const pd = pseudo ? this.pagedPseudo.get(el)?.[pseudo] : undefined;
             const fs = cssLen(this.cs(el)('font-size')) ?? 12;
@@ -2826,8 +2853,11 @@ class HtmlImporter {
       const colors = dc ? { ...(deco.includes('underline') ? { underline: dc } : {}), ...(deco.includes('overline') ? { overline: dc } : {}), ...(deco.includes('line-through') ? { lineThrough: dc } : {}) } : undefined;
       s.textDecoration = { ...(deco.includes('underline') ? { underline: true } : {}), ...(deco.includes('overline') ? { overline: true } : {}), ...(deco.includes('line-through') ? { lineThrough: true } : {}), ...(colors ? { colors } : {}), ...decoExtras(deco) };
     }
-    // 互換モード: 祖先の飾り線は表に伝えない (表に自分の飾り線があれば、それだけ。Quirks Mode §3.11)
-    if (!pseudo && isQuirksDoc(el.ownerDocument as Document | null) && /^(inline-)?table$/.test(c('display'))) {
+    // 互換モード: 祖先の飾り線は表に伝えない (表に自分の飾り線があれば、それだけ。Quirks Mode §3.11)。
+    // inline-block・inline-table (行の中の、分けられない箱) の中身にも、祖先の飾り線は伝わらない (CSS Text Decoration 3 §2:
+    // "text decorations are not propagated to ... the contents of atomic inline-level descendants such as inline blocks and inline tables")。
+    // 箱に自分の飾り線があれば、それだけを中身に引く
+    if ((!pseudo && isQuirksDoc(el.ownerDocument as Document | null) && /^(inline-)?table$/.test(c('display'))) || /^inline-(block|table)$/.test(c('display'))) {
       const own = deco && deco !== 'none' ? deco : '';
       const dc = own ? decoColor() : undefined;
       s.textDecoration = { underline: own.includes('underline'), overline: own.includes('overline'), lineThrough: own.includes('line-through'), ...(dc ? { colors: { underline: dc, overline: dc, lineThrough: dc } } : {}), ...(own ? decoExtras(own) : {}) };
@@ -4049,6 +4079,7 @@ class HtmlImporter {
       }
       const ic: LInlineContainer = {
         type: 'inline-container',
+        decorateBox: false,
         ...style,
         ...(this.paintEffectOf(el, which) ? { paintEffect: this.paintEffectOf(el, which) } : {}),
         width: cssLen(c('width')),
@@ -4395,7 +4426,7 @@ class HtmlImporter {
   private image(el: Element, src: string): LImage {
     const key = normalizeSrc(src);
     this.report.images.push(key);
-    const img: LImage = { type: 'image', src: key };
+    const img: LImage = { type: 'image', src: key, decorateBox: false };
     const alt = el.getAttribute('alt') ?? el.getAttribute('title');
     if (alt) img.alt = alt;
     const c = this.cs(el);
@@ -4523,13 +4554,30 @@ class HtmlImporter {
       // 画像の罫線・内側の余白・背景色 (img { border: … }): 画像を囲む行内の箱に付ける。
       // 角丸 (border-radius) は枠に付け、画像は枠の内側の角丸 (外側の半径 − 罫線と余白) で切り抜く (CSS Backgrounds 3 §5.1・§5.3)
       const bs = this.boxStyle(el);
+      // 外側の余白 (margin): 行内の置換要素には 4 辺とも効く (CSS 2.1 §8.3。上下の margin が効かないのは、置換要素でない行内の箱だけ)。
+      // auto は 0 (§10.3.2)。百分率は読まない
+      const c = this.cs(el);
+      const mg = { top: cssLen(c('margin-top')) ?? 0, right: cssLen(c('margin-right')) ?? 0, bottom: cssLen(c('margin-bottom')) ?? 0, left: cssLen(c('margin-left')) ?? 0 };
+      const hasMargin = !!(mg.top || mg.right || mg.bottom || mg.left);
       if (bs.border || bs.padding || bs.backgroundColor) {
         const rad = img.borderRadius;
         if (rad) img.borderRadius = innerRadius(rad, bs.border, bs.padding);
         // 変換・不透明度は、枠ごとに掛ける (基準の箱は border の箱)
         delete img.paintEffect;
-        return [{ type: 'inline', ...(bs.paintEffect ? { paintEffect: bs.paintEffect } : {}), ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline];
+        // (この箱は置換要素の箱そのものなので、字の内容の領域 (inlineBoxFontMetrics) でなく、画像を囲む。CSS 2.1 §10.6.2)
+        const frame = { type: 'inline', inlineBoxFontMetrics: false, ...(bs.paintEffect ? { paintEffect: bs.paintEffect } : {}), ...(bs.border ? { border: bs.border } : {}), ...(bs.padding ? { padding: bs.padding } : {}), ...(bs.backgroundColor ? { backgroundColor: bs.backgroundColor } : {}), ...(rad ? { borderRadius: rad } : {}), children: [img] } as LInline;
+        // 枠のある画像の余白は、枠の外に付ける: 行の進む方向の余白だけ (行内の空き。行内の要素の margin と同じ)。
+        // 行の幅の方向の余白 (横書きの上下) は、枠を行内の枠として描いているので付けられない (知らせる)
+        if (hasMargin) {
+          const vert = /^(vertical|sideways)/.test(c('writing-mode'));
+          const [ms, me, cross] = vert ? [mg.top, mg.bottom, mg.left || mg.right] : [mg.left, mg.right, mg.top || mg.bottom];
+          const rtl = !vert && c('direction') === 'rtl';
+          if (ms || me) frame.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me };
+          if (cross) this.miss(vert ? 'margin-left・margin-right (罫線・内側の余白・背景色のある行内の画像)' : 'margin-top・margin-bottom (罫線・内側の余白・背景色のある行内の画像)');
+        }
+        return [frame];
       }
+      if (hasMargin) img.margin = mg;
       return [img];
     }
     // 文書の中に直接書いた <svg>: 単独の SVG 文書 (data URI) にして、<img> と同じ画像として組む
@@ -4706,7 +4754,7 @@ class HtmlImporter {
     // ("inline-table uses its first baseline by default." CSS Box Alignment 3 §4.2、https://www.w3.org/TR/css-align-3/ 2026-11-06 取得)
     if (c('display') === 'inline-table') {
       const t = this.table(el, parent) as LBlockLevel & { margin?: LInlineContainer['margin'] };
-      const ic: LInlineContainer = { type: 'inline-container', ...this.textStyle(el, parent), children: [t] };
+      const ic: LInlineContainer = { type: 'inline-container', decorateBox: false, ...this.textStyle(el, parent), children: [t] };
       // 表の外側の余白は、行内の箱の余白にする (中身に合わせた箱の幅に余白を含める)
       if (t.margin) {
         ic.margin = t.margin;
@@ -4726,6 +4774,7 @@ class HtmlImporter {
       delete box.breakAfter;
       const ic: LInlineContainer = {
         type: 'inline-container',
+        decorateBox: false,
         ...this.textStyle(el, parent),
         ...this.paragraphStyle(el, parent),
         ...(box as Omit<LInlineContainer, 'type' | 'children'>),
@@ -5717,7 +5766,7 @@ class HtmlImporter {
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
     // fontOpticalSizeUnit: CSS の font-optical-sizing: auto は、font-size の CSS px の数を opsz にする (CSS Fonts 4 §8.1 の試験 variable-opsz.html)
-    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, inlineBoxFontMetrics: true, rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
     // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
     // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
     // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、

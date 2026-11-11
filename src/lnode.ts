@@ -63,6 +63,8 @@ export interface LNode {
   // line
   hasRuby?: boolean;
   contentLength?: number;
+  /** 行: 行頭の字下げ (text-indent・start-indent で、行の箱の始めの端に付く空き。正の値だけ)。中身から箱の幅を決めるとき、中身の長さに足す */
+  lineIndent?: number;
   // glyph
   glyph?: GlyphPayload;
   // ruby / tcy
@@ -170,6 +172,7 @@ export interface ResolvedStyle {
   collapseSpaces?: boolean;
   boxLineHalfLeading?: boolean;
   primaryFontMetrics?: boolean;
+  inlineBoxFontMetrics?: boolean;
   primaryFontByLang?: boolean;
   noStrut?: boolean;
   lineHeightQuirk?: boolean;
@@ -335,6 +338,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     collapseSpaces: n.collapseSpaces ?? parent.collapseSpaces,
     boxLineHalfLeading: n.boxLineHalfLeading ?? parent.boxLineHalfLeading,
     primaryFontMetrics: n.primaryFontMetrics ?? parent.primaryFontMetrics,
+    inlineBoxFontMetrics: n.inlineBoxFontMetrics ?? parent.inlineBoxFontMetrics,
     primaryFontByLang: n.primaryFontByLang ?? parent.primaryFontByLang,
     noStrut: n.noStrut ?? parent.noStrut,
     lineHeightQuirk: n.lineHeightQuirk ?? parent.lineHeightQuirk,

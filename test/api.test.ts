@@ -181,6 +181,114 @@ describe('公開 API: typeset', () => {
       expect([...new Set(sizes)].sort()).toEqual(['10x10', '20x5']);
     }
   });
+  it('拡張子の無い URL の画像: resolveResource が返した中身を、先頭のバイト列で画像と見分けて使う (OUT-16。MIME Sniffing §6.1・§8.2)', async () => {
+    const png = encodePngStored({ width: 10, height: 20, rgba: new Uint8Array(Array.from({ length: 200 }, () => [255, 0, 0, 255]).flat()) });
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="8"><rect width="40" height="8" fill="#00f"/></svg>';
+    const store: Record<string, Uint8Array | string> = {
+      'https://example.com/img?id=1': png,
+      'https://example.com/chart': svg,
+      'https://example.com/bg?kind=tile': png,
+      'https://example.com/mark': png,
+      'https://example.com/pic/after': png,
+      // 画像でない中身 (HTML) は、画像にしない
+      'https://example.com/page?x=1': '<!doctype html><p>not an image</p>',
+    };
+    const asked: string[] = [];
+    let fetched = 0;
+    const html = `<style>
+        .bg { width: 60pt; height: 30pt; background-image: url("https://example.com/bg?kind=tile") }
+        li { list-style-image: url(https://example.com/mark) }
+        .after::after { content: url('https://example.com/pic/after') }
+      </style>
+      <p><img src="https://example.com/img?id=1"></p><p><img src="https://example.com/chart"></p><p><img src="https://example.com/page?x=1"></p>
+      <div class="bg"></div><ul><li>項目</li></ul><p class="after">後</p>`;
+    // fetchImages は関数: 呼ばれたら (ネットワークから取ろうとしたら) 数える。中身の返った URL は、取りに行かない
+    const r = await typeset(html, { loadFont, fetchImages: () => (fetched++, false), resolveResource: (u) => (asked.push(u), store[u]) });
+    expect(asked.sort()).toEqual(Object.keys(store).sort());
+    const got: Record<string, [boolean, number, number]> = {};
+    const bgs: string[] = [];
+    walkAreaTree(r.areaTree, (a) => {
+      if (a.type === 'image') got[a.src] = [a.missing, a.width, a.height];
+      const bi = (a as { backgroundImage?: { src: string } }).backgroundImage;
+      if (bi) bgs.push(bi.src);
+    });
+    // 10×20 px の PNG (7.5×15pt)、40×8 px の SVG (30×6pt)
+    expect(got['https://example.com/img?id=1']).toEqual([false, 7.5, 15]);
+    expect(got['https://example.com/chart']).toEqual([false, 30, 6]);
+    expect(got['https://example.com/mark']).toEqual([false, 7.5, 15]);
+    expect(got['https://example.com/pic/after']).toEqual([false, 7.5, 15]);
+    expect(bgs).toEqual(['https://example.com/bg?kind=tile']);
+    // 画像でない中身: 読めない画像のまま。この 1 つだけ、これまでどおりネットワークから取るかを fetchImages に聞く (取らない)
+    expect(got['https://example.com/page?x=1'][0]).toBe(true);
+    expect(fetched).toBe(1);
+    expect(r.warnings.filter((w) => /見つからない|画像を取りません/.test(w)).every((w) => w.includes('https://example.com/page?x=1'))).toBe(true);
+    // PDF にも画像が入る
+    const pdf = await PDFDocument.load(await r.toPdf(), { updateMetadata: false });
+    expect(pdf.getPageCount()).toBe(1);
+  });
+  it('data: の URL の画像は、種類の書き方によらず、中身の先頭で種類が決まる (同じ道: 中身の先頭 → 書かれた種類)', async () => {
+    const png = encodePngStored({ width: 8, height: 4, rgba: new Uint8Array(Array.from({ length: 32 }, () => [0, 0, 0, 255]).flat()) });
+    const b64 = Buffer.from(png).toString('base64');
+    const r = await typeset(`<p><img src="data:application/octet-stream;base64,${b64}"><img src="data:;base64,${b64}"></p><div style="width: 30pt; height: 30pt; background-image: url(data:;base64,${b64})"></div>`, { loadFont, fetchImages: false });
+    const got: Array<[boolean, number, number]> = [];
+    let bg = 0;
+    walkAreaTree(r.areaTree, (a) => {
+      if (a.type === 'image') got.push([a.missing, a.width, a.height]);
+      if ((a as { backgroundImage?: unknown }).backgroundImage) bg++;
+    });
+    expect(got).toEqual([[false, 6, 3], [false, 6, 3]]);
+    expect(bg).toBe(1);
+    expect(r.warnings).toEqual([]);
+  });
+  it('拡張子の無い URL の画像: XSL-FO の external-graphic でも、resolveResource の中身を使う', async () => {
+    const png = encodePngStored({ width: 16, height: 16, rgba: new Uint8Array(Array.from({ length: 256 }, () => [0, 128, 0, 255]).flat()) });
+    const fo = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm"><fo:region-body margin="10mm"/></fo:simple-page-master></fo:layout-master-set>
+      <fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block><fo:external-graphic src="url('https://example.com/fig?no=3')"/></fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const r = await typesetFo(fo, { loadFont, fetchImages: false, resolveResource: (u) => (u === 'https://example.com/fig?no=3' ? png : undefined) });
+    const got: Array<[boolean, number, number]> = [];
+    walkAreaTree(r.areaTree, (a) => void (a.type === 'image' && got.push([a.missing, a.width, a.height])));
+    expect(got).toEqual([[false, 12, 12]]);
+    expect(r.warnings).toEqual([]);
+  });
+  it('拡張子の無い URL の画像: 中身が返らなければ、これまでどおり fetchImages の判定でネットワークから取る (種類は中身の先頭と Content-Type で決める)', async () => {
+    const png = encodePngStored({ width: 8, height: 8, rgba: new Uint8Array(Array.from({ length: 64 }, () => [0, 0, 0, 255]).flat()) });
+    // 根の <svg> が先頭の 512 バイトより後ろにある SVG: 中身の先頭では見分けられないので、Content-Type で決まる
+    const lateSvg = `<?xml version="1.0"?><!--${'x'.repeat(600)}--><svg xmlns="http://www.w3.org/2000/svg" width="40" height="8"/>`;
+    const net: Record<string, [Uint8Array | string, string]> = {
+      // Content-Type が画像でなくても、中身の先頭が PNG なら PNG (MIME Sniffing §8.2 の 2・3)
+      'https://img.test/a?x=1': [png, 'application/octet-stream'],
+      'https://img.test/b': [lateSvg, 'image/svg+xml'],
+      'https://img.test/c': ['plain text', 'text/plain'],
+    };
+    const calls: string[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const u = String(input);
+      calls.push(u);
+      const hit = net[u];
+      return hit ? new Response(hit[0] as BodyInit, { status: 200, headers: { 'content-type': hit[1] } }) : new Response('', { status: 404 });
+    }) as typeof fetch;
+    try {
+      const asked: string[] = [];
+      const r = await typeset(`<p><img src="https://img.test/a?x=1"><img src="https://img.test/b"><img src="https://img.test/c"><img src="https://other.test/d"></p>`, {
+        loadFont,
+        resolveResource: () => undefined,
+        fetchImages: (u) => (asked.push(u), u.startsWith('https://img.test/')),
+      });
+      // 許した URL だけを取る (許さない URL へは要求を出さない)
+      expect(asked.sort()).toEqual(['https://img.test/a?x=1', 'https://img.test/b', 'https://img.test/c', 'https://other.test/d']);
+      expect(calls.sort()).toEqual(['https://img.test/a?x=1', 'https://img.test/b', 'https://img.test/c']);
+      const got: Record<string, [boolean, number, number]> = {};
+      walkAreaTree(r.areaTree, (a) => void (a.type === 'image' && (got[a.src] = [a.missing, a.width, a.height])));
+      expect(got['https://img.test/a?x=1']).toEqual([false, 6, 6]);
+      expect(got['https://img.test/b']).toEqual([false, 30, 6]);
+      expect(got['https://img.test/c'][0]).toBe(true);
+      expect(got['https://other.test/d'][0]).toBe(true);
+      expect(r.warnings.some((w) => w.includes('fetchImages') && w.includes('https://other.test/d'))).toBe(true);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
   it('ASCII でない名前のカウンターとカスタム プロパティ (counter(章)・var(--色)) が、通しで効く', async () => {
     const r = await typeset('<style>body { counter-reset: 章; --色: #ff0000 } p { counter-increment: 章; color: var(--色) } p::before { content: counter(章) "." }</style><p>a</p><p>b</p>', { loadFont });
     // 末尾は既定のノンブル

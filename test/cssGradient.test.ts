@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
-import { firstGradient, gradientSvg } from '../src/cssGradient';
+import { firstGradient, gradientSvg, readGradientSvg } from '../src/cssGradient';
 import { parseSvg } from '../src/svg';
 
 const parse = (s: string) => new DOMParser().parseFromString(s, 'image/svg+xml') as never;
@@ -86,5 +86,35 @@ describe('SVG の spreadMethod・fr', () => {
     // 外接矩形の角 (グラデーションの空間で中心から √0.5) を覆う
     expect(r1).toBeGreaterThanOrEqual(Math.SQRT1_2 - 1e-9);
     expect(p.stops.filter((s) => s.color === '#000000').length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('グラデーションの SVG を読み戻す (Canvas が、PDF と同じ線・同じ止まりで描くため。OUT-19)', () => {
+  it('線形: 線の両端と止まりが、SVG を図形として読んだもの (PDF の道) と同じ', () => {
+    const text = gradientSvg('linear-gradient(45deg, #ff0 0%, #0a0 50%, rgba(0, 0, 255, 0.5) 100%)', 200, 40)!;
+    const g = readGradientSvg(text)!;
+    const p = paintOf(text);
+    expect(g.kind).toBe('linear');
+    if (g.kind !== 'linear') return;
+    expect([g.width, g.height]).toEqual([200, 40]);
+    g.coords.forEach((v, i) => expect(v).toBeCloseTo(p.coords[i], 6));
+    expect(g.stops.map((s) => [s.offset, s.color, s.opacity])).toEqual(p.stops.map((s) => [s.offset, s.color, s.opacity ?? 1]));
+  });
+  it('放射: 円は中心と半径、楕円は縦の倍率が付く', () => {
+    const c = readGradientSvg(gradientSvg('radial-gradient(circle closest-side at 30% 50%, white, black)', 200, 40)!)!;
+    expect(c).toMatchObject({ kind: 'radial', cx: 60, cy: 20, r: 20, scaleY: 1 });
+    const e = readGradientSvg(gradientSvg('radial-gradient(ellipse closest-side, red, blue)', 200, 40)!)!;
+    expect(e).toMatchObject({ kind: 'radial', cx: 100, cy: 20, r: 100, scaleY: 0.2 });
+    expect(e.kind === 'radial' && e.stops.map((s) => s.color)).toEqual(['#ff0000', '#0000ff']);
+  });
+  it('繰り返し: 並べた止まりをそのまま読む。繰り返しの長さが 0 のものは一色', () => {
+    const text = gradientSvg('repeating-linear-gradient(to right, red 0 10pt, blue 10pt 20pt)', 100, 10)!;
+    const g = readGradientSvg(text)!;
+    expect(g.kind === 'linear' && g.stops.length).toBe(paintOf(text).stops.length);
+    expect(readGradientSvg(gradientSvg('repeating-linear-gradient(red 5pt, blue 5pt)', 100, 10)!)).toEqual({ kind: 'solid', width: 100, height: 10, color: '#0000ff' });
+  });
+  it('gradientSvg の形でない SVG は読まない', () => {
+    expect(readGradientSvg('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><circle r="5"/></svg>')).toBeUndefined();
+    expect(readGradientSvg('')).toBeUndefined();
   });
 });

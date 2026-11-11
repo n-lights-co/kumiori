@@ -205,6 +205,15 @@ export interface TextStyle {
    */
   primaryFontMetrics?: boolean;
   /**
+   * 行内の箱 (背景・罫線・padding つきの inline、リンクの範囲) の内容の領域を、その inline の最初に使える書体の上の高さ・下の深さ
+   * (hhea の ascent・descent。OS/2 の typo の上下が 1em を成す和文の書体は、その値 = em の箱) で決める。横書きは基線の上に ascent・下に descent、
+   * 縦書きは中央の基線を挟んで (ascent + descent) / 2 ずつ。代わりの書体の字・中の inline の字の大きさは数えない。行の高さには関わらない
+   * (CSS 2.1 §10.6.1: 内容の領域の高さは書体に基づき、決め方は UA に任される。CSS Inline 3 §6.4 の inline-sizing: normal:
+   * 最初に使える書体の字に合う大きさ。https://www.w3.org/TR/2024/WD-css-inline-3-20241218/ 、2026-11-11 取得)。HTML の文書。
+   * 無ければ、中の字の大きさの箱 (em の箱) を囲む (XSL-FO の文書・API から直接組む文書)
+   */
+  inlineBoxFontMetrics?: boolean;
+  /**
    * アンテナハウス互換 (primaryFontMetrics の行): 最初に使える書体を、空白の字の書体でなく、言語 (lang) が日本語・中国語・韓国語なら
    * 和文の字 (国) の書体とする (font-family: source-sans-pro, … の lang="ja" の行の基準線は、和文の書体の上下で決まる)
    */
@@ -1101,6 +1110,12 @@ export interface LIndexKeyReference {
  */
 export interface LImage extends BaseNode {
   /**
+   * false: この箱 (行の中の、分けられない箱) そのものには、飾りの線 (下線・上線・取り消し線) を引かない
+   * (CSS Text Decoration 3 §2: Atomic inlines, such as images and inline blocks, are not decorated)。HTML の読み込みが付ける。
+   * 既定は、まわりの字と同じ線を箱にも引く (XSL-FO。XSL 1.1 §7.17.4)
+   */
+  decorateBox?: false;
+  /**
    * 行の中での揃え: after-edge は画像の下端を字面の下端に、before-edge は上端を字面の上端に揃える
    * (アンテナハウスの -ah-alignment-baseline: text-after-edge など。字面はその行の最初に使える書体の上下。既定は下端を基線に)
    */
@@ -1153,6 +1168,12 @@ export interface LImage extends BaseNode {
   border?: BorderInput;
   padding?: EdgesInput;
   backgroundColor?: string;
+  /**
+   * 行の中の画像の外側の余白 (CSS の margin。上下左右の向き)。画像 (罫線・余白があればその外) のまわりを空け、行の中の送りと行の高さに入れる
+   * (置換要素の行内の箱の高さは margin の箱の高さ。CSS 2.1 §10.8)。基線に揃える画像は、下の余白の外側の端を基線に置く (同 §10.8.1)。
+   * ブロックとして置く画像では使わない (包むブロックの margin を使う)
+   */
+  margin?: EdgesInput;
 }
 
 /**
@@ -1203,6 +1224,12 @@ export interface LInlineContainer extends BaseNode, BoxStyle {
   alignmentBaseline?: 'baseline' | 'central' | 'before-edge' | 'after-edge';
   /** baseline で揃えるときの、箱の基線。既定 first (中の最初の行)。last は最後の行 (CSS の inline-block。切り抜く箱・行の無い箱は下端) */
   baselineFrom?: 'first' | 'last';
+  /**
+   * false: この箱 (行の中の、分けられない箱) そのものには、飾りの線 (下線・上線・取り消し線) を引かない
+   * (CSS Text Decoration 3 §2: Atomic inlines, such as images and inline blocks, are not decorated)。HTML の読み込みが付ける。
+   * 既定は、まわりの字と同じ線を箱にも引く (XSL-FO。XSL 1.1 §7.17.4)
+   */
+  decorateBox?: false;
   children: Array<LBlockLevel | LInlineLevel>;
 }
 
