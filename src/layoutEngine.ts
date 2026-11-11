@@ -346,7 +346,7 @@ interface Frame {
   /** 前のページの断片で使った内容の長さの合計 (ページをまたいだ箱の height・min-height の残りを求める) */
   usedB?: number;
   /** 行グリッド (アンテナハウスの baseline-grid)。null は解除、undefined は親のものを使う */
-  grid?: { pitch: number; ascent: number } | null;
+  grid?: { pitch: number; ascent: number; root?: boolean } | null;
   /** XSL の、罫線をつぶした表の、前の側の外へ出る罫線の半分 (Flow.pendSpill)。次の段・ページへ続く断片の頭でも、同じだけ外へ出す */
   spillBs?: number;
   /** 開いたときの、前の余白を足す前の位置 (中身を置かずに次のページへ送り直すとき、ここまで戻す) */
@@ -375,6 +375,8 @@ interface CbItem {
 }
 
 interface FlowHost {
+  /** 行グリッドの root の書式 (いま組んでいる並びの、流れの根元の書式) */
+  gridRootStyle?: ResolvedStyle;
   assets?: AssetStore;
   hyphenate?: LayoutOptions['hyphenate'];
   kernAh?: boolean;
@@ -1653,8 +1655,11 @@ class Flow {
     }
     // 行グリッドを作った箱 (baseline-grid: new・root) の終わり: 最後の行の後ろに半行間は空けず、字の仮想ボディ (em の箱) の下端を
     // 内容の下端にする (アンテナハウスの baseline-grid。先頭の行の前と同じ扱い)。箱のすぐ上が、行グリッドの中で置いた行のときだけ
-    if (f.grid && f.opened && this.wm === 'horizontal-tb' && this.gridTrail.trail > 0 && Math.abs(this.gridTrail.end - this.cursor) < EPS) {
-      this.cursor -= this.gridTrail.trail;
+    // 半行間が負 (line-height が字の大きさより小さい) の行は、em の箱の下端が行の下端より下に出るので、その分だけ下へ伸ばす
+    // (見本の PDF: 30pt の字・line-height 25q の h1 の後ろの箱が、負の半行間 6.14pt だけ下に置かれる)
+    const gt = this.gridTrail.trail > 0 ? this.gridTrail.trail : Math.min(0, this.gridTrail.raw ?? 0);
+    if (f.grid && f.opened && this.wm === 'horizontal-tb' && gt !== 0 && Math.abs(this.gridTrail.end - this.cursor) < EPS) {
+      this.cursor -= gt;
       this.gridTrail = { end: -1, trail: 0 };
       this.gridPrev = { end: -1, trail: 0 };
       this.adjacent = 0;
@@ -2322,8 +2327,8 @@ class Flow {
     // baseline-block-snap は扱わない
     if (node.baselineGrid === 'none') frame.grid = null;
     else if (node.baselineGrid === 'new' || node.baselineGrid === 'root') {
-      const g = node.baselineGrid === 'root' ? (this.rootStyle ?? st) : st;
-      frame.grid = { pitch: lineHeightOf(g), ascent: this.nominalRatio(g) * g.fontSize };
+      const g = node.baselineGrid === 'root' ? (this.host.gridRootStyle ?? this.rootStyle ?? st) : st;
+      frame.grid = { pitch: lineHeightOf(g), ascent: this.nominalRatio(g) * g.fontSize, ...(node.baselineGrid === 'root' ? { root: true } : {}) };
     }
     // overflow: hidden は、padding の外端で切り抜く
     if (node.overflow === 'hidden') frame.node.clip = true;
@@ -2545,7 +2550,7 @@ class Flow {
     for (let k = this.stack.length - 1; k >= 0; k--) {
       const f = this.stack[k];
       if (f.grid === undefined) continue;
-      return f.grid ? { ...f.grid, ...(f.opened ? { origin: f.contentStartB } : {}) } : undefined;
+      return f.grid ? { ...f.grid, ...(f.grid.root && this.paginating ? { origin: 0 } : f.opened ? { origin: f.contentStartB } : {}) } : undefined;
     }
     return this.outerGrid;
   }
@@ -2601,7 +2606,9 @@ class Flow {
     const { pitch, ascent } = g;
     if (pitch <= EPS) return 0;
     // 箱がまだ開いていなければ、最初の行の上端 (箱が開く位置。行数を見積もるときは simOrigin) が基準
-    const origin = f ? (f.opened ? f.contentStartB : (simOrigin ?? lineTop)) : this.outerGrid!.origin;
+    // root の格子は、ページの本文の領域の上端から引く (見本の PDF: -ah-baseline-grid: root の figcaption の基線は、どのページでも
+    // 本文の領域の上端 + 根元の字のアセント + 根元の行送りの整数倍。箱の上端からではない)。ページに組む流れのときだけ
+    const origin = f ? (f.grid!.root && this.paginating ? 0 : f.opened ? f.contentStartB : (simOrigin ?? lineTop)) : this.outerGrid!.origin;
     const em = lineTop + lm.leading / 2 + lm.above;
     const cand = lineTop - (box?.prevTrail ?? 0) + (box?.above ?? this.nominalRatio(st) * st.fontSize);
     const steps = Math.max(0, Math.ceil((cand - origin - ascent - 0.5) / pitch));
@@ -2823,7 +2830,12 @@ class Flow {
    * 半行間が 0 の行も)。行グリッドの中では、最後の行の後ろにこの分は空けない (アンテナハウスの baseline-grid)。グリッドの外では 0
    */
   private gridTrailOf(lm: LineMetrics, st: ResolvedStyle): number {
-    return this.inGrid() ? Math.max(0, lm.base - (lm.topLeading ?? lm.leading / 2) - lm.above - (1 - this.nominalRatio(st)) * st.fontSize) : 0;
+    return Math.max(0, this.gridTrailRawOf(lm, st));
+  }
+
+  /** gridTrailOf の、負の値 (半行間が負で、字の下端が行の下端より下に出る行) も残したもの */
+  private gridTrailRawOf(lm: LineMetrics, st: ResolvedStyle): number {
+    return this.inGrid() ? lm.base - (lm.topLeading ?? lm.leading / 2) - lm.above - (1 - this.nominalRatio(st)) * st.fontSize : 0;
   }
 
   /**
@@ -2876,7 +2888,7 @@ class Flow {
     const trail = this.gridTrailOf(lm, st);
     const emTrail = gem ? this.gridEmTrailOf(lm, gem.below) : 0;
     if (shifted && o.last) this.cursor -= trail;
-    else this.gridTrail = { end: this.cursor, trail };
+    else this.gridTrail = { end: this.cursor, trail, raw: this.gridTrailRawOf(lm, st) };
     // 次の行が em の箱を続けるための控え (行グリッドの中で置いた行だけ)
     this.gridPrev = gem ? { end: this.cursor, trail: shifted && o.last ? Math.max(0, emTrail - trail) : emTrail } : { end: -1, trail: 0 };
     this.adjacent = lm.leading / 2;
@@ -2967,7 +2979,7 @@ class Flow {
     this.lastLead = { end: this.cursor, half: Math.max(lm.bottomLeading ?? lm.leading / 2, 0) };
   }
   /** 最後に置いた行の下端と、その行の下の部分 (行グリッドの中の行で、字の下端より下。段の終わりでは数えない) */
-  private gridTrail = { end: -1, trail: 0 };
+  private gridTrail: { end: number; trail: number; raw?: number } = { end: -1, trail: 0 };
   /** 最後に置いた行の下端と、その行の下の半行間 */
   lastLead = { end: -1, half: 0 };
   /** 中身の終わり: 最後に置いたのが行で、その行の下の半行間を捨てるなら、捨てた位置 */
@@ -3602,7 +3614,10 @@ class Flow {
     sub.layoutBlockLevel(inner, ps);
     const bsize = sub.finishAtomic();
     const wrap = newNode('block', wmC, { isize: childI, bsize, children: sub.root.children });
-    this.placeBox(wrap, outer.m.bs, outer.m.be, 0, this.extentAlongBlock(wrap), outer.precBs, outer.precBe, outer.retainBe);
+    // 親の行の向きの auto の余白 (CSS 2.1 §10.3.3): 箱の大きさ (この箱の block の大きさ) が決まったので、置く場所の残りを配る
+    const free = node.type === 'block' && node.autoMargins ? this.contentI() - bsize : 0;
+    const mis = free > EPS ? (node.autoMargins === 'center' ? free / 2 : node.autoMargins === 'start' ? free : 0) : 0;
+    this.placeBox(wrap, outer.m.bs, outer.m.be, mis, this.extentAlongBlock(wrap), outer.precBs, outer.precBe, outer.retainBe);
     if (after) this.breakNext = after;
   }
 
@@ -3695,7 +3710,13 @@ class Flow {
     // 箱自身の縦書きで読むと inline-start になり、箱が右にずれる)。
     // XSL-FO は、space-before などを箱自身の書字方向で物理の辺に読み替えている (xslfoImport) ので、箱自身の向きで読む
     const outer = st.wm === this.wm || this.host.xslSpace ? desc : describeBox(node, this.wm);
-    this.placeBox(n, outer.m.bs, outer.m.be, outer.m.is, this.extentAlongBlock(n), outer.precBs, outer.precBe, outer.retainBe);
+    // 直交する箱の、親の行の向きの auto の余白 (CSS 2.1 §10.3.3): 箱の大きさが決まったので、置く場所の残りを配る
+    let mis = outer.m.is;
+    if (node.autoMargins && st.wm !== this.wm) {
+      const free = this.contentI() - outer.m.is - outer.m.ie - n.bsize;
+      if (free > EPS) mis += node.autoMargins === 'center' ? free / 2 : node.autoMargins === 'start' ? free : 0;
+    }
+    this.placeBox(n, outer.m.bs, outer.m.be, mis, this.extentAlongBlock(n), outer.precBs, outer.precBe, outer.retainBe);
     if (node.breakAfter) this.breakNext = node.breakAfter;
   }
 
@@ -6777,6 +6798,8 @@ export class LayoutEngine {
     let pageNo = 1;
 
     doc.sequences.forEach((seq, si) => {
+      // 行グリッドの root (-ah-baseline-grid: root・axf:baseline-grid="root") の書式: この並びの流れの根元の書式 (HTML は根元の要素の書式)
+      host.gridRootStyle = resolveStyle(resolveStyle(docStyle, seq), seq.flow);
       // initial-page-number (§7.27.7): auto-odd / auto-even は、続きの番号の偶奇が合わなければ 1 足す
       const ipn = seq.initialPageNumber;
       const first =

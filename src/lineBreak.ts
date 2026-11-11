@@ -62,6 +62,8 @@ export interface LineBreakOptions {
   cjk?: boolean;
   /** アンテナハウス互換: 小書き仮名・長音記号の前で改行してよい (axf:line-break="normal") */
   looseLineStart?: boolean;
+  /** アンテナハウス互換の HTML の line-break: auto: 繰返し記号 (々〻ゝゞヽヾ) の前でも改行してよい */
+  looseIterationMarks?: boolean;
   /**
    * SY (斜線) の後ろの改行の機会を、次の改行の機会までの字の数がこれより少なければ使わない
    * (UAX #14 §5.1 SY の推奨。最小の距離は実装で決める。指定が無ければ UAX #14 の規則どおり使う)
@@ -103,7 +105,7 @@ function resolveClass(cp: number, o: LineBreakOptions): string {
   else if (raw === 'SA') c = /^M[nc]$/.test(gcOf(cp)) ? 'CM' : 'AL';
   else if (raw === 'CJ') c = s === 'loose' || o.looseLineStart ? 'ID' : 'NS';
   // CSS Text 3 §5.2: 繰返し記号の前は loose だけ改行してよい
-  if (ITERATION_MARKS.has(cp) && s === 'loose') c = 'ID';
+  if (ITERATION_MARKS.has(cp) && (s === 'loose' || o.looseIterationMarks)) c = 'ID';
   if (o.cjk) {
     // 〜・゠ の前は normal・loose で改行してよい
     if (CJK_HYPHENS.has(cp) && s !== 'strict') c = 'ID';

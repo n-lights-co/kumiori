@@ -252,8 +252,10 @@ function canBreakAtoms(a: Atom, b: Atom): boolean {
 function lineBreakOptionsOf(st: ResolvedStyle): LineBreakOptions {
   const lb = st.lineBreak;
   const strictness = lb === undefined ? 'strict' : lb === 'auto' ? 'normal' : lb;
+  // アンテナハウス互換の HTML の line-break: auto: 小書きの仮名・長音記号・繰返し記号の前でも改行する (TextStyle.lineBreakAutoAh)
+  const autoAh = lb === 'auto' && !!st.lineBreakAutoAh;
   // 斜線の後ろは、次の改行の機会まで 5 字未満なら改行しない (UAX #14 §5.1 SY の推奨。「and/or」「w/o」を分けない)
-  return { strictness, cjk: /^(ja|zh)\b/i.test(st.language ?? ''), looseLineStart: !!st.looseLineStart, symbolBreakMinDistance: 5 };
+  return { strictness, cjk: /^(ja|zh)\b/i.test(st.language ?? ''), looseLineStart: !!st.looseLineStart || autoAh, ...(autoAh ? { looseIterationMarks: true } : {}), symbolBreakMinDistance: 5 };
 }
 
 /**
