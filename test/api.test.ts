@@ -953,3 +953,22 @@ describe('公開 API: typeset', () => {
     await expect(typesetHtml('<p>a</p>', { loadFont: async () => undefined, fetchTimeoutMs: 1 })).rejects.toThrow(/書体を読めません/);
   });
 });
+
+describe('既定の書体の太字の枠に、標準の太さと同じファイルを渡したとき', () => {
+  const boldGlyph = async (lf: (spec: FontSpec) => Promise<ArrayBuffer | undefined>) => {
+    const r = await typeset('<p style="font-family: sans-serif; font-weight: bold">太字</p>', { loadFont: lf });
+    let g: GlyphArea | undefined;
+    walkAreaTree(r.areaTree, (a) => void (a.type === 'glyph' && (g ??= a as GlyphArea)));
+    return g!;
+  };
+  it('太字の書体は無いものとして、標準の太さの書体を太らせて描く (太字を持たない書体に入れ替えるとき)', async () => {
+    // ゴシックの太字 (weight 700) の枠に、標準の太さ (400) と同じファイルを返す
+    const same = async (spec: FontSpec) => loadFont(spec.family === 'Noto Sans JP' ? { ...spec, weight: 400, urls: DEFAULT_FONTS.base.find((s) => s.family === 'Noto Sans JP' && (s.weight ?? 400) === 400)!.urls } : spec);
+    const g = await boldGlyph(same);
+    expect(g.fakeBold).toBe(true);
+  });
+  it('太字のファイルがあるときは、これまでどおり太字の書体で組む (太らせない)', async () => {
+    const g = await boldGlyph(loadFont);
+    expect(g.fakeBold).toBeFalsy();
+  });
+});

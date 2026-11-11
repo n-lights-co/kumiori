@@ -318,6 +318,13 @@ describe('PDF の SVG: pattern の中の特色・ToUnicode・グラデーショ�
     const pdf = await PDFDocument.load(await renderPdf(tree, E.fonts));
     expect(contentOf(pdf)).toMatch(/2 Tr\n[\d.]+ w\n1 j\n/);
   });
+  it('疑似太字の輪郭の線の太さは、字の大きさの 0.02 倍', async () => {
+    const engine = new LayoutEngine(E.fonts, E.measurer, { defaultFontFamily: FAMILY });
+    const tree = engine.layout(doc([{ type: 'block', fontWeight: 700, fontSize: 20, children: ['太'] }]));
+    const pdf = await PDFDocument.load(await renderPdf(tree, E.fonts));
+    const w = Number(contentOf(pdf).match(/2 Tr\n([\d.]+) w\n1 j\n/)![1]);
+    expect(w).toBeCloseTo(20 * 0.02, 3);
+  });
 });
 
 describe('Canvas の SVG の preserveAspectRatio (M-4)', () => {

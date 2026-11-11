@@ -344,7 +344,7 @@ async function loadHtmlFile(text: string, name: string, files: File[], warnings:
     try {
       // 検証用: 読み込んだ文書 (iframe を消す前) を渡す (scripts/compare-css.mjs がブラウザの計算値と自前のカスケードを比べる)
       await (window as unknown as { __kumioriOnHtmlLoaded?: (l: typeof loaded) => unknown }).__kumioriOnHtmlLoaded?.(loaded);
-      await loadFontFaces(loaded.css, files);
+      await loadFontFaces(loaded.css, files, { ahFaceWeight: v === 'ah' });
       // 分綴を使う文書なら、文書に出てくる言語の分綴の規則を読み込む
       await loadDocumentHyphenators(loaded.doc, loaded.css);
       // MathML のある文書なら、数式の書体を読み込む (読めなければ、math 要素の中の字を並べる。API と同じ手順: documentResources)

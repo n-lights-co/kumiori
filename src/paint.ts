@@ -11,8 +11,12 @@ export type { Matrix } from './matrix';
 
 /** 疑似斜体の傾き (tan 12°) */
 export const ITALIC_SLANT = 0.2126;
-/** 疑似太字で輪郭をなぞる太さ (字の大きさに対する比) */
-export const FAKE_BOLD = 0.03;
+/**
+ * 疑似太字で輪郭をなぞる太さ (字の大きさに対する比)。太字の書体の無い字を太らせる量は、仕様に決まりが無い
+ * (CSS Fonts 4 §5.2 の font-synthesis は「太らせた字形を作ってよい」とするだけ)。広く使われている組版ソフトの出力
+ * (アンテナハウスの組版結果: 塗り + 線で、線の太さは字の大きさの 0.02 倍) にそろえる。0.03 では、見出しが太く見えすぎた
+ */
+export const FAKE_BOLD = 0.02;
 
 export interface Line {
   x1: number;
