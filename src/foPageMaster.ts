@@ -159,6 +159,7 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
     return { top: w(b.top), right: w(b.right), bottom: w(b.bottom), left: w(b.left) };
   };
   const bb = bwOf('body');
+  const pmBg = fo.spec ? undefined : fo.backgroundImage(m, { fontSize: fs } as Ctx);
   const pm: PageMaster = {
     width: W / PT_PER_MM,
     height: H / PT_PER_MM,
@@ -168,7 +169,12 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
     ...printerMarks(fo, m, fs),
     ...(bodyRo ? { bodyRotation: bodyRo } : {}),
     ...(columns > 1 ? { columns: { count: columns, ...(columnGapPt !== undefined ? { gap: columnGapPt / PT_PER_MM } : {}), ...(footPos === 'column' ? { footnotePosition: 'column' as const } : {}), ...(colRule ? { rule: colRule } : {}), ...(colFill ? { fill: 'balance' as const } : {}) } } : {}),
-    backgroundColor: fo.color(fo.attr(m, 'axf:background-color') ?? fo.attr(m, 'background-color')),
+    // fo:simple-page-master の背景 (background-color・background-image・-repeat・-position): 背景の性質は fo:simple-page-master には
+    // 当たらない (XSL 1.1 §6.4.13 の性質の一覧に無い)。アンテナハウスの拡張 (ページの背景。https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html の
+    // 「背景の拡張」) で、接頭辞の無い名前なので、互換モードのときだけ読む。仕様モードでは読まず、読み込みの報告に出る (読まなかった属性)。
+    // 名前に接頭辞の付いた axf:background-color は、作成者が拡張と分かって書いたものなので、どのモードでも読む
+    backgroundColor: fo.color(fo.attr(m, 'axf:background-color') ?? (fo.spec ? undefined : fo.attr(m, 'background-color'))),
+    ...(!fo.spec && pmBg ? { backgroundImage: pmBg } : {}),
     margins: {
       top: (mt + body.top + bb.top) / PT_PER_MM,
       right: (mr + body.right + bb.right) / PT_PER_MM,

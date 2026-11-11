@@ -1663,11 +1663,18 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       const runs: Run[] = [];
       /** パスに沿う文字 (textPath) */
       const onPath: Array<{ el: XmlNode; st: Style }> = [];
-      const collect = (el: XmlNode, st: Style) => {
-        let x = first(el.getAttribute?.('x'), st.fontSize);
-        let y = first(el.getAttribute?.('y'), st.fontSize);
-        let dx = first(el.getAttribute?.('dx'), st.fontSize);
-        let dy = first(el.getAttribute?.('dy'), st.fontSize);
+      // x・y・dx・dy は、その要素の最初の字に当たる。最初の字が子の tspan の中にあれば、tspan に同じ属性が無いかぎり、
+      // 先祖 (text・外の tspan) の指定がその字に当たる (SVG 1.1 §10.5 の tspan の x・y・dx・dy)。pend = まだ字に当てていない先祖の指定
+      type Pos = { x: number; y: number; dx: number; dy: number };
+      const collect = (el: XmlNode, st: Style, pend?: Pos) => {
+        const own = (k: keyof Pos) => {
+          const v = first(el.getAttribute?.(k), st.fontSize);
+          return Number.isFinite(v) || !pend ? v : pend[k];
+        };
+        let x = own('x');
+        let y = own('y');
+        let dx = own('dx');
+        let dy = own('dy');
         for (const c of Array.from(el.childNodes)) {
           if (c.nodeType === 3 || c.nodeType === 4) {
             const t = spaced(c.textContent ?? '', st);
@@ -1688,7 +1695,9 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
             const p = props(c);
             if (p.display === 'none') continue;
             if (c.getAttribute?.('transform')) throw new Unsupported('tspan transform');
-            collect(c, inherit(st, p));
+            const before = runs.length;
+            collect(c, inherit(st, p), { x, y, dx, dy });
+            if (runs.length > before) x = y = dx = dy = NaN; // 最初の字は子の中にあった
           }
         }
       };

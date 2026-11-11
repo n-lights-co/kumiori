@@ -69,8 +69,10 @@ describe('FO-22 C・D: 読まずに捨てた属性を、読み込みの報告に
     for (const c of BOTH) expect(miss(fo(body, { seq: 'initial-page-number="3" format="1" grouping-separator="," grouping-size="3" force-page-count="no-force"', statics, root: 'font-family="serif" font-size="10pt"' }), c)).toEqual({});
   });
 
-  it('本文の領域の名前でない fo:flow の flow-name は、読まずに捨てた属性として知らせる', () => {
-    expect(miss(fo('<fo:block>a</fo:block>', { flowName: 'spread' }))).toEqual({ 'flow-name (fo:flow)': 1 });
+  it('本文の領域の名前でない fo:flow の flow-name は、注意に出す (読まずに捨てた属性には数えない。test/foFlowRegion.test.ts)', () => {
+    const r = importXslFo(fo('<fo:block>a</fo:block>', { flowName: 'spread' }), parse, { compat: 'antenna' }).report;
+    expect(r.unsupported).toEqual({});
+    expect(r.notes).toEqual(['flow-name "spread" に合う領域が無いので、本文の領域へ流しました']);
   });
 
   it('中の要素ごと読まなかった要素は、要素の名前で 1 度だけ知らせる (中の属性を重ねて数えない)', () => {
