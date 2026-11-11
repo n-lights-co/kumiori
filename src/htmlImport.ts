@@ -218,6 +218,11 @@ export interface HtmlImportOptions {
    */
   textAlignInsideOutsideAh?: boolean;
   /**
+   * line-break: auto の改行の決まりを、アンテナハウスに合わせる (TextStyle.lineBreakAutoAh。auto の決まりは UA が決めてよい。CSS Text 3 §5.2)。
+   * 小書きの仮名・長音記号・繰返し記号の前でも改行する
+   */
+  lineBreakAutoAh?: boolean;
+  /**
    * ::before・::after の中身を、書式が親と同じでも inline の箱として渡す (アンテナハウス互換。LayoutOptions.kernAh で、
    * 要素の境目では字の組を詰めないため。::before の ‘ と続く字の間を詰めない)
    */
@@ -3207,6 +3212,28 @@ class HtmlImporter {
   }
 
   /** 段落の書式 (揃え・字下げ・孤立行) */
+  /**
+   * -ah-last-line-end-indent の計算値 (pt)。指定した要素 (el か祖先) の字の大きさで em を解決した値を受け継ぐ (XSL 1.1 §7.16.3: 受け継ぐ。
+   * 長さの計算値は絶対の長さ)。百分率 (含む領域の幅に対する割合) は読まない。指定が無ければ undefined
+   */
+  private lastLineEndIndentOf(el: Element, pseudo?: '::before' | '::after'): number | undefined {
+    // ::before・::after の指定 (字の大きさは、その擬似要素のもの)
+    const pv = pseudo ? this.pagedPseudo.get(el)?.[pseudo]?.['-ah-last-line-end-indent']?.trim().toLowerCase() : undefined;
+    if (pv && pv !== 'inherit' && !/%$/.test(pv)) return lenEm(pv, cssLen(this.cs(el, pseudo)('font-size')) ?? 12);
+    for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
+      const v = this.pg(e as Element)['-ah-last-line-end-indent']?.trim().toLowerCase();
+      if (!v || v === 'inherit') continue;
+      if (/%$/.test(v)) {
+        this.miss('-ah-last-line-end-indent の百分率');
+        return undefined;
+      }
+      const m = /^(-?[\d.]+)rem$/.exec(v);
+      const fs = cssLen(this.cs(m ? (el.ownerDocument?.documentElement ?? (e as Element)) : (e as Element))('font-size')) ?? 12;
+      return m ? parseFloat(m[1]) * fs : lenEm(v, fs);
+    }
+    return undefined;
+  }
+
   private paragraphStyle(el: Element, parent: Element | undefined): TextStyle {
     const c = this.cs(el);
     const p = parent ? this.cs(parent) : undefined;
@@ -3235,6 +3262,10 @@ class HtmlImporter {
       s.textAlignLast = tal === 'center' ? 'center' : tal === 'justify' ? 'justify' : tal === 'end' || tal === (rtl ? 'left' : 'right') ? 'end' : 'start';
     }
     if (diff('text-indent')) Object.assign(s, textIndentOf(c('text-indent')));
+    // アンテナハウスの -ah-last-line-end-indent (XSL 1.1 §7.16.3 の last-line-end-indent と同じ。受け継ぐ): 最後の行の終わりの端の字下げ
+    // (正で内へ、負で外へ)。接頭辞の付いた拡張なので、どのスタイルでも読む
+    const lle = this.lastLineEndIndentOf(el);
+    if (lle !== (parent ? this.lastLineEndIndentOf(parent) : undefined)) s.lastLineEndIndent = lle ?? 0;
     for (const k of ['orphans', 'widows'] as const) {
       const n = parseInt(c(k), 10);
       if (Number.isFinite(n) && diff(k)) s[k] = n;
@@ -3412,6 +3443,14 @@ class HtmlImporter {
     }
     // ブラウザの配置が無いとき: 幅の決まった箱の左右の余白が両方 auto なら、残りを等分する (CSS 2.1 §10.3.3)
     const cbEl = pseudo ? el : el.parentElement;
+    // 横書きの中の縦書きの箱 (直交する流れ) で、幅 (縦書きの block の大きさ) が中身で決まるもの: 幅は組むときに決まるので、
+    // 左右の auto の余白は組むときに配る (CSS 2.1 §10.3.3。Writing Modes 3 §7.3: 直交する流れの箱の大きさは中身で決め、
+    // そのうえで親の流れの中の箱として置く)
+    if (!this.src.rect && o.width === undefined && cbEl && /^(vertical|tb)/.test(c('writing-mode')) && !/^(vertical|tb)/.test(this.cs(cbEl)('writing-mode'))) {
+      const ms = c('margin-left') === 'auto';
+      const me = c('margin-right') === 'auto';
+      if (ms || me) o.autoMargins = ms && me ? 'center' : ms ? 'start' : 'end';
+    }
     if (!this.src.rect && o.width !== undefined && c('margin-left') === 'auto' && c('margin-right') === 'auto' && cbEl) {
       const cw = this.src.contentWidth?.(cbEl);
       if (cw !== undefined) {
@@ -4384,7 +4423,7 @@ class HtmlImporter {
         ...style,
         ...(box as Omit<LInlineContainer, 'type' | 'children'>),
         baselineFrom: 'last',
-        children: [{ type: 'block', textIndent: 0, ...textIndentOf(c('text-indent')), textAlign: align, children: parts } as LBlock],
+        children: [{ type: 'block', textIndent: 0, ...textIndentOf(c('text-indent')), textAlign: align, lastLineEndIndent: this.lastLineEndIndentOf(el, which) ?? 0, children: parts } as LBlock],
       };
       const iva = c('vertical-align');
       if (iva === 'middle') ic.alignmentBaseline = 'central';
@@ -6233,6 +6272,7 @@ class HtmlImporter {
     if (documentModeOf(doc) !== 'no-quirks') Object.assign(rootStyle, { noStrut: true, lineHeightQuirk: true });
     // 和欧間アキの既定 (CSS Text 4 §8.4 の初期値 normal)。指定のある要素は、その指定 (spacing) で上書きする
     if (rootStyle.textAutospace === undefined) rootStyle.textAutospace = this.opts.autospaceInitial ?? true;
+    if (this.opts.lineBreakAutoAh) rootStyle.lineBreakAutoAh = true;
     if (this.opts.jaDefaultsAh) {
       rootStyle.punctuationTrimParagraphStart = true;
       // 追込みで詰める量は 1 行に二分まで (XSL-FO のアンテナハウス互換と同じ)

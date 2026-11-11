@@ -181,6 +181,11 @@ export interface TextStyle {
   punctuationSpacing?: number;
   /** 小書き仮名・長音記号 (ー)・繰返し記号 (ゝゞヽヾ々) を行頭に置いてよい (axf:line-break="normal"。XSL-FO の互換モードの既定) */
   looseLineStart?: boolean;
+  /**
+   * line-break: auto のとき、小書きの仮名・長音記号 (CJ) と繰返し記号の前でも改行する (アンテナハウス互換の HTML。受け継ぐ)。
+   * CSS Text 3 §5.2 は auto の決まりを UA に任せる。見本の PDF (CSS-Print 第 4 版) は、行頭に「ー」「ョ」「ゝ」などを置く
+   */
+  lineBreakAutoAh?: boolean;
   /** 欧文の合字 (fi・fl など) を使う (axf:ligature-mode="latin")。書体が合字の字 (U+FB00〜U+FB04) を持てばその字に、無くても書体の合字の表 (OpenType の liga) で 1 つの字形になる並び (fft・ffk など。語をアイコンにする書体の home・arrow_back なども) は合字にする (横書きで letter-spacing の無いとき) */
   latinLigatures?: boolean;
   /**

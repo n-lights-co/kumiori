@@ -165,6 +165,7 @@ export interface ResolvedStyle {
   latinLigatures?: boolean;
   forcedLigatures?: string[];
   looseLineStart?: boolean;
+  lineBreakAutoAh?: boolean;
   punctuationSpacing?: number;
   lineStackingStrategy?: 'max-height' | 'line-height' | 'font-height';
   xslLineStacking?: boolean;
@@ -332,6 +333,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     latinLigatures: n.latinLigatures ?? parent.latinLigatures,
     forcedLigatures: n.forcedLigatures ?? parent.forcedLigatures,
     looseLineStart: n.looseLineStart ?? parent.looseLineStart,
+    lineBreakAutoAh: n.lineBreakAutoAh ?? parent.lineBreakAutoAh,
     punctuationSpacing: n.punctuationSpacing ?? parent.punctuationSpacing,
     lineStackingStrategy: n.lineStackingStrategy ?? parent.lineStackingStrategy,
     xslLineStacking: n.xslLineStacking ?? parent.xslLineStacking,

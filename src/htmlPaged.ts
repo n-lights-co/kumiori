@@ -858,6 +858,8 @@ export function isPagedDecl(prop: string, value: string): boolean {
   if (prop === '-ah-baseline-grid') return true;
   // アンテナハウスの -ah-display-align (XSL 1.1 §7.14.4 の display-align: 高さの決まった箱の中での内容の上下の揃え)
   if (prop === '-ah-display-align') return true;
+  // アンテナハウスの -ah-last-line-end-indent (XSL 1.1 §7.16.3 の last-line-end-indent)
+  if (prop === '-ah-last-line-end-indent') return true;
   // アンテナハウスのフロートの拡張のうち、横の位置 (-ah-float-x) と、それを読むかを決める縦の位置 (-ah-float-y)
   if (prop === '-ah-float-x' || prop === '-ah-float-y') return true;
   // アンテナハウスの段間罫の長さ・揃え・表示
