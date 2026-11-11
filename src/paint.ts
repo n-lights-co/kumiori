@@ -5,7 +5,7 @@
  */
 import { parseColor } from './color';
 import type { Matrix, Seg } from './matrix';
-import type { Area, BorderRadius, BorderSide, GlyphArea, ImageArea, Rect, SheetArea } from './types';
+import type { Area, BorderRadius, BorderSide, GlyphArea, ImageArea, Rect, SheetArea, TateChuYokoArea } from './types';
 
 export type { Matrix } from './matrix';
 
@@ -82,6 +82,12 @@ export interface Painter {
    * 描画先がタイルを 1 つの模様 (PDF のタイリングパターンなど) にできるときに実装する。扱えなければ false を返し、呼び手が 1 枚ずつ描く
    */
   drawImageTiled?(a: ImageArea, x: number, y: number, region: Rect): boolean;
+  /**
+   * 縦中横 (縦書きの行の 1 字分の枠に、横に並べた字) a の字を、まとめて描く。x, y: 枠の中身の左上の Sheet 座標 (字の座標の原点)。
+   * 描画先が、枠をひとまとまりの字として書けるとき (PDF: 縦書きの行の中の 1 つの単位にして、字の並びを書き添える) に実装する。
+   * 扱えなければ false を返し、呼び手が 1 字ずつ drawGlyph で描く
+   */
+  drawTateChuYoko?(a: TateChuYokoArea, x: number, y: number): boolean;
   /** 座標変換 m = [a,b,c,d,e,f] (局所 → Sheet 座標, x' = a·x + c·y + e, y' = b·x + d·y + f) の中で draw を実行する */
   transform(m: Matrix, draw: () => void): void;
   /**
@@ -494,7 +500,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
       order = { kids: [...a.base, ...a.ruby], phases: undefined };
       break;
     case 'tate-chu-yoko':
-      order = { kids: a.glyphs, phases: undefined };
+      order = { kids: p.drawTateChuYoko?.(a, cx, cy) ? [] : a.glyphs, phases: undefined };
       break;
     case 'sheet':
       order = { kids: [], phases: undefined };

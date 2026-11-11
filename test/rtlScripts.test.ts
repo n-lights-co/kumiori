@@ -233,10 +233,12 @@ describe('PDF からの字の取り出し (右から左の文字)', () => {
     const mapped = cmaps.join('\n').match(/<[0-9A-F]{4}> <([0-9A-F]+)>/g)!.map((x) => x.split(' ')[1]);
     expect(mapped.sort()).toEqual(['<0628>', '<062A>', '<064E>']);
   });
-  it('アラビア文字の語は、語ごとに ActualText で字を与える (字は描く順 = 逆順。字を取り出す側が読む順に直す)', async () => {
+  it('アラビア文字の語は、語ごとに ActualText で字を与える (字は読む順。ISO 32000-2 §14.9.4: 置き換えの文字列)', async () => {
     const { content } = await contentOf(['كتاب بلا']);
-    expect(content).toContain(`/Span <</ActualText <${utf16(reversed('كتاب'))}>>> BDC`);
-    expect(content).toContain(`/Span <</ActualText <${utf16(reversed('بلا'))}>>> BDC`);
+    expect(content).toContain(`/Span <</ActualText <${utf16('كتاب')}>>> BDC`);
+    expect(content).toContain(`/Span <</ActualText <${utf16('بلا')}>>> BDC`);
+    // 描く順 (逆順) では書かない (これまでの書き方)
+    expect(content).not.toContain(`/Span <</ActualText <${utf16(reversed('كتاب'))}>>> BDC`);
     // 語ごとに、送りのある字形の区切り (語の字) と、送りの無い字形 (点) の区切り (空の ActualText) の 2 つ
     expect(content.match(/BDC/g)!.length).toBe(4);
     expect(content.match(/<<\/ActualText <FEFF>>> BDC/g)!.length).toBe(2);
@@ -246,7 +248,7 @@ describe('PDF からの字の取り出し (右から左の文字)', () => {
     const { content } = await contentOf(['אבּג'], { fontFamily: HEBREW });
     // 送りのある字形 (ב) の区切りに字の並び、送りの無い字形 (ダゲシュ) は空の ActualText の区切り (区切りの範囲が ב の幅になる)
     expect(content.match(/BDC/g)!.length).toBe(2);
-    expect(content).toContain(`/Span <</ActualText <${utf16(reversed('בּ'))}>>> BDC`);
+    expect(content).toContain(`/Span <</ActualText <${utf16('בּ')}>>> BDC`);
     expect(content).toContain('/Span <</ActualText <FEFF>>> BDC');
   });
   it('同じ字形を別の字に使うとき (ی の単独形は ى と同じ字形): 字形に登録された字と違えば ActualText で字を与える', async () => {

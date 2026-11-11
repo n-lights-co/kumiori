@@ -13,6 +13,7 @@
 import {
   PDFDocument,
   PDFFont,
+  PDFArray,
   PDFDict,
   PDFHexString,
   PDFString,
@@ -57,7 +58,7 @@ import { shrinkJpeg } from './jpeg';
 import { PdfColorGlyphs } from './colorGlyphPdf';
 import { apply, invert, mul, type Seg } from './matrix';
 import { parseSvg, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type TextChars, type XmlNode } from './svg';
-import type { Annotation, Area, AreaTree, BookmarkArea, FormField, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea } from './types';
+import type { Annotation, Area, AreaTree, BookmarkArea, FormField, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea, TateChuYokoArea } from './types';
 
 export interface PdfRenderOptions {
   title?: string;
@@ -304,6 +305,8 @@ interface TextSeg {
   /** 最後に足した字の親の領域の原点 (ページの座標) */
   ox: number;
   oy: number;
+  /** 縦書きの書体 (WMode 1) の字の並び: 原点 (x, y) は最初の字の縦書きの原点、pen は字の進む向き (文字空間の y の負の向き) の位置 */
+  v?: boolean;
 }
 
 /**
@@ -313,6 +316,52 @@ interface TextSeg {
  * (MuPDF は 0.8 で別の行に分ける)。いちばん小さい 0.1 を境にする (ふつうの行の字の間は、これより狭い)
  */
 const WIDE_GAP = 0.1;
+
+/**
+ * 縦書きの書体 (WMode 1 の Type 0 書体。ISO 32000-1 §9.7.4.3・§9.7.5): 横書きの書体と同じ CIDFont・ToUnicode を指し、Encoding だけが
+ * Identity-V の辞書 (ref。中身は finishVerticalFonts が書く)。origins は、全角でない字の、縦書きの原点の横の位置 (CID → 1/1000 em。W2 に書く)
+ */
+interface VerticalFont {
+  ref: PDFRef;
+  origins: Map<number, number>;
+}
+/** 縦書きの原点の縦の位置と、縦の送り (1/1000 em)。DW2 の既定の値 (§9.7.4.3) */
+const VERTICAL_ORIGIN_Y = 880;
+const VERTICAL_ADVANCE = -1000;
+/** 縦書きの字の並び (TJ) の中で、字を詰める向きの調整として書く上限 (1/1000 em)。これより詰める所は、Tm から書き直す */
+const VERTICAL_MAX_TIGHTEN = 20;
+const round4 = (v: number) => Math.round(v * 10000) / 10000;
+/** 数を、指数の表記にならない 10 進の文字列にする (PDF の数に指数の表記は無い。ISO 32000-1 §7.3.3) */
+const decimal = (v: number) => (Math.abs(v) < 1e-6 ? v.toFixed(10).replace(/\.?0+$/, '') : String(v));
+
+/**
+ * 縦書きの書体の辞書を書く (書体が埋め込まれた後で呼ぶ): 横書きの Type 0 書体の辞書の写しで、Encoding を Identity-V にしたもの。
+ * CIDFont には、縦書きの字の送りと原点 (DW2。全角でない字は W2) を足す
+ */
+function finishVerticalFonts(pdf: PDFDocument, fonts: Map<PDFFont, VerticalFont>) {
+  const ctx = pdf.context;
+  for (const [font, vf] of fonts) {
+    const base = ctx.lookup(font.ref, PDFDict);
+    const dict = ctx.obj({ Type: 'Font', Subtype: 'Type0' });
+    for (const k of ['BaseFont', 'DescendantFonts', 'ToUnicode']) {
+      const v = base.get(PDFName.of(k));
+      if (v) dict.set(PDFName.of(k), v);
+    }
+    dict.set(PDFName.of('Encoding'), PDFName.of('Identity-V'));
+    ctx.assign(vf.ref, dict);
+    const cid = ctx.lookup(base.lookup(PDFName.of('DescendantFonts'), PDFArray).get(0), PDFDict);
+    cid.set(PDFName.of('DW2'), ctx.obj([VERTICAL_ORIGIN_Y, VERTICAL_ADVANCE]));
+    // W2: 「c [w1y vx vy …]」(c から続く CID ごとに、縦の送り・原点の位置)
+    const w2: Array<number | number[]> = [];
+    let last = -2;
+    for (const [c, vx] of [...vf.origins].sort((a, b) => a[0] - b[0])) {
+      if (c === last + 1) (w2[w2.length - 1] as number[]).push(VERTICAL_ADVANCE, vx, VERTICAL_ORIGIN_Y);
+      else w2.push(c, [VERTICAL_ADVANCE, vx, VERTICAL_ORIGIN_Y]);
+      last = c;
+    }
+    if (w2.length) cid.set(PDFName.of('W2'), ctx.obj(w2));
+  }
+}
 
 class PdfPainter implements Painter {
   private clips = 0;
@@ -860,9 +909,13 @@ class PdfPainter implements Painter {
    * 続けて描く字をためておき、同じ書体・大きさ・色・描き方の字を 1 つのテキストの区切り (BT…ET) にまとめて書く。
    * 字ごとの位置と向きは、テキストの行列 (Tm) で与える (これまでの cm と同じ行列)。字以外を描く前には書き出す
    */
-  private run?: { key: string; font: PDFFont; size: number; color: Color; css: string; fakeBold: boolean; ops: PDFOperator[]; seg?: TextSeg };
+  private run?: { key: string; font: PDFFont; size: number; color: Color; css: string; fakeBold: boolean; ops: PDFOperator[]; seg?: TextSeg; vertical?: VerticalFont };
   /** ページの資源の書体の名前 (書体ごとに 1 つ) */
   private fontKeys = new Map<PDFFont, PDFName>();
+  /** ページの資源の、縦書きの書体 (WMode 1 の Type 0 書体) の名前 */
+  private verticalFontKeys = new Map<PDFFont, PDFName>();
+  /** 文書の、縦書きの書体 (renderPdf が文書ごとに持つ)。無ければ、縦書きの字も横書きの書体で 1 字ずつ置く */
+  verticalFonts?: Map<PDFFont, VerticalFont>;
 
   /** 色つきの字形を持つ書体の字の描き手 (colorGlyphPdf.ts)。色つきの書体を使わない文書では undefined */
   colorGlyphs?: PdfColorGlyphs;
@@ -887,14 +940,14 @@ class PdfPainter implements Painter {
     // 字と字形が同じ数でも対応しない (アラビア文字の語、ヘブライ文字の字 + 母音記号)
     const rtl = RTL_TEXT.test(text);
     const own = g.glyphIds && g.glyphIds.length > 1 ? (rtl ? rtlGlyphChars(font, g.glyphIds, text, g.features) : reorderedGlyphChars(font, g.glyphIds, text, /^[\u0900-\u0E7F]/.test(text) || ACTUAL_TEXT_SEA.test(text))) : undefined;
-    // ActualText に書く字の並び。右から左の文字の並びは、描く順 (左から右。text の字の逆順) で書く。
-    // ISO 32000-1 §14.9.4 (置き換えの文字列)・§14.8.2.3 (タグ付き PDF の、内容の読む順) の考え方では読む順の文字列だが、字を取り出す側は、
-    // ActualText の字にも「ページの内容は字を左から右に置いたもの」として右から左の字の並びを逆順にする処理を掛ける。語 1 つを 1 つの
-    // 区切りにして読む順の文字列を入れて試すと (كتاب・בְּרֵאשִׁית)、poppler 24.02 の pdftotext は既定・-layout・-raw のどれでも逆順の語
-    // (باتك) を返し、MuPDF 1.28 もアラビア文字の語を逆順で返した。描く順で入れると、poppler は読む順の語を返す (母音記号・ZWNJ つきも)。
-    // MuPDF はアラビア文字の語は読む順で返すが、記号つきの語で字が重なることがある。ActualText を読まない取り出し方 (pdfminer.six) は、
-    // どちらでも字形ごとの ToUnicode を描く順で返す。右から左の文字のページの内容 (字形を左から右へ置く) と同じ順にそろえる、という形
-    const actual = rtl ? [...text].reverse().join('') : text;
+    // ActualText に書く字の並びは、どの用字でも読む順 (論理の順。text のまま)。ISO 32000-2 §14.9.4 (Replacement text。ISO 32000-1 でも同じ節):
+    // ActualText は、見る人が見るものと等しい文字による、内容の置き換え (character substitution)。描く順 (左から右) に並べた字形の並びではなく、
+    // 文字列としての置き換えなので、読む順で書く (描く順の文字列だと知らせるには、別の仕組み §14.8.2.5.3 ReversedChars がある)。
+    // 読む側の違い (2026-11-11 に測ったもの): PDFium (Chrome・Edge のビューア) は ActualText の字をそのまま返すので、読む順なら正しい語に
+    // なる。poppler の pdftotext と MuPDF は、ActualText の字にも右から左の並べ替えを掛けるので、読む順で書くと語が逆順になる (描く順で書いた
+    // これまでは、その逆で PDFium が逆順だった)。規格に合わせ、利用者の多いビューアで正しく読める読む順にする。
+    // ActualText を読まない取り出し方 (pdfminer.six) は、どちらでも字形ごとの ToUnicode を描く順で返す
+    const actual = text;
     let hex: PDFHexString;
     try {
       // 木に字形の番号があれば、それを書く (組版で測った字形と同じ)。無ければ、字を書体で組み直す
@@ -905,16 +958,21 @@ class PdfPainter implements Painter {
       return;
     }
     const fakeBold = !!g.fakeBold;
-    const key = `${g.fontFamily}|${g.fontWeight}|${(g.features ?? []).join(',')}|${g.fontSize}|${g.color}|${fakeBold}`;
+    const pos = g.glyphPositions;
+    const placedEach = (pos && g.glyphIds && pos.length === g.glyphIds.length) || !!own;
+    // 縦書きの行の正立の字 (1 つの字形) は、縦書きの書体 (WMode 1。ISO 32000-1 §9.7.4.3・§9.7.5) の字として書く
+    const vertical = this.verticalFor(g, font, hex, rtl || placedEach);
+    // 縦書きの書体の字は、OpenType の機能 (vert など。字形の番号を決めるだけ) が違っても同じ並びに続ける: 縦書きの行は、縦書き用の字形に
+    // 替わる字 (かな・約物) と替わらない字 (漢字) が交じるので、分けると 1 行が細切れになる
+    const key = `${g.fontFamily}|${g.fontWeight}|${vertical ? 'V' : (g.features ?? []).join(',')}|${g.fontSize}|${g.color}|${fakeBold}`;
     if (this.run && this.run.key !== key) this.flushText();
-    if (!this.run) this.run = { key, font, size: g.fontSize, color: toPdfColor(g.color, this.spots.cmyk), css: g.color, fakeBold, ops: [] };
+    if (!this.run) this.run = { key, font, size: g.fontSize, color: toPdfColor(g.color, this.spots.cmyk), css: g.color, fakeBold, ops: [], vertical };
     const phi = (-g.rotation * Math.PI) / 180;
     const cos = Math.cos(phi);
     const sin = Math.sin(phi);
     const m = [g.scaleX * cos, g.scaleX * sin, (g.italic ? g.scaleX * cos * ITALIC_SLANT : 0) - sin, (g.italic ? g.scaleX * sin * ITALIC_SLANT : 0) + cos, x + g.baselineX, this.H - (y + g.baselineY)];
-    const pos = g.glyphPositions;
     const r = this.run;
-    if ((pos && g.glyphIds && pos.length === g.glyphIds.length) || own) {
+    if (placedEach) {
       // GPOS の位置: 字形ごとに、送りの合計とずらし (書体の単位) の位置に置く。字 (text) は最初の字形の ToUnicode に使う
       const fk = (font as unknown as { embedder: { font: { unitsPerEm: number; getGlyph(id: number): { advanceWidth: number } } } }).embedder.font;
       const k = g.fontSize / fk.unitsPerEm;
@@ -969,22 +1027,123 @@ class PdfPainter implements Painter {
       }
     }
     // 右から左の文字は、字形の並ぶ順が字の順と違うので、広げた字の並びの ActualText の対象にしない
-    this.placeGlyph(m, g.fontSize, hex, 0, 0, x - g.x, y - g.y, rtl ? undefined : text);
+    if (this.cell && !this.cell.single && vertical) {
+      // 縦中横の枠: 最初の字の前で印の付いた内容を始める。枠の字は横に並ぶので、1 字ずつ Tm から書く (前の字の並びにも続けない)
+      this.flushSeg(r);
+      if (this.cell.text !== undefined) {
+        r.ops.push(PDFOperator.of('BDC' as never, ['/Span', `<</ActualText <${utf16Hex(this.cell.text)}>>>`] as never));
+        this.cell.text = undefined;
+        this.cell.open = true;
+      }
+      this.placeGlyph(m, g.fontSize, hex, 0, 0, x - g.x, y - g.y, undefined, vertical);
+      return;
+    }
+    this.placeGlyph(m, g.fontSize, hex, 0, 0, x - g.x, y - g.y, rtl ? undefined : text, vertical);
+  }
+
+  /**
+   * 最後に書いた字の命令が、縦書きの書体の字の並びの全体 (並びの始まりからの TJ) なら、その命令の引数 (args[0] が TJ の配列)・中身・始まりの位置。
+   * 次の字の並びが、すぐ左の、上端のそろった行なら、この命令を 2 つに分ける (flushSeg)
+   */
+  private lastColumn?: { args: string[]; parts: string[]; x: number; y: number; size: number };
+
+  /**
+   * 縦中横の枠の字を描いている間の印。text は、枠の最初の字の前に書く ActualText (書いたら undefined)、open は BDC を書いたか。
+   * single は 1 字だけの枠 (ふつうの縦書きの字と同じに、行の字の並びに続ける)
+   */
+  private cell?: { text?: string; open: boolean; single: boolean };
+
+  /**
+   * 縦中横 (縦書きの行の 1 字分の枠に、横に並べた字): 字を縦書きの書体の字として 1 つずつ置き、2 字以上の枠は 1 つの印の付いた内容にして、
+   * 字の並びを書き添える (ISO 32000-1 §14.9.4)。字を取り出す側は、枠を縦書きの行の中の 1 つの単位として読む (横書きの書体の字の並びの
+   * ままだと、行の向きの違う別の行として、行の外へ出す・行を分ける)。字の位置は変えない。
+   * 1 つの字形で書ける字が、同じ書体・大きさ・色で並ぶときだけ (ほかは false を返し、これまでどおり横書きの書体の字として描く)
+   */
+  drawTateChuYoko(a: TateChuYokoArea, x: number, y: number): boolean {
+    const gs = a.glyphs;
+    const g0 = gs[0];
+    if (!this.verticalFonts || a.writingMode === 'horizontal-tb' || !gs.length) return false;
+    const simple = (g: GlyphArea) =>
+      g.rotation === 0 && g.color !== 'transparent' && g.glyphIds?.length === 1 && !RTL_TEXT.test(g.text) && !this.colorGlyphs?.handles(g) &&
+      !g.transform && g.opacity === undefined && !g.orientation &&
+      g.fontFamily === g0.fontFamily && g.fontWeight === g0.fontWeight && g.fontSize === g0.fontSize && g.color === g0.color && !g.fakeBold === !g0.fakeBold;
+    if (!gs.every(simple)) return false;
+    this.cell = { text: gs.map((g) => g.text).join(''), open: false, single: gs.length === 1 };
+    try {
+      for (const g of gs) this.drawGlyph(g, x + g.x, y + g.y);
+    } finally {
+      // 枠の字は同じ並び (run) に入る (書体・大きさ・色が同じ) ので、印の付いた内容は 1 つのテキストの区切り (BT…ET) の中で閉じる (§14.6.1)
+      if (this.cell.open && this.run) {
+        this.flushSeg(this.run);
+        this.run.ops.push(PDFOperator.of('EMC' as never));
+      }
+      this.cell = undefined;
+    }
+    return true;
+  }
+
+  /**
+   * 字 g を縦書きの書体 (WMode 1) の字として書くなら、その書体。書かないなら undefined (これまでどおり、横書きの書体の字として置く)。
+   * 縦書きの行の正立の字で、1 つの字形のものだけ: 横倒しの字 (rotation 90) は、回したテキストの行列の横書きの字のままで、上から下へ並ぶ
+   */
+  private verticalFor(g: GlyphArea, font: PDFFont, hex: PDFHexString, complex: boolean): VerticalFont | undefined {
+    if (!this.verticalFonts || complex || (g.writingMode === 'horizontal-tb' && !this.cell) || g.rotation !== 0) return undefined;
+    const w = widthOfHex(hex);
+    const code = hex.asString();
+    if (w === undefined || code.length !== 4) return undefined;
+    let vf = this.verticalFonts.get(font);
+    if (!vf) this.verticalFonts.set(font, (vf = { ref: this.ctx!.context.nextRef(), origins: new Map() }));
+    // 縦書きの原点の横の位置 (位置のベクトル v の x。1/1000 em): 全角の字 (送り 1000) は既定の「送りの半分」(§9.7.4.3 の DW2 の既定)。
+    // ほかの字は、整数に丸めた値を W2 に書く (送りを整数に切り捨てて読む読み手 (PDFium) でも、字の位置が変わらないように)
+    if (w !== 1000) vf.origins.set(parseInt(code, 16), Math.round(w / 2));
+    return vf;
   }
 
   /**
    * 字を、ためている並び (run) に置く。同じ行列で同じ基線に並ぶ字は 1 つの文字列 (TJ。字の間隔は字送りの調整で表す) にまとめ、
-   * 字ごとに Tm と Tj を書かない (PDF の内容が数分の 1 になる)。基線の違う字 (縦書きの正立の字・ずらした字形) は Tm から書き直す。
-   * (u, v) は行列 m の文字空間での字の原点 (GPOS のずらし)。(ox, oy) は字の親の領域の原点、text は元の字 (分からなければ undefined)
+   * 字ごとに Tm と Tj を書かない (PDF の内容が数分の 1 になる)。基線の違う字 (ずらした字形・横書きの書体で置く縦書きの字) は Tm から書き直す。
+   * (u, v) は行列 m の文字空間での字の原点 (GPOS のずらし)。(ox, oy) は字の親の領域の原点、text は元の字 (分からなければ undefined)。
+   * vertical があれば、縦書きの書体 (WMode 1) の字: 同じ行 (横の位置が同じ) に上から下へ並ぶ字を、1 つの文字列にまとめる (OUT-26)。
+   * 字を取り出す側は、横書きの書体の字が 1 字ずつ縦に並ぶものを別々の行と見るが、縦書きの書体の字の並びは 1 つの行として読む
    */
-  private placeGlyph(m: number[], size: number, hex: PDFHexString, u: number, v: number, ox: number, oy: number, text?: string) {
+  private placeGlyph(m: number[], size: number, hex: PDFHexString, u: number, v: number, ox: number, oy: number, text?: string, vertical?: VerticalFont) {
     const r = this.run!;
-    const px = m[4] + m[0] * u + m[2] * v;
-    const py = m[5] + m[1] * u + m[3] * v;
+    let px = m[4] + m[0] * u + m[2] * v;
+    let py = m[5] + m[1] * u + m[3] * v;
     // 文字列の送り (1/1000 em。PDF の W と同じ値)。分からなければまとめない
     const w = widthOfHex(hex);
     const s = r.seg;
-    if (s && w !== undefined && s.join && s.a === m[0] && s.b === m[1] && s.c === m[2] && s.d === m[3]) {
+    if (vertical) {
+      // 縦書きの書体の字は、縦書きの原点 (横書きの原点 + 位置のベクトル v) をテキストの位置に合わせて描かれる (ISO 32000-1 §9.7.4.3)。
+      // 字形の位置を変えないよう、テキストの位置を v だけずらす: v = (送りの半分, 880)/1000 em (DW2 の既定。全角でない字は W2 に書く値)。
+      // 読む側が計算する字形の位置 (テキストの位置 − v) を、横書きの書体の字として Tm に書いていた値 (1/10000 に丸めた原点) に合わせる:
+      // 字形を画素の何分の 1 かの位置に丸めて描く描き手 (Poppler は 1/4 画素) では、1/10000 pt に満たない差でも、丸めの境をまたいだ字が
+      // 動いて見える。行列も Tm に書く値 (丸めた値) で計算する。字ごとに丸めた位置に合わせるので、行の中の字の間に、小さな数
+      // (丸めの差。0.01/1000 em ほど) が入る
+      const vx = ((w === 1000 ? 500 : Math.round(w! / 2)) * size) / 1000;
+      const vy = (VERTICAL_ORIGIN_Y * size) / 1000;
+      px = round4(px) + round4(m[0]) * vx + round4(m[2]) * vy;
+      py = round4(py) + round4(m[1]) * vx + round4(m[3]) * vy;
+      // 縦書きの書体の並び: 字は文字空間の y の負の向きへ進む (送り −1000。§9.7.4.3)。横の位置が同じなら同じ行 (回していない・傾けていない字だけ)。
+      // TJ の数は、縦書きでは縦の位置から引く (§9.4.4): 正なら下 (先) へ進める。pen は、読む側が計算する位置 (書いた数で進めたもの)
+      if (s && s.v && s.join && s.a === m[0] && m[1] === 0 && m[2] === 0 && m[3] === 1 && s.b === 0 && s.c === 0 && s.d === 1 && Math.abs(px - s.x) < 1e-7) {
+        const n = py - s.y;
+        const adj = Math.round(((s.pen - n) * 1000 * 1e5) / size) / 1e5;
+        // 字を詰める向き (負の数) の大きな調整はしない (Tm から書き直す): TJ の数を横書きの向きで読む読み手 (PDFium) が、
+        // 詰めた所 (続く約物の間など) を広い空きと見て、空白を挟む
+        if (adj >= -VERTICAL_MAX_TIGHTEN) {
+          if (adj !== 0) s.parts.push(decimal(adj));
+          this.chain(s, ox, oy, text, adj >= WIDE_GAP * 1000 - 0.5);
+          s.parts.push(`<${hex.asString()}>`);
+          s.pen -= (adj * size) / 1000 + size;
+          return;
+        }
+      }
+      this.flushSeg(r);
+      r.seg = { a: m[0], b: m[1], c: m[2], d: m[3], x: px, y: py, size, parts: [`<${hex.asString()}>`], pen: -size, join: true, chains: [{ at: 0, text }], ox, oy, v: true };
+      return;
+    }
+    if (s && w !== undefined && s.join && !s.v && s.a === m[0] && s.b === m[1] && s.c === m[2] && s.d === m[3]) {
       // この字の原点を、並びの原点からの文字空間の座標 (t, n) で表す。n (基線と直交する向き) が 0 なら同じ基線
       const dx = px - s.x;
       const dy = py - s.y;
@@ -996,19 +1155,7 @@ class PdfPainter implements Painter {
           // TJ の数は 1/1000 文字空間単位 (字の大きさ倍される前) で、正なら左 (前) へ戻す
           const adj = ((s.pen - t) * 1000) / size;
           if (Math.abs(adj) >= 5e-5) s.parts.push(num(adj));
-          // 同じ親の領域に続けて置かれた字は、ひと続きの字の並び (字の間の空きは、字間・行の両端揃えで広げたもの)。親が変われば
-          // (別の行内の箱・別のセル・ルビなど)、並びを分ける: 間の空きは、字の並びの切れ目 (読む側が空白を推測してよい所)
-          let c = s.chains[s.chains.length - 1];
-          if (Math.abs(ox - s.ox) > 1e-6 || Math.abs(oy - s.oy) > 1e-6) {
-            c = { at: s.parts.length, text };
-            s.chains.push(c);
-            s.ox = ox;
-            s.oy = oy;
-          } else {
-            // ほんものの空白の字の前後の空き (語の間を広げた両端揃え) は数えない: 空白の字が、そのまま取り出される
-            if (adj <= -(WIDE_GAP * 1000 - 0.5) && c.text !== undefined && text !== undefined && !/\s$/.test(c.text) && !/^\s/.test(text)) c.wide = true;
-            c.text = c.text === undefined || text === undefined ? undefined : c.text + text;
-          }
+          this.chain(s, ox, oy, text, adj <= -(WIDE_GAP * 1000 - 0.5));
           s.parts.push(`<${hex.asString()}>`);
           s.pen = t + (w * size) / 1000;
           return;
@@ -1019,15 +1166,53 @@ class PdfPainter implements Painter {
     r.seg = { a: m[0], b: m[1], c: m[2], d: m[3], x: px, y: py, size, parts: [`<${hex.asString()}>`], pen: w === undefined ? 0 : (w * size) / 1000, join: w !== undefined, chains: [{ at: 0, text }], ox, oy };
   }
 
+  /**
+   * 字の並び s に、次の字 (親の領域の原点 (ox, oy)、元の字 text) を続けるときの、ひと続きの字の並び (chains) の更新。
+   * wide は、前の字との間を WIDE_GAP より広げたか
+   */
+  private chain(s: TextSeg, ox: number, oy: number, text: string | undefined, wide: boolean) {
+    // 同じ親の領域に続けて置かれた字は、ひと続きの字の並び (字の間の空きは、字間・行の両端揃えで広げたもの)。親が変われば
+    // (別の行内の箱・別のセル・ルビなど)、並びを分ける: 間の空きは、字の並びの切れ目 (読む側が空白を推測してよい所)
+    const c = s.chains[s.chains.length - 1];
+    if (Math.abs(ox - s.ox) > 1e-6 || Math.abs(oy - s.oy) > 1e-6) {
+      s.chains.push({ at: s.parts.length, text });
+      s.ox = ox;
+      s.oy = oy;
+      return;
+    }
+    // ほんものの空白の字の前後の空き (語の間を広げた両端揃え) は数えない: 空白の字が、そのまま取り出される
+    if (wide && c.text !== undefined && text !== undefined && !/\s$/.test(c.text) && !/^\s/.test(text)) c.wide = true;
+    c.text = c.text === undefined || text === undefined ? undefined : c.text + text;
+  }
+
   /** ためている文字列を、Tm と Tj (字送りの調整があれば TJ) として run の命令に移す。数値は文字列にして渡す (pdf-lib の PDFNumber を作らない。1/10000 に丸める) */
   private flushSeg(r: { ops: PDFOperator[]; seg?: TextSeg }) {
     const s = r.seg;
     if (!s) return;
     r.seg = undefined;
-    r.ops.push(PDFOperator.of(Ops.SetTextMatrix, [num(s.a), num(s.b), num(s.c), num(s.d), num(s.x), num(s.y)] as never));
-    const show = (parts: string[]) => r.ops.push(parts.length === 1 ? PDFOperator.of(Ops.ShowText, [parts[0]] as never) : PDFOperator.of(Ops.ShowTextAdjusted, [`[${parts.join('')}]`] as never));
+    // 縦書きの書体の並びの位置は、1/100000000 まで書く (placeGlyph: 読む側が位置のベクトルを引いた字形の位置を、丸めた横書きの原点に合わせる)
+    const at = s.v ? (v: number) => decimal(Math.round(v * 1e8) / 1e8) : num;
+    r.ops.push(PDFOperator.of(Ops.SetTextMatrix, [num(s.a), num(s.b), num(s.c), num(s.d), at(s.x), at(s.y)] as never));
+    // 字を取り出す側の PDFium は、字を書く命令 (Tj・TJ) ごとの始まりの位置を比べ、前の命令と高さがほぼ同じで、左にある命令を、同じ横書きの
+    // 行の前の語とみて順を入れ替える。縦書きの行 (右から左へ並ぶ) を 1 行 1 命令で書くと、上端のそろった隣の行と順が入れ替わるので、
+    // そうなる前の行の命令を、途中で 2 つの命令に分ける (後ろの命令の始まりが下になる。続きの TJ なので、字の位置は変わらない)
+    const prev = this.lastColumn;
+    this.lastColumn = undefined;
+    if (prev && s.x < prev.x && Math.abs(s.y - prev.y) <= 0.6 * Math.max(s.size, prev.size)) {
+      const strings = prev.parts.flatMap((part, k) => (part.startsWith('<') ? [k] : []));
+      // 後ろの命令は 2 字 (並びが 3 字以下なら 1 字): 1 字だけの命令は、読む側が向きを決められないことがある
+      const at = strings[Math.max(strings.length - 2, 1)];
+      prev.args[0] = `[${prev.parts.slice(0, at).join('')}] TJ\n[${prev.parts.slice(at).join('')}]`;
+    }
+    const show = (parts: string[], first: boolean) => {
+      const args = [parts.length === 1 ? parts[0] : `[${parts.join('')}]`];
+      r.ops.push(PDFOperator.of(parts.length === 1 ? Ops.ShowText : Ops.ShowTextAdjusted, args as never));
+      // 縦書きの書体の、2 字以上の並びの最後の命令で、並びの始まりから書いたもの (後で分けることがある)
+      if (s.v && first && parts.filter((part) => part.startsWith('<')).length > 1) this.lastColumn = { args, parts, x: s.x, y: s.y, size: s.size };
+      else this.lastColumn = undefined;
+    };
     if (!s.chains.some((c) => c.wide && c.text !== undefined)) {
-      show(s.parts);
+      show(s.parts, true);
       return;
     }
     // 字の間を広げた字の並び (OUT-24): 置き換えの文字列 (ISO 32000-1 §14.9.4) で、元の字の並びを書き添える。字を取り出す側は、印の付いた
@@ -1038,7 +1223,7 @@ class PdfPainter implements Painter {
       const parts = s.parts.slice(c.at, s.chains[i + 1]?.at);
       const span = c.wide && c.text !== undefined;
       if (span) r.ops.push(PDFOperator.of('BDC' as never, ['/Span', `<</ActualText <${utf16Hex(c.text!)}>>>`] as never));
-      show(parts);
+      show(parts, i === 0);
       if (span) r.ops.push(PDFOperator.of('EMC' as never));
     });
   }
@@ -1049,10 +1234,11 @@ class PdfPainter implements Painter {
     if (!r) return;
     this.run = undefined;
     this.flushSeg(r);
-    let name = this.fontKeys.get(r.font);
+    const keys = r.vertical ? this.verticalFontKeys : this.fontKeys;
+    let name = keys.get(r.font);
     if (!name) {
-      name = this.page.node.newFontDictionary(r.font.name, r.font.ref);
-      this.fontKeys.set(r.font, name);
+      name = r.vertical ? this.page.node.newFontDictionary(`${r.font.name}-V`, r.vertical.ref) : this.page.node.newFontDictionary(r.font.name, r.font.ref);
+      keys.set(r.font, name);
     }
     this.page.pushOperators(
       pushGraphicsState(),
@@ -1378,12 +1564,14 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   const cmykOf = pdfxConverter(opts);
   if (opts.pdfx?.profile && cmykOf === rgbToCmyk) opts.pdfx.warnings?.push('ICC プロファイルの CMYK への表 (BToA) が読めないので、RGB の色は簡単な式で CMYK にします');
   const painters: PdfPainter[] = [];
+  const verticalFonts = new Map<PDFFont, VerticalFont>();
   for (const sheet of tree.sheets) {
     const page = pdf.addPage([sheet.width, sheet.height]);
     setBoxes(page, sheet);
     const painter = new PdfPainter(page, sheet.height, fontOf, (src) => images.get(src), (src) => vectors.get(src), pdf, svgFontOf, svgImages);
     if (cmykOf) painter.cmykOutput = cmykOf;
     painter.colorGlyphs = colorGlyphs;
+    painter.verticalFonts = verticalFonts;
     paintSheet(sheet, painter);
     painter.flushText();
     painters.push(painter);
@@ -1416,6 +1604,11 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   if (tree.bookmarks?.length) addOutline(pdf, tree.bookmarks, linkAction);
   const droppedSummary = summarizeDroppedLinks(droppedLinks);
   if (droppedSummary) opts.linkWarnings?.push(droppedLinkWarning(droppedSummary));
+  // 縦書きの書体の辞書は、書体の辞書 (save の中の flush で作られる) から作る
+  if (verticalFonts.size) {
+    await pdf.flush();
+    finishVerticalFonts(pdf, verticalFonts);
+  }
   // 書体のストリーム (FontFile・ToUnicode) は save の中の flush で作られるので、先に flush してから圧縮の仕方を差し替える
   // (しないと、いちばん大きい書体のストリームが pako のまま圧縮される)
   if (opts.deflate) {
