@@ -1023,7 +1023,9 @@ export interface LRuby extends BaseNode {
   rubyColorUnder?: string;
   /**
    * ルビを置く側 (CSS Ruby 1 §4.1 の ruby-position)。'under' は、rubyText を親文字の下側 (縦書きは左)、rubyTextUnder (2 段目) を
-   * 上側 (縦書きは右) に置く。無ければ、rubyText が上側 (縦書きは右)、rubyTextUnder が下側
+   * 上側 (縦書きは右) に置く。無ければ、rubyText が上側 (縦書きは右)、rubyTextUnder が下側。
+   * 側は、行の並ぶ向きで持つ: 無ければ rubyText が前の側、'under' は後ろの側。vertical-lr (行が左から右へ並ぶ) では、前の側が左、
+   * 後ろの側が右なので、HTML の取り込みは、CSS の over (行の上側 = 右。CSS Writing Modes 3 §6.4) を 'under' に、under を指定なしにして渡す
    */
   rubyPosition?: 'under';
   /**

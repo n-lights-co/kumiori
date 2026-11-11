@@ -27,6 +27,13 @@ export interface LineMetrics {
   topLeading?: number;
   /** 行の中の字の下端 (書体の descent) から、行の下端までの空き (下の半行間)。無ければ leading / 2 */
   bottomLeading?: number;
+  /**
+   * 後ろ側 (横書きは下、縦書きは行の並ぶ向きの後ろ) に置いたルビ・圏点のある CSS の行で、行間に収まらない注釈の分として空ける量
+   * (CSS Ruby 1 §3.6)。rubyBefore は行の前に足す分、rubyAfter は行の後ろに足す分 (base に含めてある)。
+   * 無ければ、足りない分 (rubyExtent − leading) をすべて行の前に足す
+   */
+  rubyBefore?: number;
+  rubyAfter?: number;
 }
 
 /** atom の基線の上下 (em の箱。箱はその上下、ルビは下側の張り出しを含む) */
@@ -104,6 +111,37 @@ function lineMetricsXsl(pl: PositionedLine, wm: WritingMode, block: ResolvedStyl
  * (CSS 2.1 §10.8.1・§10.8: 揃える箱が行より高ければ、その分だけ行を広げる)。揃えた位置は箱の shift に入れる
  */
 export function lineMetrics(
+  pl: PositionedLine,
+  wm: WritingMode,
+  fallback: ResolvedStyle,
+  nominalRatio?: number,
+  strut?: { above: number; below: number },
+  nominalDiff?: number,
+): LineMetrics {
+  return withAfterRubyRoom(lineMetricsAligned(pl, wm, fallback, nominalRatio, strut, nominalDiff), pl);
+}
+
+/**
+ * 後ろ側 (横書きは下) に置いた注釈のある CSS の行 (ruby-position: under など。RubyMetrics.roomExtent のあるルビ): CSS Ruby 1 §3.6。
+ * line-height が、前の側の注釈の端から後ろ側の注釈の端までより小さいとき、同じ行を重ねても注釈が重ならないだけの空き (注釈の厚さの合計 − 行間) を、
+ * 注釈のある側に足す (「additional leading is added on the appropriate side(s) of the ruby base container」)。両側にあれば、厚さの割合で分ける。
+ * 前の側だけの行は、これまでどおり (足りない分をすべて行の前に足す。layoutEngine の rubyRoom)
+ */
+function withAfterRubyRoom(m: LineMetrics, pl: PositionedLine): LineMetrics {
+  let before = 0;
+  let after = 0;
+  for (const a of pl.raw.hang ? [...pl.raw.items, pl.raw.hang] : pl.raw.items) {
+    if (!a.r) continue;
+    before = Math.max(before, a.r.rubyExtent);
+    if (a.r.roomExtent !== undefined) after = Math.max(after, a.r.underExtent ?? 0);
+  }
+  if (!(after > 0)) return m;
+  const lack = Math.max(0, before + after - m.leading);
+  const rubyAfter = (lack * after) / (before + after);
+  return { ...m, base: m.base + rubyAfter, rubyBefore: lack - rubyAfter, rubyAfter };
+}
+
+function lineMetricsAligned(
   pl: PositionedLine,
   wm: WritingMode,
   fallback: ResolvedStyle,

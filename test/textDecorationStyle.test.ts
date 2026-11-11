@@ -346,10 +346,19 @@ describe('圏点の色と側 (CSS Text Decoration 3 §3.2〜§3.4)', () => {
     expect(lineH('')).toBeGreaterThan(10);
   });
 
-  it('vertical-lr では、圏点は今までどおりルビと同じ側 (行の進む向きの手前 = 左) に付き、側は変えられない', () => {
+  it('vertical-lr でも、right (初期値・省略) は字の右、left は字の左 (§3.4 の right・left は物理の向き。行の並ぶ向きでは、右が後ろの側)', () => {
     const r = (pos: string) => rubies(`<div style="writing-mode: vertical-lr"><p><span style="text-emphasis-style: dot; ${pos}">圏</span></p></div>`);
-    expect(r('')).toEqual([{ type: 'ruby', baseText: '圏', rubyText: '•' }]);
-    expect(r('text-emphasis-position: over left')).toEqual(r(''));
+    // 右 = 行の並ぶ向きの後ろの側 (LRuby.rubyPosition: 'under')、左 = 前の側
+    expect(r('')).toEqual([{ type: 'ruby', baseText: '圏', rubyText: '•', rubyPosition: 'under' }]);
+    expect(r('text-emphasis-position: under right')).toEqual(r(''));
+    expect(r('text-emphasis-position: over left')).toEqual([{ type: 'ruby', baseText: '圏', rubyText: '•' }]);
+    const dx = (pos: string) => {
+      const g = glyphs(areas(`<div style="writing-mode: vertical-lr"><p style="${P}"><span style="text-emphasis-style: dot; ${pos}">圏</span></p></div>`));
+      const [base, mark] = [g.find((x) => x.a.text === '圏')!, g.find((x) => x.a.text === '•')!];
+      return mark.x - base.x;
+    };
+    expect(dx('')).toBeCloseTo(10, 3);
+    expect(dx('text-emphasis-position: over left')).toBeCloseTo(-5, 3);
   });
 });
 
