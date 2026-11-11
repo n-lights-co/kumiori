@@ -11,7 +11,7 @@
  * Bitmap16 の模様のブラシ、装置の画素の大きさが決まらないときの模様のブラシ、EMF+ (GDI コメントの記録)。
  */
 import { decodeBmp, encodePngStored, expandRle, type Pixels } from './pixels';
-import { MAX_PIXELS, METAFILE_TOTAL_IMAGE_PIXELS } from './imageLimits';
+import { MAX_PIXELS, metafilePixelBudget } from './imageLimits';
 import { apply as applyXf, isIdentity, mul, type Matrix } from './matrix';
 import { base64 } from './base64';
 import { flattenPath, polyBool, ringsPath, type Rings } from './regionBool';
@@ -224,14 +224,19 @@ class SvgOut {
   stack: Dc[] = [];
   /** パス (EMF の BEGINPATH〜ENDPATH) を集めている途中 */
   path: string | null = null;
-  /** この文書で画素にできる残りの数 (imageLimits.ts の METAFILE_TOTAL_IMAGE_PIXELS)。足りなければ false (その画像は描かない) */
-  private pixelsLeft = METAFILE_TOTAL_IMAGE_PIXELS;
+  /**
+   * この文書で画素にできる残りの数 (imageLimits.ts の metafilePixelBudget: 合計の上限と、ファイルの大きさに応じた上限の小さい方)。
+   * 足りなければ false (その画像は描かない)
+   */
+  private pixelsLeft: number;
   takePixels(n: number): boolean {
     if (n > this.pixelsLeft) return false;
     this.pixelsLeft -= n;
     return true;
   }
-  constructor() {
+  /** fileBytes: メタファイルの大きさ (バイト)。画素にできる数を決める */
+  constructor(fileBytes: number) {
+    this.pixelsLeft = metafilePixelBudget(fileBytes);
     this.dc = {
       pen: BLACK_PEN,
       brush: WHITE_BRUSH,
@@ -1133,7 +1138,7 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
   }
   if (p + 18 > b.length || (v.getUint16(p, true) !== 1 && v.getUint16(p, true) !== 2)) return undefined;
   p += v.getUint16(p + 2, true) * 2; // ヘッダの大きさ (語数)
-  const out = new SvgOut();
+  const out = new SvgOut(b.length);
   const objs: Array<Obj | undefined> = [];
   // オブジェクトは、空いている一番小さい番号に入れる ([MS-WMF] 3.1.4.1)。空きを探し始める位置 (low) を覚えて、
   // 消さずに作り続ける記録が多いファイルでも、毎回先頭から探さない
@@ -1467,7 +1472,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
   // 左右・上下が逆に書かれた枠でも、大きさは正の値 (imageInfo の emfInfo と同じ)
   widthPx ??= (Math.abs(frame[2] - frame[0]) / 100) * (96 / 25.4);
   heightPx ??= (Math.abs(frame[3] - frame[1]) / 100) * (96 / 25.4);
-  const out = new SvgOut();
+  const out = new SvgOut(b.length);
   // 装置の 1 画素の大きさ: 参照装置の大きさ (Device: 画素・Millimeters: mm。[MS-EMF] 2.2.9) から mm、
   // 出来上がりは rclFrame (0.01 mm) の大きさに viewBox を合わせるので、ページの座標の 1 単位は frame の幅 ÷ viewBox の幅
   const dev = [v.getInt32(72, true), v.getInt32(76, true)];

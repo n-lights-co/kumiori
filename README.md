@@ -85,6 +85,7 @@ cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
 - 入力の文字の符号化は、BOM と XML 宣言の `encoding` (`Shift_JIS`・`EUC-JP` など)・HTML の `<meta charset>` で決める (無ければ UTF-8)
 - 文書が `http(s):` で参照する画像は、既定ではネットワークから取る。`--no-fetch-images` で取らない (他人の書いた文書をサーバーで組むときなど。読めない画像として組む)
 - 文書が `http(s):` で参照する CSS (`<link rel="stylesheet">`・`@import`) と、その `@font-face` の書体 (`unicode-range` が文書の字と重なるものだけ) も、既定ではネットワークから取る。`--no-fetch-styles` で取らない
+- 画像の大きさには上限がある (小さなファイルで大量のメモリ・時間を使わせないため。値と根拠は `src/imageLimits.ts`)。1 枚の画像は 1 億画素まで。WMF・EMF・CGM の中の画像 (DIB・セルの並び・タイルの並び・模様) は、1 つのファイルで合計 6,400 万画素までで、かつ「26 万画素 (512 × 512) + ファイルの 1 バイトあたり 1,024 画素」まで (数百バイトのファイルから巨大な画像を作らせない。約 61KB より大きなファイルなら 6,400 万画素まで使える)。超えた画像は描かず、文書の残りを組む
 - 文書の外へのリンク (HTML の `<a href>`・XSL-FO の `fo:basic-link`・`fo:bookmark` の `external-destination`) のうち、PDF に動作を書くのは、既定では、スキームが `http`・`https`・`mailto`・`tel` の URL と、相対参照の PDF (別の PDF を開く動作) だけ。ほかのスキーム (`javascript:`・`data:`・`file:` など) と、ファイルを開く動作 (PDF でない相対のファイル・絶対パス・スキームの無い `//host/…`) は、字だけを組み、「警告:」に件数を出す (他人の書いた文書から作った PDF を、別の人が開くときのため)。`--link-schemes http,https,ftp` で許すスキームを選び (`*` はすべて)、`--link-launch` でファイルを開く動作も書く (`--link-schemes '*' --link-launch` で、すべて書く)
 - 文書・CSS が `file:` の URL で参照するファイル (`file:///…/style.css` など) は、入力のディレクトリの外でも、そのファイルを読む
 - `--watch`: 入力のディレクトリの HTML・FO・CSS・画像・書体が変わるたびに組み直す
