@@ -17,7 +17,7 @@ import { Measurer } from './measurer';
 import { LayoutEngine } from './layoutEngine';
 import { renderPdf, type PdfRenderOptions } from './pdfRenderer';
 import { renderSheetToCanvas } from './canvasRenderer';
-import { AssetStore, mentionedFiles, normalizeSrc } from './assets';
+import { AssetStore, looksLikeImage, mentionedFiles, normalizeSrc } from './assets';
 import { droppedLinkWarning, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { SANS, SERIF } from './sampleData';
 import { importHtml } from './htmlImport';
@@ -93,6 +93,7 @@ export interface TypesetOptions {
    * (file:///…/a.css・img/a.png・https://…)。CSS の中の相対参照は、その CSS の URL を基準に解決したもの。
    * 中身 (文字列・Uint8Array・ArrayBuffer) を返せば、その名前のファイルとして使う。undefined を返せば、これまでどおり
    * (http(s) の画像・CSS はネットワークから取る。fetchImages・fetchStyles)。ファイルシステムやデータベースから読むときに
+   * 画像は、URL に拡張子が無くても (https://example.com/img?id=1 など)、返した中身の先頭のバイト列で画像と見分けて使う
    */
   resolveResource?: (url: string) => KumioriFileData | undefined | Promise<KumioriFileData | undefined>;
   /**
@@ -508,6 +509,15 @@ async function typesetDocument(
       const { key: _key, ...rest } = asset;
       assets.register(f.url, rest);
     }
+  }
+  // 参照から取った中身 (resolveResource の返したもの) のうち、名前に画像の拡張子の無いもの (https://example.com/img?id=1 など):
+  // 中身の先頭のバイト列が画像なら、参照の URL の画像として読む (拡張子では決めない。HTML の画像の種類は、中身の先頭で決まる:
+  // MIME Sniffing Standard §8.2「Sniffing in an image context」・§6.1。looksLikeImage)。CSS と、名前に書体の拡張子のあるものは見ない。
+  // 画像でない中身は使わない (その参照は、これまでどおり: http(s) の画像なら fetchImages の判定でネットワークから取る)
+  for (const f of files) {
+    if (f.url === undefined || isCss(f) || IMAGE_FILE.test(f.name) || /\.(ttf|otf|ttc|otc|woff2?)$/i.test(f.name) || assets.get(f.url)?.key === normalizeSrc(f.url)) continue;
+    const bytes = bytesOf(await f.data());
+    if (looksLikeImage(bytes)) await assets.addBlob(f.url, new Blob([bytes as BlobPart]));
   }
 
   const measurer = new Measurer(fonts, 'fontkit');

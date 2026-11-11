@@ -69,6 +69,7 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `resolveResource(url)`: 文書・CSS が参照するファイルのうち、`files` に無いものを問い合わせる
   - `fetchStyles`: 文書が `http(s):` で参照する CSS (`@import` の先も) を取る (既定 `true`)
   - `kumiori/node`: `createFontLoader` (Node のコマンドと同じ既定の書体の読み込みとキャッシュ)、`createFileResolver` (`file:` の参照を読む)、`defaultFontCacheDir`・`looksLikeFont`
+  - `resolveResource` が返した画像を、URL に拡張子が無くても使う (`<img src="https://example.com/img?id=1">` など。`background-image`・`list-style-image`・`content: url()`、XSL-FO の `external-graphic` も)。中身の先頭のバイト列で画像と見分ける。**前は、拡張子の無い URL では返した中身が使われず、ネットワークから取り直していた** (`fetchImages: false` なら読めない画像になった)。ネットワークから取るかどうかの判定 (`fetchImages`) は変わらない
 - **Node のコマンド**: `file:` の URL の参照を読む。`--no-fetch-styles` で CSS を取らない
 - **flex の項目の中のページ番号の参照**: `target-counter(…, page)` を持つ flex の項目 (目次の行の `::after` など) の箱の幅を、組んだ番号の桁に合わせる。これまでは 1 桁分の幅で作られ、`word-break: break-word`・`overflow-wrap: anywhere` などがあると 2 桁の番号が「1 / 0」と割れて、目次が伸びていた
 - **`createFileResolver`** (`kumiori/node`): `root` に、いくつかのディレクトリの並びを渡せる。中にあるかは、シンボリックリンクをたどった実体のパスで見る (root の中のリンクから外のファイルを読めていたのを直した。Windows の別のドライブ、名前が `..` で始まるファイルの判定も直した)

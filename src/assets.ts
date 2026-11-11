@@ -348,7 +348,21 @@ function mimeFromName(name: string): string {
   return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml', webp: 'image/webp' } as Record<string, string>)[e ?? ''] ?? '';
 }
 
-/** マジックナンバーで形式を判定 (拡張子・Content-Type が当てにならない場合に備える) */
+/**
+ * 中身の先頭のバイト列が、対応している画像の形式か (名前に画像の拡張子の無いファイルを、画像として読むかどうかを決める)。
+ * PNG・JPEG・GIF・BMP・WebP は先頭の印 (MIME Sniffing Standard §6.1「Matching an image type pattern」の表にある形式。sniffMime)、
+ * TIFF・WMF・EMF・EPS・CGM は imageInfo の判定。SVG は、先頭に <svg がある文字 (同 §8.2 では、XML の種類は Content-Type で決まり、
+ * 中身では見分けない。Content-Type の無い中身 (resolveResource の返した中身) も SVG として読めるように、ここでは中身で見る)
+ */
+export function looksLikeImage(bytes: Uint8Array): boolean {
+  return !!imageInfo(bytes) || !!sniffMime(bytes, '');
+}
+
+/**
+ * マジックナンバーで形式を判定 (拡張子・Content-Type が当てにならない場合に備える)。
+ * 中身の先頭の印を先に見て、当たらなければ、渡された種類 (応答の Content-Type・data: の種類・名前の拡張子) が画像ならそれ
+ * (MIME Sniffing Standard §8.2「Sniffing in an image context」の 2〜4。印は §6.1 の表のうち、対応している形式)
+ */
 function sniffMime(b: Uint8Array, hint: string): string {
   const s = (i: number, str: string) => [...str].every((c, k) => b[i + k] === c.charCodeAt(0));
   if (b[0] === 0x89 && s(1, 'PNG')) return 'image/png';
