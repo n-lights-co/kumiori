@@ -254,6 +254,27 @@ export function disabledAlternateStylesheet(doc: Document): (l: Element) => bool
 }
 
 /** 文書を用意する。parse: HTML の文字列 → Document (ブラウザは DOMParser、Node は linkedom) */
+/**
+ * アンテナハウス互換 (--style ah): HTML の構文で読む文書の、接頭辞の付いた MathML・SVG の要素 (`<m:math xmlns:m="http://www.w3.org/1998/Math/MathML">`) を、
+ * 接頭辞の無い名前 (`<math>`) に書き直す。HTML の構文では接頭辞は名前空間として働かず (HTML Living Standard §13.2: 要素の名前の「m:math」は
+ * 名前空間の無い知らない要素)、MathML として組まれない。AH Formatter は、拡張子 .html の文書の中の、xmlns: で接頭辞を宣言した MathML を組む
+ * (見本の PDF: 『CSS ページ組版入門』第 4 版の 4.3 の数式)。XML の構文 (XHTML) で読むと pre の直後の改行が残って組版が変わるので、
+ * 文書全体を XHTML として読むのではなく、宣言のある接頭辞の要素だけを書き直す。
+ * 接頭辞は、MathML・SVG の名前空間を指す xmlns:接頭辞 の宣言が文書のどこかにあるものだけ。宣言は取り除く
+ */
+export function prefixedForeignToHtml(html: string): string {
+  const prefixes = new Set<string>();
+  for (const m of html.matchAll(/\sxmlns:([A-Za-z_][\w.-]*)\s*=\s*(["'])http:\/\/www\.w3\.org\/(?:1998\/Math\/MathML|2000\/svg)\2/g)) prefixes.add(m[1]);
+  let out = html;
+  for (const p of prefixes) {
+    const q = p.replace(/[.]/g, '\\.');
+    // 書き直すのはタグだけ (本文の文字の &lt;m:math …&gt; は変えない)。タグの中の、その接頭辞の宣言は取り除く
+    const decl = new RegExp(`\\sxmlns:${q}\\s*=\\s*(["'])[^"']*\\1`, 'g');
+    out = out.replace(new RegExp(`<(/?)${q}:([A-Za-z][\\w.-]*)([^<>]*)>`, 'g'), (_t, slash: string, name: string, rest: string) => `<${slash}${name}${rest.replace(decl, '')}>`);
+  }
+  return out;
+}
+
 export async function prepareHtml(
   html: string,
   files: CssFile[],
@@ -261,7 +282,8 @@ export async function prepareHtml(
   defaultPage: { width: number; height: number; margin: number },
   parse: (html: string) => Document,
 ): Promise<PreparedHtml> {
-  const parsed = parse(html);
+  // アンテナハウス互換: 接頭辞の付いた MathML・SVG の要素 (<m:math xmlns:m="…/MathML">) を、名前空間に従って読む
+  const parsed = parse(defaults === 'ah' ? prefixedForeignToHtml(html) : html);
   parsed.querySelectorAll('script').forEach((s) => s.remove());
   const warnings: string[] = [];
   // 上限を超えた入れ子は、木の形 (と組版の結果) が変わるので、黙って進めずに知らせる

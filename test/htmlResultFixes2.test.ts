@@ -342,7 +342,7 @@ describe('PKG-18 @supports は、読めない値の宣言を偽にする (Condit
 
   it('互換の指定によらず効く拡張 (-ah- の付いたプロパティ・float の拡張の値など) は、どちらのときも真 (効くものを偽にしない)', () => {
     for (const ah of [undefined, AH])
-      for (const c of ['-ah-display-align: center', '-ah-border-radius: 6pt', '-ah-text-autospace: none', '-ah-column-rule-length: 60%', '-ah-margin-start: 1em', 'float: top', 'color: cmyk(0, 0, 0, 1)'])
+      for (const c of ['-ah-display-align: center', '-ah-border-radius: 6pt', '-ah-text-autospace: none', '-ah-column-rule-length: 60%', '-ah-margin-start: 1em', '-ah-float: top', '-ah-text-align: inside', 'float: footnote', 'color: device-cmyk(0 0 0 1)'])
         expect(matchSupports(`(${c})`, ah), c).toBe(true);
     // 解釈しない -ah- のプロパティは偽
     expect(matchSupports('(-ah-kerning-mode: pair)')).toBe(false);

@@ -146,7 +146,7 @@ describe('HTML: 和文組版と段組 (第 3 段階)', () => {
   });
 
   it('float は回り込み (箱の幅・枠・余白は float に移す)、inside / outside は自前で読む', () => {
-    const r = load('<p><span class="f" data-css="float: right; width: 80px; margin-left: 8px; padding-top: 4px">囲み</span>本文</p><div class="g">外</div>', '.g { float: outside }');
+    const r = load('<p><span class="f" data-css="float: right; width: 80px; margin-left: 8px; padding-top: 4px">囲み</span>本文</p><div class="g">外</div>', '.g { -ah-float: outside }');
     const [p, g] = r.document.sequences[0].flow.children as unknown as [LBlock, LFloat];
     const f = p.children[0] as LFloat;
     expect([f.type, f.float, f.width, (f.margin as { left: number }).left, (f.padding as { top: number }).top]).toEqual(['float', 'end', 60, 6, 3]);
@@ -447,7 +447,7 @@ describe('HTML: WeasyPrint のポスター・チケットの見本との比較�
        <div data-css="position: relative"><h1 data-css="position: absolute; right: 20px">右</h1>本文</div>
        <div data-css="position: relative; writing-mode: vertical-rl"><h1 data-css="position: absolute; right: 20px">右</h1>本文</div>
        <div data-css="position: relative; column-count: 2"><h1 data-css="position: absolute; right: 20px">右</h1>本文</div>`,
-      '.s { float: start }',
+      '.s { -ah-float: start }',
     );
     const [a, b, v, c] = r.document.sequences[0].flow.children as LBlock[];
     expect((a.children[0] as LFloat).float).toBe('end');

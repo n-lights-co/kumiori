@@ -104,7 +104,8 @@ describe('HTM-31 本文の要素の -ah-float-x は、同じ側の float と同�
   };
   it('left・right・start・end・inside・outside', async () => {
     for (const [ah, css2] of [['left', 'left'], ['right', 'right'], ['start', 'left'], ['end', 'right'], ['inside', 'inside'], ['outside', 'outside']]) {
-      expect(await shape(`-ah-float-x: ${ah}`), ah).toEqual(await shape(`float: ${css2}`));
+      // inside・outside は CSS の float の値に無い (アンテナハウスの拡張の値)。接頭辞の付いた -ah-float に書けば、どのスタイルでも読む
+      expect(await shape(`-ah-float-x: ${ah}`), ah).toEqual(await shape(`${/side/.test(css2) ? '-ah-float' : 'float'}: ${css2}`));
     }
     // 右ページ (1 ページ目) の inside は左: 箱は本文の左端 60pt + 左の余白 6pt、本文は箱の右へ回り込む
     const i = await shape('-ah-float-x: inside');

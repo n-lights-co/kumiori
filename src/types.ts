@@ -135,6 +135,16 @@ export interface TextStyle {
   textAutospace?: boolean;
   /** 和欧間のアキの大きさ (字の大きさに対する比)。既定 0.25 (四分)。CSS の text-autospace は 0.125 (CSS Text 4) */
   textAutospaceWidth?: number;
+  /**
+   * 和欧間のアキで、全角の空白 (U+3000) も和字として扱う (アンテナハウスの axf:text-autospace。XSL-FO が付ける)。
+   * CSS の text-autospace は付けない (CSS Text 4 §8.4.1 の表意文字は漢字・仮名などの字で、空白の U+3000 は入らない)
+   */
+  textAutospaceIdeographicSpace?: boolean;
+  /**
+   * 両端揃えで字間を空けるとき、約物 (括弧類・句読点・中点類・区切り約物・ハイフン類) と全角の空白の前後も空ける (アンテナハウス互換。
+   * --style ah の HTML と XSL-FO の互換モードが付ける)。既定は JLREQ §3.1.11 のとおり、これらの前後は空けない
+   */
+  justifyPunctuationAh?: boolean;
   /** 約物の連続 (」「 や 。」 など) を詰める (JLREQ §3.1.4)。既定 true */
   punctuationSqueeze?: boolean;
   /**

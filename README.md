@@ -102,7 +102,7 @@ cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
 - `--generic-font serif=<書体名>`・`--generic-font sans-serif=<書体名>`: 総称の書体 (serif・sans-serif) の欧文に使う書体 (`--font` で足した書体のファミリー名)
 - `--print`: トンボと塗り足し (3mm)
 - `--image-max-dpi <dpi>`: 置かれる大きさに対してこれより細かい JPEG の写真を、この解像度に縮めて符号化し直す (PDF を小さくする。既定は元のまま)
-- `--spot-colors <JSON ファイル>`: 特色の名前と、濃度 100% のときの代わりの CMYK (`{"名前": "cmyk(20%,40%,60%,80%)"}` か `{"名前": [0.2,0.4,0.6,0.8]}`。配列は 0〜1 の数で、1 を超える値は誤り)。`rgb-icc(r,g,b,#Separation,'名前',濃度)` の色のうち、ここに名前のあるものを PDF の Separation (代わりの色空間は DeviceCMYK、濃度の変換は線形) で書く。名前の無いものは、これまでどおり代わりの RGB で書く。名前の字は UTF-8 で書く (ISO 32000-2 §7.3.5)。特色の値 (色見本帳の値など) は Kumiori には入っていないので、使う人が渡す
+- `--spot-colors <JSON ファイル>`: 特色の名前と、濃度 100% のときの代わりの CMYK (`{"名前": "cmyk(20%,40%,60%,80%)"}` か `{"名前": [0.2,0.4,0.6,0.8]}`。配列は 0〜1 の数で、1 を超える値は誤り)。`rgb-icc(r,g,b,#Separation,'名前',濃度)` の色のうち、ここに名前のあるものを PDF の Separation (代わりの色空間は DeviceCMYK、濃度の変換は線形) で書く。`rgb-icc()` は、XSL-FO ではどちらの `--compat` でも読み、HTML では `--style ah` のときだけ読む (CSS の色の関数に無い、アンテナハウスの書き方のため。ほかのスタイルでは、読めない値として宣言ごと無視し、警告に出す)。名前の無いものは、これまでどおり代わりの RGB で書く。名前の字は UTF-8 で書く (ISO 32000-2 §7.3.5)。特色の値 (色見本帳の値など) は Kumiori には入っていないので、使う人が渡す
 - HTML は linkedom で読み、CSS の計算値は自前のカスケード (画面の「CSS の解釈: Kumiori」と同じ)
 - XHTML (`.xhtml`・`.xht`) は XML の構文で読み、名前空間に従って書き直してから HTML と同じに組む (`<s:svg xmlns:s="http://www.w3.org/2000/svg">` のような接頭辞の付いた要素も SVG になる。`src/xhtml.ts`)。`.html` は HTML の構文で読むので、接頭辞の付いた要素は SVG にならない。`--xhtml` を付けると、拡張子によらず XML の構文で読む
 - MathML (`<math>`) は、数式用の書体 (`STIXTwoMath-Regular.ttf`) で組み、字の輪郭の図形にする (XSL-FO と同じ `src/mathLayout.ts`)。`display="block"` の数式は行の中央に置く

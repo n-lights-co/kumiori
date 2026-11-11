@@ -124,7 +124,7 @@ describe('HTML: 論理ツリーへの変換', () => {
   it('::marker の色と書体は、リストの記号だけに当てる (印刷の色 rgb-icc も。CSS Lists 3 §3.1)', () => {
     const css = 'li::marker { color: red; font-family: monospace } li.s::marker { color: rgb-icc(0, 0, 0, #Separation, "Ink", 1) }';
     const doc = new DOMParser().parseFromString('<html><head></head><body><ul><li>a</li><li class="s">b</li></ul><ol><li style="list-style-position: inside">c</li></ol></body></html>', 'text/html') as unknown as Document;
-    const r = importHtml(doc, cascadeStyles(doc, css, { viewport: { width: 600, height: 800 } }), { css, mapFont: (names) => names[0] });
+    const r = importHtml(doc, cascadeStyles(doc, css, { viewport: { width: 600, height: 800 } }), { css, mapFont: (names) => names[0], ahCssExtensions: true });
     const inl: Array<Record<string, unknown>> = [];
     const texts: string[] = [];
     const walkJ = (v: unknown) => {
@@ -212,7 +212,7 @@ describe('HTML: 論理ツリーへの変換', () => {
   it('::before の印刷の色 (rgb-icc の特色) を使う', () => {
     const css = `h3::before { content: "1.1 "; color: rgb(0, 61, 25); color: rgb-icc(0, 61, 25, #Separation, 'PANTONE 627 PC') }`;
     const doc = new DOMParser().parseFromString(`<html><head><style>${css}</style></head><body><h3>見出し</h3></body></html>`, 'text/html') as unknown as Document;
-    const r = importHtml(doc, cascadeStyles(doc, css, { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }), { css, spotColors: { 'PANTONE 627 PC': [0.94, 0.34, 0.6, 0.82] } });
+    const r = importHtml(doc, cascadeStyles(doc, css, { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }), { css, spotColors: { 'PANTONE 627 PC': [0.94, 0.34, 0.6, 0.82] }, ahCssExtensions: true });
     expect(JSON.stringify(r.document.sequences[0].flow)).toMatch(/"color":"spot\(/);
   });
   it('ブロックの間の br は改行の行として残す (空白だけの文字列は捨てる)', () => {
@@ -284,7 +284,7 @@ describe('HTML: 論理ツリーへの変換', () => {
       '<html><head></head><body><p id="a" style="border: solid 2px; border-color: cmyk(1,1,0,0)">a</p><p style="border: solid 2px black; border-left-color: device-cmyk(0 1 0 0)">b</p></body></html>',
       'text/html',
     ) as unknown as Document;
-    const r = importHtml(doc, cascadeStyles(doc, '', { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }), { css: '' });
+    const r = importHtml(doc, cascadeStyles(doc, '', { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }), { css: '', ahCssExtensions: true });
     // body の余白の箱の中
     const [a, b] = (r.document.sequences[0].flow.children[0] as LBlock).children as LBlock[];
     const col = (x: LBlock, sd: string) => (x.border as Record<string, { color?: string }> | undefined)?.[sd]?.color;

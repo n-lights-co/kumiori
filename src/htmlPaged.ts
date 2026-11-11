@@ -297,7 +297,11 @@ export function matchSupports(cond: string, ah?: AhFlags): boolean {
   const d = /^([-\w\u0080-\uffff]+)\s*:\s*([\s\S]*)$/.exec(c);
   if (d) {
     const prop = d[1].startsWith('--') ? d[1] : d[1].toLowerCase();
-    return prop.startsWith('--') || isPagedDecl(prop, d[2].trim()) || supportsDecl(prop, d[2].trim(), ah);
+    // 自前で読む宣言のうち、接頭辞の無い名前に書いたアンテナハウスの拡張の値 (float: top・width: 3gr・cmyk() など。compatOnlyValue) は、
+    // 互換の指定のときだけ読むので、そのときだけ真 (§6.1: 宣言を受け付けるときだけ対応していると答える)
+    // 値の文法の決まっている性質は、文法に合う値だけ (validPagedValue。互換の指定のときは、これまでどおり調べない)
+    const paged = isPagedDecl(prop, d[2].trim()) && (!!ah?.ahPagedValues || (compatOnlyValue(prop, d[2].trim()) === undefined && validPagedValue(prop, d[2].trim())));
+    return prop.startsWith('--') || paged || supportsDecl(prop, d[2].trim(), ah);
   }
   return true;
 }
@@ -758,15 +762,17 @@ export function unescapeCss(s: string): string {
  *  - rgb-icc(…, #Grayscale, g): グレースケール (g = 0 が黒、1 が白。gray(g)。PDF では DeviceGray)
  *  - rgb-icc(r, g, b, #Separation, '名前', 濃度): 特色。その名前の値 (spots) があれば特色 (spot(…)) にする。
  *    無ければ、代わりの RGB を濃度で薄めた色 (RGB が無ければ墨の濃度)
+ * ahFunctions が偽なら、CSS の関数 device-cmyk() (CSS Color 5 §12.1) だけを読む。cmyk() と rgb-icc() は CSS の色の関数に無い
+ * アンテナハウスの拡張の書き方 (rgb-icc() は XSL 1.1 §5.10.2 の関数で、CSS には無い) なので、互換の指定のときだけ読む (compatOnlyValue)
  */
-export function printColor(v: string, spots?: SpotColors): string | undefined {
+export function printColor(v: string, spots?: SpotColors, ahFunctions = true): string | undefined {
   const num = (t: string) => (t.trim().endsWith('%') ? parseFloat(t) / 100 : parseFloat(t));
-  let m = /(?:device-|(?<![\w-]))cmyk\(([^)]*)\)/i.exec(v);
+  let m = (ahFunctions ? /(?:device-|(?<![\w-]))cmyk\(([^)]*)\)/i : /\bdevice-cmyk\(([^)]*)\)/i).exec(v);
   if (m) {
     const p = m[1].split('/')[0].split(/[\s,]+/).filter(Boolean).map(num);
     if (p.length >= 4) return `cmyk(${p.slice(0, 4).join(',')})`;
   }
-  m = /rgb-icc\(([^)]*)\)/i.exec(v);
+  m = ahFunctions ? /rgb-icc\(([^)]*)\)/i.exec(v) : null;
   if (!m) return undefined;
   // 引数は位置で読むので、空の引数も残す
   const args = splitTop(m[1], ',', { keepEmpty: true });
@@ -828,20 +834,143 @@ export const AH_ALIASES: Record<string, { prop: string; value: (v: string) => st
   '-ah-linefeed-treatment': { prop: 'linefeed-treatment', value: (v) => v.trim().toLowerCase() },
   // text-align の inside・outside (アンテナハウスの拡張の値。下の isPagedDecl) を、-ah-text-align でも読む
   '-ah-text-align': { prop: 'text-align', value: (v) => v.trim().toLowerCase() },
+  // float の拡張の値 (top・bottom・inside・outside・center・alternate・multicol など。下の isPagedDecl) を、-ah-float でも読む。
+  // 接頭辞の付いた名前なので、どのスタイルでも読む (接頭辞の無い float に書いた拡張の値は、互換の指定のときだけ。compatOnlyValue)
+  '-ah-float': { prop: 'float', value: (v) => v.trim().toLowerCase() },
 };
+
+/** float の値のうち、CSS の値 (CSS 2.1 §9.5.1 の left・right・none、Logical 1 §2.1 の inline-start・inline-end、GCPM 3 §2.4 の footnote) */
+const CSS_FLOAT_VALUE = /^(left|right|none|inline-start|inline-end|footnote)$/;
+/**
+ * アンテナハウスの float の拡張の値の語 (横・縦の位置と、基準の領域)。float: top page・bottom column・multicol top・sidenote など。
+ * top・bottom は CSS Page Floats 3 §3.2 (2015 年の最初の公開草案) の float にもあるが、その意味は float-reference (初期値 inline では
+ * inline-start・inline-end と同じ) で決まり、Kumiori は float-reference を読まない。ページ・段の上下へ送る組み方はアンテナハウスの
+ * float の意味なので、拡張の値として扱う
+ */
+const AH_FLOAT_WORDS = /^(left|right|none|start|end|inside|outside|center|alternate|top|bottom|before|after|page|column|multicol|sidenote|column-outside)$/;
+/** 印刷の色の関数のうち、CSS に無いアンテナハウスの書き方 (cmyk()・rgb-icc())。device-cmyk() は CSS Color 5 §12.1 */
+const AH_COLOR_FUNCTION = /(?:\brgb-icc|(?<![\w-])cmyk)\(/i;
+/** 印刷の色を自前で読む性質 (isPagedDecl と同じ) */
+const PRINT_COLOR_PROP = /^(color|background-color|background|border(-(top|right|bottom|left))?(-color)?)$/;
+
+/**
+ * 接頭辞の無い名前 (標準のプロパティ) に書いた、アンテナハウスの拡張の値か。拡張の値なら警告に出す名前、違えば undefined。
+ * 標準の名前の意味を変えるので、互換の指定 (--style ah) のときだけ読み、指定の無いときは無効の値として捨てて警告に出す
+ * (CSS 2.1 §4.2: 読めない値の宣言は無視する)。接頭辞の付いた名前 (-ah-float・-ah-text-align) に書いた値は、どのスタイルでも読む
+ *  - float: CSS の値 (CSS_FLOAT_VALUE) のほかの値 (top・bottom・start・end・inside・outside・center・alternate・multicol・sidenote など)
+ *  - width: <数>gr (段組の段と段の間を数える単位。CSS Values 4 の単位に無い)
+ *  - text-align: inside・outside (CSS Text 3 §6.1 の値に無い。XSL 1.1 §7.16.9 の値)
+ *  - text-autospace: none (CSS Text 4 §8.4 の値に無い。空きを入れない、というアンテナハウスの書き方。CSS の値は no-autospace)
+ *  - 色: cmyk()・rgb-icc() (CSS Color 4・5 の関数に無い。標準は device-cmyk())
+ */
+export function compatOnlyValue(prop: string, value: string): string | undefined {
+  const v = value.replace(/\s*!\s*important\s*$/i, '').trim().toLowerCase();
+  if (prop === 'float') return isAhFloatValue(v) && !CSS_FLOAT_VALUE.test(v) ? `float: ${v.replace(/\s+/g, ' ')}` : undefined;
+  if (prop === 'width') return /\dgr\b/.test(v) ? 'width: <数>gr' : undefined;
+  if (prop === 'text-align') return /^(inside|outside)$/.test(v) ? `text-align: ${v}` : undefined;
+  if (prop === 'text-autospace') return v === 'none' ? 'text-autospace: none' : undefined;
+  // 前の宣言に隠れた印刷の色 (splitDecls が -kumiori-print-<性質> に残したもの) も、元は接頭辞の無い性質に書いた値
+  const cp = prop.startsWith('-kumiori-print-') ? prop.slice(15) : prop;
+  if (PRINT_COLOR_PROP.test(cp) && AH_COLOR_FUNCTION.test(v)) return `${cp}: ${/rgb-icc\(/.test(v) ? 'rgb-icc()' : 'cmyk()'}`;
+  return undefined;
+}
+
+/** || でつないだ組の値 (CSS Values 4 §2.3): 語のすべてがどれかの組に当たり、同じ組の語が 2 つ無い */
+function oneOfEach(words: string[], groups: RegExp[]): boolean {
+  const used = new Set<number>();
+  for (const w of words) {
+    const k = groups.findIndex((g, i) => !used.has(i) && g.test(w));
+    if (k < 0) return false;
+    used.add(k);
+  }
+  return words.length > 0;
+}
+/** <autospace> = no-autospace | [ ideograph-alpha || ideograph-numeric || punctuation ] || [ insert | replace ] (CSS Text 4 §8.4) */
+const isAutospace = (ws: string[]) => (ws.length === 1 && ws[0] === 'no-autospace') || oneOfEach(ws, [/^ideograph-alpha$/, /^ideograph-numeric$/, /^punctuation$/, /^(insert|replace)$/]);
+/** <spacing-trim> = space-all | normal | space-first | trim-start | trim-both | trim-all (CSS Text 4 §8.5) */
+const SPACING_TRIM = /^(space-all|normal|space-first|trim-start|trim-both|trim-all)$/;
+
+/**
+ * 自前で読む宣言 (isPagedDecl) のうち、値の文法の決まっている性質の値が、その文法に合うか (PKG-19)。合わない値の宣言は、無効の宣言として
+ * 捨てる (前の宣言を打ち消さない。CSS 2.1 §4.2) し、@supports にも対応していないと答える (Conditional 3 §6.1)。
+ * ここで扱わない性質 (string-set・bookmark-label・content・image-resolution・接頭辞の付いた -ah-* など) は、いつも真。
+ * 大域のキーワード (inherit など) は真。アンテナハウス互換のスタイルのときは、この検査をしない (拡張の値を含む宣言を、これまでどおり読む)
+ */
+export function validPagedValue(prop: string, value: string): boolean {
+  const v = value.replace(/\s*!\s*important\s*$/i, '').trim().toLowerCase();
+  if (/^(inherit|initial|unset|revert|revert-layer)$/.test(v)) return true;
+  const ws = v.split(/\s+/).filter(Boolean);
+  switch (prop) {
+    case 'page':
+      // auto | <custom-ident> (CSS Paged Media 3 §10.1 Using Named Pages)
+      return ws.length === 1 && /^(--|-?[a-z_\u0080-\uffff])[-\w\u0080-\uffff]*$/i.test(ws[0]);
+    case 'bookmark-level':
+      // none | <integer [1,∞]> (CSS Content 3 §6.1 / GCPM 3)
+      return v === 'none' || (/^\+?\d+$/.test(v) && parseInt(v, 10) >= 1);
+    case 'bookmark-state':
+      // open | closed (CSS Content 3 §6.3)
+      return v === 'open' || v === 'closed';
+    case 'text-autospace':
+      // normal | <autospace> | auto (CSS Text 4 §8.4)
+      return v === 'normal' || v === 'auto' || isAutospace(ws);
+    case 'text-spacing-trim':
+      // <spacing-trim> | auto (CSS Text 4 §8.5)
+      return v === 'auto' || SPACING_TRIM.test(v);
+    case 'text-spacing': {
+      // none | auto | <spacing-trim> || <autospace> (CSS Text 4 §8.6)
+      if (v === 'none' || v === 'auto') return true;
+      const trims = ws.filter((w) => SPACING_TRIM.test(w));
+      const rest = ws.filter((w) => !SPACING_TRIM.test(w));
+      // (normal は <spacing-trim> の語。<autospace> に normal は無い)
+      return trims.length <= 1 && (rest.length === 0 ? trims.length === 1 : isAutospace(rest));
+    }
+    case 'hanging-punctuation':
+      // none | [ first || [ force-end | allow-end ] || last ] (CSS Text 3 §8.2)
+      return v === 'none' || oneOfEach(ws, [/^first$/, /^(force-end|allow-end)$/, /^last$/]);
+    case 'ruby-position':
+      // [ alternate || [ over | under ] ] | inter-character (CSS Ruby 1 §4.1)
+      return v === 'inter-character' || oneOfEach(ws, [/^alternate$/, /^(over|under)$/]);
+    case 'ruby-align':
+      // start | center | space-between | space-around (CSS Ruby 1 §4.3)
+      return /^(start|center|space-between|space-around)$/.test(v);
+    case 'ruby-merge':
+      // separate | merge | auto (CSS Ruby 1 §4.2)
+      return /^(separate|merge|auto)$/.test(v);
+    case 'ruby-overhang':
+      // auto | none (CSS Ruby 1 §5.1)
+      return /^(auto|none)$/.test(v);
+    case 'text-combine-upright':
+      // none | all | [ digits <integer [2,4]>? ] (CSS Writing Modes 4 §9.1: 2〜4 の外の整数は不正)
+      return v === 'none' || v === 'all' || (ws[0] === 'digits' && (ws.length === 1 || (ws.length === 2 && /^\+?[234]$/.test(ws[1]))));
+    case 'alignment-baseline':
+      // baseline | text-bottom | alphabetic | ideographic | middle | central | mathematical | text-top (CSS Inline 3 §4.2.2)。
+      // SVG 1.1 §10.9.2 の値 (auto・before-edge・text-before-edge・after-edge・text-after-edge・hanging) も、古い値として受け付ける
+      return /^(baseline|text-bottom|alphabetic|ideographic|middle|central|mathematical|text-top|auto|before-edge|text-before-edge|after-edge|text-after-edge|hanging)$/.test(v);
+  }
+  return true;
+}
+
+/** float の値が、自前で読む語 (footnote と、アンテナハウスの拡張の語) だけから成るか */
+function isAhFloatValue(v: string): boolean {
+  const ws = v.split(/\s+/).filter(Boolean);
+  return ws.length > 0 && ws.every((w) => w === 'footnote' || AH_FLOAT_WORDS.test(w));
+}
 
 /** 宣言のうち、ブラウザが確定させない (知らない) 値を持つもの。要素に当てはめて読む */
 export function isPagedDecl(prop: string, value: string): boolean {
   if (prop === 'string-set' || prop === 'page' || prop === 'bookmark-level' || prop === 'bookmark-label' || prop === 'bookmark-state') return true;
   // アンテナハウスの拡張の長さの単位 gr (段組の段・段の間の幅。float: multicol の幅) は、ブラウザが読めないので自前で読む
+  // (アンテナハウス互換のスタイルのときだけ使う。compatOnlyValue)
   if (prop === 'width' && /\dgr\b/i.test(value)) return true;
   if (prop === 'position') return /running\(/i.test(value);
   // text-align の inside・outside: アンテナハウスの拡張の値 (ページのノドの側・小口の側にそろえる。XSL 1.1 §7.16.9 の値)。
-  // CSS Text 3 §6.1 の text-align には無いので、カスケードは無効の値として捨てる。自前で読み、アンテナハウス互換のスタイルのときだけ使う
-  // (HtmlImportOptions.textAlignInsideOutsideAh)
+  // CSS Text 3 §6.1 の text-align には無いので、カスケードは無効の値として捨てる。自前で読み、-ah-text-align に書いたものと、
+  // アンテナハウス互換のスタイルのときの text-align に書いたものだけ使う (compatOnlyValue・HtmlImportOptions.textAlignInsideOutsideAh)
   if (prop === 'text-align') return /^(inside|outside)$/i.test(value.trim());
-  // float は left / right / none 以外 (footnote・アンテナハウスの top / bottom / center / alternate など) を自前で読む
-  if (prop === 'float') return !/^(left|right|none|inline-start|inline-end)$/i.test(value.trim());
+  // float は left / right / none 以外 (footnote・アンテナハウスの top / bottom / center / alternate など) を自前で読む。
+  // アンテナハウスの拡張の値は、-ah-float に書いたものと、アンテナハウス互換のスタイルのときの float に書いたものだけ使う (compatOnlyValue)
+  // (知らない語を含む値 (float: zzz) は読まない。@supports にも対応していないと答える)
+  if (prop === 'float') return !/^(left|right|none|inline-start|inline-end)$/i.test(value.trim()) && isAhFloatValue(value.trim().toLowerCase());
   // 和文組版の指定 (ブラウザによっては知らない。継承するので、祖先をたどって読む)
   if (prop === 'text-autospace' || prop === 'text-spacing-trim' || prop === 'text-spacing' || prop === 'hanging-punctuation') return true;
   // ルビの配置 (CSS Ruby 1 §4・§5.1。指定の有無を見分けるために、自前で読む。継承するので、祖先をたどって読む)
@@ -858,6 +987,8 @@ export function isPagedDecl(prop: string, value: string): boolean {
   if (prop === '-ah-baseline-grid') return true;
   // アンテナハウスの -ah-display-align (XSL 1.1 §7.14.4 の display-align: 高さの決まった箱の中での内容の上下の揃え)
   if (prop === '-ah-display-align') return true;
+  // アンテナハウスの -ah-lang (要素の言語。XSL 1.1 §7.9.2 の language と同じ)
+  if (prop === '-ah-lang') return true;
   // アンテナハウスの -ah-last-line-end-indent (XSL 1.1 §7.16.3 の last-line-end-indent)
   if (prop === '-ah-last-line-end-indent') return true;
   // アンテナハウスのフロートの拡張のうち、横の位置 (-ah-float-x) と、それを読むかを決める縦の位置 (-ah-float-y)

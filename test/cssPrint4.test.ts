@@ -60,7 +60,7 @@ const placed = (tree: Awaited<ReturnType<typeof typesetHtml>>['areaTree'], sheet
 
 describe('float: sidenote', () => {
   it('@page の @sidenote の float の側に、width の幅で置く', async () => {
-    const css = `@page { size: A5; margin: 10mm; @sidenote { float: left; width: 20% } } .s { float: sidenote }`;
+    const css = `@page { size: A5; margin: 10mm; @sidenote { float: left; width: 20% } } .s { -ah-float: sidenote }`;
     const r = await typesetHtml(`<style>${css}</style><p>Body text body text body text<span class="s">NOTE</span> more text.</p>`, { loadFont });
     const gs = placed(r.areaTree, 0);
     const note = gs.find((p) => p.g.text.includes('N'))!;
