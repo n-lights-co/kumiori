@@ -185,6 +185,7 @@
 <p class="props" data-p="size"><span class="k">初期値</span> : <span class="v">auto</span> <span class="src">(size — CSS Paged Media 3)</span></p>
 <blockquote>“This property specifies the target size and orientation of the page box’s containing block.”<cite>— CSS Paged Media 3 §7.1</cite></blockquote>
 <p>長さ (幅と高さ)、A3・A4・A5・B4・B5・JIS-B4・JIS-B5・letter・legal・ledger などの名前、portrait・landscape の向きを解釈します。以下の例は、本書のページ (182mm × 257mm、B5 判) の指定です。</p>
+<p>size の指定の無い文書 (auto・向きだけの指定を含む) の用紙は A4 です。この既定の用紙は、Node のコマンドの --page-size と、公開 API の pageSize で変えられます (size と同じ書き方: A5・A5 landscape・148mm 210mm)。メディアクエリ (@media) の width・height・orientation は、文書の size ではなく、この既定の用紙で評価します <span class="spec">(CSS Paged Media 3 §7.1)</span>。</p>
 <pre class="kumiori-listing"><code>@page {
   <b>size: 182mm 257mm;</b>
   <b>margin: 20mm 18mm 18mm 18mm;</b>

@@ -5,7 +5,7 @@ import type { FontSpec, LDocument } from './types';
 import type { FontManager } from './fontManager';
 import { SANS, SERIF } from './sampleData';
 import { normalizeFamily } from './fontLoader';
-import { parseCss } from './htmlPaged';
+import { parseCss, type ParsedCss } from './htmlPaged';
 
 /** 組版用フォント: Google Fonts の gstatic (TTF) を ArrayBuffer として取得。ローカル /fonts を後備に。 */
 export const FONT_SPECS: FontSpec[] = [
@@ -248,7 +248,7 @@ export function createFontMapping(
    * @font-face の書体を、一緒に選んだファイル (src の url のパスで突き合わせ、無ければファイル名で突き合わせる) から読み込む。
    * 斜体の書体は読まない (斜体は、立体を傾けて描く)
    */
-  async function loadFontFaces(css: string, files: FontFile[]) {
+  async function loadFontFaces(css: string | ParsedCss, files: FontFile[]) {
     table.clear('face');
     const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
     // src の url() は、CSS の場所を基準に解決した参照 (CSS Fonts 4 §4.3。CSS のファイルの中の相対参照は、prepareHtml が解決済みにしている)。
@@ -263,7 +263,7 @@ export function createFontMapping(
     const fileOf = (u: string) => byUrl.get(u) ?? byPath.get(normalizePath(safeDecode(u.split(/[?#]/)[0]))) ?? byName.get(safeDecode(u.split(/[?#]/)[0].split('/').pop() ?? '').toLowerCase());
     // ファミリごとの face の並び。unicode-range の違う face は、別の名前で登録し、範囲つきの書体の組にまとめる (Fonts 4 §4.5)
     const groups = new Map<string, Array<{ family: string; ranges?: Array<[number, number]> }>>();
-    for (const ff of parseCss(css).fontFaces) {
+    for (const ff of (typeof css === 'string' ? parseCss(css) : css).fontFaces) {
       if (ff.italic) continue;
       const file = ff.srcs.map(fileOf).find(Boolean);
       if (!file) continue;

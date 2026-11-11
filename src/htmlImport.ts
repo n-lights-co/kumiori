@@ -75,7 +75,7 @@ import type { FkFont, MathFont } from './mathFont';
 import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
-import { cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
+import { UNIT_PT, cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
 import { AH_ALIASES, counterText, isPagedDecl, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
@@ -511,6 +511,33 @@ const PAGE_SIZES: Record<string, [number, number]> = {
   legal: [215.9, 355.6],
   ledger: [279.4, 431.8],
 };
+
+/**
+ * 用紙の大きさの値 (CSS Paged Media 3 §7.1 の size の値: <length>{1,2} | auto | [ <page-size> || [ portrait | landscape ] ]) → 幅・高さ (mm)。
+ * @page の無い文書の用紙 (公開 API の pageSize・Node のコマンドの --page-size) を読むのに使う。値の全体が文法に合わなければ undefined
+ * (@page の中の size と違い、合わない語を読み飛ばさない)。
+ *  - 用紙の名前 (A5・A4・A3・B5・B4・JIS-B5・JIS-B4・letter・legal・ledger と、Kumiori が足している A6) は、大文字・小文字を区別しない
+ *  - 長さは、絶対の単位 (mm・cm・Q・in・pt・pc・px) の正の値。1 つなら正方形 (§7.1 の <length>)。em・ex (ページの文脈の書体に対する長さ) と百分率は読まない
+ *  - auto と、向きだけの値 (portrait・landscape) は、def (既定は A4) の用紙に対して (§7.1: 用紙は UA が選ぶ)
+ */
+export function parsePageSize(value: string, def: { width: number; height: number } = { width: 210, height: 297 }): { width: number; height: number } | undefined {
+  const parts = value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!parts.length || parts.length > 2) return undefined;
+  const orient = (w: number, h: number, o?: string) => ((o === 'landscape' && w < h) || (o === 'portrait' && w > h) ? { width: h, height: w } : { width: w, height: h });
+  if (parts.length === 1 && parts[0] === 'auto') return { width: def.width, height: def.height };
+  const lens = parts.map((t) => {
+    const m = /^\+?(\d+\.?\d*|\.\d+)(mm|cm|q|in|pt|pc|px)$/.exec(t);
+    const n = m ? parseFloat(m[1]) * UNIT_PT[m[2]] * MM_PER_PT : undefined;
+    return n !== undefined && n > 0 && Number.isFinite(n) ? n : undefined;
+  });
+  if (lens.every((n) => n !== undefined)) return { width: lens[0]!, height: lens[1] ?? lens[0]! };
+  if (lens.some((n) => n !== undefined)) return undefined;
+  const names = parts.filter((t) => PAGE_SIZES[t]);
+  const orients = parts.filter((t) => t === 'portrait' || t === 'landscape');
+  if (names.length + orients.length !== parts.length || names.length > 1 || orients.length > 1) return undefined;
+  const [w, h] = names.length ? PAGE_SIZES[names[0]] : [def.width, def.height];
+  return orient(w, h, orients[0]);
+}
 
 /** @page の宣言 (size・margin・bleed・marks) から、用紙の大きさと余白 (mm) を読む */
 function pageBox(

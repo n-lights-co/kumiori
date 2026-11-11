@@ -3,6 +3,7 @@
  * 画面 (main.ts・htmlFrame.ts) と API・CLI (api.ts) は、どちらもここから設定を取り、同じ設定で組む
  */
 import { AH_BORDER_KEYWORDS, fontFaceWeights, relativeWeightCss21, type CascadeOptions } from './cssCascade';
+import type { ParsedCss } from './htmlPaged';
 import type { HtmlDefaults } from './htmlPrepare';
 import type { HtmlImportOptions } from './htmlImport';
 import type { LayoutOptions } from './layoutEngine';
@@ -39,7 +40,7 @@ export function isAhCompat(kind: DocKind, mode: { compat?: FoCompat; style?: Htm
  * 自前のカスケード (cascadeStyles) のアンテナハウス互換の設定。
  * 罫の太さの丸め無し・thin/medium/thick の太さ・アンテナハウスの線種・counter() の拡張・bolder/lighter を @font-face の太さから決める
  */
-export function ahCascadeOptions(css: string): Pick<CascadeOptions, 'noBorderSnap' | 'borderKeywords' | 'ahBorderStyles' | 'ahCounterFlags' | 'relativeWeight'> {
+export function ahCascadeOptions(css: string | ParsedCss): Pick<CascadeOptions, 'noBorderSnap' | 'borderKeywords' | 'ahBorderStyles' | 'ahCounterFlags' | 'relativeWeight'> {
   return { noBorderSnap: true, borderKeywords: AH_BORDER_KEYWORDS, ahBorderStyles: true, ahCounterFlags: true, relativeWeight: ahRelativeWeight(css) };
 }
 
@@ -47,7 +48,7 @@ export function ahCascadeOptions(css: string): Pick<CascadeOptions, 'noBorderSna
  * アンテナハウス互換: bolder・lighter を CSS 2.1 §15.6 のとおり、@font-face で定義した書体の太さから決める
  * (例: @font-face で Semibold (600) を定義した書体の th・b の太字は 600)。@font-face で定義していない書体は undefined (Fonts 4 の表)
  */
-function ahRelativeWeight(css: string): (family: string, parentWeight: number, kind: 'bolder' | 'lighter') => number | undefined {
+function ahRelativeWeight(css: string | ParsedCss): (family: string, parentWeight: number, kind: 'bolder' | 'lighter') => number | undefined {
   const faces = fontFaceWeights(css);
   return (family, pw, kind) => {
     const first = family.split(',')[0]?.trim().replace(/^["']|["']$/g, '').toLowerCase();

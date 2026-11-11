@@ -190,6 +190,7 @@
 <p class="props" data-p="size"><span class="k">Initial</span> : <span class="v">auto</span> <span class="src">(size — CSS Paged Media 3)</span></p>
 <blockquote>“This property specifies the target size and orientation of the page box’s containing block.”<cite>— CSS Paged Media 3 §7.1</cite></blockquote>
 <p>Kumiori interprets lengths (width and height), names such as A3, A4, A5, B4, B5, JIS-B4, JIS-B5, letter, legal and ledger, and the orientations portrait and landscape. The following example is the declaration for the pages of this guide (182mm × 257mm, JIS B5).</p>
+<p>The paper of a document without a size (including auto and an orientation-only value) is A4. This default paper can be changed with --page-size in the Node CLI and pageSize in the public API (written like size: A5, A5 landscape, 148mm 210mm). The width, height and orientation of media queries (@media) are evaluated against this default paper, not against the size in the document <span class="spec">(CSS Paged Media 3 §7.1)</span>.</p>
 <pre class="kumiori-listing"><code>@page {
   <b>size: 182mm 257mm;</b>
   <b>margin: 20mm 18mm 18mm 18mm;</b>
