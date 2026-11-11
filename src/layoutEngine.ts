@@ -2696,6 +2696,8 @@ class Flow {
    */
   private rubyRoom(lm: LineMetrics, st: ResolvedStyle, room: number): number {
     if (!(lm.rubyExtent > 0)) return 0;
+    // 後ろ側に注釈のある行: 前に足す分は、行の寸法で分けてある (後ろに足す分は、行の高さ lm.base に入っている)
+    if (lm.rubyBefore !== undefined) return lm.rubyBefore;
     if (st.primaryFontMetrics) return Math.max(0, lm.rubyExtent - lm.leading);
     return Math.max(0, lm.rubyExtent - lm.leading / 2 - room);
   }

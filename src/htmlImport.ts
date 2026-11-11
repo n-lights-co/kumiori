@@ -1008,11 +1008,15 @@ class HtmlImporter {
     if (!maxDigits && !mark) return this.smallCaps(t, el);
     // 圏点の側 (text-emphasis-position。Text Decoration 3 §3.4): 横書きは over (上)・under (下)、縦書きは right (右)・left (左。省略は right)。
     // 圏点は、字ごとのルビとして置く (§3.4「as if each character was assigned the mark as its ruby annotation text」) ので、
-    // 下・左は 2 段目のルビの側に置く。vertical-lr は、ルビの 1 段目の側 (行の進む向きの手前) にだけ置ける
+    // 下・左は 2 段目のルビの側に置く。
+    // vertical-lr: 右・左は物理の向き (§3.4)。右 (省略のときも) は行の並ぶ向きの後ろ側、左は前の側なので、ルビと同じく側を入れ替えて渡す
+    // (LRuby.rubyPosition: 'under' = 注釈を後ろ側に置く。行の高さへの効き方はルビと同じ: §3.4・CSS Ruby 1 §3.6)
     const cs = this.cs(el);
     const wmv = cs('writing-mode');
     const pos = mark ? cs('text-emphasis-position') : '';
-    const under = vertical ? /(^|\s)left(\s|$)/.test(pos) && !/vertical-lr/.test(wmv) : /(^|\s)under(\s|$)/.test(pos);
+    const lr = /vertical-lr|sideways-lr/.test(wmv);
+    const under = vertical ? /(^|\s)left(\s|$)/.test(pos) && !lr : /(^|\s)under(\s|$)/.test(pos);
+    const afterLr = lr && !/(^|\s)left(\s|$)/.test(pos);
     // 圏点の色 (text-emphasis-color。§3.2): 初期値 currentcolor は字の色 (色を付けない)。見えない要素 (visibility) の圏点には付けない
     const ec = mark ? cs('text-emphasis-color') : '';
     const markColor = ec && ec !== cs('color') && !/^(hidden|collapse)$/.test(cs('visibility')) ? cssColor(ec) : undefined;
@@ -1033,7 +1037,8 @@ class HtmlImporter {
         // 圏点は、空白・約物・記号には付けない
         if (mark && !/[\s\p{P}\p{S}]/u.test(ch)) {
           flush();
-          if (under) out.push({ type: 'ruby', baseText: ch, rubyText: '', rubyTextUnder: mark, ...(markColor ? { rubyColorUnder: markColor } : {}) });
+          if (afterLr) out.push({ type: 'ruby', baseText: ch, rubyText: mark, rubyPosition: 'under', ...(markColor ? { rubyColor: markColor } : {}) });
+          else if (under) out.push({ type: 'ruby', baseText: ch, rubyText: '', rubyTextUnder: mark, ...(markColor ? { rubyColorUnder: markColor } : {}) });
           else out.push({ type: 'ruby', baseText: ch, rubyText: mark, ...(markColor ? { rubyColor: markColor } : {}) });
         } else buf += ch;
       }
@@ -4656,6 +4661,9 @@ class HtmlImporter {
         const isUnder = (v: string) => /\bunder\b/.test(v);
         const p1 = t ? posOf(pr.con ?? el) : '';
         const under1 = isUnder(p1);
+        // vertical-lr: 行の上側 (line-over) は右 = 行の並ぶ向きの後ろ側、下側 (line-under) は左 = 前の側 (CSS Writing Modes 3 §6.4 の表)。
+        // LRuby は注釈を置く側を行の並ぶ向きで持つ (rubyPosition: 'under' = 後ろ側) ので、入れ替えて渡す
+        const lrRuby = /vertical-lr|sideways-lr/.test(this.cs(el)('writing-mode'));
         if (t && u) {
           const p2 = posOf(pr.underCon ?? el);
           if (p2 && !/\balternate\b/.test(p2) && isUnder(p2) === under1) this.miss('ruby-position (同じ側の 2 段)');
@@ -4676,7 +4684,7 @@ class HtmlImporter {
           ...(scale && Math.abs(scale - 0.5) > 1e-6 ? { rubyScale: scale } : {}),
           ...(rc ? { rubyColor: rc } : {}),
           ...(uc ? { rubyColorUnder: uc } : {}),
-          ...(under1 ? { rubyPosition: 'under' } : {}),
+          ...(under1 !== lrRuby ? { rubyPosition: 'under' } : {}),
           ...(a1 ? { rubyAlign: a1 } : {}),
           ...(a2 ? { rubyAlignUnder: a2 } : {}),
           ...(ab ? { rubyAlignBase: ab } : {}),
