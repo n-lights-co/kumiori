@@ -239,7 +239,9 @@ export interface TextStyle {
   lineHeightPrecedence?: number | 'force';
   /**
    * 行の高さを、字ごとの書体の上下の高さ (ascent・descent) に line-height を割り振って決める (CSS と同じ)。
-   * 上下の比率の違う書体 (明朝と Times など) が混ざる行は、わずかに高くなる。既定 false (どの字も em の箱で揃える)
+   * 上下の比率の違う書体 (明朝と Times など) が混ざる行は、わずかに高くなる。既定 false (どの字も em の箱で揃える)。
+   * XSL-FO の互換モード (compat: 'antenna') の文書では、ブロックと同じ書体の指定の字を、字形を取った書体ではなくブロックの nominal-font
+   * (XSL 1.1 §5.5.7) の上下の高さで割り振る (和文と欧文の混じる行も行送りは line-height のまま。欧文だけの行の基線も和文の行と同じ)
    */
   fontLineMetrics?: boolean;
   /** 欧文の語を、分綴の位置で行末にハイフンを付けて分ける (fo の hyphenate)。分綴の位置は LayoutOptions.hyphenate で求める */

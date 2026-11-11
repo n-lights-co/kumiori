@@ -110,8 +110,15 @@ function lineMetricsXsl(pl: PositionedLine, wm: WritingMode, block: ResolvedStyl
  * 行の高さ。vertical-align: top・bottom の箱 (lineAlign) は、ほかの中身で行の高さを決めてから、行の箱の上端・下端に揃える
  * (CSS 2.1 §10.8.1・§10.8: 揃える箱が行より高ければ、その分だけ行を広げる)。揃えた位置は箱の shift に入れる
  */
-export function lineMetrics(pl: PositionedLine, wm: WritingMode, fallback: ResolvedStyle, nominalRatio?: number, strut?: { above: number; below: number }): LineMetrics {
-  return withAfterRubyRoom(lineMetricsAligned(pl, wm, fallback, nominalRatio, strut), pl);
+export function lineMetrics(
+  pl: PositionedLine,
+  wm: WritingMode,
+  fallback: ResolvedStyle,
+  nominalRatio?: number,
+  strut?: { above: number; below: number },
+  nominalDiff?: number,
+): LineMetrics {
+  return withAfterRubyRoom(lineMetricsAligned(pl, wm, fallback, nominalRatio, strut, nominalDiff), pl);
 }
 
 /**
@@ -134,12 +141,19 @@ function withAfterRubyRoom(m: LineMetrics, pl: PositionedLine): LineMetrics {
   return { ...m, base: m.base + rubyAfter, rubyBefore: lack - rubyAfter, rubyAfter };
 }
 
-function lineMetricsAligned(pl: PositionedLine, wm: WritingMode, fallback: ResolvedStyle, nominalRatio?: number, strut?: { above: number; below: number }): LineMetrics {
+function lineMetricsAligned(
+  pl: PositionedLine,
+  wm: WritingMode,
+  fallback: ResolvedStyle,
+  nominalRatio?: number,
+  strut?: { above: number; below: number },
+  nominalDiff?: number,
+): LineMetrics {
   const aligned = pl.raw.items.filter((a) => a.lineAlign && a.box);
-  if (!aligned.length) return lineMetricsBase(pl, wm, fallback, nominalRatio, strut);
+  if (!aligned.length) return lineMetricsBase(pl, wm, fallback, nominalRatio, strut, nominalDiff);
   const rest = pl.raw.items.filter((a) => !(a.lineAlign && a.box));
   const base: PositionedLine = { ...pl, raw: { ...pl.raw, items: rest, ...(rest.length ? {} : { metric: pl.raw.metric ?? ({ st: fallback, kind: 'break' } as Atom) }) } };
-  const m = lineMetricsBase(base, wm, fallback, nominalRatio, strut);
+  const m = lineMetricsBase(base, wm, fallback, nominalRatio, strut, nominalDiff);
   let up = m.above + (m.topLeading ?? m.leading / 2);
   let down = m.below + (m.bottomLeading ?? m.leading / 2);
   // 背の高い箱は行を広げる: 下に揃える箱は上へ、上に揃える箱は下へ
@@ -160,10 +174,10 @@ function lineMetricsAligned(pl: PositionedLine, wm: WritingMode, fallback: Resol
   return { ...m, above: m.above + extraA, below: m.below + extraB, em: m.em + extraA + extraB, base: m.base + extraA + extraB };
 }
 
-function lineMetricsBase(pl: PositionedLine, wm: WritingMode, fallback: ResolvedStyle, nominalRatio?: number, strut?: { above: number; below: number }): LineMetrics {
+function lineMetricsBase(pl: PositionedLine, wm: WritingMode, fallback: ResolvedStyle, nominalRatio?: number, strut?: { above: number; below: number }, nominalDiff?: number): LineMetrics {
   if (fallback.xslLineStacking || fallback.lineStackingStrategy === 'font-height') return lineMetricsXsl(pl, wm, fallback);
   // 互換 (AH) モデルの印のあるブロック (XSL-FO の入力)。CSS の印 (primaryFontMetrics) と同時に付くことは無い (HTML と XSL-FO の取り込みが別々に付ける)
-  if (fallback.boxLineHalfLeading || fallback.blockLeadingMaxHeight) return lineMetricsAh(pl, wm, fallback, nominalRatio, strut);
+  if (fallback.boxLineHalfLeading || fallback.blockLeadingMaxHeight) return lineMetricsAh(pl, wm, fallback, nominalRatio, strut, nominalDiff);
   return lineMetricsCss(pl, wm, fallback, nominalRatio, strut);
 }
 
@@ -256,9 +270,21 @@ const isTextOnlyLine = (all: Atom[]): boolean => !all.some(isInlineBox) && !all.
  * 欧文の書体は ascent + descent が 1 em を超えるので、em の箱で割り振ると基準線が下がる)。広がらなくても使う。
  * 書体の上下の高さ (ascent・descent) は横書きの値なので、横書きの行だけに使う (縦書きの字は字面の中央にそろえる。
  * 縦書きで書体の混ざる行 (和文と回転した欧文) に使うと、行の中の字が block 方向へずれる)。
+ * nominal (XSL-FO の互換モードだけ): ブロックの nominal-font (XSL 1.1 §5.5.7) の上下の高さの差 (ascent − descent。em の比) と、
+ * ブロックの書体の指定。ブロックと同じ書体の指定の字は、字形を取った書体によらず、この値で割り振る。和文と欧文の混じる行でも
+ * 上と下の最大が同じ書体の値になるので、行送りが line-height を超えず、欧文だけの行の基線も和文の行と同じ位置になる
+ * (アンテナハウスの公開の見本との比較による。同じ大きさの字の行は、和文だけ・欧文だけ・混在のどれも行送りが line-height で、
+ * 表の同じ行の和文のセルと欧文のセルの基線がそろう)。書体の指定の違う字 (fo:inline の font-family) は、その字の書体の値のまま。
  * 使わない行なら undefined
  */
-function fontLineMetricsOf(all: Atom[], wm: WritingMode, sc: LineScan, leading: number, strut: { above: number; below: number } | undefined): LineMetrics | undefined {
+function fontLineMetricsOf(
+  all: Atom[],
+  wm: WritingMode,
+  sc: LineScan,
+  leading: number,
+  strut: { above: number; below: number } | undefined,
+  nominal?: { family: string; diff: number },
+): LineMetrics | undefined {
   if (wm !== 'horizontal-tb') return undefined;
   const fontGlyphs = all.filter((a) => a.st.fontLineMetrics && a.kind === 'glyph' && a.g && !a.isSpace);
   if (!fontGlyphs.length) return undefined;
@@ -275,7 +301,8 @@ function fontLineMetricsOf(all: Atom[], wm: WritingMode, sc: LineScan, leading: 
     B = Math.max(B, ab.below - (a.shift ?? 0));
   }
   for (const a of fontGlyphs) {
-    const d = a.g!.font.ascentMinusDescent * a.st.fontSize;
+    // nominal: ブロックと同じ書体の指定の字は、字形を取った書体 (欧文の代わりの書体など) ではなく、ブロックの nominal-font の上下で割り振る
+    const d = (nominal && a.st.fontFamily === nominal.family ? nominal.diff : a.g!.font.ascentMinusDescent) * a.st.fontSize;
     const l = lineHeightOf(a.st);
     A = Math.max(A, (l + d) / 2);
     B = Math.max(B, (l - d) / 2);
@@ -371,9 +398,10 @@ function lineMetricsCss(pl: PositionedLine, wm: WritingMode, fallback: ResolvedS
  *  - boxLineHalfLeading: 画像などの箱のある行も、ブロックの字の矩形 (nominal-requested-line-rectangle。XSL §4.5) を行の高さに含め、
  *    ブロックの半行間を上下に空ける
  *  - blockLeadingMaxHeight: ブロックの字より大きい字のある max-height の行は、字の大きさの箱を囲み、ブロックの半行間を上下に足す
- *  - fontLineMetrics (字ごと): 書体の ascent・descent に line-height を割り振る
+ *  - fontLineMetrics (字ごと): 書体の ascent・descent に line-height を割り振る。nominalDiff があれば、ブロックと同じ書体の指定の字は
+ *    ブロックの nominal-font の上下で割り振る (和文と欧文の混じる行を広げない。fontLineMetricsOf の説明)
  */
-function lineMetricsAh(pl: PositionedLine, wm: WritingMode, fallback: ResolvedStyle, nominalRatio?: number, strut?: { above: number; below: number }): LineMetrics {
+function lineMetricsAh(pl: PositionedLine, wm: WritingMode, fallback: ResolvedStyle, nominalRatio?: number, strut?: { above: number; below: number }, nominalDiff?: number): LineMetrics {
   const { atoms, all } = lineAtoms(pl, fallback);
   const onlyStrut = strutOnlyLine(all, strut);
   if (onlyStrut) return onlyStrut;
@@ -413,7 +441,7 @@ function lineMetricsAh(pl: PositionedLine, wm: WritingMode, fallback: ResolvedSt
   }
   // 字だけの行で line-height が字の上下より小さいときは、半行間を負にして行を line-height にする (boxLineHalfLeading のとき)
   const leading = isTextOnlyLine(all) && fallback.boxLineHalfLeading ? sc.lh - (sc.above + sc.below) : Math.max(sc.lh - (sc.above + sc.below), 0);
-  const byFont = fontLineMetricsOf(all, wm, sc, leading, strut);
+  const byFont = fontLineMetricsOf(all, wm, sc, leading, strut, nominalDiff === undefined ? undefined : { family: fallback.fontFamily, diff: nominalDiff });
   if (byFont) return byFont;
   addShiftedExtents(sc, all, wm, leading);
   // 行の高さを超える箱 (画像など) のある行も、ブロックの半行間 (line-height と字の大きさの差の半分) を上下に空ける
