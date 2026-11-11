@@ -13,7 +13,7 @@
  *  - ヒント (hstem・vstem・hstemhm・vstemhm・hintmask・cntrmask) は書かない: 差分を当てた後のステムは、並びの順が入れ替わったり
  *    重なったりしうる (CFF2「Blended stem and edge hints」) が、Type 2 の CharString ではステムを位置の順に書く決まりなので、
  *    そのまま写すと壊れた字形になりうる。字の形 (輪郭) は変わらない。小さな字を画面に描くときの、画素への合わせ込みだけが無くなる
- *  - CFF2 の字形は幅を持たない (hmtx・HVAR にある) ので、実体の送りを、Type 2 の CharString の幅として入れる (#5177 §3.1・#5176 の
+ *  - CFF2 の字形は幅を持たない (hmtx・HVAR にある) ので、実体の送りを、Type 2 の CharString の幅として入れる (#5177 §3.1・#5176 §15 の
  *    defaultWidthX・nominalWidthX)
  *  - 書き出す CFF は CID 方式 (ROS は Adobe-Identity-0、CID = 字の番号)。CFF2 の FontDICT・FontDICTSelect が、そのまま CID 方式の
  *    FDArray・FDSelect になる (CFF2 は字の名前を持たないので、名前の方式にはしない)
@@ -513,7 +513,7 @@ function writeCharString(out: Bytes, it: Interpreter, width: number | undefined,
     if (kind === MOVE) {
       const dx = xy[q] - cx;
       const dy = xy[q + 1] - cy;
-      // 幅の後の最初の moveto は、数が 1 つ多い。hmoveto・vmoveto でも同じ (#5177 §4.1)
+      // 幅の後の最初の moveto は、数が 1 つ多い。hmoveto・vmoveto でも同じ (#5177 §4.1 の Note 4)
       if (dy === 0) {
         out.int(dx);
         out.push(22);
@@ -712,7 +712,7 @@ const indexOf = (items: Uint8Array[]): Uint8Array => {
   return writeIndex1(items.length, data, offsets);
 };
 
-/** DICT の数 (#5176 §4 の表 3)。整数は短い形、ほかは実数 (2 進化 10 進) */
+/** DICT の数 (#5176 §4 の表 3)。整数は短い形、ほかは実数 (2 進化 10 進。表 5) */
 function dictNumber(out: number[], v: number) {
   if (Number.isInteger(v)) {
     if (v >= -107 && v <= 107) out.push(v + 139);
@@ -939,7 +939,7 @@ export function instantiateCff2(
     return new Uint8Array(o);
   });
 
-  // charset (形式 2): CID 1 から続きの番号。FDSelect (形式 3)
+  // charset (形式 2。#5176 §13 の表 20・21): CID 1 から続きの番号 (§18: 完全な CIDFont は、CID 1 から始まる 1 つの範囲)。FDSelect (形式 3。§19 の表 28・29)
   const charset = nGlyphs > 1 ? new Uint8Array([2, 0, 1, ((nGlyphs - 2) >> 8) & 0xff, (nGlyphs - 2) & 0xff]) : new Uint8Array([0]);
   const sel: number[] = [3, 0, 0];
   let ranges = 0;
@@ -972,13 +972,13 @@ export function instantiateCff2(
   const header = new Uint8Array([1, 0, 4, 4]);
   const name = psName.replace(/[^!-~]|[()<>[\]{}/%]/g, '').slice(0, 127) || 'Font';
   const nameIndex = indexOf([Uint8Array.from(name, (c) => c.charCodeAt(0))]);
-  // 文字列: 標準の文字列は 391 個 (#5176 付録 A) なので、足した文字列の番号 (SID) は 391 から
+  // 文字列: 標準の文字列は 391 個 (#5176 §10・付録 A の SID 0〜390) なので、足した文字列の番号 (SID) は 391 から
   const strings = indexOf(['Adobe', 'Identity'].map((s) => Uint8Array.from(s, (c) => c.charCodeAt(0))));
   const globalSubrs = new Uint8Array([0, 0]);
   const matrix = top.get(1207) ?? (unitsPerEm !== 1000 ? [1 / unitsPerEm, 0, 0, 1 / unitsPerEm, 0, 0] : undefined);
   const topDict = (pos: { charset: number; fdSelect: number; charStrings: number; fdArray: number }): Uint8Array => {
     const o: number[] = [];
-    // ROS は最初に書く (#5176 §18)
+    // ROS は最初に書く (#5176 §9 の表 10 の後ろの段落・§18)
     dictNumber(o, 391);
     dictNumber(o, 392);
     dictNumber(o, 0);

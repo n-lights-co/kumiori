@@ -4,8 +4,9 @@
  * ── 1. hflex・hflex1 ──
  *
  * hflex・hflex1 は、浅い曲線を 2 本のベジエ曲線で書く命令で、引数を省く代わりに、次の点の y が同じと決まっている
- * (OpenType 仕様「CFF2 — Compact Font Format (CFF) Version 2」の「CharString operators」の「Flex mechanism operators」。
- *  Type 2 の字形の命令 (CFF の版 1) でも、同じ番号 (12 34・12 36)・同じ引数の演算子):
+ * (The Type 2 Charstring Format (Adobe Technical Note #5177) §4.1 の hflex・hflex1 の条件 a・b。OpenType 仕様
+ *  「CFF2 — Compact Font Format (CFF) Version 2」の「CharString operators」の「Flex mechanism operators」も、同じ番号
+ *  (12 34・12 36)・同じ引数・同じ条件):
  *  - hflex [dx1 dx2 dy2 dx3 dx4 dx5 dx6]: 「始点・終点・最初の制御点・最後の制御点の y が同じ」「つなぎ目と、その両隣の制御点の y が同じ」
  *  - hflex1 [dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6]: 「始点と終点の y が同じ」「つなぎ目と、その両隣の制御点の y が同じ」
  * fontkit の CFFGlyph の _getPath は、hflex の最後の制御点と終点の y、hflex1 の終点の y を、始点の y に戻さない
@@ -15,26 +16,28 @@
  * 直し方: CFF (版 1) の字形の _getPath を 1 回差し替える。fontkit の元の読みをそのまま行い、同じ字形を自前の Type 2 の読み
  * (psCff.ts。hflex・hflex1 を上の定義のとおりに読む) でも実行して、その字形が hflex か hflex1 を実行したときだけ、
  * 自前の読みの輪郭を fontkit の Path に直して返す。hflex・hflex1 を使わない字形は、fontkit の元の結果をそのまま返す
- * (flex・flex1 を含めて、これまでと同じ輪郭)。fontkit は字形ごとに輪郭を覚えるので、読むのは字形ごとに 1 回。
+ * (flex・flex1 を含めて、これまでと同じ輪郭。fontkit の flex・flex1 の読みは #5177 §4.1 のとおり: flex1 の最後の点は、
+ * 5 点目までの動きが横に長ければ x が d6 で y は始点の y、そうでなければ x は始点の x で y が d6)。
+ * fontkit は字形ごとに輪郭を覚えるので、読むのは字形ごとに 1 回。
  *
  * 変えないもの:
  *  - CFF2 の字形 (fontkit が可変の値を混ぜて読む経路)・TrueType の字形
  *  - 自前の読みで読めない字形 (部分の命令が無い・命令が多すぎるなど) と、endchar の 4 つの数で 2 つの字を重ねる字形
- *    (seac。fontkit は重ねる字を描かないので、輪郭の中身が変わってしまう)。どちらも fontkit の元の結果を返す
+ *    (seac。#5177 付録 C。fontkit は重ねる字を描かないので、輪郭の中身が変わってしまう)。どちらも fontkit の元の結果を返す
  *  - PDF に埋め込む書体 (cff.ts の部分書体は、字形の命令のバイト列をそのまま写すので、輪郭の読みを通らない)
  *
  * ── 2. FDSelect の範囲 (CID 方式の書体) ──
  *
  * CID 方式の CFF の書体は、字形ごとに FD (Font DICT。Private DICT と局所の部分の命令を持つ) を FDSelect で選ぶ。
- * FDSelect の形式 3・4 は、範囲の並びで、「範囲は、その first の字から、次の範囲の first の手前の字まで」
- * (OpenType 仕様「CFF2」の「FontDICTSelect」の形式 3 の「Range3 record」: "Each range includes glyph IDs from the first glyph ID
- *  in the range record up to, but not including, the first glyph ID of the next range record"。CFF の版 1 の FDSelect の形式 3 も
- *  同じ形だが、Adobe Technical Note #5176 は原文で未確認)。
+ * FDSelect の形式 3 は、範囲の並びで、「範囲は、その first の字から、次の範囲の first の手前の字まで」。最初の範囲の first は 0 で、
+ * 最後の範囲の後ろに、字の数に等しい番兵の番号が続く (The Compact Font Format Specification (Adobe Technical Note #5176) §19 の
+ * 表 28 (Format 3)・表 29 (Range3 Format)。OpenType 仕様「CFF2」の「FontDICTSelect」の形式 3 の「Range3 record」も同じ決まりで、
+ * CFF2 だけにある形式 4 は、同じ並びを 4 バイトの番号で書いたもの)。
  * fontkit の CFFFont の fdForGlyph は、二分探索で「次の範囲の first より大きい」ときだけ後ろへ進むので、範囲の最初の字が、
  * 前の範囲の FD になることがある (探索が前の範囲に当たったとき)。その字形は、違う Private DICT の局所の部分の命令で読まれ、
  * 輪郭がまったく別の形になるか、読めずに例外になる (Noto Sans JP の .otf の「:」「・」「※」など 29 字)。
  * fdForGlyph を、形式 3・4 のときに「first が字の番号以下の、最後の範囲」を引くものに差し替える (ほかは fontkit の元のまま)。
- * CFF2 の書体も同じ fdForGlyph を通るので、同じく正しくなる (上の定義は CFF2 の仕様のもの。CFF2 の字形の輪郭の読み方は変えない)。
+ * CFF2 の書体も同じ fdForGlyph を通るので、同じく正しくなる (CFF2 の字形の輪郭の読み方は変えない)。
  */
 import { cffGlyph, parseCff } from './psCff';
 import type { CffFont, Type2Info } from './psCff';

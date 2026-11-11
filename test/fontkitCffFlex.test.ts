@@ -1,8 +1,8 @@
 /**
  * fontkit の CFF の字形の hflex・hflex1 の読みの直し (src/fontkitCffFlex.ts)。
  *
- * 期待値は、OpenType 仕様「CFF2 — Compact Font Format (CFF) Version 2」の「CharString operators」の
- * 「Flex mechanism operators」の hflex・hflex1 の定義から決めた (Type 2 の字形の命令でも、同じ番号・同じ引数の演算子):
+ * 期待値は、The Type 2 Charstring Format (Adobe Technical Note #5177) §4.1 の hflex・hflex1 の定義 (条件 a・b) から決めた
+ * (OpenType 仕様「CFF2 — Compact Font Format (CFF) Version 2」の「Flex mechanism operators」も同じ):
  *  - hflex [dx1 dx2 dy2 dx3 dx4 dx5 dx6]: 始点・終点・最初と最後の制御点の y が同じ。つなぎ目とその両隣の制御点の y が同じ
  *  - hflex1 [dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6]: 始点と終点の y が同じ。つなぎ目とその両隣の制御点の y が同じ
  * 書体のファイルはリポジトリに入れないので、hflex を使う CFF の書体は、ここでバイト列から組む。
@@ -23,7 +23,7 @@ type Fk = { getGlyph(gid: number): FkGlyph; numGlyphs: number; 'CFF '?: FkCff; C
 
 const PATCHED = Symbol.for('kumiori.fontkitCffFlexPatched');
 
-// ───────── CFF の書体をバイト列で組む (CFF = Adobe Technical Note #5176 の INDEX・DICT の形) ─────────
+// ───────── CFF の書体をバイト列で組む (Adobe Technical Note #5176 の §5 INDEX・§4 DICT・§6 Header・§9 Top DICT・§15 Private DICT) ─────────
 
 const u16 = (n: number) => [(n >> 8) & 255, n & 255];
 const u32 = (n: number) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
@@ -255,7 +255,7 @@ describe('fontkit の CFF の字形の hflex・hflex1 (fontkitCffFlex.ts)', () =
   });
 
   it('FDSelect (形式 3): 範囲の最初の字も、その範囲の FD の Private DICT (局所の部分の命令) で読む', () => {
-    // OpenType 仕様「CFF2」の「Range3 record」: 範囲は、その first の字から、次の範囲の first の手前の字まで。
+    // Adobe Technical Note #5176 §19 の表 29 (Range3 Format。OpenType 仕様「CFF2」の「Range3 record」も同じ): 範囲は、その first の字から、次の範囲の first の手前の字まで。
     // 直す前の fontkit は、範囲の最初の字を、前の範囲の FD で読むことがある (二分探索が前の範囲に当たったとき。ここでは GID 4)
     const right = [M(100, 200), L(150, 200), Z];
     const up = [M(100, 200), L(100, 270), Z];

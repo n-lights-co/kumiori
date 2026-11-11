@@ -443,7 +443,7 @@ function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: numbe
               break;
             }
             case 34: {
-              // hflex: dx1 dx2 dy2 dx3 dx4 dx5 dx6
+              // hflex: dx1 dx2 dy2 dx3 dx4 dx5 dx6 (T2 §4.1 hflex: 始点・終点・両端の制御点の y が同じ、つなぎ目と両隣の制御点の y が同じ)
               const [dx1, dx2, dy2, dx3, dx4, dx5, dx6] = st;
               if (info) info.hflex = true;
               curveTo(dx1, 0, dx2, dy2, dx3, 0);
@@ -451,7 +451,7 @@ function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: numbe
               break;
             }
             case 36: {
-              // hflex1: dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6
+              // hflex1: dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6 (T2 §4.1 hflex1: 始点と終点の y が同じ、つなぎ目と両隣の制御点の y が同じ)
               const [dx1, dy1, dx2, dy2, dx3, dx4, dx5, dy5, dx6] = st;
               if (info) info.hflex = true;
               curveTo(dx1, dy1, dx2, dy2, dx3, 0);
