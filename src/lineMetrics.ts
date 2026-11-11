@@ -354,7 +354,8 @@ function finishLine(sc: LineScan, lead: number, needA: number, needB: number): L
 
 /**
  * CSS の行の高さ (CSS 2.1 §10.8)。primaryFontMetrics のブロック (HTML の入力) と、互換の印の無いブロック。
- *  - 字の上下は em の箱 (atomAboveBelow)。代わりの書体の字は、最初に使える書体の上下 (primaryRatio)
+ *  - 字の上下は em の箱 (atomAboveBelow)。代わりの書体の字は、最初に使える書体の上下 (primaryRatio)。
+ *    line-height: normal の字が代わりの書体で組まれたときは、その書体の上下も行の上下の下限に入れる (CSS Inline 3 §5.3。Atom.fallbackNormal)
  *  - 行には支柱 (strut) があり、行の上下は支柱と、字ごとの行内の箱 (字の上下 + その字の半行間) を下回らない
  *  - 字だけの行の半行間は負にもなる (行の高さは line-height そのもの。primaryFontMetrics のときだけ)
  */
@@ -378,6 +379,18 @@ function lineMetricsCss(pl: PositionedLine, wm: WritingMode, fallback: ResolvedS
   // line-height を当てると、箱が行の上下へはみ出し、行が広がる)。ずらした字は、ずらしを数えない (disregard-shifts) ときだけここで、ずらす前の位置で数える
   let needA = strut?.above ?? 0;
   let needB = strut?.below ?? 0;
+  // line-height: normal の字が代わりの書体で組まれたとき: その書体の上下 (ascent・descent と行間) も行の上下の下限に入れる
+  // (CSS Inline 3 §5.3: 計算値が normal の行内の箱の layout bounds は、中の字すべてを、いちばん高い A からいちばん深い D まで囲む。
+  // normal でない字は、最初に使える書体の値と line-height だけで決まり、fallbackNormal は付かない。値は fontManager.ts の normalLineBounds)。
+  // ずらした字 (上付き・下付き) は、ずらした位置で数える (ずらしを数えない指定 (disregard-shifts) のときは、ずらす前の位置)
+  if (fallback.primaryFontMetrics) {
+    for (const a of all) {
+      if (!a.fallbackNormal || (a.kind !== 'glyph' && a.kind !== 'ruby')) continue;
+      const sh = a.shift && a.st.lineHeightShiftAdjustment !== 'disregard-shifts' ? a.shift : 0;
+      needA = Math.max(needA, a.fallbackNormal.above + sh);
+      needB = Math.max(needB, a.fallbackNormal.below - sh);
+    }
+  }
   if (fallback.primaryFontMetrics && wm === 'horizontal-tb') {
     for (const a of all) {
       if (a.kind !== 'glyph' || (a.st.lineHeightQuirk && a.isSpace)) continue;

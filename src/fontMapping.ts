@@ -316,13 +316,15 @@ export function createFontMapping(
         const fileId = earlier.length || sfnt ? (file.url ?? file.path ?? file.name) : undefined;
         if (!registeredFaces.has(key) || (fileId !== undefined && registeredFaces.get(key) !== fileId)) {
           // 可変フォントの記述子 (Fonts 4 §4.4: 記述子が無い (auto) ときは、選ぶときは normal、軸の値は制限しない)
-          await fonts.registerBuffer(family, weight, sfnt ?? (await file.arrayBuffer()), canvas, {
+          const lf = await fonts.registerBuffer(family, weight, sfnt ?? (await file.arrayBuffer()), canvas, {
             weight: ff.weightRange ?? 'auto',
             width: ff.widthRange ?? 'auto',
             ...(ff.obliqueRange ? { oblique: ff.obliqueRange } : {}),
             ...(ff.variationSettings ? { settings: ff.variationSettings } : {}),
             ...(ff.namedInstance ? { namedInstance: ff.namedInstance } : {}),
           });
+          // line-height: normal の行の高さを、書体の値から決める書体 (htmlNormalLineHeight と同じ。代わりの書体として使われたときも)
+          lf.metricsLineHeight = true;
           registeredFaces.set(key, fileId);
         }
         const g = groups.get(ff.family) ?? [];
@@ -345,10 +347,15 @@ export function createFontMapping(
   }
 
   /** HTML の font-family: @font-face の書体を先に探し (和文は Noto)、無ければ XSL-FO と同じ選び方 */
-  /** line-height: normal: @font-face で読み込んだ書体なら、その書体の上下の高さと行間 (hhea) から。ほかは undefined (1.2) */
+  /**
+   * line-height: normal: 最初に使える書体 (CSS Inline 3 §5.3 の first available font) が @font-face で読み込んだ書体なら、その書体の上下の高さと
+   * 行間 (hhea) から。ほかは undefined (1.2)。並びの中で、読み込んだ書体より前に総称・既定の書体の名前があるときは、最初に使える書体は
+   * 既定の書体 (htmlFontList の並びの先頭) なので undefined。後ろに並ぶ書体の字は、組まれた行でその書体の上下を数える (fontManager.ts の normalLineBounds)
+   */
   function htmlNormalLineHeight(names: string[], bold: boolean): number | undefined {
     const idx = names.findIndex((n) => faceOf(n));
     if (idx < 0) return undefined;
+    if (names.slice(0, idx).some((n) => isGenericOrDefaultCjk(n) || knownLatinFamily(n))) return undefined;
     const f = fonts.get(faceOf(names[idx])!, bold ? 700 : 400);
     const hh = (f.fk as unknown as { hhea?: { ascent: number; descent: number; lineGap: number } }).hhea;
     return hh ? (hh.ascent - hh.descent + hh.lineGap) / f.unitsPerEm : undefined;

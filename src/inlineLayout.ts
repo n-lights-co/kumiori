@@ -36,6 +36,11 @@ export interface Atom {
   primaryRatio?: number;
   /** 代わりの書体の字のとき、最初に使える書体の上下 (ascent・descent) と基線の比 (XSL の行の高さに使う: 和文の代わりの書体の字で基線を動かさない) */
   primaryFont?: { ascent?: number; descent?: number; baselineRatio: number };
+  /**
+   * line-height: normal の字 (st.lineHeightNormal) が代わりの書体 (読み込んだ書体。既定の書体は数えない) で組まれたとき、その書体が
+   * 行の高さに求める基線の上・下 (pt。fontManager.ts の normalLineBounds)。CSS の行の高さ (lineMetrics.ts の lineMetricsCss) が、行の上下の下限に入れる (CSS Inline 3 §5.3)
+   */
+  fallbackNormal?: { above: number; below: number };
   /** 中身の無い inline の目印 (id の位置だけを記録する幅 0 の箱) */
   idMark?: boolean;
   /** 最小の幅を測る組み方 (min-content) の字。overflow-wrap: break-word の語の途中を分割点に数えない (Text 3 §5.5) */
