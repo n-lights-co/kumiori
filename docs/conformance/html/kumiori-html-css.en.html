@@ -589,6 +589,46 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <p class="vals-h">@font-face descriptors <span class="spec">(CSS Fonts 4 §4.4, §4.6, §4.7)</span></p>
 <table class="list vals"><thead><tr><th style="width: 34mm">Descriptor</th><th>Meaning</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>font-weight: 100 900</code></td><td>The range of weights the face covers. Faces are matched against this range (§5.2), and the axis value is clamped to it. A single value means the face covers only that weight (bold of other weights is made by thickening the outlines). Without the descriptor the face is matched as weight 400 and the axis value is not clamped.</td><td>Supported</td></tr><tr><td><code>font-stretch: 75% 125%</code>, <code>font-width</code></td><td>The range the width axis value is clamped to.</td><td>Partial: faces of different widths are not matched against each other</td></tr><tr><td><code>font-style: oblique 0deg 10deg</code></td><td>The range the slant axis value is clamped to. A face whose range includes 0deg is loaded as an upright font.</td><td>Partial: italic faces, and oblique faces whose range does not include 0deg, are not loaded</td></tr><tr><td><code>font-variation-settings</code></td><td>Axis values always applied to this face.</td><td>Supported</td></tr><tr><td><code>font-named-instance</code></td><td>Applies the axis values of a named instance in the font (such as "Bold"). If the name is not found, it is the same as auto.</td><td>Supported</td></tr></tbody></table>
 <p>A PDF cannot embed a variable font as it is (PDF has no font type for variable fonts), so for each combination of axis values in use Kumiori builds a static font of that shape and embeds it as a subset of the glyphs used. Using the regular and the bold of one font gives two fonts in the PDF. A variable font with CFF2 outlines is rebuilt as a static CFF font for every shape, including the default instance (the only CFF a PDF can embed is the non-variable form). The outlines stay cubic curves and the shapes do not change, but the hints (the information used to align strokes to pixels when small text is drawn on screen) are not carried over. Overlapping contours are kept as they are. A non-variable font with CFF2 outlines is likewise embedded as a CFF font. The advances (HVAR, and VVAR for vertical writing), kerning and mark positions (GPOS), font-wide metrics (MVAR) and glyph substitutions that depend on the axis values (FeatureVariations) are those of the instance. The results for documents that load no variable font do not change.</p>
+<p>The following samples are set with the Google Fonts variable fonts Anybody (width axis wdth 50–150, weight axis wght 100–900) and Roboto Flex (optical size opsz 8–144, weight wght 100–1000, width wdth 25–151, slant slnt -10–0). Both are variable fonts with TrueType outlines, loaded with <code>@font-face</code> from the versioned URLs of the Google Fonts server (fonts.gstatic.com) as WOFF2 files (the Latin subset). When you pass the font file together with the document, write the name of that file in <code>src</code>. There is no sample of a variable font with CFF2 outlines (none can be fetched from a URL of that server; such fonts are set in the same way).</p>
+<p class="cap">Weight and width : the values 100–900 of <code>font-weight</code> and 50%–150% of <code>font-stretch</code> become the axis values as they are. The fourth line sets the axis values directly with <code>font-variation-settings</code>.</p>
+<!--kumiori-sample id="variable-axes" mark="font-weight: 100 900|font-stretch: 50% 150%|font-variation-settings"-->
+<style>
+  @font-face { font-family: "Anybody"; src: url(https://fonts.gstatic.com/s/anybody/v13/VuJxdNvK2Ib2ppdWSKHdOQ.woff2); font-weight: 100 900; font-stretch: 50% 150%; }
+  .vf p { font-family: "Anybody"; font-size: 12pt; line-height: 1.5; text-indent: 0; text-align: left; }
+</style>
+<div class="vf">
+<p><span style="font-weight: 100;">Aa100</span> <span style="font-weight: 200;">Aa200</span> <span style="font-weight: 300;">Aa300</span> <span style="font-weight: 400;">Aa400</span> <span style="font-weight: 500;">Aa500</span> <span style="font-weight: 600;">Aa600</span> <span style="font-weight: 700;">Aa700</span> <span style="font-weight: 800;">Aa800</span> <span style="font-weight: 900;">Aa900</span></p>
+<p><span style="font-stretch: 50%;">Width 50%</span> <span style="font-stretch: 75%;">Width 75%</span> <span style="font-stretch: 100%;">Width 100%</span> <span style="font-stretch: 125%;">Width 125%</span> <span style="font-stretch: 150%;">Width 150%</span></p>
+<p style="font-weight: bold; font-stretch: condensed;">bold + condensed (wght 700, wdth 75)</p>
+<p style="font-variation-settings: 'wght' 650, 'wdth' 137;">'wght' 650, 'wdth' 137</p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Slant and optical size : in the first line, the angle of <code>font-style: oblique</code> becomes the value of the slant axis (italic uses the end of the slant axis, 10 degrees). The second and third lines show, from the left, <code>font-optical-sizing: auto</code> (the initial value; the optical size that matches the font size), none (the default value of the axis, 14), and 144 set with <code>font-variation-settings</code>.</p>
+<!--kumiori-sample id="variable-slant-opsz" mark="font-style: oblique 0deg 10deg|font-style: oblique 5deg|font-style: oblique 10deg|font-optical-sizing: none|'opsz' 144"-->
+<style>
+  @font-face { font-family: "Roboto Flex"; src: url(https://fonts.gstatic.com/s/robotoflex/v31/NaNTepOXO_NexZs0b5QrzlOHb8wCikXpYqmZsWI-__OGbt8jZktqc2V3Zs0KvDLdBP8SBZtOs2IifRuUZQMsPJtUsR4DEK6cULNeUx9XgTnH37Ha_FIAp4Fm0PP1hw45DntW2x0wZGzhPmr1YNMYKYn9_1IQXGwJAiUJVUMdN5YUW4O8HtSCUhhK.woff2); font-weight: 100 1000; font-stretch: 25% 151%; font-style: oblique 0deg 10deg; }
+  .vr p { font-family: "Roboto Flex"; font-size: 12pt; line-height: 1.5; text-indent: 0; text-align: left; }
+</style>
+<div class="vr">
+<p>Slant 0deg <span style="font-style: oblique 5deg;">Slant 5deg</span> <span style="font-style: oblique 10deg;">Slant 10deg</span> <span style="font-style: italic;">italic</span></p>
+<p style="font-size: 26pt; line-height: 1.2;">Optical <span style="font-optical-sizing: none;">Optical</span> <span style="font-variation-settings: 'opsz' 144;">Optical</span></p>
+<p style="font-size: 7pt;">Optical size auto <span style="font-optical-sizing: none;">Optical size none</span> <span style="font-variation-settings: 'opsz' 144;">Optical size 144</span></p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">@font-face descriptors : the first line is clamped to the range of <code>font-weight: 300 500</code> (100 becomes 300, and heavier requests become 500). The second line always uses the width 60, set with <code>font-variation-settings</code> in <code>@font-face</code>. The third line selects the named instance ExtraBold (weight 800) of the font with <code>font-named-instance</code>.</p>
+<!--kumiori-sample id="variable-font-face" mark="font-weight: 300 500|font-variation-settings: &quot;wdth&quot; 60|font-named-instance: &quot;ExtraBold&quot;"-->
+<style>
+  @font-face { font-family: "Anybody 300-500"; src: url(https://fonts.gstatic.com/s/anybody/v13/VuJxdNvK2Ib2ppdWSKHdOQ.woff2); font-weight: 300 500; }
+  @font-face { font-family: "Anybody Narrow"; src: url(https://fonts.gstatic.com/s/anybody/v13/VuJxdNvK2Ib2ppdWSKHdOQ.woff2); font-weight: 100 900; font-variation-settings: "wdth" 60; }
+  @font-face { font-family: "Anybody ExtraBold"; src: url(https://fonts.gstatic.com/s/anybody/v13/VuJxdNvK2Ib2ppdWSKHdOQ.woff2); font-named-instance: "ExtraBold"; }
+  .vd p { font-size: 12pt; line-height: 1.5; text-indent: 0; text-align: left; }
+</style>
+<div class="vd">
+<p style="font-family: 'Anybody 300-500';"><span style="font-weight: 100;">Aa100</span> <span style="font-weight: 300;">Aa300</span> <span style="font-weight: 400;">Aa400</span> <span style="font-weight: 500;">Aa500</span> (font-weight: 300 500)</p>
+<p style="font-family: 'Anybody Narrow';">Narrow <span style="font-weight: 700;">Narrow bold</span> ("wdth" 60)</p>
+<p style="font-family: 'Anybody ExtraBold';">Named instance "ExtraBold"</p>
+</div>
+<!--/kumiori-sample-->
 <h2 id="s-color-font"><span class="num">5.7</span>Color fonts and emoji : <code>font-palette</code><span class="nw">&nbsp;<span class="badge part">Partial</span></span></h2>
 <p class="props" data-p="font-palette"><span class="k">Initial</span> : <span class="v">normal</span> <span class="k">Applies to</span> : <span class="v">all elements and text</span> <span class="k">Inherited</span> : <span class="v">yes</span> <span class="src">(font-palette — CSS Fonts 4)</span></p>
 <p>Fonts with colored glyphs (color emoji fonts, colored display fonts) are typeset in color. The default fonts include no color font, so specify one (@font-face, --font for the Node command, fonts in the API). Advances and positions in the line come from the font's values (hmtx and so on), as for any other font. In vertical writing, emoji are set upright. The parts of a glyph that are painted in the text color (palette index 0xFFFF in COLR, currentColor in SVG) take the value of color. The colors of the other parts do not change with color.</p>
@@ -605,6 +645,45 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <p>Switching the emoji presentation: a sequence with the variation selector U+FE0F (emoji presentation) after the character is set in a color font, and a sequence with U+FE0E (text presentation) is set in a font without colored glyphs (when one of the loaded fonts has the character; UTS #51, CSS Fonts 4 §5.3). Characters with neither are set in the font chosen from the font-family list. When no listed font has the character and a fallback font is searched for, characters that have emoji presentation by default (Unicode Emoji_Presentation) look in color fonts first.</p>
 <p>Limitations: palette-mix() is not interpreted (the text is set as normal). font-variant-emoji is not interpreted (chapter 16). The generic family emoji was removed from CSS Fonts 4, so it is not mapped to a font (it is skipped like the name of a font that is not loaded). Gradient colors are interpolated on sRGB values as they are (the OpenType specification asks for interpolation in linear light, but the major browsers also interpolate on sRGB values). For compositing modes that have no equivalent in PDF (SRC_ATOP, DEST_ATOP and XOR are approximated where translucent content overlaps; PLUS is drawn as an ordinary overlay), the screen and the PDF may look slightly different. Sweep gradients are approximated in the PDF by a fan of thin triangles. opacity is not applied to the colors of colored glyphs. Synthesized bold (when the font has no bold face) is not applied to characters in a color font. For a variable font (section 5.6) that also has colored glyphs, the glyph outlines follow the axis values, but variations of colors, gradients and transformations (the variable formats of COLR) stay at their default values.</p>
 <!--gen:vals-s-color-font--><p class="vals-h">Values of <code>font-palette</code> <span class="spec">(CSS Fonts 4 §9.1)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">Value</th><th>Meaning</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>normal</code></td><td>Draws with the font's default palette (usually palette 0 in COLR and CPAL fonts).</td><td>Supported</td></tr><tr><td><code>light</code></td><td>Draws with the first palette marked as suitable for a light background. Same as normal if there is none.</td><td>Supported</td></tr><tr><td><code>dark</code></td><td>Draws with the first palette marked as suitable for a dark background. Same as normal if there is none.</td><td>Supported</td></tr><tr><td><code>&lt;palette-identifier&gt; (--name)</code></td><td>Draws with the palette defined by a @font-palette-values rule. Same as normal if no rule applies.</td><td>Supported</td></tr><tr><td><code>palette-mix()</code></td><td>Draws with a palette that mixes the colors of several palettes.</td><td>Unsupported</td></tr></tbody></table><!--/gen:vals-s-color-font-->
+<p>The following sample is set with the color emoji font Noto Color Emoji (COLR version 1). Google Fonts serves this font as WOFF2 files split by character range, so the sample loads the four files that have its emoji, each with a <code>unicode-range</code> (a skin tone sequence or a ZWJ sequence is set with the font that covers the first character of the sequence). The code of the sample writes emoji as numeric character references (&amp;#x1F44D;&amp;#x1F3FD; is the sequence of the thumbs-up sign U+1F44D and the skin tone modifier U+1F3FD).</p>
+<!--kumiori-sample id="emoji-color" mark="unicode-range"-->
+<style>
+  @font-face { font-family: "Noto Color Emoji"; src: url(https://fonts.gstatic.com/s/notocoloremoji/v50/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFabsE4tq3luCC7p-aXxcn.9.woff2); unicode-range: U+263A, U+270C, U+2764, U+FE0F, U+1F3FB-1F3FF, U+1F44B, U+1F44D, U+1F600-1F64F; }
+  @font-face { font-family: "Noto Color Emoji"; src: url(https://fonts.gstatic.com/s/notocoloremoji/v50/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFabsE4tq3luCC7p-aXxcn.8.woff2); unicode-range: U+200D, U+1F3A8, U+1F468-1F469, U+1F52C, U+1F680, U+1F9D1; }
+  @font-face { font-family: "Noto Color Emoji"; src: url(https://fonts.gstatic.com/s/notocoloremoji/v50/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFabsE4tq3luCC7p-aXxcn.0.woff2); unicode-range: U+1F1E6-1F1FF; }
+  @font-face { font-family: "Noto Color Emoji"; src: url(https://fonts.gstatic.com/s/notocoloremoji/v50/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFabsE4tq3luCC7p-aXxcn.2.woff2); unicode-range: U+23, U+2A, U+30-39, U+20E3; }
+  .em p { text-indent: 0; }
+  .em span { font-family: "Noto Color Emoji"; font-size: 14pt; }
+</style>
+<div class="em">
+<p>顔と手、肌の色の修飾 <span>&#x1F600; &#x1F642; &#x1F44D; &#x1F44D;&#x1F3FD; &#x1F44B;&#x1F3FF; &#x2764;&#xFE0F;</span></p>
+<p>ZWJ でつなぐ並び <span>&#x1F469;&#x200D;&#x1F52C; &#x1F9D1;&#x200D;&#x1F680; &#x1F468;&#x1F3FD;&#x200D;&#x1F3A8;</span>　国旗 <span>&#x1F1EF;&#x1F1F5; &#x1F1EB;&#x1F1F7; &#x1F1E7;&#x1F1F7;</span>　キーキャップ <span>1&#xFE0F;&#x20E3; 2&#xFE0F;&#x20E3; #&#xFE0F;&#x20E3;</span></p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Switching the emoji presentation, and monochrome emoji : the first line shows the same characters followed by U+FE0F (the color font) and by U+FE0E (the font without color, Noto Emoji). The second line is set with the monochrome outline emoji font Noto Emoji, which takes the color of <code>color</code> like ordinary characters. The third line shows emoji in vertical text.</p>
+<!--kumiori-sample id="emoji-presentation" mark="&amp;#xFE0F;|&amp;#xFE0E;|writing-mode: vertical-rl"-->
+<style>
+  @font-face { font-family: "Noto Color Emoji"; src: url(https://fonts.gstatic.com/s/notocoloremoji/v50/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFabsE4tq3luCC7p-aXxcn.9.woff2); }
+  @font-face { font-family: "Noto Emoji"; src: url(https://fonts.gstatic.com/s/notoemoji/v65/bMrnmSyK7YY-MEu6aWjPDs-ar6uWaGWuob-r0jwv.ttf); }
+  .ep p { text-indent: 0; }
+  .ep span { font-size: 14pt; }
+</style>
+<div class="ep">
+<p style="font-family: serif, 'Noto Color Emoji', 'Noto Emoji';">絵文字の表示 (U+FE0F) <span>&#x263A;&#xFE0F; &#x270C;&#xFE0F;</span>　文字の表示 (U+FE0E) <span>&#x263A;&#xFE0E; &#x270C;&#xFE0E;</span></p>
+<p>単色の輪郭の絵文字 (Noto Emoji) <span style="font-family: 'Noto Emoji';">&#x1F600; &#x1F44D; &#x270C; <span style="color: #4f7a64;">&#x1F600; &#x1F44D; &#x270C;</span></span></p>
+<p style="writing-mode: vertical-rl; height: 30mm; font-family: serif, 'Noto Color Emoji';">縦書きの中の絵文字&#x1F600;は、正立で組みます&#x1F44D;&#x1F3FD;。</p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Palettes : the color font Nabla (COLR version 1), which has seven palettes, set from the left with the default palette, with palette 2 selected by <code>@font-palette-values</code>, and with three colors of palette 0 replaced by <code>override-colors</code>.</p>
+<!--kumiori-sample id="font-palette" mark="font-palette: --blue|font-palette: --green|@font-palette-values|base-palette: 2|override-colors"-->
+<style>
+  @font-face { font-family: "Nabla"; src: url(https://fonts.gstatic.com/s/nabla/v17/j8_D6-LI0Lvpe7Makz5UhJt9C3uqg_X_75gyGS4jAxsNIjrRBRdeFQx8.woff2); }
+  @font-palette-values --blue { font-family: "Nabla"; base-palette: 2; }
+  @font-palette-values --green { font-family: "Nabla"; base-palette: 0; override-colors: 1 #1f6f5c, 2 #3a9a7f, 3 #3a9a7f; }
+  .pl span { font-family: "Nabla"; font-size: 22pt; line-height: 1.3; margin-right: 4mm; }
+</style>
+<p class="pl" style="text-indent: 0;"><span>Kumiori</span><span style="font-palette: --blue;">Kumiori</span><span style="font-palette: --green;">Kumiori</span></p>
+<!--/kumiori-sample-->
 <h2 id="s-languages"><span class="num">5.8</span>Supported languages and scripts</h2>
 <p>The table lists the languages and scripts that have been checked to typeset with Kumiori. Scripts whose Font column says “default” can be typeset without specifying a font. For those that say “required”, the default fonts do not have the characters, so specify a font that has them (with <code>@font-face</code>, <code>--font</code> of the Node command, or <code>fonts</code> of the API). The fonts in parentheses are the ones the script was checked with.</p>
 <p>Each script in the table was typeset with that font, and the glyphs (the font's shaping), line wrapping and the text extracted from the PDF were checked. For every script, text extracted from the PDF is the original character sequence (in reading order for right-to-left scripts). The details of how each script is set, and the limitations that do not fit in the table, are in the second half of section 5.4 and in the sections named in the table.</p>
@@ -629,6 +708,139 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <p class="note">Hyphenation (<code>hyphens: auto</code>) has rules for English (en, en-US, en-GB), Latin (la), Russian (ru), Ukrainian (uk) and Modern Greek (el, monotonic spelling). Words of other languages are not hyphenated (6.7).</p>
 <p class="note">Variable fonts (fonts that hold axes such as weight in one file) can be used, with either TrueType outlines or CFF2 outlines (variable OTF fonts). <code>font-weight</code>, <code>font-stretch</code>, <code>font-variation-settings</code> and so on select the values on the axes (section 5.6 describes how properties map to axes).</p>
 <p class="note">The glyphs and positions of Thai, Lao, Khmer, Myanmar, Tibetan and Mongolian script, the Indic scripts other than Devanagari, and Arabic and Hebrew script were compared with the result of shaping the same fonts with HarfBuzz.</p>
+<h3>Samples for each script</h3>
+<p>These samples set the scripts of the table, each with its font. The text is Article 1 of the Universal Declaration of Human Rights in each language (the texts collected in “UDHR in Unicode” of the Unicode Consortium). The gray text at the start of each paragraph is the language of that paragraph (the value of its <code>lang</code> attribute), generated by the CSS in the sample with <code>attr(lang)</code>. Fonts for scripts that the default fonts lack are loaded with <code>@font-face</code> from the versioned URLs of the Google Fonts server (fonts.gstatic.com). When you pass the font files together with the document, write the names of those files in <code>src</code>. There is no sample of the Oriya script.</p>
+<p class="cap">Japanese (ja; the default fonts), Simplified Chinese (zh-Hans), Traditional Chinese (zh-Hant) and Korean (ko) :</p>
+<!--kumiori-sample id="lang-cjk"-->
+<style>
+  @font-face { font-family: "Noto Sans SC"; src: url(https://fonts.gstatic.com/s/notosanssc/v41/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYw.ttf); }
+  @font-face { font-family: "Noto Sans TC"; src: url(https://fonts.gstatic.com/s/notosanstc/v40/-nFuOG829Oofr2wohFbTp9ifNAn722rq0MXz76Cy_Co.ttf); }
+  @font-face { font-family: "Noto Sans KR"; src: url(https://fonts.gstatic.com/s/notosanskr/v40/PbyxFmXiEBPT4ITbgNA5Cgms3VYcOA-vvnIzzuoyeLQ.ttf); }
+  .ls-cjk p { margin: 0 0 1.5mm; padding-left: 13mm; text-indent: -13mm; }
+  .ls-cjk p::before { content: attr(lang); display: inline-block; width: 13mm; text-indent: 0; font: 6.5pt/1 monospace; color: #6b7275; }
+</style>
+<div class="ls-cjk">
+<p lang="ja">すべての人間は、生まれながらにして自由であり、かつ、尊厳と権利とについて平等である。人間は、理性と良心とを授けられており、互いに同胞の精神をもって行動しなければならない。</p>
+<p lang="zh-Hans" style="font-family: 'Noto Sans SC';">人人生而自由，在尊严和权利上一律平等。他们赋有理性和良心，并应以兄弟关系的精神相对待。</p>
+<p lang="zh-Hant" style="font-family: 'Noto Sans TC';">人人生而自由，在尊嚴和權利上一律平等。他們賦有理性和良心，並應以兄弟關係的精神相對待。</p>
+<p lang="ko" style="font-family: 'Noto Sans KR';">모든 인간은 태어날 때부터 자유로우며 그 존엄과 권리에 있어 동등하다. 인간은 천부적으로 이성과 양심을 부여받았으며 서로 형제애의 정신으로 행동하여야 한다.</p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Mongolian script (mn-Mong), in vertical text with <code>writing-mode: vertical-lr</code>; the lines progress from left to right :</p>
+<!--kumiori-sample id="lang-mongolian" mark="writing-mode: vertical-lr"-->
+<style>
+  @font-face { font-family: "Noto Sans Mongolian"; src: url(https://fonts.gstatic.com/s/notosansmongolian/v23/VdGCAYADGIwE0EopZx8xQfHlgEAMsrToxLs.ttf); }
+</style>
+<p lang="mn-Mong" style="font-family: 'Noto Sans Mongolian'; writing-mode: vertical-lr; height: 30mm; line-height: 1.6; text-indent: 0;">ᠬᠦᠮᠦᠨ ᠪᠦᠷ ᠲᠥᠷᠥᠵᠦ ᠮᠡᠨᠳᠡᠯᠡᠬᠦ ᠡᠷᠬᠡ ᠴᠢᠯᠥᠭᠡ ᠲᠡᠢ᠂ ᠠᠳᠠᠯᠢᠬᠠᠨ ᠨᠡᠷ᠎ᠡ ᠲᠥᠷᠥ ᠲᠡᠢ᠂ ᠢᠵᠢᠯ ᠡᠷᠬᠡ ᠲᠡᠢ ᠪᠠᠢᠠᠭ᠃ ᠣᠶᠤᠨ ᠤᠬᠠᠭᠠᠨ᠂ ᠨᠠᠨᠳᠢᠨ ᠴᠢᠨᠠᠷ ᠵᠠᠶᠠᠭᠠᠰᠠᠨ ᠬᠦᠮᠦᠨ ᠬᠡᠭᠴᠢ ᠥᠭᠡᠷ᠎ᠡ ᠬᠣᠭᠣᠷᠣᠨᠳᠣ᠎ᠨ ᠠᠬᠠᠨ ᠳᠡᠭᠦᠦ ᠢᠨ ᠦᠵᠢᠯ ᠰᠠᠨᠠᠭᠠ ᠥᠠᠷ ᠬᠠᠷᠢᠴᠠᠬᠥ ᠤᠴᠢᠷ ᠲᠠᠢ᠃</p>
+<!--/kumiori-sample-->
+<p class="cap">English (en), Vietnamese (vi), Modern Greek (el), Russian (ru) and Ukrainian (uk). <code>hyphens: auto</code> hyphenates the English, Greek, Russian and Ukrainian words. The font is the default Latin font Tinos, specified by name (with the default font set of a Japanese document, one-letter words such as the Russian и and в would be set in the Japanese font; see section 5.4) :</p>
+<!--kumiori-sample id="lang-european" mark="hyphens: auto"-->
+<style>
+  .ls-eu { column-count: 2; column-gap: 6mm; font-size: 8pt; line-height: 1.5; }
+  .ls-eu p { font-family: Tinos; hyphens: auto; text-align: justify; margin: 0 0 1.5mm; padding-left: 8mm; text-indent: -8mm; break-inside: avoid; }
+  .ls-eu p::before { content: attr(lang); display: inline-block; width: 8mm; text-indent: 0; font: 6.5pt/1 monospace; color: #6b7275; }
+</style>
+<div class="ls-eu">
+<p lang="en">All human beings are born free and equal in dignity and rights. They are endowed with reason and conscience and should act towards one another in a spirit of brotherhood.</p>
+<p lang="vi">Tất cả mọi người sinh ra đều được tự do và bình đẳng về nhân phẩm và quyền. Mọi con người đều được tạo hoá ban cho lý trí và lương tâm và cần phải đối xử với nhau trong tình bằng hữu.</p>
+<p lang="el">Όλοι οι άνθρωποι γεννιούνται ελεύθεροι και ίσοι στην αξιοπρέπεια και τα δικαιώματα. Είναι προικισμένοι με λογική και συνείδηση, και οφείλουν να συμπεριφέρονται μεταξύ τους με πνεύμα αδελφοσύνης.</p>
+<p lang="ru">Все люди рождаются свободными и равными в своем достоинстве и правах. Они наделены разумом и совестью и должны поступать в отношении друг друга в духе братства.</p>
+<p lang="uk">Всі люди народжуються вільними і рівними у своїй гідності та правах. Вони наділені розумом і совістю і повинні діяти у відношенні один до одного в дусі братерства.</p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Words of other scripts mixed into a Japanese sentence. For each character, the first font in the <code>font-family</code> list that has the character is used (Greek and Cyrillic words use the default Latin font) :</p>
+<!--kumiori-sample id="lang-mixed"-->
+<style>
+  @font-face { font-family: "Noto Sans KR"; src: url(https://fonts.gstatic.com/s/notosanskr/v40/PbyxFmXiEBPT4ITbgNA5Cgms3VYcOA-vvnIzzuoyeLQ.ttf); }
+  @font-face { font-family: "Noto Sans Arabic"; src: url(https://fonts.gstatic.com/s/notosansarabic/v33/nwpxtLGrOAZMl5nJ_wfgRg3DrWFZWsnVBJ_sS6tlqHHFlhQ5l3sQWIHPqzCfyGyvuw.ttf); }
+  @font-face { font-family: "Noto Sans Devanagari"; src: url(https://fonts.gstatic.com/s/notosansdevanagari/v33/TuGoUUFzXI5FBtUq5a8bjKYTZjtRU6Sgv3NaV_SNmI0b8QQCQmHn6B2OHjbL_08AlXQly-A.ttf); }
+</style>
+<p style="font-family: serif, 'Noto Sans KR', 'Noto Sans Arabic', 'Noto Sans Devanagari'; text-indent: 0;">「こんにちは」は、韓国語で <span lang="ko">안녕하세요</span>、アラビア語で <span lang="ar">مرحبا</span>、ヒンディー語で <span lang="hi">नमस्ते</span>、ギリシャ語で <span lang="el">Γεια σου</span>、ロシア語で <span lang="ru">Здравствуйте</span> と言います。</p>
+<!--/kumiori-sample-->
+<p class="cap">Hebrew (he; the default fonts), Arabic (ar) and Persian (fa). <code>direction: rtl</code> sets the lines from the right :</p>
+<!--kumiori-sample id="lang-rtl" mark="direction: rtl"-->
+<style>
+  @font-face { font-family: "Noto Sans Arabic"; src: url(https://fonts.gstatic.com/s/notosansarabic/v33/nwpxtLGrOAZMl5nJ_wfgRg3DrWFZWsnVBJ_sS6tlqHHFlhQ5l3sQWIHPqzCfyGyvuw.ttf); }
+  .ls-rtl p { direction: rtl; margin: 0 0 1.5mm; padding-right: 13mm; text-indent: -13mm; }
+  .ls-rtl p::before { content: attr(lang); display: inline-block; width: 13mm; text-indent: 0; font: 6.5pt/1 monospace; color: #6b7275; }
+</style>
+<div class="ls-rtl">
+<p lang="he">
+כל בני אדם נולדו בני חורין ושווים בערכם ובזכויותיהם. כולם חוננו בתבונה ובמצפון, לפיכך חובה עליהם לנהוג איש ברעהו ברוח של אחוה.
+</p>
+<p lang="ar" style="font-family: 'Noto Sans Arabic';">
+يولد جميع الناس أحرارًا متساوين في الكرامة والحقوق. وقد وهبوا عقلاً وضميرًا وعليهم أن يعامل بعضهم بعضًا بروح الإخاء.
+</p>
+<p lang="fa" style="font-family: 'Noto Sans Arabic';">
+تمام افراد بشر آزاد بدنیا میایند و از لحاظ حیثیت و حقوق با هم برابرند. همه دارای عقل و وجدان میباشند و باید نسبت بیکدیگر با روح برادری رفتار کنند.
+</p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Tibetan (bo). Lines are wrapped after a tsek (the dot that separates syllables) :</p>
+<!--kumiori-sample id="lang-tibetan"-->
+<style>
+  @font-face { font-family: "Noto Serif Tibetan"; src: url(https://fonts.gstatic.com/s/notoseriftibetan/v24/gokGH7nwAEdtF9N45n0Vaz7O-pk0wsvxHeDXMfqguoCmIrYcPS4.ttf); }
+  .ls-bo p { margin: 0 0 1.5mm; padding-left: 13mm; text-indent: -13mm; line-height: 2; }
+  .ls-bo p::before { content: attr(lang); display: inline-block; width: 13mm; text-indent: 0; font: 6.5pt/1 monospace; color: #6b7275; }
+</style>
+<div class="ls-bo">
+<p lang="bo" style="font-family: 'Noto Serif Tibetan';">འགྲོ་བ་མིའི་རིགས་རྒྱུད་ཡོངས་ལ་སྐྱེས་ཙམ་ཉིད་ནས་ཆེ་མཐོངས་དང༌། ཐོབ་ཐངགི་རང་དབང་འདྲ་མཉམ་དུ་ཡོད་ལ། ཁོང་ཚོར་རང་བྱུང་གི་བློ་རྩལ་དང་བསམ་ཚུལ་བཟང་པོ་འདོན་པའི་འོས་བབས་ཀྱང་ཡོད། དེ་བཞིན་ཕན་ཚུན་གཅིག་གིས་གཅིག་ལ་བུ་སྤུན་གྱི་འདུ་ཤེས་འཛིན་པའི་བྱ་སྤྱོད་ཀྱང་ལག་ལེན་བསྟར་དགོས་པ་ཡིན༎</p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Hindi (hi; Devanagari), Bengali (bn), Punjabi (pa; Gurmukhi) and Gujarati (gu) :</p>
+<!--kumiori-sample id="lang-indic-north"-->
+<style>
+  @font-face { font-family: "Noto Sans Devanagari"; src: url(https://fonts.gstatic.com/s/notosansdevanagari/v33/TuGoUUFzXI5FBtUq5a8bjKYTZjtRU6Sgv3NaV_SNmI0b8QQCQmHn6B2OHjbL_08AlXQly-A.ttf); }
+  @font-face { font-family: "Noto Sans Bengali"; src: url(https://fonts.gstatic.com/s/notosansbengali/v33/Cn-SJsCGWQxOjaGwMQ6fIiMywrNJIky6nvd8BjzVMvJx2mcSPVFpVEqE-6KmsolLudA.ttf); }
+  @font-face { font-family: "Noto Sans Gurmukhi"; src: url(https://fonts.gstatic.com/s/notosansgurmukhi/v29/w8g9H3EvQP81sInb43inmyN9zZ7hb7ATbSWo4q8dJ74a3cVrYFQ_bogT0-gPeG1Oenbx.ttf); }
+  @font-face { font-family: "Noto Sans Gujarati"; src: url(https://fonts.gstatic.com/s/notosansgujarati/v27/wlpWgx_HC1ti5ViekvcxnhMlCVo3f5pv17ivlzsUB14gg1TMR2Gw4VceEl7MA_ypFwPM.ttf); }
+  .ls-in p { margin: 0 0 1.5mm; padding-left: 13mm; text-indent: -13mm; }
+  .ls-in p::before { content: attr(lang); display: inline-block; width: 13mm; text-indent: 0; font: 6.5pt/1 monospace; color: #6b7275; }
+</style>
+<div class="ls-in">
+<p lang="hi" style="font-family: 'Noto Sans Devanagari';">सभी मनुष्यों को गौरव और अधिकारों के मामले में जन्मजात स्वतन्त्रता और समानता प्राप्त है । उन्हें बुद्धि और अन्तरात्मा की देन प्राप्त है और परस्पर उन्हें भाईचारे के भाव से बर्ताव करना चाहिए ।</p>
+<p lang="bn" style="font-family: 'Noto Sans Bengali';">সমস্ত মানুষ স্বাধীনভাবে সমান মর্যাদা এবং অধিকার নিয়ে জন্মগ্রহণ করে। তাঁদের বিবেক এবং বুদ্ধি আছে; সুতরাং সকলেরই একে অপরের প্রতি ভ্রাতৃত্বসুলভ মনোভাব নিয়ে আচরণ করা উচিত।</p>
+<p lang="pa" style="font-family: 'Noto Sans Gurmukhi';">ਸਾਰਾ ਮਨੁੱਖੀ ਪਰਿਵਾਰ ਆਪਣੀ ਮਹਿਮਾ, ਸ਼ਾਨ ਅਤੇ ਹੱਕਾਂ ਦੇ ਪੱਖੋਂ ਜਨਮ ਤੋਂ ਹੀ ਆਜ਼ਾਦ ਹੈ ਅਤੇ ਸੁਤੇ ਸਿੱਧ ਸਾਰੇ ਲੋਕ ਬਰਾਬਰ ਹਨ । ਉਨ੍ਹਾਂ ਸਭਨਾ ਨੂੰ ਤਰਕ ਅਤੇ ਜ਼ਮੀਰ ਦੀ ਸੌਗਾਤ ਮਿਲੀ ਹੋਈ ਹੈ ਅਤੇ ਉਨ੍ਹਾਂ ਨੂੰ ਭਰਾਤਰੀਭਾਵ ਦੀ ਭਾਵਨਾ ਰਖਦਿਆਂ ਆਪਸ ਵਿਚ ਵਿਚਰਣਾ ਚਾਹੀਦਾ ਹੈ ।</p>
+<p lang="gu" style="font-family: 'Noto Sans Gujarati';">પ્રતિષ્ઠા અને અધિકારોની દૃષ્ટિએ સર્વ માનવો જન્મથી સ્વતંત્ર અને સમાન હોય છે. તેમનામાં વિચારશક્તિ અને અંતઃકરણ હોય છે અને તેમણે પરસ્પર બંધુત્વની ભાવનાથી વર્તવું જોઇએ.</p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Tamil (ta), Telugu (te), Kannada (kn), Malayalam (ml) and Sinhala (si) :</p>
+<!--kumiori-sample id="lang-indic-south"-->
+<style>
+  @font-face { font-family: "Noto Sans Tamil"; src: url(https://fonts.gstatic.com/s/notosanstamil/v31/ieVc2YdFI3GCY6SyQy1KfStzYKZgzN1z4LKDbeZce-0429tBManUktuex7vGo70R.ttf); }
+  @font-face { font-family: "Noto Sans Telugu"; src: url(https://fonts.gstatic.com/s/notosanstelugu/v30/0FlxVOGZlE2Rrtr-HmgkMWJNjJ5_RyT8o8c7fHkeg-esVC5dzHkHIJQqrEntezbqQQ.ttf); }
+  @font-face { font-family: "Noto Sans Kannada"; src: url(https://fonts.gstatic.com/s/notosanskannada/v32/8vIs7xs32H97qzQKnzfeXycxXZyUmySvZWItmf1fe6TVmgop9ndpS-BqHEyGrDvNzSI.ttf); }
+  @font-face { font-family: "Noto Sans Malayalam"; src: url(https://fonts.gstatic.com/s/notosansmalayalam/v29/sJoi3K5XjsSdcnzn071rL37lpAOsUThnDZIfPdbeSNzVakglNM-Qw8EaeB8Nss-_RuD9BA.ttf); }
+  @font-face { font-family: "Noto Sans Sinhala"; src: url(https://fonts.gstatic.com/s/notosanssinhala/v36/yMJ2MJBya43H0SUF_WmcBEEf4rQVO2P524V5N_MxQzQtb-tf5dJbC30Fu9zUwg2a5lg.ttf); }
+  .ls-is p { margin: 0 0 1.5mm; padding-left: 13mm; text-indent: -13mm; }
+  .ls-is p::before { content: attr(lang); display: inline-block; width: 13mm; text-indent: 0; font: 6.5pt/1 monospace; color: #6b7275; }
+</style>
+<div class="ls-is">
+<p lang="ta" style="font-family: 'Noto Sans Tamil';">மனிதப் பிறிவியினர் சகலரும் சுதந்திரமாகவே பிறக்கின்றனர்; அவர்கள் மதிப்பிலும், உரிமைகளிலும் சமமானவர்கள், அவர்கள் நியாயத்தையும் மனச்சாட்சியையும் இயற்பண்பாகப் பெற்றவர்கள். அவர்கள் ஒருவருடனொருவர் சகோதர உணர்வுப் பாங்கில் நடந்துகொள்ளல் வேண்டும்.</p>
+<p lang="te" style="font-family: 'Noto Sans Telugu';">ప్రతిపత్తిస్వత్వముల విషయమున మానవులెల్లరును జన్మతః స్వతంత్రులును సమానులును నగుదురు. వారు వివేచన-అంతఃకరణ సంపన్నులగుటచే పరస్పరము భ్రాతృభావముతో వర్తింపవలయును.</p>
+<p lang="kn" style="font-family: 'Noto Sans Kannada';">ಎಲ್ಲಾ ಮಾನವರೂ ಸ್ವತಂತ್ರರಾಗಿಯೇ ಜನಿಸಿದ್ದಾರೆ. ಹಾಗೂ ಘನತೆ ಮತ್ತು ಹಕ್ಕುಗಳಲ್ಲಿ ಸಮಾನರಾಗಿದ್ದಾರೆ. ವಿವೇಕ ಮತ್ತು ಅಂತಃಕರಣಗಳನ್ನು ಪಡೆದವರಾದ್ದರಿಂದ ಅವರು ಪರಸ್ಪರ ಸಹೋದರ ಭಾವದಿಂದ ವರ್ತಿಸಬೇಕು.</p>
+<p lang="ml" style="font-family: 'Noto Sans Malayalam';">മനുഷ്യരെല്ലാവരും തുല്യാവകാശങ്ങളോടും അന്തസ്സോടും സ്വാതന്ത്ര്യത്തോടുംകൂടി ജനിച്ചിട്ടുള്ളവരാണ്‌. അന്യോന്യം ഭ്രാതൃഭാവത്തോടെ പെരുമാറുവാനാണ്‌ മനുഷ്യന്നു വിവേകബുദ്ധിയും മനസ്സാക്ഷിയും സിദ്ധമായിരിക്കുന്നത്‌.</p>
+<p lang="si" style="font-family: 'Noto Sans Sinhala';">සියලු මනුෂ්‍යයෝ නිදහස්ව උපත ලබා ඇත. ගරුත්වයෙන් හා අයිතිවාසිකම්වලින් සමාන වෙති. යුක්ති අයුක්ති පිළිබඳ හැඟීමෙන් හා හෘදය සාක්ෂියෙන් යුත් ඔවුන්, ඔවුනොවුන්ට සැළකිය යුත්තේ සහෝදරත්වය පිළිබඳ හැඟීමෙනි.</p>
+</div>
+<!--/kumiori-sample-->
+<p class="cap">Thai (th), Lao (lo), Khmer (km) and Burmese (my). Text written without spaces between words is wrapped at word boundaries. The fonts are tall, so the line height is set to 2 :</p>
+<!--kumiori-sample id="lang-sea" mark="line-height: 2"-->
+<style>
+  @font-face { font-family: "Noto Sans Thai"; src: url(https://fonts.gstatic.com/s/notosansthai/v29/iJWnBXeUZi_OHPqn4wq6hQ2_hbJ1xyN9wd43SofNWcd1MKVQt_So_9CdU5RtpzE.ttf); }
+  @font-face { font-family: "Noto Sans Lao"; src: url(https://fonts.gstatic.com/s/notosanslao/v33/bx6lNx2Ol_ixgdYWLm9BwxM3NW6BOkuf763Clj73CiQ_J1Djx9pidOt4ccbdfw.ttf); }
+  @font-face { font-family: "Noto Sans Khmer"; src: url(https://fonts.gstatic.com/s/notosanskhmer/v29/ijw3s5roRME5LLRxjsRb-gssOenAyendxrgV2c-Zw-9vbVUti_Z_dWgtWYuNAJz4.ttf); }
+  @font-face { font-family: "Noto Sans Myanmar"; src: url(https://fonts.gstatic.com/s/notosansmyanmar/v27/AlZU_y1ZtY3ymOryg38hOCSdOnFq0FP9_gnYM_ME0QeqLzz8-kqmtY3KLEbEGTOZltU.ttf); }
+  .ls-sea p { margin: 0 0 1.5mm; padding-left: 13mm; text-indent: -13mm; line-height: 2; }
+  .ls-sea p::before { content: attr(lang); display: inline-block; width: 13mm; text-indent: 0; font: 6.5pt/1 monospace; color: #6b7275; }
+</style>
+<div class="ls-sea">
+<p lang="th" style="font-family: 'Noto Sans Thai';">มนุษย์ทั้งปวงเกิดมามีอิสระและเสมอภาคกันในศักดิ์ศรีและสิทธิ ต่างในตนมีเหตุผลและมโนธรรม และควรปฏิบัติต่อกันด้วยจิตวิญญาณแห่งภราดรภาพ</p>
+<p lang="lo" style="font-family: 'Noto Sans Lao';">ມະນຸດເກີດມາມີສິດເສລີພາບ ແລະ ສະເໝີໜ້າກັນໃນທາງກຽດຕິສັກ ແລະ ທາງສິດດ້ວຍມະນຸດມີສະຕິສຳປັດຊັນຍະ(ຮູ້ດີຮູ້ຊົ່ວ)ແລະມີມະໂນທຳຈື່ງຕ້ອງປະພຶດຕົນຕໍ່ກັນໃນທາງພີ່ນ້ອງ.</p>
+<p lang="km" style="font-family: 'Noto Sans Khmer';">មនុស្សទាំងអស់ កើតមកមានសេរីភាព និងសមភាព ក្នុងផ្នែកសេចក្ដីថ្លៃថ្នូរនិងសិទ្ធិ។ មនុស្ស មានវិចារណញ្ញាណនិងសតិសម្បជញ្ញៈជាប់ពីកំណើត ហើយគប្បីប្រព្រឹត្ដចំពោះគ្នាទៅវិញទៅមកក្នុងស្មារតីភាតរភាពជាបងប្អូន។</p>
+<p lang="my" style="font-family: 'Noto Sans Myanmar';">လူတိုင်းသည် တူညီ လွတ်လပ်သော ဂုဏ်သိက္ခာဖြင့် လည်းကောင်း၊ တူညီလွတ်လပ်သော အခွင့်အရေးများဖြင့် လည်းကောင်း၊ မွေးဖွားလာသူများ ဖြစ်သည်။ ထိုသူတို့၌ ပိုင်းခြား ဝေဖန်တတ်သော ဉာဏ်နှင့် ကျင့်ဝတ် သိတတ်သော စိတ်တို့ရှိကြ၍ ထိုသူတို့သည် အချင်းချင်း မေတ္တာထား၍ ဆက်ဆံကျင့်သုံးသင့်၏။</p>
+</div>
+<!--/kumiori-sample-->
+<p class="note">Fonts used in the samples : Noto Sans SC, Noto Sans TC, Noto Sans KR, Noto Sans Arabic, Noto Sans Devanagari, Bengali, Gurmukhi, Gujarati, Tamil, Telugu, Kannada, Malayalam, Sinhala, Thai, Lao, Khmer, Myanmar and Mongolian, Noto Serif Tibetan (this section), Noto Color Emoji, Noto Emoji and Nabla (section 5.7), Anybody and Roboto Flex (section 5.6). All of them are distributed under the SIL Open Font License 1.1. The font files are not distributed with the source of this document; they are fetched from the Google Fonts server when the document is typeset.</p>
 </section>
 
 <!-- ================================================================ 6 Characters and lines -->

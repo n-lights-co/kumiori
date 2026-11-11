@@ -48,7 +48,7 @@ jobs:
         with:
           path: .cache/fonts
           # ci.yml の build と同じ (テストが取得する書体。キーは、書体の一覧の載るファイルのハッシュ。ci.yml が保存したキャッシュを使える)
-          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts') }}
+          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts', 'scripts/conformance-fonts.mjs') }}
           restore-keys: |
             fonts-test-
             fonts-defaults-v1

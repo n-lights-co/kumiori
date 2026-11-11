@@ -22,10 +22,10 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/fonts
-          # テストが取得する書体 (既定の書体・数式の書体と、テスト用の WOFF2・OTF)。一覧は src/fontMapping.ts と test/helpers.ts にある。
+          # テストが取得する書体 (既定の書体・数式の書体と、テスト用の WOFF2・OTF)。一覧は src/fontMapping.ts と test/helpers.ts と scripts/conformance-fonts.mjs (対応仕様説明書の見本の書体) にある。
           # actions/cache は、同じキーのキャッシュを上書きしない。キーを固定にすると、最初に保存した後に増えた書体は、毎回ネットワークから取ることになるので、
           # 一覧の載るファイルのハッシュをキーに入れる (一覧が変わればキーが変わり、古いキャッシュ (restore-keys) から始めて、増えた分を足して保存し直す)
-          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts') }}
+          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts', 'scripts/conformance-fonts.mjs') }}
           restore-keys: |
             fonts-test-
             fonts-defaults-v1
