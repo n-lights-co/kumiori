@@ -3,7 +3,7 @@
  */
 import type { FontSpec, LDocument } from './types';
 import { fontFileStyle, type FaceStyle, type FontManager, type RangedFace } from './fontManager';
-import { SANS, SERIF } from './sampleData';
+import { MONO_GENERIC, SANS, SERIF } from './sampleData';
 import { normalizeFamily } from './fontLoader';
 import { parseCss, type ParsedCss } from './htmlPaged';
 
@@ -55,7 +55,7 @@ export const MONO_SPECS: FontSpec[] = [
 /** 等幅の書体の指定 (CSS の monospace・Courier・Consolas など) */
 export const MONO = /^(monospace|ui-monospace|courier( new)?|consolas|menlo|monaco|lucida console|source code pro|.*\bmono\b.*)$/i;
 /** 等幅の書体の組 (欧文 Cousine・和文は HTML なら Noto Sans JP、XSL-FO なら Noto Serif JP (アンテナハウスと同じ)) */
-const MONO_STACK = 'Kumiori Mono';
+const MONO_STACK = MONO_GENERIC;
 const MONO_SERIF_STACK = 'Kumiori Mono Serif';
 
 /** 記号の書体 (✈ などの記号)。読み込み済みのどの書体も持たない字が文書にあるときだけ読み込む */
@@ -104,6 +104,38 @@ export function missingGlyphChars(fonts: FontManager, doc: LDocument, min = 0): 
 /** 文書の文字に、読み込み済みのどの書体も持たない字 (記号など) があるか。あれば記号の書体 (SYMBOL_SPEC) を読み込む */
 export function hasMissingGlyphs(fonts: FontManager, doc: LDocument): boolean {
   return missingGlyphChars(fonts, doc, 0x2000).size > 0;
+}
+
+/**
+ * 差し替えられる総称の書体 (API の genericFonts・コマンドの --generic-font の名前)。CSS Fonts 4 §2.1.3: 総称の書体に当てる書体は、
+ * 処理系が決める (利用者が選べてよい)。Kumiori の総称の書体は、和文の書体と欧文の書体の組 (§2.1.5: 総称は、字の範囲によって
+ * 別の書体を組み合わせたものでよい) なので、欧文と和文を別々に差し替える:
+ *  - serif・sans-serif・monospace: 欧文の字の書体 (既定は Tinos・Arimo・Cousine)
+ *  - serif-cjk・sans-serif-cjk: 和文 (欧文の書体に無い字) の書体 (既定は Noto Serif JP・Noto Sans JP)。
+ *    等幅の和文の書体は、等幅の和文の既定 (HTML はゴシック、XSL-FO は明朝) の側の書体になる
+ * ui-serif・ui-sans-serif・ui-monospace は、serif・sans-serif・monospace と同じ写し先 (createFontMapping の POSITIONED_GENERIC)。
+ * ほかの総称 (cursive・fantasy・system-ui・math など) は、当てる書体を持たない
+ */
+export const GENERIC_FONT_KEYS = ['serif', 'sans-serif', 'monospace', 'serif-cjk', 'sans-serif-cjk'] as const;
+export type GenericFontKey = (typeof GENERIC_FONT_KEYS)[number];
+
+/**
+ * 総称の書体を差し替える (family は読み込み済みの書体のファミリー名)。欧文の書体 (serif・sans-serif) を先に、和文の書体を後に呼ぶ
+ * (和文の書体の組は、そのときの欧文の書体を持つ)。
+ * 和文の書体は、既定の和文の書体の名前 (Noto Serif JP・Noto Sans JP) を、family と欧文の書体の組 (defineStack) にする。
+ * 既定の和文の書体は読み込んだままにし、family に無い字は、そちらで組む (読み込み済みの書体から字を探す)
+ */
+export function setGenericFont(fonts: FontManager, key: GenericFontKey, family: string) {
+  if (key === 'serif') fonts.setLatinFallback(SERIF, family);
+  else if (key === 'sans-serif') fonts.setLatinFallback(SANS, family);
+  else if (key === 'monospace') fonts.setLatinFallback(MONO_STACK, family);
+  else {
+    const cjk = key === 'serif-cjk' ? SERIF : SANS;
+    // 既定の和文の書体の名前 (serif-cjk=Noto Sans JP など) は、その名前もまた組になりうるので、いまの書体を指す別名で持つ
+    let base = family;
+    if (family === SERIF || family === SANS) fonts.addFamilyAliasOf((base = `Kumiori Generic ${family}`), family);
+    fonts.defineStack(cjk, base, fonts.latinFallbackOf(cjk));
+  }
 }
 
 /** 既定の書体を読み込んだ後の設定: 欧文の代わりの書体と、MS 明朝・MS ゴシックの上下の高さ */
@@ -200,6 +232,49 @@ const normalizePath = (p: string) => {
 };
 
 /**
+ * @font-face の src の url() から、一緒に選んだファイルを引く関数 (loadFontFaces と faceFileWeights で共通)。
+ * src の url() は、CSS の場所を基準に解決した参照 (CSS Fonts 4 §4.3。CSS のファイルの中の相対参照は、prepareHtml が解決済みにしている)。
+ * まず参照の URL の全体 (参照から取った書体)、次にパス (文書からの相対パス) で探し、無いときだけファイル名で探す
+ * (noto/Regular.woff2 と roboto/Regular.woff2 を取り違えない)。同じ鍵のファイルが複数あれば、先のもの
+ */
+function faceFileResolver(files: FontFile[]): (u: string) => FontFile | undefined {
+  const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
+  const byUrl = new Map<string, FontFile>();
+  const byPath = new Map<string, FontFile>();
+  for (const f of files) {
+    if (f.url !== undefined && !byUrl.has(f.url)) byUrl.set(f.url, f);
+    if (f.path !== undefined && !byPath.has(normalizePath(f.path))) byPath.set(normalizePath(f.path), f);
+  }
+  return (u) => byUrl.get(u) ?? byPath.get(normalizePath(safeDecode(u.split(/[?#]/)[0]))) ?? byName.get(safeDecode(u.split(/[?#]/)[0].split('/').pop() ?? '').toLowerCase());
+}
+
+/**
+ * @font-face の書体ファミリーごとの、face の太さの並び (アンテナハウス互換の bolder・lighter を決める: compat.ts の ahCascadeOptions)。
+ * font-weight の記述子の無い face は、書体のファイルの太さ (OS/2 の usWeightClass。loadFontFaces の ahFaceWeight と同じ登録の太さ)。
+ * 可変フォント・太さの読めない書体・ファイルの無い face は、記述子の値 (無ければ 400)。鍵は小文字のファミリー名
+ */
+export async function faceFileWeights(css: string | ParsedCss, files: FontFile[]): Promise<Map<string, number[]>> {
+  const fileOf = faceFileResolver(files);
+  const out = new Map<string, number[]>();
+  for (const ff of (typeof css === 'string' ? parseCss(css) : css).fontFaces) {
+    const fam = ff.family.toLowerCase();
+    if (!fam) continue;
+    let weight = ff.weight;
+    const file = ff.weightRange ? undefined : ff.srcs.map(fileOf).find(Boolean);
+    if (file) {
+      try {
+        const st = fontFileStyle(await file.arrayBuffer());
+        if (!st.variable && st.weight !== undefined) weight = st.weight;
+      } catch {
+        // 読めない書体は記述子の値のまま (loadFontFaces が警告に出す)
+      }
+    }
+    out.set(fam, [...(out.get(fam) ?? []), weight]);
+  }
+  return out;
+}
+
+/**
  * 書体の割り当てを作る。table: 書体の名前 → ファミリー名の表 (利用者が読み込んだ書体 (MS 明朝など)・fonts で足した書体。@font-face の書体は loadFontFaces がここへ足す)
  */
 export function createFontMapping(
@@ -213,6 +288,8 @@ export function createFontMapping(
   /** 明朝系・ゴシック系の欧文の書体 (setupDefaultFonts の Tinos・Arimo。CLI の --generic-font で変えられる) */
   const serifLatin = () => fonts.latinFallbackOf(SERIF) ?? 'Tinos';
   const sansLatin = () => fonts.latinFallbackOf(SANS) ?? 'Arimo';
+  /** 等幅の欧文の書体 (既定は Cousine。--generic-font monospace=… で変えられる) */
+  const monoLatin = () => fonts.latinFallbackOf(MONO_STACK) ?? 'Cousine';
   /** 等幅の指定を割り当てたか (等幅の書体を読み込むかどうか) */
   let monoUsed = false;
   /**
@@ -233,8 +310,8 @@ export function createFontMapping(
         // アンテナハウスも「monospace,MS Mincho」の欧文を Courier New で組む (ext-document-info の見本)
         const before = names.slice(0, idx).map((n) => n.trim().replace(/-/g, ' '));
         const mono = before.some((n) => MONO.test(n));
-        if (mono) monoUsed = true;
-        const latin = mono ? 'Cousine' : before.some((n) => GOTHIC.test(n)) ? sansLatin() : serifLatin();
+        const latin = mono ? monoLatin() : before.some((n) => GOTHIC.test(n)) ? sansLatin() : serifLatin();
+        if (latin === 'Cousine') monoUsed = true;
         const alias = `${base}+${latin}`;
         fonts.defineStack(alias, base, latin);
         return alias;
@@ -245,9 +322,12 @@ export function createFontMapping(
     // 欧文は Cousine (読み込まれていなければ和文の書体のまま)、和文は monoCjk (XSL-FO は明朝、HTML はゴシック)
     const known = names.map((n) => n.trim().replace(/-/g, ' ')).find((n) => MONO.test(n) || GOTHIC.test(n) || /^(serif|明朝|mincho|times( new roman)?)$|明朝|mincho/i.test(n));
     if (known && MONO.test(known)) {
-      monoUsed = true;
-      const stack = monoCjk === SANS ? MONO_STACK : MONO_SERIF_STACK;
-      fonts.defineStack(stack, monoCjk, 'Cousine', { first: true });
+      // 欧文は等幅の総称の書体 (monoLatin)。Courier・Courier New の名指しは、等幅の総称を差し替えても、字幅を合わせた Cousine
+      const courier = /^courier( new)?$/i.test(known) && monoLatin() !== 'Cousine';
+      const latin = courier ? 'Cousine' : monoLatin();
+      if (latin === 'Cousine') monoUsed = true;
+      const stack = (monoCjk === SANS ? MONO_STACK : MONO_SERIF_STACK) + (courier ? ' Courier' : '');
+      fonts.defineStack(stack, monoCjk, latin, { first: true });
       return stack;
     }
     if (GOTHIC.test(first)) return SANS;
@@ -317,20 +397,15 @@ export function createFontMapping(
    * 可変フォントと、太さの読めない書体は、標準と同じ (400)。
    * 同じ考えで、font-style の記述子の無い face は、書体のファイルの傾き (OS/2 の fsSelection の ITALIC・OBLIQUE) で登録する
    * (記述子なしで斜体のファイルを指した face は、斜体の書体として font-style: italic の字に使う。標準では立体の face: §4.4 の auto は、選ぶときは normal)
+   *
+   * 戻り値の missing: src の url() のどれにも当たるファイルが無かった face (書体名と最初の src)。CSS Fonts 4 §4.3 では、読めない src は飛ばし、
+   * どれも読めなければ、その face は無いものとして次の書体で組む。黙って次の書体にすると気付けないので、呼ぶ側が警告に出す。
+   * http(s):・data:・//host/… の src は除く (取れなかった・取らなかった http(s) の書体は、参照を集めるところ (resources.ts) が知らせる)
    */
-  async function loadFontFaces(css: string | ParsedCss, files: FontFile[], opts: { ahFaceWeight?: boolean } = {}) {
+  async function loadFontFaces(css: string | ParsedCss, files: FontFile[], opts: { ahFaceWeight?: boolean } = {}): Promise<{ missing: Array<{ family: string; src: string }> }> {
+    const missing: Array<{ family: string; src: string }> = [];
     table.clear('face');
-    const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
-    // src の url() は、CSS の場所を基準に解決した参照 (CSS Fonts 4 §4.3。CSS のファイルの中の相対参照は、prepareHtml が解決済みにしている)。
-    // まず参照の URL の全体 (参照から取った書体)、次にパス (文書からの相対パス) で探し、無いときだけファイル名で探す
-    // (noto/Regular.woff2 と roboto/Regular.woff2 を取り違えない)。同じ鍵のファイルが複数あれば、先のもの
-    const byUrl = new Map<string, FontFile>();
-    const byPath = new Map<string, FontFile>();
-    for (const f of files) {
-      if (f.url !== undefined && !byUrl.has(f.url)) byUrl.set(f.url, f);
-      if (f.path !== undefined && !byPath.has(normalizePath(f.path))) byPath.set(normalizePath(f.path), f);
-    }
-    const fileOf = (u: string) => byUrl.get(u) ?? byPath.get(normalizePath(safeDecode(u.split(/[?#]/)[0]))) ?? byName.get(safeDecode(u.split(/[?#]/)[0].split('/').pop() ?? '').toLowerCase());
+    const fileOf = faceFileResolver(files);
     // ファミリごとの face の並び。unicode-range の違う face は、別の名前で登録し、範囲つきの書体の組にまとめる (Fonts 4 §4.5)
     const groups = new Map<string, RangedFace[]>();
     // この文書で定義した face (「書体名@太さ」) ごとの、定義に使ったファイルの並び (書いた順)
@@ -339,7 +414,10 @@ export function createFontMapping(
     const used = new Set<string>();
     for (const ff of (typeof css === 'string' ? parseCss(css) : css).fontFaces) {
       const file = ff.srcs.map(fileOf).find(Boolean);
-      if (!file) continue;
+      if (!file) {
+        if (ff.srcs.length && !ff.srcs.some((s) => /^(https?:|data:|\/\/)/i.test(s))) missing.push({ family: ff.family, src: ff.srcs[0] });
+        continue;
+      }
       const rangeKey = ff.ranges ? ff.ranges.map(([a, b]) => `${a}-${b}`).join(',') : '';
       const first = rangeKey ? `css:${ff.family}#${rangeKey}` : `css:${ff.family}`;
       try {
@@ -412,6 +490,7 @@ export function createFontMapping(
         table.add('face', [fam], name);
       }
     }
+    return { missing };
   }
 
   /** HTML の font-family: @font-face の書体を先に探し (和文は Noto)、無ければ XSL-FO と同じ選び方 */
@@ -429,7 +508,7 @@ export function createFontMapping(
   function htmlNormalLineHeight(names: string[], bold: boolean, opts?: { defaultFonts?: boolean }): number | undefined {
     if (opts?.defaultFonts) {
       const fam = mapHtmlFont(names, bold);
-      if (!fam || ((fam === MONO_STACK || fam === MONO_SERIF_STACK) && !fonts.has('Cousine'))) return undefined;
+      if (!fam || ((fam === MONO_STACK || fam === MONO_SERIF_STACK) && !fonts.has(monoLatin()))) return undefined;
       const f = fonts.getForChar(fam, bold ? 700 : 400, ' ');
       const hh = (f.fk as unknown as { hhea?: { ascent: number; descent: number; lineGap: number } }).hhea;
       return hh ? (hh.ascent - hh.descent + hh.lineGap) / f.unitsPerEm : undefined;

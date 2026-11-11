@@ -226,17 +226,24 @@ class SvgOut {
   path: string | null = null;
   /**
    * この文書で画素にできる残りの数 (imageLimits.ts の metafilePixelBudget: 合計の上限と、ファイルの大きさに応じた上限の小さい方)。
-   * 足りなければ false (その画像は描かない)
+   * 足りなければ、警告 (warnings) に書いて false (その画像は描かない)
    */
   private pixelsLeft: number;
-  takePixels(n: number): boolean {
-    if (n > this.pixelsLeft) return false;
+  private readonly pixelBudget: number;
+  /** 描かなかったもの (同じ文は 1 回。wmfToSvg・emfToSvg の warnings に渡し、組版の警告に出す。IMG-19 (4)) */
+  readonly warnings = new Set<string>();
+  takePixels(n: number, what = '画像'): boolean {
+    if (n > this.pixelsLeft) {
+      this.warnings.add(`${what} は、文書の画像の画素の合計が上限 (${this.fileBytes} バイトのファイルでは ${this.pixelBudget} 画素) を超えるので描きません`);
+      return false;
+    }
     this.pixelsLeft -= n;
     return true;
   }
   /** fileBytes: メタファイルの大きさ (バイト)。画素にできる数を決める */
-  constructor(fileBytes: number) {
-    this.pixelsLeft = metafilePixelBudget(fileBytes);
+  constructor(private readonly fileBytes: number) {
+    this.pixelBudget = metafilePixelBudget(fileBytes);
+    this.pixelsLeft = this.pixelBudget;
     this.dc = {
       pen: BLACK_PEN,
       brush: WHITE_BRUSH,
@@ -798,7 +805,7 @@ function dibImage(out: SvgOut, b: Uint8Array, s: DibSrc): { px: Pixels } | { mim
   const W = Math.abs(w);
   const rows = s.scans ?? Math.abs(h);
   // 画素の数の上限 (ヘッダの寸法だけで大量のメモリ・時間を使わない)
-  if (!W || !rows || W * rows > MAX_PIXELS || !out.takePixels(W * rows)) return undefined;
+  if (!W || !rows || W * rows > MAX_PIXELS || !out.takePixels(W * rows, 'DIB の画像')) return undefined;
   const stride = Math.floor((bpp * W + 31) / 32) * 4;
   let pixels: Uint8Array;
   let newComp = comp;
@@ -931,7 +938,7 @@ function blendLayers(out: SvgOut, code: number, pat: [number, number, number], p
     if (!px) {
       // 元の無い演算 (DSTINVERT・PATINVERT など): 矩形を 1 色で
       out.fillRects([normRect(x, y, x + w, y + h)], `#${[0, 1, 2].map((k) => rgba[k].toString(16).padStart(2, '0')).join('')}`, mode);
-    } else if (out.takePixels(W * H)) out.image(x, y, w, h, `data:image/png;base64,${base64(encodePngStored({ width: W, height: H, rgba }))}`, mode); // (層ごとに 1 枚の画像になるので、画素の合計に数える)
+    } else if (out.takePixels(W * H, 'ラスター演算の画像')) out.image(x, y, w, h, `data:image/png;base64,${base64(encodePngStored({ width: W, height: H, rgba }))}`, mode); // (層ごとに 1 枚の画像になるので、画素の合計に数える)
   }
   return true;
 }
@@ -1145,8 +1152,11 @@ function setDibToDevice(out: SvgOut, b: Uint8Array, dst: [number, number, number
   out.image(x + sx * (x0 - xSrc), y + sy * (y0 - top), sx * (x1 - x0), sy * (y1 - y0), `data:image/png;base64,${base64(encodePngStored(px))}`);
 }
 
-/** WMF (Placeable ヘッダ付き、または無し) → SVG。読めなければ undefined */
-export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): string | undefined {
+/**
+ * WMF (Placeable ヘッダ付き、または無し) → SVG。読めなければ undefined。
+ * warnings を渡すと、描かなかったもの (画素の合計の上限を超えた画像) の警告を足す
+ */
+export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number, warnings?: string[]): string | undefined {
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   if (b.length < 18) return undefined;
   let p = 0;
@@ -1476,17 +1486,18 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
       : [0, 0, widthPx ?? 100, heightPx ?? 100];
   const w = widthPx ?? vb[2];
   const h = heightPx ?? vb[3];
-  return finish(out, vb, w, h);
+  return finish(out, vb, w, h, warnings);
 }
 
-/** 細い線 (幅 0 のペン) を、出来上がりの 1px 相当にしてから SVG にする */
-function finish(out: SvgOut, vb: [number, number, number, number], w: number, h: number): string {
+/** 細い線 (幅 0 のペン) を、出来上がりの 1px 相当にしてから SVG にする。描かなかったものの警告は warnings に足す */
+function finish(out: SvgOut, vb: [number, number, number, number], w: number, h: number, warnings?: string[]): string {
+  warnings?.push(...out.warnings);
   const hair = Math.abs(vb[2]) / Math.max(w, 1);
   return out.toSvg(vb, w, h).split(HAIR).join(num(hair));
 }
 
-/** EMF → SVG。読めなければ undefined */
-export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): string | undefined {
+/** EMF → SVG。読めなければ undefined。warnings は wmfToSvg と同じ */
+export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number, warnings?: string[]): string | undefined {
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   if (b.length < 88 || v.getUint32(0, true) !== 1 || v.getUint32(40, true) !== 0x464d4520) return undefined;
   const bounds = [v.getInt32(8, true), v.getInt32(12, true), v.getInt32(16, true), v.getInt32(20, true)];
@@ -1991,5 +2002,5 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number): st
   const ext = out.dc.winExt;
   // 座標系: window の原点・大きさ (SETWINDOW*) があればそれ、無ければ装置座標の外接矩形
   const vb: [number, number, number, number] = ext ? [out.dc.winOrg[0], out.dc.winOrg[1], ext[0], ext[1]] : [bounds[0], bounds[1], bounds[2] - bounds[0] + 1, bounds[3] - bounds[1] + 1];
-  return finish(out, vb, widthPx, heightPx);
+  return finish(out, vb, widthPx, heightPx, warnings);
 }

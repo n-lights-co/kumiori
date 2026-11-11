@@ -186,6 +186,65 @@ describe('ページをまたぐ段組のコンテナの id と左右の罫線 (L
   });
 });
 
+describe('ページをまたぐ段組のコンテナの断片の飾り: 背景の画像・角丸・影 (LAY-14 (3))', () => {
+  const deco = { backgroundImage: { src: 'bg.png', width: 10, height: 10 }, borderRadius: { rx: 6, ry: 6 }, boxShadow: { dx: 2, dy: 2, color: '#000' } };
+  const make = (extra: object = {}) => {
+    const container = { type: 'block-container', backgroundColor: '#eee', ...deco, ...extra, columns: { count: 2, gap: 10 }, children: [{ type: 'block', textAlign: 'start', children: ['あ'.repeat(1500)] }] };
+    const tr = E.engine.layout(doc([container] as never));
+    return tr.sheets.map((_, k) => kids(tr, k).filter((b) => b.backgroundColor === '#eee')[0]);
+  };
+  it('どのページの断片も、背景の色・罫線・padding と同じく、背景の画像と影を持つ (ページをまたぐブロックの断片と同じ)', () => {
+    const rows = make();
+    expect(rows.length).toBeGreaterThan(2);
+    for (const r of rows) {
+      expect(r.backgroundImage).toMatchObject({ src: 'bg.png', width: 10, height: 10 });
+      expect(r.boxShadow).toMatchObject({ dx: 2, dy: 2 });
+      expect(r.borderRadius).toBeDefined();
+    }
+  });
+  it('box-decoration-break: slice (既定) では、切れ目の側の角を丸めない (CSS Fragmentation 3 §5.4。分けずに描いてから切った形)。clone では断片ごとに丸める', () => {
+    const rows = make();
+    const zero = [0, 0];
+    const six = [6, 6];
+    // 角は 左上・右上・右下・左下 の順
+    expect(rows[0].borderRadius!.corners).toEqual([six, six, zero, zero]);
+    for (const r of rows.slice(1, -1)) expect(r.borderRadius!.corners).toEqual([zero, zero, zero, zero]);
+    expect(rows[rows.length - 1].borderRadius!.corners).toEqual([zero, zero, six, six]);
+    const cloned = make({ edgeRetain: { borderBefore: true, paddingBefore: true, borderAfter: true, paddingAfter: true } });
+    for (const r of cloned) expect(r.borderRadius).toEqual({ rx: 6, ry: 6 });
+  });
+  it('ページをまたぐブロックの断片も同じ: slice では切れ目の側の角を丸めない', () => {
+    const tr = E.engine.layout(doc([{ type: 'block', backgroundColor: '#eee', borderRadius: { rx: 6, ry: 6 }, textAlign: 'start', children: ['あ'.repeat(1500)] }] as never));
+    const frags = tr.sheets.map((_, k) => kids(tr, k).filter((b) => b.backgroundColor === '#eee')[0]);
+    expect(frags.length).toBeGreaterThan(1);
+    expect(frags[0].borderRadius!.corners).toEqual([[6, 6], [6, 6], [0, 0], [0, 0]]);
+    expect(frags[frags.length - 1].borderRadius!.corners).toEqual([[0, 0], [0, 0], [6, 6], [6, 6]]);
+  });
+});
+
+describe('行内の箱の背景は、中の inline-block・画像の所も塗る (LAY-20 (3))', () => {
+  it('背景の色の span の中の inline-block の所も、span の内容の領域の高さで塗る (CSS 2.1 §9.2.2・§14.2、CSS Backgrounds 3 §3.7)', () => {
+    const box = { type: 'inline-container', width: 100, height: 10, children: [] };
+    const t = E.engine.layout(doc([{ type: 'block', textAlign: 'start', fontSize: 20, children: [{ type: 'inline', backgroundColor: '#f00', children: ['AB', box, 'CD'] }] }] as never));
+    const line = (kids(t)[0].children as Area[])[0] as unknown as { children: Area[] };
+    // 行の直下の、背景を塗る箱 (block)。位置は行の始めからの x
+    const bgs = line.children.filter((a) => a.type === 'block' && (a as BlockArea).backgroundColor === '#f00') as BlockArea[];
+    let text = 0;
+    walk(line as unknown as Area, (a) => {
+      if (a.type === 'glyph') text += (a as GlyphArea).advance;
+    });
+    // 塗った範囲を合わせると、A の始めから D の終わりまで、すき間なく続く
+    const spans = bgs.map((b) => [b.x, b.x + b.width]).sort((a, b) => a[0] - b[0]);
+    expect(spans.length).toBeGreaterThan(1);
+    for (let k = 1; k < spans.length; k++) expect(spans[k][0]).toBeLessThanOrEqual(spans[k - 1][1] + 0.01);
+    const total = spans[spans.length - 1][1] - spans[0][0];
+    expect(total).toBeCloseTo(text + 100, 1);
+    // 高さは、字の領域と同じ (inline-block の高さではない)
+    const hs = new Set(bgs.map((b) => b.height.toFixed(3)));
+    expect(hs.size).toBe(1);
+  });
+});
+
 describe('列定義の無い表の列数 (LAY-08)', () => {
   const cellsOf = (t: Tree) => {
     const out: BlockArea[] = [];

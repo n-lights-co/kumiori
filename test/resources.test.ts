@@ -28,6 +28,10 @@ describe('参照の集め方', () => {
     expect(resolveRef('../img/a.png', 'file:///w/css/main.css')).toBe('file:///w/img/a.png');
     expect(resolveRef('b.css', 'https://cdn.example/x/a.css?v=1')).toBe('https://cdn.example/x/b.css');
     expect(resolveRef('../img/a.png', 'css/main.css')).toBe('img/a.png');
+    // 基準より上を指す参照は、上がりきれなかった .. を残す (入力のディレクトリの外のファイル。名前の上で消すと、別のファイルを指してしまう)
+    expect(resolveRef('../../fx/a.ttf', 'css/main.css')).toBe('../fx/a.ttf');
+    expect(resolveRef('../a.png', 'main.css')).toBe('../a.png');
+    expect(resolveRef('../b.png', '../x/main.css')).toBe('../b.png');
     expect(resolveRef('https://x/y.css', 'css/main.css')).toBe('https://x/y.css');
     expect(resolveRef('a.png')).toBe('a.png');
   });
@@ -162,6 +166,18 @@ describe('ネットワークからの取得: 転送の先と大きさの上限',
     expect(await fetchGuarded(`${base}/r/file`, { ...big, allow })).toBeUndefined();
     expect(await fetchGuarded(`${base}/r/data`, { ...big, allow })).toBeUndefined();
     expect(asked).toEqual([]);
+  });
+  it('解決できない Location の転送は network error (Fetch Standard §2.2.6 の location URL が failure)。Location の無い転送の応答は使わない', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', async (u: string) => {
+      calls.push(u);
+      if (u === 'https://a.example/bad') return new Response(null, { status: 302, headers: { location: 'http://[' } });
+      if (u === 'https://a.example/none') return new Response('moved', { status: 302 });
+      return new Response('p {}', { status: 200 });
+    });
+    expect(await fetchGuarded('https://a.example/bad', big)).toBeUndefined();
+    expect(await fetchGuarded('https://a.example/none', big)).toBeUndefined();
+    expect(calls).toEqual(['https://a.example/bad', 'https://a.example/none']);
   });
   it('https から http への転送 (格下げ) は断る。https から https へはたどる', async () => {
     const calls: string[] = [];

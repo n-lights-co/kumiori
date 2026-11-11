@@ -151,6 +151,8 @@ export interface ParsedCss {
   fontPaletteValues?: FontPaletteRule[];
   /** 根元 (:root・html・*) の規則に書かれたカスタム プロパティ (自前で読む宣言の var() の置き換え用)。無ければ undefined */
   rootVars?: Record<string, string>;
+  /** 読まずに捨てた、未対応の規則・書き方 ('@namespace'・'@page :nth()')。現れた数だけ並べる。未対応の CSS の警告に出す (cssUnsupported)。無ければ undefined */
+  ignored?: string[];
 }
 
 /** 根元のカスタム プロパティで var() を置き換える (parseCss が decls に行うものと同じ。変数が無ければそのまま) */
@@ -172,6 +174,7 @@ export function concatCss(...sheets: ParsedCss[]): ParsedCss {
     counterStyles: new Map(sheets.flatMap((s) => [...s.counterStyles])),
     ...(sheets.some((s) => s.fontPaletteValues) ? { fontPaletteValues: sheets.flatMap((s) => s.fontPaletteValues ?? []) } : {}),
     ...(rootVars ? { rootVars } : {}),
+    ...(sheets.some((s) => s.ignored) ? { ignored: sheets.flatMap((s) => s.ignored ?? []) } : {}),
   };
 }
 
@@ -382,6 +385,7 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
   let curLayer: string | undefined;
   // 用紙の大きさに依るメディアクエリの中にいる深さ (その中の @page の size は読まない。Page 3 §7.1)
   let sizeQualified = 0;
+  const ignored: string[] = [];
   const layerOf = (name: string) => layers.add(name);
   const walk = (text: string) => {
     let i = 0;
@@ -392,6 +396,8 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
       if (text[open] === ';') {
         // @layer a, b; は層の順だけを決める。ほか (@import / @charset) は読まない
         if (/^@layer\b/i.test(head)) for (const n of head.slice(6).split(',').map((x) => x.trim()).filter(Boolean)) layerOf(curLayer ? `${curLayer}.${n}` : n);
+        // @namespace (CSS Namespaces 3 §2) は読まない (名前空間の接頭辞の付いたセレクタ (svg|a) も読めない)。未対応として知らせる
+        else if (/^@namespace\b/i.test(head)) ignored.push('@namespace');
         i = open + 1;
         continue;
       }
@@ -410,6 +416,8 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
       else if (/^@page\b/i.test(head)) {
         const sels = head.slice(5).split(',').map((x) => x.trim());
         for (const sel of sels.length ? sels : ['']) {
+          // :nth() のページの擬似クラス (CSS GCPM 3 §3) は読まない (その規則はどのページにも当たらない)。未対応として知らせる
+          if (/:nth\(/i.test(sel)) ignored.push('@page :nth()');
           const rule = parsePageBody(sel, body);
           // 用紙の大きさに依るメディアクエリ (width・height・orientation など) で条件づけた size の宣言は無視する (Page 3 §7.1:
           // 「the declaration must be ignored」)。ほかの宣言 (余白など) は読む
@@ -571,7 +579,7 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
   }
   const ranks = layerRanks(layers);
   for (const [r, name] of layered) r.layer = ranks.get(name);
-  return { pages, rules, fontFaces, counterStyles, ...(fontPaletteValues.length ? { fontPaletteValues } : {}), ...(rootVars ? { rootVars } : {}) };
+  return { pages, rules, fontFaces, counterStyles, ...(fontPaletteValues.length ? { fontPaletteValues } : {}), ...(rootVars ? { rootVars } : {}), ...(ignored.length ? { ignored } : {}) };
 }
 
 /**
@@ -898,8 +906,43 @@ function oneOfEach(words: string[], groups: RegExp[]): boolean {
 }
 /** <autospace> = no-autospace | [ ideograph-alpha || ideograph-numeric || punctuation ] || [ insert | replace ] (CSS Text 4 §8.4) */
 const isAutospace = (ws: string[]) => (ws.length === 1 && ws[0] === 'no-autospace') || oneOfEach(ws, [/^ideograph-alpha$/, /^ideograph-numeric$/, /^punctuation$/, /^(insert|replace)$/]);
-/** <spacing-trim> = space-all | normal | space-first | trim-start | trim-both | trim-all (CSS Text 4 §8.5) */
-const SPACING_TRIM = /^(space-all|normal|space-first|trim-start|trim-both|trim-all)$/;
+/**
+ * text-spacing-trim の値を、行頭・隣り合う約物・行末の 3 つの位置ごとの組み方にしたもの (CSS Text 4 §8.5 の計算値:
+ * 「the keyword auto, the keyword trim-all, or three keywords, one per controlled position (start, adjacent, end)」)
+ *  - start: space (space-start: 始め括弧類を全角)・trim (trim-start: 二分)・first (space-first: 段落の 1 行目と強制改行の後の行は全角、ほかは二分)
+ *  - adjacent: trim (trim-adjacent: 隣り合う約物のアキを詰める)・space (space-adjacent: 詰めない)
+ *  - end: allow (allow-end: 入らないときだけ二分)・trim (trim-end: 二分)・space (space-end: 全角)
+ *  - all: trim-all (位置・前後の字によらず、全角の括弧類・中点類を二分。§8.5.2)
+ */
+export type SpacingTrim = { all: true } | { all?: false; start: 'space' | 'trim' | 'first'; adjacent: 'space' | 'trim'; end: 'space' | 'trim' | 'allow' };
+/**
+ * <spacing-trim> を読む (CSS Text 4 §8.5。編集者草案の文法):
+ *   [ trim-start | space-start | space-first ] || [ trim-adjacent | space-adjacent ] || [ trim-end | space-end | allow-end ] | trim-both | space-all | trim-all
+ * 省いた位置は trim-start trim-adjacent allow-end の値になる。normal (初期値) は space-start trim-adjacent allow-end。
+ * 勧告候補より前の草案 (www.w3.org/TR) の値 (space-all | normal | space-first | trim-start | trim-both | trim-all) は、この文法の中にある。
+ * 読めない値・auto は undefined (auto は、利用者エージェントが選ぶ値。Kumiori は初期値の normal と同じに組む)
+ */
+export function parseSpacingTrim(value: string): SpacingTrim | undefined {
+  const ws = value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (ws.length === 1) {
+    const w = ws[0];
+    if (w === 'trim-all') return { all: true };
+    if (w === 'normal') return { start: 'space', adjacent: 'trim', end: 'allow' };
+    if (w === 'space-all') return { start: 'space', adjacent: 'space', end: 'space' };
+    if (w === 'trim-both') return { start: 'trim', adjacent: 'trim', end: 'trim' };
+  }
+  const groups = [/^(trim|space)-start$|^space-first$/, /^(trim|space)-adjacent$/, /^(trim|space)-end$|^allow-end$/];
+  if (!oneOfEach(ws, groups)) return undefined;
+  const at = (g: number) => ws.find((w) => groups[g].test(w));
+  const st = at(0), ad = at(1), en = at(2);
+  return {
+    start: st === 'space-start' ? 'space' : st === 'space-first' ? 'first' : 'trim',
+    adjacent: ad === 'space-adjacent' ? 'space' : 'trim',
+    end: en === 'trim-end' ? 'trim' : en === 'space-end' ? 'space' : 'allow',
+  };
+}
+/** <spacing-trim> の 1 つの値か (text-spacing の中の語を見分ける) */
+export const SPACING_TRIM_WORD = /^(space-all|normal|trim-both|trim-all|(trim|space)-(start|adjacent|end)|space-first|allow-end)$/;
 
 /**
  * 自前で読む宣言 (isPagedDecl) のうち、値の文法の決まっている性質の値が、その文法に合うか (PKG-19)。合わない値の宣言は、無効の宣言として
@@ -925,15 +968,15 @@ export function validPagedValue(prop: string, value: string): boolean {
       // normal | <autospace> | auto (CSS Text 4 §8.4)
       return v === 'normal' || v === 'auto' || isAutospace(ws);
     case 'text-spacing-trim':
-      // <spacing-trim> | auto (CSS Text 4 §8.5)
-      return v === 'auto' || SPACING_TRIM.test(v);
+      // <spacing-trim> | auto (CSS Text 4 §8.5)。初期値の normal も読む
+      return v === 'auto' || parseSpacingTrim(v) !== undefined;
     case 'text-spacing': {
       // none | auto | <spacing-trim> || <autospace> (CSS Text 4 §8.6)
       if (v === 'none' || v === 'auto') return true;
-      const trims = ws.filter((w) => SPACING_TRIM.test(w));
-      const rest = ws.filter((w) => !SPACING_TRIM.test(w));
+      const trims = ws.filter((w) => SPACING_TRIM_WORD.test(w));
+      const rest = ws.filter((w) => !SPACING_TRIM_WORD.test(w));
       // (normal は <spacing-trim> の語。<autospace> に normal は無い)
-      return trims.length <= 1 && (rest.length === 0 ? trims.length === 1 : isAutospace(rest));
+      return (trims.length === 0 || parseSpacingTrim(trims.join(' ')) !== undefined) && (rest.length === 0 ? trims.length > 0 : isAutospace(rest));
     }
     case 'hanging-punctuation':
       // none | [ first || [ force-end | allow-end ] || last ] (CSS Text 3 §8.2)

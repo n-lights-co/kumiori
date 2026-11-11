@@ -99,6 +99,7 @@ import {
   flattenInline,
   glueAfterCssLeaders,
   markLineBreaks,
+  splitJoinedAtoms,
   markWordSqueeze,
   glyphNode,
   isInlineChild,
@@ -333,18 +334,40 @@ const MAX_CONTENT_ROOT = 1e7;
 const startSide = (wm: WritingMode): keyof Edges => (wm === 'horizontal-tb' ? 'top' : wm === 'vertical-lr' ? 'left' : 'right');
 const endSide = (wm: WritingMode): keyof Edges => (wm === 'horizontal-tb' ? 'bottom' : wm === 'vertical-lr' ? 'right' : 'left');
 
-/** keepBorder: 表は断片ごとに外枠を閉じる (box-decoration-break: clone 相当) ので、罫線は残して余白だけ切る */
+/**
+ * 断片の切れ目の側 (side) の角を丸めない (box-decoration-break: slice。CSS Fragmentation 3 §5.4: 箱を分けずに描いてから切った形になるので、
+ * border-radius の角は、箱の最初と最後の断片の外側の角にだけ付く)。角は 左上・右上・右下・左下 の順 (BorderRadius.corners)
+ */
+function cutRadius(n: LNode, side: keyof Edges) {
+  const r = n.radius;
+  if (!r) return;
+  const at = side === 'top' ? [0, 1] : side === 'right' ? [1, 2] : side === 'bottom' ? [2, 3] : [3, 0];
+  const corners: NonNullable<typeof r.corners> = r.corners ? r.corners.map((c) => [c[0], c[1]]) : [0, 1, 2, 3].map(() => [r.rx, r.ry]);
+  for (const k of at) corners[k] = [0, 0];
+  n.radius = { ...r, corners };
+}
+
+/**
+ * 断片の切れ目の側の罫線・余白を切る。keepBorder: 表は断片ごとに外枠を閉じる (box-decoration-break: clone 相当) ので、罫線は残して余白だけ切る。
+ * 罫線を残さない断片 (slice) は、切れ目の側の角も丸めない (cutRadius)。罫線を残す断片 (clone・表) は、断片ごとに丸める (§5.4)
+ */
 function cutStart(n: LNode, keepBorder = false, keepPadding = false) {
   const s = startSide(n.wm);
   if (!keepPadding) n.padding[s] = 0;
   n.margin[s] = 0;
-  if (!keepBorder) delete n.border[s];
+  if (!keepBorder) {
+    delete n.border[s];
+    cutRadius(n, s);
+  }
 }
 function cutEnd(n: LNode, keepBorder = false, keepPadding = false) {
   const s = endSide(n.wm);
   if (!keepPadding) n.padding[s] = 0;
   n.margin[s] = 0;
-  if (!keepBorder) delete n.border[s];
+  if (!keepBorder) {
+    delete n.border[s];
+    cutRadius(n, s);
+  }
 }
 
 // ───────────────────────── Flow (フラグメンタ) ─────────────────────────
@@ -387,6 +410,11 @@ interface CbItem {
   sy: number;
   frag: number;
   anchor?: LNode;
+  /**
+   * 行の中で見つけた箱の、見つけた所の目印の番号 (LNode.absAnchor)。基準の箱の断片の中に目印の箱があれば、その箱の行の中の位置と、
+   * その行の上端を static position にする (sy・frag・anchor より先に使う)
+   */
+  staticKey?: number;
 }
 
 interface FlowHost {
@@ -766,6 +794,8 @@ class Flow {
   private localAbs?: FlowInit['localAbs'];
   /** いちばん近い、絶対配置の基準になるブロック (localAbs より内側) */
   private cbAbs?: CbAbs;
+  /** 行の途中で見つけた絶対配置の箱を組む間の、見つけた所の目印の番号 (CbItem.staticKey) */
+  private staticKey?: number;
   /** この流れ (表のセルの中) で見つけた、基準の箱がこの流れの外にある絶対配置の箱 (FlowInit.collectAbs) */
   private collectAbs: boolean;
   foreignAbs: CbItem[] = [];
@@ -2024,8 +2054,20 @@ class Flow {
         runAbs.push(c);
       } else if (typeof c !== 'string' && c.type === 'block-container' && c.absolutePosition && ((c.positionInContainer && (this.cbAbs || (this.collectAbs && !this.localAbs))) || (run.length > 0 && !this.host.xslSpace))) {
         // 絶対配置の基準になるブロックの中の絶対配置の箱: 段落 (run) を分断しない。上下の位置の指定が無ければ、段落の頭の高さ (static position)。
-        // CSS の絶対配置の箱は、流れの外 (CSS 2.1 §9.3.1): 字の並びの途中にあっても、行を分けない (ページの上に置く箱も)
-        this.layoutContainer(c, style);
+        // CSS の絶対配置の箱は、流れの外 (CSS 2.1 §9.3.1): 字の並びの途中にあっても、行を分けない (ページの上に置く箱も)。
+        // 行の途中で見つけた、基準の箱を組んでから置く箱は、見つけた所に目印 (幅 0 の箱) を入れ、組んだ後でその位置を static position にする
+        // (CSS 2.1 §10.3.7・§10.6.4: 位置が static だったときの仮の箱の位置。行の中の箱は、行の中の見つけた所)
+        const anchored = run.length > 0 && c.positionInContainer && (this.cbAbs || (this.collectAbs && !this.localAbs));
+        if (anchored) {
+          const key = ++staticAnchorSeq;
+          run.push({ type: 'inline', children: [], staticAnchor: key } as LInline);
+          this.staticKey = key;
+        }
+        try {
+          this.layoutContainer(c, style);
+        } finally {
+          this.staticKey = undefined;
+        }
       } else if (typeof c !== 'string' && c.type === 'retrieve-marker') {
         this.host.warn('retrieve-marker は PageSequence.staticContent 内でのみ使えます');
       } else if (typeof c !== 'string' && c.type === 'retrieve-table-marker') {
@@ -2572,7 +2614,13 @@ class Flow {
       let frag = it.frag;
       let sx = 0;
       let sy = it.sy;
-      if (it.anchor) {
+      const mark = it.staticKey !== undefined ? locateStaticAnchor(frags, it.staticKey) : undefined;
+      if (mark) {
+        // 行の中で見つけた箱: 目印の箱の、行の中の位置と、その行の上端 (CSS 2.1 §10.3.7・§10.6.4)
+        frag = mark.k;
+        sx = mark.i;
+        sy = mark.b;
+      } else if (it.anchor) {
         const at = locateNode(frags, it.anchor);
         if (!at) continue;
         frag = at.k;
@@ -2883,6 +2931,8 @@ class Flow {
       const blockRef = this.stack[this.stack.length - 1]?.desc.ref;
       if (blockRef !== undefined) for (const a of atoms) a.ref ??= blockRef;
       glueAfterCssLeaders(atoms);
+      // 語の途中で折ってよい、つながる字の語 (アラビア文字など) を、字ごとの断片に分ける (CSS Text 3 §5.1・§5.5。splitJoinedAtoms)
+      if (atoms.some((a) => a.splitJoined)) splitJoinedAtoms(atoms, L, !!this.intrinsic);
       markLineBreaks(atoms);
       // 語間を追込みで詰めない行 (XSL-FO の仕様モード: 両端揃えで組まない行) の印。揃えは、この行を持つブロックの値
       markWordSqueeze(atoms, st);
@@ -2915,6 +2965,8 @@ class Flow {
         this.wm === 'horizontal-tb'
           ? (a, b) => {
               if (!sameFeatures(fontFeaturesBetweenUnits(a.st), fontFeaturesBetweenUnits(b.st))) return 0;
+              // つながる字の語を分けた断片の間: 字の組の詰めは、語の中の位置合わせ (書体が語ごとに決めたもの) に任せる
+              if (b.joinPiece) return 0;
               // インド系・ラオ・チベット・ミャンマー・クメールの字の単位 (2 字以上) は、単位のまま書体に渡して引く
               if ((a.cluster || b.cluster) && kernScript(a.last))
                 return ms.kernUnits(a.cluster ?? a.last, b.cluster ?? b.first, a.cluster ? lastBaseOfUnit(a.cluster) : a.last, { fontFamily: a.st.fontFamily, fontWeight: a.st.fontWeight, features: fontFeaturesBetweenUnits(a.st), featuresA: a.st.fontFeatures, featuresB: b.st.fontFeatures }) * a.st.fontSize;
@@ -3363,6 +3415,8 @@ class Flow {
   private imageBox(c: LImage, st: ResolvedStyle): BoxSpec {
     const asset = this.host.assets?.get(c.src);
     if (asset?.unsupported) this.host.warn(`画像 ${c.src} を描けないため、仮の枠で描きます (${asset.unsupported})`);
+    // 描いたが、中の一部を描けなかったもの (CGM・WMF・EMF。assets.ts の ImageAsset.notes)
+    for (const n of asset?.notes ?? []) this.host.warn(`画像 ${c.src} の一部を描けません: ${n}`);
     // 画像が見つからない・中身が画像でない (読めない) ときは、黙って省かずに知らせる (instream-foreign-object の仮の名前は除く)
     if (this.host.assets && !asset && !this.measureOnly && !c.src.startsWith('instream-foreign-object:')) this.host.warn(`画像 ${c.src} が見つからないか、中身を画像として読めません`);
     // 画像本来の大きさ (pt)。intrinsicFromImage なら、画像に書かれた解像度で決める
@@ -3877,13 +3931,13 @@ class Flow {
       const f = this.cbAbs.frame;
       const sy = f.opened ? Math.max(this.cursor + this.pendingValue() - f.contentStartB, 0) : 0;
       const frag = f.opened ? Math.max((f.frags?.length ?? 1) - 1, 0) : (f.frags?.length ?? 0);
-      this.cbAbs.items.push({ node, st, sy, frag });
+      this.cbAbs.items.push({ node, st, sy, frag, ...(this.staticKey !== undefined ? { staticKey: this.staticKey } : {}) });
       return;
     }
     if (node.absolutePosition && node.positionInContainer && this.collectAbs && !this.localAbs) {
       // 表のセルの中の流れで、基準のブロックがこの流れの中に無い: 基準の箱はセルか、その外 (表・表を含むブロック)。
       // 見つけた所 (セルの内容の箱の中の static position) を覚えて、セルを組む側に渡す
-      this.foreignAbs.push({ node, st, sy: Math.max(this.cursor + this.pendingValue(), 0), frag: this.breakCount });
+      this.foreignAbs.push({ node, st, sy: Math.max(this.cursor + this.pendingValue(), 0), frag: this.breakCount, ...(this.staticKey !== undefined ? { staticKey: this.staticKey } : {}) });
       return;
     }
     if (node.absolutePosition && node.positionInContainer && this.localAbs) {
@@ -4077,7 +4131,9 @@ class Flow {
     });
     const { roots, used, colMarkers } = run((c) => (rowOf(c) === 0 ? avail : rowOf(c) < rows - 1 ? full : lastLimit), true);
     // 段の行の箱は、コンテナ自身の断片: inline 方向の罫線と padding (block 方向のものは無い。呼ぶ側の条件)・id (page-number-citation の
-    // 参照先)・元の入力の節を持つ。段は、その内容の箱 (padding と罫線の内側) の始めの端から並べる
+    // 参照先)・元の入力の節を持つ。段は、その内容の箱 (padding と罫線の内側) の始めの端から並べる。
+    // 背景の画像・斜めの罫線・効果 (decorOf)・角丸・影も、ページをまたぐブロックの断片 (breakPage で開き直す箱) と同じく、どの断片にも付ける。
+    // 角丸は、box-decoration-break: slice なら、切れ目の側の角を丸めない (CSS Fragmentation 3 §5.4。cutRadius)
     let placedRow = false;
     for (let r = 0; r * n < roots.length; r++) {
       const kids: LNode[] = [];
@@ -4104,9 +4160,11 @@ class Flow {
       // この行の段のマーカーは、この行を置くページに記録する (placeBox が記録する)
       for (let k = 0; k < n; k++) this.markerSink.push(...(colMarkers[r * n + k] ?? []));
       const last = (r + 1) * n >= roots.length;
-      const row = newNode('block', wm, { isize, bsize: height, padding: { ...desc.paddingP }, border: { ...desc.borderP }, bg: desc.bg, src: desc.src, ref: desc.ref, children: kids });
+      const row = newNode('block', wm, { isize, bsize: height, padding: { ...desc.paddingP }, border: { ...desc.borderP }, bg: desc.bg, ...this.decorOf(desc), src: desc.src, ref: desc.ref, radius: desc.radius, shadow: desc.shadow, children: kids });
       if (placedRow) row.cont = true;
       if (!last) row.contNext = true;
+      if (placedRow && !desc.keepStart.border) cutRadius(row, startSide(wm));
+      if (!last && !desc.keepEnd.border) cutRadius(row, endSide(wm));
       placedRow = true;
       this.placeBox(row, r === 0 ? desc.m.bs : 0, last ? desc.m.be : 0, desc.m.is, this.extentAlongBlock(row), r === 0 ? desc.precBs : 0, last ? desc.precBe : 0);
     }
@@ -5681,6 +5739,7 @@ class Flow {
             border: { ...c.desc.borderP },
             bg: c.desc.bg,
             ...this.decorOf(c.desc),
+            ...(c.cell.relativeOffset ? { relShift: c.cell.relativeOffset } : {}),
             src: k === 0 ? c.desc.src : undefined,
             ref: c.desc.ref,
             children: content,
@@ -5824,6 +5883,7 @@ class Flow {
       border: { ...desc.borderP },
       bg: desc.bg,
       ...this.decorOf(desc),
+      ...(cell.relativeOffset ? { relShift: cell.relativeOffset } : {}),
       src: desc.src,
       ref: desc.ref,
       children: sub.root.children,
@@ -5917,6 +5977,30 @@ function locateNode(frags: readonly LNode[], target: LNode): { k: number; i: num
   };
   for (let k = 0; k < frags.length; k++) {
     const hit = find(frags[k], 0, 0);
+    if (hit) return { k, ...hit };
+  }
+  return undefined;
+}
+
+/**
+ * 行の中で見つけた絶対配置の箱の目印の箱 (LNode.absAnchor が key) を、断片 frags の中から探す。
+ * k は断片の番号、i は目印の箱の inline 方向の位置、b はその箱を含む行の上端 (どちらも断片の内容の箱の頭から)
+ */
+function locateStaticAnchor(frags: readonly LNode[], key: number): { k: number; i: number; b: number } | undefined {
+  const find = (n: LNode, i: number, b: number, lineB: number | undefined): { i: number; b: number } | undefined => {
+    for (const c of n.children) {
+      if (c.kind === 'glyph' || c.kind === 'image' || c.phys) continue;
+      const e = logicalEdges(c);
+      const ci = i + c.i + e.is;
+      const cb = b + c.b + e.bs;
+      if (c.absAnchor === key) return { i: i + c.i, b: lineB ?? b + c.b };
+      const hit = find(c, ci, cb, c.kind === 'line' ? b + c.b : lineB);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  for (let k = 0; k < frags.length; k++) {
+    const hit = find(frags[k], 0, 0, undefined);
     if (hit) return { k, ...hit };
   }
   return undefined;
@@ -6264,6 +6348,8 @@ function percentImage<T extends BackgroundImage & { width: number; height: numbe
 
 /** gradientImage で作ったグラデーションの背景の数 (増えていなければ registerGradients は木をたどらない) */
 let gradientsMade = 0;
+/** 行の中で見つけた絶対配置の箱の目印 (LInline.staticAnchor) の通し番号 */
+let staticAnchorSeq = 0;
 /** グラデーションの背景の画像の大きさ: background-size の指定 (cover・contain・auto は背景の領域の大きさ)。CSS Images 3 §3 の画像は本来の大きさを持たない */
 function gradientImage(bi: BackgroundImage, W: number, H: number): BackgroundImage & { width: number; height: number } {
   gradientsMade++;
@@ -6363,8 +6449,9 @@ export function toArea(n: LNode, parentWm: WritingMode, PW: number): Area {
   const bw = borderWidths(n.border);
   const contentPW = width - n.padding.left - n.padding.right - bw.left - bw.right;
   const base = {
-    x: pos.x,
-    y: pos.y,
+    // position: relative のセル (CSS 2.1 §9.4.3): 組んだ後の箱を、物理の向きにずらす
+    x: pos.x + (n.relShift?.x ?? 0),
+    y: pos.y + (n.relShift?.y ?? 0),
     width,
     height,
     margin: n.margin,

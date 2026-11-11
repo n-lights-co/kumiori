@@ -95,6 +95,10 @@ export interface LNode {
   fx?: import('./types').PaintEffect;
   /** 字の背景の箱: 字を作った入力の節の番号 (効果を付けるときにだけ使う。Area の sourceRef にはしない) */
   fxRef?: number;
+  /** 描くときのずらし (物理の向き。右・下が正): CSS の position: relative のセル (LTableCell.relativeOffset)。toArea が位置に足す */
+  relShift?: { x: number; y: number };
+  /** 行の中で見つけた絶対配置の箱の、見つけた所の目印の箱 (LInline.staticAnchor の番号。幅 0) */
+  absAnchor?: number;
   /** line: ページを持たない Flow (セル・コンテナの中) で組んだ行の脚注。親が置いたときに、そのページの脚注領域へ積む */
   fns?: import('./types').LFootnote[];
   /** 段組の段 (0 始まり)。行番号の数え直し・置く側の判定に使う */

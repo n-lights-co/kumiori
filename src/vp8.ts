@@ -39,7 +39,7 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-import { MAX_PIXELS } from './imageLimits';
+import { VP8_PIXELS_PER_BYTE, pixelBudget } from './imageLimits';
 import { AC_TABLE, BMODES_PROBA, COEFF_PROBA0, COEFF_UPDATE_PROBA, DC_TABLE } from './vp8Tables';
 
 /** ブール符号 (RFC 6386 §7) */
@@ -139,7 +139,9 @@ function decode(b: Uint8Array) {
   if (!keyFrame || b[3] !== 0x9d || b[4] !== 0x01 || b[5] !== 0x2a) return undefined;
   const width = (b[6] | (b[7] << 8)) & 0x3fff;
   const height = (b[8] | (b[9] << 8)) & 0x3fff;
-  if (!width || !height || width * height > MAX_PIXELS) return undefined;
+  // 画素の数は、MAX_PIXELS と、データの大きさ (マクロブロックごとに 1.67 ビット以上を使う) で縛る (imageLimits.ts の VP8_PIXELS_PER_BYTE)。
+  // 頭の寸法 (14 ビット) だけの 50 バイトのファイルで、1 億画素の配列を作っていた (IMG-19)
+  if (!width || !height || width * height > pixelBudget(b.length, VP8_PIXELS_PER_BYTE)) return undefined;
   const mbw = (width + 15) >> 4;
   const mbh = (height + 15) >> 4;
   if (10 + firstSize > b.length) return undefined;

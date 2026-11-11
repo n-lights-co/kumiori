@@ -19,6 +19,7 @@ import type { StyleSource } from './htmlImport';
 import type { ParsedCss } from './htmlPaged';
 import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
 import { ahCascadeOptions } from './compat';
+import { faceFileWeights } from './fontMapping';
 import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
 
 export { KUMIORI_BOOK_CSS, PRINT_UA_CSS, CSS21_DEFAULT_CSS, type HtmlDefaults } from './htmlPrepare';
@@ -90,11 +91,13 @@ export async function loadHtml(
     img.setAttribute('src', fontUrls.get('img:' + f.name)!);
   });
 
+  // アンテナハウス互換の bolder・lighter は、@font-face の書体の太さで決める (記述子の無い face は、書体のファイルの太さ。compat.ts の ahCascadeOptions)
+  const ahWeights = defaults === 'ah' ? await faceFileWeights(css, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name))) : undefined;
   // iframe を使わない: 読んだ文書に、自前のカスケードの計算値 (vw・vh と根元の幅は、ページの領域の大きさ)
   if (opts.noFrame) {
     return {
       doc: parsed,
-      styles: cascadeStyles(parsed, authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: uaSheet, quirksMode: documentMode(parsed), viewport: { width: Math.max(bodyWidthPx, 100), height: pageHeightPx }, ...(defaults === 'ah' ? ahCascadeOptions(css) : {}) }),
+      styles: cascadeStyles(parsed, authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: uaSheet, quirksMode: documentMode(parsed), viewport: { width: Math.max(bodyWidthPx, 100), height: pageHeightPx }, ...(defaults === 'ah' ? ahCascadeOptions(css, ahWeights) : {}) }),
       css,
       authorSheet,
       warnings,

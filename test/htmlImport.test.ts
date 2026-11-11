@@ -635,16 +635,27 @@ describe('HTML: 組版の指摘 (描く順・飾り線・揃え・字下げ・�
     expect(cascadeStyles(d, '', { viewport: { width: 600, height: 800 } }).style(d.getElementById('a')!).getPropertyValue('text-indent')).toBe('32px hanging each-line');
   });
 
-  it('text-spacing-trim: space-first は、行頭の始め括弧類を normal と同じく全角にする (Text 4 §8.5「Otherwise as normal」)', () => {
+  it('text-spacing-trim: space-first は、段落の 1 行目の行頭の始め括弧類を全角に、ほかの行は二分にする (Text 4 §8.5 の要約の表)', () => {
     // 「の次の字の、行の頭からの位置 (全角なら 1em = 10pt、半角に詰めれば 5pt)。2 つ目の「は、折り返した行の頭
     const x0 = (10 * 72) / 25.4;
     const opens = (v: string) => {
       const gs = glyphs(`<p style="text-spacing-trim: ${v}; width: 50pt">「あいう」「かきく」</p>`);
       return gs.flatMap((g, i) => (g.text === '「' ? [Math.round(gs[i + 1].x - x0)] : []));
     };
-    expect(opens('space-first')).toEqual(opens('normal'));
-    expect(opens('space-first')).toEqual([10, 10]);
+    expect(opens('normal')).toEqual([10, 10]);
+    expect(opens('space-first')).toEqual([10, 5]);
     expect(opens('trim-start')).toEqual([5, 5]);
+    // 位置ごとの語 (編集者草案の文法): space-start は全角、省いた行頭は trim-start
+    expect(opens('space-start trim-end')).toEqual([10, 10]);
+    expect(opens('trim-end')).toEqual([5, 5]);
+  });
+
+  it('text-spacing-trim: trim-all は、行の中のどこでも全角の括弧類を二分にする (Text 4 §8.5・§8.5.2)', () => {
+    // 約物でない字 (あいうえ) の、行の頭からの位置。行の中の 」 と 「 (前後が約物でなく、隣り合う約物の詰めの無い所) も二分
+    const x0 = (10 * 72) / 25.4;
+    const pos = (v: string) => glyphs(`<p style="text-spacing-trim: ${v}">「あ」い「う」え</p>`).filter((g) => !/[「」]/.test(g.text)).map((g) => Math.round(g.x - x0));
+    expect(pos('trim-all')).toEqual([5, 20, 35, 50]);
+    expect(pos('normal')).toEqual([10, 30, 50, 70]);
   });
 
   it('target-text() の first-letter は、::first-letter と同じく前後の約物を含む最初の字 (GCPM 3 §1.1.1.1・CSS Inline 3 §7.2)', () => {

@@ -353,4 +353,31 @@ describe('Node のコマンド', () => {
     fs.writeFileSync(fo, '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:block>');
     expect(() => execFileSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), fo, '--font-dir', fontDir], { stdio: 'pipe', env: JA_ENV })).toThrow();
   }, 120_000);
+
+  it('文書・CSS の相対参照が入力のディレクトリの外を指す @font-face の書体も読む。どこにも無い書体のファイルは警告で知らせる (CSS-24 (11))', async () => {
+    const dir = fs.mkdtempSync(path.join(work, 'outside-'));
+    fs.mkdirSync(path.join(dir, 'fx'));
+    fs.mkdirSync(path.join(dir, 'sub', 'css'), { recursive: true });
+    fs.copyFileSync(path.join(fontDir, 'Cousine-Regular.ttf'), path.join(dir, 'fx', 'Cousine-Regular.ttf'));
+    /** PDF に埋め込んだ書体の名前 (BaseFont) */
+    const baseFonts = (pdf: PDFDocument) =>
+      pdf.context.enumerateIndirectObjects().flatMap(([, o]) => (o instanceof PDFDict && o.lookup(PDFName.of('Type')) === PDFName.of('Font') ? [String(o.lookup(PDFName.of('BaseFont')))] : []));
+    // 文書の <style> の相対参照 (ブラウザで手元の HTML を開いたときと同じく、文書の場所を基準に解決したファイルを読む)
+    const a = path.join(dir, 'sub', 'a.html');
+    fs.writeFileSync(a, '<style>@font-face{font-family:X;src:url(../fx/Cousine-Regular.ttf)}p{font-family:X}</style><p>iiiWWW</p>');
+    const ra = await run(a);
+    expect(baseFonts(ra.pdf).some((n) => n.includes('Cousine'))).toBe(true);
+    // CSS のファイルの中の相対参照 (CSS の場所 sub/css/ を基準に、入力のディレクトリ sub/ より 1 つ上)
+    fs.writeFileSync(path.join(dir, 'sub', 'css', 'b.css'), '@font-face{font-family:X;src:url("../../fx/Cousine-Regular.ttf")}p{font-family:X}');
+    const b = path.join(dir, 'sub', 'b.html');
+    fs.writeFileSync(b, '<link rel="stylesheet" href="css/b.css"><p>iiiWWW</p>');
+    const rb = await run(b);
+    expect(baseFonts(rb.pdf).some((n) => n.includes('Cousine'))).toBe(true);
+    // どこにも無いファイル: 黙って既定の書体にせず、警告で知らせる
+    const c = path.join(dir, 'sub', 'c.html');
+    fs.writeFileSync(c, '<style>@font-face{font-family:X;src:url(../fx/none.ttf)}p{font-family:X}</style><p>iiiWWW</p>');
+    const r = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), c, '-o', path.join(dir, 'c.pdf'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('@font-face の書体のファイルが見つかりません: X (../fx/none.ttf)');
+  }, 120_000);
 });

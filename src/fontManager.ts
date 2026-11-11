@@ -766,7 +766,14 @@ export class FontManager {
       const target = listed?.list ? listed.base : family;
       const loaded = target ? [...(this.ranged.get(target) ?? [])].reverse().filter((f) => this.isLoaded(f.family) && (!f.same || this.sameApplies(f.same, weight))) : [];
       const rangedFirst = (loaded.find((f) => !f.ranges || f.ranges.some(([a, b]) => a <= 0x20 && 0x20 <= b)) ?? loaded[loaded.length - 1])?.family;
-      const real = rangedFirst ?? (target ? (this.stacks.get(target)?.base ?? target) : target);
+      // 組の基本の書体が、また組の名前のこと (総称の和文の書体を差し替えたとき: 既定の和文の書体の名前が、差し替えた書体の組になる。
+      // fontMapping の setGenericFont) は、組の名前をたどる (順の列を持つ組は除く。輪になっても止まるよう、たどる数を限る)
+      let real = rangedFirst ?? target;
+      for (let k = 0; !rangedFirst && real && k < 4; k++) {
+        const st = this.stacks.get(real);
+        if (!st || st.list) break;
+        real = st.base;
+      }
       const fam = real && this.isLoaded(real) ? real : this.fallbackFamily;
       if (!fam) throw new Error(msg('フォントが 1 つも登録されていません', 'no font is registered'));
       // 幅 → 傾き → 太さの順に絞る (Fonts 4 §5.2)。傾き・幅を持つ書体の無いファミリーは、太さだけ (今までと同じ)
@@ -793,6 +800,10 @@ export class FontManager {
    * ("this may include font aliases")。別名で引いたときは、その書体の中だけで傾き・太さを照合する
    */
   private aliases = new Map<string, Set<string>>();
+  /** いま読み込んであるファミリー family のすべての書体を、別名 alias でも指す (addFamilyAlias をそれぞれに) */
+  addFamilyAliasOf(alias: string, family: string) {
+    for (const f of [...this.fonts.values()]) if (groupOf(f) === family) this.addFamilyAlias(alias, f);
+  }
   addFamilyAlias(alias: string, font: LoadedFont) {
     let set = this.aliases.get(alias);
     if (!set) this.aliases.set(alias, (set = new Set()));

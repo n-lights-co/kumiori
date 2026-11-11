@@ -8,7 +8,7 @@
  * src/vp8.ts の冒頭と THIRD_PARTY_NOTICES.md の 3 節にある
  */
 import type { Pixels } from './pixels';
-import { MAX_PIXELS } from './imageLimits';
+import { VP8L_PIXELS_PER_BYTE, pixelBudget } from './imageLimits';
 import { decodeVp8 } from './vp8';
 
 class Bits {
@@ -394,8 +394,9 @@ function decodeStill(chunks: Map<string, Uint8Array>): Pixels | undefined {
     const br = new Bits(vp8l.subarray(1));
     const width = br.read(14) + 1;
     const height = br.read(14) + 1;
-    // 頭に書かれた大きさで画素の配列を作るので、ほかの形式と同じ上限で止める (28 バイトのファイルで数 GB を要求できる)
-    if (width * height > MAX_PIXELS) return undefined;
+    // 頭に書かれた大きさで画素の配列を作るので、MAX_PIXELS と、チャンクの大きさ (imageLimits.ts の VP8L_PIXELS_PER_BYTE) で止める
+    // (38 バイトのファイルで 1 億画素の配列を作り、12.7 秒・2.1GB を使っていた。IMG-19)
+    if (width * height > pixelBudget(vp8l.length, VP8L_PIXELS_PER_BYTE)) return undefined;
     br.read(1); // 透明を使うか (画素の値のまま使う)
     if (br.read(3) !== 0) return undefined;
     return argbToRgba(decodeImage(br, width, height, true), width, height);
@@ -420,12 +421,13 @@ function decodeStill(chunks: Map<string, Uint8Array>): Pixels | undefined {
  *    (blend.A = src.A。blend.A が 0 なら RGB は 0) なので、違いは透明な画素の RGB だけ。
  *  - コマの中身 (Frame Data) は、ALPH (あれば) と VP8 / VP8L のチャンクの並び。
  */
-function decodeFirstFrame(vp8x: Uint8Array, anmf: Uint8Array): Pixels | undefined {
+function decodeFirstFrame(vp8x: Uint8Array, anmf: Uint8Array, fileBytes: number): Pixels | undefined {
   if (vp8x.length < 10 || anmf.length < 16) return undefined;
   const u24 = (a: Uint8Array, o: number) => a[o] | (a[o + 1] << 8) | (a[o + 2] << 16);
   const cw = u24(vp8x, 4) + 1;
   const ch = u24(vp8x, 7) + 1;
-  if (cw * ch > MAX_PIXELS) return undefined;
+  // canvas の外のコマの無い所は透明で、データを使わないので、可逆の画像と同じ密度の上限 (VP8L_PIXELS_PER_BYTE) でファイルの大きさに縛る
+  if (cw * ch > pixelBudget(fileBytes, VP8L_PIXELS_PER_BYTE)) return undefined;
   const fx = u24(anmf, 0) * 2;
   const fy = u24(anmf, 3) * 2;
   const fw = u24(anmf, 6) + 1;
@@ -455,7 +457,7 @@ export function decodeWebp(b: Uint8Array): Pixels | undefined {
     // 動く WebP: VP8X の Animation の旗 (0x02) が立ち、コマは ANMF の中にある (RFC 9649 §2.7・§2.7.1.1)
     const vp8x = chunks.get('VP8X');
     const anmf = chunks.get('ANMF');
-    if (vp8x && anmf && vp8x[0] & 0x02) return decodeFirstFrame(vp8x, anmf);
+    if (vp8x && anmf && vp8x[0] & 0x02) return decodeFirstFrame(vp8x, anmf, b.length);
     return decodeStill(chunks);
   } catch {
     return undefined;

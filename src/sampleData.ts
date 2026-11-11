@@ -24,6 +24,8 @@ import { mm } from './units';
 
 export const SERIF = 'Noto Serif JP';
 export const SANS = 'Noto Sans JP';
+/** 等幅の書体の組の名前 (欧文の書体を、FontManager の setLatinFallback(MONO_GENERIC, …) で差し替える。fontMapping の等幅の組) */
+export const MONO_GENERIC = 'Kumiori Mono';
 
 const ruby = (baseText: string, rubyText: string): LRuby => ({ type: 'ruby', baseText, rubyText });
 const tcy = (text: string): LTateChuYoko => ({ type: 'tate-chu-yoko', text });

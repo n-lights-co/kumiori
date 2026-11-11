@@ -19,7 +19,7 @@ import { renderPdf, type PdfRenderOptions } from './pdfRenderer';
 import { renderSheetToCanvas } from './canvasRenderer';
 import { AssetStore, looksLikeImage, mentionedFiles, normalizeSrc } from './assets';
 import { droppedLinkWarning, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
-import { SANS, SERIF } from './sampleData';
+import { SERIF } from './sampleData';
 import { importHtml, parsePageSize } from './htmlImport';
 import { importXslFo, type ImportOptions, type XNode } from './xslfoImport';
 import { fetchReportedImages, mathOptionsFor, type MathOptions } from './documentResources';
@@ -30,7 +30,7 @@ import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
 import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
 import { MESSAGE_LANGS, msg, withMessageLang, type MessageLang } from './messages';
 import { FO_COMPATS, HTML_STYLES, ahCascadeOptions, compatLayoutOptions, compatPdfOptions, htmlImportCompatOptions, isAhCompat, loadFoHyphenators, type FoCompat } from './compat';
-import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, missingGlyphChars, setupDefaultFonts } from './fontMapping';
+import { FONT_SPECS, FontNameTable, GENERIC_FONT_KEYS, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, faceFileWeights, hasMissingGlyphs, missingGlyphChars, setGenericFont, setupDefaultFonts, type GenericFontKey } from './fontMapping';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
 import { collectResources, documentChars, refBasename } from './resources';
@@ -68,8 +68,13 @@ export interface TypesetOptions {
    * 斜体の書体は font-style: italic の字に、幅の違う書体 (Arial Narrow など) は font-stretch の指定かその書体の名前で選ぶ (CSS Fonts 4 §5.2)
    */
   fonts?: KumioriFile[];
-  /** 総称の書体 (serif・sans-serif) の欧文に使う書体のファミリー名 (fonts で渡した書体) */
-  genericFonts?: Partial<Record<'serif' | 'sans-serif', string>>;
+  /**
+   * 総称の書体に使う書体のファミリー名 (fonts で渡した書体か、既定の書体)。CSS Fonts 4 §2.1.3: 総称の書体に当てる書体は処理系が決める。
+   *  - serif・sans-serif・monospace: 欧文の字の書体 (既定は Tinos・Arimo・Cousine)
+   *  - serif-cjk・sans-serif-cjk: 和文 (欧文の書体に無い字) の書体 (既定は Noto Serif JP・Noto Sans JP)。
+   *    等幅の和文は、HTML は sans-serif-cjk、XSL-FO は serif-cjk の書体 (等幅の和文の既定と同じ側)
+   */
+  genericFonts?: Partial<Record<GenericFontKey, string>>;
   /** HTML の既定のスタイル。既定 kumiori (本の組版向け) */
   style?: HtmlDefaults;
   /**
@@ -314,6 +319,8 @@ function checkOptions(o: TypesetOptions) {
   }
   if (o.resolveResource !== undefined && typeof o.resolveResource !== 'function') throw optionError(msg('resolveResource は関数にしてください', 'resolveResource must be a function'));
   for (const k of ['genericFonts', 'spotColors'] as const) if (o[k] !== undefined && (typeof o[k] !== 'object' || o[k] === null)) throw optionError(msg(`${k} はオブジェクトにしてください`, `${k} must be an object`));
+  for (const k of Object.keys(o.genericFonts ?? {}))
+    if (!(GENERIC_FONT_KEYS as readonly string[]).includes(k)) throw optionError(msg(`genericFonts の名前 "${k}" は使えません (${GENERIC_FONT_KEYS.join('・')})`, `genericFonts cannot have "${k}" (${GENERIC_FONT_KEYS.join(', ')})`));
   const ln = o.links;
   if (ln !== undefined) {
     if (typeof ln !== 'object' || ln === null) throw optionError(msg('links はオブジェクトにしてください', 'links must be an object'));
@@ -429,14 +436,15 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
       } else fontNames.add('installed', [family, fk.familyName, ...Object.values(recs?.preferredFamily ?? {}), ...Object.values(recs?.fontFamily ?? {})], family);
     }
   }
-  // 総称の書体 (既定の和文書体) の欧文を、指定の書体にする
-  for (const [generic, family] of Object.entries(setup.genericFonts ?? {})) {
+  // 総称の書体を、指定の書体にする (欧文の書体を先に。和文の書体の組は、そのときの欧文の書体を持つ: setGenericFont)
+  for (const generic of GENERIC_FONT_KEYS) {
+    const family = setup.genericFonts?.[generic];
     if (!family) continue;
     if (!base.has(family)) {
       baseWarnings.push(msg(`genericFonts の書体 "${family}" が読み込まれていません (fonts で書体ファイルを渡してください)`, `the genericFonts font "${family}" is not loaded (pass its font file in fonts)`));
       continue;
     }
-    base.setLatinFallback(generic === 'serif' ? SERIF : SANS, family);
+    setGenericFont(base, generic, family);
   }
   // 文書によって使う書体 (数式・等幅・記号): 初めて使うときに読み込んで base に入れ、その後は解析し直さない
   const optional = new Map<string, Promise<LoadedFont>>();
@@ -732,10 +740,16 @@ async function importHtmlText(
   // 既定のスタイル (style) は、作成者スタイルシート ではなく既定のスタイルシート (UA) として当てる (作成者スタイルシート に詳細度で勝たない)
   // attr() を置き換えた結果、読めない値になって無効にした宣言 (CSS Values 5 §7.7.1。警告に出す)
   const invalidAttr: Record<string, number> = {};
-  const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.sheet) : {}), onInvalidAttr: (p, v) => (invalidAttr[`${p}: ${v}`] = (invalidAttr[`${p}: ${v}`] ?? 0) + 1) });
+  const fontFiles = files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name));
+  // アンテナハウス互換の bolder・lighter は、@font-face の書体の太さで決める (記述子の無い face は、書体のファイルの太さ。compat.ts の ahCascadeOptions)
+  const ahWeights = style === 'ah' ? await faceFileWeights(prepared.sheet, fontFiles) : undefined;
+  const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.sheet, ahWeights) : {}), onInvalidAttr: (p, v) => (invalidAttr[`${p}: ${v}`] = (invalidAttr[`${p}: ${v}`] ?? 0) + 1) });
   // @font-face の書体 (TTF・OTF と、ふつうの書体のファイルに戻して使う WOFF・WOFF2)
   // アンテナハウス互換 (style ah) では、font-weight の記述子の無い face を、書体のファイルの太さで登録する (fontMapping.loadFontFaces)
-  await mapping.loadFontFaces(prepared.sheet, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)), { ahFaceWeight: style === 'ah' });
+  // 当たるファイルの無かった face は、次の書体で組み (CSS Fonts 4 §4.3)、警告で知らせる
+  const faceWarnings: string[] = [];
+  const faces = await mapping.loadFontFaces(prepared.sheet, fontFiles, { ahFaceWeight: style === 'ah' });
+  for (const m of faces.missing) faceWarnings.push(msg(`@font-face の書体のファイルが見つかりません: ${m.family} (${m.src.slice(0, 200)})`, `font file of @font-face not found: ${m.family} (${m.src.slice(0, 200)})`));
   // 分綴を使う文書なら、文書に出てくる言語の分綴の規則を読み込む
   await loadDocumentHyphenators(prepared.doc, prepared.css);
   // 作成者スタイルシート と style 属性のうち、読まない宣言 (未対応・知らないプロパティ) を数える
@@ -768,6 +782,6 @@ async function importHtmlText(
         ),
       ]
     : [];
-  return { ...imported, report: { ...imported.report, unsupported, unknownCss: cssRep.unknown }, warnings: [...prepared.warnings, ...attrWarnings] };
+  return { ...imported, report: { ...imported.report, unsupported, unknownCss: cssRep.unknown }, warnings: [...prepared.warnings, ...faceWarnings, ...attrWarnings] };
 }
 

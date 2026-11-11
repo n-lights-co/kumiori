@@ -1890,9 +1890,37 @@ describe('XSL-FO の規格どおりでない読み方 (全体のレビュー)', 
     const xml = fo(`<fo:list-block><fo:list-item break-before="page" keep-together.within-page="always"><fo:list-item-label id="L1" color="red"><fo:block>1</fo:block></fo:list-item-label><fo:list-item-body><fo:block>x</fo:block></fo:list-item-body></fo:list-item></fo:list-block>
       <fo:table><fo:table-body><fo:table-row break-after="page"><fo:table-cell><fo:block>c</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table>`);
     const [list, table] = seq(xml).flow.children as LTable[];
-    expect(list.body.rows[0]).toMatchObject({ breakBefore: true, keepTogether: true });
+    expect(list.body.rows[0]).toMatchObject({ breakBefore: 'page', keepTogether: true });
     expect(list.body.rows[0].cells[0]).toMatchObject({ id: 'L1', color: 'red' });
-    expect(table.body.rows[0].breakAfter).toBe(true);
+    expect(table.body.rows[0].breakAfter).toBe('page');
+  });
+  it('NC-28 (7) list-item・table-row の break-before・break-after の種類 (odd-page・even-page・column) を残す (XSL 1.1 §7.20.1・§7.20.2)', () => {
+    const item = (a: string) => `<fo:list-item ${a}><fo:list-item-label><fo:block>1</fo:block></fo:list-item-label><fo:list-item-body><fo:block>x</fo:block></fo:list-item-body></fo:list-item>`;
+    const xml = fo(`<fo:list-block>${item('break-before="odd-page" break-after="even-page"')}${item('break-before="column"')}</fo:list-block>
+      <fo:table><fo:table-body><fo:table-row break-before="even-page" break-after="odd-page"><fo:table-cell><fo:block>c</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table>`);
+    const [list, table] = seq(xml).flow.children as LTable[];
+    expect([list.body.rows[0].breakBefore, list.body.rows[0].breakAfter, list.body.rows[1].breakBefore]).toEqual(['odd-page', 'even-page', 'column']);
+    expect([table.body.rows[0].breakBefore, table.body.rows[0].breakAfter]).toEqual(['even-page', 'odd-page']);
+  });
+  it('NC-28 (7) 表の行・リストの項目の break-before="odd-page" は、白ページを挟んで奇数ページから', () => {
+    const row = (a: string, t: string) => `<fo:table-row ${a}><fo:table-cell><fo:block>${t}</fo:block></fo:table-cell></fo:table-row>`;
+    const pagesOf = (xml: string) =>
+      E.engine.layout(imp(xml, { compat: 'spec' }).document).sheets.map((sh) => {
+        let t = '';
+        walk(sh.page.regionBody, (a) => {
+          if (a.type === 'glyph') t += a.text;
+        });
+        return t;
+      });
+    // 1 ページ目の後ろの odd-page: 2 ページ目は白ページ、3 ページ目から
+    expect(pagesOf(fo(`<fo:table><fo:table-body>${row('', 'A')}${row('break-before="odd-page"', 'B')}</fo:table-body></fo:table>`))).toEqual(['A', '', 'B']);
+    // even-page: 2 ページ目から (白ページ無し)
+    expect(pagesOf(fo(`<fo:table><fo:table-body>${row('', 'A')}${row('break-before="even-page"', 'B')}</fo:table-body></fo:table>`))).toEqual(['A', 'B']);
+    // 行の break-after="odd-page" も同じ
+    expect(pagesOf(fo(`<fo:table><fo:table-body>${row('break-after="odd-page"', 'A')}${row('', 'B')}</fo:table-body></fo:table>`))).toEqual(['A', '', 'B']);
+    // リストの項目
+    const item = (a: string, t: string) => `<fo:list-item ${a}><fo:list-item-label><fo:block>-</fo:block></fo:list-item-label><fo:list-item-body start-indent="body-start()"><fo:block>${t}</fo:block></fo:list-item-body></fo:list-item>`;
+    expect(pagesOf(fo(`<fo:list-block>${item('', 'A')}${item('break-before="odd-page"', 'B')}</fo:list-block>`))).toEqual(['-A', '', '-B']);
   });
   it('fo:character の空白を残し、書式を当てる', () => {
     const b = seq(fo('<fo:block>a<fo:character character=" "/>b<fo:character character="X" color="red"/></fo:block>')).flow.children[0] as LBlock;

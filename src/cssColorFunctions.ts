@@ -356,12 +356,14 @@ export function gamutMapToSrgb(xyz: Vec): Vec {
 
 /**
  * 色 → 8 ビットの sRGB。alpha の none は 0 (Color 4 §4.4)。
- * legacy は、sRGB に解決する色 (hwb()。§4.1・§15.1) か: rgb()・hsl() と同じく、色域に収めずに成分を切り詰める
+ * legacy は、sRGB に解決する色 (rgb()・hsl()・hwb()。§4.1・§15.1) か: 色域に収めずに成分を切り詰める
  */
 function toRgba8(col: Col, legacy: boolean): Rgba8 {
   // sRGB の成分のままで色域の中にある色は、XYZ を経由しない (往復の誤差で 8 ビットの丸めが変わらないように)
   const own = col.space === 'srgb' ? (col.c.map((x) => x ?? 0) as Vec) : undefined;
-  const rgb = legacy ? clip01(hwbToRgb(col.c[0] ?? 0, col.c[1] ?? 0, col.c[2] ?? 0)) : own && inSrgb(own) ? own : gamutMapToSrgb(toXyz(col));
+  const [c0, c1, c2] = col.c.map((x) => x ?? 0);
+  const legacyRgb = (): Vec => clip01(col.space === 'hwb' ? hwbToRgb(c0, c1, c2) : col.space === 'hsl' ? hslToRgb(c0, c1, c2) : [c0, c1, c2]);
+  const rgb = legacy ? legacyRgb() : own && inSrgb(own) ? own : gamutMapToSrgb(toXyz(col));
   const to8 = (x: number) => Math.round(Math.min(255, Math.max(0, (Number.isFinite(x) ? x : 0) * 255)));
   return [to8(rgb[0]), to8(rgb[1]), to8(rgb[2]), Math.min(1, Math.max(0, col.alpha ?? 0))];
 }
@@ -426,7 +428,7 @@ const COLOR_SPACES: Record<string, Space> = {
  *  - color(): 成分は数か百分率 (100% = 1)。範囲の外の値もそのまま持つ (§10.1)
  */
 function parseFunction(s: string): Col | undefined {
-  const m = /^(hwb|lab|lch|oklab|oklch|color)\((.*)\)$/s.exec(s);
+  const m = /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\((.*)\)$/s.exec(s);
   if (!m || m[2].includes(',') || /[()]/.test(m[2])) return undefined;
   const halves = m[2].split('/');
   if (halves.length > 2) return undefined;
@@ -446,6 +448,22 @@ function parseFunction(s: string): Col | undefined {
   }
   if (parts.length !== 3) return undefined;
   let c: Array<Comp | undefined>;
+  // rgb()・hsl() の新しい構文 (Color 4 §5.1・§7.1。成分は数・百分率・none)。範囲の外の値は、読むときに範囲に丸める
+  //  - rgb(): 成分は 0〜255 (100% = 255)。sRGB の 0〜1 にする
+  //  - hsl(): 彩度・明度は数か百分率 (100% = 100)。彩度は 0 以上、明度は 0〜100 に丸める
+  if (fn === 'rgb' || fn === 'rgba') {
+    c = parts.map((t) => {
+      const v = clampComp(component(t, 255), 0, 255);
+      return v === null || v === undefined ? v : v / 255;
+    });
+    if (c.some((x) => x === undefined)) return undefined;
+    return { space: 'srgb', c: c as [Comp, Comp, Comp], alpha };
+  }
+  if (fn === 'hsl' || fn === 'hsla') {
+    c = [hueComponent(parts[0]), clampComp(component(parts[1], 100), 0, Infinity), clampComp(component(parts[2], 100), 0, 100)];
+    if (c.some((x) => x === undefined)) return undefined;
+    return { space: 'hsl', c: c as [Comp, Comp, Comp], alpha };
+  }
   if (fn === 'hwb') c = [hueComponent(parts[0]), component(parts[1], 100), component(parts[2], 100)];
   else if (fn === 'lab') c = [clampComp(component(parts[0], 100), 0, 100), component(parts[1], 125), component(parts[2], 125)];
   else if (fn === 'lch') c = [clampComp(component(parts[0], 100), 0, 100), clampComp(component(parts[1], 150), 0, Infinity), hueComponent(parts[2])];
@@ -644,10 +662,17 @@ export function parseColorFunction(s: string, legacy: (v: string) => Rgba8 | 'cu
   const parseAny = (v: string, depth = 0): Col | undefined => {
     if (depth > 8) return undefined;
     if (v.startsWith('color-mix(')) return parseColorMix(v, (x) => parseAny(x, depth + 1));
-    if (isColorFunction(v)) return parseFunction(v);
+    // 欠けた成分 (none) のある rgb()・hsl() は、欠けたまま混ぜる (Color 4 §13.4: 欠けた成分は、もう一方の色の成分を引き継ぐ)
+    if (isColorFunction(v) || hasNoneComponent(v)) return parseFunction(v);
     const c = legacy(v);
     return c === undefined ? undefined : fromRgba(c === 'current' ? current : c);
   };
   const col = parseAny(s);
-  return col ? toRgba8(col, col.space === 'hwb' && s.startsWith('hwb(')) : undefined;
+  return col ? toRgba8(col, /^(rgba?|hsla?|hwb)\(/.test(s)) : undefined;
 }
+
+/**
+ * none の成分を書いた rgb()・rgba()・hsl()・hsla() か (新しい構文。Color 4 §4.4)。cssText の parseColor が、ここ (parseColorFunction) へ回すかを決める。
+ * 欠けた成分は、色を描くときは 0 にする (§4.4.1「treat it as zero」)
+ */
+export const hasNoneComponent = (s: string) => /^(rgba?|hsla?)\(/.test(s) && /(^|[\s(/])none([\s)/]|$)/.test(s);

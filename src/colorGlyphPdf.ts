@@ -26,6 +26,7 @@ import { parseColor } from './color';
 import { ITALIC_SLANT } from './paint';
 import { invert, type Seg } from './matrix';
 import { embedCmykImage } from './pdfLibPatches';
+import { pngWithinLimits } from './pixels';
 import { areaGlyphs, boxThrough, colorFontOf, COMPOSITE, paletteKey, plainStops, segsBox, sweepSampler, unrollStops, type Box, type ColorFill, type ColorFont, type ColorOp, type ColorStop, type Rgb } from './colorGlyph';
 import { svgGlyphReader } from './colorGlyphSvg';
 import type { XmlNode } from './svg';
@@ -171,6 +172,8 @@ export class PdfColorGlyphs {
       try {
         const cmyk = opts.cmyk ? await embedCmykImage(pdf, data, kind, opts.cmyk) : undefined;
         if (cmyk?.hasAlpha) alpha = true;
+        // 上限を超える PNG は展開しない (pixels.ts の pngWithinLimits。IMG-19)
+        if (kind === 'png' && !cmyk && !pngWithinLimits(data)) throw new Error('PNG: 画素の数か展開の大きさが上限を超えます');
         self.images.set(key, cmyk?.image ?? (kind === 'png' ? await pdf.embedPng(data) : await pdf.embedJpg(data)));
       } catch (e) {
         console.warn('PDF: 色つきの字形の画像を埋め込めません', e);

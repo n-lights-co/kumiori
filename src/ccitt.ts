@@ -13,7 +13,7 @@
  *  - 連なりの長さは、0 個以上の Make-up の符号と、1 つの Terminating の符号の和。
  *  - FillOrder=1 は各バイトの上位のビットから、2 は下位のビットから読む。
  */
-import { MAX_PIXELS } from './imageLimits';
+import { CCITT_1D_PIXELS_PER_BYTE, CCITT_2D_PIXELS_PER_BYTE, ccittRowLimit, pixelBudget } from './imageLimits';
 
 /** 白の Terminating (0〜63) と Make-up (64〜1728) の符号 */
 const WHITE: Array<[number, string]> = [
@@ -264,6 +264,19 @@ export interface CcittOptions {
   fillOrder?: number;
 }
 
+/** 2 次元の符号の行がありうるか (T.6、または T4Options の bit 0 の立った T.4) */
+export const ccittTwoDimensional = (o: Pick<CcittOptions, 'compression' | 'twoDimensional'>): boolean => o.compression === 4 || (o.compression === 3 && !!o.twoDimensional);
+
+/**
+ * 幅 width・rows 行の CCITT の画像を、dataBytes バイトの符号から読んでよいか (imageLimits.ts の CCITT_1D_PIXELS_PER_BYTE・CCITT_2D_PIXELS_PER_BYTE・ccittRowLimit)。
+ * 2 次元の符号なら、行の数はデータのビット数まで (1 行は 1 ビット以上)。画素の数は、1 次元・2 次元の符号の密度の上限と MAX_PIXELS まで
+ * (寸法だけを大きくした 138 バイトの T.6 の TIFF で、1 億画素の配列を作り、11 秒・2.1GB を使っていた。IMG-19)
+ */
+export function ccittFits(width: number, rows: number, dataBytes: number, twoDimensional: boolean): boolean {
+  if (twoDimensional && rows > ccittRowLimit(dataBytes)) return false;
+  return width * rows <= pixelBudget(dataBytes, twoDimensional ? CCITT_2D_PIXELS_PER_BYTE : CCITT_1D_PIXELS_PER_BYTE);
+}
+
 /**
  * 1 つのストリップを展開する。戻り値は 1 画素 1 バイト (1 = CCITT の黒、0 = 白)。行の連なりの和が幅と合わないなど、
  * 読めなければ undefined
@@ -273,8 +286,8 @@ export function decodeModifiedHuffman(data: Uint8Array, o: CcittOptions): Uint8A
   modeTable ??= new Map(MODES.map(([c, m]) => [key(c.length, parseInt(c, 2)), m]));
   const { white, black } = tables;
   const W = o.width;
-  // 画素の数の上限 (頭に書かれた寸法だけで大量のメモリ・時間を使わない)
-  if (!(W > 0) || !(o.rows > 0) || W * o.rows > MAX_PIXELS) return undefined;
+  // 画素の数の上限 (頭に書かれた寸法だけで大量のメモリ・時間を使わない)。MAX_PIXELS と、データの大きさで縛る (ccittFits)
+  if (!(W > 0) || !(o.rows > 0) || !ccittFits(W, o.rows, data.length, ccittTwoDimensional(o))) return undefined;
   const out = new Uint8Array(W * o.rows);
   const nbits = data.length * 8;
   let pos = 0;

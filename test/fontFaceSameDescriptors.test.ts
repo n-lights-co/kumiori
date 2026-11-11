@@ -180,6 +180,32 @@ describe('公開の API: 同じ名前で記述子の無い @font-face を並べ�
   });
 });
 
+describe('--style ah: bolder・lighter は、記述子の無い face を書体のファイルの太さで数える (HTM-32 の (6))', () => {
+  const loadFont = async (spec: Parameters<typeof loadCachedFont>[0]) => (await loadCachedFont(spec))!;
+  // 『CSS ページ組版入門』第 4 版の source-han-sans と同じ形: 記述子の無い Regular・Bold の face。b は bolder
+  const html = `<!DOCTYPE html><html lang="ja"><head><style>
+    @font-face { font-family: shs; src: url(r.ttf) }
+    @font-face { font-family: shs; src: url(b.ttf) }
+    p { font-family: shs; margin: 0 }</style></head><body><p>標<b>太</b></p><p style="font-weight:700">太<span style="font-weight:lighter">細</span></p></body></html>`;
+  const files = () => [
+    { name: 'r.ttf', data: new Uint8Array(cached('NotoSansJP-Regular.ttf')) },
+    { name: 'b.ttf', data: new Uint8Array(cached('NotoSansJP-Bold.ttf')) },
+  ];
+  it('b (bolder) は太字のファイル (700)、太字の中の lighter は標準の太さのファイル (400)', async () => {
+    const t = await createTypesetter({ loadFont });
+    const r = await t.typeset(html, { kind: 'html', style: 'ah', files: files() });
+    const got: string[] = [];
+    walkAreaTree(r.areaTree, (a) => {
+      if (a.type !== 'glyph' || !/[標太細]/.test((a as GlyphArea).text)) return;
+      const g = a as GlyphArea;
+      got.push(`${g.text}:${g.fontWeight}${g.fakeBold ? ':太らせる' : ''}`);
+    });
+    // CSS 2.1 §15.6: 書体にある太さ (400・700) のうち、継承した太さより濃い (淡い) 次の太さ。記述子の太さ (どちらも 400) で数えると、
+    // b は 500 になり、標準の太さのファイルで組まれる
+    expect(got).toEqual(['標:400', '太:700', '太:700', '細:400']);
+  });
+});
+
 describe('同じ割り当てで文書を続けて読む (画面): 前の文書の @font-face の書体を、次の文書に残さない (HTM-32 の (4))', () => {
   it('同じ font-family の名前で別のファイルを指す文書は、その文書の書体で組む。前の文書だけにあった太さの face は外す', async () => {
     const { fonts, m, pick } = await setup();

@@ -18,7 +18,7 @@
  * 算術符号・可逆・階層・12 ビット・4 成分 (CMYK)・上の場合以外の APP14 の画像は扱わない (読まずに undefined を返す)。
  */
 import { AC_CHROMA, AC_LUMA, DC_CHROMA, DC_LUMA, QUANT_CHROMA, QUANT_LUMA, UNZIGZAG, ZIGZAG, type HuffmanSpec } from './jpegTables';
-import { MAX_PIXELS } from './imageLimits';
+import { JPEG_PIXELS_PER_BYTE, pixelBudget } from './imageLimits';
 
 /** 画素: 濃淡 (1 画素 1 バイト) か RGB (1 画素 3 バイト)、上の行から */
 export interface JpegPixels {
@@ -281,7 +281,10 @@ function decode(b: Uint8Array): JpegPixels | undefined {
       X = be16(seg, 3);
       const nf = seg[5];
       if (nf !== 1 && nf !== 3) return undefined;
-      if (!X || !Y || X * Y > MAX_PIXELS) return undefined;
+      // 画素の数は、MAX_PIXELS と、ファイルの大きさ (区画ごとに 1 ビット以上を使う) で縛る (imageLimits.ts の JPEG_PIXELS_PER_BYTE)。
+      // 係数の配列 (1 標本 2 バイト) と面は寸法のとおりに作るので、走査のデータの無い 136 バイトのファイルで、1 億画素の係数と IDCT を
+      // 作っていた (IMG-19)
+      if (!X || !Y || X * Y > pixelBudget(b.length, JPEG_PIXELS_PER_BYTE)) return undefined;
       for (let i = 0; i < nf; i++) {
         const hv = seg[7 + 3 * i];
         const c = { id: seg[6 + 3 * i], h: hv >> 4, v: hv & 15, tq: seg[8 + 3 * i] & 3 } as Component;
