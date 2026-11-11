@@ -52,6 +52,11 @@ export interface Atom {
   /** 中身の無い inline の目印 (id の位置だけを記録する幅 0 の箱) */
   idMark?: boolean;
   /**
+   * 行の中で見つけた絶対配置の箱の、見つけた所の目印 (idMark の箱。LInline.staticAnchor)。行末の空白を捨てるときは、目印を飛ばして
+   * その前の空白も捨てる (目印は行に残す): 目印があっても、行の字の位置を変えない
+   */
+  staticMark?: boolean;
+  /**
    * 行内の箱の外側の空き (CSS の margin。LInline.inlineMargin の bound) の箱: 箱の始まりの側 (start) か終わりの側 (end)。
    * 改行の機会の計算 (markLineBreaks) では字の並びに入れず、前後の字の間の機会を、箱の margin の端の外に付ける
    * (終わりの側の空きの後ろ・始まりの側の空きの前。CSS Text 3 §5.5)
@@ -70,6 +75,13 @@ export interface Atom {
   cluster?: string;
   /** 字ごとに分けて組んだクラスタの 2 つ目以降の字 (どの書体も並び全体を持たないとき)。前の字と同じ字の単位で、前では行を分けない (glue も付く) */
   clusterCont?: boolean;
+  /**
+   * つながる字の並び (アラビア文字の語など。1 つの atom) を、字ごとの断片に分ける関数 (inlineFlatten.ts の joinedPieces)。
+   * 語の途中で折ってよい書式の並びだけが持つ。splitJoinedAtoms が、要るときだけ呼んで置き換える。分けられなければ undefined
+   */
+  splitJoined?: () => Array<Partial<Atom> & { first: string; last: string; advance: number }> | undefined;
+  /** つながる字の並びを分けた断片の、2 つ目以降 (前の断片と同じ語。字の組の詰め (kern) を前の断片との間に入れない) */
+  joinPiece?: boolean;
   advance: number;
   isSpace: boolean;
   /**
@@ -287,6 +299,45 @@ function canBreakAtoms(a: Atom, b: Atom): boolean {
   return b.lbBefore ?? false;
 }
 
+/** 断片に分けるとき、最初の断片だけに残す印 (並びの始まりの側のもの) と、最後の断片だけに残す印 (終わりの側のもの) */
+const PIECE_START_KEYS = ['bidiOpen', 'paraStart', 'frameOpen', 'ovL', 'lsLead', 'dx', 'afterBreak', 'fnRef'] as const;
+const PIECE_END_KEYS = ['bidiClose', 'frameClose', 'trail', 'lsTrail', 'ovR', 'hyphen', 'softHyphen'] as const;
+
+/**
+ * 語の途中で折るために、つながる字の並び (アラビア文字の語など。inlineFlatten.ts が 1 つの atom にまとめたもの) を、字ごとの断片の atom に分ける。
+ * 行に分ける前 (markLineBreaks の前) に呼ぶ。分けるのは:
+ *  - word-break: break-all の並び (CSS Text 3 §5.1: 字 (AL の字も) を ID として扱い、字と字の間で折ってよい。行を埋めるように折るので、常に分ける)
+ *  - overflow-wrap: anywhere・break-word (XSL-FO は、語の途中の強制分割) の並びのうち、行の幅 L より長いもの (§5.5: ほかに折れる所が無く、
+ *    語が行に収まらないときだけ、語の途中で折る。L 以下の語は、次の行へ送れば収まるので分けない)。最小の幅を測るときの break-word は分けない
+ *    (§5.5: break-word の語の途中の機会は、最小の幅 (min-content) を決めるときには数えない)
+ * 断片の字形は、折らないときと同じつながった形 (§5.1 の注。joinedPieces)
+ */
+export function splitJoinedAtoms(atoms: Atom[], L: number, intrinsic = false): void {
+  for (let i = atoms.length - 1; i >= 0; i--) {
+    const a = atoms[i];
+    if (!a.splitJoined) continue;
+    const ow = a.st.overflowWrap;
+    const need = a.st.wordBreak === 'break-all' || (ow !== 'normal' && !(ow === 'break-word' && intrinsic) && a.advance > L + EPS);
+    if (!need) continue;
+    const pieces = a.splitJoined();
+    if (!pieces) continue;
+    const { splitJoined: _s, ...rest } = a;
+    const made = pieces.map((p, k) => {
+      const atom: Atom = { ...rest, ...p };
+      if (k > 0) {
+        for (const key of PIECE_START_KEYS) delete atom[key];
+        atom.joinPiece = true;
+      }
+      if (k < pieces.length - 1) for (const key of PIECE_END_KEYS) delete atom[key];
+      return atom;
+    });
+    // 字の後ろに足した空き (和欧間のアキなど) は、最後の断片の送りに残す
+    const extra = a.advance - (a.g?.advance ?? a.advance);
+    if (extra) made[made.length - 1].advance += extra;
+    atoms.splice(i, 1, ...made);
+  }
+}
+
 /** 改行の調整 (CSS の line-break と、アンテナハウス互換の looseLineStart) */
 function lineBreakOptionsOf(st: ResolvedStyle): LineBreakOptions {
   const lb = st.lineBreak;
@@ -433,9 +484,14 @@ function resolveLineTabs(items: Atom[], indent: number): void {
 
 function makeLine(items: Atom[], last: boolean, indent: number): RawLine {
   let e = items.length;
-  // white-space-treatment="preserve" などの空白は、行末でも残す (XSL §7.16.8)
-  while (e > 0 && items[e - 1].isSpace && !items[e - 1].st.keepLineEndSpace) e--;
-  return { items: items.slice(0, e), last, indent };
+  // white-space-treatment="preserve" などの空白は、行末でも残す (XSL §7.16.8)。
+  // 絶対配置の箱の目印 (staticMark) は飛ばして、その前の空白も捨てる (目印は、捨てた空白の後ろ = 行の字の終わりに残す)
+  const marks: Atom[] = [];
+  while (e > 0 && ((items[e - 1].isSpace && !items[e - 1].st.keepLineEndSpace) || items[e - 1].staticMark)) {
+    if (items[e - 1].staticMark) marks.unshift(items[e - 1]);
+    e--;
+  }
+  return { items: marks.length ? [...items.slice(0, e), ...marks] : items.slice(0, e), last, indent };
 }
 
 /**
@@ -1009,7 +1065,7 @@ function unfilledAt(atoms: Atom[], start: number, j: number, k: number, x: numbe
   let w = x;
   for (let i = j; i < k; i++) w -= atoms[i].advance;
   let e = j;
-  while (e > start && atoms[e - 1].isSpace && !atoms[e - 1].st.keepLineEndSpace) w -= atoms[--e].advance;
+  while (e > start && ((atoms[e - 1].isSpace && !atoms[e - 1].st.keepLineEndSpace) || atoms[e - 1].staticMark)) w -= atoms[--e].advance;
   const last = e > start ? atoms[e - 1] : undefined;
   if (last) w -= (last.trail ?? 0) + (last.lsTrail ?? 0) + endTrimOf(last) - (last.ovR ?? 0);
   return avail - w;
@@ -1595,23 +1651,27 @@ export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): Pos
   const avail = Math.max(L - raw.indent - (raw.endIndent ?? 0), 0);
   const widths = items.map((t) => t.advance);
   // 行頭・行末のルビは、行の外の字には掛けない (はみ出し分を送りへ戻す)
-  const ov = items.map((t, k) => (t.ovL || t.ovR ? [k === 0 ? 0 : (t.ovL ?? 0), k === items.length - 1 ? 0 : (t.ovR ?? 0)] : undefined));
+  // 行頭・行末の字 (絶対配置の箱の目印 staticMark は、幅 0 で行の字の位置に関わらないので飛ばす)
+  let head = 0;
+  while (head < items.length - 1 && items[head].staticMark) head++;
+  let tail = items.length - 1;
+  while (tail > 0 && items[tail].staticMark) tail--;
+  const ov = items.map((t, k) => (t.ovL || t.ovR ? [k === head ? 0 : (t.ovL ?? 0), k === tail ? 0 : (t.ovR ?? 0)] : undefined));
   ov.forEach((o, k) => {
     if (o) widths[k] += (items[k].ovL ?? 0) - o[0] + (items[k].ovR ?? 0) - o[1];
   });
   // 行末の字の後ろの和欧間アキは捨てる
-  const tail = items.length - 1;
   if (tail >= 0 && items[tail].trail) widths[tail] -= items[tail].trail!;
   // letter-spacing の行頭・行末の分は捨てる (XSL §7.17.2: conditionality = discard)
   if (tail >= 0 && items[tail].lsTrail) widths[tail] -= items[tail].lsTrail!;
   // 行末の終わり括弧類・句読点の後ろのアキを捨てる (ぶら下げた行は、ぶら下げた字が行の外なので対象外)
   const endTrim = tail >= 0 && !raw.hang ? endTrimOf(items[tail]) : 0;
   if (endTrim) widths[tail] -= endTrim;
-  const lsHead = items[0]?.lsLead ?? 0;
-  if (lsHead) widths[0] -= lsHead;
+  const lsHead = items[head]?.lsLead ?? 0;
+  if (lsHead) widths[head] -= lsHead;
   // 行頭の始め括弧類の前の二分アキを詰める (字面を前へ寄せる)
-  const startTrim = startTrimOf(items[0]);
-  if (startTrim) widths[0] -= startTrim;
+  const startTrim = startTrimOf(items[head]);
+  if (startTrim) widths[head] -= startTrim;
   const hasLeader = items.some((t) => t.kind === 'leader');
   if (hasLeader) fillLeaders(items, widths, avail - widths.reduce((a, b) => a + b, 0));
   // 追込み: 行が溢れるときは、詰めてよい箇所を JLREQ §3.8.3 の順に、段階ごとに文字サイズ比で均等に詰める
@@ -1619,7 +1679,7 @@ export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): Pos
   let shrinkDx: number[] | undefined;
   let over = widths.reduce((a, b) => a + b, 0) - avail;
   if (over > EPS) {
-    const parts = items.map((a, k) => squeezeParts(a, k === tail && !raw.hang, k === 0, raw.last));
+    const parts = items.map((a, k) => squeezeParts(a, k === tail && !raw.hang, k === head, raw.last));
     // 詰める量の合計は squeezeCap まで (アンテナハウス互換)
     let left = squeezeCap(items);
     for (let lv = 0; lv < SQUEEZE_LEVELS && over > EPS && left > EPS; lv++) {
@@ -1675,7 +1735,7 @@ export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): Pos
   if (ov.some((o) => o)) out.overhang = ov;
   if (startTrim || lsHead) {
     shrinkDx ??= items.map(() => 0);
-    shrinkDx[0] -= startTrim + lsHead;
+    shrinkDx[head] -= startTrim + lsHead;
   }
   if (shrinkDx?.some((d) => d)) out.shrinkDx = shrinkDx;
   // ぶら下げた字は、行の最後の字のすぐ後ろに置く (両端揃えの行では版面端ちょうど。揃えない行で版面端に置くと、最後の字との間が空く)

@@ -53,6 +53,10 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'overflow-inline',
   'overflow-clip-margin',
   'page-orientation',
+  // 回り込みの形 (CSS Shapes 1 §6.1〜§6.3)。Kumiori の回り込みは、いつも箱の形 (margin box)
+  'shape-outside',
+  'shape-image-threshold',
+  'shape-margin',
 
   'text-align-all',
   'text-justify',
@@ -119,6 +123,18 @@ export const UNSUPPORTED_CSS_VALUES: Readonly<Record<string, readonly string[]>>
   'hyphenate-limit-last': ['column', 'page', 'spread'],
 };
 
+/**
+ * 対応しているプロパティのうち、値の中の語で見分ける、読まない値 (ほかの語と組んで書ける値)。「prop: 語」として数える
+ *  - hanging-punctuation の last (CSS Text 3 §8.2.1: 最後の行の末尾の終わり括弧・引用符をぶら下げる。first・allow-end などは読む)
+ */
+const UNSUPPORTED_CSS_VALUE_WORDS: Readonly<Record<string, readonly string[]>> = {
+  'hanging-punctuation': ['last'],
+};
+/** 宣言の値の中の、読まない関数 (prop → 関数の名前)。「名前()」として数える。target-counters() (CSS Content 3 §6.2。入れ子のカウンターの値の並び) */
+const UNSUPPORTED_CSS_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
+  content: ['target-counters'],
+};
+
 export interface UnsupportedCssReport {
   /** 未対応のプロパティ・値 (「prop」「prop: value」) → 宣言の数 */
   unsupported: Record<string, number>;
@@ -182,6 +198,12 @@ function count(rep: UnsupportedCssReport, prop: string, value: string, svg = fal
     rep.unsupported[p] = (rep.unsupported[p] ?? 0) + 1;
     return;
   }
+  const words = UNSUPPORTED_CSS_VALUE_WORDS[p];
+  if (words) {
+    const ws = v.toLowerCase().split(/\s+/);
+    for (const w of words) if (ws.includes(w)) rep.unsupported[`${p}: ${w}`] = (rep.unsupported[`${p}: ${w}`] ?? 0) + 1;
+  }
+  for (const fn of UNSUPPORTED_CSS_FUNCTIONS[p] ?? []) if (new RegExp(`(^|[^-\\w])${fn}\\(`, 'i').test(v)) rep.unsupported[`${fn}()`] = (rep.unsupported[`${fn}()`] ?? 0) + 1;
   const vals = UNSUPPORTED_CSS_VALUES[p];
   if (vals) {
     const lv = v.toLowerCase();
@@ -199,10 +221,18 @@ function count(rep: UnsupportedCssReport, prop: string, value: string, svg = fal
 
 /**
  * 作成者スタイルシート (読んだスタイルシート) と、文書の style 属性の宣言を数える。
- * @page の宣言と余白の箱の宣言、@font-face の記述子は数えない (別の決まりで読む)
+ * @page の宣言と余白の箱の宣言、@font-face の記述子は、知らないプロパティとしては数えない (別の決まりで読む)。
+ * @page の未対応の記述子 (page-orientation) と、余白の箱の content の未対応の関数 (target-counters()) は数える。
+ * 読まずに捨てた規則・書き方 (@namespace・@page :nth()。parseCss の ignored) も数える
  */
 export function unsupportedCssReport(sheet: ParsedCss | undefined, doc?: Document): UnsupportedCssReport {
   const rep: UnsupportedCssReport = { unsupported: {}, unknown: {} };
+  const add = (k: string) => (rep.unsupported[k] = (rep.unsupported[k] ?? 0) + 1);
+  for (const k of sheet?.ignored ?? []) add(k);
+  for (const pg of sheet?.pages ?? []) {
+    for (const p of Object.keys(pg.decls)) if (UNSUPPORTED_CSS_PROPERTIES.has(p.toLowerCase())) add(p.toLowerCase());
+    for (const box of Object.values(pg.boxes)) if (box.content && /(^|[^-\w])target-counters\(/i.test(box.content)) add('target-counters()');
+  }
   // 文書の中にじかに書いた <svg> があるか (SVG の要素にだけ当てはまる性質を、未対応に数えるかを決める)
   const hasSvg = !!doc && Array.from((doc.getElementsByTagName?.('svg') ?? []) as ArrayLike<Element>).length > 0;
   for (const r of sheet?.rules ?? []) for (const [p, v] of Object.entries(r.decls)) count(rep, p, v, hasSvg);

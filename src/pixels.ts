@@ -11,7 +11,7 @@ export interface Pixels {
   rgba: Uint8Array;
 }
 
-import { MAX_PIXELS, gifPixelBudget } from './imageLimits';
+import { BMP_RLE_PIXELS_PER_BYTE, DEFLATE_MAX_RATIO, MAX_PIXELS, gifPixelBudget, pixelBudget } from './imageLimits';
 
 /** 画素の数の上限 (imageLimits.ts。ここからも引けるようにしてある) */
 export { MAX_PIXELS } from './imageLimits';
@@ -146,7 +146,37 @@ function lzw(data: Uint8Array, minSize: number, n: number): Uint8Array {
   return out;
 }
 
-/** BMP の画素 (圧縮なし、または 16・32 ビットのビットフィールド)。読めなければ undefined */
+/**
+ * PNG を展開してよいか (画素の数が MAX_PIXELS まで、かつ、展開した走査線の大きさが IDAT の大きさの DEFLATE_MAX_RATIO 倍まで)。
+ * 画像を描けない環境 (Node) で、pdf-lib の embedPng は、IHDR の寸法のとおりに走査線・RGBA・RGB・透明度の配列を作ってから展開するので、
+ * 寸法だけが大きい 65 バイトの PNG で、9 秒・1.3GB を使っていた (IMG-19)。PNG の画素の並びは zlib (deflate) で圧縮する
+ * (W3C の PNG の仕様 (Second Edition) §10.1) ので、正当な PNG の走査線は IDAT の 1,032 倍より大きくならない (RFC 1951)。
+ * 走査線の大きさは、少なく見積もる (幅 × 高さ × 1 画素のビット数 / 8。インターレースの PNG はこれより大きい) ので、正当な PNG は断らない。
+ * PNG でない・頭の読めないものは false
+ */
+export function pngWithinLimits(b: Uint8Array): boolean {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (b.length < 33 || sig.some((v, i) => b[i] !== v)) return false;
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  let pixelBits = 0;
+  let pixels = 0;
+  let idat = 0;
+  for (let at = 8; at + 12 <= b.length; ) {
+    const len = dv.getUint32(at);
+    const type = String.fromCharCode(b[at + 4], b[at + 5], b[at + 6], b[at + 7]);
+    if (type === 'IHDR' && len >= 13 && at + 21 <= b.length) {
+      pixels = dv.getUint32(at + 8) * dv.getUint32(at + 12);
+      // 1 画素のビット数 = 標本の数 × ビットの深さ (PNG の仕様 §11.2.2 の Table 11.1: 色の型 0 灰・2 RGB・3 色の表・4 灰と α・6 RGBA)
+      const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[b[at + 17]] ?? 0;
+      pixelBits = channels * b[at + 16];
+    } else if (type === 'IDAT') idat += Math.min(len, b.length - at - 8);
+    else if (type === 'IEND') break;
+    at += 12 + len;
+  }
+  return pixels > 0 && pixelBits > 0 && pixels <= MAX_PIXELS && (pixels * pixelBits) / 8 <= DEFLATE_MAX_RATIO * idat;
+}
+
+/** BMP の画素 (圧縮なし、16・32 ビットのビットフィールド、または RLE8・RLE4)。読めなければ undefined */
 export function decodeBmp(b: Uint8Array): Pixels | undefined {
   if (b.length < 26 || b[0] !== 0x42 || b[1] !== 0x4d) return undefined;
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
@@ -162,7 +192,13 @@ export function decodeBmp(b: Uint8Array): Pixels | undefined {
   const W = Math.abs(w);
   const H = Math.abs(h);
   if (!W || !H || W * H > MAX_PIXELS) return undefined;
-  if (comp !== 0 && !(comp === 3 && (bpp === 16 || bpp === 32))) return undefined;
+  // RLE8 (BI_RLE8 = 1、8 ビット) と RLE4 (BI_RLE4 = 2、4 ビット) は、メタファイルの DIB と同じ符号 ([MS-WMF] 2.1.1.7 の Compression・3.1.6 の
+  // Bitmap Compression) なので、expandRle で圧縮しない行に戻してから読む (IMG-19 (5))。指定の無い画素 (行の終わり・画像の終わり・ずれで飛ばした所) は
+  // 色の表の 0 番 (expandRle と同じ、仕様書の例のとおり)
+  const rle = (comp === 1 && bpp === 8) || (comp === 2 && bpp === 4);
+  if (comp !== 0 && !rle && !(comp === 3 && (bpp === 16 || bpp === 32))) return undefined;
+  // RLE の画素の数は、ファイルの大きさでも縛る (「画像の終わり」「ずれ」の符号で、数バイトから大きな画像を作れる。imageLimits.ts の BMP_RLE_PIXELS_PER_BYTE)
+  if (rle && W * H > pixelBudget(b.length, BMP_RLE_PIXELS_PER_BYTE)) return undefined;
   // BITFIELDS のマスク (54〜65、V4 以降は α も 66〜69) が入りきらない壊れたファイル
   if (comp === 3 && b.length < (hs >= 56 ? 70 : 66)) return undefined;
   // 色の表 (BGR。OS/2 の頭は 3 バイト、ほかは 4 バイト)
@@ -184,16 +220,25 @@ export function decodeBmp(b: Uint8Array): Pixels | undefined {
     return Math.round((((v & m) >>> s) * 255) / max);
   };
   const rowSize = Math.floor((bpp * W + 31) / 32) * 4;
-  if (off + rowSize * H > b.length) return undefined;
+  // 画素の行を読む所: 圧縮しないものはファイルそのもの (off から)、RLE は戻した行 (0 から。行の順は圧縮した列の順のまま)。
+  // RLE のデータの長さは biSizeImage (34〜37。0 ならファイルの終わりまで)
+  let px = b;
+  let base = off;
+  if (rle) {
+    if (off >= b.length) return undefined;
+    const size = dv.getUint32(34, true);
+    px = expandRle(b.subarray(off, size ? Math.min(b.length, off + size) : b.length), W, H, bpp as 4 | 8);
+    base = 0;
+  } else if (off + rowSize * H > b.length) return undefined;
   const rgba = new Uint8Array(W * H * 4);
   for (let y = 0; y < H; y++) {
-    const r = off + (h < 0 ? y : H - 1 - y) * rowSize;
+    const r = base + (h < 0 ? y : H - 1 - y) * rowSize;
     for (let x = 0; x < W; x++) {
       const o = (y * W + x) * 4;
       let c: number[];
       if (bpp <= 8) {
         const bit = x * bpp;
-        const i = (b[r + (bit >> 3)] >> (8 - bpp - (bit & 7))) & ((1 << bpp) - 1);
+        const i = (px[r + (bit >> 3)] >> (8 - bpp - (bit & 7))) & ((1 << bpp) - 1);
         c = [...(pal[i] ?? [0, 0, 0]), 255];
       } else if (bpp === 24) c = [b[r + x * 3 + 2], b[r + x * 3 + 1], b[r + x * 3], 255];
       else if (bpp === 16 || bpp === 32) {

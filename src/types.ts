@@ -1023,6 +1023,11 @@ export interface LInline extends BaseNode {
   children: LInlineLevel[];
   /** 絶対配置の箱 (LBlockContainer.inlineCb が同じ番号のもの) の基準になる行内の箱の番号 */
   cbKey?: number;
+  /**
+   * 行の中で見つけた絶対配置の箱の、見つけた所の目印 (組版が段落の並びに入れる、中身の無い inline。読み込みは付けない)。
+   * 幅 0 の箱 (LNode.absAnchor が同じ番号) になり、組んだ後で、その箱の位置を static position にする (CSS 2.1 §10.3.7・§10.6.4)
+   */
+  staticAnchor?: number;
   /** 行を分ける改行 (children は '\n')。行頭 (空の行になるとき) では無視する (行内の要素のブロックの ::before / ::after) */
   softBreak?: boolean;
   /**
@@ -1751,6 +1756,11 @@ export interface LTableCell extends BaseNode, BoxStyle {
    */
   containingBlock?: boolean;
   /**
+   * CSS の position: relative のずらし (pt。右・下が正。CSS 2.1 §9.4.3)。表を組んだ後のセルの箱 (中身・背景・罫線) を動かし、行の高さ・列の幅・
+   * ほかのセルの位置は変えない (HTML のリストの項目は、記号のセルと本文のセルの両方に付ける)
+   */
+  relativeOffset?: { x: number; y: number };
+  /**
    * セルの高さの中での内容の block 方向の配置 (display-align)。既定 start。baseline は同じ行の baseline のセルの最初の行の基線をそろえる。
    * last-baseline は同じ行の last-baseline のセルの最後の行の基線をそろえ、行の下端に寄せる (CSS の flex の align-items: last baseline)
    */
@@ -1809,8 +1819,8 @@ export interface LTableRow extends BaseNode {
   spaceAfter?: number;
   /**
    * この行の前・後の強制の区切り。区切りの種類 (CSS の tr・li の break-before・break-after。CSS Fragmentation 3 §3.1: page はページ、
-   * column は段、odd-page・even-page は白ページを挟んで奇数・偶数ページから) か、true (XSL-FO の fo:table-row・fo:list-item の
-   * break-before・break-after。次の段・ページへ送るだけ)
+   * column は段、odd-page・even-page は白ページを挟んで奇数・偶数ページから。XSL-FO の fo:table-row・fo:list-item の break-before・
+   * break-after (XSL 1.1 §7.20.1・§7.20.2) も同じ) か、true (種類を持たない区切り。次の段・ページへ送るだけ)
    */
   breakBefore?: boolean | BreakKind;
   breakAfter?: boolean | BreakKind;

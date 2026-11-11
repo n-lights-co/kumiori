@@ -613,15 +613,26 @@ function dct(src: ByteSource, ctx?: FilterContext): ByteSource {
   return { read: () => (i < b.length ? b[i++] : -1), jpeg: () => b };
 }
 
-/** バイト列を、ByteSource の展開 (読めなくなったところまで) に通す */
+/**
+ * バイト列を、ByteSource の展開 (読めなくなったところまで、limit バイトまで) に通す。
+ * 出力は倍々に伸ばすバイト列にためる (数の配列にためると、1 バイトに 8 バイトのヒープを使う。WOFF の表を展開するときなど)
+ */
 function drain(src: ByteSource, limit: number): Uint8Array {
-  const out: number[] = [];
+  let out = new Uint8Array(Math.min(limit, 4096));
+  let n = 0;
   try {
-    for (let c = src.read(); c >= 0 && out.length < limit; c = src.read()) out.push(c);
+    for (let c = n < limit ? src.read() : -1; c >= 0; c = n < limit ? src.read() : -1) {
+      if (n === out.length) {
+        const grown = new Uint8Array(Math.min(limit, n * 2));
+        grown.set(out);
+        out = grown;
+      }
+      out[n++] = c;
+    }
   } catch {
     /* 壊れた所までを返す */
   }
-  return Uint8Array.from(out);
+  return out.slice(0, n);
 }
 const arraySource = (b: Uint8Array): ByteSource => {
   let i = 0;

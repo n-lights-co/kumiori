@@ -167,10 +167,14 @@ export function resolveRef(ref: string, base?: string): string {
     }
   }
   if (ref.startsWith('/')) return ref.replace(/^\/+/, '');
+  // 基準 (files の名前は文書からの相対パス) より上を指す .. は残す (../fx/a.ttf: 入力のディレクトリの外のファイル。
+  // RFC 3986 §5.2.4 は絶対の URL の .. を根で止めるが、ここは相対のパスなので、止めると別のファイルの名前になる)
   const parts = base.split('/').slice(0, -1);
   for (const seg of ref.split('/')) {
-    if (seg === '..') parts.pop();
-    else if (seg !== '.') parts.push(seg);
+    if (seg === '..') {
+      if (parts.length && parts[parts.length - 1] !== '..') parts.pop();
+      else parts.push('..');
+    } else if (seg !== '.') parts.push(seg);
   }
   return parts.join('/');
 }
@@ -327,7 +331,7 @@ export interface GuardedFetchOptions {
   allow?: (url: string) => boolean;
 }
 
-/** 転送の応答の状態コード (Fetch Standard の redirect status: 301・302・303・307・308) */
+/** 転送の応答の状態コード (Fetch Standard §2.2.3 の redirect status: 301・302・303・307・308。2026-11 の版で確かめた) */
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
 
 /** ブラウザの中か (転送の先の Location をスクリプトから読めない実行環境。ほかの所と同じく document の有無で見分ける) */
@@ -338,11 +342,13 @@ const inBrowser = () => typeof document !== 'undefined';
  *
  * 転送 (OUT-01): 許可の関数 allow には、文書に書かれた URL だけでなく、転送の先の URL も聞く (許したホストが 302 で内部のアドレスを返しても、
  * そこへ要求を出さない)。
- *  - Node など、転送の応答の Location を読める実行環境: redirect: 'manual' で取り、Location を今の URL に対して解決し (RFC 9110 §10.2.2)、
- *    allow に聞き直してから次の要求を出す。たどるのは fetchLimits.redirects 回まで (ブラウザの上限と同じ 20。Fetch Standard の HTTP-redirect fetch)。
- *    http(s) でないスキームへの転送は断る (同じく HTTP-redirect fetch)。https から http への格下げも断る (これは Kumiori の決まり。暗号化した経路で
+ *  - Node など、転送の応答の Location を読める実行環境: redirect: 'manual' で取り、Location を今の URL に対して解決し (RFC 9110 §10.2.2。
+ *    Fetch Standard §2.2.6 の location URL: 解決できない Location は network error、Location の無い転送の応答はそのまま返す)、
+ *    allow に聞き直してから次の要求を出す。たどるのは fetchLimits.redirects 回まで (Fetch Standard §4.5 HTTP-redirect fetch の
+ *    「redirect count が 20 なら network error」: 20 回まではたどり、21 回目の転送で止める。ブラウザの上限と同じ)。
+ *    http(s) でないスキームへの転送は断る (同じく §4.5)。https から http への格下げも断る (これは Kumiori の決まり。暗号化した経路で
  *    許したものを、平文の経路で取り直さない)。
- *  - ブラウザ: redirect: 'manual' の応答は中身の見えない opaqueredirect になり、Location を読めない (Fetch Standard の opaque-redirect filtered response)。
+ *  - ブラウザ: redirect: 'manual' の応答は中身の見えない opaqueredirect になり、Location を読めない (Fetch Standard §2.2.6 の opaque-redirect filtered response)。
  *    転送の先を確かめずにたどるのはブラウザ自身なので、allow があるときは、たどった後の最後の URL (res.url) を allow に聞き、許されなければ応答を捨てる。
  *    このとき、要求そのものは転送の先に届いている (中身を使わないだけ)。allow が無ければ、これまでどおりブラウザに任せる。
  * allow は URL の文字列を見るだけなので、名前の解決の結果 (内部のアドレスに解決されるホスト名) までは、ここでは防げない。

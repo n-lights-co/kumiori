@@ -40,16 +40,21 @@ export function isAhCompat(kind: DocKind, mode: { compat?: FoCompat; style?: Htm
  * 自前のカスケード (cascadeStyles) のアンテナハウス互換の設定。
  * 罫の太さの丸め無し・thin/medium/thick の太さ・アンテナハウスの線種・counter() の拡張・数の式の中の型の無い attr()・bolder/lighter を @font-face の太さから決める
  */
-export function ahCascadeOptions(css: string | ParsedCss): Pick<CascadeOptions, 'noBorderSnap' | 'borderKeywords' | 'ahBorderStyles' | 'ahCounterFlags' | 'ahAttrNumber' | 'ahPagedValues' | 'relativeWeight'> {
-  return { noBorderSnap: true, borderKeywords: AH_BORDER_KEYWORDS, ...ALL_AH, relativeWeight: ahRelativeWeight(css) };
+export function ahCascadeOptions(
+  css: string | ParsedCss,
+  faceWeights?: Map<string, number[]>,
+): Pick<CascadeOptions, 'noBorderSnap' | 'borderKeywords' | 'ahBorderStyles' | 'ahCounterFlags' | 'ahAttrNumber' | 'ahPagedValues' | 'relativeWeight'> {
+  return { noBorderSnap: true, borderKeywords: AH_BORDER_KEYWORDS, ...ALL_AH, relativeWeight: ahRelativeWeight(faceWeights ?? fontFaceWeights(css)) };
 }
 
 /**
  * アンテナハウス互換: bolder・lighter を CSS 2.1 §15.6 のとおり、@font-face で定義した書体の太さから決める
- * (例: @font-face で Semibold (600) を定義した書体の th・b の太字は 600)。@font-face で定義していない書体は undefined (Fonts 4 の表)
+ * (例: @font-face で Semibold (600) を定義した書体の th・b の太字は 600)。@font-face で定義していない書体は undefined (Fonts 4 の表)。
+ * faces: ファミリー (小文字) ごとの face の太さ。font-weight の記述子の無い face は、書体のファイルの太さ (fontMapping.ts の faceFileWeights。
+ * 書体の登録 (loadFontFaces の ahFaceWeight) と同じ太さ。見本の PDF: CSS-Print 第 4 版の、記述子なしで Regular・Bold・Heavy を並べた
+ * source-han-sans の b・strong は Bold のファイルで組まれる)。ファイルを渡さないときは記述子の太さ (無ければ 400)
  */
-function ahRelativeWeight(css: string | ParsedCss): (family: string, parentWeight: number, kind: 'bolder' | 'lighter') => number | undefined {
-  const faces = fontFaceWeights(css);
+function ahRelativeWeight(faces: Map<string, number[]>): (family: string, parentWeight: number, kind: 'bolder' | 'lighter') => number | undefined {
   return (family, pw, kind) => {
     const first = family.split(',')[0]?.trim().replace(/^["']|["']$/g, '').toLowerCase();
     const ws = first ? faces.get(first) : undefined;

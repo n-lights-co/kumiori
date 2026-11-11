@@ -120,8 +120,11 @@ describe('PKG-19 自前で読む宣言 (htmlPaged) の値の文法', () => {
     'bookmark-level': [['none', '1', '4'], ['zzz', '0', '-5', '1 2']],
     'bookmark-state': [['open', 'closed'], ['zzz', 'open closed']],
     'text-autospace': [['normal', 'auto', 'no-autospace', 'ideograph-alpha', 'ideograph-alpha ideograph-numeric', 'punctuation insert', 'replace'], ['zzz', 'no-autospace ideograph-alpha', 'insert replace', '12qq']],
-    'text-spacing-trim': [['normal', 'space-all', 'space-first', 'trim-start', 'trim-both', 'trim-all', 'auto'], ['zzz', 'trim-start trim-both', '-5']],
-    'text-spacing': [['none', 'auto', 'trim-start', 'no-autospace', 'trim-both ideograph-alpha', 'ideograph-numeric space-all'], ['zzz', 'none auto', 'trim-start trim-both', '12qq']],
+    'text-spacing-trim': [
+      ['normal', 'space-all', 'space-first', 'trim-start', 'trim-both', 'trim-all', 'auto', 'trim-start trim-end', 'space-first allow-end space-adjacent', 'trim-adjacent', 'space-end'],
+      ['zzz', 'trim-start trim-both', '-5', 'trim-start space-start', 'trim-end allow-end', 'normal trim-end', 'trim-all trim-end'],
+    ],
+    'text-spacing': [['none', 'auto', 'trim-start', 'no-autospace', 'trim-both ideograph-alpha', 'ideograph-numeric space-all', 'trim-start trim-end ideograph-alpha'], ['zzz', 'none auto', 'trim-start trim-both', '12qq', 'trim-start space-start']],
     'hanging-punctuation': [['none', 'first', 'last', 'allow-end', 'first force-end last', 'last first'], ['zzz', 'force-end allow-end', 'none first', 'first first']],
     'ruby-position': [['over', 'under', 'alternate over', 'inter-character'], ['zzz', 'over under']],
     'ruby-align': [['start', 'center', 'space-between', 'space-around'], ['zzz', 'start center']],

@@ -10,8 +10,8 @@
  * レイアウトはしないので、幅・高さが auto の要素の寸法 (ブラウザが返す使用値) は返さない (auto のまま)。
  * 百分率の幅・余白は、包含ブロックの幅を親から順に見積もって px にする。
  */
-import { MAX_VAR_LENGTH, parseCss, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
-import { fmtColor, parseColor, splitTop, UNIT_PX, type RGBA } from './cssText';
+import { MAX_VAR_LENGTH, parseCss, parseSpacingTrim, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
+import { fmtColor, parseColor, resolveLightDark, splitTop, UNIT_PX, type RGBA } from './cssText';
 import { parseVariationSettings } from './fontVariation';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { is3dTransformValue } from './cssTransform';
@@ -458,6 +458,8 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'text-emphasis-color': [true, 'currentcolor', 'color'],
   'text-emphasis-position': [true, 'over right', 'raw'],
   'text-spacing-trim': [true, 'normal', 'raw'],
+  // 要素の色の組 (CSS Color Adjust 1 §2.2)。light-dark() の色を選ぶ (CSS Color 5 §7)
+  'color-scheme': [true, 'normal', 'raw'],
   // 初期値は normal (CSS Text 4 §8.4 https://www.w3.org/TR/css-text-4/ 2026-11-05 取得。ideograph-alpha ideograph-numeric と同じ)
   'text-autospace': [true, 'normal', 'raw'],
   'ruby-position': [true, 'over', 'raw'],
@@ -1838,6 +1840,21 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     return h;
   };
   const rootEl = doc.documentElement;
+  /** ページの色の組 (CSS Color Adjust 1 §2.1: <meta name="color-scheme"> の content。最初の読めるもの)。無ければ normal */
+  let pageScheme: string | undefined;
+  const pageColorScheme = (): string => {
+    if (pageScheme !== undefined) return pageScheme;
+    pageScheme = 'normal';
+    for (const m of Array.from((doc.getElementsByTagName?.('meta') ?? []) as ArrayLike<Element>)) {
+      if ((m.getAttribute('name') ?? '').trim().toLowerCase() !== 'color-scheme') continue;
+      const c = (m.getAttribute('content') ?? '').trim().toLowerCase();
+      if (validColorScheme(c)) {
+        pageScheme = c;
+        break;
+      }
+    }
+    return pageScheme;
+  };
 
   /** 要素 (と疑似要素) に当たる宣言を、優先度の高い順に */
   const declsFor = (el: Element, pseudo?: string, parent?: Computed) => {
@@ -2116,6 +2133,13 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     const fsCtx = (): LenCtx => ({ fs: parent?.fs ?? 16, rootFs: isRoot ? 16 : rootFs, vw, vh, pct: parent?.fs ?? 16 });
     const { cascaded, rank, svgFrom } = cascadeDecls(decls, vars, fsCtx, el);
     mapLogical(cascaded, rank, parent);
+    // light-dark() (CSS Color 5 §7) は、要素の色の組の側の色にする。宣言が無ければ親の color-scheme を継ぐ
+    if ([...cascaded.values()].some((v) => /light-dark\(/i.test(v))) {
+      const csv = cascaded.get('color-scheme');
+      const scheme = csv === undefined || /^(inherit|unset|revert|revert-layer)$/i.test(csv.trim()) ? (parent?.v.get('color-scheme') ?? 'normal') : /^initial$/i.test(csv.trim()) ? 'normal' : csv;
+      const dark = usedColorScheme(scheme, pageColorScheme()) === 'dark';
+      for (const [p, v] of cascaded) if (/light-dark\(/i.test(v)) cascaded.set(p, resolveLightDark(v, dark));
+    }
     const out: Computed = { v: new Map(), fs: 16, fsKeyword: true, cw: parent?.cw ?? vw, pcw: parent?.pcw ?? vw, vars, specified: cascaded, ...(svgFrom ? { svgFrom } : {}) };
     const pv = (p: string) => parent?.v.get(p);
     const valueOf = (p: string): string => {
@@ -2524,7 +2548,6 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'empty-cells': 'show hide',
     'column-span': 'none all',
     'column-fill': 'auto balance',
-    'text-spacing-trim': 'normal space-all space-first trim-start trim-both trim-all auto',
     'writing-mode': 'horizontal-tb vertical-rl vertical-lr sideways-rl sideways-lr lr lr-tb rl rl-tb tb tb-rl',
     'text-transform': 'none capitalize uppercase lowercase full-width full-size-kana math-auto',
     // 以下は、値の検査が無かった性質 (PKG-19。読めない値でも受け付けていた)。語は、それぞれの仕様の値の定義のとおり
@@ -2585,7 +2608,7 @@ const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 /** 1 語だけを取るキーワードの性質 */
 const SINGLE_KEYWORD = new Set([
   'float', 'clear', 'position', 'visibility', 'box-sizing', 'box-decoration-break', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens', 'hyphenate-limit-last',
-  'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'text-spacing-trim', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style', 'outline-style',
+  'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style', 'outline-style',
   'flex-direction', 'flex-wrap', 'font-kerning', 'font-variant-caps', 'font-variant-position', 'line-break', 'text-orientation', 'unicode-bidi',
 ]);
 
@@ -2605,6 +2628,31 @@ function oneOfEachGroup(words: string[], groups: RegExp[]): boolean {
 /** 数の式 (calc() など) を含む値か。中身は調べずに、読めるものとする */
 const HAS_MATH_FUNCTION = /\b(calc|min|max|clamp|round|mod|rem|abs|sign)\(/i;
 
+/** color-scheme の値 (normal | [ light | dark | <custom-ident> ]+ && only?。CSS Color Adjust 1 §2.2) か */
+function validColorScheme(v: string): boolean {
+  const ws = v.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (ws.length === 1 && ws[0] === 'normal') return true;
+  const only = ws.filter((w) => w === 'only').length;
+  const names = ws.filter((w) => w !== 'only');
+  // only は先頭か末尾に 1 つだけ (&& は順不同。[...]+ の語の間には入らない)。<custom-ident> に normal・only は使えない。大域のキーワードは別に読む
+  if (only > 1 || (only === 1 && ws[0] !== 'only' && ws[ws.length - 1] !== 'only')) return false;
+  return names.length > 0 && names.every((w) => /^-?[_a-z][-\w]*$/.test(w) && w !== 'normal' && !/^(initial|inherit|unset|default|revert|revert-layer)$/.test(w));
+}
+
+/**
+ * 要素の色の組 (CSS Color Adjust 1 §2.3 の used color scheme)。Kumiori は印刷の組版なので、利用者の好みは light (上書きではない好み) とする:
+ *  - 対応の並びが無い (normal で、ページも normal) か、light も dark も無ければ、既定の light
+ *  - 並びに light があれば light (好みが並びにある)
+ *  - そうでなければ (dark だけ。only の有無によらず) 並びの最初の、対応する色の組 (dark)
+ * element は要素の color-scheme の計算値、page はページの色の組 (<meta name="color-scheme">。要素が normal のとき使う)
+ */
+export function usedColorScheme(element: string, page: string): 'light' | 'dark' {
+  const v = (element.trim().toLowerCase() === 'normal' ? page : element).trim().toLowerCase();
+  const ws = v.split(/\s+/);
+  if (ws.includes('light')) return 'light';
+  return ws.includes('dark') ? 'dark' : 'light';
+}
+
 /**
  * 値の検査が無かった性質の、値の文法 (PKG-19)。どれも、それぞれの仕様の値の定義のとおり。この関数が扱わない性質は undefined
  * (lv は小文字にした値、ws はその語)
@@ -2616,6 +2664,11 @@ function validByGrammar(prop: string, lv: string, ws: string[], ctx: LenCtx): bo
     return px !== undefined && !(nonNegative && /^-/.test(t.trim()) && px !== 0);
   };
   switch (prop) {
+    case 'color-scheme':
+      return validColorScheme(lv);
+    case 'text-spacing-trim':
+      // <spacing-trim> | auto (CSS Text 4 §8.5。位置ごとの語の組 trim-start trim-end なども。htmlPaged の parseSpacingTrim)
+      return lv === 'auto' || parseSpacingTrim(lv) !== undefined;
     case 'font-variant-ligatures':
       // normal | none | [ <common-lig-values> || <discretionary-lig-values> || <historical-lig-values> || <contextual-alt-values> ] (Fonts 4 §6.4)
       return lv === 'normal' || lv === 'none' || oneOfEachGroup(ws, [/^(no-)?common-ligatures$/, /^(no-)?discretionary-ligatures$/, /^(no-)?historical-ligatures$/, /^(no-)?contextual$/]);

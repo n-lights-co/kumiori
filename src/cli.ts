@@ -3,7 +3,7 @@
  *
  * 使い方 (npm run build:cli の後):
  *   node dist-cli/cli.js <HTML ファイル> [-o <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css]
- *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font serif|sans-serif=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--xhtml] [--watch]
+ *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--xhtml] [--watch]
  *   node dist-cli/cli.js <FO ファイル (.fo・.xml)> [-o <PDF ファイル>] [--compat spec|antenna] [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--watch]
  *   node dist-cli/cli.js a.html b.fo c.html -o <出力先のディレクトリ>      (まとめて変換)
  *   cat a.html | node dist-cli/cli.js - -o - [--base <ディレクトリ>] > a.pdf  (標準入力から読み、標準出力へ書く)
@@ -45,7 +45,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { parseColor } from './color';
 import type { HtmlDefaults } from './htmlPrepare';
@@ -53,6 +53,7 @@ import { parsePageSize } from './htmlImport';
 import { FO_COMPATS, HTML_STYLES, type FoCompat } from './compat';
 import { isXhtmlFile } from './xhtml';
 import { decodeDocumentText, typeset, type KumioriFile } from './api';
+import { GENERIC_FONT_KEYS } from './fontMapping';
 import { createFileResolver, defaultFontCacheDir, FETCH_TIMEOUT_MS, localFont } from './nodeFonts';
 // テストと、これまで cli から読んでいた利用者のために出し直す
 export { defaultFontCacheDir, localFont, looksLikeFont } from './nodeFonts';
@@ -77,7 +78,10 @@ export function parseArgs(argv: string[]) {
     noFontCache: boolean;
     /** 足す書体のファイル (--font。システムに入れた書体のように、書体のファミリー名・太さで使う) */
     fontFiles: string[];
-    /** 総称の書体 (serif・sans-serif) の欧文に使う書体のファミリー名 (--generic-font serif=<名前>。CSS Fonts 4 §2.1.3: 総称の書体の割り当ては UA が決める) */
+    /**
+     * 総称の書体に使う書体のファミリー名 (--generic-font serif=<名前>。CSS Fonts 4 §2.1.3: 総称の書体の割り当ては UA が決める)。
+     * serif・sans-serif・monospace は欧文の書体、serif-cjk・sans-serif-cjk は和文の書体 (fontMapping の GENERIC_FONT_KEYS)
+     */
     genericFonts: Record<string, string>;
     print: boolean;
     /** HTML を XML の構文 (XHTML) で読む */
@@ -152,8 +156,9 @@ export function parseArgs(argv: string[]) {
     else if (a === '--font') out.fontFiles.push(value(k++));
     else if (a === '--generic-font') {
       const v = value(k++);
-      const m = /^(serif|sans-serif)=(.+)$/.exec(v);
-      if (!m) throw new UsageError(msg(`--generic-font の値 "${v}" は使えません (serif=<書体名> か sans-serif=<書体名>)`, `--generic-font cannot be "${v}" (serif=<family> or sans-serif=<family>)`));
+      const m = /^([a-z-]+)=(.+)$/.exec(v);
+      if (!m || !(GENERIC_FONT_KEYS as readonly string[]).includes(m[1]))
+        throw new UsageError(msg(`--generic-font の値 "${v}" は使えません (${GENERIC_FONT_KEYS.join('・')} のどれか=<書体名>)`, `--generic-font cannot be "${v}" (one of ${GENERIC_FONT_KEYS.join(', ')}=<family>)`));
       out.genericFonts[m[1]] = m[2].trim();
     }
     else if (a === '--print') out.print = true;
@@ -252,6 +257,32 @@ export function cssOptionFiles(value: string): string[] {
   return value.split(',').map((c) => c.trim()).filter(Boolean);
 }
 
+/**
+ * コマンドの resolveResource: file: の URL の参照は、そのファイルを読む (入力のディレクトリの外でも。ブラウザで手元の HTML を開いたときと同じ)。
+ * スキームの無い相対参照のうち、入力のディレクトリ (dir) の外を指すもの (sub/a.html の url(../fx/a.ttf) など。files には入っていない) も、
+ * 同じ考えで、dir を基準に解決したファイルを読む (RFC 3986 §5.2: 相対参照は文書の URL を基準に解決する。CSS Values 4 §4.5.1・CSS Fonts 4 §4.3:
+ * CSS の中の url() は、その CSS の場所が基準。CSS のファイルの中の参照は、resources.ts の resolveRef が dir からの相対パスにしてから問い合わせる)。
+ * dir の中を指す相対参照は読まない (files に入れるかどうかは、--css の選び方・node_modules と . で始まるディレクトリを見ない決まりで決めている)
+ */
+export function cliResourceResolver(dir: string, readFile: (url: string) => Uint8Array | undefined = createFileResolver()): (url: string) => Uint8Array | undefined {
+  const base = pathToFileURL(path.resolve(dir) + path.sep);
+  return (url) => {
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return readFile(url);
+    // 根からのパス (/a.png) と、スキームの無い //host/… は、文書の場所からの相対ではないので読まない
+    if (!url || url.startsWith('/') || url.startsWith('\\')) return undefined;
+    let target: URL;
+    try {
+      target = new URL(url, base);
+    } catch {
+      return undefined;
+    }
+    if (target.protocol !== 'file:') return undefined;
+    const rel = path.relative(path.resolve(dir), fileURLToPath(target));
+    const outside = rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+    return outside ? readFile(target.href) : undefined;
+  };
+}
+
 /** 1 つの入力を PDF にする。input が '-' なら標準入力 (text に中身)、output が '-' なら標準出力 */
 async function convert(input: string, output: string, args: Args, text: string) {
   const stdin = input === '-';
@@ -291,8 +322,8 @@ async function convert(input: string, output: string, args: Args, text: string) 
     fetchImages: args.fetchImages,
     fetchStyles: args.fetchStyles,
     links: { ...(args.linkSchemes ? { schemes: args.linkSchemes } : {}), launch: args.linkLaunch },
-    // file: の URL の参照は、そのファイルを読む (入力のディレクトリの外でも。ブラウザで手元の HTML を開いたときと同じ)
-    resolveResource: createFileResolver(),
+    // file: の URL の参照と、入力のディレクトリの外を指す相対参照は、そのファイルを読む (ブラウザで手元の HTML を開いたときと同じ。cliResourceResolver)
+    resolveResource: cliResourceResolver(dir),
     ...(args.spotColors ? { spotColors: args.spotColors } : {}),
     loadFont: localFont(args.fontDir, args.noFontCache ? undefined : args.fontCache ? path.resolve(args.fontCache) : defaultFontCacheDir()),
     lang: messageLang(),
@@ -318,7 +349,7 @@ export class UsageError extends Error {}
 
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font serif|sans-serif=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
   '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--link-schemes <a,b>] [--link-launch] [--watch]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
@@ -333,7 +364,7 @@ export const USAGE_JA = [
   '                            Linux は ~/.cache/kumiori/fonts、macOS は ~/Library/Caches/kumiori/fonts、Windows は %LOCALAPPDATA%\\kumiori\\fonts)',
   '  --no-font-cache           書体のキャッシュを読まず、保存もしない (毎回 Google Fonts から取る)',
   '  --font <書体ファイル>     書体を足す (TTF・OTF・TTC・WOFF・WOFF2。可変フォントは font-weight などに合う形で組む。何度でも)',
-  '  --generic-font serif=<書体名> | sans-serif=<書体名>   総称の書体の欧文に使う書体',
+  '  --generic-font <総称>=<書体名>  総称の書体に使う書体 (serif・sans-serif・monospace は欧文、serif-cjk・sans-serif-cjk は和文。何度でも)',
   '  --compat spec|antenna     XSL-FO の既定値の流儀 (XSL-FO 1.1 の初期値 / アンテナハウスに合わせる。既定 spec)',
   '  --fo                      拡張子によらず XSL-FO として読む   --xhtml  拡張子によらず XML の構文 (XHTML) で読む',
   '  --print                   トンボと塗り足し (3mm) を付ける',
@@ -352,7 +383,7 @@ export const USAGE_JA = [
 
 /** 使い方。英語 */
 export const USAGE_EN = [
-  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font serif|sans-serif=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
+  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
   '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--link-schemes <a,b>] [--link-launch] [--watch]',
   '       kumiori a.html b.fo … -o <output directory>',
   '       kumiori - -o - [--base <dir>] < input > output.pdf',
@@ -367,7 +398,7 @@ export const USAGE_EN = [
   '                            ~/.cache/kumiori/fonts on Linux, ~/Library/Caches/kumiori/fonts on macOS, %LOCALAPPDATA%\\kumiori\\fonts on Windows)',
   '  --no-font-cache           do not read or write the font cache (fetch from Google Fonts every time)',
   '  --font <font file>        add a font (TTF, OTF, TTC, WOFF, WOFF2; a variable font is used at the shape matching font-weight etc.; repeatable)',
-  '  --generic-font serif=<family> | sans-serif=<family>   font used for Latin text of the generic families',
+  '  --generic-font <generic>=<family>  font used for a generic family (serif, sans-serif, monospace: Latin text; serif-cjk, sans-serif-cjk: Japanese text; repeatable)',
   '  --compat spec|antenna     XSL-FO default-value convention (XSL-FO 1.1 initial values / AH Formatter compatible; default spec)',
   '  --fo                      read as XSL-FO regardless of the extension   --xhtml  read with XML syntax (XHTML) regardless of the extension',
   '  --print                   add trim marks and 3mm bleed',

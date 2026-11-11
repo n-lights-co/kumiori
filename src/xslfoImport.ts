@@ -4165,11 +4165,17 @@ class Importer {
     return cell;
   }
 
-  /** table-row・list-item の break-before・break-after (§7.20.2: fo:list-item・fo:table-row にも当たる) */
+  /**
+   * table-row・list-item の break-before・break-after (XSL 1.1 §7.20.1・§7.20.2: fo:list-item・fo:table-row にも当たる)。
+   * ブロック (boxStyle) と同じに、区切りの種類 (page・column・odd-page・even-page) を残す: odd-page・even-page は、次の奇数・偶数ページから
+   * (間に白ページを挟む)、column は次の段から
+   */
   private rowBreaks(el: XEl, row: LTableRow) {
-    const brk = (v: string | undefined) => v === 'page' || v === 'column' || v === 'odd-page' || v === 'even-page';
-    if (brk(this.attr(el, 'break-before'))) row.breakBefore = true;
-    if (brk(this.attr(el, 'break-after'))) row.breakAfter = true;
+    const brk = (v: string | undefined) => (v === 'page' || v === 'column' || v === 'odd-page' || v === 'even-page' ? v : undefined);
+    const bb = brk(this.attr(el, 'break-before'));
+    const ba = brk(this.attr(el, 'break-after'));
+    if (bb) row.breakBefore = bb;
+    if (ba) row.breakAfter = ba;
   }
 
   /** list-block → 「ラベル列 + 本体列」の枠なし表 (項目ごとに 1 行) */

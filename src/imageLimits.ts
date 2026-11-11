@@ -56,6 +56,91 @@ export const GIF_PIXELS_PER_BYTE = 4096;
 /** fileBytes バイトの GIF が、画素にできる数 (論理画面と、画像の画素の数の、それぞれの上限) */
 export const gifPixelBudget = (fileBytes: number): number => Math.min(MAX_PIXELS, GIF_FREE_PIXELS + GIF_PIXELS_PER_BYTE * fileBytes);
 
+/**
+ * ほかの画素の形式も、GIF と同じ考え方で、画素の数をファイル (符号のデータ) の大きさで縛る (IMG-19 (1))。
+ * 画素の数の上限 = min(MAX_PIXELS, IMAGE_FREE_PIXELS + 1 バイトあたりの画素の数 × バイト数)。1 バイトあたりの画素の数は、
+ * 形式ごとに、その規格の符号で 1 バイトが表せる画素の数の上限 (正当なファイルの密度の上限) より大きくとる。
+ * 頭の寸法だけを大きくした数十バイトのファイルで、1 億画素 (RGBA で 400MB) の配列を作り、組むのに 10〜19 秒・2〜2.6GB を使っていた
+ */
+export const IMAGE_FREE_PIXELS = GIF_FREE_PIXELS;
+
+/** fileBytes バイトのデータが、1 バイトあたり perByte 画素の形式で、画素にできる数 */
+export const pixelBudget = (fileBytes: number, perByte: number): number => Math.min(MAX_PIXELS, IMAGE_FREE_PIXELS + perByte * fileBytes);
+
+/**
+ * VP8 (WebP の非可逆) の 1 バイトあたりの画素の数 (VP8 のチャンクの大きさに当てる)。キーフレームのマクロブロック (16 × 16 画素) は、
+ * どれも、輝度の予測の向き (RFC 6386 §11.2。最初の判定の確率は 145/256 で固定) と、色差の予測の向き (§11.4。最初の判定の確率は 142/256 で固定) を
+ * 最初の区画にブール符号 (§7) で持つ。確率の固定された判定は、ブール符号でも −log2(確率) ビットより短くならないので、マクロブロックは
+ * 最も起きやすい向きを選んでも 0.820 + 0.850 = 1.67 ビット以上を使う (4×4 の向き・係数・飛ばしの印は数えない)。
+ * よって、正当な VP8 の密度は 1 バイトで 256 × 8 / 1.67 = 約 1,226 画素まで。その上の 2,048 画素にする
+ */
+export const VP8_PIXELS_PER_BYTE = 2048;
+
+/**
+ * VP8L (WebP の可逆) の 1 バイトあたりの画素の数 (VP8L のチャンクの大きさに当てる)。RFC 9649 §3.7.2.1.1 の簡単な符号で字が 1 つだけの符号は
+ * 0 ビットで読むので、全部が 1 色の画像 (と、色のキャッシュの同じ番号だけの画像) は、どれだけ大きくても数十バイトで書ける。
+ * 規格には密度の上限が無いので、そうでない画像の密度の上限から決める: 緑の符号が 2 字以上なら、画素 (か後方参照) ごとに 1 ビット以上を使い、
+ * 後方参照の長さ L は前置きの符号のほかに、L が 2^(e+2) までなら e ビットの追加のビットを使う (§4.2.2。4,096 画素は 10 ビット)。
+ * よって 1 ビットあたり 4,096 / 11 = 約 372 画素、色の表の変換で 8 画素を 1 つに詰めても (§4.4)、1 バイトで約 23,800 画素まで。その上の 32,768 画素にする。
+ * **全部 (または大半) が 0 ビットの符号の、ほぼ 1 色の大きな可逆の WebP は、この上限を超えれば読まない** (仮の枠で描いて警告を出す。
+ * 1 億画素は約 3KB 以上の VP8L で読める)。動く WebP の canvas (VP8X の大きさ) も、ファイルの大きさでこの上限に縛る
+ */
+export const VP8L_PIXELS_PER_BYTE = 32768;
+
+/**
+ * JPEG の 1 バイトあたりの画素の数 (ファイルの大きさに当てる)。ハフマン符号の長さは 1 ビット以上 (T.81 B.2.4.2 の BITS は長さ 1〜16 の符号の数) で、
+ * 逐次の符号 (F.1.2.1) も漸進の DC の最初の走査 (G.1.2.1) も、どの成分のどの 8 × 8 の区画にも DC の差の符号を 1 つ持つので、区画ごとに 1 ビット以上を使う。
+ * 濃淡の画像は 1 ビットで 64 画素、3 成分で標本化の比が最も偏った組 (4×1・1×4・1×1。各成分の区画は合わせて画像の 64 × 16 画素あたり 9 個) でも
+ * 1 ビットで 64 × 16 / 9 = 約 114 画素なので、正当な JPEG の密度は 1 バイトで約 910 画素まで。その上の 1,024 画素にする
+ * (データの途中で切れた JPEG は、切れた所の後を 0 の係数にして描くが、この上限を超えるほど短ければ読まない)
+ */
+export const JPEG_PIXELS_PER_BYTE = 1024;
+
+/**
+ * CCITT (TIFF の Compression=2・3・4) の 1 バイトあたりの画素の数 (そのストリップ・タイルのデータの大きさに当てる)。
+ *  - 1 次元の符号 (Modified Huffman。T.4 §4.1): 連なりの長さの符号は、最も密なもので 2,560 画素を 12 ビットで書く (追加の Make-up の符号) ので、
+ *    1 バイトで約 1,707 画素まで。その上の 2,048 画素にする (CCITT_1D_PIXELS_PER_BYTE)
+ *  - 2 次元の符号 (T.4 §4.2・T.6): 行は 1 つ以上のモードの符号で書き、最も短い符号 (V0) は 1 ビット (T.4 の Table 4/T.4) なので、行の数は
+ *    データのビット数まで (ccittRowLimit)。全部白の行は幅に依らず 1 ビットで書けるので、規格からは幅あたりの密度の上限が決まらない。
+ *    そこで、幅 16,384 画素 (A3 の長辺を 1,000dpi ほど) までの白紙を通す値 (1 バイトの 8 行 × 16,384 画素 = 131,072 画素) にする
+ *    (CCITT_2D_PIXELS_PER_BYTE。A4 を 600dpi で走査した白紙の T.6 (4,960 × 7,016 画素・約 880 バイト) も通る)。
+ *    **幅が 16,384 画素より広く、ほとんど白紙の CCITT の画像は、この上限を超えれば読まない**
+ */
+export const CCITT_1D_PIXELS_PER_BYTE = 2048;
+export const CCITT_2D_PIXELS_PER_BYTE = 131072;
+/** 2 次元の CCITT の符号の、dataBytes バイトのデータが持てる行の数の上限 (1 行は 1 ビット以上。T.4 の Table 4/T.4 の V0) */
+export const ccittRowLimit = (dataBytes: number): number => dataBytes * 8;
+
+/**
+ * RLE4・RLE8 の BMP の 1 バイトあたりの画素の数 (ファイルの大きさに当てる)。メタファイルの中の RLE の DIB と同じ値 (METAFILE_PIXELS_PER_BYTE):
+ * 符号化の形の連なりは 2 バイトで 255 画素まで ([MS-WMF] 3.1.6) だが、「行の終わり」「画像の終わり」「ずれ」の符号は、数バイトで
+ * いくらでも多くの画素を指定せずに飛ばせるので、規格からは上限が決まらない。ほぼ白紙の大きな RLE の BMP は、この上限を超えれば読まない
+ */
+export const BMP_RLE_PIXELS_PER_BYTE = METAFILE_PIXELS_PER_BYTE;
+
+/**
+ * deflate (zlib) の展開の比の上限 (RFC 1951 §3.2.5: 長さの符号の表す長さは 258 バイトまで。長さ・字の符号と距離の符号は、
+ * 字が 2 つ以上なら 1 ビット以上で、距離の符号が 1 つだけでも 1 ビットで書く (§3.2.7) ので、1 ビットで 129 バイト、1 バイトで 1,032 バイトまで)。
+ * 正当な deflate のデータは、これより大きく膨らまない。PNG の IDAT (pngWithinLimits) と WOFF の表 (webFont.ts) に当てる
+ */
+export const DEFLATE_MAX_RATIO = 1032;
+
+/**
+ * WOFF・WOFF2 を戻した書体 (sfnt) の大きさの上限 (webFont.ts)。
+ *  - 合計は WEBFONT_MAX_SFNT_BYTES (128MB) まで: ネットワークから取る書体の上限 (fetchLimits.fontBytes) と同じ。それより大きな書体を
+ *    WOFF に包んでも読まない。WOFF の表の目録の origLength (WOFF 1.0 §5) と WOFF2 の目録の origLength・transformLength (WOFF2 §4.1) は
+ *    32 ビットで、それぞれ 4GB まで書けるので、頭の値のとおりに展開すると、小さなファイルで数 GB を使う
+ *    (300KB の WOFF で 5.6 秒・2GB、558 バイトの WOFF2 で 3.3 秒・1.7GB)
+ *  - ファイルの大きさの WEBFONT_MAX_RATIO 倍 + WEBFONT_FREE_BYTES まで: Brotli (RFC 7932) の展開の比には実用の上限が無い (1 つの命令で 1,600 万バイト
+ *    を写せる) ので、実在の書体の圧縮の比から決める。実在の WOFF2 の比は多くて 20 倍ほどで、Google の woff2 の復号器も、100 倍を超えるものを
+ *    ありえないものとして断る。WOFF 1.0 の表ごとの比は、別に deflate の上限 (DEFLATE_MAX_RATIO) でも縛る
+ */
+export const WEBFONT_MAX_SFNT_BYTES = 128 * 1024 * 1024;
+export const WEBFONT_MAX_RATIO = 100;
+export const WEBFONT_FREE_BYTES = 1024 * 1024;
+/** fileBytes バイトの WOFF・WOFF2 を戻した書体の大きさの上限 */
+export const webFontSfntBudget = (fileBytes: number): number => Math.min(WEBFONT_MAX_SFNT_BYTES, WEBFONT_FREE_BYTES + WEBFONT_MAX_RATIO * fileBytes);
+
 /** fileBytes バイトのメタファイル・CGM が、画素にできる数 (その文書の画像の画素の合計の上限) */
 export const metafilePixelBudget = (fileBytes: number): number => Math.min(METAFILE_TOTAL_IMAGE_PIXELS, METAFILE_FREE_PIXELS + METAFILE_PIXELS_PER_BYTE * fileBytes);
 
@@ -127,7 +212,7 @@ export const PS_MAX_SVG_CHARS = 128 * 1024 * 1024;
  *  - fontBytes: 128MB。和文・CJK の書体は 1 書体で 5〜25MB、いくつもの書体をまとめた集まり (TTC・OTC。CJK の全ウェイトを入れたもの) は
  *    数十 MB から 100MB ほどなので、それを弾かない
  *  - imageBytes: 256MB。ファイルとして渡した画像の上限 (assets.ts の MAX_FILE_BYTES) と同じ
- *  - redirects: 20。ブラウザが転送をたどる回数の上限 (Fetch Standard の HTTP-redirect fetch の redirect count。Node の fetch も同じ 20)
+ *  - redirects: 20。ブラウザが転送をたどる回数の上限 (Fetch Standard §4.5 HTTP-redirect fetch の redirect count。Node の fetch も同じ 20)
  */
 export const fetchLimits = {
   cssBytes: 16 * 1024 * 1024,

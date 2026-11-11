@@ -475,3 +475,136 @@ describe('NC-28 絶対配置の top・bottom・height の百分率 (CSS 2.1 §10
     expect(y.y + y.h).toBeCloseTo(cb.pad.y1 - 4, 3);
   });
 });
+
+describe('NC-28 (4) 行の中の絶対配置の箱の static position (CSS 2.1 §10.3.7・§10.6.4)', () => {
+  it('left・right・top・bottom が auto なら、行の中の見つけた所 (後ろの字の前) に置く', () => {
+    const body = '<div style="position: relative; margin-left: 30pt; width: 200pt">PRE <span class="abs">S</span>Q</div>';
+    const s = glyphAt(body, '', 'S');
+    const q = glyphAt(body, '', 'Q');
+    expect(s.x).toBeCloseTo(q.x, 3);
+    expect(s.y).toBeCloseTo(q.y, 3);
+  });
+
+  it('2 行目で見つけたら、2 行目の高さ', () => {
+    const body = '<div style="position: relative; width: 40pt">AAAA BBBB <span class="abs">S</span>C</div>';
+    const s = glyphAt(body, '', 'S');
+    const c = glyphAt(body, '', 'C');
+    expect(c.y - glyphAt(body, '', 'A').y).toBeCloseTo(12, 3);
+    expect(s.x).toBeCloseTo(c.x, 3);
+    expect(s.y).toBeCloseTo(c.y, 3);
+  });
+
+  it('表のセルの中で見つけた箱 (基準は外のブロック)', () => {
+    const body = '<div style="position: relative; margin-left: 30pt"><table><tr><td>PRE <span class="abs">S</span>Q</td></tr></table></div>';
+    const s = glyphAt(body, '', 'S');
+    const q = glyphAt(body, '', 'Q');
+    expect(s.x).toBeCloseTo(q.x, 3);
+    expect(s.y).toBeCloseTo(q.y, 3);
+  });
+
+  it('見つけた所の目印は、行の字の位置を変えない (右寄せ・両端揃え・行末の空白)', () => {
+    for (const align of ['right', 'center', 'justify']) {
+      const text = 'aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo';
+      const plain = `<div style="position: relative; width: 120pt; text-align: ${align}">${text} <span>Z</span></div>`;
+      const marked = `<div style="position: relative; width: 120pt; text-align: ${align}">${text} <span class="abs">S</span><span>Z</span></div>`;
+      for (const ch of ['a', 'f', 'k', 'o', 'Z']) {
+        expect(glyphAt(marked, '', ch).x).toBeCloseTo(glyphAt(plain, '', ch).x, 3);
+        expect(glyphAt(marked, '', ch).y).toBeCloseTo(glyphAt(plain, '', ch).y, 3);
+      }
+    }
+    // どの語の後ろに箱があっても (行の終わり・行の頭になる所も)、ほかの字の位置は同じ
+    const words = 'aaa bbb ccc ddd eee 「fff」 ggg hhh iii jjj kkk lll'.split(' ');
+    const all = (body: string) => {
+      const out: string[] = [];
+      const rec = (a: Area, ox: number, oy: number) => {
+        const g = a as unknown as { x?: number; y?: number };
+        const x = ox + (g.x ?? 0);
+        const y = oy + (g.y ?? 0);
+        if (a.type === 'glyph') {
+          if (a.text !== 'S') out.push(`${a.text}@${x.toFixed(3)},${y.toFixed(3)}`);
+          return;
+        }
+        for (const c of childrenOf(a)) rec(c, x, y);
+      };
+      rec(E.engine.layout(imp(body).document).sheets[0].page, 0, 0);
+      return out.sort().join(' ');
+    };
+    for (const align of ['left', 'right', 'justify']) {
+      const wrap = (t: string) => `<div style="position: relative; width: 70pt; text-align: ${align}">${t}</div>`;
+      const plain = all(wrap(words.join(' ')));
+      for (let k = 1; k < words.length; k++) {
+        expect(all(wrap(`${words.slice(0, k).join(' ')} <span class="abs">S</span>${words.slice(k).join(' ')}`))).toBe(plain);
+        expect(all(wrap(`${words.slice(0, k).join(' ')}<span class="abs">S</span> ${words.slice(k).join(' ')}`))).toBe(plain);
+      }
+    }
+    // 段落の終わりの箱 (後ろに字が無い): 行末の空白は、これまでどおり右寄せの字の位置に数えない
+    const p0 = '<div style="position: relative; width: 120pt; text-align: right">abc </div>';
+    const p1 = '<div style="position: relative; width: 120pt; text-align: right">abc <span class="abs">S</span></div>';
+    expect(glyphAt(p1, '', 'c').x).toBeCloseTo(glyphAt(p0, '', 'c').x, 3);
+  });
+
+  it('left の指定があれば、左右は指定どおり (上下は行の高さ)', () => {
+    const body = '<div style="position: relative; margin-left: 30pt; width: 200pt">PRE <span class="abs" style="left: 5pt">S</span>Q</div>';
+    const s = glyphAt(body, '', 'S');
+    expect(s.x).toBeCloseTo((10 * 72) / 25.4 + 35, 3);
+    expect(s.y).toBeCloseTo(glyphAt(body, '', 'Q').y, 3);
+  });
+});
+
+describe('NC-28 (2) flex・grid の容器が基準の絶対配置 (CSS Flexbox 1 §4.1・CSS Grid 1 §9.1・CSS 2.1 §10.1 の 4)', () => {
+  for (const disp of ['flex', 'grid']) {
+    it(`position: relative の ${disp} の容器の padding の箱から`, () => {
+      const bs = boxes(`<div style="position: relative; display: ${disp}; margin-left: 30pt; width: 200pt; height: 50pt; padding: 4pt">F<div class="abs" style="left: 7pt; top: 9pt">X</div></div>`);
+      const cb = bs.find((b) => Math.abs(b.w - 208) < 0.01 && Math.abs(b.h - 58) < 0.01)!;
+      expect(cb).toBeTruthy();
+      const x = find(bs, 'X');
+      expect(x.x).toBeCloseTo(cb.pad.x0 + 7, 3);
+      expect(x.y).toBeCloseTo(cb.pad.y0 + 9, 3);
+      const r = find(boxes(`<div style="position: relative; display: ${disp}; margin-left: 30pt; width: 200pt; height: 50pt; padding: 4pt">F<div class="abs" style="right: 0; bottom: 0">X</div></div>`), 'X');
+      expect(r.x + r.w).toBeCloseTo(cb.pad.x1, 3);
+      expect(r.y + r.h).toBeCloseTo(cb.pad.y1, 3);
+    });
+  }
+
+  it('flex の項目の中の絶対配置の箱も、容器が基準 (高さが中身で決まる容器も)', () => {
+    for (const h of ['height: 50pt; ', '']) {
+      const bs = boxes(`<div style="position: relative; display: flex; margin-left: 30pt; width: 200pt; ${h}padding: 4pt"><div>A<div class="abs" style="left: 7pt; top: 9pt">X</div></div><div>B</div></div>`);
+      const cb = bs.find((b) => Math.abs(b.w - 208) < 0.01 && norm(b.text) === norm('ABX'))!;
+      expect(cb).toBeTruthy();
+      const x = find(bs, 'X');
+      expect(x.x).toBeCloseTo(cb.pad.x0 + 7, 3);
+      expect(x.y).toBeCloseTo(cb.pad.y0 + 9, 3);
+    }
+  });
+
+  it('position が static の flex の容器は、これまでどおり基準にしない (外の基準のブロックから)', () => {
+    const bs = boxes('<div style="position: relative; margin-left: 30pt; width: 300pt; padding: 2pt"><div style="display: flex; margin-left: 40pt">F<div class="abs" style="left: 7pt; top: 9pt">X</div></div></div>');
+    const cb = bs.find((b) => Math.abs(b.w - 304) < 0.01)!;
+    const x = find(bs, 'X');
+    expect(x.x).toBeCloseTo(cb.pad.x0 + 7, 3);
+    expect(x.y).toBeCloseTo(cb.pad.y0 + 9, 3);
+    // 項目の中の箱も (項目は表のセルに組む)
+    const bs2 = boxes('<div style="position: relative; margin-left: 30pt; width: 300pt; padding: 2pt"><p>p</p><div style="display: flex; margin-left: 40pt"><div>A<div class="abs" style="left: 7pt; top: 9pt">X</div></div><div>B</div></div></div>');
+    const cb2 = bs2.find((b) => Math.abs(b.w - 304) < 0.01)!;
+    const x2 = find(bs2, 'X');
+    expect(x2.x).toBeCloseTo(cb2.pad.x0 + 7, 3);
+    expect(x2.y).toBeCloseTo(cb2.pad.y0 + 9, 3);
+  });
+});
+
+describe('NC-28 (3) リストの項目・表のセルの position: relative のずらし (CSS 2.1 §9.4.3)', () => {
+  it('li の left・top', () => {
+    const a = glyphAt('<ul><li>L</li></ul>', '', 'L');
+    const b = glyphAt('<ul><li style="position: relative; left: 100pt; top: 5pt">L</li></ul>', '', 'L');
+    expect(b.x - a.x).toBeCloseTo(100, 3);
+    expect(b.y - a.y).toBeCloseTo(5, 3);
+  });
+
+  it('td の left・top (後ろのセルは動かない)', () => {
+    const a = (ch: string) => glyphAt('<table><tr><td>T</td><td>U</td></tr></table>', '', ch);
+    const b = (ch: string) => glyphAt('<table><tr><td style="position: relative; left: 100pt; top: 5pt">T</td><td>U</td></tr></table>', '', ch);
+    expect(b('T').x - a('T').x).toBeCloseTo(100, 3);
+    expect(b('T').y - a('T').y).toBeCloseTo(5, 3);
+    expect(b('U').x).toBeCloseTo(a('U').x, 3);
+  });
+});

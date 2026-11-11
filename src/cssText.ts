@@ -9,7 +9,7 @@
  * cssCascade・htmlPaged・htmlImport・cssGradient・cssSelector が使う (それぞれが持っていた同じ役割の関数を寄せたもの)
  */
 import { NAMED_COLORS } from './color';
-import { isColorFunction, parseColorFunction } from './cssColorFunctions';
+import { hasNoneComponent, isColorFunction, parseColorFunction } from './cssColorFunctions';
 
 // ───────────────────────── 区切り ─────────────────────────
 
@@ -107,6 +107,16 @@ export function parseColor(v: string, current?: RGBA): RGBA | 'current' | undefi
     const n = [0, 2, 4, 6].map((k) => parseInt(full.slice(k, k + 2) || 'ff', 16));
     return [n[0], n[1], n[2], n[3] / 255];
   }
+  // light-dark(<color>, <color>) (CSS Color 5 §7): 要素の色の組 (color-scheme) が light なら前の色、dark なら後ろの色。
+  // ここでは light の色にする (印刷の利用者の好みは light。dark の要素の値は、カスケードが resolveLightDark で先に選ぶ)。
+  // 2 つとも色として読めなければ、色として読めない
+  const ld = lightDarkArgs(s);
+  if (ld) {
+    const [l, d] = ld.map((x) => parseColor(x, current));
+    return l === undefined || d === undefined ? undefined : l;
+  }
+  // none の成分 (Color 4 §4.4。新しい構文だけ) を書いた rgb()・hsl() は、Color 4 の関数と同じに読む (欠けた成分は 0)
+  if (hasNoneComponent(s)) return parseColorFunction(s, (x) => parseColor(x), current ?? [0, 0, 0, 1]);
   const m = /^(rgba?|hsla?)\(\s*([^)]*)\)$/.exec(s);
   if (!m) return isColorFunction(s) ? parseColorFunction(s, (x) => parseColor(x), current ?? [0, 0, 0, 1]) : undefined;
   const parts = m[2].split(/[\s,/]+/).filter(Boolean);
@@ -135,6 +145,45 @@ export function parseColor(v: string, current?: RGBA): RGBA | 'current' | undefi
   const a = sat * Math.min(l, 1 - l);
   const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
   return [f(0), f(8), f(4)].map((x) => Math.round(Math.min(255, Math.max(0, x * 255)))).concat(alpha) as RGBA;
+}
+
+/** light-dark(a, b) の 2 つの引数 (括弧の外のカンマで分ける)。light-dark() でなければ undefined。s は小文字で前後の空白の無い値 */
+function lightDarkArgs(s: string): [string, string] | undefined {
+  if (!s.startsWith('light-dark(') || !s.endsWith(')')) return undefined;
+  const args = splitTop(s.slice(11, -1), ',').map((x) => x.trim());
+  return args.length === 2 && args.every(Boolean) ? (args as [string, string]) : undefined;
+}
+
+/**
+ * 値の中の light-dark(<color>, <color>) (CSS Color 5 §7) を、要素の色の組 (dark が偽なら light) の側の色に置き換える。
+ * 入れ子の light-dark() も、内側まで置き換える。引数の数が違うものは、そのまま残す (色として読めない値になる)
+ */
+export function resolveLightDark(v: string, dark: boolean): string {
+  const re = /light-dark\(/gi;
+  let out = '';
+  let pos = 0;
+  for (let m = re.exec(v); m; m = re.exec(v)) {
+    // 名前の一部 (my-light-dark( など) は関数ではない
+    if (m.index > 0 && /[-\w]/.test(v[m.index - 1])) continue;
+    let depth = 0;
+    let end = -1;
+    for (let i = m.index + 10; i < v.length; i++) {
+      const ch = v[i];
+      if (ch === '"' || ch === "'") i = skipString(v, i) - 1;
+      else if (ch === '(') depth++;
+      else if (ch === ')' && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    if (end < 0) break;
+    const args = splitTop(v.slice(m.index + 11, end), ',').map((x) => x.trim());
+    if (args.length !== 2) continue;
+    out += v.slice(pos, m.index) + resolveLightDark(args[dark ? 1 : 0], dark);
+    pos = end + 1;
+    re.lastIndex = pos;
+  }
+  return out + v.slice(pos);
 }
 
 /** RGBA → ブラウザの計算値の形 (rgb(r, g, b)、半透明なら rgba(r, g, b, a)) */

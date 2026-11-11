@@ -295,3 +295,63 @@ describe('Canvas の輪郭の描画 (右から左のクラスタ)', () => {
     expect(at[1][1] as number).toBeCloseTo((pos[0].xAdvance + pos[1].xOffset) * k, 6);
   });
 });
+
+describe('アラビア文字の長い語を、箱の幅で折る (CSS-24 (4))', () => {
+  const MIM = 'م'.repeat(38);
+  /** 行ごとの字 (行の並び。字は x の順) */
+  const lines = (extra: object) => {
+    const tree = layout([MIM], { width: 60, fontSize: 14, direction: 'rtl', ...extra });
+    const block = tree.sheets[0].page.regionBody.children[0] as unknown as { children: Area[] };
+    return block.children.map((line) => {
+      const out: Array<{ g: GlyphArea; x: number }> = [];
+      const visit = (a: Area, ox: number) => {
+        const x = ox + a.x;
+        if (a.type === 'glyph') out.push({ g: a, x });
+        for (const c of (a as unknown as { children?: Area[] }).children ?? []) visit(c, x);
+      };
+      visit(line, 0);
+      return out.sort((a, b) => a.x - b.x);
+    });
+  };
+  it('word-break: break-all・overflow-wrap: anywhere: 語の途中で折り、字は箱の中に収まる。字形は、折らないときと同じつながった形 (Text 3 §5.1・§5.5)', () => {
+    for (const extra of [{ wordBreak: 'break-all' }, { overflowWrap: 'anywhere' }]) {
+      const ls = lines(extra);
+      expect(ls.length).toBeGreaterThan(5);
+      // 字は箱 (0〜60pt) の中。右から左の行は右端 (始端) から並べる
+      for (const l of ls)
+        for (const e of l) {
+          expect(e.x).toBeGreaterThanOrEqual(-0.01);
+          expect(e.x + e.g.advance).toBeLessThanOrEqual(60.01);
+        }
+      // 字は合わせて 38 字 (文字列のつながりは、読む順に並べ直せば元の語)
+      expect(ls.flat().map((e) => e.g.text.replace(/\u200d/g, '')).join('')).toBe(MIM);
+      // 字形: 語の最初の字 (1 行目の右端) だけが語頭形、最後の字 (最後の行の左端) だけが語尾形、ほかは語中形 (行の切れ目でも、つながった形)
+      // (ゼロ幅接合子の字形 (この書体では幅 0 の space) は除く)
+      const forms = ls.flatMap((l) => [...l].reverse().flatMap((e) => names(e.g).reverse())).filter((n) => n.startsWith('uni0645'));
+      expect(forms[0]).toBe('uni0645.init');
+      expect(forms[forms.length - 1]).toBe('uni0645.fina');
+      expect(forms.slice(1, -1).every((f) => f === 'uni0645.medi')).toBe(true);
+    }
+  });
+  it('折らないとき (overflow-wrap: normal): 語は 1 つの字のまま、始端 (右端) から置き、終端 (左) へはみ出す (Text 3 §6.1)', () => {
+    const ls = lines({ overflowWrap: 'normal' });
+    expect(ls.length).toBe(1);
+    expect(ls[0].length).toBe(1);
+    const e = ls[0][0];
+    expect(e.x + e.g.advance).toBeCloseTo(60, 3);
+    expect(e.x).toBeLessThan(0);
+  });
+  it('break-all で折っても、行に収まる語は、折らないときと同じ幅 (つながる字の並びを字ごとに分けても、送りの合計は同じ)', () => {
+    const word = 'بسم';
+    const whole = glyphsOf([word])[0].g.advance;
+    const parts = glyphsOf([word], { wordBreak: 'break-all' });
+    expect(parts.reduce((t, e) => t + e.g.advance, 0)).toBeCloseTo(whole, 3);
+    // ラーム・アリフ (必須の合字) は分けない
+    const la = glyphsOf(['سلام'], { wordBreak: 'break-all' }).map((e) => e.g.text.replace(/\u200d/g, ''));
+    expect(la.some((t) => t === 'لا')).toBe(true);
+    // 最初の書体がアラビア文字を持たない並び: 断片 (前にゼロ幅接合子を足したもの) も、語の字の書体で組む (ゼロ幅接合子で書体を選ばない)
+    const mixed = glyphsOf([word], { wordBreak: 'break-all', fontFamily: `${FAMILY}, ${ARABIC}` });
+    expect(mixed.length).toBe(3);
+    expect(mixed.every((e) => e.g.fontFamily === ARABIC)).toBe(true);
+  });
+});

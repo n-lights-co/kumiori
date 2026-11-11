@@ -48,12 +48,12 @@ import fontkit from '@pdf-lib/fontkit';
 import type { FontManager } from './fontManager';
 import { parseColor, type SpotColor } from './color';
 import { walkAreaTree } from './areaTree';
-import { SANS } from './sampleData';
+import { MONO_GENERIC, SANS } from './sampleData';
 import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
 import { AssetStore } from './assets';
 import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, referencePath, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { iccRgbToCmyk, type CmykConverter } from './icc';
-import { embedCmykImage, embedPngAsIs, markCffSubset, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
+import { embedCmykImage, embedPngChecked, markCffSubset, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
 import { shrinkJpeg } from './jpeg';
 import { PdfColorGlyphs } from './colorGlyphPdf';
 import { apply, invert, mul, type Seg } from './matrix';
@@ -1461,7 +1461,7 @@ async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager,
         return r.image;
       }
     }
-    return kind === 'png' ? ((await embedPngAsIs(pdf, bytes)) ?? (await pdf.embedPng(bytes))) : await pdf.embedJpg(bytes);
+    return kind === 'png' ? await embedPngChecked(pdf, bytes) : await pdf.embedJpg(bytes);
   };
   /** SVG の中の画像 (data: の PNG・JPEG) を埋め込んでおく */
   const embedSvgImages = async (doc: SvgDoc) => {
@@ -1675,9 +1675,12 @@ function outlineText(fonts: FontManager, text: string, family: string | undefine
   const unique = uniqueNames ? names.map((f) => (fonts.has(f) ? undefined : fonts.uniqueName(f))).find(Boolean) : undefined;
   if (unique && !names.some((f) => fonts.has(f))) return outlineText(fonts, text, unique.family, unique.weight, size);
   // 読み込んでいない書体の名前なら、ゴシック系 (gothic・sans など) は和文のゴシック、それ以外は既定の書体 (明朝) で描く
-  // Courier・等幅の名前は、字幅が Courier New と同じ Cousine (読み込んであれば)
+  // Courier・等幅の名前は、字幅が Courier New と同じ Cousine (読み込んであれば)。等幅の総称の書体を差し替えたとき (genericFonts の monospace) は、
+  // monospace の名前はその書体
+  const monoLatin = fonts.latinFallbackOf(MONO_GENERIC);
   const fam =
     names.find((f) => fonts.has(f)) ??
+    (monoLatin && names.some((f) => /monospace/i.test(f)) && fonts.has(monoLatin) ? monoLatin : undefined) ??
     (names.some((f) => /courier|monospace/i.test(f)) && fonts.has('Cousine') ? 'Cousine' : undefined) ??
     (names.some((f) => /gothic|ゴシック|sans|arial|helvetica|meiryo|メイリオ/i.test(f)) && fonts.has(SANS) ? SANS : undefined);
   // 読み込んでいない書体の名前が太字を表すなら (CourierNewPS-BoldMT など)、代わりの書体も太字にする

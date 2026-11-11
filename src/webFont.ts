@@ -9,6 +9,7 @@
  */
 import fontkit from '@pdf-lib/fontkit';
 import { inflateBytes } from './psFilters';
+import { DEFLATE_MAX_RATIO, webFontSfntBudget } from './imageLimits';
 
 /** 先頭の印で見分ける: WOFF は 'wOFF'、WOFF2 は 'wOF2' */
 export function webFontKind(buf: ArrayBuffer | Uint8Array): 'woff' | 'woff2' | undefined {
@@ -37,12 +38,19 @@ function woffToSfnt(b: Uint8Array): ArrayBuffer {
   const flavor = v.getUint32(4);
   const numTables = v.getUint16(12);
   const tables: Table[] = [];
+  // 戻した表の大きさの合計の上限 (imageLimits.ts の webFontSfntBudget。IMG-19)。origLength (§5) は 32 ビットで、頭の値のとおりに展開すると、
+  // 300KB のファイルで 5.6 秒・2GB を使っていた
+  let left = webFontSfntBudget(b.length);
   for (let k = 0; k < numTables; k++) {
     const at = 44 + 20 * k;
     const tag = String.fromCharCode(b[at], b[at + 1], b[at + 2], b[at + 3]);
     const offset = v.getUint32(at + 4);
     const compLength = v.getUint32(at + 8);
     const origLength = v.getUint32(at + 12);
+    if (origLength > left) throw new Error('WOFF: the decompressed font is too large');
+    left -= origLength;
+    // zlib (deflate) は、1 バイトが 1,032 バイトより大きく膨らまない (RFC 1951。imageLimits.ts の DEFLATE_MAX_RATIO)
+    if (compLength < origLength && origLength > DEFLATE_MAX_RATIO * compLength) throw new Error(`WOFF: the table ${tag} has an impossible compression ratio`);
     const raw = b.subarray(offset, offset + compLength);
     const data = compLength < origLength ? inflateBytes(raw, origLength + 1) : raw.slice();
     if (data.length !== origLength) throw new Error(`WOFF: the table ${tag} has a wrong length`);
@@ -177,6 +185,10 @@ function woff2ToSfnt(b: Uint8Array): ArrayBuffer {
   // Brotli の展開 (圧縮したデータは、目録のすぐ後ろから totalCompressedSize バイト。§5)
   if (r.pos + totalCompressedSize > b.length) throw new Error('WOFF2: the data is too short');
   const expected = dir.reduce((a, d) => a + (d.transformLength ?? d.origLength), 0);
+  // 展開した大きさ (Brotli の展開は、この大きさの配列を先に作る) と、戻した表の大きさの合計の上限 (imageLimits.ts の webFontSfntBudget。IMG-19)。
+  // 目録の長さ (§4.1 の UIntBase128) は 32 ビットまで書けるので、558 バイトのファイルで 3.3 秒・1.7GB を使っていた
+  const budget = webFontSfntBudget(b.length);
+  if (expected > budget || dir.reduce((a, d) => a + d.origLength, 0) > budget) throw new Error('WOFF2: the decompressed font is too large');
   const data = brotliDecompress(b.subarray(r.pos, r.pos + totalCompressedSize), expected);
   if (data.length < expected) throw new Error('WOFF2: the decompressed data is too short');
   const raw: Uint8Array[] = [];

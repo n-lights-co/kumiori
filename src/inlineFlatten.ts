@@ -310,6 +310,50 @@ export function joiningUnits(units: string[], sameFont: (seq: string) => boolean
   return out;
 }
 
+const ZWJ = '\u200D';
+/** ラーム (U+0644) と、ラーム・アリフの必須の合字になるアリフ (U+0622・U+0623・U+0625・U+0627) */
+const LAM = '\u0644';
+const LAM_ALEF = /^[\u0622\u0623\u0625\u0627]$/;
+
+/**
+ * つながる字の並び (joiningUnits がまとめた語) を、字ごとの断片 (基底の字と、その後ろの結合文字 (Joining_Type が T の字)・ZWNJ) に分ける。
+ * 語の途中で折るとき (word-break: break-all、overflow-wrap: anywhere。CSS Text 3 §5.1・§5.5) のため。
+ * Text 3 §5.1 の注: アラビア文字のようにつながる用字を語の途中で折っても、字は、折らなかったときと同じ形 (語頭・語中・語尾) で組む。
+ * そこで、前の字とつながる断片の前と、後ろの字とつながる断片の後ろに、ゼロ幅接合子 (U+200D。Joining_Type が C) を足して書体に渡す
+ * (Unicode 15 §9.2「Cursive Connection」: ZWJ は、隣の字につながる形を選ばせる)。ラーム・アリフ (必須の合字) は 1 つの断片のままにする。
+ * 書体がゼロ幅接合子の字形を持たない (描くと豆腐になる) ときは分けない (undefined)。
+ * 戻り値の断片の first・last は ZWJ を除いた最初・最後の字、g は ZWJ を含めた並びを書体で組んだ字
+ */
+function joinedPieces(seq: string, glyph: (text: string, draw: string) => GlyphMetrics, primary: (g: GlyphMetrics) => Partial<Atom>): Array<Partial<Atom> & { first: string; last: string; g: GlyphMetrics; advance: number }> | undefined {
+  const chars = [...seq];
+  const groups: string[][] = [];
+  for (const c of chars) {
+    const t = joiningType(c.codePointAt(0)!);
+    const prev = groups[groups.length - 1];
+    // 結合文字 (T) と ZWNJ は前の字に付ける。ラーム・アリフは 1 つにする
+    if (prev && (t === 'T' || c === ZWNJ || (LAM_ALEF.test(c) && prev.length === 1 && prev[0] === LAM))) prev.push(c);
+    else groups.push([c]);
+  }
+  if (groups.length < 2) return undefined;
+  const base = (g: string[], end: boolean) => (end ? [...g].reverse() : g).find((c) => joiningType(c.codePointAt(0)!) !== 'T');
+  // 前後の断片がつながるか: 前の断片の最後の字が後ろへつながる字 (D・L・C)、後ろの断片の最初の字が前へつながる字 (D・R・C)。間に ZWNJ が無い
+  const joinsNext = groups.map((g, i) => {
+    if (i + 1 >= groups.length || g[g.length - 1] === ZWNJ) return false;
+    const a = base(g, true);
+    const b = base(groups[i + 1], false);
+    return !!a && !!b && /^[DLC]$/.test(joiningType(a.codePointAt(0)!)) && /^[DRC]$/.test(joiningType(b.codePointAt(0)!));
+  });
+  const out: Array<Partial<Atom> & { first: string; last: string; g: GlyphMetrics; advance: number }> = [];
+  for (let i = 0; i < groups.length; i++) {
+    const text = groups[i].join('');
+    const draw = `${i > 0 && joinsNext[i - 1] ? ZWJ : ''}${text}${joinsNext[i] ? ZWJ : ''}`;
+    const g = glyph(text, draw);
+    if (draw !== text && !g.font.fk.hasGlyphForCodePoint(0x200d)) return undefined;
+    out.push({ first: groups[i][0], last: groups[i][groups[i].length - 1], g, advance: g.advance, ...primary(g) });
+  }
+  return out;
+}
+
 /** モンゴル文字の字 (U+1820〜U+18AA。伝統的なモンゴル文字・トド・シベ・満洲) */
 function isMongolianLetter(u: string): boolean {
   const c = u.charCodeAt(0);
@@ -522,7 +566,11 @@ function flattenText(c: string, cx: FlattenCtx): void {
       // 縦書き: 並びを 1 つの書体でまとめて組み、横倒しにする (clusterGlyph。基底の字の向きで決まる: アラビア文字・モンゴル文字は横倒し)
       const g = wm === 'horizontal-tb' ? { ...m.glyph(ch, runStyle(st), wm), draw: ch } : m.clusterGlyph(ch, runStyle(st), wm);
       const chars = [...ch];
-      out.push({ kind: 'glyph', first: chars[0], last: chars[chars.length - 1], advance: g.advance, isSpace: false, runId: state.run, st, bg, g, ...primaryProps(st, g) });
+      const atom: Atom = { kind: 'glyph', first: chars[0], last: chars[chars.length - 1], advance: g.advance, isSpace: false, runId: state.run, st, bg, g, ...primaryProps(st, g) };
+      // 語の途中で折ってよい書式 (word-break: break-all、overflow-wrap: anywhere・break-word。XSL-FO は語の途中の強制分割) なら、
+      // 字ごとに分けた並びを作れるようにしておく (行に分ける前に、splitJoinedAtoms が要るものだけ分ける)
+      if (wm === 'horizontal-tb' && (st.wordBreak === 'break-all' || st.overflowWrap !== 'normal')) atom.splitJoined = () => joinedPieces(ch, (text, draw) => m.contextGlyph(text, draw, runStyle(st), wm), (p) => primaryProps(st, p));
+      out.push(atom);
       continue;
     }
     if (!variation && ligSt && ch.length > 1 && !/[\uD800-\uDBFF]/.test(ch[0])) {
@@ -804,6 +852,9 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
   }
   // inline の id は、最初の atom に付けて、その行が置かれたページで記録する (page-number-citation の参照先)
   if (c.id && kids.length && !kids[0].src) kids[0].src = c.id;
+  // 行の中で見つけた絶対配置の箱の目印: 幅 0 の箱 (前の字との間で改行しない)。組んだ後で、この箱の位置を static position にする
+  if (c.staticAnchor !== undefined && !kids.length)
+    kids.push({ kind: 'box', idMark: true, staticMark: true, first: '\uFFFC', last: '\uFFFC', advance: 0, isSpace: false, runId: ++state.run, st: s2, glue: true, box: { node: newNode('block', wm, { isize: 0, bsize: 0, absAnchor: c.staticAnchor }), adv: 0, cross: 0, above: 0, below: 0 } });
   // 中身の無い inline (HTML の <a id="…"></a> のような目印) は、幅 0 の箱で位置を記録する (前の字との間で改行しない)
   if (c.id && !kids.length)
     kids.push({ kind: 'box', idMark: true, first: '\uFFFC', last: '\uFFFC', advance: 0, isSpace: false, runId: ++state.run, st: s2, glue: true, src: c.id, box: { node: newNode('block', wm, { isize: 0, bsize: 0 }), adv: 0, cross: 0, above: 0, below: 0 } });
@@ -903,7 +954,7 @@ function flattenRuby(c: LRuby, cx: FlattenCtx): void {
 
 /** 画像・inline-container: Flow が組んだ行内の箱 (state.image / state.inlineBox) を atom にし、alignment-baseline で基線に対する位置を決める */
 function flattenInlineBox(c: LImage | LInlineContainer, cx: FlattenCtx): void {
-  const { st, m, state, wm, out } = cx;
+  const { st, m, state, bg, wm, out } = cx;
   const runStyle = runStyleOf;
   const s2 = resolveStyle(st, { ...c, writingMode: undefined });
   let spec = c.type === 'image' ? state.image?.(c, s2) : state.inlineBox?.(c, s2);
@@ -922,7 +973,10 @@ function flattenInlineBox(c: LImage | LInlineContainer, cx: FlattenCtx): void {
     state.run++;
     // 行の中の、分けられない箱 (画像・inline-block) そのものには、飾りの線を引かない (CSS Text Decoration 3 §2。HTML の読み込みが decorateBox: false を付ける)
     const boxSt = c.decorateBox === false && s2.textDecoration ? { ...s2, textDecoration: undefined } : s2;
-    out.push({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: spec.adv, isSpace: false, runId: state.run, st: boxSt, bg: undefined, box: spec, ...(c.type === 'image' && c.noWrapInCellMin ? { noWrapInCellMin: true } : {}), ...(lineAlign ? { lineAlign } : {}) });
+    // 囲む inline の背景 (bg) は、箱の所も塗る: 行内の箱 (inline) の背景は、その内容の領域に、中の分けられない箱の所も含めて続けて塗る
+    // (CSS 2.1 §9.2.2・§14.2・CSS Backgrounds 3 §3.7。塗る高さは、囲む inline の内容の領域 (bgArea。flattenInlineElement が付ける) で、
+    // 箱の高さではない)。箱そのものの背景は、箱が自分で描く
+    out.push({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: spec.adv, isSpace: false, runId: state.run, st: boxSt, bg, box: spec, ...(c.type === 'image' && c.noWrapInCellMin ? { noWrapInCellMin: true } : {}), ...(lineAlign ? { lineAlign } : {}) });
     state.run++;
   }
 }

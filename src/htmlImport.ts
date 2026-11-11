@@ -79,7 +79,7 @@ import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
 import { UNIT_PT, cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
 import { parseTextJustifyTrim } from './textJustifyTrim';
-import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
+import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, parseSpacingTrim, SPACING_TRIM_WORD, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 
 /** ブロック水準の部品か (行内の並びを区切る) */
@@ -627,7 +627,7 @@ function pageBox(
   spots?: SpotColors,
   /** 色の cmyk()・rgb-icc() (アンテナハウスの拡張の書き方) を読む (互換の指定のときだけ。printColor) */
   ahColorFunctions = true,
-): Pick<PageMaster, 'width' | 'height' | 'margins'> & { bleed?: number; marks?: boolean; cropOffset?: number; background?: string } {
+): Pick<PageMaster, 'width' | 'height' | 'margins'> & { bleed?: number | 'auto'; marks?: boolean; marksCrop?: boolean; cropOffset?: number; background?: string } {
   // ページの文脈は根元の要素から継ぐ (Paged Media 3 §9)。em は @page の font-size、rem は根元の要素の字の大きさ
   const fsDecl = decls['font-size'] ? lengthPx(decls['font-size'], { fs: rootFsPx, rootFs: rootFsPx, vw: 0, vh: 0, pct: rootFsPx }) : undefined;
   const fsPx = fsDecl ?? rootFsPx;
@@ -642,7 +642,7 @@ function pageBox(
   let width = def.width;
   let height = def.height;
   const margins = { top: def.margin, right: def.margin, bottom: def.margin, left: def.margin };
-  const out: { bleed?: number; marks?: boolean; cropOffset?: number; background?: string } = {};
+  const out: { bleed?: number | 'auto'; marks?: boolean; marksCrop?: boolean; cropOffset?: number; background?: string } = {};
   const rawMargins: Partial<Record<'top' | 'right' | 'bottom' | 'left', string>> = {};
   for (const [prop, raw] of Object.entries(decls)) {
     const val = raw.toLowerCase();
@@ -663,9 +663,16 @@ function pageBox(
     } else if (/^margin-(top|right|bottom|left)$/.test(prop)) {
       rawMargins[prop.slice(7) as 'top'] = val;
     } else if (prop === 'bleed') {
-      const n = lenPt(val);
-      if (n !== undefined) out.bleed = n * MM_PER_PT;
-    } else if (prop === 'marks') out.marks = /crop|cross/.test(val);
+      // auto は、marks に crop があれば 6pt、無ければ 0 (CSS Paged Media 3 §7.3)。marks が決まってから masterOf で長さにする
+      if (val.trim() === 'auto') out.bleed = 'auto';
+      else {
+        const n = lenPt(val);
+        if (n !== undefined) out.bleed = n * MM_PER_PT;
+      }
+    } else if (prop === 'marks') {
+      out.marks = /crop|cross/.test(val);
+      out.marksCrop = /\bcrop\b/.test(val);
+    }
     else if (prop === 'background' || prop === 'background-color') {
       // ページの背景色 (塗り足しまで届く)。background の一括指定は、色だけ読む
       const col = printColor(raw, spots, ahColorFunctions) ?? splitWords(raw).map(cssColor).find((c) => c && (/^#/.test(c) || isColorName(c)));
@@ -1127,7 +1134,7 @@ class HtmlImporter {
   }
 
   /** 和文の字間の指定 (text-autospace・text-spacing-trim・text-spacing・hanging-punctuation) */
-  private spacing(el: Element): { autospace?: boolean; squeeze?: boolean; trimStart?: boolean; trimEnd?: boolean; hang: boolean; hangFirst: boolean } {
+  private spacing(el: Element): { autospace?: boolean; squeeze?: boolean; trimStart?: boolean; trimStartExceptFirst?: boolean; trimEnd?: boolean; trimAll?: boolean; hang: boolean; hangFirst: boolean } {
     // 自前で読んだ指定 (アンテナハウスの -ah- を含む) を先に見る。ブラウザは、指定が無くても normal を返すため
     let as = this.inh(el, 'text-autospace', true);
     // none は CSS Text 4 の値に無い (無効な宣言として無視する)。アンテナハウス互換では、空きを入れない
@@ -1136,17 +1143,28 @@ class HtmlImporter {
     const ts = this.inh(el, 'text-spacing', true);
     if (ts === 'none') [as, tr] = ['no-autospace', 'space-all'];
     else if (ts && ts !== 'normal') {
+      // text-spacing の <spacing-trim> の語は text-spacing-trim に、<autospace> の語は text-autospace にする (CSS Text 4 §8.6)
+      const words = ts.split(/\s+/);
       if (/no-autospace/.test(ts)) as = 'no-autospace';
       else if (/autospace|ideograph/.test(ts)) as ||= 'normal';
-      if (/space-all/.test(ts)) tr = 'space-all';
-      else if (/trim|space-first/.test(ts)) tr ||= 'normal';
+      const trims = words.filter((w) => SPACING_TRIM_WORD.test(w));
+      if (trims.length) tr = trims.join(' ');
     }
-    // text-spacing-trim (CSS Text 4 §8.5): trim-start・trim-both は行頭の全角の始め括弧類を二分に、trim-both は行末の終わり括弧類も二分に
-    const trv = (tr ?? '').trim();
+    // text-spacing-trim (CSS Text 4 §8.5)。位置ごとの組み方 (parseSpacingTrim) を、行組みの指定にする:
+    //  - 行頭: trim は全角の始め括弧類を二分に。space-first は、段落の 1 行目と強制改行の後の行は全角、ほかは二分
+    //    (§8.5 の要約の表「spaced first line, trim others」。本文の「Otherwise as space-start」は、この表・値の目的の説明と食い違うので、表に従う)
+    //  - 隣り合う約物: trim は詰める (§8.5.2)、space は詰めない
+    //  - 行末: trim は終わり括弧類・句読点を二分に。allow-end (入らないときだけ二分) と space-end は、全角のまま
+    //  - trim-all: 位置・前後の字によらず、全角の括弧類・中点類・句読点類を二分にする (§8.5.2)
+    //  - auto: 利用者エージェントが選ぶ値。Kumiori は初期値の normal と同じにする
+    const st = tr ? parseSpacingTrim(tr.trim() === 'auto' ? 'normal' : tr) : undefined;
     return {
       ...(as ? { autospace: as !== 'no-autospace' } : {}),
-      ...(tr ? { squeeze: trv !== 'space-all' } : {}),
-      ...(tr ? { trimStart: trv === 'trim-start' || trv === 'trim-both', trimEnd: trv === 'trim-both' } : {}),
+      ...(st?.all
+        ? { squeeze: true, trimStart: false, trimStartExceptFirst: false, trimEnd: false, trimAll: true }
+        : st
+          ? { squeeze: st.adjacent === 'trim', trimStart: st.start !== 'space', trimStartExceptFirst: st.start === 'first', trimEnd: st.end === 'trim', trimAll: false }
+          : {}),
       hang: /allow-end|force-end/.test(this.inh(el, 'hanging-punctuation', true)),
       hangFirst: /(^|\s)first(\s|$)/.test(this.inh(el, 'hanging-punctuation', true)),
     };
@@ -1362,7 +1380,7 @@ class HtmlImporter {
     this.report.counts.blocks++;
     // 高さが決まった容器 (全面の表紙など) は、ページをまたがない箱にする (中の文字がブラウザより少し大きくても、次のページへはみ出さない)
     const fixed = this.src.isAuto?.(el, 'height') === false;
-    return { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), children: [...extra, ...children] } as LBlock;
+    return { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), ...this.flexCbOf(el), children: [...extra, ...children] } as LBlock;
   }
 
   /**
@@ -1790,7 +1808,7 @@ class HtmlImporter {
         : ai === 'center' || ai === 'end' || ai === 'last-baseline'
           ? ai === 'last-baseline' ? 'end' : ai
           : undefined;
-    return { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), ...(blockAlign ? { blockAlign } : {}), children: [...extra, ...children] } as LBlock;
+    return { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), ...(blockAlign ? { blockAlign } : {}), ...this.flexCbOf(el), children: [...extra, ...children] } as LBlock;
   }
 
   /** ::before・::after に content がある (none・normal でない) か */
@@ -2327,7 +2345,29 @@ class HtmlImporter {
     if (d === 'table-cell') return 'cell';
     if (d === 'table' && p.localName !== 'img') return 'table';
     if (/^table-(row|row-group|header-group|footer-group)$/.test(d)) return 'pass';
+    // 横書きの flex・grid の容器 (ブロックの箱か、高さの決まった箱に組む) は、ブロックと同じに基準にする (CSS Flexbox 1 §4.1・CSS Grid 1 §9.1:
+    // 絶対配置の子の包含ブロックは、ふつうの CSS 2.1 §10.1 の決め方による)。間の要素 (position が static) としては、高さが中身で決まる
+    // (ブロックの箱に組む) 容器だけを通す (高さの決まった容器は、組版が中の絶対配置の箱を、その容器の内容の箱を基準に置くため)
+    if (/^(flex|grid)$/.test(d) && !/^(vertical|sideways|tb)/.test(c('writing-mode')) && (this.makesCb(p) || this.src.isAuto?.(p, 'height') !== false)) return 'block';
     return undefined;
+  }
+
+  /** flex・grid の容器の箱に付ける、絶対配置の基準の印 (cbPart が基準にする容器だけ) */
+  private flexCbOf(el: Element): { containingBlock?: true } {
+    return /^(flex|grid)$/.test(this.cs(el)('display')) && this.makesCb(el) && this.cbPart(el) === 'block' ? { containingBlock: true } : {};
+  }
+
+  /**
+   * position: relative の箱のずらし (pt。右・下が正。CSS 2.1 §9.4.3: left と right の両方があれば left (direction: ltr)、top と bottom の
+   * 両方があれば top。auto は 0)。ずらしが無ければ undefined
+   */
+  private relativeOffsetOf(el: Element): { x: number; y: number } | undefined {
+    const c = this.cs(el);
+    if (c('position') !== 'relative') return undefined;
+    const off = (p: 'top' | 'right' | 'bottom' | 'left') => (this.src.isAuto?.(el, p) === false ? cssLen(c(p)) : undefined);
+    const x = off('left') ?? (off('right') !== undefined ? -off('right')! : 0);
+    const y = off('top') ?? (off('bottom') !== undefined ? -off('bottom')! : 0);
+    return x || y ? { x, y } : undefined;
   }
 
   /** 中の絶対配置の箱の基準になる要素か: position が relative・sticky か、変換の付いた箱 (CSS 2.1 §10.1・Transforms 1 §3) */
@@ -3257,6 +3297,8 @@ class HtmlImporter {
       if (sp.squeeze !== undefined && sp.squeeze !== ps?.squeeze) s.punctuationSqueeze = sp.squeeze;
       if (sp.trimStart !== undefined && sp.trimStart !== ps?.trimStart) s.punctuationTrimStart = sp.trimStart;
       if (sp.trimEnd !== undefined && sp.trimEnd !== ps?.trimEnd) s.punctuationTrimEnd = sp.trimEnd;
+      if (sp.trimStartExceptFirst !== undefined && sp.trimStartExceptFirst !== ps?.trimStartExceptFirst) s.punctuationTrimStartExceptFirst = sp.trimStartExceptFirst;
+      if (sp.trimAll !== undefined && sp.trimAll !== ps?.trimAll) s.punctuationTrimAll = sp.trimAll;
       if (sp.hang !== ps?.hang) s.hangingPunctuation = sp.hang;
       if (sp.hangFirst !== (ps?.hangFirst ?? false)) s.hangFirst = sp.hangFirst;
     }
@@ -4842,12 +4884,8 @@ class HtmlImporter {
     // position が static でない箱は、中の絶対配置の箱の基準 (CSS 2.1 §10.1)。relative は、組んだ箱を left・top (無ければ right・bottom の逆) だけずらす (§9.4.3)
     const posv = c('position');
     if (posv === 'relative' || posv === 'sticky' || b.paintEffect?.transform) b.containingBlock = true;
-    if (posv === 'relative') {
-      const off = (p: 'top' | 'right' | 'bottom' | 'left') => (this.src.isAuto?.(el, p) === false ? cssLen(c(p)) : undefined);
-      const x = off('left') ?? (off('right') !== undefined ? -off('right')! : 0);
-      const y = off('top') ?? (off('bottom') !== undefined ? -off('bottom')! : 0);
-      if (x || y) b.relativeOffset = { x, y };
-    }
+    const rel = this.relativeOffsetOf(el);
+    if (rel) b.relativeOffset = rel;
     // アンテナハウスの行グリッド (-ah-baseline-grid。normal は何もしない)
     const bgrid = this.pg(el)['-ah-baseline-grid']?.trim().toLowerCase();
     if (bgrid === 'new' || bgrid === 'root' || bgrid === 'none') b.baselineGrid = bgrid;
@@ -5539,6 +5577,9 @@ class HtmlImporter {
       const body: LTableCell = { type: 'table-cell', ...this.textStyle(li, container), ...this.paragraphStyle(li, container), children: this.flowChildren(li) };
       // position が static でない項目は、中の絶対配置の箱の基準 (項目の箱 = 本文のセル)
       if (this.makesCb(li)) body.containingBlock = true;
+      // position: relative の項目のずらし (CSS 2.1 §9.4.3): 項目の箱 (記号のセルと本文のセル) を、組んだ後で動かす
+      const liRel = this.relativeOffsetOf(li);
+      if (liRel) body.relativeOffset = liRel;
       // 記号は li の内容の先頭の行内の字 (最初の子がブロックなら、その前の行になる。Lists 3 §3.5)
       if (insideMarker) (body.children as Array<LBlockLevel | LInlineLevel>).unshift(insideMarker);
       if (marks.length) (body.children as Array<LBlockLevel | LInlineLevel>).unshift(...marks);
@@ -5560,7 +5601,7 @@ class HtmlImporter {
         ...(marker ? { listMarkerRow: true } : {}),
         // 記号・番号は、本文の最初の行の基線にそろえる (CSS Lists: 外側の記号は最初の行の箱に置く)
         // 本文の最後の子の下の余白は、li の外へ抜けて次の項目との間に残る (CSS 2.1 §8.3.1)。セルの高さに含める
-        cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', ...(body.trailingSpaceOut === undefined ? { keepTrailingSpace: true } : {}) }],
+        cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, ...(liRel ? { relativeOffset: liRel } : {}), children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', ...(body.trailingSpaceOut === undefined ? { keepTrailingSpace: true } : {}) }],
       };
     });
     const table = {
@@ -5719,6 +5760,9 @@ class HtmlImporter {
           if (cellGrid) cell.children = [{ type: 'block', baselineGrid: cellGrid, ...(cellGrid === 'new' ? { baselineGridStack: true } : {}), children: cell.children } as LBlock];
           // position が static でないセル・変換の付いたセルは、中の絶対配置の箱の基準 (CSS 2.1 §10.1)
           if (this.makesCb(td)) cell.containingBlock = true;
+          // position: relative のセルのずらし (CSS 2.1 §9.4.3): 表を組んだ後のセルの箱を動かす (行の高さ・ほかのセルは変えない)
+          const tdRel = this.relativeOffsetOf(td);
+          if (tdRel) cell.relativeOffset = tdRel;
           const cs = Math.min(MAX_COL_SPAN, parseInt(td.getAttribute('colspan') ?? '1', 10));
           const rs = Math.min(MAX_ROW_SPAN, parseInt(td.getAttribute('rowspan') ?? '1', 10));
           if (cs > 1) cell.colSpan = cs;
@@ -5970,14 +6014,20 @@ class HtmlImporter {
   private masterOf(decls: Record<string, string>): PageMaster {
     const def = this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 };
     const pb = pageBox(decls, def, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions);
+    const trimMarks = pb.marks ?? this.opts.trimMarks ?? false;
+    // 塗り足しの幅。bleed の初期値は auto で、auto は marks に crop があれば 6pt、無ければ 0 (CSS Paged Media 3 §7.3)。
+    // @page に bleed も marks も無いときは、呼び出しの設定 (コマンドの --print の 3mm など) に従う。
+    // Kumiori は crop と cross を分けずに両方描くが、auto の幅は、書かれた marks に crop があるかで決める (marks を書かないときは、設定のトンボ)
+    const crop = pb.marks !== undefined ? !!pb.marksCrop : trimMarks;
+    const bleed = typeof pb.bleed === 'number' ? pb.bleed : pb.bleed === 'auto' || pb.marks !== undefined ? (crop ? 6 * MM_PER_PT : 0) : (this.opts.bleedMm ?? 0);
     return {
       width: pb.width,
       height: pb.height,
-      bleed: pb.bleed ?? this.opts.bleedMm ?? 0,
-      trimMarks: pb.marks ?? this.opts.trimMarks ?? false,
+      bleed,
+      trimMarks,
       // トンボの領域の幅は、塗り足しの外側から数える
       ...(pb.background ? { backgroundColor: pb.background } : {}),
-      ...(pb.cropOffset !== undefined ? { trimMarkMargin: Math.max(pb.cropOffset - (pb.bleed ?? this.opts.bleedMm ?? 0), 0) } : {}),
+      ...(pb.cropOffset !== undefined ? { trimMarkMargin: Math.max(pb.cropOffset - bleed, 0) } : {}),
       margins: pb.margins,
       ...(this.pageColumns ? { columns: this.pageColumns } : {}),
     };

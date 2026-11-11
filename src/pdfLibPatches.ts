@@ -19,6 +19,7 @@ import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFDocument, PDFFl
 import type { PDFOperator, PDFPage } from 'pdf-lib';
 import type { FontManager } from './fontManager';
 import { decodeJpeg } from './jpeg';
+import { pngWithinLimits } from './pixels';
 import { cffGidToCid, cffTable, subsetCff } from './cff';
 
 /** 差し替え済みの印 (原型に付ける) */
@@ -243,6 +244,16 @@ export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array): Promise<P
 }
 
 /**
+ * PNG を埋め込む: 展開せずに入れられるものは embedPngAsIs、ほかは pdf-lib の embedPng (展開する)。
+ * どちらも、画素の数と展開の大きさの上限 (pixels.ts の pngWithinLimits) を超える PNG は埋め込まずに投げる
+ * (pdf-lib は IHDR の寸法のとおりに配列を作る。PDF に入れても、PDF を見る側が同じだけ展開する。IMG-19)
+ */
+export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array): Promise<PDFImage> {
+  if (!pngWithinLimits(png)) throw new Error('PNG: 画素の数か展開の大きさが上限を超えます');
+  return (await embedPngAsIs(pdf, png)) ?? (await pdf.embedPng(png));
+}
+
+/**
  * 入稿用 (PDF/X) の出力: RGB の画像 (PNG・JPEG) を画素に戻し、CMYK (DeviceCMYK・8 ビット・FlateDecode) の画像として埋め込む。
  * 色の変換は toCmyk (ICC の変換はしない)。透明度は SMask (DeviceGray) として残し、hasAlpha で知らせる。
  * グレーの画像・CMYK の JPEG・読めない画像は undefined (呼ぶ側で、ふつうに埋め込む)
@@ -263,6 +274,8 @@ export async function embedCmykImage(
     ({ width, height } = px);
     rgb = px.data;
   } else {
+    // 上限を超える PNG は展開しない (呼ぶ側のふつうの埋め込み (embedPngChecked) も断る)
+    if (!pngWithinLimits(bytes)) return undefined;
     let e: PngEmbedder;
     try {
       e = await PngEmbedder.for(bytes);

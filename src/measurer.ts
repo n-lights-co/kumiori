@@ -433,6 +433,18 @@ export class Measurer {
   }
 
   /**
+   * 字の並び text を、前後に字 (ゼロ幅接合子など) を足した並び draw として組んだ字 (横書き)。書体は text で選び (draw の先頭の
+   * ゼロ幅接合子で書体を選ばない)、送りは draw をその書体で組んだ幅。つながる字の語を分けた断片 (inlineFlatten.ts の joinedPieces) に使う
+   */
+  contextGlyph(text: string, draw: string, style: RunStyle, wm: WritingMode): GlyphMetrics {
+    const g = this.glyph(text, style, wm);
+    if (draw === text) return { ...g, draw };
+    const k = g.scaleX ?? 1;
+    const w = this.emAdvance(g.font, draw, wm === 'horizontal-tb' ? style.features : undefined) * style.fontSize * k;
+    return { ...g, advance: w, naturalWidth: w, draw };
+  }
+
+  /**
    * 基底の字と異体字セレクタの並び (variationUnits の単位) のメトリクス。書体・送り・縦書きの扱いは基底の字で決め、
    * 描く文字列だけを並びにする (描く側が、並びから異体字の字形を選べるように。横書きは draw、縦書きは vertical.glyph)。
    * 横書きの送りは並びで測る (字形が替わって幅が変わる書体のため)

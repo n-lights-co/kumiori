@@ -3,9 +3,9 @@ import { emfToSvg, wmfToSvg } from './metafile';
 import { epsToSvg } from './eps';
 import { cgmToSvg } from './cgm';
 import { parseSvg, type XmlNode } from './svg';
-import { decodeBmp, decodeGif, encodePng, MAX_PIXELS, type Pixels } from './pixels';
+import { decodeBmp, decodeGif, encodePng, MAX_PIXELS, pngWithinLimits, type Pixels } from './pixels';
 import { decodeWebp } from './webp';
-import { decodeModifiedHuffman } from './ccitt';
+import { ccittFits, decodeModifiedHuffman } from './ccitt';
 import { fetchGuarded } from './resources';
 import { fetchLimits } from './imageLimits';
 
@@ -31,6 +31,8 @@ export interface ImageAsset {
   drawable?: false;
   /** 描けない理由 (画像を描けない環境 (Node) で、PDF に入れられない形式 (GIF など) や、図形にできない SVG の機能 (filter・marker など))。組版の警告に出す */
   unsupported?: string;
+  /** 描いたが、中の一部を描けなかったもの (CGM の読めない要素、WMF・EMF・CGM の上限を超えた画像など)。組版の警告に出す (IMG-19 (4)) */
+  notes?: string[];
   /** 画像に書かれた解像度 (dpi。PNG・JPEG)。width / height は 96dpi とみなした大きさのまま */
   dpi?: number;
 }
@@ -206,19 +208,24 @@ export class AssetStore {
       // WMF・EMF (と WMF のプレビューを持つ EPS) は、描画命令を SVG にして描く (PDF にはベクターのまま入る)
       const preview = info.mime === 'application/postscript' && tiff && !element ? tiff : undefined;
       // CGM は要素を読んで SVG にする (cgm.ts)
-      const cgmSvg = info.mime === 'image/cgm' ? cgmToSvg(bytes)?.svg : undefined;
+      // 描けなかった要素・上限を超えて描かなかった画像の警告 (cgm.ts の CgmResult.warnings・metafile.ts の warnings) は、描いた画像の notes にして
+      // 組版の警告に出す (前は捨てていた。IMG-19 (4))
+      const notes: string[] = [];
+      const cgm = !epsSvg && info.mime === 'image/cgm' ? cgmToSvg(bytes) : undefined;
+      if (cgm) notes.push(...cgm.warnings);
       const svg =
         epsSvg ??
-        cgmSvg ??
-        (info.mime === 'image/wmf' ? wmfToSvg(bytes) : info.mime === 'image/emf' ? emfToSvg(bytes) : preview ? wmfToSvg(preview, info.width, info.height) : undefined);
+        cgm?.svg ??
+        (info.mime === 'image/wmf' ? wmfToSvg(bytes, undefined, undefined, notes) : info.mime === 'image/emf' ? emfToSvg(bytes, undefined, undefined, notes) : preview ? wmfToSvg(preview, info.width, info.height, notes) : undefined);
       if (svg) {
         const sb = new TextEncoder().encode(svg);
+        const extra = notes.length ? { notes: [...new Set(notes)] } : {};
         // 画像を描けない環境 (Node): SVG のまま登録する (PDF には図形で描く)
         if (noCanvas() && this.opts.parseXml && parseSvg(svg, this.opts.parseXml, { outline: () => ({ segs: [], advance: 0 }) }))
-          return this.register(name, { mime: 'image/svg+xml', bytes: sb, width: info.width, height: info.height });
+          return this.register(name, { mime: 'image/svg+xml', bytes: sb, width: info.width, height: info.height, ...extra });
         try {
           const d = await decode(sb, 'image/svg+xml');
-          return this.register(name, { mime: 'image/svg+xml', bytes: sb, width: info.width, height: info.height, element: d.element });
+          return this.register(name, { mime: 'image/svg+xml', bytes: sb, width: info.width, height: info.height, element: d.element, ...extra });
         } catch {
           /* 描けなければ仮の枠 */
         }
@@ -242,6 +249,9 @@ export class AssetStore {
       // GIF・BMP・WebP は画素を読んで PNG にする (大きさは元の画像の大きさ)
       const px = mime === 'image/gif' ? decodeGif(bytes) : mime === 'image/bmp' ? decodeBmp(bytes) : mime === 'image/webp' ? decodeWebp(bytes) : undefined;
       if (px) return this.register(name, { mime: 'image/png', bytes: await encodePng(px), width: size.width, height: size.height, ...(dpi ? { dpi } : {}) });
+      // PNG は PDF に入れるとき (pdf-lib の embedPng) に展開するので、展開の大きさの上限を先に確かめる (pixels.ts の pngWithinLimits。IMG-19)
+      if (mime === 'image/png' && !pngWithinLimits(bytes))
+        return this.register(name, { mime, bytes, width: size.width, height: size.height, drawable: false, unsupported: 'PNG (画素の数か展開の大きさが上限を超える)' });
       // PDF に入れられるのは PNG・JPEG・図形にできる SVG だけ (読めない GIF・BMP・WebP は画素に直せない)
       if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/svg+xml') {
         const label = mime === 'image/webp' ? 'WebP' : mime.replace(/^image\//, '').toUpperCase();
@@ -417,6 +427,23 @@ function paletteWithExtra(ifd: { width: number; height: number; [k: string]: unk
 }
 
 /**
+ * CCITT の符号の TIFF (Compression=2・3・4) の寸法 (ImageWidth × ImageLength) が、ストリップ・タイルのデータの合計の大きさで読める範囲にあるか
+ * (ccitt.ts の ccittFits: 2 次元の符号なら行の数はデータのビット数まで、画素の数は符号の密度の上限まで)。CCITT の符号でなければ true
+ */
+export function ccittWithinLimits(ifd: { [k: string]: unknown }, buf: ArrayBuffer): boolean {
+  const tag = (k: number) => ifd[`t${k}`] as number[] | undefined;
+  const comp = tag(259)?.[0];
+  if (comp !== 2 && comp !== 3 && comp !== 4) return true;
+  const twoD = comp === 4 || (comp === 3 && !!((tag(292)?.[0] ?? 0) & 1));
+  const tiled = !!(tag(322)?.[0] && tag(323)?.[0] && tag(324)?.length);
+  const offs = (tiled ? tag(324) : tag(273)) ?? [];
+  const lens = (tiled ? tag(325) : tag(279)) ?? [];
+  let bytes = 0;
+  for (let k = 0; k < offs.length; k++) bytes += Math.min(lens[k] ?? 0, Math.max(buf.byteLength - offs[k], 0));
+  return ccittFits(tag(256)?.[0] ?? 0, tag(257)?.[0] ?? 0, bytes, twoD);
+}
+
+/**
  * CCITT の符号の TIFF (Compression=2・3・4) の画素 (ccitt.ts で読む)。
  * PhotometricInterpretation が WhiteIsZero (0) なら CCITT の白を白に、BlackIsZero (1) なら白と黒を入れ替える (TIFF 6.0 Section 10・11)。
  * 対象でなければ、または読めなければ undefined
@@ -428,7 +455,7 @@ export function ccittPixels(ifd: { [k: string]: unknown }, buf: ArrayBuffer): Pi
   const t4 = comp === 3 ? (tag(292)?.[0] ?? 0) : 0;
   const width = tag(256)?.[0] ?? 0;
   const height = tag(257)?.[0] ?? 0;
-  if (!width || !height || width * height > MAX_PIXELS) return undefined;
+  if (!width || !height || !ccittWithinLimits(ifd, buf)) return undefined;
   const photo = tag(262)?.[0] ?? 0;
   const rgba = new Uint8Array(width * height * 4);
   /** 1 つの塊 (ストリップ・タイル) を展開し、画像の (x0, y0) から w × rows を写す (ImageWidth・ImageLength の外の埋めた画素は捨てる) */
@@ -483,6 +510,9 @@ async function tiffPixels(bytes: Uint8Array): Promise<Pixels | undefined> {
     // (124 バイトの PackBits の TIFF で、寸法どおりの領域と RGBA を確保し、常駐のメモリを 1.6GB 使っていた。IMG-18)
     const tagOf = (k: number) => Number((ifds[0][`t${k}`] as number[] | undefined)?.[0] ?? 0);
     if (!(tagOf(256) > 0 && tagOf(257) > 0) || tagOf(256) * tagOf(257) > MAX_PIXELS) return undefined;
+    // CCITT の符号は、自前の復号 (ccittPixels) で読めなかったときも、データの大きさの上限 (ccittWithinLimits) を超えれば utif に渡さない
+    // (utif も寸法のとおりに確保する。IMG-19)
+    if (!ccittWithinLimits(ifds[0], buf)) return undefined;
     UTIF.decodeImage(buf, ifds[0], ifds);
     const rgba = paletteWithExtra(ifds[0], buf) ?? UTIF.toRGBA8(ifds[0]);
     const { width, height } = ifds[0];
