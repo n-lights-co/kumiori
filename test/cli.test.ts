@@ -75,6 +75,24 @@ describe('Node のコマンド', () => {
     expect([Math.round(width), Math.round(height)]).toEqual([420, 595]);
   }, 120_000);
 
+  it('入力のディレクトリの CSS のうち、文書が参照しないものは当てずに知らせる (--css で名指ししたものは足す)', async () => {
+    const dir = fs.mkdtempSync(path.join(work, 'unref-'));
+    fs.writeFileSync(path.join(dir, 'style.css'), '@page { size: A5 }');
+    // 同じディレクトリにある、別の文書のための CSS
+    fs.writeFileSync(path.join(dir, 'other.css'), '@page { size: A3 }');
+    const html = path.join(dir, 'doc.html');
+    fs.writeFileSync(html, '<!doctype html><html lang="ja"><link rel="stylesheet" href="style.css"><p>本文。</p></html>');
+    const out = path.join(dir, 'doc.pdf');
+    const a = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    // 警告は標準エラー出力
+    expect(a.stderr).toContain('文書から参照されていない CSS は当てません: other.css');
+    expect(Math.round((await PDFDocument.load(fs.readFileSync(out))).getPage(0).getSize().width)).toBe(420); // A5
+    // --css で名指しすれば、参照されていなくても利用者のスタイルシートとして足す
+    const b = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir, '--css', 'style.css,other.css'], { encoding: 'utf8', env: JA_ENV });
+    expect(b.stderr).not.toContain('参照されていない CSS');
+    expect(Math.round((await PDFDocument.load(fs.readFileSync(out))).getPage(0).getSize().width)).toBe(842); // A3 (利用者のスタイルシートが後)
+  }, 120_000);
+
   it('--spot-colors: 名前の特色を PDF の Separation (代わりの色は DeviceCMYK) にする', async () => {
     const dir = fs.mkdtempSync(path.join(work, 'spot-'));
     const spots = path.join(dir, 'spots.json');

@@ -277,6 +277,11 @@ class SvgOut {
    */
   pixelSize?: (vb: [number, number, number, number]) => [number, number] | undefined;
   private patterns: Array<{ id: string; px: Pixels; org: [number, number]; xf?: Xf; size?: [number, number] }> = [];
+  /**
+   * 同じ模様 (画素・置き方) の定義の id (IMG-19 (3))。模様のブラシは塗るたびに定義を足していたので、同じブラシで塗る図形が多いと、
+   * 同じ中身の pattern をその数だけ書いていた。画素の中身と置き方 (ブラシの原点・世界変換・タイルの大きさ) が同じなら、同じ定義を使う
+   */
+  private patternIds = new Map<string, string>();
   /** ブラシの塗り (色・模様の url)。塗らないなら undefined */
   paintOf(b: Brush): string | undefined {
     if (b.none) return undefined;
@@ -294,8 +299,14 @@ class SvgOut {
     } else if (!this.pixelSize) return undefined;
     const org = this.dc.brushOrg ?? [0, 0];
     const xf = isIdentity(this.dc.xf) ? undefined : this.dc.xf;
-    const id = `kmMfPat${this.patterns.length + 1}`;
-    this.patterns.push({ id, px, org: xf ? applyXf(xf, org[0], org[1]) : [org[0], org[1]], ...(xf ? { xf } : {}), ...(size ? { size } : {}) });
+    const at: [number, number] = xf ? applyXf(xf, org[0], org[1]) : [org[0], org[1]];
+    const key = `${px.width}x${px.height}:${pixelHash(px.rgba)}|${at.join(',')}|${xf?.join(',') ?? ''}|${size?.join(',') ?? ''}`;
+    let id = this.patternIds.get(key);
+    if (!id) {
+      id = `kmMfPat${this.patterns.length + 1}`;
+      this.patternIds.set(key, id);
+      this.patterns.push({ id, px, org: at, ...(xf ? { xf } : {}), ...(size ? { size } : {}) });
+    }
     return `url(#${id})`;
   }
   /** 模様の定義 (pattern。ページの座標で、装置の画素のタイルを敷き詰める。中身は色ごとの矩形) */
@@ -1056,6 +1067,17 @@ function hatchBrush(color: string, hatch: number): Brush {
       return { width: 8, height: 8, rgba };
     },
   };
+}
+
+/** 画素の並びの要約 (FNV-1a の 32 ビットを 2 本。同じ模様の定義をまとめる鍵。衝突は 2 本とも一致する場合だけ) */
+function pixelHash(rgba: Uint8Array): string {
+  let a = 0x811c9dc5;
+  let b = 0x01000193 ^ rgba.length;
+  for (let i = 0; i < rgba.length; i++) {
+    a = Math.imul(a ^ rgba[i], 0x01000193);
+    b = Math.imul(b ^ rgba[i] ^ (i & 0xff), 0x5bd1e995);
+  }
+  return `${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
 }
 
 /** DIB の模様のブラシ。画素は使うときのパレットで作る (DIB_PAL_COLORS のため) */

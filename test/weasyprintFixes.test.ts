@@ -148,13 +148,13 @@ describe('絶対配置の margin・表の幅、行内要素のブロックの ::
 });
 
 describe('img の罫線・余白の箱の重なり・SVG の引き伸ばし・page-number-citation の書式', () => {
-  it('img の border・padding・背景色は、画像を囲む行内の箱に付く', () => {
+  it('img の border・padding・背景色は、画像の箱そのものに付く (組版が包んで、行の高さに入れる。CSS 2.1 §10.8)', () => {
     const [p] = flow('<p><img src="a.png" width="40" height="20"></p>', 'img { border: 3pt solid #f00; padding: 1pt; background: #eee }');
-    const inl = find<LInline>(p, (n) => n.type === 'inline' && !!n.border)[0];
-    expect(inl).toBeDefined();
-    expect((inl.border as { left: { width: number } }).left.width).toBeCloseTo(3, 3);
-    expect(inl.backgroundColor).toBe('#eeeeee');
-    expect((inl.children[0] as LImage).type).toBe('image');
+    expect(find<LInline>(p, (n) => n.type === 'inline' && !!n.border)).toHaveLength(0);
+    const im = p.children[0] as LImage;
+    expect(im.type).toBe('image');
+    expect((im.border as { left: { width: number } }).left.width).toBeCloseTo(3, 3);
+    expect(im.backgroundColor).toBe('#eeeeee');
     // 罫線が無ければ、画像をそのまま置く
     const [q] = flow('<p><img src="a.png" width="40" height="20"></p>');
     expect((q.children[0] as LImage).type).toBe('image');
@@ -165,12 +165,11 @@ describe('img の罫線・余白の箱の重なり・SVG の引き伸ばし・pa
     const img = (p.children[0] as LImage);
     expect(img.type).toBe('image');
     expect(img.borderRadius).toEqual({ rx: 0, ry: 0, corners: [['50%', '50%'], ['50%', '50%'], ['50%', '50%'], ['50%', '50%']] });
-    // 行内の img (罫線 3pt・余白 1pt・角丸 10pt): 包みの行内の箱に 10pt、画像は 6pt
+    // 行内の img (罫線 3pt・余白 1pt・角丸 10pt): 罫線の箱の角丸 (boxRadius) は 10pt、画像を切り抜く角丸は 6pt
     const [q] = flow('<p><img src="a.png" width="40" height="20"></p>', 'img { border: 3pt solid #f00; padding: 1pt; border-radius: 10pt }');
-    const inl = find<LInline>(q, (n) => n.type === 'inline' && !!n.border)[0];
-    expect(inl.borderRadius?.rx).toBeCloseTo(10, 3);
-    expect(inl.borderRadius?.ry).toBeCloseTo(10, 3);
-    const inner = inl.children[0] as LImage;
+    const inner = q.children[0] as LImage;
+    expect(inner.boxRadius?.rx).toBeCloseTo(10, 3);
+    expect(inner.boxRadius?.ry).toBeCloseTo(10, 3);
     expect(inner.borderRadius?.corners?.map(([h, v]) => [Math.round(h as number), Math.round(v as number)])).toEqual([[6, 6], [6, 6], [6, 6], [6, 6]]);
     // ブロックの img: ブロックに罫線と角丸。子は行内の包みでなく画像そのもの (罫線は 1 重)。画像は内側の角丸
     const [b] = flow('<img src="a.png" width="40" height="20">', 'img { display: block; border: 2pt solid #00f; border-radius: 50% }');

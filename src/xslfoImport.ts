@@ -677,6 +677,15 @@ class Importer {
     return set ? o : undefined;
   }
 
+  /**
+   * 角丸の指定 (axf:border-radius。アンテナハウスの拡張なので、どのモードでも読む)。接頭辞の無い border-radius は XSL 1.1 に無い
+   * プロパティで、アンテナハウスが拡張として読む書き方なので、互換モードのときだけ読む (見本の PDF: axf-form-field-1 の
+   * border-radius="0.6em" のラジオボタンは丸い。CLAUDE.md の「接頭辞の無い名前に足された拡張は、互換の指定のときだけ」)
+   */
+  private borderRadiusAttr(n: XNode): string | undefined {
+    return this.attr(n, 'axf:border-radius') ?? (this.spec ? undefined : this.attr(n, 'border-radius'));
+  }
+
   attrInh(n: XNode, k: string): string | undefined {
     const v = this.attr(n, k);
     return v === 'inherit' ? undefined : v;
@@ -2183,7 +2192,7 @@ class Importer {
     const bgi = this.backgroundImage(el, ctx);
     if (bgi) o.backgroundImage = bgi;
     // 角丸 (axf:border-radius="水平半径 垂直半径") と影 (axf:box-shadow="横 縦 ぼかし 広がり 色")
-    const rad = this.attr(el, 'axf:border-radius')?.split(/\s+/).map((v) => this.len(v, fs));
+    const rad = this.borderRadiusAttr(el)?.split(/\s+/).map((v) => this.len(v, fs));
     if (rad?.[0] !== undefined && rad[0] > 0) o.borderRadius = { rx: rad[0], ry: rad[1] ?? rad[0] };
     // 角ごとの半径 (axf:border-top-left-radius など。最初の値は水平方向、縦書きでは垂直方向の径。省略した二番目は最初と同じ)
     const cornerNames = ['top-left', 'top-right', 'bottom-right', 'bottom-left'] as const;
@@ -2840,7 +2849,7 @@ class Importer {
         // 背景の色は padding の矩形までに塗る (XSL 1.1 §4.9.4。ブロックの背景と同じく、罫線の下が見える箱だけ。OUT-22)
         this.clipBackground(inl);
         // 角丸 (axf:border-radius="水平半径 垂直半径"。ブロックと同じ書き方)
-        const ir = this.attr(n, 'axf:border-radius')?.split(/\s+/).map((v) => this.len(v, c2.fontSize));
+        const ir = this.borderRadiusAttr(n)?.split(/\s+/).map((v) => this.len(v, c2.fontSize));
         if (ir?.[0] !== undefined && ir[0] > 0) inl.borderRadius = { rx: ir[0], ry: ir[1] ?? ir[0] };
         // 行の進む方向の外側の空き: space-start・space-end (§7.12.5・§7.12.6)。無ければ、その辺の margin (§7.11.4 の対応)
         {

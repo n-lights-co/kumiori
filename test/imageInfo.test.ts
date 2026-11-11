@@ -502,6 +502,14 @@ describe('metafile: WMF・EMF を SVG に', () => {
     // EMF: 1 画素 = 10.01 (ページの座標)、HS_HORIZONTAL (0)
     const e = emfToSvg(emfOf([[39, [1, 2, 0x0000ff, 0]], [37, [1]], [43, [0, 0, 100, 100]]]))!;
     expect(e).toContain('width="80.08" height="80.08"><path d="M0 0H80.08V10.01H0Z" fill="#ff0000"/></pattern>');
+    // IMG-19 (3) 同じブラシで何度塗っても、模様の定義は 1 つ (前は塗るたびに足していた)。原点を変えれば別の定義
+    const many = wmfToSvg(wmfOf([[0x0103, [1]], brush, [0x012d, [0]], ...Array.from({ length: 500 }, (_, k): [number, number[]] => [0x041b, [100, 100, k % 50, 0]])]))!;
+    expect(many.match(/<pattern /g)!.length).toBe(1);
+    expect(many.match(/fill="url\(#kmMfPat1\)"/g)!.length).toBe(500);
+    // EMR_SETBRUSHORGEX (13) で原点を (3, 3) にして塗り、(0, 0) に戻して塗る
+    const moved = emfToSvg(emfOf([[39, [1, 2, 0x0000ff, 0]], [37, [1]], [43, [0, 0, 100, 100]], [13, [3, 3]], [43, [0, 0, 100, 100]], [13, [0, 0]], [43, [0, 0, 100, 100]]]))!;
+    expect(moved.match(/<pattern /g)!.length).toBe(2);
+    expect(moved.match(/fill="url\(#kmMfPat1\)"/g)!.length).toBe(2);
   });
   it('EMF: EXTTEXTOUTA の 2 バイトの文字コードの字は、バイトごとの送りの値を足して 1 字の送りにする', async () => {
     const { emfToSvg } = await import('../src/metafile');

@@ -263,3 +263,34 @@ describe('PKG-20 XSL-FO: 標準の属性に足されたアンテナハウスの�
     expect(imp(fo('<fo:block>a</fo:block>', 'force-page-count="end-on-even"'), 'spec').document.sequences[0].forcePageCount).toBe('end-on-even');
   });
 });
+
+describe('PKG-21 (1) 罫線・背景の一括指定の中の印刷の色', () => {
+  /** 段落の罫線 (上の辺) の [線種, 幅, 色]。実線は論理ツリーで線種を省く */
+  const top = (json: string) => {
+    const m = /"border":\{"top":(\{[^}]*\})/.exec(json);
+    if (!m) return undefined;
+    const t = JSON.parse(m[1]) as { width: number; style?: string; color: string };
+    return [t.style ?? 'solid', t.width, t.color];
+  };
+  it('border の一括指定に書いた device-cmyk() (CSS Color 5 §12.1 の <color>) で、罫線の幅・線種が消えない (どのスタイルでも)', () => {
+    for (const ah of [false, true]) {
+      expect(top(html('<p class="b">b</p>', '.b { border: 2px solid device-cmyk(1 0 0 0) }', ah).json), String(ah)).toEqual(['solid', 1.5, 'cmyk(1,0,0,0)']);
+      expect(top(html('<p class="b">b</p>', '.b { border-top: 4px dashed device-cmyk(0 1 0 0) }', ah).json), String(ah)).toEqual(['dashed', 3, 'cmyk(0,1,0,0)']);
+    }
+  });
+  it('cmyk()・rgb-icc() は、--style ah のときだけ一括指定の中で読む。既定では宣言ごと無効 (罫線は出ない) で、警告に出る', () => {
+    const css = '.b { border: 2px solid cmyk(1, 0, 0, 0) }';
+    const d = html('<p class="b">b</p>', css);
+    expect(top(d.json)).toBeUndefined();
+    expect(d.unsupported[`border: cmyk()${COMPAT}`]).toBe(1);
+    expect(top(html('<p class="b">b</p>', css, true).json)).toEqual(['solid', 1.5, 'cmyk(1,0,0,0)']);
+    expect(top(html('<p class="b">b</p>', '.b { border: 2px solid rgb-icc(255, 0, 0, #CMYK, 0, 1, 1, 0) }', true).json)).toEqual(['solid', 1.5, 'cmyk(0,1,1,0)']);
+  });
+  it('background の一括指定の device-cmyk() で、同じ宣言の背景の画像が消えない。@supports も真', () => {
+    const d = html('<div class="g">g</div>', '.g { background: url(a.png) no-repeat device-cmyk(0 0 1 0) }');
+    expect(d.json).toContain('cmyk(0,0,1,0)');
+    expect(d.json).toContain('a.png');
+    expect(matchSupports('(border: 1px solid device-cmyk(0 0 0 1))')).toBe(true);
+    expect(matchSupports('(border: 1px solid cmyk(0, 0, 0, 1))')).toBe(false);
+  });
+});

@@ -396,3 +396,78 @@ describe('リストの最後の項目の最後の子の下の余白 (CSS 2.1 §8
     expect(await gap('<ul><li style="margin-bottom: 30pt"><div style="margin-bottom: 20pt">あ</div></li></ul><h3>見</h3>')).toBeCloseTo(div + 10, 1);
   });
 });
+
+describe('表の -ah-baseline-grid (行グリッド。継承する)', () => {
+  it('表に new があれば、セルの中も行グリッドの領域: 最初の行の前・最後の行の後ろに半行間を付けない', async () => {
+    const pitch = async (grid: string) => {
+      const css = `table { border-collapse: collapse; font-size: 10pt; line-height: 20pt; ${grid} } td { padding: 2pt; border-bottom: 1pt solid }`;
+      const tree = (await typesetHtml(doc('<table><tr><td>あ</td></tr><tr><td>い</td></tr></table>', css), { loadFont: loadCachedFont, style: 'ah' })).areaTree;
+      const ys: Record<string, number> = {};
+      const rec = (a: Area, y: number) => {
+        const ay = y + (a.y ?? 0);
+        const g = a as unknown as { text?: string; baselineY?: number };
+        if (a.type === 'glyph' && g.text) ys[g.text] = ay + (g.baselineY ?? 0);
+        for (const c of childrenOf(a)) rec(c as Area, ay);
+      };
+      rec(tree.sheets[0].page as unknown as Area, 0);
+      return ys['い'] - ys['あ'];
+    };
+    // 指定が無ければ、行の送りは line-height 20pt + padding 4pt + 罫線 (重ねた罫線の分) 0.5pt
+    const plain = await pitch('');
+    expect(plain).toBeCloseTo(24.5, 1);
+    // 行グリッドでは、行の箱は字の大きさ (10pt) だけで、半行間 10pt の分だけ狭い (見本の PDF: CSS-Print 第 4 版の 10.1 の表は、
+    // 行の高さが 字の大きさ + padding + 罫線 = line-height 1 つ分)
+    expect(await pitch('-ah-baseline-grid: new')).toBeCloseTo(plain - 10, 1);
+  });
+});
+
+describe('行グリッドに行を載せる位置 (-ah-baseline-grid)', () => {
+  const baselineOf = async (body: string, ch: string) => {
+    const tree = (await typesetHtml(doc(body), { loadFont: loadCachedFont, style: 'ah' })).areaTree;
+    let top: number | undefined;
+    let base: number | undefined;
+    const rec = (a: Area, y: number) => {
+      const ay = y + (a.y ?? 0);
+      const g = a as unknown as { text?: string; baselineY?: number };
+      if (a.type === 'glyph' && g.text === '基' && top === undefined) top = ay + (g.baselineY ?? 0);
+      if (a.type === 'glyph' && g.text === ch && base === undefined) base = ay + (g.baselineY ?? 0);
+      for (const c of childrenOf(a)) rec(c as Area, ay);
+    };
+    rec(tree.sheets[0].page as unknown as Area, 0);
+    return base! - top!;
+  };
+  it('格子を作った字より小さい字の行も、格子の字の em の箱の上端が入る格子に載せる', async () => {
+    // 格子: 字の大きさ 20pt・行送り 30pt。基の行の次に、上の余白 10pt の 10pt の段落。行の上端 + 格子の字の em の上 (20pt × 0.88) が
+    // 次の格子の基線を越えるので、その次の格子 (2 つ下) に載る (見本の PDF: CSS-Print 第 4 版の root の figcaption)。
+    // これまでは段落の字 (10pt) の em の上で数え、次の格子に載せていた
+    const d = await baselineOf('<div style="-ah-baseline-grid: new; font-size: 20pt; line-height: 30pt"><p>基</p><p style="font-size: 10pt; margin-top: 10pt">小</p></div>', '小');
+    expect(d).toBeCloseTo(60, 1);
+  });
+  it('disregard-shifts の行では、上付きの字で次の格子へ送らない', async () => {
+    const h = (sup: string) => `<div style="-ah-baseline-grid: new; -ah-line-height-shift-adjustment: disregard-shifts; font-size: 20pt; line-height: 30pt"><p>基</p><p style="margin-top: 5pt">見${sup}</p></div>`;
+    // 上付きが無ければ次の格子 (30pt 下)。これまでは上付きの字の持ち上げた上端で数え、その次の格子 (60pt 下) へ送っていた
+    expect(await baselineOf(h('®'), '見')).toBeCloseTo(30, 1);
+    expect(await baselineOf(h('<sup>®</sup>'), '見')).toBeCloseTo(30, 1);
+  });
+});
+
+describe('XSL-FO の行内の箱の角丸 (HTM-64)', () => {
+  const radiusOf = async (attr: string, compat: 'spec' | 'antenna') => {
+    const fo = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="200pt" page-height="200pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block>a<fo:inline-container width="20pt" height="20pt" border="1pt solid black" ${attr}><fo:block>b</fo:block></fo:inline-container></fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const tree = (await typesetFo(fo, { loadFont: loadCachedFont, compat })).areaTree;
+    let r: unknown;
+    const rec = (a: Area) => {
+      const b = a as unknown as { borderRadius?: unknown; border?: unknown };
+      if (b.border && b.borderRadius) r = b.borderRadius;
+      for (const c of childrenOf(a)) rec(c);
+    };
+    rec(tree.sheets[0].page as unknown as Area);
+    return r;
+  };
+  it('fo:inline-container の axf:border-radius を描く (どのモードでも)。接頭辞の無い border-radius は互換モードだけ (見本の axf-form-field-1)', async () => {
+    expect(await radiusOf('axf:border-radius="5pt"', 'spec')).toBeDefined();
+    expect(await radiusOf('axf:border-radius="5pt"', 'antenna')).toBeDefined();
+    expect(await radiusOf('border-radius="5pt"', 'antenna')).toBeDefined();
+    expect(await radiusOf('border-radius="5pt"', 'spec')).toBeUndefined();
+  });
+});

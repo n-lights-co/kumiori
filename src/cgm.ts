@@ -1427,6 +1427,42 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
 
   let patSeq = 0;
   /**
+   * 模様の定義を、使うたびに書き出さない (IMG-19 (3))。中身 (セルの矩形・画像、geometric pattern のセグメントの図形) は、同じ中身ごとに 1 つの
+   * pattern に書き (patternBodies: 中身 → id)、使う所は、それを href で引いて置き方 (位置・大きさ・patternTransform) だけを書いた pattern にする
+   * (SVG 1.1 §13.3 の xlink:href・SVG 2 §14.3.4 の href: 引いた pattern の中身を受け継ぐ)。同じ中身・同じ置き方なら同じ pattern を使う
+   * (patternUses: 中身の id と置き方 → id)。前は使うたびに中身ごと書いたので、14KB の CGM で SVG が 2.9 億字 (<rect> 410 万個) になった
+   */
+  const patternBodies = new Map<string, string>();
+  const patternUses = new Map<string, string>();
+  /**
+   * 中身の pattern の id。key は中身を見分ける鍵 (中身の文字列そのもの、または中身を決める値)。新しい中身なら content() で作って定義を書き、
+   * cost を画素の合計に数える (足りなければ undefined)
+   */
+  const patternBody = (key: string, content: () => string, cost: number, what: string): string | undefined => {
+    let id = patternBodies.get(key);
+    if (id) return id;
+    if (!takePixels(cost, what)) return undefined;
+    id = `cgmp${patSeq++}`;
+    patternBodies.set(key, id);
+    defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse">${content()}</pattern>`);
+    return id;
+  };
+  /** 中身の pattern (body) を、置き方 (place: pattern の属性) で敷く pattern の id */
+  const patternUse = (body: string, place: string): string => {
+    const key = `${body}|${place}`;
+    let id = patternUses.get(key);
+    if (id) return id;
+    id = `cgmp${patSeq++}`;
+    patternUses.set(key, id);
+    defs.push(`<pattern id="${id}" href="#${body}" ${place}/>`);
+    return id;
+  };
+  /**
+   * 模様のセルを矩形で書くときの、1 セルの重み (画素の合計に数える数)。<rect> 1 つは約 70 字で、画素を PNG (圧縮しない形) の base64 で書くときの
+   * 1 画素 (約 5.3 字) の 13 倍ほどなので、16 と数える (画素の合計の上限が、SVG の長さの上限としても同じ程度に効くように)
+   */
+  const RECT_CELL_WEIGHT = 16;
+  /**
    * PATTERN TABLE の模様 (第 1 部 7.7.32・7.7.33): 塗りの基準点 F と、PATTERN SIZE の高さの向き h・幅の向き w の平行四辺形 (模様の箱) を
    * nx × ny のセルに分ける。色の (1, ny) が F のセル、第 1 の添字は w の向き、第 2 の添字は h の向きに減る (1 行目が箱の h の側)。箱を繰り返して敷く
    */
@@ -1435,26 +1471,36 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     if (!t || t.nx < 1 || t.ny < 1 || t.nx * t.ny > MAX_PIXELS) return undefined;
     const box = patternBox();
     if (!box) return undefined;
-    // 模様は使うたびに定義を書き出すので、そのたびに画素の合計に数える
-    if (!takePixels(t.nx * t.ny, 'PATTERN TABLE の模様')) return undefined;
-    const rgba = new Uint8Array(t.nx * t.ny * 4);
-    for (let k = 0; k < t.nx * t.ny; k++) {
-      const c = colourOf(t.colours[k] ?? { index: 1 });
-      rgba.set([Math.round(c[0] * 255), Math.round(c[1] * 255), Math.round(c[2] * 255), 255], k * 4);
-    }
-    const id = `cgmp${patSeq++}`;
+    const cells = t.nx * t.ny;
+    const rects = cells <= 4096;
+    // セルの色 (いまの色の表で決める)。中身の鍵は、セルの数と、色の並び (8 ビットに丸めた値) の要約 (色の表が変われば別の中身)。
+    // 要約は 32 ビットの FNV-1a を 2 本 (使うたびに 4096 色の文字列を作らない。2 本とも一致する別の並びは、まず起きない)
+    const rgb = Array.from({ length: cells }, (_, k) => colourOf(t.colours[k] ?? { index: 1 }));
+    let h1 = 0x811c9dc5;
+    let h2 = 0x9747b28c;
+    for (const c of rgb)
+      for (let j = 0; j < 3; j++) {
+        const v = Math.round(Math.min(1, Math.max(0, c[j])) * 255);
+        h1 = Math.imul(h1 ^ v, 0x01000193);
+        h2 = Math.imul((h2 ^ v) + 0x9e3779b9, 0x5bd1e995);
+      }
+    const key = `t${t.nx}x${t.ny}:${(h1 >>> 0).toString(16)}:${(h2 >>> 0).toString(16)}`;
     // 模様の中身の座標: 単位の正方形 (u: 幅の向き、t: 下向き = 高さの向きの逆)。(u, t) → F + u·w + (1 − t)·h
     const [F, wv, hv] = box;
     const o = map([F[0] + hv[0], F[1] + hv[1]]);
     const a = mapVec(wv);
     const c = mapVec([-hv[0], -hv[1]]);
     // セルの色の境目をはっきりさせるため、小さな模様はセルを矩形で描く (大きな模様は画像)
-    const content =
-      t.nx * t.ny <= 4096
-        ? Array.from({ length: t.nx * t.ny }, (_, k) => `<rect x="${num((k % t.nx) / t.nx)}" y="${num(Math.floor(k / t.nx) / t.ny)}" width="${num(1 / t.nx + 1e-4)}" height="${num(1 / t.ny + 1e-4)}" fill="${hex(colourOf(t.colours[k] ?? { index: 1 }))}"/>`).join('')
-        : `<image x="0" y="0" width="1" height="1" preserveAspectRatio="none" style="image-rendering:pixelated" href="data:image/png;base64,${base64(encodePngStored({ width: t.nx, height: t.ny, rgba }))}"/>`;
-    defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse" x="0" y="0" width="1" height="1" patternTransform="matrix(${[a[0], a[1], c[0], c[1], o[0], o[1]].map((v) => String(Math.round(v * 10000) / 10000)).join(' ')})">${content}</pattern>`);
-    return id;
+    const content = () => {
+      if (rects) return rgb.map((c, k) => `<rect x="${num((k % t.nx) / t.nx)}" y="${num(Math.floor(k / t.nx) / t.ny)}" width="${num(1 / t.nx + 1e-4)}" height="${num(1 / t.ny + 1e-4)}" fill="${hex(c)}"/>`).join('');
+      const rgba = new Uint8Array(cells * 4);
+      rgb.forEach((c, k) => rgba.set([Math.round(c[0] * 255), Math.round(c[1] * 255), Math.round(c[2] * 255), 255], k * 4));
+      return `<image x="0" y="0" width="1" height="1" preserveAspectRatio="none" style="image-rendering:pixelated" href="data:image/png;base64,${base64(encodePngStored({ width: t.nx, height: t.ny, rgba }))}"/>`;
+    };
+    // 中身は、新しい色の並びのときだけ書き、画素の合計に数える
+    const body = patternBody(key, content, rects ? cells * RECT_CELL_WEIGHT : cells, 'PATTERN TABLE の模様');
+    if (!body) return undefined;
+    return patternUse(body, `patternUnits="userSpaceOnUse" x="0" y="0" width="1" height="1" patternTransform="matrix(${[a[0], a[1], c[0], c[1], o[0], o[1]].map((v) => String(Math.round(v * 10000) / 10000)).join(' ')})"`);
   };
   /** 模様の箱 (第 1 部 7.7.33): 基準点 F・幅の向き w・高さの向き h (VDC)。既定は (0, dy, dx, 0): 既定の VDC EXTENT の高さと幅 (absolute のとき) */
   const patternBox = (): [Pt, Pt, Pt] | undefined => {
@@ -1489,12 +1535,14 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     // 模様の中身は絵の px の座標のまま描き、範囲の矩形 (px) を 1 つの区画にする
     const a = map([x0, y1]);
     const b = map([x1, y0]);
-    const id = `cgmp${patSeq++}`;
     const m = svgMatrix(B);
-    defs.push(
-      `<pattern id="${id}" patternUnits="userSpaceOnUse" x="${num(Math.min(a[0], b[0]))}" y="${num(Math.min(a[1], b[1]))}" width="${num(Math.abs(b[0] - a[0]))}" height="${num(Math.abs(b[1] - a[1]))}" patternTransform="matrix(${m.map((v) => String(Math.round(v * 10000) / 10000)).join(' ')})">${frag}</pattern>`,
+    // 中身 (セグメントの図形) は同じ図形ごとに 1 つ。画素ではないので数えない (図形の数はセグメントの定義の大きさまで)
+    const body = patternBody(`g${frag}`, () => frag, 0, 'GEOMETRIC PATTERN の模様');
+    if (!body) return undefined;
+    return patternUse(
+      body,
+      `patternUnits="userSpaceOnUse" x="${num(Math.min(a[0], b[0]))}" y="${num(Math.min(a[1], b[1]))}" width="${num(Math.abs(b[0] - a[0]))}" height="${num(Math.abs(b[1] - a[1]))}" patternTransform="matrix(${m.map((v) => String(Math.round(v * 10000) / 10000)).join(' ')})"`,
     );
-    return id;
   };
 
   /**

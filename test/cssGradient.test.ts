@@ -118,3 +118,45 @@ describe('グラデーションの SVG を読み戻す (Canvas が、PDF と同�
     expect(readGradientSvg('')).toBeUndefined();
   });
 });
+
+describe('conic-gradient (CSS Images 4 §3.3)', () => {
+  /** 角度 deg (上から時計回り) の方向で、中心から距離 d の所を含む三角形の色 */
+  const colorAt = (svg: string, cx: number, cy: number, deg: number, d = 10) => {
+    const g = readGradientSvg(svg);
+    if (g?.kind !== 'wedges') throw new Error('wedges でない');
+    const r = (deg * Math.PI) / 180;
+    const [px, py] = [cx + d * Math.sin(r), cy - d * Math.cos(r)];
+    const inTri = (p: number[]) => {
+      const s = (ax: number, ay: number, bx: number, by: number) => (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+      const d1 = s(p[0], p[1], p[2], p[3]);
+      const d2 = s(p[2], p[3], p[4], p[5]);
+      const d3 = s(p[4], p[5], p[0], p[1]);
+      return (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
+    };
+    return g.wedges.filter((w) => inTri(w.pts)).map((w) => w.color);
+  };
+  it('firstGradient で取り出し、中心から出る扇形の色で描く (0deg は上、時計回り)', () => {
+    expect(firstGradient('conic-gradient(red, blue)')).toBe('conic-gradient(red, blue)');
+    const svg = gradientSvg('conic-gradient(red 0 25%, blue 25% 100%)', 100, 100)!;
+    expect(colorAt(svg, 50, 50, 45)).toContain('#ff0000');
+    expect(colorAt(svg, 50, 50, 180)).toEqual(expect.arrayContaining(['#0000ff']));
+    expect(colorAt(svg, 50, 50, 180)).not.toContain('#ff0000');
+  });
+  it('from <角度> と at <位置>: 回してから、中心を動かす', () => {
+    const svg = gradientSvg('conic-gradient(from 90deg at 20% 30%, red 0 25%, blue 25% 100%)', 100, 100)!;
+    // 赤は 90deg (右) から 180deg (下) の間
+    expect(colorAt(svg, 20, 30, 135)).toContain('#ff0000');
+    expect(colorAt(svg, 20, 30, 45)).not.toContain('#ff0000');
+  });
+  it('同じ色の広い扇形も、箱の角まで覆う (三角形の弧の欠けが無い)', () => {
+    const svg = gradientSvg('conic-gradient(red 0 50%, blue 50% 100%)', 100, 100)!;
+    // 中心から右下の角 (135deg、距離 70.7) まで赤
+    expect(colorAt(svg, 50, 50, 135, 70)).toContain('#ff0000');
+  });
+  it('repeating-conic-gradient: 1 周を覆うまで繰り返す', () => {
+    const svg = gradientSvg('repeating-conic-gradient(#000 0 15deg, #fff 15deg 30deg)', 100, 100)!;
+    expect(colorAt(svg, 50, 50, 7)).toContain('#000000');
+    expect(colorAt(svg, 50, 50, 22)).toContain('#ffffff');
+    expect(colorAt(svg, 50, 50, 337)).toContain('#000000');
+  });
+});

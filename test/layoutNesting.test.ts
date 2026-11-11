@@ -152,3 +152,48 @@ describe('入れ子の深さと、組む回数 (LAY-12・LAY-13)', () => {
     }
   }, 120_000);
 });
+
+/**
+ * LAY-18 組む回数の総量の上限と、段組の入れ子の深さの上限。超えたら、以後の箱は中身の幅を測らずに組み、段組は 1 段に組む (警告を出す)。
+ * 種類を混ぜた XSL-FO の入れ子 (幅が段ごとに変わる) は、覚え (memoMeasure) が当たらず、深さの 4 乗ほどで組む回数が増える
+ * (上限なしで 50 段 25 万回)。中身がページからあふれる段組の入れ子は、外側の段の高さの二分探索の値ごとに内側の探索をやり直す
+ */
+describe('幅を中身で決める箱・段組の入れ子の上限 (LAY-18)', () => {
+  // inline-container (padding)・start-indent の段・inline-container・float・字に挟まれた inline-container を順に繰り返す
+  const P: Array<[string, string]> = [
+    ['<fo:block><fo:inline-container padding="1pt">', '</fo:inline-container></fo:block>'],
+    ['<fo:block start-indent="inherited-property-value(start-indent) + 2pt">', '</fo:block>'],
+    ['<fo:block><fo:inline-container>', '</fo:inline-container></fo:block>'],
+    ['<fo:block><fo:float float="start">', '</fo:float></fo:block>'],
+    ['<fo:block>x<fo:inline-container>', '</fo:inline-container>y</fo:block>'],
+  ];
+  const mixed = (n: number) => {
+    let x = '<fo:block>あいうえおかきくけこ abc def </fo:block>';
+    for (let i = 0; i < n; i++) x = P[i % P.length][0] + x + P[i % P.length][1];
+    return fo(x);
+  };
+  const overflowColumns = (n: number) => fo('<fo:block-container column-count="2">'.repeat(n) + `<fo:block>${'あいうえお'.repeat(60)}</fo:block>` + '</fo:block-container>'.repeat(n));
+  const warned = (w: string[]) => w.some((m) => m.includes('入れ子が深すぎます'));
+
+  it('種類を混ぜた XSL-FO の入れ子: 120 段で組む流れの数が上限を超えず、警告が出る', () => {
+    // 上限なし: 20 段で 5255、40 段で 108403、50 段で 257222、120 段で 3863943 (深さの 4 乗ほど)。上限 (100000) を超えたら測らない
+    const t = E.engine.layout(mixed(120));
+    expect(E.engine.stats.flows).toBeLessThanOrEqual(150000);
+    expect(warned(t.warnings)).toBe(true);
+  }, 120_000);
+
+  it('中身がページからあふれる段組の入れ子: 10 段で組む流れの数が上限を超えず、警告が出る', () => {
+    const t = E.engine.layout(overflowColumns(10));
+    expect(E.engine.stats.flows).toBeLessThanOrEqual(1500);
+    expect(warned(t.warnings)).toBe(true);
+  }, 120_000);
+
+  it('上限より浅い入れ子は、上限を切った組版と同じで、警告も出ない', () => {
+    const free = new LayoutEngine(E.fonts, E.measurer, { defaultFontFamily: FAMILY, maxMeasureFlows: Infinity, maxColumnNest: Infinity });
+    for (const d of [mixed(20), overflowColumns(3)]) {
+      const a = E.engine.layout(d);
+      expect(warned(a.warnings)).toBe(false);
+      expect(serializeAreaTree(a)).toBe(serializeAreaTree(free.layout(d)));
+    }
+  }, 120_000);
+});

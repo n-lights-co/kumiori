@@ -250,7 +250,7 @@ node scripts/compare-pdf.mjs --html <見本>.html --ref <見本>.pdf --out <出�
 
 比較で足したもの (この表と下の項目はブラウザ経由の経路のときのもの。自前のカスケードでの結果は第 6 段階の表):
 
-- HTML から参照されていない CSS ファイルは、利用者のスタイルシートとして文書の CSS の後に足す
+- HTML から参照されていない CSS ファイルは、利用者のスタイルシートとして文書の CSS の後に足す (API の `unreferencedCss: 'ignore'` では足さずに警告に出す。コマンドは `--css` の指定が無ければこちら)
 - iframe の中で、`@font-face` の書体と `<img>` の画像を、一緒に選んだファイルの blob URL で読む (ブラウザの配置がその書体・画像の大きさで決まる)
 - CSS の入れ子 (`&`・子孫の規則)、`@page` の背景色
 - 画像: `object-fit` (cover / contain)、`background-size: cover / contain`、max-width などの上限・下限があればブラウザが置いた大きさ、絶対配置の `<img>`、`z-index` が負なら背面

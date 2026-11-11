@@ -299,9 +299,29 @@ describe('CGM (ISO/IEC 8632 の 2 進符号化)', () => {
       ...cmd(4, 11, i16(0, 0, 100, 50)),
     ];
     const r = cgmToSvg(metafile(body))!;
-    expect(r.svg).toMatch(/<pattern id="cgmp0" patternUnits="userSpaceOnUse" x="0" y="0" width="1" height="1" patternTransform="matrix\(40 0 0 40 0 160\)">/);
+    // 中身 (セルの矩形) の pattern と、それを href で引いて置き方を書いた pattern (IMG-19 (3))
+    expect(r.svg).toMatch(/<pattern id="cgmp0" patternUnits="userSpaceOnUse"><rect /);
+    expect(r.svg).toContain('<pattern id="cgmp1" href="#cgmp0" patternUnits="userSpaceOnUse" x="0" y="0" width="1" height="1" patternTransform="matrix(40 0 0 40 0 160)"/>');
     expect([...r.svg.matchAll(/<rect x="[\d.]+" y="[\d.]+" width="[\d.]+" height="[\d.]+" fill="(#[0-9a-f]+)"/g)].map((m) => m[1])).toEqual(['#ff0000', '#0000ff', '#0000ff', '#ff0000']);
-    expect(r.svg).toContain('fill="url(#cgmp0)"');
+    expect(r.svg).toContain('fill="url(#cgmp1)"');
+  });
+
+  it('IMG-19 (3) 同じ模様を何度使っても、中身の定義は 1 つ。置き方が同じなら pattern も 1 つ。新しい中身だけを画素の合計に数える', () => {
+    // 64 × 64 = 4096 セルの模様 (矩形で書く大きさの上限) を、2000 個の矩形で使う
+    const colours = Array.from({ length: 4096 }, (_, k) => 2 + (k % 2));
+    const fills = Array.from({ length: 2000 }, () => cmd(4, 11, i16(0, 0, 100, 50))).flat();
+    const body = [...table, ...cmd(5, 32, [...i16(1, 64, 64, 8), ...colours]), ...cmd(5, 33, i16(0, 10, 10, 0)), ...cmd(5, 22, i16(2)), ...fills];
+    const r = cgmToSvg(metafile(body))!;
+    expect(r.svg.match(/<pattern /g)!.length).toBe(2);
+    const cellRects = (svg: string) => svg.match(/<rect x="[\d.]+" y="[\d.]+" width="[\d.]+" height="[\d.]+" fill=/g)!.length;
+    expect(cellRects(r.svg)).toBe(4096);
+    expect(r.svg.length).toBeLessThan(600_000);
+    expect(r.warnings ?? []).toEqual([]);
+    // 塗りの基準点を変えて使えば置き方の pattern は増えるが、中身は 1 つのまま
+    const moved = [...table, ...cmd(5, 32, [...i16(1, 64, 64, 8), ...colours]), ...cmd(5, 33, i16(0, 10, 10, 0)), ...cmd(5, 22, i16(2)), ...Array.from({ length: 300 }, (_, k) => [...cmd(5, 31, i16(k, 0)), ...cmd(4, 11, i16(0, 0, 100, 50))]).flat()];
+    const m = cgmToSvg(metafile(moved))!;
+    expect(m.svg.match(/<pattern /g)!.length).toBe(301);
+    expect(cellRects(m.svg)).toBe(4096);
   });
 
   it('HATCH STYLE DEFINITION (交差) は 2 つの向きの線の模様を重ね、LINE AND EDGE TYPE DEFINITION は破線の並びになる', () => {
@@ -361,7 +381,8 @@ describe('CGM (ISO/IEC 8632 の 2 進符号化)', () => {
   it('geometric pattern: GEOMETRIC PATTERN DEFINITION のセグメントを模様にして敷く', () => {
     const desc = [...cmd(0, 6, i16(3)), ...cmd(4, 1, i16(0, 0, 10, 10)), ...cmd(0, 7), ...cmd(2, 19, i16(1, 3, 0, 0, 10, 10))];
     const r = cgmToSvg(withDesc(desc, [...cmd(5, 33, i16(0, 10, 10, 0)), ...cmd(5, 22, i16(5)), ...cmd(4, 11, i16(0, 0, 100, 50))]))!;
-    expect(r.svg).toMatch(/<pattern id="cgmp\d+" patternUnits="userSpaceOnUse" x="0" y="160" width="40" height="40"[^>]*><path d="M0 200L40 160"/);
+    expect(r.svg).toMatch(/<pattern id="(cgmp\d+)" patternUnits="userSpaceOnUse"><path d="M0 200L40 160"/);
+    expect(r.svg).toMatch(/<pattern id="cgmp\d+" href="#cgmp\d+" patternUnits="userSpaceOnUse" x="0" y="160" width="40" height="40"[^>]*\/>/);
     expect(r.svg).toMatch(/fill="url\(#cgmp\d+\)"/);
     // 絵の記述子のセグメントは、その場では描かない
     expect(pathD(r.svg).filter((d) => d === 'M0 200L40 160').length).toBe(1);

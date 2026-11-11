@@ -40,7 +40,7 @@ export function isAhCompat(kind: DocKind, mode: { compat?: FoCompat; style?: Htm
  * 自前のカスケード (cascadeStyles) のアンテナハウス互換の設定。
  * 罫の太さの丸め無し・thin/medium/thick の太さ・アンテナハウスの線種・counter() の拡張・数の式の中の型の無い attr()・bolder/lighter を @font-face の太さから決める
  */
-export function ahCascadeOptions(css: string | ParsedCss): Pick<CascadeOptions, 'noBorderSnap' | 'borderKeywords' | 'ahBorderStyles' | 'ahCounterFlags' | 'ahAttrNumber' | 'relativeWeight'> {
+export function ahCascadeOptions(css: string | ParsedCss): Pick<CascadeOptions, 'noBorderSnap' | 'borderKeywords' | 'ahBorderStyles' | 'ahCounterFlags' | 'ahAttrNumber' | 'ahPagedValues' | 'relativeWeight'> {
   return { noBorderSnap: true, borderKeywords: AH_BORDER_KEYWORDS, ...ALL_AH, relativeWeight: ahRelativeWeight(css) };
 }
 
