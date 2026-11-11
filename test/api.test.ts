@@ -972,3 +972,37 @@ describe('既定の書体の太字の枠に、標準の太さと同じファイ�
     expect(g.fakeBold).toBeFalsy();
   });
 });
+
+describe('resolveResource: 名前に %xx のある画像の参照 (空白・括弧・日本語のファイル名)', () => {
+  const png = (w: number, h: number) => encodePngStored({ width: w, height: h, rgba: new Uint8Array(Array.from({ length: w * h }, () => [255, 0, 0, 255]).flat()) });
+  const imagesOf = (r: Awaited<ReturnType<typeof typeset>>) => {
+    const got: Array<[boolean, number, number]> = [];
+    walkAreaTree(r.areaTree, (a) => void (a.type === 'image' && got.push([!!a.missing, a.width, a.height])));
+    return got;
+  };
+  // 問い合わせは文書に書かれたままの URL (%xx のまま)。返した中身が、その参照の画像として組まれる
+  for (const [label, src] of [
+    ['空白', '/a%20b.png'],
+    ['空白と括弧', '/img/03_TestItems_024%20(1).png'],
+    ['括弧も %xx', '/img/x%20%281%29.png'],
+    ['日本語', '/%E5%9B%B3%E7%89%88/%E5%86%99%E7%9C%9F1.png'],
+    ['問い合わせつき', '/a%20b.png?v=2'],
+  ] as const) {
+    it(`<img src="${src}"> (${label}) が、見つからない画像にならない`, async () => {
+      const asked: string[] = [];
+      const r = await typeset(`<img src="${src}">`, { loadFont, fetchImages: false, resolveResource: (u) => (asked.push(u), u === src ? png(10, 20) : undefined) });
+      expect(asked).toContain(src);
+      expect(imagesOf(r)).toEqual([[false, 7.5, 15]]);
+      expect(r.warnings.join('\n')).not.toMatch(/見つから|not found/i);
+    });
+  }
+  it('CSS の background-image: url(a%20b.png) と、XSL-FO の external-graphic でも同じ', async () => {
+    const asked: string[] = [];
+    const css = await typeset('<div style="width:40pt;height:40pt;background-image:url(/bg%20x.png)">a</div>', { loadFont, fetchImages: false, resolveResource: (u) => (asked.push(u), u === '/bg%20x.png' ? png(4, 4) : undefined) });
+    expect(asked).toContain('/bg%20x.png');
+    expect(css.warnings.join('\n')).not.toMatch(/見つから|not found/i);
+    const fo = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block><fo:external-graphic src="url('/a%20b.png')"/></fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const r = await typeset(fo, { loadFont, fetchImages: false, resolveResource: (u) => (u === '/a%20b.png' ? png(10, 20) : undefined) });
+    expect(imagesOf(r).map((x) => x[0])).toEqual([false]);
+  });
+});

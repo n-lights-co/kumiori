@@ -528,10 +528,15 @@ async function typesetDocument(
   const assets = new AssetStore({ parseXml: svgParse });
   const mentioned = mentionedFiles([text, ...(await Promise.all(files.filter(isCss).map((f) => f.text())))]);
   const images = files.filter((x) => IMAGE_FILE.test(x.name));
-  for (const f of images.filter((x) => /\.svg$/i.test(x.name) && mentioned.has(x.name.toLowerCase()))) {
+  // 文書に名前が出てくるか。mentionedFiles は %xx を戻した名前を返すので、参照から取ったファイル (名前は参照の URL のまま =
+  // %xx のまま。resolveResource にも、その URL で問い合わせている) は、%xx を戻した名前でも突き合わせる。戻さないと、名前に空白・
+  // 括弧・日本語などのある画像 (a%20b.png) が、中身を受け取っているのに「見つからない画像」になる (RFC 3986 §2.1・§6.2.2.2:
+  // %xx と元の字は同じ参照)
+  const isMentioned = (x: (typeof files)[number]) => mentioned.has(x.name.toLowerCase()) || (x.url !== undefined && mentioned.has(refBasename(x.url)));
+  for (const f of images.filter((x) => /\.svg$/i.test(x.name) && isMentioned(x))) {
     for (const n of mentionedFiles([await f.text()])) mentioned.add(n);
   }
-  for (const f of images.filter((x) => mentioned.has(x.name.toLowerCase()))) {
+  for (const f of images.filter(isMentioned)) {
     const asset = await assets.addBlob(f.path.split('\\').join('/'), new Blob([bytesOf(await f.data()) as BlobPart]));
     // 参照から取った画像は、参照の URL の全体 (問い合わせの ?… を含む) でも登録する。画像は「完全一致 → ファイル名」の順に引くので、
     // 問い合わせだけが違う 2 つの画像 (a.png?id=1 と a.png?id=2) が、それぞれの画像になる (名前だけだと、後に登録したものに両方が当たる)
