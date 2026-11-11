@@ -4296,10 +4296,14 @@ class Flow {
       // 最初の段 (start 側) をいちばん長くし、後の段ほど短くする (どの段も前の段より高くならない)。段数に収まる最小の高さで
       // そうなっていれば (段の高さが同じときを含む) それを使い、なっていなければ、そうなる最小の高さまで伸ばす。
       // 段の下端の float がある段組は、float の分で段の長さが変わるので調整しない
+      // ただし、伸ばして使う段の数が減る (後ろの段が空になる) 高さは採らない (見本の PDF: CSS-Print 第 4 版の 5.2 の段組の例は、
+      // 2 段目が 1 段目より長いまま 3 段に組む。伸ばして 2 段にすると、箱が高くなって次のページへ送られる)
       if (!first.after) {
+        const usedCols = (r: ReturnType<typeof run>) => r.roots.filter((x) => x.children.length > 0).length;
+        const minCols = usedCols(run(limit, false));
         const ok = (h: number) => {
           const r = run(h, false);
-          if (!fits(r)) return false;
+          if (!fits(r) || usedCols(r) < minCols) return false;
           const u = r.used.slice(0, n);
           return u.every((x, k) => k === 0 || x <= u[k - 1] + 0.5);
         };

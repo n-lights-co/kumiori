@@ -10,6 +10,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_FONTS, typesetHtml, childrenOf } from '../src/index';
 import type { Area, AreaTree } from '../src/types';
 import { ensureFonts, loadCachedFont } from './helpers';
+import { DOMParser } from '@xmldom/xmldom';
+import { cascadeStyles } from '../src/cssCascade';
 
 beforeAll(async () => {
   await ensureFonts([...DEFAULT_FONTS.base, ...DEFAULT_FONTS.mono]);
@@ -101,5 +103,37 @@ describe('縦書きの箱の左右の auto の余白', () => {
       // 本文の幅 360pt の中央
       expect(b.x - 20 + b.w / 2).toBeCloseTo(180, 0);
     }
+  });
+});
+
+describe('段組の釣り合わせ', () => {
+  it('後ろの段ほど短くするために伸ばして、使う段の数を減らさない (2 段目が 1 段目より長くても 3 段に組む)', async () => {
+    // CSS-Print 第 4 版の 5.2 の例と同じ形 (A4・--style ah・column-width: 12em の 3 段)
+    const src = `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>t</title><style>div.M { column-width: 12em; column-gap: 1em; column-rule: solid 1pt; border: solid 0.3pt gray; padding: 3pt }</style></head><body>
+<div class="M"><p> column-width:を 12em と指定した段組のブロックです．段間 column-gap，段間罫 column-rule も指定しています．</p>
+<pre>
+div.MultiColW {
+  column-width: 12em;
+  column-gap: 1em;
+  column-rule:
+     solid 1pt;
+}
+</pre>
+<p>段組の指定には，column-count を指定する代わりに column-width を指定します．</p></div></body></html>`;
+    const r = scan((await typesetHtml(src, { loadFont: loadCachedFont, style: 'ah' })).areaTree);
+    // 3 段目 (左端 385pt 付近) にも字がある (直す前は、1 段目を長くするために伸ばして 2 段だけになり、3 段目が空だった)
+    expect(r.glyphs.filter((g) => g.text.trim() && g.x >= 380).length).toBeGreaterThan(0);
+  });
+});
+
+describe('-ah-text-decoration-*', () => {
+  it('-ah-text-decoration-line・-style・-color・-ah-text-line-width を、text-decoration-line・-style・-color・-thickness と同じに読む (wave は wavy)', () => {
+    const d = new DOMParser().parseFromString('<html><head><title>t</title></head><body><span>あ</span></body></html>', 'text/html') as unknown as Document;
+    const st = cascadeStyles(d, 'span { -ah-text-decoration-line: line-through; -ah-text-decoration-style: wave; -ah-text-decoration-color: red; -ah-text-line-width: 2pt }', { viewport: { width: 600, height: 800 } });
+    const s = st.style(d.getElementsByTagName('span')[0] as unknown as Element);
+    expect(s.getPropertyValue('text-decoration-line').trim()).toBe('line-through');
+    expect(s.getPropertyValue('text-decoration-style').trim()).toBe('wavy');
+    expect(s.getPropertyValue('text-decoration-color').trim()).toMatch(/255, 0, 0|red/);
+    expect(s.getPropertyValue('text-decoration-thickness').trim()).toMatch(/^(2pt|2\.6+7px)$/);
   });
 });
