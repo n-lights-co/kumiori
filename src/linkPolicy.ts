@@ -22,6 +22,15 @@ export interface LinkPolicy {
    * スキームの無い //host/… の参照も、動作として書く
    */
   launch?: boolean;
+  /**
+   * スキームの無い相対参照 (file.pdf・dir/a.mp3 など) の書き方。既定は 'file'。
+   *  - 'file': PDF の場所からの相対のファイルとして書く (PDF は GoToR、ほかのファイルは Launch。Launch は launch: true のときだけ)
+   *  - 'uri': 書かれた参照のまま、URI 動作 (ISO 32000-1 §12.6.4.7) に書く (%xx は解かない)。ブラウザの中の PDF ビューアは GoToR・Launch を
+   *    扱わないものが多く、相対の URI なら、PDF の URL からの相対として開ける。PDF でないファイルへの参照も、launch に関わらず書く
+   *    (ファイルを開く動作ではなく、http の URL と同じく、URL を開く動作になるため)。絶対パス (/…・\…) と //host/… は、
+   *    'file' のときと同じく launch: true のときだけ書く
+   */
+  relative?: 'file' | 'uri';
 }
 
 /** 既定で許すスキーム */
@@ -48,8 +57,11 @@ export function urlScheme(u: string): string | undefined {
 
 /** 外への飛び先の判定の結果 */
 export interface LinkJudgement {
-  /** PDF の動作の種類。uri: URI 動作、gotor: 別の PDF を開く、launch: ファイルを開く */
-  kind: 'uri' | 'gotor' | 'launch';
+  /**
+   * PDF の動作の種類。uri: URI 動作 (スキームのある URL と //host/…)、gotor: 別の PDF を開く、launch: ファイルを開く、
+   * relative-uri: 相対参照を、そのまま URI 動作に書く (policy.relative が 'uri' のとき)
+   */
+  kind: 'uri' | 'gotor' | 'launch' | 'relative-uri';
   /** 前処理 (cleanUrl) の後の文字列。PDF には、これを書く */
   url: string;
   /** 動作を書いてよいか */
@@ -85,6 +97,8 @@ export function decodePath(path: string): string {
  *    PDF ではファイルの指定になるので、下の絶対パスのファイルとして扱う (どちらも policy.launch のときだけ通る)
  *  - 相対参照 (§4.2) で、パスが .pdf で終わるもの: GoToR。絶対パス (/…・\…・C:…。%xx を戻した後で見る) は policy.launch のときだけ通す
  *  - ほかの相対参照: Launch。policy.launch のときだけ通す
+ *  - policy.relative が 'uri' のときの相対参照 (PDF も、ほかのファイルも): 相対参照のままの URI 動作 (relative-uri)。
+ *    絶対パス (%xx を戻した後で見る) は policy.launch のときだけ通す
  */
 export function judgeExternalLink(raw: string, policy: LinkPolicy = {}): LinkJudgement {
   const url = cleanUrl(raw);
@@ -97,6 +111,10 @@ export function judgeExternalLink(raw: string, policy: LinkPolicy = {}): LinkJud
   }
   if (url.startsWith('//')) return { kind: 'uri', url, allowed: launch, ...(launch ? {} : { reason: '//host' }) };
   const path = referencePath(url);
+  if (policy.relative === 'uri') {
+    const allowed = launch || !isAbsoluteFile(decodePath(path));
+    return { kind: 'relative-uri', url, allowed, ...(allowed ? {} : { reason: 'URI (absolute path)' }) };
+  }
   if (/\.pdf$/i.test(path)) {
     const allowed = launch || !isAbsoluteFile(decodePath(path));
     return { kind: 'gotor', url, allowed, ...(allowed ? {} : { reason: 'GoToR (absolute path)' }) };

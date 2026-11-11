@@ -104,7 +104,7 @@ export interface PdfRenderOptions {
   deflate?: (data: Uint8Array) => Uint8Array;
   /**
    * 文書の外への飛び先 (リンクの注釈・しおり・フォームの送り先) のうち、PDF に動作を書いてよいもの (linkPolicy.ts)。
-   * 既定では、http・https・mailto・tel の URL と相対の PDF (GoToR) だけを書く。ほかは動作を書かない
+   * 既定では、http・https・mailto・tel の URL と相対の PDF (GoToR) だけを書く。relative: 'uri' なら、相対参照を URI 動作に書く。ほかは動作を書かない
    */
   links?: LinkPolicy;
   /** 動作を書かなかった飛び先があれば、その警告の文を足す配列 */
@@ -252,17 +252,19 @@ function pdfByteString(s: string): PDFString | PDFHexString {
   return PDFHexString.of(Array.from(new TextEncoder().encode(s), (b) => b.toString(16).padStart(2, '0')).join(''));
 }
 
-/** ASCII (0x20〜0x7E) でない字を _ にした名前 (ファイル指定の辞書の F。Unicode の名前は UF に書く) */
+/** ASCII (0x20〜0x7E) でない字を _ にした名前 (添付ファイルのファイル指定の辞書の F。Unicode の名前は UF に書く) */
 const asciiName = (s: string) => s.replace(/[^\x20-\x7e]/g, '_');
 
 /**
  * ファイルの指定 (ISO 32000-2 §7.11)。0x20〜0x7E の字だけの名前は、ファイル指定の文字列 (§7.11.2)。ほかの字 (日本語の名前など) があれば、
- * ファイル指定の辞書 (§7.11.3 Table 43) にして、UF に Unicode のテキスト文字列で名前を書く (F は、UF を読まない実装のための ASCII の代わりの名前。
- * 添付ファイルの注釈の FS と同じ書き方)。文字列のままでは、ASCII でない字の符号化が決まらず、pdf-lib は字の番号の下位 8 ビットを書く (pdfByteString)
+ * ファイル指定の辞書 (§7.11.3 Table 43) にして、UF に Unicode のテキスト文字列 (UTF-16BE、BOM 付き) で名前を書く。F は、UF を読まない
+ * 実装のための名前で、同じ名前の UTF-8 のバイト列 (16 進の文字列) にする (ファイル指定の文字列はバイト列で、ファイルの名前を UTF-8 で持つ
+ * 環境では、そのまま名前に当たる。_ に置き換えた名前では、どの環境でも開けない)。
+ * 文字列のままでは、pdf-lib は字の番号の下位 8 ビットを書く (pdfByteString)
  */
 function pdfFileSpec(file: string): PDFString | PDFHexString | Record<string, unknown> {
   if (/^[\x20-\x7e]*$/.test(file)) return pdfByteString(file);
-  return { Type: 'Filespec', F: pdfByteString(asciiName(file)), UF: PDFHexString.fromText(file) };
+  return { Type: 'Filespec', F: pdfByteString(file), UF: PDFHexString.fromText(file) };
 }
 
 /** URL のスキーム (RFC 3986 §3.1: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )) があるか */
@@ -274,6 +276,7 @@ export function hasUriScheme(u: string): boolean {
  * 外へのリンクの動作。スキームのある URL と、ネットワークパスの参照 (//host/…) は URI 動作 (ISO 32000-1 §12.6.4.7)。
  * 相対参照 (RFC 3986 §4.2) は、PDF の場所からの相対のファイル (§7.11.2 の相対のファイル指定): PDF なら別の PDF へ飛ぶ動作 (GoToR。§12.6.4.3。
  * #page=N はそのページ、#名前 は名前付きの飛び先、無ければ 1 ページ目)、ほかのファイルは開く動作 (Launch。§12.6.4.5)。
+ * links.relative が 'uri' のときは、相対参照も、書かれたままの URI 動作にする (%xx は解かない。URI は 7 ビットの ASCII。§12.6.4.7)。
  * 動作を書いてよいかは linkPolicy の judgeExternalLink が決める (既定では、http・https・mailto・tel の URL と相対の PDF だけ)。
  * 書かない飛び先は undefined を返し、dropped に数える。Area Tree をそのまま渡された (取り込みを通らない) 木も、ここで必ず判定する
  */
@@ -285,7 +288,7 @@ function externalAction(raw: string, policy: LinkPolicy | undefined, dropped: Dr
   }
   // 判定に使った文字列 (前後の空白・制御文字と、タブ・改行を取り除いたもの) を書く
   const u = j.url;
-  if (j.kind === 'uri') return { S: 'URI', URI: pdfUri(u) };
+  if (j.kind === 'uri' || j.kind === 'relative-uri') return { S: 'URI', URI: pdfUri(u) };
   const hash = u.indexOf('#');
   const path = referencePath(u);
   const frag = hash < 0 ? '' : u.slice(hash + 1);

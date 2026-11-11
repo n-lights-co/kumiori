@@ -88,10 +88,10 @@ describe('リンクの動作を安全なものに限る (HTM-20)', () => {
     // 読み戻した動作は、どれも GoToR で、項目は S・F・D だけ
     expect(acts.map((a) => [String(a.get(PDFName.of('S'))), a.keys().map(String).sort().join(' ')])).toEqual(Array.from({ length: 3 }, () => ['/GoToR', '/D /F /S']));
     expect(String(acts[0].get(PDFName.of('D')))).toBe('(x\\)/S/JavaScript/JS\\(app.alert\\(1\\))');
-    // ASCII でない字のある名前は、ファイル指定の辞書 (§7.11.3 Table 43): UF に Unicode の名前、F は ASCII の代わりの名前
+    // ASCII でない字のある名前は、ファイル指定の辞書 (§7.11.3 Table 43): UF に Unicode の名前、F は同じ名前の UTF-8 のバイト列 (16 進の文字列)
     const spec = (a: PDFDict) => a.lookup(PDFName.of('F'), PDFDict);
     expect((spec(acts[1]).lookup(PDFName.of('UF')) as PDFHexString).decodeText()).toBe('aĩ/S/JavaScript/JSĨapp.alertĨ1ĩĩ/XĨ.pdf');
-    expect(String(spec(acts[1]).get(PDFName.of('F')))).toBe('(a_/S/JavaScript/JS_app.alert_1__/X_.pdf)');
+    expect(String(spec(acts[1]).get(PDFName.of('F')))).toBe(`<${Buffer.from('aĩ/S/JavaScript/JSĨapp.alertĨ1ĩĩ/XĨ.pdf').toString('hex')}>`);
     expect((spec(acts[2]).lookup(PDFName.of('UF')) as PDFHexString).decodeText()).toBe('資料.pdf');
     // 名前付きの飛び先の名前は、UTF-8 のバイト列 (16 進の文字列)
     expect(String(acts[2].get(PDFName.of('D')))).toBe(`<${Buffer.from('第1章').toString('hex')}>`);
@@ -196,7 +196,125 @@ describe('リンクの動作を安全なものに限る (HTM-20)', () => {
   });
 });
 
-describe('コマンドの引数: --link-schemes・--link-launch', () => {
+describe('ASCII でない字のあるファイルの名前 (ISO 32000-1 §7.11)', () => {
+  it('GoToR・Launch の F は UTF-8 のバイト列、UF は同じ名前のテキスト文字列 (UTF-16BE、BOM 付き)。%xx で書いた名前は戻す', async () => {
+    const NAME = 'Bluetoothスピーカー 取扱説明書';
+    const enc = encodeURIComponent(NAME);
+    const r = await typeset(`<p><a href="${enc}.pdf">a</a> <a href="${enc}.mp3">b</a> <a href="plain.pdf">c</a></p>`, { loadFont, links: { launch: true } });
+    const pdf = await PDFDocument.load(await r.toPdf());
+    const acts: PDFDict[] = [];
+    for (const [, o] of pdf.context.enumerateIndirectObjects()) if (o instanceof PDFDict && o.get(PDFName.of('A'))) acts.push(o.lookup(PDFName.of('A'), PDFDict));
+    expect(acts.map((a) => String(a.get(PDFName.of('S'))))).toEqual(['/GoToR', '/Launch', '/GoToR']);
+    for (const [k, ext] of [[0, '.pdf'], [1, '.mp3']] as const) {
+      const spec = acts[k].lookup(PDFName.of('F'), PDFDict);
+      expect(String(spec.get(PDFName.of('Type')))).toBe('/Filespec');
+      const uf = spec.lookup(PDFName.of('UF'), PDFHexString);
+      expect(uf.decodeText()).toBe(NAME + ext);
+      expect(uf.asString().toLowerCase().startsWith('feff')).toBe(true);
+      const f = spec.lookup(PDFName.of('F'), PDFHexString);
+      expect(new TextDecoder('utf-8', { fatal: true }).decode(f.asBytes())).toBe(NAME + ext);
+    }
+    // ASCII だけの名前は、今までどおりファイル指定の文字列
+    expect(String(acts[2].get(PDFName.of('F')))).toBe('(plain.pdf)');
+  });
+});
+
+describe("相対参照を URI の動作に書く (links.relative: 'uri')", () => {
+  const ENC = 'Bluetooth%E3%82%B9%E3%83%94%E3%83%BC%E3%82%AB%E3%83%BC%20%E5%8F%96%E6%89%B1%E8%AA%AC%E6%98%8E%E6%9B%B8.pdf';
+  const HREFS = ['001-sibutomo.mp3', ENC, './a.pdf', 'b.pdf#page=3', 'pdf-media-link://a.pdf', 'https://example.com/a.pdf', '#sec'];
+  const DOC = HREFS.map((h) => `<p><a href="${h}">x</a></p>`).join('') + '<h2 id="sec">sec</h2>';
+  /** リンクの注釈を、文書の順に、動作の文字か "Dest" にする */
+  const linksOf = async (bytes: Uint8Array) => {
+    const pdf = await PDFDocument.load(bytes);
+    const out: string[] = [];
+    for (const page of pdf.getPages())
+      for (const ref of page.node.Annots()?.asArray() ?? []) {
+        const annot = pdf.context.lookup(ref, PDFDict);
+        const a = annot.lookup(PDFName.of('A'));
+        out.push(a ? String(a).replace(/\s+/g, ' ') : annot.get(PDFName.of('Dest')) ? 'Dest' : '?');
+      }
+    return out;
+  };
+
+  it('判定: 相対参照は relative-uri。PDF でないファイルも launch 無しで通し、絶対パスと //host は launch のときだけ', () => {
+    const uri = { relative: 'uri' } as const;
+    for (const u of ['a.mp3', 'x.pdf', './a.pdf#page=2', '../dir/a%20b.html?q=1']) expect(judgeExternalLink(u, uri), u).toMatchObject({ kind: 'relative-uri', allowed: true, url: u });
+    for (const u of ['/etc/passwd', '%2Fetc/a.pdf', '\\\\host\\share\\x.exe']) {
+      expect(judgeExternalLink(u, uri), u).toMatchObject({ kind: 'relative-uri', allowed: false, reason: 'URI (absolute path)' });
+      expect(judgeExternalLink(u, { ...uri, launch: true }).allowed, u).toBe(true);
+    }
+    expect(judgeExternalLink('//example.com/x', uri)).toMatchObject({ kind: 'uri', allowed: false, reason: '//host' });
+    // スキームのある URL の判定は変わらない (C:\… は c: のスキームとして落ちる)
+    expect(judgeExternalLink('javascript:alert(1)', uri)).toMatchObject({ kind: 'uri', allowed: false });
+    expect(judgeExternalLink('C:\\x.pdf', uri)).toMatchObject({ kind: 'uri', allowed: false, reason: 'c:' });
+    expect(judgeExternalLink('https://example.com/', uri)).toMatchObject({ kind: 'uri', allowed: true });
+    // 'file' は、指定しないときと同じ
+    for (const u of ['a.mp3', 'x.pdf', '/a.pdf']) expect(judgeExternalLink(u, { relative: 'file' })).toEqual(judgeExternalLink(u));
+  });
+
+  it("'uri': 相対の href を、書かれたまま (%xx も解かずに) URI の動作に書く。#id・https・独自のスキームは今までどおり", async () => {
+    const r = await typeset(DOC, { loadFont, links: { schemes: ['*'], relative: 'uri' } });
+    expect(await linksOf(await r.toPdf())).toEqual([
+      '<< /S /URI /URI (001-sibutomo.mp3) >>',
+      `<< /S /URI /URI (${ENC}) >>`,
+      '<< /S /URI /URI (./a.pdf) >>',
+      '<< /S /URI /URI (b.pdf#page=3) >>',
+      '<< /S /URI /URI (pdf-media-link://a.pdf) >>',
+      '<< /S /URI /URI (https://example.com/a.pdf) >>',
+      'Dest',
+    ]);
+    expect(r.warnings.filter((x) => x.includes('リンクの動作'))).toEqual([]);
+    // スキームの制限は、'uri' でも変わらない (既定では、独自のスキームは書かない)。相対のファイルは launch 無しで書く
+    const d = await typeset(DOC, { loadFont, links: { relative: 'uri' } });
+    const acts = await linksOf(await d.toPdf());
+    expect(acts).toHaveLength(6);
+    expect(acts.join()).not.toContain('pdf-media-link');
+    expect(acts[0]).toBe('<< /S /URI /URI (001-sibutomo.mp3) >>');
+    expect(d.warnings.find((x) => x.includes('リンクの動作'))).toContain('pdf-media-link: ×1');
+  });
+
+  it("'uri': URI は 7 ビットの ASCII (§12.6.4.7)。ASCII でない字と空白は UTF-8 の %xx にし、括弧は逃がす。絶対パスは書かずに警告する", async () => {
+    const r = await typeset('<p><a href="資料 1.pdf">a</a> <a href="a(1).pdf">b</a> <a href="/etc/passwd">c</a></p>', { loadFont, links: { relative: 'uri' } });
+    expect(await linksOf(await r.toPdf())).toEqual(['<< /S /URI /URI (%E8%B3%87%E6%96%99%201.pdf) >>', '<< /S /URI /URI (a\\(1\\).pdf) >>']);
+    expect(r.warnings.find((x) => x.includes('リンクの動作'))).toContain('URI (absolute path) ×1 (/etc/passwd)');
+  });
+
+  it("既定 (指定しない) と 'file' の出力は同じ: 相対の PDF は GoToR、ほかのファイルは Launch", async () => {
+    const all = { schemes: ['*'], launch: true };
+    const expected = [
+      '<< /S /Launch /F (001-sibutomo.mp3) >>',
+      expect.stringMatching(/^<< \/S \/GoToR \/F << \/Type \/Filespec \/F <[0-9a-f]+> \/UF <FEFF[0-9A-F]+> >> \/D \[ 0 \/Fit \] >>$/),
+      '<< /S /GoToR /F (./a.pdf) /D [ 0 /Fit ] >>',
+      '<< /S /GoToR /F (b.pdf) /D [ 2 /Fit ] >>',
+      '<< /S /URI /URI (pdf-media-link://a.pdf) >>',
+      '<< /S /URI /URI (https://example.com/a.pdf) >>',
+      'Dest',
+    ];
+    const none = await linksOf(await (await typeset(DOC, { loadFont, links: all })).toPdf());
+    expect(none).toEqual(expected);
+    expect(await linksOf(await (await typeset(DOC, { loadFont, links: { ...all, relative: 'file' } })).toPdf())).toEqual(none);
+    await expect(typeset(DOC, { loadFont, links: { relative: 'url' as never } })).rejects.toThrow(/links\.relative/);
+  });
+
+  it('XSL-FO の fo:basic-link の external-destination と、しおりにも同じように効く', async () => {
+    const fo =
+      '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm"><fo:region-body margin="10mm"/></fo:simple-page-master></fo:layout-master-set>' +
+      '<fo:bookmark-tree><fo:bookmark external-destination="url(notes.html)"><fo:bookmark-title>n</fo:bookmark-title></fo:bookmark></fo:bookmark-tree>' +
+      '<fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block><fo:basic-link external-destination="url(next.pdf)">a</fo:basic-link> <fo:basic-link external-destination="url(a.mp3)">b</fo:basic-link></fo:block></fo:flow></fo:page-sequence></fo:root>';
+    const r = await typeset(fo, { loadFont, kind: 'fo', links: { relative: 'uri' } });
+    expect((await actionsOf(await r.toPdf())).sort()).toEqual(['/S /URI /URI (a.mp3)', '/S /URI /URI (next.pdf)', '/S /URI /URI (notes.html)']);
+  });
+});
+
+describe('コマンドの引数: --link-schemes・--link-launch・--link-relative', () => {
+  it('--link-relative は file か uri (既定は指定なし)', () => {
+    expect(parseArgs(['a.html']).linkRelative).toBeUndefined();
+    expect(parseArgs(['a.html', '--link-relative', 'uri']).linkRelative).toBe('uri');
+    expect(parseArgs(['a.html', '--link-relative', 'file']).linkRelative).toBe('file');
+    expect(() => parseArgs(['a.html', '--link-relative', 'url'])).toThrow(UsageError);
+    expect(() => parseArgs(['a.html', '--link-relative'])).toThrow(UsageError);
+  });
+
   it('既定は指定なし (API の既定)。--link-schemes はカンマ区切り、--link-launch は真偽', () => {
     const d = parseArgs(['a.html']);
     expect([d.linkSchemes, d.linkLaunch]).toEqual([undefined, false]);

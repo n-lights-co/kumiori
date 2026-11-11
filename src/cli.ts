@@ -28,6 +28,7 @@
  *  - --no-fetch-styles: 文書が http(s) で参照する CSS (<link>・@import) をネットワークから取らない (既定は取る)
  *  - --link-schemes http,https,…: PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて)
  *  - --link-launch: ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パスなど) も PDF に書く (既定は書かない)
+ *  - --link-relative file|uri: スキームの無い相対参照のリンクの書き方 (既定 file: GoToR・Launch。uri: 書かれた参照のままの URI 動作)
  *  - 文書・CSS が file: の URL で参照するファイル (file:///…/style.css など) は、そのファイルを読む
  *  - '-' は標準入力から読む (CSS・画像・書体は --base のディレクトリ (既定は今のディレクトリ) から。FO かどうかは中身で見分ける)。
  *    -o - は PDF を標準出力へ書く (報告は標準エラーへ)
@@ -102,6 +103,8 @@ export function parseArgs(argv: string[]) {
     linkSchemes?: string[];
     /** ファイルを開く動作のリンクも PDF に書く (--link-launch) */
     linkLaunch: boolean;
+    /** スキームの無い相対参照のリンクの書き方 (--link-relative file|uri。無ければ既定の file) */
+    linkRelative?: 'file' | 'uri';
     /** --help: 使い方を書いて終わる */
     help: boolean;
     /** --version: 版を書いて終わる */
@@ -182,6 +185,11 @@ export function parseArgs(argv: string[]) {
       out.linkSchemes = list;
     }
     else if (a === '--link-launch') out.linkLaunch = true;
+    else if (a === '--link-relative') {
+      const v = value(k++);
+      if (v !== 'file' && v !== 'uri') throw new UsageError(msg(`--link-relative の値 "${v}" は使えません (file か uri)`, `--link-relative cannot be "${v}" (file or uri)`));
+      out.linkRelative = v;
+    }
     else if (a === '--base') out.base = value(k++);
     else if (a === '--spot-colors') out.spotColors = readSpotColors(value(k++));
     else if (a === '--image-max-dpi') {
@@ -332,7 +340,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
     print: args.print,
     fetchImages: args.fetchImages,
     fetchStyles: args.fetchStyles,
-    links: { ...(args.linkSchemes ? { schemes: args.linkSchemes } : {}), launch: args.linkLaunch },
+    links: { ...(args.linkSchemes ? { schemes: args.linkSchemes } : {}), launch: args.linkLaunch, ...(args.linkRelative ? { relative: args.linkRelative } : {}) },
     // file: の URL の参照と、入力のディレクトリの外を指す相対参照は、そのファイルを読む (ブラウザで手元の HTML を開いたときと同じ。cliResourceResolver)
     resolveResource: cliResourceResolver(dir),
     ...(args.spotColors ? { spotColors: args.spotColors } : {}),
@@ -384,6 +392,7 @@ export const USAGE_JA = [
   '  --no-fetch-styles         文書が http(s) で参照する CSS を取らない',
   '  --link-schemes <a,b>      PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて。ほかのスキームのリンクは字だけを組む)',
   '  --link-launch             ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パス・//host/…) も PDF に書く (既定は書かない)',
+  '  --link-relative <file|uri> スキームの無い相対のリンク (x.pdf・a.mp3) の書き方。file: ファイルを開く動作 (GoToR・Launch。既定)、uri: 書かれた参照のままの URI の動作 (ブラウザの中の PDF ビューアでも開ける)',
   '  --base <dir>              標準入力の文書の CSS・画像・書体を探すディレクトリ (既定は今のディレクトリ)',
   '  --watch                   入力のディレクトリの変更を見張って組み直す (Ctrl+C で終わる)',
   '  --lang ja|en              文言の言語 (無ければ環境変数 KUMIORI_LANG、OS のロケール (LANG) の順。既定は日本語)',
@@ -418,6 +427,7 @@ export const USAGE_EN = [
   '  --no-fetch-styles         do not fetch stylesheets the document references over http(s)',
   '  --link-schemes <a,b>      URL schemes whose links get an action in the PDF (default http,https,mailto,tel; * means all; other links are typeset as plain text)',
   '  --link-launch             also write links that open a file (relative non-PDF files, absolute paths, //host/…) to the PDF (off by default)',
+  '  --link-relative <file|uri> how scheme-less relative links (x.pdf, a.mp3) are written: file = open-file actions (GoToR/Launch; default), uri = a URI action with the reference as written (works in browser PDF viewers)',
   '  --base <dir>              directory where CSS, images and fonts of a document read from standard input are looked up (default: current directory)',
   '  --watch                   watch the input directories and re-typeset on changes (Ctrl+C to stop)',
   '  --lang ja|en              language of messages (otherwise KUMIORI_LANG, then the OS locale (LANG); default Japanese)',
