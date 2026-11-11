@@ -674,8 +674,11 @@ export class FontManager {
       const f = this.get(stack.symbol, weight);
       if (this.hasGlyph(f, ch)) return f;
     }
-    // 基本の書体が持たない字 (ヘブライ語・記号など): 欧文の書体、読み込み済みのほかの書体の順に、その字を持つ書体を探す
-    if (!/[\s\u0000-\u001f]/.test(ch) && !this.hasGlyph(base, ch)) {
+    // 基本の書体が持たない字 (ヘブライ語・記号など): 欧文の書体、読み込み済みのほかの書体の順に、その字を持つ書体を探す。
+    // 幅を持つ空白 (U+0020・U+00A0・U+3000 など) も同じ: 空白の字形を持たない書体 (絵文字の書体・アイコンの書体など) を指定した行で、
+    // 空白を「字が無い」しるしにしない (CSS Fonts 4 §5.2 の書体の選び方に、空白の特別な扱いは無い。HTML の font-family の並び
+    // (findInList) と同じ)。改行・タブなどの制御の字は、字形を探さない
+    if ((!/[\s\u0000-\u001f]/.test(ch) || WIDE_SPACE.test(ch)) && !this.hasGlyph(base, ch)) {
       const key = `${base.key}|${ch}`;
       let hit = this.charFallback.get(key);
       if (hit === undefined) {
@@ -845,6 +848,9 @@ export class FontManager {
     return font.fk.hasGlyphForCodePoint(cp);
   }
 }
+
+/** 幅を持つ空白の字 (字形で幅が決まる。改行・タブ・行と段落の区切りは含めない) */
+const WIDE_SPACE = /^[ \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]$/;
 
 /** 字形を持たなくても描ける字 (書体が組むときに隠す。ZWJ・ZWNJ・異体字セレクタ・タグなど) */
 const DEFAULT_IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;

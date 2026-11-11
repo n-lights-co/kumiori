@@ -2,12 +2,15 @@
  * 行の組版・擬似要素の箱の回帰テスト (0.2.0 までに入れるもの):
  *  - HTM-29 (1)(2) ::before・::after の箱は、ふつうの要素の箱と同じ書式 (margin・padding・border・background・box-decoration-break・opacity) を持つ
  *  - HTM-28 I 行内の箱の負の margin は、行分けの幅に数える
+ *  - HTM-29 (3) 受け継いだ font-family でも、要素の言語 (lang) で書体を選ぶ (自分に指定したときと同じ)
+ *  - HTM-29 (4) 空白の字を持たない書体を指定した XSL-FO で、空白を、字を持つ書体で組む
  *  - HTM-28 J ページの余白の箱に、font-variant・font・text-transform・text-decoration・word-spacing などが効く
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_FONTS, typesetFo, typesetHtml, childrenOf } from '../src/index';
 import type { Area, AreaTree } from '../src/types';
-import { ensureFonts, loadCachedFont } from './helpers';
+import fs from 'node:fs';
+import { ensureFonts, extraTestFont, loadCachedFont } from './helpers';
 
 beforeAll(async () => {
   await ensureFonts([...DEFAULT_FONTS.base, ...DEFAULT_FONTS.mono]);
@@ -21,7 +24,7 @@ interface Found {
   borders: Box[];
   /** 不透明度などの効果のある箱の数 */
   effects: number;
-  glyphs: Array<{ text: string; x: number; y: number; w: number; h: number; size: number; weight: number }>;
+  glyphs: Array<{ text: string; x: number; y: number; w: number; h: number; size: number; weight: number; font: string }>;
   /** 細い線の箱 (下線など。高さ 3pt 未満で、字でないもの) */
   rules: Box[];
   lines: Array<{ y: number; h: number; x: number; w: number; text: string }>;
@@ -31,7 +34,7 @@ function scan(tree: AreaTree, sheet = 0): Found {
   const rec = (a: Area, ox: number, oy: number, line?: Found['lines'][number]) => {
     const x = ox + (a.x ?? 0);
     const y = oy + (a.y ?? 0);
-    const b = a as unknown as { backgroundColor?: string; border?: Record<string, unknown>; opacity?: number; text?: string; fontSize?: number; fontWeight?: number };
+    const b = a as unknown as { backgroundColor?: string; border?: Record<string, unknown>; opacity?: number; text?: string; fontSize?: number; fontWeight?: number; fontId?: string };
     const box = { x, y, w: a.width, h: a.height };
     if (b.backgroundColor) f.bg.set(b.backgroundColor.toLowerCase(), [...(f.bg.get(b.backgroundColor.toLowerCase()) ?? []), box]);
     if (b.border && Object.keys(b.border).length) f.borders.push(box);
@@ -42,7 +45,7 @@ function scan(tree: AreaTree, sheet = 0): Found {
       f.lines.push(ln);
     }
     if (a.type === 'glyph') {
-      f.glyphs.push({ text: b.text ?? '', x, y, w: a.width, h: a.height, size: b.fontSize ?? 0, weight: b.fontWeight ?? 0 });
+      f.glyphs.push({ text: b.text ?? '', x, y, w: a.width, h: a.height, size: b.fontSize ?? 0, weight: b.fontWeight ?? 0, font: (b.fontId ?? '').replace(/@.*$/, '') });
       if (ln) ln.text += b.text ?? '';
     }
     else if (a.height > 0 && a.height < 3 && a.width > 0 && !childrenOf(a).length) f.rules.push(box);
@@ -216,5 +219,51 @@ describe('HTM-28 J ページの余白の箱の字の書式 (CSS Page 3 §6・付
     const t = await top('@top-center { content: "Page " counter(page); font-size: 12pt; font-weight: bold; letter-spacing: 1pt }');
     expect(t.text).toBe('Page 1');
     expect(t.glyphs.map((g) => [Math.round(g.size), g.weight])).toEqual(Array.from({ length: 6 }, () => [12, 700]));
+  });
+});
+
+describe('HTM-29 (4) 空白の字を持たない書体 (絵文字の書体など) を指定したときの空白', () => {
+  // Twemoji Mozilla は、空白 (U+0020・U+00A0)・英数字の字形を持たない
+  const emoji = async () => [{ name: 'TwemojiMozilla.ttf', data: new Uint8Array(fs.readFileSync(await extraTestFont('TwemojiMozilla-colr-0.7.0.ttf'))) }];
+  const fo = (text: string) =>
+    `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja" font-family="serif" font-size="20pt"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="400pt" page-height="200pt" margin="20pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block font-family="Twemoji Mozilla">${text}</fo:block><fo:block>1 A</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+
+  it('XSL-FO: 空白は、字を持つ書体 (HTML と同じ後備) で組む。字が無いしるし (□) にしない', async () => {
+    const f = scan((await typesetFo(fo('1 &#x1F600; &#xA0;A'), { loadFont: loadCachedFont, fonts: await emoji() })).areaTree);
+    const row = f.glyphs.filter((g) => g.y < 45);
+    expect(row.map((g) => g.text).join('')).toBe('1 😀 \u00a0A');
+    expect(row.find((g) => g.text === '😀')!.font).toBe('Twemoji Mozilla');
+    for (const g of row.filter((x) => /\s/.test(x.text))) expect(g.font, JSON.stringify(g.text)).not.toBe('Twemoji Mozilla');
+    // 空白は、この書体に無いほかの字 (A) と同じ書体で、幅は半角ほど (絵文字の書体の「字が無い」しるしの幅 (1em 前後) ではない)
+    expect(row.find((g) => g.text === ' ')!.font).toBe(row.find((g) => g.text === 'A')!.font);
+    expect(row.find((g) => g.text === ' ')!.w).toBeLessThan(10);
+    expect(row.find((g) => g.text === ' ')!.w).toBeGreaterThan(3);
+  });
+  it('HTML でも同じ (これまでどおり)', async () => {
+    const f = scan((await typesetHtml(doc(`<p style="font-family: 'Twemoji Mozilla'">1 &#x1F600; A</p>`), { loadFont: loadCachedFont, fonts: await emoji() })).areaTree);
+    const row = f.lines[0] && f.glyphs.filter((g) => g.y < 60);
+    for (const g of row.filter((x) => x.text === ' ')) expect(g.font).not.toBe('Twemoji Mozilla');
+  });
+});
+
+describe('HTM-29 (3) 受け継いだ font-family と、自分に指定した font-family とで、同じ書体を選ぶ', () => {
+  const fontsOf = async (body: string) => {
+    const f = await html(body);
+    return f.glyphs.filter((g) => g.y < 60 && /[\u0400-\u04ff]/.test(g.text)).map((g) => `${g.text}:${g.font}`).join(' ');
+  };
+  const RU = 'духе и в у';
+  it('親の font-family を受け継いだ lang="ru" の段落も、キリル文字の 1 字の語を欧文の書体で組む', async () => {
+    const own = await fontsOf(`<p lang="ru" style="font-family: Tinos">${RU}</p>`);
+    expect(own).toMatch(/и:Tinos в:Tinos у:Tinos$/);
+    expect(await fontsOf(`<div style="font-family: Tinos"><p lang="ru">${RU}</p></div>`)).toBe(own);
+    expect(await fontsOf(`<div style="font-family: Tinos"><div><p lang="ru">${RU}</p></div></div>`)).toBe(own);
+    // 行内の要素の lang も同じ
+    expect(await fontsOf(`<p style="font-family: Tinos">和文 <span lang="ru">${RU}</span></p>`)).toBe(own);
+    // 総称 (既定の書体) を受け継いだときも、自分に指定したときと同じ
+    expect(await fontsOf(`<p lang="ru">${RU}</p>`)).toBe(await fontsOf(`<p lang="ru" style="font-family: serif">${RU}</p>`));
+  });
+  it('lang の無い要素・日本語の要素は、これまでどおり (単独の 1 字は和文の書体)', async () => {
+    expect(await fontsOf(`<div style="font-family: Tinos"><p>${RU}</p></div>`)).toMatch(/и:Noto Serif JP в:Noto Serif JP у:Noto Serif JP$/);
+    expect(await fontsOf(`<div lang="ru" style="font-family: Tinos"><p lang="ja">${RU}</p></div>`)).toMatch(/и:Noto Serif JP в:Noto Serif JP у:Noto Serif JP$/);
   });
 });
