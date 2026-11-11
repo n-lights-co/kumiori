@@ -126,6 +126,7 @@ import type { AssetStore } from './assets';
 import { FootnoteCtx, splitEntry, withLabel, type FootEntry } from './footnotes';
 import { breakEdgeBorder, collapsedOuterHalves, collapseTableBorders, placeCells } from './tableBorders';
 import { formatPageNumber } from './pageNumber';
+import { applyTextTransform } from './textTransform';
 
 export interface LayoutOptions {
   /** 画像 (fo:external-graphic) の登録所。自然なサイズの取得に使う */
@@ -360,7 +361,7 @@ interface Frame {
   /** 前のページの断片で使った内容の長さの合計 (ページをまたいだ箱の height・min-height の残りを求める) */
   usedB?: number;
   /** 行グリッド (アンテナハウスの baseline-grid)。null は解除、undefined は親のものを使う */
-  grid?: { pitch: number; ascent: number; root?: boolean } | null;
+  grid?: { pitch: number; ascent: number; root?: boolean; stack?: boolean } | null;
   /** XSL の、罫線をつぶした表の、前の側の外へ出る罫線の半分 (Flow.pendSpill)。次の段・ページへ続く断片の頭でも、同じだけ外へ出す */
   spillBs?: number;
   /** 開いたときの、前の余白を足す前の位置 (中身を置かずに次のページへ送り直すとき、ここまで戻す) */
@@ -2135,7 +2136,7 @@ class Flow {
       // 行グリッドの中なら、試し組みにもグリッドを渡す (このページの続きでは、いまの位置を試し組みの原点として、グリッドの位置をそろえる。
       // 渡さないと、行がグリッドに揃わず最後の行の下の半行間も数えるので、本番では入る行が入らないと判断する)
       const g = this.currentGrid();
-      if (g && this.wm === 'horizontal-tb') trial.outerGrid = { pitch: g.pitch, ascent: g.ascent, origin: seed && g.origin !== undefined ? g.origin - this.cursor : 0 };
+      if (g && this.wm === 'horizontal-tb') trial.outerGrid = { pitch: g.pitch, ascent: g.ascent, ...(g.stack ? { stack: true } : {}), origin: seed && g.origin !== undefined ? g.origin - this.cursor : 0 };
       // このページの続きで試すときは、保留中の余白 (前の要素の下の余白など) を引き継ぎ、並びの先頭の上の余白と畳ませる
       // (空きから引いたうえで先頭の余白も足すと、畳まれる余白を二重に数える)
       if (seed) {
@@ -2475,7 +2476,12 @@ class Flow {
     if (node.baselineGrid === 'none') frame.grid = null;
     else if (node.baselineGrid === 'new' || node.baselineGrid === 'root') {
       const g = node.baselineGrid === 'root' ? (this.host.gridRootStyle ?? this.rootStyle ?? st) : st;
-      frame.grid = { pitch: lineHeightOf(g), ascent: this.nominalRatio(g) * g.fontSize, ...(node.baselineGrid === 'root' ? { root: true } : {}) };
+      frame.grid = {
+        pitch: lineHeightOf(g),
+        ascent: this.nominalRatio(g) * g.fontSize,
+        ...(node.baselineGrid === 'root' ? { root: true } : {}),
+        ...(node.baselineGrid === 'new' && node.baselineGridStack ? { stack: true } : {}),
+      };
     }
     // overflow: hidden は、padding の外端で切り抜く
     if (node.overflow === 'hidden') frame.node.clip = true;
@@ -2732,10 +2738,10 @@ class Flow {
   }
 
   /** 外の流れから受け継いだ行グリッド (keep の試し組み)。origin はこの流れの座標での、グリッドの箱の内容の上端 */
-  outerGrid?: { pitch: number; ascent: number; origin: number };
+  outerGrid?: { pitch: number; ascent: number; stack?: boolean; origin: number };
 
   /** いま効いている行グリッドと、その箱の内容の上端 (この流れの座標。箱がまだ開いていなければ undefined) */
-  private currentGrid(): { pitch: number; ascent: number; origin?: number } | undefined {
+  private currentGrid(): { pitch: number; ascent: number; stack?: boolean; origin?: number } | undefined {
     for (let k = this.stack.length - 1; k >= 0; k--) {
       const f = this.stack[k];
       if (f.grid === undefined) continue;
@@ -2805,6 +2811,8 @@ class Flow {
     // (見本の PDF: CSS-Print 第 4 版の -ah-baseline-grid: root の figcaption (根元より小さい字) は、上端 + 根元の字の em の上の長さが
     // 格子の基線を越えれば、次の格子に載る)
     const cand = lineTop - (box?.prevTrail ?? 0) + Math.max(box?.above ?? this.nominalRatio(st) * st.fontSize, ascent);
+    // 格子に載せない行グリッド (LBlock.baselineGridStack): em の箱をそのまま積む (最初の行は内容の上端 + 字の em の上の長さ)
+    if (g.stack) return Math.max(origin + ascent, cand) - em;
     const steps = Math.max(0, Math.ceil((cand - origin - ascent - 0.5) / pitch));
     return origin + ascent + steps * pitch - em;
   }
@@ -4813,16 +4821,6 @@ class Flow {
     const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
     if (sum(mx) <= avail) return mx;
     if (sum(mn) >= avail) return sum(mn) > 0 ? mn.map((w) => (w * avail) / sum(mn)) : mn;
-    if (table.fitContentRule === 'ah-html') {
-      // 'ah-html' の規則 (LTable.fitContentRule): 最大の長さが均等割り以下の列は最大の長さ、残りの列は最小の長さ + 余りを最大の長さの比で
-      const keep = mx.map((w) => w <= avail / n);
-      const left = avail - sum(mx.filter((_, k) => keep[k]));
-      const mnF = sum(mn.filter((_, k) => !keep[k]));
-      const mxF = sum(mx.filter((_, k) => !keep[k]));
-      if (left >= mnF && mxF > 0) return mn.map((w, k) => (keep[k] ? mx[k] : w + ((left - mnF) * mx[k]) / mxF));
-      // 最大の長さのままの列で幅が足りなくなるときは、すべての列を最小の長さ + 余りを最大の長さの比で
-      return mn.map((w, k) => w + ((avail - sum(mn)) * mx[k]) / sum(mx));
-    }
     // 中身の短い列 (最大の長さが均等割りの半分以下) は最大の長さのまま (短い列を折り返さない)。
     // 残りの列に、最小と最大の間を比例で配る
     const fixed = mx.map((w) => w <= avail / n / 2);
@@ -7975,7 +7973,7 @@ export class LayoutEngine {
     for (const c of p.staticContent) {
       const sub = new Flow({ ...host, pageNumber: () => p.number }, { wm, rootI: W, abs: () => staticNodes, pageSize: () => ({ width: W, height: H }) });
       // マーカーを展開してからページ番号を差し替える (マーカーの中身のページ番号 (HTML の running() の中の counter(page)) も差し替える)
-      const sc = substitute(resolveMarkers(c, allPages, index), { pageNumber: formatPageNumber(p.number, p.seq.pageNumberFormat), totalPages: String(total) });
+      const sc = substitute(resolveMarkers(c, allPages, index), { pageNumber: formatPageNumber(p.number, p.seq.pageNumberFormat), totalPages: String(total) }, p.number);
       const forced: LBlockContainer = { ...sc, absolutePosition: true };
       sub.layoutBlockLevel(forced, resolveStyle(docStyle, p.seq));
     }
@@ -8173,10 +8171,15 @@ function resolveMarkers<T>(node: T, pages: PageBuild[], index: number): T {
 }
 
 /** 静的コンテンツ内の {pageNumber} / {totalPages} を置換した複製を返す */
-function substitute<T>(node: T, vars: Record<string, string>): T {
+function substitute<T>(node: T, vars: Record<string, string>, pageNo?: number): T {
   const walk = (v: unknown): unknown => {
-    // \u0000名前\u0000 は、文字として書かれた「{名前}」(置き換えない。xslfoImport の static-content の文字)
-    if (typeof v === 'string') return v.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m)).replace(/\u0000(\w+)\u0000/g, '{$1}');
+    // \u0000名前\u0000 は、文字として書かれた「{名前}」(置き換えない。xslfoImport の static-content の文字)。
+    // {pageNumber|書式|text-transform} は、その書式のページ番号に text-transform を当てた字 (HTML の余白の箱の counter(page, …))
+    if (typeof v === 'string')
+      return v
+        .replace(/\{pageNumber\|([^|}]*)\|([^}]*)\}/g, (m, fmt: string, tt: string) => (pageNo === undefined ? m : tt ? applyTextTransform(formatPageNumber(pageNo, fmt || undefined), tt) : formatPageNumber(pageNo, fmt || undefined)))
+        .replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m))
+        .replace(/\u0000(\w+)\u0000/g, '{$1}');
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
       const copy = Object.fromEntries(Object.entries(v).map(([k, val]) => [k, walk(val)]));

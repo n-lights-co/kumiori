@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_FONTS, typeset, typesetFo, typesetHtml, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
 import { parsePageSize } from '../src/htmlImport';
+import { childrenOf, type AreaNode } from '../src/areaTree';
 import { UsageError, parseArgs, USAGE_EN, USAGE_JA } from '../src/cli';
 import { ensureFonts, fontDir } from './helpers';
 
@@ -118,5 +119,29 @@ describe('CLI: --page-size', () => {
   it('使い方 (--help) に、日本語・英語とも書いてある', () => {
     expect(USAGE_JA).toContain('--page-size');
     expect(USAGE_EN).toContain('--page-size');
+  });
+});
+
+describe('--style weasyprint のページの余白 (HTM-28 L)', () => {
+  // 字 A までの x の合計 (座標の取り方は同じなので、比べるのは差だけ)
+  const firstX = async (html: string, style: 'weasyprint' | 'browser-margin') => {
+    const r = await typesetHtml(html, { loadFont, style });
+    const go = (a: AreaNode, ox: number): number | undefined => {
+      if (a.type === 'glyph' && (a as GlyphArea).text === 'A') return ox + a.x;
+      for (const c of childrenOf(a)) {
+        const v = go(c, ox + ('x' in a ? a.x : 0));
+        if (v !== undefined) return v;
+      }
+      return undefined;
+    };
+    return go(r.areaTree.sheets[0], 0)!;
+  };
+  it('WeasyPrint の既定の余白は 75px (56.25pt。WeasyPrint 65.1 の css/html5_ua.css)。文書の @page の margin が勝つ', async () => {
+    const body = '<html><body><p>A</p></body></html>';
+    const wp = await firstX(body, 'weasyprint');
+    // Kumiori の既定 20mm (56.69pt) より 0.44pt 左
+    expect((await firstX(body, 'browser-margin')) - wp).toBeCloseTo((20 * 72) / 25.4 - 56.25, 2);
+    const one = '<html><head><style>@page { margin-left: 1cm }</style></head><body><p>A</p></body></html>';
+    expect(await firstX(one, 'weasyprint')).toBeCloseTo(await firstX(one, 'browser-margin'), 3);
   });
 });

@@ -11,7 +11,7 @@ export interface Pixels {
   rgba: Uint8Array;
 }
 
-import { MAX_PIXELS } from './imageLimits';
+import { MAX_PIXELS, gifPixelBudget } from './imageLimits';
 
 /** 画素の数の上限 (imageLimits.ts。ここからも引けるようにしてある) */
 export { MAX_PIXELS } from './imageLimits';
@@ -22,7 +22,9 @@ export function decodeGif(b: Uint8Array): Pixels | undefined {
   const u16 = (o: number) => b[o] | (b[o + 1] << 8);
   const W = u16(6);
   const H = u16(8);
-  if (!W || !H || W * H > MAX_PIXELS) return undefined;
+  // 画素の数は、MAX_PIXELS とファイルの大きさの両方で縛る (imageLimits.ts の gifPixelBudget)
+  const budget = gifPixelBudget(b.length);
+  if (!W || !H || W * H > budget) return undefined;
   let p = 13;
   let gct: Uint8Array | undefined;
   if (b[10] & 0x80) {
@@ -52,7 +54,7 @@ export function decodeGif(b: Uint8Array): Pixels | undefined {
         ct = b.subarray(p, p + n);
         p += n;
       }
-      if (!ct || iw * ih > MAX_PIXELS) return undefined;
+      if (!ct || iw * ih > budget) return undefined;
       const minSize = b[p++];
       if (minSize < 2 || minSize > 11) return undefined;
       // データの小区画をつなぐ

@@ -291,7 +291,7 @@ Unicode の公式の適合試験 (UAX #14 の `LineBreakTest.txt`、UAX #29 の 
 node scripts/compare-pdf.mjs --fo <FO のディレクトリ> --ref <見本の PDF のディレクトリ> --img <画像のディレクトリ> --out compare-pdf-out
 ```
 
-FO と同じ名前の PDF を組にして比べる。`compare-pdf-out/report.md` に、見本ごとのページ数と、ページごとの差 (差の大きい順) が出る。アンテナハウスの見本と比べるときは `--compat antenna` を付ける (既定は仕様どおりのモード)。見本と同じ書体で組むには、書体のファイルを `--fonts <ディレクトリ>` で渡し、総称の書体 (`serif`・`sans-serif`) に当たる既定の書体を `--web-fonts <ディレクトリ>` で差し替える (MS 明朝・MS ゴシック・Times New Roman・Arial を、`notoserif.ttf`・`notosans.ttf`・`tinos400.ttf`・`arimo400.ttf` などの名前で置く。TTC は中の 1 つ目の書体を TTF に取り出す)。
+FO と同じ名前の PDF を組にして比べる。`compare-pdf-out/report.md` に、見本ごとのページ数と、ページごとの差 (差の大きい順) が出る。アンテナハウスの見本と比べるときは `--compat antenna` を付ける (既定は仕様どおりのモード)。見本と同じ書体で組むには、書体のファイルを `--fonts <ディレクトリ>` で渡し、総称の書体 (`serif`・`sans-serif`) に当たる既定の書体を `--web-fonts <ディレクトリ>` で差し替える (MS 明朝・MS ゴシック・Times New Roman・Arial・Courier New を、`notoserif.ttf`・`notosans.ttf`・`tinos400.ttf`・`arimo400.ttf`・`cousine400.ttf` などの名前で置く。TTC は中の 1 つ目の書体を TTF に取り出す。ディレクトリに無い書体は配信元から取る)。
 
 見本と Kumiori の出力を、目で見比べるページを作る (見本の PDF と Kumiori の PDF を、同じ名前で組にする):
 

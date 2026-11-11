@@ -2855,7 +2855,7 @@ describe('行分割・コンテナ: ハイフン・語間・和欧間アキ・�
     expect(long).toBeLessThanOrEqual(E.engine.layout(doc([{ type: 'block', children: ['x'] }])).sheets[0].page.regionBody.width + 0.01);
   });
 
-  it("fitContentRule 'ah-html': 最大の長さが均等割り以下の列は最大の長さのまま、残りの列に余りを配る", () => {
+  it("fitContentRule 'max-ratio': 最大の長さが均等割りの半分を超える短い列も、最大の長さの比で縮める", () => {
     const cell = (t: string) => ({ type: 'table-cell' as const, children: [{ type: 'block' as const, children: [t] }] });
     const short = 'abcdefgh/abcdefgh';
     const table = (rule?: string, cells = [cell('あ'.repeat(80)), cell(short)]) => ({ type: 'table' as const, fitContent: true, ...(rule ? { fitContentRule: rule } : {}), columns: [], body: { type: 'table-body' as const, rows: [{ type: 'table-row' as const, cells }] } });
@@ -2871,11 +2871,10 @@ describe('行分割・コンテナ: ハイフン・語間・和欧間アキ・�
     const max = cellWidths(E.engine.layout(doc([table(undefined, [cell(short)]) as never])))[0];
     expect(max).toBeLessThan(avail / 2);
     expect(max).toBeGreaterThan(avail / 4);
-    // 既定 (最小と最大の間を同じ比で配る) では短い列も縮むが、'ah-html' では最大の長さのまま
-    expect(cellWidths(E.engine.layout(doc([table() as never])))[1]).toBeLessThan(max - 1);
-    const ah = cellWidths(E.engine.layout(doc([table('ah-html') as never])));
-    expect(ah[1]).toBeCloseTo(max, 1);
-    expect(ah[0] + ah[1]).toBeCloseTo(avail, 0);
+    // 長い列の最大の長さは使える幅で頭打ち。短い列は、最大の長さの比 (max : avail) で縮む (最大の長さのままにしない)
+    const r = cellWidths(E.engine.layout(doc([table('max-ratio') as never])));
+    expect(r[1]).toBeCloseTo((avail * max) / (max + avail), 0);
+    expect(r[0] + r[1]).toBeCloseTo(avail, 0);
   });
 
   it('下側のルビ (rubyTextUnder) は親文字の下に置き、行の下を広げる', () => {

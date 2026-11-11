@@ -19,7 +19,8 @@
  *  - --compat spec|antenna: XSL-FO の互換モード (画面の「仕様どおりの既定値で組む」。既定 spec)。アンテナハウスの見本と比べるときは antenna。
  *  - --fonts: MS 明朝などの書体 (TTF / OTF / TTC) を、画面の「書体を読み込む」で読み込んでから組む (見本と同じ書体で比べる)。
  *    見本の PDF が書体を埋め込んでいないときは、同じ書体を OS (fontconfig) にも入れておくと pdftoppm が描ける。
- *  - --web-fonts: 既定の Web フォント (Noto Serif JP など) を、ネットワークではなくこのディレクトリから読む (e2e テストと同じファイル名)。
+ *  - --web-fonts: 既定の Web フォント (Noto Serif JP など) を、ネットワークではなくこのディレクトリから読む (e2e テストと同じファイル名。
+ *    等幅の Cousine は cousine400.ttf・cousine700.ttf)。ディレクトリに無い書体は、配信元から取る。
  *
  *  - FO と同じ名前 (拡張子だけ .pdf) の見本の PDF がある FO だけを比べる。
  *  - --ref の古い名前 --ah も受け付ける
@@ -165,11 +166,26 @@ if (args['web-fonts']) {
   const dir = args['web-fonts'];
   await page.route('**/fonts.gstatic.com/**', (route) => {
     const u = route.request().url();
-    const f = u.includes('/tinos/')
-      ? u.includes('buE1') ? 'tinos700.ttf' : 'tinos400.ttf'
-      : u.includes('/arimo/')
-        ? u.includes('CstsBw') ? 'arimo700.ttf' : 'arimo400.ttf'
-        : u.includes('notoserifjp') ? (u.includes('zWPebA') && fs.existsSync(path.join(dir, 'notoserif700.ttf')) ? 'notoserif700.ttf' : 'notoserif.ttf') : u.includes('notosanssymbols2') && fs.existsSync(path.join(dir, 'notosanssymbols2.ttf')) ? 'notosanssymbols2.ttf' : u.includes('VFPYk75s') ? 'notosans700.ttf' : 'notosans.ttf';
+    const has = (f) => fs.existsSync(path.join(dir, f));
+    // 書体のファミリー (URL の /s/<family>/) ごとに、置き場のファイルの名前を決める。太字は URL の終わりの形で見分ける。
+    // 置き場に無い書体 (等幅の Cousine を置いていないときなど) は、ほかの書体で代えずに、配信元から取る
+    // (前は、知らない書体をすべて notosans.ttf で代えていたので、notosans.ttf に MS ゴシックを置くと、等幅の字が MS ゴシックで組まれた)
+    const fam = /\/s\/([a-z0-9]+)\//.exec(u)?.[1] ?? '';
+    const f =
+      fam === 'tinos'
+        ? u.includes('buE1') ? 'tinos700.ttf' : 'tinos400.ttf'
+        : fam === 'arimo'
+          ? u.includes('CstsBw') ? 'arimo700.ttf' : 'arimo400.ttf'
+          : fam === 'cousine'
+            ? u.includes('d6lN') && has('cousine700.ttf') ? 'cousine700.ttf' : 'cousine400.ttf'
+            : fam === 'notoserifjp'
+              ? u.includes('zWPebA') && has('notoserif700.ttf') ? 'notoserif700.ttf' : 'notoserif.ttf'
+              : fam === 'notosansjp'
+                ? u.includes('VFPYk75s') ? 'notosans700.ttf' : 'notosans.ttf'
+                : fam === 'notosanssymbols2'
+                  ? 'notosanssymbols2.ttf'
+                  : '';
+    if (!f || !has(f)) return route.continue();
     return route.fulfill({ body: fs.readFileSync(path.join(dir, f)), contentType: 'font/ttf', headers: { 'access-control-allow-origin': '*' } });
   });
   await page.route('**/fonts.googleapis.com/**', (r) => r.fulfill({ body: '', contentType: 'text/css' }));

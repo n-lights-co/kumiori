@@ -29,6 +29,24 @@ describe('画素の読み書き (Node 用)', () => {
     expect(decodeGif(new TextEncoder().encode('<!DOCTYPE html>'))).toBeUndefined();
   });
 
+  it('GIF: 画素の数をファイルの大きさでも縛る (IMG-19 (2)。34 バイトで 10000×10000 画素を指定したファイルは読まない)', async () => {
+    const { gifPixelBudget, GIF_FREE_PIXELS, GIF_PIXELS_PER_BYTE } = await import('../src/imageLimits');
+    // 頭の寸法 (論理画面・画像) を 10000×10000 にした、データのほとんど無い GIF
+    const big = hex(GIF);
+    const set16 = (o: number, v: number) => ((big[o] = v & 255), (big[o + 1] = v >> 8));
+    set16(6, 10000);
+    set16(8, 10000);
+    set16(13 + 12 + 1 + 4, 10000);
+    set16(13 + 12 + 1 + 6, 10000);
+    expect(decodeGif(big)).toBeUndefined();
+    // 上限は、ファイルの大きさに依らない分 + 1 バイトあたりの分
+    expect(gifPixelBudget(34)).toBe(GIF_FREE_PIXELS + GIF_PIXELS_PER_BYTE * 34);
+    // 正当な GIF の密度 (LZW の 12 ビットの符号 1 つで 4,096 画素まで = 1 バイトで約 2,730 画素) は上限の内に入る
+    expect(GIF_PIXELS_PER_BYTE).toBeGreaterThan(4096 / 1.5);
+    // 小さな GIF は、これまでどおり読む
+    expect(decodeGif(hex(GIF))).toBeDefined();
+  });
+
   it('BMP: 24 ビット (下から上へ・行の 4 バイト揃え) と 8 ビット (色の表)', () => {
     const bmp = (bpp: number, w: number, h: number, pal: number[][], px: (x: number, y: number) => number[]) => {
       const row = Math.floor((bpp * w + 31) / 32) * 4;

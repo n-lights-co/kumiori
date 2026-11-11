@@ -341,6 +341,14 @@ export interface TextStyle {
   /** 欧文のペアカーニング (フォントの kern / GPOS)。横書きのみ。既定 false */
   kerning?: boolean;
   /**
+   * 書体に無い字形を作ってよいか (CSS Fonts 4 §2.8 の font-synthesis-weight・-style・-small-caps。継承する)。
+   * false: 太字の無い書体を太らせない・斜体の無い書体を傾けない (font-synthesis-style: oblique-only の italic も)・small caps の字形の無い書体で
+   * 大文字を縮めて代わりにしない。既定 (undefined) は作る
+   */
+  synthesizeWeight?: boolean;
+  synthesizeStyle?: boolean;
+  synthesizeSmallCaps?: boolean;
+  /**
    * 欧文の語間 (空白) を、行が僅かに溢れるとき本来の幅より詰めて、語を行に収めてよいか。既定 true。
    * false なら語間は本来の幅より詰めない (ブラウザ・CSS と同じ。両端揃えでは広げるだけ)
    */
@@ -1002,6 +1010,12 @@ export interface LBlock extends BaseNode, BoxStyle {
    * 行グリッドを作った箱の内容の上端・下端は、最初・最後の行の em の箱の端 (最後の行の後ろに半行間を空けない)
    */
   baselineGrid?: 'new' | 'root' | 'none';
+  /**
+   * 行グリッド (baselineGrid の new) の中の行を格子に載せず、em の箱を前の行の em の箱にそのまま続けて積む
+   * (半行間を空けない決まりは同じ)。アンテナハウス互換の、行グリッドの表のセルの中身 (見本の PDF: CSS-Print 第 4 版の
+   * table { line-height: 21q; -ah-baseline-grid: new } の、折り返したセルの行の送りは字の大きさ。21q の格子に載せない)
+   */
+  baselineGridStack?: boolean;
 }
 
 export interface LInline extends BaseNode {
@@ -1907,11 +1921,10 @@ export interface LTable extends BaseNode, BoxStyle {
   /**
    * fitContent の表が入りきらないときの列の幅の配り方。
    * 'interpolate' (既定): 各列の最小と最大の長さの間を同じ比で配る (CSS のブラウザと同じ)。
-   * 'max-ratio': 各列の最大の長さ (使える幅で頭打ち) の比で配る (XSL-FO の表)
-   * 'ah-html': 最大の長さが均等割り (使える幅 ÷ 列の数) 以下の列は最大の長さのまま。残りの列は、最小の長さに、
-   * 残りの幅の最小の長さの合計からの余りを最大の長さの比で足す (HTML の入力のアンテナハウス互換)
+   * 'max-ratio': 最大の長さが均等割りの半分以下の列は最大の長さのまま。残りの列は、各列の最大の長さ (使える幅で頭打ち) の比で配る
+   * (XSL-FO の表と、HTML の入力のアンテナハウス互換)
    */
-  fitContentRule?: 'interpolate' | 'max-ratio' | 'ah-html';
+  fitContentRule?: 'interpolate' | 'max-ratio';
   body: LTableBody;
 }
 

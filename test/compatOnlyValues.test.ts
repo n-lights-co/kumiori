@@ -105,6 +105,13 @@ describe('PKG-20 HTML: width の gr・text-align の inside / outside・色の c
     expect(html('<p class="t">a</p>', '.t { text-align: outside }', true).json).toContain('"textAlign":"outside"');
     for (const ah of [false, true]) expect(html('<p class="t">a</p>', '.t { -ah-text-align: inside }', ah).json).toContain('"textAlign":"inside"');
   });
+  it('text-align-last: inside・outside も同じ (HTM-31 (5)): 既定では無効の値で警告に出る。--style ah と -ah-text-align-last では読む', () => {
+    const d = html('<p class="t">a</p>', '.t { text-align-last: inside }');
+    expect(d.json).not.toContain('"textAlignLast":"inside"');
+    expect(d.unsupported[`text-align-last: inside${COMPAT}`]).toBe(1);
+    expect(html('<p class="t">a</p>', '.t { text-align-last: outside }', true).json).toContain('"textAlignLast":"outside"');
+    for (const ah of [false, true]) expect(html('<p class="t">a</p>', '.t { -ah-text-align-last: inside }', ah).json).toContain('"textAlignLast":"inside"');
+  });
   it('色の cmyk()・rgb-icc() は、既定では無効の値 (前の宣言・継いだ色を使う) で、警告に出る。device-cmyk() はどちらでも読む', () => {
     const css = '.c { color: cmyk(0, 1, 1, 0) } .r { color: #0000ff; color: rgb-icc(255, 0, 0, #CMYK, 0, 1, 1, 0) } .d { color: device-cmyk(0 1 1 0) } .b { border: 2px solid; border-color: cmyk(1, 0, 0, 0); background-color: rgb-icc(#Grayscale, 0.5) }';
     const body = '<p class="c">c</p><p class="r">r</p><p class="d">d</p><p class="b">b</p>';
