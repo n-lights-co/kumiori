@@ -36,6 +36,8 @@
 - `opacity` (不透明度。CSS の `opacity`。0 以上 1 未満) があるとき、この Area とその子孫をまとめて 1 枚の絵にしてから、その濃さで重ねます (中の重なりは濃くなりません)。`transform` と両方あれば、変換した絵を重ねます。
 - `transform`・`opacity` の付いた Area は、回り込み (`float`) のある所でも、背景と中身に分けずに、行内の中身の段でまるごと描きます。
 - 行の中の要素 (枠の付いた `span` など) に `opacity`・`transform` が付くと、その枠と中身をまとめた `inline` の Area (`sourceRef` は無し) を作り、そこに付けます。
+- `outline` (輪郭線。CSS の `outline`。`{ width, color, style?, offset? }`。pt) があるとき、この Area の border-box の外側に、`offset` だけ離して (負の値は内側へ)、4 辺とも同じ線を描きます。場所は取りません (`x`・`y`・`width`・`height` は変わりません)。この Area の中身と罫線より後に描き、`borderRadius` のある Area では角も丸めます。行の中の要素の輪郭線は、行ごとに、描くだけの `block` の Area (子は無し) として、行の子の末尾に置きます。
+- `clipRect` (切り抜きの矩形。CSS の `clip: rect(…)`。`{ x, y, width, height }`。`x`・`y` は、この Area の border-box の左上から。pt) があるとき、この Area の影・背景・罫線・輪郭線と子孫を、その矩形で切り抜いて描きます (`clip` は、子だけを padding の箱で切り抜きます)。幅か高さが 0 以下なら、この Area は何も描きません。
 
 ## 節と子
 

@@ -239,6 +239,8 @@ interface OpenBox {
   phases: PaintPhase[] | undefined;
   /** 次に描く子の位置 */
   i: number;
+  /** 輪郭線 (outline) を描くか (背景の段 'bg' では描かない: 中身より後に描く) */
+  over?: boolean;
 }
 
 /**
@@ -287,6 +289,9 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
     if (top.i >= top.kids.length) {
       stack.pop();
       closeArea(top, p);
+      if (top.over && top.a.outline) paintOutline(top.a, top.x, top.y, p);
+      // 切り抜きの矩形 (clipRect) の終わり: 輪郭線も切り抜く (CSS 2.1 §11.1.2)
+      if (top.a.clipRect) p.restore();
       continue;
     }
     const k = top.i++;
@@ -349,6 +354,10 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
     return undefined;
   }
   if (a.type === 'image' && a.hidden) return undefined;
+  // 切り抜きの矩形 (CSS の clip。CSS 2.1 §11.1.2): 箱の影・背景・罫線・輪郭線と中身を、border-box の左上からの矩形で切り抜く。
+  // 幅か高さが 0 の矩形 (clip: rect(0 0 0 0) など) では、何も描かない (§11.1.2: left と right が同じ値なら、1 画素も見えないようにする)
+  if (a.clipRect && !(a.clipRect.width > 0 && a.clipRect.height > 0)) return undefined;
+  if (a.clipRect) p.clipRect({ x: x + a.clipRect.x, y: y + a.clipRect.y, width: a.clipRect.width, height: a.clipRect.height });
   if (a.type === 'image') {
     // 角丸 (border-radius): 画像 (置換要素の中身) も角丸で切り抜く (CSS Backgrounds 3 §5.3)
     const round = a.borderRadius && !a.missing;
@@ -371,6 +380,8 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
       p.restore();
     } else p.drawImage(a, x, y);
     if (round) p.restore();
+    if (a.outline) paintOutline(a, x, y, p);
+    if (a.clipRect) p.restore();
     return undefined;
   }
   if (box && (a.link || a.annotation || a.formField)) p.mark?.(a, x, y);
@@ -491,7 +502,51 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
     default:
       order = childOrder(a.children, phase);
   }
-  return { a, x, y, box, cx, cy, kids: order.kids, phases: order.phases, i: 0 };
+  return { a, x, y, box, cx, cy, kids: order.kids, phases: order.phases, i: 0, over: phase !== 'bg' };
+}
+
+const NO_EDGES = { top: 0, right: 0, bottom: 0, left: 0 };
+
+/**
+ * 輪郭線 (CSS の outline。CSS UI 4 §3) を描く。(x, y) は領域 a の border-box の左上。
+ *  - 罫線の箱の外側に、outline-offset だけ離して描く (§3.5)。場所は取らない (§3.1)。4 辺とも同じ線 (§3.1 の注記)
+ *  - 負の outline-offset は箱の内側へ縮めるが、輪郭線の外形の幅・高さは、太さの 2 倍より小さくしない (向きごとに当てる。§3.5)
+ *  - 角丸の箱では、輪郭線も角を丸める (§3.1: 罫線の端に沿う所では border-radius の曲線に沿う)。外形の角の半径は、
+ *    箱の角の半径に、離した距離と太さを足したもの (半径 0 の角は丸めない)
+ * 線は、輪郭線の外形を border の箱とする、4 辺が同じ罫線として描く (線種・半透明・角丸の描き方は罫線と同じ。closeArea)
+ */
+function paintOutline(a: Area, x: number, y: number, p: Painter) {
+  const o = a.outline!;
+  const w = o.width;
+  if (!(w > 0) || o.color === 'transparent') return;
+  const ex = Math.max(o.offset ?? 0, -a.width / 2) + w;
+  const ey = Math.max(o.offset ?? 0, -a.height / 2) + w;
+  const side: BorderSide = { width: w, color: o.color, ...(o.style && o.style !== 'solid' ? { style: o.style, symmetric: true } : {}) };
+  let radius: BorderRadius | undefined;
+  if (a.borderRadius) {
+    const r = a.borderRadius;
+    // 角ごとの半径 (百分率は箱の大きさに対して)。隣り合う半径の和が辺より長ければ、同じ比で縮める (CSS Backgrounds 3 §4.2)
+    const cs = (r.corners ?? [[r.rx, r.ry], [r.rx, r.ry], [r.rx, r.ry], [r.rx, r.ry]]).map(([h, v]) => [typeof h === 'string' ? (parseFloat(h) * a.width) / 100 : h, typeof v === 'string' ? (parseFloat(v) * a.height) / 100 : v] as [number, number]);
+    const f = Math.min(1, a.width / Math.max(cs[0][0] + cs[1][0], cs[3][0] + cs[2][0], 1e-9), a.height / Math.max(cs[0][1] + cs[3][1], cs[1][1] + cs[2][1], 1e-9));
+    const corners = cs.map(([h, v]) => (h > 0 && v > 0 ? [Math.max(h * f + ex, 0), Math.max(v * f + ey, 0)] : [0, 0]) as [number, number]);
+    if (corners.some(([h, v]) => h > 0 && v > 0)) radius = { rx: 0, ry: 0, corners };
+  }
+  const box: Area = {
+    type: 'block',
+    x: 0,
+    y: 0,
+    width: a.width + 2 * ex,
+    height: a.height + 2 * ey,
+    margin: NO_EDGES,
+    padding: NO_EDGES,
+    border: { top: side, right: side, bottom: side, left: side },
+    writingMode: a.writingMode,
+    children: [],
+    isContinuation: false,
+    continuesOnNext: false,
+    ...(radius ? { borderRadius: radius } : {}),
+  };
+  closeArea({ a: box, x: x - ex, y: y - ey, box: true, cx: 0, cy: 0, kids: [], phases: undefined, i: 0 }, p);
 }
 
 /** 領域の、子より後に描くもの (切り抜きの終わり・罫線・斜めの罫線) を描く */

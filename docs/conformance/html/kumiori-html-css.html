@@ -69,10 +69,12 @@
 <li class="sec"><a href="#s-transform"><span class="num">3.15</span>変形 : <span class="nw">transform</span>・&#8203;<span class="nw">transform-origin</span>・&#8203;<span class="nw">transform-box</span></a></li>
 <li class="sec"><a href="#s-opacity"><span class="num">3.16</span>不透明度 : <span class="nw">opacity</span></a></li>
 <li class="sec"><a href="#s-bg-box"><span class="num">3.17</span>背景の範囲 : <span class="nw">background-clip</span>・&#8203;<span class="nw">background-origin</span>・&#8203;<span class="nw">background-attachment</span></a></li>
+<li class="sec"><a href="#s-outline"><span class="num">3.18</span>輪郭線 : <span class="nw">outline</span>・&#8203;<span class="nw">outline-offset</span></a></li>
 <li class="ch"><a href="#ch-float"><span class="num">4</span>回り込みと配置</a></li>
 <li class="sec"><a href="#s-float"><span class="num">4.1</span>回り込み : <span class="nw">float</span></a></li>
 <li class="sec"><a href="#s-clear"><span class="num">4.2</span>回り込みの解除 : <span class="nw">clear</span></a></li>
 <li class="sec"><a href="#s-position"><span class="num">4.3</span>配置 : <span class="nw">position</span></a></li>
+<li class="sec"><a href="#s-clip"><span class="num">4.4</span>切り抜き : <span class="nw">clip</span></a></li>
 <li class="ch"><a href="#ch-font"><span class="num">5</span>フォント</a></li>
 <li class="sec"><a href="#s-font-family"><span class="num">5.1</span>フォント名 : <span class="nw">font-family</span></a></li>
 <li class="sec"><a href="#s-font-size"><span class="num">5.2</span>フォントサイズ : <span class="nw">font-size</span></a></li>
@@ -95,6 +97,7 @@
 <li class="sec"><a href="#s-autospace"><span class="num">6.10</span>和欧文間のアキ : <span class="nw">text-autospace</span></a></li>
 <li class="sec"><a href="#s-spacing-trim"><span class="num">6.11</span>約物のアキの詰め : <span class="nw">text-spacing-trim</span></a></li>
 <li class="sec"><a href="#s-hanging"><span class="num">6.12</span>ぶら下げ : <span class="nw">hanging-punctuation</span></a></li>
+<li class="sec"><a href="#s-tab-size"><span class="num">6.13</span>タブの幅 : <span class="nw">tab-size</span></a></li>
 <li class="ch"><a href="#ch-deco"><span class="num">7</span>文字の飾り</a></li>
 <li class="sec"><a href="#s-decoration"><span class="num">7.1</span>線 : <span class="nw">text-decoration-line</span></a></li>
 <li class="sec"><a href="#s-emphasis"><span class="num">7.2</span>圏点 : <span class="nw">text-emphasis-style</span></a></li>
@@ -479,6 +482,18 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
   <div style="display: inline-block; box-sizing: border-box; width: 40mm; height: 16mm; padding: 2mm; border: 1mm solid #4f7a64; background-image: url(images/checker.png); background-repeat: no-repeat; background-origin: content-box;">background-origin: content-box</div>
 </div>
 <!--/kumiori-sample-->
+<h2 id="s-outline"><span class="num">3.18</span>輪郭線 : <code>outline</code>・&#8203;<code>outline-offset</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
+<p class="props" data-p="outline-style"><span class="k">初期値</span> : <span class="v">none</span> <span class="k">適用対象</span> : <span class="v">all elements</span> <span class="k">継承</span> : <span class="v">no</span> <span class="src">(outline-style — CSS UI 4)</span></p>
+<blockquote>“Outlines do not take up space.”<cite>— CSS UI 4 §3</cite></blockquote>
+<p>ボックスのまわりに、場所を取らない線 (輪郭線) を描きます <span class="spec">(CSS UI 4 §3)</span>。罫線と違って、ボックスの大きさも、ほかのボックスの位置も変えません。線は罫線のボックスの外側に描き、outline-offset で、罫線のボックスから離す距離を指定できます (負の値は内側へ縮めます。輪郭線の外形は、太さの 2 倍より小さくなりません。<span class="spec">§3.5</span>)。一括指定の outline には、太さ (outline-width。thin・medium・thick と長さ)・線の種類 (outline-style)・色 (outline-color) を書けます。outline-offset は一括指定に含まれません <span class="spec">(§3.1)</span>。色の初期値 (auto) は文字の色です。4 辺とも同じ線で、辺ごとの指定はありません。太さは、罫線と同じ丸め方をします (3.4 節)。</p>
+<p>輪郭線は、そのボックスの中身と罫線より後に描きます。角の丸いボックスでは、輪郭線の角も丸くなります (丸い角の groove・ridge・inset・outset は、罫線と同じく実線で描きます)。行の中の要素 (span など) が行をまたぐときは行ごとに、ブロックがページ・段をまたぐときは断片ごとに、閉じた線で囲みます。ブロック・表・表のセルと行・回り込み・絶対配置のボックス・画像・行の中の要素に効き、transform・opacity の付いたボックスでは、一緒に変形し、同じ濃さで描きます。縦書きでも同じです。リストの項目 (li) の輪郭線は、記号・番号も囲みます。html・body、表の行グループ (thead・tbody・tfoot)、ルビの要素 (ruby・rb・rt・rtc)、ページの余白のボックスの輪郭線は描きません (読み込みのときに未対応として知らせます)。::first-letter と ::marker には効きません。</p>
+<p class="vals-h"><code>outline-style</code> の値の意味 <span class="spec">(CSS UI 4 §3.3)</span></p><table class="list vals"><thead><tr><th style="width: 34mm">値</th><th>意味</th><th style="width: 34mm">Kumiori</th></tr></thead><tbody><tr><td><code>none</code></td><td>輪郭線を描きません。</td><td>対応</td></tr><tr><td><code>auto</code></td><td>処理系が決めた形の輪郭線を描きます (実線として扱ってもよい)。</td><td>対応 (実線として描きます)</td></tr><tr><td><code>dotted・dashed・solid・double</code></td><td>点線・破線・実線・二重線です (罫線の種類と同じ意味)。</td><td>対応</td></tr><tr><td><code>groove・ridge・inset・outset</code></td><td>立体的に見える線です (罫線の種類と同じ意味)。</td><td>対応 (角の丸いボックスでは実線)</td></tr></tbody></table>
+<!--kumiori-sample id="outline" mark="outline: 1mm solid #c9a227|outline: 0.6mm dashed #4f7a64; outline-offset: 1mm|outline: 0.3mm solid #a33a3a"-->
+<div style="font-size: 8pt; margin: 2mm 0 2mm 4mm;">
+  <div style="width: 44mm; padding: 1mm 2mm; background: #dfeae4; outline: 1mm solid #c9a227;">outline <span style="outline: 0.3mm solid #a33a3a;">inline</span></div>
+  <div style="width: 44mm; padding: 1mm 2mm; margin-top: 4mm; background: #dfeae4; border-radius: 2mm; outline: 0.6mm dashed #4f7a64; outline-offset: 1mm;">outline-offset: 1mm</div>
+</div>
+<!--/kumiori-sample-->
 </section>
 
 <!-- ================================================================ 4 回り込みと配置 -->
@@ -515,6 +530,17 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <!--kumiori-sample id="position" mark="position: relative|position: absolute; top: 2mm; right: 2mm|position: relative; left: 4mm"-->
 <div style="position: relative; height: 16mm; border: 0.5pt solid #999; padding: 2mm 16mm 2mm 2mm; font-size: 8pt;">基準のボックス (position: relative)。ラベルは、このボックスのボーダーの内側の右上から 2mm の位置に、内容に合わせた幅で置かれます。<div style="position: absolute; top: 2mm; right: 2mm; background-color: #222; color: #fff; padding: 0 2pt;">ラベル</div></div>
 <div style="position: relative; left: 4mm; margin: 2mm 4mm 0 0; border: 0.5pt solid #999; font-size: 8pt;">left: 4mm でずらしたボックス。前後のボックスの位置は変わりません。</div>
+<!--/kumiori-sample-->
+<h2 id="s-clip"><span class="num">4.4</span>切り抜き : <code>clip</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
+<p class="props" data-p="clip"><span class="k">初期値</span> : <span class="v">auto</span> <span class="k">適用対象</span> : <span class="v">absolutely positioned elements</span> <span class="k">継承</span> : <span class="v">no</span> <span class="src">(clip — CSS 2.1)</span></p>
+<p>絶対配置 (position: absolute) のボックスの、見える範囲を矩形で指定します <span class="spec">(CSS 2.1 §11.1.2)</span>。値は auto (切り抜かない) か rect(上, 右, 下, 左) で、4 つの値は、ボックスの罫線のボックスの左上からの距離です (右・下の値も、左・上の端から測ります)。それぞれ長さ (負の値も可) か auto で、auto は罫線のボックスのその辺です。コンマで区切る書き方と、空白で区切る古い書き方の両方を解釈します (混ぜた書き方は解釈しません)。ボックスの背景・罫線・輪郭線・中身 (子孫) を、この矩形で切り抜いて描きます。組版には影響しません。右が左以下、または下が上以下の矩形 (clip: rect(0 0 0 0) など。画面には出さずに読み上げにだけ残す要素の書き方) では、そのボックスを描きません。</p>
+<p>絶対配置でないボックスには効きません。固定配置 (position: fixed) のボックスと html・body の clip は解釈しません (読み込みのときに未対応として知らせます)。CSS Masking 1 は、clip を非推奨とし、代わりに clip-path を勧めています (付録 A)。clip-path には対応していません。</p>
+<!--kumiori-sample id="clip" mark="clip: rect(2mm, 30mm, 8mm, 4mm)|clip: rect(0 0 0 0)"-->
+<div style="position: relative; height: 14mm; font-size: 8pt;">
+  <div style="position: absolute; left: 4mm; top: 2mm; width: 40mm; height: 10mm; background: #dfeae4; border: 0.5mm dashed #999;"></div>
+  <div style="position: absolute; left: 4mm; top: 2mm; width: 40mm; height: 10mm; background: #4f7a64; color: #fff; border: 0.5mm solid #c9a227; clip: rect(2mm, 30mm, 8mm, 4mm);">rect(2mm, 30mm, 8mm, 4mm)</div>
+  <div style="position: absolute; left: 60mm; top: 4mm;">before<span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);">hidden text</span> / after</div>
+</div>
 <!--/kumiori-sample-->
 </section>
 
@@ -981,6 +1007,22 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
   <p style="hanging-punctuation: allow-end; width: 15em; border-right: 0.4pt solid #b08132; text-align: justify; text-indent: 0;">行の終わりに句読点がくるときは、ぶら下げると、行末がそろいます。</p>
 </div>
 <!--/kumiori-sample-->
+<h2 id="s-tab-size"><span class="num">6.13</span>タブの幅 : <code>tab-size</code><span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
+<p class="props" data-p="tab-size"><span class="k">初期値</span> : <span class="v">8</span> <span class="k">適用対象</span> : <span class="v">text</span> <span class="k">継承</span> : <span class="v">yes</span> <span class="src">(tab-size — CSS Text 3)</span></p>
+<blockquote>“Tab stops occur at points that are multiples of the tab size from the starting content edge of the preserved tab’s nearest block container ancestor.”<cite>— CSS Text 3 §4.1.2</cite></blockquote>
+<p>white-space が pre・pre-wrap・break-spaces のとき、タブ文字 (U+0009) を残し、次の字の始まりを次のタブ位置にそろえます <span class="spec">(CSS Text 3 §4.1.2)</span>。タブ位置は、ブロックの内容の始まりの端から、tab-size の間隔ごとの所です。tab-size は、数 (ブロックの空白の文字 (U+0020) の幅の何倍か。letter-spacing・word-spacing を含む) か、長さで指定します <span class="spec">(§4.2)</span>。次のタブ位置までが 0.5ch より短いときは、その次のタブ位置を使います。0 のときは、タブを描きません。字下げ (text-indent) のある行でも、内容の端から数えます。折り返した後の行は、その行の始まりから数えます。縦書きでは、行の始まり (上) から数えます。white-space が normal・nowrap・pre-line のときは、タブを空白と同じに詰めます。</p>
+<p>回り込み (float) の横で短くなった行では、タブ位置を、その行の始まりから数えます (仕様では、ブロックの内容の端から)。数になる式 (calc(2 * 2) など) は解釈しません。-moz-tab-size などの接頭辞の付いた名前は解釈しません。</p>
+<!--kumiori-sample id="tab-size" mark="tab-size: 4|tab-size: 10"-->
+<div style="font-size: 8pt; margin-left: 4mm;">
+<pre style="tab-size: 4; display: inline-block; margin: 1mm 10mm 1mm 0; padding: 1mm 2mm; background: #dfeae4;">def f(x):
+&#9;if x:
+&#9;&#9;return 1
+&#9;return 0</pre>
+<pre style="tab-size: 10; display: inline-block; margin: 1mm 0; padding: 1mm 2mm; background: #dfeae4;">name&#9;qty&#9;price
+tea&#9;2&#9;480
+coffee&#9;10&#9;1200</pre>
+</div>
+<!--/kumiori-sample-->
 </section>
 
 <!-- ================================================================ 7 文字の飾り -->
@@ -1425,7 +1467,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 
 <h2 id="s-svg-inline"><span class="num">15.3</span>HTML の中の SVG<span class="nw">&nbsp;<span class="badge ok">対応</span></span></h2>
 <p>HTML の中に直に書いた svg 要素を、画像のファイルの SVG (15.1 節) と同じに解釈し、PDF にベクターのまま描きます。大きさは svg 要素の width・height 属性で決め、行の中では画像と同じに置きます。下の例は、折り返すグラデーション (spreadMethod="reflect") と字を描いた SVG です。</p>
-<p>文書の CSS は、svg 要素とその中の要素にも効きます <span class="spec">(SVG 2 §6.4)</span>。対応するプロパティは、fill・stroke・stroke-width・fill-opacity・stroke-opacity・opacity・fill-rule・stroke-linecap・stroke-linejoin・stroke-miterlimit・stroke-dasharray・stroke-dashoffset と color です (これらは SVG の要素にだけ効きます。HTML の要素の箱には効かず、継承して中の svg 要素に届くだけです)。SVG の属性 (fill="…" など) は詳細度 0 の規則として扱うので、文書の CSS の規則が属性に勝ちます <span class="spec">(SVG 2 §6.6)</span>。currentColor は、その要素の color の値で、svg 要素の外の color も継承します <span class="spec">(CSS Color 4 §6.4)</span>。sanitize.css の svg:not([fill]) { fill: currentColor } のように、アイコンの色を文書の CSS で決める書き方ができます。文書の CSS のほかのプロパティ (transform・display・font など) は、svg 要素の中の要素には届きません。</p>
+<p>文書の CSS は、svg 要素とその中の要素にも効きます <span class="spec">(SVG 2 §6.4)</span>。対応するプロパティは、fill・stroke・stroke-width・fill-opacity・stroke-opacity・opacity・fill-rule・stroke-linecap・stroke-linejoin・stroke-miterlimit・stroke-dasharray・stroke-dashoffset、clip-rule・stop-color・stop-opacity・text-anchor・marker (marker-start・marker-mid・marker-end)・vector-effect (none・non-scaling-stroke・non-scaling-size) と color です (これらは SVG の要素にだけ効きます。HTML の要素の箱には効かず、継承して中の svg 要素に届くだけです)。SVG の属性 (fill="…" など) は詳細度 0 の規則として扱うので、文書の CSS の規則が属性に勝ちます <span class="spec">(SVG 2 §6.6)</span>。currentColor は、その要素の color の値で、svg 要素の外の color も継承します <span class="spec">(CSS Color 4 §6.4)</span>。sanitize.css の svg:not([fill]) { fill: currentColor } のように、アイコンの色を文書の CSS で決める書き方ができます。文書の CSS のほかのプロパティ (transform・display・font など) は、svg 要素の中の要素には届きません。SVG の要素にだけ当てはまるプロパティのうち、paint-order・color-interpolation と、図形の位置と大きさ (cx・cy・r・rx・ry・x・y・d)、フィルターとマスクのプロパティ (flood-color・flood-opacity・lighting-color・color-interpolation-filters・mask-type) も届きません。文書の中に svg 要素があるときは、読み込みのときに未対応として知らせます (svg 要素の無い文書では、当てはまる要素が無いので知らせません)。描き方の手がかり (shape-rendering・text-rendering) は、何もしません。</p>
 <!--kumiori-sample id="svg-inline" mark="&lt;svg|spreadMethod=&quot;reflect&quot;"-->
 <p style="text-align: center; text-indent: 0;">
   <svg xmlns="http://www.w3.org/2000/svg" width="60mm" height="22mm" viewBox="0 0 120 44">
@@ -1466,7 +1508,7 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <section class="chapter c16">
 <h1 class="chapter" id="ch-unsupported" data-no="16">対応していないプロパティ</h1>
 <p>第 1 章の確かめ方で、指定しても組版に何も渡らなかったプロパティを、仕様ごとに並べます。印刷に関わらないプロパティ (画面の操作・音声など) は、最後の表にまとめます。対応しているプロパティの中で対応していない値は、各節の値の表に書いています。そのうち、仕様の決まりが長く、表の 1 行では説明しきれないものを、2 つ目の表に取り出して説明しています。各項目には、どういうものか、どういう場面で使うかを書いています。説明は、取得した仕様書 (いずれも 2026-11-06 取得) の定義と、Kumiori のソースで確かめたことに基づきます。</p>
-<!--gen:unsupported--><h3>対応していないプロパティ (58 項目)</h3>
+<!--gen:unsupported--><h3>対応していないプロパティ (51 項目)</h3>
 <table class="list expl"><thead><tr><th style="width: 36mm">名前</th><th>説明</th></tr></thead><tbody>
 <tr><td><code>border-image</code><br><span class="spec">CSS Backgrounds 3 §5.7</span></td><td>border-image-source・-slice・-width・-outset・-repeat をまとめて指定する一括指定です。罫線の代わりに画像で枠を描きたいときに使います。</td></tr>
 <tr><td><code>border-image-source</code><br><span class="spec">CSS Backgrounds 3 §5.1</span></td><td>border-style の罫線の代わりに、枠として使う画像を指定します。画像が none か表示できないときは、border-style の罫線を描きます。飾り枠など、線では描けない枠を画像で付けたいときに使います。</td></tr>
@@ -1489,7 +1531,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>ascent-override</code><br><span class="spec">CSS Fonts 4 §4.11</span></td><td>@font-face の記述子で、フォントの上の高さ (ascent metric) を、文字サイズに対するパーセントで置き換えます。normal のときはフォントのファイルの値を使います。フォントの上の高さの値を変えて、行の組み方をほかのフォントとそろえたいときに使います。</td></tr>
 <tr><td><code>descent-override</code><br><span class="spec">CSS Fonts 4 §4.11</span></td><td>@font-face の記述子で、フォントの下の深さ (descent metric) を、文字サイズに対するパーセントで置き換えます。normal のときはフォントのファイルの値を使います。フォントの下の深さの値を変えて、行の組み方をほかのフォントとそろえたいときに使います。</td></tr>
 <tr><td><code>line-gap-override</code><br><span class="spec">CSS Fonts 4 §4.11</span></td><td>@font-face の記述子で、フォントの行間 (line gap metric) を、文字サイズに対するパーセントで置き換えます。normal のときはフォントのファイルの値を使います。フォントの行間の値を変えて、行の組み方をほかのフォントとそろえたいときに使います。</td></tr>
-<tr><td><code>clip</code><br><span class="spec">CSS 2.1 §11.1.2</span></td><td>絶対配置のボックスの、見える範囲の矩形を指定します (rect(…))。画面には出さずに読み上げにだけ残す要素の書き方 (clip: rect(0 0 0 0)) でよく使われます。</td></tr>
 <tr><td><code>footnote-display</code><br><span class="spec">CSS GCPM 3 §2.3</span></td><td>脚注を、脚注の領域にブロックとして置くか (block)、行の中の要素として置くか (inline)、処理系に決めさせるか (compact) を指定します。短い脚注を、脚注の領域に 1 行に続けて並べたいときに使います。</td></tr>
 <tr><td><code>footnote-policy</code><br><span class="spec">CSS GCPM 3 §2.8</span></td><td>脚注の本文が今のページに入りきらないときの扱いを指定します。line は脚注の参照のある行の前で、block はその段落の前で改ページします。auto は処理系が決め、脚注の本文を後のページに置いてもよいとしています。脚注の参照とその本文を、必ず同じページに置きたいときに使います。</td></tr>
 <tr><td><code>grid</code><br><span class="spec">CSS Grid 1 §7.8</span></td><td>明示のグリッドのプロパティ (grid-template-rows・-columns・-areas) と暗黙のグリッドのプロパティ (grid-auto-rows・-columns・-flow) をまとめて指定する一括指定です。グリッドの行・列・領域と自動の配置を、1 つの宣言で決めたいときに使います。</td></tr>
@@ -1511,7 +1552,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>overflow-inline</code><br><span class="spec">CSS Overflow 3 §3.1</span></td><td>行の向き (inline 軸) のはみ出しの扱いを指定します。overflow-x・overflow-y・overflow-block と、overflow の一括指定と組になる、論理のプロパティです。縦書きと横書きのどちらでも、行の向きのはみ出しを同じ指定で扱いたいときに使います。</td></tr>
 <tr><td><code>overflow-clip-margin</code><br><span class="spec">CSS Overflow 3 §3.2</span></td><td>overflow: clip などで中身を切るときの境目 (overflow clip edge) を、ボックスのどの端から、どれだけ外に広げるかを指定します。ボックスで切る中身を、ボックスの端より少し外まで見せたいときに使います。</td></tr>
 <tr><td><code>page-orientation</code><br><span class="spec">CSS Paged Media 3 §7.1.2</span></td><td>@page の記述子で、組んだ後のページを、出力の媒体 (PDF など) で回す向きを指定します (upright・rotate-left・rotate-right)。仕様の例では、幅の広い表を載せるページを、ほかのページと同じ大きさで組んだまま、横向きに回して出すときに使います。</td></tr>
-<tr><td><code>tab-size</code><br><span class="spec">CSS Text 3 §4.2</span></td><td>残したタブ文字 (U+0009) の幅を、空白の文字 (U+0020) の幅の何倍か、または長さで指定します。pre などでタブを含むプログラムの文を、決まった幅のタブで組みたいときに使います。</td></tr>
 <tr><td><code>text-align-all</code><br><span class="spec">CSS Text 3 §6.2</span></td><td>text-align の一括指定の個別のプロパティで、最後の行 (text-align-last で auto 以外を指定したとき) を除いたすべての行のそろえ方を指定します。仕様は、文書の作成者には text-align を使うよう求めています。最後の行だけ別のそろえ方にして、ほかの行のそろえ方を決めたいときに使います。</td></tr>
 <tr><td><code>text-justify</code><br><span class="spec">CSS Text 3 §6.4</span></td><td>両端そろえ (justify) のときに、アキをどう配るか (auto・none・inter-word・inter-character) を選びます。欧文は語の間で、和文は字の間でアキを広げるなど、両端そろえの方法を選びたいときに使います。</td></tr>
 <tr><td><code>text-wrap</code><br><span class="spec">CSS Text 4 §5.5</span></td><td>text-wrap-mode と text-wrap-style をまとめて指定する一括指定です。省いた個別のプロパティは初期値になります。行を折り返すかどうかと、折り返しの方法 (バランスなど) を一度に決めたいときに使います。</td></tr>
@@ -1520,11 +1560,6 @@ h2 { <b>bookmark-level: 2;</b> }</code></pre>
 <tr><td><code>text-underline-position</code><br><span class="spec">CSS Text Decoration 3 §2.5</span></td><td>要素に付けた下線の位置を指定します (祖先の要素が付けた下線には効きません)。仕様の例は、日本語などの横書き・縦書きでの下線の位置を、この指定で決めています。縦書きの傍線を左右のどちらに付けるかを決めたいとき、下線を字の下に下げたいときに使います。</td></tr>
 <tr><td><code>text-decoration-skip-ink</code><br><span class="spec">CSS Text Decoration 4 §2.10.5</span></td><td>下線・上線が字の形と重なる所で、線を切るかどうかを指定します (auto・none・all)。Kumiori は線を切らずに引きます。</td></tr>
 <tr><td><code>text-shadow</code><br><span class="spec">CSS Text Decoration 3 §4</span></td><td>文字に付ける影を、カンマ区切りの並びで指定します。値は box-shadow と同じ書き方です (広げる値と inset は使えません)。影は文字とその線の両方に付きます。見出しの文字に影を付けて目立たせたいときに使います。</td></tr>
-<tr><td><code>outline</code><br><span class="spec">CSS UI 4 §3.1</span></td><td>outline-style・outline-width・outline-color をまとめて指定する一括指定です。outline-offset は含みません。要素のまわりに、配置に影響しない輪郭線を付けたいときに使います。</td></tr>
-<tr><td><code>outline-color</code><br><span class="spec">CSS UI 4 §3.4</span></td><td>輪郭線の色を指定します。border-top-color の値と auto が使えます。輪郭線の色を決めたいときに使います。</td></tr>
-<tr><td><code>outline-style</code><br><span class="spec">CSS UI 4 §3.3</span></td><td>輪郭線の形を指定します。border-style と同じ値 (hidden を除く) と auto が使えます。輪郭線を実線・点線などにしたいときに使います。</td></tr>
-<tr><td><code>outline-width</code><br><span class="spec">CSS UI 4 §3.2</span></td><td>輪郭線の太さを指定します。border-width と同じ値が使えます。輪郭線の太さを決めたいときに使います。</td></tr>
-<tr><td><code>outline-offset</code><br><span class="spec">CSS UI 4 §3.5</span></td><td>輪郭線を、罫線の外側の線 (border edge) からどれだけ離すかを指定します。負の値のときは内側に縮めます。輪郭線と要素の間を空けたいときに使います。</td></tr>
 <tr><td><code>glyph-orientation-vertical</code><br><span class="spec">CSS Writing Modes 4 §5.1.3</span></td><td>SVG 1.1 の古いプロパティです。対応は任意 (optional) で、対応する処理系は text-orientation の一括指定として扱います (auto は mixed、0deg は upright、90deg は sideways)。SVG 1.1 向けに書かれた文書の、縦書きの字の向きの指定を解釈するときに使います。</td></tr>
 </tbody></table>
 <h3>対応しているプロパティの中で対応していない値 (11 項目)</h3>

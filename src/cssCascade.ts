@@ -419,6 +419,9 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'line-height': [true, 'normal', 'raw'],
   'letter-spacing': [true, 'normal', 'len-normal'],
   'word-spacing': [true, '0px', 'len-normal'],
+  // タブ位置の間隔 (CSS Text 3 §4.2。https://www.w3.org/TR/css-text-3/#tab-size-property 、2026-11-11 取得):
+  // <number [0,∞]> | <length [0,∞]>。初期値 8。継承する。計算値は、指定した数か、絶対の長さ
+  'tab-size': [true, '8', 'raw'],
   'text-align': [true, 'start', 'raw'],
   'text-align-last': [true, 'auto', 'raw'],
   'text-indent': [true, '0px', 'len'],
@@ -485,6 +488,16 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   'column-rule-width': [false, 'medium', 'border-width'],
   'column-rule-style': [false, 'none', 'raw'],
   'column-rule-color': [false, 'currentcolor', 'color'],
+  // 輪郭線 (CSS UI 4 §3。https://www.w3.org/TR/css-ui-4/#outline-props 、2026-11-11 取得): 場所を取らない線。どれも継承しない。
+  // outline-width (§3.2) は <line-width>、outline-style (§3.3) は auto | <outline-line-style>、outline-color (§3.4) は auto | <color>
+  // (初期値 auto は、線種が auto でなければ currentColor)、outline-offset (§3.5) は <length>
+  'outline-width': [false, 'medium', 'border-width'],
+  'outline-style': [false, 'none', 'raw'],
+  'outline-color': [false, 'auto', 'raw'],
+  'outline-offset': [false, '0px', 'len'],
+  // 切り抜きの矩形 (CSS 2.1 §11.1.2・CSS Masking 1 付録 A「The deprecated clip property」: 非推奨だが、対応は求められている)。
+  // rect(<top>, <right>, <bottom>, <left>) | auto。絶対配置の要素にだけ効く。継承しない。計算値は、4 つの値が auto か絶対の長さの矩形
+  clip: [false, 'auto', 'raw'],
   'column-span': [false, 'none', 'raw'],
   'column-fill': [false, 'balance', 'raw'],
   'flex-direction': [false, 'row', 'raw'],
@@ -725,7 +738,13 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
  * 文書の中にじかに書いた <svg> に渡す、SVG の表示の性質: [継承するか, 初期値 (計算値の形)]。
  * 値の定義・初期値・継承は SVG 2 の 13 章 (https://www.w3.org/TR/SVG2/painting.html 、2026-11-10 取得): fill・fill-rule・fill-opacity は §13.4、
  * stroke・stroke-opacity・stroke-width・stroke-linecap・stroke-linejoin・stroke-miterlimit・stroke-dasharray・stroke-dashoffset は §13.5。
- * HTML の要素の箱には効かない (継承して、中の <svg> に届くだけ)。color と opacity は PROPS にある
+ * HTML の要素の箱には効かない (継承して、中の <svg> に届くだけ)。color と opacity は PROPS にある。
+ * SVG の側 (svg.ts) が属性として読む性質も、同じ道で届ける (2026-11-11 取得):
+ *  - clip-rule (CSS Masking 1 §6.2: nonzero | evenodd。継承する)
+ *  - stop-color・stop-opacity (SVG 2 §14.2.4.2: 継承しない。初期値は black・1)
+ *  - text-anchor (SVG 2 §11.10.1.1: start | middle | end。継承する)
+ *  - marker-start・marker-mid・marker-end (SVG 2 §13.7.2: none | <marker-ref>。継承する。一括指定 marker は §13.7.3)
+ *  - vector-effect (SVG 2 §8.13: 継承しない。svg.ts が描ける none・non-scaling-stroke・non-scaling-size だけを読む)
  */
 const SVG_STYLE_PROPS: Record<string, [boolean, string]> = {
   fill: [true, 'rgb(0, 0, 0)'],
@@ -739,10 +758,26 @@ const SVG_STYLE_PROPS: Record<string, [boolean, string]> = {
   'stroke-miterlimit': [true, '4'],
   'stroke-dasharray': [true, 'none'],
   'stroke-dashoffset': [true, '0px'],
+  'clip-rule': [true, 'nonzero'],
+  'stop-color': [false, 'rgb(0, 0, 0)'],
+  'stop-opacity': [false, '1'],
+  'text-anchor': [true, 'start'],
+  'marker-start': [true, 'none'],
+  'marker-mid': [true, 'none'],
+  'marker-end': [true, 'none'],
+  'vector-effect': [false, 'none'],
 };
 const SVG_STYLE_PROP_NAMES = Object.keys(SVG_STYLE_PROPS);
 const SVG_PRESENTATION_ATTRS = [...SVG_STYLE_PROP_NAMES, 'color', 'opacity'];
-const SVG_STYLE_KEYWORDS: Record<string, RegExp> = { 'fill-rule': /^(nonzero|evenodd)$/, 'stroke-linecap': /^(butt|round|square)$/, 'stroke-linejoin': /^(miter|round|bevel)$/ };
+const SVG_STYLE_KEYWORDS: Record<string, RegExp> = {
+  'fill-rule': /^(nonzero|evenodd)$/,
+  'stroke-linecap': /^(butt|round|square)$/,
+  'stroke-linejoin': /^(miter|round|bevel)$/,
+  'clip-rule': /^(nonzero|evenodd)$/,
+  'text-anchor': /^(start|middle|end)$/,
+  // non-rotation・fixed-position (SVG 2 §8.13) は描けないので、読めない値にする
+  'vector-effect': /^(none|non-scaling-stroke|non-scaling-size)$/,
+};
 /** fill の属性が別の意味を持つ要素 (アニメーションの要素。SVG 2 §6.6 の表) */
 const SVG_ANIMATION = /^(animate|animatemotion|animatetransform|animatecolor|set)$/;
 
@@ -778,7 +813,16 @@ function svgStyleValue(prop: string, raw: string, ctx: LenCtx, current?: string)
       const fb = u[2].toLowerCase() === 'none' ? 'none' : color(u[2]);
       return fb === undefined ? undefined : `${u[1]} ${fb}`;
     }
+    case 'stop-color':
+      // <color> (SVG 2 §14.2.4.2)
+      return color(s);
+    case 'marker-start':
+    case 'marker-mid':
+    case 'marker-end':
+      // none | <marker-ref> (= <url>。SVG 2 §13.7.2)
+      return l === 'none' ? l : /^url\((?:"[^"]*"|'[^']*'|[^()"']*)\)$/i.test(s) ? s : undefined;
     case 'fill-opacity':
+    case 'stop-opacity':
     case 'stroke-opacity': {
       const n = CSS_NUMBER.test(l) ? parseFloat(l) : /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(l) ? parseFloat(l) / 100 : NaN;
       return Number.isFinite(n) ? String(+Math.min(1, Math.max(0, n)).toFixed(4)) : undefined;
@@ -1200,6 +1244,58 @@ shorthand(['margin-block', 'padding-block', 'margin-inline', 'padding-inline'], 
   return startEnd(`${base}-${axis}-start`, `${base}-${axis}-end`, v, global);
 });
 shorthand(['border', 'border-top', 'border-right', 'border-bottom', 'border-left', 'column-rule'], borderShorthand);
+/**
+ * clip の rect() の 4 つの値 (top・right・bottom・left) を取り出す。CSS 2.1 §11.1.2: 値はコンマで区切る。コンマ無し (空白区切り) の書き方も
+ * 受け付けるが、混ぜた書き方は受け付けない (「User agents must support separation with commas, but may also support separation
+ * without commas (but not a combination)」)。rect() でない・値が 4 つでないなら undefined
+ */
+function clipRectParts(lv: string): string[] | undefined {
+  const m = /^rect\(([\s\S]*)\)$/.exec(lv.trim());
+  if (!m) return undefined;
+  const inner = m[1].trim();
+  const parts = inner.includes(',') ? splitTop(inner, ',', { keepEmpty: true }).map((t) => t.trim()) : tokens(inner);
+  if (parts.length !== 4 || parts.some((t) => !t || tokens(t).length !== 1)) return undefined;
+  return parts;
+}
+
+// marker (SVG 2 §13.7.3): none | <marker-ref>。marker-start・marker-mid・marker-end に同じ値を入れる
+shorthand(['marker'], (_p, v) => each(['marker-start', 'marker-mid', 'marker-end'], v));
+/** 輪郭線の線種 (CSS UI 4 §3.3 の <outline-line-style>: <line-style> から hidden を除いたもの) */
+const OUTLINE_LINE_STYLE = /^(none|dotted|dashed|solid|double|groove|ridge|inset|outset)$/;
+// outline (CSS UI 4 §3.1): <'outline-width'> || <'outline-style'> || <'outline-color'>。outline-offset は含まない (§3.1 の注記)。
+// auto は線種にも色にもなる: auto だけ、または auto と太さだけ (線種・色の語が無い) のときは、線種と色の両方を auto にする (§3.1)。
+// 同じ種類の語が 2 つあれば、宣言ごと読めない (色でない語は、色として受け取り、色の検査で落ちる)
+shorthand(['outline'], (_p, v, global) => {
+  if (global) return each(['outline-width', 'outline-style', 'outline-color'], v);
+  let w: string | undefined;
+  let st: string | undefined;
+  let col: string | undefined;
+  let autos = 0;
+  const ts = tokens(v);
+  for (const t of ts) {
+    const l = t.toLowerCase();
+    if (l === 'auto') autos++;
+    else if (OUTLINE_LINE_STYLE.test(l)) {
+      if (st !== undefined) return [];
+      st = l;
+    } else if (/^(thin|medium|thick)$/.test(l) || isLenLike(t)) {
+      if (w !== undefined) return [];
+      w = t;
+    } else {
+      if (col !== undefined) return [];
+      col = t;
+    }
+  }
+  if (!ts.length) return [];
+  if (autos === 1 && st === undefined && col === undefined) st = col = 'auto';
+  else
+    for (let k = 0; k < autos; k++) {
+      if (st === undefined) st = 'auto';
+      else if (col === undefined) col = 'auto';
+      else return [];
+    }
+  return [['outline-width', w ?? 'medium'], ['outline-style', st ?? 'none'], ['outline-color', col ?? 'auto']];
+});
 // 論理的な罫線 (Logical 1 §5): 論理的な名前の個別の性質 (border-block-start-width など) のまま持ち、
 // 要素の書字方向が決まってから物理的な辺に写す (logicalToPhysical)
 shorthand(['border-block-start', 'border-block-end', 'border-inline-start', 'border-inline-end'], (prop, v, _g, ah) =>
@@ -2190,6 +2286,19 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           val = CSS_INTEGER.test(raw.trim()) ? String(parseInt(raw, 10)) : 'auto';
           break;
         default:
+          // tab-size の計算値 (CSS Text 3 §4.2): 指定した数か、絶対の長さ (em などは px に直す)
+          if (p === 'tab-size') {
+            const t = raw.trim();
+            const px = CSS_NUMBER.test(t) ? undefined : lengthPx(t, ctx());
+            val = CSS_NUMBER.test(t) ? String(parseFloat(t)) : px !== undefined && px >= 0 ? fmtPx(px) : '8';
+            break;
+          }
+          // clip の計算値 (CSS 2.1 §11.1.2): 4 つの値が auto か絶対の長さの矩形。コンマ区切りにそろえる
+          if (p === 'clip') {
+            const parts = clipRectParts(lv);
+            val = parts ? `rect(${parts.map((t) => (t === 'auto' ? 'auto' : fmtPx(lengthPx(t, ctx()) ?? 0))).join(', ')})` : 'auto';
+            break;
+          }
           // border-spacing の計算値は 2 つの絶対長さ (CSS 2.1 §17.6.1)。pt・em なども px に直す (htmlImport は px として読む)
           if (p === 'border-spacing') {
             const xs = raw.trim().split(/\s+/).map((v) => lengthPx(v, ctx()));
@@ -2366,6 +2475,8 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'border-bottom-style': BORDER_STYLE,
     'border-left-style': BORDER_STYLE,
     'column-rule-style': BORDER_STYLE,
+    // auto | <outline-line-style> (CSS UI 4 §3.3: hidden は無い)
+    'outline-style': 'auto none dotted dashed solid double groove ridge inset outset',
     direction: 'ltr rtl',
     hyphens: 'none manual auto',
     'hyphenate-limit-last': 'none always column page spread',
@@ -2438,7 +2549,7 @@ const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 /** 1 語だけを取るキーワードの性質 */
 const SINGLE_KEYWORD = new Set([
   'float', 'clear', 'position', 'visibility', 'box-sizing', 'box-decoration-break', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens', 'hyphenate-limit-last',
-  'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'text-spacing-trim', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style',
+  'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'text-spacing-trim', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style', 'outline-style',
   'flex-direction', 'flex-wrap', 'font-kerning', 'font-variant-caps', 'font-variant-position', 'line-break', 'text-orientation', 'unicode-bidi',
 ]);
 
@@ -2507,6 +2618,29 @@ function validByGrammar(prop: string, lv: string, ws: string[], ctx: LenCtx): bo
       }
       return ws.length > 0 && used.fl <= 1 && used.al <= 1 && used.sh <= 1;
     }
+    case 'tab-size': {
+      // <number [0,∞]> | <length [0,∞]> (CSS Text 3 §4.2: 負の値は不正。百分率は無い)。
+      // 数になる式 (calc(2 * 2) など) は読まない (長さになる式は読む)
+      if (ws.length !== 1) return false;
+      if (CSS_NUMBER.test(lv)) return parseFloat(lv) >= 0;
+      const px = /%/.test(lv) ? undefined : lengthPx(lv, ctx);
+      return px !== undefined && px >= 0;
+    }
+    case 'clip': {
+      // rect(<top>, <right>, <bottom>, <left>) | auto。値は <length> | auto (負の長さも可。百分率は無い)。CSS 2.1 §11.1.2
+      if (lv === 'auto') return true;
+      const parts = clipRectParts(lv);
+      return !!parts && parts.every((t) => t === 'auto' || (!/%/.test(t) && lenPct(t, false)));
+    }
+    case 'outline-width':
+      // <line-width> = <length [0,∞]> | thin | medium | thick (CSS UI 4 §3.2・Backgrounds 3 §3.3: 負の値・百分率は不正)
+      return ws.length === 1 && (/^(thin|medium|thick)$/.test(lv) || (!/%/.test(lv) && lenPct(lv, true)));
+    case 'outline-offset':
+      // <length> (CSS UI 4 §3.5: 負の値は、輪郭線を箱の内側へ縮める)
+      return ws.length === 1 && !/%/.test(lv) && lenPct(lv, false);
+    case 'outline-color':
+      // auto | <color> (CSS UI 4 §3.4)
+      return lv === 'auto' || parseColor(lv) !== undefined;
     case 'border-top-left-radius':
     case 'border-top-right-radius':
     case 'border-bottom-right-radius':

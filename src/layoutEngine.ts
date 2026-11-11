@@ -6181,6 +6181,7 @@ export function toArea(n: LNode, parentWm: WritingMode, PW: number): Area {
     ...(n.radius ? { borderRadius: n.radius } : {}),
     ...(n.diag ? { diagonals: n.diag } : {}),
     ...(n.shadow ? { boxShadow: n.shadow } : {}),
+    ...(n.outline ? { outline: n.outline } : {}),
     // 描くときだけの効果の印 (組み終えたら applyPaintEffects が transform・opacity に直して消す)
     ...(n.fx ? { [PAINT_EFFECT_MARK]: n.fx } : {}),
     ...(n.fxRef !== undefined && paintEffectState.on ? { [PAINT_REF_MARK]: n.fxRef } : {}),

@@ -36,6 +36,8 @@ This document collects the rules for the `AreaTree` returned by `LayoutEngine.la
 - When `opacity` (CSS `opacity`; 0 or more and less than 1) is present, this Area and its descendants are rendered as one image and then blended with that opacity (overlapping parts inside do not become darker). When `transform` is also present, the transformed image is blended.
 - An Area with `transform` or `opacity` is painted as a whole in the inline-content phase, without being split into background and content, even where there are floats (`float`).
 - When an inline element (such as a `span` with a border) has `opacity` or `transform`, an `inline` Area (without `sourceRef`) that groups its frame and content is created and carries them.
+- When `outline` (CSS `outline`; `{ width, color, style?, offset? }`, in pt) is present, a line that is the same on all four sides is drawn outside the border-box of this Area, set off by `offset` (a negative value goes inward). It takes up no space (`x`, `y`, `width`, `height` do not change). It is painted after the content and the border of this Area, and its corners are rounded on an Area with `borderRadius`. The outline of an inline element is placed, for each line, as a paint-only `block` Area (without children) at the end of the children of the line.
+- When `clipRect` (the clipping rectangle of CSS `clip: rect(…)`; `{ x, y, width, height }`, with `x`, `y` measured from the top left of the border-box of this Area, in pt) is present, the shadow, background, border, outline and descendants of this Area are painted clipped to that rectangle (`clip` clips only the children, to the padding box). If the width or height is 0 or less, nothing of this Area is painted.
 
 ## Nodes and children
 

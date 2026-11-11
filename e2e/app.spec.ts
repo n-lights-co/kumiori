@@ -389,7 +389,7 @@ test('画面: 読み込みの警告を左の欄に出す (落としたリンク�
   await expect(page.locator('#warnings li')).toContainText('javascript:');
   // 多いときは畳む (見出しに件数。開けば読める)
   const deep = '<div>'.repeat(300) + '<p>深い</p>' + '</div>'.repeat(300);
-  await drop(`<!doctype html><style>p { outline: 1px solid red; colr: red }</style><p><a href="javascript:alert(1)">危ないリンク</a></p>${deep}`, 'many.html');
+  await drop(`<!doctype html><style>p { image-rendering: pixelated; colr: red }</style><p><a href="javascript:alert(1)">危ないリンク</a></p>${deep}`, 'many.html');
   await expect(page.locator('#status')).toContainText('many.html');
   await expect(page.locator('#status')).toContainText('警告 4 件');
   await expect(page.locator('#warnings summary')).toHaveText('⚠ 警告 4 件');
@@ -400,7 +400,7 @@ test('画面: 読み込みの警告を左の欄に出す (落としたリンク�
   await expect(page.locator('#warnings li').first()).toBeVisible();
   const text = (await page.locator('#warnings').textContent()) ?? '';
   expect(text).toContain('javascript:');
-  expect(text).toContain('未対応の CSS を無視しました: outline');
+  expect(text).toContain('未対応の CSS を無視しました: image-rendering');
   expect(text).toContain('知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr');
   expect(text).toContain('入れ子が深すぎます');
   // 警告の無い文書を開けば、欄は空に戻る
@@ -857,7 +857,7 @@ test('見本: 印刷プレビュー (examples/preview) で、編集すると組�
   await expect.poll(pageWidth, { timeout: 30_000 }).toBeCloseTo((a5 * 210) / 148, 0);
   // 対応していないプロパティを書くと、組んだページの上に警告が出る
   await expect(page.locator('#warnings')).toBeEmpty();
-  await page.locator('#css').fill(`${css}\np { outline: 1px solid red }`);
-  await expect(page.locator('#warnings')).toContainText('outline', { timeout: 30_000 });
+  await page.locator('#css').fill(`${css}\np { image-rendering: pixelated }`);
+  await expect(page.locator('#warnings')).toContainText('image-rendering', { timeout: 30_000 });
   expect(errors).toEqual([]);
 });

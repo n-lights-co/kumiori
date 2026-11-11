@@ -56,6 +56,9 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 | `hyphens: auto` + `lang` | 分綴 (英語・ラテン語・ロシア語・ウクライナ語・現代ギリシャ語。文書の中の lang・xml:lang の言語の分綴の表を読み込む) |
 | `hyphenate-character`・`hyphenate-limit-chars`・`hyphenate-limit-lines`・`hyphenate-limit-last: always`・`hyphenate-limit-zone` | 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5。行末に出す字・字数・続く行の数・段落の最後の行の手前・行末の空きの幅)。`hyphenate-limit-last` の `column`・`page`・`spread` は未対応 |
 | `vertical-align: super / sub`・`text-decoration` | `baselineShift`・`textDecoration` |
+| `outline`・`outline-offset` (CSS UI 4 §3) | `PaintEffect.outline` (ブロック・表・画像など。組んだ後で Area の `outline` に付ける)・`LInline.outline` (行内の要素。行ごとの断片に描く)。組版には関わらない |
+| `clip: rect(…)` (CSS 2.1 §11.1.2。絶対配置の箱) | `PaintEffect.clip` (組んだ後で Area の `clipRect` に付ける。組版には関わらない) |
+| `tab-size` (CSS Text 3 §4.2) と、残したタブ (U+0009。`white-space: pre`・`pre-wrap`・`break-spaces`) | `TextStyle.tabSize` (数か `{ length }`)。タブは空白の字の単位にして、行を分けるとき・置くときに、行の始まりからの位置で送りを決める (`inlineLayout.ts` の `tabAdvance`) |
 | `<img>`・`<svg>` | `LImage`・SVG (文書の中の `<svg>` は、要素名の大文字小文字を HTML 5.2 §8.2.5.5 の表で戻し、単独の SVG 文書の画像にする。`src/htmlSvg.ts`) |
 | `<math>` | 数式用の書体があれば、XSL-FO と同じ MathML の組版 (`mathLayout`) で図形にする。`display="block"` は MathML Core の既定のスタイル (`display: block math`) と同じに、内容の箱の中央に置く |
 | `white-space`・`line-break`・`word-break`・`hanging-punctuation` | 空白の扱い・禁則・ぶら下げ |

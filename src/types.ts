@@ -429,6 +429,11 @@ export interface TextStyle {
   letterSpacing?: number;
   /** 語間 (CSS の word-spacing。pt)。語を分ける字 (空白・ノーブレークスペース) の幅に足す */
   wordSpacing?: number;
+  /**
+   * タブ位置の間隔 (CSS の tab-size。CSS Text 3 §4.2)。数は、段落のブロックの空白の字 (U+0020) の送り (字間・語間を足したもの) の何倍か、
+   * { length } は長さ (pt)。省略は 8。残したタブ (空白を詰めない書式の中の U+0009) は、ブロックの内容の端から数えた次のタブ位置まで進む。0 なら進まない
+   */
+  tabSize?: number | { length: number };
   /** 字間が値で指定されている (fo の letter-spacing が normal 以外)。両端揃えでも字間を伸縮せず、行は左 (start) に詰める */
   fixedLetterSpacing?: boolean;
   /** fixedLetterSpacing のとき、両端揃えで字間を広げてよい上限 (pt, 1 字間あたり)。letter-spacing.maximum − .optimum。無ければ広げない */
@@ -473,6 +478,21 @@ export type TransformFunction =
   | { fn: 'rotate'; deg: number }
   | { fn: 'skew'; x: number; y: number };
 
+/**
+ * 輪郭線 (CSS の outline。CSS UI 4 §3)。罫線の箱の外側に、offset だけ離して (負の値は内側へ) 描く線。場所を取らず、ほかの箱を動かさない。
+ * 4 辺とも同じ太さ・線種・色 (§3.1 の注記: 辺ごとの指定は無い)
+ */
+export interface Outline {
+  /** 太さ (pt) */
+  width: number;
+  /** 色。#rrggbbaa (半透明) は、その濃さで重ねて描く */
+  color: string;
+  /** 線種。省略は solid (hidden は無い。§3.3) */
+  style?: Exclude<BorderLineStyle, 'hidden' | 'dot-dash' | 'dot-dot-dash' | 'wave'>;
+  /** 罫線の箱の端から輪郭線の内側までの距離 (pt。outline-offset。負の値は箱の内側へ。省略は 0) */
+  offset?: number;
+}
+
 /** 描くときだけに効く効果 (BaseNode.paintEffect) */
 export interface PaintEffect {
   /**
@@ -483,6 +503,17 @@ export interface PaintEffect {
   transform?: { functions: TransformFunction[]; origin?: [TransformLength, TransformLength]; box?: 'content-box' };
   /** 不透明度 (CSS の opacity。0〜1)。箱とその中身をまとめて 1 枚の絵にしてから、この濃さで重ねる (CSS Color 4 §3.3) */
   opacity?: number;
+  /**
+   * 輪郭線 (CSS の outline。CSS UI 4 §3)。この節の箱 (ページ・段で分かれた箱は断片ごと) の罫線の箱の外側に描く。
+   * 行内の箱 (LInline) の輪郭線は、LInline.outline に書く (行ごとの断片に描く)
+   */
+  outline?: Outline;
+  /**
+   * 切り抜きの矩形 (CSS の clip: rect(top, right, bottom, left)。CSS 2.1 §11.1.2・CSS Masking 1 付録 A)。絶対配置の箱だけ。
+   * 4 つの値は、箱の罫線の箱の左上からの距離 (pt。right・bottom も、左・上の端から測る)。無い辺は auto (罫線の箱のその辺)。
+   * この節の箱の中身 (背景・罫線・輪郭線・子孫) を、この矩形で切り抜く
+   */
+  clip?: { top?: number; right?: number; bottom?: number; left?: number };
 }
 
 /**
@@ -979,6 +1010,11 @@ export interface LInline extends BaseNode {
   boxDecorationBreak?: 'clone';
   /** 角丸 (CSS の border-radius)。枠の罫線と背景を丸め、中の画像も内側の角丸で切り抜く */
   borderRadius?: BorderRadius;
+  /**
+   * 輪郭線 (CSS の outline。CSS UI 4 §3)。行ごとの断片のそれぞれを、閉じた線で囲む (行の高さ・字の位置は変えない)。
+   * 罫線・余白のある箱は罫線の箱の外側、無い箱は内容の領域の外側に描く
+   */
+  outline?: Outline;
   /**
    * 外側の空き (pt)。行の進む方向の始端 (start) と終端 (end) に、枠の外の空白を置く (CSS の inline 要素の左右の margin)。
    * bound: 空きを、箱の最初の字・最後の字と分けない (CSS の margin。行を分けるのは箱の margin の端の外。CSS 2.1 §9.4.2・CSS Text 3 §5.5)。
@@ -1875,6 +1911,17 @@ export interface AreaBase {
   opacity?: number;
   /** 内容を padding の外端で切り抜く (overflow="hidden" 等) */
   clip?: boolean;
+  /**
+   * 輪郭線 (CSS の outline。CSS UI 4 §3)。罫線の箱 (width × height) の外側に、offset だけ離して描く。この Area の中身と罫線より後 (上) に描く。
+   * 角丸 (borderRadius) の箱では、輪郭線の角も丸くなる
+   */
+  outline?: Outline;
+  /**
+   * 切り抜きの矩形 (CSS の clip。CSS 2.1 §11.1.2)。x・y は、この Area の border-box の左上からの位置 (pt)。この Area の影・背景・罫線・
+   * 輪郭線と子孫を、この矩形で切り抜いて描く (clip は padding の箱で子だけを切り抜く。こちらは箱そのものも切り抜く)。
+   * 幅か高さが 0 以下なら、何も描かない
+   */
+  clipRect?: Rect;
   /** CSS の回り込み (float) の箱。親の流れの中のブロックの背景より手前、行内の中身より奥に描く (CSS 2.1 §9.5) */
   float?: boolean;
   /** デバッグ・トレース用 */
