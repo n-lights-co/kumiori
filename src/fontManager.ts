@@ -11,6 +11,7 @@ import { toSfnt } from './webFont';
 import { msg } from './messages';
 import { patchFontkitShaping } from './fontkitShaping';
 import { patchFontkitCffFlex } from './fontkitCffFlex';
+import { patchFontkitEmptyGlyph } from './fontkitEmptyGlyph';
 import { colorFontOf, orderByPresentation, prepareColorFont, presentationOf } from './colorGlyph';
 import { instantiateFont, readVariationInfo, staticCff2ToCff, variationNamePrefix, type VariationInfo } from './fontInstancer';
 import { splitVariation, variationNumber as num, variationSuffix, type VariationRequest } from './fontVariation';
@@ -328,6 +329,8 @@ export class FontManager {
     const fk = fontkit.create(new Uint8Array(buffer));
     patchFontkitVariationSelector(fk);
     patchFontkitShaping(fk);
+    // 輪郭の無い TrueType の字形 (空白など) の外枠を、glyf を読まずに空にする (最後の字形が空白の書体で、その字の送りが読めず例外になる)
+    patchFontkitEmptyGlyph(fk);
     // CFF の字形の読みを正す: hflex・hflex1 と、CID 方式の書体の FDSelect の範囲 (輪郭で描くとき・字形の外接枠を使うとき。CFF・CFF2 の表の無い書体には何もしない)
     patchFontkitCffFlex(fk);
     // 輪郭の表を持たない、ビットマップだけの色つきの書体 (CBDT の絵文字) を組めるようにする (ほかの書体には何もしない)
@@ -545,6 +548,7 @@ export class FontManager {
         fk = fontkit.create(new Uint8Array(buffer));
         patchFontkitVariationSelector(fk);
         patchFontkitShaping(fk);
+        patchFontkitEmptyGlyph(fk);
         patchFontkitCffFlex(fk);
         prepareColorFont(fk);
         metrics = fontMetricsOf(fk);
