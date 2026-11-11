@@ -226,14 +226,21 @@ code {
   font-size: 9.5pt;
   font-weight: bold;
   line-height: 1.9;
-  padding-left: 11mm;
-  text-indent: -11mm;
+  padding-left: 7mm;
+  text-indent: -7mm;
   break-after: avoid;
 }
+/* 章の番号の幅は、2 桁の番号 (9.5pt の太字で約 3.7mm) と、題との間の 1 字分ほどのアキ。広げすぎると、番号と題が離れて見える */
 .toc li.ch .num {
   display: inline-block;
-  width: 11mm;
+  width: 7mm;
   text-indent: 0;
+}
+/* 付録の番号 (「付録 A」・「Appendix A」) は、章の番号の幅に収まらないので、幅を決めずに、題との間を 1 字分あける (途中で折り返さない) */
+.toc li.ch a[href^="#app-"] .num {
+  width: auto;
+  margin-right: 1em;
+  white-space: nowrap;
 }
 .toc li.sec {
   font-size: 7.8pt;
