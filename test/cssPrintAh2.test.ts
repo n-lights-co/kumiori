@@ -353,3 +353,46 @@ describe('-ah-text-justify-trim・axf:text-justify-trim (追込みで詰めて�
     expect(firstLine((await typesetFo(fo(' axf:text-justify-trim="none"'), { loadFont: loadCachedFont, compat: 'antenna' })).areaTree)).toBe('（あいうえお。かき・');
   });
 });
+
+describe('::footnote-call の text-autospace (-ah-text-autospace)', () => {
+  it('no-autospace (-ah-text-autospace: none) なら、参照番号と前の和字の間を空けない (見本の PDF: CSS-Print 第 4 版)', async () => {
+    const xOf1 = async (rule: string) => {
+      const tree = (await typesetHtml(doc('<p>あいう<span class="fn">注</span></p>', `.fn { float: footnote } ::footnote-call { font-size: 10pt; ${rule} }`), { loadFont: loadCachedFont, style: 'ah' })).areaTree;
+      const xs: Record<string, number> = {};
+      const rec = (a: Area, x: number) => {
+        const ax = x + (a.x ?? 0);
+        const g = a as unknown as { text?: string };
+        if (a.type === 'glyph' && g.text && xs[g.text] === undefined) xs[g.text] = ax;
+        for (const c of childrenOf(a)) rec(c as Area, ax);
+      };
+      rec(tree.sheets[0].page as unknown as Area, 0);
+      return xs['1'] - xs['う'];
+    };
+    // 既定は和欧間の四分アキ (参照番号の字の大きさ 10pt の 1/4 = 2.5pt) を空ける
+    expect(await xOf1('')).toBeCloseTo(22.5, 1);
+    expect(await xOf1('-ah-text-autospace: none')).toBeCloseTo(20, 1);
+    expect(await xOf1('text-autospace: no-autospace')).toBeCloseTo(20, 1);
+  });
+});
+
+describe('リストの最後の項目の最後の子の下の余白 (CSS 2.1 §8.3.1)', () => {
+  it('リストの後ろのブロックの上の余白と重なる (足し合わせない)', async () => {
+    const gap = async (body: string) => {
+      const tree = (await typesetHtml(doc(body, 'ul { margin: 0 } h3 { font-size: 20pt; margin: 10pt 0 0 }'), { loadFont: loadCachedFont })).areaTree;
+      const ys: Record<string, number> = {};
+      const rec = (a: Area, y: number) => {
+        const ay = y + (a.y ?? 0);
+        const g = a as unknown as { text?: string; baselineY?: number };
+        if (a.type === 'glyph' && g.text && ys[g.text] === undefined) ys[g.text] = ay + (g.baselineY ?? 0);
+        for (const c of childrenOf(a)) rec(c as Area, ay);
+      };
+      rec(tree.sheets[0].page as unknown as Area, 0);
+      return ys['見'] - ys['あ'];
+    };
+    // div の中の最後の子の余白 20pt と、見出しの余白 10pt は重なって 20pt
+    const div = await gap('<div><div style="margin-bottom: 20pt">あ</div></div><h3>見</h3>');
+    expect(await gap('<ul><li><div style="margin-bottom: 20pt">あ</div></li></ul><h3>見</h3>')).toBeCloseTo(div, 1);
+    // li の余白とも重なる (大きい方の 30pt)
+    expect(await gap('<ul><li style="margin-bottom: 30pt"><div style="margin-bottom: 20pt">あ</div></li></ul><h3>見</h3>')).toBeCloseTo(div + 10, 1);
+  });
+});

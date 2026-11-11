@@ -121,9 +121,11 @@ describe('font-family の並びを、字ごとに前から順に引く (CSS Font
     expect(pick(['serif', 'Sym'], '●', { lang: 'ja' })).toEqual([SERIF]);
   });
 
-  it('太字: 総称の位置には、太字の総称の組 (欧文は欧文の書体の太字、和文は Noto Sans JP の太字)', async () => {
+  it('太字: 総称の位置には、同じ総称の組の太字 (serif は、欧文が欧文の書体の太字、和文が Noto Serif JP の太字。ゴシックに替えない)', async () => {
     const { pick, fonts, m } = await setup();
-    expect(pick(['serif', 'Sym'], 'a字✈', { bold: true })).toEqual(['Tinos', SANS, 'Sym']);
+    expect(pick(['serif', 'Sym'], 'a字✈', { bold: true })).toEqual(['Tinos', SERIF, 'Sym']);
+    expect(fonts.getForChar(m.mapHtmlFont(['serif', 'Sym'], true), 700, '字').weight).toBe(700);
+    expect(pick(['sans-serif', 'Sym'], 'a字✈', { bold: true })).toEqual(['Arimo', SANS, 'Sym']);
     expect(fonts.getForChar(m.mapHtmlFont(['serif', 'Sym'], true), 700, 'a').weight).toBe(700);
   });
 

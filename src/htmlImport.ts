@@ -5526,7 +5526,12 @@ class HtmlImporter {
       const liId = li.getAttribute('id');
       if (liId) body.id = liId;
       const box = this.boxStyle(li);
-      if (box.margin) body.padding = { top: (box.margin as Record<string, number>).top ?? 0, bottom: (box.margin as Record<string, number>).bottom ?? 0 };
+      const liMb = (box.margin as Record<string, number> | undefined)?.bottom ?? 0;
+      // 最後の項目: 最後の子の下の余白と li の下の余白は、リストの外へ抜けて、リストの後ろの余白・次のブロックの上の余白と重なる
+      // (CSS 2.1 §8.3.1。li とリストに下の枠・padding が無いとき)。セルの高さに含めず、表の後ろの余白にする (trailingSpaceOut)
+      const lastOut = k === lis.length - 1 && !(cssLen(lc('padding-bottom')) ?? 0) && !(cssLen(lc('border-bottom-width')) ?? 0) && !(cssLen(c('padding-bottom')) ?? 0) && !(cssLen(c('border-bottom-width')) ?? 0);
+      if (box.margin) body.padding = { top: (box.margin as Record<string, number>).top ?? 0, bottom: lastOut ? 0 : liMb };
+      if (lastOut) body.trailingSpaceOut = liMb;
       return {
         type: 'table-row',
         // 描くときだけの効果 (li の transform・opacity): 項目の行 (記号と本文) に掛ける
@@ -5535,7 +5540,7 @@ class HtmlImporter {
         ...(marker ? { listMarkerRow: true } : {}),
         // 記号・番号は、本文の最初の行の基線にそろえる (CSS Lists: 外側の記号は最初の行の箱に置く)
         // 本文の最後の子の下の余白は、li の外へ抜けて次の項目との間に残る (CSS 2.1 §8.3.1)。セルの高さに含める
-        cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', keepTrailingSpace: true }],
+        cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', ...(body.trailingSpaceOut === undefined ? { keepTrailingSpace: true } : {}) }],
       };
     });
     const table = {
@@ -6049,11 +6054,15 @@ class HtmlImporter {
   private rootBackground?: Record<string, string>;
 
   /** 参照番号 (::footnote-call) の字の大きさ (置く所の字に対する比) と太さ。脚注の要素 e の値に、::footnote-call の規則を重ねる */
-  private footnoteCallStyle(e: Element, parent: Element): Pick<LFootnote, 'referenceScale' | 'referenceWeight' | 'referenceLineHeight'> {
+  private footnoteCallStyle(e: Element, parent: Element): Pick<LFootnote, 'referenceScale' | 'referenceWeight' | 'referenceLineHeight' | 'referenceShift' | 'referenceAutospace'> {
     const call = this.footnoteRules.filter((r) => /call$/.test(r.selector)).reduce<Record<string, string>>((a, r) => ({ ...a, ...r.decls }), {});
     const fnFs = cssLen(this.cs(e)('font-size'));
     const parentFs = cssLen(this.cs(parent)('font-size'));
-    const out: Pick<LFootnote, 'referenceScale' | 'referenceWeight' | 'referenceLineHeight' | 'referenceShift'> = {};
+    const out: Pick<LFootnote, 'referenceScale' | 'referenceWeight' | 'referenceLineHeight' | 'referenceShift' | 'referenceAutospace'> = {};
+    // 和欧間のアキ (CSS Text 4 §8.4 の text-autospace。アンテナハウスの -ah-text-autospace も、規則と同じく読み替える)。
+    // no-autospace なら、参照番号の前後に空けない (見本の PDF: CSS-Print 第 4 版の ::footnote-call { -ah-text-autospace: none } は「要素2)」を詰めて組む)
+    const asv = call['text-autospace'] ?? (call['-ah-text-autospace'] !== undefined ? AH_ALIASES['-ah-text-autospace'].value(call['-ah-text-autospace']) : undefined);
+    if (asv !== undefined) out.referenceAutospace = !/^no-autospace$/i.test(asv.trim());
     // アンテナハウス互換: 上付きの上げ幅は、置く所の字の大きさの 1/3 (superShiftAh)
     const cva = (call['vertical-align'] ?? 'super').trim().toLowerCase();
     if (this.opts.superShiftAh && parentFs && cva === 'super') out.referenceShift = parentFs / 3;

@@ -95,7 +95,7 @@ cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
 - HTML と同じディレクトリ (と下のディレクトリ) の CSS・画像・書体を使う (画面で一緒に選ぶのと同じ)。画像は、文書と CSS に名前が出てくるものだけを読む。`--css a.css,b.css` で使う CSS を選ぶ (カンマ区切りで複数。`@import` 先も使う。HTML から参照されていない CSS は利用者のスタイルシートとして足す)
 - `--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint`: 既定のスタイル (画面の「設定」の「既定のスタイル」と同じ。既定は kumiori)
 - `--page-size <用紙>`: HTML の既定の用紙 (`@page` で `size` を指定していない文書の用紙。既定は A4)。CSS の `size` と同じ書き方で、用紙の名前 (`A5`・`JIS-B5`・`letter` など)、向きを付けたもの (`"A5 landscape"`)、幅と高さ (`148mm,210mm`。区切りは空白かカンマ) を書く。文書の `@page { size: … }` があれば、そちらが勝つ。`@media` の `width`・`height` も、この用紙で評価する。XSL-FO では使わない
-- `--font-dir <dir>`: 既定の書体 (`NotoSerifJP-Regular.ttf`・`NotoSansJP-Regular.ttf`・`NotoSansJP-Bold.ttf`・`Tinos-*.ttf`・`Arimo-*.ttf`、等幅の指定があれば `Cousine-*.ttf`、MathML があれば `STIXTwoMath-Regular.ttf`、どの書体にも無い記号があれば `NotoSansSymbols2-Regular.ttf`) を読むディレクトリ。無ければ書体のキャッシュ、次に Google Fonts から読む。太字のファイル (`-Bold`) に、同じ書体の `-Regular` と同じ中身のファイルを置くと、太字の書体は無いものとして、太字の字は Regular を太らせて描く (太字を持たない書体に入れ替えるとき)
+- `--font-dir <dir>`: 既定の書体 (`NotoSerifJP-Regular.ttf`・`NotoSerifJP-Bold.ttf`・`NotoSansJP-Regular.ttf`・`NotoSansJP-Bold.ttf`・`Tinos-*.ttf`・`Arimo-*.ttf`、等幅の指定があれば `Cousine-*.ttf`、MathML があれば `STIXTwoMath-Regular.ttf`、どの書体にも無い記号があれば `NotoSansSymbols2-Regular.ttf`) を読むディレクトリ。無ければ書体のキャッシュ、次に Google Fonts から読む。太字のファイル (`-Bold`) に、同じ書体の `-Regular` と同じ中身のファイルを置くと、太字の書体は無いものとして、太字の字は Regular を太らせて描く (太字を持たない書体に入れ替えるとき)。既定の書体を手元の書体に入れ替えるときは、太字のファイル (`NotoSerifJP-Bold.ttf`・`NotoSansJP-Bold.ttf` など) も置く: 置かなかったファイルは、キャッシュかネットワークの既定の書体になり、入れ替えた書体と混ざる
 - `--font-cache <dir>`: Google Fonts から取った既定の書体を保存して使い回すディレクトリ。既定は環境変数 `KUMIORI_FONT_CACHE`、無ければ OS のキャッシュ (Linux は `$XDG_CACHE_HOME` か `~/.cache` の `kumiori/fonts`、macOS は `~/Library/Caches/kumiori/fonts`、Windows は `%LOCALAPPDATA%\kumiori\fonts`)。初回だけネットワークから取り、`書体 … を取得して … に保存しました` と知らせる。2 回目からはネットワークに行かない。途中で切れた取得など、書体のファイルでないものは保存せず、壊れたキャッシュは捨てて取り直す。保存できない場所でも変換は続ける
 - `--no-font-cache`: 書体のキャッシュを読まず、保存もしない (毎回 Google Fonts から取る)
 - `--lang ja|en`: 使い方・報告・警告・誤りの文の言語。無ければ環境変数 `KUMIORI_LANG`、次に OS のロケール (`LC_ALL`・`LC_MESSAGES`・`LANG` が `en…` なら英語) で決める。既定は日本語
@@ -235,11 +235,13 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 
 | 書体 | 用途 | ライセンス |
 | --- | --- | --- |
-| Noto Serif JP・Noto Sans JP | 和文 (明朝・ゴシック) | SIL Open Font License 1.1 |
-| Tinos・Arimo | 欧文 (セリフ・サンセリフ) | Apache License 2.0 |
+| Noto Serif JP・Noto Sans JP (それぞれ Regular と Bold) | 和文 (明朝・ゴシック) | SIL Open Font License 1.1 |
+| Tinos・Arimo (それぞれ Regular と Bold) | 欧文 (セリフ・サンセリフ) | Apache License 2.0 |
 | Cousine | 等幅の指定があるとき | Apache License 2.0 |
 | STIX Two Math | 数式 (MathML) があるとき。MathML を、この書体の MATH 表の値で組む | SIL Open Font License 1.1 |
 | Noto Sans Symbols 2 | 読み込んだどの書体にも無い記号 (✈ など) が文書にあるとき | SIL Open Font License 1.1 |
+
+どの文書でも読むのは、上の 2 行の 8 つのファイル (和文 4 つ・欧文 4 つ。合わせて約 29MB。うち Noto Serif JP が 8.0MB ずつ、Noto Sans JP が 5.7MB ずつ) で、ほかは文書に必要なときだけ読みます。太字の指定の字は、同じ書体の Bold で組みます (明朝の文の太字は Noto Serif JP の Bold)。
 
 Node のコマンドは、取った書体を OS のキャッシュ (`~/.cache/kumiori/fonts` など。`--font-cache` で変えられます) に保存し、2 回目からはネットワークに行きません。オフラインで使うときは、画面 (ブラウザ) では同じ名前の TTF を `public/fonts/` に置けば後備として使われます（git 管理外）。Node のコマンドでは、一度オンラインで動かしてキャッシュに入れるか、`--font-dir` で読むディレクトリを指定します。ライブラリ (`typeset`) の既定の取得は `https:` の URL しか試さないので、手元の書体は `loadFont` で渡してください。
 `public/fonts/` に置いた書体は、Web アプリのビルドの出力 (`dist/fonts/`) にもコピーされます。配布物に含めない場合は、ビルドの前に取り除いてください。npm で配る出力 (`dist-cli/`・`dist-lib/`・`dist-browser/`) には `public/` の中身をコピーしません。Node のコマンドは、`--font-dir` で渡したディレクトリだけを見ます。

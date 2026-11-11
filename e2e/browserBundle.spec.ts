@@ -21,7 +21,7 @@ async function routeFonts(page: Page) {
   if (!dir) return;
   await page.route('**/fonts.gstatic.com/**', (route) => {
     const u = route.request().url();
-    const f = u.includes('/tinos/') ? (u.includes('buE1') ? 'tinos700.ttf' : 'tinos400.ttf') : u.includes('/arimo/') ? (u.includes('CstsBw') ? 'arimo700.ttf' : 'arimo400.ttf') : u.includes('notoserifjp') ? 'notoserif.ttf' : u.includes('VFPYk75s') ? 'notosans700.ttf' : 'notosans.ttf';
+    const f = u.includes('/tinos/') ? (u.includes('buE1') ? 'tinos700.ttf' : 'tinos400.ttf') : u.includes('/arimo/') ? (u.includes('CstsBw') ? 'arimo700.ttf' : 'arimo400.ttf') : u.includes('notoserifjp') ? (u.includes('zWPebA') && fs.existsSync(path.join(dir, 'notoserif700.ttf')) ? 'notoserif700.ttf' : 'notoserif.ttf') : u.includes('VFPYk75s') ? 'notosans700.ttf' : 'notosans.ttf';
     return route.fulfill({ body: fs.readFileSync(path.join(dir, f)), contentType: 'font/ttf', headers: { 'access-control-allow-origin': '*' } });
   });
 }
@@ -57,6 +57,7 @@ test('dist-browser/kumiori.js を import して HTML を組み、PDF を作れ�
   expect(r.warnings.filter((w) => /未対応|知らない|読めません/.test(w))).toEqual([]);
   expect(r.pdfHead).toBe('%PDF-');
   expect(r.pdfLength).toBeGreaterThan(1000);
-  expect(r.defaults).toBe(7);
+  // 既定の書体の数 (Noto Serif JP の Regular・Bold、Noto Sans JP の Regular・Bold、Tinos・Arimo の Regular・Bold)
+  expect(r.defaults).toBe(8);
   expect(errors).toEqual([]);
 });

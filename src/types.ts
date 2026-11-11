@@ -1426,6 +1426,8 @@ export interface LFootnote extends BaseNode {
   referenceLineHeight?: number;
   /** 参照記号の上げ下げ。none: 本文と同じ基線。省略時は上付き */
   referenceShift?: 'super' | 'sub' | 'none' | number;
+  /** 本文中の参照記号の前後の和欧間のアキ (text-autospace)。false: 空けない。省略時は、置く所の書式 */
+  referenceAutospace?: boolean;
   /** 本文中の参照記号の書体・太さ・斜体・色・飾り線 (XSL-FO の参照側の fo:inline の指定)。省略は置く所の書式 */
   referenceStyle?: Pick<BaseNode, 'fontFamily' | 'fontWeight' | 'fontStyle' | 'color' | 'textDecoration'>;
   children: Array<LBlockLevel | LInlineLevel>;
@@ -1722,6 +1724,11 @@ export interface LTableCell extends BaseNode, BoxStyle {
    * 余白は li の外へ抜けて、次の項目との間に残る)
    */
   keepTrailingSpace?: boolean;
+  /**
+   * 末尾の内容の後ろの余白 (margin-bottom) を、セルの高さに含めず、表の後ろの余白として表の外へ出す (値は、それと重ねる余白)。
+   * HTML のリストの最後の項目の本文: li の最後の子の余白と li の余白は、リストの後ろの余白・次のブロックの余白と重なる (CSS 2.1 §8.3.1)
+   */
+  trailingSpaceOut?: number;
   /**
    * セルの先頭の内容の前の余白 (margin-top) と末尾の内容の後ろの余白 (margin-bottom) を捨てず、セルの高さに含める
    * (CSS の表のセルと flex の項目: セルは新しい整形文脈で、中の margin はセルの外と重ならない。XSL では参照領域の先頭・末尾の space を捨てる)

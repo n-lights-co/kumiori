@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 /**
  * ブラウザでの結合テスト (e2e/)。画面を開いて、標準サンプルと XSL-FO の組版・PDF 出力が通ることを確かめる。
- * フォントは Google Fonts から取得する (KUMIORI_E2E_FONT_DIR を指定すると、そのディレクトリのフォントを使う。
+ * フォントは Google Fonts から取得する (KUMIORI_E2E_FONT_DIR を指定すると、そのディレクトリのフォントを使う。ファイルの名前は e2e/app.spec.ts の routeFonts の説明にある。
  * KUMIORI_E2E_FONT_CACHE を指定すると、取得したフォントをそのディレクトリに覚えておき、次からはそこから返す。e2e/fontCache.ts)。
  */
 export default defineConfig({

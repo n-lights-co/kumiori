@@ -769,6 +769,8 @@ class Flow {
    * header: 続きのページで表ヘッダーを繰り返すか、compat: 内側の線を後ろのセルが全体の太さで持つ組み方 (collapseToAfterCell) か
    */
   private tableBreak?: { header: boolean; compat: boolean } & NonNullable<LTable['breakBorders']>;
+  /** 組んでいる表の、外へ出す末尾の余白 (LTableCell.trailingSpaceOut。リストの最後の項目) */
+  private tableTrailOut?: number;
   /** 組んだ行のセルの、占める列 (c から cs 列) と、改ページの境目で使う前側・後ろ側の線 (LTableCell.breakEdges) */
   private cellCols = new WeakMap<LNode, { c: number; cs: number; before?: BorderSide; after?: BorderSide }>();
   private intrinsic: boolean;
@@ -4965,6 +4967,8 @@ class Flow {
     const savedSpacing = this.spacing;
     const savedRowspanAh = this.rowspanMiddleAh;
     const savedTableBreak = this.tableBreak;
+    const savedTrailOut = this.tableTrailOut;
+    this.tableTrailOut = undefined;
     this.spacing = sp;
     this.rowspanMiddleAh = !!node.rowspanMiddleAh;
     this.tableBreak = node.breakBorders ? { ...node.breakBorders, header: !!node.header?.rows.length && !node.omitHeaderAtBreak, compat: !!node.collapseToAfterCell } : undefined;
@@ -5007,6 +5011,10 @@ class Flow {
     this.rowspanMiddleAh = savedRowspanAh;
     this.tableBreak = savedTableBreak;
     this.closeFrame();
+    // リストの最後の項目の末尾の余白 (trailingSpaceOut): 表の後ろの余白と重ねる (CSS 2.1 §8.3.1)
+    const trailOut = this.tableTrailOut;
+    this.tableTrailOut = savedTrailOut;
+    if (trailOut) this.addMargin(trailOut);
     if (cb) {
       this.cbAbs = outerCb;
       this.placeCbAbs(cb);
@@ -5613,6 +5621,8 @@ class Flow {
     // 末尾の内容の後ろの余白 (space-after) も捨てる (keepTrailingSpace・keepEdgeSpace のセルは残す)
     const fin = sub.finishWithTrailing();
     const used = fin.height + (cell.keepTrailingSpace || cell.keepEdgeSpace ? fin.after : 0);
+    // 表の外へ出す末尾の余白 (HTML のリストの最後の項目。trailingSpaceOut): 表を閉じた後ろの余白にする (layoutTable)
+    if (cell.trailingSpaceOut !== undefined) this.tableTrailOut = Math.max(this.tableTrailOut ?? 0, fin.after, cell.trailingSpaceOut);
     const bsize = Math.max(used, desc.bsizeExplicit ?? 0) + desc.bpStart + desc.bpEnd;
     // 中身が行で終わり、その下に余白・枠が無ければ、その行の下の半行間 (行グリッドの中の表で、改ページの判定に数えない分)
     const trailLead = Math.abs(sub.lastLead.end - used) < EPS && !desc.bpEnd && bsize - desc.bpStart - used < EPS ? sub.lastLead.half : 0;

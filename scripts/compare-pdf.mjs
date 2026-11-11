@@ -152,7 +152,7 @@ if (args['web-fonts']) {
       ? u.includes('buE1') ? 'tinos700.ttf' : 'tinos400.ttf'
       : u.includes('/arimo/')
         ? u.includes('CstsBw') ? 'arimo700.ttf' : 'arimo400.ttf'
-        : u.includes('notoserifjp') ? 'notoserif.ttf' : u.includes('notosanssymbols2') && fs.existsSync(path.join(dir, 'notosanssymbols2.ttf')) ? 'notosanssymbols2.ttf' : u.includes('VFPYk75s') ? 'notosans700.ttf' : 'notosans.ttf';
+        : u.includes('notoserifjp') ? (u.includes('zWPebA') && fs.existsSync(path.join(dir, 'notoserif700.ttf')) ? 'notoserif700.ttf' : 'notoserif.ttf') : u.includes('notosanssymbols2') && fs.existsSync(path.join(dir, 'notosanssymbols2.ttf')) ? 'notosanssymbols2.ttf' : u.includes('VFPYk75s') ? 'notosans700.ttf' : 'notosans.ttf';
     return route.fulfill({ body: fs.readFileSync(path.join(dir, f)), contentType: 'font/ttf', headers: { 'access-control-allow-origin': '*' } });
   });
   await page.route('**/fonts.googleapis.com/**', (r) => r.fulfill({ body: '', contentType: 'text/css' }));

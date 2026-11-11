@@ -47,7 +47,9 @@ describe('書体のキャッシュ', () => {
   it('localFont: --font-dir の書体を使い、ネットワークから取れなければ理由を添えて投げる (時限 1ms で取れない状態にする)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-fc-'));
     const logs: string[] = [];
-    const spec = FONT_SPECS[0];
+    // 一覧の何番目かでなく、ファミリー名と太さで選ぶ (既定の書体を足しても、指す書体が変わらないように)
+    const specOf = (family: string, weight: number) => FONT_SPECS.find((x) => x.family === family && (x.weight ?? 400) === weight)!;
+    const spec = specOf('Noto Serif JP', 400);
     // 手元の書体: 中身は何でも読む (判定は取得したものとキャッシュだけ)
     fs.writeFileSync(path.join(dir, 'NotoSerifJP-Regular.ttf'), new Uint8Array([0, 1, 0, 0, ...new Array(20).fill(7)]));
     const buf = await localFont(dir, undefined, (s) => logs.push(s), 1)(spec);
@@ -56,12 +58,12 @@ describe('書体のキャッシュ', () => {
     // 別の書体はどこにも無く、1ms では取れない → 投げる (キャッシュには何も書かない)
     const cache = path.join(dir, 'cache');
     const load = localFont(dir, cache, (s) => logs.push(s), 1);
-    await expect(load(FONT_SPECS[1])).rejects.toThrow(/書体を取得できません: Noto Sans JP .*--font-dir .*NotoSansJP-Regular\.ttf/);
+    await expect(load(specOf('Noto Sans JP', 400))).rejects.toThrow(/書体を取得できません: Noto Sans JP .*--font-dir .*NotoSansJP-Regular\.ttf/);
     expect(fs.existsSync(cache)).toBe(false);
     // 壊れたキャッシュは捨てる (取り直しは 1ms で失敗するので投げるが、ファイルは消えている)
     fs.mkdirSync(cache);
     fs.writeFileSync(path.join(cache, 'NotoSansJP-Bold.ttf'), 'broken');
-    await expect(load(FONT_SPECS[2])).rejects.toThrow(/書体を取得できません/);
+    await expect(load(specOf('Noto Sans JP', 700))).rejects.toThrow(/書体を取得できません/);
     expect(fs.existsSync(path.join(cache, 'NotoSansJP-Bold.ttf'))).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
   });
