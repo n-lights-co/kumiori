@@ -177,7 +177,7 @@ describe('HTM-24 li の改ページの指定 (Fragmentation 3 §3.1)', () => {
 
 describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   it('名前は読むが組版に使わない性質は、対応していないと答える', () => {
-    for (const c of ['font-variant-alternates: historical-forms', 'text-decoration-skip-ink: none', 'text-underline-position: under', 'text-shadow: 1px 1px red', 'outline: 1px solid'])
+    for (const c of ['font-variant-alternates: historical-forms', 'text-decoration-skip-ink: none', 'text-underline-position: under', 'text-shadow: 1px 1px red', 'image-rendering: pixelated'])
       expect(matchSupports(`(${c})`), c).toBe(false);
     // 未対応の一覧の性質は、どれも偽
     expect([...UNSUPPORTED_CSS_PROPERTIES].filter((p) => matchSupports(`(${p}: initial)`))).toEqual([]);
@@ -194,8 +194,8 @@ describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   });
 
   it('一括指定は、未対応の性質に初期値でない値を入れるものだけ偽にする', () => {
-    // text-decoration の一括指定に、未対応の text-decoration-skip-ink は入らない。outline の一括指定は、どれも未対応の性質
-    expect(matchSupports('(outline: 1px solid red)')).toBe(false);
+    // text-decoration の一括指定に、未対応の text-decoration-skip-ink は入らない。border-image の一括指定は、どれも未対応の性質
+    expect(matchSupports('(border-image: url(a.png) 30)')).toBe(false);
     expect(matchSupports('(list-style: url(a.png) inside)')).toBe(true);
     expect(matchSupports('(text-decoration: underline)')).toBe(true);
     expect(matchSupports('(text-decoration: underline wavy)')).toBe(true);
@@ -218,7 +218,7 @@ describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
     expect(matchSupports('(display: block) and (position: sticky)')).toBe(false);
     expect(matchSupports('(text-shadow: none) or (display: block)')).toBe(true);
     expect(supportsCssDeclaration('text-shadow', 'none')).toBe(false);
-    const css = '@supports (text-shadow: 1px 1px red) { .t { color: red } } @supports not (text-shadow: 1px 1px red) { .nt { color: red } } @supports (position: sticky) { .s { color: red } } @supports (display: grid) { .g { color: red } } p { color: blue; @supports (outline: 1px solid) { margin: 0 } }';
+    const css = '@supports (text-shadow: 1px 1px red) { .t { color: red } } @supports not (text-shadow: 1px 1px red) { .nt { color: red } } @supports (position: sticky) { .s { color: red } } @supports (display: grid) { .g { color: red } } p { color: blue; @supports (image-rendering: pixelated) { margin: 0 } }';
     const rules = parseCss(css).rules;
     expect(rules.map((r) => r.selector)).toEqual(['.nt', '.g', 'p']);
     const files = { 't.css': '.t { color: red }', 'g.css': '.g { color: red }', 's.css': '.s { color: red }' };

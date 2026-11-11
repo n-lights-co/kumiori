@@ -402,6 +402,15 @@ export function flattenInline(
 ): Atom[] {
   const cx: FlattenCtx = { st, m, state, bg, wm: st.wm, out: [] };
   const wm = cx.wm;
+  // タブ位置の間隔 (tab-size。CSS Text 3 §4.2): 数は、タブにいちばん近いブロック容器の空白の字 (U+0020) の送り (字間・語間を含む) の何倍か。
+  // 最初の呼び出しの書式が、段落のブロックの書式 (中の inline の呼び出しは、同じ state を受け継ぐ)。初期値は 8。
+  // タブ位置までが 0.5ch より短ければ次のタブ位置へ (§4.1.2)。ch は、ブロックの書体の「0」の送り
+  if (!state.tab) {
+    const rs = runStyleOf(st);
+    const ts = st.tabSize ?? 8;
+    const size = typeof ts === 'number' ? ts * (m.glyph(' ', rs, wm).advance + (st.letterSpacing ?? 0) + (st.wordSpacing ?? 0)) : ts.length;
+    state.tab = { size: Math.max(size, 0), half: m.glyph('0', rs, wm).advance / 2 };
+  }
   for (const c0 of children) {
     const start0 = cx.out.length;
     // 欧文の合字 (axf:ligature-mode="latin")。書体が合字の字 (U+FB00〜U+FB04) を持つときはその字に置き換える (無い並びは、下で書体の liga を使う)
@@ -433,6 +442,20 @@ export function flattenInline(
 /** 文字列: 字ごとの atom (合字・つながる字の並びは 1 単位。ソフトハイフン・ゼロ幅空白・改行は印)。字間 (letter-spacing)・word-spacing はここで送りに足す */
 function flattenText(c: string, cx: FlattenCtx): void {
   const { st, m, state, bg, wm, out } = cx;
+  // 残したタブ (空白を詰めない書式の中の U+0009。CSS Text 3 §4.1.2): 空白の字の atom にタブの印を付ける (字は描かない。送りは、行の中の位置で
+  // 決まるので、行を分けるときに決める)。タブの前後は、別々の字の並びとして組む。空白を詰める書式の中のタブは、空白の字と同じ
+  if (c.includes('\t')) {
+    c.split('\t').forEach((part, i) => {
+      if (i) {
+        const n0 = out.length;
+        flattenText(' ', cx);
+        const sp = out[out.length - 1];
+        if (out.length > n0 && sp.kind === 'glyph' && st.collapseSpaces === false && state.tab) sp.tab = state.tab;
+      }
+      if (part) flattenText(part, cx);
+    });
+    return;
+  }
   const runStyle = runStyleOf;
   // 合字: 書体の合字の機能 (liga。指定があれば dlig・hlig・clig も) で 1 つの字形になる並びを 1 単位に (横書きだけ)。
   // 候補は欧文の字の並び。語をアイコンにする書体のように、それに収まらない合字を持つ書体が読み込まれているときは、書体の合字の表から引く
@@ -697,7 +720,7 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
   }
   const kids = flattenInline(children, s2, m, state, c.backgroundColor ?? bg);
   // 内容の領域 (CSS の inline): 背景・枠・リンクの範囲の、block 方向の広がり。この inline の最初に使える書体と字の大きさで決まる
-  const area = c.backgroundColor || c.border || c.padding || c.link || c.annotation ? inlineContentArea(s2, m, wm) : undefined;
+  const area = c.backgroundColor || c.border || c.padding || c.link || c.annotation || c.outline ? inlineContentArea(s2, m, wm) : undefined;
   // この inline の背景を引き継いだ字 (中の inline の字も。自分の背景を持つ inline の字は、その inline の領域が付いている) に、領域を付ける
   if (area && c.backgroundColor) {
     for (const a of kids) {
@@ -721,12 +744,18 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     kids.push({ kind: 'box', idMark: true, first: '\uFFFC', last: '\uFFFC', advance: 0, isSpace: false, runId: ++state.run, st: s2, glue: true, ...(c.id ? { src: c.id } : {}), box: { node: newNode('block', wm, { isize: 0, bsize: 0 }), adv: 0, cross: 0, above, below } });
   }
   // 罫線・余白つきの inline: 始端・終端に「余白 + 罫線」ぶんの空き (atom) を置き、行を作るときに枠を描く。
-  // リンク・注釈つきの inline も同じ枠の仕組みで、行ごとの範囲を求める (空きは置かない)
+  // リンク・注釈つきの inline も同じ枠の仕組みで、行ごとの範囲を求める (空きは置かない)。輪郭線 (outline) も、行ごとの範囲に描く
+  // (場所を取らないので、空きは置かない。CSS UI 4 §3)
   const hasBox = !!(c.border || c.padding);
-  if ((hasBox || c.link || c.annotation) && kids.length) {
+  if ((hasBox || c.link || c.annotation || c.outline) && kids.length) {
     const frame: InlineFrame = { id: ++frameSeq, border: normBorder(c.border), padding: normEdges(c.padding), bg: c.backgroundColor, box: hasBox, ...(c.borderRadius ? { radius: c.borderRadius } : {}), ...(hasBox && c.boxDecorationBreak === 'clone' ? { clone: true } : {}), ...(hasBox && c.paintEffect ? { fx: c.paintEffect } : {}) };
     if (c.link) frame.link = c.link;
     if (c.annotation) frame.annot = c.annotation;
+    if (c.outline) {
+      frame.outline = c.outline;
+      const r = sourceRef(c);
+      if (r !== undefined) frame.outlineRef = r;
+    }
     if (area) frame.area = area;
     // clone の枠の margin (CSS の margin = bound) は、行で分かれた断片のそれぞれに付け直す (CSS Fragmentation 3 §5.4)
     if (frame.clone && c.inlineMargin?.bound && (c.inlineMargin.start || c.inlineMargin.end)) frame.cloneMargin = { start: c.inlineMargin.start ?? 0, end: c.inlineMargin.end ?? 0 };

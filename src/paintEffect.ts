@@ -67,7 +67,7 @@ export function collectPaintEffects(nodes: readonly object[]): PaintEffectEntry[
   const open: PaintEffectEntry[] = [];
   nodes.forEach((n, k) => {
     const fx = (n as { paintEffect?: PaintEffect }).paintEffect;
-    if (!fx || (!fx.transform && fx.opacity === undefined)) return;
+    if (!fx || (!fx.transform && fx.opacity === undefined && !fx.outline && !fx.clip)) return;
     while (open.length && open[open.length - 1].end <= k) open.pop();
     const e: PaintEffectEntry = { k, end: lastRefIn(n, k) + 1, fx, parent: open[open.length - 1] };
     open.push(e);
@@ -257,11 +257,26 @@ export function applyPaintEffects(sheets: readonly SheetArea[], entries: readonl
     }
     return undefined;
   };
-  /** Area c に効果 e を付ける。変換は、c の中の e の節の箱 (c そのものか、まとめた中の枠・画像) を基準にする */
+  /**
+   * Area c に効果 e を付ける。変換は、c の中の e の節の箱 (c そのものか、まとめた中の枠・画像) を基準にする。
+   * 輪郭線 (outline。CSS UI 4 §3) は、節の箱の Area に付ける (断片ごと。罫線の箱の外側に描くので、まとめた Area ではなく箱そのものに)。
+   * 切り抜きの矩形 (clip。CSS 2.1 §11.1.2) も、節の箱の Area に付ける
+   */
   const set = (c: Area, e: PaintEffectEntry) => {
     if (fades(e)) c.opacity = Math.max(e.fx.opacity!, 0) * (c.opacity ?? 1);
-    const box = e.fx.transform && findBox(c, e);
-    if (box) {
+    const box = (e.fx.transform || e.fx.outline || e.fx.clip) && findBox(c, e);
+    if (box && e.fx.outline) box.a.outline = e.fx.outline;
+    if (box && e.fx.clip) {
+      // 切り抜きの矩形 (CSS 2.1 §11.1.2): auto の辺は、罫線の箱のその辺 (top・left は 0、right は箱の幅、bottom は箱の高さ)。
+      // 断片ごとに、その断片の箱から決める。right ≦ left・bottom ≦ top なら何も見えない (幅・高さ 0)
+      const k = e.fx.clip;
+      const l = k.left ?? 0;
+      const t = k.top ?? 0;
+      const r = k.right ?? box.a.width;
+      const b = k.bottom ?? box.a.height;
+      box.a.clipRect = { x: l, y: t, width: Math.max(r - l, 0), height: Math.max(b - t, 0) };
+    }
+    if (box && e.fx.transform) {
       const m = areaMatrix(box.a, e.fx.transform!, box.x, box.y);
       const cur = c.transform ? mul(m, c.transform) : m;
       if (isIdentity(cur)) delete c.transform;

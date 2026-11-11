@@ -151,3 +151,58 @@ describe('未対応の一覧と @supports', () => {
     expect(supportsCssDeclaration('stroke-linecap', 'pointy')).toBe(false);
   });
 });
+
+describe('SVG の側が属性として読む性質も、文書の CSS から届ける', () => {
+  it('stop-color・stop-opacity (SVG 2 §14.2.4.2。継承しない): グラデーションの色を CSS で決める', () => {
+    const body = `<svg viewBox="0 0 10 10"><linearGradient id="g"><stop class="a" offset="0"/><stop class="b" offset="1" stop-color="lime"/></linearGradient><path fill="url(#g)" ${PATH}/></svg>`;
+    const css = '.a { stop-color: red } .b { stop-color: blue; stop-opacity: 50% } svg { stop-color: yellow }';
+    const r = out(body, css);
+    expect(r.styled).toContain('<stop class="a" offset="0" style="stop-color: rgb(255, 0, 0)"/>');
+    expect(r.styled).toContain('<stop class="b" offset="1" stop-color="lime" style="stop-color: rgb(0, 0, 255); stop-opacity: 0.5"/>');
+    const stops = shapes(body, css)[0].fillPaint!.stops;
+    expect(stops.map((s) => s.color)).toEqual(['#ff0000', '#0000ff']);
+    expect(stops[1].opacity).toBe(0.5);
+    // CSS が無ければ、書き出す SVG は変わらない (属性のまま)
+    expect(out(body).styled).toBe(out(body).plain);
+  });
+  it('text-anchor (SVG 2 §11.10.1.1)・clip-rule (CSS Masking 1 §6.2) は継承する。<svg> の外の要素の値も届く', () => {
+    const body = `<p class="c"><svg viewBox="0 0 10 10"><text x="5" y="5">a</text><g class="m"><text x="5" y="9">b</text></g></svg></p>`;
+    const r = out(body, '.c { text-anchor: middle; clip-rule: evenodd } .m { text-anchor: end }');
+    expect(r.styled).toContain('style="clip-rule: evenodd; text-anchor: middle"');
+    expect(r.styled).toContain('<g class="m" style="text-anchor: end">');
+  });
+  it('marker-start・marker-mid・marker-end と一括指定 marker (SVG 2 §13.7.2・§13.7.3)、vector-effect (§8.13。継承しない)', () => {
+    const body = `<svg viewBox="0 0 10 10"><marker id="m" markerWidth="2" markerHeight="2"><circle cx="1" cy="1" r="1"/></marker><path class="p" d="M0 0L5 5L10 0" fill="none" stroke="black"/><path class="q" d="M0 9L10 9" stroke="black"/></svg>`;
+    const r = out(body, '.p { marker: url(#m); vector-effect: non-scaling-stroke } .q { marker-end: url(#m); marker-start: none }');
+    expect(r.styled).toContain('style="marker-start: url(#m); marker-mid: url(#m); marker-end: url(#m); vector-effect: non-scaling-stroke"');
+    expect(r.styled).toContain('style="marker-start: none; marker-end: url(#m)"');
+  });
+  it('読めない値の宣言は捨てる。@supports も、読める値だけ真', () => {
+    const body = `<svg viewBox="0 0 10 10"><text class="t" x="5" y="5">a</text></svg>`;
+    expect(out(body, '.t { text-anchor: zzz; vector-effect: non-rotation; clip-rule: 1; stop-color: notacolor; marker-end: m; stop-opacity: x }').styled).toBe(out(body).plain);
+    for (const [p, v] of [['text-anchor', 'middle'], ['clip-rule', 'evenodd'], ['stop-color', '#f00'], ['stop-opacity', '.5'], ['marker-start', 'url(#m)'], ['marker', 'none'], ['marker', 'url("#m")'], ['vector-effect', 'non-scaling-stroke']])
+      expect(supportsCssDeclaration(p, v), `${p}: ${v}`).toBe(true);
+    for (const [p, v] of [['text-anchor', 'center'], ['clip-rule', 'zzz'], ['stop-color', 'notacolor'], ['marker-end', 'm'], ['marker', 'zzz'], ['vector-effect', 'non-rotation'], ['paint-order', 'stroke'], ['cx', '1px']])
+      expect(supportsCssDeclaration(p, v), `${p}: ${v}`).toBe(false);
+  });
+});
+
+describe('SVG の要素にだけ当てはまる性質の数え方', () => {
+  const doc = (body: string) => parseHTML(`<!DOCTYPE html><html><head><title>t</title></head><body>${body}</body></html>`).document as unknown as Document;
+  const SVG_ONLY = 'paint-order: stroke; cx: 1px; cy: 1px; r: 2px; rx: 1px; ry: 1px; x: 0; y: 0; d: none; color-interpolation: sRGB; color-interpolation-filters: sRGB; flood-color: red; flood-opacity: 1; lighting-color: red; mask-type: alpha';
+  it('HTML の要素に書いた SVG の性質は、当てはまらないので何もしない (未対応にも、知らないプロパティにも数えない)', () => {
+    const css = parseCss(`div { fill: green; stroke: red; text-anchor: middle; stop-color: red; marker: none; clip-rule: evenodd; vector-effect: none; shape-rendering: crispEdges; text-rendering: optimizeLegibility; ${SVG_ONLY} }`);
+    // 文書に <svg> が無い (文書を渡さないときも同じ)
+    expect(unsupportedCssReport(css, doc(`<div style="${SVG_ONLY}; fill: red">a</div>`))).toEqual({ unsupported: {}, unknown: {} });
+    expect(unsupportedCssReport(css)).toEqual({ unsupported: {}, unknown: {} });
+  });
+  it('文書の中に <svg> があれば、届けない性質を「<名前> (SVG の要素)」として未対応に数える。描き方の手がかり (shape-rendering・text-rendering) は数えない', () => {
+    const css = parseCss('svg circle { paint-order: stroke; r: 4px; shape-rendering: crispEdges; fill: red } text { text-rendering: geometricPrecision; text-anchor: middle }');
+    const d = doc(`<div style="paint-order: stroke">a</div><svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="2" style="cx: 3px; fill: blue"/></svg>`);
+    // style 属性は、SVG の要素のものだけを数える (div の paint-order は数えない)
+    expect(unsupportedCssReport(css, d)).toEqual({ unsupported: { 'paint-order (SVG の要素)': 1, 'r (SVG の要素)': 1, 'cx (SVG の要素)': 1 }, unknown: {} });
+  });
+  it('SVG の性質でない、知らない名前は、これまでどおり知らないプロパティに数える', () => {
+    expect(unsupportedCssReport(parseCss('div { filll: red; strok: 1 }')).unknown).toEqual({ filll: 1, strok: 1 });
+  });
+});

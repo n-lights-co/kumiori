@@ -89,6 +89,8 @@ export interface LNode {
   /** 斜めの罫線 (Area の diagonals と同じ) */
   diag?: Array<{ kind: 'tlbr' | 'trbl'; side: import('./types').BorderSide }>;
   shadow?: import('./types').BoxShadow | import('./types').BoxShadow[];
+  /** 輪郭線 (CSS の outline。行内の箱の、行ごとの断片に付ける。toArea が Area の outline にする) */
+  outline?: import('./types').Outline;
   /** 描くときだけの効果 (transform・opacity)。toArea が Area に印を付け、組み終えてから Area の transform・opacity にする (paintEffect.ts) */
   fx?: import('./types').PaintEffect;
   /** 字の背景の箱: 字を作った入力の節の番号 (効果を付けるときにだけ使う。Area の sourceRef にはしない) */
@@ -238,6 +240,8 @@ export interface ResolvedStyle {
   textIndentEachLine?: boolean;
   letterSpacing: number;
   wordSpacing?: number;
+  /** タブ位置の間隔 (TextStyle.tabSize。CSS の tab-size) */
+  tabSize?: number | { length: number };
   fixedLetterSpacing?: boolean;
   letterSpacingStretch?: number;
   rubyScale: number;
@@ -424,6 +428,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     textIndentEachLine: n.textIndentEachLine ?? parent.textIndentEachLine,
     letterSpacing: n.letterSpacing ?? parent.letterSpacing,
     wordSpacing: n.wordSpacing ?? parent.wordSpacing,
+    tabSize: n.tabSize ?? parent.tabSize,
     fixedLetterSpacing: n.fixedLetterSpacing ?? parent.fixedLetterSpacing,
     letterSpacingStretch: n.letterSpacingStretch ?? parent.letterSpacingStretch,
     rubyScale: n.rubyScale ?? parent.rubyScale,

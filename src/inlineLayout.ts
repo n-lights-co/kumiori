@@ -72,6 +72,11 @@ export interface Atom {
   clusterCont?: boolean;
   advance: number;
   isSpace: boolean;
+  /**
+   * 残したタブ (U+0009。CSS Text 3 §4.1.2): 送り (advance) は、行の中の位置で決まる (tabAdvance)。size はタブ位置の間隔、half は 0.5ch (pt)。
+   * 行を分けるとき (breakOne) と、行を置くとき (positionLine) に、その行の始まりからの位置で決める
+   */
+  tab?: { size: number; half: number };
   runId: number;
   /** page-number-citation の字 (参照の引数の鍵) */
   cite?: string;
@@ -178,6 +183,10 @@ export interface InlineFrame {
   fx?: import('./types').PaintEffect;
   /** 罫線・余白を描く枠か (false ならリンク・注釈の範囲だけを示す) */
   box: boolean;
+  /** 輪郭線 (CSS の outline)。行ごとの断片を囲む線を、行の字より後に描く (場所は取らない) */
+  outline?: import('./types').Outline;
+  /** 輪郭線の箱を、この inline の効果 (opacity) に入れるための、節の番号 (字の背景の fxRef と同じ) */
+  outlineRef?: number;
   /** 行で分かれた断片のそれぞれを、罫線・余白で包む (box-decoration-break: clone。CSS Fragmentation 3 §5.4) */
   clone?: boolean;
   /**
@@ -225,6 +234,8 @@ export interface LeaderSpec {
 
 export interface FlattenState {
   run: number;
+  /** 段落のブロックの、タブ位置の間隔と 0.5ch (pt)。flattenInline の最初の呼び出し (ブロックの書式) で決める (CSS Text 3 §4.2) */
+  tab?: { size: number; half: number };
   /** ギリシャ文字・キリル文字の語を、欧文の書体に替えない (アンテナハウス互換) */
   noLatinWords?: boolean;
   /** 脚注: ラベル取得と参照記号の縮小率。無ければ '*' だけ出して本体は捨てる */
@@ -393,6 +404,28 @@ const EPS = 1e-6;
 const FIT_EPS = 1e-3;
 
 /** 行末スペースは捨てて RawLine を作る */
+/**
+ * 残したタブの送り (CSS Text 3 §4.1.2): 次の字の始まりを、次のタブ位置にそろえる。タブ位置は、ブロックの内容の端から、タブ位置の間隔
+ * (tab-size) の倍数の所。次のタブ位置までが 0.5ch より短ければ、その次のタブ位置を使う。間隔が 0 なら、タブは描かない (送り 0)。
+ * x は、ブロックの内容の端から、タブの始まりまでの距離 (行の字下げを含む)
+ */
+function tabAdvance(tab: { size: number; half: number }, x: number): number {
+  if (!(tab.size > 0)) return 0;
+  const TAB_EPS = 1e-6;
+  let w = (Math.floor(x / tab.size + TAB_EPS) + 1) * tab.size - x;
+  if (w < tab.half - TAB_EPS) w += tab.size;
+  return w;
+}
+
+/** 行の字 (items) の中のタブの送りを、行の始まり (字下げ indent の後) からの位置で決める */
+function resolveLineTabs(items: Atom[], indent: number): void {
+  let x = indent;
+  for (const a of items) {
+    if (a.tab) a.advance = tabAdvance(a.tab, x);
+    x += a.advance;
+  }
+}
+
 function makeLine(items: Atom[], last: boolean, indent: number): RawLine {
   let e = items.length;
   // white-space-treatment="preserve" などの空白は、行末でも残す (XSL §7.16.8)
@@ -705,7 +738,16 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
   let k = start;
   // 後ろの負の幅の箱 (行内の箱の負の margin) まで数えれば収まると分かった範囲の終わり (この手前の字は、あふれても行に入れる)
   let fitUntil = start;
+  // 行の始まりからの位置 (ブロックの内容の端から。タブの送りを決める。行頭・行末で捨てる空きは数えない)
+  let tabX = indent;
+  let tabAt = start;
   while (k < n && atoms[k].kind !== 'break') {
+    // 残したタブ: この行での送りを決めてから測る (CSS Text 3 §4.1.2)
+    if (k >= tabAt) {
+      if (atoms[k].tab) atoms[k].advance = tabAdvance(atoms[k].tab!, tabX);
+      tabX += atoms[k].advance;
+      tabAt = k + 1;
+    }
     const w = atoms[k].advance;
     // 和欧間アキ・字の後ろの letter-spacing は行末なら捨てるので、それを除いて収まれば行に入れる
     // 行末の終わり括弧類・句読点の後ろのアキも、行末なら捨てる
@@ -1537,6 +1579,8 @@ function fillLeaders(items: Atom[], widths: number[], free: number) {
 
 export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): PositionedLine {
   const items = raw.items;
+  // 残したタブの送りを、この行の始まりからの位置で決め直す (行を分けた後の試し組みで、別の行として測った値が残らないように)
+  if (items.some((t) => t.tab)) resolveLineTabs(items, raw.indent);
   const avail = Math.max(L - raw.indent - (raw.endIndent ?? 0), 0);
   const widths = items.map((t) => t.advance);
   // 行頭・行末のルビは、行の外の字には掛けない (はみ出し分を送りへ戻す)
@@ -2097,6 +2141,26 @@ function drawInlineFrames(line: LNode, entries: { a: Atom; off: number; w: numbe
     if (f.link || (f.annot && sp.first)) {
       // リンク・注釈の範囲 (描画しない箱)
       line.children.push(newNode('block', wm, { i: sp.lo, b: area?.top ?? emTop, isize: Math.max(sp.hi - sp.lo, 0), bsize: area?.size ?? lm.em, link: f.link, annot: sp.first ? f.annot : undefined }));
+    }
+    if (f.outline) {
+      // 輪郭線 (CSS UI 4 §3.1): 行ごとの断片のそれぞれを、閉じた線で囲む。箱は、罫線の箱 (内容の領域に余白と罫線を足したもの。
+      // 行で切れた側には足さない)。描くだけの箱で、行の字より後 (行の子の末尾) に置く
+      const pl = toLogical(f.padding, wm);
+      const bl = borderToLogicalWidths(f.border, wm);
+      const ext = area ?? emExtent(sp.atoms, lm, emTop, wm);
+      const clone = !!f.clone;
+      // 行の向きの両端: 枠の始まり・終わりの空き (余白と罫線) は、sp.lo・sp.hi に入っている
+      line.children.push(
+        newNode('block', wm, {
+          i: sp.lo,
+          b: ext.top - (f.box ? pl.bs + bl.bs : 0),
+          isize: Math.max(sp.hi - sp.lo, 0),
+          bsize: ext.size + (f.box ? pl.bs + pl.be + bl.bs + bl.be : 0),
+          outline: f.outline,
+          ...(f.outlineRef !== undefined ? { fxRef: f.outlineRef } : {}),
+          ...(f.radius && (clone || (!sp.cutStart && !sp.cutEnd)) ? { radius: f.radius } : {}),
+        }),
+      );
     }
     if (!f.box) continue;
     const pl = toLogical(f.padding, wm);

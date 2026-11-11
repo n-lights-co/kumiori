@@ -37,6 +37,7 @@ import type {
   BoxShadow,
   ObjectPosition,
   PaintEffect,
+  Outline,
   TransformFunction,
   LFloat,
   ConditionalPageMaster,
@@ -349,6 +350,23 @@ function objectPositionOf(v: string): ObjectPosition | undefined {
  * 罫線の色の計算値 → 罫線の色。透明 (alpha が 0) は 'transparent' (太さは取り、描かない)、半透明は #rrggbbaa (描くときに、その濃さで
  * 下の背景に重ねる。CSS Backgrounds 3 §2.7: 背景は罫線の下まで描くので、半透明の罫線の下に背景が見える)。読めない色は黒
  */
+/**
+ * 輪郭線 (outline。CSS UI 4 §3) を、計算値から読む。線種が none か、太さが 0 なら undefined。
+ *  - 線種 (§3.3): auto は実線として描く (「User agents may treat auto as solid」)。hidden は無い
+ *  - 色 (§3.4): auto は、線種が auto でなければ currentColor (線種 auto は実線として描くので、同じく currentColor にする)
+ *  - outline-offset (§3.5): 罫線の箱の端からの距離 (負の値は内側)
+ */
+function outlineOf(c: (p: string) => string): Outline | undefined {
+  const style = c('outline-style').trim().toLowerCase();
+  const w = cssLen(c('outline-width')) ?? 0;
+  if (!style || style === 'none' || w <= 0) return undefined;
+  const cv = c('outline-color').trim().toLowerCase();
+  const color = borderColorOf(cv === 'auto' || cv === 'currentcolor' || !cv ? c('color') : cv);
+  if (color === 'transparent') return undefined;
+  const off = cssLen(c('outline-offset')) ?? 0;
+  return { width: w, color, ...(style !== 'solid' && style !== 'auto' ? { style: style as Outline['style'] } : {}), ...(off ? { offset: off } : {}) };
+}
+
 function borderColorOf(v: string): string {
   const rgba = parseRgbFn(v.trim());
   if ((rgba && rgba.a <= 0) || v.trim().toLowerCase() === 'transparent') return 'transparent';
@@ -3032,9 +3050,41 @@ class HtmlImporter {
         }
       }
     }
-    const out = fx.transform || fx.opacity !== undefined ? fx : undefined;
+    // 輪郭線 (outline。CSS UI 4 §3): どの要素にも効く (::first-letter に効く性質の一覧 (CSS Pseudo 4 §2.3) には無い)。
+    // 見えない箱 (visibility: hidden・collapse) には描かない (CSS 2.1 §11.2: 箱は見えない)
+    if (!boxless && pseudo !== '::first-letter' && !/^(hidden|collapse)$/.test(c('visibility'))) {
+      const ol = outlineOf(c);
+      if (ol) fx.outline = ol;
+    }
+    // 切り抜きの矩形 (clip。CSS 2.1 §11.1.2): 絶対配置 (position: absolute・fixed) の要素にだけ効く。計算値は rect(a, b, c, d)
+    // (a〜d は auto か px の長さ)。auto の辺は、組んだ後で、箱の罫線の箱のその辺にする
+    if (!boxless && pseudo !== '::first-letter' && /^(absolute|fixed)$/.test(c('position'))) {
+      const m = /^rect\((.*)\)$/.exec(c('clip').trim());
+      const parts = m?.[1].split(',').map((t) => t.trim());
+      if (parts?.length === 4) {
+        const [top, right, bottom, left] = parts.map((t) => (t === 'auto' ? undefined : cssLen(t)));
+        fx.clip = { ...(top !== undefined ? { top } : {}), ...(right !== undefined ? { right } : {}), ...(bottom !== undefined ? { bottom } : {}), ...(left !== undefined ? { left } : {}) };
+      }
+    }
+    const out = fx.transform || fx.opacity !== undefined || fx.outline || fx.clip ? fx : undefined;
     slot[pseudo ?? ''] = { fx: out };
     return out;
+  }
+
+  /**
+   * 行内の箱 (display: inline の、置換要素でない箱) に渡す効果: 輪郭線は、行ごとの断片に描くので、効果 (不透明度) とは別に渡す
+   * (LInline.outline)。残りの効果は、同じ要素には同じ物を返す (paintEffectOf と同じ理由)
+   */
+  private inlineEffectOf(el: Element, pseudo?: PseudoSel): { fx?: PaintEffect; outline?: Outline } {
+    const all = this.paintEffectOf(el, pseudo);
+    if (!all?.outline) return { fx: all };
+    const slot = this.fxCache.get(el)!;
+    const key = `inline:${pseudo ?? ''}`;
+    if (!slot[key]) {
+      const { outline: _ol, ...rest } = all;
+      slot[key] = { fx: rest.transform || rest.opacity !== undefined || rest.clip ? rest : undefined };
+    }
+    return { fx: slot[key].fx, outline: all.outline };
   }
 
   /** 文字の書式: 親と違うものだけ (CSS の継承は Kumiori の resolveStyle と同じく子へ引き継ぐ) */
@@ -3120,6 +3170,11 @@ class HtmlImporter {
     // letter-spacing・word-spacing の normal は 0 (Text 3 §7.1・§7.2)。親の値を打ち消せるように、変わったら必ず設定する
     if (diff('letter-spacing')) s.letterSpacing = cssLen(c('letter-spacing')) ?? 0;
     if (diff('word-spacing')) s.wordSpacing = cssLen(c('word-spacing')) ?? 0;
+    // tab-size (Text 3 §4.2): 計算値は、数 (空白の字の送りの何倍か) か、絶対の長さ。親の値を打ち消せるように、変わったら必ず設定する
+    if (diff('tab-size')) {
+      const ts = c('tab-size').trim();
+      s.tabSize = /^[\d.+-]+(e[+-]?\d+)?$/i.test(ts) ? parseFloat(ts) : { length: cssLen(ts) ?? 0 };
+    }
     // white-space: nowrap・pre は折り返さない (行内要素でも。Text 3 §3)。子の normal などで打ち消せる
     if (diff('white-space')) {
       s.noWrap = /^(nowrap|pre)$/.test(c('white-space'));
@@ -5078,6 +5133,8 @@ class HtmlImporter {
     // 数式 (MathML の math 要素): 数式用の書体があれば、組んだ図形にする
     if (this.opts.mathFont && this.isMath(el)) return [this.mathFormula(el)];
     if (name === 'ruby') {
+      // ルビの箱 (ruby・rb・rt・rtc) の輪郭線 (outline) は描けない (ルビは、親文字とルビの字の組として組み、要素の箱を作らない)。知らせる
+      if ([el, ...(Array.from(el.getElementsByTagName('*')) as Element[]).filter((e) => /^(rb|rt|rtc)$/.test(e.localName))].some((e) => this.paintEffectOf(e)?.outline)) this.miss('outline (ruby・rb・rt・rtc)');
       // <ruby>親文字<rt>ルビ</rt>…</ruby> (rp は除く)。ルビは、直前の rt から後の親文字と対になる (Ruby 1 §2.3。
       // <ruby>漢<rt>かん</rt>字<rt>じ</rt></ruby> は 2 組)。rb を並べた書き方 (rb…rb rt…rt) は、順番どうしで対にする
       const kids = Array.from(el.childNodes).filter((n) => !(n.nodeType === 1 && (n as Element).localName === 'rp'));
@@ -5330,8 +5387,12 @@ class HtmlImporter {
       const rtl = !vert && c('direction') === 'rtl';
       inl.inlineMargin = { start: rtl ? me : ms, end: rtl ? ms : me, bound: true, ...(this.opts.inlineMarginStartAtWrapAh ? { dropStartAtWrap: true } : {}) };
     }
-    // 不透明度 (opacity は行内の箱にも効く。変換は、置換要素でない行内の箱には効かない)
-    if (box.paintEffect) inl.paintEffect = box.paintEffect;
+    // 不透明度 (opacity は行内の箱にも効く。変換は、置換要素でない行内の箱には効かない)。輪郭線 (outline) は、行ごとの断片に描く
+    if (box.paintEffect) {
+      const ie = this.inlineEffectOf(el, pseudo);
+      if (ie.fx) inl.paintEffect = ie.fx;
+      if (ie.outline) inl.outline = ie.outline;
+    }
   }
 
   /**
@@ -5637,7 +5698,11 @@ class HtmlImporter {
       const bg = bgOf(g);
       for (const r of rows) paintCells(r, bg);
       // 行グループ (thead・tbody・tfoot) の箱は作らないので、その transform・opacity は掛けられない (未対応として知らせる)
-      if (this.paintEffectOf(g)) this.miss('transform・opacity (thead・tbody・tfoot)');
+      {
+        const gfx = this.paintEffectOf(g);
+        if (gfx?.transform || gfx?.opacity !== undefined) this.miss('transform・opacity (thead・tbody・tfoot)');
+        if (gfx?.outline) this.miss('outline (thead・tbody・tfoot)');
+      }
       const gb = collapse && rows.length ? this.boxStyle(g).border : undefined;
       if (gb) rows.forEach((r, k) => (r.group = { border: gb, first: k === 0, last: k === rows.length - 1 }));
     };
@@ -6127,6 +6192,8 @@ class HtmlImporter {
       }
       const content = decls.content;
       if (!content || content === 'none' || content === 'normal') continue;
+      // 余白の箱の輪郭線 (outline) は描かない (余白の箱の宣言は自前で読み、輪郭線は読まない)。知らせる
+      if (Object.keys(decls).some((k) => /^outline(-|$)/.test(k) && !/^(none|0|initial|unset)\b/i.test(decls[k].trim()))) this.miss('outline (ページの余白の箱)');
       const fs = lenEm(decls['font-size'] ?? '', rootFs) ?? rootFs;
       // 箱の位置: 上下の辺は本文の幅いっぱい (隅は余白の角)、左右の辺は本文の高さいっぱい
       let x: number, y: number, w: number, h: number;
@@ -6311,6 +6378,10 @@ class HtmlImporter {
     // 左右: 左から右へ進む本では右ページが奇数ページ。縦書き (右から左へ進む本) では左ページが奇数ページ
     const rtl = wm === 'vertical-rl';
     this.pageFormat = null;
+    // 固定配置 (position: fixed) の箱は、どのページにも出す内容として運ぶので、描くときだけの効果が付かない。その輪郭線 (outline)・
+    // 切り抜きの矩形 (clip) は描けないので、知らせる
+    if (this.fixed.some((f) => f.paintEffect?.outline)) this.miss('outline (position: fixed の箱)');
+    if (this.fixed.some((f) => f.paintEffect?.clip)) this.miss('clip (position: fixed の箱)');
     const alts: ConditionalPageMaster[] = [];
     for (const kind of blanks)
       for (const first of firsts)
@@ -6413,7 +6484,13 @@ class HtmlImporter {
     this.pagesRtl = wm === 'vertical-rl';
     const box = this.boxStyle(bodyEl);
     // html・body はページをまたぐ本文の全体で、1 つの箱として描かないので、その transform・opacity は掛けられない (未対応として知らせる)
-    if (box.paintEffect || (html !== bodyEl && this.paintEffectOf(html))) this.miss('transform・opacity (html・body)');
+    {
+      const fxs = [box.paintEffect, html !== bodyEl ? this.paintEffectOf(html) : undefined];
+      if (fxs.some((f) => f?.transform || f?.opacity !== undefined)) this.miss('transform・opacity (html・body)');
+      // 輪郭線 (outline) も同じ理由で描けない
+      if (fxs.some((f) => f?.outline)) this.miss('outline (html・body)');
+      if (fxs.some((f) => f?.clip)) this.miss('clip (html・body)');
+    }
     delete box.paintEffect;
     // body の背景をページの背景にしたときは、body の箱には描かない (CSS と同じ)
     if (rootFromBody) {

@@ -37,7 +37,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'text-wrap-mode',
   'text-wrap-style',
   'text-decoration-skip-ink',
-  'clip',
   'footnote-display',
   'footnote-policy',
   'grid',
@@ -59,17 +58,13 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'overflow-inline',
   'overflow-clip-margin',
   'page-orientation',
-  'tab-size',
+
   'text-align-all',
   'text-justify',
   'text-wrap',
   'text-underline-position',
   'text-shadow',
-  'outline',
-  'outline-color',
-  'outline-style',
-  'outline-width',
-  'outline-offset',
+
   'glyph-orientation-vertical',
 ]);
 
@@ -162,10 +157,31 @@ export function splitStyleAttribute(text: string): Array<[string, string]> {
   return out;
 }
 
-/** 1 つの宣言を数える */
-function count(rep: UnsupportedCssReport, prop: string, value: string) {
+/**
+ * SVG の要素にだけ当てはまる性質のうち、文書の中にじかに書いた <svg> に届けないもの。HTML の要素の箱には当てはまらないので、
+ * そこに書いても何もしないのが正しい (未対応・知らないプロパティに数えない)。文書の中に <svg> があるときだけ、
+ * 「<名前> (SVG の要素)」として未対応に数える (SVG の要素に書いても効かないため)。
+ *  - paint-order (SVG 2 §13.8)、color-interpolation (§13.9)、図形の位置と大きさ cx・cy・r・rx・ry・x・y (§7) と d (§9.3.1)
+ *  - color-interpolation-filters・flood-color・flood-opacity・lighting-color (Filter Effects 1)、mask-type (CSS Masking 1 §7.2)
+ * fill・stroke など、<svg> に届ける性質は cssCascade の SVG_STYLE_PROPS (isKnownCssProperty が真)
+ */
+const SVG_ONLY_UNSUPPORTED: ReadonlySet<string> = new Set(['paint-order', 'color-interpolation', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y', 'd', 'color-interpolation-filters', 'flood-color', 'flood-opacity', 'lighting-color', 'mask-type']);
+/**
+ * SVG の描き方の手がかり (SVG 2 §13.10.1 shape-rendering・§13.10.2 text-rendering:「provides a hint to the implementation」)。
+ * 手がかりに従わなくてもよいので、何もしない (未対応・知らないプロパティに数えない)
+ */
+const SVG_RENDERING_HINTS: ReadonlySet<string> = new Set(['shape-rendering', 'text-rendering']);
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** 1 つの宣言を数える。svg: この宣言が、文書の中の <svg> の要素に当たりうるか (規則は文書に <svg> があるか、style 属性はその要素が SVG の要素か) */
+function count(rep: UnsupportedCssReport, prop: string, value: string, svg = false) {
   const p = prop.toLowerCase();
   if (!p || p.startsWith('--') || isPrintIrrelevantCssProperty(p)) return;
+  if (SVG_RENDERING_HINTS.has(p)) return;
+  if (SVG_ONLY_UNSUPPORTED.has(p)) {
+    if (svg) rep.unsupported[`${p} (SVG の要素)`] = (rep.unsupported[`${p} (SVG の要素)`] ?? 0) + 1;
+    return;
+  }
   const v = value.replace(/\s*!important\s*$/i, '').trim();
   if (UNSUPPORTED_CSS_PROPERTIES.has(p)) {
     rep.unsupported[p] = (rep.unsupported[p] ?? 0) + 1;
@@ -192,12 +208,16 @@ function count(rep: UnsupportedCssReport, prop: string, value: string) {
  */
 export function unsupportedCssReport(sheet: ParsedCss | undefined, doc?: Document): UnsupportedCssReport {
   const rep: UnsupportedCssReport = { unsupported: {}, unknown: {} };
-  for (const r of sheet?.rules ?? []) for (const [p, v] of Object.entries(r.decls)) count(rep, p, v);
+  // 文書の中にじかに書いた <svg> があるか (SVG の要素にだけ当てはまる性質を、未対応に数えるかを決める)
+  const hasSvg = !!doc && Array.from((doc.getElementsByTagName?.('svg') ?? []) as ArrayLike<Element>).length > 0;
+  for (const r of sheet?.rules ?? []) for (const [p, v] of Object.entries(r.decls)) count(rep, p, v, hasSvg);
   if (doc) {
     const els = doc.querySelectorAll?.('[style]') ?? [];
     for (const el of Array.from(els) as Element[]) {
       const st = el.getAttribute('style');
-      if (st) for (const [p, v] of splitStyleAttribute(st)) count(rep, p, v);
+      // style 属性は、その要素が SVG の要素 (<svg> とその中の要素) のときだけ、SVG の性質が当たる
+      const inSvg = hasSvg && (el.namespaceURI === SVG_NS || !!el.closest?.('svg'));
+      if (st) for (const [p, v] of splitStyleAttribute(st)) count(rep, p, v, inSvg);
     }
   }
   return rep;

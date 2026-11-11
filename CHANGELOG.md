@@ -54,6 +54,10 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
   - `writing-mode` を指定した表 (CSS Writing Modes 3 §2.1・CSS 2.1 §17)。**組版の結果が変わる**: 横書きの文書の中の `writing-mode: vertical-rl`・`vertical-lr` の表 (`table`・`display: table`) を、縦書きで組む (行が右から左へ、行の中のセルが上から下へ並ぶ。前は、表の `writing-mode` を見ずに横書きのまま組んでいた)。縦書きの文書の中の `horizontal-tb` の表も同じ。親と書字方向の違う、罫線を分ける表 (`border-spacing`) の大きさに、セルの間隔を入れる
   - 表の無名の行・セル (CSS 2.1 §17.2.1)。**組版の結果が変わる**: 表 (`display: table`・`inline-table`)・行 (`table-row`) の直下の、表の部分でない中身 (文字・ほかの要素) を、無名の行・無名のセルに包んで組む (前は消えていた。`<span style="display: inline-table">字</span>` の字など)
   - 表の `text-indent` (CSS Text 3 §8.1・HTML Standard の既定のスタイル)。**組版の結果が変わる**: 表に指定した `text-indent` がセルの行に効く (前は効かなかった)。表の外 (`body`・`div` など) の `text-indent` は、表の中へ入らない (`table { text-indent: initial }`。前は、外の字下げがセルの行に入っていた。ブラウザと同じ)
+  - 輪郭線 (`outline`・`outline-width`・`outline-style`・`outline-color`・`outline-offset`。CSS UI 4 §3) に対応。罫線の箱の外側に、場所を取らない線を描く (角の丸い箱では角も丸く、行をまたぐ行内の要素・ページをまたぐブロックは断片ごとに囲む)。これまでは未対応の CSS として警告に出していた
+  - 切り抜きの矩形 (`clip: rect(…)`。CSS 2.1 §11.1.2) に対応。**`clip` を指定した絶対配置の箱の結果が変わる**: 箱の背景・罫線・中身を矩形で切り抜いて描く。読み上げ用に隠す書き方 (`clip: rect(0 0 0 0)`) の箱は描かない。これまでは、未対応の CSS として警告に出し、切り抜かずに描いていた
+  - タブの幅 (`tab-size`。CSS Text 3 §4.2) に対応。**`pre` などの中のタブ文字の結果が変わる**: `white-space` が `pre`・`pre-wrap`・`break-spaces` の中のタブ文字 (U+0009) を、次のタブ位置 (ブロックの内容の端から、空白 8 つ分ごと。`tab-size` で変えられる) まで進める (CSS Text 3 §4.1.2)。これまでは、タブ文字を、字形の無い字の印 (□) として描いていた
+  - 文書の中にじかに書いた `<svg>` に、`stop-color`・`stop-opacity`・`text-anchor`・`clip-rule`・`marker` (`marker-start`・`marker-mid`・`marker-end`)・`vector-effect` も、文書の CSS から効くようにした (`fill`・`stroke` などと同じ)。SVG の要素にだけ当てはまるプロパティ (`paint-order`・`cx`・`r` など) を書いても、文書に `<svg>` が無ければ警告に出さない (当てはまる要素が無いため。`<svg>` があれば「未対応 (SVG の要素)」として出す。これまでは「知らないプロパティ」)。描き方の手がかり (`shape-rendering`・`text-rendering`) は警告に出さない
 - **リンクとしおり**: ブロック・flex・表の `<a href>` も箱の全体をリンクにする。相対参照のリンク (PDF は GoToR、ほかのファイルは Launch)。どの既定のスタイルでも `h1`〜`h6` をしおりにする (CSS GCPM 3 の付録 B)
 - **表**: `border-collapse: collapse` の表で、改ページで繰り返す表ヘッダー・表フッターとの境目の罫線を、両側の線から選び直す (XSL 1.1 §6.7.10・CSS 2.1 §17.6.2.1)
 - **書体**: WOFF・WOFF2 (書体の集まりを含む) を読む (`--font`・`fonts`・`@font-face`)。`@font-face` が `http(s):` で参照する書体も取る (`unicode-range` が文書の字と重なるものだけ)
@@ -80,7 +84,6 @@ flex・WOFF/WOFF2・参照の読み込みの API などを足した版。0.x の
 - **Node のコマンド**: `file:` の URL の参照を読む。`--no-fetch-styles` で CSS を取らない。`--page-size <用紙>` で HTML の既定の用紙を変える (`A5`・`"A5 landscape"`・`148mm,210mm`。API の `pageSize` と同じ)
 - **flex の項目の中のページ番号の参照**: `target-counter(…, page)` を持つ flex の項目 (目次の行の `::after` など) の箱の幅を、組んだ番号の桁に合わせる。これまでは 1 桁分の幅で作られ、`word-break: break-word`・`overflow-wrap: anywhere` などがあると 2 桁の番号が「1 / 0」と割れて、目次が伸びていた
 - **`createFileResolver`** (`kumiori/node`): `root` に、いくつかのディレクトリの並びを渡せる。中にあるかは、シンボリックリンクをたどった実体のパスで見る (root の中のリンクから外のファイルを読めていたのを直した。Windows の別のドライブ、名前が `..` で始まるファイルの判定も直した)
-- **未対応の CSS の警告**: `clip` と `fill` を、「知らないプロパティ」ではなく「未対応のプロパティ」として出す (対応仕様説明書の 16 章にも足した)
 - **安全性** (他人の書いた文書を組むときの守り):
   - PDF のリンクの動作を、安全なものに限る。既定で書くのは、文書の中の飛び先、`http`・`https`・`mailto`・`tel` の URL、相対参照の PDF (GoToR) だけ。ほかのスキーム (`javascript:`・`data:`・`file:` など)、PDF でない相対のファイルを開く動作 (Launch。`.html` も)、絶対パスの PDF、`//host/…` は、字だけを組んで動作を書かず、警告に出す。今までどおりにするには、API の `links: { schemes: ['*'], launch: true }`、コマンドの `--link-schemes '*' --link-launch`。スキームは、ブラウザと同じく、前後の制御文字と途中のタブ・改行を取り除いてから見る (`java<TAB>script:` も落とす)。XSL-FO のリンク・しおり・フォームの送り先も同じ
   - `fetchImages`・`fetchStyles` に渡す許可の関数に、転送 (redirect) の先の URL も聞く。Node では転送を 1 つずつ確かめてたどり、許されない先へは要求を出さない (20 回まで)。`https:` から `http:` への転送は、既定 (`true`) でもたどらない。ブラウザでは、要求は転送先に届き、許されない先からの応答を捨てる (ブラウザは転送先を事前に読ませないため)
