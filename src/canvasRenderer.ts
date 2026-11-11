@@ -6,7 +6,8 @@ import type { FontManager } from './fontManager';
 import { uprightPositions } from './areaResources';
 import { toCss } from './color';
 import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
-import type { AssetStore } from './assets';
+import type { AssetStore, ImageAsset } from './assets';
+import { readGradientSvg, type GradientPaint } from './cssGradient';
 import { colorFontOf } from './colorGlyph';
 import { drawColorGlyphArea } from './colorGlyphCanvas';
 import type { Area, GlyphArea, ImageArea, Rect, SheetArea } from './types';
@@ -39,6 +40,21 @@ function svgAspect(bytes: Uint8Array | undefined): { align: string; slice: boole
   const v = m ? { align: m[1] === 'none' ? 'none' : m[1], slice: m[2]?.toLowerCase() === 'slice' } : dflt;
   svgAspectCache.set(bytes, v);
   return v;
+}
+
+/**
+ * CSS のグラデーションの背景 (組版が SVG の画像にして登録したもの。layoutEngine.ts の registerGradients) の中身。
+ * この画像には、ブラウザの画像 (element) が無い (組版の中で同期に作るので、読み込みを待てない) ので、Canvas のグラデーションで直に描く
+ */
+const gradientCache = new WeakMap<Uint8Array, GradientPaint | null>();
+function gradientOf(asset: ImageAsset): GradientPaint | undefined {
+  if (asset.mime !== 'image/svg+xml' || !asset.bytes || !/^kumiori-gradient-\d+\.svg$/.test(asset.key)) return undefined;
+  let g = gradientCache.get(asset.bytes);
+  if (g === undefined) {
+    g = readGradientSvg(new TextDecoder().decode(asset.bytes)) ?? null;
+    gradientCache.set(asset.bytes, g);
+  }
+  return g ?? undefined;
 }
 
 /** 字の並びの輪郭 (字の大きさ 1em = unitsPerEm の座標) と送り。書体・文字列・機能ごとに覚えておく */
@@ -124,7 +140,11 @@ class CanvasPainter implements Painter {
   drawImage(a: ImageArea, x: number, y: number) {
     const asset = this.assets?.get(a.src);
     const el = asset?.element;
-    if (!el) return;
+    if (!el) {
+      const g = asset && gradientOf(asset);
+      if (g) this.drawGradient(g, x, y, a.width, a.height);
+      return;
+    }
     // SVG: ブラウザは <img> を枠の大きさに引き伸ばすので、preserveAspectRatio (SVG 1.1 §7.8。既定 xMidYMid meet) を自分で当てる
     // (PDF の drawVector と同じ見た目にする)。none は引き伸ばす。slice は枠で切り抜く
     const par = asset.mime === 'image/svg+xml' && asset.width > 0 && asset.height > 0 ? svgAspect(asset.bytes) : undefined;
@@ -148,6 +168,51 @@ class CanvasPainter implements Painter {
       }
     }
     this.ctx.drawImage(el, x, y, a.width, a.height);
+  }
+  /**
+   * CSS のグラデーションの画像 (幅 g.width・高さ g.height の SVG) を、(x, y) に幅 w・高さ h で描く。PDF は同じ SVG を図形として描く (同じ線・同じ止まり)。
+   * 止まりの外は、端の色で塗る (SVG の spreadMethod の初期値 pad。Canvas のグラデーションも同じ)。
+   * 色の補間は、SVG も Canvas も乗算しない値 (HTML の「CanvasGradient」: without premultiplying the alpha value)。乗算済みの補間 (CSS Images 3 §3.4.4) に
+   * 近づける止まりは、SVG を作るときに足してある
+   */
+  private drawGradient(g: GradientPaint, x: number, y: number, w: number, h: number) {
+    const ctx = this.ctx;
+    ctx.save();
+    // 回転・傾きの無いときは、描く四角の辺を画面の画素の境に合わせる (繰り返して並べたとき、隣どうしの縁のぼかしが重なって、継ぎ目に筋が出るのを防ぐ)
+    const m = ctx.getTransform();
+    if (m.b === 0 && m.c === 0) {
+      const x0 = Math.round(m.a * x + m.e);
+      const y0 = Math.round(m.d * y + m.f);
+      const x1 = Math.round(m.a * (x + w) + m.e);
+      const y1 = Math.round(m.d * (y + h) + m.f);
+      if (x1 === x0 || y1 === y0) return ctx.restore();
+      ctx.setTransform(1, 0, 0, 1, x0, y0);
+      ctx.scale((x1 - x0) / g.width, (y1 - y0) / g.height);
+    } else {
+      ctx.translate(x, y);
+      ctx.scale(w / g.width, h / g.height);
+    }
+    ctx.beginPath();
+    ctx.rect(0, 0, g.width, g.height);
+    if (g.kind === 'solid') ctx.fillStyle = g.color;
+    else {
+      let cg: CanvasGradient;
+      if (g.kind === 'linear') cg = ctx.createLinearGradient(...g.coords);
+      else {
+        // 楕円: 塗りの座標だけを、中心のまわりに縦へ伸ばす (道は伸ばす前に作ってあるので、塗る範囲は変わらない)
+        ctx.translate(g.cx, g.cy);
+        ctx.scale(1, g.scaleY);
+        ctx.translate(-g.cx, -g.cy);
+        cg = ctx.createRadialGradient(g.cx, g.cy, 0, g.cx, g.cy, g.r);
+      }
+      for (const s of g.stops) {
+        const c = parseInt(s.color.slice(1), 16);
+        cg.addColorStop(Math.min(1, Math.max(0, s.offset)), `rgba(${c >> 16}, ${(c >> 8) & 255}, ${c & 255}, ${s.opacity})`);
+      }
+      ctx.fillStyle = cg;
+    }
+    ctx.fill();
+    ctx.restore();
   }
   fillRect(x: number, y: number, w: number, h: number, color: string) {
     this.ctx.fillStyle = toCss(color);

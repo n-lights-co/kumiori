@@ -362,3 +362,68 @@ describe('飾りの指定を使わない文書', () => {
     expect(JSON.stringify(r.document)).not.toMatch(/styles|thickness|underlineOffset|rubyColor|rubyTextUnder/);
   });
 });
+
+describe('行の中の、分けられない箱 (inline-block・画像) と飾りの線 (CSS Text Decoration 3 §2。OUT-19)', () => {
+  /** 線の左右の範囲 (ページの左から) を、左から順に */
+  const spans = (ps: Placed[]) => decoLines(ps).map((l) => [l.x, l.x + l.a.width]).sort((a, b) => a[0] - b[0]);
+  const xs = (ps: Placed[], text: string) => glyphs(ps).filter((g) => text.includes(g.a.text)).map((g) => g.x);
+
+  it('inline-block にしたリンクの下線は、中の字の下の 1 本だけ (箱そのものには引かない)', () => {
+    const ps = areas(`<p style="${P}">前<a href="#x" style="display: inline-block; padding: 0 6pt">リンク</a>後</p>`);
+    const lines = decoLines(ps);
+    expect(lines).toHaveLength(1);
+    // 線は、中の字 (3 字 = 30pt) の幅。内側の余白 (左右 6pt) には掛からない
+    expect(lines[0].a.width).toBeCloseTo(30, 1);
+    expect(lines[0].x).toBeCloseTo(Math.min(...xs(ps, 'リンク')), 1);
+  });
+
+  it('祖先の線は、inline-block の中身に伝わらない。箱の前後の字には引く', () => {
+    const ps = areas(`<p style="${P} text-decoration: underline">前の字<span style="display: inline-block">箱内部</span>後の字</p>`);
+    const s = spans(ps);
+    expect(s).toHaveLength(2);
+    const box = xs(ps, '箱内部');
+    // 1 本目は箱の前まで、2 本目は箱の後ろから (箱の中の字の範囲に、線は無い)
+    expect(s[0][1]).toBeLessThanOrEqual(Math.min(...box) + 0.01);
+    expect(s[1][0]).toBeGreaterThanOrEqual(Math.max(...box) + 10 - 0.01);
+  });
+
+  it('inline-block に自分の線があれば、それだけを中身に引く (祖先の線は重ねない)', () => {
+    const ps = areas(`<p style="${P}"><u>前<span style="display: inline-block; text-decoration: line-through">箱</span></u></p>`);
+    const lines = decoLines(ps);
+    // 「前」の下線と、「箱」の取り消し線 (下線は無い)
+    expect(lines).toHaveLength(2);
+    const [boxX] = xs(ps, '箱');
+    const inBox = lines.filter((l) => l.x >= boxX - 0.01);
+    expect(inBox).toHaveLength(1);
+    // 取り消し線は基線より上
+    expect(inBox[0].y).toBeLessThan(baselineOf(glyphs(ps).find((g) => g.a.text === '箱')!));
+  });
+
+  it('画像には線を引かない (前後の字には引く)', () => {
+    const ps = areas(`<p style="${P}"><u>前<img src="x.png" style="width: 30pt; height: 10pt">後</u></p>`);
+    const s = spans(ps);
+    expect(s).toHaveLength(2);
+    expect(s[0][1] - s[0][0]).toBeCloseTo(10, 1);
+    expect(s[1][0] - s[0][1]).toBeCloseTo(30, 1);
+  });
+
+  it('::before を inline-block にすると、祖先の線が付かない', () => {
+    const ps = areas(`<p style="${P}"><u class="q">字</u></p>`, '.q::before { content: "印"; display: inline-block }');
+    const s = spans(ps);
+    expect(s).toHaveLength(1);
+    expect(s[0][0]).toBeCloseTo(xs(ps, '字')[0], 1);
+  });
+
+  it('XSL-FO の inline-container は、今までどおり (XSL 1.1 §7.17.4: 箱にもまわりの字と同じ線)', () => {
+    const doc = {
+      type: 'document',
+      sequences: [{ type: 'page-sequence', master: { width: 100, height: 100, bleed: 0, trimMarks: false, margins: { top: 10, right: 10, bottom: 10, left: 10 } }, flow: { type: 'flow', writingMode: 'horizontal-tb', fontSize: 10, children: [{ type: 'block', children: [{ type: 'inline', textDecoration: { underline: true }, children: ['前', { type: 'inline-container', width: 30, children: [{ type: 'block', children: ['箱'] }] }, '後'] }] }] } }],
+    };
+    const out: Area[] = [];
+    const rec = (a: Area) => (out.push(a), childrenOf(a).forEach(rec));
+    E.engine.layout(doc as never).sheets.forEach((s) => rec(s.page));
+    const lines = out.filter((a) => a.type === 'block' && childrenOf(a).length === 0 && a.height < 5 && a.width > 5 && (a as BlockArea).backgroundColor);
+    // 前・箱 (箱の幅 30pt と、中の字)・後
+    expect(lines.some((l) => Math.abs(l.width - 30) < 0.01)).toBe(true);
+  });
+});

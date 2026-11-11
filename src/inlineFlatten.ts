@@ -825,7 +825,9 @@ function flattenInlineBox(c: LImage | LInlineContainer, cx: FlattenCtx): void {
   }
   if (spec) {
     state.run++;
-    out.push({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: spec.adv, isSpace: false, runId: state.run, st: s2, bg: undefined, box: spec, ...(c.type === 'image' && c.noWrapInCellMin ? { noWrapInCellMin: true } : {}), ...(lineAlign ? { lineAlign } : {}) });
+    // 行の中の、分けられない箱 (画像・inline-block) そのものには、飾りの線を引かない (CSS Text Decoration 3 §2。HTML の読み込みが decorateBox: false を付ける)
+    const boxSt = c.decorateBox === false && s2.textDecoration ? { ...s2, textDecoration: undefined } : s2;
+    out.push({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: spec.adv, isSpace: false, runId: state.run, st: boxSt, bg: undefined, box: spec, ...(c.type === 'image' && c.noWrapInCellMin ? { noWrapInCellMin: true } : {}), ...(lineAlign ? { lineAlign } : {}) });
     state.run++;
   }
 }

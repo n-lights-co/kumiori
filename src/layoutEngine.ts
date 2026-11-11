@@ -2930,6 +2930,18 @@ class Flow {
       w = horizontal ? w + d.bpI : w + bpB;
       h = horizontal ? h! + bpB : h! + d.bpI;
     }
+    // 外側の余白 (CSS の margin。置換要素の行内の箱): 余白の分ずらした入れ物で包み、行の中の送りと行の高さに入れる
+    // (CSS 2.1 §8.3: 上下の margin は、置換要素でない行内の箱にだけ効かない。§10.8: 行の箱の中での高さは margin の箱の高さ。
+    // §10.8.1: 基線の無い箱は、下の margin の端を基線に揃える)。負の余白は、箱を小さくする (0 まで)
+    const mg = c.margin !== undefined ? normEdges(c.margin) : undefined;
+    if (mg && (mg.top || mg.right || mg.bottom || mg.left)) {
+      const inner = bboxOf(node);
+      node.i = mg.left;
+      node.b = mg.top;
+      const wrap = newNode('block', 'horizontal-tb', { isize: Math.max(inner.width + mg.left + mg.right, 0), bsize: Math.max(inner.height + mg.top + mg.bottom, 0), children: [node] });
+      const pw = bboxOf(wrap);
+      return horizontal ? { node: wrap, adv: pw.width, cross: pw.height, above: pw.height, below: 0 } : { node: wrap, adv: pw.height, cross: pw.width, above: pw.width / 2, below: pw.width / 2 };
+    }
     const adv = horizontal ? w : h!;
     const cross = horizontal ? h! : w;
     // 横書きは下端を基線に揃える。縦書きは字面の中央 (above/below は使われない)
@@ -5164,7 +5176,9 @@ function orthogonalExtent(n: LNode, c: LNode): number {
 }
 
 function maxLineLength(n: LNode, root = true, tableByColumns = false, countFixed = false): number {
-  if (n.kind === 'line') return n.contentLength ?? 0;
+  // 行の長さには、行頭の字下げも入れる (CSS Text 3 §8.1: "The indent is treated as a margin applied to the start edge of the line box."
+  // 字下げを受け継いだ inline-block・回り込みの箱の幅 (CSS 2.1 §10.3.5・§10.3.9 の shrink-to-fit) が字下げの分だけ足りず、中の行が折り返すのを防ぐ)
+  if (n.kind === 'line') return (n.contentLength ?? 0) + (n.lineIndent ?? 0);
   // 大きさの指定のある箱は、中身によらず、箱の外側の大きさ (内容による大きさの計測。CSS Sizing 3 §5.1)
   if (countFixed && !root && n.fixedI) {
     const pos = (v: number) => Math.max(v, 0);

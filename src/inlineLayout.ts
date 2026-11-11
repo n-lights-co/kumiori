@@ -1721,6 +1721,7 @@ export function buildLineNode(
     bsize: extraBefore + lm.base,
     hasRuby: lm.rubyExtent > 0,
     contentLength: pl.contentLength,
+    ...(pl.raw.indent > 0 ? { lineIndent: pl.raw.indent } : {}),
     baseline: emTop + lm.above,
   });
   // 改訂バー: この行の文字に付いたもの (同じ指定は 1 本)

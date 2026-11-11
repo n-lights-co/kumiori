@@ -17,10 +17,10 @@ import { Measurer } from './measurer';
 import { LayoutEngine } from './layoutEngine';
 import { renderPdf, type PdfRenderOptions } from './pdfRenderer';
 import { renderSheetToCanvas } from './canvasRenderer';
-import { AssetStore, mentionedFiles, normalizeSrc } from './assets';
+import { AssetStore, looksLikeImage, mentionedFiles, normalizeSrc } from './assets';
 import { droppedLinkWarning, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { SANS, SERIF } from './sampleData';
-import { importHtml } from './htmlImport';
+import { importHtml, parsePageSize } from './htmlImport';
 import { importXslFo, type ImportOptions, type XNode } from './xslfoImport';
 import { fetchReportedImages, mathOptionsFor, type MathOptions } from './documentResources';
 import { collectionFaces, splitFontFile, type UserFont } from './fontLoader';
@@ -64,6 +64,14 @@ export interface TypesetOptions {
   genericFonts?: Partial<Record<'serif' | 'sans-serif', string>>;
   /** HTML の既定のスタイル。既定 kumiori (本の組版向け) */
   style?: HtmlDefaults;
+  /**
+   * HTML の既定の用紙: @page で size を指定していない文書の用紙の大きさ。既定は A4。CSS の size と同じ書き方
+   * (CSS Paged Media 3 §7.1: 用紙の名前 "A5"・"JIS-B5"・"letter"、向きを付けた "A5 landscape"、長さ "148mm 210mm"。長さは絶対の単位)。
+   * 文書の @page { size: … } があれば、そちらが勝つ (向きだけの size: landscape は、この用紙を横置きにする)。余白の既定 (20mm) は変わらない。
+   * @media の width・height・orientation も、この用紙で評価する (同 §7.1: メディアクエリは、@page の規則が無いときに選ばれる用紙で評価する)。
+   * 既定のスタイル (style) によらず効く。XSL-FO では使わない (用紙は page master で決まる)
+   */
+  pageSize?: string;
   /** XSL-FO の既定値の流儀。spec (既定): XSL-FO 1.1 の初期値、antenna: アンテナハウスに合わせる */
   compat?: FoCompat;
   /** 印刷用: 塗り足し 3mm とトンボを付ける */
@@ -93,6 +101,7 @@ export interface TypesetOptions {
    * (file:///…/a.css・img/a.png・https://…)。CSS の中の相対参照は、その CSS の URL を基準に解決したもの。
    * 中身 (文字列・Uint8Array・ArrayBuffer) を返せば、その名前のファイルとして使う。undefined を返せば、これまでどおり
    * (http(s) の画像・CSS はネットワークから取る。fetchImages・fetchStyles)。ファイルシステムやデータベースから読むときに
+   * 画像は、URL に拡張子が無くても (https://example.com/img?id=1 など)、返した中身の先頭のバイト列で画像と見分けて使う
    */
   resolveResource?: (url: string) => KumioriFileData | undefined | Promise<KumioriFileData | undefined>;
   /**
@@ -285,6 +294,8 @@ function checkOptions(o: TypesetOptions) {
   oneOf('compat', o.compat, FO_COMPATS);
   oneOf('style', o.style, HTML_STYLES);
   oneOf('lang', o.lang, MESSAGE_LANGS);
+  if (o.pageSize !== undefined && (typeof o.pageSize !== 'string' || !parsePageSize(o.pageSize)))
+    throw optionError(msg(`pageSize の値 ${JSON.stringify(o.pageSize)} は使えません (CSS の size の書き方: "A5"・"A5 landscape"・"148mm 210mm" など)`, `pageSize cannot be ${JSON.stringify(o.pageSize)} (write it like the CSS size property: "A5", "A5 landscape", "148mm 210mm", etc.)`));
   const t = o.fetchTimeoutMs;
   if (t !== undefined && !(typeof t === 'number' && Number.isFinite(t) && t > 0)) throw optionError(msg(`fetchTimeoutMs は正の数 (ミリ秒) にしてください: ${String(t)}`, `fetchTimeoutMs must be a positive number of milliseconds: ${String(t)}`));
   for (const k of ['files', 'fonts'] as const) if (o[k] !== undefined && !Array.isArray(o[k])) throw optionError(msg(`${k} は KumioriFile の配列にしてください`, `${k} must be an array of KumioriFile`));
@@ -509,6 +520,15 @@ async function typesetDocument(
       assets.register(f.url, rest);
     }
   }
+  // 参照から取った中身 (resolveResource の返したもの) のうち、名前に画像の拡張子の無いもの (https://example.com/img?id=1 など):
+  // 中身の先頭のバイト列が画像なら、参照の URL の画像として読む (拡張子では決めない。HTML の画像の種類は、中身の先頭で決まる:
+  // MIME Sniffing Standard §8.2「Sniffing in an image context」・§6.1。looksLikeImage)。CSS と、名前に書体の拡張子のあるものは見ない。
+  // 画像でない中身は使わない (その参照は、これまでどおり: http(s) の画像なら fetchImages の判定でネットワークから取る)
+  for (const f of files) {
+    if (f.url === undefined || isCss(f) || IMAGE_FILE.test(f.name) || /\.(ttf|otf|ttc|otc|woff2?)$/i.test(f.name) || assets.get(f.url)?.key === normalizeSrc(f.url)) continue;
+    const bytes = bytesOf(await f.data());
+    if (looksLikeImage(bytes)) await assets.addBlob(f.url, new Blob([bytes as BlobPart]));
+  }
 
   const measurer = new Measurer(fonts, 'fontkit');
   // MathML のある文書なら、数式の書体を読み込む (読めなければ、本文の書体で組む。画面と同じ手順: documentResources)
@@ -647,13 +667,16 @@ async function importHtmlText(
   xml: boolean,
 ): Promise<Imported> {
   const parseHtml = (await parsers()).html;
-  const prepared = await prepareHtml(html, files.filter(isCss), style, { width: 210, height: 297, margin: 20 }, parseHtml);
+  // @page の無いときに選ばれる用紙 (既定は A4。TypesetOptions.pageSize で変える) と余白 20mm。@media の width・height・orientation も、この用紙で評価する
+  // (CSS Paged Media 3 §7.1: Media queries do not honor size: they assume the paper size that would be chosen if no @page rules were specified)
+  const defaultPage = { ...((o.pageSize !== undefined ? parsePageSize(o.pageSize) : undefined) ?? { width: 210, height: 297 }), margin: 20 };
+  const prepared = await prepareHtml(html, files.filter(isCss), style, defaultPage, parseHtml);
   // 画像は data-kumiori-src に元のパスを残す (画面と同じ)
   prepared.doc.querySelectorAll('img[src]').forEach((img) => img.setAttribute('data-kumiori-src', img.getAttribute('src') ?? ''));
   // 既定のスタイル (style) は、作成者スタイルシート ではなく既定のスタイルシート (UA) として当てる (作成者スタイルシート に詳細度で勝たない)
-  const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.css) : {}) });
+  const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.sheet) : {}) });
   // @font-face の書体 (TTF・OTF と、ふつうの書体のファイルに戻して使う WOFF・WOFF2)
-  await mapping.loadFontFaces(prepared.css, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)));
+  await mapping.loadFontFaces(prepared.sheet, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)));
   // 分綴を使う文書なら、文書に出てくる言語の分綴の規則を読み込む
   await loadDocumentHyphenators(prepared.doc, prepared.css);
   // 作成者スタイルシート と style 属性のうち、読まない宣言 (未対応・知らないプロパティ) を数える
@@ -667,6 +690,7 @@ async function importHtmlText(
     ...(style === 'ah' ? AH_HTML_IMPORT_OPTIONS : {}),
     css: prepared.css,
     sheet: prepared.sheet,
+    defaultPage,
     bleedMm: o.print ? 3 : 0,
     trimMarks: !!o.print,
     ...(o.links ? { links: o.links } : {}),

@@ -2,7 +2,7 @@
  * cli — HTML+CSS を、ブラウザを使わずに PDF に組む (Node のコマンド)。
  *
  * 使い方 (npm run build:cli の後):
- *   node dist-cli/cli.js <HTML ファイル> [-o <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--css a.css,b.css]
+ *   node dist-cli/cli.js <HTML ファイル> [-o <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css]
  *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font serif|sans-serif=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--xhtml] [--watch]
  *   node dist-cli/cli.js <FO ファイル (.fo・.xml)> [-o <PDF ファイル>] [--compat spec|antenna] [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--watch]
  *   node dist-cli/cli.js a.html b.fo c.html -o <出力先のディレクトリ>      (まとめて変換)
@@ -17,6 +17,8 @@
  *    そこから、無ければ Google Fonts から読む
  *  - XSL-FO (.fo・.xml、または --fo) は xmldom で読み、画面の XSL-FO の読み込みと同じに組む。--compat は既定値の流儀
  *    (spec: XSL-FO 1.1 の初期値 (既定) / antenna: アンテナハウスに合わせる)。同じディレクトリの書体ファイルは、FO の font-family から使う
+ *  - --page-size <用紙>: HTML の既定の用紙 (@page で size を指定していない文書の用紙。既定 A4)。CSS の size の書き方 (A5・"A5 landscape"・148mm,210mm。
+ *    CSS Paged Media 3 §7.1)。文書の @page { size } があれば、そちらが勝つ。@media の width・height もこの用紙で評価する。XSL-FO では使わない
  *  - --print: トンボと塗り足し (3mm) を付ける
  *  - --xhtml: 拡張子によらず、HTML を XML の構文 (XHTML) で読む (アンテナハウスのコマンドの -f XHTML に当たる。接頭辞の付いた m:math・s:svg も、名前空間に従って MathML・SVG になる)
  *  - 入力が複数なら、-o は出力先のディレクトリ (無ければ各入力の隣に .pdf)。1 つの失敗でほかの変換は止めない (終了コードは 1)。
@@ -47,6 +49,7 @@ import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { parseColor } from './color';
 import type { HtmlDefaults } from './htmlPrepare';
+import { parsePageSize } from './htmlImport';
 import { FO_COMPATS, HTML_STYLES, type FoCompat } from './compat';
 import { isXhtmlFile } from './xhtml';
 import { decodeDocumentText, typeset, type KumioriFile } from './api';
@@ -64,6 +67,8 @@ export function parseArgs(argv: string[]) {
     inputs: string[];
     output?: string;
     style: HtmlDefaults;
+    /** HTML の既定の用紙 (--page-size。@page で size を指定していない文書の用紙。CSS の size の書き方) */
+    pageSize?: string;
     css?: string;
     fontDir?: string;
     /** 書体のキャッシュのディレクトリ (--font-cache。無ければ KUMIORI_FONT_CACHE か OS のキャッシュ) */
@@ -132,6 +137,13 @@ export function parseArgs(argv: string[]) {
       // 使える値は公開 API と同じ (compat.ts の HTML_STYLES)
       if (!(HTML_STYLES as readonly string[]).includes(v)) throw new UsageError(msg(`--style の値 "${v}" は使えません (${HTML_STYLES.join('・')})`, `--style cannot be "${v}" (${HTML_STYLES.join(', ')})`));
       out.style = v as HtmlDefaults;
+    }
+    else if (a === '--page-size') {
+      // CSS の size の書き方 (CSS Paged Media 3 §7.1)。語の区切りは空白のほか、カンマでもよい (148mm,210mm。シェルで引用符を付けずに書ける)
+      const v = value(k++);
+      const size = v.split(/[\s,]+/).filter(Boolean).join(' ');
+      if (!parsePageSize(size)) throw new UsageError(msg(`--page-size の値 "${v}" は使えません (A5・"A5 landscape"・148mm,210mm のように、用紙の名前か幅と高さ)`, `--page-size cannot be "${v}" (a paper name or a width and height, such as A5, "A5 landscape" or 148mm,210mm)`));
+      out.pageSize = size;
     }
     else if (a === '--css') out.css = value(k++);
     else if (a === '--font-dir') out.fontDir = value(k++);
@@ -271,6 +283,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
     fonts: args.fontFiles.map((f) => lazy(f, path.basename(f))),
     genericFonts: args.genericFonts,
     style: args.style,
+    ...(args.pageSize ? { pageSize: args.pageSize } : {}),
     compat: args.compat,
     print: args.print,
     fetchImages: args.fetchImages,
@@ -303,7 +316,7 @@ export class UsageError extends Error {}
 
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font serif|sans-serif=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font serif|sans-serif=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
   '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--link-schemes <a,b>] [--link-launch] [--watch]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
@@ -311,6 +324,7 @@ export const USAGE_JA = [
   '',
   '  -o, --output <PDF>        出力の PDF (入力が複数なら出力先のディレクトリ。- は標準出力)',
   '  --style <名前>            HTML の既定のスタイル (kumiori・browser・browser-margin・ah・vivliostyle・weasyprint。既定 kumiori)',
+  '  --page-size <用紙>        HTML の既定の用紙 (@page で size を指定していない文書の用紙。A5・"A5 landscape"・148mm,210mm など。既定 A4)',
   '  --css a.css,b.css         使う CSS (HTML から参照されていないものは利用者のスタイルシートとして足す)',
   '  --font-dir <dir>          既定の書体 (NotoSerifJP-Regular.ttf など) を読むディレクトリ (無ければキャッシュ、次に Google Fonts から取る)',
   '  --font-cache <dir>        Google Fonts から取った既定の書体を保存して使い回すディレクトリ (既定は環境変数 KUMIORI_FONT_CACHE か OS のキャッシュ:',
@@ -336,7 +350,7 @@ export const USAGE_JA = [
 
 /** 使い方。英語 */
 export const USAGE_EN = [
-  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font serif|sans-serif=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
+  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font serif|sans-serif=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
   '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--link-schemes <a,b>] [--link-launch] [--watch]',
   '       kumiori a.html b.fo … -o <output directory>',
   '       kumiori - -o - [--base <dir>] < input > output.pdf',
@@ -344,6 +358,7 @@ export const USAGE_EN = [
   '',
   '  -o, --output <PDF>        output PDF (a directory when there are several inputs; - is standard output)',
   '  --style <name>            default style sheet for HTML (kumiori, browser, browser-margin, ah, vivliostyle, weasyprint; default kumiori)',
+  '  --page-size <size>        default paper for HTML (used when the document has no @page size; A5, "A5 landscape", 148mm,210mm, etc.; default A4)',
   '  --css a.css,b.css         CSS files to use (ones not referenced by the HTML are added as user style sheets)',
   '  --font-dir <dir>          directory of the default fonts (NotoSerifJP-Regular.ttf etc.; otherwise the cache, then Google Fonts)',
   '  --font-cache <dir>        directory where default fonts fetched from Google Fonts are saved and reused (default: KUMIORI_FONT_CACHE or the OS cache:',
