@@ -296,7 +296,23 @@ interface TextSeg {
   pen: number;
   /** 送りが分かっていて、後ろの字をつなげられるか */
   join: boolean;
+  /**
+   * ひと続きの字の並び (同じ親の領域に続けて置かれた字) ごとの区切り。at は parts の中の最初の字の位置、text は元の字の並び
+   * (分からない字が混じれば undefined)、wide は字の間を WIDE_GAP より広げた所があるか
+   */
+  chains: Array<{ at: number; text?: string; wide?: boolean }>;
+  /** 最後に足した字の親の領域の原点 (ページの座標) */
+  ox: number;
+  oy: number;
 }
+
+/**
+ * 字の間の空きが、字の大きさのこの割合以上なら「広げた字の並び」とみる (OUT-24)。PDF には空白の字が無くても、字を取り出す側は、字の間の
+ * 広さから空白を推測する。空白と見なし始める空きを測ると (字の大きさに対する割合。Poppler 24.02 の pdftotext・PDFium 153・MuPDF 1.28)、
+ * 欧文は PDFium が 0.10〜0.12、Poppler の -raw と MuPDF が 0.15、和文は Poppler の -raw が 0.15、PDFium が 0.17、Poppler の既定が 0.5
+ * (MuPDF は 0.8 で別の行に分ける)。いちばん小さい 0.1 を境にする (ふつうの行の字の間は、これより狭い)
+ */
+const WIDE_GAP = 0.1;
 
 class PdfPainter implements Painter {
   private clips = 0;
@@ -914,7 +930,8 @@ class PdfPainter implements Painter {
         return at;
       });
       const put = (list: typeof placed) => {
-        for (const at of list) this.placeGlyph(m, g.fontSize, (font as FeatureFont).encodeGlyphs([at.id], textOf(at.i)), at.u * k, at.v * k);
+        // ActualText を付ける単位 (own) の字は、広げた字の並びの ActualText (flushSeg) に入れない (ActualText は入れ子にできない)
+        for (const at of list) this.placeGlyph(m, g.fontSize, (font as FeatureFont).encodeGlyphs([at.id], textOf(at.i)), at.u * k, at.v * k, x - g.x, y - g.y, own ? undefined : textOf(at.i));
       };
       if (own) {
         // 置き換えの文字列 (ISO 32000-1 §14.9.4 Replacement Text): 印の付いた内容 (/Span) の ActualText に、元の字の並びを UTF-16BE で書く。
@@ -945,21 +962,22 @@ class PdfPainter implements Painter {
       if (multi || (font as FeatureFont).glyphText(g.glyphIds[0]) !== text) {
         this.flushSeg(r);
         r.ops.push(PDFOperator.of('BDC' as never, ['/Span', `<</ActualText <${utf16Hex(actual)}>>>`] as never));
-        this.placeGlyph(m, g.fontSize, hex, 0, 0);
+        this.placeGlyph(m, g.fontSize, hex, 0, 0, x - g.x, y - g.y);
         this.flushSeg(r);
         r.ops.push(PDFOperator.of('EMC' as never));
         return;
       }
     }
-    this.placeGlyph(m, g.fontSize, hex, 0, 0);
+    // 右から左の文字は、字形の並ぶ順が字の順と違うので、広げた字の並びの ActualText の対象にしない
+    this.placeGlyph(m, g.fontSize, hex, 0, 0, x - g.x, y - g.y, rtl ? undefined : text);
   }
 
   /**
    * 字を、ためている並び (run) に置く。同じ行列で同じ基線に並ぶ字は 1 つの文字列 (TJ。字の間隔は字送りの調整で表す) にまとめ、
    * 字ごとに Tm と Tj を書かない (PDF の内容が数分の 1 になる)。基線の違う字 (縦書きの正立の字・ずらした字形) は Tm から書き直す。
-   * (u, v) は行列 m の文字空間での字の原点 (GPOS のずらし)
+   * (u, v) は行列 m の文字空間での字の原点 (GPOS のずらし)。(ox, oy) は字の親の領域の原点、text は元の字 (分からなければ undefined)
    */
-  private placeGlyph(m: number[], size: number, hex: PDFHexString, u: number, v: number) {
+  private placeGlyph(m: number[], size: number, hex: PDFHexString, u: number, v: number, ox: number, oy: number, text?: string) {
     const r = this.run!;
     const px = m[4] + m[0] * u + m[2] * v;
     const py = m[5] + m[1] * u + m[3] * v;
@@ -978,6 +996,19 @@ class PdfPainter implements Painter {
           // TJ の数は 1/1000 文字空間単位 (字の大きさ倍される前) で、正なら左 (前) へ戻す
           const adj = ((s.pen - t) * 1000) / size;
           if (Math.abs(adj) >= 5e-5) s.parts.push(num(adj));
+          // 同じ親の領域に続けて置かれた字は、ひと続きの字の並び (字の間の空きは、字間・行の両端揃えで広げたもの)。親が変われば
+          // (別の行内の箱・別のセル・ルビなど)、並びを分ける: 間の空きは、字の並びの切れ目 (読む側が空白を推測してよい所)
+          let c = s.chains[s.chains.length - 1];
+          if (Math.abs(ox - s.ox) > 1e-6 || Math.abs(oy - s.oy) > 1e-6) {
+            c = { at: s.parts.length, text };
+            s.chains.push(c);
+            s.ox = ox;
+            s.oy = oy;
+          } else {
+            // ほんものの空白の字の前後の空き (語の間を広げた両端揃え) は数えない: 空白の字が、そのまま取り出される
+            if (adj <= -(WIDE_GAP * 1000 - 0.5) && c.text !== undefined && text !== undefined && !/\s$/.test(c.text) && !/^\s/.test(text)) c.wide = true;
+            c.text = c.text === undefined || text === undefined ? undefined : c.text + text;
+          }
           s.parts.push(`<${hex.asString()}>`);
           s.pen = t + (w * size) / 1000;
           return;
@@ -985,7 +1016,7 @@ class PdfPainter implements Painter {
       }
     }
     this.flushSeg(r);
-    r.seg = { a: m[0], b: m[1], c: m[2], d: m[3], x: px, y: py, size, parts: [`<${hex.asString()}>`], pen: w === undefined ? 0 : (w * size) / 1000, join: w !== undefined };
+    r.seg = { a: m[0], b: m[1], c: m[2], d: m[3], x: px, y: py, size, parts: [`<${hex.asString()}>`], pen: w === undefined ? 0 : (w * size) / 1000, join: w !== undefined, chains: [{ at: 0, text }], ox, oy };
   }
 
   /** ためている文字列を、Tm と Tj (字送りの調整があれば TJ) として run の命令に移す。数値は文字列にして渡す (pdf-lib の PDFNumber を作らない。1/10000 に丸める) */
@@ -994,8 +1025,22 @@ class PdfPainter implements Painter {
     if (!s) return;
     r.seg = undefined;
     r.ops.push(PDFOperator.of(Ops.SetTextMatrix, [num(s.a), num(s.b), num(s.c), num(s.d), num(s.x), num(s.y)] as never));
-    if (s.parts.length === 1) r.ops.push(PDFOperator.of(Ops.ShowText, [s.parts[0]] as never));
-    else r.ops.push(PDFOperator.of(Ops.ShowTextAdjusted, [`[${s.parts.join('')}]`] as never));
+    const show = (parts: string[]) => r.ops.push(parts.length === 1 ? PDFOperator.of(Ops.ShowText, [parts[0]] as never) : PDFOperator.of(Ops.ShowTextAdjusted, [`[${parts.join('')}]`] as never));
+    if (!s.chains.some((c) => c.wide && c.text !== undefined)) {
+      show(s.parts);
+      return;
+    }
+    // 字の間を広げた字の並び (OUT-24): 置き換えの文字列 (ISO 32000-1 §14.9.4) で、元の字の並びを書き添える。字を取り出す側は、印の付いた
+    // 内容 (/Span … BDC 〜 EMC。§14.6) の中の字を、この文字列に置き換えるので、字の間の広さから空白を推測しない。印の付いた内容は
+    // テキストの区切り (BT…ET) の中に置ける (§14.6.1)。字の位置 (TJ の字送りの調整) は変えない: 並びの切れ目で TJ を分けるだけで、
+    // 切れ目の空きは、前の TJ の終わりの調整量になる。広げていない並びには付けない
+    s.chains.forEach((c, i) => {
+      const parts = s.parts.slice(c.at, s.chains[i + 1]?.at);
+      const span = c.wide && c.text !== undefined;
+      if (span) r.ops.push(PDFOperator.of('BDC' as never, ['/Span', `<</ActualText <${utf16Hex(c.text!)}>>>`] as never));
+      show(parts);
+      if (span) r.ops.push(PDFOperator.of('EMC' as never));
+    });
   }
 
   /** ためた字を書き出す */
