@@ -56,6 +56,8 @@ export interface Atom {
   cite?: string;
   st: ResolvedStyle;
   bg?: string;
+  /** 背景 (bg) を持つ inline の内容の領域 (inlineBoxFontMetrics の文書)。無ければ、字の大きさの箱に塗る */
+  bgArea?: InlineContentArea;
   g?: GlyphMetrics;
   r?: RubyMetrics;
   /** ルビの字の色 [上側, 下側] (LRuby.rubyColor・rubyColorUnder。rubyPosition: 'under' なら入れ替えたもの)。無ければ字の色 */
@@ -129,10 +131,22 @@ export interface Atom {
   bidiPara?: number;
 }
 
+/**
+ * 行内の箱 (inline) の内容の領域 (CSS 2.1 §10.6.1・CSS Inline 3 §6.4): その inline の基線から block 方向の前 (above)・後ろ (below) への長さ。
+ * 横書きは最初に使える書体の ascent・descent、縦書きは中央の基線を挟んで半分ずつ。shift は、その inline の基線のずらし (baseline-shift の合計。上向きが正)
+ */
+export interface InlineContentArea {
+  above: number;
+  below: number;
+  shift: number;
+}
+
 /** 行内に置く箱 (画像・inline-container)。寸法は行の書字方向に対する値 */
 /** 罫線・余白つきの inline (文字を囲む枠) */
 export interface InlineFrame {
   id: number;
+  /** 内容の領域 (inlineBoxFontMetrics の文書)。無ければ、中の字の大きさの箱を囲む */
+  area?: InlineContentArea;
   /** 物理辺の罫線と余白 */
   border: BorderStyle;
   padding: Edges;
@@ -954,7 +968,7 @@ export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: s
           if (a && k! < word.length - 1) {
             // 行末に出す字 (hyphenate-character。既定は U+002D) は、語ごとに 1 度だけ測る
             hy ??= hyphenAtoms(st, (ch) => m.glyph(ch, { fontFamily: st.fontFamily, fontWeight: st.fontWeight, fontSize: st.fontSize, stretch: st.fontStretch, latinWord: true }, wm), a.runId, a.bg);
-            a.hyphen = hy.map((h) => ({ ...h, runId: a.runId, bg: a.bg }));
+            a.hyphen = hy.map((h) => ({ ...h, runId: a.runId, bg: a.bg, ...(a.bgArea ? { bgArea: a.bgArea } : {}) }));
           }
         }
       }
@@ -1730,7 +1744,7 @@ export function buildLineNode(
     // 字の背景は、字の大きさの箱 (em の箱) に塗る (行送りの高さには塗らない)。字の並びの箱は動かさず、背景は別の箱で描く
     const bg = group[0].a.bg;
     if (bg) {
-      const ext = emExtent(group.map((g) => g.a), lm, emTop, wm);
+      const ext = areaExtent(group[0].a.bgArea, lm, emTop) ?? emExtent(group.map((g) => g.a), lm, emTop, wm);
       // (fxRef: 字の背景も、字と同じ節の効果 (opacity) に入れるための番号。Area の sourceRef にはしない)
       line.children.unshift(newNode('block', wm, { i: gStart, b: ext.top, isize: span, bsize: ext.size, bg, ...(group[0].a.ref !== undefined ? { fxRef: group[0].a.ref } : {}) }));
     }
@@ -1856,6 +1870,14 @@ export function buildLineNode(
  * 字の並びの、字の大きさの箱 (em の箱) の上端と高さ。横書きは、字ごとの基準線より上と下の最大 (基準線は行の emTop + above)。
  * 縦書き・字の無い並びは、行の em の箱
  */
+/**
+ * 内容の領域 (InlineContentArea) の、行の中での上端と高さ。行の基線 (縦書きは中央の基線) は emTop + lm.above で、ずらした inline は、その分だけ動く
+ */
+function areaExtent(area: InlineContentArea | undefined, lm: LineMetrics, emTop: number): { top: number; size: number } | undefined {
+  if (!area) return undefined;
+  return { top: emTop + lm.above - area.shift - area.above, size: area.above + area.below };
+}
+
 function emExtent(atoms: Atom[], lm: LineMetrics, emTop: number, wm: WritingMode): { top: number; size: number } {
   const glyphs = atoms.filter((a) => a.kind === 'glyph' && !a.frameOpen && !a.frameClose && !a.shift);
   if (wm !== 'horizontal-tb' || !glyphs.length || glyphs.length !== atoms.filter((a) => !a.frameOpen && !a.frameClose).length) return { top: emTop, size: lm.em };
@@ -1889,9 +1911,11 @@ function drawInlineFrames(line: LNode, entries: { a: Atom; off: number; w: numbe
   const list = [...spans.values()].sort((x, y) => y.depth - x.depth);
   for (const sp of list) {
     const f = sp.frame;
+    // 内容の領域が決まっている枠 (CSS の inline) は、その領域。無ければ、枠は中の字の大きさの箱 (em の箱) を囲み、リンク・注釈の範囲は行の em の箱
+    const area = areaExtent(f.area, lm, emTop);
     if (f.link || (f.annot && sp.first)) {
       // リンク・注釈の範囲 (描画しない箱)
-      line.children.push(newNode('block', wm, { i: sp.lo, b: emTop, isize: Math.max(sp.hi - sp.lo, 0), bsize: lm.em, link: f.link, annot: sp.first ? f.annot : undefined }));
+      line.children.push(newNode('block', wm, { i: sp.lo, b: area?.top ?? emTop, isize: Math.max(sp.hi - sp.lo, 0), bsize: area?.size ?? lm.em, link: f.link, annot: sp.first ? f.annot : undefined }));
     }
     if (!f.box) continue;
     const pl = toLogical(f.padding, wm);
@@ -1901,7 +1925,7 @@ function drawInlineFrames(line: LNode, entries: { a: Atom; off: number; w: numbe
     if (sp.cutStart) delete border[phys('is')];
     if (sp.cutEnd) delete border[phys('ie')];
     // 枠は、中の字の大きさの箱 (em の箱) を囲む (行送りの高さでは囲まない)
-    const ext = emExtent(sp.atoms, lm, emTop, wm);
+    const ext = area ?? emExtent(sp.atoms, lm, emTop, wm);
     line.children.unshift(
       newNode('block', wm, {
         i: sp.lo,

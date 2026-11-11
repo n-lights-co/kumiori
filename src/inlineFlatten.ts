@@ -9,7 +9,7 @@ import { isVariationSequence, UNIT_CLUSTER, UNIT_CONT, type GlyphMetrics, type M
 import { mayCluster } from './grapheme';
 import { NOT_WORD_INITIAL } from './fontkitShaping';
 import { unitFeatures } from './orthographicSyllable';
-import { isGreekCyrillicLetter } from './fontManager';
+import { inlineAreaMetrics, isGreekCyrillicLetter } from './fontManager';
 import { LIGATURE_FEATURES, ligatureTable } from './ligature';
 import { isWrapSpace } from './jis';
 import { rangeTable } from './lineBreak';
@@ -18,7 +18,7 @@ import { lineHeightOf, newNode, resolveStyle, type ResolvedStyle } from './lnode
 import { withOpticalSize } from './fontVariation';
 import { borderToLogicalWidths, normBorder, normEdges, toLogical } from './geometry';
 import { sourceRef } from './sourceRef';
-import type { Atom, FlattenState, InlineChild, InlineFrame } from './inlineLayout';
+import type { Atom, FlattenState, InlineChild, InlineContentArea, InlineFrame } from './inlineLayout';
 
 /**
  * 分綴した行の終わりに出す字の atom の並び。字は hyphenate-character (CSS Text 4 §6.3.2)・hyphenation-character (XSL 1.1 §7.10.5) の
@@ -652,6 +652,15 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
       });
   }
   const kids = flattenInline(children, s2, m, state, c.backgroundColor ?? bg);
+  // 内容の領域 (CSS の inline): 背景・枠・リンクの範囲の、block 方向の広がり。この inline の最初に使える書体と字の大きさで決まる
+  const area = c.backgroundColor || c.border || c.padding || c.link || c.annotation ? inlineContentArea(s2, m, wm) : undefined;
+  // この inline の背景を引き継いだ字 (中の inline の字も。自分の背景を持つ inline の字は、その inline の領域が付いている) に、領域を付ける
+  if (area && c.backgroundColor) {
+    for (const a of kids) {
+      if (a.bg && !a.bgArea) a.bgArea = area;
+      for (const h of a.hyphen ?? []) if (h.bg && !h.bgArea) h.bgArea = area;
+    }
+  }
   // unicode-bidi: 中身の前後に双方向の制御文字を入れる (外側の inline の制御文字が外になる)
   const ctl = bidiControls(c.unicodeBidi, s2.direction === 'rtl');
   if (ctl && kids.length) {
@@ -674,6 +683,7 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     const frame: InlineFrame = { id: ++frameSeq, border: normBorder(c.border), padding: normEdges(c.padding), bg: c.backgroundColor, box: hasBox, ...(c.borderRadius ? { radius: c.borderRadius } : {}), ...(hasBox && c.boxDecorationBreak === 'clone' ? { clone: true } : {}), ...(hasBox && c.paintEffect ? { fx: c.paintEffect } : {}) };
     if (c.link) frame.link = c.link;
     if (c.annotation) frame.annot = c.annotation;
+    if (area) frame.area = area;
     if (hasBox) {
       const pl = toLogical(frame.padding, wm);
       const bl = borderToLogicalWidths(frame.border, wm);
@@ -715,6 +725,13 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     const d = c.baselineShift === 'super' ? st.fontSize * 0.35 : c.baselineShift === 'sub' ? -st.fontSize * 0.2 : c.baselineShift;
     // 字と、行内の箱 (画像・数式など。枠の始まり・終わりの空きは除く) をずらす
     for (const a of kids) if (a.kind === 'glyph' || (a.kind === 'box' && !a.frameOpen && !a.frameClose)) a.shift = (a.shift ?? 0) + d;
+    // この inline と、中の inline の内容の領域も、同じだけずらす (外側の inline の領域は、まだ付いていないので動かない)
+    const areas = new Set<InlineContentArea>();
+    for (const a of kids) {
+      if (a.bgArea) areas.add(a.bgArea);
+      for (const f of a.frames ?? []) if (f.area) areas.add(f.area);
+    }
+    for (const ar of areas) ar.shift += d;
   }
   out.push(...kids);
   if (c.width !== undefined) {
@@ -738,6 +755,20 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     }
   }
   state.run++;
+}
+
+/**
+ * inline の内容の領域 (inlineBoxFontMetrics の文書だけ。CSS 2.1 §10.6.1・CSS Inline 3 §6.4 の inline-sizing: normal):
+ * 最初に使える書体 (空白の字の書体。§5.3) の上の高さ・下の深さ (書体のどの値を使うかは fontManager.ts の inlineAreaMetrics)。
+ * 縦書きは、字が中央の基線にそろう (CSS Writing Modes 4 §4.2) ので、中央の基線を挟んで半分ずつ
+ */
+function inlineContentArea(st: ResolvedStyle, m: Measurer, wm: WritingMode): InlineContentArea | undefined {
+  if (!st.inlineBoxFontMetrics) return undefined;
+  const fm = inlineAreaMetrics(m.glyph(primaryChar(st), runStyleOf(st), wm).font);
+  const above = fm.ascent * st.fontSize;
+  const below = fm.descent * st.fontSize;
+  if (wm !== 'horizontal-tb') return { above: (above + below) / 2, below: (above + below) / 2, shift: 0 };
+  return { above, below, shift: 0 };
 }
 
 /** ルビ: 親文字とルビ文字をまとめて 1 つの atom にする */
