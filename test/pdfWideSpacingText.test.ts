@@ -104,8 +104,8 @@ describe('字の間を広げた字の並びの ActualText (OUT-24)', () => {
     const c = await contentOf('<p style="letter-spacing: 0.4em">हिन्दी की पंक्ति</p><p style="letter-spacing: 0.4em">كتاب بلا</p><p class="j">和文と हिन्दी と كتاب の混じる行</p>');
     expect(actualTexts(c).length).toBeGreaterThan(0);
   });
-  it('縦書きの字 (1 字ずつ位置を決めて置く正立の字) には付けない (これまでと同じ)', async () => {
-    const c = await contentOf('<div style="writing-mode: vertical-rl"><p class="j">最後の行も両端にそろえる</p><p style="letter-spacing: 0.5em">字間を広げた行</p></div>');
-    expect(actualTexts(c)).toEqual([]);
+  it('縦書きの行 (縦書きの書体の字の並び。OUT-26) も、広げた行には付ける。広げていない行には付けない', async () => {
+    const c = await contentOf('<div style="writing-mode: vertical-rl"><p class="j">最後の行も両端にそろえる</p><p style="letter-spacing: 0.5em">字間を広げた行</p><p>ふつうの行</p></div>');
+    expect(actualTexts(c)).toEqual(['最後の行も両端にそろえる', '字間を広げた行']);
   });
 });

@@ -373,7 +373,7 @@ describe('PDF の字の符号化 (性能)', () => {
     for (const v of tm) expect(v).toMatch(/^-?\d+(\.\d{1,4})?$/);
   });
 
-  it('同じ基線の字の間隔は TJ の字送りの調整 (1/1000 em) で表し、縦書きの正立の字は字ごとに Tm から書く', async () => {
+  it('同じ基線の字の間隔は TJ の字送りの調整 (1/1000 em) で表す。縦書きの正立の字は、縦書きの書体の 1 つの字の並びにする', async () => {
     const { PDFDocument: Doc, decodePDFRawStream } = await import('pdf-lib');
     const { fonts, engine } = await makeEngine();
     const content = async (children: unknown[], wm: 'horizontal-tb' | 'vertical-rl' = 'horizontal-tb') => {
@@ -389,10 +389,11 @@ describe('PDF の字の符号化 (性能)', () => {
     const adj = [...tj.replace(/<[^>]*>/g, ' ').matchAll(/(-?\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]));
     expect(adj).toHaveLength(2);
     for (const a of adj) expect(a).toBeCloseTo(-200, 2);
-    // 縦書きの正立の字は基線 (行) が同じでも並ぶ向きが違うので、字ごとに Tm
+    // 縦書きの正立の字は、縦書きの書体 (WMode 1) の字として、行ごとに Tm 1 つと TJ 1 つ (字は上から下へ送られる。OUT-26)
     const v = await content(['あいう'], 'vertical-rl');
-    expect(v.match(/ Tm$/gm)).toHaveLength(3);
-    expect(v.match(/ TJ/g)).toBeNull();
+    expect(v.match(/ Tm$/gm)).toHaveLength(1);
+    expect(v.match(/ TJ/g)).toHaveLength(1);
+    expect(v).toMatch(/-V-\d+ [\d.]+ Tf/);
     expect(shownCodes(v)).toHaveLength(3);
   });
 
@@ -468,7 +469,10 @@ describe('PDF の書体の埋め込み', () => {
     });
     expect(featured).toBeGreaterThan(0);
     const pdf = await PDFDocument.load(await renderPdf(tree, fonts));
-    const type0 = pdf.context.enumerateIndirectObjects().filter(([, o]) => (o as { get?: (n: PDFName) => unknown }).get?.(PDFName.of('Subtype'))?.toString() === '/Type0');
-    expect(type0.length).toBe(1);
+    const subtype = (name: string) => pdf.context.enumerateIndirectObjects().filter(([, o]) => (o as { get?: (n: PDFName) => unknown }).get?.(PDFName.of('Subtype'))?.toString() === name);
+    // Type 0 書体の辞書は、横書き用 (Identity-H) と縦書き用 (Identity-V。OUT-26) の 2 つで、同じ CIDFont (書体のデータ 1 つ) を指す
+    expect(subtype('/Type0').length).toBe(2);
+    expect(subtype('/CIDFontType2').length + subtype('/CIDFontType0').length).toBe(1);
+    expect(pdf.context.enumerateIndirectObjects().filter(([, o]) => (o as { get?: (n: PDFName) => unknown }).get?.(PDFName.of('FontFile2')) || (o as { get?: (n: PDFName) => unknown }).get?.(PDFName.of('FontFile3'))).length).toBe(1);
   });
 });
