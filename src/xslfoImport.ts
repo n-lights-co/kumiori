@@ -1204,7 +1204,8 @@ class Importer {
       hangingPunctuation: false,
       // 行番号の字の大きさの既定は medium (互換モードでは本文の大きさによらず 10pt)
       ...(this.spec ? {} : { lineNumber: { fontSize: this.defaultFontSize } }),
-      // 行の高さは、字ごとの書体の上下の高さに line-height を割り振って決める (互換モード。和欧混在の行が少し広がる)
+      // 行の高さは、書体の上下の高さに line-height を割り振って決める (互換モード)。ブロックと同じ書体の指定の字は、ブロックの nominal-font の
+      // 上下で割り振るので、和欧混在の行も行送りは line-height のまま (layoutEngine の nominalDiff・lineMetrics.ts の fontLineMetricsOf)
       fontLineMetrics: !this.spec,
       // 仕様モード: 代わりの書体 (和文の書体で組んだ字) の行の高さ・基線は、最初に使える書体の上下で決める
       // (欧文だけの行と和文を含む行で、表の隣のセルの基線がそろう)
