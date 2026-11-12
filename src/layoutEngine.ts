@@ -126,8 +126,10 @@ import { mm } from './units';
 import type { AssetStore } from './assets';
 import { FootnoteCtx, splitEntry, withLabel, type FootEntry } from './footnotes';
 import { breakEdgeBorder, collapsedOuterHalves, collapseTableBorders, placeCells } from './tableBorders';
+import { limitTableSpans } from './tableLimits';
 import { formatPageNumber } from './pageNumber';
 import { applyTextTransform } from './textTransform';
+import { maxOf, minOf, pushAll } from './arrayLoop';
 
 export interface LayoutOptions {
   /** 画像 (fo:external-graphic) の登録所。自然なサイズの取得に使う */
@@ -522,6 +524,19 @@ interface PlacedFloat {
   b0: number;
   b1: number;
   size: number;
+}
+
+/** 置いた float の索引 (Flow.floatIndex) */
+interface FloatIndex {
+  arr: PlacedFloat[];
+  epoch: number;
+  /** 調べ終えた float の数 */
+  n: number;
+  maxB0: number;
+  maxB1: { start: number; end: number };
+  live: PlacedFloat[];
+  /** 前に除いたときの live の数 */
+  kept: number;
 }
 
 interface FloatBox {
@@ -1104,7 +1119,37 @@ class Flow {
   }
 
   private floatBottom(side: 'start' | 'end' | 'both'): number {
-    return this.floats.filter((f) => side === 'both' || f.side === side).reduce((a, f) => Math.max(a, f.b1), 0);
+    const x = this.floatIndex();
+    return side === 'both' ? Math.max(x.maxB1.start, x.maxB1.end) : x.maxB1[side];
+  }
+
+  /** this.floats の b0・b1 を書き換えたら増やす (floatIndex を作り直させる) */
+  private floatEpoch = 0;
+  private floatIdx?: FloatIndex;
+  /**
+   * 置いた float の索引: b0 の最大、側ごとの b1 の最大、CSS の置き方で候補になりうる float (live)。置くたびに増えた分だけ足す。
+   * float を置くたびに全部の float を調べ直すと、float の数の 2 乗の手間になり、「span { float: left; width: 7px; height: 9px }」4 万個 (583KB) で
+   * 67 秒かかった。値は、全部を調べたときと同じ (置く位置は変わらない)
+   */
+  private floatIndex(): FloatIndex {
+    let x = this.floatIdx;
+    if (!x || x.arr !== this.floats || x.epoch !== this.floatEpoch || x.n > this.floats.length) {
+      x = this.floatIdx = { arr: this.floats, epoch: this.floatEpoch, n: 0, maxB0: -Infinity, maxB1: { start: 0, end: 0 }, live: [], kept: 0 };
+    }
+    for (; x.n < this.floats.length; x.n++) {
+      const p = this.floats[x.n];
+      x.maxB0 = Math.max(x.maxB0, p.b0);
+      x.maxB1[p.side] = Math.max(x.maxB1[p.side], p.b1);
+      x.live.push(p);
+    }
+    // CSS の置き方 (anchorFloat の cb) では、新しい float の上端は b0 の最大より上にならない (CSS 2.1 §9.5.1 の規則 5) ので、
+    // 下端がそれより上の float は、この索引の続くかぎり候補にならない。数が倍になるたびに除く (除く手間を、置く数にならす)
+    if (x.live.length > 2 * x.kept + 64) {
+      const y = x.maxB0;
+      x.live = x.live.filter((p) => !(p.b1 <= y + EPS));
+      x.kept = x.live.length;
+    }
+    return x;
   }
 
   private placeFloat(node: LFloat, ps: ResolvedStyle) {
@@ -1380,6 +1425,7 @@ class Flow {
       }
       this.afterBand.b0 = this.afterAt - this.afterUsed;
       this.afterBand.b1 = this.afterAt;
+      this.floatEpoch++;
       this.root.children.push(f.box);
       this.noteIds(f.box);
       this.placeHeldFootnotes(f.box);
@@ -1421,14 +1467,16 @@ class Flow {
     if (f.cb && (f.side === 'start' || f.side === 'end')) {
       const { off, width } = f.cb;
       // 上端は、先の float の上端より上にしない (規則 5)
-      let y = Math.max(this.cursor + pv, ...this.floats.map((p) => p.b0), f.clear ? this.floatBottom(f.clear) : 0);
+      const fx = this.floatIndex();
+      let y = Math.max(this.cursor + pv, fx.maxB0, f.clear ? this.floatBottom(f.clear) : 0);
       let left = off;
       let right = off + width;
       for (let guard = 0; guard < 100; guard++) {
         left = off;
         right = off + width;
         let next = Infinity;
-        for (const p of this.floats) {
+        // 候補は、下端が b0 の最大より下の float (fx.live。y は b0 の最大より下なので、ほかの float は下の条件で飛ばされる)
+        for (const p of fx.live) {
           if (p.b1 <= y + EPS || p.b0 >= y + f.outerB - EPS) continue;
           next = Math.min(next, p.b1);
           if (p.side === 'start') left = Math.max(left, p.size);
@@ -1484,6 +1532,7 @@ class Flow {
       f.b0 += h;
       f.b1 += h;
     }
+    this.floatEpoch++;
     for (const fr of this.stack) {
       if (!fr.opened) continue;
       fr.startB += h;
@@ -2560,7 +2609,7 @@ class Flow {
     if (node.bfc && this.stack[this.stack.length - 1] === frame) {
       // 中の最後の子の下の余白も箱の中に置き、中で始まった float の下端まで箱を伸ばす (CSS 2.1 §10.6.7)
       this.flush();
-      const fb = Math.max(-Infinity, ...this.floats.filter((f) => (f.seq ?? 0) > floatsBefore).map((f) => f.b1));
+      const fb = maxOf(this.floats.filter((f) => (f.seq ?? 0) > floatsBefore).map((f) => f.b1));
       if (fb > this.cursor) {
         this.cursor = fb;
         this.adjacent = 0;
@@ -3711,7 +3760,7 @@ class Flow {
         limit: width,
         pages: {
           addMarkers: (list) => {
-            if (final) this.markerSink.push(...list);
+            if (final) pushAll(this.markerSink, list);
           },
           noteId: () => {},
           columnEnd: (u) => used.push(u),
@@ -3780,7 +3829,7 @@ class Flow {
       root: roots[0],
       limit: width,
       pages: {
-        addMarkers: (list) => this.markerSink.push(...list),
+        addMarkers: (list) => pushAll(this.markerSink, list),
         noteId: () => {},
         columnEnd: (u) => used.push(u),
         nextPage: () => {
@@ -4056,7 +4105,7 @@ class Flow {
         limit: limitOf(0),
         pages: {
           addMarkers: (list) => {
-            if (final) (colMarkers[roots.length - 1] ??= []).push(...list);
+            if (final) pushAll((colMarkers[roots.length - 1] ??= []), list);
           },
           noteId: () => {},
           columnEnd: (u) => used.push(u),
@@ -4158,7 +4207,7 @@ class Flow {
       }
       if (r > 0) this.breakPage();
       // この行の段のマーカーは、この行を置くページに記録する (placeBox が記録する)
-      for (let k = 0; k < n; k++) this.markerSink.push(...(colMarkers[r * n + k] ?? []));
+      for (let k = 0; k < n; k++) pushAll(this.markerSink, colMarkers[r * n + k] ?? []);
       const last = (r + 1) * n >= roots.length;
       const row = newNode('block', wm, { isize, bsize: height, padding: { ...desc.paddingP }, border: { ...desc.borderP }, bg: desc.bg, ...this.decorOf(desc), src: desc.src, ref: desc.ref, radius: desc.radius, shadow: desc.shadow, children: kids });
       if (placedRow) row.cont = true;
@@ -4313,7 +4362,7 @@ class Flow {
         colH += occ(k);
       }
       const cw = Math.max(isize - desc.bpI, 0);
-      const widths = cols.map((col) => Math.max(...col.map((k) => lm(k).is + k.isize + lm(k).ie)));
+      const widths = cols.map((col) => maxOf(col.map((k) => lm(k).is + k.isize + lm(k).ie)));
       // align-content: stretch (normal): 余った幅を列に等しく分ける
       const spare = cw - widths.reduce((a, b) => a + b, 0) - wrapCols.gap * (cols.length - 1);
       if (wrapCols.stretch && spare > EPS) widths.forEach((_, k) => (widths[k] += spare / cols.length));
@@ -4374,7 +4423,7 @@ class Flow {
         const extent = (k: LNode) => {
           const lp = toLogical(k.padding, k.wm);
           const lb = borderToLogicalWidths(k.border, k.wm);
-          return lp.bs + lb.bs + (k.children.length ? Math.max(...k.children.map((c) => c.b + c.bsize)) : 0) + lp.be + lb.be;
+          return lp.bs + lb.bs + (k.children.length ? maxOf(k.children.map((c) => c.b + c.bsize)) : 0) + lp.be + lb.be;
         };
         const order = [...kids].sort((a, b) => a.b - b.b);
         const items = order.flatMap((k) => {
@@ -4563,7 +4612,7 @@ class Flow {
         limit,
         pages: {
           addMarkers: (list) => {
-            if (final) this.markerSink.push(...list);
+            if (final) pushAll(this.markerSink, list);
           },
           noteId: () => {},
           columnEnd: (u) => used.push(u),
@@ -4696,7 +4745,7 @@ class Flow {
       root,
       limit: 1e7,
       pages: {
-        addMarkers: (list) => this.markerSink.push(...list),
+        addMarkers: (list) => pushAll(this.markerSink, list),
         noteId: () => {},
         columnEnd: (u) => (used = Math.max(used, u)),
         columnIndex: () => 0,
@@ -4842,7 +4891,7 @@ class Flow {
       let have = 0;
       for (let k = col; k < col + span; k++) have += ws[k] ?? 0;
       if (need <= have + EPS) return;
-      const wt = weights.slice(col, col + span).map((w) => w ?? 0);
+      const wt = weights.map((w) => w ?? 0);
       const tw = wt.reduce((a, b) => a + b, 0);
       for (let k = 0; k < span; k++) ws[col + k] = (ws[col + k] ?? 0) + ((need - have) * (tw > 0 ? wt[k] / tw : 1 / span));
     };
@@ -4858,7 +4907,8 @@ class Flow {
         maxW[k] ??= 0;
       }
       // 最大の幅の比は、配る前の値で (最小の幅を配ってから最大の幅を配る)
-      const weights = maxW.slice();
+      // (またぐ列の分だけを写す。列の全体を写すと、列をまたぐセルの数 × 列の数の手間になる: colspan="1000" のセルが 50 行 × 50 個で 1.2 億回)
+      const weights = maxW.slice(col, col + span);
       spread(minW, col, span, W !== undefined ? Math.max(W, cmn) : cmn, weights);
       spread(maxW, col, span, cmx, weights);
       for (let k = col; k < col + span; k++) maxW[k] = Math.max(maxW[k], minW[k]);
@@ -4878,7 +4928,9 @@ class Flow {
     const mn = Array.from({ length: n }, (_, k) => Math.min(minW[k] ?? 0, mx[k]));
     const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
     if (sum(mx) <= avail) return mx;
-    if (sum(mn) >= avail) return sum(mn) > 0 ? mn.map((w) => (w * avail) / sum(mn)) : mn;
+    // (最小の幅の合計は 1 度だけ足す。列ごとに足し直すと列の数の 2 乗: colspan="1000" のセルの並ぶ表は列が数万本になる)
+    const sumMn = sum(mn);
+    if (sumMn >= avail) return sumMn > 0 ? mn.map((w) => (w * avail) / sumMn) : mn;
     // 中身の短い列 (最大の長さが均等割りの半分以下) は最大の長さのまま (短い列を折り返さない)。
     // 残りの列に、最小と最大の間を比例で配る
     const fixed = mx.map((w) => w <= avail / n / 2);
@@ -5135,6 +5187,8 @@ class Flow {
   layoutTable(table: LTable, ps: ResolvedStyle) {
     if (this.host.stats) this.host.stats.tables++;
     const st = resolveStyle(ps, table);
+    // 行をまたぐセルの広がりを、行グループの終わりと、表ごとの上限で切る (tableLimits.ts。どの行のセルも表の終わりまでまたぐ表の、行数の 2 乗のマス)
+    if (limitTableSpans(table)) this.host.warn(`表の、行をまたぐセルの広がりが上限を超えたので、超えた分のセルはまたがせません (number-rows-spanned・rowspan)`);
     if (st.wm !== this.wm) return this.layoutOrthogonal(table, st, ps);
     let node = collapseTableBorders(table, st.wm);
     // アンテナハウス互換 (collapse): 行の高さの指定は、罫線の中心から中心まで (trimEdgeRowHeights)
@@ -5227,7 +5281,23 @@ class Flow {
       const footerRows = node.footer ? this.layoutRowGroup(node.footer.rows, sizes, resolveStyle(st, node.footer)) : [];
       const footerH = footerRows.reduce((a, r) => a + r.bsize, 0);
       // 改ページのたびに各ページの末尾へ置く表フッター。その分の高さを、本体の行を置くときに空けておく
-      const repeatFooter = footerRows.length > 0 && !node.omitFooterAtBreak;
+      let repeatFooter = footerRows.length > 0 && !node.omitFooterAtBreak;
+      // 繰り返す見出しとフッターだけでページ (段) の高さを使い切る表: 続きのページでは繰り返さない。繰り返すと、本体の行を置く所が無く、
+      // どのページも見出しとフッターだけになって、本体の 1 行ごとに見出し・フッターの全部の行を持つページができる
+      // (見出し 100 行・フッター 100 行・本体 1000 行の 23KB の表で、20 万個の行を作り、メモリを使い切った)。
+      // CSS 2.1 §17.2 は「Print user agents may repeat header rows on each page」(繰り返してもよい)、CSS Tables 3 §6.2 は、繰り返しに要る高さが
+      // ページの高さの半分 (見出し・フッターそれぞれ 1/4) までのときに繰り返すと定める。XSL 1.1 §6.7.3 は繰り返すと定めるが、
+      // 領域に収まらない見出し・フッターの扱いは定めていない (あふれ) ので、同じく扱う
+      {
+        const headerH = headerRows.reduce((a, r) => a + r.bsize, 0);
+        const repeatH = (headerRows.length && !node.omitHeaderAtBreak ? headerH : 0) + (repeatFooter ? footerH : 0);
+        if (repeatH > 0 && this.paginating && Number.isFinite(this.limit) && repeatH >= this.limit - EPS) {
+          node = { ...node, omitHeaderAtBreak: true, omitFooterAtBreak: true };
+          repeatFooter = false;
+          if (this.tableBreak) this.tableBreak = { ...this.tableBreak, header: false };
+          this.host.warn('表の見出しとフッターがページの高さを超えるので、続きのページでは繰り返しません');
+        }
+      }
       const reserve = repeatFooter ? footerH : 0;
       const placeFooterAtBreak = repeatFooter
         ? () => {
@@ -5448,7 +5518,7 @@ class Flow {
       const closeBorder = this.stack.reduce((a, f) => a + (f.node.kind === 'table' ? f.desc.bw.be : 0), 0);
       // 行グリッドの中では、最後の行の後ろの半行間は空けない (アンテナハウスの baseline-grid)。セルの中の最後の行の分を、入るかの判定に数えない
       const last = group[group.length - 1];
-      const gridTrail = this.inGrid() && last?.children.length ? Math.min(...last.children.map((c) => c.trailLead ?? 0)) : 0;
+      const gridTrail = this.inGrid() && last?.children.length ? minOf(last.children.map((c) => c.trailLead ?? 0)) : 0;
       const need = this.cursor + this.pendingValue() + extent - gridTrail + closeBorder + (opts.reserve ?? 0) + this.heldFootCost(group);
       if (need > this.room + EPS || (opts.forceNewPage && this.pageHasContent)) {
         if (this.pageHasContent && (!this.headerOnly || opts.forceNewPage)) {
@@ -5669,7 +5739,7 @@ class Flow {
         limit: Math.max(avail - bp - sb, 1),
         pages: {
           addMarkers: (list) => {
-            this.markerSink.push(...list);
+            pushAll(this.markerSink, list);
             if (mk) for (const pm of list) if (!pm.indexId) cellMk.push({ pm, start: roots.length - 1 });
           },
           ...(mk
@@ -5716,7 +5786,7 @@ class Flow {
     if (baselineSplit) return null;
     const firstOver = cells.some((c) => (c.used[0] ?? 0) + c.desc.bpStart + c.desc.bpEnd + sb > avail + EPS);
     if (!firstHas || firstOver || brokeFirst) return null;
-    const n = Math.max(...cells.map((c) => c.roots.length));
+    const n = maxOf(cells.map((c) => c.roots.length));
     const out: LNode[] = [];
     for (let k = 0; k < n; k++) {
       const rn = newNode('row', this.wm, { isize: total, src: row.id, ref: sourceRef(row), ...(row.paintEffect ? { fx: row.paintEffect } : {}) });
@@ -5785,12 +5855,16 @@ class Flow {
     const rowNodes = rows.map((r) => newNode('row', this.wm, { isize: total, src: r.id, ref: sourceRef(r), ...(r.paintEffect ? { fx: r.paintEffect } : {}) }));
     const rowStyles = rows.map((row) => resolveStyle(st, row));
     // グリッドへの割り付け (placeCells): 上の行から伸びてきたセルが占める列は飛ばす。rowSpan はこの行グループの末尾で切る
+    // 列の始めの位置 (前の列の幅を、左から順に足したもの)。セルごとに足し直すと、セルの数 × 列の数の手間になる
+    // (colspan="1000" のセルが並ぶ表は、列が数万本になる)。足す順は同じなので、値は変わらない
+    const colStart: number[] = [0];
+    for (let k = 0; k < sizes.length; k++) colStart.push(colStart[k] + sizes[k]);
     for (const { cell, r: j, c: col, rs, cs } of placeCells([rows]).placed) {
       const w = sizes.slice(col, col + cs).reduce((a, b) => a + b, 0) + si * (Math.min(cs, nCols - col) - 1);
       // リストの項目の行 (listMarkerRow): 本文のセル (2 つ目) の最初の行を、記号のセル (1 つ目) の最初の行の基線より下の深さまで伸ばす
       const markerNode = rows[j].listMarkerRow && rowNodes[j].children.length === 1 ? rowNodes[j].children[0] : undefined;
       const cn = this.layoutCell(cell, w, rowStyles[j], markerNode ? markerBelow(markerNode) : undefined);
-      cn.i = sizes.slice(0, col).reduce((a, b) => a + b, 0) + si * (col + 1);
+      cn.i = colStart[Math.min(col, sizes.length)] + si * (col + 1);
       this.cellCols.set(cn, { c: col, cs, ...cell.breakEdges });
       rowNodes[j].children.push(cn);
       placed.push({ node: cn, row: j, span: rs, align: cell.blockAlign, ...(cell.stretchContent ? { stretch: true } : {}), ...(cell.stretchMax !== undefined ? { stretchMax: cell.stretchMax } : {}) });
@@ -5803,14 +5877,14 @@ class Flow {
     if (this.wm === 'horizontal-tb') {
       rows.forEach((_, j) => {
         // 行の無いセルの基線は、内容の下端 (中の箱の下端。空なら上端)
-        const contentBottom = (n: LNode) => (n.children.length ? Math.max(...n.children.map((c) => c.b + c.bsize)) : 0);
+        const contentBottom = (n: LNode) => (n.children.length ? maxOf(n.children.map((c) => c.b + c.bsize)) : 0);
         // last-baseline のセル (flex の align-items: last baseline。CSS Box Alignment 3 §9.3): 最後の行の基線から下端までの距離を
         // いちばん長いものにそろえ (下に空きを足す)、下で行の下端に寄せる (代わりの揃えは end)。行の無いセルは下端を基線にする
         const ll = placed.filter((p) => p.row === j && p.align === 'last-baseline').map((p) => ({ p, below: p.node.bsize - (lastBaseline(p.node) ?? p.node.bsize) }));
-        const deepest = Math.max(...ll.map((x) => x.below), -Infinity);
+        const deepest = maxOf(ll.map((x) => x.below));
         for (const { p, below } of ll) if (deepest - below > EPS) p.node.bsize += deepest - below;
         const bl = placed.filter((p) => p.row === j && p.align === 'baseline').map((p) => ({ p, fb: firstBaseline(p.node) ?? (this.host.xslSpace ? undefined : contentBottom(p.node)) }));
-        const target = Math.max(...bl.map((x) => x.fb ?? -Infinity));
+        const target = maxOf(bl.map((x) => x.fb ?? -Infinity));
         if (!Number.isFinite(target)) return;
         for (const { p, fb } of bl) {
           const d = fb === undefined ? 0 : target - fb;
@@ -5955,7 +6029,7 @@ function inlineBoxRect(host: LNode, k: number, end: number): { i0: number; b0: n
   if (!frags.length) return undefined;
   const first = frags[0];
   const last = frags[frags.length - 1];
-  return { i0: first.i0, b0: first.b0, i1: Math.max(first.i0, ...frags.map((f) => f.i1)), b1: Math.max(last.b1, first.b0) };
+  return { i0: first.i0, b0: first.b0, i1: maxOf(frags.map((f) => f.i1), first.i0), b1: Math.max(last.b1, first.b0) };
 }
 
 /**
@@ -6844,7 +6918,7 @@ export class LayoutEngine {
         }
         this.indexLog?.set(c, ex);
         out ??= run.slice(0, k);
-        out.push(...ex.nodes);
+        pushAll(out, ex.nodes);
         continue;
       }
       let r: InlineChild = c;
@@ -7211,11 +7285,11 @@ export class LayoutEngine {
       if (memo && !this.fnResetUsed && memo.first === first && memo.fnCarryIn === this.fnCarry && sameIndexLists(memo) && this.reuseCites(memo)) {
         if (this.indexKeys) memo.built.forEach((pb, k) => this.pageOrdinal.set(pb, pages.length + k));
         for (const [list, ex] of memo.indexLists ?? []) this.indexUsed.set(list, ex);
-        pages.push(...memo.built);
+        pushAll(pages, memo.built);
         for (const [k, v] of memo.idPages) this.idPages.set(k, { ...v });
         for (const [k, v] of memo.idPageBuild) this.idPageBuild.set(k, v);
         for (const [k, v] of memo.idPageBuildLast) this.idPageBuildLast.set(k, v);
-        this.warnings.push(...memo.warnings);
+        pushAll(this.warnings, memo.warnings);
         if (memo.cites.size) this.citationUsed = true;
         pageNo = first + memo.built.length;
         this.fnCarry = memo.fnCarryOut;
@@ -7271,7 +7345,7 @@ export class LayoutEngine {
       noteSpan(seq.id, built.length);
       noteSpan(seq.flow.id, Math.min(flowPages, built.length));
       if (this.indexKeys) built.forEach((pb, k) => this.pageOrdinal.set(pb, pages.length + k));
-      pages.push(...built);
+      pushAll(pages, built);
       pageNo = first + built.length;
       this.fnCarry = this.lastFoot?.lastNumber ?? this.fnCarry;
       this.lastFoot = undefined;
@@ -7283,7 +7357,9 @@ export class LayoutEngine {
 
     const total = pages.length;
     this.lineCount.clear();
+    this.staticMemo = new Map();
     const sheets: SheetArea[] = pages.map((p, i) => this.buildSheet(p, total, host, docStyle, pages, i));
+    this.staticMemo = new Map();
     // しおりの飛び先 (id) を、シートの番号に解決する
     const resolve = (bs: LBookmark[] | undefined): BookmarkArea[] =>
       (bs ?? []).map((b) => {
@@ -7517,7 +7593,7 @@ export class LayoutEngine {
       limit: first.limit,
       pages: {
         addMarkers: (list) => {
-          if (!o.trial) ensurePage(abs).markers.push(...this.takeIndexPoints(list, (id) => this.noteIdPage(id, firstNumber + abs, seq.pageNumberFormat, ensurePage(abs))));
+          if (!o.trial) pushAll(ensurePage(abs).markers, this.takeIndexPoints(list, (id) => this.noteIdPage(id, firstNumber + abs, seq.pageNumberFormat, ensurePage(abs))));
         },
         markerEnd: (key) => {
           if (!o.trial) (ensurePage(abs).markerEnds ??= []).push(key);
@@ -7902,7 +7978,7 @@ export class LayoutEngine {
       root: cur.root,
       limit: firstPage.limit,
       pages: {
-        addMarkers: (list) => cur.markers.push(...this.takeIndexPoints(list, (id) => this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur))),
+        addMarkers: (list) => pushAll(cur.markers, this.takeIndexPoints(list, (id) => this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur))),
         markerEnd: (key) => (cur.markerEnds ??= []).push(key),
         noteId: (id) => {
           this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur);
@@ -7960,9 +8036,13 @@ export class LayoutEngine {
     for (const ch of p.root.children) walk(ch, 0, 0, { k: 0, i: 0, isize: p.root.isize }, 0);
     // 改訂バー: 同じ指定が続く行 (段落の間の空きを含む) は 1 本につなげ、行の block 方向の長さいっぱいに引く
     const runs: Array<{ rb: RevisionBar; col: Col; b0: number; b1: number; last: number }> = [];
+    // バーごとの最後の続き (行の revs は Set から作るので同じバーは 1 度だけ。前の行で伸ばした続きは、そのバーの最後の続きに限る)。
+    // 続きを全部の続きから探すと、開いている change-bar の数 × 行の数 × 続きの数になり、change-bar 2000 個 × block 2000 個 (180KB) で 17 秒かかった
+    const lastRun = new Map<RevisionBar, (typeof runs)[number]>();
     hits.forEach((h, k) => {
       for (const rb of h.line.revs ?? []) {
-        const r = runs.find((x) => x.rb === rb && x.last === k - 1 && x.col.k === h.col.k);
+        const l = lastRun.get(rb);
+        const r = l && l.last === k - 1 && l.col.k === h.col.k ? l : undefined;
         if (r && rb.changeBar) {
           // 変更バー: 隣り合うセルの行 (前の行より上に戻る) も含めて、いちばん上からいちばん下まで
           r.b0 = Math.min(r.b0, h.b);
@@ -7971,10 +8051,27 @@ export class LayoutEngine {
         } else if (r) {
           r.b1 = h.b + h.line.bsize;
           r.last = k;
-        } else runs.push({ rb, col: h.col, b0: h.b, b1: h.b + h.line.bsize, last: k });
+        } else {
+          const run = { rb, col: h.col, b0: h.b, b1: h.b + h.line.bsize, last: k };
+          runs.push(run);
+          lastRun.set(rb, run);
+        }
       }
     });
-    for (const { rb, col, b0, b1 } of runs) {
+    // 同じ所に同じ見た目で引くバー (同じ範囲の行に開いている、同じ指定の change-bar) は、最後の 1 本だけ描く (どの点でも、いちばん後に
+    // 描くバーは変わらないので、見た目は同じ。透明度のある色は、重ねると濃くなるので除く)。開いている change-bar の数だけ、ページごとに
+    // 同じバーを作らない
+    const seen = new Set<string>();
+    const skip = new Set<number>();
+    for (let k = runs.length - 1; k >= 0; k--) {
+      const { rb, col, b0, b1 } = runs[k];
+      if (/rgba|hsla|transparent|\/|#[0-9a-f]{8}\b|#[0-9a-f]{4}\b/i.test(rb.color)) continue;
+      const key = `${rb.color}|${rb.style}|${rb.width}|${rb.offset}|${rb.position}|${!!rb.changeBar}|${col.k}|${col.i}|${col.isize}|${b0}|${b1}`;
+      if (seen.has(key)) skip.add(k);
+      else seen.add(key);
+    }
+    for (const [k, { rb, col, b0, b1 }] of runs.entries()) {
+      if (skip.has(k)) continue;
       const w = rb.width ?? 1;
       // 段の端からバーまでの間隔 (既定 0。指定が無ければ、バーは段の端に接する)
       const off = rb.offset ?? 0;
@@ -8042,6 +8139,9 @@ export class LayoutEngine {
     this.lineCount.set(p.seq, n);
   }
 
+  /** 組んだ static-content (余白の箱・柱) の箱の覚え (buildSheet。組版の通しごとに作り直す) */
+  private staticMemo = new Map<LBlockContainer, StaticMemoEntry[]>();
+
   private buildSheet(p: PageBuild, total: number, host: FlowHost, docStyle: ResolvedStyle, allPages: PageBuild[], index: number): SheetArea {
     const m: PageMaster = p.master;
     const W = mm(m.width);
@@ -8058,11 +8158,41 @@ export class LayoutEngine {
     // 全ページ共通の絶対配置 (ヘッダー等) — ページ番号を差し替えてレイアウト
     const staticNodes: LNode[] = [];
     for (const c of p.staticContent) {
-      const sub = new Flow({ ...host, pageNumber: () => p.number }, { wm, rootI: W, abs: () => staticNodes, pageSize: () => ({ width: W, height: H }) });
+      // ページで変わらない中身 (ページ番号・ページ番号の参照・脚注などを含まず、取り出すマーカーも前に組んだページと同じ) は、
+      // 前に組んだ箱を使い回す (staticMemo)。ページごとに写して組み直すと、「static-content 225KB × 300 ページ」(239KB)・
+      // 「余白の箱の content の 4000 字 × 400 ページ」(20KB) で、入力の大きさ × ページの数の手間とメモリになる
+      const retrieves = staticRetrieves(c);
+      const found = retrieves ? retrieves.map((r) => findMarker(r, allPages, index)) : undefined;
+      const reusable = found !== undefined && found.every((m) => m === undefined || isPageInvariant(m.children));
+      const parity = p.number % 2;
+      let entries = this.staticMemo.get(c);
+      const hit = reusable ? entries?.find((e) => e.W === W && e.H === H && e.wm === wm && e.seq === p.seq && e.parity === parity && e.found.length === found.length && e.found.every((m, k) => m === found[k])) : undefined;
+      // ページの下端より 1 ページ分以上下の行は、組んだ後で捨てる (offPageLines。見えない)
+      const below = H + ex.bottom + H;
+      if (hit) {
+        for (const n of hit.nodes) staticNodes.push(n);
+        for (const w of hit.warnings) host.warn(w);
+        continue;
+      }
+      const own: LNode[] = [];
+      const warnings: string[] = [];
+      const warn = (m: string) => {
+        warnings.push(m);
+        host.warn(m);
+      };
+      const sub = new Flow({ ...host, warn, pageNumber: () => p.number }, { wm, rootI: W, abs: () => own, pageSize: () => ({ width: W, height: H }) });
       // マーカーを展開してからページ番号を差し替える (マーカーの中身のページ番号 (HTML の running() の中の counter(page)) も差し替える)
       const sc = substitute(resolveMarkers(c, allPages, index), { pageNumber: formatPageNumber(p.number, p.seq.pageNumberFormat), totalPages: String(total) }, p.number);
       const forced: LBlockContainer = { ...sc, absolutePosition: true };
       sub.layoutBlockLevel(forced, resolveStyle(docStyle, p.seq));
+      for (let k = 0; k < own.length; k++) own[k] = dropLinesBelow(own[k], (own[k].phys ? own[k].phys!.y : own[k].b) + (own[k].relShift?.y ?? 0), below);
+      for (const n of own) staticNodes.push(n);
+      if (reusable) {
+        if (!entries) this.staticMemo.set(c, (entries = []));
+        // 覚えるのは直近の数件 (柱の中身は章ごとに変わる。ページごとに変わる中身を、ページの数だけ覚えない)
+        if (entries.length >= STATIC_MEMO_ENTRIES) entries.shift();
+        entries.push({ W, H, wm, seq: p.seq, parity, found, nodes: own, warnings });
+      }
     }
 
     const rx = mm(m.margins.left);
@@ -8205,11 +8335,32 @@ const flipped = new WeakSet<LNode>();
 /** marker を子に持つ箱 (BoxDesc)。閉じるときに、終わったページを記録する */
 const markerParents = new WeakSet<object>();
 
+/**
+ * ページのマーカーを、クラスの名前ごとに分けた索引 (ページのマーカーの並びごとに 1 度作る。並びが伸びたら作り直す)。
+ * retrieve-marker のたびにページのマーカーを全部調べると、「string-set 2000 個 × 余白の string() 2000 個 × 100 ページ」(270KB) で
+ * 数億回の比較になり、100 秒を超えた
+ */
+const markerIndex = new WeakMap<PendingMarker[], { n: number; by: Map<string, PendingMarker[]> }>();
+const NO_MARKERS: PendingMarker[] = [];
+function markersOfClass(markers: PendingMarker[], className: string): PendingMarker[] {
+  let x = markerIndex.get(markers);
+  if (!x || x.n !== markers.length) {
+    const by = new Map<string, PendingMarker[]>();
+    for (const m of markers) {
+      const l = by.get(m.className);
+      if (l) l.push(m);
+      else by.set(m.className, [m]);
+    }
+    markerIndex.set(markers, (x = { n: markers.length, by }));
+  }
+  return x.by.get(className) ?? NO_MARKERS;
+}
+
 /** retrieve-marker で該当するマーカーを探す (carryover は boundary の範囲まで遡る) */
 function findMarker(r: LRetrieveMarker, pages: PageBuild[], index: number): LMarker | undefined {
   const position = r.position ?? 'first-starting-within-page';
   const boundary = r.boundary ?? 'page-sequence';
-  const on = (i: number) => pages[i].markers.filter((m) => m.className === r.className);
+  const on = (i: number) => markersOfClass(pages[i].markers, r.className);
   const own = on(index);
   // 前のページから持ち越した値 (直近のマーカー)
   const carry = () => {
@@ -8250,6 +8401,107 @@ function findMarker(r: LRetrieveMarker, pages: PageBuild[], index: number): LMar
   if (hit) return hit.marker;
   if (position.endsWith('including-carryover')) return carry();
   return undefined;
+}
+
+/**
+ * 横書きの箱 n (上端の、ページの上端からの位置が y) の中の行のうち、上端が limit より下のものを除いた箱を返す (変えた所だけ写す)。
+ * static-content・余白の箱は、領域からあふれた中身もそのまま描く (overflow は visible) が、ページより下の行は見えない。
+ * 「static-content 225KB × 300 ページ」(239KB) では、ページごとに 225KB の字を描く領域を作り、メモリを使い切った。
+ * 位置を確かめられる箱 (横書き・回転なし・描くときの変形なし) の中だけを調べ、ほかは変えない。箱の位置は toArea と同じに求める
+ * (物理の位置 phys があればそれ、無ければ b。position: relative のずらし relShift を足す)。
+ * 行の字が行の箱から上へはみ出す分を見込み、limit は呼ぶ側がページの下端より 1 ページ分下にする
+ */
+function dropLinesBelow(n: LNode, y: number, limit: number): LNode {
+  if (n.wm !== 'horizontal-tb' || n.rot || n.fx || n.kind === 'line' || !n.children.length) return n;
+  const top = y + n.padding.top + borderWidths(n.border).top;
+  let kids: LNode[] | undefined;
+  for (let k = 0; k < n.children.length; k++) {
+    const c = n.children[k];
+    const cy = top + (c.phys ? c.phys.y : c.b) + (c.relShift?.y ?? 0);
+    const drop = c.kind === 'line' && c.wm === 'horizontal-tb' && !c.rot && !c.fx && cy > limit;
+    const next = drop ? undefined : dropLinesBelow(c, cy, limit);
+    if (next !== c && !kids) kids = n.children.slice(0, k);
+    if (kids && next) kids.push(next);
+  }
+  return kids ? { ...n, children: kids } : n;
+}
+
+/** 1 つの static-content について覚える、組んだ箱の件数 */
+const STATIC_MEMO_ENTRIES = 4;
+
+/** 組んだ static-content の箱の覚え: 組んだ条件 (ページの大きさ・書字方向・page-sequence・ページ番号の偶奇・取り出したマーカー) と、箱・警告 */
+interface StaticMemoEntry {
+  W: number;
+  H: number;
+  wm: WritingMode;
+  seq: LPageSequence;
+  parity: number;
+  found: Array<LMarker | undefined>;
+  nodes: LNode[];
+  warnings: string[];
+}
+
+/**
+ * ページによって組んだ結果の変わる節の種類: ページ番号の参照・索引のページ番号 (番号が要る)、脚注・回り込み・マーカー (ページに跡を残す)、
+ * fo:retrieve-table-marker。retrieve-marker は、取り出したマーカーを鍵にして別に扱う (staticRetrieves)
+ */
+const PAGE_VARIANT_TYPES = new Set(['page-number-citation', 'index-page-citation-list', 'footnote', 'footnote-citation', 'float', 'marker', 'retrieve-table-marker']);
+const pageInvariant = new WeakMap<object, boolean>();
+
+/**
+ * 節 (と子孫) が、ページによらず同じに組めるか。ページ番号・総ページ数の差し替え ({pageNumber} など。substitute) のある文字列、
+ * PAGE_VARIANT_TYPES の節を含まないこと。retrieve-marker は数えない (呼ぶ側が、取り出したマーカーを別に確かめる)。入力の節ごとに 1 度だけ調べる
+ */
+function isPageInvariant(node: object): boolean {
+  const known = pageInvariant.get(node);
+  if (known !== undefined) return known;
+  // 深い入れ子でもスタックを使い切らないよう、積んで回る
+  const stack: unknown[] = [node];
+  let ok = true;
+  while (ok && stack.length) {
+    const v = stack.pop();
+    if (typeof v === 'string') {
+      if (v.includes('{') || v.includes('\u0000')) ok = false;
+    } else if (Array.isArray(v)) {
+      for (const e of v) if (typeof e === 'string' || (e && typeof e === 'object')) stack.push(e);
+    } else if (v && typeof v === 'object') {
+      const t = (v as { type?: unknown }).type;
+      if (typeof t === 'string' && PAGE_VARIANT_TYPES.has(t)) ok = false;
+      else for (const e of Object.values(v)) if (typeof e === 'string' || (e && typeof e === 'object')) stack.push(e);
+    }
+  }
+  pageInvariant.set(node, ok);
+  return ok;
+}
+
+const staticRetrieveList = new WeakMap<object, LRetrieveMarker[] | null>();
+
+/**
+ * static-content の中の retrieve-marker (文書の順)。中身がページで変わる (isPageInvariant でない) なら undefined (使い回せない)。
+ * マーカーの中身に retrieve-marker があることは無い (XSL 1.1 §6.13.5: fo:marker は flow の子孫だけ。retrieve-marker は static-content の子孫だけ)
+ */
+function staticRetrieves(c: LBlockContainer): LRetrieveMarker[] | undefined {
+  let list = staticRetrieveList.get(c);
+  if (list === undefined) {
+    list = null;
+    if (isPageInvariant(c)) {
+      list = [];
+      const stack: unknown[] = [c];
+      while (stack.length) {
+        const v = stack.pop();
+        if (Array.isArray(v)) for (let k = v.length - 1; k >= 0; k--) stack.push(v[k]);
+        else if (v && typeof v === 'object') {
+          if ((v as { type?: string }).type === 'retrieve-marker') list.push(v as LRetrieveMarker);
+          else {
+            const vals = Object.values(v);
+            for (let k = vals.length - 1; k >= 0; k--) if (vals[k] && typeof vals[k] === 'object') stack.push(vals[k]);
+          }
+        }
+      }
+    }
+    staticRetrieveList.set(c, list);
+  }
+  return list ?? undefined;
 }
 
 /** 静的コンテンツ中の retrieve-marker を、該当マーカーの内容 (または空) に置き換えた複製を返す */

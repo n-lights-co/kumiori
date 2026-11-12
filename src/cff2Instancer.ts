@@ -26,6 +26,18 @@
 
 const MAX_STACK = 513; // CFF2「Stack-based CFF2 decoding」: 積める数は 513 まで
 const MAX_SUBR_DEPTH = 10; // CFF2「Subroutines」: 部品の入れ子は 10 段まで
+/**
+ * 字形の CharString を実行する手間の上限 (読んだ数・演算子の数。部品の中も数える)。入れ子の上限 (10 段) があっても、
+ * 「部品 k が部品 k−1 を何度も呼ぶ」鎖で、呼び出しの回数は掛け算で増える (2.4KB の表で 8 秒・2.6GB になった)。
+ * Type 2 の仕様 (Adobe Technical Note #5177 の Appendix B) にも CFF2 の仕様にも、呼び出しの回数の定めは無いので、
+ * 正当な書体が届かない値にする: 字形 1 つで 100 万、表の全体で、表の 1 バイトあたり 64 + 400 万
+ * (正当な字形は、部品を展開しても数千。字形の CharString の合計は、表の大きさを超えない)。
+ * 超えた字形は、輪郭の無い字形にする (送りは変えない)
+ */
+const CFF2_GLYPH_OPS = 1_000_000;
+const CFF2_OPS_PER_BYTE = 64;
+const CFF2_OPS_BASE = 4_000_000;
+class Cff2BudgetError extends Error {}
 
 /** 仕様の丸め (0.5 は上へ) */
 const otRound = (v: number) => Math.floor(v + 0.5);
@@ -195,6 +207,9 @@ class Interpreter {
   nXy = 0;
   private localOffsets: Uint32Array = new Uint32Array(1);
   private localCount = 0;
+  /** 実行した数・演算子の数と、その上限 (run の呼び出しごと) */
+  ops = 0;
+  private opsCap = Infinity;
 
   constructor(
     private b: Uint8Array,
@@ -202,7 +217,9 @@ class Interpreter {
     private scalarsOf: (vsindex: number) => Float64Array | undefined,
   ) {}
 
-  run(start: number, end: number, local: Index2 | undefined, vsindex: number) {
+  run(start: number, end: number, local: Index2 | undefined, vsindex: number, opsCap = Infinity) {
+    this.ops = 0;
+    this.opsCap = opsCap;
     this.sp = 0;
     this.stems = 0;
     this.x = 0;
@@ -260,6 +277,7 @@ class Interpreter {
     let sp = this.sp;
     let p = start;
     while (p < end) {
+      if (++this.ops > this.opsCap) throw new Cff2BudgetError('CFF2: the glyph takes too much to run');
       const b0 = b[p++];
       if (b0 >= 32 || b0 === 28) {
         // 数 (CFF2「Encoded numbers」)
@@ -760,6 +778,8 @@ export interface Cff2Instance {
   boxes: Int32Array;
   /** 輪郭のある字形か */
   hasOutline: Uint8Array;
+  /** 実行の手間が上限を超えて、輪郭の無い字形にした字形の数 (無ければ 0) */
+  emptied: number;
 }
 
 /**
@@ -885,9 +905,20 @@ export function instantiateCff2(
   const boxes = new Int32Array(nGlyphs * 4);
   const hasOutline = new Uint8Array(nGlyphs);
   const box = new Float64Array(4);
+  let opsLeft = CFF2_OPS_PER_BYTE * b.length + CFF2_OPS_BASE;
+  let emptied = 0;
   for (let g = 0; g < nGlyphs; g++) {
     const fd = fds[fdOf[g]];
-    it.run(charStrings.offsets[g], charStrings.offsets[g + 1], fd.local, fd.vsindex);
+    try {
+      it.run(charStrings.offsets[g], charStrings.offsets[g + 1], fd.local, fd.vsindex, Math.min(CFF2_GLYPH_OPS, opsLeft));
+      opsLeft -= it.ops;
+    } catch (e) {
+      if (!(e instanceof Cff2BudgetError)) throw e;
+      opsLeft = Math.max(0, opsLeft - it.ops);
+      it.nKinds = 0;
+      it.nXy = 0;
+      emptied++;
+    }
     const w = advances[g];
     box[0] = box[2] = Infinity;
     box[1] = box[3] = -Infinity;
@@ -1031,5 +1062,5 @@ export function instantiateCff2(
     q += part.length;
   }
   if (q !== at) throw new Error('CFF2: instance layout mismatch');
-  return { cff, boxes, hasOutline };
+  return { cff, boxes, hasOutline, emptied };
 }

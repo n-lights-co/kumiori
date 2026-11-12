@@ -3,6 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      読み込みの制限 (Content Security Policy)。スクリプトは、このサイトのファイルだけを動かす (文中のスクリプト・イベントの属性・javascript: の URL は動かない)。
+      読み込んだ文書 (他人の書いた HTML・XSL-FO・SVG かもしれない) の中身が、画面の DOM に入り込んでも、スクリプトとしては動かないようにする守り。
+      文書の表示を確かめる枠 (iframe の srcdoc。sandbox でスクリプトを止めている) にも、この制限が引き継がれる。
+      画像・書体・CSS・取得は、文書がどこを指してもよいので、どこからでも許す (文書の <style>・style 属性のために、文中のスタイルも許す)
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; media-src * data: blob:; connect-src * data: blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
+    />
     <title>Kumiori（組み織り）— ブラウザ組版エンジン</title>
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />

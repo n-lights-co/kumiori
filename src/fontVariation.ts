@@ -94,7 +94,7 @@ export function parseVariationSettings(value: string): Record<string, number> | 
   if (/^normal$/i.test(v)) return {};
   const out: Record<string, number> = {};
   for (const item of v.split(',')) {
-    const m = /^\s*(?:"([ -~]{4})"|'([ -~]{4})')\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*$/i.exec(item);
+    const m = /^\s*(?:"([ -~]{4})"|'([ -~]{4})')\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\s*$/i.exec(item);
     if (!m) return undefined;
     out[m[1] ?? m[2]] = parseFloat(m[3]);
   }

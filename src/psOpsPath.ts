@@ -188,26 +188,34 @@ export function installPathOperators(I: Interp, G: Graphics) {
     G.g.cp = last && last.op === 'M' ? [last.x, last.y] : undefined;
   });
   d('pathbbox', (I) => {
-    const pts: Array<[number, number]> = [];
-    for (const s of G.g.path) {
-      if (s.op === 'Z') continue;
-      if (s.op === 'C') pts.push([s.x1, s.y1], [s.x2, s.y2]);
-      pts.push([s.x, s.y]);
-    }
-    if (!pts.length) throw new PSError('nocurrentpoint');
-    const inv = invert(G.g.ctm);
-    if (!inv) throw new PSError('undefinedresult');
+    // 点を配列に集めずに、パスをたどりながら範囲を求め、パスの長さの手間を数える (前は 1 回ごとに点の数だけの配列を作り、
+    // 400 万点のパスに「{ pathbbox pop pop pop pop } loop」をすると、ごみ集めに時間を取られて時間の上限を数秒越えた)
+    const path = G.g.path;
+    I.work(path.length);
     // Math.min(...xs) の spread は点の数 (数十万) で引数の数の上限を超えて RangeError になるので、ループで求める
     let x0 = Infinity;
     let y0 = Infinity;
     let x1 = -Infinity;
     let y1 = -Infinity;
-    for (const [x, y] of pts) {
+    let any = false;
+    const add = (x: number, y: number) => {
+      any = true;
       if (x < x0) x0 = x;
       if (x > x1) x1 = x;
       if (y < y0) y0 = y;
       if (y > y1) y1 = y;
+    };
+    for (const s of path) {
+      if (s.op === 'Z') continue;
+      if (s.op === 'C') {
+        add(s.x1, s.y1);
+        add(s.x2, s.y2);
+      }
+      add(s.x, s.y);
     }
+    if (!any) throw new PSError('nocurrentpoint');
+    const inv = invert(G.g.ctm);
+    if (!inv) throw new PSError('undefinedresult');
     const corners = [
       [x0, y0],
       [x1, y0],

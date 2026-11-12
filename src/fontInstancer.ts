@@ -21,6 +21,7 @@
  * (呼び出し側が、既定の形のまま使う)。
  */
 import { instantiateCff2 } from './cff2Instancer';
+import { msg } from './messages';
 
 /** 可変フォントの軸 ('fvar' の VariationAxisRecord) */
 export interface VariationAxis {
@@ -65,34 +66,40 @@ function tableDirectory(dv: DataView): Map<string, TableRec> | undefined {
   return out;
 }
 
-/** 'name' 表から、nameID の文字列 (Windows の Unicode の英語を先に、無ければ最初に読めるもの) */
-function nameString(dv: DataView, rec: TableRec | undefined, nameId: number): string {
-  if (!rec || rec.length < 6) return '';
+/**
+ * 'name' 表の、nameID ごとの文字列 (Windows の Unicode の英語を先に、無ければ最初に読めるもの)。
+ * 表を 1 度だけなめて、すべての nameID の分を作る (名前つきの実体ごとに表の全体をなめると、65535 の実体 × 65535 の記録で 18 秒かかった)
+ */
+function nameStrings(dv: DataView, rec: TableRec | undefined): Map<number, string> {
+  const out = new Map<number, string>();
+  if (!rec || rec.length < 6) return out;
+  const rankOf = new Map<number, number>();
   const base = rec.offset;
   const count = dv.getUint16(base + 2);
   const strings = base + dv.getUint16(base + 4);
-  let best = '';
-  let bestRank = -1;
   for (let i = 0; i < count; i++) {
     const o = base + 6 + i * 12;
     if (o + 12 > base + rec.length) break;
-    if (dv.getUint16(o + 6) !== nameId) continue;
+    const nameId = dv.getUint16(o + 6);
     const platform = dv.getUint16(o);
     const lang = dv.getUint16(o + 4);
+    const rank = platform === 3 && lang === 0x409 ? 3 : platform === 3 ? 2 : platform === 0 ? 1 : platform === 1 ? 0 : -1;
+    if (rank < 0 || rank <= (rankOf.get(nameId) ?? -1)) continue;
     const len = dv.getUint16(o + 8);
     const off = strings + dv.getUint16(o + 10);
     if (off + len > dv.byteLength) continue;
     let s = '';
     if (platform === 3 || platform === 0) for (let k = 0; k + 1 < len; k += 2) s += String.fromCharCode(dv.getUint16(off + k));
-    else if (platform === 1) for (let k = 0; k < len; k++) s += String.fromCharCode(dv.getUint8(off + k));
-    else continue;
-    const rank = platform === 3 && lang === 0x409 ? 3 : platform === 3 ? 2 : platform === 0 ? 1 : 0;
-    if (rank > bestRank) {
-      best = s;
-      bestRank = rank;
-    }
+    else for (let k = 0; k < len; k++) s += String.fromCharCode(dv.getUint8(off + k));
+    out.set(nameId, s);
+    rankOf.set(nameId, rank);
   }
-  return best;
+  return out;
+}
+
+/** 'name' 表から、nameID の文字列 (nameStrings と同じ選び方) */
+function nameString(dv: DataView, rec: TableRec | undefined, nameId: number): string {
+  return nameStrings(dv, rec).get(nameId) ?? '';
 }
 
 /**
@@ -128,13 +135,13 @@ export function readVariationInfo(buffer: ArrayBuffer): VariationInfo | undefine
     axes.push({ tag: tagAt(dv, o), min: dv.getInt32(o + 4) / 65536, default: dv.getInt32(o + 8) / 65536, max: dv.getInt32(o + 12) / 65536 });
   }
   const instances: VariationInfo['instances'] = [];
-  const name = dir.get('name');
+  const names = nameStrings(dv, dir.get('name'));
   for (let i = 0; i < instanceCount; i++) {
     const o = b + axesOffset + axisCount * axisSize + i * instanceSize;
     if (instanceSize < 4 + axisCount * 4) break;
     const coords: number[] = [];
     for (let a = 0; a < axisCount; a++) coords.push(dv.getInt32(o + 4 + a * 4) / 65536);
-    instances.push({ name: nameString(dv, name, dv.getUint16(o)), coords });
+    instances.push({ name: names.get(dv.getUint16(o)) ?? '', coords });
   }
   const cff2 = dir.has('CFF2');
   return { axes, instances, cff2, unsupported: !cff2 && (!dir.has('glyf') || !dir.has('gvar')) };
@@ -334,10 +341,15 @@ function readPoints(dv: DataView, pos: { o: number }): number[] | null {
   return pts;
 }
 
-/** Tuple Variation Store の、詰めた差分 (Packed deltas) を n 個、out に読む */
-function readDeltas(dv: DataView, pos: { o: number }, n: number, out: Float64Array) {
+/**
+ * Tuple Variation Store の、詰めた差分 (Packed deltas) を n 個、out に読む。end は、その組の直列化したデータの終わり
+ * (TupleVariationHeader の variationDataSize。範囲の外は読まない: 大きさ 0 の組を並べて同じデータを共有させると、
+ * 組の数 × 点の数の読みになった)。読み切れない (データが足りない) ときは false
+ */
+function readDeltas(dv: DataView, pos: { o: number }, n: number, out: Float64Array, end = Infinity): boolean {
   let i = 0;
   while (i < n) {
+    if (pos.o >= end) return false;
     const c = dv.getUint8(pos.o++);
     let run = (c & 0x3f) + 1;
     if (c & 0x80) {
@@ -351,6 +363,7 @@ function readDeltas(dv: DataView, pos: { o: number }, n: number, out: Float64Arr
       while (run-- > 0 && i < n) out[i++] = dv.getInt8(pos.o++);
     }
   }
+  return pos.o <= end;
 }
 
 /**
@@ -370,6 +383,7 @@ function eachTuple(
   pointCount: number,
   twoCoords: boolean,
   apply: (scalar: number, points: number[] | null, dx: Float64Array, dy: Float64Array) => void,
+  budget?: { left: number },
 ) {
   const count = tupleCountRaw & 0x0fff;
   const pos = { o: dataAt };
@@ -408,14 +422,16 @@ function eachTuple(
     } else scalar = regionScalar(coords, axisCount, (i) => dv.getInt16(peakAt + i * 2));
     if (scalar !== 0 && data + size <= limit) {
       const p = { o: data };
+      const end = data + size;
       const points = index & 0x2000 ? readPoints(dv, p) : shared;
       const n = points ? points.length : pointCount;
-      {
+      // 手間の予算 (呼ぶ側が決める): 組ごとに、差分の数と、字形の点の数 (触れていない点を補う手間)
+      if (budget && (budget.left -= n + pointCount) < 0) throw new Error('too many glyph variation deltas');
+      // 差分は 1 バイトで 64 個まで (DELTAS_ARE_ZERO の連) なので、データが足りない組は読まない
+      if (p.o + Math.ceil(n / 64) * (twoCoords ? 2 : 1) <= end) {
         const bx = points ? new Float64Array(n) : dx;
         const by = points ? new Float64Array(n) : dy;
-        readDeltas(dv, p, n, bx);
-        if (twoCoords) readDeltas(dv, p, n, by);
-        apply(scalar, points, bx, by);
+        if (readDeltas(dv, p, n, bx, end) && (!twoCoords || readDeltas(dv, p, n, by, end))) apply(scalar, points, bx, by);
       }
     }
     data += size;
@@ -1138,6 +1154,12 @@ export function instantiateFont(buffer: ArrayBuffer, info: VariationInfo, user: 
   }
   const points = new Map<number, { xs: Int32Array; ys: Int32Array }>();
   const hasVmtx = !!vmtxRec;
+  /**
+   * 差分を当てる手間の予算 (実体 1 つ): gvar と glyf の表の 1 バイトあたり 64 + 400 万。組 (tuple) は字形ごとに 4095 個まで、点は 65535 個まで持てるので、
+   * 小さな gvar (47KB) から「組の数 × 点の数」の大きな手間を作れた (40 秒を超えた)。正当な書体は、組ごとに差分のデータを持つ
+   * (触れる点 64 個につき 1 バイト以上) ので、手間は表の大きさの数倍に収まる。超えたら実体を作らない (呼ぶ側が既定の形で組む)
+   */
+  const work = { left: 64 * (gvar.length + glyf.length) + 4_000_000 };
 
   /** 字形 g の差分 (点の数 n + 幻影の点 4 つ) を足し合わせる。単純な字形は、触れていない点を補う */
   const deltasFor = (g: number, n: number, ox: Float64Array, oy: Float64Array, endPts: number[] | null): { dx: Float64Array; dy: Float64Array } => {
@@ -1210,7 +1232,7 @@ export function instantiateFont(buffer: ArrayBuffer, info: VariationInfo, user: 
         dx[i] += scalar * fx[i];
         dy[i] += scalar * fy[i];
       }
-    });
+    }, work);
     return { dx, dy };
   };
 
@@ -1318,6 +1340,9 @@ export function instantiateFont(buffer: ArrayBuffer, info: VariationInfo, user: 
         ex = xs[p.arg1] - tx(p.arg2);
         ey = ys[p.arg1] - ty(p.arg2);
       }
+      // 字形の点の番号は 16 ビット (maxp の maxCompositePoints は uint16) なので、65535 点を超える部品は足さない
+      // (字形 i が字形 i−1 を 2 つ持つ鎖で、点の数が 2 の n 乗になった。登録のときの検査 (fontSanity.ts) が空にするが、念のため)
+      if (xs.length + sub.xs.length > 65535) break;
       for (let k = 0; k < sub.xs.length; k++) {
         xs.push(otRound(tx(k) + ex));
         ys.push(otRound(ty(k) + ey));
@@ -1507,6 +1532,13 @@ function instantiateCff2Font(buffer: ArrayBuffer, dir: Map<string, TableRec>, in
     headDv.getUint16(18),
   );
   const { boxes, hasOutline } = made;
+  if (made.emptied)
+    notes.push(
+      msg(
+        `字形の輪郭 (CFF2 の CharString) の実行が大きすぎる字形 ${made.emptied} 個を、空の字形として扱います`,
+        `${made.emptied} glyph outline(s) (CFF2 CharStrings) take too much to run and are treated as empty glyphs`,
+      ),
+    );
 
   // 書体全体の外接の箱 ('head')
   let any = false;

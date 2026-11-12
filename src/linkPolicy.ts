@@ -42,8 +42,13 @@ export const DEFAULT_LINK_SCHEMES: readonly string[] = ['http', 'https', 'mailto
  * "java\tscript:"・" javascript:" は javascript: の URL になる。判定も PDF への書き出しも、この後の文字列で行う
  */
 export function cleanUrl(u: string): string {
-  // eslint-disable-next-line no-control-regex
-  return u.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '').replace(/[\t\n\r]/g, '');
+  // 前後の制御文字・空白は、端から数えて切る (末尾に固定した正規表現 [\u0000-\u0020]+$ は、途中に長い制御文字の並びがあると、
+  // 並びの長さの 2 乗の手間になる)
+  let a = 0;
+  let b = u.length;
+  while (a < b && u.charCodeAt(a) <= 0x20) a++;
+  while (b > a && u.charCodeAt(b - 1) <= 0x20) b--;
+  return u.slice(a, b).replace(/[\t\n\r]/g, '');
 }
 
 /**

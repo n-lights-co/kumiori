@@ -26,6 +26,7 @@
  *  - 入力の文字の符号化は、BOM と XML 宣言の encoding (Shift_JIS・EUC-JP など)・HTML の <meta charset> で決める (無ければ UTF-8)
  *  - --no-fetch-images: 文書が http(s) で参照する画像をネットワークから取らない (既定は取る。他人の文書をサーバーで組むときに)
  *  - --no-fetch-styles: 文書が http(s) で参照する CSS (<link>・@import) をネットワークから取らない (既定は取る)
+ *  - --no-outside-files: 文書が file: の URL・../ で指した、入力のディレクトリの外のファイルを読まない (既定は読む。他人の文書を組むときに)
  *  - --link-schemes http,https,…: PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて)
  *  - --link-launch: ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パスなど) も PDF に書く (既定は書かない)
  *  - --link-relative file|uri: スキームの無い相対参照のリンクの書き方 (既定 file: GoToR・Launch。uri: 書かれた参照のままの URI 動作)
@@ -99,6 +100,8 @@ export function parseArgs(argv: string[]) {
     fetchImages: boolean;
     /** 文書が http(s) で参照する CSS をネットワークから取る (--no-fetch-styles で止める) */
     fetchStyles: boolean;
+    /** 文書が file: の URL・入力のディレクトリの外を指す相対参照で指したファイルを読む (--no-outside-files で止める) */
+    outsideFiles: boolean;
     /** PDF に動作を書くリンクの URL のスキーム (--link-schemes。無ければ既定の http・https・mailto・tel) */
     linkSchemes?: string[];
     /** ファイルを開く動作のリンクも PDF に書く (--link-launch) */
@@ -122,6 +125,7 @@ export function parseArgs(argv: string[]) {
     watch: false,
     fetchImages: true,
     fetchStyles: true,
+    outsideFiles: true,
     linkLaunch: false,
     noFontCache: false,
     help: false,
@@ -176,6 +180,7 @@ export function parseArgs(argv: string[]) {
     else if (a === '--watch') out.watch = true;
     else if (a === '--no-fetch-images') out.fetchImages = false;
     else if (a === '--no-fetch-styles') out.fetchStyles = false;
+    else if (a === '--no-outside-files') out.outsideFiles = false;
     else if (a === '--link-schemes') {
       const v = value(k++);
       // スキームの名前 (RFC 3986 §3.1 の形) か * をカンマで区切る。末尾の : は付けても付けなくてもよい
@@ -342,7 +347,9 @@ async function convert(input: string, output: string, args: Args, text: string) 
     fetchStyles: args.fetchStyles,
     links: { ...(args.linkSchemes ? { schemes: args.linkSchemes } : {}), launch: args.linkLaunch, ...(args.linkRelative ? { relative: args.linkRelative } : {}) },
     // file: の URL の参照と、入力のディレクトリの外を指す相対参照は、そのファイルを読む (ブラウザで手元の HTML を開いたときと同じ。cliResourceResolver)
-    resolveResource: cliResourceResolver(dir),
+    // --no-outside-files なら読まない (他人の書いた文書を組むとき。文書が指した画像・書体・SVG は、読めた中身が PDF に描かれるので、
+    // 組む側の機械の、入力のディレクトリの外のファイルを写し取られないようにする)
+    ...(args.outsideFiles ? { resolveResource: cliResourceResolver(dir) } : {}),
     ...(args.spotColors ? { spotColors: args.spotColors } : {}),
     loadFont: localFont(args.fontDir, args.noFontCache ? undefined : args.fontCache ? path.resolve(args.fontCache) : defaultFontCacheDir()),
     lang: messageLang(),
@@ -368,8 +375,8 @@ export class UsageError extends Error {}
 
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
-  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--link-schemes <a,b>] [--link-launch] [--watch]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
+  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--watch]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
   '        kumiori --help | --version',
@@ -390,6 +397,7 @@ export const USAGE_JA = [
   '  --spot-colors <JSON>      特色の名前と代わりの CMYK      --image-max-dpi <dpi>  JPEG の解像度の上限',
   '  --no-fetch-images         文書が http(s) で参照する画像を取らない',
   '  --no-fetch-styles         文書が http(s) で参照する CSS を取らない',
+  '  --no-outside-files        文書が file: の URL や ../ で指した、入力のディレクトリの外のファイルを読まない (他人の書いた文書を組むとき)',
   '  --link-schemes <a,b>      PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて。ほかのスキームのリンクは字だけを組む)',
   '  --link-launch             ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パス・//host/…) も PDF に書く (既定は書かない)',
   '  --link-relative <file|uri> スキームの無い相対のリンク (x.pdf・a.mp3) の書き方。file: ファイルを開く動作 (GoToR・Launch。既定)、uri: 書かれた参照のままの URI の動作 (ブラウザの中の PDF ビューアでも開ける)',
@@ -403,8 +411,8 @@ export const USAGE_JA = [
 
 /** 使い方。英語 */
 export const USAGE_EN = [
-  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
-  '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--link-schemes <a,b>] [--link-launch] [--watch]',
+  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
+  '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--watch]',
   '       kumiori a.html b.fo … -o <output directory>',
   '       kumiori - -o - [--base <dir>] < input > output.pdf',
   '       kumiori --help | --version',
@@ -425,6 +433,7 @@ export const USAGE_EN = [
   '  --spot-colors <JSON>      spot color names and fallback CMYK      --image-max-dpi <dpi>  resolution limit for JPEG images',
   '  --no-fetch-images         do not fetch images the document references over http(s)',
   '  --no-fetch-styles         do not fetch stylesheets the document references over http(s)',
+  '  --no-outside-files        do not read files outside the input directory that the document points at with file: URLs or ../ (for documents written by others)',
   '  --link-schemes <a,b>      URL schemes whose links get an action in the PDF (default http,https,mailto,tel; * means all; other links are typeset as plain text)',
   '  --link-launch             also write links that open a file (relative non-PDF files, absolute paths, //host/…) to the PDF (off by default)',
   '  --link-relative <file|uri> how scheme-less relative links (x.pdf, a.mp3) are written: file = open-file actions (GoToR/Launch; default), uri = a URI action with the reference as written (works in browser PDF viewers)',

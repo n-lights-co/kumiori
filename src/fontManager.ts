@@ -12,6 +12,7 @@ import { msg } from './messages';
 import { patchFontkitShaping } from './fontkitShaping';
 import { patchFontkitCffFlex } from './fontkitCffFlex';
 import { patchFontkitEmptyGlyph } from './fontkitEmptyGlyph';
+import { FONT_NOTICE, checkFontFile, dropTables, patchFontkitCffBudget, probeFont } from './fontSanity';
 import { colorFontOf, orderByPresentation, prepareColorFont, presentationOf } from './colorGlyph';
 import { instantiateFont, readVariationInfo, staticCff2ToCff, variationNamePrefix, type VariationInfo } from './fontInstancer';
 import { splitVariation, variationNumber as num, variationSuffix, type VariationRequest } from './fontVariation';
@@ -315,6 +316,46 @@ export function normalLineBounds(font: Pick<LoadedFont, 'ascent' | 'descent' | '
 /** 実体を作れない可変フォントを知らせたか (書体のファイルごとに 1 度) */
 const unsupportedWarned = new WeakSet<ArrayBuffer>();
 
+/**
+ * 書体のファイル buffer を fontkit で読み、組版に使う差し替えを掛ける (登録と、可変フォントの実体で同じ)。
+ * fontkit は表を使うときに読むので、ここで使う表を読んでみる (fontSanity.ts の probeFont): 読めない書体は FontFileError (呼ぶ側は、その書体を使わない)。
+ * 読みが大きすぎる表 (壊れた・細工した GSUB・GPOS など。fontkit が上限なしに展開して、メモリを使い切った) は、外して読み直す
+ * (その書体は、その表の機能 (合字・カーニングなど) なしで組む)。notice: 利用者に知らせる文の出し先。
+ * probe が偽なら読んでみない (可変フォントの実体: 表は、検査を通った元の書体のものを写すので、実体ごとに読み直さない)
+ */
+function openFontkit(buffer: ArrayBuffer, notice: (m: string) => void, probe = true): { buffer: ArrayBuffer; fk: ReturnType<typeof fontkit.create> } {
+  const create = (b: ArrayBuffer) => {
+    const fk = fontkit.create(new Uint8Array(b));
+    (fk as unknown as Record<symbol, unknown>)[FONT_NOTICE] = notice;
+    patchFontkitVariationSelector(fk);
+    patchFontkitShaping(fk);
+    // 輪郭の無い TrueType の字形 (空白など) の外枠を、glyf を読まずに空にする (最後の字形が空白の書体で、その字の送りが読めず例外になる)
+    patchFontkitEmptyGlyph(fk);
+    // CFF の字形の読みを正す: hflex・hflex1 と、CID 方式の書体の FDSelect の範囲 (輪郭で描くとき・字形の外接枠を使うとき。CFF・CFF2 の表の無い書体には何もしない)
+    patchFontkitCffFlex(fk);
+    // CFF の字形の読みに上限を置く (部品の呼び出しの倍々の鎖で、送りを読むだけで時間とメモリを使い切った)
+    patchFontkitCffBudget(fk);
+    // 輪郭の表を持たない、ビットマップだけの色つきの書体 (CBDT の絵文字) を組めるようにする (ほかの書体には何もしない)
+    prepareColorFont(fk);
+    return fk;
+  };
+  let fk = create(buffer);
+  if (!probe) return { buffer, fk };
+  const { over } = probeFont(fk);
+  if (over.length) {
+    notice(
+      msg(
+        `表 (${over.map((t) => t.trim()).join('・')}) の読みが大きすぎるので、その表を使いません (合字・カーニングなどの機能が効かないことがあります)`,
+        `the table(s) ${over.map((t) => t.trim()).join(', ')} take too much to read and are not used (ligatures, kerning and other features may not apply)`,
+      ),
+    );
+    buffer = dropTables(buffer, over);
+    fk = create(buffer);
+    probeFont(fk);
+  }
+  return { buffer, fk };
+}
+
 export class FontManager {
   private fonts = new Map<string, LoadedFont>();
   private fallbackFamily: string | null = null;
@@ -361,6 +402,10 @@ export class FontManager {
     // 書体の集まり (TTC と、WOFF2 の書体の集まりを戻したもの) は、最初の書体を使う (@font-face で集まりを指したとき)
     buffer = toSfnt(buffer);
     if (isCollection(buffer)) buffer = extractFromCollection(buffer, 0);
+    // 表の目録と、必ず使う表の形を確かめる。部品の展開が大きすぎる複合の字形は空にする (fontSanity.ts)
+    const checked = checkFontFile(buffer);
+    for (const n of checked.notes) this.onNotice(`${family}: ${n}`);
+    buffer = checked.buffer;
     // 可変でない CFF2 の書体 (fvar の無い、輪郭が CFF2 の OpenType) は、静的な CFF に作り直して登録する (CFF2 の輪郭は PDF に埋め込めない)
     try {
       buffer = staticCff2ToCff(buffer) ?? buffer;
@@ -373,20 +418,16 @@ export class FontManager {
         ),
       );
     }
+    const notice = (m: string) => this.onNotice(`${family}: ${m}`);
+    // 壊れた・細工した書体を、組む前に見分ける (fontSanity.ts)。使えない書体は FontFileError (呼ぶ側が知らせて、その書体を使わない)
+    const opened = openFontkit(buffer, notice);
+    buffer = opened.buffer;
+    const fk = opened.fk;
     this.charFallback.clear();
     this.forCharMemo.clear();
     this.clusterMemo.clear();
     this.getMemo.clear();
     this.generation++;
-    const fk = fontkit.create(new Uint8Array(buffer));
-    patchFontkitVariationSelector(fk);
-    patchFontkitShaping(fk);
-    // 輪郭の無い TrueType の字形 (空白など) の外枠を、glyf を読まずに空にする (最後の字形が空白の書体で、その字の送りが読めず例外になる)
-    patchFontkitEmptyGlyph(fk);
-    // CFF の字形の読みを正す: hflex・hflex1 と、CID 方式の書体の FDSelect の範囲 (輪郭で描くとき・字形の外接枠を使うとき。CFF・CFF2 の表の無い書体には何もしない)
-    patchFontkitCffFlex(fk);
-    // 輪郭の表を持たない、ビットマップだけの色つきの書体 (CBDT の絵文字) を組めるようにする (ほかの書体には何もしない)
-    prepareColorFont(fk);
     const info = readVariationInfo(buffer);
     if (info?.unsupported && !unsupportedWarned.has(buffer)) {
       // 輪郭の差分 (TrueType の gvar か、CFF2) を持たない可変フォントの実体は作れない: 既定の形のまま 1 つの太さの書体として使う
@@ -529,6 +570,8 @@ export class FontManager {
    * 古いものから忘れるが、この組が返した実体は、ここで持ち続ける (1 つの文書の中で、同じ指定は同じ実体)
    */
   private handed = new Map<string, LoadedFont>();
+  /** 実体の数の上限を知らせた可変フォント (元の書体) */
+  private instanceCapWarned = new WeakSet<LoadedFont>();
 
   /**
    * 読み込んだ可変フォントの軸の札 (すべての書体の分)。可変フォントが無ければ undefined。
@@ -649,6 +692,40 @@ export class FontManager {
     const isDefault = coords.every((c, i) => c === axes[i].default);
     // 静的な書体に作り直すか: 既定の形でない実体と、CFF2 の書体のすべての形
     const rebuild = !isDefault || v.info.cff2;
+    if (rebuild) {
+      // 1 つの組 (文書) で作る実体の数の上限: 16〜64 (書体のファイルの大きさで、実体のバイト列の合計が 256MB ほどに収まる数)。
+      // 実体は 1 つ作るごとに書体の全体を作り直す (465KB の書体で 50ms ほど) ので、31KB の HTML で 800 種類の font-weight を指定すると、
+      // 42 秒・1.5GB かかった。正当な文書の実体は、太さ・幅・傾き・字の大きさ (opsz) の組で、多くて数十。
+      // 超えたら、既に作った実体のうち、軸の値の最も近いもので組む (書体ごとに 1 度知らせる)
+      const capN = Math.max(16, Math.min(64, Math.floor(256e6 / Math.max(1, master.buffer.byteLength))));
+      const made = [...this.handed.values()].filter((f) => f.instanceOf?.master === master);
+      if (made.length >= capN) {
+        const range = axes.map((a) => Math.max(a.max - a.min, 1e-9));
+        let best = made[0];
+        let bestD = Infinity;
+        for (const f of made) {
+          const c = f.instanceOf!.coords;
+          let d = 0;
+          axes.forEach((a, i) => (d += ((c[a.tag] - coords[i]) / range[i]) ** 2));
+          d += ((f.weight - effW) / 1000) ** 2;
+          if (d < bestD) {
+            bestD = d;
+            best = f;
+          }
+        }
+        if (!this.instanceCapWarned.has(master)) {
+          this.instanceCapWarned.add(master);
+          this.onNotice(
+            msg(
+              `${master.family}: 可変フォントの実体 (軸の値の組) が多すぎます (${capN} 個まで)。それより後の指定は、軸の値の最も近い実体で組みます`,
+              `${master.family}: too many instances (combinations of axis values) of the variable font (at most ${capN}); later requests use the instance with the nearest axis values`,
+            ),
+          );
+        }
+        this.handed.set(id, best);
+        return best;
+      }
+    }
     let lf: LoadedFont;
     if (isDefault && effW === master.weight && !rebuild) lf = master;
     else {
@@ -695,12 +772,15 @@ export class FontManager {
         }
         for (const n of r.notes) this.onNotice(`${master.family}: ${n}`);
         buffer = r.buffer;
-        fk = fontkit.create(new Uint8Array(buffer));
-        patchFontkitVariationSelector(fk);
-        patchFontkitShaping(fk);
-        patchFontkitEmptyGlyph(fk);
-        patchFontkitCffFlex(fk);
-        prepareColorFont(fk);
+        try {
+          ({ buffer, fk } = openFontkit(buffer, (m) => this.onNotice(`${master.family}: ${m}`), false));
+        } catch (e) {
+          // 作った実体が読めない (元の表の壊れ方による): 既定の形のまま使う
+          v.failed = true;
+          const why = e instanceof Error ? e.message : String(e);
+          this.onNotice(msg(`${master.family}: 可変フォントの実体を作れません (${why})。既定の形 (default instance) で組みます`, `${master.family}: cannot instantiate the variable font (${why}); the default instance is used`));
+          return master;
+        }
         metrics = fontMetricsOf(fk);
       }
       // PostScript 名: 「ファミリー名_値+札…」(既定の値でない軸だけ。Adobe Technical Note #5902 の、名前の無い実体の名前の作り方に倣う)

@@ -46,7 +46,8 @@ describe('SVG: 細工した入力 (IMG-01・IMG-03・IMG-08)', () => {
   };
   it('use を重ねて図形が膨らむ SVG は、上限で打ち切って、図形にできないものとして扱う', T, () => {
     // 10^6 個の図形 (1.3KB の SVG)
-    expect(svgResult(useTower(10, 6))).toEqual({ doc: null, why: 'too many elements' });
+    // (先に、参照で増える線分の上限 (svg.ts の EXPANDED_SEGS_BASE) に届く)
+    expect(svgResult(useTower(10, 6))).toEqual({ doc: null, why: 'too many path segments' });
     // 2^25 個 (深さは 32 段より浅い)
     expect(svgResult(useTower(2, 25)).doc).toBeNull();
     // ふつうの大きさの重ね方 (10^4 個) は、これまでどおり図形にする

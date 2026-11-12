@@ -46,7 +46,7 @@ function tokenize(s: string): Tok[] | undefined {
       i++;
       continue;
     }
-    const num = /^(\d+\.?\d*|\.\d+)([a-z%]*)/i.exec(s.slice(i));
+    const num = /^(\d+(?:\.\d*)?|\.\d+)([a-z%]*)/i.exec(s.slice(i));
     if (num) {
       const unit = num[2].toLowerCase();
       out.push({ t: 'num', v: parseFloat(num[1]), unit });

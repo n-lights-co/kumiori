@@ -362,10 +362,13 @@ export async function prepareHtml(
   // (仕様に循環の決まりは無い。ブラウザも、祖先の鎖にある URL の @import は読み込まない)。
   // 読み込んだ CSS の長さ・回数の合計が上限 (MAX_IMPORTED_CSS_LENGTH・MAX_IMPORTS) を超える @import は、捨てて警告する
   const budget = { length: MAX_IMPORTED_CSS_LENGTH, count: MAX_IMPORTS, warned: false };
+  // @import の文は「;」で終わるので、最後の「;」までだけを探す (その後ろは写すだけ)。「;」の無い「@import "aaa…(30 万字)」で、
+  // 参照の字を 1 つ減らすたびに末尾まで「;」を探し直して、長さの 2 乗の時間 (この正規表現だけで約 40 秒) がかかった。
+  // 後ろに「;」があれば、参照を読んだ後の「;」までの部分は必ず合うので、探し直さない
   const inlineImports = (css: string, reading: string[] = [], depth = 0, base?: string): string =>
     depth > 8
       ? css
-      : css.replace(/@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?([^;]*);/gi, (_m, href: string, cond: string) => {
+      : css.slice(0, css.lastIndexOf(';') + 1).replace(/@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?([^;]*);/gi, (_m, href: string, cond: string) => {
           // media・supports() の条件が合わない @import は読まない (Cascade 5 §2)。layer() は読み飛ばす
           // 条件に合わずに読まない CSS も、参照された CSS として数える (参照されていない CSS = 利用者のスタイルシートとして足さない)
           const name = cssKey(href, base);
@@ -388,7 +391,7 @@ export async function prepareHtml(
           const inner = inlineImports(t, [...reading, name], depth + 1, cssBases.get(name));
           // 用紙の大きさに依る条件の @import は、条件の @media で包んで残す (中の @page の size を読まないため。Page 3 §7.1)
           return media && mediaDependsOnPageSize(media) ? `@media ${media} {\n${inner}\n}` : inner;
-        });
+        }) + css.slice(css.lastIndexOf(';') + 1);
   for (const [name, text] of cssFiles) cssFiles.set(name, inlineImports(text, [name], 0, cssBases.get(name)));
   parsed.querySelectorAll('style').forEach((s) => {
     s.textContent = inlineImports(s.textContent ?? '');

@@ -9,7 +9,7 @@
 
 import { parseSelectorList } from './cssSelector';
 import { spotColor } from './color';
-import { hex2, parseColor as parseCssColor, rgbHex, skipString, splitTop, splitWords, UNIT_PX } from './cssText';
+import { hex2, parseColor as parseCssColor, rgbHex, skipString, splitTop, splitWords, stripImportant, UNIT_PX, urlsIn } from './cssText';
 import type { FontPaletteRule } from './colorGlyph';
 import { MAX_COUNTER_LENGTH, parseCounterStyleRule, type CounterStyleRule } from './counterStyle';
 import { FONT_WIDTH_KEYWORDS, parseVariationSettings } from './fontVariation';
@@ -209,7 +209,7 @@ export function matchMedia(list: string, page: MediaPage = { width: 793.7, heigh
       neg = true;
       s = s.slice(4).trim();
     } else if (/^only\s/.test(s)) s = s.slice(5).trim();
-    const parts = s.split(/\s+and\s+/);
+    const parts = splitOnAnd(s);
     let ok = true;
     for (const part of parts) {
       const t = part.trim();
@@ -267,6 +267,26 @@ export function matchMedia(list: string, page: MediaPage = { width: 793.7, heigh
 }
 
 /**
+ * 「空白 and 空白」で分ける。s.split(/\s+and\s+/) と同じ結果。その正規表現は、空白の並びのどの位置からも照合を始めるので、
+ * 空白の長い並び (@media の条件に改行 10 万個) で、並びの長さの 2 乗の時間がかかった。「空白 1 つ + and + 空白 1 つ」を探して、前後の空白を足す
+ */
+function splitOnAnd(s: string): string[] {
+  const out: string[] = [];
+  const re = /\sand\s/g;
+  let from = 0;
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    let a = m.index;
+    while (a > from && /\s/.test(s[a - 1])) a--;
+    let b = m.index + 5;
+    while (b < s.length && /\s/.test(s[b])) b++;
+    out.push(s.slice(from, a));
+    from = re.lastIndex = b;
+  }
+  out.push(s.slice(from));
+  return out;
+}
+
+/**
  * @supports の宣言 (prop: value) を読めるか。cssCascade が、知っている性質と値で判定する関数を入れる
  * (入れる前は、すべて読めるものとする)。ah は、アンテナハウスの拡張の値の読み方 (互換の指定のときだけ渡す)
  */
@@ -281,6 +301,19 @@ export function setSupportsDecl(f: (prop: string, value: string, ah?: AhFlags) =
  * 省けば、拡張の値は読まないものとして答える。§6.1: 対応していると答えるのは、宣言を受け付けるときだけ)
  */
 export function matchSupports(cond: string, ah?: AhFlags): boolean {
+  const state = { tooDeep: false };
+  const r = supportsCondition(cond, ah, 0, state);
+  // 入れ子が深すぎる条件は、読めない条件として偽 (Conditional 3 §6: 読めない条件は偽。途中の not で真に返さない)
+  return state.tooDeep ? false : r;
+}
+function supportsCondition(cond: string, ah: AhFlags | undefined, depth: number, state: { tooDeep: boolean }): boolean {
+  // 括弧・not・and・or の入れ子ごとに再帰し、段ごとに条件の全体を見るので、(not (not (… を 3 万段に重ねた条件 (180KB) で、
+  // 呼び出しの段を使い切った (その前に、段の数 × 長さの時間もかかる)。実在の条件の入れ子は数段なので、MAX_CSS_NESTING で止める
+  if (depth > MAX_CSS_NESTING) {
+    state.tooDeep = true;
+    return false;
+  }
+  const matchSupports = (x: string, a?: AhFlags) => supportsCondition(x, a, depth + 1, state);
   const c = cond.trim();
   if (/^not\s/i.test(c)) return !matchSupports(c.slice(4), ah);
   // 外側の括弧を外す
@@ -330,6 +363,15 @@ function splitTopWord(s: string, word: string): string[] {
   return out.map((x) => x.trim()).filter(Boolean);
 }
 
+/**
+ * 規則の入れ子 (@media・@supports・@layer の塊、入れ子のスタイル規則) と、@supports の条件の括弧の入れ子の深さの上限。
+ * 入れ子ごとに再帰して読むので、「@media all {」を 5000 個、「p {」を 10 万個、「p { & 」を 3000 個重ねた CSS (数十〜数百 KB) で、
+ * 呼び出しの段を使い切り (Maximum call stack size exceeded)、文書が組めなかった。上限より深い塊は読まずに、未対応の CSS の警告に数える。
+ * CSS の仕様に入れ子の深さの上限は無い (CSS Nesting 1・Conditional 3)。実在のスタイルシートの入れ子は数段 (手で書く入れ子で 5〜6 段、
+ * @layer・@media・@supports を重ねても 10 段ほど) なので、64 段あれば届かない
+ */
+const MAX_CSS_NESTING = 64;
+const TOO_DEEP = '深すぎる入れ子の規則 (rules nested too deeply)';
 /** @layer の名前の、点で区切った段の数の上限 (layerRanks) */
 const MAX_LAYER_DEPTH = 32;
 /** 入れ子の規則を展開したセレクタの数の上限 (styleRule) */
@@ -399,7 +441,21 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
   let sizeQualified = 0;
   const ignored: string[] = [];
   const layerOf = (name: string) => layers.add(name);
+  // 規則の入れ子の深さ (walk と styleRule で共通に数える)
+  let nesting = 0;
   const walk = (text: string) => {
+    if (nesting >= MAX_CSS_NESTING) {
+      if (/\S/.test(text)) ignored.push(TOO_DEEP);
+      return;
+    }
+    nesting++;
+    try {
+      walk1(text);
+    } finally {
+      nesting--;
+    }
+  };
+  const walk1 = (text: string) => {
     let i = 0;
     while (i < text.length) {
       const open = nextBraceOrSemi(text, i);
@@ -476,7 +532,7 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
         const d = Object.fromEntries(splitDecls(body));
         const family = unquote(d['font-family'] ?? '');
         const w = (d['font-weight'] ?? 'normal').toLowerCase();
-        const srcs = [...(d.src ?? '').matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)/gi)].map((m) => (m[1] ?? m[2] ?? m[3]).trim());
+        const srcs = urlsIn(d.src ?? '');
         // font-weight は 1 つの値か範囲 (可変の書体。Fonts 4 §4.4)。範囲は 400 を含めば 400、含まなければ下の端で登録する
         const ws = String(w).split(/\s+/).map((x: string) => (x === 'bold' ? 700 : x === 'normal' ? 400 : parseInt(x, 10) || 400));
         const weight = ws.length > 1 ? (ws[0] <= 400 && 400 <= ws[1] ? 400 : ws[0]) : ws[0];
@@ -527,6 +583,18 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
    * 中の規則を除いた宣言が、この規則の宣言
    */
   function styleRule(selectors: string[], body: string) {
+    if (nesting >= MAX_CSS_NESTING) {
+      ignored.push(TOO_DEEP);
+      return;
+    }
+    nesting++;
+    try {
+      styleRule1(selectors, body);
+    } finally {
+      nesting--;
+    }
+  }
+  function styleRule1(selectors: string[], body: string) {
     // セレクタの並びに読めないものが 1 つでもあれば、規則ごと捨てる (Selectors 4 §3.9)。& を含む入れ子のものは置き換えてから調べる
     if (selectors.some((sel) => !sel.includes('&') && !parseSelectorList(sel).length)) return;
     let rest = '';
@@ -583,8 +651,11 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
   for (const r of rules) if (/^(:root|html|\*)$/i.test(r.selector.trim())) for (const [k, v] of Object.entries(r.decls)) if (k.startsWith('--')) vars[k] = v;
   const rootVars = Object.keys(vars).length ? vars : undefined;
   if (rootVars) {
+    // カスタム プロパティ (--名前) の宣言そのものは置き換えない: その値は decls から名前で読まれることがなく (根元の変数の表 vars は
+    // 置き換える前の値から作る)、置き換えると、互いに参照する変数の連鎖 (:root に --a1: var(--a0) var(--a0) … を 5000 個。177KB) で、
+    // 宣言ごとに 2 の 10 乗倍に膨らませた値を作って 10 秒と 700MB を使った
     const sub = (d: Record<string, string>) => {
-      for (const k of Object.keys(d)) d[k] = substituteRootVars(d[k], rootVars);
+      for (const k of Object.keys(d)) if (!k.startsWith('--')) d[k] = substituteRootVars(d[k], rootVars);
     };
     for (const pg of pages) {
       sub(pg.decls);
@@ -637,12 +708,16 @@ function nextNested(s: string, from: number): number {
 }
 
 function nextBraceOrSemi(s: string, from: number): number {
+  // from からの最初の空白でない字 (まだ無ければ空)。; のたびに s.slice(from, k).trim() を作って先頭を見ると、{ の無いまま ; の並ぶ
+  // CSS (a;a;a;… を 10 万個) で、長さの 2 乗の時間がかかる
+  let first = '';
   for (let k = from; k < s.length; k++) {
     const c = s[k];
+    // ; は @規則の文 (@layer a; @import …;) の終わり。規則の間の迷子の ; (b{} ; p{…}) も区切りとして読み飛ばす (p の規則を落とさない)
+    if (c === ';' && (first === '@' || first === '')) return k;
+    if (!first && c.trim()) first = c;
     if (c === '"' || c === "'") k = skipString(s, k) - 1;
     else if (c === '{') return k;
-    // ; は @規則の文 (@layer a; @import …;) の終わり。規則の間の迷子の ; (b{} ; p{…}) も区切りとして読み飛ばす (p の規則を落とさない)
-    else if (c === ';' && /^(@|$)/.test(s.slice(from, k).trim())) return k;
   }
   return -1;
 }
@@ -898,7 +973,7 @@ const PRINT_COLOR_PROP = /^(color|background-color|background|border(-(top|right
  *  - 色: cmyk()・rgb-icc() (CSS Color 4・5 の関数に無い。標準は device-cmyk())
  */
 export function compatOnlyValue(prop: string, value: string): string | undefined {
-  const v = value.replace(/\s*!\s*important\s*$/i, '').trim().toLowerCase();
+  const v = stripImportant(value).toLowerCase();
   if (prop === 'float') return isAhFloatValue(v) && !CSS_FLOAT_VALUE.test(v) ? `float: ${v.replace(/\s+/g, ' ')}` : undefined;
   if (prop === 'width') return /\dgr\b/.test(v) ? 'width: <数>gr' : undefined;
   if (prop === 'text-align' || prop === 'text-align-last') return /^(inside|outside)$/.test(v) ? `${prop}: ${v}` : undefined;
@@ -966,7 +1041,7 @@ export const SPACING_TRIM_WORD = /^(space-all|normal|trim-both|trim-all|(trim|sp
  * 大域のキーワード (inherit など) は真。アンテナハウス互換のスタイルのときは、この検査をしない (拡張の値を含む宣言を、これまでどおり読む)
  */
 export function validPagedValue(prop: string, value: string): boolean {
-  const v = value.replace(/\s*!\s*important\s*$/i, '').trim().toLowerCase();
+  const v = stripImportant(value).toLowerCase();
   if (/^(inherit|initial|unset|revert|revert-layer)$/.test(v)) return true;
   const ws = v.split(/\s+/).filter(Boolean);
   switch (prop) {

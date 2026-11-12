@@ -11,11 +11,11 @@
  * 百分率の幅・余白は、包含ブロックの幅を親から順に見積もって px にする。
  */
 import { MAX_VAR_LENGTH, parseCss, parseSpacingTrim, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
-import { fmtColor, parseColor, resolveLightDark, splitTop, UNIT_PX, type RGBA } from './cssText';
+import { fmtColor, parseColor, replaceUrls, resolveLightDark, splitTop, stripImportant, UNIT_PX, type RGBA } from './cssText';
 import { parseVariationSettings } from './fontVariation';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { is3dTransformValue } from './cssTransform';
-import { asciiLower, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
+import { asciiLower, createSelectorMemo, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
 
 /** 計算値を持つ疑似要素 */
@@ -263,7 +263,7 @@ function quirkyValue(prop: string, value: string): string {
     }
     return value;
   }
-  if (QUIRKY_LENGTH_PROPS.has(prop) && !/\(/.test(v)) return v.replace(/(^|\s)([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(?=\s|$)/g, (_m, sp: string, n: string) => (parseFloat(n) === 0 ? sp + n : `${sp}${n}px`));
+  if (QUIRKY_LENGTH_PROPS.has(prop) && !/\(/.test(v)) return v.replace(/(^|\s)([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?=\s|$)/g, (_m, sp: string, n: string) => (parseFloat(n) === 0 ? sp + n : `${sp}${n}px`));
   return value;
 }
 
@@ -329,7 +329,7 @@ interface Computed {
   /** 子の高さの百分率の基準 (px。決まらなければ undefined で、子の百分率の高さは auto) */
   ch?: number;
   /** カスタム プロパティ (--名前) */
-  vars: Map<string, string>;
+  vars: VarTable;
   /** 明示した性質 (auto かどうか) */
   specified: Map<string, string>;
   /** SVG の表示の性質 (と color・opacity) の、勝った宣言 (文書の中の <svg> に渡すかを決める) */
@@ -605,7 +605,7 @@ function initialComputed(p: string, kind: Kind, initial: string, colorVal: strin
     if (kind === 'len' || kind === 'len-auto' || kind === 'len-none' || kind === 'len-normal') {
       if ((kind === 'len-auto' && lv === 'auto') || (kind === 'len-none' && lv === 'none') || (kind === 'len-normal' && lv === 'normal')) hit = lv;
       else {
-        const m = /^(-?\d*\.?\d+)(px)?$/.exec(lv);
+        const m = /^(-?(?:\d+(?:\.\d+)?|\.\d+))(px)?$/.exec(lv);
         hit = m ? fmtPx(parseFloat(m[1])) : null;
       }
     } else if (kind === 'int-auto') hit = /^-?\d+$/.test(initial) ? initial : 'auto';
@@ -631,12 +631,54 @@ interface LenCtx {
   pct?: number;
 }
 
+const CALC_NUMBER = /-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?[a-z%]*/iy;
+const CALC_FUNCTION = /[a-z-]+\([^()]*(?:\([^()]*\)[^()]*)*\)/iy;
+const CALC_NAME = /[a-z-]+/iy;
+/**
+ * 数の式を項 (数・長さ、( ) + - * /、関数) に分ける。項にならない字は飛ばす。
+ * body.match(/(?:数と単位)|[()+\-*\/]|名前\(…\)/gi) と同じ結果 (位置ごとに、数、記号、関数の順に試す) を、位置を進めながら作る。
+ * 1 つの正規表現で探すと、関数にならない名前の字の並び (calc(aaa…a) の 10 万字) で、並びのどの位置からも「名前(」を探し直すので、
+ * 長さの 2 乗の時間がかかった。名前の並びの先頭で関数にならなければ、並びの途中から始めても同じ所で合わないので、並びの終わりまで試さない
+ */
+function calcTokens(body: string): string[] {
+  const toks: string[] = [];
+  let noFunctionBefore = 0;
+  for (let i = 0; i < body.length; ) {
+    CALC_NUMBER.lastIndex = i;
+    const num = CALC_NUMBER.exec(body);
+    if (num) {
+      toks.push(num[0]);
+      i += num[0].length;
+      continue;
+    }
+    const c = body[i];
+    if (c === '(' || c === ')' || c === '+' || c === '-' || c === '*' || c === '/') {
+      toks.push(c);
+      i++;
+      continue;
+    }
+    if (i >= noFunctionBefore) {
+      CALC_FUNCTION.lastIndex = i;
+      const fn = CALC_FUNCTION.exec(body);
+      if (fn) {
+        toks.push(fn[0]);
+        i += fn[0].length;
+        continue;
+      }
+      CALC_NAME.lastIndex = i;
+      noFunctionBefore = CALC_NAME.exec(body) ? CALC_NAME.lastIndex : i + 1;
+    }
+    i++;
+  }
+  return toks;
+}
+
 /** 長さ (calc() を含む) を px に。読めなければ undefined */
 export function lengthPx(v: string, ctx: LenCtx): number | undefined {
   const s = v.trim().toLowerCase();
   if (s === '0') return 0;
   // 数の書き方: 先頭の + と、指数の + も読む (Values 4 §5.3)
-  const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z%]*)$/.exec(s);
+  const m = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)([a-z%]*)$/.exec(s);
   if (m) {
     const n = parseFloat(m[1]);
     const u = m[2];
@@ -680,7 +722,7 @@ function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
   }
   // 項に分ける: 数・長さ・( ) と + - * /
   // 数は指数表記 (1e2px) も 1 つの項 (Values 4 §5.3。e の後に数字が続くときだけ。1em の e は単位)
-  const toks = body.match(/(?:-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?[a-z%]*)|[()+\-*/]|[a-z-]+\([^()]*(?:\([^()]*\)[^()]*)*\)/gi) ?? [];
+  const toks = calcTokens(body);
   // 項にならない字 (calc(10px foo) の foo など) が残れば、式として読めない (読める所だけを拾って値にしない)
   if (toks.join('').replace(/\s+/g, '') !== body.replace(/\s+/g, '')) return undefined;
   let k = 0;
@@ -699,7 +741,7 @@ function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
       const r = inner[1].toLowerCase() === 'var' ? undefined : calcPx(inner[1].toLowerCase(), inner[2], ctx);
       return r === undefined ? undefined : { n: r, unitless: false };
     }
-    if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/.test(t)) return { n: parseFloat(t), unitless: true };
+    if (/^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/.test(t)) return { n: parseFloat(t), unitless: true };
     const px = lengthPx(t, ctx);
     return px === undefined ? undefined : { n: px, unitless: false };
   };
@@ -739,7 +781,7 @@ function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
 const tokens = (v: string) => splitTop(v, ' ');
 
 /** 数・整数の書き方 (Values 4 §5.2・§5.3)。読めるかの検査・計算値を決める所・一括指定を分ける所で使う (食い違うと、読めると判定した値が初期値になる) */
-const CSS_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+const CSS_NUMBER = /^[+-]?(\d+(?:\.\d*)?|\.\d+)(e[+-]?\d+)?$/i;
 const CSS_INTEGER = /^[+-]?\d+$/;
 
 // ───────────────────────── SVG の表示の性質 ─────────────────────────
@@ -810,7 +852,7 @@ function svgStyleValue(prop: string, raw: string, ctx: LenCtx, current?: string)
   };
   // 数 (利用者単位 = px)・長さ → px、百分率はそのまま
   const len = (t: string, nonNegative: boolean) => {
-    if (/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?%$/.test(t)) return nonNegative && parseFloat(t) < 0 ? undefined : `${parseFloat(t)}%`;
+    if (/^[+-]?(\d+(?:\.\d*)?|\.\d+)(e[+-]?\d+)?%$/.test(t)) return nonNegative && parseFloat(t) < 0 ? undefined : `${parseFloat(t)}%`;
     const px = CSS_NUMBER.test(t) ? parseFloat(t) : lengthPx(t, { ...ctx, pct: undefined });
     return px === undefined || !Number.isFinite(px) || (nonNegative && px < 0) ? undefined : fmtPx(px);
   };
@@ -835,7 +877,7 @@ function svgStyleValue(prop: string, raw: string, ctx: LenCtx, current?: string)
     case 'fill-opacity':
     case 'stop-opacity':
     case 'stroke-opacity': {
-      const n = CSS_NUMBER.test(l) ? parseFloat(l) : /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(l) ? parseFloat(l) / 100 : NaN;
+      const n = CSS_NUMBER.test(l) ? parseFloat(l) : /^[+-]?(\d+(?:\.\d*)?|\.\d+)%$/.test(l) ? parseFloat(l) / 100 : NaN;
       return Number.isFinite(n) ? String(+Math.min(1, Math.max(0, n)).toFixed(4)) : undefined;
     }
     case 'stroke-width':
@@ -899,7 +941,7 @@ const NO_AH: AhFlags = { ahBorderStyles: false, ahCounterFlags: false };
 /** 拡張をすべて読む (アンテナハウス互換。compat.ts の ahCascadeOptions と、prepareHtml の @supports の読み方) */
 export const ALL_AH: AhFlags = { ahBorderStyles: true, ahCounterFlags: true, ahAttrNumber: true, ahPagedValues: true };
 const isBorderStyle = (t: string, ah: AhFlags) => BORDER_STYLES.test(t) || (ah.ahBorderStyles && AH_BORDER_STYLES.test(t));
-const isLenLike = (t: string) => /^(-?(?:\d+\.?\d*|\.\d+)[a-z%]*|calc\(.*\)|min\(.*\)|max\(.*\)|clamp\(.*\)|var\(.*\))$/i.test(t);
+const isLenLike = (t: string) => /^(-?(?:\d+(?:\.\d*)?|\.\d+)[a-z%]*|calc\(.*\)|min\(.*\)|max\(.*\)|clamp\(.*\)|var\(.*\))$/i.test(t);
 const isColorLike = (t: string) => parseColor(t) !== undefined || /^var\(/i.test(t);
 /**
  * 印刷の色の関数: device-cmyk() (CSS Color 5 §12.1 の <color>)。互換の指定のときは、アンテナハウスの cmyk()・rgb-icc() も (htmlPaged の compatOnlyValue)。
@@ -959,7 +1001,7 @@ export function isKnownCssProperty(prop: string, value = '', ah: AhFlags = NO_AH
  */
 export function supportsCssDeclaration(prop: string, value: string, ah: AhFlags = NO_AH): boolean {
   const p = prop.toLowerCase();
-  const v = value.replace(/\s*!\s*important\s*$/i, '').trim();
+  const v = stripImportant(value);
   const unsupported = (lp: string, lv: string, longhandOfShorthand: boolean) => {
     const t = lv.trim().toLowerCase();
     if (UNSUPPORTED_CSS_PROPERTIES.has(lp)) return !longhandOfShorthand || !(t === (PROPS[lp]?.[1] ?? '').toLowerCase() || /^(inherit|initial|unset|revert|revert-layer)$/.test(t));
@@ -1139,7 +1181,9 @@ const fontShorthand: Expander = (_prop, v, global) => {
   // 指定できるものと、初期値に戻すだけのもの (Fonts 4 §2.7)
   const props = ['font-style', 'font-variant', 'font-variant-caps', 'font-weight', 'font-stretch', 'font-size', 'line-height', 'font-family', ...FONT_RESET_ONLY.map(([p]) => p)];
   if (global) return each(props, v);
-  const ts = tokens(v.replace(/\s*\/\s*/g, ' / '));
+  // 「/」の前後の空白を除いて ' / ' にする (v.replace(/\s*\/\s*/g, ' / ') と同じ結果。その正規表現は、空白の長い並びで 2 乗の時間がかかった)
+  const slashParts = v.split('/');
+  const ts = tokens(slashParts.map((x, i) => (i > 0 ? (i < slashParts.length - 1 ? x.trim() : x.trimStart()) : slashParts.length > 1 ? x.trimEnd() : x)).join(' / '));
   const out: Record<string, string> = { 'font-style': 'normal', 'font-variant': 'normal', 'font-variant-caps': 'normal', 'font-weight': 'normal', 'font-stretch': 'normal', 'line-height': 'normal', ...Object.fromEntries(FONT_RESET_ONLY) };
   let k = 0;
   for (; k < ts.length; k++) {
@@ -1556,6 +1600,40 @@ export interface CascadeOptions {
   onInvalidAttr?: (prop: string, value: string) => void;
 }
 
+/**
+ * 要素のカスタム プロパティの表 (名前 → 計算値)。自分で定義した分 (own) と、親の表への参照 (parent) で持つ。
+ * 親の表を要素ごとに写すと、:root に 2 万個の変数があり、自分の変数を 1 つ持つ要素が 2000 個ある文書 (405KB) で、2 万 × 2000 個の
+ * 項目を持ち、2GB を使った。own の null は「必ず無効な値」(親の値を隠す)。
+ * 鎖が長くならないよう、作り終えたとき (compact) に、自分の 2 倍以下の大きさの親の分は自分に写してまとめる
+ * (下へ行くほど 2 倍より大きくなるので、鎖の長さは、変数の数の対数で収まる。大きな親の表は写さない)
+ */
+class VarTable {
+  private own = new Map<string, string | null>();
+  constructor(private parent?: VarTable) {}
+  get(name: string): string | undefined {
+    for (let t: VarTable | undefined = this; t; t = t.parent) {
+      const v = t.own.get(name);
+      if (v !== undefined) return v ?? undefined;
+    }
+    return undefined;
+  }
+  set(name: string, value: string): void {
+    this.own.set(name, value);
+  }
+  delete(name: string): void {
+    this.own.set(name, null);
+  }
+  compact(): this {
+    while (this.parent && this.parent.own.size <= 2 * this.own.size) {
+      const merged = new Map(this.parent.own);
+      for (const [k, v] of this.own) merged.set(k, v);
+      this.own = merged;
+      this.parent = this.parent.parent;
+    }
+    return this;
+  }
+}
+
 /** 宣言の強さ (rank) が既定のスタイル (UA) の出どころか */
 const isUa = (rank: number) => rank < 1 || rank === 5;
 
@@ -1584,7 +1662,7 @@ const ATTR_OWN_PROPS = new Set(['content', 'string-set', 'bookmark-label']);
 const substitutesAttr = (prop: string) => !ATTR_OWN_PROPS.has(prop) && !prop.startsWith('-');
 /** 値の中の attr( (-ah-attr-img( などの、名前の一部が attr の関数は除く) */
 const ATTR_FN_RE = new RegExp(String.raw`(?<!${NAME_CHAR})attr\(`, 'i');
-const ATTR_NUM = String.raw`[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?`;
+const ATTR_NUM = String.raw`[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?`;
 const ATTR_NUM_RE = new RegExp(`^${ATTR_NUM}$`, 'i');
 const ATTR_LEN_UNITS = 'px|pt|pc|mm|cm|q|in|em|rem|ex|ch|ic|cap|lh|rlh|vw|vh|vi|vb|vmin|vmax';
 /** <attr-unit> として受け付ける単位の名前 (CSS の寸法の単位) と % */
@@ -1810,27 +1888,82 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   addSheet(authorCss, 1);
 
   // 右端の単純セレクタで分ける (要素ごとに調べる規則を減らす)
-  const byId = new Map<string, RuleEntry[]>();
-  const byClass = new Map<string, RuleEntry[]>();
-  const byTag = new Map<string, RuleEntry[]>();
-  const rest: RuleEntry[] = [];
+  interface RuleGroup { byId: Map<string, RuleEntry[]>; byClass: Map<string, RuleEntry[]>; byTag: Map<string, RuleEntry[]>; rest: RuleEntry[] }
+  const newGroup = (): RuleGroup => ({ byId: new Map(), byClass: new Map(), byTag: new Map(), rest: [] });
   const add = (m: Map<string, RuleEntry[]>, k: string, r: RuleEntry) => (m.get(k) ?? m.set(k, []).get(k)!).push(r);
+  // 互換モードでは、ID とクラスの大文字小文字を区別しないので、小文字にした名前で分ける
+  const keyName = (n: string) => (quirks ? asciiLower(n) : n);
+  /**
+   * 祖先の複合セレクタ (子孫・子の結合子の左側。その相手は必ず要素の祖先) の id・クラス・要素名のどれか 1 つ ('#id'・'.class'・要素名)。
+   * その名前を持つ祖先が無い要素には、規則は合わない。祖先の条件が無いか、名前の無い条件だけなら undefined
+   */
+  const ancestorKey = (sel: Selector): string | undefined => {
+    let cls: string | undefined;
+    let tag: string | undefined;
+    for (let k = 1; k < sel.compounds.length; k++) {
+      if (sel.combs[k - 1] !== ' ' && sel.combs[k - 1] !== '>') continue;
+      const c = sel.compounds[k];
+      if (c.ids.length) return `#${keyName(c.ids[0])}`;
+      if (c.classes.length) cls ??= `.${keyName(c.classes[0])}`;
+      else if (c.tag) tag ??= c.tag;
+    }
+    return cls ?? tag;
+  };
+  // 祖先の名前の無い規則 (plain) と、祖先の名前ごとの規則 (byAncestor)。
+  // 右端だけで分けると、「.c1 p」「.c2 p」… のように右端が同じ規則が 2 万個あるとき、p の要素ごとに 2 万個を照合する
+  // (2 万規則 × 2000 要素 (814KB) で 57 秒)。祖先の名前でも分けて、要素の祖先が持つ名前の規則だけを候補にする
+  // (ブラウザが祖先の名前の集まりで規則をふるい落とすのと同じ考え方。候補を減らすだけで、合うかどうかは matches が決める)
+  const plain = newGroup();
+  const byAncestor = new Map<string, RuleGroup>();
   for (const r of rules) {
+    const anc = ancestorKey(r.sel);
+    const g = anc === undefined ? plain : (byAncestor.get(anc) ?? byAncestor.set(anc, newGroup()).get(anc)!);
     const c = r.sel.compounds[0];
-    // 互換モードでは、ID とクラスの大文字小文字を区別しないので、小文字にした名前で分ける
-    if (c.ids.length) add(byId, quirks ? asciiLower(c.ids[0]) : c.ids[0], r);
-    else if (c.classes.length) add(byClass, quirks ? asciiLower(c.classes[0]) : c.classes[0], r);
-    else if (c.tag) add(byTag, c.tag, r);
-    else rest.push(r);
+    if (c.ids.length) add(g.byId, keyName(c.ids[0]), r);
+    else if (c.classes.length) add(g.byClass, keyName(c.classes[0]), r);
+    else if (c.tag) add(g.byTag, c.tag, r);
+    else g.rest.push(r);
   }
+  /** 要素の祖先が持つ名前のうち、byAncestor にあるもの。兄弟は同じなので、直前に調べた親の分を覚える (祖先ごとの表は持たない: 深い木で、深さの 2 乗の記憶を使わない) */
+  let lastParent: Node | null = null;
+  let lastAncestorKeys: string[] = [];
+  const ancestorKeys = (el: Element): string[] => {
+    const parent = el.parentNode;
+    if (parent === lastParent) return lastAncestorKeys;
+    const keys = new Set<string>();
+    for (let a = parent; a && a.nodeType === 1; a = a.parentNode) {
+      const e = a as Element;
+      const tag = (e.localName ?? e.nodeName).toLowerCase();
+      if (byAncestor.has(tag)) keys.add(tag);
+      const id = e.getAttribute('id');
+      if (id && byAncestor.has(`#${keyName(id)}`)) keys.add(`#${keyName(id)}`);
+      const cls = e.getAttribute('class');
+      if (cls) for (const c of cls.split(/\s+/)) if (c && byAncestor.has(`.${keyName(c)}`)) keys.add(`.${keyName(c)}`);
+    }
+    lastParent = parent;
+    return (lastAncestorKeys = [...keys]);
+  };
   const candidates = (el: Element): RuleEntry[] => {
-    const out: RuleEntry[] = [...rest];
+    const out: RuleEntry[] = [];
     const id = el.getAttribute('id');
-    if (id) out.push(...(byId.get(quirks ? asciiLower(id) : id) ?? []));
-    for (const c of (el.getAttribute('class') ?? '').split(/\s+/)) if (c) out.push(...(byClass.get(quirks ? asciiLower(c) : c) ?? []));
-    out.push(...(byTag.get((el.localName ?? el.nodeName).toLowerCase()) ?? []));
+    const classes = (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+    const tag = (el.localName ?? el.nodeName).toLowerCase();
+    // 配列を引数に広げて push しない (規則が十数万個あると、引数の数の上限を超える)
+    const all = (list: RuleEntry[] | undefined) => {
+      if (list) for (const r of list) out.push(r);
+    };
+    const from = (g: RuleGroup) => {
+      all(g.rest);
+      if (id) all(g.byId.get(keyName(id)));
+      for (const c of classes) all(g.byClass.get(keyName(c)));
+      all(g.byTag.get(tag));
+    };
+    from(plain);
+    if (byAncestor.size) for (const k of ancestorKeys(el)) from(byAncestor.get(k)!);
     return out;
   };
+  /** :has()・:nth-child(… of S) の照合の覚え。このカスケードの間だけ持つ (計算値と同じく、文書の木は変わらない前提) */
+  const selectorMemo = createSelectorMemo();
 
   const cache = new Map<Element, Computed>();
   const pseudoCache = new Map<Element, Partial<Record<PseudoName, Computed>>>();
@@ -1879,7 +2012,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       seen.add(r);
       const pe = r.sel.pseudoElement;
       if ((pe ?? undefined) !== pseudo) continue;
-      if (!matches(el, r.sel)) continue;
+      if (!matches(el, r.sel, undefined, selectorMemo)) continue;
       r.decls.forEach(([p, v, imp], k) => push(p, v, imp, r.origin, r.sel.specificity, r.order + k / 1e4, r.layer));
     }
     if (!pseudo) {
@@ -1905,9 +2038,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
    * initial・循環するもの・読めない参照を含むものは「必ず無効な値」(変数の表から除き、使う側で fallback を使う)。
    * 表は、自分で定義していなければ親の表をそのまま使う (要素ごとに写さない)
    */
-  const resolveCustomProps = (decls: DeclaredValue[], parent: Computed | undefined): Map<string, string> => {
+  const resolveCustomProps = (decls: DeclaredValue[], parent: Computed | undefined): VarTable => {
     const ownVars = decls.some((d) => d.prop.startsWith('--'));
-    const vars = ownVars || !parent ? new Map(parent?.vars ?? []) : parent.vars;
+    const vars = ownVars || !parent ? new VarTable(parent?.vars) : parent.vars;
     const own = new Map<string, string>();
     for (const d of decls) if (d.prop.startsWith('--') && !own.has(d.prop)) own.set(d.prop, d.value);
     const state = new Map<string, 'busy' | 'done'>();
@@ -1919,19 +2052,54 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       const to = [...raw.matchAll(VAR_NAME_RE)].map((m) => m[1]).filter((x) => own.has(x));
       if (to.length) refs.set(n, to);
     }
+    // 循環の上にあるもの = 2 つ以上の節の強連結成分の節と、自分を参照する節。強連結成分を 1 度の深さ優先の探索 (Tarjan。再帰なし) で求める。
+    // 節ごとに「自分に戻れるか」を探し直すと、5000 個の変数の連鎖 (--a2: var(--a1) …) で、節の数の 2 乗の手間がかかった。
+    // 探索を終えた順 (ordered) は、参照される側が先に並ぶ: その順に値を決めれば、連鎖が何千段あっても、値を決める関数 (resolveOwn) が
+    // 連鎖の深さだけ再帰しない (5000 段の連鎖で、呼び出しの段を使い切って文書が組めなかった)
     const cyclic = new Set<string>();
-    for (const start of refs.keys()) {
-      const seen = new Set<string>();
-      const todo = [...refs.get(start)!];
-      while (todo.length) {
-        const n = todo.pop()!;
-        if (n === start) {
-          cyclic.add(start);
-          break;
+    const ordered: string[] = [];
+    {
+      const index = new Map<string, number>();
+      const low = new Map<string, number>();
+      const onStack = new Set<string>();
+      const stack: string[] = [];
+      for (const root of refs.keys()) {
+        if (index.has(root)) continue;
+        const work: Array<{ n: string; k: number }> = [{ n: root, k: 0 }];
+        index.set(root, index.size);
+        low.set(root, index.get(root)!);
+        stack.push(root);
+        onStack.add(root);
+        while (work.length) {
+          const f = work[work.length - 1];
+          const to = refs.get(f.n) ?? [];
+          if (f.k < to.length) {
+            const m = to[f.k++];
+            if (m === f.n) cyclic.add(m);
+            if (!index.has(m)) {
+              index.set(m, index.size);
+              low.set(m, index.get(m)!);
+              stack.push(m);
+              onStack.add(m);
+              work.push({ n: m, k: 0 });
+            } else if (onStack.has(m)) low.set(f.n, Math.min(low.get(f.n)!, index.get(m)!));
+            continue;
+          }
+          work.pop();
+          const up = work[work.length - 1];
+          if (up) low.set(up.n, Math.min(low.get(up.n)!, low.get(f.n)!));
+          if (low.get(f.n) === index.get(f.n)) {
+            const scc: string[] = [];
+            for (;;) {
+              const m = stack.pop()!;
+              onStack.delete(m);
+              scc.push(m);
+              if (m === f.n) break;
+            }
+            if (scc.length > 1) for (const m of scc) cyclic.add(m);
+            for (const m of scc) ordered.push(m);
+          }
         }
-        if (seen.has(n)) continue;
-        seen.add(n);
-        todo.push(...(refs.get(n) ?? []));
       }
     }
     const resolveOwn = (name: string): string | typeof INVALID | undefined => {
@@ -1979,8 +2147,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       else vars.set(name, val);
       return val;
     };
+    for (const n of ordered) resolveOwn(n);
     for (const n of own.keys()) resolveOwn(n);
-    return vars;
+    return ownVars ? vars.compact() : vars;
   };
 
   /**
@@ -1988,7 +2157,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
    * どれか 1 つでも読めなければ宣言ごと捨てる。revert は既定のスタイルの宣言まで戻す。
    * 返す rank は、性質ごとの、決まった宣言の強さの順 (小さいほど強い)
    */
-  const cascadeDecls = (decls: DeclaredValue[], vars: Map<string, string>, fsCtx: () => LenCtx, el: Element): { cascaded: Map<string, string>; rank: Map<string, number>; svgFrom?: Map<string, DeclaredValue> } => {
+  const cascadeDecls = (decls: DeclaredValue[], vars: VarTable, fsCtx: () => LenCtx, el: Element): { cascaded: Map<string, string>; rank: Map<string, number>; svgFrom?: Map<string, DeclaredValue> } => {
     const cascaded = new Map<string, string>();
     const rank = new Map<string, number>();
     let svgFrom: Map<string, DeclaredValue> | undefined;
@@ -2590,7 +2759,7 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
 export function parseInitialLetter(v: string): { size: number; sink: number } | undefined {
   const w = v.trim().toLowerCase().split(/\s+/);
   if (w.length < 1 || w.length > 2) return undefined;
-  const num = (x: string) => (/^\+?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/.test(x) ? parseFloat(x) : undefined);
+  const num = (x: string) => (/^\+?(\d+(?:\.\d*)?|\.\d+)(e[+-]?\d+)?$/.test(x) ? parseFloat(x) : undefined);
   const kw = w.find((x) => x === 'drop' || x === 'raise');
   const nums = w.filter((x) => x !== kw);
   if (kw ? nums.length !== 1 : nums.length < 1) return undefined;
@@ -2681,10 +2850,10 @@ function validByGrammar(prop: string, lv: string, ws: string[], ctx: LenCtx): bo
       return lv === 'normal' || oneOfEachGroup(ws, [/^(lining|oldstyle)-nums$/, /^(proportional|tabular)-nums$/, /^(diagonal|stacked)-fractions$/, /^ordinal$/, /^slashed-zero$/]);
     case 'font-style':
       // normal | italic | left | right | oblique <angle [-90deg,90deg]>? (Fonts 4 §2.4)
-      return /^(normal|italic|left|right|oblique)$/.test(lv) || (ws.length === 2 && ws[0] === 'oblique' && (HAS_MATH_FUNCTION.test(ws[1]) || /^[+-]?(\d+\.?\d*|\.\d+)(deg|grad|rad|turn)$/.test(ws[1])));
+      return /^(normal|italic|left|right|oblique)$/.test(lv) || (ws.length === 2 && ws[0] === 'oblique' && (HAS_MATH_FUNCTION.test(ws[1]) || /^[+-]?(\d+(?:\.\d*)?|\.\d+)(deg|grad|rad|turn)$/.test(ws[1])));
     case 'font-stretch':
       // normal | <percentage [0,∞]> | ultra-condensed | … | ultra-expanded (Fonts 4 §2.3 の font-width。font-stretch はその古い名前)
-      return /^(normal|(ultra|extra|semi)-(condensed|expanded)|condensed|expanded)$/.test(lv) || HAS_MATH_FUNCTION.test(lv) || /^\+?(\d+\.?\d*|\.\d+)%$/.test(lv);
+      return /^(normal|(ultra|extra|semi)-(condensed|expanded)|condensed|expanded)$/.test(lv) || HAS_MATH_FUNCTION.test(lv) || /^\+?(\d+(?:\.\d*)?|\.\d+)%$/.test(lv);
     case 'object-fit':
       // fill | none | [ contain | cover ] || scale-down (Images 4 §4.5。Images 3 §5.5 は 1 語だけ)
       return lv === 'fill' || lv === 'none' || oneOfEachGroup(ws, [/^(contain|cover)$/, /^scale-down$/]);
@@ -2849,7 +3018,9 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   if (prop === 'content') {
     // ブラウザが知らない関数 (leader()・target-counter() など) を含む content は読めない (自前の読み取り htmlPaged で扱う)
     const bare = v.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '"s"');
-    const fns = [...bare.matchAll(/([a-z-]+)\(/gi)].map((m) => m[1].toLowerCase());
+    // 名前の先頭からだけ探す (名前の途中から始めても、同じ「(」で終わる短い名前になるだけで、先頭からの照合が先に取る。
+    // 途中からも探すと、「(」の続かない名前の字の長い並びで、長さの 2 乗の時間がかかった)
+    const fns = [...bare.matchAll(/(?<![a-z-])([a-z-]+)\(/gi)].map((m) => m[1].toLowerCase());
     if (!fns.every((f) => /^(counter|counters|attr|url|image-set|(repeating-)?(linear|radial|conic)-gradient)$/.test(f))) return false;
     // counter(名前[, 書式])・counters(名前, 文字列[, 書式]) の引数。カンマの無い counter(page physical) は CSS の構文に無い (読めない)。
     // アンテナハウス互換 (ahCounterFlags) では、その拡張 counter(<ident> [physical || reverse]?, …) として通す。physical・reverse を
@@ -2891,7 +3062,7 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       // normal | [ <opentype-tag> <number> ]# (Fonts 4 §8.2。札は大文字小文字を区別する 4 字)
       return parseVariationSettings(v) !== undefined;
     case 'opacity':
-      return num.test(s0) || /^[+-]?(\d+\.?\d*|\.\d+)%$/.test(s0);
+      return num.test(s0) || /^[+-]?(\d+(?:\.\d*)?|\.\d+)%$/.test(s0);
     case 'background-origin':
     case 'background-clip':
       // <visual-box># (Backgrounds 3 §2.7・§2.8: border-box | padding-box | content-box)
@@ -3092,7 +3263,7 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
     }
     case 'background-image':
     case 'list-style-image':
-      return raw.replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)/g, (_m, a?: string, b?: string, c?: string) => `url("${(a ?? b ?? c ?? '').trim()}")`);
+      return replaceUrls(raw, (u) => `url("${u}")`);
     case 'text-align':
       // match-parent: 親の計算値を継ぐ。親の start・end は、親の direction で left・right にする (Text 3 §6.1)
       if (lv === 'match-parent') {

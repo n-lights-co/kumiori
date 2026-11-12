@@ -9,6 +9,7 @@
  * 結果は typeset の warnings に 1 行ずつ出す (ブラウザの画面の「変換レポート」と同じ数え方)
  */
 import { isKnownCssProperty } from './cssCascade';
+import { stripImportant } from './cssText';
 import { isPagedDecl, type ParsedCss } from './htmlPaged';
 
 /** 対応していないプロパティ (対応仕様説明書 HTML と CSS 編 16 章) */
@@ -193,7 +194,7 @@ function count(rep: UnsupportedCssReport, prop: string, value: string, svg = fal
     if (svg) rep.unsupported[`${p} (SVG の要素)`] = (rep.unsupported[`${p} (SVG の要素)`] ?? 0) + 1;
     return;
   }
-  const v = value.replace(/\s*!important\s*$/i, '').trim();
+  const v = stripImportant(value, false);
   if (UNSUPPORTED_CSS_PROPERTIES.has(p)) {
     rep.unsupported[p] = (rep.unsupported[p] ?? 0) + 1;
     return;

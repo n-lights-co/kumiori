@@ -20,6 +20,7 @@ import { mirrorChar, resolveLevels, visualOrder } from './bidi';
 import { atomAboveBelow, DEFAULT_BASELINE_RATIO, lineMetrics, type LineMetrics } from './lineMetrics';
 import { hyphenationLetters } from './hyphenation';
 import { bidiControls, flattenInline, fontBaselineRatio, hyphenAtoms, joiningUnits, ligatureUnits, primaryChar, runStyleOf } from './inlineFlatten';
+import { pushAll } from './arrayLoop';
 
 // inline の木を atom に平らにする処理 (inlineFlatten.ts) も、ほかのファイルからは従来どおりここから使える
 export { bidiControls, flattenInline, joiningUnits, ligatureUnits, primaryChar, runStyleOf };
@@ -804,6 +805,10 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
   // 行の始まりからの位置 (ブロックの内容の端から。タブの送りを決める。行頭・行末で捨てる空きは数えない)
   let tabX = indent;
   let tabAt = start;
+  // 折り返さない字があふれたときに、折り返してよい位置が無いと確かめた範囲の終わり (lead より後ろ、ここまでには無い)。
+  // 折り返さない長い 1 行 (white-space: nowrap・pre の 100KB の行) では、あふれた字ごとに行頭まで戻って探すと、字数の 2 乗の手間になる。
+  // 位置の良し悪しは前後の字だけで決まるので、1 度確かめた範囲は探し直さない (見つかる位置は変わらない)
+  let noBreakUntil = lead;
   while (k < n && atoms[k].kind !== 'break') {
     // 残したタブ: この行での送りを決めてから測る (CSS Text 3 §4.1.2)
     if (k >= tabAt) {
@@ -824,12 +829,13 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
       // 折り返さない (nowrap・pre) 字があふれる: その前の、折り返してよい位置 (white-space が折り返す側の空白・和文の字の間など。
       // 両側が折り返さない字の間は除く) まで戻って改行する (Text 3 §3・§5)。無ければ、折り返さずにはみ出す
       let q = k - 1;
-      while (q > lead && !(atoms[q].isSpace && !atoms[q].st.noWrap && !atoms[q].glue) && !(!(atoms[q].st.noWrap && atoms[q - 1].st.noWrap) && canBreakAtoms(atoms[q - 1], atoms[q]))) q--;
-      if (q > lead) {
+      while (q > noBreakUntil && !(atoms[q].isSpace && !atoms[q].st.noWrap && !atoms[q].glue) && !(!(atoms[q].st.noWrap && atoms[q - 1].st.noWrap) && canBreakAtoms(atoms[q - 1], atoms[q]))) q--;
+      if (q > noBreakUntil) {
         let j = q;
         while (j < n && atoms[j].isSpace) j++;
         return { line: makeLine(atoms.slice(start, q), false, indent), next: j };
       }
+      noBreakUntil = Math.max(noBreakUntil, k - 1);
     }
     x += w;
     k++;
@@ -915,7 +921,7 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
       // xj = atoms[start..h) の長さ
       if (hy && h < n && xj + hy.reduce((w, a) => w + a.advance, 0) <= avail + FIT_EPS && h - 1 > start) {
         const line = makeLine(atoms.slice(start, h), false, indent);
-        line.items.push(...hy);
+        pushAll(line.items, hy);
         line.hyphenated = true;
         return { line, next: h };
       }

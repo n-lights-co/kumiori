@@ -471,7 +471,9 @@ export function createFontMapping(
         if (!g.some((x) => x.family === family && x.same?.weight === same?.weight && x.same?.style === same?.style && x.same?.width === same?.width)) g.push({ family, ...(ff.ranges ? { ranges: ff.ranges } : {}), ...(same ? { same } : {}) });
         groups.set(ff.family, g);
       } catch (e) {
-        console.warn(`@font-face ${ff.family}: ${String(e)}`);
+        // 読めない書体 (壊れた・細工した書体を含む) は、書体の組の知らせ (onNotice) に出す。API・コマンドでは、結果の警告 (warnings) に入る
+        // (console.warn に出すだけだと、ライブラリの利用者には見えなかった)。画面では、これまでどおりコンソールに出る
+        fonts.onNotice(`@font-face ${ff.family}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     // 前の文書だけにあった face を外す (画面は、書体の組と割り当てを 1 つだけ作って使い回す。前の文書の太字の face が、

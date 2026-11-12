@@ -58,6 +58,8 @@ export interface MathResult {
   ascent: number;
   /** 基線から下の深さ (pt) */
   descent: number;
+  /** 字の数が MAX_MATH_GLYPHS を超え、超えた分を描かなかった (呼ぶ側で警告に出す) */
+  truncated?: boolean;
 }
 
 type Item =
@@ -179,6 +181,12 @@ export const MAX_MATH_NEST = 300;
  * 0.71^100 ≈ 1.3e-15 で、倍率は数として扱える範囲に収まる。実在の数式の深さは、添え字の入れ子の数 (数段) まで
  */
 const MAX_MATH_DEPTH = 100;
+/**
+ * 1 つの数式で描く字の数の上限。数式は 1 つの画像になり、行にも頁にも分かれないので、10pt の字 (1 字が約 5 × 10pt) で
+ * A4 の版面 (約 500 × 750pt) を埋めるのが約 7500 字。その 2 倍余りの 2 万字を超える分は描かない (箱の大きさは変えない)。
+ * 字は 1 つずつ輪郭の図形にするので、mn に 4 万桁を書いただけ (40KB) の数式が、11MB の PDF・24 秒・1.1GB になった
+ */
+export const MAX_MATH_GLYPHS = 20_000;
 /** 破線の線 1 本の、線の切れ端の数の上限 (これを超える線は実線にする)。切れ端の周期は線の太さの 8 倍なので、太さ 0.5pt で 40m の線にあたる */
 const MAX_DASHES = 10000;
 
@@ -200,6 +208,10 @@ class MathLayouter {
   private readonly f: MathFont;
   private readonly upm: number;
   private fenced = new WeakMap<MNode, MNode>();
+  /** flow・nonSpace・spaceLike の結果 (要素ごと) */
+  private flowCache = new WeakMap<MNode, MNode[]>();
+  private nonSpaceCache = new WeakMap<MNode, MNode[]>();
+  private spaceLikeCache = new WeakMap<MNode, boolean>();
   constructor(private o: MathLayoutOptions) {
     this.f = o.font;
     this.upm = o.font.upm;
@@ -229,7 +241,7 @@ class MathLayouter {
     const named = NAMED_SPACE[neg ? s.slice(8) : s];
     if (named !== undefined) return (neg ? -named : named) * this.em(ctx);
     if (s === 'infinity') return Infinity;
-    const m = /^([+-]?(?:\d+\.?\d*|\.\d+))\s*([a-z%]*)$/.exec(s);
+    const m = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*([a-z%]*)$/.exec(s);
     if (!m) return undefined;
     const n = parseFloat(m[1]);
     switch (m[2]) {
@@ -341,8 +353,28 @@ class MathLayouter {
     if (nm === 'mtext' || nm === 'mspace') return true;
     // 深すぎる入れ子は空白のようなものとみなさない (layout の深さの上限と同じ。JS の呼び出しの深さを使い切らない)
     if (depth > MAX_MATH_NEST) return false;
-    if (nm === 'mrow' || nm === 'mstyle' || nm === 'mphantom' || nm === 'mpadded') return elements(n).every((c) => this.spaceLike(c, depth + 1));
+    if (nm === 'mrow' || nm === 'mstyle' || nm === 'mphantom' || nm === 'mpadded') {
+      // 深さ 0 から読んだ結果だけを覚える (深さの上限で打ち切った結果は、読み始めの深さで変わる)
+      if (depth === 0) {
+        const hit = this.spaceLikeCache.get(n);
+        if (hit !== undefined) return hit;
+      }
+      const v = elements(n).every((c) => this.spaceLike(c, depth + 1));
+      if (depth === 0) this.spaceLikeCache.set(n, v);
+      return v;
+    }
     return false;
+  }
+
+  /**
+   * 子 (flow) のうち、空白のようなものでないもの。要素ごとに 1 度だけ求める (返した並びは書き換えない)。
+   * mo ごとに form を決める (formOf) とき、親の子の並びを読み直すと、1 万個の子を持つ math で、子の数の 2 乗の手間になる
+   * (<mo>(</mo><mi>x</mi> を 5000 組並べた 100KB で 37 秒)
+   */
+  private nonSpace(n: MNode): MNode[] {
+    let v = this.nonSpaceCache.get(n);
+    if (!v) this.nonSpaceCache.set(n, (v = this.flow(n).filter((c) => !this.spaceLike(c))));
+    return v;
   }
 
   /** 埋め込まれた演算子 (embellished operator) なら、中心の mo を返す */
@@ -350,18 +382,25 @@ class MathLayouter {
     const nm = nameOf(n);
     if (nm === 'mo') return n;
     if (depth > MAX_MATH_NEST) return undefined; // 深すぎる入れ子は追わない (JS の呼び出しの深さを使い切らない)
-    const els = this.flow(n);
-    if (SCRIPTED.has(nm) || nm === 'mfrac') return els[0] ? this.coreOp(els[0], depth + 1) : undefined;
+    if (SCRIPTED.has(nm) || nm === 'mfrac') {
+      const els = this.flow(n);
+      return els[0] ? this.coreOp(els[0], depth + 1) : undefined;
+    }
     if (nm === 'mrow' || nm === 'mstyle' || nm === 'mphantom' || nm === 'mpadded') {
-      const non = els.filter((c) => !this.spaceLike(c));
+      const non = this.nonSpace(n);
       return non.length === 1 ? this.coreOp(non[0], depth + 1) : undefined;
     }
     return undefined;
   }
 
-  /** 子の要素 (mfenced は mrow に置き換え、semantics・maction は表示する子だけ) */
+  /**
+   * 子の要素 (mfenced は mrow に置き換え、semantics・maction は表示する子だけ)。要素ごとに 1 度だけ求める (返した並びは書き換えない。
+   * linkedom の childNodes は読むたびに並びを作り直すので、多くの子を持つ要素で何度も読むと重い)
+   */
   private flow(n: MNode): MNode[] {
-    return elements(n).map((c) => (nameOf(c) === 'mfenced' ? this.fencedRow(c) : c));
+    let v = this.flowCache.get(n);
+    if (!v) this.flowCache.set(n, (v = elements(n).map((c) => (nameOf(c) === 'mfenced' ? this.fencedRow(c) : c))));
+    return v;
   }
 
   /** mfenced を、開きと閉じの括弧・区切りの mo を持つ mrow にする (MathML 3 の mfenced の定義) */
@@ -410,7 +449,8 @@ class MathLayouter {
         const mid = this.flow(this.fencedRow(p))[1];
         return mid && mid !== e && nameOf(mid) === 'mrow' && mid.parentNode !== p ? this.flow(mid) : [e];
       };
-      const sibs = (pn === 'mfenced' ? fencedInner() : this.flow(p)).filter((c) => !this.spaceLike(c) || c === e);
+      // (e は空白のようなものでない (中に mo がある) ので、ふつうは、親の空白のようなものでない子の並び (nonSpace) と同じ)
+      const sibs = pn !== 'mfenced' && !this.spaceLike(e) ? this.nonSpace(p) : (pn === 'mfenced' ? fencedInner() : this.flow(p)).filter((c) => !this.spaceLike(c) || c === e);
       if ((ROW_LIKE.has(pn) || pn === 'mfenced') && pn !== 'mtd' && sibs.length > 1) {
         if (sibs[0] === e) return { form: 'prefix', explicit: false };
         if (sibs[sibs.length - 1] === e) return { form: 'postfix', explicit: false };
@@ -1323,7 +1363,7 @@ class MathLayouter {
     const dim = (v: string | undefined, cur: number): number => {
       if (!v) return cur;
       const s = v.trim();
-      const m = /^([+-]?)\s*(\d+\.?\d*|\.\d+)\s*(%|width|height|depth|[a-z]*)\s*(width|height|depth)?$/i.exec(s);
+      const m = /^([+-]?)\s*(\d+(?:\.\d*)?|\.\d+)\s*(%|width|height|depth|[a-z]*)\s*(width|height|depth)?$/i.exec(s);
       if (!m) return cur;
       const sign = m[1];
       const num = parseFloat(m[2]);
@@ -1799,8 +1839,15 @@ class MathLayouter {
       if (!l) byColor.set(c, (l = []));
       l.push(d);
     };
+    let glyphs = 0;
+    let truncated = false;
     for (const it of box.items) {
       if (it.t === 'g') {
+        // 字の数の上限 (MAX_MATH_GLYPHS の説明)
+        if (++glyphs > MAX_MATH_GLYPHS) {
+          truncated = true;
+          continue;
+        }
         const X = (v: number) => r(it.x + v * it.s);
         const Y = (v: number) => r(A - (it.y + v * it.s));
         let d = '';
@@ -1848,7 +1895,7 @@ class MathLayouter {
     for (const [c, ds] of byColor) body += `<path fill="${c}" d="${ds.join('')}"/>`;
     body += strokes.join('');
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${r(W)}pt" height="${r(H)}pt" viewBox="0 0 ${r(W)} ${r(H)}">${body}</svg>`;
-    return { svg, width: W, ascent: A, descent: D };
+    return { svg, width: W, ascent: A, descent: D, ...(truncated ? { truncated } : {}) };
   }
 }
 

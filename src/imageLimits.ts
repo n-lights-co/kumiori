@@ -241,3 +241,43 @@ export const EPUB_MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
  * (ZIP64 は読まない) ので、zip の項目はもともと 65,535 まで。spine に同じ章を何度でも並べられるので、章の並びにも同じ上限を当てる
  */
 export const EPUB_MAX_ENTRIES = 65_535;
+
+/**
+ * メタファイル (WMF・EMF) と CGM を SVG にした文字列の長さの上限 (画像の data: の中身は除く。そちらは画素の合計の上限 metafilePixelBudget で縛る)。
+ * PS_MAX_SVG_CHARS と同じ考え方: SVG を受け取る側 (assets.ts・svg.ts) は、文字列を XML として読んで図形にするので、1 字あたり約 1 マイクロ秒と、
+ * 文字列の何倍ものメモリを使う。小さな記録が、前に定義した大きなものを何度も書かせる入力では、SVG がファイルの 2 乗や数百倍に膨らんだ:
+ *  - WMF の META_PAINTREGION (8 バイト) が、矩形の多い Region の全部の矩形を、塗るたびに path に書く (20KB の WMF で SVG が 9,700 万字・72 秒・2.4GB)
+ *  - EMF の切り抜きの領域を、切り抜きが変わるたびに clipPath に書く (66KB で 2,900 万字)、EMR_GRADIENTFILL の三角形 (12 バイト) が 64 個の path になる (48KB で 3,100 万字)
+ *  - CGM の COPY SEGMENT (24 バイト) が、点の多いセグメントを写すたびに全部書く (33KB で 18 秒・1.2GB)
+ * そこで、SVG の長さを「ファイルの大きさに依らず使える分 + 1 バイトあたりの分」と、絶対の上限までにする (超えたら、そこまでを描いて警告を出す)。
+ *  - METAFILE_SVG_FREE_CHARS: ファイルの大きさに依らず使える分 (2MB)。小さなファイルの模様・色の変わる塗り (三角形 1 つが 64 個の path) を弾かない
+ *  - METAFILE_SVG_CHARS_PER_BYTE: 1 バイトあたりの分 (128 字)。実在のファイルの比は、WMF・EMF で 1〜2 字、2 進の CGM で 20 字ほど
+ *    (docs/conformance の見本 woven.wmf 1.8・woven.emf 1.2・woven.cgm 19.0)。記録ごとの比が最も大きい普通の記録は、1 字ずつ送り幅を付けた文字
+ *    (WMF の META_EXTTEXTOUT: 1 字が字 1 バイト + 送り幅 2 バイトで、回転の付いた <text> が約 200 字 = 1 バイトで約 67 字) と、
+ *    CGM の短い線の要素 (10 バイトほどで、線の属性の付いた path が約 150〜250 字 = 1 バイトで約 25 字) なので、その 2 倍ほどにした
+ *  - METAFILE_MAX_SVG_CHARS: 絶対の上限。EPS と同じ (PS_MAX_SVG_CHARS)。画像 (画素の合計の上限 6,400 万画素で約 3.4 億字) と合わせても、
+ *    V8 の文字列の長さの上限 (約 5.3 億字) に収まる
+ */
+export const METAFILE_SVG_FREE_CHARS = 2 * 1024 * 1024;
+export const METAFILE_SVG_CHARS_PER_BYTE = 128;
+export const METAFILE_MAX_SVG_CHARS = PS_MAX_SVG_CHARS;
+/** fileBytes バイトのメタファイル・CGM を SVG にした文字列 (画像の中身を除く) の長さの上限 */
+export const metafileSvgBudget = (fileBytes: number): number => Math.min(METAFILE_MAX_SVG_CHARS, METAFILE_SVG_FREE_CHARS + METAFILE_SVG_CHARS_PER_BYTE * fileBytes);
+
+/**
+ * メタファイル (WMF・EMF) の 1 つの文書で、切り抜きの領域の演算 (metafile.ts の regionOp) に使える手間の合計の上限。
+ * 手間は、領域を横の帯に分けたときの「帯ごとの、その帯にかかる矩形の数 + 1」の合計 (1 単位は約 0.1 マイクロ秒)。
+ * 矩形の多い領域を切り抜きにして、全体を覆う矩形との演算 (META_INTERSECTCLIPRECT は 14 バイト) を繰り返すと、記録 1 つごとに領域の全部の矩形を
+ * たどるので、手間はファイルの大きさの 2 乗になる (50KB の WMF で 120 秒を超えた。帯ごとに全部の矩形を調べていた頃)。
+ * 5,000 万は、矩形 5,000 個の領域 (印刷のドライバーの書き出す込み入った切り抜きの大きさ) との演算を 5,000 回できる値。超えたら、その後の演算はせず
+ * (切り抜きを変えず)、警告を出す
+ */
+export const METAFILE_REGION_WORK = 50_000_000;
+
+/**
+ * メタファイル (EMF) の 1 つの文書で、パスを含む切り抜きの OR・XOR (metafile.ts の combineClip。regionBool.ts の polyBool で多角形を演算する) に
+ * 渡せる点の数の合計の上限 (1 点は約 2 マイクロ秒)。OR・XOR の結果は、それまでの全部の形を持つ 1 つの層になるので、小さなパスを
+ * EMR_SELECTCLIPPATH で OR に足す記録を並べると、点の数の合計がファイルの大きさの 2 乗になる (1,000 回・52KB の EMF で 4 秒、2,000 回・104KB で 18 秒)。
+ * 100 万点 (約 2 秒) は、点が 10 万の込み入った切り抜きのパス (地図・字の輪郭) との演算を 10 回できる値。超えたら、その後の演算はせず (切り抜きを変えず)、警告を出す
+ */
+export const METAFILE_CLIP_PATH_WORK = 1_000_000;

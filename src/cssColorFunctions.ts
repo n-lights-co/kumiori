@@ -370,7 +370,7 @@ function toRgba8(col: Col, legacy: boolean): Rgba8 {
 
 // ───────────────────────── 構文 ─────────────────────────
 
-const NUMBER = String.raw`[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?`;
+const NUMBER = String.raw`[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?`;
 const NUM_RE = new RegExp(`^${NUMBER}$`);
 const PCT_RE = new RegExp(`^${NUMBER}%$`);
 const HUE_RE = new RegExp(`^(${NUMBER})(deg|grad|rad|turn)?$`);

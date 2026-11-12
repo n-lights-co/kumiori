@@ -262,12 +262,19 @@ describe('HTM-18: 同じ画像の URL は 1 度だけ取る', () => {
   it('取れなかった URL を取り直さない。許さない URL も 1 度だけ報告する', async () => {
     const assets = new AssetStore();
     const calls: string[] = [];
-    assets.addUrl = async (url: string) => {
-      calls.push(url);
-      return undefined;
-    };
+    // 取得 (fetchGuarded の中の fetch) を、取れない取得に差し替えて、要求の数を数える
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: unknown) => {
+      calls.push(String(url));
+      throw new Error('unreachable');
+    }) as typeof fetch;
     const bad = 'https://example.invalid/x.png';
-    const refused = await fetchReportedImages(assets, [...Array(50).fill(bad), 'https://no.invalid/a.png', 'https://no.invalid/a.png'], (u) => u === bad, 10);
+    let refused: string[];
+    try {
+      refused = await fetchReportedImages(assets, [...Array(50).fill(bad), 'https://no.invalid/a.png', 'https://no.invalid/a.png'], (u) => u === bad, 10);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
     expect(calls).toEqual([bad]);
     expect(refused).toEqual(['https://no.invalid/a.png']);
   });

@@ -180,6 +180,11 @@ interface Component {
   bw: number;
   bh: number;
   coef: Int16Array;
+  /**
+   * 区画ごとの「AC の係数 (k ≥ 1) に 0 でないものを置いたことがある」印 (1 区画 1 バイト)。AC の続く走査 (G.1.2.3) の EOBRUN の中の区画は、
+   * 0 でない係数にだけ 1 ビットを読むので、印の無い区画は 63 個の係数を調べずに飛ばせる (読むビットも変えることも無い)
+   */
+  nz: Uint8Array;
   quant?: Uint16Array;
   pred: number;
   dc?: DecodeTable;
@@ -194,6 +199,15 @@ class JpegError extends Error {}
  * その数十倍をとる (libjpeg-turbo が走査の数に上限を置けるようにしている (走査の数の制限) のと同じ考え方)。超えれば読めない画像として扱う
  */
 const MAX_SCANS = 500;
+
+/**
+ * 1 枚の画像の全部の走査でたどる区画の数の合計の上限 (全部の成分の区画の数の何倍か)。EOBRUN (G.1.2.2) は 1 つの符号で 32,767 個までの区画を
+ * 終わらせるので、数バイトの走査で全部の区画をたどらせられる。MAX_SCANS (500) の走査を並べると、たどる数が区画の数の 500 倍になる
+ * (CGM の TILE に入れた 14KB の JPEG で 18 秒。AC の続く走査で、区画ごとに 63 個の係数を調べていた頃)。
+ * 実在の漸進の JPEG で、1 つの区画をたどる走査は、多くて 10 個ほど (libjpeg の既定の走査の組み方で、輝度の成分が 6 個・色差の成分が 4 個) なので、
+ * その数倍の 64 にする。超えれば読めない画像として扱う
+ */
+const MAX_BLOCK_VISITS_PER_BLOCK = 64;
 
 /** JPEG の画素を読む。扱えない形式や壊れたデータなら undefined */
 export function decodeJpeg(b: Uint8Array): JpegPixels | undefined {
@@ -222,6 +236,8 @@ function decode(b: Uint8Array): JpegPixels | undefined {
   let adobe: AdobeMarker | undefined;
   let framed = false;
   let scans = 0;
+  /** たどってよい区画の残り (MAX_BLOCK_VISITS_PER_BLOCK。decodeScan が引く) */
+  const visits = { left: 0 };
   let p = 2;
   for (;;) {
     if (p + 2 > b.length) break;
@@ -299,8 +315,10 @@ function decode(b: Uint8Array): JpegPixels | undefined {
         c.bw = mcusX * c.h;
         c.bh = mcusY * c.v;
         c.coef = new Int16Array(c.bw * c.bh * 64);
+        c.nz = new Uint8Array(c.bw * c.bh);
         c.pred = 0;
       }
+      visits.left = MAX_BLOCK_VISITS_PER_BLOCK * comps.reduce((n, c) => n + c.bw * c.bh, 0);
     } else if (m === 0xda) {
       if (!framed) throw new JpegError('SOS before SOF');
       if (++scans > MAX_SCANS) throw new JpegError('too many scans');
@@ -319,7 +337,7 @@ function decode(b: Uint8Array): JpegPixels | undefined {
       const se = seg[2 + 2 * ns];
       const ah = seg[3 + 2 * ns] >> 4;
       const al = seg[3 + 2 * ns] & 15;
-      p = decodeScan(b, p + len, sc, { X, Y, hmax, vmax, mcusX, mcusY, progressive, restart, ss, se, ah, al });
+      p = decodeScan(b, p + len, sc, { X, Y, hmax, vmax, mcusX, mcusY, progressive, restart, ss, se, ah, al, visits });
       continue;
     }
     p += len;
@@ -425,6 +443,8 @@ interface ScanParams {
   se: number;
   ah: number;
   al: number;
+  /** たどってよい区画の残り (画像の全部の走査の合計。尽きれば読めない画像) */
+  visits: { left: number };
 }
 
 /** 1 つの走査の符号を読み、係数に足す。読み終えた位置 (次の印の位置) を返す */
@@ -512,6 +532,7 @@ function decodeScan(b: Uint8Array, start: number, sc: Component[], P: ScanParams
         k += r;
         if (k > 63) throw new JpegError('AC index');
         coef[off + UNZIGZAG[k]] = extend(receive(s), s);
+        c.nz[off >> 6] = 1;
         k++;
       }
       return;
@@ -547,6 +568,7 @@ function decodeScan(b: Uint8Array, start: number, sc: Component[], P: ScanParams
         k += r;
         if (k > 63) throw new JpegError('AC index');
         coef[off + UNZIGZAG[k]] = extend(receive(s), s) * (1 << al);
+        c.nz[off >> 6] = 1;
         k++;
       }
       return;
@@ -577,14 +599,19 @@ function decodeScan(b: Uint8Array, start: number, sc: Component[], P: ScanParams
           else if (--r < 0) break;
           k++;
         }
-        if (val && k <= se) coef[off + UNZIGZAG[k]] = val;
+        if (val && k <= se) {
+          coef[off + UNZIGZAG[k]] = val;
+          c.nz[off >> 6] = 1;
+        }
       }
     }
     if (eobrun > 0) {
-      for (; k <= se; k++) {
-        const z = off + UNZIGZAG[k];
-        if (coef[z] !== 0) refine(z);
-      }
+      // 0 でない AC の係数の無い区画は、何も読まず何も変えないので、係数を調べない (EOBRUN の中の区画の大半。G.1.2.3)
+      if (c.nz[off >> 6])
+        for (; k <= se; k++) {
+          const z = off + UNZIGZAG[k];
+          if (coef[z] !== 0) refine(z);
+        }
       eobrun--;
     }
   };
@@ -605,6 +632,7 @@ function decodeScan(b: Uint8Array, start: number, sc: Component[], P: ScanParams
   const restartCheck = () => {
     if (P.restart && units > 0 && units % P.restart === 0) nextRestart();
     units++;
+    if (--P.visits.left < 0) throw new JpegError('too many block visits');
   };
   // 符号のデータが尽きた後の区画は読まない (0 のビットを符号として読み続けない。係数はそれまでの値のまま)。再開の間隔があれば、
   // 次の再開の印から読み直す (E.2.4・F.2.1.3.1)。無ければ、または、もうファイルの終わりなら、この走査をそこで打ち切る

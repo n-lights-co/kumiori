@@ -36,7 +36,7 @@ import { cffGlyph, parseCff, type CffFont } from './psCff';
 //  - 複合書体 (FontType 0、FMapType 9): CMap で CID にし、CIDFontType 0 の字形の命令を使う (§5.11)
 // 字の形を持たない書体 (findfont で見つからない書体の代わりの辞書) は、書体の名前から代わりの書体で描く (SVG の text)。
 
-/** CMap の範囲・字の数の上限 (usecmap) */
+/** CMap の範囲・字の数の上限 (usecmap と、endcodespacerange・endcidrange・endcidchar で足すとき) */
 const MAX_CMAP_ENTRIES = 200_000;
 
 /** CMap の辞書ごとの対応 (CIDInit の演算子で作る) */
@@ -67,15 +67,25 @@ export function makeCIDInit(I: Interp): PSDict {
   /** 印までのオペランドを取り出す */
   const items = (I: Interp): PSObj[] => {
     const out: PSObj[] = [];
-    while (I.ostack.length && I.ostack[I.ostack.length - 1].t !== 'mark') out.unshift(I.ostack.pop()!);
+    // 後ろから取って、最後に逆順にする (unshift で前に足すと、オペランドの数の 2 乗の手間になる。スタックは 10 万個まで積める)
+    while (I.ostack.length && I.ostack[I.ostack.length - 1].t !== 'mark') out.push(I.ostack.pop()!);
     I.ostack.pop();
-    return out;
+    return out.reverse();
   };
   const codeOf = (o: PSObj) => {
     const b = bytesOfStr(o) ?? new Uint8Array(0);
     let v = 0;
     for (const c of b) v = v * 256 + c;
     return { n: b.length, v, bytes: [...b] };
+  };
+  /**
+   * 対応を n 件足す前に、上限 (MAX_CMAP_ENTRIES) とメモリの勘定を確かめる (usecmap と同じに 1 件 100 バイト)。
+   * 前は endcidchar・endcidrange・endcodespacerange が勘定の外で足し続け、「{ mark … endcidchar } loop」が字の対応の表を際限なく伸ばした
+   */
+  const addEntries = (I: Interp, now: number, n: number) => {
+    if (now + n > MAX_CMAP_ENTRIES) throw new PSError('limitcheck');
+    I.work(n);
+    I.memAlloc(n * 100);
   };
   const beginN = (I: Interp) => {
     I.popInt();
@@ -87,6 +97,7 @@ export function makeCIDInit(I: Interp): PSDict {
     op('endcodespacerange', (I) => {
       const v = items(I);
       const cm = cmapOf(I);
+      addEntries(I, cm.space.length, v.length >> 1);
       for (let k = 0; k + 1 < v.length; k += 2) cm.space.push({ lo: codeOf(v[k]).bytes, hi: codeOf(v[k + 1]).bytes });
     }),
   );
@@ -95,6 +106,7 @@ export function makeCIDInit(I: Interp): PSDict {
     op('endcidrange', (I) => {
       const v = items(I);
       const cm = cmapOf(I);
+      addEntries(I, cm.ranges.length, Math.floor(v.length / 3));
       for (let k = 0; k + 2 < v.length; k += 3) {
         const lo = codeOf(v[k]);
         cm.ranges.push({ n: lo.n, lo: lo.v, hi: codeOf(v[k + 1]).v, cid: intOf(v[k + 2], 0) });
@@ -106,6 +118,7 @@ export function makeCIDInit(I: Interp): PSDict {
     op('endcidchar', (I) => {
       const v = items(I);
       const cm = cmapOf(I);
+      addEntries(I, cm.chars.size, v.length >> 1);
       for (let k = 0; k + 1 < v.length; k += 2) {
         const c = codeOf(v[k]);
         cm.chars.set(`${c.n}:${c.v}`, intOf(v[k + 1], 0));
@@ -646,7 +659,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
           } else {
             G.countItem();
             runItem = { k: 'text', text: g.fallback.ch, fontName: g.fallback.fontName, mat: [e[0], e[1], e[2], e[3], cp[0], cp[1]], color: G.currentRGB(), cmyk: G.currentCMYK(), clip: G.g.clip };
-            G.items.push(runItem);
+            G.emit(runItem);
             if (!own) runItem = undefined;
           }
         }
@@ -664,7 +677,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
     if (fillSegs.length && opts.paint && !G.invisible()) {
       G.countItem(fillSegs.length);
       if (stroke)
-        G.items.push({
+        G.emit({
           k: 'stroke',
           segs: fillSegs,
           color: G.currentRGB(),
@@ -676,7 +689,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
           ctm: stroke.m,
           clip: G.g.clip,
         });
-      else G.items.push({ k: 'fill', segs: fillSegs, evenOdd: false, color: G.currentRGB(), cmyk: G.currentCMYK(), clip: G.g.clip });
+      else G.emit({ k: 'fill', segs: fillSegs, evenOdd: false, color: G.currentRGB(), cmyk: G.currentCMYK(), clip: G.g.clip });
     }
     // 現在の点をパスにも反映する (show のあとの rlineto などのため)
     if (G.g.cp) {
