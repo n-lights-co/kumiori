@@ -264,12 +264,13 @@ export function decodeBmp(b: Uint8Array): Pixels | undefined {
   }
   // ビットフィールド (無ければ 16 ビットは 5-5-5、32 ビットは 8-8-8)
   const masks = comp === 3 ? [dv.getUint32(54, true), dv.getUint32(58, true), dv.getUint32(62, true), hs >= 56 ? dv.getUint32(66, true) : 0] : bpp === 16 ? [0x7c00, 0x3e0, 0x1f, 0] : [0xff0000, 0xff00, 0xff, 0];
-  const field = (v: number, m: number) => {
-    if (!m) return -1;
+  /** ビットフィールドのマスク m の値を 0..255 にする関数 (マスクが 0 なら −1)。シフトの量と最大値は、マスクごとに 1 度だけ求める */
+  const fieldOf = (m: number): ((v: number) => number) => {
+    if (!m) return () => -1;
     let s = 0;
     while (!((m >>> s) & 1)) s++;
     const max = m >>> s;
-    return Math.round((((v & m) >>> s) * 255) / max);
+    return (v: number) => Math.round((((v & m) >>> s) * 255) / max);
   };
   const rowSize = Math.floor((bpp * W + 31) / 32) * 4;
   // 画素の行を読む所: 圧縮しないものはファイルそのもの (off から)、RLE は戻した行 (0 から。行の順は圧縮した列の順のまま)。
@@ -282,25 +283,48 @@ export function decodeBmp(b: Uint8Array): Pixels | undefined {
     px = expandRle(b.subarray(off, size ? Math.min(b.length, off + size) : b.length), W, H, bpp as 4 | 8);
     base = 0;
   } else if (off + rowSize * H > b.length) return undefined;
+  // 画素ごとに色の配列を作らず、RGBA の配列へじかに書く (1 億画素の上限ちょうどの RLE の BMP (98KB) で、画素ごとの配列の分だけで 6 秒あまりかかった)
   const rgba = new Uint8Array(W * H * 4);
-  for (let y = 0; y < H; y++) {
-    const r = base + (h < 0 ? y : H - 1 - y) * rowSize;
-    for (let x = 0; x < W; x++) {
-      const o = (y * W + x) * 4;
-      let c: number[];
-      if (bpp <= 8) {
+  if (bpp <= 8) {
+    // 色の表 (無い番号は黒)
+    const lut = new Uint8Array(256 * 3);
+    pal.forEach((c, i) => lut.set(c, i * 3));
+    const mask = (1 << bpp) - 1;
+    for (let y = 0; y < H; y++) {
+      const r = base + (h < 0 ? y : H - 1 - y) * rowSize;
+      for (let x = 0, o = y * W * 4; x < W; x++, o += 4) {
         const bit = x * bpp;
-        const i = (px[r + (bit >> 3)] >> (8 - bpp - (bit & 7))) & ((1 << bpp) - 1);
-        c = [...(pal[i] ?? [0, 0, 0]), 255];
-      } else if (bpp === 24) c = [b[r + x * 3 + 2], b[r + x * 3 + 1], b[r + x * 3], 255];
-      else if (bpp === 16 || bpp === 32) {
-        const v = bpp === 16 ? dv.getUint16(r + x * 2, true) : dv.getUint32(r + x * 4, true);
-        const a = field(v, masks[3]);
-        c = [field(v, masks[0]), field(v, masks[1]), field(v, masks[2]), a < 0 ? 255 : a];
-      } else return undefined;
-      rgba.set(c, o);
+        const i = ((px[r + (bit >> 3)] >> (8 - bpp - (bit & 7))) & mask) * 3;
+        rgba[o] = lut[i];
+        rgba[o + 1] = lut[i + 1];
+        rgba[o + 2] = lut[i + 2];
+        rgba[o + 3] = 255;
+      }
     }
-  }
+  } else if (bpp === 24) {
+    for (let y = 0; y < H; y++) {
+      const r = base + (h < 0 ? y : H - 1 - y) * rowSize;
+      for (let x = 0, o = y * W * 4, q = r; x < W; x++, o += 4, q += 3) {
+        rgba[o] = b[q + 2];
+        rgba[o + 1] = b[q + 1];
+        rgba[o + 2] = b[q];
+        rgba[o + 3] = 255;
+      }
+    }
+  } else if (bpp === 16 || bpp === 32) {
+    const [fr, fg, fb, fa] = masks.map(fieldOf);
+    for (let y = 0; y < H; y++) {
+      const r = base + (h < 0 ? y : H - 1 - y) * rowSize;
+      for (let x = 0, o = y * W * 4; x < W; x++, o += 4) {
+        const v = bpp === 16 ? dv.getUint16(r + x * 2, true) : dv.getUint32(r + x * 4, true);
+        const a = fa(v);
+        rgba[o] = fr(v);
+        rgba[o + 1] = fg(v);
+        rgba[o + 2] = fb(v);
+        rgba[o + 3] = a < 0 ? 255 : a;
+      }
+    }
+  } else return undefined;
   return { width: W, height: H, rgba };
 }
 

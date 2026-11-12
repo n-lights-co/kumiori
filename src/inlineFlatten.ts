@@ -19,6 +19,7 @@ import { withOpticalSize } from './fontVariation';
 import { borderToLogicalWidths, normBorder, normEdges, toLogical } from './geometry';
 import { sourceRef } from './sourceRef';
 import type { Atom, FlattenState, InlineChild, InlineContentArea, InlineFrame } from './inlineLayout';
+import { pushAll } from './arrayLoop';
 
 /**
  * 分綴した行の終わりに出す字の atom の並び。字は hyphenate-character (CSS Text 4 §6.3.2)・hyphenation-character (XSL 1.1 §7.10.5) の
@@ -446,42 +447,53 @@ export function flattenInline(
 ): Atom[] {
   const cx: FlattenCtx = { st, m, state, bg, wm: st.wm, out: [] };
   const wm = cx.wm;
-  // タブ位置の間隔 (tab-size。CSS Text 3 §4.2): 数は、タブにいちばん近いブロック容器の空白の字 (U+0020) の送り (字間・語間を含む) の何倍か。
-  // 最初の呼び出しの書式が、段落のブロックの書式 (中の inline の呼び出しは、同じ state を受け継ぐ)。初期値は 8。
-  // タブ位置までが 0.5ch より短ければ次のタブ位置へ (§4.1.2)。ch は、ブロックの書体の「0」の送り
-  if (!state.tab) {
-    const rs = runStyleOf(st);
-    const ts = st.tabSize ?? 8;
-    const size = typeof ts === 'number' ? ts * (m.glyph(' ', rs, wm).advance + (st.letterSpacing ?? 0) + (st.wordSpacing ?? 0)) : ts.length;
-    state.tab = { size: Math.max(size, 0), half: m.glyph('0', rs, wm).advance / 2 };
+  flattenDepth.set(state, (flattenDepth.get(state) ?? 0) + 1);
+  try {
+    // タブ位置の間隔 (tab-size。CSS Text 3 §4.2): 数は、タブにいちばん近いブロック容器の空白の字 (U+0020) の送り (字間・語間を含む) の何倍か。
+    // 最初の呼び出しの書式が、段落のブロックの書式 (中の inline の呼び出しは、同じ state を受け継ぐ)。初期値は 8。
+    // タブ位置までが 0.5ch より短ければ次のタブ位置へ (§4.1.2)。ch は、ブロックの書体の「0」の送り
+    if (!state.tab) {
+      const rs = runStyleOf(st);
+      const ts = st.tabSize ?? 8;
+      const size = typeof ts === 'number' ? ts * (m.glyph(' ', rs, wm).advance + (st.letterSpacing ?? 0) + (st.wordSpacing ?? 0)) : ts.length;
+      state.tab = { size: Math.max(size, 0), half: m.glyph('0', rs, wm).advance / 2 };
+    }
+    for (const c0 of children) {
+      const start0 = cx.out.length;
+      // 欧文の合字 (axf:ligature-mode="latin")。書体が合字の字 (U+FB00〜U+FB04) を持つときはその字に置き換える (無い並びは、下で書体の liga を使う)
+      // 字間 (letter-spacing) のあるときは、合字にしない (Text 3 §7.2)。font-feature-settings で liga を明示したときは、字間があっても合字にする (同じ節)
+      // 合字の字に置き換えるのは、書体の liga がその並びを合字にするとき (Fonts 4 §6.4: 標準の合字は書体の liga が定める) と、
+      // 書体が liga を持たないが合字の字形 (U+FB01 など) を持つとき (Tinos・Arimo など。等幅の書体は除く: 字幅を保つため)。
+      // liga を持つのにその並びを合字にしない書体 (Source Code Pro など) は、合字の字形があっても合字にしない
+      const c =
+        typeof c0 === 'string' && st.latinLigatures && (!st.letterSpacing || !!st.forcedLigatures?.includes('liga')) && /f[fil]/.test(c0)
+          ? applyLatinLigatures(c0, (ch, seq) => {
+              const f = m.glyph('f', runStyleOf(st), wm).font;
+              return m.glyph(ch, runStyleOf(st), wm).font === f && (fontLigates(f, seq) || fontLacksLigaButHasGlyphs(f));
+            })
+          : c0;
+      if (typeof c === 'string') flattenText(c, cx);
+      else if (c.type === 'inline') flattenInlineElement(c, cx);
+      else if (c.type === 'ruby') flattenRuby(c, cx);
+      else if (c.type === 'image' || c.type === 'inline-container') flattenInlineBox(c, cx);
+      else if (c.type === 'page-number-citation') flattenCitation(c, cx);
+      else if (c.type === 'footnote') flattenFootnoteRef(c, cx);
+      else if (c.type === 'leader') flattenLeader(c, cx);
+      else if (c.type === 'tate-chu-yoko') flattenTateChuYoko(c, cx);
+      if (typeof c0 === 'object') markRef(cx.out, c0, start0);
+    }
+  } finally {
+    flattenDepth.set(state, flattenDepth.get(state)! - 1);
   }
-  for (const c0 of children) {
-    const start0 = cx.out.length;
-    // 欧文の合字 (axf:ligature-mode="latin")。書体が合字の字 (U+FB00〜U+FB04) を持つときはその字に置き換える (無い並びは、下で書体の liga を使う)
-    // 字間 (letter-spacing) のあるときは、合字にしない (Text 3 §7.2)。font-feature-settings で liga を明示したときは、字間があっても合字にする (同じ節)
-    // 合字の字に置き換えるのは、書体の liga がその並びを合字にするとき (Fonts 4 §6.4: 標準の合字は書体の liga が定める) と、
-    // 書体が liga を持たないが合字の字形 (U+FB01 など) を持つとき (Tinos・Arimo など。等幅の書体は除く: 字幅を保つため)。
-    // liga を持つのにその並びを合字にしない書体 (Source Code Pro など) は、合字の字形があっても合字にしない
-    const c =
-      typeof c0 === 'string' && st.latinLigatures && (!st.letterSpacing || !!st.forcedLigatures?.includes('liga')) && /f[fil]/.test(c0)
-        ? applyLatinLigatures(c0, (ch, seq) => {
-            const f = m.glyph('f', runStyleOf(st), wm).font;
-            return m.glyph(ch, runStyleOf(st), wm).font === f && (fontLigates(f, seq) || fontLacksLigaButHasGlyphs(f));
-          })
-        : c0;
-    if (typeof c === 'string') flattenText(c, cx);
-    else if (c.type === 'inline') flattenInlineElement(c, cx);
-    else if (c.type === 'ruby') flattenRuby(c, cx);
-    else if (c.type === 'image' || c.type === 'inline-container') flattenInlineBox(c, cx);
-    else if (c.type === 'page-number-citation') flattenCitation(c, cx);
-    else if (c.type === 'footnote') flattenFootnoteRef(c, cx);
-    else if (c.type === 'leader') flattenLeader(c, cx);
-    else if (c.type === 'tate-chu-yoko') flattenTateChuYoko(c, cx);
-    if (typeof c0 === 'object') markRef(cx.out, c0, start0);
-  }
-  applyFontBaseline(cx.out, m, wm);
+  // 書体の基線の比 (applyFontBaseline) は、いちばん外の呼び出しで 1 度だけ付ける (中の inline の字も、外の呼び出しの out に入る)。
+  // inline の入れ子の段ごとに全部の字に付け直すと、段数 × 字の数の手間になった (<b><i><a><font> × 3 万で 6 秒)。
+  // 付ける値は字の書式だけで決まり、中の呼び出しの後で読む所は無いので、結果は同じ
+  if (!flattenDepth.get(state)) applyFontBaseline(cx.out, m, wm);
   return cx.out;
 }
+
+/** flattenInline の呼び出しの深さ (FlattenState ごと。インラインブロックの中身は別の FlattenState で組む) */
+const flattenDepth = new WeakMap<FlattenState, number>();
 
 /** 文字列: 字ごとの atom (合字・つながる字の並びは 1 単位。ソフトハイフン・ゼロ幅空白・改行は印)。字間 (letter-spacing)・word-spacing はここで送りに足す */
 function flattenText(c: string, cx: FlattenCtx): void {
@@ -872,7 +884,7 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     }
     for (const ar of areas) ar.shift += d;
   }
-  out.push(...kids);
+  pushAll(out, kids);
   if (c.width !== undefined) {
     // 固定の長さ (inline-progression-dimension) に満たない分は、余白 (inline の背景色が付く) で埋める
     const used = kids.reduce((a, k) => a + k.advance, 0);
@@ -990,7 +1002,7 @@ function flattenCitation(c: LPageNumberCitation, cx: FlattenCtx): void {
   // 参照の字に印を付ける (2 回目の組版で、番号の幅が同じなら組み直さずに字だけ差し替える)
   const key = JSON.stringify([c.refId, c.last, c.format, c.physical]);
   for (const a of cited) a.cite = key;
-  out.push(...cited);
+  pushAll(out, cited);
   state.run++;
 }
 
@@ -1096,7 +1108,7 @@ function flattenTateChuYoko(c: LTateChuYoko, cx: FlattenCtx): void {
     const t = m.tateChuYoko(c.text, runStyle(s2));
     if (!t.fits && !c.fit) {
       // 潰れすぎる場合は縦中横にせず、欧文と同じ横倒し組みにフォールバック (CSS の縦中横 (fit) は縮めて 1em に収める)
-      out.push(...flattenInline([c.text], s2, m, state, bg));
+      pushAll(out, flattenInline([c.text], s2, m, state, bg));
       state.run++;
       return;
     }
@@ -1116,7 +1128,7 @@ function flattenTateChuYoko(c: LTateChuYoko, cx: FlattenCtx): void {
     state.run++;
   } else {
     state.run++;
-    out.push(...flattenInline([c.text], s2, m, state, bg));
+    pushAll(out, flattenInline([c.text], s2, m, state, bg));
     state.run++;
   }
 }

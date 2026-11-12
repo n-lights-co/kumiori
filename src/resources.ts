@@ -122,6 +122,55 @@ function dedupe(refs: ResourceRef[]): ResourceRef[] {
   return [...m.values()];
 }
 
+const isSpace = (c: string | undefined) => c !== undefined && /\s/.test(c);
+
+/**
+ * CSS の中の url(…) を順に拾う (index〜end が url(…) の全体、raw が中身。引用符は外すが、空白は除かない)。
+ * /url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s]*))\s*\)/gi と同じ照合を、後戻りなしで行う。その正規表現は、「)」で閉じない「url(」が
+ * 並ぶ CSS (url( を 5 万個。600KB) で、「url(」ごとに引用符の無い中身の終わりまで読んでは戻るので、長さの 2 乗の時間 (8〜14 秒) がかかった。
+ * 引用符の無い中身 (空白・引用符・「)」の無い字の並び) の終わりと、その後ろが「)」かどうかは、同じ並びの中のどの「url(」から
+ * 始めても同じなので、並びごとに 1 度だけ調べて覚える
+ */
+function scanUrls(css: string): Array<{ index: number; end: number; raw: string }> {
+  const out: Array<{ index: number; end: number; raw: string }> = [];
+  const re = /url\(/gi;
+  // 覚えている字の並び (runFrom〜runEnd) と、その後ろの「)」の位置 (閉じなければ -1)
+  let runFrom = -1;
+  let runEnd = -1;
+  let runClose = -1;
+  for (let m = re.exec(css); m; m = re.exec(css)) {
+    let i = m.index + 4;
+    while (isSpace(css[i])) i++;
+    const q = css[i];
+    let raw: string;
+    let close: number;
+    if (q === '"' || q === "'") {
+      const e = css.indexOf(q, i + 1);
+      // 閉じる引用符が無ければ、この先の同じ引用符で始まる url( も閉じない (最後の 1 つだけがここに来る)
+      if (e < 0) continue;
+      raw = css.slice(i + 1, e);
+      close = e + 1;
+      while (isSpace(css[close])) close++;
+      if (css[close] !== ')') continue;
+    } else {
+      if (i < runFrom || i > runEnd) {
+        runFrom = i;
+        runEnd = i;
+        while (runEnd < css.length && !/["')\s]/.test(css[runEnd])) runEnd++;
+        runClose = runEnd;
+        while (isSpace(css[runClose])) runClose++;
+        if (css[runClose] !== ')') runClose = -1;
+      }
+      if (runClose < 0) continue;
+      raw = css.slice(i, runEnd);
+      close = runClose;
+    }
+    out.push({ index: m.index, end: close + 1, raw });
+    re.lastIndex = close + 1;
+  }
+  return out;
+}
+
 /** CSS の文字から参照を拾う (@import は CSS、url() はそのほか) */
 export function cssRefs(css: string): ResourceRef[] {
   const out: ResourceRef[] = [];
@@ -132,16 +181,21 @@ export function cssRefs(css: string): ResourceRef[] {
   }
   // @font-face の規則の範囲 (中の url() は書体。unicode-range も読む)
   const faces: Array<{ start: number; end: number; ranges?: Array<[number, number]> }> = [];
-  for (const m of css.matchAll(/@font-face\s*\{([^}]*)\}/gi)) {
+  // 「}」は最後のものより後ろには無いので、そこまでだけを探す: 閉じない「@font-face {」が並ぶ CSS (5 万個。650KB) で、
+  // 1 つごとに末尾まで「}」を探して、長さの 2 乗の時間 (15 秒) がかかった (その先の @font-face は、どのみち閉じないので合わない)
+  for (const m of css.slice(0, css.lastIndexOf('}') + 1).matchAll(/@font-face\s*\{([^}]*)\}/gi)) {
     const ur = /unicode-range\s*:\s*([^;}]+)/i.exec(m[1]);
     faces.push({ start: m.index!, end: m.index! + m[0].length, ...(ur ? { ranges: parseUnicodeRange(ur[1]) } : {}) });
   }
-  for (const m of css.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s]*))\s*\)/gi)) {
+  // faces は位置の順で重ならず、url() も位置の順に来るので、過ぎた規則は見直さない (規則の数 × url() の数の手間にしない)
+  let fi = 0;
+  for (const m of scanUrls(css)) {
     // @import url(…) は上で拾った
-    const before = css.slice(Math.max(0, m.index! - 20), m.index!);
+    const before = css.slice(Math.max(0, m.index - 20), m.index);
     if (/@import\s*$/i.test(before)) continue;
-    const url = (m[1] ?? m[2] ?? m[3] ?? '').trim();
-    const face = faces.find((f) => m.index! > f.start && m.index! < f.end);
+    const url = m.raw.trim();
+    while (fi < faces.length && faces[fi].end <= m.index) fi++;
+    const face = fi < faces.length && m.index > faces[fi].start && m.index < faces[fi].end ? faces[fi] : undefined;
     out.push(face ? { url, kind: 'font', ...(face.ranges ? { ranges: face.ranges } : {}) } : { url, kind: 'other' });
   }
   return out;
@@ -149,8 +203,14 @@ export function cssRefs(css: string): ResourceRef[] {
 
 /** url(…) で包んだ値 (XSL-FO の src="url('a.png')") の中身 */
 function unwrapUrl(v: string): string {
-  const m = /^url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')]*))\s*\)$/i.exec(v.trim());
-  return m ? (m[1] ?? m[2] ?? m[3] ?? '').trim() : v;
+  // /^url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')]*))\s*\)$/i と同じ照合。その正規表現は、空白の長い並びを含む値で 2 乗の時間がかかるので、
+  // 前後を外してから中身を見る (中身は、引用符で包んだものか、引用符と「)」を含まないもの)
+  const t = v.trim();
+  if (!/^url\(/i.test(t) || !t.endsWith(')')) return v;
+  const inner = t.slice(4, -1).trim();
+  const quoted = inner.length >= 2 && (inner[0] === '"' || inner[0] === "'") && inner.endsWith(inner[0]) && !inner.slice(1, -1).includes(inner[0]);
+  if (quoted) return inner.slice(1, -1).trim();
+  return /["')]/.test(inner) ? v : inner;
 }
 
 /**
@@ -187,13 +247,21 @@ export function resolveRef(ref: string, base?: string): string {
  */
 export function rebaseFontFaceUrls(css: string, base: string): string {
   if (!/@font-face/i.test(css)) return css;
-  return css.replace(/@font-face\s*\{[^}]*\}/gi, (rule) =>
-    rule.replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s]*))\s*\)/gi, (all, a?: string, b?: string, c?: string) => {
-      const ref = (a ?? b ?? c ?? '').trim();
-      if (skip(ref)) return all;
-      const to = resolveRef(ref, base);
-      return to === ref || /["\\\n\r\f]/.test(to) ? all : `url("${to}")`;
-    }),
+  // 「}」のある所までだけを探す (cssRefs と同じ。閉じない @font-face の並びで 2 乗の時間をかけない)
+  const last = css.lastIndexOf('}') + 1;
+  return (
+    css.slice(0, last).replace(/@font-face\s*\{[^}]*\}/gi, (rule) => {
+      let out = '';
+      let pos = 0;
+      for (const m of scanUrls(rule)) {
+        const all = rule.slice(m.index, m.end);
+        const ref = m.raw.trim();
+        const to = skip(ref) ? ref : resolveRef(ref, base);
+        out += rule.slice(pos, m.index) + (to === ref || /["\\\n\r\f]/.test(to) ? all : `url("${to}")`);
+        pos = m.end;
+      }
+      return out + rule.slice(pos);
+    }) + css.slice(last)
   );
 }
 

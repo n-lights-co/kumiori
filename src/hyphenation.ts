@@ -78,6 +78,13 @@ const CYRILLIC_WORD = /^[\u0400-\u052F]+$/;
 const GREEK_WORD = /^[\u0370-\u03FF\u1F00-\u1FFF]+$/;
 
 /**
+ * 分綴する語の字数 (コードポイント) の上限。実在の語で最も長いものは、辞書の英語で 45 字 (pneumonoultramicroscopicsilicovolcanoconiosis)、
+ * 複合語のドイツ語で 80 字ほど (Donaudampfschifffahrtselektrizitätenhauptbetriebswerkbauunterbeamtengesellschaft) なので、
+ * その 1.5 倍を超える 128 字あれば、実在の文の語には届かない
+ */
+const MAX_HYPHENATE_WORD = 128;
+
+/**
  * 読み込み済みの規則で、語の分綴の位置 (その字の後ろで分けてよい、0 始まりの字の位置) を返す。
  * minWordLength は分綴する語の最小の字数 (既定 5。hyphenate-limit-chars の 1 つ目の値を指定したときに渡る)。
  * 切れ目の前後は、規則の決まりで 2 字以上 (それより小さい制限を指定しても、2 字より短くは分けない)
@@ -86,6 +93,9 @@ export function hyphenPositions(word: string, language: string | undefined, minW
   const key = keyOf(language);
   const h = key ? cache.get(key) : undefined;
   if (!h) return undefined;
+  // 長すぎる語は分綴しない (切れ目なし)。分綴の規則 (依存の hyphen) は語の長さの 2 乗の時間がかかり、空白の無い欧文の 1 語が
+  // 34KB で 4 秒、135KB で 47 秒かかった
+  if (word.length > MAX_HYPHENATE_WORD && [...word].length > MAX_HYPHENATE_WORD) return [];
   const parts = h(word, { hyphenChar: '\u00AD', minWordLength: Math.max(1, minWordLength) }).split('\u00AD');
   const out: number[] = [];
   let at = -1;

@@ -20,7 +20,7 @@ export interface TransformMiss {
 
 /** 角度 → 度 (CSS Values 4 §7.1: deg・grad・rad・turn)。単位の無い 0 は 0deg (Transforms 1 §9) */
 function angle(v: string): number | undefined {
-  const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(deg|grad|rad|turn)?$/i.exec(v.trim());
+  const m = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(deg|grad|rad|turn)?$/i.exec(v.trim());
   if (!m) return undefined;
   const n = parseFloat(m[1]);
   switch ((m[2] ?? '').toLowerCase()) {
@@ -37,7 +37,7 @@ function angle(v: string): number | undefined {
   }
 }
 
-const NUM = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
+const NUM = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 const num = (v: string): number | undefined => (NUM.test(v.trim()) ? parseFloat(v) : undefined);
 /** 数か百分率 (scale。Transforms 2 §12: 百分率は数と同じ意味。100% = 1) */
 const numPct = (v: string): number | undefined => (/%$/.test(v.trim()) ? (num(v.trim().slice(0, -1)) ?? NaN) / 100 : num(v));

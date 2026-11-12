@@ -1,6 +1,6 @@
 import { epsPreview, imageInfo, pixelDensity } from './imageInfo';
 import { emfToSvg, wmfToSvg } from './metafile';
-import { epsToSvg } from './eps';
+import { epsBudgetOf, epsToSvg } from './eps';
 import { cgmToSvg } from './cgm';
 import { parseSvg, type XmlNode } from './svg';
 import { decodeBmp, decodeGif, encodePng, MAX_PIXELS, pngWithinLimits, type Pixels } from './pixels';
@@ -207,7 +207,8 @@ export class AssetStore {
       // EPS は PostScript を実行して描く (図形と画像。eps.ts)。描けないもの (解釈系が warnings に入れる。CMYK の JPEG・一部の複合書体の文字など) があり、プレビューを持つときは、プレビューで描く
       let epsSvg: string | undefined;
       if (info.mime === 'application/postscript') {
-        const r = await epsToSvg(bytes).catch(() => undefined);
+        // 実行の時間は、この入れ物 (文書) の EPS の合計にも上限がある (eps.ts の EPS_DOCUMENT_MILLIS)
+        const r = await epsToSvg(bytes, { budget: epsBudgetOf(this) }).catch(() => undefined);
         if (r && r.count > 0 && (!r.warnings.length || !epsPreview(bytes))) epsSvg = r.svg;
       }
       // TIFF と、TIFF のプレビューを持つ EPS は、画素を読んで描く (大きさは元の形式の値)

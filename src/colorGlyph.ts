@@ -16,6 +16,8 @@
  */
 import type { Matrix, Seg } from './matrix';
 import { apply, mul } from './matrix';
+import { msg } from './messages';
+import { fontNotice } from './fontSanity';
 
 /** 色 (0〜1 の RGB) */
 export type Rgb = [number, number, number];
@@ -176,6 +178,22 @@ export const COMPOSITE = {
 const MAX_PAINT_DEPTH = 64;
 /** 1 つの字形の Paint の表の数の上限 (壊れた書体・悪意のある書体で、共有の部分木が指数的に増えるのを止める) */
 const MAX_PAINTS = 20000;
+
+/**
+ * 書体 1 つの、色つきの字形の描き方に入れる、層と輪郭の区分の数の合計の上限 (字形ごとに、初めて作るときに数える):
+ * COLR の表と輪郭の表 (glyf・CFF・CFF2) の 1 バイトあたり 8 + 100 万。
+ * COLR version 0 の層は 1 字形に 65535 まで持て、層の記録 (4 バイト) ごとに同じ輪郭を何度でも指せるので、小さな表から、字の数 × 層の数の
+ * 描画の命令を作れた (65535 層の字形 20 字で 40 秒・2.1GB)。正当な書体は、層の輪郭を数個の字形で使い回すだけで、合計は表の大きさの数倍。
+ * 超えた字形は、色つきでない字形として描く (書体ごとに 1 度知らせる)
+ */
+const COLOR_SEGS_PER_BYTE = 4;
+const COLOR_SEGS_BASE = 1_000_000;
+/**
+ * 字形 1 つの、層と輪郭の区分の数の上限。正当な字形は、COLR version 0 の層が多くて百ほど (Twemoji)、version 1 の Paint の表は
+ * MAX_PAINTS まで、輪郭の区分は合わせて数千。65535 層の字形 3 つで、PDF を書くときに 1.5GB を超えた
+ */
+const COLOR_GLYPH_SEGS = 100_000;
+class ColorBudgetError extends Error {}
 
 /** fontkit の書体のうち、ここで使う所 */
 interface FkFont {
@@ -512,7 +530,16 @@ export function hexColor(css: string): [number, number, number, number] | undefi
 }
 
 /** SVG の表の字形を、描画の命令にする関数 (colorGlyphSvg.ts。XML を読む関数が要るので、描く側が渡す) */
-export type SvgGlyphReader = (doc: Uint8Array, gid: number, unitsPerEm: number, palette: ReadonlyArray<readonly [number, number, number, number]>) => { ops: ColorOp[] } | undefined;
+/**
+ * SVG の表の字形の読み方。budget があれば、読む文書の文字の数 (展開した後) をそこから引き、尽きていたら読まずに over を立てて undefined
+ */
+export type SvgGlyphReader = (
+  doc: Uint8Array,
+  gid: number,
+  unitsPerEm: number,
+  palette: ReadonlyArray<readonly [number, number, number, number]>,
+  budget?: { left: number; over?: boolean },
+) => { ops: ColorOp[] } | undefined;
 
 /**
  * 色つきの字形を持つ書体。colorFontOf で作る (書体ごとに 1 つ)
@@ -535,6 +562,24 @@ export class ColorFont {
   private bitmapMemo = new Map<number, Extract<ColorOp, { op: 'image' }> | null>();
   /** SVG の表の字形の読み方 (描く側が入れる。無ければ、SVG だけの字形は色つきにしない) */
   svgReader?: SvgGlyphReader;
+  /** 色つきの字形の層・輪郭の区分の数の、残りの予算 (COLOR_SEGS_PER_BYTE) */
+  private segsLeft = 0;
+  private segsBudget = 0;
+  /**
+   * SVG の表の文書を読む (文字列を解析する) 手間の残り: SVG の表の 1 バイトあたり 4 文字 + 400 万文字 (字形ごとに、初めて作るときに数える)。
+   * 1 つの文書に複数の字形が入る書体は、字形ごとに文書の全体を解析する (ほかの字形の要素を隠して) ので、10 万の図形の文書 1 つに
+   * 60 の字形を入れた書体で、60 秒を超えた。正当な書体は、字形ごとの文書か、小さな文書にまとめたもの
+   */
+  private svgBudget: { left: number; over?: boolean } = { left: 0 };
+  private svgBudgetInit = 0;
+  /** 予算から n を引く。尽きたら ColorBudgetError (その字形は色つきにしない) */
+  private charge(n: number) {
+    this.segsLeft -= n;
+    this.glyphSegsLeft -= n;
+    if (this.segsLeft < 0 || this.glyphSegsLeft < 0) throw new ColorBudgetError('too many color glyph layers');
+  }
+  /** いま作っている字形の、層・輪郭の区分の数の残り (COLOR_GLYPH_SEGS) */
+  private glyphSegsLeft = COLOR_GLYPH_SEGS;
 
   constructor(
     private fk: FkFont,
@@ -554,6 +599,10 @@ export class ColorFont {
     };
     this.tables = {};
     this.hasOutlines = dir.has('glyf') || dir.has('CFF ') || dir.has('CFF2');
+    const bytes = (dir.get('COLR')?.length ?? 0) + (dir.get('glyf')?.length ?? 0) + (dir.get('CFF ')?.length ?? 0) + (dir.get('CFF2')?.length ?? 0) + (dir.get('SVG ')?.length ?? 0);
+    this.segsLeft = this.segsBudget = COLOR_SEGS_PER_BYTE * bytes + COLOR_SEGS_BASE;
+    this.svgBudgetInit = 4 * (dir.get('SVG ')?.length ?? 0) + 4_000_000;
+    this.svgBudget = { left: this.svgBudgetInit };
     const colr = reader('COLR');
     const cpal = reader('CPAL');
     // CPAL (色のパレット) は、COLR の色の番号と、SVG の表の var(--colorN) が引く
@@ -695,15 +744,25 @@ export class ColorFont {
     if (hit !== undefined) return hit ?? undefined;
     let g: ColorGlyph | undefined;
     for (const read of [() => this.colrGlyph(gid, sel), () => this.svgGlyph(gid, sel), () => this.cbdtGlyph(gid), () => this.sbixGlyph(gid)]) {
+      this.glyphSegsLeft = COLOR_GLYPH_SEGS;
       try {
         g = read();
-      } catch {
+      } catch (e) {
         // 表が壊れている (範囲の外を指す) 字形は、その表では色つきにしない
         g = undefined;
+        if (e instanceof ColorBudgetError) {
+          fontNotice(this.fk, 'color-budget', () => msg('色つきの字形の層・輪郭が多すぎる字があります。その字は、色つきでない字形として描きます', 'some color glyphs have too many layers or outlines; those glyphs are drawn without color'));
+          break;
+        }
       }
       if (g) break;
     }
-    if (this.glyphMemo.size > 20000) this.glyphMemo.clear();
+    if (this.glyphMemo.size > 20000) {
+      this.glyphMemo.clear();
+      // 覚えた字形を忘れたら、作り直す分の予算も戻す (予算は、覚えている字形の分の上限)
+      this.segsLeft = this.segsBudget;
+      this.svgBudget = { left: this.svgBudgetInit };
+    }
     this.glyphMemo.set(key, g ?? null);
     return g;
   }
@@ -765,6 +824,7 @@ export class ColorFont {
           const layerGid = colr.u16(layersAt + i * 4);
           const color = this.colorRef(pal, colr.u16(layersAt + i * 4 + 2), 1);
           const path = this.outline(layerGid);
+          this.charge(1 + path.length);
           if (color && path.length) ops.push({ op: 'fill', path, fill: { kind: 'solid', color } });
         }
         return this.finish(ops, 'colr0');
@@ -965,6 +1025,7 @@ export class ColorFont {
           // PaintGlyph: 字形の輪郭で切り抜いて、子を描く。子が塗り 1 つなら、輪郭をその塗りで塗る
           const ops = child(colr.u24(at + 1));
           const outline = this.outline(colr.u16(at + 4));
+          this.charge(1 + outline.length);
           if (!ops.length || !outline.length) return [];
           if (ops.length === 1 && ops[0].op === 'paint') return [{ op: 'fill', path: outline, fill: ops[0].fill }];
           return [{ op: 'clip', path: outline, ops }];
@@ -1037,7 +1098,9 @@ export class ColorFont {
         default:
           return [];
       }
-    } catch {
+    } catch (e) {
+      // 層・輪郭の予算が尽きたら、字形の全体を色つきにしない (glyph が受ける)
+      if (e instanceof ColorBudgetError) throw e;
       // 表の範囲の外を指す Paint は、その部分木を描かない
       return [];
     }
@@ -1050,7 +1113,9 @@ export class ColorFont {
     if (!svg || !this.svgReader) return undefined;
     const doc = this.svgDocument(gid);
     if (!doc) return undefined;
-    const r = this.svgReader(doc, gid, this.unitsPerEm, this.palette(sel));
+    const r = this.svgReader(doc, gid, this.unitsPerEm, this.palette(sel), this.svgBudget);
+    if (this.svgBudget.over) throw new ColorBudgetError('too many SVG documents to read');
+    if (r) this.charge(r.ops.length);
     return r ? this.finish(r.ops, 'svg') : undefined;
   }
 

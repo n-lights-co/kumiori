@@ -9,6 +9,7 @@
  * 組む側は、その順に見て最初に合ったものを使う
  */
 import type { LoadedFont } from './fontManager';
+import { withLayoutBudget } from './fontSanity';
 
 /** 合字の機能 (CSS Fonts 4 §6.4: 標準の合字 liga・clig、任意の合字 dlig、歴史的な合字 hlig) */
 export const LIGATURE_FEATURES: readonly string[] = ['liga', 'clig', 'dlig', 'hlig'];
@@ -35,14 +36,31 @@ type FkGsub = {
 
 const cache = new WeakMap<object, Map<string, LigatureTable | null>>();
 
-/** Coverage の表が覆う字形の番号 (Coverage Index の順) */
-function coverageGlyphs(c: FkCoverage): number[] {
-  if (c.version === 1) return c.glyphs ?? [];
-  const out: number[] = [];
-  for (const r of c.rangeRecords ?? []) for (let g = r.start; g <= r.end; g++) out[r.startCoverageIndex + g - r.start] = g;
+/**
+ * Coverage の表が覆う字形の番号 (Coverage Index の順)。使うのは Coverage Index が count より小さい分だけ (LigatureSet の数) なので、
+ * その先は数えない。範囲 (format 2 の RangeRecord) は 65536 字形まで広げられ、副表ごとに範囲の全体を広げると、
+ * 副表の数 × 範囲の数 × 65536 の手間になった (200 の副表 × 2000 の範囲で 40 秒を超えた)。同じ Coverage は 1 度だけ広げる (memo)
+ */
+function coverageGlyphs(c: FkCoverage, count: number, memo: Map<FkCoverage, { count: number; out: number[] }>, work: { left: number }): number[] {
+  const hit = memo.get(c);
+  if (hit && hit.count >= count) return hit.out;
+  let out: number[];
+  if (c.version === 1) out = c.glyphs ? Array.from(c.glyphs).slice(0, count) : [];
+  else {
+    out = [];
+    for (const r of c.rangeRecords ?? []) {
+      if (--work.left < 0) throw new Error('coverage too large');
+      const from = r.startCoverageIndex;
+      const n = Math.min(r.end - r.start + 1, count - from);
+      for (let k = 0; k < n; k++) out[from + k] = r.start + k;
+      work.left -= Math.max(0, n);
+    }
+  }
+  work.left -= out.length;
+  if (work.left < 0) throw new Error('coverage too large');
+  memo.set(c, { count, out });
   return out;
 }
-
 /**
  * 書体 font の、機能 features (liga・dlig など) の合字の表。合字の表 (LookupType 4) が無ければ null。書体と機能の組ごとに覚える。
  * 用字系・言語の別は見ない (どれかの用字系で有効な並びを候補にする。実際に 1 つの字形になるかは、呼ぶ側が書体の整形で確かめる)
@@ -54,7 +72,8 @@ export function ligatureTable(font: LoadedFont, features: readonly string[]): Li
   let t = byKey.get(key);
   if (t === undefined) {
     try {
-      t = readLigatureTable(font, features);
+      // 整形の表の読みの予算の中で読む (fontSanity.ts。壊れた・細工した表の読みが、上限なしに大きくならないように)
+      t = withLayoutBudget(font.fk, () => readLigatureTable(font, features));
     } catch {
       t = null;
     }
@@ -72,6 +91,9 @@ function readLigatureTable(font: LoadedFont, features: readonly string[]): Ligat
   if (!lookups.size) return null;
   const byFirst = new Map<number, number[][]>();
   let maxLen = 0;
+  // 広げる手間の上限: 字形の数の 64 倍 + 100 万 (正当な書体は、合字の副表の Coverage の合計が字形の数ほど)。超えたら、合字の表は無いものとする
+  const work = { left: 64 * ((fk as { numGlyphs?: number }).numGlyphs ?? 0) + 1_000_000 };
+  const memo = new Map<FkCoverage, { count: number; out: number[] }>();
   // Lookup は番号の順に当たる (OpenType の仕様の「Lookup List table」)
   for (const i of [...lookups].sort((a, b) => a - b)) {
     const lookup = gsub.lookupList.get(i);
@@ -80,13 +102,14 @@ function readLigatureTable(font: LoadedFont, features: readonly string[]): Ligat
       const type = lookup.lookupType === 7 ? st0.lookupType : lookup.lookupType;
       const st = lookup.lookupType === 7 ? st0.extension : st0;
       if (type !== 4 || !st?.coverage || !st.ligatureSets) continue;
-      const firsts = coverageGlyphs(st.coverage);
+      const firsts = coverageGlyphs(st.coverage, st.ligatureSets.length, memo, work);
       for (let k = 0; k < st.ligatureSets.length; k++) {
         const first = firsts[k];
         if (first === undefined) continue;
         let list = byFirst.get(first);
         if (!list) byFirst.set(first, (list = []));
         for (const lig of st.ligatureSets.get(k)) {
+          if (--work.left < 0) throw new Error('ligature table too large');
           list.push(Array.from(lig.components));
           maxLen = Math.max(maxLen, lig.compCount);
         }

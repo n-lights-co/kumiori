@@ -78,9 +78,13 @@ import { layoutMathML, type MNode } from './mathLayout';
 import { CounterStyles } from './counterStyle';
 import { COMPLEX_COUNTER, complexCounterSuffix, complexCounterText, predefinedCounterStyles } from './counterStylePredefined';
 import { UNIT_PT, cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parseCssColor, parseRgbFn, rgbHex, splitTop, splitWords } from './cssText';
+// url(…) は、閉じない url( を並べた値で 2 乗の手間になる正規表現でなく、同じ結果を線形の手間で返す関数で探す (cssUrlScan.ts)
+import { firstCssUrl, wholeCssUrl } from './cssUrlScan';
 import { parseTextJustifyTrim } from './textJustifyTrim';
+import { graphemeClusters } from './grapheme';
 import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, parseSpacingTrim, SPACING_TRIM_WORD, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
+import { maxOf, pushAll } from './arrayLoop';
 
 /** ブロック水準の部品か (行内の並びを区切る) */
 const isBlockLevel = (n: unknown): boolean =>
@@ -468,8 +472,29 @@ function textIndentOf(v: string): Pick<TextStyle, 'textIndent' | 'textIndentHang
  * 表の列・行をまたぐ数の上限 (HTML Living Standard §4.9.12.1「Forming a table」: <col>・<colgroup> の span と colspan は
  * 1000 を超えたら 1000、rowspan は 65534 を超えたら 65534 にする)
  */
+/**
+ * 文字列の最初の書記素クラスタ (UAX #29。圏点の文字列に使う)。先頭の 64 単位だけを見る (長い文字列をまるごと分けない。
+ * 実在の絵文字の並びは 64 単位に収まる。それより長いクラスタは、そこで切る)
+ */
+function firstGrapheme(s: string): string {
+  // 切った端に残る、対の片方だけの代用符号は捨てる
+  return graphemeClusters(s.slice(0, 64).replace(/[\uD800-\uDBFF]$/, ''))[0] ?? '';
+}
+
 const MAX_COL_SPAN = 1000;
 const MAX_ROW_SPAN = 65534;
+
+/**
+ * 生成内容 (content の文字列・attr()・counters()・target-text() など) で作る字の数の、文書全体の予算 (UTF-16 の単位)。
+ * 生成内容は、短い宣言を多くの要素に当てたり (p::before に 100KB の文字列 × p 100 個で 1000 万字)、1 つの値に attr() を並べたり
+ * (attr(title) × 2000 で、title 2000 字の要素 1 つから 400 万字) して、入力の大きさを大きく超える字を作れ、メモリを使い切った。
+ * 定数の分 (20 万字。四六判の本の 200 ページほど) に、文書の字の数の 2 倍 (目次の target-text()・柱の string-set のように、
+ * 本文の字を写す生成内容は、本文の字の数に比例する) と、要素 1 つあたり GENERATED_TEXT_PER_ELEMENT 字 (::before の「第」「章」・
+ * 番号のように、要素ごとに足す生成内容は、要素の数に比例する) を足す。CSS Content 3 には上限の定めが無いが、Counter Styles 3 §2 の、
+ * 表記の長さの上限 (MAX_COUNTER_LENGTH) と同じ考え方で、実在の文書が届かない値にする。超えた分の字は出さない (報告に出す)
+ */
+const GENERATED_TEXT_BASE = 200_000;
+const GENERATED_TEXT_PER_ELEMENT = 32;
 
 /**
  * 名前の引数が要る関数 (attr()・counter()・counters()・target-counter()・target-text()) に、引数が無いもの。
@@ -603,7 +628,7 @@ export function parsePageSize(value: string, def: { width: number; height: numbe
   const orient = (w: number, h: number, o?: string) => ((o === 'landscape' && w < h) || (o === 'portrait' && w > h) ? { width: h, height: w } : { width: w, height: h });
   if (parts.length === 1 && parts[0] === 'auto') return { width: def.width, height: def.height };
   const lens = parts.map((t) => {
-    const m = /^\+?(\d+\.?\d*|\.\d+)(mm|cm|q|in|pt|pc|px)$/.exec(t);
+    const m = /^\+?(\d+(?:\.\d*)?|\.\d+)(mm|cm|q|in|pt|pc|px)$/.exec(t);
     const n = m ? parseFloat(m[1]) * UNIT_PT[m[2]] * MM_PER_PT : undefined;
     return n !== undefined && n > 0 && Number.isFinite(n) ? n : undefined;
   });
@@ -992,8 +1017,12 @@ class HtmlImporter {
     const b = pageBox(resolvePageRules(this.pageRules, { name }, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions);
     return { top: b.margins.top * PT, right: b.margins.right * PT, bottom: b.margins.bottom * PT, left: b.margins.left * PT, width: (b.width - b.margins.left - b.margins.right) * PT, height: (b.height - b.margins.top - b.margins.bottom) * PT };
   }
+  /** 要素の子の字 (plainText。生成内容を含まない部分だけ覚える) */
+  private plainInner = new WeakMap<Element, string>();
   /** position: fixed の箱 (全ページに出す) */
   private fixed: LBlockContainer[] = [];
+  /** 生成内容で作れる残りの字の数 (GENERATED_TEXT_BASE。run で、文書の字の数から決める) */
+  private generatedLeft = GENERATED_TEXT_BASE;
   /** 縦に並べる flex の項目の揃え (align-items / align-self。ブラウザの配置が無いとき)。項目のブロックの文字の揃えにする */
   private flexItemAlign = new Map<Element, 'center' | 'end'>();
   /** id → 要素の情報。1 回目の変換で集め (record)、2 回目で使う (lookup) */
@@ -1032,7 +1061,9 @@ class HtmlImporter {
       // 接頭辞の無い名前に書いたアンテナハウスの拡張の値 (float: top など) は、互換の指定の無いときは無効の値なので、宣言ごと除いて
       // 報告する (前の宣言を打ち消さない。CSS 2.1 §4.2)
       const decls = r.list.flatMap(([p, v0, imp]) => {
-        const v = substituteRootVars(v0, rootVars);
+        // カスタム プロパティ (--*) の宣言の値は、ここでは置き換えない (自前で読む宣言ではなく、値はカスケードが var() で引くときに解く)。
+        // 置き換えると、var() の長い連鎖 (--a1: var(--a0) を 5000 段) で、段ごとに前の段の値の全体を写し、2 乗の手間になっていた
+        const v = p.startsWith('--') ? v0 : substituteRootVars(v0, rootVars);
         if (this.dropCompatOnly(p, v)) return [];
         const al = AH_ALIASES[p];
         const ok = wanted(p, v, !!pseudo);
@@ -1125,12 +1156,39 @@ class HtmlImporter {
   private inh(el: Element, prop: string, pagedFirst = false): string {
     const v = pagedFirst ? '' : this.cs(el)(prop);
     if (v) return v;
+    const found = this.pagedInherited(el, prop);
+    if (found) return found;
+    return pagedFirst ? this.cs(el)(prop) : '';
+  }
+
+  /** inh の、祖先をたどって自前で読んだ指定を探した結果 (性質ごと・要素ごとに覚える) */
+  private inhMemo = new Map<string, WeakMap<Node, string>>();
+  /**
+   * 要素とその祖先のうち、いちばん近い、自前で読んだ指定 (style 属性の宣言も。pg) のある要素の値 (無ければ '')。
+   * 要素ごとに祖先を根までたどると、深い入れ子 (128 段) の要素が多い文書で、段数 × 要素の数 × 性質の数の手間になった
+   * (<b><i><a><font> × 3 万で 4 秒)。たどった要素の答えを覚える (読み込みの間、要素の指定と木の形は変わらない)
+   */
+  private pagedInherited(el: Element, prop: string): string {
+    let memo = this.inhMemo.get(prop);
+    if (!memo) this.inhMemo.set(prop, (memo = new WeakMap()));
+    const chain: Node[] = [];
+    let found = '';
     for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
+      const known = memo.get(e);
+      if (known !== undefined) {
+        found = known;
+        break;
+      }
+      chain.push(e);
       // style 属性の宣言も見る (pg が読む)
       const p = this.pg(e as Element)[prop];
-      if (p) return p.trim().toLowerCase();
+      if (p) {
+        found = p.trim().toLowerCase();
+        break;
+      }
     }
-    return pagedFirst ? this.cs(el)(prop) : '';
+    for (const e of chain) memo.set(e, found);
+    return found;
   }
 
   /** 和文の字間の指定 (text-autospace・text-spacing-trim・text-spacing・hanging-punctuation) */
@@ -1174,7 +1232,10 @@ class HtmlImporter {
   private emphasisMark(el: Element, vertical: boolean): string | undefined {
     const v = this.cs(el)('text-emphasis-style');
     if (!v || v === 'none') return undefined;
-    if (/^["']/.test(v)) return unquote(v);
+    // 文字列の圏点: 最初の書記素クラスタだけを使う (CSS Text Decoration 4 §3.1 の <string>: “The UA may truncate or ignore strings
+    // consisting of more than one grapheme cluster.” ブラウザも最初の 1 つだけを描く)。文字列をまるごと各字に付けると、500 字の文字列と
+    // 5000 字の本文 (6KB) で 250 万字を組むことになり、メモリを使い切った
+    if (/^["']/.test(v)) return firstGrapheme(unquote(v)) || undefined;
     const shapes: Record<string, [string, string]> = { dot: ['•', '◦'], circle: ['●', '○'], 'double-circle': ['◉', '◎'], triangle: ['▲', '△'], sesame: ['﹅', '﹆'] };
     const shape = Object.keys(shapes).find((k) => new RegExp(`(^|\\s)${k}(\\s|$)`).test(v)) ?? (vertical ? 'sesame' : 'circle');
     return shapes[shape][/open/.test(v) ? 1 : 0];
@@ -2066,7 +2127,7 @@ class HtmlImporter {
     for (const k of Array.from(el.children)) {
       const d = this.display(k);
       if (d === 'table-row') rows.push(k);
-      else if (/^table-(header|footer|row)-group$/.test(d)) rows.push(...Array.from(k.children).filter((r) => this.display(r) === 'table-row'));
+      else if (/^table-(header|footer|row)-group$/.test(d)) pushAll(rows, Array.from(k.children).filter((r) => this.display(r) === 'table-row'));
       else if (d === 'table-caption') caption = Math.max(caption, this.maxContentWidth(k));
     }
     const cols: number[] = [];
@@ -2716,7 +2777,14 @@ class HtmlImporter {
             break;
           case 'counters': {
             const st = this.counters.get(a[0]) ?? [];
-            out.push((st.length ? st : [{ v: 0 }]).map((x) => this.counterString(a[2] ?? 'decimal', x.v)).join(unquote(a[1] ?? '.')));
+            // 区切りの字 × 入れ子の段の数は、予算を超えたところで作るのをやめる (長い区切りの字と深い入れ子で、要素ごとに大きな字を作らない)
+            const sep = unquote(a[1] ?? '.');
+            let s = '';
+            for (const [k, x] of (st.length ? st : [{ v: 0 }]).entries()) {
+              if (s.length > this.generatedLeft) break;
+              s += (k ? sep : '') + this.counterString(a[2] ?? 'decimal', x.v);
+            }
+            out.push(s);
             break;
           }
           case 'attr':
@@ -2774,7 +2842,28 @@ class HtmlImporter {
         }
       }
     }
-    return out;
+    return this.spendGenerated(out);
+  }
+
+  /** 生成内容の字を、文書全体の予算 (GENERATED_TEXT_BASE) から引く。予算を超えた分の字は捨てる (字でない項目は残す) */
+  private spendGenerated(out: LInlineLevel[]): LInlineLevel[] {
+    let cut = false;
+    const kept: LInlineLevel[] = [];
+    for (const x of out) {
+      if (typeof x !== 'string') kept.push(x);
+      else if (x.length <= this.generatedLeft) {
+        this.generatedLeft -= x.length;
+        kept.push(x);
+      } else {
+        // 切った端に、対の片方だけの代用符号を残さない
+        const s = x.slice(0, this.generatedLeft).replace(/[\uD800-\uDBFF]$/, '');
+        this.generatedLeft = 0;
+        cut = true;
+        if (s) kept.push(s);
+      }
+    }
+    if (cut) this.miss('content (生成内容の字の数が上限を超えた分)');
+    return kept;
   }
 
   /** float: multicol top / before の float (段組の箱の先頭へ移す) */
@@ -2859,29 +2948,44 @@ class HtmlImporter {
    * 子孫の span の ::before / ::after の引用符を含み、content: "" の span の文字を含まない)
    */
   private plainText(el: Element): string {
-    let s = '';
-    const strings = (e: Element, v: string, which?: '::before' | '::after') =>
-      this.evalContent(e, parseContent(v), which)
+    // 生成内容を字にしたか (その部分の字は、字にした時のカウンターの値などで変わるので、覚えない)
+    let impure = false;
+    const strings = (e: Element, v: string, which?: '::before' | '::after') => {
+      impure = true;
+      return this.evalContent(e, parseContent(v), which)
         .filter((x): x is string => typeof x === 'string')
         .join('');
+    };
     const pseudoText = (e: Element, which: '::before' | '::after') => {
       const done = this.pseudoTextOf.get(e)?.[which];
       if (done !== undefined) return done;
       const v = this.pagedPseudo.get(e)?.[which]?.content ?? this.cs(e, which)('content');
       return !v || v === 'none' || v === 'normal' ? '' : strings(e, v, which);
     };
-    const walk = (e: Element, self: boolean) => {
-      if (!self) s += pseudoText(e, '::before');
-      const own = self ? undefined : this.pg(e).content;
-      if (own !== undefined && own !== 'normal' && own !== 'none') s += strings(e, own);
-      else
-        for (const n of Array.from(e.childNodes)) {
-          if (n.nodeType === 3 || n.nodeType === 4) s += n.textContent ?? '';
-          else if (n.nodeType === 1 && this.display(n as Element) !== 'none') walk(n as Element, false);
-        }
-      if (!self) s += pseudoText(e, '::after');
+    // 要素の子の字。生成内容を字にしない部分は、要素ごとに覚えて使い回す (plainInner)。入れ子の見出しの、しおりの題・string-set の
+    // content() ごとに子孫を全部たどると、入れ子の段数 × 要素の数の手間になり、<h1><button> × 2 万 (240KB) で 20 秒を超えた
+    const inner = (e: Element): string => {
+      const known = this.plainInner.get(e);
+      if (known !== undefined) return known;
+      const outerImpure = impure;
+      impure = false;
+      let t = '';
+      for (const n of Array.from(e.childNodes)) {
+        if (n.nodeType === 3 || n.nodeType === 4) t += n.textContent ?? '';
+        else if (n.nodeType === 1 && this.display(n as Element) !== 'none') t += walk(n as Element);
+      }
+      if (!impure) this.plainInner.set(e, t);
+      impure ||= outerImpure;
+      return t;
     };
-    walk(el, true);
+    const walk = (e: Element): string => {
+      let t = pseudoText(e, '::before');
+      const own = this.pg(e).content;
+      if (own !== undefined && own !== 'normal' && own !== 'none') t += strings(e, own);
+      else t += inner(e);
+      return t + pseudoText(e, '::after');
+    };
+    const s = inner(el);
     return s.replace(/\s+/g, (w) => (/\n/.test(w) ? '' : ' ')).trim();
   }
 
@@ -2896,7 +3000,8 @@ class HtmlImporter {
     for (const toks of parts) {
       const name = toks[0]?.kind === 'ident' ? toks[0].v : undefined;
       if (!name) continue;
-      const text = this.textValue(el, toks.slice(1));
+      // string-set の値も生成内容の予算から引く (名前 2000 個 × h1 100 個 × 余白の string() で、ページごとに 20 万字の柱を組んでいた)
+      const text = (this.spendGenerated([this.textValue(el, toks.slice(1))])[0] as string | undefined) ?? '';
       out.push({ type: 'marker', className: `string:${name}`, children: [text] });
       // 余白の箱の text-transform・font-variant-caps を当てた字 (余白の箱ごとに、その書式の変種を取り出す。marginBoxes)
       for (const v of this.marginStringVariants()) out.push({ type: 'marker', className: `string:${name}|${v.tt}|${v.sc}`, children: this.marginText(text, v.tt, v.sc) });
@@ -3031,7 +3136,7 @@ class HtmlImporter {
   private markerImage(li: Element): string | undefined {
     const v = this.cs(li)('list-style-image').trim();
     if (!v || v === 'none') return undefined;
-    const m = /^url\(\s*["']?([^"')]+)["']?\s*\)$/.exec(v);
+    const m = wholeCssUrl(v);
     if (!m) {
       if (!this.markerImageMissed.has(li)) this.miss(`list-style-image: ${v.replace(/\(.*$/, '()')}`);
       this.markerImageMissed.add(li);
@@ -3081,7 +3186,7 @@ class HtmlImporter {
         }
         const list = parseTransformList(tv);
         if ('miss' in list) miss ??= `transform: ${list.miss}`;
-        else fns.push(...list);
+        else pushAll(fns, list);
         if (miss) this.miss(miss);
         else if (fns.length) {
           const origin = parseTransformOrigin(c('transform-origin'));
@@ -3556,7 +3661,7 @@ class HtmlImporter {
     const imgs: BackgroundImage[] = [];
     for (const L of layers) {
       const bimg = L.image;
-      const bi = /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(bimg);
+      const bi = firstCssUrl(bimg);
       const grad = !bi || bimg.search(/(linear|radial|conic)-gradient\(/i) < bimg.search(/url\(/i) ? firstGradient(bimg) : undefined;
       if (!bi && !grad) continue;
       const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(c('font-size')) ?? 12 } : { src: normalizeSrc(bi![1]) };
@@ -4225,7 +4330,7 @@ class HtmlImporter {
           if (seen) out.push({ v: { type: 'block', [mainP]: rowGap, children: [] } as LBlock, block: true });
           seen = true;
         }
-        out.push(...g.v);
+        pushAll(out, g.v);
       }
       items.splice(0, items.length, ...out);
     }
@@ -4574,6 +4679,8 @@ class HtmlImporter {
       color: cssColor(c('color')) ?? '#000000',
       parseColor: (v) => cssColor(v),
     });
+    // 1 つの数式で描く字の数の上限 (mathLayout.ts の MAX_MATH_GLYPHS) を超えて、超えた分の字を描かなかったときは、報告する
+    if (r.truncated) this.miss('数式の字の数が上限を超えたので、超えた分の字を描きません');
     const bytes = new TextEncoder().encode(r.svg);
     let bin = '';
     for (let k = 0; k < bytes.length; k += 0x8000) bin += String.fromCharCode(...bytes.subarray(k, k + 0x8000));
@@ -4614,7 +4721,7 @@ class HtmlImporter {
       const w = cssLen(c('width'));
       const h = cssLen(c('height'));
       const bgc = cssColor(c('background-color'));
-      const bu = /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(c('background-image'));
+      const bu = firstCssUrl(c('background-image'));
       const bgrad = bu ? undefined : firstGradient(c('background-image'));
       if ((w && h) || bgc || bu || bgrad) {
         const boxC: LBlockContainer = { type: 'block-container', children: parts.some((x) => x !== '') ? [{ type: 'block', ...style, children: parts }] : [] };
@@ -4748,7 +4855,7 @@ class HtmlImporter {
     }
     const bg = cssColor(c('background-color'));
     if (bg) cont.backgroundColor = bg;
-    const bi = /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(c('background-image'));
+    const bi = firstCssUrl(c('background-image'));
     if (bi) {
       const img: BackgroundImage = { src: normalizeSrc(bi[1]) };
       const bsz = c('background-size').split(',')[0].trim();
@@ -5434,7 +5541,7 @@ class HtmlImporter {
     if (va === 'super' && this.opts.superShiftAh) inl.baselineShift = (cssLen(this.cs(parent)('font-size')) ?? 12) / 3;
     else if (va === 'super' || va === 'sub') inl.baselineShift = va;
     else if (cssLen(va)) inl.baselineShift = cssLen(va);
-    else if (/^[+-]?(\d+\.?\d*|\.\d+)%$/.test(va)) {
+    else if (/^[+-]?(\d+(?:\.\d*)?|\.\d+)%$/.test(va)) {
       // 百分率は、この要素の line-height に対する割合だけ上げ下げする (CSS 2.1 §10.8.1)。line-height: normal は、書体の値 (textStyle と同じ)
       const fams = c('font-family').split(',').map((n) => n.replace(/['"]/g, '').trim()).filter(Boolean);
       const lh = cssLen(c('line-height')) ?? (this.opts.normalLineHeight?.(fams, (parseInt(c('font-weight'), 10) || 400) >= 600, this.normalOpts) ?? 1.2) * (cssLen(c('font-size')) ?? 12);
@@ -5509,7 +5616,7 @@ class HtmlImporter {
     if (lis.every((li) => this.cs(li)('list-style-type') === 'none' && !this.markerImage(li))) {
       const blocks: Array<LBlockLevel | LInlineLevel> = [];
       lis.forEach((li, k) => {
-        blocks.push(...enter(li, k));
+        pushAll(blocks, enter(li, k));
         const b = this.block(li, container);
         if (b) blocks.push(b);
       });
@@ -5668,7 +5775,7 @@ class HtmlImporter {
       if (e === entered) return;
       this.enterCounters(this.cs(e), owner);
       this.bookmark(e);
-      marks.push(...this.stringSet(e));
+      pushAll(marks, this.stringSet(e));
     };
     const takeMarks = (): LMarker[] => marks.splice(0);
     // 行のセルの並びの 1 つ: セルの要素か、無名のセルに包む中身 (表の部分でない節の並び。CSS 2.1 §17.2.1 の「欠けた子を包む」:
@@ -5953,7 +6060,7 @@ class HtmlImporter {
     }
     // 幅が auto の表は、table-layout が fixed でも自動レイアウト (CSS 2.1 §17.5.2)。列の最小の幅は、列の幅の指定とセルの最小の幅の
     // 大きい方 (§17.5.2.2。組むときに決める)。列の幅がすべて決まっていれば、左右の余白が両方 auto のとき、その合計の幅で残りを等分する (§10.3.3)
-    const nCols = Math.max(0, ...[...header, ...body, ...footer].map((r) => r.cells.reduce((a, x) => a + (x.colSpan ?? 1), 0)));
+    const nCols = maxOf([header, body, footer].flat().map((r) => r.cells.reduce((a, x) => a + (x.colSpan ?? 1), 0)), 0);
     if (t.width === undefined && !this.src.rect && columns.length && columns.length >= nCols && columns.every((col) => typeof col.width === 'number')) {
       const gaps = t.borderSpacing ? t.borderSpacing.i * (columns.length + 1) : 0;
       const est = columns.reduce((a, col) => a + (col.width as number), 0) + gaps;
@@ -6100,7 +6207,7 @@ class HtmlImporter {
         const measure = (s: string) =>
           this.opts.measureText ? this.opts.measureText(s, { fontFamily: family, fontWeight: weight, fontSize: fs, kerning: (decls['font-kerning'] ?? '').trim() !== 'none' }) : [...s].reduce((a, ch) => a + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55), 0) * fs;
         const max = measure(text);
-        const min = Math.max(0, ...text.split(/\s+/).map(measure));
+        const min = maxOf(text.split(/\s+/).map(measure), 0);
         const len = (k: string) => (decls[k] === undefined || decls[k] === 'auto' ? 0 : (lenEm(decls[k], fs) ?? 0));
         const sideLen = (k: 'margin' | 'padding') => {
           const all = decls[k] ? edges4(decls[k], fs) : { left: 0, right: 0, top: 0, bottom: 0 };
@@ -6260,7 +6367,7 @@ class HtmlImporter {
   /** @page の背景画像 (background / background-image の url()) → ページの背景画像 (本文より先に、塗り足しまで描く) */
   private pageBackground(decls: Record<string, string>): BackgroundImage | undefined {
     const v = decls['background-image'] ?? decls.background ?? '';
-    const u = /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(v);
+    const u = firstCssUrl(v);
     // グラデーションは、ページの背景の領域の大きさで組版のときに画像にする
     const grad = u ? undefined : firstGradient(v);
     if (grad) return { src: '', gradient: grad, gradientFontSize: cssLen(decls['font-size'] ?? '') ?? 12 };
@@ -6544,6 +6651,7 @@ class HtmlImporter {
     const html = doc.documentElement;
     const bodyEl = doc.body ?? (doc.getElementsByTagName('body')[0] as HTMLElement | undefined) ?? html;
     const { pages, rules, counterStyles, rootVars } = this.sheet;
+    this.generatedLeft = GENERATED_TEXT_BASE + 2 * (html?.textContent?.length ?? 0) + GENERATED_TEXT_PER_ELEMENT * (html?.getElementsByTagName('*').length ?? 0);
     this.pageRules = pages;
     // @page と余白の箱の宣言の色に書いた cmyk()・rgb-icc() (アンテナハウスの拡張の書き方) は、互換の指定の無いときは読まない (printColor)。報告する
     for (const pr of pages) for (const ds of [pr.decls, ...Object.values(pr.boxes)]) for (const [p, v] of Object.entries(ds)) if (PAGE_COLOR_PROP.test(p)) this.dropCompatOnly(p, v);

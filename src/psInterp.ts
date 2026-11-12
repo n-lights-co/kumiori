@@ -442,8 +442,37 @@ function scanCharge(I: Interp) {
   };
 }
 
+/**
+ * 文字列の字句の長さの上限 (バイト。超えれば limitcheck)。PLRM 第 3 版の付録 B の表 B.1 の文字列の上限は 65,535 だが、それより長い字句を書く
+ * EPS (画像のデータを 1 つの 16 進の文字列にしたもの) も読めるように、大きめの値にする (Ghostscript が長く使っていた上限は 16MB)。
+ * 上限が無いと、何重にも圧縮した元から読む「閉じない文字列」(strlit.eps。909 バイト) が、VM の上限 (512MB) までためる
+ */
+const MAX_STRING_TOKEN = 64 * 1024 * 1024;
+
+/**
+ * 字句の文字列のバイトをためる入れ物 (倍々に伸ばす Uint8Array。psFilters の ByteStore と同じ考え方)。
+ * 数の配列 (number[]) にためると、1 バイトに 8 バイトを使い、VM には 1 バイトしか積まないので、VM の上限 (512MB) より先に、
+ * 配列の長さの限界とヒープの限界に届いた (4 億バイトの文字列で 2GB)
+ */
+class TokenBytes {
+  private buf = new Uint8Array(256);
+  length = 0;
+  push(c: number) {
+    if (this.length === this.buf.length) {
+      if (this.length >= MAX_STRING_TOKEN) throw new PSError('limitcheck');
+      const b = new Uint8Array(Math.min(MAX_STRING_TOKEN, this.length * 2));
+      b.set(this.buf);
+      this.buf = b;
+    }
+    this.buf[this.length++] = c;
+  }
+  bytes(): Uint8Array {
+    return this.buf.slice(0, this.length);
+  }
+}
+
 function readLiteralString(f: PSFile, I: Interp): PSString {
-  const out: number[] = [];
+  const out = new TokenBytes();
   const vm = scanCharge(I);
   let depth = 1;
   for (;;) {
@@ -482,7 +511,7 @@ function readLiteralString(f: PSFile, I: Interp): PSString {
     out.push(c);
   }
   vm.done(out.length);
-  return str(Uint8Array.from(out));
+  return str(out.bytes());
 }
 
 function hexVal(c: number): number {
@@ -493,7 +522,7 @@ function hexVal(c: number): number {
 }
 
 function readHexString(f: PSFile, I: Interp): PSString {
-  const out: number[] = [];
+  const out = new TokenBytes();
   const vm = scanCharge(I);
   let hi = -1;
   for (;;) {
@@ -512,12 +541,12 @@ function readHexString(f: PSFile, I: Interp): PSString {
   }
   if (hi >= 0) out.push(hi * 16);
   vm.done(out.length);
-  return str(Uint8Array.from(out));
+  return str(out.bytes());
 }
 
 function readA85String(f: PSFile, I: Interp): PSString {
   const src = filterSource('ASCII85Decode', { read: () => f.read() }, undefined);
-  const out: number[] = [];
+  const out = new TokenBytes();
   const vm = scanCharge(I);
   try {
     for (let c = src.read(); c >= 0; c = src.read()) {
@@ -530,7 +559,7 @@ function readA85String(f: PSFile, I: Interp): PSString {
     throw e;
   }
   vm.done(out.length);
-  return str(Uint8Array.from(out));
+  return str(out.bytes());
 }
 
 // ───────────────────────── save (§3.7.3) ─────────────────────────
@@ -2097,13 +2126,18 @@ function installCoreOperators(I: Interp) {
 
   // 雑多 (§8.2)
   d('null', (I) => I.push(NULL));
-  d('version', (I) => I.push(str('3010')));
+  // version・product は呼ぶたびに新しい文字列を作る (§8.2)。文字列の入れ物の分を勘定に積む ({ version } loop が、勘定の外でメモリを使わない)
+  const constStr = (I: Interp, t: string) => {
+    I.vmAlloc(t.length, t.length + MEM_STRING);
+    I.push(str(t));
+  };
+  d('version', (I) => constStr(I, '3010'));
   // languagelevel: 演算子ではなく整数 3 として定義する。名前を実行すると 3 が積まれるのは演算子と同じで、
   // Adobe CoolType の手続き集の「systemdict /languagelevel get 2 ge」(get のあと exec しない) も通る
   I.systemdict.map.set('languagelevel', { k: name('languagelevel'), v: int(3) });
   d('realtime', (I) => I.push(int(Date.now() & 0x7fffffff)));
   d('usertime', (I) => I.push(int(I.steps & 0x7fffffff)));
-  d('product', (I) => I.push(str('Kumiori')));
+  d('product', (I) => constStr(I, 'Kumiori'));
   d('revision', (I) => I.push(int(1)));
   d('serialnumber', (I) => I.push(int(0)));
   d('executive', () => {});

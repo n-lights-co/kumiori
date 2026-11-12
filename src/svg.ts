@@ -201,7 +201,7 @@ function clampStops(stops: SvgGradient['stops']): SvgGradient['stops'] {
 function parseTransform(s: string | null | undefined): M | null {
   let m = ID;
   if (!s) return m;
-  const re = /(\w+)\s*\(([^)]*)\)/g;
+  const re = /(?<!\w)(\w+)\s*\(([^)]*)\)/g;
   let t: RegExpExecArray | null;
   let any = false;
   while ((t = re.exec(s))) {
@@ -244,7 +244,7 @@ function parseTransform(s: string | null | undefined): M | null {
 
 /** SVG の d 属性 → 絶対座標の M/L/C/Z。構文エラーは null */
 export function parsePathData(d: string): Seg[] | null {
-  const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g);
+  const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?/g);
   if (!tokens) return [];
   const segs: Seg[] = [];
   let i = 0;
@@ -513,6 +513,98 @@ class Unsupported extends Error {}
  * 記号 (symbol) を数万回置く地図でも、参照で増える分は数十万までなので、50 万にする
  */
 const MAX_EXPANDED_VISITS = 500_000;
+/**
+ * 訪ね直す要素の重さ: 2 回目からの訪問は、属性の値の字数を、この字数ごとに 1 回分として余分に数える。
+ * 要素を訪ねるたびに、属性 (stroke-dasharray・x の並び・書式の値など) を読み直すので、数十万字の属性を持つ要素を use で何千回も
+ * 置くと、訪ねる回数は上限の中でも、数百 MB 分の字を読むことになる。ふつうの要素 (属性の合計が 64 字に満たない) は、これまでと同じ 1 回
+ */
+const VISIT_WEIGHT_CHARS = 64;
+/**
+ * 1 つの SVG で、参照 (use・marker・pattern・mask・clip-path・textPath) や効果 (filter の影の写し) によって、書かれた数より増える分の
+ * 線分 (M・L・C・Z の 1 つを 1 と数える。グラデーションの stop、同じ切り抜きを図形ごとに付け直す分も同じに数える) の上限。
+ * 5 万点の path を use で 400 回置くだけ (212KB) で 2000 万の線分になり、メモリを使い切るので、ここで切って「図形にできない」ものとして扱う
+ * (訪ねる回数の上限 MAX_EXPANDED_VISITS は、訪ねた先の path の大きさを数えない)。
+ * 要素ごとに 1 回目に読む形 (文書に書かれたとおりの分) は数えないので、線分が数百万ある地図・図面は、これまでどおり読める。
+ * 上限 = EXPANDED_SEGS_BASE + SVG の字数 × EXPANDED_SEGS_PER_CHAR (MAX_EXPANDED_SEGS まで):
+ * - 記号 (数十の線分) を数千〜1 万回置く地図・字形を use で置く SVG (matplotlib・cairo の出力。1 字が 40 線分ほど、use 1 つが 50 字ほど) は、
+ *   参照で増える分が use の字数の 1 倍ほど。小さな SVG でも足りるように 25 万を足し、字数の 2 倍までを許す
+ *   (25 万は、点の多い記号 (1000 線分) を数百回置く小さな SVG の分。100 万にすると、12KB の marker の SVG (1000 線分の marker を
+ *   1000 の頂点に置く) が 100 万の線分・10MB の PDF になり、8 秒・700MB かかった)
+ * - 全体の上限は、EPS のパスの点の上限 (imageLimits.ts の PS_MAX_PATH_POINTS = 500 万) と同じにする
+ */
+const EXPANDED_SEGS_BASE = 250_000;
+const EXPANDED_SEGS_PER_CHAR = 2;
+const MAX_EXPANDED_SEGS = 5_000_000;
+/**
+ * SVG の要素の入れ子の上限 (250 段。XSL-FO の入れ子の上限 (xslfoImport.ts の MAX_FO_NEST) と同じ値)。
+ * 図形になる要素の入れ子は、もともと 32 段まで (walk の depth。超えれば「図形にできない」) なので、これより深い SVG は、どのみち描けない。
+ * `<g>` を 10 万段重ねた SVG (700KB) は、XML の解析だけで 5〜10 秒かかるので、解析の前に字の上で段を数えて、読まずに「図形にできない」ものとする
+ */
+export const SVG_MAX_NEST = 250;
+
+/**
+ * SVG (XML) の文字列の要素の入れ子が limit 段を超えるか。解析せずに、字の上で開始タグ・終了タグを数える (文字列の長さに比例する手間)。
+ * 注釈・CDATA・処理命令・DOCTYPE は飛ばし、開始タグの中の引用符で囲んだ値は > で終わらせない
+ */
+export function svgNestTooDeep(text: string, limit = SVG_MAX_NEST): boolean {
+  const n = text.length;
+  let depth = 0;
+  let i = text.indexOf('<');
+  while (i >= 0 && i < n) {
+    const c = text.charCodeAt(i + 1);
+    let next: number;
+    if (c === 0x21 /* ! */) {
+      if (text.startsWith('<!--', i)) {
+        const e = text.indexOf('-->', i + 4);
+        if (e < 0) break;
+        next = e + 3;
+      } else if (text.startsWith('<![CDATA[', i)) {
+        const e = text.indexOf(']]>', i + 9);
+        if (e < 0) break;
+        next = e + 3;
+      } else {
+        // DOCTYPE など: 内部サブセット [ ] と引用符の中の > は終わりでない
+        let j = i + 2;
+        let br = 0;
+        let q = 0;
+        for (; j < n; j++) {
+          const d = text.charCodeAt(j);
+          if (q) {
+            if (d === q) q = 0;
+          } else if (d === 0x22 || d === 0x27) q = d;
+          else if (d === 0x5b) br++;
+          else if (d === 0x5d) br--;
+          else if (d === 0x3e && br <= 0) break;
+        }
+        next = j + 1;
+      }
+    } else if (c === 0x3f /* ? */) {
+      const e = text.indexOf('?>', i + 2);
+      if (e < 0) break;
+      next = e + 2;
+    } else if (c === 0x2f /* / */) {
+      if (depth > 0) depth--;
+      const e = text.indexOf('>', i + 2);
+      if (e < 0) break;
+      next = e + 1;
+    } else if ((c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f || c === 0x3a || c >= 0x80) {
+      let j = i + 1;
+      let q = 0;
+      for (; j < n; j++) {
+        const d = text.charCodeAt(j);
+        if (q) {
+          if (d === q) q = 0;
+        } else if (d === 0x22 || d === 0x27) q = d;
+        else if (d === 0x3e) break;
+      }
+      if (j >= n) break;
+      if (text.charCodeAt(j - 1) !== 0x2f && ++depth > limit) return true;
+      next = j + 1;
+    } else next = i + 1; // 名前の続かない < は文字
+    i = text.indexOf('<', next);
+  }
+  return false;
+}
 /** pattern の中身の図形が、また pattern で塗られているときの入れ子の上限 (互いを指す pattern で止まらなくなるのを防ぐ。gradient の参照の上限と同じ 8) */
 const MAX_PATTERN_NEST = 8;
 
@@ -625,7 +717,84 @@ export function parseCss(css: string): CssRule[] {
   return rules.sort((a, b) => a.specificity - b.specificity || a.order - b.order);
 }
 
-function propsOf(n: XmlNode, css: CssRule[] = []): Record<string, string> {
+/** 同じ選択子 (要素名・id・class の組) の規則をまとめたもの。decls は、プロパティごとに、その組の中で最後に効く宣言 (pos は規則の当てる順) */
+interface CssGroup {
+  tag?: string;
+  id?: string;
+  classes: string[];
+  decls: Map<string, { pos: number; value: string }>;
+}
+/**
+ * <style> の規則の索引。規則 × 要素の総当たり (5000 規則 × 5000 要素の 400KB で 8 秒、2 万 × 2 万で 90 秒超) を避けるため、
+ * 規則を id・class・要素名で引けるようにして、要素に当たりうる組だけを確かめる。
+ * 当てる順 (詳細度・出現順) は変えない: プロパティごとに、当たる規則のうち pos がいちばん後の宣言が勝つ (順に Object.assign したのと同じ結果)
+ */
+interface CssIndex {
+  byId: Map<string, CssGroup[]>;
+  byClass: Map<string, CssGroup[]>;
+  byTag: Map<string, CssGroup[]>;
+  any: CssGroup[];
+  /** 要素名・id・class の値が同じ要素の結果 (同じ class の要素が何千とある絵で、計算し直さない) */
+  cache: Map<string, Record<string, string>>;
+}
+
+/** rules は parseCss の結果 (当てる順に並んでいる) */
+function indexCss(rules: CssRule[]): CssIndex | undefined {
+  if (!rules.length) return undefined;
+  const ix: CssIndex = { byId: new Map(), byClass: new Map(), byTag: new Map(), any: [], cache: new Map() };
+  const groups = new Map<string, CssGroup>();
+  rules.forEach((r, pos) => {
+    const classes = [...new Set(r.classes)].sort();
+    const sig = `${r.tag ?? ''}#${r.id ?? ''}.${classes.join('.')}`;
+    let g = groups.get(sig);
+    if (!g) {
+      g = { tag: r.tag, id: r.id, classes, decls: new Map() };
+      groups.set(sig, g);
+      // 組は 1 つの引き出しにだけ入れる (id → 最初の class → 要素名 → どれも無い)
+      const [map, key] = r.id ? [ix.byId, r.id] : classes.length ? [ix.byClass, classes[0]] : r.tag ? [ix.byTag, r.tag] : [undefined, ''];
+      if (!map) ix.any.push(g);
+      else {
+        const list = map.get(key);
+        if (list) list.push(g);
+        else map.set(key, [g]);
+      }
+    }
+    for (const k of Object.keys(r.decls)) g.decls.set(k, { pos, value: r.decls[k] });
+  });
+  return ix;
+}
+
+/** 要素に当たる <style> の規則の宣言 (当てる順に重ねた結果) */
+function cssDeclsOf(n: XmlNode, ix: CssIndex): Record<string, string> {
+  const tag = (n.localName ?? n.nodeName.split(':').pop() ?? '').toLowerCase();
+  const id = n.getAttribute?.('id') ?? undefined;
+  const classAttr = n.getAttribute?.('class') ?? '';
+  const key = `${tag}\0${id !== undefined && ix.byId.has(id) ? id : ''}\0${classAttr}`;
+  const hit = ix.cache.get(key);
+  if (hit) return hit;
+  const cls = new Set(classAttr.split(/\s+/).filter(Boolean));
+  const win = new Map<string, { pos: number; value: string }>();
+  const apply = (list: CssGroup[] | undefined) => {
+    if (!list) return;
+    for (const g of list) {
+      if ((g.tag && g.tag !== tag) || (g.id && g.id !== id) || !g.classes.every((c) => cls.has(c))) continue;
+      for (const [k, d] of g.decls) {
+        const w = win.get(k);
+        if (!w || w.pos < d.pos) win.set(k, d);
+      }
+    }
+  };
+  apply(ix.any);
+  apply(ix.byTag.get(tag));
+  if (id) apply(ix.byId.get(id));
+  for (const c of cls) apply(ix.byClass.get(c));
+  const out: Record<string, string> = {};
+  for (const [k, d] of win) out[k] = d.value;
+  if (ix.cache.size < 4096) ix.cache.set(key, out);
+  return out;
+}
+
+function propsOf(n: XmlNode, css?: CssIndex): Record<string, string> {
   const out: Record<string, string> = {};
   const names = ['color', 'fill', 'stroke', 'stroke-width', 'opacity', 'fill-opacity', 'stroke-opacity', 'fill-rule', 'clip-rule', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-miterlimit', 'display', 'visibility', 'clip-path', 'mask', 'filter', 'stop-color', 'stop-opacity', 'font-family', 'font-size', 'font-weight', 'text-anchor', 'overflow', 'marker', 'marker-start', 'marker-mid', 'marker-end', 'data-fill-cmyk', 'data-stroke-cmyk', 'vector-effect', 'mix-blend-mode', 'xml:space'];
   for (const k of names) {
@@ -633,15 +802,7 @@ function propsOf(n: XmlNode, css: CssRule[] = []): Record<string, string> {
     if (v !== null && v !== undefined) out[k] = v.trim();
   }
   // 優先度: 表示属性 < <style> の規則 (詳細度・出現順) < style 属性
-  if (css.length) {
-    const tag = (n.localName ?? n.nodeName.split(':').pop() ?? '').toLowerCase();
-    const id = n.getAttribute?.('id') ?? undefined;
-    const cls = new Set((n.getAttribute?.('class') ?? '').split(/\s+/).filter(Boolean));
-    for (const r of css) {
-      if ((r.tag && r.tag !== tag) || (r.id && r.id !== id) || !r.classes.every((c) => cls.has(c))) continue;
-      Object.assign(out, r.decls);
-    }
-  }
+  if (css) Object.assign(out, cssDeclsOf(n, css));
   const st = n.getAttribute?.('style');
   if (st) Object.assign(out, parseDecls(st));
   return out;
@@ -792,6 +953,8 @@ const len = (v: string | null | undefined) => {
 /** SVG を解釈する。PDF ベクタにできない内容を含む場合は null (ラスタライズへフォールバック) */
 export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: ParseSvgOptions = {}): SvgDoc | null {
   try {
+    // 入れ子の深すぎる SVG は、解析の前に断る (SVG_MAX_NEST の説明)
+    if (svgNestTooDeep(text)) throw new Unsupported('too deep');
     const doc = parse(text);
     const root = Array.from(doc.childNodes).find((c) => c.nodeType === 1);
     if (!root || nm(root) !== 'svg') return null;
@@ -814,8 +977,43 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     const byId = new Map<string, XmlNode>();
     /** 要素を訪ねられる残りの回数 (文書の要素の数 + MAX_EXPANDED_VISITS)。尽きたら Unsupported */
     let visitsLeft = MAX_EXPANDED_VISITS;
-    const visit = () => {
-      if (--visitsLeft < 0) throw new Unsupported('too many elements');
+    /** n を訪ねる。2 回目からは、属性の字数に応じて余分に数える (VISIT_WEIGHT_CHARS の説明) */
+    const visit = (n: XmlNode) => {
+      const e = entryOf(n);
+      let cost = 1;
+      if (e.seen) {
+        if (e.weight === undefined) {
+          // 属性の値の字数の合計 (属性の一覧を読めない実装では、書式のプロパティの字数)。
+          // 形の属性 (d・points) は数えない: 形は要素ごとに 1 度だけ読み (geometryOf)、置き直す分は線分の数で数える
+          let w = 0;
+          const attrs = (n as { attributes?: ArrayLike<{ name?: string; value?: string | null }> }).attributes;
+          if (attrs && typeof attrs.length === 'number')
+            for (let k = 0; k < attrs.length; k++) {
+              const at = attrs[k];
+              if (at && at.name !== 'd' && at.name !== 'points') w += at.value?.length ?? 0;
+            }
+          else for (const k of Object.keys(e.p)) w += k.length + e.p[k].length;
+          e.weight = Math.floor(w / VISIT_WEIGHT_CHARS);
+        }
+        cost += e.weight;
+      } else e.seen = true;
+      if ((visitsLeft -= cost) < 0) throw new Unsupported('too many elements');
+    };
+    /** 参照や効果で増える線分の残り (MAX_EXPANDED_SEGS の説明)。尽きたら Unsupported */
+    let segsLeft = Math.min(MAX_EXPANDED_SEGS, EXPANDED_SEGS_BASE + text.length * EXPANDED_SEGS_PER_CHAR);
+    const charge = (k: number) => {
+      if ((segsLeft -= k) < 0) throw new Unsupported('too many path segments');
+    };
+    /**
+     * transform の値 → 行列 (読めなければ null)。同じ文字列は 1 度だけ読む (長い transform を持つ要素を use で何度も置くと、
+     * 置くたびに読み直すことになる)。返した行列は書き換えない
+     */
+    const transforms = new Map<string, M | null>();
+    const tf = (v: string | null | undefined): M | null => {
+      if (!v) return ID;
+      let m = transforms.get(v);
+      if (m === undefined) transforms.set(v, (m = parseTransform(v)));
+      return m;
     };
     let patternNest = 0;
     /** 要素 → 親の要素 (stop-color・flood-color の currentColor を、その要素の color で決めるため) */
@@ -838,8 +1036,18 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       for (const c of Array.from(n.childNodes)) if (c.nodeType === 1) collectCss(c);
     };
     collectCss(root);
-    const css = cssText.trim() ? parseCss(cssText) : [];
-    const props = (n: XmlNode) => propsOf(n, css);
+    const css = cssText.trim() ? indexCss(parseCss(cssText)) : undefined;
+    /**
+     * 要素の書式 (属性・<style> の規則・style 属性) は、要素ごとに 1 度だけ読んで覚える (1 回の訪問で何度も引き、use で置くたびにも引く)。
+     * 返したものは書き換えない。seen・weight は visit が使う
+     */
+    const entries = new Map<XmlNode, { p: Record<string, string>; seen?: boolean; weight?: number }>();
+    const entryOf = (n: XmlNode) => {
+      let e = entries.get(n);
+      if (!e) entries.set(n, (e = { p: propsOf(n, css) }));
+      return e;
+    };
+    const props = (n: XmlNode) => entryOf(n).p;
     /** 要素の color (祖先をさかのぼって最初の指定。無ければ初期値の黒)。図形でない要素 (stop・フィルタの要素) の currentColor に使う */
     const colorAt = (n: XmlNode): string => {
       for (let e: XmlNode | undefined = n; e; e = parentOf.get(e)) {
@@ -854,8 +1062,29 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     const vbW = viewBox[2];
     const vbH = viewBox[3];
 
-    /** 図形要素の形 (ローカル座標)。図形でなければ undefined */
+    /**
+     * 図形要素の形 (ローカル座標)。図形でなければ undefined。返した並びは書き換えない。
+     * 同じ要素の形を 2 度目に求められたら覚え、それからは読み直さない (use・clip-path・marker・textPath で何度も引かれる path の d を、
+     * 引かれるたびに読み直さない。1 度しか引かれない要素は覚えないので、大きな絵でメモリを余分に使わない)。
+     * 2 度目からは、線分の数を「参照で増える分」に数える (MAX_EXPANDED_SEGS の説明)
+     */
+    const geoSeen = new Set<XmlNode>();
+    const geoKept = new Map<XmlNode, Seg[]>();
     const geometryOf = (n: XmlNode, name: string): Seg[] | undefined => {
+      const kept = geoKept.get(n);
+      if (kept) {
+        charge(kept.length);
+        return kept;
+      }
+      const segs = geometryOf0(n, name);
+      if (!segs) return segs;
+      if (geoSeen.has(n)) {
+        geoKept.set(n, segs);
+        charge(segs.length);
+      } else geoSeen.add(n);
+      return segs;
+    };
+    const geometryOf0 = (n: XmlNode, name: string): Seg[] | undefined => {
       // 長さは単位を利用者座標 (px) に直す。百分率は viewport の幅 (x 方向)・高さ (y 方向)・対角 / √2 (r) に対して (SVG 1.1 §7.10)
       const ref = (k: string) => (/^(y|cy|y1|y2|height|ry)$/.test(k) ? vbH : k === 'r' ? Math.hypot(vbW, vbH) / Math.SQRT2 : vbW);
       const g = (k: string) => userLen(n.getAttribute?.(k), ref(k));
@@ -930,6 +1159,8 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       }
       return { x: x0, y: y0, w: Math.max(x1 - x0, 1e-6), h: Math.max(y1 - y0, 1e-6) };
     };
+    /** グラデーションの要素 → 読んだ stop の並び (書き換えない) */
+    const gradientStopsKept = new Map<XmlNode, SvgGradient['stops']>();
     /** 塗りのグラデーション。stop が 1 つなら単色、無ければ塗らない */
     const gradientOf = (id: string, local: Seg[], mm: M): SvgGradient | string | null => {
       const g = byId.get(id);
@@ -937,8 +1168,12 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       const kind = nm(g) === 'lineargradient' ? 'linear' : nm(g) === 'radialgradient' ? 'radial' : undefined;
       if (!kind) throw new Unsupported(`paint server ${nm(g)}`);
       const bboxUnits = (gradientAttr(g, 'gradientUnits') ?? 'objectBoundingBox') !== 'userSpaceOnUse';
-      const stops = gradientStops(g)
-        .map((st) => {
+      // stop の並びは、グラデーションごとに 1 度だけ読む (stop が 2 万個のグラデーションで 500 個の図形を塗ると、塗るたびに読み直して
+      // 1000 万個の stop を作っていた)。2 度目からは、stop の数を「参照で増える分」に数える (描く側は、図形ごとに stop の数だけの関数を書く)
+      let stops = gradientStopsKept.get(g);
+      if (stops) charge(stops.length);
+      else {
+        stops = gradientStops(g).map((st) => {
           const p = props(st);
           const sc = p['stop-color'] ?? '#000000';
           const color = colorOf(sc, false, isCurrentColor(sc) ? colorAt(st) : undefined) as string | null;
@@ -946,7 +1181,9 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           const op = color ? Math.max(0, Math.min(1, num(p['stop-opacity'], 1))) : 0;
           return { offset: Math.max(0, Math.min(1, num(st.getAttribute?.('offset') ?? undefined, 0))), color: color ?? '#000000', ...(op < 1 ? { opacity: op } : {}) };
         });
-      for (let k = 1; k < stops.length; k++) stops[k].offset = Math.max(stops[k].offset, stops[k - 1].offset);
+        for (let k = 1; k < stops.length; k++) stops[k].offset = Math.max(stops[k].offset, stops[k - 1].offset);
+        gradientStopsKept.set(g, stops);
+      }
       if (!stops.length) return null;
       if (stops.length === 1) return stops[0].color;
       // 座標: bbox 単位は 0〜1 (% も)、userSpaceOnUse は長さ (% は viewBox に対する割合)
@@ -969,7 +1206,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         const fr = Math.min(Math.max(coord('fr', '0%', 'r'), 0), r);
         coords = [fx, fy, fr, cx, cy, r];
       }
-      const gt = parseTransform(gradientAttr(g, 'gradientTransform'));
+      const gt = tf(gradientAttr(g, 'gradientTransform'));
       if (!gt) throw new Unsupported('gradientTransform');
       const b = segBox(local);
       const unitMap: M = bboxUnits ? [b.w, 0, 0, b.h, b.x, b.y] : ID;
@@ -979,6 +1216,8 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         // 図形の外接矩形の角を、グラデーションの空間に写す
         const inv = invert(mul(unitMap, gt));
         if (inv) spreadGradient(grad, spread, [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]].map(([x, y]) => [inv[0] * x + inv[2] * y + inv[4], inv[1] * x + inv[3] * y + inv[5]]));
+        // 繰り返して並べた stop は、図形ごとに作るので、増えた分を数える
+        if (grad.stops !== stops) charge(grad.stops.length - stops.length);
       }
       return grad;
     };
@@ -1004,7 +1243,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       const w = v('width', 'x');
       const h = v('height', 'y');
       if (!(w > 0) || !(h > 0)) return null;
-      const pt = parseTransform(a('patternTransform'));
+      const pt = tf(a('patternTransform'));
       if (!pt) throw new Unsupported('patternTransform');
       // 中身の座標 → タイルの座標
       const pvb = (a('viewBox') ?? '').split(/[\s,]+/).filter(Boolean).map(Number);
@@ -1039,15 +1278,19 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       const cp = byId.get(id);
       if (!cp || nm(cp) !== 'clippath') return null;
       if ((cp.getAttribute?.('clipPathUnits') ?? 'userSpaceOnUse') !== 'userSpaceOnUse') throw new Unsupported('clipPathUnits');
-      const ct = parseTransform(cp.getAttribute?.('transform'));
+      // 同じ clipPath を同じ座標系で使う切り抜きは、1 つを共有する (図形ごとに clip-path を付けた絵で、付けた数だけ形を作り直さない)
+      const key = `${id}\0${mm.join(' ')}`;
+      const shared = clipsKept.get(key);
+      if (shared) return shared;
+      const ct = tf(cp.getAttribute?.('transform'));
       if (!ct) throw new Unsupported('transform');
       const base = mul(mm, ct);
       const segs: Seg[] = [];
       let evenOdd = false;
       const add = (n: XmlNode, m: M, depth: number) => {
-        visit();
+        visit(n);
         const name = nm(n);
-        const tr = parseTransform(n.getAttribute?.('transform'));
+        const tr = tf(n.getAttribute?.('transform'));
         if (!tr) throw new Unsupported('transform');
         const m2 = mul(m, tr);
         if (name === 'use') {
@@ -1066,7 +1309,21 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         segs.push(...transformSegs(geo, m2));
       };
       for (const c of Array.from(cp.childNodes)) if (c.nodeType === 1) add(c, base, 0);
-      return { segs, evenOdd };
+      const clip: SvgClip = { segs, evenOdd };
+      clipsKept.set(key, clip);
+      return clip;
+    };
+    const clipsKept = new Map<string, SvgClip>();
+    /**
+     * 図形に付ける切り抜きの線分を「参照で増える分」に数える。描く側は、切り抜きの形を図形ごとに書くので、5 万点の切り抜きを 400 個の
+     * 図形に付けると 2000 万の線分になる。切り抜きごとに、最初の 1 つの図形の分は数えない
+     */
+    const clipsUsed = new Set<SvgClip>();
+    const chargeClips = (cl: SvgClip[]) => {
+      for (const c of cl) {
+        if (clipsUsed.has(c)) charge(c.segs.length);
+        else clipsUsed.add(c);
+      }
     };
 
     /** filter を近似して描き直している要素 */
@@ -1174,6 +1431,8 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         const alpha = alphas[k];
         for (const sh of shapes) {
           if (sh.image) continue;
+          // 写しは「効果で増える分」に数える (filter の付いた g を 8 段重ねると、1 つの図形が 6 の 8 乗 = 168 万個になる)
+          charge(sh.segs.length + 1);
           const filled = sh.fill !== undefined || !!sh.fillPaint || !!sh.fillPattern;
           const fillColor = color ?? sh.fill;
           const strokeColor = color ?? sh.stroke ?? sh.fill;
@@ -1274,7 +1533,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           target = savedTarget;
         }
         if (fx.shadow) {
-          const tr0 = isRoot ? ID : parseTransform(n.getAttribute?.('transform')) ?? ID;
+          const tr0 = isRoot ? ID : tf(n.getAttribute?.('transform')) ?? ID;
           const lm = mul(m, tr0);
           // ずらす量は要素の座標系で (移動を除いた変換を掛ける)、ぼかしの幅は拡大率を掛ける
           const ox = lm[0] * fx.shadow.dx + lm[2] * fx.shadow.dy;
@@ -1285,7 +1544,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         if (fx.source) target.push(...own);
         return;
       }
-      const tr = isRoot ? ID : parseTransform(n.getAttribute?.('transform'));
+      const tr = isRoot ? ID : tf(n.getAttribute?.('transform'));
       if (!tr) throw new Unsupported('transform');
       const mm = mul(m, tr);
       // マスク: 中身をこの要素の座標系 (transform 適用後) で図形にし、この要素の図形すべてに付けて、もう一度この要素を描く
@@ -1316,7 +1575,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         }
         return;
       }
-      visit(); // (filter・mask でこの要素を描き直す分は、ここまで来ないので 1 回と数える)
+      visit(n); // (filter・mask でこの要素を描き直す分は、ここまで来ないので 1 回と数える)
       const s = inherit(st, p);
       const o = op * s.opacity;
       // 切り抜き: この要素の座標系 (transform 適用後) で clipPath の形を作る
@@ -1388,6 +1647,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           iw = dw;
           ih = dh;
         }
+        chargeClips(cl);
         target.push({
           segs: [],
           evenOdd: false,
@@ -1504,6 +1764,9 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       }
       // non-scaling-size: 要素の原点だけを変換で写し、形は元の大きさのまま、その点の周りに置く
       const anchor: [number, number] | undefined = s.nonScalingSize ? [mm[4], mm[5]] : undefined;
+      chargeClips(cl);
+      // use で置き直した text の字の輪郭 (textAgain の説明)
+      if (textAgain) charge(segs.length + 1);
       target.push({
         segs: anchor ? transformSegs(segs, [1, 0, 0, 1, anchor[0], anchor[1]]) : transformSegs(segs, mm),
         ...(anchor ? { nonScalingAnchor: anchor } : {}),
@@ -1539,6 +1802,12 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
      * 文字データの空白 (SVG 1.1 §10.15)。preserve: 改行・タブを空白にし、空白はすべて残す。
      * default: 空白の並びを 1 つにまとめる (先頭・末尾は、塊の両端で落とす)
      */
+    /**
+     * いま描いている text が、2 度目からの描き直し (use で置き直したもの) か。描き直しでは、字の数と輪郭の線分を「参照で増える分」に数える
+     * (2000 字の text を use で 3000 回置く 92KB の SVG で、600 万字の輪郭を作っていた)
+     */
+    const textSeen = new Set<XmlNode>();
+    let textAgain = false;
     const spaced = (t: string, st: Style) => (st.preserveSpace ? t.replace(/\r\n|[\n\r\t]/g, ' ') : t.replace(/\s+/g, ' '));
     const textOnPath = (tp: XmlNode, st: Style, mm: M, o: number, cl: SvgClip[], parentSpacing = 0) => {
       const outline = opts.outline!;
@@ -1546,7 +1815,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       if (!ref) return;
       const geo = geometryOf(ref, nm(ref));
       if (!geo || !geo.length) return;
-      const rt = parseTransform(ref.getAttribute?.('transform'));
+      const rt = tf(ref.getAttribute?.('transform'));
       if (!rt) throw new Unsupported('transform');
       // パスを折れ線にして、長さを積み上げる
       const pts: Array<{ x: number; y: number; d: number }> = [];
@@ -1586,8 +1855,16 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       if (!(total > 0)) return;
       /** 長さ d の点と向き */
       const at = (d: number) => {
-        let i = 1;
-        while (i < pts.length - 1 && pts[i].d < d) i++;
+        // d 以上の長さの最初の点 (1 〜 末尾)。長さは点の順に減らないので、二分して探す
+        // (頭から探すと、字の数 × 点の数の手間になる: 2 万の曲線の path に 2 万字で 96 億回)
+        let lo = 1;
+        let hi = pts.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (pts[mid].d < d) lo = mid + 1;
+          else hi = mid;
+        }
+        const i = lo;
         const a = pts[i - 1];
         const b = pts[i];
         const t = b.d > a.d ? (d - a.d) / (b.d - a.d) : 0;
@@ -1606,6 +1883,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         while (chars.length && chars[0].ch === ' ') chars.shift();
         while (chars.length && chars[chars.length - 1].ch === ' ') chars.pop();
       }
+      if (textAgain) charge(chars.length);
       const glyphs = chars.map((c) => {
         const ol = outline(c.ch, c.st.fontFamily, c.st.fontWeight, c.st.fontSize);
         if (!ol) throw new Unsupported('text outline');
@@ -1647,6 +1925,16 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     };
 
     const textShapes = (n: XmlNode, s: Style, mm: M, o: number, cl: SvgClip[]) => {
+      const saved = textAgain;
+      textAgain = textSeen.has(n);
+      textSeen.add(n);
+      try {
+        textShapes0(n, s, mm, o, cl);
+      } finally {
+        textAgain = saved;
+      }
+    };
+    const textShapes0 = (n: XmlNode, s: Style, mm: M, o: number, cl: SvgClip[]) => {
       const outline = opts.outline;
       if (!outline) throw new Unsupported('text');
       // 並びの最初の長さ (em・ex はその要素の字の大きさに対して。Visio の dy="1.2em" など)
@@ -1816,6 +2104,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         px += r.dx;
         py += r.dy;
         if (!r.text) continue;
+        if (textAgain) charge(r.text.length);
         const ol = outline(r.text, r.st.fontFamily, r.st.fontWeight, r.st.fontSize);
         if (!ol) throw new Unsupported('text outline');
         chunk.push({ run: r, segs: ol.segs, at: px, y: py, adv: ol.advance, ...(ol.chars ? { chars: ol.chars } : {}) });

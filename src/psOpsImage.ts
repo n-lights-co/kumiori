@@ -28,7 +28,8 @@ export function installImageOperators(I: Interp, G: Graphics) {
     const ncomp = I.popInt();
     const multi = I.popBool();
     const srcs: PSObj[] = [];
-    for (let k = 0; k < (multi ? ncomp : 1); k++) srcs.unshift(I.pop());
+    for (let k = 0; k < (multi ? ncomp : 1); k++) srcs.push(I.pop());
+    srcs.reverse();
     const m = popMatrix(I);
     const bpc = I.popInt();
     const h = I.popInt();
@@ -182,7 +183,7 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   // JPEG をそのまま使えるのは、DCTDecode のファイルから 1 つの元で読む、Decode が既定の DeviceGray・DeviceRGB の画像
   const jp = readers[0].jpeg;
   if (jp && !s.multi && !s.mask && !s.explicitMask && !s.maskColor && bpc === 8 && (s.cs.family === 'DeviceGray' || s.cs.family === 'DeviceRGB') && isDefaultDecode(s.decode)) {
-    G.items.push({ k: 'image', width: w, height: h, jpeg: jp(), mat, interpolate: s.interpolate, clip: G.g.clip });
+    G.emit({ k: 'image', width: w, height: h, jpeg: jp(), mat, interpolate: s.interpolate, clip: G.g.clip });
     return;
   }
   if (jp) I.warn('JPEG の画像 (CMYK など)');
@@ -320,7 +321,7 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
       rgba[o + 3] = alpha;
     }
   }
-  G.items.push({ k: 'image', width: w, height: h, rgba, mat, interpolate: s.interpolate, clip: G.g.clip });
+  G.emit({ k: 'image', width: w, height: h, rgba, mat, interpolate: s.interpolate, clip: G.g.clip });
 }
 
 function isDefaultDecode(d: number[]): boolean {

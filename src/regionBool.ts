@@ -18,7 +18,7 @@ const TOL = 2.5e-4;
 
 /** パスの d (M・L・H・V・C・A・Z。絶対座標だけ) を輪にする。m があれば点を写す */
 export function flattenPath(d: string, m?: Mat): Rings {
-  const tk = d.match(/[MLHVCAZmlhvcaz]|-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) ?? [];
+  const tk = d.match(/[MLHVCAZmlhvcaz]|-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?/g) ?? [];
   const rings: Rings = [];
   let cur: Pt[] = [];
   let x = 0;

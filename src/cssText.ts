@@ -60,6 +60,37 @@ export function splitTop(s: string, sep: string, opts: SplitTopOptions = {}): st
 }
 
 /**
+ * 値の末尾の !important を除き、前後の空白を除く。between が真なら「!」と「important」の間の空白も認める (CSS Syntax 3 §5.4.4 の読み方)。
+ * value.replace(/\s*!\s*important\s*$/i, '').trim() と同じ結果。その正規表現は、空白の並びのどの位置からも照合を始めるので、
+ * 空白の長い並びを含む値 (color: red + 空白 10 万個 + x) で、並びの長さの 2 乗の時間がかかった。末尾の空白を先に除いてから、「!」の位置だけで調べる
+ */
+export function stripImportant(value: string, between = true): string {
+  const t = value.trimEnd();
+  const m = (between ? /!\s*important$/i : /!important$/i).exec(t);
+  return (m ? t.slice(0, m.index) : t).trim();
+}
+
+/**
+ * 値の中の url(…) を、f の返す字に置き換える。f の引数は url() の中身 (引用符を外し、前後の空白を除いたもの)。
+ * value.replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)/g, …) と同じ結果。その正規表現は、後ろに「)」の無い「url(」が並ぶ値
+ * (url( を 5 万個。600KB) で、「url(」ごとに末尾まで探すので、長さの 2 乗の時間がかかった。「)」は最後のものより後ろには無いので、
+ * そこまでだけを調べる (後ろの「url(」は、元の正規表現でも合わない)。引用符の無い中身は、最初の「)」までを取ってから空白を除く
+ */
+export function replaceUrls(value: string, f: (url: string, whole: string) => string, ignoreCase = false): string {
+  const last = value.lastIndexOf(')');
+  if (last < 0) return value;
+  const re = ignoreCase ? /url\(\s*(?:"([^"]*)"\s*\)|'([^']*)'\s*\)|([^)]*)\))/gi : /url\(\s*(?:"([^"]*)"\s*\)|'([^']*)'\s*\)|([^)]*)\))/g;
+  return value.slice(0, last + 1).replace(re, (m, a?: string, b?: string, c?: string) => f((a ?? b ?? c ?? '').trim(), m)) + value.slice(last + 1);
+}
+
+/** 値の中の url(…) の中身 (引用符を外し、前後の空白を除いたもの) を、現れた順に並べる (replaceUrls と同じ読み方。url は大文字でもよい) */
+export function urlsIn(value: string): string[] {
+  const out: string[] = [];
+  replaceUrls(value, (u) => (out.push(u), ''), true);
+  return out;
+}
+
+/**
  * 値を、括弧・文字列の外の空白で語に分ける (url(a b)・入れ子の括弧 calc(1mm + (2mm * 2)) の中では分けない。括弧の深さを数える)。
  * 空の値は、空の語 1 つを返す
  */
@@ -122,7 +153,7 @@ export function parseColor(v: string, current?: RGBA): RGBA | 'current' | undefi
   const parts = m[2].split(/[\s,/]+/).filter(Boolean);
   if (parts.length < 3 || parts.length > 4) return undefined;
   // 成分は数か百分率 (Color 4 §5.1・§7)。数として読めない成分 (rgb(1, 2, 3, foo) など) があれば、色として読めない
-  const NUM = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%?$/;
+  const NUM = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?%?$/;
   if (!parts.slice(1).every((p) => NUM.test(p))) return undefined;
   // alpha は、範囲 [0, 1] の外でも不正ではなく、範囲に丸める (Color 4 §4.2)
   const alpha = Math.min(1, Math.max(0, parts[3] === undefined ? 1 : parts[3].endsWith('%') ? parseFloat(parts[3]) / 100 : parseFloat(parts[3])));

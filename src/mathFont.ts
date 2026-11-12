@@ -132,11 +132,15 @@ export function readMathFont(fk: FkFont): MathFont | undefined {
       for (let k = 0; k < n; k++) m.set(u16(o + 4 + k * 2), k);
     } else if (fmt === 2) {
       const n = u16(o + 2);
-      for (let k = 0; k < n; k++) {
+      // 範囲 (RangeRecord) は字形の番号の順で重ならない (OpenType の「Coverage table」format 2) ので、広げる字形は合わせて 65536 まで。
+      // 重なる範囲を並べた表 (65535 の範囲 × 65536 字形) で、上限なしに回らないよう、その数で止める
+      let left = 0x10000;
+      for (let k = 0; k < n && left > 0; k++) {
         const r = o + 4 + k * 6;
         const s = u16(r);
-        const e = u16(r + 2);
+        const e = Math.min(u16(r + 2), s + left - 1);
         const idx = u16(r + 4);
+        left -= Math.max(0, e - s + 1);
         for (let g = s; g <= e; g++) m.set(g, idx + g - s);
       }
     }

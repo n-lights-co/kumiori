@@ -15,6 +15,7 @@
 import { apply, applyVector, invert, mul, transformSegs, type Matrix, type Seg } from './matrix';
 import { type Interp, type PSDict, type PSObj, PSError, arrItems, isProc, strBytes } from './psInterp';
 import type { Clip, DisplayItem, Graphics, RGB } from './psGraphics';
+import { drawWeight } from './psGraphics';
 import type { ColorSpace } from './psColorSpace';
 import { PS_TOTAL_IMAGE_PIXELS } from './imageLimits';
 
@@ -359,7 +360,20 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
         put(i, j, sc.rgb([dom[0] + s * (dom[1] - dom[0])]));
       }
   } else if (type >= 4 && type <= 7) {
-    const tris = meshTriangles(sh, type, sc.fn ? 1 : sc.cs.ncomp, !!sc.fn);
+    // 三角形の並びは、画素にする間だけ持つ。作る手間とメモリを数え、メモリは使い終わったら戻す
+    // (面の網かけは 1 面を 288 個の三角形に分けるので、3,125 面で 90 万個を、前は勘定の外で一度に作った)
+    let temp = 0;
+    const tally = (n: number) => {
+      G.I.memAlloc(n * MEM_MESH_TRIANGLE);
+      temp += n * MEM_MESH_TRIANGLE;
+      G.I.charge(n / 4);
+    };
+    let tris: Tri[] | undefined;
+    try {
+      tris = meshTriangles(sh, type, sc.fn ? 1 : sc.cs.ncomp, !!sc.fn, tally);
+    } finally {
+      G.I.memUsed -= temp;
+    }
     if (!tris) {
       G.I.warn(`ShadingType ${type} のデータ`);
       return undefined;
@@ -395,12 +409,14 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
 }
 
 type Tri = { p: [number, number][]; c: number[][] };
+/** 網の三角形 1 つが、画素にする間に使う量 (点と色の配列を含む。面を分けた三角形は、隣と点を共有しない) */
+const MEM_MESH_TRIANGLE = 300;
 
 /**
  * 網の網かけ (4 三角形・5 格子・6 Coons の面・7 テンソル積の面) の三角形 (網かけの空間の点と、色の成分)。
  * DataSource は数の配列か、ビットに詰めた文字列・ファイル (BitsPerCoordinate・BitsPerComponent・BitsPerFlag・Decode。頂点・面ごとにバイトの境目へ)
  */
-function meshTriangles(sh: PSDict, type: number, nc: number, fnT = false): Tri[] | undefined {
+function meshTriangles(sh: PSDict, type: number, nc: number, fnT = false, tally: (n: number) => void = () => {}): Tri[] | undefined {
   const ds = sh.get('DataSource');
   let next: (kind: 'flag' | 'x' | 'y' | number) => number | undefined;
   let align = () => {};
@@ -470,6 +486,7 @@ function meshTriangles(sh: PSDict, type: number, nc: number, fnT = false): Tri[]
         [a, b, c] = [v.v, v2.v, v3.v];
       } else if (v.f === 1) [a, b, c] = [b, c, v.v];
       else [a, b, c] = [a, c, v.v];
+      if ((tris.length & 1023) === 0) tally(1024);
       tris.push({ p: [a.p, b.p, c.p], c: [a.c, b.c, c.c] });
     }
   } else if (type === 5) {
@@ -487,6 +504,7 @@ function meshTriangles(sh: PSDict, type: number, nc: number, fnT = false): Tri[]
         row.push({ p, c: col });
       }
       if (row.length < per) break;
+      tally(2 * per);
       if (prev)
         for (let k = 0; k + 1 < per; k++) {
           tris.push({ p: [prev[k].p, prev[k + 1].p, row[k].p], c: [prev[k].c, prev[k + 1].c, row[k].c] });
@@ -531,6 +549,7 @@ function meshTriangles(sh: PSDict, type: number, nc: number, fnT = false): Tri[]
       align();
       if (!ok) break;
       prev = { P, C };
+      tally(288);
       tris.push(...patchTriangles(P, C, type === 7));
     }
   }
@@ -593,7 +612,7 @@ export function shfill(G: Graphics, o: PSObj) {
   const clip = G.clipPathSegs();
   const box = intersect(segsBox(clip), G.opts.bbox);
   const it = rasterShading(G, sh, G.g.ctm, box, false);
-  if (it) G.items.push(it);
+  if (it) G.emit(it);
 }
 
 /** 模様の辞書の、模様の空間 → 機器の座標の行列 (makepattern の時の CTM を掛けたもの) */
@@ -604,6 +623,12 @@ function patternMatrix(p: PSDict): Matrix | undefined {
 }
 
 const tileCache = new WeakMap<PSDict, { items: DisplayItem[]; bboxClip: Clip; inside: boolean }>();
+
+/** いまの模様で塗れるか (模様の辞書と、makepattern が作った行列がある)。塗れないなら、patternFill は警告を出すだけ */
+export function patternUsable(G: Graphics): boolean {
+  const p = dictOf(G.g.pattern);
+  return !!p && !!patternMatrix(p);
+}
 
 /** Pattern の色空間で塗る (fill・eofill)。PatternType 2 は網かけ、1 は PaintProc の絵を並べる */
 export function patternFill(G: Graphics, segs: Seg[], evenOdd: boolean) {
@@ -625,7 +650,7 @@ export function patternFill(G: Graphics, segs: Seg[], evenOdd: boolean) {
     G.g.clip = fillClip;
     try {
       const it = rasterShading(G, sh, pm, region, true);
-      if (it) G.items.push(it);
+      if (it) G.emit(it);
     } finally {
       G.g.clip = saved;
     }
@@ -716,9 +741,23 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
     I.warn('模様の写しが多すぎるので、途中まで描きます');
   }
   let budget = 100000;
+  // 写し 1 つの描画の並びの手間 (要素・写しごとのクリップ・写したクリップ)。残りの手間で描ける写しまでで止め、警告にする。
+  // 上限の 1 割は模様の後の絵のために残す (止めずに上限まで使うと、模様の後の絵が limitcheck で描けない)
+  const tileClips = new Set<Clip>();
+  for (const it of tile.items) for (let c = it.clip; c && c !== tile.bboxClip; c = c.parent) tileClips.add(c);
+  const perCopy = tile.items.reduce((t, it) => t + drawWeight(it), 0) + (tile.inside ? 0 : 1) + tileClips.size;
+  let warned = count * tile.items.length > 100000;
   for (let j = ja; j <= jb && budget > 0; j++)
     for (let i = ia; i <= ib && budget > 0; i++) {
+      if (G.drawCostLeft() - G.maxDrawCost / 10 < perCopy) {
+        if (!warned) I.warn('模様の写しが多すぎるので、途中まで描きます');
+        warned = true;
+        budget = 0;
+        break;
+      }
       const [dx, dy] = applyVector(pm, i * Math.abs(xs), j * Math.abs(ys));
+      // 写しごとのクリップも、描画の並びの手間に数える (SVG では 1 つずつ clipPath になる)
+      if (!tile.inside) G.countDraw(1);
       const tileClip: Clip = tile.inside ? fillClip : { segs: tile.bboxClip.segs.map((s) => moveSeg(s, dx, dy)), evenOdd: false, parent: fillClip };
       const memo = new Map<Clip, Clip>();
       const clipOf = (c: Clip | undefined): Clip => {
@@ -727,6 +766,7 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
         if (!m) {
           G.countPoints(c.segs.length);
           G.countItem(c.segs.length);
+          G.countDraw(1);
           m = { segs: c.segs.map((s) => moveSeg(s, dx, dy)), evenOdd: c.evenOdd, parent: clipOf(c.parent) };
           memo.set(c, m);
         }
@@ -738,7 +778,13 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
         const n = it.k === 'fill' || it.k === 'stroke' ? it.segs.length : 0;
         G.countPoints(n);
         G.countItem(n);
-        G.items.push(moveItem(it, dx, dy, clipOf(it.clip), color));
+        if (it.k === 'image') {
+          // 画像の写しは画素を共有するが、PDF に描くまでには写しごとに画素を読むので、画像の画素の合計の上限に数える
+          // (前は、模様の絵の 1 枚ぶんしか数えず、2,500 万画素の画像を 1 万枚並べる 297 バイトの EPS が 200 秒を超えた)
+          G.imagePixels = (G.imagePixels ?? 0) + it.width * it.height;
+          if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
+        }
+        G.emit(moveItem(it, dx, dy, clipOf(it.clip), color));
       }
     }
   I.charge(count);
@@ -774,9 +820,51 @@ export function patternToDevice(G: Graphics, m: Matrix): Matrix {
  * つなぎ目は丸 (join 1)・面取り (2)・とがり (0。とがりの長さの比が miter の上限を超えれば面取り)、
  * 端は突き出し (cap 2: 太さの半分だけ延ばす)・丸 (1)・切り落とし (0)。破線は先に切り分ける。曲線は細かい線分にする
  */
-export function strokeOutline(segs: Seg[], ctm: Matrix, w: number, cap: number, join: number, dash: { array: number[]; offset: number }, miter = 10): Seg[] {
+export function strokeOutline(segs: Seg[], ctm: Matrix, w: number, cap: number, join: number, dash: { array: number[]; offset: number }, miter = 10, tally?: OutlineTally): Seg[] {
+  // 作る間だけ持つ点の数 (勘定に積んだ分。作り終えたら戻す)
+  const st = { temp: 0 };
+  try {
+    return outlineOf(segs, ctm, w, cap, join, dash, miter, tally, st);
+  } finally {
+    tally?.release(st.temp);
+  }
+}
+
+/**
+ * 線の輪郭を作る間の勘定 (Graphics.stroke が渡す)。どれも、上限を超えれば例外を投げて、輪郭を作るのをやめる。
+ * 輪郭は元のパスの何十倍もの点になる (丸いつなぎ目は 1 つで 25 点、曲線は 16 分割して、線分ごとに長方形の 5 点) ので、
+ * 作り切ってから数えるのでは遅い
+ */
+export interface OutlineTally {
+  /** 輪郭の点を n 個作った */
+  points(n: number): void;
+  /** 作る間だけ持つ点 (パスの写し・曲線を分けた線分・破線のかけら) を n 個作った */
+  temp(n: number): void;
+  /** temp で数えた分を戻す */
+  release(n: number): void;
+}
+
+function outlineOf(segs: Seg[], ctm: Matrix, w: number, cap: number, join: number, dash: { array: number[]; offset: number }, miter: number, tally: OutlineTally | undefined, st: { temp: number }): Seg[] {
   const inv = invert(ctm);
   if (!inv || !(w > 0)) return [];
+  // 4096 点ごとにまとめて数える
+  let pend = 0;
+  const flushTemp = () => {
+    if (tally && pend) {
+      // 勘定に積めた分だけを、後で戻す分に足す (memAlloc が VMerror を投げたときは、積んでいない)
+      tally.temp(pend);
+      st.temp += pend;
+    }
+    pend = 0;
+  };
+  const temp = (n: number) => {
+    pend += n;
+    if (pend >= 4096) flushTemp();
+  };
+  if (tally) {
+    tally.temp(segs.length);
+    st.temp += segs.length;
+  }
   const user = transformSegs(segs, inv);
   // 線分の並び (部分パスごと。閉じた部分パスは最初の点に戻る)
   const subs: Array<{ pts: Array<[number, number]>; closed: boolean }> = [];
@@ -791,8 +879,11 @@ export function strokeOutline(segs: Seg[], ctm: Matrix, w: number, cap: number, 
       flush(false);
       cur = [[s.x, s.y]];
       start = [s.x, s.y];
-    } else if (s.op === 'L') cur.push([s.x, s.y]);
-    else if (s.op === 'C') {
+    } else if (s.op === 'L') {
+      temp(1);
+      cur.push([s.x, s.y]);
+    } else if (s.op === 'C') {
+      temp(16);
       const p0 = cur[cur.length - 1] ?? [s.x1, s.y1];
       for (let k = 1; k <= 16; k++) {
         const t = k / 16;
@@ -838,7 +929,10 @@ export function strokeOutline(segs: Seg[], ctm: Matrix, w: number, cap: number, 
         const t = step / len;
         const nx = x0 + (x1 - x0) * t;
         const ny = y0 + (y1 - y0) * t;
-        if (on) piece.push([nx, ny]);
+        if (on) {
+          temp(1);
+          piece.push([nx, ny]);
+        }
         len -= step;
         left -= step;
         [x0, y0] = [nx, ny];
@@ -854,11 +948,20 @@ export function strokeOutline(segs: Seg[], ctm: Matrix, w: number, cap: number, 
     }
     if (on && piece.length >= 2) pieces.push({ pts: piece, closed: false });
   }
+  flushTemp();
   const h = w / 2;
   const out: Seg[] = [];
+  let counted = 0;
+  // 機器の座標に直しながら足す (transformSegs と同じ式。全部を作ってから写すと、輪郭を 2 重に持つ)
+  const X = (x: number, y: number) => ctm[0] * x + ctm[2] * y + ctm[4];
+  const Y = (x: number, y: number) => ctm[1] * x + ctm[3] * y + ctm[5];
   /** 反時計回りの多角形を足す */
   const poly = (ps: Array<[number, number]>) => {
     if (ps.length < 3) return;
+    if (tally && out.length - counted >= 4096) {
+      tally.points(out.length - counted);
+      counted = out.length;
+    }
     let area = 0;
     for (let k = 0; k < ps.length; k++) {
       const [ax, ay] = ps[k];
@@ -866,7 +969,7 @@ export function strokeOutline(segs: Seg[], ctm: Matrix, w: number, cap: number, 
       area += ax * by - bx * ay;
     }
     const pts = area < 0 ? ps.slice().reverse() : ps;
-    pts.forEach(([x, y], k) => out.push({ op: k ? 'L' : 'M', x, y }));
+    pts.forEach(([x, y], k) => out.push({ op: k ? 'L' : 'M', x: X(x, y), y: Y(x, y) }));
     out.push({ op: 'Z' });
   };
   const circle = (c: [number, number]) => poly(Array.from({ length: 24 }, (_, k): [number, number] => [c[0] + h * Math.cos((k * Math.PI) / 12), c[1] + h * Math.sin((k * Math.PI) / 12)]));
@@ -934,6 +1037,7 @@ export function strokeOutline(segs: Seg[], ctm: Matrix, w: number, cap: number, 
       circle(pts[pts.length - 1]);
     }
   }
-  return transformSegs(out, ctm);
+  if (tally) tally.points(out.length - counted);
+  return out;
 }
 

@@ -11,7 +11,7 @@
  * Bitmap16 の模様のブラシ、装置の画素の大きさが決まらないときの模様のブラシ、EMF+ (GDI コメントの記録)。
  */
 import { decodeBmp, encodePngStored, expandRle, type Pixels } from './pixels';
-import { MAX_PIXELS, metafilePixelBudget } from './imageLimits';
+import { MAX_PIXELS, METAFILE_CLIP_PATH_WORK, METAFILE_REGION_WORK, metafilePixelBudget, metafileSvgBudget } from './imageLimits';
 import { apply as applyXf, isIdentity, mul, type Matrix } from './matrix';
 import { base64 } from './base64';
 import { flattenPath, polyBool, ringsPath, type Rings } from './regionBool';
@@ -96,60 +96,104 @@ const normRect = (l: number, t: number, r: number, b: number): Rect => [Math.min
 /**
  * 領域 (重ならない矩形の集まり) の演算。undefined は全面。op は RegionMode ([MS-EMF] 2.1.29): 1 AND・2 OR・3 XOR・4 DIFF・5 COPY
  */
-function regionOp(a: Rect[] | undefined, b: Rect[] | undefined, op: number): Rect[] | undefined {
+function regionOp(a: Rect[] | undefined, b: Rect[] | undefined, op: number, work: { left: number } = { left: Infinity }): Rect[] | undefined {
   if (op === 5) return b;
   const whole: Rect[] = [[-HUGE, -HUGE, HUGE, HUGE]];
   const A = a ?? whole;
   const B = b ?? whole;
-  const xs = [...new Set([...A, ...B].flatMap((r) => [r[0], r[2]]))].sort((p, q) => p - q);
-  const ys = [...new Set([...A, ...B].flatMap((r) => [r[1], r[3]]))].sort((p, q) => p - q);
-  if (xs.length * ys.length > 4e6 || A.length + B.length > 50_000) return a;
-  // 格子の 1 マスごとに矩形を線形に探さず (格子 × 矩形数)、行 (y の帯) ごとに、その帯にかかる矩形の x の範囲に印を付ける
-  // (矩形の辺はすべて xs にあるので、辺の番号の範囲をそのまま塗れる)。手間は 行数 × 矩形数 + マス数
-  const xi = new Map<number, number>();
-  xs.forEach((v, i) => xi.set(v, i));
-  const cells = xs.length - 1;
-  const inA = new Uint8Array(Math.max(cells, 0));
-  const inB = new Uint8Array(Math.max(cells, 0));
-  const mark = (rs: Rect[], flags: Uint8Array, cy: number) => {
-    flags.fill(0);
+  if (A.length + B.length > 50_000 || work.left < 0) return a;
+  // 走査線で解く: 矩形を上の辺の順に並べ、横の帯 (矩形の上下の辺の y で区切る) ごとに、その帯にかかる矩形だけを持って (act)、
+  // x の区間の並びにして演算する。前は、帯ごとに全部の矩形を調べ、格子の全部のマスを見ていた (帯の数 × (矩形の数 + 列の数))。
+  // 走査線 3,000 本の Region を切り抜きにして、全体を覆う META_INTERSECTCLIPRECT (14 バイト) を 1,000 回並べた 50KB の WMF で、120 秒を超えた。
+  // 手間は「帯ごとの、かかる矩形の数 + 1」の合計 (work から引く。文書の合計が上限 METAFILE_REGION_WORK を超えたら、演算をやめて a のまま)
+  const prep = (rs: Rect[]) => rs.filter((r) => r[0] < r[2] && r[1] < r[3]).sort((p, q) => p[1] - q[1]);
+  const SA = prep(A);
+  const SB = prep(B);
+  const yv = new Float64Array((SA.length + SB.length) * 2);
+  let yn = 0;
+  for (const rs of [SA, SB])
     for (const r of rs) {
-      if (!(r[1] <= cy && cy < r[3])) continue;
-      const i1 = xi.get(r[2])!;
-      for (let i = xi.get(r[0])!; i < i1; i++) flags[i] = 1;
+      yv[yn++] = r[1];
+      yv[yn++] = r[3];
     }
+  yv.sort();
+  /** 帯にかかる矩形 → 重ならず接しない x の区間の並び (左, 右, 左, 右, …) */
+  const spans = (act: Rect[]): number[] => {
+    const s = act.length > 1 ? [...act].sort((p, q) => p[0] - q[0]) : act;
+    const iv: number[] = [];
+    for (const r of s) {
+      if (iv.length && r[0] <= iv[iv.length - 1]) {
+        if (r[2] > iv[iv.length - 1]) iv[iv.length - 1] = r[2];
+      } else iv.push(r[0], r[2]);
+    }
+    return iv;
   };
   const out: Rect[] = [];
   let prev = new Map<string, Rect>();
-  for (let j = 0; j + 1 < ys.length; j++) {
-    const cy = (ys[j] + ys[j + 1]) / 2;
-    mark(A, inA, cy);
-    mark(B, inB, cy);
-    const row: Rect[] = [];
-    for (let i = 0; i < cells; i++) {
-      const p = inA[i] === 1;
-      const q = inB[i] === 1;
-      const v = op === 1 ? p && q : op === 2 ? p || q : op === 3 ? p !== q : p && !q;
-      if (!v) continue;
-      const last = row[row.length - 1];
-      if (last && last[2] === xs[i]) last[2] = xs[i + 1];
-      else row.push([xs[i], ys[j], xs[i + 1], ys[j + 1]]);
+  let actA: Rect[] = [];
+  let actB: Rect[] = [];
+  let ivA: number[] = [];
+  let ivB: number[] = [];
+  let ia = 0;
+  let ib = 0;
+  for (let j = 0; j + 1 < yn; j++) {
+    const y0 = yv[j];
+    const y1 = yv[j + 1];
+    if (!(y0 < y1)) continue;
+    let changed = false;
+    if (actA.some((r) => r[3] <= y0)) {
+      actA = actA.filter((r) => r[3] > y0);
+      changed = true;
     }
-    // 上の行と左右が同じ矩形はつなげる
+    for (; ia < SA.length && SA[ia][1] <= y0; ia++, changed = true) actA.push(SA[ia]);
+    if (changed) ivA = spans(actA);
+    changed = false;
+    if (actB.some((r) => r[3] <= y0)) {
+      actB = actB.filter((r) => r[3] > y0);
+      changed = true;
+    }
+    for (; ib < SB.length && SB[ib][1] <= y0; ib++, changed = true) actB.push(SB[ib]);
+    if (changed) ivB = spans(actB);
+    work.left -= actA.length + actB.length + 1;
+    if (work.left < 0) return a;
+    // 2 つの区間の並びを左からたどり、演算の結果が真の所を、続くかぎり 1 つの矩形にする
     const next = new Map<string, Rect>();
-    for (const r of row) {
-      const key = `${r[0]},${r[2]}`;
-      const up = prev.get(key);
-      if (up && up[3] === r[1]) {
-        up[3] = r[3];
-        next.set(key, up);
-      } else {
-        out.push(r);
-        next.set(key, r);
+    let i = 0;
+    let k = 0;
+    let open = false;
+    let start = 0;
+    while (i < ivA.length || k < ivB.length) {
+      const px = i < ivA.length ? ivA[i] : Infinity;
+      const qx = k < ivB.length ? ivB[k] : Infinity;
+      const x = Math.min(px, qx);
+      if (i < ivA.length && px === x) i++;
+      if (k < ivB.length && qx === x) k++;
+      const p = (i & 1) === 1;
+      const q = (k & 1) === 1;
+      const v = op === 1 ? p && q : op === 2 ? p || q : op === 3 ? p !== q : p && !q;
+      if (v && !open) {
+        open = true;
+        start = x;
+      } else if (!v && open) {
+        open = false;
+        if (!(x > start)) continue;
+        // 上の行と左右が同じ矩形はつなげる
+        const key = `${start},${x}`;
+        const up = prev.get(key);
+        if (up && up[3] === y0) {
+          up[3] = y1;
+          next.set(key, up);
+        } else {
+          const r: Rect = [start, y0, x, y1];
+          out.push(r);
+          next.set(key, r);
+        }
       }
     }
     prev = next;
   }
+  // 結果が元の領域と同じ中身なら、元の配列をそのまま返す (切り抜きの鍵・写した矩形の控えを、配列ごとに 1 度だけ作るため。SvgOut.keyOf)
+  if (a && out.length === a.length && out.every((r, n) => r[0] === a[n][0] && r[1] === a[n][1] && r[2] === a[n][2] && r[3] === a[n][3])) return a;
   return out;
 }
 const rectsPath = (rs: Rect[]) => rs.map((r) => `M${fmt(r[0])} ${fmt(r[1])}H${fmt(r[2])}V${fmt(r[3])}H${fmt(r[0])}Z`).join('');
@@ -240,10 +284,50 @@ class SvgOut {
     this.pixelsLeft -= n;
     return true;
   }
-  /** fileBytes: メタファイルの大きさ (バイト)。画素にできる数を決める */
+  /**
+   * 出力の SVG の長さの勘定 (imageLimits.ts の metafileSvgBudget。画像の data: の中身は数えない)。上限を超えたら、そこで描くのをやめる
+   * (overflow。その後の記録は、状態だけを追い、何も出さない)。小さな記録 (領域の塗り・切り抜きの切り替え・色の変わる三角形) が
+   * 大きな SVG を何度も書かせる入力で、SVG がファイルの 2 乗や数百倍に膨らむのを止める
+   */
+  private chars = 0;
+  private readonly charBudget: number;
+  overflow = false;
+  /** n 字を出してよいか (よければ勘定に足す)。上限を超えるなら、警告を出して、その後は何も出さない */
+  private room(n: number): boolean {
+    if (this.overflow) return false;
+    if (this.chars + n > this.charBudget) {
+      this.overflow = true;
+      this.warnings.add(`メタファイルを SVG にした長さが上限 (${this.fileBytes} バイトのファイルでは ${this.charBudget} 字) を超えるので、途中までを描きます`);
+      return false;
+    }
+    this.chars += n;
+    return true;
+  }
+  /**
+   * 色を変えながら塗る三角形 (EMR_GRADIENTFILL) を分けた小さな三角形に使える、残りの字数 (SVG の長さの上限の半分まで)。
+   * 三角形 1 つ (12 バイト) を 64 個に分けると約 7,000 字になるので、三角形の多いファイルは、分け方を粗くして、この中に収める (gradientSteps)
+   */
+  private gradChars: number;
+  /** 小さな三角形 1 つの path の字数の見積もり */
+  private static readonly GRAD_PATH_CHARS = 110;
+  /** nTri 個の三角形を、各辺いくつに分けるか (8・4・2・1 のうち、残りの字数に収まる最も細かいもの) */
+  gradientSteps(nTri: number): number {
+    let n = 8;
+    while (n > 1 && nTri * n * n * SvgOut.GRAD_PATH_CHARS > this.gradChars) n >>= 1;
+    if (n < 8) this.warnings.add('色を変えながら塗る三角形 (EMR_GRADIENTFILL) が多いので、色の変わり方を粗くして描きます');
+    this.gradChars -= nTri * n * n * SvgOut.GRAD_PATH_CHARS;
+    return n;
+  }
+  /** 切り抜きの領域の演算に使える残りの手間 (imageLimits.ts の METAFILE_REGION_WORK。regionOp が引く) */
+  private regionWork = { left: METAFILE_REGION_WORK };
+  /** 切り抜きのパスの演算 (OR・XOR の多角形の演算) に使える残りの手間 (点の数。imageLimits.ts の METAFILE_CLIP_PATH_WORK) */
+  private clipPathWork = METAFILE_CLIP_PATH_WORK;
+  /** fileBytes: メタファイルの大きさ (バイト)。画素にできる数と、SVG の長さの上限を決める */
   constructor(private readonly fileBytes: number) {
     this.pixelBudget = metafilePixelBudget(fileBytes);
     this.pixelsLeft = this.pixelBudget;
+    this.charBudget = metafileSvgBudget(fileBytes);
+    this.gradChars = this.charBudget / 2;
     this.dc = {
       pen: BLACK_PEN,
       brush: WHITE_BRUSH,
@@ -324,8 +408,12 @@ class SvgOut {
       if (!sz) continue;
       const [tx, ty] = sz;
       const { width: W, height: H, rgba } = pt.px;
+      // 模様の定義も SVG の長さの勘定に入れる (色の変わり目ごとに矩形を 1 つ書くので、細かい模様は 1 画素が約 35 字になる。ブラシの原点を
+      // 変えるたびに別の定義になるので、小さな記録で、大きな定義をいくつも書かせられる)。上限を超える定義は書かない (その模様の塗りは描かれない)
+      if (this.overflow) break;
+      let len = 0;
       const byColor = new Map<string, string>();
-      for (let y = 0; y < H; y++)
+      for (let y = 0; y < H && this.chars + len <= this.charBudget; y++)
         for (let x = 0; x < W; ) {
           const o = (y * W + x) * 4;
           const c = `#${[rgba[o], rgba[o + 1], rgba[o + 2]].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
@@ -335,9 +423,12 @@ class SvgOut {
             x = e;
             continue;
           }
-          byColor.set(c, (byColor.get(c) ?? '') + `M${fmt(x * tx)} ${fmt(y * ty)}H${fmt(e * tx)}V${fmt((y + 1) * ty)}H${fmt(x * tx)}Z`);
+          const d = `M${fmt(x * tx)} ${fmt(y * ty)}H${fmt(e * tx)}V${fmt((y + 1) * ty)}H${fmt(x * tx)}Z`;
+          len += d.length;
+          byColor.set(c, (byColor.get(c) ?? '') + d);
           x = e;
         }
+      if (!this.room(len + 200)) break;
       // 要素の座標は論理座標 (世界変換の組の中) なので、patternTransform で世界変換を戻す
       let tr = '';
       if (pt.xf) {
@@ -510,20 +601,31 @@ class SvgOut {
     if (k === undefined) this.keys.set(o, (k = JSON.stringify(o)));
     return k;
   }
+  /**
+   * 切り抜きの鍵。矩形の並び (rects) と層の並び (paths) を、配列ごとに 1 度だけ文字列にする: 切り抜きを変える記録の多くは、片方の配列を
+   * そのまま引き継ぐ (領域の演算の結果が前と同じなら、同じ配列が返る。regionOp)。切り抜きごとに全体を文字列にすると、矩形の多い切り抜きの下で
+   * 結果の変わらない切り抜きの記録と描く記録を交互に並べたとき、記録ごとに全部の矩形を文字列にする
+   */
+  private clipKeyOf(c: Clip | undefined): string {
+    if (!c) return '';
+    let k = this.keys.get(c);
+    if (k === undefined) this.keys.set(c, (k = `${c.rects ? this.keyOf(c.rects) : 'u'}|${this.keyOf(c.paths)}`));
+    return k;
+  }
   private openDepth = 0;
   private layerSeq = 0;
   /** 要素を出す。切り抜きか世界変換が前の要素と違えば、組 (g) を閉じて開き直す */
-  emit(el: string) {
+  /** uncounted: el のうち、SVG の長さの勘定に入れない字数 (画像の data: の中身。画素の合計の上限で縛ってある) */
+  emit(el: string, uncounted = 0) {
     if (this.pending) this.flushPending();
+    if (this.overflow) return;
     const c = this.dc.clip;
     if (c?.rects && c.rects.length === 0) return; // 空の切り抜き: 何も見えない
     const xf = isIdentity(this.dc.xf) ? undefined : this.dc.xf;
-    const clipKey = this.keyOf(c);
+    const clipKey = this.clipKeyOf(c);
     const xfKey = this.keyOf(xf);
     if (clipKey !== this.openClipKey || xfKey !== this.openXfKey) {
       this.closeGroups();
-      this.openClipKey = clipKey;
-      this.openXfKey = xfKey;
       const layers: string[] = [];
       if (c?.rects) layers.push(`<path d="${rectsPath(c.rects)}"/>`);
       for (const l of c?.paths ?? []) {
@@ -544,16 +646,21 @@ class SvgOut {
         const tr = l.m && !isIdentity(l.m) ? ` transform="matrix(${l.m.map(fmt).join(' ')})"` : '';
         layers.push(`<path d="${d}" clip-rule="${l.evenodd || l.invert ? 'evenodd' : 'nonzero'}"${tr}/>`);
       }
+      const xfOpen = xf ? `<g transform="matrix(${xf.map(fmt).join(' ')})">` : '';
+      // 切り抜きの層は、組を開き直すたびに全部を書く (矩形の多い領域・重ねた層は長い) ので、開く分も勘定に入れてから出す
+      if (!this.room(layers.reduce((n, body) => n + body.length + 70, 0) + xfOpen.length + el.length - uncounted)) return;
+      this.openClipKey = clipKey;
+      this.openXfKey = xfKey;
       for (const body of layers) {
         const id = `kmMfRgn${++this.layerSeq}`;
         this.parts.push(`<clipPath id="${id}">${body}</clipPath><g clip-path="url(#${id})">`);
         this.openDepth++;
       }
       if (xf) {
-        this.parts.push(`<g transform="matrix(${xf.map(fmt).join(' ')})">`);
+        this.parts.push(xfOpen);
         this.openDepth++;
       }
-    }
+    } else if (!this.room(el.length - uncounted)) return;
     this.parts.push(el);
   }
   closeGroups() {
@@ -566,17 +673,24 @@ class SvgOut {
   /** 論理座標の矩形の集まり → 世界変換が軸に沿うならページの座標の矩形、そうでなければパスの層 */
   private shapeOf(rs: Rect[]): { rects: Rect[] } | { layer: ClipLayer } {
     const m = this.dc.xf;
+    // 同じ領域 (同じ配列) を同じ世界変換で写した結果は、控えを返す。WMF の META_SELECTCLIPREGION (8 バイト) は、Region オブジェクトの
+    // 全部の矩形を選ぶたびに写すので、矩形の多い Region を何度も選ぶと、手間が記録の数 × 矩形の数になる。同じ配列を返せば、切り抜きの鍵も作り直さない
+    const hit = this.shapes.get(rs);
+    if (hit && hit.m === m) return hit.shape;
+    let shape: { rects: Rect[] } | { layer: ClipLayer };
     if (!m || (m[1] === 0 && m[2] === 0)) {
-      return {
+      shape = {
         rects: rs.map((r) => {
           const [x0, y0] = m ? applyXf(m, r[0], r[1]) : [r[0], r[1]];
           const [x1, y1] = m ? applyXf(m, r[2], r[3]) : [r[2], r[3]];
           return normRect(x0, y0, x1, y1);
         }),
       };
-    }
-    return { layer: { d: rectsPath(rs), evenodd: false, m } };
+    } else shape = { layer: { d: rectsPath(rs), evenodd: false, m } };
+    this.shapes.set(rs, { m, shape });
+    return shape;
   }
+  private shapes = new WeakMap<Rect[], { m: Xf | undefined; shape: { rects: Rect[] } | { layer: ClipLayer } }>();
   /** 切り抜きに、矩形の集まり (論理座標) か、パスの層を組み合わせる。mode は RegionMode (1 AND・2 OR・3 XOR・4 DIFF・5 COPY) */
   combineClip(shape: { rects: Rect[] } | { layer: ClipLayer } | undefined, mode: number) {
     const cur = this.dc.clip;
@@ -589,7 +703,7 @@ class SvgOut {
     if ('rects' in shape) {
       if (mode === 1 || mode === 4 || !paths.length) {
         this.dc.clip = {
-          rects: regionOp(cur?.rects, shape.rects, mode),
+          rects: this.regionRects(cur?.rects, shape.rects, mode),
           paths,
         };
         return;
@@ -616,10 +730,28 @@ class SvgOut {
         [r[2], r[3]],
         [r[0], r[3]],
       ]);
+    // 手間の上限を超えた後は、パスを点にもしない
+    if (this.clipPathWork < 0) return;
     let acc: Rings = toRings(cur?.rects ?? [[-HUGE, -HUGE, HUGE, HUGE]]);
-    for (const l of paths) acc = polyBool(acc, false, flattenPath(l.d, l.m), l.evenodd, l.invert ? 4 : 1);
+    const layers = paths.map((l) => ({ l, rings: flattenPath(l.d, l.m) }));
     const add: [Rings, boolean] = 'rects' in shape ? [toRings(shape.rects), false] : [flattenPath(shape.layer.d, shape.layer.m), shape.layer.evenodd];
+    // 多角形の演算の手間 (演算に渡す点の数) を、文書の合計で縛る (imageLimits.ts の METAFILE_CLIP_PATH_WORK)。OR・XOR の結果は、それまでの全部の
+    // 形を持つ 1 つの層になるので、小さなパスを切り抜きに OR で足す記録 (EMR_SELECTCLIPPATH。パスを含めて 52 バイト) を並べると、手間がファイルの 2 乗になった
+    // (52KB の EMF で 4 秒、104KB で 18 秒)。超えたら、その後の演算はせず (切り抜きを変えず)、警告を出す
+    const pts = (rs: Rings) => rs.reduce((n, r) => n + r.length, 0);
+    this.clipPathWork -= pts(acc) + pts(add[0]) + layers.reduce((n, x) => n + pts(x.rings), 0) + (layers.length + 1) * pts(acc);
+    if (this.clipPathWork < 0) {
+      this.warnings.add('切り抜きのパスの演算の手間が上限を超えたので、その後の切り抜きの変更は読みません');
+      return;
+    }
+    for (const { l, rings } of layers) acc = polyBool(acc, false, rings, l.evenodd, l.invert ? 4 : 1);
     this.dc.clip = { paths: [{ d: ringsPath(polyBool(acc, false, add[0], add[1], mode), fmt), evenodd: false }] };
+  }
+  /** 領域の演算 (手間の合計が上限を超えたら、演算をやめて、切り抜きを変えずに警告を出す) */
+  private regionRects(a: Rect[] | undefined, b: Rect[], mode: number): Rect[] | undefined {
+    const r = regionOp(a, b, mode, this.regionWork);
+    if (this.regionWork.left < 0) this.warnings.add('切り抜きの領域の演算の手間が上限を超えたので、その後の切り抜きの変更は読みません');
+    return r;
   }
   clipRects(rs: Rect[], mode: number) {
     this.combineClip(this.shapeOf(rs), mode);
@@ -704,7 +836,8 @@ class SvgOut {
   /** 領域 (論理座標の矩形) を色で塗る (線は引かない) */
   /** 領域を塗る (paint は色か模様の url。blend は描画モード) */
   fillRects(rs: Rect[], paint: string | undefined, blend?: string) {
-    if (!rs.length || !paint) return;
+    // 上限を超えた後は、矩形を文字列にしない (矩形の多い領域を塗る記録は 8 バイトで、塗るたびに全部の矩形を書く)
+    if (!rs.length || !paint || this.overflow) return;
     this.emit(`<path d="${rectsPath(rs)}" fill="${paint}" stroke="none"${blend ? ` style="mix-blend-mode:${blend}"` : ''}/>`);
   }
   /** 画像を (x, y) から幅 w・高さ h (論理座標。負なら裏返す) に描く。blend は描画モード */
@@ -712,6 +845,7 @@ class SvgOut {
     if (!w || !h) return;
     this.emit(
       `<image x="0" y="0" width="${fmt(Math.abs(w))}" height="${fmt(Math.abs(h))}" preserveAspectRatio="none" transform="matrix(${Math.sign(w)} 0 0 ${Math.sign(h)} ${fmt(x)} ${fmt(y)})"${blend ? ` style="mix-blend-mode:${blend}"` : ''} href="${href}"/>`,
+      href.length,
     );
   }
   toSvg(vb: [number, number, number, number], widthPx: number, heightPx: number): string {
@@ -1491,9 +1625,11 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number, war
 
 /** 細い線 (幅 0 のペン) を、出来上がりの 1px 相当にしてから SVG にする。描かなかったものの警告は warnings に足す */
 function finish(out: SvgOut, vb: [number, number, number, number], w: number, h: number, warnings?: string[]): string {
-  warnings?.push(...out.warnings);
   const hair = Math.abs(vb[2]) / Math.max(w, 1);
-  return out.toSvg(vb, w, h).split(HAIR).join(num(hair));
+  const svg = out.toSvg(vb, w, h).split(HAIR).join(num(hair));
+  // 警告は SVG を作った後に渡す (模様の定義が SVG の長さの上限を超えたときの警告は、SVG を作る所で出る)
+  warnings?.push(...out.warnings);
+  return svg;
 }
 
 /** EMF → SVG。読めなければ undefined。warnings は wmfToSvg と同じ */
@@ -1763,9 +1899,12 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number, war
             out.gradientRect(p0.x, p0.y, p1.x, p1.y, hex(p0.c), hex(p1.c), mode === 1);
           }
         } else if (mode === 2) {
-          // 三角形: 各辺を 8 等分した小さな三角形に分け、それぞれを重心の色 (3 つの頂点の色の重み付きの平均) で塗る
-          const N = 8;
-          for (let k = 0; k < nTri && iat + k * 12 + 12 <= end; k++) {
+          // 三角形: 各辺を 8 等分した小さな三角形に分け、それぞれを重心の色 (3 つの頂点の色の重み付きの平均) で塗る。
+          // 三角形 1 つ (12 バイト) が 64 個の path (約 7,000 字) になるので、三角形の多いファイル (4,000 個・48KB で SVG が 3,100 万字・61 秒) は、
+          // SVG の長さの上限の半分に収まるよう、分け方を粗くする (4・2・1 等分。SvgOut.gradientSteps)
+          if (out.overflow) break;
+          const N = out.gradientSteps(Math.min(nTri, Math.max(0, Math.floor((end - iat) / 12))));
+          for (let k = 0; k < nTri && iat + k * 12 + 12 <= end && !out.overflow; k++) {
             const t = [0, 4, 8].map((d) => vx[u32(iat + k * 12 + d)]);
             if (t.some((q) => !q)) continue;
             const at = (i: number, j: number) => {

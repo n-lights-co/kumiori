@@ -394,4 +394,27 @@ describe('Node のコマンド', () => {
     // 警告は 1 件が 1 行のまま (改行で行を増やせない)
     expect(r.stderr.split('\n').filter((l) => /^b\.pdf/.test(l))).toEqual([]);
   }, 120_000);
+  it('--no-outside-files: 文書が file: の URL・../ で指した、入力のディレクトリの外のファイルを読まない', () => {
+    const dir = path.join(work, 'outside', 'doc');
+    const out = path.join(work, 'outside', 'secret');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(out, { recursive: true });
+    // 8 ビット RGB の小さな PNG (zlib の圧縮なしの塊)
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64');
+    fs.writeFileSync(path.join(out, 'p.png'), png);
+    fs.writeFileSync(path.join(dir, 'in.png'), png);
+    const h = path.join(dir, 'c.html');
+    fs.writeFileSync(h, `<p><img src="../secret/p.png"><img src="file://${path.join(out, 'p.png')}"><img src="in.png"></p>`);
+    const run = (...args: string[]) => spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), h, '-o', path.join(dir, 'c.pdf'), '--font-dir', fontDir, ...args], { encoding: 'utf8', env: JA_ENV });
+    // 既定: 外のファイルも読む (警告なし)
+    const a = run();
+    expect(a.status).toBe(0);
+    expect(a.stderr).not.toContain('p.png');
+    // --no-outside-files: 外の 2 つは読めない画像、中の画像は読む
+    const b = run('--no-outside-files');
+    expect(b.status).toBe(0);
+    expect(b.stderr).toContain('../secret/p.png');
+    expect(b.stderr).toMatch(/file:\/\/.*p\.png/);
+    expect(b.stderr).not.toContain('in.png');
+  }, 120_000);
 });

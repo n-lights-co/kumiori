@@ -95,11 +95,17 @@ function shapeOps(sh: SvgShape): ColorOp[] {
  * 文書ごとに 1 度だけ読み (複数の字形の入った文書は、字形ごとに読み直す)、結果は ColorFont が字形ごとに覚える
  */
 export function svgGlyphReader(parseXml: (xml: string) => XmlNode): SvgGlyphReader {
-  return (doc, gid, unitsPerEm, palette) => {
+  return (doc, gid, unitsPerEm, palette, budget) => {
+    if (budget?.over) return undefined;
     let text: string;
     try {
       text = new TextDecoder().decode(gunzip(doc));
     } catch {
+      return undefined;
+    }
+    // 解析する文字の数の予算 (呼ぶ側の colorGlyph.ts が決める。文書を字形ごとに解析し直すので)
+    if (budget && (budget.left -= text.length) < 0) {
+      budget.over = true;
       return undefined;
     }
     // CPAL のパレットの色: var(--colorN, 代わりの色) を、パレットの N 番の色 (無ければ代わりの色) に置き換える

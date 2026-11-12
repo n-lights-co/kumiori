@@ -95,9 +95,14 @@ export function parseCounterStyleRule(
   decls: Array<[string, string]>,
 ): CounterStyleRule {
   const r: CounterStyleRule = {};
+  // 記号・前置き・後置き・負の記号・詰め物の記号のうち、表記の長さの上限 (MAX_COUNTER_LENGTH。§2) より長いものを含む記述子は、
+  // 読めないもの (無視) とする。どれも項目ごとに写されるので、長い記号は項目の数だけ大きな字になる
+  // (prefix に 10 万字 × li 1000 個 (110KB) で 1 億字の目印を作り、70 秒を超えた)。上限は表記 1 つの長さなので、実在の書式は届かない
+  const tooLong = (list: string[]) => list.some((x) => x.length > MAX_COUNTER_LENGTH && cpLength(x) > MAX_COUNTER_LENGTH);
   for (const [k0, v0] of decls) {
     const k = k0.trim().toLowerCase();
     const v = v0.trim();
+    if (/^(symbols|additive-symbols|negative|prefix|suffix|pad)$/.test(k) && v.length > MAX_COUNTER_LENGTH && tooLong(splitSymbols(v))) continue;
     switch (k) {
       case "system": {
         const m = /^(cyclic|numeric|alphabetic|symbolic|additive)$/i.exec(v);

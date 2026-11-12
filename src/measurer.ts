@@ -22,6 +22,14 @@ export const UNIT_PLAIN = 0;
 export const UNIT_CLUSTER = 1;
 export const UNIT_CONT = 2;
 
+/**
+ * 書体がクラスタの全部の字を持たないときに、基底の字の書体が持つ先頭の並びを探す長さの上限 (符号位置の数。resolveClusters)。
+ * UAX #29 の書記素クラスタに長さの上限は無いが、UAX #15 §13 (Stream-Safe Text Format) は、続けて置く結合文字 (non-starter) を 30 個まで
+ * とし、絵文字の ZWJ の並び (UTS #51 の RGI) は 10 符号位置ほどに収まる。基底の字 1 つと 30 個の結合文字を含む 32 字にする
+ * (これより長いクラスタの、32 字より後ろの字は、1 字ずつ書体を選ぶ。全部の字を持つ書体があるクラスタは、これまでどおりまとめて組む)
+ */
+const MAX_CLUSTER_SEARCH = 32;
+
 /** 異体字セレクタ (字形を選ぶ U+FE00〜FE0F と、漢字の異体字の U+E0100〜E01EF) を含みうるか */
 const HAS_VARIATION_SELECTOR = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/u;
 const VARIATION_SELECTOR = /^[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]$/u;
@@ -540,7 +548,9 @@ export class Measurer {
       }
       // 基底の字の書体が持つ、最も長い先頭の並び (2 字以上なら 1 つの単位)。残りは 1 字ずつ
       const chars = [...u];
-      let n = chars.length - 1;
+      // 探す並びの長さは MAX_CLUSTER_SEARCH 字まで (それより後ろの字は 1 字ずつ)。並びを 1 字ずつ縮めて書体に尋ねると、クラスタの字の数の
+      // 2 乗の手間になり、ZWJ でつないだ絵文字 1 万組 (U+1F468 U+200D の繰り返し。70KB) の 1 つのクラスタで 24 秒かかった
+      let n = Math.min(chars.length - 1, MAX_CLUSTER_SEARCH);
       while (n > 1 && this.fonts.getForCluster(style.fontFamily, weight, chars.slice(0, n).join('')) !== this.fonts.getForChar(style.fontFamily, weight, chars[0])) n--;
       const head = chars.slice(0, n).join('');
       out.push(head);

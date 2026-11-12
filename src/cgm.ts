@@ -19,7 +19,7 @@
 import { base64 } from './base64';
 import { decodeModifiedHuffman } from './ccitt';
 import { fontFamilyOf } from './eps';
-import { MAX_PIXELS, metafilePixelBudget } from './imageLimits';
+import { MAX_PIXELS, metafilePixelBudget, metafileSvgBudget } from './imageLimits';
 import { decodeJpeg } from './jpeg';
 import { encodePngStored } from './pixels';
 import { inflateBytes, lzwBytes } from './psFilters';
@@ -143,7 +143,11 @@ interface State {
   /** PATTERN INDEX (第 1 部 7.7.25) */
   patternIndex: number;
   /** PATTERN TABLE (第 1 部 7.7.32): 番号 → nx × ny の色 (1 行目から) */
-  patternTable: Map<number, { nx: number; ny: number; colours: Colour[] }>;
+  /**
+   * PATTERN TABLE の模様。セルの色は、違う色の並び (palette) と、セルごとのその番号 (cells) で持つ (セルごとに色のオブジェクトを持つと、
+   * 精度 1 ビットの表は、データの 1 バイトが 8 個のオブジェクト (約 300 バイト) になる)。uid は定義ごとの通し番号 (中身を見分ける鍵)
+   */
+  patternTable: Map<number, { nx: number; ny: number; uid: number; palette: Colour[]; cells: Uint32Array }>;
   /** PATTERN SIZE (第 1 部 7.7.33): 高さの向き (x, y)・幅の向き (x, y)。無ければ既定 (既定の VDC EXTENT の高さと幅) */
   patternSize: number[] | undefined;
   /** GEOMETRIC PATTERN DEFINITION (第 1 部 7.4.19): 番号 → セグメントと、模様にする範囲 */
@@ -378,6 +382,13 @@ class Params {
   private bits(n: number): number {
     // 上位ビットが先
     let v = 0;
+    if ((this.bit & 7) === 0 && (n & 7) === 0) {
+      // バイトの境目から、バイトの倍数を読む (セルの色の並びの大半。1 ビットずつ読むのと同じ値)
+      let o = this.bit >> 3;
+      for (let k = 0; k < n; k += 8) v = v * 256 + (this.d[o++] ?? 0);
+      this.bit += n;
+      return v;
+    }
     for (let k = 0; k < n; k++) {
       const byte = this.d[this.bit >> 3] ?? 0;
       v = v * 2 + ((byte >> (7 - (this.bit & 7))) & 1);
@@ -1184,9 +1195,36 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   const clipAttr = () => (clipId && !replayDepth ? ` clip-path="url(#${clipId})"` : '');
   const pathOf = (pts: Pt[], close: boolean) => pts.map((p, k) => `${k ? 'L' : 'M'}${num(X(p[0]))} ${num(Y(p[1]))}`).join('') + (close ? 'Z' : '');
 
-  const emit = (el: string) => {
+  /**
+   * 出力の SVG の長さの勘定 (imageLimits.ts の metafileSvgBudget。画像の data: の中身と模様の中身は数えない: 画素の合計の上限で縛ってある)。
+   * 上限を超えたら、警告を出して、その後は何も描かない (overflow)。COPY SEGMENT (24 バイト) は、点の多いセグメントを写すたびに全部を書くので、
+   * 写した要素の数だけを数える上限 (replayBudget) では、33KB の CGM で SVG が数千万字 (18 秒・1.2GB) になった。
+   * セグメントを写して描いた分は、写すたびに (emit で) 数えるので、写した量がそのまま勘定に入る
+   */
+  const svgBudget = metafileSvgBudget(bytes.length);
+  let svgChars = 0;
+  let overflow = false;
+  const room = (n: number): boolean => {
+    if (overflow) return false;
+    if (svgChars + n > svgBudget) {
+      overflow = true;
+      warn(`CGM を SVG にした長さが上限 (${bytes.length} バイトのファイルでは ${svgBudget} 字) を超えるので、途中までを描きます`);
+      return false;
+    }
+    svgChars += n;
+    return true;
+  };
+  /** 要素を出す。uncounted は、el のうち勘定に入れない字数 (画像の中身、写したセグメントの中身 (写した時に数えてある)) */
+  const emit = (el: string, uncounted = 0) => {
+    if (!room(el.length - uncounted)) return;
     body.push(el);
     count++;
+  };
+  /** 定義 (defs) を足す。長さは勘定に入れるが、捨てはしない (引く側の要素が先に出ていることがあるので)。上限を超えた後は足さない */
+  const addDef = (el: string, uncounted = 0) => {
+    if (overflow) return;
+    room(el.length - uncounted);
+    defs.push(el);
   };
 
   /**
@@ -1222,6 +1260,8 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       warn('COPY SEGMENT の入れ子が深すぎるか多すぎるので、途中から描きません');
       return '';
     }
+    // SVG の長さの上限を超えた後は、写さない (写しても何も出ない。写す手間は、セグメントの大きさだけかかる)
+    if (overflow) return '';
     const saved = { s, body, fig, pendingText, compound };
     s = cloneState(seg.snap);
     // INHERITANCE FILTER の 'state list' の属性: 写す時の値を使う (セグメントの中の属性の要素も、その属性を変えない)
@@ -1361,13 +1401,13 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     if (g.style === 1) {
       const a = map(F);
       const b = map([F[0] + g1[0] * last, F[1] + g1[1] * last]);
-      defs.push(`<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}">${stopTags}</linearGradient>`);
+      addDef(`<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}">${stopTags}</linearGradient>`);
     } else {
       // 単位円 (半径 last) を、2 つの共役半径で楕円に写す
       const c = map(F);
       const u = mapVec(g1);
       const v = mapVec(g2);
-      defs.push(
+      addDef(
         `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="${num(last)}" gradientTransform="matrix(${[u[0], u[1], v[0], v[1], c[0], c[1]].map(num).join(' ')})">${stopTags}</radialGradient>`,
       );
     }
@@ -1426,6 +1466,15 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   };
 
   let patSeq = 0;
+  /** PATTERN TABLE の定義の通し番号 (模様の中身を見分ける鍵に使う) */
+  let patternTableSeq = 0;
+  /**
+   * PATTERN TABLE の模様で塗るたびに調べる「表の中の違う色の数」の合計の上限 (2,000 万。1 つ約 50 ナノ秒で、約 1 秒)。
+   * 正当な模様の色は多くて数百 (色番号 8 ビットの表で 256) なので、数万回塗っても届かない
+   */
+  let patternWork = 20_000_000;
+  /** geometric pattern のセグメントを写した結果の控え (セグメントの番号 → 写した SVG と、模様の中身の id)。セグメントを定義し直したら捨てる */
+  const geoFrags = new Map<number, { frag: string; body?: string }>();
   /**
    * 模様の定義を、使うたびに書き出さない (IMG-19 (3))。中身 (セルの矩形・画像、geometric pattern のセグメントの図形) は、同じ中身ごとに 1 つの
    * pattern に書き (patternBodies: 中身 → id)、使う所は、それを href で引いて置き方 (位置・大きさ・patternTransform) だけを書いた pattern にする
@@ -1444,7 +1493,9 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     if (!takePixels(cost, what)) return undefined;
     id = `cgmp${patSeq++}`;
     patternBodies.set(key, id);
-    defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse">${content()}</pattern>`);
+    // 中身は SVG の長さの勘定に入れない (セルの矩形・画像は画素の合計 (cost) で、セグメントの図形は写した時に、数えてある)
+    const inner = content();
+    addDef(`<pattern id="${id}" patternUnits="userSpaceOnUse">${inner}</pattern>`, inner.length);
     return id;
   };
   /** 中身の pattern (body) を、置き方 (place: pattern の属性) で敷く pattern の id */
@@ -1454,7 +1505,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     if (id) return id;
     id = `cgmp${patSeq++}`;
     patternUses.set(key, id);
-    defs.push(`<pattern id="${id}" href="#${body}" ${place}/>`);
+    addDef(`<pattern id="${id}" href="#${body}" ${place}/>`);
     return id;
   };
   /**
@@ -1467,24 +1518,31 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
    * nx × ny のセルに分ける。色の (1, ny) が F のセル、第 1 の添字は w の向き、第 2 の添字は h の向きに減る (1 行目が箱の h の側)。箱を繰り返して敷く
    */
   const tablePattern = (): string | undefined => {
-    const t = s.patternTable.get(s.patternIndex) ?? (s.patternIndex === 1 ? { nx: 1, ny: 1, colours: [s.colourSelection === 1 ? ({ rgb: DEVICE_FOREGROUND } as Colour) : { index: 1 }] } : undefined);
+    const t = s.patternTable.get(s.patternIndex) ?? (s.patternIndex === 1 ? { nx: 1, ny: 1, uid: 0, palette: [s.colourSelection === 1 ? ({ rgb: DEVICE_FOREGROUND } as Colour) : { index: 1 }], cells: new Uint32Array(1) } : undefined);
     if (!t || t.nx < 1 || t.ny < 1 || t.nx * t.ny > MAX_PIXELS) return undefined;
     const box = patternBox();
     if (!box) return undefined;
     const cells = t.nx * t.ny;
     const rects = cells <= 4096;
-    // セルの色 (いまの色の表で決める)。中身の鍵は、セルの数と、色の並び (8 ビットに丸めた値) の要約 (色の表が変われば別の中身)。
-    // 要約は 32 ビットの FNV-1a を 2 本 (使うたびに 4096 色の文字列を作らない。2 本とも一致する別の並びは、まず起きない)
-    const rgb = Array.from({ length: cells }, (_, k) => colourOf(t.colours[k] ?? { index: 1 }));
+    // セルの色 (いまの色の表で決める)。中身の鍵は、表の定義の通し番号と、表の中の違う色 (palette) を色にした並び (8 ビットに丸めた値) の
+    // 要約 (色の表が変われば別の中身)。要約は 32 ビットの FNV-1a を 2 本 (2 本とも一致する別の並びは、まず起きない)。
+    // 前は、塗るたびに全部のセルの色を調べて要約を作っていたので、セルの多い表で小さな図形をいくつも塗ると、手間が図形の数 × セルの数になった。
+    // 違う色の数だけを調べ、その合計にも上限を置く (patternWork。超えたら、その後の模様の塗りは描かない)
+    patternWork -= t.palette.length;
+    if (patternWork < 0) {
+      warn('PATTERN TABLE の模様の色を調べる手間が上限を超えたので、その後の模様の塗りは描きません');
+      return undefined;
+    }
+    const pal = t.palette.map(colourOf);
     let h1 = 0x811c9dc5;
     let h2 = 0x9747b28c;
-    for (const c of rgb)
+    for (const c of pal)
       for (let j = 0; j < 3; j++) {
         const v = Math.round(Math.min(1, Math.max(0, c[j])) * 255);
         h1 = Math.imul(h1 ^ v, 0x01000193);
         h2 = Math.imul((h2 ^ v) + 0x9e3779b9, 0x5bd1e995);
       }
-    const key = `t${t.nx}x${t.ny}:${(h1 >>> 0).toString(16)}:${(h2 >>> 0).toString(16)}`;
+    const key = `t${t.uid}:${t.nx}x${t.ny}:${(h1 >>> 0).toString(16)}:${(h2 >>> 0).toString(16)}`;
     // 模様の中身の座標: 単位の正方形 (u: 幅の向き、t: 下向き = 高さの向きの逆)。(u, t) → F + u·w + (1 − t)·h
     const [F, wv, hv] = box;
     const o = map([F[0] + hv[0], F[1] + hv[1]]);
@@ -1492,9 +1550,16 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const c = mapVec([-hv[0], -hv[1]]);
     // セルの色の境目をはっきりさせるため、小さな模様はセルを矩形で描く (大きな模様は画像)
     const content = () => {
-      if (rects) return rgb.map((c, k) => `<rect x="${num((k % t.nx) / t.nx)}" y="${num(Math.floor(k / t.nx) / t.ny)}" width="${num(1 / t.nx + 1e-4)}" height="${num(1 / t.ny + 1e-4)}" fill="${hex(c)}"/>`).join('');
+      if (rects) return Array.from(t.cells, (n, k) => `<rect x="${num((k % t.nx) / t.nx)}" y="${num(Math.floor(k / t.nx) / t.ny)}" width="${num(1 / t.nx + 1e-4)}" height="${num(1 / t.ny + 1e-4)}" fill="${hex(pal[n])}"/>`).join('');
       const rgba = new Uint8Array(cells * 4);
-      rgb.forEach((c, k) => rgba.set([Math.round(c[0] * 255), Math.round(c[1] * 255), Math.round(c[2] * 255), 255], k * 4));
+      const bytes4 = pal.map((c) => [Math.round(c[0] * 255), Math.round(c[1] * 255), Math.round(c[2] * 255)]);
+      for (let k = 0; k < cells; k++) {
+        const c = bytes4[t.cells[k]];
+        rgba[k * 4] = c[0];
+        rgba[k * 4 + 1] = c[1];
+        rgba[k * 4 + 2] = c[2];
+        rgba[k * 4 + 3] = 255;
+      }
       return `<image x="0" y="0" width="1" height="1" preserveAspectRatio="none" style="image-rendering:pixelated" href="data:image/png;base64,${base64(encodePngStored({ width: t.nx, height: t.ny, rgba }))}"/>`;
     };
     // 中身は、新しい色の並びのときだけ書き、画素の合計に数える
@@ -1519,8 +1584,17 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const gp = s.geoPatterns.get(s.patternIndex);
     const box = patternBox();
     if (!gp || !box) return undefined;
-    const frag = replaySegment(gp.seg);
-    if (frag === undefined) return undefined;
+    // セグメントを写した結果は、セグメントごとに 1 度だけ作る (写す時の状態はセグメントの定義の時のもので、塗る時の状態に依らない)。
+    // 前は塗るたびに写していたので、点の多いセグメントの模様で小さな図形をいくつも塗ると、手間が図形の数 × セグメントの大きさになった
+    let geo = geoFrags.get(gp.seg);
+    if (!geo) {
+      const f = replaySegment(gp.seg);
+      if (f === undefined) return undefined;
+      geo = { frag: f };
+      // 上限 (入れ子・写す数・SVG の長さ) で途中までになった結果は、控えない
+      if (!overflow && replayBudget > 0) geoFrags.set(gp.seg, geo);
+    }
+    const frag = geo.frag;
     const [F, wv, hv] = box;
     const x0 = Math.min(gp.ext[0][0], gp.ext[1][0]);
     const x1 = Math.max(gp.ext[0][0], gp.ext[1][0]);
@@ -1537,7 +1611,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const b = map([x1, y0]);
     const m = svgMatrix(B);
     // 中身 (セグメントの図形) は同じ図形ごとに 1 つ。画素ではないので数えない (図形の数はセグメントの定義の大きさまで)
-    const body = patternBody(`g${frag}`, () => frag, 0, 'GEOMETRIC PATTERN の模様');
+    const body = geo.body ?? (geo.body = patternBody(`g${frag}`, () => frag, 0, 'GEOMETRIC PATTERN の模様'));
     if (!body) return undefined;
     return patternUse(
       body,
@@ -1594,8 +1668,9 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         rgba[o + 3] = 255;
       }
     const cid = `cgmc${clipSeq++}`;
-    defs.push(`<clipPath id="${cid}"><path d="${d}" clip-rule="evenodd"/></clipPath>`);
-    emit(`<g${clipAttr()}><g clip-path="url(#${cid})">${imageEl(rgba, iw, ih, [bw, 0, 0, bh, x0, y0], false)}</g></g>`);
+    addDef(`<clipPath id="${cid}"><path d="${d}" clip-rule="evenodd"/></clipPath>`);
+    const img = imageEl(rgba, iw, ih, [bw, 0, 0, bh, x0, y0], false);
+    emit(`<g${clipAttr()}><g clip-path="url(#${cid})">${img}</g></g>`, img.length);
   };
 
   const hatchIds = new Map<string, string>();
@@ -1627,7 +1702,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         y += gap * unit;
       });
       const id = `cgmh${hatchIds.size + out.length}x${patSeq++}`;
-      defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse" x="0" y="0" width="${num(dutyPx)}" height="${num(dutyPx)}" patternTransform="translate(${num(F[0])} ${num(F[1])}) rotate(${num(ang)})">${lines.join('')}</pattern>`);
+      addDef(`<pattern id="${id}" patternUnits="userSpaceOnUse" x="0" y="0" width="${num(dutyPx)}" height="${num(dutyPx)}" patternTransform="translate(${num(F[0])} ${num(F[1])}) rotate(${num(ang)})">${lines.join('')}</pattern>`);
       out.push(id);
     }
     return out.length ? out : [hatchPattern(1, c)];
@@ -1647,7 +1722,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     if (idx === 3 || idx === 6) parts.push(line(0, g, g, 0));
     if (idx === 4 || idx === 6) parts.push(line(0, 0, g, g));
     if (!parts.length) parts.push(line(0, g / 2, g, g / 2));
-    defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse" width="${g}" height="${g}">${parts.join('')}</pattern>`);
+    addDef(`<pattern id="${id}" patternUnits="userSpaceOnUse" width="${g}" height="${g}">${parts.join('')}</pattern>`);
     return id;
   };
 
@@ -1770,7 +1845,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const e = defaultExtent(defaults);
     const d = s.textPathD ?? pathOf([[Math.min(e[0][0], e[1][0]), Math.min(e[0][1], e[1][1])], [Math.max(e[0][0], e[1][0]), Math.min(e[0][1], e[1][1])]], false);
     const id = `cgmtp${textPathSeq++}`;
-    defs.push(`<path id="${id}" d="${d}"/>`);
+    addDef(`<path id="${id}" d="${d}"/>`);
     // 局所の単位 (VDC) を px にする倍率: 上の向きの長さ
     const k = Math.hypot(U[0], U[1]) || 1;
     const fs = (h / CAP_HEIGHT_EM) * k;
@@ -1873,6 +1948,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         } else if (id === 7 && rec && !replayDepth) {
           // END SEGMENT: 覚える。絵の本体のセグメントに SEGMENT TRANSFORMATION があれば、その場で描いたものに掛ける
           segments.set(rec.id, { els: rec.els, snap: rec.snap, xf: rec.xf });
+          geoFrags.clear();
           if (rec.shown && rec.xf) {
             const part = body.splice(rec.bodyStart);
             body.push(`<g transform="matrix(${fmtM(svgMatrix(xfOf(rec.xf)))})">${part.join('')}</g>`);
@@ -2083,7 +2159,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
           if (frag === undefined) return;
           const segXf = segments.get(sid)?.xf;
           const f = applySeg && segXf ? (q: Pt) => xfOf(m)(xfOf(segXf)(q)) : xfOf(m);
-          emit(`<g${clipAttr()}><g transform="matrix(${fmtM(svgMatrix(f))})">${frag}</g></g>`);
+          emit(`<g${clipAttr()}><g transform="matrix(${fmtM(svgMatrix(f))})">${frag}</g></g>`, frag.length);
         } else if (id === 2) {
           // INHERITANCE FILTER: 選び方の並びと、設定 (0 state list: 写す時の属性を使う・1 segment: 定義した時の属性のまま)
           const vals: number[] = [];
@@ -2114,7 +2190,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const x = Math.min(a[0], b[0]);
     const y = Math.min(a[1], b[1]);
     clipId = `cgmc${clipSeq++}`;
-    defs.push(`<clipPath id="${clipId}"><rect x="${num(x)}" y="${num(y)}" width="${num(Math.abs(b[0] - a[0]))}" height="${num(Math.abs(b[1] - a[1]))}"/></clipPath>`);
+    addDef(`<clipPath id="${clipId}"><rect x="${num(x)}" y="${num(y)}" width="${num(Math.abs(b[0] - a[0]))}" height="${num(Math.abs(b[1] - a[1]))}"/></clipPath>`);
   };
 
   const attribute = (id: number, p: Params, st: State) => {
@@ -2196,10 +2272,39 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const ny = p.I();
         const prec = p.I();
         if (!(nx > 0 && ny > 0) || nx * ny > MAX_PIXELS || ![0, 1, 2, 4, 8, 16, 24, 32].includes(prec)) break;
-        const colours: Colour[] = [];
-        const read = (): Colour => (st.colourSelection === 0 ? { index: p.CI(prec || st.colourIndexPrec) } : directColour(st, p.CD(prec || st.colourPrec)));
-        for (let k = 0; k < nx * ny && p.left > 0; k++) colours.push(read());
-        st.patternTable.set(idx, { nx, ny, colours });
+        // セルの数は、データに入る数まで (色の足りないセルは 1 番の色で埋めるが、それは 65,536 個の表まで)。大きさだけを書いた表
+        // (10000 × 10000 で色が無い) は、塗るたびに 1 億個のセルの色を調べさせる
+        const indexed = st.colourSelection === 0;
+        const cellBits = indexed ? prec || st.colourIndexPrec : (prec || st.colourPrec) * compsOf(st.colourModel);
+        if (nx * ny > 65536 && !(cellBits > 0 && nx * ny <= Math.floor(Math.max(0, p.left) / cellBits))) {
+          warn('PATTERN TABLE の色の数が、セルの数に足りないので読みません');
+          break;
+        }
+        // 同じ色のセルは、1 つの色を指す (palette の番号)。鍵は、色番号か、直接色の成分の並び
+        const palette: Colour[] = [];
+        const seen = new Map<number | string, number>();
+        const cells = new Uint32Array(nx * ny);
+        const slot = (key: number | string, make: () => Colour): number => {
+          let n = seen.get(key);
+          if (n === undefined) {
+            n = palette.length;
+            seen.set(key, n);
+            palette.push(make());
+          }
+          return n;
+        };
+        let k = 0;
+        for (; k < nx * ny && p.left > 0; k++) {
+          if (indexed) {
+            const ci = p.CI(prec || st.colourIndexPrec);
+            cells[k] = slot(ci, () => ({ index: ci }));
+          } else {
+            const cd = p.CD(prec || st.colourPrec);
+            cells[k] = slot(cd.join(','), () => directColour(st, cd));
+          }
+        }
+        if (k < nx * ny) cells.fill(slot(-1, () => ({ index: 1 })), k);
+        st.patternTable.set(idx, { nx, ny, uid: ++patternTableSeq, palette, cells });
         break;
       }
       case 33:
@@ -2649,13 +2754,32 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     s.colourSelection === 0 ? { index: p.CI(prec || s.colourIndexPrec) } : directColour(s, p.CD(prec || s.colourPrec));
   const sameColour = (a: Colour, b: Colour | undefined) =>
     !!b && ('index' in a ? 'index' in b && a.index === b.index : 'rgb' in b && a.rgb.every((v, k) => Math.abs(v - b.rgb[k]) < 1e-6));
-  const putCell = (rgba: Uint8Array, k: number, c: Colour) => {
-    if (sameColour(c, s.transparentCell)) return; // 透明 (0 のまま)
+  /**
+   * セルの色を、画素の 4 バイト (R・G・B・不透明度) を 1 つの数に詰めた値にする (前の putCell が書いた値と同じ)。透明のセルの色なら -1。
+   * セルごとに色のオブジェクトを作らずに書くために使う (CELL ARRAY・タイルは、セルの数だけ色を読む)
+   */
+  const packCell = (c: Colour): number => {
+    if (sameColour(c, s.transparentCell)) return -1;
     const v = colourOf(c);
-    rgba[k * 4] = Math.round(v[0] * 255);
-    rgba[k * 4 + 1] = Math.round(v[1] * 255);
-    rgba[k * 4 + 2] = Math.round(v[2] * 255);
-    rgba[k * 4 + 3] = Math.round(alphaOf(c) * 255);
+    // 各バイトは、Uint8Array に書くときと同じに 256 で割った余り (範囲の外の成分も、前の putCell と同じ値になる)
+    const b = (x: number) => Math.round(x * 255) & 255;
+    return b(v[0]) + b(v[1]) * 0x100 + b(v[2]) * 0x10000 + b(alphaOf(c)) * 0x1000000;
+  };
+  const putPacked = (rgba: Uint8Array, k: number, v: number) => {
+    if (v < 0) return; // 透明 (0 のまま)
+    rgba[k * 4] = v & 255;
+    rgba[k * 4 + 1] = (v >>> 8) & 255;
+    rgba[k * 4 + 2] = (v >>> 16) & 255;
+    rgba[k * 4 + 3] = Math.floor(v / 0x1000000);
+  };
+  /** 色番号 → 詰めた値 (1 つの要素を読む間は色の表が変わらないので、番号ごとに 1 度だけ色にする) を返す関数 */
+  const indexPacker = () => {
+    const memo = new Map<number, number>();
+    return (index: number): number => {
+      let v = memo.get(index);
+      if (v === undefined) memo.set(index, (v = packCell({ index })));
+      return v;
+    };
   };
 
   /**
@@ -2682,15 +2806,19 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const rows = rowBits > 0 ? Math.min(ny, Math.ceil(Math.max(0, p.left) / rowBits)) : ny;
     if (!rows || !takePixels(nx * rows, 'CELL ARRAY')) return;
     const rgba = new Uint8Array(nx * rows * 4);
+    // セルの色は、オブジェクトにせず、画素の値にして書く (色番号は番号ごとに 1 度だけ色にする)
+    const indexed = s.colourSelection === 0;
+    const pack = indexPacker();
+    const read = (): number => (indexed ? pack(p.CI(prec || s.colourIndexPrec)) : packCell(readCell(p, prec)));
     for (let j = 0; j < rows && p.left > 0; j++) {
       p.alignWord();
-      if (mode === 1) for (let i = 0; i < nx && p.left > 0; i++) putCell(rgba, j * nx + i, readCell(p, prec));
+      if (mode === 1) for (let i = 0; i < nx && p.left > 0; i++) putPacked(rgba, j * nx + i, read());
       else {
         let i = 0;
         while (i < nx && p.left > 0) {
           const cnt = p.I();
-          const c = readCell(p, prec);
-          for (let r = 0; r < cnt && i < nx; r++, i++) putCell(rgba, j * nx + i, c);
+          const c = read();
+          for (let r = 0; r < cnt && i < nx; r++, i++) putPacked(rgba, j * nx + i, c);
           if (cnt <= 0) break;
         }
       }
@@ -2699,7 +2827,8 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const a = mapVec(sub(R0, P0));
     const c = mapVec(sub(Q0, R0)).map((v) => (v * rows) / ny);
     const o = map(P0);
-    emit(clipId && !replayDepth ? `<g${clipAttr()}>${imageEl(rgba, nx, rows, [a[0], a[1], c[0], c[1], o[0], o[1]])}</g>` : imageEl(rgba, nx, rows, [a[0], a[1], c[0], c[1], o[0], o[1]]));
+    const img = imageEl(rgba, nx, rows, [a[0], a[1], c[0], c[1], o[0], o[1]]);
+    emit(clipId && !replayDepth ? `<g${clipAttr()}>${img}</g>` : img, img.length);
   };
 
   /** BEGIN TILE ARRAY (第 3 部 表 3 の 19 番) */
@@ -2748,22 +2877,37 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     // 行の埋めで増えるセルも画素の合計に数える (埋めの数 pad が巨大だと、1 行の長さ rowLen が pad そのものになり、
     // 連なりのループや、LZW・deflate を展開する長さの上限 (rowLen から決める) が、タイルの大きさと関係なく膨らむ)
     if (!(rowLen * t.ctl <= MAX_PIXELS) || !takePixels((rowLen - t.ctp) * t.ctl, 'TILE (行の埋め)')) return;
-    const cells: Colour[] = new Array(t.ctp * t.ctl);
+    // セルは、色のオブジェクトの配列にためず、タイルの並びの画素 (t.rgba) へじかに書く (読まれなかったセル・透明のセルの色は、元のまま)。
+    // 前は、タイルごとに「セルの数の配列」と、セルごとの色のオブジェクトを作っていたので、deflate で縮めた 8000 × 8000 のタイル (62KB) で
+    // 52 秒・3GB を使い、ヒープを使い切った
     const effPrec = bitonal ? 1 : prec || (s.colourSelection === 0 ? s.colourIndexPrec : s.colourPrec);
     const comps = s.colourSelection === 0 ? 1 : compsOf(s.colourModel);
-    const colourFromBits = (r: Params): Colour => {
-      if (bitonal) return r.uint(1) ? fg : bg;
-      return s.colourSelection === 0 ? { index: r.CI(effPrec) } : directColour(s, r.CD(effPrec));
+    const indexed = s.colourSelection === 0;
+    const bgP = packCell(bg);
+    const fgP = packCell(fg);
+    const pack = indexPacker();
+    /** r から色を 1 つ読み、詰めた値にする */
+    const packedFromBits = (r: Params): number => {
+      if (bitonal) return r.uint(1) ? fgP : bgP;
+      return indexed ? pack(r.CI(effPrec)) : packCell(directColour(s, r.CD(effPrec)));
     };
-    if (kind === 0 || kind === 1) cells.fill(kind === 0 ? bg : fg);
-    else if (kind === 5 || kind === 6) {
+    // 並びの中のタイルの位置: セルの進む向きに ntp 個、行の進む向きに折り返す
+    const tx = (idx % t.ntp) * t.ctp;
+    const ty = Math.floor(idx / t.ntp) * t.ctl;
+    const W0 = t.ntp * t.ctp;
+    /** タイルの中のセル (j 行・i 列) の、並びの画素の番号 */
+    const at = (j: number, i: number) => (ty + j) * W0 + tx + i;
+    if (kind === 0 || kind === 1) {
+      const v = kind === 0 ? bgP : fgP;
+      if (v >= 0) for (let j = 0; j < t.ctl; j++) for (let i = 0; i < t.ctp; i++) putPacked(t.rgba, at(j, i), v);
+    } else if (kind === 5 || kind === 6) {
       const r = new Params(bs, s);
       if (kind === 5) {
         for (let j = 0; j < t.ctl; j++)
           for (let i = 0; i < rowLen; i++) {
             if (r.left < effPrec * comps) break;
-            const c = colourFromBits(r);
-            if (i < t.ctp) cells[j * t.ctp + i] = c;
+            const c = packedFromBits(r);
+            if (i < t.ctp) putPacked(t.rgba, at(j, i), c);
           }
       } else {
         // 連なり: 数 (SDR の精度 n ビット) と色の組。行の埋めを含めて、行ごとに続けて数える
@@ -2774,10 +2918,10 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const total = rowLen * t.ctl;
         while (k < total && r.left >= n + effPrec * comps && n > 0 && n <= 32) {
           const cnt = r.uint(n);
-          const c = colourFromBits(r);
+          const c = packedFromBits(r);
           for (let q = 0; q < cnt && k < total; q++, k++) {
             const i = k % rowLen;
-            if (i < t.ctp) cells[Math.floor(k / rowLen) * t.ctp + i] = c;
+            if (i < t.ctp) putPacked(t.rgba, at(Math.floor(k / rowLen), i), c);
           }
           if (cnt <= 0) break;
         }
@@ -2788,7 +2932,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       if (!bits) warn('TILE の T.4 / T.6 の符号が読めません');
       else
         for (let j = 0; j < t.ctl; j++)
-          for (let i = 0; i < t.ctp; i++) cells[j * t.ctp + i] = bits[j * rowLen + i] ? fg : bg;
+          for (let i = 0; i < t.ctp; i++) putPacked(t.rgba, at(j, i), bits[j * rowLen + i] ? fgP : bgP);
     } else if (kind === 7 && !bitonal) {
       // 登録簿の 7: baseline JPEG。BS は JPEG のデータ。色は直接色の RGB として置く (SDR の JPEG の色の型は読まない)
       const px = decodeJpeg(bs);
@@ -2796,11 +2940,22 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         warn('TILE の JPEG が読めません');
         return;
       }
+      // 直接色 { rgb: [v / 255, …] } として前の putCell で書いたのと同じ値: 色は元の 8 ビットの値、不透明度は ESCAPE 45 の値、透明のセルの色 (直接色) は書かない
+      const alpha = Math.round(s.alpha * 255);
+      const tc = s.transparentCell && 'rgb' in s.transparentCell ? s.transparentCell.rgb : undefined;
+      const mono = px.components !== 3;
       for (let j = 0; j < Math.min(t.ctl, px.height); j++)
         for (let i = 0; i < Math.min(t.ctp, px.width); i++) {
           const o = (j * px.width + i) * px.components;
-          const v = px.components === 3 ? [px.data[o], px.data[o + 1], px.data[o + 2]] : [px.data[o], px.data[o], px.data[o]];
-          cells[j * t.ctp + i] = { rgb: [v[0] / 255, v[1] / 255, v[2] / 255] };
+          const v0 = px.data[o];
+          const v1 = mono ? v0 : px.data[o + 1];
+          const v2 = mono ? v0 : px.data[o + 2];
+          if (tc && Math.abs(v0 / 255 - tc[0]) < 1e-6 && Math.abs(v1 / 255 - tc[1]) < 1e-6 && Math.abs(v2 / 255 - tc[2]) < 1e-6) continue;
+          const k = at(j, i) * 4;
+          t.rgba[k] = v0;
+          t.rgba[k + 1] = v1;
+          t.rgba[k + 2] = v2;
+          t.rgba[k + 3] = alpha;
         }
     } else if (kind === 8 || kind === 9) {
       // 登録簿の 8: LZW (TIFF・PDF の形)、9: PNG の圧縮の形 0 (zlib の deflate)。展開した後は圧縮なし (5) と同じセルの並び。
@@ -2813,30 +2968,22 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         warn(`TILE の ${kind === 8 ? 'LZW' : 'PNG (deflate)'} の圧縮が読めません`);
         return;
       }
-      const filtered = kind === 9 && data.length >= (rowBytes + 1) * t.ctl && Array.from({ length: t.ctl }, (_, j) => data[j * (rowBytes + 1)]).every((f) => f <= 4);
+      let filtered = kind === 9 && data.length >= (rowBytes + 1) * t.ctl;
+      for (let j = 0; filtered && j < t.ctl; j++) if (data[j * (rowBytes + 1)] > 4) filtered = false;
       if (filtered) data = unfilterPng(data, rowBytes, Math.max(1, Math.ceil(bitsPerCell / 8)), t.ctl);
       const r = new Params(data, s);
       for (let j = 0; j < t.ctl; j++) {
         if (filtered) r.seekByte(j * rowBytes);
         for (let i = 0; i < rowLen; i++) {
           if (r.left < bitsPerCell) break;
-          const c = colourFromBits(r);
-          if (i < t.ctp) cells[j * t.ctp + i] = c;
+          const c = packedFromBits(r);
+          if (i < t.ctp) putPacked(t.rgba, at(j, i), c);
         }
       }
     } else {
       warn(`TILE の圧縮の形 ${kind} は、登録簿に無いか Kumiori の知らない形なので読みません`);
       return;
     }
-    // 並びの中のタイルの位置: セルの進む向きに ntp 個、行の進む向きに折り返す
-    const tx = (idx % t.ntp) * t.ctp;
-    const ty = Math.floor(idx / t.ntp) * t.ctl;
-    const W0 = t.ntp * t.ctp;
-    for (let j = 0; j < t.ctl; j++)
-      for (let i = 0; i < t.ctp; i++) {
-        const c = cells[j * t.ctp + i];
-        if (c) putCell(t.rgba, (ty + j) * W0 + tx + i, c);
-      }
   };
 
   /**
@@ -2862,7 +3009,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const c = mapVec(dl);
     const o = map(t.pos);
     const el = imageEl(rgba, iw, ih, [a[0], a[1], c[0], c[1], o[0], o[1]]);
-    emit(clipId && !replayDepth ? `<g${clipAttr()}>${el}</g>` : el);
+    emit(clipId && !replayDepth ? `<g${clipAttr()}>${el}</g>` : el, el.length);
   };
 
   /** 3 点を通る円弧 (第 1 部 7.6.13)。3 点が一直線なら折れ線 (附属書 D.4.5.4) */

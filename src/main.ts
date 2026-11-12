@@ -4,6 +4,7 @@ import { LayoutEngine } from './layoutEngine';
 import { renderSheetToCanvas } from './canvasRenderer';
 import { renderPdf } from './pdfRenderer';
 import { AssetStore } from './assets';
+import { resetEpsBudget } from './eps';
 import { SERIF, buildSampleDocument } from './sampleData';
 import { browserParse, importXslFo, type ImportReport } from './xslfoImport';
 import type { AreaTree, LDocument } from './types';
@@ -431,6 +432,8 @@ function pickFromFolder(files: File[]): File[] {
 /** 選んだ (またはドラッグ&ドロップした) ファイルを開く */
 async function openFiles(files: File[]) {
   if (!files.length) return;
+  // EPS の時間の予算 (eps.ts の EPS_DOCUMENT_MILLIS) は、画像の入れ物に結び付いている。入れ物は開き直しても使い続けるので、予算は文書を開くたびに戻す
+  resetEpsBudget(assets);
   // EPUB: 1 つの HTML (と画像) にまとめて、HTML として組む
   const epub = files.find((f) => /\.epub$/i.test(f.name));
   if (epub) {

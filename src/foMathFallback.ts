@@ -182,7 +182,7 @@ export class FoMathFallback {
    */
   private mathShape(d: string, w: number, h: number, sw: number, round = true): string {
     const r = (v: number) => +v.toFixed(2);
-    const path = d.replace(/-?\d+\.?\d*(e-?\d+)?/g, (v) => String(r(parseFloat(v))));
+    const path = d.replace(/-?\d+(?:\.\d*)?(e-?\d+)?/g, (v) => String(r(parseFloat(v))));
     const cap = round ? ' stroke-linecap="round"' : '';
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${r(w)}pt" height="${r(h)}pt" viewBox="0 0 ${r(w)} ${r(h)}"><path d="${path}" fill="none" stroke="${toCss(this.mathColor)}" stroke-width="${r(sw)}"${cap} stroke-linejoin="round"/></svg>`;
     const src = `data:image/svg+xml;base64,${utf8Base64(svg)}`;

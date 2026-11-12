@@ -20,7 +20,7 @@ import { installStateOperators } from './psOpsState';
 import { appendRects, installPathOperators } from './psOpsPath';
 import { installImageOperators } from './psOpsImage';
 import { installFontStubs, makeCIDInit, makeFontSetInit } from './psOpsFont';
-import { patternFill as shadePatternFill, strokeOutline } from './psShading';
+import { patternFill as shadePatternFill, patternUsable, strokeOutline, type OutlineTally } from './psShading';
 
 /**
  * 変換の行列 (matrix.ts の Matrix)。PostScript の「点に a を掛けてから b を掛ける」積 (§4.3.3) は mul(b, a) と書く
@@ -44,6 +44,20 @@ export interface Clip {
  * (PLRM 第 3 版の付録 B には、クリップの入れ子の限界の項目は無い。実在の EPS の入れ子は、多くて十数段)
  */
 const MAX_CLIP_DEPTH = 1000;
+
+/**
+ * DeviceN の色空間の成分の数の上限 (超えれば limitcheck)。PDF は 32 まで (ISO 32000-1 の付録 C の表 C.1 の DeviceN の成分の数)。
+ * PLRM 第 3 版 (§4.8.4 DeviceN・付録 B の表 B.1) に、成分の数の限界の値は見当たらなかった。印刷の色材の数なので、実在の文書では多くて十数個。
+ * 上限が無いと、99,990 成分の DeviceN で、setcolor の 1 回ごとに 10 万個のオペランドを取り、濃度の変換の結果を覚える鍵 (成分を全部つないだ
+ * 文字列) が 1 件で数百 KB になる
+ */
+const MAX_DEVICEN_COMPONENTS = 32;
+
+/**
+ * 濃度の変換の結果を覚える表 (Graphics.tintCache) の鍵の字数の合計の上限。4 成分・8 ビットの DeviceN の画像は、1 件の鍵が 20 字ほどで、
+ * 20 万件を覚えても 400 万字。32 成分でも、1 件が 80 字 (成分ごとに 1〜2 桁) なら 20 万件が収まる
+ */
+const TINT_CACHE_CHARS = 16_000_000;
 
 export type DisplayItem =
   | { k: 'fill'; segs: Seg[]; evenOdd: boolean; color: RGB; cmyk?: number[]; clip?: Clip }
@@ -112,12 +126,31 @@ export interface GState {
  * 2 点の stroke で 388 バイト・4 点の fill で 412 バイト (点の分を含む)、文字は 1 字 33 バイト
  */
 export const MEM_PATH_POINT = 96;
+/** 線の輪郭を作る間だけ持つ 1 点 (座標の組の配列と、向き・写しの分。測った値は 1 点 150 バイトほど) */
+const MEM_OUTLINE_TEMP = 160;
 /** 描画の並び・クリップに写したパスの 1 点 (点の本体は共有し、並びだけを写す) */
 export const MEM_SHOWN_POINT = 8;
+
+/**
+ * 描画の並びの手間の上限 (超えれば limitcheck。そこまでに描いたものは残る)。図形 (fill・stroke) とクリップは 1 件を 1、文字 (代わりの書体で描く
+ * show の 1 回) は 5、画像は 20 と数える。重みは、描画の並びを SVG にして PDF に描くまでの 1 件の手間の比 (Node 22 で測った値:
+ * 図形 10 万件で 3.8 秒・490MB、20 万件で 6.6 秒・750MB、文字 10 万件で 15.8 秒・1.3GB、1 画素の画像 10 万件で 90 秒・1GB)。
+ * 上限が無いと、「1200000 { gsave fill grestore } repeat」(100 バイト) が 120 万件を描き、PDF にするまでに 135〜253 秒・2.4GB を使った
+ * (パスの点の上限は、1 件を 4 点と数えるので 125 万件まで通す)。
+ * 実在の EPS は、1 ページの絵で、図形が数百〜数万件、文字 (show) が数千回、画像が数十〜数百枚。20 万件を超える絵 (点の多い散布図・地図) は、
+ * 上限の前でも組むのに 7 秒・750MB 以上を使う
+ */
+const MAX_DRAW_COST = 200_000;
+const DRAW_COST_TEXT = 5;
+const DRAW_COST_IMAGE = 20;
+/** 描画の並びの 1 件の手間 (MAX_DRAW_COST の説明) */
+export const drawWeight = (it: DisplayItem): number => (it.k === 'image' ? DRAW_COST_IMAGE : it.k === 'text' ? DRAW_COST_TEXT : 1);
 
 export interface GraphicsOptions {
   /** 既定の座標 (EPS の外接矩形) */
   bbox: [number, number, number, number];
+  /** 描画の並びの手間の上限 (超えれば limitcheck)。既定は MAX_DRAW_COST */
+  maxDrawCost?: number;
   /** パスの点の合計の上限 (超えれば limitcheck)。既定は PS_MAX_PATH_POINTS */
   maxPathPoints?: number;
 }
@@ -142,12 +175,15 @@ export class Graphics {
    * ({ gsave fill grestore } loop が、10 万点のパスを何百回も写す)
    */
   shownPoints = 0;
-  /** 一度だけ出す警告 */
+  /** 描画の並びに足したものの手間の合計 (MAX_DRAW_COST の説明) */
+  drawCost = 0;
+  maxDrawCost: number;
   constructor(
     public I: Interp,
     public opts: GraphicsOptions,
   ) {
     this.maxPathPoints = opts.maxPathPoints ?? PS_MAX_PATH_POINTS;
+    this.maxDrawCost = opts.maxDrawCost ?? MAX_DRAW_COST;
     this.g = this.initial();
     I.gfx = {
       saveCost: () => this.gstateCost(this.g) + this.stack.reduce((t, s) => t + this.gstateCost(s), 0),
@@ -222,6 +258,21 @@ export class Graphics {
     this.I.work(n);
   }
 
+  /** 描画の並びに 1 件を足す (手間の上限を確かめる。MAX_DRAW_COST の説明) */
+  emit(it: DisplayItem) {
+    this.countDraw(drawWeight(it));
+    this.items.push(it);
+  }
+  /** 描画の並びの手間を n だけ数える (クリップ 1 つは 1)。上限を超えれば limitcheck */
+  countDraw(n: number) {
+    if (this.drawCost + n > this.maxDrawCost) throw new PSError('limitcheck');
+    this.drawCost += n;
+  }
+  /** 描画の並びの手間の残り (模様の写しを、上限の手前で止める) */
+  drawCostLeft(): number {
+    return this.maxDrawCost - this.drawCost;
+  }
+
   // ── 色 ──
   /** 色空間の成分を RGB にする */
   toRGB(cs: ColorSpace, c: number[]): RGB {
@@ -262,6 +313,7 @@ export class Graphics {
     }
   }
   private tintCache = new Map<string, number[]>();
+  private tintCacheChars = 0;
   callTint(proc: PSObj, comps: number[], n: number): number[] {
     const key = (proc as { a?: unknown }).a ? `${comps.join(',')}` : '';
     const cacheKey = key && this.tintKey(proc) + ':' + key;
@@ -280,11 +332,17 @@ export class Graphics {
     const out: number[] = [];
     while (I.ostack.length > depth && out.length < n) {
       const o = I.ostack.pop()!;
-      out.unshift(o.t === 'int' || o.t === 'real' ? o.v : 0);
+      out.push(o.t === 'int' || o.t === 'real' ? o.v : 0);
     }
+    out.reverse();
     I.ostack.length = depth;
     while (out.length < n) out.push(0);
-    if (cacheKey && this.tintCache.size < 200000) this.tintCache.set(cacheKey, out);
+    // 覚えるのは 20 万件・鍵の字数の合計が TINT_CACHE_CHARS まで (鍵は成分を全部つないだ文字列。成分の多い DeviceN の色を
+    // 変えながら塗り続けると、件数の上限だけでは、鍵だけで数百 MB を持つ)
+    if (cacheKey && this.tintCache.size < 200000 && this.tintCacheChars + cacheKey.length <= TINT_CACHE_CHARS) {
+      this.tintCacheChars += cacheKey.length;
+      this.tintCache.set(cacheKey, out);
+    }
     return out;
   }
   private procIds = new WeakMap<object, number>();
@@ -394,6 +452,8 @@ export class Graphics {
       case 'DeviceN': {
         const nms = items[1];
         if (nms.t !== 'array') throw new PSError('typecheck');
+        // 成分の数の上限 (MAX_DEVICEN_COMPONENTS の説明)
+        if (nms.n > MAX_DEVICEN_COMPONENTS) throw new PSError('limitcheck');
         const names = arrItems(nms).map((x) => (x.t === 'name' ? x.v : x.t === 'string' ? strText(x) : ''));
         return { family: 'DeviceN', obj: o, ncomp: names.length, names, base: this.parseColorSpace(items[2]), tint: items[3] };
       }
@@ -515,7 +575,7 @@ export class Graphics {
       else {
         // 描画の並びに写すパスの点にも上限を置く ({ gsave fill grestore } loop が、メモリを使い切る前に limitcheck にする)
         this.countItem(segs.length);
-        this.items.push({ k: 'fill', segs: segs.slice(), evenOdd, color: this.currentRGB(), cmyk: this.currentCMYK(), clip: this.g.clip });
+        this.emit({ k: 'fill', segs: segs.slice(), evenOdd, color: this.currentRGB(), cmyk: this.currentCMYK(), clip: this.g.clip });
       }
     }
     this.newPath();
@@ -525,12 +585,20 @@ export class Graphics {
     if (segs.some((s) => s.op !== 'M') && !this.invisible()) {
       const g = this.g;
       if (g.cs.family === 'Pattern') {
-        // 模様の線: 線の輪郭 (太さを持った形) を求めて、その形を模様で塗る
-        const outline = strokeOutline(segs, g.ctm, g.lineWidth, g.cap, g.join, g.dash, g.miter);
-        if (outline.length) shadePatternFill(this, outline, false);
+        // 模様の線: 線の輪郭 (太さを持った形) を求めて、その形を模様で塗る。
+        // 輪郭は元のパスの何十倍もの点になる (丸いつなぎ目は 1 つで 25 点、曲線は 16 分割) ので、塗れない模様 (模様を選んでいない
+        // 「/Pattern setcolorspace」だけの状態など) では作らず、作るときは、作りながら点の数・メモリ・時間の上限を確かめる
+        // (前は、200 万点のパスの輪郭 6,000 万点を、1 つの演算子の中で作り切ってから数えたので、50〜120 秒・2.5GB を使った)
+        if (g.lineWidth > 0 && invert(g.ctm)) {
+          if (!patternUsable(this)) this.I.warn('模様の塗り');
+          else {
+            const outline = strokeOutline(segs, g.ctm, g.lineWidth, g.cap, g.join, g.dash, g.miter, this.outlineTally());
+            if (outline.length) shadePatternFill(this, outline, false);
+          }
+        }
       } else {
         this.countItem(segs.length);
-        this.items.push({
+        this.emit({
           k: 'stroke',
           segs: segs.slice(),
           color: this.currentRGB(),
@@ -547,6 +615,23 @@ export class Graphics {
     }
     this.newPath();
   }
+  /** 線の輪郭を作る間の勘定 (strokeOutline に渡す) */
+  private outlineTally(): OutlineTally {
+    const I = this.I;
+    return {
+      // 輪郭の点: パスの点と同じに数える (描画の並びのクリップとして残る)
+      points: (n) => {
+        this.countPoints(n);
+        I.work(n);
+      },
+      // 作る間だけ持つ点 (曲線を分けた線分・破線のかけら): メモリの合計の勘定に積み、作り終えたら戻す
+      temp: (n) => {
+        I.work(n);
+        I.memAlloc(n * MEM_OUTLINE_TEMP);
+      },
+      release: (n) => void (I.memUsed -= n * MEM_OUTLINE_TEMP),
+    };
+  }
   patternFill(segs: Seg[], evenOdd: boolean) {
     shadePatternFill(this, segs, evenOdd);
   }
@@ -562,6 +647,7 @@ export class Graphics {
     const segs = this.g.path.slice();
     const depth = this.g.clip ? (this.g.clip.depth ?? 0) + 1 : 0;
     if (depth >= MAX_CLIP_DEPTH) throw new PSError('limitcheck');
+    this.countDraw(1);
     this.g.clip = { segs, evenOdd, parent: this.g.clip, depth };
   }
   /** 現在のクリップのパス (無ければ外接矩形) */

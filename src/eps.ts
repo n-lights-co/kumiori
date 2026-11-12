@@ -75,6 +75,36 @@ export interface EpsLimits {
    * 既定は PS_MAX_SVG_CHARS (128MB)
    */
   maxSvgChars?: number;
+  /** 文書あたりの時間の予算 (epsToSvg だけ)。残りが maxMillis より短ければ、残りを時間の上限にし、使った時間を引く。残りが無ければ実行しない */
+  budget?: EpsBudget;
+}
+
+/**
+ * 1 つの文書 (画像の登録の入れ物 1 つ。assets.ts の AssetStore) で、EPS を実行して SVG にする時間の合計の上限 (ミリ秒)。
+ * EPS 1 つごとの上限 (20 秒・512MB) だけでは、名前を変えて同じ EPS を何個も参照する文書 (8 個で 280 秒を超えた) が、個数の分だけ
+ * 時間を使う。実在の EPS は 1 つが数十〜数百ミリ秒 (見本の docs/conformance の EPS は、どれも 1 秒未満) なので、60 秒は数百個の図を
+ * 持つ文書でも届かない。使い切ったら、残りの EPS は実行しない (epsToSvg が undefined を返し、プレビューがあればプレビューで、
+ * 無ければ描けない画像として警告に出す)
+ */
+export const EPS_DOCUMENT_MILLIS = 60_000;
+
+/** 文書あたりの EPS の時間の予算 (EPS_DOCUMENT_MILLIS の説明) */
+export class EpsBudget {
+  constructor(public millisLeft = EPS_DOCUMENT_MILLIS) {}
+}
+const budgets = new WeakMap<object, EpsBudget>();
+/**
+ * 予算を初めの値に戻す。画面 (main.ts) は、画像の入れ物を 1 つだけ作り、別の文書を開いても使い続ける (前に読んだ画像を残す) ので、
+ * 文書を開くたびに戻す (戻さないと、「文書あたり」の予算が「画面を開いている間の合計」になり、重い EPS を何度か開いた後は、どの EPS も描けなくなる)
+ */
+export function resetEpsBudget(owner: object): void {
+  budgets.delete(owner);
+}
+/** 文書 (画像の登録の入れ物など、文書ごとに 1 つのもの) に結び付けた予算。初めて引いたときに作る */
+export function epsBudgetOf(owner: object): EpsBudget {
+  let b = budgets.get(owner);
+  if (!b) budgets.set(owner, (b = new EpsBudget()));
+  return b;
 }
 
 /** EPS を実行して、描いたものを返す */
@@ -162,6 +192,19 @@ class Pieces {
 
 /** EPS を SVG にする。読めない EPS なら undefined */
 export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<EpsResult | undefined> {
+  const budget = opts.budget;
+  if (!budget) return epsToSvg1(b, opts);
+  if (!(budget.millisLeft > 0) || !epsProgram(b)) return undefined;
+  const t0 = Date.now();
+  try {
+    return await epsToSvg1(b, { ...opts, maxMillis: Math.min(opts.maxMillis ?? 20_000, budget.millisLeft) });
+  } finally {
+    // 実行の後の SVG にする時間も引く
+    budget.millisLeft -= Date.now() - t0;
+  }
+}
+
+async function epsToSvg1(b: Uint8Array, opts: EpsLimits): Promise<EpsResult | undefined> {
   const r = runEps(b, opts);
   if (!r) return undefined;
   const [x0, y0, x1, y1] = r.bbox;
@@ -179,6 +222,25 @@ export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<Eps
     to.push(piece);
   };
   let tooLong = false;
+  // 画素を共有する画像 (模様の写しは、模様の絵の画像の画素を共有する。psShading の moveItem) は、PNG に 1 度だけ圧縮して使い回す。
+  // 前は写しごとに圧縮し直し、2,500 万画素の画像の写しの数だけ、数秒ずつかかった。覚えるのは共有されている画素だけ (最後の写しで手放す)
+  const shared = new Map<Uint8Array, number>();
+  for (const it of r.items) if (it.k === 'image' && it.rgba) shared.set(it.rgba, (shared.get(it.rgba) ?? 0) + 1);
+  const pngs = new Map<Uint8Array, Uint8Array>();
+  const pngOf = async (rgba: Uint8Array, width: number, height: number): Promise<Uint8Array> => {
+    const left = (shared.get(rgba) ?? 1) - 1;
+    shared.set(rgba, left);
+    let data = pngs.get(rgba);
+    if (!data) {
+      data = await encodePng({ width, height, rgba });
+      if (left > 0) pngs.set(rgba, data);
+    }
+    if (left <= 0) {
+      pngs.delete(rgba);
+      shared.delete(rgba);
+    }
+    return data;
+  };
   const clipIds = new Map<Clip, string>();
   const clipId = (c: Clip) => {
     let id = clipIds.get(c);
@@ -239,7 +301,7 @@ export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<Eps
         );
       } else if (it.k === 'image') {
         // base64 にする前に長さを確かめる (上限を超える画像を、文字列にしない)
-        const data = it.jpeg ?? (await encodePng({ width: it.width, height: it.height, rgba: it.rgba! }));
+        const data = it.jpeg ?? (await pngOf(it.rgba!, it.width, it.height));
         if (chars + Math.ceil(data.length / 3) * 4 > maxChars) throw TOO_LONG;
         const uri = `data:image/${it.jpeg ? 'jpeg' : 'png'};base64,${base64(data)}`;
         // 画素は、SVG にしたら手放す (描画の並びはこの関数の中だけのもの。画像の多い絵で、画素と PNG を 2 重に持ち続けない)

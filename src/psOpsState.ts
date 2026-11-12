@@ -2,7 +2,7 @@
  * psOpsState — グラフィックス状態の演算子 (§8.2: gsave・setlinewidth・setdash など)、色 (setgray・setrgbcolor・setcolorspace・setpattern など) と、
  * 機器に依存する色の変換 (§7。値は持つだけ)
  */
-import { type Interp, PSError, VM_ARRAY_ITEM, arr, arrItems, bool, dictObj, int, name, num, real } from './psInterp';
+import { type Interp, PSError, MEM_ARRAY_ITEM, VM_ARRAY_ITEM, arr, arrItems, bool, dictObj, int, name, num, real } from './psInterp';
 import type { Graphics, GState } from './psGraphics';
 import { DEVICE_GRAY, DEVICE_RGB, DEVICE_CMYK, clamp01, type ColorSpace } from './psColorSpace';
 import { popMatrix } from './psOpsMatrix';
@@ -96,7 +96,10 @@ export function installStateOperators(I: Interp, G: Graphics) {
     G.g.dash = { array, offset: off };
   });
   d('currentdash', (I) => {
-    I.vmAlloc(G.g.dash.array.length * VM_ARRAY_ITEM);
+    // 新しい配列を作る (§8.2 currentdash)。要素のオブジェクトと配列の入れ物の分も、メモリの合計の勘定に積む
+    // (前は 1 要素 8 バイトしか積まず、1000 要素の破線を 10 万回取り出すと、勘定の 10 倍のメモリを使った)
+    const n = G.g.dash.array.length;
+    I.vmAlloc((n + 1) * VM_ARRAY_ITEM, (n + 1) * MEM_ARRAY_ITEM);
     I.push(arr(G.g.dash.array.map(num)));
     I.push(num(G.g.dash.offset));
   });
@@ -196,14 +199,15 @@ export function installStateOperators(I: Interp, G: Graphics) {
     if (cs.family === 'Pattern') {
       const p = I.pop();
       const under: number[] = [];
-      if (cs.base) for (let k = 0; k < cs.base.ncomp; k++) under.unshift(I.popNum());
+      // 後ろの成分から取って、最後に逆順にする (unshift で前に足すと、成分の数の 2 乗の手間になる)
+      if (cs.base) for (let k = 0; k < cs.base.ncomp; k++) under.push(I.popNum());
       G.g.pattern = p;
-      G.g.color = under;
+      G.g.color = under.reverse();
       return;
     }
     const c: number[] = [];
-    for (let k = 0; k < cs.ncomp; k++) c.unshift(I.popNum());
-    G.g.color = c;
+    for (let k = 0; k < cs.ncomp; k++) c.push(I.popNum());
+    G.g.color = c.reverse();
   });
   d('currentcolor', (I) => {
     for (const v of G.g.color) I.push(real(v));
@@ -217,7 +221,8 @@ export function installStateOperators(I: Interp, G: Graphics) {
       // 色の無い模様: 下の色の成分を取る
       const base = G.g.cs.family === 'Pattern' ? G.g.cs.base : G.g.cs;
       const comps: number[] = [];
-      if (base) for (let k = 0; k < base.ncomp; k++) comps.unshift(I.popNum());
+      if (base) for (let k = 0; k < base.ncomp; k++) comps.push(I.popNum());
+      comps.reverse();
       G.g.cs = { family: 'Pattern', obj: arr([name('Pattern'), base?.obj ?? name('DeviceGray')]), ncomp: 1, base };
       G.g.color = comps;
     } else {

@@ -817,6 +817,13 @@ function mitreWith(sd: BorderSide | undefined, adj: BorderSide | undefined): boo
   return st === 'solid' && (adj.color !== sd.color || at !== 'solid');
 }
 
+/**
+ * 罫線の 1 辺に、1 つずつ図形にして描く模様 (点線の点・破線の線・鎖線・波線の波) の数の上限。超える辺は、破線の指定を付けた 1 本の線で描く
+ * (paintBorderSide)。点線のいちばん短い周期は 1.5pt (太さ 0.6pt 以下) なので、2 万個は 30000pt (約 10.5m) 以上の辺に当たる。
+ * PDF のページの大きさの上限 (14400pt。ISO 32000-1 附属書 C.2) の 2 倍を超え、ページに収まる辺は届かない
+ */
+const MAX_BORDER_MARKS = 20_000;
+
 function dashes(len: number, dash: number, gap: number): Array<[number, number]> {
   if (len <= dash * 1.5) return [[0, len]];
   const n = Math.max(2, Math.round((len + gap) / (dash + gap)));
@@ -880,6 +887,27 @@ function paintBorderSide(
   };
   const style = s.style ?? 'solid';
   const outerFirst = edge === 'top' || edge === 'left'; // 辺の外側が先頭側 (top/left) か
+  // 模様 (点・線・波) の数が多すぎる辺は、模様を 1 つずつ図形にせず、破線の指定を付けた 1 本の線で描く。
+  // 「border: 1px dotted; width: 1e7px」(129 バイト) で、1 辺に 300 万個の点の図形を作り、メモリを使い切った
+  {
+    const u = Math.max(t, 0.5);
+    // 模様の 1 周期の長さ (下の各分岐の、いちばん短い周期)
+    const period =
+      style === 'dotted' ? Math.max(t, 0.6) + Math.max(t * 1.5, 0.9)
+      : style === 'dashed' ? 6 * u
+      : style === 'dot-dash' ? 5.8 * u
+      : style === 'dot-dot-dash' ? 9.2 * u
+      : style === 'wave' ? Math.min(s.waveLength ? s.waveLength / 2 : 3 * u, 3 * u)
+      : 0;
+    if (period > 0 && !(len / period <= MAX_BORDER_MARKS)) {
+      if (!(len > 0) || !Number.isFinite(len) || !(t > 0)) return;
+      const c = t / 2;
+      const P = (along: number) => (horizontal ? { x: x + along, y: y + c } : { x: x + c, y: y + along });
+      const dash: [number, number] | undefined = style === 'wave' ? undefined : style === 'dotted' ? [Math.max(t, 0.6), Math.max(t * 1.5, 0.9)] : [4 * u, 2 * u];
+      p.strokePath([{ op: 'M', ...P(0) }, { op: 'L', ...P(len) }], style === 'wave' ? (s.waveStroke ?? Math.max(t / 8, 0.25)) : t, s.color, dash);
+      return;
+    }
+  }
   // 辺の中央に対して対称に置く模様 (BorderSide.symmetric)。模様の 1 周期の中の線 (始め, 長さ) と周期、辺の中央に来る位置。
   // 破線: 両端の角 (隣の辺の太さの部分) は線。その間の長さ L' を「半分の線 (2) ・(間 (2) ・線 (4)) × k・間 (2)・半分の線 (2)」で割り付け、
   // k は L' に合う整数 (L' を 6(k + 1) 等分した長さが太さに近くなる数)。短い辺 (k = 0) は、L' を線・間・線に 3 等分する

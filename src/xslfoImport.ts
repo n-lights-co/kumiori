@@ -72,6 +72,7 @@ import type {
 } from './types';
 import { PT_PER_MM } from './units';
 import { withGrouping } from './pageNumber';
+import { MAX_COUNTER_LENGTH } from './counterStyle';
 import { isColorName, spotColor, toCss } from './color';
 import { normalizeSrc } from './assets';
 import { gradientSvg, isCssGradient } from './cssGradient';
@@ -79,6 +80,7 @@ import { normBorder } from './geometry';
 import type { FkFont, MathFont } from './mathFont';
 import { layoutMathML, type MNode } from './mathLayout';
 import { isAntennaCompat, type FoCompat } from './compat';
+import { pushAll } from './arrayLoop';
 
 /** 表の列の番号・数の上限 */
 const MAX_TABLE_COLUMNS = 1000;
@@ -296,7 +298,7 @@ class Importer {
   /** line-height の成分 (数は字の大きさに掛け、長さ・百分率はそのまま) を pt にする */
   private lineHeightComponent(v: string | undefined, fs: number): number | undefined {
     if (v === undefined) return undefined;
-    if (/^-?\d*\.?\d+$/.test(v.trim())) return Math.max(parseFloat(v) * fs, 0);
+    if (/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(v.trim())) return Math.max(parseFloat(v) * fs, 0);
     const n = this.len(v, fs, fs);
     return n === undefined ? undefined : Math.max(n, 0);
   }
@@ -824,7 +826,7 @@ class Importer {
    * of the permitted values.”)。<angle> として読めなければ undefined
    */
   private angle90(v: string): 0 | 90 | 180 | 270 | undefined {
-    const m = /^([-+]?(?:\d+\.?\d*|\.\d+))(deg|grad|rad)$/.exec(v.trim());
+    const m = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(deg|grad|rad)$/.exec(v.trim());
     if (!m) return undefined;
     const deg = parseFloat(m[1]) * (m[2] === 'grad' ? 0.9 : m[2] === 'rad' ? 180 / Math.PI : 1);
     const n = ((deg % 360) + 360) % 360;
@@ -841,7 +843,7 @@ class Importer {
       const fn = /\b(from-parent|inherited-property-value|from-nearest-specified-value|from-table-column|merge-property-values)\s*\(/.exec(v);
       if (fn) this.miss(`function:${fn[1]}()`);
       // XSL 1.1 §5.9.13 に無い単位 (CSS の rem・ch・vw、アンテナハウスの q・jpt など) の長さも、黙って捨てずに報告する (PKG-21 (2))
-      const unit = /^[+-]?(?:\d+\.?\d*|\.\d+)([a-z]+)$/i.exec(v.trim());
+      const unit = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)([a-z]+)$/i.exec(v.trim());
       if (unit) this.miss(`単位 ${unit[1].toLowerCase()} (長さ "${v.trim().slice(0, 20)}")`);
     }
     return r;
@@ -1007,7 +1009,7 @@ class Importer {
       const todo: XEl[] = [ps];
       for (let el = todo.pop(); el; el = todo.pop()) {
         note(el, ps);
-        todo.push(...this.els(el));
+        pushAll(todo, this.els(el));
       }
     }
     this.idSeqs = map;
@@ -1568,7 +1570,12 @@ class Importer {
     // 脚注どうしの間は、本体の space-before / space-after だけ (FO には Kumiori の既定の 2pt のアキは無い)
     seq.footnotes = { ...seq.footnotes, spacing: 0 };
     // アンテナハウスの自動脚注番号の書式・初期値・振り直し
-    const fnFmt = this.attr(ps, 'axf:footnote-number-format');
+    let fnFmt = this.attr(ps, 'axf:footnote-number-format');
+    // 長すぎる書式は読まない (format と同じ。脚注ごとに写される)
+    if (fnFmt && fnFmt.length > MAX_COUNTER_LENGTH && [...fnFmt].length > MAX_COUNTER_LENGTH) {
+      this.miss(`axf:footnote-number-format (${MAX_COUNTER_LENGTH} 字より長い書式)`);
+      fnFmt = undefined;
+    }
     const fnInit = parseInt(this.attr(ps, 'axf:footnote-number-initial') ?? '', 10);
     const fnReset = this.attr(ps, 'axf:footnote-number-reset');
     if (fnFmt || Number.isFinite(fnInit) || fnReset === 'page') {
@@ -1583,7 +1590,14 @@ class Importer {
     if (Number.isFinite(ipn)) seq.initialPageNumber = ipn;
     else if (ipnAttr === 'auto-odd' || ipnAttr === 'auto-even') seq.initialPageNumber = ipnAttr;
     // ページ番号の書式 (§7.26.1)
-    const fmt = this.attr(ps, 'format');
+    let fmt = this.attr(ps, 'format');
+    // 長すぎる書式は読めないもの (初期値の "1") とする。書式トークンの桁 ("0001" の 0) は番号を詰める桁数 (XSLT 1.0 §7.7.1) なので、
+    // format="0…(10 万桁)1" は、ページ番号ごとに 10 万字を作り、50 ページ (104KB) でメモリを使い切った。上限は、カウンターの表記の
+    // 長さの上限 (Counter Styles 3 §2 の MAX_COUNTER_LENGTH。1000 符号位置) と同じにする (実在の書式は数字か、短い字と区切り)
+    if (fmt && fmt.length > MAX_COUNTER_LENGTH && [...fmt].length > MAX_COUNTER_LENGTH) {
+      this.miss(`format (${MAX_COUNTER_LENGTH} 字より長い書式)`);
+      fmt = undefined;
+    }
     if (fmt && fmt !== '1') seq.pageNumberFormat = fmt;
     // 桁区切り (§7.26.2 grouping-separator・§7.26.3 grouping-size。XSLT 1.0 §7.7.1): 10 進の番号を、後ろから grouping-size 桁ごとに
     // grouping-separator (1 字) で区切る。片方だけの指定は無視する (“If only one of the grouping-separator and grouping-size attributes
@@ -1723,7 +1737,7 @@ class Importer {
     const lh = this.attr(el, 'line-height') ?? this.attr(el, 'line-height.optimum');
     if (lh && lh !== 'normal') {
       // 数値 (比) は比のまま、長さ・百分率は計算済みの長さで継承される (§7.16.4)
-      if (/^-?\d*\.?\d+$/.test(lh)) {
+      if (/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(lh)) {
         const r = parseFloat(lh);
         if (r > 0) s.lineHeight = r;
       } else {
@@ -2499,7 +2513,7 @@ class Importer {
     };
     const out: LBookmark[] = [];
     for (const [g, list] of groups) {
-      if (g === undefined) out.push(...tree(list));
+      if (g === undefined) pushAll(out, tree(list));
       else out.push({ title: g, ref: '', children: tree(list) });
     }
     return out;
@@ -2547,7 +2561,7 @@ class Importer {
     const posOf = (p: string | undefined, keys: string[]): BackgroundImage['x'] | undefined => {
       if (!p) return undefined;
       if (keys.includes(p)) return p as never;
-      if (/^-?\d*\.?\d+%$/.test(p)) return p as `${number}%`;
+      if (/^-?(?:\d+(?:\.\d+)?|\.\d+)%$/.test(p)) return p as `${number}%`;
       return this.len(p, ctx.fontSize);
     };
     const x = posOf(ph, ['left', 'center', 'right']);
@@ -2593,7 +2607,7 @@ class Importer {
     if (parts.length > 2 || v.includes(',')) return bad();
     const read = (t: string): { len?: number; pct?: number } | undefined => {
       if (t === 'auto') return {};
-      if (/^\d*\.?\d+%$/.test(t)) return { pct: parseFloat(t) / 100 };
+      if (/^(?:\d+(?:\.\d+)?|\.\d+)%$/.test(t)) return { pct: parseFloat(t) / 100 };
       const n = this.len(t, fs);
       return n !== undefined && n >= 0 ? { len: n } : undefined;
     };
@@ -2661,8 +2675,8 @@ class Importer {
         // ブロックの隣の、空白だけの文字列は消す (XML の空白だけ。改行しない空白 U+00A0 などは中身として残す)。
         // inline と inline の間の空白は、子にブロックがあっても語の間の空白として残す (§7.16.8・§7.16.12)
         if (hasBlock && isXmlSpaceOnly(t) && (!prev || prev.block || !next || next.block)) t = '';
-        if (t) out.push(...this.smallCapsOf(this.punctuationSpacing(t, ctx), ctx));
-      } else if (typeof it.v === 'string') out.push(...this.smallCapsOf([it.v], ctx));
+        if (t) pushAll(out, this.smallCapsOf(this.punctuationSpacing(t, ctx), ctx));
+      } else if (typeof it.v === 'string') pushAll(out, this.smallCapsOf([it.v], ctx));
       else out.push(it.v);
     });
     // 行の先頭・末尾の空白だけを消す (§7.16.8)。inline の中の空白は、inline の端でも残し、
@@ -3072,6 +3086,8 @@ class Importer {
         return c ? toCss(c) : undefined;
       },
     });
+    // 1 つの数式で描く字の数の上限 (mathLayout.ts の MAX_MATH_GLYPHS) を超えて、超えた分の字を描かなかったときは、報告する
+    if (r.truncated) this.miss('数式の字の数が上限を超えたので、超えた分の字を描きません');
     const src = `data:image/svg+xml;base64,${utf8Base64(r.svg)}`;
     this.addImage(src);
     const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -3087,7 +3103,7 @@ class Importer {
     const one = (v: string | undefined, base: number) => {
       const t = v?.trim();
       if (!t || /^(auto|scale-to-fit|scale-down-to-fit|scale-up-to-fit)$/.test(t) || !(base > 0)) return undefined;
-      if (/^\d*\.?\d+%$/.test(t)) return parseFloat(t) / 100;
+      if (/^(?:\d+(?:\.\d+)?|\.\d+)%$/.test(t)) return parseFloat(t) / 100;
       const len = this.len(t, ctx.fontSize, ctx.width);
       return len !== undefined && len > 0 ? len / base : undefined;
     };
@@ -3389,7 +3405,7 @@ class Importer {
     const fs = ctx.fontSize;
     const sized = (v: string | undefined) => (v && !/^(auto|scale-to-fit|scale-down-to-fit|scale-up-to-fit)$/.test(v) ? this.len(v, fs, ctx.width) : undefined);
     // content-width / content-height の百分率は、画像本来の大きさに対する倍率 (周りの幅に対する割合ではない)
-    const pct = (v: string | undefined) => (v && /^\d*\.?\d+%$/.test(v.trim()) ? parseFloat(v) / 100 : undefined);
+    const pct = (v: string | undefined) => (v && /^(?:\d+(?:\.\d+)?|\.\d+)%$/.test(v.trim()) ? parseFloat(v) / 100 : undefined);
     const cwScale = pct(this.attr(n, 'content-width'));
     const chScale = pct(this.attr(n, 'content-height'));
     // 画像の大きさ: content-* の長さ。scale-to-fit などなら枠の大きさ (枠に合わせる)。auto・百分率は本来の大きさから (組むときに決める)
@@ -3793,7 +3809,7 @@ class Importer {
       this.inheritedDisplayAlign = prevDA;
       // 表は、table-and-caption の text-align (継承される) に従って寄せる (§6.7.2)。寄せ方は組むときに、継承した値で決める
       for (const o of t) if (typeof o.v !== 'string' && o.v.type === 'table') (o.v as LTable).alignByTextAlign = true;
-      out.push(...t);
+      pushAll(out, t);
     }
     if (caption && (cs === 'after' || cs === 'end')) out.push(...captionBlocks());
     // 書式も id も無ければ包まない (id があれば、ページ番号の参照・リンクの飛び先にするため包む)
@@ -4031,7 +4047,7 @@ class Importer {
       const markers = this.inMarker ? [] : mkEls.map((x) => this.marker(x, c2));
       this.inTableHF = saved;
       if (markers.length) rows.forEach((r, k) => (r.bodyMarkers = { markers, first: k === 0, last: k === rows.length - 1 }));
-      tbl.body.rows.push(...rows);
+      pushAll(tbl.body.rows, rows);
     }
     // table-body が無く、table-row が直接ある場合
     for (const r of els.filter((e) => this.name(e) === 'table-row')) tbl.body.rows.push(this.row(r, c2, tw, tAlign));

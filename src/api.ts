@@ -223,6 +223,11 @@ export { decodeDocumentText } from './documentText';
 const ENTITY_MAX_DEPTH = 8;
 const ENTITY_MAX_GROWTH = 16;
 /**
+ * 展開で増える長さの上限 (字の数)。展開後の長さを V8 の文字列の長さの上限 (約 2^29 字) より十分小さくする (それを超えると、
+ * 分かる文の誤りの前に「Invalid string length」で終わる)。2^27 字 (約 1.3 億字) 増える展開は、実在の FO・XHTML には無い
+ */
+const ENTITY_MAX_ADDED = 2 ** 27;
+/**
  * DOCTYPE の内部サブセットに宣言された内部実体 (<!ENTITY name "値">) を、文書の中の &name; に置き換える
  * (@xmldom/xmldom は内部実体を展開しないので、読み込みの前に自前で展開する。ブラウザの DOMParser と同じ結果にする)。
  * 外部実体 (SYSTEM・PUBLIC) と引数実体 (%) は展開しない。CDATA 区間とコメントの中は置き換えない。
@@ -234,20 +239,29 @@ export function expandInternalEntities(xml: string): string {
   const ents = new Map<string, string>();
   for (const m of dt[1].matchAll(/<!ENTITY\s+([A-Za-z_:][\w.:-]*)\s+(?:"([^"]*)"|'([^']*)')\s*>/g)) if (!ents.has(m[1])) ents.set(m[1], m[2] ?? m[3] ?? '');
   if (!ents.size) return xml;
-  const limit = xml.length * ENTITY_MAX_GROWTH;
-  const expand = (t: string, depth: number): string =>
-    t.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|&([A-Za-z_:][\w.:-]*);/g, (all, name?: string) => {
+  // 上限は、元の長さの ENTITY_MAX_GROWTH 倍と、元の長さ + ENTITY_MAX_ADDED の小さい方
+  const limit = Math.min(xml.length * ENTITY_MAX_GROWTH, xml.length + ENTITY_MAX_ADDED);
+  const tooLarge = () => new Error(msg('XML の解析に失敗しました: 内部実体の展開が大きすぎます', 'XML parse error: the expansion of internal entities is too large'));
+  const expand = (t: string, depth: number): string => {
+    // 置き換えた結果の長さを、置き換えるたびに数える。置き換えを終えてから長さを見ると、1 つずつは上限の内の大きな実体を
+    // 何万回も参照する文書 (6 万字の実体 × 2 万個の参照。120KB) で、replace の結果が文字列の長さの上限を超え、
+    // 分かる文の誤りの前に「Invalid string length」で終わっていた
+    let size = t.length;
+    return t.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|&([A-Za-z_:][\w.:-]*);/g, (all, name?: string) => {
       if (name === undefined) return all;
       const v = ents.get(name);
       if (v === undefined) return all;
       if (depth >= ENTITY_MAX_DEPTH) throw new Error(msg(`XML の解析に失敗しました: 実体 &${name}; の入れ子が深すぎます`, `XML parse error: entity &${name}; is nested too deeply`));
       const out = expand(v, depth + 1);
       if (out.length > limit) throw new Error(msg(`XML の解析に失敗しました: 実体 &${name}; の展開が大きすぎます`, `XML parse error: the expansion of entity &${name}; is too large`));
+      size += out.length - all.length;
+      if (size > limit) throw tooLarge();
       return out;
     });
+  };
   const bodyAt = dt.index + dt[0].length;
   const body = expand(xml.slice(bodyAt), 0);
-  if (body.length > limit) throw new Error(msg('XML の解析に失敗しました: 内部実体の展開が大きすぎます', 'XML parse error: the expansion of internal entities is too large'));
+  if (body.length > limit) throw tooLarge();
   return xml.slice(0, bodyAt) + body;
 }
 

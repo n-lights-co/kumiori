@@ -40,6 +40,25 @@ export class ZipLimitError extends Error {
   }
 }
 
+/**
+ * zip の項目が読めない誤り (位置・大きさが zip の外を指す、暗号化されている、ZIP64 の項目、対応していない圧縮方式)。
+ * EPUB の章・CSS・画像なら、その項目だけを読めないものとして飛ばす (readEpub の warnings に書く)
+ */
+export class ZipEntryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ZipEntryError';
+  }
+}
+
+/**
+ * EPUB の章 (HTML) と CSS の字の数の合計の上限 (2^27 字 = 約 1.3 億字)。超えたら、その後の章は読まずに警告を出す。
+ * 章をつないだ HTML は 1 つの文字列なので、V8 の文字列の長さの上限 (約 5.3 億字) を超えると「Invalid string length」で終わり、
+ * その手前でも、展開の合計の上限 (1GB) に届くまで読むと、止まるまで 18 秒・1.46GB かかった (60,000 回 spine に並べた 8MB の章)。
+ * 実在の本で文字の多いもの (全集・事典) でも、章の HTML の合計は数千万字なので、届かない
+ */
+export const EPUB_MAX_TEXT_CHARS = 2 ** 27;
+
 const mb = (n: number) => (n >= 1024 * 1024 ? `${Math.round(n / 1024 / 1024)}MB` : `${n}B`);
 
 /**
@@ -69,17 +88,24 @@ export function readZip(bytes: Uint8Array, limits: Partial<ZipLimits> = {}): Zip
   }
   if (eocd < 0) throw new Error('zip ではありません');
   const count = v.getUint16(eocd + 10, true);
+  const cdStart = v.getUint32(eocd + 16, true);
+  // ZIP64 (項目の数・中央ディレクトリの位置が 16・32 ビットの最大値で、本当の値は ZIP64 の記録にある。APPNOTE 6.3 §4.4.1.4) は読まない
+  if (count === 0xffff || cdStart === 0xffffffff) throw new Error(msg('ZIP64 の zip は読めません', 'ZIP64 archives are not supported'));
   if (count > lim.maxEntries) throw new ZipLimitError(msg(`zip の項目が多すぎます (${count} 個。上限 ${lim.maxEntries} 個)`, `the zip has too many entries (${count}; the limit is ${lim.maxEntries})`), 'entries');
-  let p = v.getUint32(eocd + 16, true);
+  let p = cdStart;
+  // 項目のデータは、中央ディレクトリより前にある (APPNOTE 6.3 §4.3.6 の並び)。データの範囲は、そこまでで切る
+  const dataEnd = Math.min(cdStart, bytes.length);
   const out: ZipEntry[] = [];
   const utf8 = new TextDecoder();
   for (let k = 0; k < count && p + 46 <= bytes.length; k++) {
     if (v.getUint32(p, true) !== 0x02014b50) break;
+    const flags = v.getUint16(p + 8, true);
     const method = v.getUint16(p + 10, true);
     const csize = v.getUint32(p + 20, true);
     const nameLen = v.getUint16(p + 28, true);
     const extraLen = v.getUint16(p + 30, true);
     const commentLen = v.getUint16(p + 32, true);
+    const usize = v.getUint32(p + 24, true);
     const local = v.getUint32(p + 42, true);
     const name = utf8.decode(bytes.subarray(p + 46, p + 46 + nameLen));
     p += 46 + nameLen + extraLen + commentLen;
@@ -87,14 +113,24 @@ export function readZip(bytes: Uint8Array, limits: Partial<ZipLimits> = {}): Zip
     out.push({
       name,
       data: async () => {
+        // 暗号化 (汎用の印の bit 0。APPNOTE 6.3 §4.4.4) の項目は読めない (暗号を解かずに展開すると、でたらめなデータになる)
+        if (flags & 1) throw new ZipEntryError(msg(`${name}: 暗号化された項目は読めません`, `${name}: encrypted entries are not supported`));
+        // ZIP64 の項目 (大きさ・位置が 32 ビットの最大値で、本当の値は拡張の欄にある。§4.4.8・§4.4.9・§4.4.16) は読まない
+        if (csize === 0xffffffff || usize === 0xffffffff || local === 0xffffffff) throw new ZipEntryError(msg(`${name}: ZIP64 の項目は読めません`, `${name}: ZIP64 entries are not supported`));
+        // 局所ヘッダ (30 バイト + 名前 + 拡張の欄。§4.3.7) とデータが、zip のデータの範囲の内にあるか。
+        // 偽の位置を読むと、DataView が生の RangeError を投げていた。範囲を超える大きさのデータは、後ろの項目・中央ディレクトリまで読んでいた
+        const broken = () => new ZipEntryError(msg(`${name}: zip の項目の位置か大きさが壊れています`, `${name}: the offset or size of the zip entry is corrupt`));
+        if (local + 30 > dataEnd || v.getUint32(local, true) !== 0x04034b50) throw broken();
         const ln = v.getUint16(local + 26, true);
         const le = v.getUint16(local + 28, true);
-        const raw = bytes.subarray(local + 30 + ln + le, local + 30 + ln + le + csize);
+        const start = local + 30 + ln + le;
+        if (start + csize > dataEnd) throw broken();
+        const raw = bytes.subarray(start, start + csize);
         if (method === 0) {
           take(name, 0, raw.length);
           return raw;
         }
-        if (method !== 8) throw new Error(`${name}: 対応していない圧縮方式 (${method})`);
+        if (method !== 8) throw new ZipEntryError(msg(`${name}: 対応していない圧縮方式 (${method})`, `${name}: unsupported compression method (${method})`));
         // 出力を塊ごとに受け取り、数えながらためる。上限を超えたら、残りを展開せずに止める
         const reader = new Blob([raw as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
         const chunks: Uint8Array[] = [];
@@ -109,7 +145,9 @@ export function readZip(bytes: Uint8Array, limits: Partial<ZipLimits> = {}): Zip
           }
         } catch (e) {
           await reader.cancel().catch(() => undefined);
-          throw e;
+          if (e instanceof ZipLimitError) throw e;
+          // 壊れた deflate のデータ: DecompressionStream は文の無い TypeError を投げるので、どの項目か分かる文の誤りにする
+          throw new ZipEntryError(msg(`${name}: 圧縮されたデータを展開できません (${e instanceof Error && e.message ? e.message : '壊れたデータ'})`, `${name}: cannot decompress the data (${e instanceof Error && e.message ? e.message : 'corrupt data'})`));
         }
         const outBytes = new Uint8Array(size);
         let at = 0;
@@ -159,8 +197,11 @@ type ParseXml = (text: string, type: 'application/xml' | 'text/html') => Documen
  * limits: 展開の上限 (既定は imageLimits.ts の値)。1 つの項目の上限を超えた章・CSS・画像は、読めないものとして飛ばし (warnings に書く)、
  * 合計の上限を超えたら、誤りで止める (ZipLimitError)。container.xml・OPF が上限を超えるときも、読めないので誤りで止める
  */
-export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Partial<ZipLimits> = {}): Promise<EpubBook> {
+export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Partial<ZipLimits> & { maxTextChars?: number } = {}): Promise<EpubBook> {
   const maxEntries = limits.maxEntries ?? EPUB_MAX_ENTRIES;
+  const maxTextChars = limits.maxTextChars ?? EPUB_MAX_TEXT_CHARS;
+  /** これまでに読んだ章と CSS の字の数 */
+  let textChars = 0;
   // 項目の名前は、メモリの上の表の鍵にするだけ (ファイルには書き出さない)。名前に ../ があっても、表の外には出ない。
   // 文書からの参照は resolvePath で .. を解いてから引く (根より上へは出ない) ので、../ を含む名前の項目には当たらない
   const entries = new Map(readZip(bytes, limits).map((e) => [e.name, e]));
@@ -169,12 +210,12 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
     return e ? new TextDecoder().decode(await e.data()) : undefined;
   };
   const warnings: string[] = [];
-  /** 1 つの項目の上限を超えた誤りなら、警告にして undefined を返す (その項目を飛ばす)。ほかの誤り (合計の上限など) は投げ直す */
+  /** 1 つの項目の上限を超えた誤りか、読めない項目の誤りなら、警告にして undefined を返す (その項目を飛ばす)。ほかの誤り (合計の上限など) は投げ直す */
   const skipTooLarge = async <T>(read: () => Promise<T>): Promise<T | undefined> => {
     try {
       return await read();
     } catch (e) {
-      if (!(e instanceof ZipLimitError) || e.scope !== 'entry') throw e;
+      if (!(e instanceof ZipEntryError) && (!(e instanceof ZipLimitError) || e.scope !== 'entry')) throw e;
       warnings.push(e.message);
       return undefined;
     }
@@ -213,6 +254,13 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
     if (!item) continue;
     const src = await skipTooLarge(() => text(item.href));
     if (src === undefined) continue;
+    if (textChars + src.length > maxTextChars) {
+      // 字の数の合計の上限 (EPUB_MAX_TEXT_CHARS)。この章とその後の章は読まない (読んだ所までを組む)
+      const rest = itemrefs.length - k;
+      warnings.push(msg(`EPUB の章の字の数の合計が上限 (${maxTextChars} 字) を超えるので、${item.href} から後の ${rest} 個の章を読みません`, `the total length of the EPUB chapters exceeds the limit (${maxTextChars} characters); ${rest} chapters from ${item.href} on are not read`));
+      break;
+    }
+    textChars += src.length;
     // XHTML は XML として読む (<a/> のような空要素を正しく扱う)。読めなければ HTML として読む
     let doc = /xhtml|xml/.test(item.type) ? parse(src, 'application/xml') : undefined;
     if (!doc || doc.getElementsByTagName('parsererror').length || !doc.getElementsByTagName('body')[0]) doc = parse(src, 'text/html');
@@ -225,7 +273,8 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
       if (seenCss.has(p)) continue;
       seenCss.add(p);
       const t = await skipTooLarge(() => text(p));
-      if (t) css.push(t);
+      if (t && textChars + t.length > maxTextChars) warnings.push(msg(`${p}: EPUB の字の数の合計が上限 (${maxTextChars} 字) を超えるので、この CSS を読みません`, `${p}: the total length of the EPUB text exceeds the limit (${maxTextChars} characters); this stylesheet is not read`));
+      else if (t) (css.push(t), (textChars += t.length));
     }
     for (const s of Array.from(doc.getElementsByTagName('style'))) {
       const t = s.textContent ?? '';

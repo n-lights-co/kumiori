@@ -10,3 +10,15 @@ updates:
     groups:
       actions:
         patterns: ['*']
+  # npm の依存 (実行時の依存は @pdf-lib/fontkit・@xmldom/xmldom・hyphen・linkedom・pdf-lib・utif。どれも、他人の書いた文書・画像・書体を読む所)。
+  # 脆弱性の修正の版は、Dependabot の security updates が、下の設定とは別に、すぐに PR にする (リポジトリの Settings → Code security で有効にしておく)。
+  # 版の上げは、週に 1 度、開発用の依存 (vite・vitest・typescript・playwright など) と実行時の依存を、別々の PR にまとめる
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      runtime-dependencies:
+        dependency-type: production

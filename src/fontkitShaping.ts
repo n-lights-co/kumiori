@@ -120,6 +120,8 @@
 import { isMyanmarBase, isMyanmarDependent } from './orthographicSyllable';
 import { reorderArabicMarks } from './arabicMarks';
 import { reorderHebrewMarks } from './hebrewMarks';
+import { msg } from './messages';
+import { LookupBudgetError, ReadBudgetError, disableLayoutTables, withLayoutBudget, fontNotice, patchLookupBudget, resetLookupBudget } from './fontSanity';
 
 /** 差し替え済みの印 (fontkit の原型に付ける。pdfLibPatches.ts と同じ決まり) */
 const SHAPING_PATCHED = Symbol.for('kumiori.fontkitShapingPatched');
@@ -341,15 +343,27 @@ function prepareLookupFixes(font: FkFont) {
     const coverages = font.GDEF?.markGlyphSetsDef?.coverage;
     if (!coverages?.length) return;
     let any = false;
+    // 記号の集合は、集合ごとに 1 度だけ広げる (多くの Lookup が同じ集合を指す表で、Lookup の数 × 範囲の字形の数の手間になった)。
+    // 範囲は字形の番号の順で重ならない (OpenType の「Coverage table」format 2) ので、1 つの集合の字形は 65536 まで
+    const setOf = new Map<number, Set<number>>();
     for (const table of [font.GSUB, font.GPOS]) {
       const list = table?.lookupList;
       for (let i = 0; list && i < list.length; i++) {
         const lookup = list.get(i);
-        const cov = lookup?.flags?.flags?.useMarkFilteringSet && lookup.markFilteringSet != null ? coverages[lookup.markFilteringSet] : undefined;
-        if (!lookup?.flags || !cov) continue;
-        const set = new Set<number>();
-        for (const g of cov.glyphs ?? []) set.add(g);
-        for (const r of cov.rangeRecords ?? []) for (let g = r.start; g <= r.end; g++) set.add(g);
+        const at = lookup?.flags?.flags?.useMarkFilteringSet && lookup.markFilteringSet != null ? lookup.markFilteringSet : undefined;
+        const cov = at !== undefined ? coverages[at] : undefined;
+        if (!lookup?.flags || !cov || at === undefined) continue;
+        let set = setOf.get(at);
+        if (!set) {
+          set = new Set<number>();
+          for (const g of cov.glyphs ?? []) set.add(g);
+          let left = 0x10000;
+          for (const r of cov.rangeRecords ?? []) {
+            for (let g = r.start; g <= r.end && left > 0; g++, left--) set.add(g);
+            if (left <= 0) break;
+          }
+          setOf.set(at, set);
+        }
         markSets.set(lookup.flags, set);
         any = true;
       }
@@ -607,7 +621,7 @@ export function patchFontkitShaping(fk: unknown) {
   if (!proto || proto[SHAPING_PATCHED] || typeof proto.layout !== 'function') return;
   const layout = proto.layout;
   const g = globalThis as { regeneratorRuntime?: unknown };
-  proto.layout = function (text0, ...rest) {
+  const shaped = function (this: unknown, text0: unknown, ...rest: unknown[]) {
     if (typeof text0 !== 'string' || !(MAY_SYLLABLE_SHAPE.test(text0) || LOOKUP_FIX_TEXT.test(text0))) {
       try {
         return layout.call(this, text0, ...rest);
@@ -670,6 +684,32 @@ export function patchFontkitShaping(fk: unknown) {
       lookupFixActive = wasActive;
       seaFixActive = wasSea;
       nullAnchorActive = wasAnchor;
+    }
+  };
+  let depth = 0;
+  proto.layout = function (text0, ...rest) {
+    // 文脈の Lookup の呼び出しの数を、1 回の整形ごとに数える (fontSanity.ts の patchLookupBudget。入れ子の layout は外の数のまま)
+    if (depth === 0) {
+      patchLookupBudget(this);
+      resetLookupBudget();
+    }
+    depth++;
+    try {
+      // 整形の表の遅れて読む部分 (Lookup・部分表) の読みに上限を置く (fontSanity.ts の withLayoutBudget)
+      return depth === 1 ? withLayoutBudget(this, () => shaped.call(this, text0, ...rest)) : shaped.call(this, text0, ...rest);
+    } catch (e) {
+      // 整形の表 (GSUB・GPOS・morx) の手間が上限を超えた書体 (呼び出しの多すぎる Lookup、読みの大きすぎる表) は、
+      // 文書の全体を失敗にせず、整形の表を使わずに組み直す (字は cmap の字形、送りは hmtx)。知らせは書体ごとに 1 度。
+      // ほかの例外は、これまでどおり呼ぶ側に返す (ここで書体の整形を止めると、正当な書体の組み方が変わる: Noto Sans Sinhala は、
+      // ある字の並びで fontkit が「reading 'syllable'」の例外を出し、整形を止めると、ほかの行の合字も外れた)
+      const budget = e instanceof LookupBudgetError || e instanceof ReadBudgetError;
+      if (depth !== 1 || !budget || !disableLayoutTables(this)) throw e;
+      const why = e instanceof LookupBudgetError ? msg('Lookup の呼び出しが多すぎる', 'too many lookup calls') : msg('表の読みが大きすぎる', 'the tables take too much to read');
+      fontNotice(this, 'layout', () => msg(`整形の表 (GSUB・GPOS・morx) で字を組めません (${why})。この書体は、合字・カーニングなどの機能を使わずに組みます`, `cannot shape text with the layout tables (GSUB, GPOS, morx) (${why}); this font is set without ligatures, kerning or other features`));
+      resetLookupBudget();
+      return withLayoutBudget(this, () => shaped.call(this, text0, ...rest), true);
+    } finally {
+      depth--;
     }
   };
   proto[SHAPING_PATCHED] = true;
