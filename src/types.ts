@@ -64,7 +64,9 @@ export interface BorderSide {
 export interface CollapsedSide {
   /**
    * 隣のセルと罫線を半分ずつ持つときの、描く線の太さ。width はセルが取る場所 (線の太さの半分)。
-   * 線はこの太さで、箱の外へ (paintWidth − width) だけはみ出して描く (グリッド線を中心に描くため)
+   * 線はこの太さで、箱の外へ (paintWidth − width) だけはみ出して描く (グリッド線を中心に描くため)。
+   * paintWidth が width より小さいときは、箱の縁から (width − paintWidth) だけ内に描く (表の外周や、互換の組み方の内側の線で、
+   * 太さの違う線の中心をそろえるため。場所は、その線のいちばん太い線の半分と、自分の線の半分)
    */
   paintWidth?: number;
   /** 罫線の幅 (width) だけ場所を取り、線は描かない (隣のセルが描く) */
@@ -149,6 +151,13 @@ export interface TextStyle {
    */
   textAutospaceIdeographicSpace?: boolean;
   /**
+   * 和欧間のアキの相手の字を、CSS Text 4 §8.4.1 の定義どおりにする: 一般カテゴリ L・M の字 (non-ideographic letters。ギリシャ・キリル・
+   * アラビア・ヘブライ・インド系の字なども) と Nd の字 (non-ideographic numerals)。East_Asian_Width が W・F の字と、縦書きで正立にする字は除く。
+   * 無ければ、ラテン文字・数字 (0〜9) と、欧文の書体で組むギリシャ文字・キリル文字の語だけ (XSL-FO の axf:text-autospace と、HTML の互換の指定)。
+   * HTML の既定のスタイルの組版が付ける
+   */
+  textAutospaceUnicode?: boolean;
+  /**
    * 両端揃えで字間を空けるとき、約物 (括弧類・句読点・中点類・区切り約物・ハイフン類) と全角の空白の前後も空ける (アンテナハウス互換。
    * --style ah の HTML と XSL-FO の互換モードが付ける)。既定は JLREQ §3.1.11 のとおり、これらの前後は空けない
    */
@@ -160,6 +169,11 @@ export interface TextStyle {
    * 既定は無制限 (JLREQ §3.8.3)。アンテナハウス互換は 0.5 (二分: 約物 1 つ分までしか追い込まない)
    */
   lineSqueezeMax?: number;
+  /**
+   * lineSqueezeMax を超えて追い込んでよい行 (アンテナハウス互換の HTML+CSS。--style ah): 詰める量が、その行を追い出したときに
+   * 行に残る空き (両端揃えで空ける量) 以下なら、上限を超えても追い込む (inlineLayout の breakOne)
+   */
+  lineSqueezeBeyondMax?: boolean;
   /**
    * 行の調整 (追込み) で、欧文の語間と、和字と欧字・数字の間の四分アキを詰めない (アンテナハウス互換。XSL-FO の互換モードの既定)。
    * 語間・和欧間のアキは本来の幅より狭くせず (両端揃えの行は広げるだけ)、詰めれば入る字・語は次の行へ送る。
@@ -189,6 +203,17 @@ export interface TextStyle {
    * 約物のアキの追込みは、揃えによらず行う。既定 false (どの行でも詰める。wordSpaceShrink が false なら、どの行でも詰めない)
    */
   wordSqueezeJustifiedOnly?: boolean;
+  /**
+   * 行の調整 (追込み) で、欧文の語間 (空白 1 つ) を詰めてよい量の上限 (pt。継承する)。無ければ空白の字の幅の 1/3 まで。
+   * XSL-FO の仕様モードの既定は 0 (詰めない。XSL 1.1 §7.17.8: word-spacing="normal" と <length> は .minimum = .optimum)。
+   * word-spacing.minimum の指定があれば、.optimum − .minimum (§7.17.8: “The minimum and maximum values specify the limits of the adjustment.”)
+   */
+  wordSpaceShrinkLimit?: number;
+  /**
+   * 両端揃えで、欧文の語間 (空白 1 つ) を広げてよい量の上限 (pt。継承する)。無いか 'none' なら上限無し (§7.16.9 の justify の伸び)。
+   * XSL-FO の仕様モードで word-spacing.maximum の指定があれば、.maximum − .optimum。'none' は、祖先の上限を打ち消す (上限を書かない指定)
+   */
+  wordSpaceStretchLimit?: number | 'none';
   /** 行頭の全角の始め括弧類の前の二分アキを詰める (アンテナハウスの axf:punctuation-trim の start)。既定 false */
   punctuationTrimStart?: boolean;
   /**
@@ -1741,11 +1766,38 @@ export interface LTableColumn {
   border?: BorderInput;
   /**
    * 列の幅を、組むときに測ったセルの中身の幅 (max-content) にする (width は、測れないときの値)。
-   * 中身の幅が組むまで決まらない列に使う: ページ番号の引用 (target-counter(…, page)) を持つ flex の項目は、番号の桁の数が
-   * 組んでみるまで分からない (読み込みのときの見積もりの幅のままだと、桁が増えたときに番号が箱からはみ出すか、折り返す)。
-   * 幅の変わった分は、同じ表の比例 ('N*') の列が受ける
+   * 中身の幅で決まる flex の項目の列に使う (Flexbox 1 §9.2 の 3 の E): 読み込みのときの見積もり (字の幅の足し算) は、行を組むときの
+   * 字の間の空白・行内の箱の余白と枠・::before の中身・語間などを数えきれず、見積もりが狭いと最後の字が次の行に送られる (目次の項目名)。
+   * ページ番号の引用 (target-counter(…, page)) の番号の桁の数も、組んでみるまで分からない。
+   * 幅の変わった分は、同じ表の比例 ('N*') の列が受け、入りきらなければ flexItem の値で縮める
    */
   fitContent?: boolean;
+  /**
+   * flex の項目の列 (HTML の flex の 1 行の表)。中身に合わせる列 (fitContent) の幅を組むときに測ると、読み込みのときの見積もりと違うことがあるので、
+   * 行の列の幅の合計が置く場所を超えたら、組版エンジンが項目を縮め直す (Flexbox 1 §9.7)。width は縮める前の幅 (仮の主軸の大きさ。外側の幅)。
+   * 中身に合わせる列のある行の、項目の列にだけ付く
+   */
+  flexItem?: LFlexItemColumn;
+}
+
+/** flex の項目の列の、縮めるための値 (LTableColumn.flexItem。長さは pt) */
+export interface LFlexItemColumn {
+  /** flex-shrink */
+  shrink: number;
+  /** flex の基準の大きさ (内容の幅。縮める比の基準)。中身に合わせる列では、組むときに測った幅から edge を引いたもの (この値は使わない) */
+  basis: number;
+  /** 外側の幅のうち、内容の幅以外 (左右の余白・枠・内側の余白) */
+  edge: number;
+  /** 縮める下限 (外側の幅。min-width の指定か、見積もった中身の最も狭い幅) */
+  floor: number;
+  /**
+   * min-width: auto (自動の最小の大きさ。Flexbox 1 §4.5): 下限を、組むときに測った中身の最も狭い幅 (min-content) にする。
+   * minCap は、その上限 (幅の指定・max-width の外側の幅。無ければ上限無し)
+   */
+  minAuto?: boolean;
+  minCap?: number;
+  /** 上限 (外側の幅。max-width) */
+  cap?: number;
 }
 
 export interface LTableCell extends BaseNode, BoxStyle {
@@ -1844,6 +1896,8 @@ export interface LTableBody extends BaseNode {
 }
 
 export interface LTable extends BaseNode, BoxStyle {
+  /** HTML の flex の容器の 1 行の表 (htmlImport の flexNoRect)。中身の幅を測るとき、比例の列は足す固定の長さだけを数える (LNode.flexContentI) */
+  flexLine?: boolean;
   type: 'table';
   /**
    * セルの中の絶対配置の箱 (positionInContainer) の基準になる (CSS の position が static でない表。CSS 2.1 §10.1)。
@@ -1896,6 +1950,11 @@ export interface LTable extends BaseNode, BoxStyle {
    * 互換モードの組み方。省略時は仕様どおり、隣り合うセルが半分ずつ持つ (XSL §6.7.10・CSS2 §17.6.2)
    */
   collapseToAfterCell?: boolean;
+  /**
+   * 互換の組み方 (collapseToAfterCell) の、列の境目の線ごとの、いちばん太い線の太さ (組版が collapseTableBorders で付ける)。
+   * 添え字 k は、列 k の始めの線 (k は 1 から列の数 − 1)。後ろのセルの箱は、グリッド線からこの半分だけ前で始まる
+   */
+  collapseColumnLines?: number[];
   /**
    * collapse の表で、改ページの境目の罫線を決め直すのに使う、列ごとの線 (組版が collapseTableBorders で付ける)。
    * headerAfter: 表ヘッダーの最後の行の後ろ側、footerBefore: 表フッターの最初の行の前側 (セル・行・行グループの指定から選んだもの)
@@ -2083,6 +2142,8 @@ export interface ImageArea extends AreaBase {
   /** 画像データが無い (プレースホルダを描く) */
   missing: boolean;
   alt?: string;
+  /** 画像を置いた所の言語 (xml:lang・language・lang。BCP 47 か ISO 639 の符号)。SVG の systemLanguage (SVG 2 §5.6.5) を、この言語で照らす */
+  language?: string;
   /**
    * 枠への収め方 (LImage.fit の cover・contain・none・scale-down)。描く時に、画像本来の大きさ (naturalWidth × naturalHeight。pt) から
    * 大きさを決め (none は本来の大きさ、scale-down は none と contain の小さいほう)、枠の中に置いて切り抜く

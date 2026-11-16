@@ -260,6 +260,19 @@ describe('公開 API: typeset', () => {
     expect(r.pageCount).toBe(1);
     expect(r.warnings.some((w) => /constructor/.test(w) && /__proto__/.test(w))).toBe(true);
     expect((await r.toPdf()).length).toBeGreaterThan(1000);
+    // 入力の名前で引く表の残り (HTM-67): SVG の要素名・@page の余白の箱の名前・target-counter のカウンターの名前・位置の語・font-variant の値など
+    for (const N of ['constructor', '__proto__', 'toString']) {
+      const h = await typeset(
+        `<style>@page { @top-center { content: 'h' } @${N} { content: 'x' } } p { background-position: ${N}; transform-origin: ${N}; font-variant-numeric: ${N};
+        font-variant-ligatures: ${N}; font-variant-east-asian: ${N}; color: ${N}; font-size: ${N}; font-stretch: ${N} } a::after { content: target-counter(attr(href), ${N}) }</style>
+        <h1 id=t>h</h1><p><a href="#t">l</a></p><svg width="10" height="10"><${N}/></svg>`,
+        { loadFont },
+      );
+      expect(h.pageCount).toBe(1);
+      expect(serializeAreaTree(h.areaTree)).not.toMatch(/NaN/);
+      // 知らない余白の箱 (@constructor) は、知らない名前として報告する (関数を箱の位置として拾わない)
+      expect(h.warnings.some((w) => w.includes(`@${N.toLowerCase()}`))).toBe(N !== '__proto__');
+    }
     const fo = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>
       <fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block border-top-width="constructor" border-top-style="solid" font-size="constructor" constructor="1" color="rgb(1e999,0,0)">x</fo:block></fo:flow></fo:page-sequence></fo:root>`;
     const f = await typesetFo(fo, { loadFont });
@@ -525,7 +538,7 @@ describe('公開 API: typeset', () => {
     expect(small.length).toBeLessThan(full.length - jpg.length / 2);
   });
 
-  it('toPdf の pdfx: RGB の色・画像を CMYK にして書く (灰色は DeviceGray のまま)', async () => {
+  it('toPdf の pdfx: RGB の色・画像を CMYK にして書く (灰色は K だけの CMYK)', async () => {
     const w = 8, h = 8;
     const data = new Uint8Array(w * h * 3);
     for (let i = 0; i < w * h; i++) data.set([200, 40, (i * 30) % 256], 3 * i);
@@ -553,9 +566,10 @@ describe('公開 API: typeset', () => {
       }
     }
     const content = streams.join('\n');
-    // 色は k / K (CMYK) と g (灰色) で、rg / RG (RGB) は使わない
+    // 色は k / K (CMYK) で、rg / RG (RGB) と g / G (灰色) は使わない。灰色 (#333) は K だけ (GWG 2022-R1 の R0011・R0012)
     expect(content).toMatch(/ k\b/);
-    expect(content).not.toMatch(/\d rg\b|\d RG\b/);
+    expect(content).not.toMatch(/\d rg\b|\d RG\b|\d g\b|\d G\b/);
+    expect(content).toMatch(/\b0 0 0 0\.8 k\b/);
     // 色のある画像は DeviceCMYK
     expect(spaces.filter((c) => c === '/DeviceCMYK').length).toBe(2);
     expect(warnings).toEqual([]);

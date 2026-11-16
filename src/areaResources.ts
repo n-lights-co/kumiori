@@ -7,6 +7,7 @@
 import type { AssetStore } from './assets';
 import type { FontManager, LoadedFont } from './fontManager';
 import { walkAreaTree } from './areaTree';
+import { checkGlyphData } from './fontSanity';
 import { sha256 } from './sha256';
 import type { AreaTree, FontResource, ImageResource } from './types';
 
@@ -89,6 +90,8 @@ export function attachResources(tree: AreaTree, fonts: FontManager, assets?: Ass
         const feats = { kern: false, liga: false, clig: false, ...Object.fromEntries((a.features ?? []).map((x) => [x, true])) };
         const run = f.fk.layout(text, feats as never);
         const ids = run.glyphs.map((g) => g.id);
+        // 字形のデータが読めない字形を知らせる (PDF の部分書体では、輪郭の無い字形になる。fontSanity.ts の checkGlyphData)
+        checkGlyphData(f.fk, ids);
         // 縦書き用の字形の並び (正立の字のクラスタ) の位置は、横書きの位置 (uprightPositions)
         const positions = uprightPositions(f.fk, text, feats, run);
         const adjusted = ids.length > 1 && positions.some((p, k) => p.xAdvance !== run.glyphs[k].advanceWidth || p.xOffset || p.yOffset);

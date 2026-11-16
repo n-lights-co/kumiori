@@ -408,7 +408,7 @@ const inBrowser = () => typeof document !== 'undefined';
 /**
  * 文書に書かれた http(s) の URL を、転送の先と大きさを確かめながら取る。取れない・許されない・大きすぎるものは undefined (投げない)。
  *
- * 転送 (OUT-01): 許可の関数 allow には、文書に書かれた URL だけでなく、転送の先の URL も聞く (許したホストが 302 で内部のアドレスを返しても、
+ * 転送: 許可の関数 allow には、文書に書かれた URL だけでなく、転送の先の URL も聞く (許したホストが 302 で内部のアドレスを返しても、
  * そこへ要求を出さない)。
  *  - Node など、転送の応答の Location を読める実行環境: redirect: 'manual' で取り、Location を今の URL に対して解決し (RFC 9110 §10.2.2。
  *    Fetch Standard §2.2.6 の location URL: 解決できない Location は network error、Location の無い転送の応答はそのまま返す)、
@@ -421,7 +421,7 @@ const inBrowser = () => typeof document !== 'undefined';
  *    このとき、要求そのものは転送の先に届いている (中身を使わないだけ)。allow が無ければ、これまでどおりブラウザに任せる。
  * allow は URL の文字列を見るだけなので、名前の解決の結果 (内部のアドレスに解決されるホスト名) までは、ここでは防げない。
  *
- * 大きさ (OUT-11): Content-Length が上限を超えていれば本体を読まずに断り、本体は少しずつ読んで、上限を超えた所で読むのをやめる
+ * 大きさ: Content-Length が上限を超えていれば本体を読まずに断り、本体は少しずつ読んで、上限を超えた所で読むのをやめる
  * (Content-Length の無い応答・偽った応答でも、上限より多くは持たない)。本体を少しずつ読めない実行環境 (res.body が無い) では、全部を読んでから大きさを見る。
  */
 export async function fetchGuarded(url: string, o: GuardedFetchOptions): Promise<FetchedResource | undefined> {
