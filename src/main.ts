@@ -4,7 +4,7 @@ import { LayoutEngine } from './layoutEngine';
 import { renderSheetToCanvas } from './canvasRenderer';
 import { renderPdf } from './pdfRenderer';
 import { AssetStore } from './assets';
-import { resetEpsBudget } from './eps';
+import { resetEpsBudget } from './epsInfo';
 import { SERIF, buildSampleDocument } from './sampleData';
 import { browserParse, importXslFo, type ImportReport } from './xslfoImport';
 import type { AreaTree, LDocument } from './types';
@@ -20,13 +20,22 @@ import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
 import { msg } from './messages';
 import { loadHtml } from './htmlFrame';
 import { readEpub } from './epub';
-import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, hasMissingGlyphs, setupDefaultFonts } from './fontMapping';
+import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, EMOJI_SPEC, createFontMapping, hasMissingEmoji, hasMissingGlyphs, setupDefaultFonts } from './fontMapping';
+import { fetchGuarded } from './resources';
+import { fetchLimits } from './imageLimits';
+import { formatsOf } from './imageFormats';
+import type { DrawioOptions } from './drawio/index';
+import { XML_COMMENT } from './drawio/sniff';
+import { messageLang } from './messages';
+import { clearUserStencils, loadUserStencils, saveUserStencil, type UserStencilFile } from './userStencils';
 
 let symbolsTried = false;
+let emojiTried = false;
 let monoTried = false;
 
 /**
- * 文書の文字に、読み込み済みのどの書体も持たない字があれば、記号の書体を読み込む (1 度だけ。取れなければそのまま組む)。
+ * 文書の文字に、読み込み済みのどの書体も持たない字があれば、記号の書体を読み込む。それでも無い絵文字があれば、絵文字の書体も読み込む
+ * (どちらも 1 度だけ。取れなければそのまま組む)。
  * 読み込んだ書体は、字の書体の代替 (FontManager.getForChar) で使われる
  */
 async function ensureSymbolFont(doc: LDocument) {
@@ -35,12 +44,14 @@ async function ensureSymbolFont(doc: LDocument) {
     monoTried = true;
     for (const spec of MONO_SPECS) await fonts.load(spec, setStatus).catch(noteError);
   }
-  if (symbolsTried || !hasMissingGlyphs(fonts, doc)) return;
-  symbolsTried = true;
-  try {
-    await fonts.load(SYMBOL_SPEC, setStatus);
-  } catch (e) {
-    noteError(e);
+  if (!symbolsTried && hasMissingGlyphs(fonts, doc)) {
+    symbolsTried = true;
+    await fonts.load(SYMBOL_SPEC, setStatus).catch(noteError);
+  }
+  // 記号の書体にも無い絵文字があれば、絵文字の書体を読み込む (1 度だけ。記号の書体の後に読むので、記号の書体が持つ字はこれまでどおり)
+  if (!emojiTried && hasMissingEmoji(fonts, doc)) {
+    emojiTried = true;
+    await fonts.load(EMOJI_SPEC, setStatus).catch(noteError);
   }
 }
 
@@ -65,6 +76,12 @@ const saveJsonBtn = $<HTMLButtonElement>('savejson');
 const resetBtn = $<HTMLButtonElement>('resetsample');
 const folderFile = $<HTMLInputElement>('folderfile');
 const settingsBtn = $<HTMLButtonElement>('settingsbtn');
+const drawioOn = $<HTMLInputElement>('drawio-on');
+const drawioOpts = $('drawioopts');
+const stencilFile = $<HTMLInputElement>('stencilfile');
+const clearStencilsBtn = $<HTMLButtonElement>('clearstencils');
+const stencilStateEl = $('stencilstate');
+const drawioFetch = $<HTMLInputElement>('drawiofetch');
 const settingsEl = $('settings');
 const sidebarEl = $('sidebar');
 const sideToggle = $<HTMLButtonElement>('sidetoggle');
@@ -77,7 +94,92 @@ const setStatus = (s: string) => {
 };
 
 const fonts = new FontManager();
-const assets = new AssetStore();
+/** 文字の幅を測る canvas (本体の外の画像の形式に渡す。画面は変換した SVG を img で描くので、ブラウザの同じ書体で測る) */
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+const assets = new AssetStore({
+  formatContext: {
+    measureText: (text, ft) => {
+      measureCtx ??= document.createElement('canvas').getContext('2d');
+      if (!measureCtx) return undefined;
+      // 書体の名前は CSS の文字列にして渡す (名前の中の " と \ は逃がす)
+      measureCtx.font = `${ft.italic ? 'italic ' : ''}${ft.bold ? 'bold ' : ''}${ft.size}px "${ft.family.replace(/["\\]/g, '\\$&')}", sans-serif`;
+      return measureCtx.measureText(text).width;
+    },
+    // 図が URL で指す資源は、文書の画像と同じく取る (自分の計算機の URL は取らない)
+    fetchResource: async (url) =>
+      /^https?:\/\//i.test(url) && allowRemoteImage(url) ? (await fetchGuarded(url, { maxBytes: fetchLimits.imageBytes, allow: allowRemoteImage }).catch(() => undefined))?.bytes : undefined,
+    // 利用者が設定で許したもの (draw.io の図形ライブラリの配布物) を取る
+    fetch: async (url) => (/^https?:\/\//i.test(url) ? (await fetchGuarded(url, { maxBytes: fetchLimits.imageBytes }).catch(() => undefined))?.bytes : undefined),
+    warn: (m) => formatWarnings.add(m),
+    lang: messageLang(),
+  },
+});
+
+// ───────────── draw.io の図 (設定の「draw.io の図」で、読む・読まないと図形ライブラリを選ぶ) ─────────────
+
+/**
+ * draw.io の図形ライブラリのファイル (設定で読み込んだもの (ブラウザに覚える)・開いたファイルと一緒に渡したもの)。
+ * 中身 (図形ライブラリ・SVG は文字、PNG・JPEG はバイト列) をそのまま持ち、draw.io の図の選択肢に渡す (図形ライブラリを読む処理は、図を開いたときに読み込む)
+ */
+let stencilFiles: UserStencilFile[] = [];
+/** 画像の形式の警告 (画像ごとでないもの: 読めない図形ライブラリ・取れない配布物など)。文書の警告と一緒に出す */
+const formatWarnings = new Set<string>();
+/**
+ * draw.io の図として読めるかもしれない画像のファイル (開いたときに読めなかったもの・draw.io の図として読んだもの)。
+ * draw.io の図を読む・読まないを切り替えたら、これを読み直す (名前 → 中身)
+ */
+const drawioCandidates = new Map<string, Blob>();
+
+/** 今の設定の draw.io の図の選択肢 (選択肢が変わるたびに作り直す。取った図形ライブラリは、drawioStencil.ts が URL ごとに使い回す)。読まないなら false */
+function currentDrawio(): DrawioOptions | false {
+  if (!drawioOn.checked) return false;
+  return { stencils: stencilFiles.map((f) => ({ name: f.name, data: f.data })), fetchStencils: drawioFetch.checked };
+}
+
+/** 画像を登録する。読めなかったもの・draw.io の図として読んだものは、draw.io の設定を変えたときに読み直す */
+async function addImage(name: string, blob: Blob) {
+  const a = await assets.addBlob(name, blob);
+  if (!a || a.formatSource) drawioCandidates.set(name, blob);
+  return a;
+}
+
+/**
+ * draw.io の図の設定が変わった: 形式を差し替え、読み込み済みの画像を読み直して、画面の文書を組み直す。
+ * fragment の付いた参照の図 (図.drawio#page=2) は、元のファイルを登録し直すときに assets が捨て、文書を読み直すときに作り直す (AssetStore.addFragment)
+ */
+async function drawioChanged() {
+  drawioOpts.setAttribute('aria-disabled', String(!drawioOn.checked));
+  for (const el of drawioOpts.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button')) el.disabled = !drawioOn.checked;
+  assets.setFormats(formatsOf(undefined, currentDrawio()));
+  formatWarnings.clear();
+  for (const [name, blob] of drawioCandidates) if (!(await addImage(name, blob))) assets.unregister(name);
+  if (lastSource) reloadCurrent();
+  else if (currentDoc) showDocument(currentDoc, currentName);
+}
+
+/**
+ * draw.io の図形ライブラリのファイルか: 配布物の stencils.min.js (f['….xml'] = '…' の並び) か、ライブラリの XML (<shapes>・<stencils>)。
+ * 名前の拡張子 (.js・.xml) と、中身の頭で見分ける (FO・MathML の .xml と取り違えない)
+ */
+function isStencilFile(name: string, text: string): boolean {
+  if (/\.js$/i.test(name)) return /\bf\['[^']+\.xml'\]\s*=/.test(text.slice(0, 1 << 16));
+  return /\.xml$/i.test(name) && STENCIL_XML_HEAD.test(text.slice(0, 4096));
+}
+/** 図形ライブラリの XML の頭: XML 宣言・注釈 (XML_COMMENT。手間が長さに比例する形)・空白の後ろに <shapes か <stencils */
+const STENCIL_XML_HEAD = new RegExp(String.raw`^\ufeff?\s*(?:<\?xml[^>]*\?>\s*)?(?:${XML_COMMENT}\s*)*<(?:shapes|stencils)[\s>]`);
+/** PNG (署名の 8 バイト) か JPEG (SOI の FF D8 と、次の印の FF) か */
+function isPngOrJpeg(b: Uint8Array): boolean {
+  const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  return (b.length > 8 && png.every((v, i) => b[i] === v)) || (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff);
+}
+/** 図形ライブラリを足す (呼ぶ側が isStencilFile などで確かめたもの。同じ名前は置き換える)。名前を設定の欄に出す。足したファイルの数を返す */
+function addStencils(files: UserStencilFile[]): number {
+  for (const f of files) stencilFiles = [...stencilFiles.filter((x) => x.name !== f.name), f];
+  const names = stencilFiles.map((f) => f.name);
+  clearStencilsBtn.hidden = !names.length;
+  stencilStateEl.textContent = names.length ? `読み込んだ図形ライブラリ: ${names.join('、')}` : '読み込んだ図形ライブラリはありません';
+  return files.length;
+}
 
 /**
  * 画面に出している文書の、読み込みの途中の警告 (組版の警告 = tree.warnings の前に出す)。公開 API の typeset が warnings に入れるものと同じ:
@@ -213,7 +315,7 @@ function showDocument(doc: LDocument, name: string, compat?: { kind: DocKind; ah
   tree = engine.layout(doc);
   const ms = performance.now() - t0;
   pdfWarnings = [];
-  const warned = showWarnings([...loadWarnings, ...tree.warnings]);
+  const warned = showWarnings([...loadWarnings, ...formatWarnings, ...tree.warnings]);
   render();
   // 警告の件数は、帯の状態の欄にも出す (左の欄をたたんでいても、狭い画面でも気付けるように)
   setStatus(`${name}: ${tree.sheets.length} ページ / 組版 ${ms.toFixed(0)}ms${warned ? ` / ${warningCountText(warned)}` : ''}`);
@@ -404,6 +506,11 @@ async function main() {
     measurerRef = new Measurer(fonts, 'canvas');
     for (const f of await loadUserFonts()) await registerUserFont(f);
     clearFontsBtn.hidden = !userFonts.length;
+    // draw.io の図の設定 (ブラウザに覚えたもの。既定で読む)
+    drawioOn.checked = remember('kumiori.drawio') !== '0';
+    drawioFetch.checked = remember('kumiori.drawioFetch') === '1';
+    addStencils(await loadUserStencils());
+    await drawioChanged();
     showDocument(buildSampleDocument(), 'Kumiori サンプル', null);
     document.documentElement.dataset.ready = '1';
   } catch (e) {
@@ -434,12 +541,31 @@ async function openFiles(files: File[]) {
   if (!files.length) return;
   // EPS の時間の予算 (eps.ts の EPS_DOCUMENT_MILLIS) は、画像の入れ物に結び付いている。入れ物は開き直しても使い続けるので、予算は文書を開くたびに戻す
   resetEpsBudget(assets);
+  formatWarnings.clear();
+  // 一緒に渡した draw.io の図形ライブラリは、この画面の間だけ使う (覚えておくのは設定の「図形ライブラリを読み込む」)
+  const libs: UserStencilFile[] = [];
+  const rest: File[] = [];
+  for (const f of files) {
+    const text = /\.(js|xml)$/i.test(f.name) ? await f.text() : undefined;
+    if (text !== undefined && isStencilFile(f.name, text)) libs.push({ name: f.name, data: text });
+    else rest.push(f);
+  }
+  if (libs.length) {
+    addStencils(libs);
+    files = rest;
+    if (!files.length) {
+      setStatus(`draw.io の図形ライブラリを読み込みました: ${libs.map((l) => l.name).join('、')}`);
+      await drawioChanged();
+      return;
+    }
+    assets.setFormats(formatsOf(undefined, currentDrawio()));
+  }
   // EPUB: 1 つの HTML (と画像) にまとめて、HTML として組む
   const epub = files.find((f) => /\.epub$/i.test(f.name));
   if (epub) {
     try {
       const book = await readEpub(new Uint8Array(await epub.arrayBuffer()), (t, type) => new DOMParser().parseFromString(t, type));
-      for (const im of book.images) await assets.addBlob(im.name, new Blob([im.data as BlobPart]));
+      for (const im of book.images) await addImage(im.name, new Blob([im.data as BlobPart]));
       // 上限を超えて飛ばした章・CSS・画像 (EpubBook.warnings) も、警告に出す
       await loadHtmlFile(book.html, epub.name, [], book.warnings ?? []);
     } catch (e) {
@@ -451,7 +577,7 @@ async function openFiles(files: File[]) {
   // HTML (と CSS・画像) を選んだとき
   const html = files.find((f) => /\.(html?|xhtml)$/i.test(f.name));
   if (html) {
-    for (const f of files) if (f !== html && !/\.(css|ttf|otf|ttc|woff2?)$/i.test(f.name)) await assets.addBlob(f.name, f);
+    for (const f of files) if (f !== html && !/\.(css|ttf|otf|ttc|woff2?)$/i.test(f.name)) await addImage(f.name, f);
     await loadHtmlFile(await readDocument(html), html.name, files);
     return;
   }
@@ -459,7 +585,7 @@ async function openFiles(files: File[]) {
   let fo = files.find((f) => /\.fo$/i.test(f.name));
   if (!fo) for (const f of files) if (!fo && /\.(xml|xsl)$/i.test(f.name) && /<([\w-]+:)?root[\s>]/.test(await f.text())) fo = f;
   // FO 以外のファイルは画像 (と MathML) として登録する (ファイル名で FO 中の相対パスと突き合わせる)
-  for (const f of files) if (f !== fo) await assets.addBlob(f.name, f);
+  for (const f of files) if (f !== fo) await addImage(f.name, f);
   if (fo) await loadFo(await readDocument(fo), fo.name);
   else if (lastFo && files.some((f) => assets.getText(f.name) !== undefined)) {
     // MathML のファイルが追加された: 変換からやり直す (数式は変換時に行内の要素へ組み替えるため)
@@ -573,6 +699,44 @@ fontFile.addEventListener('change', async () => {
   if (lastFo && !resetBtn.hidden) await loadFo(lastFo.text, lastFo.name);
   else if (currentDoc) showDocument(currentDoc, currentName);
 });
+drawioOn.addEventListener('change', async () => {
+  remember('kumiori.drawio', drawioOn.checked ? '1' : '0');
+  await drawioChanged();
+});
+stencilFile.addEventListener('change', async () => {
+  const files = Array.from(stencilFile.files ?? []);
+  stencilFile.value = '';
+  const ok: UserStencilFile[] = [];
+  for (const file of files) {
+    // draw.io の配布物の画像 (SAP のアイコンの中の画像など。img/lib/…/<名前>.png・.jpg を名前で引く) はバイト列で持つ。
+    // 中身の頭で確かめる (PNG の署名: PNG (ISO/IEC 15948) §5.2、JPEG の SOI と次の印の頭: ITU-T T.81 §B.1.1.3・B.2.1)
+    if (/\.(png|jpe?g)$/i.test(file.name)) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (isPngOrJpeg(bytes)) ok.push({ name: file.name, data: bytes });
+      else setStatus(`${file.name}: PNG・JPEG の画像として読めません`);
+      continue;
+    }
+    const text = await file.text();
+    // .svg は draw.io の配布物の画像 (SAP のアイコンの中の画像。img/lib/sap/<名前>.svg を名前で引く)
+    if (isStencilFile(file.name, text) || (/\.svg$/i.test(file.name) && /<svg[\s>]/i.test(text.slice(0, 4096)))) ok.push({ name: file.name, data: text });
+    else setStatus(`${file.name}: draw.io の図形ライブラリとして読めません`);
+  }
+  if (!addStencils(ok)) return;
+  for (const f of ok) void saveUserStencil(f);
+  setStatus(`draw.io の図形ライブラリを読み込みました: ${ok.map((f) => f.name).join('、')}`);
+  await drawioChanged();
+});
+clearStencilsBtn.addEventListener('click', async () => {
+  await clearUserStencils();
+  stencilFiles = [];
+  addStencils([]);
+  setStatus('読み込んだ図形ライブラリを消しました');
+  await drawioChanged();
+});
+drawioFetch.addEventListener('change', async () => {
+  remember('kumiori.drawioFetch', drawioFetch.checked ? '1' : '0');
+  await drawioChanged();
+});
 clearFontsBtn.addEventListener('click', async () => {
   await clearUserFonts();
   location.reload();
@@ -634,11 +798,11 @@ downloadBtn.addEventListener('click', async () => {
   downloadBtn.disabled = true;
   setStatus('PDF 生成中（フォント埋め込み）…');
   try {
-    // PDF に動作を書かなかったリンク (安全のため落としたもの) は、警告に足す
-    const linkWarnings: string[] = [];
-    const bytes = await renderPdf(tree, fonts, { assets, ...(currentCompat ? compatPdfOptions(currentCompat.kind, currentCompat.ah) : {}), linkWarnings });
-    pdfWarnings = linkWarnings;
-    showWarnings([...loadWarnings, ...tree.warnings, ...pdfWarnings]);
+    // PDF に動作を書かなかったリンク (安全のため落としたもの) と、PDF を書く途中の警告 (描けない字・色つきの字形など) は、警告に足す
+    const out: string[] = [];
+    const bytes = await renderPdf(tree, fonts, { assets, ...(currentCompat ? compatPdfOptions(currentCompat.kind, currentCompat.ah) : {}), linkWarnings: out, warnings: out });
+    pdfWarnings = out;
+    showWarnings([...loadWarnings, ...formatWarnings, ...tree.warnings, ...pdfWarnings]);
     const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/pdf' }));
     const a = document.createElement('a');
     a.href = url;

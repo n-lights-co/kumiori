@@ -108,3 +108,59 @@ test("dist-browser/kumiori.js でも、links の relative: 'uri' で相対のリ
   expect(r.default.warnings.some((w) => w.includes('Launch ×1'))).toBe(true);
   expect(errors).toEqual([]);
 });
+
+test('dist-browser/kumiori.js: CGM・EPS・WMF の処理は、文書にその画像が出てきたときだけ別のファイル (chunks/) から読み込み、これまでどおり描く (IMG-31)', async ({ page }) => {
+  const errors = await openWithBundle(page);
+  const chunks: string[] = [];
+  page.on('request', (r) => {
+    const m = /\/dist-browser\/chunks\/([a-zA-Z]+)-/.exec(r.url());
+    if (m) chunks.push(m[1]);
+  });
+  // CGM (2 進符号化): VDC EXTENT (0,0)-(100,50) の絵に、赤の POLYGON (test/cgm.test.ts の cmd と同じ作り方)
+  const cmd = (cls: number, id: number, data: number[] = []) => {
+    const h = (cls << 12) | (id << 5) | data.length;
+    return [h >> 8, h & 0xff, ...data, ...(data.length % 2 ? [0] : [])];
+  };
+  const i16 = (...v: number[]) => v.flatMap((x) => [(x >> 8) & 0xff, x & 0xff]);
+  const str = (t: string) => [t.length, ...Array.from(t, (c) => c.charCodeAt(0))];
+  const cgm = [...cmd(0, 1, str('t')), ...cmd(0, 3, str('p')), ...cmd(2, 6, i16(0, 0, 100, 50)), ...cmd(0, 4), ...cmd(5, 23, [255, 0, 0]), ...cmd(4, 7, i16(0, 0, 100, 0, 50, 50)), ...cmd(0, 5), ...cmd(0, 2)];
+  // WMF (Placeable ヘッダ付き): 緑の CREATEBRUSHINDIRECT・SELECTOBJECT・RECTANGLE (test/imageInfo.test.ts の wmfOf と同じ作り方)
+  const words: number[] = [];
+  for (const [fn, w] of [[0x02fc, [0, 0xff00, 0, 0]], [0x012d, [0]], [0x041b, [800, 1000, 0, 0]], [0, []]] as Array<[number, number[]]>) words.push((3 + w.length) & 0xffff, (3 + w.length) >> 16, fn, ...w);
+  const head = [1, 9, 0x300, 0, 0, 0, 0, 0, 0];
+  const wmf = new Uint8Array(22 + (head.length + words.length) * 2);
+  const v = new DataView(wmf.buffer);
+  v.setUint32(0, 0x9ac6cdd7, true);
+  v.setInt16(10, 1000, true), v.setInt16(12, 800, true), v.setUint16(14, 1440, true);
+  [...head, ...words].forEach((w, k) => v.setUint16(22 + k * 2, w & 0xffff, true));
+  const eps = '%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 50\n0 0 1 setrgbcolor 0 0 100 50 rectfill\n';
+  const r = await page.evaluate(
+    async ({ cgm, wmf, eps }) => {
+      const url = '/dist-browser/kumiori.js';
+      const mod = (await import(/* @vite-ignore */ url)) as typeof import('../src/index');
+      const plain = await mod.typesetHtml('<!DOCTYPE html><p>画像の無い文書</p>', { name: 'p.html' });
+      const before = performance.getEntriesByType('resource').map((e) => e.name);
+      const html = '<!DOCTYPE html><p><img src="a.cgm" style="width:100px"> <img src="b.wmf" style="width:100px"> <img src="c.eps" style="width:100px"></p>';
+      const res = await mod.typesetHtml(html, {
+        name: 'i.html',
+        files: [
+          { name: 'a.cgm', data: Uint8Array.from(cgm) },
+          { name: 'b.wmf', data: Uint8Array.from(wmf) },
+          { name: 'c.eps', data: new TextEncoder().encode(eps) },
+        ],
+      });
+      const pdf = await res.toPdf();
+      return { plainPages: plain.pageCount, before, pages: res.pageCount, warnings: res.warnings, pdfLength: pdf.length };
+    },
+    { cgm, wmf: Array.from(wmf), eps },
+  );
+  // 画像の無い文書を組んだ所までは、CGM・EPS・WMF の処理を読んでいない
+  expect(r.plainPages).toBe(1);
+  expect(r.before.filter((u) => /\/chunks\/(cgm|eps|metafile)-/.test(u))).toEqual([]);
+  // 画像のある文書を組むと読み込み、描けない画像の警告を出さない
+  for (const c of ['cgm', 'eps', 'metafile']) expect(chunks).toContain(c);
+  expect(r.pages).toBe(1);
+  expect(r.warnings.filter((w) => /CGM|EPS|WMF|読めない|描けない|unsupported/i.test(w))).toEqual([]);
+  expect(r.pdfLength).toBeGreaterThan(1000);
+  expect(errors).toEqual([]);
+});
