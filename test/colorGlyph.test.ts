@@ -417,6 +417,12 @@ describe('SVG の表 (OpenType-SVG)', () => {
     expect(fill).toMatchObject({ kind: 'linear', x0: 0, y0: 0, x1: 100, y1: 0 });
     expect(fill.kind === 'linear' && fill.stops.map((s) => s.color.a)).toEqual([1, 0.5]);
   });
+  it('続く図形に同じ clip-path が付いていれば、1 つの clip の中にまとめる (切り抜きの形を図形ごとに書き直さない。OUT-31)', () => {
+    const text = `<svg xmlns="http://www.w3.org/2000/svg" id="glyph${gid('A')}"><defs><clipPath id="c"><rect x="0" y="-100" width="50" height="100"/></clipPath></defs><rect x="0" y="-100" width="10" height="10" fill="red" clip-path="url(#c)"/><rect x="20" y="-100" width="10" height="10" fill="red" clip-path="url(#c)"/><rect x="40" y="-100" width="10" height="10" fill="red"/><rect x="60" y="-100" width="10" height="10" fill="red" clip-path="url(#c)"/></svg>`;
+    const ops = unwrap(svgFont([{ start: gid('A'), end: gid('A'), doc: text }]).glyph(gid('A'))!.ops).ops;
+    // 切り抜いた 2 つ、切り抜かない 1 つ、切り抜いた 1 つ (間に切り抜かない図形があるので、開き直す)
+    expect(ops.map((o) => (o.op === 'clip' ? `clip:${o.ops.length}` : o.op))).toEqual(['clip:2', 'fill', 'clip:1']);
+  });
 });
 
 // ---- 組版と PDF ----

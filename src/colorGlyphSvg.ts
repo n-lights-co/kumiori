@@ -14,7 +14,8 @@
 import type { Matrix } from './matrix';
 import { parseColor } from './color';
 import { inflateBytes } from './psFilters';
-import { parseSvg, type SvgGradient, type SvgShape, type XmlNode } from './svg';
+import { firstSvgTag, hideGlyphElements, replacePaletteVars } from './linearText';
+import { clipRuns, flattenGroups, parseSvg, type SvgGradient, type SvgShape, type XmlNode } from './svg';
 import type { ColorFill, ColorOp, ColorRef, ColorStop, SvgGlyphReader } from './colorGlyph';
 
 /** currentColor (前景色) の目印にする色。根の要素の color に入れておき、図形の色がこれなら前景色とする */
@@ -85,9 +86,29 @@ function shapeOps(sh: SvgShape): ColorOp[] {
       if (color && color.a > 0) ops.push({ op: 'stroke', path: sh.segs, fill: { kind: 'solid', color }, width: sh.strokeWidth, cap: sh.lineCap, join: sh.lineJoin, miter: sh.miterLimit ?? 4, ...(sh.dash ? { dash: sh.dash, dashOffset: sh.dashOffset ?? 0 } : {}) });
     }
   }
-  // 切り抜き (clip-path)。複数あれば、すべての共通部分
-  for (const c of sh.clips ?? []) if (ops.length) ops = [{ op: 'clip', path: c.segs, evenOdd: c.evenOdd, ops }];
   return ops;
+}
+
+/**
+ * 図形の並び → 命令の並び。切り抜き (clip-path。複数あれば、すべての共通部分) は、続く図形に同じものが付いていれば、1 つの clip の
+ * 中にまとめる (svg.ts の clipRuns。点の多い切り抜きを、図形の数だけ書き直さない)。中身の無い clip は残さない
+ */
+function shapesOps(shapes: SvgShape[]): ColorOp[] {
+  const { steps } = clipRuns(shapes);
+  const root: ColorOp[] = [];
+  const stack: ColorOp[][] = [root];
+  shapes.forEach((sh, i) => {
+    const st = steps[i];
+    stack.length -= st.close;
+    for (const c of st.open) {
+      const node: ColorOp = { op: 'clip', path: c.segs, evenOdd: c.evenOdd, ops: [] };
+      stack[stack.length - 1].push(node);
+      stack.push(node.ops);
+    }
+    stack[stack.length - 1].push(...shapeOps(sh));
+  });
+  const prune = (ops: ColorOp[]): ColorOp[] => ops.filter((o) => o.op !== 'clip' || (o.ops = prune(o.ops)).length > 0);
+  return prune(root);
 }
 
 /**
@@ -109,18 +130,17 @@ export function svgGlyphReader(parseXml: (xml: string) => XmlNode): SvgGlyphRead
       return undefined;
     }
     // CPAL のパレットの色: var(--colorN, 代わりの色) を、パレットの N 番の色 (無ければ代わりの色) に置き換える
-    text = text.replace(/var\(\s*--color(\d+)\s*(?:,\s*([^()]*(?:\([^()]*\))?[^()]*))?\)/g, (_, n: string, fallback?: string) => {
+    text = replacePaletteVars(text, (n, fallback) => {
       const c = palette[Number(n)];
       return c ? `#${hex2(c[0])}${hex2(c[1])}${hex2(c[2])}` : (fallback?.trim() ?? 'black');
     });
-    const rootTag = /<svg\b[^>]*>/.exec(text);
-    if (!rootTag) return undefined;
+    const tag = firstSvgTag(text);
+    if (tag === undefined) return undefined;
     // ほかの字形の要素 (id が glyphM で、M がこの字形でないもの) は描かない。根の要素が字形そのもののときは、何もしない
     const own = `glyph${gid}`;
-    text = text.replace(/<([A-Za-z][\w:.-]*)\b([^>]*?\bid\s*=\s*["']glyph(\d+)["'][^>]*?)(\/?)>/g, (all, name: string, attrs: string, n: string, close: string) => (`glyph${n}` === own || name === 'svg' ? all : `<${name}${attrs} display="none"${close}>`));
+    text = hideGlyphElements(text, (name, n) => `glyph${n}` === own || name === 'svg');
     // 根の要素: viewBox を読んでおき、svg.ts には、利用者座標のまま (viewBox の変換を掛けない) の図形を作らせる。
     // currentColor の目印に、根の color を入れる
-    const tag = rootTag[0];
     const vb = /\bviewBox\s*=\s*["']([^"']*)["']/.exec(tag)?.[1].split(/[\s,]+/).filter(Boolean).map(Number);
     const cleaned = tag.replace(/\s(?:viewBox|width|height|color|overflow|clip|preserveAspectRatio)\s*=\s*(?:"[^"]*"|'[^']*')/g, '').replace(/^<svg\b/, `<svg width="${unitsPerEm}" height="${unitsPerEm}" color="${FOREGROUND}"`);
     text = text.replace(tag, cleaned);
@@ -131,7 +151,8 @@ export function svgGlyphReader(parseXml: (xml: string) => XmlNode): SvgGlyphRead
       return undefined;
     }
     if (!parsed) return undefined;
-    const ops = parsed.shapes.flatMap(shapeOps);
+    // 透明のグループは開いて描く (色の付いた字形の命令には、グループが無い)
+    const ops = shapesOps(flattenGroups(parsed.shapes));
     // 利用者座標 → 字形の座標 (y 上向き): viewBox があれば、全角の枠 (unitsPerEm 角) に、縦横比を保って中央に収める変換
     // (preserveAspectRatio の既定 xMidYMid meet)。その後で、y の向きを返す
     let m: Matrix = [1, 0, 0, -1, 0, 0];

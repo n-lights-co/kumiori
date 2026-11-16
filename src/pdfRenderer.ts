@@ -10,6 +10,9 @@
  *   cm = [ sx·cosφ, sx·sinφ, −sinφ, cosφ, P.x, H−P.y ]   (φ = −θ : y 上向きでは時計回り = 負の回転)
  * を求め、その内側で原点 (0,0) に drawText する。縦書きの横倒し字・縦中横の圧縮が同じ式で表現できる。
  */
+import { fromBase64 } from './base64';
+import { gwgWarnings } from './pdfCheck';
+import { markPdfStandard, pdfStandardOf, pdfText, type PdfStandard, type PdfXOptions } from './pdfStandard';
 import {
   PDFDocument,
   PDFFont,
@@ -46,22 +49,38 @@ import {
 } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import type { FontManager } from './fontManager';
+import { variationSuffix } from './fontVariation';
+import { resolveRef } from './resources';
+import { verticalTreatment } from './jis';
+import { decodeBmp, decodeGif, encodePng, encodePngStored } from './pixels';
+import { rasterFilter } from './svgFilterRaster';
+import { decodeWebp } from './webp';
 import { parseColor, type SpotColor } from './color';
 import { walkAreaTree } from './areaTree';
 import { MONO_GENERIC, SANS } from './sampleData';
 import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
 import { AssetStore } from './assets';
+import { msg } from './messages';
 import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, referencePath, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { iccRgbToCmyk, type CmykConverter } from './icc';
 import { embedCmykImage, embedPngChecked, markCffSubset, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
 import { shrinkJpeg } from './jpeg';
 import { PdfColorGlyphs } from './colorGlyphPdf';
-import { apply, invert, mul, type Seg } from './matrix';
-import { parseSvg, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type TextChars, type XmlNode } from './svg';
+import { apply, invert, mul, transformSegs, type Seg } from './matrix';
+import { clipRuns, eachSvgShape, flattenGroups, foreignObjectContexts, parseSvg, systemLanguageKey, transformShape, type SvgClip, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type TextChars, type XmlNode } from './svg';
 import type { Annotation, Area, AreaTree, BookmarkArea, FormField, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea, TateChuYokoArea } from './types';
 
 export interface PdfRenderOptions {
   title?: string;
+  /**
+   * SVG の foreignObject の中身 (HTML・MathML。中身の文字のまま) を、幅 width・高さ height (SVG の利用者の単位 = CSS px) のページとして組む関数
+   * (api.ts が、本文と同じ HTML の組版で組む)。組んだページを SVG の図形にして、foreignObject の位置に描く。無ければ、HTML の文字だけを近似して描く。
+   * content は、SVG の祖先を表す入れ物 (同じ id・class。display: contents) に包み、一番内の入れ物に受け継ぐ書式を付けたもの。
+   * context.css は SVG の <style> の規則 (組む文書の作成者のスタイルシートに入れる)。中身は本文の既定のスタイルでなく、ブラウザの既定で組む
+   */
+  typesetForeign?: (content: string, width: number, height: number, context?: { css?: string }) => Promise<SheetArea | undefined>;
+  /** systemLanguage を照らす言語 (画像を置いた所に言語の指定が無いとき。無ければ実行環境の言語) */
+  svgLanguages?: string[];
   subset?: boolean;
   /** 画像 (fo:external-graphic) の登録所 */
   assets?: AssetStore;
@@ -88,15 +107,21 @@ export interface PdfRenderOptions {
    */
   svgFontUniqueNames?: boolean;
   /**
-   * 入稿用 (PDF/X-3:2003) の印: OutputIntent (印刷条件)・GTS_PDFXVersion・Trapped。
-   * condition は ICC の登録名 (既定 JC200103 = Japan Color 2001 Coated)。登録名なら ICC プロファイルは省略でき、
+   * 入稿用 (PDF/X) の印: OutputIntent (印刷条件)・GTS_PDFXVersion・Trapped。version は 'X-3' (PDF/X-3:2003。既定) か 'X-4' (PDF/X-4)。
+   * condition は ICC の登録名 (既定 JC200103 = Japan Color 2001 Coated)。X-3 では、登録名なら ICC プロファイルは省略できる。
    * profile (CMYK の ICC プロファイルのバイト列) を渡せば DestOutputProfile として埋め込み、RGB の色と画像は、そのプロファイルの BToA の表で
    * CMYK にする (src/icc.ts。表が読めなければ warnings に書き、rgbToCmyk の式で変換する)。
-   * 透明 (不透明度) は PDF/X-3 では使えないので、使っていれば warnings に書く。
-   * 出力意図の辞書の形は ISO 32000-2 の §14.11.5 (Table 401) で確かめた。PDF/X の規格 (ISO 15930) の本文では確かめていないので、規格への適合は保証しない。
+   * X-3: 透明 (不透明度) は使えないので、使っていれば warnings に書く。PDF 1.4 で、オブジェクトストリームを使わない。
+   * X-4: 出力の ICC プロファイルの埋め込みが要るので、profile が無いか CMYK のプロファイルでなければ、誤りとして投げる
+   * (GWG 2022-R1 の R0035 も、出力意図のプロファイルの色空間を CMYK とする)。透明はそのまま出す。PDF 1.6 で、XMP のメタデータに版の印
+   * (pdfxid:GTS_PDFXVersion) を書く。
+   * どちらでも、ページには TrimBox だけを書き (ArtBox は書かない)、塗り足しまでの範囲 (BleedBox) に掛かる注釈・リンク・フォームの欄は書かずに
+   * warnings に件数を書く (BleedBox はページの絵柄の全体を囲むので、ページの中のものはほぼ全部が無くなる。しおりは残る)。
+   * 出力意図の辞書の形は ISO 32000-2 の §14.11.5 (Table 401)、XMP のメタデータは §14.3.2 で確かめた。PDF/X の規格 (ISO 15930-6・-7) の本文では
+   * 確かめていない (版の印・ボックス・注釈の決まりは、公開の説明による) ので、規格への適合は保証しない。
    * 登録に無い印刷条件の名前 (condition) を使うときは、Table 401 により profile (DestOutputProfile) を渡すこと
    */
-  pdfx?: { condition?: string; info?: string; profile?: Uint8Array; warnings?: string[] };
+  pdfx?: PdfXOptions;
   /**
    * ページの中身などの圧縮 (Flate) に使う関数。省略時は pdf-lib の pako (JavaScript)。
    * Node のコマンドでは、組み込みの zlib (ネイティブで速い) を渡す。展開した中身は同じ
@@ -109,6 +134,11 @@ export interface PdfRenderOptions {
   links?: LinkPolicy;
   /** 動作を書かなかった飛び先があれば、その警告の文を足す配列 */
   linkWarnings?: string[];
+  /**
+   * PDF を書く途中の警告 (描けない字・作れないフォームの欄・色つきの字形を色つきで描けないことなど) を足す配列。同じ文は 1 度だけ足す。
+   * 省略すれば console.warn に出す
+   */
+  warnings?: string[];
 }
 
 /** 部分書体の名前の印 (大文字 6 字。n 番目の部分書体ごとに違う) */
@@ -139,11 +169,11 @@ export function rgbToCmyk(r: number, g: number, b: number): [number, number, num
 const iccCache = new WeakMap<Uint8Array, CmykConverter | null>();
 /**
  * PDF/X の RGB → CMYK の変換: CMYK の ICC プロファイルを渡されたら、その表 (BToA) で変換する (読んだ表はプロファイルごとに覚える)。
- * 読めないプロファイルなら ISO 32000-2 §10.4.2.4 の式 (rgbToCmyk)。PDF/X でなければ undefined
+ * 読めないプロファイルなら ISO 32000-2 §10.4.2.4 の式 (rgbToCmyk)。規格の方針が CMYK にしないなら (ふつうの PDF も) undefined
  */
-function pdfxConverter(opts: PdfRenderOptions): CmykConverter | undefined {
+function pdfxConverter(opts: PdfRenderOptions, std: PdfStandard | undefined): CmykConverter | undefined {
   const x = opts.pdfx;
-  if (!x) return undefined;
+  if (!x || !std?.cmyk) return undefined;
   if (!x.profile) return rgbToCmyk;
   let c = iccCache.get(x.profile);
   if (c === undefined) {
@@ -164,11 +194,20 @@ function toPdfColor(input: string, toCmyk?: CmykConverter): Color {
     c.g = u(c.g);
     c.b = u(c.b);
     if (!toCmyk) return rgb(c.r, c.g, c.b);
-    if (c.r === c.g && c.g === c.b) return grayscale(c.r);
+    // PDF/X: 灰色は K だけの CMYK (pdfStandard.ts の PdfStandard.cmyk。GWG 2022-R1 の R0011・R0012)
+    if (c.r === c.g && c.g === c.b) return cmyk(0, 0, 0, 1 - c.r);
     const [cc, m, y, k] = toCmyk(c.r, c.g, c.b);
     return cmyk(cc, m, y, k);
   }
-  return c.gray ? grayscale(1 - u(c.k)) : cmyk(u(c.c), u(c.m), u(c.y), u(c.k));
+  if (c.gray) return toCmyk ? cmyk(0, 0, 0, u(c.k)) : grayscale(1 - u(c.k));
+  return cmyk(u(c.c), u(c.m), u(c.y), u(c.k));
+}
+
+/** K だけの黒 (K 100%) になる色か (特色は除く)。PDF/X のノセ (PdfStandard.blackOverprint) に使う。GWG 2022-R1 の D0013 */
+function isKBlack(css: string): boolean {
+  const c = parseColor(css);
+  if (c.mode === 'rgb') return c.r === 0 && c.g === 0 && c.b === 0;
+  return !c.spot && c.c === 0 && c.m === 0 && c.y === 0 && c.k === 1;
 }
 
 /**
@@ -216,15 +255,6 @@ function spotColorSpace(sp: SpotColor, spotPage: SpotPage | undefined): PDFName 
  */
 function textName(s: string): PDFName {
   return PDFName.of(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join(''));
-}
-
-/**
- * 字句の文字列 (literal string)。pdf-lib の PDFString.of は値をそのまま ( ) で囲むので、括弧と \ を逃がす (ISO 32000-2 §7.3.4.2)。
- * 0x20〜0x7E 以外の字を含む文字列は、テキスト文字列 (UTF-16BE。§7.9.2.2) の 16 進の文字列にする
- */
-function pdfText(s: string): PDFString | PDFHexString {
-  if (/^[\x20-\x7e]*$/.test(s)) return PDFString.of(s.replace(/[\\()]/g, (c) => '\\' + c));
-  return PDFHexString.fromText(s);
 }
 
 /**
@@ -344,7 +374,7 @@ interface TextSeg {
 }
 
 /**
- * 字の間の空きが、字の大きさのこの割合以上なら「広げた字の並び」とみる (OUT-24)。PDF には空白の字が無くても、字を取り出す側は、字の間の
+ * 字の間の空きが、字の大きさのこの割合以上なら「広げた字の並び」とみる。PDF には空白の字が無くても、字を取り出す側は、字の間の
  * 広さから空白を推測する。空白と見なし始める空きを測ると (字の大きさに対する割合。Poppler 24.02 の pdftotext・PDFium 153・MuPDF 1.28)、
  * 欧文は PDFium が 0.10〜0.12、Poppler の -raw と MuPDF が 0.15、和文は Poppler の -raw が 0.15、PDFium が 0.17、Poppler の既定が 0.5
  * (MuPDF は 0.8 で別の行に分ける)。いちばん小さい 0.1 を境にする (ふつうの行の字の間は、これより狭い)
@@ -399,6 +429,12 @@ function finishVerticalFonts(pdf: PDFDocument, fonts: Map<PDFFont, VerticalFont>
 
 class PdfPainter implements Painter {
   private clips = 0;
+  /** 描く途中の警告の出し先 (renderPdf の opts.warnings) */
+  warn: (message: string) => void = (m) => console.warn(m);
+  /** このページに置いた SVG のリンク (a) の注釈の数 (SVG_MAX_LINKS_PER_PAGE と比べる) */
+  private svgLinks = 0;
+  /** 描けない字のあった書体 (知らせを書体ごとに 1 度にする。文書の全ページで共有) */
+  failedFonts = new Set<string>();
   constructor(
     private page: PDFPage,
     private H: number,
@@ -413,12 +449,34 @@ class PdfPainter implements Painter {
   ) {
     this.spots = { page, names: new Map() };
   }
+  /** K だけの黒の小さい字・細い線にノセを付ける大きさの上限 (PDF/X の出力。PdfStandard.blackOverprint) */
+  blackOverprint?: { text: number; line: number };
+  /**
+   * K だけの黒の小さい字 (kind 'text') と細い線 (kind 'line') のノセの ExtGState を選ぶ命令 (blackOverprint。ISO 32000-2 §8.6.7・Table 57 の
+   * OP・op・OPM)。size はいまの座標での大きさで、いまの変換の倍率を掛けて比べる。当たらなければ何も書かない
+   */
+  private overprintOps(css: string, size: number, kind: 'text' | 'line'): PDFOperator[] {
+    const o = this.blackOverprint;
+    if (!o || !this.ctx) return [];
+    const m = this.ctm;
+    if (size * Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2])) >= o[kind] || !isKBlack(css)) return [];
+    let name = this.gstates.get('overprint');
+    if (!name) {
+      name = this.page.node.newExtGState('KmOP', this.ctx.context.obj({ Type: 'ExtGState', OP: true, op: true, OPM: 1 }));
+      this.gstates.set('overprint', name);
+    }
+    return [PDFOperator.of(Ops.SetGraphicsStateParams, [name])];
+  }
   /** RGB の色を CMYK にして書く (PDF/X の出力)。RGB → CMYK の変換 (ICC プロファイルの表か、rgbToCmyk) */
   set cmykOutput(v: CmykConverter | undefined) {
     this.spots.cmyk = v;
   }
   /** このページの特色 (Separation) の資源 */
   private spots: SpotPage;
+  /** このページで使った特色の名前 (入稿の検査に使う) */
+  get spotNames(): string[] {
+    return [...this.spots.names.keys()].map((k) => k.slice(0, k.lastIndexOf('|')));
+  }
   private gstates = new Map<string, PDFName>();
 
   /** 塗り・線の不透明度 (ExtGState)。1 のときは何もしない */
@@ -431,8 +489,8 @@ class PdfPainter implements Painter {
     let name = this.gstates.get(key);
     if (!name) {
       const ctx = this.ctx.context;
-      // 描画モード (PDF 32000-1 11.3.5 の BM): Multiply・Screen・Difference
-      const BM = blend ? { BM: blend === 'multiply' ? 'Multiply' : blend === 'screen' ? 'Screen' : 'Difference' } : {};
+      // 描画モード (BM)。PDF の描画モードの名前 (ISO 32000-2 §11.3.5): color-dodge → ColorDodge
+      const BM = blend ? { BM: blend.replace(/(^|-)([a-z])/g, (_, _h, c: string) => c.toUpperCase()) } : {};
       name = this.page.node.newExtGState(`KmA${this.gstates.size}`, ctx.obj({ Type: 'ExtGState', ca, CA, ...BM }));
       this.gstates.set(key, name);
     }
@@ -446,17 +504,39 @@ class PdfPainter implements Painter {
     let name = this.masks.get(mk);
     if (!name) {
       const ctx = this.ctx.context;
-      // 中身はページの資源 (不透明度・模様) を使うので、Form XObject の資源はページと同じ辞書にする。
+      // 中身はページの資源 (不透明度・模様) を使うので、Form XObject の資源はページと同じ辞書にする
+      // (間接オブジェクトにして参照する。じかに渡すと、保存のとき Form ごとに辞書の写しが書かれ、マスクの数の 2 乗で大きくなる)。
       // 中身はいまの座標 (SVG の座標) で描く。描かれていないところは黒 (輝度 0) なので隠れる
-      const ops = mk.shapes.flatMap((sh) => this.shapeOps(sh, [1, 0, 0, 1, 0, 0], bbox));
+      const ops = this.shapesOps(mk.shapes, [1, 0, 0, 1, 0, 0], bbox);
       const form = ctx.register(
-        ctx.contentStream(ops, { Type: 'XObject', Subtype: 'Form', BBox: bbox, Group: { S: 'Transparency', CS: this.spots.cmyk ? 'DeviceCMYK' : 'DeviceRGB' }, Resources: this.page.node.Resources()! }),
+        ctx.contentStream(ops, { Type: 'XObject', Subtype: 'Form', BBox: bbox, Group: { S: 'Transparency', CS: this.spots.cmyk ? 'DeviceCMYK' : 'DeviceRGB' }, Resources: this.sharedResources() }),
       );
       this.usedAlpha = true;
-      name = this.page.node.newExtGState(`KmM${this.masks.size}`, ctx.obj({ Type: 'ExtGState', SMask: { Type: 'Mask', S: 'Luminosity', G: form } }));
+      // mask-type: alpha は、中身の不透明度のソフトマスク (ISO 32000-2 §11.6.5.2 の S が Alpha)
+      name = this.page.node.newExtGState(`KmM${this.masks.size}`, ctx.obj({ Type: 'ExtGState', SMask: { Type: 'Mask', S: mk.alpha ? 'Alpha' : 'Luminosity', G: form } }));
       this.masks.set(mk, name);
     }
     return [PDFOperator.of(Ops.SetGraphicsStateParams, [name])];
+  }
+
+  /**
+   * SVG の図形の並びを描く命令。続く図形に同じ切り抜きが付いていれば、外側の q 〜 Q で 1 度だけ書く (svg.ts の clipRuns。
+   * 点の多い切り抜きを多くの図形に付けた SVG で、切り抜きの形を図形の数だけ書き直さない)。図形そのものは、切り抜きを外して描く
+   */
+  private shapesOps(shapes: readonly SvgShape[], outer: Matrix, bbox: [number, number, number, number]): PDFOperator[] {
+    const { steps, end } = clipRuns(shapes);
+    const out: PDFOperator[] = [];
+    shapes.forEach((sh, i) => {
+      const st = steps[i];
+      for (let k = 0; k < st.close; k++) out.push(popGraphicsState());
+      for (const c of st.open) {
+        out.push(pushGraphicsState());
+        pushClips(out, [c]);
+      }
+      pushAll(out, this.shapeOps(sh.clips ? { ...sh, clips: undefined } : sh, outer, bbox));
+    });
+    for (let k = 0; k < end; k++) out.push(popGraphicsState());
+    return out;
   }
 
   /** SVG の図形 1 つを描く命令 (q 〜 Q)。outer: SVG の座標 → 模様の座標 (ページ、マスクの中ではマスクの座標) */
@@ -478,12 +558,37 @@ class PdfPainter implements Painter {
     }
     const N = (n: number) => PDFNumber.of(n);
     const op = (o: Ops, ...args: number[]) => PDFOperator.of(o, args.map(N));
+    // 入れ子のマスク (外の要素と内の要素の両方の mask): ExtGState のソフトマスクは 1 つしか効かない (後のものに置き換わる) ので、
+    // 内側のマスクで描いた図形を透明のグループにして、外側のマスクをそのグループに掛ける (マスクの値が掛け合わさる)
+    if (sh.masks && sh.masks.length > 1 && this.ctx) {
+      const last = sh.masks[sh.masks.length - 1];
+      return this.shapeOps({ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: 1, strokeOpacity: 1, masks: sh.masks.slice(0, -1), group: { shapes: [{ ...sh, masks: [last] }] } }, outer, bbox);
+    }
+    if (sh.group) {
+      // 透明のグループ: 子を Form XObject (Group の S が Transparency、I が true) に描き、不透明度・描画モードで置く (ISO 32000-2 §11.6.6)。
+      // 子の模様・グラデーションの行列は、Form の座標 (いまの SVG の座標) へ写す (§8.7.3.1) ので、外の変換は掛けない
+      if (!this.ctx) return sh.group.shapes.flatMap((c) => this.shapeOps({ ...c, fillOpacity: c.fillOpacity * sh.fillOpacity, strokeOpacity: c.strokeOpacity * sh.fillOpacity }, outer, bbox));
+      const inner = this.shapesOps(sh.group.shapes, [1, 0, 0, 1, 0, 0], bbox);
+      if (!inner.length) return [];
+      const ctx = this.ctx.context;
+      // 資源はページと同じ辞書を間接オブジェクトで参照する (sharedResources)。じかに渡すと、保存のとき Form ごとに
+      // 辞書 (全部の Form の /KmG… を並べたもの) の写しが書かれ、グループの数の 2 乗で PDF が大きくなる
+      const form = ctx.register(
+        ctx.contentStream(inner, { Type: 'XObject', Subtype: 'Form', BBox: bbox, Group: { S: 'Transparency', I: true, CS: this.spots.cmyk ? 'DeviceCMYK' : 'DeviceRGB' }, Resources: this.sharedResources() }),
+      );
+      const name = this.page.node.newXObject('KmG', form);
+      const out: PDFOperator[] = [pushGraphicsState()];
+      pushClips(out, sh.clips);
+      for (const mk of sh.masks ?? []) out.push(...this.maskOps(mk, bbox));
+      out.push(...this.alphaOps(sh.fillOpacity, sh.fillOpacity, sh.blend), PDFOperator.of(Ops.DrawObject, [name]), popGraphicsState());
+      return out;
+    }
     if (sh.image) {
       // 画像 (前もって埋め込んだもの): 切り抜き・マスク・不透明度のあとで、単位正方形を画像の位置に写して描く
       const img = this.svgImages.get(sh.image);
       if (!img) return [];
       const out: PDFOperator[] = [pushGraphicsState()];
-      for (const c of sh.clips ?? []) (pushAll(out, segOps(c.segs)), out.push(PDFOperator.of(c.evenOdd ? Ops.ClipEvenOdd : Ops.ClipNonZero), PDFOperator.of(Ops.EndPath)));
+      pushClips(out, sh.clips);
       for (const mk of sh.masks ?? []) out.push(...this.maskOps(mk, bbox));
       out.push(...this.alphaOps(sh.fillOpacity, 1, sh.blend));
       out.push(concatTransformationMatrix(...sh.image.matrix), PDFOperator.of(Ops.DrawObject, [this.imageName(img)]), popGraphicsState());
@@ -495,13 +600,17 @@ class PdfPainter implements Painter {
     const strokeAlpha = stroke0 && !!sh.strokePaint?.stops.some((s) => s.opacity !== undefined);
     // 透明度のあるグラデーションのマスクが、塗りと線の片方だけに掛かるように、分けて描く
     if ((fillAlpha || strokeAlpha) && fill0 && stroke0)
-      return [
-        ...this.shapeOps({ ...sh, stroke: undefined, strokePaint: undefined }, outer, bbox),
-        ...this.shapeOps({ ...sh, fill: undefined, fillPaint: undefined, fillPattern: undefined }, outer, bbox),
-      ];
+      return this.shapesOps(
+        [
+          { ...sh, stroke: undefined, strokePaint: undefined },
+          { ...sh, fill: undefined, fillPaint: undefined, fillPattern: undefined },
+        ],
+        outer,
+        bbox,
+      );
     const out: PDFOperator[] = [pushGraphicsState()];
     // 切り抜き (clipPath): 形を作って W n
-    for (const c of sh.clips ?? []) (pushAll(out, segOps(c.segs)), out.push(PDFOperator.of(c.evenOdd ? Ops.ClipEvenOdd : Ops.ClipNonZero), PDFOperator.of(Ops.EndPath)));
+    pushClips(out, sh.clips);
     // マスク: ExtGState のソフトマスク (外側のマスクから。重ねると後のものに置き換わるので、内側のマスクだけが効く近似)
     for (const mk of sh.masks ?? []) out.push(...this.maskOps(mk, bbox));
     out.push(...this.alphaOps(sh.fillOpacity, sh.strokeOpacity, sh.blend));
@@ -526,7 +635,9 @@ class PdfPainter implements Painter {
     // 単色の塗りだけの字は、書体の文字として描く (字の座標は y 下向きなので、文字の行列で上下を返す)
     const textOps = fill && !stroke && !sh.fillPaint && !sh.fillPattern && sh.text ? this.svgTextOps(sh.text) : undefined;
     if (textOps) {
-      out.push(...textOps, popGraphicsState());
+      // 多数の字の text (9.6 万字) で、push(...並び) は呼び出しのスタックが尽きて文書の全体が誤りで終わったので、pushAll で足す
+      pushAll(out, textOps);
+      out.push(popGraphicsState());
       return out;
     }
     pushAll(out, segOps(sh.segs));
@@ -597,8 +708,39 @@ class PdfPainter implements Painter {
     // マスクの Form XObject の範囲 (SVG の座標): viewBox の周りを広めに
     const bbox: [number, number, number, number] = [vx - vw * 10, vy - vh * 10, vx + vw * 11, vy + vh * 11];
     const outer = mul(this.patternCtm, svgCm);
-    for (const sh of v.shapes) pushOps(this.page, this.shapeOps(sh, outer, bbox));
+    pushOps(this.page, this.shapesOps(v.shapes, outer, bbox));
     this.page.pushOperators(popGraphicsState());
+    // SVG の a のリンク: リンクごとに、図形の外接矩形 (画像の領域の中) をリンクの注釈にする
+    const boxes = new Map<string, number[]>();
+    for (const sh of flattenGroups(v.shapes)) {
+      if (!sh.link) continue;
+      const pts: number[][] = sh.image
+        ? [[0, 0], [1, 0], [0, 1], [1, 1]].map(([px, py]) => apply(sh.image!.matrix, px, py))
+        : sh.segs.flatMap((g) => (g.op === 'Z' ? [] : g.op === 'C' ? [[g.x1, g.y1], [g.x2, g.y2], [g.x, g.y]] : [[g.x, g.y]]));
+      const m = mul(this.ctm, svgCm);
+      const b = boxes.get(sh.link) ?? [Infinity, Infinity, -Infinity, -Infinity];
+      for (const [px, py] of pts) {
+        const [qx, qy] = apply(m, px, py);
+        b[0] = Math.min(b[0], qx);
+        b[1] = Math.min(b[1], qy);
+        b[2] = Math.max(b[2], qx);
+        b[3] = Math.max(b[3], qy);
+      }
+      boxes.set(sh.link, b);
+    }
+    if (boxes.size) {
+      const area = this.pdfRect(ax, ay, a.width, a.height);
+      for (const [link, b] of boxes) {
+        const r = [Math.max(b[0], area[0]), Math.max(b[1], area[1]), Math.min(b[2], area[2]), Math.min(b[3], area[3])];
+        if (!(r[2] > r[0] && r[3] > r[1])) continue;
+        // 1 ページの SVG のリンクの数の上限 (SVG_MAX_LINKS_PER_PAGE)。超えた分はリンクにしない (絵はそのまま描く)
+        if (++this.svgLinks > SVG_MAX_LINKS_PER_PAGE) {
+          this.warn(msg(`SVG のリンクが 1 ページに ${SVG_MAX_LINKS_PER_PAGE} 個を超えたので、それより後の SVG の a はリンクにしません`, `More than ${SVG_MAX_LINKS_PER_PAGE} SVG links on one page; later SVG a elements are not made into links`));
+          break;
+        }
+        this.marks.push({ rect: r, link: { external: link } });
+      }
+    }
   }
 
   /**
@@ -694,6 +836,7 @@ class PdfPainter implements Painter {
     this.flushText();
     this.page.pushOperators(
       pushGraphicsState(),
+      ...this.overprintOps(color, width, 'line'),
       ...colorOps(color, false, this.spots),
       PDFOperator.of(Ops.SetLineWidth, [PDFNumber.of(width)]),
       ...(dash ? [setDashPattern(dash, 0)] : []),
@@ -755,23 +898,12 @@ class PdfPainter implements Painter {
   private patternFill(pt: SvgPattern, outer: Matrix): PDFOperator[] {
     if (!this.ctx) return colorOps('#808080', true, this.spots);
     const ctx = this.ctx.context;
-    const N = (n: number) => PDFNumber.of(n);
-    const ops: PDFOperator[] = [];
-    for (const sh of pt.shapes) {
-      const fill = sh.fill !== undefined;
-      const stroke = sh.stroke !== undefined && sh.strokeWidth > 0;
-      if (fill) ops.push(...colorOps(sh.fill!, true, this.spots));
-      if (stroke) {
-        ops.push(...colorOps(sh.stroke!, false, this.spots), PDFOperator.of(Ops.SetLineWidth, [N(sh.strokeWidth)]), PDFOperator.of(Ops.SetLineCapStyle, [N(sh.lineCap)]), PDFOperator.of(Ops.SetLineJoinStyle, [N(sh.lineJoin)]));
-        if (sh.lineJoin === 0) ops.push(PDFOperator.of(Ops.SetLineMiterLimit, [N(sh.miterLimit ?? 4)]));
-        ops.push(setDashPattern(sh.dash ?? [], sh.dash ? (sh.dashOffset ?? 0) : 0));
-      }
-      pushAll(ops, segOps(sh.segs));
-      ops.push(PDFOperator.of(fill && stroke ? (sh.evenOdd ? Ops.FillEvenOddAndStroke : Ops.FillNonZeroAndStroke) : fill ? (sh.evenOdd ? Ops.FillEvenOdd : Ops.FillNonZero) : stroke ? Ops.StrokePath : Ops.EndPath));
-    }
+    // タイルの中身は、ページの SVG の図形と同じに描く (グラデーション・不透明度・切り抜き・描画モード・入れ子の模様)。
+    // 中身の模様・グラデーションの行列は、タイルの座標への変換 (ISO 32000-2 §8.7.3.1: 模様の中で使う模様の行列は、外の模様の座標へ写す)
+    const ops: PDFOperator[] = this.shapesOps(pt.shapes, [1, 0, 0, 1, 0, 0], [0, 0, pt.width, pt.height]);
     // タイルの中身は SVG のルート座標ではなくタイルの座標で描いてあるので、タイル → ルートの変換を前に掛ける。
-    // 資源: 特色 (spot(...)) の色空間の名前はページの資源を指すので、パターンの資源にも同じ ColorSpace の辞書を置く
-    // (パターンの内容ストリームの中では、ページの資源は解けない。ISO 32000-2 §7.8.3)
+    // 資源: パターンの内容ストリームの中では、ページの資源は解けない (ISO 32000-2 §7.8.3) ので、ページと同じ資源の辞書を指す
+    // (特色の色空間・ExtGState・模様・書体)
     const stream = ctx.contentStream(ops, {
       Type: 'Pattern',
       PatternType: 1,
@@ -781,7 +913,7 @@ class PdfPainter implements Painter {
       XStep: pt.width,
       YStep: pt.height,
       Matrix: mul(outer, pt.matrix),
-      Resources: this.spots.names.size ? { ColorSpace: spotColorSpaceDict(this.spots) } : {},
+      Resources: this.sharedResources(),
     });
     const ref = ctx.register(stream);
     const name = this.addPattern(ref);
@@ -887,7 +1019,8 @@ class PdfPainter implements Painter {
 
   drawImage(a: ImageArea, x: number, y: number) {
     this.flushText();
-    const vec = this.vectorOf(a.src);
+    // 置いた所の言語で図形にした SVG があればそれ (systemLanguage を照らしたもの)
+    const vec = (a.language && this.vectorOf(`${a.src}\0${a.language}`)) || this.vectorOf(a.src);
     if (vec) return this.drawVector(vec, a, x, y);
     const img = this.imageOf(a.src);
     // 単位正方形の画像を (幅, 高さ) に伸ばして左下 (x, H − y − 高さ) に置く: q w 0 0 h x y cm /KmI Do Q
@@ -936,7 +1069,11 @@ class PdfPainter implements Painter {
       this.page.pushOperators(pushGraphicsState(), ...colorOps(color, true, this.spots), PDFOperator.of(Ops.AppendRectangle, [PDFNumber.of(x), PDFNumber.of(this.H - y - h), PDFNumber.of(w), PDFNumber.of(h)]), PDFOperator.of(Ops.FillNonZero), popGraphicsState());
       return;
     }
+    // 細い長方形 (罫線) の黒は、線と同じにノセを付ける (GWG 2022-R1 の I00004: 細い長方形の実際の線の太さ)
+    const op = this.overprintOps(color, Math.min(w, h), 'line');
+    if (op.length) this.page.pushOperators(pushGraphicsState(), ...op);
     this.page.drawRectangle({ x, y: this.H - y - h, width: w, height: h, color: toPdfColor(color, this.spots.cmyk), borderWidth: 0 });
+    if (op.length) this.page.pushOperators(popGraphicsState());
   }
 
   /**
@@ -988,7 +1125,12 @@ class PdfPainter implements Painter {
       hex = own ? (font as FeatureFont).encodeGlyphs(g.glyphIds!, '') : g.glyphIds?.length ? (font as FeatureFont).encodeGlyphs(g.glyphIds, text) : (font as FeatureFont).encodeText(text, g.features);
     } catch (e) {
       // 字形のデータが壊れている書体 (fontkit が読めない字) は、その字を描かずに続ける (PDF の書き出し全体を止めない)
-      console.warn(`PDF: ${g.fontFamily} の「${g.text}」(U+${(g.text.codePointAt(0) ?? 0).toString(16)}) を描けません`, e);
+      // 知らせは書体ごとに 1 度 (壊れた書体では、多くの字が描けない)。初めの字を例に書く
+      if (!this.failedFonts.has(g.fontFamily)) {
+        this.failedFonts.add(g.fontFamily);
+        const cp = (g.text.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0');
+        this.warn(msg(`PDF: ${g.fontFamily} に描けない字があります (「${g.text}」U+${cp} など: ${errorText(e)})。その字は描きません`, `PDF: some characters cannot be drawn in ${g.fontFamily} (such as "${g.text}" U+${cp}: ${errorText(e)}); they are not drawn`));
+      }
       return;
     }
     const fakeBold = !!g.fakeBold;
@@ -1137,7 +1279,7 @@ class PdfPainter implements Painter {
    * 字を、ためている並び (run) に置く。同じ行列で同じ基線に並ぶ字は 1 つの文字列 (TJ。字の間隔は字送りの調整で表す) にまとめ、
    * 字ごとに Tm と Tj を書かない (PDF の内容が数分の 1 になる)。基線の違う字 (ずらした字形・横書きの書体で置く縦書きの字) は Tm から書き直す。
    * (u, v) は行列 m の文字空間での字の原点 (GPOS のずらし)。(ox, oy) は字の親の領域の原点、text は元の字 (分からなければ undefined)。
-   * vertical があれば、縦書きの書体 (WMode 1) の字: 同じ行 (横の位置が同じ) に上から下へ並ぶ字を、1 つの文字列にまとめる (OUT-26)。
+   * vertical があれば、縦書きの書体 (WMode 1) の字: 同じ行 (横の位置が同じ) に上から下へ並ぶ字を、1 つの文字列にまとめる。
    * 字を取り出す側は、横書きの書体の字が 1 字ずつ縦に並ぶものを別々の行と見るが、縦書きの書体の字の並びは 1 つの行として読む
    */
   private placeGlyph(m: number[], size: number, hex: PDFHexString, u: number, v: number, ox: number, oy: number, text?: string, vertical?: VerticalFont) {
@@ -1249,7 +1391,7 @@ class PdfPainter implements Painter {
       show(s.parts, true);
       return;
     }
-    // 字の間を広げた字の並び (OUT-24): 置き換えの文字列 (ISO 32000-1 §14.9.4) で、元の字の並びを書き添える。字を取り出す側は、印の付いた
+    // 字の間を広げた字の並び: 置き換えの文字列 (ISO 32000-1 §14.9.4) で、元の字の並びを書き添える。字を取り出す側は、印の付いた
     // 内容 (/Span … BDC 〜 EMC。§14.6) の中の字を、この文字列に置き換えるので、字の間の広さから空白を推測しない。印の付いた内容は
     // テキストの区切り (BT…ET) の中に置ける (§14.6.1)。字の位置 (TJ の字送りの調整) は変えない: 並びの切れ目で TJ を分けるだけで、
     // 切れ目の空きは、前の TJ の終わりの調整量になる。広げていない並びには付けない
@@ -1276,6 +1418,7 @@ class PdfPainter implements Painter {
     }
     this.page.pushOperators(
       pushGraphicsState(),
+      ...this.overprintOps(r.css, r.size, 'text'),
       // 疑似太字: 塗りと輪郭のなぞり (文字の描画モード 2) で字を太らせる
       // 疑似太字: 塗りと輪郭。継ぎ目は丸 (Canvas の strokeText と同じ lineJoin = 'round')
       ...(r.fakeBold ? [setTextRenderingMode(TextRenderingMode.FillAndOutline), setLineWidth(r.size * FAKE_BOLD), PDFOperator.of(Ops.SetLineJoinStyle, [PDFNumber.of(1)]), ...colorOps(r.css, false, this.spots)] : []),
@@ -1294,6 +1437,7 @@ class PdfPainter implements Painter {
     const colorSet = cs ? [PDFOperator.of(Ops.StrokingColorspace, [cs]), PDFOperator.of(Ops.StrokingColorN, [PDFNumber.of(1)])] : colorOps(color ?? '#000', false, this.spots);
     this.page.pushOperators(
       pushGraphicsState(),
+      ...(color === undefined ? [] : this.overprintOps(color, width, 'line')),
       setLineWidth(width),
       ...colorSet,
       PDFOperator.of(Ops.MoveTo, [PDFNumber.of(l.x1), PDFNumber.of(this.H - l.y1)]),
@@ -1422,6 +1566,11 @@ function pushAll<T>(to: T[], from: readonly T[]) {
   for (let i = 0; i < from.length; i++) to.push(from[i]);
 }
 
+/** 切り抜きの形を作って W n (偶奇なら W* n) にする命令を、out に足す */
+function pushClips(out: PDFOperator[], clips: readonly SvgClip[] | undefined) {
+  for (const c of clips ?? []) (pushAll(out, segOps(c.segs)), out.push(PDFOperator.of(c.evenOdd ? Ops.ClipEvenOdd : Ops.ClipNonZero), PDFOperator.of(Ops.EndPath)));
+}
+
 function segOps(segs: readonly Seg[], flipH?: number): PDFOperator[] {
   const N = (v: number) => PDFNumber.of(v);
   const Y = flipH === undefined ? (y: number) => y : (y: number) => flipH - y;
@@ -1458,9 +1607,17 @@ function setDocumentInfo(pdf: PDFDocument, tree: AreaTree, opts: PdfRenderOption
  * 木で使われている画像 (fo:external-graphic・背景画像) を埋め込む。src ごとに、置かれる大きさ (最大) から必要な解像度を決める。
  * SVG は (XML パーサがあれば) ベクタのまま (vectors)、その中の data: の画像は svgImages に埋め込む。ラスタは images に
  */
-async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager, opts: PdfRenderOptions): Promise<{ images: Map<string, PDFImage>; vectors: Map<string, SvgDoc>; svgImages: Map<object, PDFImage> }> {
+async function embedImages(
+  pdf: PDFDocument,
+  tree: AreaTree,
+  fonts: FontManager,
+  opts: PdfRenderOptions,
+  warn: (message: string) => void = (m) => console.warn(m),
+): Promise<{ images: Map<string, PDFImage>; vectors: Map<string, SvgDoc>; svgImages: Map<object, PDFImage>; placed: Map<string, { width: number; height: number }> }> {
   const sizes = new Map<string, number>();
   const heights = new Map<string, number>();
+  /** 画像を置いた所の言語 (src ごと。SVG の systemLanguage を照らす) */
+  const langs = new Map<string, Set<string>>();
   const use = (src: string, w: number, h: number) => {
     sizes.set(src, Math.max(sizes.get(src) ?? 0, w));
     heights.set(src, Math.max(heights.get(src) ?? 0, h));
@@ -1468,6 +1625,11 @@ async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager,
   walkAreaTree(tree, (a) => {
     if (a.type === 'image') {
       if (!a.missing) use(a.src, a.width, a.height);
+      if (!a.missing && a.language) {
+        const set = langs.get(a.src) ?? new Set<string>();
+        set.add(a.language);
+        langs.set(a.src, set);
+      }
       return;
     }
     // 背景画像も埋め込む
@@ -1491,14 +1653,15 @@ async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager,
    * PDF/X の RGB → CMYK: CMYK の ICC プロファイルを渡されたら、その表 (BToA) で変換する。読めないプロファイルなら警告して、
    * ISO 32000-2 §10.4.2.4 の式 (rgbToCmyk) で変換する
    */
-  const cmykOf = pdfxConverter(opts);
+  const std = pdfStandardOf(opts.pdfx);
+  const cmykOf = pdfxConverter(opts, std);
   const embedAny = async (bytes: Uint8Array, kind: 'png' | 'jpg'): Promise<PDFImage> => {
-    if (opts.pdfx) {
-      const r = await embedCmykImage(pdf, bytes, kind, cmykOf!);
+    if (opts.pdfx && cmykOf) {
+      const r = await embedCmykImage(pdf, bytes, kind, cmykOf);
       if (r) {
-        if (r.hasAlpha && !alphaWarned) {
+        if (r.hasAlpha && !alphaWarned && std?.transparency === 'warn') {
           alphaWarned = true;
-          opts.pdfx.warnings?.push('PDF/X-3 では透明 (画像の透明度) を使えません');
+          opts.pdfx.warnings?.push(msg(`${std.label} では透明 (画像の透明度) を使えません`, `${std.label} does not allow transparency (image transparency)`));
         }
         return r.image;
       }
@@ -1507,10 +1670,15 @@ async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager,
   };
   /** SVG の中の画像 (data: の PNG・JPEG) を埋め込んでおく */
   const embedSvgImages = async (doc: SvgDoc) => {
-    for (const sh of doc.shapes) {
+    // グループの子・模様の中身・マスクの中身の画像も
+    const all: SvgShape[] = [];
+    eachSvgShape(doc.shapes, (sh) => all.push(sh));
+    for (const sh of all) {
       if (!sh.image || svgImages.has(sh.image)) continue;
       try {
-        svgImages.set(sh.image, await embedAny(sh.image.bytes, sh.image.kind === 'png' ? 'png' : 'jpg'));
+        // filter を画素で計算した画像は、圧縮した PNG にして埋め込む
+        const bytes = sh.image.pixels ? await encodePng(sh.image.pixels) : sh.image.bytes;
+        svgImages.set(sh.image, await embedAny(bytes, sh.image.kind === 'png' ? 'png' : 'jpg'));
       } catch {
         /* 埋め込めない画像は描かない */
       }
@@ -1518,29 +1686,82 @@ async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager,
   };
   for (const [src, wPt] of sizes) {
     const asset = opts.assets?.get(src);
-    if (xml && asset?.bytes && asset.mime === 'image/svg+xml') {
-      await registerSvgFonts(fonts, new TextDecoder().decode(asset.bytes));
-      const doc = parseSvg(new TextDecoder().decode(asset.bytes), xml, {
-        outline: (t, fam, w, size) => outlineText(fonts, t, fam, w, size, !!opts.svgFontUniqueNames),
-        ...(opts.svgMarkerOverflowVisible ? { markerOverflowVisible: true } : {}),
-        ...(opts.svgRootOverflowVisible ? { rootOverflowVisible: true } : {}),
-      });
-      if (doc) {
-        await embedSvgImages(doc);
-        vectors.set(src, doc);
-        continue;
+    // SVG の image の外のファイル: SVG の場所を基準に、登録した画像を引く (文書の中の SVG (data: の URI) は、文書の場所が基準)
+    const image = (href: string) => {
+      const a = opts.assets?.get(resolveRef(href, /^data:/i.test(src) ? undefined : src));
+      if (!a?.bytes) return undefined;
+      if (a.mime === 'image/png' || a.mime === 'image/jpeg') return { kind: a.mime === 'image/png' ? ('png' as const) : ('jpeg' as const), bytes: a.bytes };
+      // GIF・BMP・WebP は画素に戻して PNG にする (GIF は最初の絵)
+      const px = a.mime === 'image/gif' ? decodeGif(a.bytes) : a.mime === 'image/bmp' ? decodeBmp(a.bytes) : a.mime === 'image/webp' ? decodeWebp(a.bytes) : undefined;
+      return px ? { kind: 'png' as const, bytes: encodePngStored(px) } : undefined;
+    };
+    // use の外のファイル (file.svg#id): 同じく SVG の場所を基準に引いた、登録した SVG の中身
+    const resource = (href: string) => {
+      const a = opts.assets?.get(resolveRef(href, /^data:/i.test(src) ? undefined : src));
+      return a?.bytes && a.mime === 'image/svg+xml' ? new TextDecoder().decode(a.bytes) : undefined;
+    };
+    const svgText = xml && asset?.bytes && asset.mime === 'image/svg+xml' ? new TextDecoder().decode(asset.bytes) : undefined;
+    /**
+     * SVG を図形にする。systemLanguage (SVG 2 §5.6.5) は、画像を置いた所の言語 (文書の lang・xml:lang・language) で照らす。
+     * 言語の違う所に置いた SVG は、言語ごとに図形にする (vectors の鍵は src と言語)。言語の指定が無ければ、実行環境の言語で照らす
+     */
+    const toVectors = async (approximateFilters: boolean): Promise<boolean> => {
+      const parseAt = (lang?: string) =>
+        parseSvg(svgText!, xml!, {
+          outline: (t, fam, w, size, style, vertical) => outlineText(fonts, t, fam, w, size, !!opts.svgFontUniqueNames, style, vertical),
+          image,
+          resource,
+          ...(foreign.length ? { foreignShapes: (i: number) => foreign[i] } : {}),
+          ...(lang ? { languages: [svgLanguageTag(lang)] } : opts.svgLanguages?.length ? { languages: opts.svgLanguages.map(svgLanguageTag) } : {}),
+          // 近似できない filter は画素で計算する。解像度は、置く大きさの dpi (SVG の 1 単位を、画像の大きさの 1 px とみなす)
+          ...(approximateFilters ? { approximateFilters: true, rasterFilter, filterResolution: Math.max(1, Math.min(8, ((wPt / 72) * dpi) / Math.max(1, asset?.width ?? wPt))) } : {}),
+          ...(opts.svgMarkerOverflowVisible ? { markerOverflowVisible: true } : {}),
+          ...(opts.svgRootOverflowVisible ? { rootOverflowVisible: true } : {}),
+        });
+      const doc = parseAt();
+      if (!doc) return false;
+      await embedSvgImages(doc);
+      vectors.set(src, doc);
+      if (/systemLanguage/.test(svgText!)) {
+        // systemLanguage の照らし方の結果が同じ言語は、組んだものを使い回す (systemLanguageKey の説明)。鍵が無ければ、言語ごとに組む
+        const baseKey = systemLanguageKey(svgText!, opts.svgLanguages?.length ? opts.svgLanguages.map(svgLanguageTag) : undefined);
+        const byKey = new Map<string, SvgDoc | null>();
+        if (baseKey !== undefined) byKey.set(baseKey, doc);
+        for (const lang of langs.get(src) ?? []) {
+          const key = baseKey === undefined ? undefined : systemLanguageKey(svgText!, [svgLanguageTag(lang)]);
+          let d = key !== undefined ? byKey.get(key) : undefined;
+          if (d === undefined) {
+            d = parseAt(lang);
+            if (d) await embedSvgImages(d);
+            if (key !== undefined) byKey.set(key, d);
+          }
+          if (d) vectors.set(`${src}\0${lang}`, d);
+        }
       }
+      return true;
+    };
+    // foreignObject の中身を、本文と同じ組版で組んでおく (文書の順の番号で引く。parseSvg は同期なので、先に組む)
+    const foreign: Array<SvgShape[] | undefined> =
+      svgText && xml && opts.typesetForeign
+        ? await typesetForeignObjects(
+            svgText,
+            xml,
+            opts.typesetForeign,
+            fonts,
+            opts.assets,
+            (b) => parseSvg(new TextDecoder().decode(b), xml, { outline: (t, fam, w, size, style, vertical) => outlineText(fonts, t, fam, w, size, !!opts.svgFontUniqueNames, style, vertical), approximateFilters: true, rasterFilter }),
+            warn,
+            { resource, ...(opts.svgLanguages?.length ? { languages: opts.svgLanguages.map(svgLanguageTag) } : {}) },
+          )
+        : [];
+    if (svgText) {
+      await registerSvgFonts(fonts, svgText);
+      if (await toVectors(false)) continue;
     }
     const data = await opts.assets?.forPdf(src, (wPt / 72) * dpi);
     if (!data) {
       // ラスタライズできない (Node): filter を近似して図形にする (影・ぼかし)
-      if (xml && asset?.bytes && asset.mime === 'image/svg+xml') {
-        const doc = parseSvg(new TextDecoder().decode(asset.bytes), xml, { outline: (t, fam, w, size) => outlineText(fonts, t, fam, w, size, !!opts.svgFontUniqueNames), approximateFilters: true });
-        if (doc) {
-          await embedSvgImages(doc);
-          vectors.set(src, doc);
-        }
-      }
+      if (svgText) await toVectors(true);
       continue;
     }
     try {
@@ -1554,19 +1775,32 @@ async function embedImages(pdf: PDFDocument, tree: AreaTree, fonts: FontManager,
       if (r) images.set(src, await embedAny(r.bytes, 'png'));
     }
   }
-  return { images, vectors, svgImages };
+  /** 画像ごとの、いちばん大きく置かれた大きさ (入稿の検査の解像度に使う) */
+  const placed = new Map([...sizes].map(([src, w]) => [src, { width: w, height: heights.get(src) ?? 0 }]));
+  return { images, vectors, svgImages, placed };
 }
 
 export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRenderOptions = {}): Promise<Uint8Array> {
+  // PDF の出力の規格 (PDF/X-3・X-4) の方針。指定が無ければ undefined (ふつうの PDF)
+  const std = pdfStandardOf(opts.pdfx);
+  if (std && opts.pdfx) std.check(opts.pdfx);
   if (opts.subset ?? true) patchFontkitSubset(fonts);
   patchCffEmbedding();
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkit);
   setDocumentInfo(pdf, tree, opts);
+  // PDF を書く途中の警告: opts.warnings があればそこに足す (同じ文は 1 度だけ)。無ければ console.warn
+  const warned = new Set<string>();
+  const warn = (m: string) => {
+    if (warned.has(m)) return;
+    warned.add(m);
+    if (opts.warnings) opts.warnings.push(m);
+    else console.warn(m);
+  };
 
   // 使用フォントだけを埋め込む (サブセット)。OpenType の機能 (onum・vert など) を使う字も、同じ埋め込みの字形として書く
   // 色つきの表を持つ書体の字は、別に Type 3 書体として書く (ふつうの埋め込みを通さない)。色つきの書体を使わない文書では undefined
-  const colorGlyphs = await PdfColorGlyphs.create(pdf, tree, fonts, { cmyk: pdfxConverter(opts), warnings: opts.pdfx?.warnings, parseXml: opts.parseXml });
+  const colorGlyphs = await PdfColorGlyphs.create(pdf, tree, fonts, { cmyk: pdfxConverter(opts, std), alphaWarning: std?.transparency === 'warn' ? std.label : undefined, warnings: opts.pdfx?.warnings, warn, parseXml: opts.parseXml });
   const used = new Set<string>();
   walkAreaTree(tree, (a) => {
     if (a.type === 'glyph' && !colorGlyphs?.handles(a)) used.add(fonts.get(a.fontFamily, a.fontWeight).key);
@@ -1591,11 +1825,14 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   for (const f of fonts.all()) if (used.has(f.key)) await embedFont(f);
   const fontOf = (g: GlyphArea) => embedded.get(fonts.get(g.fontFamily, g.fontWeight).key)!;
 
-  const { images, vectors, svgImages } = await embedImages(pdf, tree, fonts, opts);
+  const { images, vectors, svgImages, placed } = await embedImages(pdf, tree, fonts, opts, warn);
 
   // SVG の中の字の書体 (PDF の文字として描く)。本文で使っていない書体も埋め込む
   const svgKeys = new Set<string>();
-  for (const v of vectors.values()) for (const sh of v.shapes) for (const c of sh.text?.chars ?? []) svgKeys.add(c.font);
+  for (const v of vectors.values())
+    eachSvgShape(v.shapes, (sh) => {
+      for (const c of sh.text?.chars ?? []) svgKeys.add(c.font);
+    });
   for (const key of svgKeys) {
     if (embedded.has(key)) continue;
     const f = fonts.all().find((x) => x.key === key);
@@ -1603,16 +1840,20 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   }
   const svgFontOf = (key: string) => embedded.get(key);
 
-  const cmykOf = pdfxConverter(opts);
-  if (opts.pdfx?.profile && cmykOf === rgbToCmyk) opts.pdfx.warnings?.push('ICC プロファイルの CMYK への表 (BToA) が読めないので、RGB の色は簡単な式で CMYK にします');
+  const cmykOf = pdfxConverter(opts, std);
+  if (opts.pdfx?.profile && cmykOf === rgbToCmyk) opts.pdfx.warnings?.push(msg('ICC プロファイルの CMYK への表 (BToA) が読めないので、RGB の色は簡単な式で CMYK にします', 'the CMYK table (BToA) of the ICC profile cannot be read, so RGB colors are converted to CMYK with a simple formula'));
   const painters: PdfPainter[] = [];
+  const failedFonts = new Set<string>();
   const verticalFonts = new Map<PDFFont, VerticalFont>();
   for (const sheet of tree.sheets) {
     const page = pdf.addPage([sheet.width, sheet.height]);
-    setBoxes(page, sheet);
+    setBoxes(page, sheet, std?.artBox ?? true);
     const painter = new PdfPainter(page, sheet.height, fontOf, (src) => images.get(src), (src) => vectors.get(src), pdf, svgFontOf, svgImages);
     if (cmykOf) painter.cmykOutput = cmykOf;
+    if (std?.blackOverprint) painter.blackOverprint = std.blackOverprint;
     painter.colorGlyphs = colorGlyphs;
+    painter.warn = warn;
+    painter.failedFonts = failedFonts;
     painter.verticalFonts = verticalFonts;
     paintSheet(sheet, painter);
     painter.flushText();
@@ -1628,12 +1869,28 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     return undefined;
   };
   colorGlyphs?.finish();
-  if (opts.pdfx) markPdfX(pdf, opts.pdfx, painters);
+  if (std && opts.pdfx) {
+    markPdfStandard(pdf, std, opts.pdfx);
+    if (std.transparency === 'warn' && painters.some((p) => p.usedAlpha)) opts.pdfx.warnings?.push(msg(`${std.label} では透明 (不透明度) を使えません`, `${std.label} does not allow transparency (opacity)`));
+    // 入稿の仕様 (GWG 2022-R1) の検査: 仕上がりの大きさ・特色・画像の解像度 (出力は変えずに、合わないものを警告に書く)
+    if (std.gwg) {
+      const checked = gwgWarnings(
+        {
+          trimSizes: tree.sheets.map((s) => ({ width: s.trimBox.width, height: s.trimBox.height })),
+          images: [...images].map(([src, im]) => ({ src, pixels: { width: im.width, height: im.height }, placed: placed.get(src) ?? { width: 0, height: 0 } })),
+          spots: painters.flatMap((p) => p.spotNames),
+        },
+        std.gwg,
+      );
+      opts.pdfx.warnings?.push(...checked);
+    }
+  }
   // ファイルの識別子 (trailer の ID)。PDF 2.0 では必須、それより前の版では任意 (ISO 32000-2 §7.5.5 の Table 15・§14.4)
   if (!pdf.context.trailerInfo.ID) {
     const id = PDFHexString.of(Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''));
     pdf.context.trailerInfo.ID = pdf.context.obj([id, id]);
   }
+  if (std?.marksInBleed === 'drop') dropMarksInBleed(pdf, painters, opts.pdfx?.warnings);
   const droppedLinks: DroppedLinks = {};
   const linkAction = (u: string) => externalAction(u, opts.links, droppedLinks);
   addAnnotations(pdf, painters, tree.destinations ?? {}, textFont, (src) => (opts.assets ?? new AssetStore()).getFile(src), linkAction);
@@ -1642,7 +1899,7 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     const j = judgeExternalLink(u, opts.links);
     if (j.kind === 'uri' && !j.allowed) countDroppedLink(droppedLinks, j);
     return j.kind !== 'uri' || j.allowed;
-  });
+  }, warn);
   if (tree.bookmarks?.length) addOutline(pdf, tree.bookmarks, linkAction);
   const droppedSummary = summarizeDroppedLinks(droppedLinks);
   if (droppedSummary) opts.linkWarnings?.push(droppedLinkWarning(droppedSummary));
@@ -1657,11 +1914,11 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     await pdf.flush();
     useDeflate(pdf, opts.deflate);
   }
-  // PDF/X-3 (PDF 1.4) では、オブジェクトストリーム (PDF 1.5 の機能) を使わない
-  if (!opts.pdfx) return pdf.save();
-  const bytes = await pdf.save({ useObjectStreams: false });
-  // 版数を 1.4 に (同じ長さなので、相互参照のオフセットは変わらない)
-  bytes.set(new TextEncoder().encode('%PDF-1.4'), 0);
+  if (!std) return pdf.save();
+  // 規格の版で書く: PDF/X-4 は PDF 1.6 が元 (オブジェクトストリームは PDF 1.5 の機能なので使える)。PDF/X-3 (PDF 1.4) では使わない
+  const bytes = await pdf.save({ useObjectStreams: std.objectStreams });
+  // 版数を書き換える (pdf-lib の書き出しは 1.7 固定。同じ長さなので、相互参照のオフセットは変わらない)
+  bytes.set(new TextEncoder().encode(std.header), 0);
   return bytes;
 }
 
@@ -1673,25 +1930,344 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
  * SVG の style の @font-face に埋め込んだ書体 (src が data: の URI の TrueType・OpenType) を、その font-family の名前で読み込む。
  * SVG の text は、この書体の輪郭で描く (無ければ読み込み済みの書体で描く)
  */
+/** SVG の @font-face で登録した書体の、ファミリー名と太さ・傾き (同じ書体を 2 度登録しない。文書の書体と同じ名前は、文書の書体を使う) */
+const SVG_FACES = new WeakMap<FontManager, Set<string>>();
 async function registerSvgFonts(fonts: FontManager, svg: string) {
+  let done = SVG_FACES.get(fonts);
+  if (!done) SVG_FACES.set(fonts, (done = new Set()));
   for (const m of svg.matchAll(/@font-face\s*\{([^{}]*)\}/gi)) {
     // CSS の文字列の中の「\ + 改行」は、行の続き (改行を取り除く)
     const body = m[1].replace(/\\\r?\n/g, '');
     const fam = /font-family\s*:\s*(['"]?)([^;'"]+)\1/i.exec(body)?.[2]?.trim();
     const data = /url\(\s*(['"]?)data:[^;,]*(?:;[^;,]*)*;base64,([A-Za-z0-9+/=\s]+)\1\s*\)/i.exec(body)?.[2];
-    if (!fam || !data || fonts.has(fam)) continue;
+    if (!fam || !data) continue;
+    // font-weight・font-style の記述子 (CSS Fonts 4 §4.4・§4.3): 太さ (bold は 700。範囲は最初の値) と、斜体・斜めの書体
+    const fw = /font-weight\s*:\s*([^;]+)/i.exec(body)?.[1].trim().split(/\s+/)[0];
+    const weight = fw === 'bold' ? 700 : fw && /^\d+$/.test(fw) ? Math.min(1000, Math.max(1, parseInt(fw, 10))) : 400;
+    const fs = /font-style\s*:\s*([^;]+)/i.exec(body)?.[1].trim();
+    const style = fs === 'italic' ? ('italic' as const) : fs && /^oblique\b/.test(fs) ? ('oblique' as const) : undefined;
+    const key = `${fam}\0${weight}\0${style ?? ''}`;
+    if (done.has(key) || (fonts.has(fam) && ![...done].some((k) => k.startsWith(`${fam}\0`)))) continue;
+    done.add(key);
     try {
-      const bin = atob(data.replace(/\s+/g, ''));
-      const bytes = new Uint8Array(bin.length);
-      for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
-      await fonts.registerBuffer(fam, 400, bytes.buffer, false);
+      const bytes = fromBase64(data);
+      await fonts.registerBuffer(fam, weight, bytes.buffer, false, undefined, style ? { style } : undefined);
     } catch {
       // 読めない書体は使わない (読み込み済みの書体で描く)
     }
   }
 }
 
+/**
+ * 文書の言語の符号を、SVG の systemLanguage と照らす言語タグ (BCP 47。RFC 5646 §2.2.1: 2 字の符号のある言語は 2 字) にする。
+ * XSL-FO の language は ISO 639-2 の 3 字でもよい (XSL 1.1 §7.10.1) ので、よく使う言語の 3 字の符号 (書誌用 B と用語用 T の両方) を 2 字に直す
+ */
+const ISO639_2_TO_1: Record<string, string> = {
+  jpn: 'ja', eng: 'en', zho: 'zh', chi: 'zh', kor: 'ko', fra: 'fr', fre: 'fr', deu: 'de', ger: 'de', spa: 'es', ita: 'it', por: 'pt', rus: 'ru', nld: 'nl', dut: 'nl',
+  swe: 'sv', dan: 'da', nor: 'no', fin: 'fi', pol: 'pl', ces: 'cs', cze: 'cs', ell: 'el', gre: 'el', tur: 'tr', ara: 'ar', heb: 'he', hin: 'hi', tha: 'th', vie: 'vi',
+};
+export function svgLanguageTag(lang: string): string {
+  const [base, ...rest] = lang.trim().replace(/_/g, '-').split('-');
+  const b = base.toLowerCase();
+  return [ISO639_2_TO_1[b] ?? b, ...rest].join('-');
+}
+
+/** SVG の祖先の要素の名前を、組む文書の入れ物の名前にする。HTML の構文で特別に読まれる名前 (svg・a・image など) は div にする */
+const FOREIGN_WRAPPERS = new Set(['g', 'switch', 'symbol', 'marker', 'pattern', 'mask', 'clippath', 'foreignobject']);
+
+/**
+ * SVG の foreignObject の中身 (文書の順) を、typeset で組んで、SVG の図形 (foreignObject の中の座標。CSS px) にする。組めなかったものは undefined。
+ * 中身は、解析した SVG の木から取り (svg.ts の foreignObjectContexts。字の上で探すと、注釈の中の字や入れ子で食い違う)、
+ * SVG の <style> の規則と、SVG の祖先から受け継ぐ書式を付けて組む (SVG 2 §23.2: 中身は SVG の文書の中の要素としてスタイルが当たり、
+ * 祖先から受け継ぐ。CSS 2.1 §6.2)。祖先は同じ id・class・style の入れ物にし (「#id p」の形の選択子が中身に合うように)、
+ * display: contents (CSS Display 3 §2.5。箱を作らず、受け継ぐだけ) にする。
+ * 中身が foreignObject の枠の外に全部出て何も描かれないときは、警告して、文字だけの近似 (svg.ts の foreignText) にする。
+ * 入れ子の foreignObject (組んだ foreignObject の中のもの) は組まない: 外側を組んだ図形を置くと、parseSvg は中を訪ねない
+ * (中の SVG は、外側の組版が描く)。入れ子も組むと、64 段の入れ子 (中に表 1000 個。48KB) で、同じ中身を 64 回組んで 50 秒かかった
+ */
+async function typesetForeignObjects(
+  svg: string,
+  xml: (text: string) => XmlNode,
+  typeset: NonNullable<PdfRenderOptions['typesetForeign']>,
+  fonts: FontManager,
+  assets: AssetStore | undefined,
+  svgDoc: ((bytes: Uint8Array) => SvgDoc | null) | undefined,
+  warn: (message: string) => void,
+  parseOpts: { languages?: string[]; resource?: (href: string) => string | undefined },
+): Promise<Array<SvgShape[] | undefined>> {
+  const out: Array<SvgShape[] | undefined> = [];
+  // foreignObject の無い SVG は、解析し直さない (foreignObjectContexts は SVG をもう 1 度解析して訪ねる)
+  if (!/foreignObject/i.test(svg)) return out;
+  const attr = (t: string) => t.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const contexts = foreignObjectContexts(svg, xml, parseOpts);
+  for (let i = 0; i < Math.min(contexts.length, 64); i++) {
+    const c = contexts[i];
+    if (!c) {
+      out.push(undefined);
+      continue;
+    }
+    // 祖先の入れ物 (外から順。最後が foreignObject。受け継ぐ書式は、foreignObject の入れ物に書く)
+    let open = '';
+    let close = '';
+    c.ancestors.forEach((a, k) => {
+      const name = FOREIGN_WRAPPERS.has(a.name) ? a.name : 'div';
+      const last = k === c.ancestors.length - 1;
+      const style = [a.style?.trim().replace(/;?\s*$/, ''), last ? c.inherited : '', 'display:contents!important'].filter(Boolean).join(';');
+      open += `<${name}${a.id ? ` id="${attr(a.id)}"` : ''}${a.className ? ` class="${attr(a.className)}"` : ''} style="${attr(style)}">`;
+      close = `</${name}>${close}`;
+    });
+    try {
+      const sheet = await typeset(open + c.content + close, c.width, c.height, { css: c.css.replace(/<\/(style)/gi, '<\\/$1') });
+      const shapes = sheet ? sheetToSvgShapes(sheet, fonts, assets, svgDoc) : undefined;
+      // 中身に字があるのに、組んだ結果が枠の中に何も描かない (枠の外に出た・組めずに落ちた) ときは、黙って消さずに知らせて、
+      // 文字だけの近似にする (Mermaid のラベルの <span><p>…</p></span> の形など)
+      if (shapes && !shapesMeet(shapes, c.width, c.height) && /\S/.test(c.content.replace(/<style[^>]*>[\s\S]*?<\/style>|<script[^>]*>[\s\S]*?<\/script>|<[^>]*>/gi, ''))) {
+        warn(
+          msg(
+            `SVG の foreignObject の中身を組んだものが、枠 (幅 ${+c.width.toFixed(2)}・高さ ${+c.height.toFixed(2)}) の中に何も描かれないので、文字だけを近似して描きます`,
+            `The typeset content of an SVG foreignObject draws nothing inside its box (width ${+c.width.toFixed(2)}, height ${+c.height.toFixed(2)}); only its text is drawn, approximately`,
+          ),
+        );
+        out.push(undefined);
+        continue;
+      }
+      out.push(shapes);
+    } catch {
+      out.push(undefined);
+    }
+  }
+  return out;
+}
+
+/** 図形の並び (グループの中も) の外接矩形が、(0, 0)〜(w, h) の枠と重なるか */
+function shapesMeet(shapes: SvgShape[], w: number, h: number): boolean {
+  let hit = false;
+  eachSvgShape(shapes, (sh) => {
+    if (hit) return;
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    const pt = (x: number, y: number) => {
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
+    };
+    for (const g of sh.segs) if (g.op !== 'Z') pt(g.x, g.y);
+    if (sh.image) {
+      const m = sh.image.matrix;
+      for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]]) pt(m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]);
+    }
+    if (x0 < w && x1 > 0 && y0 < h && y1 > 0) hit = true;
+  });
+  return hit;
+}
+
+/** 組んだページを、SVG の図形 (CSS px の座標。y は下向き) にする (paint.ts の描き手として描く) */
+export function sheetToSvgShapes(sheet: SheetArea, fonts: FontManager, assets?: AssetStore, svgDoc?: (bytes: Uint8Array) => SvgDoc | null): SvgShape[] {
+  const p = new SvgShapePainter([4 / 3, 0, 0, 4 / 3, 0, 0], fonts, assets, svgDoc);
+  paintSheet(sheet, p);
+  return p.shapes;
+}
+
+/**
+ * paint.ts の描き手の決まりで、描くものを SVG の図形の並びにする (foreignObject の中身を、組版の結果のとおりに描くため)。
+ * 座標は、ページの座標 (pt) に base を掛けたもの。字は書体の字形の輪郭 (斜体の傾き・太字の重ね・回転も)、画像は PNG・JPEG
+ */
+class SvgShapePainter implements Painter {
+  shapes: SvgShape[] = [];
+  private m: Matrix;
+  private clips: SvgShape['clips'] = [];
+  private saved: Array<NonNullable<SvgShape['clips']>> = [];
+  constructor(
+    base: Matrix,
+    private fonts: FontManager,
+    private assets?: AssetStore,
+    /** SVG の画像を図形にする (数式を描いた SVG など)。無ければ SVG の画像は描かない */
+    private svgDoc?: (bytes: Uint8Array) => SvgDoc | null,
+  ) {
+    this.m = base;
+  }
+  private base(): Omit<SvgShape, 'segs'> {
+    return { evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: 1, strokeOpacity: 1, ...(this.clips?.length ? { clips: [...this.clips] } : {}) };
+  }
+  private color(css: string): string | undefined {
+    if (!css || css === 'transparent' || css === 'none') return undefined;
+    try {
+      const c = parseColor(css);
+      if (c.mode !== 'rgb') return css;
+      const h = (x: number) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, '0');
+      return `#${h(c.r)}${h(c.g)}${h(c.b)}`;
+    } catch {
+      return undefined;
+    }
+  }
+  private scale() {
+    return Math.sqrt(Math.abs(this.m[0] * this.m[3] - this.m[1] * this.m[2]));
+  }
+  fillRect(x: number, y: number, w: number, h: number, color: string) {
+    this.fillPath([{ op: 'M', x, y }, { op: 'L', x: x + w, y }, { op: 'L', x: x + w, y: y + h }, { op: 'L', x, y: y + h }, { op: 'Z' }], color);
+  }
+  fillPath(path: PathSeg[], color: string, evenOdd?: boolean, opacity = 1) {
+    const fill = this.color(color);
+    if (!fill) return;
+    this.shapes.push({ ...this.base(), segs: transformSegs(path, this.m), fill, evenOdd: !!evenOdd, fillOpacity: opacity });
+  }
+  strokePath(path: PathSeg[], width: number, color: string, dash?: [number, number]) {
+    const stroke = this.color(color);
+    if (!stroke) return;
+    const k = this.scale();
+    this.shapes.push({ ...this.base(), segs: transformSegs(path, this.m), stroke, strokeWidth: width * k, ...(dash ? { dash: dash.map((d) => d * k) } : {}) });
+  }
+  strokeLine(l: Line, width: number, color = '#000000') {
+    this.strokePath([{ op: 'M', x: l.x1, y: l.y1 }, { op: 'L', x: l.x2, y: l.y2 }], width, color);
+  }
+  drawGlyph(g: GlyphArea, x: number, y: number) {
+    const fill = this.color(g.color);
+    if (!fill) return;
+    const ol = outlineText(this.fonts, g.text.replace(/\u00A0/g, ' '), g.fontFamily, g.fontWeight, g.fontSize, false, undefined, undefined, g.features);
+    if (!ol) return;
+    // pdfRenderer の drawGlyph の行列 (y 上向き) を、y 下向きの字の座標 → ページの座標に直したもの
+    const phi = (-g.rotation * Math.PI) / 180;
+    const cos = Math.cos(phi);
+    const sin = Math.sin(phi);
+    const a = g.scaleX * cos;
+    const b = g.scaleX * sin;
+    const c = (g.italic ? g.scaleX * cos * ITALIC_SLANT : 0) - sin;
+    const d = (g.italic ? g.scaleX * sin * ITALIC_SLANT : 0) + cos;
+    const t = mul(this.m, [a, -b, -c, d, x + g.baselineX, y + g.baselineY]);
+    const sh: SvgShape = { ...this.base(), segs: transformSegs(ol.segs, t), fill };
+    // 疑似の太字は、字の色の線を重ねる (paint.ts の FAKE_BOLD)
+    if (g.fakeBold) Object.assign(sh, { stroke: fill, strokeWidth: g.fontSize * FAKE_BOLD * this.scale(), lineJoin: 1 });
+    this.shapes.push(sh);
+  }
+  drawImage(a: ImageArea, x: number, y: number) {
+    const asset = this.assets?.get(a.src);
+    if (asset?.bytes && asset.mime === 'image/svg+xml' && this.svgDoc) {
+      // SVG の画像: viewBox を画像の枠に、縦横の比を保って中央に合わせる (preserveAspectRatio の既定。stretch なら引き伸ばす)
+      const doc = this.svgDoc(asset.bytes);
+      if (!doc) return;
+      const [vx, vy, vw, vh] = doc.viewBox;
+      let sx = a.width / vw;
+      let sy = a.height / vh;
+      let ox = x;
+      let oy = y;
+      if (!a.stretch && (doc.aspect?.align ?? 'xMidYMid') !== 'none') {
+        const k = Math.min(sx, sy);
+        ox += (a.width - vw * k) / 2;
+        oy += (a.height - vh * k) / 2;
+        sx = sy = k;
+      }
+      const t = mul(this.m, [sx, 0, 0, sy, ox - vx * sx, oy - vy * sy]);
+      // 同じ切り抜きは同じ 1 つに写す (描くときに、続く図形の切り抜きを 1 度だけ書けるように。svg.ts の clipRuns)
+      const memo = new Map<SvgClip, SvgClip>();
+      for (const sh of doc.shapes) {
+        const x = transformShape(sh, t, 1, memo);
+        this.shapes.push(this.clips?.length ? { ...x, clips: [...this.clips, ...(x.clips ?? [])] } : x);
+      }
+      return;
+    }
+    if (!asset?.bytes || (asset.mime !== 'image/png' && asset.mime !== 'image/jpeg')) return;
+    this.shapes.push({ ...this.base(), segs: [], image: { kind: asset.mime === 'image/png' ? 'png' : 'jpeg', bytes: asset.bytes, matrix: mul(this.m, [a.width, 0, 0, -a.height, x, y + a.height]) as [number, number, number, number, number, number] } });
+  }
+  transform(m: Matrix, draw: () => void) {
+    const saved = this.m;
+    this.m = mul(this.m, m);
+    try {
+      draw();
+    } finally {
+      this.m = saved;
+    }
+  }
+  group(opacity: number, draw: () => void) {
+    const saved = this.shapes;
+    this.shapes = [];
+    try {
+      draw();
+    } finally {
+      const inner = this.shapes;
+      this.shapes = saved;
+      if (inner.length) this.shapes.push({ ...this.base(), segs: [], fillOpacity: opacity, strokeOpacity: opacity, group: { shapes: inner } });
+    }
+  }
+  clipRect(r: Rect) {
+    this.clipPath([{ op: 'M', x: r.x, y: r.y }, { op: 'L', x: r.x + r.width, y: r.y }, { op: 'L', x: r.x + r.width, y: r.y + r.height }, { op: 'L', x: r.x, y: r.y + r.height }, { op: 'Z' }]);
+  }
+  clipPath(path: PathSeg[], evenOdd?: boolean) {
+    this.saved.push(this.clips ?? []);
+    this.clips = [...(this.clips ?? []), { segs: transformSegs(path, this.m), evenOdd: !!evenOdd }];
+  }
+  restore() {
+    this.clips = this.saved.pop() ?? [];
+  }
+}
+
+/**
+ * 縦書きの 1 字の輪郭 (SVG の writing-mode が縦のとき)。原点は字の枠の上端の中央 (中央の基線の上。CSS Writing Modes 3 §4.2: 縦書きの字は central の
+ * 基線にそろう) で、y は下向き、advance は縦の送り。字を立てるか寝かせるか・縦書き用の字形は、本文の縦書きと同じ決め方 (jis.ts の verticalTreatment:
+ * UAX #50 の Vertical_Orientation と text-orientation、書体の vert、Unicode の縦書き用字形)。立てる字の送りは 1em、寝かせる字は横の送り。
+ * 書体の上の高さ・下の深さは、合わせて 1em になるように割り振る (CSS Inline 3 の付録 A.1)。字は輪郭で描く (PDF の文字にしない)
+ */
+function outlineVertical(fonts: FontManager, text: string, family: string | undefined, weight: number, size: number, uniqueNames: boolean, style: 'italic' | 'oblique' | undefined, orientation: 'mixed' | 'upright' | 'sideways') {
+  const segs: Seg[] = [];
+  let y = 0;
+  let ascent: number | undefined;
+  let descent: number | undefined;
+  for (const ch of text) {
+    if (SVG_IGNORABLE.test(ch)) continue;
+    const font = fonts.getForChar(family?.split(',')[0]?.replace(/['"]/g, '').trim(), weight, ch);
+    const has = (c: string) => {
+      try {
+        return font.fk.hasGlyphForCodePoint(c.codePointAt(0)!);
+      } catch {
+        return false;
+      }
+    };
+    const hasVert = (c: string) => {
+      try {
+        const plain = font.fk.layout(c, { kern: false, liga: false } as never).glyphs;
+        const vert = font.fk.layout(c, { kern: false, liga: false, vert: true } as never).glyphs;
+        return plain.length === 1 && vert.length === 1 && plain[0].id !== vert[0].id && vert[0].id !== 0;
+      } catch {
+        return false;
+      }
+    };
+    const fontHasVert = ((font.fk as unknown as { availableFeatures?: string[] }).availableFeatures ?? []).includes('vert');
+    const vt = verticalTreatment(ch, has, orientation, hasVert, fontHasVert);
+    const h = outlineText(fonts, vt.glyph, family, weight, size, uniqueNames, style, undefined, vt.features);
+    if (!h) return null;
+    const a0 = font.ascent ?? 0.88;
+    const d0 = font.descent ?? 0.12;
+    const asc = a0 / (a0 + d0 || 1);
+    const desc = 1 - asc;
+    ascent ??= asc;
+    descent ??= desc;
+    let m: Matrix;
+    let adv: number;
+    if (vt.mode === 'upright') {
+      // 立てる字: 横の送りの中央を中央の線に、字の枠の上端を y に
+      m = [1, 0, 0, 1, -h.advance / 2 + vt.dx * size, y + asc * size + vt.dy * size];
+      adv = size;
+    } else {
+      // 寝かせる字: 時計回りに 90 度回し、上の高さと下の深さの中ほどを中央の線に
+      m = [0, 1, -1, 0, -((asc - desc) / 2) * size, y];
+      adv = h.advance;
+    }
+    for (const g of h.segs) segs.push(g.op === 'Z' ? g : g.op === 'C' ? { op: 'C', x1: apply(m, g.x1, g.y1)[0], y1: apply(m, g.x1, g.y1)[1], x2: apply(m, g.x2, g.y2)[0], y2: apply(m, g.x2, g.y2)[1], x: apply(m, g.x, g.y)[0], y: apply(m, g.x, g.y)[1] } : { op: g.op, x: apply(m, g.x, g.y)[0], y: apply(m, g.x, g.y)[1] });
+    y += adv;
+  }
+  return { segs, advance: y, ...(ascent !== undefined ? { ascent, descent } : {}) };
+}
+
 /** SVG の字のペアカーニング (字の大きさ 1em = unitsPerEm の座標で、a の後ろに b が続くときに足す量)。書体ごとに覚えておく */
+/**
+ * SVG の字で描かない字 (Default_Ignorable_Code_Point。ソフトハイフン U+00AD・ZWSP・ZWJ・異体字セレクタなど)。Unicode 標準 §5.21 (見える字形を
+ * 出さず、送りも持たない)・CSS Text 3 §6.1 (改行しない所のソフトハイフンは見えない)。SVG の字は 1 字ずつ組むので、前後の字にかかる働きも無い。
+ * 書体の組む処理 (fontkit の layout) にも渡さない: fontkit は字形を番号で覚え、最初に作ったときの符号位置を持ち続けるので、ハイフンと字形を
+ * 分け合うソフトハイフンを先に組むと、その後の「-」も描かない字 (空白の字形・送り 0) と見なされて、同じ書体の「-」が消える
+ */
+const SVG_IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
 const SVG_KERN = new WeakMap<object, Map<string, number>>();
 function svgKern(font: ReturnType<FontManager['get']>, a: string, b: string): number {
   let m = SVG_KERN.get(font);
@@ -1711,11 +2287,35 @@ function svgKern(font: ReturnType<FontManager['get']>, a: string, b: string): nu
   return v;
 }
 
-function outlineText(fonts: FontManager, text: string, family: string | undefined, weight: number, size: number, uniqueNames = false): { segs: Seg[]; advance: number } | null {
+/**
+ * SVG の文字 (font-family・太さ・大きさ) を描くときの送りの幅 (px)。SVG の文字を描く outlineText と同じ書体の選び方で測る
+ * (本体の外の画像の形式が、文字の折り返しなどを描く書体に合わせる: imageFormats.ts の measureText)
+ */
+export function svgTextWidth(fonts: FontManager, text: string, family: string | undefined, weight: number, size: number, uniqueNames = false): number | undefined {
+  return outlineText(fonts, text, family, weight, size, uniqueNames)?.advance;
+}
+
+/**
+ * SVG の字の輪郭。style (font-style の italic・oblique) は、斜体・斜めの書体があればその書体で (CSS Fonts 4 §5.2 の照合。書体の名前に傾きの印を付けて引く)、
+ * 無ければ立体を傾けて描く (§2.4。傾きは本文の字と同じ ITALIC_SLANT)。傾けた字は、PDF の文字ではなく輪郭で描く (chars を返さない)。
+ * 返す ascent・descent は、字の大きさに対する書体の上の高さ・下の深さ (dominant-baseline の基線を求めるため。最初の字の書体)
+ */
+function outlineText(
+  fonts: FontManager,
+  text: string,
+  family: string | undefined,
+  weight: number,
+  size: number,
+  uniqueNames = false,
+  style?: 'italic' | 'oblique',
+  vertical?: 'mixed' | 'upright' | 'sideways',
+  features?: string[],
+): { segs: Seg[]; advance: number; chars?: TextChars; ascent?: number; descent?: number } | null {
+  if (vertical) return outlineVertical(fonts, text, family, weight, size, uniqueNames, style, vertical);
   const names = family?.split(',').map((f) => f.replace(/['"]/g, '').trim()) ?? [];
   // アンテナハウス互換: ファミリー名の前に、PostScript 名・完全な名前で探す (見つかれば、その書体の太さで描く)
   const unique = uniqueNames ? names.map((f) => (fonts.has(f) ? undefined : fonts.uniqueName(f))).find(Boolean) : undefined;
-  if (unique && !names.some((f) => fonts.has(f))) return outlineText(fonts, text, unique.family, unique.weight, size);
+  if (unique && !names.some((f) => fonts.has(f))) return outlineText(fonts, text, unique.family, unique.weight, size, false, style, undefined, features);
   // 読み込んでいない書体の名前なら、ゴシック系 (gothic・sans など) は和文のゴシック、それ以外は既定の書体 (明朝) で描く
   // Courier・等幅の名前は、字幅が Courier New と同じ Cousine (読み込んであれば)。等幅の総称の書体を差し替えたとき (genericFonts の monospace) は、
   // monospace の名前はその書体
@@ -1732,9 +2332,23 @@ function outlineText(fonts: FontManager, text: string, family: string | undefine
   let chars: TextChars | undefined = [];
   let x = 0;
   let prev: { ch: string; font: ReturnType<FontManager['get']> } | undefined;
+  // 斜体: italic は ital、oblique は slnt (CSS Fonts 4 §2.4 の oblique の既定の角度 14deg) の印を名前に付けて引く
+  const styled = style && fam !== undefined ? fam + variationSuffix(style === 'italic' ? { ital: true } : { slnt: 14 }) : fam;
+  let synth = false;
+  let ascent: number | undefined;
+  let descent: number | undefined;
   for (const ch of text) {
-    const font = fonts.getForChar(fam, weight, ch);
-    const run = font.fk.layout(ch, { kern: false, liga: false } as never);
+    if (SVG_IGNORABLE.test(ch)) continue;
+    const font = fonts.getForChar(styled, weight, ch);
+    if (ascent === undefined && font.ascent !== undefined && font.descent !== undefined) {
+      ascent = font.ascent;
+      descent = font.descent;
+    }
+    // 書体そのものが傾いていない (斜体の書体が無い) なら、立体を傾ける
+    const slanted = !!(font.instanceOf?.slanted || (font.instanceOf?.master ?? font).style);
+    const skew = style && !slanted ? ITALIC_SLANT : 0;
+    if (skew) synth = true;
+    const run = font.fk.layout(ch, { kern: false, liga: false, ...(features?.includes('vert') ? { vert: true } : {}) } as never);
     const k = size / font.unitsPerEm;
     // 同じ書体の字が続くときは、書体のペアカーニングを前の字の送りに足す (font-kerning の既定 auto。ブラウザと同じく欧文にかける)
     if (prev && prev.font === font) x += svgKern(font, prev.ch, ch) * k;
@@ -1745,7 +2359,8 @@ function outlineText(fonts: FontManager, text: string, family: string | undefine
       const glyph = run.glyphs[g] as unknown as { path: { commands: Array<{ command: string; args: number[] }> } };
       const ox = x + run.positions[g].xOffset * k;
       const oy = -run.positions[g].yOffset * k;
-      const P = (px: number, py: number) => [ox + px * k, oy - py * k] as const;
+      // 傾けるときは、基線からの高さに比例して右へずらす (y は下向きなので、上の点ほど y が負)
+      const P = (px: number, py: number) => [ox + px * k + (py * k - oy) * skew, oy - py * k] as const;
       let cx = 0;
       let cy = 0;
       for (const c of glyph.path.commands) {
@@ -1773,14 +2388,14 @@ function outlineText(fonts: FontManager, text: string, family: string | undefine
       x += run.positions[g].xAdvance * k;
     }
   }
-  return { segs, advance: x, ...(chars?.length ? { chars } : {}) };
+  return { segs, advance: x, ...(chars?.length && !synth ? { chars } : {}), ...(ascent !== undefined ? { ascent, descent } : {}) };
 }
 
 /**
  * フォームの欄 (axf:form-field) を、PDF の AcroForm の欄にする (pdf-lib の form)。
  * 欄の背景・枠は Kumiori が描くので、欄自身は透明・枠なし。表示の書体は、欧文だけなら Helvetica、それ以外は埋め込み済みの書体
  */
-async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont: (text: string) => PDFFont | undefined, submitAllowed: (url: string) => boolean = () => true) {
+async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont: (text: string) => PDFFont | undefined, submitAllowed: (url: string) => boolean = () => true, warn: (message: string) => void = (m) => console.warn(m)) {
   const all = painters.flatMap((p, k) => p.marks.filter((m) => m.form).map((m) => ({ ...m, page: k })));
   if (!all.length) return;
   const form = pdf.getForm();
@@ -1890,7 +2505,7 @@ async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont:
       }
     } catch (e) {
       // 欄を作れない (書体に字が無いなど) ときは、見た目 (Kumiori が描いた枠) だけ残す
-      console.warn('フォームの欄を作れません', f.name, e);
+      warn(msg(`PDF: フォームの欄「${f.name}」を作れません (${errorText(e)})。枠の見た目だけを残します`, `PDF: cannot create the form field "${f.name}" (${errorText(e)}); only its drawn frame is kept`));
     }
   }
 }
@@ -1996,26 +2611,45 @@ function exportValues(dict: PDFDict, f: FormField) {
   dict.set(PDFName.of('I'), ctx.obj(sel));
 }
 
-/** PDF/X-3:2003 の印 (OutputIntent・バージョン・Trapped・ID)。透明を使っていれば警告する */
-function markPdfX(pdf: PDFDocument, o: NonNullable<PdfRenderOptions['pdfx']>, painters: PdfPainter[]) {
-  const ctx = pdf.context;
-  const condition = o.condition ?? 'JC200103';
-  const intent: Record<string, unknown> = {
-    Type: 'OutputIntent',
-    S: 'GTS_PDFX',
-    OutputConditionIdentifier: pdfText(condition),
-    OutputCondition: pdfText(o.info ?? condition),
-    RegistryName: PDFString.of('http://www.color.org'),
-    Info: pdfText(o.info ?? condition),
-  };
-  if (o.profile) intent.DestOutputProfile = ctx.register(ctx.stream(o.profile, { N: 4 }));
-  pdf.catalog.set(PDFName.of('OutputIntents'), ctx.obj([ctx.obj(intent as never)]));
-  const info = ctx.lookup(ctx.trailerInfo.Info) as PDFDict;
-  info.set(PDFName.of('GTS_PDFXVersion'), PDFString.of('PDF/X-3:2003'));
-  info.set(PDFName.of('Trapped'), PDFName.of('False'));
-  // 文書の ID は renderPdf が書く。PDF 1.4 の版数は保存後に書き換える (pdf-lib の書き出しは 1.7 固定)
-  if (painters.some((p) => p.usedAlpha)) o.warnings?.push('PDF/X-3 では透明 (不透明度) を使えません');
+/**
+ * PDF/X: 塗り足しまでの範囲 (BleedBox) に少しでも掛かる注釈・リンク・フォームの欄を書かない (印刷されるものを置けない決まりがある、という公開の説明による。
+ * ISO 15930 の本文では未確認)。BleedBox はページの絵柄の全体を囲むので、ページの中のものはほぼ全部が外れる (しおりは注釈でないので残る)。
+ * 外したものの件数を warnings に書く
+ */
+function dropMarksInBleed(pdf: PDFDocument, painters: PdfPainter[], warnings: string[] | undefined) {
+  const pages = pdf.getPages();
+  let links = 0;
+  let annots = 0;
+  let forms = 0;
+  painters.forEach((painter, k) => {
+    const b = pages[k].getBleedBox();
+    const hits = (r: number[]) => Math.min(r[0], r[2]) < b.x + b.width && Math.max(r[0], r[2]) > b.x && Math.min(r[1], r[3]) < b.y + b.height && Math.max(r[1], r[3]) > b.y;
+    painter.marks = painter.marks.filter((m) => {
+      if (!hits(m.rect)) return true;
+      if (m.form) forms++;
+      else if (m.link) links++;
+      else annots++;
+      return false;
+    });
+  });
+  const ja = [links && `リンク ${links} 件`, annots && `注釈 ${annots} 件`, forms && `フォームの欄 ${forms} 件`].filter(Boolean);
+  const en = [links && `${links} link(s)`, annots && `${annots} annotation(s)`, forms && `${forms} form field(s)`].filter(Boolean);
+  if (ja.length) {
+    warnings?.push(
+      msg(
+        `PDF/X では、ページの中 (塗り足しまでの範囲 BleedBox に掛かる所) の注釈・リンク・フォームの欄を書きません (${ja.join('・')})`,
+        `PDF/X: annotations, links and form fields on the pages (anything overlapping the area up to the bleed, BleedBox) are not written (${en.join(', ')})`,
+      ),
+    );
+  }
 }
+
+/**
+ * 1 ページに置く SVG のリンク (a の注釈) の数の上限。PDF (ISO 32000-2 §12.5) に数は無い。2 万個の a の SVG を 20 回置いた 1 ページで、
+ * 注釈が 40 万個・PDF が 13MB・1.9GB になった。押せるリンクは数 mm 角はあるので、A4 の 1 ページに並ぶのは 3mm 角で 7000 個ほど
+ * (210 × 297 / 9)。5000 個は、実在の図 (地図・系統図のリンク) の届かない数
+ */
+const SVG_MAX_LINKS_PER_PAGE = 5000;
 
 /** PDF の注釈の色 (C は RGB の配列) */
 function annotColor(css: string): number[] {
@@ -2168,13 +2802,17 @@ function addOutline(pdf: PDFDocument, items: BookmarkArea[], linkAction: LinkAct
 }
 
 /** MediaBox = Sheet 全体。TrimBox = 仕上がり、BleedBox = 塗り足し込み (PDF 座標: 左下原点) */
-function setBoxes(page: PDFPage, sheet: SheetArea) {
+/**
+ * ページの範囲 (MediaBox・BleedBox・TrimBox・ArtBox・CropBox。ISO 32000-2 §14.11.2)。
+ * artBox が false なら ArtBox を書かない (PDF/X: TrimBox と ArtBox の両方は書かない決まりがある、という公開の説明による。ISO 15930 の本文では未確認)
+ */
+function setBoxes(page: PDFPage, sheet: SheetArea, artBox = true) {
   const H = sheet.height;
   const conv = (r: Rect) => [r.x, H - r.y - r.height, r.width, r.height] as const;
   page.setMediaBox(0, 0, sheet.width, sheet.height);
   page.setBleedBox(...conv(sheet.bleedBox));
   page.setTrimBox(...conv(sheet.trimBox));
-  page.setArtBox(...conv(sheet.trimBox));
+  if (artBox) page.setArtBox(...conv(sheet.trimBox));
   // CropBox は MediaBox のまま (トンボまで含めて表示)
   page.setCropBox(0, 0, sheet.width, sheet.height);
 }
@@ -2190,3 +2828,7 @@ function num(v: number): string {
  */
 const ACTUAL_TEXT_SEA = /^[\u0E80-\u0FFF\u1000-\u109F\u1780-\u17FF\uA9E0-\uA9FF\uAA60-\uAA7F]/;
 
+/** 例外の文 (警告に書く) */
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}

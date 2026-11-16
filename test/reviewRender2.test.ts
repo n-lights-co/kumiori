@@ -546,12 +546,12 @@ describe('CGM の大きさ (L-9)', () => {
   };
   const i16 = (...v: number[]) => v.flatMap((x) => [(x >> 8) & 0xff, x & 0xff]);
   const str = (t: string) => [t.length, ...Array.from(t, (c) => c.charCodeAt(0))];
-  it('METAFILE DEFAULTS REPLACEMENT の中の VDC EXTENT を見る', () => {
+  it('METAFILE DEFAULTS REPLACEMENT の中の VDC EXTENT を見る', async () => {
     const inner = [...cmd(2, 6, i16(0, 0, 200, 100)), ...cmd(5, 22, i16(1))];
     const b = new Uint8Array([...cmd(0, 1, str('t')), ...cmd(1, 12, inner), ...cmd(0, 3, str('p')), ...cmd(0, 4), ...cmd(0, 5), ...cmd(0, 2)]);
-    expect(imageInfo(b)).toMatchObject({ mime: 'image/cgm', width: 400, height: 200 });
+    expect(await imageInfo(b)).toMatchObject({ mime: 'image/cgm', width: 400, height: 200 });
   });
-  it('長い形の分割された引数 (続きありのビット) をつないで読む', () => {
+  it('長い形の分割された引数 (続きありのビット) をつないで読む', async () => {
     // MDR を 2 つに分けて書く: 1 つ目 (続きあり) に VDC EXTENT の前半、2 つ目に後半
     const inner = [...cmd(5, 22, i16(1)), ...cmd(2, 6, i16(0, 0, 300, 100))];
     const cut = 6;
@@ -561,6 +561,6 @@ describe('CGM の大きさ (L-9)', () => {
     const long = [h >> 8, h & 0xff, 0x80 | (part1.length >> 8), part1.length & 0xff, ...part1, part2.length >> 8, part2.length & 0xff, ...part2];
     if (part2.length % 2) long.push(0);
     const b = new Uint8Array([...cmd(0, 1, str('t')), ...long, ...cmd(0, 3, str('p')), ...cmd(0, 4), ...cmd(0, 5), ...cmd(0, 2)]);
-    expect(imageInfo(b)).toMatchObject({ mime: 'image/cgm', width: 400, height: (400 * 100) / 300 });
+    expect(await imageInfo(b)).toMatchObject({ mime: 'image/cgm', width: 400, height: (400 * 100) / 300 });
   });
 });

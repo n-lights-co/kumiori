@@ -1,7 +1,8 @@
 /**
  * 色指定のパース。#rgb / #rrggbb / rgb() / cmyk(c,m,y,k) (0-1 or 0-100%) / gray(g) (0 が黒、1 が白) / spot(濃度,c,m,y,k,名前)。
  * spot は特色 (PDF の Separation)。c,m,y,k は濃度 100% のときの代わりの CMYK、名前は encodeURIComponent したもの。
- * 特色の CMYK は、濃度を掛けた値 (Separation の濃度の変換を線形にしたものと同じ) で、spot に元の値を持つ
+ * 特色の CMYK は、濃度を掛けた値 (Separation の濃度の変換を線形にしたものと同じ) で、spot に元の値を持つ。
+ * 名前の後ろに ,#rrggbb があれば、作成者が書いた代わりの RGB (spot(濃度,c,m,y,k,名前,#rrggbb)。名前の # は %23 になるので紛れない)
  */
 export type ParsedColor =
   | { mode: 'rgb'; r: number; g: number; b: number }
@@ -14,12 +15,21 @@ export interface SpotColor {
   tint: number;
   /** 濃度 100% の代わりの CMYK (0〜1) */
   cmyk: [number, number, number, number];
+  /**
+   * 作成者が書いた代わりの RGB (0〜1。アンテナハウスの rgb-icc(r, g, b, #Separation, …) の r, g, b から、特色の値が無いときに使う色と
+   * 同じに作ったもの。濃度を掛けるかどうかも、その色と同じ)。PDF には書かず、立体の罫線の明暗の色を作るのに使う (paint.ts の shade)
+   */
+  rgb?: [number, number, number];
 }
 
-/** 特色の色の文字列 (spot(濃度,c,m,y,k,名前)) */
-export function spotColor(name: string, tint: number, cmyk: [number, number, number, number]): string {
+/** 特色の色の文字列 (spot(濃度,c,m,y,k,名前)。代わりの RGB (0〜255) を渡すと spot(濃度,c,m,y,k,名前,#rrggbb)) */
+export function spotColor(name: string, tint: number, cmyk: [number, number, number, number], rgb?: [number, number, number]): string {
   const t = Math.min(1, Math.max(0, tint));
-  return `spot(${+t.toFixed(5)},${cmyk.map((x) => +x.toFixed(5)).join(',')},${encodeURIComponent(name).replace(/[()]/g, (ch) => (ch === '(' ? '%28' : '%29'))})`;
+  const alt =
+    rgb && rgb.every((x) => Number.isFinite(x))
+      ? `,#${rgb.map((x) => Math.round(Math.min(255, Math.max(0, x))).toString(16).padStart(2, '0')).join('')}`
+      : '';
+  return `spot(${+t.toFixed(5)},${cmyk.map((x) => +x.toFixed(5)).join(',')},${encodeURIComponent(name).replace(/[()]/g, (ch) => (ch === '(' ? '%28' : '%29'))}${alt})`;
 }
 
 /**
@@ -81,13 +91,17 @@ export function parseColor(input: string): ParsedColor {
   if (m) {
     const p = m[1].split(',');
     const [t, c, mm, y, k] = p.slice(0, 5).map(Number);
+    // 名前の後ろの #rrggbb は代わりの RGB
+    const alt = p.length > 6 && /^#[0-9a-f]{6}$/i.test(p[p.length - 1].trim()) ? parseInt(p.pop()!.trim().slice(1), 16) : undefined;
     let name = p.slice(5).join(',');
     try {
       name = decodeURIComponent(name);
     } catch {
       /* 不正な % の並びは、そのまま */
     }
-    return { mode: 'cmyk', c: c * t, m: mm * t, y: y * t, k: k * t, spot: { name, tint: t, cmyk: [c, mm, y, k] } };
+    const spot: SpotColor = { name, tint: t, cmyk: [c, mm, y, k] };
+    if (alt !== undefined) spot.rgb = [((alt >> 16) & 255) / 255, ((alt >> 8) & 255) / 255, (alt & 255) / 255];
+    return { mode: 'cmyk', c: c * t, m: mm * t, y: y * t, k: k * t, spot };
   }
   // グレースケール (アンテナハウスの rgb-icc(#Grayscale, g))。墨の量 k = 1 − g の CMYK として扱い、PDF では DeviceGray で書く (gray)
   m = /^gray\(([^)]+)\)$/i.exec(s);

@@ -44,6 +44,16 @@ describe('特色 (spot)', () => {
     expect(c.spot).toEqual({ name, tint: 0.5, cmyk: [0.2, 0.4, 0.6, 0.8] });
   });
 
+  it('代わりの RGB (0〜255) を渡すと、名前の後ろに #rrggbb を書き、parseColor で spot.rgb (0〜1) に戻る (CSS-25)', () => {
+    const s = spotColor('Ink #1', 0.5, [0.2, 0.4, 0.6, 0.8], [0, 61, 25.4]);
+    expect(s).toBe('spot(0.5,0.2,0.4,0.6,0.8,Ink%20%231,#003d19)');
+    const c = parseColor(s);
+    if (c.mode !== 'cmyk') throw new Error('cmyk でない');
+    expect(c.spot).toEqual({ name: 'Ink #1', tint: 0.5, cmyk: [0.2, 0.4, 0.6, 0.8], rgb: [0, 61 / 255, 25 / 255] });
+    // 代わりの RGB の無い特色は、これまでどおり
+    expect(parseColor('spot(1,0,1,1,0,Foo)')).toEqual({ mode: 'cmyk', c: 0, m: 1, y: 1, k: 0, spot: { name: 'Foo', tint: 1, cmyk: [0, 1, 1, 0] } });
+  });
+
   it('濃度は 0〜1 に収める', () => {
     expect(spotColor('x', 2, [0, 0, 0, 1])).toBe('spot(1,0,0,0,1,x)');
   });
