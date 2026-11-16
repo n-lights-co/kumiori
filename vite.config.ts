@@ -1,11 +1,20 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
+import { drawioBanner } from './src/drawio/notice';
 
 /**
  * ビルドの出力 (dist/・dist-cli/) に、Kumiori の LICENSE・NOTICE と第三者のソフトウェアの表示を入れる。
  * public/fonts/ に書体のファイルがあれば (出力にコピーされるので) 警告する。ビルドは止めない
  */
+/**
+ * draw.io の図を描く処理 (draw.io と mxGraph から移したコード) の場所。取り込んだチャンクの先頭に、その著作権表示を書く。
+ * Vite のモジュールの id は、Windows でも「/」で区切る (fileURLToPath の道は「\\」で区切る) ので、「/」に揃えて比べる
+ */
+const toSlash = (p: string) => p.replace(/\\/g, '/');
+const DRAWIO_DIR = toSlash(fileURLToPath(new URL('src/drawio/', import.meta.url)));
+
 function licenseFiles(): Plugin {
   return {
     name: 'kumiori-license-files',
@@ -156,8 +165,9 @@ export default defineConfig({
       output: {
         // 分綴のパターンを取り込んだチャンクには、Kumiori の表示の後ろに、そのパターンの著作権・ライセンスの注記を足す
         postBanner: (chunk: { moduleIds: readonly string[] }) => {
-          const extra = hyphenNotice(chunk.moduleIds);
-          return extra ? `${banner}\n${extra}` : banner;
+          // draw.io の図を描く処理 (src/drawio/ の、draw.io と mxGraph から移したコード) を取り込んだチャンクには、その著作権表示も足す
+          const extra = [hyphenNotice(chunk.moduleIds), ...(chunk.moduleIds.some((id) => toSlash(id).startsWith(DRAWIO_DIR) && !/[\\/](index|sniff|options|messages|nodeFiles)\.ts$/.test(id)) ? [drawioBanner()] : [])].filter(Boolean);
+          return [banner, ...extra].join('\n');
         },
       },
     },

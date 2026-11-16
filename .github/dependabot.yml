@@ -10,7 +10,7 @@ updates:
     groups:
       actions:
         patterns: ['*']
-  # npm の依存 (実行時の依存は @pdf-lib/fontkit・@xmldom/xmldom・hyphen・linkedom・pdf-lib・utif。どれも、他人の書いた文書・画像・書体を読む所)。
+  # npm の依存 (実行時の依存は @pdf-lib/fontkit・@xmldom/xmldom・htmlparser2・hyphen・linkedom・pako・pdf-lib・roughjs・utif。どれも、他人の書いた文書・画像・書体を読んで組み、描く所)。
   # 脆弱性の修正の版は、Dependabot の security updates が、下の設定とは別に、すぐに PR にする (リポジトリの Settings → Code security で有効にしておく)。
   # 版の上げは、週に 1 度、開発用の依存 (vite・vitest・typescript・playwright など) と実行時の依存を、別々の PR にまとめる
   - package-ecosystem: npm
@@ -22,3 +22,14 @@ updates:
         dependency-type: development
       runtime-dependencies:
         dependency-type: production
+    # htmlparser2 と pako は、主な版の上げ (htmlparser2 10 → 11 以上・pako 1 → 2 以上) を PR にしない。上げるには、コードの側の対応が要るため
+    # (pako は src/drawio/inflate.ts で使い、新しい版では API と取り込み方が変わる。htmlparser2 は Parser の内部の作りに当てている守り src/htmlParserStack.ts が合わなくなる)。
+    # 小さな版・修正の版の上げと、脆弱性の修正 (security updates) は、これまでどおり受ける。
+    # pako は、pdf-lib・@pdf-lib/fontkit・@pdf-lib/standard-fonts・@pdf-lib/upng・utif も自分の依存として 1.x を持つので、本体だけ上げると 2 つの版が同時に入る (上げるときに考える。
+    # htmlparser2 も、linkedom が自分の依存として 10.x を持つので同じ)。
+    # コードの側の対応をしたら、その対応のコミットで、ここの項も一緒に外す。
+    ignore:
+      - dependency-name: htmlparser2
+        update-types: ['version-update:semver-major']
+      - dependency-name: pako
+        update-types: ['version-update:semver-major']

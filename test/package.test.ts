@@ -80,6 +80,14 @@ describe('配布物を Node から読む', () => {
     expect(packed.filter((f) => /^dist-[^/]+\/.*\.(ttf|otf|ttc|woff2?|ico|png|svg)$/i.test(f))).toEqual([]);
   });
 
+  it('tarball に sourcemap (.map) は入らず、配る JS に sourceMappingURL の行も無い', () => {
+    // sourcemap は配らない (vite.lib.config.ts の sourcemap: false)。sourceMappingURL の行が残ると、利用者の側で「map が見つからない」という警告になる
+    expect(packed.filter((f) => f.endsWith('.map'))).toEqual([]);
+    const pkgDir = path.join(app, 'node_modules', 'kumiori');
+    const withUrl = packed.filter((f) => /\.(m?js|cjs)$/.test(f) && /^\/\/# sourceMappingURL=/m.test(fs.readFileSync(path.join(pkgDir, f), 'utf8')));
+    expect(withUrl).toEqual([]);
+  });
+
   it('import で kumiori・kumiori/node・kumiori/browser・kumiori/package.json が読める', () => {
     const code = `
       const lib = await import('kumiori');
