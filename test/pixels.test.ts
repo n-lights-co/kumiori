@@ -224,8 +224,10 @@ describe('TIFF: パレット + 透明度 (1 画素 2 サンプル)', () => {
       p += 12 + len;
     }
     const raw = inflateSync(Uint8Array.from(idat));
-    const row = 1 + W * 4;
+    // 不透明の画像の PNG は RGB (色の型 2。pixels.ts の encodePng)
+    expect(png[25]).toBe(2);
+    const row = 1 + W * 3;
     const last = raw.subarray((H - 1) * row + 1, H * row);
-    expect([...last.subarray(0, 4)]).toEqual([255, 0, 0, 255]);
+    expect([...last.subarray(0, 3)]).toEqual([255, 0, 0]);
   });
 });

@@ -38,7 +38,7 @@ function woffToSfnt(b: Uint8Array): ArrayBuffer {
   const flavor = v.getUint32(4);
   const numTables = v.getUint16(12);
   const tables: Table[] = [];
-  // 戻した表の大きさの合計の上限 (imageLimits.ts の webFontSfntBudget。IMG-19)。origLength (§5) は 32 ビットで、頭の値のとおりに展開すると、
+  // 戻した表の大きさの合計の上限 (imageLimits.ts の webFontSfntBudget)。origLength (§5) は 32 ビットで、頭の値のとおりに展開すると、
   // 300KB のファイルで 5.6 秒・2GB を使っていた
   let left = webFontSfntBudget(b.length);
   for (let k = 0; k < numTables; k++) {
@@ -185,7 +185,7 @@ function woff2ToSfnt(b: Uint8Array): ArrayBuffer {
   // Brotli の展開 (圧縮したデータは、目録のすぐ後ろから totalCompressedSize バイト。§5)
   if (r.pos + totalCompressedSize > b.length) throw new Error('WOFF2: the data is too short');
   const expected = dir.reduce((a, d) => a + (d.transformLength ?? d.origLength), 0);
-  // 展開した大きさ (Brotli の展開は、この大きさの配列を先に作る) と、戻した表の大きさの合計の上限 (imageLimits.ts の webFontSfntBudget。IMG-19)。
+  // 展開した大きさ (Brotli の展開は、この大きさの配列を先に作る) と、戻した表の大きさの合計の上限 (imageLimits.ts の webFontSfntBudget)。
   // 目録の長さ (§4.1 の UIntBase128) は 32 ビットまで書けるので、558 バイトのファイルで 3.3 秒・1.7GB を使っていた
   const budget = webFontSfntBudget(b.length);
   if (expected > budget || dir.reduce((a, d) => a + d.origLength, 0) > budget) throw new Error('WOFF2: the decompressed font is too large');

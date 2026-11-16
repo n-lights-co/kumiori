@@ -13,6 +13,10 @@ import { encodePng } from './pixels';
 import { invert, type Matrix as Mat, type Seg } from './matrix';
 import { base64 } from './base64';
 import { PS_MAX_SVG_CHARS } from './imageLimits';
+import { EpsBudget, epsBoundingBox, fontFamilyOf } from './epsInfo';
+import { msg } from './messages';
+
+export { EPS_DOCUMENT_MILLIS, EpsBudget, epsBoundingBox, epsBudgetOf, fontFamilyOf, resetEpsBudget } from './epsInfo';
 
 export interface EpsResult {
   svg: string;
@@ -45,16 +49,6 @@ export function epsProgram(b: Uint8Array): { ps: Uint8Array; bbox: [number, numb
   return { ps, bbox };
 }
 
-/** DSC の注釈の外接矩形 [x0, y0, x1, y1] (pt)。%%HiResBoundingBox を優先し、無ければ %%BoundingBox。どちらも無ければ undefined */
-export function epsBoundingBox(head: string): [number, number, number, number] | undefined {
-  const m = /%%HiResBoundingBox:\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/.exec(head) ?? /%%BoundingBox:\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/.exec(head);
-  if (!m) return undefined;
-  // 数として読めない値 (1.2.3 は NaN) と、有限でない値 (何百桁もの数は Infinity) の外接矩形は、無いものとして扱う (EPS として読まない)。
-  // そのまま通すと、幅・高さが NaN・Infinity の画像になり、PDF を書く所で文書の全体が誤りになる
-  const box = m.slice(1).map(Number) as [number, number, number, number];
-  return box.every(Number.isFinite) ? box : undefined;
-}
-
 /** EPS を実行するときの上限 (どれも、超えたら PostScript のエラーで終わり、そこまでに描いたものを返す) */
 export interface EpsLimits {
   /** 経過時間の上限 (ミリ秒)。既定は 20 秒 */
@@ -77,34 +71,6 @@ export interface EpsLimits {
   maxSvgChars?: number;
   /** 文書あたりの時間の予算 (epsToSvg だけ)。残りが maxMillis より短ければ、残りを時間の上限にし、使った時間を引く。残りが無ければ実行しない */
   budget?: EpsBudget;
-}
-
-/**
- * 1 つの文書 (画像の登録の入れ物 1 つ。assets.ts の AssetStore) で、EPS を実行して SVG にする時間の合計の上限 (ミリ秒)。
- * EPS 1 つごとの上限 (20 秒・512MB) だけでは、名前を変えて同じ EPS を何個も参照する文書 (8 個で 280 秒を超えた) が、個数の分だけ
- * 時間を使う。実在の EPS は 1 つが数十〜数百ミリ秒 (見本の docs/conformance の EPS は、どれも 1 秒未満) なので、60 秒は数百個の図を
- * 持つ文書でも届かない。使い切ったら、残りの EPS は実行しない (epsToSvg が undefined を返し、プレビューがあればプレビューで、
- * 無ければ描けない画像として警告に出す)
- */
-export const EPS_DOCUMENT_MILLIS = 60_000;
-
-/** 文書あたりの EPS の時間の予算 (EPS_DOCUMENT_MILLIS の説明) */
-export class EpsBudget {
-  constructor(public millisLeft = EPS_DOCUMENT_MILLIS) {}
-}
-const budgets = new WeakMap<object, EpsBudget>();
-/**
- * 予算を初めの値に戻す。画面 (main.ts) は、画像の入れ物を 1 つだけ作り、別の文書を開いても使い続ける (前に読んだ画像を残す) ので、
- * 文書を開くたびに戻す (戻さないと、「文書あたり」の予算が「画面を開いている間の合計」になり、重い EPS を何度か開いた後は、どの EPS も描けなくなる)
- */
-export function resetEpsBudget(owner: object): void {
-  budgets.delete(owner);
-}
-/** 文書 (画像の登録の入れ物など、文書ごとに 1 つのもの) に結び付けた予算。初めて引いたときに作る */
-export function epsBudgetOf(owner: object): EpsBudget {
-  let b = budgets.get(owner);
-  if (!b) budgets.set(owner, (b = new EpsBudget()));
-  return b;
 }
 
 /** EPS を実行して、描いたものを返す */
@@ -150,18 +116,6 @@ function pathData(segs: Seg[], m?: Mat): string {
 }
 
 const xmlText = (t: string) => t.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;')).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
-
-/** PostScript の書体の名前から、SVG の font-family (系統) と太さ・斜体を決める */
-export function fontFamilyOf(psName: string): { family: string; bold: boolean; italic: boolean } {
-  const n = psName.replace(/^[A-Z]{6}\+/, '');
-  const bold = /Bold|Black|Heavy|Demi|W[6-9]\b|-B\b/i.test(n);
-  const italic = /Italic|Oblique/i.test(n);
-  let family = 'sans-serif';
-  if (/Courier|Mono|Consol/i.test(n)) family = 'monospace';
-  else if (/Times|Roman|Serif|Garamond|Century|Minion|Georgia|Mincho|Ryumin|Ming|明朝/i.test(n) && !/Sans/i.test(n)) family = 'serif';
-  else if (/Symbol/i.test(n)) family = 'serif';
-  return { family, bold, italic };
-}
 
 /**
  * SVG の断片をためる。短い断片を 1 つずつ配列に持つと、断片ごとの入れ物で文字の何倍ものメモリを使う (900 万個の断片で 1GB を超えた) ので、
@@ -322,5 +276,5 @@ async function epsToSvg1(b: Uint8Array, opts: EpsLimits): Promise<EpsResult | un
     (defs.empty ? '' : `<defs>${defs.join()}</defs>`) +
     `<g transform="matrix(1 0 0 -1 ${f(-x0)} ${f(y1)})">${body.join()}</g></svg>`;
   // SVG が上限を超えたときは、PostScript の実装の限界のエラーの名前で知らせる (PLRM 付録 B: 限界を超える操作は limitcheck)
-  return { svg, bbox: r.bbox, count: r.items.length, warnings: r.warnings, notes: r.notes, error: r.error ?? (tooLong ? 'limitcheck (SVG の出力が長すぎます)' : undefined) };
+  return { svg, bbox: r.bbox, count: r.items.length, warnings: r.warnings, notes: r.notes, error: r.error ?? (tooLong ? msg('limitcheck (SVG の出力が長すぎます)', 'limitcheck (the SVG output is too long)') : undefined) };
 }

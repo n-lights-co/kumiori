@@ -299,7 +299,7 @@ function decode(b: Uint8Array): JpegPixels | undefined {
       if (nf !== 1 && nf !== 3) return undefined;
       // 画素の数は、MAX_PIXELS と、ファイルの大きさ (区画ごとに 1 ビット以上を使う) で縛る (imageLimits.ts の JPEG_PIXELS_PER_BYTE)。
       // 係数の配列 (1 標本 2 バイト) と面は寸法のとおりに作るので、走査のデータの無い 136 バイトのファイルで、1 億画素の係数と IDCT を
-      // 作っていた (IMG-19)
+      // 作っていた
       if (!X || !Y || X * Y > pixelBudget(b.length, JPEG_PIXELS_PER_BYTE)) return undefined;
       for (let i = 0; i < nf; i++) {
         const hv = seg[7 + 3 * i];

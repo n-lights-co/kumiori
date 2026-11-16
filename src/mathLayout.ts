@@ -122,6 +122,8 @@ const NAMED_SPACE: Record<string, number> = {
   verythickmathspace: 6 / 18,
   veryverythickmathspace: 7 / 18,
 };
+// 入力の値 (lspace="__proto__" など) で引くので、原型を持たない表にする (原型の Object.prototype を拾い、長さが NaN になっていた)
+Object.setPrototypeOf(NAMED_SPACE, null);
 
 export function layoutMathML(root: MNode, o: MathLayoutOptions): MathResult {
   const L = new MathLayouter(o);
@@ -285,7 +287,7 @@ class MathLayouter {
     }
     const size = attr(n, 'mathsize') ?? attr(n, 'fontsize');
     if (size) {
-      const named: Record<string, number> = { small: 0.71, normal: 1, big: 1.41 };
+      const named = { __proto__: null, small: 0.71, normal: 1, big: 1.41 } as unknown as Record<string, number>;
       const v = named[size] !== undefined ? named[size] * c.size : this.length(size, c, c.size);
       if (v && v > 0 && Number.isFinite(v)) c = { ...c, size: v };
     }
@@ -983,7 +985,8 @@ class MathLayouter {
     const def = k('fractionRuleThickness');
     let t = def;
     if (lt) {
-      const named: Record<string, number> = { thin: 0.5, medium: 1, thick: 2 };
+      // 入力の値で引くので、原型を持たない表にする (linethickness="constructor" で関数を拾い、線の太さが NaN になっていた)
+      const named = { __proto__: null, thin: 0.5, medium: 1, thick: 2 } as unknown as Record<string, number>;
       t = named[lt] !== undefined ? named[lt] * def : (this.length(lt, ctx, def) ?? def);
     }
     const pad = 0.75; // padding-inline: 1px (付録 A)

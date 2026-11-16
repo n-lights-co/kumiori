@@ -15,6 +15,7 @@ import { MAX_PIXELS, METAFILE_CLIP_PATH_WORK, METAFILE_REGION_WORK, metafilePixe
 import { apply as applyXf, isIdentity, mul, type Matrix } from './matrix';
 import { base64 } from './base64';
 import { flattenPath, polyBool, ringsPath, type Rings } from './regionBool';
+import { msg } from './messages';
 
 interface Pen {
   kind: 'pen';
@@ -274,11 +275,11 @@ class SvgOut {
    */
   private pixelsLeft: number;
   private readonly pixelBudget: number;
-  /** 描かなかったもの (同じ文は 1 回。wmfToSvg・emfToSvg の warnings に渡し、組版の警告に出す。IMG-19 (4)) */
+  /** 描かなかったもの (同じ文は 1 回。wmfToSvg・emfToSvg の warnings に渡し、組版の警告に出す) */
   readonly warnings = new Set<string>();
-  takePixels(n: number, what = '画像'): boolean {
+  takePixels(n: number, what = msg('画像', 'an image')): boolean {
     if (n > this.pixelsLeft) {
-      this.warnings.add(`${what} は、文書の画像の画素の合計が上限 (${this.fileBytes} バイトのファイルでは ${this.pixelBudget} 画素) を超えるので描きません`);
+      this.warnings.add(msg(`${what} は、文書の画像の画素の合計が上限 (${this.fileBytes} バイトのファイルでは ${this.pixelBudget} 画素) を超えるので描きません`, `${what} is not drawn because the total pixels of the images in the document exceed the limit (${this.pixelBudget} pixels for a file of ${this.fileBytes} bytes)`));
       return false;
     }
     this.pixelsLeft -= n;
@@ -297,7 +298,7 @@ class SvgOut {
     if (this.overflow) return false;
     if (this.chars + n > this.charBudget) {
       this.overflow = true;
-      this.warnings.add(`メタファイルを SVG にした長さが上限 (${this.fileBytes} バイトのファイルでは ${this.charBudget} 字) を超えるので、途中までを描きます`);
+      this.warnings.add(msg(`メタファイルを SVG にした長さが上限 (${this.fileBytes} バイトのファイルでは ${this.charBudget} 字) を超えるので、途中までを描きます`, `the SVG made from the metafile exceeds the length limit (${this.charBudget} characters for a file of ${this.fileBytes} bytes); only the first part is drawn`));
       return false;
     }
     this.chars += n;
@@ -314,7 +315,7 @@ class SvgOut {
   gradientSteps(nTri: number): number {
     let n = 8;
     while (n > 1 && nTri * n * n * SvgOut.GRAD_PATH_CHARS > this.gradChars) n >>= 1;
-    if (n < 8) this.warnings.add('色を変えながら塗る三角形 (EMR_GRADIENTFILL) が多いので、色の変わり方を粗くして描きます');
+    if (n < 8) this.warnings.add(msg('色を変えながら塗る三角形 (EMR_GRADIENTFILL) が多いので、色の変わり方を粗くして描きます', 'there are many gradient-filled triangles (EMR_GRADIENTFILL); the gradients are drawn more coarsely'));
     this.gradChars -= nTri * n * n * SvgOut.GRAD_PATH_CHARS;
     return n;
   }
@@ -369,7 +370,7 @@ class SvgOut {
   pixelSize?: (vb: [number, number, number, number]) => [number, number] | undefined;
   private patterns: Array<{ id: string; px: Pixels; org: [number, number]; xf?: Xf; size?: [number, number] }> = [];
   /**
-   * 同じ模様 (画素・置き方) の定義の id (IMG-19 (3))。模様のブラシは塗るたびに定義を足していたので、同じブラシで塗る図形が多いと、
+   * 同じ模様 (画素・置き方) の定義の id。模様のブラシは塗るたびに定義を足していたので、同じブラシで塗る図形が多いと、
    * 同じ中身の pattern をその数だけ書いていた。画素の中身と置き方 (ブラシの原点・世界変換・タイルの大きさ) が同じなら、同じ定義を使う
    */
   private patternIds = new Map<string, string>();
@@ -741,7 +742,7 @@ class SvgOut {
     const pts = (rs: Rings) => rs.reduce((n, r) => n + r.length, 0);
     this.clipPathWork -= pts(acc) + pts(add[0]) + layers.reduce((n, x) => n + pts(x.rings), 0) + (layers.length + 1) * pts(acc);
     if (this.clipPathWork < 0) {
-      this.warnings.add('切り抜きのパスの演算の手間が上限を超えたので、その後の切り抜きの変更は読みません');
+      this.warnings.add(msg('切り抜きのパスの演算の手間が上限を超えたので、その後の切り抜きの変更は読みません', 'clipping path operations exceeded the work limit; later changes of the clipping are not read'));
       return;
     }
     for (const { l, rings } of layers) acc = polyBool(acc, false, rings, l.evenodd, l.invert ? 4 : 1);
@@ -750,7 +751,7 @@ class SvgOut {
   /** 領域の演算 (手間の合計が上限を超えたら、演算をやめて、切り抜きを変えずに警告を出す) */
   private regionRects(a: Rect[] | undefined, b: Rect[], mode: number): Rect[] | undefined {
     const r = regionOp(a, b, mode, this.regionWork);
-    if (this.regionWork.left < 0) this.warnings.add('切り抜きの領域の演算の手間が上限を超えたので、その後の切り抜きの変更は読みません');
+    if (this.regionWork.left < 0) this.warnings.add(msg('切り抜きの領域の演算の手間が上限を超えたので、その後の切り抜きの変更は読みません', 'clipping region operations exceeded the work limit; later changes of the clipping are not read'));
     return r;
   }
   clipRects(rs: Rect[], mode: number) {
@@ -939,7 +940,7 @@ function dibImage(out: SvgOut, b: Uint8Array, s: DibSrc): { px: Pixels } | { mim
   const W = Math.abs(w);
   const rows = s.scans ?? Math.abs(h);
   // 画素の数の上限 (ヘッダの寸法だけで大量のメモリ・時間を使わない)
-  if (!W || !rows || W * rows > MAX_PIXELS || !out.takePixels(W * rows, 'DIB の画像')) return undefined;
+  if (!W || !rows || W * rows > MAX_PIXELS || !out.takePixels(W * rows, msg('DIB の画像', 'a DIB image'))) return undefined;
   const stride = Math.floor((bpp * W + 31) / 32) * 4;
   let pixels: Uint8Array;
   let newComp = comp;
@@ -1072,7 +1073,7 @@ function blendLayers(out: SvgOut, code: number, pat: [number, number, number], p
     if (!px) {
       // 元の無い演算 (DSTINVERT・PATINVERT など): 矩形を 1 色で
       out.fillRects([normRect(x, y, x + w, y + h)], `#${[0, 1, 2].map((k) => rgba[k].toString(16).padStart(2, '0')).join('')}`, mode);
-    } else if (out.takePixels(W * H, 'ラスター演算の画像')) out.image(x, y, w, h, `data:image/png;base64,${base64(encodePngStored({ width: W, height: H, rgba }))}`, mode); // (層ごとに 1 枚の画像になるので、画素の合計に数える)
+    } else if (out.takePixels(W * H, msg('ラスター演算の画像', 'a raster operation image'))) out.image(x, y, w, h, `data:image/png;base64,${base64(encodePngStored({ width: W, height: H, rgba }))}`, mode); // (層ごとに 1 枚の画像になるので、画素の合計に数える)
   }
   return true;
 }
@@ -1326,7 +1327,7 @@ export function wmfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number, war
     // 数の欄だけを信じると、短い記録を並べたファイルで、記録ごとにファイルの終わりまでを読み、出力が入力の 2 乗で増える
     const end = Math.min(p + size, b.length);
     const fit = (at: number, n: number, unit: number): number => {
-      if (n > 0 && at + n * unit > end) throw new RangeError('記録に入りきらない数');
+      if (n > 0 && at + n * unit > end) throw new RangeError(msg('記録に入りきらない数', 'a count that does not fit in the record'));
       return Math.max(0, n);
     };
     const pts = (at: number, n: number) => Array.from({ length: fit(at, n, 4) }, (_, k) => [i16(at + k * 4), i16(at + k * 4 + 2)]);
@@ -1689,7 +1690,7 @@ export function emfToSvg(b: Uint8Array, widthPx?: number, heightPx?: number, war
     // ファイルの終わりまでを読み、出力が入力の 2 乗で増える
     const end = Math.min(p + size, b.length);
     const fit = (at: number, n: number, unit: number): number => {
-      if (n > 0 && at + n * unit > end) throw new RangeError('記録に入りきらない数');
+      if (n > 0 && at + n * unit > end) throw new RangeError(msg('記録に入りきらない数', 'a count that does not fit in the record'));
       return n;
     };
     const pts16 = (at: number, n: number) => Array.from({ length: fit(at, n, 4) }, (_, k) => [i16(at + k * 4), i16(at + k * 4 + 2)]);

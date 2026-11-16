@@ -11,8 +11,9 @@ export interface Pixels {
   rgba: Uint8Array;
 }
 
-import { inflateBytes } from './psFilters';
+import { inflateFast, inflatedLength } from './inflateFast';
 import { BMP_RLE_PIXELS_PER_BYTE, DEFLATE_MAX_RATIO, MAX_PIXELS, gifPixelBudget, pixelBudget } from './imageLimits';
+import { msg } from './messages';
 
 /** 画素の数の上限 (imageLimits.ts。ここからも引けるようにしてある) */
 export { MAX_PIXELS } from './imageLimits';
@@ -150,7 +151,7 @@ function lzw(data: Uint8Array, minSize: number, n: number): Uint8Array {
 /**
  * PNG を展開してよいか (画素の数が MAX_PIXELS まで、かつ、展開した走査線の大きさが IDAT の大きさの DEFLATE_MAX_RATIO 倍まで)。
  * 画像を描けない環境 (Node) で、pdf-lib の embedPng は、IHDR の寸法のとおりに走査線・RGBA・RGB・透明度の配列を作ってから展開するので、
- * 寸法だけが大きい 65 バイトの PNG で、9 秒・1.3GB を使っていた (IMG-19)。PNG の画素の並びは zlib (deflate) で圧縮する
+ * 寸法だけが大きい 65 バイトの PNG で、9 秒・1.3GB を使っていた。PNG の画素の並びは zlib (deflate) で圧縮する
  * (W3C の PNG の仕様 (Second Edition) §10.1) ので、正当な PNG の走査線は IDAT の 1,032 倍より大きくならない (RFC 1951)。
  * 走査線の大きさは、少なく見積もる (幅 × 高さ × 1 画素のビット数 / 8。インターレースの PNG はこれより大きい) ので、正当な PNG は断らない。
  * PNG でない・頭の読めないものは false
@@ -198,7 +199,7 @@ export function pngWithinLimits(b: Uint8Array): boolean {
 /**
  * PNG の画素のデータ (IDAT をつないだ zlib の列) が、終わりまで展開できるか。pdf-lib の embedPng (UPNG) の展開は、壊れたデータ
  * (割り当ての無い符号) に当たると、読む位置が進まないまま回り続けて止まらない。UPNG に渡す前に、誤りで止まる自前の展開
- * (psFilters の inflateBytes。壊れた所までを返す) で、走査線の大きさ (飛び越しでない並びの「(1 行のバイト数 + フィルタの 1 バイト) × 高さ」。
+ * (inflateFast.ts の inflatedLength。壊れた所までの長さを、展開したバイト列を持たずに数える) で、走査線の大きさ (飛び越しでない並びの「(1 行のバイト数 + フィルタの 1 バイト) × 高さ」。
  * PNG の仕様 §7.2・§9.1。飛び越しの並びはこれより大きい) まで出ることを確かめる。pngWithinLimits を通った PNG に使う
  */
 export function pngDataComplete(b: Uint8Array): boolean {
@@ -222,7 +223,7 @@ export function pngDataComplete(b: Uint8Array): boolean {
     all.set(p, at);
     at += p.length;
   }
-  return inflateBytes(all, need).length >= need;
+  return inflatedLength(all, need) >= need;
 }
 
 /** BMP の画素 (圧縮なし、16・32 ビットのビットフィールド、または RLE8・RLE4)。読めなければ undefined */
@@ -245,7 +246,7 @@ export function decodeBmp(b: Uint8Array): Pixels | undefined {
   // 0 を通すと、1 行のバイト数が 0 になって、下のファイルの大きさの検査を、54 バイトのファイルの 10000 × 10000 が通る
   if (![1, 4, 8, 16, 24, 32].includes(bpp)) return undefined;
   // RLE8 (BI_RLE8 = 1、8 ビット) と RLE4 (BI_RLE4 = 2、4 ビット) は、メタファイルの DIB と同じ符号 ([MS-WMF] 2.1.1.7 の Compression・3.1.6 の
-  // Bitmap Compression) なので、expandRle で圧縮しない行に戻してから読む (IMG-19 (5))。指定の無い画素 (行の終わり・画像の終わり・ずれで飛ばした所) は
+  // Bitmap Compression) なので、expandRle で圧縮しない行に戻してから読む。指定の無い画素 (行の終わり・画像の終わり・ずれで飛ばした所) は
   // 色の表の 0 番 (expandRle と同じ、仕様書の例のとおり)
   const rle = (comp === 1 && bpp === 8) || (comp === 2 && bpp === 4);
   if (comp !== 0 && !rle && !(comp === 3 && (bpp === 16 || bpp === 32))) return undefined;
@@ -338,51 +339,74 @@ const CRC = (() => {
   return t;
 })();
 
-function crc32(b: Uint8Array): number {
-  let c = 0xffffffff;
-  for (const v of b) c = CRC[(c ^ v) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
+/** CRC-32 (PNG の仕様 §5.5・附属書 D)。添字のループで引く (for…of の反復子は、1 億画素の画像で数秒かかっていた) */
+function crc32(b: Uint8Array, c = 0xffffffff): number {
+  for (let i = 0, n = b.length; i < n; i++) c = CRC[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+  return c;
 }
 
-/** PNG の生の走査線 (行ごとに先頭にフィルタの種類 0 を置いた RGBA) */
-function pngRaw(px: Pixels): Uint8Array {
+/** PNG の生の走査線 (行ごとに先頭にフィルタの種類 0 を置いた RGBA。rgb なら α を除いた RGB) */
+function pngRaw(px: Pixels, rgb = false): Uint8Array {
   const { width, height, rgba } = px;
-  const raw = new Uint8Array((width * 4 + 1) * height);
-  for (let y = 0; y < height; y++) raw.set(rgba.subarray(y * width * 4, (y + 1) * width * 4), y * (width * 4 + 1) + 1);
+  const ch = rgb ? 3 : 4;
+  const raw = new Uint8Array((width * ch + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const r = y * (width * ch + 1) + 1;
+    if (!rgb) raw.set(rgba.subarray(y * width * 4, (y + 1) * width * 4), r);
+    else
+      for (let x = 0, i = y * width * 4, o = r; x < width; x++, i += 4, o += 3) {
+        raw[o] = rgba[i];
+        raw[o + 1] = rgba[i + 1];
+        raw[o + 2] = rgba[i + 2];
+      }
+  }
   return raw;
 }
 
-/** PNG のファイル (署名・IHDR (8 ビット RGBA)・IDAT (zlib のデータ z)・IEND) */
-function pngFile(width: number, height: number, z: Uint8Array): Uint8Array {
-  const chunk = (type: string, data: Uint8Array) => {
-    const c = new Uint8Array(12 + data.length);
-    const dv = new DataView(c.buffer);
-    dv.setUint32(0, data.length);
-    c.set(new TextEncoder().encode(type), 4);
-    c.set(data, 8);
-    dv.setUint32(8 + data.length, crc32(c.subarray(4, 8 + data.length)));
-    return c;
+/** α が全部 255 (不透明) か */
+function opaque(rgba: Uint8Array): boolean {
+  for (let i = 3, n = rgba.length; i < n; i += 4) if (rgba[i] !== 255) return false;
+  return true;
+}
+
+const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/**
+ * PNG のファイル (署名・IHDR (8 ビット。色の型 colorType は 6 RGBA か 2 RGB)・IDAT・IEND) を、1 つの配列に書く。IDAT の中身 (zLength バイト) は、
+ * body が out の at から書く (中身を別の配列に作ってから写す手間を省く)
+ */
+function pngFile(width: number, height: number, zLength: number, body: (out: Uint8Array, at: number) => void, colorType = 6): Uint8Array {
+  const out = new Uint8Array(8 + 25 + 12 + zLength + 12);
+  const dv = new DataView(out.buffer);
+  out.set(PNG_SIG);
+  let o = 8;
+  const chunk = (type: string, length: number, write: (at: number) => void) => {
+    dv.setUint32(o, length);
+    for (let k = 0; k < 4; k++) out[o + 4 + k] = type.charCodeAt(k);
+    write(o + 8);
+    dv.setUint32(o + 8 + length, (crc32(out.subarray(o + 4, o + 8 + length)) ^ 0xffffffff) >>> 0);
+    o += 12 + length;
   };
-  const ihdr = new Uint8Array(13);
-  const hv = new DataView(ihdr.buffer);
-  hv.setUint32(0, width);
-  hv.setUint32(4, height);
-  ihdr.set([8, 6, 0, 0, 0], 8);
-  const parts = [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', z), chunk('IEND', new Uint8Array(0))];
-  const out = new Uint8Array(parts.reduce((a, x) => a + x.length, 0));
-  let o = 0;
-  for (const x of parts) {
-    out.set(x, o);
-    o += x.length;
-  }
+  chunk('IHDR', 13, (at) => {
+    dv.setUint32(at, width);
+    dv.setUint32(at + 4, height);
+    out.set([8, colorType, 0, 0, 0], at + 8);
+  });
+  chunk('IDAT', zLength, (at) => body(out, at));
+  chunk('IEND', 0, () => {});
   return out;
 }
 
-/** 画素を PNG (RGBA・8 ビット) にする */
+/**
+ * 画素を PNG (8 ビット。RGBA、α が全部 255 なら RGB) にする。
+ * 不透明の画像を RGB (色の型 2。PNG の仕様 §11.2.2) にするのは、PDF に入れるとき、展開せずに圧縮のデータのまま埋め込めるようにするため
+ * (pdfLibPatches の embedPngAsIs。RGBA は、展開して RGB と α に分けてから圧縮し直すので、1 億画素で数秒かかる)
+ */
 export async function encodePng(px: Pixels): Promise<Uint8Array> {
-  const raw = pngRaw(px);
+  const rgb = opaque(px.rgba);
+  const raw = pngRaw(px, rgb);
   const z = new Uint8Array(await new Response(new Blob([raw as BlobPart]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
-  return pngFile(px.width, px.height, z);
+  return pngFile(px.width, px.height, z.length, (out, at) => out.set(z, at), rgb ? 2 : 6);
 }
 
 /**
@@ -390,32 +414,56 @@ export async function encodePng(px: Pixels): Promise<Uint8Array> {
  * メタファイルの中の画像のように、同期の処理の中で data: の URI にするときに使う
  */
 export function encodePngStored(px: Pixels): Uint8Array {
-  const raw = pngRaw(px);
-  // zlib: CMF=0x78 FLG=0x01 (CM=8, CINFO=7, FCHECK で 31 の倍数)、無圧縮のブロック (最大 65535 バイト)、Adler-32
-  const nBlocks = Math.max(1, Math.ceil(raw.length / 65535));
-  const z = new Uint8Array(2 + raw.length + nBlocks * 5 + 4);
-  z[0] = 0x78;
-  z[1] = 0x01;
-  let o = 2;
-  for (let k = 0; k < nBlocks; k++) {
-    const s = k * 65535;
-    const len = Math.min(65535, raw.length - s);
-    z[o++] = k === nBlocks - 1 ? 1 : 0;
-    z[o++] = len & 0xff;
-    z[o++] = len >> 8;
-    z[o++] = ~len & 0xff;
-    z[o++] = (~len >> 8) & 0xff;
-    z.set(raw.subarray(s, s + len), o);
-    o += len;
-  }
-  let a = 1;
-  let b = 0;
-  for (const v of raw) {
-    a = (a + v) % 65521;
-    b = (b + a) % 65521;
-  }
-  new DataView(z.buffer).setUint32(o, ((b << 16) | a) >>> 0);
-  return pngFile(px.width, px.height, z);
+  const { width, height, rgba } = px;
+  const row = width * 4 + 1;
+  const rawLength = row * height;
+  // zlib: CMF=0x78 FLG=0x01 (CM=8, CINFO=7, FCHECK で 31 の倍数)、無圧縮のブロック (最大 65535 バイト)、Adler-32。
+  // 走査線は、別の配列に作らずに、ブロックの中へじかに書く (1 億画素の画像で、400MB の写しを 2 度作っていた)
+  const nBlocks = Math.max(1, Math.ceil(rawLength / 65535));
+  return pngFile(width, height, 2 + rawLength + nBlocks * 5 + 4, (z, start) => {
+    z[start] = 0x78;
+    z[start + 1] = 0x01;
+    // 走査線のバイト i (0 から) の、z の中の位置: 頭の 2 バイトと、i の前のブロックの頭 (5 バイトずつ) の後ろ
+    const at = (i: number) => start + 2 + i + (Math.floor(i / 65535) + 1) * 5;
+    for (let k = 0; k < nBlocks; k++) {
+      const len = Math.min(65535, rawLength - k * 65535);
+      const h = start + 2 + k * (65535 + 5);
+      z[h] = k === nBlocks - 1 ? 1 : 0;
+      z[h + 1] = len & 0xff;
+      z[h + 2] = len >> 8;
+      z[h + 3] = ~len & 0xff;
+      z[h + 4] = (~len >> 8) & 0xff;
+    }
+    // 行ごとに、フィルタの種類 0 と RGBA を、ブロックの切れ目で分けて書く
+    let a = 1;
+    let b = 0;
+    const put = (src: Uint8Array, i: number) => {
+      for (let s = 0; s < src.length; ) {
+        const q = i + s;
+        const n = Math.min(src.length - s, 65535 - (q % 65535));
+        z.set(src.subarray(s, s + n), at(q));
+        s += n;
+      }
+    };
+    const zero = new Uint8Array(1);
+    for (let y = 0; y < height; y++) {
+      const line = rgba.subarray(y * width * 4, (y + 1) * width * 4);
+      put(zero, y * row);
+      put(line, y * row + 1);
+      // Adler-32 (RFC 1950 §8.2): 5552 バイトごとに剰余を取る (それまでは 32 ビットの整数に収まる)
+      b = (b + a) % 65521;
+      for (let i = 0, n = line.length; i < n; ) {
+        const end = Math.min(n, i + 5552);
+        for (; i < end; i++) {
+          a += line[i];
+          b += a;
+        }
+        a %= 65521;
+        b %= 65521;
+      }
+    }
+    new DataView(z.buffer, z.byteOffset).setUint32(start + 2 + rawLength + nBlocks * 5, ((b << 16) | a) >>> 0);
+  });
 }
 
 /**
@@ -424,7 +472,7 @@ export function encodePngStored(px: Pixels): Uint8Array {
  */
 export function expandRle(src: Uint8Array, width: number, height: number, bpp: 4 | 8): Uint8Array {
   const stride = Math.floor((bpp * width + 31) / 32) * 4;
-  if (width * height > MAX_PIXELS) throw new RangeError(`画像が大きすぎます (${width}×${height})`);
+  if (width * height > MAX_PIXELS) throw new RangeError(msg(`画像が大きすぎます (${width}×${height})`, `the image is too large (${width}×${height})`));
   const out = new Uint8Array(stride * height);
   let x = 0;
   let y = 0;
@@ -467,4 +515,90 @@ export function expandRle(src: Uint8Array, width: number, height: number, bpp: 4
     }
   }
   return out;
+}
+
+/**
+ * PDF に入れるための、8 ビット・飛び越しでない、α の付いた PNG (色の型 4 灰と α・6 RGBA。PNG の仕様 §11.2.2) の画素。
+ * pdf-lib の embedPng (UPNG で RGBA にしてから、RGB と α に分ける) と同じ RGB と α を返す (灰は R=G=B。α が全部 255 なら alpha は無し)。
+ * pdf-lib の形は、RGBA の配列・RGB と α の配列を別に作り、反復子で数えるので、1 億画素の画像で 10 秒かかっていた。
+ * ここでは、展開 (inflateFast.ts) した走査線から、フィルタ (§9.2〜9.4) を戻しながら RGB と α にじかに書く。
+ * 形の違う PNG・知らないフィルタの種類は undefined (pdf-lib に任せる)。画素のデータが終わりまで展開できなければ 'broken'。
+ * pngWithinLimits を通った PNG に使う
+ */
+export function decodePngForPdf(b: Uint8Array): { width: number; height: number; rgb: Uint8Array; alpha?: Uint8Array } | 'broken' | undefined {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const parts: Uint8Array[] = [];
+  let width = 0;
+  let height = 0;
+  let channels = 0;
+  for (let at = 8; at + 12 <= b.length; ) {
+    const len = dv.getUint32(at);
+    const type = String.fromCharCode(b[at + 4], b[at + 5], b[at + 6], b[at + 7]);
+    if (type === 'IHDR' && len === 13) {
+      width = dv.getUint32(at + 8);
+      height = dv.getUint32(at + 12);
+      // ビットの深さ 8、圧縮 0・フィルタの方式 0・飛び越し 0 (§11.2.2)
+      if (b[at + 16] !== 8 || b[at + 18] || b[at + 19] || b[at + 20]) return undefined;
+      channels = b[at + 17] === 6 ? 4 : b[at + 17] === 4 ? 2 : 0;
+      if (!channels) return undefined;
+    } else if (type === 'IDAT') parts.push(b.subarray(at + 8, Math.min(at + 8 + len, b.length)));
+    else if (type === 'acTL') return undefined; // 動く PNG は pdf-lib が断る (同じ誤りにする)
+    else if (type === 'IEND') break;
+    at += 12 + len;
+  }
+  if (!channels || !width || !height || !parts.length) return undefined;
+  const all = parts.length === 1 ? parts[0] : new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  if (parts.length > 1) parts.reduce((o, p) => (all.set(p, o), o + p.length), 0);
+  const stride = width * channels;
+  const need = (stride + 1) * height;
+  const raw = inflateFast(all, need);
+  if (raw.length < need) return 'broken';
+  // フィルタを戻す (§9.2: a 左・b 上・c 左上。1 画素のバイト数 = channels)。戻した行は raw の中に上書きする
+  const bpp = channels;
+  for (let y = 0; y < height; y++) {
+    const r = y * (stride + 1) + 1;
+    const p = r - (stride + 1);
+    const f = raw[r - 1];
+    if (f === 0) continue;
+    if (f > 4) return undefined;
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? raw[r + i - bpp] : 0;
+      const up = y ? raw[p + i] : 0;
+      let v: number;
+      if (f === 1) v = a;
+      else if (f === 2) v = up;
+      else if (f === 3) v = (a + up) >> 1;
+      else {
+        // Paeth (§9.4)
+        const c = y && i >= bpp ? raw[p + i - bpp] : 0;
+        const pa = Math.abs(up - c);
+        const pb = Math.abs(a - c);
+        const pc = Math.abs(a + up - 2 * c);
+        v = pa <= pb && pa <= pc ? a : pb <= pc ? up : c;
+      }
+      raw[r + i] = (raw[r + i] + v) & 0xff;
+    }
+  }
+  const rgb = new Uint8Array(width * height * 3);
+  const alpha = new Uint8Array(width * height);
+  let translucent = false;
+  for (let y = 0, q = 0, k = 0; y < height; y++) {
+    const r = y * (stride + 1) + 1;
+    if (channels === 4) {
+      for (let i = r, end = r + stride; i < end; i += 4, q += 3, k++) {
+        rgb[q] = raw[i];
+        rgb[q + 1] = raw[i + 1];
+        rgb[q + 2] = raw[i + 2];
+        alpha[k] = raw[i + 3];
+        if (raw[i + 3] !== 255) translucent = true;
+      }
+    } else {
+      for (let i = r, end = r + stride; i < end; i += 2, q += 3, k++) {
+        rgb[q] = rgb[q + 1] = rgb[q + 2] = raw[i];
+        alpha[k] = raw[i + 1];
+        if (raw[i + 1] !== 255) translucent = true;
+      }
+    }
+  }
+  return translucent ? { width, height, rgb, alpha } : { width, height, rgb };
 }

@@ -153,6 +153,23 @@ describe('ヘブライ文字の点の順 (書体に渡す順。src/hebrewMarks.t
     expect(reorderHebrewMarks('שלום abc')).toBe('שלום abc');
     expect(reorderHebrewMarks(`ב${SHEVA}${DAGESH}`).normalize('NFC')).toBe(`ב${SHEVA}${DAGESH}`.normalize('NFC'));
   });
+  it('表に無い字 (上下の点・マカフ・CGJ など) で並びを区切り、その字を越えて点を動かさない', async () => {
+    const { reorderHebrewMarks } = await import('../src/hebrewMarks');
+    const PATAH = 'ַ';
+    const METEG = 'ֽ';
+    const MAQAF = '־';
+    const LOWER_PUNCTUM = 'ׅ';
+    const CGJ = '͏';
+    // 下の点 (ccc 220) の前と後ろを、それぞれ別に並べ替える
+    const punctum = `ש${QAMATS}${LOWER_PUNCTUM}${DAGESH}${SHIN_DOT}`;
+    expect(reorderHebrewMarks(punctum)).toBe(`ש${QAMATS}${LOWER_PUNCTUM}${SHIN_DOT}${DAGESH}`);
+    expect(reorderHebrewMarks(punctum).normalize('NFC')).toBe(punctum.normalize('NFC'));
+    // マカフ (ccc 0) は動かさない
+    expect(reorderHebrewMarks(`ב${SHEVA}${MAQAF}${DAGESH}${SHIN_DOT}`)).toBe(`ב${SHEVA}${MAQAF}${SHIN_DOT}${DAGESH}`);
+    // メテグを右に置く <meteg, CGJ, 母音> (Unicode §9.1) はそのまま。CGJ の無い並びは「母音 + メテグ」にする
+    expect(reorderHebrewMarks(`ב${METEG}${CGJ}${PATAH}`)).toBe(`ב${METEG}${CGJ}${PATAH}`);
+    expect(reorderHebrewMarks(`ב${METEG}${PATAH}`)).toBe(`ב${PATAH}${METEG}`);
+  });
   it('Tinos・Arimo: 正準順 (子音・母音・ダゲシュ) でも、ダゲシュ・シンの点が合成済みの字形になる。組版の字は元のまま', async () => {
     const f = new FontManager();
     await f.registerBuffer('Tinos', 400, await defaultFontBuffer('Tinos-Regular.ttf'), false);

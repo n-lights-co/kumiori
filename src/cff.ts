@@ -9,6 +9,7 @@
  * 字の番号を変えないので、部分書体でも、元の書体と同じ CID・GID で字を選べる。
  */
 import { CFF_STANDARD_STRINGS, STANDARD_ENCODING } from './psEncodings';
+import { msg } from './messages';
 
 /** sfnt の表を取り出す (無ければ undefined) */
 export function cffTable(otf: Uint8Array): Uint8Array | undefined {
@@ -41,14 +42,14 @@ export interface Index {
  * lenient なら (EPS の中の壊れた書体でも読めるところまで読む) 検査をせず、足りないバイトは 0 とみなす
  */
 export function readIndex(b: Uint8Array, at: number, lenient = false): Index {
-  if (!lenient && at + 2 > b.length) throw new Error('CFF: INDEX が途中で切れています');
+  if (!lenient && at + 2 > b.length) throw new Error(msg('CFF: INDEX が途中で切れています', 'CFF: INDEX is truncated'));
   const count = ((b[at] ?? 0) << 8) | (b[at + 1] ?? 0);
   if (count === 0) return { start: at, end: at + 2, items: [] };
   const offSize = b[at + 2] ?? 0;
-  if (!lenient && !(offSize >= 1 && offSize <= 4)) throw new Error('CFF: INDEX の offSize が読めません');
+  if (!lenient && !(offSize >= 1 && offSize <= 4)) throw new Error(msg('CFF: INDEX の offSize が読めません', 'CFF: cannot read the offSize of INDEX'));
   const offAt = at + 3;
   // 位置の表が入りきらない (読むと undefined → NaN になり、下の end の検査を通ってしまう) 壊れた INDEX
-  if (!lenient && offAt + (count + 1) * offSize > b.length) throw new Error('CFF: INDEX が途中で切れています');
+  if (!lenient && offAt + (count + 1) * offSize > b.length) throw new Error(msg('CFF: INDEX が途中で切れています', 'CFF: INDEX is truncated'));
   const dataBase = offAt + (count + 1) * offSize - 1;
   const off = (k: number) => {
     let x = 0;
@@ -58,7 +59,7 @@ export function readIndex(b: Uint8Array, at: number, lenient = false): Index {
   const items: Array<[number, number]> = [];
   for (let k = 0; k < count; k++) items.push([dataBase + off(k), dataBase + off(k + 1)]);
   const end = dataBase + off(count);
-  if (!lenient && (!Number.isFinite(end) || end > b.length)) throw new Error('CFF: INDEX が途中で切れています');
+  if (!lenient && (!Number.isFinite(end) || end > b.length)) throw new Error(msg('CFF: INDEX が途中で切れています', 'CFF: INDEX is truncated'));
   return { start: at, end, items };
 }
 
@@ -146,7 +147,7 @@ export function readDict(b: Uint8Array, start: number, end: number, lenient = fa
       nums.push(-(b0 - 251) * 256 - b[p + 1] - 108);
       p += 2;
     } else if (lenient) p++;
-    else throw new Error(`CFF: DICT の値 ${b0} が読めません`);
+    else throw new Error(msg(`CFF: DICT の値 ${b0} が読めません`, `CFF: cannot read the DICT value ${b0}`));
   }
   return out;
 }
@@ -179,13 +180,13 @@ function readCharset(b: Uint8Array, at: number, nGlyphs: number): { len: number;
     for (; g < nGlyphs; g++, p += 2) ids[g] = (b[p] << 8) | b[p + 1];
   } else if (fmt === 1 || fmt === 2) {
     while (g < nGlyphs) {
-      if (p + (fmt === 1 ? 3 : 4) > b.length) throw new Error('CFF: charset が途中で切れています');
+      if (p + (fmt === 1 ? 3 : 4) > b.length) throw new Error(msg('CFF: charset が途中で切れています', 'CFF: charset is truncated'));
       const first = (b[p] << 8) | b[p + 1];
       const nLeft = fmt === 1 ? b[p + 2] : (b[p + 2] << 8) | b[p + 3];
       p += fmt === 1 ? 3 : 4;
       for (let k = 0; k <= nLeft && g < nGlyphs; k++) ids[g++] = first + k;
     }
-  } else throw new Error(`CFF: charset の形 ${fmt} が読めません`);
+  } else throw new Error(msg(`CFF: charset の形 ${fmt} が読めません`, `CFF: cannot read charset format ${fmt}`));
   return { len: p - at, ids };
 }
 
@@ -194,14 +195,14 @@ function fdSelectLength(b: Uint8Array, at: number, nGlyphs: number): number {
   const fmt = b[at];
   if (fmt === 0) return 1 + nGlyphs;
   if (fmt === 3) return 1 + 2 + 3 * ((b[at + 1] << 8) | b[at + 2]) + 2;
-  throw new Error(`CFF: FDSelect の形 ${fmt} が読めません`);
+  throw new Error(msg(`CFF: FDSelect の形 ${fmt} が読めません`, `CFF: cannot read FDSelect format ${fmt}`));
 }
 
 /** Encoding の長さ (バイト。名前の書体の独自の Encoding) */
 function encodingLength(b: Uint8Array, at: number): number {
   const fmt = b[at] & 0x7f;
   let len = fmt === 0 ? 2 + b[at + 1] : fmt === 1 ? 2 + 2 * b[at + 1] : NaN;
-  if (Number.isNaN(len)) throw new Error(`CFF: Encoding の形 ${fmt} が読めません`);
+  if (Number.isNaN(len)) throw new Error(msg(`CFF: Encoding の形 ${fmt} が読めません`, `CFF: cannot read Encoding format ${fmt}`));
   if (b[at] & 0x80) len += 1 + 3 * b[at + len];
   return len;
 }
@@ -217,16 +218,16 @@ interface Parsed {
 }
 
 function parse(b: Uint8Array): Parsed {
-  if (b.length < 4 || b[0] !== 1) throw new Error('CFF: 版 1 の CFF ではありません');
+  if (b.length < 4 || b[0] !== 1) throw new Error(msg('CFF: 版 1 の CFF ではありません', 'CFF: not a version 1 CFF'));
   const hdrSize = b[2];
   const name = readIndex(b, hdrSize);
   const topIdx = readIndex(b, name.end);
-  if (name.items.length !== 1 || topIdx.items.length !== 1) throw new Error('CFF: 書体が 1 つではありません');
+  if (name.items.length !== 1 || topIdx.items.length !== 1) throw new Error(msg('CFF: 書体が 1 つではありません', 'CFF: the font set does not hold exactly one font'));
   const top = readDict(b, topIdx.items[0][0], topIdx.items[0][1]);
   const strings = readIndex(b, topIdx.end);
   const gsubrs = readIndex(b, strings.end);
   const cs = get(top, 17);
-  if (!cs) throw new Error('CFF: CharStrings がありません');
+  if (!cs) throw new Error(msg('CFF: CharStrings がありません', 'CFF: no CharStrings'));
   const charStrings = readIndex(b, cs[0]);
   return { hdrSize, name, top, strings, gsubrs, charStrings, cidKeyed: !!get(top, 1230) };
 }
@@ -315,8 +316,8 @@ function glyphNames(p: Parsed, cff: Uint8Array): Map<string, number> {
  */
 export function subsetCff(cff: Uint8Array, keep: Set<number>): Uint8Array {
   const p = parse(cff);
-  if ((get(p.top, 1206)?.[0] ?? 2) !== 2) throw new Error('CFF: Type 2 の字形ではありません');
-  if (get(p.top, 1220)) throw new Error('CFF: SyntheticBase の書体は扱いません');
+  if ((get(p.top, 1206)?.[0] ?? 2) !== 2) throw new Error(msg('CFF: Type 2 の字形ではありません', 'CFF: not Type 2 charstrings'));
+  if (get(p.top, 1220)) throw new Error(msg('CFF: SyntheticBase の書体は扱いません', 'CFF: SyntheticBase fonts are not supported'));
   const n = p.charStrings.items.length;
   const raw = (a: number, z: number) => cff.subarray(a, z);
   const keepAll = new Set(keep);
@@ -427,6 +428,6 @@ export function subsetCff(cff: Uint8Array, keep: Set<number>): Uint8Array {
     out.set(x, q);
     q += x.length;
   }
-  if (q !== at) throw new Error('CFF: 部分書体の長さが合いません');
+  if (q !== at) throw new Error(msg('CFF: 部分書体の長さが合いません', 'CFF: the length of the subset font does not match'));
   return out;
 }

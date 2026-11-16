@@ -509,7 +509,7 @@ export class FontManager {
     let lastErr: unknown;
     for (const url of spec.urls) {
       try {
-        onProgress?.(`フォント取得: ${spec.family} ${weight} ← ${url}`);
+        onProgress?.(msg(`フォント取得: ${spec.family} ${weight} ← ${url}`, `fetching font: ${spec.family} ${weight} ← ${url}`));
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const buf = await res.arrayBuffer();
@@ -517,7 +517,7 @@ export class FontManager {
         return buf;
       } catch (e) {
         lastErr = e;
-        onProgress?.(`  失敗 (${String(e)}) → 次の候補へ`);
+        onProgress?.(msg(`  失敗 (${String(e)}) → 次の候補へ`, `  failed (${String(e)}) → trying the next one`));
       }
     }
     throw new Error(msg(`フォント ${spec.family}@${weight} を取得できませんでした: ${String(lastErr)}`, `could not fetch the font ${spec.family}@${weight}: ${String(lastErr)}`));

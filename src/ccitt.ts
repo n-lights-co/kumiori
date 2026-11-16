@@ -270,7 +270,7 @@ export const ccittTwoDimensional = (o: Pick<CcittOptions, 'compression' | 'twoDi
 /**
  * 幅 width・rows 行の CCITT の画像を、dataBytes バイトの符号から読んでよいか (imageLimits.ts の CCITT_1D_PIXELS_PER_BYTE・CCITT_2D_PIXELS_PER_BYTE・ccittRowLimit)。
  * 2 次元の符号なら、行の数はデータのビット数まで (1 行は 1 ビット以上)。画素の数は、1 次元・2 次元の符号の密度の上限と MAX_PIXELS まで
- * (寸法だけを大きくした 138 バイトの T.6 の TIFF で、1 億画素の配列を作り、11 秒・2.1GB を使っていた。IMG-19)
+ * (寸法だけを大きくした 138 バイトの T.6 の TIFF で、1 億画素の配列を作り、11 秒・2.1GB を使っていた)
  */
 export function ccittFits(width: number, rows: number, dataBytes: number, twoDimensional: boolean): boolean {
   if (twoDimensional && rows > ccittRowLimit(dataBytes)) return false;

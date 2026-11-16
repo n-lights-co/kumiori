@@ -620,6 +620,25 @@ export function patchLookupBudget(fk: unknown) {
 const layoutDisabled = new WeakSet<object>();
 
 /**
+ * fn を、書体 fk の整形の表 (GSUB・GPOS・morx・kern) を使わない形で呼ぶ (呼び出しの間だけ。終われば元に戻す)。
+ * disableLayoutTables と同じ形 (字は cmap の字形のまま、送りは hmtx のまま) を、1 回の整形にだけ当てる。
+ * 書体の整形の表を、特定の字の並びのときだけ読めない (壊れた参照の先が、その字の並びで初めて引かれる) 書体に使う
+ */
+export function withoutLayoutTables<T>(fk: unknown, fn: () => T): T {
+  const le = (fk as { _layoutEngine?: { engine?: unknown; kernProcessor?: unknown } } | null)?._layoutEngine;
+  if (!le) return fn();
+  const { engine, kernProcessor } = le;
+  le.engine = null;
+  le.kernProcessor = { process() {} };
+  try {
+    return fn();
+  } finally {
+    le.engine = engine;
+    le.kernProcessor = kernProcessor;
+  }
+}
+
+/**
  * fontkit の書体 fk の整形の表 (GSUB・GPOS・morx・kern) を、以後使わないようにする (字は cmap の字形のまま、送りは hmtx のまま)。
  * 整形の途中で例外になる書体 (参照の先が無い表・呼び出しの多すぎる Lookup) を、文書の全体の失敗にしないために使う。
  * いま止めたら true (既に止めてあれば false)
@@ -637,5 +656,62 @@ export function disableLayoutTables(fk: unknown): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ---- 字形のデータの読み (組むときに確かめて知らせる) ----
+
+/** 書体ごとの、確かめた字形の番号 */
+const glyphChecked = new WeakMap<object, Set<number>>();
+/** 1 回の呼び出しで確かめる字形の数の上限 (複合の字形の部品も数える。部品の入れ子は checkFontFile が 64 段までにしてある) */
+const GLYPH_CHECKS_PER_CALL = 256;
+
+type GlyphDataFont = {
+  getGlyph?(id: number): { _decode?(): { numberOfContours?: number; components?: Array<{ glyphID: number; pos: number }> } | null } | undefined;
+  loca?: { offsets?: ArrayLike<number> };
+};
+
+/**
+ * 組んだ字の字形 ids (と、複合の字形の部品) のデータを、PDF の部分書体に書くとき (pdfLibPatches.ts の addGlyphOrEmpty) と同じように読んでみる。
+ * 読めない字形があれば、書体ごとに 1 度だけ知らせる (その字形は、部分書体では輪郭の無い字形になり、字が描かれない)。
+ * 登録のとき (probeFont) に全部の字形を読むと、正当な書体の登録が重くなるので、使った字形だけを、使うときに確かめる。
+ * TrueType の輪郭 (glyf) の字形だけ (_decode を持つ。CFF の字形の読みの上限は patchFontkitCffBudget)。
+ * 複合の字形の部品の番号は、字形のデータの中に書き直すので、部品の記録 (OpenType の 'glyf' の表の Composite Glyph Description) が、
+ * loca で決まる字形の長さに収まること
+ */
+export function checkGlyphData(fk: unknown, ids: readonly number[]): void {
+  const font = fk as GlyphDataFont | null;
+  if (!font || typeof font.getGlyph !== 'function') return;
+  let seen = glyphChecked.get(font);
+  if (!seen) glyphChecked.set(font, (seen = new Set()));
+  const todo = [...ids];
+  for (let n = 0; todo.length && n < GLYPH_CHECKS_PER_CALL; ) {
+    const id = todo.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    n++;
+    let why: string | undefined;
+    try {
+      const g = font.getGlyph(id);
+      if (typeof g?._decode !== 'function') continue;
+      const d = g._decode();
+      if (d && (d.numberOfContours ?? 0) < 0) {
+        const offs = font.loca?.offsets;
+        const len = offs && id + 1 < offs.length ? offs[id + 1] - offs[id] : Infinity;
+        for (const c of d.components ?? []) {
+          if (!(c.pos + 2 <= len)) {
+            why = msg('複合の字形の部品の記録が、字形のデータの外にある', 'a component record of the composite glyph lies outside the glyph data');
+            break;
+          }
+          todo.push(c.glyphID);
+        }
+      }
+    } catch (e) {
+      why = e instanceof Error ? e.message : String(e);
+    }
+    if (why !== undefined) {
+      const reason = why;
+      fontNotice(font, 'glyph-data', () => msg(`字形 ${id} のデータが読めません (${reason})。PDF では、読めない字形を描きません`, `cannot read the data of glyph ${id} (${reason}); unreadable glyphs are not drawn in the PDF`));
+    }
   }
 }

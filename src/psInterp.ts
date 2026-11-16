@@ -8,6 +8,7 @@
  */
 import { FilterError, UnsupportedFilter, filterSource, type ByteSource } from './psFilters';
 import { PS_FILTER_MAX_BYTES, PS_MAX_MEMORY_BYTES, PS_MAX_VM_BYTES } from './imageLimits';
+import { msg } from './messages';
 
 // ───────────────────────── オブジェクト (PLRM §3.3) ─────────────────────────
 
@@ -692,7 +693,7 @@ export class Interp {
   operandCounts(counts: Record<string, number>) {
     for (const [nm, n] of Object.entries(counts)) {
       const op = this.systemdict.get(nm);
-      if (!op || op.t !== 'operator') throw new Error(`演算子 ${nm} が定義されていません (operandCounts)`);
+      if (!op || op.t !== 'operator') throw new Error(msg(`演算子 ${nm} が定義されていません (operandCounts)`, `operator ${nm} is not defined (operandCounts)`));
       op.n = n;
     }
   }

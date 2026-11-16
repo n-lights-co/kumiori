@@ -10,6 +10,7 @@
 import type { Pixels } from './pixels';
 import { VP8L_PIXELS_PER_BYTE, pixelBudget } from './imageLimits';
 import { decodeVp8 } from './vp8';
+import { msg } from './messages';
 
 class Bits {
   private pos = 0;
@@ -19,7 +20,7 @@ class Bits {
     let v = 0;
     for (let i = 0; i < n; i++, this.pos++) {
       const byte = this.b[this.pos >> 3];
-      if (byte === undefined) throw new Error('webp: データが足りない');
+      if (byte === undefined) throw new Error(msg('webp: データが足りない', 'webp: not enough data'));
       v += ((byte >> (this.pos & 7)) & 1) * 2 ** i;
     }
     return v;
@@ -42,7 +43,7 @@ class Huffman {
         last = s;
       }
     }
-    if (n === 0) throw new Error('webp: 空の符号');
+    if (n === 0) throw new Error(msg('webp: 空の符号', 'webp: empty code'));
     if (n === 1) this.single = last;
     const offs = new Int32Array(16);
     for (let l = 1; l < 16; l++) offs[l] = offs[l - 1] + this.count[l - 1];
@@ -62,7 +63,7 @@ class Huffman {
       first = (first + c) << 1;
       code <<= 1;
     }
-    throw new Error('webp: 読めない符号');
+    throw new Error(msg('webp: 読めない符号', 'webp: unreadable code'));
   }
 }
 
@@ -97,7 +98,7 @@ function readCode(br: Bits, size: number): Huffman {
     } else {
       const [extra, base, v] = c === 16 ? [2, 3, prev] : c === 17 ? [3, 3, 0] : [7, 11, 0];
       const r = base + br.read(extra);
-      if (s + r > size) throw new Error('webp: 符号の長さが多すぎる');
+      if (s + r > size) throw new Error(msg('webp: 符号の長さが多すぎる', 'webp: too many code lengths'));
       lengths.fill(v, s, s + r);
       s += r;
     }
@@ -130,7 +131,7 @@ function decodeImage(br: Bits, xsize0: number, ysize: number, top: boolean): Uin
   if (top) {
     while (br.read(1)) {
       const type = br.read(2);
-      if (transforms.some((t) => t.type === type)) throw new Error('webp: 同じ変換が 2 度');
+      if (transforms.some((t) => t.type === type)) throw new Error(msg('webp: 同じ変換が 2 度', 'webp: the same transform twice'));
       if (type === 0 || type === 1) {
         const bits = br.read(3) + 2;
         transforms.push({ type, xsize, bits, data: decodeImage(br, sub(xsize, bits), sub(ysize, bits), false) });
@@ -148,7 +149,7 @@ function decodeImage(br: Bits, xsize0: number, ysize: number, top: boolean): Uin
   }
   const useCache = br.read(1);
   const cacheBits = useCache ? br.read(4) : 0;
-  if (useCache && (cacheBits < 1 || cacheBits > 11)) throw new Error('webp: 色のキャッシュの大きさ');
+  if (useCache && (cacheBits < 1 || cacheBits > 11)) throw new Error(msg('webp: 色のキャッシュの大きさ', 'webp: invalid color cache size'));
   let metaBits = 0;
   let meta: Uint32Array | undefined;
   if (top && br.read(1)) {
@@ -192,7 +193,7 @@ function decodeImage(br: Bits, xsize0: number, ysize: number, top: boolean): Uin
         dist = (v >> 4) * xsize + (8 - (v & 0xf));
         if (dist < 1) dist = 1;
       }
-      if (dist > pos || pos + len > out.length) throw new Error('webp: 後方参照が範囲の外');
+      if (dist > pos || pos + len > out.length) throw new Error(msg('webp: 後方参照が範囲の外', 'webp: back reference out of range'));
       for (let i = 0; i < len; i++, pos++) out[pos] = out[pos - dist];
     } else {
       flush(pos);
@@ -395,7 +396,7 @@ function decodeStill(chunks: Map<string, Uint8Array>): Pixels | undefined {
     const width = br.read(14) + 1;
     const height = br.read(14) + 1;
     // 頭に書かれた大きさで画素の配列を作るので、MAX_PIXELS と、チャンクの大きさ (imageLimits.ts の VP8L_PIXELS_PER_BYTE) で止める
-    // (38 バイトのファイルで 1 億画素の配列を作り、12.7 秒・2.1GB を使っていた。IMG-19)
+    // (38 バイトのファイルで 1 億画素の配列を作り、12.7 秒・2.1GB を使っていた)
     if (width * height > pixelBudget(vp8l.length, VP8L_PIXELS_PER_BYTE)) return undefined;
     br.read(1); // 透明を使うか (画素の値のまま使う)
     if (br.read(3) !== 0) return undefined;

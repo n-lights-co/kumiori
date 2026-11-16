@@ -9,6 +9,7 @@ import { DEVICE_GRAY, DEVICE_RGB, DEVICE_CMYK, clamp01, type ColorSpace, type RG
 import { popMatrix } from './psOpsMatrix';
 import type { ByteSource } from './psFilters';
 import { PS_IMAGE_MAX_PIXELS, PS_TOTAL_IMAGE_PIXELS } from './imageLimits';
+import { msg } from './messages';
 
 /** 画像の演算子を登録する */
 export function installImageOperators(I: Interp, G: Graphics) {
@@ -186,7 +187,7 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
     G.emit({ k: 'image', width: w, height: h, jpeg: jp(), mat, interpolate: s.interpolate, clip: G.g.clip });
     return;
   }
-  if (jp) I.warn('JPEG の画像 (CMYK など)');
+  if (jp) I.warn(msg('JPEG の画像 (CMYK など)', 'JPEG images (CMYK and others)'));
   // 画素 (RGBA) は、メモリの合計の勘定に積む (PS_MAX_MEMORY_BYTES。JPEG のまま持つ画像は、読みためた分を VM に積んである)
   I.memAlloc(w * h * 4);
   const rgba = new Uint8Array(w * h * 4);
@@ -240,6 +241,30 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   const ratio = em && il === 2 ? Math.max(1, Math.round(h / em.h)) : 1;
   const mratio = em && il === 2 ? Math.max(1, Math.round(em.h / h)) : 1;
   let curMask: Uint8Array | undefined;
+  // よくある形 (DeviceGray・DeviceRGB の 1 つの元、マスク・MaskColor 無し) は、成分の値ごとの結果 (下の一般の形と同じ式の
+  // Math.round(clamp01(Decode で写した値) * 255)) を先に表にして引く。画素ごとに配列を作る一般の形は、2,500 万画素で 1 秒あまりかかった
+  if ((fastGray || fastRGB) && !s.multi && !il && !em && !s.maskColor) {
+    const luts = Array.from({ length: ncomp }, (_, k) => {
+      const t = new Uint8Array(maxv + 1);
+      for (let v = 0; v <= maxv; v++) t[v] = Math.round(clamp01(dec[k * 2] + (v * (dec[k * 2 + 1] - dec[k * 2])) / maxv) * 255);
+      return t;
+    });
+    const [l0, l1, l2] = luts;
+    for (let y = 0; y < h; y++) {
+      if (!readRow(readers[0], compsInRow, single)) break;
+      for (let x = 0, o = y * w * 4; x < w; x++, o += 4) {
+        if (fastGray) rgba[o] = rgba[o + 1] = rgba[o + 2] = l0[sample(single, x)];
+        else {
+          rgba[o] = l0[sample(single, x * 3)];
+          rgba[o + 1] = l1[sample(single, x * 3 + 1)];
+          rgba[o + 2] = l2[sample(single, x * 3 + 2)];
+        }
+        rgba[o + 3] = 255;
+      }
+    }
+    G.emit({ k: 'image', width: w, height: h, rgba, mat, interpolate: s.interpolate, clip: G.g.clip });
+    return;
+  }
   for (let y = 0; y < h; y++) {
     if (em && il === 2 && maskRowBuf) {
       // 行ごとの組: マスクの行のあとに画像の行 (§4.10.6 interleave 2)
