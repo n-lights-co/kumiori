@@ -185,20 +185,22 @@ describe('HTML: 和文組版と段組 (第 3 段階)', () => {
 });
 
 describe('HTML: 印刷の色・target-counter()・脚注・アンテナハウスの拡張', () => {
-  it('印刷の色 (device-cmyk・rgb-icc)、読めない色は前の宣言を使う、@font-face', () => {
+  it('印刷の色 (device-cmyk・rgb-icc)、@font-face', () => {
     expect(printColor('device-cmyk(0 0.5 1 0)')).toBe('cmyk(0,0.5,1,0)');
     expect(printColor('rgb-icc(255, 0, 0, #CMYK, 0, 1, 1, 0)')).toBe('cmyk(0,1,1,0)');
     expect(printColor('rgb-icc(#Grayscale, 0.25)')).toBe('gray(0.25)');
     expect(printColor("rgb-icc(0, 61, 25, #Separation, 'PANTONE 627 PC', 0.15)")).toBe('#d9e2dd');
-    // 前に同じ指定がある読めない色は、その指定を使わず、特色の値が渡されたときのために -kumiori-print- として残す
+    // 同じ性質の宣言は、書いた順のまま残す (勝ち負けはカスケードが決める。後の宣言が勝つ。CSS Cascade 4 §6.4。PKG-21 (5))
     expect(splitDecls('background-color: rgba(0, 61, 25, 0.15); background-color: rgb-icc(0, 61, 25, #Separation, "P", 0.15)')).toEqual([
       ['background-color', 'rgba(0, 61, 25, 0.15)'],
-      ['-kumiori-print-background-color', 'rgb-icc(0, 61, 25, #Separation, "P", 0.15)'],
+      ['background-color', 'rgb-icc(0, 61, 25, #Separation, "P", 0.15)'],
     ]);
     // 特色の値が渡されたときは、特色 (spot) にする。名前が無い・値の無い名前は、これまでどおり RGB
     const spots = { 'Ink A': [0.2, 0.4, 0.6, 0.8] as [number, number, number, number] };
-    expect(printColor("rgb-icc(0, 61, 25, #Separation, 'Ink A', 0.15)", spots)).toBe('spot(0.15,0.2,0.4,0.6,0.8,Ink%20A)');
-    expect(printColor("rgb-icc(0, 61, 25, #Separation, 'Ink A')", spots)).toBe('spot(1,0.2,0.4,0.6,0.8,Ink%20A)');
+    // 名前の後ろの #rrggbb は代わりの RGB (特色の値が無いときの色と同じ。立体の罫線の明暗の色に使う。CSS-25)
+    expect(printColor("rgb-icc(0, 61, 25, #Separation, 'Ink A', 0.15)", spots)).toBe('spot(0.15,0.2,0.4,0.6,0.8,Ink%20A,#d9e2dd)');
+    expect(printColor("rgb-icc(0, 61, 25, #Separation, 'Ink A')", spots)).toBe('spot(1,0.2,0.4,0.6,0.8,Ink%20A,#003d19)');
+    expect(printColor("rgb-icc(#Separation, 'Ink A', 0.5)", spots)).toBe('spot(0.5,0.2,0.4,0.6,0.8,Ink%20A)');
     expect(printColor("rgb-icc(0, 61, 25, #Separation, 'Ink B', 0.15)", spots)).toBe('#d9e2dd');
     const { fontFaces } = parseCss(`@font-face { font-family: "my sans"; src: url(fonts/My-Bold.otf) format("opentype"); font-weight: bold } @font-face { font-family: x; src: url('x-It.otf'); font-style: italic }`);
     expect(fontFaces).toEqual([
@@ -224,10 +226,13 @@ describe('HTML: 印刷の色・target-counter()・脚注・アンテナハウス
     );
     const [ref, div] = r.document.sequences[0].flow.children as LBlock[];
     expect(texts(ref.children).join('')).toBe('第2章「二」');
-    const h2 = (div.children as LBlock[])[1];
-    // ::before (display: block) はブロック、target-text(…, before) にも使える
-    expect((h2.children[0] as LBlock).type).toBe('block');
-    expect(texts(h2.children).join('')).toBe('Chapter 2二');
+    // ::before (display: block) はブロック、target-text(…, before) にも使える。このテストのスタイルでは h2 は行内の要素なので、行内の箱を
+    // ::before のブロックの前後で分ける (CSS 2.1 §9.2.1.1。HTM-88): 2 つ目の h2 は、id を持つ無名のブロックで包んだ ::before と、残りの行内の箱
+    const kids = div.children as LBlock[];
+    expect(kids.map((k) => k.type)).toEqual(['block', 'inline', 'block', 'inline']);
+    expect(kids[2].id).toBe('c2');
+    expect((kids[2].children[0] as LBlock).type).toBe('block');
+    expect(texts(kids.slice(2)).join('')).toBe('Chapter 2二');
   });
 
   it('<object> は画像があればその画像、image-resolution (-ah-image-resolution) で本来の大きさを決める', () => {
@@ -403,8 +408,9 @@ describe('HTML: WeasyPrint の報告書の見本との比較で足したもの',
     const cm = 72 / 2.54;
     const box = rest[0];
     expect([Math.round(box.width!), Math.round(box.height!), Math.round(box.left!), box.backgroundColor]).toEqual([Math.round(cm), Math.round(cm), Math.round((20 * 72) / 25.4), '#808080']);
-    // 縦の揃えは中央: 余白 20mm の中に 1cm の箱
-    expect(box.top).toBeCloseTo(((20 * 72) / 25.4 - cm) / 2, 1);
+    // 余白 20mm の中に 1cm の箱: 決まりすぎなので margin-top を auto とし、本文の側 (下端) に寄せる (CSS Page 3 §5.3.3。HTM-28 の K。
+    // 以前は中央に置いていた)
+    expect(box.top).toBeCloseTo((20 * 72) / 25.4 - cm, 1);
   });
 
   it('記号の無いリストはブロックの並び (li の枠・余白が付く)、大きさのある回り込みの ::before は箱の回り込み', () => {

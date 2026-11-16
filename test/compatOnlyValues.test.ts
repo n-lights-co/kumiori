@@ -125,8 +125,9 @@ describe('PKG-20 HTML: width の gr・text-align の inside / outside・色の c
     expect(d.unsupported[`border-color: cmyk()${COMPAT}`]).toBe(1);
     expect(d.unsupported[`background-color: rgb-icc()${COMPAT}`]).toBe(1);
     const a = html(body, css, true);
-    expect(a.json.match(/cmyk\([^)]*\)/g)).toEqual(['cmyk(0,1,1,0)', 'cmyk(0,1,1,0)', 'cmyk(1,0,0,0)', 'cmyk(1,0,0,0)', 'cmyk(1,0,0,0)', 'cmyk(1,0,0,0)']);
-    // (.r は、前の宣言の青のまま: 前に同じ性質の読める宣言があるときの rgb-icc() は、特色の値が渡されたときだけ使う)
+    // .r も CMYK: --style ah では rgb-icc() も色として読むので、後の宣言が勝つ (CSS Cascade 4 §6.4。PKG-21 (5))
+    expect(a.json.match(/cmyk\([^)]*\)/g)).toEqual(['cmyk(0,1,1,0)', 'cmyk(0,1,1,0)', 'cmyk(0,1,1,0)', 'cmyk(1,0,0,0)', 'cmyk(1,0,0,0)', 'cmyk(1,0,0,0)', 'cmyk(1,0,0,0)']);
+    expect(a.json).not.toContain('"color":"#0000ff"');
     expect(a.json).toContain('gray(0.5)');
     expect(Object.keys(a.unsupported).filter((k) => /cmyk|rgb-icc/.test(k))).toEqual([]);
   });
@@ -163,7 +164,7 @@ describe('PKG-20 HTML: width の gr・text-align の inside / outside・色の c
 
 describe('PKG-20 拡張の値の見分け (compatOnlyValue) と @supports', () => {
   it('compatOnlyValue: 接頭辞の無い名前に書いた拡張の値だけ', () => {
-    for (const [p, v] of [['float', 'top'], ['float', 'multicol top'], ['float', 'Outside'], ['width', '2.5gr'], ['text-align', 'inside'], ['color', 'cmyk(0,0,0,1)'], ['background', 'rgb-icc(#CMYK,0,0,0,1)'], ['border-left-color', 'cmyk(1,0,0,0)'], ['-kumiori-print-color', "rgb-icc(0,0,0,#Separation,'A')"]])
+    for (const [p, v] of [['float', 'top'], ['float', 'multicol top'], ['float', 'Outside'], ['width', '2.5gr'], ['text-align', 'inside'], ['color', 'cmyk(0,0,0,1)'], ['background', 'rgb-icc(#CMYK,0,0,0,1)'], ['border-left-color', 'cmyk(1,0,0,0)'], ['color', "rgb-icc(0,0,0,#Separation,'A')"]])
       expect(compatOnlyValue(p, v), `${p}: ${v}`).toBeTruthy();
     for (const [p, v] of [['float', 'left'], ['float', 'inline-start'], ['float', 'footnote'], ['float', 'zzz'], ['width', '2em'], ['text-align', 'justify'], ['color', 'device-cmyk(0 0 0 1)'], ['-ah-float', 'top'], ['-ah-text-align', 'inside'], ['content', '"cmyk(0,0,0,1)"']])
       expect(compatOnlyValue(p, v), `${p}: ${v}`).toBeUndefined();

@@ -190,7 +190,7 @@ describe('互換の設定 (compat.ts: 画面と API で同じ)', () => {
     expect(isAhCompat('html', { style: 'weasyprint' })).toBe(false);
   });
   it('組版・PDF・カスケード・読み込みの設定', () => {
-    expect(compatLayoutOptions(true)).toEqual({ kernAh: true });
+    expect(compatLayoutOptions(true)).toEqual({ kernAh: true, lineFitToleranceAh: true, fixedColumnBordersAh: true });
     expect(compatLayoutOptions(false)).toEqual({});
     expect(compatPdfOptions('fo', true)).toEqual({ svgFontUniqueNames: true, svgRootOverflowVisible: true, svgMarkerOverflowVisible: true });
     expect(compatPdfOptions('html', true)).toEqual({ svgFontUniqueNames: true, svgRootOverflowVisible: true });

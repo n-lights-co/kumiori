@@ -57,6 +57,7 @@ import type {
   LTable,
   LTableCell,
   LTableColumn,
+  LFlexItemColumn,
   LTableRow,
   PageMaster,
   TextDecorationStyle,
@@ -85,8 +86,106 @@ import { graphemeClusters } from './grapheme';
 import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, parseSpacingTrim, SPACING_TRIM_WORD, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
 import { maxOf, pushAll } from './arrayLoop';
+import { autospaceNonIdeographic, isAutospaceIdeograph, isLatinAlnum } from './jis';
+import { CSS_SPACE, firstLetterOf, splitCommasOutsideParens, trailingResolution, trimAroundNewlines, trimChars } from './linearText';
+import { msg } from './messages';
 
 /** ブロック水準の部品か (行内の並びを区切る) */
+/**
+ * ブロック化した flex の項目の中身の行内の箱から、項目の箱が持つ書式 (罫線・内側の余白・背景・行内の余白・上げ下げ・不透明度・輪郭線) を外す。
+ * リンクと字の書式は残す。行内の箱でないもの (画像・inline-block など) はそのまま
+ */
+function stripInlineFrame(n: LInlineLevel): LInlineLevel {
+  if (typeof n === 'string' || n.type !== 'inline') return n;
+  const { border: _b, padding: _p, backgroundColor: _bg, inlineMargin: _m, baselineShift: _s, paintEffect: _fx, outline: _o, boxDecorationBreak: _d, ...rest } = n;
+  return rest as LInline;
+}
+
+/** 流れの中のブロック水準の部品か (絶対配置の箱は流れの外なので、行内の箱を分けない) */
+const isInFlowBlock = (n: unknown): boolean => isBlockLevel(n) && !(n as { absolutePosition?: boolean }).absolutePosition;
+
+/** 行内の箱 n の中 (入れ子の行内の箱の中も) に、流れの中のブロック水準の部品があるか */
+function hasBlockInside(n: LInline): boolean {
+  return n.children.some((k) => isInFlowBlock(k) || (typeof k === 'object' && k.type === 'inline' && hasBlockInside(k)));
+}
+
+/** 罫線・内側の余白の、ある辺 (side) を除いた値 (分けた行内の箱の、分けた所の辺。罫線・余白は描かない) */
+function withoutSide<T extends object>(v: T | number | undefined, side: 'top' | 'right' | 'bottom' | 'left', isAll: (x: object) => boolean): T | Partial<Record<'top' | 'right' | 'bottom' | 'left', unknown>> | undefined {
+  if (v === undefined) return undefined;
+  const all = typeof v === 'number' || isAll(v as object);
+  const o: Record<string, unknown> = all ? { top: v, right: v, bottom: v, left: v } : { ...(v as object) };
+  delete o[side];
+  return Object.keys(o).length ? o : undefined;
+}
+
+/**
+ * ブロックを含む行内の箱 (CSS 2.1 §9.2.1.1): 行内の箱 n の中にブロック水準の箱があれば、行内の箱をブロックの前後で分ける。ブロックの前・後ろの
+ * 行内の中身は、それぞれ分けた行内の箱 (n の書式・リンクを写したもの) に入れ、ブロックはその間に、ブロックとして並べる (前後の行内の中身は、
+ * 組版がそれぞれ無名のブロックの箱にまとめる)。分けた所の辺には、罫線・内側の余白・行内の余白を付けない (行で分かれた行内の箱と同じ扱い。
+ * CSS 2.1 §8.6・CSS Fragmentation 3 §5.4 の slice。box-decoration-break: clone の箱は、分けた所の辺にも付ける)。start・end: 行の進む向きの始まり・終わりの物理の辺。
+ * ブロックは、行内の箱の受け継ぐ書式 (字の書式。textStyle は親との差だけを持つ) とリンクを持つ無名のブロックで包み、行内の箱から受け継ぐ書式を
+ * 保つ (CSS 2.1 §9.2.1.1: 行内の箱の性質は、中のブロックの箱に受け継がれる)。
+ * 中身が空になった分けた箱は置かない。入れ子の行内の箱の中のブロックも、外の箱まで分けて出す。ブロックの無い箱はそのまま返す
+ */
+function splitInlineAtBlocks(n: LInlineLevel, start: 'top' | 'right' | 'bottom' | 'left', end: 'top' | 'right' | 'bottom' | 'left'): FlowItem[] {
+  if (isInFlowBlock(n)) return [{ v: n, block: true }];
+  if (typeof n === 'string' || n.type !== 'inline' || !hasBlockInside(n)) return [{ v: n, block: false }];
+  const parts: FlowItem[] = [];
+  for (const k of n.children) pushAll(parts, splitInlineAtBlocks(k, start, end));
+  const { type: _t, children: _c, id, cbKey: _k, staticAnchor: _a, softBreak: _sb, smallCaps: _sc, backgroundColor: _bg, backgroundClip: _bc, emptyStrut: _es, firstLine: _fl, noBreak: _nb, baselineShift: _bs, border: _bo, padding: _pa, boxDecorationBreak: _d, borderRadius: _r, outline: _o, inlineMargin: _m, width: _w, link, annotation: _an, paintEffect: _fx, writingMode: _wm, ...text } = n;
+  const isSide = (x: object) => 'width' in x;
+  const out: FlowItem[] = [];
+  let idUsed = !id;
+  for (let i = 0; i < parts.length; ) {
+    if (parts[i].block) {
+      const b = parts[i++].v as LBlockLevel;
+      const own = !idUsed ? { id } : {};
+      idUsed = true;
+      const wrap = Object.keys(text).length || link || own.id;
+      out.push({ v: wrap ? ({ type: 'block', ...text, ...own, ...(link ? { link } : {}), children: [b] } as LBlock) : b, block: true });
+      continue;
+    }
+    const kids: LInlineLevel[] = [];
+    const afterBlock = i > 0;
+    for (; i < parts.length && !parts[i].block; i++) kids.push(parts[i].v as LInlineLevel);
+    const beforeBlock = i < parts.length;
+    if (!kids.length) continue;
+    const frag: LInline = { ...n, children: kids };
+    delete frag.emptyStrut;
+    if (idUsed) delete frag.id;
+    idUsed = true;
+    // 分けた所の辺 (前にブロックがあれば始まりの辺、後ろにあれば終わりの辺) の罫線・内側の余白・行内の余白を外す
+    for (const [cut, side, key] of [
+      [afterBlock, start, 'start'],
+      [beforeBlock, end, 'end'],
+    ] as const) {
+      if (!cut || frag.boxDecorationBreak === 'clone') continue;
+      if (frag.border) frag.border = withoutSide(frag.border, side, isSide) as LInline['border'];
+      if (frag.padding !== undefined) frag.padding = withoutSide(frag.padding as object | number, side, () => false) as LInline['padding'];
+      if (frag.inlineMargin) frag.inlineMargin = { ...frag.inlineMargin, [key]: 0 };
+      if (frag.border === undefined) delete frag.border;
+      if (frag.padding === undefined) delete frag.padding;
+    }
+    out.push({ v: frag, block: false });
+  }
+  return out;
+}
+
+/** 和欧間アキの見積もりに使う、字の側の書式 (htmlImport の textWidth)。ch: 字 (空白なら隣とは空けない)・fs: 字の大きさ・on: text-autospace が有効か・width: アキの比 */
+type AutospaceSide = { ch: string; fs: number; on: boolean; width: number };
+
+/**
+ * 隣り合う 2 字の間に和欧間アキを入れるか (CSS Text 4 §8.4.1: 和字と、non-ideographic letters・numerals の間。inlineLayout.ts の
+ * adjustJapaneseSpacing と同じ判定)。unicode: §8.4.1 の定義どおり (一般カテゴリ L・M・Nd の字。jis.ts の autospaceNonIdeographic)。
+ * false (互換の指定。HtmlImportOptions.autospaceLatinOnly) はラテン文字・数字だけ (欧文の書体で組むギリシャ文字・キリル文字の語
+ * (Atom.latinWord) は、ここでは数えない)
+ */
+const COMBINING_MARK = /^\p{M}$/u;
+const autospacePair = (a: string, b: string, unicode: boolean): boolean => {
+  const other = unicode ? (c: string) => autospaceNonIdeographic(c) !== undefined : isLatinAlnum;
+  return (isAutospaceIdeograph(a) && other(b)) || (other(a) && isAutospaceIdeograph(b));
+};
+
 const isBlockLevel = (n: unknown): boolean =>
   typeof n === 'object' && n !== null && /^(block|block-container|table)$/.test((n as { type: string }).type);
 
@@ -267,6 +366,11 @@ export interface HtmlImportOptions {
    */
   autospaceInitial?: boolean;
   /**
+   * 和欧間アキの相手を、ラテン文字・数字 (0〜9) と、欧文の書体で組むギリシャ文字・キリル文字の語だけにする (互換の指定のときの、これまでの範囲)。
+   * 既定 (false) は、CSS Text 4 §8.4.1 の定義どおり、一般カテゴリ L・M・Nd の字すべて (TextStyle.textAutospaceUnicode)
+   */
+  autospaceLatinOnly?: boolean;
+  /**
    * アンテナハウス互換の和文組版: text-autospace: none を「空きを入れない」と読み (アンテナハウスの拡張の構文。CSS Text 4 の値には無い)、
    * 段落の 1 行目の行頭の始め括弧類を詰める (XSL-FO の互換の既定と同じ)
    */
@@ -417,12 +521,6 @@ function setBackgroundPosition(img: BackgroundImage, px: string, py: string) {
     if (end) img.yFromEnd = true;
   }
 }
-
-/**
- * ::first-letter の字 (2 つ目の組): 最初の字 (字・数字・記号と、続く結合文字) と、その前後に付く約物
- * (CSS Inline 3 §7.2 の注: ::first-letter は最初の字の前後の約物も選ぶ)。1 つ目の組は前の空白
- */
-const FIRST_LETTER = /^(\s*)([\p{Ps}\p{Pi}\p{Po}]*\s*[\p{L}\p{N}\p{S}]\p{M}*[\p{Pe}\p{Pf}\p{Po}]*)/u;
 
 const HYPHEN_LIMIT_PROPS = ['hyphenate-character', 'hyphenate-limit-chars', 'hyphenate-limit-lines', 'hyphenate-limit-last', 'hyphenate-limit-zone'] as const;
 
@@ -896,6 +994,12 @@ function flexCross(v: string, reverse: boolean): 'start' | 'end' | 'center' | 'b
 /** 名前付きページの切り替えの印 (flowChildren が body の直下に置き、run で分ける) */
 /** 流し込みの途中の項目 (block は、ブロックの箱として並ぶもの) */
 type FlowItem = { v: LBlockLevel | LInlineLevel; block: boolean };
+/** 行内の flex・grid の容器の直下の、続いた文字の並び: 組んだ項目 (items) と、空白の処理・字の変換の前の元の字 (raw) */
+type TextRun = { items: FlowItem[]; raw: string };
+/** 文字の節 (Text か CDATASection) か */
+const isTextNode = (n: Node) => n.nodeType === 3 || n.nodeType === 4;
+/** 区切りを避ける値の種類 (edgeAvoids)。all: avoid・avoid-page、column: avoid-column */
+type AvoidKind = 'all' | 'column';
 /** 絶対配置の箱の、百分率で指定した top・bottom・height (0.5 = 50%) */
 type AbsPercent = { top?: number; bottom?: number; height?: number };
 
@@ -961,6 +1065,40 @@ function marginSmallCaps(v: string): '' | 'small' | 'all' {
 }
 
 /** 1〜4 個の値の一括指定 (margin・padding) */
+/**
+ * 余白の箱の決まった向きの寸法 (CSS Page 3 §5.3.3。上の箱の height・margin-top・margin-bottom の決まりと、それを読み替えた下・左・右の箱)。
+ * outer: その辺の余白の大きさ。a・b: 前・後ろの margin (上下なら上・下、左右なら左・右)。size: 中身の大きさ。pb: 罫線と内側の余白の和。
+ * outsideA: a がページの端の側の margin (上の箱・左の箱)。
+ *  1. a + pb + size + b = outer
+ *  2. auto でない値と pb の和が outer より大きければ、auto の margin は 0 とする
+ *  3. どれも auto でなければ (決まりすぎ)、ページの端の側の margin を auto とする
+ *  4. auto が 1 つなら、式から決める
+ *  5. size が auto なら、ほかの auto は 0 とし、size を式から決める (負にはしない)
+ *  6. margin が両方 auto なら、等しくする (真ん中に置く)
+ */
+export function marginBoxFixedDimension(outer: number, a: number | 'auto', b: number | 'auto', size: number | 'auto', pb: number, outsideA: boolean): { a: number; b: number; size: number } {
+  const known = pb + (a === 'auto' ? 0 : a) + (b === 'auto' ? 0 : b) + (size === 'auto' ? 0 : size);
+  if (known > outer) {
+    if (a === 'auto') a = 0;
+    if (b === 'auto') b = 0;
+  }
+  if (a !== 'auto' && b !== 'auto' && size !== 'auto') {
+    if (outsideA) a = 'auto';
+    else b = 'auto';
+  }
+  if (size === 'auto') {
+    const ma = a === 'auto' ? 0 : a;
+    const mb = b === 'auto' ? 0 : b;
+    return { a: ma, b: mb, size: Math.max(0, outer - pb - ma - mb) };
+  }
+  if (a === 'auto' && b === 'auto') {
+    const m = (outer - pb - size) / 2;
+    return { a: m, b: m, size };
+  }
+  if (a === 'auto') return { a: outer - pb - size - (b as number), b: b as number, size };
+  return { a, b: outer - pb - size - a, size };
+}
+
 function edges4(v: string, fs: number): { top: number; right: number; bottom: number; left: number } {
   const n = v.trim().split(/\s+/).map((x) => lenEm(x, fs) ?? 0);
   const [t, r = t, b = t, l = r] = n;
@@ -968,6 +1106,39 @@ function edges4(v: string, fs: number): { top: number; right: number; bottom: nu
 }
 
 const CJK = /[　-ヿ㐀-鿿豈-﫿＀-￯]/u;
+
+/**
+ * まだ空白にするか消すかを決めていない改行 (segment break) の印。text() が、前か後ろの字が同じテキストの節の中に無い改行をこれにし、
+ * resolveSegmentBreaks が、ブロックの中身をつないだ後に、空白 (U+0020) にするか消す。U+2000 (EN QUAD) は、text() が普通の空白にする字
+ * (改行する幅の空白) なので、text() の出力には印としてしか現れない。また、正規の分解で U+2002 になる字 (NFC で残らない) で、文書の字としてもまず現れない。
+ * JavaScript の trim() と \s は空白とみなす (空白だけの文字列を捨てる判定は、印を空白と同じに扱う)。決めずに残った印は、importHtml の終わりに空白にする
+ */
+const SEG_BREAK = '\u2000';
+
+/**
+ * 字の並びの空白と改行を white-space (ws) で扱う (CSS Text 3 §4.1)。pre・pre-wrap・break-spaces は空白も改行も残す (改行は強制改行になる)。
+ * mark が偽なら、前か後ろの字が並びの中に無い改行も、ここで空白にする (印 SEG_BREAK にしない。並びの外の字を見ない所: 余白の箱など)
+ */
+function whiteSpaceText(t: string, ws: string, mark: boolean): string {
+  if (ws === 'pre' || ws === 'pre-wrap' || ws === 'break-spaces') return t.replace(/\r\n?/g, '\n');
+  let s = trimAroundNewlines(t.replace(/\r\n?/g, '\n'));
+  // 改行 (CSS Text 3 §4.1.3): 続いた改行は 1 つにまとめ、残った改行は、前後の字で空白にするか消すかを決める (決め方は UA に任されている)。
+  // ここでは、前後が和文なら消し、それ以外は空白にする (pre-line は改行のまま)。前後の字は見るだけで、置き換えには含めない
+  // (含めると、1 字だけの行が続くとき (あ\nい\nう) に、次の改行の前の字を見られない)。
+  // 前か後ろの字がこの節の中に無い改行 (節の端の改行。<b>\n強調\n</b>・これは\n<b>…) は、ここでは決めずに印 (SEG_BREAK) にし、ブロックの中身を
+  // つないだ後に、行内の要素の境目をまたいだ前後の字で決める (resolveSegmentBreaks。CSS Text 3 §1.5: 隣り合うかは、間の行内の箱の境目と
+  // 流れの外の要素を無視して決める)。text-transform: full-width の要素では、空白が全角の空白になる (§2.1) ので、印にせず、これまでどおり空白にする
+  if (ws !== 'pre-line') {
+    s = s.replace(/\n+/g, (m, at: number, all: string) => {
+      const a = Array.from(all.slice(Math.max(0, at - 2), at)).pop() ?? '';
+      const cp = all.codePointAt(at + m.length);
+      const b = cp === undefined ? '' : String.fromCodePoint(cp);
+      if (mark && (!a || !b)) return SEG_BREAK;
+      return CJK.test(a) && CJK.test(b) ? '' : ' ';
+    });
+  }
+  return s.replace(/[ \t]+/g, ' ');
+}
 
 class HtmlImporter {
   report: ImportReport = { unsupported: Object.create(null), notes: [], images: [], counts: { sequences: 1, blocks: 0, tables: 0, footnotes: 0, floats: 0, rubies: 0 } };
@@ -989,6 +1160,8 @@ class HtmlImporter {
   private lastPseudoText: Record<'::before' | '::after', string> = { '::before': '', '::after': '' };
   /** 組んだ ::before / ::after の文字 (要素ごと。target-text() の子孫の生成した内容を、組んだときのカウンターの値で取る) */
   private pseudoTextOf = new WeakMap<Element, Partial<Record<'::before' | '::after', string>>>();
+  /** 組んだ ::before・::after の中身の字 (中身の幅の見積もり maxContentWidth が数える。pseudoTextOf と違い、いつも覚える) */
+  private pseudoTextSeen = new WeakMap<Element, Partial<Record<'::before' | '::after', string>>>();
   /** target-text() を使う文書 (1 回目の変換で、id を持つ要素の文字を集める) */
   private readonly wantText: boolean;
   /** インラインの中で生じたマーカー (段落の外へ出す) */
@@ -1126,11 +1299,22 @@ class HtmlImporter {
       this.styleAttrRead.add(el);
       const attr = el.getAttribute?.('style');
       if (attr) {
-        // アンテナハウスの別名 (-ah-line-height-shift-adjustment など) は、規則と同じく CSS の名前に読み替える
-        const own = splitDecls(attr)
-          .filter(([p, val]) => !this.dropCompatOnly(p, val) && (isPagedDecl(p, val) || p === 'content'))
-          .map(([p, val]): [string, string] => (AH_ALIASES[p] ? [AH_ALIASES[p].prop, AH_ALIASES[p].value(val)] : [p, val]));
-        if (own.length) this.paged.set(el, (v = { ...v, ...Object.fromEntries(own) }));
+        // アンテナハウスの別名 (-ah-line-height-shift-adjustment など) は、規則と同じく CSS の名前に読み替える。
+        // 同じ性質の宣言は、後の宣言が勝つ (!important の宣言は、!important の無い宣言に勝つ。CSS Cascade 4 §6.1)。
+        // 読めない値の宣言は捨てる (CSS 2.1 §4.2。前の宣言が残る)。勝った宣言が自前で読まない値 (color: #00f など) なら、
+        // その性質は当てず、規則から当てた値も外す (ブラウザの確定値を使う。collectPaged と同じ)
+        const win = new Map<string, { v: string; imp: boolean; ok: boolean }>();
+        for (const [p0, val0, imp] of splitDecls(attr)) {
+          if (this.dropCompatOnly(p0, val0)) continue;
+          const al = AH_ALIASES[p0];
+          const [p, val] = al ? [al.prop, al.value(val0)] : [p0, val0];
+          const cur = win.get(p);
+          if (cur?.imp && !imp) continue;
+          win.set(p, { v: val, imp: !!imp, ok: isPagedDecl(p0, val0) || p0 === 'content' });
+        }
+        if (win.size && v) for (const [p, d] of win) if (!d.ok && p in v) (v = { ...v }), delete v[p];
+        const own = [...win].filter(([, d]) => d.ok).map(([p, d]): [string, string] => [p, d.v]);
+        if (own.length || v !== this.paged.get(el)) this.paged.set(el, (v = { ...v, ...Object.fromEntries(own) }));
       }
     }
     return v ?? {};
@@ -1148,7 +1332,7 @@ class HtmlImporter {
     if (what && (((prop === 'text-align' || prop === 'text-align-last') && this.opts.textAlignInsideOutsideAh) || (prop === 'text-autospace' && this.opts.jaDefaultsAh))) return false;
     // 値の文法に合わない宣言 (text-spacing-trim: zzz など) は、ふつうの無効の宣言として黙って捨てる (CSS 2.1 §4.2。htmlPaged の validPagedValue)
     if (!what) return !validPagedValue(prop, value);
-    this.miss(`${what} (--style ah のときだけ解釈する値)`);
+    this.miss(msg(`${what} (--style ah のときだけ解釈する値)`, `${what} (a value read only with --style ah)`));
     return true;
   }
 
@@ -1376,7 +1560,7 @@ class HtmlImporter {
     // 項目の箱: ブラウザが決めた幅・高さ (border-box)。外側の余白は、帯の中の位置で表す
     const itemNode = (it: (typeof items)[number]): LBlockLevel => {
       const d = this.display(it.el);
-      const n = (this.isBlock(d, it.el) ? this.block(it.el, el) : undefined) ?? ({ type: 'block', ...this.textStyle(it.el, el), ...this.boxStyle(it.el), children: this.inline(it.el, el) } as LBlock);
+      const n = (this.isBlock(d, it.el) ? this.block(it.el, el) : undefined) ?? ({ type: 'block', ...this.textStyle(it.el, el), ...this.boxStyle(it.el), children: this.flexItemInline(it.el, el, false) } as LBlock);
       const b = n as LBlock;
       delete b.margin;
       b.width = it.w * PT_PER_PX + FLEX_SLACK;
@@ -1527,7 +1711,9 @@ class HtmlImporter {
       }
       // 項目の上下の margin は、セルの先頭・末尾でも捨てない (CSS の flex の項目。表紙の h1 の margin-top: 5cm など)
       const d = this.display(k);
-      const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.inline(k, el) } as LBlock);
+      // 行内の要素 (span・a など) の項目は、ブロック化する (Flexbox 1 §4・CSS Display 3 §2.7)。罫線・内側の余白・背景・余白は項目の箱
+      // (boxStyle) に付けるので、中身の行内の箱からは外す (外さないと、罫線が二重に描かれ、行内の罫線・余白の分だけ中身が項目の幅を超えて折り返される)
+      const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.flexItemInline(k, el, true) } as LBlock);
       // visibility: collapse の flex の項目 (Flexbox 1 §4.4): 主軸の大きさを 0 にして、交差軸の大きさだけを支柱として残す (下の行の組み立て)。
       // grid の項目の collapse は hidden と同じ (場所を残す。CSS 2.1 §11.2)
       // 書字方向が容器と直交する項目 (横書きの行の中の縦書きの箱など。block() が writingMode を付けたブロック): 主軸の大きさは項目の block の大きさ
@@ -1563,7 +1749,7 @@ class HtmlImporter {
     /** 行の 1 列: 項目 (el) か空き。w は固定の幅 (pt)、star があれば比例の列 (組版時の容器の幅の余りを star の比で分け、w を足す。表の 'N*' + widthExtra) */
     /** collapse の項目の支柱のもと: 畳む前の組みで同じ行にあった項目と、その幅 (同じ行の支柱どうしで分け合う) */
     type StrutLine = Array<{ el: Item; w: number }>;
-    type Cell = { el?: Item; w: number; star?: number; strut?: StrutLine };
+    type Cell = { el?: Item; w: number; star?: number; strut?: StrutLine; flex?: LFlexItemColumn };
     const lines: Cell[][] = [];
     if (isGrid) {
       const tracks = gridTracks(c('grid-template-columns'), W, colGap);
@@ -1587,20 +1773,22 @@ class HtmlImporter {
        * 縮める下限 (外側の幅)。min-width: auto は自動の最小の大きさ (Flexbox 1 §4.5): 中身の最も狭い幅 (min-content。max-width で抑える) と、
        * 幅の指定があればその小さい方。overflow が visible でない (切り取る・流す) 項目は 0。min-width の指定があれば、それ
        */
-      const minOf = (k: Item, kc: (n: string) => string, fixedW: boolean) => {
+      const minOf = (k: Item, kc: (n: string) => string, fixedW: boolean): { floor: number; minCap?: number; minAuto?: boolean } => {
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
         const mw = kc('min-width');
-        if (mw && mw !== 'auto') return (len(mw, W) ?? 0) + outer(k);
-        if (!/^(visible|clip)?$/.test(kc('overflow-x') || kc('overflow'))) return outer(k);
-        let content = k.anon ? measure(() => this.minTextWidth(k.text ?? '', k.el)) : k.ps ? measure(() => this.minTextWidth(k.text ?? '', k.el, k.ps)) + (outer(k) - margins) : measure(() => this.minContentWidth(k.el, false));
+        if (mw && mw !== 'auto') return { floor: (len(mw, W) ?? 0) + outer(k) };
+        if (!/^(visible|clip)?$/.test(kc('overflow-x') || kc('overflow'))) return { floor: outer(k) };
+        const content = k.anon ? measure(() => this.minTextWidth(k.text ?? '', k.el)) : k.ps ? measure(() => this.minTextWidth(k.text ?? '', k.el, k.ps)) + (outer(k) - margins) : measure(() => this.minContentWidth(k.el, false));
+        // 中身の最も狭い幅の上限 (外側の幅): max-width と、幅の指定 (自動の最小の大きさは、指定の大きさを超えない)
         const max = len(kc('max-width'), W);
-        if (max !== undefined) content = Math.min(content, max + (kc('box-sizing') === 'border-box' ? 0 : outer(k) - margins));
         const specified = fixedW ? len(kc('width'), W) : undefined;
-        const auto = specified !== undefined ? Math.min(content, specified + (kc('box-sizing') === 'border-box' ? 0 : outer(k) - margins)) : content;
-        return auto + margins;
+        const caps = [max, specified].filter((v): v is number => v !== undefined).map((v) => v + (kc('box-sizing') === 'border-box' ? 0 : outer(k) - margins) + margins);
+        const minCap = caps.length ? Math.min(...caps) : undefined;
+        return { floor: Math.min(content + margins, minCap ?? Infinity), minAuto: true, ...(minCap !== undefined ? { minCap } : {}) };
       };
       /** 項目の幅の基準 (w: flex-basis、無ければ width。分からなければ undefined)・伸び縮みの比と下限・上限。strut は collapse の項目の本来の幅 */
-      type Info = { el: Item; w: number | undefined; grow: number; shrink: number; base: number; floor: number; cap?: number; orig?: Info };
+      /** hypo: 縮める前の幅 (仮の主軸の大きさ。外側の幅)・mins: 縮める下限の求め方 (組版エンジンに測らせるとき。LFlexItemColumn) */
+      type Info = { el: Item; w: number | undefined; hypo?: number; grow: number; shrink: number; base: number; floor: number; mins?: { minAuto?: boolean; minCap?: number }; cap?: number; orig?: Info };
       const info = items.map((k): Info => {
         const kc = ics(k);
         // flex-basis: auto は width を使う (Flexbox 1 §7.2.3)。width が内容による大きさの語 (CSS Sizing 3 §3.2) なら、その語を基準にする
@@ -1629,17 +1817,22 @@ class HtmlImporter {
         // 見積もりは枠・内側の余白を含むので、足すのは外側の余白だけ
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
         const shrink = parseFloat(kc('flex-shrink'));
-        // 中身の幅で決まる項目にページ番号の引用 (target-counter(…, page)) があれば、番号の桁の数は組むまで分からないので、
-        // 列の幅を組版エンジンに測らせる (LTableColumn.fitContent。ここの見積もりは、引用の字を数えていない)
-        if (inner === undefined && hasPageCitation(k.node)) k.fit = true;
+        // 中身の幅で決まる項目は、列の幅を組版エンジンに測らせる (LTableColumn.fitContent。Flexbox 1 §9.2 の 3 の E)。
+        // ここの見積もり (字の幅の足し算) は、行を組むときの字の間の空白・行内の箱の余白と枠・::before の中身・語間・ページ番号の引用の字などを
+        // 数えきれず、見積もりが狭いと、最後の字が次の行に送られる (目次の項目名)。見積もりは、行に分けるとき (flex-wrap) の目安と、測れないときの幅にだけ使う
+        if (inner === undefined && est !== undefined) k.fit = true;
+        const mins = minOf(k, kc, fixedW);
+        const w = inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined;
         const own: Info = {
           el: k,
-          w: inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined,
+          w,
+          hypo: w,
           grow: parseFloat(kc('flex-grow')) || 0,
           shrink: Number.isFinite(shrink) && shrink >= 0 ? shrink : 1,
           // 縮める比の基準 (flex の基準の大きさ) と、縮める下限 (min-width と、内容の幅以外の分)
           base: inner ?? est ?? 0,
-          floor: minOf(k, kc, fixedW),
+          floor: mins.floor,
+          mins,
           // 伸ばす上限 (外側の幅。max-width が無ければ無し)
           cap: max !== undefined ? max + outer(k) : undefined,
         };
@@ -1762,6 +1955,13 @@ class HtmlImporter {
         const lead = leadU * share;
         const trail = trailU * share;
         const between = betweenU * share;
+        // 中身に合わせる列 (組むときに測る項目) のある行は、項目を縮める前の幅で並べ、入りきらなければ組版エンジンが縮め直す
+        // (LTableColumn.flexItem。ここで見積もりから縮めた幅は、測った幅と食い違う)。縮めずに済んだ項目は、伸ばす上限で止めた幅のまま
+        const engineShrinks = g.some((it) => it.el.fit && !it.el.collapse);
+        const flexOf = (it: Info): LFlexItemColumn => {
+          const edge = outer(it.el);
+          return { shrink: it.shrink, basis: it.base, edge, floor: it.floor, ...(it.mins?.minAuto ? { minAuto: true } : {}), ...(it.mins?.minCap !== undefined ? { minCap: it.mins.minCap } : {}), ...(it.cap !== undefined ? { cap: it.cap } : {}) };
+        };
         const line: Cell[] = [];
         if (lead) line.push({ w: 0, star: lead });
         let seen = 0;
@@ -1772,7 +1972,8 @@ class HtmlImporter {
           }
           if (seen++ > 0 && (colGap > 0.4 || between)) line.push({ w: colGap, ...(between ? { star: between } : {}) });
           if (autoSpacers && autoM[k].l) line.push({ w: 0, star: 1 });
-          line.push({ el: it.el, w: it.w ?? 0, ...(stars[k] ? { star: stars[k] } : {}) });
+          const w = engineShrinks && it.hypo !== undefined ? Math.max(it.w ?? 0, it.hypo) : (it.w ?? 0);
+          line.push({ el: it.el, w, ...(stars[k] ? { star: stars[k] } : {}), ...(engineShrinks ? { flex: flexOf(it) } : {}) });
           if (autoSpacers && autoM[k].r) line.push({ w: 0, star: 1 });
         });
         if (trail) line.push({ w: 0, star: trail });
@@ -1835,7 +2036,12 @@ class HtmlImporter {
       return t;
     };
     lines.forEach((line, k) => {
-      const columns: LTableColumn[] = line.map((cell) => (cell.star ? { type: 'table-column', width: `${cell.star}*`, ...(cell.w ? { widthExtra: cell.w } : {}) } : { type: 'table-column', width: Math.max(cell.w, 0), ...(cell.el?.fit ? { fitContent: true } : {}) }));
+      const columns: LTableColumn[] = line.map((cell) => ({
+        type: 'table-column',
+        ...(cell.star ? { width: `${cell.star}*` as const, ...(cell.w ? { widthExtra: cell.w } : {}) } : { width: Math.max(cell.w, 0) }),
+        ...(cell.el?.fit ? { fitContent: true } : {}),
+        ...(cell.flex ? { flexItem: cell.flex } : {}),
+      }));
       const cells: LTableCell[] = line.map((cell) => {
         if (!cell.el) return { type: 'table-cell', children: [] };
         // collapse の項目の支柱: 幅 0 の列の中に、畳む前の行の高さの空の箱を置く (phantom。中身は描かない。伸ばさず、揃えない)。
@@ -1849,7 +2055,7 @@ class HtmlImporter {
         return itemCell(cell.el);
       });
       this.report.counts.tables++;
-      children.push({ type: 'table', columns, ...(stretchLines ? { flexGrow: 1 } : {}), ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', ...(fullLine ? { minHeight: innerH } : {}), cells }] } } as LTable);
+      children.push({ type: 'table', columns, ...(isGrid ? {} : { flexLine: true }), ...(stretchLines ? { flexGrow: 1 } : {}), ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', ...(fullLine ? { minHeight: innerH } : {}), cells }] } } as LTable);
     });
     this.report.counts.blocks++;
     // 高さの決まった容器の行の揃え: 複数行 (flex-wrap の複数行と grid) は align-content、1 行だけなら行の高さは容器いっぱいなので
@@ -2068,45 +2274,106 @@ class HtmlImporter {
     // 中のブロックは、いちばん広いもの。続く文字と行内の要素は、1 行につなげた幅 (改行を残すなら行ごと)
     let widest = 0;
     let line = 0;
+    // 同じ行で直前にある字 (要素の境目をまたぐ和欧間アキを数える)
+    let prev: AutospaceSide | undefined;
+    // 行に字や箱がもうあるか (行頭の空白は消える)・まだ数えていない、詰めた後の空白 1 つの持ち主 (行末なら消え、続く字があれば数える。
+    // 要素の境目をまたぐ空白も 1 つに詰める: CSS Text 3 §4.1.1)
+    let filled = false;
+    let pendingSpace: { el: Element; pseudo?: '::before' | '::after' } | undefined;
     const end = () => {
       widest = Math.max(widest, line);
       line = 0;
+      prev = undefined;
+      filled = false;
+      pendingSpace = undefined;
     };
-    const text = (t: string, owner: Element) => {
-      const parts = pre ? t.split('\n') : [t.replace(CSS_WS, ' ')];
-      parts.forEach((part, k) => {
-        if (k > 0) end();
-        line += this.textWidth(this.transformText(part, owner), owner);
-      });
+    /** 字や箱を置く前に、待たせていた空白を数える */
+    const flushSpace = () => {
+      if (pendingSpace && filled) {
+        line += this.spaceWidth(pendingSpace.el, pendingSpace.pseudo);
+        prev = undefined;
+      }
+      pendingSpace = undefined;
     };
-    // 行内の要素は、それぞれの書体・字の大きさで測る (中の要素もたどる)
+    const text = (t: string, owner: Element, pseudo?: '::before' | '::after') => {
+      if (pre) {
+        t.split('\n').forEach((part, k) => {
+          if (k > 0) end();
+          const tt = this.transformText(part, owner);
+          line += this.textWidthPlain(tt, owner, pseudo, true) + this.autospaceWidthOf(tt, owner, pseudo, prev);
+          if (!tt) return;
+          filled = true;
+          prev = this.autospaceSide(owner, pseudo, [...tt].pop()!);
+        });
+        return;
+      }
+      const tt = this.transformText(t.replace(CSS_WS, ' ').replace(/ {2,}/g, ' '), owner);
+      if (!tt) return;
+      if (tt.startsWith(' ') && filled && !pendingSpace) pendingSpace = { el: owner, ...(pseudo ? { pseudo } : {}) };
+      const core = trimChars(tt, ' ');
+      if (core) {
+        flushSpace();
+        // 中の空白は、textWidthPlain が字として測る。語間 (word-spacing) は、その空白ごとに足す
+        line += this.textWidth(core, owner, pseudo, prev) + (core.split(' ').length - 1) * this.wordSpacing(owner, pseudo);
+        filled = true;
+        prev = this.autospaceSide(owner, pseudo, [...core].pop()!);
+      }
+      if (tt.endsWith(' ') && filled && !pendingSpace) pendingSpace = { el: owner, ...(pseudo ? { pseudo } : {}) };
+    };
+    /** 行内の箱の左右の余白・枠・内側の余白 (side: 始めか終わりか) */
+    const edge = (e: Element, side: 'left' | 'right') => {
+      const ec = this.csA(e);
+      const v = (n: string) => Math.max(cssLen(ec(n)) ?? 0, 0);
+      return v(`margin-${side}`) + v(`padding-${side}`) + v(`border-${side}-width`);
+    };
+    /** 置換要素・inline-block などの、中で行を分けない行内の箱: 中身の幅に左右の余白を足す */
+    const atomic = (e: Element) => {
+      flushSpace();
+      const ec = this.csA(e);
+      line += this.maxContentWidth(e) + (cssLen(ec('margin-left')) ?? 0) + (cssLen(ec('margin-right')) ?? 0);
+      filled = true;
+      prev = undefined;
+    };
+    const pseudoText = (e: Element, which: '::before' | '::after') => {
+      const t = this.pseudoTextSeen.get(e)?.[which];
+      if (t) text(t, e, which);
+    };
+    // 行内の要素は、それぞれの書体・字の大きさで測る (中の要素もたどる)。::before・::after の中身 (組んだときの字) も数える
     const inline = (k: Element) => {
+      const l = edge(k, 'left');
+      if (l) {
+        flushSpace();
+        line += l;
+      }
+      pseudoText(k, '::before');
       for (const n of Array.from(k.childNodes)) {
         if (n.nodeType === 3) text(n.textContent ?? '', k);
-        else if (n.nodeType === 1) {
-          const e = n as Element;
-          if (this.display(e) === 'none') continue;
-          if (e.localName === 'img') line += this.maxContentWidth(e);
-          else if (e.localName === 'br') end();
-          else inline(e);
-        }
+        else if (n.nodeType === 1) child(n as Element);
+      }
+      pseudoText(k, '::after');
+      const r = edge(k, 'right');
+      if (r) {
+        line += r;
+        prev = undefined;
       }
     };
+    const child = (e: Element) => {
+      const d = this.display(e);
+      if (d === 'none' || /^(absolute|fixed)$/.test(this.csA(e)('position'))) return;
+      if (this.isBlock(d, e)) {
+        end();
+        const ec = this.csA(e);
+        widest = Math.max(widest, this.maxContentWidth(e) + (cssLen(ec('margin-left')) ?? 0) + (cssLen(ec('margin-right')) ?? 0));
+      } else if (e.localName === 'br') end();
+      else if (e.localName === 'img' || /^inline-/.test(d)) atomic(e);
+      else inline(e);
+    };
+    pseudoText(el, '::before');
     for (const n of Array.from(el.childNodes)) {
       if (n.nodeType === 3) text(n.textContent ?? '', el);
-      else if (n.nodeType === 1) {
-        const k = n as Element;
-        const d = this.display(k);
-        if (d === 'none' || /^(absolute|fixed)$/.test(this.csA(k)('position'))) continue;
-        if (this.isBlock(d, k)) {
-          end();
-          const kc = this.csA(k);
-          widest = Math.max(widest, this.maxContentWidth(k) + (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0));
-        } else if (k.localName === 'img') line += this.maxContentWidth(k);
-        else if (k.localName === 'br') end();
-        else inline(k);
-      }
+      else if (n.nodeType === 1) child(n as Element);
     }
+    pseudoText(el, '::after');
     end();
     return widest + pad;
   }
@@ -2163,10 +2430,66 @@ class HtmlImporter {
     return Math.max(grid, caption) + frame;
   }
 
-  /** 1 行の文字列の幅 (pt)。measureText があれば要素の書体・字の大きさ・太さ・字間で測り、無ければ字数 × 字の大きさ (欧文は 0.55 倍) */
-  private textWidth(t: string, el: Element, pseudo?: '::before' | '::after'): number {
-    // 前後の空白は、詰める空白だけを取る (全角の空白 U+3000 は字として数える)
-    const s = t.replace(/^[ \t\n\r\f]+|[ \t\n\r\f]+$/g, '');
+  /**
+   * 1 行の文字列の幅 (pt)。measureText があれば要素の書体・字の大きさ・太さ・字間で測り、無ければ字数 × 字の大きさ (欧文は 0.55 倍)。
+   * 和字と欧文の字・数字の間の和欧間アキ (text-autospace。CSS Text 4 §8.4) も足す (行を組むときの inlineLayout.ts の adjustJapaneseSpacing と同じ判定)。
+   * アキを足さないと、見積もった幅 (flex の項目の max-content など) に、組んだ行が入りきらずに折り返される。
+   * prev: 同じ行で直前にある字 (要素の境目をまたぐ組のアキを数える。maxContentWidth が渡す)
+   */
+  private textWidth(t: string, el: Element, pseudo?: '::before' | '::after', prev?: AutospaceSide): number {
+    return this.textWidthPlain(t, el, pseudo) + this.autospaceWidthOf(t, el, pseudo, prev);
+  }
+
+  /**
+   * 文字列の中 (と、prev との境目) の和欧間アキの合計 (pt)。アキの大きさは、両側の字の大きさの小さい方 × textAutospaceWidth
+   * (inlineLayout.ts の adjustJapaneseSpacing)。両側の text-autospace が有効なときだけ空ける。空白の字 (語間の空白) の前後は空けない
+   */
+  private autospaceWidthOf(t: string, el: Element, pseudo?: '::before' | '::after', prev?: AutospaceSide): number {
+    const s = trimChars(t, CSS_SPACE);
+    if (!s) return 0;
+    const side = this.autospaceSide(el, pseudo, '');
+    const chars = [...s];
+    let w = 0;
+    // 先頭の空白は取ったので、元の文字列が空白で始まるなら、前の字とは隣り合わない
+    const unicode = !this.opts.autospaceLatinOnly;
+    if (prev && prev.on && side.on && t === t.trimStart() && autospacePair(prev.ch, chars[0], unicode)) w += Math.min(prev.fs, side.fs) * prev.width;
+    if (side.on) {
+      // CSS Text 4 §8.4.1 の字の種類は、字の単位の基底の字で決める: 結合文字 (M) は前の字と同じ単位なので、その前は空けず、後ろは基底の字で決める
+      // (行を組むときの、書記素クラスタの判定の見積もり)
+      let base = chars[0];
+      for (let k = 0; k + 1 < chars.length; k++) {
+        if (!unicode || !COMBINING_MARK.test(chars[k])) base = chars[k];
+        if (unicode && COMBINING_MARK.test(chars[k + 1])) continue;
+        if (autospacePair(unicode ? base : chars[k], chars[k + 1], unicode)) w += side.fs * side.width;
+      }
+    }
+    return w;
+  }
+
+  /** 和欧間アキの判定に使う、要素の字の書式 (text-autospace が有効か・字の大きさ・アキの比) と、最後の字 ch */
+  private autospaceSide(el: Element, pseudo: '::before' | '::after' | undefined, ch: string): AutospaceSide {
+    const fs = cssLen(this.cs(el, pseudo)('font-size')) ?? 12;
+    const on = this.spacing(el).autospace ?? this.opts.autospaceInitial ?? true;
+    // アンテナハウスの -ah-text-autospace-width (百分率または長さの em。textStyle の textAutospaceWidth と同じ読み方)
+    const aw = this.inh(el, 'text-autospace-width', true);
+    const v = aw ? (/^([\d.]+)%$/.exec(aw) ? parseFloat(aw) / 100 : /^([\d.]+)em$/.exec(aw) ? parseFloat(aw) : undefined) : undefined;
+    return { ch, fs, on, width: v !== undefined && Number.isFinite(v) ? v : (this.opts.autospaceWidth ?? 0.125) };
+  }
+
+  /** 詰めた後の空白 1 字の幅 (pt): 要素の書体の空白の送りと、字間・語間 (CSS Text 3 §7.1・§8.2) */
+  private spaceWidth(el: Element, pseudo?: '::before' | '::after'): number {
+    return this.textWidthPlain(' ', el, pseudo, true) + this.wordSpacing(el, pseudo);
+  }
+
+  /** 語間 (word-spacing。pt。normal は 0) */
+  private wordSpacing(el: Element, pseudo?: '::before' | '::after'): number {
+    return cssLen(this.cs(el, pseudo)('word-spacing')) ?? 0;
+  }
+
+  /** 1 行の文字列の幅 (pt。和欧間アキを含めない) */
+  private textWidthPlain(t: string, el: Element, pseudo?: '::before' | '::after', keepEdges = false): number {
+    // 前後の空白は、詰める空白だけを取る (全角の空白 U+3000 は字として数える)。keepEdges なら取らない (改行を残す行・空白 1 字の幅)
+    const s = keepEdges ? t : trimChars(t, CSS_SPACE);
     if (!s) return 0;
     const c = this.cs(el, pseudo);
     const fs = cssLen(c('font-size')) ?? 12;
@@ -2282,7 +2605,7 @@ class HtmlImporter {
                   ? 'before'
                   : (fl as LFloat['float']);
     const d = this.display(e);
-    const inner = (d === 'table' || this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', ...this.textStyle(e, parent), ...this.paragraphStyle(e, parent), ...this.boxStyle(e), children: this.flowChildren(e, true) } as LBlock)) as LBlock;
+    const inner = (d === 'table' || this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', ...this.textStyle(e, parent), ...this.paragraphStyle(e, parent), ...this.boxStyle(e), children: this.asBlockContent(this.flowChildren(e, true), e) } as LBlock)) as LBlock;
     // (float はブロックの箱になるので、行内の要素から作るときも text-indent などの段落の書式を渡す。渡さないと
     // span.sidenote { text-indent: 0 } のような指定が効かず、本文の字下げを受け継いでしまう)
     // 置き換え要素 (画像など) の float は行の箱を持たないので、受け継いだ text-indent を掛けない
@@ -2389,6 +2712,15 @@ class HtmlImporter {
 
   /** 表の行にして組んだリストの項目 (li。記号のあるリスト)。項目の箱は、本文のセル */
   private liRows = new WeakSet<Element>();
+  /**
+   * 箱の前・後ろの区切りを避ける値 (自分の break-before・break-after と、最初・最後の子から伝わったもの。CSS Fragmentation 3 §3.1.1)。
+   * all は avoid・avoid-page (ページの区切りも避ける)、column は avoid-column (段の区切りだけ)。column の値は、段組の容器
+   * (段の分割の文脈) の手前で伝わるのを止める (§3.1.1: 伝わるのは、最も近い合う種類の分割の文脈の手前まで)。
+   * ここに無い箱 (無名の箱・疑似要素の箱) は、keepWithPrevious・keepWithNext を all とみなす
+   */
+  private edgeAvoids = new WeakMap<object, { before?: AvoidKind; after?: AvoidKind }>();
+  /** edgeAvoids に無い箱の、たどった答えの覚え (edgeAvoidOf) */
+  private edgeAvoidMemo = new WeakMap<object, { before?: AvoidKind; after?: AvoidKind }>();
 
   /**
    * 絶対配置の基準の箱を探すときの、祖先の要素の種類: 'block' はそのまま組むブロック (plainBlock と、ブロックとして組むリストの項目)、
@@ -2772,7 +3104,7 @@ class HtmlImporter {
             } else if (a[0] === 'pages') {
               // 本文の中の総ページ数
               out.push({ type: 'page-number-citation', refId: TOTAL_PAGES_ID, format: pageNumberFormatOf(a[1] ?? 'decimal') ?? '1' });
-            } else if (a[0] === 'page') this.miss(`content:counter(${a[0]}) (本文の中)`);
+            } else if (a[0] === 'page') this.miss(msg(`content:counter(${a[0]}) (本文の中)`, `content:counter(${a[0]}) (in the body)`));
             else out.push(this.counterString(a[1] ?? 'decimal', this.counterValue(a[0])));
             break;
           case 'counters': {
@@ -2802,7 +3134,7 @@ class HtmlImporter {
             const ref = this.targetId(el, a[0]);
             const info = ref ? this.lookup?.get(ref) : undefined;
             const which = (a[1] ?? 'content').trim();
-            if (info) out.push(which === 'before' ? info.before : which === 'after' ? info.after : which === 'first-letter' ? (FIRST_LETTER.exec(info.text)?.[2] ?? '') : info.text);
+            if (info) out.push(which === 'before' ? info.before : which === 'after' ? info.after : which === 'first-letter' ? (firstLetterOf(info.text)?.[1] ?? '') : info.text);
             break;
           }
           case 'leader': {
@@ -2862,7 +3194,7 @@ class HtmlImporter {
         if (s) kept.push(s);
       }
     }
-    if (cut) this.miss('content (生成内容の字の数が上限を超えた分)');
+    if (cut) this.miss(msg('content (生成内容の字の数が上限を超えた分)', 'content (generated content beyond the character limit)'));
     return kept;
   }
 
@@ -2870,6 +3202,8 @@ class HtmlImporter {
   private multicolTop = new WeakMap<LFloat, string | undefined>();
   /** float: multicol top の箱のうち、box-sizing: border-box のもの (gr の幅を罫線・内側の余白込みの幅にする) */
   private multicolTopBorderBox = new WeakSet<LFloat>();
+  /** float: multicol top の箱が入る行グリッド (-ah-baseline-grid の new・root。継承した値も) */
+  private multicolTopGrid = new WeakMap<LFloat, 'new' | 'root'>();
 
   /** 文書の @counter-style の定義 (run で読む) */
   private counterStyles = new CounterStyles(new Map(), () => undefined, () => undefined);
@@ -2994,7 +3328,7 @@ class HtmlImporter {
     const v = this.pg(el)['string-set'];
     if (!v || v === 'none') return [];
     const out: LMarker[] = [];
-    const parts = v.split(/,(?![^(]*\))/).map((part) => parseContent(part));
+    const parts = splitCommasOutsideParens(v).map((part) => parseContent(part));
     // 引数の無い attr() などのある宣言は、全体が無効 (missingArgument)
     if (parts.some((toks) => toks.some(missingArgument))) return [];
     for (const toks of parts) {
@@ -3078,15 +3412,10 @@ class HtmlImporter {
   }
 
   /**
-   * 印刷の色 (device-cmyk・rgb-icc)。特色の値が渡されていて、前の値に隠れた rgb-icc(…, #Separation, …) がその特色なら、それを使う
-   * (特色で塗る)。ほかは、その性質の印刷の色 (無ければ undefined)
+   * 印刷の色 (device-cmyk・rgb-icc)。その性質の、カスケードで勝った宣言の印刷の色 (無ければ undefined)。
+   * rgb-icc(…, #Separation, '名前', …) は、特色の値が渡されていれば特色 (spot) にする
    */
   private printOf(decls: Record<string, string>, prop: string, alt?: string): string | undefined {
-    const hidden = decls[`-kumiori-print-${prop}`] ?? (alt ? decls[`-kumiori-print-${alt}`] : undefined);
-    if (hidden && this.opts.spotColors) {
-      const c = printColor(hidden, this.opts.spotColors, !!this.opts.ahCssExtensions);
-      if (c?.startsWith('spot(')) return c;
-    }
     return printColor(decls[prop] ?? (alt ? decls[alt] : undefined) ?? '', this.opts.spotColors, !!this.opts.ahCssExtensions);
   }
 
@@ -3412,7 +3741,9 @@ class HtmlImporter {
     // 字は 1 字ずつ字形を引くので、字の並びで決まる機能 (frac の分数・ordn の序数・calt) は書体が 1 字で差し替えるものだけ効く
     // (合字の機能 liga・clig・dlig・hlig は、字の並びを 1 つの単位にまとめてから当てる: inlineFlatten.ts の ligatureUnits)
     if (diff('font-variant-numeric') || diff('font-variant-position') || diff('font-variant-ligatures') || diff('font-variant-east-asian') || diff('font-feature-settings')) {
-      const NUM: Record<string, string> = {
+      // 下の 3 つの表は入力の値 (font-variant-numeric: __proto__ など) で引くので、原型を持たないものにする
+      const NUM = {
+        __proto__: null,
         'oldstyle-nums': 'onum',
         'lining-nums': 'lnum',
         'proportional-nums': 'pnum',
@@ -3421,16 +3752,16 @@ class HtmlImporter {
         'stacked-fractions': 'afrc',
         'slashed-zero': 'zero',
         ordinal: 'ordn',
-      };
+      } as unknown as Record<string, string>;
       const feats = c('font-variant-numeric').split(/\s+/).flatMap((v) => (NUM[v] ? [NUM[v]] : []));
       const pos = c('font-variant-position');
       if (pos === 'super') feats.push('sups');
       else if (pos === 'sub') feats.push('subs');
-      const LIG: Record<string, string> = { 'discretionary-ligatures': 'dlig', 'historical-ligatures': 'hlig', contextual: 'calt' };
+      const LIG = { __proto__: null, 'discretionary-ligatures': 'dlig', 'historical-ligatures': 'hlig', contextual: 'calt' } as unknown as Record<string, string>;
       for (const v of c('font-variant-ligatures').split(/\s+/)) if (LIG[v] && !feats.includes(LIG[v])) feats.push(LIG[v]);
       // font-variant-east-asian (Fonts 4 §6.10): 字形の版 (JIS78・83・90・2004、簡体・繁体)・字の幅 (全角・プロポーショナル)・ルビ用の字形。
       // 値ごとに決まった OpenType の機能を使う。書体にその機能が無ければ、何も変わらない (§7.2: 作り出さない)
-      const EA: Record<string, string> = { jis78: 'jp78', jis83: 'jp83', jis90: 'jp90', jis04: 'jp04', simplified: 'smpl', traditional: 'trad', 'full-width': 'fwid', 'proportional-width': 'pwid', ruby: 'ruby' };
+      const EA = { __proto__: null, jis78: 'jp78', jis83: 'jp83', jis90: 'jp90', jis04: 'jp04', simplified: 'smpl', traditional: 'trad', 'full-width': 'fwid', 'proportional-width': 'pwid', ruby: 'ruby' } as unknown as Record<string, string>;
       for (const v of c('font-variant-east-asian').split(/\s+/)) if (EA[v] && !feats.includes(EA[v])) feats.push(EA[v]);
       for (const m of c('font-feature-settings').matchAll(/["']([a-z0-9]{4})["']\s*(on|off|\d+)?/gi)) {
         const on = m[2] === undefined || m[2] === 'on' || parseInt(m[2], 10) > 0;
@@ -3547,14 +3878,32 @@ class HtmlImporter {
    * 祖先との間で text-align の計算値が変わっていれば、間の要素が別の値を指定しているので、受け継がない
    */
   private insideOutsideAlign(el: Element, prop: 'text-align' | 'text-align-last' = 'text-align'): 'inside' | 'outside' | undefined {
+    // 祖先を、計算値が同じ間だけさかのぼる。親の計算値が同じなら、答えは親の答えと同じなので、たどった要素の答えを覚える
+    // (深い入れ子 (128 段) の段落が多い文書で、段落ごとに祖先をたどり直すと、段数 × 段落の数の手間になった)
+    let memo = this.insideOutsideMemo.get(prop);
+    if (!memo) this.insideOutsideMemo.set(prop, (memo = new WeakMap()));
     const own = this.cs(el)(prop);
+    const chain: Node[] = [];
+    let found: 'inside' | 'outside' | null = null;
     for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
-      if (this.cs(e as Element)(prop) !== own) return undefined;
+      if (e !== el && this.cs(e as Element)(prop) !== own) break;
+      const known = memo.get(e);
+      if (known !== undefined) {
+        found = known;
+        break;
+      }
+      chain.push(e);
       const v = this.pg(e as Element)[prop]?.trim().toLowerCase();
-      if (v === 'inside' || v === 'outside') return v;
+      if (v === 'inside' || v === 'outside') {
+        found = v;
+        break;
+      }
     }
-    return undefined;
+    for (const e of chain) memo.set(e, found);
+    return found ?? undefined;
   }
+  /** insideOutsideAlign の答え (性質ごと・要素ごと。null は無し) */
+  private insideOutsideMemo = new Map<string, WeakMap<Node, 'inside' | 'outside' | null>>();
 
   /** 段落の書式 (揃え・字下げ・孤立行) */
   /**
@@ -3569,7 +3918,7 @@ class HtmlImporter {
       const v = this.pg(e as Element)['-ah-last-line-end-indent']?.trim().toLowerCase();
       if (!v || v === 'inherit') continue;
       if (/%$/.test(v)) {
-        this.miss('-ah-last-line-end-indent の百分率');
+        this.miss(msg('-ah-last-line-end-indent の百分率', '-ah-last-line-end-indent (percentage)'));
         return undefined;
       }
       const m = /^(-?[\d.]+)rem$/.exec(v);
@@ -3861,7 +4210,7 @@ class HtmlImporter {
       // flex・grid の容器、表とその中の箱 (セル・行・列) の語の大きさは未対応 (auto として組み、知らせる)
       const sizable = /^(block|list-item|flow-root|inline-block)$/.test(disp);
       if ((size || min || max) && !sizable && disp !== 'inline' && disp !== 'contents' && disp !== 'none') {
-        const name = /flex|grid/.test(disp) ? 'flex・grid の容器' : '表とその中の箱';
+        const name = /flex|grid/.test(disp) ? msg('flex・grid の容器', 'flex and grid containers') : msg('表とその中の箱', 'tables and boxes in them');
         for (const [p, k] of [['width', size], ['min-width', min], ['max-width', max]] as const) if (k) this.miss(`${B(p)}: ${typeof k === 'object' ? 'fit-content()' : k} (${name})`);
       }
       if ((size || min || max) && sizable) {
@@ -3884,7 +4233,7 @@ class HtmlImporter {
       const kwB = (p: string) => /^(min-content|max-content|fit-content)/.test((c(B(p)) || '').trim().toLowerCase());
       const hp = B('height') as 'width' | 'height';
       if (o[hp] !== undefined && !o.aspectRatio) {
-        if (kwB('max-height')) this.miss(`${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (${hp} の指定のある箱)`);
+        if (kwB('max-height')) this.miss(msg(`${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (${hp} の指定のある箱)`, `${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (box with ${hp})`));
         else if (kwB('min-height')) {
           const bpB = vertB ? edge('left') + edge('right') : edge('top') + edge('bottom');
           o.minBlockSize = Math.max(o.minBlockSize ?? 0, o[hp]! - (bb ? bpB : 0));
@@ -3984,27 +4333,21 @@ class HtmlImporter {
     return this.cs(el)('display') || 'inline';
   }
 
-  /** 文字列の空白の扱い (white-space)。和文どうしの間の改行は詰める (CSS Text 3 の segment break の扱い) */
-  private text(raw: string, parent: Element): string {
+  /**
+   * 文字列の空白の扱い (white-space)。和文どうしの間の改行は詰める (CSS Text 3 の segment break の扱い)。
+   * pseudo を渡すと、その疑似要素 (::before・::after) の white-space で扱う (生成した内容の文字列。下の pseudo を見る)
+   */
+  private text(raw: string, parent: Element, pseudo?: '::before' | '::after'): string {
     // 特殊な空白: 改行する幅の空白 (U+2000〜U+200A など) は普通の空白にする。改行しない U+202F・U+2007 はそのまま
     // (書体が持たなければ、決まった幅の空白として測る)
-    let t = raw.replace(/[\u2000-\u2006\u2008-\u200A\u205F]/g, ' ');
+    // 生成した内容 (pseudo) の字は、作成者が逃がし (\2003 など) で選んだ字なので変えない。U+2000 だけは、改行の印 (SEG_BREAK) と紛れるので空白にする
+    // 生成した内容の CR (\D) は空白と同じ (CSS Text 3 §4.1: "Carriage returns (U+000D) are treated identically to spaces")。
+    // 文書の字の CR は、HTML の構文解析が改行 (LF) にするので、ここでは改行として扱う
+    let t = raw.replace(pseudo ? /[\u2000\r]/g : /[\u2000-\u2006\u2008-\u200A\u205F]/g, ' ');
     // アンテナハウスの -ah-linefeed-treatment: ignore (XSL §7.16.7): 改行を捨てる (空白にもしない)
     if (this.inh(parent, 'linefeed-treatment', true) === 'ignore') t = t.replace(/\r\n?|\n/g, '');
-    const ws = this.cs(parent)('white-space') || 'normal';
-    if (ws === 'pre' || ws === 'pre-wrap' || ws === 'break-spaces') return t.replace(/\r\n?/g, '\n');
-    let s = t.replace(/\r\n?/g, '\n').replace(/[ \t]*\n[ \t]*/g, '\n');
-    // 改行 (CSS Text 3 §4.1.3): 続いた改行は 1 つにまとめ、残った改行は、前後の字で空白にするか消すかを決める (決め方は UA に任されている)。
-    // ここでは、前後が和文なら消し、それ以外は空白にする (pre-line は改行のまま)。前後の字は見るだけで、置き換えには含めない
-    // (含めると、1 字だけの行が続くとき (あ\nい\nう) に、次の改行の前の字を見られない)
-    if (ws !== 'pre-line')
-      s = s.replace(/\n+/g, (m, at: number, all: string) => {
-        const a = Array.from(all.slice(Math.max(0, at - 2), at)).pop() ?? '';
-        const cp = all.codePointAt(at + m.length);
-        const b = cp === undefined ? '' : String.fromCodePoint(cp);
-        return CJK.test(a) && CJK.test(b) ? '' : ' ';
-      });
-    return s.replace(/[ \t]+/g, ' ');
+    const ws = this.cs(parent, pseudo)('white-space') || 'normal';
+    return whiteSpaceText(t, ws, !/full-width/.test(this.cs(parent, pseudo)('text-transform') || ''));
   }
 
   /**
@@ -4041,7 +4384,7 @@ class HtmlImporter {
       marks.push({ at: items.length, order: orderOf(k) });
       this.enterCounters(this.cs(k), e);
       this.bookmark(k);
-      const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.inline(k, el) } as LBlock);
+      const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.flexItemInline(k, el, false) } as LBlock);
       items.push({ v: this.withFlexGrow(node, k, el), block: true });
     }
     flush();
@@ -4175,28 +4518,123 @@ class HtmlImporter {
     });
   }
 
+  /**
+   * 字だけを持つ display: contents の要素 e の、元の字 (空白の処理の前)。子が文字の節・コメント・処理命令・display: none の要素・
+   * 同じく字だけを持つ display: contents の要素だけで、e が ::before・::after を持たず、流れの外に出ないときに返す (ほかは undefined)。
+   * そうした要素は箱を作らず、中の字がその場所に入る (CSS Display 3 §2.5) ので、まわりの続いた文字の並びの一部になる
+   */
+  private contentsText(e: Element): string | undefined {
+    if (this.display(e) !== 'contents' || this.hasPseudoContent(e, '::before') || this.hasPseudoContent(e, '::after') || this.outOfFlow(e)) return undefined;
+    let raw = '';
+    for (const n of Array.from(e.childNodes)) {
+      if (isTextNode(n)) raw += n.textContent ?? '';
+      else if (n.nodeType === 1) {
+        if (this.display(n as Element) === 'none') continue;
+        const r = this.contentsText(n as Element);
+        if (r === undefined) return undefined;
+        raw += r;
+      }
+    }
+    return raw;
+  }
+
   /** 流し込む項目 (ブロックか行の中のもの) */
   /**
    * part を渡すと、el の子のうち part の節だけを流し込む (表・行の直下の、表の部分でない中身を包む無名のセル。CSS 2.1 §17.2.1)。
    * el そのものに付くもの (::before・::after、content での置き換え、参照先の記録、カウンターの有効範囲の終わり) は扱わない
    */
+  /**
+   * 要素の ::before・::after を items に置く。flex・grid の容器 (item) では、項目としてブロック化する (Flexbox 1 §4: ::before・::after も項目)。
+   * 絶対配置の箱はそのまま置く
+   */
+  private flowPseudo(el: Element, which: '::before' | '::after', items: FlowItem[], item: boolean) {
+    const at = items.length;
+    this.pseudo(el, which, items);
+    if (!item) return;
+    const added = items.slice(at);
+    if (!added.some((x) => !x.block && (typeof x.v !== 'string' || x.v.trim()))) return;
+    items.splice(at, added.length, { v: { type: 'block', ...this.textStyle(el, el, which), ...this.boxStyle(el, which), children: added.map((x) => (x.block ? x.v : stripInlineFrame(x.v as LInlineLevel))) } as LBlock, block: true });
+  }
+
+  /**
+   * flex・grid の項目にした行内の要素 (k。容器は el) の中身。項目はブロック化する (Flexbox 1 §4・CSS Grid 1 §6.1) ので、中身の並びの端は
+   * 行の頭・終わりで、端の空白 (タグの直後の改行を含む) は消える (CSS Text 3 §4.1.2 の 1・3)。行内の要素の中身 (inline) は端の空白を残して読む
+   * ので、ここで collapseAcrossInlines を掛ける。white-space が空白を残す項目 (pre・pre-wrap・break-spaces) では消さない。
+   * strip: 罫線・内側の余白・背景・余白を、項目の箱に付けたので中身の行内の箱からは外す
+   */
+  private flexItemInline(k: Element, el: Element, strip: boolean): Array<LBlockLevel | LInlineLevel> {
+    // 中のブロック (CSS 2.1 §9.2.1.1) は、行内の箱を分けて項目の中のブロックとして並べる (splitAtBlocks)
+    const kids = this.splitAtBlocks(this.inline(k, el), k).map((x) => x.v);
+    const out = strip ? kids.map((x) => (isBlockLevel(x) ? x : stripInlineFrame(x as LInlineLevel))) : kids;
+    return this.asBlockContent(out, k);
+  }
+
+  /**
+   * 行内の要素 e の中身 (inline・flowChildren(e, true) の結果。端の空白を残して読んだもの) を、1 つのブロックの中身として仕上げる。
+   * flex・grid の項目にした行内の要素・脚注の本体 (float: footnote)・柱に出す要素 (position: running()) の中身・行内の要素の回り込みは、
+   * それ自体が 1 つのブロックの中身なので、ブロックの中身 (collapseFlowWhitespace の !inline) と同じ決まりで扱う: 行内の要素の境目を
+   * またいで空白を詰め、行の頭・終わりの空白 (タグの直後の改行を含む) を消す (CSS Text 3 §4.1.1 の 4・§4.1.2 の 1・3)。節の端の改行は、
+   * 境目をまたいだ前後の字で、空白にするか消す (§4.1.3。resolveSegmentBreaks)。white-space が空白を残す要素 (pre・pre-wrap・break-spaces)
+   * では空白は消さず、中の空白を詰める行内の要素の、節の端の改行だけを決める
+   */
+  private asBlockContent(list: Array<LBlockLevel | LInlineLevel>, e: Element): Array<LBlockLevel | LInlineLevel> {
+    if (/^(normal|nowrap|pre-line)$/.test(this.cs(e)('white-space') || 'normal')) collapseAcrossInlines(list);
+    else resolveSegmentBreaks(list, false);
+    return list;
+  }
+
+  /**
+   * 行内の要素 e の箱の並び (inline の結果) を、中のブロックの前後で分ける (splitInlineAtBlocks。CSS 2.1 §9.2.1.1)。分けた所の辺は、
+   * e の書字方向で決める (縦書きは上・下、横書きは左・右。右から左へ書く要素は右・左)
+   */
+  private splitAtBlocks(list: LInlineLevel[], e: Element): FlowItem[] {
+    const c = this.cs(e);
+    const vert = /^(vertical|sideways)/.test(c('writing-mode'));
+    const [s, en] = vert ? (['top', 'bottom'] as const) : c('direction') === 'rtl' ? (['right', 'left'] as const) : (['left', 'right'] as const);
+    const out: FlowItem[] = [];
+    for (const n of list) pushAll(out, splitInlineAtBlocks(n, s, en));
+    return out;
+  }
+
   private flowChildren(el: Element, inline = false, part?: Node[]): Array<LBlockLevel | LInlineLevel> {
     const items: FlowItem[] = [];
     // flex・grid の容器をふつうのブロックとして組むとき (縦並びの flex など) も、項目は order の順 (order-modified document order。
     // CSS Flexbox 1 §5.4) に並べる。::before・::after も項目 (§4)。項目ごとに items の区切り (at) と order を覚え、最後に並べ替える。
     // 続いた文字の並びは 1 つの無名の項目で、order は 0
     const flexBox = /^(inline-)?(flex|grid)$/.test(this.display(el));
+    // 項目をブロック化するか: 行内の要素として組む (inline。display: inline-flex・inline-grid の要素を inlineBox が組むとき) ときはしない。
+    // 行内の箱 (LInline) の子にブロックを入れると、組版がそれを置かず、中身が丸ごと消え、まわりの空白も行の境目として消える。
+    // inline-flex・inline-grid は本来は行内の flex・grid の容器 (Flexbox 1 §3・CSS Grid 1 §5.1) だが、それとしては組まず、0.2.0 と同じに
+    // 中身を行の中に組む (項目を横に並べた形に近い。縦並び・項目の間の空き・揃えは効かない)。
+    // 行内の容器は行内水準の箱で、外の段落の行を分けない。ブロックになる項目 (ブロックの子・中にブロックを持つ行内の要素・リストの項目・表の部分) は、
+    // 行の中の分けられない箱 (inline-block と同じ箱。幅は中身の幅、CSS 2.1 §10.3.9) にして横に並べる (下の flexInlineItems)。
+    // 「inline-block の中の flex・grid の容器」としては組まない: ブラウザの配置を使わない組み方 (flexNoRect) は容器の幅を contentWidth から取るので、
+    // grid の容器が行いっぱいになり後ろの字を次の行に送る、flex-grow の項目が重なる、などが起きる
+    const blockify = flexBox && !inline;
+    const inlineFlex = flexBox && inline;
     const marks: Array<{ at: number; order: number }> = [];
+    /** 行内の flex・grid の容器の直下の、続いた文字の並びごとの項目と元の字 (flexInlineItems で使う) */
+    const textRuns: TextRun[] = [];
+    /**
+     * いま続いている文字の並び。コメント・処理命令 (CSS Display 3 §1: CSS では、無いものとして扱う)・display: none の要素と、字だけを持つ
+     * display: contents の要素 (CSS Display 3 §2.5: 中身がその場所に入る) は、並びを切らない。ほかの要素は切る
+     */
+    let openRun: TextRun | undefined;
+    const runOf = (): TextRun => {
+      if (!openRun) textRuns.push((openRun = { items: [], raw: '' }));
+      return openRun;
+    };
     const orderOf = (e: Element, ps?: '::before' | '::after') => (!ps && /^(absolute|fixed)$/.test(this.cs(e)('position')) ? 0 : parseInt(this.cs(e, ps)('order'), 10) || 0);
     if (flexBox) marks.push({ at: 0, order: orderOf(el, '::before') });
     this.lastPseudoText['::before'] = '';
-    if (!part) this.pseudo(el, '::before', items);
+    if (!part) this.flowPseudo(el, '::before', items, blockify);
     const before = this.lastPseudoText['::before'];
     // 参照先の番号は、要素 (と ::before) のカウンターを当てた直後の値
     let snap: Record<string, number> | undefined;
     const elId = el.getAttribute?.('id');
     if (elId && !this.lookup && !part) {
-      snap = {};
+      // カウンターの名前で引く (target-counter(…, constructor) など) ので、原型を持たない表にする
+      snap = Object.create(null) as Record<string, number>;
       for (const [n, st] of this.counters) if (st.length) snap[n] = st[st.length - 1].v;
     }
     // 要素の content (normal 以外) は、中身を置き換える (Content 3 §1.2)。ただし空の文字列 ('') は、その要素に ::before / ::after の
@@ -4223,8 +4661,35 @@ class HtmlImporter {
     let listStarted = false;
     for (let i = 0; i < kids.length; i++) {
       const n = kids[i];
-      if (flexBox && (n.nodeType !== 3 || i === 0 || kids[i - 1].nodeType !== 3)) marks.push({ at: items.length, order: n.nodeType === 1 ? orderOf(n as Element) : 0 });
+      if (flexBox && (n.nodeType !== 3 || i === 0 || kids[i - 1].nodeType !== 3) && !(inlineFlex && isTextNode(n) && i > 0 && isTextNode(kids[i - 1]))) marks.push({ at: items.length, order: n.nodeType === 1 ? orderOf(n as Element) : 0 });
       if (n.nodeType === 3 || n.nodeType === 4) {
+        if (blockify) {
+          // flex・grid の容器の直下の、続いた文字の並びは、1 つの無名の項目 (ブロック)。空白だけの並びは項目にしない (Flexbox 1 §4)
+          const fi: FlowItem[] = [];
+          for (; i < kids.length && (kids[i].nodeType === 3 || kids[i].nodeType === 4); i++) {
+            const t = this.text(kids[i].textContent ?? '', el);
+            if (t) for (const v of this.decorateText(t, el)) fi.push({ v, block: false });
+          }
+          i--;
+          if (fi.some((x) => typeof x.v !== 'string' || x.v.trim())) items.push({ v: { type: 'block', children: this.collapseFlowWhitespace(fi, /^pre/.test(this.cs(el)('white-space'))) } as LBlock, block: true });
+          continue;
+        }
+        if (inlineFlex) {
+          // 行内の flex・grid の容器の直下の、続いた文字の並び (Flexbox 1 §4・CSS Grid 1 §6 の child text sequence) は、まとめて覚えておく。
+          // ブロックの項目があれば、下の flexInlineItems が 1 つの無名の項目にする (空白だけの並びは組まない)。
+          // 空白だけかは、空白の処理と字の変換の前の元の字 (raw) で見る (text() は節の端の改行を印 SEG_BREAK にし、text-transform: full-width は
+          // 空白を全角の空白にする。CSS Text 3 §2.1: 字の変換は、空白の処理の詰める段 (§4.1.1) の後)
+          const r = runOf();
+          r.raw += n.textContent ?? '';
+          const t = this.text(n.textContent ?? '', el);
+          if (t)
+            for (const v of this.decorateText(t, el)) {
+              const it: FlowItem = { v, block: false };
+              items.push(it);
+              r.items.push(it);
+            }
+          continue;
+        }
         const t = this.text(n.textContent ?? '', el);
         if (t) for (const v of this.decorateText(t, el)) items.push({ v, block: false });
         continue;
@@ -4233,6 +4698,14 @@ class HtmlImporter {
       const e = n as Element;
       const d = this.display(e);
       if (d === 'none') continue;
+      // 字だけを持つ display: contents の要素の中身は、まわりの文字の並びに入れる (下の pushAll の所)。ほかの要素は並びを切る
+      let joinRun: TextRun | undefined;
+      let joinRaw: string | undefined;
+      if (inlineFlex) {
+        joinRaw = d === 'contents' ? this.contentsText(e) : undefined;
+        if (joinRaw !== undefined) joinRun = runOf();
+        else openRun = undefined;
+      }
       // flex の容器の visibility: collapse の項目は、主軸から外す (Flexbox 1 §4.4)
       if (flexBox && /flex$/.test(this.display(el)) && this.cs(e)('visibility') === 'collapse') continue;
       const pg = this.pg(e);
@@ -4285,7 +4758,7 @@ class HtmlImporter {
         items.push({ v: this.list(el, lis.elements), block: true });
         continue;
       }
-      if (flexBox && d === 'contents') {
+      if (blockify && d === 'contents') {
         // flex・grid の容器の中の display: contents (直下の文字か ::before・::after を持つもの。ほかは expandContents で展開済み):
         // 中の文字の並び・疑似要素・子の要素を、それぞれ項目として並べる (CSS Display 3 §2.5・Flexbox 1 §4)
         this.flexContentsItems(e, el, items, marks, orderOf);
@@ -4298,15 +4771,39 @@ class HtmlImporter {
       } else if (this.isBlock(d, e)) {
         const b = this.block(e, el);
         if (b) items.push({ v: this.withFlexGrow(b, e, el), block: true });
+      } else if (blockify) {
+        // flex・grid の項目は、ブロック化する (Flexbox 1 §4・CSS Grid 1 §6.1・CSS Display 3 §2.7)。縦並びの flex の行内の要素 (span など) を、
+        // 横に並べずに縦に積む。罫線・内側の余白・背景・余白は項目の箱に付け、中身の行内の箱からは外す (横並びの flexNoRect と同じ)
+        const node = { type: 'block', ...this.textStyle(e, el), ...this.boxStyle(e), children: this.flexItemInline(e, el, true) } as LBlock;
+        items.push({ v: this.withFlexGrow(node, e, el), block: true });
       } else {
-        for (const v of this.inline(e, el)) items.push({ v, block: false });
+        // 中にブロックを持つ行内の要素 (<span><p>…</p></span>・<a><div>…</div></a> など) は、ブロックの前後で分ける (CSS 2.1 §9.2.1.1)
+        const split = this.splitAtBlocks(this.inline(e, el), e);
+        // 行内の flex・grid の容器の項目にした行内の要素で、中にブロックを持つもの: 項目は 1 つのブロックの箱 (Flexbox 1 §4) なので、分けた並びを
+        // 中身にした、行の中の分けられない箱にする。罫線・内側の余白・背景・余白は箱に付け、中身の行内の箱からは外す (flexItemInline と同じ)
+        if (inlineFlex && split.some((x) => x.block)) {
+          const kids = this.asBlockContent(
+            split.map((x) => (x.block ? x.v : stripInlineFrame(x.v as LInlineLevel))),
+            e,
+          );
+          const box = this.boxStyle(e);
+          delete box.breakBefore;
+          delete box.breakAfter;
+          items.push({ v: { type: 'inline-container', decorateBox: false, baselineFrom: 'first', ...(box as Omit<LInlineContainer, 'type' | 'children'>), children: kids } as LInlineContainer, block: false });
+        } else {
+          pushAll(items, split);
+          if (joinRun) {
+            joinRun.raw += joinRaw;
+            pushAll(joinRun.items, split);
+          }
+        }
       }
       if (!inline) for (const m of this.pendingMarkers.splice(0)) items.push({ v: m, block: false });
       this.flushPendingAbs(el, inline, items);
     }
     if (flexBox) marks.push({ at: items.length, order: orderOf(el, '::after') });
     this.lastPseudoText['::after'] = '';
-    if (!part) this.pseudo(el, '::after', items);
+    if (!part) this.flowPseudo(el, '::after', items, blockify);
     // column-reverse は項目を逆の順に積む (Flexbox 1 §5.1。row-reverse は flexNoRect で並べ替える)
     const reverse = flexBox && /flex$/.test(this.display(el)) && this.cs(el)('flex-direction') === 'column-reverse';
     // 縦並びの flex の項目の間の空き (row-gap。CSS Box Alignment 3 §8: % は容器の高さが決まっていればその割合、決まらなければ 0)
@@ -4334,9 +4831,140 @@ class HtmlImporter {
       }
       items.splice(0, items.length, ...out);
     }
+    if (inlineFlex) this.flexInlineItems(items, textRuns, el);
     if (snap && elId) this.record.set(elId, { counters: snap, text: this.wantText ? this.plainText(el) : '', before, after: this.lastPseudoText['::after'] });
     if (!part) this.leaveCounters(el);
-    return this.collapseFlowWhitespace(items, /^pre/.test(this.cs(el)('white-space')));
+    return this.collapseFlowWhitespace(items, /^pre/.test(this.cs(el)('white-space')), inline);
+  }
+
+  /**
+   * 行内の要素として組む inline-flex・inline-grid の容器の中身 (items) の、流れの中のブロック (ブロックの子・リスト・表など) を、行の中の
+   * 分けられない箱 (inline-block と同じ。幅は中身の幅) で包む。容器は行内水準の箱 (Flexbox 1 §3・CSS Grid 1 §5.1) で、外の段落の行を
+   * 分けないので、ブロックの項目も行の中に横に並べる (ブロックのまま行内の箱の子に残すと、splitInlineAtBlocks が外の段落の行内の箱ごと
+   * 前後で分け、項目が縦に積まれる)。箱の基線は、中の最初の行の基線 (flex の容器の基線は最初の項目の基線。Flexbox 1 §8.5)。
+   * 高さの無い飛び先の印 (outOfFlowMarks) は包まない。
+   *
+   * ブロックの項目を包んだときは、直下の続いた文字の並び (textRuns) も項目として扱う (Flexbox 1 §4・CSS Grid 1 §6):
+   * 空白 (white-space の効く字: 空白・タブ・改行。NBSP は含まない) だけの並びは、white-space の値に関わらず組まない (項目の間・容器の頭と
+   * 終わりの改行と字下げが、行の中の空白の字にならない)。ほかの並びは、1 つの無名のブロックの項目にし、同じく分けられない箱で包む
+   * (その頭・終わりの空白は、項目の行の頭・終わりの空白として消える。CSS Text 3 §4.1.2。white-space: pre・pre-wrap などでは残る)。
+   * 空白だけかは、並びの元の字 (空白の処理・字の変換の前) で見る。並びは、コメント・display: none の要素・字だけを持つ display: contents の
+   * 要素では切れない (flowChildren の openRun)。
+   * 行内の要素だけの項目の容器 (ブロックの項目が無いもの) は、文字の並びを行の中に組んだままにする
+   */
+  private flexInlineItems(items: FlowItem[], textRuns: TextRun[], el: Element) {
+    let wrapped = false;
+    for (const it of items) {
+      if (!it.block || !isInFlowBlock(it.v) || this.outOfFlowMarks.has(it.v as LBlock)) continue;
+      it.v = { type: 'inline-container', decorateBox: false, baselineFrom: 'first', children: [it.v as LBlockLevel] } as LInlineContainer;
+      it.block = false;
+      wrapped = true;
+    }
+    if (!wrapped || !textRuns.length) return;
+    const ws = this.cs(el)('white-space') || 'normal';
+    const pre = /^pre/.test(ws);
+    // 空白を詰める値か (CSS Text 3 §3 の表: normal・nowrap・pre-line は詰め、pre・pre-wrap・break-spaces は詰めない)。pre とは別 (pre-line は
+    // 空白を詰めるが、collapseFlowWhitespace には、これまでどおり pre として渡す)
+    const collapse = /^(normal|nowrap|pre-line)$/.test(ws);
+    // つなぎ目で詰める字: 空白と、節の端の改行の印 SEG_BREAK (normal・nowrap)。pre-line では、改行は残すので印にならず、改行のまま (§4.1.1)
+    const preLine = ws === 'pre-line';
+    const brCode = preLine ? 0x0a : SEG_BREAK.charCodeAt(0);
+    /** つなぎ目で詰める字か (空白と、改行の印か改行) */
+    const isEdge = (c: number) => c === 0x20 || c === brCode;
+    /** s の頭から続く、詰める字の数 */
+    const headLen = (s: string) => {
+      let i = 0;
+      while (i < s.length && isEdge(s.charCodeAt(i))) i++;
+      return i;
+    };
+    /** s の終わりに続く、詰める字の始まりの位置 (正規表現の `[…]*$` は頭から 1 字ずつ試すので、長い文字列で遅い。終わりから戻る) */
+    const tailStart = (s: string) => {
+      let i = s.length;
+      while (i > 0 && isEdge(s.charCodeAt(i - 1))) i--;
+      return i;
+    };
+    /** s の中の改行の印か改行の数 */
+    const countBr = (s: string) => {
+      let n = 0;
+      for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === brCode) n++;
+      return n;
+    };
+    /** つなぎ目の前の終わりと次の頭の、詰める字の続き (改行の印か改行が br 個、全部で len 字) を、まとめた字 */
+    const midOf = (br: number, len: number) => (br ? (preLine ? '\n'.repeat(br) : SEG_BREAK) : len ? ' ' : '');
+    // 並びの最初の項目を、無名の項目 (空白だけなら無し) に置き換え、残りの項目は除く
+    const head = new Map<FlowItem, FlowItem | undefined>();
+    const drop = new Set<FlowItem>();
+    for (const { items: run, raw } of textRuns) {
+      if (!run.length) continue;
+      // 空白だけかは、元の字 (空白の処理・字の変換の前) で見る (Flexbox 1 §4: document white space characters だけの並び)
+      const blank = /^[ \t\n\r\f]*$/.test(raw);
+      // 並びの中の、コメントなどで分かれた文字の節は、1 つの並びとして空白を処理する (CSS Text 3 §4.1.1)。collapseFlowWhitespace は隣り合う
+      // 文字列をそのままつなぎ、その後の collapseAcrossInlines は 1 つの文字列の中の続いた空白を詰めない (text() が節ごとに詰めている) ので、
+      // 空白を詰める値では、ここで、つなぎ目の前の終わりと次の頭の、空白・改行の続きを 1 つにまとめる (§4.1.1 の 4: 詰める空白の直後の詰める空白は消す):
+      //  - 改行の印 SEG_BREAK を含めば、印 1 つにする。改行の前後の空白は消し (§4.1.1 の 1)、印は後で resolveSegmentBreaks が、前後の字で
+      //    消すか空白にする (§4.1.3。コメントの無い「あ \nい」と同じく、和文の間では消える)
+      //  - pre-line で改行を含めば、改行は残し (§4.1.1・§3 の表)、前後の空白は消す (§4.1.1 の 1)
+      //  - 空白だけなら、空白 1 つにする
+      // pre・pre-wrap・break-spaces は、空白も改行も残すので、そのままつなぐ
+      // つなぐ文字列は、断片を配列に貯めて最後に 1 度だけつなぐ (つなぐたびに長い文字列を作り直すと、節の数の 2 乗の手間になる)。
+      // cur は、いまつないでいる文字列の項目 (joined の最後) で、中身は body を順につないだ後に、終わりの詰める字の続き (tail) を足したもの。
+      // tail は、元の字のまま (raw) か、つなぎ目でまとめた字 (raw が undefined。字は midOf(br, len) で作る) で、どちらも改行の印か改行の数 br と
+      // 字の数 len を持つ (pre-line で、まとめた長い改行の続きを、つなぐたびに作り直したり数え直したりしない)
+      const joined: FlowItem[] = [];
+      let cur: { item: FlowItem; body: string[]; raw: string | undefined; br: number; len: number } | undefined;
+      const flush = () => {
+        if (cur) cur.item.v = cur.body.join('') + (cur.raw ?? midOf(cur.br, cur.len));
+        cur = undefined;
+      };
+      for (const x of run) {
+        if (!(collapse && typeof x.v === 'string')) {
+          flush();
+          joined.push({ ...x });
+          continue;
+        }
+        if (!cur) {
+          const item = { ...x };
+          joined.push(item);
+          const e = tailStart(x.v);
+          const raw = x.v.slice(e);
+          cur = { item, body: [x.v.slice(0, e)], raw, br: countBr(raw), len: raw.length };
+          continue;
+        }
+        const b = headLen(x.v);
+        const br = cur.br + countBr(x.v.slice(0, b));
+        const len = cur.len + b;
+        const rest = x.v.slice(b);
+        if (rest) {
+          // rest は詰める字で始まらないので、つなぎ目でまとめた字は、ここで中身に入る
+          const mid = midOf(br, len);
+          if (mid) cur.body.push(mid);
+          const e = tailStart(rest);
+          cur.body.push(rest.slice(0, e));
+          cur.raw = rest.slice(e);
+          cur.br = countBr(cur.raw);
+          cur.len = cur.raw.length;
+        } else {
+          // 次の節も詰める字だけ: まとめた字が、そのまま終わりの詰める字の続きになる (midOf の字の改行の数と字の数)
+          cur.raw = undefined;
+          cur.br = br ? (preLine ? br : 1) : 0;
+          cur.len = br ? cur.br : len ? 1 : 0;
+        }
+      }
+      flush();
+      const anon = { type: 'block', children: this.collapseFlowWhitespace(joined, pre) } as LBlock;
+      head.set(run[0], blank ? undefined : { v: { type: 'inline-container', decorateBox: false, baselineFrom: 'first', children: [anon] } as LInlineContainer, block: false });
+      for (const x of run.slice(1)) drop.add(x);
+    }
+    const out: FlowItem[] = [];
+    for (const it of items) {
+      if (drop.has(it)) continue;
+      if (!head.has(it)) out.push(it);
+      else {
+        const r = head.get(it);
+        if (r) out.push(r);
+      }
+    }
+    items.splice(0, items.length, ...out);
   }
 
   /**
@@ -4403,7 +5031,7 @@ class HtmlImporter {
     // 左へ出る)。ページの外へ出た分は、塗り足しの端で切れる。
     // 小口の余白に置く章の印 (ツメ) を、左右のページで対称に出す書き方 (-ah-float-x: inside)
     const side = this.ahFloatX(pg, true);
-    const content = side ? this.float(e, parent, side) : this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', children: this.inline(e, parent) } as LBlock);
+    const content = side ? this.float(e, parent, side) : this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', children: this.asBlockContent(this.splitAtBlocks(this.inline(e, parent), e).map((x) => x.v), e) } as LBlock);
     this.inRunning = false;
     this.runningFamily = undefined;
     const m: LMarker = { type: 'marker', className: `running:${run[1]}`, children: content ? [content] : [] };
@@ -4447,7 +5075,7 @@ class HtmlImporter {
     this.report.counts.footnotes++;
     // 脚注の本文は、要素の書式 (字の大きさ・行送り・揃え) で組む (書式は脚注に付ける。本文の前に番号が付く)
     // 段落の書式 (揃え・字下げ) は親と比べずに全部渡す (脚注の領域の既定は始め揃えなので、親と同じ両端揃えでも渡す)
-    const fn: LFootnote = { type: 'footnote', ...this.textStyle(e, parent), ...this.paragraphStyle(e, undefined), children: this.flowChildren(e, true) };
+    const fn: LFootnote = { type: 'footnote', ...this.textStyle(e, parent), ...this.paragraphStyle(e, undefined), children: this.asBlockContent(this.flowChildren(e, true), e) };
     // 参照番号 (::footnote-call) は、脚注の要素の場所に差し込む擬似要素 (GCPM 3 §2.2・§2.6)。元の脚注の要素から受け継ぐと読み、字の大きさ・太さは脚注の要素の値を
     // ::footnote-call の規則で上書きする (見出しの中の脚注でも、見出しの太字・字の大きさにはならない)
     Object.assign(fn, this.footnoteCallStyle(e, parent));
@@ -4538,6 +5166,8 @@ class HtmlImporter {
     if (pg.float && /\bmulticol\b/i.test(pg.float) && (fl === 'top' || fl === 'before')) {
       this.multicolTop.set(fv, /^\s*([\d.]+)gr\s*$/i.exec(pg.width ?? '')?.[1]);
       if (this.cs(e)('box-sizing') === 'border-box') this.multicolTopBorderBox.add(fv);
+      const grid = this.inheritedGrid(e);
+      if (grid) this.multicolTopGrid.set(fv, grid);
     }
     items.push({ v: fv, block: false });
     return true;
@@ -4595,8 +5225,12 @@ class HtmlImporter {
     return { elements, last: i };
   }
 
-  /** 隣り合う文字列をつなぎ、ブロック境界の空白を除く (pre は white-space: pre*。空白をそのまま残す) */
-  private collapseFlowWhitespace(items: FlowItem[], pre: boolean): Array<LBlockLevel | LInlineLevel> {
+  /**
+   * 隣り合う文字列をつなぎ、ブロック境界の空白を除く (pre は white-space: pre*。空白をそのまま残す)。
+   * inline: 行内の要素の中身の並び。並びの端は要素の境目で、行の頭・終わりではないので、端の空白は残す (CSS Text 3 §4.1.1: 空白を詰めるのは、
+   * 要素の境目をまたいだ並びで行う。行の頭・終わりの空白は §4.1.2 で行を組むときに消す)。消すと「word <b>bold </b>word」が「boldword」になる
+   */
+  private collapseFlowWhitespace(items: FlowItem[], pre: boolean, inline = false): Array<LBlockLevel | LInlineLevel> {
     const merged: FlowItem[] = [];
     for (const it of items) {
       const last = merged[merged.length - 1];
@@ -4618,7 +5252,7 @@ class HtmlImporter {
           // 空白だけの文字列 (行の頭・終わりで消える) も飛ばす
           if (!outOfFlow(merged[j]) && !(typeof merged[j].v === 'string' && !(merged[j].v as string).trim())) return false;
         }
-        return true;
+        return !inline;
       };
       const atStart = edge(k - 1, -1);
       const atEnd = edge(k + 1, 1);
@@ -4632,6 +5266,10 @@ class HtmlImporter {
       else if (t.trim() === '' && boundary) t = t.replace(/[^\n]/g, '');
       if (t) out.push(t);
     });
+    // ブロックの中身の並び (行内の要素の中身でないもの) では、行内の要素の境目をまたいで空白を詰める。white-space が空白を残すブロックでも、
+    // 中の空白を詰める行内の要素の、節の端の改行は決める (直下の字は空白も字として数える)
+    if (!inline && !pre) collapseAcrossInlines(out);
+    else if (!inline) resolveSegmentBreaks(out, false);
     return out;
   }
 
@@ -4680,7 +5318,7 @@ class HtmlImporter {
       parseColor: (v) => cssColor(v),
     });
     // 1 つの数式で描く字の数の上限 (mathLayout.ts の MAX_MATH_GLYPHS) を超えて、超えた分の字を描かなかったときは、報告する
-    if (r.truncated) this.miss('数式の字の数が上限を超えたので、超えた分の字を描きません');
+    if (r.truncated) this.miss(msg('数式の字の数が上限を超えたので、超えた分の字を描きません', 'the number of characters in the formula exceeds the limit; the excess characters are not drawn'));
     const bytes = new TextEncoder().encode(r.svg);
     let bin = '';
     for (let k = 0; k < bytes.length; k += 0x8000) bin += String.fromCharCode(...bytes.subarray(k, k + 0x8000));
@@ -4700,10 +5338,15 @@ class HtmlImporter {
     if (!content || content === 'none' || content === 'normal') return;
     this.enterCounters(c, el);
     this.countQuotes = true;
-    const parts = this.evalContent(el, parseContent(content), which);
+    // 生成した内容の文字列も、文書の字と同じに white-space で扱う (CSS 2.1 §12.2: 「\A」は改行で、white-space が pre などのときだけ
+    // 行を分ける。CSS Text 3 §4.1: 改行 (U+000A) は segment break で、§4.1.1〜§4.1.3 の決まりで、normal・nowrap なら空白にするか消し、
+    // pre・pre-wrap・pre-line なら強制改行にする)。前後の字で空白にするか消すかは、文書の中の改行と同じ決まり (前後が和文なら消す。
+    // 文字列の端の改行は、resolveSegmentBreaks が、行内の要素の境目をまたいだ前後の字で決める)。タブ (\9) も、normal なら空白になる
+    const parts = this.evalContent(el, parseContent(content), which).map((x) => (typeof x === 'string' ? this.text(x, el, which) : x));
     this.countQuotes = false;
     this.lastPseudoText[which] = parts.filter((x): x is string => typeof x === 'string').join('');
     if (this.wantText) this.pseudoTextOf.set(el, { ...this.pseudoTextOf.get(el), [which]: this.lastPseudoText[which] });
+    this.pseudoTextSeen.set(el, { ...this.pseudoTextSeen.get(el), [which]: this.lastPseudoText[which] });
     // 絶対配置の ::before / ::after (章の扉の背景画像など): 本文領域を基準にした箱にする
     const pos = c('position');
     if (pos === 'absolute' || pos === 'fixed') {
@@ -4754,7 +5397,7 @@ class HtmlImporter {
       boxC.backgroundImage = { src: '', gradient: bgrad, gradientFontSize: cssLen(c('font-size')) ?? 12, ...(gcl === 'border-box' || gcl === 'content-box' ? { clip: gcl } : {}) };
     }
         // (回り込みの ::before・::after の背景は 1 枚目だけ)
-        if (backgroundLayers(c).filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss('background-image: 2 枚目以降 (::before・::after)');
+        if (backgroundLayers(c).filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss(msg('background-image: 2 枚目以降 (::before・::after)', 'background-image: second and later layers (::before, ::after)'));
         const mg: Record<string, number> = {};
         for (const sd of ['top', 'right', 'bottom', 'left']) {
           const v = cssLen(c(`margin-${sd}`));
@@ -4874,7 +5517,7 @@ class HtmlImporter {
       cont.backgroundImage = { src: '', gradient: cgrad, gradientFontSize: cssLen(c('font-size')) ?? 12, ...(gcl === 'border-box' || gcl === 'content-box' ? { clip: gcl } : {}) };
     }
     // (絶対配置の ::before・::after の背景は 1 枚目だけ)
-    if (backgroundLayers(c).filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss('background-image: 2 枚目以降 (::before・::after)');
+    if (backgroundLayers(c).filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss(msg('background-image: 2 枚目以降 (::before・::after)', 'background-image: second and later layers (::before, ::after)'));
     if ((parseInt(c('z-index'), 10) || 0) < 0) cont.layer = 'behind';
     const rad = this.radiusOf(c);
     if (rad) cont.borderRadius = rad;
@@ -4916,14 +5559,96 @@ class HtmlImporter {
   /** ブロックの箱を組む。<a href> なら箱にリンクを付ける (ブロック・flex・表の <a> も、箱の全体が飛び先へのリンクになる) */
   private block(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
     const b = this.blockBox(el, parent, plain);
+    if (b) this.propagateEdgeAvoids(b, el);
     const link = b && this.linkOf(el);
     if (!b || !link) return b;
     if (b.type === 'block' && !(b as LBlock).link) {
       (b as LBlock).link = link;
       return b;
     }
-    // 表・高さの決まった箱などは、書式を持たないブロックで包んでリンクにする
-    return { type: 'block', link, children: [b] } as LBlock;
+    // 表・高さの決まった箱などは、書式を持たないブロックで包んでリンクにする (包んだ箱の前後の区切りは、中の箱と同じ所)
+    const wrap = { type: 'block', link, children: [b] } as LBlock;
+    this.propagateEdgeAvoids(wrap);
+    return wrap;
+  }
+
+  /** 区切りを避ける値 (break-before・break-after) の種類。avoid-column は段組の文脈の中だけで効く (CSS Fragmentation 3 §3.1) */
+  private avoidKind(v: string, el: Element): AvoidKind | undefined {
+    return v === 'avoid' || v === 'avoid-page' ? 'all' : v === 'avoid-column' && this.inMulticol(el) ? 'column' : undefined;
+  }
+
+  /** 要素が段組の容器 (段の分割の文脈を作る箱。CSS Multi-column 1 §2: column-count か column-width が auto でない) か */
+  private isMulticolContainer(el: Element): boolean {
+    const c = this.cs(el);
+    const cc = c('column-count');
+    const cw = c('column-width');
+    return (!!cc && cc !== 'auto') || (!!cw && cw !== 'auto');
+  }
+
+  /**
+   * 最初の子の break-before・最後の子の break-after の avoid 系の値を、箱の前・後ろの区切りに伝える (CSS Fragmentation 3 §3.1.1:
+   * 区切りは兄弟の間にだけあり、箱とその容器の間には無いので、最初の通常の流れの子の break-before は容器に、最後の子の break-after も容器に伝わる。
+   * 子は先に組んであるので、伝わった値をたどれば、入れ子の奥の子からも伝わる)。伝わった値は、同じ区切りに当たる値として合わせる:
+   * - 強制の区切り (箱の前の強制の区切り、最初の子へたどった強制の区切り。edgeBreaks) があれば、そこは強制で分ける (§4.3: 強制の区切りの値は、
+   *   同じ区切りに当たる avoid の値に勝つ)。avoid は伝えず、箱自身の avoid も外す (組むときに、前の箱とつなげようとしない)。
+   * - そうでなければ、どれかが避けるなら、そこでは分けない (§4.4 の Rule 1)。
+   * avoid-column の値は、段組の容器の手前で止める (§3.1.1: 伝わるのは、最も近い合う種類の分割の文脈の手前まで)。avoid・avoid-page は止めない
+   * (ページの分割の文脈は、段組の容器より外側)。
+   * flex・grid の容器 (§3.1.1: 並べ替え・並べて組む組み方は、それぞれの仕様の規則による) と、流れの外の箱 (絶対配置) には伝えない。
+   * el は箱の要素 (無ければ、書式を持たない包みの箱。中の箱の値をそのまま伝える)
+   */
+  private propagateEdgeAvoids(node: LBlockLevel, el?: Element): void {
+    if (node.type !== 'block' && node.type !== 'table' && node.type !== 'block-container') return;
+    if (node.type === 'block-container' && node.absolutePosition) return;
+    const own = this.edgeAvoids.get(node) ?? {};
+    const c = el ? this.cs(el) : undefined;
+    if (c) {
+      own.before = maxAvoid(own.before, this.avoidKind(c('break-before') || c('page-break-before'), el!));
+      own.after = maxAvoid(own.after, this.avoidKind(c('break-after') || c('page-break-after'), el!));
+    }
+    // 中身の子から伝える (表の中身は行。flex・grid の容器も伝えない)
+    const flexBox = !!el && /^(inline-)?(flex|grid)$/.test(this.display(el));
+    const children = node.type !== 'table' && !flexBox ? ((node as LBlock).children as ReadonlyArray<LBlockLevel | LInlineLevel>) : undefined;
+    const stopColumn = !!el && this.isMulticolContainer(el);
+    for (const side of ['before', 'after'] as const) {
+      if ((side === 'before' ? node.breakBefore : node.breakAfter) || (children && edgeBreak(children, side))) {
+        // 強制の区切りが勝つ (§4.3)
+        delete own[side];
+        continue;
+      }
+      const inner = children ? this.edgeAvoidOf(children, side) : undefined;
+      own[side] = maxAvoid(own[side], inner === 'column' && stopColumn ? undefined : inner);
+    }
+    if (!own.before) delete own.before;
+    if (!own.after) delete own.after;
+    this.edgeAvoids.set(node, own);
+    if (own.before) node.keepWithPrevious = true;
+    else delete node.keepWithPrevious;
+    if (own.after) node.keepWithNext = true;
+    else delete node.keepWithNext;
+  }
+
+  /** 中身の最初 (before)・最後 (after) の通常の流れの子の、前・後ろの区切りを避ける値 (伝わったものを含む)。子の前 (後ろ) に行内の中身があれば無い */
+  private edgeAvoidOf(children: ReadonlyArray<LBlockLevel | LInlineLevel>, side: 'before' | 'after'): AvoidKind | undefined {
+    let c: LBlockLevel | LInlineLevel | undefined;
+    if (side === 'before') {
+      for (const x of children) if (inFlowChild(x)) { c = x; break; }
+    } else {
+      for (let i = children.length - 1; i >= 0; i--) if (inFlowChild(children[i])) { c = children[i]; break; }
+    }
+    if (!c || typeof c === 'string' || (c.type !== 'block' && c.type !== 'table' && c.type !== 'block-container')) return undefined;
+    const m = this.edgeAvoids.get(c);
+    if (m) return m[side];
+    const memo = this.edgeAvoidMemo.get(c) ?? {};
+    if (side in memo) return memo[side];
+    // 値を合わせていない箱 (無名の箱・疑似要素の箱など): 自分の値と、その中身の最初 (最後) の子からたどった値。強制の区切りがあれば無い (§4.3)。
+    // 答えは覚えて使い回す (入れ子の無名の箱を、親ごとにたどり直さない)
+    const forced = !!(side === 'before' ? c.breakBefore : c.breakAfter) || (c.type === 'block' && !!edgeBreak(c.children, side));
+    const own = (side === 'before' ? c.keepWithPrevious : c.keepWithNext) ? 'all' : undefined;
+    const v = forced ? undefined : c.type === 'block' ? maxAvoid(own, this.edgeAvoidOf(c.children, side)) : own;
+    memo[side] = v;
+    this.edgeAvoidMemo.set(c, memo);
+    return v;
   }
 
   private blockBox(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
@@ -5041,7 +5766,12 @@ class HtmlImporter {
           const { type: _a, float: _b, children: ch, cssPlacement: _c, clear: _d, ...bx } = f;
           void [_a, _b, _c, _d];
           const gr = this.multicolTop.get(f);
-          const b2 = { type: 'block', span: 'all', ...bx, children: ch } as unknown as LBlock;
+          // 行グリッドの中の段組フロートの中身は、表のセルと同じに行グリッドの領域にする (最初の行の前と最後の行の後ろに半行間を付けず、
+          // new なら em の箱を積む)。見本の PDF: CSS-Print 第 4 版の 9.3.6 の段組フロート (-ah-baseline-grid: new の段組の中の
+          // float: multicol top start。罫線 3pt・内側の余白 3pt) の箱の高さは、罫線と内側の余白に字の em の箱を足したもの (半行間が無い)
+          const grid = this.multicolTopGrid.get(f);
+          const inner = grid ? [{ type: 'block', baselineGrid: grid, ...(grid === 'new' ? { baselineGridStack: true } : {}), children: ch } as LBlock] : ch;
+          const b2 = { type: 'block', span: 'all', ...bx, children: inner } as unknown as LBlock;
           // width は box-sizing のとおり (border-box なら罫線・内側の余白込み)。値は gr を pt に直したもの。
           // ブロックの width は内容の幅なので、border-box なら左右の内側の余白と罫線を引く (1gr の箱が段の幅になる)
           if (gr !== undefined && colW !== undefined) {
@@ -5074,12 +5804,12 @@ class HtmlImporter {
         for (let i = 0; i < list.length; i++) {
           const k = list[i];
           if (typeof k === 'string') {
-            const m = FIRST_LETTER.exec(k);
+            const m = firstLetterOf(k);
             if (!m) {
               if (k.trim()) return true;
               continue;
             }
-            const letter = m[2];
+            const letter = m[1];
             const st = this.textStyle(el, el, '::first-letter');
             const fc = this.cs(el, '::first-letter');
             const fl = fc('float');
@@ -5122,8 +5852,9 @@ class HtmlImporter {
               node = inl;
             }
             // 沈めた最初の字と、続く内容の間の、詰める空白は消す (CSS Inline 3 §7.8.1: 回り込む行の頭をそろえる)
-            const rest = il && il.sink > 1 ? k.slice(m[0].length).replace(/^[ \t\n\r\f]+/, '') : k.slice(m[0].length);
-            list.splice(i, 1, ...(m[1] ? [m[1]] : []), node, ...(rest ? [rest] : []));
+            const after = k.slice(m[0].length + letter.length);
+            const rest = il && il.sink > 1 ? after.replace(/^[ \t\n\r\f]+/, '') : after;
+            list.splice(i, 1, ...(m[0] ? [m[0]] : []), node, ...(rest ? [rest] : []));
             return true;
           }
           if (typeof k === 'object' && k.type === 'inline') {
@@ -5246,10 +5977,10 @@ class HtmlImporter {
     if (img.width === undefined && img.height === undefined && img.widthScale === undefined) {
       const res = this.inh(el, 'image-resolution', true);
       if (/from-image/i.test(res)) img.resolutionFromImage = true;
-      const m = /(\d+(?:\.\d+)?)\s*(dpi|dpcm|dppx|x)?\s*$/i.exec(res.replace(/from-image|snap/gi, '').trim());
+      const m = trailingResolution(res.replace(/from-image|snap/gi, '').trim());
       if (m) {
-        const n = parseFloat(m[1]);
-        const dpi = (m[2] ?? 'dpi').toLowerCase() === 'dpcm' ? n * 2.54 : /^(dppx|x)$/i.test(m[2] ?? '') ? n * 96 : n;
+        const n = parseFloat(m[0]);
+        const dpi = (m[1] ?? 'dpi').toLowerCase() === 'dpcm' ? n * 2.54 : /^(dppx|x)$/i.test(m[1] ?? '') ? n * 96 : n;
         if (dpi > 0 && Math.abs(dpi - 96) > 1e-6) img.widthScale = img.heightScale = 96 / dpi;
       }
     }
@@ -5311,7 +6042,7 @@ class HtmlImporter {
     if (this.opts.mathFont && this.isMath(el)) return [this.mathFormula(el)];
     if (name === 'ruby') {
       // ルビの箱 (ruby・rb・rt・rtc) の輪郭線 (outline) は描けない (ルビは、親文字とルビの字の組として組み、要素の箱を作らない)。知らせる
-      if ([el, ...(Array.from(el.getElementsByTagName('*')) as Element[]).filter((e) => /^(rb|rt|rtc)$/.test(e.localName))].some((e) => this.paintEffectOf(e)?.outline)) this.miss('outline (ruby・rb・rt・rtc)');
+      if ([el, ...(Array.from(el.getElementsByTagName('*')) as Element[]).filter((e) => /^(rb|rt|rtc)$/.test(e.localName))].some((e) => this.paintEffectOf(e)?.outline)) this.miss(msg('outline (ruby・rb・rt・rtc)', 'outline (ruby, rb, rt, rtc)'));
       // <ruby>親文字<rt>ルビ</rt>…</ruby> (rp は除く)。ルビは、直前の rt から後の親文字と対になる (Ruby 1 §2.3。
       // <ruby>漢<rt>かん</rt>字<rt>じ</rt></ruby> は 2 組)。rb を並べた書き方 (rb…rb rt…rt) は、順番どうしで対にする
       const kids = Array.from(el.childNodes).filter((n) => !(n.nodeType === 1 && (n as Element).localName === 'rp'));
@@ -5377,7 +6108,7 @@ class HtmlImporter {
           const mergeOf = (l: Level | undefined) => !!l && !l.anon && nb > 1 && this.rubyDecl(conOf(l), 'ruby-merge') === 'merge';
           let [m1, m2] = [mergeOf(l1), mergeOf(l2)];
           if ((m1 && l2 && !l2.anon && !m2) || (m2 && l1 && !l1.anon && !m1)) {
-            this.miss('ruby-merge: merge (片方の段だけ)');
+            this.miss(msg('ruby-merge: merge (片方の段だけ)', 'ruby-merge: merge (on one level only)'));
             m1 = m2 = false;
           }
           if (!nb || l1?.anon || l2?.anon || m1 || m2)
@@ -5435,7 +6166,7 @@ class HtmlImporter {
         // 2 段目は、alternate (初期値) なら 1 段目の逆の側。over・under を明示して 1 段目と同じ側になるとき (外へ重ねる) は未対応で、逆の側に置いて知らせる
         const posOf = (c: Element) => {
           const v = this.rubyDecl(c, 'ruby-position');
-          if (v === 'inter-character' && !/^(vertical|sideways)/.test(this.cs(el)('writing-mode'))) this.miss('ruby-position: inter-character (横書き)');
+          if (v === 'inter-character' && !/^(vertical|sideways)/.test(this.cs(el)('writing-mode'))) this.miss(msg('ruby-position: inter-character (横書き)', 'ruby-position: inter-character (horizontal writing)'));
           return v;
         };
         const isUnder = (v: string) => /\bunder\b/.test(v);
@@ -5446,7 +6177,7 @@ class HtmlImporter {
         const lrRuby = /vertical-lr|sideways-lr/.test(this.cs(el)('writing-mode'));
         if (t && u) {
           const p2 = posOf(pr.underCon ?? el);
-          if (p2 && !/\balternate\b/.test(p2) && isUnder(p2) === under1) this.miss('ruby-position (同じ側の 2 段)');
+          if (p2 && !/\balternate\b/.test(p2) && isUnder(p2) === under1) this.miss(msg('ruby-position (同じ側の 2 段)', 'ruby-position (two levels on the same side)'));
         }
         // ruby-overhang (§5.1。段の入れ物の値): auto を明示したら前後の字に掛け、none なら掛けない。指定が無ければ、これまでどおり掛けない
         // (初期値 auto は、掛けるかどうかを処理系に任せる)
@@ -5554,7 +6285,7 @@ class HtmlImporter {
     if (box.border) inl.border = box.border;
     if (box.padding) inl.padding = box.padding;
     // initial-letter は ::first-letter だけ (行の最初の行内の箱への指定 (CSS Inline 3 §7.3.1) は未対応。知らせる)
-    if (parseInitialLetter(c('initial-letter') || '')) this.miss('initial-letter (::first-letter 以外の箱)');
+    if (parseInitialLetter(c('initial-letter') || '')) this.miss(msg('initial-letter (::first-letter 以外の箱)', 'initial-letter (boxes other than ::first-letter)'));
     // box-decoration-break: clone: 行で分かれた枠の断片のそれぞれを、罫線と内側の余白で包む (CSS Fragmentation 3 §5.4)
     if ((box.border || box.padding) && c('box-decoration-break') === 'clone') inl.boxDecorationBreak = 'clone';
     // 行の進む方向の margin は行内の空き (横書きは左右。右から左へ書く段落では入れ替わる。縦書きは上下)
@@ -5620,7 +6351,10 @@ class HtmlImporter {
         const b = this.block(li, container);
         if (b) blocks.push(b);
       });
-      return { type: 'block', children: blocks };
+      // 項目を並べる無名の箱: 最初の項目の前・最後の項目の後ろの区切りは、この箱の前後と同じ所 (CSS Fragmentation 3 §3.1.1)
+      const out: LBlock = { type: 'block', children: blocks };
+      this.propagateEdgeAvoids(out);
+      return out;
     }
     this.report.counts.tables++;
     // 記号の列の幅は、リストの inline-start 側の字下げ (UA の padding-inline-start)。縦書きでは上 (padding-top)。表もその側へ引き戻す
@@ -5631,28 +6365,42 @@ class HtmlImporter {
     // list-item の箱も block-level)。項目は表の行にして組むので、行の指定にする (表の tr と同じ。区切りの種類 = ページ・段・左右のページを
     // そのまま渡す)。最初の項目の前・最後の項目の後ろの強制の区切りは、リストの箱の前後の区切りと同じ所なので
     // (§3.1.1 の区切りの値の伝播)、リストを組む表の前後の指定にする。
-    // 項目の最初の子の break-before・最後の子の break-after も、項目の前後の区切りと同じ所 (§3.1.1): 項目の値と合わせる (§4.3)
+    // 項目の最初の子の break-before・最後の子の break-after も、項目の前後の区切りと同じ所 (§3.1.1): 項目の値と合わせる (§4.3)。
+    // 避ける値 (avoid・avoid-page・avoid-column) も同じに合わせる (§3.1.1・§4.4 の Rule 1。propagateEdgeAvoids と同じ考え方): 項目か、
+    // その最初 (最後) の子へたどったどれかが避けるなら、項目の前 (後ろ) では分けない。強制の区切りがあれば、強制が勝つ (§4.3)。
+    // 最初の項目の前・最後の項目の後ろの値は、リストを組む表の前後の値にする。avoid-column は、リストが段組の容器なら、そこで止める
     let listBefore: LBlock['breakBefore'];
     let listAfter: LBlock['breakBefore'];
+    let listAvoidBefore: AvoidKind | undefined;
+    let listAvoidAfter: AvoidKind | undefined;
+    const stopColumn = this.isMulticolContainer(container);
     const rowBreaks = (li: Element, k: number, body: LTableCell): Pick<LTableRow, 'breakBefore' | 'breakAfter' | 'keepTogether' | 'keepWithNext' | 'keepWithPrevious'> => {
       const lc = this.cs(li);
       const bb = lc('break-before') || lc('page-break-before');
       const ba = lc('break-after') || lc('page-break-after');
       const bi = lc('break-inside') || lc('page-break-inside');
-      let multicol: boolean | undefined;
-      const avoids = (v: string) => v === 'avoid' || v === 'avoid-page' || (v === 'avoid-column' && (multicol ??= this.inMulticol(li)));
       const edge = edgeBreaks(body.children);
       // 項目とその最初の子は同じ区切りに当たる。左右のページの指定は、流れの中で後ろの要素 (子) の値、break-after は項目の値が後ろ
       const fb = mergeBreaks(this.forcedBreak(bb, li), edge.before);
       const fa = mergeBreaks(edge.after, this.forcedBreak(ba, li));
+      const ab = fb ? undefined : maxAvoid(this.avoidKind(bb, li), this.edgeAvoidOf(body.children, 'before'));
+      const aa = fa ? undefined : maxAvoid(this.avoidKind(ba, li), this.edgeAvoidOf(body.children, 'after'));
       const o: ReturnType<typeof rowBreaks> = {};
-      if (k === 0) listBefore = fb;
-      else if (fb) o.breakBefore = fb;
-      if (k === lis.length - 1) listAfter = fa;
-      else if (fa) o.breakAfter = fa;
-      if (avoids(bi)) o.keepTogether = true;
-      if (avoids(ba)) o.keepWithNext = true;
-      if (avoids(bb)) o.keepWithPrevious = true;
+      if (k === 0) {
+        listBefore = fb;
+        listAvoidBefore = ab === 'column' && stopColumn ? undefined : ab;
+      } else {
+        if (fb) o.breakBefore = fb;
+        if (ab) o.keepWithPrevious = true;
+      }
+      if (k === lis.length - 1) {
+        listAfter = fa;
+        listAvoidAfter = aa === 'column' && stopColumn ? undefined : aa;
+      } else {
+        if (fa) o.breakAfter = fa;
+        if (aa) o.keepWithNext = true;
+      }
+      if (this.avoidKind(bi, li)) o.keepTogether = true;
       return o;
     };
     const rows: LTableRow[] = lis.map((li, k) => {
@@ -5725,6 +6473,10 @@ class HtmlImporter {
     const out = bgrid === 'new' || bgrid === 'root' || bgrid === 'none' ? ({ type: 'block', baselineGrid: bgrid, children: [table] } as LBlock) : table;
     if (listBefore) out.breakBefore = listBefore;
     if (listAfter) out.breakAfter = listAfter;
+    // 最初の項目の前・最後の項目の後ろの避ける値は、リストの箱の前後の値と合わせる (block の propagateEdgeAvoids が、リスト自身の値と合わせる)
+    if (listAvoidBefore || listAvoidAfter) this.edgeAvoids.set(out, { ...(listAvoidBefore ? { before: listAvoidBefore } : {}), ...(listAvoidAfter ? { after: listAvoidAfter } : {}) });
+    if (listAvoidBefore) out.keepWithPrevious = true;
+    if (listAvoidAfter) out.keepWithNext = true;
     return out;
   }
 
@@ -5732,6 +6484,19 @@ class HtmlImporter {
    * 表のセル td に効く行グリッドの指定 (-ah-baseline-grid。継承する): セルから表の要素 table までさかのぼって、最初に見つかった
    * new・root・none の指定 (normal は行グリッドを変えないので、その先を見る)。new・root でなければ undefined
    */
+  /**
+   * 要素に効いている行グリッド (-ah-baseline-grid。継承する): 自分か祖先の new・root の指定 (近いもの)。none の指定があれば、
+   * その先は見ない (undefined)
+   */
+  private inheritedGrid(el: Element): 'new' | 'root' | undefined {
+    for (let e: Node | null = el; e && e.nodeType === 1; e = e.parentNode) {
+      const v = this.pg(e as Element)['-ah-baseline-grid']?.trim().toLowerCase();
+      if (v === 'new' || v === 'root') return v;
+      if (v === 'none') return undefined;
+    }
+    return undefined;
+  }
+
   private tableCellGrid(td: Element, table: Element): 'new' | 'root' | undefined {
     for (let e: Node | null = td; e && e.nodeType === 1; e = e.parentNode) {
       const v = this.pg(e as Element)['-ah-baseline-grid']?.trim().toLowerCase();
@@ -5910,8 +6675,8 @@ class HtmlImporter {
       // 行グループ (thead・tbody・tfoot) の箱は作らないので、その transform・opacity は掛けられない (未対応として知らせる)
       {
         const gfx = this.paintEffectOf(g);
-        if (gfx?.transform || gfx?.opacity !== undefined) this.miss('transform・opacity (thead・tbody・tfoot)');
-        if (gfx?.outline) this.miss('outline (thead・tbody・tfoot)');
+        if (gfx?.transform || gfx?.opacity !== undefined) this.miss(msg('transform・opacity (thead・tbody・tfoot)', 'transform, opacity (thead, tbody, tfoot)'));
+        if (gfx?.outline) this.miss(msg('outline (thead・tbody・tfoot)', 'outline (thead, tbody, tfoot)'));
       }
       const gb = collapse && rows.length ? this.boxStyle(g).border : undefined;
       if (gb) rows.forEach((r, k) => (r.group = { border: gb, first: k === 0, last: k === rows.length - 1 }));
@@ -5980,6 +6745,11 @@ class HtmlImporter {
           this.blockStack.push(block);
           block.children = [...pre, ...this.flowChildren(ch)];
           this.blockStack.pop();
+          // アンテナハウスの行グリッド (-ah-baseline-grid): 表・見出しに new・root の指定があれば、見出しの中身も、セルと同じに
+          // 行グリッドの領域にする (最初の行の前と最後の行の後ろに半行間を付けず、new なら em の箱を積む)。見本の PDF: CSS-Print 第 4 版の
+          // table { line-height: 21q; -ah-baseline-grid: new } の表の見出し (10.2・20.3 など) は、上下に半行間を空けない
+          const capGrid = this.tableCellGrid(ch, el);
+          if (capGrid) block.children = [{ type: 'block', baselineGrid: capGrid, ...(capGrid === 'new' ? { baselineGridStack: true } : {}), children: block.children } as LBlock];
           captions.push({ side: this.cs(ch)('caption-side') === 'bottom' ? 'bottom' : 'top', block });
         }
       }
@@ -6141,10 +6911,19 @@ class HtmlImporter {
   }
 
   /** 余白の箱の content → 行内の要素 (ページ番号・総ページ数・string()・element()) */
-  private boxContent(v: string, tt = 'none', sc: '' | 'small' | 'all' = ''): Array<LInlineLevel | LRetrieveMarker> {
+  private boxContent(v: string, tt = 'none', sc: '' | 'small' | 'all' = '', ws = 'normal'): Array<LInlineLevel | LRetrieveMarker> {
     const out: Array<LInlineLevel | LRetrieveMarker> = [];
     const plain = tt === 'none' && !sc;
+    // 文字列は、本文の生成した内容と同じに、箱の white-space で空白と改行 (\A) を扱う (CSS 2.1 §12.2・CSS Text 3 §4.1)。
+    // 続いた文字列 ("あ" "\A" "い") は 1 つにつないでから扱う (改行の前後の字を見て、空白にするか消すかを決めるため)
+    const toks: ContentToken[] = [];
     for (const t of parseContent(v)) {
+      const last = toks[toks.length - 1];
+      if (t.kind === 'str' && last?.kind === 'str') toks[toks.length - 1] = { kind: 'str', v: last.v + t.v };
+      else toks.push(t);
+    }
+    for (const t0 of toks) {
+      const t = t0.kind === 'str' ? { ...t0, v: whiteSpaceText(t0.v.replace(/[\u2000\r]/g, ' '), ws, false) } : t0;
       if (t.kind === 'str') out.push(...(plain ? [t.v] : this.marginText(t.v, tt, sc)));
       else if (t.kind !== 'fn') continue;
       else if (t.name === 'counter' && t.args[0] === 'page') {
@@ -6168,6 +6947,12 @@ class HtmlImporter {
       } else this.miss(`@page content:${t.name}()`);
     }
     return out;
+  }
+
+  /** 余白の箱の white-space (箱の宣言、ページ文脈から受け継いだ宣言、根の要素の値の順。Page 3 §6: ページ文脈は根の要素から受け継ぐ) */
+  private marginWhiteSpace(decls: Record<string, string>): string {
+    const rootEl = (this.bodyEl?.ownerDocument as Document | undefined)?.documentElement ?? this.bodyEl;
+    return (decls['white-space'] ?? (rootEl ? this.cs(rootEl)('white-space') : '') ?? '').trim().toLowerCase() || 'normal';
   }
 
   /** 文書の題 (<title>。余白の箱の env(doc-title)) */
@@ -6197,7 +6982,7 @@ class HtmlImporter {
         }
         const fs = lenEm(decls['font-size'] ?? '', rootFs) ?? rootFs;
         // 幅は、text-transform を当てた字で見積もる (small caps の字の幅は、元の字で見積もる)
-        const items = this.boxContent(content, (decls['text-transform'] ?? 'none').trim().toLowerCase() || 'none');
+        const items = this.boxContent(content, (decls['text-transform'] ?? 'none').trim().toLowerCase() || 'none', '', this.marginWhiteSpace(decls));
         if (items.some((x) => typeof x !== 'string')) unknown = true;
         // ページ番号の印は、3 桁の数の幅とみなす
         const text = items.map((x) => (typeof x === 'string' ? x.replace(/\{(pageNumber|totalPages)(\|[^}]*)?\}/g, '000') : '')).join('');
@@ -6420,7 +7205,7 @@ class HtmlImporter {
       const content = decls.content;
       if (!content || content === 'none' || content === 'normal') continue;
       // 余白の箱の輪郭線 (outline) は描かない (余白の箱の宣言は自前で読み、輪郭線は読まない)。知らせる
-      if (Object.keys(decls).some((k) => /^outline(-|$)/.test(k) && !/^(none|0|initial|unset)\b/i.test(decls[k].trim()))) this.miss('outline (ページの余白の箱)');
+      if (Object.keys(decls).some((k) => /^outline(-|$)/.test(k) && !/^(none|0|initial|unset)\b/i.test(decls[k].trim()))) this.miss(msg('outline (ページの余白の箱)', 'outline (page-margin boxes)'));
       const fs = lenEm(decls['font-size'] ?? '', rootFs) ?? rootFs;
       // 箱の位置: 上下の辺は本文の幅いっぱい (隅は余白の角)、左右の辺は本文の高さいっぱい
       let x: number, y: number, w: number, h: number;
@@ -6437,37 +7222,85 @@ class HtmlImporter {
         w = pos.edge === 'left' ? m.left : m.right;
         [y, h] = [m.top, H - m.top - m.bottom];
       }
-      // 箱の margin は、箱を内側へ縮める
-      const mg = decls.margin ? edges4(decls.margin, fs) : { top: 0, right: 0, bottom: 0, left: 0 };
-      for (const sd of ['top', 'right', 'bottom', 'left'] as const) {
-        const v = decls[`margin-${sd}`];
-        if (v !== undefined) mg[sd] = lenEm(v, fs) ?? 0;
-      }
       // 余白が 0 のページ (全面の表紙など) では、箱を置く場所が無いので出さない
       if (w <= 0.5 || h <= 0.5) continue;
-      x += mg.left;
-      y += mg.top;
-      w = Math.max(1, w - mg.left - mg.right);
-      h = Math.max(1, h - mg.top - mg.bottom);
+      // 罫線・内側の余白 (箱の寸法の計算に使い、箱にも付ける)
+      const border: Partial<Record<'top' | 'right' | 'bottom' | 'left', BorderSide>> = {};
+      for (const [prop, val] of Object.entries(decls)) {
+        const bm = /^border(?:-(top|right|bottom|left))?$/.exec(prop);
+        if (!bm) continue;
+        const b = parseBorder(val, fs);
+        for (const sd of bm[1] ? [bm[1] as 'top'] : (['top', 'right', 'bottom', 'left'] as const)) {
+          if (b) border[sd] = b;
+          else delete border[sd];
+        }
+      }
+      const pad = decls.padding ? edges4(decls.padding, fs) : undefined;
+      const padding = { ...(pad ?? {}) } as Record<string, number>;
+      for (const sd of ['top', 'right', 'bottom', 'left']) if (decls[`padding-${sd}`] !== undefined) padding[sd] = lenEm(decls[`padding-${sd}`], fs) ?? 0;
+      // 箱の margin (長さか auto)。一括指定の後に、個別の指定
+      const mgTokens = (decls.margin ?? '').trim().split(/\s+/).filter(Boolean);
+      const [t0 = '0', r0 = t0, b0 = t0, l0 = r0] = mgTokens;
+      const mgRaw: Record<'top' | 'right' | 'bottom' | 'left', string> = { top: t0, right: r0, bottom: b0, left: l0 };
+      for (const sd of ['top', 'right', 'bottom', 'left'] as const) if (decls[`margin-${sd}`] !== undefined) mgRaw[sd] = decls[`margin-${sd}`];
+      const mgOf = (sd: 'top' | 'right' | 'bottom' | 'left'): number | 'auto' => (/^auto$/i.test(mgRaw[sd].trim()) ? 'auto' : (lenEm(mgRaw[sd], fs) ?? 0));
+      const mgNum = (sd: 'top' | 'right' | 'bottom' | 'left') => {
+        const v = mgOf(sd);
+        return v === 'auto' ? 0 : v;
+      };
+      // 箱の大きさの指定 (width・height。百分率は余白の領域に対して)。box-sizing: border-box なら、罫線と内側の余白を引いた中身の大きさにする
+      const borderBox = /^border-box$/i.test((decls['box-sizing'] ?? '').trim());
+      const pbV = (padding.top ?? 0) + (padding.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0);
+      const pbH = (padding.left ?? 0) + (padding.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
+      const size = (v: string | undefined, room: number, pb: number): number | 'auto' => {
+        const n = v === undefined || v === 'auto' ? undefined : /%$/.test(v) ? (room * parseFloat(v)) / 100 : lenEm(v, fs);
+        return n === undefined ? 'auto' : Math.max(0, borderBox ? n - pb : n);
+      };
+      // 決まった向きの寸法 (CSS Page 3 §5.3.3): 上下の箱の高さと上下の margin、左右の箱の幅と左右の margin、隅の箱の両方。
+      // 決まりすぎ (どれも auto でない) のときは、ページの端の側の margin (上の箱は margin-top、下の箱は margin-bottom、左の箱は margin-left、
+      // 右の箱は margin-right) を auto とするので、高さ・幅を指定した箱は本文の側に寄る。margin が両方 auto なら真ん中。
+      // (以前は、vertical-align で箱の位置を決め、既定は真ん中だった。vertical-align は箱の中の中身の揃え。§6.3: 表のセルと同じ)
+      const fixedV = pos.edge === 'top' || pos.edge === 'bottom';
+      const fixedH = pos.edge === 'left' || pos.edge === 'right' || pos.part === 'corner-start' || pos.part === 'corner-end';
+      if (fixedV) {
+        const f = marginBoxFixedDimension(h, mgOf('top'), mgOf('bottom'), size(decls.height, h, pbV), pbV, pos.edge === 'top');
+        y += f.a;
+        h = pbV + f.size;
+      } else {
+        // 左右の辺の箱の上下 (変わる向きの寸法。§5.3.2 の上下の辺の決まりを、上下に読み替えたもの): margin は箱を内側へ縮め、
+        // 高さを指定した箱は、上の箱は上端・真ん中の箱は真ん中・下の箱は下端に置く (§5.3.2.4)
+        y += mgNum('top');
+        h -= mgNum('top') + mgNum('bottom');
+        const bh = size(decls.height, h, pbV);
+        if (bh !== 'auto' && bh + pbV < h) {
+          y += pos.part === 'start' ? 0 : pos.part === 'end' ? h - bh - pbV : (h - bh - pbV) / 2;
+          h = bh + pbV;
+        }
+      }
+      if (fixedH) {
+        const left = pos.edge === 'left' || pos.part === 'corner-start';
+        const f = marginBoxFixedDimension(w, mgOf('left'), mgOf('right'), size(decls.width, w, pbH), pbH, left);
+        x += f.a;
+        w = pbH + f.size;
+      } else {
+        // 上下の辺の箱の左右 (変わる向きの寸法。§5.3.2): 幅は marginBoxWidths で決めたもの。margin は箱を内側へ縮める
+        x += mgNum('left');
+        w -= mgNum('left') + mgNum('right');
+        const bw = size(decls.width, w, pbH);
+        if (bw !== 'auto' && bw + pbH < w && !along.has(name)) {
+          x += pos.part === 'start' ? 0 : pos.part === 'end' ? w - bw - pbH : (w - bw - pbH) / 2;
+          w = bw + pbH;
+        }
+      }
+      w = Math.max(1, w);
+      h = Math.max(1, h);
       const ta = (decls['text-align'] ?? '').toLowerCase();
       const defAlign = pos.edge === 'left' || pos.edge === 'right' ? 'center' : pos.part === 'start' || pos.part === 'corner-end' ? 'start' : pos.part === 'end' || pos.part === 'corner-start' ? 'end' : 'center';
       const align = ta === 'left' || ta === 'start' ? 'start' : ta === 'right' || ta === 'end' ? 'end' : ta === 'center' ? 'center' : ta === 'justify' ? 'justify' : defAlign;
+      // 箱の中の中身の縦の揃え (vertical-align。§6.3 で表のセルと同じ。既定は §5.3 の表: 上下の箱は middle、左右の箱は top・middle・bottom)
       const va = (decls['vertical-align'] ?? '').toLowerCase();
       const defV = pos.edge === 'left' || pos.edge === 'right' ? (pos.part === 'start' ? 'start' : pos.part === 'end' ? 'end' : 'center') : 'center';
       const blockAlign = va === 'top' ? 'start' : va === 'bottom' ? 'end' : va === 'middle' ? 'center' : defV;
-      // 箱の大きさの指定 (width・height。百分率は余白の領域に対して): 辺の上の位置と縦の揃えで置く
-      const size = (v: string | undefined, room: number) => (v === undefined || v === 'auto' ? undefined : /%$/.test(v) ? (room * parseFloat(v)) / 100 : lenEm(v, fs));
-      const bw = size(decls.width, w);
-      const bh = size(decls.height, h);
-      if (bw !== undefined && bw < w && !along.has(name)) {
-        const along = pos.edge === 'top' || pos.edge === 'bottom' ? pos.part : 'center';
-        x += along === 'start' || along === 'corner-end' ? 0 : along === 'end' || along === 'corner-start' ? w - bw : (w - bw) / 2;
-        w = bw;
-      }
-      if (bh !== undefined && bh < h) {
-        y += blockAlign === 'start' ? 0 : blockAlign === 'end' ? h - bh : (h - bh) / 2;
-        h = bh;
-      }
       // opacity: 背景と文字の色を、白い紙に重ねた色にする
       const opacity = decls.opacity !== undefined ? Math.min(Math.max(parseFloat(decls.opacity), 0), 1) : 1;
       const fade = (col: string | undefined) => {
@@ -6503,24 +7336,11 @@ class HtmlImporter {
         boxSizing: 'border-box',
         blockAlign,
         writingMode: this.wm(decls['writing-mode'] ?? '') ?? 'horizontal-tb',
-        children: [{ type: 'block', ...ts, children: this.boxContent(content, tt, sc) as LInlineLevel[] }],
+        children: [{ type: 'block', ...ts, children: this.boxContent(content, tt, sc, this.marginWhiteSpace(decls)) as LInlineLevel[] }],
       };
       // z-index が負の余白の箱 (本文の絵の下に隠れるノンブルなど) は、本文の背面に置く
       if ((parseInt(decls['z-index'] ?? '', 10) || 0) < 0) box.layer = 'behind';
-      const border: Partial<Record<'top' | 'right' | 'bottom' | 'left', BorderSide>> = {};
-      for (const [prop, val] of Object.entries(decls)) {
-        const bm = /^border(?:-(top|right|bottom|left))?$/.exec(prop);
-        if (!bm) continue;
-        const b = parseBorder(val, fs);
-        for (const sd of bm[1] ? [bm[1] as 'top'] : (['top', 'right', 'bottom', 'left'] as const)) {
-          if (b) border[sd] = b;
-          else delete border[sd];
-        }
-      }
       if (Object.keys(border).length) box.border = border;
-      const pad = decls.padding ? edges4(decls.padding, fs) : undefined;
-      const padding = { ...(pad ?? {}) } as Record<string, number>;
-      for (const sd of ['top', 'right', 'bottom', 'left']) if (decls[`padding-${sd}`] !== undefined) padding[sd] = lenEm(decls[`padding-${sd}`], fs) ?? 0;
       if (Object.keys(padding).length) box.padding = padding;
       const bgv = decls['background-color'] ?? decls.background ?? '';
       const bg = this.printOf(decls, 'background-color', 'background') ?? cssColor(bgv);
@@ -6607,8 +7427,8 @@ class HtmlImporter {
     this.pageFormat = null;
     // 固定配置 (position: fixed) の箱は、どのページにも出す内容として運ぶので、描くときだけの効果が付かない。その輪郭線 (outline)・
     // 切り抜きの矩形 (clip) は描けないので、知らせる
-    if (this.fixed.some((f) => f.paintEffect?.outline)) this.miss('outline (position: fixed の箱)');
-    if (this.fixed.some((f) => f.paintEffect?.clip)) this.miss('clip (position: fixed の箱)');
+    if (this.fixed.some((f) => f.paintEffect?.outline)) this.miss(msg('outline (position: fixed の箱)', 'outline (position: fixed boxes)'));
+    if (this.fixed.some((f) => f.paintEffect?.clip)) this.miss(msg('clip (position: fixed の箱)', 'clip (position: fixed boxes)'));
     const alts: ConditionalPageMaster[] = [];
     for (const kind of blanks)
       for (const first of firsts)
@@ -6672,7 +7492,7 @@ class HtmlImporter {
       // ページの背景にするのは、最初の画像の層だけ (層ごとの値は、その層のもの)。2 枚目以降は未対応として知らせる
       const rl = backgroundLayers(rc);
       const first = rl.find((l) => /url\(/.test(l.image));
-      if (rl.filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss('background-image: 2 枚目以降 (html・body)');
+      if (rl.filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss(msg('background-image: 2 枚目以降 (html・body)', 'background-image: second and later layers (html, body)'));
       this.rootBackground = {
         ...(col ? { 'background-color': col } : {}),
         ...(first ? { 'background-image': first.image, 'background-size': first.size, 'background-repeat': first.repeat, 'background-position': `${first.x} ${first.y}` } : {}),
@@ -6687,7 +7507,7 @@ class HtmlImporter {
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
     // fontOpticalSizeUnit: CSS の font-optical-sizing: auto は、font-size の CSS px の数を opsz にする (CSS Fonts 4 §8.1 の試験 variable-opsz.html)
-    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, primaryFontMetrics: true, inlineBoxFontMetrics: true, ...(this.opts.emBoxBaselineAh ? {} : { fontBaseline: true }), ...(this.opts.normalLineHeightAllFonts ? { normalLineHeightAllFonts: true } : {}), rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
+    const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, ...(this.opts.autospaceLatinOnly ? {} : { textAutospaceUnicode: true }), primaryFontMetrics: true, inlineBoxFontMetrics: true, ...(this.opts.emBoxBaselineAh ? {} : { fontBaseline: true }), ...(this.opts.normalLineHeightAllFonts ? { normalLineHeightAllFonts: true } : {}), rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
     // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
     // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
     // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、
@@ -6705,8 +7525,10 @@ class HtmlImporter {
       rootStyle.punctuationTrimParagraphStart = true;
       // 両端揃えで、約物の前後も字間を空ける (見本の PDF: CSS-Print 第 4 版は「き、」「す。」の間なども空ける)
       rootStyle.justifyPunctuationAh = true;
-      // 追込みで詰める量は 1 行に二分まで (XSL-FO のアンテナハウス互換と同じ)
+      // 追込みで詰める量は 1 行に二分まで (XSL-FO のアンテナハウス互換と同じ)。ただし、追い出すと詰める量より大きく空く行は、
+      // 二分を超えても追い込む (lineSqueezeBeyondMax。見本の PDF: CSS-Print 第 4 版の 17.9 の縦書きの例など)
       rootStyle.lineSqueezeMax = 0.5;
+      rootStyle.lineSqueezeBeyondMax = true;
     }
     const wm = this.wm(this.cs(bodyEl)('writing-mode')) ?? 'horizontal-tb';
     this.pagesRtl = wm === 'vertical-rl';
@@ -6714,10 +7536,10 @@ class HtmlImporter {
     // html・body はページをまたぐ本文の全体で、1 つの箱として描かないので、その transform・opacity は掛けられない (未対応として知らせる)
     {
       const fxs = [box.paintEffect, html !== bodyEl ? this.paintEffectOf(html) : undefined];
-      if (fxs.some((f) => f?.transform || f?.opacity !== undefined)) this.miss('transform・opacity (html・body)');
+      if (fxs.some((f) => f?.transform || f?.opacity !== undefined)) this.miss(msg('transform・opacity (html・body)', 'transform, opacity (html, body)'));
       // 輪郭線 (outline) も同じ理由で描けない
-      if (fxs.some((f) => f?.outline)) this.miss('outline (html・body)');
-      if (fxs.some((f) => f?.clip)) this.miss('clip (html・body)');
+      if (fxs.some((f) => f?.outline)) this.miss(msg('outline (html・body)', 'outline (html, body)'));
+      if (fxs.some((f) => f?.clip)) this.miss(msg('clip (html・body)', 'clip (html, body)'));
     }
     delete box.paintEffect;
     // body の背景をページの背景にしたときは、body の箱には描かない (CSS と同じ)
@@ -6834,38 +7656,242 @@ function mergeBreaks(a: BreakKind | undefined, b: BreakKind | undefined): BreakK
   return a === 'page' || b === 'page' ? 'page' : (a ?? b);
 }
 
+/** 通常の流れの子か (区切りの値が伝わる子を探すとき。マーカー・回り込み・絶対配置の箱は飛ばす。字は流れの中) */
+function inFlowChild(c: LBlockLevel | LInlineLevel): boolean {
+  return typeof c === 'string' || (c.type !== 'marker' && c.type !== 'float' && !(c.type === 'block-container' && c.absolutePosition));
+}
+
+/** 区切りを避ける値の種類を合わせる (どちらかが all なら all) */
+function maxAvoid(a: AvoidKind | undefined, b: AvoidKind | undefined): AvoidKind | undefined {
+  return a === 'all' || b === 'all' ? 'all' : (a ?? b);
+}
+
 /**
  * 箱の中身の、最初の通常の流れの子の break-before と、最後の子の break-after (子の最初・最後の子へたどる)。
  * 箱の前後の区切りに伝わる値 (CSS Fragmentation 3 §3.1.1)。子の前 (後ろ) に行内の中身があれば、伝わらない
  */
 function edgeBreaks(children: ReadonlyArray<LBlockLevel | LInlineLevel>): { before?: BreakKind; after?: BreakKind } {
-  const inFlow = children.filter((c) => typeof c === 'string' || (c.type !== 'marker' && c.type !== 'float' && !(c.type === 'block-container' && c.absolutePosition)));
-  const edge = (c: LBlockLevel | LInlineLevel | undefined, side: 'before' | 'after'): BreakKind | undefined => {
-    if (!c || typeof c === 'string' || (c.type !== 'block' && c.type !== 'table' && c.type !== 'block-container')) return undefined;
-    const own = side === 'before' ? c.breakBefore : c.breakAfter;
-    const inner = c.type === 'block' ? edgeBreaks(c.children)[side] : undefined;
-    // 子 (内側) は、before では流れの中で後ろ、after では前
-    return side === 'before' ? mergeBreaks(own, inner) : mergeBreaks(inner, own);
-  };
-  const before = edge(inFlow[0], 'before');
-  const after = edge(inFlow[inFlow.length - 1], 'after');
+  const before = edgeBreak(children, 'before');
+  const after = edgeBreak(children, 'after');
   return { ...(before ? { before } : {}), ...(after ? { after } : {}) };
 }
 
-/** 論理ツリーの部分木に、ページ番号の引用 (page-number-citation) があるか */
-function hasPageCitation(node: unknown): boolean {
-  const stack: unknown[] = [node];
-  while (stack.length) {
-    const n = stack.pop();
-    if (!n || typeof n !== 'object') continue;
-    if (Array.isArray(n)) {
-      for (const x of n) stack.push(x);
-      continue;
-    }
-    if ((n as { type?: string }).type === 'page-number-citation') return true;
-    for (const v of Object.values(n)) if (v && typeof v === 'object') stack.push(v);
+/** edgeBreaks の片側 (before か after だけをたどる。両側を一度にたどると、子が 1 つの入れ子で、深さの 2 乗ではなく 2 の深さ乗の手間になる) */
+function edgeBreak(children: ReadonlyArray<LBlockLevel | LInlineLevel>, side: 'before' | 'after'): BreakKind | undefined {
+  let c: LBlockLevel | LInlineLevel | undefined;
+  if (side === 'before') {
+    for (const x of children) if (inFlowChild(x)) { c = x; break; }
+  } else {
+    for (let i = children.length - 1; i >= 0; i--) if (inFlowChild(children[i])) { c = children[i]; break; }
   }
-  return false;
+  if (!c || typeof c === 'string' || (c.type !== 'block' && c.type !== 'table' && c.type !== 'block-container')) return undefined;
+  const own = side === 'before' ? c.breakBefore : c.breakAfter;
+  const inner = c.type === 'block' ? edgeBreak(c.children, side) : undefined;
+  // 子 (内側) は、before では流れの中で後ろ、after では前
+  return side === 'before' ? mergeBreaks(own, inner) : mergeBreaks(inner, own);
+}
+
+/** 末尾の空白 (U+0020) を取る (端から数える。/ +$/ は空白の長い並びで 2 乗の手間になる。linearText.ts の trimChars と同じ考え方) */
+function trimEndSpaces(s: string): string {
+  let b = s.length;
+  while (b > 0 && s[b - 1] === ' ') b--;
+  return b === s.length ? s : s.slice(0, b);
+}
+
+/**
+ * ブロックの中身の並び (list) の、まだ決めていない改行の印 (SEG_BREAK。text() が節の端の改行に置いたもの) を、空白にするか消す
+ * (CSS Text 3 §4.1.3。CSS Text 4 §4.3.3 も同じ: 続いた改行は 1 つにまとめ、残った改行を、前後の字に応じて空白 (U+0020) にするか消す。
+ * 決め方は UA に任されている)。決め方は text() の、同じテキストの節の中の改行と同じ (前後の字が和文なら消し、ほかは空白)。
+ * 前後の字は、行内の要素 (LInline) の境目と、流れの外の箱 (回り込み・マーカー・絶対配置の箱) をまたいで探す (CSS Text 3 §1.5: 空白の処理で
+ * 隣り合うかを決めるときは、間の行内の箱の境目と流れの外の要素を無視する。§4.1.1 の 4 も、空白を詰めるのは行内の要素の境目をまたぐ)。
+ * 改行の前後の、詰める空白 (U+0020) も見て飛ばす (§4.1.1 の 1: 改行の前後の空白とタブは、改行を変える前に消す。text() は同じ節の中の空白を
+ * trimAroundNewlines で消している)。消すと決めた改行の前後の、詰める空白も消す (同じ節の中と同じ結果にする)。空白にすると決めたときは、
+ * 前後の空白は collapseAcrossInlines が 1 つに詰める。
+ * 前後の字に数えないもの (境目。そこで探すのを止め、和文でない側とみなす): ブロック (中のブロックで分けた行内の箱の境目も)・強制改行 (br・保った改行)・
+ * 行内の箱 (画像・inline-block・ルビ・縦中横など)。white-space が空白を残す要素 (collapseSpaces: false) の中の字は、空白・タブも字として数える
+ * (改行は強制改行)。root: 並びの直下の字の white-space が空白を詰めるか。
+ * 手間は並びの字の数に比例する (1 度だけたどり、決めた所だけを後で書き換える)
+ */
+function resolveSegmentBreaks(list: Array<LBlockLevel | LInlineLevel>, root = true): void {
+  type Arr = Array<LBlockLevel | LInlineLevel>;
+  /** 書き換える範囲: arr[i] の [from, to) を repl にする */
+  type Edit = { arr: Arr; i: number; from: number; to: number; repl: string };
+  const edits: Edit[] = [];
+  // 直前の字 ('' は境目)・決めていない改行と、その前後の空白の並び (印を含むときだけ決める)
+  let before = '';
+  let run: Array<{ arr: Arr; i: number; from: number; to: number }> = [];
+  let hasBreak = false;
+  const close = (after: string) => {
+    if (hasBreak) {
+      const remove = CJK.test(before) && CJK.test(after);
+      for (const r of run) {
+        const src = r.arr[r.i] as string;
+        // 消すなら、改行と前後の空白を消す。空白にするなら、印を空白にする (続いた印・空白は collapseAcrossInlines が 1 つに詰める)
+        edits.push({ ...r, repl: remove ? '' : src.slice(r.from, r.to).split(SEG_BREAK).join(' ') });
+      }
+    }
+    run = [];
+    hasBreak = false;
+  };
+  const char = (c: string) => {
+    close(c);
+    before = c;
+  };
+  const walk = (arr: Arr, collapse: boolean) => {
+    for (let i = 0; i < arr.length; i++) {
+      const n = arr[i];
+      if (typeof n === 'string') {
+        if (!collapse) {
+          for (let j = 0; j < n.length; j++) {
+            if (n[j] === '\n') char('');
+            else char(n[j]);
+          }
+          continue;
+        }
+        for (let j = 0; j < n.length; ) {
+          const c = n[j];
+          if (c === ' ' || c === SEG_BREAK) {
+            let k = j;
+            while (k < n.length && (n[k] === ' ' || n[k] === SEG_BREAK)) {
+              if (n[k] === SEG_BREAK) hasBreak = true;
+              k++;
+            }
+            run.push({ arr, i, from: j, to: k });
+            j = k;
+            continue;
+          }
+          // 強制改行 (保った改行) は境目
+          char(c === '\n' ? '' : c);
+          j++;
+        }
+        continue;
+      }
+      if (!n || typeof n !== 'object') continue;
+      if (n.type === 'float' || n.type === 'marker' || (n as { absolutePosition?: boolean }).absolutePosition) continue;
+      if (n.type === 'inline' && Array.isArray(n.children) && !isBlockLevel(n)) {
+        walk(n.children as Arr, n.collapseSpaces ?? collapse);
+        continue;
+      }
+      // ブロック・行内の箱は境目
+      char('');
+    }
+  };
+  walk(list, root);
+  close('');
+  if (!edits.length) return;
+  // 後ろの範囲から書き換える (同じ文字列の中の範囲の位置がずれないように。edits は並びの順なので、逆にたどる)
+  const emptied = new Set<Arr>();
+  for (let k = edits.length - 1; k >= 0; k--) {
+    const e = edits[k];
+    const src = e.arr[e.i] as string;
+    const v = src.slice(0, e.from) + e.repl + src.slice(e.to);
+    e.arr[e.i] = v;
+    if (!v) emptied.add(e.arr);
+  }
+  for (const arr of emptied) {
+    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] === '') arr.splice(i, 1);
+  }
+}
+
+/** importHtml の終わりに、決めずに残った改行の印 (SEG_BREAK) を空白にする (ブロックの中身として resolveSegmentBreaks を通らなかった並び。前の版と同じ空白) */
+function finishSegmentBreaks(root: unknown): void {
+  const seen = new WeakSet<object>();
+  const visit = (n: unknown) => {
+    if (!n || typeof n !== 'object' || seen.has(n) || ArrayBuffer.isView(n) || n instanceof ArrayBuffer) return;
+    seen.add(n);
+    if (Array.isArray(n)) {
+      for (let i = 0; i < n.length; i++) {
+        const v = n[i];
+        if (typeof v === 'string') {
+          if (v.includes(SEG_BREAK)) n[i] = v.split(SEG_BREAK).join(' ');
+        } else visit(v);
+      }
+      return;
+    }
+    for (const v of Object.values(n)) visit(v);
+  };
+  visit(root);
+}
+
+/**
+ * ブロックの中身の並びで、行内の要素 (LInline) の境目をまたいで空白を詰める (CSS Text 3 §4.1.1 の 4: 詰める空白の直後の詰める空白は消す。
+ * 要素の境目は関係しない)。行の頭 (ブロックの始め・強制改行の後・中のブロックの後) と行の終わりの空白も消す (§4.1.2 の 1・3)。
+ * 行内の要素の中身は、端の空白を残して読む (collapseFlowWhitespace の inline) ので、「word <b> bold</b>」の二重の空白、
+ * 「<p><b> bold </b></p>」の行の頭・終わりの空白は、ここで消す。white-space が空白を残す要素 (collapseSpaces: false) の中の字は変えず、字として数える。
+ * 画像・inline-block などの行内の箱は字と同じに数え、回り込み・マーカー・絶対配置の箱は飛ばす。空になった文字列は並びから除く
+ */
+function collapseAcrossInlines(list: Array<LBlockLevel | LInlineLevel>): void {
+  type Arr = Array<LBlockLevel | LInlineLevel>;
+  // 節の端の改行を、境目をまたいだ前後の字で、空白にするか消す (空白を詰める前に。CSS Text 3 §4.1.1 の 2 は 4 より前)
+  resolveSegmentBreaks(list);
+  // 行の頭か、直前の字が詰める空白か
+  let prevSpace = true;
+  // 末尾が空白の、直前の文字列 (行の終わりなら、その空白を消す)
+  let tail: { arr: Arr; i: number } | undefined;
+  const touched = new Set<Arr>();
+  const endLine = () => {
+    if (tail) {
+      tail.arr[tail.i] = trimEndSpaces(tail.arr[tail.i] as string);
+      touched.add(tail.arr);
+    }
+    tail = undefined;
+    prevSpace = true;
+  };
+  const walk = (arr: Arr, collapse: boolean) => {
+    for (let i = 0; i < arr.length; i++) {
+      const n = arr[i];
+      if (typeof n === 'string') {
+        if (!collapse) {
+          if (n) {
+            prevSpace = false;
+            tail = undefined;
+          }
+          continue;
+        }
+        // 強制改行 (保った改行) の前後は、行の終わりと頭
+        const segs = n.split('\n');
+        let t = '';
+        segs.forEach((seg, k) => {
+          if (k > 0) {
+            if (tail) endLine();
+            t = trimEndSpaces(t) + '\n';
+            prevSpace = true;
+            tail = undefined;
+          }
+          let v = seg;
+          if (prevSpace) v = v.replace(/^ +/, '');
+          if (v) prevSpace = v.endsWith(' ');
+          t += v;
+        });
+        if (t !== n) {
+          arr[i] = t;
+          touched.add(arr);
+        }
+        if (/[^ ]/.test(t.replace(/\n/g, ''))) tail = undefined;
+        if (t.endsWith(' ')) tail = { arr, i };
+        continue;
+      }
+      if (!n || typeof n !== 'object') continue;
+      // 流れの外の箱 (回り込み・マーカー・絶対配置の箱。行の中の場所は取らない) は飛ばす
+      if (n.type === 'float' || n.type === 'marker' || (n as { absolutePosition?: boolean }).absolutePosition) continue;
+      if (isBlockLevel(n)) {
+        endLine();
+        continue;
+      }
+      if (n.type === 'inline' && Array.isArray(n.children)) {
+        walk(n.children as Arr, n.collapseSpaces ?? collapse);
+        continue;
+      }
+      // 行内の箱 (画像・inline-block・リーダー・ページ番号の引用など) は字と同じ
+      prevSpace = false;
+      tail = undefined;
+    }
+  };
+  walk(list, true);
+  endLine();
+  for (const arr of touched) {
+    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] === '') arr.splice(i, 1);
+  }
 }
 
 /** HTML の文書 (スタイルを確定させたもの) を Kumiori の論理ツリーにする */
@@ -6881,6 +7907,7 @@ export function importHtml(doc: Document, src: StyleSource, opts: HtmlImportOpti
   }
   const imp = new HtmlImporter(src, opts, sheet, lookup);
   const document = imp.run(doc);
+  finishSegmentBreaks(document);
   // 同じ画像は 1 度だけ報告する (XSL-FO の読み込みの報告と同じ。同じ URL を何度も取りに行かせない)
   imp.report.images = [...new Set(imp.report.images)];
   return { document, report: imp.report };
@@ -6902,4 +7929,4 @@ function innerRadius(rad: BorderRadius, border?: BorderInput, padding?: EdgesInp
 
 // 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
 // Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
-for (const t of [PAGE_SIZES]) Object.setPrototypeOf(t, null);
+for (const t of [PAGE_SIZES, MARGIN_BOXES, MARKER_POS, OBSOLETE_LIST_GLYPHS]) Object.setPrototypeOf(t, null);
