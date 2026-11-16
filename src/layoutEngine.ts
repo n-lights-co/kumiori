@@ -21,6 +21,8 @@ import type { PaintEffect } from './types';
 import { attachResources } from './areaResources';
 import type {
   Annotation,
+  LTableColumn,
+  LFlexItemColumn,
   LInline,
   Area,
   BackgroundImage,
@@ -105,6 +107,7 @@ import {
   isInlineChild,
   lineMetrics,
   markBidi,
+  placeAutospaceBidi,
   reorderLine,
   positionLine,
   type BoxSpec,
@@ -124,8 +127,9 @@ import { kernScript, lastBaseOfUnit } from './orthographicSyllable';
 import { fontFeaturesBetweenUnits } from './inlineFlatten';
 import { mm } from './units';
 import type { AssetStore } from './assets';
+import { resolveRef } from './resources';
 import { FootnoteCtx, splitEntry, withLabel, type FootEntry } from './footnotes';
-import { breakEdgeBorder, collapsedOuterHalves, collapseTableBorders, placeCells } from './tableBorders';
+import { breakEdgeBorder, collapsedOuterHalves, collapseTableBorders, firstRowBorderWidths, placeCells } from './tableBorders';
 import { limitTableSpans } from './tableLimits';
 import { formatPageNumber } from './pageNumber';
 import { applyTextTransform } from './textTransform';
@@ -149,17 +153,37 @@ export interface LayoutOptions {
    */
   kernAh?: boolean;
   /**
+   * アンテナハウス互換の、行がページ (段) に入るかの判定の許容 (lineFitTolerance)。行の下端 (脚注の領域を引いた本文の下端と比べる) が
+   * これだけはみ出しても、その行を置く。既定は 0.01pt (計算の誤差だけ)。見本の PDF: CSS-Print 第 4 版の 75 ページの図のキャプションは、
+   * 脚注の分を引いた本文の下端を約 0.03pt 越えるが、そのページに置かれる (位置は Kumiori と 0.001pt まで同じ)
+   */
+  lineFitToleranceAh?: boolean;
+  /**
+   * アンテナハウス互換の、列の幅の指定の無い固定の列幅の表 (table-layout: fixed) の列の配り方: 1 行目のセルの罫線を除いた幅
+   * (中身と padding の幅) を等しく配る (columnSizes の edges。アンテナハウスの見本に合わせたもの)。HTML の --style ah で使う。
+   * XSL-FO の文書 (LDocument.spaceResolution が 'xsl') は、この設定に関わらず、どのモードでもこの配り方。
+   * 既定 (HTML のほかのスタイル) は、CSS 2.1 §17.5.2.1 の 3 の “Any remaining columns equally divide the remaining horizontal
+   * table space (minus borders or cell spacing).” を、表の罫線・セルの間隔を除いた幅を列の箱に等しく分けると読み、
+   * 列の箱を等分する (ブラウザ (Chromium) と同じ)
+   */
+  fixedColumnBordersAh?: boolean;
+  /**
    * false で、計測の覚え (Flow.memoMeasure。幅を中身で決める箱の中身の幅・段組の釣り合わせの高さを、同じ組版の中で使い回す) を切る。
    * 覚えは組版の結果を変えない。切るのは、それを確かめるテストのためだけ (入れ子が深いと、組む回数が深さに対して指数的に増える)
    */
   measureMemo?: boolean;
   /**
-   * 段組の入れ子の深さの上限 (LAY-18)。これより深い段組は 1 段に組む (警告を出す)。既定 4。Infinity で上限なし。
+   * 行分けの結果の覚え (同じ段落を同じ幅で組み直すときに使い回す) に置いておく大きさ (atom (字など) の数と、項目ごとの分) の上限。超えたら古いものから捨てる
+   * (結果は変わらない。既定 LINE_MEMO_ATOMS。0 で覚えない)。テストで、捨てても結果が同じことを確かめるため
+   */
+  lineMemoAtoms?: number;
+  /**
+   * 段組の入れ子の深さの上限。これより深い段組は 1 段に組む (警告を出す)。既定 4。Infinity で上限なし。
    * 中身がページからあふれる段組の入れ子は、外側の段の高さの探索の値ごとに内側の探索をやり直すので、段ごとに組む回数が増える
    */
   maxColumnNest?: number;
   /**
-   * 組版の 1 回の通し (ページ番号の参照の組み直しは別に数える) で作る流れ (Flow) の数の上限 (LAY-18)。超えたら、以後の幅を中身で決める箱
+   * 組版の 1 回の通し (ページ番号の参照の組み直しは別に数える) で作る流れ (Flow) の数の上限。超えたら、以後の幅を中身で決める箱
    * (inline-container・inline-block・float・絶対配置の箱・回した箱) は中身の幅を測らずに使える幅で組み、段組は 1 段に組む (警告を出す)。
    * 既定 100000 (説明書・見本で最も多い CSS-Print の本で約 2 万)。Infinity で上限なし。
    * 種類を混ぜた入れ子は、箱が段ごとに違う幅で測られて覚え (memoMeasure) が当たらず、深さの 4 乗ほどで組む回数が増える。
@@ -169,6 +193,11 @@ export interface LayoutOptions {
 }
 
 const EPS = 0.01;
+/**
+ * アンテナハウス互換の、行がページに入るかの判定の許容 (pt。LayoutOptions.lineFitToleranceAh)。見本の PDF で、AH が置いた行のはみ出しは
+ * 約 0.03pt (CSS-Print 第 4 版の 75 ページ)。許す幅はこの 1 か所からは決められないので、それを含む小さな値にする
+ */
+const LINE_FIT_TOLERANCE_AH = 0.05;
 
 /** 回転後の外接矩形の物理サイズ (90・270 は幅と高さが入れ替わる) */
 function bboxOf(n: LNode): { width: number; height: number } {
@@ -425,6 +454,8 @@ interface FlowHost {
   assets?: AssetStore;
   hyphenate?: LayoutOptions['hyphenate'];
   kernAh?: boolean;
+  /** 行がページ (段) に入るかの判定の許容 (pt。LayoutOptions.lineFitToleranceAh)。無ければ EPS */
+  lineFitTolerance?: number;
   warn(msg: string): void;
   /** page-number-citation: 参照先 id のページ番号 (文字列) */
   cite(refId: string, last?: boolean, format?: string, physical?: boolean, style?: ResolvedStyle, pageNumber?: number): string;
@@ -449,6 +480,11 @@ interface FlowHost {
   /** 余白の解決を XSL 1.1 §4.3.1 の規則で行う (LDocument.spaceResolution) */
   xslSpace?: boolean;
   /**
+   * 列の幅の指定の無い固定の列幅の表で、1 行目のセルの罫線を除いた幅を等しく配る (XSL-FO の文書と、LayoutOptions.fixedColumnBordersAh)。
+   * 無ければ、列の箱を等分する
+   */
+  fixedColumnBorders?: boolean;
+  /**
    * いま組んでいる参照領域 (段をまたぐブロックの切り替わりで分かれた、本文の中の領域。XSL 1.1 §6.4.14 の span-reference-area の中の
    * normal-flow-reference-area) の先頭の、本文の領域の先頭からの block 方向の距離。絶対配置の箱 (LBlockContainer.areaOffset) の基準に使う。
    * 無ければ 0 (本文の領域の先頭)
@@ -466,6 +502,8 @@ interface FlowHost {
    * 中身の並び (子の配列) → 計測の条件 → 値。組版 (layoutOnce) ごとに作り直す (ページ番号の参照の値が変わる組み直しでは捨てる)
    */
   measureMemo?: WeakMap<object, Map<string, MeasureEntry[]>>;
+  /** 行分けの結果の覚え (lineMemos) の、覚えている量と古さの順 (LineMemoLru。LayoutEngine.layout ごとに作り直す) */
+  lineMemoLru?: LineMemoLru;
   /**
    * 計測の覚え (measureMemo) のための記録。
    *  - n: 覚えてはいけない計測の数え上げ。結果のほかに跡を残すこと (試し組みの中の絶対配置の箱) が起きるたびに増やす。
@@ -474,7 +512,7 @@ interface FlowHost {
    */
   volatile?: { n: number; active: number; cites: CiteUse[] };
   /**
-   * 組む手間の上限 (LAY-18): 幅を中身で決める箱・段組の入れ子のいまの深さ (d・段組は cd)、段組の深さの上限 (cmax)、
+   * 組む手間の上限: 幅を中身で決める箱・段組の入れ子のいまの深さ (d・段組は cd)、段組の深さの上限 (cmax)、
    * この通しの始めの流れの数 (base) と流れの数の上限 (budget)、簡略に組んだか (hit)、いちばん深いところ (maxSeen・cSeen)、警告の出し先
    */
   nest?: { d: number; cd: number; cmax: number; base: number; budget: number; hit: boolean; maxSeen: number; cSeen: number; warn: (m: string) => void };
@@ -509,6 +547,9 @@ export interface LayoutStats {
   nestMax?: number;
   /** 段組の入れ子の、いちばん深いところ */
   columnNestMax?: number;
+  /** 行分けの結果の覚えが、いちばん大きかったときの大きさ (LineMemoLru。上限 LayoutOptions.lineMemoAtoms の効き方を確かめる) と、覚えから使い回した回数 */
+  lineMemoPeak?: number;
+  lineMemoHits?: number;
 }
 
 /** keep-with-next の試し組みを、次のブロックの最初の行が置かれた時点で打ち切る合図 (Flow.onPlaced が投げる) */
@@ -1033,7 +1074,7 @@ class Flow {
       this.footReserve += lead + sp.head.height;
       this.carry.push(sp.rest);
     } else {
-      this.host.warn('脚注がページに収まらないため溢れます');
+      this.host.warn(msg('脚注がページに収まらないため溢れます', 'a footnote does not fit on the page and overflows'));
       this.footnotes.push(e);
       this.footReserve += lead + e.height;
     }
@@ -1388,7 +1429,7 @@ class Flow {
         return;
       }
       if (this.paginating && !this.pageHasContent && this.cursor + need + this.footReserve > this.limit + EPS) {
-        this.host.warn('float がページより大きいため溢れます');
+        this.host.warn(msg('float がページより大きいため溢れます', 'a float is larger than the page and overflows'));
       }
       // すでに置かれた本文を float の高さだけ押し下げ、ページ先頭側へ積む
       this.shiftContent(need);
@@ -1490,7 +1531,7 @@ class Flow {
         this.deferredFloats.push(f);
         return;
       }
-      if (this.paginating && !this.pageHasContent && y + f.outerB + this.footReserve > this.limit + EPS) this.host.warn('float がページより大きいため溢れます');
+      if (this.paginating && !this.pageHasContent && y + f.outerB + this.footReserve > this.limit + EPS) this.host.warn(msg('float がページより大きいため溢れます', 'a float is larger than the page and overflows'));
       const x0 = f.side === 'start' ? left : right - f.outerI;
       f.box.i = x0 + f.m.is;
       f.box.b = y + f.m.bs;
@@ -1509,7 +1550,7 @@ class Flow {
       return;
     }
     if (this.paginating && !this.pageHasContent && y + f.outerB + this.footReserve > this.limit + EPS) {
-      this.host.warn('float がページより大きいため溢れます');
+      this.host.warn(msg('float がページより大きいため溢れます', 'a float is larger than the page and overflows'));
     }
     // 寄せる端: 包含ブロックの内容の端 (無ければ領域の端)
     const e0 = f.edge?.off ?? 0;
@@ -1859,7 +1900,7 @@ class Flow {
         const pageEnd = this.room;
         if (this.cursor >= need - EPS || need + d.bpEnd <= pageEnd + d.keepEnd.size + EPS || pageEnd - f.contentStartB <= EPS) break;
         if (guard >= 50) {
-          this.host.warn('高さの指定が 50 ページを超える箱は、50 ページで打ち切ります');
+          this.host.warn(msg('高さの指定が 50 ページを超える箱は、50 ページで打ち切ります', 'a box whose specified height exceeds 50 pages is cut off at 50 pages'));
           break;
         }
         this.cursor = Math.max(this.cursor, pageEnd);
@@ -1955,6 +1996,7 @@ class Flow {
         if (f.frags) f.frags = f.frags.filter((x) => x !== f.node);
         const fresh = this.makeNode(f.node.kind as 'block' | 'table', f.desc, f.node.isize);
         fresh.colSizes = f.node.colSizes;
+        fresh.flexContentI = f.node.flexContentI;
         f.node = fresh;
         f.opened = false;
         // 開いたときに進めた位置 (前の余白・上の罫線と padding) を戻す (段の高さに数えない)
@@ -2038,6 +2080,7 @@ class Flow {
         shadow: f.desc.shadow,
         cont: true,
         colSizes: old.colSizes,
+        flexContentI: old.flexContentI,
       });
       const clone = node.kind === 'table';
       // 前側の罫線・余白を残す指定 (conditionality="retain") なら、続きの断片にも付ける
@@ -2118,10 +2161,10 @@ class Flow {
           this.staticKey = undefined;
         }
       } else if (typeof c !== 'string' && c.type === 'retrieve-marker') {
-        this.host.warn('retrieve-marker は PageSequence.staticContent 内でのみ使えます');
+        this.host.warn(msg('retrieve-marker は PageSequence.staticContent 内でのみ使えます', 'retrieve-marker can be used only in the static content of a page sequence'));
       } else if (typeof c !== 'string' && c.type === 'retrieve-table-marker') {
         // 表の header・footer の中のものは、組む前に中身に置き換えてある (layoutTableWithMarkers)。ここへ来るのは、それ以外の所に置いたもの
-        this.host.warn('retrieve-table-marker は表の header・footer の中でのみ使えます');
+        this.host.warn(msg('retrieve-table-marker は表の header・footer の中でのみ使えます', 'retrieve-table-marker can be used only in a table header or footer'));
       } else if (isInlineChild(c)) run.push(c);
       else {
         // 字の並び (無名のブロック) の直後のブロックが keep-with-previous (CSS の break-before: avoid) なら、
@@ -2299,7 +2342,7 @@ class Flow {
     return keptM(Math.max(pageLimit - reserve, 1)); // 新しいページなら一緒に入る場合だけ、改ページする
   }
 
-  /** 幅を中身で決める箱・段組を 1 段深く組む (入れ子の深さを数える。LAY-18) */
+  /** 幅を中身で決める箱・段組を 1 段深く組む (入れ子の深さを数える) */
   private nested<T>(f: () => T, column = false): T {
     const c = this.host.nest;
     if (!c) return f();
@@ -2316,7 +2359,7 @@ class Flow {
   }
 
   /**
-   * 組む手間の上限を超えた (LAY-18): 流れの数が上限を超えたか、段組 (column) が上限より深い。超えたら中身の幅を測らずに組み、段組は 1 段に組む
+   * 組む手間の上限を超えた: 流れの数が上限を超えたか、段組 (column) が上限より深い。超えたら中身の幅を測らずに組み、段組は 1 段に組む
    * (最初に当たったとき、警告を出す)。上限の内側の文書は、ここが偽なので、組版の結果が変わらない
    */
   private simplified(column = false): boolean {
@@ -2778,7 +2821,7 @@ class Flow {
     const { need, h } = this.keepTogetherNeed(children[ci] as LBlock, ps);
     const over = this.cursor + need - this.room;
     if (over <= EPS || h > this.room + EPS) return undefined;
-    this.host.warn('keep-together・keep-with-next を保つため、ブロックをページの下へはみ出させました (--compat antenna)');
+    this.host.warn(msg('keep-together・keep-with-next を保つため、ブロックをページの下へはみ出させました (--compat antenna)', 'a block was let overflow the bottom of the page to keep keep-together and keep-with-next (--compat antenna)'));
     return over;
   }
 
@@ -2961,6 +3004,8 @@ class Flow {
         image: (c, ps) => this.imageBox(c, ps),
         inlineBox: (c, ps) => this.inlineContainerBox(c, ps),
         containerI: L,
+        // 行内の箱の子に入ったブロックは、行の中に置けない (読み込みがブロックの前後で行内の箱を分けなかった経路。CSS 2.1 §9.2.1.1)。黙って捨てずに知らせる
+        dropped: (t) => this.host.warn(msg(`行内の箱の中のブロック (${t}) を置けないため、その中身を省きました`, `a block (${t}) inside an inline box cannot be placed; its content was omitted`)),
         // アンテナハウス互換では、ギリシャ文字・キリル文字の語を欧文の書体に替えない (その製品に合わせる指定なので、書体の選び方を変えない)
         ...(this.host.kernAh ? { noLatinWords: true } : {}),
         ...(this.intrinsic ? { intrinsic: true } : {}),
@@ -3028,7 +3073,7 @@ class Flow {
       adjustHangulWordSpaces(atoms, (p, n, s) => ms.contextSpaceDelta(p, n, { fontFamily: s.fontFamily, fontWeight: s.fontWeight }));
       // 双方向のテキスト (UAX #9): 段落の字の深さを決める。並べ替えは行ごと (reorderLine)
       // 縦書きの段落は、上から下 (左から右と同じ深さ 0) として並べる (direction の rtl の縦書きの配置は扱わない)
-      markBidi(atoms, this.wm === 'horizontal-tb' && st.direction === 'rtl', ms, this.wm, st.unicodeBidi);
+      if (markBidi(atoms, this.wm === 'horizontal-tb' && st.direction === 'rtl', ms, this.wm, st.unicodeBidi)) placeAutospaceBidi(atoms);
       // 回り込みがある (または次ページ先頭に float が来る) 場合は、行ごとに使える幅が変わるので 1 行ずつ組む
       if (floating) {
         this.layoutInlineRunFloating(atoms, st, first);
@@ -3086,7 +3131,7 @@ class Flow {
         const gridTrail = this.gridTrailOf(lm, st);
         // 参照を含む行は「行 + その脚注」が一緒に入る場合だけ置く (入らなければ参照行ごと次ページへ)
         const { count, inc } = this.footCostOfRefs(refs[k], useFoot, nFoot);
-        if (c + h - gridTrail + tail + resv + inc > this.limit + EPS) break;
+        if (c + h - gridTrail + tail + resv + inc > this.limit + (this.host.lineFitTolerance ?? EPS)) break;
         c += h;
         resv += inc;
         nFoot += count;
@@ -3112,7 +3157,7 @@ class Flow {
           this.brokeKeep = true;
           this.brokeKeepPage = Math.min(this.brokeKeepPage, this.breakCount);
         }
-        if (fit === 0) this.host.warn('行がページに収まりません');
+        if (fit === 0) this.host.warn(msg('行がページに収まりません', 'a line does not fit on the page'));
       }
       this.flush();
       this.commitMarkers();
@@ -3383,7 +3428,7 @@ class Flow {
       // 行グリッド: 回り込みの無い経路 (layoutInlineRun) と同じく、行の基線をグリッドに揃える分を足し、最後の行の下の部分は入るかの判定に数えない
       const gdSim = this.gridDelta(y0 + extra0, lm, st, y0 + extra0, this.inGrid() ? { above: this.gridEmOf(pl, st).above, prevTrail: pv ? 0 : this.gridPrevTrail(this.cursor) } : undefined);
       const gridTrail = this.gridTrailOf(lm, st);
-      if (this.paginating && this.cursor + pv + extra0 + gdSim + lm.base - gridTrail + tail + this.footReserve + inc > this.limit + EPS) {
+      if (this.paginating && this.cursor + pv + extra0 + gdSim + lm.base - gridTrail + tail + this.footReserve + inc > this.limit + (this.host.lineFitTolerance ?? EPS)) {
         if (this.pageHasContent) {
           // widows / orphans: 次のページへ行く行が widows より少なければ、このページに置いた行を送る
           // (残りの行の数は、回り込みの無い幅で数える)
@@ -3403,7 +3448,7 @@ class Flow {
           this.breakPage();
           continue; // 新ページでは回り込みの状況が変わるので、行を組み直す
         }
-        this.host.warn('行がページに収まりません');
+        this.host.warn(msg('行がページに収まりません', 'a line does not fit on the page'));
       }
       const before = { cursor: this.cursor, adjacent: this.adjacent };
       this.flush();
@@ -3463,11 +3508,20 @@ class Flow {
   /** 画像を行内の箱として組む。画像データが無ければ、指定サイズ (既定 60×40pt) のプレースホルダ */
   private imageBox(c: LImage, st: ResolvedStyle): BoxSpec {
     const asset = this.host.assets?.get(c.src);
-    if (asset?.unsupported) this.host.warn(`画像 ${c.src} を描けないため、仮の枠で描きます (${asset.unsupported})`);
+    if (asset?.unsupported) this.host.warn(msg(`画像 ${c.src} を描けないため、仮の枠で描きます (${asset.unsupported})`, `image ${c.src} cannot be drawn, so a placeholder frame is drawn (${asset.unsupported})`));
     // 描いたが、中の一部を描けなかったもの (CGM・WMF・EMF。assets.ts の ImageAsset.notes)
-    for (const n of asset?.notes ?? []) this.host.warn(`画像 ${c.src} の一部を描けません: ${n}`);
+    for (const n of asset?.notes ?? []) this.host.warn(msg(`画像 ${c.src} の一部を描けません: ${n}`, `part of image ${c.src} cannot be drawn: ${n}`));
     // 画像が見つからない・中身が画像でない (読めない) ときは、黙って省かずに知らせる (instream-foreign-object の仮の名前は除く)
-    if (this.host.assets && !asset && !this.measureOnly && !c.src.startsWith('instream-foreign-object:')) this.host.warn(`画像 ${c.src} が見つからないか、中身を画像として読めません`);
+    if (this.host.assets && !asset && !this.measureOnly && !c.src.startsWith('instream-foreign-object:')) this.host.warn(msg(`画像 ${c.src} が見つからないか、中身を画像として読めません`, `image ${c.src} is not found or its content cannot be read as an image`));
+    // SVG の image が指す外のファイルのうち、描けないもの (文書のファイルに無い・PNG と JPEG でない) を知らせる (その image は描かない。svg.ts)
+    if (asset?.mime === 'image/svg+xml' && asset.bytes && !asset.unsupported && !this.measureOnly) {
+      for (const { href, use } of svgMissingImages(c.src, asset.bytes, this.host.assets!))
+        this.host.warn(
+          use
+            ? msg(`画像 ${c.src} の use が指すファイル ${href} が見つからないか、SVG でないため、描きません`, `file ${href} referenced by use in image ${c.src} is not found or is not SVG, so it is not drawn`)
+            : msg(`画像 ${c.src} の中の画像 ${href} が見つからないか、PNG・JPEG・GIF・BMP・WebP でないため、描きません`, `image ${href} in image ${c.src} is not found or is not PNG, JPEG, GIF, BMP or WebP, so it is not drawn`),
+        );
+    }
     // 画像本来の大きさ (pt)。intrinsicFromImage なら、画像に書かれた解像度で決める
     const k = c.intrinsicFromImage && asset?.dpi ? 96 / asset.dpi : 1;
     const nat = asset ? { w: asset.width * 0.75 * k, h: asset.height * 0.75 * k } : undefined;
@@ -3514,6 +3568,8 @@ class Flow {
         src: c.src,
         missing: !asset || asset.drawable === false,
         alt: c.alt,
+        // 画像を置いた所の言語 (SVG の systemLanguage を照らす)
+        ...(st.language ? { language: st.language } : {}),
         ...(c.fit && c.fit !== 'fill' && nat ? { fit: c.fit, naturalWidth: nat.w, naturalHeight: nat.h, ...(c.fitPosition ? { fitPosition: c.fitPosition } : {}) } : {}),
         // scaling="non-uniform" (XSL §7.15.11): 縦横の比を変えて枠へ引き伸ばす (SVG も preserveAspectRatio によらず)
         ...(c.scaling === 'non-uniform' && c.width !== undefined && c.height !== undefined ? { stretch: true } : {}),
@@ -3695,7 +3751,7 @@ class Flow {
     this.addMargin(mbs, precBs);
     if (this.paginating && this.pageHasContent && this.cursor + this.pendingValue() + extent + this.heldFootCost([node]) > this.room + EPS) this.breakPage();
     // 改ページした後の (または元から空の) ページにも入らなければ、溢れる (else にすると、改ページした経路では警告が出ない)
-    if (this.paginating && !this.pageHasContent && extent > this.room + EPS) this.host.warn('ボックスがページより大きいため溢れます');
+    if (this.paginating && !this.pageHasContent && extent > this.room + EPS) this.host.warn(msg('ボックスがページより大きいため溢れます', 'a box is larger than the page and overflows'));
     this.flush();
     this.commitMarkers();
     node.i = mis;
@@ -3717,8 +3773,11 @@ class Flow {
     return this.wm === 'horizontal-tb' ? s.height : s.width;
   }
 
-  /** 直交する書字方向のブロックを、ページ (親の block 方向) ごとの断片に分けて置く */
-  private layoutOrthogonalPaged(node: LBlock | LTable, st: ResolvedStyle, ps: ResolvedStyle) {
+  /**
+   * 直交する書字方向のブロックを、ページ (親の block 方向) ごとの断片に分けて置く。
+   * fillB: 1 つの断片に収まるなら、箱の block の向きの内容の大きさを、この長さまで広げる (XSL-FO の直交するコンテナ。fillOrthogonal)
+   */
+  private layoutOrthogonalPaged(node: LBlock | LTable, st: ResolvedStyle, ps: ResolvedStyle, fillB?: number) {
     const wmC = st.wm;
     this.applyPendingBreak();
     const minLine = st.fontSize * 4;
@@ -3749,6 +3808,8 @@ class Flow {
     const floorI = sized?.minInlineSize !== undefined ? sized.minInlineSize + od.bpI + od.m.is + od.m.ie : 0;
     const fitLen = (len: number) => Math.max(Math.min(mc > 0 && mc < len ? mc : len, capI), floorI);
     let lineLen = fitLen(Math.max(avail, minLine));
+    /** 組む箱 (fillB の広げ方を決めた後のもの) */
+    let subject: LBlock | LTable = node;
     /** 最初の断片の行の長さを len にして組む。final でなければ試し組み (マーカー・警告を残さない) */
     const lay = (len: number, final: boolean) => {
       const roots: LNode[] = [newNode('block', wmC, { isize: len })];
@@ -3777,7 +3838,7 @@ class Flow {
         footnotes: this.foot,
         holdFootnotes: true,
       });
-      sub.layoutBlockLevel(node, ps);
+      sub.layoutBlockLevel(subject, ps);
       sub.finishPaginated();
       return { roots, used };
     };
@@ -3787,6 +3848,14 @@ class Flow {
     if (node.keepTogether && this.pageHasContent && Number.isFinite(this.limit) && pieces(lay(lineLen, false)) > 1 && pieces(lay(fitLen(this.limit), false)) === 1) {
       this.breakPage();
       lineLen = fitLen(Math.max(this.room - this.cursor - this.pendingValue(), minLine));
+    }
+    // 1 つの断片に収まるなら、箱を fillB まで広げる (ページをまたぐなら広げない: 最後の断片は中身の大きさ)
+    if (fillB !== undefined && node.type === 'block') {
+      const filled: LBlock = { ...node, minBlockSize: Math.max(fillB, node.minBlockSize ?? 0) };
+      if (pieces(lay(lineLen, false)) <= 1) {
+        subject = filled;
+        if (pieces(lay(lineLen, false)) > 1) subject = node;
+      }
     }
     const { roots, used } = lay(lineLen, true);
     roots.forEach((r, k) => {
@@ -3802,15 +3871,21 @@ class Flow {
    * 90°・270° 回したコンテナをページに分けて組む。回す前の行の長さはページの残りの高さ (次のページからは本文の高さ)、
    * 回す前の block 方向には本文の幅まで積み、入りきらない分は次のページへ続ける
    */
-  private layoutRotatedPaged(node: LBlockContainer, st: ResolvedStyle, rot: 90 | 270) {
+  /**
+   * outer: 箱の外の余白 (space-before・space-after・start-indent) を当てるときの箱の寸法 (枠を中のブロックに移した XSL-FO の箱。
+   * 1 つの箱にして置くときと同じに、最初の断片の前・最後の断片の後ろ・各断片の行の向きの始めに当てる)
+   */
+  private layoutRotatedPaged(node: LBlockContainer, st: ResolvedStyle, rot: 90 | 270, outer?: ReturnType<typeof describeBox>) {
     this.applyPendingBreak();
     const minLine = st.fontSize * 4;
-    let avail = this.room - this.cursor - this.pendingValue();
+    // 箱の前の余白 (outer) は、最初の断片の前に置く (その分、最初のページの残りが短い)
+    const before = outer ? Math.max(outer.m.bs, 0) : 0;
+    let avail = this.room - this.cursor - this.pendingValue() - before;
     if (avail < minLine && this.pageHasContent) {
       this.breakPage();
-      avail = this.room - this.cursor - this.pendingValue();
+      avail = this.room - this.cursor - this.pendingValue() - before;
     }
-    const width = this.contentI();
+    const width = this.contentI() - (outer ? outer.m.is + outer.m.ie : 0);
     // 回転した箱の局所の幅 (回転後のページの縦の長さ) は、中身の長さに合わせる (使える長さが上限。shrink-to-fit)。
     // 90°・270° の表は、表の幅 (列の幅の合計 + 字下げ) の長さで本文の上から置く
     const fit = (len: number) => {
@@ -3851,12 +3926,15 @@ class Flow {
     sub.finishPaginated();
     // 回転した箱がページをまたぐときは、本文の幅いっぱいの箱にする (rotatedFill。1 ページに収まるときは中身の大きさ)
     const fill = !!node.rotatedFill && roots.filter((r) => r.children.length).length > 1;
-    roots.forEach((r, k) => {
-      if (!r.children.length) return;
+    const placed = roots.filter((r) => r.children.length);
+    placed.forEach((r, k) => {
       if (k > 0) this.breakPage();
-      const wrap = newNode('block', st.wm, { isize: r.isize, bsize: fill ? width : (used[k] ?? width), children: r.children });
+      const wrap = newNode('block', st.wm, { isize: r.isize, bsize: fill ? width : (used[roots.indexOf(r)] ?? width), children: r.children });
       wrap.rot = rot;
-      this.placeBox(wrap, 0, 0, 0, this.extentAlongBlock(wrap));
+      const first = k === 0;
+      const last = k === placed.length - 1;
+      if (!outer) this.placeBox(wrap, 0, 0, 0, this.extentAlongBlock(wrap));
+      else this.placeBox(wrap, first ? outer.m.bs : 0, last ? outer.m.be : 0, outer.m.is, this.extentAlongBlock(wrap), first ? outer.precBs : 0, last ? outer.precBe : 0, last ? outer.retainBe : false);
     });
   }
 
@@ -3888,14 +3966,11 @@ class Flow {
   }
 
   /** 親と直交する書字方向を持つブロック/表 (例: 横書きフロー内の縦書きブロック) */
-  private layoutOrthogonal(node: LBlock | LTable, st: ResolvedStyle, ps: ResolvedStyle) {
+  /** fillB: ページに分けて組むとき、1 つの断片に収まるなら、箱の block の向きの内容の大きさをこの長さまで広げる (layoutOrthogonalPaged) */
+  private layoutOrthogonal(node: LBlock | LTable, st: ResolvedStyle, ps: ResolvedStyle, fillB?: number) {
     // 段の先頭・末尾に寄せる float (before・after・inside・outside) を直下に持つ箱は、ブロックコンテナとして組む
     // (float を箱の内容の block-start・block-end の端に置く。ブロックのまま組むと、float が箱の枠の外の、組む流れの根元に積まれる)
-    if (
-      node.type === 'block' &&
-      node.children.some((c) => typeof c === 'object' && c.type === 'float' && /^(before|after|inside|outside)$/.test(c.float)) &&
-      node.children.every((c) => (typeof c === 'string' ? !c.trim() : !isInlineChild(c)))
-    ) {
+    if (node.type === 'block' && hasEdgeFloats(node.children)) {
       const { children, ...rest } = node;
       this.layoutContainer({ ...rest, type: 'block-container', fillOrthogonal: true, children: children.filter((c) => typeof c !== 'string') } as unknown as LBlockContainer, ps);
       return;
@@ -3911,7 +3986,7 @@ class Flow {
     // ページ分割: inline 方向の寸法の指定が無ければ、行の長さをページの残りの高さ (親の block 方向) にして、
     // 子の block 方向 (親の inline 方向) に親の幅まで積み、入りきらない行は次ページへ続ける
     if (desc.isizeExplicit == null && this.paginating && !this.measureOnly) {
-      this.layoutOrthogonalPaged(node, st, ps);
+      this.layoutOrthogonalPaged(node, st, ps, fillB);
       if (after) this.breakNext = after;
       return;
     }
@@ -4017,7 +4092,11 @@ class Flow {
       return; // 通常フローの消費計算をスキップ
     }
     const desc = describeBox(node, st.wm);
-    // 90°・270° 回したコンテナ (寸法の指定・枠の無いもの) は、中身をページの幅ごとに区切り、断片を回してページごとに置く
+    // 90°・270° 回したコンテナ (寸法の指定・枠の無いもの) は、中身をページの幅ごとに区切り、断片を回してページごとに置く。
+    // XSL-FO では、枠 (罫線・padding) の付いたものも: 1 つの箱にすると、局所の行の長さがページの高さになり、局所の
+    // block の向き (回した後のページの横) に本文の幅を超えて積んだ行が、箱の外へはみ出す (字が切れる)。枠・背景は、回す前の
+    // 局所の向きのまま中のブロックに移し (boxIntoBlock)、そのブロックをページごとの断片に分ける (切れ目の罫線は、ブロックの
+    // 断片と同じに conditionality で決める。XSL 1.1 §7.8)
     if (
       this.paginating &&
       !this.measureOnly &&
@@ -4027,17 +4106,41 @@ class Flow {
       desc.isizeExplicit == null &&
       desc.bsizeExplicit == null &&
       !(node.columns && node.columns.count > 1) &&
-      desc.bpI === 0 &&
-      desc.bpStart + desc.bpEnd === 0
+      ((desc.bpI === 0 && desc.bpStart + desc.bpEnd === 0) || this.host.xslSpace)
     ) {
       if (node.breakBefore) this.forceBreak(node.breakBefore);
-      this.layoutRotatedPaged(node, st, node.rotation);
+      const bare = desc.bpI === 0 && desc.bpStart + desc.bpEnd === 0;
+      this.layoutRotatedPaged(bare ? node : boxIntoBlock(node), st, node.rotation, bare ? undefined : desc);
       if (node.breakAfter) this.breakNext = node.breakAfter;
       return;
     }
     // 高さの指定の無いコンテナは、内容があふれたらページをまたいで続ける (枠付きのブロックと同じに組む)。
     // 高さ固定・回転・段組・切り抜き・書字方向の違うコンテナ、書字方向を裏返すコンテナ (bt-lr・lr-bt など) は、従来どおり 1 つの箱にする
     const flips = !!(node.writingFlip && (node.writingFlip.block || node.writingFlip.inline || node.writingFlip.alternate));
+    // 親と直交する書字方向のコンテナ (横書きの本文の中の writing-mode="tb-rl" など) で、行の向きの大きさ (縦書きなら高さ。
+    // inline-progression-dimension) の指定が無いもの: XSL 1.1 §6.5.3 は、行の進む向きが親と違うコンテナの
+    // inline-progression-dimension を auto にしてはならないとし、その組み方を決めていない (§7.15.7 の auto は「ほかの制約を
+    // 考えに入れて組版ソフトが決める」)。本文の幅を行の長さにすると、箱がページの高さを超えて下へはみ出し、字が切れるので、
+    // 直交するブロック (E-16。layoutOrthogonalPaged) と同じに、行の長さをページの残りの高さ (次のページからはページの高さ) にし、
+    // 親の幅まで行を積み、入りきらない行は次のページの断片へ続ける。コンテナは参照領域 (§6.5.3) なので、中と外の余白は重ねない
+    // (§4.2.5 の fence。refArea)。block の向きの大きさの指定が無ければ、これまでどおり親の幅いっぱいに広げる (fillOrthogonal を
+    // 中身の最小の大きさにする。ページをまたぐときは、最後の断片は中身の大きさ)
+    if (
+      this.host.xslSpace &&
+      this.paginating &&
+      !this.measureOnly &&
+      (st.wm === 'horizontal-tb') !== (this.wm === 'horizontal-tb') &&
+      !hasEdgeFloats(node.children) &&
+      desc.isizeExplicit == null &&
+      !node.rotation &&
+      !(node.columns && node.columns.count > 1) &&
+      !flips
+    ) {
+      const { columns: _c, rotation: _r, blockAlign: _a, layer: _l, top: _t, left: _x, right: _rt, bottom: _b, absolutePosition: _p, fillOrthogonal, ...rest } = node;
+      const fillB = fillOrthogonal && desc.bsizeExplicit == null ? Math.max(this.contentI() - desc.bpStart - desc.bpEnd - desc.m.bs - desc.m.be, 0) : undefined;
+      const blk = { ...rest, type: 'block', refLines: true, refArea: true } as LBlock;
+      return this.layoutOrthogonal(blk, resolveStyle(ps, blk), ps, fillB);
+    }
     if (this.paginating && desc.bsizeExplicit == null && !node.rotation && !(node.columns && node.columns.count > 1) && node.overflow !== 'hidden' && st.wm === this.wm && !flips) {
       const { columns: _c, rotation: _r, blockAlign: _a, layer: _l, top: _t, left: _x, right: _rt, bottom: _b, absolutePosition: _p, ...rest } = node;
       // ブロックコンテナは参照領域を作る (XSL §6.5.3): 中の余白と外の余白を重ね合わせない (§4.2.5 の fence)
@@ -4163,7 +4266,7 @@ class Flow {
           const r = run(limitOf(h), false);
           if (r.roots.length > rows * n) return false;
           const u = r.used.slice((rows - 1) * n, rows * n);
-          return u.every((x, k) => k === 0 || x <= u[k - 1] + 0.5);
+          return u.every((x, k) => k === 0 || x < u[k - 1] + st.fontSize);
         };
         if (!ok(lastLimit) && lastLimit < full) {
           let a = lastLimit;
@@ -4562,7 +4665,7 @@ class Flow {
    * コンテナの中の段組。段の高さ limit で段を順に埋める Flow を組み、高さの指定 (contentB) が無ければ、
    * 段数に収まる最小の高さを二分探索で求めて釣り合わせる。段と段間罫の箱を返す
    */
-  private layoutBoxColumns(node: LBlockContainer, st: ResolvedStyle, innerI: number, contentB: number | undefined): { used: number; kids: LNode[] } {
+  private layoutBoxColumns(node: LBlockContainer, st: ResolvedStyle, innerI: number, contentB: number | undefined, gridShift = 0): { used: number; kids: LNode[] } {
     const cols = node.columns!;
     const n = cols.count;
     const gap = cols.gap ?? 12;
@@ -4578,7 +4681,9 @@ class Flow {
       const flushSeg = (last = false) => {
         if (seg.some((c) => typeof c !== 'string' || c.trim() !== '')) {
           const h = last && contentB != null ? Math.max(contentB - y, 0) : undefined;
-          const r = this.layoutBoxColumns({ ...node, children: seg }, st, innerI, h);
+          // 段組の箱の行グリッド (new) は、箱の内容の上端から引く。またがる要素の後ろの段組も、その格子に載せる (y はこの段組の上端の位置。
+          // 見本の PDF: CSS-Print 第 4 版の 9.3.6 の段組フロートの下の段の本文は、段組の箱の格子に載る)
+          const r = this.layoutBoxColumns({ ...node, children: seg }, st, innerI, h, y);
           for (const k of r.kids) {
             k.b += y;
             kids.push(k);
@@ -4632,7 +4737,12 @@ class Flow {
         // アンテナハウス互換 (discardStartMargin): 最初の段の頭の余白を捨てる。強制の段区切りの後の余白は残す (CSS Fragmentation)
         ...(cols.discardStartMargin ? { discardLeading: true, discardAfterForced: false } : {}),
       });
-      flow.layoutChildren(columnChildren(node), st);
+      // またがる要素の後ろの段組 (gridShift > 0) は、箱の new の行グリッドを、箱の内容の上端 (この段組の上端の gridShift 上) から引く
+      const ownGrid = (node as { baselineGrid?: LBlock['baselineGrid'] }).baselineGrid;
+      if (gridShift > 0 && ownGrid === 'new' && wm === 'horizontal-tb') {
+        flow.outerGrid = { pitch: lineHeightOf(st), ascent: this.nominalRatio(st) * st.fontSize, origin: -gridShift };
+        flow.layoutChildren(node.children, st);
+      } else flow.layoutChildren(columnChildren(node), st);
       flow.finishPaginated();
       return { roots, used, after: flow.afterBelowUsed, broke: flow.brokeKeep, deferred: flow.deferredBefore };
     };
@@ -4667,7 +4777,10 @@ class Flow {
       // 釣り合わせの方針 (CSS Multi-column 1 の balance は「できるだけ均等に」で、どの段を長くするかは定めていない):
       // 最初の段 (start 側) をいちばん長くし、後の段ほど短くする (どの段も前の段より高くならない)。段数に収まる最小の高さで
       // そうなっていれば (段の高さが同じときを含む) それを使い、なっていなければ、そうなる最小の高さまで伸ばす。
-      // 段の下端の float がある段組は、float の分で段の長さが変わるので調整しない
+      // 段の下端の float がある段組は、float の分で段の長さが変わるので調整しない。
+      // 後ろの段が前の段より長くても、その差が段組の箱の 1em 未満なら、同じ高さとみて伸ばさない (見本の PDF: アンテナハウスの
+      // サンプル FO 集の graphics-cgm-1 は、2 段目の画像の箱が 1.24pt 高いまま [見出し・画像] | [見出し・画像] に組む。
+      // CSS-Print 第 4 版の段組の例と、ほかの見本の段組は、差が 14pt 以上 (1em 以上) で、伸ばして 1 段目を長くする)。
       // ただし、伸ばして使う段の数が減る (後ろの段が空になる) 高さは採らない (見本の PDF: CSS-Print 第 4 版の 5.2 の段組の例は、
       // 2 段目が 1 段目より長いまま 3 段に組む。伸ばして 2 段にすると、箱が高くなって次のページへ送られる)
       if (!first.after) {
@@ -4677,7 +4790,7 @@ class Flow {
           const r = run(h, false);
           if (!fits(r) || usedCols(r) < minCols) return false;
           const u = r.used.slice(0, n);
-          return u.every((x, k) => k === 0 || x <= u[k - 1] + 0.5);
+          return u.every((x, k) => k === 0 || x < u[k - 1] + st.fontSize);
         };
         // 条件を満たす最小の高さを二分探索で求める (0.5pt まで)。見つからなければ最小の高さのまま
         if (!ok(limit) && limit < total) {
@@ -4697,9 +4810,9 @@ class Flow {
     const limit =
       contentB != null
         ? contentB
-        : this.memoMeasure('colbal', node.children, st, [colI, n, !!cols.discardEndMargin, !!cols.discardStartMargin, (node as { baselineGrid?: LBlock['baselineGrid'] }).baselineGrid], this.foot, balanced);
+        : this.memoMeasure('colbal', node.children, st, [colI, n, !!cols.discardEndMargin, !!cols.discardStartMargin, (node as { baselineGrid?: LBlock['baselineGrid'] }).baselineGrid, gridShift], this.foot, balanced);
     const { roots, used } = run(limit, true);
-    if (roots.length > n) this.host.warn(`段組のコンテナに内容が収まりません (${n} 段)`);
+    if (roots.length > n) this.host.warn(msg(`段組のコンテナに内容が収まりません (${n} 段)`, `the content does not fit in the multi-column container (${n} columns)`));
     const kids: LNode[] = [];
     const filled = (k: number) => k < roots.length && roots[k].children.length > 0;
     const height = contentB ?? Math.max(0, ...used.slice(0, n));
@@ -4769,7 +4882,7 @@ class Flow {
     // 最後に残った脚注 (長い脚注の続き) のために、必要なら脚注だけのページを足す
     for (let guard = 0; this.carry.length || this.deferredFloats.length; guard++) {
       if (guard >= 50) {
-        this.host.warn('脚注・float の続きが 50 ページを超えるため、残りを置きません');
+        this.host.warn(msg('脚注・float の続きが 50 ページを超えるため、残りを置きません', 'the continuation of footnotes and floats exceeds 50 pages; the rest is not placed'));
         break;
       }
       this.breakPage();
@@ -4829,21 +4942,98 @@ class Flow {
   private specifiedColumns: boolean[] = [];
 
   /**
-   * 中身に合わせる列 (LTableColumn.fitContent) の幅を、いまの組版でのセルの中身の幅 (max-content。CSS Sizing 3 §5.1) にした表を返す。
-   * ページ番号の引用の字は、前回の組版の結果 (1 回目は仮の字) で測るので、番号の桁が変われば、次の組版で列の幅も変わる
-   * (flex の項目の基本の大きさは、中身の幅: Flexbox 1 §9.2 の 3 の E)。列をまたぐセルは見ない
+   * 中身に合わせる列 (LTableColumn.fitContent) の幅を、いまの組版でのセルの中身の幅 (max-content。CSS Sizing 3 §5.1) にした表を返す
+   * (flex の項目の基本の大きさは、中身の幅: Flexbox 1 §9.2 の 3 の E)。比例の列 ('N*') なら、足す固定の長さ (widthExtra) を測った幅にする。
+   * ページ番号の引用の字は、前回の組版の結果 (1 回目は仮の字) で測るので、番号の桁が変われば、次の組版で列の幅も変わる。列をまたぐセルは見ない。
+   * 中の、大きさの指定のある箱は、その箱の大きさを数える (maxLineLength の countFixed。CSS Sizing 3 §5.1)。
+   * flex の項目の列 (LTableColumn.flexItem) は、上限 (max-width) で止め、列の幅の合計が avail (列に配れる幅) を超えたら縮める (flexShrinkColumns)
    */
-  private fitContentColumns(table: LTable, st: ResolvedStyle): LTable {
+  private fitContentColumns(table: LTable, st: ResolvedStyle, avail: number): LTable {
     const rows = [...(table.header?.rows ?? []), ...table.body.rows, ...(table.footer?.rows ?? [])];
     const fit = new Map<number, number>();
+    /** 列 → その列のセル (縮める下限の min-content を測るのに使う) */
+    const cellOf = new Map<number, { cell: LTableCell; cst: ResolvedStyle }>();
+    const widthOf = (cell: LTableCell, cst: ResolvedStyle, min: boolean) => this.cellContentI(cell, cst, min);
     for (const { cell, c: col, cs: span } of placeCells([rows]).placed) {
-      if (span !== 1 || !table.columns[col]?.fitContent) continue;
+      if (span !== 1) continue;
       const cst = resolveStyle(st, cell);
-      const w = Math.ceil(this.intrinsicWidth(cell.children, cst, 1e5) * 100) / 100 + 0.01 + describeBox(cell, cst.wm).bpI;
-      fit.set(col, Math.max(fit.get(col) ?? 0, w));
+      if (table.columns[col]?.flexItem) cellOf.set(col, { cell, cst });
+      if (!table.columns[col]?.fitContent) continue;
+      fit.set(col, Math.max(fit.get(col) ?? 0, widthOf(cell, cst, false)));
     }
     if (!fit.size) return table;
-    return { ...table, columns: table.columns.map((c, k) => (fit.has(k) ? { ...c, width: fit.get(k)! } : c)) };
+    const isStar = (c: LTableColumn) => typeof c.width === 'string';
+    /** 列の外側の幅 (比例の列は、足す固定の長さ) */
+    const widths = table.columns.map((c, k) => {
+      const w = fit.get(k) ?? (isStar(c) ? (c.widthExtra ?? 0) : typeof c.width === 'number' ? c.width : 0);
+      // 仮の主軸の大きさは、上限 (max-width) と、指定の下限 (min-width) で止める (Flexbox 1 §9.2 の 3 の後・§9.7)
+      const f = c.flexItem;
+      return f && fit.has(k) ? Math.max(Math.min(w, f.cap ?? Infinity), f.minAuto ? 0 : f.floor) : w;
+    });
+    const shrunk = this.flexShrinkColumns(table.columns, widths, avail, fit, (k) => {
+      const c = cellOf.get(k);
+      return c ? widthOf(c.cell, c.cst, true) : undefined;
+    });
+    return {
+      ...table,
+      columns: table.columns.map((c, k) => {
+        if (!fit.has(k) && shrunk[k] === widths[k]) return c;
+        return isStar(c) ? { ...c, widthExtra: shrunk[k] } : { ...c, width: shrunk[k] };
+      }),
+    };
+  }
+
+  /**
+   * セルの中身の幅 (外側。min なら min-content、でなければ max-content。CSS Sizing 3 §5.1)。0.01pt に切り上げ、0.01pt の余裕を足す。
+   * 中の、大きさの指定のある箱は、その箱の大きさを数える (maxLineLength の countFixed)
+   */
+  private cellContentI(cell: LTableCell, cst: ResolvedStyle, min: boolean): number {
+    const rootI = min ? 1 : MAX_CONTENT_ROOT;
+    const w = this.memoMeasure('iwx', cell.children, cst, [rootI, min], undefined, () => maxLineLength(this.measureSub(cell.children, cst, rootI, { intrinsic: true, ...(min ? { minContent: true } : {}) }).sub.root, true, false, true));
+    return Math.ceil(w * 100) / 100 + 0.01 + describeBox(cell, cst.wm).bpI;
+  }
+
+  /**
+   * flex の 1 行の表の、項目の列 (LTableColumn.flexItem) を縮める (Flexbox 1 §9.7 の flexible lengths の解決のうち、縮める側)。
+   * widths は列の外側の幅 (比例の列は足す固定の長さ) で、合計が avail を超えたら、はみ出した分を、flex-shrink × flex の基準の大きさの比で分けて引く。
+   * 下限 (min-width。auto なら組むときに測った中身の最も狭い幅 minContentOf) に当たった項目はそこで止め (凍結)、残りをほかの項目で分ける。
+   * fit: 組むときに幅を測った列 (flex の基準の大きさは、測った幅から内容の幅以外の分を引いたもの)
+   */
+  private flexShrinkColumns(cols: readonly LTableColumn[], widths: readonly number[], avail: number, fit: Map<number, number>, minContentOf: (k: number) => number | undefined): number[] {
+    const out = widths.slice();
+    let over = out.reduce((a, b) => a + b, 0) - avail;
+    /** 縮める項目の列: 番号と、縮める値 */
+    const items: Array<{ k: number; f: LFlexItemColumn }> = [];
+    cols.forEach((c, k) => c.flexItem && items.push({ k, f: c.flexItem }));
+    if (over <= EPS || !items.length) return out;
+    const floors = new Map<number, number>();
+    const floorOf = (k: number, f: LFlexItemColumn) => {
+      let v = floors.get(k);
+      if (v === undefined) {
+        const m = f.minAuto ? minContentOf(k) : undefined;
+        v = m !== undefined ? Math.min(m, f.minCap ?? Infinity) : f.floor;
+        floors.set(k, v);
+      }
+      return v;
+    };
+    const base = (k: number, f: LFlexItemColumn) => (fit.has(k) ? Math.max((widths[k] ?? 0) - f.edge, 0) : f.basis);
+    const frozen = new Set<number>();
+    for (let pass = 0; pass <= items.length && over > EPS; pass++) {
+      const act = items.filter(({ k, f }) => !frozen.has(k) && f.shrink > 0 && base(k, f) > 0 && (out[k] ?? 0) > floorOf(k, f));
+      const sum = act.reduce((a, { k, f }) => a + f.shrink * base(k, f), 0);
+      if (!sum) break;
+      let taken = 0;
+      for (const { k, f } of act) {
+        const cur = out[k] ?? 0;
+        const want = cur - (over * f.shrink * base(k, f)) / sum;
+        const nw = Math.max(want, floorOf(k, f));
+        if (want < floorOf(k, f)) frozen.add(k);
+        taken += cur - nw;
+        out[k] = nw;
+      }
+      over -= taken;
+    }
+    return out;
   }
 
   private measureColumns(table: LTable, st: ResolvedStyle, avail: number): number[] {
@@ -5029,7 +5219,14 @@ class Flow {
     // 寄せ (table-and-caption の text-align): 表の幅 (指定、または固定の列の幅の合計) が置く場所より狭ければ、start 側の余白に空きを足す
     const align = node.alignByTextAlign ? (ps.textAlign === 'center' ? 'center' : ps.textAlign === 'end' ? 'end' : undefined) : undefined;
     if (align) {
-      const fixed = node.columns.length && node.columns.every((c) => typeof c.width === 'number') ? node.columns.reduce((a, c) => a + (c.width as number), 0) : undefined;
+      const colSum = node.columns.length && node.columns.every((c) => typeof c.width === 'number') ? node.columns.reduce((a, c) => a + (c.width as number), 0) : undefined;
+      // 罫線をつぶした表の列の幅は、グリッド線 (罫線の中心) の間の幅 (CSS 2.1 §17.6.2。columnSizes の offsets)。列の幅の和は、
+      // 幅を書いた表の width と同じく外周の罫線の中心から中心までの幅なので、中身の幅 (表の罫線の内側) は、それに外へ出る半分を足し、
+      // 表が持つ外周の罫線の太さを引いたもの (layoutTable の explicitI の式と同じ)。ただし表が罫線を持たない辺の外へ出る半分は、
+      // 後で layoutTable が中身に合わせた幅に足すので、ここでは表が罫線を持つ辺の分だけ直す (足さないと、最後の列と
+      // 表の罫線の間に、表の罫線の太さだけ隙間ができていた)
+      const fixed =
+        colSum !== undefined && node.borderCollapse === 'collapse' ? colSum + (desc.bw.is ? out.is - desc.bw.is : 0) + (desc.bw.ie ? out.ie - desc.bw.ie : 0) : colSum;
       const w = desc.isizeExplicit ?? fixed;
       const free = w == null ? 0 : this.contentI() - desc.m.is - desc.m.ie - desc.bpI - w;
       if (w != null && free > EPS) desc = { ...desc, isizeExplicit: w, m: { ...desc.m, is: desc.m.is + (align === 'center' ? free / 2 : free) } };
@@ -5188,14 +5385,14 @@ class Flow {
     if (this.host.stats) this.host.stats.tables++;
     const st = resolveStyle(ps, table);
     // 行をまたぐセルの広がりを、行グループの終わりと、表ごとの上限で切る (tableLimits.ts。どの行のセルも表の終わりまでまたぐ表の、行数の 2 乗のマス)
-    if (limitTableSpans(table)) this.host.warn(`表の、行をまたぐセルの広がりが上限を超えたので、超えた分のセルはまたがせません (number-rows-spanned・rowspan)`);
+    if (limitTableSpans(table)) this.host.warn(msg(`表の、行をまたぐセルの広がりが上限を超えたので、超えた分のセルはまたがせません (number-rows-spanned・rowspan)`, `the row spans of table cells exceed the limit; the excess cells do not span (number-rows-spanned, rowspan)`));
     if (st.wm !== this.wm) return this.layoutOrthogonal(table, st, ps);
     let node = collapseTableBorders(table, st.wm);
     // アンテナハウス互換 (collapse): 行の高さの指定は、罫線の中心から中心まで (trimEdgeRowHeights)
     if (node.collapseToAfterCell) node = trimEdgeRowHeights(node, st.wm);
     if (node.breakBefore) this.forceBreak(node.breakBefore);
     // clear: その側の回り込みの下まで下げる (CSS 2.1 §9.5.2。ブロックの clear (layoutBlock) と同じく、保留の余白の下限として扱う)。
-    // 表は読み込みで clear を持つ (HTML の table の clear) が、これまで読まず、回り込みの範囲に重ねて置いていた (OUT-22 (4))
+    // 表は読み込みで clear を持つ (HTML の table の clear) が、これまで読まず、回り込みの範囲に重ねて置いていた
     const clr = (node as { clear?: 'start' | 'end' | 'both' }).clear;
     if (clr) {
       const y = this.floatBottom(clr);
@@ -5220,7 +5417,7 @@ class Flow {
     const spI = node.borderCollapse !== 'collapse' && node.borderSpacing ? node.borderSpacing.i : 0;
     const gaps = spI > 0 ? spI * (columnSizes(node, 0).length + 1) : 0;
     ({ node, desc } = this.tableColumnWidths(node, desc, st, ps, out, gaps));
-    if (node.columns.some((c) => c.fitContent)) node = this.fitContentColumns(node, st);
+    if (node.columns.some((c) => c.fitContent)) node = this.fitContentColumns(node, st, Math.max((desc.isizeExplicit ?? this.contentI() - desc.m.is - desc.m.ie - desc.bpI) - gaps, 0));
     // 表の見出し (CSS の caption): 表と見出しを包む箱 (table wrapper box) の中で、表の上か下に置く (CSS 2.1 §17.4)。
     // 包む箱が表の余白を持ち、幅は表の罫線の外側の幅。見出しはその幅のブロックとして組む
     const caps = node.captions ?? [];
@@ -5264,8 +5461,36 @@ class Flow {
     // 罫線を分ける表のセルの間隔 (border-separation / border-spacing): 列の幅は、間隔を除いた幅で決める
     const sp = node.borderCollapse !== 'collapse' && node.borderSpacing && (node.borderSpacing.i > 0 || node.borderSpacing.b > 0) ? node.borderSpacing : undefined;
     const nC = columnSizes(node, frame.contentI).length;
-    const sizes = columnSizes(node, Math.max(frame.contentI - (sp ? sp.i * (nC + 1) : 0), 0));
+    // 罫線をつぶした表の列の箱の境目の、グリッド線からのずれ (columnSizes の offsets)。表の始めの端の箱は、セルが外周の罫線を持てば
+    // グリッド線から外へ出る半分だけ前、表が持てば表の罫線の内側の半分だけ後ろで始まる (out.is − 表の罫線の太さ)。終わりの端も同じ。
+    // 内側は、仕様の組み方ではグリッド線、互換の組み方では後ろのセルが線をまるごと持つので、線の太さの半分だけ前。
+    // 自動レイアウト (fitContent・fillContent) の列の幅は、中身から測った箱の幅 (tableColumnWidths) なので、直さない
+    const offsets =
+      node.borderCollapse === 'collapse' && !node.fitContent && !node.fillContent
+        ? Array.from({ length: nC + 1 }, (_, k) =>
+            k === 0 ? out.is - desc.bw.is : k === nC ? -(out.ie - desc.bw.ie) : (node.collapseColumnLines?.[k] ?? 0) / 2,
+          )
+        : undefined;
+    // 幅の指定の無い列の配り方: XSL-FO と HTML の --style ah は、1 行目のセルの罫線を除いた幅を等しく、HTML のほかのスタイルは列の箱を等分
+    // (CSS 2.1 §17.5.2.1。LayoutOptions.fixedColumnBordersAh)
+    const edges = this.host.fixedColumnBorders ? firstRowBorderWidths(node, this.wm) : undefined;
+    const sizes = columnSizes(node, Math.max(frame.contentI - (sp ? sp.i * (nC + 1) : 0), 0), edges, offsets);
     frame.node.colSizes = sizes;
+    if (node.flexLine) {
+      // flex の 1 行の中身の幅 (Flexbox 1 §9.9.1: 項目の max-content の寄与の和): 比例の列 (余りを分ける列) は、足す固定の長さ (基準の大きさ) だけ。
+      // ただし中身の幅を測る組版 (intrinsic) では、伸びる項目の列 (flexItem のある比例の列) は、項目の中身の幅 (基準の大きさより広ければ)
+      const cols = node.columns;
+      const grown = new Map<number, number>();
+      if (this.intrinsic && cols.some((c) => typeof c.width === 'string' && c.flexItem)) {
+        const rows = [...(node.header?.rows ?? []), ...node.body.rows, ...(node.footer?.rows ?? [])];
+        for (const { cell, c: col, cs: span } of placeCells([rows]).placed) {
+          if (span !== 1 || typeof cols[col]?.width !== 'string' || !cols[col].flexItem) continue;
+          grown.set(col, Math.max(grown.get(col) ?? 0, this.cellContentI(cell, resolveStyle(st, cell), !!this.minContent)));
+        }
+      }
+      frame.node.flexContentI =
+        sizes.reduce((a, w, k) => a + (typeof cols[k]?.width === 'string' ? Math.max(Math.min(cols[k].widthExtra ?? 0, w), grown.get(k) ?? 0) : w), 0) + (sp ? sp.i * (nC + 1) : 0);
+    }
     const savedSpacing = this.spacing;
     const savedRowspanAh = this.rowspanMiddleAh;
     const savedTableBreak = this.tableBreak;
@@ -5295,7 +5520,7 @@ class Flow {
           node = { ...node, omitHeaderAtBreak: true, omitFooterAtBreak: true };
           repeatFooter = false;
           if (this.tableBreak) this.tableBreak = { ...this.tableBreak, header: false };
-          this.host.warn('表の見出しとフッターがページの高さを超えるので、続きのページでは繰り返しません');
+          this.host.warn(msg('表の見出しとフッターがページの高さを超えるので、続きのページでは繰り返しません', 'the table header and footer exceed the page height, so they are not repeated on the following pages'));
         }
       }
       const reserve = repeatFooter ? footerH : 0;
@@ -5541,7 +5766,7 @@ class Flow {
           }
           // ヘッダ複製後に再判定 (ヘッダ + 行が入らない場合は強制配置)
         } else {
-          this.host.warn('表の行がページ高さを超えているため溢れます');
+          this.host.warn(msg('表の行がページ高さを超えているため溢れます', 'a table row exceeds the page height and overflows'));
         }
       } else if (pageNo !== undefined && !parityOk(pageNo) && !this.pageHasContent && (this.pages!.atPageStart?.() ?? true)) {
         // まだ何も置いていないページの偶奇が合わない: このページを白ページとして残し、次へ (forceBreak と同じ)
@@ -5595,7 +5820,9 @@ class Flow {
       const b = below?.border[s] ?? (own?.collapse?.noPaint ? { ...own, width: own.collapse.paintWidth ?? own.width * 2 } : undefined);
       if (!b) continue;
       // 辺の描き方は、重ね合わせの半分ずつの指示を外して、そのまま描く (表の外周の印は残す)
+      // (線を内へずらして描く辺 (paintWidth が場所より細い) は、描く太さの線にする)
       const { collapse, ...rest } = b;
+      if (collapse?.paintWidth !== undefined && collapse.paintWidth < rest.width) rest.width = collapse.paintWidth;
       cell.border[e] = collapse?.tableEdge ? { ...rest, collapse: { tableEdge: true } } : rest;
     }
   }
@@ -6172,6 +6399,43 @@ function stretchCellBlock(cell: LNode, kid: LNode, add: number) {
   if (kid.children.length === 1 && kid.children[0].kind === 'block' && kid.children[0].wm === kid.wm) kid.children[0].isize += add;
 }
 
+/**
+ * ブロックコンテナの枠 (罫線・padding)・背景・角丸・影・斜めの罫線を、中身を包むブロックに移す (回したコンテナを、
+ * ページごとの断片に分けて組むため。layoutRotatedPaged)。コンテナは参照領域なので、包むブロックも参照領域 (refArea) にし、
+ * 中と外の余白を重ねない (XSL 1.1 §4.2.5)
+ */
+function boxIntoBlock(node: LBlockContainer): LBlockContainer {
+  // rotatedFill (互換モードの、ページをまたぐ回した箱を本文の幅いっぱいにする印) は、枠の無い箱 (回した表など。見本の形) のもの。
+  // 枠を中へ移した箱には当てない (仕様モードと同じに組む)
+  const { border, padding, backgroundColor, backgroundImage, backgroundClip, borderRadius, boxShadow, diagonalBorder, reverseDiagonalBorder, edgeRetain, rotatedFill: _f, ...rest } = node;
+  const inner = {
+    type: 'block' as const,
+    refArea: true,
+    refLines: true,
+    ...(border ? { border } : {}),
+    ...(padding ? { padding } : {}),
+    ...(backgroundColor ? { backgroundColor } : {}),
+    ...(backgroundImage ? { backgroundImage } : {}),
+    ...(backgroundClip ? { backgroundClip } : {}),
+    ...(borderRadius ? { borderRadius } : {}),
+    ...(boxShadow ? { boxShadow } : {}),
+    ...(diagonalBorder ? { diagonalBorder } : {}),
+    ...(reverseDiagonalBorder ? { reverseDiagonalBorder } : {}),
+    ...(edgeRetain ? { edgeRetain } : {}),
+    children: node.children as LBlock['children'],
+  } as LBlock;
+  return { ...rest, children: [inner] };
+}
+
+/**
+ * 段の先頭・末尾に寄せる float (before・after・inside・outside) を直下に持ち、行の中身を持たない子の並びか
+ * (直交する箱は、ブロックコンテナとして組む。layoutOrthogonal)
+ */
+function hasEdgeFloats(children: ReadonlyArray<LNode | LInline | string | unknown>): boolean {
+  const cs = children as Array<{ type?: string; float?: string } | string>;
+  return cs.some((c) => typeof c === 'object' && c.type === 'float' && /^(before|after|inside|outside)$/.test(c.float ?? '')) && cs.every((c) => (typeof c === 'string' ? !c.trim() : !isInlineChild(c as never)));
+}
+
 /** c は、n と書字方向が直交するブロック・表か (行の中の箱は、行の長さに入っているので見ない) */
 function isOrthogonalBox(n: LNode, c: LNode): boolean {
   return (c.kind === 'block' || c.kind === 'table') && n.kind !== 'line' && (c.wm === 'horizontal-tb') !== (n.wm === 'horizontal-tb');
@@ -6197,6 +6461,15 @@ function maxLineLength(n: LNode, root = true, tableByColumns = false, countFixed
   // 表は表そのものの幅 (中の行の長さではない)。tableByColumns なら、列の幅の合計 + 表の左右の罫線・余白
   // (幅の指定の無い表が、置く場所いっぱいに広がっていても、列の幅だけの長さにする)
   if (n.kind === 'table') {
+    // flex の 1 行の表は、置く場所いっぱいに広がった幅でなく、項目の幅の合計 (LNode.flexContentI) + 表の左右の罫線・余白
+    if (n.flexContentI !== undefined) {
+      const h = n.wm === 'horizontal-tb';
+      const bw = (e: 'top' | 'right' | 'bottom' | 'left') => n.border[e]?.width ?? 0;
+      const edges = h ? n.padding.left + n.padding.right + bw('left') + bw('right') : n.padding.top + n.padding.bottom + bw('top') + bw('bottom');
+      const pos = (v: number) => Math.max(v, 0);
+      const margins = root ? 0 : h ? pos(n.margin.left) + pos(n.margin.right) : pos(n.margin.top) + pos(n.margin.bottom);
+      return Math.min(n.isize, n.flexContentI + edges) + margins;
+    }
     if (!tableByColumns || !n.colSizes?.length) return n.isize;
     const h = n.wm === 'horizontal-tb';
     const bw = (e: 'top' | 'right' | 'bottom' | 'left') => n.border[e]?.width ?? 0;
@@ -6380,7 +6653,23 @@ function columnChildren(node: LBlockContainer): LBlockContainer['children'] {
   return grid === 'new' || grid === 'root' || grid === 'none' ? [{ type: 'block', baselineGrid: grid, children: node.children } as LBlock] : node.children;
 }
 
-function columnSizes(table: LTable, avail: number): number[] {
+/**
+ * 表の列の箱の幅 (avail を列に配る)。edges は collapse モデルの表の 1 行目のセルが列ごとに取る罫線の幅 (firstRowBorderWidths)。
+ * 渡すと、幅の指定の無い列は、罫線を除いた幅 (中身と padding の幅) が等しくなるように配る: CSS 2.1 §17.5.2.1 の固定の列幅
+ * (XSL 1.1 §7.28.16 の table-layout="fixed" が引く) の「残りの列は、残りの表の幅を (罫線・セルの間隔を除いて) 等しく分ける」。
+ * 固定の列幅は 1 行目のセルだけを見るので、除く罫線は 1 行目のセルの罫線。アンテナハウスの見本 (サンプル FO 集の
+ * table-border-conflict-resolution-1。1 行目の罫線が 5・10・5・5・15pt の 5 列の表) も、5 列とも中身の幅が 86.4pt で等しい
+ * (グリッド線の間は 93.8・96.5・93.75・96.5・101.25pt。画素で測って確かめた)。罫線を分ける表も、同じ文により、1 行目のセルの罫線を除いた幅を等しく配る。
+ * edges を渡すのは、XSL-FO の文書と HTML の --style ah だけ (FlowHost.fixedColumnBorders)。HTML のほかのスタイルは渡さず、列の箱を等分する
+ * (同じ文の “minus borders or cell spacing” を、表の罫線・セルの間隔と読む。ブラウザ (Chromium) も列の箱を等分する)。
+ * offsets は、collapse の表の、列の箱の境目がグリッド線より前にある量 (列の境目 k = 0〜列の数。仕様の組み方の内側は 0、互換の組み方
+ * (collapseToAfterCell) の内側は線の太さの半分、表の始めの端はセルが外周の罫線を持てば外へ出る半分・表が持てば表の罫線の内側の半分を負に、
+ * 終わりの端はその逆の向き)。渡すと、幅の指定のある列は、グリッド線の間を指定の幅にし、箱の幅を offsets で直す
+ * (列の幅の指定は、グリッド線の間の幅。表の幅は外周のグリッド線の間 (CSS 2.1 §17.6.2 の row-width) なので、列の幅の指定の和が表の幅になる)。
+ * アンテナハウスの見本 (サンプル FO 集の axf-form-field-event-1: 30・30・30・40mm の 4 列、外周の 1pt の線をセルが持つ表) も、
+ * グリッド線の間が端の列も最後の列も指定の幅 (85.0・85.0・85.0・113.5pt。画素で測って確かめた)
+ */
+function columnSizes(table: LTable, avail: number, edges?: number[], offsets?: number[]): number[] {
   let cols = table.columns;
   // 表の使う列の数: セルをグリッドに割り付けて数える (行をまたぐセルが占める列は、下の行のセルが飛ばす。CSS 2.1 §17.5)。
   // 表ヘッダー・本体・表フッターのどの行も数える (行ごとの colSpan の合計では、上の行から伸びてきたセルの列が抜ける)
@@ -6401,8 +6690,15 @@ function columnSizes(table: LTable, avail: number): number[] {
     stars += w;
     return w;
   });
-  const rem = Math.max(avail - fixed, 0);
-  return cols.map((c, k) => (typeof c.width === 'number' ? c.width : (c.widthExtra ?? 0) + (stars > 0 ? (rem * weights[k]) / stars : 0)));
+  // 幅の指定のある列: グリッド線の間を指定の幅にする (箱の幅は、始めの境目のずれを足し、終わりの境目のずれを引いたもの)
+  const grow = (k: number) => (offsets && typeof cols[k].width === 'number' ? (offsets[k] ?? 0) - (offsets[k + 1] ?? 0) : 0);
+  const grown = offsets ? cols.reduce((a, _c, k) => a + grow(k), 0) : 0;
+  // 幅の指定の無い列 (比例の指定も無い列) の罫線は、先に除き、配った後で足す (等しくなるのは、罫線を除いた幅)
+  const plain = (c: (typeof cols)[number]) => (c.width === undefined || c.width === 'auto') && c.widthExtra === undefined;
+  const border = (k: number) => (edges && plain(cols[k]) ? (edges[k] ?? 0) : 0);
+  const taken = edges ? cols.reduce((a, _c, k) => a + border(k), 0) : 0;
+  const rem = Math.max(avail - fixed - grown - taken, 0);
+  return cols.map((c, k) => (typeof c.width === 'number' ? Math.max(c.width + grow(k), 0) : (c.widthExtra ?? 0) + (stars > 0 ? (rem * weights[k]) / stars : 0) + border(k)));
 }
 
 // ───────────────────────── LNode → Area (物理化) ─────────────────────────
@@ -6579,6 +6875,7 @@ export function toArea(n: LNode, parentWm: WritingMode, PW: number): Area {
         src: n.image?.src ?? '',
         missing: n.image?.missing ?? true,
         alt: n.image?.alt,
+        ...(n.image?.language ? { language: n.image.language } : {}),
         ...(n.image?.fit ? { fit: n.image.fit, naturalWidth: n.image.naturalWidth, naturalHeight: n.image.naturalHeight, ...(n.image.fitPosition ? { fitPosition: n.image.fitPosition } : {}) } : {}),
         ...(n.image?.stretch ? { stretch: true } : {}),
         ...(n.image?.hidden ? { hidden: true } : {}),
@@ -6974,6 +7271,8 @@ export class LayoutEngine {
   private lastFoot?: FootnoteCtx;
   /** 前回の組版での page-sequence ごとの結果 (layoutPasses の中でだけ使う) */
   private seqMemo: Array<SeqMemo | undefined> = [];
+  /** 行分けの結果の覚えの、覚えている量と古さの順 (組版 (layout) ごと) */
+  private lineMemoLru = new LineMemoLru(LINE_MEMO_ATOMS);
   /** いま組んでいる sequence の中で参照したページ番号 (cite の引数 → 返した値) */
   private citeLog?: SeqMemo['cites'];
 
@@ -7132,9 +7431,12 @@ export class LayoutEngine {
   }
 
   layout(doc: LDocument): AreaTree {
+    this.lineMemoLru = new LineMemoLru(this.options.lineMemoAtoms ?? LINE_MEMO_ATOMS);
     this.stats.flows = this.stats.blocks = this.stats.tables = 0;
     this.stats.nestMax = this.stats.columnNestMax = 0;
     const tree = this.layoutPasses(doc);
+    this.stats.lineMemoPeak = this.lineMemoLru.peak;
+    this.stats.lineMemoHits = this.lineMemoLru.hits;
     // 使う書体・画像の一覧と、字の字形の番号を付ける (木だけで描くための情報)
     attachResources(tree, this.fonts, this.options.assets);
     return tree;
@@ -7234,13 +7536,16 @@ export class LayoutEngine {
       volatile,
       nest,
       ...(doc.spaceResolution === 'xsl' ? { xslSpace: true } : {}),
+      ...(doc.spaceResolution === 'xsl' || this.options.fixedColumnBordersAh ? { fixedColumnBorders: true } : {}),
       assets: this.options.assets,
       hyphenate: this.options.hyphenate,
       ...(this.options.kernAh ? { kernAh: true } : {}),
+      ...(this.options.lineFitToleranceAh ? { lineFitTolerance: LINE_FIT_TOLERANCE_AH } : {}),
       warn: (m) => this.warnings.push(m),
       ...(this.indexKeys ? { index: (run: InlineChild[]) => this.expandIndex(run, (m) => this.warnings.push(m)) } : {}),
       ...(this.indexPoints.size ? { indexPoint: (id: string) => this.indexPoints.get(id) } : {}),
       measurer: this.measurer,
+      lineMemoLru: this.lineMemoLru,
       cellMeasure: new WeakMap(),
       stats: this.stats,
       inlineCbRange: (key) => this.inlineCbRange(key),
@@ -7858,7 +8163,7 @@ export class LayoutEngine {
           if (carried.length) carried.push(e);
           // 本文領域に収まらないときだけ分ける。分ける位置は、参照までの本文を段に収めた残り (もう空けてある高さがあれば、そこまで)
           else if (!over(e, room) || !splitPut(e, Math.min(room, Math.max(g.limit - it.footEnds[k], reserves.bot.get(a) ?? 0)))) {
-            if (over(e, room)) host.warn('脚注がページに収まらないため溢れます');
+            if (over(e, room)) host.warn(msg('脚注がページに収まらないため溢れます', 'a footnote does not fit on the page and overflows'));
             put(e);
           }
         });
@@ -7875,7 +8180,7 @@ export class LayoutEngine {
       // 続きが残っていて、次のページに脚注・前方 float が無ければ、次のページも見る (本文の終わりより後ろなら、脚注だけのページを足す)
       if (carried.length && queue[qi + 1] !== a + 1) {
         if (a + 1 >= contentPages + 50) {
-          host.warn('脚注・float の続きが 50 ページを超えるため、残りを置きません');
+          host.warn(msg('脚注・float の続きが 50 ページを超えるため、残りを置きません', 'the continuation of footnotes and floats exceeds 50 pages; the rest is not placed'));
           carried = [];
         } else queue.splice(qi + 1, 0, a + 1);
       }
@@ -8583,17 +8888,82 @@ function lineMemoKey(at: number, L: number, first: boolean, wm: WritingMode, int
 }
 
 function lineMemoGet(arr: object, at: number, run: InlineChild[], st: ResolvedStyle, L: number, first: boolean, wm: WritingMode, host: FlowHost, intrinsic: boolean, minContent: boolean): LineMemo | undefined {
-  const e = lineMemos.get(arr)?.get(lineMemoKey(at, L, first, wm, intrinsic, minContent));
+  const m = lineMemos.get(arr);
+  const key = lineMemoKey(at, L, first, wm, intrinsic, minContent);
+  const e = m?.get(key);
   if (!e || e.measurer !== host.measurer || e.hyphenate !== host.hyphenate || e.kernAh !== !!host.kernAh || e.version !== host.measurer.version()) return undefined;
   if (e.run.length !== run.length || e.run.some((c, k) => c !== run[k])) return undefined;
-  return sameStyle(e.st, st) ? e : undefined;
+  if (!sameStyle(e.st, st)) return undefined;
+  if (host.lineMemoLru) {
+    host.lineMemoLru.hits++;
+    host.lineMemoLru.touch(arr, m!, key, e);
+  }
+  return e;
 }
 
 function lineMemoSet(arr: object, at: number, run: InlineChild[], st: ResolvedStyle, L: number, first: boolean, wm: WritingMode, host: FlowHost, intrinsic: boolean, minContent: boolean, memo: LineMemo) {
+  if (host.lineMemoLru?.limit === 0) return;
   if (hasDynamicInline(run) || memo.atoms.some((a) => a.kind === 'box' || a.fnRef)) return;
   let m = lineMemos.get(arr);
   if (!m) lineMemos.set(arr, (m = new Map()));
-  m.set(lineMemoKey(at, L, first, wm, intrinsic, minContent), { ...memo, run: run.slice(), st, measurer: host.measurer, hyphenate: host.hyphenate, kernAh: !!host.kernAh, version: host.measurer.version() });
+  const key = lineMemoKey(at, L, first, wm, intrinsic, minContent);
+  const e: LineMemoEntry = { ...memo, run: run.slice(), st, measurer: host.measurer, hyphenate: host.hyphenate, kernAh: !!host.kernAh, version: host.measurer.version() };
+  const prev = m.get(key);
+  if (prev) host.lineMemoLru?.forget(prev);
+  m.set(key, e);
+  host.lineMemoLru?.touch(arr, m, key, e);
+}
+
+/**
+ * 行分けの結果の覚えに置いておく atom の数の上限の既定。覚えは、同じ段落を続けて組み直すとき (段の高さ揃えの二分探索・
+ * keep-with-next の試し組み・表のセルの計測など) に効くので、近くに組んだ段落の分だけ持てばよい。上限が無いと、文書の全部の段落の
+ * 字ごとの atom・行・行の位置を、組み終えるまで持ち続け、ふつうの文章 1MB で約 170MB、表 1MB (10 万セル) で約 870MB を使った (組み終えた時点の、GC の後に残る量)。
+ * 5 万は、ふつうの本文の 20 ページほど (1 ページ 2500 字。行ごとの分を含めて数える)
+ */
+export const LINE_MEMO_ATOMS = 50000;
+
+/**
+ * 行分けの結果の覚えの、覚えている atom の数と、使った順 (古いものから捨てる)。
+ * 使った順は、使うたびに後ろへ足す列 (queue) と、項目ごとの最後に足した番号 (last) で持つ (列の古い番号の並びは読み飛ばす)。
+ * Map の入れ直しで順を持つと、先頭から取り出すたびに、消した項目の跡をたどり直すので、取り出す数の 2 乗の手間になる
+ */
+/** 覚えの項目の大きさの見積もり (atom の数に、項目ごとの行・行の位置などの分を足す。小さな段落 (表のセルなど) が多いとき、項目の数でも抑える) */
+const lineMemoSize = (e: LineMemoEntry) => e.atoms.length + 32 * (1 + e.raws.length);
+
+class LineMemoLru {
+  private queue: Array<{ e: LineMemoEntry; arr: object; m: Map<string, LineMemoEntry>; key: string; n: number }> = [];
+  private head = 0;
+  private last = new Map<LineMemoEntry, number>();
+  private serial = 0;
+  private atoms = 0;
+  /** 覚えた大きさのいちばん大きかった値 (捨てた後の値) と、使い回した回数 (LayoutStats に出す) */
+  peak = 0;
+  hits = 0;
+  constructor(readonly limit: number) {}
+  forget(e: LineMemoEntry): void {
+    if (this.last.delete(e)) this.atoms -= lineMemoSize(e);
+  }
+  touch(arr: object, m: Map<string, LineMemoEntry>, key: string, e: LineMemoEntry): void {
+    if (!this.last.has(e)) this.atoms += lineMemoSize(e);
+    const n = ++this.serial;
+    this.last.set(e, n);
+    this.queue.push({ e, arr, m, key, n });
+    while (this.atoms > this.limit && this.last.size > 1 && this.head < this.queue.length) {
+      const q = this.queue[this.head++];
+      // 後で使い直した項目 (列の後ろに新しい番号がある) と、もう覚えていない項目は読み飛ばす
+      if (this.last.get(q.e) !== q.n) continue;
+      this.last.delete(q.e);
+      this.atoms -= lineMemoSize(q.e);
+      if (q.m.get(q.key) === q.e) q.m.delete(q.key);
+      if (q.m.size === 0 && lineMemos.get(q.arr) === q.m) lineMemos.delete(q.arr);
+    }
+    if (this.atoms > this.peak) this.peak = this.atoms;
+    // 読み終えた列の前の部分を捨てる
+    if (this.head > 1024 && this.head * 2 > this.queue.length) {
+      this.queue = this.queue.slice(this.head);
+      this.head = 0;
+    }
+  }
 }
 
 /** 字形を差し替える OpenType の機能の並びが同じか (違う機能の字の組には、カーニングを当てない) */
@@ -8601,4 +8971,30 @@ function sameFeatures(a: string[] | undefined, b: string[] | undefined): boolean
   const x = a ?? [];
   const y = b ?? [];
   return x.length === y.length && x.every((f, i) => f === y[i]);
+}
+
+/** SVG の中で見つからない外の画像を調べた結果 (SVG の中身ごと。同じ SVG を何度置いても、1 度だけ調べる) */
+const svgMissingMemo = new WeakMap<Uint8Array, Array<{ href: string; use: boolean }>>();
+/**
+ * SVG の image 要素の href のうち、data: でなく、SVG の場所を基準に引いた画像が PNG・JPEG でないもの (見つからないものも)と、
+ * use 要素の href の外のファイルのうち、SVG でないもの (見つからないものも)。
+ * PDF の書き出し (pdfRenderer.ts の embedImages) と同じ引き方で引く
+ */
+function svgMissingImages(src: string, bytes: Uint8Array, assets: AssetStore): Array<{ href: string; use: boolean }> {
+  let out = svgMissingMemo.get(bytes);
+  if (out) return out;
+  out = [];
+  const text = new TextDecoder().decode(bytes);
+  // image の外の画像 (PNG・JPEG) と、use の外のファイル (file.svg#id の SVG)
+  for (const m of text.matchAll(/<(?:[\w-]+:)?(image|use)\b[^>]*>/gi)) {
+    const use = m[1].toLowerCase() === 'use';
+    const h = /\s(?:xlink:)?href\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(m[0]);
+    let href = (h?.[1] ?? h?.[2] ?? '').trim();
+    if (use) href = href.split('#')[0];
+    if (!href || /^data:/i.test(href) || out.some((x) => x.href === href)) continue;
+    const a = assets.get(resolveRef(href, /^data:/i.test(src) ? undefined : src));
+    if (use ? !a?.bytes || a.mime !== 'image/svg+xml' : !a?.bytes || !['image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/webp'].includes(a.mime)) out.push({ href, use });
+  }
+  svgMissingMemo.set(bytes, out);
+  return out;
 }

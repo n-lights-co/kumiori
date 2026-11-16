@@ -9,7 +9,7 @@
  */
 import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LIndexPageCitationList, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
 import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './measurer';
-import { isClosingPunct, isHangable, isIdeographicOrKana, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
+import { autospaceNonIdeographic, isAutospaceIdeograph, isClosingPunct, isHangable, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
 import { kernablePair } from './orthographicSyllable';
 import { complexContextBreaks, lineBreakActions, type LineBreakOptions } from './lineBreak';
 import { newNode, type LNode, type ResolvedStyle } from './lnode';
@@ -134,6 +134,8 @@ export interface Atom {
   ovR?: number;
   /** advance の末尾に足した和欧間アキ。行末に来たら捨てる (行末の字の後ろにアキを残さない) */
   trail?: number;
+  /** CSS の text-autospace で、この字と次の字の間に入れたアキ (trail に含む)。placeAutospaceBidi が見た目の境目に置き直す */
+  autospaceAfter?: number;
   /** 分綴: この字の後ろで、ハイフン (この atom の並び。hyphenate-character が空の文字列なら空) を付けて行を分けてよい */
   hyphen?: Atom[];
   /** この字の後ろにソフトハイフン (U+00AD) がある (その語は自動の分綴をしない。CSS Text 3 §5.3) */
@@ -264,6 +266,8 @@ export interface FlattenState {
   containerI?: number;
   /** 中身の長さを測っている (表の自動レイアウト)。百分率の長さは決められない */
   intrinsic?: boolean;
+  /** 行の中に置けないブロック水準の部品 (行内の箱の子のブロック。type はその種類) を置かずに捨てたときに呼ぶ (知らせるため) */
+  dropped?: (type: string) => void;
 }
 
 export function isInlineChild(c: unknown): c is InlineChild {
@@ -443,6 +447,8 @@ export interface RawLine {
   hyphenated?: boolean;
   /** 行の終わりの端をずらす量 (正で内へ、負で外へ。XSL 1.1 §7.16.3 の last-line-end-indent を当てた最後の行) */
   endIndent?: number;
+  /** この行で詰めてよい量の合計 (squeezeCap を超えて追い込んだ行。breakOne の lineSqueezeBeyondMax) */
+  squeezeMax?: number;
 }
 
 /** breakOne に渡す、その行の分綴の扱い (breakOneLimited が決める) */
@@ -570,12 +576,29 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
       // U+FF01〜FF5E) も和字として扱う (JLREQ の cl-22 漢字等。「FrameMaker ＋ SGML」は四分アキ、「3.4％」「1～10」はベタ)。
       // 全角の空白 (U+3000) は、XSL-FO (アンテナハウスの axf:text-autospace。「Q1　情報…」・「　t」は四分アキ) だけ和字として扱う。
       // CSS の text-autospace では扱わない (CSS Text 4 §8.4.1。見本の PDF: CSS-Print 第 4 版の目次「第 1 章　Web」は、空白と W の間を空けない)
-      const wa = (ch: string) => isIdeographicOrKana(ch) || (ch === '\u3000' && !!a.st.textAutospaceIdeographicSpace) || (isFullwidthForm(ch) && !isOpeningPunct(ch) && !isClosingPunct(ch) && !isMiddlePunct(ch) && !/^[＃＄％～]$/.test(ch));
-      // 欧文の書体で組む語 (ギリシャ文字・キリル文字が 2 字以上続く語) の字も、欧文の字と同じに空ける (単独の 1 字は空けない)
-      if ((wa(a.last) && (isLatinAlnum(b.first) || b.latinWord)) || ((isLatinAlnum(a.last) || a.latinWord) && wa(b.first))) {
+      const wa = (ch: string) => isAutospaceIdeograph(ch, !!a.st.textAutospaceIdeographicSpace);
+      let pair: boolean;
+      if (a.st.textAutospaceUnicode) {
+        // CSS の text-autospace (HTML の既定): 相手は CSS Text 4 §8.4.1 の non-ideographic letters・numerals (一般カテゴリ L・M・Nd の字。
+        // jis.ts の autospaceNonIdeographic)。字の種類は、字の単位 (書記素クラスタ) の基底の字で決める: 字ごとに分けたクラスタの 2 つ目以降
+        // (clusterCont) は前の字と同じ単位なので、その前は空けず、後ろは基底の字で決める
+        let ai = k;
+        while (ai > 0 && atoms[ai].clusterCont && atoms[ai - 1].kind === 'glyph') ai--;
+        const base = atoms[ai];
+        // 縦書きで正立にする字 (text-orientation: upright など) は、相手に数えない (§8.4.1)。縦中横は glyph の atom でないので、ここに来ない
+        const other = (x: Atom, ch: string) => x.g?.vertical?.mode !== 'upright' && autospaceNonIdeographic(ch) !== undefined;
+        pair = !b.clusterCont && ((wa(base.last) && other(b, b.first)) || (other(base, base.last) && wa(b.first)));
+      } else {
+        // XSL-FO (axf:text-autospace) と HTML の互換の指定: ラテン文字・数字 (0〜9) だけ。欧文の書体で組む語 (ギリシャ文字・キリル文字が
+        // 2 字以上続く語) の字も、欧文の字と同じに空ける (単独の 1 字は空けない)
+        pair = (wa(a.last) && (isLatinAlnum(b.first) || !!b.latinWord)) || ((isLatinAlnum(a.last) || !!a.latinWord) && wa(b.first));
+      }
+      if (pair) {
         const s = Math.min(fa, fb) * (a.st.textAutospaceWidth ?? 0.25);
         a.advance += s;
         a.trail = (a.trail ?? 0) + s;
+        // 右から左の字との境目は、双方向の深さが決まってから、見た目の境目に置き直す (placeAutospaceBidi)
+        if (a.st.textAutospaceUnicode) a.autospaceAfter = s;
       }
     }
   }
@@ -656,12 +679,6 @@ function punctKind(a: Atom, ch: string): PunctKind {
 const closingAt = (a: Atom, ch: string) => punctKind(a, ch) === 'close';
 /** 中点類として詰める字か (前後の四分のアキ) */
 const middleAt = (a: Atom, ch: string) => punctKind(a, ch) === 'middle';
-
-/** 全角形 (U+FF01〜FF5E: ASCII の全角の英数字・記号・約物) */
-function isFullwidthForm(ch: string): boolean {
-  const cp = ch.codePointAt(0) ?? 0;
-  return cp >= 0xff01 && cp <= 0xff5e;
-}
 
 /** 約物でない字 (空白・枠の端は除く) */
 function isPlainChar(a: Atom, ch: string): boolean {
@@ -904,6 +921,17 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
       if (w - lineSqueezable(items, last) <= avail + FIT_EPS) {
         if (forced) return { line: makeLine(items, true, indent), next: afterForcedBreak(atoms, j2) };
         return { line: makeLine(items, last, indent), next: j2 };
+      }
+      // アンテナハウス互換 (HTML+CSS。lineSqueezeBeyondMax): 上限 (squeezeCap) を超えて詰めれば収まり、詰める量が、追い出したときに
+      // 行に残る空き以下なら、追い込む (小さいほうの調整を選ぶ。等しければ、詰める処理を優先する: JLREQ §3.8.2)。
+      // 見本の PDF (CSS-Print 第 4 版) で、二分を超えて詰めれば収まる行 (見本と行頭のそろう 232 か所) を調べると、見本が追い込んだ
+      // 22 か所のうち 17 か所 (17.9 の縦書きの例の「『行人』『こ」は全角。ほかに 0.5〜1 em) がこの条件に当たり、追い出した
+      // 210 か所のうち 205 か所が当たらない。アンテナハウスの公開の説明には、この規則の記述が見当たらない (見本から見当を立てた)
+      const need = w - avail;
+      if (a.st.lineSqueezeBeyondMax && need <= lineSqueezable(items, last, false) + FIT_EPS && need <= pushOutFree(atoms, lead, k, x, avail) + FIT_EPS) {
+        const line = makeLine(items, forced || last, indent);
+        line.squeezeMax = need + FIT_EPS;
+        return { line, next: forced ? afterForcedBreak(atoms, j2) : j2 };
       }
       break;
     }
@@ -1263,6 +1291,8 @@ export function markWordSqueeze(atoms: Atom[], st: { wordSqueezeJustifiedOnly?: 
 
 /**
  * 欧文の語間で詰めてよい量: 空白の字そのものの幅の 1/3 (letter-spacing の分は詰めない)。
+ * 上限の指定 (wordSpaceShrinkLimit) があれば、その量まで (空白の字の幅を超えない)。XSL-FO の仕様モードは既定で 0 (詰めない。
+ * XSL 1.1 §7.17.8: word-spacing="normal" は .minimum = .optimum)、word-spacing.minimum があれば .optimum − .minimum。
  * last は、その行が最後の行 (段落の終わり・改行で終わる行。RawLine.last) かどうか
  */
 function wordSpaceSqueeze(a: Atom, last: boolean): number {
@@ -1271,7 +1301,12 @@ function wordSpaceSqueeze(a: Atom, last: boolean): number {
   if (a.kind !== 'glyph' || a.first !== ' ' || a.st.wordSpaceShrink === false || a.st.collapseSpaces === false || (noSpaceSqueeze(a) && !a.st.textJustifyTrim?.interWord)) return 0;
   // 両端揃えで組まない行の語間は詰めない (markWordSqueeze)
   if (a.noWordSqueeze && a.noWordSqueeze & (last ? WSQ_LAST : WSQ_BODY)) return 0;
-  return Math.max(a.advance - (a.lsLead ?? 0) - (a.lsTrail ?? 0), 0) / 3;
+  const room = Math.max(a.advance - (a.lsLead ?? 0) - (a.lsTrail ?? 0), 0);
+  const lim = a.st.wordSpaceShrinkLimit;
+  // axf:text-justify-trim・-ah-text-justify-trim の inter-word (アンテナハウスの拡張。どのモードでも読む) は、語間を詰める指定なので、
+  // 仕様モードの上限 (0) によらず 1/3 まで詰める (word-spacing.minimum がそれより広ければ、その幅まで)
+  const base = lim === undefined || a.st.textJustifyTrim?.interWord ? room / 3 : 0;
+  return lim === undefined ? base : Math.max(base, Math.min(Math.max(lim, 0), room));
 }
 
 /** 全角の約物の字面の外のアキ (終わり括弧類・句読点は後ろの二分、始め括弧類は前の二分、中点類は前後の四分ずつ)。axf:punctuation-spacing で狭めたものは残っている分だけ */
@@ -1320,13 +1355,30 @@ function isFullStop(ch: string): boolean {
   return ch === '。' || ch === '．';
 }
 
-/** 追込みで、行 (items) の中で詰めてよい量の合計 (squeezeCap まで)。last は、その行が最後の行 (RawLine.last) になるか */
-function lineSqueezable(items: Atom[], last: boolean): number {
+/**
+ * 追込みで、行 (items) の中で詰めてよい量の合計 (capped なら squeezeCap まで)。last は、その行が最後の行 (RawLine.last) になるか
+ */
+function lineSqueezable(items: Atom[], last: boolean, capped = true): number {
   let t = 0;
   items.forEach((a, k) => {
     for (const v of squeezeParts(a, k === items.length - 1, k === 0, last)) t += v;
   });
-  return Math.min(t, squeezeCap(items));
+  return capped ? Math.min(t, squeezeCap(items)) : t;
+}
+
+/**
+ * atoms[k] が溢れる行 (atoms[start..k) の長さが x) を追い出したとき (禁則に抵触しない最も後ろの分割点まで戻ったとき)、行に残る空き。
+ * 戻れる分割点が無ければ -Infinity (breakOne の lineSqueezeBeyondMax)
+ */
+function pushOutFree(atoms: Atom[], lead: number, k: number, x: number, avail: number): number {
+  let j = k;
+  while (j > lead && !canBreakAtoms(atoms[j - 1], atoms[j])) j--;
+  if (j <= lead) return -Infinity;
+  let xj = x;
+  for (let q = j; q < k; q++) xj -= atoms[q].advance;
+  // 行末で捨てるアキ (和欧間・letter-spacing・行末の約物の後ろ) を除いた長さ
+  const p = atoms[j - 1];
+  return avail - (xj - (p.trail ?? 0) - (p.lsTrail ?? 0) - endTrimOf(p) + (p.ovR ?? 0));
 }
 /**
  * 1 行の中で追込みで詰めてよい量 (語間・約物のアキ・和欧間のアキのすべて) の合計の上限。
@@ -1514,6 +1566,39 @@ export function markBidi(atoms: Atom[], rtl: boolean, m: Measurer, wm: WritingMo
  * 右から左の段落 (rtl) は、左から右で求めた位置を行の幅 L の中で左右反転してから並べる。
  * 並べ直しでは、論理の順で隣り合う字の間の空き (両端揃えの空きなど) を、そのまま保つ
  */
+/**
+ * CSS の text-autospace のアキを、双方向の並べ替えの後の見た目の境目に置く (CSS Text 4 §8.4.2: アキは並べ替えの後に入れる)。
+ * adjustJapaneseSpacing は論理の順の前の字 a の後ろ (送りの右) に足すが、右から左の字 (ヘブライ文字・アラビア文字など。§8.4.1 の
+ * non-ideographic letters) との境目では、そこは見た目の境目でない。深さの違う 2 つの字の並びの境目は、深さの低い側の字の端にあるので
+ * (高い側の並びは、低い側の並びの中に 1 つの塊として置かれる)、アキを深さの低い側の字に移す (同じ深さなら a のまま):
+ *  - a に置くとき: a の論理の後ろ。左から右の字は右、右から左の字は左 (字形を右へずらす)
+ *  - b に置くとき: b の論理の前。左から右の字は左 (字形を右へずらす)、右から左の字は右。行頭に来たら捨てる (lsLead と同じ扱い)
+ * markBidi の後に呼ぶ。双方向の深さの無い段落 (左から右の字だけ) では何もしない
+ */
+export function placeAutospaceBidi(atoms: Atom[]): void {
+  for (let k = 0; k + 1 < atoms.length; k++) {
+    const a = atoms[k];
+    const s = a.autospaceAfter;
+    if (!s) continue;
+    const b = atoms[k + 1];
+    const la = a.bidiLevel ?? 0;
+    const lb = b.bidiLevel ?? la;
+    if (la % 2 === 0 && lb >= la) continue;
+    if (lb < la) {
+      // b に移す (b の論理の前)
+      a.advance -= s;
+      a.trail = (a.trail ?? 0) - s;
+      delete a.autospaceAfter;
+      b.advance += s;
+      if (lb % 2 === 0) b.dx = (b.dx ?? 0) + s;
+      b.lsLead = (b.lsLead ?? 0) + s;
+    } else {
+      // a のまま (右から左の字の論理の後ろ = 見た目の左)
+      a.dx = (a.dx ?? 0) + s;
+    }
+  }
+}
+
 export function reorderLine(pl: PositionedLine, L: number, rtl: boolean, paraLevel?: number) {
   const items = pl.raw.items;
   const n = items.length;
@@ -1553,6 +1638,39 @@ export function reorderLine(pl: PositionedLine, L: number, rtl: boolean, paraLev
     if (pl.hangOffset !== undefined && pl.raw.hang) pl.hangOffset = L - pl.hangOffset - pl.raw.hang.advance;
     pl.rtl = true;
   }
+}
+
+/**
+ * 両端揃えで配った字間の空き (gaps[k] は items[k] と items[k + 1] の間) のうち、広げる上限 (wordSpaceStretchLimit) のある語間 (空白の後ろ) を
+ * 上限までにし、超えた分を、上限の無い (まだ上限に届かない) 空きのある字間に、今の空きに比べて配り直す。
+ * XSL 1.1 §7.17.8: word-spacing の <space> は “The minimum and maximum values specify the limits of the adjustment.”
+ * 配る先が無くなったら、残りは配らない (行の終わりに残る。§7.16.9 の justify は詰め物で埋めることを求めない)
+ */
+function capWordStretch(items: Atom[], gaps: number[]): number[] {
+  const out = gaps.slice();
+  const cap = (k: number): number | undefined => {
+    const a = items[k];
+    const l = a.kind === 'glyph' && a.first === ' ' ? a.st.wordSpaceStretchLimit : undefined;
+    return typeof l === 'number' ? Math.max(l, 0) : undefined;
+  };
+  const capped = new Set<number>();
+  for (let round = 0; round < out.length + 1; round++) {
+    let over = 0;
+    out.forEach((g, k) => {
+      const c = cap(k);
+      if (c !== undefined && g > c + EPS) {
+        over += g - c;
+        out[k] = c;
+        capped.add(k);
+      }
+    });
+    if (over <= EPS) break;
+    const open = out.map((g, k) => (g > EPS && !capped.has(k) ? k : -1)).filter((k) => k >= 0);
+    const total = open.reduce((t, k) => t + out[k], 0);
+    if (total <= EPS) break;
+    for (const k of open) out[k] += (over * out[k]) / total;
+  }
+  return out;
 }
 
 function stretchable(a: Atom, b: Atom): boolean {
@@ -1689,8 +1807,8 @@ export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): Pos
   let over = widths.reduce((a, b) => a + b, 0) - avail;
   if (over > EPS) {
     const parts = items.map((a, k) => squeezeParts(a, k === tail && !raw.hang, k === head, raw.last));
-    // 詰める量の合計は squeezeCap まで (アンテナハウス互換)
-    let left = squeezeCap(items);
+    // 詰める量の合計は squeezeCap まで (アンテナハウス互換。上限を超えて追い込んだ行は、その量 (squeezeMax) まで)
+    let left = Math.max(squeezeCap(items), raw.squeezeMax ?? 0);
     for (let lv = 0; lv < SQUEEZE_LEVELS && over > EPS && left > EPS; lv++) {
       const total = parts.reduce((t, p) => t + p[lv], 0);
       if (total <= EPS) continue;
@@ -1732,6 +1850,10 @@ export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): Pos
   } else if (align === 'end' && (free > 0 || style.alignOverflow)) {
     startOff += free;
   }
+  // 語間を広げる上限 (wordSpaceStretchLimit: XSL-FO の word-spacing.maximum) があれば、その語間は上限までにし、超えた分は
+  // 上限の無い字間に配り直す (配る先が無ければ、行の終わりに残す)
+  if ((gap || gaps) && items.some((a) => typeof a.st.wordSpaceStretchLimit === 'number')) gaps = capWordStretch(items, gaps ?? items.map((a, k) => (k + 1 < items.length && stretchable(a, items[k + 1]) ? gap : 0)));
+  if (gaps) gap = 0;
   let x = startOff;
   for (let k = 0; k < items.length; k++) {
     offsets.push(x);

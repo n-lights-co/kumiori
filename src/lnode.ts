@@ -78,7 +78,7 @@ export interface LNode {
   /** 書字方向を決め直した参照領域 (block-container)。外の書字方向の裏返し (WritingFlip) は、この中へ持ち込まない */
   flipRoot?: boolean;
   // image
-  image?: { src: string; missing: boolean; alt?: string; fit?: 'cover' | 'contain' | 'none' | 'scale-down'; naturalWidth?: number; naturalHeight?: number; fitPosition?: import('./types').ObjectPosition; stretch?: boolean; hidden?: boolean };
+  image?: { src: string; missing: boolean; alt?: string; language?: string; fit?: 'cover' | 'contain' | 'none' | 'scale-down'; naturalWidth?: number; naturalHeight?: number; fitPosition?: import('./types').ObjectPosition; stretch?: boolean; hidden?: boolean };
   /** cell: 表の行の中の揃え (LTableCell の blockAlign・stretchContent・stretchMax)。flex の行の表を後から伸ばすときに当て直す */
   cellAlign?: string;
   cellStretch?: boolean;
@@ -125,6 +125,11 @@ export interface LNode {
   float?: boolean;
   // table
   colSizes?: number[];
+  /**
+   * flex の 1 行の表 (LTable.flexLine) の中身の幅 (max-content): 列の幅の合計。ただし比例の列 (余りを分ける列) は、足す固定の長さ (項目の基準の大きさ) だけを
+   * 数える (Flexbox 1 §9.9.1: flex の容器の max-content は項目の max-content の和)。中身の幅を測るとき (maxLineLength) に、置く場所いっぱいの表の幅の代わりに使う
+   */
+  flexContentI?: number;
   repeated?: boolean;
   /** 表の行の前後の余白 (fo:list-item の space-before / space-after)。前後の余白と重ね合わせる (XSL §4.3.1) */
   rowSpace?: { before: number; after: number };
@@ -169,13 +174,17 @@ export interface ResolvedStyle {
   textAutospace?: boolean;
   textAutospaceWidth?: number;
   textAutospaceIdeographicSpace?: boolean;
+  textAutospaceUnicode?: boolean;
   justifyPunctuationAh?: boolean;
   punctuationSqueeze?: boolean;
   lineSqueezeMax?: number;
+  lineSqueezeBeyondMax?: boolean;
   noSpaceSqueeze?: boolean;
   ambiguousWideBreak?: boolean;
   textJustifyTrim?: TextJustifyTrim;
   wordSqueezeJustifiedOnly?: boolean;
+  wordSpaceShrinkLimit?: number;
+  wordSpaceStretchLimit?: number | 'none';
   punctuationTrimStart?: boolean;
   hangFirst?: boolean;
   punctuationTrimEnd?: boolean;
@@ -363,13 +372,17 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     textAutospace: n.textAutospace ?? parent.textAutospace,
     textAutospaceWidth: n.textAutospaceWidth ?? parent.textAutospaceWidth,
     textAutospaceIdeographicSpace: n.textAutospaceIdeographicSpace ?? parent.textAutospaceIdeographicSpace,
+    textAutospaceUnicode: n.textAutospaceUnicode ?? parent.textAutospaceUnicode,
     justifyPunctuationAh: n.justifyPunctuationAh ?? parent.justifyPunctuationAh,
     punctuationSqueeze: n.punctuationSqueeze ?? parent.punctuationSqueeze,
     lineSqueezeMax: n.lineSqueezeMax ?? parent.lineSqueezeMax,
+    lineSqueezeBeyondMax: n.lineSqueezeBeyondMax ?? parent.lineSqueezeBeyondMax,
     noSpaceSqueeze: n.noSpaceSqueeze ?? parent.noSpaceSqueeze,
     ambiguousWideBreak: n.ambiguousWideBreak ?? parent.ambiguousWideBreak,
     textJustifyTrim: n.textJustifyTrim ?? parent.textJustifyTrim,
     wordSqueezeJustifiedOnly: n.wordSqueezeJustifiedOnly ?? parent.wordSqueezeJustifiedOnly,
+    wordSpaceShrinkLimit: n.wordSpaceShrinkLimit ?? parent.wordSpaceShrinkLimit,
+    wordSpaceStretchLimit: n.wordSpaceStretchLimit ?? parent.wordSpaceStretchLimit,
     punctuationTrimStart: n.punctuationTrimStart ?? parent.punctuationTrimStart,
     hangFirst: n.hangFirst ?? parent.hangFirst,
     punctuationTrimEnd: n.punctuationTrimEnd ?? parent.punctuationTrimEnd,
