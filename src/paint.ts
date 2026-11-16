@@ -6,6 +6,7 @@
 import { parseColor } from './color';
 import type { Matrix, Seg } from './matrix';
 import type { Area, BorderRadius, BorderSide, GlyphArea, ImageArea, Rect, SheetArea, TateChuYokoArea } from './types';
+import { msg } from './messages';
 
 export type { Matrix } from './matrix';
 
@@ -225,8 +226,8 @@ export function rotationMatrix(rot: 90 | 180 | 270, x: number, y: number, w: num
 export type PaintPhase = 'all' | 'bg' | 'fg';
 
 /**
- * 描いている途中の箱 (子を持つ領域)。Area Tree の入れ子は、呼び出しの入れ子 (再帰) ではなく、この物の並び (明示のスタック) でたどる
- * (OUT-14)。再帰でたどると、入れ子の 1 段ごとに、局所変数の多い paintArea と paintChildren の 2 つの枠を積み、Node の既定の
+ * 描いている途中の箱 (子を持つ領域)。Area Tree の入れ子は、呼び出しの入れ子 (再帰) ではなく、この物の並び (明示のスタック) でたどる。
+ * 再帰でたどると、入れ子の 1 段ごとに、局所変数の多い paintArea と paintChildren の 2 つの枠を積み、Node の既定の
  * スタック (984KB) では、領域の入れ子が約 1000 段 (flex・grid の入れ子は要素の 1 段で領域が 4 段になるので、要素の約 250 段) で
  * スタックを使い切った。描く順 (Painter の呼び出しの並び) は、再帰でたどっていたときと同じ
  */
@@ -320,7 +321,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
     // 逆行列の無い変換 (scale(0) など) の箱と中身は描かない (Transforms 1 §10)。不透明度 0 の箱も見えない
     if ((t && Math.abs(t[0] * t[3] - t[1] * t[2]) < 1e-12) || (opacity !== undefined && opacity <= 0)) return undefined;
     const body = () => (opacity !== undefined && opacity < 1 && p.group ? p.group(opacity, () => paintArea(plain, ox, oy, p, 'all')) : paintArea(plain, ox, oy, p, 'all'));
-    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(`変換・回転した領域 (transform・opacity・orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`);
+    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(msg(`変換・回転した領域 (transform・opacity・orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`, `transformed or rotated areas (transform, opacity, orientation) are nested too deeply (up to ${MAX_NESTED_ORIENTATIONS} levels)`));
     orientationDepth++;
     try {
       if (t) {
@@ -337,7 +338,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
   if (a.orientation) {
     // 局所座標系 (原点 = 箱の左上) へ移って、回転なしの箱として描く
     const m = rotationMatrix(a.orientation as 90 | 180 | 270, ox + a.x, oy + a.y, a.width, a.height);
-    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(`回転した領域 (orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`);
+    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(msg(`回転した領域 (orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`, `rotated areas (orientation) are nested too deeply (up to ${MAX_NESTED_ORIENTATIONS} levels)`));
     orientationDepth++;
     try {
       p.transform(m, () => paintArea({ ...a, x: 0, y: 0, orientation: undefined } as Area, 0, 0, p, phase));
@@ -442,11 +443,12 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
       else p.fillRect(x + l, y + t, w, h, a.backgroundColor);
     }
   } else if (box && a.backgroundColor && bgA !== undefined) {
-    p.fillPath(shape(x, y, a.width, a.height), a.backgroundColor.slice(0, 7), false, bgA);
+    const g = insetBox(a, x, y);
+    p.fillPath(shape(g.x, g.y, g.width, g.height), a.backgroundColor.slice(0, 7), false, bgA);
   } else if (box && a.backgroundColor && a.backgroundColor !== 'transparent') {
     if (rad) p.fillPath(shape(x, y, a.width, a.height), a.backgroundColor);
     else {
-      const r = snapToEdge({ x, y, width: a.width, height: a.height });
+      const r = snapToEdge(insetBox(a, x, y));
       p.fillRect(r.x, r.y, r.width, r.height, a.backgroundColor);
     }
   }
@@ -638,21 +640,48 @@ function closeArea(o: OpenBox, p: Painter) {
   const mB = mi(B.bottom, B.left, pl, B.right, pr);
   const mL = mi(B.left, B.top, pt, B.bottom, pb);
   const mR = mi(B.right, B.top, pt, B.bottom, pb);
+  // 線を箱の縁から内へずらして描く辺 (paintWidth が場所より細い。表の外周や互換の組み方の内側で、太さの違う線の中心をそろえる)。
+  // 表の外周の辺のずれは、隣の辺の線の端も同じだけ縮める (表の外の角が、ずらした線どうしで合う)
+  const inset = (sd: BorderSide | undefined, w: number, pw: number) => (sd && pw > 0 && pw < w ? w - pw : 0);
+  const dT = inset(B.top, bt, pt);
+  const dB = inset(B.bottom, bb, pb);
+  const dL = inset(B.left, bl, pl);
+  const dR = inset(B.right, br, pr);
+  const edgeIn = (sd: BorderSide | undefined, d: number) => (sd?.collapse?.tableEdge ? d : 0);
+  // 始めの側の縦の線がグリッド線を中心に箱の外へはみ出すとき (仕様の組み方の内側の線)、横の線もその分だけ始めの側へ伸ばして、
+  // 線の交わり (角) を埋める (前のセルの横の線が細いと、交わりに欠けができる。角の描き方は CSS 2.1 §17.6.2.1 で決まっていない)
+  const hx0 = edgeIn(B.left, dL) - (cell && B.left && !B.left.collapse?.tableEdge && pl > bl ? pl - bl : 0);
+  const hx1 = edgeIn(B.right, dR);
   if (traps && kt) trap(B.top!, x, y + bt / 2, x + W, y + bt / 2, bt);
-  else if (pt) paintBorderSide(p, B.top!, 'top', x, y - (pt - bt), W, pt, ph[0], mT);
+  else if (pt) paintBorderSide(p, B.top!, 'top', x + hx0, y - (pt - bt), W - hx0 - hx1, pt, ph[0], mT);
   if (traps && kb) trap(B.bottom!, x, y + H - bb / 2, x + W, y + H - bb / 2, bb);
-  else if (pb) paintBorderSide(p, B.bottom!, 'bottom', x, y + H - bb, W, pb, ph[2], mB);
+  else if (pb) paintBorderSide(p, B.bottom!, 'bottom', x + hx0, y + H - bb, W - hx0 - hx1, pb, ph[2], mB);
   // 表のセルの縦の辺は、突き合わせない角では、横の辺の帯の分だけ短くする (横の線を切らずに通す)
   const cut = (sd: BorderSide | undefined, adj: BorderSide | undefined, w: number) => (cell && w > 0 && mitreWith(sd, adj) && !ok(sd, adj) ? w : 0);
-  const lt = cut(B.left, B.top, pt);
-  const lb = cut(B.left, B.bottom, pb);
-  const rt = cut(B.right, B.top, pt);
-  const rb = cut(B.right, B.bottom, pb);
+  // 横の辺を内へずらしたとき: 表の外周なら、縦の線はずらした横の線の外の縁から (切るなら内の縁から)。
+  // 外周でない (互換の組み方の内側の線) なら、縦の線は箱の縁から切らずに通す (上・下のセルの縦の線とつなぐ)
+  const vcut = (c: number, sd: BorderSide | undefined, d: number) => (d > 0 ? (sd?.collapse?.tableEdge ? d + c : 0) : c);
+  const lt = vcut(cut(B.left, B.top, pt), B.top, dT);
+  const lb = vcut(cut(B.left, B.bottom, pb), B.bottom, dB);
+  const rt = vcut(cut(B.right, B.top, pt), B.top, dT);
+  const rb = vcut(cut(B.right, B.bottom, pb), B.bottom, dB);
   if (traps && kl) trap(B.left!, x + bl / 2, y, x + bl / 2, y + H, bl);
   else if (pl) paintBorderSide(p, B.left!, 'left', x - (pl - bl), y + lt, pl, H - lt - lb, ph[3], mL);
   if (traps && kr) trap(B.right!, x + W - br / 2, y, x + W - br / 2, y + H, br);
   else if (pr) paintBorderSide(p, B.right!, 'right', x + W - br, y + rt, pr, H - rt - rb, ph[1], mR);
   paintDiagonals(a, x, y, p);
+}
+
+/**
+ * 背景を塗る箱 (border-box)。表の罫線の重ね合わせで、線を箱の縁から内へずらして描く辺 (collapse.paintWidth が width より小さい) は、
+ * 線の外の縁から塗る (箱の縁から塗ると、ずらした線の外に背景がはみ出す)
+ */
+function insetBox(a: Area, x: number, y: number): { x: number; y: number; width: number; height: number } {
+  const d = (s: BorderSide | undefined) => (s?.collapse?.paintWidth !== undefined && s.collapse.paintWidth < s.width ? s.width - s.collapse.paintWidth : 0);
+  const B = a.border;
+  const l = d(B.left);
+  const t = d(B.top);
+  return { x: x + l, y: y + t, width: Math.max(a.width - l - d(B.right), 0), height: Math.max(a.height - t - d(B.bottom), 0) };
 }
 
 /** 線で描く破線・点線の、線と隙間の長さ (実線は undefined) */
@@ -755,6 +784,15 @@ function shade(css: string, f: number): string {
   }
   // CMYK の色は、RGB (R = (1 − C)(1 − K) など) に直してから RGB で明るく・暗くする (たとえば cmyk(1,1,0,0) の groove は、
   // 暗い側が RGB (0, 0, 0.667)、明るい側が (0.502, 0.502, 1)。CSS Backgrounds 3 §3.2 は立体の罫線の色の作り方を決めていない)
+  // 特色で、作成者が代わりの RGB を書いていれば (rgb-icc(r, g, b, #Separation, …))、その RGB から同じ式で作る。特色の値を渡さないときの
+  // 罫線の色 (その RGB) と同じ明暗になり、アンテナハウスの見本 (『CSSページ組版入門』第 4 版の 26 ページの .BorderSample。
+  // rgb-icc(0, 61, 25, #Separation, 'PANTONE 627 PC') の groove などの明暗が RGB (0, 40, 16)・(128, 158, 140)) とも、明るい側は同じ値、
+  // 暗い側は 1/255 以内で合う (暗い側は 61 × 2/3 = 40.7 を四捨五入して 41。見本は 40)。明暗の色そのものは、見本と同じく RGB で塗る。
+  // 代わりの RGB の無い特色 (rgb-icc(#Separation, '名前') のように r, g, b を省いたもの) は、これまでどおり代わりの CMYK から作る
+  if (c.mode === 'cmyk' && c.spot?.rgb) {
+    const hex = `#${c.spot.rgb.map((v) => Math.round(255 * k(v)).toString(16).padStart(2, '0')).join('')}`;
+    return shade(hex, f);
+  }
   if (c.mode === 'cmyk') {
     const rgb = [c.c, c.m, c.y].map((v) => (1 - k(v)) * (1 - k(c.k)));
     const hex = `#${rgb.map((v) => Math.round(255 * v).toString(16).padStart(2, '0')).join('')}`;

@@ -19,8 +19,9 @@ import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFDocument, PDFFl
 import type { PDFOperator, PDFPage } from 'pdf-lib';
 import type { FontManager } from './fontManager';
 import { decodeJpeg } from './jpeg';
-import { pngDataComplete, pngWithinLimits } from './pixels';
+import { decodePngForPdf, pngDataComplete, pngWithinLimits } from './pixels';
 import { cffGidToCid, cffTable, subsetCff } from './cff';
+import { msg } from './messages';
 
 /** 差し替え済みの印 (原型に付ける) */
 const PATCHED = Symbol.for('kumiori.pdfLibPatched');
@@ -31,7 +32,7 @@ const PATCHED = Symbol.for('kumiori.pdfLibPatched');
  */
 function assertPdfLibInternals() {
   const need = (o: object, names: string[], what: string) => {
-    for (const n of names) if (typeof (o as Record<string, unknown>)[n] !== 'function') throw new Error(`pdf-lib の ${what}.${n} が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)`);
+    for (const n of names) if (typeof (o as Record<string, unknown>)[n] !== 'function') throw new Error(msg(`pdf-lib の ${what}.${n} が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)`, `pdf-lib ${what}.${n} not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)`));
   };
   need(CustomFontEmbedder.prototype, ['encodeText', 'glyphId', 'embedFontStream', 'serializeFont'], 'CustomFontEmbedder.prototype');
   need(PngEmbedder.prototype, ['embedIntoContext'], 'PngEmbedder.prototype');
@@ -47,7 +48,7 @@ assertPdfLibInternals();
 export function pageOperators(page: PDFPage): PDFOperator[] {
   const p = page as unknown as { getContentStream?: () => { operators?: PDFOperator[] } };
   const ops = typeof p.getContentStream === 'function' ? p.getContentStream().operators : undefined;
-  if (!Array.isArray(ops)) throw new Error('pdf-lib の PDFPage.getContentStream().operators が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)');
+  if (!Array.isArray(ops)) throw new Error(msg('pdf-lib の PDFPage.getContentStream().operators が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)', 'pdf-lib PDFPage.getContentStream().operators not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   return ops;
 }
 
@@ -70,10 +71,10 @@ export function patchFontkitSubset(font: FontManager) {
     [PATCHED]?: boolean;
   };
   if (proto[PATCHED]) return;
-  if (typeof proto._addGlyph !== 'function') throw new Error('@pdf-lib/fontkit の部分書体の _addGlyph が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)');
+  if (typeof proto._addGlyph !== 'function') throw new Error(msg('@pdf-lib/fontkit の部分書体の _addGlyph が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)', '_addGlyph of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   const orig = proto._addGlyph;
   proto._addGlyph = function (gid: number) {
-    const r = orig.call(this, gid);
+    const r = addGlyphOrEmpty(this as unknown as SubsetGlyphs, gid, orig);
     const last = this.glyf[this.glyf.length - 1];
     const pad = (4 - (last.length % 4)) % 4;
     if (pad) {
@@ -89,6 +90,62 @@ export function patchFontkitSubset(font: FontManager) {
   patchSubsetSerialize(any.createSubset() as unknown as SubsetLike);
 }
 
+/** fontkit の TrueType の部分書体 (TTFSubset) の、書き出しの途中の表 (_addGlyph が 1 字形ずつ足す) */
+type SubsetGlyphs = {
+  font: { hmtx?: { metrics?: { length: number; get(i: number): { advance?: number } | undefined } }; _getTableStream?(tag: string): { readBuffer(n: number): Uint8Array } | null };
+  glyf: Uint8Array[];
+  offset: number;
+  loca: { offsets: number[] };
+  hmtx: { metrics: Array<{ advance: number; bearing: number }> };
+};
+
+/**
+ * 部分書体に字形 gid を足す (fontkit の _addGlyph = orig)。字形のデータが読めない字形 (loca の位置がずれて、glyf の中の別の所を指すなど。
+ * 点の座標の読みが glyf の外へ出る・複合の字形の部品の番号を書く位置がデータの外になる) は、orig が例外になり、部分書体の全体が
+ * 書けず、PDF の全体が失敗していた。その字形は、輪郭の無い字形 (長さ 0 のデータ。OpenType の 'loca' の表: 次の字形と位置が同じ字形は
+ * 輪郭を持たない) にし、送りは hmtx の値のままにする (組版で測った送りと同じ)。足しかけた表は、呼ぶ前の長さに戻す
+ * (部品として includeGlyph が並びに足した字形は残るが、それぞれ自分の番に足すので、表は食い違わない)
+ */
+function addGlyphOrEmpty(s: SubsetGlyphs, gid: number, orig: (this: SubsetGlyphs, gid: number) => number): number {
+  const n = s.glyf.length;
+  const [locaN, hmtxN, offset] = [s.loca.offsets.length, s.hmtx.metrics.length, s.offset];
+  try {
+    return orig.call(s, gid);
+  } catch {
+    s.glyf.length = n;
+    s.loca.offsets.length = locaN;
+    s.hmtx.metrics.length = hmtxN;
+    s.offset = offset;
+    let advance = 0;
+    try {
+      // hmtx の送り (hMetrics の数より後ろの字形は、最後の送り。OpenType の 'hmtx' の表)
+      const m = s.font.hmtx?.metrics;
+      if (m && m.length) advance = m.get(Math.min(gid, m.length - 1))?.advance ?? 0;
+    } catch {
+      advance = 0;
+    }
+    // 書き出しの流れ (restructure の EncodeStream) は、fontkit の中の Buffer の型だけを受けるので、fontkit の読みで長さ 0 のものを作る
+    const empty = emptyFontkitBuffer(s);
+    if (!empty) throw new Error(msg('fontkit の部分書体の字形のデータの型が分かりません', 'unknown type of glyph data in the fontkit subset'));
+    s.glyf.push(empty);
+    s.loca.offsets.push(s.offset);
+    s.hmtx.metrics.push({ advance, bearing: 0 });
+    return s.glyf.length - 1;
+  }
+}
+
+/** fontkit の中の Buffer の型の、長さ 0 のもの (書体の glyf の流れから読む。読めなければ、足した字形のデータの型から作る) */
+function emptyFontkitBuffer(s: SubsetGlyphs): Uint8Array | undefined {
+  try {
+    const b = s.font._getTableStream?.('glyf')?.readBuffer(0);
+    if (b) return b;
+  } catch {
+    // 下の代わりへ
+  }
+  const B = s.glyf[0]?.constructor as unknown as { alloc?: (n: number) => Uint8Array } | undefined;
+  return B?.alloc?.(0);
+}
+
 type EncodeStreamLike = { on(ev: string, fn: (v: never) => void): EncodeStreamLike; end(): void };
 type SubsetLike = { encode(s: EncodeStreamLike): void; encodeStream(): EncodeStreamLike };
 
@@ -101,7 +158,7 @@ type SubsetLike = { encode(s: EncodeStreamLike): void; encodeStream(): EncodeStr
 function patchSubsetSerialize(sample: SubsetLike) {
   const proto = CustomFontSubsetEmbedder.prototype as unknown as { serializeFont(this: { subset: SubsetLike }): Promise<Uint8Array>; [PATCHED]?: boolean };
   if (proto[PATCHED]) return;
-  if (typeof sample.encodeStream !== 'function' || typeof sample.encode !== 'function') throw new Error('@pdf-lib/fontkit の部分書体の encodeStream が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)');
+  if (typeof sample.encodeStream !== 'function' || typeof sample.encode !== 'function') throw new Error(msg('@pdf-lib/fontkit の部分書体の encodeStream が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)', 'encodeStream of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   // 流れの型 (restructure の EncodeStream) は、fontkit の外からは見えないので、何も書かない encode で 1 つ作らせて、その型を取る
   const Stream = sample.encodeStream.call({ encode() {} } as unknown as SubsetLike).constructor as new () => EncodeStreamLike;
   proto.serializeFont = function () {
@@ -286,16 +343,35 @@ export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array): Promise<P
 }
 
 /**
+ * 8 ビット・飛び越しでない、α の付いた PNG を自前で展開 (pixels.ts の decodePngForPdf) して、pdf-lib の PngEmbedder と同じ形の部品にする。
+ * 部品の image (rgbChannel・alphaChannel) は pdf-lib の PNG と同じ中身なので、埋め込んだ PDF も同じになる。形の違う PNG は undefined
+ */
+function decodedPngEmbedder(png: Uint8Array): PngEmbedder | 'broken' | undefined {
+  const px = decodePngForPdf(png);
+  if (!px || px === 'broken') return px;
+  const image = { rgbChannel: px.rgb, alphaChannel: px.alpha, width: px.width, height: px.height, bitsPerComponent: 8 };
+  return Object.assign(Object.create(PngEmbedder.prototype) as PngEmbedder, { image, bitsPerComponent: 8, width: px.width, height: px.height, colorSpace: 'DeviceRGB' });
+}
+
+/**
  * PNG を埋め込む: 展開せずに入れられるものは embedPngAsIs、ほかは pdf-lib の embedPng (展開する)。
  * どちらも、画素の数と展開の大きさの上限 (pixels.ts の pngWithinLimits) を超える PNG は埋め込まずに投げる
- * (pdf-lib は IHDR の寸法のとおりに配列を作る。PDF に入れても、PDF を見る側が同じだけ展開する。IMG-19)
+ * (pdf-lib は IHDR の寸法のとおりに配列を作る。PDF に入れても、PDF を見る側が同じだけ展開する)
  */
 export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array): Promise<PDFImage> {
-  if (!pngWithinLimits(png)) throw new Error('PNG: 画素の数か展開の大きさが上限を超えます');
+  if (!pngWithinLimits(png)) throw new Error(msg('PNG: 画素の数か展開の大きさが上限を超えます', 'PNG: the number of pixels or the decompressed size exceeds the limit'));
   const asIs = await embedPngAsIs(pdf, png);
   if (asIs) return asIs;
+  // 8 ビットの α の付いた PNG は、自前で展開して、pdf-lib と同じ RGB・α の画像にする (pdf-lib の展開は、1 億画素で 10 秒かかる)
+  const own = decodedPngEmbedder(png);
+  if (own === 'broken') throw new Error(msg('PNG: 画素のデータが壊れています', 'PNG: the pixel data is broken'));
+  if (own) {
+    const img = PDFImage.of(pdf.context.nextRef(), pdf, own);
+    await img.embed();
+    return img;
+  }
   // 展開して埋め込む前に、画素のデータが終わりまで展開できることを確かめる (壊れたデータで、pdf-lib の展開が止まらなくなる。pngDataComplete)
-  if (!pngDataComplete(png)) throw new Error('PNG: 画素のデータが壊れています');
+  if (!pngDataComplete(png)) throw new Error(msg('PNG: 画素のデータが壊れています', 'PNG: the pixel data is broken'));
   return pdf.embedPng(png);
 }
 
@@ -324,7 +400,9 @@ export async function embedCmykImage(
     if (!pngWithinLimits(bytes) || !pngDataComplete(bytes)) return undefined;
     let e: PngEmbedder;
     try {
-      e = await PngEmbedder.for(bytes);
+      const own = decodedPngEmbedder(bytes);
+      if (own === 'broken') return undefined;
+      e = own ?? (await PngEmbedder.for(bytes));
     } catch {
       return undefined;
     }

@@ -432,6 +432,17 @@ describe('PDF の書き方 (全体のレビュー)', () => {
     for (const n of names) expect(n).toMatch(/^\/[A-Z]{6}\+/);
   });
 
+  it('XSL-FO の rgb-icc() の特色は、代わりの sRGB (始めの 3 つ。特色の値が無いときの色と同じ) を持つ (立体の罫線の明暗の色に使う。CSS-25)', () => {
+    const fo = (attrs: string) =>
+      `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block ${attrs}>x</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+    const json = (attrs: string, spotColors?: Record<string, [number, number, number, number]>) =>
+      JSON.stringify(importXslFo(fo(attrs), (s) => new DOMParser().parseFromString(s, 'text/xml') as never, spotColors ? { spotColors } : {}).document);
+    const attrs = `border="3pt groove rgb-icc(0, 61, 25, #Separation, 'Ink B', 0.5)"`;
+    expect(json(attrs, { 'Ink B': [0.2, 0.4, 0.6, 0.8] })).toContain('"spot(0.5,0.2,0.4,0.6,0.8,Ink%20B,#003d19)"');
+    // 特色の値が無ければ、これまでどおり代わりの sRGB (濃度は掛けない)
+    expect(json(attrs)).toContain('"rgb(0,61,25)"');
+  });
+
   it('FreeText 注釈の表示 (AP) は、ページの資源の特色の色空間を使わない', async () => {
     const { fonts, engine } = await makeEngine();
     const xml = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"><fo:layout-master-set><fo:simple-page-master master-name="p"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>

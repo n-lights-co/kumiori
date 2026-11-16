@@ -11,6 +11,7 @@ import { readGradientSvg, type GradientPaint } from './cssGradient';
 import { colorFontOf } from './colorGlyph';
 import { drawColorGlyphArea } from './colorGlyphCanvas';
 import type { Area, GlyphArea, ImageArea, Rect, SheetArea } from './types';
+import { msg } from './messages';
 
 export interface CanvasRenderOptions {
   /** 1pt あたりの CSS px (既定 1.3333 = 96dpi) */
@@ -89,7 +90,7 @@ class CanvasPainter implements Painter {
     } catch (e) {
       // 字の並びを組めない書体・字 (fontkit が字形のデータを読めない) は、輪郭にできない。1 つの並びのために、ページの残りを失わない
       // (呼び出し元は、ブラウザの fillText で描く)
-      console.warn(`Canvas: ${f.key} の「${text}」を輪郭にできません`, e);
+      console.warn(msg(`Canvas: ${f.key} の「${text}」を輪郭にできません`, `Canvas: cannot make outlines of "${text}" in ${f.key}`), e);
       return undefined;
     }
     const paths: Path2D[] = [];
@@ -101,7 +102,7 @@ class CanvasPainter implements Painter {
         d = (run.glyphs[i] as unknown as { path: { toSVG(): string } }).path.toSVG();
       } catch (e) {
         // 字形のデータが壊れている書体 (fontkit が読めない字) は、その字を描かずに続ける (ページの残りを描く。PDF の drawGlyph と同じ)
-        console.warn(`Canvas: ${f.key} の「${text}」の字形 (${i} 番目) を描けません`, e);
+        console.warn(msg(`Canvas: ${f.key} の「${text}」の字形 (${i} 番目) を描けません`, `Canvas: cannot draw glyph ${i} of "${text}" in ${f.key}`), e);
       }
       paths.push(new Path2D(d));
       // 最初の字形の位置のずれ: OpenType の機能 (palt など) を当てた字は、組版で描く原点に入れてある (inlineLayout.ts の glyphNode) ので

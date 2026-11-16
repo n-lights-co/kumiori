@@ -11,6 +11,7 @@
  *   - sourceRef は、その Area を作った入力の節の位置 (documentNodes(doc) の添字)。
  */
 import type { Area, AreaTree, SheetArea } from "./types";
+import { msg } from './messages';
 
 /** 入力 (LDocument) の節の並び。Area の sourceRef はこの並びの位置 (sourceRef.ts) */
 export { documentNodes } from "./sourceRef";
@@ -19,8 +20,10 @@ export { documentNodes } from "./sourceRef";
  * Area Tree の形の版。欄の意味や子の持ち方を変えたら上げる。
  *  - 1: 最初の版
  *  - 2: 表の罫線の重ね合わせの描き方 (paintWidth・noPaint・tableEdge) を、BorderSide の欄から BorderSide.collapse の下に移した
+ *  - 3: collapse.paintWidth が width より小さい辺 (線を箱の縁から内へずらして描く) を足した (表の太さの違う罫線の中心をそろえる)。
+ *       版 2 の木は、そのまま版 3 の木として読める
  */
-export const AREA_TREE_SCHEMA_VERSION = 2;
+export const AREA_TREE_SCHEMA_VERSION = 3;
 
 /** 版 1 の罫線の辺を、版 2 の形 (重ね合わせの描き方を collapse の下へ) に直す */
 function upgradeSide(side: unknown) {
@@ -78,7 +81,7 @@ export function walkAreas(
     depth: number,
   ) => boolean | void,
 ): void {
-  // 再帰でなく、明示のスタックでたどる (OUT-14: 深い木でスタックを使い切らない)。積むのは「まだ訪ねていない節」で、
+  // 再帰でなく、明示のスタックでたどる (深い木でスタックを使い切らない)。積むのは「まだ訪ねていない節」で、
   // 子は後ろから積む (先の子が先に出る) ので、訪ねる順は再帰でたどるのと同じ
   const nodes: AreaNode[] = [root];
   const parents: Array<AreaNode | undefined> = [undefined];
@@ -122,7 +125,7 @@ export function serializeAreaTree(tree: AreaTree): string {
   } catch (e) {
     // JSON.stringify は処理系の中で再帰するので、入れ子の深すぎる木ではスタックを使い切る (Node の既定のスタックで、領域の入れ子が
     // 2000 段までは通り、4000 段では切れると測った。組版が作る木は、組版の再帰の限界から、そこまで深くならない)。分かる文の誤りにする
-    if (e instanceof RangeError) throw new AreaTreeFormatError('Area Tree の入れ子が深すぎて、JSON にできません');
+    if (e instanceof RangeError) throw new AreaTreeFormatError(msg('Area Tree の入れ子が深すぎて、JSON にできません', 'the Area Tree is nested too deeply to convert to JSON'));
     throw e;
   }
 }
@@ -141,16 +144,16 @@ export function parseAreaTree(json: string): AreaTree {
     tree = JSON.parse(json) as AreaTree;
   } catch (e) {
     // JSON.parse も処理系の中で再帰する。入れ子の深すぎる JSON でスタックを使い切ったときは、そのことが分かる文にする
-    if (e instanceof RangeError) throw new AreaTreeFormatError('Area Tree の入れ子が深すぎて、読めません');
-    throw new AreaTreeFormatError(`JSON として読めません: ${e instanceof Error ? e.message : String(e)}`);
+    if (e instanceof RangeError) throw new AreaTreeFormatError(msg('Area Tree の入れ子が深すぎて、読めません', 'the Area Tree is nested too deeply to read'));
+    throw new AreaTreeFormatError(msg(`JSON として読めません: ${e instanceof Error ? e.message : String(e)}`, `cannot read as JSON: ${e instanceof Error ? e.message : String(e)}`));
   }
-  if (!tree || typeof tree !== 'object') throw new AreaTreeFormatError('Area Tree ではありません');
+  if (!tree || typeof tree !== 'object') throw new AreaTreeFormatError(msg('Area Tree ではありません', 'not an Area Tree'));
   const version = (tree as { schemaVersion?: unknown }).schemaVersion;
-  if (version !== AREA_TREE_SCHEMA_VERSION && version !== 1) throw new AreaTreeFormatError(`版 ${String(version)} は読めません (読めるのは 1 と ${AREA_TREE_SCHEMA_VERSION})`);
-  if (!Array.isArray(tree.sheets)) throw new AreaTreeFormatError('sheets がありません');
+  if (version !== AREA_TREE_SCHEMA_VERSION && version !== 1 && version !== 2) throw new AreaTreeFormatError(msg(`版 ${String(version)} は読めません (読めるのは 1〜${AREA_TREE_SCHEMA_VERSION})`, `version ${String(version)} cannot be read (versions 1 to ${AREA_TREE_SCHEMA_VERSION} can)`));
+  if (!Array.isArray(tree.sheets)) throw new AreaTreeFormatError(msg('sheets がありません', 'no sheets'));
   if (!Array.isArray(tree.warnings)) tree.warnings = [];
   const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
-  // 節の形を確かめる。再帰でなく、明示のスタックでたどる (OUT-14)。確かめる順 (深さ優先・前順) は再帰と同じなので、
+  // 節の形を確かめる。再帰でなく、明示のスタックでたどる。確かめる順 (深さ優先・前順) は再帰と同じなので、
   // 形の誤りが複数あるときに報告する誤りも同じ
   const check = (root: AreaNode, rootPath: string) => {
     const nodes: AreaNode[] = [root];
@@ -158,14 +161,14 @@ export function parseAreaTree(json: string): AreaTree {
     while (nodes.length) {
       const a = nodes.pop()!;
       const path = paths.pop()!;
-      if (!a || typeof a !== 'object' || !AREA_TYPES.has((a as { type?: string }).type ?? '')) throw new AreaTreeFormatError(`${path}: Area の種類が読めません`);
-      for (const k of ['x', 'y', 'width', 'height'] as const) if (!num(a[k])) throw new AreaTreeFormatError(`${path} (${a.type}): ${k} が数ではありません`);
+      if (!a || typeof a !== 'object' || !AREA_TYPES.has((a as { type?: string }).type ?? '')) throw new AreaTreeFormatError(msg(`${path}: Area の種類が読めません`, `${path}: unknown Area type`));
+      for (const k of ['x', 'y', 'width', 'height'] as const) if (!num(a[k])) throw new AreaTreeFormatError(msg(`${path} (${a.type}): ${k} が数ではありません`, `${path} (${a.type}): ${k} is not a number`));
       const kids =
         a.type === 'sheet' ? [a.page] : a.type === 'page' ? [a.regionBody, ...(a.behindAreas ?? []), ...(a.absoluteAreas ?? [])] : a.type === 'ruby' ? [...(a.base ?? []), ...(a.ruby ?? [])] : a.type === 'tate-chu-yoko' ? (a.glyphs ?? []) : a.type === 'glyph' || a.type === 'image' ? [] : (a as { children?: unknown }).children;
-      if (!Array.isArray(kids)) throw new AreaTreeFormatError(`${path} (${a.type}): 子の欄がありません`);
-      if (a.type === 'page' && (!Array.isArray(a.behindAreas) || !Array.isArray(a.absoluteAreas))) throw new AreaTreeFormatError(`${path} (page): behindAreas・absoluteAreas がありません`);
-      if (a.type === 'glyph' && typeof a.text !== 'string') throw new AreaTreeFormatError(`${path} (glyph): text がありません`);
-      if (a.type === 'image' && typeof a.src !== 'string') throw new AreaTreeFormatError(`${path} (image): src がありません`);
+      if (!Array.isArray(kids)) throw new AreaTreeFormatError(msg(`${path} (${a.type}): 子の欄がありません`, `${path} (${a.type}): no children field`));
+      if (a.type === 'page' && (!Array.isArray(a.behindAreas) || !Array.isArray(a.absoluteAreas))) throw new AreaTreeFormatError(msg(`${path} (page): behindAreas・absoluteAreas がありません`, `${path} (page): no behindAreas or absoluteAreas`));
+      if (a.type === 'glyph' && typeof a.text !== 'string') throw new AreaTreeFormatError(msg(`${path} (glyph): text がありません`, `${path} (glyph): no text`));
+      if (a.type === 'image' && typeof a.src !== 'string') throw new AreaTreeFormatError(msg(`${path} (image): src がありません`, `${path} (image): no src`));
       for (let k = kids.length - 1; k >= 0; k--) {
         nodes.push(kids[k] as AreaNode);
         paths.push(`${path}/${k}`);
@@ -173,16 +176,16 @@ export function parseAreaTree(json: string): AreaTree {
     }
   };
   tree.sheets.forEach((s, k) => {
-    if (s?.type !== 'sheet') throw new AreaTreeFormatError(`sheets/${k}: sheet ではありません`);
+    if (s?.type !== 'sheet') throw new AreaTreeFormatError(msg(`sheets/${k}: sheet ではありません`, `sheets/${k}: not a sheet`));
     check(s, `sheets/${k}`);
   });
-  // 版 1 の木は、版 2 の形に直して返す
+  // 版 1 の木は、版 2 の形に直して返す。版 2 の木は、そのまま今の版の木 (版 3 は欄の値を足しただけ)
   if (version === 1) {
     walkAreaTree(tree, (a) => {
       for (const side of Object.values(a.border ?? {})) upgradeSide(side);
       for (const d of (a as { diagonals?: Array<{ side: unknown }> }).diagonals ?? []) upgradeSide(d.side);
     });
-    tree.schemaVersion = AREA_TREE_SCHEMA_VERSION;
   }
+  tree.schemaVersion = AREA_TREE_SCHEMA_VERSION;
   return tree;
 }

@@ -150,7 +150,7 @@ describe("Area Tree の版 2", () => {
     const block = v1.sheets[0].page.regionBody.children[0];
     block.border = { top: { width: 0.5, color: "#000000", noPaint: true }, bottom: { width: 0.5, color: "#000000", paintWidth: 1, tableEdge: true } };
     const back = parseAreaTree(JSON.stringify(v1));
-    expect(back.schemaVersion).toBe(2);
+    expect(back.schemaVersion).toBe(AREA_TREE_SCHEMA_VERSION);
     const b = (back.sheets[0].page.regionBody.children[0] as unknown as { border: Record<string, unknown> }).border;
     expect(b.top).toEqual({ width: 0.5, color: "#000000", collapse: { noPaint: true } });
     expect(b.bottom).toEqual({ width: 0.5, color: "#000000", collapse: { paintWidth: 1, tableEdge: true } });
