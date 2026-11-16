@@ -28,6 +28,7 @@ const fetching = new Map<string, Promise<string>>();
  * 置き場へ直接書くと、書きかけのファイルを別のワーカーが「ある」と見て読んでしまう。
  * 一時ファイル (ワーカーごと・呼び出しごとに別の名前) に書き終えてから名前を変える (同じディレクトリの中の rename は、途中の状態が見えない) ので、
  * 置き場にある名前のファイルは、いつも全体が書かれている。2 つのワーカーが同時に取りに行ったときは、どちらも同じ中身を取り、後の rename が前のものを置き換えるだけ
+ * (置き換えられないとき (Windows で前のものを開いているとき) は、前のものを使う)
  */
 export function cachedFont(name: string, url: string): Promise<string> {
   const file = path.join(fontDir, name);
@@ -45,7 +46,8 @@ export function cachedFont(name: string, url: string): Promise<string> {
         fs.renameSync(tmp, file);
       } catch (e) {
         fs.rmSync(tmp, { force: true });
-        throw e;
+        // Windows では、別のワーカーが先に置いて開いているファイルへの rename は EPERM になる。先に置かれたものがあれば、それを使う
+        if (!fs.existsSync(file)) throw e;
       }
       return file;
     })();

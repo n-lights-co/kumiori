@@ -6,16 +6,20 @@ Kumiori が読める画像の形式ごとに、同じ絵 (夕暮れの空・星�
 絵はこのスクリプトで描いた自作のもので、ほかの画像を使っていない。
 
 - ラスター画像 (PNG・JPEG・GIF・BMP・TIFF・WebP) は Pillow で書き出す。解像度は 144 dpi (幅 240 画素 = 1.667 インチ)
-- ベクター画像 (SVG・EPS・WMF・EMF・CGM) は、このスクリプトがファイルの中身を直接組み立てる
-  (WMF は [MS-WMF]、EMF は [MS-EMF]、CGM は ISO/IEC 8632-3 の 2 進符号化、EPS は PostScript と DSC の決まりに従う)
+- ベクター画像 (SVG・EPS・WMF・EMF・CGM) と draw.io の図は、このスクリプトがファイルの中身を直接組み立てる
+  (WMF は [MS-WMF]、EMF は [MS-EMF]、CGM は ISO/IEC 8632-3 の 2 進符号化、EPS は PostScript と DSC の決まりに従う。
+  draw.io の図は、draw.io の図のファイルの形 (mxGraph の XML) で、山並みは図に埋め込む形 (stencil) の多角形にする)
 
 使い方: python3 scripts/make-conformance-images.py
        (docs/conformance/fo/images と docs/conformance/html/images に同じものを書く)
 """
+import base64
 import io
 import os
 import struct
 import sys
+import urllib.parse
+import zlib
 
 from PIL import Image, ImageDraw
 
@@ -197,6 +201,53 @@ def svg():
     s.append(f'  <text x="{LABEL[0]}" y="{LABEL[1]}" font-family="sans-serif" font-size="8" letter-spacing="1" fill="{hexc(WEFT[0])}">SVG</text>')
     s.append('</svg>')
     return '\n'.join(s) + '\n'
+
+
+# ---------------------------------------------------------------- draw.io (mxGraph の XML)
+
+
+def drawio():
+    """draw.io の図のファイル。空・夕日・星・地面・織り目は四角と楕円のセル (グラデーションは fillColor と gradientColor)、
+    山並みは図に埋め込む形 (shape=stencil(…)。形の XML を encodeURIComponent して、頭の無い deflate で縮め、base64 にしたもの。
+    draw.io の Graph.compress と同じ形) の多角形にする"""
+    cells = []
+
+    def cell(style, x, y, w, h, value=''):
+        cells.append(f'<mxCell id="c{len(cells) + 2}" value="{value}" style="{style}" vertex="1" parent="1">'
+                     f'<mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" as="geometry"/></mxCell>')
+
+    def box(col, x, y, w, h, extra=''):
+        cell(f'rounded=0;whiteSpace=wrap;html=1;fillColor={hexc(col)};strokeColor=none;{extra}', x, y, w, h)
+
+    def stencil(pts):
+        top = min(y for _, y in pts)
+        w, h = W, HORIZON - top
+        path = ''.join(('<move' if i == 0 else '<line') + f' x="{x}" y="{y - top}"/>' for i, (x, y) in enumerate(pts))
+        xml = f'<shape w="{w}" h="{h}" aspect="variable" strokewidth="inherit"><foreground><path>{path}<close/></path><fill/></foreground></shape>'
+        c = zlib.compressobj(9, zlib.DEFLATED, -15)
+        data = c.compress(urllib.parse.quote(xml, safe="~()*!.'-_").encode('ascii')) + c.flush()
+        return base64.b64encode(data).decode('ascii'), top, h
+
+    box(SKY_TOP, 0, 0, W, GROUND_RECT[1], f'gradientColor={hexc(SKY_BOTTOM)};gradientDirection=south;')
+    for sx, sy in STARS:
+        cell(f'ellipse;html=1;fillColor={hexc(STAR)};strokeColor=none;', sx - STAR_R, sy - STAR_R, 2 * STAR_R, 2 * STAR_R)
+    cell(f'ellipse;html=1;fillColor={hexc(SUN_CORE)};gradientColor={hexc(SUN)};gradientDirection=radial;strokeColor=none;',
+         SUN_C[0] - SUN_R, SUN_C[1] - SUN_R, 2 * SUN_R, 2 * SUN_R)
+    for col, pts in MOUNTAINS:
+        data, top, h = stencil(pts)
+        cell(f'shape=stencil({data});whiteSpace=wrap;html=1;fillColor={hexc(col)};strokeColor=none;', 0, top, W, h)
+    x0, y0, x1, y1 = GROUND_RECT
+    box(GROUND, x0, y0, x1 - x0, y1 - y0)
+    for col, a, b, c, e in weave_rects():
+        box(col, a, b, c - a, e - b)
+    cell(f'text;html=1;align=left;verticalAlign=top;spacing=0;fontFamily=Helvetica;fontSize=8;fontColor={hexc(WEFT[0])};',
+         LABEL[0], LABEL[1] - 9, 40, 10, 'draw.io')
+    return ('<mxfile host="Kumiori">\n'
+            '  <diagram id="woven" name="織り目 (Kumiori の対応仕様説明書の見本)">\n'
+            '    <mxGraphModel dx="0" dy="0" grid="0" gridSize="10" page="0" pageScale="1" pageWidth="240" pageHeight="150" math="0" shadow="0">\n'
+            '      <root>\n        <mxCell id="0"/>\n        <mxCell id="1" parent="0"/>\n'
+            + ''.join(f'        {c}\n' for c in cells)
+            + '      </root>\n    </mxGraphModel>\n  </diagram>\n</mxfile>\n')
 
 
 # ---------------------------------------------------------------- EPS
@@ -418,7 +469,7 @@ def main():
         out = os.path.join(root, sub, 'images')
         os.makedirs(out, exist_ok=True)
         write_rasters(out)
-        files = {'woven.svg': svg().encode('utf-8'), 'woven.eps': eps().encode('latin-1'), 'woven.wmf': wmf(), 'woven.emf': emf(), 'woven.cgm': cgm()}
+        files = {'woven.svg': svg().encode('utf-8'), 'woven.eps': eps().encode('latin-1'), 'woven.wmf': wmf(), 'woven.emf': emf(), 'woven.cgm': cgm(), 'woven.drawio': drawio().encode('utf-8')}
         for name, data in files.items():
             with open(os.path.join(out, name), 'wb') as f:
                 f.write(data)

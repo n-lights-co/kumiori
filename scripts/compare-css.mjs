@@ -20,6 +20,9 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
+import { chromiumLaunchOptions } from './chromium.mjs';
+/** Chromium を起こすときの指定。KUMIORI_CHROMIUM に実行ファイルを指すと、Playwright の取った Chromium ではなくそれを使う (scripts/chromium.mjs) */
+const launchOptions = chromiumLaunchOptions();
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => (a.startsWith('--') ? [...acc, [a.slice(2), all[i + 1]]] : acc), []));
 if (!args.html && !args.list) {
@@ -62,7 +65,7 @@ for (let i = 0; i < 120; i++) {
   await new Promise((r) => setTimeout(r, 500));
 }
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(launchOptions);
 const page = await browser.newPage();
 page.on('pageerror', (e) => console.error('pageerror:', e.message));
 // 既定の Web フォント: --web-fonts があれば手元のファイルから (compare-pdf.mjs と同じ)。無ければ読まない (書体は計算値に関係しない)

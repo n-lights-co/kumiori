@@ -18,6 +18,9 @@
  *    差の画像は書き出さず、ブラウザで見本と Kumiori の画像から描く (ファイルの数を減らす))。
  *  - --mode side|overlay|blink|diff: 最初の見え方 (既定は side)。見ていた見本・ページ・見え方はブラウザに覚えておき、開き直しても
  *    (ページを更新しても) 同じところから見られる。
+ *  - --ref-label <名前>・--pdf-label <名前>: 左 (既定「見本」)・右 (既定「Kumiori」) の PDF の呼び名。見本の無い自作の FO を、Kumiori の
+ *    2 つのモードで組み比べるときなど (例: --ref-label "Kumiori 仕様" --pdf-label "Kumiori 互換")。
+ *  - --title <題>: ページの題 (既定「Kumiori 見本比較」)。--note <文>: 一覧の上の説明に足す文。
  *  - 見本の PDF とその画像はリポジトリに入れない (著作物)。出力先は既定で compare-view-out (.gitignore 済み)。
  *
  * 必要なもの: pdftoppm (poppler-utils)。
@@ -43,6 +46,11 @@ const inline = args.inline === true || args.inline === 'true';
 const jpeg = args.jpeg === true || args.jpeg === 'true';
 const artifact = args.artifact === true || args.artifact === 'true';
 const initialMode = ['side', 'overlay', 'blink', 'diff'].includes(String(args.mode)) ? String(args.mode) : 'side';
+const refLabel = typeof args['ref-label'] === 'string' ? args['ref-label'] : '見本';
+const pdfLabel = typeof args['pdf-label'] === 'string' ? args['pdf-label'] : 'Kumiori';
+const pageTitle = typeof args.title === 'string' ? args.title : 'Kumiori 見本比較';
+const note = typeof args.note === 'string' ? args.note : '';
+const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const only = typeof args.names === 'string' ? new Set(args.names.split(',').map((s) => s.trim())) : undefined;
 
 /** 比べる組 [名前, 見本の PDF, Kumiori の PDF] */
@@ -165,7 +173,7 @@ for (const [name, refPdf, kPdf] of pairs()) {
   for (const f of [...refG, ...kmG]) fs.unlinkSync(path.join(dir, f));
   const score = pages.reduce((a, p) => a + p.ratio, 0) / Math.max(n, 1);
   samples.push({ name, refPages: ref.length, kumioriPages: km.length, score, pages });
-  console.log(`${name}: 見本 ${ref.length} / Kumiori ${km.length} ページ, 差 ${(score * 100).toFixed(1)}%`);
+  console.log(`${name}: ${refLabel} ${ref.length} / ${pdfLabel} ${km.length} ページ, 差 ${(score * 100).toFixed(1)}%`);
 }
 samples.sort((a, b) => b.score - a.score);
 
@@ -174,7 +182,7 @@ if (inline) {
   for (const s of samples) for (const p of s.pages) for (const k of ['ref', 'kumiori', 'diff']) p[k] = dataUri(p[k]);
 }
 
-const head = `<title>Kumiori 見本比較</title>
+const head = `<title>${esc(pageTitle)}</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
   /* 左に見本の一覧、右に選んだ見本のページ。狭い画面では一覧を上に重ねる */
@@ -248,8 +256,8 @@ const head = `<title>Kumiori 見本比較</title>
 </style>`;
 
 const body = `<aside>
-  <h1>Kumiori 見本比較</h1>
-  <p class="legend">差の大きい順。数字は、輝度の差が大きい画素の割合。<br>赤い数字はページ数が違うもの (見本/Kumiori)。</p>
+  <h1>${esc(pageTitle)}</h1>
+  <p class="legend">差の大きい順。数字は、輝度の差が大きい画素の割合。<br>赤い数字はページ数が違うもの (${esc(refLabel)}/${esc(pdfLabel)})。${note ? '<br>' + esc(note) : ''}</p>
   <input id="filter" placeholder="名前で絞り込む" aria-label="名前で絞り込む">
   <ul id="list"></ul>
 </aside>
@@ -261,7 +269,7 @@ const body = `<aside>
     <span class="seg" id="modes">
       <button data-m="side">並べる</button><button data-m="overlay">重ねる</button><button data-m="blink">点滅</button><button data-m="diff">差</button>
     </span>
-    <label id="opacityBox">Kumiori の不透明度 <input type="range" id="opacity" min="0" max="100" value="50"></label>
+    <label id="opacityBox">${esc(pdfLabel)} の不透明度 <input type="range" id="opacity" min="0" max="100" value="50"></label>
     <label><input type="checkbox" id="actual"> 実寸 (${dpi} dpi)</label>
     <span class="key">← → ページ ・ ↑ ↓ 見本 ・ 1〜4 見え方</span>
   </header>
@@ -270,6 +278,7 @@ const body = `<aside>
 <script id="data" type="application/json">${JSON.stringify(samples).replace(/</g, '\\u003c')}</script>
 <script>
 const samples = JSON.parse(document.getElementById('data').textContent);
+const REF = ${JSON.stringify(refLabel).replace(/</g, '\\u003c')}, KM = ${JSON.stringify(pdfLabel).replace(/</g, '\\u003c')};
 const state = { s: 0, p: 0, mode: ${JSON.stringify(initialMode)}, opacity: 50 };
 // 見ていた見本・ページ・見え方を覚えておく (ブラウザの保存領域。使えなければ覚えない)
 const SAVE_KEY = 'compare-view:' + location.pathname;
@@ -348,7 +357,7 @@ function render() {
   if (!s) { $('view').textContent = '比べる PDF がありません'; return; }
   const p = s.pages[state.p];
   $('title').textContent = s.name;
-  $('info').textContent = '見本 ' + s.refPages + ' / Kumiori ' + s.kumioriPages + ' ページ ・ 全体の差 ' + pct(s.score) + ' ・ このページの差 ' + pct(p.ratio);
+  $('info').textContent = REF + ' ' + s.refPages + ' / ' + KM + ' ' + s.kumioriPages + ' ページ ・ 全体の差 ' + pct(s.score) + ' ・ このページの差 ' + pct(p.ratio);
   const sel = $('pageSel');
   sel.innerHTML = '';
   s.pages.forEach((q, k) => {
@@ -367,7 +376,7 @@ function render() {
   v.className = 'view' + ($('actual').checked ? ' zoom-actual' : '');
   if (state.mode === 'side') {
     const pair = document.createElement('div'); pair.className = 'pair';
-    for (const [src, cap] of [[p.ref, '見本'], [p.kumiori, 'Kumiori']]) {
+    for (const [src, cap] of [[p.ref, REF], [p.kumiori, KM]]) {
       const f = document.createElement('figure');
       const c = document.createElement('figcaption'); c.textContent = cap;
       f.append(c, img(src, cap));
@@ -379,9 +388,9 @@ function render() {
     const cap = document.createElement('figcaption');
     wrap.append(cap);
     if (state.mode === 'diff') {
-      cap.textContent = '差: 青は見本にだけ、赤は Kumiori にだけ字や線がある所';
+      cap.textContent = '差: 青は' + REF + 'にだけ、赤は' + KM + 'にだけ字や線がある所';
       if (p.diff) wrap.append(img(p.diff, '差の画像'));
-      else if (!p.ref || !p.kumiori) wrap.append(img(null, p.ref ? 'Kumiori' : '見本'));
+      else if (!p.ref || !p.kumiori) wrap.append(img(null, p.ref ? KM : REF));
       else {
         const note = document.createElement('p'); note.className = 'key'; note.textContent = '差の画像を描いています…';
         wrap.append(note);
@@ -389,18 +398,18 @@ function render() {
       }
     } else if (!p.ref || !p.kumiori) {
       cap.textContent = '';
-      wrap.append(img(p.ref, '見本'), img(p.kumiori, 'Kumiori'));
+      wrap.append(img(p.ref, REF), img(p.kumiori, KM));
     } else {
       const st = document.createElement('div'); st.className = 'stack';
-      const a = img(p.ref, '見本'); const b = img(p.kumiori, 'Kumiori');
+      const a = img(p.ref, REF); const b = img(p.kumiori, KM);
       st.append(a, b);
       wrap.append(st);
       if (state.mode === 'overlay') {
-        cap.textContent = '重ねる: 下が見本、上が Kumiori (不透明度 ' + state.opacity + '%)';
+        cap.textContent = '重ねる: 下が' + REF + '、上が' + KM + ' (不透明度 ' + state.opacity + '%)';
         b.style.opacity = state.opacity / 100;
       } else {
         let showK = false;
-        const tick = () => { showK = !showK; b.style.opacity = showK ? 1 : 0; cap.textContent = '点滅: いま ' + (showK ? 'Kumiori' : '見本'); };
+        const tick = () => { showK = !showK; b.style.opacity = showK ? 1 : 0; cap.textContent = '点滅: いま ' + (showK ? KM : REF); };
         tick();
         blinkTimer = setInterval(tick, 700);
       }

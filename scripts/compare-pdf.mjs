@@ -34,6 +34,9 @@ import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
+import { chromiumLaunchOptions } from './chromium.mjs';
+/** Chromium を起こすときの指定。KUMIORI_CHROMIUM に実行ファイルを指すと、Playwright の取った Chromium ではなくそれを使う (scripts/chromium.mjs) */
+const launchOptions = chromiumLaunchOptions();
 import { PNG } from 'pngjs';
 
 const args = Object.fromEntries(
@@ -100,7 +103,7 @@ async function waitServer() {
 /** PDF → ページごとの画像 (グレー)。字を描かない (--no-text): SVG にして字形の描画を除き、Chromium で画像にする */
 async function rasterNoText(pdf, prefix) {
   const pages = Number(/Pages:\s+(\d+)/.exec(execFileSync('pdfinfo', [pdf], { encoding: 'utf8' }))?.[1] ?? 0);
-  noTextBrowser ??= await chromium.launch();
+  noTextBrowser ??= await chromium.launch(launchOptions);
   const tab = await noTextBrowser.newPage();
   const out = [];
   for (let k = 1; k <= pages; k++) {
@@ -159,7 +162,7 @@ function diff(a, b) {
 }
 
 await waitServer();
-const browser = await chromium.launch();
+const browser = await chromium.launch(launchOptions);
 const page = await (await browser.newContext({ acceptDownloads: true })).newPage();
 if (args['web-fonts']) {
   // 既定の Web フォントを手元のファイルから (e2e テストの routeFonts と同じ対応)
