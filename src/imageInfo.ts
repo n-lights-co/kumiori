@@ -3,10 +3,12 @@
  *
  * 中身を描けなくても、自然なサイズが分かれば、仮の枠を正しい寸法で組める (ページ数・行の位置がずれない)。
  * サイズは CSS px (96dpi)。解像度の情報が無ければ 96dpi とみなす。
+ *
+ * CGM の大きさは、記述子を描くときと同じ読み方で読む (cgm.ts の cgmPictureSize) ので、CGM の処理 (cgm.ts) を、CGM が出てきたとき
+ * だけ読み込む (import())。そのため imageInfo は非同期。形式の判定 (isCgm) と、ほかの形式の頭の読みは、ここで同期で行う
  */
 
-import { cgmPictureSize } from './cgm';
-import { epsBoundingBox } from './eps';
+import { epsBoundingBox } from './epsInfo';
 
 export interface ImageInfo {
   mime: string;
@@ -17,9 +19,9 @@ export interface ImageInfo {
 const PX_PER_PT = 96 / 72;
 const PX_PER_MM = 96 / 25.4;
 
-export function imageInfo(b: Uint8Array): ImageInfo | undefined {
+export async function imageInfo(b: Uint8Array): Promise<ImageInfo | undefined> {
   try {
-    return tiffInfo(b) ?? wmfInfo(b) ?? emfInfo(b) ?? epsInfo(b) ?? cgmInfo(b);
+    return tiffInfo(b) ?? wmfInfo(b) ?? emfInfo(b) ?? epsInfo(b) ?? (isCgm(b) ? await cgmInfo(b) : undefined);
   } catch {
     return undefined;
   }
@@ -176,7 +178,13 @@ export function epsPreview(b: Uint8Array): Uint8Array | undefined {
  * (幅を 400px とする。FO は content-width などで大きさを決めることが多い)。
  * 描くとき (cgm.ts の cgmToSvg) と同じ大きさになるように、精度の指定・倍率の型などの読みは cgm.ts の cgmPictureSize に任せる
  */
-function cgmInfo(b: Uint8Array): ImageInfo | undefined {
+async function cgmInfo(b: Uint8Array): Promise<ImageInfo | undefined> {
+  const { cgmPictureSize } = await import('./cgm');
   const size = cgmPictureSize(b);
   return size && { mime: 'image/cgm', width: size.width, height: size.height };
+}
+
+/** CGM の 2 進符号化か (先頭が BEGIN METAFILE: 類 0・番号 1)。cgm.ts から移したもの (cgm.ts も同じ名前で出し直す) */
+export function isCgm(b: Uint8Array): boolean {
+  return b.length >= 4 && ((b[0] << 8) | b[1]) >> 5 === 1;
 }

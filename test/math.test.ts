@@ -47,6 +47,17 @@ describe('MATH 表と数式の組版', () => {
   });
   const lay = (body: string, attrs = '') => layoutMathML(math(body, attrs), { font: mf, size: 10, color: '#000000' });
 
+  it('Object.prototype の名前 (constructor・__proto__) を属性の値に書いても、線の太さ・空きは既定のまま (NaN にならない)', () => {
+    // 名前の表 (thin・medium・thick、veryverythinmathspace など) が原型を持つと、Object.prototype のものを拾っていた (HTM-67)
+    const base = lay('<mfrac><mi>a</mi><mi>b</mi></mfrac><mspace width="1em"/>');
+    for (const N of ['constructor', '__proto__', 'toString']) {
+      const r = lay(`<mfrac linethickness="${N}"><mi>a</mi><mi>b</mi></mfrac><mspace width="1em"/><mo lspace="${N}" rspace="${N}">+</mo>`);
+      expect(r.svg).not.toMatch(/NaN/);
+      expect(Number.isFinite(r.width)).toBe(true);
+      // 分数の線 (h 幅 v 太さ の矩形) の太さは、既定のまま
+      expect(r.svg.match(/h[\d.]+v([\d.]+)/)?.[1]).toBe(base.svg.match(/h[\d.]+v([\d.]+)/)?.[1]);
+    }
+  });
   it('MATH 表を読む', () => {
     expect(mf.constants.axisHeight).toBeGreaterThan(0);
     expect(mf.constants.scriptPercentScaleDown).toBeGreaterThan(0);

@@ -8,7 +8,7 @@ const bytes = (n: number, f: (v: DataView) => void) => {
 };
 
 describe('imageInfo: 描けない形式の大きさ', () => {
-  it('TIFF: 幅・高さと解像度 (dpi) から 96dpi の px', () => {
+  it('TIFF: 幅・高さと解像度 (dpi) から 96dpi の px', async () => {
     // II*\0、IFD は 8 から: 256=100, 257=50, 282=192/1, 283=192/1, 296=2
     const b = bytes(200, (v) => {
       v.setUint8(0, 0x49), v.setUint8(1, 0x49), v.setUint16(2, 42, true), v.setUint32(4, 8, true);
@@ -20,30 +20,30 @@ describe('imageInfo: 描けない形式の大きさ', () => {
       ent(0, 256, 3, 100), ent(1, 257, 3, 50), ent(2, 282, 5, 120), ent(3, 283, 5, 120), ent(4, 296, 3, 2);
       v.setUint32(120, 192, true), v.setUint32(124, 1, true);
     });
-    expect(imageInfo(b)).toEqual({ mime: 'image/tiff', width: 50, height: 25 });
+    expect(await imageInfo(b)).toEqual({ mime: 'image/tiff', width: 50, height: 25 });
   });
-  it('WMF の Placeable ヘッダ・EMF の rclFrame・EPS の BoundingBox', () => {
+  it('WMF の Placeable ヘッダ・EMF の rclFrame・EPS の BoundingBox', async () => {
     const wmf = bytes(22, (v) => {
       v.setUint32(0, 0x9ac6cdd7, true), v.setInt16(10, 1440, true), v.setInt16(12, 720, true), v.setUint16(14, 1440, true);
     });
-    expect(imageInfo(wmf)).toEqual({ mime: 'image/wmf', width: 96, height: 48 });
+    expect(await imageInfo(wmf)).toEqual({ mime: 'image/wmf', width: 96, height: 48 });
     const emf = bytes(100, (v) => {
       v.setUint32(0, 1, true), v.setInt32(32, 2540, true), v.setInt32(36, 5080, true), v.setUint32(40, 0x464d4520, true);
     });
-    const e = imageInfo(emf)!;
+    const e = (await imageInfo(emf))!;
     expect([e.mime, Math.round(e.width), Math.round(e.height)]).toEqual(['image/emf', 96, 192]);
     // 左右・上下が逆に書かれた枠 (rclFrame) でも、大きさは正の値。幅か高さが 0 の枠からは、大きさを決めない
     const rev = bytes(100, (v) => {
       v.setUint32(0, 1, true), v.setInt32(24, 2540, true), v.setInt32(28, 5080, true), v.setUint32(40, 0x464d4520, true);
     });
-    const re = imageInfo(rev)!;
+    const re = (await imageInfo(rev))!;
     expect([re.mime, Math.round(re.width), Math.round(re.height)]).toEqual(['image/emf', 96, 192]);
     const flat = bytes(100, (v) => {
       v.setUint32(0, 1, true), v.setInt32(32, 2540, true), v.setUint32(40, 0x464d4520, true);
     });
-    expect(imageInfo(flat)).toBeUndefined();
+    expect(await imageInfo(flat)).toBeUndefined();
     const eps = new TextEncoder().encode('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 72 36\n');
-    expect(imageInfo(eps)).toEqual({ mime: 'application/postscript', width: 96, height: 48 });
+    expect(await imageInfo(eps)).toEqual({ mime: 'application/postscript', width: 96, height: 48 });
     expect(epsPreview(eps)).toBeUndefined();
   });
 });
@@ -80,11 +80,11 @@ describe('tiffInfo: TIFF の頭と最初の IFD (TIFF 6.0 Section 2・Section 8)
     });
   };
 
-  it('バイトの順が MM (上位が先) の TIFF。幅・高さが LONG、横と縦の解像度が違う', () => {
+  it('バイトの順が MM (上位が先) の TIFF。幅・高さが LONG、横と縦の解像度が違う', async () => {
     // 600 × 300 画素、横 300dpi・縦 150dpi (どちらも 2 インチ = 192px)
     const b = tiff(false, [[256, 4, [600]], [257, 4, [300]], [282, 5, [[300, 1]]], [283, 5, [[150, 1]]], [296, 3, [2]]]);
     expect(tiffInfo(b)).toEqual({ mime: 'image/tiff', width: 192, height: 192 });
-    expect(imageInfo(b)).toEqual({ mime: 'image/tiff', width: 192, height: 192 });
+    expect(await imageInfo(b)).toEqual({ mime: 'image/tiff', width: 192, height: 192 });
     // 同じ中身を II (下位が先) で書いても同じ
     expect(tiffInfo(tiff(true, [[256, 4, [600]], [257, 4, [300]], [282, 5, [[300, 1]]], [283, 5, [[150, 1]]], [296, 3, [2]]]))).toEqual({ mime: 'image/tiff', width: 192, height: 192 });
   });
@@ -105,15 +105,15 @@ describe('tiffInfo: TIFF の頭と最初の IFD (TIFF 6.0 Section 2・Section 8)
     // 解像度の項が無い
     expect(tiffInfo(tiff(false, [[256, 3, [300]], [257, 3, [150]]]))).toEqual({ mime: 'image/tiff', width: 300, height: 150 });
   });
-  it('TIFF でないもの・幅か高さの無いものは undefined。途中で切れたものでも例外を投げない', () => {
+  it('TIFF でないもの・幅か高さの無いものは undefined。途中で切れたものでも例外を投げない', async () => {
     expect(tiffInfo(new Uint8Array([0x49, 0x49, 42]))).toBeUndefined(); // 頭が 4 バイトに足りない
     expect(tiffInfo(tiff(true, [[256, 3, [10]], [257, 3, [10]]], 43))).toBeUndefined(); // 42 でない (BigTIFF の 43)
     expect(tiffInfo(new Uint8Array([0x49, 0x4d, 42, 0, 0, 0, 0, 8]))).toBeUndefined(); // II でも MM でもない
     expect(tiffInfo(tiff(true, [[256, 3, [10]]]))).toBeUndefined(); // ImageLength が無い
     expect(tiffInfo(tiff(true, [[256, 3, [0]], [257, 3, [10]]]))).toBeUndefined(); // 幅が 0
     const whole = tiff(false, [[256, 4, [600]], [257, 4, [300]], [282, 5, [[300, 1]]], [283, 5, [[150, 1]]]]);
-    for (let n = 0; n < whole.length; n++) expect(() => imageInfo(whole.subarray(0, n))).not.toThrow();
-    expect(imageInfo(whole.subarray(0, 20))).toBeUndefined();
+    for (let n = 0; n < whole.length; n++) await imageInfo(whole.subarray(0, n)); // 例外を出さない (imageInfo は中で受け止めて undefined を返す)
+    expect(await imageInfo(whole.subarray(0, 20))).toBeUndefined();
   });
   it('readIfd: 値が複数の項 (4 バイトに入る 2 つの SHORT、入らない 3 つの SHORT) と RATIONAL', () => {
     for (const le of [true, false]) {

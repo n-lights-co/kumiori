@@ -121,7 +121,7 @@ import { isMyanmarBase, isMyanmarDependent } from './orthographicSyllable';
 import { reorderArabicMarks } from './arabicMarks';
 import { reorderHebrewMarks } from './hebrewMarks';
 import { msg } from './messages';
-import { LookupBudgetError, ReadBudgetError, disableLayoutTables, withLayoutBudget, fontNotice, patchLookupBudget, resetLookupBudget } from './fontSanity';
+import { LookupBudgetError, ReadBudgetError, disableLayoutTables, withLayoutBudget, withoutLayoutTables, fontNotice, patchLookupBudget, resetLookupBudget } from './fontSanity';
 
 /** 差し替え済みの印 (fontkit の原型に付ける。pdfLibPatches.ts と同じ決まり) */
 const SHAPING_PATCHED = Symbol.for('kumiori.fontkitShapingPatched');
@@ -612,6 +612,9 @@ function guardUnreadableLookups(font: FkFont): boolean {
   return any;
 }
 
+/** 結合文字 (一般カテゴリ M) と ZWNJ・ZWJ だけの文字列 (基底の字の無い並び) */
+const MARKS_ONLY = /^[\p{M}\u200c\u200d]+$/u;
+
 /** fontkit の書体の layout を差し替える (上の 1〜14。fontkit の書体の原型に 1 回だけ) */
 export function patchFontkitShaping(fk: unknown) {
   type Proto = { layout?: (this: unknown, text: unknown, ...rest: unknown[]) => unknown; [SHAPING_PATCHED]?: boolean };
@@ -700,9 +703,28 @@ export function patchFontkitShaping(fk: unknown) {
     } catch (e) {
       // 整形の表 (GSUB・GPOS・morx) の手間が上限を超えた書体 (呼び出しの多すぎる Lookup、読みの大きすぎる表) は、
       // 文書の全体を失敗にせず、整形の表を使わずに組み直す (字は cmap の字形、送りは hmtx)。知らせは書体ごとに 1 度。
-      // ほかの例外は、これまでどおり呼ぶ側に返す (ここで書体の整形を止めると、正当な書体の組み方が変わる: Noto Sans Sinhala は、
-      // ある字の並びで fontkit が「reading 'syllable'」の例外を出し、整形を止めると、ほかの行の合字も外れた)
+      // ほかの例外 (壊れた表の参照の先が、特定の字の並びのときだけ引かれる書体など) は、書体の整形は止めずに (止めると、正当な書体の
+      // 組み方が変わる: Noto Sans Sinhala は、ある字の並びで fontkit が「reading 'syllable'」の例外を出し、整形を止めると、ほかの行の合字も
+      // 外れた)、その 1 回の呼び出しだけを、整形の表を使わずに組み直す (字は cmap の字形、送りは hmtx)。前は例外を呼ぶ側に返していたので、
+      // 字形の番号の付かない字が PDF で黙って抜け (areaResources.ts)、PDF の符号にする所 (pdf-lib の encodeText) では文書の全体が失敗した。
+      // 知らせは書体ごとに 1 度。組み直しも失敗すれば (cmap・hmtx も読めない)、元の例外を返す
       const budget = e instanceof LookupBudgetError || e instanceof ReadBudgetError;
+      if (depth === 1 && !budget) {
+        let plain: unknown;
+        try {
+          resetLookupBudget();
+          plain = withLayoutBudget(this, () => withoutLayoutTables(this, () => layout.call(this, text0, ...rest)));
+        } catch {
+          throw e;
+        }
+        // 基底の字の無い記号だけの並び (書体を選ぶときに 1 字ずつ測る、単独のヴィラーマなど) は、正当な書体でも、fontkit の汎用の整形が
+        // 音節に分けられずに落ちる (Noto Sans Sinhala の U+0DCA だけの並び: 「reading 'syllable'」)。書体の壊れではなく、組み直した結果は
+        // 前と同じ (測る所が例外を受けて使っていた hmtx の送り) なので、知らせない
+        if (typeof text0 === 'string' && MARKS_ONLY.test(text0)) return plain;
+        const why = e instanceof Error ? e.message : String(e);
+        fontNotice(this, 'layout-run', () => msg(`整形の表 (GSUB・GPOS・morx) で組めない字の並びがあります (${why})。その並びは、合字・カーニングなどの機能を使わずに組みます`, `some text cannot be shaped with the layout tables (GSUB, GPOS, morx) (${why}); that text is set without ligatures, kerning or other features`));
+        return plain;
+      }
       if (depth !== 1 || !budget || !disableLayoutTables(this)) throw e;
       const why = e instanceof LookupBudgetError ? msg('Lookup の呼び出しが多すぎる', 'too many lookup calls') : msg('表の読みが大きすぎる', 'the tables take too much to read');
       fontNotice(this, 'layout', () => msg(`整形の表 (GSUB・GPOS・morx) で字を組めません (${why})。この書体は、合字・カーニングなどの機能を使わずに組みます`, `cannot shape text with the layout tables (GSUB, GPOS, morx) (${why}); this font is set without ligatures, kerning or other features`));

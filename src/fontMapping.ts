@@ -66,6 +66,20 @@ export const SYMBOL_SPEC: FontSpec = {
 };
 
 /**
+ * 絵文字の書体 (Noto Emoji。単色の輪郭の絵文字。SIL Open Font License 1.1。約 870KB)。記号の書体 (SYMBOL_SPEC) を読んだ後も、
+ * 読み込み済みのどの書体も持たない絵文字が文書にあるときだけ読み込む (hasMissingEmoji)。記号の書体の後に読むので、記号の書体が持つ字
+ * (✈・❤ など) は、これまでどおり記号の書体で組む。
+ * CSS Fonts 4 §5.2 (Matching font styles) の手順の最後: どの書体にも字形が無い字は、処理系の後備の書体 (system font fallback) で組んでよい。
+ * 色つきの Noto Color Emoji は、全体が約 25MB (COLR v1) と大きいので、既定にはしない (色つきにするには、作成者がその書体を渡す)。
+ * URL は Google Fonts の CSS (family=Noto+Emoji) が返したもの (2026-11-13 に取得できることを確認。可変フォントではない Regular の 1 つ)
+ */
+export const EMOJI_SPEC: FontSpec = {
+  family: 'Noto Emoji',
+  weight: 400,
+  urls: ['https://fonts.gstatic.com/s/notoemoji/v65/bMrnmSyK7YY-MEu6aWjPDs-ar6uWaGWuob-r0jwv.ttf', '/fonts/NotoEmoji-Regular.ttf'],
+};
+
+/**
  * 数式の書体 (OpenType の MATH 表を持つ書体。SIL Open Font License 1.1)。MathML のある文書のときだけ読み込む。
  * MathML の組版 (mathLayout) が、この書体の MATH 表の値と字の輪郭を使う。
  * URL は Google Fonts の CSS (family=STIX+Two+Math) が返したもの (2026-11-01 に確認)
@@ -104,6 +118,21 @@ export function missingGlyphChars(fonts: FontManager, doc: LDocument, min = 0): 
 /** 文書の文字に、読み込み済みのどの書体も持たない字 (記号など) があるか。あれば記号の書体 (SYMBOL_SPEC) を読み込む */
 export function hasMissingGlyphs(fonts: FontManager, doc: LDocument): boolean {
   return missingGlyphChars(fonts, doc, 0x2000).size > 0;
+}
+
+/**
+ * 絵文字の字 (UTS #51 ED-3 の emoji character = Emoji の性質を持つ字: 絵文字・国旗の字 (Regional Indicator)・肌の色の指定 (Emoji_Modifier) と、
+ * キーキャップの U+20E3 (ED-14c の emoji keycap sequence の終わりの字。Emoji の性質は持たない))
+ */
+const EMOJI_CHAR = /[\p{Emoji}\u20E3]/u;
+
+/**
+ * 文書の文字に、読み込み済みのどの書体も持たない絵文字があるか。あれば絵文字の書体 (EMOJI_SPEC) を読み込む。
+ * 0x2000 より前の字 (数字・# など、Emoji の性質を持つ ASCII の字・©・®) は、本文の書体が持つので見ない (hasMissingGlyphs と同じ)
+ */
+export function hasMissingEmoji(fonts: FontManager, doc: LDocument): boolean {
+  for (const ch of missingGlyphChars(fonts, doc, 0x2000).keys()) if (EMOJI_CHAR.test(ch)) return true;
+  return false;
 }
 
 /**

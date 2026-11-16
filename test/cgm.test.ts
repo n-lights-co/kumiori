@@ -632,6 +632,19 @@ describe('CGM (ISO/IEC 8632 の 2 進符号化)', () => {
       const x = cgmToSvg(full(md, [], [...cmd(5, 20, i16(2)), ...cmd(4, 4, [...i16(10, 25), ...i16(1), esc2022.length + 1, ...esc2022, 0xe9])]))!;
       expect(textEl(x.svg)).toContain('>A亜Bé<');
     });
+
+    it('文字集合: 基本の 8 ビットで CHARACTER SET INDEX が 96 字の集合 (ISO 8859-1 の右半分) を選んでも、0x20〜0x7E は 94 字の集合の字 (IMG-32)', () => {
+      // WebCGM の BIGCGM01 と同じ宣言: CHARACTER SET LIST (94 字 4/2, 96 字 4/1)・CHARACTER CODING ANNOUNCER basic 8-bit・CHARACTER SET INDEX 2
+      const md = [...cmd(1, 14, [...i16(0), ...str('B'), ...i16(1), ...str('A')]), ...cmd(1, 15, i16(1))];
+      const t = [...'2001-04-04 '].map((c) => c.charCodeAt(0));
+      const r = cgmToSvg(full(md, [], [...cmd(5, 19, i16(2)), ...cmd(4, 4, [...i16(10, 25), ...i16(1), t.length + 1, ...t, 0xe9])]))!;
+      // 右半分 (0xE9) は 96 字の集合 (Latin-1) の字
+      expect(textEl(r.svg)).toContain('>2001-04-04 é<');
+      // 拡張の符号 (ISO 2022 の切り替えを読む) では、これまでどおり CHARACTER SET INDEX の集合を G0 に置く
+      const ext = [...cmd(1, 14, [...i16(0), ...str('B'), ...i16(1), ...str('A')]), ...cmd(1, 15, i16(3))];
+      const e = cgmToSvg(full(ext, [], [...cmd(5, 19, i16(2)), ...cmd(4, 4, [...i16(10, 25), ...i16(1), 1, 0x69])]))!;
+      expect(textEl(e.svg)).toContain('>é<');
+    });
   });
 });
 
@@ -645,8 +658,8 @@ describe('CGM の大きさ: imageInfo (組むときの大きさ) と cgmToSvg (�
     });
   const file = (descriptor: number[], picture: number[], body: number[]) =>
     new Uint8Array([...cmd(0, 1, str('t')), ...descriptor, ...cmd(0, 3, str('p')), ...picture, ...cmd(0, 4), ...body, ...cmd(0, 5), ...cmd(0, 2)]);
-  const same = (b: Uint8Array) => {
-    const info = imageInfo(b)!;
+  const same = async (b: Uint8Array) => {
+    const info = (await imageInfo(b))!;
     const r = cgmToSvg(b)!;
     expect(info.mime).toBe('image/cgm');
     expect(info.width).toBeCloseTo(r.width, 9);
@@ -654,30 +667,30 @@ describe('CGM の大きさ: imageInfo (組むときの大きさ) と cgmToSvg (�
     return info;
   };
 
-  it('REAL PRECISION が 64 ビットの浮動小数点なら、SCALING MODE の倍率も 64 ビットで読む', () => {
+  it('REAL PRECISION が 64 ビットの浮動小数点なら、SCALING MODE の倍率も 64 ビットで読む', async () => {
     // REAL PRECISION (浮動, 12, 52)。SCALING MODE metric、VDC 1 単位が 0.5mm。VDC EXTENT (0,0)-(100,50) → 50mm × 25mm
     const b = file(cmd(1, 5, i16(0, 12, 52)), [...cmd(2, 1, [...i16(1), ...f64(0.5)]), ...cmd(2, 6, i16(0, 0, 100, 50))], cmd(4, 1, i16(0, 0, 100, 50)));
-    const info = same(b);
+    const info = await same(b);
     expect(info.width).toBeCloseTo((50 * 96) / 25.4, 9);
     expect(info.height).toBeCloseTo((25 * 96) / 25.4, 9);
   });
 
-  it('INTEGER PRECISION が 32 なら、精度の指定の引数 (整数) も 32 ビットで読む', () => {
+  it('INTEGER PRECISION が 32 なら、精度の指定の引数 (整数) も 32 ビットで読む', async () => {
     // INTEGER PRECISION 32 → VDC TYPE real → VDC REAL PRECISION (浮動, 12, 52。引数の整数は 32 ビット) → VDC EXTENT は 64 ビットの実数
     const b = file([...cmd(1, 4, i16(32)), ...cmd(1, 3, i16(1))], [...cmd(3, 2, [...i16(0), ...i32(12, 52)]), ...cmd(2, 6, f64(0, 0, 2, 0.5))], cmd(4, 1, f64(0, 0, 2, 0.5)));
-    const info = same(b);
+    const info = await same(b);
     expect([info.width, info.height]).toEqual([400, 100]);
   });
 
-  it('VDC INTEGER PRECISION 32・実数の VDC (既定の固定小数点)・VDC EXTENT の無い絵 (既定の範囲)', () => {
-    expect(same(file([], [...cmd(3, 1, i16(32)), ...cmd(2, 6, i32(0, 0, 100000, 50000))], cmd(4, 1, i32(0, 0, 100000, 50000))))).toMatchObject({ width: 400, height: 200 });
+  it('VDC INTEGER PRECISION 32・実数の VDC (既定の固定小数点)・VDC EXTENT の無い絵 (既定の範囲)', async () => {
+    expect(await same(file([], [...cmd(3, 1, i16(32)), ...cmd(2, 6, i32(0, 0, 100000, 50000))], cmd(4, 1, i32(0, 0, 100000, 50000))))).toMatchObject({ width: 400, height: 200 });
     // 固定小数点 (16, 16): 整数部と小数部
-    expect(same(file(cmd(1, 3, i16(1)), cmd(2, 6, i16(0, 0, 0, 0, 3, 0, 1, 0x8000)), cmd(4, 1, i16(0, 0, 0, 0, 3, 0, 1, 0x8000))))).toMatchObject({ width: 400, height: 200 });
+    expect(await same(file(cmd(1, 3, i16(1)), cmd(2, 6, i16(0, 0, 0, 0, 3, 0, 1, 0x8000)), cmd(4, 1, i16(0, 0, 0, 0, 3, 0, 1, 0x8000))))).toMatchObject({ width: 400, height: 200 });
     // VDC EXTENT が無ければ、既定の範囲 (整数の VDC は (0,0)-(32767,32767))
-    expect(same(file([], [], cmd(4, 1, i16(0, 0, 100, 50))))).toMatchObject({ width: 400, height: 400 });
+    expect(await same(file([], [], cmd(4, 1, i16(0, 0, 100, 50))))).toMatchObject({ width: 400, height: 400 });
   });
 
-  it('幅か高さが 0 の VDC EXTENT からは、大きさを決めない', () => {
-    expect(imageInfo(file([], cmd(2, 6, i16(0, 0, 0, 50)), []))).toBeUndefined();
+  it('幅か高さが 0 の VDC EXTENT からは、大きさを決めない', async () => {
+    expect(await imageInfo(file([], cmd(2, 6, i16(0, 0, 0, 50)), []))).toBeUndefined();
   });
 });

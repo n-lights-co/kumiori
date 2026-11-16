@@ -3,7 +3,7 @@
  * 基礎的な範囲 (行頭禁則・行末禁則・ぶら下げ) をカバーする。改行の機会そのもの (分離禁止・欧文の語の中など) は lineBreak.ts (UAX #14) が決める。
  */
 
-import { verticalOrientation } from './lineBreak';
+import { eastAsianWidth, verticalOrientation } from './lineBreak';
 
 const set = (s: string) => new Set([...s]);
 
@@ -162,3 +162,47 @@ export function isIdeographicOrKana(ch: string): boolean {
 }
 /** 欧文の文字・数字 (和欧間アキの対象)。ラテン文字は U+024F までと Latin Extended Additional (U+1E00〜1EFF。ベトナム語の ế など) */
 export const isLatinAlnum = (ch: string) => /^[A-Za-z0-9À-ÖØ-öø-ɏḀ-ỿ]$/.test(ch);
+
+/**
+ * 和欧間アキ (text-autospace) で、和字の側として扱う字か (CSS Text 4 §8.4.1 の ideographs と、JLREQ の cl-22 の全角形)。
+ * ideographicSpace: 全角の空白 (U+3000) も和字とする (XSL-FO の axf:text-autospace)。
+ * 行を組むとき (inlineLayout.ts の adjustJapaneseSpacing) と、中身の幅を見積もるとき (htmlImport.ts の textWidth) で同じ判定を使う
+ */
+export function isAutospaceIdeograph(ch: string, ideographicSpace = false): boolean {
+  return isIdeographicOrKana(ch) || (ch === '\u3000' && ideographicSpace) || (isFullwidthForm(ch) && !isOpeningPunct(ch) && !isClosingPunct(ch) && !isMiddlePunct(ch) && !/^[＃＄％～]$/.test(ch));
+}
+
+const LETTER_OR_MARK = /^[\p{L}\p{M}]$/u;
+const DECIMAL_DIGIT = /^\p{Nd}$/u;
+/**
+ * 和欧間アキ (CSS の text-autospace) で、和字の相手として扱う字の種類 (CSS Text 4 §8.4.1)。ch は字の単位 (書記素クラスタ) の基底の字。
+ *  - alpha (non-ideographic letters): 一般カテゴリ L・M の字。ideographs (isAutospaceIdeograph) と、East_Asian_Width (UAX #11) が
+ *    W・F の字 (ハングルの音節・全角の英字など) を除く。ラテン文字に限らず、ギリシャ・キリル・アラビア・ヘブライ・インド系・タイなどの字も入る。
+ *    結合文字 (M) も入る (ふつうは基底の字と 1 つの単位になる。単独の結合文字は、それ自体が単位の基底になる)
+ *  - numeric (non-ideographic numerals): 一般カテゴリ Nd の字 (アラビア・インドの数字などを含む)。East_Asian_Width が F の字 (全角の数字) を除く
+ * 記号 (S)・句読点 (P)・空白 (Z)・Nd でない数 (ローマ数字 Nl・丸数字 No) は入らない。
+ * §8.4.1 は、縦書きで正立にする字 (text-orientation・text-combine-upright) も除く: それは字形の向きで決まるので、呼ぶ側
+ * (inlineLayout.ts の adjustJapaneseSpacing) が見る。それ以外の字は undefined
+ */
+export function autospaceNonIdeographic(ch: string): 'alpha' | 'numeric' | undefined {
+  const cp = ch.codePointAt(0) ?? 0;
+  // ASCII の英数字は表を引かずに決める (いちばん多い字)
+  if ((cp >= 0x41 && cp <= 0x5a) || (cp >= 0x61 && cp <= 0x7a)) return 'alpha';
+  if (cp >= 0x30 && cp <= 0x39) return 'numeric';
+  if (cp < 0xaa) return undefined;
+  const c = String.fromCodePoint(cp);
+  if (LETTER_OR_MARK.test(c)) {
+    if (isIdeographicOrKana(c)) return undefined;
+    const ea = eastAsianWidth(cp);
+    return ea === 'W' || ea === 'F' ? undefined : 'alpha';
+  }
+  if (DECIMAL_DIGIT.test(c)) return eastAsianWidth(cp) === 'F' ? undefined : 'numeric';
+  return undefined;
+}
+
+/** 全角形 (U+FF01〜FF5E: ASCII の全角の英数字・記号・約物) */
+export function isFullwidthForm(ch: string): boolean {
+  const cp = ch.codePointAt(0) ?? 0;
+  return cp >= 0xff01 && cp <= 0xff5e;
+}
+

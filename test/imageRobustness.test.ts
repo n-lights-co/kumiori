@@ -31,7 +31,7 @@ describe('JPEG・TIFF・CCITT: 細工した入力 (IMG-09・IMG-10・IMG-14)', (
     expect(decodeJpeg(jpegWithScans(300, 1))).toMatchObject({ width: 2000, height: 2000 });
   });
 
-  it('TIFF: IFD の項ごとに 65,536 個の値を読まない (寸法と解像度は先頭の値だけ。位置がファイルの外なら打ち切る)', T, () => {
+  it('TIFF: IFD の項ごとに 65,536 個の値を読まない (寸法と解像度は先頭の値だけ。位置がファイルの外なら打ち切る)', T, async () => {
     // 同じ所を指す項 (BYTE が 65,536 個) を 20,000 個並べ、その後ろに ImageWidth・ImageLength。直す前は 13 億個の値を読む
     const n = 20_000;
     const b = new Uint8Array(8 + 2 + (n + 3) * 12 + 4);
@@ -50,7 +50,7 @@ describe('JPEG・TIFF・CCITT: 細工した入力 (IMG-09・IMG-10・IMG-14)', (
     entry(n, 256, 3, 1, 10);
     entry(n + 1, 257, 3, 1, 20);
     entry(n + 2, 40001, 3, 5, 0x7fffffff); // 値の位置がファイルの外
-    expect(imageInfo(b)).toEqual({ mime: 'image/tiff', width: 10, height: 20 });
+    expect(await imageInfo(b)).toEqual({ mime: 'image/tiff', width: 10, height: 20 });
   });
 
   it('CCITT の 2 次元の行: 参照行の変わり目 b1 を、行の中で持ち越して探す (結果は T.6 の定義どおり)', T, () => {

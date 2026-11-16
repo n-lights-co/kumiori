@@ -7,6 +7,7 @@ import { type Interp, PSError, arr, arrItems, real, FALSE } from './psInterp';
 import type { Graphics, Mat } from './psGraphics';
 import { isMatrix, popMatrix } from './psOpsMatrix';
 import { shfill } from './psShading';
+import { msg } from './messages';
 
 /** 矩形 (x, y, w, h) をそれぞれ閉じた部分パスとして現在のパスに足す (rectfill・rectstroke・rectclip・execform の BBox) */
 export function appendRects(G: Graphics, rs: Array<[number, number, number, number]>) {
@@ -272,7 +273,7 @@ export function installPathOperators(I: Interp, G: Graphics) {
       return out;
     }
     if (top.t === 'string') {
-      I.warn('rect の文字列の形');
+      I.warn(msg('rect の文字列の形', 'the string form of rect operators'));
       return [];
     }
     if (top.t !== 'int' && top.t !== 'real') throw new PSError('typecheck');
@@ -339,7 +340,7 @@ export function installPathOperators(I: Interp, G: Graphics) {
     const p = I.pop();
     if (p.t !== 'array') throw new PSError('typecheck');
     if (p.n === 2 && p.a[p.o].t === 'string') {
-      I.warn('符号化したユーザパス');
+      I.warn(msg('符号化したユーザパス', 'encoded user paths'));
       return;
     }
     I.execProc({ ...p, x: true });

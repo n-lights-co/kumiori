@@ -383,7 +383,7 @@ describe('PostScript: 結果の誤りの修正', () => {
       expect(runEps(b), String(n)).toBeUndefined();
       expect(await epsToSvg(b), String(n)).toBeUndefined();
       expect(epsPreview(b), String(n)).toBeUndefined();
-      expect(imageInfo(b), String(n)).toBeUndefined();
+      expect(await imageInfo(b), String(n)).toBeUndefined();
     }
   });
 });

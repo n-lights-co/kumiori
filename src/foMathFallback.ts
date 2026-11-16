@@ -8,6 +8,7 @@
 import type { LBlock, LInline, LInlineContainer, LInlineLevel, LTable, LTableCell, TextAlign } from './types';
 import { toCss } from './color';
 import { utf8Base64, type XEl } from './foDom';
+import { msg } from './messages';
 
 /** 数式の組み替えが Importer から借りる読み方 */
 export interface FoMathHost {
@@ -46,7 +47,7 @@ export class FoMathFallback {
   /** MathML を行内の要素に組み替える。深すぎる入れ子 (MAX_MATH_NEST) は空にして、読み込みの報告に数える */
   mathml(n: XEl, fs: number): LInlineLevel {
     if (this.nest >= MAX_MATH_NEST) {
-      this.fo.miss('MathML の深すぎる入れ子');
+      this.fo.miss(msg('MathML の深すぎる入れ子', 'MathML nested too deeply'));
       return '';
     }
     this.nest++;
@@ -67,7 +68,7 @@ export class FoMathFallback {
     // 字の色・大きさ・太さ・字体の属性 (MathML 2 の mathcolor・mathsize と、古い color・fontsize・fontweight・fontstyle)
     const color = this.fo.color(this.fo.attr(n, 'mathcolor') ?? this.fo.attr(n, 'color'));
     const sizeAttr = this.fo.attr(n, 'mathsize') ?? this.fo.attr(n, 'fontsize');
-    const named: Record<string, number> = { small: 0.71, normal: 1, big: 1.41 };
+    const named = { __proto__: null, small: 0.71, normal: 1, big: 1.41 } as unknown as Record<string, number>;
     const size = sizeAttr ? (named[sizeAttr] !== undefined ? fs * named[sizeAttr] : this.fo.len(sizeAttr, fs, fs)) : undefined;
     const weight = this.fo.attr(n, 'fontweight');
     const extra: Partial<LInline> = {

@@ -20,7 +20,9 @@ import { installStateOperators } from './psOpsState';
 import { appendRects, installPathOperators } from './psOpsPath';
 import { installImageOperators } from './psOpsImage';
 import { installFontStubs, makeCIDInit, makeFontSetInit } from './psOpsFont';
-import { patternFill as shadePatternFill, patternUsable, strokeOutline, type OutlineTally } from './psShading';
+import { patternFill as shadePatternFill, patternUsable } from './psShading';
+import { strokeOutline, type OutlineTally } from './strokeOutline';
+import { msg } from './messages';
 
 /**
  * 変換の行列 (matrix.ts の Matrix)。PostScript の「点に a を掛けてから b を掛ける」積 (§4.3.3) は mul(b, a) と書く
@@ -458,7 +460,7 @@ export class Graphics {
         return { family: 'DeviceN', obj: o, ncomp: names.length, names, base: this.parseColorSpace(items[2]), tint: items[3] };
       }
       default:
-        this.I.warn(`色空間 ${fam.v}`);
+        this.I.warn(msg(`色空間 ${fam.v}`, `color space ${fam.v}`));
         return DEVICE_GRAY;
     }
   }
@@ -590,7 +592,7 @@ export class Graphics {
         // 「/Pattern setcolorspace」だけの状態など) では作らず、作るときは、作りながら点の数・メモリ・時間の上限を確かめる
         // (前は、200 万点のパスの輪郭 6,000 万点を、1 つの演算子の中で作り切ってから数えたので、50〜120 秒・2.5GB を使った)
         if (g.lineWidth > 0 && invert(g.ctm)) {
-          if (!patternUsable(this)) this.I.warn('模様の塗り');
+          if (!patternUsable(this)) this.I.warn(msg('模様の塗り', 'pattern fills'));
           else {
             const outline = strokeOutline(segs, g.ctm, g.lineWidth, g.cap, g.join, g.dash, g.miter, this.outlineTally());
             if (outline.length) shadePatternFill(this, outline, false);

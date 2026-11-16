@@ -93,20 +93,28 @@ describe('kumiori/node の部品', () => {
     fs.writeFileSync(path.join(dir, 'b', 'in.css'), 'B');
     fs.writeFileSync(path.join(dir, 'out', 'secret.txt'), 'SECRET');
     fs.writeFileSync(path.join(dir, 'a-other', 'x.css'), 'X');
-    // root の中のリンク → 外のファイル・外のディレクトリ、外のリンク → 中のファイル、リンクの root
-    fs.symlinkSync(path.join(dir, 'out', 'secret.txt'), path.join(dir, 'a', 'link.css'));
-    fs.symlinkSync(path.join(dir, 'out'), path.join(dir, 'a', 'outdir'));
-    fs.symlinkSync(path.join(dir, 'a', 'in.css'), path.join(dir, 'out', 'back.css'));
-    fs.symlinkSync(path.join(dir, 'a'), path.join(dir, 'a-link'));
+    // root の中のリンク → 外のファイル・外のディレクトリ、外のリンク → 中のファイル、リンクの root。
+    // ディレクトリのリンクは、Windows では junction にする (権限が要らない。ほかの OS では 'junction' の指定は無視される)。
+    // ファイルのリンクは、Windows では権限 (管理者・開発者モード) が要るので、作れなければ、そのリンクの確かめだけを飛ばす
+    fs.symlinkSync(path.join(dir, 'out'), path.join(dir, 'a', 'outdir'), 'junction');
+    fs.symlinkSync(path.join(dir, 'a'), path.join(dir, 'a-link'), 'junction');
+    let fileLinks = true;
+    try {
+      fs.symlinkSync(path.join(dir, 'out', 'secret.txt'), path.join(dir, 'a', 'link.css'));
+      fs.symlinkSync(path.join(dir, 'a', 'in.css'), path.join(dir, 'out', 'back.css'));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e;
+      fileLinks = false;
+    }
     const one = createFileResolver({ root: path.join(dir, 'a') });
     expect(text(one(url(path.join(dir, 'a', 'in.css'))))).toBe('A');
     expect(text(one(url(path.join(dir, 'a', '..style.css'))))).toBe('DOTS');
-    expect(one(url(path.join(dir, 'a', 'link.css')))).toBeUndefined();
+    if (fileLinks) expect(one(url(path.join(dir, 'a', 'link.css')))).toBeUndefined();
     expect(one(url(path.join(dir, 'a', 'outdir', 'secret.txt')))).toBeUndefined();
     expect(one(url(path.join(dir, 'a', '..', 'out', 'secret.txt')))).toBeUndefined();
     // 名前の頭が同じだけの隣のディレクトリは外。外にあるリンクでも、実体が中なら読む
     expect(one(url(path.join(dir, 'a-other', 'x.css')))).toBeUndefined();
-    expect(text(one(url(path.join(dir, 'out', 'back.css'))))).toBe('A');
+    if (fileLinks) expect(text(one(url(path.join(dir, 'out', 'back.css'))))).toBe('A');
     // root がリンクなら、その指す先が範囲
     expect(text(createFileResolver({ root: path.join(dir, 'a-link') })(url(path.join(dir, 'a', 'in.css'))))).toBe('A');
     // いくつもの root: どれかの中なら読む。無い root は何も含まない

@@ -41,6 +41,7 @@
  */
 import { cffGlyph, parseCff } from './psCff';
 import type { CffFont, Type2Info } from './psCff';
+import { msg } from './messages';
 
 /** 差し替え済みの印 (原型に付ける。pdfLibPatches.ts と同じく、同じ fontkit を複数回読み込んでも二重に包まない) */
 const PATCHED = Symbol.for('kumiori.fontkitCffFlexPatched');
@@ -109,7 +110,7 @@ function patchFdForGlyph(font: FkFont) {
     return;
   }
   if (!proto || proto[PATCHED]) return;
-  if (!Object.prototype.hasOwnProperty.call(proto, 'fdForGlyph') || typeof proto.fdForGlyph !== 'function') throw new Error('@pdf-lib/fontkit の CFF の fdForGlyph が見つかりません (fontkit の版が変わり、fontkitCffFlex.ts の差し替えが合いません)');
+  if (!Object.prototype.hasOwnProperty.call(proto, 'fdForGlyph') || typeof proto.fdForGlyph !== 'function') throw new Error(msg('@pdf-lib/fontkit の CFF の fdForGlyph が見つかりません (fontkit の版が変わり、fontkitCffFlex.ts の差し替えが合いません)', 'fdForGlyph of the @pdf-lib/fontkit CFF not found (the fontkit version has changed and the patches in fontkitCffFlex.ts no longer fit)'));
   const orig = proto.fdForGlyph;
   proto.fdForGlyph = function (this: FkCff, gid: number) {
     const sel = this.topDict?.FDSelect;
@@ -150,11 +151,11 @@ export function patchFontkitCffFlex(fk: unknown) {
   // (CFF2 から作り直した静的な CFF の実体に効く。CFF2 の字形そのものの輪郭は、下で fontkit の元の結果を返す)
   if ((!tables?.['CFF '] && !tables?.CFF2) || tables.glyf) return;
   patchFdForGlyph(font);
-  if (typeof font._getBaseGlyph !== 'function') throw new Error('@pdf-lib/fontkit の書体の _getBaseGlyph が見つかりません (fontkit の版が変わり、fontkitCffFlex.ts の差し替えが合いません)');
+  if (typeof font._getBaseGlyph !== 'function') throw new Error(msg('@pdf-lib/fontkit の書体の _getBaseGlyph が見つかりません (fontkit の版が変わり、fontkitCffFlex.ts の差し替えが合いません)', '_getBaseGlyph of the @pdf-lib/fontkit font not found (the fontkit version has changed and the patches in fontkitCffFlex.ts no longer fit)'));
   const glyph = font._getBaseGlyph(0);
   const proto = (glyph ? Object.getPrototypeOf(glyph) : null) as { _getPath?: (this: FkCffGlyph) => FkPath; [PATCHED]?: boolean } | null;
   if (proto?.[PATCHED]) return;
-  if (!proto || !Object.prototype.hasOwnProperty.call(proto, '_getPath') || typeof proto._getPath !== 'function') throw new Error('@pdf-lib/fontkit の CFF の字形の _getPath が見つかりません (fontkit の版が変わり、fontkitCffFlex.ts の差し替えが合いません)');
+  if (!proto || !Object.prototype.hasOwnProperty.call(proto, '_getPath') || typeof proto._getPath !== 'function') throw new Error(msg('@pdf-lib/fontkit の CFF の字形の _getPath が見つかりません (fontkit の版が変わり、fontkitCffFlex.ts の差し替えが合いません)', '_getPath of the @pdf-lib/fontkit CFF glyph not found (the fontkit version has changed and the patches in fontkitCffFlex.ts no longer fit)'));
   const orig = proto._getPath;
   proto._getPath = function () {
     // 書体を読んだときに CFF の表が読めず、FDSelect の引き方を差し替えられなかったときのために、ここでも試す

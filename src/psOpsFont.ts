@@ -27,6 +27,7 @@ import type { ByteSource } from './psFilters';
 import { decodeCMap, decryptCharstring, eexecSource, identityCMap, newCMap, runType1Charstring, type CMapData, type Glyph } from './psFonts';
 import { GLYPH_CHARS, ISO_LATIN1_ENCODING, STANDARD_ENCODING } from './psEncodings';
 import { cffGlyph, parseCff, type CffFont } from './psCff';
+import { msg } from './messages';
 
 // ───────────────────────── 書体 (第 5 章) ─────────────────────────
 //
@@ -512,7 +513,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
       const desc = dep && dep.t === 'array' && dep.n && dep.a[dep.o].t === 'dict' ? (dep.a[dep.o] as { d: PSDict }).d : undefined;
       const cm = cmapOfFont(fd);
       if (fmt !== 9 || !desc || !cm) {
-        I.warn('複合書体の文字 (FMapType 9 以外・CMap が読めない)');
+        I.warn(msg('複合書体の文字 (FMapType 9 以外・CMap が読めない)', 'text in composite fonts (other than FMapType 9, or an unreadable CMap)'));
         return [];
       }
       const cidType = intOf(desc.get('CIDFontType'), -1);
@@ -529,7 +530,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
         return out;
       }
       if (cidType !== 0) {
-        I.warn(`CIDFontType ${cidType} の文字`);
+        I.warn(msg(`CIDFontType ${cidType} の文字`, `text in CIDFontType ${cidType}`));
         return [];
       }
       // CIDFont の FontMatrix が無ければ [.001 0 0 .001 0 0] とし、FDArray の FontMatrix を 1000 倍する (§5.11.3)
@@ -820,7 +821,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
     const na = I.pop();
     const s = I.popString();
     if (na.t !== 'array') {
-      I.warn('xshow の符号化した数の並び');
+      I.warn(msg('xshow の符号化した数の並び', 'encoded number strings of xshow'));
       return showStr(s);
     }
     const v = numsOf(na);
@@ -868,7 +869,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
     const s = I.popString();
     G.needCP();
     const gl = glyphsOf(G.g.font, s);
-    if (gl.some((g) => g.fallback)) I.warn('代わりの書体の charpath');
+    if (gl.some((g) => g.fallback)) I.warn(msg('代わりの書体の charpath', 'charpath with a substitute font'));
     showGlyphs(gl, { paint: false, path: true });
   });
   d('setcachedevice', (I) => {

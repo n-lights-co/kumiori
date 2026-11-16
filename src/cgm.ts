@@ -18,11 +18,14 @@
  */
 import { base64 } from './base64';
 import { decodeModifiedHuffman } from './ccitt';
-import { fontFamilyOf } from './eps';
+import { fontFamilyOf } from './epsInfo';
+import { isCgm } from './imageInfo';
+export { isCgm };
 import { MAX_PIXELS, metafilePixelBudget, metafileSvgBudget } from './imageLimits';
 import { decodeJpeg } from './jpeg';
 import { encodePngStored } from './pixels';
 import { inflateBytes, lzwBytes } from './psFilters';
+import { msg } from './messages';
 
 export interface CgmResult {
   svg: string;
@@ -623,6 +626,17 @@ function decodeText(st: State, raw: string): string {
   if (!st.charSets.length && !bytes.includes(0x1b)) return raw;
   if (g0?.type === 4) return decodeComplete(g0.tail, bytes) ?? raw;
   const extended = st.codingAnnouncer >= 2;
+  // 基本の 8 ビット (CHARACTER CODING ANNOUNCER が basic 8-bit) で、CHARACTER SET INDEX が 96 字の集合を選んだとき: 96 字の集合は
+  // 右半分 (0xA0〜0xFF) に置き、左半分 (0x20〜0x7E) は 94 字の集合 (ALTERNATE CHARACTER SET INDEX の集合が 94 字ならそれ、
+  // でなければ ISO 646) のままにする。ISO/IEC 2022 の 8 ビットの符号では、96 字の集合は右半分にしか呼び出せない (左半分は 94 字の G0)。
+  // WebCGM 2.1 (T.16.14) は 94 字の 4/2 を ISO 8859-1 の左半分、96 字の 4/1 を右半分とし、T.14.5 の注で「ISO/IEC 8632-1:1999 の
+  // 6.3.4.5 は ISO Latin 1 を 8 ビットで使うことを許す」とする。WebCGM の試験の BIGCGM01 (CHARACTER SET INDEX 2 = 4/1 で、
+  // 文字列は 0x20〜0x7E の字) は、この読み方で見本 (試験の参照の絵・AH Formatter) と同じ字になる。
+  if (st.codingAnnouncer === 1 && (g0?.type === 1 || g0?.type === 3)) {
+    const gr = g0;
+    g0 = g1 && (g1.type === 0 || g1.type === 2) ? g1 : undefined;
+    g1 = gr;
+  }
   const ascii: CharSet = { type: 0, tail: 'B' };
   let out = '';
   let shifted = false;
@@ -818,10 +832,6 @@ function* elements(b: Uint8Array): Generator<Element> {
   }
 }
 
-/** CGM の 2 進符号化か (先頭が BEGIN METAFILE: 類 0・番号 1) */
-export function isCgm(b: Uint8Array): boolean {
-  return b.length >= 4 && ((b[0] << 8) | b[1]) >> 5 === 1;
-}
 
 /**
  * 最初の絵の大きさ (px) を、絵の本体を読まずに求める (imageInfo の cgmInfo 用)。cgmToSvg の大きさと同じになるように、
@@ -1007,11 +1017,11 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const r: State = { ...st, lineWidth: [...st.lineWidth], markerSize: [...st.markerSize], edgeWidth: [...st.edgeWidth] };
     const get = <T,>(m: Map<number, T>, idx: number, what: string): T | undefined => {
       const b = m.get(idx);
-      if (!b) warn(`${what}の束ね表の ${idx} 番が定められていないので、個別の値で描きます`);
+      if (!b) warn(msg(`${what}の束ね表の ${idx} 番が定められていないので、個別の値で描きます`, `bundle ${idx} of the ${what} bundle table is not defined; the individual values are used`));
       return b;
     };
     if (a[0] || a[1] || a[2]) {
-      const b = get(st.bundles.line, st.lineBundle, '線');
+      const b = get(st.bundles.line, st.lineBundle, msg('線', 'line'));
       if (b) {
         if (a[0]) r.lineType = b.type;
         if (a[1]) {
@@ -1022,7 +1032,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       }
     }
     if (a[3] || a[4] || a[5]) {
-      const b = get(st.bundles.marker, st.markerBundle, '印');
+      const b = get(st.bundles.marker, st.markerBundle, msg('印', 'marker'));
       if (b) {
         if (a[3]) r.markerType = b.type;
         if (a[4]) {
@@ -1033,7 +1043,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       }
     }
     if (a[6] || a[7] || a[8] || a[9] || a[10]) {
-      const b = get(st.bundles.text, st.textBundle, '字');
+      const b = get(st.bundles.text, st.textBundle, msg('字', 'text'));
       if (b) {
         if (a[6]) r.textFont = b.font;
         if (a[7]) r.textPrecision = b.precision;
@@ -1043,7 +1053,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       }
     }
     if (a[11] || a[12] || a[13] || a[14]) {
-      const b = get(st.bundles.fill, st.fillBundle, '塗り');
+      const b = get(st.bundles.fill, st.fillBundle, msg('塗り', 'fill'));
       if (b) {
         if (a[11]) r.interiorStyle = b.style;
         if (a[12]) r.fillColour = b.colour;
@@ -1052,7 +1062,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       }
     }
     if (a[15] || a[16] || a[17]) {
-      const b = get(st.bundles.edge, st.edgeBundle, '辺');
+      const b = get(st.bundles.edge, st.edgeBundle, msg('辺', 'edge'));
       if (b) {
         if (a[15]) r.edgeType = b.type;
         if (a[16]) {
@@ -1208,7 +1218,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     if (overflow) return false;
     if (svgChars + n > svgBudget) {
       overflow = true;
-      warn(`CGM を SVG にした長さが上限 (${bytes.length} バイトのファイルでは ${svgBudget} 字) を超えるので、途中までを描きます`);
+      warn(msg(`CGM を SVG にした長さが上限 (${bytes.length} バイトのファイルでは ${svgBudget} 字) を超えるので、途中までを描きます`, `the SVG made from the CGM exceeds the length limit (${svgBudget} characters for a file of ${bytes.length} bytes); only the first part is drawn`));
       return false;
     }
     svgChars += n;
@@ -1252,12 +1262,12 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   const replaySegment = (id: number, inheritFrom?: State): string | undefined => {
     const seg = segments.get(id);
     if (!seg) {
-      warn(`セグメント ${id} は定義されていません`);
+      warn(msg(`セグメント ${id} は定義されていません`, `segment ${id} is not defined`));
       return undefined;
     }
     // 入れ子は 8 段まで、読み直す要素は合わせて 20 万まで (互いに何度も写し合うセグメントで、止まらなくならないように)
     if (replayDepth >= 8 || replayBudget <= 0) {
-      warn('COPY SEGMENT の入れ子が深すぎるか多すぎるので、途中から描きません');
+      warn(msg('COPY SEGMENT の入れ子が深すぎるか多すぎるので、途中から描きません', 'COPY SEGMENT is nested too deeply or used too many times; the rest is not drawn'));
       return '';
     }
     // SVG の長さの上限を超えた後は、写さない (写しても何も出ない。写す手間は、セグメントの大きさだけかかる)
@@ -1367,7 +1377,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       const id = st === 2 ? tablePattern() : geometricPattern();
       if (id) emit(`<path d="${d}" fill="url(#${id})" fill-rule="evenodd" stroke="none"${clipAttr()}/>`);
       else {
-        warn(`内側の塗り方 ${st === 2 ? 'pattern' : 'geometric pattern'} の模様が定められていないので、塗りの色で塗ります`);
+        warn(msg(`内側の塗り方 ${st === 2 ? 'pattern' : 'geometric pattern'} の模様が定められていないので、塗りの色で塗ります`, `the pattern for interior style ${st === 2 ? 'pattern' : 'geometric pattern'} is not defined; the fill color is used`));
         emit(`<path d="${d}" ${paint('fill', s.fillColour)} fill-rule="evenodd" stroke="none"${clipAttr()}/>`);
       }
     } else if (st === 6) {
@@ -1375,7 +1385,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       if (g.style === 3) triangleFill(d, g);
       else emit(`<path d="${d}" fill="url(#${gradient(g)})" fill-rule="evenodd" stroke="none"${clipAttr()}/>`);
     } else {
-      warn(`内側の塗り方 ${st} は塗りの色で塗ります`);
+      warn(msg(`内側の塗り方 ${st} は塗りの色で塗ります`, `interior style ${st} is filled with the fill color`));
       emit(`<path d="${d}" ${paint('fill', s.fillColour)} fill-rule="evenodd" stroke="none"${clipAttr()}/>`);
     }
     if (s.edgeVisible && edges !== null && (edges ?? d)) emit(strokeEl(edges ?? d, true, vertices));
@@ -1458,7 +1468,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   let pixelsLeft = pixelBudget;
   const takePixels = (n: number, what: string): boolean => {
     if (n > pixelsLeft) {
-      warn(`${what} は、文書の画像の画素の合計が上限 (${bytes.length} バイトのファイルでは ${pixelBudget} 画素) を超えるので描きません`);
+      warn(msg(`${what} は、文書の画像の画素の合計が上限 (${bytes.length} バイトのファイルでは ${pixelBudget} 画素) を超えるので描きません`, `${what} is not drawn because the total pixels of the images in the document exceed the limit (${pixelBudget} pixels for a file of ${bytes.length} bytes)`));
       return false;
     }
     pixelsLeft -= n;
@@ -1476,7 +1486,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   /** geometric pattern のセグメントを写した結果の控え (セグメントの番号 → 写した SVG と、模様の中身の id)。セグメントを定義し直したら捨てる */
   const geoFrags = new Map<number, { frag: string; body?: string }>();
   /**
-   * 模様の定義を、使うたびに書き出さない (IMG-19 (3))。中身 (セルの矩形・画像、geometric pattern のセグメントの図形) は、同じ中身ごとに 1 つの
+   * 模様の定義を、使うたびに書き出さない。中身 (セルの矩形・画像、geometric pattern のセグメントの図形) は、同じ中身ごとに 1 つの
    * pattern に書き (patternBodies: 中身 → id)、使う所は、それを href で引いて置き方 (位置・大きさ・patternTransform) だけを書いた pattern にする
    * (SVG 1.1 §13.3 の xlink:href・SVG 2 §14.3.4 の href: 引いた pattern の中身を受け継ぐ)。同じ中身・同じ置き方なら同じ pattern を使う
    * (patternUses: 中身の id と置き方 → id)。前は使うたびに中身ごと書いたので、14KB の CGM で SVG が 2.9 億字 (<rect> 410 万個) になった
@@ -1530,7 +1540,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     // 違う色の数だけを調べ、その合計にも上限を置く (patternWork。超えたら、その後の模様の塗りは描かない)
     patternWork -= t.palette.length;
     if (patternWork < 0) {
-      warn('PATTERN TABLE の模様の色を調べる手間が上限を超えたので、その後の模様の塗りは描きません');
+      warn(msg('PATTERN TABLE の模様の色を調べる手間が上限を超えたので、その後の模様の塗りは描きません', 'checking the colors of PATTERN TABLE patterns exceeded the work limit; later pattern fills are not drawn'));
       return undefined;
     }
     const pal = t.palette.map(colourOf);
@@ -1563,7 +1573,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       return `<image x="0" y="0" width="1" height="1" preserveAspectRatio="none" style="image-rendering:pixelated" href="data:image/png;base64,${base64(encodePngStored({ width: t.nx, height: t.ny, rgba }))}"/>`;
     };
     // 中身は、新しい色の並びのときだけ書き、画素の合計に数える
-    const body = patternBody(key, content, rects ? cells * RECT_CELL_WEIGHT : cells, 'PATTERN TABLE の模様');
+    const body = patternBody(key, content, rects ? cells * RECT_CELL_WEIGHT : cells, msg('PATTERN TABLE の模様', 'a PATTERN TABLE pattern'));
     if (!body) return undefined;
     return patternUse(body, `patternUnits="userSpaceOnUse" x="0" y="0" width="1" height="1" patternTransform="matrix(${[a[0], a[1], c[0], c[1], o[0], o[1]].map((v) => String(Math.round(v * 10000) / 10000)).join(' ')})"`);
   };
@@ -1611,7 +1621,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const b = map([x1, y0]);
     const m = svgMatrix(B);
     // 中身 (セグメントの図形) は同じ図形ごとに 1 つ。画素ではないので数えない (図形の数はセグメントの定義の大きさまで)
-    const body = geo.body ?? (geo.body = patternBody(`g${frag}`, () => frag, 0, 'GEOMETRIC PATTERN の模様'));
+    const body = geo.body ?? (geo.body = patternBody(`g${frag}`, () => frag, 0, msg('GEOMETRIC PATTERN の模様', 'a GEOMETRIC PATTERN pattern')));
     if (!body) return undefined;
     return patternUse(
       body,
@@ -1650,7 +1660,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const iw = Math.max(1, Math.round(bw >= bh ? n : (n * bw) / bh));
     const ih = Math.max(1, Math.round(bh >= bw ? n : (n * bh) / bw));
     // この画像も文書の画素の合計に数える (図形ごとに 1 枚できる)。上限を超えたら、最初の色の一色で塗る
-    if (!takePixels(iw * ih, 'INTERPOLATED INTERIOR の色の変化')) {
+    if (!takePixels(iw * ih, msg('INTERPOLATED INTERIOR の色の変化', 'an INTERPOLATED INTERIOR color gradient'))) {
       emit(`<path d="${d}" fill="${hex(C[0])}" fill-rule="evenodd" stroke="none"${clipAttr()}/>`);
       return;
     }
@@ -1764,7 +1774,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const ul = Math.hypot(ux, uy) || 1;
     // TEXT PATH (第 1 部 7.7.17): right は基準の向き、left はその逆、up は上の向き、down はその逆に字を進める
     const path = box && s.textPath >= 2 ? 0 : s.textPath;
-    if (box && s.textPath >= 2) warn('RESTRICTED TEXT の TEXT PATH (up・down) は right で描きます');
+    if (box && s.textPath >= 2) warn(msg('RESTRICTED TEXT の TEXT PATH (up・down) は right で描きます', 'RESTRICTED TEXT with TEXT PATH up or down is drawn as right'));
     // 文字の局所座標 (x: 基準の向き、y: 上の向きの逆。単位は文字の高さに対する VDC) → SVG の行列 (第 1 部 7.7.16)
     const B = mapVec([(bx / ul) * s.charExpansion, (by / ul) * s.charExpansion]);
     const U = mapVec([ux / ul, uy / ul]);
@@ -1777,7 +1787,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       return;
     }
     if (path >= 2) {
-      if (s.scores.length) warn('TEXT PATH が up・down の文字の TEXT SCORE TYPE は描きません');
+      if (s.scores.length) warn(msg('TEXT PATH が up・down の文字の TEXT SCORE TYPE は描きません', 'TEXT SCORE TYPE of text with TEXT PATH up or down is not drawn'));
       drawVerticalText(str, h, path === 3, B, U, map(pos), fs, ha, va, cv);
       return;
     }
@@ -1841,7 +1851,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
    * non-tangential は回さない。経路の終わりを超える字は、終わりの接線の向きの直線の上に置く。横の揃えは経路の始め・真ん中・終わり
    */
   const drawTextOnPath = (str: string, h: number, U: Pt, ha: number, boxed: boolean) => {
-    if (boxed) warn('GENERALIZED TEXT PATH MODE の RESTRICTED TEXT は、箱に合わせずに経路に沿って描きます');
+    if (boxed) warn(msg('GENERALIZED TEXT PATH MODE の RESTRICTED TEXT は、箱に合わせずに経路に沿って描きます', 'RESTRICTED TEXT in GENERALIZED TEXT PATH MODE is drawn along the path without fitting it to the box'));
     const e = defaultExtent(defaults);
     const d = s.textPathD ?? pathOf([[Math.min(e[0][0], e[1][0]), Math.min(e[0][1], e[1][1])], [Math.max(e[0][0], e[1][0]), Math.min(e[0][1], e[1][1])]], false);
     const id = `cgmtp${textPathSeq++}`;
@@ -1854,7 +1864,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const offset = ha === 2 ? '50%' : ha === 3 ? '100%' : '0';
     const spacing = s.charSpacing ? ` letter-spacing="${num(s.charSpacing * h * k)}"` : '';
     const el = `<text font-family="${font.family}"${font.bold ? ' font-weight="bold"' : ''}${font.italic ? ' font-style="italic"' : ''} font-size="${num(fs)}" ${paint('fill', s.textColour)}${anchor}${spacing} xml:space="preserve"><textPath href="#${id}" startOffset="${offset}" data-extend="true"${s.textPathMode === 1 ? ' data-rotate="none"' : ''}>${esc(str)}</textPath></text>`;
-    if (s.scores.length) warn('GENERALIZED TEXT PATH MODE の文字の TEXT SCORE TYPE は描きません');
+    if (s.scores.length) warn(msg('GENERALIZED TEXT PATH MODE の文字の TEXT SCORE TYPE は描きません', 'TEXT SCORE TYPE of text in GENERALIZED TEXT PATH MODE is not drawn'));
     emit(clipId && !replayDepth ? `<g${clipAttr()}>${el}</g>` : el);
   };
   /** 文字の属性 (書体・大きさ・色) */
@@ -1889,12 +1899,12 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   // 実数は (浮動 9,23)・(浮動 12,52)・(固定 16,16)・(固定 32,32) の 4 通り)。ほかの値 (0・負) は読み進められなくなるので、既定値のままにする
   const prec = (v: number, ok: number[], cur: number, what: string): number => {
     if (ok.includes(v)) return v;
-    warn(`${what} ${v} は規格に無い値なので、${cur} のまま読みます`);
+    warn(msg(`${what} ${v} は規格に無い値なので、${cur} のまま読みます`, `${what} ${v} is not a value of the standard; ${cur} is kept`));
     return cur;
   };
   const realForm = (float: boolean, a: number, b: number, cur: State['realForm'], what: string): State['realForm'] => {
     if (float ? (a === 9 && b === 23) || (a === 12 && b === 52) : (a === 16 && b === 16) || (a === 32 && b === 32)) return { float, a, b };
-    warn(`${what} (${a}, ${b}) は規格に無い値なので、前の値のまま読みます`);
+    warn(msg(`${what} (${a}, ${b}) は規格に無い値なので、前の値のまま読みます`, `${what} (${a}, ${b}) is not a value of the standard; the previous value is kept`));
     return cur;
   };
   const P8 = [8, 16, 24, 32];
@@ -1992,7 +2002,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
           const sel = p.IX();
           const w: [number, number, number] = [p.R(), p.R(), p.R()];
           if (sel >= 2 && w[1] > 0) st.white = [w[0] / w[1], 1, w[2] / w[1]];
-          if (sel >= 3) warn('COLOUR CALIBRATION の行列と表は読まず、基準の白だけを使います');
+          if (sel >= 3) warn(msg('COLOUR CALIBRATION の行列と表は読まず、基準の白だけを使います', 'the matrices and tables of COLOUR CALIBRATION are not read; only the reference white is used'));
         } else if (id === 12) {
           // METAFILE DEFAULTS REPLACEMENT: 中の要素で既定値を置き換える。中の MDR は読まない (入れ子にするものではない。
           // 入れ子を読むと、細工したファイルで深く再帰する)
@@ -2139,13 +2149,13 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
                 : undefined;
           if (!on) st.transparentCell = undefined;
           else if (c) st.transparentCell = c;
-          else warn('ESCAPE 22 (Transparent Cell Colour) の色が読めません');
+          else warn(msg('ESCAPE 22 (Transparent Cell Colour) の色が読めません', 'cannot read the color of ESCAPE 22 (Transparent Cell Colour)'));
         } else if (fid === 45) {
           // 不透明度 (実数 0.0〜1.0)。後の図形の塗り・線・字・印・セルに掛ける
           const r = first([12]);
           if (r) st.alpha = Math.min(1, Math.max(0, r.values[0] as number));
-          else warn('ESCAPE 45 (Alpha Transparency) の値が読めません');
-        } else warn(`ESCAPE ${fid} は、登録簿に無いか Kumiori の知らない機能なので読み飛ばします`);
+          else warn(msg('ESCAPE 45 (Alpha Transparency) の値が読めません', 'cannot read the value of ESCAPE 45 (Alpha Transparency)'));
+        } else warn(msg(`ESCAPE ${fid} は、登録簿に無いか Kumiori の知らない機能なので読み飛ばします`, `ESCAPE ${fid} is skipped (not in the register or not known to Kumiori)`));
         return;
       }
       case 8: // セグメントの制御と属性 (第 3 部 表 11)
@@ -2277,7 +2287,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const indexed = st.colourSelection === 0;
         const cellBits = indexed ? prec || st.colourIndexPrec : (prec || st.colourPrec) * compsOf(st.colourModel);
         if (nx * ny > 65536 && !(cellBits > 0 && nx * ny <= Math.floor(Math.max(0, p.left) / cellBits))) {
-          warn('PATTERN TABLE の色の数が、セルの数に足りないので読みません');
+          warn(msg('PATTERN TABLE の色の数が、セルの数に足りないので読みません', 'PATTERN TABLE has fewer colors than cells and is not read'));
           break;
         }
         // 同じ色のセルは、1 つの色を指す (palette の番号)。鍵は、色番号か、直接色の成分の並び
@@ -2415,7 +2425,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       default:
         // 36 PICK IDENTIFIER と、記号の属性 (48 SYMBOL LIBRARY INDEX・49 SYMBOL COLOUR・50 SYMBOL SIZE・51 SYMBOL ORIENTATION。
         // POLYSYMBOL は描かないので、読むだけ) は警告しない
-        if (id !== 36 && !(id >= 48 && id <= 51)) warn(`属性 ${elementName(5, id)} は読み飛ばします`);
+        if (id !== 36 && !(id >= 48 && id <= 51)) warn(msg(`属性 ${elementName(5, id)} は読み飛ばします`, `attribute ${elementName(5, id)} is skipped`));
     }
   };
 
@@ -2619,7 +2629,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         break;
       case 10:
         // GENERALIZED DRAWING PRIMITIVE (第 1 部 7.6.10): 中身は登録簿で決まるが、登録された GDP は無い (負の番号は処理系ごとの私用)
-        warn(`GENERALIZED DRAWING PRIMITIVE (GDP ${p.I()}) は描きません (登録された GDP がありません)`);
+        warn(msg(`GENERALIZED DRAWING PRIMITIVE (GDP ${p.I()}) は描きません (登録された GDP がありません)`, `GENERALIZED DRAWING PRIMITIVE (GDP ${p.I()}) is not drawn (no registered GDP)`));
         break;
       case 21:
         // CONNECTING EDGE: 閉じた図形の中で、前の線の要素の終わりから、次の点への辺を足す
@@ -2641,7 +2651,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const [al1, be1] = coef(s1);
         const branch = Math.sign(al0);
         if (!(Math.abs(al0) > Math.abs(be0)) || !(Math.abs(al1) > Math.abs(be1)) || Math.sign(al1) !== branch) {
-          warn('HYPERBOLIC ARC の向きが双曲線と交わらない (または両方の枝にまたがる) ので描きません');
+          warn(msg('HYPERBOLIC ARC の向きが双曲線と交わらない (または両方の枝にまたがる) ので描きません', 'HYPERBOLIC ARC is not drawn because its directions do not meet the hyperbola (or span both branches)'));
           break;
         }
         const t0 = Math.atanh(be0 / Math.abs(al0));
@@ -2672,7 +2682,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const n = p.I();
         // 次数は 64 まで (実用の次数は 10 未満。大きな次数は計算が次数の 2 乗で増えるので、細工したファイルで止まらないように)
         if (!(k >= 1 && k <= 64 && n >= k && n <= 100000)) {
-          warn(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の次数か制御点の数が読めないので描きません`);
+          warn(msg(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の次数か制御点の数が読めないので描きません`, `${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} is not drawn because its order or number of control points cannot be read`));
           break;
         }
         // 制御点・節点・重みは、残りの引数に入る数まで読む (引数の外は 0 と読めるので、数の欄だけを信じると、10 バイトの要素 1 つで
@@ -2686,7 +2696,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const wts: number[] = [];
         if (id === 25) for (let i = 0; i < n && p.left > 0; i++) wts.push(p.R());
         if (ctrl.length !== n || knots.length !== n + k || (id === 25 && wts.length !== n)) {
-          warn(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の制御点・節点が足りないので描きません`);
+          warn(msg(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の制御点・節点が足りないので描きません`, `${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} is not drawn because it lacks control points or knots`));
           break;
         }
         const v = bspline(k, ctrl, knots, Math.max(tmin, knots[k - 1]), Math.min(tmax, knots[n]), id === 25 ? wts : undefined);
@@ -2695,14 +2705,14 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       }
       case 27:
         // POLYSYMBOL: 記号の表 (SYMBOL LIBRARY LIST の名前) はメタファイルの外のもので、形は規格に無く、登録簿にも登録された表が無い (第 1 部 6.6.12・7.3.23)
-        warn('POLYSYMBOL は描きません (記号の表はメタファイルの外のもので、登録された表もありません)');
+        warn(msg('POLYSYMBOL は描きません (記号の表はメタファイルの外のもので、登録された表もありません)', 'POLYSYMBOL is not drawn (the symbol tables are outside the metafile and none is registered)'));
         break;
       case 28:
       case 29:
         if (tiles) tile(id === 28, p);
         break;
       default:
-        warn(`図形 ${elementName(4, id)} は描きません`);
+        warn(msg(`図形 ${elementName(4, id)} は描きません`, `graphical primitive ${elementName(4, id)} is not drawn`));
     }
   };
 
@@ -2795,7 +2805,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const prec = p.I();
     const mode = p.E();
     if (!(nx > 0 && ny > 0) || nx * ny > MAX_PIXELS || ![0, 1, 2, 4, 8, 16, 24, 32].includes(prec)) {
-      warn('CELL ARRAY の大きさか精度が読めないので描きません');
+      warn(msg('CELL ARRAY の大きさか精度が読めないので描きません', 'CELL ARRAY is not drawn because its size or precision cannot be read'));
       return;
     }
     // データのある行だけを画素にする: 1 行は少なくとも、詰めた並びなら nx 個のセル、連なりなら 1 組 (数と色) のビットを使うので、
@@ -2842,10 +2852,10 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const w = ntp * ctp;
     const h = ntl * ctl;
     if (!(ntp > 0 && ntl > 0 && ctp > 0 && ctl > 0) || w * h > MAX_PIXELS || !(csp > 0 && csl > 0)) {
-      warn('BEGIN TILE ARRAY の大きさが読めないので、タイルの並びを描きません');
+      warn(msg('BEGIN TILE ARRAY の大きさが読めないので、タイルの並びを描きません', 'the size of BEGIN TILE ARRAY cannot be read; the tile array is not drawn'));
       return;
     }
-    if (!takePixels(w * h, 'タイルの並び')) return;
+    if (!takePixels(w * h, msg('タイルの並び', 'the tile array'))) return;
     tiles = { pos, pathDir, lineDir, ntp, ntl, ctp, ctl, csp, csl, offp, offl, ncp, ncl, rgba: new Uint8Array(w * h * 4), next: 0 };
   };
 
@@ -2876,7 +2886,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const rowLen = pad > 0 ? Math.ceil(t.ctp / pad) * pad : t.ctp;
     // 行の埋めで増えるセルも画素の合計に数える (埋めの数 pad が巨大だと、1 行の長さ rowLen が pad そのものになり、
     // 連なりのループや、LZW・deflate を展開する長さの上限 (rowLen から決める) が、タイルの大きさと関係なく膨らむ)
-    if (!(rowLen * t.ctl <= MAX_PIXELS) || !takePixels((rowLen - t.ctp) * t.ctl, 'TILE (行の埋め)')) return;
+    if (!(rowLen * t.ctl <= MAX_PIXELS) || !takePixels((rowLen - t.ctp) * t.ctl, msg('TILE (行の埋め)', 'TILE (row padding)'))) return;
     // セルは、色のオブジェクトの配列にためず、タイルの並びの画素 (t.rgba) へじかに書く (読まれなかったセル・透明のセルの色は、元のまま)。
     // 前は、タイルごとに「セルの数の配列」と、セルごとの色のオブジェクトを作っていたので、deflate で縮めた 8000 × 8000 のタイル (62KB) で
     // 52 秒・3GB を使い、ヒープを使い切った
@@ -2929,7 +2939,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     } else if (kind >= 2 && kind <= 4) {
       // T.6・T.4 (ファクシミリの符号)。黒 (1) が前景 (1 番)、白 (0) が背景 (0 番)。多い色の精度では役に立たない (第 1 部 7.6.29 の注 2)
       const bits = decodeModifiedHuffman(bs, { width: rowLen, rows: t.ctl, compression: kind === 2 ? 4 : 3, twoDimensional: kind === 4 });
-      if (!bits) warn('TILE の T.4 / T.6 の符号が読めません');
+      if (!bits) warn(msg('TILE の T.4 / T.6 の符号が読めません', 'cannot read the T.4 / T.6 code of TILE'));
       else
         for (let j = 0; j < t.ctl; j++)
           for (let i = 0; i < t.ctp; i++) putPacked(t.rgba, at(j, i), bits[j * rowLen + i] ? fgP : bgP);
@@ -2937,7 +2947,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       // 登録簿の 7: baseline JPEG。BS は JPEG のデータ。色は直接色の RGB として置く (SDR の JPEG の色の型は読まない)
       const px = decodeJpeg(bs);
       if (!px) {
-        warn('TILE の JPEG が読めません');
+        warn(msg('TILE の JPEG が読めません', 'cannot read the JPEG of TILE'));
         return;
       }
       // 直接色 { rgb: [v / 255, …] } として前の putCell で書いたのと同じ値: 色は元の 8 ビットの値、不透明度は ESCAPE 45 の値、透明のセルの色 (直接色) は書かない
@@ -2965,7 +2975,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       const limit = (rowBytes + 1) * t.ctl + 16;
       let data = kind === 8 ? lzwBytes(bs, limit) : inflateBytes(bs, limit);
       if (!data.length) {
-        warn(`TILE の ${kind === 8 ? 'LZW' : 'PNG (deflate)'} の圧縮が読めません`);
+        warn(msg(`TILE の ${kind === 8 ? 'LZW' : 'PNG (deflate)'} の圧縮が読めません`, `cannot read the ${kind === 8 ? 'LZW' : 'PNG (deflate)'} compression of TILE`));
         return;
       }
       let filtered = kind === 9 && data.length >= (rowBytes + 1) * t.ctl;
@@ -2981,7 +2991,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         }
       }
     } else {
-      warn(`TILE の圧縮の形 ${kind} は、登録簿に無いか Kumiori の知らない形なので読みません`);
+      warn(msg(`TILE の圧縮の形 ${kind} は、登録簿に無いか Kumiori の知らない形なので読みません`, `TILE compression type ${kind} is not read (not in the register or not known to Kumiori)`));
       return;
     }
   };

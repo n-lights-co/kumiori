@@ -86,7 +86,7 @@ export function readZip(bytes: Uint8Array, limits: Partial<ZipLimits> = {}): Zip
       break;
     }
   }
-  if (eocd < 0) throw new Error('zip ではありません');
+  if (eocd < 0) throw new Error(msg('zip ではありません', 'not a zip file'));
   const count = v.getUint16(eocd + 10, true);
   const cdStart = v.getUint32(eocd + 16, true);
   // ZIP64 (項目の数・中央ディレクトリの位置が 16・32 ビットの最大値で、本当の値は ZIP64 の記録にある。APPNOTE 6.3 §4.4.1.4) は読まない
@@ -221,7 +221,7 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
     }
   };
   const container = await text('META-INF/container.xml');
-  if (!container) throw new Error('EPUB ではありません (META-INF/container.xml がありません)');
+  if (!container) throw new Error(msg('EPUB ではありません (META-INF/container.xml がありません)', 'not an EPUB (no META-INF/container.xml)'));
   // container.xml は XML として読む (属性の値の引用符は " でも ' でもよい。XML 1.0 §2.3 の AttValue)。最初の rootfile が既定の版
   // (EPUB 3.3 の OCF §4.2.6.3.1 の rootfile 要素)。XML として読めなければ、full-path の属性を文字として探す
   let opfPath: string | undefined;
@@ -234,7 +234,7 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
   }
   opfPath ||= /full-path\s*=\s*(?:"([^"]+)"|'([^']+)')/.exec(container)?.slice(1).find(Boolean);
   const opfText = opfPath ? await text(opfPath) : undefined;
-  if (!opfPath || !opfText) throw new Error('EPUB の OPF が読めません');
+  if (!opfPath || !opfText) throw new Error(msg('EPUB の OPF が読めません', 'cannot read the OPF of the EPUB'));
   const opf = parse(opfText, 'application/xml');
   const base = dirOf(opfPath);
   const items = new Map<string, { href: string; type: string }>();

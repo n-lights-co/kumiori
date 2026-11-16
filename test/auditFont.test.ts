@@ -6,9 +6,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import fontkit from '@pdf-lib/fontkit';
-import { defaultFontBuffer, ensureFonts, extraTestFont } from './helpers';
+import { defaultFontBuffer, ensureFonts, extraTestFont, loadCachedFont } from './helpers';
 import { Bytes, colr0, cpal, withTables } from './colorFontBuilder';
-import { DEFAULT_FONTS } from '../src/index';
+import { DEFAULT_FONTS, typeset } from '../src/index';
+import { walkAreaTree } from '../src/areaTree';
+import type { GlyphArea } from '../src/types';
 import { FontManager } from '../src/fontManager';
 import { checkFontFile } from '../src/fontSanity';
 import { colorFontOf } from '../src/colorGlyph';
@@ -181,6 +183,17 @@ describe('色つきの字形の層の上限 (colorGlyph.ts)', () => {
     expect(notes.join('\n')).toMatch(/層・輪郭が多すぎる/);
   });
 
+  it('上限を超えた知らせは、PDF を書いた後の結果の警告 (warnings) に入る (OUT-30)', async () => {
+    const layers: Array<[number, number]> = Array.from({ length: 65535 }, () => [gid('B'), 0]);
+    const font = withTables(tinos, { COLR: colr0([{ gid: gid('A'), layers }]), CPAL: cpal([[[255, 0, 0, 255]]]) });
+    const { res } = await typesetWith(font, '<p>AB</p>');
+    // 字形の色つきの描き方は、PDF を書くときに初めて作る。その知らせも res.warnings に入る (前は console.warn・書体の知らせの出し先に出るだけ)
+    expect(res.warnings.filter((w) => /層・輪郭が多すぎる/.test(w))).toHaveLength(1);
+    // もう 1 度書いても、同じ文を重ねない
+    await res.toPdf();
+    expect(res.warnings.filter((w) => /層・輪郭が多すぎる/.test(w))).toHaveLength(1);
+  });
+
   it('層の少ない字形は、これまでどおり色つき', async () => {
     const font = withTables(tinos, { COLR: colr0([{ gid: gid('A'), layers: [[gid('B'), 0], [gid('C'), 0]] }]), CPAL: cpal([[[255, 0, 0, 255]]]) });
     const { lf } = await register(font);
@@ -210,5 +223,88 @@ describe('可変フォント', () => {
     const r = instantiateFont(varBuf, info, info.axes.map((a) => a.max));
     expect(r.buffer.byteLength).toBeGreaterThan(0);
     expect(performance.now() - t0).toBeLessThan(10_000);
+  });
+});
+
+/**
+ * GPOS: 機能 kern が 2 つ。DFLT・latn の既定の LangSys は機能 0 (Lookup 0 = 副表の無い位置の調整) を、grek の既定の LangSys は
+ * 機能 1 (Lookup 5 = Lookup の一覧の外) を指す。ギリシャ文字を組むときだけ、壊れた参照の先を引く (登録のときの見本 'A fi 1' は組める)
+ */
+function gposBrokenForGreek(): Uint8Array {
+  const lookupList = new Bytes().u16(1, 4).u16(1, 0, 0).done();
+  const featureList = new Bytes().u16(2).tag('kern').u16(14).tag('kern').u16(20).u16(0, 1, 0).u16(0, 1, 5).done();
+  const script = (feature: number) => new Bytes().u16(4, 0).u16(0, 0xffff, 1, feature).done();
+  const scriptList = new Bytes().u16(3).tag('DFLT').u16(20).tag('grek').u16(32).tag('latn').u16(44).raw(script(0)).raw(script(1)).raw(script(0)).done();
+  const at1 = 10;
+  const at2 = at1 + scriptList.length;
+  const at3 = at2 + featureList.length;
+  return new Bytes().u16(1, 0, at1, at2, at3).raw(scriptList).raw(featureList).raw(lookupList).done();
+}
+
+/**
+ * glyf・loca (長い形式。字形のデータを 4 バイトにそろえない): 字形 0 は 4 点の四角。字 ch の字形は、複合の字形の頭 (10 バイト) だけで、
+ * 部品の記録 (字形 0 を 1 つ) は、loca の上では次の字形のデータの所にある (loca の位置が 1 つずれた書体の形)。ほかは空
+ */
+function compositeOutsideItsData(ch: string): { glyf: Uint8Array; loca: Uint8Array; head: Uint8Array } {
+  const target = gid(ch);
+  const b = new Bytes();
+  const loca = new Bytes();
+  for (let g = 0; g < numGlyphs; g++) {
+    loca.u32(b.length);
+    if (g === 0) b.i16(1, 0, 0, 100, 100).u16(3, 0).u8(1, 1, 1, 1).i16(0, 100, 0, -100).i16(0, 0, 100, 0);
+    else if (g === target) b.i16(-1, 0, 0, 100, 100);
+    // ARG_1_AND_2_ARE_WORDS | ARGS_ARE_XY_VALUES、部品は字形 0
+    else if (g === target + 1) b.u16(0x0003, 0).i16(0, 0);
+  }
+  loca.u32(b.length);
+  const head = table(tinos, 'head');
+  new DataView(head.buffer).setInt16(50, 1);
+  return { glyf: b.done(), loca: loca.done(), head };
+}
+
+/** @font-face で書体 F を使う HTML を組んで、PDF まで作る */
+async function typesetWith(font: ArrayBuffer, body: string) {
+  const html = `<!DOCTYPE html><html lang="en"><head><style>@font-face { font-family: F; src: url(f.ttf) } body { font-family: F }</style></head><body>${body}</body></html>`;
+  const res = await typeset(html, { files: [{ name: 'f.ttf', data: new Uint8Array(font) }], loadFont: loadCachedFont });
+  const glyphs: GlyphArea[] = [];
+  walkAreaTree(res.areaTree, (a) => {
+    if (a.type === 'glyph' && a.text.trim()) glyphs.push(a);
+  });
+  return { res, glyphs, pdf: await res.toPdf() };
+}
+
+describe('組む途中で読めない書体の表 (OUT-29)', () => {
+  it('特定の字の並びだけ GPOS の参照の先が無い書体は、その並びだけを整形の表を使わずに組み、知らせる', async () => {
+    const { lf, notes } = await register(withTables(tinos, { GPOS: gposBrokenForGreek(), GDEF: null }));
+    const fk = lf.fk as unknown as { layout(s: string): { glyphs: Array<{ id: number }> } };
+    // ギリシャ文字は、cmap の字形のまま (前は「reading 'flags'」の例外)
+    expect(fk.layout('αβγ').glyphs.map((g) => g.id)).toEqual([gid('α'), gid('β'), gid('γ')]);
+    expect(notes.join('\n')).toMatch(/整形の表 \(GSUB・GPOS・morx\) で組めない字の並びがあります/);
+    // 書体の整形は止めない (欧字は、これまでどおり整形の表で組む)
+    const le = (lf.fk as unknown as { _layoutEngine: { engine: unknown } })._layoutEngine;
+    expect(le.engine).not.toBeNull();
+    expect(fk.layout('AVA').glyphs.map((g) => g.id)).toEqual([gid('A'), gid('V'), gid('A')]);
+  });
+
+  it('その書体の文書は、ギリシャ文字も字形の番号を持ち (PDF に描かれ)、警告に出る', async () => {
+    const { res, glyphs, pdf } = await typesetWith(withTables(tinos, { GPOS: gposBrokenForGreek(), GDEF: null }), '<p>Alpha αβγ Omega Ω</p>');
+    expect(pdf.length).toBeGreaterThan(0);
+    // 前は、ギリシャ文字の字形の番号が付かず、PDF で黙って抜けた
+    expect(glyphs.filter((g) => !g.glyphIds?.length)).toEqual([]);
+    expect(res.warnings.join('\n')).toMatch(/整形の表 \(GSUB・GPOS・morx\) で組めない字の並びがあります/);
+  });
+
+  it('正当な書体の文書は、知らせが無い', async () => {
+    const { res } = await typesetWith(tinos, '<p>Alpha αβγ Omega Ω AVATAR</p>');
+    expect(res.warnings.join('\n')).not.toMatch(/組めない字の並び|字形 \d+ のデータが読めません/);
+  });
+
+  it('字形のデータが読めない字形 (複合の字形の部品の記録が、字形のデータの外) があっても、PDF を作り、知らせる', async () => {
+    const font = withTables(tinos, compositeOutsideItsData('A'));
+    const { res, glyphs, pdf } = await typesetWith(font, '<p>CAC</p>');
+    // 前は、PDF の部分書体を書く所 (fontkit の _addGlyph) の例外で、toPdf の全体が失敗した
+    expect(pdf.length).toBeGreaterThan(0);
+    expect(glyphs.map((g) => g.text).join('')).toContain('CAC');
+    expect(res.warnings.join('\n')).toMatch(new RegExp(`字形 ${gid('A')} のデータが読めません \\(複合の字形の部品の記録が、字形のデータの外にある\\)`));
   });
 });

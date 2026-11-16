@@ -11,6 +11,7 @@
  *
  * Flate の展開は、zlib の形式 (RFC 1950) と deflate の形式 (RFC 1951) の説明どおりに書いた。
  */
+import { inflateFast } from './inflateFast';
 import type { PSDict, PSObj } from './psInterp';
 import { PS_FILTER_MAX_BYTES } from './imageLimits';
 
@@ -668,9 +669,12 @@ const arraySource = (b: Uint8Array): ByteSource => {
   let i = 0;
   return { read: () => (i < b.length ? b[i++] : -1) };
 };
-/** zlib (deflate) の圧縮を解いたバイト列 (CGM の TILE の PNG の圧縮など)。limit は出力の上限 */
+/**
+ * zlib (deflate) の圧縮を解いたバイト列 (CGM の TILE の PNG の圧縮など)。limit は出力の上限。
+ * フィルタの inflate と同じ所まで展開する、バイト列のための速い展開 (inflateFast.ts) を使う
+ */
 export function inflateBytes(b: Uint8Array, limit = 1 << 28): Uint8Array {
-  return drain(inflate(arraySource(b)), limit);
+  return inflateFast(b, limit);
 }
 /** LZW (TIFF・PDF の形。上位のビットから詰め、early change 1) の圧縮を解いたバイト列 */
 export function lzwBytes(b: Uint8Array, limit = 1 << 28): Uint8Array {
