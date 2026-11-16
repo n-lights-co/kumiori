@@ -10,7 +10,7 @@
  * レイアウトはしないので、幅・高さが auto の要素の寸法 (ブラウザが返す使用値) は返さない (auto のまま)。
  * 百分率の幅・余白は、包含ブロックの幅を親から順に見積もって px にする。
  */
-import { MAX_VAR_LENGTH, parseCss, parseSpacingTrim, setSupportsDecl, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
+import { MAX_VAR_LENGTH, parseCss, parseSpacingTrim, setSupportsDecl, serializeCssString, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
 import { fmtColor, parseColor, replaceUrls, resolveLightDark, splitTop, stripImportant, UNIT_PX, type RGBA } from './cssText';
 import { parseVariationSettings } from './fontVariation';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
@@ -311,7 +311,7 @@ interface RuleEntry {
 
 /** 計算値 (要素 1 つ分) */
 interface Computed {
-  v: Map<string, string>;
+  v: ComputedValues;
   /** line-height の数値 (number のまま継承する。値は px にして返す) */
   lhNumber?: number;
   /** 字の大きさ (px) */
@@ -613,6 +613,21 @@ function initialComputed(p: string, kind: Kind, initial: string, colorVal: strin
     INITIAL_COMPUTED.set(p, hit);
   }
   return hit ?? undefined;
+}
+/** NON_INHERITED_DEFAULT・ALWAYS_COMPUTED を作る (初めてカスケードするとき。モジュールの読み込みの途中では、computeKeyword の使う表がまだ無い) */
+function prepareNonInheritedDefaults(): void {
+  if (NON_INHERITED_DEFAULT.size || ALWAYS_COMPUTED.length) return;
+  for (const p of PROP_NAMES) {
+    const [inh, initial, kind] = PROPS[p];
+    if (inh) continue;
+    // 色の初期値が currentcolor のもの: initialComputed は要素の色を返す
+    const d = kind === 'color' ? (initialComputed(p, kind, initial, '\0') === '\0' ? null : initialComputed(p, kind, initial, '')!) : initialComputed(p, kind, initial, '');
+    if (d === undefined) {
+      ALWAYS_COMPUTED.push(p);
+      ALWAYS_COMPUTED_SET.add(p);
+    }
+    else NON_INHERITED_DEFAULT.set(p, d);
+  }
 }
 /** 開発用: 近道の値と本来の計算の値を比べて、食い違いを console.error に出す (環境変数 KUMIORI_CSS_CHECK) */
 const CHECK_FAST = !!(globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.KUMIORI_CSS_CHECK;
@@ -947,7 +962,7 @@ const isColorLike = (t: string) => parseColor(t) !== undefined || /^var\(/i.test
  * 印刷の色の関数: device-cmyk() (CSS Color 5 §12.1 の <color>)。互換の指定のときは、アンテナハウスの cmyk()・rgb-icc() も (htmlPaged の compatOnlyValue)。
  * カスケードは画面の色として読まないので、一括指定 (border・background) の中では色の値として受け、分けた性質の色は既定の色にする。
  * 印刷の色そのものは、読み込みが自前で読んだ宣言から拾う (htmlImport の borderPrint・printOf)。受けないと、一括指定の宣言ごと読めない
- * 宣言として捨てられ、罫線の幅・線種や背景の画像まで消える (PKG-21 (1))
+ * 宣言として捨てられ、罫線の幅・線種や背景の画像まで消える
  */
 const isPrintColor = (t: string, ah: AhFlags) => /^device-cmyk\(.*\)$/i.test(t) || (!!ah.ahPagedValues && /^(?:cmyk|rgb-icc)\(.*\)$/i.test(t));
 
@@ -1215,7 +1230,7 @@ const listStyleShorthand: Expander = (_prop, v, global) => {
   let image = 'none';
   let nones = 0;
   // <'list-style-position'> || <'list-style-image'> || <'list-style-type'> (Lists 3 §3.6): それぞれ 1 つまで。none は、書いていない
-  // type と image の両方に当たるので 2 つまで。合わなければ宣言ごと読めない (以前は、後の語で上書きしていた。PKG-19)
+  // type と image の両方に当たるので 2 つまで。合わなければ宣言ごと読めない (以前は、後の語で上書きしていた)
   const seen = { position: 0, image: 0, type: 0 };
   for (const t of tokens(v)) {
     const tl = t.toLowerCase();
@@ -1237,7 +1252,7 @@ const textDecorationShorthand: Expander = (_prop, v, global) => {
   let style = 'solid';
   let color = 'currentcolor';
   let thickness = 'auto';
-  // どの種類にも当たらない語・同じ種類の 2 つ目の語があれば、宣言ごと読めない (空を返す。CSS 2.1 §4.2。以前は読み飛ばしていた。PKG-19)
+  // どの種類にも当たらない語・同じ種類の 2 つ目の語があれば、宣言ごと読めない (空を返す。CSS 2.1 §4.2。以前は読み飛ばしていた)
   const seen = { style: 0, color: 0, thickness: 0, none: 0 };
   for (const t of tokens(v)) {
     const tl = t.toLowerCase();
@@ -1280,7 +1295,7 @@ const flexShorthand: Expander = (_prop, v, global) => {
     else (basis = t), bases++;
   }
   // none | [ <'flex-grow'> <'flex-shrink'>? || <'flex-basis'> ] (Flexbox 1 §7.1): 数は 2 つまで (3 つ目の単位の無い 0 は flex-basis)、
-  // flex-basis は 1 つまで。合わなければ宣言ごと読めない (以前は、余りの語を読み飛ばしていた。PKG-19)
+  // flex-basis は 1 つまで。合わなければ宣言ごと読めない (以前は、余りの語を読み飛ばしていた)
   if (bases > 1 || nums.length > 3 || (nums.length === 3 && (bases > 0 || parseFloat(nums[2]) !== 0))) return [];
   return [['flex-grow', nums[0] ?? '1'], ['flex-shrink', nums[1] ?? '1'], ['flex-basis', basis]];
 };
@@ -1421,7 +1436,7 @@ shorthand(['columns'], (_p, v, global) => {
   let width = 'auto';
   let count = 'auto';
   // <'column-width'> || <'column-count'> (Multi-column 1 §3.3): 語は 2 つまでで、幅・数はそれぞれ 1 つまで。合わなければ宣言ごと読めない
-  // (以前は、後の語で上書きしていた。PKG-19)
+  // (以前は、後の語で上書きしていた)
   const ts = tokens(v);
   let widths = 0;
   let counts = 0;
@@ -1503,7 +1518,7 @@ export function logicalToPhysical(prop: string, wm: string, dir: string): string
  * 右・下の端からの長さは "right 10px" のように端の語を付けて返す (百分率は 100% から引く)
  */
 function positionXY(ts: string[]): [string, string] {
-  const kw: Record<string, string> = { left: '0%', right: '100%', top: '0%', bottom: '100%', center: '50%' };
+  const kw = { __proto__: null, left: '0%', right: '100%', top: '0%', bottom: '100%', center: '50%' } as unknown as Record<string, string>;
   let x = '0%';
   let y = '0%';
   if (!ts.length) return [x, y];
@@ -1631,6 +1646,91 @@ class VarTable {
       this.parent = this.parent.parent;
     }
     return this;
+  }
+}
+
+/**
+ * 継承する性質の計算値の表。親と違う値 (own) と、親の表への参照 (parent) で持つ (VarTable と同じ考え方)。
+ * 要素ごとに継承する性質の全部を写すと、要素の数 × 性質の数 (100 近く) の項目を持ち、深い入れ子の要素が十数万ある文書
+ * (<b><i><a><font> × 3 万) で 1GB を超えた。親と同じ値は持たない。作り終えたとき (compact) に、自分の 2 倍以下の大きさの親の分は
+ * 自分に写してまとめる (鎖の長さは、性質の数の対数で収まる)
+ */
+class InheritedValues {
+  own = new Map<string, string>();
+  constructor(public parent?: InheritedValues) {}
+  get(name: string): string | undefined {
+    for (let t: InheritedValues | undefined = this; t; t = t.parent) {
+      const v = t.own.get(name);
+      if (v !== undefined) return v;
+    }
+    return undefined;
+  }
+  compact(): void {
+    while (this.parent && this.parent.own.size <= 2 * this.own.size) {
+      const merged = new Map(this.parent.own);
+      for (const [k, v] of this.own) merged.set(k, v);
+      this.own = merged;
+      this.parent = this.parent.parent;
+    }
+  }
+}
+
+/**
+ * 継承しない性質の、宣言の無いときの計算値 (要素によらないもの。PROPS の性質ごと)。null は要素の色 (currentcolor)。
+ * 無いもの (border-*-width は同じ要素の線種で決まる。初期値が読めないもの) は、要素ごとに計算して持つ
+ */
+const NON_INHERITED_DEFAULT = new Map<string, string | null>();
+/** 継承しない性質のうち、宣言が無くても要素ごとに計算するもの (NON_INHERITED_DEFAULT に無いもの) */
+const ALWAYS_COMPUTED: string[] = [];
+const ALWAYS_COMPUTED_SET = new Set<string>();
+/** 計算値を決める前に、性質の表の外で決める性質 (字の大きさ・書体・色・行の高さ。計算値の表を順に決める所では飛ばす) */
+const PRESET_PROPS = new Set(['font-family', 'font-size', 'color', 'text-emphasis-color', 'line-height']);
+
+/**
+ * 要素の計算値の表 (名前 → 計算値)。継承する性質は InheritedValues (親と違う値だけ)、継承しない性質は、宣言の無いときの値
+ * (NON_INHERITED_DEFAULT) と違う値だけを持つ。性質の表 (PROPS) に無い名前 (-kumiori-…・text-decoration など) は、決めた要素だけが持つ。
+ * 引いた値は、すべての性質を要素ごとに持っていたときと同じ
+ */
+class ComputedValues {
+  private own = new Map<string, string>();
+  private inh: InheritedValues;
+  /** inh がこの要素の表か (偽なら親の表をそのまま使っている) */
+  private inhOwn = false;
+  constructor(parent?: ComputedValues) {
+    this.inh = parent ? parent.inh : new InheritedValues();
+    this.inhOwn = !parent;
+  }
+  get(name: string): string | undefined {
+    const def = PROPS[name];
+    if (def?.[0]) return this.inh.get(name);
+    const v = this.own.get(name);
+    if (v !== undefined || !def) return v;
+    const d = NON_INHERITED_DEFAULT.get(name);
+    return d === null ? this.inh.get('color') : d;
+  }
+  set(name: string, value: string): void {
+    const def = PROPS[name];
+    if (def?.[0]) {
+      if (this.inh.get(name) === value) return;
+      if (!this.inhOwn) {
+        this.inh = new InheritedValues(this.inh);
+        this.inhOwn = true;
+      }
+      this.inh.own.set(name, value);
+      return;
+    }
+    if (def && NON_INHERITED_DEFAULT.has(name)) {
+      const d = NON_INHERITED_DEFAULT.get(name);
+      if (value === (d === null ? this.inh.get('color') : d)) {
+        this.own.delete(name);
+        return;
+      }
+    }
+    this.own.set(name, value);
+  }
+  /** 作り終えたとき: 継承する性質の表の鎖を短くする */
+  done(): void {
+    if (this.inhOwn) this.inh.compact();
   }
 }
 
@@ -1864,6 +1964,7 @@ const sheetOf = (css: string | ParsedCss, ah?: AhFlags): ParsedCss => {
  * 計算値を返す StyleSource を作る。既定のスタイルシートは opts.uaCss・uaExtraCss
  */
 export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts: CascadeOptions = {}): StyleSource {
+  prepareNonInheritedDefaults();
   const vw = opts.viewport?.width ?? 794;
   const vh = opts.viewport?.height ?? 1123;
   // アンテナハウスの拡張の読み方 (expand・valid に渡す。この StyleSource の計算にだけ効く)
@@ -2313,7 +2414,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       const dark = usedColorScheme(scheme, pageColorScheme()) === 'dark';
       for (const [p, v] of cascaded) if (/light-dark\(/i.test(v)) cascaded.set(p, resolveLightDark(v, dark));
     }
-    const out: Computed = { v: new Map(), fs: 16, fsKeyword: true, cw: parent?.cw ?? vw, pcw: parent?.pcw ?? vw, vars, specified: cascaded, ...(svgFrom ? { svgFrom } : {}) };
+    const out: Computed = { v: new ComputedValues(parent?.v), fs: 16, fsKeyword: true, cw: parent?.cw ?? vw, pcw: parent?.pcw ?? vw, vars, specified: cascaded, ...(svgFrom ? { svgFrom } : {}) };
     const pv = (p: string) => parent?.v.get(p);
     const valueOf = (p: string): string => {
       const def = PROPS[p];
@@ -2336,7 +2437,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     let fsKw = parent?.fsKeyword ?? true;
     if (fsRaw !== undefined && !/^(inherit|unset)$/i.test(fsRaw)) {
       const k = fsRaw.toLowerCase();
-      const KW: Record<string, number> = { 'xx-small': 9, 'x-small': 10, small: 13, medium: 16, large: 18, 'x-large': 24, 'xx-large': 32, 'xxx-large': 48 };
+      const KW = { __proto__: null, 'xx-small': 9, 'x-small': 10, small: 13, medium: 16, large: 18, 'x-large': 24, 'xx-large': 32, 'xxx-large': 48 } as unknown as Record<string, number>;
       if (k === 'initial') ((fs = 16), (fsKw = true));
       else if (KW[k] !== undefined) ((fs = KW[k]), (fsKw = true));
       else if (k === 'smaller') fs = pfs / 1.2;
@@ -2421,11 +2522,14 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     // 包含ブロックの幅 (百分率の基準)。絶対配置は位置の基準の祖先の padding box、固定配置はページの領域
     const posv = valueOf('position').toLowerCase();
     const cbw = posv === 'fixed' ? vw : posv === 'absolute' ? (parent?.pcw ?? vw) : parent ? parent.cw : vw;
-    for (const p of PROP_NAMES) {
-      if (out.v.has(p)) continue;
+    // 宣言の無いプロパティの近道: 継承するものは親の計算値をそのまま、継承しないものは初期値の計算値 (要素によらないもの) をそのまま使う。
+    // 計算値は既に絶対値 (px・rgb()・語) なので、親の値を解釈し直しても同じ値になる。142 のプロパティを要素ごとに解釈し直す手間を省く。
+    // その値は計算値の表 (ComputedValues) が親の表・初期値の表から引くので、ここでは決めない (根元の要素は、すべて決める)。
+    // 決めるのは、宣言のある性質と、宣言が無くても要素ごとに決まる性質 (ALWAYS_COMPUTED) だけ
+    const toCompute: Iterable<string> = !parent || CHECK_FAST ? PROP_NAMES : [...ALWAYS_COMPUTED, ...[...cascaded.keys()].filter((p) => PROPS[p] && !ALWAYS_COMPUTED_SET.has(p))];
+    for (const p of toCompute) {
+      if (PRESET_PROPS.has(p)) continue;
       const [inh, initial, kind] = PROPS[p];
-      // 宣言の無いプロパティの近道: 継承するものは親の計算値をそのまま、継承しないものは初期値の計算値 (要素によらないもの) をそのまま使う。
-      // 計算値は既に絶対値 (px・rgb()・語) なので、親の値を解釈し直しても同じ値になる。142 のプロパティを要素ごとに解釈し直す手間を省く
       let fast: string | undefined;
       if (!cascaded.has(p)) fast = inh ? parent?.v.get(p) : initialComputed(p, kind, initial, colorVal);
       if (fast !== undefined && !CHECK_FAST) {
@@ -2574,6 +2678,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       out.v.set('background-position', bx.length <= 1 && by.length <= 1 ? `${out.v.get('background-position-x')} ${out.v.get('background-position-y')}` : Array.from({ length: Math.max(bx.length, by.length) }, (_, k) => `${bx[k % bx.length]} ${by[k % by.length]}`).join(', '));
     }
     if (pseudo && !cascaded.has('content')) out.v.set('content', 'none');
+    out.v.done();
     return out;
   };
 
@@ -2723,7 +2828,7 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'column-fill': 'auto balance',
     'writing-mode': 'horizontal-tb vertical-rl vertical-lr sideways-rl sideways-lr lr lr-tb rl rl-tb tb tb-rl',
     'text-transform': 'none capitalize uppercase lowercase full-width full-size-kana math-auto',
-    // 以下は、値の検査が無かった性質 (PKG-19。読めない値でも受け付けていた)。語は、それぞれの仕様の値の定義のとおり
+    // 以下は、値の検査が無かった性質 (読めない値でも受け付けていた)。語は、それぞれの仕様の値の定義のとおり
     // caption-side (CSS 2.1 §17.4.1 の top・bottom、Logical 1 §2.1 の inline-start・inline-end)
     'caption-side': 'top bottom inline-start inline-end',
     // flex-direction・flex-wrap (Flexbox 1 §5.1・§5.2)
@@ -2827,7 +2932,7 @@ export function usedColorScheme(element: string, page: string): 'light' | 'dark'
 }
 
 /**
- * 値の検査が無かった性質の、値の文法 (PKG-19)。どれも、それぞれの仕様の値の定義のとおり。この関数が扱わない性質は undefined
+ * 値の検査が無かった性質の、値の文法。どれも、それぞれの仕様の値の定義のとおり。この関数が扱わない性質は undefined
  * (lv は小文字にした値、ws はその語)
  */
 function validByGrammar(prop: string, lv: string, ws: string[], ctx: LenCtx): boolean | undefined {
@@ -3006,7 +3111,7 @@ function valid(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boolean {
 function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boolean {
   if (/^(inherit|initial|unset|revert|revert-layer)$/i.test(v.trim())) return true;
   // 論理的な罫線の線種 (border-inline-start-style など。表には無い) は、対応する物理的な性質の値として調べる (Logical 1 §4.4: 値は同じ。
-  // 以前は、語の検査を通らずに、どの値も受け付けていた。PKG-19)
+  // 以前は、語の検査を通らずに、どの値も受け付けていた)
   if (/^border-(block|inline)-(start|end)-style$/.test(prop)) return validUncached('border-top-style', v, ctx, ah);
   // always (Fragmentation 4 §3.1: いちばん近い断片化の文脈で改ページ・改段) は、ページでは page と同じ
   if (/^break-(before|after)$/.test(prop)) return /^(auto|avoid|avoid-page|avoid-column|page|column|left|right|recto|verso|always)$/i.test(v.trim());
@@ -3045,7 +3150,7 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   // 1 語だけを取る性質 (float: left right などは読めない)
   if (kw && SINGLE_KEYWORD.has(prop) && tokens(v.toLowerCase()).length !== 1) return false;
   if (kw) return tokens(v.toLowerCase()).every((t) => kw.has(t));
-  // 値の文法を調べる性質 (PKG-19)
+  // 値の文法を調べる性質
   const byGrammar = validByGrammar(prop, v.trim().toLowerCase(), tokens(v.trim().toLowerCase()), ctx);
   if (byGrammar !== undefined) return byGrammar;
   // 数・整数の性質 (Cascade 5 §5: 読めない宣言は捨てる)
@@ -3164,7 +3269,7 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       return CSS_NUMBER.test(lv) ? String(parseFloat(lv)) : '400';
     }
     case 'font-stretch': {
-      const KW: Record<string, string> = { 'ultra-condensed': '50%', 'extra-condensed': '62.5%', condensed: '75%', 'semi-condensed': '87.5%', normal: '100%', 'semi-expanded': '112.5%', expanded: '125%', 'extra-expanded': '150%', 'ultra-expanded': '200%' };
+      const KW = { __proto__: null, 'ultra-condensed': '50%', 'extra-condensed': '62.5%', condensed: '75%', 'semi-condensed': '87.5%', normal: '100%', 'semi-expanded': '112.5%', expanded: '125%', 'extra-expanded': '150%', 'ultra-expanded': '200%' } as unknown as Record<string, string>;
       return KW[lv] ?? raw;
     }
     case 'writing-mode':
@@ -3178,7 +3283,7 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       // 層ごとの値 (コンマ区切り。Backgrounds 3 §2.1) は、層ごとに計算値にする
       const layers = splitTop(raw, ',');
       if (layers.length > 1) return layers.map((l) => computeKeyword(p, l, parent, ctx)).join(', ');
-      const kw: Record<string, string> = { left: '0%', top: '0%', center: '50%', right: '100%', bottom: '100%' };
+      const kw = { __proto__: null, left: '0%', top: '0%', center: '50%', right: '100%', bottom: '100%' } as unknown as Record<string, string>;
       if (kw[lv]) return kw[lv];
       if (/%$/.test(lv)) return lv;
       // 端の語と距離 (right 10px など)。左・上からなら距離だけ。右・下からの百分率は 100% から引き、長さは端の語を残す
@@ -3249,9 +3354,11 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       return out.join(' ');
     }
     case 'content': {
-      // 文字列の中のエスケープ (\A0 など) は字にする (Chrome と同じ)
+      // 文字列は、エスケープを戻した字を、CSS の文字列の書き方で書き直す (CSSOM §2.1 serialize a string。Chrome と同じ)。
+      // 読む側 (parseContent・unquote) は CSS のエスケープとして読むので、JSON の書き方 ("\n") にしない (「\A」が字「n」になる)
       if (/^(normal|none)$/.test(lv)) return lv;
-      return raw.trim().replace(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g, (_m, a?: string, b?: string) => JSON.stringify(unescapeCss(a ?? b ?? '')));
+      // (「\」と改行 (文字列を次の行へ続ける書き方) も、エスケープとして読む: [\s\S])
+      return raw.trim().replace(/"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'/g, (_m, a?: string, b?: string) => serializeCssString(unescapeCss(a ?? b ?? '')));
     }
     case 'background-size': {
       // 層ごとの値 (コンマ区切り。Backgrounds 3 §2.1) は、層ごとに計算値にする

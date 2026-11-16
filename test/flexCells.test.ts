@@ -258,11 +258,14 @@ describe('flex の容器の直下の文字 (無名の項目。Flexbox 1 §4)', (
 
 describe('flex の項目の大きさの上限・下限 (Flexbox 1 §4.5・§9.7)', () => {
   it('min-width: auto は、中身の最も狭い幅 (長い語) より狭く縮めない。min-width: 0 なら縮める', () => {
-    const cols = (mw: string) =>
-      tables(load(`<div style="display: flex; width: 60pt"><p style="margin: 0; ${mw}">Wwwwwwwwwwww a</p><p style="margin: 0; ${mw}">b</p></div>`, PAGE))[0].columns.map((c) => c.width as number);
+    // 縮めるのは組むとき (中身に合わせる列は、組むときに測った幅から縮める。LTableColumn.flexItem)。2 つめの項目の字 b の位置で、1 つめの項目の幅を見る
+    const bAt = (mw: string) => {
+      const r = load(`<div style="display: flex; width: 60pt"><p style="margin: 0; ${mw}">Wwwwwwwwwwww a</p><p style="margin: 0; ${mw}">b</p></div>`, PAGE);
+      return boxes(E.engine.layout(r.document).sheets[0] as unknown as Area).find((a) => a.type === 'glyph' && a.text === 'b')!.x;
+    };
     // 語の幅 (W と w の 12 字。10pt で 60pt を超える) より狭くならない
-    expect(cols('')[0]).toBeGreaterThan(60);
-    expect(cols('min-width: 0')[0]).toBeLessThan(60);
+    expect(bAt('')).toBeGreaterThan(60);
+    expect(bAt('min-width: 0')).toBeLessThan(60);
   });
   it('伸ばすとき max-width で止め、残りをほかの項目で分ける。全部止まれば justify-content で空きを置く', () => {
     const r = load('<div style="display: flex"><p style="margin: 0; flex: 1; max-width: 100pt; background: #ff0000">a</p><p style="margin: 0; flex: 1; background: #0000ff">b</p></div>', PAGE);
@@ -273,8 +276,10 @@ describe('flex の項目の大きさの上限・下限 (Flexbox 1 §4.5・§9.7)
     expect(c.map((x) => (typeof x.width === 'number' ? Math.round(x.width) : x.width))).toEqual(['1*', 100, '1*']);
   });
   it('和文は 1 字ずつ改行できるので、1 字の幅まで縮められる', () => {
-    const c = tables(load('<div style="display: flex; width: 30pt"><p style="margin: 0">日本語の文章</p><p style="margin: 0">あいう</p></div>', PAGE))[0].columns.map((x) => x.width as number);
-    expect(c[0] + c[1]).toBeLessThan(31);
+    const r = load('<div style="display: flex; width: 30pt"><p style="margin: 0">日本語の文章</p><p style="margin: 0">あいう</p></div>', PAGE);
+    const g = boxes(E.engine.layout(r.document).sheets[0] as unknown as Area).filter((a) => a.type === 'glyph');
+    // 2 つの項目の字が、容器の幅 30pt の中に収まる
+    expect(Math.max(...g.map((a) => a.x + a.w))).toBeLessThan(31);
   });
 });
 

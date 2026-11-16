@@ -18,7 +18,8 @@ export function skipString(s: string, i: number): number {
   const q = s[i];
   let k = i + 1;
   // 逃がしていない改行で文字列は終わる (CSS Syntax 3 §4.3.5: bad-string。残りのスタイルシートを飲み込まない)
-  while (k < s.length && s[k] !== q && s[k] !== '\n') k += s[k] === '\\' ? 2 : 1;
+  // 「\」の後ろの CRLF は 1 つの改行 (§3.3 の前処理で LF になる) なので、まとめて飛ばす (§4.3.5: 「\」と改行は文字列を続ける)
+  while (k < s.length && s[k] !== q && s[k] !== '\n') k += s[k] === '\\' ? (s[k + 1] === '\r' && s[k + 2] === '\n' ? 3 : 2) : 1;
   return s[k] === '\n' ? k : k + 1;
 }
 
@@ -117,7 +118,8 @@ export function cssLen(v: string | undefined): number | undefined {
 // ───────────────────────── 色 ─────────────────────────
 
 /** システムの色 (Chrome の既定の値)。古いシステムの色は、Color 4 の付録 A (Deprecated CSS System Colors) の写し先の色 (ThreeDFace → ButtonFace、Window → Canvas、WindowText → CanvasText) */
-const SYSTEM_COLORS: Record<string, string> = { canvas: 'ffffff', canvastext: '000000', linktext: '0000ee', visitedtext: '551a8b', buttonface: 'efefef', buttontext: '000000', buttonborder: '767676', field: 'ffffff', fieldtext: '000000', graytext: '808080', highlight: 'b5d5ff', highlighttext: '000000', threedface: 'efefef', windowtext: '000000', window: 'ffffff' };
+// 色の名前 (入力の値) で引くので、原型を持たない表にする
+const SYSTEM_COLORS = { __proto__: null, canvas: 'ffffff', canvastext: '000000', linktext: '0000ee', visitedtext: '551a8b', buttonface: 'efefef', buttontext: '000000', buttonborder: '767676', field: 'ffffff', fieldtext: '000000', graytext: '808080', highlight: 'b5d5ff', highlighttext: '000000', threedface: 'efefef', windowtext: '000000', window: 'ffffff' } as unknown as Record<string, string>;
 
 export type RGBA = [number, number, number, number];
 

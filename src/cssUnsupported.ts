@@ -11,6 +11,7 @@
 import { isKnownCssProperty } from './cssCascade';
 import { stripImportant } from './cssText';
 import { isPagedDecl, type ParsedCss } from './htmlPaged';
+import { msg } from './messages';
 
 /** 対応していないプロパティ (対応仕様説明書 HTML と CSS 編 16 章) */
 export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
@@ -191,7 +192,10 @@ function count(rep: UnsupportedCssReport, prop: string, value: string, svg = fal
   if (!p || p.startsWith('--') || isPrintIrrelevantCssProperty(p)) return;
   if (SVG_RENDERING_HINTS.has(p)) return;
   if (SVG_ONLY_UNSUPPORTED.has(p)) {
-    if (svg) rep.unsupported[`${p} (SVG の要素)`] = (rep.unsupported[`${p} (SVG の要素)`] ?? 0) + 1;
+    if (svg) {
+      const k = msg(`${p} (SVG の要素)`, `${p} (SVG elements)`);
+      rep.unsupported[k] = (rep.unsupported[k] ?? 0) + 1;
+    }
     return;
   }
   const v = stripImportant(value, false);
@@ -254,7 +258,7 @@ export function summarizeCounts(counts: Record<string, number> | undefined, max 
   const items = Object.entries(counts ?? {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   if (!items.length) return '';
   const head = items.slice(0, max).map(([k, n]) => (n > 1 ? `${k} (${n})` : k));
-  return head.join('、') + (items.length > max ? ` …ほか ${items.length - max} 種` : '');
+  return head.join(msg('、', ', ')) + (items.length > max ? msg(` …ほか ${items.length - max} 種`, ` … and ${items.length - max} more`) : '');
 }
 
 // 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で

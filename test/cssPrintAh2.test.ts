@@ -132,6 +132,19 @@ div.MultiColW {
     // 3 段目 (左端 385pt 付近) にも字がある (直す前は、1 段目を長くするために伸ばして 2 段だけになり、3 段目が空だった)
     expect(r.glyphs.filter((g) => g.text.trim() && g.x >= 380).length).toBeGreaterThan(0);
   });
+  // [見出し A・高さ 100pt の箱・見出し B・高さ h の箱] の 2 段 (字 10pt・行 16pt)。最小の高さでは [A・箱] | [B・箱] になり、2 段目が h − 100pt 長い
+  const twoCols = async (h: number) => {
+    const fo = `<?xml version="1.0" encoding="UTF-8"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" font-size="10pt" line-height="16pt"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="440pt" page-height="600pt"><fo:region-body margin="20pt"/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block-container column-count="2" column-gap="8pt"><fo:block>A</fo:block><fo:block-container height="100pt"><fo:block/></fo:block-container><fo:block>B</fo:block><fo:block-container height="${h}pt"><fo:block/></fo:block-container></fo:block-container></fo:flow></fo:page-sequence></fo:root>`;
+    const r = scan((await typesetFo(fo, { loadFont: loadCachedFont, compat: 'antenna' })).areaTree);
+    return r.glyphs.find((g) => g.text === 'B')!;
+  };
+  it('2 段目が 1 段目より長くても、差が段組の箱の 1em 未満なら伸ばさない (見本 graphics-cgm-1: 画像の箱が 1.24pt 高い)', async () => {
+    // 1.3pt 長い: 見出し B は 2 段目の頭のまま (直す前は、伸ばして B を 1 段目へ引き取っていた)
+    expect((await twoCols(101.3)).x).toBeGreaterThan(220);
+  });
+  it('差が 1em 以上なら、伸ばして 1 段目を長くする (見出し B を 1 段目へ)', async () => {
+    expect((await twoCols(115)).x).toBeLessThan(220);
+  });
 });
 
 describe('-ah-text-decoration-*', () => {
@@ -522,5 +535,63 @@ describe('行グリッドの表のセルの行の送り (HTM-32 (2))', () => {
     expect(ys.length).toBeGreaterThanOrEqual(2);
     // 行の送りは字の大きさ (10pt)。line-height (20pt) の格子に載せない
     expect(ys[1] - ys[0]).toBeCloseTo(10, 0);
+  });
+});
+
+describe('--style ah の既定のスタイル: 見出しの後ろで改ページしない (CSS 2.1 付録 D の @media print)', () => {
+  it('ページの最後に見出しだけが入るときも、見出しを次の段落と一緒に次のページへ送る (作成者の CSS に指定が無くても)', async () => {
+    const lines = Array.from({ length: 11 }, () => '<p>あ</p>').join('');
+    const html = doc(`${lines}<h3>見</h3><p>い</p>`, 'h3 { margin: 0; font-size: 20pt; line-height: 30pt }');
+    const pageOf = async (style?: 'ah') => {
+      const tree = (await typesetHtml(html, { loadFont: loadCachedFont, ...(style ? { style } : {}) })).areaTree;
+      return tree.sheets.findIndex((_, k) => scan(tree, k).glyphs.some((g) => g.text === '見'));
+    };
+    // 11 行で見出しまでがちょうど 1 ページ目に入り、次の段落は入らない。見出しは 2 ページ目 (番号 1) へ送る
+    expect(await pageOf('ah')).toBe(1);
+  });
+});
+
+describe('行グリッドの表の見出し (caption) (HTM-74)', () => {
+  it('-ah-baseline-grid: new の表の見出しは、セルと同じに、最初の行の前と最後の行の後ろに半行間を付けない', async () => {
+    const html = doc('<table><caption>見</caption><tr><td>表</td></tr></table>', 'table { font-size: 10pt; line-height: 20pt; -ah-baseline-grid: new; border-collapse: collapse } caption, td { padding: 0 }');
+    const r = scan((await typesetHtml(html, { loadFont: loadCachedFont })).areaTree);
+    const cap = r.glyphs.find((g) => g.text === '見')!;
+    const cell = r.glyphs.find((g) => g.text === '表')!;
+    // y は字の基線。見出しの基線は、内容の上端 (20pt) から字の em の箱の上の長さ (10pt 未満) だけ下。上に半行間 (5pt) を空けると 10pt を超える
+    expect(cap.y - 20).toBeLessThan(10);
+    // セルの基線は、見出しの基線から字の大きさ (10pt) 下。見出しの下とセルの上に半行間を空けない (空けると 20pt)
+    expect(cell.y - cap.y).toBeCloseTo(10, 0);
+  });
+});
+
+describe('行グリッドの段組の中の段組フロート (float: multicol top) (HTM-73 (2))', () => {
+  const html = doc(
+    '<div class="mc"><p>あいうえおかきくけこさしすせそ</p><div class="f"><p>見</p></div><p>たちつてと</p></div>',
+    '.mc { columns: 3; column-gap: 10pt; -ah-baseline-grid: new; font-size: 10pt; line-height: 18pt } .f { float: multicol top start; width: 3gr; border: 3pt solid orange; padding: 3pt; box-sizing: border-box }',
+  );
+  it('箱の中身は、セルと同じに半行間を付けず em の箱を積む (箱の高さは罫線と内側の余白と字の大きさ)', async () => {
+    const r = scan((await typesetHtml(html, { loadFont: loadCachedFont, style: 'ah' })).areaTree);
+    const box = r.borders.find((b) => b.w > 100)!;
+    // 罫線 3pt × 2 + 内側の余白 3pt × 2 + 字の大きさ 10pt。半行間 (4pt × 2) を付けると 30pt
+    expect(box.h).toBeCloseTo(22, 0);
+  });
+  it('箱の下の段の本文は、段組の箱の内容の上端から引いた行グリッド (18pt おき) に載る (箱の下端から引き直さない)', async () => {
+    const r = scan((await typesetHtml(html, { loadFont: loadCachedFont, style: 'ah' })).areaTree);
+    const box = r.borders.find((b) => b.w > 100)!;
+    const first = r.glyphs.find((g) => g.text === 'あ')!;
+    // 段組の箱の内容の上端は箱の上端 (箱は段組の先頭)。本文の行の字の位置は、そこから 18pt の整数倍 (箱の下端から引き直すと 4pt ずれる)
+    const steps = (first.y - box.y) / 18;
+    expect(Math.abs(steps - Math.round(steps))).toBeLessThan(0.02);
+    expect(first.y).toBeGreaterThan(box.y + box.h);
+  });
+});
+
+describe('--style ah: 行がページに入るかの判定の許容 (HTM-77)', () => {
+  // 本文の高さは 359.97pt (用紙 399.97pt - 上下の余白 40pt)。30pt の行が 12 行で 360pt になり、0.03pt はみ出す
+  const html = doc(Array.from({ length: 12 }, () => '<p>あ</p>').join(''), '@page { size: 400pt 399.97pt; margin: 20pt }');
+  it('--style ah は、0.03pt ほどのはみ出しを許して、その行を同じページに置く (AH の見本: CSS-Print 第 4 版の 75 ページ)。ほかのスタイルは次のページへ送る', async () => {
+    const pages = async (style?: 'ah') => (await typesetHtml(html, { loadFont: loadCachedFont, ...(style ? { style } : {}) })).areaTree.sheets.length;
+    expect(await pages('ah')).toBe(1);
+    expect(await pages()).toBe(2);
   });
 });

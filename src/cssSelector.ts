@@ -32,8 +32,17 @@ export interface Selector {
   /** 疑似要素 (before / after など。無ければ undefined) */
   pseudoElement?: string;
   specificity: number;
-  /** :has() か :nth-child(… of S) を含む (入れ子の中も)。照合の結果を覚えて使う (SelectorMemo) */
+  /** :has() か :nth-child(… of S) を含むか、backtrack のセレクタを含む (入れ子の中も)。照合の結果を覚えて使う (SelectorMemo) */
   heavy?: boolean;
+  /** 後戻りする結合子 (子孫 ( )・後続の兄弟 (~)) を 2 つ以上持つ。照合の途中の結果を覚えて使う (SelectorMemo.chain・SelectorMemo.bt) */
+  backtrack?: boolean;
+  /** backtrack のセレクタで、結合子がすべて同じ (すべて子孫か、すべて後続の兄弟)。その結合子。要素ごとに 1 つの数を覚えて照合する (SelectorMemo.chain) */
+  chain?: ' ' | '~';
+  /**
+   * 照合の手間が大きすぎるので、どの要素にも当てないセレクタ (結合子の種類が混ざった backtrack のセレクタで、複合セレクタの数が
+   * MAX_BACKTRACK_COMPOUNDS を超えるもの。:is()・:not()・:has() などの中にそれを含むものも)
+   */
+  tooComplex?: boolean;
   /** どれかの複合セレクタが :scope を見る (Compound.usesScope) */
   usesScope?: boolean;
 }
@@ -45,6 +54,17 @@ export interface Selector {
  */
 const MAX_SELECTOR_NESTING = 32;
 let selectorNesting = 0;
+
+/**
+ * 後戻りする結合子 (子孫・後続の兄弟) を 2 つ以上持ち、結合子の種類が混ざったセレクタ (a ~ b c など) の、複合セレクタの数の上限。
+ * 超えるセレクタは、どの要素にも当てない (Selector.tooComplex。カスケードは警告に出す)。
+ * そのようなセレクタの照合は、途中の結果を (複合セレクタの位置, 要素) ごとに覚えるので (SelectorMemo.bt)、手間と覚えの大きさが
+ * 複合セレクタの数 × 要素の数になる。数千の結合子を重ねたセレクタ (入力の長さの 2 乗) で、メモリを使い切ってプロセスが落ちていた。
+ * 実在のスタイルシートのセレクタの複合セレクタは十数個まで (後戻りする結合子を何十も重ねたものは無い) なので、64 あれば届かない。
+ * 64 なら、要素 10 万個の文書でも、1 つのセレクタの照合は数百万回・覚えは十数 MB に収まる。
+ * 結合子がすべて同じ種類のセレクタ (Selector.chain) は、要素の数に比例する手間で照合するので、上限を置かない
+ */
+export const MAX_BACKTRACK_COMPOUNDS = 64;
 
 const spec = (a: number, b: number, c: number) => a * 1e6 + b * 1e3 + c;
 
@@ -109,6 +129,7 @@ function parseComplex1(text: string): Selector | undefined {
   let cur: Compound = { ids: [], classes: [], attrs: [], pseudos: [] };
   let empty = true;
   let heavy = false;
+  let tooComplex = false;
   let curScope = false;
   const s = text;
   const push = () => {
@@ -210,9 +231,11 @@ function parseComplex1(text: string): Selector | undefined {
             p.subSiblings.push(/^[+~]/.test(rel.trim()));
           }
           heavy = true;
+          if (p.sub.some((x) => x.tooComplex)) tooComplex = true;
         } else {
           p.sub = parseSelectorList(arg ?? '', forgiving);
           if (p.sub.some((x) => x.heavy)) heavy = true;
+          if (p.sub.some((x) => x.tooComplex)) tooComplex = true;
           if (p.sub.some((x) => x.usesScope)) curScope = true;
         }
         if (!p.sub.length && !forgiving) return undefined;
@@ -234,6 +257,7 @@ function parseComplex1(text: string): Selector | undefined {
             p.of = parseSelectorList(ofM[2]);
             if (!p.of.length) return undefined;
             heavy = true;
+            if (p.of.some((x) => x.tooComplex)) tooComplex = true;
             if (p.of.some((x) => x.usesScope)) curScope = true;
             const top = Math.max(0, ...p.of.map((x) => x.specificity));
             a += Math.floor(top / 1e6);
@@ -267,7 +291,23 @@ function parseComplex1(text: string): Selector | undefined {
   // 右から左に並べる
   compounds.reverse();
   combs.reverse();
-  return { compounds, combs, ...(pseudoElement ? { pseudoElement } : {}), specificity: spec(a, b, c), ...(heavy ? { heavy } : {}), ...(compounds.some((x) => x.usesScope) ? { usesScope: true } : {}) };
+  // 子孫・後続の兄弟の結合子が 2 つ以上あると、素直な後戻りの照合は、合わない祖先 (兄弟) の選び方を総当たりする (SelectorMemo.chain・SelectorMemo.bt)
+  const backtrack = combs.filter((x) => x === ' ' || x === '~').length >= 2;
+  if (backtrack) heavy = true;
+  // 結合子がすべて同じなら、要素ごとに 1 つの数を覚えて照合する (chainPrefix)。混ざっていれば (位置, 要素) ごとに覚えるので、複合セレクタの数に上限を置く
+  const chain = backtrack && combs.every((x) => x === combs[0]) ? (combs[0] as ' ' | '~') : undefined;
+  if (backtrack && !chain && compounds.length > MAX_BACKTRACK_COMPOUNDS) tooComplex = true;
+  return {
+    compounds,
+    combs,
+    ...(pseudoElement ? { pseudoElement } : {}),
+    specificity: spec(a, b, c),
+    ...(heavy ? { heavy } : {}),
+    ...(backtrack ? { backtrack } : {}),
+    ...(chain ? { chain } : {}),
+    ...(tooComplex ? { tooComplex } : {}),
+    ...(compounds.some((x) => x.usesScope) ? { usesScope: true } : {}),
+  };
 }
 
 /**
@@ -379,16 +419,44 @@ export interface SelectorMemo {
   lastSib: Map<Selector, WeakMap<Node, Element | null>>;
   /** :nth-child(… of S) の疑似クラス → 親 → S に合う子の順 */
   of: Map<object, WeakMap<Node, OfInfo>>;
+  /**
+   * 子孫の結合子の左側: セレクタ → 複合セレクタの位置 k → 要素 → その要素か祖先が、セレクタの k から先 (matchFrom(・, sel, k)) に合うか。
+   * 深い入れ子 (128 段) の要素が多い文書で、要素ごとに祖先を根まで照合し直すと、段数 × 要素の数 × 規則の数の手間になる
+   * (<h1><button> × 5 万で、既定のスタイルの :is(article, aside, nav, section) h1 などの照合に 3 秒)。scope の無い照合だけで使う
+   */
+  anc?: Map<Selector, Array<WeakMap<Element, boolean> | undefined>>;
+  /**
+   * 結合子がすべて同じ backtrack のセレクタ (Selector.chain) の照合の途中の結果: セレクタ → 基準 (:scope を見ないセレクタは基準によらず 1 つ)
+   * → 要素 → chainPrefix の数 (祖先 (前の兄弟) に、左端から順に貪欲に合わせられた複合セレクタの数)。
+   * 覚えが無いと、div を子孫の結合子で 60 個つないだセレクタ 500 個と 60 段の入れ子の div (126KB) で、合わない祖先の選び方を
+   * 総当たりして (結合子の数 × 段数の組み合わせ) 30 秒を超えた。要素ごとに 1 つの数なので、手間と覚えの大きさは要素の数に比例する
+   */
+  chain?: Map<Selector, Map<object, WeakMap<Element, number>>>;
+  /**
+   * 結合子の種類が混ざった backtrack のセレクタの照合の途中の結果: セレクタ → 基準 → 要素 → 複合セレクタの位置 k ごとの 1 バイト
+   * (BT_AT: matchFrom(要素, sel, k) / BT_UP: その要素か祖先が合うか / BT_BACK: その要素か前の兄弟が合うか。それぞれ 2 ビットで、0 は未定・1 は偽・2 は真)。
+   * 手間と覚えの大きさは 複合セレクタの数 × 要素の数 に比例するので、複合セレクタの数に上限を置く (MAX_BACKTRACK_COMPOUNDS)
+   */
+  bt?: Map<Selector, Map<object, BtTable>>;
 }
+type BtTable = WeakMap<Element, Uint8Array>;
+const BT_AT = 0;
+const BT_UP = 2;
+const BT_BACK = 4;
+/** 基準の無い照合と、:scope を見ないセレクタの照合の、覚えの鍵 */
+const NO_SCOPE = {};
 interface OfInfo { scope: Element | undefined; first: Node | null; last: Node | null; pos: Map<Element, number>; count: number }
 export const createSelectorMemo = (): SelectorMemo => ({ has: new Map(), desc: new Map(), lastSib: new Map(), of: new Map() });
 
 /** 要素がセレクタに合うか (疑似要素の部分は見ない)。memo は、木が変わらない間に続けて呼ぶときの覚え (SelectorMemo) */
 export function matches(el: Element, sel: Selector, scope?: Element, memo?: SelectorMemo): boolean {
+  if (sel.tooComplex) return false;
   return matchFrom(el, sel, 0, scope, memo ?? (sel.heavy ? createSelectorMemo() : undefined));
 }
 
 function matchFrom(el: Element, sel: Selector, k: number, scope: Element | undefined, memo: SelectorMemo | undefined): boolean {
+  if (memo && sel.chain) return matchCompound(el, sel.compounds[k], scope, memo) && chainPrefix(el, sel, scope, memo) >= sel.compounds.length - 1 - k;
+  if (memo && sel.backtrack) return matchBt(el, sel, k, scope, memo, btTable(memo, sel, scope));
   if (!matchCompound(el, sel.compounds[k], scope, memo)) return false;
   if (k === sel.compounds.length - 1) return true;
   const comb = sel.combs[k];
@@ -397,8 +465,15 @@ function matchFrom(el: Element, sel: Selector, k: number, scope: Element | undef
     return !!p && matchFrom(p, sel, k + 1, scope, memo);
   }
   if (comb === ' ') {
-    for (let p = parentEl(el); p; p = parentEl(p)) if (matchFrom(p, sel, k + 1, scope, memo)) return true;
-    return false;
+    // 近い祖先は、そのまま照合する (浅い文書では、覚えを引くより速い)。遠い祖先は、覚え (SelectorMemo.anc) を使う
+    let p = parentEl(el);
+    for (let n = 0; p && n < ANCESTOR_MEMO_FROM; p = parentEl(p), n++) if (matchFrom(p, sel, k + 1, scope, memo)) return true;
+    if (!p) return false;
+    if (!memo || scope) {
+      for (; p; p = parentEl(p)) if (matchFrom(p, sel, k + 1, scope, memo)) return true;
+      return false;
+    }
+    return selfOrAncestorMatches(p, sel, k + 1, memo);
   }
   if (comb === '+') {
     const p = prevEl(el);
@@ -406,6 +481,138 @@ function matchFrom(el: Element, sel: Selector, k: number, scope: Element | undef
   }
   for (let p = prevEl(el); p; p = prevEl(p)) if (matchFrom(p, sel, k + 1, scope, memo)) return true;
   return false;
+}
+
+/** :scope を見ないセレクタは、基準によらない覚えを使う */
+const scopeKey = (sel: Selector, scope: Element | undefined): object => (sel.usesScope && scope ? scope : NO_SCOPE);
+
+/**
+ * 結合子がすべて同じ (子孫か後続の兄弟) セレクタ (Selector.chain) で、要素 el の前 (子孫なら祖先、後続の兄弟なら前の兄弟。遠い方から順に並べる) に、
+ * 左端の複合セレクタから順に、いくつまで合わせられるか (左端から数えた複合セレクタの数。複合セレクタの数 − 1 まで)。
+ * 結合子がすべて同じなら、セレクタの左から i 個の複合セレクタが、el の前の要素の並びに、この順で (間を空けてよく) 合うことが、
+ * matchFrom(el, sel, 複合セレクタの数 − 1 − i) の、el 自身の複合セレクタより左の部分の条件 (Selectors 4 §16.1・§16.4)。
+ * 並びの中に順に合うものを探すのは、前から貪欲に合わせて取りこぼさない (最初に合う所で合わせても、後の複合セレクタの選べる要素は減らない) ので、
+ * 要素ごとに 1 つの数で足りる: 前の要素 p の数が g なら、p が左から g + 1 番目の複合セレクタに合えば g + 1、合わなければ g。
+ * 数は要素ごとに覚え、覚えの無い要素は、前へたどって覚えのある要素から順に決める (再帰を使わない)。
+ * 手間は、要素ごとに複合セレクタの照合 1 回 (位置ごとに照合し直すと、複合セレクタの数 × 要素の数になる)
+ */
+function chainPrefix(el: Element, sel: Selector, scope: Element | undefined, memo: SelectorMemo): number {
+  const byScope = (memo.chain ??= new Map()).get(sel) ?? memo.chain.set(sel, new Map()).get(sel)!;
+  const key = scopeKey(sel, scope);
+  let t = byScope.get(key);
+  if (!t) byScope.set(key, (t = new WeakMap()));
+  const up = sel.chain === ' ';
+  const last = sel.compounds.length - 1;
+  const path: Element[] = [];
+  let p: Element | null = el;
+  let g = 0;
+  for (; p; p = up ? parentEl(p) : prevEl(p)) {
+    const known = t.get(p);
+    if (known !== undefined) {
+      g = known;
+      break;
+    }
+    path.push(p);
+  }
+  // p は覚えのあった要素 (数は g)。null なら、path の最後の要素は前の要素を持たない (数は 0)
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (p) g = g < last && matchCompound(p, sel.compounds[last - g], scope, memo) ? g + 1 : g;
+    else g = 0;
+    p = path[i];
+    t.set(p, g);
+  }
+  return g;
+}
+
+/** 結合子の種類が混ざった backtrack のセレクタの照合の覚え (SelectorMemo.bt) の、このセレクタ・この基準の分 */
+function btTable(memo: SelectorMemo, sel: Selector, scope: Element | undefined): BtTable {
+  const byScope = (memo.bt ??= new Map()).get(sel) ?? memo.bt.set(sel, new Map()).get(sel)!;
+  const key = scopeKey(sel, scope);
+  let t = byScope.get(key);
+  if (!t) byScope.set(key, (t = new WeakMap()));
+  return t;
+}
+const btGet = (t: BtTable, el: Element, k: number, field: number): boolean | undefined => {
+  const v = ((t.get(el)?.[k] ?? 0) >> field) & 3;
+  return v ? v === 2 : undefined;
+};
+const btSet = (t: BtTable, el: Element, k: number, field: number, size: number, r: boolean) => {
+  let cell = t.get(el);
+  if (!cell) t.set(el, (cell = new Uint8Array(size)));
+  cell[k] = (cell[k] & ~(3 << field)) | ((r ? 2 : 1) << field);
+};
+
+/**
+ * matchFrom と同じ答えを、(位置 k, 要素) ごとに覚えて出す (結合子の種類が混ざった Selector.backtrack のセレクタ)。
+ * 子孫 (後続の兄弟) の結合子は「親か祖先 (前の兄弟) のどれかが k + 1 から先に合うか」なので、それも要素ごとに覚える
+ */
+function matchBt(el: Element, sel: Selector, k: number, scope: Element | undefined, memo: SelectorMemo, t: BtTable): boolean {
+  const known = btGet(t, el, k, BT_AT);
+  if (known !== undefined) return known;
+  let r: boolean;
+  if (!matchCompound(el, sel.compounds[k], scope, memo)) r = false;
+  else if (k === sel.compounds.length - 1) r = true;
+  else {
+    const comb = sel.combs[k];
+    if (comb === '>' || comb === '+') {
+      const p = comb === '>' ? parentEl(el) : prevEl(el);
+      r = !!p && matchBt(p, sel, k + 1, scope, memo, t);
+    } else {
+      const up = comb === ' ';
+      const p = up ? parentEl(el) : prevEl(el);
+      r = !!p && selfOrNextMatchesBt(p, up, sel, k + 1, scope, memo, t);
+    }
+  }
+  btSet(t, el, k, BT_AT, sel.compounds.length, r);
+  return r;
+}
+
+/** 要素 from か、その祖先 (up が false なら前の兄弟) が matchBt(・, k) に合うか。たどった要素ごとに答えを覚える */
+function selfOrNextMatchesBt(from: Element, up: boolean, sel: Selector, k: number, scope: Element | undefined, memo: SelectorMemo, t: BtTable): boolean {
+  const field = up ? BT_UP : BT_BACK;
+  const chain: Element[] = [];
+  let found = false;
+  for (let p: Element | null = from; p; p = up ? parentEl(p) : prevEl(p)) {
+    const known = btGet(t, p, k, field);
+    if (known !== undefined) {
+      found = known;
+      break;
+    }
+    chain.push(p);
+    if (matchBt(p, sel, k, scope, memo, t)) {
+      found = true;
+      break;
+    }
+  }
+  // たどった要素は、どれも合った要素 (か、覚えのあった要素) より下 (後) で、その間の要素は合わなかったので、答えは同じ
+  for (const p of chain) btSet(t, p, k, field, sel.compounds.length, found);
+  return found;
+}
+
+/** 子孫の結合子で、この段数より遠い祖先の照合には覚え (SelectorMemo.anc) を使う */
+const ANCESTOR_MEMO_FROM = 16;
+
+/** 要素 from か、その祖先が matchFrom(・, sel, k) に合うか (scope の無い照合。結果を from から合った要素までの要素ごとに覚える) */
+function selfOrAncestorMatches(from: Element, sel: Selector, k: number, memo: SelectorMemo): boolean {
+  const bySel = (memo.anc ??= new Map()).get(sel) ?? memo.anc.set(sel, []).get(sel)!;
+  const m = (bySel[k] ??= new WeakMap());
+  const chain: Element[] = [];
+  let found = false;
+  for (let p: Element | null = from; p; p = parentEl(p)) {
+    const known = m.get(p);
+    if (known !== undefined) {
+      found = known;
+      break;
+    }
+    chain.push(p);
+    if (matchFrom(p, sel, k, undefined, memo)) {
+      found = true;
+      break;
+    }
+  }
+  // たどった要素は、どれも合った要素 (か、覚えのあった要素) の子孫で、それより下の要素は合わなかったので、答えは同じ
+  for (const p of chain) m.set(p, found);
+  return found;
 }
 
 function attrValue(el: Element, name: string): string | null {

@@ -66,6 +66,9 @@ function ahRelativeWeight(faces: Map<string, number[]>): (family: string, parent
 export const AH_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   blankPageName: 'previous',
   autospaceWidth: 0.25,
+  // 和欧間のアキの相手は、ラテン文字・数字だけ (これまでの範囲)。見本の PDF (CSS-Print 第 4 版) には、和字とギリシャ文字・キリル文字などが
+  // 本文で隣り合う所が無く、AH Formatter が CSS Text 4 §8.4.1 の範囲まで空けるかを確かめられないため
+  autospaceLatinOnly: true,
   footnoteMarkerOutside: true,
   pageContextFontSize: 10,
   pageGroupFirst: true,
@@ -100,14 +103,40 @@ export const BROWSER_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> =
   normalLineHeightAllFonts: true,
 };
 
+/**
+ * HTML の読み込み (importHtml) の、Vivliostyle・WeasyPrint の既定のスタイル (--style vivliostyle・weasyprint) の設定:
+ * 和欧間のアキの相手は、ラテン文字・数字だけ (これまでの範囲)。和字とギリシャ文字などが隣り合う所を、それぞれの見本で確かめられていないため
+ */
+export const VIVLIOSTYLE_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
+  autospaceLatinOnly: true,
+};
+export const WEASYPRINT_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
+  autospaceLatinOnly: true,
+};
+
 /** 既定のスタイル (style) ごとの、HTML の読み込みの互換の設定 (画面 (main.ts) と API (api.ts) で同じものを使う) */
 export function htmlImportCompatOptions(style: HtmlDefaults): Readonly<Partial<HtmlImportOptions>> {
-  return style === 'ah' ? AH_HTML_IMPORT_OPTIONS : style === 'browser' || style === 'browser-margin' ? BROWSER_HTML_IMPORT_OPTIONS : {};
+  switch (style) {
+    case 'ah':
+      return AH_HTML_IMPORT_OPTIONS;
+    case 'browser':
+    case 'browser-margin':
+      return BROWSER_HTML_IMPORT_OPTIONS;
+    case 'vivliostyle':
+      return VIVLIOSTYLE_HTML_IMPORT_OPTIONS;
+    case 'weasyprint':
+      return WEASYPRINT_HTML_IMPORT_OPTIONS;
+    default:
+      return {};
+  }
 }
 
-/** 組版 (LayoutEngine) の互換の設定: アンテナハウス互換では、字の組の詰め方 (kernAh) */
-export function compatLayoutOptions(ah: boolean): Pick<LayoutOptions, 'kernAh'> {
-  return ah ? { kernAh: true } : {};
+/**
+ * 組版 (LayoutEngine) の互換の設定: アンテナハウス互換では、字の組の詰め方 (kernAh) と、行がページに入るかの判定の許容 (lineFitToleranceAh) と、
+ * 列の幅の指定の無い固定の列幅の表の列の配り方 (fixedColumnBordersAh。XSL-FO はモードに関わらずこの配り方なので、効くのは HTML の --style ah)
+ */
+export function compatLayoutOptions(ah: boolean): Pick<LayoutOptions, 'kernAh' | 'lineFitToleranceAh' | 'fixedColumnBordersAh'> {
+  return ah ? { kernAh: true, lineFitToleranceAh: true, fixedColumnBordersAh: true } : {};
 }
 
 /**

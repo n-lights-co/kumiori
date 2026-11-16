@@ -210,10 +210,30 @@ describe('HTML: 論理ツリーへの変換', () => {
     expect(fns2[0].referenceLineHeight).toBeCloseTo(7.8, 5);
   });
   it('::before の印刷の色 (rgb-icc の特色) を使う', () => {
-    const css = `h3::before { content: "1.1 "; color: rgb(0, 61, 25); color: rgb-icc(0, 61, 25, #Separation, 'PANTONE 627 PC') }`;
+    const css = `h3::before { content: "1.1 "; color: rgb(0, 61, 25); color: rgb-icc(0, 61, 25, #Separation, 'Ink A') }`;
     const doc = new DOMParser().parseFromString(`<html><head><style>${css}</style></head><body><h3>見出し</h3></body></html>`, 'text/html') as unknown as Document;
-    const r = importHtml(doc, cascadeStyles(doc, css, { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }), { css, spotColors: { 'PANTONE 627 PC': [0.94, 0.34, 0.6, 0.82] }, ahCssExtensions: true });
+    const r = importHtml(doc, cascadeStyles(doc, css, { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 } }), { css, spotColors: { 'Ink A': [0.2, 0.4, 0.6, 0.8] }, ahCssExtensions: true });
     expect(JSON.stringify(r.document.sequences[0].flow)).toMatch(/"color":"spot\(/);
+  });
+  it('同じ規則の中で後に書いた印刷の色の宣言が勝つ (CSS Cascade 4 §6.4。--style ah の rgb-icc()・cmyk()、どのスタイルでも device-cmyk()。PKG-21 (5))', () => {
+    const css =
+      '.r { color: #00f; color: rgb-icc(255, 0, 0, #CMYK, 0, 1, 1, 0) } .k { color: #00f; color: cmyk(0, 1, 0, 0) } .d { color: #00f; color: device-cmyk(1 0 0 0) }' +
+      ' .b { color: rgb-icc(255, 0, 0, #CMYK, 0, 1, 1, 0); color: #00f } .z { color: #00f; color: zzz(1) }';
+    const html = (body: string) => `<html><head><style>${css}</style></head><body>${body}</body></html>`;
+    const colorsOf = (body: string, ah: boolean) => {
+      const doc = new DOMParser().parseFromString(html(body), 'text/html') as unknown as Document;
+      const r = importHtml(doc, cascadeStyles(doc, css, { uaCss: HTML_UA_CSS, viewport: { width: 600, height: 800 }, ahPagedValues: ah }), { css, ahCssExtensions: ah });
+      const out: string[] = [];
+      JSON.stringify(r.document.sequences[0].flow, (_k, v) => (v && v.type === 'block' && v.children?.length === 1 && /^[A-Z]$/.test(v.children[0]) && out.push(`${v.children[0]}:${v.color ?? ''}`), v));
+      return { out, unsupported: Object.keys(r.report.unsupported) };
+    };
+    const body = '<p class="r">R</p><p class="k">K</p><p class="d">D</p><p class="b">B</p><p class="z">Z</p>' + '<p style="color: #00f; color: rgb-icc(255, 0, 0, #CMYK, 0, 0, 1, 0)">S</p><p style="color: device-cmyk(0 0 0 1); color: #0f0">T</p>';
+    // --style ah: rgb-icc()・cmyk() も色として読むので、後の宣言 (印刷の色) が勝つ。後に書いた #00f・#0f0 も勝つ
+    expect(colorsOf(body, true).out).toEqual(['R:cmyk(0,1,1,0)', 'K:cmyk(0,1,0,0)', 'D:cmyk(1,0,0,0)', 'B:#0000ff', 'Z:#0000ff', 'S:cmyk(0,0,1,0)', 'T:#00ff00']);
+    // ほかのスタイル: rgb-icc()・cmyk() は無効の値なので捨て (警告に出す)、前の宣言が残る。device-cmyk() は CSS Color 5 §12.1 の色なので勝つ
+    const std = colorsOf(body, false);
+    expect(std.out).toEqual(['R:#0000ff', 'K:#0000ff', 'D:cmyk(1,0,0,0)', 'B:#0000ff', 'Z:#0000ff', 'S:#0000ff', 'T:#00ff00']);
+    expect(std.unsupported).toContain('color: rgb-icc() (--style ah のときだけ解釈する値)');
   });
   it('ブロックの間の br は改行の行として残す (空白だけの文字列は捨てる)', () => {
     const r = load('<div><div>a</div>\n<br />\n<div>b</div>\n</div>');

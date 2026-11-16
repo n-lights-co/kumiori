@@ -78,7 +78,11 @@ h6 { bookmark-level: 6 }
  * padding の側に置く。作成者スタイルシート で padding-left を指定すれば、その値だけ字下げする)。
  * figure (付録 D には無い要素) の左右の余白は 0 にする (図は本文の幅いっぱいに置く。ブラウザの既定の左右 40px の余白は付けない)
  * sub・sup は、付録 D に line-height の指定が無い (https://www.w3.org/TR/CSS2/sample.html 、2026-11-05 取得) ので、
- * ブラウザの既定 (WHATWG 15.3.4 の line-height: normal) を打ち消して、親の line-height を受け継ぐ
+ * ブラウザの既定 (WHATWG 15.3.4 の line-height: normal) を打ち消して、親の line-height を受け継ぐ。
+ * 付録 D の @media print の 3 つの規則のうち、入れるのは見出しの後ろで改ページしない規則 (h1〜h6 の page-break-after: avoid) だけ。
+ * 見本の PDF (CSS-Print 第 4 版) では、改ページを避ける指定の無い「はじめに」の h3 を、ページの最後に空きがあっても次の段落と一緒に
+ * 次のページへ送る。ほかの 2 つ (h1 の page-break-before: always、ul・ol・dl の page-break-before: avoid) は、入れると
+ * 見本より 2 ページ増える (見本の組み方と合わない) ので入れない
  *
  * 付録 D の規則は、取得した文書 (W3C Recommendation 07 June 2011, edited in place 12 April 2016 to point to new work,
  * edited in place 07 December 2021 to correct markup) から写し、上のとおり一部を変えた。
@@ -106,6 +110,9 @@ ol, ul, dir, menu, dd { margin-left: 40px; padding-left: 0; }
 ol, ul { margin-left: 0; padding-left: 2.5em; }
 ol ul, ul ol, ul ul, ol ol { margin-top: 0; margin-bottom: 0; }
 figure { margin-left: 0; margin-right: 0; }
+@media print {
+  h1, h2, h3, h4, h5, h6 { page-break-after: avoid }
+}
 `;
 
 /**

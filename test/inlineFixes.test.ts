@@ -406,6 +406,17 @@ describe('text-align: inside・outside (アンテナハウスの拡張の値。X
     expect(a[0].right).toBeCloseTo(380, 0);
     expect(a[1].left).toBeCloseTo(20, 0);
   });
+  it('--style ah: 深い入れ子の中の段落も、祖先の指定を受け継ぐ (祖先をたどった答えを覚えて使い回す。HTM-65)', async () => {
+    const deep = (open: string, n: number) => open + '<div>'.repeat(n) + '<p>一二三</p><p class="b">一二三</p>' + '</div>'.repeat(n) + '</div>';
+    // 30 段下の段落 (2 つの段落が、同じ祖先をたどる)
+    const d = await pages(deep('<div style="text-align: outside">', 30), 'ah', 'p { text-align: inherit }');
+    expect(d[0].right).toBeCloseTo(380, 0);
+    expect(d[1].left).toBeCloseTo(20, 0);
+    // 途中の段の CSS の値 (left) で切れる: その下は left を受け継ぐ
+    const cut = await pages('<div style="text-align: outside">' + '<div>'.repeat(10) + deep('<div style="text-align: left">', 10) + '</div>'.repeat(10) + '</div>', 'ah', 'p { text-align: inherit }');
+    expect(cut[0].left).toBeCloseTo(20, 0);
+    expect(cut[1].left).toBeCloseTo(20, 0);
+  });
   it('--style ah: 規則の宣言・継承・打ち消し', async () => {
     // 規則で指定した親から受け継ぐ
     const inh = await pages('<div class="o"><p>一二三</p><p class="b">一二三</p></div>', 'ah', 'p { text-align: inherit } .o { text-align: outside }');

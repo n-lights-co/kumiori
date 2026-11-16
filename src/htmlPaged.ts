@@ -7,13 +7,14 @@
  *  - content の値の字句解析
  */
 
-import { parseSelectorList } from './cssSelector';
+import { MAX_BACKTRACK_COMPOUNDS, parseSelectorList } from './cssSelector';
 import { spotColor } from './color';
 import { hex2, parseColor as parseCssColor, rgbHex, skipString, splitTop, splitWords, stripImportant, UNIT_PX, urlsIn } from './cssText';
 import type { FontPaletteRule } from './colorGlyph';
 import { MAX_COUNTER_LENGTH, parseCounterStyleRule, type CounterStyleRule } from './counterStyle';
 import { FONT_WIDTH_KEYWORDS, parseVariationSettings } from './fontVariation';
 import type { AhFlags } from './cssCascade';
+import { msg } from './messages';
 
 /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1)。PANTONE などの値は Kumiori は持たず、使う人が渡す */
 export type SpotColors = Record<string, [number, number, number, number]>;
@@ -61,10 +62,9 @@ export function splitDecls(body: string): Decl[] {
       const raw = cur.slice(i + 1);
       const important = /!\s*important\s*$/i.test(raw);
       const value = raw.replace(/!\s*important\s*$/i, '').trim();
-      // 読めない値 (rgb-icc() などの色) は、前に同じ指定があれば使わない (ブラウザと同じく、読める前の値を使う)。
-      // 特色の値が渡されたときのために、-kumiori-print-<性質> として残す
-      if (/(?:\b(rgb-icc|device-cmyk|device-gray)|(?<![\w-])cmyk)\(/i.test(value) && out.some(([p]) => p === name)) out.push([`-kumiori-print-${name}`, value]);
-      else out.push(important ? [name, value, true] : [name, value]);
+      // 宣言は書いた順のまま残す。同じ性質の宣言の勝ち負けは、カスケードが決める (後の宣言が勝つ。CSS Cascade 4 §6.1)。
+      // 読めない値 (互換の指定の無いときの rgb-icc()・cmyk()) の宣言は、読む側が捨てる (CSS 2.1 §4.2。前の宣言が残る)
+      out.push(important ? [name, value, true] : [name, value]);
     }
     cur = '';
   };
@@ -371,7 +371,16 @@ function splitTopWord(s: string, word: string): string[] {
  * @layer・@media・@supports を重ねても 10 段ほど) なので、64 段あれば届かない
  */
 const MAX_CSS_NESTING = 64;
-const TOO_DEEP = '深すぎる入れ子の規則 (rules nested too deeply)';
+/** 深すぎる入れ子の規則を捨てたことの知らせ (未対応の CSS の通知に入る。言語は読むときのもの) */
+const tooDeep = () => msg('深すぎる入れ子の規則 (rules nested too deeply)', 'rules nested too deeply');
+/**
+ * 照合の手間が大きすぎるので当てないセレクタ (cssSelector の MAX_BACKTRACK_COMPOUNDS・Selector.tooComplex)。規則のほかのセレクタは当てる
+ */
+const tooComplex = () =>
+  msg(
+    `複合セレクタが ${MAX_BACKTRACK_COMPOUNDS} 個を超える、結合子の種類の混ざったセレクタ (当てない) (selectors with more than ${MAX_BACKTRACK_COMPOUNDS} compound selectors mixing kinds of combinators; not matched)`,
+    `selectors with more than ${MAX_BACKTRACK_COMPOUNDS} compound selectors mixing kinds of combinators (not matched)`,
+  );
 /** @layer の名前の、点で区切った段の数の上限 (layerRanks) */
 const MAX_LAYER_DEPTH = 32;
 /** 入れ子の規則を展開したセレクタの数の上限 (styleRule) */
@@ -445,7 +454,7 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
   let nesting = 0;
   const walk = (text: string) => {
     if (nesting >= MAX_CSS_NESTING) {
-      if (/\S/.test(text)) ignored.push(TOO_DEEP);
+      if (/\S/.test(text)) ignored.push(tooDeep());
       return;
     }
     nesting++;
@@ -584,7 +593,7 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
    */
   function styleRule(selectors: string[], body: string) {
     if (nesting >= MAX_CSS_NESTING) {
-      ignored.push(TOO_DEEP);
+      ignored.push(tooDeep());
       return;
     }
     nesting++;
@@ -596,7 +605,9 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
   }
   function styleRule1(selectors: string[], body: string) {
     // セレクタの並びに読めないものが 1 つでもあれば、規則ごと捨てる (Selectors 4 §3.9)。& を含む入れ子のものは置き換えてから調べる
-    if (selectors.some((sel) => !sel.includes('&') && !parseSelectorList(sel).length)) return;
+    const parsed = selectors.map((sel) => (sel.includes('&') ? undefined : parseSelectorList(sel)));
+    if (parsed.some((list) => list && !list.length)) return;
+    if (parsed.some((list) => list?.some((x) => x.tooComplex))) ignored.push(tooComplex());
     let rest = '';
     let i = 0;
     // 中の規則は、この規則の宣言の後に並べる (同じ詳細度なら、中の規則が勝つ)
@@ -725,7 +736,8 @@ function nextBraceOrSemi(s: string, from: number): number {
 function parsePageBody(sel: string, body: string): PageRule {
   // ページの名前は識別子 (CSS Syntax 3 §4.2: ASCII でない字も使える。@page 表紙 { … })
   const m = /^(-?[a-z_\u0080-\uffff][-\w\u0080-\uffff]*)?((?::[a-z-]+)*)\s*$/i.exec(sel.trim());
-  const rule: PageRule = { pseudos: [], decls: {}, boxes: {} };
+  // 余白の箱の表は、入力の名前 (@constructor { … } など) で引くので、原型を持たないものにする
+  const rule: PageRule = { pseudos: [], decls: {}, boxes: Object.create(null) };
   if (m) {
     if (m[1]) rule.name = m[1];
     rule.pseudos = (m[2] ?? '').split(':').filter(Boolean).map((p) => p.toLowerCase());
@@ -788,8 +800,9 @@ export function resolvePageRules(pages: PageRule[], sel: PageSelect, wm = 'horiz
     );
   });
   const sorted = matched.map((r, k) => ({ r, k })).sort((a, b) => spec(a.r) - spec(b.r) || a.k - b.k);
-  const decls: Record<string, string> = {};
-  const boxes: Record<string, Record<string, string>> = {};
+  // 入力の名前 (宣言の名前・余白の箱の名前) で引く表なので、原型を持たないものにする
+  const decls: Record<string, string> = Object.create(null);
+  const boxes: Record<string, Record<string, string>> = Object.create(null);
   for (const { r } of sorted) {
     // margin の一括指定は、個別の性質に分けてから重ねる (後の規則の margin が、前の規則の margin-top を上書きする)
     for (const [k, v] of Object.entries(r.decls)) {
@@ -855,9 +868,35 @@ export function cssCodePoint(hex: string): string {
   return String.fromCodePoint(cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? 0xfffd : cp);
 }
 
-/** CSS の文字列のエスケープを戻す (\a は改行、\XXXX は文字) */
+/**
+ * CSS の文字列のエスケープを戻す (\a は改行、\XXXX は文字)。
+ *  - 16 進の後ろの空白 1 つは、エスケープの一部 (CSS Syntax 3 §4.3.7)。空白は CSS の空白 (空白・タブ・改行) だけで、
+ *    U+00A0・U+3000 などは字として残す。CRLF は 1 つの改行 (§3.3 の前処理で LF になる)
+ *  - 「\」と改行は、何も足さずに読み捨てる (§4.3.5 consume a string token: 文字列を次の行へ続ける書き方)
+ */
 export function unescapeCss(s: string): string {
-  return s.replace(/\\([0-9a-f]{1,6})\s?|\\(.)/gi, (_m, hex: string | undefined, ch: string | undefined) => (hex ? cssCodePoint(hex) : (ch ?? '')));
+  return s.replace(/\\(?:([0-9a-f]{1,6})(?:\r\n|[ \t\n\r\f])?|(\r\n|[\n\r\f])|([\s\S]))/gi, (_m, hex: string | undefined, nl: string | undefined, ch: string | undefined) =>
+    hex ? cssCodePoint(hex) : nl ? '' : (ch ?? ''),
+  );
+}
+
+/**
+ * 字を CSS の文字列 ("…") に書く (CSSOM §2.1 serialize a string)。計算値 (content など) を作るときに使い、unescapeCss・unquote・
+ * parseContent で元の字に戻る。JSON の書き方 ("\n") は CSS では「\」と「n」(字 n) になるので使わない (CSS Syntax 3 §4.3.7)
+ *  - U+0000 は U+FFFD
+ *  - 制御文字 (U+0001〜U+001F・U+007F) は 16 進の逃がし (\a など) と、後ろの空白 1 つ (次の字が 16 進の字でも紛れないように)
+ *  - 「"」と「\」は前に「\」を付ける
+ */
+export function serializeCssString(s: string): string {
+  let out = '"';
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (cp === 0) out += '\ufffd';
+    else if (cp <= 0x1f || cp === 0x7f) out += `\\${cp.toString(16)} `;
+    else if (ch === '"' || ch === '\\') out += `\\${ch}`;
+    else out += ch;
+  }
+  return out + '"';
 }
 
 /**
@@ -896,8 +935,10 @@ export function printColor(v: string, spots?: SpotColors, ahFunctions = true): s
     // 特色の値 (使う人が渡したもの) があれば、特色 (PDF の Separation) にする
     const name = kind === '#separation' && quoted ? unquote(rest[0].trim().replace(/^["']|["']$/g, '')) : undefined;
     const sp = name !== undefined ? spots?.[name] : undefined;
-    if (name !== undefined && sp) return spotColor(name, t, sp);
-    if (rgbArgs.length >= 3) return hex(...(rgbArgs.map((c) => 255 - t * (255 - c)) as [number, number, number]));
+    // 代わりの RGB は、特色の値が無いときの色 (下の行) と同じに濃度を掛けたもの。立体の罫線の明暗の色はこれから作る
+    const alt = rgbArgs.length >= 3 ? (rgbArgs.slice(0, 3).map((c) => 255 - t * (255 - c)) as [number, number, number]) : undefined;
+    if (name !== undefined && sp) return spotColor(name, t, sp, alt);
+    if (alt) return hex(...alt);
     return `cmyk(0,0,0,${t})`;
   }
   return rgbArgs.length >= 3 ? hex(rgbArgs[0], rgbArgs[1], rgbArgs[2]) : undefined;
@@ -906,7 +947,7 @@ export function printColor(v: string, spots?: SpotColors, ahFunctions = true): s
 /** 引用符を外す (引用符が無ければそのまま) */
 export function unquote(s: string): string {
   const t = s.trim();
-  return /^(["']).*\1$/.test(t) ? unescapeCss(t.slice(1, -1)) : t;
+  return /^(["'])[\s\S]*\1$/.test(t) ? unescapeCss(t.slice(1, -1)) : t;
 }
 
 /**
@@ -975,12 +1016,10 @@ const PRINT_COLOR_PROP = /^(color|background-color|background|border(-(top|right
 export function compatOnlyValue(prop: string, value: string): string | undefined {
   const v = stripImportant(value).toLowerCase();
   if (prop === 'float') return isAhFloatValue(v) && !CSS_FLOAT_VALUE.test(v) ? `float: ${v.replace(/\s+/g, ' ')}` : undefined;
-  if (prop === 'width') return /\dgr\b/.test(v) ? 'width: <数>gr' : undefined;
+  if (prop === 'width') return /\dgr\b/.test(v) ? msg('width: <数>gr', 'width: <number>gr') : undefined;
   if (prop === 'text-align' || prop === 'text-align-last') return /^(inside|outside)$/.test(v) ? `${prop}: ${v}` : undefined;
   if (prop === 'text-autospace') return v === 'none' ? 'text-autospace: none' : undefined;
-  // 前の宣言に隠れた印刷の色 (splitDecls が -kumiori-print-<性質> に残したもの) も、元は接頭辞の無い性質に書いた値
-  const cp = prop.startsWith('-kumiori-print-') ? prop.slice(15) : prop;
-  if (PRINT_COLOR_PROP.test(cp) && AH_COLOR_FUNCTION.test(v)) return `${cp}: ${/rgb-icc\(/.test(v) ? 'rgb-icc()' : 'cmyk()'}`;
+  if (PRINT_COLOR_PROP.test(prop) && AH_COLOR_FUNCTION.test(v)) return `${prop}: ${/rgb-icc\(/.test(v) ? 'rgb-icc()' : 'cmyk()'}`;
   return undefined;
 }
 
@@ -1035,7 +1074,7 @@ export function parseSpacingTrim(value: string): SpacingTrim | undefined {
 export const SPACING_TRIM_WORD = /^(space-all|normal|trim-both|trim-all|(trim|space)-(start|adjacent|end)|space-first|allow-end)$/;
 
 /**
- * 自前で読む宣言 (isPagedDecl) のうち、値の文法の決まっている性質の値が、その文法に合うか (PKG-19)。合わない値の宣言は、無効の宣言として
+ * 自前で読む宣言 (isPagedDecl) のうち、値の文法の決まっている性質の値が、その文法に合うか。合わない値の宣言は、無効の宣言として
  * 捨てる (前の宣言を打ち消さない。CSS 2.1 §4.2) し、@supports にも対応していないと答える (Conditional 3 §6.1)。
  * ここで扱わない性質 (string-set・bookmark-label・content・image-resolution・接頭辞の付いた -ah-* など) は、いつも真。
  * 大域のキーワード (inherit など) は真。アンテナハウス互換のスタイルのときは、この検査をしない (拡張の値を含む宣言を、これまでどおり読む)
@@ -1142,8 +1181,6 @@ export function isPagedDecl(prop: string, value: string): boolean {
   if (prop === '-ah-column-rule-length' || prop === '-ah-column-rule-align' || prop === '-ah-column-rule-display') return true;
   // 行の中の揃え (CSS Inline 3 の alignment-baseline・アンテナハウスの -ah-alignment-baseline)
   if (prop === 'alignment-baseline' || prop === '-ah-alignment-baseline') return true;
-  // 前の値に隠れた印刷の色 (特色の値が渡されたときに使う)
-  if (prop.startsWith('-kumiori-print-')) return true;
   if (prop === 'text-combine-upright') return /digits/i.test(value);
   if (prop === 'content') return /(target-counter|target-text|leader|string|element)\(|counter\(\s*pages?\s*[,)]/i.test(value);
   return false;
