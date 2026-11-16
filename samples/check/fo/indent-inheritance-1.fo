@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Kumiori の確かめる見本 (自作): 字下げ (start-indent) の、表のセルの中・リストの本体の中への受け継ぎ。
+  XSL 1.1 §5.3.2 (start-indent の計算)・§7.11.7・§6.7.10 (セルは参照領域)・§6.8.4・§6.8.5
+  (リストのラベル・本体は参照領域ではない)・§7.30.4 (body-start())。
+  各ケースの赤い ▼ は、外の流れに start-indent を明示して置いた目印 (問題の受け継ぎに関わらない位置)。
+  ◆ の字の左端が A・B のどちらの目印にそろうかで、組版ソフトの読み方が分かる。
+  x は本文の領域の始端 (用紙の左端から 20mm) からの距離。
+-->
+<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja" font-family="serif" font-size="9pt" line-height="1.5">
+<fo:layout-master-set>
+<fo:simple-page-master master-name="A4" page-width="210mm" page-height="297mm" margin="15mm 20mm 15mm 20mm">
+<fo:region-body/>
+</fo:simple-page-master>
+</fo:layout-master-set>
+<fo:page-sequence master-reference="A4">
+<fo:flow flow-name="xsl-region-body">
+<fo:block font-size="13pt" font-weight="bold" font-family="sans-serif">字下げの受け継ぎ: 表のセルの中・リストの本体の中</fo:block>
+<fo:block font-size="8pt">赤い ▼ は目印 (外の流れに start-indent を明示して置いたもの)。◆ の字の左端が A・B のどちらにそろうかを見る。x は本文の領域の左端から測る。</fo:block>
+
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">1. 字下げのあるブロック (start-indent) の中の表: セルの中の指定の無いブロック</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">外のブロックに start-indent="20mm"。表にもセルの中のブロックにも字下げの指定は無い。セル (青) の端は 20mm。仕様 (XSL 1.1 §5.3.2・§7.11.7) では、セルの中のブロックも 20mm を受け継ぎ、セルの内容の端から 20mm の所 (40mm) に字が来る。</fo:block>
+<fo:block start-indent="40mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 受け継ぐ (仕様) (40mm)</fo:block>
+<fo:block start-indent="20mm" font-size="7pt" line-height="1.3" color="#c62828">▼ B: 受け継がない (セルの端) (20mm)</fo:block>
+<fo:block start-indent="20mm"><fo:table table-layout="fixed" width="110mm"><fo:table-column column-width="110mm"/><fo:table-body><fo:table-row><fo:table-cell background-color="#dde8ff"><fo:block>◆ここの字の左端を見る</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table></fo:block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">2. 字下げのあるブロック (margin-left) の中の表: セルの中の指定の無いブロック</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">1 と同じで、外のブロックの字下げを margin-left="20mm" で書いたもの (§5.3.2 で start-indent = 20mm になる)。</fo:block>
+<fo:block start-indent="40mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 受け継ぐ (仕様) (40mm)</fo:block>
+<fo:block start-indent="20mm" font-size="7pt" line-height="1.3" color="#c62828">▼ B: 受け継がない (セルの端) (20mm)</fo:block>
+<fo:block margin-left="20mm"><fo:table table-layout="fixed" width="110mm"><fo:table-column column-width="110mm"/><fo:table-body><fo:table-row><fo:table-cell background-color="#dde8ff"><fo:block>◆ここの字の左端を見る</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table></fo:block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">3. 字下げのある表の中の、指定の無いブロック (表に margin-left="0pt")</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">外のブロックに margin-left="20mm"、表に margin-left="0pt"。表の start-indent は 20mm + 0 = 20mm (§5.3.2。XSL 1.1 では表は参照領域ではない)。セルの中のブロックが受け継げば 40mm。</fo:block>
+<fo:block start-indent="40mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 受け継ぐ (仕様) (40mm)</fo:block>
+<fo:block start-indent="20mm" font-size="7pt" line-height="1.3" color="#c62828">▼ B: 受け継がない (セルの端) (20mm)</fo:block>
+<fo:block margin-left="20mm"><fo:table table-layout="fixed" width="110mm" margin-left="0pt"><fo:table-column column-width="110mm"/><fo:table-body><fo:table-row><fo:table-cell background-color="#dde8ff"><fo:block>◆ここの字の左端を見る</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table></fo:block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">4. 対照: セルの中で start-indent を明示したブロック</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">外のブロックに start-indent="20mm"、セルの中のブロックに start-indent="5mm"。セルは参照領域 (§6.7.10) なので、5mm はセルの内容の端から測る (25mm)。読み方に関わらず同じになるはずの対照。</fo:block>
+<fo:block start-indent="25mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A=B: セルの端から 5mm (25mm)</fo:block>
+<fo:block start-indent="20mm"><fo:table table-layout="fixed" width="110mm"><fo:table-column column-width="110mm"/><fo:table-body><fo:table-row><fo:table-cell background-color="#dde8ff"><fo:block start-indent="5mm">◆ここの字の左端を見る</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table></fo:block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">5. リストの本体の中の表: セルの中の指定の無いブロック</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">provisional-distance-between-starts="30mm" のリストの本体 (start-indent="body-start()" = 30mm) の中の表。セルの端は 30mm。セルの中のブロックが本体の start-indent を受け継げば、セルの端から 30mm (60mm)。</fo:block>
+<fo:block start-indent="60mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 受け継ぐ (仕様) (60mm)</fo:block>
+<fo:block start-indent="30mm" font-size="7pt" line-height="1.3" color="#c62828">▼ B: 受け継がない (セルの端) (30mm)</fo:block>
+<fo:list-block provisional-distance-between-starts="30mm" provisional-label-separation="2mm"><fo:list-item><fo:list-item-label end-indent="label-end()"><fo:block background-color="#ffe8c8">(1)</fo:block></fo:list-item-label><fo:list-item-body start-indent="body-start()"><fo:table table-layout="fixed" width="110mm"><fo:table-column column-width="110mm"/><fo:table-body><fo:table-row><fo:table-cell background-color="#dde8ff"><fo:block>◆ここの字の左端を見る</fo:block></fo:table-cell></fo:table-row></fo:table-body></fo:table></fo:list-item-body></fo:list-item></fo:list-block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">6. 入れ子のリスト (body-start() だけで書いたもの)</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">外のリストも中のリストも provisional-distance-between-starts="20mm"、本体は start-indent="body-start()"。中のリストの start-indent は外の本体から受け継いで 20mm、中のラベルは 20mm、中の本体は 20mm + 20mm = 40mm (§7.30.4 の body-start())。</fo:block>
+<fo:block start-indent="20mm" font-size="7pt" line-height="1.3" color="#c62828">▼ 中のラベル (20mm)</fo:block>
+<fo:block start-indent="40mm" font-size="7pt" line-height="1.3" color="#c62828">▼ 中の本体 (40mm)</fo:block>
+<fo:list-block provisional-distance-between-starts="20mm" provisional-label-separation="2mm"><fo:list-item><fo:list-item-label end-indent="label-end()"><fo:block background-color="#ffe8c8">(1)</fo:block></fo:list-item-label><fo:list-item-body start-indent="body-start()"><fo:list-block provisional-distance-between-starts="20mm" provisional-label-separation="2mm"><fo:list-item><fo:list-item-label end-indent="label-end()"><fo:block background-color="#ffe8c8">(a)</fo:block></fo:list-item-label><fo:list-item-body start-indent="body-start()"><fo:block>◆ここの字の左端を見る</fo:block></fo:list-item-body></fo:list-item></fo:list-block></fo:list-item-body></fo:list-item></fo:list-block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">7. 入れ子のリスト (ラベル・本体の start-indent を長さで書いたもの)</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">外のリスト: 本体 start-indent="20mm"。中のリスト: provisional-distance-between-starts="25mm"、ラベル start-indent="25mm" end-indent="label-end()" (ラベルの終端は 20mm + 25mm − 2mm = 43mm)、本体 start-indent="45mm"。ラベル・本体は参照領域ではない (§6.8.4・§6.8.5) ので、長さは外と同じ参照領域 (流れ) の端から測る (A: ラベル 25mm・本体 45mm)。外の本体の始端 (20mm) から測ると B (45mm・65mm)。</fo:block>
+<fo:block start-indent="25mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 中のラベル (仕様) (25mm)</fo:block>
+<fo:block start-indent="45mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 中の本体 (仕様) / B: 中のラベル (45mm)</fo:block>
+<fo:block start-indent="65mm" font-size="7pt" line-height="1.3" color="#c62828">▼ B: 中の本体 (外の本体の始端から測る) (65mm)</fo:block>
+<fo:list-block provisional-distance-between-starts="20mm" provisional-label-separation="2mm"><fo:list-item><fo:list-item-label end-indent="label-end()"><fo:block background-color="#ffe8c8">(1)</fo:block></fo:list-item-label><fo:list-item-body start-indent="20mm"><fo:list-block provisional-distance-between-starts="25mm" provisional-label-separation="2mm"><fo:list-item><fo:list-item-label start-indent="25mm" end-indent="label-end()"><fo:block background-color="#ffe8c8">(a)</fo:block></fo:list-item-label><fo:list-item-body start-indent="45mm"><fo:block>◆ここの字の左端を見る</fo:block></fo:list-item-body></fo:list-item></fo:list-block></fo:list-item-body></fo:list-item></fo:list-block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">8. リストの本体の中で、start-indent を長さで書いたブロック</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">本体は start-indent="body-start()" (20mm)。中のブロックに start-indent="30mm"。仕様では流れの端から 30mm (A)。本体の始端から測ると 50mm (B)。</fo:block>
+<fo:block start-indent="30mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 流れの端から (仕様) (30mm)</fo:block>
+<fo:block start-indent="50mm" font-size="7pt" line-height="1.3" color="#c62828">▼ B: 本体の始端から (50mm)</fo:block>
+<fo:list-block provisional-distance-between-starts="20mm" provisional-label-separation="2mm"><fo:list-item><fo:list-item-label end-indent="label-end()"><fo:block background-color="#ffe8c8">(1)</fo:block></fo:list-item-label><fo:list-item-body start-indent="body-start()"><fo:block start-indent="30mm">◆ここの字の左端を見る</fo:block></fo:list-item-body></fo:list-item></fo:list-block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">9. リストの本体の中で、margin-left を書いたブロック</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">本体は start-indent="body-start()" (20mm)。中のブロックに margin-left="5mm"。§5.3.2 では start-indent = 受け継いだ 20mm + 5mm = 25mm (A)。受け継いだ値を 0 とすると 5mm (B、ラベルに重なる)。</fo:block>
+<fo:block start-indent="25mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 20mm + 5mm (仕様) (25mm)</fo:block>
+<fo:block start-indent="5mm" font-size="7pt" line-height="1.3" color="#c62828">▼ B: 0 + 5mm (5mm)</fo:block>
+<fo:list-block provisional-distance-between-starts="20mm" provisional-label-separation="2mm"><fo:list-item><fo:list-item-label end-indent="label-end()"><fo:block background-color="#ffe8c8">(1)</fo:block></fo:list-item-label><fo:list-item-body start-indent="body-start()"><fo:block margin-left="5mm">◆ここの字の左端を見る</fo:block></fo:list-item-body></fo:list-item></fo:list-block>
+</fo:block>
+<fo:block keep-together.within-page="always" space-before="5mm" border-top="0.3pt solid #999999" padding-top="1.5mm">
+<fo:block font-weight="bold" font-family="sans-serif">10. リストの本体の中で、from-parent() で書いたブロック</fo:block>
+<fo:block font-size="8pt" space-after="1.5mm">本体は start-indent="body-start()" (20mm)。中のブロックに start-indent="from-parent(start-indent) + 5mm"。親 (本体) の start-indent は 20mm なので 25mm (A)。</fo:block>
+<fo:block start-indent="25mm" font-size="7pt" line-height="1.3" color="#c62828">▼ A: 20mm + 5mm (仕様) (25mm)</fo:block>
+<fo:block start-indent="5mm" font-size="7pt" line-height="1.3" color="#c62828">▼ B: 0 + 5mm (5mm)</fo:block>
+<fo:list-block provisional-distance-between-starts="20mm" provisional-label-separation="2mm"><fo:list-item><fo:list-item-label end-indent="label-end()"><fo:block background-color="#ffe8c8">(1)</fo:block></fo:list-item-label><fo:list-item-body start-indent="body-start()"><fo:block start-indent="from-parent(start-indent) + 5mm">◆ここの字の左端を見る</fo:block></fo:list-item-body></fo:list-item></fo:list-block>
+</fo:block>
+</fo:flow>
+</fo:page-sequence>
+</fo:root>

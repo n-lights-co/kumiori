@@ -23,9 +23,9 @@ npm run docs:conformance
 
 - 奥付の「組版」の欄の版は、原稿には書かず、組むときに `package.json` の版を入れます (原稿の `<?kumiori-version?>`・`<!--kumiori-version-->` の印)。リリースに付ける PDF は、そのリリースの版になります。
 - XSL-FO 編は、コマンドの既定の `--compat spec` (XSL-FO 1.1 の初期値) で組みます。
-- 本文の書体は Kumiori の既定です。和文は Noto Serif JP・Noto Sans JP、欧文は Tinos・Arimo (それぞれ Regular と Bold)、等幅は Cousine、数式は STIX Two Math を使います。Kumiori が配信元から取得します。
-- 言語・文字ごとの見本、絵文字の見本、可変フォントの見本 (HTML と CSS 編の 5.6〜5.8 節、XSL-FO 1.1 編の 5.1 節・5.6 節) は、既定の書体に無い字・機能を使うので、`scripts/conformance-fonts.mjs` の一覧の書体で組みます (Noto Sans の各文字の書体、Noto Serif Tibetan、Noto Color Emoji、Noto Emoji、Nabla、Anybody、Roboto Flex。合わせて約 29MB)。書体のファイルはリポジトリに入れず、`scripts/build-conformance.mjs` が、Google Fonts の配信元 (fonts.gstatic.com) の、版の付いた URL から置き場に取得します (無いものだけ。置き場は、環境変数 `KUMIORI_FONT_CACHE` か、無ければ `.cache/fonts`)。HTML と CSS 編の見本は、`@font-face` でその URL を指し、XSL-FO 1.1 編の見本には、コマンドの `--font` で渡します。取得できない書体があるときと、コマンドが警告を出したときは、組まずに誤りで終わります。
-- 組んだ PDF には、使った字だけを取り出した書体 (部分集合) が埋め込まれます。書体のライセンスは、Noto Serif JP・Noto Sans JP・STIX Two Math と、見本の書体 (`scripts/conformance-fonts.mjs` の一覧のもの) が SIL Open Font License 1.1、Tinos・Arimo・Cousine が Apache License 2.0 です (README の「フォント」)。書体の著作権は、それぞれの著作権者にあります。
+- 本文の書体は Kumiori の既定です。和文は Noto Serif JP・Noto Sans JP、欧文は Tinos・Arimo (それぞれ Regular と Bold)、等幅は Cousine、数式は STIX Two Math、どの書体にも無い記号・絵文字は Noto Sans Symbols 2・Noto Emoji を使います。Kumiori が配信元から取得します。
+- 言語・文字ごとの見本、絵文字の見本、可変フォントの見本 (HTML と CSS 編の 5.6〜5.8 節、XSL-FO 1.1 編の 5.1 節・5.6 節) は、既定の書体に無い字・機能を使うので、`scripts/conformance-fonts.mjs` の一覧の書体で組みます (Noto Sans の各文字の書体、Noto Serif Tibetan、Noto Color Emoji、Noto Emoji、Nabla、Anybody、Roboto Flex。合わせて約 29MB)。書体のファイルはリポジトリに入れず、`scripts/build-conformance.mjs` が、Google Fonts の配信元 (fonts.gstatic.com) の、版の付いた URL から置き場に取得します (無いものだけ。置き場は、環境変数 `KUMIORI_FONT_CACHE` か、無ければ `.cache/fonts`)。HTML と CSS 編の見本は、`@font-face` でその URL を指し、XSL-FO 1.1 編の見本には、コマンドの `--font` で渡します。取得できない書体があれば組まずに、コマンドが警告を出せば組んだ後に、誤りで終わります。
+- 組んだ PDF には、使った字だけを取り出した書体 (部分集合) が埋め込まれます。書体のライセンスは、Noto Serif JP・Noto Sans JP・STIX Two Math・Noto Sans Symbols 2・Noto Emoji と、見本の書体 (`scripts/conformance-fonts.mjs` の一覧のもの) が SIL Open Font License 1.1、Tinos・Arimo・Cousine が Apache License 2.0 です (README の「フォント」)。書体の著作権は、それぞれの著作権者にあります。
 
 ## 見本の書き方
 
@@ -44,7 +44,7 @@ npm run docs:conformance
 
 ## 画像
 
-`fo/images/` と `html/images/` の画像のうち、`woven.*` と `checker.png` は、`scripts/make-conformance-images.py` で描いた自作の絵です (`woven.*` は、同じ絵を Kumiori が読む 12 の形式で書き出したもの)。`kumiori-logo.svg` は `assets/logo/` のロゴの写し、`arabic-sample.png` は Kumiori で組んだアラビア語の例 (HTML と CSS 編の 8.4 節) で、このスクリプトでは作りません。
+`fo/images/` と `html/images/` の画像のうち、`woven.*` と `checker.png` は、`scripts/make-conformance-images.py` で描いた自作の絵です (`woven.*` は、同じ絵を Kumiori が読む 12 の形式 (WebP は非可逆と可逆の 2 つ) で書き出したもの。`woven.drawio` は draw.io の図)。`kumiori-logo.svg` は `assets/logo/` のロゴの写しで、このスクリプトでは作りません。
 
 - ラスター: PNG・JPEG・GIF・BMP・TIFF・WebP (非可逆と可逆)
 - ベクター: SVG・EPS・WMF・EMF・CGM

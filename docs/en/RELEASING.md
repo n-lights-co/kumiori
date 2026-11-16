@@ -7,7 +7,7 @@ Kumiori is released in three forms.
 | Form | Where | Contents |
 | --- | --- | --- |
 | npm package `kumiori` | npm (registry.npmjs.org) | the library (`dist-lib`), the single file for browsers (`dist-browser`), the Node CLI (`dist-cli`) |
-| Browser web app | GitHub Pages | the `dist/` from `npm run build` |
+| Browser web app | GitHub Pages | the `dist/` from `vite build` (with the asset base set to the repository name) |
 | Source | GitHub | this repository |
 
 ## 1. Once, at the start
@@ -33,15 +33,16 @@ Update the `homepage`, `repository` and `bugs` URLs in `package.json` and the Gi
 main is protected by a ruleset, so version changes also go in through a PR. Publishing to npm is done by GitHub Actions (`.github/workflows/publish.yml`) when a tag is pushed (Trusted Publishing; see "Setting up Trusted Publishing" below).
 
 1. On a working branch, write the entry for the version in `CHANGELOG.md` and `CHANGELOG.en.md` (heading "0.1.1 (date of publication)") and raise `version` in `package.json`.
-   Use `npm version patch|minor|major --no-git-tag-version` (the tag is put on main after merging, so do not create it here)
+   Use `npm version patch|minor|major --no-git-tag-version` (the tag is put on main after merging, so do not create it here).
+   Also change the version in the URL of the CDN example in the README (Japanese and English) (`kumiori@0.2.0` and so on) to the version being published
 2. Pre-publish check:
 
    ```bash
    npm publish --dry-run
    ```
 
-   `prepublishOnly` runs the type check, the tests and the three builds (`build:dist`), and the list of files that go into the tarball is printed. Check that `dist-lib`, `dist-cli`, `dist-browser`, README, LICENSE and so on are included, and that `src` and the tests are not.
-   If the dependencies (`package-lock.json`) or the specifications and data copied into the source have changed since the previous version, update `THIRD_PARTY_NOTICES.md` to match. Check that the versions from `npm ls --omit=dev --all` match section 2, and that the packages bundled into the browser build (the `node_modules/…` entries in `sources` of the `.map` files from `npx vite build --config vite.browser.config.ts --sourcemap`) match section 1
+   `prepublishOnly` runs the type check, the tests and the three builds (`build:dist`), and the list of files that go into the tarball is printed. Check that `dist-lib`, `dist-cli`, `dist-browser`, README, LICENSE and so on are included, and that `src`, the tests and source maps (`.map`) are not (source maps are not distributed; `test/package.test.ts` in `npm test` also checks that there are no `.map` files and no `//# sourceMappingURL=` lines).
+   If the dependencies (`package-lock.json`) or the specifications and data copied into the source have changed since the previous version, update `THIRD_PARTY_NOTICES.md` to match. Check that the versions from `npm ls --omit=dev --all` match section 2, and that the packages bundled into the browser build (the `node_modules/…` entries in `sources` of the `.map` files from `npx vite build --config vite.browser.config.ts --sourcemap`) match section 1. `test/thirdPartyNotices.test.ts` in `npm test` also checks that the versions and licenses of the runtime dependencies, and the license texts copied from node_modules, match the files (it fails on a mismatch)
 3. Open a PR, and merge it once CI passes
 4. Tag main after the merge and push the tag:
 
@@ -51,7 +52,7 @@ main is protected by a ruleset, so version changes also go in through a PR. Publ
    git push origin v0.1.1
    ```
 
-   publish.yml checks that the tag matches the version in `package.json` and that the tagged commit is on main, runs the type check, the tests and the three builds, and packs a tarball (the build job). A separate job (publish) then runs `npm publish` on that tarball. Only the publish job holds the permission to publish to npm (OIDC); it installs no dependencies and runs no scripts. See the result in the "Publish" run under Actions.
+   publish.yml checks that the tag matches the version in `package.json` and that the tagged commit is on main, runs the type check, the tests and the three builds, and packs a tarball (the build job). A separate job (publish) then runs `npm publish` on that tarball. Only the publish job holds the permission to publish to npm (OIDC); it installs none of the project's dependencies (only npm 11.5.1 or later, which Trusted Publishing needs) and runs no scripts. See the result in the "Publish" run under Actions.
    A published version can be unpublished, but the same number can never be reused
 5. Create a release for the tag under Releases on GitHub, with the CHANGELOG entry (Japanese and English) as its body.
    When the release is published, `.github/workflows/conformance-pdf.yml` typesets the Conformance Guide at the tagged commit and attaches the four PDFs (for v0.1.1, `kumiori-xsl-fo-v0.1.1.pdf`, `kumiori-html-css-v0.1.1.pdf` and their `.en.pdf` versions) to the release. Check the result in the "Conformance PDF" run under Actions.

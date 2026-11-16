@@ -6,11 +6,12 @@
 
 ## 版
 
-- `AreaTree.schemaVersion` は形の版です。今は `2` で、値は `AREA_TREE_SCHEMA_VERSION` (`src/areaTree.ts`) から入ります。
+- `AreaTree.schemaVersion` は形の版です。今は `3` で、値は `AREA_TREE_SCHEMA_VERSION` (`src/areaTree.ts`) から入ります。
 - 欄の意味や子の持ち方を変えたら、版を上げます。
   - 1: 最初の版。
   - 2: 表の罫線の重ね合わせの描き方 (`paintWidth`・`noPaint`・`tableEdge`) を、`BorderSide` の欄から `BorderSide.collapse` の下に移しました。
-- `parseAreaTree` は版 1 の木も読み、版 2 の形に直して返します。
+  - 3: `paintWidth` が `width` より小さい辺 (線を箱の縁から内へずらして描く) を足しました (表の太さの違う罫線の中心をそろえるため)。
+- `parseAreaTree` は版 1 の木も読み、今の版の形に直して返します。版 2 の木は、そのまま今の版の木として読みます。
 
 ## 単位と座標
 
@@ -29,6 +30,7 @@
   - 画像ごとの `origin` は位置の基準の領域 (`border-box`・`content-box`。無ければ padding の箱)、`clip` は描く範囲 (`border-box`・`content-box`。無ければ padding の箱) です。HTML の背景は、`background-clip` の初期値が `border-box` なので、ふつう `clip: "border-box"` を持ちます (罫線の下にも描く)。XSL-FO の背景は `clip` を持ちません (XSL 1.1 §4.9.4: 背景は padding の矩形に描く)。
   - `backgroundClip` は背景の色を塗る範囲 (`padding-box`・`content-box`) です。無ければ border-box (`width` × `height`) に塗ります。
 - 画像 (`image`) の `fit` (CSS の `object-fit` の `cover`・`contain`・`none`・`scale-down`) があるとき、`width` × `height` は枠の大きさで、画像は本来の大きさ (`naturalWidth` × `naturalHeight`) から大きさを決めて枠の中に置き、枠で切り抜きます。`fitPosition` (CSS の `object-position`) は枠の中での位置です (無ければ中央)。
+- 画像 (`image`) の `language` は、画像を置いた所の言語 (`xml:lang`・`lang`) です。SVG の画像の `systemLanguage` (SVG 2 §5.6.5) を、この言語で照らして描きます (この言語が、照らす言語の指定 `svgLanguages` に勝つ。どちらも無ければ実行環境の言語)。
 - `transform` (描くときの変換。CSS の `transform`) があるとき:
   - 値は行列 `[a, b, c, d, e, f]` で、x' = a·x + c·y + e、y' = b·x + d·y + f です (y は下向き)。
   - 行列の座標の原点は、この Area の `x`・`y` の点 (border-box の左上) です。
@@ -58,14 +60,15 @@
 
 - `serializeAreaTree(tree)` は、木を JSON の文字列にします。`undefined` の欄は書きません。
 - `parseAreaTree(json)` は、JSON の文字列から木を読みます。版 (`schemaVersion`) と、節の形 (種類・`x`・`y`・`width`・`height` が数であること・子の欄) を確かめ、合わなければ `AreaTreeFormatError` を投げます。
-- 読み直した木は、描く処理 (`paintSheet`・`renderPdf`) にそのまま渡せます。ただし、この 2 つと FontManager・AssetStore は内部の関数・クラスで、パッケージの入口 (`kumiori`) からは出していません。公開 API で描けるのは、`typeset` の結果 (`renderPage`・`toPdf`) だけで、`parseAreaTree` で読み直した木を描く口は、いまはありません (読み直した木は、調べる・比べる・保存するために使います)。版 1 の木は、版 2 の形に直してから返します。書体と画像は、書き出したときと同じ FontManager・AssetStore が要ります (`test/areaTree.test.ts` で、往復した木の描き方が同じことを確かめています)。
+- 読み直した木は、描く処理 (`paintSheet`・`renderPdf`) にそのまま渡せます。ただし、この 2 つと FontManager・AssetStore は内部の関数・クラスで、パッケージの入口 (`kumiori`) からは出していません。公開 API で描けるのは、`typeset` の結果 (`renderPage`・`toPdf`) だけで、`parseAreaTree` で読み直した木を描く口は、いまはありません (読み直した木は、調べる・比べる・保存するために使います)。版 1・版 2 の木は、今の版の形に直してから返します。書体と画像は、書き出したときと同じ FontManager・AssetStore が要ります (`test/areaTree.test.ts` で、往復した木の描き方が同じことを確かめています)。
 
 ## 罫線の辺の欄
 
 - `BorderSide.symmetric`: 破線・点線・鎖線の模様を、辺ごとに辺の中央に対して対称に置きます (CSS の罫線)。無ければ、辺を時計回りにたどって模様を続けます。
 - `BorderSide.waveStroke`・`BorderSide.waveLength`: 波線 (`style` が `wave`) の線の太さと、波の 1 周期の長さ (pt) です。下線・上線・取り消し線の波線 (CSS の `text-decoration-style: wavy`) に付きます。無ければ、罫線の幅から決めます (線は幅の 1/8、周期は幅の約 6 倍)。
 - `BorderSide.collapse`: 表の罫線の重ね合わせ (collapse) で決めた、セルの辺の描き方です (`CollapsedSide`)。
-  - `paintWidth`: 隣のセルと半分ずつ持つ線を、この太さで描きます (`width` はセルが取る場所で、線の太さの半分)。
+  - `paintWidth`: 線を描く太さです。`width` (セルが取る場所) より大きいときは、隣のセルと半分ずつ持つ線で、箱の外へ (`paintWidth` − `width`) だけはみ出して描きます (`width` は線の太さの半分)。
+    `width` より小さいときは、箱の縁から (`width` − `paintWidth`) だけ内に描きます (表の外周や、互換の組み方の内側の線で、太さの違う線の中心をそろえるため)。
   - `noPaint`: 場所だけ取り、線は描きません (隣のセルが描きます)。
   - `tableEdge`: 表の外周の辺です。角の突き合わせを、表の外の角だけにするのに使います。
 - `GlyphArea.advance` は、組版上の進行方向の送り幅 (字間・詰めを含む) です。
@@ -83,7 +86,7 @@
 - `AreaTree.resources` は、木が使う書体と画像の一覧です (`src/areaResources.ts`。組版の終わりに付けます)。
   - `fonts`: `id` (`GlyphArea.fontId` が指す名前)・`family`・`weight`・`postscriptName`・`unitsPerEm` と、書体のファイルのバイト列の `sha256`。
     - 可変フォント (OpenType Font Variations) は、使った軸の値の組ごとに「実体」(その形の静的な書体) を作って組むので、実体ごとに 1 項目になります。実体の項目には、`variation` (軸の値。札 → 値。書体のすべての軸) と `sourceSha256` (元の可変フォントのファイルのバイト列の SHA-256) が付きます。`sha256` は、実体にした静的な書体のバイト列のものです (`glyphIds`・`glyphPositions` は、その書体での値。字形の番号は元の可変フォントと同じ)。輪郭が CFF2 の可変フォントは、既定の形も実体 (静的な CFF の書体) になります。
-    - 実体を使う字の `GlyphArea.fontFamily` は、書体の名前の後ろに、太さ以外の軸の値の印が付きます (`css:Inter{;opsz=20,wdth=75}`。`{;` の後ろは、札 = 値の並び。`font-variation-settings` と同じ意味)。`fontWeight` は、太さの軸の値 (書体の範囲に収めた太さ) です。この名前と太さで、同じ実体が引けます。斜体の書体・幅の違う書体 (書体のファイルそのものが傾き・幅を持つもの) で組んだ字の `fontFamily` にも、その書体を指す印が付きます (`Arial{ital=1}`・`Arial{wdth=75}`・`Arial{wdth=75,ital=1}`。斜めの書体は `{slnt=14}`。`;` の前に書きます)。この字には `italic` (傾けて描く印) は付きません。可変フォントも、斜体・幅の違う書体も読み込んでいない文書の `fontFamily` には、印は付きません。
+    - 実体を使う字の `GlyphArea.fontFamily` は、書体の名前の後ろに、太さ以外の軸の値の印が付きます (`css:Inter{wdth=75,opsz=20}`・`css:Inter{;GRAD=88}`。`{` と `;` の間は、性質 (`font-stretch`・`font-style`・`font-optical-sizing`) から決まる値で、wdth・ital か slnt・opsz の順。`;` の後ろは `font-variation-settings` の値で、札 = 値を札の順に並べる)。`fontWeight` は、太さの軸の値 (書体の範囲に収めた太さ) です。この名前と太さで、同じ実体が引けます。斜体の書体・幅の違う書体 (書体のファイルそのものが傾き・幅を持つもの) で組んだ字の `fontFamily` にも、その書体を指す印が付きます (`Arial{ital=1}`・`Arial{wdth=75}`・`Arial{wdth=75,ital=1}`。斜めの書体は `{slnt=14}`。`;` の前に書きます)。この字には `italic` (傾けて描く印) は付きません。可変フォントも、斜体・幅の違う書体も読み込んでいない文書の `fontFamily` には、印は付きません。
   - `images`: `src`・`mime`・自然な大きさ (`width`・`height`。CSS px) と、画像のファイルのバイト列の `sha256` (バイト列があるとき)。
 - `GlyphArea.text` は、字の単位 1 つ分の文字列です。ふつうは 1 字ですが、書記素クラスタ (UAX #29 の拡張書記素クラスタ: 基底の字 + 結合文字・異体字セレクタ、絵文字の並びなど)、合字にする字の並び、つながる字 (アラビア文字など) の並びは、2 字以上が 1 つの `GlyphArea` になります。`advance` は、その並びを 1 つの書体で組んだ送りの合計です。
 - `GlyphArea.glyphIds` は、描く字形の番号です。`text` を書体の OpenType の機能 (`features`) で組んだ結果で、左から右へ描く順です (PDF に書くときと同じやり方)。

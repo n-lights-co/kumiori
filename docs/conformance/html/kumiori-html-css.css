@@ -123,6 +123,10 @@ p {
   text-align: justify;
   text-indent: 1em;
 }
+/* 本文の段落が続くときは、段落の境目が分かるように 2mm 空ける (XSL-FO 1.1 編の space-before="2mm" と同じ) */
+section.chapter > p:not([class]) + p:not([class]) {
+  margin-top: 2mm;
+}
 code {
   font-family: monospace;
   font-size: 0.92em;
