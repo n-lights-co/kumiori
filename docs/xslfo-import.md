@@ -3,8 +3,8 @@
 # XSL-FO インポート
 
 `src/xslfoImport.ts` は XSL-FO (1.0 / 1.1) を Kumiori の論理ツリー (JSON) へ変換する。
-画面の「XSL-FO を読み込む」から FO ファイルを選ぶと、変換 → 組版 → プレビューまでを行い、
-「JSON を保存」で変換結果の JSON を、「PDF としてダウンロード」で PDF を取り出せる。
+画面の「開く」から FO ファイルを選ぶと、変換 → 組版 → プレビューまでを行い、
+「設定」の「論理ツリーを JSON で保存」で変換結果の JSON を、「PDF を保存」で PDF を取り出せる。
 変換できなかった要素・属性は **黙って捨てず**、種類ごとの件数を「変換レポート」に出す。
 
 ```ts
@@ -33,7 +33,7 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 | `simple-page-master` の `axf:background-color` (ページ全体の背景) | `PageMaster.backgroundColor` (塗り足しまで届く) |
 | `table-and-caption`, `table`, `table-header/body/footer`, `table-row/cell` | `LTable` (列幅の固定・比例・%、`number-columns/rows-spanned`、列定義が足りない場合は補う)。表の幅も列の幅も指定が無く `table-layout` が fixed でなければ、列の幅を中身に合わせる (`fitContent`)。入りきらなければ、中身の短い列は最大の長さのまま、残りの列には各列の最大の長さ (行幅で頭打ち) の比で配る (`fitContentRule: 'max-ratio'`。HTML は最小と最大の間を比例で配るブラウザの方式) |
 | `list-block` / `list-item` | 「ラベル列 + 本体列」の枠なし表 (`provisional-distance-between-starts`) |
-| `float` (start/end/left/right/before) | `LFloat`。置いた位置 (アンカー) は中身として扱い、回り込みだけを含むブロックの space-before と space-after を相殺しない (`anchorIsContent`) |
+| `float` (start/end/left/right/before/inside/outside) | `LFloat`。置いた位置 (アンカー) は中身として扱い、回り込みだけを含むブロックの space-before と space-after を相殺しない (`anchorIsContent`) |
 | `footnote` / `footnote-body` | `LFootnote` (参照記号のテキストをラベルに、本体は自前のラベルを持つとして `bodyLabel: false`) |
 | `leader` | `LLeader` (dots / rule / space / use-content、`leader-length.*`) |
 | `marker` / `retrieve-marker` | `LMarker` / `LRetrieveMarker` (`retrieve-position`, `retrieve-boundary`) |
@@ -41,7 +41,7 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 | `retrieve-table-marker` (表の header・footer の中) | `LRetrieveTableMarker` (`retrieve-position-within-table`, `retrieve-boundary-within-table`)。`fo:table-body` の子の `marker` は `LTableRow.bodyMarkers` |
 | `page-number` / `page-number-citation` | `{pageNumber}` トークン / `LPageNumberCitation` (組版を繰り返して収束) |
 | `index-key` / `index-range-begin`〜`-end` / `index-page-citation-list` | `LDocument.indexEntries` (`LIndexEntry`) / `LIndexPageCitationList` (索引のページ番号の並び。組版を繰り返して収束) |
-| `block-container` | `LBlockContainer` (`absolute-position`, `top/left/right/bottom`。本文領域の原点を足してページ基準に変換)。`width`・`height`・`inline/block-progression-dimension` は内容の寸法 (枠・パディングは外側)、`top`・`left` などは内容の端の位置 (枠はその外へ出る)。`inline-progression-dimension.maximum` だけの指定は、領域の幅が上限を超えるとき上限の幅。高さの指定の無いコンテナ (回転・段組・切り抜き・直交する書字方向を除く) は、あふれたらページをまたいで続く |
+| `block-container` | `LBlockContainer` (`absolute-position`, `top/left/right/bottom`。本文領域の原点を足してページ基準に変換)。`width`・`height`・`inline/block-progression-dimension` は内容の寸法 (枠・パディングは外側)、`top`・`left` などは内容の端の位置 (枠はその外へ出る)。`inline-progression-dimension.maximum` だけの指定は、領域の幅が上限を超えるとき上限の幅。高さの指定の無いコンテナ (回転・段組・切り抜き・直交する書字方向を除く) は、あふれたらページをまたいで続く。親と直交する書字方向のコンテナで、行の向きの大きさ (`inline-progression-dimension`。横書きの中の縦書きなら高さ) の指定が無いものは、行の長さをページの残りの高さ (次のページからはページの高さ) にし、親の幅まで行を積み、入りきらない行は次のページへ続ける (XSL 1.1 §6.5.3 は、この大きさを auto にしてはならないとし、組み方を決めていない。1 ページに収まる箱は、これまでどおり親の幅いっぱい)。90°・270° 回したコンテナ (寸法の指定の無いもの) は、枠 (罫線・padding) が付いていても、回す前の局所の block の向きに本文の幅まで積み、続きは次のページへ送る |
 | `space-before/after`, `margin-*`, `start/end-indent` | `margin` (indent は継承される絶対位置なので、親との差分を margin にする) |
 | `padding*`, `border*` (shorthand と before/after/start/end を書字方向で物理辺へ) | `padding`, `border` (`thin/medium/thick` 対応) |
 | `font-size` (em/% は継承値基準), `line-height` (長さは比へ), `font-weight`, `color`, `background-color`, `text-align`, `text-indent`, `letter-spacing`, `orphans/widows`, `keep-together`, `break-before/after` | 同名のスタイル |
@@ -69,7 +69,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 
 ## 画像の読み込み
 
-画面で「XSL-FO・画像を読み込む」から、**FO ファイルと画像ファイルを一緒に (複数選択で)** 選ぶ。FO 中の `src="url('img/a.png')"` は、ファイル名 (`a.png`) で突き合わせる。
+画面の「開く」で、**FO ファイルと画像ファイルを一緒に (複数選択で)** 選ぶ (「フォルダを開く」でフォルダごと選んでもよい)。FO 中の `src="url('img/a.png')"` は、ファイル名 (`a.png`) で突き合わせる。
 `data:` URI と絶対 URL (CORS が許す場合) は自動で読み込む。見つからない画像は灰色の枠で表示し、変換レポートに一覧する。後から画像だけを選び足すと、組み直される。
 対応形式は PNG / JPEG / GIF / BMP / SVG / WebP と、下の TIFF・WMF・EMF・EPS・CGM。PDF には PNG・JPEG をそのまま、GIF・BMP・WebP・TIFF は画素を復号して PNG に変換して埋め込む (ブラウザが開ける画像は、出力サイズ × 300dpi に描き直す)。SVG は図形のまま入れ、filter など図形にできないものは、ブラウザではラスタライズし、Node では影・ぼかしを近似する。
 
@@ -133,7 +133,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 ## ラテン文字のフォールバック
 
 Noto Serif/Sans JP のラテン字幅は Times/Arial より広く、Times/Arial の字幅を前提に作られた文書と改行位置がずれる。
-そこで `FontManager.setLatinFallback()` により、ラテン文字 (U+0020–024F、§ ¨ ° ± ´ ¶ × ÷ を除く) だけを
+そこで `FontManager.setLatinFallback()` により、ラテン文字 (U+0020–007E・U+00A0–024F (§ ¨ ° ± ´ ¶ × ÷ を除く)・U+1E00–1EFF・欧文の合字 U+FB00–FB06。`isLatinForFallback`) を
 Tinos (明朝系) / Arimo (ゴシック系) で計測・描画・PDF 埋め込みする。和文は従来どおり Noto JP。
 FO が指定する MS 明朝 / MS ゴシック自体は未搭載のため、完全一致ではなく Times/Arial 互換幅となる。
 
@@ -143,14 +143,15 @@ FO が指定する MS 明朝 / MS ゴシック自体は未搭載のため、完�
 そのまま脚注領域の幅で組んで区切りにする。`fo:leader` は本文の中と同じに組む: `leader-pattern="dots"` は書体の点の字を並べ、
 `rule` は実線 (`rule-thickness` 反映)、`leader-length` の百分率は脚注領域の幅に対する割合。
 `xsl-footnote-separator` の `fo:static-content` が無ければ、区切りを描かない。
-あっても中身が空 (空のブロックだけなど) のときは、既定の実線 (本文幅の 1/3) を使い、読み込みの報告に書く。
+あっても中身が空 (字・`fo:leader`・画像・背景・罫線のどれも無い。空のブロックだけなど) のときも、同じく描かない (どのモードでも。知らせも出さない)。
+XSL 1.1 §6.12.1.3 で、区切りは、この `fo:static-content` を組んで返る領域で、仕様に既定の区切り線は無い。
 
 ## 段組
 
 `fo:region-body` の `column-count` / `column-gap` は `PageMaster.columns` に、`fo:block` の `span="all"` は `LBlock.span` に変換する
 (フロー直下のブロックだけ有効)。段は inline 方向に並び (縦書きでは上下)、段が埋まると次の段、最後の段が埋まると次のページへ流れる。
 `span="all"` の直前の段は、最後のページの段の高さを二分探索で縮めながら試し組みして釣り合わせる。ただし span のブロックが改ページで始まる (または直前のブロックが改ページで終わる) ときは、直前のページの段は釣り合わせない。入れ子のブロックの `span="all"` を flow の直下へ出して効かせるのは互換モードだけ (仕様では flow の直下のブロックにだけ効く。§7.21.4)。
-フローの末尾 (span の後ろが無いとき) の段は釣り合わせない。ブロックコンテナ内の段組 (`axf:column-count` / `axf:column-gap` / `axf:column-rule-*` / `axf:column-rule-display`) にも対応 (高さの指定があれば段を順に埋め、無ければ釣り合わせる)。
+フローの末尾 (span の後ろが無いとき) の段は、既定では釣り合わせない (region-body に `axf:column-fill="balance"` があれば釣り合わせる)。ブロックコンテナ内の段組 (`axf:column-count` / `axf:column-gap` / `axf:column-rule-*` / `axf:column-rule-display`) にも対応 (高さの指定があれば段を順に埋め、無ければ釣り合わせる)。
 
 `span="all"` の切り替わりは、参照領域の境: `span="all"` のブロックと、そうでないブロックは、別の span-reference-area の中の normal-flow-reference-area に入る (XSL 1.1 §6.4.14)。参照領域は余白の並びを断つ (§4.2.5) ので、切り替わりの前後の `space-after`・`space-before` は相殺せず、`conditionality="discard"` (既定) のものは捨て、`retain` のものだけが残る (§4.3.1)。続く `span="all"` のブロックどうしは同じ領域に入り、ふつうに相殺する。絶対配置の `fo:block-container` の `top` は、最も近い祖先の参照領域から測る (§7.6.1) ので、span の後の箱は、span の後の領域の上端が基準 (`LBlockContainer.areaOffset`。行の進む方向の位置と幅は、段ではなく本文の領域が基準のまま)。
 1 段の本文 (`column-count` が 1) は、仕様では領域が 1 つで足りる (§6.4.14 の「precisely enough」) ので、仕様モードは領域を分けない (前後のアキは相殺する)。互換モードは、アンテナハウスと同じく、1 段でも span の切り替わりで領域を分ける (`LPageSequence.spanAreas`)。
@@ -162,17 +163,20 @@ FO が指定する MS 明朝 / MS ゴシック自体は未搭載のため、完�
 ## SVG
 
 `fo:external-graphic` の SVG は、PDF ではベクタ命令のまま埋め込む (path・基本図形・transform・塗り/線・不透明度・破線)。
-線形・円形グラデーション (塗り・線。spreadMethod の repeat・reflect、焦点の円の半径 fr も。stop-opacity は、不透明度をグレーにした同じグラデーションの輝度のソフトマスク)、clipPath、use / symbol、pattern (タイリングパターン。中身は単色の塗り・線のみ)、`<style>` の規則 (要素名・.class・#id の単純な選択子)、text (読み込み済みの書体の字形の輪郭にする。PDF では、単色の塗りだけの字 (線・グラデーション・模様の無いもの) を、その書体を埋め込んだ PDF の文字として描く。ビューアの字の描き方 (ヒンティング) が本文と同じになり、文字として選べる。x / y・dx / dy (em も)・tspan・text-anchor・font-size / family / weight)、
+transform は CSS の書き方 (単位の付いた値・style と `<style>` の transform・transform-origin・transform-box) も読む。opacity の要素・mix-blend-mode の付いた g など・isolation: isolate の要素は、子をまとめた透明のグループ (Group の付いた Form XObject) で描く。visibility は受け継ぎ、visible に戻した子は描く。
+線形・円形グラデーション (塗り・線。spreadMethod の repeat・reflect、焦点の円の半径 fr も。stop-opacity は、不透明度をグレーにした同じグラデーションの輝度のソフトマスク)、clipPath (clipPathUnits の objectBoundingBox も。要素の外接矩形の 0〜1。clip-path の CSS の基本図形 (inset()・circle()・ellipse()・polygon()・path()・xywh()・rect()) と参照の箱も)、use / symbol (外のファイルの要素 (icons.svg#a) も。SVG の場所を基準に、文書のファイルを引く)、pattern (タイリングパターン。中身はほかの図形と同じに描く。マスクを含む中身は除く)、`<style>` の規則 (要素名・.class・#id のほか、結合子・属性・疑似クラスの選択子。Selectors 4。:hover などの動的な疑似クラスと疑似要素は当たらない。@media は印刷の画面として照らす。var()・calc() も読む)、text (読み込み済みの書体の字形の輪郭にする。PDF では、単色の塗りだけの字 (線・グラデーション・模様が無く、傾けて描かないもの) を、その書体を埋め込んだ PDF の文字として描く。ビューアの字の描き方 (ヒンティング) が本文と同じになり、文字として選べる。x / y・dx / dy・rotate の字ごとの並び (em も)・tspan・text-anchor・font-size / family / weight / style (斜体の書体が無ければ立体を傾ける)・baseline-shift・dominant-baseline・alignment-baseline (基線は CSS Inline 3 の付録 A.2 のとおりに書体の上下の高さから作る)・letter-spacing・word-spacing・text-decoration (tspan でも)・paint-order。縦書きの writing-mode・text-orientation は、字を立てるか寝かせるか・縦書き用の字形を本文の縦書きと同じに決める)、
 入れ子の svg と viewBox のある symbol (枠に viewBox を preserveAspectRatio で合わせ、overflow が visible でなければ枠で切り抜く)、
-switch (条件を満たす最初の子。requiredExtensions の付いた子は満たさない)、
+switch (条件を満たす最初の子。requiredExtensions の付いた子は満たさない。systemLanguage は、画像を置いた所の言語 (xml:lang・language。3 字の符号も読む。無ければ実行環境の言語) に合うか。switch の外の要素も、条件が満たされなければ描かない)、
 marker (始点・途中・終点の頂点に置く。orient の auto・auto-start-reverse・角度、markerUnits、viewBox と refX / refY。overflow が visible・auto でなければ marker の枠で切り抜く。ただしコマンドの互換モード (`--compat antenna`) の XSL-FO では、overflow の指定が無い marker は切り抜かない)、
-textPath (パスに沿って 1 字ずつ置き、その場所の向きに回す。startOffset・text-anchor)、
-mask (中身を、マスクを使う要素の座標で図形にし、PDF では Form XObject の輝度のソフトマスクにする。マスクの領域 x・y・width・height は見ない。入れ子のマスクは内側だけが効く) もベクタのまま出力する。
+textPath (パスに沿って 1 字ずつ置き、その場所の向きに回す。startOffset・text-anchor・side・baseline-shift)、
+mask (中身を、マスクを使う要素の座標で図形にし、PDF では Form XObject の輝度 (mask-type: alpha なら不透明度) のソフトマスクにする。maskContentUnits の objectBoundingBox も。マスクの領域 x・y・width・height の外は隠す。入れ子のマスクは、内側のマスクで描いた図形をグループにして外側を掛ける)、context-fill・context-stroke (marker・use)、a のリンク (http(s) などの URL を、PDF のリンクにする)、image (PNG・JPEG・GIF・BMP・WebP。data: の URI か、SVG の場所を基準にした、文書のファイルの画像。preserveAspectRatio の meet・slice・none。引けない画像の image は描かずに、警告に出す)、mix-blend-mode (normal のほかの 15 通り) もベクタのまま出力する。
 `<style>` の @font-face・@import・@charset・@namespace は読み飛ばし、SVG でない名前空間の要素 (Visio の v:・Illustrator の i: など) は描かない。
-filter・透明度などを含む模様・扱えない CSS 選択子を含む SVG は、従来どおり 300dpi でラスタライズする。
-Node のコマンド (`dist-cli/cli.js`) ではラスタライズできないので、filter のうち影 (feDropShadow、feGaussianBlur + feOffset + feMerge。
-feFlood・feComposite の色、feFuncA の濃さ) とぼかしだけのものは近似して図形にする (影は、0・0.5σ・σ・1.5σ・2σ 太らせた半透明の写しの重ね。
-ぼかしだけのものは元の図形のまま)。ほかの SVG は仮の枠で描き、警告する。
+filter・マスクを含む模様・読めない CSS 選択子を含む SVG は、従来どおり 300dpi でラスタライズする。
+Node のコマンド (`dist-cli/cli.js`) ではラスタライズできないので、filter は、要素の結果 (in・in2・result) をたどって、元の図形・影 (SourceAlpha から作った 1 色の形)・塗りつぶしの層の並びとして求め、図形で近似する
+(feDropShadow・feGaussianBlur・feOffset・feFlood・feColorMatrix・feComponentTransfer・feComposite の over・in・out・atop・feBlend (16 通りの描画モード)・feMerge。結果は filter の領域で切り抜く。
+feColorMatrix・feComponentTransfer は図形の色を変える (color-interpolation-filters の linearRGB・sRGB)。Figma の書き出す影もこの形。
+ぼかしは、0・0.5σ・σ・1.5σ・2σ 太らせた半透明の写しの重ね。ぼかしだけのものは元の図形のまま)。図形で近似できない filter (feTurbulence・feMorphology・feDiffuseLighting・feSpecularLighting・feDisplacementMap・feConvolveMatrix・feImage・feTile・feComposite の arithmetic など) は、要素の図形を filter の領域の画素に描いてから、Filter Effects 1 のとおりに画素で計算し、結果を画像として置く (src/svgFilterRaster.ts)。
+foreignObject の中身 (HTML・MathML) は、API・コマンドでは本文と同じ HTML の組版で、foreignObject の幅のページとして組み、組んだページを SVG の図形にして描く (背景・罫線・表・画像・数式も。枠の外は切る)。組む仕組みの無いとき (renderPdf を直に使うときなど) は、HTML の文字だけを近似して描き、HTML でない中身は仮の枠で描いて警告する。
 
 ## 区切り領域・斜体・上付き
 
@@ -246,7 +250,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 `fo:external-graphic` の `content-width` / `content-height` の百分率 (`60%` など) は、画像本来の大きさ (px × 0.75 = pt) に対する倍率として扱う (`LImage.widthScale` / `heightScale`)。
 周りの幅に対する割合ではない。`width` / `height` の百分率は、これまでどおり周りの幅に対する割合。
 
-長さの式: `space-before="20mm+18pt+30pt"` のような、長さの足し算・引き算 (`+` / `-` でつないだ項。単位は pt・mm・cm・in・px・pc・em・%) を解釈する。掛け算・割り算・括弧・数の関数 (`floor()`・`round()`・`min()` など) も解釈する (後述の §5.9)。性質の値を参照する関数 (`from-parent()`・`inherited-property-value()` など) は未対応で、警告で知らせる。
+長さの式: `space-before="20mm+18pt+30pt"` のような、長さの足し算・引き算 (`+` / `-` でつないだ項。単位は pt・mm・cm・in・px・pc・em・%) を解釈する。掛け算・割り算・括弧・数の関数 (`floor()`・`round()`・`min()` など) も解釈する (後述の §5.9)。性質の値を参照する関数 (`from-parent()`・`inherited-property-value()` など) は、仕様モードの start-indent・end-indent の値の中の `from-parent()`・`inherited-property-value()` (親の計算値に置き換える。§5.10.4) を除いて未対応で、警告で知らせる。
 
 ## XSL 1.1 仕様に合わせた変更 (仕様レビュー)
 
@@ -290,6 +294,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 | inline-container の中に block が 2 つだけあり、1 つ目の字がまわりの字の 0.8 倍より小さく、2 つ目が 0.8 倍以上で、どちらも字だけのとき | 行内の箱として組む: 2 つの block を積み、1 つ目の block の行の基線を、まわりの行の基線にそろえる (§6.6.8)。2 つ目の block はその下の行になる | ルビとして組む (1 つ目の block がルビ、2 つ目が親文字) | AH Formatter 向けの文書のルビの書き方 (XSL-FO にルビの要素は無い)。推測の読み替えなので、互換モードだけにした |
 | 分綴した行の終わりの字 (`hyphenation-character` の指定が無いとき) | U+2010 (§7.10.5 の初期値) | U+002D | 従来のまま (見本の PDF との比較はしていない) |
 | 回転した block-container (90°・270°) がページをまたぐとき | 横幅は中身の大きさ | 本文の幅いっぱい (270° は右に寄る) | 見本の PDF との比較 |
+| 行がページ (段) に入るかの判定 | はみ出しは計算の誤差 (0.01pt) まで | 0.05pt までのはみ出しを許して、その行を置く (HTML の `--style ah` も同じ) | 見本の PDF (CSS-Print 第 4 版の 75 ページ: 脚注の分を引いた本文の下端を約 0.03pt 越える図のキャプションを、そのページに置く)。XSL-FO の見本 151 は、この違いで変わる所が無い |
 
 ### 仕様どおりにしたもの (両方のモード)
 
@@ -313,7 +318,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
   - 収束: ページ番号の参照と同じ組み直しに乗せる (最初の 1 回と、組み直し 4 回まで)。1 回目は、組んでいる途中のページから並びを作る (索引が本文の後ろにあれば 1 回で決まる)。組み終えたページで作り直した並びが、組んだときの並びと同じなら終わり。索引の無い page-sequence は組み直さない。決まらなければ、上限で止めて「索引のページ番号の並びが収束しませんでした」と警告する
   - 誤りの回復: 存在しない鍵の `fo:index-key-reference` は無視して警告 (§6.10.6)。組になる `fo:index-range-end` の無い範囲は文書の終わりまで (§6.10.4)、組になる `fo:index-range-begin` の無い `fo:index-range-end` は無視 (§6.10.5。どちらも読み込みの注意に出す)。`id` か `index-key` の無い `fo:index-range-begin`、`ref-index-key` の無い `fo:index-key-reference` は、読まずに報告する
   - アンテナハウスの索引の拡張 (`axf:suppress-duplicate-page-number`・`axf:index-page-citation-range-f-suffix`・`axf:index-page-citation-range-ff-suffix`) は読まない
-- `font-variant="small-caps"` (§7.9.8): 字の並びを small caps の印の付いた行内の箱にする (`LInline.smallCaps`。書体に smcp があればその字形、無ければ 0.7 倍の大文字)。`word-spacing` (§7.17.8): 長さ (`<space>` は `.optimum`) を `wordSpacing` にして、語の間の空白に足す
+- `font-variant="small-caps"` (§7.9.8): 字の並びを small caps の印の付いた行内の箱にする (`LInline.smallCaps`。書体に smcp があればその字形、無ければ 0.7 倍の大文字)。`word-spacing` (§7.17.8): 長さ (`<space>` は `.optimum`) を `wordSpacing` にして、語の間の空白に足す。仕様モードでは、`.minimum`・`.maximum` を、両端揃えで組む行で語間を縮める・広げる限り (`wordSpaceShrinkLimit` = `.optimum − .minimum`、`wordSpaceStretchLimit` = `.maximum − .optimum`) にする。書かなければ縮めず (`normal`・長さは `.minimum = .optimum`)、広げる限りは無い
 - `glyph-orientation-vertical` (§7.29.3): `auto` は `textOrientation` の `mixed`、`0deg` は `upright`、`90deg` は `sideways` (角度は 90 度の倍数の近い方に丸める。単位は `deg`・`grad`・`rad`)。180・270 度と、`glyph-orientation-horizontal` (§7.29.2) の 0 度以外は、組版に受け皿が無いので読まずに報告する
 - `relative-position="relative"` (§7.13.5・§5.5.5。一括指定 `position="relative"` も): 横書きの `fo:block` を、`left`・`top` (無ければ `right`・`bottom` の逆) だけずらす (`LBlock.relativeOffset`)。ほかの要素・縦書きでは読まずに報告する
 - `visibility` (§7.30.17): `hidden`・`collapse` は、字の色を `transparent` にして運び、背景・影を外し、罫線を `transparent` にする (場所は残す。継承され、`visible` で戻る)。表の行・列の `collapse` は `hidden` として扱い、報告する
@@ -331,7 +336,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 
 ### まだ仕様どおりでないもの
 
-- `font-size-adjust` は読まない。`word-spacing` の `<space>` は `.optimum` だけを使う (伸び縮みの幅は使わない)
+- `font-size-adjust` は読まない。互換モードでは、`word-spacing` の `<space>` は `.optimum` だけを使う (`.minimum`・`.maximum` は未対応として報告する)
 - `border-*-precedence` と `collapse-with-precedence` (collapse と同じに扱う)
 - 回転・縦書きのブロックコンテナの中の絶対配置の基準 (コンテナに切り替えない)
 - `simple-page-master` の `reference-orientation`
@@ -340,7 +345,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 
 - ページ番号の書式 `format` (§7.26.1): `1` `01` `i` `I` `a` `A` `１` `一` と前後の文字 (XSLT 1.0 §7.7.1 どおり、最初のトークンだけを使う)。page-number・page-number-citation とも、参照先のページの書式で出す。
 - `page-number-citation-last`: 参照先が置かれた最後のページ。
-- `page-sequence-master` (§6.4.8-11): single・repeatable (maximum-repeats)・alternatives を順に使う。`blank-or-not-blank` は、偶奇合わせ・force-page-count で足した白ページを blank として扱う (段組のページでは未判定)。
+- `page-sequence-master` (§6.4.8-11): single・repeatable (maximum-repeats)・alternatives を順に使う。`blank-or-not-blank` は、偶奇合わせ・force-page-count で足した白ページを blank として扱う (段組のページも同じ)。
 - `overflow` (§7.21.2): `hidden`・`scroll`・`error-if-overflow` は切り抜き (block-container・リージョン)。`condense` などは未対応として報告。
 - リスト: ラベルに `end-indent="label-end()"` があるときは、`provisional-label-separation` (既定 6pt) をラベルの後ろに空ける。
 - 余白の優先度 (§4.3.1): `space-before/after.precedence` の force (合計) と整数 (高い方だけ残す)。
@@ -396,4 +401,4 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - 画像の枠: `external-graphic` / `instream-foreign-object` の `width` / `height` は画像を置く枠、`content-width` / `content-height` は画像の大きさ (既定 auto = 画像本来の大きさ。scale-to-fit などなら枠に合わせる)。枠の中は `text-align` / `display-align` で揃える (`text-align` は継承されるので、画像に無ければ親のブロックの値)。
 - `fo:flow` に書いた継承されるプロパティ (font-size・font-family など) を取り込む。
 - `fo:flow` は、`flow-name` が本文の領域 (`fo:region-body`。`region-name` があればその名前、無ければ `xsl-region-body`) と合うものを本文に流す (XSL 1.1 §6.4.1.4)。どの領域とも名前の合わないとき・`flow-name` が無いときは、最初の `fo:flow` を本文に流して、警告に出す (仕様ではどの領域にも流れないが、文書を空にしない)。本文でない領域 (`fo:region-before` など) へ流す `fo:flow` は未対応 (本文に流して、警告に出す)。本文に流さなかった `fo:flow` は、読まずに報告する。
-- `fo:block-container` の中の indent (§5.3.2): 仕様モードでは、中の要素がコンテナの start-indent / end-indent の値を、コンテナの内容端から受け継ぐ (内側へ下がる)。互換モード (`--compat antenna`) は、見本の PDF との比較が済むまで従来どおり (外の indent を中へ持ち込まない。indent の付いたブロックの中のコンテナの組み方は、まだ確かめられていない)。
+- `fo:block-container` の中の indent (§5.3.2): 仕様モードでは、中の要素がコンテナの start-indent / end-indent の値を、コンテナの内容端から受け継ぐ (内側へ下がる)。仕様モードでは、表のセルの中とリストのラベル・本体の中も、外の字下げを受け継ぎ、同じ参照領域の端から測る (§6.7.10・§6.8.4・§6.8.5・§7.30.4。見本は `samples/check/fo/indent-inheritance-1.fo`)。互換モード (`--compat antenna`) は、見本の PDF との比較が済むまで従来どおり (外の indent を中へ持ち込まない。indent の付いたブロックの中のコンテナの組み方は、まだ確かめられていない)。

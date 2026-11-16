@@ -7,7 +7,7 @@ Kumiori は 3 つの形で公開します。
 | 形 | 置き場所 | 中身 |
 | --- | --- | --- |
 | npm のパッケージ `kumiori` | npm (registry.npmjs.org) | ライブラリ (`dist-lib`)、ブラウザ用の 1 ファイル (`dist-browser`)、Node のコマンド (`dist-cli`) |
-| ブラウザの画面 | GitHub Pages | `npm run build` の `dist/` |
+| ブラウザの画面 | GitHub Pages | `vite build` (アセットの土台 (base) をリポジトリ名にしたもの) の `dist/` |
 | ソース | GitHub | このリポジトリ |
 
 ## 1. 最初に 1 度だけ
@@ -33,15 +33,16 @@ Kumiori は 3 つの形で公開します。
 main はルールセットで守っているので、版の変更も PR で入れる。npm への公開は、タグを push すると GitHub Actions (`.github/workflows/publish.yml`) が行う (Trusted Publishing。下の「Trusted Publishing の設定」)。
 
 1. 作業用のブランチで、`CHANGELOG.md`・`CHANGELOG.en.md` にその版の項目を書き (見出しは「0.1.1 (公開の日付)」)、`package.json` の `version` を上げる。
-   `npm version patch|minor|major --no-git-tag-version` を使う (タグはマージした後の main に付けるので、ここでは作らない)
+   `npm version patch|minor|major --no-git-tag-version` を使う (タグはマージした後の main に付けるので、ここでは作らない)。
+   README (日本語・英語) の、CDN から読む例の URL の版 (`kumiori@0.2.0` など) も、出す版に直す
 2. 公開前の確認:
 
    ```bash
    npm publish --dry-run
    ```
 
-   `prepublishOnly` が型検査・テスト・3 つのビルド (`build:dist`) を走らせ、tarball に入るファイルの一覧が出る。`dist-lib`・`dist-cli`・`dist-browser`・README・LICENSE などが入っていること、`src` やテストが入っていないことを見る。
-   前の版から依存パッケージ (`package-lock.json`) や、ソースに写した仕様書・データが変わっていれば、`THIRD_PARTY_NOTICES.md` を合わせる。`npm ls --omit=dev --all` の版が 2 節と、ブラウザ向けのビルドに取り込まれたパッケージ (`npx vite build --config vite.browser.config.ts --sourcemap` の `.map` の `sources` の `node_modules/…`) が 1 節と合っていることを見る
+   `prepublishOnly` が型検査・テスト・3 つのビルド (`build:dist`) を走らせ、tarball に入るファイルの一覧が出る。`dist-lib`・`dist-cli`・`dist-browser`・README・LICENSE などが入っていること、`src` やテスト・sourcemap (`.map`) が入っていないことを見る (sourcemap は配らない。`npm test` の `test/package.test.ts` も、`.map` と `//# sourceMappingURL=` の行が無いことを見る)。
+   前の版から依存パッケージ (`package-lock.json`) や、ソースに写した仕様書・データが変わっていれば、`THIRD_PARTY_NOTICES.md` を合わせる。`npm ls --omit=dev --all` の版が 2 節と、ブラウザ向けのビルドに取り込まれたパッケージ (`npx vite build --config vite.browser.config.ts --sourcemap` の `.map` の `sources` の `node_modules/…`) が 1 節と合っていることを見る。実行時の依存の版・license と、転記したライセンスの本文が node_modules のファイルと同じことは、`npm test` の `test/thirdPartyNotices.test.ts` も見る (食い違うと落ちる)
 3. PR を作り、CI が通ったらマージする
 4. マージした後の main にタグを付けて push する:
 
@@ -51,7 +52,7 @@ main はルールセットで守っているので、版の変更も PR で入�
    git push origin v0.1.1
    ```
 
-   publish.yml が、タグと `package.json` の版が同じで、タグのコミットが main に入っていることを確かめ、型検査・テスト・3 つのビルドをして tarball を作る (build ジョブ)。その tarball を、別のジョブ (publish) が `npm publish` する。npm へ公開する権限 (OIDC) を持つのは publish ジョブだけで、そこでは依存を入れず、スクリプトも走らせない。Actions の「Publish」の実行で結果を見る。
+   publish.yml が、タグと `package.json` の版が同じで、タグのコミットが main に入っていることを確かめ、型検査・テスト・3 つのビルドをして tarball を作る (build ジョブ)。その tarball を、別のジョブ (publish) が `npm publish` する。npm へ公開する権限 (OIDC) を持つのは publish ジョブだけで、そこではプロジェクトの依存を入れず (Trusted Publishing に要る npm 11.5.1 以上だけを入れる)、スクリプトも走らせない。Actions の「Publish」の実行で結果を見る。
    一度公開した版は取り消せても同じ番号を使い直せない
 5. GitHub の Releases で、そのタグのリリースを作り、CHANGELOG の項目 (日本語と英語) を本文にする。
    リリースを公開すると、`.github/workflows/conformance-pdf.yml` がそのタグのコミットで対応仕様説明書を組み、PDF 4 冊 (v0.1.1 なら `kumiori-xsl-fo-v0.1.1.pdf`・`kumiori-html-css-v0.1.1.pdf` と、それぞれの `.en.pdf`) をリリースに付ける。Actions の「Conformance PDF」の実行で結果を見る。
