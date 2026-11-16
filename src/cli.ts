@@ -2,9 +2,9 @@
  * cli — HTML+CSS を、ブラウザを使わずに PDF に組む (Node のコマンド)。
  *
  * 使い方 (npm run build:cli の後):
- *   node dist-cli/cli.js <HTML ファイル> [-o <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css]
- *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--xhtml] [--watch]
- *   node dist-cli/cli.js <FO ファイル (.fo・.xml)> [-o <PDF ファイル>] [--compat spec|antenna] [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--watch]
+ *   node dist-cli/cli.js <HTML ファイル> [-o <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css]
+ *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4] [--xhtml] [--watch]
+ *   node dist-cli/cli.js <FO ファイル (.fo・.xml)> [-o <PDF ファイル>] [--compat spec|antenna] [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4] [--watch]
  *   node dist-cli/cli.js a.html b.fo c.html -o <出力先のディレクトリ>      (まとめて変換)
  *   cat a.html | node dist-cli/cli.js - -o - [--base <ディレクトリ>] > a.pdf  (標準入力から読み、標準出力へ書く)
  *
@@ -12,13 +12,14 @@
  *  - HTML と同じディレクトリ (と下のディレクトリ) の CSS・画像・書体を、画面の「開く」で一緒に選んだのと同じに使う。
  *    画像は、文書と CSS (と、そこから参照された SVG) に名前が出てくるものだけを読む。
  *    --css は使う CSS ファイルを選ぶ (HTML から参照されていない CSS は、利用者のスタイルシートとして足す)
- *  - 既定の書体 (Noto Serif JP・Noto Sans JP・Tinos・Arimo。等幅の指定があれば Cousine、MathML があれば STIX Two Math、どの書体にも無い記号があれば Noto Sans Symbols 2) は、
+ *  - 既定の書体 (Noto Serif JP・Noto Sans JP・Tinos・Arimo。等幅の指定があれば Cousine、MathML があれば STIX Two Math、どの書体にも無い記号があれば Noto Sans Symbols 2、それにも無い絵文字があれば Noto Emoji) は、
  *    --font-dir に同じ名前のファイル (NotoSerifJP-Regular.ttf など) があれば
  *    そこから、無ければ Google Fonts から読む
  *  - XSL-FO (.fo・.xml、または --fo) は xmldom で読み、画面の XSL-FO の読み込みと同じに組む。--compat は既定値の流儀
  *    (spec: XSL-FO 1.1 の初期値 (既定) / antenna: アンテナハウスに合わせる)。同じディレクトリの書体ファイルは、FO の font-family から使う
  *  - --page-size <用紙>: HTML の既定の用紙 (@page で size を指定していない文書の用紙。既定 A4)。CSS の size の書き方 (A5・"A5 landscape"・148mm,210mm。
  *    CSS Paged Media 3 §7.1)。文書の @page { size } があれば、そちらが勝つ。@media の width・height もこの用紙で評価する。XSL-FO では使わない
+ *  - --svg-lang <ja,en>: SVG の systemLanguage を照らす言語 (SVG を置いた所に言語の指定が無いとき。既定は実行環境の言語)
  *  - --print: トンボと塗り足し (3mm) を付ける
  *  - --xhtml: 拡張子によらず、HTML を XML の構文 (XHTML) で読む (アンテナハウスのコマンドの -f XHTML に当たる。接頭辞の付いた m:math・s:svg も、名前空間に従って MathML・SVG になる)
  *  - 入力が複数なら、-o は出力先のディレクトリ (無ければ各入力の隣に .pdf)。1 つの失敗でほかの変換は止めない (終了コードは 1)。
@@ -30,12 +31,24 @@
  *  - --link-schemes http,https,…: PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて)
  *  - --link-launch: ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パスなど) も PDF に書く (既定は書かない)
  *  - --link-relative file|uri: スキームの無い相対参照のリンクの書き方 (既定 file: GoToR・Launch。uri: 書かれた参照のままの URI 動作)
+ *  - draw.io の図 (.drawio・.dio) は画像として読む (API の drawio)。--drawio-stencils <ファイルかディレクトリ,…> で図形ライブラリ
+ *    (draw.io の js/stencils.min.js かライブラリの XML) と配布物の画像 (.svg・.png・.jpg) を渡す。--fetch-drawio-stencils で、足りない
+ *    図形ライブラリ・画像を draw.io の配布物から取るのを許す (取ったものは書体のキャッシュの場所に保存する)。--drawio-stencils-url <URL> は、
+ *    取り先の stencils.min.js (--fetch-drawio-stencils も付けたことになる)。--no-drawio なら、draw.io の図を画像として読まない
+ *  - --plugin <モジュール>: プラグイン (API の plugins) を読み込む。./・../ で始まるもの、絶対の道、file: の URL は、ファイルの道。
+ *    それ以外は、import() と同じに、まずパッケージの名前として今のディレクトリから探し (.js などで終わるものも)、
+ *    パッケージとして読めなければ (パッケージが無いときのほか、指したサブパスを exports で出していないとき・入口のファイルが無いときも)、
+ *    今のディレクトリのその名前のファイルを読む (パッケージとして読めればパッケージ。確実にファイルを指すには ./ を付ける)。
+ *    モジュールの default は、プラグイン (KumioriPlugin) か、プラグインを返す関数 ((選択肢, { cacheDir, lang }) => KumioriPlugin)。何度でも書ける。
+ *    --plugin-option <名前>=<値> は、その前の --plugin の関数に渡す選択肢 (何度でも)。プラグインはプログラムそのものなので、信頼できるものだけを書く
  *  - 文書・CSS が file: の URL で参照するファイル (file:///…/style.css など) は、そのファイルを読む
  *  - '-' は標準入力から読む (CSS・画像・書体は --base のディレクトリ (既定は今のディレクトリ) から。FO かどうかは中身で見分ける)。
  *    -o - は PDF を標準出力へ書く (報告は標準エラーへ)
  *  - --watch: 入力のディレクトリの変更を見張り、変わるたびに組み直す (Ctrl+C で終わる)
  *  - --image-max-dpi <dpi>: 置かれる大きさに対してこれより細かい JPEG の写真を、この解像度に縮めて符号化し直す (PDF を小さくする。既定は元のまま)
- *  - --spot-colors <JSON ファイル>: 特色の名前と、濃度 100% の代わりの CMYK ({"名前": "cmyk(94%,34%,60%,82%)"} か {"名前": [0.94,0.34,0.6,0.82]})。
+ *  - --pdfx x3|x4: 入稿用の PDF/X-3:2003・PDF/X-4 の印を付ける (RGB の色・画像は CMYK にする。ページの中のリンク・注釈・フォームの欄は書かない)。--output-profile <ICC> で出力の
+ *    CMYK の ICC プロファイル (X-4 では必須)、--output-condition <名前> で印刷条件の名前 (既定 JC200103) を渡す
+ *  - --spot-colors <JSON ファイル>: 特色の名前と、濃度 100% の代わりの CMYK ({"名前": "cmyk(20%,40%,60%,80%)"} か {"名前": [0.2,0.4,0.6,0.8]})。
  *    rgb-icc(…, #Separation, '名前', 濃度) を、PDF の特色 (Separation) にする。無い名前は、代わりの RGB で塗る
  *  - 既定の書体は 1 度だけ読み、変換ごとに使い回す。読む順は --font-dir → 書体のキャッシュ → ネットワーク (Google Fonts)。
  *    ネットワークから取った書体はキャッシュに保存し、次からはネットワークに行かない。キャッシュの場所は --font-cache <dir>、
@@ -55,6 +68,10 @@ import { parsePageSize } from './htmlImport';
 import { FO_COMPATS, HTML_STYLES, type FoCompat } from './compat';
 import { isXhtmlFile } from './xhtml';
 import { decodeDocumentText, typeset, type KumioriFile } from './api';
+import type { KumioriPlugin } from './imageFormats';
+import type { DrawioOptions } from './drawio/index';
+import { cachedFetcher, stencilFiles } from './drawio/nodeFiles';
+import { pluginNotFoundMessage, resolvePlugin } from './pluginResolve';
 import { GENERIC_FONT_KEYS } from './fontMapping';
 import { createFileResolver, defaultFontCacheDir, FETCH_TIMEOUT_MS, localFont } from './nodeFonts';
 // テストと、これまで cli から読んでいた利用者のために出し直す
@@ -72,6 +89,8 @@ export function parseArgs(argv: string[]) {
     style: HtmlDefaults;
     /** HTML の既定の用紙 (--page-size。@page で size を指定していない文書の用紙。CSS の size の書き方) */
     pageSize?: string;
+    /** SVG の systemLanguage を照らす言語 (--svg-lang) */
+    svgLanguages?: string[];
     css?: string;
     fontDir?: string;
     /** 書体のキャッシュのディレクトリ (--font-cache。無ければ KUMIORI_FONT_CACHE か OS のキャッシュ) */
@@ -96,6 +115,12 @@ export function parseArgs(argv: string[]) {
     spotColors?: Record<string, [number, number, number, number]>;
     /** JPEG の解像度の上限 (dpi) */
     imageMaxDpi?: number;
+    /** 入稿用の PDF/X の版 (--pdfx x3|x4) */
+    pdfx?: 'X-3' | 'X-4';
+    /** 出力の CMYK の ICC プロファイル (--output-profile) */
+    outputProfile?: Uint8Array;
+    /** 印刷条件の名前 (--output-condition。ICC の登録名など) */
+    outputCondition?: string;
     /** 文書が http(s) で参照する画像をネットワークから取る (--no-fetch-images で止める) */
     fetchImages: boolean;
     /** 文書が http(s) で参照する CSS をネットワークから取る (--no-fetch-styles で止める) */
@@ -108,6 +133,14 @@ export function parseArgs(argv: string[]) {
     linkLaunch: boolean;
     /** スキームの無い相対参照のリンクの書き方 (--link-relative file|uri。無ければ既定の file) */
     linkRelative?: 'file' | 'uri';
+    /** draw.io の図形ライブラリのファイル・ディレクトリ (--drawio-stencils。, で区切ったもの。何度でも) */
+    drawioStencils: string[];
+    /** draw.io の配布物から取るのを許す (--fetch-drawio-stencils。--drawio-stencils-url なら、その URL) */
+    drawioFetch: boolean | string;
+    /** draw.io の図を画像として読まない (--no-drawio) */
+    noDrawio: boolean;
+    /** 読み込むプラグイン (--plugin) と、その選択肢 (--plugin-option 名前=値) */
+    plugins: Array<{ spec: string; options: Record<string, string> }>;
     /** --help: 使い方を書いて終わる */
     help: boolean;
     /** --version: 版を書いて終わる */
@@ -127,6 +160,10 @@ export function parseArgs(argv: string[]) {
     fetchStyles: true,
     outsideFiles: true,
     linkLaunch: false,
+    drawioStencils: [],
+    drawioFetch: false,
+    noDrawio: false,
+    plugins: [],
     noFontCache: false,
     help: false,
     version: false,
@@ -155,6 +192,12 @@ export function parseArgs(argv: string[]) {
       const size = v.split(/[\s,]+/).filter(Boolean).join(' ');
       if (!parsePageSize(size)) throw new UsageError(msg(`--page-size の値 "${v}" は使えません (A5・"A5 landscape"・148mm,210mm のように、用紙の名前か幅と高さ)`, `--page-size cannot be "${v}" (a paper name or a width and height, such as A5, "A5 landscape" or 148mm,210mm)`));
       out.pageSize = size;
+    }
+    else if (a === '--svg-lang') {
+      const v = value(k++);
+      const langs = v.split(/[\s,]+/).filter(Boolean);
+      if (!langs.length || !langs.every((l) => /^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/.test(l))) throw new UsageError(msg(`--svg-lang の値 "${v}" は使えません (ja,en のように、言語タグをカンマで区切る)`, `--svg-lang cannot be "${v}" (language tags separated by commas, such as ja,en)`));
+      out.svgLanguages = langs;
     }
     else if (a === '--css') out.css = value(k++);
     else if (a === '--font-dir') out.fontDir = value(k++);
@@ -195,6 +238,23 @@ export function parseArgs(argv: string[]) {
       if (v !== 'file' && v !== 'uri') throw new UsageError(msg(`--link-relative の値 "${v}" は使えません (file か uri)`, `--link-relative cannot be "${v}" (file or uri)`));
       out.linkRelative = v;
     }
+    else if (a === '--drawio-stencils') out.drawioStencils.push(value(k++));
+    else if (a === '--fetch-drawio-stencils') out.drawioFetch ||= true;
+    else if (a === '--drawio-stencils-url') {
+      const v = value(k++);
+      if (!/^https?:\/\//i.test(v)) throw new UsageError(msg(`--drawio-stencils-url の値 "${v}" は使えません (http(s) の URL)`, `--drawio-stencils-url cannot be "${v}" (an http(s) URL)`));
+      out.drawioFetch = v;
+    }
+    else if (a === '--no-drawio') out.noDrawio = true;
+    else if (a === '--plugin') out.plugins.push({ spec: value(k++), options: {} });
+    else if (a === '--plugin-option') {
+      const v = value(k++);
+      const eq = v.indexOf('=');
+      const last = out.plugins[out.plugins.length - 1];
+      if (!last) throw new UsageError(msg('--plugin-option は --plugin の後に書いてください', '--plugin-option must come after --plugin'));
+      if (eq <= 0) throw new UsageError(msg(`--plugin-option の値 "${v}" は使えません (名前=値)`, `--plugin-option cannot be "${v}" (name=value)`));
+      last.options[v.slice(0, eq)] = v.slice(eq + 1);
+    }
     else if (a === '--base') out.base = value(k++);
     else if (a === '--spot-colors') out.spotColors = readSpotColors(value(k++));
     else if (a === '--image-max-dpi') {
@@ -203,6 +263,21 @@ export function parseArgs(argv: string[]) {
       if (!(n >= 1) || !Number.isFinite(n)) throw new UsageError(msg(`--image-max-dpi の値 "${v}" は使えません (1 以上の数)`, `--image-max-dpi cannot be "${v}" (a number of 1 or more)`));
       out.imageMaxDpi = n;
     }
+    else if (a === '--pdfx') {
+      const v = value(k++);
+      const m = /^(?:pdf\/?)?x-?([34])$/i.exec(v);
+      if (!m) throw new UsageError(msg(`--pdfx の値 "${v}" は使えません (x3 か x4)`, `--pdfx cannot be "${v}" (x3 or x4)`));
+      out.pdfx = m[1] === '4' ? 'X-4' : 'X-3';
+    }
+    else if (a === '--output-profile') {
+      const f = value(k++);
+      try {
+        out.outputProfile = new Uint8Array(fs.readFileSync(f));
+      } catch (e) {
+        throw new UsageError(msg(`--output-profile のファイルを読めません: ${f} (${(e as Error).message})`, `cannot read the --output-profile file: ${f} (${(e as Error).message})`));
+      }
+    }
+    else if (a === '--output-condition') out.outputCondition = value(k++);
     else if (a === '--lang') {
       const v = value(k++);
       if (!(MESSAGE_LANGS as readonly string[]).includes(v)) throw new UsageError(msg(`--lang の値 "${v}" は使えません (${MESSAGE_LANGS.join('・')})`, `--lang cannot be "${v}" (${MESSAGE_LANGS.join(', ')})`));
@@ -214,6 +289,13 @@ export function parseArgs(argv: string[]) {
     else if (a === '-' || !a.startsWith('-')) out.inputs.push(a);
     // 知らないオプションは誤り (綴りの誤りの値を、入力のファイルとして扱わないように)
     else throw new UsageError(msg(`知らないオプションです: ${a}`, `unknown option: ${a}`));
+  }
+  if ((out.outputProfile || out.outputCondition !== undefined) && !out.pdfx) {
+    throw new UsageError(msg('--output-profile・--output-condition は --pdfx と一緒に使ってください', '--output-profile and --output-condition need --pdfx'));
+  }
+  // PDF/X-4 は出力の ICC プロファイルの埋め込みが要る (pdfRenderer.ts の checkPdfX4Profile)
+  if (out.pdfx === 'X-4' && !out.outputProfile) {
+    throw new UsageError(msg('--pdfx x4 には、出力の CMYK の ICC プロファイル (--output-profile <ICC ファイル>) が要ります', '--pdfx x4 needs an output CMYK ICC profile (--output-profile <ICC file>)'));
   }
   return out;
 }
@@ -262,6 +344,16 @@ export function listFiles(dir: string, readdir: (d: string) => fs.Dirent[] = (d)
   return readdir(dir).flatMap((e) => (e.isDirectory() ? (e.name === 'node_modules' || e.name.startsWith('.') ? [] : sub(path.join(dir, e.name))) : [path.join(dir, e.name)]));
 }
 
+/** ファイル file の実体 (シンボリックリンクをたどった先) が、ディレクトリ dir の実体の中にあるか。たどれないファイル (壊れたリンク) は外とみなす */
+export function insideRealDir(dir: string, file: string): boolean {
+  try {
+    const rel = path.relative(fs.realpathSync(dir), fs.realpathSync(file));
+    return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * --css の値 (カンマ区切り) のファイルの並び。前後の空白は捨て、空の項目は無いものとする ("a.css, b.css" の b.css も使う)。
  * 使う CSS を選ぶところと、ディレクトリの外のファイルを探すところで、同じ並びを使う
@@ -307,13 +399,56 @@ export function printable(s: string): string {
   return s.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
 }
 
+/** draw.io の図の選択肢 (1 回の実行で 1 度だけ作る: --watch で組み直すときも、取った図形ライブラリを使い回す) */
+let drawioMade: DrawioOptions | false | undefined;
+function drawioOptions(args: Args): DrawioOptions | false {
+  if (drawioMade !== undefined) return drawioMade;
+  if (args.noDrawio) return (drawioMade = false);
+  const cacheDir = args.noFontCache ? undefined : args.fontCache ? path.resolve(args.fontCache) : defaultFontCacheDir();
+  const lang = messageLang();
+  const stencils = args.drawioStencils.length ? stencilFiles(args.drawioStencils.join(','), lang) : undefined;
+  return (drawioMade = {
+    ...(stencils ? { stencils } : {}),
+    ...(args.drawioFetch ? { fetchStencils: cachedFetcher(cacheDir, lang), ...(args.drawioFetch === true ? {} : { stencilsUrl: args.drawioFetch }) } : {}),
+  });
+}
+
+/** 読み込んだプラグイン (--plugin。1 回の実行で 1 度だけ読む: --watch で組み直すときも同じものを使う) */
+let pluginsLoaded: Promise<KumioriPlugin[]> | undefined;
+/**
+ * --plugin のモジュールを読み込む。道の形 (./・../ で始まるもの、絶対の道、file: の URL) は、そのファイル。
+ * そうでなければ、まずパッケージの名前として、import() と同じ条件 (exports の import・node・default) で、今のディレクトリから探し
+ * (node_modules)、パッケージとして読めなければ (サブパスを出していない・入口のファイルが無いときも)、今のディレクトリのその名前のファイル (pluginResolve.ts の resolvePlugin)。
+ * 見つからなければ、何をどの順に探したかを誤りの文に書く。default が関数なら、--plugin-option の選択肢と
+ * { cacheDir: 書体のキャッシュのディレクトリ (--no-font-cache なら undefined), lang: 文言の言語 (--lang・環境) } を渡して呼ぶ
+ */
+function loadPlugins(args: Args): Promise<KumioriPlugin[]> {
+  pluginsLoaded ??= (async () => {
+    const cacheDir = args.noFontCache ? undefined : args.fontCache ? path.resolve(args.fontCache) : defaultFontCacheDir();
+    const out: KumioriPlugin[] = [];
+    for (const { spec, options } of args.plugins) {
+      const { url, tried } = resolvePlugin(spec);
+      if (!url) throw new Error(pluginNotFoundMessage(spec, tried));
+      const mod = (await import(url)) as { default?: unknown };
+      const d = mod.default;
+      const plugin = typeof d === 'function' ? await (d as (o: Record<string, string>, c: { cacheDir?: string; lang: 'ja' | 'en' }) => unknown)(options, { ...(cacheDir ? { cacheDir } : {}), lang: messageLang() }) : d;
+      if (!plugin) throw new Error(msg(`プラグイン ${spec} の default にプラグインがありません`, `plugin ${spec} has no default export`));
+      out.push(plugin as KumioriPlugin);
+    }
+    return out;
+  })();
+  return pluginsLoaded;
+}
+
 /** 1 つの入力を PDF にする。input が '-' なら標準入力 (text に中身)、output が '-' なら標準出力 */
 async function convert(input: string, output: string, args: Args, text: string) {
   const stdin = input === '-';
   const dir = stdin ? path.resolve(args.base ?? '.') : path.dirname(input);
   const cssNames = args.css ? cssOptionFiles(args.css) : undefined;
   const onlyCss = cssNames ? new Set(cssNames.map((c) => path.basename(c).toLowerCase())) : undefined;
-  const all = listFiles(dir).filter((f) => f !== input);
+  // --no-outside-files のときは、入力のディレクトリの中にあっても、実体 (シンボリックリンクをたどった先) が外にあるファイルは使わない
+  // (ディレクトリの中に置いた a.png → ../secret/s.png のリンクで、外のファイルの中身が PDF に描かれていた)
+  const all = listFiles(dir).filter((f) => f !== input && (args.outsideFiles || insideRealDir(dir, f)));
   // --css で選んだ CSS が @import する CSS も使う
   for (const name of onlyCss ?? []) {
     const file = all.find((f) => path.basename(f).toLowerCase() === name);
@@ -341,6 +476,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
     genericFonts: args.genericFonts,
     style: args.style,
     ...(args.pageSize ? { pageSize: args.pageSize } : {}),
+    ...(args.svgLanguages ? { svgLanguages: args.svgLanguages } : {}),
     compat: args.compat,
     print: args.print,
     fetchImages: args.fetchImages,
@@ -354,29 +490,44 @@ async function convert(input: string, output: string, args: Args, text: string) 
     loadFont: localFont(args.fontDir, args.noFontCache ? undefined : args.fontCache ? path.resolve(args.fontCache) : defaultFontCacheDir()),
     lang: messageLang(),
     fetchTimeoutMs: FETCH_TIMEOUT_MS,
+    drawio: drawioOptions(args),
+    ...(args.plugins.length ? { plugins: await loadPlugins(args) } : {}),
     // 圧縮は Node の zlib (ネイティブ) で行う (pdf-lib の pako より速い)
     deflate: (b) => deflateSync(b),
   });
-  const pdf = await res.toPdf(args.imageMaxDpi ? { imageMaxDpi: args.imageMaxDpi } : {});
+  const pdfxWarnings: string[] = [];
+  const pdf = await res.toPdf({
+    ...(args.imageMaxDpi ? { imageMaxDpi: args.imageMaxDpi } : {}),
+    ...(args.pdfx
+      ? {
+          pdfx: {
+            version: args.pdfx,
+            ...(args.outputProfile ? { profile: args.outputProfile } : {}),
+            ...(args.outputCondition !== undefined ? { condition: args.outputCondition } : {}),
+            warnings: pdfxWarnings,
+          },
+        }
+      : {}),
+  });
   if (output === '-') process.stdout.write(pdf);
   else fs.writeFileSync(output, pdf);
   // PDF を標準出力へ書くときは、報告は標準エラーへ
   const log = output === '-' ? console.error : console.log;
   const target = output === '-' ? msg('(標準出力)', '(stdout)') : path.basename(output);
   log(msg(`${target}: ${res.pageCount} ページ (組版 ${res.layoutMs}ms)`, `${target}: ${res.pageCount} page${res.pageCount === 1 ? '' : 's'} (layout ${res.layoutMs}ms)`));
-  for (const w of res.warnings) console.warn(msg(`  警告: ${printable(w)}`, `  warning: ${printable(w)}`));
+  for (const w of [...res.warnings, ...pdfxWarnings]) console.warn(msg(`  警告: ${printable(w)}`, `  warning: ${printable(w)}`));
 }
 
 /** --watch で見張るファイル */
-const WATCHED = /\.(x?html?|fo|xml|xsl|css|png|jpe?g|gif|svgz?|webp|tiff?|bmp|emf|wmf|eps|cgm|mml|ttf|otf|ttc|otc|woff2?)$/i;
+const WATCHED = /\.(x?html?|fo|xml|xsl|css|png|jpe?g|gif|svgz?|webp|tiff?|bmp|emf|wmf|eps|cgm|drawio|dio|mml|ttf|otf|ttc|otc|woff2?)$/i;
 
 /** 引数の誤り (使い方を表示して終わる。スタックトレースは出さない) */
 export class UsageError extends Error {}
 
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
-  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--watch]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--xhtml] [--watch] [--lang ja|en]',
+  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--no-fetch-images] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--watch] [--lang ja|en]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
   '        kumiori --help | --version',
@@ -384,6 +535,7 @@ export const USAGE_JA = [
   '  -o, --output <PDF>        出力の PDF (入力が複数なら出力先のディレクトリ。- は標準出力)',
   '  --style <名前>            HTML の既定のスタイル (kumiori・browser・browser-margin・ah・vivliostyle・weasyprint。既定 kumiori)',
   '  --page-size <用紙>        HTML の既定の用紙 (@page で size を指定していない文書の用紙。A5・"A5 landscape"・148mm,210mm など。既定 A4)',
+  '  --svg-lang <ja,en>        SVG の systemLanguage を照らす言語 (SVG を置いた所に言語の指定が無いとき。既定は実行環境の言語)',
   '  --css a.css,b.css         使う CSS (HTML から参照されていないものは利用者のスタイルシートとして足す。指定が無ければ、HTML が参照する CSS だけを使う)',
   '  --font-dir <dir>          既定の書体 (NotoSerifJP-Regular.ttf など) を読むディレクトリ (無ければキャッシュ、次に Google Fonts から取る)',
   '  --font-cache <dir>        Google Fonts から取った既定の書体を保存して使い回すディレクトリ (既定は環境変数 KUMIORI_FONT_CACHE か OS のキャッシュ:',
@@ -395,12 +547,20 @@ export const USAGE_JA = [
   '  --fo                      拡張子によらず XSL-FO として読む   --xhtml  拡張子によらず XML の構文 (XHTML) で読む',
   '  --print                   トンボと塗り足し (3mm) を付ける',
   '  --spot-colors <JSON>      特色の名前と代わりの CMYK      --image-max-dpi <dpi>  JPEG の解像度の上限',
+  '  --pdfx x3|x4              入稿用の PDF/X-3:2003・PDF/X-4 の印を付ける (RGB は CMYK にする。ページの中のリンク・注釈・フォームの欄は書かない)',
+  '  --output-profile <ICC>    出力の CMYK の ICC プロファイル (PDF/X。x4 では必須)   --output-condition <名前>  印刷条件の名前 (既定 JC200103)',
   '  --no-fetch-images         文書が http(s) で参照する画像を取らない',
   '  --no-fetch-styles         文書が http(s) で参照する CSS を取らない',
   '  --no-outside-files        文書が file: の URL や ../ で指した、入力のディレクトリの外のファイルを読まない (他人の書いた文書を組むとき)',
   '  --link-schemes <a,b>      PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて。ほかのスキームのリンクは字だけを組む)',
   '  --link-launch             ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パス・//host/…) も PDF に書く (既定は書かない)',
   '  --link-relative <file|uri> スキームの無い相対のリンク (x.pdf・a.mp3) の書き方。file: ファイルを開く動作 (GoToR・Launch。既定)、uri: 書かれた参照のままの URI の動作 (ブラウザの中の PDF ビューアでも開ける)',
+  '  --drawio-stencils <files> draw.io の図の図形ライブラリ (stencils.min.js・ライブラリの XML) と配布物の画像。ファイルかディレクトリを , で区切る (何度でも)',
+  '  --fetch-drawio-stencils   draw.io の図に要る図形ライブラリ・画像が無ければ、draw.io の配布物 (v24.7.5) から取る (書体のキャッシュの場所に保存する)',
+  '  --drawio-stencils-url <URL> 取り先の stencils.min.js の URL (--fetch-drawio-stencils も付けたことになる)',
+  '  --no-drawio               draw.io の図 (.drawio・.dio) を画像として読まない',
+  '  --plugin <モジュール>     プラグインを読み込む (./・../・絶対の道・file: の URL はファイル。ほかはパッケージの名前で探し、読めなければ今のディレクトリのファイル。何度でも。信頼できるものだけ)',
+  '  --plugin-option <名前=値> その前の --plugin に渡す選択肢 (何度でも)',
   '  --base <dir>              標準入力の文書の CSS・画像・書体を探すディレクトリ (既定は今のディレクトリ)',
   '  --watch                   入力のディレクトリの変更を見張って組み直す (Ctrl+C で終わる)',
   '  --lang ja|en              文言の言語 (無ければ環境変数 KUMIORI_LANG、OS のロケール (LANG) の順。既定は日本語)',
@@ -411,8 +571,8 @@ export const USAGE_JA = [
 
 /** 使い方。英語 */
 export const USAGE_EN = [
-  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--xhtml] [--watch] [--lang ja|en]',
-  '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--no-fetch-images] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--watch]',
+  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--xhtml] [--watch] [--lang ja|en]',
+  '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--no-fetch-images] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--watch] [--lang ja|en]',
   '       kumiori a.html b.fo … -o <output directory>',
   '       kumiori - -o - [--base <dir>] < input > output.pdf',
   '       kumiori --help | --version',
@@ -420,6 +580,7 @@ export const USAGE_EN = [
   '  -o, --output <PDF>        output PDF (a directory when there are several inputs; - is standard output)',
   '  --style <name>            default style sheet for HTML (kumiori, browser, browser-margin, ah, vivliostyle, weasyprint; default kumiori)',
   '  --page-size <size>        default paper for HTML (used when the document has no @page size; A5, "A5 landscape", 148mm,210mm, etc.; default A4)',
+  '  --svg-lang <ja,en>        languages to match SVG systemLanguage against (when the place of the SVG has no language; default: the environment language)',
   '  --css a.css,b.css         CSS files to use (ones not referenced by the HTML are added as user style sheets; without it, only CSS referenced by the HTML is used)',
   '  --font-dir <dir>          directory of the default fonts (NotoSerifJP-Regular.ttf etc.; otherwise the cache, then Google Fonts)',
   '  --font-cache <dir>        directory where default fonts fetched from Google Fonts are saved and reused (default: KUMIORI_FONT_CACHE or the OS cache:',
@@ -431,12 +592,20 @@ export const USAGE_EN = [
   '  --fo                      read as XSL-FO regardless of the extension   --xhtml  read with XML syntax (XHTML) regardless of the extension',
   '  --print                   add trim marks and 3mm bleed',
   '  --spot-colors <JSON>      spot color names and fallback CMYK      --image-max-dpi <dpi>  resolution limit for JPEG images',
+  '  --pdfx x3|x4              write PDF/X-3:2003 or PDF/X-4 markers for print submission (RGB is converted to CMYK; links, annotations and form fields on the pages are not written)',
+  '  --output-profile <ICC>    output CMYK ICC profile (PDF/X; required for x4)   --output-condition <name>  printing condition name (default JC200103)',
   '  --no-fetch-images         do not fetch images the document references over http(s)',
   '  --no-fetch-styles         do not fetch stylesheets the document references over http(s)',
   '  --no-outside-files        do not read files outside the input directory that the document points at with file: URLs or ../ (for documents written by others)',
   '  --link-schemes <a,b>      URL schemes whose links get an action in the PDF (default http,https,mailto,tel; * means all; other links are typeset as plain text)',
   '  --link-launch             also write links that open a file (relative non-PDF files, absolute paths, //host/…) to the PDF (off by default)',
   '  --link-relative <file|uri> how scheme-less relative links (x.pdf, a.mp3) are written: file = open-file actions (GoToR/Launch; default), uri = a URI action with the reference as written (works in browser PDF viewers)',
+  '  --drawio-stencils <files> shape libraries (stencils.min.js or library XML) and distributed images for draw.io diagrams; files or directories separated by , (repeatable)',
+  '  --fetch-drawio-stencils   fetch the shape libraries and images a draw.io diagram needs from draw.io (v24.7.5) when they are missing (saved in the font cache directory)',
+  '  --drawio-stencils-url <URL> the URL of the stencils.min.js to fetch (implies --fetch-drawio-stencils)',
+  '  --no-drawio               do not read draw.io diagrams (.drawio, .dio) as images',
+  '  --plugin <module>         load a plugin (./, ../, absolute paths and file: URLs are files; others are looked up as a package name, then as a file in the current directory; repeatable; only ones you trust)',
+  '  --plugin-option <name=value> an option passed to the preceding --plugin (repeatable)',
   '  --base <dir>              directory where CSS, images and fonts of a document read from standard input are looked up (default: current directory)',
   '  --watch                   watch the input directories and re-typeset on changes (Ctrl+C to stop)',
   '  --lang ja|en              language of messages (otherwise KUMIORI_LANG, then the OS locale (LANG); default Japanese)',
@@ -537,8 +706,17 @@ async function main() {
       return false;
     }
   };
+  // 組み終える前に、することが無くなって Node が終わろうとしたら (終わらない Promise を返すプラグインなど。待つものが無いので、
+  // そのままでは何も言わずに終了コード 0 で終わり、PDF も出ない)、誤りとして知らせて 1 で終わる
+  let finished = false;
+  process.once('beforeExit', () => {
+    if (finished) return;
+    console.error(msg('組み終える前に処理が止まりました (読み込んだプラグインが終わらないなど)。PDF は書いていません', 'processing stopped before typesetting finished (for example, a loaded plugin never completed); no PDF was written'));
+    process.exitCode = 1;
+  });
   let ok = true;
   for (const job of jobs) ok = (await run(job)) && ok;
+  finished = true;
   if (!args.watch) {
     if (!ok) process.exitCode = 1;
     return;
@@ -546,6 +724,18 @@ async function main() {
   // --watch: 入力のディレクトリの変更を見張り、少し待ってから、そのディレクトリの入力を組み直す (書き出した PDF の変更は見ない)。
   // 同じディレクトリの入力は 1 つの見張りにまとめ、組み直しは全体で 1 本に直列化する (同時に走らない)
   const outputs = new Set(jobs.map((j) => j.output));
+  // プラグインの画像の形式の拡張子のファイルも見張る (draw.io の .drawio・.dio は WATCHED にある)
+  // プラグインを読めない (見つからない・読み込みで誤りが出た) のは使い方の誤り: 文は組んだとき (run) に出してあるので、ここでは
+  // もう一度出さずに、見張らないで終了コード 1 で終わる (覚えてある失敗の Promise を受け手なしに await すると、スタックトレースを出して終わっていた)
+  let plugins: KumioriPlugin[] = [];
+  try {
+    if (args.plugins.length) plugins = await loadPlugins(args);
+  } catch {
+    process.exitCode = 1;
+    return;
+  }
+  const pluginExts = plugins.flatMap((p) => p.imageFormats ?? []).flatMap((f) => f.extensions.map((e) => e.toLowerCase().replace(/[^a-z0-9]/g, ''))).filter(Boolean);
+  const pluginWatched = pluginExts.length ? new RegExp(`\\.(?:${pluginExts.join('|')})$`, 'i') : undefined;
   let running = Promise.resolve();
   const byDir = new Map<string, Job[]>();
   for (const job of jobs) byDir.set(path.dirname(job.input), [...(byDir.get(path.dirname(job.input)) ?? []), job]);
@@ -554,7 +744,7 @@ async function main() {
     const onChange = (_ev: string, file: string | Buffer | null) => {
       // 組版に関わるファイル (HTML・FO・CSS・画像・書体) だけ。書き出した PDF・node_modules・. で始まるものは見ない
       const f = file?.toString();
-      if (!f || outputs.has(path.resolve(dir, f)) || /(^|[\\/])(node_modules|\.)/.test(f) || !WATCHED.test(f)) return;
+      if (!f || outputs.has(path.resolve(dir, f)) || /(^|[\\/])(node_modules|\.)/.test(f) || !(WATCHED.test(f) || pluginWatched?.test(f))) return;
       clearTimeout(timer);
       timer = setTimeout(() => {
         running = running.then(async () => {

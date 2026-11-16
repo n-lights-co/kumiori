@@ -15,9 +15,11 @@ import { DOMParser as XmlDOMParser } from '@xmldom/xmldom';
 import { FontManager, type LoadedFont } from './fontManager';
 import { Measurer } from './measurer';
 import { LayoutEngine } from './layoutEngine';
-import { renderPdf, type PdfRenderOptions } from './pdfRenderer';
+import { renderPdf, svgTextWidth, type PdfRenderOptions } from './pdfRenderer';
 import { renderSheetToCanvas } from './canvasRenderer';
-import { AssetStore, looksLikeImage, mentionedFiles, normalizeSrc } from './assets';
+import { AssetStore, imageExtensions, looksLikeImage, mentionedFiles, normalizeSrc } from './assets';
+import { formatsOf, pluginProblem, type ImageFormat, type KumioriPlugin } from './imageFormats';
+import type { DrawioOptions } from './drawio/index';
 import { droppedLinkWarning, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { SERIF } from './sampleData';
 import { importHtml, parsePageSize } from './htmlImport';
@@ -27,13 +29,15 @@ import { collectionFaces, faceShapeOf, normalizeFamily, splitFontFile, type Face
 import type { AreaTree, FontSpec, LDocument } from './types';
 import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
 import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
+import { patchHtmlParserStack } from './htmlParserStack';
 import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
-import { MESSAGE_LANGS, msg, withMessageLang, type MessageLang } from './messages';
+import { MESSAGE_LANGS, messageLang, msg, withMessageLang, type MessageLang } from './messages';
 import { FO_COMPATS, HTML_STYLES, ahCascadeOptions, compatLayoutOptions, compatPdfOptions, htmlImportCompatOptions, isAhCompat, loadFoHyphenators, type FoCompat } from './compat';
-import { FONT_SPECS, FontNameTable, GENERIC_FONT_KEYS, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, createFontMapping, faceFileWeights, hasMissingGlyphs, missingGlyphChars, setGenericFont, setupDefaultFonts, type GenericFontKey } from './fontMapping';
+import { FONT_SPECS, FontNameTable, GENERIC_FONT_KEYS, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, EMOJI_SPEC, createFontMapping, faceFileWeights, hasMissingEmoji, hasMissingGlyphs, missingGlyphChars, setGenericFont, setupDefaultFonts, type GenericFontKey } from './fontMapping';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
-import { collectResources, documentChars, refBasename } from './resources';
+import { collectResources, documentChars, fetchGuarded, refBasename } from './resources';
+import { fetchLimits } from './imageLimits';
 
 export type { HtmlDefaults } from './htmlPrepare';
 export type { FontSpec } from './types';
@@ -118,6 +122,11 @@ export interface TypesetOptions {
    */
   resolveResource?: (url: string) => KumioriFileData | undefined | Promise<KumioriFileData | undefined>;
   /**
+   * SVG の systemLanguage (switch の子を選ぶ条件。SVG 2 §5.6.5) を照らす言語 (BCP 47 の言語タグ。好む順。例 ["ja", "en"])。
+   * SVG を置いた所に言語の指定 (HTML の lang・XSL-FO の xml:lang・language) があれば、そちらが勝つ。省けば実行環境の言語
+   */
+  svgLanguages?: string[];
+  /**
    * 文書が http(s) の URL で参照する CSS (<link rel="stylesheet">・@import) と、CSS の @font-face が http(s) で参照する書体 (WOFF2 など。
    * unicode-range が文書の字と重なるものだけ) をネットワークから取るか。既定 true (取る)。
    * 関数なら、URL ごとに決める。他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする。
@@ -139,6 +148,21 @@ export interface TypesetOptions {
    * #id は、どちらでも文書の中のリンク
    */
   links?: LinkPolicy;
+  /**
+   * プラグイン (いまは画像の形式を足すものだけ。KumioriPlugin)。画像のファイルが、プラグインの形式の判定 (sniff) に当たれば、
+   * その形式が読み込んで SVG にする (PDF には図形のまま入る)。拡張子 (extensions) の名前のファイルも、文書に名前が出てくれば画像として読む。
+   * プラグインはプログラムそのもので、Kumiori と同じ権限で動く。自分で選んだ、信頼できるものだけを渡すこと
+   */
+  plugins?: KumioriPlugin[];
+  /**
+   * draw.io (diagrams.net) の図のファイル (.drawio・.dio) の選択肢。図は画像として読み、ページを SVG にして PDF に図形と文字のまま入れる
+   * (画像の参照の # の後ろで、描くページを選ぶ: #page=N・#page-id=ID・#ページの名前)。図を描く処理は、図が出てきたときだけ読み込む。
+   * stencils: 図形ライブラリ (draw.io の js/stencils.min.js かライブラリの XML) と配布物の画像のファイル。
+   * fetchStencils: 図に要る図形ライブラリ・画像が stencils に無いとき、draw.io の配布物から取るか (既定 false。true なら draw.io v24.7.5 の公開のリポジトリから)。
+   * Kumiori は図形ライブラリを持たない (docs/drawio.md の「図形ライブラリの利用の条件」)。false なら、draw.io の図を画像として読まない。
+   * 同じオブジェクトを渡せば、取った図形ライブラリを、組むたびに取り直さずに使い回す
+   */
+  drawio?: DrawioOptions | false;
 }
 
 export interface TypesetResult {
@@ -146,7 +170,10 @@ export interface TypesetResult {
   areaTree: AreaTree;
   /** ページ数 */
   pageCount: number;
-  /** 組版の警告 (読めない画像・溢れなど) */
+  /**
+   * 組版の警告 (読めない画像・溢れなど)。toPdf を呼ぶと、PDF を書く途中の警告 (描けない字・色つきの字形を色つきで描けないことなど) も、
+   * この配列に足す (同じ文は 1 度だけ)
+   */
   warnings: string[];
   /** 組版にかかった時間 (ミリ秒。読み込み・PDF の書き出しは含まない) */
   layoutMs: number;
@@ -228,13 +255,75 @@ const ENTITY_MAX_GROWTH = 16;
  */
 const ENTITY_MAX_ADDED = 2 ** 27;
 /**
+ * 内部サブセットのある DOCTYPE (正規表現 /<!DOCTYPE\s[^[>]*\[([\s\S]*?)\]\s*>/i の exec と同じ結果: index・[0] 全体・[1] 内部サブセット)。
+ * 正規表現のままだと、閉じない '<!DOCTYPE a' のたびに文字列の終わりまで読むので、長さの 2 乗の手間になった ('<!DOCTYPE a' を
+ * 2 万個並べた 22 万字で 4.3 秒)。次の '[' か '>' の位置を覚えて使い回す (見つからなければ、それより後ろにも無い)
+ */
+function doctypeSubset(xml: string): { index: number; 0: string; 1: string } | undefined {
+  const open = /<!DOCTYPE\s/gi;
+  const close = /\]\s*>/g;
+  let stop = -2;
+  for (let m: RegExpExecArray | null; (m = open.exec(xml)); ) {
+    const from = m.index + m[0].length;
+    if (stop !== -1 && stop < from) {
+      stop = -1;
+      for (let k = from; k < xml.length; k++) {
+        const c = xml.charCodeAt(k);
+        if (c === 0x5b || c === 0x3e) {
+          stop = k;
+          break;
+        }
+      }
+    }
+    if (stop < 0) return undefined;
+    if (xml.charCodeAt(stop) !== 0x5b) continue;
+    // 内部サブセットの閉じ (最初の ']' + 空白 + '>')。無ければ、後ろの DOCTYPE にも無い
+    close.lastIndex = stop + 1;
+    const end = close.exec(xml);
+    if (!end) return undefined;
+    return { index: m.index, 0: xml.slice(m.index, end.index + end[0].length), 1: xml.slice(stop + 1, end.index) };
+  }
+  return undefined;
+}
+
+/**
+ * 文字の中の実体参照 &name; を fn の返す文字に置き換える。CDATA 区間とコメントの中は置き換えない。正規表現
+ * /<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|&([A-Za-z_:][\w.:-]*);/g の replace (CDATA 区間とコメントはそのまま) と同じ結果。
+ * 正規表現のままだと、閉じない '<!--' と '<![CDATA[' のたびに文字列の終わりまで読むので、長さの 2 乗の手間になった
+ * ('<!--' を 2 万個並べた 8 万字で 0.9 秒)。閉じが見つからなければ、それより後ろの開きにも無いので、もう探さない
+ */
+function replaceEntityRefs(t: string, fn: (all: string, name: string) => string): string {
+  const re = /<!\[CDATA\[|<!--|&([A-Za-z_:][\w.:-]*);/g;
+  let noCdataEnd = false;
+  let noCommentEnd = false;
+  const out: string[] = [];
+  let done = 0;
+  for (let m: RegExpExecArray | null; (m = re.exec(t)); ) {
+    if (m[1] === undefined) {
+      const comment = m[0] === '<!--';
+      const e = (comment ? noCommentEnd : noCdataEnd) ? -1 : t.indexOf(comment ? '-->' : ']]>', m.index + m[0].length);
+      if (e < 0) {
+        if (comment) noCommentEnd = true;
+        else noCdataEnd = true;
+        re.lastIndex = m.index + 1;
+      } else re.lastIndex = e + 3;
+      continue;
+    }
+    out.push(t.slice(done, m.index), fn(m[0], m[1]));
+    done = re.lastIndex;
+  }
+  out.push(t.slice(done));
+  return out.join('');
+}
+
+/**
  * DOCTYPE の内部サブセットに宣言された内部実体 (<!ENTITY name "値">) を、文書の中の &name; に置き換える
  * (@xmldom/xmldom は内部実体を展開しないので、読み込みの前に自前で展開する。ブラウザの DOMParser と同じ結果にする)。
  * 外部実体 (SYSTEM・PUBLIC) と引数実体 (%) は展開しない。CDATA 区間とコメントの中は置き換えない。
  * 値の中の実体参照も展開する (深さ ENTITY_MAX_DEPTH まで。展開後の長さが元の ENTITY_MAX_GROWTH 倍を超えたら止める)
  */
 export function expandInternalEntities(xml: string): string {
-  const dt = /<!DOCTYPE\s[^[>]*\[([\s\S]*?)\]\s*>/i.exec(xml);
+  const dt = doctypeSubset(xml);
   if (!dt) return xml;
   const ents = new Map<string, string>();
   for (const m of dt[1].matchAll(/<!ENTITY\s+([A-Za-z_:][\w.:-]*)\s+(?:"([^"]*)"|'([^']*)')\s*>/g)) if (!ents.has(m[1])) ents.set(m[1], m[2] ?? m[3] ?? '');
@@ -247,8 +336,7 @@ export function expandInternalEntities(xml: string): string {
     // 何万回も参照する文書 (6 万字の実体 × 2 万個の参照。120KB) で、replace の結果が文字列の長さの上限を超え、
     // 分かる文の誤りの前に「Invalid string length」で終わっていた
     let size = t.length;
-    return t.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|&([A-Za-z_:][\w.:-]*);/g, (all, name?: string) => {
-      if (name === undefined) return all;
+    return replaceEntityRefs(t, (all, name) => {
       const v = ents.get(name);
       if (v === undefined) return all;
       if (depth >= ENTITY_MAX_DEPTH) throw new Error(msg(`XML の解析に失敗しました: 実体 &${name}; の入れ子が深すぎます`, `XML parse error: entity &${name}; is nested too deeply`));
@@ -288,6 +376,8 @@ function parsers(): Promise<Parsers> {
       };
     }
     const lk = (await import(/* @vite-ignore */ /* webpackIgnore: true */ LINKEDOM)) as typeof import('linkedom');
+    // linkedom の構文解析器 (htmlparser2) の、開いた要素の列を軽い入れ物にする (深い入れ子で、深さの 2 乗の手間にしない)
+    await patchHtmlParserStack();
     return {
       html: (t: string) => {
         const d = lk.parseHTML(wrapHtml(t)).document as unknown as Document;
@@ -303,7 +393,8 @@ let svgParser: ((t: string) => unknown) | undefined;
 const svgParse = (t: string) => svgParser!(t) as never;
 
 /** 画像 (と、FO の external-graphic が指す MathML の文字のファイル) として読むファイル */
-const IMAGE_FILE = /\.(png|jpe?g|gif|svgz?|webp|tiff?|bmp|emf|wmf|eps|ps|cgm|mml|xml)$/i;
+/** 画像 (と MathML の文字) のファイルの名前 (assets.ts の imageExtensions。本体の外の形式 (プラグインを含む) の拡張子も含む) */
+const imageFileRe = (formats: readonly ImageFormat[]) => new RegExp(`\\.(?:${imageExtensions(formats).join('|')})$`, 'i');
 
 /** 入力の種類 (TypesetOptions.kind) に使える値 */
 const KINDS = ['html', 'xhtml', 'fo'] as const;
@@ -336,6 +427,26 @@ function checkOptions(o: TypesetOptions) {
     if (fi !== undefined && typeof fi !== 'boolean' && typeof fi !== 'function') throw optionError(msg(`${k} は真偽値か関数にしてください`, `${k} must be a boolean or a function`));
   }
   if (o.resolveResource !== undefined && typeof o.resolveResource !== 'function') throw optionError(msg('resolveResource は関数にしてください', 'resolveResource must be a function'));
+  // 言語タグ (BCP 47。RFC 5646 §2.1 の形: 2〜8 字の英字と、ハイフンで続く 1〜8 字の英数字)
+  if (o.svgLanguages !== undefined && !(Array.isArray(o.svgLanguages) && o.svgLanguages.every((l) => typeof l === 'string' && /^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/.test(l))))
+    throw optionError(msg('svgLanguages は言語タグ (ja・en-US など) の配列にしてください', 'svgLanguages must be an array of language tags (ja, en-US, etc.)'));
+  if (o.plugins !== undefined) {
+    if (!Array.isArray(o.plugins)) throw optionError(msg('plugins は KumioriPlugin の配列にしてください', 'plugins must be an array of KumioriPlugin'));
+    for (const [k, p] of o.plugins.entries()) {
+      const bad = pluginProblem(p, k);
+      if (bad) throw optionError(msg(bad.ja, bad.en));
+    }
+  }
+  const dw = o.drawio;
+  if (dw !== undefined && dw !== false) {
+    if (typeof dw !== 'object' || dw === null) throw optionError(msg('drawio はオブジェクトか false にしてください', 'drawio must be an object or false'));
+    if (dw.stencils !== undefined && !(Array.isArray(dw.stencils) && dw.stencils.every((f) => f && typeof f === 'object' && typeof f.name === 'string')))
+      throw optionError(msg('drawio.stencils は、name を持つファイルの配列にしてください', 'drawio.stencils must be an array of files with a name'));
+    const fs = dw.fetchStencils;
+    if (fs !== undefined && typeof fs !== 'boolean' && typeof fs !== 'string' && typeof fs !== 'function') throw optionError(msg('drawio.fetchStencils は真偽値・URL の文字列・関数にしてください', 'drawio.fetchStencils must be a boolean, a URL string or a function'));
+    for (const k of ['stencilsUrl'] as const) if (dw[k] !== undefined && typeof dw[k] !== 'string') throw optionError(msg(`drawio.${k} は文字列にしてください`, `drawio.${k} must be a string`));
+    if (dw.provideStencils !== undefined && typeof dw.provideStencils !== 'function') throw optionError(msg('drawio.provideStencils は関数にしてください', 'drawio.provideStencils must be a function'));
+  }
   for (const k of ['genericFonts', 'spotColors'] as const) if (o[k] !== undefined && (typeof o[k] !== 'object' || o[k] === null)) throw optionError(msg(`${k} はオブジェクトにしてください`, `${k} must be an object`));
   for (const k of Object.keys(o.genericFonts ?? {}))
     if (!(GENERIC_FONT_KEYS as readonly string[]).includes(k)) throw optionError(msg(`genericFonts の名前 "${k}" は使えません (${GENERIC_FONT_KEYS.join('・')})`, `genericFonts cannot have "${k}" (${GENERIC_FONT_KEYS.join(', ')})`));
@@ -388,7 +499,9 @@ export async function createTypesetter(setup: TypesetterOptions = {}): Promise<T
       // (typeset(text, options) は同じ options を器と文書の両方に渡すので、ここは Typesetter.typeset だけ)
       const ignored = SETUP_ONLY_OPTIONS.filter((k) => (options as TypesetOptions)[k] !== undefined).map((k) => msg(`${k} は createTypesetter の設定です (Typesetter.typeset の文書ごとの設定では使われません)`, `${k} is a createTypesetter option (it is not used in the per-document options of Typesetter.typeset)`));
       const r = await run(text, options);
-      return ignored.length ? { ...r, warnings: [...ignored, ...r.warnings] } : r;
+      // r.warnings は、toPdf の警告を後から足す配列なので、作り直さずに前へ足す
+      if (ignored.length) r.warnings.unshift(...ignored);
+      return r;
     }),
   };
 }
@@ -556,8 +669,33 @@ async function typesetDocument(
 
   // 画像 (と、FO の external-graphic が指す MathML の文字のファイル)。文書と CSS (と、そこから参照された SVG) に名前が出てくるものだけを読む。
   // 画像の突き合わせはファイル名 (basename) でも当たるので、ファイル名で選ぶ
-  const assets = new AssetStore({ parseXml: svgParse });
-  const mentioned = mentionedFiles([text, ...(await Promise.all(files.filter(isCss).map((f) => f.text())))]);
+  // 本体の外の画像の形式 (imageFormats.ts。プラグインの形式を先に判定する) には、文字の幅を PDF に SVG の文字を描くときと同じ書体で測る道具と、
+  // 図が URL で指す資源を文書の画像と同じ決まり (resolveResource・fetchImages・大きさの上限) で取る道具、プラグインの選択肢で許されたものを取る道具、
+  // 警告を出す道具を渡す
+  const formats = formatsOf(options.plugins, options.drawio);
+  const IMAGE_FILE = imageFileRe(formats);
+  const allowFormatFetch = (url: string) => (typeof options.fetchImages === 'function' ? options.fetchImages(url) : options.fetchImages !== false);
+  const assets = new AssetStore({
+    parseXml: svgParse,
+    formats,
+    formatContext: {
+      fetchTimeoutMs: timeout,
+      warn: (m) => warnings.push(m),
+      lang: messageLang(),
+      fetch: async (url) => (/^https?:\/\//i.test(url) ? (await fetchGuarded(url, { timeoutMs: timeout, maxBytes: fetchLimits.imageBytes }).catch(() => undefined))?.bytes : undefined),
+      measureText: (t, ft) => svgTextWidth(fonts, t, ft.family, ft.bold ? 700 : 400, ft.size),
+      fetchResource: async (url) => {
+        const given = options.resolveResource ? await Promise.resolve(options.resolveResource(url)).catch(() => undefined) : undefined;
+        if (given !== undefined) return bytesOf(given);
+        if (!/^https?:\/\//i.test(url) || !allowFormatFetch(url)) {
+          if (/^https?:\/\//i.test(url)) warnings.push(msg(`画像を取りません (fetchImages): ${url.slice(0, 200)}`, `image not fetched (fetchImages): ${url.slice(0, 200)}`));
+          return undefined;
+        }
+        return (await fetchGuarded(url, { timeoutMs: timeout, maxBytes: fetchLimits.imageBytes, allow: allowFormatFetch }).catch(() => undefined))?.bytes;
+      },
+    },
+  });
+  const mentioned = mentionedFiles([text, ...(await Promise.all(files.filter(isCss).map((f) => f.text())))], formats);
   const images = files.filter((x) => IMAGE_FILE.test(x.name));
   // 文書に名前が出てくるか。mentionedFiles は %xx を戻した名前を返すので、参照から取ったファイル (名前は参照の URL のまま =
   // %xx のまま。resolveResource にも、その URL で問い合わせている) は、%xx を戻した名前でも突き合わせる。戻さないと、名前に空白・
@@ -565,7 +703,7 @@ async function typesetDocument(
   // %xx と元の字は同じ参照)
   const isMentioned = (x: (typeof files)[number]) => mentioned.has(x.name.toLowerCase()) || (x.url !== undefined && mentioned.has(refBasename(x.url)));
   for (const f of images.filter((x) => /\.svg$/i.test(x.name) && isMentioned(x))) {
-    for (const n of mentionedFiles([await f.text()])) mentioned.add(n);
+    for (const n of mentionedFiles([await f.text()], formats)) mentioned.add(n);
   }
   for (const f of images.filter(isMentioned)) {
     const asset = await assets.addBlob(f.path.split('\\').join('/'), new Blob([bytesOf(await f.data()) as BlobPart]));
@@ -583,7 +721,7 @@ async function typesetDocument(
   for (const f of files) {
     if (f.url === undefined || isCss(f) || IMAGE_FILE.test(f.name) || /\.(ttf|otf|ttc|otc|woff2?)$/i.test(f.name) || assets.get(f.url)?.key === normalizeSrc(f.url)) continue;
     const bytes = bytesOf(await f.data());
-    if (looksLikeImage(bytes)) await assets.addBlob(f.url, new Blob([bytes as BlobPart]));
+    if (await looksLikeImage(bytes, formats)) await assets.addBlob(f.url, new Blob([bytes as BlobPart]));
   }
 
   const measurer = new Measurer(fonts, 'fontkit');
@@ -630,36 +768,75 @@ async function typesetDocument(
   };
   if (mapping.usesMono() || (await svgMono())) for (const spec of MONO_SPECS) await loadSpec(fonts, spec).catch((e) => warnings.push(String(e instanceof Error ? e.message : e)));
   if (hasMissingGlyphs(fonts, res.document)) await loadSpec(fonts, SYMBOL_SPEC).catch((e) => warnings.push(String(e instanceof Error ? e.message : e)));
+  // 記号の書体にも無い絵文字があれば、絵文字の書体を読み込む (記号の書体の後に読むので、記号の書体が持つ字はこれまでどおり記号の書体で組む)
+  if (hasMissingEmoji(fonts, res.document)) await loadSpec(fonts, EMOJI_SPEC).catch((e) => warnings.push(String(e instanceof Error ? e.message : e)));
   // 読み込んだどの書体にも字形の無い字 (字形の無い字の形 = 豆腐で出る) を知らせる: 字と数。多ければ、多い順の先頭と残りの数
   const tofu = [...missingGlyphChars(fonts, res.document)].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
   if (tofu.length) {
     const cp = (ch: string) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`;
-    const head = tofu.slice(0, 20).map(([ch, n]) => `${ch} (${cp(ch)}${n > 1 ? ` ×${n}` : ''})`).join('、');
+    const head = tofu.slice(0, 20).map(([ch, n]) => `${ch} (${cp(ch)}${n > 1 ? ` ×${n}` : ''})`).join(msg('、', ', '));
     const rest = tofu.length > 20 ? msg(` …ほか ${tofu.length - 20} 種`, ` … and ${tofu.length - 20} more`) : '';
     warnings.push(msg(`読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます): ${head}${rest}`, `no loaded font has a glyph for these characters (they are drawn as the missing-glyph box): ${head}${rest}`));
   }
 
   const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah) });
+  /**
+   * SVG の foreignObject の中身 (HTML・MathML) を、本文と同じ HTML の組版で、幅 width・高さ height (CSS px) の余白の無いページとして組む
+   * (SVG 2 の foreignObject: 中身は CSS の組版で、foreignObject の枠を初めの包含ブロックとして組む)。中身の文書の警告は出さない。
+   * context.css (SVG の <style> の規則) は、作成者のスタイルシートとして入れる (中身は SVG の文書の中の要素なので、SVG の規則が当たる。SVG 2 §6.3)。
+   * 既定のスタイルは、本文の既定 (style。kumiori の p の字下げ・両端揃えなど) でなく、ブラウザの既定 (browser) にし、
+   * 本文の CSS のファイル (文書から参照されないもの) も当てない: 中身は SVG の中の文書で、本文の書式を受け継がない
+   */
+  const typesetForeign = async (content: string, width: number, height: number, context?: { css?: string }) => {
+    // ページは縦に長くして、中身を 1 ページに組む (foreignObject の枠の外は、描くときに切る。SVG 2 の UA スタイルシートの overflow)
+    const svgCss = context?.css?.trim() ? `<style>${context.css.replace(/<\/(style)/gi, '<\\/$1')}</style>` : '';
+    const html = `<!DOCTYPE html><html><head><style>@page{size:${width}px ${Math.max(height, 20000)}px;margin:0}html,body{margin:0;padding:0}</style>${svgCss}</head><body>${content}</body></html>`;
+    // 中身に MathML があれば、数式の書体を読み込む (本文に数式が無くても)
+    const math = await mathOptionsFor(content, fonts, () => loadSpec(fonts, MATH_SPEC).catch(() => {}));
+    const r = await importHtmlText(html, { ...options, unreferencedCss: 'ignore' }, 'browser', files, mapping, assets, measurer, math, false);
+    // 中身の画像 (数式を描いた SVG の data: の URI など) を登録する (本文と同じ手順)
+    await fetchReportedImages(assets, r.report.images, allowFetch, timeout);
+    return new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah) }).layout(r.document).sheets[0];
+  };
   const t0 = Date.now();
   const tree = engine.layout(res.document);
   const layoutMs = Date.now() - t0;
+  // 結果の警告。組んだ後の書体の知らせ (PDF を書くときに初めて読む色つきの字形の上限など。fontSanity.ts の fontNotice) と、
+  // PDF を書く途中の警告 (renderPdf の warnings) も、ここに足す (同じ文は 1 度だけ)
+  const resultWarnings = [...warnings, ...tree.warnings];
+  const addWarning = (m: string) => {
+    if (!resultWarnings.includes(m)) resultWarnings.push(m);
+  };
+  fonts.onNotice = addWarning;
+  // toPdf は typeset の後に呼ばれるので、警告の言語 (TypesetOptions.lang) を、組んだときの言語に戻して書く
+  const lang = messageLang();
   return {
     areaTree: tree,
     pageCount: tree.sheets.length,
-    warnings: [...warnings, ...tree.warnings],
+    warnings: resultWarnings,
     layoutMs,
     toPdf: (o = {}) =>
-      renderPdf(tree, fonts, {
-        ...compatPdfOptions(isFo ? 'fo' : 'html', ah),
-        assets,
-        parseXml: svgParse,
-        ...(options.deflate ? { deflate: options.deflate } : {}),
-        ...(options.links ? { links: options.links } : {}),
-        ...o,
+      withMessageLang(lang, async () => {
+        const pdfWarnings: string[] = [];
+        try {
+          return await renderPdf(tree, fonts, {
+            ...compatPdfOptions(isFo ? 'fo' : 'html', ah),
+            assets,
+            parseXml: svgParse,
+            typesetForeign,
+            ...(options.svgLanguages ? { svgLanguages: options.svgLanguages } : {}),
+            ...(options.deflate ? { deflate: options.deflate } : {}),
+            ...(options.links ? { links: options.links } : {}),
+            ...o,
+            warnings: pdfWarnings,
+          });
+        } finally {
+          pdfWarnings.forEach(addWarning);
+        }
       }),
     renderPage: (canvas, pageIndex, o = {}) => {
       const sheet = tree.sheets[pageIndex];
-      if (!sheet) throw new RangeError(`ページ ${pageIndex} はありません (0〜${tree.sheets.length - 1})`);
+      if (!sheet) throw new RangeError(msg(`ページ ${pageIndex} はありません (0〜${tree.sheets.length - 1})`, `there is no page ${pageIndex} (0 to ${tree.sheets.length - 1})`));
       renderSheetToCanvas(sheet, canvas, fonts, {
         ...(o.scale !== undefined ? { scale: o.scale } : {}),
         ...(o.devicePixelRatio !== undefined ? { devicePixelRatio: o.devicePixelRatio } : {}),

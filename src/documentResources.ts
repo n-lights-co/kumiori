@@ -29,7 +29,8 @@ export async function mathOptionsFor(text: string, fonts: FontManager, load: () 
 }
 
 /**
- * 読み込みの報告にある画像 (report.images) のうち、まだ assets に無いものを取り込む: data URI はその場で、http(s) の URL は allow が許すものだけ
+ * 読み込みの報告にある画像 (report.images) のうち、まだ assets に無いものを取り込む: fragment の付いた参照は、fragment の無い参照の画像から
+ * (本体の外の形式の画像だけ。AssetStore.addFragment)、data URI はその場で、http(s) の URL は allow が許すものだけ
  * ネットワークから (timeoutMs の時限つき。省けば時限なし。転送の先の URL も allow に聞く)。相対パスの画像は、文書と一緒に渡したファイルから既に入っているので触らない。
  * 同じ URL は 1 度だけ試す (取れなかったものを取り直さない)。許さなかった URL を返す (呼ぶ側が警告にする。同じ URL は 1 つ)
  */
@@ -38,6 +39,9 @@ export async function fetchReportedImages(assets: AssetStore, images: readonly s
   const remote: string[] = [];
   // 同じ URL は 1 度だけ試す: 取れなかった URL (assets に入らない) を、出てくるたびに時限まで待って取り直さない
   for (const src of new Set(images)) {
+    // fragment の付いた参照 (図.drawio#page=2): fragment の無い参照で読んだ画像があれば、その形式に fragment を渡して読み直す (assets.addFragment)。
+    // assets.get はファイル名でも引く (# の後ろを落とす) ので、fragment の無い画像が当たっても、先に作る
+    if (await assets.addFragment(src)) continue;
     if (assets.get(src)) continue;
     if (src.startsWith('data:')) await assets.addDataUri(src);
     else if (/^https?:/i.test(src)) {

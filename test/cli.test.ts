@@ -417,4 +417,137 @@ describe('Node のコマンド', () => {
     expect(b.stderr).toMatch(/file:\/\/.*p\.png/);
     expect(b.stderr).not.toContain('in.png');
   }, 120_000);
+
+  it('--plugin: プラグインのモジュールを読み込み、--plugin-option の選択肢を渡す (画像の形式を足す)。見つからなければエラー', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'plugin-'));
+    // 中身が「BOX」で始まるファイルを、選択肢の色の四角にするプラグイン。default は (選択肢, { cacheDir }) を受ける関数
+    fs.writeFileSync(
+      path.join(dir, 'box-plugin.mjs'),
+      `export default (options, ctx) => ({
+  apiVersion: 1,
+  name: 'box',
+  imageFormats: [{
+    name: 'box', mime: 'application/x-box', extensions: ['box'],
+    sniff: (b) => new TextDecoder().decode(b.subarray(0, 4)) === 'BOX ',
+    load: async (b, c) => {
+      c.warn('box: ' + options.color + ' ' + (typeof ctx.cacheDir));
+      return { svg: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="' + options.color + '"/></svg>', width: 40, height: 20, warnings: [] };
+    },
+  }],
+});
+`,
+    );
+    fs.writeFileSync(path.join(dir, 'a.box'), 'BOX 40 20');
+    const html = path.join(dir, 'doc.html');
+    fs.writeFileSync(html, '<p><img src="a.box"></p>');
+    const out = path.join(dir, 'doc.pdf');
+    const ok = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir, '--no-font-cache', '--plugin', path.join(dir, 'box-plugin.mjs'), '--plugin-option', 'color=#ff0000'], { encoding: 'utf8', env: JA_ENV });
+    expect(ok.status).toBe(0);
+    expect(ok.stderr).toContain('box: #ff0000 undefined');
+    expect(ok.stderr).not.toContain('a.box');
+    const missing = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir, '--plugin', 'kumiori-no-such-plugin'], { encoding: 'utf8', env: JA_ENV });
+    expect(missing.status).not.toBe(0);
+    expect(missing.stderr).toContain('プラグインが見つかりません: kumiori-no-such-plugin');
+  });
+  it('--plugin <パッケージ名>: exports に import の条件しか無い ESM のパッケージを、今のディレクトリから読む (同じ名前のディレクトリがあっても)', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'plugin-pkg-'));
+    const pd = path.join(dir, 'node_modules', 'kumiori-esm-plugin');
+    fs.mkdirSync(pd, { recursive: true });
+    fs.writeFileSync(path.join(pd, 'package.json'), JSON.stringify({ name: 'kumiori-esm-plugin', type: 'module', exports: { '.': { import: './index.js' } } }));
+    fs.writeFileSync(path.join(pd, 'index.js'), "export default (o) => { console.error('esm plugin: ' + o.x); return { apiVersion: 1, name: 'esm' }; };\n");
+    // 今のディレクトリの、パッケージと同じ名前のディレクトリ (前は、これを import しようとして失敗していた)
+    fs.mkdirSync(path.join(dir, 'kumiori-esm-plugin'));
+    fs.writeFileSync(path.join(dir, 'doc.html'), '<p>x</p>');
+    const r = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), 'doc.html', '-o', 'doc.pdf', '--font-dir', fontDir, '--no-font-cache', '--plugin', 'kumiori-esm-plugin', '--plugin-option', 'x=1'], { cwd: dir, encoding: 'utf8', env: JA_ENV });
+    expect(r.stderr).not.toContain('見つかりません');
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toContain('esm plugin: 1');
+    expect(fs.existsSync(path.join(dir, 'doc.pdf'))).toBe(true);
+  });
+  it('--plugin の .js で終わるパッケージの指定 (パッケージの中のファイル・exports の鍵・名前が .js で終わるもの) と、今のディレクトリのファイルへの落とし方', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'plugin-js-'));
+    const pkgOf = (name: string, pjson: object, files: Record<string, string>) => {
+      const d = path.join(dir, 'node_modules', name);
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, 'package.json'), JSON.stringify(pjson));
+      for (const [f, body] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(d, f)), { recursive: true });
+        fs.writeFileSync(path.join(d, f), body);
+      }
+    };
+    const P = (n: string) => `export default () => { console.error('loaded: ${n}'); return { apiVersion: 1, name: '${n}' }; };\n`;
+    pkgOf('kp', { name: 'kp', type: 'module' }, { 'dist/plugin.js': P('kp-dist') });
+    pkgOf('kp2', { name: 'kp2', type: 'module', exports: { '.': './index.js', './extra.js': './e.js' } }, { 'index.js': P('kp2'), 'e.js': P('kp2-extra') });
+    pkgOf('kplug.js', { name: 'kplug.js', type: 'module', main: 'main.js' }, { 'main.js': P('kplug-pkg') });
+    fs.writeFileSync(path.join(dir, 'kplug.js'), P('kplug-file'));
+    fs.writeFileSync(path.join(dir, 'mine.mjs'), P('mine-file'));
+    fs.writeFileSync(path.join(dir, 'doc.html'), '<p>x</p>');
+    const run = (spec: string) => spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), 'doc.html', '-o', 'doc.pdf', '--font-dir', fontDir, '--no-font-cache', '--plugin', spec], { cwd: dir, encoding: 'utf8', env: JA_ENV });
+    for (const [spec, name] of [
+      ['kp/dist/plugin.js', 'kp-dist'],
+      ['kp2/extra.js', 'kp2-extra'],
+      // 同じ名前のパッケージとファイルがあれば、パッケージ (import() と同じ)。ファイルは ./ を付けて指す
+      ['kplug.js', 'kplug-pkg'],
+      ['./kplug.js', 'kplug-file'],
+      // パッケージとして見つからなければ、今のディレクトリのファイル
+      ['mine.mjs', 'mine-file'],
+    ]) {
+      const r = run(spec);
+      expect(r.status, `${spec}: ${r.stderr}`).toBe(0);
+      expect(r.stderr, spec).toContain(`loaded: ${name}`);
+    }
+    // どちらも無い: 何をどの順に探したか
+    const missing = run('nope/x.js');
+    expect(missing.status).not.toBe(0);
+    const real = fs.realpathSync(dir);
+    expect(missing.stderr).toMatch(/プラグインが見つかりません: nope\/x\.js \(パッケージ nope を、.* から上の node_modules で探したが無い。今のディレクトリのファイル .*x\.js も無い\)/);
+    expect(missing.stderr.includes(dir) || missing.stderr.includes(real)).toBe(true);
+  }, 120_000);
+  it('--watch と読めない --plugin: 文を 1 度だけ出し、スタックトレースを出さずに終了コード 1 で終わる', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'watch-plugin-'));
+    const html = path.join(dir, 'a.html');
+    fs.writeFileSync(html, '<p>x</p>');
+    const r = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '--watch', '--font-dir', fontDir, '--plugin', 'kumiori-no-such-plugin'], { encoding: 'utf8', env: JA_ENV, timeout: 60_000 });
+    expect(r.signal, r.stderr).toBeNull();
+    expect(r.status).toBe(1);
+    expect(r.stderr.split('プラグインが見つかりません: kumiori-no-such-plugin').length - 1).toBe(1);
+    expect(r.stderr).not.toMatch(/^\s*at /m);
+    expect(r.stderr).not.toContain('見張って');
+  }, 120_000);
+  it('--no-outside-files: 入力のディレクトリの中の、外のファイルを指すシンボリックリンクも読まない', () => {
+    const base = path.join(work, 'outside-link');
+    const dir = path.join(base, 'doc');
+    const out = path.join(base, 'secret');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(out, { recursive: true });
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64');
+    fs.writeFileSync(path.join(out, 's.png'), png);
+    fs.writeFileSync(path.join(dir, 'in.png'), png);
+    try {
+      fs.symlinkSync(path.join(out, 's.png'), path.join(dir, 'a.png'));
+    } catch {
+      return; // シンボリックリンクを作れない環境 (権限の無い Windows など) では確かめない
+    }
+    const h = path.join(dir, 'c.html');
+    fs.writeFileSync(h, '<p><img src="a.png"><img src="in.png"></p>');
+    const run = (...args: string[]) => spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), h, '-o', path.join(dir, 'c.pdf'), '--font-dir', fontDir, ...args], { encoding: 'utf8', env: JA_ENV });
+    // 既定: リンクの先も読む (警告なし)
+    expect(run().stderr).not.toContain('a.png');
+    // --no-outside-files: リンクの先は外なので読めない画像、中の画像は読む
+    const b = run('--no-outside-files');
+    expect(b.status).toBe(0);
+    expect(b.stderr).toContain('a.png');
+    expect(b.stderr).not.toContain('in.png');
+  }, 120_000);
+  it('読み込んだプラグインが終わらないときは、何も言わずに 0 で終わらず、誤りとして 1 で終わる', () => {
+    const dir = path.join(work, 'hang-plugin');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'p.mjs'), 'export default function () { return new Promise(() => {}); }\n');
+    const h = path.join(dir, 'a.html');
+    fs.writeFileSync(h, '<p>x</p>');
+    const r = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), h, '-o', path.join(dir, 'a.pdf'), '--font-dir', fontDir, '--plugin', path.join(dir, 'p.mjs')], { encoding: 'utf8', env: JA_ENV, timeout: 60_000 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('組み終える前に処理が止まりました');
+    expect(fs.existsSync(path.join(dir, 'a.pdf'))).toBe(false);
+  }, 120_000);
 });
