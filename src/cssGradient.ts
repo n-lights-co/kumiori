@@ -166,7 +166,7 @@ function svgStops(stops: Stop[], p0: number, p1: number): string {
 function position(tokens: string[], W: number, H: number, fontSize: number): [number, number] | undefined {
   let x: number | undefined;
   let y: number | undefined;
-  const kw: Record<string, ['x' | 'y' | 'c', number]> = { left: ['x', 0], right: ['x', 1], top: ['y', 0], bottom: ['y', 1], center: ['c', 0.5] };
+  const kw = { __proto__: null, left: ['x', 0], right: ['x', 1], top: ['y', 0], bottom: ['y', 1], center: ['c', 0.5] } as unknown as Record<string, ['x' | 'y' | 'c', number]>;
   const rest: string[] = [];
   for (const t of tokens) {
     const k = kw[t.toLowerCase()];

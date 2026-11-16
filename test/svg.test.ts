@@ -92,19 +92,20 @@ describe('SVG → ベクタ', () => {
     assets.register('g.svg', { mime: 'image/svg+xml', bytes: new TextEncoder().encode(svg('<linearGradient id="a"/>')), width: 1, height: 1 });
   });
 
-  it('画像を描けない環境 (Node) では、図形にできない SVG (filter など) を仮の枠で描き、警告する', async () => {
+  it('画像を描けない環境 (Node) では、図形にできない SVG (foreignObject など) を仮の枠で描き、警告する', async () => {
     const { fonts, measurer } = await makeEngine();
     const assets = new AssetStore({ parseXml: parse });
-    const filtered = svg('<filter id="f"><feTurbulence baseFrequency="0.05"/></filter><rect width="100" height="50" filter="url(#f)"/>');
+    // HTML でない中身の foreignObject (MathML など) は描けない (HTML の中身は、文字を近似して描く。svgFeatures.test.ts)
+    const filtered = svg('<foreignObject width="100" height="50"><math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math></foreignObject>');
     const a = await assets.addBlob('m.svg', new Blob([filtered], { type: 'image/svg+xml' }));
-    expect([a?.drawable, a?.unsupported, a?.width]).toEqual([false, 'filter feturbulence', 100]);
+    expect([a?.drawable, a?.unsupported, a?.width]).toEqual([false, 'foreignobject', 100]);
     // 描ける SVG (text を含む) はそのまま
     const ok = await assets.addBlob('t.svg', new Blob([svg('<text x="5" y="30">A</text>')], { type: 'image/svg+xml' }));
     expect(ok?.drawable).toBeUndefined();
     const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
     const img = { type: 'image' as const, src: 'm.svg' };
     const tree = engine.layout(doc([{ type: 'block', children: [img, img] }]));
-    expect(tree.warnings).toEqual(['画像 m.svg を描けないため、仮の枠で描きます (filter feturbulence)']);
+    expect(tree.warnings).toEqual(['画像 m.svg を描けないため、仮の枠で描きます (foreignobject)']);
   });
 });
 
@@ -159,8 +160,8 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     expect(d.shapes.map((x) => x.fill)).toEqual(['#ff0000', '#0000ff', '#ffff00', '#000000']);
     expect(d.shapes[0].stroke).toBe('#00ff00');
     expect(d.shapes[2].strokeWidth).toBe(4);
-    // 扱えない選択子はラスタライズへ
-    expect(parseSvg(svg('<style>g rect{fill:red}</style><rect width="5" height="5"/>'), parse)).toBeNull();
+    // 子孫の選択子も当てる (当たらない要素は、そのまま描く。ほかの選択子は svgFeatures.test.ts)
+    expect(parseSvg(svg('<style>g rect{fill:red}</style><rect width="5" height="5"/>'), parse)!.shapes[0].fill).toBe('#000000');
     // * はすべての要素 (matplotlib の出力の *{stroke-linejoin: round})
     expect(parseSvg(svg('<style>*{fill:#00f} rect{stroke:#f00}</style><rect width="5" height="5"/>'), parse)!.shapes[0]).toMatchObject({ fill: '#0000ff', stroke: '#ff0000' });
   });
@@ -201,13 +202,14 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     expect(smasks[0]).toContain('/Luminosity');
   });
 
-  it('mix-blend-mode (multiply・screen・difference) は図形の描画モードになり、PDF では ExtGState の BM になる', async () => {
-    const src = svg('<rect width="10" height="10" fill="#000" style="mix-blend-mode:multiply"/><rect width="10" height="10" fill="#fff" mix-blend-mode="difference"/>');
+  it('mix-blend-mode (normal のほかの 15 通り) は図形の描画モードになり、PDF では ExtGState の BM になる', async () => {
+    const src = svg('<rect width="10" height="10" fill="#000" style="mix-blend-mode:multiply"/><rect width="10" height="10" fill="#fff" mix-blend-mode="difference"/><rect width="10" height="10" fill="#f00" style="mix-blend-mode:color-dodge"/>');
     const d = parseSvg(src, parse)!;
-    expect(d.shapes.map((x) => x.blend)).toEqual(['multiply', 'difference']);
-    // 子をまとめて重ねる g の描画モードと、ほかの値は扱わず、描画モード無しで描く (対応する前と同じ)
-    expect(parseSvg(svg('<g style="mix-blend-mode:multiply"><rect width="1" height="1"/></g>'), parse)!.shapes.map((x) => x.blend)).toEqual([undefined]);
-    expect(parseSvg(svg('<rect width="1" height="1" style="mix-blend-mode:overlay"/>'), parse)!.shapes.map((x) => x.blend)).toEqual([undefined]);
+    expect(d.shapes.map((x) => x.blend)).toEqual(['multiply', 'difference', 'color-dodge']);
+    // g の描画モードは、子をまとめた透明のグループに付ける (svgFeatures.test.ts)。読めない値は、描画モード無しで描く
+    const g = parseSvg(svg('<g style="mix-blend-mode:multiply"><rect width="1" height="1"/></g>'), parse)!.shapes;
+    expect(g.map((x) => [x.blend, x.group?.shapes.length])).toEqual([['multiply', 1]]);
+    expect(parseSvg(svg('<rect width="1" height="1" style="mix-blend-mode:plus-lighter"/>'), parse)!.shapes.map((x) => x.blend)).toEqual([undefined]);
     const { fonts, measurer } = await makeEngine();
     const assets = new AssetStore();
     assets.register('b.svg', { mime: 'image/svg+xml', bytes: new TextEncoder().encode(src), width: 100, height: 50 });
@@ -218,6 +220,7 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     const all = (gs?.entries() ?? []).map(([, v]) => String(pdf.context.lookup(v as never))).join(' ');
     expect(all).toContain('/BM /Multiply');
     expect(all).toContain('/BM /Difference');
+    expect(all).toContain('/BM /ColorDodge');
   });
 
   it('filter: ふつうは図形にしない。近似するときは影 (ずらした半透明の写しの重ね) と元の図形にする', () => {
@@ -470,7 +473,33 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     expect((ops2.match(/ c\n/g) ?? []).length).toBeGreaterThan(10);
   });
 
-  it('pattern は模様 (タイル) にする。中身に透明度などがあればラスタライズ', () => {
+  it('SVG の字のソフトハイフン (U+00AD) は描かず、後の「-」を消さない (IMG-32。ハイフンと字形を分け合う書体)', async () => {
+    const { fonts, measurer } = await makeEngine();
+    const assets = new AssetStore();
+    // 先にソフトハイフンを含む字、後にハイフンの字。Noto Serif JP は U+00AD と U+002D が同じ字形
+    const src = svg('<text x="5" y="20" font-size="10">x&#xAD;y</text><text x="5" y="40" font-size="10">1-2</text>');
+    assets.register('t.svg', { mime: 'image/svg+xml', bytes: new TextEncoder().encode(src), width: 100, height: 50 });
+    const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
+    const tree = engine.layout(doc([{ type: 'block', children: [{ type: 'image', src: 't.svg', width: 100, height: 50 }] }]));
+    const pdf = await PDFDocument.load(await renderPdf(tree, fonts, { assets, parseXml: parse }));
+    const { decodePDFRawStream } = await import('pdf-lib');
+    const contents = pdf.getPage(0).node.Contents()!;
+    const streams = 'asArray' in contents ? (contents as import('pdf-lib').PDFArray).asArray().map((r) => pdf.context.lookup(r)) : [contents];
+    const ops = streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n');
+    // 字ごとの位置 (Tm の x) と符号 (Tj)
+    const shown = [...ops.matchAll(/1 0 0 -1 ([\d.]+) (\d+) Tm\n<([0-9A-F]+)> Tj/g)].map((m) => ({ x: +m[1], y: +m[2], hex: m[3] }));
+    const first = shown.filter((s) => s.y === 20);
+    const second = shown.filter((s) => s.y === 40);
+    // ソフトハイフンは描かない (x と y の 2 字)
+    expect(first.length).toBe(2);
+    // 「1-2」は 3 字とも描き、左から右へ並ぶ。ハイフンは x・y と違う字形の符号
+    expect(second.length).toBe(3);
+    expect(second[1].x).toBeGreaterThan(second[0].x);
+    expect(second[2].x).toBeGreaterThan(second[1].x);
+    expect(first.map((s) => s.hex)).not.toContain(second[1].hex);
+  });
+
+  it('pattern は模様 (タイル) にする。中身にマスクがあればラスタライズ', () => {
     const d = parseSvg(
       svg('<defs><pattern id="p" patternUnits="userSpaceOnUse" x="2" y="3" width="10" height="8"><circle cx="5" cy="4" r="2" fill="#f00"/></pattern></defs><rect x="0" y="0" width="50" height="40" fill="url(#p)"/>'),
       parse,
@@ -481,7 +510,9 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     // objectBoundingBox (既定): 大きさは図形の外接矩形に対する割合
     const b = parseSvg(svg('<pattern id="p" width="0.5" height="0.25"><rect width="5" height="5"/></pattern><rect x="10" y="10" width="40" height="20" fill="url(#p)"/>'), parse)!;
     expect(b.shapes[0].fillPattern).toMatchObject({ width: 20, height: 5, matrix: [1, 0, 0, 1, 10, 10] });
-    expect(parseSvg(svg('<pattern id="p" width="1" height="1"><rect width="5" height="5" opacity="0.5"/></pattern><rect width="5" height="5" fill="url(#p)"/>'), parse)).toBeNull();
+    // 中身の不透明度は、ほかの図形と同じに描く (svgFeatures.test.ts)
+    expect(parseSvg(svg('<pattern id="p" width="1" height="1"><rect width="5" height="5" opacity="0.5"/></pattern><rect width="5" height="5" fill="url(#p)"/>'), parse)!.shapes[0].fillPattern!.shapes[0].fillOpacity).toBe(0.5);
+    expect(parseSvg(svg('<mask id="m"><rect width="1" height="1" fill="#fff"/></mask><pattern id="p" width="1" height="1"><rect width="5" height="5" mask="url(#m)"/></pattern><rect width="5" height="5" fill="url(#p)"/>'), parse)).toBeNull();
     expect(parseSvg(svg('<rect width="5" height="5" mask="url(#m)"/>'), parse)).toBeNull();
   });
 

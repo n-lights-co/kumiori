@@ -38,9 +38,21 @@ describe('SVG: 参照で増える線分の上限', () => {
     const s = `<svg ${X} viewBox="0 0 1000 1000"><defs><path id="p" d="${bigPath(50000)}"/></defs>${rep(400, (i) => `<use xlink:href="#p" x="${i % 100}"/>`)}</svg>`;
     expect(svgResult(s)).toEqual(TOO_MANY);
   });
-  it('5 万点の clipPath を 400 個の図形に付ける SVG は、図形にしない', T, () => {
-    const s = `<svg ${X} viewBox="0 0 1000 1000"><defs><clipPath id="c"><path d="${bigPath(50000)}"/></clipPath></defs>${rep(400, (i) => `<rect x="${i % 100}" width="5" height="5" clip-path="url(#c)"/>`)}</svg>`;
+  it('点の多い clipPath を多くの図形に付ける SVG は、切り抜きを 1 度だけ書くので、図形にする (5 万点 × 400 図形、地図の 5000 点 × 2000 図形。OUT-31)', T, () => {
+    for (const [pts, n] of [[50000, 400], [5000, 2000]]) {
+      const s = `<svg ${X} viewBox="0 0 1000 1000"><defs><clipPath id="c"><path d="${bigPath(pts)}"/></clipPath></defs><g clip-path="url(#c)">${rep(n, (i) => `<rect x="${i % 100}" width="5" height="5"/>`)}</g>${rep(n, (i) => `<rect x="${i % 100}" width="5" height="5" clip-path="url(#c)"/>`)}</svg>`;
+      const { doc } = svgResult(s);
+      expect(doc!.shapes).toHaveLength(2 * n);
+      const clip = doc!.shapes[0].clips![0];
+      expect(doc!.shapes.every((sh) => sh.clips?.length === 1 && sh.clips[0] === clip)).toBe(true);
+    }
+  });
+  it('5 万点の clipPath 2 つを、図形ごとに交互に付ける SVG (描くたびに切り抜きを書き直す) は、図形にしない', T, () => {
+    const s = `<svg ${X} viewBox="0 0 1000 1000"><defs><clipPath id="a"><path d="${bigPath(50000)}"/></clipPath><clipPath id="b"><path d="${bigPath(50000)}"/></clipPath></defs>${rep(400, (i) => `<rect x="${i % 100}" width="5" height="5" clip-path="url(#${i % 2 ? 'a' : 'b'})"/>`)}</svg>`;
     expect(svgResult(s)).toEqual(TOO_MANY);
+    // 間に切り抜かない図形を挟んでも同じ (開き直すことになる)
+    const t = `<svg ${X} viewBox="0 0 1000 1000"><defs><clipPath id="a"><path d="${bigPath(50000)}"/></clipPath></defs>${rep(400, (i) => `<rect x="${i % 100}" width="5" height="5" clip-path="url(#a)"/><rect width="1" height="1"/>`)}</svg>`;
+    expect(svgResult(t)).toEqual(TOO_MANY);
   });
   it('大きな path の mask・pattern・marker・textPath を何度も使う SVG は、図形にしない', T, () => {
     const mask = `<svg ${X} viewBox="0 0 1000 1000"><defs><mask id="k"><path fill="white" d="${bigPath(20000)}"/></mask></defs>${rep(200, (i) => `<rect x="${i % 100}" width="5" height="5" mask="url(#k)"/>`)}</svg>`;
