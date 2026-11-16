@@ -870,3 +870,167 @@ test('見本: 印刷プレビュー (examples/preview) で、編集すると組�
   await expect(page.locator('#warnings')).toContainText('image-rendering', { timeout: 30_000 });
   expect(errors).toEqual([]);
 });
+
+test('画面: draw.io の図の図形ライブラリを設定で読み込み・消す。開くファイルと一緒にも渡せる。取るのは設定で許したときだけ', async ({ page }) => {
+  const errors = await open(page);
+  // 自作の小さな図形ライブラリ (draw.io の図形ライブラリはリポジトリに入れない)
+  const lib = '<shapes name="mxgraph.e2e"><shape name="tri" w="10" h="10"><background><path><move x="0" y="10"/><line x="5" y="0"/><line x="10" y="10"/><close/></path></background><foreground><fillstroke/></foreground></shape></shapes>';
+  const fig = '<mxfile><diagram name="p"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="a" value="" style="shape=mxgraph.e2e.tri;fillColor=#ff0000;" vertex="1" parent="1"><mxGeometry width="100" height="80" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
+  const html = '<!doctype html><p><img src="fig.drawio"></p>';
+  const missing = '図形ライブラリ e2e が無い';
+  let fetched = 0;
+  await page.route('**/raw.githubusercontent.com/**', (route) => {
+    fetched++;
+    return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: lib });
+  });
+  const openDoc = (extra: Array<{ name: string; body: string }> = []) =>
+    page.locator('#fofile').setInputFiles([
+      { name: 'a.html', mimeType: 'text/html', buffer: Buffer.from(html) },
+      { name: 'fig.drawio', mimeType: 'application/xml', buffer: Buffer.from(fig) },
+      ...extra.map((f) => ({ name: f.name, mimeType: 'application/xml', buffer: Buffer.from(f.body) })),
+    ]);
+  // ライブラリが無ければ、形を描かずに警告する (取りに行かない)
+  await openDoc();
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  expect(fetched).toBe(0);
+  // 設定で読み込むと、開いている文書の図を描き直す。名前を欄に出す
+  await openSettings(page);
+  await page.locator('#stencilfile').setInputFiles({ name: 'e2e.xml', mimeType: 'application/xml', buffer: Buffer.from(lib) });
+  await expect(page.locator('#stencilstate')).toHaveText('読み込んだ図形ライブラリ: e2e.xml');
+  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  // 読み込んだライブラリはブラウザに覚え、開き直しても使える
+  await page.reload();
+  await page.waitForSelector('html[data-ready="1"]', { timeout: 150_000 });
+  await expect(page.locator('#stencilstate')).toHaveText('読み込んだ図形ライブラリ: e2e.xml');
+  await openDoc();
+  await expect(page.locator('#status')).toContainText('a.html', { timeout: 30_000 });
+  await expect(page.locator('#warnings')).toBeEmpty();
+  // 消すと、また描けない (設定の引き出しの開け閉めは覚えているので、開き直した後は開いている)
+  await openSettings(page);
+  await page.click('#clearstencils');
+  await expect(page.locator('#stencilstate')).toHaveText('読み込んだ図形ライブラリはありません');
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  // 開くファイルと一緒に渡したライブラリは、その画面の間だけ使う (設定の欄には出すが、覚えない)
+  await openDoc([{ name: 'lib.xml', body: lib }]);
+  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  // 取るのを許すと、要るときに 1 回だけ取る (ここでは配信元を差し替えて、ライブラリの XML を返す)
+  await page.click('#clearstencils');
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  expect(fetched).toBe(0);
+  await page.check('#drawiofetch');
+  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  expect(fetched).toBe(1);
+  await openDoc();
+  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  expect(fetched).toBe(1);
+  // 切ると、取ったライブラリを使わない
+  await page.uncheck('#drawiofetch');
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  expect(errors).toEqual([]);
+});
+
+test('画面: fragment の付いた draw.io の参照 (fig.drawio#page=2) の図も、設定の切り替えと開き直しで描き直す', async ({ page }) => {
+  const errors = await open(page);
+  const lib = '<shapes name="mxgraph.e2e"><shape name="tri" w="10" h="10"><background><path><move x="0" y="10"/><line x="5" y="0"/><line x="10" y="10"/><close/></path></background><foreground><fillstroke/></foreground></shape></shapes>';
+  const diagram = (name: string, style: string) =>
+    `<diagram name="${name}"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="a" value="" style="${style}" vertex="1" parent="1"><mxGeometry width="100" height="80" as="geometry"/></mxCell></root></mxGraphModel></diagram>`;
+  // 1 ページ目は図形ライブラリの要らない図。2 ページ目は、前の版 (v1) は図形ライブラリの形、直した版 (v2) はただの四角
+  const v1 = `<mxfile>${diagram('p1', 'rounded=0;')}${diagram('p2', 'shape=mxgraph.e2e.tri;fillColor=#ff0000;')}</mxfile>`;
+  const v2 = `<mxfile>${diagram('p1', 'rounded=0;')}${diagram('p2', 'rounded=0;fillColor=#00ff00;')}</mxfile>`;
+  const missing = '図形ライブラリ e2e が無い';
+  const openDoc = (fig: string) =>
+    page.locator('#fofile').setInputFiles([
+      { name: 'a.html', mimeType: 'text/html', buffer: Buffer.from('<!doctype html><p><img src="fig.drawio#page=2"></p>') },
+      { name: 'fig.drawio', mimeType: 'application/xml', buffer: Buffer.from(fig) },
+    ]);
+  await openDoc(v1);
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  // 図形ライブラリを読み込む・消すと、2 ページ目の図も描き直す
+  await openSettings(page);
+  await page.locator('#stencilfile').setInputFiles({ name: 'e2e.xml', mimeType: 'application/xml', buffer: Buffer.from(lib) });
+  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  await page.click('#clearstencils');
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  // 「draw.io の図を読む」を切ると、2 ページ目の図も読めない画像になる。入れ直すと読み直す
+  await page.uncheck('#drawio-on');
+  await expect(page.locator('#warnings')).toContainText('fig.drawio#page=2', { timeout: 30_000 });
+  await expect(page.locator('#warnings')).not.toContainText(missing);
+  await page.check('#drawio-on');
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  // 同じ画面で、直した図を開き直すと、2 ページ目も新しい中身で描く
+  await openDoc(v2);
+  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  // 前の版に戻すと、また図形ライブラリが無い
+  await openDoc(v1);
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  expect(errors).toEqual([]);
+});
+
+test('画面: draw.io の配布物の PNG の画像 (img/lib/…) を設定で読み込むと、図の画像を描く。バイト列のままブラウザに覚える (IMG-30)', async ({ page }) => {
+  const errors = await open(page);
+  // 1×1 の PNG (配布物の画像はリポジトリに入れないので、自作の小さな画像)
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const fig = '<mxfile><diagram name="p"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="a" value="" style="shape=image;image=img/lib/clip_art/e2e.png;" vertex="1" parent="1"><mxGeometry width="80" height="80" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
+  const openDoc = () =>
+    page.locator('#fofile').setInputFiles([
+      { name: 'a.html', mimeType: 'text/html', buffer: Buffer.from('<!doctype html><p><img src="fig.drawio"></p>') },
+      { name: 'fig.drawio', mimeType: 'application/xml', buffer: Buffer.from(fig) },
+    ]);
+  const missing = 'img/lib/clip_art/e2e.png は描けない';
+  await openDoc();
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  await openSettings(page);
+  // 名前が .png でも、中身が PNG でなければ読まない
+  await page.locator('#stencilfile').setInputFiles({ name: 'bad.png', mimeType: 'image/png', buffer: Buffer.from('not a png') });
+  await expect(page.locator('#status')).toContainText('bad.png: PNG・JPEG の画像として読めません');
+  await expect(page.locator('#stencilstate')).toHaveText('読み込んだ図形ライブラリはありません');
+  await page.locator('#stencilfile').setInputFiles({ name: 'e2e.png', mimeType: 'image/png', buffer: png });
+  await expect(page.locator('#stencilstate')).toHaveText('読み込んだ図形ライブラリ: e2e.png');
+  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  // 開き直しても使える (IndexedDB にバイト列で覚えている)
+  await page.reload();
+  await page.waitForSelector('html[data-ready="1"]', { timeout: 150_000 });
+  await expect(page.locator('#stencilstate')).toHaveText('読み込んだ図形ライブラリ: e2e.png');
+  await openDoc();
+  await expect(page.locator('#status')).toContainText('a.html', { timeout: 30_000 });
+  await expect(page.locator('#warnings')).toBeEmpty();
+  await openSettings(page);
+  await page.click('#clearstencils');
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  expect(errors).toEqual([]);
+});
+
+test('画面: draw.io の図を読む設定を切ると、図を画像として読まない。入れ直すと読む。選んだものはブラウザに覚える', async ({ page }) => {
+  const errors = await open(page);
+  const fig = '<mxfile><diagram name="p"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="a" value="" style="rounded=0;fillColor=#ff0000;" vertex="1" parent="1"><mxGeometry width="100" height="80" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
+  const openDoc = () =>
+    page.locator('#fofile').setInputFiles([
+      { name: 'a.html', mimeType: 'text/html', buffer: Buffer.from('<!doctype html><p><img src="fig.drawio"></p>') },
+      { name: 'fig.drawio', mimeType: 'application/xml', buffer: Buffer.from(fig) },
+    ]);
+  // 既定はオン: 図を読む
+  await openSettings(page);
+  await expect(page.locator('#drawio-on')).toBeChecked();
+  await expect(page.locator('#stencilfile')).toBeEnabled();
+  await openDoc();
+  await expect(page.locator('#status')).toContainText('a.html', { timeout: 30_000 });
+  await expect(page.locator('#warnings')).toBeEmpty();
+  // 切ると、開いている文書の図が読めない画像になり、図形ライブラリの設定は使えなくなる
+  await page.uncheck('#drawio-on');
+  await expect(page.locator('#warnings')).toContainText('fig.drawio', { timeout: 30_000 });
+  await expect(page.locator('#stencilfile')).toBeDisabled();
+  await expect(page.locator('#drawiofetch')).toBeDisabled();
+  await expect(page.locator('#drawioopts')).toHaveAttribute('aria-disabled', 'true');
+  // 切ったまま開き直しても読まない (選んだものはブラウザに覚える)
+  await page.reload();
+  await page.waitForSelector('html[data-ready="1"]', { timeout: 150_000 });
+  await openSettings(page);
+  await expect(page.locator('#drawio-on')).not.toBeChecked();
+  await openDoc();
+  await expect(page.locator('#warnings')).toContainText('fig.drawio', { timeout: 30_000 });
+  // 入れ直すと、開いている文書の図を読み直す
+  await page.check('#drawio-on');
+  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  await expect(page.locator('#stencilfile')).toBeEnabled();
+  expect(errors).toEqual([]);
+});

@@ -99,6 +99,8 @@
       .check { display: flex; gap: 8px; align-items: flex-start; line-height: 1.45; cursor: pointer; }
       .check input { margin-top: 3px; accent-color: var(--accent); }
       .hint { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+      .sub { display: flex; flex-direction: column; gap: 8px; padding-left: 24px; }
+      .sub[aria-disabled="true"] { opacity: 0.5; }
       .row { display: flex; flex-wrap: wrap; gap: 8px; }
 
       /* ファイルをドロップする場所 */
@@ -120,7 +122,7 @@
       </div>
       <div class="actions">
         <label class="zoom" title="表示の倍率">倍率 <input type="range" id="zoom" min="0.5" max="2" step="0.1" value="1" /></label>
-        <label class="btn" title="XSL-FO・HTML・EPUB を、使う CSS・画像・書体と一緒に選ぶ (複数選べます。画面にドラッグ&ドロップしても開けます)">開く<input type="file" id="fofile" multiple accept=".fo,.xml,.xsl,.html,.htm,.xhtml,.epub,.css,.otf,.ttf,.png,.jpg,.jpeg,.gif,.bmp,.svg,.svgz,.webp,.tif,.tiff,.wmf,.emf,.eps,.cgm,.mml,text/xml,application/xml,text/html,image/*" hidden /></label>
+        <label class="btn" title="XSL-FO・HTML・EPUB を、使う CSS・画像・書体 (と draw.io の図形ライブラリ) と一緒に選ぶ (複数選べます。画面にドラッグ&ドロップしても開けます)">開く<input type="file" id="fofile" multiple accept=".fo,.xml,.xsl,.html,.htm,.xhtml,.epub,.css,.otf,.ttf,.png,.jpg,.jpeg,.gif,.bmp,.svg,.svgz,.webp,.tif,.tiff,.wmf,.emf,.eps,.cgm,.drawio,.dio,.js,.mml,text/xml,application/xml,text/html,image/*" hidden /></label>
         <label class="btn folder" title="文書・CSS・画像の入ったフォルダを選ぶ">フォルダを開く<input type="file" id="folderfile" webkitdirectory multiple hidden /></label>
         <button id="download" class="btn primary" disabled>PDF を保存</button>
         <button id="settingsbtn" class="btn" aria-expanded="false" aria-controls="settings">設定</button>
@@ -174,6 +176,19 @@
           <div class="row">
             <label class="btn">書体を読み込む<input type="file" id="fontfile" multiple accept=".ttf,.otf,.ttc" hidden /></label>
             <button id="clearfonts" class="btn" hidden>読み込んだ書体を消す</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>draw.io の図</legend>
+          <label class="check"><input type="checkbox" id="drawio-on" checked /><span>draw.io の図を読む<br /><span class="hint">オン (既定): .drawio・.dio の図を画像として描きます。図を描く処理は、図を開いたときだけ読み込みます。オフ: 図を画像として読みません</span></span></label>
+          <div id="drawioopts" class="sub">
+            <span class="hint">draw.io の図の、図形ライブラリの形 (AWS・フローチャートなど、mxgraph.* の名前の形) を描くためのファイルです。draw.io の js/stencils.min.js か、ライブラリの XML を読み込みます (.svg・.png・.jpg は、形の中の画像 (SAP のアイコンなど、draw.io の img/lib/ のファイル) として読みます)。この PC のブラウザに覚え、外へは送りません。</span>
+            <div class="row">
+              <label class="btn">図形ライブラリを読み込む<input type="file" id="stencilfile" multiple accept=".js,.xml,.svg,.png,.jpg,.jpeg" hidden /></label>
+              <button id="clearstencils" class="btn" hidden>読み込んだ図形ライブラリを消す</button>
+            </div>
+            <span id="stencilstate" class="hint">読み込んだ図形ライブラリはありません</span>
+            <label class="check"><input type="checkbox" id="drawiofetch" /><span>図に要るときだけ draw.io から取る<br /><span class="hint">オフ (既定): 取りません。オン: 読み込んだライブラリに無い形を使う図があれば、draw.io の公開のリポジトリから stencils.min.js (約 6.6MB) を取ります。SAP のアイコンの中の画像なども、使う分だけ取ります</span></span></label>
           </div>
         </fieldset>
         <fieldset>
