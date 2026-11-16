@@ -86,8 +86,8 @@ describe('XSL-FO 互換モード: 語間・和欧間のアキを詰めない (�
     expect(run(block(mixed + mixed, 'justify'), mixedLen - 2, 'antenna')[0]).not.toBe(mixed);
     expect(mixed.startsWith(run(block(mixed + mixed, 'justify'), mixedLen - 2, 'antenna')[0])).toBe(true);
     expect(run(block(`${latin} ${latin}`, 'justify'), latinLen - 2, 'antenna')[0]).toBe('aaaa bbbb cccc dddd eeee');
-    // 仕様モードの両端揃えで組む行は、語間を詰めて収める
-    expect(run(block(`${latin} ${latin}`, 'justify'), latinLen - 2, 'spec')[0]).toBe(latin);
+    // 仕様モードの両端揃えで組む行も、word-spacing.minimum が無ければ詰めない (FO-26。foSpecWordSpaceSqueeze.test.ts)
+    expect(run(block(`${latin} ${latin}`, 'justify'), latinLen - 2, 'spec')[0]).toBe('aaaa bbbb cccc dddd eeee');
   });
 
   it('両端揃えでない行でも、行中の読点の後ろのアキは詰めて収める (二分まで)', () => {

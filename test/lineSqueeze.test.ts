@@ -64,6 +64,30 @@ describe('追込みの行中の約物の詰めの上限 (lineSqueezeMax)', () =>
   });
 });
 
+describe('上限を超える追込み (lineSqueezeBeyondMax。アンテナハウス互換の HTML+CSS)', () => {
+  // 「あ、い、うえおかきく。」は 11 字 = 110pt。句点の前では分けられないので、追い出すと「く。」を送り、
+  // 「あ、い、うえおかき」(90pt) が残る。読点 2 つと行末の句点の後ろのアキで 15pt まで詰められる
+  const text = 'あ、い、うえおかきく。';
+  const st = (beyond: boolean) => resolveStyle(base({ lineSqueezeMax: 0.5, ...(beyond ? { lineSqueezeBeyondMax: true } : {}) }), {});
+  it('詰める量が、追い出したときの空き以下なら、二分を超えても追い込む', () => {
+    // 幅 101: 詰める量 9pt、追い出すと 11pt 空く
+    expect(lines(text, st(true), 101)).toEqual([text]);
+    // 上限だけ (XSL-FO の互換と同じ) なら追い出す
+    expect(lines(text, st(false), 101)).toEqual(['あ、い、うえおかき', 'く。']);
+  });
+  it('詰める量が、追い出したときの空きより大きければ追い出す', () => {
+    // 幅 99: 詰める量 11pt、追い出すと 9pt 空く
+    expect(lines(text, st(true), 99)).toEqual(['あ、い、うえおかき', 'く。']);
+  });
+  it('追い込んだ行は、行の配置でも、上限を超えて詰めて行に収める', () => {
+    const atoms = flattenInline([text], st(true), E.measurer);
+    markLineBreaks(atoms);
+    const raw = breakLines(atoms, 101, 0, false)[0];
+    const placed = positionLine(raw, 101, st(true));
+    expect(placed.widths.reduce((a, b) => a + b, 0)).toBeCloseTo(101, 2);
+  });
+});
+
 describe('和欧間アキと全角形', () => {
   const trails = (text: string) => {
     const st = resolveStyle(base({ textAutospace: true }), {});

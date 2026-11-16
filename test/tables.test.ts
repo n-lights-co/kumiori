@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { collapseTableBorders, winningBorder } from '../src/tableBorders';
+import { ColumnRuns, collapseTableBorders, placeCells, winningBorder } from '../src/tableBorders';
 import { doc, makeEngine, pt, walk } from './helpers';
 import type { Area, BorderStyle, LBlock, LTable, LTableCell } from '../src/types';
 
@@ -121,6 +121,58 @@ describe('border-collapse (§7.28.3)', () => {
       return n;
     };
     expect(painted(table2x2())).toBe(12);
+  });
+});
+
+describe('列をまたぐセルを範囲のまま扱う (LAY-23)', () => {
+  it('ColumnRuns: 後から書いた範囲が、重なる列だけを上書きする (列ごとに書くのと同じ)', () => {
+    const r = new ColumnRuns<string>();
+    r.paint(0, 10, 'a');
+    r.paint(12, 14, 'b');
+    r.paint(3, 5, 'c');
+    r.paint(9, 13, 'd');
+    const cols = Array.from({ length: 15 }, (_, x) => r.at(x) ?? '-').join('');
+    expect(cols).toBe('aaaccaaaaddddb-');
+    expect(r.end).toBe(14);
+  });
+
+  it('割り付けは、上の行から伸びたセルの列を飛ばし、重なる列は後のセルが占める', () => {
+    const c = (colSpan?: number, rowSpan?: number): LTableCell => ({ type: 'table-cell', children: [], colSpan, rowSpan });
+    const { placed, grid, nCols } = placeCells([[{ cells: [c(2), c(1, 3), c()] }, { cells: [c(3)] }, { cells: [c(), c()] }]]);
+    expect(placed.map((p) => [p.r, p.c, p.rs, p.cs])).toEqual([
+      [0, 0, 1, 2],
+      [0, 2, 3, 1],
+      [0, 3, 1, 1],
+      [1, 0, 1, 3],
+      [2, 0, 1, 1],
+      [2, 1, 1, 1],
+    ]);
+    expect(nCols).toBe(4);
+    // 2 行目の 3 列ぶんのセルは、上から伸びたセル (列 2) に重なり、その列を占める
+    expect(grid[1].at(2)).toBe(placed[3]);
+    expect(grid[2].at(2)).toBe(placed[1]);
+  });
+
+  it('colspan="1000" のセルが並ぶ表でも、手間は列の数によらない (列 10 万本の重ね合わせ)', () => {
+    const n = 100;
+    const t: LTable = {
+      type: 'table',
+      borderCollapse: 'collapse',
+      columns: [],
+      body: { type: 'table-body', rows: Array.from({ length: n }, () => ({ type: 'table-row' as const, cells: Array.from({ length: n }, () => cell('x', { colSpan: 1000 })) })) },
+    };
+    const { grid, nCols } = placeCells([t.body.rows]);
+    expect(nCols).toBe(n * 1000);
+    expect(grid.every((r) => r.length === n)).toBe(true);
+    const t0 = performance.now();
+    const out = collapseTableBorders(t, 'horizontal-tb');
+    // 以前は列ごとのマスを見ていた (1000 万マス)。範囲ごとなら 1 万セルぶんで、ずっと短い
+    expect(performance.now() - t0).toBeLessThan(2000);
+    const [A, B] = out.body.rows[1].cells.map((c) => c.border as BorderStyle);
+    expect(A.left!.width).toBe(1);
+    expect(A.right!.collapse?.noPaint).toBe(true);
+    expect(B.left!.collapse?.paintWidth).toBe(1);
+    expect(A.top!.collapse?.paintWidth).toBe(1);
   });
 });
 

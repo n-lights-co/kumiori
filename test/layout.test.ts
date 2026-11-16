@@ -468,6 +468,41 @@ describe('回転 (reference-orientation)', () => {
     expect(colors.has('#8080ff')).toBe(true);
   });
 
+  it('特色の立体の罫線は、作成者が書いた代わりの RGB から明るく・暗くする (代わりの RGB の無い特色は、これまでどおり代わりの CMYK から。CSS-25)', async () => {
+    const { paintSheet } = await import('../src/paint');
+    const { spotColor } = await import('../src/color');
+    const colorsOf = (color: string, style: 'groove' | 'ridge' | 'inset' | 'outset') => {
+      const side = { width: 4, color, style };
+      const t = E.engine.layout(doc([{ type: 'block', width: 100, border: { top: side, bottom: side, left: side, right: side }, children: ['a'] } as never]));
+      const colors = new Set<string>();
+      const add = (c: string) => colors.add(c);
+      const painter = {
+        fillRect: (_x: number, _y: number, _w: number, _h: number, c: string) => add(c),
+        fillPath: (_p: unknown, c: string) => add(c),
+        strokePath: (_p: unknown, _w: number, c: string) => add(c),
+        drawGlyph: () => {},
+        drawImage: () => {},
+        strokeLine: () => {},
+        clipRect: () => {},
+        restore: () => {},
+        transform: (_m: number[], draw: () => void) => draw(),
+      };
+      paintSheet(t.sheets[0], painter as never);
+      return [...colors].sort();
+    };
+    // rgb-icc(0, 61, 25, #Separation, '名前') の代わりの RGB (0, 61, 25) から: 暗い側 (0, 41, 17)・明るい側 (128, 158, 140)
+    // (アンテナハウスの見本の rgb-icc(0, 61, 25, …) の明暗は (0, 40, 16)・(128, 158, 140))。特色の値を渡さないときの色 (#003d19) と同じ明暗。
+    // 特色の名前と代わりの CMYK は作りもの (実の特色の値はリポジトリに入れない)
+    const spot = spotColor('Ink A', 1, [0.2, 0.4, 0.6, 0.8], [0, 61, 25]);
+    for (const st of ['groove', 'ridge', 'inset', 'outset'] as const) {
+      expect(colorsOf(spot, st), st).toEqual(['#002911', '#809e8c']);
+      expect(colorsOf(spot, st), st).toEqual(colorsOf('#003d19', st));
+    }
+    // 代わりの RGB の無い特色は、代わりの CMYK を RGB に直したもの (R = (1 − C)(1 − K) などで (41, 31, 20)) から作る (前と同じ):
+    // 暗い側は 2/3 倍で (27, 21, 13)、明るい側は白との中間で (148, 143, 138)
+    expect(colorsOf(spotColor('Ink A', 1, [0.2, 0.4, 0.6, 0.8]), 'groove')).toEqual(['#1b150d', '#948f8a']);
+  });
+
   it('CSS の罫線 (symmetric) の破線は、辺の中央に対して対称に置き、上と下の辺は同じ位置に線を描く', async () => {
     const { paintSheet } = await import('../src/paint');
     const side = { width: 2, color: '#000000', style: 'dashed' as const, symmetric: true };

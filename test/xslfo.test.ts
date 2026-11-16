@@ -415,16 +415,86 @@ describe('XSL-FO 変換: footnote-separator', () => {
   it('画像や罫線だけの区切りも、内容としてそのまま組む (I-05)', () => {
     const img = sep('<fo:external-graphic src="sep.png"/>').footnotes!.separator as { content?: unknown[] };
     expect(img.content?.length).toBe(1);
-    const ruled = sep('').footnotes;
-    expect(ruled?.separator).toBeUndefined();
+    // 中身の無い区切り (空のブロック) は描かない (FO-21)。組んでも何も描かず場所も取らない (下の FO-41 のテスト)
     const border = seq(fo('<fo:block>a</fo:block>', '', '<fo:static-content flow-name="xsl-footnote-separator"><fo:block border-top="1pt dashed red" width="30mm"/></fo:static-content>')).footnotes!.separator as { content?: unknown[] };
     expect(border.content?.length).toBe(1);
   });
 
-  it('中身が空の区切り (空のブロックだけ) は、区切りの指定を作らず (既定の区切り線)、読み込みの報告に書く', () => {
-    const r = imp(fo('<fo:block>a</fo:block>', '', '<fo:static-content flow-name="xsl-footnote-separator"><fo:block/></fo:static-content>'));
-    expect(r.document.sequences[0].footnotes).toEqual({ spacing: 0 });
-    expect(r.report.notes.some((n) => /footnote-separator/.test(n))).toBe(true);
+  // 脚注のある 1 ページを組み、脚注の本体の上端・脚注の領域 (本文の領域の最後の子) の上端と高さ・区切りとして描かれた罫線を返す
+  const fnFlow = '<fo:block>本文<fo:footnote><fo:inline>1</fo:inline><fo:footnote-body><fo:block>脚注本体</fo:block></fo:footnote-body></fo:footnote></fo:block>';
+  const laidSep = (sepBody: string | undefined, compat: 'spec' | 'antenna' = 'spec') => {
+    const statics = sepBody === undefined ? '' : `<fo:static-content flow-name="xsl-footnote-separator">${sepBody}</fo:static-content>`;
+    const r = imp(fo(fnFlow, '', statics), { compat });
+    const t = E.engine.layout(r.document);
+    let bodyTop = NaN;
+    const borders: Array<{ side: string; width: number; y: number; h: number }> = [];
+    type A = { type: string; y?: number; height?: number; text?: string; border?: Record<string, { width: number } | undefined>; children?: A[] };
+    const visit = (a: A, oy: number) => {
+      const y = oy + (a.y ?? 0);
+      if (a.type === 'block') {
+        for (const [side, e] of Object.entries(a.border ?? {})) if (e && e.width > 0) borders.push({ side, width: e.width, y, h: a.height ?? 0 });
+        if (Number.isNaN(bodyTop) && (a.children ?? []).some((c) => c.type !== 'block') && JSON.stringify(a).includes('"脚"')) bodyTop = y;
+      }
+      for (const c of a.children ?? []) visit(c, y);
+    };
+    const kids = t.sheets[0].page.regionBody.children as unknown as A[];
+    for (const c of kids) visit(c, 0);
+    const foot = kids[kids.length - 1];
+    return { r, bodyTop, borders, footTop: foot.y ?? 0, footH: foot.height ?? 0 };
+  };
+
+  it('罫線を longhand・shorthand・絶対の向き・相対の向きのどれで書いた区切りも、組んで描く (FO-41。XSL 1.1 §6.12.1.3)', () => {
+    const cases: Array<[string, string, number]> = [
+      // [区切りの中身, 罫線の出る側, 区切りの高さ]
+      ['<fo:block border-after-style="solid" border-after-width="1pt" border-after-color="black"/>', 'bottom', 1],
+      ['<fo:block border-bottom-style="solid" border-bottom-width="1pt"/>', 'bottom', 1],
+      ['<fo:block border-style="solid" border-width="1pt"/>', 'top', 2],
+      ['<fo:block border-before-style="solid" border-before-width="1.5pt"/>', 'top', 1.5],
+      ['<fo:block border-top="1pt solid"/>', 'top', 1],
+    ];
+    for (const compat of ['spec', 'antenna'] as const) {
+      const base = laidSep(undefined, compat).bodyTop;
+      expect(Number.isFinite(base)).toBe(true);
+      for (const [body, side, h] of cases) {
+        const { r, bodyTop, borders } = laidSep(body, compat);
+        expect(typeof r.document.sequences[0].footnotes?.separator, body).toBe('object');
+        // 罫線が描かれ、脚注の本体は区切りの高さだけ下にある (区切りは脚注の領域の初めに置く)
+        expect(borders.some((b) => b.side === side), `${compat} ${body}`).toBe(true);
+        expect(base - bodyTop, `${compat} ${body}`).toBeCloseTo(0);
+        const sep = borders.find((b) => b.side === side)!;
+        expect(sep.h, body).toBeCloseTo(h);
+        expect(sep.y + sep.h, body).toBeLessThanOrEqual(bodyTop + 0.01);
+        expect(r.report.notes.some((n) => /footnote-separator/.test(n))).toBe(false);
+      }
+    }
+  });
+
+  it('アキ (padding-before・高さのある block-container) だけの区切りも、組んで場所を取る (FO-41)', () => {
+    const none = laidSep(undefined);
+    for (const body of ['<fo:block padding-before="10pt"/>', '<fo:block-container height="10pt"/>']) {
+      const { bodyTop, footTop, footH } = laidSep(body);
+      // 脚注の領域は本文の領域の下端から積むので、脚注の本体の位置は変わらず、領域が区切りの分だけ上へ伸びる
+      expect(bodyTop, body).toBeCloseTo(none.bodyTop);
+      expect(none.footTop - footTop, body).toBeCloseTo(10);
+      expect(footH - none.footH, body).toBeCloseTo(10);
+    }
+  });
+
+  it('中身が空の区切り (字・leader・画像・背景・罫線のどれも無い) は、static-content が無いときと同じく描かず場所も取らず、知らせも出さない (FO-21。どのモードでも)', () => {
+    // XSL 1.1 §6.12.1.3: 区切りは、xsl-footnote-separator の static-content を組んで返った領域。仕様に既定の区切り線は無い。
+    // 先頭の space-before は、脚注の参照領域の始めなので 0 になる (§4.3.1)
+    for (const compat of ['spec', 'antenna'] as const) {
+      const none = laidSep(undefined, compat);
+      for (const body of ['<fo:block/>', '<fo:block space-before="6pt"><fo:block> </fo:block></fo:block>', '']) {
+        const { r, bodyTop, borders, footTop, footH } = laidSep(body, compat);
+        expect(borders, body).toEqual([]);
+        expect(bodyTop, body).toBeCloseTo(none.bodyTop);
+        // 脚注の領域の上端と高さも、static-content が無いときと同じ (区切りが場所を取らない)
+        expect(footTop, body).toBeCloseTo(none.footTop);
+        expect(footH, body).toBeCloseTo(none.footH);
+        expect(r.report.notes.some((n) => /footnote-separator/.test(n))).toBe(false);
+      }
+    }
     // static-content が無ければ、区切りを描かない (報告にも書かない)
     const none = imp(fo('<fo:block>a</fo:block>'));
     expect(none.document.sequences[0].footnotes).toEqual({ separator: false, spacing: 0 });
@@ -1072,6 +1142,15 @@ describe('XSL-FO 変換: block-container の中の indent (S-07)', () => {
     const b = imp(xml).document.sequences[0].flow.children[0] as LBlock;
     const cont = b.children[0] as LBlockContainer;
     expect((cont.children[0] as LBlock).margin).toBeUndefined();
+  });
+  it('仕様モード: margin-left・margin-right を書いたコンテナの中は、受け継いだ値 + margin + padding + border を受け継ぐ (§5.3.2。FO-19 の残り)', () => {
+    const x = fo('<fo:block start-indent="10mm" end-indent="4mm"><fo:block-container margin-left="5mm" margin-right="2mm" padding-left="1mm"><fo:block>a</fo:block></fo:block-container></fo:block>');
+    const b = imp(x, { compat: 'spec' }).document.sequences[0].flow.children[0] as LBlock;
+    const wrap = (b.children[0] as LBlockContainer).children[0] as LBlock;
+    const mm = (v: number) => (v * 72) / 25.4;
+    // start-indent = 10 + 5 + 1 = 16mm、end-indent = 4 + 2 = 6mm (前は受け継いだ 10mm・4mm を足さず、6mm・2mm だった)
+    expect((wrap.margin as { left: number }).left).toBeCloseTo(mm(16), 1);
+    expect((wrap.margin as { right: number }).right).toBeCloseTo(mm(6), 1);
   });
 });
 

@@ -8,6 +8,7 @@ import { PT_PER_MM } from './units';
 import { normBorder } from './geometry';
 import type { XEl } from './foDom';
 import { WS_INITIAL, type Ctx } from './foContext';
+import { msg } from './messages';
 
 export interface RegionProps {
   wm?: WritingMode;
@@ -128,6 +129,9 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
       columnGapPt = gapR === undefined ? undefined : Math.max(gapR, 0);
       if (fo.attr(r, 'axf:footnote-position') === 'column') footPos = 'column';
       if (fo.attr(r, 'axf:footnote-position') === 'outside') sideNotes = true;
+      // 末尾の段の釣り合わせ (アンテナハウスの拡張 axf:column-fill。値は CSS Multi-column 1 §7.1 の column-fill と同じ)。
+      // 接頭辞の無い column-fill は XSL 1.1 に無い名前だが、互換の指定に関わらず読む (CLAUDE.md の「接頭辞の無い名前の拡張は互換の指定のときだけ」の例外)。
+      // 最初の公開から対応仕様説明書 (docs/conformance/fo の region-body の段組) と BACKLOG の E-13 に、どのモードでも効く書き方として書いてきたため
       if ((fo.attr(r, 'axf:column-fill') ?? fo.attr(r, 'column-fill')) === 'balance') colFill = true;
       colRule = fo.columnRule(r, fs);
       // 互換モード: 段罫が段の間隔より太ければ、段の間隔に段罫の太さを足す (例: 段罫 0.25in なら、
@@ -284,7 +288,7 @@ function printerMarks(fo: FoPageHost, m: XEl, fs: number): Partial<PageMaster> {
       if (!crop) out.cornerMarks = false;
       if (!cross) out.centerMarks = false;
     }
-    if (/url\(/.test(marks)) fo.miss('axf:printer-marks の画像 (url)');
+    if (/url\(/.test(marks)) fo.miss(msg('axf:printer-marks の画像 (url)', 'axf:printer-marks images (url)'));
   }
   if (off) {
     const v = off.trim().split(/\s+/).map((t) => fo.len(t, fs));

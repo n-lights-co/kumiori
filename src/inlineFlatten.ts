@@ -480,6 +480,7 @@ export function flattenInline(
       else if (c.type === 'footnote') flattenFootnoteRef(c, cx);
       else if (c.type === 'leader') flattenLeader(c, cx);
       else if (c.type === 'tate-chu-yoko') flattenTateChuYoko(c, cx);
+      else if (isDroppedBlock(c)) state.dropped?.((c as { type: string }).type);
       if (typeof c0 === 'object') markRef(cx.out, c0, start0);
     }
   } finally {
@@ -490,6 +491,15 @@ export function flattenInline(
   // 付ける値は字の書式だけで決まり、中の呼び出しの後で読む所は無いので、結果は同じ
   if (!flattenDepth.get(state)) applyFontBaseline(cx.out, m, wm);
   return cx.out;
+}
+
+/**
+ * 行の中に置けないブロック水準の部品 (行内の箱の子に入ったブロック・表。絶対配置の箱は流れの外なので除く)。読み込みが行内の箱をブロックの前後で
+ * 分ける (CSS 2.1 §9.2.1.1。HTML の読み込みの splitInlineAtBlocks) ので、ふつうは来ない。来たら置かずに知らせる (FlattenState.dropped)
+ */
+function isDroppedBlock(c: unknown): boolean {
+  const n = c as { type?: string; absolutePosition?: boolean };
+  return (n.type === 'block' || n.type === 'table' || n.type === 'block-container') && !n.absolutePosition;
 }
 
 /** flattenInline の呼び出しの深さ (FlattenState ごと。インラインブロックの中身は別の FlattenState で組む) */

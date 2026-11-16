@@ -81,6 +81,7 @@ import type { FkFont, MathFont } from './mathFont';
 import { layoutMathML, type MNode } from './mathLayout';
 import { isAntennaCompat, type FoCompat } from './compat';
 import { pushAll } from './arrayLoop';
+import { stripDoctype } from './linearText';
 
 /** 表の列の番号・数の上限 */
 const MAX_TABLE_COLUMNS = 1000;
@@ -90,6 +91,12 @@ const MAX_TABLE_COLUMNS = 1000;
  * fo:block の交互で 600〜800 段で切れるので、その 1/3 ほどにする。実在の文書の入れ子は数十段まで
  */
 const MAX_FO_NEST = 250;
+
+/** rgb-icc() の引数の始めの 3 つ (代わりの sRGB。XSL 1.1 §5.10.2) を 0〜255 の数にしたもの。数でないものがあれば undefined */
+function rgbOf(p: string[]): [number, number, number] | undefined {
+  const ch = p.slice(0, 3).map((x) => (x.endsWith('%') ? (parseFloat(x) * 255) / 100 : parseFloat(x)));
+  return ch.length === 3 && ch.every((x) => Number.isFinite(x)) ? (ch as [number, number, number]) : undefined;
+}
 /** 入れ子が深すぎる文書の誤り */
 const tooDeep = () => new Error(msg(`要素の入れ子が深すぎます (${MAX_FO_NEST} 段まで)`, `elements are nested too deeply (up to ${MAX_FO_NEST} levels)`));
 
@@ -233,7 +240,7 @@ class Importer {
     const t = (n.textContent ?? '').trim();
     if (!t.startsWith('<') || !this.parseXml) return undefined;
     try {
-      const d = this.parseXml(t.replace(/<!DOCTYPE[^>[]*(\[[\s\S]*?\])?\s*>/i, ''));
+      const d = this.parseXml(stripDoctype(t));
       return (d.nodeType === 9 ? Array.from(d.childNodes).find((c) => c.nodeType === 1) : d) as XEl | undefined;
     } catch {
       return undefined;
@@ -359,7 +366,7 @@ class Importer {
     const t = this.opts.readText(normalizeSrc(src));
     if (!t) return undefined;
     try {
-      const d = this.parseXml(t.replace(/<!DOCTYPE[^>[]*(\[[\s\S]*?\])?\s*>/i, ''));
+      const d = this.parseXml(stripDoctype(t));
       const root = (d.nodeType === 9 ? Array.from(d.childNodes).find((c) => c.nodeType === 1) : d) as XEl | undefined;
       return root && this.name(root) === 'math' ? root : undefined;
     } catch {
@@ -415,7 +422,7 @@ class Importer {
    */
   reportUnreadAttributes(root: XEl) {
     // 未使用の fo:page-sequence-master: どの fo:page-sequence からも参照されないので中身を読まないが、捨てたのではない
-    // (未対応の要素として報告しない。PKG-21 (3))
+    // (未対応の要素として報告しない)
     for (const m of this.allSeqMasters) if (!this.usedSeqMasters.has(m)) this.skipped.add(m);
     const own = (el: XEl) => this.isFo(el) || el.nodeName.startsWith('axf:');
     const qn = (el: XEl) => (this.isFo(el) ? `fo:${this.name(el)}` : el.nodeName);
@@ -446,7 +453,7 @@ class Importer {
       }
       const asked = this.asked.get(el);
       if (!live.has(el) && !TEXT_ONLY_FO.has(qn(el))) {
-        this.miss(parent ? `${qn(el)} (${qn(parent)} の中)` : qn(el));
+        this.miss(parent ? msg(`${qn(el)} (${qn(parent)} の中)`, `${qn(el)} (in ${qn(parent)})`) : qn(el));
         dead.add(el);
         continue;
       }
@@ -455,7 +462,7 @@ class Importer {
         if (k === 'xmlns' || k.startsWith('xmlns:') || k.startsWith('xml:') || NO_FORMATTING_EFFECT.has(k)) continue;
         if (asked?.has(k)) {
           // 読んだ属性でも、決まった値しか取らない性質の値が、値の表に無いもの (綴りの誤り・他の組版ソフトの値) は、無視したことを報告する
-          // (読む所は知らない値を初期値・継承した値のままにする。PKG-21 (2))
+          // (読む所は知らない値を初期値・継承した値のままにする)
           const ok = ENUMERATED_VALUES[k];
           const v = a.value.trim();
           if (ok && v !== 'inherit' && !ok.includes(v) && !(k === 'force-page-count' && /^\d+$/.test(v))) this.miss(`${k}="${v.slice(0, 30)}"`);
@@ -688,6 +695,36 @@ class Importer {
     return this.attr(n, 'axf:border-radius') ?? (this.spec ? undefined : this.attr(n, 'border-radius'));
   }
 
+  /**
+   * word-spacing の .minimum・.maximum (XSL 1.1 §7.17.8 の <space>。仕様モード): “This allows the user to specify a range of adjustments in
+   * addition to the default space between words. The minimum and maximum values specify the limits of the adjustment.”
+   * この要素に word-spacing (一括の値・成分) を書いたときだけ決め直す (書かなければ、親の限りを受け継ぐ: 継承される性質)。
+   *  - 一括の値 (normal・<length>) は、3 つの成分を同じ値にする (§5.11 の <space> の短い形: “Such a specification gives that value to each of
+   *    the <length> components”)。成分を書けば、その成分が勝つ (“the complete forms have precedence over the expansion of a short form”)
+   *  - .minimum が .optimum より大きければ .optimum、.maximum が .optimum より小さければ .optimum とする (§5.11)
+   *  - 縮める限り = .optimum − .minimum (inlineLayout の wordSpaceShrinkLimit。.minimum を書かなければ 0: 縮めない)
+   *  - 広げる限り = .maximum − .optimum (wordSpaceStretchLimit)。.maximum を書かなければ限り無し ('none'): normal も <length> も
+   *    .maximum = .optimum だが、両端揃えの行は語間を広げて埋める (§7.16.9 の justify: “the UA may stretch the inline boxes”。Kumiori の今までの動き)
+   * 互換モードは読まない (今までどおり、未対応の指定として報告する)
+   */
+  private readWordSpacingRange(el: XEl, s: TextStyle, opt: number, fs: number): void {
+    const short = this.attr(el, 'word-spacing');
+    const mnA = this.attr(el, 'word-spacing.minimum');
+    const mxA = this.attr(el, 'word-spacing.maximum');
+    const optA = this.attr(el, 'word-spacing.optimum');
+    if (short === undefined && mnA === undefined && mxA === undefined && optA === undefined) return;
+    const comp = (a: string | undefined, name: string): number | undefined => {
+      if (a === undefined) return undefined;
+      const v = a === 'normal' ? 0 : this.len(a, fs);
+      if (v === undefined) this.miss(`${name}:${a.slice(0, 20)}`);
+      return v;
+    };
+    const mn = comp(mnA, 'word-spacing.minimum');
+    const mx = comp(mxA, 'word-spacing.maximum');
+    s.wordSpaceShrinkLimit = mn === undefined ? 0 : Math.max(opt - Math.min(mn, opt), 0);
+    s.wordSpaceStretchLimit = mx === undefined ? 'none' : Math.max(Math.max(mx, opt) - opt, 0);
+  }
+
   attrInh(n: XNode, k: string): string | undefined {
     const v = this.attr(n, k);
     return v === 'inherit' ? undefined : v;
@@ -729,7 +766,7 @@ class Importer {
       if (fo && name === 'instream-foreign-object') continue;
       if (fo && name === 'change-bar-begin') {
         const cls = this.attr(el, 'change-bar-class') ?? '';
-        if (!this.attr(el, 'change-bar-class')) this.miss('fo:change-bar-begin (change-bar-class が無い)');
+        if (!this.attr(el, 'change-bar-class')) this.miss(msg('fo:change-bar-begin (change-bar-class が無い)', 'fo:change-bar-begin (no change-bar-class)'));
         if (this.attr(el, 'z-index') !== undefined) this.miss('z-index (fo:change-bar-begin)');
         const bar = this.changeBarOf(inh, el);
         const list = open.get(cls) ?? [];
@@ -741,7 +778,7 @@ class Importer {
       if (fo && name === 'change-bar-end') {
         const list = open.get(this.attr(el, 'change-bar-class') ?? '');
         if (!list?.length) {
-          this.miss('fo:change-bar-end (組になる fo:change-bar-begin が無い)');
+          this.miss(msg('fo:change-bar-end (組になる fo:change-bar-begin が無い)', 'fo:change-bar-end (no matching fo:change-bar-begin)'));
           continue;
         }
         const bar = list.pop();
@@ -781,7 +818,7 @@ class Importer {
     // 縦書きでは、段の左・右の端はバーを引く端 (行の始め・終わり = 上・下) に当たらない。始め・終わりの端として扱う
     if (rb.position === 'left' || rb.position === 'right') {
       const wm = this.wmOf(inh(el, 'writing-mode') ?? '');
-      if (wm && wm !== 'horizontal-tb') this.miss(`change-bar-placement="${pl}" (縦書き)`);
+      if (wm && wm !== 'horizontal-tb') this.miss(msg(`change-bar-placement="${pl}" (縦書き)`, `change-bar-placement="${pl}" (vertical writing)`));
     }
     return rb;
   }
@@ -842,11 +879,29 @@ class Importer {
     if (r === undefined) {
       const fn = /\b(from-parent|inherited-property-value|from-nearest-specified-value|from-table-column|merge-property-values)\s*\(/.exec(v);
       if (fn) this.miss(`function:${fn[1]}()`);
-      // XSL 1.1 §5.9.13 に無い単位 (CSS の rem・ch・vw、アンテナハウスの q・jpt など) の長さも、黙って捨てずに報告する (PKG-21 (2))
+      // XSL 1.1 §5.9.13 に無い単位 (CSS の rem・ch・vw、アンテナハウスの q・jpt など) の長さも、黙って捨てずに報告する
       const unit = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)([a-z]+)$/i.exec(v.trim());
-      if (unit) this.miss(`単位 ${unit[1].toLowerCase()} (長さ "${v.trim().slice(0, 20)}")`);
+      if (unit) this.miss(msg(`単位 ${unit[1].toLowerCase()} (長さ "${v.trim().slice(0, 20)}")`, `unit ${unit[1].toLowerCase()} (length "${v.trim().slice(0, 20)}")`));
     }
     return r;
+  }
+
+  /**
+   * start-indent・end-indent の属性の値。仕様モードでは、値の中の from-parent() と inherited-property-value() を、親の計算値
+   * (Ctx の startIndent・endIndent。いまの参照領域の端からの字下げ) に置き換えて、長さの式として読めるようにする
+   * (XSL 1.1 §5.10.4: from-parent(NCName) は親の計算値、引数を省くと、その式を書いた性質。inherited-property-value() は、
+   * 継承される性質では親の計算値と同じ。start-indent・end-indent は継承される (§7.11.7・§7.11.8))。
+   * 互換モードは従来どおり読まない (len() が警告に出す。リストの本体の中の Ctx の字下げが仕様の基準と違うため、読むと位置が変わる)
+   */
+  private indentAttr(el: XEl, k: 'start-indent' | 'end-indent', parent: Ctx): string | undefined {
+    const v = this.attr(el, k);
+    if (v === undefined || !this.spec) return v;
+    return v.replace(/\b(?:from-parent|inherited-property-value)\(\s*([a-z-]*)\s*\)/g, (all, name: string) => {
+      const prop = name || k;
+      if (prop === 'start-indent') return `(${parent.startIndent}pt)`;
+      if (prop === 'end-indent') return `(${parent.endIndent}pt)`;
+      return all;
+    });
   }
 
   /**
@@ -887,10 +942,12 @@ class Importer {
         const name = p[4].replace(/^["']|["']$/g, '');
         const sp = this.opts.spotColors?.[name];
         const tint = p.length >= 6 ? parseFloat(p[p.length - 1]) : 1;
-        if (sp) return spotColor(name, Number.isFinite(tint) ? tint : 1, sp);
+        // 代わりの RGB は、特色の値が無いときの色 (下の rgb(…)。濃度は掛けない) と同じもの。立体の罫線の明暗の色はこれから作る
+        const alt = rgbOf(p);
+        if (sp) return spotColor(name, Number.isFinite(tint) ? tint : 1, sp, alt);
       }
-      const ch = p.slice(0, 3).map((x) => (x.endsWith('%') ? (parseFloat(x) * 255) / 100 : parseFloat(x)));
-      if (ch.every((x) => Number.isFinite(x))) return `rgb(${ch.map((x) => Math.min(255, Math.max(0, Math.round(x)))).join(',')})`;
+      const ch = rgbOf(p);
+      if (ch) return `rgb(${ch.map((x) => Math.min(255, Math.max(0, Math.round(x)))).join(',')})`;
     }
     if (/^(#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\(|cmyk\()/i.test(s) || isColorName(s)) return s;
     this.miss(`color:${s.slice(0, 20)}`);
@@ -935,7 +992,7 @@ class Importer {
     // 並びを分けない子 (回り込み・絶対配置の箱) が途中にあると、並びの全体を 1 つの inline で包めない
     const next = kids[b] as { type?: string; absolutePosition?: boolean } | undefined;
     if (next && (next.type === 'float' || next.type === 'marker' || (next.type === 'block-container' && next.absolutePosition))) {
-      this.miss('fo:initial-property-set (最初の行の並びの途中に fo:float・絶対配置の箱がある)');
+      this.miss(msg('fo:initial-property-set (最初の行の並びの途中に fo:float・絶対配置の箱がある)', 'fo:initial-property-set (an fo:float or absolutely positioned box within the first line)'));
       return;
     }
     const has = (k: string) => {
@@ -1097,7 +1154,7 @@ class Importer {
     const { style, ctx: c2 } = this.textStyle(el, ctx);
     const kids = this.children(el, c2, false).filter((k) => {
       const block = typeof k !== 'string' && ['block', 'table', 'block-container', 'float', 'marker', 'retrieve-marker'].includes((k as { type: string }).type);
-      if (block) this.miss(`fo:${(k as { type: string }).type} (fo:${this.name(el)} の中)`);
+      if (block) this.miss(msg(`fo:${(k as { type: string }).type} (fo:${this.name(el)} の中)`, `fo:${(k as { type: string }).type} (in fo:${this.name(el)})`));
       return !block;
     }) as LInlineLevel[];
     return Object.keys(style).length ? [{ type: 'inline', ...style, children: kids } as LInline] : kids;
@@ -1132,7 +1189,7 @@ class Importer {
         // ref-index-key (§7.24.7) は “Initial: none, value required”
         const refKey = this.attr(c, 'ref-index-key');
         if (refKey === undefined) {
-          this.miss('fo:index-key-reference (ref-index-key が無い)');
+          this.miss(msg('fo:index-key-reference (ref-index-key が無い)', 'fo:index-key-reference (no ref-index-key)'));
           continue;
         }
         // ページ番号と前後の字の書式は、fo:index-key-reference から受け継ぐ (§6.10.7: “The traits of the fo:inline are inherited from R”)
@@ -1147,7 +1204,7 @@ class Importer {
           const pn = this.isFo(p) ? this.name(p) : '';
           if (pn === 'index-page-number-prefix' && !ref.prefix) ref.prefix = this.indexInlineContent(p, cr);
           else if (pn === 'index-page-number-suffix' && !ref.suffix) ref.suffix = this.indexInlineContent(p, cr);
-          else this.missElement(p, this.isFo(p) ? `fo:${pn} (fo:index-key-reference の中)` : undefined);
+          else this.missElement(p, this.isFo(p) ? msg(`fo:${pn} (fo:index-key-reference の中)`, `fo:${pn} (in fo:index-key-reference)`) : undefined);
         }
         // ページ番号は §6.6.10 の中身 (引いたページを作った page-sequence の fo:folio-prefix・番号・fo:folio-suffix。§6.10.7 の Step C:
         // “using the page referenced by the cited page item as the reference-page, and the fo:page-sequence that generated the
@@ -1162,7 +1219,7 @@ class Importer {
           (ref.folios ??= {})[key] = { ...(pre.length ? { prefix: pre } : {}), ...(suf.length ? { suffix: suf } : {}) };
         }
         list.references.push(ref);
-      } else this.missElement(c, name ? `fo:${name} (fo:index-page-citation-list の中)` : undefined);
+      } else this.missElement(c, name ? msg(`fo:${name} (fo:index-page-citation-list の中)`, `fo:${name} (in fo:index-page-citation-list)`) : undefined);
     }
     return Object.keys(style).length ? ({ type: 'inline', ...style, children: [list] } as LInline) : list;
   }
@@ -1384,9 +1441,14 @@ class Importer {
       // boxes in addition to adjusting their positions.”)。start・end・center・inside・outside (left・right) は、行の中身を寄せるだけ。
       // CSS Text 3 §6.1 (“In the case of justify, the UA may stretch or shrink any inline boxes by adjusting their text.”)・§6.4.1・
       // §7.1 (word-spacing: normal は “No additional spacing is applied.”) も同じ。
-      // 両端揃えで組む行で語間を詰める動き (JLREQ §3.8.3 の詰める順の最初) と、約物のアキの追込みは、今までどおり。
+      // 約物のアキの追込みは、揃えによらず行う。
       // 互換モードは、揃えによらず語間・和欧間を詰めない (上の noSpaceSqueeze) ので、この指定は要らない
       ...(this.spec ? { wordSqueezeJustifiedOnly: true } : {}),
+      // 仕様モード: 両端揃えで組む行でも、欧文の語間 (空白) は、word-spacing.minimum の指定が無ければ詰めない (inlineLayout の
+      // wordSpaceShrinkLimit が 0)。XSL 1.1 §7.17.8: “For "normal": .optimum = …, .maximum = .optimum, .minimum = .optimum”、
+      // <length> も “.maximum = .optimum, .minimum = .optimum” で、縮める幅が無い。詰めれば入る語は次の行へ送り、両端揃えの行は
+      // 広げる側にだけ伸ばす (§7.16.9 の justify)。word-spacing.minimum があれば、その幅まで縮める (readWordSpacingRange)
+      ...(this.spec ? { wordSpaceShrinkLimit: 0 } : {}),
       // 行頭の始め括弧類の前のアキ: axf:punctuation-trim の指定が無ければ、段落の 1 行目の先頭だけ詰める。
       // 段落の途中で折り返した行の先頭は詰めない (互換モードの既定)
       punctuationTrimParagraphStart: !this.spec,
@@ -1549,31 +1611,45 @@ class Importer {
     }
     const sepBodyW = def.pageW - (def.master.margins.left + def.master.margins.right) * PT_PER_MM;
     if (bfSepEl) seq.beforeFloatSeparator = this.children(bfSepEl, { ...ctx, width: sepBodyW });
-    // 区切りに、組む内容 (leader・文字・画像・背景・罫線) があるか
-    const sepHasContent = (n: XEl): boolean =>
-      (n.textContent ?? '').trim() !== '' ||
-      !!this.attr(n, 'background-color') ||
-      ['external-graphic', 'instream-foreign-object'].includes(this.name(n)) ||
-      ['border', 'border-top', 'border-bottom', 'border-before', 'border-after', 'border-top-style', 'border-before-style'].some((k) => (this.attr(n, k) ?? 'none') !== 'none') ||
-      this.name(n) === 'leader' ||
-      this.els(n).some(sepHasContent);
-    // 区切りの static-content が無ければ、区切り線を描かない (区切りは flow-name="xsl-footnote-separator" の static-content の内容で描く)
-    if (!sepEl) seq.footnotes = { separator: false };
-    else if (sepHasContent(sepEl)) {
-      // 区切りの内容 (leader の線・点線、文字、画像など) を、そのまま脚注領域の区切りとして組む。
-      // leader の点はフォントの字 (.) で、区切りのブロックの行の中に置く
-      seq.footnotes = { separator: { content: this.children(sepEl, { ...ctx, width: sepBodyW }) } };
-    } else {
-      // 字・leader・画像・背景・罫線のどれも無い区切り (空のブロックだけなど): 区切りの指定を作らず、組むときの既定の区切り線に任せる
-      this.note(msg('footnote-separator の内容は、区切り線の既定書式で代用しました', 'the content of footnote-separator was replaced by the default separator rule'));
+    // 脚注の区切り (XSL 1.1 §6.12.1.3「Conditional Sub-Regions」: “If there is an fo:static-content whose "flow-name" property value is
+    // "xsl-footnote-separator", then the areas returned by formatting the fo:static-content are inserted in the proper order as the initial
+    // children of a footnote-reference-area”。§6.4.1.4・§6.4.5 も、区切りの領域は、この static-content を組んで返る領域だけ)。
+    // 区切りを描くのは、この static-content を組んだ結果だけで、仕様に既定の区切り線は無い:
+    //  - static-content が無ければ (組む子が無ければ)、区切りを描かない
+    //  - あれば、中身をいつもそのまま組む。罫線・アキ・背景を、どの書き方 (longhand・shorthand・絶対の向き・相対の向き) で書いても、
+    //    ほかのブロックと同じく読まれる。中身が空 (空のブロックだけなど) なら、組んだ区切りは高さ 0 で何も描かず、static-content が
+    //    無いときと同じ結果になる (書いたとおり空として扱う。Kumiori の既定の区切り線では代用しない。どのモードでも)。
+    //    前は属性の名前の並びで「空か」を決めていて、border-after-style などで書いた罫線の区切りを捨てていた
+    const sepContent = sepEl ? this.children(sepEl, { ...ctx, width: sepBodyW }) : [];
+    // 区切りの領域は、脚注の参照領域 (footnote-reference-area) の最初の子になる (§6.12.1.3)。参照領域の始めの、
+    // conditionality が discard の space-before は 0 にする (§4.3.1 の空きの解決: “If any of the space-specifiers in S is conditional,
+    // and begins a reference-area or line-area, then it is set to zero”)。組版の側は区切りを先頭の空きを残して組むので、ここで落とす。
+    // 落とすのは、先頭のブロックと、前側に罫線・パディングの無い入れ子の先頭のブロックの space-before だけ
+    // (margin-top などから来る space-before と space-before.conditionality="retain" は retainSpaceBefore で、残す)
+    {
+      const before = this.phys('before', wm, ctx.rtl);
+      let n = sepContent[0] as { type?: string; margin?: Record<string, number>; padding?: Record<string, number>; border?: Record<string, { width?: number }>; retainSpaceBefore?: boolean; writingMode?: string; children?: unknown[] } | undefined;
+      while (n && (n.type === 'block' || n.type === 'block-container') && !n.writingMode) {
+        if (!n.retainSpaceBefore && n.margin?.[before] !== undefined) {
+          const { [before]: _s, ...rest } = n.margin;
+          void _s;
+          if (Object.keys(rest).length) n.margin = rest;
+          else delete n.margin;
+        }
+        // 入れ子の先頭のブロックの空きが参照領域の始めに来るのは、親の前側に罫線もパディングも無いとき (block-container は自身が参照領域で、中は組版の側で落とす)
+        if (n.type !== 'block' || (n.padding?.[before] ?? 0) > 0 || (n.border?.[before]?.width ?? 0) > 0) break;
+        n = n.children?.[0] as typeof n;
+      }
     }
+    // leader の点はフォントの字 (.) で、区切りのブロックの行の中に置く
+    seq.footnotes = sepContent.length ? { separator: { content: sepContent } } : { separator: false };
     // 脚注どうしの間は、本体の space-before / space-after だけ (FO には Kumiori の既定の 2pt のアキは無い)
     seq.footnotes = { ...seq.footnotes, spacing: 0 };
     // アンテナハウスの自動脚注番号の書式・初期値・振り直し
     let fnFmt = this.attr(ps, 'axf:footnote-number-format');
     // 長すぎる書式は読まない (format と同じ。脚注ごとに写される)
     if (fnFmt && fnFmt.length > MAX_COUNTER_LENGTH && [...fnFmt].length > MAX_COUNTER_LENGTH) {
-      this.miss(`axf:footnote-number-format (${MAX_COUNTER_LENGTH} 字より長い書式)`);
+      this.miss(msg(`axf:footnote-number-format (${MAX_COUNTER_LENGTH} 字より長い書式)`, `axf:footnote-number-format (a format longer than ${MAX_COUNTER_LENGTH} characters)`));
       fnFmt = undefined;
     }
     const fnInit = parseInt(this.attr(ps, 'axf:footnote-number-initial') ?? '', 10);
@@ -1595,7 +1671,7 @@ class Importer {
     // format="0…(10 万桁)1" は、ページ番号ごとに 10 万字を作り、50 ページ (104KB) でメモリを使い切った。上限は、カウンターの表記の
     // 長さの上限 (Counter Styles 3 §2 の MAX_COUNTER_LENGTH。1000 符号位置) と同じにする (実在の書式は数字か、短い字と区切り)
     if (fmt && fmt.length > MAX_COUNTER_LENGTH && [...fmt].length > MAX_COUNTER_LENGTH) {
-      this.miss(`format (${MAX_COUNTER_LENGTH} 字より長い書式)`);
+      this.miss(msg(`format (${MAX_COUNTER_LENGTH} 字より長い書式)`, `format (a format longer than ${MAX_COUNTER_LENGTH} characters)`));
       fmt = undefined;
     }
     if (fmt && fmt !== '1') seq.pageNumberFormat = fmt;
@@ -1620,7 +1696,7 @@ class Importer {
     // 数値 (アンテナハウスの拡張): そのページ数になるまで、末尾に白ページを足す。XSL 1.1 §7.27.6 の値 (auto・even・odd・end-on-even・
     // end-on-odd・no-force) に無い、標準の属性に足された値なので、互換モードのときだけ読む。仕様モードでは、書かなかったものとして報告する
     else if (fpc && /^\d+$/.test(fpc.trim())) {
-      if (this.spec) this.miss(`force-page-count="${fpc.trim()}" (--compat antenna のときだけ解釈する値)`);
+      if (this.spec) this.miss(msg(`force-page-count="${fpc.trim()}" (--compat antenna のときだけ解釈する値)`, `force-page-count="${fpc.trim()}" (a value read only with --compat antenna)`));
       else seq.forcePageCount = parseInt(fpc, 10);
     }
     if (flowEl) {
@@ -1675,7 +1751,7 @@ class Importer {
     if (fsAttr) {
       // 絶対サイズのキーワード: medium を既定サイズとし、1 段ごとに 1.2 倍 (CSS2 §15.2.4 の推奨)
       const M = this.defaultFontSize;
-      const named: Record<string, number> = { 'xx-small': M / 1.728, 'x-small': M / 1.44, small: M / 1.2, medium: M, large: M * 1.2, 'x-large': M * 1.44, 'xx-large': M * 1.728 };
+      const named = { __proto__: null, 'xx-small': M / 1.728, 'x-small': M / 1.44, small: M / 1.2, medium: M, large: M * 1.2, 'x-large': M * 1.44, 'xx-large': M * 1.728 } as unknown as Record<string, number>;
       const v = named[fsAttr] ?? (fsAttr === 'larger' ? ctx.fontSize * 1.2 : fsAttr === 'smaller' ? ctx.fontSize / 1.2 : this.len(fsAttr, ctx.fontSize, ctx.fontSize));
       if (v && v > 0) {
         fs = v;
@@ -1722,7 +1798,7 @@ class Importer {
       // ultra-condensed が 0.48 倍。仮名・欧文とも)。仕様モードは CSS の比率
       const steps = this.spec ? [0.5, 0.625, 0.75, 0.875, 1, 1.125, 1.25, 1.5, 2] : [-4, -3, -2, -1, 0, 1, 2, 3, 4].map((k) => 1.2 ** k);
       const KEYS = ['ultra-condensed', 'extra-condensed', 'condensed', 'semi-condensed', 'normal', 'semi-expanded', 'expanded', 'extra-expanded', 'ultra-expanded'];
-      const named: Record<string, number> = Object.fromEntries(KEYS.map((k, i) => [k, steps[i]]));
+      const named: Record<string, number> = Object.assign(Object.create(null), Object.fromEntries(KEYS.map((k, i) => [k, steps[i]])));
       const cur = ctx.inh?.fontStretch ?? 1;
       const at = steps.findIndex((v) => v >= cur - 1e-9);
       const v = named[fsr] ?? (fsr === 'wider' ? steps[Math.min(at + 1, steps.length - 1)] : fsr === 'narrower' ? steps[Math.max(at - 1, 0)] : /%$/.test(fsr) ? parseFloat(fsr) / 100 : undefined);
@@ -1949,7 +2025,8 @@ class Importer {
     else if (fv === 'normal') smallCaps = false;
     else if (fv) this.miss(`font-variant:${fv.slice(0, 20)}`);
     // word-spacing (§7.17.8): <length> は、語の間の空白の既定の幅に足す量 (“inter-word space in addition to the default space between words”)。
-    // <space> (.minimum・.optimum・.maximum) は optimum を使う (伸び縮みの幅は、両端揃えに任せる)。normal は足さない。継承される
+    // <space> (.minimum・.optimum・.maximum) は optimum を足し、.minimum・.maximum は、両端揃えで縮める・広げる限り (仕様モード。
+    // 下の wordSpaceShrinkLimit・wordSpaceStretchLimit)。normal は足さない。継承される
     let wordSpacing = ctx.wordSpacing;
     const wsp = this.attrInh(el, 'word-spacing') ?? this.attrInh(el, 'word-spacing.optimum');
     if (wsp !== undefined) {
@@ -1960,6 +2037,7 @@ class Importer {
         wordSpacing = v;
       }
     }
+    if (this.spec) this.readWordSpacingRange(el, s, wordSpacing ?? 0, fs);
     // glyph-orientation-vertical (§7.29.3): 縦書きの字の向き。auto は全角の字を立てて、ほかの字を 90 度倒す (組版の mixed)。
     // 0deg はすべての字を立てる (upright)、90deg はすべての字を時計回りに 90 度倒す (sideways)。180・270 度は組版に受け皿が無いので、
     // 読まずに報告する。継承される
@@ -2057,7 +2135,7 @@ class Importer {
     if (v === undefined) return undefined;
     const t = v.trim();
     if (CSS2_BORDER_STYLE.test(t) || (ah && AH_BORDER_STYLE.test(t))) return t;
-    if (t && t !== 'inherit') this.miss(AH_BORDER_STYLE.test(t) ? `${attr}="${t}" (--compat antenna のときだけ解釈する値)` : `${attr}="${t.slice(0, 20)}"`);
+    if (t && t !== 'inherit') this.miss(AH_BORDER_STYLE.test(t) ? msg(`${attr}="${t}" (--compat antenna のときだけ解釈する値)`, `${attr}="${t}" (a value read only with --compat antenna)`) : `${attr}="${t.slice(0, 20)}"`);
     return undefined;
   }
 
@@ -2073,7 +2151,7 @@ class Importer {
       else if (AH_BORDER_STYLE.test(t)) {
         if (ah) o.style = t;
         else {
-          this.miss(`${attr}="… ${t} …" (--compat antenna のときだけ解釈する値)`);
+          this.miss(msg(`${attr}="… ${t} …" (--compat antenna のときだけ解釈する値)`, `${attr}="… ${t} …" (a value read only with --compat antenna)`));
           return {};
         }
       } else if (t === 'thin' || t === 'medium' || t === 'thick') o.width = this.borderKeywords[t];
@@ -2185,8 +2263,8 @@ class Importer {
     // start/end-indent は「内容領域 (border・padding の内側) の端」の、親の内容端からの位置 (継承される絶対位置)。
     // border・padding は indent の外側に付くので、margin は (indent の差分 − border − padding) になる (負にもなる)。
     // 個別に書いた margin-left などがあれば、その側の indent は margin から決まる (指定の indent は使わない)
-    const si = indents && explicitM(startSideP) === undefined ? this.len(this.attr(el, 'start-indent'), fs, ctx.width) : undefined;
-    const ei = indents && explicitM(endSideP) === undefined ? this.len(this.attr(el, 'end-indent'), fs, ctx.width) : undefined;
+    const si = indents && explicitM(startSideP) === undefined ? this.len(this.indentAttr(el, 'start-indent', inherited), fs, ctx.width) : undefined;
+    const ei = indents && explicitM(endSideP) === undefined ? this.len(this.indentAttr(el, 'end-indent', inherited), fs, ctx.width) : undefined;
     const pad = this.padding(el, ctx);
     const b = this.border(el, ctx);
     const startP = this.phys('start', ctx.wm, ctx.rtl);
@@ -2576,7 +2654,7 @@ class Importer {
       if (ext !== undefined) return ext;
       const bare = this.attr(el, `background-content-${k}`);
       if (bare !== undefined && this.spec) {
-        this.miss(`background-content-${k} (--compat antenna のときだけ読む名前。axf:background-content-${k} はどのモードでも読む)`);
+        this.miss(msg(`background-content-${k} (--compat antenna のときだけ読む名前。axf:background-content-${k} はどのモードでも読む)`, `background-content-${k} (a name read only with --compat antenna; axf:background-content-${k} is read in every mode)`));
         return undefined;
       }
       return bare;
@@ -2763,7 +2841,7 @@ class Importer {
     // (XSL 1.1 §6.6.13・§6.6.14 の Contents)。ページ番号を読むと、その前後にまた中身を付けることになり終わらないので、読まずに報告する。
     // ブロックの要素は、行内の領域の中に置けないので、同じく読まずに報告する
     if (this.inFolio && /^(page-number|page-number-citation|page-number-citation-last|block|block-container|table|table-and-caption|list-block|float|footnote|marker|retrieve-marker)$/.test(tag)) {
-      this.missElement(n, `fo:${tag} (${this.inFolio} の中)`);
+      this.missElement(n, msg(`fo:${tag} (${this.inFolio} の中)`, `fo:${tag} (in ${this.inFolio})`));
       return [];
     }
     // relative-position="relative" (§7.13.5): 組版が受けられるのは横書きの fo:block だけ (組んだ箱をずらす)。ほかの要素では読まずに報告する
@@ -2796,7 +2874,7 @@ class Importer {
         if (clr) blk.clear = clr;
         // relative-position (§7.13.5): 組んだ箱をずらす。縦書きの箱と、負の z-index (背面に置く) は、組版に受け皿が無いので報告する
         const rel = this.relativeOffsetOf(n, c2);
-        if (rel && ctx.wm !== 'horizontal-tb') this.miss('relative-position (縦書き)');
+        if (rel && ctx.wm !== 'horizontal-tb') this.miss(msg('relative-position (縦書き)', 'relative-position (vertical writing)'));
         else if (rel) {
           if (rel.x || rel.y) blk.relativeOffset = rel;
           if (this.zIndexOf(n) < 0) this.miss('z-index (relative-position)');
@@ -2817,9 +2895,9 @@ class Importer {
         // axf:outline-level: しおりの項目にする (飛び先の id が無ければ付ける)
         const ol = parseInt(this.attr(n, 'axf:outline-level') ?? '', 10);
         // fo:static-content の中のしおりは作らない (未対応として報告する)。static-content はページのマスターごとに読み直し、
-        // 中の id はページに記録しないので、作るとしおりが重なり、どれも飛び先の無いしおりになる (FO-21)。全ページに出る内容の
+        // 中の id はページに記録しないので、作るとしおりが重なり、どれも飛び先の無いしおりになる。全ページに出る内容の
         // どのページを指すかは、XSL-FO の仕様にもアンテナハウスの公開の説明にも見当たらない
-        if (Number.isFinite(ol) && ol > 0 && ctx.inStatic) this.miss('axf:outline-level (fo:static-content の中)');
+        if (Number.isFinite(ol) && ol > 0 && ctx.inStatic) this.miss(msg('axf:outline-level (fo:static-content の中)', 'axf:outline-level (in fo:static-content)'));
         else if (Number.isFinite(ol) && ol > 0) {
           blk.id ??= `kumiori-outline-${++this.outlineSeq}`;
           const title = this.attr(n, 'axf:outline-title') ?? (n.textContent ?? '').replace(/\s+/g, ' ').trim();
@@ -2860,7 +2938,7 @@ class Importer {
         const ip = this.padding(n, c2);
         if (ib) inl.border = ib;
         if (ip) inl.padding = ip;
-        // 背景の色は padding の矩形までに塗る (XSL 1.1 §4.9.4。ブロックの背景と同じく、罫線の下が見える箱だけ。OUT-22)
+        // 背景の色は padding の矩形までに塗る (XSL 1.1 §4.9.4。ブロックの背景と同じく、罫線の下が見える箱だけ)
         this.clipBackground(inl);
         // 角丸 (axf:border-radius="水平半径 垂直半径"。ブロックと同じ書き方)
         const ir = this.borderRadiusAttr(n)?.split(/\s+/).map((v) => this.len(v, c2.fontSize));
@@ -2909,7 +2987,7 @@ class Importer {
         // 領域を作らない (“does not generate any area”) ので、id の位置を記録するだけの、幅の無い目印にする
         const id = this.attr(n, 'id');
         if (!id || !n.hasAttribute?.('index-key')) {
-          this.miss('fo:index-range-begin (id と index-key が要る)');
+          this.miss(msg('fo:index-range-begin (id と index-key が要る)', 'fo:index-range-begin (id and index-key are required)'));
           return [];
         }
         const e = this.indexEntryOf(n, this.attr(n, 'index-key') ?? '', id);
@@ -2996,7 +3074,7 @@ class Importer {
         // fo:marker の中の fo:marker: fo:marker は fo:flow の子孫で、fo:marker の子孫であってはならない (XSL 1.1 §6.13.5 の Constraints)。
         // 読むと、外の marker を取り出すたびに中の marker が増えるので、読まずに読み込みの報告に数える
         if (this.inMarker) {
-          this.missElement(n, 'fo:marker (fo:marker の中)');
+          this.missElement(n, msg('fo:marker (fo:marker の中)', 'fo:marker (in fo:marker)'));
           return [];
         }
         return one(this.marker(n, ctx), true);
@@ -3006,7 +3084,7 @@ class Importer {
         // fo:marker は fo:flow の子孫に限られる (§6.13.5) ので、fo:marker の中には置けない。読むと、取り出した中身がまた marker を
         // 取り出すことになり終わらないので、読まずに読み込みの報告に数える
         if (this.inMarker) {
-          this.missElement(n, 'fo:retrieve-marker (fo:marker の中)');
+          this.missElement(n, msg('fo:retrieve-marker (fo:marker の中)', 'fo:retrieve-marker (in fo:marker)'));
           return [];
         }
         const pos = this.attr(n, 'retrieve-position') ?? 'first-starting-within-page';
@@ -3020,7 +3098,7 @@ class Importer {
       case 'initial-property-set':
         // fo:block の子は、ブロックを読む所で最初の行の書式にする (firstLineOf)。ほかの所には置けない (§6.6.4: fo:block の最初の行の書式)
         if (this.parents.get(n) && this.isFo(this.parents.get(n)!) && this.name(this.parents.get(n)!) === 'block') return [];
-        this.missElement(n, 'fo:initial-property-set (fo:block の子でない)');
+        this.missElement(n, msg('fo:initial-property-set (fo:block の子でない)', 'fo:initial-property-set (not a child of fo:block)'));
         return [];
       case 'change-bar-begin':
       case 'change-bar-end':
@@ -3029,7 +3107,7 @@ class Importer {
       case 'retrieve-table-marker': {
         // fo:retrieve-table-marker は fo:table-header・fo:table-footer の子孫に限る (XSL 1.1 §6.13.7 の Constraints)。fo:marker の中にも置けない (§6.13.5)
         if (this.inMarker || !this.inTableHF) {
-          this.miss(this.inMarker ? 'fo:retrieve-table-marker (fo:marker の中)' : 'fo:retrieve-table-marker (fo:table-header・fo:table-footer の外)');
+          this.miss(this.inMarker ? msg('fo:retrieve-table-marker (fo:marker の中)', 'fo:retrieve-table-marker (in fo:marker)') : msg('fo:retrieve-table-marker (fo:table-header・fo:table-footer の外)', 'fo:retrieve-table-marker (outside fo:table-header and fo:table-footer)'));
           return [];
         }
         const pos = this.attr(n, 'retrieve-position-within-table') ?? 'first-starting';
@@ -3087,7 +3165,7 @@ class Importer {
       },
     });
     // 1 つの数式で描く字の数の上限 (mathLayout.ts の MAX_MATH_GLYPHS) を超えて、超えた分の字を描かなかったときは、報告する
-    if (r.truncated) this.miss('数式の字の数が上限を超えたので、超えた分の字を描きません');
+    if (r.truncated) this.miss(msg('数式の字の数が上限を超えたので、超えた分の字を描きません', 'the number of characters in the formula exceeds the limit; the excess characters are not drawn'));
     const src = `data:image/svg+xml;base64,${utf8Base64(r.svg)}`;
     this.addImage(src);
     const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -3207,7 +3285,8 @@ class Importer {
   columnRule(el: XEl, fs: number): BorderSide | undefined {
     const crs = this.attr(el, 'axf:column-rule-style');
     if (!crs || crs === 'none' || crs === 'hidden') return undefined;
-    const named: Record<string, number> = this.borderKeywords;
+    // 入力の値 (axf:column-rule-width="constructor" など) で引くので、原型を持たない表に写す
+    const named: Record<string, number> = Object.assign(Object.create(null), this.borderKeywords);
     const crw = this.attr(el, 'axf:column-rule-width');
     return {
       width: (crw ? named[crw] : undefined) ?? this.len(crw, fs) ?? named.medium,
@@ -3322,7 +3401,7 @@ class Importer {
           const files = (this.report.files ??= []);
           if (!files.includes(fa)) files.push(fa);
         }
-      } else this.miss('axf:annotation-type="FileAttachment" (添付するファイルが無いので、テキスト注釈にする)');
+      } else this.miss(msg('axf:annotation-type="FileAttachment" (添付するファイルが無いので、テキスト注釈にする)', 'axf:annotation-type="FileAttachment" (no file to attach; a text annotation is written instead)'));
     }
     const contents = this.attr(n, 'axf:annotation-contents');
     if (contents) an.contents = contents;
@@ -3430,7 +3509,7 @@ class Importer {
         this.addImage(src);
       } else {
         src = `instream-foreign-object:${++this.instream}`;
-        this.miss(`fo:instream-foreign-object (${this.els(n).map((e) => this.name(e)).join(', ') || '空'})`);
+        this.miss(msg(`fo:instream-foreign-object (${this.els(n).map((e) => this.name(e)).join(', ') || '空'})`, `fo:instream-foreign-object (${this.els(n).map((e) => this.name(e)).join(', ') || 'empty'})`));
       }
     }
     // 画像本来の大きさは、画像に書かれた解像度 (PNG の pHYs・JPEG の JFIF・BMP・TIFF) で決める。書かれていなければ 96dpi
@@ -3543,7 +3622,7 @@ class Importer {
     if (la === 'reference-area' || la === 'page') {
       if (l.pattern !== 'dots') {
         /* 線・空白には効かない */
-      } else if (ctx.rtl) this.miss(`leader-alignment="${la}" (右から左の行)`);
+      } else if (ctx.rtl) this.miss(msg(`leader-alignment="${la}" (右から左の行)`, `leader-alignment="${la}" (right-to-left line)`));
       else l.alignment = la;
     } else if (la !== undefined && la !== 'none') this.miss(`leader-alignment="${la}"`);
     return l;
@@ -3584,12 +3663,14 @@ class Importer {
       const endP = this.phys('end', ctx.wm, ctx.rtl);
       const edge = (side: 'top' | 'right' | 'bottom' | 'left') =>
         ((box.padding as Record<string, number> | undefined)?.[side] ?? 0) + ((box.border as Record<string, { width: number } | undefined> | undefined)?.[side]?.width ?? 0);
-      const ownStart = this.len(this.attr(n, 'start-indent'), c2.fontSize, ctx.width);
-      const ownEnd = this.len(this.attr(n, 'end-indent'), c2.fontSize, ctx.width);
+      const ownStart = this.len(this.indentAttr(n, 'start-indent', ctx), c2.fontSize, ctx.width);
+      const ownEnd = this.len(this.indentAttr(n, 'end-indent', ctx), c2.fontSize, ctx.width);
       const ml = this.len(this.attr(n, `margin-${startP}`), c2.fontSize, ctx.width);
       const mr = this.len(this.attr(n, `margin-${endP}`), c2.fontSize, ctx.width);
-      const si = ownStart ?? (ml !== undefined ? ml + edge(startP) : ctx.startIndent);
-      const ei = ownEnd ?? (mr !== undefined ? mr + edge(endP) : ctx.endIndent);
+      // margin を書いたときの start-indent・end-indent は、受け継いだ値 + margin + padding + border の幅 (§5.3.2 の式)。
+      // 受け継いだ値は親の計算値 (ctx。いまの参照領域の端からの字下げ)。前は受け継いだ値を足していなかった
+      const si = ownStart ?? (ml !== undefined ? ctx.startIndent + ml + edge(startP) : ctx.startIndent);
+      const ei = ownEnd ?? (mr !== undefined ? ctx.endIndent + mr + edge(endP) : ctx.endIndent);
       const inner = this.children(n, { ...c2, startIndent: si, endIndent: ei, width: innerW, cbW: innerW, cbH: box.height });
       kids = si || ei ? [{ type: 'block', margin: { [startP]: si, [endP]: ei }, children: inner }] : inner;
     } else {
@@ -3623,7 +3704,7 @@ class Importer {
       // z-index (§7.30.18): 親の値に足した値 (§5.4.5) が負の箱は、本文の背面に置く (HTML の負の z-index と同じ受け皿)。
       // 0 以上の値どうしの重なりの順は、文書の順のまま。コンテナの中の絶対配置の箱は、背面に置けないので報告する
       if (this.zIndexOf(n) < 0) {
-        if (c.positionInContainer) this.miss('z-index (コンテナの中の絶対配置)');
+        if (c.positionInContainer) this.miss(msg('z-index (コンテナの中の絶対配置)', 'z-index (absolute positioning in a container)'));
         else c.layer = 'behind';
       }
       const fs = c2.fontSize;
@@ -3912,8 +3993,17 @@ class Importer {
 
   private tableInner(n: XEl, ctx: Ctx): LTable {
     this.report.counts.tables++;
-    const { style, ctx: c2 } = this.textStyle(n, ctx);
-    const box = this.boxStyle(n, c2, ctx);
+    const { style, ctx: c2a } = this.textStyle(n, ctx);
+    const box = this.boxStyle(n, c2a, ctx);
+    // 仕様モード: 表の start-indent・end-indent の計算値 (§5.3.2: 受け継いだ値 + margin + border + padding、または指定の値) を、
+    // 行グループ・行・セルを通して、セルの中のブロックへ受け継ぐ (§7.11.7・§7.11.8 は継承される性質。XSL 1.1 では fo:table は
+    // 参照領域ではないので、外の字下げも受け継ぐ)。互換モードは従来どおり (セルの中は、セルの内容の端を 0 にして組む)
+    let c2 = c2a;
+    if (this.spec) {
+      const edge = (side: 'top' | 'right' | 'bottom' | 'left') =>
+        ((box.margin as Record<string, number> | undefined)?.[side] ?? 0) + ((box.padding as Record<string, number> | undefined)?.[side] ?? 0) + ((box.border as Record<string, { width: number } | undefined> | undefined)?.[side]?.width ?? 0);
+      c2 = { ...c2a, startIndent: ctx.startIndent + edge(this.phys('start', ctx.wm, ctx.rtl)), endIndent: ctx.endIndent + edge(this.phys('end', ctx.wm, ctx.rtl)) };
+    }
     // 表の幅: 指定が無ければ、親の内容の幅から inline 方向の余白 (start-indent・end-indent から決まる) を引いた幅
     const mg = box.margin as Record<string, number | undefined> | undefined;
     const sideMargins = c2.wm === 'horizontal-tb' ? (mg?.left ?? 0) + (mg?.right ?? 0) : (mg?.top ?? 0) + (mg?.bottom ?? 0);
@@ -3985,7 +4075,8 @@ class Importer {
       let out: LTableRow[];
       const gAlign = this.attr(e, 'display-align') ?? tAlign;
       // table-header / body / footer の字の指定 (font-size など) は、その中の行・セルへ引き継ぐ
-      const { style: gs, ctx: gc } = this.textStyle(e, c2);
+      const { style: gs, ctx: gc0 } = this.textStyle(e, c2);
+      const gc = this.tablePartIndents(e, gc0);
       if (this.grid) this.grid.busy = [];
       if (rows.length) out = rows.map((r) => this.row(r, gc, tw, gAlign));
       else {
@@ -4034,7 +4125,7 @@ class Importer {
       }
     };
     // fo:table の子の fo:retrieve-table-marker (取り出した fo:marker の中身が fo:table-header・fo:table-footer そのものになる書き方。§6.13.7) は未対応
-    if (els.some((e) => this.name(e) === 'retrieve-table-marker')) this.miss('fo:retrieve-table-marker (fo:table の子)');
+    if (els.some((e) => this.name(e) === 'retrieve-table-marker')) this.miss(msg('fo:retrieve-table-marker (fo:table の子)', 'fo:retrieve-table-marker (child of fo:table)'));
     if (headerEl) tbl.header = { type: 'table-body', rows: hfRows(headerEl) };
     for (const b of bodies) {
       // 本体の子の fo:marker (§6.7.8 の Contents): 本体の領域に付く。行に持たせて、表の header・footer から取り出せるようにする
@@ -4043,7 +4134,7 @@ class Importer {
       const rows = rowsOf(b);
       const mkEls = this.els(b).filter((x) => this.name(x) === 'marker');
       // fo:marker の中の表の fo:marker は読まない (flowChild の marker の所と同じ)
-      if (mkEls.length && this.inMarker) this.miss('fo:marker (fo:marker の中)');
+      if (mkEls.length && this.inMarker) this.miss(msg('fo:marker (fo:marker の中)', 'fo:marker (in fo:marker)'));
       const markers = this.inMarker ? [] : mkEls.map((x) => this.marker(x, c2));
       this.inTableHF = saved;
       if (markers.length) rows.forEach((r, k) => (r.bodyMarkers = { markers, first: k === 0, last: k === rows.length - 1 }));
@@ -4062,7 +4153,8 @@ class Importer {
   /** fo:table-row を読む: セル・行の背景 (セルに背景が無ければ引き継ぐ)・行の罫線・行の高さ */
   private row(r: XEl, ctx: Ctx, tw: number | undefined, inheritedAlign?: string): LTableRow {
     const rAlign = this.attr(r, 'display-align') ?? inheritedAlign;
-    const { style, ctx: c2 } = this.textStyle(r, ctx);
+    const { style, ctx: c2t } = this.textStyle(r, ctx);
+    const c2 = this.tablePartIndents(r, c2t);
     const bg = c2.hidden ? undefined : this.color(this.attr(r, 'background-color'));
     this.gridRowStart();
     const cells = this.els(r)
@@ -4147,7 +4239,8 @@ class Importer {
   }
 
   private cell(c: XEl, ctx: Ctx, tw: number | undefined, inheritedAlign?: string): LTableCell {
-    const { style, ctx: c2 } = this.textStyle(c, ctx);
+    const { style, ctx: c2t } = this.textStyle(c, ctx);
+    const c2 = this.tablePartIndents(c, c2t);
     const box = this.boxStyle(c, c2, ctx);
     const colNum = this.colInt(this.attr(c, 'column-number'), 'column-number');
     // 空・数でない値は初期値の 1 (§7.28.13・§7.28.14。NaN のままにすると、後ろのセルの列が決まらない)
@@ -4156,8 +4249,18 @@ class Importer {
     // セルは参照領域なので、中の百分率はセルの内容の幅に対する値。列の幅が決まらなければ、表の幅で代える
     const cellW = this.gridPlace(colNum, Math.max(cs, 1), Math.max(rs, 1), box, c2.wm);
     // セルは参照領域 (§6.7.10) なので、中で明示した start-indent・end-indent は、セルの内容の端から測る (§7.11.7・§7.11.8)。
-    // 外の字下げを引かない (引くと、外の字下げの分だけセルの外へはみ出す)。指定の無いブロックは従来どおりセルの端に置く
-    const cell: LTableCell = { type: 'table-cell', ...this.idOf(c), ...style, children: this.children(c, { ...c2, startIndent: 0, endIndent: 0, width: cellW ?? tw, cbW: undefined, cbH: undefined }) };
+    // 外の字下げを引かない (引くと、外の字下げの分だけセルの外へはみ出す)。
+    // 仕様モード: 指定の無いブロックも、セルの start-indent・end-indent の値 (表から受け継いだ値か、表の中の要素に書いた値) を受け継ぐ
+    // (§5.3.2・§7.11.7) ので、セルの内容の端からその分だけ下げる (block-container の中と同じ形。S-07)。
+    // 互換モードは従来どおり、指定の無いブロックをセルの端に置く
+    const [si, ei] = this.spec ? [c2.startIndent, c2.endIndent] : [0, 0];
+    const cw0 = cellW ?? tw;
+    const innerW = si || ei ? (cw0 !== undefined ? Math.max(cw0 - si - ei, 0) : undefined) : cw0;
+    const inner = this.children(c, { ...c2, startIndent: si, endIndent: ei, width: innerW, cbW: undefined, cbH: undefined });
+    const sP = this.phys('start', c2.wm, c2.rtl);
+    const eP = this.phys('end', c2.wm, c2.rtl);
+    const cellKids: Array<LBlockLevel | LInlineLevel> = si || ei ? [{ type: 'block', margin: { [sP]: si, [eP]: ei }, children: inner }] : inner;
+    const cell: LTableCell = { type: 'table-cell', ...this.idOf(c), ...style, children: cellKids as LTableCell['children'] };
     if (box.padding) cell.padding = box.padding;
     // empty-cells="hide" (継承される。罫線を分ける表で): 中身の無いセルは、罫線と背景を描かない (§7.28.10・CSS2 §17.6.1.1)
     const ec = this.attr(c, 'empty-cells') ?? this.emptyCells;
@@ -4179,6 +4282,18 @@ class Importer {
     if (cs > 1) cell.colSpan = cs;
     if (rs > 1) cell.rowSpan = rs;
     return cell;
+  }
+
+  /**
+   * 仕様モード: 表の中の要素 (行グループ・行・セル) に書いた start-indent・end-indent を、下へ受け継ぐ値にする
+   * (§5.3.2・§7.11.7・§7.11.8: 継承される性質。書いていなければ外の値のまま)。値は、セルの内容の端から測る長さ (セルは参照領域)。
+   * 互換モードでは読まない (従来どおり)
+   */
+  private tablePartIndents(el: XEl, ctx: Ctx): Ctx {
+    if (!this.spec) return ctx;
+    const si = this.len(this.indentAttr(el, 'start-indent', ctx), ctx.fontSize, ctx.width);
+    const ei = this.len(this.indentAttr(el, 'end-indent', ctx), ctx.fontSize, ctx.width);
+    return si === undefined && ei === undefined ? ctx : { ...ctx, ...(si !== undefined ? { startIndent: si } : {}), ...(ei !== undefined ? { endIndent: ei } : {}) };
   }
 
   /**
@@ -4245,13 +4360,6 @@ class Importer {
       // 本体の start-indent="body-start()" は、いつもその位置に置くので読んだことにする (ほかの値は、最初の項目の本体のものだけを読む)
       if (body && /^\s*body-start\(\s*\)\s*$/.test(body.getAttribute?.('start-indent') ?? '')) this.markAsked(body, 'start-indent');
       const itemBox = this.boxStyle(it, c3, c2);
-      // ラベル・本体自身の書式 (継承される性質) と id も、セルに載せる
-      const mk = (e: XEl | undefined, extra: Partial<LTableCell> = {}): LTableCell => {
-        if (!e) return { type: 'table-cell', ...extra, children: [] };
-        const { style: es, ctx: ec } = this.textStyle(e, c3);
-        return { type: 'table-cell', ...this.idOf(e), ...es, ...extra, children: this.children(e, ec) };
-      };
-      const labelCell = mk(label, { textAlign: 'start' });
       const endSide = this.phys('end', c3.wm, c3.rtl);
       const startSide = this.phys('start', c3.wm, c3.rtl);
       // ラベルの start-indent は、ラベルの列の中の字下げ。本体の end-indent は、本体の列の終端からの字下げ
@@ -4262,21 +4370,48 @@ class Importer {
       // (§7.30.11。本体の実際の start-indent ではない)。互換モードは、ラベルの start-indent でずらした本体の始端から測る
       const labelEnd = label ? [label, ...this.els(label)].some((e) => /label-end\(\)/.test(this.attr(e, 'end-indent') ?? '')) : false;
       const labelEndGap = this.spec || !(labelStart0 !== undefined && !(bsi && !/\(/.test(bsi))) ? dist - (pdbs - sepL) : sepL;
-      if (labelEnd && labelEndGap > 0) labelCell.padding = { [endSide]: Math.min(labelEndGap, dist) };
-      if (labelStart !== undefined) labelCell.padding = { ...(labelCell.padding as object), [startSide]: Math.min(labelStart, dist) };
-      const bodyCell = mk(body);
-      if (bodyEnd !== undefined) bodyCell.padding = { [endSide]: bodyEnd };
+      const labelStartPad = labelStart !== undefined ? Math.min(labelStart, dist) : 0;
+      let labelEndPad = labelEnd && labelEndGap > 0 ? Math.min(labelEndGap, dist) : 0;
+      // label-end() の位置が、ラベルの start-indent の位置より手前になる (ラベルの幅が 0 以下になる) とき: 幅 0 のラベルでは字が
+      // 1 字ずつ縦に割れるので、ラベルの終端を、本体の始端から provisional-label-separation だけ手前 (§7.30.12 の間隔) にする。
+      // 例: 入れ子のリストのラベルの start-indent を、外の本体の始端から測ったとき (互換モードの読み方)。仕様 (§7.30.11) の
+      // label-end() どおりでは組めない形 (内容の幅が負) なので、どちらのモードでも同じにする。AH Formatter がどう組むかは確かめていない
+      // (自作の見本 samples/check/fo/indent-inheritance-1.fo のケース 7)
+      if (labelEndPad > 0 && labelStartPad + labelEndPad >= dist) labelEndPad = Math.max(Math.min(sepL, dist - labelStartPad), 0);
       // 2 つ目からの本体に長さで書いた start-indent (§7.11.7: 本体の始端の、参照領域の始端からの距離)。本体の列の始端 (dist) と同じなら
       // そのまま、それより大きければ、差をセルの始端の余白にする。小さい値 (列の始端より手前) は置けないので、読まずに報告に出る
       const bsiRaw = body && body !== firstBody ? (body.getAttribute?.('start-indent') ?? '') : '';
+      let bodyOver = 0;
       if (body && bsiRaw && !/\(/.test(bsiRaw)) {
         const x = this.len(bsiRaw, this.textStyle(body, c3).ctx.fontSize, ctx.width);
         const over = x === undefined ? NaN : x - listStart - dist;
         if (over > -0.005) {
           this.markAsked(body, 'start-indent');
-          if (over > 0.005) bodyCell.padding = { ...(bodyCell.padding as object), [startSide]: over };
+          if (over > 0.005) bodyOver = over;
         }
       }
+      // 仕様モード: ラベル・本体は参照領域ではない (§6.8.4・§6.8.5) ので、中のブロックの start-indent・end-indent は、リストと同じ
+      // 参照領域の端から測る値。中の Ctx の字下げを、ラベル・本体の内容の端の位置 (ラベル・本体の start-indent・end-indent の値) にする。
+      // 互換モードは従来どおり、リストの外の字下げのまま (中で長さで書いた字下げは、ラベル・本体の端から測ることになる)
+      const listW = ctx.width !== undefined ? ctx.width - edgeOfBox(sP) - edgeOfBox(eP) : undefined;
+      const indentsOf = (which: 'label' | 'body'): Partial<Ctx> =>
+        !this.spec
+          ? {}
+          : which === 'body'
+            ? { startIndent: listStart + dist + bodyOver, endIndent: listEnd + (bodyEnd ?? 0) }
+            : { startIndent: listStart + labelStartPad, ...(listW !== undefined ? { endIndent: listEnd + Math.max(listW - dist + labelEndPad, 0) } : {}) };
+      // ラベル・本体自身の書式 (継承される性質) と id も、セルに載せる
+      const mk = (e: XEl | undefined, which: 'label' | 'body', extra: Partial<LTableCell> = {}): LTableCell => {
+        if (!e) return { type: 'table-cell', ...extra, children: [] };
+        const { style: es, ctx: ec } = this.textStyle(e, c3);
+        return { type: 'table-cell', ...this.idOf(e), ...es, ...extra, children: this.children(e, { ...ec, ...indentsOf(which) }) };
+      };
+      const labelCell = mk(label, 'label', { textAlign: 'start' });
+      if (labelEndPad > 0) labelCell.padding = { [endSide]: labelEndPad };
+      if (labelStart !== undefined) labelCell.padding = { ...(labelCell.padding as object), [startSide]: labelStartPad };
+      const bodyCell = mk(body, 'body');
+      if (bodyEnd !== undefined) bodyCell.padding = { [endSide]: bodyEnd };
+      if (bodyOver > 0) bodyCell.padding = { ...(bodyCell.padding as object), [startSide]: bodyOver };
       // relative-align="baseline" の項目 (§7.14.6): ラベルと本体の 1 行目の基線をそろえる
       if (c3.relAlign === 'baseline') labelCell.blockAlign = bodyCell.blockAlign = 'baseline';
       const row: LTableRow = { type: 'table-row', ...this.idOf(it), ...s2, cells: [labelCell, bodyCell] };

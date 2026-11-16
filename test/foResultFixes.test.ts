@@ -100,11 +100,16 @@ describe('FO-05: 表のセルの中の start-indent・end-indent (セルは参�
   const table = (cell: string, outer = 'start-indent="20pt" end-indent="12pt"') =>
     fo(`<fo:block ${outer}><fo:table table-layout="fixed" width="150pt" start-indent="20pt" end-indent="0pt"><fo:table-column column-width="150pt"/><fo:table-body><fo:table-row><fo:table-cell>${cell}</fo:table-cell></fo:table-row></fo:table-body></fo:table></fo:block>`);
   const cellBlock = (xml: string, compat: Compat) => ((first<LBlock>(xml, compat).children[0] as LTable).body.rows[0].cells[0].children[0] as LBlock);
+  /** セルの中のブロックの、セルの内容の端からの位置 (仕様モードで、受け継いだ字下げを付ける無名のブロックがあれば、その margin も足す。FO-19) */
+  const cellOffset = (xml: string, compat: Compat) => {
+    const outer = cellBlock(xml, compat);
+    const wrapped = compat === 'spec';
+    const b = wrapped ? (outer.children[0] as LBlock) : outer;
+    const m = (x: LBlock, k: 'left' | 'right') => ((x.margin as Record<string, number> | undefined)?.[k] ?? 0);
+    return { left: m(b, 'left') + (wrapped ? m(outer, 'left') : 0), right: m(b, 'right') + (wrapped ? m(outer, 'right') : 0) };
+  };
   it('セルの中で明示した start-indent・end-indent は、セルの内容の端から測る (外の字下げを引かない)', () => {
-    for (const compat of BOTH) {
-      const b = cellBlock(table('<fo:block start-indent="5pt" end-indent="3pt">あ</fo:block>'), compat);
-      expect(b.margin).toEqual({ left: 5, right: 3 });
-    }
+    for (const compat of BOTH) expect(cellOffset(table('<fo:block start-indent="5pt" end-indent="3pt">あ</fo:block>'), compat)).toEqual({ left: 5, right: 3 });
   });
   it('組んだ結果: セルの中の字は、セルの端から start-indent だけ内側 (外へはみ出さない)', () => {
     const x = (cell: string) => {
@@ -121,7 +126,8 @@ describe('FO-05: 表のセルの中の start-indent・end-indent (セルは参�
     expect(x('<fo:block start-indent="5pt">あ</fo:block>') - x('<fo:block start-indent="0pt">あ</fo:block>')).toBeCloseTo(5, 3);
   });
   it('セルの中の入れ子のブロックは、明示した値からの差で下がる', () => {
-    const b = cellBlock(table('<fo:block start-indent="5pt"><fo:block start-indent="8pt">あ</fo:block></fo:block>'), 'spec');
+    // 仕様モードでは、セルの中は表の字下げ (20pt) を受け継いだ無名のブロックで包まれる (FO-19)
+    const b = cellBlock(table('<fo:block start-indent="5pt"><fo:block start-indent="8pt">あ</fo:block></fo:block>'), 'spec').children[0] as LBlock;
     expect((b.children[0] as LBlock).margin).toEqual({ left: 3 });
   });
 });
