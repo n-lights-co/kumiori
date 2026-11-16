@@ -155,8 +155,8 @@ export function parseIndividualTransform(prop: 'translate' | 'rotate' | 'scale',
 export function parseTransformOrigin(value: string): [TransformLength, TransformLength] | undefined {
   const t = value.trim().toLowerCase().split(/\s+/).filter(Boolean).slice(0, 2);
   if (!t.length) return undefined;
-  const kwX: Record<string, TransformLength> = { left: '0%', center: '50%', right: '100%' };
-  const kwY: Record<string, TransformLength> = { top: '0%', center: '50%', bottom: '100%' };
+  const kwX = { __proto__: null, left: '0%', center: '50%', right: '100%' } as unknown as Record<string, TransformLength>;
+  const kwY = { __proto__: null, top: '0%', center: '50%', bottom: '100%' } as unknown as Record<string, TransformLength>;
   let x: TransformLength | undefined;
   let y: TransformLength | undefined;
   if (t.length === 1) {

@@ -83,8 +83,10 @@ describe('SVG: 細工した入力 (IMG-01・IMG-03・IMG-08)', () => {
     // 終わりの無い注釈・; の無い @import は残るので、規則の一部として読まれる (選択子として扱えなければ誤り)
     expect(() => parseCss('@import url(a.css) g{fill:blue}')).toThrow('css selector');
     expect(() => parseCss('g{fill:blue} /* 終わらない')).toThrow('css');
-    // 入れ子 (@media)・選択子の無い { }・閉じない { }・余った } は扱えない
-    for (const bad of ['@media print { g { fill: red } }', '{fill:red}', 'g{fill:red', 'g{fill:red}}', 'g{fill:red}{}', 'g']) expect(() => parseCss(bad), bad).toThrow('css');
+    // @media は照らして、合うものの中の規則を読む (svgFeatures.test.ts)。選択子の無い { }・閉じない { }・余った } は扱えない
+    expect(parseCss('@media print { g { fill: red } }').map(rule)).toEqual([['g', undefined, [], { fill: 'red' }]]);
+    expect(() => parseCss(`${'@media all{'.repeat(100)}g{fill:red}${'}'.repeat(100)}`)).toThrow('css');
+    for (const bad of ['{fill:red}', 'g{fill:red', 'g{fill:red}}', 'g{fill:red}{}', 'g']) expect(() => parseCss(bad), bad).toThrow('css');
     expect(parseCss('  \n ')).toEqual([]);
     expect(parseCss('g{}').map(rule)).toEqual([['g', undefined, [], {}]]);
   });

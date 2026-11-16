@@ -9,8 +9,8 @@
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const XLINK_NS = 'http://www.w3.org/1999/xlink';
 
-/** 要素名 (小文字) → SVG の要素名 */
-const SVG_TAG_CASE: Record<string, string> = Object.fromEntries(
+/** 要素名 (小文字) → SVG の要素名。入力の要素名で引くので、原型を持たない表にする (<constructor> の要素名が関数の文字列になっていた) */
+const SVG_TAG_CASE: Record<string, string> = Object.assign(Object.create(null), Object.fromEntries(
   [
     'altGlyph',
     'altGlyphDef',
@@ -50,7 +50,7 @@ const SVG_TAG_CASE: Record<string, string> = Object.fromEntries(
     'radialGradient',
     'textPath',
   ].map((n) => [n.toLowerCase(), n]),
-);
+));
 
 const escText = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');

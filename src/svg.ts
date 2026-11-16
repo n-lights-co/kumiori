@@ -5,18 +5,24 @@
  *       fill・stroke・stroke-width・opacity・fill-opacity・stroke-opacity・fill-rule・stroke-linecap/linejoin/dasharray/dashoffset/miterlimit・
  *       transform・style 属性・display:none (サブツリーごと無視)・viewBox
  *       線形・円形グラデーション (塗り・線。gradientUnits・gradientTransform・href の継承・spreadMethod・fr)・clipPath (userSpaceOnUse)・use / symbol・
- *       pattern (中身は単色)・mask (ソフトマスク)・text (字形の輪郭。letter-spacing・textLength・lengthAdjust・text-decoration)・textPath・marker・
+ *       pattern・mask (ソフトマスク)・text (字形の輪郭。letter-spacing・textLength・lengthAdjust・text-decoration)・textPath・marker・
  *       style 要素 (単純な選択子)・入れ子の svg・switch
  *       Kumiori の拡張 (CGM の字のため): data-max-length・data-fit・data-kendot (text)、data-rotate・data-extend (textPath)
- *       image (href が data: の PNG・JPEG で、preserveAspectRatio が none のもの)
- *       mix-blend-mode (multiply・screen・difference。図形・画像の要素のもの。PDF の BM。g のもの・ほかの値は無視して描く)
+ *       image (PNG・JPEG。href が data: か、呼ぶ側の引く外のファイル。preserveAspectRatio の meet・slice・none)
+ *       mix-blend-mode (normal のほかの 15 通り。図形・画像の要素のもの。PDF の BM。g などの子を持つ要素のものは無視して描く)
  * 非対応 (null を返す = 呼び出し側でラスタライズに切り替える。Node では仮の枠):
- *   filter (Node では影とぼかしを近似)・それ以外の image・扱えない CSS 選択子
+ *   filter (Node では影とぼかしなどを近似)・PNG・JPEG でない data: の画像・読めない CSS 選択子 (引けない外のファイルの image は描かない)
  *
  * 変換は座標に焼き込む (transform を適用済みの 点列) ので、描画側は cm のネストを持たなくてよい。
  */
+import { fromBase64 } from './base64';
 import { parseColor } from './color';
+import { createSelectorMemo, matches, parseSelectorList, type Selector, type SelectorMemo } from './cssSelector';
+import { decodeBmp, decodeGif, encodePngStored } from './pixels';
+import { decodeWebp } from './webp';
+import { lineBreakActions } from './lineBreak';
 import { IDENTITY as ID, invert, mul, transformSegs, type Matrix, type Seg } from './matrix';
+import { defaultSubregion, subregionAttrs, subregionRefs } from './svgFilterSubregion';
 
 export type { Seg } from './matrix';
 
@@ -50,6 +56,8 @@ export interface SvgClip {
 /** マスク (mask)。中身の図形 (ルートの座標) を描いた輝度で、図形を隠す */
 export interface SvgMask {
   shapes: SvgShape[];
+  /** mask-type: alpha (中身の不透明度で隠す。CSS Masking 1 §9.2。既定の luminance は輝度で隠す) */
+  alpha?: boolean;
 }
 
 /** 模様 (pattern)。PDF のタイリングパターンになる */
@@ -59,7 +67,7 @@ export interface SvgPattern {
   height: number;
   /** タイルの座標 → SVG のルートの座標 */
   matrix: [number, number, number, number, number, number];
-  /** タイルの中身 (タイルの座標。単色の塗り・線だけ) */
+  /** タイルの中身 (タイルの座標) */
   shapes: SvgShape[];
 }
 
@@ -98,18 +106,127 @@ export interface SvgShape {
   fillOpacity: number;
   strokeOpacity: number;
   /**
-   * 画像 (image 要素。href が data: の PNG・JPEG で、preserveAspectRatio が none のもの)。
+   * 画像 (image 要素の PNG・JPEG)。
    * matrix は、PDF の画像の単位正方形 (左下が原点、上の辺が画像の 1 行目) → SVG のルートの座標
    */
-  image?: { kind: 'png' | 'jpeg'; bytes: Uint8Array; matrix: [number, number, number, number, number, number] };
-  /** 描画モード (mix-blend-mode。PDF の ExtGState の BM: Multiply・Screen・Difference) */
-  blend?: 'multiply' | 'screen' | 'difference';
+  image?: {
+    kind: 'png' | 'jpeg';
+    bytes: Uint8Array;
+    matrix: [number, number, number, number, number, number];
+    /** filter を画素で計算した画像の画素 (bytes は圧縮しない PNG。呼ぶ側が、圧縮した PNG にして埋め込む) */
+    pixels?: FilterRasterResult;
+  };
+  /** 描画モード (mix-blend-mode。normal のほかの 15 通り。PDF の ExtGState の BM) */
+  blend?: SvgBlend;
+  /**
+   * 透明のグループ (Compositing and Blending 1 §3.3 の isolated group)。子の図形を、まとめて重ねてから、fillOpacity の不透明度と
+   * blend の描画モードで置く (PDF では、透明のグループの Form XObject。ISO 32000-2 §11.6.6)。このとき segs は空
+   */
+  group?: { shapes: SvgShape[] };
+  /** リンク (a 要素の href。SVG 2 の Linking の章の a 要素。http(s)・mailto などの絶対の URL だけ)。PDF では、図形の外接矩形のリンクの注釈にする */
+  link?: string;
   /**
    * 文字 (text 要素の字)。segs はその字の形。PDF に書くときは、塗りだけの単色の字なら、segs の代わりに書体の文字として描く
    * (ビューアの字の描き方 (ヒンティング) が本文と同じになり、文字として選べる)。
    * matrix は字の座標 (基線の上の原点、x 右向き、y 下向き、単位はユーザー単位) → SVG のルートの座標。size は字の大きさ
    */
   text?: { chars: TextChars; size: number; matrix: [number, number, number, number, number, number] };
+}
+
+/**
+ * mix-blend-mode の値 (Compositing and Blending 1 §3.4.1。normal を除く)。PDF の描画モード (ISO 32000-2 §11.3.5) と同じ 15 通りで、
+ * 名前は PDF の BM の名前の小文字・ハイフン区切り
+ */
+export const SVG_BLENDS = ['multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'] as const;
+export type SvgBlend = (typeof SVG_BLENDS)[number];
+
+/** filter を画素で計算するときに渡すもの (svgFilterRaster.ts の rasterFilter) */
+export interface FilterRasterRequest {
+  /** filter の要素 (順に)。name は小文字の要素名。color はその要素の色の性質 (flood-color・lighting-color) と不透明度の性質の、乗算していない RGBA */
+  prims: Array<{
+    name: string;
+    attr: (k: string) => string | undefined;
+    linear: boolean;
+    color: (colorProp: string, opacityProp?: string) => number[];
+    colorMatrix: () => number[];
+    componentTransfer: () => (c: number[]) => number[];
+    children: Array<{ name: string; attr: (k: string) => string | undefined }>;
+    /** feImage の中身 (部分領域。要素の座標) の図形 (根の座標) */
+    image: (box: { x: number; y: number; w: number; h: number }) => SvgShape[] | undefined;
+  }>;
+  /** filter を付けた要素の図形 (根の座標) */
+  source: SvgShape[];
+  /** filter の領域 (要素の座標) */
+  region: { x: number; y: number; w: number; h: number };
+  /** 要素の座標 → 根の座標 */
+  toRoot: [number, number, number, number, number, number];
+  /** 要素の座標の 1 単位あたりの画素の数 */
+  pxPerUnit: number;
+  /** 要素の外接矩形 (要素の座標)。primitiveUnits が objectBoundingBox のときの基準 */
+  bbox?: { x: number; y: number; w: number; h: number };
+  primitiveUnits: 'userSpaceOnUse' | 'objectBoundingBox';
+  /** 要素の viewport の大きさ (要素の座標)。primitiveUnits が userSpaceOnUse のときの、要素の x・y・width・height の百分率の基準 */
+  viewport?: { w: number; h: number };
+  /** 要素の塗り・線の色 (FillPaint・StrokePaint。単色のときだけ。乗算していない RGBA) */
+  fillPaint?: number[];
+  strokePaint?: number[];
+  /**
+   * 画素の計算の予算の使った量 (1 つの SVG のすべての filter で同じものを渡す。rasterFilter が足していき、尽きたら null を返す。
+   * filter を付けた要素が多い・入れ子の SVG で止まらなくなっていた)
+   */
+  budget?: { used?: number };
+}
+/** filter を画素で計算した結果 (filter の領域の画素。sRGB・8 ビットの RGBA。乗算していない) */
+export interface FilterRasterResult {
+  width: number;
+  height: number;
+  rgba: Uint8Array;
+}
+
+/**
+ * 図形の並びを、グループ (SvgShape.group) を開いた並びにする (グループを描けない描き手のため)。グループの不透明度は子の図形に掛け、
+ * 描画モードは、自分の描画モードの無い子に付ける (重なった子の重ね方は、グループで描いたものと少し違う)
+ */
+export function flattenGroups(shapes: SvgShape[]): SvgShape[] {
+  return shapes.flatMap((sh) =>
+    sh.group
+      ? flattenGroups(sh.group.shapes).map((c) => ({ ...c, fillOpacity: c.fillOpacity * sh.fillOpacity, strokeOpacity: c.strokeOpacity * sh.fillOpacity, ...(sh.blend && !c.blend ? { blend: sh.blend } : {}) }))
+      : [sh],
+  );
+}
+
+/**
+ * 図形の並びに付いた切り抜き (SvgShape.clips) を、図形ごとに書き直さずに、続く図形でまとめて書く手順。
+ * PDF の切り抜きは、q で積んだ状態の中で、Q で戻すまで効き続ける (ISO 32000-2 §8.4.2・§8.5.4) ので、前の図形と前から同じ (同じ物の)
+ * 切り抜きは開いたまま次の図形を描き、違うところから後ろだけを閉じて開き直す。切り抜き 1 つを 1 段の q で開く (外側の切り抜きだけが同じ
+ * 図形が続いたとき、内側だけを閉じられるように。q の入れ子は、clip-path の入れ子の深さになる)。切り抜きは領域の共通部分なので、外側で
+ * まとめて掛けても、図形ごとに掛けても、描く結果は同じ。
+ * steps[i] は i 番目の図形の前に、close 段の q を閉じ (Q)、open の切り抜きを 1 つずつ q で開く。最後に end 段を閉じる。
+ * 図形そのものは、clips を外して描く。描く側 (pdfRenderer.ts・colorGlyphSvg.ts) と、線分の予算 (parseSvg) が、同じ手順を使う
+ */
+export function clipRuns(shapes: readonly SvgShape[]): { steps: Array<{ close: number; open: SvgClip[] }>; end: number } {
+  const open: SvgClip[] = [];
+  const steps = shapes.map((sh) => {
+    const cl = sh.clips ?? [];
+    let k = 0;
+    while (k < open.length && k < cl.length && open[k] === cl[k]) k++;
+    const close = open.length - k;
+    open.length = k;
+    const add = cl.slice(k);
+    open.push(...add);
+    return { close, open: add };
+  });
+  return { steps, end: open.length };
+}
+
+/** 図形と、その中の図形 (グループの子・模様の中身・マスクの中身) を、すべて訪ねる */
+export function eachSvgShape(shapes: SvgShape[], fn: (sh: SvgShape) => void): void {
+  for (const sh of shapes) {
+    fn(sh);
+    if (sh.group) eachSvgShape(sh.group.shapes, fn);
+    if (sh.fillPattern) eachSvgShape(sh.fillPattern.shapes, fn);
+    for (const mk of sh.masks ?? []) eachSvgShape(mk.shapes, fn);
+  }
 }
 
 export interface SvgDoc {
@@ -123,6 +240,8 @@ export interface SvgDoc {
 }
 
 type M = Matrix;
+/** 外接矩形 */
+type Box = { x: number; y: number; w: number; h: number };
 
 /** 繰り返し・折り返しのグラデーション (spreadMethod) を並べた後の、stop の数の上限 */
 const MAX_SPREAD_STOPS = 100_000;
@@ -198,45 +317,110 @@ function clampStops(stops: SvgGradient['stops']): SvgGradient['stops'] {
   });
 }
 
-function parseTransform(s: string | null | undefined): M | null {
+/**
+ * transform の値 → 行列 (読めなければ null)。SVG の属性の書き方 (CSS Transforms 1 §7.3: 単位の無い数は px と deg。rotate(a cx cy)) と、
+ * §9.1 の 2D の関数 (単位の付いた値: 角度の deg・rad・grad・turn、長さの px など。translateX・scaleY・skew など。none) の両方を読む
+ * (属性の書き方に無い関数も、ブラウザと同じに読む)。box は百分率の基準の箱 (transform-box。translate の % は、その幅・高さに対して)。無ければ % は読めない
+ */
+function parseTransform(s: string | null | undefined, box?: { w: number; h: number }): M | null {
   let m = ID;
   if (!s) return m;
-  const re = /(?<!\w)(\w+)\s*\(([^)]*)\)/g;
+  if (s.trim() === 'none') return ID;
+  const re = /(?<!\w)([a-zA-Z][\w-]*)\s*\(([^)]*)\)/g;
   let t: RegExpExecArray | null;
   let any = false;
+  let last = 0;
+  /** 角度 (度)。単位の無い数は度 */
+  const angle = (x: string) => {
+    const mm = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?)(deg|rad|grad|turn)?$/i.exec(x);
+    if (!mm) return NaN;
+    const n = parseFloat(mm[1]);
+    const u = (mm[2] ?? 'deg').toLowerCase();
+    return u === 'rad' ? (n * 180) / Math.PI : u === 'grad' ? n * 0.9 : u === 'turn' ? n * 360 : n;
+  };
+  /** 長さ (利用者の単位)。% は箱の幅 (ref) に対して */
+  const length = (x: string, ref?: number) => {
+    const mm = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?)(px|pt|pc|mm|cm|in|q|%)?$/i.exec(x);
+    if (!mm) return NaN;
+    const n = parseFloat(mm[1]);
+    const u = (mm[2] ?? 'px').toLowerCase();
+    if (u === '%') return ref === undefined ? NaN : (n / 100) * ref;
+    return n * ({ px: 1, pt: 4 / 3, pc: 16, mm: 96 / 25.4, cm: 96 / 2.54, in: 96, q: 96 / 101.6 } as Record<string, number>)[u];
+  };
+  /** 倍率 (数か百分率) */
+  const factor = (x: string) => (/%$/.test(x) ? parseFloat(x) / 100 : /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?$/i.test(x) ? parseFloat(x) : NaN);
   while ((t = re.exec(s))) {
+    // 関数の間には、空白・カンマのほかは書けない
+    if (s.slice(last, t.index).replace(/[\s,]/g, '')) return null;
+    last = t.index + t[0].length;
     any = true;
-    const v = t[2].split(/[\s,]+/).filter(Boolean).map(Number);
-    if (v.some((x) => !Number.isFinite(x))) return null;
+    const a = t[2].split(/[\s,]+/).filter(Boolean);
     let c: M;
+    const nums = (f: (x: string) => number) => {
+      const v = a.map(f);
+      return v.every(Number.isFinite) ? v : null;
+    };
     switch (t[1]) {
-      case 'matrix':
-        if (v.length !== 6) return null;
+      case 'matrix': {
+        const v = nums(Number);
+        if (!v || v.length !== 6) return null;
         c = v as M;
         break;
-      case 'translate':
-        c = [1, 0, 0, 1, v[0] ?? 0, v[1] ?? 0];
-        break;
-      case 'scale':
-        c = [v[0] ?? 1, 0, 0, v[1] ?? v[0] ?? 1, 0, 0];
-        break;
-      case 'rotate': {
-        const a = ((v[0] ?? 0) * Math.PI) / 180;
-        const r: M = [Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a), 0, 0];
-        c = v.length >= 3 ? mul(mul([1, 0, 0, 1, v[1], v[2]], r), [1, 0, 0, 1, -v[1], -v[2]]) : r;
+      }
+      case 'translate': {
+        if (a.length < 1 || a.length > 2) return null;
+        const x = length(a[0], box?.w);
+        const y = a.length > 1 ? length(a[1], box?.h) : 0;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        c = [1, 0, 0, 1, x, y];
         break;
       }
+      case 'translateX':
+      case 'translateY': {
+        const d = a.length === 1 ? length(a[0], t[1] === 'translateX' ? box?.w : box?.h) : NaN;
+        if (!Number.isFinite(d)) return null;
+        c = t[1] === 'translateX' ? [1, 0, 0, 1, d, 0] : [1, 0, 0, 1, 0, d];
+        break;
+      }
+      case 'scale': {
+        const v = nums(factor);
+        if (!v || v.length < 1 || v.length > 2) return null;
+        c = [v[0], 0, 0, v[1] ?? v[0], 0, 0];
+        break;
+      }
+      case 'scaleX':
+      case 'scaleY': {
+        const v = nums(factor);
+        if (!v || v.length !== 1) return null;
+        c = t[1] === 'scaleX' ? [v[0], 0, 0, 1, 0, 0] : [1, 0, 0, v[0], 0, 0];
+        break;
+      }
+      case 'rotate': {
+        // SVG の rotate(a cx cy) は、(cx, cy) の周りに回す
+        const deg = a.length ? angle(a[0]) : NaN;
+        const cxy = a.slice(1).map((x) => length(x));
+        if (!Number.isFinite(deg) || (a.length !== 1 && a.length !== 3) || !cxy.every(Number.isFinite)) return null;
+        const r0 = (deg * Math.PI) / 180;
+        const r: M = [Math.cos(r0), Math.sin(r0), -Math.sin(r0), Math.cos(r0), 0, 0];
+        c = a.length === 3 ? mul(mul([1, 0, 0, 1, cxy[0], cxy[1]], r), [1, 0, 0, 1, -cxy[0], -cxy[1]]) : r;
+        break;
+      }
+      case 'skew':
       case 'skewX':
-        c = [1, 0, Math.tan(((v[0] ?? 0) * Math.PI) / 180), 1, 0, 0];
+      case 'skewY': {
+        const v = nums(angle);
+        if (!v || v.length < 1 || v.length > (t[1] === 'skew' ? 2 : 1)) return null;
+        const ax = t[1] === 'skewY' ? 0 : v[0];
+        const ay = t[1] === 'skewY' ? v[0] : t[1] === 'skew' ? (v[1] ?? 0) : 0;
+        c = [1, Math.tan((ay * Math.PI) / 180), Math.tan((ax * Math.PI) / 180), 1, 0, 0];
         break;
-      case 'skewY':
-        c = [1, Math.tan(((v[0] ?? 0) * Math.PI) / 180), 0, 1, 0, 0];
-        break;
+      }
       default:
         return null;
     }
     m = mul(m, c);
   }
+  if (s.slice(last).replace(/[\s,]/g, '')) return null;
   return any || !s.trim() ? m : null;
 }
 
@@ -430,6 +614,25 @@ interface PaintRef {
   ref: string;
 }
 
+/** 模様・グラデーションを当てる座標系 (m) と、objectBoundingBox の基準の形 (segs。m の座標)。測れなければ undefined */
+type PaintFrame = () => { segs: Seg[]; m: M } | undefined;
+/**
+ * context element (marker を付けた図形・use の要素) の塗り・線を、中身に渡すもの (Style.context)。frame は context element の座標系と
+ * 外接矩形 (1 度だけ測る)。context element の塗り自体が、さらに外の context element から来たものなら、その座標系のまま
+ */
+function contextOf(s: Style, frame: PaintFrame): NonNullable<Style['context']> {
+  let kept: { v: ReturnType<PaintFrame> } | undefined;
+  const once: PaintFrame = () => (kept ??= { v: frame() }).v;
+  return { fill: s.fill, stroke: s.stroke, fillAlpha: s.fillAlpha, strokeAlpha: s.strokeAlpha, fillFrame: s.fillFrame ?? once, strokeFrame: s.strokeFrame ?? once };
+}
+/** 矩形の形 (外接矩形を、模様・グラデーションの objectBoundingBox の基準に渡す) */
+const rectSegs = (b: { x: number; y: number; w: number; h: number }): Seg[] => [
+  { op: 'M', x: b.x, y: b.y },
+  { op: 'L', x: b.x + b.w, y: b.y },
+  { op: 'L', x: b.x + b.w, y: b.y + b.h },
+  { op: 'L', x: b.x, y: b.y + b.h },
+  { op: 'Z' },
+];
 interface Style {
   fill: string | null | PaintRef; // null = none
   stroke: string | null | PaintRef;
@@ -446,6 +649,42 @@ interface Style {
   fontSize: number;
   fontFamily?: string;
   fontWeight: number;
+  /** visibility が hidden・collapse (継承する。子が visible に戻せば、その子は描く。SVG 2 の visibility は CSS 2.1 §11.2 のもの) */
+  hidden?: boolean;
+  /**
+   * context-fill・context-stroke (SVG 2 §13.2 の context element の塗り): marker の中身では marker を付けた図形の、use で置いた中身では
+   * use の要素の塗り・線 (受け継ぐ)
+   */
+  context?: { fill: Style['fill']; stroke: Style['stroke']; fillAlpha?: number; strokeAlpha?: number; fillFrame?: PaintFrame; strokeFrame?: PaintFrame };
+  /**
+   * 塗り・線が context-fill・context-stroke から来た模様・グラデーションのときの、塗りの座標系と外接矩形 (context element のもの。
+   * SVG 2 §13.2: 「the coordinate space and the bounding box used to scale the paint server elements are those of the context element」)。
+   * 無ければ、塗る図形そのものの座標系と外接矩形
+   */
+  fillFrame?: PaintFrame;
+  strokeFrame?: PaintFrame;
+  /**
+   * 縦書き (writing-mode が縦。受け継ぐ) のときの字の向き (text-orientation。CSS Writing Modes 3 §5.1)。横書きは undefined
+   */
+  vertical?: 'mixed' | 'upright' | 'sideways';
+  /** リンク (a 要素の中の図形。外側の a の href を受け継ぐ) */
+  link?: string;
+  /** letter-spacing・word-spacing (継承する。CSS Text 3 §8.2・§8.3。ユーザー単位。normal は 0) */
+  letterSpacing?: number;
+  wordSpacing?: number;
+  /**
+   * text-decoration (SVG 1.1 §10.12): 線を引く要素の指定を、子孫の字へ伝える。線の色は、指定した要素の塗り (fill) と不透明度
+   */
+  decorations?: Array<{ under: boolean; over: boolean; through: boolean; fill: string | null | PaintRef; opacity: number }>;
+  /** paint-order (継承する。SVG 2 §13.8)。normal なら undefined。省いた語は、normal の順 (fill・stroke・markers) で後に続く */
+  paintOrder?: Array<'fill' | 'stroke' | 'markers'>;
+  /** font-style (継承する。立体は undefined) */
+  fontStyle?: 'italic' | 'oblique';
+  /** baseline-shift を重ねた量 (下向きが正。ユーザー単位)。text の中の入れ子の要素の分を足す (SVG 1.1 §10.9.2) */
+  baselineShift?: number;
+  /** dominant-baseline (継承する。CSS Inline 3 §4.1)。alignment-baseline (§4.2.2。継承しない) があれば、その要素の字はそれ */
+  dominantBaseline?: string;
+  alignmentBaseline?: string;
   textAnchor: 'start' | 'middle' | 'end';
   /** vector-effect="non-scaling-stroke" (継承しない): 線の太さを、ページの上の太さ (CSS px) とする */
   nonScalingStroke?: boolean;
@@ -475,15 +714,56 @@ const ROOT_STYLE: Style = { color: '#000000', fill: '#000000', stroke: null, str
 /** 文字の輪郭 (text を図形にするため)。原点は基線の始点、y は下向き。描けない文字があれば null */
 /** 字の並び (PDF の文字として描くため): 字・書体 (読み込んだ書体の鍵)・字の原点の x (字の座標。基線の上、右向き) */
 export type TextChars = Array<{ ch: string; font: string; x: number }>;
-export type TextOutliner = (text: string, family: string | undefined, weight: number, size: number) => { segs: Seg[]; advance: number; chars?: TextChars } | null;
+/**
+ * 文字の輪郭を作る。style は font-style (italic・oblique。立体なら undefined)。
+ * ascent・descent は、字の大きさに対する書体の上の高さ・下の深さ (em の割合。dominant-baseline の基線を求めるのに使う。無ければ見積もる)
+ */
+export type TextOutliner = (
+  text: string,
+  family: string | undefined,
+  weight: number,
+  size: number,
+  style?: 'italic' | 'oblique',
+  /** 縦書きの字 (text-orientation)。このときは 1 字ずつ渡し、原点は字の枠の上端の中央、advance は縦の送り */
+  vertical?: 'mixed' | 'upright' | 'sideways',
+) => { segs: Seg[]; advance: number; chars?: TextChars; ascent?: number; descent?: number } | null;
 
 export interface ParseSvgOptions {
   /** text 要素を輪郭にして描く (無ければ text を含む SVG はラスタライズ) */
   outline?: TextOutliner;
+  /**
+   * image の href が外のファイル (data: でないもの) のとき、その PNG・JPEG の中身を返す (呼ぶ側が、SVG の場所を基準に引く)。
+   * 無ければ (引けなければ)、その image は描かない
+   */
+  image?: (href: string) => { kind: 'png' | 'jpeg'; bytes: Uint8Array } | undefined;
+  /**
+   * use の href が外のファイル (file.svg#id) のとき、そのファイルの中身 (SVG の文字) を返す (呼ぶ側が、SVG の場所を基準に引く)。
+   * 無ければ (引けなければ)、その use は描かない
+   */
+  resource?: (href: string) => string | undefined;
+  /**
+   * filter を画素で計算する関数 (svgFilterRaster.ts の rasterFilter)。approximateFilters のとき、図形で近似できない filter に使う。
+   * 無ければ、その SVG は描けないもの
+   */
+  rasterFilter?: (req: FilterRasterRequest) => FilterRasterResult | null;
+  /** 画素で計算する filter の解像度 (SVG の根の座標の 1 単位あたりの画素の数。既定 4) */
+  filterResolution?: number;
+  /**
+   * foreignObject の中身を組んだ図形 (文書の順の番号 → foreignObject の中の座標の図形)。呼ぶ側が、中身の HTML・MathML を本文と同じ組版で組んで渡す。
+   * 無い番号の foreignObject は、HTML の文字だけを近似して描く
+   */
+  foreignShapes?: (index: number) => SvgShape[] | undefined;
+  /**
+   * foreignObject を描かずに、中身を組むための情報 (ForeignContext) を受け取る (foreignObjectContexts が使う。番号は foreignShapes と同じ)。
+   * 描く順に訪ねたときに呼ぶ (描かれない foreignObject では呼ばない)
+   */
+  collectForeign?: (index: number, context: ForeignContext) => void;
+  /** systemLanguage を照らす利用者の言語 (BCP 47 の言語タグ。好む順)。省けば実行環境の言語 (ブラウザは navigator.languages、Node は Intl の言語) */
+  languages?: string[];
   /** 図形にできなかったとき (null を返すとき)、その理由 (filter・marker など、扱えない機能の名前) を受け取る */
   onUnsupported?: (what: string) => void;
   /**
-   * filter を近似して図形にする (ラスタライズできない環境用。影 (feDropShadow、feGaussianBlur + feOffset + feMerge) と、ぼかしだけのもの)。
+   * filter と foreignObject の HTML の文字を近似して図形にする (ラスタライズできない環境用。影 (feDropShadow、feGaussianBlur + feOffset + feMerge) と、ぼかしだけのもの)。
    * ぼかしは、少しずつ太らせた半透明の図形を重ねて表す。ほかの filter は図形にできない
    */
   approximateFilters?: boolean;
@@ -499,9 +779,86 @@ export interface ParseSvgOptions {
   rootOverflowVisible?: boolean;
 }
 
-const UNSUPPORTED = new Set(['textpath', 'foreignobject']);
+/**
+ * foreignObject の中身を、本文と同じ HTML の組版で組むための情報 (SVG 2 §23.2 の foreignObject: 中身は、SVG の文書の中の要素として
+ * スタイルが当たり、SVG の祖先から書式を受け継ぐ。CSS 2.1 §6.2 の継承)
+ */
+export interface ForeignContext {
+  /** 中身 (foreignObject の子) を直列化した HTML (解析した木から。字の上で探すと、注釈や入れ子で食い違う) */
+  content: string;
+  /** foreignObject の幅・高さ (利用者の単位 = CSS px) */
+  width: number;
+  height: number;
+  /** SVG の <style> の規則 (文書の全部。中身の要素にも当たる) */
+  css: string;
+  /**
+   * 根の svg から foreignObject までの要素 (外から順。最後が foreignObject)。名前 (小文字)・id・class・style 属性。
+   * 組む文書に同じ id・class の入れ物を並べて、<style> の「#id p」の形の選択子を中身に当てる
+   */
+  ancestors: Array<{ name: string; id?: string; className?: string; style?: string }>;
+  /** foreignObject の計算した書式のうち、中身が受け継ぐもの (font-family・font-size・font-weight・font-style・color など。CSS の宣言の並び) */
+  inherited: string;
+}
+
+/** HTML の空の要素 (終わりのタグを書かない。HTML Living Standard §13.1.2 の void elements) */
+const HTML_VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
+/**
+ * XML の要素の子を、HTML の構文の文字にする (foreignObject の中身を、本文の HTML の組版で読ませるため)。名前は接頭辞を外した名前
+ * (xhtml:div → div)。名前空間の宣言 (xmlns) は書かない (HTML の構文では、名前空間は要素の名前で決まる)。注釈は落とす。
+ * style・script の中は、字をそのまま (HTML の構文では、その中の文字参照を読まない)
+ */
+function serializeChildren(n: XmlNode): string {
+  const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const attr = (t: string) => t.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const out: string[] = [];
+  const walk = (el: XmlNode, raw: boolean) => {
+    for (const c of Array.from(el.childNodes)) {
+      if (c.nodeType === 3 || c.nodeType === 4) out.push(raw ? (c.textContent ?? '').replace(/<\//g, '<\\/') : esc(c.textContent ?? ''));
+      if (c.nodeType !== 1) continue;
+      const name = (c.localName ?? c.nodeName.replace(/^[^:]*:/, '')).replace(/[^\w.-]/g, '');
+      if (!name) continue;
+      out.push(`<${name}`);
+      for (const a of Array.from((c as { attributes?: ArrayLike<{ name: string; value: string }> }).attributes ?? [])) {
+        if (/^xmlns(:|$)/.test(a.name) || !/^[\w:.-]+$/.test(a.name)) continue;
+        out.push(` ${a.name}="${attr(a.value)}"`);
+      }
+      out.push('>');
+      const lower = name.toLowerCase();
+      if (HTML_VOID.has(lower)) continue;
+      walk(c, lower === 'style' || lower === 'script');
+      out.push(`</${name}>`);
+    }
+  };
+  walk(n, false);
+  return out.join('');
+}
+
+/**
+ * SVG の foreignObject ごとの、中身を組むための情報 (文書の順の番号。parseSvg の foreignShapes の番号と同じ)。描かれない foreignObject は undefined。
+ * SVG を図形にできなければ空 (中身を組まない。文字だけの近似か、仮の枠になる)
+ */
+export function foreignObjectContexts(text: string, parse: (xml: string) => XmlNode, opts: Pick<ParseSvgOptions, 'languages' | 'resource'> = {}): Array<ForeignContext | undefined> {
+  const out: Array<ForeignContext | undefined> = [];
+  // 字の輪郭・filter の画素の計算は要らない (foreignObject に届くまでを訪ねられればよい)
+  const doc = parseSvg(text, parse, {
+    ...opts,
+    outline: () => ({ segs: [], advance: 0 }),
+    approximateFilters: true,
+    rasterFilter: () => ({ width: 1, height: 1, rgba: new Uint8Array(4) }),
+    collectForeign: (i, c) => {
+      while (out.length < i) out.push(undefined);
+      if (out[i] === undefined) out[i] = c;
+    },
+  });
+  return doc ? out : [];
+}
+
+/** 描けない要素 (textPath は text の中でだけ描く。text の外のものは誤り。foreignObject は walk0 で、中身が HTML なら文字を近似して描く) */
+const UNSUPPORTED = new Set(['textpath']);
+/** clipPath の中身に置けない要素 */
+const CLIP_UNSUPPORTED = new Set(['textpath', 'foreignobject']);
 /** 定義だけで、その場では描かない要素 */
-const DEFINITIONS = new Set(['lineargradient', 'radialgradient', 'clippath', 'symbol', 'style', 'pattern', 'mask', 'filter', 'marker']);
+const DEFINITIONS = new Set(['lineargradient', 'radialgradient', 'clippath', 'symbol', 'style', 'pattern', 'mask', 'filter', 'marker', 'font', 'font-face']);
 const IGNORED = new Set(['title', 'desc', 'metadata', 'defs', 'sodipodi:namedview', 'namedview']);
 
 class Unsupported extends Error {}
@@ -521,7 +878,7 @@ const MAX_EXPANDED_VISITS = 500_000;
 const VISIT_WEIGHT_CHARS = 64;
 /**
  * 1 つの SVG で、参照 (use・marker・pattern・mask・clip-path・textPath) や効果 (filter の影の写し) によって、書かれた数より増える分の
- * 線分 (M・L・C・Z の 1 つを 1 と数える。グラデーションの stop、同じ切り抜きを図形ごとに付け直す分も同じに数える) の上限。
+ * 線分 (M・L・C・Z の 1 つを 1 と数える。グラデーションの stop、切り抜きを図形の並びの途中で書き直す分も同じに数える) の上限。
  * 5 万点の path を use で 400 回置くだけ (212KB) で 2000 万の線分になり、メモリを使い切るので、ここで切って「図形にできない」ものとして扱う
  * (訪ねる回数の上限 MAX_EXPANDED_VISITS は、訪ねた先の path の大きさを数えない)。
  * 要素ごとに 1 回目に読む形 (文書に書かれたとおりの分) は数えないので、線分が数百万ある地図・図面は、これまでどおり読める。
@@ -533,6 +890,11 @@ const VISIT_WEIGHT_CHARS = 64;
  * - 全体の上限は、EPS のパスの点の上限 (imageLimits.ts の PS_MAX_PATH_POINTS = 500 万) と同じにする
  */
 const EXPANDED_SEGS_BASE = 250_000;
+/**
+ * SVG フォントの合字 (unicode が何字かの glyph) の字の数の上限。SVG 1.1 §20.5 に数は無い。実在の合字 (ffi・ﬃ、絵文字の ZWJ の並び・
+ * 旗のタグの並び) は 10 字ほどまでなので、64 字あれば足りる。超える glyph は使わない (字を 1 つ当てるのに、その長さだけたどらないように)
+ */
+const SVG_FONT_MAX_LIGATURE = 64;
 const EXPANDED_SEGS_PER_CHAR = 2;
 const MAX_EXPANDED_SEGS = 5_000_000;
 /**
@@ -608,11 +970,16 @@ export function svgNestTooDeep(text: string, limit = SVG_MAX_NEST): boolean {
 /** pattern の中身の図形が、また pattern で塗られているときの入れ子の上限 (互いを指す pattern で止まらなくなるのを防ぐ。gradient の参照の上限と同じ 8) */
 const MAX_PATTERN_NEST = 8;
 
-/** <style> の規則 (単純な選択子だけ: 要素名・.class・#id とその組み合わせ、カンマ区切り) */
+/**
+ * <style> の規則。単純な選択子 (要素名・.class・#id とその組み合わせ) は tag・id・classes で引く。
+ * それ以外の選択子 (結合子・属性・疑似クラス。Selectors 4) は complex に読み、要素ごとに照らす (cssSelector.ts)
+ */
 interface CssRule {
   tag?: string;
   id?: string;
   classes: string[];
+  complex?: Selector;
+  /** 詳細度 (Selectors 4 §17。[id, class, 要素名] を a×10⁶ + b×10³ + c の 1 つの数にする。cssSelector.ts と同じ) */
   specificity: number;
   order: number;
   decls: Record<string, string>;
@@ -622,7 +989,9 @@ function parseDecls(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const decl of text.split(';')) {
     const i = decl.indexOf(':');
-    if (i > 0) out[decl.slice(0, i).trim().toLowerCase()] = decl.slice(i + 1).replace(/!important/i, '').trim();
+    // カスタムプロパティ (--で始まる名前) は、大文字小文字を区別する (CSS Variables 1 §2)
+    const name = decl.slice(0, i).trim();
+    if (i > 0) out[name.startsWith('--') ? name : name.toLowerCase()] = decl.slice(i + 1).replace(/!important/i, '').trim();
   }
   return out;
 }
@@ -673,15 +1042,118 @@ function stripAtStatements(text: string): string {
   return out + text.slice(p);
 }
 
-/** CSS を規則の列にする。扱えない選択子 (子孫・疑似クラスなど) や @ 規則 (読み飛ばすもの以外) があれば Unsupported */
-export function parseCss(css: string): CssRule[] {
+/** media query を照らす環境: 印刷 (print) の、幅・高さ (CSS px) の画面 */
+export interface MediaEnv {
+  width: number;
+  height: number;
+}
+
+/**
+ * media query の並び (カンマ区切り。どれかが合えば合う) を照らす (Media Queries 4)。描くのは印刷物なので、media type は all・print が合い、
+ * screen と古い type・知らない type は合わない (§2.3・§3.2。not で反転、only は何もしない: §2.2)。特徴は width・height (min-・max-)・orientation・aspect-ratio・color・monochrome・grid・prefers-color-scheme (light) を読む。
+ * (width・height は §4.1・§4.2、orientation は §4.4、prefers-color-scheme は Media Queries 5 §12.5)。知らない特徴・読めない書き方の query は合わない (§3.2)
+ */
+export function mediaMatches(list: string, env: MediaEnv): boolean {
+  const queries = list.split(',').map((q) => q.trim().toLowerCase());
+  if (!queries.some(Boolean)) return true;
+  const len = (v: string) => {
+    const m = /^(-?[\d.]+)(px|em|rem|pt|pc|mm|cm|in|q)?$/.exec(v.trim());
+    if (!m) return NaN;
+    const n = parseFloat(m[1]);
+    const u = m[2] ?? 'px';
+    return u === 'em' || u === 'rem' ? n * 16 : n * (PX_PER[u] ?? NaN);
+  };
+  const feature = (f: string): boolean => {
+    const m = /^\(\s*([a-z-]+)\s*(?::\s*([^)]*?))?\s*\)$/.exec(f.trim());
+    if (!m) return false;
+    const [, name, value] = m;
+    const v = value?.trim();
+    const cmp = (actual: number) => {
+      const pre = /^(min|max)-/.exec(name)?.[1];
+      if (v === undefined) return actual > 0;
+      const want = len(v);
+      if (!Number.isFinite(want)) return false;
+      return pre === 'min' ? actual >= want : pre === 'max' ? actual <= want : Math.abs(actual - want) < 1e-6;
+    };
+    switch (name.replace(/^(min|max)-/, '')) {
+      case 'width':
+        return cmp(env.width);
+      case 'height':
+        return cmp(env.height);
+      case 'aspect-ratio': {
+        if (v === undefined) return true;
+        const r = /^([\d.]+)\s*(?:\/\s*([\d.]+))?$/.exec(v);
+        if (!r) return false;
+        const want = parseFloat(r[1]) / (r[2] ? parseFloat(r[2]) : 1);
+        const actual = env.width / env.height;
+        const pre = /^(min|max)-/.exec(name)?.[1];
+        return pre === 'min' ? actual >= want : pre === 'max' ? actual <= want : Math.abs(actual - want) < 1e-6;
+      }
+      case 'orientation':
+        return v === (env.height >= env.width ? 'portrait' : 'landscape');
+      case 'color':
+        return v === undefined || (/^(min|max)-/.test(name) ? (name.startsWith('min') ? parseFloat(v) <= 8 : parseFloat(v) >= 8) : parseFloat(v) === 8);
+      case 'monochrome':
+        return v !== undefined && parseFloat(v) === 0 && !name.startsWith('min');
+      case 'grid':
+        return v !== undefined && parseFloat(v) === 0;
+      case 'prefers-color-scheme':
+        return v === 'light';
+      default:
+        return false;
+    }
+  };
+  return queries.some((q0) => {
+    const not = /^not\s/.test(q0);
+    const q = q0.replace(/^(not|only)\s+/, '');
+    const parts = q.split(/\s+and\s+/);
+    // 先頭が ( でなければ media type。知らない type は、何にも合わない
+    const type = q.startsWith('(') ? undefined : parts.shift();
+    const ok = (!type || type === 'all' || type === 'print') && parts.every((f) => feature(f));
+    return not ? !ok : ok;
+  });
+}
+
+/** @media の規則: 合う media query の中の規則は、外に書いたものとして読み、合わないものは捨てる (入れ子も) */
+function expandMedia(text: string, env: MediaEnv, depth = 0): string {
+  // 入れ子の深すぎる @media は読めない (呼び出しの段が尽きないように)
+  if (depth > 32) throw new Unsupported('css');
+  let out = '';
+  let p = 0;
+  const re = /@media\b/gi;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const open = text.indexOf('{', re.lastIndex);
+    if (open < 0) break;
+    let level = 1;
+    let i = open + 1;
+    for (; i < text.length && level; i++) {
+      if (text[i] === '{') level++;
+      else if (text[i] === '}') level--;
+    }
+    if (level) break;
+    out += text.slice(p, m.index);
+    if (mediaMatches(text.slice(re.lastIndex, open), env)) out += expandMedia(text.slice(open + 1, i - 1), env, depth + 1);
+    p = i;
+    re.lastIndex = i;
+  }
+  return out + text.slice(p);
+}
+
+/**
+ * CSS を規則の列にする。読めない選択子や @ 規則 (読み飛ばすもの以外) があれば Unsupported。
+ * @media は、env (無ければ 300 × 150 の印刷の画面) で照らして、合うものの中の規則を読む
+ */
+export function parseCss(css: string, env: MediaEnv = { width: 300, height: 150 }): CssRule[] {
   const rules: CssRule[] = [];
   // @font-face (SVG に埋め込んだ書体。text は読み込み済みの書体の輪郭で描く)・@import・@charset・@namespace は読み飛ばす
   // (注釈と @import などは、終わりの無いものが並ぶと正規表現では 2 乗の手間になるので、1 回の走査で取り除く)
   const text = stripAtStatements(
-    stripCssComments(css)
-      .replace(/<!\[CDATA\[|\]\]>/g, '')
-      .replace(/@font-face\s*\{[^{}]*\}/gi, ''),
+    expandMedia(
+      stripCssComments(css)
+        .replace(/<!\[CDATA\[|\]\]>/g, '')
+        .replace(/@font-face\s*\{[^{}]*\}/gi, ''),
+      env,
+    ),
   );
   // 規則 = 「{ } を含まない 1 字以上の選択子」「{」「{ } を含まない宣言」「}」。頭から 1 回の走査で切り出す
   // (正規表現 /([^{}]+)\{([^{}]*)\}/g と同じ切り方。正規表現だと、{ の無い長い文で、始まりの位置ごとに終わりまで読み直して 2 乗の手間になる)。
@@ -704,14 +1176,22 @@ export function parseCss(css: string): CssRule[] {
     for (const raw of selectors.split(',')) {
       const sel = raw.trim();
       // * (すべての要素。matplotlib の出力など) は型の指定なしと同じ
+      if (!sel || sel.startsWith('@')) throw new Unsupported(`css selector ${sel}`);
       const parsed = /^(\*|[a-zA-Z][\w-]*)?((?:[.#][\w-]+)*)$/.exec(sel);
-      if (!sel || !parsed || sel.startsWith('@')) throw new Unsupported(`css selector ${sel}`);
-      const parts = parsed[2].match(/[.#][\w-]+/g) ?? [];
+      const parts = parsed?.[2].match(/[.#][\w-]+/g) ?? [];
       const ids = parts.filter((p) => p[0] === '#').map((p) => p.slice(1));
-      const classes = parts.filter((p) => p[0] === '.').map((p) => p.slice(1));
-      if (ids.length > 1) throw new Unsupported(`css selector ${sel}`);
-      const tag = parsed[1] === '*' ? undefined : parsed[1]?.toLowerCase();
-      rules.push({ tag, id: ids[0], classes, specificity: ids.length * 100 + classes.length * 10 + (tag ? 1 : 0), order: order++, decls });
+      if (parsed && ids.length <= 1) {
+        const classes = parts.filter((p) => p[0] === '.').map((p) => p.slice(1));
+        const tag = parsed[1] === '*' ? undefined : parsed[1]?.toLowerCase();
+        rules.push({ tag, id: ids[0], classes, specificity: ids.length * 1e6 + classes.length * 1e3 + (tag ? 1 : 0), order: order++, decls });
+        continue;
+      }
+      // 結合子 (子孫・子・隣接・後続)・属性・疑似クラスの選択子 (Selectors 4)。読めない選択子は描けないものとする
+      const [complex] = parseSelectorList(sel);
+      if (!complex) throw new Unsupported(`css selector ${sel}`);
+      // 疑似要素 (::before など) の規則は、SVG では描くものが無い (SVG 2 §6.4 は ::before・::after の中身を描かない)
+      if (complex.pseudoElement) continue;
+      rules.push({ classes: [], complex, specificity: complex.specificity, order: order++, decls });
     }
   }
   return rules.sort((a, b) => a.specificity - b.specificity || a.order - b.order);
@@ -734,16 +1214,57 @@ interface CssIndex {
   byClass: Map<string, CssGroup[]>;
   byTag: Map<string, CssGroup[]>;
   any: CssGroup[];
-  /** 要素名・id・class の値が同じ要素の結果 (同じ class の要素が何千とある絵で、計算し直さない) */
-  cache: Map<string, Record<string, string>>;
+  /** 要素名・id・class の値が同じ要素の、単純な選択子の規則の結果 (同じ class の要素が何千とある絵で、計算し直さない) */
+  cache: Map<string, Map<string, { pos: number; value: string }>>;
+  /**
+   * 単純でない選択子の規則 (要素ごとに照らす)。いちばん右の複合の選択子の id (#名前)・class (.名前)・属性の名前 ([名前。小文字])・要素名で引く
+   * (どれも無ければ complexAny)。属性の名前で引くのは、[a1] {…} を 1000 規則と rect を 1 万個並べた 299KB の SVG で、全部の規則を全部の
+   * 要素に照らして 30 秒かかったため (属性の選択子は、その名前の属性を持つ要素にしか当たらない。Selectors 4 §6)
+   */
+  complexBy: Map<string, ComplexRule[]>;
+  complexAny: ComplexRule[];
+  /** 単純でない選択子を要素に照らす回数の残り (CSS_MAX_MATCHES から減らす)。尽きたら、その SVG は描けないものとする */
+  matchLeft: number;
+  /**
+   * 照らした結果の覚え (cssSelector の SelectorMemo。SVG の木は、書式を読む間は変わらない)。覚えが無いと、子孫の結合子の左側
+   * (*:nth-child(…) * の祖先) と :has() を、要素ごとに照らし直す
+   */
+  memo: SelectorMemo;
+}
+
+/**
+ * 1 つの <style> の索引で、単純でない選択子を要素に照らす回数の上限。索引で引けない規則 (右端が * や疑似クラスだけ: *:nth-child(…) *) を
+ * 1000 個と要素 8000 個の 354KB の SVG で、照らすだけで 90 秒を超えた (1 回に 3µs ほど)。実在の SVG (Inkscape・Illustrator・matplotlib・
+ * d3・draw.io の出力) の単純でない規則は、右端に class か要素名があって索引で引け、引けない規則は数個までなので、照らす回数は
+ * 要素の数 (数万) の数倍で、50 万に届かない。50 万回は 1.5 秒ほどで終わる量 (描けないときは、filter を近似してもう 1 度読むので、その 2 倍)
+ */
+const CSS_MAX_MATCHES = 500_000;
+interface ComplexRule {
+  sel: Selector;
+  pos: number;
+  decls: Record<string, string>;
 }
 
 /** rules は parseCss の結果 (当てる順に並んでいる) */
 function indexCss(rules: CssRule[]): CssIndex | undefined {
   if (!rules.length) return undefined;
-  const ix: CssIndex = { byId: new Map(), byClass: new Map(), byTag: new Map(), any: [], cache: new Map() };
+  const ix: CssIndex = { byId: new Map(), byClass: new Map(), byTag: new Map(), any: [], cache: new Map(), complexBy: new Map(), complexAny: [], matchLeft: CSS_MAX_MATCHES, memo: createSelectorMemo() };
   const groups = new Map<string, CssGroup>();
   rules.forEach((r, pos) => {
+    if (r.complex) {
+      const right = r.complex.compounds[0];
+      // 属性の名前は、照らす側 (cssSelector の attrValue) と同じく小文字で比べる。名前空間の付いた名前 (a|b) は引かない
+      const attr = right.attrs.find((a) => !a.name.includes('|'))?.name;
+      const key = right.ids[0] !== undefined ? `#${right.ids[0]}` : right.classes[0] !== undefined ? `.${right.classes[0]}` : attr !== undefined ? `[${attr}` : right.tag ? right.tag : undefined;
+      const rule = { sel: r.complex, pos, decls: r.decls };
+      if (key === undefined) ix.complexAny.push(rule);
+      else {
+        const list = ix.complexBy.get(key);
+        if (list) list.push(rule);
+        else ix.complexBy.set(key, [rule]);
+      }
+      return;
+    }
     const classes = [...new Set(r.classes)].sort();
     const sig = `${r.tag ?? ''}#${r.id ?? ''}.${classes.join('.')}`;
     let g = groups.get(sig);
@@ -770,9 +1291,38 @@ function cssDeclsOf(n: XmlNode, ix: CssIndex): Record<string, string> {
   const id = n.getAttribute?.('id') ?? undefined;
   const classAttr = n.getAttribute?.('class') ?? '';
   const key = `${tag}\0${id !== undefined && ix.byId.has(id) ? id : ''}\0${classAttr}`;
-  const hit = ix.cache.get(key);
-  if (hit) return hit;
   const cls = new Set(classAttr.split(/\s+/).filter(Boolean));
+  let win = ix.cache.get(key);
+  if (!win) {
+    win = simpleDecls(ix, tag, id, cls);
+    if (ix.cache.size < 4096) ix.cache.set(key, win);
+  }
+  // 単純でない選択子の規則: いちばん右の複合の選択子が当たりうる規則だけを、要素に照らす
+  const cands = [...ix.complexAny, ...(id ? (ix.complexBy.get(`#${id}`) ?? []) : []), ...[...cls].flatMap((c) => ix.complexBy.get(`.${c}`) ?? []), ...(ix.complexBy.get(tag) ?? [])];
+  if (ix.complexBy.size) for (const a of Array.from((n as unknown as Element).attributes ?? [])) {
+    const list = ix.complexBy.get(`[${a.name.toLowerCase()}`);
+    if (list) for (const r of list) cands.push(r);
+  }
+  let merged = win;
+  if (cands.length && typeof (n as { parentNode?: unknown }).parentNode !== 'undefined') {
+    // 当てる順は pos (規則の順) で決まり、照らす順にはよらない (下の pos の比べ方)
+    for (const r of new Set(cands)) {
+      if (--ix.matchLeft < 0) throw new Unsupported('css selectors: too many matches');
+      if (!matches(n as unknown as Element, r.sel, undefined, ix.memo)) continue;
+      if (merged === win) merged = new Map(win);
+      for (const [k, value] of Object.entries(r.decls)) {
+        const w = merged.get(k);
+        if (!w || w.pos < r.pos) merged.set(k, { pos: r.pos, value });
+      }
+    }
+  }
+  const out: Record<string, string> = {};
+  for (const [k, d] of merged) out[k] = d.value;
+  return out;
+}
+
+/** 単純な選択子の規則のうち、要素名・id・class が tag・id・cls の要素に当たるものの宣言 (プロパティごとに、勝つ宣言) */
+function simpleDecls(ix: CssIndex, tag: string, id: string | undefined, cls: Set<string>): Map<string, { pos: number; value: string }> {
   const win = new Map<string, { pos: number; value: string }>();
   const apply = (list: CssGroup[] | undefined) => {
     if (!list) return;
@@ -788,15 +1338,12 @@ function cssDeclsOf(n: XmlNode, ix: CssIndex): Record<string, string> {
   apply(ix.byTag.get(tag));
   if (id) apply(ix.byId.get(id));
   for (const c of cls) apply(ix.byClass.get(c));
-  const out: Record<string, string> = {};
-  for (const [k, d] of win) out[k] = d.value;
-  if (ix.cache.size < 4096) ix.cache.set(key, out);
-  return out;
+  return win;
 }
 
 function propsOf(n: XmlNode, css?: CssIndex): Record<string, string> {
   const out: Record<string, string> = {};
-  const names = ['color', 'fill', 'stroke', 'stroke-width', 'opacity', 'fill-opacity', 'stroke-opacity', 'fill-rule', 'clip-rule', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-miterlimit', 'display', 'visibility', 'clip-path', 'mask', 'filter', 'stop-color', 'stop-opacity', 'font-family', 'font-size', 'font-weight', 'text-anchor', 'overflow', 'marker', 'marker-start', 'marker-mid', 'marker-end', 'data-fill-cmyk', 'data-stroke-cmyk', 'vector-effect', 'mix-blend-mode', 'xml:space'];
+  const names = ['color', 'fill', 'stroke', 'stroke-width', 'opacity', 'fill-opacity', 'stroke-opacity', 'fill-rule', 'clip-rule', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-miterlimit', 'display', 'visibility', 'clip-path', 'mask', 'filter', 'stop-color', 'stop-opacity', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor', 'baseline-shift', 'dominant-baseline', 'alignment-baseline', 'paint-order', 'transform', 'transform-origin', 'transform-box', 'isolation', 'letter-spacing', 'word-spacing', 'text-decoration', 'text-decoration-line', 'mask-type', 'inline-size', 'line-height', 'text-align', 'white-space', 'writing-mode', 'text-orientation', 'glyph-orientation-vertical', 'overflow', 'marker', 'marker-start', 'marker-mid', 'marker-end', 'data-fill-cmyk', 'data-stroke-cmyk', 'vector-effect', 'mix-blend-mode', 'xml:space'];
   for (const k of names) {
     const v = n.getAttribute?.(k);
     if (v !== null && v !== undefined) out[k] = v.trim();
@@ -809,6 +1356,149 @@ function propsOf(n: XmlNode, css?: CssIndex): Record<string, string> {
 }
 
 const isCurrentColor = (v: string) => /^currentcolor$/i.test(v.trim());
+
+/** s の i 番目 (開き括弧の次) から、対応する閉じ括弧の位置。無ければ -1 */
+function closeParen(s: string, i: number): number {
+  for (let d = 1; i < s.length; i++) {
+    if (s[i] === '(') d++;
+    else if (s[i] === ')' && --d === 0) return i;
+  }
+  return -1;
+}
+
+/** var() を置き換えた値の長さの上限 (字の数)。HTML の側 (htmlPaged の MAX_VAR_LENGTH) と同じ値 (Chromium の上限 2097152 と同じ。Variables 1 §3.3) */
+const SVG_MAX_VAR_LENGTH = 2 * 1024 * 1024;
+
+/**
+ * var() を、カスタムプロパティの値 (vars。要素の祖先から受け継いだもの) に置き換える (CSS Variables 1 §3)。名前が無く、代わりの値も無ければ
+ * undefined (計算値の時点で無効。§3.1。呼ぶ側は、そのプロパティの指定が無いものとする)。値の中の var() も置き換える (深さ 16 まで。輪は無効)。
+ * 置き換えた値の長さの合計 (と置き換えの回数) が上限 (SVG_MAX_VAR_LENGTH。HTML の側の resolveVars と同じ) を超えたら、無効 (undefined) にする
+ * (Variables 1 §3.3「Safely Handling Overly-Long Variables」)。--v1: var(--v0) var(--v0) var(--v0) var(--v0) を 15 段重ねた 834 バイトの SVG で、
+ * 値が 4^15 字に膨らみ、60 秒・2.7GB を超えていた。budget は、入れ子の置き換えで共有する残りの長さ
+ */
+export function substituteVars(v: string, vars: ReadonlyMap<string, string>, depth = 0, budget: { left: number } = { left: SVG_MAX_VAR_LENGTH }): string | undefined {
+  if (depth > 16) return undefined;
+  let out = '';
+  let p = 0;
+  for (;;) {
+    const k = v.indexOf('var(', p);
+    if (k < 0) return out + v.slice(p);
+    const e = closeParen(v, k + 4);
+    if (e < 0) return undefined;
+    const inner = v.slice(k + 4, e);
+    const comma = (() => {
+      for (let i = 0, d = 0; i < inner.length; i++) {
+        if (inner[i] === '(') d++;
+        else if (inner[i] === ')') d--;
+        else if (inner[i] === ',' && d === 0) return i;
+      }
+      return -1;
+    })();
+    const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
+    const fallback = comma < 0 ? undefined : inner.slice(comma + 1).trim();
+    const own = vars.get(name);
+    // 空の値の置き換えも 1 と数える (長さの増えない置き換えを、指数的な回数だけ繰り返させない)
+    if ((budget.left -= 1) < 0) return undefined;
+    const got = own !== undefined ? substituteVars(own, vars, depth + 1, budget) : undefined;
+    const value = got ?? (fallback !== undefined ? substituteVars(fallback, vars, depth + 1, budget) : undefined);
+    if (value === undefined) return undefined;
+    if ((budget.left -= value.length) < 0) return undefined;
+    out += v.slice(p, k) + value;
+    p = e + 1;
+  }
+}
+
+/** 長さの単位 → 利用者の単位 (px) */
+const PX_PER: Record<string, number> = { px: 1, pt: 4 / 3, pc: 16, mm: 96 / 25.4, cm: 96 / 2.54, in: 96, q: 96 / 101.6 };
+/** 角度の単位 → 度 */
+const DEG_PER: Record<string, number> = { deg: 1, rad: 180 / Math.PI, grad: 0.9, turn: 360 };
+
+/**
+ * calc() (CSS Values 4 §10.1) を数にする。項がすべて同じ種類 (数・長さ・角度・百分率) の式だけを読み、長さは px、角度は deg にして書く。
+ * 読めない式 (百分率と長さを足す式など) は、そのまま残す (そのプロパティは読めない値になる)
+ */
+export function evaluateCalc(v: string): string {
+  let out = '';
+  let p = 0;
+  // 小文字にするのは 1 度だけ、探すのは今の位置から (ループの 1 回ごとに値の全体を search・toLowerCase すると、calc(1) を 4 万個並べた
+  // stroke-dasharray で長さの 2 乗の時間 (32 秒) がかかった)
+  const lower = v.toLowerCase();
+  for (;;) {
+    const k = lower.indexOf('calc(', p);
+    if (k < 0) return out + v.slice(p);
+    const e = closeParen(v, k + 5);
+    if (e < 0) return out + v.slice(p);
+    const r = calcValue(v.slice(k + 5, e));
+    out += v.slice(p, k) + (r ? `${+r.n.toFixed(6)}${r.u}` : v.slice(k, e + 1));
+    p = e + 1;
+  }
+}
+type CalcVal = { n: number; u: '' | 'px' | 'deg' | '%' };
+/** calc() の括弧の入れ子の深さの上限。仕様 (CSS Values 4 §10) に数は無い。手で書く式は数段で、32 段は実在の SVG の届かない深さ */
+const CALC_MAX_DEPTH = 32;
+function calcValue(src: string): CalcVal | undefined {
+  const toks = src.match(/\d*\.?\d+(?:e[-+]?\d+)?(?:[a-z]+|%)?|[-+*/()]|calc\(/gi);
+  if (!toks || toks.join('').replace(/calc\(/gi, '(') !== src.replace(/\s+/g, '').replace(/calc\(/gi, '(')) return undefined;
+  let i = 0;
+  // 括弧・符号の入れ子の深さ。上限 (CALC_MAX_DEPTH) を超えた式は読めない値にする (calc(((((… を数万段重ねた値で、
+  // 呼び出しのスタックが尽きないように)
+  let depth = 0;
+  const atom = (): CalcVal | undefined => {
+    const t = toks[i++];
+    if (t === undefined) return undefined;
+    if (t === '(' || /^calc\($/i.test(t) || t === '-' || t === '+') {
+      if (++depth > CALC_MAX_DEPTH) return undefined;
+      try {
+        if (t === '-' || t === '+') {
+          const v = atom();
+          return v && { n: t === '-' ? -v.n : v.n, u: v.u };
+        }
+        const v = sum();
+        return toks[i++] === ')' ? v : undefined;
+      } finally {
+        depth--;
+      }
+    }
+    const m = /^(\d*\.?\d+(?:e[-+]?\d+)?)([a-z]+|%)?$/i.exec(t);
+    if (!m) return undefined;
+    const n = parseFloat(m[1]);
+    const u = (m[2] ?? '').toLowerCase();
+    if (!u) return { n, u: '' };
+    if (u === '%') return { n, u: '%' };
+    if (PX_PER[u] !== undefined) return { n: n * PX_PER[u], u: 'px' };
+    if (DEG_PER[u] !== undefined) return { n: n * DEG_PER[u], u: 'deg' };
+    return undefined;
+  };
+  const product = (): CalcVal | undefined => {
+    let a = atom();
+    while (a && (toks[i] === '*' || toks[i] === '/')) {
+      const op = toks[i++];
+      const b = atom();
+      if (!b) return undefined;
+      // 掛け算は片方が数、割り算は割る数が数 (CSS Values 4 §10 の型の決まり)
+      if (op === '*') {
+        if (a.u && b.u) return undefined;
+        a = { n: a.n * b.n, u: a.u || b.u };
+      } else {
+        if (b.u || b.n === 0) return undefined;
+        a = { n: a.n / b.n, u: a.u };
+      }
+    }
+    return a;
+  };
+  const sum = (): CalcVal | undefined => {
+    let a = product();
+    while (a && (toks[i] === '+' || toks[i] === '-')) {
+      const op = toks[i++];
+      const b = product();
+      if (!b || b.u !== a.u) return undefined;
+      a = { n: op === '+' ? a.n + b.n : a.n - b.n, u: a.u };
+    }
+    return a;
+  };
+  const r = sum();
+  return r && i === toks.length && Number.isFinite(r.n) ? r : undefined;
+}
 
 /** 色の不透明度: rgb()・rgba() の 4 つ目の成分 (数か百分率。[0, 1] に丸める)。無ければ 1 */
 function alphaOf(v: string): number {
@@ -856,10 +1546,23 @@ function inherit(parent: Style, p: Record<string, string>): Style {
     }
   }
   // fill・stroke: currentColor は語のまま継承するので、宣言の無い要素でも、自分の color で決め直す
-  for (const [k, cur, alpha] of [['fill', 'fillCurrent', 'fillAlpha'], ['stroke', 'strokeCurrent', 'strokeAlpha']] as const) {
+  for (const [k, cur, alpha, frame] of [['fill', 'fillCurrent', 'fillAlpha', 'fillFrame'], ['stroke', 'strokeCurrent', 'strokeAlpha', 'strokeFrame']] as const) {
     const v = p[k];
-    if (v !== undefined && v !== 'inherit') {
+    const ctx = v?.trim() === 'context-fill' ? 'fill' : v?.trim() === 'context-stroke' ? 'stroke' : undefined;
+    if (ctx) {
+      // context-fill・context-stroke: context element の塗り・線 (無ければ塗らない)。模様・グラデーションは、context element の
+      // 座標系と外接矩形で当てる (SVG 2 §13.2)
+      s[k] = parent.context ? parent.context[ctx] : null;
+      const f = parent.context?.[ctx === 'fill' ? 'fillFrame' : 'strokeFrame'];
+      if (f && s[k] && typeof s[k] !== 'string') s[frame] = f;
+      else delete s[frame];
+      delete s[cur];
+      const a = parent.context?.[ctx === 'fill' ? 'fillAlpha' : 'strokeAlpha'];
+      if (a !== undefined && a < 1) s[alpha] = a;
+      else delete s[alpha];
+    } else if (v !== undefined && v !== 'inherit') {
       s[k] = colorOf(v, true, s.color);
+      delete s[frame];
       const current = isCurrentColor(v);
       const a = current ? (s.colorAlpha ?? 1) : alphaOf(v);
       if (current) s[cur] = true;
@@ -896,6 +1599,71 @@ function inherit(parent: Style, p: Record<string, string>): Style {
     const w = p['font-weight'];
     s.fontWeight = w === 'bold' || w === 'bolder' ? 700 : w === 'normal' || w === 'lighter' ? 400 : parseInt(w, 10) || s.fontWeight;
   }
+  // baseline-shift (SVG 1.1 §10.9.2・CSS Inline 3 §4.2.3): 入れ子の要素の分は足し合わせる。百分率は字の大きさ (SVG の line-height) に対して。
+  // sub・super は、書体の上付き・下付きの位置が無いので、CSS Inline 3 §4.2.3 の既定 (親の字の大きさの 1/5 下げる・1/3 上げる)
+  delete s.alignmentBaseline;
+  if (p['baseline-shift'] !== undefined) {
+    const v = p['baseline-shift'].trim();
+    const fs = parent.fontSize;
+    const up = v === 'sub' ? -fs / 5 : v === 'super' ? fs / 3 : v === 'baseline' ? 0 : /%$/.test(v) ? (parseFloat(v) / 100) * fs : /em$/.test(v) ? parseFloat(v) * fs : userLen(v, fs);
+    if (Number.isFinite(up) && up) s.baselineShift = (parent.baselineShift ?? 0) - up;
+  }
+  if (p['dominant-baseline'] !== undefined && p['dominant-baseline'] !== 'inherit') s.dominantBaseline = p['dominant-baseline'].trim();
+  if (p['alignment-baseline'] !== undefined && !/^(auto|baseline|inherit)$/.test(p['alignment-baseline'].trim())) s.alignmentBaseline = p['alignment-baseline'].trim();
+  // visibility (CSS 2.1 §11.2。継承する): hidden・collapse の要素は描かないが、visible の子は描く
+  if (p.visibility !== undefined && p.visibility !== 'inherit') {
+    const v = p.visibility.trim();
+    if (v === 'hidden' || v === 'collapse') s.hidden = true;
+    else if (v === 'visible') delete s.hidden;
+  }
+  // writing-mode (SVG 1.1 §10.7.2 の lr-tb・rl-tb・tb-rl・lr・rl・tb、CSS Writing Modes 3 §2.1 の horizontal-tb・vertical-rl・vertical-lr、
+  // Writing Modes 4 の sideways-rl・sideways-lr) と text-orientation (§5.1。mixed・upright・sideways)、SVG 1.1 の glyph-orientation-vertical
+  // (0 は立てる、90 は寝かせる、auto は mixed)
+  const wm = p['writing-mode']?.trim();
+  if (wm !== undefined && wm !== 'inherit') {
+    if (/^(tb|tb-rl|vertical-rl|vertical-lr)$/.test(wm)) s.vertical = s.vertical ?? 'mixed';
+    else if (/^sideways-(rl|lr)$/.test(wm)) s.vertical = 'sideways';
+    else if (/^(lr|lr-tb|rl|rl-tb|horizontal-tb)$/.test(wm)) delete s.vertical;
+  }
+  const to = p['text-orientation']?.trim();
+  const gov = p['glyph-orientation-vertical']?.trim();
+  if (s.vertical && to && /^(mixed|upright|sideways|sideways-right)$/.test(to)) s.vertical = to === 'sideways-right' ? 'sideways' : (to as 'mixed' | 'upright' | 'sideways');
+  else if (s.vertical && gov) s.vertical = gov === 'auto' ? 'mixed' : /^0(deg)?$/.test(gov) ? 'upright' : /^90(deg)?$/.test(gov) ? 'sideways' : s.vertical;
+  // letter-spacing・word-spacing: normal は 0。em は字の大きさに対して
+  for (const [k, f] of [['letter-spacing', 'letterSpacing'], ['word-spacing', 'wordSpacing']] as const) {
+    const v = p[k]?.trim();
+    if (v === undefined || v === 'inherit') continue;
+    if (v === 'normal') delete s[f];
+    else {
+      const em = /^(-?[\d.]+(?:e-?\d+)?)em$/i.exec(v);
+      const x = em ? parseFloat(em[1]) * s.fontSize : userLen(v, s.fontSize);
+      if (Number.isFinite(x)) s[f] = x;
+    }
+  }
+  // text-decoration (SVG 1.1 §10.12・CSS Text Decoration 3 §2.1 の text-decoration-line): 線の種類と、指定した要素の塗り
+  const deco = p['text-decoration-line'] ?? p['text-decoration'];
+  if (deco !== undefined && deco !== 'inherit' && deco.trim() !== 'none') {
+    const d = { under: /\bunderline\b/.test(deco), over: /\boverline\b/.test(deco), through: /\bline-through\b/.test(deco) };
+    if (d.under || d.over || d.through) s.decorations = [...(parent.decorations ?? []), { ...d, fill: s.fill, opacity: s.fillOpacity * (s.fillAlpha ?? 1) }];
+  }
+  // paint-order (SVG 2 §13.8): normal | [ fill || stroke || markers ]。読めない値は無視する
+  if (p['paint-order'] !== undefined && p['paint-order'] !== 'inherit') {
+    const ws = p['paint-order'].trim().split(/\s+/);
+    const all = ['fill', 'stroke', 'markers'] as const;
+    if (ws.length === 1 && ws[0] === 'normal') delete s.paintOrder;
+    else if (ws.every((w) => (all as readonly string[]).includes(w)) && new Set(ws).size === ws.length) {
+      const order = [...(ws as Array<(typeof all)[number]>), ...all.filter((w) => !ws.includes(w))];
+      if (order.join() === all.join()) delete s.paintOrder;
+      else s.paintOrder = order;
+    }
+  }
+  // font-style (CSS Fonts 4 §2.4): normal | italic | oblique <角度>?
+  if (p['font-style'] !== undefined && p['font-style'] !== 'inherit') {
+    const v = p['font-style'].trim().toLowerCase();
+    if (v === 'normal') delete s.fontStyle;
+    else if (v === 'italic') s.fontStyle = 'italic';
+    else if (/^oblique\b/.test(v)) s.fontStyle = 'oblique';
+  }
   if (p['text-anchor'] === 'start' || p['text-anchor'] === 'middle' || p['text-anchor'] === 'end') s.textAnchor = p['text-anchor'];
   if (p['xml:space'] === 'preserve') s.preserveSpace = true;
   else if (p['xml:space'] === 'default') s.preserveSpace = false;
@@ -916,13 +1684,6 @@ function inherit(parent: Style, p: Record<string, string>): Style {
     s.miterLimit = Number.isFinite(v) && v >= 1 ? v : undefined;
   }
   return s;
-}
-
-/** letter-spacing (属性か style) の長さ。normal・読めない値は 0 */
-function letterSpacingOf(n: XmlNode): number {
-  const v = n.getAttribute?.('letter-spacing') ?? /letter-spacing\s*:\s*([^;]+)/i.exec(n.getAttribute?.('style') ?? '')?.[1];
-  const x = parseFloat(v ?? '');
-  return Number.isFinite(x) ? x : 0;
 }
 
 // ───────────── 本体 ─────────────
@@ -1015,7 +1776,61 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       if (m === undefined) transforms.set(v, (m = parseTransform(v)));
       return m;
     };
+    /**
+     * 要素の変換: transform (属性・<style>・style 属性。スタイルの transform は属性に勝つ: CSS Transforms 1 §7.1) を、transform-origin (§5。
+     * SVG の要素の初期値は 0 0) の点の周りに掛ける (変換 = translate(origin) · transform · translate(−origin))。transform-box (§6。初期値 view-box) は、
+     * 百分率と transform-origin の基準の箱: view-box はいまの viewport (原点は座標の原点)、fill-box・content-box は要素の外接矩形、
+     * stroke-box・border-box は線の太さの半分を外へ広げた外接矩形 (§6: SVG の要素の content-box は fill-box、border-box は stroke-box)。
+     * bbox は要素の外接矩形を求める関数 (無ければ fill-box も view-box で代える)。読めなければ null
+     */
+    const elementTransform = (n: XmlNode, bbox?: () => Box | undefined): M | null => {
+      const p = props(n);
+      const raw = p.transform;
+      if (!raw || raw.trim() === 'none') return ID;
+      const originRaw = p['transform-origin'];
+      const boxKind = (p['transform-box'] ?? 'view-box').trim();
+      const needBox = /%/.test(raw) || originRaw !== undefined;
+      if (!needBox) return tf(raw);
+      let box: Box = { x: 0, y: 0, w: vp.w, h: vp.h };
+      if (boxKind !== 'view-box' && bbox) {
+        const b = bbox();
+        if (b) {
+          box = b;
+          if (boxKind === 'stroke-box' || boxKind === 'border-box') {
+            const st = props(n)['stroke'];
+            const half = st && st !== 'none' ? userLen(props(n)['stroke-width'] ?? '1', Math.hypot(vp.w, vp.h) / Math.SQRT2) / 2 : 0;
+            box = { x: b.x - half, y: b.y - half, w: b.w + 2 * half, h: b.h + 2 * half };
+          }
+        }
+      }
+      const t = parseTransform(raw, box);
+      if (!t || originRaw === undefined) return t;
+      // transform-origin (CSS Transforms 1 §5): 1〜3 個の値 (x y z。z は 2D では使わない)。語 (left・center・right・top・bottom)・長さ・百分率
+      const parts = originRaw.trim().split(/\s+/);
+      let ox: string | undefined;
+      let oy: string | undefined;
+      for (const v of parts.slice(0, 2)) {
+        if ((v === 'top' || v === 'bottom') && oy === undefined) oy = v;
+        else if ((v === 'left' || v === 'right') && ox === undefined) ox = v;
+        else if (ox === undefined) ox = v;
+        else oy = v;
+      }
+      const pos = (v: string | undefined, start: number, size: number, lo: string, hi: string) => {
+        if (v === undefined || v === 'center') return start + size / 2;
+        if (v === lo) return start;
+        if (v === hi) return start + size;
+        if (/%$/.test(v)) return start + (parseFloat(v) / 100) * size;
+        const l = userLen(v, size);
+        return start + l;
+      };
+      const x = pos(ox, box.x, box.w, 'left', 'right');
+      const y = pos(oy, box.y, box.h, 'top', 'bottom');
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return mul(mul([1, 0, 0, 1, x, y], t), [1, 0, 0, 1, -x, -y]);
+    };
     let patternNest = 0;
+    /** filter を画素で計算する予算 (この SVG の分。FilterRasterRequest の budget) */
+    const filterBudget: { used?: number } = {};
     /** 要素 → 親の要素 (stop-color・flood-color の currentColor を、その要素の color で決めるため) */
     const parentOf = new Map<XmlNode, XmlNode>();
     const index = (n: XmlNode) => {
@@ -1036,7 +1851,62 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       for (const c of Array.from(n.childNodes)) if (c.nodeType === 1) collectCss(c);
     };
     collectCss(root);
-    const css = cssText.trim() ? indexCss(parseCss(cssText)) : undefined;
+    // @media は、SVG の画像の大きさ (viewBox の幅・高さ) の印刷の画面として照らす
+    const media: MediaEnv = { width: viewBox[2], height: viewBox[3] };
+    const css = cssText.trim() ? indexCss(parseCss(cssText, media)) : undefined;
+    /** 外のファイルの要素の、そのファイルの <style> の規則 (use で外のファイルを指したとき) */
+    const extCss = new Map<XmlNode, CssIndex | undefined>();
+    /** 読んだ外のファイル (名前 → 根の要素と id の索引。読めなければ null) */
+    const extDocs = new Map<string, { root: XmlNode; ids: Map<string, XmlNode> } | null>();
+    /**
+     * use の参照先。同じ文書の #id のほか、外のファイル (file.svg#id。#id が無ければ、そのファイルの根) を opts.resource で読む
+     * (SVG 2 の use は、外の文書の要素も指せる)。外のファイルの中の #id の参照 (グラデーションなど) は、そのファイルの id で引けるように、
+     * 同じ id の無いものを id の索引に足す。読むファイルは 8 つまで
+     */
+    const useRef = (n: XmlNode): XmlNode | undefined => {
+      const raw = (n.getAttribute?.('href') ?? n.getAttribute?.('xlink:href') ?? '').trim();
+      const k = raw.indexOf('#');
+      const file = k < 0 ? raw : raw.slice(0, k);
+      const id = k < 0 ? '' : raw.slice(k + 1);
+      if (!file) return byId.get(id);
+      if (/^data:/i.test(file) || !opts.resource) return undefined;
+      let ext = extDocs.get(file);
+      if (ext === undefined) {
+        ext = null;
+        const text = extDocs.size < 8 ? opts.resource(file) : undefined;
+        if (text !== undefined && !svgNestTooDeep(text)) {
+          const d = parse(text);
+          const r = Array.from(d.childNodes).find((c) => c.nodeType === 1);
+          if (r && nm(r) === 'svg') {
+            const ids = new Map<string, XmlNode>();
+            let extText = '';
+            const walkExt = (e: XmlNode) => {
+              visitsLeft++;
+              const eid = e.getAttribute?.('id');
+              if (eid && !ids.has(eid)) ids.set(eid, e);
+              if (nm(e) === 'style') extText += `${e.textContent ?? ''}\n`;
+              for (const c of Array.from(e.childNodes))
+                if (c.nodeType === 1) {
+                  parentOf.set(c, e);
+                  walkExt(c);
+                }
+            };
+            walkExt(r);
+            const ix = extText.trim() ? indexCss(parseCss(extText, media)) : undefined;
+            const mark = (e: XmlNode) => {
+              extCss.set(e, ix);
+              for (const c of Array.from(e.childNodes)) if (c.nodeType === 1) mark(c);
+            };
+            mark(r);
+            for (const [i2, e] of ids) if (!byId.has(i2)) byId.set(i2, e);
+            ext = { root: r, ids };
+          }
+        }
+        extDocs.set(file, ext);
+      }
+      if (!ext) return undefined;
+      return id ? ext.ids.get(id) : ext.root;
+    };
     /**
      * 要素の書式 (属性・<style> の規則・style 属性) は、要素ごとに 1 度だけ読んで覚える (1 回の訪問で何度も引き、use で置くたびにも引く)。
      * 返したものは書き換えない。seen・weight は visit が使う
@@ -1044,8 +1914,64 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     const entries = new Map<XmlNode, { p: Record<string, string>; seen?: boolean; weight?: number }>();
     const entryOf = (n: XmlNode) => {
       let e = entries.get(n);
-      if (!e) entries.set(n, (e = { p: propsOf(n, css) }));
+      if (!e) entries.set(n, (e = { p: resolveValues(n, propsOf(n, extCss.has(n) ? extCss.get(n) : css)) }));
       return e;
+    };
+    /** 要素のカスタムプロパティ (受け継ぐ。CSS Variables 1 §2): 親のものに、自分の --名前 の宣言を重ねる */
+    const customKept = new Map<XmlNode, ReadonlyMap<string, string>>();
+    const NO_VARS: ReadonlyMap<string, string> = new Map();
+    const customOf = (n: XmlNode | undefined): ReadonlyMap<string, string> => {
+      if (!n) return NO_VARS;
+      let c = customKept.get(n);
+      if (c) return c;
+      const parent = customOf(parentOf.get(n));
+      const own = Object.entries(entryOf(n).p).filter(([k]) => k.startsWith('--'));
+      c = own.length ? new Map([...parent, ...own]) : parent;
+      customKept.set(n, c);
+      return c;
+    };
+    /**
+     * 1 つの SVG で var() を置き換えた長さの合計の上限 (1 つの値の上限の 8 倍)。1 つの値は上限に収まっても (--v: 1M 字)、
+     * それを使う要素がそれぞれ自分の --名前 を持つと (受け継いだ表を使い回せないので) 要素の数だけ置き換え直し、30KB の SVG で 1GB を使えた。
+     * 同じ表 (受け継いだもの) で同じ値を置き換えるときは、覚えた結果を使い回し、合計に数えない (実在の絵の、同じ var() を引く多数の要素はこちら)。
+     * 尽きたら、それより後の var() を含む値は無効 (Variables 1 §3.3 と同じ扱い)
+     */
+    const varTotal = { left: 8 * SVG_MAX_VAR_LENGTH };
+    const varKept = new WeakMap<ReadonlyMap<string, string>, Map<string, string | undefined>>();
+    const substituteVarsKept = (v: string, vars: ReadonlyMap<string, string>): string | undefined => {
+      let kept = varKept.get(vars);
+      if (!kept) varKept.set(vars, (kept = new Map()));
+      if (kept.has(v)) return kept.get(v);
+      const budget = { left: Math.min(SVG_MAX_VAR_LENGTH, varTotal.left) };
+      const start = budget.left;
+      const r = varTotal.left > 0 ? substituteVars(v, vars, 0, budget) : undefined;
+      varTotal.left -= start - budget.left;
+      kept.set(v, r);
+      return r;
+    };
+    /** 値の var() (CSS Variables 1 §3) と calc() (CSS Values 4 §10.1) を解く。var() の解けない値のプロパティは、指定が無いものとする */
+    const resolveValues = (n: XmlNode, p: Record<string, string>): Record<string, string> => {
+      if (!Object.values(p).some((v) => v.includes('var(') || /calc\(/i.test(v))) return p;
+      const out: Record<string, string> = {};
+      let vars: ReadonlyMap<string, string> | undefined;
+      for (const [k, v0] of Object.entries(p)) {
+        if (k.startsWith('--')) {
+          out[k] = v0;
+          continue;
+        }
+        let v: string | undefined = v0;
+        if (v.includes('var(')) {
+          // 自分の --名前 の宣言は、entryOf がまだ返せないので、ここで重ねる
+          if (!vars) {
+            const own = Object.entries(p).filter(([q]) => q.startsWith('--'));
+            vars = own.length ? new Map([...customOf(parentOf.get(n)), ...own]) : customOf(parentOf.get(n));
+          }
+          v = substituteVarsKept(v, vars);
+        }
+        if (v === undefined) continue;
+        out[k] = /calc\(/i.test(v) ? evaluateCalc(v) : v;
+      }
+      return out;
     };
     const props = (n: XmlNode) => entryOf(n).p;
     /** 要素の color (祖先をさかのぼって最初の指定。無ければ初期値の黒)。図形でない要素 (stop・フィルタの要素) の currentColor に使う */
@@ -1223,7 +2149,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     };
     /**
      * 塗りの模様 (pattern)。patternUnits (既定 objectBoundingBox)・patternContentUnits・viewBox・patternTransform・href の継承。
-     * 中身は単色の塗り・線だけ (透明度・グラデーション・切り抜き・入れ子の模様があればラスタライズ)
+     * 中身はほかの図形と同じに描く (マスク・vector-effect があればラスタライズ)
      */
     const patternOf = (id: string, local: Seg[], mm: M): SvgPattern | null => {
       const g = byId.get(id)!;
@@ -1269,32 +2195,42 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         patternNest--;
         target = saved;
       }
-      if (inner.some((sh) => sh.fillPaint || sh.fillPattern || sh.strokePaint || sh.clips || sh.blend || sh.fillOpacity < 1 || sh.strokeOpacity < 1)) throw new Unsupported('pattern content');
+      // マスク・大きさの変わらない線や形 (vector-effect) は、タイルの中では描けない
+      if (inner.some((sh) => sh.masks || sh.nonScalingStroke || sh.nonScalingAnchor)) throw new Unsupported('pattern content');
       return { width: w, height: h, matrix: mul(mul(mm, pt), [1, 0, 0, 1, x, y]), shapes: inner };
     };
 
-    /** clip-path="url(#id)" の切り抜き (clipPathUnits=userSpaceOnUse のみ) */
-    const clipOf = (id: string, mm: M): SvgClip | null => {
+    /**
+     * clip-path="url(#id)" の切り抜き。clipPathUnits が objectBoundingBox なら、中身の座標は要素の外接矩形 (bbox。要素の座標系) の
+     * 0〜1 (CSS Masking 1 §6.1。外接矩形の無い要素は描かない)
+     */
+    const clipOf = (id: string, mm0: M, bbox: () => Box | undefined): SvgClip | null => {
       const cp = byId.get(id);
       if (!cp || nm(cp) !== 'clippath') return null;
-      if ((cp.getAttribute?.('clipPathUnits') ?? 'userSpaceOnUse') !== 'userSpaceOnUse') throw new Unsupported('clipPathUnits');
+      const units = cp.getAttribute?.('clipPathUnits') ?? 'userSpaceOnUse';
+      const ct = elementTransform(cp);
+      if (!ct) throw new Unsupported('transform');
+      // clipPath の transform は要素の座標系で掛け、外接矩形の単位はその内側 (ブラウザの描き方と同じ)
+      let base = mul(mm0, ct);
+      if (units === 'objectBoundingBox') {
+        const b = bbox();
+        if (!b) return { segs: [], evenOdd: false };
+        base = mul(base, [b.w, 0, 0, b.h, b.x, b.y]);
+      } else if (units !== 'userSpaceOnUse') throw new Unsupported('clipPathUnits');
       // 同じ clipPath を同じ座標系で使う切り抜きは、1 つを共有する (図形ごとに clip-path を付けた絵で、付けた数だけ形を作り直さない)
-      const key = `${id}\0${mm.join(' ')}`;
+      const key = `${id}\0${base.join(' ')}`;
       const shared = clipsKept.get(key);
       if (shared) return shared;
-      const ct = tf(cp.getAttribute?.('transform'));
-      if (!ct) throw new Unsupported('transform');
-      const base = mul(mm, ct);
       const segs: Seg[] = [];
       let evenOdd = false;
       const add = (n: XmlNode, m: M, depth: number) => {
         visit(n);
         const name = nm(n);
-        const tr = tf(n.getAttribute?.('transform'));
+        const tr = elementTransform(n);
         if (!tr) throw new Unsupported('transform');
         const m2 = mul(m, tr);
         if (name === 'use') {
-          const ref = byId.get(hrefOf(n));
+          const ref = useRef(n);
           if (ref && depth < 8) add(ref, mul(m2, [1, 0, 0, 1, userLen(n.getAttribute?.('x'), vbW), userLen(n.getAttribute?.('y'), vbH)]), depth + 1);
           return;
         }
@@ -1302,7 +2238,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           for (const c of Array.from(n.childNodes)) if (c.nodeType === 1) add(c, m2, depth + 1);
           return;
         }
-        if (UNSUPPORTED.has(name)) throw new Unsupported(name);
+        if (CLIP_UNSUPPORTED.has(name)) throw new Unsupported(name);
         const geo = geometryOf(n, name);
         if (!geo) return;
         if (props(n)['clip-rule'] === 'evenodd') evenOdd = true;
@@ -1315,100 +2251,400 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     };
     const clipsKept = new Map<string, SvgClip>();
     /**
-     * 図形に付ける切り抜きの線分を「参照で増える分」に数える。描く側は、切り抜きの形を図形ごとに書くので、5 万点の切り抜きを 400 個の
-     * 図形に付けると 2000 万の線分になる。切り抜きごとに、最初の 1 つの図形の分は数えない
+     * 描くときに書く切り抜きの線分を「参照で増える分」に数える (読み終えた図形について)。描く側は、続く図形で同じ切り抜きを 1 度だけ書く
+     * (clipRuns) ので、同じ手順で開く切り抜きを数える。切り抜きごとに、最初に開く 1 回の分は数えない。5 万点の切り抜きを 400 個の図形に
+     * 付けても 1 度だけ書くが、2 つの切り抜きを交互に付けると、図形ごとに開き直すことになるので数える。
+     * グループの中身・模様の中身 (使うたびに描く) も同じに数え、マスクの中身は、マスクごとに 1 度 (描く側が使い回す)
      */
     const clipsUsed = new Set<SvgClip>();
-    const chargeClips = (cl: SvgClip[]) => {
-      for (const c of cl) {
-        if (clipsUsed.has(c)) charge(c.segs.length);
-        else clipsUsed.add(c);
-      }
+    const masksSeen = new Set<SvgMask>();
+    const chargeClipRuns = (list: readonly SvgShape[]) => {
+      const { steps } = clipRuns(list);
+      list.forEach((sh, i) => {
+        for (const c of steps[i].open) {
+          if (clipsUsed.has(c)) charge(c.segs.length);
+          else clipsUsed.add(c);
+        }
+        if (sh.group) chargeClipRuns(sh.group.shapes);
+        if (sh.fillPattern) chargeClipRuns(sh.fillPattern.shapes);
+        for (const mk of sh.masks ?? []) {
+          if (masksSeen.has(mk)) continue;
+          masksSeen.add(mk);
+          chargeClipRuns(mk.shapes);
+        }
+      });
     };
 
     /** filter を近似して描き直している要素 */
     const filtering = new Set<XmlNode>();
     /**
-     * filter の要素を読み、近似のしかたを決める。shadow: 影 (ずらす量・ぼかしの幅・色 (無ければ図形の色)・不透明度)、
-     * source: 元の図形も描くか。扱えない filter なら Unsupported
+     * filter の要素を読み、近似のしかたを決める (Filter Effects 1)。filter の結果を「層」の並び (下から順) として求める:
+     *  - source: 元の図形 (ずらす量・ぼかしの幅・色の変換 recolor・不透明度を掛けて描く)
+     *  - alpha: 元の図形の形を 1 色で塗った影 (SourceAlpha から作ったもの。色・不透明度)
+     *  - flood: 領域いっぱいの単色 (feFlood。feComposite の in で、影の形の色になる)
+     * ぼかしは近似 (blurredCopies)。feComposite の in・out・atop は、図形で正しく描ける組み合わせだけを近似する (fecomposite の説明)。
+     * 扱えない filter なら Unsupported (画素の計算 rasterFilter が渡っていればそれに回し、無ければ仮の枠)
+     *  - uncut: feComposite の out で、元の図形の形 (ずらさない SourceAlpha など) を切り抜かずに描いた層。
+     *    filter の結果で、後ろに元の図形 (不透明・ずらさない) が重なって、切り抜くはずの所が隠れるときだけ使える
+     *  - cut: 層を切り抜く矩形 (要素の座標。どれにも入る所だけを描く)。filter の要素の部分領域 (Filter Effects 1 §9.4) が
+     *    filter の領域を覆わないとき、要素の結果を部分領域で切る。後の要素がずらせば、矩形も一緒にずらす。
+     *    切った層をぼかすと、切った縁がぼけるので図形では描けない (Unsupported にして、画素の計算に回す)
      */
-    const filterOf = (ref: string): { shadow?: { dx: number; dy: number; std: number; color?: string; opacity: number }; source: boolean } => {
+    type FilterLayer =
+      | { kind: 'source'; dx: number; dy: number; std: number; opacity: number; recolor: Array<(c: number[]) => number[]>; blend?: SvgBlend; uncut?: true; cut?: Box[] }
+      | { kind: 'alpha'; dx: number; dy: number; std: number; color: number[]; opacity: number; blend?: SvgBlend; uncut?: true; cut?: Box[] }
+      | { kind: 'flood'; color: number[]; opacity: number; blend?: SvgBlend; cut?: Box[] };
+    /**
+     * filter の領域 (filterUnits の既定は objectBoundingBox、x・y・width・height の既定は −10%・−10%・120%・120%。Filter Effects 1 §8)。
+     * box は要素の外接矩形を受け取って、領域 (要素の座標) を返す関数
+     */
+    const filterRegion = (f: XmlNode) => (box: () => Box | undefined, view: { w: number; h: number }): Box | undefined => {
+      const ra = (k: string, d: string) => (f.getAttribute?.(k) ?? d).trim();
+      if ((f.getAttribute?.('filterUnits') ?? 'objectBoundingBox') === 'userSpaceOnUse')
+        return { x: ulen(ra('x', '-10%'), view.w), y: ulen(ra('y', '-10%'), view.h), w: ulen(ra('width', '120%'), view.w), h: ulen(ra('height', '120%'), view.h) };
+      const b = box();
+      if (!b) return undefined;
+      const fr = (k: string, d: string) => (/%$/.test(ra(k, d)) ? parseFloat(ra(k, d)) / 100 : parseFloat(ra(k, d)));
+      return { x: b.x + fr('x', '-10%') * b.w, y: b.y + fr('y', '-10%') * b.h, w: fr('width', '120%') * b.w, h: fr('height', '120%') * b.h };
+    };
+    /**
+     * filter を読む。box は要素の外接矩形を求める関数、view は viewport の幅・高さ (filter の領域と、要素の部分領域の百分率に使う)
+     */
+    const filterOf = (ref: string, box: () => Box | undefined, view: { w: number; h: number }): { layers: FilterLayer[]; region: ReturnType<typeof filterRegion>; raster?: { prims: (image: (e: XmlNode, box: Box) => SvgShape[] | undefined) => FilterRasterRequest['prims']; obb: boolean } } => {
       const u = /url\(\s*['"]?#([^'")\s]+)/.exec(ref);
       const f = u ? byId.get(u[1]) : undefined;
       if (!f || nm(f) !== 'filter') throw new Unsupported('filter');
-      if ((f.getAttribute?.('primitiveUnits') ?? 'userSpaceOnUse') !== 'userSpaceOnUse') throw new Unsupported('filter primitiveUnits');
+      const obbUnits = (f.getAttribute?.('primitiveUnits') ?? 'userSpaceOnUse') === 'objectBoundingBox';
       const prims = Array.from(f.childNodes).filter((c) => c.nodeType === 1);
       const a = (e: XmlNode, k: string) => e.getAttribute?.(k) ?? '';
       const num = (e: XmlNode, k: string, d = 0) => {
         const v = parseFloat(a(e, k));
         return Number.isFinite(v) ? v : d;
       };
-      const color = (e: XmlNode) => {
+      const nums = (v: string) => v.split(/[\s,]+/).filter(Boolean).map(Number).filter(Number.isFinite);
+      /** #rrggbb → [r, g, b] (0〜1)。読めない色 (cmyk など) は Unsupported */
+      const rgbOf = (c: string | null | undefined): number[] => {
+        const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c ?? '');
+        if (!m) throw new Unsupported('filter color');
+        return [1, 2, 3].map((k) => parseInt(m[k], 16) / 255);
+      };
+      const floodOf = (e: XmlNode): { color: number[]; opacity: number } => {
         const c = props(e)['flood-color'] ?? a(e, 'flood-color');
-        return c ? ((colorOf(c, false, isCurrentColor(c) ? colorAt(e) : undefined) as string | null) ?? undefined) : '#000000';
-      };
-      const opacityOf = (e: XmlNode) => {
+        const col = c ? (colorOf(c, false, isCurrentColor(c) ? colorAt(e) : undefined) as string | null) : '#000000';
         const v = parseFloat(props(e)['flood-opacity'] ?? a(e, 'flood-opacity'));
-        return Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 1;
+        const op = (Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 1) * (col ? alphaOf(c ?? '') : 0);
+        return { color: rgbOf(col ?? '#000000'), opacity: op };
       };
-      let dx = 0;
-      let dy = 0;
-      let std = 0;
-      let col: string | undefined;
-      let opac = 1;
-      let alphaSource = false;
-      let merged = false;
-      let source = false;
+      // color-interpolation-filters (継承する。初期値 linearRGB。Filter Effects 1 §10): 色を変える計算を、線形の RGB でするか sRGB でするか
+      const linearOf = (e: XmlNode) => {
+        for (let n: XmlNode | undefined = e; n; n = parentOf.get(n)) {
+          const v = (props(n)['color-interpolation-filters'] ?? n.getAttribute?.('color-interpolation-filters') ?? '').trim();
+          if (v === 'sRGB' || v === 'srgb') return false;
+          if (v === 'linearRGB' || v === 'linearrgb') return true;
+        }
+        return true;
+      };
+      const toLin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+      const toSrgb = (c: number) => (c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055);
+      const clamp = (x: number) => Math.min(1, Math.max(0, x));
+      /** 色 (sRGB の r, g, b と不透明度 a) を変える関数を、color-interpolation-filters の色空間で fn を当てるものにする */
+      const inSpace = (e: XmlNode, fn: (c: number[]) => number[]) => {
+        const lin = linearOf(e);
+        return (c: number[]) => {
+          const x = fn(lin ? [toLin(c[0]), toLin(c[1]), toLin(c[2]), c[3]] : c).map(clamp);
+          return lin ? [toSrgb(x[0]), toSrgb(x[1]), toSrgb(x[2]), x[3]] : x;
+        };
+      };
+      /**
+       * feColorMatrix (Filter Effects 1 §9.6。2018-12-18 の WD) の行列 (4 行 5 列を並べた 20 個)。
+       * saturate・hueRotate の係数 (0.213・0.715・0.072 など) は §9.6 の行列のとおりで、SVG 1.1 §15.10 と同じ
+       * (§9.6 の a00 の式だけ 0.2127・0.7873 と書くが、同じ節の行列は 0.213・0.787)。
+       * luminanceToAlpha は §9.6 の 0.2126・0.7152・0.0722 (SVG 1.1 §15.10 は 0.2125・0.7154・0.0721。差は 1/255 より小さい)
+       */
+      const colorMatrix = (e: XmlNode): number[] => {
+        const type = a(e, 'type') || 'matrix';
+        const v = nums(a(e, 'values'));
+        if (type === 'matrix') return v.length === 20 ? v : [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+        if (type === 'saturate') {
+          const s = v.length ? v[0] : 1;
+          return [0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0, 0, 0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0, 0, 0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s, 0, 0, 0, 0, 0, 1, 0];
+        }
+        if (type === 'hueRotate') {
+          const t = ((v.length ? v[0] : 0) * Math.PI) / 180;
+          const c = Math.cos(t);
+          const s = Math.sin(t);
+          return [
+            0.213 + c * 0.787 - s * 0.213, 0.715 - c * 0.715 - s * 0.715, 0.072 - c * 0.072 + s * 0.928, 0, 0,
+            0.213 - c * 0.213 + s * 0.143, 0.715 + c * 0.285 + s * 0.14, 0.072 - c * 0.072 - s * 0.283, 0, 0,
+            0.213 - c * 0.213 - s * 0.787, 0.715 - c * 0.715 + s * 0.715, 0.072 + c * 0.928 + s * 0.072, 0, 0,
+            0, 0, 0, 1, 0,
+          ];
+        }
+        if (type === 'luminanceToAlpha') return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.2126, 0.7152, 0.0722, 0, 0];
+        throw new Unsupported('filter feColorMatrix');
+      };
+      const applyMatrix = (m: number[]) => (c: number[]) => [0, 1, 2, 3].map((r) => m[r * 5] * c[0] + m[r * 5 + 1] * c[1] + m[r * 5 + 2] * c[2] + m[r * 5 + 3] * c[3] + m[r * 5 + 4]);
+      /** feComponentTransfer (§9.7) の、成分ごとの関数 (feFuncR・G・B・A。無い成分はそのまま) */
+      const componentTransfer = (e: XmlNode) => {
+        const fns = ['fefuncr', 'fefuncg', 'fefuncb', 'fefunca'].map((name) => {
+          const fn = Array.from(e.childNodes).find((c) => c.nodeType === 1 && nm(c) === name);
+          if (!fn) return (x: number) => x;
+          const t = a(fn, 'type');
+          const tv = nums(a(fn, 'tableValues'));
+          if (t === 'linear') return (x: number) => num(fn, 'slope', 1) * x + num(fn, 'intercept', 0);
+          if (t === 'gamma') return (x: number) => num(fn, 'amplitude', 1) * x ** num(fn, 'exponent', 1) + num(fn, 'offset', 0);
+          if (t === 'table' && tv.length) {
+            const n = tv.length - 1;
+            return (x: number) => {
+              if (!n) return tv[0];
+              const k = Math.min(Math.floor(x * n), n - 1);
+              return tv[k] + (x - k / n) * n * (tv[k + 1] - tv[k]);
+            };
+          }
+          if (t === 'discrete' && tv.length) return (x: number) => tv[Math.min(Math.floor(x * tv.length), tv.length - 1)];
+          return (x: number) => x;
+        });
+        return (c: number[]) => c.map((x, k) => fns[k](x));
+      };
+      /** 層の色 (不透明度つき) を fn で変える */
+      const recolorLayer = (l: FilterLayer, fn: (c: number[]) => number[]): FilterLayer => {
+        if (l.kind === 'source') return { ...l, recolor: [...l.recolor, fn] };
+        const c = fn([...l.color, l.opacity]);
+        return { ...l, color: c.slice(0, 3), opacity: c[3] };
+      };
+      const results = new Map<string, FilterLayer[]>();
+      let prev: FilterLayer[] | undefined;
+      // in・in2 (§9.2): 名前の無い・無い結果を指すものは、前の要素の結果 (最初の要素なら SourceGraphic)
+      const input = (e: XmlNode, k: 'in' | 'in2'): FilterLayer[] => {
+        const v = a(e, k).trim();
+        if (v === 'SourceGraphic') return [{ kind: 'source', dx: 0, dy: 0, std: 0, opacity: 1, recolor: [] }];
+        if (v === 'SourceAlpha') return [{ kind: 'alpha', dx: 0, dy: 0, std: 0, color: [0, 0, 0], opacity: 1 }];
+        // BackgroundImage・BackgroundAlpha は、描くものが無い (Filter Effects 1 では透明の黒)
+        if (v === 'BackgroundImage' || v === 'BackgroundAlpha') return [];
+        if (v === 'FillPaint' || v === 'StrokePaint') throw new Unsupported(`filter ${v}`);
+        const r = v ? results.get(v) : undefined;
+        if (r) return r;
+        return prev ?? [{ kind: 'source', dx: 0, dy: 0, std: 0, opacity: 1, recolor: [] }];
+      };
+      // 切り抜かずに描いた層 (uncut) をずらす・ぼかすと、切り抜くはずの所が元の図形からはみ出るので、近似しない
+      const movable = (l: FilterLayer, moved: boolean) => {
+        if (moved && l.kind !== 'flood' && l.uncut) throw new Unsupported('filter feComposite out');
+      };
+      /** 切り抜く矩形を (dx, dy) ずらす (部分領域で切った後にずらした結果は、切った所ごと動く) */
+      const shiftCut = (cut: Box[] | undefined, dx: number, dy: number) => (cut ? { cut: cut.map((c) => ({ ...c, x: c.x + dx, y: c.y + dy })) } : {});
+      /** 2 つの層の切り抜く矩形を合わせる (両方の中だけを描く) */
+      const bothCuts = (a?: Box[], b?: Box[]) => (a || b ? { cut: [...(a ?? []), ...(b ?? [])] } : {});
+      const shift = (ls: FilterLayer[], dx: number, dy: number) =>
+        ls.map((l) => (movable(l, !!(dx || dy)), l.kind === 'flood' ? { ...l, ...shiftCut(l.cut, dx, dy) } : { ...l, dx: l.dx + dx, dy: l.dy + dy, ...shiftCut(l.cut, dx, dy) }));
+      const blur = (ls: FilterLayer[], s: number) =>
+        ls.map((l) => {
+          movable(l, !!s);
+          // 部分領域で切った層をぼかすと、切った縁もぼける (切り抜きの図形では描けない)
+          if (s && l.cut) throw new Unsupported('filter subregion');
+          return l.kind === 'flood' ? l : { ...l, std: Math.hypot(l.std, s) };
+        });
+      /** 影の形 (in2 の層) を、色 (flood) で塗った層にする (feComposite の in)。色の層を部分領域で切っていれば、その中だけ */
+      const paintShape = (flood: { color: number[]; opacity: number; cut?: Box[] }, shape: FilterLayer[]) =>
+        shape.flatMap((s): FilterLayer[] =>
+          s.kind === 'flood'
+            ? [{ kind: 'flood', color: flood.color, opacity: flood.opacity * s.opacity, ...bothCuts(flood.cut, s.cut) }]
+            : [{ kind: 'alpha', dx: s.dx, dy: s.dy, std: s.std, color: flood.color, opacity: flood.opacity * s.opacity, ...(s.uncut ? { uncut: true as const } : {}), ...bothCuts(flood.cut, s.cut) }],
+        );
+      /**
+       * 元の図形と同じ形の層 (ずらさず、ぼかさない SourceGraphic・SourceAlpha。色を変えた SourceGraphic は、不透明度が変わりうるので除く。
+       * 部分領域で切った層も除く)
+       */
+      const isSelf = (l: FilterLayer) => l.kind !== 'flood' && !l.uncut && !l.cut && !l.dx && !l.dy && !l.std && l.opacity > 0 && (l.kind === 'alpha' || !l.recolor.length);
+      /** 元の図形を不透明に覆う層 (filter の結果の中で、切り抜かずに描いた層 uncut の上にあれば、切り抜くはずの所を隠す) */
+      const covers = (l: FilterLayer) => isSelf(l) && l.opacity >= 1 && !l.blend;
+      const vectorLayers = (): FilterLayer[] => {
+      if (obbUnits) throw new Unsupported('filter primitiveUnits');
+      // 要素の部分領域 (Filter Effects 1 §9.4。読み方は画素の計算と同じ。svgFilterSubregion.ts)。filter の領域 (要素の座標) は、
+      // 部分領域を書いた要素が出てきたときに求める。subs は名前を付けた結果の部分領域、prevSub は前の要素の結果の部分領域
+      // (どちらも、部分領域を書いた要素が出てくるまでは空で、filter の領域と同じ)
+      let region: Box | undefined | null = null;
+      const subs = new Map<string, Box>();
+      let prevSub: Box | undefined;
+      const attrOf = (n: XmlNode) => (k: string) => n.getAttribute?.(k) ?? undefined;
+      const mergeNodes = (e: XmlNode) => Array.from(e.childNodes).filter((c) => c.nodeType === 1 && nm(c) === 'femergenode');
+      /** a が b の中にあるか (計算の誤差は許す) */
+      const within = (a: Box, b: Box, eps: number) => a.x >= b.x - eps && a.y >= b.y - eps && a.x + a.w <= b.x + b.w + eps && a.y + a.h <= b.y + b.h + eps;
       for (const e of prims) {
+        let out: FilterLayer[];
         switch (nm(e)) {
-          case 'fedropshadow':
-            dx = num(e, 'dx', 2);
-            dy = num(e, 'dy', 2);
-            std = num(e, 'stdDeviation', 2);
-            col = color(e);
-            opac = opacityOf(e);
-            return { shadow: { dx, dy, std, color: col, opacity: opac }, source: true };
-          case 'fegaussianblur':
-            std = num(e, 'stdDeviation');
-            if (a(e, 'in') === 'SourceAlpha') alphaSource = true;
+          case 'fedropshadow': {
+            // §9.12: in をずらしてぼかした影を、flood-color・flood-opacity で塗り、in の下に置く
+            const src = input(e, 'in');
+            const fl = floodOf(e);
+            const sd = nums(a(e, 'stdDeviation'));
+            const shadow = blur(shift(paintShape(fl, src), num(e, 'dx', 2), num(e, 'dy', 2)), sd.length ? sd[0] : 2);
+            out = [...shadow, ...src];
             break;
+          }
+          case 'fegaussianblur': {
+            const sd = nums(a(e, 'stdDeviation'));
+            out = blur(input(e, 'in'), sd.length ? sd[0] : 0);
+            break;
+          }
           case 'feoffset':
-            dx = num(e, 'dx');
-            dy = num(e, 'dy');
-            if (a(e, 'in') === 'SourceAlpha') alphaSource = true;
+            out = shift(input(e, 'in'), num(e, 'dx'), num(e, 'dy'));
             break;
-          case 'feflood':
-            col = color(e);
-            opac = opacityOf(e);
+          case 'feflood': {
+            const fl = floodOf(e);
+            out = fl.opacity > 0 ? [{ kind: 'flood', ...fl }] : [];
             break;
-          case 'fecomposite':
-          case 'feblend':
+          }
+          case 'fecolormatrix':
+            out = input(e, 'in').map((l) => recolorLayer(l, inSpace(e, applyMatrix(colorMatrix(e)))));
             break;
-          case 'fecomponenttransfer': {
-            // 影の濃さ (feFuncA の linear の slope・table の最大)
-            for (const fn of Array.from(e.childNodes).filter((c) => c.nodeType === 1 && nm(c) === 'fefunca')) {
-              const t = a(fn, 'type');
-              if (t === 'linear') opac *= num(fn, 'slope', 1);
-              else if (t === 'table' || t === 'discrete') opac *= Math.max(...a(fn, 'tableValues').split(/[\s,]+/).filter(Boolean).map(Number), 0);
-              else throw new Unsupported('filter');
-            }
+          case 'fecomponenttransfer':
+            out = input(e, 'in').map((l) => recolorLayer(l, inSpace(e, componentTransfer(e))));
+            break;
+          case 'fecomposite': {
+            // §9.8 (Porter-Duff): in = in の in2 の中の部分、out = in の in2 の外の部分、atop = in2 の上に、in の in2 の中の部分。
+            // 図形で正しく描けるのは、次の組み合わせだけ (ほかは Unsupported にして、画素の計算に回す):
+            //  - in・atop で、in が単色 (flood): in2 の形をその色で塗る (paintShape)
+            //  - in・atop で、in も in2 も元の図形と同じ形 (isSelf): in の中の部分は in そのもの (in2 の不透明度を掛ける)
+            //  - out で、in2 が元の図形と同じ形: 切り抜かずに描き (uncut)、filter の結果で後ろに元の図形が重なって隠れるときだけ使う
+            //    (Figma などの書き出す影。終わりで確かめる)
+            //  - in2 が空 (BackgroundAlpha など): in・atop は空、out は in のまま
+            const op = a(e, 'operator') || 'over';
+            const i1 = input(e, 'in');
+            const i2 = input(e, 'in2');
+            const self2 = i2.length === 1 && isSelf(i2[0]) ? i2[0] : undefined;
+            /** in の層の、in2 の中の部分 (in・atop) */
+            const inside = () =>
+              i1.flatMap((l): FilterLayer[] => {
+                if (l.kind === 'flood') return paintShape(l, i2);
+                if (self2 && isSelf(l)) return [{ ...l, opacity: l.opacity * self2.opacity }];
+                throw new Unsupported(`filter feComposite ${op}`);
+              });
+            if (op === 'over') out = [...i2, ...i1];
+            else if (!i2.length && (op === 'in' || op === 'atop' || op === 'out')) out = op === 'out' ? i1 : [];
+            else if (op === 'in') out = inside();
+            else if (op === 'atop') out = [...i2, ...inside()];
+            else if (op === 'out') {
+              if (!i2.every(isSelf) || i1.some((l) => l.kind === 'flood')) throw new Unsupported(`filter feComposite ${op}`);
+              out = i1.map((l) => (l.kind === 'flood' ? l : { ...l, uncut: true as const }));
+            } else throw new Unsupported(`filter feComposite ${op}`);
+            break;
+          }
+          case 'feblend': {
+            // §9.5: in を in2 の上に、mode の描画モード (Compositing and Blending 1 の 16 通り) で重ねる。描画モードは in の層の図形に付け、
+            // filter の結果を透明のグループにまとめる (in2 の外のもの (filter の外の図形) と混ぜない)
+            const mode = (a(e, 'mode') || 'normal').trim();
+            const i1 = input(e, 'in');
+            if (mode !== 'normal') {
+              if (!(SVG_BLENDS as readonly string[]).includes(mode) || i1.some((l) => l.kind === 'flood')) throw new Unsupported(`filter feBlend ${mode}`);
+              out = [...input(e, 'in2'), ...i1.map((l) => ({ ...l, blend: mode as SvgBlend }))];
+            } else out = [...input(e, 'in2'), ...i1];
             break;
           }
           case 'femerge':
-            merged = true;
-            for (const mn of Array.from(e.childNodes).filter((c) => c.nodeType === 1)) if (a(mn, 'in') === 'SourceGraphic') source = true;
+            out = mergeNodes(e).flatMap((mn) => input(mn, 'in'));
             break;
           default:
             throw new Unsupported(`filter ${nm(e)}`);
         }
+        const r = a(e, 'result').trim();
+        // 部分領域 (§9.4): 要素の結果は、部分領域の外が透明。既定は参照する結果の部分領域の和で、x・y・width・height を書けばその値
+        const own = subregionAttrs(attrOf(e), { obb: false, viewport: view });
+        if (Object.keys(own).length || prevSub || subs.size) {
+          if (region === null) region = filterRegion(f)(box, view);
+          const R = region;
+          if (R) {
+            const refs = subregionRefs(nm(e), attrOf(e), () => mergeNodes(e).map((mn) => attrOf(mn)('in')));
+            const sub: Box = { ...defaultSubregion(refs, (n) => subs.get(n), prevSub, R), ...own };
+            // 幅か高さが 0 (負の値は誤り) の部分領域は、何も描かない (画素の計算と同じ)
+            if (!(sub.w > 0 && sub.h > 0)) out = [];
+            // 部分領域が filter の領域を覆うなら、切っても変わらない (filter の領域では、どの道切る)。既定の部分領域で、層が
+            // 既に部分領域の中の矩形で切ってあるもの (feMerge で重ねただけなど) も、切り直さない
+            else if (!within(R, sub, 1e-9 * Math.max(Math.abs(R.w), Math.abs(R.h), 1)))
+              out = out.map((l) => {
+                if (l.cut?.some((c) => within(c, sub, 0))) return l;
+                // ぼかした層は切らない (ぼかしは写しの重ねの近似で、ぼかしだけの filter は元の図形のまま描くが、切るとそれができない。
+                // 迷うものは画素の計算に回す)
+                if (l.kind !== 'flood' && l.std) throw new Unsupported('filter subregion');
+                return { ...l, cut: [...(l.cut ?? []), sub] };
+              });
+            prevSub = sub;
+            if (r) subs.set(r, sub);
+          }
+        }
+        prev = out;
+        if (r) results.set(r, out);
       }
-      if (!merged) {
-        // 合わせない filter: ぼかしだけ (ずらしも影の色も無い) なら元の図形をそのまま描き、ほかは扱えない
-        if (dx || dy || col) throw new Unsupported('filter');
-        return { source: true };
+      const layers = prev ?? [{ kind: 'source', dx: 0, dy: 0, std: 0, opacity: 1, recolor: [] }];
+      // 領域いっぱいの単色は、filter の領域の形を求めないと描けない
+      if (layers.some((l) => l.kind === 'flood')) throw new Unsupported('filter feFlood');
+      // 切り抜かずに描いた層 (feComposite の out) は、その上に元の図形が不透明に重なって、切り抜くはずの所が隠れるときだけ
+      let lastUncut = -1;
+      layers.forEach((l, k) => l.kind !== 'flood' && l.uncut && (lastUncut = k));
+      if (lastUncut >= 0 && !layers.slice(lastUncut + 1).some(covers)) throw new Unsupported('filter feComposite out');
+      return layers.map((l) => (l.kind !== 'flood' && l.uncut ? (({ uncut: _u, ...r }) => r)(l) : l)) as FilterLayer[];
+      };
+      /** 画素で計算するときの、filter の要素の読み方 (svgFilterRaster.ts に渡す) */
+      const rasterPrims = (image: (e: XmlNode, box: Box) => SvgShape[] | undefined): FilterRasterRequest['prims'] =>
+        prims.map((e) => {
+          const attr = (k: string) => {
+            const v = e.getAttribute?.(k);
+            return v === null || v === undefined ? undefined : v;
+          };
+          return {
+            name: nm(e),
+            attr,
+            linear: linearOf(e),
+            color: (cp: string, op?: string) => {
+              const c = props(e)[cp] ?? attr(cp);
+              const col = c ? (colorOf(c, false, isCurrentColor(c) ? colorAt(e) : undefined) as string | null) : cp === 'lighting-color' ? '#ffffff' : '#000000';
+              const ov = op ? parseFloat(props(e)[op] ?? attr(op) ?? '') : 1;
+              const rgb = col ? rgbOf(col) : [0, 0, 0];
+              return [rgb[0], rgb[1], rgb[2], (col ? 1 : 0) * (Number.isFinite(ov) ? Math.min(Math.max(ov, 0), 1) : 1) * (c ? alphaOf(c) : 1)];
+            },
+            colorMatrix: () => colorMatrix(e),
+            componentTransfer: () => componentTransfer(e),
+            children: Array.from(e.childNodes)
+              .filter((c) => c.nodeType === 1)
+              .map((c) => ({ name: nm(c), attr: (k: string) => c.getAttribute?.(k) ?? undefined })),
+            image: (box: Box) => image(e, box),
+          };
+        });
+      try {
+        return { layers: vectorLayers(), region: filterRegion(f) };
+      } catch (err) {
+        // 図形で近似できない filter は、画素で計算する (呼ぶ側が svgFilterRaster.ts を渡したとき)
+        if (!(err instanceof Unsupported) || !opts.rasterFilter) throw err;
+        return { layers: [], region: filterRegion(f), raster: { prims: rasterPrims, obb: obbUnits } };
       }
-      if (alphaSource && !col) col = '#000000';
-      return { shadow: { dx, dy, std, color: col, opacity: opac }, source };
+    };
+    /**
+     * 図形の色を filter の色の変換 (feColorMatrix・feComponentTransfer) で変える。色は図形ごとに変えるので、重なった半透明の図形では、
+     * 重ねた結果の色を変えるのと少し違う (不透明の図形なら同じ)。画像・CMYK の色は変えられないので Unsupported
+     */
+    const recolorShape = (sh: SvgShape, fns: Array<(c: number[]) => number[]>): SvgShape => {
+      if (sh.image || sh.fillPattern) throw new Unsupported('filter color');
+      const conv = (c: string, a: number): [string, number] => {
+        const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c);
+        if (!m) throw new Unsupported('filter color');
+        let v = [parseInt(m[1], 16) / 255, parseInt(m[2], 16) / 255, parseInt(m[3], 16) / 255, a];
+        for (const fn of fns) v = fn(v);
+        return [`#${v.slice(0, 3).map((x) => Math.round(x * 255).toString(16).padStart(2, '0')).join('')}`, v[3]];
+      };
+      const out: SvgShape = { ...sh };
+      if (sh.fill !== undefined) [out.fill, out.fillOpacity] = conv(sh.fill, sh.fillOpacity);
+      if (sh.stroke !== undefined) [out.stroke, out.strokeOpacity] = conv(sh.stroke, sh.strokeOpacity);
+      // グラデーションは stop ごとに変える (不透明度の変わる分は、stop の不透明度に掛ける)
+      const grad = (g: SvgGradient, base: number): SvgGradient => ({
+        ...g,
+        stops: g.stops.map((st) => {
+          const [color, op] = conv(st.color, (st.opacity ?? 1) * base);
+          const k = base > 0 ? op / base : 0;
+          return { offset: st.offset, color, ...(k < 1 ? { opacity: k } : {}) };
+        }),
+      });
+      if (sh.fillPaint) out.fillPaint = grad(sh.fillPaint, sh.fillOpacity);
+      if (sh.strokePaint) out.strokePaint = grad(sh.strokePaint, sh.strokeOpacity);
+      return out;
     };
     /**
      * 影: 図形の写しを (ox, oy) ずらし、ぼかしの幅 std (ルートの座標) を、少しずつ太らせた半透明の写し (5 枚) の重ねで表す。
@@ -1494,34 +2730,288 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     };
 
     /**
-     * mix-blend-mode (multiply・screen・difference) の付いた要素は、その要素の図形に描画モードを付ける。重ね方は図形ごとなので、
+     * 条件の属性 (SVG 2 §5.6.4・§5.6.5) が満たされるか。requiredExtensions は、拡張を持たないので、属性があれば満たさない。
+     * systemLanguage は、言語の並び (空白・カンマ区切り) のどれかが、利用者の言語 (opts.languages。無ければ実行環境の言語) に合えば満たす:
+     * 大文字小文字を区別せずに同じか、利用者の言語がその言語に「-」の続くもの (利用者の en-US は en に合う)。空の値は満たさない
+     */
+    const userLangs = (opts.languages ?? environmentLanguages()).map((l) => l.toLowerCase());
+    const conditionsHold = (c: XmlNode) => {
+      if (c.getAttribute?.('requiredExtensions') !== null && c.getAttribute?.('requiredExtensions') !== undefined) return false;
+      const sl = c.getAttribute?.('systemLanguage');
+      if (sl === null || sl === undefined) return true;
+      return systemLanguageHolds(sl, userLangs);
+    };
+    /**
+     * clip-path の基本図形と参照の箱 (CSS Masking 1 §5.1: [ <basic-shape> || <geometry-box> ])。基本図形は CSS Shapes 1 §3.1 の
+     * inset()・circle()・ellipse()・polygon()・path()・xywh()・rect()。参照の箱は、SVG の要素では content-box・padding-box が fill-box、
+     * border-box・margin-box が stroke-box (§5.1。指定が無ければ border-box、つまり stroke-box)。stroke-box は、外接矩形を線の太さの半分だけ広げた箱。
+     * 座標は要素の座標 (mm で写す)。読めない値は null
+     */
+    const basicShapeClip = (v: string, n: XmlNode, mm: M, bbox: () => Box | undefined): SvgClip | null => {
+      const fn = /^([a-z]+)\(/i.exec(v);
+      let shape = '';
+      let rest = v;
+      if (fn) {
+        const e = closeParen(v, fn[0].length);
+        if (e < 0) return null;
+        shape = v.slice(0, e + 1);
+        rest = v.slice(e + 1);
+      } else {
+        const after = /\)\s*$/.test(v) ? v.indexOf(v.match(/[a-z]+\(/i)?.[0] ?? '\0') : -1;
+        if (after > 0) {
+          shape = v.slice(after);
+          rest = v.slice(0, after);
+        }
+      }
+      const boxWord = rest.trim();
+      if (boxWord && !/^(content-box|padding-box|border-box|margin-box|fill-box|stroke-box|view-box)$/.test(boxWord)) return null;
+      const kind = boxWord || 'border-box';
+      let box: Box;
+      if (kind === 'view-box') box = { x: 0, y: 0, w: vp.w, h: vp.h };
+      else {
+        const b = bbox();
+        if (!b) return { segs: [], evenOdd: false };
+        box = b;
+        if (kind === 'border-box' || kind === 'margin-box' || kind === 'stroke-box') {
+          const sw = props(n)['stroke'];
+          const half = sw && sw !== 'none' ? userLen(props(n)['stroke-width'] ?? '1', Math.hypot(vp.w, vp.h) / Math.SQRT2) / 2 : 0;
+          box = { x: b.x - half, y: b.y - half, w: b.w + 2 * half, h: b.h + 2 * half };
+        }
+      }
+      const rect = (x: number, y: number, w: number, h: number): Seg[] => [{ op: 'M', x, y }, { op: 'L', x: x + w, y }, { op: 'L', x: x + w, y: y + h }, { op: 'L', x, y: y + h }, { op: 'Z' }];
+      const L = (t: string, ref: number) => (/%$/.test(t) ? (parseFloat(t) / 100) * ref : /^[-+]?(?:\d|\.\d)/.test(t) ? userLen(t, ref) : NaN);
+      /** <position> (1・2 個の値。語・長さ・百分率)。既定は center */
+      const position = (ws: string[]): [number, number] | null => {
+        if (!ws.length) return [box.x + box.w / 2, box.y + box.h / 2];
+        if (ws.length > 2) return null;
+        let px: string | undefined;
+        let py: string | undefined;
+        for (const w of ws) {
+          if ((w === 'top' || w === 'bottom') && py === undefined) py = w;
+          else if ((w === 'left' || w === 'right') && px === undefined) px = w;
+          else if (px === undefined && w !== 'top' && w !== 'bottom') px = w;
+          else py = w;
+        }
+        const at = (w: string | undefined, start: number, size: number, lo: string, hi: string) =>
+          w === undefined || w === 'center' ? start + size / 2 : w === lo ? start : w === hi ? start + size : start + L(w, size);
+        const r: [number, number] = [at(px, box.x, box.w, 'left', 'right'), at(py, box.y, box.h, 'top', 'bottom')];
+        return r.every(Number.isFinite) ? r : null;
+      };
+      const ellipseSegs = (cx: number, cy: number, rx: number, ry: number): Seg[] =>
+        rx > 0 && ry > 0 ? (parsePathData(`M${cx + rx},${cy}A${rx},${ry} 0 1 1 ${cx - rx},${cy}A${rx},${ry} 0 1 1 ${cx + rx},${cy}Z`) ?? []) : [];
+      let segs: Seg[];
+      let evenOdd = false;
+      if (!shape) segs = rect(box.x, box.y, box.w, box.h);
+      else {
+        const name = /^([a-z]+)\(/i.exec(shape)![1].toLowerCase();
+        const inner = shape.slice(name.length + 1, -1).trim();
+        if (name === 'inset' || name === 'xywh' || name === 'rect') {
+          // inset(上 右 下 左 [round 半径])・xywh(x y 幅 高さ [round 半径])・rect(上 右 下 左 [round 半径]。auto は箱の端)
+          const [a, r] = inner.split(/\s+round\s+/);
+          const ws = a.trim().split(/\s+/);
+          let x0: number, y0: number, x1: number, y1: number;
+          if (name === 'xywh') {
+            if (ws.length !== 4) return null;
+            x0 = box.x + L(ws[0], box.w);
+            y0 = box.y + L(ws[1], box.h);
+            x1 = x0 + L(ws[2], box.w);
+            y1 = y0 + L(ws[3], box.h);
+          } else {
+            if (ws.length < 1 || ws.length > 4) return null;
+            const [t, ri, b, le] = [ws[0], ws[1] ?? ws[0], ws[2] ?? ws[0], ws[3] ?? ws[1] ?? ws[0]];
+            if (name === 'inset') {
+              x0 = box.x + L(le, box.w);
+              y0 = box.y + L(t, box.h);
+              x1 = box.x + box.w - L(ri, box.w);
+              y1 = box.y + box.h - L(b, box.h);
+            } else {
+              // rect() の値は、箱の上端・左端からの位置 (auto は、その辺の箱の端)
+              y0 = t === 'auto' ? box.y : box.y + L(t, box.h);
+              x1 = ri === 'auto' ? box.x + box.w : box.x + L(ri, box.w);
+              y1 = b === 'auto' ? box.y + box.h : box.y + L(b, box.h);
+              x0 = le === 'auto' ? box.x : box.x + L(le, box.w);
+            }
+          }
+          if (![x0, y0, x1, y1].every(Number.isFinite)) return null;
+          const w = Math.max(x1 - x0, 0);
+          const h = Math.max(y1 - y0, 0);
+          // 角の丸み (1 つの半径。横 / 縦の 2 つの値も)。辺の長さの半分までにする
+          const rs = (r ?? '').trim().split(/\s*\/\s*/);
+          const rx = r ? Math.min(L(rs[0].split(/\s+/)[0], box.w), w / 2) : 0;
+          const ry = r ? Math.min(L((rs[1] ?? rs[0]).split(/\s+/)[0], box.h), h / 2) : 0;
+          if (r && !(Number.isFinite(rx) && Number.isFinite(ry))) return null;
+          segs =
+            rx > 0 && ry > 0
+              ? (parsePathData(`M${x0 + rx},${y0}H${x1 - rx}A${rx},${ry} 0 0 1 ${x1},${y0 + ry}V${y1 - ry}A${rx},${ry} 0 0 1 ${x1 - rx},${y1}H${x0 + rx}A${rx},${ry} 0 0 1 ${x0},${y1 - ry}V${y0 + ry}A${rx},${ry} 0 0 1 ${x0 + rx},${y0}Z`) ?? [])
+              : w > 0 && h > 0
+                ? rect(x0, y0, w, h)
+                : [];
+        } else if (name === 'circle' || name === 'ellipse') {
+          // circle(半径 [at 位置])・ellipse(横の半径 縦の半径 [at 位置])。半径の既定は closest-side。circle の % は、箱の対角の長さ / √2 に対して
+          const [sz, at] = inner.split(/\s*\bat\b\s*/);
+          const c = position(at ? at.trim().split(/\s+/) : []);
+          if (!c) return null;
+          const radii = sz.trim() ? sz.trim().split(/\s+/) : [];
+          const side = (w: string, axis: 'x' | 'y' | 'r'): number => {
+            const dx = [c[0] - box.x, box.x + box.w - c[0]];
+            const dy = [c[1] - box.y, box.y + box.h - c[1]];
+            const pick = w === 'farthest-side' ? Math.max : Math.min;
+            if (w === 'closest-side' || w === 'farthest-side') return axis === 'x' ? pick(...dx) : axis === 'y' ? pick(...dy) : pick(...dx, ...dy);
+            return L(w, axis === 'x' ? box.w : axis === 'y' ? box.h : Math.hypot(box.w, box.h) / Math.SQRT2);
+          };
+          let rx: number;
+          let ry: number;
+          if (name === 'circle') {
+            if (radii.length > 1) return null;
+            rx = ry = side(radii[0] ?? 'closest-side', 'r');
+          } else {
+            if (radii.length !== 0 && radii.length !== 2) return null;
+            rx = side(radii[0] ?? 'closest-side', 'x');
+            ry = side(radii[1] ?? 'closest-side', 'y');
+          }
+          if (!Number.isFinite(rx) || !Number.isFinite(ry)) return null;
+          segs = ellipseSegs(c[0], c[1], rx, ry);
+        } else if (name === 'polygon') {
+          // polygon([<fill-rule>,] x y, …)
+          const parts = inner.split(',').map((t) => t.trim());
+          if (/^(nonzero|evenodd)$/.test(parts[0])) evenOdd = parts.shift() === 'evenodd';
+          segs = [];
+          for (const pt of parts) {
+            const xy = pt.split(/\s+/);
+            if (xy.length !== 2) return null;
+            const x = box.x + L(xy[0], box.w);
+            const y = box.y + L(xy[1], box.h);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            segs.push({ op: segs.length ? 'L' : 'M', x, y });
+          }
+          if (segs.length) segs.push({ op: 'Z' });
+        } else if (name === 'path') {
+          // path([<fill-rule>,] "パスの書き方")。座標は参照の箱の左上が原点
+          const pm = /^(?:(nonzero|evenodd)\s*,\s*)?(?:"([^"]*)"|'([^']*)')$/.exec(inner);
+          if (!pm) return null;
+          evenOdd = pm[1] === 'evenodd';
+          const d = parsePathData(pm[2] ?? pm[3] ?? '');
+          if (!d) return null;
+          segs = transformSegs(d, [1, 0, 0, 1, box.x, box.y]);
+        } else return null;
+      }
+      return { segs: transformSegs(segs, mm), evenOdd };
+    };
+    /** foreignObject の、文書の順の番号 (opts.foreignShapes の番号。呼ぶ側が、文字の上で foreignObject を前から数えた順と同じ) */
+    const foreignIndex = new Map<XmlNode, number>();
+    for (const e of allElements(root)) if (nm(e) === 'foreignobject') foreignIndex.set(e, foreignIndex.size);
+    /** 透明のグループにまとめて描いている要素 (グループの中身を描くときは、自分の不透明度を掛けない) */
+    const grouping = new Set<XmlNode>();
+    /** 外接矩形を測っている要素 (切り抜き・マスク・filter を当てずに、形だけを集める) */
+    const measuring = new Set<XmlNode>();
+    /**
+     * 要素の外接矩形 (objectBoundingBox。SVG 2 §8.10: 形の外接矩形で、線の太さ・marker・filter を含まない)。座標は mm の座標系 (要素の座標系)。
+     * 要素を描いて形を集め、mm の逆で戻して測る。幅か高さが 0 なら undefined
+     */
+    const bboxOf = (n: XmlNode, st: Style, m: M, op: number, isRoot: boolean, depth: number, mm: M): Box | undefined => {
+      const inv = invert(mm);
+      if (!inv) return undefined;
+      const saved = target;
+      const savedMasks = masks;
+      const tmp: SvgShape[] = [];
+      target = tmp;
+      masks = [];
+      measuring.add(n);
+      try {
+        walk(n, st, m, op, isRoot, [], depth);
+      } finally {
+        measuring.delete(n);
+        target = saved;
+        masks = savedMasks;
+      }
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      const add = (x: number, y: number) => {
+        const u = inv[0] * x + inv[2] * y + inv[4];
+        const v = inv[1] * x + inv[3] * y + inv[5];
+        x0 = Math.min(x0, u); y0 = Math.min(y0, v); x1 = Math.max(x1, u); y1 = Math.max(y1, v);
+      };
+      for (const sh of flattenGroups(tmp)) {
+        if (sh.image) {
+          const [a, b, c, d, e, f] = sh.image.matrix;
+          for (const [px, py] of [[0, 0], [1, 0], [0, 1], [1, 1]]) add(a * px + c * py + e, b * px + d * py + f);
+          continue;
+        }
+        if (sh.nonScalingAnchor) continue;
+        // 曲線は、端の点と、要素の座標系での x・y の極値の点 (制御点は形の外に出るので使わない)
+        let cx = 0;
+        let cy = 0;
+        let sx = 0;
+        let sy = 0;
+        const tp = (x: number, y: number): [number, number] => [inv[0] * x + inv[2] * y + inv[4], inv[1] * x + inv[3] * y + inv[5]];
+        for (const g of sh.segs) {
+          if (g.op === 'Z') {
+            cx = sx;
+            cy = sy;
+            continue;
+          }
+          if (g.op === 'C') {
+            const P = [tp(cx, cy), tp(g.x1, g.y1), tp(g.x2, g.y2), tp(g.x, g.y)];
+            for (const k of [0, 1]) {
+              // 3 次ベジェの微分 (2 次式) の根
+              const [p0, p1, p2, p3] = P.map((q) => q[k]);
+              const a = -p0 + 3 * p1 - 3 * p2 + p3;
+              const b = 2 * (p0 - 2 * p1 + p2);
+              const c = p1 - p0;
+              const roots = Math.abs(a) < 1e-12 ? (Math.abs(b) < 1e-12 ? [] : [-c / b]) : (() => {
+                const D = b * b - 4 * a * c;
+                return D < 0 ? [] : [(-b + Math.sqrt(D)) / (2 * a), (-b - Math.sqrt(D)) / (2 * a)];
+              })();
+              for (const t of roots) {
+                if (!(t > 0 && t < 1)) continue;
+                const u = 1 - t;
+                const pt = [0, 1].map((j) => u * u * u * P[0][j] + 3 * u * u * t * P[1][j] + 3 * u * t * t * P[2][j] + t * t * t * P[3][j]);
+                x0 = Math.min(x0, pt[0]); y0 = Math.min(y0, pt[1]); x1 = Math.max(x1, pt[0]); y1 = Math.max(y1, pt[1]);
+              }
+            }
+          }
+          add(g.x, g.y);
+          cx = g.x;
+          cy = g.y;
+          if (g.op === 'M') {
+            sx = g.x;
+            sy = g.y;
+          }
+        }
+      }
+      return x1 - x0 > 0 && y1 - y0 > 0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : undefined;
+    };
+    /**
+     * mix-blend-mode (SVG_BLENDS) の付いた要素は、その要素の図形に描画モードを付ける。重ね方は図形ごとなので、
      * 子を持つ要素 (g など。子をまとめて重ねる) のものと、ほかの値は扱わず、描画モード無しで描く (対応する前と同じ)
      */
     const walk = (n: XmlNode, st: Style, m: M, op: number, isRoot: boolean, clips: SvgClip[] = [], depth = 0) => {
       const bm = n.nodeType === 1 ? (props(n)['mix-blend-mode'] ?? 'normal').trim() : 'normal';
-      if (!['multiply', 'screen', 'difference'].includes(bm) || ['g', 'svg', 'a', 'use', 'switch', 'text'].includes(nm(n))) return walk0(n, st, m, op, isRoot, clips, depth);
+      if (!(SVG_BLENDS as readonly string[]).includes(bm) || ['g', 'svg', 'a', 'use', 'switch', 'text'].includes(nm(n))) return walk0(n, st, m, op, isRoot, clips, depth);
       const before = target.length;
       walk0(n, st, m, op, isRoot, clips, depth);
-      for (let i = before; i < target.length; i++) target[i] = { ...target[i], blend: bm as 'multiply' | 'screen' | 'difference' };
+      for (let i = before; i < target.length; i++) target[i] = { ...target[i], blend: bm as SvgBlend };
     };
     const walk0 = (n: XmlNode, st: Style, m: M, op: number, isRoot: boolean, clips: SvgClip[] = [], depth = 0) => {
       const name = nm(n);
       if (IGNORED.has(name) || IGNORED.has(n.nodeName.toLowerCase()) || foreign(n)) return;
       if (DEFINITIONS.has(name)) return;
-      // switch: 条件を満たす最初の子だけを描く (requiredExtensions の付いた子 (Illustrator の foreignObject など) は満たさない)
+      // switch (SVG 2 §5.6.3): 条件を満たす最初の子だけを描く (Illustrator の foreignObject は requiredExtensions で満たさない)
       if (name === 'switch') {
-        const pick = Array.from(n.childNodes).find((c) => c.nodeType === 1 && !foreign(c) && !c.getAttribute?.('requiredExtensions') && nm(c) !== 'foreignobject');
+        const pick = Array.from(n.childNodes).find((c) => c.nodeType === 1 && !foreign(c) && nm(c) !== 'foreignobject' && conditionsHold(c));
         if (pick) walk(pick, st, m, op, false, clips, depth + 1);
         return;
       }
+      // 条件の属性が満たされない要素は、switch の外でも描かない (SVG 2 §5.6.1)
+      if (!conditionsHold(n)) return;
       if (UNSUPPORTED.has(name)) throw new Unsupported(name);
       if (depth > 32) throw new Unsupported('too deep');
       const p = props(n);
-      if (p.display === 'none' || p.visibility === 'hidden') return;
-      if (p.filter && p.filter !== 'none' && !(opts.approximateFilters && filtering.has(n))) {
+      if (p.display === 'none') return;
+      if (p.filter && p.filter !== 'none' && !(opts.approximateFilters && filtering.has(n)) && !measuring.has(n)) {
         if (!opts.approximateFilters) throw new Unsupported('filter');
-        const fx = filterOf(p.filter);
-        // 要素の図形を集めてから、影 (ずらしてぼかした写し) を先に、元の図形を後に足す
+        const fr = filterOf(p.filter, () => bboxOf(n, st, m, op, isRoot, depth, m), vp);
+        const { layers, region: regionOf } = fr;
+        // 要素の図形を集めてから、層を下から順に足す (影 (ずらしてぼかした写し) が先、元の図形が後)
         const savedTarget = target;
         const own: SvgShape[] = [];
         target = own;
@@ -1532,28 +3022,147 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           filtering.delete(n);
           target = savedTarget;
         }
-        if (fx.shadow) {
-          const tr0 = isRoot ? ID : tf(n.getAttribute?.('transform')) ?? ID;
-          const lm = mul(m, tr0);
-          // ずらす量は要素の座標系で (移動を除いた変換を掛ける)、ぼかしの幅は拡大率を掛ける
-          const ox = lm[0] * fx.shadow.dx + lm[2] * fx.shadow.dy;
-          const oy = lm[1] * fx.shadow.dx + lm[3] * fx.shadow.dy;
-          const scale = Math.sqrt(Math.abs(lm[0] * lm[3] - lm[1] * lm[2]));
-          target.push(...blurredCopies(own, ox, oy, fx.shadow.std * scale, fx.shadow.color, fx.shadow.opacity));
+        if (fr.raster) {
+          // 画素で計算する: 要素の図形を filter の領域 (要素の座標) の画素にして、filter の要素を順に計算し、結果の画像を領域に置く
+          const tr1 = isRoot ? ID : (elementTransform(n, () => bboxOf(n, st, m, op, isRoot, depth, m)) ?? ID);
+          const lm1 = mul(m, tr1);
+          const bb = bboxOf(n, st, m, op, isRoot, depth, m);
+          const reg = regionOf(() => bb, vp);
+          if (!reg || !(reg.w > 0 && reg.h > 0)) return;
+          const scale = Math.sqrt(Math.abs(lm1[0] * lm1[3] - lm1[1] * lm1[2])) || 1;
+          const s0 = inherit(st, p);
+          const paintOf = (v: Style['fill']): number[] | undefined => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? [...[1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16) / 255), 1] : undefined);
+          // feImage: 画像 (data: と、呼ぶ側の引く外のファイル) は部分領域に preserveAspectRatio で合わせ、#id の要素はその要素を描く
+          const imageFor = (e: XmlNode, box: Box): SvgShape[] | undefined => {
+            const href = (e.getAttribute?.('href') ?? e.getAttribute?.('xlink:href') ?? '').trim();
+            const saved = target;
+            const tmp: SvgShape[] = [];
+            target = tmp;
+            try {
+              if (href.startsWith('#')) {
+                const el = byId.get(href.slice(1));
+                if (el) walk(el, ROOT_STYLE, lm1, 1, false, [], depth + 1);
+              } else if (href) {
+                const fake = { nodeType: 1, nodeName: 'image', localName: 'image', childNodes: [], getAttribute: (k: string) => ({ href, x: String(box.x), y: String(box.y), width: String(box.w), height: String(box.h), preserveAspectRatio: e.getAttribute?.('preserveAspectRatio') ?? null })[k] ?? null } as XmlNode;
+                walk(fake, ROOT_STYLE, lm1, 1, false, [], depth + 1);
+              }
+            } finally {
+              target = saved;
+            }
+            return tmp.length ? tmp : undefined;
+          };
+          const result = opts.rasterFilter!({
+            prims: fr.raster.prims(imageFor),
+            source: own,
+            region: reg,
+            toRoot: lm1,
+            pxPerUnit: (opts.filterResolution ?? 4) * scale,
+            ...(bb ? { bbox: bb } : {}),
+            primitiveUnits: fr.raster.obb ? 'objectBoundingBox' : 'userSpaceOnUse',
+            viewport: { w: vp.w, h: vp.h },
+            ...(paintOf(s0.fill) ? { fillPaint: paintOf(s0.fill) } : {}),
+            ...(paintOf(s0.stroke) ? { strokePaint: paintOf(s0.stroke) } : {}),
+            budget: filterBudget,
+          });
+          if (!result) throw new Unsupported('filter');
+          target.push({
+            segs: [],
+            evenOdd: false,
+            strokeWidth: 0,
+            lineCap: 0,
+            lineJoin: 0,
+            fillOpacity: 1,
+            strokeOpacity: 1,
+            ...(clips.length ? { clips } : {}),
+            image: { kind: 'png', bytes: encodePngStored(result), pixels: result, matrix: mul(lm1, [reg.w, 0, 0, -reg.h, reg.x, reg.y + reg.h]) },
+          });
+          return;
         }
-        if (fx.source) target.push(...own);
+        // 影・色の変換は図形ごとに作るので、グループは開いて扱う
+        const flat = flattenGroups(own);
+        own.length = 0;
+        own.push(...flat);
+        const tr0 = isRoot ? ID : (elementTransform(n, () => bboxOf(n, st, m, op, isRoot, depth, m)) ?? ID);
+        const lm = mul(m, tr0);
+        const scale = Math.sqrt(Math.abs(lm[0] * lm[3] - lm[1] * lm[2]));
+        const hex = (c: number[]) => `#${c.map((x) => Math.round(Math.min(1, Math.max(0, x)) * 255).toString(16).padStart(2, '0')).join('')}`;
+        // ぼかしだけ (ずらさず、色も変えない元の図形 1 つ) は、元の図形のまま描く
+        const only = layers.length === 1 && layers[0].kind === 'source' ? layers[0] : undefined;
+        if (only && !only.dx && !only.dy && !only.recolor.length && only.opacity === 1 && !only.blend && !only.cut) {
+          target.push(...own);
+          return;
+        }
+        // 結果を集めて、filter の領域で切り抜く (領域の外は描かない。Filter Effects 1 §8)。描画モードがあれば透明のグループにする
+        const outer = target;
+        const result: SvgShape[] = [];
+        target = result;
+        for (const l of layers) {
+          if (l.kind === 'flood') continue;
+          // ずらす量は要素の座標系で (移動を除いた変換を掛ける)、ぼかしの幅は拡大率を掛ける
+          const ox = lm[0] * l.dx + lm[2] * l.dy;
+          const oy = lm[1] * l.dx + lm[3] * l.dy;
+          const before = target.length;
+          if (l.kind === 'alpha') {
+            if (l.opacity > 0) target.push(...blurredCopies(own, ox, oy, l.std * scale, hex(l.color), l.opacity));
+          } else {
+            const shapes = l.recolor.length ? own.map((sh) => recolorShape(sh, l.recolor)) : own;
+            if (!l.std && !ox && !oy && l.opacity === 1) target.push(...shapes);
+            else target.push(...blurredCopies(shapes, ox, oy, l.std * scale, undefined, l.opacity));
+          }
+          if (l.blend) for (let i = before; i < target.length; i++) target[i] = { ...target[i], blend: l.blend };
+          // 部分領域で切る (要素の座標の矩形を、ルートの座標にして切り抜きに足す)
+          if (l.cut) {
+            const cuts = l.cut.map((c): SvgClip => ({ segs: transformSegs(rectSegs(c), lm), evenOdd: false }));
+            for (let i = before; i < target.length; i++) target[i] = { ...target[i], clips: [...(target[i].clips ?? []), ...cuts] };
+          }
+        }
+        target = outer;
+        const reg = regionOf(() => bboxOf(n, st, m, op, isRoot, depth, m), vp);
+        if (!reg || !(reg.w > 0 && reg.h > 0)) return;
+        const regionClip: SvgClip = { segs: transformSegs(rectSegs(reg), lm), evenOdd: false };
+        if (layers.some((l) => l.blend)) target.push({ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: 1, strokeOpacity: 1, clips: [regionClip], group: { shapes: result } });
+        else for (const x of result) target.push({ ...x, clips: [...(x.clips ?? []), regionClip] });
         return;
       }
-      const tr = isRoot ? ID : tf(n.getAttribute?.('transform'));
+      // 外接矩形を測っている要素は、自分の変換を掛けずに測る (外接矩形は要素の座標で求める。transform-box の fill-box もこれで測る)
+      const tr = isRoot || measuring.has(n) ? ID : elementTransform(n, () => bboxOf(n, st, m, op, isRoot, depth, m));
       if (!tr) throw new Unsupported('transform');
       const mm = mul(m, tr);
       // マスク: 中身をこの要素の座標系 (transform 適用後) で図形にし、この要素の図形すべてに付けて、もう一度この要素を描く
       // (マスクの領域 x・y・width・height は見ない)
-      if (p.mask && p.mask !== 'none' && !masking.has(n)) {
+      if (p.mask && p.mask !== 'none' && !masking.has(n) && !measuring.has(n)) {
         const u = /url\(\s*['"]?#([^'")\s]+)/.exec(p.mask);
         const mk = u ? byId.get(u[1]) : undefined;
         if (!mk || nm(mk) !== 'mask') throw new Unsupported('mask');
-        if ((mk.getAttribute?.('maskContentUnits') ?? 'userSpaceOnUse') !== 'userSpaceOnUse') throw new Unsupported('maskContentUnits');
+        // maskContentUnits が objectBoundingBox なら、中身の座標は要素の外接矩形の 0〜1 (CSS Masking 1 §7.1)
+        const mcu = mk.getAttribute?.('maskContentUnits') ?? 'userSpaceOnUse';
+        let contentM = mm;
+        let bb: Box | undefined | null = null;
+        const bboxOnce = () => (bb === null ? (bb = bboxOf(n, st, m, op, isRoot, depth, m)) : bb);
+        if (mcu === 'objectBoundingBox') {
+          const b = bboxOnce();
+          if (!b) return;
+          contentM = mul(mm, [b.w, 0, 0, b.h, b.x, b.y]);
+        } else if (mcu !== 'userSpaceOnUse') throw new Unsupported('maskContentUnits');
+        // マスクの領域 (x・y・width・height。maskUnits の既定は objectBoundingBox で、既定の領域は外接矩形の −10%・−10%・120%・120%。
+        // CSS Masking 1 §9.1): 領域の外は、マスクの値が 0 なので隠れる。要素を領域で切り抜くのと同じ
+        const mu = mk.getAttribute?.('maskUnits') ?? 'objectBoundingBox';
+        const ra = (k: string, d: string) => mk.getAttribute?.(k) ?? d;
+        let region: Box;
+        if (mu === 'userSpaceOnUse') {
+          region = { x: ulen(ra('x', '-10%'), vp.w), y: ulen(ra('y', '-10%'), vp.h), w: ulen(ra('width', '120%'), vp.w), h: ulen(ra('height', '120%'), vp.h) };
+        } else {
+          const b = bboxOnce();
+          if (!b) return;
+          const f = (k: string, d: string) => {
+            const v = ra(k, d).trim();
+            return /%$/.test(v) ? parseFloat(v) / 100 : parseFloat(v);
+          };
+          region = { x: b.x + f('x', '-10%') * b.w, y: b.y + f('y', '-10%') * b.h, w: f('width', '120%') * b.w, h: f('height', '120%') * b.h };
+        }
+        if (![region.x, region.y, region.w, region.h].every(Number.isFinite) || region.w <= 0 || region.h <= 0) return;
+        const regionSegs: Seg[] = [{ op: 'M', x: region.x, y: region.y }, { op: 'L', x: region.x + region.w, y: region.y }, { op: 'L', x: region.x + region.w, y: region.y + region.h }, { op: 'L', x: region.x, y: region.y + region.h }, { op: 'Z' }];
+        const regionClip: SvgClip = { segs: transformSegs(regionSegs, mm), evenOdd: false };
         const savedTarget = target;
         const savedMasks = masks;
         const content: SvgShape[] = [];
@@ -1561,14 +3170,15 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         masks = [];
         try {
           const ms = inherit(ROOT_STYLE, props(mk));
-          for (const c of Array.from(mk.childNodes)) if (c.nodeType === 1) walk(c, ms, mm, 1, false, [], depth + 1);
+          for (const c of Array.from(mk.childNodes)) if (c.nodeType === 1) walk(c, ms, contentM, 1, false, [], depth + 1);
         } finally {
           target = savedTarget;
         }
-        masks = [...savedMasks, { shapes: content }];
+        const alpha = (props(mk)['mask-type'] ?? '').trim() === 'alpha';
+        masks = [...savedMasks, { shapes: content, ...(alpha ? { alpha: true } : {}) }];
         masking.add(n);
         try {
-          walk(n, st, m, op, isRoot, clips, depth);
+          walk(n, st, m, op, isRoot, [...clips, regionClip], depth);
         } finally {
           masks = savedMasks;
           masking.delete(n);
@@ -1577,14 +3187,50 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       }
       visit(n); // (filter・mask でこの要素を描き直す分は、ここまで来ないので 1 回と数える)
       const s = inherit(st, p);
-      const o = op * s.opacity;
+      // 透明のグループ (Compositing and Blending 1 §3.3): opacity が 1 未満の要素・mix-blend-mode の付いた子を持つ要素・isolation: isolate の要素は、
+      // 子をまとめて描いてから、不透明度・描画モードで置く (子ごとに不透明度を掛けると、重なった所が濃くなる)
+      const bm = (p['mix-blend-mode'] ?? 'normal').trim();
+      const container = ['g', 'svg', 'a', 'use', 'text'].includes(name);
+      const blend = container && (SVG_BLENDS as readonly string[]).includes(bm) ? (bm as SvgBlend) : undefined;
+      if (!grouping.has(n) && !measuring.has(n) && (s.opacity < 1 || blend || (container && p.isolation === 'isolate'))) {
+        const saved = target;
+        const inner: SvgShape[] = [];
+        target = inner;
+        grouping.add(n);
+        try {
+          walk0(n, st, m, op, isRoot, clips, depth);
+        } finally {
+          grouping.delete(n);
+          target = saved;
+        }
+        if (!inner.length) return;
+        const one = inner.length === 1 ? inner[0] : undefined;
+        const paints = (x: SvgShape) => (x.fill !== undefined || !!x.fillPaint || !!x.fillPattern) && x.stroke !== undefined && x.strokeWidth > 0;
+        // 線の太さ・形の大きさが変わらない図形 (vector-effect) はグループの中で描けないので、子ごとに掛ける (前と同じ)
+        const perShape = inner.some((x) => x.nonScalingStroke || x.nonScalingAnchor);
+        if (perShape || (one && !blend && p.isolation !== 'isolate' && !one.group && !paints(one))) {
+          // 図形 1 つ (塗りと線の重なりの無いもの) は、その図形に不透明度を掛ければ同じ
+          for (const x of inner) target.push({ ...x, fillOpacity: x.fillOpacity * s.opacity, strokeOpacity: x.strokeOpacity * s.opacity, ...(blend && !x.blend ? { blend } : {}) });
+          return;
+        }
+        target.push({ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: s.opacity, strokeOpacity: s.opacity, ...(blend ? { blend } : {}), group: { shapes: inner } });
+        return;
+      }
+      const o = op * (grouping.has(n) ? 1 : s.opacity);
       // 切り抜き: この要素の座標系 (transform 適用後) で clipPath の形を作る
       let cl = clips;
-      if (p['clip-path'] && p['clip-path'] !== 'none') {
-        const u = /url\(\s*['"]?#([^'")\s]+)/.exec(p['clip-path']);
-        const c = u ? clipOf(u[1], mm) : null;
-        if (!c) throw new Unsupported('clip-path');
-        cl = [...clips, c];
+      if (p['clip-path'] && p['clip-path'] !== 'none' && !measuring.has(n)) {
+        const cp = p['clip-path'].trim();
+        const u = /^url\(\s*['"]?#([^'")\s]+)['"]?\s*\)$/.exec(cp);
+        const bbox = () => bboxOf(n, st, m, op, isRoot, depth, m);
+        // 無い要素・clipPath でない要素を指す url() は、指定が無いものとする (CSS Masking 1 §5.1)
+        const c = u ? (byId.get(u[1]) && nm(byId.get(u[1])!) === 'clippath' ? clipOf(u[1], mm, bbox) : undefined) : basicShapeClip(cp, n, mm, bbox);
+        if (c === null) throw new Unsupported('clip-path');
+        if (c) {
+          // 中身の無い切り抜き (空の clipPath・外接矩形の無い要素の objectBoundingBox) は、すべてを切る (CSS Masking 1 §6.1)
+          if (!c.segs.length) return;
+          cl = [...clips, c];
+        }
       }
       if (name === 'svg' && !isRoot) {
         // 入れ子の svg: 枠 (x・y・width・height。既定は 0・0・100%・100%) に viewBox を合わせた座標系で、中身を描く
@@ -1595,48 +3241,82 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         return;
       }
       if (name === 'svg' || name === 'g' || name === 'a') {
-        for (const c of Array.from(n.childNodes)) if (c.nodeType === 1) walk(c, s, mm, o, false, cl, depth + 1);
+        // a の href (SVG 2 の a 要素。xlink:href も): 絶対の URL (http(s)・mailto・ftp・tel) だけを、中の図形のリンクにする
+        const href = name === 'a' ? (n.getAttribute?.('href') ?? n.getAttribute?.('xlink:href') ?? '').trim() : '';
+        const sa: Style = /^(https?|mailto|ftp|tel):/i.test(href) ? { ...s, link: href } : s;
+        for (const c of Array.from(n.childNodes)) if (c.nodeType === 1) walk(c, sa, mm, o, false, cl, depth + 1);
         return;
       }
       if (name === 'use') {
-        // 参照先を、use の位置 (x, y) に描く。symbol は g と同じに扱う (viewBox は未対応)
-        const ref = byId.get(hrefOf(n));
+        // 参照先を、use の位置 (x, y) に描く。symbol は、viewBox があれば use の枠に合わせ、無ければ g と同じに扱う
+        const ref = useRef(n);
         if (!ref) return;
         const ux = ulen(n.getAttribute?.('x') ?? '0', vp.w);
         const uy = ulen(n.getAttribute?.('y') ?? '0', vp.h);
         const at = mul(mm, [1, 0, 0, 1, ux, uy]);
+        // use の中身の context element は use の要素 (context-fill・context-stroke は use の塗り・線)。模様・グラデーションは、use の
+        // 座標系と、use の外接矩形 (中身の外接矩形) で当てる (SVG 2 §13.2)。use の座標系は、x・y のずらし (translate(x,y)) を
+        // 変換の右に足したもの (SVG 2 §5.5.2)
+        const useFrame = (): ReturnType<PaintFrame> => {
+          if (measuring.has(n)) return undefined;
+          const b = bboxOf(n, st, m, op, isRoot, depth, at);
+          return b ? { segs: rectSegs(b), m: at } : undefined;
+        };
+        const su: Style = { ...s, context: contextOf(s, useFrame) };
         if (nm(ref) === 'symbol') {
           const kids = (m2: M, cl2: SvgClip[]) => {
-            for (const c of Array.from(ref.childNodes)) if (c.nodeType === 1) walk(c, s, m2, o, false, cl2, depth + 1);
+            for (const c of Array.from(ref.childNodes)) if (c.nodeType === 1) walk(c, su, m2, o, false, cl2, depth + 1);
           };
           // viewBox のある symbol: use の枠 (width・height。既定は 100%) に viewBox を合わせる
           if (ref.getAttribute?.('viewBox')) inViewport(ref, ux, uy, ulen(n.getAttribute?.('width') ?? '100%', vp.w), ulen(n.getAttribute?.('height') ?? '100%', vp.h), mm, cl, kids);
           else kids(at, cl);
-        } else walk(ref, s, at, o, false, cl, depth + 1);
+        } else walk(ref, su, at, o, false, cl, depth + 1);
         return;
       }
       if (name === 'image') {
-        // data: の PNG・JPEG を、枠 (x・y・width・height) に引き伸ばして描く
+        // PNG・JPEG を、枠 (x・y・width・height) に preserveAspectRatio で合わせて描く
         const href = (n.getAttribute?.('href') ?? n.getAttribute?.('xlink:href') ?? '').trim();
-        const d = /^data:image\/(png|jpeg);base64,([\s\S]*)$/.exec(href);
-        if (!d) throw new Unsupported('image');
+        // 外のファイルを指す href は、呼ぶ側 (opts.image) が引いた PNG・JPEG を描く。引けない画像と、href の無い image は描かない
+        // (ほかの要素は描く。ブラウザも、読めない画像の image は描かない)
+        let kind: 'png' | 'jpeg';
+        let bytes: Uint8Array;
+        const d = /^data:image\/(png|jpeg|jpg|gif|bmp|x-ms-bmp|webp);base64,([\s\S]*)$/i.exec(href);
+        if (d) {
+          bytes = fromBase64(d[2]);
+          const t = d[1].toLowerCase();
+          if (t === 'png' || t === 'jpeg' || t === 'jpg') kind = t === 'png' ? 'png' : 'jpeg';
+          else {
+            // GIF・BMP・WebP は画素に戻して PNG にする (PDF に入れられるのは PNG・JPEG。GIF は最初の絵)
+            const px = t === 'gif' ? decodeGif(bytes) : t === 'webp' ? decodeWebp(bytes) : decodeBmp(bytes);
+            if (!px) throw new Unsupported('image');
+            bytes = encodePngStored(px);
+            kind = 'png';
+          }
+        } else if (/^data:/i.test(href)) throw new Unsupported('image');
+        else {
+          const got = href ? opts.image?.(href) : undefined;
+          if (!got) return;
+          ({ kind, bytes } = got);
+        }
         const a = (k: string, def: string) => n.getAttribute?.(k) ?? def;
         let ix = ulen(a('x', '0'), vp.w);
         let iy = ulen(a('y', '0'), vp.h);
         let iw = ulen(a('width', '0'), vp.w);
         let ih = ulen(a('height', '0'), vp.h);
         if (!(iw > 0 && ih > 0)) return;
-        const bin = atob(d[2].replace(/\s+/g, ''));
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         // preserveAspectRatio (SVG 1.1 §7.8。既定は xMidYMid meet): 画像の縦横比を保って枠に収め、揃えの位置に置く。
-        // slice (はみ出しを切る) は描けないので、描けないものとして扱う
+        // slice は、枠を覆う大きさにして、はみ出しを枠で切る
         const par = (n.getAttribute?.('preserveAspectRatio') ?? 'xMidYMid meet').trim().split(/\s+/);
+        let icl = cl;
         if (par[0] !== 'none') {
-          if (par[1] === 'slice') throw new Unsupported('image');
-          const nat = imagePixelSize(bytes, d[1] as 'png' | 'jpeg');
+          const nat = imagePixelSize(bytes, kind);
           if (!nat) throw new Unsupported('image');
-          const k = Math.min(iw / nat.w, ih / nat.h);
+          const slice = par[1] === 'slice';
+          if (slice) {
+            const box: Seg[] = [{ op: 'M', x: ix, y: iy }, { op: 'L', x: ix + iw, y: iy }, { op: 'L', x: ix + iw, y: iy + ih }, { op: 'L', x: ix, y: iy + ih }, { op: 'Z' }];
+            icl = [...cl, { segs: transformSegs(box, mm), evenOdd: false }];
+          }
+          const k = slice ? Math.max(iw / nat.w, ih / nat.h) : Math.min(iw / nat.w, ih / nat.h);
           const dw = nat.w * k;
           const dh = nat.h * k;
           const al = /^x(Min|Mid|Max)Y(Min|Mid|Max)$/.exec(par[0]);
@@ -1647,7 +3327,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           iw = dw;
           ih = dh;
         }
-        chargeClips(cl);
+        if (s.hidden) return;
         target.push({
           segs: [],
           evenOdd: false,
@@ -1656,9 +3336,10 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           lineJoin: 0,
           fillOpacity: o,
           strokeOpacity: o,
-          ...(cl.length ? { clips: cl } : {}),
+          ...(icl.length ? { clips: icl } : {}),
           ...(masks.length ? { masks } : {}),
-          image: { kind: d[1] as 'png' | 'jpeg', bytes, matrix: mul(mm, [iw, 0, 0, -ih, ix, iy + ih]) },
+          image: { kind, bytes, matrix: mul(mm, [iw, 0, 0, -ih, ix, iy + ih]) },
+          ...(s.link ? { link: s.link } : {}),
         });
         return;
       }
@@ -1666,11 +3347,31 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         textShapes(n, s, mm, o, cl);
         return;
       }
+      if (name === 'foreignobject') {
+        if (opts.collectForeign) {
+          collectForeign(n, s, opts.collectForeign);
+          return;
+        }
+        // 近似なので、画像にできる環境 (ブラウザ) では使わない (SVG ごと画像にして、HTML の組版のとおりに描く)
+        if (!opts.approximateFilters) throw new Unsupported('foreignobject');
+        foreignText(n, s, mm, o, cl, depth);
+        return;
+      }
       if (name === 'tspan') throw new Unsupported('tspan');
       const segs = geometryOf(n, name);
       if (!segs || !segs.length) return; // 未知の要素 (メタデータ等) は描かない
-      pushShape(name, segs, s, mm, o, cl);
-      if (/^(path|line|polyline|polygon)$/.test(name) && (s.markerStart || s.markerMid || s.markerEnd)) markers(segs, s, mm, o, cl, depth);
+      const hasMarkers = /^(path|line|polyline|polygon)$/.test(name) && !!(s.markerStart || s.markerMid || s.markerEnd);
+      if (!s.paintOrder) {
+        pushShape(name, segs, s, mm, o, cl);
+        if (hasMarkers) markers(segs, s, mm, o, cl, depth);
+        return;
+      }
+      // paint-order: 塗り・線・marker を、指定の順に描く (塗りと線は別の図形にする)
+      for (const step of s.paintOrder) {
+        if (step === 'markers') {
+          if (hasMarkers) markers(segs, s, mm, o, cl, depth);
+        } else if (step === 'fill' ? s.fill : s.stroke) pushShape(name, segs, step === 'fill' ? { ...s, stroke: null } : { ...s, fill: null }, mm, o, cl);
+      }
     };
 
     /**
@@ -1726,7 +3427,9 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         const vb = viewBoxOf(mk, mw, mh).m;
         const rx = num(mk.getAttribute?.('refX') ?? undefined, 0);
         const ry = num(mk.getAttribute?.('refY') ?? undefined, 0);
-        const ms = inherit(ROOT_STYLE, props(mk));
+        // marker の中身の context element は marker を付けた図形。模様・グラデーションは、その図形の座標系と外接矩形で当てる
+        // (SVG 2 §13.2。図形から marker へ続けて塗る)
+        const ms = inherit({ ...ROOT_STYLE, context: contextOf(s, () => ({ segs, m: mm })) }, props(mk));
         inViewport(mk, -(vb[0] * rx + vb[2] * ry + vb[4]), -(vb[1] * rx + vb[3] * ry + vb[5]), mw, mh, base, cl, (m2, cl2) => {
           for (const c of Array.from(mk.childNodes)) if (c.nodeType === 1) walk(c, ms, m2, o, false, cl2, depth + 1);
         }, !!opts.markerOverflowVisible && props(mk).overflow === undefined);
@@ -1736,18 +3439,27 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
 
     /** 図形 (ローカル座標の形) を、塗り・線の指定とともに shapes へ足す */
     const pushShape = (name: string, segs: Seg[], s: Style, mm: M, o: number, cl: SvgClip[], evenOdd = s.evenOdd, text?: { chars?: TextChars; size: number; t: M }) => {
+      if (s.hidden) return;
+      // 字の paint-order (SVG 2 §13.8): 線を塗りより先にするなら、字ごとに、線と塗りを別の図形にして描く
+      if (name === 'text' && s.paintOrder && s.fill && s.stroke && s.paintOrder.indexOf('stroke') < s.paintOrder.indexOf('fill')) {
+        pushShape(name, segs, { ...s, fill: null, paintOrder: undefined }, mm, o, cl, evenOdd, text);
+        pushShape(name, segs, { ...s, stroke: null, paintOrder: undefined }, mm, o, cl, evenOdd, text);
+        return;
+      }
       const det = Math.abs(mm[0] * mm[3] - mm[1] * mm[2]);
       const fillable = name !== 'line';
       let fill: string | undefined;
       let fillPaint: SvgGradient | undefined;
       let fillPattern: SvgPattern | undefined;
       if (fillable && s.fill) {
+        // context-fill・context-stroke の模様・グラデーションは、context element の座標系と外接矩形で当てる (Style.fillFrame)
+        const ff = s.fillFrame?.();
         if (typeof s.fill === 'string') fill = s.fill;
         else if (nm(byId.get(s.fill.ref) ?? root) === 'pattern') {
-          const pt = patternOf(s.fill.ref, segs, mm);
+          const pt = patternOf(s.fill.ref, ff?.segs ?? segs, ff?.m ?? mm);
           if (pt) fillPattern = pt;
         } else {
-          const gr = gradientOf(s.fill.ref, segs, mm);
+          const gr = gradientOf(s.fill.ref, ff?.segs ?? segs, ff?.m ?? mm);
           if (typeof gr === 'string') fill = gr;
           else if (gr) fillPaint = gr;
         }
@@ -1757,14 +3469,14 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       if (s.stroke) {
         if (typeof s.stroke === 'string') stroke = s.stroke;
         else {
-          const gr = gradientOf(s.stroke.ref, segs, mm);
+          const sf = s.strokeFrame?.();
+          const gr = gradientOf(s.stroke.ref, sf?.segs ?? segs, sf?.m ?? mm);
           if (typeof gr === 'string') stroke = gr;
           else if (gr) strokePaint = gr;
         }
       }
       // non-scaling-size: 要素の原点だけを変換で写し、形は元の大きさのまま、その点の周りに置く
       const anchor: [number, number] | undefined = s.nonScalingSize ? [mm[4], mm[5]] : undefined;
-      chargeClips(cl);
       // use で置き直した text の字の輪郭 (textAgain の説明)
       if (textAgain) charge(segs.length + 1);
       target.push({
@@ -1788,6 +3500,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         fillOpacity: o * s.fillOpacity * (s.fillAlpha ?? 1),
         strokeOpacity: o * s.strokeOpacity * (s.strokeAlpha ?? 1),
         ...(text?.chars?.length && !anchor ? { text: { chars: text.chars, size: text.size, matrix: mul(mm, text.t) } } : {}),
+        ...(s.link ? { link: s.link } : {}),
       });
     };
     /**
@@ -1808,14 +3521,114 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
      */
     const textSeen = new Set<XmlNode>();
     let textAgain = false;
+    /**
+     * SVG フォント (SVG 1.1 §20 の font 要素): font-face の font-family の名前 → 字形 (glyph の unicode → 輪郭と送り)。
+     * 字形の座標は y が上向きで、units-per-em (既定 1000) の単位。unicode が何字かの glyph (合字) は、長いものを先に当てる。
+     * 字形の無い字は missing-glyph、それも無ければ、呼ぶ側の書体 (opts.outline) で描く。
+     * glyph は unicode の字の木 (trie) で引く: 字の位置ごとに、最長の unicode の長さから 1 まで、そのたびに slice と join で引き直すと、
+     * 2000 字の unicode の glyph と 2000 字の text で 3 乗の手間 (29 秒) になった
+     */
+    type SvgGlyph = { segs: Seg[]; adv: number };
+    type GlyphNode = { next: Map<string, GlyphNode>; glyph?: SvgGlyph };
+    /** 1 度描いた glyph (2 度目からを線分の予算に数える) */
+    const glyphDrawn = new WeakSet<SvgGlyph>();
+    const svgFonts = new Map<string, { upm: number; adv: number; trie: GlyphNode; missing?: SvgGlyph }>();
+    for (const f of allElements(root)) {
+      if (nm(f) !== 'font') continue;
+      const face = Array.from(f.childNodes).find((c) => c.nodeType === 1 && nm(c) === 'font-face');
+      const fam = face?.getAttribute?.('font-family')?.trim().replace(/^['"]|['"]$/g, '');
+      if (!fam) continue;
+      const upm = parseFloat(face?.getAttribute?.('units-per-em') ?? '') || 1000;
+      const adv = parseFloat(f.getAttribute?.('horiz-adv-x') ?? '') || upm;
+      const trie: GlyphNode = { next: new Map() };
+      let missing: SvgGlyph | undefined;
+      for (const g of Array.from(f.childNodes)) {
+        if (g.nodeType !== 1) continue;
+        const kind = nm(g);
+        if (kind !== 'glyph' && kind !== 'missing-glyph') continue;
+        const segs = parsePathData(g.getAttribute?.('d') ?? '') ?? [];
+        const ga = { segs, adv: parseFloat(g.getAttribute?.('horiz-adv-x') ?? '') || adv };
+        if (kind === 'missing-glyph') missing = ga;
+        else {
+          const u = g.getAttribute?.('unicode');
+          const cps = u ? [...u] : [];
+          // 合字の unicode の長さの上限 (SVG_FONT_MAX_LIGATURE)。超える glyph は使わない
+          if (cps.length && cps.length <= SVG_FONT_MAX_LIGATURE) {
+            let node = trie;
+            for (const c of cps) {
+              let nx = node.next.get(c);
+              if (!nx) node.next.set(c, (nx = { next: new Map() }));
+              node = nx;
+            }
+            // 同じ unicode の glyph は、先に書かれたものを使う (これまでと同じ)
+            node.glyph ??= ga;
+          }
+        }
+      }
+      if (!svgFonts.has(fam)) svgFonts.set(fam, { upm, adv, trie, ...(missing ? { missing } : {}) });
+    }
+    /** 字の輪郭: font-family の並びの最初の名前が SVG フォントなら、その字形で、ほかは呼ぶ側の書体で */
+    const textOutline: TextOutliner | undefined = !svgFonts.size
+      ? opts.outline
+      : (text, family, weight, size, style, vertical) => {
+          const name = family?.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '');
+          const sf = name ? svgFonts.get(name) : undefined;
+          if (!sf) return opts.outline ? opts.outline(text, family, weight, size, style, vertical) : null;
+          const k = size / sf.upm;
+          const segs: Seg[] = [];
+          let x = 0;
+          const cs = [...text];
+          // 線分を足す (push(...並び) は、大きな並びで呼び出しのスタックが尽きるので、1 つずつ)
+          const add = (from: Seg[]) => {
+            for (const sg of from) segs.push(sg);
+          };
+          for (let i = 0; i < cs.length; ) {
+            // 字の木をたどり、いちばん長く合う glyph を当てる
+            let hit: GlyphNode | undefined;
+            let used = 1;
+            for (let node: GlyphNode | undefined = sf.trie, n = 0; i + n < cs.length; ) {
+              node = node.next.get(cs[i + n]);
+              if (!node) break;
+              n++;
+              if (node.glyph) {
+                hit = node;
+                used = n;
+              }
+            }
+            if (!hit && !sf.missing && opts.outline) {
+              // 字形の無い字は、呼ぶ側の書体で
+              const ol = opts.outline(cs[i], family, weight, size, style);
+              if (!ol) return null;
+              add(transformSegs(ol.segs, [1, 0, 0, 1, x, 0]));
+              x += ol.advance;
+              i++;
+              continue;
+            }
+            const g = hit?.glyph ?? sf.missing;
+            if (g) {
+              // 字形の輪郭は、文書に 1 度だけ書かれ、字の数だけ写す (use で置くのと同じ) ので、2 度目からを線分の予算に数える
+              // (4 万線分の glyph を 1000 字並べると 4000 万の線分になり、メモリが尽きて落ちていた)。
+              // use で置き直した text は、呼ぶ側が輪郭の全部を数えるので、ここでは数えない (textAgain の説明)
+              if (!textAgain) {
+                if (glyphDrawn.has(g)) charge(g.segs.length);
+                else glyphDrawn.add(g);
+              }
+              add(transformSegs(g.segs, [k, 0, 0, -k, x, 0]));
+              x += g.adv * k;
+            }
+            i += used;
+          }
+          return { segs, advance: x };
+        };
     const spaced = (t: string, st: Style) => (st.preserveSpace ? t.replace(/\r\n|[\n\r\t]/g, ' ') : t.replace(/\s+/g, ' '));
     const textOnPath = (tp: XmlNode, st: Style, mm: M, o: number, cl: SvgClip[], parentSpacing = 0) => {
-      const outline = opts.outline!;
+      const outline = textOutline;
+      if (!outline) throw new Unsupported('text');
       const ref = byId.get(hrefOf(tp));
       if (!ref) return;
       const geo = geometryOf(ref, nm(ref));
       if (!geo || !geo.length) return;
-      const rt = tf(ref.getAttribute?.('transform'));
+      const rt = elementTransform(ref);
       if (!rt) throw new Unsupported('transform');
       // パスを折れ線にして、長さを積み上げる
       const pts: Array<{ x: number; y: number; d: number }> = [];
@@ -1851,6 +3664,12 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           cy = sy;
         }
       }
+      // side="right" (SVG 2 の textPath の side): パスの向きを逆にして、字をパスの右側に置く
+      if (tp.getAttribute?.('side') === 'right') {
+        const rev = pts.reverse();
+        const total0 = rev[0].d;
+        for (const q of rev) q.d = total0 - q.d;
+      }
       const total = pts[pts.length - 1].d;
       if (!(total > 0)) return;
       /** 長さ d の点と向き */
@@ -1885,12 +3704,12 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       }
       if (textAgain) charge(chars.length);
       const glyphs = chars.map((c) => {
-        const ol = outline(c.ch, c.st.fontFamily, c.st.fontWeight, c.st.fontSize);
+        const ol = outline(c.ch, c.st.fontFamily, c.st.fontWeight, c.st.fontSize, c.st.fontStyle);
         if (!ol) throw new Unsupported('text outline');
         return { ...c, ol };
       });
       // letter-spacing は textPath のもの (無ければ text 要素のもの)
-      const ls = letterSpacingOf(tp) || parentSpacing;
+      const ls = st.letterSpacing ?? parentSpacing;
       const width = glyphs.reduce((a, g) => a + g.ol.advance + ls, 0);
       const so = tp.getAttribute?.('startOffset') ?? '0';
       let d = /%\s*$/.test(so) ? (parseFloat(so) / 100) * total : parseFloat(so) || 0;
@@ -1919,11 +3738,330 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         const p = mid < 0 || mid > total ? beyond(mid) : at(mid);
         const c = noRotate ? 1 : Math.cos(p.angle);
         const sn = noRotate ? 0 : Math.sin(p.angle);
-        const t: M = mul([c, sn, -sn, c, p.x, p.y], [1, 0, 0, 1, -g.ol.advance / 2, 0]);
+        // baseline-shift (SVG 1.1 §10.9.2): 字を、パスに垂直な向きにずらす
+        const t: M = mul([c, sn, -sn, c, p.x, p.y], [1, 0, 0, 1, -g.ol.advance / 2, g.st.baselineShift ?? 0]);
         pushShape('text', transformSegs(g.ol.segs, t), g.st, mm, o, cl, false, { chars: g.ol.chars, size: g.st.fontSize, t });
       }
     };
 
+    /**
+     * 縦書きの text (SVG 2 の text の章・CSS Writing Modes 3): 字を 1 字ずつ下へ送る。x は字の中央の線 (central の基線)、y は送りの向きの位置。
+     * x・y の指定で始まる塊ごとに、text-anchor で送りの向きにずらす。letter-spacing・word-spacing は送りに足し、baseline-shift は
+     * 右 (上の向き) へずらす。rotate は字をその原点の周りに回す。textLength (text と tspan。SVG 1.1 §10.5) は送りの向きの長さにそろえる。
+     * text-decoration は、underline を字の左 (縦書きの行の下の側)、overline を右、line-through を中央に引く (CSS Text Decoration 3 §2.1)
+     */
+    const verticalText = (
+      runs: Array<{ text: string; st: Style; x?: number; y?: number; dx: number; dy: number; rotate?: number; tl?: { length: number; glyphs: boolean } }>,
+      outline: TextOutliner,
+      mm: M,
+      o: number,
+      cl: SvgClip[],
+      textLength?: { length: number; glyphs: boolean },
+    ) => {
+      let px = runs[0].x ?? 0;
+      let py = runs[0].y ?? 0;
+      type VG = { st: Style; segs: Seg[]; x: number; y: number; adv: number; rotate?: number; sy?: number; tl?: { length: number; glyphs: boolean } };
+      let chunk: VG[] = [];
+      const fit = (gs: VG[], spec: { length: number; glyphs: boolean }) => {
+        const y0 = gs[0].y;
+        const w0 = gs[gs.length - 1].y + gs[gs.length - 1].adv - y0;
+        if (!(w0 > 0)) return 0;
+        if (spec.glyphs) {
+          const f = spec.length / w0;
+          for (const g of gs) {
+            g.y = y0 + (g.y - y0) * f;
+            g.sy = (g.sy ?? 1) * f;
+            g.adv *= f;
+          }
+        } else if (gs.length > 1) {
+          const gap = (spec.length - w0) / (gs.length - 1);
+          gs.forEach((g, q) => (g.y += gap * q));
+        }
+        return spec.length - w0;
+      };
+      const flushV = () => {
+        if (!chunk.length) return;
+        // tspan の textLength (字の範囲ごと。後ろの字をずらす)、text の textLength (塊の全体)
+        let moved = 0;
+        for (let i = 0; i < chunk.length; ) {
+          const tl = chunk[i].tl;
+          let j = i + 1;
+          while (j < chunk.length && chunk[j].tl === tl) j++;
+          for (let q = i; q < j; q++) chunk[q].y += moved;
+          if (tl) moved += fit(chunk.slice(i, j), tl);
+          i = j;
+        }
+        if (textLength) fit(chunk, textLength);
+        const first = chunk[0];
+        const lastG = chunk[chunk.length - 1];
+        const len = lastG.y + lastG.adv - first.y;
+        const anchor = first.st.textAnchor;
+        const shift = anchor === 'middle' ? -len / 2 : anchor === 'end' ? -len : 0;
+        for (const c of chunk) {
+          const r = ((c.rotate ?? 0) * Math.PI) / 180;
+          const sy = c.sy ?? 1;
+          const t: M = c.rotate ? [Math.cos(r), Math.sin(r) * sy, -Math.sin(r), Math.cos(r) * sy, c.x, c.y + shift] : [1, 0, 0, sy, c.x, c.y + shift];
+          pushShape('text', transformSegs(c.segs, t), c.st, mm, o, cl, false);
+        }
+        // 線: 同じ指定の続く字の範囲ごとに、指定した要素の塗りで
+        for (let i = 0; i < chunk.length; ) {
+          const ds = chunk[i].st.decorations;
+          let j = i + 1;
+          while (j < chunk.length && chunk[j].st.decorations === ds) j++;
+          for (const d of ds ?? []) {
+            const fs = Math.max(...chunk.slice(i, j).map((c) => c.st.fontSize));
+            const th = fs * 0.06;
+            const ya = chunk[i].y + shift;
+            const yb = chunk[j - 1].y + chunk[j - 1].adv + shift;
+            const xc = chunk[i].x;
+            const segs: Seg[] = [];
+            const bar = (x: number) => segs.push({ op: 'M', x, y: ya }, { op: 'L', x: x + th, y: ya }, { op: 'L', x: x + th, y: yb }, { op: 'L', x, y: yb }, { op: 'Z' });
+            if (d.under) bar(xc - fs / 2 - th);
+            if (d.over) bar(xc + fs / 2);
+            if (d.through) bar(xc - th / 2);
+            pushShape('path', segs, { ...chunk[i].st, fill: d.fill, stroke: null, fillOpacity: d.opacity, fillAlpha: undefined }, mm, o, cl, false);
+          }
+          i = j;
+        }
+        chunk = [];
+      };
+      for (const r of runs) {
+        if (r.x !== undefined || r.y !== undefined) {
+          flushV();
+          if (r.x !== undefined) px = r.x;
+          if (r.y !== undefined) py = r.y;
+        }
+        px += r.dx;
+        py += r.dy;
+        if (textAgain) charge(r.text.length);
+        for (const ch of r.text) {
+          const ol = outline(ch, r.st.fontFamily, r.st.fontWeight, r.st.fontSize, r.st.fontStyle, r.st.vertical ?? 'mixed');
+          if (!ol) throw new Unsupported('text outline');
+          chunk.push({ st: r.st, segs: ol.segs, x: px - (r.st.baselineShift ?? 0), y: py, adv: ol.advance, ...(r.rotate ? { rotate: r.rotate } : {}), ...(r.tl ? { tl: r.tl } : {}) });
+          py += ol.advance + (r.st.letterSpacing ?? 0) + (ch === ' ' ? (r.st.wordSpacing ?? 0) : 0);
+        }
+      }
+      flushV();
+    };
+    /** inline-size の折り返し: Run の並びを、行ごとに x・y を付けた Run の並びにする (行の頭と末尾の空白は落とす) */
+    const wrapRuns = <R extends { text: string; st: Style; x?: number; y?: number; dx: number; dy: number; rotate?: number }>(runs: R[], width: number, outline: TextOutliner, lineHeight?: string): R[] => {
+      const X = runs[0].x ?? 0;
+      const Y = runs[0].y ?? 0;
+      const chars: Array<{ ch: string; run: R; adv: number }> = [];
+      for (const r of runs)
+        for (const ch of r.text) {
+          const ol = outline(ch, r.st.fontFamily, r.st.fontWeight, r.st.fontSize, r.st.fontStyle);
+          if (!ol) throw new Unsupported('text outline');
+          chars.push({ ch, run: r, adv: ol.advance + (r.st.letterSpacing ?? 0) + (ch === ' ' ? (r.st.wordSpacing ?? 0) : 0) });
+        }
+      const acts = lineBreakActions(chars.map((c) => c.ch.codePointAt(0)!), { cjk: true });
+      const lines: Array<[number, number]> = [];
+      let start = 0;
+      let w = 0;
+      let lastBreak = -1;
+      for (let i = 0; i < chars.length; i++) {
+        if (i > start && acts[i] === '!') {
+          lines.push([start, i]);
+          start = i;
+          w = 0;
+          lastBreak = -1;
+        }
+        if (i > start && acts[i] === '÷') lastBreak = i;
+        w += chars[i].adv;
+        // 幅を超えたら、最後の改行の機会で折る (空白は行の末尾にぶら下げるので、幅に数えない)
+        if (w > width && chars[i].ch !== ' ' && lastBreak > start) {
+          lines.push([start, lastBreak]);
+          start = lastBreak;
+          w = chars.slice(start, i + 1).reduce((a, c) => a + c.adv, 0);
+          lastBreak = -1;
+        }
+      }
+      lines.push([start, chars.length]);
+      const fs = runs[0].st.fontSize;
+      const lhRaw = (lineHeight ?? 'normal').trim();
+      const lh = lhRaw === 'normal' ? fs * 1.2 : /^[\d.]+$/.test(lhRaw) ? parseFloat(lhRaw) * fs : /%$/.test(lhRaw) ? (parseFloat(lhRaw) / 100) * fs : userLen(lhRaw, fs) || fs * 1.2;
+      const out: R[] = [];
+      lines.forEach(([a, b], li) => {
+        while (a < b && chars[a].ch === ' ') a++;
+        while (b > a && chars[b - 1].ch === ' ') b--;
+        let first = true;
+        for (let i = a; i < b; i++) {
+          const c = chars[i];
+          const last = out[out.length - 1];
+          if (!first && last && last.st === c.run.st && !c.run.rotate && !last.rotate) {
+            last.text += c.ch;
+            continue;
+          }
+          out.push({ ...c.run, text: c.ch, dx: 0, dy: 0, ...(first ? { x: X, y: Y + li * lh } : { x: undefined, y: undefined }) });
+          first = false;
+        }
+      });
+      return out.map((r) => {
+        const { x, y, ...rest } = r;
+        return { ...rest, ...(x !== undefined ? { x } : {}), ...(y !== undefined ? { y } : {}) } as R;
+      });
+    };
+    /**
+     * foreignObject (SVG 2 の embedded の章) の中身の HTML を、文字だけ近似して描く (HTML の組版はしない)。ブロックの要素 (div・p・li・h1〜h6 など。
+     * display の指定も見る) と br で行を分け、枠の幅で折り返し (white-space: nowrap・pre なら折り返さない)、text-align で揃える。
+     * 字の色 (color)・大きさ・太さ・斜体・書体は、SVG の <style> の規則と style 属性から読む (HTML の既定: h1〜h6 の大きさと太字、b・strong の太字、
+     * i・em の斜体)。行の間は line-height (normal は字の大きさの 1.2 倍)。枠の外は切る (overflow の初期値。visible なら切らない)。
+     * 背景・罫線・画像・表の組み方は描かない。中身が HTML でなければ (MathML など) 描けないもの
+     */
+    /** foreignObject の中身を組むための情報を渡す (ForeignContext) */
+    const collectForeign = (n: XmlNode, s: Style, put: NonNullable<ParseSvgOptions['collectForeign']>) => {
+      const idx = foreignIndex.get(n);
+      const w = ulen(n.getAttribute?.('width') ?? '0', vp.w);
+      const h = ulen(n.getAttribute?.('height') ?? '0', vp.h);
+      if (idx === undefined || !(w > 0 && h > 0)) return;
+      const ancestors: ForeignContext['ancestors'] = [];
+      for (let e: XmlNode | undefined = n; e; e = parentOf.get(e)) {
+        const id = e.getAttribute?.('id');
+        const cls = e.getAttribute?.('class');
+        const st = e.getAttribute?.('style');
+        ancestors.unshift({ name: nm(e), ...(id ? { id } : {}), ...(cls ? { className: cls } : {}), ...(st ? { style: st } : {}) });
+      }
+      // 受け継ぐ書式 (SVG の計算した値。字の大きさは利用者の単位 = CSS px)。color の不透明度は rgba にする
+      const decl: string[] = [`font-size:${s.fontSize}px`, `font-weight:${s.fontWeight}`, `font-style:${s.fontStyle ?? 'normal'}`];
+      if (s.fontFamily) decl.push(`font-family:${s.fontFamily.replace(/[;{}<>]/g, '')}`);
+      const rgb = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(s.color);
+      if (rgb) decl.push(s.colorAlpha !== undefined && s.colorAlpha < 1 ? `color:rgba(${[1, 2, 3].map((k) => parseInt(rgb[k], 16)).join(',')},${s.colorAlpha})` : `color:${s.color}`);
+      if (s.letterSpacing) decl.push(`letter-spacing:${s.letterSpacing}px`);
+      if (s.wordSpacing) decl.push(`word-spacing:${s.wordSpacing}px`);
+      if (s.hidden) decl.push('visibility:hidden');
+      put(idx, { content: serializeChildren(n), width: w, height: h, css: cssText, ancestors, inherited: decl.join(';') });
+    };
+    const foreignText = (n: XmlNode, s: Style, mm: M, o: number, cl: SvgClip[], depth: number) => {
+      const XHTML = 'http://www.w3.org/1999/xhtml';
+      const fa = (k: string, d: string) => n.getAttribute?.(k) ?? d;
+      const fx = ulen(fa('x', '0'), vp.w);
+      const fy = ulen(fa('y', '0'), vp.h);
+      const fw = ulen(fa('width', '0'), vp.w);
+      const fh = ulen(fa('height', '0'), vp.h);
+      if (!(fw > 0 && fh > 0)) return;
+      const ov = props(n).overflow;
+      const cl2 = ov === 'visible' || ov === 'auto' ? cl : [...cl, { segs: transformSegs([{ op: 'M', x: fx, y: fy }, { op: 'L', x: fx + fw, y: fy }, { op: 'L', x: fx + fw, y: fy + fh }, { op: 'L', x: fx, y: fy + fh }, { op: 'Z' }], mm), evenOdd: false }];
+      // 呼ぶ側が中身を本文と同じ組版で組んだもの (HTML の背景・罫線・画像・表、MathML も) があれば、それを foreignObject の位置に置く
+      const idx = foreignIndex.get(n);
+      const pre = idx !== undefined ? opts.foreignShapes?.(idx) : undefined;
+      if (pre) {
+        const t = mul(mm, [1, 0, 0, 1, fx, fy]);
+        const memo = new Map<SvgClip, SvgClip>();
+        for (const sh of pre) {
+          const x = transformShape(sh, t, o, memo);
+          target.push(cl2.length ? { ...x, clips: [...cl2, ...(x.clips ?? [])] } : x);
+        }
+        return;
+      }
+      const kids = Array.from(n.childNodes).filter((c) => c.nodeType === 1);
+      const isHtml = (c: XmlNode) => (c as { namespaceURI?: string | null }).namespaceURI === XHTML || /^(html:|xhtml:)/i.test(c.nodeName);
+      if (kids.some((c) => !isHtml(c))) throw new Unsupported('foreignobject');
+      const BLOCK = /^(address|article|aside|blockquote|center|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|thead|tfoot|tr|td|th|ul|body|html)$/;
+      const HEADING: Record<string, number> = { h1: 2, h2: 1.5, h3: 1.17, h4: 1, h5: 0.83, h6: 0.67 };
+      type Block = { runs: Array<{ text: string; st: Style; dx: number; dy: number; x?: number; y?: number }>; align: string; nowrap: boolean; lh?: string };
+      const blocks: Block[] = [];
+      let cur: Block | undefined;
+      const open = (align: string, nowrap: boolean, lh?: string) => {
+        if (!cur || cur.runs.length) blocks.push((cur = { runs: [], align, nowrap, ...(lh ? { lh } : {}) }));
+        else Object.assign(cur, { align, nowrap, ...(lh ? { lh } : {}) });
+      };
+      type Ctx = { st: Style; align: string; nowrap: boolean; lh?: string };
+      // HTML の要素の書式: color は字の塗り。h1〜h6・b・strong・i・em の既定
+      const styleOf = (el: XmlNode, ctx: Ctx): Ctx => {
+        const tag = nm(el);
+        const p = props(el);
+        const q: Record<string, string> = {};
+        if (HEADING[tag]) Object.assign(q, { 'font-size': `${HEADING[tag]}em`, 'font-weight': 'bold' });
+        if (tag === 'b' || tag === 'strong' || tag === 'th') q['font-weight'] = 'bold';
+        if (tag === 'i' || tag === 'em') q['font-style'] = 'italic';
+        for (const k of ['font-size', 'font-weight', 'font-style', 'font-family', 'letter-spacing', 'word-spacing', 'text-decoration']) if (p[k] !== undefined) q[k] = p[k];
+        if (p.color !== undefined) q.fill = p.color;
+        if (p.opacity !== undefined) q.opacity = p.opacity;
+        const st = inherit(ctx.st, q);
+        st.opacity = 1;
+        const ws = p['white-space'];
+        return {
+          st,
+          align: p['text-align'] ?? (tag === 'center' ? 'center' : ctx.align),
+          nowrap: ws !== undefined ? /^(nowrap|pre)$/.test(ws.trim()) : ctx.nowrap,
+          lh: p['line-height'] ?? ctx.lh,
+        };
+      };
+      const visit2 = (el: XmlNode, ctx: Ctx) => {
+        for (const c of Array.from(el.childNodes)) {
+          if (c.nodeType === 3 || c.nodeType === 4) {
+            const t = (c.textContent ?? '').replace(/\s+/g, ' ');
+            if (!t.trim() && !cur?.runs.length) continue;
+            if (!cur) open(ctx.align, ctx.nowrap, ctx.lh);
+            cur!.runs.push({ text: t, st: ctx.st, dx: 0, dy: 0 });
+            continue;
+          }
+          if (c.nodeType !== 1) continue;
+          const tag = nm(c);
+          const p = props(c);
+          if (p.display === 'none' || /^(script|style|head|title)$/.test(tag)) continue;
+          if (tag === 'br') {
+            cur = undefined;
+            continue;
+          }
+          const ctx2 = styleOf(c, ctx);
+          const block = p.display ? !/^inline/.test(p.display.trim()) : BLOCK.test(tag);
+          if (block) {
+            cur = undefined;
+            open(ctx2.align, ctx2.nowrap, ctx2.lh);
+            visit2(c, ctx2);
+            cur = undefined;
+          } else visit2(c, ctx2);
+        }
+      };
+      // foreignObject の中の HTML は、SVG の書式 (font-size・font-family・color など) を受け継ぐ。字の色は color
+      const base: Ctx = { st: { ...s, fill: s.color, stroke: null, opacity: 1 }, align: 'start', nowrap: false };
+      visit2(n, base);
+      let top = fy;
+      for (const b of blocks) {
+        // 行の頭と末尾の空白を落とす
+        const runs = b.runs.map((r) => ({ ...r }));
+        if (!runs.length) continue;
+        runs[0].text = runs[0].text.replace(/^ +/, '');
+        runs[runs.length - 1].text = runs[runs.length - 1].text.replace(/ +$/, '');
+        const live = runs.filter((r) => r.text);
+        if (!live.length || !textOutline) continue;
+        const fs = Math.max(...live.map((r) => r.st.fontSize));
+        const lhRaw = (b.lh ?? 'normal').trim();
+        const lh = lhRaw === 'normal' ? fs * 1.2 : /^[\d.]+$/.test(lhRaw) ? parseFloat(lhRaw) * fs : /%$/.test(lhRaw) ? (parseFloat(lhRaw) / 100) * fs : userLen(lhRaw, fs) || fs * 1.2;
+        const align = b.align === 'center' ? 'middle' : b.align === 'right' || b.align === 'end' ? 'end' : 'start';
+        const ax = align === 'middle' ? fx + fw / 2 : align === 'end' ? fx + fw : fx;
+        // 最初の行の基線: 行の高さの中で、字の枠 (上 0.8・下 0.2) を真ん中に置く
+        live[0].x = ax;
+        live[0].y = top + (lh - fs) / 2 + fs * 0.8;
+        const lines = b.nowrap ? live : wrapRuns(live, fw, textOutline, `${lh}px`);
+        // 行ごとに、仮の text 要素を作って描く (字の書式は style 属性に書く: <style> の text・tspan の規則に負けない)
+        let group: typeof lines = [];
+        const emit = () => {
+          if (!group.length) return;
+          const tspans = group.map((r) => {
+            const css = [`fill:${typeof r.st.fill === 'string' ? r.st.fill : 'none'}`, `font-size:${r.st.fontSize}px`, `font-weight:${r.st.fontWeight}`, `font-style:${r.st.fontStyle ?? 'normal'}`, ...(r.st.fontFamily ? [`font-family:${r.st.fontFamily.replace(/;/g, '')}`] : [])].join(';');
+            const t: XmlNode = { nodeType: 3, nodeName: '#text', childNodes: [], textContent: r.text };
+            return { nodeType: 1, nodeName: 'tspan', localName: 'tspan', childNodes: [t], getAttribute: (k: string) => (k === 'style' ? css : null) } as XmlNode;
+          });
+          const g0 = group[0];
+          const attrs: Record<string, string> = { x: String(g0.x ?? ax), y: String(g0.y ?? 0), 'text-anchor': align, 'xml:space': 'preserve' };
+          const fake = { nodeType: 1, nodeName: 'text', localName: 'text', childNodes: tspans, getAttribute: (k: string) => attrs[k] ?? null } as XmlNode;
+          walk(fake, { ...s, fill: s.color, stroke: null, opacity: 1, decorations: undefined }, mm, o, false, cl2, depth + 1);
+          group = [];
+        };
+        let count = 0;
+        for (const r of lines) {
+          if (r.y !== undefined) {
+            emit();
+            count++;
+          }
+          group.push(r);
+        }
+        emit();
+        top += Math.max(1, count) * lh;
+      }
+    };
     const textShapes = (n: XmlNode, s: Style, mm: M, o: number, cl: SvgClip[]) => {
       const saved = textAgain;
       textAgain = textSeen.has(n);
@@ -1935,16 +4073,15 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       }
     };
     const textShapes0 = (n: XmlNode, s: Style, mm: M, o: number, cl: SvgClip[]) => {
-      const outline = opts.outline;
+      const outline = textOutline;
       if (!outline) throw new Unsupported('text');
-      // 並びの最初の長さ (em・ex はその要素の字の大きさに対して。Visio の dy="1.2em" など)
-      const first = (v: string | null | undefined, fs: number) => {
-        const t = v?.trim().split(/[\s,]+/)[0];
-        if (!t) return NaN;
-        const m = /^(-?[\d.]+(?:e-?\d+)?)(em|ex)$/i.exec(t);
-        if (m) return parseFloat(m[1]) * fs * (m[2].toLowerCase() === 'ex' ? 0.5 : 1);
-        return /[a-z%]$/i.test(t) ? ulen(t, 0) : parseFloat(t);
-      };
+      // 長さの並び (em・ex はその要素の字の大きさに対して。Visio の dy="1.2em" など)。読めない値は NaN (指定の無いもの)
+      const list = (v: string | null | undefined, fs: number): number[] =>
+        (v?.trim() ? v.trim().split(/[\s,]+/) : []).map((t) => {
+          const m = /^(-?[\d.]+(?:e-?\d+)?)(em|ex)$/i.exec(t);
+          if (m) return parseFloat(m[1]) * fs * (m[2].toLowerCase() === 'ex' ? 0.5 : 1);
+          return /[a-z%]$/i.test(t) ? ulen(t, 0) : parseFloat(t);
+        });
       interface Run {
         text: string;
         st: Style;
@@ -1952,28 +4089,34 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         y?: number;
         dx: number;
         dy: number;
+        /** 字の回転 (度。時計回り)。回す字は 1 字の Run */
+        rotate?: number;
+        /** この字を含む、textLength の付いた tspan (いちばん内側のもの) */
+        tl?: TextLengthSpec;
       }
+      /** tspan の textLength・lengthAdjust (SVG 1.1 §10.5) */
+      type TextLengthSpec = { length: number; glyphs: boolean };
       const runs: Run[] = [];
       /** パスに沿う文字 (textPath) */
       const onPath: Array<{ el: XmlNode; st: Style }> = [];
-      // x・y・dx・dy は、その要素の最初の字に当たる。最初の字が子の tspan の中にあれば、tspan に同じ属性が無いかぎり、
-      // 先祖 (text・外の tspan) の指定がその字に当たる (SVG 1.1 §10.5 の tspan の x・y・dx・dy)。pend = まだ字に当てていない先祖の指定
-      type Pos = { x: number; y: number; dx: number; dy: number };
-      const collect = (el: XmlNode, st: Style, pend?: Pos) => {
-        const own = (k: keyof Pos) => {
-          const v = first(el.getAttribute?.(k), st.fontSize);
-          return Number.isFinite(v) || !pend ? v : pend[k];
-        };
-        let x = own('x');
-        let y = own('y');
-        let dx = own('dx');
-        let dy = own('dy');
+      // 字を 1 字ずつ集め、x・y・dx・dy・rotate の並びを当てる (SVG 1.1 §10.5): 要素の並びの i 番目の値は、その要素の中の i 番目の字に当たる。
+      // 子の tspan に同じ属性があれば、その中の字は子の値 (無い番号は先祖の値)。dx・dy は並びの外の字をずらさず、rotate は最後の値が後の字にも続く
+      type Key = 'x' | 'y' | 'dx' | 'dy' | 'rotate';
+      const KEYS: Key[] = ['x', 'y', 'dx', 'dy', 'rotate'];
+      const cs: Array<{ ch: string; st: Style; tl?: TextLengthSpec }> = [];
+      /** 要素ごとの字の範囲 (cs の番号) と並び。先祖から順 (後のものほど内側) */
+      const ranges: Array<{ start: number; end: number; lists: Partial<Record<Key, number[]>> }> = [];
+      const collect = (el: XmlNode, st: Style, tl?: TextLengthSpec) => {
+        const lists: Partial<Record<Key, number[]>> = {};
+        for (const k of KEYS) {
+          const v = list(el.getAttribute?.(k), st.fontSize);
+          if (v.length) lists[k] = v;
+        }
+        const range = { start: cs.length, end: cs.length, lists };
+        if (Object.keys(lists).length) ranges.push(range);
         for (const c of Array.from(el.childNodes)) {
           if (c.nodeType === 3 || c.nodeType === 4) {
-            const t = spaced(c.textContent ?? '', st);
-            if (!t) continue;
-            runs.push({ text: t, st, ...(Number.isFinite(x) ? { x } : {}), ...(Number.isFinite(y) ? { y } : {}), dx: Number.isFinite(dx) ? dx : 0, dy: Number.isFinite(dy) ? dy : 0 });
-            x = y = dx = dy = NaN; // 位置の指定は最初の文字だけ
+            for (const ch of spaced(c.textContent ?? '', st)) cs.push({ ch, st, ...(tl ? { tl } : {}) });
           } else if (c.nodeType === 1) {
             const name = nm(c);
             if (name === 'textpath') {
@@ -1987,36 +4130,136 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
             }
             const p = props(c);
             if (p.display === 'none') continue;
-            if (c.getAttribute?.('transform')) throw new Unsupported('tspan transform');
-            const before = runs.length;
-            collect(c, inherit(st, p), { x, y, dx, dy });
-            if (runs.length > before) x = y = dx = dy = NaN; // 最初の字は子の中にあった
+            // tspan の transform は使わない (tspan は変換できる要素 (CSS Transforms 1 の用語の transformable element) でない。ブラウザも使わない)
+            // tspan の textLength: その中の字を、この長さにそろえる (text 要素のものは、塊の全体に flush で当てる)
+            const len = parseFloat(c.getAttribute?.('textLength') ?? '');
+            const tl2 = Number.isFinite(len) && len > 0 ? { length: len, glyphs: c.getAttribute?.('lengthAdjust') === 'spacingAndGlyphs' } : tl;
+            collect(c, inherit(st, p), tl2);
           }
         }
+        range.end = cs.length;
       };
-      collect(n, s);
-      for (const tp of onPath) textOnPath(tp.el, tp.st, mm, o, cl, letterSpacingOf(n));
+      // baseline-shift は text の中の要素 (tspan・textPath) のもの。text の外から受け継いだ分は使わない
+      collect(n, { ...s, baselineShift: 0 });
+      for (const tp of onPath) textOnPath(tp.el, tp.st, mm, o, cl);
+      // 先頭・末尾の空白は落とす (xml:space="default")。落とした字は数えない (並びの番号を詰める)
+      let lo = 0;
+      let hi = cs.length;
+      if (hi && !cs[0].st.preserveSpace && cs[0].ch === ' ') lo = 1;
+      if (hi > lo && !cs[hi - 1].st.preserveSpace && cs[hi - 1].ch === ' ') hi--;
+      const at: Array<Partial<Record<Key, number>>> = Array.from({ length: hi - lo }, () => ({}));
+      for (const r of ranges) {
+        const s0 = Math.max(r.start, lo);
+        const e0 = Math.min(r.end, hi);
+        for (const k of KEYS) {
+          const v = r.lists[k];
+          if (!v) continue;
+          for (let i = s0; i < e0; i++) {
+            const j = i - s0;
+            const val = j < v.length ? v[j] : k === 'rotate' ? v[v.length - 1] : NaN;
+            if (Number.isFinite(val)) at[i - lo][k] = val;
+          }
+        }
+      }
+      // 続く字を Run にまとめる (位置の指定のある字・回す字で分ける)
+      for (let i = lo; i < hi; i++) {
+        const c = cs[i];
+        const p = at[i - lo];
+        const rot = p.rotate ?? 0;
+        const last = runs[runs.length - 1];
+        const fresh = p.x !== undefined || p.y !== undefined || p.dx !== undefined || p.dy !== undefined || rot !== 0;
+        if (last && !fresh && last.st === c.st && !last.rotate && last.tl === c.tl) {
+          last.text += c.ch;
+          continue;
+        }
+        runs.push({ text: c.ch, st: c.st, ...(p.x !== undefined ? { x: p.x } : {}), ...(p.y !== undefined ? { y: p.y } : {}), dx: p.dx ?? 0, dy: p.dy ?? 0, ...(rot ? { rotate: rot } : {}), ...(c.tl ? { tl: c.tl } : {}) });
+      }
       if (!runs.length) return;
-      if (!runs[0].st.preserveSpace) runs[0].text = runs[0].text.replace(/^ /, '');
-      if (!runs[runs.length - 1].st.preserveSpace) runs[runs.length - 1].text = runs[runs.length - 1].text.replace(/ $/, '');
+      // inline-size (SVG 2 の text の章の自動の折り返し): 横書きの text を、この幅の中で行に折り返す。改行できる位置は UAX #14
+      // (lineBreak.ts)。行は x から始め (text-anchor の揃えは行ごと)、行の間は line-height (normal は字の大きさの 1.2 倍)
+      const inlineSize = s.vertical ? NaN : userLen(props(n)['inline-size'] ?? '', vp.w);
+      if (Number.isFinite(inlineSize) && inlineSize > 0) {
+        const wrapped = wrapRuns(runs, inlineSize, outline, props(n)['line-height']);
+        runs.length = 0;
+        runs.push(...wrapped);
+        if (!runs.length) return;
+      }
+      // 字の形の高さ (字の座標の上端・下端。y は下向き)。書体ごとに 1 度だけ測る
+      const measured = new Map<string, { top: number; bottom: number } | undefined>();
+      const measure = (ch: string, st: Style) => {
+        const key = `${ch}\0${st.fontFamily ?? ''}\0${st.fontWeight}\0${st.fontStyle ?? ''}`;
+        if (measured.has(key)) return measured.get(key);
+        const ol = outline(ch, st.fontFamily, st.fontWeight, 1000, st.fontStyle);
+        let top = Infinity;
+        let bottom = -Infinity;
+        for (const g of ol?.segs ?? []) {
+          if (g.op === 'Z') continue;
+          for (const y of g.op === 'C' ? [g.y1, g.y2, g.y] : [g.y]) {
+            top = Math.min(top, y);
+            bottom = Math.max(bottom, y);
+          }
+        }
+        const r = top < bottom ? { top: top / 1000, bottom: bottom / 1000 } : undefined;
+        measured.set(key, r);
+        return r;
+      };
+      /**
+       * dominant-baseline・alignment-baseline (CSS Inline 3 §4.1・§4.2.2) の基線を、字の y に合わせるために、字を下へずらす量。
+       * 書体の基線の表は読まないので、CSS Inline 3 の付録 A.2 のとおりに作る: central は上の高さと下の深さ (ascent・descent) の中ほど、
+       * text-top・text-bottom は上の高さ・下の深さ、ideographic は下の深さ、middle は x の高さ (「o」の上端から下へのはみ出しを引いた高さ。
+       * 測れなければ 0.5em) の半分、mathematical は負の記号 (U+2212) の中ほど、hanging は 0.6em (付録 A.2 の既定)
+       */
+      const baselineOffset = (st: Style, ol: { ascent?: number; descent?: number }) => {
+        const b = st.alignmentBaseline ?? st.dominantBaseline ?? 'auto';
+        if (b === 'auto' || b === 'alphabetic' || b === 'baseline') return 0;
+        const fs = st.fontSize;
+        const asc = ol.ascent ?? 0.8;
+        const desc = ol.descent ?? 0.2;
+        const xHeight = () => {
+          const m = measure('o', st);
+          return m ? -m.top - Math.max(m.bottom, 0) : 0.5;
+        };
+        switch (b) {
+          case 'text-top':
+          case 'text-before-edge':
+          case 'before-edge':
+            return asc * fs;
+          case 'text-bottom':
+          case 'text-after-edge':
+          case 'after-edge':
+          case 'ideographic':
+            return -desc * fs;
+          case 'central':
+            return ((asc - desc) / 2) * fs;
+          case 'middle':
+            return (xHeight() / 2) * fs;
+          case 'mathematical': {
+            const m = measure('\u2212', st);
+            return (m ? -(m.top + m.bottom) / 2 : xHeight() / 2) * fs;
+          }
+          case 'hanging':
+            return 0.6 * fs;
+          default:
+            return 0;
+        }
+      };
       // 塊 (x / y の指定で始まる) ごとに置く
       let px = runs[0].x ?? 0;
       let py = runs[0].y ?? 0;
-      let chunk: Array<{ run: Run; segs: Seg[]; at: number; y: number; adv: number; chars?: TextChars }> = [];
+      let chunk: Array<{ run: Run; segs: Seg[]; at: number; y: number; adv: number; chars?: TextChars; sx?: number }> = [];
       // textLength・lengthAdjust (SVG 1.1 §10.5): 文字列の長さを textLength にそろえる。spacingAndGlyphs は字ごと横に伸び縮みさせ、
       // spacing は字の間を空ける (詰める)。text-decoration (underline・overline・line-through) は字の色の線を引く
       const textLength = parseFloat(n.getAttribute?.('textLength') ?? '');
       const lengthAdjust = n.getAttribute?.('lengthAdjust') === 'spacingAndGlyphs' ? 'glyphs' : 'spacing';
-      const decoText = `${n.getAttribute?.('text-decoration') ?? ''} ${/text-decoration\s*:\s*([^;]+)/i.exec(n.getAttribute?.('style') ?? '')?.[1] ?? ''}`;
-      const deco = { under: /underline/.test(decoText), over: /overline/.test(decoText), through: /line-through/.test(decoText) };
       // data-kendot (Kumiori の拡張。CGM の TEXT SCORE TYPE の kendot): 字ごとに、字の下に点を打つ
       // data-kendot="over" は字の上に打つ (CGM の left の path では、右側が字の上になる)
       const kendotAttr = n.getAttribute?.('data-kendot');
       const kendot = kendotAttr === 'true' || kendotAttr === 'over';
       // data-fit="uniform" (Kumiori の拡張。CGM の RESTRICTED TEXT の isotropic): data-max-length を超えるとき、縦横同じ比で縮める
       const uniform = n.getAttribute?.('data-fit') === 'uniform';
-      // letter-spacing (SVG 1.1 §10.11。text 要素のもの): 字ごとに、字の後に足す
-      const letterSpacing = letterSpacingOf(n);
+      // letter-spacing (SVG 1.1 §10.11) は字ごとに字の後に、word-spacing (CSS Text 3 §8.2) は語を分ける空白 (U+0020) の後に足す。
+      // どちらも字の書式 (Style。tspan で変えられる) のもの
+      const spaced0 = runs.some((r) => r.st.letterSpacing || r.st.wordSpacing);
       const flush = () => {
         if (!chunk.length) return;
         const anchor = chunk[0].run.st.textAnchor;
@@ -2024,18 +4267,48 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         let width = last.at + last.adv - chunk[0].at;
         // 字の間を空ける (textLength の spacing・letter-spacing): 字ごとに輪郭を作り直して、間に足す
         const spread = Number.isFinite(textLength) && textLength > 0 && lengthAdjust === 'spacing';
-        if (spread || letterSpacing) {
+        const hasTl = chunk.some((c) => c.run.tl);
+        if (spread || spaced0 || hasTl) {
           const glyphs: typeof chunk = [];
           let extra = 0;
           for (const c of chunk) {
             let at = c.at + extra;
             for (const ch of [...c.run.text]) {
-              const ol = outline(ch, c.run.st.fontFamily, c.run.st.fontWeight, c.run.st.fontSize);
+              const ol = outline(ch, c.run.st.fontFamily, c.run.st.fontWeight, c.run.st.fontSize, c.run.st.fontStyle);
               if (!ol) continue;
               glyphs.push({ run: c.run, segs: ol.segs, at, y: c.y, adv: ol.advance, ...(ol.chars ? { chars: ol.chars } : {}) });
-              at += ol.advance + letterSpacing;
-              extra += letterSpacing;
+              const gap = (c.run.st.letterSpacing ?? 0) + (ch === ' ' ? (c.run.st.wordSpacing ?? 0) : 0);
+              at += ol.advance + gap;
+              extra += gap;
             }
+          }
+          // tspan の textLength: その tspan の字の範囲ごとに、字の間を空ける (spacing) か、字を横に伸び縮みさせる (spacingAndGlyphs)。
+          // 後ろの字は、範囲の長さの変わった分だけずらす
+          let moved = 0;
+          for (let i = 0; i < glyphs.length; ) {
+            const tl = glyphs[i].run.tl;
+            let j = i + 1;
+            while (j < glyphs.length && glyphs[j].run.tl === tl) j++;
+            for (let q = i; q < j; q++) glyphs[q].at += moved;
+            if (tl) {
+              const a0 = glyphs[i].at;
+              const w0 = glyphs[j - 1].at + glyphs[j - 1].adv - a0;
+              if (w0 > 0) {
+                if (tl.glyphs) {
+                  const f = tl.length / w0;
+                  for (let q = i; q < j; q++) {
+                    glyphs[q].at = a0 + (glyphs[q].at - a0) * f;
+                    glyphs[q].sx = f;
+                    glyphs[q].adv *= f;
+                  }
+                } else if (j - i > 1) {
+                  const gap = (tl.length - w0) / (j - i - 1);
+                  for (let q = i; q < j; q++) glyphs[q].at += gap * (q - i);
+                }
+                moved += tl.length - w0;
+              }
+            }
+            i = j;
           }
           if (glyphs.length) {
             chunk = glyphs;
@@ -2056,11 +4329,15 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         width *= k;
         const shift = anchor === 'middle' ? -width / 2 : anchor === 'end' ? -width : 0;
         const x0 = chunk[0].at;
-        const placed: Array<{ x: number; adv: number; y: number; fs: number }> = [];
+        const placed: Array<{ x: number; adv: number; y: number; fs: number; deco?: Style['decorations'] }> = [];
         for (const c of chunk) {
-          const t: M = [k, 0, 0, ky, x0 + (c.at - x0) * k + shift, c.y];
+          // rotate (SVG 1.1 §10.5): 字をその原点の周りに回す (時計回り)
+          const rad = ((c.run.rotate ?? 0) * Math.PI) / 180;
+          const [co, si] = [Math.cos(rad), Math.sin(rad)];
+          const kx = k * (c.sx ?? 1);
+          const t: M = c.run.rotate ? [kx * co, kx * si, -ky * si, ky * co, x0 + (c.at - x0) * k + shift, c.y] : [kx, 0, 0, ky, x0 + (c.at - x0) * k + shift, c.y];
           pushShape('text', transformSegs(c.segs, t), c.run.st, mm, o, cl, false, { chars: c.chars, size: c.run.st.fontSize, t });
-          placed.push({ x: t[4], adv: c.adv * k, y: c.y, fs: c.run.st.fontSize * ky });
+          placed.push({ x: t[4], adv: c.adv * k, y: c.y, fs: c.run.st.fontSize * ky, deco: c.run.st.decorations });
         }
         // 線と点 (字の色。太さは字の大きさの 0.06。位置は基線から下 0.12・上 0.85・0.3 の高さ)
         const st0 = chunk[0].run.st;
@@ -2074,12 +4351,26 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         const fsMax = Math.max(...placed.map((p) => p.fs));
         const th = fsMax * 0.06;
         const lineSegs: Seg[] = [];
-        const xa = placed[0].x;
-        const xb = placed[placed.length - 1].x + placed[placed.length - 1].adv;
         const yb = placed[0].y;
-        if (deco.under) lineSegs.push(...rect(xa, yb + fsMax * 0.12, xb - xa, th));
-        if (deco.over) lineSegs.push(...rect(xa, yb - fsMax * 0.85 - th, xb - xa, th));
-        if (deco.through) lineSegs.push(...rect(xa, yb - fsMax * 0.3 - th / 2, xb - xa, th));
+        // 線: 同じ指定の続く字の範囲ごとに、指定した要素の塗りで引く (字の色と同じなら、点と一緒の図形にする)
+        const others: Array<{ segs: Seg[]; fill: string | null | PaintRef; opacity: number }> = [];
+        for (let i = 0; i < placed.length; ) {
+          const ds = placed[i].deco;
+          let j = i + 1;
+          while (j < placed.length && placed[j].deco === ds) j++;
+          for (const d of ds ?? []) {
+            const xa = placed[i].x;
+            const xb = placed[j - 1].x + placed[j - 1].adv;
+            const segs: Seg[] = [];
+            if (d.under) segs.push(...rect(xa, yb + fsMax * 0.12, xb - xa, th));
+            if (d.over) segs.push(...rect(xa, yb - fsMax * 0.85 - th, xb - xa, th));
+            if (d.through) segs.push(...rect(xa, yb - fsMax * 0.3 - th / 2, xb - xa, th));
+            if (d.fill === st0.fill && d.opacity === 1) lineSegs.push(...segs);
+            else others.push({ segs, fill: d.fill, opacity: d.opacity });
+          }
+          i = j;
+        }
+        for (const x of others) pushShape('path', x.segs, { ...st0, fill: x.fill, stroke: null, fillOpacity: x.opacity, fillAlpha: undefined }, mm, o, cl, false);
         if (kendot)
           for (const c of chunk) {
             const n0 = [...c.run.text].length || 1;
@@ -2095,6 +4386,11 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         if (lineSegs.length) pushShape("path", transformSegs(lineSegs, ID), { ...st0, stroke: null }, mm, o, cl, false);
         chunk = [];
       };
+      if (s.vertical) {
+        const tlen = parseFloat(n.getAttribute?.('textLength') ?? '');
+        verticalText(runs, outline, mm, o, cl, Number.isFinite(tlen) && tlen > 0 ? { length: tlen, glyphs: n.getAttribute?.('lengthAdjust') === 'spacingAndGlyphs' } : undefined);
+        return;
+      }
       for (const r of runs) {
         if (r.x !== undefined || r.y !== undefined) {
           flush();
@@ -2105,15 +4401,16 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         py += r.dy;
         if (!r.text) continue;
         if (textAgain) charge(r.text.length);
-        const ol = outline(r.text, r.st.fontFamily, r.st.fontWeight, r.st.fontSize);
+        const ol = outline(r.text, r.st.fontFamily, r.st.fontWeight, r.st.fontSize, r.st.fontStyle);
         if (!ol) throw new Unsupported('text outline');
-        chunk.push({ run: r, segs: ol.segs, at: px, y: py, adv: ol.advance, ...(ol.chars ? { chars: ol.chars } : {}) });
+        chunk.push({ run: r, segs: ol.segs, at: px, y: py + (r.st.baselineShift ?? 0) + baselineOffset(r.st, ol), adv: ol.advance, ...(ol.chars ? { chars: ol.chars } : {}) });
         px += ol.advance;
       }
       flush();
     };
 
     walk(root, ROOT_STYLE, ID, 1, true);
+    chargeClipRuns(shapes);
     const par = (root.getAttribute?.('preserveAspectRatio') ?? '').trim().split(/\s+/).filter(Boolean);
     const aspect = { align: par[0] ?? 'xMidYMid', slice: par[1] === 'slice' };
     const rov = (props(root).overflow ?? '').trim();
@@ -2122,6 +4419,84 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
   } catch (e) {
     opts.onUnsupported?.(e instanceof Unsupported ? e.message : 'parse');
     return null;
+  }
+}
+
+/**
+ * 図形を変換 m で写す (形・切り抜き・画像・グラデーション・模様・グループの中身・字の行列。線の太さと破線は拡大率を掛ける)。
+ * opacity は、塗り・線の不透明度に掛ける (foreignObject の祖先の opacity)。
+ * clipMemo: 写した切り抜き (元の切り抜き → 写したもの)。同じ m で図形の並びを写すときに、並びで共有すると、同じ切り抜きは同じ 1 つに
+ * 写る (描く側が、続く図形の切り抜きを 1 度だけ書けるように。clipRuns の説明)
+ */
+export function transformShape(sh: SvgShape, m: Matrix, opacity = 1, clipMemo = new Map<SvgClip, SvgClip>()): SvgShape {
+  const k = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
+  const out: SvgShape = {
+    ...sh,
+    segs: transformSegs(sh.segs, m),
+    strokeWidth: sh.nonScalingStroke ? sh.strokeWidth : sh.strokeWidth * k,
+    fillOpacity: sh.fillOpacity * opacity,
+    strokeOpacity: sh.strokeOpacity * opacity,
+  };
+  if (sh.dash && !sh.nonScalingStroke) out.dash = sh.dash.map((d) => d * k);
+  if (sh.clips)
+    out.clips = sh.clips.map((c) => {
+      let t = clipMemo.get(c);
+      if (!t) clipMemo.set(c, (t = { ...c, segs: transformSegs(c.segs, m) }));
+      return t;
+    });
+  if (sh.masks) out.masks = sh.masks.map((mk) => ({ ...mk, shapes: mk.shapes.map((x) => transformShape(x, m, 1, clipMemo)) }));
+  if (sh.image) out.image = { ...sh.image, matrix: mul(m, sh.image.matrix) };
+  if (sh.fillPaint) out.fillPaint = { ...sh.fillPaint, matrix: mul(m, sh.fillPaint.matrix) };
+  if (sh.strokePaint) out.strokePaint = { ...sh.strokePaint, matrix: mul(m, sh.strokePaint.matrix) };
+  if (sh.fillPattern) out.fillPattern = { ...sh.fillPattern, matrix: mul(m, sh.fillPattern.matrix) };
+  if (sh.group) out.group = { shapes: sh.group.shapes.map((x) => transformShape(x, m, 1, clipMemo)) };
+  if (sh.text) out.text = { ...sh.text, matrix: mul(m, sh.text.matrix) };
+  return out;
+}
+
+/** 文書のすべての要素 (font 要素などを探すため) */
+function allElements(root: XmlNode): XmlNode[] {
+  const out: XmlNode[] = [];
+  const walk = (n: XmlNode) => {
+    out.push(n);
+    for (const c of Array.from(n.childNodes)) if (c.nodeType === 1) walk(c);
+  };
+  walk(root);
+  return out;
+}
+
+/** systemLanguage の値 sl が、利用者の言語 (小文字にしたもの) に合うか (parseSvg の conditionsHold の説明) */
+function systemLanguageHolds(sl: string, userLangs: readonly string[]): boolean {
+  const tags = sl.split(/[\s,]+/).filter(Boolean).map((t) => t.toLowerCase());
+  return tags.some((t) => userLangs.some((u) => u === t || u.startsWith(`${t}-`)));
+}
+
+/**
+ * SVG の字の中の systemLanguage の値ごとに、利用者の言語 languages (parseSvg の opts.languages と同じ。省けば実行環境の言語) で
+ * 満たすかを並べた鍵。鍵の同じ言語は、parseSvg の結果が同じ (照らし方の結果が同じ) なので、組んだものを使い回せる
+ * (30 種の言語の所に置いた SVG を 30 回組み直し、画素のフィルタも 30 回計算して 74 秒かかった)。
+ * 値に文字の参照 (&…;) があるなど、字の上で値を読めないときは undefined (使い回さない)
+ */
+export function systemLanguageKey(text: string, languages?: readonly string[]): string | undefined {
+  const userLangs = (languages ?? environmentLanguages()).map((l) => l.toLowerCase());
+  let key = '';
+  for (const m of text.matchAll(/\ssystemLanguage\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    const v = m[1] ?? m[2] ?? '';
+    if (v.includes('&')) return undefined;
+    key += systemLanguageHolds(v, userLangs) ? '1' : '0';
+  }
+  return key;
+}
+
+/** 実行環境の言語 (ブラウザは navigator.languages、ほかは Intl の既定の言語)。分からなければ空 */
+function environmentLanguages(): string[] {
+  const nav = (globalThis as { navigator?: { languages?: readonly string[]; language?: string } }).navigator;
+  if (nav?.languages?.length) return [...nav.languages];
+  if (nav?.language) return [nav.language];
+  try {
+    return [new Intl.DateTimeFormat().resolvedOptions().locale];
+  } catch {
+    return [];
   }
 }
 
