@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  見本: draw.io の図のページの選び方 (XSL-FO の fo:external-graphic で置く形)。
+  pages.html と同じ図 (diagrams.drawio) を、src の uri-specification (XSL 1.1 §5.11) の # の後ろで選ぶ。
+  図の大きさ: 横に長い図は content-width="scale-down-to-fit" で行の幅に収め (XSL 1.1 §7.15.4)、
+  縦に長い「組版の流れ」は content-width="62mm" で小さく置く (縦横の比は scaling="uniform" の既定で保つ。§7.15.12)。
+-->
+<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja">
+  <fo:layout-master-set>
+    <fo:simple-page-master master-name="A4" page-width="210mm" page-height="297mm" margin="20mm 18mm 12mm">
+      <fo:region-body margin-bottom="10mm"/>
+      <fo:region-after extent="8mm"/>
+    </fo:simple-page-master>
+  </fo:layout-master-set>
+  <fo:page-sequence master-reference="A4">
+    <fo:static-content flow-name="xsl-region-after">
+      <fo:block text-align="center" font-size="9pt"><fo:page-number/></fo:block>
+    </fo:static-content>
+    <fo:flow flow-name="xsl-region-body" font-size="10.5pt" line-height="1.7">
+      <fo:block font-size="16pt" font-weight="bold" space-after="4mm">draw.io の図のページの選び方 (XSL-FO)</fo:block>
+      <fo:block text-indent="1em">この見本は、3 ページの draw.io の図のファイル <fo:inline font-family="monospace">diagrams.drawio</fo:inline> から、<fo:inline font-family="monospace">fo:external-graphic</fo:inline> の <fo:inline font-family="monospace">src</fo:inline> の <fo:inline font-family="monospace">#</fo:inline> の後ろで、描くページを選びます。ファイルのページは、1 ページ目「全体図」(id <fo:inline font-family="monospace">overview</fo:inline>)、2 ページ目「組版の流れ」(id <fo:inline font-family="monospace">flow</fo:inline>)、3 ページ目「凡例」(id <fo:inline font-family="monospace">legend</fo:inline>。中身を圧縮した形) です。それぞれの図の左下の字で、どのページを描いたかが分かります。</fo:block>
+
+      <!-- 1. 何も付けない -->
+      <fo:block font-size="12pt" font-weight="bold" space-before="7mm" space-after="2mm" border-after-style="solid" border-after-width="0.5pt" border-after-color="#999999" keep-with-next.within-page="always">1. 何も付けない: 最初のページ</fo:block>
+      <fo:block keep-together.within-page="always">
+        <fo:block><fo:external-graphic src="url('diagrams.drawio')" content-width="scale-down-to-fit" width="100%"/></fo:block>
+        <fo:block font-size="9pt" color="#555555"><fo:inline font-family="monospace">src="url('diagrams.drawio')"</fo:inline> — 1 ページ目「全体図」</fo:block>
+      </fo:block>
+
+      <!-- 2. page=N -->
+      <fo:block font-size="12pt" font-weight="bold" space-before="7mm" space-after="2mm" border-after-style="solid" border-after-width="0.5pt" border-after-color="#999999" keep-with-next.within-page="always">2. #page=N: N ページ目 (1 から数える)</fo:block>
+      <fo:block font-size="9.5pt" color="#444444" keep-with-next.within-page="always">PDF の #page=N と同じく 1 から数えます。draw.io の画面の URL の page は 0 から数えるので、1 ずれます。</fo:block>
+      <fo:block keep-together.within-page="always">
+        <fo:block><fo:external-graphic src="url('diagrams.drawio#page=2')" content-width="62mm"/></fo:block>
+        <fo:block font-size="9pt" color="#555555"><fo:inline font-family="monospace">src="url('diagrams.drawio#page=2')"</fo:inline> — 2 ページ目「組版の流れ」</fo:block>
+      </fo:block>
+
+      <!-- 3. page-id=ID -->
+      <fo:block font-size="12pt" font-weight="bold" space-before="7mm" space-after="2mm" border-after-style="solid" border-after-width="0.5pt" border-after-color="#999999" keep-with-next.within-page="always">3. #page-id=ID: id で選ぶ</fo:block>
+      <fo:block font-size="9.5pt" color="#444444" keep-with-next.within-page="always">ファイルの &lt;diagram id="…"&gt; の値です。ページの名前を変えても参照が変わりません。このページは中身を圧縮した形で入っています。url() で囲まない URI でも書けます (XSL 1.1 §5.11)。</fo:block>
+      <fo:block keep-together.within-page="always">
+        <fo:block><fo:external-graphic src="diagrams.drawio#page-id=legend" content-width="scale-down-to-fit" width="100%"/></fo:block>
+        <fo:block font-size="9pt" color="#555555"><fo:inline font-family="monospace">src="diagrams.drawio#page-id=legend"</fo:inline> — 3 ページ目「凡例」</fo:block>
+      </fo:block>
+
+      <!-- 4. 名前 -->
+      <fo:block font-size="12pt" font-weight="bold" space-before="7mm" space-after="2mm" border-after-style="solid" border-after-width="0.5pt" border-after-color="#999999" keep-with-next.within-page="always">4. #名前: ページの名前で選ぶ</fo:block>
+      <fo:block font-size="9.5pt" color="#444444" keep-with-next.within-page="always">draw.io の画面の下のタブに出る名前です。日本語・空白は % の形 (%E5%87%A1%E4%BE%8B など) で書いても同じです。</fo:block>
+      <fo:block keep-together.within-page="always">
+        <fo:block><fo:external-graphic src="url('diagrams.drawio#組版の流れ')" content-width="62mm"/></fo:block>
+        <fo:block font-size="9pt" color="#555555"><fo:inline font-family="monospace">src="url('diagrams.drawio#組版の流れ')"</fo:inline> — 2 ページ目「組版の流れ」</fo:block>
+      </fo:block>
+      <fo:block keep-together.within-page="always" space-before="3mm">
+        <fo:block><fo:external-graphic src="url('diagrams.drawio#%E5%87%A1%E4%BE%8B')" content-width="scale-down-to-fit" width="100%"/></fo:block>
+        <fo:block font-size="9pt" color="#555555"><fo:inline font-family="monospace">src="url('diagrams.drawio#%E5%87%A1%E4%BE%8B')"</fo:inline> (「凡例」) — 3 ページ目「凡例」</fo:block>
+      </fo:block>
+
+      <!-- 5. 無いページ -->
+      <fo:block font-size="12pt" font-weight="bold" space-before="7mm" space-after="2mm" border-after-style="solid" border-after-width="0.5pt" border-after-color="#999999" keep-with-next.within-page="always">5. 無いページ: 最初のページを描いて警告する</fo:block>
+      <fo:block font-size="9.5pt" color="#444444" keep-with-next.within-page="always">組むと「draw.io の図に 9 ページ目がありません (3 ページ。最初のページを描きます)」の警告が出ます。</fo:block>
+      <fo:block keep-together.within-page="always">
+        <fo:block><fo:external-graphic src="url('diagrams.drawio#page=9')" content-width="scale-down-to-fit" width="100%"/></fo:block>
+        <fo:block font-size="9pt" color="#555555"><fo:inline font-family="monospace">src="url('diagrams.drawio#page=9')"</fo:inline> — 無いので、1 ページ目「全体図」</fo:block>
+      </fo:block>
+    </fo:flow>
+  </fo:page-sequence>
+</fo:root>

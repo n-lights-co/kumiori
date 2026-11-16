@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>draw.io の図のページの選び方 (Kumiori の見本)</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm; @bottom-center { content: counter(page); font-size: 9pt; } }
+  body { font-size: 10.5pt; line-height: 1.7; }
+  h1 { font-size: 16pt; margin: 0 0 4mm; }
+  h2 { font-size: 12pt; margin: 7mm 0 2mm; border-bottom: 0.5pt solid #999; }
+  code { font-size: 9.5pt; background: #f2f2f2; padding: 0 0.3em; }
+  figure { margin: 3mm 0 0; break-inside: avoid; }
+  figure img { display: block; max-width: 100%; border: 0.5pt solid #ccc; padding: 2mm; }
+  figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; }
+  .note { font-size: 9.5pt; color: #444; }
+  /* 見出しと説明だけをページの下に残さない (CSS Fragmentation 3 §3.1) */
+  h2, .note { break-after: avoid; }
+  /* 縦に長い「組版の流れ」は小さく置く */
+  figure.tall img { width: 62mm; }
+</style>
+</head>
+<body>
+<h1>draw.io の図のページの選び方</h1>
+<p>
+  この見本は、3 ページの draw.io の図のファイル <code>diagrams.drawio</code> から、画像の参照の <code>#</code> の後ろで描くページを選びます。
+  ファイルのページは、1 ページ目「全体図」(id <code>overview</code>)、2 ページ目「組版の流れ」(id <code>flow</code>)、
+  3 ページ目「凡例」(id <code>legend</code>。中身を圧縮した形) です。それぞれの図の下の字で、どのページを描いたかが分かります。
+</p>
+
+<h2>1. 何も付けない: 最初のページ</h2>
+<figure>
+  <img src="diagrams.drawio" alt="全体図">
+  <figcaption><code>&lt;img src="diagrams.drawio"&gt;</code> — 1 ページ目「全体図」</figcaption>
+</figure>
+
+<h2>2. <code>#page=N</code>: N ページ目 (1 から数える)</h2>
+<p class="note">PDF の <code>#page=N</code> と同じく 1 から数えます。draw.io の画面の URL の <code>page</code> は 0 から数えるので、1 ずれます。</p>
+<figure class="tall">
+  <img src="diagrams.drawio#page=2" alt="組版の流れ">
+  <figcaption><code>&lt;img src="diagrams.drawio#page=2"&gt;</code> — 2 ページ目「組版の流れ」</figcaption>
+</figure>
+
+<h2>3. <code>#page-id=ID</code>: id で選ぶ</h2>
+<p class="note">ファイルの <code>&lt;diagram id="…"&gt;</code> の値です。ページの名前を変えても参照が変わりません。このページは中身を圧縮した形で入っています。</p>
+<figure>
+  <img src="diagrams.drawio#page-id=legend" alt="凡例">
+  <figcaption><code>&lt;img src="diagrams.drawio#page-id=legend"&gt;</code> — 3 ページ目「凡例」</figcaption>
+</figure>
+
+<h2>4. <code>#名前</code>: ページの名前で選ぶ</h2>
+<p class="note">draw.io の画面の下のタブに出る名前です。日本語・空白は <code>%</code> の形 (<code>%E5%87%A1%E4%BE%8B</code> など) で書いても同じです。</p>
+<figure class="tall">
+  <img src="diagrams.drawio#組版の流れ" alt="組版の流れ">
+  <figcaption><code>&lt;img src="diagrams.drawio#組版の流れ"&gt;</code> — 2 ページ目「組版の流れ」</figcaption>
+</figure>
+<figure>
+  <img src="diagrams.drawio#%E5%87%A1%E4%BE%8B" alt="凡例">
+  <figcaption><code>&lt;img src="diagrams.drawio#%E5%87%A1%E4%BE%8B"&gt;</code> (「凡例」) — 3 ページ目「凡例」</figcaption>
+</figure>
+
+<h2>5. 無いページ: 最初のページを描いて警告する</h2>
+<p class="note">組むと「draw.io の図に 9 ページ目がありません (3 ページ。最初のページを描きます)」の警告が出ます。</p>
+<figure>
+  <img src="diagrams.drawio#page=9" alt="全体図">
+  <figcaption><code>&lt;img src="diagrams.drawio#page=9"&gt;</code> — 無いので、1 ページ目「全体図」</figcaption>
+</figure>
+</body>
+</html>
