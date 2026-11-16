@@ -1,16 +1,18 @@
 import { defineConfig } from '@playwright/test';
+import { chromiumLaunchOptions } from './scripts/chromium.mjs';
 
 /**
  * ブラウザでの結合テスト (e2e/)。画面を開いて、標準サンプルと XSL-FO の組版・PDF 出力が通ることを確かめる。
  * フォントは Google Fonts から取得する (KUMIORI_E2E_FONT_DIR を指定すると、そのディレクトリのフォントを使う。ファイルの名前は e2e/app.spec.ts の routeFonts の説明にある。
  * KUMIORI_E2E_FONT_CACHE を指定すると、取得したフォントをそのディレクトリに覚えておき、次からはそこから返す。e2e/fontCache.ts)。
+ * KUMIORI_CHROMIUM に Chromium の実行ファイルを指すと、Playwright の取った Chromium ではなくそれを使う (比較のスクリプトと同じ。scripts/chromium.mjs)。
  */
 export default defineConfig({
   testDir: 'e2e',
   timeout: 180_000,
   fullyParallel: false,
   reporter: [['list']],
-  use: { baseURL: 'http://127.0.0.1:5174', headless: true },
+  use: { baseURL: 'http://127.0.0.1:5174', headless: true, launchOptions: chromiumLaunchOptions() },
   webServer: {
     command: 'npx vite --host 127.0.0.1 --port 5174 --strictPort',
     url: 'http://127.0.0.1:5174',

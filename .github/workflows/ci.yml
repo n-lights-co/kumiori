@@ -13,13 +13,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/fonts
           # テストが取得する書体 (既定の書体・数式の書体と、テスト用の WOFF2・OTF)。一覧は src/fontMapping.ts と test/helpers.ts と scripts/conformance-fonts.mjs (対応仕様説明書の見本の書体) にある。
@@ -29,7 +29,7 @@ jobs:
           restore-keys: |
             fonts-test-
             fonts-defaults-v1
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/unicode
           # テストが取得する Unicode の公式の適合試験 (LineBreakTest.txt・BidiTest.txt・BidiCharacterTest.txt)。版と取得は test/ucdTestData.ts にある。
@@ -49,20 +49,20 @@ jobs:
   node-min:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 20.19.0
           cache: npm
       - run: npm ci
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/fonts
           key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts', 'scripts/conformance-fonts.mjs') }}
           restore-keys: |
             fonts-test-
             fonts-defaults-v1
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/unicode
           key: unicode-test-${{ hashFiles('test/ucdTestData.ts') }}
@@ -81,14 +81,14 @@ jobs:
       # ブラウザが Google Fonts の配信元から取った書体を覚えておく場所 (e2e/fontCache.ts)。下の actions/cache で持ち越す
       KUMIORI_E2E_FONT_CACHE: ${{ github.workspace }}/.cache/e2e-fonts
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/e2e-fonts
           # 画面が取る書体は src/fontMapping.ts の一覧、ほかに e2e のテストが読ませる文書の書体。どちらかが変わればキーが変わり、

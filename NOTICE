@@ -2,4 +2,6 @@ Kumiori (組み織り)
 Copyright 2026 Northern Lights Co.
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+It includes code ported from draw.io and mxGraph (Copyright JGraph Ltd, JGraph Holdings Ltd and draw.io AG, Apache License 2.0).
+The shapes from draw.io's src/main/webapp/shapes/ are ported from draw.io v24.7.5, which is licensed only under the Apache License 2.0.
 Third-party components and their licenses are listed in THIRD_PARTY_NOTICES.md.

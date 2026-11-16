@@ -18,7 +18,12 @@
     "esModuleInterop": true,
     "types": [
       "vite/client"
-    ]
+    ],
+    "paths": {
+      "kumiori": [
+        "./src/index.ts"
+      ]
+    }
   },
   "include": [
     "src",

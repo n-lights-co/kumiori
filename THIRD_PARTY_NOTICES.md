@@ -9,10 +9,13 @@ Kumiori の配布物に含まれる、または Kumiori の実行に使われる
 
 ## 1. ブラウザ向けの配布物 (`dist/`・`dist-browser/`) に含まれるもの
 
-次の 2 つのブラウザ向けの配布物は、この節のパッケージを取り込んでいます (2026-11-08 に、ビルドのソースマップで取り込まれたパッケージを確かめました)。
+次の 2 つのブラウザ向けの配布物は、この節のパッケージを取り込んでいます (2026-11-16 に、ビルドのソースマップで取り込まれたパッケージを確かめました)。
 
 - 画面 (`npm run build` の `dist/`。GitHub Pages に置くもの)
 - ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も取り込んでいます (XSL-FO を読むため)
+
+draw.io の図を描く処理 (`src/drawio/`。図が出てきたときだけ読み込む別のチャンク) は、roughjs (hachure-fill・path-data-parser・points-on-curve・points-on-path を含む) を取り込んでいます。
+その処理には、draw.io と mxGraph から移したコードが入っています (表示は下の 13 節)。そのチャンクの JavaScript のファイルの先頭にも、draw.io と mxGraph の著作権表示を書いています。
 
 ライブラリ (`npm run build:lib` の `dist-lib/`。npm の `kumiori`) は依存パッケージを取り込まず、実行時に node_modules から読み込みます (下の 2 節と同じ)。
 
@@ -254,6 +257,166 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+### roughjs 4.6.6
+
+- package.json の license: `MIT`
+- 場所: `node_modules/roughjs`
+- draw.io の図の手書き風 (sketch) を描く (`src/drawio/drawioSketch.ts`。draw.io の図を描く処理と一緒に、図が出てきたときだけ読み込む)。
+
+`node_modules/roughjs/LICENSE` の本文:
+
+```text
+MIT License
+
+Copyright (c) 2019 Preet Shihn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### hachure-fill 0.5.2
+
+- package.json の license: `MIT`
+- 場所: `node_modules/hachure-fill`
+- roughjs の依存 (斜線の塗り)。
+
+`node_modules/hachure-fill/LICENSE` の本文:
+
+```text
+MIT License
+
+Copyright (c) 2023 Preet Shihn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### path-data-parser 0.1.0
+
+- package.json の license: `MIT`
+- 場所: `node_modules/path-data-parser`
+- roughjs の依存 (SVG の経路の読み取り)。
+
+`node_modules/path-data-parser/LICENSE` の本文:
+
+```text
+MIT License
+
+Copyright (c) 2020 Preet Shihn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### points-on-curve 0.2.0
+
+- package.json の license: `MIT`
+- 場所: `node_modules/points-on-curve`
+- roughjs の依存 (曲線の点)。
+
+`node_modules/points-on-curve/LICENSE` の本文:
+
+```text
+MIT License
+
+Copyright (c) 2020 Preet Shihn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### points-on-path 0.2.1
+
+- package.json の license: `MIT`
+- 場所: `node_modules/points-on-path`
+- roughjs の依存 (経路の点)。
+
+`node_modules/points-on-path/LICENSE` の本文:
+
+```text
+MIT License
+
+Copyright (c) 2020 Preet
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### 1.1 パッケージのソースの中にある、ほかのソフトウェアの表示
@@ -1875,7 +2038,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### linkedom 0.18.14
+### linkedom 0.18.15
 
 - package.json の license: `ISC`
 - 場所: `node_modules/linkedom`
@@ -2241,34 +2404,29 @@ THIS IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRE
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### @acemir/cssom 0.9.32
+### cssomnom 0.1.11
 
-- package.json の license: `MIT`
-- 場所: `node_modules/@acemir/cssom`
+- package.json の license: `Apache-2.0`
+- 場所: `node_modules/cssomnom`
 
-`node_modules/@acemir/cssom/LICENSE.txt` の本文:
+`node_modules/cssomnom/LICENSE` は Apache License 2.0 の本文で、上の 1.5 の本文と同じです (行末の空白を除いて一字も違いません)。
+配布物のファイル (`node_modules/cssomnom/dist/index.js` など) の冒頭には、次の表示があります (`dist/index.js` の 5〜18 行目をそのまま):
 
 ```text
-Copyright (c) Nikita Vasilyev
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+* @license
+* Copyright 2026 Google LLC
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     https://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
 ```
 
 ### html-escaper 3.0.3
@@ -2754,3 +2912,183 @@ This software includes material copied from or derived from CSS Color Module Lev
 - 文書の取得元: https://www.w3.org/TR/css-color-4/ (取得日 2026-11-10。取得した版は W3C Candidate Recommendation Draft、https://www.w3.org/TR/2026/CRD-css-color-4-20261103/)
 - 文書の著作権表示 (原文): 「Copyright © 2026 World Wide Web Consortium. W3C® liability, trademark and permissive document license rules apply.」。permissive document license のリンク先は https://www.w3.org/copyright/software-license/ (2026-11-10 の時点で https://www.w3.org/copyright/software-license-2023/ に転送される)
 - ライセンスの本文は、上の 4 節に写した Software and Document license - 2023 version と同じです。
+
+## 12. Kumiori のコードに写した W3C の文書の見本のコード (Filter Effects 1 の feTurbulence の参照の実装)
+
+`src/svgFilterRaster.ts` の feTurbulence のノイズ (`turbulenceInit`・`noise2`・`turbulence`) は、W3C の文書 Filter Effects Module Level 1 の 9.21 節 (Filter primitive feTurbulence) の参照の実装 (C のコード) を、TypeScript に書き直したものです (乱数の作り方・格子の勾配の表の作り方・ノイズの補間・オクターブの足し方・タイルのつなぎ方の手順と定数は変えていません)。
+
+This software or document includes material copied from or derived from Filter Effects Module Level 1 (https://www.w3.org/TR/2018/WD-filter-effects-1-20181218/). Copyright © 2018 W3C® (MIT, ERCIM, Keio, Beihang).
+
+- 文書の取得元: https://www.w3.org/TR/filter-effects-1/ (取得日 2026-11-12。取得した版は W3C Working Draft 18 December 2018、https://www.w3.org/TR/2018/WD-filter-effects-1-20181218/)
+- 文書の著作権表示 (原文): 「Copyright © 2018 W3C® (MIT, ERCIM, Keio, Beihang). W3C liability, trademark and permissive document license rules apply.」。permissive document license のリンク先は https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document (Software and Document license - 2015 version)
+- 下はそのライセンスの本文です。取得元: https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document (取得日 2026-11-12)。HTML から文字だけを取り出しました (語句は書き換えていません。見出しと段落の区切りは改行にしています。言語の選び方の案内と、末尾の版の一覧・変更の説明は含めていません)。
+
+```text
+Software and Document license - 2015 version
+
+Status: This license was in effect between 13 May 2015 and 31 December 2022. It was replaced by this version.
+This work is being provided by the copyright holders under the following license.
+License
+By obtaining and/or copying this work, you (the licensee) agree that you have read, understood, and will comply with the following terms and conditions.
+Permission to copy, modify, and distribute this work, with or without modification, for any purpose and without fee or royalty is hereby granted, provided that you include the following on ALL copies of the work or portions thereof, including modifications:
+The full text of this NOTICE in a location viewable to users of the redistributed or derivative work.
+Any pre-existing intellectual property disclaimers, notices, or terms and conditions. If none exist, the W3C Software and Document Short Notice should be included.
+Notice of any changes or modifications, through a copyright statement on the new code or document such as "This software or document includes material copied from or derived from [title and URI of the W3C document]. Copyright © [YEAR] W3C® (MIT, ERCIM, Keio, Beihang)."
+Disclaimers
+THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
+COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
+The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to the work without specific, written prior permission. Title to copyright in this work will at all times remain with copyright holders.
+```
+
+## 13. Kumiori のコードに移した draw.io と mxGraph のソース (draw.io の図)
+
+draw.io の図 (`.drawio`・`.dio`) を描く次のファイルは、draw.io (diagrams.net) と mxGraph の公開のソース (https://github.com/jgraph/drawio 。`src/main/webapp/shapes/` の下のファイルは版 v24.7.5、そのほかは版 v32.6.10) の JavaScript の形の描き方 (各形の `paintVertexShape`・`redrawPath`、線の端の形、線の曲げ方、mxStencil の形の命令の解釈、`stencils.min.js` の読み方) と、既定のスタイル (`src/main/webapp/styles/default.xml`) を、TypeScript に書き直したものです。各ファイルの先頭のコメントに、移したソースのファイルの名前を書いています。
+
+- `src/drawio/` の `drawio.ts`・`drawioCanvas.ts`・`drawioEdges.ts`・`drawioShapes.ts`・`drawioShapesA.ts`・`drawioShapesB.ts`・`drawioSketch.ts` (draw.io の Editor.js の RoughCanvas と Shapes.js の HandJiggle)・`drawioStencil.ts`・`drawioTapered.ts`
+- `src/drawio/drawioJs/` の各ファイル (draw.io の `src/main/webapp/shapes/` の形)
+
+`src/drawio/` のほかのファイル (`load.ts`・`drawioXml.ts`・`sniff.ts` など) は Kumiori で書いたもので、draw.io と mxGraph のソースを移していません。
+
+ソースのライセンスは Apache License 2.0 です (本文は 1.5 節。Kumiori 自身のライセンスと同じ)。Apache License 2.0 の 4 項に従い、次のようにしています。
+
+- (b) 変更したことの表示: 移した各ファイルの先頭のコメントに、元のファイルの名前と、TypeScript に書き直して変更したことを書いています。
+- (c) 著作権表示を残す: 移した各ファイルの先頭のコメントに、元のファイルの先頭の著作権表示を、書き換えずに写しています。元のファイルとその表示の一覧は、下の 13.1 節にあります。
+- (d) NOTICE: draw.io のリポジトリには、v24.7.5 にも v32.6.10 にも NOTICE のファイルがありません (2026-11-15 に、両方の版のファイルの一覧で確かめました)。
+- ビルドした JavaScript (画面の `dist/`・`dist-browser/`・`dist-lib/`・`dist-cli/` の、これらのファイルを取り込んだもの) は、縮めるとコメントが除かれるので、ファイルの先頭に、draw.io と mxGraph の著作権表示とこの文書の場所を書いています。
+
+Kumiori は、draw.io の図形ライブラリのデータ (`stencils/` の XML と `js/stencils.min.js`) とアイコンの画像を含みません (使う人が渡すか、許したときだけ取ります)。
+`src/drawio/drawioJs/` の各ファイル (と `src/drawio/drawioShapes.ts` などの一部の形) は、draw.io の `src/main/webapp/shapes/` の形 (JavaScript で書かれた図形ライブラリ。AWS 3D・モックアップ・電気の図など) を書き直したものです。
+draw.io は v29.3.2 から `shapes/` に利用の制限 (`shapes/LICENSE`。下の 13.2 節) を付けましたが、Kumiori に移した `shapes/` の形は、その前の v24.7.5 から移したもので、その制限はかかりません (13.2 節)。
+v24.7.5 より後に足された形・style のキー・描き方の変更は入れず、v24.7.5 の描き方にそろえています。
+
+移した JavaScript の形には、他社の製品のアイコン・画面の部品を、画像でなく経路の座標として描くものがあります。
+
+- AWS 3D の形 (`mxgraph.aws3d.*` の 57 種類。`src/drawio/drawioJs/aws3d.ts`): Amazon Web Services のサービスのアイコン (`dynamoDb`・`cloudfront`・`lambda`・`s3`・`rds`・`route53` など) と、Oracle のデータセンター・サーバーの形 (`oracleDataCenter`・`oracleDbServer`・`oracleServer`) を含みます
+- Atlassian の Jira の課題の形 (`mxgraph.atlassian.issue`。`src/drawio/drawioJs/misc.ts`)
+- 携帯の端末と画面の部品の形 (`src/drawio/drawioJs/ui.ts`・`mockupIos.ts`): Apple の iOS (`mxgraph.ios.*`・`mxgraph.ios7ui.*`。iPhone・iPad の端末の形を含みます)、Google の Android (`mxgraph.android.*`)、Google の Material Design (`mxgraph.gmdl.*`)
+- Bootstrap の画面の部品の形 (`mxgraph.bootstrap.*`。`src/drawio/drawioJs/ui.ts`)
+
+これらの形の名前と意匠 (商標を含みます) は、各社のものです。Kumiori は各社と関係が無く、Kumiori がこれらの形を描けることは、各社の承認や後援を意味しません。
+
+draw.io v24.7.5 の README の「License」の節は、次のように書いています (取得元: https://github.com/jgraph/drawio/blob/v24.7.5/README.md 。取得日 2026-11-16。2 つの段落の始めの部分を抜き出し、リンクの記法を除いたもの)。
+draw.io の書いたソースは Apache License 2.0、JGraph の提供するアイコンと図のひな形は CC BY 4.0 で、第三者が元の権利を持つアイコンには別の条件が掛かることがある、という趣旨です。
+
+```text
+The source code authored by us in this repo is licensed under the Apache v2.
+The JGraph provided icons and diagram templates are licensed under the CC BY 4.0. Additional terms may also apply where the icons are originally defined by a third-party copyright holder.
+```
+
+Kumiori は、`src/main/webapp/shapes/` の `*.js` を、この「ソース」(Apache License 2.0) として扱っています。v24.7.5 の `shapes/` には LICENSE のファイルが無く (13.2 節)、各ファイルの先頭の表示は JGraph Ltd の著作権表示だけです (13.1 節)。
+これらの形を含む図を PDF にして人に配る・公開するときは、各社の商標・ブランド・アイコンの使い方の決まりを、使う人が確かめて、それに従ってください。この節は、ライセンスの解釈や法的な判断を示すものではありません。
+
+許したときに取る (`drawio.fetchStencils`。コマンドは `--fetch-drawio-stencils`) 図形ライブラリ (`js/stencils.min.js`・`stencils/` の XML) と配布物の画像 (`img/`) は、既定では draw.io v24.7.5 のものです。そのライセンスは、v24.7.5 の `src/main/webapp/stencils/LICENSE`・`src/main/webapp/img/LICENSE` の Creative Commons Attribution 4.0 International (CC BY 4.0) です。
+使う人が `drawio.stencils` (コマンドは `--drawio-stencils`) で渡すもの、`drawio.fetchStencils` の URL (コマンドは `--drawio-stencils-url`) で別の版から取るものには、その版の LICENSE がかかります (v29.3.2 から後の版の `stencils/`・`img/` には、13.2 節の制限が付いています)。
+
+### 13.1 元のファイルと著作権表示
+
+移した、または描き方を合わせた draw.io のファイルと、その先頭の著作権表示 (原文) です。「版」は移した版で、`src/main/webapp/shapes/` の下は v24.7.5 (13.2 節)、そのほかは v32.6.10 です。著作権表示は、その版のファイルから写しました (2026-11-15)。「(無い)」は、その版のファイルの先頭に著作権表示が無いものです。mxGraph のファイルは、draw.io のリポジトリの中の `src/main/webapp/mxgraph/src/` のものです。
+
+| 元のファイル | 版 | 著作権表示 | Kumiori のファイル (`src/drawio/` の下) |
+| --- | --- | --- | --- |
+| `src/main/webapp/js/diagramly/App.js` | v32.6.10 | `Copyright (c) 2006-2020, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2020, draw.io AG` | `drawioStencil.ts` |
+| `src/main/webapp/js/diagramly/Editor.js` | v32.6.10 | `Copyright (c) 2006-2026, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2026, draw.io AG` | `drawio.ts`・`drawioSketch.ts` |
+| `src/main/webapp/js/diagramly/GraphViewer.js` | v32.6.10 | `Copyright (c) 2006-2016, JGraph Holdings Ltd` | `drawio.ts` |
+| `src/main/webapp/js/grapheditor/Graph.js` | v32.6.10 | `Copyright (c) 2006-2012, JGraph Holdings Ltd` | `drawio.ts`・`drawioEdges.ts`・`drawioShapesA.ts`・`drawioStencil.ts`・`drawioTapered.ts` |
+| `src/main/webapp/js/grapheditor/Shapes.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd` | `drawio.ts`・`drawioCanvas.ts`・`drawioEdges.ts`・`drawioJs/basic.ts`・`drawioJs/bpmn.ts`・`drawioShapes.ts`・`drawioShapesA.ts`・`drawioShapesB.ts`・`drawioSketch.ts`・`drawioTapered.ts` |
+| `src/main/webapp/mxgraph/src/model/mxCell.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/model/mxGeometry.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/model/mxGraphModel.js` | v32.6.10 | `Copyright (c) 2006-2018, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2018, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxActor.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioJs/archimate.ts`・`drawioJs/misc.ts`・`drawioShapesA.ts`・`drawioShapesB.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxArrow.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawioEdges.ts`・`drawioJs/arrows.ts`・`drawioJs/edges.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxArrowConnector.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioEdges.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxCloud.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxConnector.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioEdges.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxCylinder.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioShapesA.ts`・`drawioShapesB.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxDoubleEllipse.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxEllipse.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioJs/archimate.ts`・`drawioShapesB.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxLine.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxMarker.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioEdges.ts`・`drawioTapered.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxPolyline.js` | v32.6.10 | `Copyright (c) 2006-2026, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2026, draw.io AG` | `drawio.ts`・`drawioTapered.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxRectangleShape.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioJs/misc.ts`・`drawioShapes.ts`・`drawioShapesA.ts`・`drawioShapesB.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxRhombus.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioShapesB.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxShape.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioCanvas.ts`・`drawioJs/basic.ts`・`drawioJs/electrical.ts`・`drawioJs/misc.ts`・`drawioJs/mockupIos.ts`・`drawioShapes.ts`・`drawioShapesA.ts`・`drawioShapesB.ts`・`drawioStencil.ts`・`drawioTapered.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxStencil.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioCanvas.ts`・`drawioStencil.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxStencilRegistry.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioJs/archimate.ts`・`drawioJs/misc.ts`・`drawioStencil.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxSwimlane.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioJs/bpmn.ts` |
+| `src/main/webapp/mxgraph/src/shape/mxText.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/util/mxAbstractCanvas2D.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawioCanvas.ts`・`drawioJs/electrical.ts`・`drawioJs/mockup.ts`・`drawioJs/mockupIos.ts`・`drawioStencil.ts` |
+| `src/main/webapp/mxgraph/src/util/mxConstants.js` | v32.6.10 | `Copyright (c) 2006-2026, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2026, draw.io AG` | `drawio.ts`・`drawioEdges.ts`・`drawioJs/bpmn.ts`・`drawioJs/mockup.ts`・`drawioJs/ui.ts`・`drawioShapesA.ts`・`drawioShapesB.ts`・`drawioStencil.ts`・`drawioTapered.ts` |
+| `src/main/webapp/mxgraph/src/util/mxPoint.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioShapesB.ts` |
+| `src/main/webapp/mxgraph/src/util/mxSvgCanvas2D.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioCanvas.ts`・`drawioJs/arrows.ts`・`drawioJs/bpmn.ts`・`drawioJs/electrical.ts`・`drawioJs/misc.ts`・`drawioJs/mockup.ts`・`drawioJs/mockupIos.ts`・`drawioJs/ui.ts`・`drawioStencil.ts` |
+| `src/main/webapp/mxgraph/src/util/mxUtils.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioEdges.ts`・`drawioJs/archimate.ts`・`drawioJs/arrows.ts`・`drawioJs/basic.ts`・`drawioJs/bpmn.ts`・`drawioJs/electrical.ts`・`drawioJs/mockup.ts`・`drawioJs/mockupIos.ts`・`drawioJs/ui.ts`・`drawioShapes.ts`・`drawioShapesB.ts`・`drawioTapered.ts` |
+| `src/main/webapp/mxgraph/src/view/mxCellRenderer.js` | v32.6.10 | `Copyright (c) 2006-2017, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2017, draw.io AG` | `drawio.ts`・`drawioJs/archimate.ts`・`drawioJs/arrows.ts`・`drawioJs/basic.ts`・`drawioJs/bpmn.ts` |
+| `src/main/webapp/mxgraph/src/view/mxEdgeStyle.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/view/mxGraph.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioCanvas.ts`・`drawioEdges.ts`・`drawioJs/archimate.ts`・`drawioJs/arrows.ts`・`drawioJs/basic.ts`・`drawioJs/bpmn.ts`・`drawioJs/electrical.ts`・`drawioJs/misc.ts`・`drawioJs/mockup.ts`・`drawioJs/ui.ts`・`drawioShapesA.ts`・`drawioShapesB.ts`・`drawioStencil.ts`・`drawioTapered.ts` |
+| `src/main/webapp/mxgraph/src/view/mxGraphView.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioEdges.ts` |
+| `src/main/webapp/mxgraph/src/view/mxPerimeter.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts` |
+| `src/main/webapp/mxgraph/src/view/mxStylesheet.js` | v32.6.10 | `Copyright (c) 2006-2015, JGraph Holdings Ltd`<br>`Copyright (c) 2006-2015, draw.io AG` | `drawio.ts`・`drawioJs/arrows.ts`・`drawioJs/basic.ts`・`drawioJs/bpmn.ts`・`drawioJs/ui.ts` |
+| `src/main/webapp/shapes/bpmn/mxBpmnShape2.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/bpmn.ts` |
+| `src/main/webapp/shapes/emoji/mxEmoji.js` | v24.7.5 | (無い) | `drawioJs/misc.ts` |
+| `src/main/webapp/shapes/er/mxER.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioEdges.ts`・`drawioJs/bpmn.ts` |
+| `src/main/webapp/shapes/ios7/mxIOS7Ui.js` | v24.7.5 | `Copyright (c) 2006-2013, JGraph Ltd` | `drawioJs/ui.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupButtons.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockup.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupContainers.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockup.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupForms.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockup.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupGraphics.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockup.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupMarkup.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockupIos.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupMisc.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockup.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupNavigation.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockupIos.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupText.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockup.ts` |
+| `src/main/webapp/shapes/mockup/mxMockupiOS.js` | v24.7.5 | `Copyright (c) 2006-2010, JGraph Ltd` | `drawioJs/mockupIos.ts` |
+| `src/main/webapp/shapes/mxAWS3D.js` | v24.7.5 | `Copyright (c) 2006-2015, JGraph Ltd` | `drawioJs/aws3d.ts` |
+| `src/main/webapp/shapes/mxAWS4.js` | v24.7.5 | `Copyright (c) 2006-2018, JGraph Ltd` | `drawioShapes.ts` |
+| `src/main/webapp/shapes/mxAndroid.js` | v24.7.5 | `Copyright (c) 2006-2013, JGraph Ltd` | `drawioJs/ui.ts` |
+| `src/main/webapp/shapes/mxArchiMate.js` | v24.7.5 | `Copyright (c) 2006-2014, JGraph Ltd` | `drawioJs/archimate.ts` |
+| `src/main/webapp/shapes/mxArchiMate3.js` | v24.7.5 | `Copyright (c) 2006-2016, JGraph Ltd` | `drawioJs/archimate.ts` |
+| `src/main/webapp/shapes/mxArrows.js` | v24.7.5 | `Copyright (c) 2006-2016, JGraph Ltd` | `drawioJs/arrows.ts` |
+| `src/main/webapp/shapes/mxAtlassian.js` | v24.7.5 | `Copyright (c) 2006-2018, JGraph Ltd` | `drawioJs/misc.ts` |
+| `src/main/webapp/shapes/mxBasic.js` | v24.7.5 | `Copyright (c) 2006-2018, JGraph Ltd` | `drawioJs/basic.ts` |
+| `src/main/webapp/shapes/mxBootstrap.js` | v24.7.5 | `Copyright (c) 2006-2014, JGraph Ltd` | `drawioJs/ui.ts` |
+| `src/main/webapp/shapes/mxC4.js` | v24.7.5 | `Copyright (c) 2006-2018, JGraph Ltd` | `drawioJs/archimate.ts` |
+| `src/main/webapp/shapes/mxCabinets.js` | v24.7.5 | `Copyright (c) 2006-2014, JGraph Ltd` | `drawioJs/arrows.ts` |
+| `src/main/webapp/shapes/mxCisco19.js` | v24.7.5 | `Copyright (c) 2006-2020, JGraph Ltd` | `drawioShapes.ts` |
+| `src/main/webapp/shapes/mxCiscoSafe.js` | v24.7.5 | `Copyright (c) 2006-2020, JGraph Ltd` | `drawioShapes.ts` |
+| `src/main/webapp/shapes/mxDFD.js` | v24.7.5 | `Copyright (c) 2006-2018, JGraph Ltd` | `drawioJs/archimate.ts` |
+| `src/main/webapp/shapes/mxEip.js` | v24.7.5 | `Copyright (c) 2006-2015, JGraph Ltd` | `drawioJs/arrows.ts` |
+| `src/main/webapp/shapes/mxElectrical.js` | v24.7.5 | `Copyright (c) 2006-2016, JGraph Ltd` | `drawioJs/electrical.ts` |
+| `src/main/webapp/shapes/mxFloorplan.js` | v24.7.5 | `Copyright (c) 2006-2014, JGraph Ltd` | `drawioJs/bpmn.ts` |
+| `src/main/webapp/shapes/mxFlowchart.js` | v24.7.5 | `Copyright (c) 2006-2018, JGraph Ltd` | `drawioJs/misc.ts` |
+| `src/main/webapp/shapes/mxGCP2.js` | v24.7.5 | `Copyright (c) 2006-2018, JGraph Ltd` | `drawioShapes.ts` |
+| `src/main/webapp/shapes/mxGmdl.js` | v24.7.5 | `Copyright (c) 2006-2015, JGraph Ltd` | `drawioJs/ui.ts` |
+| `src/main/webapp/shapes/mxIBM.js` | v24.7.5 | `Copyright (c) 2006-2020, JGraph Ltd` | `drawioJs/misc.ts` |
+| `src/main/webapp/shapes/mxInfographic.js` | v24.7.5 | `Copyright (c) 2006-2018, JGraph Ltd` | `drawioJs/arrows.ts` |
+| `src/main/webapp/shapes/mxKubernetes.js` | v24.7.5 | `Copyright (c) 2006-2020, JGraph Ltd` | `drawioJs/arrows.ts` |
+| `src/main/webapp/shapes/mxLeanMap.js` | v24.7.5 | `Copyright (c) 2006-2013, JGraph Ltd` | `drawioJs/bpmn.ts`・`drawioJs/edges.ts` |
+| `src/main/webapp/shapes/mxNetworks.js` | v24.7.5 | `Copyright (c) 2006-2015, JGraph Ltd` | `drawioJs/edges.ts`・`drawioJs/misc.ts` |
+| `src/main/webapp/shapes/mxSAP.js` | v24.7.5 | `Copyright (c) 2006-2016, JGraph Ltd` | `drawioJs/misc.ts` |
+| `src/main/webapp/shapes/mxSysML.js` | v24.7.5 | `Copyright (c) 2006-2014, JGraph Ltd` | `drawioEdges.ts`・`drawioJs/basic.ts` |
+| `src/main/webapp/shapes/mxUML25.js` | v24.7.5 | (無い) | `drawioJs/archimate.ts` |
+| `src/main/webapp/shapes/pid2/mxPidInstruments.js` | v24.7.5 | `Copyright (c) 2006-2013, JGraph Ltd` | `drawioJs/electrical.ts` |
+| `src/main/webapp/shapes/pid2/mxPidMisc.js` | v24.7.5 | `Copyright (c) 2006-2013, JGraph Ltd` | `drawioJs/electrical.ts` |
+| `src/main/webapp/shapes/pid2/mxPidValves.js` | v24.7.5 | `Copyright (c) 2006-2013, JGraph Ltd` | `drawioJs/electrical.ts` |
+| `src/main/webapp/shapes/rack/mxRack.js` | v24.7.5 | `Copyright (c) 2006-2013, JGraph Ltd` | `drawioJs/ui.ts` |
+| `src/main/webapp/styles/default.xml` | v32.6.10 | (無い) | `drawio.ts` |
+
+### 13.2 draw.io の `shapes/`・`stencils/`・`img/` の利用の制限と、移した版
+
+draw.io は v29.3.2 (2026-01-17) から、`src/main/webapp/shapes/` に次の LICENSE を付けました (`stencils/LICENSE`・`img/LICENSE` も同じ文に変わりました)。
+取得元: https://github.com/jgraph/drawio/blob/v32.6.10/src/main/webapp/shapes/LICENSE (取得日 2026-11-15。そのまま)。
+
+```text
+The icon sets and stencil libraries included in this software, and any derivatives thereof (including conversions to other formats, traced reproductions, substantially similar visual representations, or AI-generated images created using these icons as reference or training input), may not be used as software assets in, distributed for use with, or incorporated into Atlassian products or products distributed through the Atlassian marketplace or plugin ecosystem, without explicit written permission.
+This restriction does not apply to end-user diagram output (such as exported images or documents) created using this software.
+```
+
+Kumiori に移した `shapes/` の形を移した v24.7.5 (2024-07-25) には、この制限がありません (2026-11-15 に、v24.7.5 のタグのファイルで確かめました)。
+
+- リポジトリの直下の `LICENSE` は Apache License 2.0 の本文だけです。
+- `src/main/webapp/shapes/` に LICENSE のファイルはありません (`shapes/` のソースは、リポジトリ全体の Apache License 2.0 で公開されていました)。
+- `src/main/webapp/stencils/LICENSE`・`src/main/webapp/img/LICENSE` は Creative Commons Attribution 4.0 International Public License の本文です。
+
+そのため、`src/main/webapp/shapes/` の下のファイルは v24.7.5 から移し (13.1 節の表の「版」)、v24.7.5 より後に足されたものは入れていません。
+`shapes/` の外 (`js/grapheditor/`・`js/diagramly/`・`mxgraph/src/`) のファイルは、v32.6.10 でも Apache License 2.0 だけなので、v32.6.10 から移しています。

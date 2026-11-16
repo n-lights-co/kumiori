@@ -67,6 +67,7 @@
     "build:browser": "vite build --config vite.browser.config.ts",
     "build:dist": "npm run build:lib && npm run build:cli && npm run build:browser",
     "docs:conformance": "node scripts/build-conformance.mjs",
+    "ci:local": "node scripts/ci-local.mjs",
     "prepublishOnly": "npm run typecheck && npm test && npm run build:dist"
   },
   "license": "Apache-2.0",
@@ -74,9 +75,12 @@
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
     "@xmldom/xmldom": "^0.9.12",
+    "htmlparser2": "^10.1.0",
     "hyphen": "^1.14.1",
     "linkedom": "^0.18.14",
+    "pako": "^1.0.11",
     "pdf-lib": "^1.17.1",
+    "roughjs": "^4.6.6",
     "utif": "^3.1.0"
   },
   "devDependencies": {
