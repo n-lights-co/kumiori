@@ -188,6 +188,14 @@ describe('幅を中身で決める箱・段組の入れ子の上限 (LAY-18)', (
     expect(warned(t.warnings)).toBe(true);
   }, 120_000);
 
+  it('入れ子が浅くても数の多い大きな文書は、上限 (入力の節の数の 2 倍と 10 万の大きい方) に当たらない', () => {
+    // 字に挟んだ inline-container を 1 段だけ持つ段落を 6 万並べる (流れは 10 万を超えるが、節の数もそれに比例して多い)
+    const d = fo('<fo:block>x<fo:inline-container><fo:block>y</fo:block></fo:inline-container>z</fo:block>'.repeat(60000));
+    const t = E.engine.layout(d);
+    expect(E.engine.stats.flows).toBeGreaterThan(100000);
+    expect(warned(t.warnings)).toBe(false);
+  }, 600_000);
+
   it('上限より浅い入れ子は、上限を切った組版と同じで、警告も出ない', () => {
     const free = new LayoutEngine(E.fonts, E.measurer, { defaultFontFamily: FAMILY, maxMeasureFlows: Infinity, maxColumnNest: Infinity });
     for (const d of [mixed(20), overflowColumns(3)]) {

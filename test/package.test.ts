@@ -29,10 +29,15 @@ let work = '';
 let app = '';
 /** tarball に入ったファイルの一覧 (パッケージの直下からの相対パス) */
 let packed: string[] = [];
+/**
+ * 入れ子の npm に渡す環境: `npm publish --dry-run` の下では npm_config_dry_run が引き継がれ、入れ子の `npm pack` も
+ * dry-run になって tarball を書かないので、その設定 (大文字の書き方も) を除く
+ */
+const npmEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== 'npm_config_dry_run'));
 
 beforeAll(() => {
-  execFileSync('npm', ['run', '--silent', 'build:lib'], { cwd: root, stdio: 'ignore', shell });
-  execFileSync('npm', ['run', '--silent', 'build:browser'], { cwd: root, stdio: 'ignore', shell });
+  execFileSync('npm', ['run', '--silent', 'build:lib'], { cwd: root, env: npmEnv, stdio: 'ignore', shell });
+  execFileSync('npm', ['run', '--silent', 'build:browser'], { cwd: root, env: npmEnv, stdio: 'ignore', shell });
   work = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-package-'));
   // tarball を作る場所: package.json・files の挙げるもの (dist-cli を除く) を写す
   const stage = path.join(work, 'stage');
@@ -40,7 +45,7 @@ beforeAll(() => {
   for (const name of ['package.json', ...pkg.files.filter((f) => f !== 'dist-cli')]) {
     fs.cpSync(path.join(root, name), path.join(stage, name), { recursive: true });
   }
-  const out = execFileSync('npm', ['pack', '--json', '--ignore-scripts'], { cwd: stage, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell });
+  const out = execFileSync('npm', ['pack', '--json', '--ignore-scripts'], { cwd: stage, env: npmEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell });
   const info = (JSON.parse(out) as { filename: string; files: { path: string }[] }[])[0]!;
   packed = info.files.map((f) => f.path);
   // 利用者役のプロジェクト: node_modules/kumiori に tarball を展開し、依存パッケージはリポジトリのものへリンクする

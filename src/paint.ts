@@ -5,7 +5,7 @@
  */
 import { parseColor } from './color';
 import type { Matrix, Seg } from './matrix';
-import type { Area, BorderRadius, BorderSide, GlyphArea, ImageArea, Rect, SheetArea, TateChuYokoArea } from './types';
+import type { Area, BorderRadius, BorderSide, GlyphArea, ImageArea, RadiusLength, Rect, SheetArea, TateChuYokoArea } from './types';
 import { msg } from './messages';
 
 export type { Matrix } from './matrix';
@@ -147,7 +147,12 @@ export function paintSheet(sheet: SheetArea, p: Painter, opts: { guides?: boolea
   // 1') 用紙全体の背景画像 (塗り足しを含む範囲。本文の下)
   if (sheet.backgroundImage) {
     const b = sheet.backgroundBox ?? sheet.bleedBox;
-    paintBackgroundImage({ ...sheet, width: b.width, height: b.height, border: {}, backgroundImage: sheet.backgroundImage } as unknown as Area, b.x, b.y, p);
+    // 位置の基準の領域 (backgroundOriginBox) があれば、描く範囲 b の中のその領域を、仮の箱の内容の箱にして、位置・繰り返しの並べ始めを
+    // そこで決める (background-origin: content-box)。描く範囲は b の全体 (仮の箱の padding の箱 = b。罫線は無い)
+    const o = sheet.backgroundBox ? undefined : sheet.backgroundOriginBox;
+    const padding = o ? { left: o.x - b.x, top: o.y - b.y, right: b.x + b.width - (o.x + o.width), bottom: b.y + b.height - (o.y + o.height) } : sheet.padding;
+    const image = o ? { ...sheet.backgroundImage, origin: 'content-box' as const } : sheet.backgroundImage;
+    paintBackgroundImage({ ...sheet, width: b.width, height: b.height, border: {}, padding, backgroundImage: image } as unknown as Area, b.x, b.y, p);
   }
   // 2) 内容は塗り足し領域までで裁ち落とす (トンボ領域には描かない)
   p.clipRect(snapToEdge(sheet.bleedBox));
@@ -168,12 +173,19 @@ export function paintSheet(sheet: SheetArea, p: Painter, opts: { guides?: boolea
 
 export const TRIM_MARK_WIDTH = 0.3; // pt ≒ 0.1mm
 
+/** 角の半径 (長さ・百分率・百分率と長さの和) を、基準の大きさ base (pt) で長さにする (負にはしない。CSS Backgrounds 3 §5.1) */
+export function radiusLen(v: RadiusLength, base: number): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') return (parseFloat(v) * base) / 100;
+  return Math.max((v.pct * base) / 100 + v.len, 0);
+}
+
 /**
  * 角丸の箱の形を作る関数 (rad が無ければ角の無い矩形)。boxW × boxH は百分率の基準 (border の箱の大きさ)。
  * inset は内側の形 (padding の箱など) にするときに角の半径から引く量 (CSS Backgrounds 3 §5.1: 内側の半径 = 外側の半径 − 罫線の太さ)
  */
 export function radiusShape(rad: BorderRadius | undefined, boxW: number, boxH: number) {
-  const corners = rad?.corners?.map(([h, v]) => [typeof h === 'string' ? (parseFloat(h) * boxW) / 100 : h, typeof v === 'string' ? (parseFloat(v) * boxH) / 100 : v] as [number, number]);
+  const corners = rad?.corners?.map(([h, v]) => [radiusLen(h, boxW), radiusLen(v, boxH)] as [number, number]);
   return (sx: number, sy: number, sw: number, sh: number, inset = 0) =>
     corners
       ? roundRectPathCorners(sx, sy, sw, sh, corners.map(([h, v]) => [Math.max(h - inset, 0), Math.max(v - inset, 0)]))
@@ -380,8 +392,8 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
       // 位置: 百分率は (枠 − 画像) に対する割合、長さは左・上の端 (FromEnd なら右・下の端) からの距離
       const fp = a.fitPosition;
       const at = (v: number | string, room: number, fromEnd?: boolean) => (typeof v === 'number' ? (fromEnd ? room - v : v) : (room * parseFloat(v)) / 100);
-      const dx = fp ? at(fp.x, a.width - w, fp.xFromEnd) : (a.width - w) / 2;
-      const dy = fp ? at(fp.y, a.height - h, fp.yFromEnd) : (a.height - h) / 2;
+      const dx = fp ? at(fp.x, a.width - w, fp.xFromEnd) + (fp.xOffset ?? 0) : (a.width - w) / 2;
+      const dy = fp ? at(fp.y, a.height - h, fp.yFromEnd) + (fp.yOffset ?? 0) : (a.height - h) / 2;
       p.clipRect({ x, y, width: a.width, height: a.height });
       p.drawImage({ ...a, width: w, height: h }, x + dx, y + dy);
       p.restore();
@@ -534,7 +546,7 @@ function paintOutline(a: Area, x: number, y: number, p: Painter) {
   if (a.borderRadius) {
     const r = a.borderRadius;
     // 角ごとの半径 (百分率は箱の大きさに対して)。隣り合う半径の和が辺より長ければ、同じ比で縮める (CSS Backgrounds 3 §4.2)
-    const cs = (r.corners ?? [[r.rx, r.ry], [r.rx, r.ry], [r.rx, r.ry], [r.rx, r.ry]]).map(([h, v]) => [typeof h === 'string' ? (parseFloat(h) * a.width) / 100 : h, typeof v === 'string' ? (parseFloat(v) * a.height) / 100 : v] as [number, number]);
+    const cs = (r.corners ?? [[r.rx, r.ry], [r.rx, r.ry], [r.rx, r.ry], [r.rx, r.ry]]).map(([h, v]) => [radiusLen(h, a.width), radiusLen(v, a.height)] as [number, number]);
     const f = Math.min(1, a.width / Math.max(cs[0][0] + cs[1][0], cs[3][0] + cs[2][0], 1e-9), a.height / Math.max(cs[0][1] + cs[3][1], cs[1][1] + cs[2][1], 1e-9));
     const corners = cs.map(([h, v]) => (h > 0 && v > 0 ? [Math.max(h * f + ex, 0), Math.max(v * f + ey, 0)] : [0, 0]) as [number, number]);
     if (corners.some(([h, v]) => h > 0 && v > 0)) radius = { rx: 0, ry: 0, corners };
@@ -1163,8 +1175,9 @@ function paintBackgroundLayer(a: Area, layer: NonNullable<Area['backgroundImage'
   }
   // 大きさの無い (0・NaN・Infinity) タイルは描けない (壊れた画像で 0 除算のループにしない)
   if (!(bi.width > 0) || !(bi.height > 0) || !Number.isFinite(bi.width) || !Number.isFinite(bi.height)) return;
-  const ox = bi.xFromEnd && typeof bi.x === 'number' ? W - bi.width - bi.x : pos(bi.x, W - bi.width);
-  const oy = bi.yFromEnd && typeof bi.y === 'number' ? H - bi.height - bi.y : pos(bi.y, H - bi.height);
+  // 百分率と長さの和 (calc(50% + 10px)) は、百分率の位置に長さ (xOffset・yOffset) を足す
+  const ox = bi.xFromEnd && typeof bi.x === 'number' ? W - bi.width - bi.x : pos(bi.x, W - bi.width) + (bi.xOffset ?? 0);
+  const oy = bi.yFromEnd && typeof bi.y === 'number' ? H - bi.height - bi.y : pos(bi.y, H - bi.height) + (bi.yOffset ?? 0);
   const rx = bi.repeat === undefined || bi.repeat === 'repeat' || bi.repeat === 'repeat-x';
   const ry = bi.repeat === undefined || bi.repeat === 'repeat' || bi.repeat === 'repeat-y';
   // 並べる範囲 (位置の基準の領域の左上から): 描く範囲が基準の領域と違うとき (origin・clip の指定) は、描く範囲を覆うまで並べる

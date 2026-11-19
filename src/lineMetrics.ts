@@ -152,27 +152,55 @@ function lineMetricsAligned(
   strut?: { above: number; below: number },
   nominalDiff?: number,
 ): LineMetrics {
-  const aligned = pl.raw.items.filter((a) => a.lineAlign && a.box);
+  const isAligned = (a: Atom) => !!a.lineAlign && (!!a.box || !!a.alignGroup);
+  const aligned = pl.raw.items.filter(isAligned);
   if (!aligned.length) return lineMetricsBase(pl, wm, fallback, nominalRatio, strut, nominalDiff);
-  const rest = pl.raw.items.filter((a) => !(a.lineAlign && a.box));
-  const base: PositionedLine = { ...pl, raw: { ...pl.raw, items: rest, ...(rest.length ? {} : { metric: pl.raw.metric ?? ({ st: fallback, kind: 'break' } as Atom) }) } };
+  const rest = pl.raw.items.filter((a) => !isAligned(a));
+  const base: PositionedLine = { ...pl, raw: { ...pl.raw, items: rest, ...(rest.length ? {} : { metric: pl.raw.metric ?? ({ st: fallback, kind: 'break' } as Atom)  }) } };
   const m = lineMetricsBase(base, wm, fallback, nominalRatio, strut, nominalDiff);
   let up = m.above + (m.topLeading ?? m.leading / 2);
   let down = m.below + (m.bottomLeading ?? m.leading / 2);
+  // 揃える箱: 行内の箱 (画像など) は、その箱。vertical-align: top・bottom の行内の要素 (alignGroup) は、この行の中の、同じ要素の atom を
+  // まとめた部分木 (aligned subtree。CSS 2.1 §10.8.1): 字は line-height の箱 (atomAboveBelow に半行間を足したもの)、中の行内の箱はその箱を、
+  // 部分木の中でのずらし (alignBase) の位置で囲む
+  interface Unit { align: 'top' | 'bottom'; above: number; below: number; atoms: Atom[] }
+  const units = new Map<object, Unit>();
+  for (const a of aligned) {
+    const key = a.alignGroup ?? a;
+    let u = units.get(key);
+    if (!u) units.set(key, (u = { align: a.lineAlign!, above: -Infinity, below: -Infinity, atoms: [] }));
+    u.atoms.push(a);
+    if (!a.alignGroup) {
+      u.above = a.box!.above;
+      u.below = a.box!.below;
+      continue;
+    }
+    const ab = atomAboveBelow(a, wm);
+    const half = a.kind === 'box' && !a.frameOpen && !a.frameClose ? 0 : (lineHeightOf(a.st) - (ab.above + ab.below)) / 2;
+    const k = a.alignBase ?? 0;
+    u.above = Math.max(u.above, ab.above + half + k);
+    u.below = Math.max(u.below, ab.below + half - k);
+  }
   // 背の高い箱は行を広げる: 下に揃える箱は上へ、上に揃える箱は下へ
   let extraA = 0;
   let extraB = 0;
-  for (const a of aligned) {
-    const h = a.box!.above + a.box!.below;
-    const over = h - (up + down);
+  for (const u of units.values()) {
+    const over = u.above + u.below - (up + down);
     if (over <= 0) continue;
-    if (a.lineAlign === 'bottom') extraA = Math.max(extraA, over);
+    if (u.align === 'bottom') extraA = Math.max(extraA, over);
     else extraB = Math.max(extraB, over);
   }
   up += extraA;
   down += extraB;
-  // shift は上向きが正。下に揃える箱の下端を行の下端 (基線の下 down) に、上に揃える箱の上端を行の上端 (基線の上 up) に
-  for (const a of aligned) a.shift = a.lineAlign === 'bottom' ? a.box!.below - down : up - a.box!.above;
+  // shift は上向きが正。下に揃える箱の下端を行の下端 (基線の下 down) に、上に揃える箱の上端を行の上端 (基線の上 up) に。
+  // 部分木の中の atom と内容の領域は、部分木のずらしに、部分木の中でのずらし (alignBase) を足す (何度測り直しても同じ値になる)
+  for (const u of units.values()) {
+    const sh = u.align === 'bottom' ? u.below - down : up - u.above;
+    for (const a of u.atoms) {
+      a.shift = sh + (a.alignBase ?? 0);
+      for (const ar of [a.bgArea, ...(a.frames ?? []).map((f) => f.area)]) if (ar && ar.alignBase !== undefined) ar.shift = sh + ar.alignBase;
+    }
+  }
   if (!extraA && !extraB) return m;
   return { ...m, above: m.above + extraA, below: m.below + extraB, em: m.em + extraA + extraB, base: m.base + extraA + extraB };
 }

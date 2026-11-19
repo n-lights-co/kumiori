@@ -51,6 +51,14 @@ export interface Ctx {
   color?: string;
   /** relative-align (継承される。XSL 1.1 §7.14.6。初期値 before) */
   relAlign?: 'before' | 'baseline';
+  /**
+   * 詰め込みの性質 (アンテナハウスの拡張。どれも継承される: ahf-ext.html の axf:overflow-condense・axf:overflow-condense-limit-font-size・
+   * -limit-line-height の Inherited: yes)。methods は axf:overflow-condense の値 (小文字。none は自分だけのもので、子へは受け継がない)。
+   * limFs は下限の字の大きさ (pt。none は無し)、limLh は下限の行の高さ (字の大きさに対する比。none は無し)。act は下限の後ろの語
+   */
+  condense?: { methods?: string; limFs?: { v?: number; act?: string }; limLh?: { ratio?: number; pt?: number; act?: string } };
+  /** 祖先の fo:block で指定した axf:initial-letters-* の値 (属性の名前の axf:initial-letters- の後ろ → 書いた値。どれも継承される) */
+  initialLetters?: Record<string, string>;
   /** 祖先で指定した axf:revision-bar-* の値 (どれも継承される) */
   revBar?: Partial<Record<'style' | 'color' | 'width' | 'offset' | 'position', string>>;
   /** font-variant="small-caps" (継承される。§7.9.8)。字の並びに small caps の印を付ける */

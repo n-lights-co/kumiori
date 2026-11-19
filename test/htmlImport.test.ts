@@ -408,6 +408,41 @@ describe('HTML: position (CSS 2.1 §9.3・§10.1・§10.3.7)', () => {
     }
   });
 
+  it('自動の配置の表: セルの中のリストの最小・最大の幅は、字下げと項目の中身の幅 (記号の有無で変わらない。表の幅いっぱいにしない)', () => {
+    const words = 'aaa '.repeat(30);
+    const cols = (list: string) => {
+      const { boxes } = layoutBoxes(`<table style="width: 300pt; font-size: 8pt"><tr><td>${words}</td><td><ul style="${list}"><li>bbb ccc</li></ul></td></tr></table>`);
+      const cells = boxes.filter((b) => b.text.startsWith('aaa') || b.text === 'bbb ccc');
+      return { a: cells.find((b) => b.text.startsWith('aaa'))!, b: cells.filter((b) => b.text === 'bbb ccc').pop()! };
+    };
+    const disc = cols('');
+    const none = cols('list-style: none');
+    // 記号の有無で列の幅は変わらない (記号は字下げの中に置く)
+    expect(disc.b.x).toBeCloseTo(none.b.x, 1);
+    // 1 列目は最小の幅 (1 語ずつの行) まで縮まず、表の幅の大半を取る (2 列目は字下げと「bbb ccc」の幅)
+    expect(disc.a.w).toBeGreaterThan(200);
+    expect(disc.b.x + disc.b.w - disc.a.x).toBeLessThan(301);
+  });
+
+  it('セルの中身の最後の子の break-after・最初の子の break-before は、行の後ろ・前の改ページ (CSS Fragmentation 3 §3.1.1)', () => {
+    const t = (cell: string) => layoutBoxes(`<table><tr><td>r1</td></tr><tr><td>r2</td><td>${cell}</td></tr><tr><td>r3</td></tr></table>`);
+    // 最後の子の break-after: 行 2 の後ろで改ページ
+    const a = t('<p>x</p><div><p style="break-after: page">y</p></div>');
+    expect([a.box('r1').page, a.box('r2').page, a.box('r3').page]).toEqual([0, 0, 1]);
+    // 最初の子の break-before (古い page-break-before も): 行 2 の前で改ページ
+    const b = t('<p style="page-break-before: always">x</p><p>y</p>');
+    expect([b.box('r1').page, b.box('r2').page, b.box('r3').page]).toEqual([0, 1, 1]);
+    // 最後の子でない break-after は、行の中で分ける (行 2 は x と y の間で分かれる)
+    const c = t('<p style="break-after: page">x</p><p>y</p>');
+    expect([c.box('r1').page, c.box('x').page, c.box('y').page, c.box('r3').page]).toEqual([0, 0, 1, 1]);
+  });
+
+  it('font-size: 0 は有効な値: line-height: normal の段落の行の高さは 0 (親の字の大きさにしない)', () => {
+    const { box } = layoutBoxes('<div style="font-size: 14pt"><p>a</p><p style="font-size: 0; line-height: normal">&nbsp;</p><p>b</p></div>');
+    const a = box('a');
+    expect(box('b').y - (a.y + a.h)).toBeCloseTo(0, 1);
+  });
+
   it('position: relative は組んだ箱だけをずらし、後ろの箱は動かさない (中の絶対配置の箱もいっしょに動く)', () => {
     const html = (off: string) =>
       `<p>前</p><div style="position: relative; ${off} border: 4px solid">box <div style="position: absolute; top: 0; left: 0">札</div></div><p>後</p>`;

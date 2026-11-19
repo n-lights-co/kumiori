@@ -37,8 +37,15 @@ export interface ImageAsset {
   notes?: string[];
   /** 画像に書かれた解像度 (dpi。PNG・JPEG)。width / height は 96dpi とみなした大きさのまま */
   dpi?: number;
+  /** 本来の縦横比が無い画像 (幅・高さも viewBox も無い SVG。大きさは既定の 300×150。CSS Images 3 §4.1 の既定の大きさ) */
+  noRatio?: true;
   /** 本体の外の形式 (imageFormats.ts) で読んだ画像の、形式の名前と元のファイルの中身 (形式の選択肢が変わったときに描き直す: AssetStore.redrawFormat) */
   formatSource?: { format: string; bytes: Uint8Array };
+  /**
+   * PDF に埋め込んだので、中身 (bytes) を捨てた画像 (AssetStore.releaseImageBytes。PDF だけを作るとき)。中身はあったものとして扱う
+   * (組版は、画像が読めるかを、中身の有無で見る所がある)
+   */
+  released?: true;
 }
 
 export function normalizeSrc(src: string): string {
@@ -189,6 +196,26 @@ export class AssetStore {
 
   get size() {
     return this.map.size;
+  }
+
+  /**
+   * PDF に埋め込んだラスター画像 (PNG・JPEG・GIF・BMP・WebP・TIFF など) の中身を捨てる (PDF だけを作るとき。PDF は埋め込んだ写しを持つ)。
+   * 同じ中身を指す登録 (同じ画像を、ファイル名と参照の URL で登録したもの) も捨てる。SVG は捨てない (組版が、中から参照する画像を確かめるのに読む)。
+   * 捨てた画像には released の印を付け、大きさなどの欄は残す (組み直しても、同じに組む)
+   */
+  releaseImageBytes(srcs: Iterable<string>): void {
+    const targets = new Set<Uint8Array>();
+    for (const src of srcs) {
+      const a = this.get(src);
+      if (a?.bytes && a.mime.startsWith('image/') && a.mime !== 'image/svg+xml' && !a.formatSource) targets.add(a.bytes);
+    }
+    if (!targets.size) return;
+    for (const m of [this.map, this.byBase, this.derived])
+      for (const a of m.values())
+        if (a.bytes && targets.has(a.bytes)) {
+          a.bytes = undefined;
+          a.released = true;
+        }
   }
 
   register(src: string, a: Omit<ImageAsset, 'key'>): ImageAsset {
@@ -462,13 +489,16 @@ export class AssetStore {
       }
       if (mime === 'image/svg+xml' && this.opts.parseXml) {
         let what = '';
-        if (!svgDrawableInPdf(new TextDecoder().decode(bytes), this.opts.parseXml, (w) => (what = w))) return this.register(name, { mime, bytes, width: size.width, height: size.height, drawable: false, unsupported: what });
+        if (!svgDrawableInPdf(new TextDecoder().decode(bytes), this.opts.parseXml, (w) => (what = w))) return this.register(name, { mime, bytes, width: size.width, height: size.height, drawable: false, unsupported: what, ...(size.noRatio ? { noRatio: true as const } : {}) });
       }
-      return this.register(name, { mime, bytes, width: size.width, height: size.height, ...(dpi ? { dpi } : {}) });
+      return this.register(name, { mime, bytes, width: size.width, height: size.height, ...(dpi ? { dpi } : {}), ...(size.noRatio ? { noRatio: true as const } : {}) });
     }
     try {
       const { element, width, height } = await decode(bytes, mime);
-      return this.register(name, { mime, bytes, width, height, element, ...(dpi ? { dpi } : {}) });
+      // 本来の比の無い SVG (大きさも viewBox も無い): ファイルの頭から読んで分からず、ブラウザの読んだ大きさも既定の 300×150 のときだけ
+      // (ブラウザが大きさを読めた SVG の比を、属性の比で置き換えない)
+      const noRatio = mime === 'image/svg+xml' && headerSize(bytes, mime)?.noRatio && width === 300 && height === 150;
+      return this.register(name, { mime, bytes, width, height, element, ...(dpi ? { dpi } : {}), ...(noRatio ? { noRatio: true as const } : {}) });
     } catch {
       return undefined;
     }
@@ -864,8 +894,58 @@ async function decode(bytes: Uint8Array, mime: string): Promise<{ element: Canva
   return { element: bmp, width: bmp.width, height: bmp.height };
 }
 
+/**
+ * SVG の文書の、最初の svg の開始タグ (<svg … >)。XML 1.0 §2.5〜§2.8 の注釈 (<!-- -->)・CDATA (<![CDATA[ ]]>)・処理命令 (<? ?>)・
+ * 文書型宣言 (<!DOCTYPE …>。内部の宣言 [ … ] と、引用符の中の > も含む) と、ほかの要素のタグは、中を読まずに飛ばす (注釈の中に書いた
+ * <svg …> を、本物の開始タグと取り違えない)。タグの中の属性の値の > は、タグの終わりにしない。どこも 1 度だけ前へ読む (手間は、文書の長さに比例)。
+ * 開始タグが終わる前に文書が終われば undefined (頭だけを渡したときは、全体で探し直す)
+ */
+export function svgStartTag(t: string): string | undefined {
+  // svg の開始タグ (名前空間の接頭辞の付いた svg:svg も)
+  const svgTag = /<(?:[\w.-]+:)?svg[\s/>]/iy;
+  /**
+   * from から、引用符の外の > の次の位置 (無ければ -1)。brackets なら、[ ] の中の > も飛ばす (DOCTYPE の内部の宣言)。
+   * 内部の宣言の中の注釈・処理命令は、まるごと飛ばす (XML 1.0 §2.8 の intSubset: markupdecl のほかに PI・Comment も書ける。
+   * 注釈の中の引用符 (<!-- don't -->) は、引用符として読まない)
+   */
+  const tagEnd = (from: number, brackets: boolean): number => {
+    let depth = 0;
+    for (let i = from; i < t.length; i++) {
+      const c = t[i];
+      if (depth > 0 && c === '<' && (t.startsWith('<!--', i) || t.startsWith('<?', i))) {
+        const close = t.startsWith('<!--', i) ? '-->' : '?>';
+        const j = t.indexOf(close, i + 2);
+        if (j < 0) return -1;
+        i = j + close.length - 1;
+      } else if (c === '"' || c === "'") {
+        const j = t.indexOf(c, i + 1);
+        if (j < 0) return -1;
+        i = j;
+      } else if (brackets && c === '[') depth++;
+      else if (brackets && c === ']') depth = Math.max(depth - 1, 0);
+      else if (c === '>' && depth === 0) return i + 1;
+    }
+    return -1;
+  };
+  for (let i = t.indexOf('<'); i >= 0 && i < t.length; i = t.indexOf('<', i)) {
+    let end: number;
+    if (t.startsWith('<!--', i)) end = ((j) => (j < 0 ? -1 : j + 3))(t.indexOf('-->', i + 4));
+    else if (t.startsWith('<![CDATA[', i)) end = ((j) => (j < 0 ? -1 : j + 3))(t.indexOf(']]>', i + 9));
+    else if (t.startsWith('<?', i)) end = ((j) => (j < 0 ? -1 : j + 2))(t.indexOf('?>', i + 2));
+    else if (t.startsWith('<!', i)) end = tagEnd(i + 2, true);
+    else {
+      end = tagEnd(i + 1, false);
+      svgTag.lastIndex = i;
+      if (end >= 0 && svgTag.test(t)) return t.slice(i, end);
+    }
+    if (end < 0) return undefined;
+    i = end;
+  }
+  return undefined;
+}
+
 /** PNG・JPEG・GIF・BMP・WebP・SVG の大きさ (px) を、ファイルの頭から読む (画像を描かない環境用) */
-export function headerSize(b: Uint8Array, mime: string): { width: number; height: number } | undefined {
+export function headerSize(b: Uint8Array, mime: string): { width: number; height: number; noRatio?: true } | undefined {
   const u16 = (o: number) => (b[o] << 8) | b[o + 1];
   const u32 = (o: number) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
   // どれも、ファイルの頭の印を確かめる (拡張子だけが画像の、中身の違うファイルの大きさを読まない)
@@ -895,12 +975,16 @@ export function headerSize(b: Uint8Array, mime: string): { width: number; height
     return undefined;
   }
   if (mime === 'image/svg+xml') {
-    const head = new TextDecoder().decode(b.subarray(0, 4096));
-    const svg = /<svg\b[^>]*>/i.exec(head)?.[0] ?? '';
+    // 開始タグは、ファイルの頭 (4096 バイト) で終わらなければ (長い注釈・DOCTYPE の内部の宣言の後など)、ファイル全体から探す
+    const svg = svgStartTag(new TextDecoder().decode(b.subarray(0, 4096))) ?? (b.length > 4096 ? svgStartTag(new TextDecoder().decode(b)) : undefined) ?? '';
+    // 長さ (px)。em・ex・rem・pc・Q も読む: 文書の外の画像なので、字の大きさは CSS の既定の 16px (em・rem)、ex はその半分
+    // (SVG 2 §8.2・CSS Values 4 §6: 字の大きさが分からないときの既定。CSS Images 3 §5 の本来の大きさ)
+    // 空白を読む所 (\s*) を続けて並べない: 単位が無く引用符の前に別の字があると、空白の分け方を全部試して長さの 2 乗の時間になる
+    // (開始タグはファイル全体から探すので、長さに上限が無い)
     const len = (n: string) => {
-      const m = new RegExp(`\\b${n}\\s*=\\s*["']\\s*([\\d.]+)\\s*(px|pt|mm|cm|in)?\\s*["']`, 'i').exec(svg);
+      const m = new RegExp(`\\b${n}\\s*=\\s*["']\\s*([\\d.]+)\\s*(?:(px|pt|pc|mm|cm|in|q|em|ex|rem)\\s*)?["']`, 'i').exec(svg);
       if (!m) return undefined;
-      const k = { px: 1, pt: 4 / 3, mm: 96 / 25.4, cm: 96 / 2.54, in: 96 }[(m[2] ?? 'px').toLowerCase() as 'px'];
+      const k = { px: 1, pt: 4 / 3, pc: 16, mm: 96 / 25.4, cm: 96 / 2.54, in: 96, q: 96 / 101.6, em: 16, ex: 8, rem: 16 }[(m[2] ?? 'px').toLowerCase() as 'px'];
       return parseFloat(m[1]) * k;
     };
     const vb = /\bviewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(svg);
@@ -908,7 +992,7 @@ export function headerSize(b: Uint8Array, mime: string): { width: number; height
     // 幅・高さの指定が無ければ viewBox の大きさ。片方だけなら viewBox の縦横比で。どちらも無ければ 300×150 (ブラウザと同じ)
     const w = len('width') ?? (vw !== undefined && vh !== undefined && len('height') !== undefined ? (len('height')! * vw) / vh : vw);
     const h = len('height') ?? (vw !== undefined && vh !== undefined && w !== undefined ? (w * vh) / vw : undefined);
-    return w && h ? { width: w, height: h } : { width: 300, height: 150 };
+    return w && h ? { width: w, height: h } : { width: 300, height: 150, noRatio: true };
   }
   return undefined;
 }

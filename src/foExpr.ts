@@ -24,6 +24,13 @@ export interface ExprOptions {
   proportional?: boolean;
   /** lh (行の高さ。CSS Values 4 の単位。アンテナハウスも使える) の基準。省略時、lh を含む式は評価できない */
   lh?: number;
+  /**
+   * dcem (アンテナハウスの拡張の単位: ドロップキャップの字の大きさ) の基準。省略時、dcem を含む式は評価できない
+   * (読み込みが、互換モードと axf:initial-letters の性質でだけ渡す)
+   */
+  dcem?: number;
+  /** ic (CSS Values 4 の単位: 和文の字の送り「水」) の基準。省略時、ic を含む式は評価できない */
+  ic?: number;
 }
 
 /** 評価の結果: 長さ (pt) と、proportional-column-width の係数 */
@@ -109,6 +116,11 @@ export function evalExpr(src: string, o: ExprOptions): ExprValue | undefined {
       if (u === 'lh') {
         if (o.lh === undefined) return fail();
         return { pt: k.v * o.lh, prop: 0, dim: 1 };
+      }
+      if (u === 'dcem' || u === 'ic') {
+        const base = u === 'dcem' ? o.dcem : o.ic;
+        if (base === undefined) return fail();
+        return { pt: k.v * base, prop: 0, dim: 1 };
       }
       if (u === '%') {
         if (o.pct === undefined) return fail();

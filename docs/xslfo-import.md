@@ -47,6 +47,9 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 | `font-size` (em/% は継承値基準), `line-height` (長さは比へ), `font-weight`, `color`, `background-color`, `text-align`, `text-indent`, `letter-spacing`, `orphans/widows`, `keep-together`, `break-before/after` | 同名のスタイル |
 | `rgb-icc(r,g,b,#CMYK,c,m,y,k)` | `cmyk(c,m,y,k)` (PDF では DeviceCMYK のまま) |
 | `rgb-icc(r,g,b,#Separation,'名前',濃度)` | 特色の値 (`spotColors`、コマンドの `--spot-colors`) に名前があれば `spot(濃度,c,m,y,k,名前)` (PDF では Separation)。無ければ `rgb(r,g,b)` |
+| `hsl(H,S,L)`・`hsla(H,S,L,A)` (アンテナハウスの拡張) | 互換モード (`--compat antenna`) のときだけ `rgb(r,g,b)` (透明度が 1 未満なら `#rrggbbaa`)。色相は単位の無い数 (度) だけを読み、単位の付いた値 (`deg`・`turn`・`rad`・`grad`) は読めない色として知らせる。彩度・輝度・透明度は 0%〜100% か 0.0〜1.0 (範囲の外は切り詰める)。仕様モードでは無効の値として警告に出す |
+| `fo:block-container` の `overflow="condense"` と `axf:overflow-condense` (アンテナハウスの拡張) | 互換モードのときだけ `LBlockContainer.condense`。中身が収める高さを超えるなら、字の大きさ (`font-size`。既定の `auto`) か行の高さ (`line-height`) を詰めて収める。収める高さは、`height`・`max-height` を決めた容器ならその高さ (表のセル・リストの本体・`fo:static-content` の中や、絶対配置の容器でも。`max-height` が `min-height` より小さければ `min-height`)。高さの決まらない容器は、ページに流す本文の keep-together の容器なら本文の領域 (1 ページ)、ほかは詰めずに警告に出す。中で絶対の値を書いた字の大きさは変えない (容器そのものに書いた字の大きさは詰める)。入れ子の内側の詰め込みの容器は、外の詰め込みで変えない。`axf:overflow-condense="none"` を書いた要素 (`fo:inline`・`fo:block` など) とその中身の字の大きさ・行の高さも、外の詰め込みで変えない。下限は `axf:overflow-condense-limit-font-size` (長さ)・`-limit-line-height` (字の大きさに対する比) で、初期値は 0。下限を書いた方法は下限まで縮め、最後まで収まらなければはみ出したまま警告に出す (下限の後ろに `hidden`・`error-if-overflow` を書けば、箱の高さを `height` (無ければ収める高さ。`min-height` より小さくはしない) にして切り抜く。`repeat` は未対応として知らせる)。下限の無い方法でどうしても収まらなければ、その方法では縮めない (どの方法でも収まらなければ、はみ出したまま警告に出す)。`axf:overflow-condense` (`none` を除く)・`-limit-*` は受け継ぐ。入れ子の詰め込みでは、同じ容器を同じ条件で詰めた結果を使い回し、中の容器のために中身を測る回数に、いちばん外の詰め込みの容器ごとの上限 (`LayoutOptions.maxCondenseMeasures`。既定は 10000 と、その容器の中の節の数の 40 倍の、大きい方。ふつうの 2〜3 段の入れ子は、中の容器が多くても当たらない) を置く。上限に当たれば、その容器の中の、以後の容器を詰めずに組み、ページに置いた結果に、そうして詰めなかったために収まらない容器が残るときだけ、警告を 1 度出す (毎ページ組む柱の詰め込みの容器は、ページごとに数え直す)。縦書き・`font-stretch`・`letter-spacing` と `fo:inline-container` の詰め込みは未対応として知らせる |
+| `fo:block` の `axf:initial-letters` と `axf:initial-letters-*` (アンテナハウスの拡張のドロップキャップ。どのモードでも) | 最初の字 (前後の約物を含む) か最初の画像を、`LFloat.initialLetter` (HTML の `initial-letter` と同じ受け皿) の回り込みの箱にする。字の大きさは、最初の行の大文字の高さ (small-caps の小文字が続けば x-height) から N 行目の基線までに合わせる (`<length>` ならその大きさ)。読む値: 行の数・長さ・沈める行の数・`drop`・`raise`・`adjacent`・`<integer2>`、`-end-indent` (行ごと)・`-first-line-head-height`・`-width`・`-text-align`・`-color`・`-leading-punctuation="hide"`・`-leading-punctuation-position="hang"`。これらの長さの中の `dcem` と `ic` (1em とみなす) は、どのモードでも読む (`axf:initial-letters` の長さには `dcem` を使えない)。ブロックの `text-indent` は字の箱のずらし (`dcem` は互換モードだけ)。字の箱の行の数より短いブロックの後ろのブロックも、字の箱の横に字下げする (`adjacent` でも、字の箱の範囲まで)。ただし、前のブロックとの間に空き (`space-before`・`space-after` など) があるブロックと `clear` のブロックは、字の箱の下へ送る。先行する約物の大きさ・色・`intrude`・`-leading-punctuation-shift`・`axf:initial-letters-start-intrusion="first-line"`・ルビの最初の字は、未対応として件数に出す |
 
 ## 既定値と書体
 
@@ -152,6 +155,11 @@ XSL 1.1 §6.12.1.3 で、区切りは、この `fo:static-content` を組んで�
 (フロー直下のブロックだけ有効)。段は inline 方向に並び (縦書きでは上下)、段が埋まると次の段、最後の段が埋まると次のページへ流れる。
 `span="all"` の直前の段は、最後のページの段の高さを二分探索で縮めながら試し組みして釣り合わせる。ただし span のブロックが改ページで始まる (または直前のブロックが改ページで終わる) ときは、直前のページの段は釣り合わせない。入れ子のブロックの `span="all"` を flow の直下へ出して効かせるのは互換モードだけ (仕様では flow の直下のブロックにだけ効く。§7.21.4)。
 フローの末尾 (span の後ろが無いとき) の段は、既定では釣り合わせない (region-body に `axf:column-fill="balance"` があれば釣り合わせる)。ブロックコンテナ内の段組 (`axf:column-count` / `axf:column-gap` / `axf:column-rule-*` / `axf:column-rule-display`) にも対応 (高さの指定があれば段を順に埋め、無ければ釣り合わせる)。
+ブロックコンテナ内の段組 (アンテナハウスの拡張。XSL 1.1 には無い) の中の `break-before` / `break-after` の `page`・`even-page`・`odd-page` も、ページの区切り (残りの段を空けて、次のページ (偶奇が合わなければ白ページを挟む) の最初の段から続ける。区切りの前の段の組は釣り合わせない)。段組の最初の子の `break-before`・最後の子の `break-after` のページの区切りは、段組の前・後ろの区切りにする。高さの指定のある段組 (ページをまたげない) の中では、段の区切りにする。
+`span="all"` のブロックは、入れ子のブロックの中のものも (どのモードでも。製品の見本に合わせる)、コンテナの幅に置き、その前後で段の組を分ける (ページをまたぐ段組でも)。分けた包みのブロックとコンテナの断片は、同じ FO の続きの領域として扱う: `id` はどの断片にも付き (`fo:page-number-citation-last` は最後の断片のページ。§6.6.12)、`text-indent` は最初の断片の最初の行だけに当てる (§7.16.11)。段の組の最初の段の頭の `break-before="column"` では、段を空けない (§4.8: 区切りの条件が、もう満たされている)。
+ブロックコンテナ内の段組の段と、`span="all"` のブロックの領域は、それぞれ参照領域として扱う (コンテナは §6.5.3 の参照領域。region-body の段と span の領域 (§6.4.13・§6.4.14) と同じ): 領域の頭と終わりの `conditionality="discard"` の余白 (`space-before`・`space-after`) は捨て、`retain` の余白 (`margin-top`・`margin-bottom` から来るものを含む。§5.3.2) は残す (§4.3.1)。段の組の最初の段の頭の `space-before` も捨てるので、1 段目と 2 段目の最初の行は同じ高さに並ぶ。`span="all"` のブロックの `margin-bottom` は、互換モードでも残す (製品の見本に合わせる。region-body の段組の `span="all"` のブロックも同じ)。
+段の釣り合わせでは、`keep-together.within-column="always"` (`within-page`・`keep-together="always"` も) のブロック・ブロックコンテナ・表を、段を低くして 2 つの段に分けない (§7.20.3)。分けずに収まる最小の段の高さにする。1 段に収まらない高さのもの (分けずに組むと、段組の箱が置く場所に入らないもの。置く場所の高さは、ページの残りから、前の余白 (頭で捨てるものは除く)・コンテナの padding と罫線・前の `span="all"` のブロック・中の脚注の分を除いたもの。絶対配置のコンテナの中では、包含ブロックの残り (位置の指定とコンテナの padding・罫線を除く)、高さを決めたコンテナの中では、その高さの残り、`fo:float` の中では、版面の高さ) は、これまでどおり 2 つの段に分けて、ページに収める (keep は、満たせなければ破る)。
+段の頭の行が入るかを確かめるときは、段の頭で捨てる余白 (`discard` の `space-before`) を数えない (§4.3.1。釣り合わせで、その余白の分だけ段を高くしない)。ページの残りが少ないために、段組のコンテナを次のページの頭へ送るときは、コンテナの `discard` の `space-before` も、ページの頭で捨てる。
 
 `span="all"` の切り替わりは、参照領域の境: `span="all"` のブロックと、そうでないブロックは、別の span-reference-area の中の normal-flow-reference-area に入る (XSL 1.1 §6.4.14)。参照領域は余白の並びを断つ (§4.2.5) ので、切り替わりの前後の `space-after`・`space-before` は相殺せず、`conditionality="discard"` (既定) のものは捨て、`retain` のものだけが残る (§4.3.1)。続く `span="all"` のブロックどうしは同じ領域に入り、ふつうに相殺する。絶対配置の `fo:block-container` の `top` は、最も近い祖先の参照領域から測る (§7.6.1) ので、span の後の箱は、span の後の領域の上端が基準 (`LBlockContainer.areaOffset`。行の進む方向の位置と幅は、段ではなく本文の領域が基準のまま)。
 1 段の本文 (`column-count` が 1) は、仕様では領域が 1 つで足りる (§6.4.14 の「precisely enough」) ので、仕様モードは領域を分けない (前後のアキは相殺する)。互換モードは、アンテナハウスと同じく、1 段でも span の切り替わりで領域を分ける (`LPageSequence.spanAreas`)。
@@ -193,6 +201,7 @@ foreignObject の中身 (HTML・MathML) は、API・コマンドでは本文と�
 全段を貫く幅で置き、段はその間に組む。領域の高さは組んでみないと分からないので、ページごとの予約を増やしながら安定するまで (最大 6 回) 組み直す。
 `axf:footnote-position="column"` を `fo:region-body` に指定したときだけ、脚注を段ごとに置く (`PageMaster.columns.footnotePosition`)。
 `axf:footnote-position="outside"` (横書きのページ・段組でない本文) は傍注にする (`PageMaster.sideNotes`)。奇数ページは region-end、偶数ページは region-start の領域の幅で脚注の本体を組み、参照する行の上端の高さから置く。前の傍注に重なるときは、その下へ送る。そのページに領域が無ければ、ふだんの脚注にする。
+段組でない流れでも、ページの頭に来る流れの最初のブロックの `space-before` (`conditionality="discard"`) はそこで捨てるので、行がページに入るかの判定でも数えない (§4.3.1)。
 `space-before.conditionality="retain"` は、段・ページの先頭でも余白を残す (`BoxStyle.retainSpaceBefore`)。段組の先頭のブロックにあるときは、続く段の頭も同じ量だけ下げる。
 
 ## 書体の読み込み (MS 明朝・MS ゴシックなど)
@@ -262,7 +271,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - margin-top などの block 方向の前側の margin から決まる space は、ページ・段の先頭でも残す (§5.3.2 の conditionality=retain)。
 - 空白・改行: `linefeed-treatment` / `white-space-treatment` / `white-space-collapse` / `wrap-option` と略記 `white-space` を、それぞれの初期値どおりに扱う。タブは空白 1 つ。
 - `font-size` のキーワードは medium (仕様モード 12pt・互換モード 10pt) から 1 段ごとに 1.2 倍。線種だけ指定した罫線の太さは medium。罫線の `thin` / `medium` / `thick` は、仕様モードでは CSS の値 (0.75pt / 2.25pt / 3.75pt)、互換モードでは 1pt / 3pt / 5pt。
-- 改ページ: `break-before` / `break-after` の `column` (段組なら次の段)・`odd-page`・`even-page` (偶奇が合わなければ白ページを挟む) に対応 (§7.20.2)。段組で `page` は、残りの段を空けて次のページへ。表の `break-before/after` も効く。表のセル・リストの項目の本体の中のブロックの `break-before/after` は、その所で行 (項目) を分ける (§4.8: 区切りの条件は必ず満たす。同じ行のほかのセルの中身は動かさない)。
+- 改ページ: `break-before` / `break-after` の `column` (段組なら次の段)・`odd-page`・`even-page` (偶奇が合わなければ白ページを挟む) に対応 (§7.20.2)。段組 (region-body の `column-count` と、ブロックコンテナ内の段組) で `page` は、残りの段を空けて次のページへ。段の組の最初の段の頭の `column` では段を空けない。表の `break-before/after` も効く。表のセル・リストの項目の本体の中のブロックの `break-before/after` は、その所で行 (項目) を分ける (§4.8: 区切りの条件は必ず満たす。同じ行のほかのセルの中身は動かさない)。
 - `initial-page-number` の `auto-odd` / `auto-even`、`force-page-count` (既定 auto: 次の page-sequence の initial-page-number が数値なら、それに続くよう最後のページの偶奇を合わせる) に対応 (§7.27.6-7)。
 - `id` を inline・wrapper・表の行・セル・リスト項目・ブロックコンテナ・画像・inline-container からも取り込み、page-number-citation の参照先にする。
 - writing-mode: `tb-lr` は行を左から右へ積む縦書き (`vertical-lr`)。`lr` / `tb` は `lr-tb` / `tb-rl` の略。`rl-tb` (`rl`) と `direction="rtl"` は右から左の横組み (`direction: 'rtl'`): 行は右から並べ、start / end は右 / 左、`text-align` の left / right は end / start、表 (リスト) の列も右から。字の並べ方は UAX #9 (Unicode Bidirectional Algorithm、Unicode 18.0.0) で決める (下の「双方向のテキスト」)。アラビア文字などのつながる字 (Joining_Type が D・R・L・C の字と、その後ろの結合記号) は、並びを 1 単位にまとめて書体の字形の置き換えで測り、描く (語頭・語中・語尾・独立形と、ラーム・アリフなどの必須の合字。横書き)。単位の中の記号の位置などの GPOS の調整も、測る幅と PDF の字の位置に入れる。ルビのはみ出しは扱わない。下から上へ・行ごとに向きの変わる値 (§7.29.7) は、横・縦で組んだ後に軸を裏返して表す: `bt-lr`・`bt-rl` は縦書きの行の中を下から上へ (横向きに組む欧文の字の向きは上から下のまま)、`lr-bt`・`rl-bt` は行とブロックを下から上へ積む、`lr-alternating-*` は偶数行を逆の向きに並べ、`lr-inverting-*` は偶数行を 180 度回す (逆さの字で右から左)、`tb-lr-in-lr-pairs` は 2 字ずつの縦中横を縦に積む (1em に収める)。block-container と、page-sequence・region-body の writing-mode に効く。裏返すコンテナは、高さの指定が無くてもページをまたがずに 1 つの箱にする。
@@ -298,7 +307,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 
 ### 仕様どおりにしたもの (両方のモード)
 
-- 長さの式 (§5.9): 掛け算・割り算は足し算・引き算より強く結びつく。括弧・`mod`・`floor()`・`ceiling()`・`round()`・`min()`・`max()`・`abs()`。`proportional-column-width(N)+長さ` の列幅 (§5.10.4)。`lh` 単位 (行の高さ) は罫線の太さで読む
+- 長さの式 (§5.9): 掛け算・割り算は足し算・引き算より強く結びつく。括弧・`mod`・`floor()`・`ceiling()`・`round()`・`min()`・`max()`・`abs()`。`proportional-column-width(N)+長さ` の列幅 (§5.10.4)。`lh` 単位 (行の高さ。XSL 1.1 に無い単位) は、互換モードのときだけ、どの長さでも、その要素の行の高さを基準に読む (`font-size` は親の行の高さが基準。`line-height` には使えず、読まずに知らせる。仕様モードでは警告に出す)
 - 表の罫線の重ね合わせ (§6.7.10): セル・行・行グループ・列・表の罫線から線分ごとに 1 本を選ぶ (table-footer も含む)。`hidden` はすべてに勝って線を消す。太さ・線種が同じで色だけ違えば、セル > 行 > 行グループ > 列 > 表。`transparent` の罫線は場所だけ取って描かない
 - `border-separation` / `border-spacing` (§7.28.5・§7.31.9)、`empty-cells="hide"` (§7.28.10)、table-row の無い表の `starts-row` / `ends-row`、セルの `column-number`
 - 幅の指定がある `table-layout="auto"` の表も自動レイアウト (§6.7.3)。足りない幅は伸びる leader の列に配る
@@ -346,7 +355,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - ページ番号の書式 `format` (§7.26.1): `1` `01` `i` `I` `a` `A` `１` `一` と前後の文字 (XSLT 1.0 §7.7.1 どおり、最初のトークンだけを使う)。page-number・page-number-citation とも、参照先のページの書式で出す。
 - `page-number-citation-last`: 参照先が置かれた最後のページ。
 - `page-sequence-master` (§6.4.8-11): single・repeatable (maximum-repeats)・alternatives を順に使う。`blank-or-not-blank` は、偶奇合わせ・force-page-count で足した白ページを blank として扱う (段組のページも同じ)。
-- `overflow` (§7.21.2): `hidden`・`scroll`・`error-if-overflow` は切り抜き (block-container・リージョン)。`condense` などは未対応として報告。
+- `overflow` (§7.21.2): `hidden`・`scroll`・`error-if-overflow` は切り抜き (block-container・リージョン)。アンテナハウスの拡張の値 `condense` は、互換モードのときだけ、`fo:block-container` の詰め込みとして読む (上の表。縦書き・`fo:inline-container` の詰め込みは未対応として報告)。仕様モードの `condense` と、ほかの知らない値は、未対応として報告。
 - リスト: ラベルに `end-indent="label-end()"` があるときは、`provisional-label-separation` (既定 6pt) をラベルの後ろに空ける。
 - 余白の優先度 (§4.3.1): `space-before/after.precedence` の force (合計) と整数 (高い方だけ残す)。
 - 脚注の参照記号は、FO の参照側 inline の文字の大きさ・baseline-shift で組む。

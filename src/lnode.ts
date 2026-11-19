@@ -57,6 +57,13 @@ export interface LNode {
   phys?: { x: number; y: number };
   /** 中身の幅を測る組版 (Flow の intrinsic) で、inline 方向の大きさの指定のある箱 (内容による大きさの計測で、箱の幅そのものを数える) */
   fixedI?: boolean;
+  /**
+   * 中身の幅を測る組版で、見積もりから決めた大きさを auto として組んだ箱 (BoxStyle.estimatedSize) の、inline 方向の長さの上限・下限 (border の箱)。
+   * 内容による大きさの計測 (maxLineLength) で、中身の幅をこれで抑える (CSS Sizing 3 §5.1)
+   */
+  intrinsicClamp?: { max?: number; min?: number };
+  /** CSS の絶対配置の箱 (流れの外。CSS 2.1 §9.3.1)。中身の幅の計測 (maxLineLength) では、祖先の中身に数えない */
+  outOfFlow?: boolean;
   // fragmentation
   cont?: boolean;
   contNext?: boolean;
@@ -130,6 +137,17 @@ export interface LNode {
    * 数える (Flexbox 1 §9.9.1: flex の容器の max-content は項目の max-content の和)。中身の幅を測るとき (maxLineLength) に、置く場所いっぱいの表の幅の代わりに使う
    */
   flexContentI?: number;
+  /**
+   * grid の 1 行の表 (LTable.gridTemplate) の中身の幅 (flexContentI) を、表の幅でなく、表の幅と列の幅の和の大きい方で抑える。
+   * 列は下限 (項目の自動の最小の大きさ: CSS Grid 1 §6.6・§12.5) より狭くならないので、min-content を測る狭い所では、表の箱の外まで並ぶ
+   * (表の幅で抑えると、入れ子の grid の min-content が 0 になる)
+   */
+  gridContent?: boolean;
+  /**
+   * リストの表 (LTable.listTable) の中身の幅 (中身の幅を測る組版で): 記号の列の幅 + 本文のセルの中身の幅 (min-content か max-content)。
+   * 本文の列は残りを取る比例の列なので、表の幅は置く場所いっぱい (測る行の長さ) になる。maxLineLength で、その代わりに使う
+   */
+  listContentI?: number;
   repeated?: boolean;
   /** 表の行の前後の余白 (fo:list-item の space-before / space-after)。前後の余白と重ね合わせる (XSL §4.3.1) */
   rowSpace?: { before: number; after: number };
@@ -297,6 +315,16 @@ function mergeDecoration(p: Decoration | undefined, n: Decoration): Decoration {
   }
   if (n.underline !== undefined && n.underlineOffset === undefined) delete out.underlineOffset;
   return out;
+}
+
+/**
+ * 字のノード (newNode('glyph', …) と同じ中身)。欄を 1 つのリテラルに並べて作る: newNode の、既定の欄のリテラルに後から欄を足す作り方では、
+ * 欄の数がオブジェクトの中に取った枠を超え、字ごとに、外に欄の置き場 (約 40 バイト) を持っていた (字は文書のノードの大半を占める)
+ */
+export function glyphLeaf(wm: WritingMode, isize: number, bsize: number, glyph: GlyphPayload, src: string | undefined, cite?: string): LNode {
+  const n: LNode = { kind: 'glyph', wm, i: 0, b: 0, isize, bsize, margin: NO_EDGES, padding: NO_EDGES, border: NO_BORDER, children: NO_CHILDREN, src, glyph };
+  if (cite) n.cite = cite;
+  return n;
 }
 
 export function newNode(kind: LKind, wm: WritingMode, extra: Partial<LNode> = {}): LNode {

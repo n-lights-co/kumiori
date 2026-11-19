@@ -110,7 +110,10 @@ CC BY 4.0 は、媒体と状況に応じた合理的な方法でよいとして�
 > 図中のアイコンの一部は draw.io (JGraph Ltd) の図形ライブラリ (v24.7.5) を使用しています。CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
 
 - 外に提供しないとき (自分だけ、組織の中だけで使うなど) は、この条件はかかりません。
-- JavaScript で書かれた形 (`src/drawio/drawioJs/`) は、Apache License 2.0 のコードが描くもので、図形ライブラリのデータではないので、このクレジットは要りません。
+- JavaScript で書かれた形 (`src/drawio/drawioJs/`) は、Apache License 2.0 のコード (draw.io の `shapes/*.js` を移したもの) が描くもので、図形ライブラリのデータではありません。
+  そのため、この CC BY 4.0 のクレジットは要らないと考えています。
+  ただ、下に書くとおり、draw.io の README は「JGraph の提供するアイコン」を CC BY 4.0 としていて、アイコンを描く形 (AWS 3D の `mxgraph.aws3d.*` など) はそれに当たると読まれる余地があります。
+  そうした形を含む PDF を配る・公開するときは、念のため、上の例と同じクレジットを付けておくと安全です (`fetchStencils` を付けないときも)。
 - AWS・Azure・Cisco・Google Cloud などのアイコンは各社の商標でもあり、CC BY 4.0 は商標の使用を許しません (2 項 (b)(2))。それらのアイコンを使うときは、各社のアイコンの利用の決まりも確かめてください。
 - JavaScript で書かれた形 (`src/drawio/drawioJs/`) にも、他社の製品のアイコン・画面の部品を描くもの (AWS 3D の `mxgraph.aws3d.*`、Atlassian の Jira の課題の `mxgraph.atlassian.issue`、iOS・Android・Material Design・Bootstrap の部品の `mxgraph.ios.*`・`mxgraph.android.*`・`mxgraph.gmdl.*`・`mxgraph.bootstrap.*` など) があります。その名前と意匠 (商標を含みます) は各社のもので、Kumiori は各社と関係が無く、描けることは各社の承認を意味しません。
   draw.io v24.7.5 の README は、draw.io の書いたソースは Apache License 2.0、JGraph の提供するアイコンと図のひな形は CC BY 4.0 で、第三者が元の権利を持つアイコンには別の条件が掛かることがある、としています。Kumiori は `shapes/*.js` をソース (Apache License 2.0) として扱っています (THIRD_PARTY_NOTICES.md の 13 節)。

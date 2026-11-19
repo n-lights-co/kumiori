@@ -262,3 +262,63 @@ export function cssColorAlpha(v: string): string | undefined {
   if (c.a <= 0) return undefined;
   return `${rgbHex(c.r, c.g, c.b)}${hex2(c.a * 255)}`;
 }
+
+/** grid-template-columns の列の並び (CSS Grid 1 §7.2: <track-list>) を、括弧の外の空白で語に分ける。線の名前 ([a b]。<line-names>) は列ではないので飛ばす */
+export const gridTrackTokens = (s: string): string[] => splitTop(s, ' ', { brackets: true }).filter((t) => t && !t.startsWith('['));
+
+/**
+ * repeat(回数, 列の並び) (CSS Grid 1 §7.2.3)。exec の結果の [1] は回数 (前後の空白を除く)、[2] は列の並び (前の空白を除く)。
+ * 正規表現 (/^repeat\(\s*([^,]+?)\s*,\s*([\s\S]*)\)$/i と同じ結果) にせず、前から 1 度読む: 空白を読む所が続く正規表現は、
+ * カンマの無い・閉じない repeat( と長い空白で、入力の長さの 2 乗以上の手間になる
+ */
+export const GRID_REPEAT = {
+  exec(t: string): [string, string, string] | null {
+    if (!/^repeat\(/i.test(t) || !t.endsWith(')')) return null;
+    const inner = t.slice(7, -1);
+    const comma = inner.indexOf(',');
+    if (comma <= 0) return null;
+    const count = inner.slice(0, comma);
+    return [t, count.trim() || count.slice(-1), inner.slice(comma + 1).trimStart()];
+  },
+  test(t: string): boolean {
+    return this.exec(t) !== null;
+  },
+};
+
+/** minmax(最小, 最大) の 2 つの引数 (CSS Grid 1 §7.2.3)。括弧の外のカンマで分ける (minmax(min(100%, 200px), 1fr) の min() の中のカンマで切らない) */
+export function gridMinmaxArgs(t: string): [string, string] | undefined {
+  const m = /^minmax\(([\s\S]*)\)$/i.exec(t);
+  const args = m ? splitTop(m[1], ',') : [];
+  return args.length === 2 ? [args[0].trim(), args[1].trim()] : undefined;
+}
+
+/**
+ * grid-template-columns の列の並びが無効か (宣言ごと無効。CSS Grid 1 §7.2)。isLength は、語が長さ・百分率 (calc() などを含む) か。
+ * カスケード (読めない宣言を捨てて、前の宣言を使う: CSS 2.1 §4.2) と、列の幅を決める gridTrackPlan (無効なら none と同じ 1 列) が使う:
+ *  - 負の大きさ (<track-breadth> の長さ・百分率は 0 以上。§7.2.1。数学の関数の中の数は見ない)
+ *  - repeat() の中の repeat() (§7.2.3.1: repeat() は入れ子にできない)
+ *  - 最小の大きさが fr の minmax() (§7.2.3: minmax() の最小の大きさは <inflexible-breadth> で、<flex> は書けない)
+ *  - auto-fill・auto-fit の repeat() (<auto-repeat>) が 2 つ以上か、それと一緒に、決まった大きさでない列 (fr・auto・中身で決まる列) を書いたもの
+ *    (§7.2.3.2: <auto-track-list> の列と <auto-repeat> の中の列は <fixed-size> だけ)
+ */
+export function gridTrackListInvalid(src: string, isLength: (t: string) => boolean): boolean {
+  const top = gridTrackTokens(src);
+  const inner = (t: string) => {
+    const m = GRID_REPEAT.exec(t);
+    return m ? gridTrackTokens(m[2]) : [t];
+  };
+  const all = top.flatMap(inner);
+  // 負の数は、列の大きさそのもの (語か、minmax() の引数) が負の数のときだけ。数学の関数 (min()・max()・calc() など) の中の負の数は、
+  // 式の値が負でなければ有効で、負なら 0 以上に抑える (CSS Values 4 §10.12: 範囲の外の計算値は抑える) ので、宣言を無効にしない。
+  // 値が 0 の数 (-0・-0px・-0%・-0fr) は、負でない (CSS Values 4 §5.1: 0 以上の範囲に入る)
+  const negative = all.some((t) => (gridMinmaxArgs(t) ?? [t]).some((b) => /^-/.test(b) && parseFloat(b) !== 0));
+  const nested = top.some((t) => GRID_REPEAT.test(t) && inner(t).some((x) => /^repeat\(/i.test(x)));
+  const flexMin = all.some((t) => /fr$/i.test(gridMinmaxArgs(t)?.[0] ?? ''));
+  const autoReps = top.filter((t) => /^auto-(fill|fit)$/i.test(GRID_REPEAT.exec(t)?.[1] ?? ''));
+  const fixedBreadth = (t: string) => !/fr$/i.test(t) && isLength(t);
+  const fixedSize = (t: string) => {
+    const mm = gridMinmaxArgs(t);
+    return mm ? fixedBreadth(mm[0]) || (fixedBreadth(mm[1]) && !/fr$/i.test(mm[0])) : fixedBreadth(t);
+  };
+  return negative || nested || flexMin || autoReps.length > 1 || (autoReps.length === 1 && !all.every(fixedSize));
+}

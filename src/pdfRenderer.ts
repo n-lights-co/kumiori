@@ -55,18 +55,19 @@ import { verticalTreatment } from './jis';
 import { decodeBmp, decodeGif, encodePng, encodePngStored } from './pixels';
 import { rasterFilter } from './svgFilterRaster';
 import { decodeWebp } from './webp';
-import { parseColor, type SpotColor } from './color';
-import { walkAreaTree } from './areaTree';
+import { alphaOf, parseColor, type SpotColor } from './color';
+import { walkAreas, type AreaNode } from './areaTree';
 import { MONO_GENERIC, SANS } from './sampleData';
 import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
 import { AssetStore } from './assets';
 import { msg } from './messages';
 import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, referencePath, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { iccRgbToCmyk, type CmykConverter } from './icc';
-import { embedCmykImage, embedPngChecked, markCffSubset, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
+import { embedCmykImage, embedPngChecked, markCffSubset, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, sealPageContents, useDeflate, widthOfHex, type FeatureFont } from './pdfLibPatches';
 import { shrinkJpeg } from './jpeg';
 import { PdfColorGlyphs } from './colorGlyphPdf';
 import { apply, invert, mul, transformSegs, type Seg } from './matrix';
+import { shapesOverlap, segsBox, blendNormal, exactBox, flatColorOf, flatCss, FlatPage, flattenPpi, intersect, meets, openPlainGroups, processCmyk, rasterCmyk, shapeBox, shapesBox, shapeUsesAlpha, coveredPolygon, transformBox, union, type Box, type FlatItem } from './pdfFlatten';
 import { clipRuns, eachSvgShape, flattenGroups, foreignObjectContexts, parseSvg, systemLanguageKey, transformShape, type SvgClip, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type TextChars, type XmlNode } from './svg';
 import type { Annotation, Area, AreaTree, BookmarkArea, FormField, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea, TateChuYokoArea } from './types';
 
@@ -84,6 +85,11 @@ export interface PdfRenderOptions {
   subset?: boolean;
   /** 画像 (fo:external-graphic) の登録所 */
   assets?: AssetStore;
+  /**
+   * 画像を埋め込んだら、画像の置き場 (assets) のラスター画像の中身を捨てる (PDF だけを作るとき: typesetToPdf。PDF は埋め込んだ写しを持つ)。
+   * 組んだ結果を後で描く (renderPage) ときは付けない
+   */
+  releaseImageBytes?: boolean;
   /** SVG などをラスタライズするときの解像度 (dpi)。既定 300 */
   imageDpi?: number;
   /**
@@ -427,8 +433,120 @@ function finishVerticalFonts(pdf: PDFDocument, fonts: Map<PDFFont, VerticalFont>
   }
 }
 
+/** 透明を平らにするときの、ラスター画像のデータ (画素にするときに描く) */
+interface FlatImageData {
+  kind: 'png' | 'jpeg';
+  bytes: Uint8Array;
+  width: number;
+  height: number;
+}
+
+/** 透明を平らにする出力 (PdfStandard.transparency が 'flatten') の、文書ごとのもの (renderPdfPages が作る) */
+interface FlatDoc {
+  /** 規格の名前 (誤りと警告の文に書く) */
+  label: string;
+  fonts: FontManager;
+  /** RGB → CMYK (PDF/X の出力の変換) */
+  toCmyk: CmykConverter;
+  /** 透明度つきのラスター画像 (埋め込まない。画素にするときに、下の物と合わせて描く) */
+  alphaImages: Map<string, FlatImageData>;
+  /** 埋め込んだ不透明なラスター画像のデータ (下の物として画素にするときに描く) */
+  imageData: Map<string, FlatImageData>;
+  /** SVG の中の、透明度つきの画像 (SvgShape.image。埋め込まない) */
+  alphaShapeImages: Set<object>;
+  /** 画素にした所 (ページの番号・字を含むか・解像度) */
+  rasters: Array<{ page: number; text: boolean; ppi: number }>;
+  /** 画素にした所に掛かった特色の名前 (画像の中では、代わりの CMYK になる) */
+  rasterSpots: Set<string>;
+  /** 平らにできなかった透明 (文。あれば、描き終えた後に誤りとして投げる) */
+  failures: string[];
+}
+
+/** 透明のグループの中身を、描かずに覚えたもの (FlatState.recording) */
+interface FlatRec {
+  item: FlatItem;
+  /** 1 色の物 (塗り・線・字) の色。ほかの物 (画像・SVG・入れ子のグループ) は undefined */
+  css?: string;
+  /** その物の不透明度 (グループの不透明度を掛ける前) */
+  alpha: number;
+}
+
+/** 透明を平らにする出力の、ページごとの状態 (PdfPainter.fl) */
+interface FlatState {
+  doc: FlatDoc;
+  page: FlatPage;
+  /** ページの番号 (1 から) */
+  pageNo: number;
+  /** いまの変換 (局所の座標 → ページの座標。y は下向き) */
+  M: Matrix;
+  /** いまの切り抜き (ページの座標) と、restore で戻す前の切り抜き */
+  clips: SvgClip[];
+  clipStack: SvgClip[][];
+  /** 透明のグループの中身を、描かずに覚えている間の並び (PdfPainter.flatGroup) */
+  recording?: FlatRec[];
+  /** 平らにして描くグループの不透明度 (グループの中を、子ごとに平らにして描く間) */
+  alphaMul: number;
+  /** 下の色を探すときに見る、描いた物の数 (グループの中を描く間は、グループの前に描いた物だけを見る) */
+  end?: number;
+  /** 0 でなければ、平らにした色で描いている (平らにする処理を通さずに描く) */
+  direct: number;
+  /** 0 でなければ、リンク・注釈を覚えない (グループの中を 2 度目に描く間) */
+  noMarks: number;
+  /** 画像にする範囲で、まだ描いていないもの (PdfPainter.flatRaster。隣の範囲をまとめる) */
+  pending?: { box: Box; glyph: boolean };
+}
+
+/**
+ * 字の画像にする範囲 b を、ためている字の範囲 p にまとめるか: 同じ行に並ぶ (縦の範囲が重なり、横の隙間が、高さの半分か 3pt 以下)、
+ * または同じ列に並ぶ (縦書き。横の範囲が重なり、縦の隙間が、幅の半分か 3pt 以下)。次の行の字は、行の頭へ戻るので離れていて、まとめない
+ */
+function mergeable(p: Box, b: Box): boolean {
+  const overlapY = b.y0 < p.y1 && p.y0 < b.y1;
+  const overlapX = b.x0 < p.x1 && p.x0 < b.x1;
+  const gapX = Math.max(b.x0 - p.x1, p.x0 - b.x1);
+  const gapY = Math.max(b.y0 - p.y1, p.y0 - b.y1);
+  // 隙間は、足す字の大きさで測る (ためた範囲は行の全体に広がっているので、その大きさでは次の行もまとまる)
+  const h = b.y1 - b.y0;
+  const w = b.x1 - b.x0;
+  return (overlapY && gapX <= Math.max(3, h / 2)) || (overlapX && gapY <= Math.max(3, w / 2));
+}
+
+/** 矩形 box を、切り抜き c の外接矩形で切ったもの */
+function clipBox(box: Box, c: SvgClip): Box | undefined {
+  const cb = segsBox(c.segs);
+  return cb ? intersect(box, cb) : undefined;
+}
+
+/** 図形の不透明度に k を掛けたもの */
+function scaleOpacity(shapes: SvgShape[], k: number): SvgShape[] {
+  return k === 1 ? shapes : shapes.map((sh) => ({ ...sh, fillOpacity: sh.fillOpacity * k, strokeOpacity: sh.strokeOpacity * k }));
+}
+
+/**
+ * 図形が、座標軸に沿った矩形か角丸の矩形を 1 色で塗るだけ (線・透明・模様が無く、切り抜きも矩形か角丸) なら、必ず覆う矩形の並びと色
+ * (平らにする下の色に使う。pdfFlatten.ts の coveredPolygon)。css は塗りの色 (無ければ図形の fill)
+ */
+function solidOf(shapes: SvgShape[], toCmyk: CmykConverter, css?: string): FlatItem['solid'] {
+  if (shapes.length !== 1) return undefined;
+  const sh = shapes[0];
+  if (sh.fill === undefined || sh.fillPaint || sh.fillPattern || sh.image || sh.group || sh.masks?.length || sh.blend || sh.fillOpacity < 1) return undefined;
+  if (sh.stroke !== undefined && sh.strokeWidth > 0) return undefined;
+  const color = css ?? sh.fill;
+  if (alphaOf(color) < 1 || /^\s*(transparent|none)\s*$/i.test(color)) return undefined;
+  // 輪郭の覆う凸の多角形と、切り抜きの覆う凸の多角形 (どれかが凸の形でなければ使わない)。下の色は、そのすべての中にある所
+  const regions: number[][] = [];
+  for (const segs of [sh.segs, ...(sh.clips ?? []).map((c) => c.segs)]) {
+    const poly = coveredPolygon(segs);
+    if (!poly) return undefined;
+    regions.push(poly);
+  }
+  return { regions, color: flatColorOf(color, toCmyk) };
+}
+
 class PdfPainter implements Painter {
   private clips = 0;
+  /** 透明を平らにする出力 (PDF/X-1a・X-3) の、ページの状態。ふつうの出力では undefined */
+  fl?: FlatState;
   /** 描く途中の警告の出し先 (renderPdf の opts.warnings) */
   warn: (message: string) => void = (m) => console.warn(m);
   /** このページに置いた SVG のリンク (a) の注釈の数 (SVG_MAX_LINKS_PER_PAGE と比べる) */
@@ -752,14 +870,32 @@ class PdfPainter implements Painter {
     const [a, b, c, d, e, f] = m;
     const H = this.H;
     const G: Matrix = [a, -b, -c, d, c * H + e, H - d * H - f];
-    this.flushText();
-    this.page.pushOperators(pushGraphicsState(), concatTransformationMatrix(...G));
-    const saved = this.ctm;
-    this.ctm = mul(this.ctm, G);
-    draw();
-    this.flushText();
-    this.ctm = saved;
-    this.page.pushOperators(popGraphicsState());
+    const fl = this.fl;
+    const savedM = fl?.M;
+    if (fl) fl.M = mul(fl.M, m);
+    try {
+      // 透明のグループの中身を覚えている間は、命令を書かない (リンクの位置のために、いまの変換だけを追う)
+      if (fl?.recording) {
+        const saved = this.ctm;
+        this.ctm = mul(this.ctm, G);
+        try {
+          draw();
+        } finally {
+          this.ctm = saved;
+        }
+        return;
+      }
+      this.flushText();
+      this.page.pushOperators(pushGraphicsState(), concatTransformationMatrix(...G));
+      const saved = this.ctm;
+      this.ctm = mul(this.ctm, G);
+      draw();
+      this.flushText();
+      this.ctm = saved;
+      this.page.pushOperators(popGraphicsState());
+    } finally {
+      if (fl) fl.M = savedM!;
+    }
   }
 
   /**
@@ -770,6 +906,8 @@ class PdfPainter implements Painter {
    */
   group(opacity: number, draw: () => void) {
     if (!this.ctx) return draw();
+    // 透明を平らにする出力 (PDF/X-1a・X-3): 透明のグループを作らずに、平らにして描く
+    if (this.flatGroup(opacity, draw)) return;
     this.flushText();
     const ops = pageOperators(this.page);
     const start = ops.length;
@@ -829,13 +967,17 @@ class PdfPainter implements Painter {
     return segOps(path, this.H);
   }
   fillPath(path: PathSeg[], color: string, evenOdd?: boolean, opacity = 1) {
+    if (this.fl && this.flatPaint((css, k) => this.flatItem((p) => p.fillPath(path, css, evenOdd, k), css), color, opacity, (css) => this.fillPath(path, css, evenOdd, 1))) return;
     this.flushText();
-    this.page.pushOperators(pushGraphicsState(), ...this.alphaOps(opacity, 1), ...colorOps(color, true, this.spots), ...this.pathOps(path), PDFOperator.of(evenOdd ? Ops.FillEvenOdd : Ops.FillNonZero), popGraphicsState());
+    // 色の透明度 (#rrggbbaa など) も不透明度に掛ける
+    this.page.pushOperators(pushGraphicsState(), ...this.alphaOps(opacity * alphaOf(color), 1), ...colorOps(color, true, this.spots), ...this.pathOps(path), PDFOperator.of(evenOdd ? Ops.FillEvenOdd : Ops.FillNonZero), popGraphicsState());
   }
   strokePath(path: PathSeg[], width: number, color: string, dash?: [number, number]) {
+    if (this.fl && this.flatPaint((css, k) => this.scaledItem(this.flatItem((p) => p.strokePath(path, width, css, dash)), k), color, 1, (css) => this.strokePath(path, width, css, dash))) return;
     this.flushText();
     this.page.pushOperators(
       pushGraphicsState(),
+      ...this.alphaOps(1, alphaOf(color)),
       ...this.overprintOps(color, width, 'line'),
       ...colorOps(color, false, this.spots),
       PDFOperator.of(Ops.SetLineWidth, [PDFNumber.of(width)]),
@@ -867,6 +1009,8 @@ class PdfPainter implements Painter {
   }
 
   mark(a: Area, x: number, y: number) {
+    // 透明のグループの中を 2 度目に描く間は、1 度目に覚えたので覚えない
+    if (this.fl?.noMarks) return;
     if (a.link) this.marks.push({ rect: this.pdfRect(x, y, a.width, a.height), link: a.link });
     if (a.formField) {
       // 欄は罫線の内側 (罫線は Kumiori が描く)
@@ -1018,6 +1162,7 @@ class PdfPainter implements Painter {
   }
 
   drawImage(a: ImageArea, x: number, y: number) {
+    if (this.flatImage(a, x, y)) return;
     this.flushText();
     // 置いた所の言語で図形にした SVG があればそれ (systemLanguage を照らしたもの)
     const vec = (a.language && this.vectorOf(`${a.src}\0${a.language}`)) || this.vectorOf(a.src);
@@ -1034,6 +1179,35 @@ class PdfPainter implements Painter {
    */
   drawImageTiled(a: ImageArea, x: number, y: number, region: Rect): boolean {
     if (!this.ctx || this.vectorOf(a.src)) return false;
+    const fl = this.fl;
+    // 平らにする出力: 透明のグループの中・透明度つきの画像は、1 枚ずつ描く (drawImage で平らにする)
+    if (fl && !fl.direct && (fl.recording || fl.alphaMul < 1 || fl.doc.alphaImages.has(a.src))) return false;
+    if (fl && !fl.direct) {
+      const data = fl.doc.imageData.get(a.src);
+      const { M, clips } = fl;
+      const rc: SvgClip = { segs: transformSegs([{ op: 'M', x: region.x, y: region.y }, { op: 'L', x: region.x + region.width, y: region.y }, { op: 'L', x: region.x + region.width, y: region.y + region.height }, { op: 'L', x: region.x, y: region.y + region.height }, { op: 'Z' }], M), evenOdd: false };
+      let box: Box | undefined = transformBox(M, { x0: region.x, y0: region.y, x1: region.x + region.width, y1: region.y + region.height });
+      for (const c of clips) box = box && clipBox(box, c);
+      if (box && data && a.width > 0 && a.height > 0) {
+        const i0 = Math.floor((region.x - x) / a.width);
+        const i1 = Math.ceil((region.x + region.width - x) / a.width);
+        const j0 = Math.floor((region.y - y) / a.height);
+        const j1 = Math.ceil((region.y + region.height - y) / a.height);
+        const n = (i1 - i0) * (j1 - j0);
+        const scale = Math.sqrt(Math.abs(M[0] * M[3] - M[1] * M[2])) || 1;
+        const tiles = () => {
+          const out: SvgShape[] = [];
+          for (let j = j0; j < j1; j++)
+            for (let i = i0; i < i1; i++) {
+              const tx = x + i * a.width;
+              const ty = y + j * a.height;
+              out.push({ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: 1, strokeOpacity: 1, clips: [...clips, rc], image: { kind: data.kind, bytes: data.bytes, matrix: mul(M, [a.width, 0, 0, -a.height, tx, ty + a.height]) as [number, number, number, number, number, number] } });
+            }
+          return out;
+        };
+        fl.page.items.push({ box, shapes: tiles, ppi: data.width / Math.max(1e-6, (a.width * scale) / 72), ...(n > 4096 ? { opaqueOnly: msg('透明な物の下に、繰り返しの多い背景画像があるので、画像にできません', 'a transparent object lies over a background image with too many repetitions to rasterize') } : {}) });
+      }
+    }
     this.flushText();
     const img = this.imageOf(a.src);
     if (!img) return true;
@@ -1064,13 +1238,15 @@ class PdfPainter implements Painter {
   }
 
   fillRect(x: number, y: number, w: number, h: number, color: string) {
+    if (this.fl && this.flatPaint((css, k) => this.scaledItem(this.flatItem((p) => p.fillRect(x, y, w, h, css), css), k), color, 1, (css) => this.fillRect(x, y, w, h, css))) return;
     this.flushText();
     if (/^spot\(/i.test(color)) {
       this.page.pushOperators(pushGraphicsState(), ...colorOps(color, true, this.spots), PDFOperator.of(Ops.AppendRectangle, [PDFNumber.of(x), PDFNumber.of(this.H - y - h), PDFNumber.of(w), PDFNumber.of(h)]), PDFOperator.of(Ops.FillNonZero), popGraphicsState());
       return;
     }
     // 細い長方形 (罫線) の黒は、線と同じにノセを付ける (GWG 2022-R1 の I00004: 細い長方形の実際の線の太さ)
-    const op = this.overprintOps(color, Math.min(w, h), 'line');
+    // 半透明の色 (#rrggbbaa。半透明の字の色の下線など): その濃さで重ねる
+    const op = [...this.alphaOps(alphaOf(color), 1), ...this.overprintOps(color, Math.min(w, h), 'line')];
     if (op.length) this.page.pushOperators(pushGraphicsState(), ...op);
     this.page.drawRectangle({ x, y: this.H - y - h, width: w, height: h, color: toPdfColor(color, this.spots.cmyk), borderWidth: 0 });
     if (op.length) this.page.pushOperators(popGraphicsState());
@@ -1092,6 +1268,22 @@ class PdfPainter implements Painter {
   colorGlyphs?: PdfColorGlyphs;
 
   drawGlyph(g: GlyphArea, x: number, y: number) {
+    const fl = this.fl;
+    if (fl && !fl.direct) {
+      if (this.colorGlyphs?.handles(g)) {
+        // 色つきの字形: 図形で描き直せないので、重なる透明な物は画素にできない
+        const it = this.glyphItem(g, x, y, 1);
+        if (it) {
+          it.opaqueOnly = msg('色つきの字形に重なる透明な物は、平らにできません', 'transparent objects overlapping a color glyph cannot be flattened');
+          if (fl.recording) {
+            fl.recording.push({ item: it, alpha: 1 });
+            return;
+          }
+          fl.page.items.push(it);
+        }
+        if (fl.alphaMul < 1 || alphaOf(g.color) < 1) fl.doc.failures.push(msg(`${fl.pageNo} ページ目: 色つきの字形の透明は、平らにできません`, `page ${fl.pageNo}: transparency of a color glyph cannot be flattened`));
+      } else if (this.flatPaint((css, k) => this.glyphItem({ ...g, color: css }, x, y, k), g.color, 1, (css) => this.drawGlyph({ ...g, color: css }, x, y))) return;
+    }
     // 色つきの表 (COLR・CBDT・sbix・SVG) を持つ書体の字は、Type 3 書体の字として描く
     const colored = this.colorGlyphs?.draw(g, x, y, this.page, this.H, (css) => colorOps(css, true, this.spots));
     if (colored) {
@@ -1239,6 +1431,9 @@ class PdfPainter implements Painter {
     const gs = a.glyphs;
     const g0 = gs[0];
     if (!this.verticalFonts || a.writingMode === 'horizontal-tb' || !gs.length) return false;
+    // 平らにする出力の、透明な字・グループの中の字は、1 字ずつ描く (drawGlyph で平らにする)
+    const fl = this.fl;
+    if (fl && !fl.direct && (fl.recording || fl.alphaMul < 1 || gs.some((g) => alphaOf(g.color) < 1))) return false;
     const simple = (g: GlyphArea) =>
       g.rotation === 0 && g.color !== 'transparent' && g.glyphIds?.length === 1 && !RTL_TEXT.test(g.text) && !this.colorGlyphs?.handles(g) &&
       !g.transform && g.opacity === undefined && !g.orientation &&
@@ -1404,8 +1599,14 @@ class PdfPainter implements Painter {
     });
   }
 
-  /** ためた字を書き出す */
+  /** ためた字を書き出す (透明を平らにする出力では、先に、ためた画像にする範囲を描く: そちらが先に描いた物なので) */
   flushText() {
+    this.flushPendingRaster();
+    this.flushRun();
+  }
+
+  /** ためた字 (run) を書き出す */
+  private flushRun() {
     const r = this.run;
     if (!r) return;
     this.run = undefined;
@@ -1418,6 +1619,8 @@ class PdfPainter implements Painter {
     }
     this.page.pushOperators(
       pushGraphicsState(),
+      // 半透明の字の色 (#rrggbbaa。CSS の color: rgba()): その濃さで重ねる (塗りと、疑似太字の輪郭)
+      ...this.alphaOps(alphaOf(r.css), alphaOf(r.css)),
       ...this.overprintOps(r.css, r.size, 'text'),
       // 疑似太字: 塗りと輪郭のなぞり (文字の描画モード 2) で字を太らせる
       // 疑似太字: 塗りと輪郭。継ぎ目は丸 (Canvas の strokeText と同じ lineJoin = 'round')
@@ -1432,12 +1635,24 @@ class PdfPainter implements Painter {
 
   /** 線を引く。色が無ければトンボ (レジストレーション色)。色があれば、その色 (画像の代わりの枠・案内の線) */
   strokeLine(l: Line, width: number, color?: string) {
+    const fl = this.fl;
+    if (fl && !fl.direct) {
+      if (color === undefined) {
+        // トンボ (レジストレーション色): 下の物として、黒の線で覚える
+        const it = this.flatItem((p) => p.strokeLine(l, width, '#000000'));
+        if (fl.recording) {
+          if (it) fl.recording.push({ item: it, alpha: 1 });
+          return;
+        }
+        if (it) fl.page.items.push(it);
+      } else if (this.flatPaint((css, k) => this.scaledItem(this.flatItem((p) => p.strokeLine(l, width, css)), k), color, 1, (css) => this.strokeLine(l, width, css))) return;
+    }
     this.flushText();
     const cs = color === undefined ? spotColorSpace(REGISTRATION, this.spots) : undefined;
     const colorSet = cs ? [PDFOperator.of(Ops.StrokingColorspace, [cs]), PDFOperator.of(Ops.StrokingColorN, [PDFNumber.of(1)])] : colorOps(color ?? '#000', false, this.spots);
     this.page.pushOperators(
       pushGraphicsState(),
-      ...(color === undefined ? [] : this.overprintOps(color, width, 'line')),
+      ...(color === undefined ? [] : [...this.alphaOps(1, alphaOf(color)), ...this.overprintOps(color, width, 'line')]),
       setLineWidth(width),
       ...colorSet,
       PDFOperator.of(Ops.MoveTo, [PDFNumber.of(l.x1), PDFNumber.of(this.H - l.y1)]),
@@ -1448,12 +1663,14 @@ class PdfPainter implements Painter {
   }
 
   clipPath(path: PathSeg[], evenOdd?: boolean) {
+    if (this.flatClip(path, evenOdd)) return;
     this.flushText();
     this.page.pushOperators(pushGraphicsState(), ...this.pathOps(path), PDFOperator.of(evenOdd ? Ops.ClipEvenOdd : Ops.ClipNonZero), PDFOperator.of(Ops.EndPath));
     this.clips++;
   }
 
   clipRect(r: Rect) {
+    if (this.flatClip([{ op: 'M', x: r.x, y: r.y }, { op: 'L', x: r.x + r.width, y: r.y }, { op: 'L', x: r.x + r.width, y: r.y + r.height }, { op: 'L', x: r.x, y: r.y + r.height }, { op: 'Z' }])) return;
     this.flushText();
     const { page, H } = this;
     const x = r.x;
@@ -1465,9 +1682,422 @@ class PdfPainter implements Painter {
   }
 
   restore() {
+    const f = this.fl;
+    if (f) {
+      f.clips = f.clipStack.pop() ?? [];
+      if (f.recording) return;
+    }
     this.flushText();
     this.page.pushOperators(popGraphicsState());
     this.clips--;
+  }
+
+  // ───────────── 透明を平らにする (PDF/X-1a・X-3。pdfFlatten.ts) ─────────────
+
+  /** 切り抜きを、平らにする処理の状態にも積む。透明のグループの中身を覚えている間は命令を書かない (true を返す) */
+  private flatClip(path: PathSeg[], evenOdd?: boolean): boolean {
+    const f = this.fl;
+    if (!f) return false;
+    f.clipStack.push(f.clips);
+    f.clips = [...f.clips, { segs: transformSegs(path, f.M), evenOdd: !!evenOdd }];
+    return !!f.recording;
+  }
+
+  /** 描いた物の図形の不透明度に k を掛ける */
+  private scaledItem(it: FlatItem | undefined, k: number): FlatItem | undefined {
+    if (!it || k === 1) return it;
+    const shapes = scaleOpacity(it.shapes(), k);
+    return { ...it, shapes: () => shapes, solid: undefined };
+  }
+
+  /** いまの変換・切り抜きで、SvgShapePainter に描かせた図形を、描いた物にする (描く範囲が無ければ undefined) */
+  private flatItem(draw: (p: SvgShapePainter) => void, css?: string): FlatItem | undefined {
+    const f = this.fl!;
+    const p = new SvgShapePainter(f.M, f.doc.fonts, undefined, undefined, f.clips);
+    draw(p);
+    const shapes = p.shapes;
+    const box = shapesBox(shapes);
+    if (!box) return undefined;
+    // K だけの黒の細い長方形 (罫線) にはノセを付けることがあるので、下の色には使わない
+    const solid = css && !(this.blackOverprint && isKBlack(css)) ? solidOf(shapes, f.doc.toCmyk, css) : undefined;
+    return { box, shapes: () => shapes, ...(solid ? { solid } : {}) };
+  }
+
+  /**
+   * 字の描いた物。外接矩形は、字の枠を字の大きさの 2 倍ずつ広げた大まかなもの (字の輪郭は、要るときに作る)。
+   * k は不透明度に掛けるもの
+   */
+  private glyphItem(g: GlyphArea, x: number, y: number, k: number): FlatItem | undefined {
+    const f = this.fl!;
+    const { M, clips } = f;
+    const fonts = f.doc.fonts;
+    const fs = g.fontSize;
+    const ext = Math.max(g.width, g.height) / Math.max(0.05, Math.abs(g.scaleX || 1)) + 2 * fs;
+    // 字の座標 (基線の上の原点。SvgShapePainter.drawGlyph の行列) の大まかな範囲を、ページの座標へ写す
+    const phi = (-g.rotation * Math.PI) / 180;
+    const cos = Math.cos(phi);
+    const sin = Math.sin(phi);
+    const a = g.scaleX * cos;
+    const b = g.scaleX * sin;
+    const c = (g.italic ? g.scaleX * cos * ITALIC_SLANT : 0) - sin;
+    const d = (g.italic ? g.scaleX * sin * ITALIC_SLANT : 0) + cos;
+    let box: Box | undefined = transformBox(mul(M, [a, -b, -c, d, x + g.baselineX, y + g.baselineY]), { x0: -ext, y0: -ext, x1: ext, y1: ext });
+    for (const cl of clips) box = box && clipBox(box, cl);
+    if (!box) return undefined;
+    let shapes: SvgShape[] | undefined;
+    const make = () => {
+      if (!shapes) {
+        const p = new SvgShapePainter(M, fonts, undefined, undefined, clips);
+        p.drawGlyph(g, x, y);
+        shapes = scaleOpacity(p.shapes, k);
+      }
+      return shapes;
+    };
+    const scale = Math.sqrt(Math.abs(M[0] * M[3] - M[1] * M[2]));
+    return { box, exact: () => shapesBox(make()), shapes: make, text: fs * scale, glyph: true };
+  }
+
+  /**
+   * 平らにする出力で、1 色の物 (塗り・線・字) を描く前に呼ぶ。描いた物を覚え、透明なら平らにして描く。
+   * make(css, k) は、色 css・不透明度 k (呼び手の不透明度の代わり) の描いた物を作る。emit(css) は、不透明な色 css で描く。
+   * true を返したら、呼び手は描かない (平らにして描いた・画素にした・グループの中を覚えている)
+   */
+  private flatPaint(make: (css: string, k: number) => FlatItem | undefined, css: string, opacity: number, emit: (css: string) => void): boolean {
+    const f = this.fl;
+    if (!f || f.direct) return false;
+    if (/^\s*(transparent|none)\s*$/i.test(css)) return false;
+    const own = opacity * alphaOf(css);
+    if (f.recording) {
+      const it = make(css, opacity);
+      if (it) f.recording.push({ item: it, css, alpha: own });
+      return true;
+    }
+    const a = own * f.alphaMul;
+    if (a >= 1) {
+      const it = make(css, opacity);
+      if (it) f.page.items.push(it);
+      return false;
+    }
+    if (a <= 0) return true;
+    const it = make(css, opacity * f.alphaMul);
+    if (!it) return true;
+    const box = exactBox(it);
+    if (!box) return true;
+    // 1. 下が 1 色の塗りかページの白なら、合成した不透明な色で描く
+    const bd = f.page.backdrop(box, f.end, it.shapes);
+    const out = bd && blendNormal(flatColorOf(css, f.doc.toCmyk), a, bd);
+    if (out) {
+      const c = flatCss(out);
+      f.direct++;
+      try {
+        emit(c);
+      } finally {
+        f.direct--;
+      }
+      const done = make(c, 1);
+      if (done) f.page.items.push(done);
+      return true;
+    }
+    // 2. 画素にする
+    this.flatRaster(it);
+    return true;
+  }
+
+  /**
+   * 透明な物 it と、その下の物を、CMYK の画像にして置く (pdfFlatten.ts の rasterCmyk)。すぐには描かずに、画像にする範囲として
+   * ためておき (FlatState.pending)、続けて画像にする物が隣にあれば、範囲をまとめる (グラデーションや写真の上の半透明の字を、
+   * 字ごとの小さな画像にせず、行ごとの 1 つの画像にする)。ためた範囲は、ほかの物を描く前・描く状態を変える前に描く (flushText)。
+   * it は、すぐに描いた物の並びに足す (続く物の下の色を探すとき、画像にするときの、下の物になる)
+   */
+  private flatRaster(it: FlatItem) {
+    const f = this.fl!;
+    this.flushRun();
+    const page: Box = { x0: 0, y0: 0, x1: f.page.width, y1: f.page.height };
+    const region = intersect(exactBox(it) ?? it.box, page);
+    if (!region) return;
+    if (it.opaqueOnly) return this.flatFail(it.opaqueOnly);
+    // まとめるのは字だけ (画像・SVG・グループは、それぞれの範囲で描く)
+    const p = f.pending;
+    if (p && p.glyph && it.glyph && mergeable(p.box, region)) p.box = union(p.box, region)!;
+    else {
+      this.flushPendingRaster();
+      f.pending = { box: region, glyph: !!it.glyph };
+    }
+    f.page.items.push(it);
+  }
+
+  /** 平らにできなかった透明を覚える (描き終えた後に、誤りとして投げる) */
+  private flatFail(why: string) {
+    const f = this.fl!;
+    f.doc.failures.push(msg(`${f.pageNo} ページ目: ${why}`, `page ${f.pageNo}: ${why}`));
+  }
+
+  /** ためた画像にする範囲 (FlatState.pending) を、その範囲に掛かる物 (ためた透明な物も) を描いた CMYK の画像にして置く */
+  private flushPendingRaster() {
+    const f = this.fl;
+    const region = f?.pending?.box;
+    if (!f || !region) return;
+    f.pending = undefined;
+    const under0 = f.page.under(region);
+    if (typeof under0 === 'string') return this.flatFail(under0);
+    const ppi = flattenPpi(under0, region);
+    if (!(ppi >= 1)) return this.flatFail(msg('透明な物の範囲が広すぎて、画像にできません', 'a transparent object covers too large an area to rasterize'));
+    // 画素の格子に合わせて少し広がる範囲で、掛かる物を選び直す
+    const s = ppi / 72;
+    const box: Box = { x0: region.x0, y0: region.y0, x1: region.x0 + Math.ceil((region.x1 - region.x0) * s - 1e-6) / s, y1: region.y0 + Math.ceil((region.y1 - region.y0) * s - 1e-6) / s };
+    const under = f.page.under(box);
+    if (typeof under === 'string') return this.flatFail(under);
+    const toCmyk = f.doc.toCmyk;
+    let r: ReturnType<typeof rasterCmyk>;
+    try {
+      r = rasterCmyk(
+        under.flatMap((u) => u.shapes()),
+        box,
+        ppi,
+        (css) => {
+          const c = flatColorOf(css, toCmyk);
+          if ('spot' in c) f.doc.rasterSpots.add(c.spot.name);
+          return processCmyk(c);
+        },
+        (red, green, blue) => (red === green && green === blue ? [0, 0, 0, 1 - red] : (toCmyk(red, green, blue).map((v) => Math.min(1, Math.max(0, v))) as [number, number, number, number])),
+      );
+    } catch (e) {
+      return this.flatFail(msg(`透明な物を画像にできません (${errorText(e)})`, `cannot rasterize a transparent object (${errorText(e)})`));
+    }
+    const ctx = this.ctx!.context;
+    const ref = ctx.register(ctx.flateStream(r.data, { Type: 'XObject', Subtype: 'Image', Width: r.width, Height: r.height, BitsPerComponent: 8, ColorSpace: 'DeviceCMYK' }));
+    const name = this.page.node.newXObject('KmF', ref);
+    // 画像はページの座標で置く (いまの変換を戻してから。ためている間に変換・切り抜きは変わらない: 変える前に描くので)
+    const inv = invert(this.ctm) ?? [1, 0, 0, 1, 0, 0];
+    const bw = r.box.x1 - r.box.x0;
+    const bh = r.box.y1 - r.box.y0;
+    this.page.pushOperators(pushGraphicsState(), concatTransformationMatrix(...inv), concatTransformationMatrix(bw, 0, 0, bh, r.box.x0, this.H - r.box.y1), PDFOperator.of(Ops.DrawObject, [name]), popGraphicsState());
+    f.doc.rasters.push({ page: f.pageNo, text: under.some((u) => u.text !== undefined), ppi });
+  }
+
+  /**
+   * 平らにする出力の透明のグループ (CSS の opacity): 中身を描かずに覚え (recording)、中の物が 1 色の物だけで、透明な子が前の子と重ならず、
+   * どの子の下も 1 色の塗りなら、中身をもう 1 度、子ごとに不透明度を掛けて平らにして描く。そうでなければ、グループの全体を画素にする。
+   * true を返したら、呼び手は描かない
+   */
+  private flatGroup(opacity: number, draw: () => void): boolean {
+    const f = this.fl;
+    if (!f || f.direct) return false;
+    const groupItem = (rec: FlatRec[], k: number): FlatItem | undefined => {
+      let box: Box | undefined;
+      for (const r of rec) box = union(box, r.item.box);
+      if (!box) return undefined;
+      const texts = rec.map((r) => r.item.text).filter((t): t is number => t !== undefined);
+      const ppis = rec.map((r) => r.item.ppi ?? 0);
+      const opaqueOnly = rec.find((r) => r.item.opaqueOnly)?.item.opaqueOnly;
+      let shapes: SvgShape[] | undefined;
+      return {
+        box,
+        exact: () => {
+          let b: Box | undefined;
+          for (const r of rec) b = union(b, exactBox(r.item));
+          return b;
+        },
+        shapes: () => (shapes ??= [{ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: k, strokeOpacity: k, group: { shapes: rec.flatMap((r) => r.item.shapes()) } }]),
+        ...(texts.length ? { text: Math.min(...texts) } : {}),
+        ...(Math.max(0, ...ppis) > 0 ? { ppi: Math.max(...ppis) } : {}),
+        ...(opaqueOnly ? { opaqueOnly } : {}),
+      };
+    };
+    if (f.recording) {
+      // 入れ子のグループ: 中身を覚えて、1 つの物 (1 色の物ではない) にする
+      const outer = f.recording;
+      f.recording = [];
+      let inner: FlatRec[];
+      try {
+        draw();
+      } finally {
+        inner = f.recording;
+        f.recording = outer;
+      }
+      const it = groupItem(inner, opacity);
+      if (it) outer.push({ item: it, alpha: opacity });
+      return true;
+    }
+    this.flushText();
+    f.recording = [];
+    let rec: FlatRec[];
+    try {
+      draw();
+    } finally {
+      rec = f.recording;
+      f.recording = undefined;
+    }
+    const k = opacity * f.alphaMul;
+    const g = groupItem(rec, k);
+    if (!g) return true;
+    const toCmyk = f.doc.toCmyk;
+    const vector = rec.every((r, i) => {
+      if (r.css === undefined) return false;
+      const b = exactBox(r.item);
+      if (!b) return true;
+      if (r.alpha < 1 && rec.slice(0, i).some((q) => meets(q.item.box, b) && !!exactBox(q.item) && meets(exactBox(q.item)!, b) && shapesOverlap(q.item.shapes(), r.item.shapes()))) return false;
+      const bd = f.page.backdrop(b, f.end, r.item.shapes);
+      return !!bd && !!blendNormal(flatColorOf(r.css, toCmyk), r.alpha * k, bd);
+    });
+    if (vector) {
+      const saved = { alphaMul: f.alphaMul, end: f.end };
+      f.alphaMul = k;
+      f.end = f.page.items.length;
+      f.noMarks++;
+      try {
+        draw();
+        this.flushText();
+      } finally {
+        f.alphaMul = saved.alphaMul;
+        f.end = saved.end;
+        f.noMarks--;
+      }
+      return true;
+    }
+    this.flatRaster(g);
+    return true;
+  }
+
+  /** SVG を置く位置: viewBox の原点の位置と拡大率 (preserveAspectRatio。drawVector と同じ) */
+  private placeVector(v: SvgDoc, a: ImageArea, x: number, y: number): { x: number; y: number; sx: number; sy: number } {
+    const [, , vw, vh] = v.viewBox;
+    let sx = a.width / vw;
+    let sy = a.height / vh;
+    const align = a.stretch ? 'none' : (v.aspect?.align ?? 'xMidYMid');
+    if (align !== 'none' && Math.abs(sx - sy) > 1e-9) {
+      const s = v.aspect?.slice ? Math.max(sx, sy) : Math.min(sx, sy);
+      const fx = /xMid/.test(align) ? 0.5 : /xMax/.test(align) ? 1 : 0;
+      const fy = /YMid/.test(align) ? 0.5 : /YMax/.test(align) ? 1 : 0;
+      x += (a.width - vw * s) * fx;
+      y += (a.height - vh * s) * fy;
+      sx = sy = s;
+    }
+    return { x, y, sx, sy };
+  }
+
+  /** 平らにする出力で、画像を描く前に呼ぶ。true を返したら、呼び手は描かない */
+  private flatImage(a: ImageArea, x: number, y: number): boolean {
+    const f = this.fl;
+    if (!f || f.direct) return false;
+    const vec = (a.language && this.vectorOf(`${a.src}\0${a.language}`)) || this.vectorOf(a.src);
+    if (vec) return this.flatVector(vec, a, x, y);
+    const alphaImg = f.doc.alphaImages.get(a.src);
+    const data = alphaImg ?? f.doc.imageData.get(a.src);
+    if (!data) return false;
+    const shape: SvgShape = { segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: f.alphaMul, strokeOpacity: 1, ...(f.clips.length ? { clips: f.clips } : {}), image: { kind: data.kind, bytes: data.bytes, matrix: mul(f.M, [a.width, 0, 0, -a.height, x, y + a.height]) as [number, number, number, number, number, number] } };
+    const box = shapeBox(shape);
+    if (!box) return true;
+    const scale = Math.sqrt(Math.abs(f.M[0] * f.M[3] - f.M[1] * f.M[2])) || 1;
+    const item: FlatItem = { box, shapes: () => [shape], ppi: data.width / Math.max(1e-6, (a.width * scale) / 72) };
+    if (f.recording) {
+      f.recording.push({ item, alpha: 1 });
+      return true;
+    }
+    if (!alphaImg && f.alphaMul >= 1) {
+      f.page.items.push(item);
+      return false;
+    }
+    this.flatRaster(item);
+    return true;
+  }
+
+  /**
+   * 平らにする出力の SVG: 透明が無ければそのまま描く。透明な図形が、どれも 1 色の塗り・線で、下が 1 色の塗りなら、色を平らにして描く。
+   * そうでなければ、SVG の全体を画素にする。true を返したら、呼び手は描かない
+   */
+  private flatVector(v: SvgDoc, a: ImageArea, x: number, y: number): boolean {
+    const f = this.fl!;
+    const pl = this.placeVector(v, a, x, y);
+    const [vx, vy] = v.viewBox;
+    const t = mul(f.M, [pl.sx, 0, 0, pl.sy, pl.x - pl.sx * vx, pl.y - pl.sy * vy]);
+    const rect = (x0: number, y0: number, w: number, h: number): SvgClip => ({ segs: transformSegs([{ op: 'M', x: x0, y: y0 }, { op: 'L', x: x0 + w, y: y0 }, { op: 'L', x: x0 + w, y: y0 + h }, { op: 'L', x: x0, y: y0 + h }, { op: 'Z' }], f.M), evenOdd: false });
+    const clips = v.noClip ? f.clips : [...f.clips, rect(x, y, a.width, a.height)];
+    const shapes0 = openPlainGroups(v.shapes);
+    const opened = shapes0.length !== v.shapes.length || shapes0.some((sh, i) => sh !== v.shapes[i]);
+    const memo = new Map<SvgClip, SvgClip>();
+    const pageShapes = shapes0.map((sh) => {
+      const s = transformShape(sh, t, f.alphaMul, memo);
+      return clips.length ? { ...s, clips: [...clips, ...(s.clips ?? [])] } : s;
+    });
+    const box = shapesBox(pageShapes);
+    if (!box) return true;
+    const scale = Math.sqrt(Math.abs(t[0] * t[3] - t[1] * t[2])) || 1;
+    const texts: number[] = [];
+    eachSvgShape(pageShapes, (sh) => {
+      if (sh.text) texts.push(sh.text.size * Math.sqrt(Math.abs(sh.text.matrix[0] * sh.text.matrix[3] - sh.text.matrix[1] * sh.text.matrix[2])));
+    });
+    const item: FlatItem = { box, shapes: () => pageShapes, ...(texts.length ? { text: Math.min(...texts) } : {}) };
+    if (f.recording) {
+      f.recording.push({ item, alpha: 1 });
+      return true;
+    }
+    const alphaImg = (img: object) => f.doc.alphaShapeImages.has(img);
+    const drawDoc = (shapes: SvgShape[]) => {
+      f.direct++;
+      try {
+        this.drawVector({ ...v, shapes }, a, x, y);
+      } finally {
+        f.direct--;
+      }
+    };
+    const itemOf = (sh: SvgShape): FlatItem | undefined => {
+      const b = shapeBox(sh);
+      if (!b) return undefined;
+      const solid = solidOf([sh], f.doc.toCmyk);
+      return { box: b, shapes: () => [sh], ...(solid ? { solid } : {}), ...(sh.text ? { text: sh.text.size * scale } : {}) };
+    };
+    if (f.alphaMul >= 1 && !shapes0.some((sh) => shapeUsesAlpha(sh, alphaImg))) {
+      // 透明が無い: そのまま描く (開いたグループがあれば、開いたもので)
+      f.page.items.push(...pageShapes.map(itemOf).filter((it): it is FlatItem => !!it));
+      if (!opened) return false;
+      drawDoc(shapes0);
+      return true;
+    }
+    // 図形ごとに、1 色の塗り・線の透明を平らにする。下の色は、ページに描いた物と、この SVG の前の図形から探す
+    const view = new FlatPage(f.page.width, f.page.height);
+    view.items = f.page.items.slice(0, f.end ?? f.page.items.length);
+    const out: SvgShape[] = [];
+    const added: FlatItem[] = [];
+    const toCmyk = f.doc.toCmyk;
+    for (let i = 0; i < shapes0.length; i++) {
+      const sh = shapes0[i];
+      const pg = pageShapes[i];
+      let flat: SvgShape | undefined = sh;
+      let flatPg: SvgShape = pg;
+      if (f.alphaMul < 1 || shapeUsesAlpha(sh, alphaImg)) {
+        flat = undefined;
+        const fill = pg.fill !== undefined;
+        const stroke = pg.stroke !== undefined && pg.strokeWidth > 0;
+        const simple = !pg.masks?.length && !pg.blend && !pg.group && !pg.image && !pg.fillPaint && !pg.fillPattern && !pg.strokePaint && (fill || stroke);
+        // 線が半透明で塗りもあると、線の内側の半分の下は塗り、外側の半分の下は外の物なので、1 色にならない
+        const b = shapeBox(pg);
+        const bd = simple && b && !(fill && stroke && pg.strokeOpacity < 1) ? view.backdrop(b, undefined, () => [pg]) : undefined;
+        if (bd) {
+          const fc = fill ? (pg.fillOpacity < 1 ? blendNormal(flatColorOf(pg.fill!, toCmyk), pg.fillOpacity, bd) : flatColorOf(pg.fill!, toCmyk)) : undefined;
+          const sc = stroke ? (pg.strokeOpacity < 1 ? blendNormal(flatColorOf(pg.stroke!, toCmyk), pg.strokeOpacity, bd) : flatColorOf(pg.stroke!, toCmyk)) : undefined;
+          if ((!fill || fc) && (!stroke || sc)) {
+            const colors = { ...(fc ? { fill: flatCss(fc) } : {}), ...(sc ? { stroke: flatCss(sc) } : {}), fillOpacity: 1, strokeOpacity: 1 };
+            flat = { ...sh, ...colors };
+            flatPg = { ...pg, ...colors };
+          }
+        }
+      }
+      if (!flat) {
+        // 3. 平らにできない図形がある: SVG の全体を画素にする
+        this.flatRaster(item);
+        return true;
+      }
+      out.push(flat);
+      const it = itemOf(flatPg);
+      if (it) {
+        view.items.push(it);
+        added.push(it);
+      }
+    }
+    drawDoc(out);
+    f.page.items.push(...added);
+    return true;
   }
 }
 
@@ -1594,7 +2224,7 @@ function rectClipOps(x: number, y: number, w: number, h: number): PDFOperator[] 
 }
 
 /** 文書の情報 (Info 辞書: 題名・著者・主題・キーワード・作成したソフト) */
-function setDocumentInfo(pdf: PDFDocument, tree: AreaTree, opts: PdfRenderOptions) {
+function setDocumentInfo(pdf: PDFDocument, tree: Pick<AreaTree, 'title' | 'info'>, opts: PdfRenderOptions) {
   if (tree.title ?? opts.title) pdf.setTitle(tree.title ?? opts.title ?? '');
   if (tree.info?.author) pdf.setAuthor(tree.info.author);
   if (tree.info?.subject) pdf.setSubject(tree.info.subject);
@@ -1603,17 +2233,8 @@ function setDocumentInfo(pdf: PDFDocument, tree: AreaTree, opts: PdfRenderOption
   pdf.setCreator('Kumiori');
 }
 
-/**
- * 木で使われている画像 (fo:external-graphic・背景画像) を埋め込む。src ごとに、置かれる大きさ (最大) から必要な解像度を決める。
- * SVG は (XML パーサがあれば) ベクタのまま (vectors)、その中の data: の画像は svgImages に埋め込む。ラスタは images に
- */
-async function embedImages(
-  pdf: PDFDocument,
-  tree: AreaTree,
-  fonts: FontManager,
-  opts: PdfRenderOptions,
-  warn: (message: string) => void = (m) => console.warn(m),
-): Promise<{ images: Map<string, PDFImage>; vectors: Map<string, SvgDoc>; svgImages: Map<object, PDFImage>; placed: Map<string, { width: number; height: number }> }> {
+/** 木で使われている画像を集めるもの (embedImages の前に、領域を順にたどって visit に渡す): src ごとの、置かれる大きさ (最大) と言語 */
+function imageScanner() {
   const sizes = new Map<string, number>();
   const heights = new Map<string, number>();
   /** 画像を置いた所の言語 (src ごと。SVG の systemLanguage を照らす) */
@@ -1622,7 +2243,7 @@ async function embedImages(
     sizes.set(src, Math.max(sizes.get(src) ?? 0, w));
     heights.set(src, Math.max(heights.get(src) ?? 0, h));
   };
-  walkAreaTree(tree, (a) => {
+  const visit = (a: AreaNode) => {
     if (a.type === 'image') {
       if (!a.missing) use(a.src, a.width, a.height);
       if (!a.missing && a.language) {
@@ -1637,7 +2258,35 @@ async function embedImages(
     if (bgi) use(bgi.src, bgi.width, bgi.height);
     // 後ろに重ねる背景の画像 (複数の背景) も
     for (const l of bgi?.under ?? []) use(l.src, l.width ?? 0, l.height ?? 0);
-  });
+  };
+  const reset = () => {
+    sizes.clear();
+    heights.clear();
+    langs.clear();
+  };
+  return { visit, reset, sizes, heights, langs };
+}
+type ImageScan = ReturnType<typeof imageScanner>;
+
+/**
+ * 木で使われている画像 (fo:external-graphic・背景画像) を埋め込む (imageScanner で集めたもの)。src ごとに、置かれる大きさ (最大) から必要な解像度を決める。
+ * SVG は (XML パーサがあれば) ベクタのまま (vectors)、その中の data: の画像は svgImages に埋め込む。ラスタは images に
+ */
+async function embedImages(
+  pdf: PDFDocument,
+  scan: ImageScan,
+  fonts: FontManager,
+  opts: PdfRenderOptions,
+  warn: (message: string) => void = (m) => console.warn(m),
+): Promise<{
+  images: Map<string, PDFImage>;
+  vectors: Map<string, SvgDoc>;
+  svgImages: Map<object, PDFImage>;
+  placed: Map<string, { width: number; height: number }>;
+  /** 透明を平らにする出力のときだけ: 透明度つきの画像 (埋め込まない)・埋め込んだ画像のデータ・SVG の中の透明度つきの画像 */
+  flat?: Pick<FlatDoc, 'alphaImages' | 'imageData' | 'alphaShapeImages'>;
+}> {
+  const { sizes, heights, langs } = scan;
   const images = new Map<string, PDFImage>();
   const vectors = new Map<string, SvgDoc>();
   /** SVG の中の画像 (SvgShape.image) を埋め込んだもの (この文書のもの) */
@@ -1655,18 +2304,52 @@ async function embedImages(
    */
   const std = pdfStandardOf(opts.pdfx);
   const cmykOf = pdfxConverter(opts, std);
-  const embedAny = async (bytes: Uint8Array, kind: 'png' | 'jpg'): Promise<PDFImage> => {
+  // 透明を平らにする出力 (PDF/X-1a・X-3): 透明度つきの画像は埋め込まない (ソフトマスクは透明)。画像は、置くときに下の物と合わせて画素にする
+  const flat = std?.transparency === 'flatten' ? { alphaImages: new Map<string, FlatImageData>(), imageData: new Map<string, FlatImageData>(), alphaShapeImages: new Set<object>() } : undefined;
+  /** 画像を埋め込む。透明を平らにする出力で、透明度つきの画像なら、埋め込まずに大きさだけを返す (image が undefined) */
+  const embedAny = async (bytes: Uint8Array, kind: 'png' | 'jpg'): Promise<{ image?: PDFImage; width: number; height: number }> => {
     if (opts.pdfx && cmykOf) {
-      const r = await embedCmykImage(pdf, bytes, kind, cmykOf);
+      const r = await embedCmykImage(pdf, bytes, kind, cmykOf, flat ? 'skip' : 'smask');
+      if (r && !r.image) return { width: r.width, height: r.height };
       if (r) {
         if (r.hasAlpha && !alphaWarned && std?.transparency === 'warn') {
           alphaWarned = true;
           opts.pdfx.warnings?.push(msg(`${std.label} では透明 (画像の透明度) を使えません`, `${std.label} does not allow transparency (image transparency)`));
         }
-        return r.image;
+        return { image: r.image, width: r.image.width, height: r.image.height };
       }
     }
-    return kind === 'png' ? await embedPngChecked(pdf, bytes) : await pdf.embedJpg(bytes);
+    const image = kind === 'png' ? await embedPngChecked(pdf, bytes) : await pdf.embedJpg(bytes);
+    return { image, width: image.width, height: image.height };
+  };
+  /**
+   * 埋め込んだ画像を、埋め込みに渡したバイト列 (と形式) ごとに覚えて使い回す。同じ画像を別の書き方で指す参照 (a.png と A.PNG・sub/a.png・
+   * ./a.png#x・CSS の url(../a.png)、SVG の中からの参照など。画像の置き場は、ファイル名で引いて同じ中身を返す) は、1 つの XObject にする
+   * (画像の XObject は、いくつのページ・所からでも Do で描ける: ISO 32000-2 §8.8・§8.9.5)。
+   * 埋め込みの結果は、渡したバイト列と形式と、文書ごとの設定 (PDF/X の色の変換、透明を平らにする出力で透明度つきの画像を埋め込まないこと)
+   * だけで決まるので、同じバイト列なら同じ結果になる (埋め込まなかった透明度つきの画像は、大きさだけの結果を使い回す)。
+   * 縮めた JPEG (imageMaxDpi)・ラスタライズした画像・filter を画素で計算した画像は、そのたびに作る新しいバイト列なので、ここでは当たらない
+   * (参照ごとの大きさで結果が変わるものは、使い回さない)。弱い表で持つ (画像の置き場が中身を捨てたら、ここでは引き留めない)
+   */
+  const embeddedBytes = new WeakMap<Uint8Array, Partial<Record<'png' | 'jpg', Awaited<ReturnType<typeof embedAny>>>>>();
+  const embedOnce = async (bytes: Uint8Array, kind: 'png' | 'jpg'): Promise<Awaited<ReturnType<typeof embedAny>>> => {
+    const got = embeddedBytes.get(bytes) ?? {};
+    let r = got[kind];
+    if (!r) {
+      r = await embedAny(bytes, kind);
+      got[kind] = r;
+      embeddedBytes.set(bytes, got);
+    }
+    return r;
+  };
+  /**
+   * ラスター画像 src を埋め込み (同じバイト列は使い回す: embedOnce)、透明を平らにする出力では、画素にするときのデータも覚える
+   * (同じバイト列を 2 度目に引いた参照も、src ごとに覚える。描くときは src で引くので)
+   */
+  const embedRaster = async (src: string, bytes: Uint8Array, kind: 'png' | 'jpg') => {
+    const r = await embedOnce(bytes, kind);
+    if (r.image) images.set(src, r.image);
+    if (flat) (r.image ? flat.imageData : flat.alphaImages).set(src, { kind: kind === 'png' ? 'png' : 'jpeg', bytes, width: r.width, height: r.height });
   };
   /** SVG の中の画像 (data: の PNG・JPEG) を埋め込んでおく */
   const embedSvgImages = async (doc: SvgDoc) => {
@@ -1678,14 +2361,56 @@ async function embedImages(
       try {
         // filter を画素で計算した画像は、圧縮した PNG にして埋め込む
         const bytes = sh.image.pixels ? await encodePng(sh.image.pixels) : sh.image.bytes;
-        svgImages.set(sh.image, await embedAny(bytes, sh.image.kind === 'png' ? 'png' : 'jpg'));
+        const r = await embedOnce(bytes, sh.image.kind === 'png' ? 'png' : 'jpg');
+        if (r.image) svgImages.set(sh.image, r.image);
+        else flat?.alphaShapeImages.add(sh.image);
       } catch {
         /* 埋め込めない画像は描かない */
       }
     }
   };
+  // PDF だけを作るとき (releaseImageBytes) は、ラスター画像を埋め込むごとに、画像の置き場の元の中身を捨てる (全部を埋め込み終えるまで元を持つと、
+  // 元と埋め込んだ写しの両方を同時に持つ)。ただし、SVG が中から参照する画像は、その SVG を埋め込むまで元が要るので残す (中身で見分ける:
+  // 同じ中身を別の名前で登録したものも捨てるため)。foreignObject (中身の HTML が参照する画像は前もって分からない) や、外の SVG を指す use の
+  // ある SVG があれば、元はすべて最後まで残す (renderPdfPages が、埋め込み終えてから捨てる)
+  const keepBytes = new Set<Uint8Array>();
+  let keepAll = !opts.releaseImageBytes;
+  if (!keepAll)
+    for (const src of sizes.keys()) {
+      const a = opts.assets?.get(src);
+      if (!a?.bytes || a.mime !== 'image/svg+xml') continue;
+      const text = new TextDecoder().decode(a.bytes);
+      if (/foreignObject/i.test(text) || /<(?:[\w-]+:)?use\b[^>]*\shref\s*=\s*["'][^#"']/i.test(text) || /<(?:[\w-]+:)?use\b[^>]*xlink:href\s*=\s*["'][^#"']/i.test(text)) {
+        keepAll = true;
+        break;
+      }
+      for (const m of text.matchAll(/<(?:[\w-]+:)?image\b[^>]*>/gi)) {
+        const h = /\s(?:xlink:)?href\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(m[0]);
+        const href = (h?.[1] ?? h?.[2] ?? '').trim();
+        const r = href && !/^data:/i.test(href) ? opts.assets?.get(resolveRef(href, /^data:/i.test(src) ? undefined : src)) : undefined;
+        if (r?.bytes) keepBytes.add(r.bytes);
+      }
+    }
+  // 同じ中身を指す参照 (別の書き方で同じ画像を指すもの) の、まだ埋め込んでいない数 (中身ごと)。releaseImageBytes は同じ中身の登録を
+  // まとめて捨てるので、最後の参照を埋め込むまで捨てない (先に捨てると、後の参照の中身が無く、黙って描かれない)
+  const pending = new Map<Uint8Array, number>();
+  if (!keepAll)
+    for (const src of sizes.keys()) {
+      const b = opts.assets?.get(src)?.bytes;
+      if (b) pending.set(b, (pending.get(b) ?? 0) + 1);
+    }
+  const releaseEmbedded = (src: string) => {
+    const b = opts.assets?.get(src)?.bytes;
+    if (!keepAll && b && !keepBytes.has(b) && !pending.has(b)) opts.assets?.releaseImageBytes([src]);
+  };
   for (const [src, wPt] of sizes) {
     const asset = opts.assets?.get(src);
+    // 数え終えた中身は表から除く (表が中身を引き留めると、捨てても空かない)
+    const left = asset?.bytes && pending.get(asset.bytes);
+    if (left) {
+      if (left > 1) pending.set(asset.bytes!, left - 1);
+      else pending.delete(asset.bytes!);
+    }
     // SVG の image の外のファイル: SVG の場所を基準に、登録した画像を引く (文書の中の SVG (data: の URI) は、文書の場所が基準)
     const image = (href: string) => {
       const a = opts.assets?.get(resolveRef(href, /^data:/i.test(src) ? undefined : src));
@@ -1767,28 +2492,52 @@ async function embedImages(
     try {
       // 置かれる大きさに対して解像度の高すぎる JPEG は、縮めて符号化し直す (imageMaxDpi を指定したときだけ)
       const jpg = data.type === 'jpg' && opts.imageMaxDpi ? (shrinkJpeg(data.bytes, wPt, heights.get(src) ?? 0, opts.imageMaxDpi) ?? data.bytes) : data.bytes;
-      images.set(src, await embedAny(data.type === 'png' ? data.bytes : jpg, data.type === 'png' ? 'png' : 'jpg'));
+      await embedRaster(src, data.type === 'png' ? data.bytes : jpg, data.type === 'png' ? 'png' : 'jpg');
     } catch {
       // 埋め込めない JPEG (CMYK 等) は PNG に変換して再試行
       const a = opts.assets?.get(src);
       const r = a && (await opts.assets?.rasterize(a, (wPt / 72) * dpi));
-      if (r) images.set(src, await embedAny(r.bytes, 'png'));
+      if (r) await embedRaster(src, r.bytes, 'png');
     }
+    if (images.has(src) || flat?.alphaImages.has(src)) releaseEmbedded(src);
   }
   /** 画像ごとの、いちばん大きく置かれた大きさ (入稿の検査の解像度に使う) */
   const placed = new Map([...sizes].map(([src, w]) => [src, { width: w, height: heights.get(src) ?? 0 }]));
-  return { images, vectors, svgImages, placed };
+  return { images, vectors, svgImages, placed, ...(flat ? { flat } : {}) };
+}
+
+/**
+ * PDF に書くページの出どころ (renderPdfPages): ページを 1 枚ずつ作るもの (LayoutEngine.layoutSheets・layoutLowMemory) か、文書全体の領域の木 (renderPdf)。
+ * PDF を書くときは、ページを 2 度たどる: 先に、使う書体・色つきの字・画像を集めるために作ってはたどり (scan。書体と画像を埋め込む順と、
+ * 画像の解像度に要る)、次に、作って描く (paint)。どちらも、出どころがページを順に作って渡す (渡し終えたページは、出どころが手放してよい)
+ */
+export interface PdfPageSource {
+  readonly title?: string;
+  readonly info?: AreaTree['info'];
+  /** ページを順に visit に渡す。初めから渡し直すときは、先に restart を呼ぶ (それまでに集めたものを捨てる) */
+  scan(visit: (sheet: SheetArea) => void, restart: () => void): void;
+  /** ページを順に paint に渡す (scan で渡したのと同じページ) */
+  paint(paint: (sheet: SheetArea) => void): void;
+  finish(): Pick<AreaTree, 'bookmarks' | 'destinations'>;
+  /** 先のたどり (書体・色つきの字・画像を集めるもの) を終えたとき */
+  scanned?(): void;
 }
 
 export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRenderOptions = {}): Promise<Uint8Array> {
-  // PDF の出力の規格 (PDF/X-3・X-4) の方針。指定が無ければ undefined (ふつうの PDF)
+  const each = (visit: (sheet: SheetArea) => void) => tree.sheets.forEach((s) => visit(s));
+  return renderPdfPages({ title: tree.title, info: tree.info, scan: each, paint: each, finish: () => tree }, fonts, opts);
+}
+
+/** ページを 1 枚ずつ作りながら PDF を書く (renderPdf と同じ PDF。文書全体の領域の木を、1 度に持たなくてよい) */
+export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opts: PdfRenderOptions = {}): Promise<Uint8Array> {
+  // PDF の出力の規格 (PDF/X-1a・X-3・X-4) の方針。指定が無ければ undefined (ふつうの PDF)
   const std = pdfStandardOf(opts.pdfx);
   if (std && opts.pdfx) std.check(opts.pdfx);
   if (opts.subset ?? true) patchFontkitSubset(fonts);
   patchCffEmbedding();
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkit);
-  setDocumentInfo(pdf, tree, opts);
+  setDocumentInfo(pdf, src, opts);
   // PDF を書く途中の警告: opts.warnings があればそこに足す (同じ文は 1 度だけ)。無ければ console.warn
   const warned = new Set<string>();
   const warn = (m: string) => {
@@ -1800,11 +2549,31 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
 
   // 使用フォントだけを埋め込む (サブセット)。OpenType の機能 (onum・vert など) を使う字も、同じ埋め込みの字形として書く
   // 色つきの表を持つ書体の字は、別に Type 3 書体として書く (ふつうの埋め込みを通さない)。色つきの書体を使わない文書では undefined
-  const colorGlyphs = await PdfColorGlyphs.create(pdf, tree, fonts, { cmyk: pdfxConverter(opts, std), alphaWarning: std?.transparency === 'warn' ? std.label : undefined, warnings: opts.pdfx?.warnings, warn, parseXml: opts.parseXml });
+  // 色つきの字・使う書体・画像は、ページを 1 度たどって集める (ページを作り直すときに、何度も作らない)
   const used = new Set<string>();
-  walkAreaTree(tree, (a) => {
-    if (a.type === 'glyph' && !colorGlyphs?.handles(a)) used.add(fonts.get(a.fontFamily, a.fontWeight).key);
-  });
+  const imageScan = imageScanner();
+  let scanned = false;
+  const scan = (colorVisit?: (a: AreaNode) => void, colorRestart?: () => void) => {
+    scanned = true;
+    src.scan(
+      (sheet) =>
+        walkAreas(sheet, (a) => {
+          colorVisit?.(a);
+          // 色つきの字を描き手が描く字のほかの書体を埋め込む (描き手の handles と同じ判定)
+          if (a.type === 'glyph' && !PdfColorGlyphs.drawsInColor(fonts, a)) used.add(fonts.get(a.fontFamily, a.fontWeight).key);
+          imageScan.visit(a);
+        }),
+      () => {
+        colorRestart?.();
+        used.clear();
+        imageScan.reset();
+      },
+    );
+    src.scanned?.();
+  };
+  const colorGlyphs = await PdfColorGlyphs.create(pdf, scan, fonts, { cmyk: pdfxConverter(opts, std), alphaWarning: std?.transparency === 'warn' ? std.label : undefined, warnings: opts.pdfx?.warnings, warn, parseXml: opts.parseXml });
+  // 色つきの書体を使わない文書では、描き手を作らない (たどらない) ので、ここでたどる
+  if (!scanned) scan();
   const embedded = new Map<string, PDFFont>();
   /**
    * 書体を埋め込む (書体の key で覚える)。CFF の OpenType (先頭が OTTO) は、fontkit のサブセットが壊れた字形を出すので、
@@ -1825,7 +2594,9 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   for (const f of fonts.all()) if (used.has(f.key)) await embedFont(f);
   const fontOf = (g: GlyphArea) => embedded.get(fonts.get(g.fontFamily, g.fontWeight).key)!;
 
-  const { images, vectors, svgImages, placed } = await embedImages(pdf, tree, fonts, opts, warn);
+  const { images, vectors, svgImages, placed, flat } = await embedImages(pdf, imageScan, fonts, opts, warn);
+  // PDF だけを作るときは、埋め込んだラスター画像の、画像の置き場の中身を捨てる (同じ画像を、置き場と PDF の両方に持たない)
+  if (opts.releaseImageBytes) opts.assets?.releaseImageBytes(images.keys());
 
   // SVG の中の字の書体 (PDF の文字として描く)。本文で使っていない書体も埋め込む
   const svgKeys = new Set<string>();
@@ -1841,11 +2612,15 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   const svgFontOf = (key: string) => embedded.get(key);
 
   const cmykOf = pdfxConverter(opts, std);
+  // 透明を平らにする出力 (PDF/X-1a・X-3。pdfFlatten.ts): 文書ごとのもの
+  const flatDoc: FlatDoc | undefined = flat && cmykOf && std ? { label: std.label, fonts, toCmyk: cmykOf, ...flat, rasters: [], rasterSpots: new Set(), failures: [] } : undefined;
   if (opts.pdfx?.profile && cmykOf === rgbToCmyk) opts.pdfx.warnings?.push(msg('ICC プロファイルの CMYK への表 (BToA) が読めないので、RGB の色は簡単な式で CMYK にします', 'the CMYK table (BToA) of the ICC profile cannot be read, so RGB colors are converted to CMYK with a simple formula'));
   const painters: PdfPainter[] = [];
   const failedFonts = new Set<string>();
   const verticalFonts = new Map<PDFFont, VerticalFont>();
-  for (const sheet of tree.sheets) {
+  const trimSizes: Array<{ width: number; height: number }> = [];
+  src.paint((sheet) => {
+    trimSizes.push({ width: sheet.trimBox.width, height: sheet.trimBox.height });
     const page = pdf.addPage([sheet.width, sheet.height]);
     setBoxes(page, sheet, std?.artBox ?? true);
     const painter = new PdfPainter(page, sheet.height, fontOf, (src) => images.get(src), (src) => vectors.get(src), pdf, svgFontOf, svgImages);
@@ -1855,9 +2630,36 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     painter.warn = warn;
     painter.failedFonts = failedFonts;
     painter.verticalFonts = verticalFonts;
+    if (flatDoc) painter.fl = { doc: flatDoc, page: new FlatPage(sheet.width, sheet.height), pageNo: painters.length + 1, M: [1, 0, 0, 1, 0, 0], clips: [], clipStack: [], alphaMul: 1, direct: 0, noMarks: 0 };
     paintSheet(sheet, painter);
     painter.flushText();
+    // 描き終えたページの、描いた物の並びは要らない
+    painter.fl = undefined;
     painters.push(painter);
+    // 描き終えたページの命令を、保存のときと同じに圧縮したバイト列にして手放す (命令を保存まで持たない)
+    sealPageContents(pdf, page, opts.deflate);
+  });
+  const tree = src.finish();
+  if (flatDoc) {
+    // 平らにできなかった透明が残ったら、PDF/X-1a の PDF にしない
+    if (flatDoc.failures.length) {
+      const list = [...new Set(flatDoc.failures)];
+      const shown = list.slice(0, 10).map((p) => `  - ${p}`).join('\n');
+      const more = list.length > 10 ? msg(`\n  ほか ${list.length - 10} 件`, `\n  and ${list.length - 10} more`) : '';
+      throw new Error(msg(`${flatDoc.label} では透明を使えないので平らにしますが、平らにできない透明が残りました:\n${shown}${more}\nPDF/X-4 を使ってください`, `${flatDoc.label} does not allow transparency, so it is flattened, but some transparency could not be flattened:\n${shown}${more}\nUse PDF/X-4`));
+    }
+    if (flatDoc.rasters.length) {
+      const pages = [...new Set(flatDoc.rasters.map((r) => r.page))];
+      const ppi = Math.min(...flatDoc.rasters.map((r) => r.ppi));
+      const at = pages.slice(0, 10).join(', ') + (pages.length > 10 ? ', …' : '');
+      opts.pdfx?.warnings?.push(msg(`${flatDoc.label}: 透明を平らにするため、${flatDoc.rasters.length} か所 (${at} ページ目) を画像 (${ppi}ppi 以上) にしました`, `${flatDoc.label}: to flatten transparency, ${flatDoc.rasters.length} area(s) (page ${at}) were rasterized (${ppi} ppi or more)`));
+      const textPages = [...new Set(flatDoc.rasters.filter((r) => r.text).map((r) => r.page))];
+      if (flatDoc.rasterSpots.size) {
+        const names = [...flatDoc.rasterSpots].slice(0, 5).join('、');
+        opts.pdfx?.warnings?.push(msg(`${flatDoc.label}: 画像にした所に特色 (${names}) が掛かっています。画像の中では、特色の代わりの CMYK になります`, `${flatDoc.label}: spot colors (${names}) lie within rasterized areas; inside the image they become their alternate CMYK`));
+      }
+      if (textPages.length) opts.pdfx?.warnings?.push(msg(`${flatDoc.label}: 画像にした所に字が掛かっています (${textPages.slice(0, 10).join(', ')} ページ目)。その字は画像になるので、字の質が落ち、文字として選べません`, `${flatDoc.label}: text lies within rasterized areas (page ${textPages.slice(0, 10).join(', ')}); that text becomes part of the image, so its quality is lower and it cannot be selected as text`));
+    }
   }
   // FreeText の表示 (appearance stream) に使う書体: 注釈の文字をすべて持つ、埋め込み済みの書体
   const textFont = (text: string): PDFFont | undefined => {
@@ -1876,7 +2678,7 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
     if (std.gwg) {
       const checked = gwgWarnings(
         {
-          trimSizes: tree.sheets.map((s) => ({ width: s.trimBox.width, height: s.trimBox.height })),
+          trimSizes,
           images: [...images].map(([src, im]) => ({ src, pixels: { width: im.width, height: im.height }, placed: placed.get(src) ?? { width: 0, height: 0 } })),
           spots: painters.flatMap((p) => p.spotNames),
         },
@@ -1919,6 +2721,21 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   const bytes = await pdf.save({ useObjectStreams: std.objectStreams });
   // 版数を書き換える (pdf-lib の書き出しは 1.7 固定。同じ長さなので、相互参照のオフセットは変わらない)
   bytes.set(new TextEncoder().encode(std.header), 0);
+  // 書き出した PDF を読み直して、規格の決まりに合うかを調べる (PDF/X-1a・X-3)。合わなければ、規格の印の付いた PDF を返さずに誤りとして投げる
+  const problems = (await std.verify?.(bytes)) ?? [];
+  if (problems.length) {
+    const shown = problems.slice(0, 10).map((p) => `  - ${p}`).join('\n');
+    const more = problems.length > 10 ? msg(`\n  ほか ${problems.length - 10} 件`, `\n  and ${problems.length - 10} more`) : '';
+    const transparent = problems.some((p) => /透明|transparen/.test(p));
+    const hint = !transparent
+      ? ''
+      : std.transparency === 'flatten'
+        ? msg(`\n平らにできない透明が残りました。PDF/X-4 を使ってください`, `\nSome transparency could not be flattened. Use PDF/X-4`)
+        : std.transparency === 'forbid'
+          ? msg(`\n透明を使う文書は、${std.label} では出せません (透明を平らにする処理が無いため)。PDF/X-4 を使ってください`, `\nDocuments that use transparency cannot be written as ${std.label} (transparency flattening is not supported). Use PDF/X-4`)
+          : '';
+    throw new Error(msg(`${std.label} の決まりに合わないので、${std.label} の PDF にできません:\n${shown}${more}${hint}`, `The output does not meet the ${std.label} requirements, so it cannot be written as ${std.label}:\n${shown}${more}${hint}`));
+  }
   return bytes;
 }
 
@@ -2086,8 +2903,11 @@ class SvgShapePainter implements Painter {
     private assets?: AssetStore,
     /** SVG の画像を図形にする (数式を描いた SVG など)。無ければ SVG の画像は描かない */
     private svgDoc?: (bytes: Uint8Array) => SvgDoc | null,
+    /** 初めから掛かっている切り抜き (ページの座標。透明を平らにする処理が、描いた物を図形にするとき) */
+    clips?: SvgShape['clips'],
   ) {
     this.m = base;
+    if (clips?.length) this.clips = [...clips];
   }
   private base(): Omit<SvgShape, 'segs'> {
     return { evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: 1, strokeOpacity: 1, ...(this.clips?.length ? { clips: [...this.clips] } : {}) };
@@ -2112,13 +2932,13 @@ class SvgShapePainter implements Painter {
   fillPath(path: PathSeg[], color: string, evenOdd?: boolean, opacity = 1) {
     const fill = this.color(color);
     if (!fill) return;
-    this.shapes.push({ ...this.base(), segs: transformSegs(path, this.m), fill, evenOdd: !!evenOdd, fillOpacity: opacity });
+    this.shapes.push({ ...this.base(), segs: transformSegs(path, this.m), fill, evenOdd: !!evenOdd, fillOpacity: opacity * alphaOf(color) });
   }
   strokePath(path: PathSeg[], width: number, color: string, dash?: [number, number]) {
     const stroke = this.color(color);
     if (!stroke) return;
     const k = this.scale();
-    this.shapes.push({ ...this.base(), segs: transformSegs(path, this.m), stroke, strokeWidth: width * k, ...(dash ? { dash: dash.map((d) => d * k) } : {}) });
+    this.shapes.push({ ...this.base(), segs: transformSegs(path, this.m), stroke, strokeWidth: width * k, strokeOpacity: alphaOf(color), ...(dash ? { dash: dash.map((d) => d * k) } : {}) });
   }
   strokeLine(l: Line, width: number, color = '#000000') {
     this.strokePath([{ op: 'M', x: l.x1, y: l.y1 }, { op: 'L', x: l.x2, y: l.y2 }], width, color);
@@ -2137,7 +2957,7 @@ class SvgShapePainter implements Painter {
     const c = (g.italic ? g.scaleX * cos * ITALIC_SLANT : 0) - sin;
     const d = (g.italic ? g.scaleX * sin * ITALIC_SLANT : 0) + cos;
     const t = mul(this.m, [a, -b, -c, d, x + g.baselineX, y + g.baselineY]);
-    const sh: SvgShape = { ...this.base(), segs: transformSegs(ol.segs, t), fill };
+    const sh: SvgShape = { ...this.base(), segs: transformSegs(ol.segs, t), fill, fillOpacity: alphaOf(g.color), strokeOpacity: alphaOf(g.color) };
     // 疑似の太字は、字の色の線を重ねる (paint.ts の FAKE_BOLD)
     if (g.fakeBold) Object.assign(sh, { stroke: fill, strokeWidth: g.fontSize * FAKE_BOLD * this.scale(), lineJoin: 1 });
     this.shapes.push(sh);

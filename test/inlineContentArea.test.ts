@@ -73,7 +73,8 @@ describe('HTML の span の背景の高さは、最初に使える書体の asce
     expect(s.bottom - base).toBeCloseTo(JP.d * FS, 1);
     const g = await html('<p><span style="background: #ff0000; border: 1pt solid #000">漢字<span style="font-size: 30pt">大</span></span></p>');
     const b = span(g, '#ff0000');
-    expect(b.bottom - b.top).toBeCloseTo(FS + 1.5, 1);
+    // 罫線 1pt は丸めずに 1pt (既定のスタイルは罫線の太さを画素に丸めない)
+    expect(b.bottom - b.top).toBeCloseTo(FS + 2, 1);
   });
   it('既定の書体の組 (serif = 欧文 Tinos + 和文 Noto Serif JP): 最初に使える書体は Tinos。和文だけの span も、基線の上に 0.891em、下に 0.216em', async () => {
     for (const fam of ['serif', `'Noto Serif JP'`]) {
@@ -94,7 +95,7 @@ describe('HTML の span の背景の高さは、最初に使える書体の asce
   });
   it('行の高さ・字の位置は変わらない (背景の無いときと同じ)', async () => {
     const a = await html(`<p>前<span style="background: #ff0000; border: 1pt solid #000; padding: 2pt">漢字</span>後</p><p>次の行</p>`);
-    const b = await html(`<p>前<span style="border: 0 solid #000; padding: 0 2.75pt">漢字</span>後</p><p>次の行</p>`);
+    const b = await html(`<p>前<span style="border: 0 solid #000; padding: 0 3pt">漢字</span>後</p><p>次の行</p>`);
     expect(a.lines.map((l) => [l.y, l.h])).toEqual(b.lines.map((l) => [l.y, l.h]));
     for (const l of a.lines) expect(l.h).toBeCloseTo(40, 1);
     expect(a.glyphs.map((g) => g.base)).toEqual(b.glyphs.map((g) => g.base));
@@ -116,7 +117,7 @@ describe('HTML の span の背景の高さは、最初に使える書体の asce
       expect(s.bottom - base).toBeCloseTo(TINOS.d * FS, 1);
     }
     const box = span(f, '#0000ff');
-    expect(box.bottom - box.top).toBeCloseTo((TINOS.a + TINOS.d) * FS + 1.5, 1);
+    expect(box.bottom - box.top).toBeCloseTo((TINOS.a + TINOS.d) * FS + 2, 1);
   });
   it('入れ子: 外の span の背景は外の字の大きさ・書体で決まり、中の小さい字・大きい字の所でも同じ高さ。中の span の背景は中の字の大きさ', async () => {
     const f = await html(`<p style="line-height: 3; font-family: Tinos, J"><span style="background: #ff0000">外<span style="font-size: 10pt">小</span><span style="font-size: 30pt">大</span>外</span> <span style="background: #00ff00">外<span style="background: #0000ff; font-size: 30pt">大</span></span></p>`);
@@ -134,7 +135,7 @@ describe('HTML の span の背景の高さは、最初に使える書体の asce
   });
   it('上付き (vertical-align: super) の span の箱は、ずらした基線から', async () => {
     const f = await html(`<p style="line-height: 3; font-family: Tinos, J">字<span style="vertical-align: super; font-size: 10pt; background: #ff0000">上</span><span style="vertical-align: super; font-size: 10pt; background: #00ff00; border: 1pt solid #000">枠</span></p>`);
-    for (const [c, ch, extra] of [['#ff0000', '上', 0], ['#00ff00', '枠', 0.75]] as const) {
+    for (const [c, ch, extra] of [['#ff0000', '上', 0], ['#00ff00', '枠', 1]] as const) {
       const s = span(f, c);
       const base = baseOf(f, ch);
       expect(base).toBeLessThan(baseOf(f, '字') - 1);
@@ -149,7 +150,7 @@ describe('HTML の span の背景の高さは、最初に使える書体の asce
     expect(base - r.top).toBeCloseTo(TINOS.a * FS, 1);
     expect(r.bottom - base).toBeCloseTo(TINOS.d * FS, 1);
     const b = span(f, '#00ff00');
-    expect(b.bottom - b.top).toBeCloseTo((TINOS.a + TINOS.d) * FS + 1.5, 1);
+    expect(b.bottom - b.top).toBeCloseTo((TINOS.a + TINOS.d) * FS + 2, 1);
   });
   it('リンクの範囲も同じ箱', async () => {
     const f = await html('<p style="font-family: Tinos, J"><a href="https://example.com/">漢字</a></p>');
@@ -167,8 +168,8 @@ describe('HTML の span の背景の高さは、最初に使える書体の asce
     expect(s.right - centre).toBeCloseTo(((TINOS.a + TINOS.d) / 2) * FS, 1);
     const b = span(f, '#00ff00');
     const c2 = g[1].x + g[1].w / 2;
-    expect(c2 - b.left).toBeCloseTo(((TINOS.a + TINOS.d) / 2) * FS + 2.75, 1);
-    expect(b.right - c2).toBeCloseTo(((TINOS.a + TINOS.d) / 2) * FS + 2.75, 1);
+    expect(c2 - b.left).toBeCloseTo(((TINOS.a + TINOS.d) / 2) * FS + 3, 1);
+    expect(b.right - c2).toBeCloseTo(((TINOS.a + TINOS.d) / 2) * FS + 3, 1);
   });
 });
 

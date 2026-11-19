@@ -105,7 +105,8 @@ describe('字の間を広げた字の並びの ActualText (OUT-24)', () => {
     expect(actualTexts(c).length).toBeGreaterThan(0);
   });
   it('縦書きの行 (縦書きの書体の字の並び。OUT-26) も、広げた行には付ける。広げていない行には付けない', async () => {
-    const c = await contentOf('<div style="writing-mode: vertical-rl"><p class="j">最後の行も両端にそろえる</p><p style="letter-spacing: 0.5em">字間を広げた行</p><p>ふつうの行</p></div>');
+    // 縦書きの箱の高さ (行の長さ) は指定する (指定が無ければ中身の幅 (fit-content) で、両端揃えで広げる余りが無い)
+    const c = await contentOf('<div style="writing-mode: vertical-rl; height: 55mm"><p class="j">最後の行も両端にそろえる</p><p style="letter-spacing: 0.5em">字間を広げた行</p><p>ふつうの行</p></div>');
     expect(actualTexts(c)).toEqual(['最後の行も両端にそろえる', '字間を広げた行']);
   });
 });

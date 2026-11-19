@@ -43,6 +43,11 @@ export interface Selector {
    * MAX_BACKTRACK_COMPOUNDS を超えるもの。:is()・:not()・:has() などの中にそれを含むものも)
    */
   tooComplex?: boolean;
+  /**
+   * 結合子の種類が混ざった backtrack のセレクタ (照合に SelectorMemo.bt を使うもの) であるか、:is()・:not()・:has() などの中にそれを含む。
+   * 覚えの予算 (SelectorMemo.btBudget) を使い切った後は、当てない
+   */
+  btMixed?: boolean;
   /** どれかの複合セレクタが :scope を見る (Compound.usesScope) */
   usesScope?: boolean;
 }
@@ -130,6 +135,7 @@ function parseComplex1(text: string): Selector | undefined {
   let empty = true;
   let heavy = false;
   let tooComplex = false;
+  let btMixed = false;
   let curScope = false;
   const s = text;
   const push = () => {
@@ -232,10 +238,12 @@ function parseComplex1(text: string): Selector | undefined {
           }
           heavy = true;
           if (p.sub.some((x) => x.tooComplex)) tooComplex = true;
+          if (p.sub.some((x) => x.btMixed)) btMixed = true;
         } else {
           p.sub = parseSelectorList(arg ?? '', forgiving);
           if (p.sub.some((x) => x.heavy)) heavy = true;
           if (p.sub.some((x) => x.tooComplex)) tooComplex = true;
+          if (p.sub.some((x) => x.btMixed)) btMixed = true;
           if (p.sub.some((x) => x.usesScope)) curScope = true;
         }
         if (!p.sub.length && !forgiving) return undefined;
@@ -258,6 +266,7 @@ function parseComplex1(text: string): Selector | undefined {
             if (!p.of.length) return undefined;
             heavy = true;
             if (p.of.some((x) => x.tooComplex)) tooComplex = true;
+            if (p.of.some((x) => x.btMixed)) btMixed = true;
             if (p.of.some((x) => x.usesScope)) curScope = true;
             const top = Math.max(0, ...p.of.map((x) => x.specificity));
             a += Math.floor(top / 1e6);
@@ -296,6 +305,7 @@ function parseComplex1(text: string): Selector | undefined {
   if (backtrack) heavy = true;
   // 結合子がすべて同じなら、要素ごとに 1 つの数を覚えて照合する (chainPrefix)。混ざっていれば (位置, 要素) ごとに覚えるので、複合セレクタの数に上限を置く
   const chain = backtrack && combs.every((x) => x === combs[0]) ? (combs[0] as ' ' | '~') : undefined;
+  if (backtrack && !chain) btMixed = true;
   if (backtrack && !chain && compounds.length > MAX_BACKTRACK_COMPOUNDS) tooComplex = true;
   return {
     compounds,
@@ -306,6 +316,7 @@ function parseComplex1(text: string): Selector | undefined {
     ...(backtrack ? { backtrack } : {}),
     ...(chain ? { chain } : {}),
     ...(tooComplex ? { tooComplex } : {}),
+    ...(btMixed ? { btMixed } : {}),
     ...(compounds.some((x) => x.usesScope) ? { usesScope: true } : {}),
   };
 }
@@ -433,30 +444,89 @@ export interface SelectorMemo {
    */
   chain?: Map<Selector, Map<object, WeakMap<Element, number>>>;
   /**
-   * 結合子の種類が混ざった backtrack のセレクタの照合の途中の結果: セレクタ → 基準 → 要素 → 複合セレクタの位置 k ごとの 1 バイト
+   * 結合子の種類が混ざった backtrack のセレクタの照合の途中の結果: セレクタ → 基準 → 要素 → 複合セレクタの位置 k ごとの 1 バイト (BtTable)
    * (BT_AT: matchFrom(要素, sel, k) / BT_UP: その要素か祖先が合うか / BT_BACK: その要素か前の兄弟が合うか。それぞれ 2 ビットで、0 は未定・1 は偽・2 は真)。
    * 手間と覚えの大きさは 複合セレクタの数 × 要素の数 に比例するので、複合セレクタの数に上限を置く (MAX_BACKTRACK_COMPOUNDS)
    */
   bt?: Map<Selector, Map<object, BtTable>>;
+  /**
+   * bt の覚えの大きさの予算の残り (バイトの見積もり。BT_ROW_BYTES)。undefined なら上限を置かない。
+   * 1 つのセレクタの覚えは 複合セレクタの数 × 要素の数 に収まる (MAX_BACKTRACK_COMPOUNDS) が、規則の数には上限が無いので、
+   * 1 回のカスケードで覚えの合計が 規則の数 × 要素の数 × 64 になる (そのようなセレクタ 100 個と要素 5000 個で 6 秒・500MB)。
+   * 使い切った後は、btMixed のセレクタを当てない (btOver。onBtOver で知らせる)
+   */
+  btBudget?: number;
+  /** btBudget を使い切った */
+  btOver?: boolean;
+  /** いま照合しているセレクタ (matches の 1 回) の中で、予算を使い切ったために照合を打ち切った (その照合の答えは偽にする) */
+  btCut?: boolean;
+  /** btBudget を初めて使い切ったときに呼ぶ (カスケードは警告に出す) */
+  onBtOver?: () => void;
 }
-type BtTable = WeakMap<Element, Uint8Array>;
+/**
+ * bt の覚えの、セレクタ・基準ごとの表。要素ごとに 1 行 (複合セレクタの数のバイト) を、1 つの並び (data) に続けて置く
+ * (要素ごとに Uint8Array を作ると、1 行に 240 バイトほどの余分がかかる。行の番号を引く WeakMap の項目は 1 つ 34 バイトほど)
+ */
+interface BtTable {
+  row: WeakMap<Element, number>;
+  data: Uint8Array;
+  rows: number;
+  /** 1 行の長さ (複合セレクタの数) */
+  size: number;
+}
 const BT_AT = 0;
 const BT_UP = 2;
 const BT_BACK = 4;
 /** 基準の無い照合と、:scope を見ないセレクタの照合の、覚えの鍵 */
 const NO_SCOPE = {};
 interface OfInfo { scope: Element | undefined; first: Node | null; last: Node | null; pos: Map<Element, number>; count: number }
-export const createSelectorMemo = (): SelectorMemo => ({ has: new Map(), desc: new Map(), lastSib: new Map(), of: new Map() });
+export const createSelectorMemo = (opts: { btBudget?: number; onBtOver?: () => void } = {}): SelectorMemo => ({
+  has: new Map(),
+  desc: new Map(),
+  lastSib: new Map(),
+  of: new Map(),
+  ...(opts.btBudget !== undefined ? { btBudget: opts.btBudget } : {}),
+  ...(opts.onBtOver ? { onBtOver: opts.onBtOver } : {}),
+});
+
+/**
+ * bt の覚えの 1 行 (要素 1 つの分) の大きさの見積もりの、行の長さ (複合セレクタの数のバイト) を除いた分 (バイト)。
+ * 行の番号を引く WeakMap の項目の分で、Node 22 で 100 万個を作って測ると、1 つあたり 34 バイトほど。並びを伸ばすときの空きの分も見込んで 40
+ */
+const BT_ROW_BYTES = 40;
+
+/**
+ * 1 回のカスケードの、bt の覚えの大きさの予算 (バイトの見積もり。SelectorMemo.btBudget)。
+ * 超えると、結合子の種類の混ざった backtrack のセレクタ (と、それを含むもの) を、それより後は当てない。
+ * 既定のスタイルシートには、そのようなセレクタは無い。要素 1.7 万個の文書 (section 400 個) に、そのようなセレクタ 10 個
+ * (main h2 ~ p a・section > p ~ ul li など。どれも多くの要素に当たる) を当てて 310 万ほどなので、3000 万なら、その 10 倍の大きさの文書でも届かない。
+ * 届くのは、複合セレクタを数十個つないだセレクタを何十個も並べたもの (複合セレクタ 64 個のもの 100 個と要素 5000 個で、5200 万ほど要る)
+ */
+export const BT_MEMO_BUDGET = 30_000_000;
 
 /** 要素がセレクタに合うか (疑似要素の部分は見ない)。memo は、木が変わらない間に続けて呼ぶときの覚え (SelectorMemo) */
 export function matches(el: Element, sel: Selector, scope?: Element, memo?: SelectorMemo): boolean {
   if (sel.tooComplex) return false;
-  return matchFrom(el, sel, 0, scope, memo ?? (sel.heavy ? createSelectorMemo() : undefined));
+  if (!memo || memo.btBudget === undefined || !sel.btMixed) return matchFrom(el, sel, 0, scope, memo ?? (sel.heavy ? createSelectorMemo() : undefined));
+  // 覚えの予算を使い切った後は当てない。照合の途中で使い切ったら、その照合も偽にする (中の :not() などの答えが、打ち切った照合で変わらないように)
+  if (memo.btOver) return false;
+  const outer = memo.btCut;
+  memo.btCut = false;
+  const r = matchFrom(el, sel, 0, scope, memo);
+  const cut = memo.btCut;
+  memo.btCut = outer || cut;
+  return r && !cut;
 }
 
 function matchFrom(el: Element, sel: Selector, k: number, scope: Element | undefined, memo: SelectorMemo | undefined): boolean {
   if (memo && sel.chain) return matchCompound(el, sel.compounds[k], scope, memo) && chainPrefix(el, sel, scope, memo) >= sel.compounds.length - 1 - k;
-  if (memo && sel.backtrack) return matchBt(el, sel, k, scope, memo, btTable(memo, sel, scope));
+  if (memo && sel.backtrack) {
+    if (memo.btOver) {
+      memo.btCut = true;
+      return false;
+    }
+    return matchBt(el, sel, k, scope, memo, btTable(memo, sel, scope));
+  }
   if (!matchCompound(el, sel.compounds[k], scope, memo)) return false;
   if (k === sel.compounds.length - 1) return true;
   const comb = sel.combs[k];
@@ -529,17 +599,33 @@ function btTable(memo: SelectorMemo, sel: Selector, scope: Element | undefined):
   const byScope = (memo.bt ??= new Map()).get(sel) ?? memo.bt.set(sel, new Map()).get(sel)!;
   const key = scopeKey(sel, scope);
   let t = byScope.get(key);
-  if (!t) byScope.set(key, (t = new WeakMap()));
+  if (!t) byScope.set(key, (t = { row: new WeakMap(), data: new Uint8Array(sel.compounds.length * 16), rows: 0, size: sel.compounds.length }));
   return t;
 }
 const btGet = (t: BtTable, el: Element, k: number, field: number): boolean | undefined => {
-  const v = ((t.get(el)?.[k] ?? 0) >> field) & 3;
+  const i = t.row.get(el);
+  if (i === undefined) return undefined;
+  const v = (t.data[i * t.size + k] >> field) & 3;
   return v ? v === 2 : undefined;
 };
-const btSet = (t: BtTable, el: Element, k: number, field: number, size: number, r: boolean) => {
-  let cell = t.get(el);
-  if (!cell) t.set(el, (cell = new Uint8Array(size)));
-  cell[k] = (cell[k] & ~(3 << field)) | ((r ? 2 : 1) << field);
+const btSet = (t: BtTable, el: Element, k: number, field: number, r: boolean, memo: SelectorMemo) => {
+  const size = t.size;
+  let i = t.row.get(el);
+  if (i === undefined) {
+    t.row.set(el, (i = t.rows++));
+    if (t.rows * size > t.data.length) {
+      const grown = new Uint8Array(t.data.length * 2);
+      grown.set(t.data);
+      t.data = grown;
+    }
+    if (memo.btBudget !== undefined && (memo.btBudget -= size + BT_ROW_BYTES) < 0 && !memo.btOver) {
+      // 使い切った。いまの照合は最後まで続ける (中の別の backtrack のセレクタは、matchFrom で打ち切る)
+      memo.btOver = true;
+      memo.onBtOver?.();
+    }
+  }
+  const at = i * size + k;
+  t.data[at] = (t.data[at] & ~(3 << field)) | ((r ? 2 : 1) << field);
 };
 
 /**
@@ -563,7 +649,7 @@ function matchBt(el: Element, sel: Selector, k: number, scope: Element | undefin
       r = !!p && selfOrNextMatchesBt(p, up, sel, k + 1, scope, memo, t);
     }
   }
-  btSet(t, el, k, BT_AT, sel.compounds.length, r);
+  btSet(t, el, k, BT_AT, r, memo);
   return r;
 }
 
@@ -585,7 +671,7 @@ function selfOrNextMatchesBt(from: Element, up: boolean, sel: Selector, k: numbe
     }
   }
   // たどった要素は、どれも合った要素 (か、覚えのあった要素) より下 (後) で、その間の要素は合わなかったので、答えは同じ
-  for (const p of chain) btSet(t, p, k, field, sel.compounds.length, found);
+  for (const p of chain) btSet(t, p, k, field, found, memo);
   return found;
 }
 

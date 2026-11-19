@@ -102,7 +102,8 @@ describe('HTML: 本の体裁 (柱・ノンブル・脚注・目次)', () => {
     expect([fn.type, texts(fn.children)]).toEqual(['footnote', ['脚注の文']]);
     expect(r.report.counts.footnotes).toBe(1);
     const a = toc.children[0] as LInline;
-    expect(flat(a.children)).toEqual(['第二章', { type: 'leader', cssLeader: true }, { type: 'page-number-citation', refId: 'c2' }]);
+    // 数え方を書かない target-counter() は decimal (format '1')
+    expect(flat(a.children)).toEqual(['第二章', { type: 'leader', cssLeader: true }, { type: 'page-number-citation', refId: 'c2', format: '1' }]);
   });
 
   it('counter() / counters() (counter-reset・counter-increment)', () => {
@@ -550,7 +551,16 @@ describe('HTML: ブラウザの配置を使わない flex・grid', () => {
     const [g] = noRect('<div data-css="display: grid; grid-template-columns: 1fr 1fr"><p>a</p><p>b</p><p>c</p></div>') as LBlock[];
     const tables = g.children as LTable[];
     expect(tables.length).toBe(2);
-    expect(widths(tables[0])).toEqual([150, 150]); // 400px = 300pt
+    // fr の列は、組むときに容器の幅で分ける (行の表が列の指定を持ち、項目の列は grid の列の範囲を持つ)。
+    // 容器の幅が見積もりの 400px = 300pt なら 150pt ずつ。長さの列は、その長さ
+    expect(tables[0].gridTemplate?.tracks).toBe('1fr 1fr');
+    expect(tables[0].columns!.map((c) => c.gridSpan)).toEqual([
+      [0, 1],
+      [1, 2],
+    ]);
+    expect(widths(tables[0])).toEqual([150, 150]);
+    const [h] = noRect('<div data-css="display: grid; grid-template-columns: 100px 50px"><p>a</p><p>b</p></div>') as LBlock[];
+    expect(widths((h.children as LTable[])[0])).toEqual([75, 75 / 2].map(Math.round));
   });
 
   it('幅の指定の無い項目は、measureText で中身の幅を測る (行内の要素は、それぞれの字の大きさで)', () => {

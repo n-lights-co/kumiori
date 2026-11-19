@@ -5,7 +5,7 @@
  * 名前の後ろに ,#rrggbb があれば、作成者が書いた代わりの RGB (spot(濃度,c,m,y,k,名前,#rrggbb)。名前の # は %23 になるので紛れない)
  */
 export type ParsedColor =
-  | { mode: 'rgb'; r: number; g: number; b: number }
+  | { mode: 'rgb'; r: number; g: number; b: number; /** 不透明度 (0〜1。#rrggbbaa・#rgba・rgba() の透明度。省略は不透明) */ a?: number }
   | { mode: 'cmyk'; c: number; m: number; y: number; k: number; spot?: SpotColor; gray?: boolean };
 
 /** 特色 (PDF の Separation 色空間) */
@@ -72,20 +72,23 @@ export const isColorName = (s: string) => Object.hasOwn(NAMED_COLORS, s.trim().t
 
 export function parseColor(input: string): ParsedColor {
   const s = (Object.hasOwn(NAMED_COLORS, input.trim().toLowerCase()) ? NAMED_COLORS[input.trim().toLowerCase()] : input).trim();
-  let m = /^#([0-9a-f]{3})$/i.exec(s);
+  // 透明度つきの #rgba・#rrggbbaa (半透明の字・罫線・背景の色。CSS Color 4 §5.2) は、不透明度を a に持つ (前は読めずに黒になった)
+  let m = /^#([0-9a-f]{3})([0-9a-f])?$/i.exec(s);
   if (m) {
     const [r, g, b] = [...m[1]].map((h) => parseInt(h + h, 16) / 255);
-    return { mode: 'rgb', r, g, b };
+    return { mode: 'rgb', r, g, b, ...(m[2] !== undefined ? { a: parseInt(m[2] + m[2], 16) / 255 } : {}) };
   }
-  m = /^#([0-9a-f]{6})$/i.exec(s);
+  m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(s);
   if (m) {
     const n = parseInt(m[1], 16);
-    return { mode: 'rgb', r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255 };
+    return { mode: 'rgb', r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255, ...(m[2] !== undefined ? { a: parseInt(m[2], 16) / 255 } : {}) };
   }
   m = /^rgba?\(([^)]+)\)$/i.exec(s);
   if (m) {
-    const [r, g, b] = m[1].split(',').map((v) => parseFloat(v) / 255);
-    return { mode: 'rgb', r, g, b };
+    const parts = m[1].split(',');
+    const [r, g, b] = parts.map((v) => parseFloat(v) / 255);
+    const a = parts.length > 3 ? (/%\s*$/.test(parts[3]) ? parseFloat(parts[3]) / 100 : parseFloat(parts[3])) : undefined;
+    return { mode: 'rgb', r, g, b, ...(a !== undefined && Number.isFinite(a) && a < 1 ? { a: Math.max(0, a) } : {}) };
   }
   m = /^spot\(([^)]+)\)$/i.exec(s);
   if (m) {
@@ -121,9 +124,15 @@ export function parseColor(input: string): ParsedColor {
 }
 
 /** Canvas 用の CSS 色 (CMYK は単純変換) */
+/** 色の不透明度 (0〜1)。透明度の無い色・CMYK・特色は 1 */
+export function alphaOf(input: string): number {
+  const c = parseColor(input);
+  return c.mode === 'rgb' && c.a !== undefined ? c.a : 1;
+}
+
 export function toCss(input: string): string {
   const c = parseColor(input);
-  if (c.mode === 'rgb') return `rgb(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)})`;
+  if (c.mode === 'rgb') return c.a !== undefined && c.a < 1 ? `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${+c.a.toFixed(4)})` : `rgb(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)})`;
   const r = 255 * (1 - c.c) * (1 - c.k);
   const g = 255 * (1 - c.m) * (1 - c.k);
   const b = 255 * (1 - c.y) * (1 - c.k);

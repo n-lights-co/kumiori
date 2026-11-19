@@ -18,7 +18,7 @@
 import type { StyleSource } from './htmlImport';
 import type { ParsedCss } from './htmlPaged';
 import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
-import { ahCascadeOptions } from './compat';
+import { styleCascadeOptions } from './compat';
 import { faceFileWeights } from './fontMapping';
 import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
 
@@ -58,7 +58,7 @@ export async function loadHtml(
   defaultPage = { width: 210, height: 297, margin: 20 },
   opts: { noFrame?: boolean } = {},
 ): Promise<LoadedHtml> {
-  const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageHeightPx, warnings } = await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html'));
+  const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageWidthsPx, pageHeightPx, warnings } = await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html'));
   // @font-face の書体のファイルは、一緒に選んだファイルの blob URL にする (iframe の中でも書体を読み、その字幅で flex・grid などを置かせる)
   const fontFiles = new Map(files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)).map((f) => [f.name.toLowerCase(), f]));
   const fontUrls = new Map<string, string>();
@@ -93,11 +93,12 @@ export async function loadHtml(
 
   // アンテナハウス互換の bolder・lighter は、@font-face の書体の太さで決める (記述子の無い face は、書体のファイルの太さ。compat.ts の ahCascadeOptions)
   const ahWeights = defaults === 'ah' ? await faceFileWeights(css, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name))) : undefined;
-  // iframe を使わない: 読んだ文書に、自前のカスケードの計算値 (vw・vh と根元の幅は、ページの領域の大きさ)
+  // iframe を使わない: 読んだ文書に、自前のカスケードの計算値 (vw・vh と根元の幅は、ページの領域の大きさ。名前付きのページを指定した箱から下の
+  // 百分率の幅は、そのページの領域の幅で見積もる。Node のコマンド・API (api.ts) と同じ)
   if (opts.noFrame) {
     return {
       doc: parsed,
-      styles: cascadeStyles(parsed, authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: uaSheet, quirksMode: documentMode(parsed), viewport: { width: Math.max(bodyWidthPx, 100), height: pageHeightPx }, ...(defaults === 'ah' ? ahCascadeOptions(css, ahWeights) : {}) }),
+      styles: cascadeStyles(parsed, authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: uaSheet, quirksMode: documentMode(parsed), viewport: { width: Math.max(bodyWidthPx, 100), height: pageHeightPx }, pageWidths: pageWidthsPx, ...styleCascadeOptions(defaults, css, ahWeights) }),
       css,
       authorSheet,
       warnings,

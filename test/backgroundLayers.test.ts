@@ -130,6 +130,16 @@ describe('複数の背景 (§2.1)', () => {
     near([bi.under![0].x as number, bi.under![0].y as number], [3, 5]);
     expect(r.warnings).toEqual([]);
   });
+  it('background-size の em・rem は、その要素の字の大きさで長さにする (§3.9 の計算値。一括指定も)', async () => {
+    // 字の大きさ 8pt: 1.5em = 12pt、2em = 16pt。rem は根元の字の大きさ (ここでは 12pt)
+    const r = await set(page('<div class="b" style="background: url(a.png) no-repeat 0.5em center / 1.5em 2em"></div>'));
+    const bi = boxOf(r.areaTree).backgroundImage!;
+    near([bi.width!, bi.height!, bi.x as number], [12, 16, 4]);
+    const r2 = await set(page('<div class="b" style="background-image: url(a.png); background-size: 0.5rem"></div>', 'html { font-size: 12pt }'));
+    // 高さは auto (画像の縦横比で、幅と同じ)
+    const b2 = boxOf(r2.areaTree).backgroundImage!;
+    near([b2.width!, b2.height!], [6, 6]);
+  });
   it('後ろの層から順に描く。位置は、それぞれの層の値', async () => {
     const { layers } = await paintLog(page('<div class="b" style="background: url(a.png) no-repeat right bottom, url(b.png) no-repeat 3pt 5pt"></div>'));
     expect(layers.map((l) => l.images.map((i) => i[0]))).toEqual([['b.png'], ['a.png']]);

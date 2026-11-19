@@ -82,3 +82,24 @@ export function physPos(
   if (parentWm === 'vertical-lr') return { x: b, y: i };
   return { x: PW - b - pw, y: i };
 }
+
+/**
+ * 縦横比のある置換要素 (画像) の大きさに、最小・最大の幅と高さを当てる (CSS 2.1 §10.4 の表)。
+ * 縦横比を保ったまま、上限を超えれば縮め、下限に届かなければ広げる
+ */
+export function constrainReplaced(w: number, h: number, minW: number, maxW: number, minH: number, maxH: number): [number, number] {
+  maxW = Math.max(minW, maxW);
+  maxH = Math.max(minH, maxH);
+  // 幅か高さが 0 なら、縦横比が無い (0 で割れない) ので、それぞれの向きに最小・最大を当てる
+  // (CSS 2.1 §10.4 の表の式は、縦横比のある大きさのとき。0 の向きを縦横比で広げると 0/0 になる)
+  if (!(w > 0 && h > 0)) return [Math.min(Math.max(w, minW), maxW), Math.min(Math.max(h, minH), maxH)];
+  if (w > maxW && h > maxH) return maxW / w <= maxH / h ? [maxW, Math.max(minH, (maxW * h) / w)] : [Math.max(minW, (maxH * w) / h), maxH];
+  if (w < minW && h < minH) return minW / w <= minH / h ? [Math.min(maxW, (minH * w) / h), minH] : [minW, Math.min(maxH, (minW * h) / w)];
+  if (w > maxW && h < minH) return [maxW, minH];
+  if (w < minW && h > maxH) return [minW, maxH];
+  if (w > maxW) return [maxW, Math.max((maxW * h) / w, minH)];
+  if (w < minW) return [minW, Math.min((minW * h) / w, maxH)];
+  if (h > maxH) return [Math.max((maxH * w) / h, minW), maxH];
+  if (h < minH) return [Math.min((minH * w) / h, maxW), minH];
+  return [w, h];
+}

@@ -37,6 +37,19 @@ export function isAhCompat(kind: DocKind, mode: { compat?: FoCompat; style?: Htm
 }
 
 /**
+ * 既定のスタイル (style) ごとの、自前のカスケード (cascadeStyles) の互換の設定 (API (api.ts) と画面 (htmlFrame.ts) で同じものを使う):
+ *  - ah: アンテナハウス互換 (ahCascadeOptions)
+ *  - kumiori (既定)・weasyprint: 罫線の太さを画素に丸めない。CSS Values 4 の丸め (snap as a border width) は機器の画素に合わせるもので、
+ *    PDF には画素が無い (0.3pt の罫線は 0.3pt で描く。WeasyPrint も同じ)
+ *  - browser・browser-margin・vivliostyle: ブラウザ (Chromium) と同じに、1px 未満を 1px に切り上げ、それより太い線は画素に切り捨てる
+ */
+export function styleCascadeOptions(style: HtmlDefaults, css: string | ParsedCss, faceWeights?: Map<string, number[]>): Partial<CascadeOptions> {
+  if (style === 'ah') return ahCascadeOptions(css, faceWeights);
+  if (style === 'weasyprint' || style === 'kumiori') return { noBorderSnap: true };
+  return {};
+}
+
+/**
  * 自前のカスケード (cascadeStyles) のアンテナハウス互換の設定。
  * 罫の太さの丸め無し・thin/medium/thick の太さ・アンテナハウスの線種・counter() の拡張・数の式の中の型の無い attr()・bolder/lighter を @font-face の太さから決める
  */
@@ -71,11 +84,17 @@ export const AH_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   autospaceLatinOnly: true,
   footnoteMarkerOutside: true,
   pageContextFontSize: 10,
+  // @page・余白の箱の罫線の thin・medium・thick も、文書の要素の罫線 (ahCascadeOptions の borderKeywords。px) と同じ太さ (pt)
+  pageBorderKeywords: { thin: AH_BORDER_KEYWORDS.thin * 0.75, medium: AH_BORDER_KEYWORDS.medium * 0.75, thick: AH_BORDER_KEYWORDS.thick * 0.75 },
   pageGroupFirst: true,
+  // ページの左右をページ番号の偶奇で決め、ページ番号を振り直す組の前に、偶奇を合わせる白ページを入れる: AH Formatter がそう組むかを確かめられていないので、
+  // これまでの動きのまま
+  pageSidesByNumber: true,
   columnsDiscardEndMargin: true,
   columnsDiscardStartMargin: true,
   tableCollapseSpillAh: true,
   tableRowspanMiddleAh: true,
+  avoidRowOverflowAh: true,
   primaryFontByLangAh: true,
   emBoxBaselineAh: true,
   superShiftAh: true,
@@ -109,9 +128,22 @@ export const BROWSER_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> =
  */
 export const VIVLIOSTYLE_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   autospaceLatinOnly: true,
+  // ページの左右をページ番号の偶奇で決め、ページ番号を振り直す組の前に、偶奇を合わせる白ページを入れる: Vivliostyle がそう組むかを確かめられていないので、
+  // これまでの動きのまま
+  pageSidesByNumber: true,
 };
+/**
+ * WeasyPrint の既定のスタイルでは、さらに WeasyPrint の組み方に合わせる: 中身の無い目印だけの行でマージンを相殺しない (idLinesSeparateMarginsWp)、
+ * 見つからないページ番号の参照を空にする (unresolvedCitationEmptyWp)、折り返しの flex の容器の 1 つだけの行を容器の高さにする (flexSingleLineFullWp)
+ */
 export const WEASYPRINT_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
   autospaceLatinOnly: true,
+  idLinesSeparateMarginsWp: true,
+  unresolvedCitationEmptyWp: true,
+  flexSingleLineFullWp: true,
+  // ページの左右をページ番号の偶奇で決め、ページ番号を振り直す組の前に、偶奇を合わせる白ページを入れる: WeasyPrint がそう組むかを確かめられていないので、
+  // これまでの動きのまま
+  pageSidesByNumber: true,
 };
 
 /** 既定のスタイル (style) ごとの、HTML の読み込みの互換の設定 (画面 (main.ts) と API (api.ts) で同じものを使う) */

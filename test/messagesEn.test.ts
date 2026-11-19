@@ -110,6 +110,20 @@ describe('lang: en の警告に日本語が残らない', () => {
     expect(japanese(r.warnings)).toEqual([]);
   });
 
+  it('XSL-FO: 詰め込み (overflow="condense") の知らせ (縦書き・高さの決まらない容器・収まらない中身)', async () => {
+    const fo = `<?xml version="1.0"?>
+<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions">
+<fo:layout-master-set><fo:simple-page-master master-name="p" page-width="100mm" page-height="60mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>
+<fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body">
+<fo:block-container writing-mode="tb-rl" width="20mm" height="20mm" overflow="condense"><fo:block>v</fo:block></fo:block-container>
+<fo:block-container overflow="condense"><fo:block>a</fo:block></fo:block-container>
+<fo:block-container height="10pt" overflow="condense"><fo:block font-size="10pt">b</fo:block><fo:block font-size="10pt">c</fo:block></fo:block-container>
+</fo:flow></fo:page-sequence></fo:root>`;
+    const r = await typeset(fo, { loadFont, lang: 'en', compat: 'antenna' });
+    expect(r.warnings.filter((w) => /condense/.test(w)).length).toBeGreaterThanOrEqual(3);
+    expect(japanese(r.warnings)).toEqual([]);
+  });
+
   it('画像の形式の中の知らせ (CGM・EMF) と、Area Tree・EPUB の読み込みの誤り', async () => {
     /** CGM の命令 (ISO/IEC 8632-3 5.4。長さ 31 未満の短い形) */
     const cmd = (cls: number, id: number, data: number[] = []) => {

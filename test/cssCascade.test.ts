@@ -564,7 +564,9 @@ describe('自前のカスケードからの読み込み', () => {
     importHtml(doc, s).document.sequences[0].flow.children.forEach((b) => walk(b as LBlock));
     const d = blocks.find((b) => b.id === 'd')!;
     expect(d.width).toBe(150);
-    expect(d.margin).toMatchObject({ left: 144, right: 144 }); // (584 - 200) / 2 px
+    // 左右の auto の余白は、組むときに置く場所の幅から等分する (読み込みのときの見積もりで長さにしない)
+    expect(d.autoMargins).toBe('center');
+    expect(d.margin).toBeUndefined();
     expect(d.minBlockSize).toBe(30);
   });
 
@@ -681,12 +683,15 @@ describe('自前のカスケードからの読み込み', () => {
     const s = cascadeStyles(doc, '', { viewport: { width: 600, height: 800 } });
     const find = (n: { type?: string; children?: unknown[] }): LTable | undefined =>
       n.type === 'table' ? (n as LTable) : (n.children ?? []).map((k) => (typeof k === 'object' && k ? find(k as never) : undefined)).find(Boolean);
-    const rows = find(importHtml(doc, s).document.sequences[0].flow)!.body.rows;
+    const table = find(importHtml(doc, s).document.sequences[0].flow)!;
+    const rows = table.body.rows;
+    // 最後の行の break-after は、表の後ろの区切り (CSS Fragmentation 3 §3.1.1: 最後の子の値は容器へ伝わる)
     expect(rows.map((r) => [!!r.breakBefore, !!r.keepTogether, !!r.breakAfter])).toEqual([
       [false, false, false],
       [true, true, false],
-      [false, false, true],
+      [false, false, false],
     ]);
+    expect(table.breakAfter).toBe('page');
   });
 
   it('表の外のセル・行の無いセルは、匿名の表・行で包む', () => {
@@ -753,7 +758,9 @@ describe('自前のカスケードからの読み込み', () => {
     };
     importHtml(doc, s).document.sequences[0].flow.children.forEach((b) => walk(b as LBlock));
     const div = blocks.find((b) => b.id === 'd')!;
-    expect(div.margin).toMatchObject({ left: 144, right: 144 }); // (600 - 16 - 200) / 2 px = 144pt
+    // 左右の auto の余白は、組むときに置く場所の幅から等分する (読み込みのときの見積もりで長さにしない)
+    expect(div.autoMargins).toBe('center');
+    expect(div.margin).toBeUndefined();
     expect(blocks.some((b) => b.textAlign === 'center' && b.children.some((k) => (k as { type: string }).type === 'image'))).toBe(true);
   });
 });

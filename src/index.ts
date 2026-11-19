@@ -4,14 +4,15 @@
  *   import { typeset } from 'kumiori';
  *   const result = await typeset(html, { files: [{ name: 'style.css', data: css }] });
  *   const pdf = await result.toPdf();          // Uint8Array
+ *   const { pdf: bytes } = await typesetToPdf(html); // PDF だけが要るとき (組んだ結果を持たないので、大きな文書で使うメモリが少ない)
  *   result.renderPage(canvas, 0);              // 1 ページ目を canvas に描く (ブラウザ)
  *   walkAreaTree(result.areaTree, (a) => { … }); // 組んだ結果 (Area Tree) をたどる
  *
  * ここから出すものだけが公開 API (ほかのモジュールの関数・型は、版の間で変わることがある)。
  */
 
-export { typeset, typesetHtml, typesetFo, createTypesetter, decodeDocumentText } from './api';
-export type { TypesetOptions, TypesetResult, RenderPageOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec } from './api';
+export { typeset, typesetHtml, typesetFo, typesetToPdf, createTypesetter, decodeDocumentText } from './api';
+export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, PdfOptions, RenderPageOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec } from './api';
 
 // プラグイン (TypesetOptions.plugins。いまは画像の形式を足すものだけ。imageFormats.ts)
 export { PLUGIN_API_VERSION } from './imageFormats';
