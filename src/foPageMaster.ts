@@ -280,7 +280,7 @@ function printerMarks(fo: FoPageHost, m: XEl, fs: number): Partial<PageMaster> {
   const bleedPt = bl !== undefined ? fo.len(bl, fs) : undefined;
   if (bleedPt !== undefined) out.bleed = bleedPt / PT_PER_MM;
   if (marks && marks !== 'none') {
-    const toks = marks.replace(/url\([^)]*\)/g, ' ').split(/\s+/).filter(Boolean);
+    const toks = marks.replace(/url\([^)]*(?:\)|$)/g, ' ').split(/\s+/).filter(Boolean);
     const crop = toks.includes('crop');
     const cross = toks.includes('cross');
     if (crop || cross) {

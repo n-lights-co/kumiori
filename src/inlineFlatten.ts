@@ -882,18 +882,9 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     kids.push({ kind: 'box', idMark: true, first: '\uFFFC', last: '\uFFFC', advance: 0, isSpace: false, runId: ++state.run, st: s2, glue: true, src: c.id, box: { node: newNode('block', wm, { isize: 0, bsize: 0 }), adv: 0, cross: 0, above: 0, below: 0 } });
   // keep-together.within-line: inline の中では改行しない (2 つ目以降の atom の前で改行させない)
   if (c.noBreak) for (let q = 1; q < kids.length; q++) kids[q].glue = true;
-  if (c.baselineShift) {
-    const d = c.baselineShift === 'super' ? st.fontSize * 0.35 : c.baselineShift === 'sub' ? -st.fontSize * 0.2 : c.baselineShift;
-    // 字と、行内の箱 (画像・数式など。枠の始まり・終わりの空きは除く) をずらす
-    for (const a of kids) if (a.kind === 'glyph' || (a.kind === 'box' && !a.frameOpen && !a.frameClose)) a.shift = (a.shift ?? 0) + d;
-    // この inline と、中の inline の内容の領域も、同じだけずらす (外側の inline の領域は、まだ付いていないので動かない)
-    const areas = new Set<InlineContentArea>();
-    for (const a of kids) {
-      if (a.bgArea) areas.add(a.bgArea);
-      for (const f of a.frames ?? []) if (f.area) areas.add(f.area);
-    }
-    for (const ar of areas) ar.shift += d;
-  }
+  if (c.baselineShift) shiftAtoms(kids, c.baselineShift === 'super' ? st.fontSize * 0.35 : c.baselineShift === 'sub' ? -st.fontSize * 0.2 : c.baselineShift);
+  // vertical-align のキーワード (CSS 2.1 §10.8.1)。縦書きの行は、まだ扱わない (画像の top・bottom と同じ。基線にそろえる)
+  else if (c.verticalAlign && wm === 'horizontal-tb') alignKeyword(c.verticalAlign, kids, st, s2, m, wm);
   pushAll(out, kids);
   if (c.width !== undefined) {
     // 固定の長さ (inline-progression-dimension) に満たない分は、余白 (inline の背景色が付く) で埋める
@@ -916,6 +907,64 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     }
   }
   state.run++;
+}
+
+/** atom の中の inline の内容の領域 (この inline と、中の inline のもの。外側の inline の領域は、まだ付いていない) */
+function contentAreas(kids: Atom[]): Set<InlineContentArea> {
+  const areas = new Set<InlineContentArea>();
+  for (const a of kids) {
+    if (a.bgArea) areas.add(a.bgArea);
+    for (const f of a.frames ?? []) if (f.area) areas.add(f.area);
+  }
+  return areas;
+}
+
+/** inline の中身を d だけ上げる (負なら下げる): 字と、行内の箱 (画像・数式など。枠の始まり・終わりの空きは除く) と、内容の領域 */
+function shiftAtoms(kids: Atom[], d: number): void {
+  for (const a of kids) if (a.kind === 'glyph' || (a.kind === 'box' && !a.frameOpen && !a.frameClose)) a.shift = (a.shift ?? 0) + d;
+  for (const ar of contentAreas(kids)) ar.shift += d;
+}
+
+/**
+ * vertical-align のキーワード (CSS 2.1 §10.8.1。置き換えでない行内の箱)。行内の箱は line-height の高さの箱: 最初に使える書体の基線の上・下
+ * (em の箱。lineMetrics.ts の atomAboveBelow と同じ値) に、半行間 ((line-height − 字の大きさ) / 2。負にもなる) を足したもの (§10.8.1)。
+ *  - top・bottom: 行の高さを決めてから、行の箱の上端・下端にそろえる (lineMetrics.ts の lineMetricsAligned)。ここでは、中身の atom に部分木の印を付ける。
+ *    中の top・bottom の要素は、それ自身の部分木 (外側の部分木に入れない。§10.8.1 の aligned subtree)
+ *  - middle: 箱の上下の中央を、親の基線から親の x-height の半分だけ上に (x-height は書体の OS/2 の sxHeight。無ければ 0.5em)
+ *  - text-top・text-bottom: 箱の上端・下端を、親の内容の領域 (親の書式の最初に使える書体の em の箱) の上端・下端に
+ */
+function alignKeyword(va: NonNullable<LInline['verticalAlign']>, kids: Atom[], parent: ResolvedStyle, own: ResolvedStyle, m: Measurer, wm: WritingMode): void {
+  if (va === 'top' || va === 'bottom') {
+    const group = {};
+    for (const a of kids) {
+      // 中の top・bottom の要素 (alignGroup の付いた atom) と、top・bottom の行内の箱 (画像・inline-block など。lineAlign だけが付く) は、
+      // それぞれ自分の部分木なので、外側の部分木に入れない (§10.8.1: aligned subtree は、vertical-align が top・bottom でない子孫だけを含む)
+      if (a.alignGroup || a.lineAlign || a.ownLineAlign) continue;
+      a.lineAlign = va;
+      a.alignGroup = group;
+      a.alignBase = a.shift ?? 0;
+    }
+    for (const ar of contentAreas(kids)) ar.alignBase ??= ar.shift;
+    return;
+  }
+  const ratio = (st: ResolvedStyle) => fontBaselineRatio(st, m, wm) ?? m.glyph(primaryChar(st), runStyleOf(st), wm).font.baselineRatio;
+  const fs = own.fontSize;
+  const br = ratio(own);
+  const half = (lineHeightOf(own) - fs) / 2;
+  const above = br * fs + half;
+  const below = (1 - br) * fs + half;
+  const pfs = parent.fontSize;
+  const pbr = ratio(parent);
+  let d: number;
+  if (va === 'text-top') d = pbr * pfs - above;
+  else if (va === 'text-bottom') d = below - (1 - pbr) * pfs;
+  else {
+    const f = m.glyph(primaryChar(parent), runStyleOf(parent), wm).font;
+    const xh = (f.fk as { xHeight?: number }).xHeight;
+    const x = xh && xh > 0 ? xh / f.unitsPerEm : 0.5;
+    d = (x * pfs) / 2 - (above - below) / 2;
+  }
+  if (d) shiftAtoms(kids, d);
 }
 
 /**
@@ -998,7 +1047,7 @@ function flattenInlineBox(c: LImage | LInlineContainer, cx: FlattenCtx): void {
     // 囲む inline の背景 (bg) は、箱の所も塗る: 行内の箱 (inline) の背景は、その内容の領域に、中の分けられない箱の所も含めて続けて塗る
     // (CSS 2.1 §9.2.2・§14.2・CSS Backgrounds 3 §3.7。塗る高さは、囲む inline の内容の領域 (bgArea。flattenInlineElement が付ける) で、
     // 箱の高さではない)。箱そのものの背景は、箱が自分で描く
-    out.push({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: spec.adv, isSpace: false, runId: state.run, st: boxSt, bg, box: spec, ...(c.type === 'image' && c.noWrapInCellMin ? { noWrapInCellMin: true } : {}), ...(lineAlign ? { lineAlign } : {}) });
+    out.push({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: spec.adv, isSpace: false, runId: state.run, st: boxSt, bg, box: spec, ...(c.type === 'image' && c.noWrapInCellMin ? { noWrapInCellMin: true } : {}), ...(lineAlign ? { lineAlign } : {}), ...(c.type === 'inline-container' && c.ownLineAlign ? { ownLineAlign: true } : {}) });
     state.run++;
   }
 }

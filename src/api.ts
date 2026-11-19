@@ -15,7 +15,7 @@ import { DOMParser as XmlDOMParser } from '@xmldom/xmldom';
 import { FontManager, type LoadedFont } from './fontManager';
 import { Measurer } from './measurer';
 import { LayoutEngine } from './layoutEngine';
-import { renderPdf, svgTextWidth, type PdfRenderOptions } from './pdfRenderer';
+import { renderPdf, renderPdfPages, svgTextWidth, type PdfRenderOptions } from './pdfRenderer';
 import { renderSheetToCanvas } from './canvasRenderer';
 import { AssetStore, imageExtensions, looksLikeImage, mentionedFiles, normalizeSrc } from './assets';
 import { formatsOf, pluginProblem, type ImageFormat, type KumioriPlugin } from './imageFormats';
@@ -32,7 +32,8 @@ import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
 import { patchHtmlParserStack } from './htmlParserStack';
 import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
 import { MESSAGE_LANGS, messageLang, msg, withMessageLang, type MessageLang } from './messages';
-import { FO_COMPATS, HTML_STYLES, ahCascadeOptions, compatLayoutOptions, compatPdfOptions, htmlImportCompatOptions, isAhCompat, loadFoHyphenators, type FoCompat } from './compat';
+import { tooComplexTotal } from './htmlPaged';
+import { FO_COMPATS, HTML_STYLES, styleCascadeOptions, compatLayoutOptions, compatPdfOptions, htmlImportCompatOptions, isAhCompat, loadFoHyphenators, type FoCompat } from './compat';
 import { FONT_SPECS, FontNameTable, GENERIC_FONT_KEYS, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, EMOJI_SPEC, createFontMapping, faceFileWeights, hasMissingEmoji, hasMissingGlyphs, missingGlyphChars, setGenericFont, setupDefaultFonts, type GenericFontKey } from './fontMapping';
 import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
@@ -178,7 +179,7 @@ export interface TypesetResult {
   /** 組版にかかった時間 (ミリ秒。読み込み・PDF の書き出しは含まない) */
   layoutMs: number;
   /** PDF にする */
-  toPdf(options?: Pick<PdfRenderOptions, 'title' | 'pdfx' | 'imageMaxDpi'>): Promise<Uint8Array>;
+  toPdf(options?: PdfOptions): Promise<Uint8Array>;
   /**
    * ページ (0 から数える) を canvas に描く (ブラウザ。印刷プレビューなど)。canvas の大きさは、ページの大きさ × scale に合わせて設定し直す。
    * 字は書体ファイルの輪郭から描くので、ページの外の書体の設定 (CSS の @font-face など) に左右されない
@@ -204,12 +205,17 @@ const bufferOf = (d: KumioriFileData): ArrayBuffer => {
 const textOf = (d: KumioriFileData) => (typeof d === 'string' ? d : new TextDecoder().decode(bytesOf(d)));
 /**
  * 中の処理が使う形 (ブラウザの File と同じ: 名前はファイル名、読み出しは text・arrayBuffer)。関数の中身は 1 度だけ読む。
- * url: 参照から取ったファイルの、参照の URL の全体 (問い合わせの ?… も含む。名前が同じでも URL の違うものを取り違えないため)
+ * url: 参照から取ったファイルの、参照の URL の全体 (問い合わせの ?… も含む。名前が同じでも URL の違うものを取り違えないため)。
+ * forget: 読んだ中身の覚えを捨てる (画像の置き場に写した画像。もう 1 度要るときは、関数を呼び直して読む。中身を値で渡されたものは、
+ * 値を持つ側がいるので、捨てても空かない)
  */
 const toFile = (f: KumioriFile, css = false, url?: string) => {
   let got: Promise<KumioriFileData> | undefined;
   const data = () => (got ??= typeof f.data === 'function' ? f.data() : Promise.resolve(f.data));
-  return { name: f.name.split(/[\\/]/).pop()!, path: f.name, css, ...(url !== undefined ? { url } : {}), data, text: async () => textOf(await data()), arrayBuffer: async () => bufferOf(await data()) };
+  const forget = () => {
+    if (typeof f.data === 'function') got = undefined;
+  };
+  return { name: f.name.split(/[\\/]/).pop()!, path: f.name, css, ...(url !== undefined ? { url } : {}), data, forget, text: async () => textOf(await data()), arrayBuffer: async () => bufferOf(await data()) };
 };
 /** CSS として読むファイル (拡張子 .css か、参照から CSS として取ったもの) */
 const isCss = (f: { name: string; css?: boolean }) => !!f.css || /\.css$/i.test(f.name);
@@ -472,7 +478,43 @@ function kindOf(text: string, o: TypesetOptions): 'html' | 'xhtml' | 'fo' {
 
 /** HTML+CSS・XSL-FO を組む */
 export async function typeset(text: string, options: TypesetOptions = {}): Promise<TypesetResult> {
-  return withMessageLang(options.lang, async () => (await buildTypesetter(options))(text, options));
+  return withMessageLang(options.lang, async () => (await buildTypesetter(options))(text, options) as Promise<TypesetResult>);
+}
+
+/** PDF の設定 (TypesetResult.toPdf・typesetToPdf): 題名 (文書に題が無いとき)・PDF/X の印・画像の解像度の上限 */
+export type PdfOptions = Pick<PdfRenderOptions, 'title' | 'pdfx' | 'imageMaxDpi'>;
+/** typesetToPdf の設定: PDF の設定 (PdfOptions) と、組み方 */
+export interface TypesetPdfOptions extends PdfOptions {
+  /**
+   * メモリ節約: 組み直しの回 (ページ番号の参照を決めるもの) で、前の回のページを使い回さず、組み終えた page-sequence の組版の途中の木を
+   * 手放す (既定 false)。使うメモリは、文書全体の組版の途中の木から、いちばん大きな page-sequence と書きかけの PDF の分ほどに減る
+   * (PostgreSQL の文書の FO (3,231 ページ) で、約 2.3GB → 約 0.9GB。いちばん多いのは FO の読み込みの所)。その代わり、組み直しの回ごとに文書全体を組み、決まった後に
+   * もう 1 度組む (同じ文書で、時間は約 1.5 倍)。PDF は、使い回すときと同じ (使い回すときは、前の回のページのページ番号の参照の字を、
+   * 組み直したときと同じ字・同じ位置になると確かめられたとき (字数・字の種類・書体・送りが同じで、前後の字との詰め (カーニング) に加わらないとき) だけ
+   * 差し替え、確かめられなければ、その page-sequence を組み直す)
+   */
+  lowMemory?: boolean;
+}
+/** typesetToPdf の結果 (TypesetResult から、組んだ結果 (areaTree) と、それを使う toPdf・renderPage を除いたもの) */
+export interface TypesetPdfResult {
+  /** PDF のバイト列 */
+  pdf: Uint8Array;
+  /** ページ数 */
+  pageCount: number;
+  /** 組版の警告と、PDF を書く途中の警告 (typeset の warnings に、toPdf の警告を足したものと同じ並び) */
+  warnings: string[];
+  /** 組版にかかった時間 (ミリ秒)。ページを領域の木にする時間は含まない (PDF を書く時間に入る。TypesetResult.layoutMs より短い) */
+  layoutMs: number;
+}
+
+/**
+ * 文書を組み、PDF だけを作る (typeset の後に toPdf を呼ぶのと同じ PDF・警告・ページ数)。ページを 1 枚ずつ領域の木にして書き、
+ * 書いたページを手放すので、文書全体の領域の木を 1 度に持たない (数千ページの文書で、使うメモリが少ない)。
+ * 組んだ結果 (Area Tree) を使わず、PDF だけが要るときに使う。ページの領域の木を 2 度作る (使う書体・画像を集めるときと、描くとき)。
+ * Node のコマンドもこれで PDF を作る
+ */
+export async function typesetToPdf(text: string, options: TypesetOptions = {}, pdf: TypesetPdfOptions = {}): Promise<TypesetPdfResult> {
+  return withMessageLang(options.lang, async () => (await buildTypesetter(options))(text, options, pdf) as Promise<TypesetPdfResult>);
 }
 
 /** createTypesetter の設定: 書体まわり (何度組んでも同じもの) */
@@ -484,6 +526,8 @@ export type DocumentOptions = Omit<TypesetOptions, keyof TypesetterOptions>;
 export interface Typesetter {
   /** 文書を組む (typeset と同じ。書体は読み込み済みのものを使い回す) */
   typeset(text: string, options?: DocumentOptions): Promise<TypesetResult>;
+  /** 文書を組み、PDF だけを作る (typesetToPdf と同じ。書体は読み込み済みのものを使い回す) */
+  typesetToPdf(text: string, options?: DocumentOptions, pdf?: TypesetPdfOptions): Promise<TypesetPdfResult>;
 }
 
 /**
@@ -497,17 +541,27 @@ export async function createTypesetter(setup: TypesetterOptions = {}): Promise<T
     typeset: async (text, options = {}) => withMessageLang(options.lang, async () => {
       // 書体まわりの設定 (fonts・genericFonts・loadFont) は器を作るときのもの。文書ごとの設定に渡しても使われないので、無言で捨てずに警告にする
       // (typeset(text, options) は同じ options を器と文書の両方に渡すので、ここは Typesetter.typeset だけ)
-      const ignored = SETUP_ONLY_OPTIONS.filter((k) => (options as TypesetOptions)[k] !== undefined).map((k) => msg(`${k} は createTypesetter の設定です (Typesetter.typeset の文書ごとの設定では使われません)`, `${k} is a createTypesetter option (it is not used in the per-document options of Typesetter.typeset)`));
-      const r = await run(text, options);
+      const ignored = setupOnlyWarnings(options, 'Typesetter.typeset');
+      const r = (await run(text, options)) as TypesetResult;
       // r.warnings は、toPdf の警告を後から足す配列なので、作り直さずに前へ足す
       if (ignored.length) r.warnings.unshift(...ignored);
+      return r;
+    }),
+    typesetToPdf: async (text, options = {}, pdf = {}) => withMessageLang(options.lang, async () => {
+      const r = (await run(text, options, pdf)) as TypesetPdfResult;
+      r.warnings.unshift(...setupOnlyWarnings(options, 'Typesetter.typesetToPdf'));
       return r;
     }),
   };
 }
 
+/** 器の文書ごとの設定に渡された、器を作るときの設定 (書体まわり) の警告 (使われないので、無言で捨てない) */
+function setupOnlyWarnings(options: DocumentOptions, method: string): string[] {
+  return SETUP_ONLY_OPTIONS.filter((k) => (options as TypesetOptions)[k] !== undefined).map((k) => msg(`${k} は createTypesetter の設定です (${method} の文書ごとの設定では使われません)`, `${k} is a createTypesetter option (it is not used in the per-document options of ${method})`));
+}
+
 /** 書体を読み込み、文書を組む関数を返す (createTypesetter と typeset の中身) */
-async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string, options: DocumentOptions) => Promise<TypesetResult>> {
+async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string, options: DocumentOptions, pdfOnly?: TypesetPdfOptions) => Promise<TypesetResult | TypesetPdfResult>> {
   checkOptions(setup);
   svgParser ??= (await parsers()).svg;
   const timeout = setup.fetchTimeoutMs ?? 30_000;
@@ -591,7 +645,7 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
     }
     fonts.adopt(await p);
   };
-  return (text, options) => typesetDocument(text, { ...setup, ...options }, base, loadOptional, baseWarnings, fontNames);
+  return (text, options, pdfOnly) => typesetDocument(text, { ...setup, ...options }, base, loadOptional, baseWarnings, fontNames, pdfOnly);
 }
 
 /** 文書を 1 つ組む: base (読み込み済みの書体) の写しに、文書ごとの書体を足して組む */
@@ -602,7 +656,9 @@ async function typesetDocument(
   loadSpec: (fonts: FontManager, spec: FontSpec) => Promise<void>,
   baseWarnings: string[],
   baseNames: FontNameTable,
-): Promise<TypesetResult> {
+  /** PDF だけを作るときの toPdf の設定 (typesetToPdf)。無ければ、領域の木を持つ結果 (TypesetResult) を返す */
+  pdfOnly?: TypesetPdfOptions,
+): Promise<TypesetResult | TypesetPdfResult> {
   // 選択肢は入口で検証し、compat は 1 つの真偽値 (ah) に正規化して下流 (組版・PDF の設定) に渡す (読み込みの Importer も同じ判定 isAntennaCompat を使う)
   checkOptions(options);
   const kind = kindOf(text, options);
@@ -707,6 +763,8 @@ async function typesetDocument(
   }
   for (const f of images.filter(isMentioned)) {
     const asset = await assets.addBlob(f.path.split('\\').join('/'), new Blob([bytesOf(await f.data()) as BlobPart]));
+    // 画像の置き場が中身を写して持つので、ファイルの読んだ中身は捨てる (同じ画像を 2 度持たない。画像の多い文書で、画像の量の分のメモリになっていた)
+    f.forget();
     // 参照から取った画像は、参照の URL の全体 (問い合わせの ?… を含む) でも登録する。画像は「完全一致 → ファイル名」の順に引くので、
     // 問い合わせだけが違う 2 つの画像 (a.png?id=1 と a.png?id=2) が、それぞれの画像になる (名前だけだと、後に登録したものに両方が当たる)
     if (asset && f.url !== undefined && normalizeSrc(f.url) !== asset.key) {
@@ -721,7 +779,10 @@ async function typesetDocument(
   for (const f of files) {
     if (f.url === undefined || isCss(f) || IMAGE_FILE.test(f.name) || /\.(ttf|otf|ttc|otc|woff2?)$/i.test(f.name) || assets.get(f.url)?.key === normalizeSrc(f.url)) continue;
     const bytes = bytesOf(await f.data());
-    if (await looksLikeImage(bytes, formats)) await assets.addBlob(f.url, new Blob([bytes as BlobPart]));
+    if (await looksLikeImage(bytes, formats)) {
+      await assets.addBlob(f.url, new Blob([bytes as BlobPart]));
+      f.forget();
+    }
   }
 
   const measurer = new Measurer(fonts, 'fontkit');
@@ -798,7 +859,71 @@ async function typesetDocument(
     await fetchReportedImages(assets, r.report.images, allowFetch, timeout);
     return new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah) }).layout(r.document).sheets[0];
   };
+  /** PDF を書く設定 (toPdf と typesetToPdf で同じもの) */
+  const pdfOptions = (o: PdfOptions, pdfWarnings: string[]): PdfRenderOptions => ({
+    ...compatPdfOptions(isFo ? 'fo' : 'html', ah),
+    assets,
+    parseXml: svgParse,
+    typesetForeign,
+    ...(options.svgLanguages ? { svgLanguages: options.svgLanguages } : {}),
+    ...(options.deflate ? { deflate: options.deflate } : {}),
+    ...(options.links ? { links: options.links } : {}),
+    ...o,
+    warnings: pdfWarnings,
+  });
   const t0 = Date.now();
+  if (pdfOnly) {
+    // PDF だけを作る (typesetToPdf): ページを 1 枚ずつ領域の木にして書き、書いたページを手放す (文書全体の領域の木を 1 度に持たない)
+    const { lowMemory, ...pdfOpts } = pdfOnly;
+    // 書体の知らせ: ページを集めるたどり (layout の attachResources に当たる) の間は組版の警告に、ページを描く間は PDF を書く途中の知らせに入れる
+    // (typeset の後に toPdf を呼んだときと同じ順にする)
+    const pdfNotices: string[] = [];
+    const scanned = () => {
+      fonts.onNotice = (m) => pdfNotices.push(m);
+    };
+    let info: Pick<AreaTree, 'warnings'> | undefined;
+    const pdfWarnings: string[] = [];
+    let pageCount: number;
+    let layoutMs: number;
+    let bytes: Uint8Array;
+    if (lowMemory) {
+      // メモリ節約: 組み直しの回で前の回のページを使い回さず、組み終えた page-sequence の組版の途中の木を手放す (組版の手間は増える)
+      const pages = engine.layoutLowMemory(res.document);
+      bytes = await renderPdfPages(
+        { title: pages.title, info: pages.info, scan: (v, r) => pages.scan(v, r), paint: (v) => pages.paint(v), finish: () => (info = pages.finish()), scanned },
+        fonts,
+        { ...pdfOptions(pdfOpts, pdfWarnings), releaseImageBytes: true },
+      );
+      pageCount = pages.count;
+      layoutMs = pages.layoutMs;
+    } else {
+      const pages = engine.layoutSheets(res.document);
+      layoutMs = Date.now() - t0;
+      bytes = await renderPdfPages(
+        {
+          title: pages.title,
+          info: pages.info,
+          scan: (visit) => {
+            for (let i = 0; i < pages.count; i++) visit(pages.sheet(i));
+          },
+          paint: (visit) => {
+            for (let i = 0; i < pages.count; i++) {
+              visit(pages.sheet(i));
+              pages.release(i);
+            }
+          },
+          finish: () => (info = pages.finish()),
+          scanned,
+        },
+        fonts,
+        { ...pdfOptions(pdfOpts, pdfWarnings), releaseImageBytes: true },
+      );
+      pageCount = pages.count;
+    }
+    const out = [...warnings, ...(info?.warnings ?? [])];
+    for (const m of [...pdfNotices, ...pdfWarnings]) if (!out.includes(m)) out.push(m);
+    return { pdf: bytes, pageCount, warnings: out, layoutMs };
+  }
   const tree = engine.layout(res.document);
   const layoutMs = Date.now() - t0;
   // 結果の警告。組んだ後の書体の知らせ (PDF を書くときに初めて読む色つきの字形の上限など。fontSanity.ts の fontNotice) と、
@@ -819,17 +944,7 @@ async function typesetDocument(
       withMessageLang(lang, async () => {
         const pdfWarnings: string[] = [];
         try {
-          return await renderPdf(tree, fonts, {
-            ...compatPdfOptions(isFo ? 'fo' : 'html', ah),
-            assets,
-            parseXml: svgParse,
-            typesetForeign,
-            ...(options.svgLanguages ? { svgLanguages: options.svgLanguages } : {}),
-            ...(options.deflate ? { deflate: options.deflate } : {}),
-            ...(options.links ? { links: options.links } : {}),
-            ...o,
-            warnings: pdfWarnings,
-          });
+          return await renderPdf(tree, fonts, pdfOptions(o, pdfWarnings));
         } finally {
           pdfWarnings.forEach(addWarning);
         }
@@ -941,10 +1056,12 @@ async function importHtmlText(
   // 既定のスタイル (style) は、作成者スタイルシート ではなく既定のスタイルシート (UA) として当てる (作成者スタイルシート に詳細度で勝たない)
   // attr() を置き換えた結果、読めない値になって無効にした宣言 (CSS Values 5 §7.7.1。警告に出す)
   const invalidAttr: Record<string, number> = {};
+  // 結合子の種類の混ざったセレクタの照合の覚えの予算を使い切った (未対応の CSS の警告に出す)
+  let selectorBudget = false;
   const fontFiles = files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name));
   // アンテナハウス互換の bolder・lighter は、@font-face の書体の太さで決める (記述子の無い face は、書体のファイルの太さ。compat.ts の ahCascadeOptions)
   const ahWeights = style === 'ah' ? await faceFileWeights(prepared.sheet, fontFiles) : undefined;
-  const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, ...(style === 'ah' ? ahCascadeOptions(prepared.sheet, ahWeights) : {}), onInvalidAttr: (p, v) => (invalidAttr[`${p}: ${v}`] = (invalidAttr[`${p}: ${v}`] ?? 0) + 1) });
+  const styles = cascadeStyles(prepared.doc, prepared.authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: prepared.uaSheet, quirksMode: documentMode(prepared.doc, xml), viewport: { width: Math.max(prepared.bodyWidthPx, 100), height: prepared.pageHeightPx }, pageWidths: prepared.pageWidthsPx, ...styleCascadeOptions(style, prepared.sheet, ahWeights), onInvalidAttr: (p, v) => (invalidAttr[`${p}: ${v}`] = (invalidAttr[`${p}: ${v}`] ?? 0) + 1), onSelectorBudget: () => (selectorBudget = true) });
   // @font-face の書体 (TTF・OTF と、ふつうの書体のファイルに戻して使う WOFF・WOFF2)
   // アンテナハウス互換 (style ah) では、font-weight の記述子の無い face を、書体のファイルの太さで登録する (fontMapping.loadFontFaces)
   // 当たるファイルの無かった face は、次の書体で組み (CSS Fonts 4 §4.3)、警告で知らせる
@@ -974,6 +1091,7 @@ async function importHtmlText(
   });
   const unsupported = { ...imported.report.unsupported };
   for (const [k, n] of Object.entries(cssRep.unsupported)) unsupported[k] = (unsupported[k] ?? 0) + n;
+  if (selectorBudget) unsupported[tooComplexTotal()] = (unsupported[tooComplexTotal()] ?? 0) + 1;
   const badAttr = summarizeCounts(invalidAttr);
   const attrWarnings = badAttr
     ? [

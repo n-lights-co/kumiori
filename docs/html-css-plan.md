@@ -25,6 +25,9 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 
 - HTML を読み (画面は DOMParser、Node のコマンドは linkedom)、各要素の計算値を自前のカスケード (`src/cssCascade.ts`・`src/cssSelector.ts`) で決める。
   継承・セレクタの優先順位・`!important`・既定のスタイル (UA スタイルシート)・単位の換算 (em・% → px)・`::before` / `::after` を扱う (第 6 段階)。
+  箱の大きさ・余白の百分率 (`width`・`max-width`・`min-width`・`margin`・`padding`・`text-indent`。百分率を含む `calc()` も) は、読み込みのときの包含ブロックの幅の見積もりで px にしたものに加えて、
+  百分率のまま論理ツリーへ運び (`BoxStyle.percent`・画像の `LImage.percentSize`)、組版エンジンが、箱を置くときの実際の包含ブロックの幅で解き直す (CSS 2.1 §10.2。
+  float・inline-block・絶対配置・flex と grid の項目・段・表のセルの中と、`:first`・名前付きのページなどのページごとに違う領域)。左右の `margin: auto` も、組むときに配る。
 - htmlImport が受け取るのは StyleSource (`style()`・`isAuto()`・`select()`・`contentWidth()`) だけ。ブラウザの配置 (`rect()`) は無いので、
   画像の大きさ・flex・grid・絶対配置・`margin: auto` は CSS の指定から決める (第 6 段階の 4〜7)。
 - 単位は px (CSS の 1px = 0.75pt) で返るので pt に直す。
@@ -51,7 +54,7 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 | `writing-mode: vertical-rl`・`text-orientation`・`text-combine-upright` | 縦書き・縦中横 (`LTateChuYoko`) |
 | `<ruby>` `<rt>` | `LRuby` |
 | `float: left / right` | `LFloat` (start / end) |
-| `break-before / after / inside`・`orphans`・`widows` | 改ページ・keep・孤立行の制御。最初の子の `break-before`・最後の子の `break-after` は、強制の区切りも避ける値 (`avoid` 系) も、親の箱の前後の区切りに伝える (CSS Fragmentation 3 §3.1.1。同じ所の強制の区切りは避ける値に勝つ = §4.3。`avoid-column` は段組の容器で止まる。flex・grid の容器と表の行からは、まだ伝えない。`htmlImport.ts` の `propagateEdgeAvoids`) |
+| `break-before / after / inside`・`orphans`・`widows` | 改ページ・keep・孤立行の制御。最初の子の `break-before`・最後の子の `break-after` は、強制の区切りも避ける値 (`avoid` 系) も、親の箱の前後の区切りに伝える (CSS Fragmentation 3 §3.1.1。同じ所の強制の区切りは避ける値に勝つ = §4.3。`avoid-column` は段組の容器で止まる。`htmlImport.ts` の `propagateEdgeAvoids`)。表のセルの中身の最初・最後の子の区切りは行の前後へ、表の最初・最後の行 (と `thead`・`tbody`・`tfoot`) の区切りは表の前後へ、flex・grid の項目の区切りは項目のある行 (行ごとの 1 行の表) の前後へ、最初・最後の行の区切りは容器の前後へ伝える。同じ所の `left`・`right` は、後ろの値で 1 度だけ効かせる (§4.3) |
 | `column-count`・`column-gap`・`column-rule` | 段組 (ページ・コンテナ) |
 | `hyphens: auto` + `lang` | 分綴 (英語・ラテン語・ロシア語・ウクライナ語・現代ギリシャ語。文書の中の lang・xml:lang の言語の分綴の表を読み込む) |
 | `hyphenate-character`・`hyphenate-limit-chars`・`hyphenate-limit-lines`・`hyphenate-limit-last: always`・`hyphenate-limit-zone` | 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5。行末に出す字・字数・続く行の数・段落の最後の行の手前・行末の空きの幅)。`hyphenate-limit-last` の `column`・`page`・`spread` は未対応 |
@@ -109,13 +112,25 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 - 接頭辞の無い名前 (標準のプロパティ) に書いたアンテナハウスの拡張の値は、互換のスタイル (`--style ah`) のときだけ読む: `float` の `top`・`bottom`・`start`・`end`・`inside`・`outside`・`center`・`alternate`・`multicol`・`sidenote` など、`width` の単位 `gr`、`text-align` の `inside`・`outside`、色の `cmyk()`・`rgb-icc()` (`htmlPaged.ts` の `compatOnlyValue`・`HtmlImportOptions.ahCssExtensions`)。ほかのスタイルでは、読めない値として宣言ごと捨て (前の宣言を打ち消さない。CSS 2.1 §4.2)、警告に出す。`@supports` にも、互換のスタイルのときだけ真と答える。接頭辞の付いた名前 (`-ah-float`・`-ah-text-align`) に書いた値は、どのスタイルでも読む。以下の節の「拡張の値」の説明は、この決まりの上での動き。
 - SVG の字の `font-family` が読み込んでいない Courier・monospace の名前なら、字幅が Courier New と同じ Cousine で描く (名前が Bold などなら太字)。
 - 余白の箱の角丸 (`border-radius`・`border-*-radius`) も描く (Paged Media 3 §6 は、CSS 2.1 に無いプロパティの余白の箱での振る舞いを決めていない)。
+- ページ文脈・余白の箱には、Paged Media 3 付録 A の CSS 2.1 のプロパティを、文書の要素と同じ書き方 (一括指定・個別の指定) で読む:
+  `@page` の `padding`・`border` (ページの箱の margin と padding の間。本文の領域を狭める。§3)・`outline`、余白の箱の `border`・`background` (画像・グラデーションも)・
+  `outline`・`min-width`・`max-width`・`min-height`・`max-height` (§5.3・§5.3.2.3。上下の辺の箱の幅は、3 つの箱をまとめて分け直す)。
+  輪郭線は、文書の要素と同じに、描くときだけの効果 (`PaintEffect.outline`) として描く (余白の箱の角丸にも沿う)。
+  付録 A に無いプロパティ (論理の名前の `margin-block-start` など・`box-shadow`) は、ページ文脈・余白の箱では読まない (§6: 振る舞いは決まっていない)。
+- `@footnote` は、区切り線 (`border-top`。個別の指定も)・`border-length`・`margin`・`padding` と、領域の高さの上限 `max-height` (GCPM 3 §2.4.2。超える脚注は次のページへ送る) を読む。
 - 余白の箱は 16 か所すべて。上下の辺の箱は本文の幅いっぱいに置き、揃え (左・中央・右) で位置を分ける (CSS の箱の幅の配分は行わない)。
   高さを指定した上下の箱・幅を指定した左右の箱 (と隅の箱) は、Paged Media 3 §5.3.3 どおり本文の側に寄せる (決まりすぎのとき、ページの端の側の margin を auto とする。margin が両方 auto なら真ん中)。vertical-align は箱の中の中身の揃えだけ (§6.3)。WeasyPrint の見本との組み比べで直した (前は vertical-align で箱を置き、既定は真ん中だった)。
 - `:first`・`:left`・`:right`・`:blank` は条件付きのページマスターにする。名前の無い `:first` は文書の先頭ページだけ、名前付きの `:first` (`chapter:first`) はその名前のページの並びの先頭ページに当てる。
-- 名前付きページは、body の直下のブロックの `page` が変わるところでページシーケンスを分ける。
+- 名前付きページは、流れの中のブロックの `page` (`auto` は親の値) が変わるところでページシーケンスを分ける。body の直下より深い所のブロックも見る
+  (body から、流れの中のふつうのブロックをたどった箱。表・flex・grid・段組の中は見ない)。包む箱は切り替えの所で分け、上の飾りは最初の断片、下の飾りは最後の断片に残す。
   `page` を比べるのは流れの中のブロックだけ (CSS Page 3 §8.1: `page` は class A の区切りを作る箱に効く)。絶対配置・固定配置・回り込みの箱は
   ページの名前を変えず、最初の流れの中の箱の前にそれらしか無ければ、最初のページはその箱の名前のページにする
   (book の見本の `h1 { position: absolute; visibility: hidden }` の後の `page: full`。WeasyPrint・Chromium と同じ)。
+  `body`・`html` の `page` は、最初のページの名前にする (`body` が先)。リストの項目 (`li`) の `page` でも切り替える。切り替えられない箱
+  (表の行・flex と grid の項目・段組や表のセルの中の箱) の `page` は、未対応の CSS として知らせる。同じ名前のページが続いても、`page` に同じ名前を書いた、強制の改ページと
+  `counter-reset: page` のある箱では、ページシーケンスを分けて番号を振り直す (`body`・`html` の `counter-reset: page` は、最初のページシーケンスの番号)。
+  左右のページ (`:left`・`:right`、`left`・`right` の区切りの白ページ、`inside`・`outside`) は、ページ番号の偶奇でなく、文書の最初からのページの順 (白ページも 1 枚と数える) で決め、
+  番号を振り直しても変わらない (Paged Media 3 §3.3。互換のスタイル (`--style ah`・`weasyprint`・`vivliostyle`) では、これまでどおりページ番号の偶奇で決める)。
 - この段階で残した `string(…, first-except / start)`、`::footnote-call` / `::footnote-marker` / `@footnote` の書式、`target-text()`、本文の中の `counter(page)` は、後で対応した (下の各節)。
 - 本の組版向けの既定 (Kumiori の既定のスタイル) には、ページ下の中央のノンブルを含める。
 
@@ -165,7 +180,7 @@ node scripts/compare-pdf.mjs --html <見本>.html --ref <見本>.pdf --out <出�
 - 脚注どうしの間は空けない (CSS は脚注の要素の余白だけ。組版エンジンの既定の 2pt を使わない)。`@footnote` の em の基準は、互換のスタイルでは初期値 10pt (ページの文脈は根元の要素から受け継ぐが、初期値にする実装も適合: Paged Media 3 §5)
 - 横書きの行の中の基線の位置: 最初に使える書体の上の高さ・下の深さ (hhea の ascent・descent) で置く。行内の箱の上端から基線までは (line-height + A − D) / 2 (Inline 3 §5.3 の A′ = A + L/2、L = line-height − (A + D)。CSS 2.1 §10.8.1)。行の中身は、箱ごとの上下 (A′・D′) を基線でそろえて囲む (別の書体・大きさの inline のある行は、line-height より高くなることがある。ブラウザと同じ)。縦書きは中央の基線 (行の中央) のまま。XSL-FO は変えない。アンテナハウス互換 (`--style ah`) は、基線を字の枠 (em の箱) の位置に置き、別の書体の inline があっても行を高くしない (見本の『CSS ページ組版入門』の PDF との組み比べで、基線が合うのはこちら)
 - 代わりの書体の字 (最初に使える書体に無い字): 行の高さは最初に使える書体の上下だけで決め、字はその字の書体の基線で行の基線に置く (Inline 3 §5.3。line-height が normal でないとき)。本文の書体に無いリストの印「◦」などで行が高くならない。line-height が normal のときは、代わりの書体 (読み込んだ書体) の上下 (ascent・descent と行間) も数え、その字のある行は、使われた書体の上下を囲む高さになる (同じ節。既定の書体は normal を 1.2 倍と決めてあるので、代わりの書体としては数えない)
-- 互換のスタイル: ol・ul の字下げは 2.5em (CSS 2.1 付録 D の 40px ではない)。罫線の太さは px の整数に丸めず (ブラウザは 1px 未満を 1px にする)、thin・medium・thick は 1pt・3pt・5pt
+- 互換のスタイル: ol・ul の字下げは 2.5em (CSS 2.1 付録 D の 40px ではない)。罫線の太さは px の整数に丸めず (ブラウザは 1px 未満を 1px にする。既定のスタイル (kumiori)・WeasyPrint 互換も丸めない)、thin・medium・thick は 1pt・3pt・5pt
 - `-ah-padding-start`・`-ah-margin-before` など (XSL の padding-start などに当たる) は、論理的な内側の余白・余白として読む
 - `style` 属性に書いた `-ah-` の別名 (`-ah-line-height-shift-adjustment` など) も、規則と同じく CSS の名前に読み替え、子孫に継承する (以前は、規則に書いたものだけを読み、`style` 属性の値は継承のときに見ていなかった)
 - `-ah-line-stacking-strategy` は、XSL の line-stacking-strategy (§7.16.6) として読み、継承する。font-height では、どの行も、ブロックの字の高さ (text-altitude・text-depth) と上下の半行間で同じ高さにする (§4.5 の nominal-requested-line-rectangle。大きな字や上付き・下付きで行が広がらない)

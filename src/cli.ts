@@ -3,8 +3,8 @@
  *
  * 使い方 (npm run build:cli の後):
  *   node dist-cli/cli.js <HTML ファイル> [-o <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css]
- *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4] [--xhtml] [--watch]
- *   node dist-cli/cli.js <FO ファイル (.fo・.xml)> [-o <PDF ファイル>] [--compat spec|antenna] [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4] [--watch]
+ *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4] [--xhtml] [--watch]
+ *   node dist-cli/cli.js <FO ファイル (.fo・.xml)> [-o <PDF ファイル>] [--compat spec|antenna] [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4] [--watch]
  *   node dist-cli/cli.js a.html b.fo c.html -o <出力先のディレクトリ>      (まとめて変換)
  *   cat a.html | node dist-cli/cli.js - -o - [--base <ディレクトリ>] > a.pdf  (標準入力から読み、標準出力へ書く)
  *
@@ -28,6 +28,8 @@
  *  - --no-fetch-images: 文書が http(s) で参照する画像をネットワークから取らない (既定は取る。他人の文書をサーバーで組むときに)
  *  - --no-fetch-styles: 文書が http(s) で参照する CSS (<link>・@import) をネットワークから取らない (既定は取る)
  *  - --no-outside-files: 文書が file: の URL・../ で指した、入力のディレクトリの外のファイルを読まない (既定は読む。他人の文書を組むときに)
+ *  - --low-memory: メモリを節約して組む (ページ番号の参照を決める組み直しで、前の回のページを使い回さない。数千ページの文書で、
+ *    使うメモリが 4 割ほどになり、時間は 1.5 倍ほどになる。PDF は同じ)
  *  - --link-schemes http,https,…: PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて)
  *  - --link-launch: ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パスなど) も PDF に書く (既定は書かない)
  *  - --link-relative file|uri: スキームの無い相対参照のリンクの書き方 (既定 file: GoToR・Launch。uri: 書かれた参照のままの URI 動作)
@@ -46,7 +48,8 @@
  *    -o - は PDF を標準出力へ書く (報告は標準エラーへ)
  *  - --watch: 入力のディレクトリの変更を見張り、変わるたびに組み直す (Ctrl+C で終わる)
  *  - --image-max-dpi <dpi>: 置かれる大きさに対してこれより細かい JPEG の写真を、この解像度に縮めて符号化し直す (PDF を小さくする。既定は元のまま)
- *  - --pdfx x3|x4: 入稿用の PDF/X-3:2003・PDF/X-4 の印を付ける (RGB の色・画像は CMYK にする。ページの中のリンク・注釈・フォームの欄は書かない)。--output-profile <ICC> で出力の
+ *  - --pdfx x1a|x1a:2003|x3|x4: 入稿用の PDF/X-1a:2001・PDF/X-1a:2003・PDF/X-3:2003・PDF/X-4 の印を付ける (RGB の色・画像は CMYK にする。
+ *    ページの中のリンク・注釈・フォームの欄は書かない。X-1a・X-3 は、透明を平らにし、書き出した PDF を調べて決まりに合わなければ誤り)。--output-profile <ICC> で出力の
  *    CMYK の ICC プロファイル (X-4 では必須)、--output-condition <名前> で印刷条件の名前 (既定 JC200103) を渡す
  *  - --spot-colors <JSON ファイル>: 特色の名前と、濃度 100% の代わりの CMYK ({"名前": "cmyk(20%,40%,60%,80%)"} か {"名前": [0.2,0.4,0.6,0.8]})。
  *    rgb-icc(…, #Separation, '名前', 濃度) を、PDF の特色 (Separation) にする。無い名前は、代わりの RGB で塗る
@@ -67,7 +70,7 @@ import type { HtmlDefaults } from './htmlPrepare';
 import { parsePageSize } from './htmlImport';
 import { FO_COMPATS, HTML_STYLES, type FoCompat } from './compat';
 import { isXhtmlFile } from './xhtml';
-import { decodeDocumentText, typeset, type KumioriFile } from './api';
+import { decodeDocumentText, typesetToPdf, type KumioriFile } from './api';
 import type { KumioriPlugin } from './imageFormats';
 import type { DrawioOptions } from './drawio/index';
 import { cachedFetcher, stencilFiles } from './drawio/nodeFiles';
@@ -115,8 +118,8 @@ export function parseArgs(argv: string[]) {
     spotColors?: Record<string, [number, number, number, number]>;
     /** JPEG の解像度の上限 (dpi) */
     imageMaxDpi?: number;
-    /** 入稿用の PDF/X の版 (--pdfx x3|x4) */
-    pdfx?: 'X-3' | 'X-4';
+    /** 入稿用の PDF/X の版 (--pdfx x1a|x1a:2003|x3|x4) */
+    pdfx?: 'X-1a' | 'X-1a:2003' | 'X-3' | 'X-4';
     /** 出力の CMYK の ICC プロファイル (--output-profile) */
     outputProfile?: Uint8Array;
     /** 印刷条件の名前 (--output-condition。ICC の登録名など) */
@@ -127,6 +130,8 @@ export function parseArgs(argv: string[]) {
     fetchStyles: boolean;
     /** 文書が file: の URL・入力のディレクトリの外を指す相対参照で指したファイルを読む (--no-outside-files で止める) */
     outsideFiles: boolean;
+    /** メモリ節約 (--low-memory): 組み直しで前の回のページを使い回さず、組み終えたページの組版の途中の結果を手放す (時間は増える) */
+    lowMemory: boolean;
     /** PDF に動作を書くリンクの URL のスキーム (--link-schemes。無ければ既定の http・https・mailto・tel) */
     linkSchemes?: string[];
     /** ファイルを開く動作のリンクも PDF に書く (--link-launch) */
@@ -159,6 +164,7 @@ export function parseArgs(argv: string[]) {
     fetchImages: true,
     fetchStyles: true,
     outsideFiles: true,
+    lowMemory: false,
     linkLaunch: false,
     drawioStencils: [],
     drawioFetch: false,
@@ -224,6 +230,7 @@ export function parseArgs(argv: string[]) {
     else if (a === '--no-fetch-images') out.fetchImages = false;
     else if (a === '--no-fetch-styles') out.fetchStyles = false;
     else if (a === '--no-outside-files') out.outsideFiles = false;
+    else if (a === '--low-memory') out.lowMemory = true;
     else if (a === '--link-schemes') {
       const v = value(k++);
       // スキームの名前 (RFC 3986 §3.1 の形) か * をカンマで区切る。末尾の : は付けても付けなくてもよい
@@ -265,9 +272,9 @@ export function parseArgs(argv: string[]) {
     }
     else if (a === '--pdfx') {
       const v = value(k++);
-      const m = /^(?:pdf\/?)?x-?([34])$/i.exec(v);
-      if (!m) throw new UsageError(msg(`--pdfx の値 "${v}" は使えません (x3 か x4)`, `--pdfx cannot be "${v}" (x3 or x4)`));
-      out.pdfx = m[1] === '4' ? 'X-4' : 'X-3';
+      const m = /^(?:pdf\/?)?x-?(1a(?::?(2001|2003))?|3|4)$/i.exec(v);
+      if (!m) throw new UsageError(msg(`--pdfx の値 "${v}" は使えません (x1a・x1a:2003・x3・x4)`, `--pdfx cannot be "${v}" (x1a, x1a:2003, x3 or x4)`));
+      out.pdfx = m[1] === '4' ? 'X-4' : m[1] === '3' ? 'X-3' : m[2] === '2003' ? 'X-1a:2003' : 'X-1a';
     }
     else if (a === '--output-profile') {
       const f = value(k++);
@@ -467,7 +474,9 @@ async function convert(input: string, output: string, args: Args, text: string) 
   const lazy = (p: string, name: string): KumioriFile => ({ name, data: async () => fs.readFileSync(p) });
   const files = [...chosen.map((p) => lazy(p, path.relative(dir, p).split(path.sep).join('/'))), ...outside.map((p) => lazy(p, path.basename(p)))];
   const kind = args.fo ? 'fo' : !stdin && /\.(fo|xml)$/i.test(input) ? 'fo' : args.xhtml || (!stdin && isXhtmlFile(input)) ? 'xhtml' : stdin ? undefined : 'html';
-  const res = await typeset(text, {
+  // PDF だけを作る (typeset の後に toPdf を呼ぶのと同じ PDF。ページを書いたら手放すので、数千ページの文書でも、文書全体の領域の木を持たない)
+  const pdfxWarnings: string[] = [];
+  const res = await typesetToPdf(text, {
     ...(kind ? { kind } : {}),
     files,
     // 入力のディレクトリの CSS のうち、文書が参照していないものは当てない (--css で名指ししたものは、参照していなくても利用者のスタイルシートとして足す)
@@ -494,9 +503,8 @@ async function convert(input: string, output: string, args: Args, text: string) 
     ...(args.plugins.length ? { plugins: await loadPlugins(args) } : {}),
     // 圧縮は Node の zlib (ネイティブ) で行う (pdf-lib の pako より速い)
     deflate: (b) => deflateSync(b),
-  });
-  const pdfxWarnings: string[] = [];
-  const pdf = await res.toPdf({
+  }, {
+    ...(args.lowMemory ? { lowMemory: true } : {}),
     ...(args.imageMaxDpi ? { imageMaxDpi: args.imageMaxDpi } : {}),
     ...(args.pdfx
       ? {
@@ -509,6 +517,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
         }
       : {}),
   });
+  const pdf = res.pdf;
   if (output === '-') process.stdout.write(pdf);
   else fs.writeFileSync(output, pdf);
   // PDF を標準出力へ書くときは、報告は標準エラーへ
@@ -526,8 +535,8 @@ export class UsageError extends Error {}
 
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--xhtml] [--watch] [--lang ja|en]',
-  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--no-fetch-images] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--watch] [--lang ja|en]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--xhtml] [--watch] [--lang ja|en]',
+  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--watch] [--lang ja|en]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
   '        kumiori --help | --version',
@@ -547,11 +556,12 @@ export const USAGE_JA = [
   '  --fo                      拡張子によらず XSL-FO として読む   --xhtml  拡張子によらず XML の構文 (XHTML) で読む',
   '  --print                   トンボと塗り足し (3mm) を付ける',
   '  --spot-colors <JSON>      特色の名前と代わりの CMYK      --image-max-dpi <dpi>  JPEG の解像度の上限',
-  '  --pdfx x3|x4              入稿用の PDF/X-3:2003・PDF/X-4 の印を付ける (RGB は CMYK にする。ページの中のリンク・注釈・フォームの欄は書かない)',
+  '  --pdfx x1a|x1a:2003|x3|x4 入稿用の PDF/X-1a:2001・PDF/X-1a:2003・PDF/X-3:2003・PDF/X-4 の印を付ける (RGB は CMYK にする。ページの中のリンク・注釈・フォームの欄は書かない。x1a・x3 は透明を平らにする (一部を画像にすることがある))',
   '  --output-profile <ICC>    出力の CMYK の ICC プロファイル (PDF/X。x4 では必須)   --output-condition <名前>  印刷条件の名前 (既定 JC200103)',
   '  --no-fetch-images         文書が http(s) で参照する画像を取らない',
   '  --no-fetch-styles         文書が http(s) で参照する CSS を取らない',
   '  --no-outside-files        文書が file: の URL や ../ で指した、入力のディレクトリの外のファイルを読まない (他人の書いた文書を組むとき)',
+  '  --low-memory              メモリを節約して組む (組み直しで前の回のページを使い回さない。数千ページの文書でメモリが 4 割ほど、時間は 1.5 倍ほど)',
   '  --link-schemes <a,b>      PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて。ほかのスキームのリンクは字だけを組む)',
   '  --link-launch             ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パス・//host/…) も PDF に書く (既定は書かない)',
   '  --link-relative <file|uri> スキームの無い相対のリンク (x.pdf・a.mp3) の書き方。file: ファイルを開く動作 (GoToR・Launch。既定)、uri: 書かれた参照のままの URI の動作 (ブラウザの中の PDF ビューアでも開ける)',
@@ -571,8 +581,8 @@ export const USAGE_JA = [
 
 /** 使い方。英語 */
 export const USAGE_EN = [
-  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--xhtml] [--watch] [--lang ja|en]',
-  '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--no-fetch-images] [--no-outside-files] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--watch] [--lang ja|en]',
+  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--xhtml] [--watch] [--lang ja|en]',
+  '       kumiori <FO file> [-o|--output <PDF file>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--watch] [--lang ja|en]',
   '       kumiori a.html b.fo … -o <output directory>',
   '       kumiori - -o - [--base <dir>] < input > output.pdf',
   '       kumiori --help | --version',
@@ -592,11 +602,12 @@ export const USAGE_EN = [
   '  --fo                      read as XSL-FO regardless of the extension   --xhtml  read with XML syntax (XHTML) regardless of the extension',
   '  --print                   add trim marks and 3mm bleed',
   '  --spot-colors <JSON>      spot color names and fallback CMYK      --image-max-dpi <dpi>  resolution limit for JPEG images',
-  '  --pdfx x3|x4              write PDF/X-3:2003 or PDF/X-4 markers for print submission (RGB is converted to CMYK; links, annotations and form fields on the pages are not written)',
+  '  --pdfx x1a|x1a:2003|x3|x4 write PDF/X-1a:2001, PDF/X-1a:2003, PDF/X-3:2003 or PDF/X-4 markers for print submission (RGB is converted to CMYK; links, annotations and form fields on the pages are not written; x1a and x3 flatten transparency, rasterizing some areas if needed)',
   '  --output-profile <ICC>    output CMYK ICC profile (PDF/X; required for x4)   --output-condition <name>  printing condition name (default JC200103)',
   '  --no-fetch-images         do not fetch images the document references over http(s)',
   '  --no-fetch-styles         do not fetch stylesheets the document references over http(s)',
   '  --no-outside-files        do not read files outside the input directory that the document points at with file: URLs or ../ (for documents written by others)',
+  '  --low-memory              typeset with less memory (re-layouts do not reuse the pages of the previous pass; about 40% of the memory for documents of thousands of pages, about 1.5 times the time)',
   '  --link-schemes <a,b>      URL schemes whose links get an action in the PDF (default http,https,mailto,tel; * means all; other links are typeset as plain text)',
   '  --link-launch             also write links that open a file (relative non-PDF files, absolute paths, //host/…) to the PDF (off by default)',
   '  --link-relative <file|uri> how scheme-less relative links (x.pdf, a.mp3) are written: file = open-file actions (GoToR/Launch; default), uri = a URI action with the reference as written (works in browser PDF viewers)',

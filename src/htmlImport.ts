@@ -32,6 +32,7 @@ import type {
   FootnoteOptions,
   LFootnote,
   BorderRadius,
+  RadiusLength,
   BorderSide,
   ContentSizeKeyword,
   BoxShadow,
@@ -58,19 +59,25 @@ import type {
   LTableCell,
   LTableColumn,
   LFlexItemColumn,
+  GridItemFloor,
   LTableRow,
   PageMaster,
   TextDecorationStyle,
   TextStyle,
   HyphenLimits,
   WritingMode,
+  PercentLength,
+  BoxStyle,
 } from './types';
 import { TOTAL_PAGES_ID } from './types';
 import { parseIndividualTransform, parseTransformList, parseTransformOrigin } from './cssTransform';
 import type { ImportReport, ImportResult } from './xslfoImport';
 import { normalizeSrc } from './assets';
+import { constrainReplaced } from './geometry';
+import { gridTrackPlan, gridTracks } from './gridTracks';
+import { setGridItems } from './sourceRef';
 import { countDroppedLink, judgeExternalLink, type LinkPolicy } from './linkPolicy';
-import { ALL_AH, expand, lengthPx, parseInitialLetter, splitTextIndent } from './cssCascade';
+import { ALL_AH, expand, lengthPx, parseInitialLetter, percentPlusLength, positionXY, splitTextIndent } from './cssCascade';
 import { parseVariationSettings } from './fontVariation';
 import { inlineSvgDataUri, isInlineSvg } from './htmlSvg';
 import { isColorName } from './color';
@@ -83,12 +90,14 @@ import { UNIT_PT, cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parse
 import { firstCssUrl, wholeCssUrl } from './cssUrlScan';
 import { parseTextJustifyTrim } from './textJustifyTrim';
 import { graphemeClusters } from './grapheme';
-import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, parseSpacingTrim, SPACING_TRIM_WORD, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type ParsedCss, type StyleRule } from './htmlPaged';
-import { documentModeOf, isQuirksDoc, parseSelectorList } from './cssSelector';
+import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, parseSpacingTrim, SPACING_TRIM_WORD, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type PageSelect, type ParsedCss, type StyleRule } from './htmlPaged';
+import { documentModeOf, isQuirksDoc, matches, parseSelectorList, type Selector } from './cssSelector';
 import { maxOf, pushAll } from './arrayLoop';
 import { autospaceNonIdeographic, isAutospaceIdeograph, isLatinAlnum } from './jis';
 import { CSS_SPACE, firstLetterOf, splitCommasOutsideParens, trailingResolution, trimAroundNewlines, trimChars } from './linearText';
 import { msg } from './messages';
+import { MAX_TREE_DEPTH } from './htmlPrepare';
+import { blockLevelDisplay, bodyPageSwitchHolder, ownPageName, pageSwitchBox, pageSwitchHolder, rootPageName } from './pageFlow';
 
 /** ブロック水準の部品か (行内の並びを区切る) */
 /**
@@ -208,6 +217,22 @@ export interface StyleSource {
   hasPseudo?(el: Element, pseudo: PseudoSel): boolean;
   /** 指定が auto か (幅・高さ。ブラウザの確定値は auto でも寸法になるので、別に確かめる)。分からなければ undefined */
   isAuto?(el: Element, prop: 'width' | 'height' | 'top' | 'right' | 'bottom' | 'left'): boolean | undefined;
+  /**
+   * 指定が百分率 (calc() の中の百分率も) か (幅・高さとその上限・下限)。百分率は、包含ブロックの大きさの見積もりから長さにしてある
+   * (中身の幅を測るときは auto として扱う。CSS Sizing 3 §5.2.1)。分からなければ undefined
+   */
+  isPercent?(el: Element, prop: 'width' | 'height' | 'min-width' | 'max-width'): boolean | undefined;
+  /**
+   * 百分率 (と、百分率を含む calc() の線形の和) で指定した width・min-width・max-width・margin-*・padding-*・text-indent の、
+   * 割合 (f: 基準 1px あたりの px) と長さの部分 (px)。組むときに、実際の包含ブロックの幅で解き直す (BoxStyle.percent)。
+   * 百分率でなければ (分からなければ) undefined
+   */
+  percentOf?(el: Element, prop: string): { f: number; px: number } | undefined;
+  /**
+   * 大きさの性質 (width・height と、その上限・下限) の、勝った宣言の出どころ: 既定のスタイル (ua)・HTML の属性による指定 (hint。
+   * HTML §15.4.3 の寸法の属性)・作成者のスタイルシートか style 属性 (author)。宣言が無ければ (分からなければ) undefined
+   */
+  sizeOrigin?(el: Element, prop: string): 'ua' | 'hint' | 'author' | undefined;
   /** セレクタに合う要素 (既定は document.querySelectorAll。テストでは差し替える) */
   select?(selector: string): Element[];
   /** ブラウザが置いた要素の位置と大きさ (px、border-box)。flex・grid の配置に使う */
@@ -247,6 +272,11 @@ export interface HtmlImportOptions {
    * (@footnote の padding-top: 0.3em が 3pt になる)
    */
   pageContextFontSize?: number;
+  /**
+   * @page・余白の箱の罫線の太さの thin・medium・thick (pt)。文書の要素の罫線と同じ値にする (既定のスタイルの 1px・3px・5px。
+   * アンテナハウス互換では 1pt・3pt・5pt。cssCascade の borderKeywords)。指定が無ければ 0.75pt・2.25pt・3.75pt
+   */
+  pageBorderKeywords?: { thin: number; medium: number; thick: number };
   /** 数式の書体に無い字 (和字など) を描く書体 */
   mathFallback?: (ch: string) => FkFont | undefined;
   /** CSS の font-family の並びと太さから、使う書体を決める (XSL-FO の読み込みと同じ) */
@@ -299,6 +329,17 @@ export interface HtmlImportOptions {
    */
   pageGroupFirst?: boolean;
   /**
+   * ページの左右 (@page の :left・:right、break-before の left・right・recto・verso の白ページ、余白の箱の左右) を、ページ番号の偶奇で決め、
+   * ページ番号を振り直すページの組 (counter-reset・counter-set の page) の前で、前の組の最後のページ番号の偶奇を、振り直した番号に続くように
+   * 合わせる白ページを足す (XSL 1.1 §6.4.11 の odd-or-even・§7.27.6 の force-page-count="auto" と同じ。互換のスタイル ah・weasyprint・vivliostyle の、
+   * これまでの動き)。
+   * 既定では、左右を、文書の最初からのページの順 (何枚目か。白ページも数える) で決め (LDocument.pageSidesByOrder)、振り直しの白ページを足さない:
+   * CSS では、左右のページは交互に来て、最初のページの左右はページの進む向きで決まり (CSS Paged Media 3 §3.3・§4.2.1)、page のカウンターは
+   * 番号の表示のためのもので、左右とは別 (§6.1)。白ページを作るのは、左右の強制の区切り break-before: left・right・recto・verso だけ
+   * (CSS Fragmentation 3 §3.1)
+   */
+  pageSidesByNumber?: boolean;
+  /**
    * counter() の最初の引数に、カウンタの名前 page に続けて physical を書ける (アンテナハウスの拡張: counter(<ident> [physical || reverse]?, <list-style-type>?)。
    * physical は FO の axf:physical-page-number に当たる、initial-page-number によらない物理的なページ番号)。
    * 既定では CSS Lists 3 の構文どおり、名前の後に語の続く counter() を含む content は読めない (何も出さない)
@@ -320,6 +361,11 @@ export interface HtmlImportOptions {
   tableCollapseSpillAh?: boolean;
   /** 行をまたぐセルの中央寄せで、またいだ行の間の間隔を除く (アンテナハウス互換。LTable.rowspanMiddleAh) */
   tableRowspanMiddleAh?: boolean;
+  /**
+   * アンテナハウス互換: break-inside: avoid の表の行・リストの項目が、新しいページにも入らない高さでも分けず、はみ出させる (これまでの組み方)。
+   * 無ければ、CSS Fragmentation 3 §4.4 のとおり、入らないときは avoid を緩めて行の中で分ける (LTableRow.keepTogetherYields)
+   */
+  avoidRowOverflowAh?: boolean;
   /** アンテナハウス互換: lang が日本語・中国語・韓国語の行は、和文の字の書体の上下で行の基準線を決める (TextStyle.primaryFontByLang) */
   primaryFontByLangAh?: boolean;
   /**
@@ -370,6 +416,20 @@ export interface HtmlImportOptions {
    * 既定 (false) は、CSS Text 4 §8.4.1 の定義どおり、一般カテゴリ L・M・Nd の字すべて (TextStyle.textAutospaceUnicode)
    */
   autospaceLatinOnly?: boolean;
+  /**
+   * WeasyPrint の組み方 (--style weasyprint): 中身の無い目印 (<span id="…"></span> など) だけの行を、マージンの相殺を断つものとして扱う
+   * (見出しの前に目印を置く Sphinx の HTML で、前の段落の下と見出しの上のマージンを足す)。
+   * 無ければ、CSS 2.1 §9.4.2 のとおり、その行は無いものとして相殺する (Chromium と同じ)
+   */
+  idLinesSeparateMarginsWp?: boolean;
+  /** WeasyPrint の組み方: 見つからないページ番号の参照 (target-counter()) を空にする。無ければ「?」(どちらも警告は出す) */
+  unresolvedCitationEmptyWp?: boolean;
+  /**
+   * WeasyPrint の組み方: 高さの決まった折り返しの flex の容器 (flex-wrap: wrap) の行が 1 つなら、align-content に関わらず、行を容器の高さにする
+   * (中の項目は容器の高さに伸び、中の百分率の高さ・ずらしが効く。Sphinx の印刷用の CSS の表紙)。
+   * 無ければ、Flexbox 1 §9.4 の 15 のとおり、1 行の容器 (nowrap) と、align-content が normal・stretch のときだけ
+   */
+  flexSingleLineFullWp?: boolean;
   /**
    * アンテナハウス互換の和文組版: text-autospace: none を「空きを入れない」と読み (アンテナハウスの拡張の構文。CSS Text 4 の値には無い)、
    * 段落の 1 行目の行頭の始め括弧類を詰める (XSL-FO の互換の既定と同じ)
@@ -443,16 +503,19 @@ function collectIds(n: unknown, out: string[] = []): string[] {
 function objectPositionOf(v: string): ObjectPosition | undefined {
   const ts = splitTop(v.trim(), ' ').filter(Boolean);
   if (ts.length !== 2) return undefined;
-  const one = (t: string): { v: number | `${number}%`; end?: boolean } | undefined => {
+  const one = (t: string): { v: number | `${number}%`; end?: boolean; off?: number } | undefined => {
     if (/^-?[\d.]+%$/.test(t)) return { v: t as `${number}%` };
     const far = /^calc\(\s*100%\s*-\s*(.+?)\s*\)$/i.exec(t);
     const n = cssLen(far ? far[1] : t);
-    return n === undefined ? undefined : { v: n, ...(far ? { end: true } : {}) };
+    if (n !== undefined) return { v: n, ...(far ? { end: true } : {}) };
+    // 百分率と長さの和の一般の形 (calc(50% + 10px) など。CSS Values 4 §10.11): 百分率の位置に長さを足す
+    const pl = /%/.test(t) ? percentPlusLength(t) : undefined;
+    return pl ? { v: `${pl.pct}%`, ...(pl.px ? { off: pl.px * PT_PER_PX } : {}) } : undefined;
   };
   const x = one(ts[0]);
   const y = one(ts[1]);
-  if (!x || !y || (x.v === '50%' && y.v === '50%')) return undefined;
-  return { x: x.v, y: y.v, ...(x.end ? { xFromEnd: true } : {}), ...(y.end ? { yFromEnd: true } : {}) };
+  if (!x || !y || (x.v === '50%' && y.v === '50%' && !x.off && !y.off)) return undefined;
+  return { x: x.v, y: y.v, ...(x.end ? { xFromEnd: true } : {}), ...(y.end ? { yFromEnd: true } : {}), ...(x.off ? { xOffset: x.off } : {}), ...(y.off ? { yOffset: y.off } : {}) };
 }
 
 /**
@@ -474,6 +537,27 @@ function outlineOf(c: (p: string) => string): Outline | undefined {
   if (color === 'transparent') return undefined;
   const off = cssLen(c('outline-offset')) ?? 0;
   return { width: w, color, ...(style !== 'solid' && style !== 'auto' ? { style: style as Outline['style'] } : {}), ...(off ? { offset: off } : {}) };
+}
+
+/**
+ * 字の色の計算値 → 字の色。透明 (transparent・alpha が 0 の色) は 'transparent' (字は場所を取り、塗らない。visibility: hidden の字と同じ受け皿)、
+ * 半透明は #rrggbbaa。CSS Color 4 §4.1・§6.3: transparent は alpha が 0 の色で、color の値にもなる (前は色が無いものとして親の色を受け継いでいた)。
+ * 透明度は 8 ビット (#rrggbbaa の aa) で運ぶので、8 ビットで 0 になる alpha (rgba(…, 0.001) など。描いても見えない) も透明と同じに扱う
+ * (PDF と画面で同じに、字を描かない。白い紙に重ねて白で描くと、色の付いた地の上で見えてしまう)。読めない色は undefined (親の色のまま)
+ */
+function textColorOf(v: string): string | undefined {
+  const rgba = parseRgbFn(v.trim());
+  if ((rgba && Math.round(rgba.a * 255) <= 0) || v.trim().toLowerCase() === 'transparent') return 'transparent';
+  return cssColorAlpha(v);
+}
+
+/**
+ * 字の飾り (下線・圏点)・ルビ・ページの余白の箱の字の色の計算値 → 色 (cssColorAlpha と同じ。半透明は #rrggbbaa)。
+ * 8 ビットで 0 になる alpha の色は、alpha が 0 の色と同じに、色が無いもの (undefined) にする (textColorOf と同じ境目)
+ */
+function visibleColorOf(v: string): string | undefined {
+  const col = cssColorAlpha(v);
+  return col && /^#[0-9a-f]{6}00$/.test(col) ? undefined : col;
 }
 
 function borderColorOf(v: string): string {
@@ -504,21 +588,27 @@ function backgroundLayers(c: (p: string) => string): Array<{ image: string; repe
 }
 
 function setBackgroundPosition(img: BackgroundImage, px: string, py: string) {
-  const one = (v: string, far: string): [number | `${number}%` | undefined, boolean] => {
-    const t = v.split(',')[0].trim();
+  const one = (v: string, far: string): [number | `${number}%` | undefined, boolean, number?] => {
+    const t = splitTop(v, ',')[0].trim();
     if (/%$/.test(t)) return [t as `${number}%`, false];
-    const m = new RegExp(`^${far}\\s+(\\S+)$`).exec(t);
-    return m ? [cssLen(m[1]), true] : [cssLen(t), false];
+    const m = new RegExp(`^${far}\\s+(.+)$`).exec(t);
+    const d = m ? m[1] : t;
+    // 百分率と長さの和 (calc(50% + 10px)。CSS Values 4 §10.11): 百分率の位置に長さを足す。右・下の端からなら、100% から引く
+    const pl = /%/.test(d) ? percentPlusLength(d) : undefined;
+    if (pl) return m ? [`${100 - pl.pct}%`, false, -pl.px * PT_PER_PX] : [`${pl.pct}%`, false, pl.px * PT_PER_PX];
+    return m ? [cssLen(d), true] : [cssLen(d), false];
   };
   if (px) {
-    const [v, end] = one(px, 'right');
+    const [v, end, off] = one(px, 'right');
     img.x = v;
     if (end) img.xFromEnd = true;
+    if (off) img.xOffset = off;
   }
   if (py) {
-    const [v, end] = one(py, 'bottom');
+    const [v, end, off] = one(py, 'bottom');
     img.y = v;
     if (end) img.yFromEnd = true;
+    if (off) img.yOffset = off;
   }
 }
 
@@ -556,6 +646,17 @@ function hyphenLimitsOf(c: (name: string) => string): HyphenLimits {
     if (z !== undefined && z > 0) o.zone = z;
   }
   return o;
+}
+
+/**
+ * letter-spacing・word-spacing の計算値 → pt (normal は 0)。百分率 (と、百分率と長さの和) は、その要素の字の大きさに対する割合
+ * (CSS Text 4 §8.1・§8.2: “relative to used font-size”。計算値は百分率のまま受け継ぐので、受け継いだ要素の字の大きさで解く)
+ */
+function spacingPt(c: (p: string) => string, prop: 'letter-spacing' | 'word-spacing'): number {
+  const v = c(prop);
+  if (!/%/.test(v)) return cssLen(v) ?? 0;
+  const pl = percentPlusLength(v);
+  return pl ? ((cssLen(c('font-size')) ?? 12) * pl.pct) / 100 + pl.px * PT_PER_PX : 0;
 }
 
 /** text-indent の計算値 (長さと hanging・each-line の語。CSS Text 3 §8.1) を、字下げの書式にする */
@@ -604,49 +705,39 @@ function missingArgument(t: ContentToken): boolean {
 }
 
 /**
- * grid-template-columns の列の数の上限。CSS Grid 1 §5.4 (Limiting Large Grids) は、実装がグリッドの大きさを実装の決めた上限に
- * 切ってよいとし、その上限は [-10000, 10000] の線を収めるべきとする。repeat() の回数 (§7.2.3 の <integer [1,∞]>) が大きくても
- * 宣言は有効のままなので、無効にはせず、列の数がこの上限に収まる回数に切る (ブラウザも repeat() の回数を自分の上限に切る)
+ * 画像 (img・object) そのものが flex の項目のとき、項目を包むブロック (node) の中の画像の百分率の幅・上限・下限 (LImage.percentSize) を、
+ * 包むブロックの幅いっぱい (100%) にする。包むブロック (か、項目のセル) は、画像の幅・上限・下限で大きさを決めてあり、その百分率の基準は
+ * flex の容器 (CSS Flexbox 1 §9.2・CSS 2.1 §10.2)。画像の百分率を、包むブロックの幅で解き直すと、百分率が 2 度掛かる。
+ * 長さで書いた高さ・高さの上限・下限は、そのまま (幅から縦横比で高さを決める: CSS 2.1 §10.6.2)
  */
-export const MAX_GRID_REPEAT = 10000;
-
-/** grid-template-columns → 列の幅 (pt)。px・%・fr・auto・minmax()・repeat(n, …) を読む (auto と minmax は残りを等分する) */
-export function gridTracks(v: string, W: number, gap: number): number[] {
-  const src = (v ?? '').trim();
-  if (!src || src === 'none') return [W];
-  // repeat(n, a b) を展開する
-  // 回数は、中の列の数 × 回数が上限 (MAX_GRID_REPEAT) に収まる数に切る (巨大な回数で配列・文字列を作らない)
-  const trackTokens = (s: string) => s.match(/minmax\([^)]*\)|[^\s]+/g) ?? [];
-  const expanded = src.replace(/repeat\(\s*(\d+)\s*,\s*((?:[^()]|\([^()]*\))*)\)/g, (_m, n: string, body: string) => {
-    const times = Math.min(parseInt(n, 10), Math.max(1, Math.floor(MAX_GRID_REPEAT / Math.max(trackTokens(body).length, 1))));
-    return Array(times).fill(body.trim()).join(' ');
-  });
-  const toks = trackTokens(expanded).slice(0, MAX_GRID_REPEAT);
-  const free0 = W - gap * Math.max(toks.length - 1, 0);
-  const fixed = toks.map((t) => (/%$/.test(t) ? (parseFloat(t) * W) / 100 : /fr$|^auto$|^minmax/.test(t) ? undefined : cssLen(t)));
-  const rest = Math.max(free0 - fixed.reduce<number>((a, x) => a + (x ?? 0), 0), 0);
-  const frs = toks.map((t, k) => (fixed[k] !== undefined ? 0 : /fr$/.test(t) ? parseFloat(t) || 1 : 1));
-  const frSum = frs.reduce((a, b) => a + b, 0);
-  return toks.map((_t, k) => fixed[k] ?? (frSum ? (rest * frs[k]) / frSum : 0));
+function imageFillsItem(node: LBlockLevel, el: Element, widthOnly = false, sizedByItem = false): void {
+  if (!/^(img|object)$/.test(el.localName) || node.type !== 'block') return;
+  const visit = (list: ReadonlyArray<LBlockLevel | LInlineLevel>, depth: number) => {
+    for (const x of list) {
+      if (typeof x === 'string') continue;
+      if (x.type === 'image') {
+        // 幅を百分率で決めない画像 (既定の max-width: 100% だけのもの) は、セルの幅で解いても同じなので、そのまま。ただし、flex-basis の
+        // 百分率・flex-grow で項目の幅が決まるとき (sizedByItem) は、セルの幅で描く。
+        // widthOnly: 包むブロックが、画像の幅だけを持つ (上限・下限の百分率は当てていない) とき。百分率の幅の無い画像は、そのまま
+        // (包むブロックは容器の幅いっぱいなので、画像の上限・下限の百分率は、包むブロックの幅で解いてよい)
+        const P = x.percentSize;
+        const pctSized = !!P && ((!!P.width && P.width.pct !== 0) || (!!P.maxWidth && P.maxWidth.pct !== 0 && !(P.maxWidth.pct === 1 && P.maxWidth.len === 0)) || (!!P.minWidth && P.minWidth.pct !== 0));
+        if (P && (widthOnly ? !!P.width && P.width.pct !== 0 : pctSized || sizedByItem)) {
+          // 上限・下限のうち、長さだけで書いたもの (pct 0) は、もう 1 度当てても同じなので残す (セルの幅が、それを当てていないときのため)
+          const { maxWidth, minWidth, ...rest } = P;
+          x.percentSize = { ...rest, width: { pct: 1, len: 0 }, ...(maxWidth?.pct === 0 ? { maxWidth } : {}), ...(minWidth?.pct === 0 ? { minWidth } : {}) };
+        }
+      } else if (depth < 3 && 'children' in x && Array.isArray(x.children)) visit(x.children as Array<LBlockLevel | LInlineLevel>, depth + 1);
+    }
+  };
+  visit(node.children, 0);
 }
 
-/**
- * 縦横比のある置換要素 (画像) の大きさに、最小・最大の幅と高さを当てる (CSS 2.1 §10.4 の表)。
- * 縦横比を保ったまま、上限を超えれば縮め、下限に届かなければ広げる
- */
-export function constrainReplaced(w: number, h: number, minW: number, maxW: number, minH: number, maxH: number): [number, number] {
-  maxW = Math.max(minW, maxW);
-  maxH = Math.max(minH, maxH);
-  if (w > maxW && h > maxH) return maxW / w <= maxH / h ? [maxW, Math.max(minH, (maxW * h) / w)] : [Math.max(minW, (maxH * w) / h), maxH];
-  if (w < minW && h < minH) return minW / w <= minH / h ? [Math.min(maxW, (minH * w) / h), minH] : [minW, Math.min(maxH, (minW * h) / w)];
-  if (w > maxW && h < minH) return [maxW, minH];
-  if (w < minW && h > maxH) return [minW, maxH];
-  if (w > maxW) return [maxW, Math.max((maxW * h) / w, minH)];
-  if (w < minW) return [minW, Math.min((minW * h) / w, maxH)];
-  if (h > maxH) return [Math.max((maxH * w) / h, minW), maxH];
-  if (h < minH) return [Math.min((minH * w) / h, maxW), minH];
-  return [w, h];
-}
+// grid-template-columns の列の幅 (読み込みと組版エンジンの両方が使うので gridTracks.ts に置く)
+export { gridTracks, MAX_GRID_REPEAT } from './gridTracks';
+
+// 縦横比のある置換要素の大きさに、最小・最大の幅と高さを当てる関数は、組版エンジンも使うので geometry.ts に置く
+export { constrainReplaced } from './geometry';
 
 /**
  * box-shadow (と filter の drop-shadow()。箱の形の影として近似する) を読む。
@@ -750,14 +841,17 @@ function pageBox(
   spots?: SpotColors,
   /** 色の cmyk()・rgb-icc() (アンテナハウスの拡張の書き方) を読む (互換の指定のときだけ。printColor) */
   ahColorFunctions = true,
-): Pick<PageMaster, 'width' | 'height' | 'margins'> & { bleed?: number | 'auto'; marks?: boolean; marksCrop?: boolean; cropOffset?: number; background?: string } {
+  /** 罫線の太さの thin・medium・thick (pt。HtmlImportOptions.pageBorderKeywords) */
+  borderKw?: typeof BORDER_KEYWORDS_PT,
+): Pick<PageMaster, 'width' | 'height' | 'margins' | 'marginBoxMargins' | 'backgroundOrigin'> & { bleed?: number | 'auto'; marks?: boolean; marksCrop?: boolean; cropOffset?: number; background?: string } {
   // ページの文脈は根元の要素から継ぐ (Paged Media 3 §9)。em は @page の font-size、rem は根元の要素の字の大きさ
-  const fsDecl = decls['font-size'] ? lengthPx(decls['font-size'], { fs: rootFsPx, rootFs: rootFsPx, vw: 0, vh: 0, pct: rootFsPx }) : undefined;
-  const fsPx = fsDecl ?? rootFsPx;
-  /** 長さ (calc() を含む) → pt。vw・vh は用紙の大きさ (決まってから呼ぶ) */
-  const lenPt = (v: string | undefined): number | undefined => {
+  // 字の大きさのキーワード (x-large など) も読む (CSS Fonts 4 §2.4)
+  const fsDecl = fontSizePt(decls['font-size'], rootFsPx * PT_PER_PX, rootFsPx * PT_PER_PX);
+  const fsPx = fsDecl !== undefined ? fsDecl / PT_PER_PX : rootFsPx;
+  /** 長さ (calc() を含む) → pt。vw・vh は用紙の大きさ (決まってから呼ぶ)。pctPx は百分率の基準 (px。無ければ百分率は読まない) */
+  const lenPt = (v: string | undefined, pctPx?: number): number | undefined => {
     if (!v) return undefined;
-    const px = lengthPx(v, { fs: fsPx, rootFs: rootFsPx, vw: width / MM_PER_PT / PT_PER_PX, vh: height / MM_PER_PT / PT_PER_PX });
+    const px = lengthPx(v, { fs: fsPx, rootFs: rootFsPx, vw: width / MM_PER_PT / PT_PER_PX, vh: height / MM_PER_PT / PT_PER_PX, ...(pctPx !== undefined ? { pct: pctPx } : {}) });
     return px === undefined ? undefined : px * PT_PER_PX;
   };
   /** 括弧の外の空白で分ける */
@@ -767,6 +861,7 @@ function pageBox(
   const margins = { top: def.margin, right: def.margin, bottom: def.margin, left: def.margin };
   const out: { bleed?: number | 'auto'; marks?: boolean; marksCrop?: boolean; cropOffset?: number; background?: string } = {};
   const rawMargins: Partial<Record<'top' | 'right' | 'bottom' | 'left', string>> = {};
+  const rawPadding: Partial<Record<'top' | 'right' | 'bottom' | 'left', string>> = {};
   for (const [prop, raw] of Object.entries(decls)) {
     const val = raw.toLowerCase();
     if (prop === 'size') {
@@ -785,6 +880,11 @@ function pageBox(
       Object.assign(rawMargins, { top: t, right: r, bottom: b, left: l });
     } else if (/^margin-(top|right|bottom|left)$/.test(prop)) {
       rawMargins[prop.slice(7) as 'top'] = val;
+    } else if (prop === 'padding') {
+      const [t, r = t, b = t, l = r] = words(val);
+      Object.assign(rawPadding, { top: t, right: r, bottom: b, left: l });
+    } else if (/^padding-(top|right|bottom|left)$/.test(prop)) {
+      rawPadding[prop.slice(8) as 'top'] = val;
     } else if (prop === 'bleed') {
       // auto は、marks に crop があれば 6pt、無ければ 0 (CSS Paged Media 3 §7.3)。marks が決まってから masterOf で長さにする
       if (val.trim() === 'auto') out.bleed = 'auto';
@@ -807,23 +907,45 @@ function pageBox(
     }
   }
   // 余白 (用紙の大きさが決まってから。百分率は、左右は用紙の幅、上下は用紙の高さに対して)
-  for (const [sd, v] of Object.entries(rawMargins) as Array<['top' | 'right' | 'bottom' | 'left', string]>) {
+  const sideLen = (sd: 'top' | 'right' | 'bottom' | 'left', v: string): number | undefined => {
+    const base = sd === 'left' || sd === 'right' ? width : height;
     const pct = /^(-?[\d.]+)%$/.exec(v.trim());
-    if (pct) margins[sd] = ((sd === 'left' || sd === 'right' ? width : height) * parseFloat(pct[1])) / 100;
-    else {
-      const n = lenPt(v);
-      if (n !== undefined) margins[sd] = n * MM_PER_PT;
-    }
+    if (pct) return (base * parseFloat(pct[1])) / 100;
+    // calc() の中の百分率も、同じ基準 (calc(10% + 10pt) など。前は読めずに、前の @page の余白を既定の余白に戻していた)
+    const n = lenPt(v, base / MM_PER_PT / PT_PER_PX);
+    return n === undefined ? undefined : n * MM_PER_PT;
+  };
+  for (const [sd, v] of Object.entries(rawMargins) as Array<['top' | 'right' | 'bottom' | 'left', string]>) {
+    const n = sideLen(sd, v);
+    if (n !== undefined) margins[sd] = n;
   }
-  return { width, height, margins, ...out };
+  // ページの箱の padding と罫線 (CSS Paged Media 3 §3: ページの箱は CSS の箱の模型に従い、ページの領域 (本文を組む所) は箱の内容の領域。
+  // 余白の箱はページの余白 (margin) の中に置くので、padding は余白の箱を動かさず、本文の領域だけを狭める)。負の値は無効 (CSS 2.1 §8.4)
+  const padding = { top: 0, right: 0, bottom: 0, left: 0 };
+  for (const [sd, v] of Object.entries(rawPadding) as Array<['top' | 'right' | 'bottom' | 'left', string]>) {
+    const n = sideLen(sd, v);
+    if (n !== undefined && n >= 0) padding[sd] = n;
+  }
+  // ページの箱の罫線も、本文の領域を狭める (margin の内側、padding の外側。CSS Paged Media 3 §3)
+  const pb = pageBorders(decls, fsPx * PT_PER_PX, undefined, borderKw);
+  // 背景画像の位置の基準の領域: ページの箱の padding の領域 (余白と罫線の内側。CSS Paged Media 3 §3.1: ページの背景は、既定では
+  // ページの箱の padding の領域に据える (background-origin の初期値 padding-box。CSS Backgrounds 3 §2.8))。背景画像のあるときだけ使う
+  const backgroundOrigin = { ...margins };
+  for (const sd of ['top', 'right', 'bottom', 'left'] as const) if (pb[sd]) backgroundOrigin[sd] += pb[sd]!.width * MM_PER_PT;
+  for (const sd of ['top', 'right', 'bottom', 'left'] as const) if (pb[sd]) padding[sd] += pb[sd]!.width * MM_PER_PT;
+  if (padding.top || padding.right || padding.bottom || padding.left) {
+    const body = { top: margins.top + padding.top, right: margins.right + padding.right, bottom: margins.bottom + padding.bottom, left: margins.left + padding.left };
+    return { width, height, margins: body, marginBoxMargins: margins, backgroundOrigin, ...out };
+  }
+  return { width, height, margins, backgroundOrigin, ...out };
 }
 
 /**
  * CSS の @page 規則 (名前・擬似クラスの無いもの) から、用紙の大きさと余白を読む。
  * :first などの規則・余白の箱は、importHtml の中で扱う
  */
-export function parsePageRule(css: string | ParsedCss, def: { width: number; height: number; margin: number }): Pick<PageMaster, 'width' | 'height' | 'margins'> {
-  const { width, height, margins } = pageBox(resolvePageRules((typeof css === 'string' ? parseCss(css) : css).pages, {}).decls, def);
+export function parsePageRule(css: string | ParsedCss, def: { width: number; height: number; margin: number }, sel: PageSelect = {}): Pick<PageMaster, 'width' | 'height' | 'margins'> {
+  const { width, height, margins } = pageBox(resolvePageRules((typeof css === 'string' ? parseCss(css) : css).pages, sel).decls, def);
   return { width, height, margins };
 }
 
@@ -1001,7 +1123,7 @@ const isTextNode = (n: Node) => n.nodeType === 3 || n.nodeType === 4;
 /** 区切りを避ける値の種類 (edgeAvoids)。all: avoid・avoid-page、column: avoid-column */
 type AvoidKind = 'all' | 'column';
 /** 絶対配置の箱の、百分率で指定した top・bottom・height (0.5 = 50%) */
-type AbsPercent = { top?: number; bottom?: number; height?: number };
+type AbsPercent = { top?: number; bottom?: number; height?: number; left?: number; right?: number };
 
 interface PageSwitch {
   type: 'page-switch';
@@ -1010,27 +1132,196 @@ interface PageSwitch {
   initial?: number;
 }
 
-/** CSS の border の一括指定 (幅・線種・色) */
-function parseBorder(v: string, fs: number): BorderSide | undefined {
-  let width = 1.5;
+/**
+ * @page の背景の background-attachment が fixed か (個別の指定か、無ければ background の一括指定の中の fixed。CSS Backgrounds 3 §2.5)。
+ * 繰り返しの読み方 (pageBackground) と同じに、個別の指定を一括指定より先に見る
+ */
+function pageBackgroundFixed(decls: Record<string, string>): boolean {
+  const a = decls['background-attachment'];
+  if (a !== undefined) return a.trim().toLowerCase().split(/\s*,\s*/)[0] === 'fixed';
+  // 重ねの区切りは、括弧の外のカンマだけ (色の rgb(…, …) の中のカンマで切らない。CSS Backgrounds 3 §2.10 の <bg-layer> の並び)
+  return splitWords(splitTop((decls.background ?? '').replace(/url\([^)]*(?:\)|$)/gi, ' '), ',')[0] ?? '').some((t) => t.toLowerCase() === 'fixed');
+}
+
+/** 罫線の太さの thin・medium・thick の既定 (pt)。文書の要素の罫線の既定 (1px・3px・5px。cssCascade) と同じ */
+const BORDER_KEYWORDS_PT = { thin: 0.75, medium: 2.25, thick: 3.75 };
+
+/**
+ * CSS の border の一括指定 (幅・線種・色)。半透明の色は #rrggbbaa のまま (文書の要素の罫線と同じに、描くときに下の色と重ねる)。
+ * 書かなかった太さは初期値の medium (CSS Backgrounds 3 §3.2・§3.4。kw は thin・medium・thick の太さ (pt))
+ */
+function parseBorder(v: string, fs: number, kw = BORDER_KEYWORDS_PT): BorderSide | undefined {
+  let width = kw.medium;
   let style = 'solid';
   let color = '#000000';
   for (const t of splitWords(v)) {
     const n = lenEm(t, fs);
     if (n !== undefined) width = n;
     else if (/^(none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset)$/.test(t)) style = t;
-    else if (t === 'thin' || t === 'medium' || t === 'thick') width = { thin: 0.75, medium: 2.25, thick: 3.75 }[t];
-    else color = cssColor(t) ?? color;
+    else if (t === 'thin' || t === 'medium' || t === 'thick') width = kw[t];
+    else color = cssColorAlpha(t) ?? color;
   }
   if (style === 'none' || style === 'hidden' || width <= 0) return undefined;
   return { width, color, ...(style !== 'solid' ? { style: style as BorderSide['style'] } : {}) };
 }
 
-/** 長さ (em・rem は fs pt を基準にする) → pt */
-function lenEm(v: string, fs: number): number | undefined {
+/**
+ * ページの文脈・余白の箱・脚注の擬似要素の宣言 (書いたままの値) の長さ → pt (CSS Paged Media 3 §4・§5: ふつうの CSS の値)。
+ * em は fs (pt)、rem は o.rootFs (根元の要素の字の大きさ。無ければ fs)、百分率は o.pct (pt。無ければ読まない) に対する長さ。
+ * calc()・min()・max()・clamp() と、ex・ch・lh などの相対の単位も読む (CSS Values 4 §6・§10。vw・vh は、o.vw・o.vh があるときだけ)。
+ * 前は em・rem と絶対の単位しか読まず、百分率・calc() の宣言を黙って捨てていた
+ */
+function lenEm(v: string, fs: number, o: { rootFs?: number; pct?: number; vw?: number; vh?: number } = {}): number | undefined {
   const m = /^(-?[\d.]+)(r?em)$/i.exec(v.trim());
-  if (m) return parseFloat(m[1]) * fs;
-  return cssLen(v);
+  if (m) return parseFloat(m[1]) * (m[2].toLowerCase() === 'rem' ? (o.rootFs ?? fs) : fs);
+  const abs = cssLen(v);
+  if (abs !== undefined) return abs;
+  const px = lengthPx(v, { fs: fs / PT_PER_PX, rootFs: (o.rootFs ?? fs) / PT_PER_PX, vw: (o.vw ?? NaN) / PT_PER_PX, vh: (o.vh ?? NaN) / PT_PER_PX, ...(o.pct !== undefined ? { pct: o.pct / PT_PER_PX } : {}) });
+  return px !== undefined && Number.isFinite(px) ? px * PT_PER_PX : undefined;
+}
+
+/** 字の大きさの絶対のキーワード (px。CSS Fonts 4 §2.4 の表。文書の要素の字の大きさ (cssCascade) と同じ値) */
+const FONT_SIZE_KEYWORDS_PX = { __proto__: null, 'xx-small': 9, 'x-small': 10, small: 13, medium: 16, large: 18, 'x-large': 24, 'xx-large': 32, 'xxx-large': 48 } as unknown as Record<string, number>;
+
+/**
+ * ページの文脈・余白の箱・脚注の擬似要素の font-size (書いたままの値) → pt (CSS Fonts 4 §2.4)。parentFs (pt) は受け継ぐ字の大きさで、
+ * 百分率・em・smaller・larger の基準。rootFs (pt) は rem の基準。絶対のキーワード (x-large など) は表の大きさ。負の値・読めない値は undefined
+ * (前は em・rem と絶対の単位しか読まず、百分率 (@bottom-center { font-size: 80% } など)・calc()・キーワードを黙って捨てていた)
+ */
+function fontSizePt(v: string | undefined, parentFs: number, rootFs: number): number | undefined {
+  const k = (v ?? '').trim().toLowerCase();
+  if (!k) return undefined;
+  if (k === 'initial') return FONT_SIZE_KEYWORDS_PX.medium * PT_PER_PX;
+  if (FONT_SIZE_KEYWORDS_PX[k] !== undefined) return FONT_SIZE_KEYWORDS_PX[k] * PT_PER_PX;
+  // 相対のキーワード (文書の要素と同じに、1.2 倍で増やし・減らす)
+  if (k === 'smaller') return parentFs / 1.2;
+  if (k === 'larger') return parentFs * 1.2;
+  const n = lenEm(k, parentFs, { rootFs, pct: parentFs });
+  return n !== undefined && n >= 0 ? n : undefined;
+}
+
+/**
+ * 余白の箱の宣言の罫線の個別の指定 (border-<辺>-width・-style・-color と、border-width・border-style・border-color (1〜4 個の値。
+ * 上・右・下・左の決まり)) を、辺ごとの一括指定 (border-<辺>: 太さ 線種 色) にまとめる (書いた順に、後の宣言が勝つ。CSS Backgrounds 3 §3)。
+ * 一括指定で書かれなかった部分は初期値 (太さ medium・線種 none・色 currentcolor (箱の字の色。箱の color か、受け継いだ色 inheritedColor)。§3.1〜§3.3)。
+ * 個別の指定が無ければ、宣言はそのまま (余白の箱の罫線は、一括指定 (border・border-<辺>) だけを読んでいた)
+ */
+function marginBorderDecls(d: Record<string, string>, inheritedColor?: string): Record<string, string> {
+  const LONG = /^border(?:-(top|right|bottom|left))?-(width|style|color)$/;
+  if (!Object.keys(d).some((k) => LONG.test(k))) return d;
+  type Part = 'width' | 'style' | 'color';
+  const SIDES = ['top', 'right', 'bottom', 'left'] as const;
+  const sides: Partial<Record<(typeof SIDES)[number], Partial<Record<Part, string>>>> = {};
+  const STYLE = /^(none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset)$/i;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(d)) {
+    const sh = /^border(?:-(top|right|bottom|left))?$/.exec(k);
+    const lg = LONG.exec(k);
+    if (!sh && !lg) {
+      out[k] = v;
+      continue;
+    }
+    if (sh) {
+      // 一括指定: 書かれなかった部分は初期値に戻す
+      const parts: Partial<Record<Part, string>> = {};
+      for (const t of splitWords(v)) {
+        if (STYLE.test(t)) parts.style = t;
+        else if (/^(thin|medium|thick)$/i.test(t) || cssLen(t) !== undefined || /^-?[\d.]+r?em$/i.test(t)) parts.width = t;
+        else parts.color = t;
+      }
+      for (const sd of sh[1] ? [sh[1] as (typeof SIDES)[number]] : SIDES) sides[sd] = { ...parts };
+      continue;
+    }
+    const part = lg![2] as Part;
+    if (lg![1]) {
+      const sd = lg![1] as (typeof SIDES)[number];
+      sides[sd] = { ...sides[sd], [part]: v.trim() };
+    } else {
+      // border-width など: 上・右・下・左 (値が足りなければ、向かいの辺の値)
+      const [t, r = t, b = t, l = r] = splitWords(v).filter(Boolean);
+      const vals = { top: t, right: r, bottom: b, left: l };
+      for (const sd of SIDES) sides[sd] = { ...sides[sd], [part]: vals[sd] };
+    }
+  }
+  const color = d.color ?? inheritedColor ?? 'currentcolor';
+  for (const sd of SIDES) {
+    const s = sides[sd];
+    if (!s) continue;
+    const c = !s.color || /^currentcolor$/i.test(s.color) ? color : s.color;
+    out[`border-${sd}`] = `${s.width ?? 'medium'} ${s.style ?? 'none'} ${c}`;
+  }
+  return out;
+}
+
+/**
+ * ページ文脈・余白の箱の宣言の輪郭線 (outline・outline-width・-style・-color・outline-offset。CSS UI 4 §3。書いた順に、後の宣言が勝つ)。
+ * 線種が none か太さが 0 なら undefined。色の初期値 (auto・currentcolor) は箱の字の色 (color)。fs は em の基準 (pt)
+ */
+function declOutline(d: Record<string, string>, fs: number, color: string | undefined): Outline | undefined {
+  let width = 'medium';
+  let style = 'none';
+  let col = 'currentcolor';
+  const STYLE = /^(none|auto|solid|dashed|dotted|double|groove|ridge|inset|outset)$/i;
+  for (const [k, v] of Object.entries(d)) {
+    if (k === 'outline') {
+      [width, style, col] = ['medium', 'none', 'currentcolor'];
+      for (const t of splitWords(v)) {
+        if (STYLE.test(t)) style = t;
+        else if (/^(thin|medium|thick)$/i.test(t) || lenEm(t, fs) !== undefined) width = t;
+        else col = t;
+      }
+    } else if (k === 'outline-width') width = v.trim();
+    else if (k === 'outline-style') style = v.trim();
+    else if (k === 'outline-color') col = v.trim();
+  }
+  style = style.toLowerCase();
+  const w = /^(thin|medium|thick)$/i.test(width) ? { thin: 0.75, medium: 2.25, thick: 3.75 }[width.toLowerCase() as 'thin'] : (lenEm(width, fs) ?? 0);
+  if (style === 'none' || w <= 0) return undefined;
+  const c = borderColorOf(/^(auto|currentcolor)$/i.test(col) ? (color ?? '#000000') : col);
+  if (c === 'transparent') return undefined;
+  const off = d['outline-offset'] !== undefined ? (lenEm(d['outline-offset'], fs) ?? 0) : 0;
+  return { width: w, color: c, ...(style !== 'solid' && style !== 'auto' ? { style: style as Outline['style'] } : {}), ...(off ? { offset: off } : {}) };
+}
+
+/**
+ * ページの箱の罫線 (@page の border・border-<辺>・個別の指定。CSS Paged Media 3 §3・付録 A: ページの箱は CSS の箱の模型に従い、
+ * margin と padding の間に罫線がある)。辺 → 罫線 (幅は pt)。fs は em の基準 (pt)、color は字の色 (罫線の色の初期値)
+ */
+function pageBorders(decls: Record<string, string>, fs: number, color?: string, kw?: typeof BORDER_KEYWORDS_PT): Partial<Record<'top' | 'right' | 'bottom' | 'left', BorderSide>> {
+  const bd = marginBorderDecls(Object.fromEntries(Object.entries(decls).filter(([k]) => /^border(-(top|right|bottom|left))?(-(width|style|color))?$/.test(k))), color);
+  const out: Partial<Record<'top' | 'right' | 'bottom' | 'left', BorderSide>> = {};
+  for (const [prop, val] of Object.entries(bd)) {
+    const bm = /^border(?:-(top|right|bottom|left))?$/.exec(prop);
+    if (!bm) continue;
+    const b = parseBorder(val, fs, kw);
+    for (const sd of bm[1] ? [bm[1] as 'top'] : (['top', 'right', 'bottom', 'left'] as const)) {
+      if (b) out[sd] = b;
+      else delete out[sd];
+    }
+  }
+  return out;
+}
+
+/**
+ * margin・padding の一括指定 (1〜4 個の値。上・右・下・左の決まり) を、辺ごとの指定 (margin-top など) に展開する (書いた順に、後の宣言が勝つ)。
+ * 辺ごとの指定だけを読む所 (@footnote の領域) のため
+ */
+function expandBoxSides(d: Record<string, string>): Record<string, string> {
+  if (d.margin === undefined && d.padding === undefined) return d;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(d)) {
+    if (k !== 'margin' && k !== 'padding') {
+      out[k] = v;
+      continue;
+    }
+    const [t, r = t, b = t, l = r] = splitWords(v).filter(Boolean);
+    for (const [sd, x] of [['top', t], ['right', r], ['bottom', b], ['left', l]] as const) {
+      // 後の宣言が勝つように、前に書いた同じ辺の指定を消してから足す
+      delete out[`${k}-${sd}`];
+      if (x !== undefined) out[`${k}-${sd}`] = x;
+    }
+  }
+  return out;
 }
 
 /**
@@ -1099,8 +1390,9 @@ export function marginBoxFixedDimension(outer: number, a: number | 'auto', b: nu
   return { a, b: outer - pb - size - a, size };
 }
 
-function edges4(v: string, fs: number): { top: number; right: number; bottom: number; left: number } {
-  const n = v.trim().split(/\s+/).map((x) => lenEm(x, fs) ?? 0);
+function edges4(v: string, fs: number, rootFs?: number): { top: number; right: number; bottom: number; left: number } {
+  // 括弧の外の空白で分ける (calc(5pt + 5pt) を 1 つの値として読む)
+  const n = splitWords(v.trim()).filter(Boolean).map((x) => lenEm(x, fs, { rootFs }) ?? 0);
   const [t, r = t, b = t, l = r] = n;
   return { top: t, right: r, bottom: b, left: l };
 }
@@ -1168,6 +1460,15 @@ class HtmlImporter {
   private pendingMarkers: LMarker[] = [];
   private bodyEl?: Element;
   private curPage?: string;
+  /**
+   * 文書の最初のページの名前 (html・body の page。rootPageName)。最初の切り替え (curPage が決まる所) より前の箱
+   * (最初の流れの箱より前の絶対配置・固定配置の箱) は、このページに置かれるので、その領域を基準にする
+   */
+  private rootPage = '';
+  /** pageSwitchAt を、まだ呼んでいない (次に見る箱が、最初の流れの箱) */
+  private pageSwitchSeen = false;
+  /** 最初の流れの箱の、ページ番号の振り直し (切り替えを入れずに、最初の組の番号にするもの。pageSwitchAt) */
+  private firstPageInitial?: number;
   /** counter(page, 書式) の書式 (ページシーケンスごとに、最初に出たもの。null はまだ出ていない) */
   private pageFormat: string | null = null;
   /** body の段組 (ページの段組にする) */
@@ -1187,7 +1488,7 @@ class HtmlImporter {
   private areaOf(name: string) {
     if (!name) return this.area;
     const PT = 72 / 25.4;
-    const b = pageBox(resolvePageRules(this.pageRules, { name }, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions);
+    const b = pageBox(resolvePageRules(this.pageRules, { name }, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions, this.opts.pageBorderKeywords);
     return { top: b.margins.top * PT, right: b.margins.right * PT, bottom: b.margins.bottom * PT, left: b.margins.left * PT, width: (b.width - b.margins.left - b.margins.right) * PT, height: (b.height - b.margins.top - b.margins.bottom) * PT };
   }
   /** 要素の子の字 (plainText。生成内容を含まない部分だけ覚える) */
@@ -1446,7 +1747,7 @@ class HtmlImporter {
     const afterLr = lr && !/(^|\s)left(\s|$)/.test(pos);
     // 圏点の色 (text-emphasis-color。§3.2): 初期値 currentcolor は字の色 (色を付けない)。見えない要素 (visibility) の圏点には付けない
     const ec = mark ? cs('text-emphasis-color') : '';
-    const markColor = ec && ec !== cs('color') && !/^(hidden|collapse)$/.test(cs('visibility')) ? cssColor(ec) : undefined;
+    const markColor = ec && ec !== cs('color') && !/^(hidden|collapse)$/.test(cs('visibility')) ? visibleColorOf(ec) : undefined;
     const out: LInlineLevel[] = [];
     let buf = '';
     const flush = () => {
@@ -1713,7 +2014,16 @@ class HtmlImporter {
       const d = this.display(k);
       // 行内の要素 (span・a など) の項目は、ブロック化する (Flexbox 1 §4・CSS Display 3 §2.7)。罫線・内側の余白・背景・余白は項目の箱
       // (boxStyle) に付けるので、中身の行内の箱からは外す (外さないと、罫線が二重に描かれ、行内の罫線・余白の分だけ中身が項目の幅を超えて折り返される)
+      // 項目の page (名前付きのページ) では、ページを切り替えない (未対応として知らせる)
+      this.pageIgnored(k, ['flex・grid の項目', 'flex and grid items']);
       const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.flexItemInline(k, el, true) } as LBlock);
+      // flex の項目の百分率の寸法は、包含ブロック (flex の容器) の幅が基準 (CSS Flexbox 1 §4.2・§7.2.3)。項目を入れたセルの幅ではないので、
+      // 組むときに解き直さない (幅は、下で列の幅に使った見積もり)。grid の項目の包含ブロックは grid の領域 (CSS Grid 2 §6.2) で、それは
+      // 項目を入れたセルなので、組むときに解く
+      if (!isGrid) delete (node as BoxStyle).percent;
+      // 画像そのものが flex の項目: 百分率の幅・上限・下限は、項目のセルの幅を決めるときに、容器の幅で解いてある。画像は、そのセルの幅で描く
+      // (セルの幅で、百分率をもう 1 度解かない。Flexbox 1 §9.2・CSS 2.1 §10.2: 基準は flex の容器)
+      if (!isGrid) imageFillsItem(node, k, false, parseFloat(kc('flex-grow')) > 0 || /%/.test(kc('flex-basis')));
       // visibility: collapse の flex の項目 (Flexbox 1 §4.4): 主軸の大きさを 0 にして、交差軸の大きさだけを支柱として残す (下の行の組み立て)。
       // grid の項目の collapse は hidden と同じ (場所を残す。CSS 2.1 §11.2)
       // 書字方向が容器と直交する項目 (横書きの行の中の縦書きの箱など。block() が writingMode を付けたブロック): 主軸の大きさは項目の block の大きさ
@@ -1746,38 +2056,136 @@ class HtmlImporter {
       const p = (n: string) => cssLen(kc(n)) ?? 0;
       return p('margin-left') + p('margin-right') + (kc('box-sizing') === 'border-box' ? 0 : p('padding-left') + p('padding-right') + p('border-left-width') + p('border-right-width'));
     };
-    /** 行の 1 列: 項目 (el) か空き。w は固定の幅 (pt)、star があれば比例の列 (組版時の容器の幅の余りを star の比で分け、w を足す。表の 'N*' + widthExtra) */
+    /**
+     * 行の 1 列: 項目 (el) か空き。w は固定の幅 (pt)、star があれば比例の列 (組版時の容器の幅の余りを star の比で分け、w を足す。表の 'N*' + widthExtra)。
+     * grid の行の列は、占める grid の列の範囲 (span) か、間隔の列 (gap)。幅は、組版エンジンが、表を置くときの内容の幅で決める (w は見積もりの幅での値)
+     */
     /** collapse の項目の支柱のもと: 畳む前の組みで同じ行にあった項目と、その幅 (同じ行の支柱どうしで分け合う) */
     type StrutLine = Array<{ el: Item; w: number }>;
-    type Cell = { el?: Item; w: number; star?: number; strut?: StrutLine; flex?: LFlexItemColumn };
+    type Cell = { el?: Item; w: number; star?: number; strut?: StrutLine; flex?: LFlexItemColumn; late?: LFlexItemColumn; span?: [number, number]; gap?: boolean };
     const lines: Cell[][] = [];
+    let gridTemplate: LTable['gridTemplate'];
+    /** grid の項目の、列の下限への寄与のもと (floorOf。行の表を作るときに、項目のセルと一緒に gridTemplate.items に入れる) */
+    let itemFloors: Map<Item, Omit<GridItemFloor, 'col' | 'cell'>> | undefined;
+    /** gridTemplate.items (列挙しない性質: setGridItems) */
+    let gridItems: GridItemFloor[] | undefined;
     if (isGrid) {
-      const tracks = gridTracks(c('grid-template-columns'), W, colGap);
+      const tpl = c('grid-template-columns');
+      const count = gridTracks(tpl, W, colGap).length;
+      const spanOf = (k: Item) => Math.min(count, parseInt(/span\s+(\d+)/.exec(ics(k)('grid-column-start') + ' ' + ics(k)('grid-column-end'))?.[1] ?? '1', 10) || 1);
+      // 項目の自動の最小の大きさ (CSS Grid 1 §6.6) を、列の下限 (0fr の列の幅と、最小の大きさが auto の列 (fr・auto・minmax(auto, …) など) の
+      // 基準の大きさ: §12.5・§12.7.1。容器が狭くても、列を中身より狭くして字を重ねない) に使うか。決まった幅の列だけなら使わない。
+      // 下限は、組版エンジンが、組むときと同じ折り返しで、項目の中身を測って決める (LTable.gridTemplate.items。ここでの見積もりは、
+      // 空白でしか折らず、百分率の幅を見積もりの幅で解くので、使わない)
+      const wantFloor = /(^|[\s(])0*\.?0*fr\b/.test(tpl) || !!gridTrackPlan(tpl, W, colGap)?.fixed.some((x) => x === undefined);
+      /**
+       * 項目の、測らずに決まる下限・上限 (外側の幅。CSS Grid 1 §6.6): min-width の指定があれば、それ。overflow が visible でない項目
+       * (スクロールの容器) の自動の最小の大きさは 0。width が長さで決まっていれば、その幅 (specified size suggestion)。
+       * どれでもなければ、中身を測る (content size suggestion = min-content)。max-width の長さは、どちらも抑える
+       */
+      const floorOf = (k: Item): Omit<GridItemFloor, 'col' | 'cell'> => {
+        const kc = ics(k);
+        const o = outer(k);
+        // 百分率の width・min-width・max-width (計算値は、見積もりの幅で長さにしてある: isPercent) は、列の大きさを決める間は基準 (grid の領域) が
+        // 決まらないので auto (上限は none) と同じ (CSS Sizing 3 §5.2.1)
+        const pct = (p: 'width' | 'min-width' | 'max-width') => /%/.test(kc(p)) || (!k.anon && !k.ps && !!this.src.isPercent?.(k.el, p));
+        const mw = kc('min-width');
+        if (mw && mw !== 'auto' && !pct('min-width')) return { floor: (len(mw, W) ?? 0) + o };
+        if (!/^(visible|clip)?$/.test(kc('overflow-x') || kc('overflow'))) return { floor: o };
+        const mx = pct('max-width') ? undefined : cssLen(kc('max-width'));
+        const cap = mx !== undefined ? mx + o : undefined;
+        const wv = kc('width');
+        const wl = wv && wv !== 'auto' && !pct('width') ? cssLen(wv) : undefined;
+        // 項目そのものが縮められる置換要素 (img・object) で、max-width が百分率 (既定の img { max-width: 100% } も): 大きさの提案は max-width で
+        // 抑えるが (§6.6 の終わり)、その百分率は、列の大きさを決める間は 0 で解く (CSS Sizing 3 §5.2.2) ので、決まった幅 (属性の幅も) を下限に
+        // しない。中身を測る (画像の min-content の寄与は、同じく 0)
+        const shrinkable = !k.anon && !k.ps && /^(img|object)$/.test(k.el.localName) && pct('max-width');
+        if (wl !== undefined && !shrinkable) return { floor: Math.min(wl + o, cap ?? Infinity) };
+        return cap !== undefined ? { cap } : {};
+      };
+      itemFloors = wantFloor ? new Map<Item, Omit<GridItemFloor, 'col' | 'cell'>>(items.map((k) => [k, floorOf(k)])) : undefined;
+      // repeat(auto-fill | auto-fit, …) の回数は、ここで見た W (読み込みのときの、容器の内容の幅の見積もり) で 1 度だけ決める
+      // (CSS Grid 1 §7.2.3.2)。行に何個の項目を並べるかは、ここで決まるので、組むときに容器の幅が見積もりと違っても、回数は変えない
+      const rep: { times?: number } = {};
+      const tracks = gridTracks(tpl, W, colGap, undefined, rep);
+      // 列の幅は、組版エンジンが、行の表を置くときの内容の幅 (容器の実際の内容の幅) で gridTracks を呼んで決める (LTable.gridTemplate)。
+      // 容器の幅が W なら、ここで見た tracks と同じ幅。float・inline-block・flex の項目・表のセルの中のように、容器の幅が W と違っても、
+      // 列は、その幅で分け直す (fr の列は、容器の幅の余りを分け、minmax() の最小の大きさより狭くならず、最大の大きさより広がらない。
+      // 百分率の列は、容器の幅 × 比。CSS Grid 1 §7.2.1・§12)。間隔の百分率も、組むときの幅で解く (CSS Box Alignment 3 §8.1)
+      const gapPct = /^[\d.]+%$/.test(c('column-gap').trim()) ? parseFloat(c('column-gap')) / 100 : undefined;
+      gridTemplate = { tracks: tpl, gap: colGap, ...(gapPct !== undefined ? { gapPct } : {}), ...(rep.times !== undefined ? { repeat: rep.times } : {}) };
+      if (itemFloors) setGridItems(gridTemplate, (gridItems = []));
+      /**
+       * 列 [from, to) を 1 つのセルにした列 (w は、見積もりの幅での幅)。幅の和は範囲ごとに 1 度だけ足す
+       * (列は上限 MAX_GRID_REPEAT まであり、多くの項目が広い範囲を占めると、項目の数 × 範囲の列の数の手間になる。足す順は同じ)
+       */
+      const spanW = new Map<string, number>();
+      const span1 = (from: number, to: number): Cell => {
+        const key = `${from},${to}`;
+        let w = spanW.get(key);
+        if (w === undefined) spanW.set(key, (w = tracks.slice(from, to).reduce((a, b) => a + b, 0) + colGap * Math.max(to - from - 1, 0)));
+        return { w, span: [from, to] };
+      };
       let line: Cell[] = [];
       let col = 0;
       for (const k of items) {
-        const span = Math.min(tracks.length, parseInt(/span\s+(\d+)/.exec(ics(k)('grid-column-start') + ' ' + ics(k)('grid-column-end'))?.[1] ?? '1', 10) || 1);
+        const span = spanOf(k);
         if (col + span > tracks.length) {
           lines.push(line);
           line = [];
           col = 0;
         }
-        const w = tracks.slice(col, col + span).reduce((a, b) => a + b, 0) + colGap * (span - 1);
-        if (line.length && colGap > 0) line.push({ w: colGap });
-        line.push({ el: k, w });
+        if (line.length && (colGap > 0 || gapPct)) line.push({ w: colGap, gap: true });
+        line.push({ el: k, ...span1(col, col + span) });
         col += span;
       }
       if (line.length) lines.push(line);
     } else {
       /**
+       * 項目の百分率 (calc の線形の和も) の max-width (既定のスタイルの img { max-width: 100% } も): 比 (f) と、外側の幅に足す分 (edge。
+       * 余白・枠・内側の余白と、長さの部分)。百分率の基準は flex の容器の内容の幅なので、組むときに、実際の容器の幅で解く (CSS 2.1 §10.4)。
+       * 百分率でなければ undefined
+       */
+      const pctMaxOf = (k: Item, kc: (n: string) => string): { f: number; edge: number } | undefined => {
+        const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
+        const mxv = kc('max-width');
+        // 百分率 (calc の線形の和も) の max-width: 比と長さの部分 (StyleSource.percentOf)
+        const mp = this.src.percentOf?.(k.el, 'max-width');
+        const f = mp ? mp.f : /^[\d.]+%$/.test(mxv) ? parseFloat(mxv) / 100 : undefined;
+        return f === undefined ? undefined : { f, edge: (kc('box-sizing') === 'border-box' ? margins : outer(k)) + (mp ? mp.px * PT_PER_PX : 0) };
+      };
+      /**
        * 縮める下限 (外側の幅)。min-width: auto は自動の最小の大きさ (Flexbox 1 §4.5): 中身の最も狭い幅 (min-content。max-width で抑える) と、
        * 幅の指定があればその小さい方。overflow が visible でない (切り取る・流す) 項目は 0。min-width の指定があれば、それ
        */
-      const minOf = (k: Item, kc: (n: string) => string, fixedW: boolean): { floor: number; minCap?: number; minAuto?: boolean } => {
+      const minOf = (k: Item, kc: (n: string) => string, fixedW: boolean): { floor: number; minCap?: number; minAuto?: boolean; replacedMin?: LFlexItemColumn['replacedMin'] } => {
         const margins = (cssLen(kc('margin-left')) ?? 0) + (cssLen(kc('margin-right')) ?? 0);
         const mw = kc('min-width');
         if (mw && mw !== 'auto') return { floor: (len(mw, W) ?? 0) + outer(k) };
         if (!/^(visible|clip)?$/.test(kc('overflow-x') || kc('overflow'))) return { floor: outer(k) };
+        // 項目が画像そのもの: 自動の最小の大きさは、指定の幅か本来の幅 (中身の大きさの候補は置換要素の min-content の大きさ。Flexbox 1 §4.5)。
+        // 指定の幅・max-width で抑える。max-width の百分率の基準は flex の容器なので、組むときに容器の内容の幅で解き直す (LFlexItemColumn.replacedMin)。
+        // 中身の最も狭い幅の寄与 (縮められる置換要素の 0。CSS Sizing 3 §5.2.2) は、項目を包むブロックの中の画像のもの
+        if (!k.anon && !k.ps && k.el.localName === 'img') {
+          const content = measure(() => this.maxContentWidth(k.el)) + margins;
+          const bb = kc('box-sizing') === 'border-box';
+          const mxv = kc('max-width');
+          const pm = pctMaxOf(k, kc);
+          const maxPct = pm?.f;
+          const maxEdge = pm?.edge;
+          const capOf = (v: string) => {
+            const n = len(v, W);
+            return n === undefined ? undefined : n + (bb ? margins : outer(k));
+          };
+          const caps = [capOf(mxv), fixedW ? capOf(kc('width')) : undefined].filter((v): v is number => v !== undefined);
+          const minCap = caps.length ? Math.min(...caps) : undefined;
+          // 組むときに解き直す百分率の max-width は、cap に入れない
+          const fixedCap = maxPct !== undefined ? (fixedW ? capOf(kc('width')) : undefined) : minCap;
+          return {
+            floor: Math.min(content, minCap ?? Infinity),
+            replacedMin: { ...(fixedCap !== undefined ? { cap: fixedCap } : {}), ...(maxPct !== undefined ? { maxPct, maxEdge } : {}) },
+          };
+        }
         const content = k.anon ? measure(() => this.minTextWidth(k.text ?? '', k.el)) : k.ps ? measure(() => this.minTextWidth(k.text ?? '', k.el, k.ps)) + (outer(k) - margins) : measure(() => this.minContentWidth(k.el, false));
         // 中身の最も狭い幅の上限 (外側の幅): max-width と、幅の指定 (自動の最小の大きさは、指定の大きさを超えない)
         const max = len(kc('max-width'), W);
@@ -1788,7 +2196,7 @@ class HtmlImporter {
       };
       /** 項目の幅の基準 (w: flex-basis、無ければ width。分からなければ undefined)・伸び縮みの比と下限・上限。strut は collapse の項目の本来の幅 */
       /** hypo: 縮める前の幅 (仮の主軸の大きさ。外側の幅)・mins: 縮める下限の求め方 (組版エンジンに測らせるとき。LFlexItemColumn) */
-      type Info = { el: Item; w: number | undefined; hypo?: number; grow: number; shrink: number; base: number; floor: number; mins?: { minAuto?: boolean; minCap?: number }; cap?: number; orig?: Info };
+      type Info = { el: Item; w: number | undefined; hypo?: number; grow: number; shrink: number; base: number; floor: number; mins?: { minAuto?: boolean; minCap?: number; replacedMin?: LFlexItemColumn['replacedMin'] }; cap?: number; capPct?: LFlexItemColumn['capPct']; orig?: Info };
       const info = items.map((k): Info => {
         const kc = ics(k);
         // flex-basis: auto は width を使う (Flexbox 1 §7.2.3)。width が内容による大きさの語 (CSS Sizing 3 §3.2) なら、その語を基準にする
@@ -1822,7 +2230,15 @@ class HtmlImporter {
         // 数えきれず、見積もりが狭いと、最後の字が次の行に送られる (目次の項目名)。見積もりは、行に分けるとき (flex-wrap) の目安と、測れないときの幅にだけ使う
         if (inner === undefined && est !== undefined) k.fit = true;
         const mins = minOf(k, kc, fixedW);
-        const w = inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined;
+        let w = inner !== undefined ? inner + outer(k) : est !== undefined ? est + margins : undefined;
+        // 画像そのものの項目の仮の主軸の大きさは、flex-basis (百分率・0 も) を、自動の最小の大きさ (本来の幅か指定の幅。max-width で抑える) で
+        // 下から抑えたもの (Flexbox 1 §9.2 の 3 の E・§4.5)。flex: 0 0 30% の画像は、本来の幅より狭くしない (前は、セルが basis の幅で、
+        // 画像が本来の幅 (0.3.0) か、basis の幅に縮んで描かれていた)。百分率の max-width は、ここでは見積もりの幅で解く
+        if (mins.replacedMin && w !== undefined && inner !== undefined) {
+          const rm = mins.replacedMin;
+          const capPct = rm.maxPct !== undefined ? rm.maxPct * W + (rm.maxEdge ?? 0) : Infinity;
+          w = Math.max(w, Math.min(mins.floor, capPct));
+        }
         const own: Info = {
           el: k,
           w,
@@ -1835,6 +2251,9 @@ class HtmlImporter {
           mins,
           // 伸ばす上限 (外側の幅。max-width が無ければ無し)
           cap: max !== undefined ? max + outer(k) : undefined,
+          // 画像そのものの項目の、百分率の max-width (組むときに、実際の容器の幅で解く。LFlexItemColumn.capPct)。min-width・overflow で
+          // 自動の最小の大きさを外した項目 (replacedMin の無い項目) も
+          ...(!k.anon && !k.ps && k.el.localName === 'img' ? { capPct: pctMaxOf(k, kc) } : {}),
         };
         // collapse の項目 (§4.4・§9.1 の 4): 行に分けるときも、伸ばし縮めるときも、主軸の大きさは 0。畳む前の組み (orig) は支柱に使う
         return k.collapse ? { el: k, w: 0, grow: 0, shrink: 0, base: 0, floor: 0, orig: own } : own;
@@ -1960,7 +2379,7 @@ class HtmlImporter {
         const engineShrinks = g.some((it) => it.el.fit && !it.el.collapse);
         const flexOf = (it: Info): LFlexItemColumn => {
           const edge = outer(it.el);
-          return { shrink: it.shrink, basis: it.base, edge, floor: it.floor, ...(it.mins?.minAuto ? { minAuto: true } : {}), ...(it.mins?.minCap !== undefined ? { minCap: it.mins.minCap } : {}), ...(it.cap !== undefined ? { cap: it.cap } : {}) };
+          return { shrink: it.shrink, basis: it.base, edge, floor: it.floor, ...(it.mins?.minAuto ? { minAuto: true } : {}), ...(it.mins?.minCap !== undefined ? { minCap: it.mins.minCap } : {}), ...(it.mins?.replacedMin ? { replacedMin: it.mins.replacedMin } : {}), ...(it.cap !== undefined ? { cap: it.cap } : {}), ...(it.capPct ? { capPct: it.capPct } : {}) };
         };
         const line: Cell[] = [];
         if (lead) line.push({ w: 0, star: lead });
@@ -1973,7 +2392,10 @@ class HtmlImporter {
           if (seen++ > 0 && (colGap > 0.4 || between)) line.push({ w: colGap, ...(between ? { star: between } : {}) });
           if (autoSpacers && autoM[k].l) line.push({ w: 0, star: 1 });
           const w = engineShrinks && it.hypo !== undefined ? Math.max(it.w ?? 0, it.hypo) : (it.w ?? 0);
-          line.push({ el: it.el, w, ...(stars[k] ? { star: stars[k] } : {}), ...(engineShrinks ? { flex: flexOf(it) } : {}) });
+          // 組むときの容器の幅で縮め直す (late) のは、1 行の容器 (nowrap) だけ。折り返す容器は、行に分けたのが見積もりの幅 W なので、
+          // 狭い所で縮めて 1 行に詰めると、折り返すべき項目が詰まる (Flexbox 1 §9.3)。折り返しは W のまま (組むときの幅で分け直さない)
+          const late = !this.src.rect && c('flex-wrap') === 'nowrap';
+          line.push({ el: it.el, w, ...(stars[k] ? { star: stars[k] } : {}), ...(engineShrinks ? { flex: flexOf(it) } : late ? { late: flexOf(it) } : {}) });
           if (autoSpacers && autoM[k].r) line.push({ w: 0, star: 1 });
         });
         if (trail) line.push({ w: 0, star: trail });
@@ -1987,7 +2409,8 @@ class HtmlImporter {
     const pb = (n: string) => cssLen(c(n)) ?? 0;
     const innerH = fixed && cssLen(c('height')) !== undefined ? cssLen(c('height'))! - (c('box-sizing') === 'border-box' ? pb('padding-top') + pb('padding-bottom') + pb('border-top-width') + pb('border-bottom-width') : 0) : undefined;
     const ac0 = alignKeyword(c('align-content'));
-    const fullLine = !isGrid && lines.length === 1 && innerH !== undefined && innerH > 0 && (c('flex-wrap') === 'nowrap' || ac0 === 'normal' || ac0 === 'stretch');
+    // WeasyPrint の組み方 (flexSingleLineFullWp): 折り返しの容器の 1 つだけの行も、align-content に関わらず容器の高さにする
+    const fullLine = !isGrid && lines.length === 1 && innerH !== undefined && innerH > 0 && (c('flex-wrap') === 'nowrap' || ac0 === 'normal' || ac0 === 'stretch' || !!this.opts.flexSingleLineFullWp);
     // 高さの決まった複数行の容器の align-content: stretch (normal も同じ): 余った高さを行に等しく分ける (Flexbox 1 §8.4・§9.4 の 15)。
     // 行の表に伸ばす比 1 を付け、組版エンジンが行とセルを伸ばす
     const stretchLines = fixed && lines.length > 1 && (ac0 === 'normal' || ac0 === 'stretch');
@@ -2041,6 +2464,9 @@ class HtmlImporter {
         ...(cell.star ? { width: `${cell.star}*` as const, ...(cell.w ? { widthExtra: cell.w } : {}) } : { width: Math.max(cell.w, 0) }),
         ...(cell.el?.fit ? { fitContent: true } : {}),
         ...(cell.flex ? { flexItem: cell.flex } : {}),
+        ...(cell.late ? { flexLate: cell.late } : {}),
+        ...(cell.span ? { gridSpan: cell.span } : {}),
+        ...(cell.gap ? { gridGap: true as const } : {}),
       }));
       const cells: LTableCell[] = line.map((cell) => {
         if (!cell.el) return { type: 'table-cell', children: [] };
@@ -2052,10 +2478,16 @@ class HtmlImporter {
           const { table, total } = strutTable(cell.strut);
           return { type: 'table-cell', keepEdgeSpace: true, children: [{ type: 'block', phantom: true, [L('width')]: total, ...(ids.length ? { phantomIds: ids } : {}), children: [table] } as LBlock] };
         }
-        return itemCell(cell.el);
+        const ic = itemCell(cell.el);
+        // 1 列だけを占める項目は、その列の下限に数える (LTable.gridTemplate.items)
+        const fl = itemFloors?.get(cell.el);
+        if (fl && cell.span && cell.span[1] - cell.span[0] === 1) gridItems!.push({ col: cell.span[0], cell: ic, ...fl });
+        return ic;
       });
       this.report.counts.tables++;
-      children.push({ type: 'table', columns, ...(isGrid ? {} : { flexLine: true }), ...(stretchLines ? { flexGrow: 1 } : {}), ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', ...(fullLine ? { minHeight: innerH } : {}), cells }] } } as LTable);
+      const lineTable = { type: 'table', columns, ...(gridTemplate ? { gridTemplate } : { flexLine: true }), ...(stretchLines ? { flexGrow: 1 } : {}), ...(k > 0 && rowGap > 0 ? { margin: { top: rowGap } } : {}), body: { type: 'table-body', rows: [{ type: 'table-row', ...(fullLine ? { minHeight: innerH } : {}), cells }] } } as LTable;
+      this.flexLineBreaks(lineTable, cells.filter((_, j) => !!line[j].el && !line[j].strut));
+      children.push(lineTable);
     });
     this.report.counts.blocks++;
     // 高さの決まった容器の行の揃え: 複数行 (flex-wrap の複数行と grid) は align-content、1 行だけなら行の高さは容器いっぱいなので
@@ -2075,7 +2507,63 @@ class HtmlImporter {
         : ai === 'center' || ai === 'end' || ai === 'last-baseline'
           ? ai === 'last-baseline' ? 'end' : ai
           : undefined;
-    return { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), ...(blockAlign ? { blockAlign } : {}), ...this.flexCbOf(el), children: [...extra, ...children] } as LBlock;
+    const out = { type: fixed ? 'block-container' : 'block', ...this.textStyle(el, parent), ...this.paragraphStyle(el, parent), ...this.boxStyle(el), ...(blockAlign ? { blockAlign } : {}), ...this.flexCbOf(el), children: [...extra, ...children] } as LBlock;
+    this.flexContainerBreaks(out, children);
+    return out;
+  }
+
+  /**
+   * flex の行 (grid の行) を組む 1 行の表の、前後の区切り: 項目 (セルの中身) の break-before・break-after (項目の最初・最後の子へたどった値も)
+   * は、その項目の並ぶ行の前後の区切りにする (CSS Flexbox 1 §12: 行の向きの flex の容器では、項目の break-before・break-after は flex の行へ伝わる。
+   * CSS Grid 2 §12: grid の項目の値は、その項目の並ぶ grid の行へ伝わる。CSS Fragmentation 3 §3.1.1)。項目からは外す (残すと、その項目だけを
+   * 次のページへ送り、兄弟の項目を前のページに残していた)。値どうしは §4.3 で合わせる (左右のページの指定は、後ろの項目の値)。
+   * 避ける値は、どれかの項目が避けるなら、行の前 (後ろ) では分けない (§4.4 の Rule 1)。項目の break-inside の避ける値は、
+   * その項目を分けない (行を分けない。新しいページにも入らなければ緩める: §4.4)
+   */
+  private flexLineBreaks(t: LTable, items: LTableCell[]) {
+    const row = t.body.rows[0];
+    let bb: BreakKind | undefined;
+    let ba: BreakKind | undefined;
+    let avB = false;
+    let avA = false;
+    for (const cell of items) {
+      bb = mergeBreaks(bb, takeEdgeBreak(cell.children, 'before'));
+      ba = mergeBreaks(ba, takeEdgeBreak(cell.children, 'after'));
+      avB ||= !!this.edgeAvoidOf(cell.children, 'before');
+      avA ||= !!this.edgeAvoidOf(cell.children, 'after');
+      const n = cell.children.find((x) => typeof x !== 'string');
+      if (n && typeof n !== 'string' && (n.type === 'block' || n.type === 'table') && n.keepTogether) {
+        row.keepTogether = true;
+        if (!this.opts.avoidRowOverflowAh) row.keepTogetherYields = true;
+      }
+    }
+    if (bb) t.breakBefore = bb;
+    if (ba) t.breakAfter = ba;
+    const avoid = { ...(!bb && avB ? { before: 'all' as const } : {}), ...(!ba && avA ? { after: 'all' as const } : {}) };
+    if (avoid.before || avoid.after) {
+      this.edgeAvoids.set(t, avoid);
+      if (avoid.before) t.keepWithPrevious = true;
+      if (avoid.after) t.keepWithNext = true;
+    }
+  }
+
+  /**
+   * flex・grid の容器の、最初の行の前・最後の行の後ろの区切りは、容器の前後の区切り (CSS Flexbox 1 §12・CSS Grid 2 §12: 最初の行の
+   * break-before・最後の行の break-after は、容器へ伝わる)。容器自身の値と合わせ (§4.3)、行からは外す。避ける値も伝える
+   * (propagateEdgeAvoids が、容器自身の値と合わせる)
+   */
+  private flexContainerBreaks(out: LBlock, lines: LBlockLevel[]) {
+    const first = lines[0] as LTable | undefined;
+    const last = lines[lines.length - 1] as LTable | undefined;
+    if (!first || !last) return;
+    const bb = mergeBreaks(out.breakBefore, first.breakBefore);
+    const ba = mergeBreaks(last.breakAfter, out.breakAfter);
+    delete first.breakBefore;
+    delete last.breakAfter;
+    if (bb) out.breakBefore = bb;
+    if (ba) out.breakAfter = ba;
+    const avoid = { ...(!bb && first.keepWithPrevious ? { before: 'all' as const } : {}), ...(!ba && last.keepWithNext ? { after: 'all' as const } : {}) };
+    if (avoid.before || avoid.after) this.edgeAvoids.set(out, avoid);
   }
 
   /** ::before・::after に content がある (none・normal でない) か */
@@ -2483,7 +2971,7 @@ class HtmlImporter {
 
   /** 語間 (word-spacing。pt。normal は 0) */
   private wordSpacing(el: Element, pseudo?: '::before' | '::after'): number {
-    return cssLen(this.cs(el, pseudo)('word-spacing')) ?? 0;
+    return spacingPt(this.cs(el, pseudo), 'word-spacing');
   }
 
   /** 1 行の文字列の幅 (pt。和欧間アキを含めない) */
@@ -2493,7 +2981,7 @@ class HtmlImporter {
     if (!s) return 0;
     const c = this.cs(el, pseudo);
     const fs = cssLen(c('font-size')) ?? 12;
-    const ls = cssLen(c('letter-spacing')) ?? 0;
+    const ls = spacingPt(c, 'letter-spacing');
     if (!this.opts.measureText) return [...s].reduce((a, ch) => a + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55), 0) * fs + ls * [...s].length;
     const weight = parseInt(c('font-weight'), 10) || 400;
     const names = c('font-family')
@@ -2507,7 +2995,7 @@ class HtmlImporter {
   }
 
   /** 段組 (column-count・column-width・column-gap・column-rule)。avail: 段組する幅 (pt) */
-  private columnsOf(el: Element, avail: number): ({ count: number; gap: number; rule?: BorderSide; fill: 'balance' | 'auto' } & Pick<NonNullable<LBlockContainer['columns']>, 'ruleDisplay' | 'ruleLength' | 'ruleAlign' | 'discardEndMargin' | 'discardStartMargin'>) | undefined {
+  private columnsOf(el: Element, avail: number): ({ count: number; gap: number; rule?: BorderSide; fill: 'balance' | 'auto' } & Pick<NonNullable<LBlockContainer['columns']>, 'ruleDisplay' | 'ruleLength' | 'ruleAlign' | 'discardEndMargin' | 'discardStartMargin' | 'byWidth'>) | undefined {
     const c = this.cs(el);
     let count = parseInt(c('column-count'), 10) || 0;
     const width = cssLen(c('column-width'));
@@ -2520,6 +3008,12 @@ class HtmlImporter {
     }
     if (count <= 1) return undefined;
     const out: NonNullable<ReturnType<typeof this.columnsOf>> = { count, gap, fill: c('column-fill') === 'auto' ? 'auto' : 'balance' };
+    // 段の数・段の間を、組むときに実際の幅で決め直す (段の数を column-width から決めたとき・段の間が百分率のとき)
+    const gapPct = g && /%$/.test(g.trim()) ? parseFloat(g) / 100 : undefined;
+    if (!this.src.rect && (width || gapPct !== undefined)) {
+      const maxCount = parseInt(c('column-count'), 10) || 0;
+      out.byWidth = { ...(width ? { width } : {}), ...(width && maxCount ? { maxCount } : !width ? { maxCount: count } : {}), ...(gapPct !== undefined ? { gapPct } : {}) };
+    }
     if (this.opts.columnsDiscardEndMargin) out.discardEndMargin = true;
     if (this.opts.columnsDiscardStartMargin) out.discardStartMargin = true;
     const rs = c('column-rule-style');
@@ -2615,7 +3109,7 @@ class HtmlImporter {
     const f: LFloat = { type: 'float', float: side, children: [inner], ...(side === 'start' || side === 'end' || side === 'inside' || side === 'outside' ? { cssPlacement: true } : {}) };
     // 箱の寸法・余白・枠・背景は float に移す (外側の余白は本文との間隔、幅は回り込みの幅になる)
     // 内容による大きさ (inlineSizing) と、その長さの上限・下限も、float の箱が持つ
-    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'backgroundClip', 'borderRadius', 'boxShadow', 'paintEffect', 'width', 'height', 'boxSizing', 'clear', ...(inner.inlineSizing ? (['inlineSizing', 'minInlineSize', 'maxInlineSize'] as const) : [])] as const) {
+    for (const k of ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'backgroundClip', 'borderRadius', 'boxShadow', 'paintEffect', 'width', 'height', 'boxSizing', 'clear', 'percent', ...(inner.inlineSizing ? (['inlineSizing', 'minInlineSize', 'maxInlineSize'] as const) : [])] as const) {
       if (inner[k] === undefined) continue;
       (f as unknown as Record<string, unknown>)[k] = inner[k];
       delete inner[k];
@@ -2754,13 +3248,84 @@ class HtmlImporter {
    * position: relative の箱のずらし (pt。右・下が正。CSS 2.1 §9.4.3: left と right の両方があれば left (direction: ltr)、top と bottom の
    * 両方があれば top。auto は 0)。ずらしが無ければ undefined
    */
+  /** tr から、行のまとまりの終わりまでの行の数 (tr を含む)。まとまりの行ごとに覚える (rowspan="0" のセルごとに残りの行をたどり直さない) */
+  private rowsFromMemo = new WeakMap<Element, number>();
+  private rowsFrom(tr: Element): number {
+    const known = this.rowsFromMemo.get(tr);
+    if (known !== undefined) return known;
+    const rows: Element[] = [tr];
+    for (let n = tr.nextSibling; n; n = n.nextSibling) {
+      if (n.nodeType !== 1) continue;
+      const ln = (n as Element).localName;
+      if (ln === 'tr') rows.push(n as Element);
+      else if (/^(thead|tbody|tfoot)$/.test(ln)) break;
+    }
+    rows.forEach((r, k) => this.rowsFromMemo.set(r, rows.length - k));
+    return rows.length;
+  }
+
   private relativeOffsetOf(el: Element): { x: number; y: number } | undefined {
     const c = this.cs(el);
     if (c('position') !== 'relative') return undefined;
-    const off = (p: 'top' | 'right' | 'bottom' | 'left') => (this.src.isAuto?.(el, p) === false ? cssLen(c(p)) : undefined);
+    // top・bottom の百分率は、包含ブロックの高さに対する割合。高さが決まっていなければ auto (CSS 2.1 §9.3.2・§9.4.3)。
+    // 計算値は % のまま来る (cssCascade.ts) ので、ここで包含ブロックの決まった高さに当てる。
+    // 包含ブロックは、いちばん近いブロックの容器の祖先 (CSS 2.1 §10.1 の 2)。行内の要素 (ルビの部分も) と display: contents
+    // (箱を作らない。CSS Display 3 §2.5) は飛ばしてたどる。行内の要素の height は効かない (§10.5) ので、その高さは読まない。
+    // ただし、flex・grid の容器の子 (display: contents の祖先を通して子になるものも。§2.5) は、計算値の display が inline のままでも、
+    // ブロック化されたブロックの容器の箱 (CSS Display 3 §2.7・Flexbox 1 §4・Grid 1 §6.1) なので、包含ブロックになる (飛ばさない)
+    const pct = (v: string) => {
+      const m = /^(-?[\d.]+)%$/.exec(v.trim());
+      if (!m) return undefined;
+      const flexOrGridItem = (e: Element) => {
+        let p = e.parentElement;
+        while (p && p !== this.bodyEl && this.display(p) === 'contents') p = p.parentElement;
+        return !!p && /(^|[\s-])(flex|grid)$/.test(this.display(p));
+      };
+      let cb = el.parentElement;
+      while (cb && cb !== this.bodyEl && /^(inline|contents|ruby.*)$/.test(this.display(cb)) && !(this.display(cb) !== 'contents' && flexOrGridItem(cb))) cb = cb.parentElement;
+      const h = cb ? this.definiteContentHeight(cb) : undefined;
+      return h === undefined ? undefined : (parseFloat(m[1]) * h) / 100;
+    };
+    const off = (p: 'top' | 'right' | 'bottom' | 'left') =>
+      this.src.isAuto?.(el, p) === false ? (cssLen(c(p)) ?? (p === 'top' || p === 'bottom' ? pct(c(p)) : undefined)) : undefined;
     const x = off('left') ?? (off('right') !== undefined ? -off('right')! : 0);
     const y = off('top') ?? (off('bottom') !== undefined ? -off('bottom')! : 0);
     return x || y ? { x, y } : undefined;
+  }
+
+  /**
+   * 横書きのブロックの箱の、決まった内容の高さ (pt。子の高さ・相対配置のずらしの百分率の基準)。決まっていなければ undefined。
+   * height が長さの箱と、容器の高さに伸ばす flex の項目 (行が容器の高さになる 1 行の容器の、交差軸の大きさが auto で stretch の項目。
+   * Flexbox 1 §9.4 の 15・§9.8: 伸ばした大きさは決まった大きさとして扱う)。項目が 1 行に収まるかは読み込みのときに分からないので、
+   * 折り返さない容器か、項目が 1 つの容器だけを見る
+   */
+  private definiteContentHeight(el: Element): number | undefined {
+    const c = this.cs(el);
+    if (/^(vertical|sideways|tb)/.test(c('writing-mode'))) return undefined;
+    const q = (p: string) => cssLen(c(p)) ?? 0;
+    const inner = (cc: (n: string) => string, outer: number) =>
+      cc('box-sizing') === 'border-box' ? Math.max(0, outer - (cssLen(cc('padding-top')) ?? 0) - (cssLen(cc('padding-bottom')) ?? 0) - (cssLen(cc('border-top-width')) ?? 0) - (cssLen(cc('border-bottom-width')) ?? 0)) : outer;
+    if (this.src.isAuto?.(el, 'height') === false) {
+      const h = cssLen(c('height'));
+      return h === undefined ? undefined : inner(c, h);
+    }
+    // 容器の高さに伸ばす flex の項目
+    const box = el.parentElement;
+    if (!box || !/^(inline-)?flex$/.test(this.display(box))) return undefined;
+    const bc = this.cs(box);
+    if (/^column/.test(bc('flex-direction')) || /^(vertical|sideways|tb)/.test(bc('writing-mode')) || this.src.isAuto?.(box, 'height') !== false) return undefined;
+    const bh = cssLen(bc('height'));
+    if (bh === undefined) return undefined;
+    const ac = alignKeyword(bc('align-content'));
+    const items = this.flexItemSources(box).filter((s) => s.ps || s.text !== undefined || !/^(absolute|fixed)$/.test(this.cs(s.el)('position')));
+    const oneLine = bc('flex-wrap') === 'nowrap' || items.length === 1;
+    if (!oneLine || !(bc('flex-wrap') === 'nowrap' || ac === 'normal' || ac === 'stretch' || this.opts.flexSingleLineFullWp)) return undefined;
+    const as = c('align-self');
+    if (flexCross(as && as !== 'auto' ? as : bc('align-items'), bc('flex-wrap') === 'wrap-reverse') !== 'stretch') return undefined;
+    if (c('margin-top') === 'auto' || c('margin-bottom') === 'auto') return undefined;
+    const outer = inner(bc, bh) - q('margin-top') - q('margin-bottom');
+    // 項目の内容の高さ (伸ばした大きさは border-box の外の大きさなので、内側の余白と枠を引く)
+    return Math.max(0, outer - q('padding-top') - q('padding-bottom') - q('border-top-width') - q('border-bottom-width'));
   }
 
   /** 中の絶対配置の箱の基準になる要素か: position が relative・sticky か、変換の付いた箱 (CSS 2.1 §10.1・Transforms 1 §3) */
@@ -2837,10 +3402,11 @@ class HtmlImporter {
     const pad = (side: string) => (this.liRows.has(cb) ? 0 : (cssLen(pc(`padding-${side}`)) ?? 0));
     cont.positionInContainer = true;
     if (off.left !== undefined) cont.left = off.left - pad('left');
-    if (off.right !== undefined && (off.left === undefined || cont.width === undefined)) cont.right = off.right - pad('right');
+    // left と width があれば right は捨てる (§10.3.7 の制約の余り)。ただし auto の余白に残りを配る箱は、残りを求めるのに要る
+    if (off.right !== undefined && (off.left === undefined || cont.width === undefined || cont.autoMargins)) cont.right = off.right - pad('right');
     if (off.top !== undefined) cont.top = off.top - pad('top');
     if (off.bottom !== undefined && (off.top === undefined || cont.height === undefined)) cont.bottom = off.bottom - pad('bottom');
-    this.setCbPercent(cont, pct, pad('top') + pad('bottom'));
+    this.setCbPercent(cont, pct, pad('top') + pad('bottom'), pad('left') + pad('right'));
   }
 
   /**
@@ -2868,13 +3434,16 @@ class HtmlImporter {
    * 百分率の top・bottom・height を、組版に渡す (LBlockContainer.cbPercent)。基準の箱の高さは組んでから決まるので、組版が決める。
    * pad: 組版が求める基準の箱の高さ (内容の箱) に足して、padding の箱の高さにする量
    */
-  private setCbPercent(cont: LBlockContainer, pct: AbsPercent | undefined, pad: number) {
+  private setCbPercent(cont: LBlockContainer, pct: AbsPercent | undefined, pad: number, padI = 0) {
     if (!pct) return;
     const out: NonNullable<LBlockContainer['cbPercent']> = { pad };
     if (pct.top !== undefined && cont.top !== undefined) out.top = pct.top;
     if (pct.bottom !== undefined && cont.bottom !== undefined) out.bottom = pct.bottom;
     if (pct.height !== undefined) out.height = pct.height;
-    if (out.top !== undefined || out.bottom !== undefined || out.height !== undefined) cont.cbPercent = out;
+    if (pct.left !== undefined && cont.left !== undefined) out.left = pct.left;
+    if (pct.right !== undefined && cont.right !== undefined) out.right = pct.right;
+    if (padI) out.padI = padI;
+    if (out.top !== undefined || out.bottom !== undefined || out.height !== undefined || out.left !== undefined || out.right !== undefined || (padI && cont.percent)) cont.cbPercent = out;
   }
 
   /** position: absolute / fixed → 絶対配置の箱 (基準の祖先 (localCb) の箱、無ければ本文領域を基準にする) */
@@ -2889,6 +3458,32 @@ class HtmlImporter {
     // top も bottom も無ければ、static position を margin-top だけ下げる
     const mg = (box.margin ?? {}) as Partial<Record<'top' | 'right' | 'bottom' | 'left', number>>;
     delete box.margin;
+    // 百分率の left・right と margin-left・margin-right (基準は包含ブロックの幅。CSS Position 3 §3.1・CSS 2.1 §8.3): 基準の箱の中に置く箱
+    // (placeInCb・行内の箱が基準) は、見積もりで解いた分を引いて長さの分を位置に残し、割合 (pct.left・pct.right) は組版が、基準の箱の
+    // padding の箱の幅で足す (LBlockContainer.cbPercent)。ページの領域が基準の箱は、下の pageArea で決める
+    const lrPct: Partial<Record<'left' | 'right', { f: number; d: number }>> = {};
+    for (const sd of ['left', 'right'] as const) {
+      const pp = this.src.isAuto?.(e, sd) === false ? this.src.percentOf?.(e, sd) : undefined;
+      const est = cssLen(c(sd));
+      const pm = box.percent?.margin?.[sd];
+      let f = 0;
+      let d = 0;
+      if (pp && pp.f !== 0 && est !== undefined) {
+        f += pp.f;
+        d += pp.px * PT_PER_PX - est;
+      }
+      if (pm && pm.pct !== 0 && mg[sd] !== undefined) {
+        f += pm.pct;
+        d += pm.len - mg[sd]!;
+      }
+      if (f !== 0) lrPct[sd] = { f, d };
+    }
+    // 百分率の margin の上下は、見積もりの長さのまま位置の指定に足した (組むときに解き直さない)
+    if (box.percent?.margin) {
+      const { margin: _m, ...rest } = box.percent;
+      if (Object.keys(rest).length) box.percent = rest;
+      else delete box.percent;
+    }
     delete box.breakBefore;
     delete box.breakAfter;
     // 画像 (<img>) は、画像そのものを箱の大きさで置く (object-fit も)
@@ -2909,8 +3504,35 @@ class HtmlImporter {
     const add = (v: number | undefined, m: number | undefined) => (v === undefined ? undefined : v + (m ?? 0));
     const [top, right, bottom, left] = [add(off('top'), mg.top), add(off('right'), mg.right), add(off('bottom'), mg.bottom), add(off('left'), mg.left)];
     if (top === undefined && bottom === undefined && mg.top) cont.staticOffset = mg.top;
+    // left・right・width がどれも auto でない箱の auto の左右の余白 (CSS 2.1 §10.3.7): 包含ブロックの幅は組むときに決まるので、
+    // 組版が、残りを auto の余白に配る (LBlockContainer.autoMargins。right も渡す)。どれかが auto なら、auto の余白は 0
+    // (boxStyle が付けた印は、ここで物理の左右から決め直す)
+    delete cont.autoMargins;
+    if (left !== undefined && right !== undefined && cont.width !== undefined) {
+      const ml = c('margin-left') === 'auto';
+      const mr = c('margin-right') === 'auto';
+      if (ml || mr) cont.autoMargins = ml && mr ? 'center' : ml ? 'start' : 'end';
+    }
     // 左右の位置の指定が無ければ、static position (基準の左端) から margin-left だけずらす (table#total { margin: 0 -3cm } など)
-    const staticI = left === undefined && right === undefined ? (mg.left ?? 0) : 0;
+    // static position は、箱をふつうの流れに置いたとしたときの位置 (CSS 2.1 §10.3.7)。親の <center>・align (-webkit-center・-webkit-right)
+    // は、流れの中の子孫のブロックの左右の余白を auto のように扱って寄せる (HTML Living Standard §15.3.3) ので、幅の決まった箱の
+    // static position は、寄せた位置にする。置く場所の幅は、読み込みのときの親の内容の幅の見積もり
+    let staticAlign = 0;
+    if (left === undefined && right === undefined && !this.src.rect && cont.width !== undefined && e.parentElement && c('margin-left') === '0px' && c('margin-right') === '0px') {
+      const al = /^-webkit-(center|right)$/.exec(this.cs(e.parentElement)('text-align'))?.[1];
+      const cw = al ? this.src.contentWidth?.(e.parentElement) : undefined;
+      if (cw !== undefined) {
+        const edge = (sd: 'left' | 'right') => {
+          const b = box.border;
+          const bw = !b ? 0 : 'width' in b ? (b as BorderSide).width : ((b as Partial<Record<'left' | 'right', BorderSide>>)[sd]?.width ?? 0);
+          const p = box.padding;
+          return bw + (p === undefined ? 0 : typeof p === 'number' ? p : (p[sd] ?? 0));
+        };
+        const free = cw * PT_PER_PX - cont.width - (cont.boxSizing === 'border-box' ? 0 : edge('left') + edge('right'));
+        if (free > 0) staticAlign = al === 'center' ? free / 2 : free;
+      }
+    }
+    const staticI = left === undefined && right === undefined ? (mg.left ?? 0) + staticAlign : 0;
     // 幅は、ブラウザが決めた幅。指定が無ければ中身に合わせた幅 (shrink-to-fit。CSS 2.1 §10.3.7)
     if (cont.width === undefined) {
       const w = cssLen(c('width'));
@@ -2951,7 +3573,10 @@ class HtmlImporter {
     }
     const cb = c('position') === 'absolute' ? this.localCb(e.parentElement) : undefined;
     const icb = c('position') === 'absolute' && !cb ? this.inlineCbOf(e.parentElement) : undefined;
-    if (cb) this.placeInCb(cont, cb, { top, right, bottom, left: staticI ? staticI : left }, pct);
+    // 基準の箱の中に置く箱の、百分率の left・right の長さの分と割合
+    const lenOf = (sd: 'left' | 'right', v: number | undefined) => (v === undefined || !lrPct[sd] ? v : v + lrPct[sd]!.d);
+    const pctLR: AbsPercent = { ...pct, ...(left !== undefined && lrPct.left ? { left: lrPct.left.f } : {}), ...(right !== undefined && lrPct.right ? { right: lrPct.right.f } : {}) };
+    if (cb) this.placeInCb(cont, cb, { top, right: lenOf('right', right), bottom, left: staticI ? staticI : lenOf('left', left) }, pctLR);
     else if (icb) {
       // 行内の箱が基準: 位置は、その箱の padding の箱を囲む矩形からの距離 (組版が、行を組んだ後で矩形を求める)
       let key = this.inlineCbKeys.get(icb);
@@ -2962,23 +3587,48 @@ class HtmlImporter {
       // inline-block は、組版が箱の padding の箱を求める
       const ic = this.cs(icb);
       const pad = (side: string) => (this.plainInline(icb) ? (cssLen(ic(`padding-${side}`)) ?? 0) : 0);
-      if (left !== undefined) cont.left = left - pad('left');
+      if (left !== undefined) cont.left = lenOf('left', left)! - pad('left');
       else if (staticI) cont.left = staticI;
-      if (right !== undefined && (left === undefined || cont.width === undefined)) cont.right = right - pad('right');
+      if (right !== undefined && (left === undefined || cont.width === undefined || cont.autoMargins)) cont.right = lenOf('right', right)! - pad('right');
       if (top !== undefined) cont.top = top - pad('top');
       if (bottom !== undefined && (top === undefined || cont.height === undefined)) cont.bottom = bottom - pad('bottom');
-      this.setCbPercent(cont, pct, pad('top') + pad('bottom'));
+      this.setCbPercent(cont, pctLR, pad('top') + pad('bottom'), pad('left') + pad('right'));
     } else {
       // 基準の祖先が無い (初期包含ブロック) か position: fixed: 基準は本文領域 (ページの領域。CSS 2.1 §10.1 の 1・3)。
       // 高さが分かっているので、百分率はここで長さにする
-      const a = this.areaOf(this.curPage ?? '');
-      if (left !== undefined) cont.left = a.left + left;
-      else if (right !== undefined) cont.right = a.right + right;
-      else cont.left = a.left + staticI;
-      if (top !== undefined) cont.top = a.top + top + (pct.top ?? 0) * a.height;
-      else if (bottom !== undefined) cont.bottom = a.bottom + bottom + (pct.bottom ?? 0) * a.height;
-      else cont.top = a.top;
+      const a = this.areaOf(this.curPage ?? this.rootPage);
+      // 組版エンジンは、置くページの領域で決め直す (pageArea)。ここでは、見積もりのページの領域で決めておく
+      const pa: NonNullable<LBlockContainer['pageArea']> = {};
+      // 百分率の left・right (基準はページの領域の幅。CSS 2.1 §10.1 の 1・3・CSS Position 3 §3.1): 長さの分 (と margin) と割合に分け、
+      // 割合は、ページの領域の幅に当てる (カスケードの見積もりの幅で解いた分は引く)
+      const side = (p: 'left' | 'right', v: number): [number, number | undefined] => {
+        const pp = this.src.isAuto?.(e, p) === false ? this.src.percentOf?.(e, p) : undefined;
+        const est = cssLen(c(p));
+        return pp && pp.f !== 0 && est !== undefined ? [v - est + pp.px * PT_PER_PX, pp.f] : [v, undefined];
+      };
+      const setSide = (p: 'left' | 'right', v: number) => {
+        const [len, f] = side(p, v);
+        pa[p] = len;
+        if (f !== undefined) pa[p === 'left' ? 'pctLeft' : 'pctRight'] = f;
+      };
+      if (left !== undefined) setSide('left', left);
+      else if (right !== undefined) setSide('right', right);
+      else pa.left = staticI;
+      if (left !== undefined && right !== undefined && cont.autoMargins) setSide('right', right);
+      if (top !== undefined) {
+        pa.top = top;
+        if (pct.top !== undefined) pa.pctTop = pct.top;
+      } else if (bottom !== undefined) {
+        pa.bottom = bottom;
+        if (pct.bottom !== undefined) pa.pctBottom = pct.bottom;
+      } else pa.top = 0;
+      if (pct.height !== undefined) pa.pctHeight = pct.height;
+      if (pa.left !== undefined) cont.left = a.left + pa.left + (pa.pctLeft ?? 0) * a.width;
+      if (pa.right !== undefined) cont.right = a.right + pa.right + (pa.pctRight ?? 0) * a.width;
+      if (pa.top !== undefined) cont.top = a.top + pa.top + (pa.pctTop ?? 0) * a.height;
+      if (pa.bottom !== undefined) cont.bottom = a.bottom + pa.bottom + (pa.pctBottom ?? 0) * a.height;
       if (pct.height !== undefined) cont.height = pct.height * a.height;
+      if (!this.src.rect) cont.pageArea = pa;
     }
     const wm = this.wm(c('writing-mode'));
     if (wm) cont.writingMode = wm;
@@ -3126,7 +3776,9 @@ class HtmlImporter {
           case 'target-counter': {
             const ref = this.targetId(el, a[0]);
             if (!ref) break;
-            if (a[1] === 'page') out.push({ type: 'page-number-citation', refId: ref });
+            // 数え方は 3 つめの引数、無ければ decimal (CSS GCPM 3 §4.1・CSS Lists 3 §4.6 の counter() と同じ)。参照先のページの数え方ではない
+            // (前は参照先のページの表記をそのまま使い、ローマ数字のページへの参照が、数え方を書かなくてもローマ数字になった)
+            if (a[1] === 'page') out.push({ type: 'page-number-citation', refId: ref, format: pageNumberFormatOf(a[2] ?? 'decimal') ?? '1' });
             else if (this.lookup) out.push(this.counterString(a[2] ?? 'decimal', this.lookup.get(ref)?.counters[a[1]] ?? 0));
             break;
           }
@@ -3228,7 +3880,9 @@ class HtmlImporter {
     if (!arg) return undefined;
     const m = /^attr\(\s*([\w:-]+)(?:\s+[\w%-]+)?\s*(?:,[^)]*)?\)$/.exec(arg);
     const v = m ? (el.getAttribute(m[1]) ?? '') : unquote(arg.replace(/^url\((.*)\)$/, '$1'));
-    const id = v.replace(/^.*#/, '');
+    // fragment は最初の # の後ろ全部 (URL Standard §4.4 の fragment state。"#a#b" の fragment は "a#b")。
+    // リンクの飛び先 (linkOf) と同じに引く。前は最後の # の後ろで引き、リンクの飛べない項目にもページ番号が出た
+    const id = v.replace(/^[^#]*#/, '');
     return id ? this.fragmentId(el, id) : undefined;
   }
 
@@ -3575,7 +4229,9 @@ class HtmlImporter {
     const s: TextStyle = {};
     if (diff('font-size')) {
       const v = cssLen(c('font-size'));
-      if (v) s.fontSize = v;
+      // 0 も有効な値 (CSS Fonts 4 §2.4: 負の値だけが不正)。字は大きさ 0 で、line-height: normal の行の高さも 0 になる
+      // (0 を捨てると親の字の大きさのままになり、font-size: 0 で隠した段落 (改ページの印など) が 1 行の高さを取っていた)
+      if (v !== undefined) s.fontSize = v;
     }
     const bold = (parseInt(c('font-weight'), 10) || 400) >= 600;
     if (diff('font-weight')) s.fontWeight = parseInt(c('font-weight'), 10) || 400;
@@ -3621,14 +4277,16 @@ class HtmlImporter {
     const pcol = pdecl ? this.printOf(pdecl, 'color') : undefined;
     if (pcol) s.color = pcol;
     else if (diff('color')) {
-      const col = cssColor(c('color'));
+      // 半透明の字の色 (rgba() など) は、透明度つき (#rrggbbaa) のまま持ち、描くときにその濃さで重ねる (CSS Color 4 §4.1。
+      // 前は白い紙に重ねた不透明の色にしていたので、下に背景があると色が違った)
+      const col = textColorOf(c('color'));
       if (col) s.color = col;
     }
     // visibility (CSS 2.1 §11.2・CSS Display 3 §4): hidden・collapse の要素は、場所を残して描かない。字の色を transparent にして運び、
     // 描画で描かない (字・リーダー・リストの記号・画像。paint.ts)。visibility は受け継ぐので、見えない親の中で visible の子は自分の色に戻す
     const hiddenOf = (cc: (n: string) => string) => /^(hidden|collapse)$/.test(cc('visibility'));
     if (hiddenOf(c)) s.color = 'transparent';
-    else if (p && hiddenOf(p)) s.color = s.color ?? pcol ?? cssColor(c('color')) ?? '#000000';
+    else if (p && hiddenOf(p)) s.color = s.color ?? pcol ?? textColorOf(c('color')) ?? '#000000';
     if (diff('line-height') || diff('font-size') || (c('line-height') === 'normal' && diff('font-family'))) {
       const lh = c('line-height');
       const v = cssLen(lh);
@@ -3643,8 +4301,9 @@ class HtmlImporter {
       }
     }
     // letter-spacing・word-spacing の normal は 0 (Text 3 §7.1・§7.2)。親の値を打ち消せるように、変わったら必ず設定する
-    if (diff('letter-spacing')) s.letterSpacing = cssLen(c('letter-spacing')) ?? 0;
-    if (diff('word-spacing')) s.wordSpacing = cssLen(c('word-spacing')) ?? 0;
+    // 百分率 (字の大きさに対する割合。計算値は百分率のまま受け継ぐ) は、字の大きさが変わっても決め直す
+    for (const [prop, key] of [['letter-spacing', 'letterSpacing'], ['word-spacing', 'wordSpacing']] as const)
+      if (diff(prop) || (/%/.test(c(prop)) && diff('font-size'))) s[key] = spacingPt(c, prop);
     // tab-size (Text 3 §4.2): 計算値は、数 (空白の字の送りの何倍か) か、絶対の長さ。親の値を打ち消せるように、変わったら必ず設定する
     if (diff('tab-size')) {
       const ts = c('tab-size').trim();
@@ -3676,7 +4335,7 @@ class HtmlImporter {
     // (CSS Text Decoration 3 §2.3)。currentcolor なら、印刷の色 (特色など) の指定も字と同じに使う
     const decoColor = () => {
       const v = c('text-decoration-color');
-      return v === c('color') ? (pcol ?? cssColor(c('color'))) : cssColor(v);
+      return v === c('color') ? (pcol ?? visibleColorOf(c('color'))) : visibleColorOf(v);
     };
     // 線の種類 (text-decoration-style。Text Decoration 3 §2.2)・太さ (text-decoration-thickness。同 4 §2.4)・下線のずらし
     // (text-underline-offset。同 4 §2.8) は、線を指定したこの要素の値を、この要素から出る線に付ける。初期値 (solid・auto・auto) では何も付けない。
@@ -4025,15 +4684,20 @@ class HtmlImporter {
       // 百分率は、背景の領域 (padding box) の大きさに対して (ブラウザが置いた箱の大きさから)
       const r = /%/.test(bsz) ? this.src.rect?.(el) : undefined;
       const area = r && { w: (r.width - (parseFloat(c('border-left-width')) || 0) - (parseFloat(c('border-right-width')) || 0)) * PT_PER_PX, h: (r.height - (parseFloat(c('border-top-width')) || 0) - (parseFloat(c('border-bottom-width')) || 0)) * PT_PER_PX };
-      const size = bsz.split(/\s+/).map((v, k) => (/%$/.test(v) ? (area ? (parseFloat(v) / 100) * (k === 0 ? area.w : area.h) : undefined) : cssLen(v)));
+      // 百分率と長さの和 (calc(50% + 10px)。計算値は式のまま) も、百分率と長さに分けて読む (CSS Values 4 §10.11)
+      const parts = splitTop(bsz, ' ').filter(Boolean);
+      const pl = parts.map((v) => (/%/.test(v) ? percentPlusLength(v) : undefined));
+      const size = parts.map((v, k) => (pl[k] ? (area ? (pl[k]!.pct / 100) * (k === 0 ? area.w : area.h) + pl[k]!.px * PT_PER_PX : undefined) : cssLen(v)));
       if (size[0] !== undefined) img.width = size[0];
       if (size[1] !== undefined) img.height = size[1];
       // ブラウザの配置が無いとき (コマンドで組むとき): 百分率は、組版で箱の大きさが決まってから長さにする (CSS Backgrounds 3 §2.9)
       if (!area && !img.size) {
-        bsz.split(/\s+/).forEach((v, k) => {
-          if (/%$/.test(v) && !Number.isNaN(parseFloat(v))) img[k === 0 ? 'widthPct' : 'heightPct'] = parseFloat(v) / 100;
+        parts.forEach((_v, k) => {
+          const p = pl[k];
+          if (k > 1 || !p) return;
+          img[k === 0 ? 'widthPct' : 'heightPct'] = p.pct / 100;
+          if (p.px) img[k === 0 ? 'widthOffset' : 'heightOffset'] = p.px * PT_PER_PX;
         });
-        const parts = bsz.split(/\s+/);
         if (img.widthPct !== undefined && (parts[1] ?? 'auto') === 'auto') img.pctAuto = 'height';
         else if (img.heightPct !== undefined && parts[0] === 'auto') img.pctAuto = 'width';
       }
@@ -4055,6 +4719,9 @@ class HtmlImporter {
       if (pseudo ? c(prop) === 'auto' || !c(prop) : this.src.isAuto?.(el, prop) !== false) continue;
       const v = cssLen(c(prop));
       if (v !== undefined) o[prop] = v;
+      // 百分率の指定 (calc() の中の百分率も) は、包含ブロックの大きさの見積もりから長さにした値。中身の幅を測るときは auto として扱う
+      // (CSS Sizing 3 §5.2.1。BoxStyle.estimatedSize)
+      if (v !== undefined && !pseudo && this.src.isPercent?.(el, prop)) o.estimatedSize = { ...o.estimatedSize, [prop]: {} };
     }
     // max-width・min-width (CSS 2.1 §10.4): 幅が auto のブロックで上限・下限が効いたら、その幅にする (カスケードの見積もりの幅)。
     // 幅の指定があれば、指定の幅を上限・下限で抑える
@@ -4089,12 +4756,16 @@ class HtmlImporter {
       const lim = (p: string) => (/px$/.test(c(p)) ? cssLen(c(p)) : undefined);
       const mx = lim('max-width');
       const mn = lim('min-width');
+      // 百分率の上限・下限は、中身の幅を測るときは none・0 (CSS Sizing 3 §5.2.1)
+      const lenOnly = (p: 'max-width' | 'min-width', v: number | undefined) => (this.src.isPercent?.(el, p) ? undefined : v);
       if (o.width !== undefined) {
         // 指定の幅を、同じ box-sizing の上限・下限で抑える
         let w = o.width;
         if (mx !== undefined) w = Math.min(w, mx);
         if (mn !== undefined) w = Math.max(w, mn);
         o.width = w;
+        // 百分率の幅を、中身の幅を測るときに auto として扱うなら、長さの上限・下限はそのまま当てる (CSS Sizing 3 §5.1)
+        if (o.estimatedSize?.width) o.estimatedSize = { ...o.estimatedSize, width: estLimits(lenOnly('max-width', mx), lenOnly('min-width', mn)) };
       } else if ((mx !== undefined || mn !== undefined) && el.parentElement) {
         const own = this.src.contentWidth?.(el);
         const pcw = this.src.contentWidth?.(el.parentElement);
@@ -4102,7 +4773,14 @@ class HtmlImporter {
           const mPx = (p: string) => (c(p) === 'auto' ? 0 : parseFloat(c(p)) || 0);
           const avail = pcw - mPx('margin-left') - mPx('margin-right');
           const ownBorderPx = own + hbPt / PT_PER_PX;
-          if (Math.abs(ownBorderPx - avail) > 0.01) o.width = own * PT_PER_PX + (bb ? hbPt : 0);
+          if (Math.abs(ownBorderPx - avail) > 0.01) {
+            o.width = own * PT_PER_PX + (bb ? hbPt : 0);
+            // この幅は、auto の幅を見積もりの包含ブロックの幅で決めたもの。組むときは、置く場所の幅を長さの上限・下限で抑えた幅にする
+            // (CSS 2.1 §10.4。見積もりと置く場所の幅が違う表のセルの中などで、はみ出さない)。中身の幅を測るときは auto として扱い、
+            // 上限・下限で抑える (CSS Sizing 3 §5.1: max-content の寄与は max-width で頭打ち、min-width で底上げ)。百分率の上限・下限は、
+            // 測るときは none・0 (§5.2.1)
+            o.estimatedSize = { ...o.estimatedSize, width: { auto: true, ...estLimits(lenOnly('max-width', mx), lenOnly('min-width', mn)) } };
+          }
         }
       }
     }
@@ -4149,33 +4827,32 @@ class HtmlImporter {
       const me = c('margin-right') === 'auto';
       if (ms || me) o.autoMargins = ms && me ? 'center' : ms ? 'start' : 'end';
     }
-    if (!this.src.rect && o.width !== undefined && c('margin-left') === 'auto' && c('margin-right') === 'auto' && cbEl) {
-      const cw = this.src.contentWidth?.(cbEl);
-      if (cw !== undefined) {
-        const extra = o.boxSizing === 'border-box' ? 0 : (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
-        const m = (cw * PT_PER_PX - o.width - extra) / 2;
-        if (m > 0) o.margin = { ...margin, left: m, right: m };
-      }
-      // 組むときの置く場所の幅が見積もりと違えば、組版エンジンが残りを等分し直す
+    // 寄せるのは、包含ブロックの行の向き (CSS 2.1 §10.3.3 を、CSS Writing Modes 4 §7.1 で包含ブロックの書字方向の inline の軸に読む):
+    // 縦書きの親の中では、上下の余白 (margin-top・margin-bottom) と高さ。左右の auto の余白は block の向きなので 0
+    // (組版は、autoMargins を親の行の向きに配る。'start' は margin-left、縦書きの親では margin-top)
+    const P = cbEl ? this.axisOf(cbEl) : (n: string) => n;
+    const isz = o[P('width') as 'width' | 'height'];
+    if (!this.src.rect && isz !== undefined && c(P('margin-left')) === 'auto' && c(P('margin-right')) === 'auto' && cbEl) {
+      // 余白は組むときに、置く場所の幅から等分する。読み込みのときの包含ブロックの幅の見積もりから余白を長さにしておくと、
+      // 表のセルの中 (見積もりは表の全体の幅に近い) で、列の幅を決める内容の幅 (min-content・max-content) にその余白が入り、
+      // 列が広がり過ぎた。また、置く場所が見積もりより狭いと、余白が縮まずに箱がはみ出した
       o.autoMargins ??= 'center';
     }
     // 左右の一方だけが auto: 組むときに、残りをその余白に配る (margin-left が auto なら右へ寄る)
-    else if (!this.src.rect && o.width !== undefined && (c('margin-left') === 'auto' || c('margin-right') === 'auto')) {
-      o.autoMargins ??= c('margin-left') === 'auto' ? 'start' : 'end';
+    else if (!this.src.rect && isz !== undefined && (c(P('margin-left')) === 'auto' || c(P('margin-right')) === 'auto')) {
+      o.autoMargins ??= c(P('margin-left')) === 'auto' ? 'start' : 'end';
     }
-    // HTML の center 要素・align 属性 (-webkit-center など) は、子孫のブロックもそろえる (HTML 5.2 §10.3.3・§10.3.9)。
-    // 幅の決まった箱で、左右の余白の指定が無い (0) ものを、親の中で寄せる
-    else if (!this.src.rect && !pseudo && o.width !== undefined && cbEl && c('float') === 'none' && c('margin-left') === '0px' && c('margin-right') === '0px') {
+    // HTML の center 要素・align 属性 (-webkit-center など) は、子孫のブロックもそろえる (HTML 5.2 §10.3.3・§10.3.9。
+    // HTML Living Standard §15.3.3: 子孫のブロックの左右の余白を auto のように扱って寄せる)。
+    // 幅の決まった箱で、左右の余白の指定が無い (0) ものを、親の中で寄せる。余白は margin: auto の箱と同じに、組むときに置く場所の幅から配る
+    // (読み込みのときの包含ブロックの幅の見積もりから余白を長さにすると、表のセルの中 (見積もりは表の全体の幅に近い) で、その余白が
+    // 列の幅を決める中身の幅に入ってほかの列が縮み、置く場所が見積もりより狭い inline-block・flex の項目・セルの中では、箱がはみ出した)。
+    // 寄せた箱は、rtl の「右端から置く」決まりの外 (寄せる向きは text-align が決める。-webkit-left は、rtl でも左へ寄せる: 'end' は
+    // margin-right が auto)。寄せるのはブロックの箱だけ (inline-block などの行内の箱は、行の text-align で寄る)
+    else if (!this.src.rect && !pseudo && isz !== undefined && cbEl && c('float') === 'none' && !/^inline/.test(c('display')) && c(P('margin-left')) === '0px' && c(P('margin-right')) === '0px') {
       const pa = this.cs(cbEl)('text-align');
       const al = /^-webkit-(center|right|left)$/.exec(pa)?.[1];
-      const cw = al && al !== 'left' ? this.src.contentWidth?.(cbEl) : undefined;
-      if (cw !== undefined) {
-        const extra = o.boxSizing === 'border-box' ? 0 : (padding?.left ?? 0) + (padding?.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
-        const free = cw * PT_PER_PX - o.width - extra;
-        if (free > 0) o.margin = { ...margin, ...(al === 'center' ? { left: free / 2, right: free / 2 } : { left: free }) };
-        // 寄せた箱は、rtl の「右端から置く」決まりの外 (寄せる向きは text-align が決める)
-        o.autoMargins ??= al === 'center' ? 'center' : 'start';
-      }
+      if (al) o.autoMargins ??= al === 'center' ? 'center' : al === 'right' ? 'start' : 'end';
     }
     // 内容による大きさ (CSS Sizing 3 §3.2 の min-content・max-content・fit-content、CSS Sizing 4 §3.2 の fit-content(<長さ>)):
     // 行の向きの大きさ (横書きの width・縦書きの height) とその上限・下限は、組むときに中身の幅を測って決める (inlineSizing)。
@@ -4240,6 +4917,12 @@ class HtmlImporter {
           delete o[hp];
         }
       }
+    }
+    // 百分率の寸法 (BoxStyle.percent): 組むときに、箱を置く所の実際の包含ブロックの幅で解き直す (CSS 2.1 §10.2・§10.4・§8.3・§8.4)。
+    // 上の値 (見積もりの包含ブロックの幅から長さにしたもの) は、組版エンジンが解かない所 (と、ブラウザの配置のあるとき) に使う
+    if (!pseudo && !this.src.rect && this.src.percentOf) {
+      const pr = percentBox(this.src.percentOf.bind(this.src, el), c, !replaced && !o.aspectRatio && !o.inlineSizing);
+      if (pr) o.percent = pr;
     }
     const rad = this.radiusOf(c);
     if (rad) o.borderRadius = rad;
@@ -4384,7 +5067,12 @@ class HtmlImporter {
       marks.push({ at: items.length, order: orderOf(k) });
       this.enterCounters(this.cs(k), e);
       this.bookmark(k);
+      // 項目の page (名前付きのページ) では、ページを切り替えない (未対応として知らせる)
+      this.pageIgnored(k, ['flex・grid の項目', 'flex and grid items']);
       const node = (this.isBlock(d, k) ? this.block(k, el) : undefined) ?? ({ type: 'block', ...this.textStyle(k, el), ...this.boxStyle(k), children: this.flexItemInline(k, el, false) } as LBlock);
+      // 画像そのものが項目: 項目を包むブロックが、画像の幅・上限・下限 (百分率は容器の幅で解く) を持つので、画像はその幅で描く
+      // (包むブロックの幅で、百分率をもう 1 度解かない。Flexbox 1 §9.2・CSS 2.1 §10.2)
+      imageFillsItem(node, k);
       items.push({ v: this.withFlexGrow(node, k, el), block: true });
     }
     flush();
@@ -4709,9 +5397,28 @@ class HtmlImporter {
       // flex の容器の visibility: collapse の項目は、主軸から外す (Flexbox 1 §4.4)
       if (flexBox && /flex$/.test(this.display(el)) && this.cs(e)('visibility') === 'collapse') continue;
       const pg = this.pg(e);
-      // 名前付きページ (body の直下のブロック): ページの名前が変わるところで、ページシーケンスを分ける
-      // page は class A の区切りを作る箱 (流れの中のブロック) に効く (CSS Page 3 §8.1)。絶対配置・固定配置・float の箱は、ページの名前を変えない
-      if (el === this.bodyEl && this.isBlock(d, e) && !/^(absolute|fixed)$/.test(this.cs(e)('position')) && (this.cs(e)('float') || 'none') === 'none') this.flowPageSwitch(e, pg, items);
+      // 名前付きページ: ページの名前が変わるところで、ページシーケンスを分ける。page は class A の区切りを作る箱 (流れの中のブロック) に、
+      // どの深さでも効き、auto の箱は親の値を使う (CSS Page 3 §8.1)。絶対配置・固定配置・float の箱は、ページの名前を変えない。
+      // 見るのは、body から流れの中のふつうのブロック (pageFlowEls) だけをたどった箱 (表・flex・段組などの中は見ない)。
+      // body の直下より深い所の切り替えは、run の終わりで、包む箱を分けて body の直下へ引き上げる (hoistPageSwitches)。
+      // 見分け方 (pageSwitchBox・pageSwitchHolder) は、カスケードの百分率の幅の見積もり (cssCascade の cascadeStyles) と同じもの (pageFlow.ts)
+      // running() の要素の中身 (inRunning) は、本文の流れから外した箱なので、ページの名前を変えない (切り替えも、いまの名前も進めない。
+      // 進めると、後ろの箱の同じ名前の切り替えが消える)
+      if (this.pageFlowEls.has(el) && !this.inRunning && pageSwitchBox(this.isBlock(d, e), this.cs(e)('position'), this.cs(e)('float'))) {
+        // 入れ子の深さの上限 (MAX_TREE_DEPTH) の段の要素は、深すぎる入れ子を平らにしたとき (limitTreeDepth) に、子を後ろへ出された要素か、
+        // 出された要素なので、page を書いた箱と、その中身だった箱の親子が切れている。そこでは名前を変えない (親の値を使う。
+        // 名前のページに中身が残らず、空のページになるため。平らにしたことは、深い入れ子の警告で知らせる)
+        const own = !this.atDepthLimit(e) ? ownPageName(pg.page) : undefined;
+        const used = own ?? this.pageUsed.get(el) ?? '';
+        this.pageUsed.set(e, used);
+        this.flowPageSwitch(e, used, items, own !== undefined);
+        // 中の箱も切り替えを置ける箱: ふつうのブロック (段組・表・flex・grid・リストの項目・置き換えの要素は除く)
+        if (pageSwitchHolder(d, this.cs(e)('column-count'), this.cs(e)('column-width'), e.localName) && !this.inRunning) this.pageFlowEls.add(e);
+      } else if (d !== 'list-item' && this.isBlock(d, e) && !/^(absolute|fixed)$/.test(this.cs(e)('position')) && (this.cs(e)('float') || 'none') === 'none') {
+        // 切り替えを置けない所 (段組・表のセル・flex・grid の項目・リストの項目の中など) の箱の page は、黙って無視せず、未対応として知らせる
+        // (リストの項目は list が見る)
+        this.pageIgnored(e, ['段組・表のセル・flex・grid の項目などの中の箱', 'boxes in multi-column containers, table cells, flex and grid items and so on']);
+      }
       if (d !== 'list-item') this.enterCounters(this.cs(e), el);
       else {
         // リストの項目: 容器の list-item カウンターの暗黙の reset は、容器ごとに 1 度だけ (Lists 3 §4.6。項目の並びが、ほかの子や
@@ -4775,6 +5482,8 @@ class HtmlImporter {
         // flex・grid の項目は、ブロック化する (Flexbox 1 §4・CSS Grid 1 §6.1・CSS Display 3 §2.7)。縦並びの flex の行内の要素 (span など) を、
         // 横に並べずに縦に積む。罫線・内側の余白・背景・余白は項目の箱に付け、中身の行内の箱からは外す (横並びの flexNoRect と同じ)
         const node = { type: 'block', ...this.textStyle(e, el), ...this.boxStyle(e), children: this.flexItemInline(e, el, true) } as LBlock;
+        // 画像そのものが項目: 包むブロックが画像の幅を持つので、画像は、包むブロックの幅で描く (百分率を 2 度掛けない)
+        imageFillsItem(node, e, true);
         items.push({ v: this.withFlexGrow(node, e, el), block: true });
       } else {
         // 中にブロックを持つ行内の要素 (<span><p>…</p></span>・<a><div>…</div></a> など) は、ブロックの前後で分ける (CSS 2.1 §9.2.1.1)
@@ -4990,6 +5699,84 @@ class HtmlImporter {
     else items.push({ v: m, block: false });
   }
 
+  /**
+   * body の直下より深い所のページの切り替え (page-switch) を、body の直下へ引き上げる: 切り替えを含むブロックを、切り替えの所で分ける
+   * (CSS Page 3 §8.1: ページの名前は、入れ子の箱の間の class A の区切りでも変わる)。分けた断片は、元の箱の書式を持ち、
+   * 書字方向の始め側の余白・罫線・内側の余白・id・前の区切りは最初の断片だけに、終わり側のものと後の区切りは最後の断片だけに残す
+   * (箱がページの境で分かれるときと同じ。CSS Break 3 §5.4 の box-decoration-break: slice)。流れの中の中身の無い断片は作らない
+   */
+  private hoistPageSwitches(items: Array<LBlockLevel | LInlineLevel>): Array<LBlockLevel | LInlineLevel> {
+    const isSw = (x: unknown) => typeof x === 'object' && x !== null && (x as PageSwitch).type === 'page-switch';
+    const has = (x: unknown): boolean => typeof x === 'object' && x !== null && (x as LBlock).type === 'block' && (x as LBlock).children.some((c) => isSw(c) || has(c));
+    if (!items.some(has)) return items;
+    const wm = this.pageWm[0];
+    const [bs, be] = /^vertical-lr|^sideways-lr/.test(wm) ? (['left', 'right'] as const) : /^(vertical|sideways)/.test(wm) ? (['right', 'left'] as const) : (['top', 'bottom'] as const);
+    /** 余白・罫線の片方の辺を外す (全周の値は辺ごとの値にしてから) */
+    const drop = <T>(v: T | undefined, side: 'top' | 'right' | 'bottom' | 'left', border: boolean): T | undefined => {
+      if (v === undefined) return v;
+      const all = typeof v === 'number' || (border && typeof (v as { width?: unknown }).width === 'number') ? { top: v, right: v, bottom: v, left: v } : { ...(v as object) };
+      delete (all as Record<string, unknown>)[side];
+      return all as T;
+    };
+    const split = (b: LBlock): Array<LBlockLevel | LInlineLevel> => {
+      // 切り替えの所で、子を組に分ける (中の切り替えを含むブロックは、先に分けて並べる)
+      const parts: Array<Array<LBlockLevel | LInlineLevel> | PageSwitch> = [[]];
+      const cur = () => parts[parts.length - 1] as Array<LBlockLevel | LInlineLevel>;
+      for (const c of b.children as Array<LBlockLevel | LInlineLevel>) {
+        const flat = isSw(c) ? [c] : has(c) ? split(c as LBlock) : [c];
+        for (const x of flat) {
+          if (isSw(x)) parts.push(x as unknown as PageSwitch, []);
+          else cur().push(x);
+        }
+      }
+      const groups = parts.filter((p): p is Array<LBlockLevel | LInlineLevel> => Array.isArray(p));
+      const live = groups.filter((g) => g.some((x) => this.inFlowItem(x)));
+      const first = live[0];
+      const last = live[live.length - 1];
+      const out: Array<LBlockLevel | LInlineLevel> = [];
+      for (const p of parts) {
+        if (!Array.isArray(p)) {
+          out.push(p as unknown as LBlockLevel);
+          continue;
+        }
+        // 流れの中の中身の無い組 (空白・目印だけ) は、箱にせず、そのまま並べる
+        if (!live.includes(p)) {
+          out.push(...p.filter((x) => typeof x !== 'string'));
+          continue;
+        }
+        const { children: _c, ...props } = b;
+        const frag: LBlock = { ...props, children: p } as LBlock;
+        // box-decoration-break: clone の箱は、分けた所の辺にも罫線・内側の余白を付ける (ページの境で分かれるときと同じ。CSS Break 3 §5.4)
+        const er = frag.edgeRetain;
+        if (p !== first) {
+          delete frag.id;
+          delete frag.breakBefore;
+          delete frag.keepWithPrevious;
+          frag.margin = drop(frag.margin, bs, false);
+          if (!er?.paddingBefore) frag.padding = drop(frag.padding, bs, false);
+          if (!er?.borderBefore) frag.border = drop(frag.border, bs, true);
+          // block の向きの大きさの指定 (height・min-height・max-height・aspect-ratio) は、分ける前の箱の全体の大きさなので、最初の断片だけに
+          // 残す (CSS Break 3 §5.3: 区切りで押し出された分も、箱の大きさの指定に数える。§5.4 の slice: 区切りが無いものとして組んでから切る)。
+          // 後の断片に写すと、断片ごとに同じ高さを取り直す
+          delete frag[/^(vertical|sideways)/.test(frag.writingMode ?? wm) ? 'width' : 'height'];
+          delete frag.minBlockSize;
+          delete frag.maxBlockSize;
+          delete frag.aspectRatio;
+        }
+        if (p !== last) {
+          delete frag.breakAfter;
+          delete frag.keepWithNext;
+          frag.margin = drop(frag.margin, be, false);
+          if (!er?.paddingAfter) frag.padding = drop(frag.padding, be, false);
+          if (!er?.borderAfter) frag.border = drop(frag.border, be, true);
+        }
+        out.push(frag);
+      }
+      return out;
+    };
+    return items.flatMap((x) => (has(x) ? split(x as LBlock) : [x]));
+  }
+
   /** 流れの外の箱の代わりに置いた印 (見えない絶対配置の箱の id の印)。ページの名前の切り替えでは、流れの中の箱に数えない */
   private outOfFlowMarks = new WeakSet<object>();
 
@@ -5001,19 +5788,88 @@ class HtmlImporter {
     return !(n.type === 'marker' || n.type === 'float' || (n.type === 'block-container' && n.absolutePosition));
   }
 
-  /** 名前付きページ: body の直下のブロック e で、ページの名前が変わるところにページシーケンスの切り替え (page-switch) を置く */
-  private flowPageSwitch(e: Element, pg: Record<string, string>, items: FlowItem[]) {
-    const name = pg.page && pg.page !== 'auto' ? pg.page : '';
-    // アンテナハウス互換: 同じ名前でも、強制改ページを持つ要素ごとに新しいページの組にする (pageGroupFirst)
-    const forced = /^(page|left|right|recto|verso|always)$/.test(this.cs(e)('break-before') || this.cs(e)('page-break-before') || '');
-    if (name !== this.curPage || (this.opts.pageGroupFirst && name && forced)) {
-      const sw: PageSwitch = { type: 'page-switch', page: name };
-      // カウンターの名前は全体で見る (pagenote・page-x は page ではない)
-      const reset = /(?:^|\s)page(?![-\w\u0080-\uffff])(?:\s+(-?\d+))?/.exec(this.cs(e)('counter-reset'));
-      if (reset) sw.initial = reset[1] !== undefined ? Math.max(1, parseInt(reset[1], 10)) : 1;
-      items.push({ v: sw as unknown as LBlockLevel, block: true });
-      this.curPage = name;
+  /** 名前付きページの切り替えを置ける箱の並びを持つ要素 (body と、その中の流れの中のふつうのブロック) */
+  private pageFlowEls = new WeakSet<Element>();
+  /** 要素が、入れ子の深さの上限 (MAX_TREE_DEPTH。html 要素を 1 と数える) の段にあるか (それより深い要素は、読み込みの前に平らにしてある) */
+  private atDepthLimit(e: Element): boolean {
+    let depth = 1;
+    for (let p = e.parentElement; p && depth < MAX_TREE_DEPTH; p = p.parentElement) depth++;
+    return depth >= MAX_TREE_DEPTH;
+  }
+  /** 流れの中のブロックの、ページの名前の使用値 (page が auto なら親の値。CSS Page 3 §8.1) */
+  private pageUsed = new WeakMap<Element, string>();
+
+  /** 名前付きページ: 流れの中のブロック e (ページの名前の使用値 name) で、ページの名前が変わるところにページシーケンスの切り替え (page-switch) を置く */
+  private flowPageSwitch(e: Element, name: string, items: FlowItem[], named = true) {
+    const sw = this.pageSwitchAt(e, name, named);
+    if (sw) items.push({ v: sw as unknown as LBlockLevel, block: true });
+  }
+
+  /**
+   * リストの 2 番目より後ろの項目 li の、名前付きのページの切り替え (最初の項目は flowChildren が見る)。名前の読み方 (ownPageName) と、
+   * 入れ子の深さの上限の段の扱い (名前を変えず、親の値を使う) は、flowChildren の流れの中の箱と同じ
+   */
+  private listItemPageSwitch(li: Element, container: Element): PageSwitch | undefined {
+    const own = !this.atDepthLimit(li) ? ownPageName(this.pg(li).page) : undefined;
+    const used = own ?? this.pageUsed.get(container) ?? '';
+    this.pageUsed.set(li, used);
+    return this.pageSwitchAt(li, used, own !== undefined);
+  }
+
+  /**
+   * 要素の counter-reset・counter-set の page の値 (ページ番号の振り直し。無ければ undefined)。当てる順は enterCounters と同じ
+   * (Lists 3 §4: reset の後に set)。カウンターの名前は全体で見る (pagenote・page-x は page ではない)
+   */
+  private pageCounterStart(e: Element): number | undefined {
+    let v: number | undefined;
+    for (const p of ['counter-reset', 'counter-set']) {
+      const m = /(?:^|\s)page(?![-\w\u0080-\uffff])(?:\s+(-?\d+))?/.exec(this.cs(e)(p));
+      if (m) v = m[1] !== undefined ? Math.max(1, parseInt(m[1], 10)) : 1;
     }
+    return v;
+  }
+
+  /** 流れの中の箱 e (ページの名前の使用値 name) の前に置く、ページシーケンスの切り替え (名前が変わらなければ undefined)。いまの名前を進める */
+  private pageSwitchAt(e: Element, name: string, named: boolean): PageSwitch | undefined {
+    // アンテナハウス互換: 同じ名前でも、強制改ページを持つ要素ごとに新しいページの組にする (pageGroupFirst)。page を自分で書いた要素だけ
+    // (auto で親の名前を使う、入れ子の要素の改ページでは、組を分けない)
+    const forced = /^(page|left|right|recto|verso|always)$/.test(this.cs(e)('break-before') || this.cs(e)('page-break-before') || '');
+    const initial = this.pageCounterStart(e);
+    // page を自分で書いた、強制の改ページのある箱のページ番号の振り直し (counter-reset・counter-set の page) は、名前が変わらなくても
+    // その改ページから効かせる (振り直しは、ページの組の切り替えで渡す。名前が同じでも組を分ける)。body { page: x } の文書で、
+    // 同じ名前を書いた章の箱の振り直しが、名前の切り替わる文書 (body に page を書かない) と同じに効くように
+    const first = !this.pageSwitchSeen;
+    this.pageSwitchSeen = true;
+    if (name !== this.curPage || (named && forced && (initial !== undefined || (this.opts.pageGroupFirst && name)))) {
+      const sw: PageSwitch = { type: 'page-switch', page: name };
+      if (initial !== undefined) sw.initial = initial;
+      this.curPage = name;
+      return sw;
+    }
+    // 最初の流れの箱の振り直しは、名前が最初のページと同じで、強制の改ページが無くても、最初の組の番号にする (いまのページの名前は、
+    // 最初の組の名前から始めるので、切り替えは入れない。切り替えを入れると、前の字 (body の最初の中身が字のとき) との間で改ページする)
+    if (first && initial !== undefined) this.firstPageInitial = initial;
+    return undefined;
+  }
+
+  /** 要素 e の箱が置かれるページの名前: いちばん近い、流れの中の箱の祖先のページの名前の使用値 (無ければ文書の最初のページの名前) */
+  private pageUsedAround(e: Element): string {
+    for (let p = e.parentElement; p; p = p.parentElement) {
+      const u = this.pageUsed.get(p);
+      if (u !== undefined) return u;
+    }
+    return this.rootPage;
+  }
+
+  /**
+   * ページの名前を切り替えられない所 (段組・表のセル・flex・grid の項目の中など) の箱に書いた page (名前付きのページ): 未対応として知らせる
+   * (CSS Page 3 §8.1: page は、class A の区切りを作る流れの中の block-level の箱に当たる。Kumiori は、body から流れの中のふつうのブロックと、
+   * リストの項目をたどった箱でだけ切り替える)。where は箱の種類 (日本語・英語)
+   */
+  private pageIgnored(e: Element, where: [string, string]) {
+    // その所で使われているページの名前と同じなら、切り替えが要らない (無視しても結果は同じ) ので、知らせない
+    const v = ownPageName(this.pg(e).page);
+    if (v !== undefined && v !== this.pageUsedAround(e) && !this.inRunning) this.miss(msg(`page (${where[0]})`, `page (${where[1]})`));
   }
 
   /** position: running(name): 本文から外し、余白の箱の element(name) で出す。扱ったら true */
@@ -5079,6 +5935,8 @@ class HtmlImporter {
     // 参照番号 (::footnote-call) は、脚注の要素の場所に差し込む擬似要素 (GCPM 3 §2.2・§2.6)。元の脚注の要素から受け継ぐと読み、字の大きさ・太さは脚注の要素の値を
     // ::footnote-call の規則で上書きする (見出しの中の脚注でも、見出しの太字・字の大きさにはならない)
     Object.assign(fn, this.footnoteCallStyle(e, parent));
+    // 番号の書式は、この要素に当たる ::footnote-call・::footnote-marker の content (脚注ごとに違ってよい)
+    Object.assign(fn, this.footnoteFormatOf(e));
     items.push({ v: fn, block: false });
     return true;
   }
@@ -5282,10 +6140,8 @@ class HtmlImporter {
   }
 
   private isBlock(d: string, e: Element): boolean {
-    // block math・block ruby は、短い書き方の無い 2 値の display (Display 3 §2.2)
-    if (/^(block|flow-root|table|list-item|flex|grid|block math|block ruby)$/.test(d)) return true;
-    // 表の部品は表の中で扱う。単独で現れたらブロックとして扱う
-    if (/^table-/.test(d)) return true;
+    // block math・block ruby・表の部品 (表の中で扱う。単独で現れたらブロックとして扱う)。名前付きのページの見分け方と同じもの (pageFlow.ts)
+    if (blockLevelDisplay(d)) return true;
     return this.isMath(e) && (this.cs(e)('display') === 'block' || this.mathBlock(e));
   }
 
@@ -5458,6 +6314,8 @@ class HtmlImporter {
       if (iva === 'middle') ic.alignmentBaseline = 'central';
       else if (iva === 'top' || iva === 'text-top') ic.alignmentBaseline = 'before-edge';
       else if (iva === 'bottom' || iva === 'text-bottom') ic.alignmentBaseline = 'after-edge';
+      // top・bottom の箱は、自分の部分木を作る (CSS 2.1 §10.8.1。囲む top・bottom の行内の要素の部分木に入れない)
+      if (iva === 'top' || iva === 'bottom') ic.ownLineAlign = true;
       items.push({ v: ic, block: false });
     } else {
       // 行内の箱 (display: inline): ふつうの行内の要素と同じ道で、背景・罫線・内側の余白・左右の margin・vertical-align・不透明度を付ける
@@ -5472,18 +6330,19 @@ class HtmlImporter {
   /** 絶対配置の ::before / ::after → 絶対配置の箱 (大きさ・位置・背景はブラウザが確定させた値) */
   private positionedPseudo(el: Element, which: '::before' | '::after', parts: LInlineLevel[]): LBlockContainer {
     const c = this.cs(el, which);
-    const a = this.areaOf(this.curPage ?? '');
+    const a = this.areaOf(this.curPage ?? this.rootPage);
     const cont: LBlockContainer = { type: 'block-container', absolutePosition: true, ...this.textStyle(el, el, which), children: parts.length ? [{ type: 'block', children: parts }] : [] };
     const len = (p: string) => cssLen(c(p));
     const w = len('width');
     const h = len('height');
-    if (w) cont.width = w;
-    if (h) cont.height = h;
+    // 0 も有効な大きさ (CSS 2.1 §10.2・§10.5。前は width: 0 を auto として、中身の幅に広げていた)
+    if (w !== undefined) cont.width = w;
+    if (h !== undefined) cont.height = h;
     // 百分率の top・bottom・height (positioned と同じ。基準は包含ブロックの padding の箱の高さ)
     const pct = this.absPercent(c, () => false);
     if (pct.height !== undefined) cont.height = 0;
     const [top, left, right, bottom] = [len('top') ?? (pct.top !== undefined ? 0 : undefined), len('left'), len('right'), len('bottom') ?? (pct.bottom !== undefined ? 0 : undefined)];
-    if (!w) cont.shrinkToFit = true;
+    if (w === undefined) cont.shrinkToFit = true;
     const pfx = this.paintEffectOf(el, which);
     if (pfx) cont.paintEffect = pfx;
     // 基準は、要素自身 (position が static でなければ) か、その祖先
@@ -5527,11 +6386,17 @@ class HtmlImporter {
   /** border-*-radius → 角丸 (すべて 0 なら undefined。4 隅が同じ長さなら rx・ry、違えば角ごと) */
   private radiusOf(c: (p: string) => string): BorderRadius | undefined {
     const corners = (['top-left', 'top-right', 'bottom-right', 'bottom-left'] as const).map((k) => {
-      const [h, v = h] = (c(`border-${k}-radius`) || '0px').trim().split(/\s+/);
-      const one = (x: string): number | `${number}%` => (/%$/.test(x) ? (x as `${number}%`) : (cssLen(x) ?? 0));
-      return [one(h), one(v)] as [number | `${number}%`, number | `${number}%`];
+      const [h, v = h] = splitTop((c(`border-${k}-radius`) || '0px').trim(), ' ').filter(Boolean);
+      // 百分率を含む calc() (計算値は calc(10% + 10px) の形のまま。CSS Backgrounds 3 §5.1) は、百分率と長さの和
+      const one = (x: string): RadiusLength => {
+        if (/%$/.test(x)) return x as `${number}%`;
+        const pl = /%/.test(x) ? percentPlusLength(x) : undefined;
+        return pl ? { pct: pl.pct, len: pl.px * PT_PER_PX } : (cssLen(x) ?? 0);
+      };
+      return [one(h), one(v)] as [RadiusLength, RadiusLength];
     });
-    if (corners.every(([h, v]) => !parseFloat(String(h)) && !parseFloat(String(v)))) return undefined;
+    const zero = (x: RadiusLength) => (typeof x === 'object' ? !x.pct && !x.len : !parseFloat(String(x)));
+    if (corners.every(([h, v]) => zero(h) && zero(v))) return undefined;
     const [h0, v0] = corners[0];
     if (typeof h0 === 'number' && typeof v0 === 'number' && corners.every(([h, v]) => h === h0 && v === v0)) return { rx: h0, ry: v0 };
     return { rx: 0, ry: 0, corners };
@@ -5559,6 +6424,11 @@ class HtmlImporter {
   /** ブロックの箱を組む。<a href> なら箱にリンクを付ける (ブロック・flex・表の <a> も、箱の全体が飛び先へのリンクになる) */
   private block(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
     const b = this.blockBox(el, parent, plain);
+    // 最初の子 (その最初の子…) の break-before は、箱の前の区切りと同じ所の値 (CSS Fragmentation 3 §3.1.1: 最初の子の値は容器へ伝わる)。
+    // 箱自身の値と合わせて (§4.3: 左右のページの指定は、流れの中で後ろ = 内側の子の値が勝つ) 箱の値にし、子からは外す。
+    // 別々に効かせると、break-before: right の箱の中の break-before: left の子で、右ページへ送ってから、さらに左ページへ送っていた。
+    // 箱に値が無くても移す: 前の箱の break-after は、組版が箱を開くときに効かせるので、子の値と合わせられるのは箱の前 (layoutBlock の forceBreak)
+    if (b?.type === 'block' && edgeBreak(b.children, 'before')) b.breakBefore = mergeBreaks(b.breakBefore, takeEdgeBreak(b.children, 'before'));
     if (b) this.propagateEdgeAvoids(b, el);
     const link = b && this.linkOf(el);
     if (!b || !link) return b;
@@ -5783,6 +6653,18 @@ class HtmlImporter {
         });
         rest.children = [...spans, ...rest.children.filter((k) => !tops.includes(k as LFloat))];
       }
+      // 段組の最初の子の break-before・最後の子の break-after のページの区切り (page・left・right など) は、段組の容器の前後の区切り
+      // (CSS Fragmentation 3 §3.1.1: 値は、合う種類の分割の文脈の手前まで伝わる。段組は段の分割の文脈なので、ページの区切りは外へ出る)。
+      // 容器自身の値と合わせ (§4.3)、子からは外す。段の区切り (column) だけなら、段組の中で止まる (最初の段の前・最後の段の後ろでは区切らない)
+      const pageKind = (k: BreakKind | undefined) => !!k && k !== 'column';
+      if (pageKind(edgeBreak(rest.children, 'before'))) rest.breakBefore = mergeBreaks(rest.breakBefore, takeEdgeBreak(rest.children, 'before'));
+      if (pageKind(edgeBreak(rest.children, 'after'))) rest.breakAfter = mergeBreaks(takeEdgeBreak(rest.children, 'after'), rest.breakAfter);
+      // 高さが中身で決まる横書きの段組の max-height (CSS 2.1 §10.7: 箱の高さの上限): 箱の高さは抑えない (はみ出しの描き方が無い。boxStyle) が、
+      // 段の高さは、その内側に取る (CSS Multi-column 1 §7.1: 高さか max-height で限られた段組)。組版エンジンが、段が取れる高さの上限にする
+      if (rest.height === undefined && !rest.aspectRatio && !wm?.startsWith('vertical') && /px$/.test(c('max-height'))) {
+        const bb = c('box-sizing') === 'border-box' ? ['padding-top', 'padding-bottom', 'border-top-width', 'border-bottom-width'].reduce((a, p) => a + (cssLen(c(p)) ?? 0), 0) : 0;
+        rest.maxBlockSize = Math.max(0, (cssLen(c('max-height')) ?? 0) - bb);
+      }
       return { ...rest, type: 'block-container', columns: colSpec } as LBlockContainer;
     }
     // アンテナハウスの -ah-display-align: 高さの決まったブロックは、中身を箱の中の上下の中央・末尾に寄せる
@@ -5887,6 +6769,19 @@ class HtmlImporter {
     return v === 'vertical-rl' || v === 'tb-rl' || v === 'sideways-rl' ? 'vertical-rl' : v === 'vertical-lr' ? 'vertical-lr' : v === 'horizontal-tb' || v === 'lr-tb' ? 'horizontal-tb' : undefined;
   }
 
+  /**
+   * 要素 e の包含ブロックを作る祖先 (行内の要素 (display: inline・contents) を越えた、いちばん近い祖先) が、行内の要素として組む
+   * inline-flex・inline-grid の容器か
+   */
+  private inInlineFlexBox(e: Element): boolean {
+    for (let p = e.parentElement; p; p = p.parentElement) {
+      const d = this.display(p);
+      if (/^inline-(flex|grid)$/.test(d)) return true;
+      if (d !== 'inline' && d !== 'contents') return false;
+    }
+    return false;
+  }
+
   /** 画像 (<img> と、画像を指す <object>) */
   private image(el: Element, src: string): LImage {
     const key = normalizeSrc(src);
@@ -5903,12 +6798,31 @@ class HtmlImporter {
     for (const prop of ['width', 'height'] as const) {
       const auto = this.src.isAuto?.(el, prop);
       const attr = el.getAttribute(prop);
-      const v = auto === false ? cssLen(c(prop)) : attr && /^\d+(\.\d+)?$/.test(attr) ? parseFloat(attr) * PT_PER_PX : undefined;
-      if (v) img[prop] = v;
+      // img・object の属性は、カスケードが表示のための指定 (presentational hints。HTML §15.4.3) にしてあるので、作成者が auto を
+      // 書けば auto (max-width: 100%; height: auto の画像は、幅を縮めると、高さも縦横比で縮む)。その属性を読むのは、auto かどうかが
+      // 分からないときだけ。表示のための指定にしない要素 (行内の svg など) の属性は、これまでどおり読む
+      const hinted = auto !== undefined && /^(img|object)$/.test(el.localName);
+      const v = auto === false ? cssLen(c(prop)) : !hinted && attr && /^\d+(\.\d+)?$/.test(attr) ? parseFloat(attr) * PT_PER_PX : undefined;
+      // 0 も有効な大きさ (CSS 2.1 §10.2。img の width="0" も、HTML §15.4.3 の寸法の属性で 0 を無視しない。前は 0 を指定なしとして、
+      // 画像本来の大きさで描いていた)
+      if (v !== undefined) img[prop] = v;
+    }
+    // 属性の縦横比 (aspect-ratio: auto w / h。HTML §15.4.3): auto のために読まなかった属性があれば、比を残す (組版が、本来の比が無いときに使う)
+    if (/^(img|object)$/.test(el.localName) && (img.width === undefined || img.height === undefined)) {
+      const aw = el.getAttribute('width');
+      const ah = el.getAttribute('height');
+      if (aw && ah && /^\d+(\.\d+)?$/.test(aw) && /^\d+(\.\d+)?$/.test(ah) && parseFloat(aw) > 0 && parseFloat(ah) > 0) img.attrRatio = parseFloat(ah) / parseFloat(aw);
     }
     // 指定が無く、max-width などの上限・下限があれば、ブラウザが置いた大きさ (上限・下限が効いた大きさ。画像を読めたときだけ)。
     // 上限・下限が無ければ、Kumiori が読んだ画像本来の大きさ (image-resolution の指定がある画像は、その解像度で決める。ブラウザはこの指定を知らない)
     const limited = ['max-width', 'max-height'].some((p) => !/^(none|)$/.test(c(p))) || ['min-width', 'min-height'].some((p) => !/^(0px|auto|)$/.test(c(p)));
+    // 既定のスタイルの max-width (Kumiori の既定の img { max-width: 100% }。印刷で、ページの幅からはみ出さないために足しているもの) で
+    // 縮めるときは、属性の大きさ (表示のための指定) を、縦横比を保って縮める (0.3.0 までと同じ)。属性の大きさは aspect-ratio: auto w / h
+    // にもなる (HTML §15.4.3) ので、属性の大きさを望む大きさとして、CSS 2.1 §10.4 の表 (幅・高さが auto のときの、比を保つ上限・下限の当て方) で
+    // 決める。作成者が width・height・max-width を CSS で書いたときは、CSS のとおり (幅と高さがどちらも決まっていれば、それぞれに上限・下限を
+    // 当てるだけ。§10.4。作成者の img { max-width: 100% } だけなら、ブラウザと同じに高さは属性のまま)
+    const uaFit =
+      /^(img|object)$/.test(el.localName) && this.src.sizeOrigin?.(el, 'max-width') === 'ua' && this.src.sizeOrigin(el, 'width') !== 'author' && this.src.sizeOrigin(el, 'height') !== 'author';
     if (limited && el.localName === 'img' && img.width === undefined && img.height === undefined && !this.inh(el, 'image-resolution', true)) {
       const r = this.src.rect?.(el);
       if (r && r.width > 0 && r.height > 0 && (el as HTMLImageElement).complete !== false && ((el as HTMLImageElement).naturalWidth ?? 1) > 0) {
@@ -5924,14 +6838,72 @@ class HtmlImporter {
           const v = cssLen(c(p));
           return v === undefined ? def : v / PT_PER_PX;
         };
-        const ratio = nat.height / nat.width;
+        // 本来の比の無い画像 (大きさも viewBox も無い SVG) は、属性の比 (LImage.attrRatio) があればそれ
+        const ratio = (nat as { noRatio?: true }).noRatio && img.attrRatio ? img.attrRatio : nat.height / nat.width;
+        const [minW, maxW, minH, maxH] = [px('min-width', 0), px('max-width', Infinity), px('min-height', 0), px('max-height', Infinity)];
+        const clampW = (v: number) => Math.min(Math.max(v, minW), Math.max(minW, maxW));
+        const clampH = (v: number) => Math.min(Math.max(v, minH), Math.max(minH, maxH));
+        let w: number, h: number;
+        // §10.4 の表は、幅と高さの両方が auto のときのもの。片方が決まっていれば (0 も)、その向きは最小・最大だけを当て、
+        // もう一方は、当てた後の値と縦横比から出して (§10.3.2・§10.6.2)、その向きの最小・最大を当てる。両方が決まっていれば、それぞれに当てる。
+        // 既定のスタイルの max-width で縮める属性の大きさ (uaFit) は、既定の max-width が、属性の大きさ (無い向きは縦横比から) の幅を実際に
+        // 縮めるときだけ、§10.4 の表で、縦横比を保って縮める。縮めないとき (上限より狭い・0 の属性を下限で広げる) は、下のふつうの決め方
         const w0 = img.width !== undefined ? img.width / PT_PER_PX : img.height !== undefined ? img.height / PT_PER_PX / ratio : nat.width;
-        const h0 = img.height !== undefined ? img.height / PT_PER_PX : w0 * ratio;
-        const [w, h] = constrainReplaced(w0, h0, px('min-width', 0), px('max-width', Infinity), px('min-height', 0), px('max-height', Infinity));
+        if (uaFit && (img.width !== undefined || img.height !== undefined) && clampW(w0) < w0 - 0.005)
+          [w, h] = constrainReplaced(w0, img.height !== undefined ? img.height / PT_PER_PX : w0 * ratio, minW, maxW, minH, maxH);
+        else if (img.width !== undefined && img.height !== undefined) [w, h] = [clampW(img.width / PT_PER_PX), clampH(img.height / PT_PER_PX)];
+        else if (img.width !== undefined) {
+          w = clampW(img.width / PT_PER_PX);
+          h = clampH(w * ratio);
+        } else if (img.height !== undefined) {
+          h = clampH(img.height / PT_PER_PX);
+          w = clampW(h / ratio);
+        } else [w, h] = constrainReplaced(nat.width, nat.height, minW, maxW, minH, maxH);
         img.width = w * PT_PER_PX;
         img.height = h * PT_PER_PX;
       }
     }
+    // 百分率の幅・上限・下限 (LImage.percentSize): 組むときに、行を組む包含ブロックの内容の幅で解き直す (CSS 2.1 §10.2・§10.4)。
+    // 上の大きさ (見積もりの幅で決めたもの) は、組版エンジンが解かないとき (縦書きの行など) に使う
+    // 行内の要素として組む inline-flex・inline-grid の容器 (flowChildren の inlineFlex) の中の画像は、解き直さない: 百分率の基準は、その容器の
+    // 内容の幅 (Flexbox 1 §9.2・CSS 2.1 §10.1) だが、容器を箱として組まないので、組むときの包含ブロックは外の行になる。読み込みの見積もり
+    // (カスケードが、容器の幅を基準にして解いた値) のまま (0.3.0 と同じ)
+    if (!this.src.rect && this.src.percentOf && (el.localName === 'img' || el.localName === 'object') && !this.inh(el, 'image-resolution', true) && !this.inInlineFlexBox(el)) {
+      const pl = (p: string): PercentLength | undefined => {
+        const v = this.src.percentOf!(el, p);
+        if (v) return { pct: v.f, len: v.px * PT_PER_PX };
+        return /px$/.test(c(p)) && (p !== 'width' || this.src.isAuto?.(el, 'width') === false) ? { pct: 0, len: cssLen(c(p))! } : undefined;
+      };
+      // 長さだけの上限・下限も、読み込みのときに画像本来の大きさが分からなければ (上で大きさを決められなければ)、組版エンジンに当てさせる
+      // (前は当てず、max-width: 50px の画像を本来の大きさで描いていた)
+      const natUnknown = limited && !((this.opts.imageSize?.(key)?.width ?? 0) > 0);
+      if (['width', 'max-width', 'min-width'].some((p) => this.src.percentOf!(el, p)) || natUnknown) {
+        const ps: NonNullable<LImage['percentSize']> = {};
+        const w = pl('width');
+        const mx = pl('max-width');
+        const mn = pl('min-width');
+        if (w) ps.width = w;
+        else if (img.width !== undefined && this.src.isAuto?.(el, 'width') === undefined && el.getAttribute('width')) ps.width = { pct: 0, len: parseFloat(el.getAttribute('width')!) * PT_PER_PX };
+        if (mx) ps.maxWidth = mx;
+        if (mn) ps.minWidth = mn;
+        const mnh = /px$/.test(c('min-height')) ? cssLen(c('min-height')) : undefined;
+        const mxh = /px$/.test(c('max-height')) ? cssLen(c('max-height')) : undefined;
+        if (mnh) ps.minHeight = mnh;
+        if (mxh !== undefined) ps.maxHeight = mxh;
+        const hAttr = el.getAttribute('height');
+        const hAuto = this.src.isAuto?.(el, 'height');
+        const h = hAuto === false ? cssLen(c('height')) : hAuto === undefined && hAttr && /^\d+(\.\d+)?$/.test(hAttr) ? parseFloat(hAttr) * PT_PER_PX : undefined;
+        if (h !== undefined) ps.height = h;
+        if (uaFit && mx && ps.maxWidth) {
+          ps.uaFit = true;
+          // 属性の幅と高さの比 (flex の項目の画像で、幅を項目の幅に置き換えても、属性の比で高さを決める: imageFillsItem)
+          if (ps.width?.pct === 0 && ps.width.len > 0 && h !== undefined) ps.fitRatio = h / ps.width.len;
+        }
+        img.percentSize = ps;
+      }
+    }
+    // 組むときに解き直さない百分率の幅 (行内の svg など) は、見積もりの幅だと印を付ける (grid の項目の min-content で 0 にする: LImage.estimatedWidth)
+    if (!img.percentSize && img.width !== undefined && this.src.isPercent?.(el, 'width')) img.estimatedWidth = true;
     // vertical-align (CSS 2.1 §10.8.1): text-bottom・text-top は字面の下端・上端に、bottom・top は行の箱の下端・上端に揃える
     const va = c('vertical-align');
     if (va === 'text-bottom') img.alignmentBaseline = 'after-edge';
@@ -6143,11 +7115,11 @@ class HtmlImporter {
       const tfs = firstRt ? cssLen(this.cs(firstRt as Element)('font-size')) : undefined;
       const scale = rfs && tfs ? tfs / rfs : undefined;
       // ルビの字の色: 注釈の要素 (rt・rtc) の color (印刷の色の指定も読む)。ruby の字の色と同じなら付けない
-      const rubyColor = cssColor(this.cs(el)('color'));
+      const rubyColor = visibleColorOf(this.cs(el)('color'));
       const colorOf = (n: Node | undefined) => {
         if (!n || n.nodeType !== 1) return undefined;
         const e = n as Element;
-        const v = this.printOf(this.pg(e), 'color') ?? cssColor(this.cs(e)('color'));
+        const v = this.printOf(this.pg(e), 'color') ?? visibleColorOf(this.cs(e)('color'));
         return v && v !== rubyColor ? v : undefined;
       };
       for (const pr of pairs) {
@@ -6222,6 +7194,8 @@ class HtmlImporter {
       if (iva === 'middle') ic.alignmentBaseline = 'central';
       else if (iva === 'top' || iva === 'text-top') ic.alignmentBaseline = 'before-edge';
       else if (iva === 'bottom' || iva === 'text-bottom') ic.alignmentBaseline = 'after-edge';
+      // top・bottom の箱は、自分の部分木を作る (CSS 2.1 §10.8.1。囲む top・bottom の行内の要素の部分木に入れない)
+      if (iva === 'top' || iva === 'bottom') ic.ownLineAlign = true;
       return [ic];
     }
     // inline-block: 行内の箱 (中にブロックを持てる。幅の指定が無ければ中身に合わせた幅)
@@ -6246,6 +7220,8 @@ class HtmlImporter {
       if (iva === 'middle') ic.alignmentBaseline = 'central';
       else if (iva === 'top' || iva === 'text-top') ic.alignmentBaseline = 'before-edge';
       else if (iva === 'bottom' || iva === 'text-bottom') ic.alignmentBaseline = 'after-edge';
+      // top・bottom の箱は、自分の部分木を作る (CSS 2.1 §10.8.1。囲む top・bottom の行内の要素の部分木に入れない)
+      if (iva === 'top' || iva === 'bottom') ic.ownLineAlign = true;
       return [ic];
     }
     // display: contents (CSS Display 3 §2.5): 箱を作らないので、罫線・背景・内側と外側の余白・vertical-align は付けず、受け継ぐ書式だけを中身に渡す
@@ -6271,6 +7247,8 @@ class HtmlImporter {
     const va = c('vertical-align');
     if (va === 'super' && this.opts.superShiftAh) inl.baselineShift = (cssLen(this.cs(parent)('font-size')) ?? 12) / 3;
     else if (va === 'super' || va === 'sub') inl.baselineShift = va;
+    // top・bottom・middle・text-top・text-bottom (CSS 2.1 §10.8.1): 行の中身にするとき (inlineFlatten.ts) に位置を決める
+    else if (va === 'top' || va === 'bottom' || va === 'middle' || va === 'text-top' || va === 'text-bottom') inl.verticalAlign = va;
     else if (cssLen(va)) inl.baselineShift = cssLen(va);
     else if (/^[+-]?(\d+(?:\.\d*)?|\.\d+)%$/.test(va)) {
       // 百分率は、この要素の line-height に対する割合だけ上げ下げする (CSS 2.1 §10.8.1)。line-height: normal は、書体の値 (textStyle と同じ)
@@ -6346,7 +7324,13 @@ class HtmlImporter {
     // 記号の無いリスト (list-style: none) は、ふつうのブロックの並びにする (li の枠・余白がそのまま付く)
     if (lis.every((li) => this.cs(li)('list-style-type') === 'none' && !this.markerImage(li))) {
       const blocks: Array<LBlockLevel | LInlineLevel> = [];
+      const pageFlowNone = this.pageFlowEls.has(container);
       lis.forEach((li, k) => {
+        // 名前付きのページ: 項目でページの名前が変わる所に、切り替えを置く (下の表のリストと同じ。最初の項目は呼び出し側が置いている)
+        if (k > 0 && pageFlowNone) {
+          const sw = this.listItemPageSwitch(li, container);
+          if (sw) blocks.push(sw as unknown as LBlockLevel);
+        } else if (!pageFlowNone) this.pageIgnored(li, ['表のセル・段組などの中のリストの項目', 'list items in table cells, multi-column containers and so on']);
         pushAll(blocks, enter(li, k));
         const b = this.block(li, container);
         if (b) blocks.push(b);
@@ -6374,7 +7358,7 @@ class HtmlImporter {
     let listAvoidBefore: AvoidKind | undefined;
     let listAvoidAfter: AvoidKind | undefined;
     const stopColumn = this.isMulticolContainer(container);
-    const rowBreaks = (li: Element, k: number, body: LTableCell): Pick<LTableRow, 'breakBefore' | 'breakAfter' | 'keepTogether' | 'keepWithNext' | 'keepWithPrevious'> => {
+    const rowBreaks = (li: Element, k: number, body: LTableCell): Pick<LTableRow, 'breakBefore' | 'breakAfter' | 'keepTogether' | 'keepTogetherYields' | 'keepWithNext' | 'keepWithPrevious'> => {
       const lc = this.cs(li);
       const bb = lc('break-before') || lc('page-break-before');
       const ba = lc('break-after') || lc('page-break-after');
@@ -6400,11 +7384,24 @@ class HtmlImporter {
         if (fa) o.breakAfter = fa;
         if (aa) o.keepWithNext = true;
       }
-      if (this.avoidKind(bi, li)) o.keepTogether = true;
+      if (this.avoidKind(bi, li)) {
+        o.keepTogether = true;
+        // 新しいページにも入らなければ、avoid を緩めて分ける (CSS Fragmentation 3 §4.4)
+        if (!this.opts.avoidRowOverflowAh) o.keepTogetherYields = true;
+      }
       return o;
     };
+    // 名前付きのページ (CSS Page 3 §8.1: list-item の箱も block-level の箱なので、page が当たる): 項目でページの名前が変わる所で、
+    // リストの表を分け、間にページシーケンスの切り替えを置く (body の直下へは hoistPageSwitches が引き上げる)。最初の項目の切り替えは、
+    // 呼び出し側 (flowChildren) がリストの前に置いている。切り替えられない所 (表のセルの中のリストなど) の項目の page は、未対応として知らせる
+    const pageSwitches = new Map<number, PageSwitch>();
+    const pageFlow = this.pageFlowEls.has(container);
     const rows: LTableRow[] = lis.map((li, k) => {
       const lc = this.cs(li);
+      if (k > 0 && pageFlow) {
+        const sw = this.listItemPageSwitch(li, container);
+        if (sw) pageSwitches.set(k, sw);
+      } else if (!pageFlow) this.pageIgnored(li, ['表のセル・段組などの中のリストの項目', 'list items in table cells, multi-column containers and so on']);
       const marks = enter(li, k);
       // 番号: list-item カウンターの値
       n = this.counterValue('list-item');
@@ -6459,18 +7456,33 @@ class HtmlImporter {
         cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, ...(liRel ? { relativeOffset: liRel } : {}), children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', ...(body.trailingSpaceOut === undefined ? { keepTrailingSpace: true } : {}) }],
       };
     });
-    const table = {
-      type: 'table',
-      columns: [
-        { type: 'table-column', width: Math.max(indent, 1) },
-        { type: 'table-column', width: '1*' },
-      ],
-      margin: { [startSide]: -indent },
-      body: { type: 'table-body', rows },
-    } as LTable;
+    const tableOf = (rs: LTableRow[]) =>
+      ({
+        type: 'table',
+        listTable: true,
+        columns: [
+          { type: 'table-column', width: Math.max(indent, 1) },
+          { type: 'table-column', width: '1*' },
+        ],
+        margin: { [startSide]: -indent },
+        body: { type: 'table-body', rows: rs },
+      }) as LTable;
     // リストの箱の行グリッド (-ah-baseline-grid): 表を、その指定を持つ箱で包む (ページの終わりの判定に使う)
     const bgrid = this.pg(container)['-ah-baseline-grid']?.trim().toLowerCase();
-    const out = bgrid === 'new' || bgrid === 'root' || bgrid === 'none' ? ({ type: 'block', baselineGrid: bgrid, children: [table] } as LBlock) : table;
+    const wrapGrid = (t: LTable): LBlock | LTable => (bgrid === 'new' || bgrid === 'root' || bgrid === 'none' ? ({ type: 'block', baselineGrid: bgrid, children: [t] } as LBlock) : t);
+    let out: LBlock | LTable;
+    if (!pageSwitches.size) out = wrapGrid(tableOf(rows));
+    else {
+      // ページの名前の変わる項目の前で表を分け、切り替えを挟む (分けた表を並べる無名の箱。前後の区切りは、この箱の前後と同じ所)
+      const parts: Array<LBlockLevel | LInlineLevel> = [];
+      let from = 0;
+      for (const [k, sw] of pageSwitches) {
+        parts.push(wrapGrid(tableOf(rows.slice(from, k))), sw as unknown as LBlockLevel);
+        from = k;
+      }
+      parts.push(wrapGrid(tableOf(rows.slice(from))));
+      out = { type: 'block', children: parts } as LBlock;
+    }
     if (listBefore) out.breakBefore = listBefore;
     if (listAfter) out.breakAfter = listAfter;
     // 最初の項目の前・最後の項目の後ろの避ける値は、リストの箱の前後の値と合わせる (block の propagateEdgeAvoids が、リスト自身の値と合わせる)
@@ -6577,18 +7589,42 @@ class HtmlImporter {
       // 行の id は、リンク・しおりの飛び先 (行の領域に付く)
       const rowId = tr.getAttribute('id');
       if (rowId) row.id = rowId;
+      // 行の page (名前付きのページ) では、表を分けてページを切り替えることはしない (未対応として知らせる)
+      this.pageIgnored(tr, ['表の行', 'table rows']);
       // 行の改ページの指定 (Fragmentation 3 §3: break-* は表の行にも効く)
       const rc = this.cs(tr);
       const bb = rc('break-before') || rc('page-break-before');
       const ba = rc('break-after') || rc('page-break-after');
-      if (/avoid/.test(rc('break-inside') || rc('page-break-inside'))) row.keepTogether = true;
-      // 強制の区切りは、種類 (ページ・段・左右のページ) をそのまま渡す (§3.1・§4.3)
-      const fb = this.forcedBreak(bb, tr);
-      const fa = this.forcedBreak(ba, tr);
+      if (/avoid/.test(rc('break-inside') || rc('page-break-inside'))) {
+        row.keepTogether = true;
+        // 新しいページにも入らない高さの行は、avoid を緩めて行の中で分ける (CSS Fragmentation 3 §4.4: 区切りを避ける指定は、
+        // ほかに区切れる所が無ければ守らない)。アンテナハウス互換では、これまでどおりはみ出させる
+        if (!this.opts.avoidRowOverflowAh) row.keepTogetherYields = true;
+      }
+      // 強制の区切りは、種類 (ページ・段・左右のページ) をそのまま渡す (§3.1・§4.3)。
+      // セルの中身の最初の子の break-before・最後の子の break-after も、行の前後の区切りと同じ所 (§3.1.1: 区切りは兄弟の間にだけあり、
+      // 最初 (最後) の子の値は容器へ伝わる。セルの容器は行で、行は break-* の当たる箱)。リストの項目の行 (rowBreaks) と同じに合わせる。
+      // 行をまたぐセル (rowspan) は、行の前後の区切りと同じ所ではないので数えない
+      let cellBefore: BreakKind | undefined;
+      let cellAfter: BreakKind | undefined;
+      // 行へ移した値は、セルの中から外す (残すと、セルの中身の後ろ (前) で区切ろうとして、行を分ける組み方になり、
+      // 中身の後ろの空の断片のために、行ごと次のページへ送っていた)
+      for (const cell of row.cells) {
+        if ((cell.rowSpan ?? 1) > 1) continue;
+        cellBefore = mergeBreaks(cellBefore, takeEdgeBreak(cell.children, 'before'));
+        cellAfter = mergeBreaks(cellAfter, takeEdgeBreak(cell.children, 'after'));
+      }
+      const fb = mergeBreaks(this.forcedBreak(bb, tr), cellBefore);
+      const fa = mergeBreaks(cellAfter, this.forcedBreak(ba, tr));
       if (fb) row.breakBefore = fb;
       if (/avoid/.test(bb)) row.keepWithPrevious = true;
       if (/avoid/.test(ba)) row.keepWithNext = true;
       if (fa) row.breakAfter = fa;
+      // セルの中身の最初の子の break-before・最後の子の break-after の避ける値も、行の前後の区切りの値 (§3.1.1。どれかが避けるなら、
+      // そこでは分けない: §4.4 の Rule 1)。強制の区切りがあれば、強制が勝つ (§4.3)
+      const spanless = row.cells.filter((cell) => (cell.rowSpan ?? 1) === 1);
+      if (!fb && spanless.some((cell) => this.edgeAvoidOf(cell.children, 'before'))) row.keepWithPrevious = true;
+      if (!fa && spanless.some((cell) => this.edgeAvoidOf(cell.children, 'after'))) row.keepWithNext = true;
       paintCells(row, bgOf(tr));
       // 行の罫線は、罫線を重ねる表でだけ使う (CSS 2.1 §17.6.1: 罫線を分ける表の行・行グループには罫線が無い)
       const rb = collapse ? this.boxStyle(tr).border : undefined;
@@ -6636,7 +7672,10 @@ class HtmlImporter {
           const tdRel = this.relativeOffsetOf(td);
           if (tdRel) cell.relativeOffset = tdRel;
           const cs = Math.min(MAX_COL_SPAN, parseInt(td.getAttribute('colspan') ?? '1', 10));
-          const rs = Math.min(MAX_ROW_SPAN, parseInt(td.getAttribute('rowspan') ?? '1', 10));
+          let rs = Math.min(MAX_ROW_SPAN, parseInt(td.getAttribute('rowspan') ?? '1', 10));
+          // rowspan="0" は、行のまとまり (thead・tbody・tfoot。表の直下の tr の並びは、その並び) の残りの行すべて
+          // (HTML §4.9.11 の rowspan・§4.9.12.1 の「cell grows downward」。前は 1 行として扱っていた)
+          if (rs === 0) rs = Math.min(MAX_ROW_SPAN, this.rowsFrom(tr));
           if (cs > 1) cell.colSpan = cs;
           if (rs > 1) cell.rowSpan = rs;
           const va = tc('vertical-align');
@@ -6680,6 +7719,31 @@ class HtmlImporter {
       }
       const gb = collapse && rows.length ? this.boxStyle(g).border : undefined;
       if (gb) rows.forEach((r, k) => (r.group = { border: gb, first: k === 0, last: k === rows.length - 1 }));
+      // 行のまとまりの区切りの指定 (CSS Fragmentation 3 §3.1: break-* は表の行のまとまりにも当たる)。まとまりの箱は作らないので、
+      // break-before はまとまりの最初の行の前、break-after は最後の行の後ろの区切りにする (§3.1.1: 同じ所の値。行の値と合わせる。
+      // 左右のページの指定は、流れの中で後ろの要素の値が勝つ: 前ではまとまり、後ろでは行が先 = §4.3)。
+      // break-inside の避ける値は、まとまりの行を分けない (行の中も、行の間も)
+      if (rows.length) {
+        const gc = this.cs(g);
+        const gbb = gc('break-before') || gc('page-break-before');
+        const gba = gc('break-after') || gc('page-break-after');
+        const first = rows[0];
+        const last = rows[rows.length - 1];
+        const fb = mergeBreaks(this.forcedBreak(gbb, g), first.breakBefore as BreakKind | undefined);
+        const fa = mergeBreaks(last.breakAfter as BreakKind | undefined, this.forcedBreak(gba, g));
+        if (fb) first.breakBefore = fb;
+        if (fa) last.breakAfter = fa;
+        if (!fb && this.avoidKind(gbb, g)) first.keepWithPrevious = true;
+        if (!fa && this.avoidKind(gba, g)) last.keepWithNext = true;
+        if (this.avoidKind(gc('break-inside') || gc('page-break-inside'), g)) {
+          rows.forEach((r, k) => {
+            r.keepTogether = true;
+            // 新しいページにも入らなければ、avoid を緩めて分ける (§4.4。行の break-inside と同じ)
+            if (!this.opts.avoidRowOverflowAh) r.keepTogetherYields = true;
+            if (k < rows.length - 1 && !r.breakAfter && !rows[k + 1].breakBefore) r.keepWithNext = true;
+          });
+        }
+      }
     };
     const walk = (n: Element, into: LTableRow[], list?: Element[]) => {
       // 表・行グループの直下の、表の子でないもの (セル・文字・ほかの要素) は、続くものをまとめて匿名の行で包む (CSS 2.1 §17.2.1)。
@@ -6829,24 +7893,9 @@ class HtmlImporter {
       });
     }
     // 幅が auto の表は、table-layout が fixed でも自動レイアウト (CSS 2.1 §17.5.2)。列の最小の幅は、列の幅の指定とセルの最小の幅の
-    // 大きい方 (§17.5.2.2。組むときに決める)。列の幅がすべて決まっていれば、左右の余白が両方 auto のとき、その合計の幅で残りを等分する (§10.3.3)
-    const nCols = maxOf([header, body, footer].flat().map((r) => r.cells.reduce((a, x) => a + (x.colSpan ?? 1), 0)), 0);
-    if (t.width === undefined && !this.src.rect && columns.length && columns.length >= nCols && columns.every((col) => typeof col.width === 'number')) {
-      const gaps = t.borderSpacing ? t.borderSpacing.i * (columns.length + 1) : 0;
-      const est = columns.reduce((a, col) => a + (col.width as number), 0) + gaps;
-      // collapse の表は、組むときに外枠の罫線と合わせて中央に置く (LTable.autoMargins。列の幅を縮めない)
-      if (c('margin-left') === 'auto' && c('margin-right') === 'auto' && el.parentElement && t.borderCollapse !== 'collapse') {
-        const cw = this.src.contentWidth?.(el.parentElement);
-        const e = (k: 'padding' | 'border') => {
-          const v = t[k] as Record<string, number | { width: number }> | undefined;
-          const w = (x: number | { width: number } | undefined) => (typeof x === 'number' ? x : (x?.width ?? 0));
-          return w(v?.left) + w(v?.right);
-        };
-        const extra = e('padding') + e('border');
-        const m = cw === undefined ? 0 : (cw * PT_PER_PX - est - extra) / 2;
-        if (m > 0) t.margin = { ...(t.margin as object), left: m, right: m };
-      }
-    }
+    // 大きい方 (§17.5.2.2。組むときに決める)。左右の余白が auto なら、組むときに表の幅が決まってから、置く場所の残りを配る
+    // (§10.3.3。下の fitContent の autoMargins)。読み込みのときの包含ブロックの幅の見積もりから余白を長さにすると、表のセルの中
+    // (見積もりは外の表の全体の幅に近い) で、その余白が列の幅を決める中身の幅に入り、置く場所が見積もりより狭いと表がはみ出した
     // 互換モードの、中身の無い表 (行グループ・見出し・列の無い表): 高さ 0、罫線なし (Quirks Mode §3.10)
     if (!anon && isQuirksDoc(el.ownerDocument as Document | null)) {
       const hasBox = Array.from(el.childNodes).some((n) => {
@@ -6870,6 +7919,7 @@ class HtmlImporter {
     if (this.opts.tableHeaderWithBodyAh || headerAvoidBreak) t.keepHeaderWithBodyAh = true;
     if (header.length) t.header = { type: 'table-body', rows: header };
     if (footer.length) t.footer = { type: 'table-body', rows: footer };
+    this.tableEdgeBreaks(t, header, body, footer, captions);
     // 自動レイアウト: 幅が auto の表 (table-layout によらない) と、幅の指定のある table-layout: auto の表。列の幅は中身と列の幅の指定から決める
     // (CSS2 §17.5.2.2)。比例の列幅 (百分率の col) のある表は、従来どおり比で分ける
     const noStar = columns.every((col) => typeof col.width !== 'string');
@@ -6887,10 +7937,53 @@ class HtmlImporter {
     return t;
   }
 
+  /**
+   * 表の最初の行の前・最後の行の後ろの区切りを、表の前後の区切りにする (CSS Fragmentation 3 §3.1.1: 区切りは兄弟の間にだけあり、
+   * 最初の子の break-before・最後の子の break-after は容器へ伝わる。行・行のまとまりの容器は表の箱。リストの表の listBefore・listAfter と同じ)。
+   * 組版は行の前の区切りを 2 行目から見るので、移さないと最初の行の前の区切りが消える。行からは外す (表と行で 2 度区切らない)。
+   * 表の最初の行は、thead があればその最初の行 (見出しの行の組は、表の最初に置く。CSS 2.1 §17.2)、無ければ本体の最初の行。最後の行は、
+   * tfoot があればその最後の行、無ければ本体の最後の行。表の上 (下) に caption があれば、表の箱の前 (後ろ) は caption との間なので
+   * (CSS 2.1 §17.4: caption と表の箱は、表を包む箱の中の兄弟)、移さない (組版が、caption と行の間で区切る)。
+   * thead のある表の本体の最初の行の前の強制の区切り (tr・tbody・セルの中身の最初の子の値) も、表の前の区切りにする: 見出しと本体の間で
+   * 区切ると、繰り返す見出しだけのページができる (表がページの先頭にあれば、最初のページが見出しだけ)。見出しは本体の行の前に置く塊なので、
+   * 本体の最初の行を新しいページから始める指定は、見出しごと表を新しいページから始める指定と読む (§3.1.1 の伝え方を、見出しを飛ばして読む)。
+   * 上に caption があれば、caption と表の箱の間 (組版が区切る)。tfoot のある表の本体の最後の行の後ろの区切りは、フッターと本体の間なので、
+   * 行に残す (組版が区切る)。避ける値 (行の keepWithPrevious・keepWithNext) も同じに、表の前後の値にする (propagateEdgeAvoids が、表自身の値と合わせる)
+   */
+  private tableEdgeBreaks(t: LTable, header: LTableRow[], body: LTableRow[], footer: LTableRow[], captions: NonNullable<LTable['captions']>) {
+    const first = captions.some((c) => c.side === 'top') ? undefined : (header[0] ?? body[0]);
+    const last = captions.some((c) => c.side === 'bottom') ? undefined : (footer.length ? footer[footer.length - 1] : body[body.length - 1]);
+    const avoid: { before?: AvoidKind; after?: AvoidKind } = {};
+    // 見出しのある表の本体の最初の行の前の強制の区切り (上の見出しの後ろ)。左右のページの指定は、流れの中で後ろの本体の値が勝つ (§4.3)
+    const bodyLead = header.length && body[0]?.breakBefore ? (body[0].breakBefore as BreakKind) : undefined;
+    if (bodyLead) {
+      delete body[0].breakBefore;
+      if (first) first.breakBefore = mergeBreaks(first.breakBefore as BreakKind | undefined, bodyLead);
+      else header[0].breakBefore = mergeBreaks(header[0].breakBefore as BreakKind | undefined, bodyLead);
+    }
+    if (first) {
+      const bb = mergeBreaks(t.breakBefore, first.breakBefore as BreakKind | undefined);
+      delete first.breakBefore;
+      if (bb) t.breakBefore = bb;
+      else if (first.keepWithPrevious) avoid.before = 'all';
+    }
+    if (last) {
+      const ba = mergeBreaks(last.breakAfter as BreakKind | undefined, t.breakAfter);
+      delete last.breakAfter;
+      if (ba) t.breakAfter = ba;
+      else if (last.keepWithNext) avoid.after = 'all';
+    }
+    if (avoid.before || avoid.after) {
+      this.edgeAvoids.set(t, { ...(this.edgeAvoids.get(t) ?? {}), ...avoid });
+      if (avoid.before) t.keepWithPrevious = true;
+      if (avoid.after) t.keepWithNext = true;
+    }
+  }
+
   /** ページマスター (@page の宣言から) */
   private masterOf(decls: Record<string, string>): PageMaster {
     const def = this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 };
-    const pb = pageBox(decls, def, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions);
+    const pb = pageBox(decls, def, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions, this.opts.pageBorderKeywords);
     const trimMarks = pb.marks ?? this.opts.trimMarks ?? false;
     // 塗り足しの幅。bleed の初期値は auto で、auto は marks に crop があれば 6pt、無ければ 0 (CSS Paged Media 3 §7.3)。
     // @page に bleed も marks も無いときは、呼び出しの設定 (コマンドの --print の 3mm など) に従う。
@@ -6906,6 +7999,13 @@ class HtmlImporter {
       ...(pb.background ? { backgroundColor: pb.background } : {}),
       ...(pb.cropOffset !== undefined ? { trimMarkMargin: Math.max(pb.cropOffset - bleed, 0) } : {}),
       margins: pb.margins,
+      ...(pb.marginBoxMargins ? { marginBoxMargins: pb.marginBoxMargins } : {}),
+      // 背景画像 (url()) の位置の基準の領域 (ページの箱の padding の領域。pageBox)。background-attachment: fixed なら、余白を含むページの箱
+      // (仕上がりの用紙の全体。塗り足しがあっても、仕上がりの角が基準。CSS Paged Media 3 §3.1: "if background-attachment is fixed then
+      // the image is positioned relative to the page box including its margins")。百分率・cover・contain の大きさの基準も同じ箱
+      ...(pb.backgroundOrigin && firstCssUrl(decls['background-image'] ?? decls.background ?? '')
+        ? { backgroundOrigin: pageBackgroundFixed(decls) ? { top: 0, right: 0, bottom: 0, left: 0 } : pb.backgroundOrigin }
+        : {}),
       ...(this.pageColumns ? { columns: this.pageColumns } : {}),
     };
   }
@@ -6965,11 +8065,20 @@ class HtmlImporter {
    *  - A は左端、B は中央、C は右端に置く。auto の margin は 0
    * 内容に文字列 (string()・element()) を含む辺は、内容の幅が組むまで分からないので、ここでは決めない (箱は辺の幅いっぱい)
    */
+  /**
+   * 余白の箱の字の大きさ (pt)。箱の font-size は、ページの文脈 (@page) の字の大きさを基準に、ページの文脈の font-size は根元の要素の字の大きさを
+   * 基準に読む (CSS Paged Media 3 §6: 余白の箱はページの文脈から、ページの文脈は根元の要素から受け継ぐ。CSS Fonts 4 §2.4)
+   */
+  private marginBoxFs(inherited: Record<string, string>, own: Record<string, string> | undefined, rootFs: number): number {
+    const pageFs = fontSizePt(inherited['font-size'], rootFs, rootFs) ?? rootFs;
+    return own?.['font-size'] !== undefined ? (fontSizePt(own['font-size'], pageFs, rootFs) ?? pageFs) : pageFs;
+  }
+
   private marginBoxWidths(boxes: Record<string, Record<string, string>>, inherited: Record<string, string>, rootFs: number, x0: number, avail: number): Map<string, [number, number]> {
     const out = new Map<string, [number, number]>();
     for (const edge of ['top', 'bottom'] as const) {
       const names = [`${edge}-left`, `${edge}-center`, `${edge}-right`];
-      interface Info { name: string; extra: number; width?: number; max: number; min: number }
+      interface Info { name: string; extra: number; width?: number; max: number; min: number; maxW?: number; minW?: number }
       const infos: Array<Info | undefined> = [];
       let unknown = false;
       for (const name of names) {
@@ -6980,7 +8089,7 @@ class HtmlImporter {
           infos.push(undefined);
           continue;
         }
-        const fs = lenEm(decls['font-size'] ?? '', rootFs) ?? rootFs;
+        const fs = this.marginBoxFs(inherited, own, rootFs);
         // 幅は、text-transform を当てた字で見積もる (small caps の字の幅は、元の字で見積もる)
         const items = this.boxContent(content, (decls['text-transform'] ?? 'none').trim().toLowerCase() || 'none', '', this.marginWhiteSpace(decls));
         if (items.some((x) => typeof x !== 'string')) unknown = true;
@@ -6993,19 +8102,31 @@ class HtmlImporter {
           this.opts.measureText ? this.opts.measureText(s, { fontFamily: family, fontWeight: weight, fontSize: fs, kerning: (decls['font-kerning'] ?? '').trim() !== 'none' }) : [...s].reduce((a, ch) => a + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55), 0) * fs;
         const max = measure(text);
         const min = maxOf(text.split(/\s+/).map(measure), 0);
-        const len = (k: string) => (decls[k] === undefined || decls[k] === 'auto' ? 0 : (lenEm(decls[k], fs) ?? 0));
+        const len = (k: string) => (decls[k] === undefined || decls[k] === 'auto' ? 0 : (lenEm(decls[k], fs, { rootFs }) ?? 0));
         const sideLen = (k: 'margin' | 'padding') => {
-          const all = decls[k] ? edges4(decls[k], fs) : { left: 0, right: 0, top: 0, bottom: 0 };
+          const all = decls[k] ? edges4(decls[k], fs, rootFs) : { left: 0, right: 0, top: 0, bottom: 0 };
           return (decls[`${k}-left`] !== undefined ? len(`${k}-left`) : all.left) + (decls[`${k}-right`] !== undefined ? len(`${k}-right`) : all.right);
         };
         const bw = (side: string) => {
           const v = decls[`border-${side}`] ?? decls.border;
-          return v ? (parseBorder(v, fs)?.width ?? 0) : 0;
+          return v ? (parseBorder(v, fs, this.opts.pageBorderKeywords)?.width ?? 0) : 0;
         };
         const extra = sideLen('margin') + sideLen('padding') + bw('left') + bw('right');
         const wv = decls.width;
-        const width = wv === undefined || wv === 'auto' ? undefined : /%$/.test(wv) ? (avail * parseFloat(wv)) / 100 : lenEm(wv, fs);
-        infos.push({ name, extra, ...(width !== undefined ? { width: width + extra } : {}), max: max + extra, min: min + extra });
+        // 百分率 (calc() の中の百分率も) は、辺の余白の領域の幅に対して
+        const lenOf = (v: string | undefined) => (v === undefined || /^(auto|none)$/i.test(v.trim()) ? undefined : /%$/.test(v) ? (avail * parseFloat(v)) / 100 : lenEm(v, fs, { rootFs, pct: avail }));
+        const width = lenOf(wv);
+        const maxW = lenOf(decls['max-width']);
+        const minW = lenOf(decls['min-width']);
+        infos.push({
+          name,
+          extra,
+          ...(width !== undefined ? { width: width + extra } : {}),
+          max: max + extra,
+          min: min + extra,
+          ...(maxW !== undefined ? { maxW: maxW + extra } : {}),
+          ...(minW !== undefined ? { minW: minW + extra } : {}),
+        });
       }
       if (unknown || infos.every((x) => !x)) continue;
       // 2 つの箱で幅を分ける (§5.3.2.2 の A・C の手順)。決まった幅 (width の指定) はそのまま
@@ -7025,18 +8146,38 @@ class HtmlImporter {
       };
       const [A, B, C] = infos;
       const none = { max: 0, min: 0, width: 0 };
-      if (!B) {
-        const [wa, wc] = share(A ?? none, C ?? none);
-        if (A) out.set(A.name, [x0, wa]);
-        if (C) out.set(C.name, [x0 + avail - wc, wc]);
-      } else {
-        const ac = { max: 2 * Math.max(A?.max ?? 0, C?.max ?? 0), min: 2 * Math.max(A?.min ?? 0, C?.min ?? 0) };
-        const [wb] = share(B, ac);
-        const side = (avail - wb) / 2;
-        out.set(B.name, [x0 + (avail - wb) / 2, wb]);
-        if (A) out.set(A.name, [x0, A.width ?? side]);
-        if (C) out.set(C.name, [x0 + avail - (C.width ?? side), C.width ?? side]);
+      const layout = () => {
+        const res = new Map<string, [number, number]>();
+        if (!B) {
+          const [wa, wc] = share(A ?? none, C ?? none);
+          if (A) res.set(A.name, [x0, wa]);
+          if (C) res.set(C.name, [x0 + avail - wc, wc]);
+        } else {
+          // A・C に決まった幅があれば、その大きい方の 2 倍を AC の幅にする (A・C の幅は、B を中央に置いた残り)
+          const fixedAC = [A?.width, C?.width].filter((x): x is number => x !== undefined);
+          const ac = { max: 2 * Math.max(A?.max ?? 0, C?.max ?? 0), min: 2 * Math.max(A?.min ?? 0, C?.min ?? 0), ...(fixedAC.length === [A, C].filter(Boolean).length && fixedAC.length ? { width: 2 * Math.max(...fixedAC) } : {}) };
+          const [wb] = share(B, ac);
+          const side = (avail - wb) / 2;
+          res.set(B.name, [x0 + (avail - wb) / 2, wb]);
+          if (A) res.set(A.name, [x0, A.width ?? side]);
+          if (C) res.set(C.name, [x0 + avail - (C.width ?? side), C.width ?? side]);
+        }
+        return res;
+      };
+      // 最小・最大の幅 (§5.3.2.3): 3 つの箱をまとめて扱う。分けた幅が max-width を超えた箱は、max-width を幅の指定として分け直し、
+      // 次に min-width を下回った箱を、min-width を幅の指定として分け直す
+      let res = layout();
+      for (const pass of ['max', 'min'] as const) {
+        let changed = false;
+        for (const it of infos) {
+          const used = it && res.get(it.name)?.[1];
+          if (!it || used === undefined) continue;
+          if (pass === 'max' && it.maxW !== undefined && used > it.maxW + 0.01) (it.width = it.maxW), (changed = true);
+          if (pass === 'min' && it.minW !== undefined && used < it.minW - 0.01) (it.width = it.minW), (changed = true);
+        }
+        if (changed) res = layout();
       }
+      for (const [k, v] of res) out.set(k, v);
     }
     return out;
   }
@@ -7044,9 +8185,60 @@ class HtmlImporter {
   /** 根元の要素 (html・body) の背景 (@page の宣言の形)。ページの背景にする */
   private rootBackground?: Record<string, string>;
 
-  /** 参照番号 (::footnote-call) の字の大きさ (置く所の字に対する比) と太さ。脚注の要素 e の値に、::footnote-call の規則を重ねる */
+  /** 脚注の疑似要素の規則の、読んだ選択子 (規則ごとに 1 度だけ読む) */
+  private footnoteSelectors = new WeakMap<StyleRule, Selector[]>();
+
+  /**
+   * 脚注の要素 e の ::footnote-call・::footnote-marker (which) に当たる規則の宣言を、詳細度と書いた順で重ねたもの (CSS Cascade 4 §6.4)。
+   * 疑似要素の前の選択子が e に当たる規則だけ (GCPM 3 §2.5・§2.6: 疑似要素は、その脚注の要素のもの)
+   */
+  private footnotePseudo(e: Element, which: 'call' | 'marker'): Record<string, string> {
+    const hits: Array<{ spec: number; k: number; decls: Record<string, string> }> = [];
+    this.footnoteRules.forEach((r, k) => {
+      let sels = this.footnoteSelectors.get(r);
+      if (!sels) this.footnoteSelectors.set(r, (sels = parseSelectorList(r.selector, true)));
+      const hit = sels.filter((s) => s.pseudoElement === `footnote-${which}` && matches(e, s));
+      if (hit.length) hits.push({ spec: Math.max(...hit.map((s) => s.specificity)), k, decls: r.decls });
+    });
+    hits.sort((a, b) => a.spec - b.spec || a.k - b.k);
+    return hits.reduce<Record<string, string>>((a, h) => ({ ...a, ...h.decls }), {});
+  }
+
+  /** content の counter(footnote) の前後の文字と書式 (無ければ undefined) */
+  private footnoteContentParts(v: string): { pre: string; post: string; format?: string } | undefined {
+    const toks = parseContent(v);
+    const k = toks.findIndex((t) => t.kind === 'fn' && t.name === 'counter');
+    if (k < 0) return undefined;
+    const str = (ts: ContentToken[]) => ts.map((t) => (t.kind === 'str' ? t.v : '')).join('');
+    const format = pageNumberFormatOf((toks[k] as { args: string[] }).args[1]);
+    return { pre: str(toks.slice(0, k)), post: str(toks.slice(k + 1)), ...(format ? { format } : {}) };
+  }
+
+  /**
+   * 脚注の要素 e に当たる ::footnote-call・::footnote-marker の content から、この脚注の番号の書式 (LFootnote.callPrefix など) を作る。
+   * 参照記号は ::footnote-call (無ければ ::footnote-marker)、本体の頭は ::footnote-marker (無ければ参照記号と同じ)。どちらも無ければ空
+   * (文書全体の書式 FootnoteOptions を使う)。本文の頭の番号の置き方 (labelPosition) も、e に当たる ::footnote-marker の list-style-position
+   */
+  private footnoteFormatOf(e: Element): Pick<LFootnote, 'callPrefix' | 'callSuffix' | 'markerPrefix' | 'markerSuffix' | 'numberFormat' | 'labelPosition' | 'labelGapEm'> {
+    const call = this.footnotePseudo(e, 'call').content;
+    const markerDecls = this.footnotePseudo(e, 'marker');
+    const marker = markerDecls.content;
+    const cp = call ?? marker ? this.footnoteContentParts((call ?? marker)!) : undefined;
+    const mp = call && marker ? this.footnoteContentParts(marker) : undefined;
+    // 置き方 (GCPM 3 §2.7: ::footnote-marker は ::marker と同じに list-style-position で決まる)。書いてあれば、この脚注の値にする
+    // (outside の番号と本文の間は、文書全体の値 (footnoteOptions) と同じく字の大きさの半分)
+    const lsp = /\b(inside|outside)\b/.exec(markerDecls['list-style-position'] ?? markerDecls['list-style'] ?? '')?.[1] as 'inside' | 'outside' | undefined;
+    return {
+      // 数え方を書かない counter(footnote) は decimal (文書全体の書式に戻さない)
+      ...(cp ? { callPrefix: cp.pre, callSuffix: cp.post, numberFormat: cp.format ?? '1' } : {}),
+      ...(mp ? { markerPrefix: mp.pre, markerSuffix: mp.post } : {}),
+      ...(lsp ? { labelPosition: lsp, ...(lsp === 'outside' ? { labelGapEm: 0.5 } : {}) } : {}),
+    };
+  }
+
+  /** 参照番号 (::footnote-call) の字の大きさ (置く所の字に対する比) と太さ。脚注の要素 e の値に、e に当たる ::footnote-call の規則を重ねる */
   private footnoteCallStyle(e: Element, parent: Element): Pick<LFootnote, 'referenceScale' | 'referenceWeight' | 'referenceLineHeight' | 'referenceShift' | 'referenceAutospace'> {
-    const call = this.footnoteRules.filter((r) => /call$/.test(r.selector)).reduce<Record<string, string>>((a, r) => ({ ...a, ...r.decls }), {});
+    const call = this.footnotePseudo(e, 'call');
     const fnFs = cssLen(this.cs(e)('font-size'));
     const parentFs = cssLen(this.cs(parent)('font-size'));
     const out: Pick<LFootnote, 'referenceScale' | 'referenceWeight' | 'referenceLineHeight' | 'referenceShift' | 'referenceAutospace'> = {};
@@ -7058,7 +8250,8 @@ class HtmlImporter {
     const cva = (call['vertical-align'] ?? 'super').trim().toLowerCase();
     if (this.opts.superShiftAh && parentFs && cva === 'super') out.referenceShift = parentFs / 3;
     if (fnFs && parentFs) {
-      const callFs = (call['font-size'] ? lenEm(call['font-size'], fnFs) : undefined) ?? fnFs;
+      // 百分率・em・キーワードの基準は、脚注の要素の字の大きさ (::footnote-call は、その脚注の要素の疑似要素。GCPM 3 §2.5)
+      const callFs = (call['font-size'] ? fontSizePt(call['font-size'], fnFs, this.rootFsPx * PT_PER_PX) : undefined) ?? fnFs;
       if (call['font-size']) out.referenceScale = callFs / parentFs;
       // 行の高さ (line-height) も脚注の要素から受け継ぐ (GCPM 3 §2.6 の既定のスタイルは line-height: inherit)。
       // 数値 (1.2 など) は参照番号の字の大きさに掛ける。置く所の行の line-height を小さな字に当てると、字の箱が支柱の下へはみ出して行が広がる
@@ -7071,7 +8264,7 @@ class HtmlImporter {
         const lhNum = this.cs(e)('-kumiori-line-height-number');
         const lh = (call['line-height'] ?? (lhNum || this.cs(e)('line-height'))).trim();
         if (/^[\d.]+$/.test(lh)) out.referenceLineHeight = parseFloat(lh) * callFs;
-        else if (call['line-height'] && lenEm(lh, callFs)) out.referenceLineHeight = lenEm(lh, callFs);
+        else if (call['line-height'] && lenEm(lh, callFs, { pct: callFs })) out.referenceLineHeight = lenEm(lh, callFs, { pct: callFs });
         else if (!call['line-height'] && cssLen(lh)) out.referenceLineHeight = cssLen(lh);
       }
     }
@@ -7091,14 +8284,17 @@ class HtmlImporter {
   }
 
   /**
-   * 脚注の書式: @page の @footnote (区切り線: border-top・border-length、上の空き: margin-top・padding-top) と、
+   * 脚注の書式: @page の @footnote (区切り線: border-top (個別の指定も)・border-length、上の空き: margin-top・padding-top (一括指定も)) と、
    * ::footnote-call / ::footnote-marker (番号の書式 counter(footnote, …) と前後の文字、参照番号の字の大きさ)
    */
   private footnoteOptions(master: PageMaster, box: Record<string, string> | undefined, rootFs: number): FootnoteOptions | undefined {
     const fo: FootnoteOptions = {};
     const bodyFs = cssLen(this.cs(this.bodyEl!)('font-size')) ?? rootFs;
     if (box) {
-      const fs = lenEm(box['font-size'] ?? '', rootFs) ?? rootFs;
+      // 罫線の個別の指定 (border-top-width など) と、margin・padding の一括指定を、辺ごとの指定にする (読むのは辺ごとの指定)
+      const d = expandBoxSides(marginBorderDecls(box, this.cs(this.bodyEl!)('color')));
+      box = d;
+      const fs = fontSizePt(box['font-size'], rootFs, this.rootFsPx * PT_PER_PX) ?? rootFs;
       const bt = box['border-top'] ?? box.border;
       const b = bt ? parseBorder(bt, fs) : undefined;
       // 区切りの長さの % の基準は、本文領域の行の向きの長さ (縦書きは高さ)
@@ -7106,7 +8302,7 @@ class HtmlImporter {
       const area = (vertArea ? master.height - master.margins.top - master.margins.bottom : master.width - master.margins.left - master.margins.right) * (72 / 25.4);
       const lenV = (box['border-length'] ?? '').split(/\s+/)[0];
       const length = /%$/.test(lenV) ? (area * parseFloat(lenV)) / 100 : lenEm(lenV, fs);
-      const sp = (k: string) => lenEm(box[k] ?? '', fs) ?? 0;
+      const sp = (k: string) => lenEm(d[k] ?? '', fs) ?? 0;
       // 領域の行の向きの padding は、脚注本文の始め側・終わり側の空き。区切りの前後は block の始め側の margin・padding
       // (横書きは左右・上、縦書きは上下・右 (vertical-lr は左))
       const rwm = this.cs(this.bodyEl!)('writing-mode');
@@ -7117,65 +8313,126 @@ class HtmlImporter {
       if (pl || pr) fo.inset = { start: pl, end: pr };
       const bsBorder = vert ? (box[`border-${bs}`] ?? box.border) : bt;
       const b2 = vert ? (bsBorder ? parseBorder(bsBorder, fs) : undefined) : b;
+      // 脚注の領域の高さの上限 (GCPM 3 §2.4.2 の max-height)。百分率は本文の領域の高さ (縦書きは幅) に対して。none は上限なし
+      const mh = (d['max-height'] ?? '').trim();
+      if (mh && !/^none$/i.test(mh)) {
+        const blockArea = (vertArea ? master.width - master.margins.left - master.margins.right : master.height - master.margins.top - master.margins.bottom) * (72 / 25.4);
+        const v = /%$/.test(mh) ? (blockArea * parseFloat(mh)) / 100 : lenEm(mh, fs);
+        if (v !== undefined && v >= 0) fo.maxHeight = v;
+      }
       fo.separator = bsBorder && !b2 ? false : { ...(b2 ? { thickness: b2.width, color: b2.color } : {}), ...(length ? { length } : {}), spaceBefore: sp(`margin-${bs}`), spaceAfter: sp(`padding-${bs}`) };
     }
-    const call = this.footnoteRules.filter((r) => /call$/.test(r.selector)).reduce<Record<string, string>>((a, r) => ({ ...a, ...r.decls }), {});
-    const content = call.content ?? this.footnoteRules.filter((r) => /marker$/.test(r.selector)).reduce<string | undefined>((a, r) => r.decls.content ?? a, undefined);
-    if (content) {
-      const toks = parseContent(content);
+    // 文書全体の書式 (どの脚注にも使う値) は、選択子の無い規則 (::footnote-call・*::footnote-call。どの脚注の要素にも当たる) だけから作る。
+    // 要素を名指しした規則 (.a::footnote-call) は、当たる脚注の要素の値 (footnoteFormatOf・footnoteCallStyle) にだけ入れる
+    // (GCPM 3 §2.6・§2.7: 疑似要素は、その脚注の要素のもの。名指しした規則を全体に入れると、当たらない脚注にもその書式が付いた)
+    const universal = (which: 'call' | 'marker') =>
+      this.footnoteRules.filter((r) => splitTop(r.selector, ',').some((part) => new RegExp(`^\\*?::footnote-${which}$`).test(part.trim())));
+    const call = universal('call').reduce<Record<string, string>>((a, r) => ({ ...a, ...r.decls }), {});
+    const markerContent = universal('marker').reduce<string | undefined>((a, r) => r.decls.content ?? a, undefined);
+    /** content の counter(footnote) の前後の文字と書式 */
+    const parts = (v: string) => {
+      const toks = parseContent(v);
       const k = toks.findIndex((t) => t.kind === 'fn' && t.name === 'counter');
-      if (k >= 0) {
-        const str = (ts: ContentToken[]) => ts.map((t) => (t.kind === 'str' ? t.v : '')).join('');
-        const pre = str(toks.slice(0, k));
-        const post = str(toks.slice(k + 1));
-        if (pre) fo.labelPrefix = pre;
-        if (post) fo.labelSuffix = post;
-        const style = (toks[k] as { args: string[] }).args[1];
-        const f = pageNumberFormatOf(style);
-        if (f) fo.format = f;
+      if (k < 0) return undefined;
+      const str = (ts: ContentToken[]) => ts.map((t) => (t.kind === 'str' ? t.v : '')).join('');
+      return { pre: str(toks.slice(0, k)), post: str(toks.slice(k + 1)), format: pageNumberFormatOf((toks[k] as { args: string[] }).args[1]) };
+    };
+    // 参照の印 (::footnote-call) の書式。無ければ本文の頭の印 (::footnote-marker) の書式を両方に使う (これまでどおり)
+    const content = call.content ?? markerContent;
+    const cp = content ? parts(content) : undefined;
+    if (cp) {
+      if (cp.pre) fo.labelPrefix = cp.pre;
+      if (cp.post) fo.labelSuffix = cp.post;
+      if (cp.format) fo.format = cp.format;
+    }
+    // 本文の頭の印は、::footnote-marker の content の前後の文字 (参照の印と別。GCPM 3 §2.5・§2.6: 書式は疑似要素ごとに決める)
+    // (前は ::footnote-call の content があれば、本文の頭の印にもそれを使い、「1. 」の「. 」が抜けた)
+    if (call.content && markerContent) {
+      const mp = parts(markerContent);
+      if (mp) {
+        fo.markerPrefix = mp.pre;
+        fo.markerSuffix = mp.post;
       }
     }
     // 脚注本文の番号 (::footnote-marker) の置き方: list-style-position (GCPM 3 §2.7: ::marker と同じに振る舞い、既定は inside。
     // https://www.w3.org/TR/2024/WD-css-gcpm-3-20240125/ 、2026-11-04 取得)。
     // outside の番号の終わりと本文の始めの間は、字の大きさの半分 (7.5pt の字なら 3.75pt)
-    const marker = this.footnoteRules.filter((r) => /marker$/.test(r.selector)).reduce<Record<string, string>>((a, r) => ({ ...a, ...r.decls }), {});
+    const marker = universal('marker').reduce<Record<string, string>>((a, r) => ({ ...a, ...r.decls }), {});
     const lsp = /\b(inside|outside)\b/.exec(marker['list-style-position'] ?? marker['list-style'] ?? '')?.[1] ?? (this.opts.footnoteMarkerOutside ? 'outside' : 'inside');
     fo.labelPosition = lsp as 'inside' | 'outside';
     // 脚注どうしの間は空けない (CSS では脚注の要素の余白だけ)
     fo.spacing = 0;
     if (lsp === 'outside') fo.labelGapEm = 0.5;
-    const callFs = lenEm(call['font-size'] ?? '', bodyFs);
+    const callFs = fontSizePt(call['font-size'], bodyFs, this.rootFsPx * PT_PER_PX);
     if (callFs) fo.referenceScale = callFs / bodyFs;
     return Object.keys(fo).length ? fo : undefined;
   }
 
-  /** @page の背景画像 (background / background-image の url()) → ページの背景画像 (本文より先に、塗り足しまで描く) */
-  private pageBackground(decls: Record<string, string>): BackgroundImage | undefined {
+  /** @page・余白の箱の背景画像 (background / background-image の url()・グラデーション) → 背景画像 (ページの背景は、本文より先に、塗り足しまで描く) */
+  private pageBackground(decls: Record<string, string>, fs = 12): BackgroundImage | undefined {
     const v = decls['background-image'] ?? decls.background ?? '';
     const u = firstCssUrl(v);
-    // グラデーションは、ページの背景の領域の大きさで組版のときに画像にする
+    // グラデーションは、ページの背景の領域の大きさで組版のときに画像にする。大きさ (background-size の百分率・長さ)・繰り返し・位置は、
+    // url() の画像と同じに読む (CSS Backgrounds 3 §3.9: グラデーションも背景の画像。前は読まずに、領域いっぱいに塗っていた)
     const grad = u ? undefined : firstGradient(v);
-    if (grad) return { src: '', gradient: grad, gradientFontSize: cssLen(decls['font-size'] ?? '') ?? 12 };
-    if (!u) return undefined;
-    const img: BackgroundImage = { src: normalizeSrc(u[1]) };
+    if (!u && !grad) return undefined;
+    const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(decls['font-size'] ?? '') ?? 12 } : { src: normalizeSrc(u![1]) };
+    /** 長さ → pt。em は箱 (@page・余白の箱) の字の大きさ fs (pt)、rem は根元の要素の字の大きさ。calc() も (百分率を含まないもの) */
+    const lenOf = (t: string) => {
+      const px = lengthPx(t, { fs: fs / PT_PER_PX, rootFs: this.rootFsPx, vw: 0, vh: 0 });
+      return px === undefined ? undefined : px * PT_PER_PX;
+    };
     const bsz = (decls['background-size'] ?? '').trim();
     if (bsz === 'cover' || bsz === 'contain') img.size = bsz;
     else {
-      const sz = bsz.split(/\s+/).map(cssLen);
-      if (sz[0] !== undefined) img.width = sz[0];
-      if (sz[1] !== undefined) img.height = sz[1];
+      // 百分率は、位置の基準の領域 (ページの箱・余白の箱の padding の領域) の大きさに対して、組版で長さにする (CSS Backgrounds 3 §2.9)
+      const parts = splitWords(bsz).filter(Boolean);
+      // 百分率と長さの和 (calc(50% + 1em)) は、百分率と長さに分ける (CSS Values 4 §10.11)
+      const lctx = { fs: fs / PT_PER_PX, rootFs: this.rootFsPx, vw: NaN, vh: NaN };
+      parts.forEach((t, k) => {
+        const pct = /^(-?[\d.]+)%$/.exec(t);
+        const pl = !pct && k < 2 && /%/.test(t) ? percentPlusLength(t, lctx) : undefined;
+        if (pct) img[k === 0 ? 'widthPct' : 'heightPct'] = parseFloat(pct[1]) / 100;
+        else if (pl && Number.isFinite(pl.px)) {
+          img[k === 0 ? 'widthPct' : 'heightPct'] = pl.pct / 100;
+          if (pl.px) img[k === 0 ? 'widthOffset' : 'heightOffset'] = pl.px * PT_PER_PX;
+        } else if (k < 2 && t && t !== 'auto') {
+          const n = lenOf(t);
+          if (n !== undefined) img[k === 0 ? 'width' : 'height'] = n;
+        }
+      });
+      if (img.widthPct !== undefined && (parts[1] ?? 'auto') === 'auto') img.pctAuto = 'height';
+      else if (img.heightPct !== undefined && parts[0] === 'auto') img.pctAuto = 'width';
     }
-    // 一括指定の no-repeat・位置 (center / 百分率)
-    if (/no-repeat/.test(v) || /no-repeat/.test(decls['background-repeat'] ?? '') || img.size) img.repeat = 'no-repeat';
-    const posv = (decls['background-position'] ?? v.replace(/url\([^)]*\)/, '')).trim().split(/\s+/).filter((t) => /^(center|left|right|top|bottom|-?[\d.]+%)$/.test(t));
-    if (posv.includes('center') || !posv.length) [img.x, img.y] = ['center', 'center'];
-    const pct = posv.filter((t) => /%$/.test(t)) as Array<`${number}%`>;
-    if (pct.length) [img.x, img.y] = [pct[0], pct[1] ?? pct[0]];
-    if (posv.includes('left')) img.x = 'left';
-    if (posv.includes('right')) img.x = 'right';
-    if (posv.includes('top')) img.y = 'top';
-    if (posv.includes('bottom')) img.y = 'bottom';
-    this.report.images.push(img.src);
+    // 繰り返し (一括指定の no-repeat も)。大きさ (cover・contain) を書いても、繰り返しは書いたとおり (書かなければ初期値の repeat。
+    // CSS Backgrounds 3 §2.4・§2.9。前は cover・contain で no-repeat にしていた。ページの背景は、位置の基準の領域から並べて塗り足しまで覆う)
+    if (/no-repeat/.test(v) || /no-repeat/.test(decls['background-repeat'] ?? '')) img.repeat = 'no-repeat';
+    // 位置 (CSS Backgrounds 3 §3.6): background-position か、一括指定の中の位置の語・百分率・長さ (/ の後の大きさは除く)。
+    // 1〜4 値は文書の要素の背景と同じに x・y に分ける (値が 1 つなら、もう一方は center)。指定が無ければ、初期値の左上 (0% 0%)
+    // (前は、指定が無ければ中央に置き、値が 1 つのときの残りの軸を center にしていなかった)
+    // 長さ (em・rem・calc() も) は pt にしてから分ける。百分率を含む calc() など、読めない値があれば、宣言ごと無効にして初期値にする
+    // (読めない語を落とした残りを、別の軸に当てない。CSS Syntax 3 §1・CSS 2.1 §4.2: 無効な宣言は捨てる)。文書の要素の背景の位置も、
+    // 長さか百分率に計算できない値は読まない (setBackgroundPosition)
+    const explicit = decls['background-position'] !== undefined;
+    const posSrc = decls['background-position'] ?? (v.replace(/url\([^)]*(?:\)|$)/g, ' ').replace(/(?:repeating-)?(?:linear|radial|conic)-gradient\((?:[^()]|\([^()]*\))*\)/gi, ' ').split('/')[0] ?? '');
+    const posTokens: string[] = [];
+    let posOk = true;
+    for (const t of splitWords(posSrc)) {
+      if (/^(center|left|right|top|bottom|-?[\d.]+%)$/i.test(t)) posTokens.push(t);
+      else if (/^-?[\d.]+([a-z]+)?$/i.test(t) || /^(calc|min|max|clamp)\(/i.test(t)) {
+        const n = lenOf(t);
+        // 百分率と長さの和 (calc(50% + 1em)) は、百分率と長さ (px) の和の式にして渡す (setBackgroundPosition が分ける)
+        const pl = n === undefined && /%/.test(t) ? percentPlusLength(t, { fs: fs / PT_PER_PX, rootFs: this.rootFsPx, vw: NaN, vh: NaN }) : undefined;
+        if (pl && Number.isFinite(pl.px)) posTokens.push(`calc(${pl.pct}% + ${pl.px}px)`);
+        else if (n === undefined) posOk = false;
+        else posTokens.push(`${n}pt`);
+      } else if (explicit && t) posOk = false;
+    }
+    if (posOk && posTokens.length) {
+      const [px, py] = positionXY(posTokens);
+      setBackgroundPosition(img, px, py);
+    }
+    if (!grad) this.report.images.push(img.src);
     return img;
   }
 
@@ -7185,14 +8442,29 @@ class HtmlImporter {
     // (CSS Page 3 §6: "page-margin boxes inherit from the page context. The page context inherits from the root element.")。
     // 字の書式の一括指定 (font・font-variant・text-decoration) は、個別の性質に分けてから読む
     const inherited = Object.fromEntries(Object.entries(marginTextDecls(pageDecls)).filter(([k]) => MARGIN_TEXT_PROPS.test(k) && !MARGIN_TEXT_NOT_INHERITED.test(k)));
-    boxes = Object.fromEntries(Object.entries(boxes).map(([k, d]) => [k, marginTextDecls(d)]));
     const rootEl = (this.bodyEl?.ownerDocument as Document | undefined)?.documentElement ?? this.bodyEl;
     const rootC = rootEl ? this.cs(rootEl) : undefined;
+    // 罫線の色の初期値 currentcolor は、箱の字の色 (箱の color か、ページ文脈・根の要素から受け継いだ色)
+    boxes = Object.fromEntries(Object.entries(boxes).map(([k, d]) => [k, marginBorderDecls(marginTextDecls(d), inherited.color ?? rootC?.('color'))]));
     const PT = 72 / 25.4;
     const W = master.width * PT;
     const H = master.height * PT;
-    const m = { top: master.margins.top * PT, right: master.margins.right * PT, bottom: master.margins.bottom * PT, left: master.margins.left * PT };
+    // 余白の箱はページの余白 (padding の外) に置く
+    const mm = master.marginBoxMargins ?? master.margins;
+    const m = { top: mm.top * PT, right: mm.right * PT, bottom: mm.bottom * PT, left: mm.left * PT };
     const out: LBlockContainer[] = [];
+    // ページの箱の罫線と輪郭線 (@page の border・outline。CSS Paged Media 3 §3・付録 A)。ページの余白の内側 (ページの箱の罫線の箱) に、
+    // 本文の背面に描く。色の初期値は、ページ文脈の字の色 (根の要素から受け継ぐ)
+    {
+      const pfs = fontSizePt(pageDecls['font-size'], rootFs, rootFs) ?? rootFs;
+      const pcol = pageDecls.color ?? rootC?.('color');
+      const pb = pageBorders(pageDecls, pfs, pcol, this.opts.pageBorderKeywords);
+      const [px, py, pw, ph] = [m.left, m.top, W - m.left - m.right, H - m.top - m.bottom];
+      // 輪郭線は、罫線の箱に描くときだけの効果 (paintEffect の outline) として付ける (文書の要素と同じに描く)
+      const po = declOutline(pageDecls, pfs, pcol ? (cssColor(pcol) ?? pcol) : undefined);
+      if ((Object.keys(pb).length || po) && pw > 0 && ph > 0)
+        out.push({ type: 'block-container', absolutePosition: true, left: px, top: py, width: pw, height: ph, boxSizing: 'border-box', ...(Object.keys(pb).length ? { border: pb } : {}), ...(po ? { paintEffect: { outline: po } } : {}), layer: 'behind', children: [] });
+    }
     const along = this.marginBoxWidths(boxes, inherited, rootFs, m.left, W - m.left - m.right);
     for (const [name, own] of Object.entries(boxes)) {
       const decls = { ...inherited, ...own };
@@ -7204,9 +8476,7 @@ class HtmlImporter {
       }
       const content = decls.content;
       if (!content || content === 'none' || content === 'normal') continue;
-      // 余白の箱の輪郭線 (outline) は描かない (余白の箱の宣言は自前で読み、輪郭線は読まない)。知らせる
-      if (Object.keys(decls).some((k) => /^outline(-|$)/.test(k) && !/^(none|0|initial|unset)\b/i.test(decls[k].trim()))) this.miss(msg('outline (ページの余白の箱)', 'outline (page-margin boxes)'));
-      const fs = lenEm(decls['font-size'] ?? '', rootFs) ?? rootFs;
+      const fs = this.marginBoxFs(inherited, own, rootFs);
       // 箱の位置: 上下の辺は本文の幅いっぱい (隅は余白の角)、左右の辺は本文の高さいっぱい
       let x: number, y: number, w: number, h: number;
       if (pos.edge === 'top' || pos.edge === 'bottom') {
@@ -7229,21 +8499,21 @@ class HtmlImporter {
       for (const [prop, val] of Object.entries(decls)) {
         const bm = /^border(?:-(top|right|bottom|left))?$/.exec(prop);
         if (!bm) continue;
-        const b = parseBorder(val, fs);
+        const b = parseBorder(val, fs, this.opts.pageBorderKeywords);
         for (const sd of bm[1] ? [bm[1] as 'top'] : (['top', 'right', 'bottom', 'left'] as const)) {
           if (b) border[sd] = b;
           else delete border[sd];
         }
       }
-      const pad = decls.padding ? edges4(decls.padding, fs) : undefined;
+      const pad = decls.padding ? edges4(decls.padding, fs, rootFs) : undefined;
       const padding = { ...(pad ?? {}) } as Record<string, number>;
-      for (const sd of ['top', 'right', 'bottom', 'left']) if (decls[`padding-${sd}`] !== undefined) padding[sd] = lenEm(decls[`padding-${sd}`], fs) ?? 0;
+      for (const sd of ['top', 'right', 'bottom', 'left']) if (decls[`padding-${sd}`] !== undefined) padding[sd] = lenEm(decls[`padding-${sd}`], fs, { rootFs }) ?? 0;
       // 箱の margin (長さか auto)。一括指定の後に、個別の指定
-      const mgTokens = (decls.margin ?? '').trim().split(/\s+/).filter(Boolean);
+      const mgTokens = splitWords((decls.margin ?? '').trim()).filter(Boolean);
       const [t0 = '0', r0 = t0, b0 = t0, l0 = r0] = mgTokens;
       const mgRaw: Record<'top' | 'right' | 'bottom' | 'left', string> = { top: t0, right: r0, bottom: b0, left: l0 };
       for (const sd of ['top', 'right', 'bottom', 'left'] as const) if (decls[`margin-${sd}`] !== undefined) mgRaw[sd] = decls[`margin-${sd}`];
-      const mgOf = (sd: 'top' | 'right' | 'bottom' | 'left'): number | 'auto' => (/^auto$/i.test(mgRaw[sd].trim()) ? 'auto' : (lenEm(mgRaw[sd], fs) ?? 0));
+      const mgOf = (sd: 'top' | 'right' | 'bottom' | 'left'): number | 'auto' => (/^auto$/i.test(mgRaw[sd].trim()) ? 'auto' : (lenEm(mgRaw[sd], fs, { rootFs }) ?? 0));
       const mgNum = (sd: 'top' | 'right' | 'bottom' | 'left') => {
         const v = mgOf(sd);
         return v === 'auto' ? 0 : v;
@@ -7253,7 +8523,8 @@ class HtmlImporter {
       const pbV = (padding.top ?? 0) + (padding.bottom ?? 0) + (border.top?.width ?? 0) + (border.bottom?.width ?? 0);
       const pbH = (padding.left ?? 0) + (padding.right ?? 0) + (border.left?.width ?? 0) + (border.right?.width ?? 0);
       const size = (v: string | undefined, room: number, pb: number): number | 'auto' => {
-        const n = v === undefined || v === 'auto' ? undefined : /%$/.test(v) ? (room * parseFloat(v)) / 100 : lenEm(v, fs);
+        // 百分率 (calc() の中の百分率も) は、余白の領域に対して
+        const n = v === undefined || v === 'auto' ? undefined : /%$/.test(v) ? (room * parseFloat(v)) / 100 : lenEm(v, fs, { rootFs, pct: room });
         return n === undefined ? 'auto' : Math.max(0, borderBox ? n - pb : n);
       };
       // 決まった向きの寸法 (CSS Page 3 §5.3.3): 上下の箱の高さと上下の margin、左右の箱の幅と左右の margin、隅の箱の両方。
@@ -7262,8 +8533,27 @@ class HtmlImporter {
       // (以前は、vertical-align で箱の位置を決め、既定は真ん中だった。vertical-align は箱の中の中身の揃え。§6.3: 表のセルと同じ)
       const fixedV = pos.edge === 'top' || pos.edge === 'bottom';
       const fixedH = pos.edge === 'left' || pos.edge === 'right' || pos.part === 'corner-start' || pos.part === 'corner-end';
+      // 最小・最大の大きさ (min-*・max-*。CSS Page 3 §5.3: CSS 2.1 の決まりを余白の箱にも当て、外れたら大きさ・margin を決め直す)。
+      // CSS 2.1 §10.4・§10.7 と同じに、指定の大きさで決め、max を超えたら max を、min を下回ったら min を指定の大きさとして決め直す
+      const fixedDim = (outer: number, a: number | 'auto', b: number | 'auto', prop: 'width' | 'height', pb: number, outsideA: boolean) => {
+        let f = marginBoxFixedDimension(outer, a, b, size(decls[prop], outer, pb), pb, outsideA);
+        const mx = size(decls[`max-${prop}`], outer, pb);
+        if (mx !== 'auto' && f.size > mx) f = marginBoxFixedDimension(outer, a, b, mx, pb, outsideA);
+        const mn = size(decls[`min-${prop}`], outer, pb);
+        if (mn !== 'auto' && f.size < mn) f = marginBoxFixedDimension(outer, a, b, mn, pb, outsideA);
+        return f;
+      };
+      /** 変わる向きの寸法の、1 つの箱の大きさ (中身。auto は余りいっぱい) を、最小・最大の間に収める。auto のまま収まれば auto */
+      const clampVar = (s: number | 'auto', room: number, prop: 'width' | 'height', pb: number): number | 'auto' => {
+        let v = s === 'auto' ? Math.max(0, room - pb) : s;
+        const mx = size(decls[`max-${prop}`], room, pb);
+        const mn = size(decls[`min-${prop}`], room, pb);
+        if (mx !== 'auto') v = Math.min(v, mx);
+        if (mn !== 'auto') v = Math.max(v, mn);
+        return s === 'auto' && Math.abs(v - Math.max(0, room - pb)) < 0.01 ? 'auto' : v;
+      };
       if (fixedV) {
-        const f = marginBoxFixedDimension(h, mgOf('top'), mgOf('bottom'), size(decls.height, h, pbV), pbV, pos.edge === 'top');
+        const f = fixedDim(h, mgOf('top'), mgOf('bottom'), 'height', pbV, pos.edge === 'top');
         y += f.a;
         h = pbV + f.size;
       } else {
@@ -7271,7 +8561,7 @@ class HtmlImporter {
         // 高さを指定した箱は、上の箱は上端・真ん中の箱は真ん中・下の箱は下端に置く (§5.3.2.4)
         y += mgNum('top');
         h -= mgNum('top') + mgNum('bottom');
-        const bh = size(decls.height, h, pbV);
+        const bh = clampVar(size(decls.height, h, pbV), h, 'height', pbV);
         if (bh !== 'auto' && bh + pbV < h) {
           y += pos.part === 'start' ? 0 : pos.part === 'end' ? h - bh - pbV : (h - bh - pbV) / 2;
           h = bh + pbV;
@@ -7279,14 +8569,15 @@ class HtmlImporter {
       }
       if (fixedH) {
         const left = pos.edge === 'left' || pos.part === 'corner-start';
-        const f = marginBoxFixedDimension(w, mgOf('left'), mgOf('right'), size(decls.width, w, pbH), pbH, left);
+        const f = fixedDim(w, mgOf('left'), mgOf('right'), 'width', pbH, left);
         x += f.a;
         w = pbH + f.size;
       } else {
         // 上下の辺の箱の左右 (変わる向きの寸法。§5.3.2): 幅は marginBoxWidths で決めたもの。margin は箱を内側へ縮める
         x += mgNum('left');
         w -= mgNum('left') + mgNum('right');
-        const bw = size(decls.width, w, pbH);
+        // 幅を分けた箱 (along) は、marginBoxWidths が最小・最大も当てた。分けていない箱 (内容の幅が組むまで分からない辺) は、ここで収める
+        const bw = along.has(name) ? size(decls.width, w, pbH) : clampVar(size(decls.width, w, pbH), w, 'width', pbH);
         if (bw !== 'auto' && bw + pbH < w && !along.has(name)) {
           x += pos.part === 'start' ? 0 : pos.part === 'end' ? w - bw - pbH : (w - bw - pbH) / 2;
           w = bw + pbH;
@@ -7304,6 +8595,9 @@ class HtmlImporter {
       // opacity: 背景と文字の色を、白い紙に重ねた色にする
       const opacity = decls.opacity !== undefined ? Math.min(Math.max(parseFloat(decls.opacity), 0), 1) : 1;
       const fade = (col: string | undefined) => {
+        // 半透明の色 (#rrggbbaa。背景) は、透明度に opacity を掛ける
+        const a8 = col && opacity < 1 ? /^(#[0-9a-f]{6})([0-9a-f]{2})$/i.exec(col) : null;
+        if (a8) return `${a8[1]}${Math.round(parseInt(a8[2], 16) * opacity).toString(16).padStart(2, '0')}`;
         if (!col || opacity >= 1 || !/^#[0-9a-f]{6}$/i.test(col)) return col;
         const n = parseInt(col.slice(1), 16);
         return `#${[(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => Math.round(255 - opacity * (255 - c)).toString(16).padStart(2, '0')).join('')}`;
@@ -7319,12 +8613,13 @@ class HtmlImporter {
         const mapped = names.length ? this.opts.mapFont?.(names, (ts.fontWeight ?? 400) >= 600) : undefined;
         if (mapped) ts.fontFamily = mapped;
       }
-      if (decls.color) ts.color = this.printOf(decls, 'color') ?? cssColor(decls.color);
-      if (decls['letter-spacing']) ts.letterSpacing = lenEm(decls['letter-spacing'], fs);
+      if (decls.color) ts.color = this.printOf(decls, 'color') ?? visibleColorOf(decls.color);
+      // 字間の百分率は、字の大きさに対する割合 (CSS Text 4 §7.2)。行の高さの百分率も、字の大きさに対する割合 (CSS 2.1 §10.8.1)
+      if (decls['letter-spacing']) ts.letterSpacing = lenEm(decls['letter-spacing'], fs, { rootFs, pct: fs });
       if (decls['line-height']) {
         const lh = decls['line-height'];
         if (/^[\d.]+$/.test(lh)) ts.lineHeight = parseFloat(lh);
-        else if (lenEm(lh, fs) !== undefined) ts.lineHeightPt = lenEm(lh, fs);
+        else if (lenEm(lh, fs, { rootFs, pct: fs }) !== undefined) ts.lineHeightPt = lenEm(lh, fs, { rootFs, pct: fs });
       }
       const box: LBlockContainer = {
         type: 'block-container',
@@ -7343,19 +8638,31 @@ class HtmlImporter {
       if (Object.keys(border).length) box.border = border;
       if (Object.keys(padding).length) box.padding = padding;
       const bgv = decls['background-color'] ?? decls.background ?? '';
-      const bg = this.printOf(decls, 'background-color', 'background') ?? cssColor(bgv);
-      if (bg && /^(#|cmyk\(|spot\()/.test(bg)) box.backgroundColor = fade(bg);
+      // 半透明の色は #rrggbbaa のまま (文書の要素の背景と同じ)。色の名前 (red など) も読む (前は # で始まる色だけ)
+      const bg = this.printOf(decls, 'background-color', 'background') ?? splitWords(bgv).map((t) => cssColorAlpha(t)).find((col) => col && (/^(#|cmyk\(|spot\()/.test(col) || isColorName(col)));
+      if (bg) box.backgroundColor = fade(bg);
+      // 背景の画像 (background-image・background の url()・グラデーション。CSS Paged Media 3 付録 A)。位置の初期値は左上 (0% 0%)
+      const bimg = this.pageBackground(decls, fs);
+      if (bimg) box.backgroundImage = bimg;
+      // 輪郭線 (outline。付録 A): 文書の要素と同じに、描くときだけの効果 (paintEffect の outline) として付ける
+      const ol = declOutline(decls, fs, ts.color ?? (rootC ? cssColor(rootC('color')) : undefined));
       // 角丸 (border-radius・border-*-radius): ほかの箱と同じに描く。CSS Paged Media 3 §6 は、CSS 2.1 に無い性質の余白の箱での振る舞いを決めて
       // いない (CSS3 の性質を少しずつ足せるように、と注記する)。書いた順に一括指定を展開する
       const radius: Record<string, string> = {};
-      const toPt = (x: string) => (/%$/.test(x) ? x : `${lenEm(x, fs) ?? 0}pt`);
+      // 百分率を含む calc() は、百分率と長さ (px) の和の式にする (radiusOf が、箱の大きさで解く)
+      const toPt = (x: string) => {
+        if (/%$/.test(x)) return x;
+        const pl = /%/.test(x) ? percentPlusLength(x, { fs: fs / PT_PER_PX, rootFs: rootFs / PT_PER_PX, vw: NaN, vh: NaN }) : undefined;
+        return pl && Number.isFinite(pl.px) ? `calc(${pl.pct}% + ${pl.px}px)` : `${lenEm(x, fs, { rootFs }) ?? 0}pt`;
+      };
       for (const [prop, val] of Object.entries(decls)) {
         const longs = prop === 'border-radius' ? expand(prop, val) : /^border-(top|bottom)-(left|right)-radius$/.test(prop) ? [[prop, val] as [string, string]] : [];
-        for (const [k, v] of longs) radius[k] = v.trim().split(/\s+/).map(toPt).join(' ');
+        for (const [k, v] of longs) radius[k] = splitWords(v.trim()).filter(Boolean).map(toPt).join(' ');
       }
       const rad = Object.keys(radius).length ? this.radiusOf((p) => radius[p] ?? '0px') : undefined;
       if (rad) box.borderRadius = rad;
       if (box.children[0] && (box.children[0] as LBlock).color) (box.children[0] as LBlock).color = fade((box.children[0] as LBlock).color);
+      if (ol) box.paintEffect = { ...box.paintEffect, outline: ol };
       out.push(box);
     }
     return out;
@@ -7422,13 +8729,12 @@ class HtmlImporter {
     const blanks: BlankKind[] = otherBlank ? ['trailing', 'blank', 'none'] : has('blank') ? ['blank', 'none'] : ['none'];
     const firsts = has('first') ? [true, false] : [false];
     const sides: Array<'left' | 'right' | undefined> = has('left') || has('right') ? ['right', 'left'] : [undefined];
-    // 左右: 左から右へ進む本では右ページが奇数ページ。縦書き (右から左へ進む本) では左ページが奇数ページ
+    // 左右: 左から右へ進む本では右ページが奇数ページ。縦書き (右から左へ進む本) では左ページが奇数ページ (CSS Paged Media 3 §3.3: 最初のページの左右は、
+    // ページの進む向きで決まる)。奇数・偶数は、既定のスタイルではページの順、互換のスタイルではページ番号 (HtmlImportOptions.pageSidesByNumber)
     const rtl = wm === 'vertical-rl';
     this.pageFormat = null;
     // 固定配置 (position: fixed) の箱は、どのページにも出す内容として運ぶので、描くときだけの効果が付かない。その輪郭線 (outline)・
     // 切り抜きの矩形 (clip) は描けないので、知らせる
-    if (this.fixed.some((f) => f.paintEffect?.outline)) this.miss(msg('outline (position: fixed の箱)', 'outline (position: fixed boxes)'));
-    if (this.fixed.some((f) => f.paintEffect?.clip)) this.miss(msg('clip (position: fixed の箱)', 'clip (position: fixed boxes)'));
     const alts: ConditionalPageMaster[] = [];
     for (const kind of blanks)
       for (const first of firsts)
@@ -7446,7 +8752,7 @@ class HtmlImporter {
           if (kind === 'trailing') when.trailingBlank = true;
           if (first) when.pagePosition = 'first';
           if (side) when.oddOrEven = (side === 'right') !== rtl ? 'odd' : 'even';
-          const pbg = this.pageBackground(r.decls);
+          const pbg = this.pageBackground(r.decls, fontSizePt(r.decls['font-size'], rootFs, rootFs) ?? rootFs);
           if (pbg) master.backgroundImage = pbg;
           alts.push({ when, master, staticContent: [...this.marginBoxes(master, r.boxes, rootFs, r.decls), ...this.fixed] });
         }
@@ -7488,10 +8794,11 @@ class HtmlImporter {
       const rc = this.cs(e);
       const col = cssColor(rc('background-color'));
       const imgv = rc('background-image');
-      if (!col && !/url\(/.test(imgv)) continue;
+      // 根元の要素の背景 (色・url() の画像・グラデーション) は、ページ (canvas) へ伝わる (CSS Backgrounds 3 §2.11.1)
+      if (!col && !/url\(|gradient\(/.test(imgv)) continue;
       // ページの背景にするのは、最初の画像の層だけ (層ごとの値は、その層のもの)。2 枚目以降は未対応として知らせる
       const rl = backgroundLayers(rc);
-      const first = rl.find((l) => /url\(/.test(l.image));
+      const first = rl.find((l) => /url\(|gradient\(/.test(l.image));
       if (rl.filter((l) => /url\(|gradient\(/.test(l.image)).length > 1) this.miss(msg('background-image: 2 枚目以降 (html・body)', 'background-image: second and later layers (html, body)'));
       this.rootBackground = {
         ...(col ? { 'background-color': col } : {}),
@@ -7500,7 +8807,24 @@ class HtmlImporter {
       rootFromBody = e === bodyEl && e !== html;
       break;
     }
-    this.footnoteRules = rules.filter((r) => /^\*?::footnote-(call|marker)$/.test(r.selector.trim()));
+    // ::footnote-call・::footnote-marker の規則 (文書全体の書式は選択子の無い規則だけから作り、要素を名指しした規則は、当たる脚注の書式にだけ
+    // 入れる。GCPM 3 §2.6・§2.7: 疑似要素は、その脚注の要素のもの)。疑似要素の前の選択子 (span.footnote-body::footnote-call など) は、
+    // 文書のどれかの要素に当たれば集める (前は選択子の無い ::footnote-call・*::footnote-call だけを読み、前に選択子の付いた規則を読み落とした)
+    const pseudoBaseMatches = (sel: string) =>
+      splitTop(sel, ',').some((part) => {
+        const m = /^(.*?)::footnote-(call|marker)$/.exec(part.trim());
+        if (!m) return false;
+        const base = m[1].trim();
+        if (!base || base === '*') return true;
+        // 照合は、カスケードと同じ自前の照合 (覚えを使う。cssSelector.ts) で引く。linkedom の querySelector は、子孫・後続の兄弟の結合子で
+        // 合わない祖先・兄弟の選び方を総当たりし、短い選択子と深い入れ子で、手間が指数で伸びる
+        try {
+          return this.src.select ? this.src.select(base).length > 0 : !!doc.querySelector(base);
+        } catch {
+          return false;
+        }
+      });
+    this.footnoteRules = rules.filter((r) => /::footnote-(call|marker)\s*$/.test(r.selector.trim()) && pseudoBaseMatches(r.selector));
     this.collectPaged(doc, rules, rootVars);
     this.bodyEl = bodyEl;
     const rootFs = cssLen(this.cs(html)('font-size')) ?? 12;
@@ -7549,7 +8873,7 @@ class HtmlImporter {
     }
     // 本文領域 (名前の無い @page) の余白と幅 (pt)
     const PT = 72 / 25.4;
-    const base = pageBox(resolvePageRules(pages, {}, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions);
+    const base = pageBox(resolvePageRules(pages, {}, ...this.pageWm).decls, this.opts.defaultPage ?? { width: 210, height: 297, margin: 20 }, this.rootFsPx, this.opts.spotColors, !!this.opts.ahCssExtensions, this.opts.pageBorderKeywords);
     const bm = base.margins;
     this.area = { top: bm.top * PT, right: bm.right * PT, bottom: bm.bottom * PT, left: bm.left * PT, width: (base.width - bm.left - bm.right) * PT, height: (base.height - bm.top - bm.bottom) * PT };
     // body (か html) の段組は、ページの段組にする
@@ -7557,11 +8881,15 @@ class HtmlImporter {
     if (pc) this.pageColumns = { count: pc.count, gap: pc.gap / PT, fill: pc.fill, ...(pc.rule ? { rule: pc.rule } : {}) };
     this.enterCounters(this.cs(html), null);
     this.enterCounters(this.cs(bodyEl), null);
+    // 文書の最初のページの名前: body の page、無ければ html の page (CSS Paged Media 3 §8.1: page の auto の使用値は親の値なので、
+    // page が auto の中の箱は、すべて、この名前のページに置く。文書の全体を名前付きのページにする書き方 (body { page: x }))
+    const rootPage = rootPageName(this.pg(bodyEl).page, html !== bodyEl ? this.pg(html).page : undefined) ?? '';
+    this.rootPage = rootPage;
     // body が flex・grid の容器なら、ブラウザが置いた配置で組む (body の箱も含める)。
     // さらに html が flex・grid の容器なら、body の箱を、ブラウザが置いた位置 (本文領域の左上から) に置く
     let children: Array<LBlockLevel | LInlineLevel>;
     let bodyBoxed = false;
-    const fg = /^(inline-)?(flex|grid)$/.test(this.display(bodyEl)) ? this.flexGrid(bodyEl, html) : undefined;
+    const fg = !bodyPageSwitchHolder(this.display(bodyEl)) ? this.flexGrid(bodyEl, html) : undefined;
     if (fg) {
       const htmlFlex = /^(inline-)?(flex|grid)$/.test(this.display(html));
       const r = htmlFlex ? this.src.rect?.(bodyEl) : undefined;
@@ -7581,16 +8909,26 @@ class HtmlImporter {
       }
       children = [fg];
       bodyBoxed = true;
-    } else children = this.flowChildren(bodyEl);
+    } else {
+      this.pageFlowEls.add(bodyEl);
+      this.pageUsed.set(bodyEl, rootPage);
+      // いまのページの名前は、最初の組の名前 (下の groups の最初) から始める。未定のままだと、最初の流れの中のブロックの前に
+      // 切り替え (同じ名前) が入り、その前の字 (body の最初の中身が字のとき) との間で改ページしていた
+      this.curPage = rootPage;
+      children = this.hoistPageSwitches(this.flowChildren(bodyEl));
+    }
     // 名前付きページの切り替えで分ける
-    const groups: Array<{ page: string; initial?: number; items: Array<LBlockLevel | LInlineLevel> }> = [{ page: '', items: [] }];
+    // html・body の counter-reset・counter-set の page は、最初のページの番号 (最初の組の振り直し。後の箱の振り直しと同じ読み方)
+    const rootInitial = this.firstPageInitial ?? this.pageCounterStart(bodyEl) ?? (html !== bodyEl ? this.pageCounterStart(html) : undefined);
+    const groups: Array<{ page: string; initial?: number; items: Array<LBlockLevel | LInlineLevel> }> = [{ page: rootPage, ...(rootInitial !== undefined ? { initial: rootInitial } : {}), items: [] }];
     for (const c of children) {
       if (typeof c !== 'string' && (c as unknown as PageSwitch).type === 'page-switch') {
         const sw = c as unknown as PageSwitch;
         const last = groups[groups.length - 1];
         // 前の組に流れの中の箱が無ければ (空白・絶対配置の箱・見えない箱の印だけ)、改ページせず、その組をこの名前のページにする
         // (ページの名前は流れの中の箱の間でだけ比べる。CSS Page 3 §8.1。最初のページの種類は、最初の流れの中の箱の page)
-        if (!last.items.some((x) => this.inFlowItem(x))) Object.assign(last, { page: sw.page, initial: sw.initial });
+        // (前の切り替えのページ番号の振り直し (counter-reset: page) は、この切り替えに振り直しが無ければ残す)
+        if (!last.items.some((x) => this.inFlowItem(x))) Object.assign(last, { page: sw.page, initial: sw.initial ?? last.initial });
         else groups.push({ page: sw.page, initial: sw.initial, items: [] });
       } else groups[groups.length - 1].items.push(c);
     }
@@ -7604,15 +8942,29 @@ class HtmlImporter {
     const sequences = groups.map((g, k) => {
       // ページシーケンスの境目の改ページ (左右): 前の最後のブロックの break-after、次の最初のブロックの break-before を、
       // 前のシーケンスのページ数の偶奇に写す (右ページから始める = 前を偶数ページで終える)
+      // 包む箱を分けた断片 (hoistPageSwitches) では、左右の改ページは中の最初・最後のブロックにあるので、最初・最後の子をたどって見る
       const lastBlock = [...g.items].reverse().find((x): x is LBlock => typeof x !== 'string' && x.type === 'block');
       const next = groups[k + 1]?.items.find((x): x is LBlock => typeof x !== 'string' && x.type === 'block');
-      const side = next?.breakBefore === 'odd-page' || next?.breakBefore === 'even-page' ? next.breakBefore : lastBlock?.breakAfter;
+      const sideOf = (b: LBlock | undefined, end: boolean): BreakKind | undefined => {
+        for (let n = b; n; ) {
+          const v = end ? n.breakAfter : n.breakBefore;
+          if (v === 'odd-page' || v === 'even-page') return v;
+          const kids = n.children.filter((x) => typeof x !== 'string');
+          const c = end ? kids[kids.length - 1] : kids[0];
+          n = c && (c as LBlock).type === 'block' ? (c as LBlock) : undefined;
+        }
+        return undefined;
+      };
+      const side = sideOf(next, false) ?? sideOf(lastBlock, true) ?? lastBlock?.breakAfter;
       const pads = side === 'odd-page' || side === 'even-page';
       const blankName = pads && this.opts.blankPageName !== 'previous' ? (groups[k + 1]?.page ?? '') : undefined;
       const seq = this.sequence(pages, g.page, k, rootStyle, wm, hasBox ? [{ type: 'block', ...box, children: g.items } as LBlock] : g.items, rootFs, blankName);
       if (g.initial !== undefined) seq.initialPageNumber = g.initial;
       if (side === 'odd-page') seq.forcePageCount = 'end-on-even';
       else if (side === 'even-page') seq.forcePageCount = 'end-on-odd';
+      // 左右の区切りの無い境目で、次の組がページ番号を振り直すとき: その番号の偶奇に合わせる白ページ (組版エンジンの既定の
+      // force-page-count="auto") を足さない (HtmlImportOptions.pageSidesByNumber)
+      else if (groups[k + 1]?.initial !== undefined && !this.opts.pageSidesByNumber) seq.forcePageCount = 'no-force';
       return seq;
     });
     this.report.counts.sequences = sequences.length;
@@ -7628,7 +8980,16 @@ class HtmlImporter {
       else roots.push(node);
       stack.push({ level: b.level, node });
     }
-    return { type: 'document', ...(title ? { title } : {}), ...(roots.length ? { bookmarks: roots } : {}), sequences };
+    return {
+      type: 'document',
+      ...(title ? { title } : {}),
+      ...(roots.length ? { bookmarks: roots } : {}),
+      sequences,
+      ...(this.opts.idLinesSeparateMarginsWp ? { idLinesSeparateMargins: true } : {}),
+      ...(this.opts.unresolvedCitationEmptyWp ? { unresolvedCitationEmpty: true } : {}),
+      // ページの左右は、ページの順で決める (CSS Paged Media 3 §3.3。HtmlImportOptions.pageSidesByNumber)
+      ...(this.opts.pageSidesByNumber ? {} : { pageSidesByOrder: true }),
+    };
   }
 }
 
@@ -7688,6 +9049,68 @@ function edgeBreak(children: ReadonlyArray<LBlockLevel | LInlineLevel>, side: 'b
   const own = side === 'before' ? c.breakBefore : c.breakAfter;
   const inner = c.type === 'block' ? edgeBreak(c.children, side) : undefined;
   // 子 (内側) は、before では流れの中で後ろ、after では前
+  return side === 'before' ? mergeBreaks(own, inner) : mergeBreaks(inner, own);
+}
+
+/**
+ * 要素の百分率の寸法 (BoxStyle.percent)。of は、性質の割合と長さの部分 (px。StyleSource.percentOf)。sized は、読み込みが幅 (width) を
+ * 決めた箱か (幅・上限・下限を組むときに解き直す。置換要素・縦横比・内容による大きさの箱は、ここでは扱わない)。
+ * 幅・上限・下限のどれかが百分率なら、長さで書いたものも割合 0 で入れる (組むときに、同じ式で抑え直す)
+ */
+function percentBox(of: (prop: string) => { f: number; px: number } | undefined, c: (p: string) => string, sized: boolean): BoxStyle['percent'] | undefined {
+  const pl = (p: string): PercentLength | undefined => {
+    const v = of(p);
+    return v ? { pct: v.f, len: v.px * PT_PER_PX } : undefined;
+  };
+  const out: NonNullable<BoxStyle['percent']> = {};
+  for (const k of ['margin', 'padding'] as const) {
+    const e: Partial<Record<'top' | 'right' | 'bottom' | 'left', PercentLength>> = {};
+    for (const sd of ['top', 'right', 'bottom', 'left'] as const) {
+      const v = pl(`${k}-${sd}`);
+      if (v) e[sd] = v;
+    }
+    if (Object.keys(e).length) out[k] = e;
+  }
+  const ti = pl('text-indent');
+  if (ti) out.textIndent = ti;
+  const w = pl('width');
+  const mx = pl('max-width');
+  const mn = pl('min-width');
+  // 幅が auto で、長さの上限・下限のある箱も、組むときに、置く場所の幅を上限・下限で抑える (CSS 2.1 §10.4。見積もりの幅では効かなかった
+  // 上限・下限が、名前付きのページ・:first の狭い領域では効くことがある)
+  const lenLimit = c('width') === 'auto' && (/px$/.test(c('max-width')) || (/px$/.test(c('min-width')) && (cssLen(c('min-width')) ?? 0) > 0));
+  if ((w || mx || mn || lenLimit) && sized) {
+    const len = (p: string): PercentLength | undefined => (/px$/.test(c(p)) ? { pct: 0, len: cssLen(c(p))! } : undefined);
+    const W = w ?? len('width');
+    const MX = mx ?? len('max-width');
+    const MN = mn ?? len('min-width');
+    if (W) out.width = W;
+    if (MX) out.maxWidth = MX;
+    if (MN) out.minWidth = MN;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** BoxStyle.estimatedSize の、長さの上限・下限 (無いものは書かない) */
+function estLimits(max: number | undefined, min: number | undefined): { max?: number; min?: number } {
+  return { ...(max !== undefined ? { max } : {}), ...(min !== undefined ? { min } : {}) };
+}
+
+/**
+ * edgeBreak と同じにたどった、最初 (最後) の子の強制の区切りを返し、子からは外す (容器へ移す。表のセルの中身の区切りを、行の区切りにするとき)
+ */
+function takeEdgeBreak(children: ReadonlyArray<LBlockLevel | LInlineLevel>, side: 'before' | 'after'): BreakKind | undefined {
+  let c: LBlockLevel | LInlineLevel | undefined;
+  if (side === 'before') {
+    for (const x of children) if (inFlowChild(x)) { c = x; break; }
+  } else {
+    for (let i = children.length - 1; i >= 0; i--) if (inFlowChild(children[i])) { c = children[i]; break; }
+  }
+  if (!c || typeof c === 'string' || (c.type !== 'block' && c.type !== 'table' && c.type !== 'block-container')) return undefined;
+  const own = side === 'before' ? c.breakBefore : c.breakAfter;
+  if (side === 'before') delete c.breakBefore;
+  else delete c.breakAfter;
+  const inner = c.type === 'block' ? takeEdgeBreak(c.children, side) : undefined;
   return side === 'before' ? mergeBreaks(own, inner) : mergeBreaks(inner, own);
 }
 
@@ -7779,18 +9202,31 @@ function resolveSegmentBreaks(list: Array<LBlockLevel | LInlineLevel>, root = tr
   walk(list, root);
   close('');
   if (!edits.length) return;
-  // 後ろの範囲から書き換える (同じ文字列の中の範囲の位置がずれないように。edits は並びの順なので、逆にたどる)
+  // 文字列ごとに、範囲を前から順につないで 1 度に書き換える (edits は並びの順で、同じ文字列の範囲は続いて、前から並ぶ。
+  // 範囲ごとに文字列の全体を切り貼りすると、範囲の多い長い文字列で、長さの 2 乗の手間になる)
   const emptied = new Set<Arr>();
-  for (let k = edits.length - 1; k >= 0; k--) {
-    const e = edits[k];
-    const src = e.arr[e.i] as string;
-    const v = src.slice(0, e.from) + e.repl + src.slice(e.to);
-    e.arr[e.i] = v;
-    if (!v) emptied.add(e.arr);
+  for (let k = 0; k < edits.length; ) {
+    const { arr, i } = edits[k];
+    const src = arr[i] as string;
+    let v = '';
+    let at = 0;
+    for (; k < edits.length && edits[k].arr === arr && edits[k].i === i; k++) {
+      const e = edits[k];
+      v += src.slice(at, e.from) + e.repl;
+      at = e.to;
+    }
+    v += src.slice(at);
+    arr[i] = v;
+    if (!v) emptied.add(arr);
   }
-  for (const arr of emptied) {
-    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] === '') arr.splice(i, 1);
-  }
+  for (const arr of emptied) dropEmptyStrings(arr);
+}
+
+/** 並びの中の空の文字列を、その場で除く (1 つずつ splice すると、空の項目の多い並びで長さの 2 乗の手間になるので、1 度の走査で詰める) */
+function dropEmptyStrings(arr: unknown[]): void {
+  let w = 0;
+  for (let r = 0; r < arr.length; r++) if (arr[r] !== '') arr[w++] = arr[r];
+  arr.length = w;
 }
 
 /** importHtml の終わりに、決めずに残った改行の印 (SEG_BREAK) を空白にする (ブロックの中身として resolveSegmentBreaks を通らなかった並び。前の版と同じ空白) */
@@ -7889,9 +9325,7 @@ function collapseAcrossInlines(list: Array<LBlockLevel | LInlineLevel>): void {
   };
   walk(list, true);
   endLine();
-  for (const arr of touched) {
-    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] === '') arr.splice(i, 1);
-  }
+  for (const arr of touched) dropEmptyStrings(arr);
 }
 
 /** HTML の文書 (スタイルを確定させたもの) を Kumiori の論理ツリーにする */
@@ -7919,11 +9353,12 @@ export function importHtml(doc: Document, src: StyleSource, opts: HtmlImportOpti
  */
 function innerRadius(rad: BorderRadius, border?: BorderInput, padding?: EdgesInput): BorderRadius {
   const w = (s: 'top' | 'right' | 'bottom' | 'left') => ((border as Partial<Record<string, BorderSide>> | undefined)?.[s]?.width ?? 0) + ((padding as Partial<Record<string, number>> | undefined)?.[s] ?? 0);
-  const sub = (v: number | `${number}%`, d: number) => (typeof v === 'number' ? Math.max(v - d, 0) : v);
+  // 百分率と長さの和は、長さの側から引く (長さにするときに 0 未満を 0 にする: paint の radiusLen)
+  const sub = (v: RadiusLength, d: number): RadiusLength => (typeof v === 'number' ? Math.max(v - d, 0) : typeof v === 'object' ? { pct: v.pct, len: v.len - d } : v);
   const corners = rad.corners ?? [[rad.rx, rad.ry], [rad.rx, rad.ry], [rad.rx, rad.ry], [rad.rx, rad.ry]];
   const hs = [w('left'), w('right'), w('right'), w('left')];
   const vs = [w('top'), w('top'), w('bottom'), w('bottom')];
-  const out = corners.map(([h, v], k) => [sub(h, hs[k]), sub(v, vs[k])] as [number | `${number}%`, number | `${number}%`]);
+  const out = corners.map(([h, v], k) => [sub(h, hs[k]), sub(v, vs[k])] as [RadiusLength, RadiusLength]);
   return { rx: 0, ry: 0, corners: out };
 }
 

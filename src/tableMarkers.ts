@@ -7,7 +7,7 @@
  * 断片の中から、retrieve-position-within-table (§7.25.6) に従って 1 つ選ぶ。「最初」「最後」は領域の木の前順。
  */
 import type { LBlockLevel, LInlineLevel, LMarker, LRetrieveTableMarker } from './types';
-import { copySourceRef } from './sourceRef';
+import { copySourceRef, gridCopies } from './sourceRef';
 
 /** マーカーの付いた領域 1 つ (断片の中の、前順の並びで持つ) */
 export interface MarkerArea {
@@ -107,6 +107,8 @@ type Kids = Array<LBlockLevel | LInlineLevel>;
  * skipTables: 入れ子の表の中は置き換えない (入れ子の表の fo:retrieve-table-marker は、その表が取り出す)
  */
 export function replaceRetrieves<T, R extends { type: string; variants?: Record<number, Kids> }>(node: T, retrieveType: R['type'], find: (r: R) => LMarker | undefined, skipTables = false): T {
+  // grid の項目の並び (列挙しない性質) を、写した木のセルに付け直す (gridCopies)
+  const gc = gridCopies();
   const walk = (v: unknown): unknown => {
     if (Array.isArray(v)) {
       return v.flatMap((e) => {
@@ -128,11 +130,14 @@ export function replaceRetrieves<T, R extends { type: string; variants?: Record<
       if (skipTables && (v as { type?: string }).type === 'table') return v;
       const copy = Object.fromEntries(Object.entries(v).map(([k, val]) => [k, walk(val)]));
       copySourceRef(v, copy);
+      gc?.note(v, copy);
       return copy;
     }
     return v;
   };
-  return walk(node) as T;
+  const out = walk(node) as T;
+  gc?.done();
+  return out;
 }
 
 /** node の中の fo:retrieve-table-marker (入れ子の表の中は除く) を、文書の順に集める */

@@ -12,7 +12,7 @@ import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './
 import { autospaceNonIdeographic, isAutospaceIdeograph, isClosingPunct, isHangable, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
 import { kernablePair } from './orthographicSyllable';
 import { complexContextBreaks, lineBreakActions, type LineBreakOptions } from './lineBreak';
-import { newNode, type LNode, type ResolvedStyle } from './lnode';
+import { glyphLeaf, newNode, type GlyphPayload, type LNode, type ResolvedStyle } from './lnode';
 import { paletteForFont } from './colorGlyph';
 import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, HyphenLimits, WritingMode } from './types';
 import { borderToLogicalWidths, toLogical } from './geometry';
@@ -67,6 +67,11 @@ export interface Atom {
   dropAtWrap?: boolean;
   /** 最小の幅を測る組み方 (min-content) の字。overflow-wrap: break-word の語の途中を分割点に数えない (Text 3 §5.5) */
   intrinsic?: boolean;
+  /**
+   * grid の項目の min-content を測る組み方の字 (layoutEngine の FlowInit.gridItemMin)。収まる分綴の位置も、戻れる分割点も無い行は、
+   * 最初の分綴の位置で分ける (分綴の位置は折り返しの機会: CSS Text 3 §5.4。min-content は折り返しの機会を全部取った幅: CSS Sizing 3 §5.1)
+   */
+  hyphenMin?: boolean;
   first: string;
   last: string;
   /**
@@ -121,6 +126,15 @@ export interface Atom {
   lbDict?: boolean;
   /** vertical-align: top・bottom の箱: 行の高さを決めてから、行の箱の上端・下端に揃える (lineMetrics) */
   lineAlign?: 'top' | 'bottom';
+  /**
+   * vertical-align: top・bottom の行内の要素 (置き換えでない箱) の中身の atom: 同じ要素の atom は同じ印を持ち、行ごとに、その行の中の
+   * 同じ印の atom をまとめて 1 つの箱 (aligned subtree。CSS 2.1 §10.8.1) として揃える (lineMetrics)。alignBase は、部分木の中でのずらし
+   * (中の上付きなど)。揃えた位置は、部分木のずらし + alignBase
+   */
+  alignGroup?: object;
+  alignBase?: number;
+  /** vertical-align: top・bottom の inline-container の箱 (LInlineContainer.ownLineAlign): 囲む top・bottom の行内の要素の部分木に入れない */
+  ownLineAlign?: true;
   /** 前で改行してよいが、ほかに改行できる位置が無いときだけ使う (斜線の後ろ。UAX #14 §5.1 SY の推奨。lineBreakActions の soft) */
   lbSoft?: boolean;
   /** 表のセルの最小の幅を測るとき、前後で改行しない画像 (LImage.noWrapInCellMin) */
@@ -180,6 +194,8 @@ export interface InlineContentArea {
   above: number;
   below: number;
   shift: number;
+  /** vertical-align: top・bottom の部分木の中の領域: 部分木の中でのずらし (揃えた位置は、部分木のずらし + alignBase。lineMetrics) */
+  alignBase?: number;
 }
 
 /** 行内に置く箱 (画像・inline-container)。寸法は行の書字方向に対する値 */
@@ -954,6 +970,20 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
         return { line, next: h };
       }
     }
+    // grid の項目の min-content を測るとき (Atom.hyphenMin): 戻れる分割点が無ければ、収まらなくても、次の分割点より前の、
+    // 最初の分綴の位置で分ける
+    if (j <= lead && atoms[start]?.hyphenMin)
+      for (let h = start + 2; h < n && atoms[h - 1].kind !== 'break'; h++) {
+        const hy = atoms[h - 1].hyphen;
+        if (!hy) {
+          if (canBreakAtoms(atoms[h - 1], atoms[h])) break;
+          continue;
+        }
+        const line = makeLine(atoms.slice(start, h), false, indent);
+        pushAll(line.items, hy);
+        line.hyphenated = true;
+        return { line, next: h };
+      }
   }
   if (j <= lead) {
     // 戻れない (行頭に置けない約物などが長く続く): 先の分割点までを、行内の約物のアキを詰めて押し込めるなら押し込む (追い込み)。
@@ -1771,7 +1801,8 @@ function fillLeaders(items: Atom[], widths: number[], free: number) {
   }
 }
 
-export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): PositionedLine {
+/** measureNoJustify: 中身の幅を測る組版の行を、両端揃えで広げない (CSS の文書。XSL-FO の文書は、これまでどおり広げる) */
+export function positionLine(raw: RawLine, L: number, style: ResolvedStyle, measureNoJustify = true): PositionedLine {
   const items = raw.items;
   // 残したタブの送りを、この行の始まりからの位置で決め直す (行を分けた後の試し組みで、別の行として測った値が残らないように)
   if (items.some((t) => t.tab)) resolveLineTabs(items, raw.indent);
@@ -1835,7 +1866,11 @@ export function positionLine(raw: RawLine, L: number, style: ResolvedStyle): Pos
   // leader を含む行は leader が余白を吸収するので均等割付しない
   // 最終行は textAlignLast があればそれに従う (無ければ通常行と同じ揃え。ただし両端揃えは行わない)
   const align = raw.last && style.textAlignLast ? style.textAlignLast : style.textAlign;
-  if (align === 'justify' && (!raw.last || style.textAlignLast === 'justify') && free > EPS && !hasLeader && (!style.fixedLetterSpacing || (style.letterSpacingStretch ?? 0) > 0)) {
+  // 中身の幅を測る組版 (Atom.intrinsic) の行は、両端揃えで広げない: 揃え方は中身の幅に関わらない (CSS Sizing 3 §5.1・CSS Text 3 §7。
+  // 測る行の長さ (max-content では非常に長い) まで広げると、text-align-last: justify・text-align: justify-all の行の長さが、
+  // 置く場所いっぱいと数えられる)。中央・末尾の揃えは、もとから中身の長さ (contentLength) に入らない
+  const measuring = measureNoJustify && items.some((a) => a.intrinsic);
+  if (align === 'justify' && !measuring && (!raw.last || style.textAlignLast === 'justify') && free > EPS && !hasLeader && (!style.fixedLetterSpacing || (style.letterSpacingStretch ?? 0) > 0)) {
     let slots = 0;
     for (let k = 0; k + 1 < items.length; k++) if (stretchable(items[k], items[k + 1])) slots++;
     if (slots > 0) gap = style.fixedLetterSpacing ? Math.min(free / slots, style.letterSpacingStretch ?? 0) : free / slots;
@@ -1928,7 +1963,7 @@ export function glyphNode(
     }
   }
   // 省略できる値は、指定があるときだけ代入する (字ごとに小さなオブジェクトを作らない)
-  const glyph: NonNullable<LNode['glyph']> = {
+  const glyph: GlyphPayload = {
     text,
     fontFamily: g.font.family,
     fontWeight: g.font.weight,
@@ -1953,7 +1988,26 @@ export function glyphNode(
     const pal = paletteForFont(st.fontPalette, g.font);
     if (pal) glyph.fontPalette = pal;
   }
-  return newNode('glyph', wm, { isize: g.advance, bsize: fontSize, src, glyph, ...(cite ? { cite } : {}) });
+  return glyphLeaf(wm, g.advance, fontSize, internGlyph(glyph), src, cite);
+}
+
+/**
+ * 字の描き方 (GlyphPayload) を、同じ中身のもので 1 つにまとめる (字ごとに作らない。数千ページの文書では、字の節の 4 割ほどを占めていた)。
+ * 字の描き方は、作った後で書き換えない (ページ番号の参照の字を差し替えるときは、写してから書き換える: layoutEngine.ts の reuseCites)。
+ * 覚える数には上限があり、超えたら初めから覚え直す (同じ中身でも別のオブジェクトになるだけで、組版の結果は変わらない)
+ */
+const glyphPool = new Map<string, GlyphPayload>();
+const GLYPH_POOL_MAX = 1 << 16;
+function internGlyph(p: GlyphPayload): GlyphPayload {
+  // パレットは、書体ごとに作るオブジェクトなので、まとめない (色つきの書体の字だけ)
+  if (p.fontPalette) return p;
+  // 数は文字列にしても区別が付く (違う double は違う文字列になる)
+  const key = `${p.text}\u0000${p.fontFamily}\u0000${p.fontWeight}\u0000${p.fontSize}\u0000${p.color}\u0000${p.baselineX}\u0000${p.baselineY}\u0000${p.rotation}\u0000${p.scaleX}\u0000${p.advance}\u0000${p.italic ? 1 : 0}${p.fakeBold ? 1 : 0}\u0000${p.features?.join(',') ?? '-'}`;
+  const hit = glyphPool.get(key);
+  if (hit) return hit;
+  if (glyphPool.size >= GLYPH_POOL_MAX) glyphPool.clear();
+  glyphPool.set(key, p);
+  return p;
 }
 
 /**

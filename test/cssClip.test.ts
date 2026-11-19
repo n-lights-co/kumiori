@@ -175,8 +175,13 @@ describe('絶対配置の箱を矩形で切り抜く', () => {
     const back = parseAreaTree(serializeAreaTree(r.areaTree));
     expect(JSON.stringify(record(back))).toBe(JSON.stringify(log));
   });
-  it('固定配置 (position: fixed) の箱の clip は描けないので、知らせる', async () => {
-    const r = await set(page('<p>a</p><div class="a" style="position: fixed; clip: rect(0, 5pt, 5pt, 0)">f</div>'));
-    expect((r.warnings ?? []).join('\n')).toContain('clip (position: fixed の箱)');
+  it('固定配置 (position: fixed) の箱の clip も、どのページでも切り抜く', async () => {
+    const r = await set(page('<p>a</p><p style="break-before: page">b</p><div class="a" style="position: fixed; clip: rect(0, 5pt, 5pt, 0)">f</div>'));
+    expect((r.warnings ?? []).join('\n')).not.toContain('clip');
+    expect(r.areaTree.sheets.length).toBe(2);
+    for (const s of r.areaTree.sheets) {
+      const got = areas({ ...r.areaTree, sheets: [s] }, (a) => !!a.clipRect);
+      expect(got.map(rectOf)).toEqual([[0, 0, 5, 5]]);
+    }
   });
 });

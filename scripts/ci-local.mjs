@@ -29,9 +29,21 @@ import { fileURLToPath } from 'node:url';
 import { shellArg } from './shellArg.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// Windows の npm は npm.cmd で、shell なしでは動かせないので、shell を通す。shell を通す引数は shellArg で囲む
-// (一時の場所のパスに空白が入ることがある。囲み方は scripts/shellArg.mjs)
-const shell = process.platform === 'win32';
+/**
+ * npm の呼び方。npm run ci:local で走らせたときは、npm が子のプロセスに渡す npm_execpath (npm の本体 npm-cli.js) を、
+ * いま動いている Node (process.execPath) で直に動かす (node <npm-cli.js> run build のように、shell を通さない)。
+ * OS によらず同じ呼び方になり、Windows でも npm.cmd (バッチファイル) を動かさないので shell が要らず、引数を囲まずにそのまま渡せる
+ * (Node 24 からの、shell: true に引数の並びを渡す呼び方の非推奨 (DEP0190) にも当たらない)。npm がこのスクリプトと同じ Node で動くので、
+ * node-min のジョブで PATH の先頭に Node の下限を置いたときも、途中で別の版の Node に替わらない。
+ * node scripts/ci-local.mjs で直に走らせたとき (npm_execpath が無い) と、npm でない道具 (yarn・pnpm) から走らせたときは、PATH の npm を呼ぶ:
+ * Windows の npm は npm.cmd で、Node は .cmd・.bat を shell なしで動かすのを拒む (CVE-2024-27980 への対応) ので shell を通し、
+ * 引数は shellArg で囲む (一時の場所のパスに空白が入ることがある。囲み方は scripts/shellArg.mjs)
+ */
+const npmCli = process.env.npm_execpath && /(?:^|[\\/])npm-cli\.[cm]?js$/.test(process.env.npm_execpath) ? process.env.npm_execpath : undefined;
+const npm = (args, opts) =>
+  npmCli
+    ? spawnSync(process.execPath, [npmCli, ...args], opts)
+    : spawnSync('npm', args.map((a) => shellArg(a)), { ...opts, shell: process.platform === 'win32' });
 
 /**
  * pages.yml の Build と同じ土台 (base)。pages.yml は github.event.repository.name (動いたリポジトリの名前) から
@@ -82,7 +94,7 @@ const JOBS = {
   pages: [
     (dir) => {
       pagesOut = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-ci-pages-'));
-      return ['exec', '--', 'vite', 'build', `--base=${pagesBase(dir)}`, '--outDir', shellArg(pagesOut), '--emptyOutDir'];
+      return ['exec', '--', 'vite', 'build', `--base=${pagesBase(dir)}`, '--outDir', pagesOut, '--emptyOutDir'];
     },
     { label: '土台の確かめ (index.html のアセットの参照)', fn: (dir) => checkPagesBase(pagesBase(dir)) },
   ],
@@ -157,7 +169,7 @@ const run = (job, step) => {
       const args = typeof step === 'function' ? step(cwd) : step;
       label = `npm ${args.join(' ')}`;
       console.log(`\n▶ [${job}] ${label}`);
-      ok = spawnSync('npm', args, { cwd, env, stdio: 'inherit', shell }).status === 0;
+      ok = npm(args, { cwd, env, stdio: 'inherit' }).status === 0;
     }
   } catch (e) {
     console.error(e instanceof Error ? e.message : e);

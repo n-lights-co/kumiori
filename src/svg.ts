@@ -2432,8 +2432,38 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       };
       /** 切り抜く矩形を (dx, dy) ずらす (部分領域で切った後にずらした結果は、切った所ごと動く) */
       const shiftCut = (cut: Box[] | undefined, dx: number, dy: number) => (cut ? { cut: cut.map((c) => ({ ...c, x: c.x + dx, y: c.y + dy })) } : {});
-      /** 2 つの層の切り抜く矩形を合わせる (両方の中だけを描く) */
-      const bothCuts = (a?: Box[], b?: Box[]) => (a || b ? { cut: [...(a ?? []), ...(b ?? [])] } : {});
+      /**
+       * 切り抜く矩形の並びが長くなりすぎたら、重なりの 1 つの矩形にまとめる。並びは「どれにも入る所だけを描く」
+       * (描くときに、矩形ごとの切り抜きを重ねる。PDF 32000-1 §8.5.4 の切り抜きの重ねは、重なりになる) ので、
+       * 軸に平行な矩形の並びで切るのは、その重なりの 1 つの矩形で切るのと同じ。feComposite の in の in と in2 に
+       * 同じ切った結果を渡すと並びがつながって 2 倍になり、重ねると数が指数で増えるため、上限を置く
+       * (上限までは並びのまま描くので、ふつうの filter の結果は変わらない)。重なりが空なら undefined (何も描かない)
+       */
+      const CUT_MAX = 8;
+      /**
+       * 近似の層の数の上限。feComposite の over (in2 の上に in。§9.8)・feMerge (§9.10) は、入力の層を並べてつなぐので、
+       * in と in2 に同じ結果を渡したものを重ねると、層の数が 2 倍ずつ増える。同じ層を重ねた over は、不透明度が重なるので
+       * 1 つの層にはまとめられない。上限を超えたら図形での近似をやめ、画素の計算 (予算のあるもの) に回す。
+       * ふつうの filter (影・光彩を数個重ねたものなど) の層は数個から数十なので、届かない
+       */
+      const LAYER_MAX = 128;
+      const capCuts = (cut: Box[]): Box[] | undefined => {
+        if (cut.length <= CUT_MAX) return cut;
+        let x0 = -Infinity, y0 = -Infinity, x1 = Infinity, y1 = Infinity;
+        for (const c of cut) {
+          x0 = Math.max(x0, c.x);
+          y0 = Math.max(y0, c.y);
+          x1 = Math.min(x1, c.x + c.w);
+          y1 = Math.min(y1, c.y + c.h);
+        }
+        return x1 > x0 && y1 > y0 ? [{ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }] : undefined;
+      };
+      /** 2 つの層の切り抜く矩形を合わせる (両方の中だけを描く)。重なりが空なら undefined */
+      const bothCuts = (a?: Box[], b?: Box[]): { cut?: Box[] } | undefined => {
+        if (!a && !b) return {};
+        const cut = capCuts([...(a ?? []), ...(b ?? [])]);
+        return cut ? { cut } : undefined;
+      };
       const shift = (ls: FilterLayer[], dx: number, dy: number) =>
         ls.map((l) => (movable(l, !!(dx || dy)), l.kind === 'flood' ? { ...l, ...shiftCut(l.cut, dx, dy) } : { ...l, dx: l.dx + dx, dy: l.dy + dy, ...shiftCut(l.cut, dx, dy) }));
       const blur = (ls: FilterLayer[], s: number) =>
@@ -2445,11 +2475,13 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         });
       /** 影の形 (in2 の層) を、色 (flood) で塗った層にする (feComposite の in)。色の層を部分領域で切っていれば、その中だけ */
       const paintShape = (flood: { color: number[]; opacity: number; cut?: Box[] }, shape: FilterLayer[]) =>
-        shape.flatMap((s): FilterLayer[] =>
-          s.kind === 'flood'
-            ? [{ kind: 'flood', color: flood.color, opacity: flood.opacity * s.opacity, ...bothCuts(flood.cut, s.cut) }]
-            : [{ kind: 'alpha', dx: s.dx, dy: s.dy, std: s.std, color: flood.color, opacity: flood.opacity * s.opacity, ...(s.uncut ? { uncut: true as const } : {}), ...bothCuts(flood.cut, s.cut) }],
-        );
+        shape.flatMap((s): FilterLayer[] => {
+          const cut = bothCuts(flood.cut, s.cut);
+          if (!cut) return [];
+          return s.kind === 'flood'
+            ? [{ kind: 'flood', color: flood.color, opacity: flood.opacity * s.opacity, ...cut }]
+            : [{ kind: 'alpha', dx: s.dx, dy: s.dy, std: s.std, color: flood.color, opacity: flood.opacity * s.opacity, ...(s.uncut ? { uncut: true as const } : {}), ...cut }];
+        });
       /**
        * 元の図形と同じ形の層 (ずらさず、ぼかさない SourceGraphic・SourceAlpha。色を変えた SourceGraphic は、不透明度が変わりうるので除く。
        * 部分領域で切った層も除く)
@@ -2546,6 +2578,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           default:
             throw new Unsupported(`filter ${nm(e)}`);
         }
+        if (out.length > LAYER_MAX) throw new Unsupported('filter layers');
         const r = a(e, 'result').trim();
         // 部分領域 (§9.4): 要素の結果は、部分領域の外が透明。既定は参照する結果の部分領域の和で、x・y・width・height を書けばその値
         const own = subregionAttrs(attrOf(e), { obb: false, viewport: view });
@@ -2560,12 +2593,13 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
             // 部分領域が filter の領域を覆うなら、切っても変わらない (filter の領域では、どの道切る)。既定の部分領域で、層が
             // 既に部分領域の中の矩形で切ってあるもの (feMerge で重ねただけなど) も、切り直さない
             else if (!within(R, sub, 1e-9 * Math.max(Math.abs(R.w), Math.abs(R.h), 1)))
-              out = out.map((l) => {
-                if (l.cut?.some((c) => within(c, sub, 0))) return l;
+              out = out.flatMap((l): FilterLayer[] => {
+                if (l.cut?.some((c) => within(c, sub, 0))) return [l];
                 // ぼかした層は切らない (ぼかしは写しの重ねの近似で、ぼかしだけの filter は元の図形のまま描くが、切るとそれができない。
                 // 迷うものは画素の計算に回す)
                 if (l.kind !== 'flood' && l.std) throw new Unsupported('filter subregion');
-                return { ...l, cut: [...(l.cut ?? []), sub] };
+                const cut = capCuts([...(l.cut ?? []), sub]);
+                return cut ? [{ ...l, cut }] : [];
               });
             prevSub = sub;
             if (r) subs.set(r, sub);

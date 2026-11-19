@@ -1,9 +1,11 @@
 /**
  * shellArg — scripts/ci-local.mjs が npm を shell を通して動かすとき (Windows) の、コマンドの引数の囲み方。
+ * ci-local.mjs は、npm run ci:local で走らせたときは npm の本体 (npm_execpath) を shell を通さずに動かすので、これを使わない。
+ * 使うのは、node scripts/ci-local.mjs で直に走らせたときと、npm でない道具から走らせたとき (npm_execpath が npm の本体を指さない) だけ。
  *
  * Windows では npm は npm.cmd (バッチファイル) で、Node は .cmd・.bat を shell なしで動かすのを拒む
  * (spawn が EINVAL になる。Node 18.20.2・20.12.2 からの、バッチファイルの引数の扱いの脆弱性 CVE-2024-27980 への対応) ので、
- * ci-local.mjs は shell: true で動かす。このとき Node は引数を空白でつないだだけの 1 本のコマンド行を cmd.exe に渡すので、
+ * そのときの ci-local.mjs は shell: true で動かす。このとき Node は引数を空白でつないだだけの 1 本のコマンド行を cmd.exe に渡すので、
  * 空白を含む引数は、こちらで囲んでおかないと分かれてしまう。
  */
 

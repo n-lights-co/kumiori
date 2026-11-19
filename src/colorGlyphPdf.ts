@@ -21,7 +21,7 @@
  */
 import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFOperator, PDFOperatorNames as Ops, PDFPage, PDFRef, popGraphicsState, pushGraphicsState, type PDFImage } from 'pdf-lib';
 import type { FontManager, LoadedFont } from './fontManager';
-import { walkAreaTree } from './areaTree';
+import { walkAreaTree, type AreaNode } from './areaTree';
 import { parseColor } from './color';
 import { ITALIC_SLANT } from './paint';
 import { invert, type Seg } from './matrix';
@@ -147,14 +147,17 @@ export class PdfColorGlyphs {
    * 木が、色つきの表を持つ書体の字を含めば、その描き手を作る (含まなければ undefined。色つきの書体を使わない文書では、何もしない)。
    * ビットマップの字形 (CBDT・sbix) の画像は、ここで先に埋め込む (画像の埋め込みは非同期)
    */
-  static async create(pdf: PDFDocument, tree: AreaTree, fonts: FontManager, opts: PdfColorGlyphOptions = {}): Promise<PdfColorGlyphs | undefined> {
+  static async create(pdf: PDFDocument, tree: AreaTree | ((visit: (a: AreaNode) => void, restart: () => void) => void), fonts: FontManager, opts: PdfColorGlyphOptions = {}): Promise<PdfColorGlyphs | undefined> {
     if (!fonts.all().some((f) => colorFontOf(f))) return undefined;
+    // 木 (文書全体の領域の木) か、領域をたどる関数 (ページを 1 枚ずつ作ってたどるもの。pdfRenderer.ts の renderPdfPages)。
+    // たどる関数は、初めからたどり直すときに restart を呼ぶ (それまでに集めたものを捨てる)
+    const walk = typeof tree === 'function' ? tree : (visit: (a: AreaNode) => void) => walkAreaTree(tree, visit);
     const self = new PdfColorGlyphs(pdf, fonts, opts);
     const xml = opts.parseXml ?? (typeof DOMParser !== 'undefined' ? (t: string) => new DOMParser().parseFromString(t, 'image/svg+xml') as unknown as XmlNode : undefined);
     const svgReader = xml && svgGlyphReader(xml);
     const pending = new Map<string, { kind: 'png' | 'jpg'; data: Uint8Array }>();
     let any = false;
-    walkAreaTree(tree, (a) => {
+    walk((a) => {
       if (a.type !== 'glyph') return;
       const font = fonts.get(a.fontFamily, a.fontWeight);
       const cf = colorFontOf(font);
@@ -170,6 +173,9 @@ export class PdfColorGlyphs {
         }
       };
       for (const { id } of areaGlyphs(a, font)) collect(cf.glyph(id, a.fontPalette)?.ops ?? []);
+    }, () => {
+      pending.clear();
+      any = false;
     });
     if (!any) return undefined;
     let alpha = false;
@@ -199,12 +205,20 @@ export class PdfColorGlyphs {
   handles(g: GlyphArea): boolean {
     let hit = this.handled.get(g);
     if (hit === undefined) {
-      const font = this.fonts.get(g.fontFamily, g.fontWeight);
-      const cf = colorFontOf(font);
-      hit = !!cf && !areaGlyphs(g, font).every((gl) => cf.isPlain(gl.id, g.fontPalette));
+      hit = PdfColorGlyphs.drawsInColor(this.fonts, g);
       this.handled.set(g, hit);
     }
     return hit;
+  }
+
+  /**
+   * handles の中身 (描き手を作る前にも使う: 色つきの字を含む文書では、描き手の handles と同じ答え。含まない文書では、いつも false で、
+   * 描き手は作られないので、どの字も描き手が描かない)
+   */
+  static drawsInColor(fonts: FontManager, g: GlyphArea): boolean {
+    const font = fonts.get(g.fontFamily, g.fontWeight);
+    const cf = colorFontOf(font);
+    return !!cf && !areaGlyphs(g, font).every((gl) => cf.isPlain(gl.id, g.fontPalette));
   }
   private handled = new WeakMap<GlyphArea, boolean>();
 

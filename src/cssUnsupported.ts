@@ -34,7 +34,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'text-wrap-mode',
   'text-wrap-style',
   'text-decoration-skip-ink',
-  'footnote-display',
   'footnote-policy',
   'grid',
   'grid-template',
@@ -123,6 +122,16 @@ export const UNSUPPORTED_CSS_VALUES: Readonly<Record<string, readonly string[]>>
   // 描く範囲の text は CSS Backgrounds 4 の値 (Backgrounds 3 §2.7 の <visual-box> は border-box・padding-box・content-box)
   'background-clip': ['text'],
   'hyphenate-limit-last': ['column', 'page', 'spread'],
+  // 脚注の置き方 (CSS GCPM 3 §2.3)。block (初期値) は Kumiori の置き方そのもの (SUPPORTED_ONLY_VALUES)
+  'footnote-display': ['inline', 'compact'],
+};
+
+/**
+ * カスケードでは読まないが、この値なら Kumiori の組み方そのものなので、未対応にも知らないプロパティにも数えない値 (prop → 値)。
+ * footnote-display: block (CSS GCPM 3 §2.3 の初期値。脚注は、いつもブロックとして脚注の領域に置く)
+ */
+const SUPPORTED_ONLY_VALUES: Readonly<Record<string, readonly string[]>> = {
+  'footnote-display': ['block'],
 };
 
 /**
@@ -221,6 +230,7 @@ function count(rep: UnsupportedCssReport, prop: string, value: string, svg = fal
   // 接頭辞付き (-webkit-・-moz-・-ms-・-o-・-ah-・-kumiori-) は数えない (ブラウザ向けの指定か、自前で読む拡張)
   if (p.startsWith('-')) return;
   if (isKnownCssProperty(p, v) || isPagedDecl(p, v)) return;
+  if (SUPPORTED_ONLY_VALUES[p]?.includes(v.trim().toLowerCase())) return;
   rep.unknown[p] = (rep.unknown[p] ?? 0) + 1;
 }
 
@@ -263,4 +273,4 @@ export function summarizeCounts(counts: Record<string, number> | undefined, max 
 
 // 入力の名前 (プロパティ・値・属性の値) で引く定数の表は、原型を持たないものにする: 原型があると、constructor・__proto__・toString などの名前で
 // Object.prototype の関数を拾い、30 バイトほどの入力 (p { constructor: 1 }) で、文書の全体が TypeError で組めなくなる
-for (const t of [UNSUPPORTED_CSS_VALUES, UNSUPPORTED_CSS_VALUE_WORDS, UNSUPPORTED_CSS_FUNCTIONS]) Object.setPrototypeOf(t, null);
+for (const t of [UNSUPPORTED_CSS_VALUES, UNSUPPORTED_CSS_VALUE_WORDS, UNSUPPORTED_CSS_FUNCTIONS, SUPPORTED_ONLY_VALUES]) Object.setPrototypeOf(t, null);

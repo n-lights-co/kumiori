@@ -68,7 +68,7 @@ describe('parseWindowsArgs (テストの中の、決まりのとおりの解析)
   });
 });
 
-/** scripts/ci-local.mjs が shell を通して npm を動かすときの引数の囲み方 (scripts/shellArg.mjs) */
+/** scripts/ci-local.mjs が shell を通して npm を動かすとき (直に走らせたときの Windows) の引数の囲み方 (scripts/shellArg.mjs) */
 describe('shellArg', () => {
   it('Windows でないときは、何も変えない', () => {
     for (const s of ['/tmp/a b', 'a"b', 'a\\"b', 'C:\\dir with space\\', ''])

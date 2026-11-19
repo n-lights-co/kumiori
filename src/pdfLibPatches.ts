@@ -8,6 +8,7 @@
  *  4. PDFFont の encodeText を結果を覚えるものに差し替え、fontkit の layout を一時的にすり替えて字形の番号から符号にする (memoEncode)
  *  5. PDFFlateStream の contentsCache を差し替えて、圧縮の関数を替える (useDeflate)
  *  6. PDFPage の内容の流れ (getContentStream) の命令の並び (operators) をじかに読み書きする (pageOperators。描いた命令を Form XObject に移す)
+ *  7. 描き終えたページの内容の流れ (PDFPage の contentStream・contentStreamRef) を、圧縮したバイト列の流れに置き換える (sealPageContents)
  * (fontkit の異体字の並びの字形の引き方 (CmapProcessor.getVariationSelector) の差し替えは、PDF を作らないときの組版・描画にも
  *  要るので、書体を読む fontManager.ts の patchFontkitVariationSelector にある。同じ理由で、CFF の字形の輪郭の読み
  *  (CFFGlyph の _getPath の hflex・hflex1 と、CFFFont の fdForGlyph の FDSelect の範囲) の差し替えは fontkitCffFlex.ts にある)
@@ -15,8 +16,8 @@
  * 前提 (差し替えるメソッドの存在) は、このモジュールを読み込んだときに assertPdfLibInternals で確かめる。
  * 「差し替え済み」の印はモジュールの変数でなく、差し替えた原型 (prototype) 自体に付ける (テストで同じ pdf-lib を複数回読み込んでも二重に包まない)
  */
-import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFDocument, PDFFlateStream, PDFFont, PDFHexString, PDFImage, PDFRef, PngEmbedder } from 'pdf-lib';
-import type { PDFOperator, PDFPage } from 'pdf-lib';
+import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFContentStream, PDFContext, PDFDict, PDFDocument, PDFFlateStream, PDFFont, PDFHexString, PDFImage, PDFPage, PDFRawStream, PDFRef, PngEmbedder } from 'pdf-lib';
+import type { PDFOperator } from 'pdf-lib';
 import type { FontManager } from './fontManager';
 import { decodeJpeg } from './jpeg';
 import { decodePngForPdf, pngDataComplete, pngWithinLimits } from './pixels';
@@ -26,18 +27,27 @@ import { msg } from './messages';
 /** 差し替え済みの印 (原型に付ける) */
 const PATCHED = Symbol.for('kumiori.pdfLibPatched');
 
+/** pdf-lib の中の欄・メソッドが見つからないときの誤り (pdf-lib の版が変わったことをはっきり知らせる) */
+const internalsChanged = (what: string) => new Error(msg(`pdf-lib の ${what} が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)`, `pdf-lib ${what} not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)`));
+
 /**
  * 差し替えるメソッドが pdf-lib にあることを確かめる (無ければ、版が変わったことをはっきり知らせる)。
  * fontkit の部分書体の _addGlyph は書体を読むまで原型が取れないので、patchFontkitSubset の中で確かめる
  */
 function assertPdfLibInternals() {
   const need = (o: object, names: string[], what: string) => {
-    for (const n of names) if (typeof (o as Record<string, unknown>)[n] !== 'function') throw new Error(msg(`pdf-lib の ${what}.${n} が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)`, `pdf-lib ${what}.${n} not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)`));
+    for (const n of names) if (typeof (o as Record<string, unknown>)[n] !== 'function') throw internalsChanged(`${what}.${n}`);
   };
   need(CustomFontEmbedder.prototype, ['encodeText', 'glyphId', 'embedFontStream', 'serializeFont'], 'CustomFontEmbedder.prototype');
   need(PngEmbedder.prototype, ['embedIntoContext'], 'PngEmbedder.prototype');
   need(PDFImage, ['of'], 'PDFImage');
   need(Cache, ['populatedBy'], 'Cache');
+  need(PDFRawStream, ['of'], 'PDFRawStream');
+  // 描き終えたページの内容の流れを置き換える所 (sealPageContents)。ページの欄 (contentStream・contentStreamRef) と、内容の流れの欄
+  // (encode・dict) は、作ったものにしか無いので、sealPageContents の中で確かめる
+  need(PDFPage.prototype, ['getContentStream'], 'PDFPage.prototype');
+  need(PDFContentStream.prototype, ['getUnencodedContents', 'getContents'], 'PDFContentStream.prototype');
+  need(PDFContext.prototype, ['assign', 'lookup'], 'PDFContext.prototype');
 }
 assertPdfLibInternals();
 
@@ -378,14 +388,24 @@ export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array): Promis
 /**
  * 入稿用 (PDF/X) の出力: RGB の画像 (PNG・JPEG) を画素に戻し、CMYK (DeviceCMYK・8 ビット・FlateDecode) の画像として埋め込む。
  * 色の変換は toCmyk (ICC の変換はしない)。透明度は SMask (DeviceGray) として残し、hasAlpha で知らせる。
- * グレーの画像・CMYK の JPEG・読めない画像は undefined (呼ぶ側で、ふつうに埋め込む)
+ * 灰色だけの画像 (画素がすべて R = G = B。RGB・RGBA の PNG、16 ビット・1 ビットの灰色の PNG、灰色 + α の PNG も、展開すると RGB の
+ * 3 つの成分になる) は、DeviceGray (8 ビット・FlateDecode) の画像にする (pdfStandard.ts の PdfStandard.cmyk: 灰色の画像は DeviceGray。
+ * 値は R の成分そのものなので、濃さは変わらない。ISO 32000-2 §8.6.4.2・§10.4.2.2: DeviceRGB の r = g = b と、DeviceGray の同じ値は同じ灰色)。
+ * 呼ぶ側のふつうの埋め込みは、8 ビットの灰色 (色の型 0) の PNG のほかを DeviceRGB で書くので、PDF/X-1a・X-3 の検査で止まっていた。
+ * 展開せずにそのまま DeviceGray で入れられる PNG (8 ビットの灰色・インターレース無し・tRNS 無し) は、そのまま入れる (embedPngAsIs)。
+ * CMYK・灰色の JPEG (成分が 3 でないもの)・読めない画像は undefined (呼ぶ側で、ふつうに埋め込む)
  */
 export async function embedCmykImage(
   pdf: PDFDocument,
   bytes: Uint8Array,
   kind: 'png' | 'jpg',
   toCmyk: (r: number, g: number, b: number) => number[],
-): Promise<{ image: PDFImage; hasAlpha: boolean } | undefined> {
+  /**
+   * 透明度のある画像の扱い: 'smask' はソフトマスク (SMask) を付けて埋め込む。'skip' は埋め込まずに、透明度があることと大きさだけを返す
+   * (透明を平らにする出力。画像は、下の物と合わせて画素にする)
+   */
+  alphaMode: 'smask' | 'skip' = 'smask',
+): Promise<{ image: PDFImage; hasAlpha: boolean } | { image?: undefined; hasAlpha: true; width: number; height: number } | undefined> {
   let width = 0;
   let height = 0;
   let rgb: Uint8Array;
@@ -412,10 +432,19 @@ export async function embedCmykImage(
     rgb = png.rgbChannel;
     alpha = png.alphaChannel && png.alphaChannel.some((v) => v !== 255) ? png.alphaChannel : undefined;
   }
-  // 灰色だけの画像は DeviceGray のままでよい (呼ぶ側でふつうに埋め込む)
+  if (alpha && alphaMode === 'skip') return { hasAlpha: true, width, height };
   let colourful = false;
   for (let i = 0; i < rgb.length && !colourful; i += 3) colourful = rgb[i] !== rgb[i + 1] || rgb[i + 1] !== rgb[i + 2];
-  if (!colourful && !alpha) return undefined;
+  if (!colourful) {
+    // 8 ビットの灰色 (IHDR の色の型 0) の PNG は、展開せずにそのまま DeviceGray で入れる (透明度が無いとき。tRNS があれば embedPngAsIs が断る)
+    if (kind === 'png' && !alpha && bytes[25] === 0) {
+      const asIs = await embedPngAsIs(pdf, bytes);
+      if (asIs) return { image: asIs, hasAlpha: false };
+    }
+    const gray = new Uint8Array(width * height);
+    for (let i = 0, o = 0; o < gray.length; i += 3, o++) gray[o] = rgb[i];
+    return { image: await embedImageStream(pdf, gray, width, height, 'DeviceGray', alpha), hasAlpha: !!alpha };
+  }
   const cmyk = new Uint8Array(width * height * 4);
   const memo = new Map<number, number[]>();
   for (let i = 0, o = 0; i < rgb.length; i += 3, o += 4) {
@@ -427,6 +456,11 @@ export async function embedCmykImage(
     }
     cmyk.set(c, o);
   }
+  return { image: await embedImageStream(pdf, cmyk, width, height, 'DeviceCMYK', alpha), hasAlpha: !!alpha };
+}
+
+/** 8 ビットの画素 data (色空間 colorSpace の成分の並び) を、FlateDecode の画像として埋め込む。alpha があれば SMask (DeviceGray) にする */
+async function embedImageStream(pdf: PDFDocument, data: Uint8Array, width: number, height: number, colorSpace: 'DeviceCMYK' | 'DeviceGray', alpha: Uint8Array | undefined): Promise<PDFImage> {
   const embedder = Object.assign(Object.create(PngEmbedder.prototype) as PngEmbedder, {
     width,
     height,
@@ -434,7 +468,7 @@ export async function embedCmykImage(
       const smask = alpha
         ? context.register(context.flateStream(alpha, { Type: 'XObject', Subtype: 'Image', Width: width, Height: height, BitsPerComponent: 8, ColorSpace: 'DeviceGray' }))
         : undefined;
-      const stream = context.flateStream(cmyk, { Type: 'XObject', Subtype: 'Image', Width: width, Height: height, BitsPerComponent: 8, ColorSpace: 'DeviceCMYK', ...(smask ? { SMask: smask } : {}) });
+      const stream = context.flateStream(data, { Type: 'XObject', Subtype: 'Image', Width: width, Height: height, BitsPerComponent: 8, ColorSpace: colorSpace, ...(smask ? { SMask: smask } : {}) });
       if (ref) {
         context.assign(ref, stream);
         return ref;
@@ -444,7 +478,7 @@ export async function embedCmykImage(
   });
   const image = PDFImage.of(pdf.context.nextRef(), pdf, embedder);
   await image.embed();
-  return { image, hasAlpha: !!alpha };
+  return image;
 }
 
 
@@ -530,6 +564,40 @@ export function decomposeLigatures(cps: number[]): number[] {
 export type FeatureFont = PDFFont & { encodeText(t: string, features?: string[]): PDFHexString; encodeGlyphs(ids: number[], text: string): PDFHexString; glyphText(id: number): string };
 
 /** 保存のときに圧縮する流れ (ページの中身など) の圧縮を、渡した関数に替える (pdf-lib は保存のときに中身を作って圧縮する) */
+/**
+ * 描き終えたページの内容の流れを、保存のときと同じに圧縮したバイト列の流れ (PDFRawStream) に、同じ番号のまま置き換える。
+ * pdf-lib は、ページの命令 (PDFOperator) を保存まで持つので、数千ページの文書では、命令だけで数百 MB になっていた。
+ * 圧縮は、保存のときと同じ: deflate を渡せば deflate (useDeflate で差し替えるもの)、無ければ pdf-lib の圧縮 (pako)。
+ * 辞書は、内容の流れの辞書をそのまま使う (圧縮の印 Filter は作ったときに入っていて、長さ Length は保存のときに入る) ので、書き出す PDF は同じ。
+ * 置き換えた後で、そのページに命令を足そうとしたら誤りにする (黙って捨てない)
+ */
+export function sealPageContents(pdf: PDFDocument, page: PDFPage, deflate?: (data: Uint8Array) => Uint8Array): void {
+  const p = page as unknown as { contentStream?: unknown; contentStreamRef?: PDFRef; getContentStream(): unknown };
+  const s = p.contentStream;
+  const ref = p.contentStreamRef;
+  // 何も描いていないページ (pdf-lib が内容の流れを作っていない) は、置き換えるものが無い。内容の流れがページにあるのに欄が無ければ、
+  // pdf-lib の形が変わっている (黙って置き換えずにいると、命令を保存まで持ち続ける)
+  if (s === undefined && ref === undefined && page.node.Contents() === undefined) return;
+  if (!(s instanceof PDFContentStream) || !(ref instanceof PDFRef)) throw internalsChanged('PDFPage.contentStream・contentStreamRef');
+  const f = s as unknown as { encode: unknown; getUnencodedContents(): Uint8Array; dict: unknown };
+  if (typeof f.encode !== 'boolean' || !(f.dict instanceof PDFDict)) throw internalsChanged('PDFContentStream.encode・dict');
+  const contents = !f.encode ? f.getUnencodedContents() : deflate ? deflate(f.getUnencodedContents()) : s.getContents();
+  pdf.context.assign(ref, PDFRawStream.of(f.dict, contents));
+  p.contentStream = SEALED_CONTENTS;
+  // pdf-lib がページの内容の流れを、この欄から引いていること (引いていなければ、置き換えた後の命令が黙って捨てられる)
+  if (p.getContentStream() !== SEALED_CONTENTS) throw internalsChanged('PDFPage.getContentStream (contentStream)');
+}
+const sealed = () => {
+  throw new Error(msg('PDF: 描き終えたページに命令を足そうとしました (sealPageContents の後)', 'PDF: tried to add operators to a page that was already finished (after sealPageContents)'));
+};
+/** 置き換えた後のページの内容の流れの印 (命令を足す・読むと誤り) */
+const SEALED_CONTENTS = {
+  push: sealed,
+  get operators(): never {
+    return sealed();
+  },
+};
+
 export function useDeflate(pdf: PDFDocument, deflate: (data: Uint8Array) => Uint8Array) {
   for (const [, obj] of pdf.context.enumerateIndirectObjects()) {
     if (!(obj instanceof PDFFlateStream)) continue;

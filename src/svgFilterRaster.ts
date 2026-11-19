@@ -58,10 +58,10 @@ const MAX_LIVE_PIXELS = 24_000_000;
 /** 予算を超えた (rasterFilter は null を返す) */
 class OverBudget extends Error {}
 /** 予算の使った量 (1 つの SVG で共有する。FilterRasterRequest の budget) */
-type Meter = { used?: number };
+type Meter = { used?: number; /** 予算の上限 (無ければ BUDGET) */ limit?: number };
 function charge(meter: Meter, n: number) {
   meter.used = (meter.used ?? 0) + n;
-  if (!(meter.used <= BUDGET)) throw new OverBudget();
+  if (!(meter.used <= (meter.limit ?? BUDGET))) throw new OverBudget();
 }
 
 const newImg = (w: number, h: number, linear = false): Img => ({ w, h, d: new Float32Array(w * h * 4), linear });
@@ -126,6 +126,9 @@ function flatten(segs: Seg[], m: Matrix): number[][] {
   return polys;
 }
 
+/** coverage の結果の、覆う所のある画素の範囲 (行 y0〜y1、列 x0〜x1。終わりは含まない)。塗る繰り返しを、この範囲に限る */
+const coverageBounds = new WeakMap<Float32Array, { x0: number; x1: number; y0: number; y1: number }>();
+
 /** 輪郭の覆う割合 (画素ごと 0〜1)。縦は 4 本の走査線、横は端の画素の割合で数える */
 function coverage(polys: number[][], evenOdd: boolean, w: number, h: number, meter: Meter): Float32Array {
   charge(meter, w * h * 2);
@@ -146,17 +149,35 @@ function coverage(polys: number[][], evenOdd: boolean, w: number, h: number, met
       y1 = Math.max(y1, ay, by);
     }
   }
-  if (!edges.length) return cov;
+  if (!edges.length) {
+    coverageBounds.set(cov, { x0: 0, x1: 0, y0: 0, y1: 0 });
+    return cov;
+  }
   const rowStart = Math.max(0, Math.floor(y0));
   const rowEnd = Math.min(h, Math.ceil(y1));
-  // 走査線 (1 行に 4 本) ごとに、辺をすべて見る
+  let ex0 = Infinity;
+  let ex1 = -Infinity;
+  for (const e of edges) {
+    ex0 = Math.min(ex0, e[0], e[2]);
+    ex1 = Math.max(ex1, e[0], e[2]);
+  }
+  coverageBounds.set(cov, { x0: Math.max(0, Math.floor(ex0)), x1: Math.min(w, Math.ceil(ex1) + 1), y0: rowStart, y1: Math.max(rowStart, rowEnd) });
+  // 走査線 (1 行に 4 本) ごとに、掛かる辺を見る。辺を始まりの高さの順に並べ、走査線を下へ進めながら、始まった辺を足し、
+  // 終わった辺を除く (走査線ごとに全部の辺を見ると、点の多い輪郭 (字) で、行の数 × 辺の数の手間になる)
   if (rowEnd > rowStart) charge(meter, (rowEnd - rowStart) * edges.length);
+  edges.sort((a, b) => a[1] - b[1]);
+  const active: typeof edges = [];
+  let next = 0;
   const xs: Array<[number, number]> = [];
   for (let row = rowStart; row < rowEnd; row++) {
     for (let k = 0; k < 4; k++) {
       const y = row + (k + 0.5) / 4;
+      while (next < edges.length && edges[next][1] <= y) active.push(edges[next++]);
+      let n = 0;
+      for (const e of active) if (e[3] > y) active[n++] = e;
+      active.length = n;
       xs.length = 0;
-      for (const e of edges) if (y >= e[1] && y < e[3]) xs.push([e[0] + ((y - e[1]) * (e[2] - e[0])) / (e[3] - e[1]), e[4]]);
+      for (const e of active) xs.push([e[0] + ((y - e[1]) * (e[2] - e[0])) / (e[3] - e[1]), e[4]]);
       if (xs.length < 2) continue;
       xs.sort((a, b) => a[0] - b[0]);
       let wind = 0;
@@ -189,7 +210,7 @@ function rgbOf(css: string): [number, number, number] {
 }
 
 /** グラデーションの色 (乗算していない RGBA)。p は SVG の根の座標 */
-function gradientAt(g: SvgGradient, inv: Matrix, px: number, py: number): [number, number, number, number] {
+function gradientAt(g: SvgGradient, inv: Matrix, px: number, py: number, rgb: (css: string) => number[] = rgbOf, stopRgb?: number[][]): [number, number, number, number] {
   const [x, y] = apply(inv, px, py);
   const c = g.coords;
   let t: number;
@@ -222,8 +243,9 @@ function gradientAt(g: SvgGradient, inv: Matrix, px: number, py: number): [numbe
   const a0 = s[i];
   const a1 = s[Math.min(i + 1, s.length - 1)];
   const k = a1.offset > a0.offset ? clamp01((t - a0.offset) / (a1.offset - a0.offset)) : 0;
-  const c0 = rgbOf(a0.color);
-  const c1 = rgbOf(a1.color);
+  // 止まり点の色 (stopRgb は、前もって計算したもの。画素ごとに色の文字列を読まない)
+  const c0 = stopRgb ? stopRgb[i] : rgb(a0.color);
+  const c1 = stopRgb ? stopRgb[Math.min(i + 1, s.length - 1)] : rgb(a1.color);
   const o0 = a0.opacity ?? 1;
   const o1 = a1.opacity ?? 1;
   return [c0[0] + (c1[0] - c0[0]) * k, c0[1] + (c1[1] - c0[1]) * k, c0[2] + (c1[2] - c0[2]) * k, o0 + (o1 - o0) * k];
@@ -318,6 +340,18 @@ interface Painter {
   h: number;
   /** 予算 */
   meter: Meter;
+  /**
+   * 塗り・線・グラデーションの色 (CSS の色 → 0〜1 の 3 つの値)。無ければ sRGB (rgbOf)。透明を平らにする処理 (pdfFlatten.ts) が、
+   * CMYK の版を 3 つの値にして描くのに使う。マスクの中身は、この色ではなく sRGB で描く (輝度のマスクは sRGB の値で決まる)
+   */
+  color?: (css: string) => number[];
+  /** 画像の画素 (RGBA 8 ビット)。無ければ decodeImage。色を置き換えるときに、画素の色も同じに置き換えて渡す */
+  decode?: (img: NonNullable<SvgShape['image']>) => { w: number; h: number; rgba: Uint8Array } | undefined;
+  /**
+   * 覆う割合 (coverage) の覚え (図形の塗り・線・切り抜きごと)。同じ m・w・h で、同じ図形を色を変えて何度か描くとき (CMYK の版ごと) に、
+   * 呼ぶ側が同じものを渡すと、割合を計算し直さない
+   */
+  cache?: Map<object, Float32Array>;
 }
 
 /** 画像 (PNG・JPEG) の画素 (RGBA 8 ビット)。読めなければ undefined */
@@ -359,7 +393,8 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
     const now = new Map<SvgClip, Float32Array>();
     for (const c of sh.clips ?? []) {
       let cv = covered.get(c) ?? now.get(c);
-      if (!cv) cv = coverage(flatten(c.segs, P.m), c.evenOdd, W, H, meter);
+      if (!cv) cv = P.cache?.get(c) ?? coverage(flatten(c.segs, P.m), c.evenOdd, W, H, meter);
+      P.cache?.set(c, cv);
       now.set(c, cv);
       charge(meter, W * H);
       if (!mask) mask = Float32Array.from(cv);
@@ -368,7 +403,7 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
     covered = now;
     const nowMasks = new Map<object, Img>();
     for (const mk of sh.masks ?? []) {
-      const mi = maskImgs.get(mk) ?? nowMasks.get(mk) ?? paintShapes(mk.shapes, P);
+      const mi = maskImgs.get(mk) ?? nowMasks.get(mk) ?? paintShapes(mk.shapes, { m: P.m, w: P.w, h: P.h, meter: P.meter });
       nowMasks.set(mk, mi);
       charge(meter, W * H * 2);
       if (!mask) mask = new Float32Array(W * H).fill(1);
@@ -391,7 +426,7 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
       continue;
     }
     if (sh.image) {
-      const px = decodeImage(sh.image);
+      const px = P.decode ? P.decode(sh.image) : decodeImage(sh.image);
       if (!px) throw new Error('image');
       // 画素の中心 → 画像の単位正方形 (左下が原点、上の辺が 1 行目) → 画像の画素
       const toUnit = invert(mul(P.m, sh.image.matrix));
@@ -419,15 +454,18 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
         const pinv = invert(pattern.matrix);
         if (pinv) {
           if (!(lastTile && lastTile.pattern === pattern && lastTile.tw === tw && lastTile.th === th))
-            lastTile = { pattern, tw, th, img: paintShapes(pattern.shapes, { m: [tw / pattern.width, 0, 0, th / pattern.height, 0, 0], w: tw, h: th, meter }) };
+            lastTile = { pattern, tw, th, img: paintShapes(pattern.shapes, { m: [tw / pattern.width, 0, 0, th / pattern.height, 0, 0], w: tw, h: th, meter, color: P.color, decode: P.decode }) };
           tile = { img: lastTile.img, inv: pinv, tw, th };
         }
       }
       const ginv = grad ? invert(grad.matrix) : undefined;
-      const rgb = color ? rgbOf(color) : [0, 0, 0];
+      const rgb = color ? (P.color ?? rgbOf)(color) : [0, 0, 0];
+      const stopRgb = grad?.stops.map((s) => (P.color ?? rgbOf)(s.color));
       charge(meter, W * H * (ginv ? 60 : tile ? 8 : 4));
-      for (let y = 0; y < H; y++)
-        for (let x = 0; x < W; x++) {
+      // 覆う所のある範囲だけを回す (外は cov が 0)
+      const cb = coverageBounds.get(cov);
+      for (let y = cb?.y0 ?? 0; y < (cb?.y1 ?? H); y++)
+        for (let x = cb?.x0 ?? 0; x < (cb?.x1 ?? W); x++) {
           const i = y * W + x;
           let a = cov[i] * opacity * (mask ? mask[i] : 1);
           if (a <= 0) continue;
@@ -436,7 +474,7 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
           let b = rgb[2];
           if (ginv && grad) {
             const [rx, ry] = apply(inv, x + 0.5, y + 0.5);
-            const c = gradientAt(grad, ginv, rx, ry);
+            const c = gradientAt(grad, ginv, rx, ry, P.color, stopRgb);
             [r, g, b] = c;
             a *= c[3];
           } else if (tile) {
@@ -455,14 +493,43 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
           compositeOver(out.d, i * 4, r * a, g * a, b * a, a, blend);
         }
     };
-    if (sh.fill !== undefined || sh.fillPaint || sh.fillPattern) paint(coverage(flatten(sh.segs, P.m), sh.evenOdd, W, H, meter), sh.fill, sh.fillPaint, sh.fillPattern, sh.fillOpacity);
+    /** 覆う割合 (P.cache があれば覚える。key は塗りなら図形、線なら図形の輪郭の配列) */
+    const covOf = (key: object, make: () => Float32Array): Float32Array => {
+      const hit = P.cache?.get(key);
+      if (hit) return hit;
+      const c = make();
+      P.cache?.set(key, c);
+      return c;
+    };
+    if (sh.fill !== undefined || sh.fillPaint || sh.fillPattern) paint(covOf(sh, () => coverage(flatten(sh.segs, P.m), sh.evenOdd, W, H, meter)), sh.fill, sh.fillPaint, sh.fillPattern, sh.fillOpacity);
     if ((sh.stroke !== undefined || sh.strokePaint) && sh.strokeWidth > 0) {
-      const outline = strokeOutline(sh.segs, [1, 0, 0, 1, 0, 0], sh.strokeWidth, sh.lineCap, sh.lineJoin, { array: sh.dash ?? [], offset: sh.dashOffset ?? 0 }, sh.miterLimit ?? 4);
-      paint(coverage(flatten(outline, P.m), false, W, H, meter), sh.stroke, sh.strokePaint, undefined, sh.strokeOpacity);
+      const cov = covOf(sh.segs, () => {
+        const outline = strokeOutline(sh.segs, [1, 0, 0, 1, 0, 0], sh.strokeWidth, sh.lineCap, sh.lineJoin, { array: sh.dash ?? [], offset: sh.dashOffset ?? 0 }, sh.miterLimit ?? 4);
+        return coverage(flatten(outline, P.m), false, W, H, meter);
+      });
+      paint(cov, sh.stroke, sh.strokePaint, undefined, sh.strokeOpacity);
     }
   }
   return out;
 }
+
+/**
+ * 図形の並びを、w × h の画素 (乗算済みの RGBA。0〜1 の浮動小数) に描く。m は図形の座標 → 画素の座標。
+ * color・decode は Painter の同じ名前のもの (色を置き換えて描く)。予算の上限は無い (呼ぶ側が、描く範囲を小さく分けて呼ぶ)。
+ * 透明を平らにする処理 (pdfFlatten.ts) が、透明な物とその下の物を画素にするのに使う
+ */
+export function paintShapesToPixels(
+  shapes: SvgShape[],
+  m: Matrix,
+  w: number,
+  h: number,
+  hooks: Pick<Painter, 'color' | 'decode' | 'cache'> = {},
+): Float32Array {
+  return paintShapes(shapes, { m, w, h, meter: { limit: Infinity }, ...hooks }).d;
+}
+
+/** 画像 (PNG・JPEG) の画素 (RGBA 8 ビット)。読めなければ undefined */
+export const decodeShapeImage = decodeImage;
 
 // ───────────── filter の要素 ─────────────
 

@@ -81,7 +81,7 @@ import type { FkFont, MathFont } from './mathFont';
 import { layoutMathML, type MNode } from './mathLayout';
 import { isAntennaCompat, type FoCompat } from './compat';
 import { pushAll } from './arrayLoop';
-import { stripDoctype } from './linearText';
+import { firstLetterOf, stripDoctype } from './linearText';
 
 /** 表の列の番号・数の上限 */
 const MAX_TABLE_COLUMNS = 1000;
@@ -91,6 +91,46 @@ const MAX_TABLE_COLUMNS = 1000;
  * fo:block の交互で 600〜800 段で切れるので、その 1/3 ほどにする。実在の文書の入れ子は数十段まで
  */
 const MAX_FO_NEST = 250;
+/**
+ * 段組のコンテナの中の、入れ子のブロックの中の span="all" を外へ出すときに作る、包むブロックの断片の数 (span ごとに 2 × 入れ子の深さ) の上限。
+ * 実在の文書は、数段の入れ子の中に数十の span ほど。細工した FO (深い入れ子の一番下に何千もの span) で、断片を何十万も作らない
+ */
+const MAX_LIFTED_SPAN_PIECES = 20000;
+
+/**
+ * アンテナハウスの拡張の hsl(H, S, L)・hsla(H, S, L, A) → 色 (rgb(r,g,b)、透明度が 1 未満なら #rrggbbaa)。読めなければ undefined。
+ * アンテナハウスの公開の説明 (サンプル FO 集の color-hsl-1 の本文。https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html#hsl) のとおり:
+ * 色相 H は単位の無い角度 (0・360 が赤、120 が緑、240 が青)。彩度 S・輝度 L・透明度 A は 0%〜100% か 0.0〜1.0 で、範囲の外は切り詰める
+ * (「彩度120%は100%に切り詰められます」)。HSL から RGB へは CSS Color 4 §7.1 の式 (hslToRgb) と同じ。
+ * 色相は、説明 (ahf-ext.html の「関数」の hsl()・hsla()) のとおり単位の無い数だけを読む。角度の単位 (CSS Values 4 §7.1 の deg・grad・rad・turn)
+ * や知らない字の付いた値は、互換の指定のときだけ読む拡張の値で、製品が読む書き方でないので、読めない色にする (呼ぶ側が知らせる)
+ */
+function ahHslColor(s: string): string | undefined {
+  const m = /^hsl(a?)\(([^)]*)\)$/i.exec(s.trim());
+  if (!m) return undefined;
+  const p = m[2].split(',').map((x) => x.trim());
+  if (p.length < 3 || p.length > 4) return undefined;
+  const h = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(p[0]) ? parseFloat(p[0]) : NaN;
+  /** 0%〜100% か 0.0〜1.0 → 0〜1 (切り詰める) */
+  const unit = (v: string) => {
+    const pc = /^(-?[\d.]+)%$/.exec(v);
+    const n = pc ? parseFloat(pc[1]) / 100 : /^-?[\d.]+$/.test(v) ? parseFloat(v) : NaN;
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : undefined;
+  };
+  const sat = unit(p[1]);
+  const lig = unit(p[2]);
+  const a = p.length === 4 ? unit(p[3]) : 1;
+  if (!Number.isFinite(h) || sat === undefined || lig === undefined || a === undefined) return undefined;
+  // CSS Color 4 §7.1 の hslToRgb
+  const hue = (((h % 360) + 360) % 360) / 30;
+  const f = (n: number) => {
+    const k = (n + hue) % 12;
+    return lig - sat * Math.min(lig, 1 - lig) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  const rgb = [f(0), f(8), f(4)].map((x) => Math.round(x * 255));
+  if (a >= 1) return `rgb(${rgb.join(',')})`;
+  return `#${rgb.map((x) => x.toString(16).padStart(2, '0')).join('')}${Math.round(a * 255).toString(16).padStart(2, '0')}`;
+}
 
 /** rgb-icc() の引数の始めの 3 つ (代わりの sRGB。XSL 1.1 §5.10.2) を 0〜255 の数にしたもの。数でないものがあれば undefined */
 function rgbOf(p: string[]): [number, number, number] | undefined {
@@ -213,6 +253,30 @@ const ENUMERATED_VALUES: Record<string, readonly string[]> = {
  * (XSL 1.1 §7.5 Common Accessibility Properties。§7.5.2 role: “provides a hint for alternate renderers (aural readers, etc.)”)
  */
 const NO_FORMATTING_EFFECT = new Set(['role', 'source-document']);
+
+
+/** ドロップキャップの、継承される性質 (axf:initial-letters- の後ろの名前。アンテナハウスの公開の説明のドロップキャップの節) */
+const IL_INHERITED = ['first-line-head-height', 'end-indent', 'leading-punctuation', 'leading-punctuation-position', 'leading-punctuation-shift', 'width', 'text-align', 'color', 'start-intrusion'];
+
+/** ドロップキャップの字を包む行内の要素から、字の箱に写す字の書式 */
+const CHAIN_STYLE = ['fontFamily', 'fontWeight', 'fontStyle', 'fontStretch', 'color', 'language', 'fontFeatures', 'letterSpacing', 'textShadow'] as const;
+
+/** 値の並び (空白区切り) を、括弧の外の空白で分ける (括弧の中の式の空白では分けない) */
+function splitOutsideParens(v: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of v.trim()) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(depth - 1, 0);
+    if (/\s/.test(ch) && depth === 0) {
+      if (cur) out.push(cur);
+      cur = '';
+    } else cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
 
 class Importer {
   /** 本文の fo:page-number に付ける id の番号 */
@@ -353,6 +417,107 @@ class Importer {
     return out;
   }
 
+  /**
+   * 段組のコンテナ (axf:column-count) の中の、入れ子のブロックの中の span="all" のブロックを、コンテナの直下へ出す (包むブロックを、
+   * その前後で分ける)。アンテナハウスの拡張の段組 (XSL 1.1 には無い。§7.21.4 の span は fo:flow の直下のブロックにだけ効く) なので、
+   * どのモードでも、製品の見本に合わせる: サンプル FO 集の axf-initial-letters-1 は、コンテナの中のブロックの中の span="all" のブロックも、
+   * コンテナの幅に置き、その前後で段の組を分ける。分けた断片は、包むブロックの書式 (受け継ぐ性質) を持ち、block 方向の前の側の余白・
+   * 罫線・padding と前の区切り・keep-with-previous は最初の断片だけに、後ろの側のものは最後の断片だけに残す。
+   * id は、どの断片にも残す: 断片は、同じ FO の続きの領域 (ページをまたいだブロックの断片と同じ。ページ番号の参照・リンクの飛び先・
+   * しおりは最初の断片の最初のページ、fo:page-number-citation-last は最後の断片の最後のページ。XSL 1.1 §6.6.11・§6.6.12)
+   */
+  private liftColumnSpans(children: Array<LBlockLevel | LInlineLevel>, wm: WritingMode): Array<LBlockLevel | LInlineLevel> {
+    // 外へ出す span の数え上げ: 深さ d (包むブロックの数) の span を 1 つ外へ出すと、包むブロックが段ごとに分かれ、断片がおよそ 2d 増える。
+    // 文書の順に足し、MAX_LIFTED_SPAN_PIECES を超えたら、それより後ろの span は外へ出さず、段の中のブロックとして組む
+    // (組版は、コンテナの直下のブロックの span だけを見る)。深い入れ子の中に多くの span を置いた文書で、断片の数が
+    // 深さ × span の数に膨らむのを防ぐ
+    const keep = new Set<LBlock>();
+    let pieces = 0;
+    const stack: Array<{ k: LBlockLevel | LInlineLevel; d: number }> = [];
+    for (let i = children.length - 1; i >= 0; i--) stack.push({ k: children[i], d: 0 });
+    while (stack.length) {
+      const { k, d } = stack.pop()!;
+      if (typeof k === 'string' || k.type !== 'block') continue;
+      if (k.span === 'all') {
+        if (d === 0) continue;
+        if (pieces + 2 * d > MAX_LIFTED_SPAN_PIECES) keep.add(k);
+        else pieces += 2 * d;
+        continue;
+      }
+      for (let i = k.children.length - 1; i >= 0; i--) stack.push({ k: k.children[i], d: d + 1 });
+    }
+    if (keep.size)
+      this.note(
+        msg(
+          `段組のコンテナの中の、入れ子のブロックの中の span="all" が多すぎるので、後ろの ${keep.size} 個は段抜きにせず、段の中に組みます`,
+          `too many span="all" blocks nested inside blocks in a multi-column container; the last ${keep.size} are set within the columns instead of spanning them`,
+        ),
+      );
+    const isSpan = (k: LBlockLevel | LInlineLevel): k is LBlock => typeof k !== 'string' && k.type === 'block' && k.span === 'all' && !keep.has(k);
+    // 外へ出す span を中に持つか。部分木を 1 度だけたどる (覚えておく)
+    const held = new Map<LBlock, boolean>();
+    const holds = (k: LBlockLevel | LInlineLevel): k is LBlock => {
+      if (typeof k === 'string' || k.type !== 'block' || k.span === 'all') return false;
+      let v = held.get(k);
+      if (v === undefined) held.set(k, (v = k.children.some((x) => isSpan(x) || holds(x))));
+      return v;
+    };
+    return this.liftSpansIn(children, wm, isSpan, holds);
+  }
+
+  /** liftColumnSpans の本体 (入れ子のブロックへ再帰する)。isSpan は外へ出す span、holds はそれを中に持つブロック */
+  private liftSpansIn(
+    children: Array<LBlockLevel | LInlineLevel>,
+    wm: WritingMode,
+    isSpan: (k: LBlockLevel | LInlineLevel) => k is LBlock,
+    holds: (k: LBlockLevel | LInlineLevel) => k is LBlock,
+  ): Array<LBlockLevel | LInlineLevel> {
+    if (!children.some(holds)) return children;
+    const before = this.beforeSideOf(wm);
+    const after = wm === 'horizontal-tb' ? 'bottom' : wm === 'vertical-lr' ? 'right' : 'left';
+    /** 余白・padding・罫線の、残さない側を 0 (罫線は無し) にする */
+    const cut = <T,>(v: T, sides: string[]): T => {
+      if (v === undefined || !sides.length) return v;
+      if (typeof v === 'number') {
+        const e: Record<string, number> = { top: v, right: v, bottom: v, left: v };
+        for (const sd of sides) e[sd] = 0;
+        return e as T;
+      }
+      const single = typeof v === 'object' && v !== null && 'width' in (v as object);
+      const e = (single ? { top: v, right: v, bottom: v, left: v } : { ...(v as object) }) as Record<string, unknown>;
+      for (const sd of sides) e[sd] = single || typeof e[sd] === 'object' ? undefined : 0;
+      return e as T;
+    };
+    const out: Array<LBlockLevel | LInlineLevel> = [];
+    for (const c of children) {
+      if (!holds(c)) {
+        out.push(c);
+        continue;
+      }
+      const inner = this.liftSpansIn(c.children, wm, isSpan, holds);
+      const groups: Array<Array<LBlockLevel | LInlineLevel>> = [];
+      for (const k of inner) {
+        const last = groups[groups.length - 1];
+        if (!isSpan(k) && last && !isSpan(last[0])) last.push(k);
+        else groups.push([k]);
+      }
+      groups.forEach((g, i) => {
+        const first = i === 0;
+        const last = i === groups.length - 1;
+        const sides = [...(first ? [] : [before]), ...(last ? [] : [after])];
+        const piece: LBlock = { ...c, children: g, margin: cut(c.margin, sides), padding: cut(c.padding, sides), border: cut(c.border, sides) };
+        if (!first) for (const k of ['breakBefore', 'keepWithPrevious', 'retainSpaceBefore', 'spaceBeforePrecedence'] as const) delete piece[k];
+        // 2 つ目からの断片の最初の行は、ブロックの最初の行ではない (text-indent を当てない。XSL 1.1 §7.16.11)
+        if (!first) piece.spanContinued = true;
+        if (!last) for (const k of ['breakAfter', 'keepWithNext', 'retainSpaceAfter', 'spaceAfterPrecedence'] as const) delete piece[k];
+        if (isSpan(g[0])) piece.span = 'all';
+        for (const k of ['margin', 'padding', 'border'] as const) if (piece[k] === undefined) delete piece[k];
+        out.push(piece);
+      });
+    }
+    return out;
+  }
+
   /** 書字方向での block-start 側の物理的な辺 */
   private beforeSideOf(wm: WritingMode): 'top' | 'left' | 'right' {
     return wm === 'horizontal-tb' ? 'top' : wm === 'vertical-lr' ? 'left' : 'right';
@@ -468,7 +633,7 @@ class Importer {
           if (ok && v !== 'inherit' && !ok.includes(v) && !(k === 'force-page-count' && /^\d+$/.test(v))) this.miss(`${k}="${v.slice(0, 30)}"`);
           continue;
         }
-        this.miss(asked && !this.askedNames.has(k) ? k : `${k} (${qn(el)})`);
+        this.miss(this.asked.has(el) && !this.askedNames.has(k) ? k : `${k} (${qn(el)})`);
       }
     }
   }
@@ -511,13 +676,19 @@ class Importer {
   els(n: XNode): XEl[] {
     return Array.from(n.childNodes).filter((c) => c.nodeType === 1);
   }
-  /** 要素ごとの、読み込みが値を尋ねた属性の名前 (尋ねなかった属性は、読まずに捨てている: reportUnreadAttributes) */
-  private asked = new WeakMap<XNode, Set<string>>();
+  /**
+   * 要素ごとの、読み込みが値を尋ねた属性のうち、要素に書かれているものの名前 (尋ねなかった属性は、読まずに捨てている: reportUnreadAttributes)。
+   * 尋ねたが、書かれた属性が 1 つも無い要素は null。書かれていない属性の名前は覚えない (読み込みは、要素ごとに、読む性質をすべて尋ねるので、
+   * 書かれていないものまで覚えると、数十万の要素の文書で、要素の数 × 性質の数の名前を持つことになる)
+   */
+  private asked = new WeakMap<XNode, Set<string> | null>();
   private markAsked(n: XNode, k: string) {
     this.askedNames.add(k);
+    const written = !!n.hasAttribute?.(k);
     const s = this.asked.get(n);
-    if (s) s.add(k);
-    else this.asked.set(n, new Set([k]));
+    if (s) {
+      if (written) s.add(k);
+    } else if (s === undefined || written) this.asked.set(n, written ? new Set([k]) : null);
   }
   attr(n: XNode, k: string): string | undefined {
     this.markAsked(n, k);
@@ -870,18 +1041,114 @@ class Importer {
     return ((Math.round(n / 90) % 4) * 90) as 0 | 90 | 180 | 270;
   }
 
+  /**
+   * 詰め込み (overflow="condense" と axf:overflow-condense。アンテナハウスの拡張)。アンテナハウスの公開の説明
+   * (https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html の overflow (オーバーフローの拡張)・axf:overflow-condense・
+   * axf:overflow-condense-limit-font-size・axf:overflow-condense-limit-line-height) のとおり: overflow="condense" のとき、axf:overflow-condense
+   * (初期値 auto。継承する。ただし none は継承しない) の方法で、はみ出す中身を領域に詰め込む。値は font-size・font-stretch・line-height・
+   * letter-spacing の並び (前のもので収まらなければ次)、auto (ブロックの詰め込みでは font-size)、none。中で絶対の値を書いた字の大きさは変えない。
+   * 下限は axf:overflow-condense-limit-font-size (<length>)・-limit-line-height (<number>。字の大きさに対する比) で、初期値の none は 0。
+   * どれも継承する (textStyle が ctx.condense に載せる)。下限の後ろの visible・hidden・error-if-overflow・repeat は、下限でも収まらないときの
+   * 扱い (次の方法があれば無視)。hidden・error-if-overflow は切り抜く (overflow の hidden・error-if-overflow と同じ。§7.21.2)。repeat は未対応。
+   * overflow="condense" は標準の属性に足された値なので、互換モード (--compat antenna) のときだけ読む。読むのは fo:block-container
+   * (ブロックの詰め込み) の font-size・line-height だけで、ほか (fo:inline-container の詰め込み・縦書き・font-stretch・letter-spacing) は
+   * 未対応として知らせる
+   */
+  private condenseOf(el: XEl, ctx: Ctx, horizontal: boolean): LBlockContainer['condense'] | undefined {
+    if (this.attr(el, 'overflow') !== 'condense') return undefined;
+    if (this.spec) {
+      this.miss(msg('overflow="condense" (--compat antenna のときだけ解釈する値)', 'overflow="condense" (a value read only with --compat antenna)'));
+      return undefined;
+    }
+    if (this.name(el) !== 'block-container' || !horizontal) {
+      this.miss(horizontal ? `overflow:condense (fo:${this.name(el)})` : msg(`overflow:condense (fo:${this.name(el)}、縦書き)`, `overflow:condense (fo:${this.name(el)}, vertical writing)`));
+      return undefined;
+    }
+    const raw = ctx.condense?.methods ?? 'auto';
+    if (raw === 'none') return undefined;
+    const written = raw === 'auto' ? ['font-size'] : raw.split(/\s+/);
+    const methods: Array<'font-size' | 'line-height'> = [];
+    for (const t of written) {
+      if (t === 'font-size' || t === 'line-height') methods.push(t);
+      else this.miss(`axf:overflow-condense="${t}"`);
+    }
+    if (!methods.length) return undefined;
+    const fs = ctx.fontSize;
+    const lf = ctx.condense?.limFs;
+    const ll = ctx.condense?.limLh;
+    const minFontSize = lf?.v;
+    const minLineHeight = ll?.pt ?? (ll?.ratio !== undefined ? ll.ratio * fs : undefined);
+    // 下限でも収まらないときの扱いは、最後に試す方法の下限の後ろの語 (次の方法があれば無視する)
+    const last = written[written.length - 1];
+    const act = last === 'font-size' ? lf?.act : last === 'line-height' ? ll?.act : undefined;
+    const mh = this.attrInh(el, 'max-height')?.trim();
+    const pct = mh ? /^([\d.]+)%$/.exec(mh) : null;
+    const maxBlock = mh && !pct && mh !== 'none' && mh !== 'auto' ? this.len(mh, fs, ctx.cbH) : pct && ctx.cbH !== undefined ? (ctx.cbH * parseFloat(pct[1])) / 100 : undefined;
+    return {
+      methods,
+      ...(maxBlock !== undefined ? { maxBlock } : pct ? { maxBlockPct: parseFloat(pct[1]) / 100 } : {}),
+      ...(minFontSize ? { minFontSize } : {}),
+      ...(minLineHeight ? { minLineHeight } : {}),
+      ...(act === 'hidden' || act === 'error-if-overflow' ? { clip: true } : {}),
+    };
+  }
+
+  /**
+   * 詰め込みの性質 (axf:overflow-condense・-limit-font-size・-limit-line-height。どれも継承される) の、この要素での値 (ctx.condense)。
+   * 書いていなければ親の値 (axf:overflow-condense の none は受け継がない)。字の大きさの下限は、書いた要素の字の大きさ fs で長さにして受け継ぐ
+   */
+  private condenseInherited(el: XEl, parent: Ctx['condense'], fs: number): Ctx['condense'] {
+    let out = parent?.methods === 'none' ? { ...parent, methods: undefined } : parent;
+    const m = this.attrInh(el, 'axf:overflow-condense');
+    if (m !== undefined) out = { ...out, methods: m.trim().toLowerCase() };
+    /** 値の頭と、後ろの語 (visible・hidden・error-if-overflow・repeat)。知らない語・repeat は知らせる */
+    const split = (k: string): { head: string; act?: string } | undefined => {
+      const v = this.attrInh(el, k);
+      if (v === undefined) return undefined;
+      const [head = '', act] = v.trim().split(/\s+/);
+      if (act !== undefined && !['visible', 'hidden', 'error-if-overflow'].includes(act)) this.miss(`${k}="${v.trim().slice(0, 30)}"`);
+      return { head, ...(act === 'hidden' || act === 'error-if-overflow' ? { act } : {}) };
+    };
+    const f = split('axf:overflow-condense-limit-font-size');
+    if (f) {
+      const v = f.head === 'none' ? undefined : this.len(f.head, fs);
+      if (v === undefined && f.head !== 'none') this.miss(`axf:overflow-condense-limit-font-size="${f.head.slice(0, 20)}"`);
+      // 0 未満は 0 (説明のとおり)。0 は none と同じ
+      out = { ...out, limFs: { ...(v !== undefined && v > 0 ? { v } : {}), ...(f.act ? { act: f.act } : {}) } };
+    }
+    const l = split('axf:overflow-condense-limit-line-height');
+    if (l) {
+      // <number> は字の大きさに対する比 (使う所の字の大きさを掛ける)。長さを書いたときは、その長さ
+      const num = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(l.head) ? parseFloat(l.head) : undefined;
+      const pt = num === undefined && l.head !== 'none' ? this.len(l.head, fs) : undefined;
+      if (num === undefined && pt === undefined && l.head !== 'none') this.miss(`axf:overflow-condense-limit-line-height="${l.head.slice(0, 20)}"`);
+      out = { ...out, limLh: { ...(num !== undefined && num > 0 ? { ratio: num } : {}), ...(pt !== undefined && pt > 0 ? { pt } : {}), ...(l.act ? { act: l.act } : {}) } };
+    }
+    return out;
+  }
+
   // ── 長さ・色 ──
+  /** lh の単位の基準 (いま読んでいる要素の行の高さ。互換モードだけ。textStyle が決め、children を抜けると戻る) */
+  private lenLh?: number;
+
   len(v: string | undefined, fs: number, pct?: number, lh?: number): number | undefined {
     if (!v) return undefined;
-    // §5.9 の式 (演算子の優先順位・括弧・数の関数) として評価する
-    const r = evalLength(v.trim(), { fs, ...(pct !== undefined ? { pct } : {}), ...(lh !== undefined ? { lh } : {}) });
+    // §5.9 の式 (演算子の優先順位・括弧・数の関数) として評価する。lh (行の高さ。XSL 1.1 §5.9.13 に無い単位で、アンテナハウスが読む) は、
+    // 互換モードのときだけ読む (呼び出しが基準を渡さなければ、いまの要素の行の高さ)
+    const useLh = this.spec ? undefined : (lh ?? this.lenLh);
+    // dcem (アンテナハウスの拡張の単位: ドロップキャップの字の大きさ) も、標準の性質の値では互換モードのときだけ読む。ドロップキャップの
+    // 字の大きさは組むときに決まるので、ここでは基準の字の大きさを em にする (製品の公開の説明の、単位の節: 基準の無い所の dcem の扱い)。
+    // ドロップキャップを置くブロックの text-indent は、initialLettersOf が、字の大きさの倍数のまま読み直す
+    const r = evalLength(v.trim(), { fs, ...(pct !== undefined ? { pct } : {}), ...(useLh !== undefined ? { lh: useLh } : {}), ...(this.spec ? {} : { dcem: fs }) });
     // 読めない性質の値の関数 (§5.10.4 の from-parent など) は、黙って捨てずに報告する
     if (r === undefined) {
       const fn = /\b(from-parent|inherited-property-value|from-nearest-specified-value|from-table-column|merge-property-values)\s*\(/.exec(v);
       if (fn) this.miss(`function:${fn[1]}()`);
       // XSL 1.1 §5.9.13 に無い単位 (CSS の rem・ch・vw、アンテナハウスの q・jpt など) の長さも、黙って捨てずに報告する
       const unit = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)([a-z]+)$/i.exec(v.trim());
-      if (unit) this.miss(msg(`単位 ${unit[1].toLowerCase()} (長さ "${v.trim().slice(0, 20)}")`, `unit ${unit[1].toLowerCase()} (length "${v.trim().slice(0, 20)}")`));
+      if (this.spec && /\ddcem\b/i.test(v)) this.miss(msg(`単位 dcem (長さ "${v.trim().slice(0, 20)}"。--compat antenna のときだけ解釈する値)`, `unit dcem (length "${v.trim().slice(0, 20)}"; a value read only with --compat antenna)`));
+      else if (unit && this.spec && unit[1].toLowerCase() === 'lh') this.miss(msg(`単位 lh (長さ "${v.trim().slice(0, 20)}"。--compat antenna のときだけ解釈する値)`, `unit lh (length "${v.trim().slice(0, 20)}"; a value read only with --compat antenna)`));
+      else if (unit) this.miss(msg(`単位 ${unit[1].toLowerCase()} (長さ "${v.trim().slice(0, 20)}")`, `unit ${unit[1].toLowerCase()} (length "${v.trim().slice(0, 20)}")`));
     }
     return r;
   }
@@ -950,6 +1217,15 @@ class Importer {
       if (ch) return `rgb(${ch.map((x) => Math.min(255, Math.max(0, Math.round(x)))).join(',')})`;
     }
     if (/^(#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\(|cmyk\()/i.test(s) || isColorName(s)) return s;
+    // hsl()・hsla() (アンテナハウスの拡張。XSL 1.1 §5.10.2 の色の関数には無い): 互換の指定 (--compat antenna。XSL-FO の既定) のときだけ読む
+    if (/^hsla?\(/i.test(s)) {
+      if (this.spec) {
+        this.miss(msg(`color:${s.slice(0, 20)} (--compat antenna のときだけ解釈する値)`, `color:${s.slice(0, 20)} (a value read only with --compat antenna)`));
+        return undefined;
+      }
+      const c = ahHslColor(s);
+      if (c) return c;
+    }
     this.miss(`color:${s.slice(0, 20)}`);
     return undefined;
   }
@@ -1014,6 +1290,263 @@ class Importer {
     const bg = c2.hidden ? undefined : this.color(this.attr(ips, 'background-color'));
     if (bg) wrap.backgroundColor = bg;
     kids.splice(a, b - a, wrap);
+  }
+
+  /**
+   * ドロップキャップの性質 (axf:initial-letters-* の、axf:initial-letters 以外のもの) を、祖先の値に重ねる。アンテナハウスの公開の説明
+   * (ahf-ext.html のドロップキャップの節) では、どれも Inherited: yes で、fo:block に書く
+   */
+  private initialLettersInherited(n: XEl, ctx: Ctx): Record<string, string> | undefined {
+    let out = ctx.initialLetters;
+    let own = false;
+    for (const k of IL_INHERITED) {
+      const v = this.attr(n, `axf:initial-letters-${k}`)?.trim();
+      if (v === undefined || v === 'inherit' || v === '') continue;
+      if (!own) out = { ...(out ?? {}) };
+      own = true;
+      out![k] = v;
+    }
+    return out;
+  }
+
+  /**
+   * axf:initial-letters の値 (アンテナハウスの拡張。製品の公開の説明の、axf:initial-letters の値の節)。normal か、字の大きさ (数か長さ)・
+   * 沈める行の数 (整数か drop・raise)・その後ろの字下げ (adjacent か整数) を並べたもの:
+   *  - <number>: 字の大きさを行の数で (1 未満は無効)。<length>: 字の大きさを長さで (dcem は使えない。1 行に満たないかは組むときに見る)
+   *  - <integer>: 沈める行の数 (0・省略は、行の数の小数を切り捨てた数: sink 0 で渡す)。drop は省略と同じ、raise は 1
+   *  - adjacent: ブロックの終わりまで字下げする (Infinity)。<integer2>: 字の行の後ろの、さらに字下げする行の数
+   * 読めない値は undefined
+   */
+  private parseInitialLetters(v: string, fs: number): { size: number; length?: number; sink: number; adjacent?: number } | undefined {
+    if (/dcem/i.test(v)) return undefined;
+    const toks = v.split(/\s+/);
+    let i = 0;
+    let kw: string | undefined;
+    if (toks[i] === 'drop' || toks[i] === 'raise') kw = toks[i++];
+    const t = toks[i++];
+    if (t === undefined) return undefined;
+    let size = 0;
+    let length: number | undefined;
+    if (/^(\d+(\.\d*)?|\.\d+)$/.test(t)) {
+      size = parseFloat(t);
+      if (!(size >= 1)) return undefined;
+    } else {
+      length = this.ilLength(t, fs)?.pt;
+      if (length === undefined || !(length > 0)) return undefined;
+    }
+    if (!kw && (toks[i] === 'drop' || toks[i] === 'raise')) kw = toks[i++];
+    let sink = kw === 'raise' ? 1 : 0;
+    if (!kw && /^\d+$/.test(toks[i] ?? '')) sink = parseInt(toks[i++], 10);
+    let adjacent: number | undefined;
+    if (toks[i] === 'adjacent') {
+      adjacent = Infinity;
+      i++;
+    } else if (/^\d+$/.test(toks[i] ?? '')) adjacent = parseInt(toks[i++], 10);
+    if (i < toks.length) return undefined;
+    return { size, ...(length !== undefined ? { length } : {}), sink, ...(adjacent ? { adjacent } : {}) };
+  }
+
+  /** 長さの式を、pt と dcem (ドロップキャップの字の大きさ) の倍数に分けて読む (式は dcem について 1 次なので、dcem を 0 と 1 にして 2 度評価する) */
+  private dcemLength(v: string, fs: number, pct?: number): { pt: number; dcem: number } | undefined {
+    const o = { fs, ...(pct !== undefined ? { pct } : {}), ...(this.spec ? {} : this.lenLh !== undefined ? { lh: this.lenLh } : {}) };
+    const a = evalLength(v.trim(), { ...o, dcem: 0 });
+    const b = evalLength(v.trim(), { ...o, dcem: 1 });
+    return a === undefined || b === undefined ? undefined : { pt: a, dcem: b - a };
+  }
+
+  /**
+   * ドロップキャップの性質 (axf:initial-letters と axf:initial-letters-*) の長さ。接頭辞の付いた拡張の性質なので、値の中の dcem
+   * (字の大きさ) と ic (和文の字の送り。1em とみなす) は、どのモードでも読む。lh は、ほかの長さと同じく互換モードだけ
+   */
+  private ilLength(v: string, fs: number, pct?: number): { pt: number; dcem: number } | undefined {
+    const o = { fs, ic: fs, ...(pct !== undefined ? { pct } : {}), ...(this.spec ? {} : this.lenLh !== undefined ? { lh: this.lenLh } : {}) };
+    const a = evalLength(v.trim(), { ...o, dcem: 0 });
+    const b = evalLength(v.trim(), { ...o, dcem: 1 });
+    return a === undefined || b === undefined ? undefined : { pt: a, dcem: b - a };
+  }
+
+  /**
+   * ドロップキャップ (アンテナハウスの拡張 axf:initial-letters。製品の公開の説明 ahf-ext.html のドロップキャップの節と、サンプル FO 集の
+   * axf-initial-letters-1 に合わせる)。ブロックの最初の字 (前後の約物を含む。CSS の ::first-letter と同じ選び方) か、最初の画像を、
+   * 数行の高さの字にして、行の頭に置き、続く行をその横に回り込ませる。CSS の initial-letter (CSS Inline 3 §7) と同じ受け皿
+   * (LFloat.initialLetter) に写し、組版エンジンの同じ仕組みで組む。CSS と違う所 (製品の説明・見本に合わせる):
+   *  - 最初の字は、子を辿って最初の字から選ぶ (中の fo:block にも入る)。その前に、axf:initial-letters を書いた fo:block・fo:block 以外の
+   *    ブロックの要素・fo:inline-container・fo:bidi-override・ページ番号などがあれば、何もしない。text-align が start・left・justify 以外でも何もしない
+   *  - オランダ語 (xml:lang="nl") の語頭の IJ は、2 字とも最初の字にする (CSS 2.1 §5.12.2 の ::first-letter の注と同じ)
+   *  - 最初が画像なら、画像を字の代わりにする (画像の大きさの指定は使わず、高さを字と同じ範囲にする)
+   *  - 字の大きさを長さでも書ける。沈める行の数の後ろに adjacent・<integer2> (字の行の後ろも字下げする)
+   *  - ブロックの text-indent は、字の箱をずらす量にする (最初の行の字下げにしない)。dcem (字の大きさの単位) で書ける (互換モード)
+   *  - axf:initial-letters-end-indent (字の後ろの行ごとの空き)・-first-line-head-height (x-height に合わせる)・-width・-text-align・
+   *    -color・-leading-punctuation="hide"・-leading-punctuation-position="hang"
+   * 対応していない値 (先行する約物の大きさ・色・食い込ませ・ずらし、axf:initial-letters-start-intrusion="first-line"、ルビの最初の字) は報告する
+   */
+  private initialLettersOf(n: XEl, blk: LBlock, ctx: Ctx) {
+    const raw = this.attr(n, 'axf:initial-letters')?.trim();
+    if (!raw || raw === 'normal' || raw === 'inherit') return;
+    const fs = ctx.fontSize;
+    const spec = this.parseInitialLetters(raw, fs);
+    if (!spec) {
+      this.miss(`axf:initial-letters="${raw.slice(0, 30)}"`);
+      return;
+    }
+    // 揃えが行の頭の側 (start・left) か両端揃え (justify) のブロックだけで働く (製品の公開の説明の、ドロップキャップの節の注意)
+    if (blk.textAlign !== undefined && blk.textAlign !== 'start' && blk.textAlign !== 'justify') return;
+    // list・i: 字 (画像) のある並びと位置。outer: 字を包む行内の要素 (chain) の、いちばん外のものの、ブロックの子の並びでの位置
+    type Pos = { list: Array<LBlockLevel | LInlineLevel>; i: number };
+    type Hit = Pos & { host: LBlock; chain: LInline[]; outer: Pos };
+    const find = (list: Array<LBlockLevel | LInlineLevel>, host: LBlock, chain: LInline[], outer?: Pos): Hit | 'stop' | undefined => {
+      for (let i = 0; i < list.length; i++) {
+        const k = list[i];
+        if (typeof k === 'string') {
+          if (!k.trim()) continue;
+          return { list, i, host, chain, outer: outer ?? { list, i } };
+        }
+        if (k.type === 'inline') {
+          if (k.unicodeBidi === 'bidi-override') return 'stop';
+          const r = find(k.children as Array<LBlockLevel | LInlineLevel>, host, [...chain, k], outer ?? { list, i });
+          if (r) return r;
+          continue;
+        }
+        if (k.type === 'image') return { list, i, host, chain, outer: outer ?? { list, i } };
+        // 中の fo:block (axf:initial-letters を書いていないもの) にも入る。書いたもの (字を置いた後の float がある) の中では何もしない
+        if (k.type === 'block') {
+          const r = find(k.children, k, []);
+          if (r) return r;
+          continue;
+        }
+        if (k.type === 'marker') continue;
+        // 字より前の fo:float は飛ばす (字の前にアンカーのある float は、字の行の頭の側に置かれる)
+        if (k.type === 'float' && !k.initialLetter) continue;
+        if (k.type === 'ruby') this.miss(msg('axf:initial-letters (最初の字がルビ)', 'axf:initial-letters (the first letter is ruby)'));
+        return 'stop';
+      }
+      return undefined;
+    };
+    const hit = find(blk.children, blk, []);
+    if (!hit || hit === 'stop') return;
+    const il = ctx.initialLetters ?? {};
+    const k = hit.list[hit.i];
+    let content: LInlineLevel;
+    let before = '';
+    let lead = '';
+    let after: string | undefined;
+    let nextSmallCaps = false;
+    if (typeof k === 'string') {
+      const m = firstLetterOf(k);
+      if (!m) return;
+      before = m[0];
+      let letter = m[1];
+      let rest = k.slice(m[0].length + m[1].length);
+      // オランダ語の語頭の IJ (CSS 2.1 §5.12.2: “if the letter combination "ij" appears at the beginning of a word, both letters
+      // should be considered within the :first-letter pseudo-element”)
+      if (/^nl\b/i.test(ctx.lang ?? '') && /[Ii]$/.test(letter) && /^[Jj]/.test(rest)) {
+        letter += rest[0];
+        rest = rest.slice(1);
+      }
+      lead = /^[\p{Ps}\p{Pi}\p{Po}\s]*/u.exec(letter)![0];
+      // 先行する約物 (axf:initial-letters-leading-punctuation): hide は描かない。<length>・<color> (約物の大きさ・色) は対応していない
+      const lp = il['leading-punctuation'];
+      if (lead && lp === 'hide') {
+        letter = letter.slice(lead.length);
+        lead = '';
+      } else if (lead && lp && lp !== 'normal') this.miss(`axf:initial-letters-leading-punctuation="${lp.slice(0, 30)}"`);
+      // 字と続く内容の間の空白は消す (続く行の頭を、字の箱の後ろにそろえる)
+      after = rest.replace(/^[ \t\n\r\f]+/, '');
+      nextSmallCaps = /^\p{Ll}/u.test(after) && hit.chain.some((c) => c.smallCaps === 'small');
+      content = letter;
+    } else {
+      // 画像: 画像に書いた幅・高さ・拡大縮小の性質は読まず、組むときに、字と同じ範囲の高さに合わせる (製品の公開の説明の、ドロップキャップの節)
+      const img = { ...(k as LImage) };
+      for (const key of ['width', 'height', 'widthScale', 'heightScale', 'viewport', 'percentSize', 'fit', 'fitPosition', 'fitLimit', 'scaling', 'alignmentBaseline'] as const) delete img[key];
+      content = img;
+      const nx = hit.list[hit.i + 1];
+      if (typeof nx === 'string') {
+        const t = nx.replace(/^[ \t\n\r\f]+/, '');
+        if (t) hit.list[hit.i + 1] = t;
+        else hit.list.splice(hit.i + 1, 1);
+      }
+    }
+    // 字の高さを合わせる位置 (axf:initial-letters-first-line-head-height。初期値 auto): auto は、字の次の字が同じ要素の small-caps の小文字で、
+    // 字の大きさ (単位の無い行の数) と沈める行の数が等しいときに x-height、ほかは cap-height
+    const hh = il['first-line-head-height'] ?? 'auto';
+    const sinkEq = spec.length === undefined && (spec.sink || Math.floor(spec.size)) === spec.size;
+    const xHeight = hh === 'x-height' || (hh === 'auto' && nextSmallCaps && sinkEq);
+    if (hh !== 'auto' && hh !== 'x-height' && hh !== 'cap-height') this.miss(`axf:initial-letters-first-line-head-height="${hh.slice(0, 30)}"`);
+    // 字の箱のずらし: 字を置くブロックの text-indent (dcem は互換モードだけ。仕様モードでは len() が報告して、読まない)
+    let shift: { pt: number; dcem: number } | undefined;
+    const tiRaw = hit.host === blk ? this.attr(n, 'text-indent') : undefined;
+    if (tiRaw && !this.spec && /dcem/i.test(tiRaw)) shift = this.dcemLength(tiRaw, fs, this.cbW(ctx));
+    else if (hit.host.textIndent) shift = { pt: hit.host.textIndent, dcem: 0 };
+    if (shift || hit.host.textIndent) hit.host.textIndent = 0;
+    // 字の後ろの空き (行ごと。dcem はどのモードでも読む: 拡張の性質の値)
+    let endIndent: Array<{ pt: number; dcem: number }> | undefined;
+    const eiRaw = il['end-indent'];
+    if (eiRaw) {
+      const parts = splitOutsideParens(eiRaw).map((p) => this.ilLength(p, fs));
+      const whole = parts.some((p) => !p) ? this.ilLength(eiRaw, fs) : undefined;
+      if (parts.every((p) => p)) endIndent = parts as Array<{ pt: number; dcem: number }>;
+      else if (whole) endIndent = [whole];
+      else this.miss(`axf:initial-letters-end-indent="${eiRaw.slice(0, 30)}"`);
+      if (endIndent && endIndent.every((e) => !e.pt && !e.dcem)) endIndent = undefined;
+    }
+    // 先行する約物の位置: hang は、約物を行の頭の外へ出す。食い込ませ (intrude)・ずらしの長さは対応していない
+    const lpp = il['leading-punctuation-position'];
+    const hang = !!lead && lpp === 'hang';
+    if (lead && lpp && lpp !== 'normal' && lpp !== 'hang') this.miss(`axf:initial-letters-leading-punctuation-position="${lpp.slice(0, 30)}"`);
+    const lps = il['leading-punctuation-shift'];
+    if (lead && lps && lps !== 'normal') this.miss(`axf:initial-letters-leading-punctuation-shift="${lps.slice(0, 30)}"`);
+    if (il['start-intrusion'] && il['start-intrusion'] !== 'none') this.miss(`axf:initial-letters-start-intrusion="${il['start-intrusion'].slice(0, 30)}"`);
+    // 字の箱の幅 (axf:initial-letters-width。auto・長さ・包含する参照領域の幅に対する百分率。dcem・ic も読む) と、
+    // その中の字の揃え (axf:initial-letters-text-align。初期値 end。幅が auto なら効かない)。dcem を含む幅は、字の大きさが決まる組版で解く
+    const wRaw = il['width'];
+    let width: number | undefined;
+    let widthDcem: { pt: number; dcem: number } | undefined;
+    if (wRaw && wRaw !== 'auto') {
+      const w = this.ilLength(wRaw, fs, this.cbW(ctx));
+      if (!w || (w.pt < 0 && w.dcem <= 0) || (w.dcem < 0 && w.pt <= 0)) this.miss(`axf:initial-letters-width="${wRaw.slice(0, 30)}"`);
+      else if (w.dcem) widthDcem = w;
+      else width = w.pt;
+    }
+    const taRaw = il['text-align'] ?? 'end';
+    const left = taRaw === 'left' ? (ctx.rtl ? 'end' : 'start') : taRaw === 'right' ? (ctx.rtl ? 'start' : 'end') : taRaw;
+    if (!['start', 'center', 'end'].includes(left)) this.miss(`axf:initial-letters-text-align="${taRaw.slice(0, 30)}"`);
+    const color = il['color'] ? this.color(il['color']) : undefined;
+    // 字を包む行内の要素 (fo:inline など) の字の書式は、字の箱に写す (箱は、行内の要素の外の、ブロックの子の並びに置く。組版は、
+    // 回り込みをブロックの子の並びでだけ置く)
+    const fromChain: Record<string, unknown> = {};
+    for (const c of hit.chain) for (const key of CHAIN_STYLE) if ((c as unknown as Record<string, unknown>)[key] !== undefined) fromChain[key] = (c as unknown as Record<string, unknown>)[key];
+    const inner: LBlock = {
+      type: 'block',
+      ...fromChain,
+      textIndent: 0,
+      textAlign: (width !== undefined || widthDcem) && (left === 'center' || left === 'end') ? left : 'start',
+      ...(color ? { color } : {}),
+      children: [content],
+    };
+    const f: LFloat = {
+      type: 'float',
+      // 右から左へ書く横組みでは、行の頭は右 (組版の回り込みは、左右を物理の向きで置くので end にする)
+      float: ctx.rtl && ctx.wm === 'horizontal-tb' ? 'end' : 'start',
+      cssPlacement: true,
+      initialLetter: {
+        size: spec.size,
+        sink: spec.sink,
+        align: 'alphabetic',
+        ...(spec.length !== undefined ? { length: spec.length } : {}),
+        ...(xHeight ? { xHeight } : {}),
+        ...(endIndent ? { endIndent } : {}),
+        ...(shift && (shift.pt || shift.dcem) ? { shift } : {}),
+        ...(spec.adjacent ? { adjacent: spec.adjacent } : {}),
+        ...(hang ? { hangLead: lead } : {}),
+        ...(widthDcem ? { width: widthDcem } : {}),
+      },
+      ...(width !== undefined ? (ctx.wm === 'horizontal-tb' ? { width } : { height: width }) : {}),
+      children: [inner],
+    };
+    if (typeof k === 'string') hit.list.splice(hit.i, 1, ...(before ? [before] : []), ...(after ? [after] : []));
+    else hit.list.splice(hit.i, 1);
+    const same = hit.outer.list === hit.list && hit.outer.i === hit.i;
+    hit.outer.list.splice(hit.outer.i + (same && before ? 1 : 0), 0, f as unknown as LInlineLevel);
   }
   /** fo:marker を読む (読んだ要素は markerEls に控える) */
   private marker(n: XEl, ctx: Ctx): LMarker {
@@ -1746,6 +2279,9 @@ class Importer {
     const dir = this.attr(el, 'direction');
     if (dir === 'rtl' || dir === 'ltr') rtl = dir === 'rtl';
     if (rtl !== (ctx.rtl ?? false)) s.direction = rtl ? 'rtl' : 'ltr';
+    // lh の単位の基準 (CSS Values 4 §6.1.1): font-size・line-height に書いた lh は、親の行の高さが基準。この要素の行の高さは、
+    // line-height を読んだ後で決める (ほかの性質の lh の基準)。前の兄弟の要素の値を基準にしない
+    if (!this.spec) this.lenLh = this.lineHeightOf(ctx);
     let fs = ctx.fontSize;
     const fsAttr = this.attr(el, 'font-size');
     if (fsAttr) {
@@ -1756,6 +2292,8 @@ class Importer {
       if (v && v > 0) {
         fs = v;
         s.fontSize = v;
+        // 絶対の大きさ (相対の % ・em・ex・lh・larger・smaller でないもの): 詰め込み (overflow="condense") で変えない
+        if (!/(%|em|ex|lh)\s*$/i.test(fsAttr.trim()) && fsAttr !== 'larger' && fsAttr !== 'smaller') s.fontSizeFixed = true;
       }
     }
     const ff = this.attr(el, 'font-family');
@@ -1816,6 +2354,9 @@ class Importer {
       if (/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(lh)) {
         const r = parseFloat(lh);
         if (r > 0) s.lineHeight = r;
+      } else if (!this.spec && /(?:\d|\.)\s*lh\b/i.test(lh)) {
+        // lh の単位は、line-height の値には使えない (アンテナハウスの説明 ahf-ext.html の「単位」の lh)。読まずに知らせる
+        this.miss(msg(`line-height:${lh.slice(0, 20)} (line-height に lh の単位は使えない)`, `line-height:${lh.slice(0, 20)} (the lh unit cannot be used in line-height)`));
       } else {
         const v = this.len(lh, fs, fs);
         if (v !== undefined && v > 0) s.lineHeightPt = v;
@@ -1837,6 +2378,8 @@ class Importer {
         }
       }
     }
+    // ここから後の lh の基準は、この要素の行の高さ (textStyle の終わりに ctx から決める値と同じ)
+    if (!this.spec) this.lenLh = s.lineHeightPt ?? (s.lineHeight !== undefined ? s.lineHeight * fs : (ctx.inh?.lineHeightPt ?? (ctx.inh?.lineHeight ?? this.defaultLineHeight) * fs));
     const ta = this.attrInh(el, 'text-align');
     // 仕様モード: left は start、right は end と読む (XSL 1.1 §7.16.9・§7.16.10: “left Interpreted as "text-align='start'".
     // right Interpreted as "text-align='end'".”)。右から左の書字方向でも、left は start (右) に寄る。
@@ -2088,7 +2631,17 @@ class Importer {
     // 書字方向の裏返し (bt-lr・lr-bt など): 自分の writing-mode があれば決め直し、無ければ親のまま
     const ownWm = this.attr(el, 'writing-mode');
     const flip = ownWm && !ownWm.startsWith('from-') ? flipOf(ownWm) : ctx.flip;
-    return { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, ...(langBase !== ctx.langBase ? { langBase } : {}), ...(country !== ctx.country ? { country } : {}), ...(hyph ? { hyph } : {}), color: shownColor, textTransform, ...(hidden !== !!ctx.hidden ? { hidden } : {}), ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
+    const out: { style: TextStyle & { writingMode?: WritingMode }; ctx: Ctx } = { style: s, ctx: { ...ctx, flip, fontSize: fs, wm, ws, inh, rtl, families, lang: s.language ?? ctx.lang, ...(langBase !== ctx.langBase ? { langBase } : {}), ...(country !== ctx.country ? { country } : {}), ...(hyph ? { hyph } : {}), color: shownColor, textTransform, ...(hidden !== !!ctx.hidden ? { hidden } : {}), ...(smallCaps !== ctx.smallCaps ? { smallCaps } : {}), ...(wordSpacing !== ctx.wordSpacing ? { wordSpacing } : {}), ...(textOrientation !== ctx.textOrientation ? { textOrientation } : {}), ...(rbAll ? { revBar: rbAll } : {}), ...(relAlign ? { relAlign } : {}) } };
+    // 詰め込みの性質 (アンテナハウスの拡張の axf:overflow-condense・-limit-*。継承される。どのモードでも読む)
+    const condense = this.condenseInherited(el, ctx.condense, fs);
+    if (condense !== ctx.condense) out.ctx.condense = condense;
+    // axf:overflow-condense="none" を書いた要素 (行内の要素にも書ける。受け継がない): その要素とその中身を、外の容器の詰め込みから除く
+    // (アンテナハウスの説明 ahf-ext.html の axf:overflow-condense の none。layoutEngine の scaleFonts・scaleLineHeights が飛ばす)
+    if (condense?.methods === 'none' && this.attrInh(el, 'axf:overflow-condense') !== undefined) s.condenseNone = true;
+    // lh の単位の基準 (この要素の行の高さ)。lh は XSL 1.1 §5.9.13 に無い単位 (CSS Values 4 §6.1.1。アンテナハウスが読む) なので、
+    // 互換モードだけ (len が使う。children を抜けると親の値に戻る)
+    this.lenLh = this.spec ? undefined : this.lineHeightOf(out.ctx);
+    return out;
   }
 
   phys(rel: 'before' | 'after' | 'start' | 'end', wm: WritingMode, rtl = false): 'top' | 'right' | 'bottom' | 'left' {
@@ -2253,8 +2806,10 @@ class Importer {
     const mBefore = this.len(marginOf(beforeSide), fs, this.cbW(inherited));
     if (mBefore !== undefined && mBefore !== 0) o.retainSpaceBefore = true;
     // block 方向の後ろ側の margin から決まる space-after も retain (§5.3.2)。段・ページの終わりでも捨てない。
-    // 互換モードは従来どおり (後ろ側の margin はページの終わりで捨てる)
-    if (this.spec) {
+    // 互換モードは従来どおり (後ろ側の margin はページの終わりで捨てる)。ただし、段をまたぐブロック (span="all") の後ろ側の margin は、
+    // 互換モードでも残す: 段をまたぐブロックの領域の終わりでは、conditionality="discard" の space-after は捨て、margin から来るものは残す
+    // (見本の PDF: サンプル FO 集の space-after-2 は、段組のコンテナの中の span="all" のブロックの space-after を空けず、margin-bottom は空ける)
+    if (this.spec || this.attr(el, 'span') === 'all') {
       const mAfter = this.len(marginOf(afterSide), fs, this.cbW(inherited));
       if (mAfter !== undefined && mAfter !== 0) o.retainSpaceAfter = true;
     }
@@ -2354,9 +2909,12 @@ class Importer {
     if (bpdMin !== undefined && bpdMin > 0) o.minBlockSize = bpdMin;
     // 絶対の上限・下限 (min-height など) のうち、組版に受け皿の無いもの (block 方向の上限と、縦書きの箱の上限・下限) は、読まずに報告する。
     // block-container の max-width は、blockContainer が読む (従来どおり)
+    // 詰め込み (overflow="condense"。アンテナハウスの拡張の値): 互換モードの fo:block-container だけ。max-height は、詰め込む高さとして読む
+    const condense = this.condenseOf(el, ctx, horizontal);
+    if (condense) (o as { condense?: LBlockContainer['condense'] }).condense = condense;
     for (const k of horizontal ? ['max-height'] : ['min-height', 'max-height', 'min-width', 'max-width']) {
       const v = this.attrInh(el, k);
-      if (v !== undefined && v !== 'none' && v !== 'auto' && !(k === 'max-width' && this.name(el) === 'block-container')) this.miss(k);
+      if (v !== undefined && v !== 'none' && v !== 'auto' && !(k === 'max-width' && this.name(el) === 'block-container') && !(k === 'max-height' && condense)) this.miss(k);
     }
     // FO の width・height (inline/block-progression-dimension) は内容の寸法 (§7.15: 枠・パディングは外側)
     // break-before / break-after (§7.20.2): page・column・odd-page・even-page
@@ -2383,7 +2941,9 @@ class Importer {
     // overflow (§7.21.2): hidden・scroll・error-if-overflow は、印刷では切り抜きと同じ
     const ov = this.attr(el, 'overflow');
     if (ov === 'hidden' || ov === 'scroll' || ov === 'error-if-overflow') o.overflow = 'hidden';
-    else if (ov && ov !== 'auto' && ov !== 'visible') this.miss(`overflow:${ov}`);
+    else if (ov === 'condense') {
+      // 読めた詰め込みは condenseOf が付ける。読まなかったもの (仕様モード・block-container でない要素) は、condenseOf が知らせる
+    } else if (ov && ov !== 'auto' && ov !== 'visible') this.miss(`overflow:${ov}`);
     // 見えない要素 (visibility が hidden・collapse。§7.30.17) は、背景・影・対角罫を描かない (罫線は border() が transparent にする。場所は変えない)
     if (ctx.hidden) {
       delete o.backgroundColor;
@@ -2712,6 +3272,16 @@ class Importer {
 
   /** 子ノードを変換し、FO の空白規則 (連続空白の畳み込み・ブロック境界の除去) を適用する */
   private children(el: XEl, ctx: Ctx, edgeTrim = true): Array<LBlockLevel | LInlineLevel> {
+    // 子を読む間に変わった lh の基準を、抜けるときに戻す (子の行の高さが、親の後の長さの基準にならないように)
+    const lh = this.lenLh;
+    try {
+      return this.children0(el, ctx, edgeTrim);
+    } finally {
+      this.lenLh = lh;
+    }
+  }
+
+  private children0(el: XEl, ctx: Ctx, edgeTrim = true): Array<LBlockLevel | LInlineLevel> {
     type Item = { v: LBlockLevel | LInlineLevel; block: boolean };
     const items: Item[] = [];
     for (const n of Array.from(el.childNodes)) {
@@ -2731,7 +3301,13 @@ class Importer {
         const span = ctx.spanW !== undefined && this.attr(n as XEl, 'span') === 'all';
         const { spanW, ...rest } = ctx;
         const c = spanW === undefined ? ctx : span ? { ...rest, width: spanW, cbW: spanW } : rest;
-        for (const r of this.element(n, c as Ctx)) items.push(r);
+        // 子の lh の基準 (子の行の高さ) を、次の兄弟に持ち越さない
+        const lh = this.lenLh;
+        try {
+          for (const r of this.element(n, c as Ctx)) items.push(r);
+        } finally {
+          this.lenLh = lh;
+        }
       }
     }
     // 隣り合う文字列を連結
@@ -2862,6 +3438,9 @@ class Importer {
         // 子の包含ブロックの高さ: このブロックの高さの指定があればその値。無ければ百分率は auto
         c3.cbH = box.height;
         if (box.width !== undefined && c3.wm === 'horizontal-tb') c3.width = box.width;
+        // ドロップキャップの性質 (axf:initial-letters-*。継承される) を、子へ渡す
+        const ilInh = this.initialLettersInherited(n, ctx);
+        if (ilInh) c3.initialLetters = ilInh;
         this.report.counts.blocks++;
         const blk: LBlock = { type: 'block', ...this.idOf(n), ...style, ...box, children: this.children(n, c3) };
         // 行グリッド (axf:baseline-grid。HTML の -ah-baseline-grid と同じ受け皿)
@@ -2870,6 +3449,8 @@ class Importer {
         // fo:initial-property-set (§6.6.4): 最初の行の書式
         const ips = this.els(n).find((e) => this.isFo(e) && this.name(e) === 'initial-property-set');
         if (ips) this.firstLineOf(blk, ips, c3);
+        // ドロップキャップ (アンテナハウスの拡張 axf:initial-letters)
+        if (tag === 'block') this.initialLettersOf(n, blk, c3);
         const clr = this.clearOf(n);
         if (clr) blk.clear = clr;
         // relative-position (§7.13.5): 組んだ箱をずらす。縦書きの箱と、負の z-index (背面に置く) は、組版に受け皿が無いので報告する
@@ -3677,6 +4258,7 @@ class Importer {
       // 互換モード: コンテナの外の indent を中へ持ち込まない (従来どおり)
       kids = this.children(n, { ...c2, width: innerW, cbW: innerW, cbH: box.height });
     }
+    if (ccIn > 1) kids = this.liftColumnSpans(kids, c2.wm);
     // 行グリッド (axf:baseline-grid): コンテナの中身は別の流れなので、中身を、その指定を持つブロックで包む (new・root)。
     // コンテナの中へは外の行グリッドが届かないので、none は何もしなくてよい
     const grid = this.baselineGridOf(n);

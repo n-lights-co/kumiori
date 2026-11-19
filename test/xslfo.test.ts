@@ -1018,11 +1018,12 @@ describe('XSL-FO 変換: 既定値の流儀 (S-13)', () => {
 });
 
 describe('XSL-FO 変換: overflow (S-12)', () => {
-  it('block-container の overflow=hidden / scroll は切り抜き、condense などは未対応として報告', () => {
+  it('block-container の overflow=hidden / scroll は切り抜き。condense (アンテナハウスの拡張の値) は互換モードでは詰め込みの指定 (知らせない)', () => {
     const r = imp(fo('<fo:block-container overflow="hidden" height="10mm"><fo:block>a</fo:block></fo:block-container><fo:block-container overflow="scroll"><fo:block>b</fo:block></fo:block-container><fo:block-container overflow="condense"><fo:block>c</fo:block></fo:block-container>'));
     const [a, b, c] = r.document.sequences[0].flow.children as LBlockContainer[];
     expect([a.overflow, b.overflow, c.overflow]).toEqual(['hidden', 'hidden', undefined]);
-    expect(r.report.unsupported['overflow:condense']).toBe(1);
+    expect(c.condense).toEqual({ methods: ['font-size'] });
+    expect(Object.keys(r.report.unsupported).filter((k) => k.includes('condense'))).toEqual([]);
     // 組版結果の Area に clip が付く
     const t = E.engine.layout(r.document);
     let clipped = 0;

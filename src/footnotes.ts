@@ -52,6 +52,8 @@ export class FootnoteCtx {
   readonly format: NonNullable<FootnoteOptions['numberFormat']>;
   readonly referenceScale: number;
   readonly spacing: number;
+  /** 脚注の領域の高さの上限 (FootnoteOptions.maxHeight) */
+  readonly maxHeight: number | undefined;
   readonly separator: { length?: number; pattern: 'rule' | 'dots'; thickness: number; color: string; spaceBefore: number; spaceAfter: number } | null;
   private numbers = new WeakMap<LFootnote, number>();
   /** 組んだ本体。脚注領域の幅 (本文領域の inline サイズ) ごとに覚える (幅の違うページマスターへ続いたときは、その幅で組み直す) */
@@ -71,6 +73,7 @@ export class FootnoteCtx {
     this.referenceScale = opts.referenceScale ?? 0.7;
     this.spacing = opts.spacing ?? 2;
     this.counter = (opts.startNumber ?? 1) - 1;
+    this.maxHeight = opts.maxHeight;
     const s = opts.separator;
     this.separator =
       s === false
@@ -83,9 +86,22 @@ export class FootnoteCtx {
     return this.counter;
   }
 
-  /** 参照記号・本体の見出しに使うラベル。番号は文書順に 1 度だけ採番 (何度呼んでも同じ) */
+  /** 参照記号に使うラベル (本体の見出しは markerLabel)。番号は文書順に 1 度だけ採番 (何度呼んでも同じ) */
   label(fn: LFootnote): string {
     if (fn.label !== undefined) return fn.label;
+    return `${fn.callPrefix ?? this.opts.labelPrefix ?? ''}${this.numberText(fn)}${fn.callSuffix ?? this.opts.labelSuffix ?? ''}`;
+  }
+
+  /** 本体の見出しに使うラベル (FootnoteOptions.markerPrefix・markerSuffix。省略時は参照記号と同じ前後の文字) */
+  markerLabel(fn: LFootnote): string {
+    if (fn.label !== undefined) return fn.label;
+    const pre = fn.markerPrefix ?? fn.callPrefix ?? this.opts.markerPrefix ?? this.opts.labelPrefix ?? '';
+    const post = fn.markerSuffix ?? fn.callSuffix ?? this.opts.markerSuffix ?? this.opts.labelSuffix ?? '';
+    return `${pre}${this.numberText(fn)}${post}`;
+  }
+
+  /** 番号の字 (前後の文字を付ける前)。番号は文書順に 1 度だけ採番 */
+  private numberText(fn: LFootnote): string {
     let n = this.numbers.get(fn);
     if (n === undefined) {
       n = ++this.counter;
@@ -94,8 +110,8 @@ export class FootnoteCtx {
       if (k !== undefined) n = (this.opts.startNumber ?? 1) + k;
       this.numbers.set(fn, n);
     }
-    const body = this.opts.format ? formatPageNumber(n, this.opts.format) : formatNumber(n, this.format);
-    return `${this.opts.labelPrefix ?? ''}${body}${this.opts.labelSuffix ?? ''}`;
+    const f = fn.numberFormat ?? this.opts.format;
+    return f ? formatPageNumber(n, f) : formatNumber(n, this.format);
   }
 
   private claimed = new WeakSet<LFootnote>();
@@ -140,7 +156,7 @@ export class FootnoteCtx {
     if (!byWidth) this.entries.set(fn, (byWidth = new Map()));
     let e = byWidth.get(key);
     if (!e) {
-      const label = this.label(fn);
+      const label = this.markerLabel(fn);
       e = this.layoutBody({ ...fn, children: withLabel(fn.children, label) as LFootnote['children'] }, label, width);
       byWidth.set(key, e);
     }
@@ -192,14 +208,28 @@ export class FootnoteCtx {
  * 脚注を行単位で分割する。budget に収まる行を head、残りを rest にする。入れ子のブロックは中まで降りて、その中の行で分ける
  * (分けたブロックは、head 側の終端・rest 側の始端の罫線と余白を落とす)。
  * 先頭の 1 行は budget に収まらなくても head に入れる (前進を保証)。分けられなければ null。
+ *
+ * 手間は、head に置く分 (と、降りる入れ子の深さ) に比例する: rest は子を写さずに、元の子の並びと始まりの位置で持ち (SplitView)、
+ * rest.node を読んだときに初めて箱にする。1 ページに 1 行ずつしか置けない長い脚注を、続くページへ何度も分けても、
+ * 全体の手間は脚注の大きさに比例する (分けるたびに残りの子を全部写すと、行の数の 2 乗になった)
  */
 export function splitEntry(e: FootEntry, budget: number): { head: FootEntry; rest: FootEntry } | null {
-  const r = splitTree(e.node, budget, true);
+  const r = splitView(views.get(e) ?? viewOf(e.node), budget, true);
   if (!r) return null;
   return {
     head: { node: r.head, height: r.head.bsize },
-    rest: { node: r.rest, height: r.rest.bsize, cont: true, after: e.after },
+    rest: restEntry(r.rest, e.after),
   };
+}
+
+/**
+ * 脚注 (分けた残りを含む) の、それ以上分けられない単位 (行と、子の無い箱) の数。splitEntry は 1 回に少なくとも 1 つを head に置き、
+ * head と rest で単位を分け合う (前進の保証) ので、1 つの脚注の続きのページの数は、白ページを除いて、これを超えない。
+ * 手間は入れ子の深さほど (子の並びごとの数は覚えておく)
+ */
+export function footUnits(e: FootEntry): number {
+  const v = views.get(e);
+  return v ? viewUnits(v) : nodeUnits(e.node);
 }
 
 const EPS = 0.01;
@@ -211,39 +241,174 @@ function edges(n: LNode): { s: number; e: number; sSide: keyof LNode['padding'];
   return { s: n.padding[sSide] + (n.border[sSide]?.width ?? 0), e: n.padding[eSide] + (n.border[eSide]?.width ?? 0), sSide, eSide };
 }
 
-/** 箱 n を、始端から budget のところで 2 つに分ける。行は分けず、入れ子の箱は中で分ける */
-function splitTree(n: LNode, budget: number, force: boolean): { head: LNode; rest: LNode } | null {
-  const ed = edges(n);
-  const kids = [...n.children].sort((x, y) => x.b - y.b);
+/**
+ * 分けた残りの箱 (または、まだ分けていない箱)。子の並びは写さずに持つ: 子は first (前に分けた子の残り。あれば先頭) と、
+ * kids[start..] (位置は b - off)。kids は block 方向の位置の順に並べた子 (sortedKids。元の箱の子の配列そのものか、1 度だけ並べた写し)
+ */
+interface SplitView {
+  /** 子を除く箱の値 (children は使わない。b は親の箱の中での位置) */
+  tpl: LNode;
+  first?: SplitView;
+  kids: readonly LNode[];
+  start: number;
+  off: number;
+  /** kids の子を置くとき、位置を直した写しにするか (分けた残りの子は写す。まだ分けていない箱の子は、そのまま置く) */
+  copy: boolean;
+}
+
+/** 分けた残りの脚注の SplitView (rest.node を箱にしないまま、続けて分けるため) */
+const views = new WeakMap<FootEntry, SplitView>();
+
+/** 子の配列ごとに、block 方向の位置の順に並べた子と、i 番目から後ろの子の終わり (b + bsize) の最大 (1 度だけ求めて覚える) */
+const sortedCache = new WeakMap<readonly LNode[], { kids: readonly LNode[]; sufEnd: Float64Array }>();
+function sorted(children: readonly LNode[]): { kids: readonly LNode[]; sufEnd: Float64Array } {
+  let c = sortedCache.get(children);
+  if (!c) {
+    // ふつうは並んでいる (行・ブロックを順に積む) ので写さない。並んでいなければ、1 度だけ並べる (安定な並べ替え。前と同じ順)
+    let inOrder = true;
+    for (let k = 1; k < children.length && inOrder; k++) if (children[k].b < children[k - 1].b) inOrder = false;
+    const kids = inOrder ? children : [...children].sort((x, y) => x.b - y.b);
+    const sufEnd = new Float64Array(kids.length + 1);
+    sufEnd[kids.length] = -Infinity;
+    for (let k = kids.length - 1; k >= 0; k--) sufEnd[k] = Math.max(sufEnd[k + 1], kids[k].b + kids[k].bsize);
+    c = { kids, sufEnd };
+    sortedCache.set(children, c);
+    if (kids !== children) sortedCache.set(kids, c);
+  }
+  return c;
+}
+
+const viewOf = (n: LNode): SplitView => ({ tpl: n, kids: sorted(n.children).kids, start: 0, off: 0, copy: false });
+
+const childCount = (v: SplitView) => (v.first ? 1 : 0) + v.kids.length - v.start;
+
+/** SplitView を箱にする (子を写すのは、ここで 1 度だけ) */
+function materialize(v: SplitView): LNode {
+  const children: LNode[] = v.first ? [materialize(v.first)] : [];
+  for (let k = v.start; k < v.kids.length; k++) children.push(v.copy ? { ...v.kids[k], b: v.kids[k].b - v.off } : v.kids[k]);
+  return { ...v.tpl, children };
+}
+
+function restEntry(v: SplitView, after: number | undefined): FootEntry {
+  let node: LNode | undefined;
+  const e: FootEntry = {
+    get node() {
+      return (node ??= materialize(v));
+    },
+    set node(n: LNode) {
+      node = n;
+      views.delete(e);
+    },
+    height: v.tpl.bsize,
+    cont: true,
+    after,
+  };
+  views.set(e, v);
+  return e;
+}
+
+/**
+ * 単位の数は、子の並びごとに 1 度だけ数えて覚える (unitsCache・unitsSuffix。分けた残りの子は位置を直した写しだが、その子の並びは元のまま)。
+ * 守り (ContinuationGuard) が、続きのページを足すたびに送る脚注の単位を数えても、ページごとの手間は脚注の大きさに比例しない
+ */
+const unitsCache = new WeakMap<readonly LNode[], number>();
+function nodeUnits(n: LNode): number {
+  if (n.kind === 'line' || !n.children?.length) return 1;
+  let u = unitsCache.get(n.children);
+  if (u === undefined) {
+    u = 0;
+    for (const c of n.children) u += nodeUnits(c);
+    unitsCache.set(n.children, u);
+  }
+  return u;
+}
+
+/** 並べた子 kids の、i 番目から後ろの子の単位の数の和 */
+const unitsSuffixCache = new WeakMap<readonly LNode[], Float64Array>();
+function unitsSuffix(kids: readonly LNode[]): Float64Array {
+  let a = unitsSuffixCache.get(kids);
+  if (!a) {
+    a = new Float64Array(kids.length + 1);
+    for (let k = kids.length - 1; k >= 0; k--) a[k] = a[k + 1] + nodeUnits(kids[k]);
+    unitsSuffixCache.set(kids, a);
+  }
+  return a;
+}
+
+function viewUnits(v: SplitView): number {
+  if (v.tpl.kind === 'line' || !childCount(v)) return 1;
+  return (v.first ? viewUnits(v.first) : 0) + unitsSuffix(v.kids)[v.start];
+}
+
+/** 箱 v を、始端から budget のところで 2 つに分ける。行は分けず、入れ子の箱は中で分ける */
+function splitView(v: SplitView, budget: number, force: boolean): { head: LNode; rest: SplitView } | null {
+  const ed = edges(v.tpl);
   const head: LNode[] = [];
-  const rest: LNode[] = [];
-  for (const c of kids) {
-    if (rest.length) {
-      rest.push(c);
-      continue;
-    }
-    const top = ed.s + c.b;
-    const bottom = top + c.bsize;
-    if (bottom <= budget + EPS) head.push(c);
-    else if (top >= budget - EPS || c.kind === 'line' || !c.children.length) rest.push(c);
+  let headEnd = -Infinity;
+  const push = (c: LNode) => {
+    head.push(c);
+    headEnd = Math.max(headEnd, c.b + c.bsize);
+  };
+  /** kids[k] を、この箱の中の位置にして返す */
+  const kid = (k: number): LNode => (v.copy ? { ...v.kids[k], b: v.kids[k].b - v.off } : v.kids[k]);
+  // 残り: restFirst (分けた子の残り、または置かなかった first) と kids[restStart..]
+  let restFirst: SplitView | undefined;
+  let restStart = v.kids.length;
+  /** restFirst が kids[frontKid] を分けた残りなら、その番号 */
+  let frontKid = -1;
+  let k = v.start;
+  if (v.first) {
+    const f = v.first;
+    const top = ed.s + f.tpl.b;
+    if (top + f.tpl.bsize <= budget + EPS) push(materialize(f));
     else {
-      const r = splitTree(c, budget - top, force && !head.length);
+      const r = top >= budget - EPS || f.tpl.kind === 'line' || !childCount(f) ? null : splitView(f, budget - top, force);
       if (r) {
-        head.push(r.head);
-        rest.push(r.rest);
-      } else rest.push(c);
+        push(r.head);
+        restFirst = r.rest;
+      } else restFirst = f;
+      restStart = k;
+      k = v.kids.length;
     }
   }
+  for (; k < v.kids.length; k++) {
+    const o = v.kids[k];
+    const top = ed.s + (o.b - v.off);
+    if (top + o.bsize <= budget + EPS) {
+      push(kid(k));
+      continue;
+    }
+    restStart = k;
+    if (!(top >= budget - EPS || o.kind === 'line' || !o.children.length)) {
+      const c = kid(k);
+      const r = splitView(viewOf(c), budget - top, force && !head.length);
+      if (r) {
+        push(r.head);
+        restFirst = r.rest;
+        frontKid = k;
+        restStart = k + 1;
+      }
+    }
+    break;
+  }
   // 先頭の行すら入らないときは、最初の子 (行・画像などの箱) を 1 つだけ head に入れる (前進を保証)
-  if (!head.length && force && rest.length) head.push(rest.shift()!);
-  if (!head.length || !rest.length) return null;
-  const headEnd = Math.max(...head.map((c) => c.b + c.bsize));
-  const off = Math.min(...rest.map((c) => c.b));
-  const restKids = rest.map((c) => ({ ...c, b: c.b - off }));
-  const restEnd = Math.max(...restKids.map((c) => c.b + c.bsize));
-  const headNode: LNode = { ...n, children: head, bsize: ed.s + headEnd, padding: { ...n.padding, [ed.eSide]: 0 }, border: { ...n.border } };
+  if (!head.length && force) {
+    if (restFirst) {
+      push(materialize(restFirst));
+      restFirst = undefined;
+    } else if (restStart < v.kids.length) push(kid(restStart++));
+  }
+  if (!head.length || (!restFirst && restStart >= v.kids.length)) return null;
+  // 残りの子は、先頭の子の位置を 0 にする (子は位置の順に並ぶので、先頭の子の位置が最小)
+  // 残りの子の位置は、元の子の位置から、先頭の子の元の位置を 1 度だけ引いて求める (先頭の子は丸めずに 0。分けるたびに引き直した前の形と、
+  // 位置は浮動小数点の丸めの差 (1e-13 ほど) まで同じ)
+  const off = restFirst ? restFirst.tpl.b : v.kids[restStart].b - v.off;
+  const first = restFirst && { ...restFirst, tpl: { ...restFirst.tpl, b: restFirst.tpl.b - off } };
+  const restOff = restFirst ? (frontKid >= 0 ? v.kids[frontKid].b : v.off) : v.kids[restStart].b;
+  const restEnd = Math.max(first ? first.tpl.b + first.tpl.bsize : -Infinity, sorted(v.kids).sufEnd[restStart] - restOff);
+  const headNode: LNode = { ...v.tpl, children: head, bsize: ed.s + headEnd, padding: { ...v.tpl.padding, [ed.eSide]: 0 }, border: { ...v.tpl.border } };
   delete headNode.border[ed.eSide];
-  const restNode: LNode = { ...n, children: restKids, bsize: restEnd + ed.e, padding: { ...n.padding, [ed.sSide]: 0 }, border: { ...n.border }, cont: true };
-  delete restNode.border[ed.sSide];
-  return { head: headNode, rest: restNode };
+  const restTpl: LNode = { ...v.tpl, children: [], bsize: restEnd + ed.e, padding: { ...v.tpl.padding, [ed.sSide]: 0 }, border: { ...v.tpl.border }, cont: true };
+  delete restTpl.border[ed.sSide];
+  return { head: headNode, rest: { tpl: restTpl, first, kids: v.kids, start: restStart, off: restOff, copy: true } };
 }

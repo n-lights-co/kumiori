@@ -32,6 +32,12 @@ export interface Edges {
 /** 入力用: 数値 1 つなら 4 辺共通 */
 export type EdgesInput = number | Partial<Edges>;
 
+/** 百分率と長さの和 (pct は基準に掛ける割合、len は pt)。基準の大きさ b (pt) に対して pct × b + len */
+export interface PercentLength {
+  pct: number;
+  len: number;
+}
+
 /** 下線・上線・取り消し線の線の種類 (CSS の text-decoration-style) */
 export type TextDecorationStyle = 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
 
@@ -117,6 +123,16 @@ export interface TextStyle {
   fontFamily?: string;
   /** pt */
   fontSize?: number;
+  /**
+   * fontSize が、作成者の書いた絶対の大きさ (pt・mm やキーワード。% や em ではない)。詰め込み (LBlockContainer.condense) の font-size で、
+   * この節とその中身の字の大きさは変えない
+   */
+  fontSizeFixed?: boolean;
+  /**
+   * 詰め込みから除く節 (アンテナハウスの拡張の axf:overflow-condense="none" を書いた要素。受け継がない)。外の容器の詰め込み
+   * (LBlockContainer.condense) で、この節とその中身の字の大きさ・行の高さは変えない
+   */
+  condenseNone?: boolean;
   fontWeight?: number;
   /** 下線・上線・取り消し線 (fo の text-decoration)。子へ引き継がれ、false で打ち消す */
   /**
@@ -596,6 +612,9 @@ export interface BackgroundImage {
   /** x・y の長さ (pt) を、右の端・下の端から内側への距離とする (CSS の background-position: right 10px bottom 20px) */
   xFromEnd?: boolean;
   yFromEnd?: boolean;
+  /** 百分率の位置 (x・y) に足す長さ (pt。CSS の background-position: calc(50% + 10px) の長さの部分。CSS Values 4 §10.11) */
+  xOffset?: number;
+  yOffset?: number;
   /** 画像の大きさ (pt)。省略は画像本来の大きさ (px × 0.75) */
   width?: number;
   height?: number;
@@ -605,6 +624,9 @@ export interface BackgroundImage {
    */
   widthPct?: number;
   heightPct?: number;
+  /** 百分率の大きさに足す長さ (pt。CSS の background-size: calc(50% + 10px) の長さの部分) */
+  widthOffset?: number;
+  heightOffset?: number;
   /** 百分率のとき、auto の (縦横比で決める) ほう */
   pctAuto?: 'width' | 'height';
   aspect?: number;
@@ -640,6 +662,9 @@ export interface ObjectPosition {
   y: number | `${number}%`;
   xFromEnd?: boolean;
   yFromEnd?: boolean;
+  /** 百分率の位置に足す長さ (pt。object-position: calc(50% + 10px) の長さの部分) */
+  xOffset?: number;
+  yOffset?: number;
 }
 
 /** 角丸 (アンテナハウスの axf:border-radius)。四隅を半径 rx (水平)・ry (垂直) の楕円で丸める */
@@ -648,10 +673,14 @@ export interface BorderRadius {
   ry: number;
   /**
    * 角ごとの半径 (左上・右上・右下・左下の順に [水平, 垂直])。あれば rx・ry より優先する (CSS の border-*-radius)。
-   * 百分率は箱の幅 (水平)・高さ (垂直) に対して。隣り合う半径の和が辺より長ければ、すべてを同じ比で縮める
+   * 百分率は箱の幅 (水平)・高さ (垂直) に対して。{ pct, len } は百分率と長さの和 (CSS の calc(10% + 5pt))。
+   * 隣り合う半径の和が辺より長ければ、すべてを同じ比で縮める
    */
-  corners?: Array<[number | `${number}%`, number | `${number}%`]>;
+  corners?: Array<[RadiusLength, RadiusLength]>;
 }
+
+/** 角の半径: 長さ (pt)、百分率、百分率 (pct。10% なら 10) と長さ (len。pt) の和 */
+export type RadiusLength = number | `${number}%` | { pct: number; len: number };
 
 /** 影 (axf:box-shadow・CSS の box-shadow)。ぼかしは、少しずつ太らせた半透明の形の重ねで表す */
 export interface BoxShadow {
@@ -710,6 +739,29 @@ export interface BoxStyle {
   width?: number;
   height?: number;
   /**
+   * width・height のうち、読み込みのときに包含ブロックの大きさの見積もりから長さにしたもの (HTML の百分率の指定と、auto の幅を
+   * max-width・min-width で抑えたもの)。中身の幅を測る組版 (min-content・max-content) では、その向きの大きさを auto として扱い
+   * (CSS Sizing 3 §5.2.1)、max・min (pt。width・height と同じ box-sizing の箱の長さの上限・下限) で抑える (§5.1)。
+   * auto は、指定が auto の大きさ (上限・下限で抑えた見積もり): 組むときも、置く場所の大きさを max・min で抑えた大きさにする (CSS 2.1 §10.4)
+   */
+  estimatedSize?: { width?: { auto?: boolean; max?: number; min?: number }; height?: { auto?: boolean; max?: number; min?: number } };
+  /**
+   * 包含ブロックの幅に対する百分率で指定した寸法 (HTML の CSS。百分率と長さの和の calc() も)。読み込みのときは、包含ブロックの幅の
+   * 見積もりから長さにして width・margin などに入れてあり、組版エンジンは、箱を置くときの実際の包含ブロックの inline の大きさで
+   * 解き直して、それに代える (CSS 2.1 §10.2・§10.4・§8.3・§8.4。margin・padding は上下も包含ブロックの inline の大きさが基準:
+   * CSS Writing Modes 4 §7.2)。width・minWidth・maxWidth は、横書きの流れの中の箱の物理の幅 (どれかが百分率なら、長さで書いたものも
+   * pct 0 で入れる。width が無ければ auto)。textIndent は、箱の内容の幅が基準 (CSS Text 3 §8.1)。中身の幅を測る組版で、基準が
+   * 測る幅によるときは、幅は auto、上限は none、下限・margin・padding・textIndent は百分率の部分を 0 として解く (CSS Sizing 3 §5.2.1)
+   */
+  percent?: {
+    width?: PercentLength;
+    minWidth?: PercentLength;
+    maxWidth?: PercentLength;
+    margin?: Partial<Record<keyof Edges, PercentLength>>;
+    padding?: Partial<Record<keyof Edges, PercentLength>>;
+    textIndent?: PercentLength;
+  };
+  /**
    * 幅の決まったブロックの、auto の左右の余白の向き (CSS 2.1 §10.3.3)。組むときに、置く場所の残りを 'center' は左右に等分、
    * 'end' は終わり側、'start' は始まり側の余白に足す (包含ブロックの幅が読み込みのときに分からない flex の項目の中などで使う)
    */
@@ -723,7 +775,10 @@ export interface BoxStyle {
    * 高さを決める。scroll なしの箱 (overflow: visible) は中身で伸びる (自動の最小の大きさ。§5.1)、切り抜く箱は比の高さで固定
    */
   aspectRatio?: number;
-  /** block 方向の内容の寸法の最大値 (pt。max-height。aspect-ratio の箱でだけ使う: 比から出した大きさを抑える。CSS Sizing 4 §5.1) */
+  /**
+   * block 方向の内容の寸法の最大値 (pt。max-height)。aspect-ratio の箱では、比から出した大きさを抑える (CSS Sizing 4 §5.1)。
+   * 高さが中身で決まる横書きの段組の箱では、段の取れる高さの上限にする (箱の高さは抑えない。CSS Multi-column 1 §7.1)
+   */
   maxBlockSize?: number;
   /** inline 方向の内容の寸法の最小値・最大値 (pt。横書きの min-width・max-width。aspect-ratio の箱でだけ使う。CSS Sizing 4 §5.1) */
   minInlineSize?: number;
@@ -764,6 +819,11 @@ export interface PageMaster {
   /** 本文領域 (region-body) の余白 (mm) */
   margins: { top: number; right: number; bottom: number; left: number };
   /**
+   * 余白の箱を置く、ページの余白 (mm。CSS の @page の margin)。@page に padding があるときだけ (margins は margin に padding を足したもの)。
+   * 無ければ margins を使う
+   */
+  marginBoxMargins?: { top: number; right: number; bottom: number; left: number };
+  /**
    * 段組 (fo:region-body の column-count / column-gap)。gap は mm (既定 12pt)。
    * 脚注と前方 float は、既定 (footnotePosition='page') ではページ全体 (全段を貫く) に置き、'column' なら段ごとに置く (axf:footnote-position)。
    */
@@ -792,6 +852,12 @@ export interface PageMaster {
    * 背景画像の位置・cover / contain もその範囲に対して決める (CSS の根元の要素 (html・body) の背景。WeasyPrint と同じ)
    */
   backgroundArea?: 'page' | 'content';
+  /**
+   * 背景画像の位置の基準の領域 (仕上がりの各辺から内側への幅、mm)。CSS の @page の背景は、塗り足しまでのページの箱の全体に描くが、
+   * 位置・百分率の大きさ・cover / contain・繰り返しの並べ始めは、ページの箱の padding の領域 (余白と罫線の内側) で決める (CSS Paged Media 3 §3.1)。
+   * 無ければ、描く範囲 (塗り足しを含む用紙の全体か、backgroundArea が content なら本文の領域) で決める
+   */
+  backgroundOrigin?: { top: number; right: number; bottom: number; left: number };
 }
 
 // ───────────────────────── 論理ツリー (Input) ─────────────────────────
@@ -828,6 +894,21 @@ export interface LDocument extends BaseNode {
    * 省略: CSS の margin の相殺 (正の最大と負の最小の和)
    */
   spaceResolution?: 'xsl';
+  /**
+   * 中身の無い目印 (<span id="…"></span> など) だけの行を、マージンの相殺を断つものとして扱う (WeasyPrint の組み方。HtmlImportOptions.idLinesSeparateMarginsWp)。
+   * 省略: CSS 2.1 §9.4.2 のとおり、その行は無いものとして扱い、前後のマージンを相殺する
+   */
+  idLinesSeparateMargins?: boolean;
+  /** 見つからないページ番号の参照 (target-counter()) を空にする (WeasyPrint の組み方。HtmlImportOptions.unresolvedCitationEmptyWp)。省略: 「?」 */
+  unresolvedCitationEmpty?: boolean;
+  /**
+   * ページの左右 (条件付きのマスターの oddOrEven・odd-page と even-page の区切り・force-page-count の end-on-even と end-on-odd・
+   * 綴じ側と小口側) を、ページ番号の偶奇でなく、文書の最初からのページの順 (何枚目か。白ページも 1 枚と数える) の偶奇で決める
+   * (CSS の組み方。CSS Paged Media 3 §3.3: 左右のページは交互に来て、最初のページの左右はページの進む向きで決まる。§6.1 の page の
+   * カウンターは、番号の表示のためのもの)。odd は、順が奇数のページ (左から右へ進む文書の右ページ)。
+   * 省略: ページ番号の偶奇 (XSL 1.1 §6.4.11 の odd-or-even。XSL-FO と、HTML の互換のスタイル)
+   */
+  pageSidesByOrder?: boolean;
   /**
    * 索引の鍵の付いた所 (XSL-FO の index-key・fo:index-range-begin〜-end。XSL 1.1 §6.10・§7.24)。文書の中の順に並べる。
    * LIndexPageCitationList が、ここに並んだ所の置かれたページを引く。無ければ索引を使わない文書
@@ -871,7 +952,7 @@ export interface PageMasterCondition {
   blankOrNotBlank?: 'blank' | 'not-blank' | 'any';
   /** true なら、ページシーケンスの末尾に足した白ページ (force-page-count・次のシーケンスの左右合わせ) だけに当てる (途中の改ページで入る白ページには当てない) */
   trailingBlank?: boolean;
-  /** ページ番号の偶奇 (initialPageNumber を考慮) */
+  /** ページ番号の偶奇 (initialPageNumber を考慮)。LDocument.pageSidesByOrder のときは、文書の最初からのページの順の偶奇 */
   oddOrEven?: 'odd' | 'even' | 'any';
 }
 
@@ -1014,6 +1095,11 @@ export interface LBlock extends BaseNode, BoxStyle {
   breakAfter?: BreakKind;
   /** 段組の本文で、フローの直下に置いたときに全段を貫く (fo:block の span="all")。直前までの段は釣り合わせる */
   span?: 'all';
+  /**
+   * 段組のコンテナの中で、span="all" の前後で分けたブロックの、2 つ目からの断片 (XSL-FO)。断片の中の最初の行は、ブロックの最初の行では
+   * ないので、text-indent を当てない (XSL 1.1 §7.16.11: 字下げするのは、ブロックの最初の領域の最初の行だけ)
+   */
+  spanContinued?: boolean;
   /** ブロック内の改ページを禁止 (可能な限り) */
   keepTogether?: boolean;
   /**
@@ -1078,6 +1164,14 @@ export interface LInline extends BaseNode {
   noBreak?: boolean;
   /** ベースラインからの上げ下げ (super / sub / pt。正が上)。文字サイズは別に fontSize で指定する */
   baselineShift?: 'super' | 'sub' | number;
+  /**
+   * CSS の vertical-align のキーワード (置き換えでない行内の箱。CSS 2.1 §10.8.1。横書きの行だけ)。行内の箱は、line-height の高さの箱
+   * (最初に使える書体の上下に半行間を足したもの):
+   *  - top・bottom: その要素と中身 (aligned subtree) の箱の上端・下端を、行の箱の上端・下端にそろえる
+   *  - middle: 箱の上下の中央を、親の基線から親の x-height の半分だけ上にそろえる
+   *  - text-top・text-bottom: 箱の上端・下端を、親の内容の領域の上端・下端にそろえる
+   */
+  verticalAlign?: 'top' | 'bottom' | 'middle' | 'text-top' | 'text-bottom';
   /** 文字を囲む罫線・内側の余白 (fo:inline の border / padding)。行をまたぐときは、切れ目の辺は描かない */
   border?: BorderInput;
   padding?: EdgesInput;
@@ -1314,6 +1408,35 @@ export interface LImage extends BaseNode {
   boxRadius?: BorderRadius;
   width?: number;
   height?: number;
+  /**
+   * 幅は、百分率の指定 (width: 100% など) を、読み込みのときの包含ブロックの幅の見積もりで長さにしたもの (percentSize で組むときに解き直さない
+   * 置換要素: 行内の svg など)。grid の項目の min-content を測るときは、縮められる置換要素の百分率の幅として 0 にする (CSS Sizing 3 §5.2.2)
+   */
+  estimatedWidth?: boolean;
+  /**
+   * 包含ブロックの幅に対する百分率で指定した幅と、その上限・下限 (HTML の CSS の width・max-width・min-width。長さで書いたものも pct 0 で入れる。
+   * どれかが百分率のときだけ)。width・height は、読み込みのときの見積もりの幅で決めた大きさで、組版エンジンは、行を組むときの
+   * 包含ブロックの内容の幅で、幅を解き直して、上限・下限 (高さの上限・下限 minHeight・maxHeight (pt) も) を縦横比を保って当てる
+   * (CSS 2.1 §10.2・§10.3.2・§10.4)。height は、長さで指定した高さ (pt。無ければ auto: 幅と本来の縦横比から決める)。中身の幅を測る組版で、基準が測る幅に
+   * よるときは、min-content を測るときは百分率の部分を 0 として、max-content を測るときは auto (上限は none) として解く (CSS Sizing 3 §5.2.1)。
+   * 横書きの行の中の画像だけ
+   */
+  percentSize?: {
+    width?: PercentLength;
+    maxWidth?: PercentLength;
+    minWidth?: PercentLength;
+    minHeight?: number;
+    maxHeight?: number;
+    height?: number;
+    /**
+     * maxWidth は既定のスタイルのもの (Kumiori の既定の img { max-width: 100% })、width・height は HTML の属性か auto: 幅・高さ
+     * (無い向きは縦横比から) を望む大きさとして、上限・下限を縦横比を保って当てる (CSS 2.1 §10.4 の表。属性の大きさの画像を、
+     * ページの幅に収めるために縮めても、歪めない)
+     */
+    uaFit?: boolean;
+    /** uaFit のときの、属性の高さ / 幅 (width を項目の幅に置き換えても、この比で高さを決める) */
+    fitRatio?: number;
+  };
   /** 画像本来の大きさに対する倍率 (fo の content-width / content-height の百分率)。width / height があればそちらを優先 */
   widthScale?: number;
   heightScale?: number;
@@ -1327,6 +1450,11 @@ export interface LImage extends BaseNode {
    * (XSL-FO の content-width の百分率など) は、その大きさに掛ける
    */
   intrinsicFromImage?: boolean;
+  /**
+   * HTML の img・object の width・height の属性の縦横比 (高さ / 幅)。属性は aspect-ratio: auto w / h の指定にもなる (HTML §15.4.3) ので、
+   * 作成者が auto を書いて属性の大きさを使わない向きも、画像本来の比が無いとき (読めない画像・大きさも viewBox も無い SVG) は、この比で決める
+   */
+  attrRatio?: number;
   /** uniform (既定): width × height に収まるよう縦横比を保って縮尺 / non-uniform: 指定寸法へ引き伸ばす */
   scaling?: 'uniform' | 'non-uniform';
   /**
@@ -1408,6 +1536,11 @@ export interface LInlineContainer extends BaseNode, BoxStyle {
   blockAlign?: 'start' | 'center' | 'end';
   /** 行の中での揃え。既定 baseline (中の最初の行の基線を行の基線に)。central は字面の中央、before-edge / after-edge は字面の上端 / 下端 */
   alignmentBaseline?: 'baseline' | 'central' | 'before-edge' | 'after-edge';
+  /**
+   * CSS の vertical-align: top・bottom の箱 (行の中では、字面の上端・下端に揃える: alignmentBaseline の before-edge・after-edge)。
+   * 自分の部分木を作るので、囲む top・bottom の行内の要素の部分木に入れない (CSS 2.1 §10.8.1 の aligned subtree)。HTML の読み込みが付ける
+   */
+  ownLineAlign?: true;
   /** baseline で揃えるときの、箱の基線。既定 first (中の最初の行)。last は最後の行 (CSS の inline-block。切り抜く箱・行の無い箱は下端) */
   baselineFrom?: 'first' | 'last';
   /**
@@ -1446,7 +1579,35 @@ export interface LFloat extends BaseNode, BoxStyle {
    * leading = 行の上端と下端。字の大きさ・位置は、組むときに書体の値から決める (§7.5.3・§7.6.1)。字を入れたブロックの
    * 字の大きさ・行の高さの指定は使わない (§7.5.1)
    */
-  initialLetter?: { size: number; sink: number; align?: 'alphabetic' | 'ideographic' | 'leading' };
+  initialLetter?: {
+    size: number;
+    sink: number;
+    align?: 'alphabetic' | 'ideographic' | 'leading';
+    /**
+     * 以下は、XSL-FO の axf:initial-letters (アンテナハウスの拡張のドロップキャップ) の指定。HTML の initial-letter は使わない。
+     * length: 字の大きさを長さで指定したもの (pt)。字の大きさはこの値で、size は使わず、字の大文字の高さが届く行の数を、組むときに
+     * 書体の値から求める。sink が 0 なら、その行の数の小数を切り捨てた数
+     */
+    length?: number;
+    /** 最初の行の側を、大文字の高さでなく x-height に合わせる (axf:initial-letters-first-line-head-height。和文・縦書きでは使わない) */
+    xHeight?: boolean;
+    /**
+     * 字の箱の行の進む向きの後ろの空き。値は行ごとで、最後の値はその後の行にも当てる (axf:initial-letters-end-indent)。
+     * pt + dcem × 字の大きさ (dcem はドロップキャップの字の大きさの単位)
+     */
+    endIndent?: Array<{ pt: number; dcem: number }>;
+    /** 字の箱を、行の進む向きにずらす量 (字を置いたブロックの text-indent。pt + dcem × 字の大きさ)。最初の行の字下げには使わない */
+    shift?: { pt: number; dcem: number };
+    /** 字の箱の行の後ろの、さらに字下げする行の数 (adjacent はブロックの終わりまで: Infinity) */
+    adjacent?: number;
+    /** 字の前の約物 (axf:initial-letters-leading-punctuation-position="hang")。その幅だけ、字の箱を行の頭の外へ出す */
+    hangLead?: string;
+    /**
+     * 字の箱の幅 (行の向きの大きさ) を、字の大きさの単位 dcem を含む長さで書いたもの (axf:initial-letters-width)。pt + dcem × 字の大きさ。
+     * 組むときに、float の幅 (縦書きは高さ) にする。dcem を含まない幅は、float の幅のまま渡す
+     */
+    width?: { pt: number; dcem: number };
+  };
   /**
    * 本文に食い込まない、余白に置く注 (傍注)。float の幅は本文領域の幅になり、中身は負の margin で余白へはみ出して置く。
    * 本文の行は短くならない。続けて置く傍注は、前の傍注の下へ積む
@@ -1499,6 +1660,18 @@ export interface LFootnote extends BaseNode {
   referenceAutospace?: boolean;
   /** 本文中の参照記号の書体・太さ・斜体・色・飾り線 (XSL-FO の参照側の fo:inline の指定)。省略は置く所の書式 */
   referenceStyle?: Pick<BaseNode, 'fontFamily' | 'fontWeight' | 'fontStyle' | 'color' | 'textDecoration'>;
+  /**
+   * この脚注の番号の書式 (CSS の、この要素に当たる ::footnote-call・::footnote-marker の content)。省略時は FootnoteOptions の値。
+   * callPrefix・callSuffix は参照記号、markerPrefix・markerSuffix は本体の頭の番号の前後の文字、numberFormat は番号の書式 (FootnoteOptions.format と同じ書き方)
+   */
+  callPrefix?: string;
+  callSuffix?: string;
+  markerPrefix?: string;
+  markerSuffix?: string;
+  numberFormat?: string;
+  /** この脚注の本文の頭の番号の置き方と、outside のときの空き (CSS の、この要素に当たる ::footnote-marker の list-style-position)。省略時は FootnoteOptions の値 */
+  labelPosition?: FootnoteOptions['labelPosition'];
+  labelGapEm?: number;
   children: Array<LBlockLevel | LInlineLevel>;
 }
 
@@ -1515,6 +1688,12 @@ export interface FootnoteOptions {
   continueNumbering?: boolean;
   labelPrefix?: string;
   labelSuffix?: string;
+  /**
+   * 脚注本文の頭の番号の前後の文字 (CSS の ::footnote-marker の content)。省略時は labelPrefix・labelSuffix (参照の印と同じ)。
+   * CSS では、参照の印 (::footnote-call) と本文の頭の印の書式は別 (GCPM 3 §2.5・§2.6)
+   */
+  markerPrefix?: string;
+  markerSuffix?: string;
   /**
    * 脚注本文の番号の置き方。outside: 本文の行の始め側の外にぶら下げる・inside: 本文の前にそのまま置く (CSS の ::footnote-marker の list-style-position)。
    * 指定なし: 番号と本文の間に全角の空きを入れる (XSL-FO)
@@ -1543,6 +1722,11 @@ export interface FootnoteOptions {
   spacing?: number;
   /** 脚注の領域の行の始め側・終わり側の内側の空き pt (CSS の @footnote の padding-left・padding-right など) */
   inset?: { start?: number; end?: number };
+  /**
+   * 脚注の領域の高さの上限 pt (区切りの線と、その前後の空きを含む。CSS GCPM 3 §2.4.2 の @footnote の max-height)。
+   * 超える脚注は、行で分けて (分けられなければ丸ごと) 次のページへ送る。ページに脚注しか無いときは上限を超えてよい
+   */
+  maxHeight?: number;
 }
 
 /**
@@ -1654,6 +1838,13 @@ export interface LTateChuYoko extends BaseNode {
 export interface LBlockContainer extends BaseNode, BoxStyle {
   type: 'block-container';
   /**
+   * 中身が収める高さを超えたら、字の大きさ・行の高さを詰めて収める (アンテナハウスの拡張の overflow="condense" と axf:overflow-condense)。
+   * methods は試す順 (前のもので収まらなければ次)。収める高さは、内容の高さの指定 (height) か maxBlock (pt)、maxBlockPct (本文の領域の高さに
+   * 対する割合。ページに流す本文の中だけ)。どれも無ければ、ページに流す本文の keep-together の容器は本文の領域の高さ、ほかは詰めない (警告に出す)。
+   * minFontSize・minLineHeight は下限 (pt)。clip は、詰めても収まらないときに中身を切り抜く (最後に試す方法の下限の後ろの hidden・error-if-overflow)
+   */
+  condense?: { methods: Array<'font-size' | 'line-height'>; maxBlock?: number; maxBlockPct?: number; minFontSize?: number; minLineHeight?: number; clip?: boolean };
+  /**
    * 縦並びの flex の折り返しの容器 (flex-direction: column と flex-wrap: wrap。Flexbox 1 §9.3): 子を上から積み、高さを超える所で次の列へ移す。
    * 列の幅はその列のいちばん広い子の幅、列の間は gap。reverse (wrap-reverse) なら列を右から並べる。stretch (align-content: normal・stretch) なら、
    * 余った幅を列に等しく分けて列を広げる (Flexbox 1 §9.4 の 15)
@@ -1685,9 +1876,18 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
    * CSS の絶対配置の箱 (positionInContainer・inlineCb) の top・bottom・height のうち、百分率で指定したもの (0.5 = 50%)。
    * 基準は、包含ブロックの padding の箱の高さ (CSS 2.1 §10.1 の 4・§10.5、CSS Position 3 §3.1)。高さが中身で決まる箱も基準になるので、
    * 組版が、基準の箱を組み終えてから、top・bottom には足し (top・bottom に入っている長さは、百分率に足す分)、height には入れる。
-   * pad は、組版が求める基準の箱の高さ (内容の箱) に足して、padding の箱の高さにする量 (pt)
+   * pad は、組版が求める基準の箱の高さ (内容の箱) に足して、padding の箱の高さにする量 (pt)。
+   * left・right は、百分率の left・right と margin-left・margin-right の割合の和 (基準は包含ブロックの padding の箱の幅。left・right に入っている長さに足す)。
+   * padI は、組版が求める基準の箱の幅 (内容の箱) に足して、padding の箱の幅にする量 (pt。百分率の幅・margin・padding・left・right の基準)
    */
-  cbPercent?: { top?: number; bottom?: number; height?: number; pad: number };
+  cbPercent?: { top?: number; bottom?: number; height?: number; pad: number; left?: number; right?: number; padI?: number };
+  /**
+   * 基準がページの領域 (初期包含ブロック・固定配置の箱。CSS 2.1 §10.1 の 1・3) の箱の、位置の指定 (ページの領域の端からの距離。pt) と、
+   * 百分率の top・bottom・height (0.5 = 50%。基準は領域の高さ) と left・right (基準は領域の幅)。left・top などには、読み込みのときに見積もったページの領域で、用紙の端からの
+   * 位置に直した値が入っていて、組版エンジンは、箱を置くページの領域 (:first・:left・:right・名前付きのページで違う) で決め直し、百分率の
+   * 幅・margin・padding (BoxStyle.percent) も、そのページの領域の幅で解く (CSS Paged Media 3 §3)
+   */
+  pageArea?: { left?: number; right?: number; top?: number; bottom?: number; pctLeft?: number; pctRight?: number; pctTop?: number; pctBottom?: number; pctHeight?: number };
   /**
    * 幅の指定が無く、left と right の片方しか無いとき、幅を中身に合わせて縮める (CSS の絶対配置の shrink-to-fit。CSS 2.1 §10.3.7):
    * min(max(最小の内容の幅, 使える幅), 内容の幅)。指定が無ければ、使える幅いっぱい (XSL-FO の absolute-position)
@@ -1745,6 +1945,12 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
      * 仕様では、段組の箱は新しいブロック整形文脈で、最初の子の上の余白は残る
      */
     discardStartMargin?: boolean;
+    /**
+     * 段の数を column-width から決めた段組・段の間の百分率 (HTML の CSS)。count・gap は、読み込みのときの見積もりの幅で決めたもので、
+     * 組版エンジンは、箱を置くときの実際の内容の幅で決め直す (CSS Multi-column 1 §3.4 の擬似アルゴリズム。width は column-width (pt)、
+     * maxCount は column-count (auto なら無し)。gapPct は column-gap の百分率 (0.1 = 10%。基準は段組の箱の内容の幅。CSS Box Alignment 3 §8.1))
+     */
+    byWidth?: { width?: number; maxCount?: number; gapPct?: number };
   };
   /** pt。absolutePosition 時は PageArea 原点基準。right/bottom 指定時は width/height から逆算 */
   top?: number;
@@ -1778,6 +1984,19 @@ export interface LTableColumn {
    * 中身に合わせる列のある行の、項目の列にだけ付く
    */
   flexItem?: LFlexItemColumn;
+  /**
+   * flex の項目の列で、読み込みのときの容器の幅の見積もりで縮めた (か、縮めずに済んだ) もの (中身に合わせる列の無い行)。組むときの実際の
+   * 置く場所 (表の内容の幅) に、列の幅の合計が入りきらなければ、組版エンジンが、この値で項目を縮める (Flexbox 1 §9.7。見積もりより狭い
+   * 所 (grid の項目・表のセル・inline-block・絶対配置の箱の中など) に置いた flex の容器)。width は見積もりで決めた幅 (外側の幅)
+   */
+  flexLate?: LFlexItemColumn;
+  /**
+   * grid の 1 行の表 (LTable.gridTemplate) の、項目 (か、項目の無い残り) の列が占める grid の列の範囲 [from, to)。組版エンジンが、表を置くときの
+   * 内容の幅で列の幅を決め (gridTracks)、この範囲の列の幅と、間の間隔を足した幅にする
+   */
+  gridSpan?: [number, number];
+  /** grid の 1 行の表の、項目の間の間隔の列 (幅は LTable.gridTemplate の間隔を、表を置くときの内容の幅で解いたもの) */
+  gridGap?: boolean;
 }
 
 /** flex の項目の列の、縮めるための値 (LTableColumn.flexItem。長さは pt) */
@@ -1796,8 +2015,21 @@ export interface LFlexItemColumn {
    */
   minAuto?: boolean;
   minCap?: number;
+  /**
+   * 項目が画像そのもの (置換要素) のときの自動の最小の大きさ (Flexbox 1 §4.5): 組むときに測った画像の幅 (指定の幅か本来の幅。セルの max-content) を、
+   * cap (指定の幅・長さの max-width の外側の幅) で抑えたもの。max-width が百分率なら、その比 (maxPct) と外側の幅に足す分 (maxEdge) で、
+   * 組むときの容器の内容の幅で解いて抑える (項目の百分率の基準は flex の容器。中身の幅を測る組版では、基準を 0 とする: CSS Sizing 3 §5.2.2)。
+   * floor は、読み込みのときの見積もり (容器の幅 W で解いた値。画像の本来の大きさが分からなければ 0)
+   */
+  replacedMin?: { cap?: number; maxPct?: number; maxEdge?: number };
   /** 上限 (外側の幅。max-width) */
   cap?: number;
+  /**
+   * 項目が画像そのもので、max-width が百分率 (既定のスタイルの 100% も) のとき: その比 (f) と、外側の幅に足す分 (edge)。cap は読み込みのときの
+   * 見積もりの容器の幅で解いたものなので、組むときに、実際の容器の内容の幅で解いて、項目の幅が上限に当たっているか (既定の max-width が画像を
+   * 縮めたか) を見る (CSS 2.1 §10.4。min-width・overflow で自動の最小の大きさを外した、replacedMin の無い項目も)
+   */
+  capPct?: { f: number; edge: number };
 }
 
 export interface LTableCell extends BaseNode, BoxStyle {
@@ -1858,8 +2090,8 @@ export interface LTableRow extends BaseNode {
   keepTogether?: boolean;
   /**
    * keepTogether の行が、新しいページ (段) にも入らない高さなら、分割しないことをやめ、いまの位置から行単位で分ける
-   * (XSL-FO の仕様モードの keep-together と、アンテナハウス互換の数値の強さの keep-together。省略時は、入らなくても分けずに
-   * はみ出させる: アンテナハウス互換の always と、HTML の break-inside: avoid)
+   * (XSL-FO の仕様モードの keep-together と、アンテナハウス互換の数値の強さの keep-together、HTML の break-inside: avoid。省略時は、
+   * 入らなくても分けずにはみ出させる: アンテナハウス互換の always と、アンテナハウス互換のスタイルの HTML の break-inside: avoid)
    */
   keepTogetherYields?: boolean;
   /** 行の高さの最小値 (pt。fo:table-row の height / block-progression-dimension、CSS の tr の height) */
@@ -1895,9 +2127,37 @@ export interface LTableBody extends BaseNode {
   rows: LTableRow[];
 }
 
+/**
+ * grid の項目の、列の下限への寄与 (LTable.gridTemplate.items)。col は項目の占める列 (1 列だけを占める項目)、cell は項目を入れた行の表のセル。
+ * floor があれば、測らずにその値 (外側の幅。min-width の長さ・決まった width・overflow が visible でない項目: CSS Grid 1 §6.6)。
+ * 無ければ、組版エンジンが、セルの中身の min-content を測る (cap は max-width の長さによる上限。外側の幅)
+ */
+export interface GridItemFloor {
+  col: number;
+  cell: LTableCell;
+  floor?: number;
+  cap?: number;
+}
+
 export interface LTable extends BaseNode, BoxStyle {
   /** HTML の flex の容器の 1 行の表 (htmlImport の flexNoRect)。中身の幅を測るとき、比例の列は足す固定の長さだけを数える (LNode.flexContentI) */
   flexLine?: boolean;
+  /**
+   * HTML の grid の容器の 1 行の表 (列は LTableColumn.gridSpan・gridGap)。列の幅は、組版エンジンが、表を置くときの内容の幅 (容器の実際の
+   * 内容の幅) W で gridTracks(tracks, W, 間隔, 下限, repeat) を呼んで決める (CSS Grid 1 §11・§12。読み込みのときの幅の見積もりでなく)。
+   * tracks は grid-template-columns の計算値 (相対の長さは px にしてある)。gap は列の間隔 (pt)、gapPct は百分率の間隔の比 (W に掛ける)。
+   * 同じ grid の容器の行の表は、同じ値 (この物) を持つ。items は、その grid の全部の行の、1 列だけを占める項目 (GridItemFloor)。列挙しない性質
+   * (sourceRef.ts の setGridItems。文書の木を性質を選ばずにたどる所が、行の表ごとに全部の項目をたどり直さないように。写すときは gridCopies)。組版エンジンは、
+   * 項目の自動の最小の大きさ (CSS Grid 1 §6.6: 項目の中身を、組むときと同じ折り返しで測った min-content) の、列ごとの最大を、0fr の列の幅と、
+   * 最小の大きさが auto の列 (fr・auto・minmax(auto, …)) の下限にする (§12.5・§12.7.1。grid 全体で 1 つ。どの行でも同じ列の幅)。
+   * repeat は auto-fill・auto-fit の回数 (読み込みのときの幅の見積もりで決めた回数。行に並べた項目の数を変えないため)。
+   * 中身の幅を測る組版では、長さの列はその幅、百分率の列は auto (中身の幅)、fr・auto・minmax() の列は項目の中身の幅から決める
+   * (LNode.flexContentI。CSS Grid 1 §7.2.1・§12.7: max-content では、fr の 1 つ分を、項目の max-content を列の比で割ったものの最大にする。
+   * min-content では、項目の min-content。どちらも minmax() の最小・最大の大きさの間)
+   */
+  gridTemplate?: { tracks: string; gap: number; gapPct?: number; items?: GridItemFloor[]; repeat?: number };
+  /** HTML のリスト (ul・ol と display: list-item) を組む表 (記号の列と本文の列)。中身の幅を測るとき、本文の列は置く場所いっぱいでなく、本文の中身の幅を数える (LNode.listContentI) */
+  listTable?: boolean;
   type: 'table';
   /**
    * セルの中の絶対配置の箱 (positionInContainer) の基準になる (CSS の position が static でない表。CSS 2.1 §10.1)。
@@ -2249,6 +2509,8 @@ export interface SheetArea extends AreaBase {
   backgroundColor?: string;
   /** 用紙全体の背景画像 (PageMaster.backgroundImage。width / height は画像本来の大きさで決めたもの) */
   backgroundImage?: BackgroundImage & { width: number; height: number };
+  /** 背景画像の位置の基準の領域 (PageMaster.backgroundOrigin。Sheet ローカル)。無ければ、描く範囲 (backgroundBox か bleedBox) */
+  backgroundOriginBox?: Rect;
 }
 
 export interface Rect {

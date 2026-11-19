@@ -1,5 +1,5 @@
 /**
- * pdfStandard — PDF の出力の規格 (入稿用の PDF/X-3・PDF/X-4) ごとの方針。
+ * pdfStandard — PDF の出力の規格 (入稿用の PDF/X-1a・PDF/X-3・PDF/X-4) ごとの方針。
  *
  * 描く処理 (pdfRenderer.ts) は、規格の名前で分かれずに、ここの方針 (PdfStandard) の値を見る: 版とオブジェクトストリーム、RGB を CMYK に
  * するか、透明を警告するか、ArtBox を書くか、塗り足しまでの範囲 (ページの中) の注釈・フォームを外すか、必須の条件 (check)、印とメタデータ (mark)。
@@ -7,17 +7,19 @@
  * 規格への適合の責任も Kumiori の側にあるため)。
  *
  * 根拠: 出力意図の辞書は ISO 32000-2 §14.11.5 (Table 401)、XMP のメタデータは §14.3.2、文書の ID は §14.4、ページの範囲は §14.11.2。
- * PDF/X の規格 (ISO 15930-6・-7) の本文では確かめていない (版の印・ボックス・注釈・題の決まりは、公開の説明による) ので、
- * 規格への適合は保証しない。
+ * PDF/X の規格 (ISO 15930-1・-4・-6・-7) の本文では確かめていない (版の印・ボックス・注釈・題の決まりは、公開の説明による) ので、
+ * 規格への適合は保証しない。PDF/X-1a・PDF/X-3 は、透明を平らにし (pdfFlatten.ts)、書き出した PDF を読み直して決まりに合うかを調べ (pdfxVerify.ts)、
+ * 合わなければ誤りとして投げる。
  */
 import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFString } from 'pdf-lib';
 import { GWG_SHEET_CMYK, type GwgVariant } from './pdfCheck';
 import { msg } from './messages';
+import { verifyPdfX1a, verifyPdfX3 } from './pdfxVerify';
 
 /** 入稿用 (PDF/X) の出力の指定 (PdfRenderOptions.pdfx) */
 export interface PdfXOptions {
-  /** 版: 'X-3' (PDF/X-3:2003。既定) か 'X-4' (PDF/X-4) */
-  version?: 'X-3' | 'X-4';
+  /** 版: 'X-3' (PDF/X-3:2003。既定)、'X-4' (PDF/X-4)、'X-1a' (PDF/X-1a:2001)、'X-1a:2003' (PDF/X-1a:2003) */
+  version?: 'X-3' | 'X-4' | 'X-1a' | 'X-1a:2003';
   /** 印刷条件の名前 (OutputConditionIdentifier。ICC の登録名など。既定 JC200103 = Japan Color 2001 Coated) */
   condition?: string;
   /** 印刷条件の説明 (OutputCondition・Info。無ければ condition) */
@@ -34,6 +36,8 @@ export interface PdfStandard {
   readonly label: string;
   /** 版の印 (GTS_PDFXVersion) の値 */
   readonly version: string;
+  /** 適合の水準の印 (GTS_PDFXConformance) の値。PDF/X-1a:2001 だけが書く (PDF/X-1:2001 の 1a の水準) */
+  readonly conformance?: string;
   /** ファイルの頭 (%PDF-1.x。pdf-lib の書き出しは 1.7 固定なので、同じ長さで書き換える) */
   readonly header: string;
   /** オブジェクトストリーム (PDF 1.5 の機能) を使うか */
@@ -51,8 +55,13 @@ export interface PdfStandard {
    * 付けるのは本文 (ページの余白も) の字・線・罫線だけで、図 (SVG・EPS など、SVG にして描く画像) の中の字・線には付けない (pdfRenderer.ts の overprintOps を呼ぶ所)
    */
   readonly blackOverprint?: { readonly text: number; readonly line: number };
-  /** 透明 (不透明度・ソフトマスク・画像の透明度) を使ったとき: 'allow' はそのまま、'warn' は警告に書く (出力からは消さない) */
-  readonly transparency: 'allow' | 'warn';
+  /**
+   * 透明 (不透明度・ソフトマスク・画像の透明度) を使ったとき: 'allow' はそのまま、'warn' は警告に書く (出力からは消さない)、
+   * 'forbid' は書き出した後の検査 (verify) で誤りにする (透明のある文書はこの規格では出せない)、
+   * 'flatten' は透明を平らにする (pdfFlatten.ts: 下が 1 色の塗りならベクタのまま合成した色で、ほかは画素にして置く)。
+   * 平らにできない透明が残れば誤りにする
+   */
+  readonly transparency: 'allow' | 'warn' | 'forbid' | 'flatten';
   /** ページに ArtBox を書くか (PDF/X は TrimBox と ArtBox の両方を書かない決まりがある、という公開の説明による) */
   readonly artBox: boolean;
   /** 塗り足しまでの範囲 (BleedBox。ページの絵柄の全体を囲む) に掛かる注釈・リンク・フォームの欄: 'keep' は書く、'drop' は書かずに警告に件数を書く */
@@ -63,9 +72,41 @@ export interface PdfStandard {
   readonly gwg?: GwgVariant;
   /** 書き出す前に確かめる必須の条件。満たさなければ誤りとして投げる */
   check(o: PdfXOptions): void;
+  /** 書き出した PDF を読み直して、規格の決まりに合わないものを文の並びで返す (空なら合う)。あれば、合わないときは誤りとして投げる */
+  verify?(bytes: Uint8Array): Promise<string[]>;
 }
 
-/** PDF/X-3:2003 (ISO 15930-6。PDF 1.4 が元。透明は使えない) */
+/**
+ * PDF/X-1a (CMYK と特色だけ。透明・RGB・ICC の色は使えない。書体はすべて埋め込む)。:2001 は ISO 15930-1 で PDF 1.3 が元、
+ * :2003 は ISO 15930-4 で PDF 1.4 が元。印刷条件は登録名だけでよく、プロファイルを渡せば埋め込む (CMYK のものに限る)
+ */
+function pdfX1a(year: '2001' | '2003'): PdfStandard {
+  return {
+    label: 'PDF/X-1a',
+    version: year === '2001' ? 'PDF/X-1:2001' : 'PDF/X-1a:2003',
+    ...(year === '2001' ? { conformance: 'PDF/X-1a:2001' } : {}),
+    header: year === '2001' ? '%PDF-1.3' : '%PDF-1.4',
+    objectStreams: false,
+    cmyk: true,
+    blackOverprint: { text: 12, line: 2 },
+    transparency: 'flatten',
+    artBox: false,
+    marksInBleed: 'drop',
+    xmp: false,
+    gwg: GWG_SHEET_CMYK,
+    check: (o) => {
+      if (o.profile) checkCmykProfile(o.profile, 'PDF/X-1a');
+    },
+    verify: (bytes) => verifyPdfX1a(bytes, year === '2001' ? 'X-1a:2001' : 'X-1a:2003'),
+  };
+}
+const PDF_X1A_2001 = pdfX1a('2001');
+const PDF_X1A_2003 = pdfX1a('2003');
+
+/**
+ * PDF/X-3:2003 (ISO 15930-6。PDF 1.4 が元。透明は使えない。機器によらない色 (ICC・Lab) は使える)。透明は平らにし (X-1a と同じ)、
+ * 書き出した PDF を読み直して決まりに合うかを調べる
+ */
 const PDF_X3: PdfStandard = {
   label: 'PDF/X-3',
   version: 'PDF/X-3:2003',
@@ -73,12 +114,13 @@ const PDF_X3: PdfStandard = {
   objectStreams: false,
   cmyk: true,
   blackOverprint: { text: 12, line: 2 },
-  transparency: 'warn',
+  transparency: 'flatten',
   artBox: false,
   marksInBleed: 'drop',
   xmp: false,
   gwg: GWG_SHEET_CMYK,
   check: () => {},
+  verify: (bytes) => verifyPdfX3(bytes),
 };
 
 /** PDF/X-4 (ISO 15930-7。PDF 1.6 が元。透明を使える。出力の ICC プロファイルの埋め込みが要る) */
@@ -94,23 +136,26 @@ const PDF_X4: PdfStandard = {
   marksInBleed: 'drop',
   xmp: true,
   gwg: GWG_SHEET_CMYK,
-  check: (o) => checkCmykProfile(o.profile),
+  check: (o) => checkCmykProfile(o.profile, 'PDF/X-4'),
 };
 
 /** PDF/X の指定の規格の方針。指定が無ければ undefined (ふつうの PDF) */
 export function pdfStandardOf(o: PdfXOptions | undefined): PdfStandard | undefined {
   if (!o) return undefined;
-  return o.version === 'X-4' ? PDF_X4 : PDF_X3;
+  if (o.version === 'X-4') return PDF_X4;
+  if (o.version === 'X-1a') return PDF_X1A_2001;
+  if (o.version === 'X-1a:2003') return PDF_X1A_2003;
+  return PDF_X3;
 }
 
 /**
  * 出力の ICC プロファイルを確かめる: 埋め込みが要り (DestOutputProfile)、色空間は CMYK
  * (ICC.1:2010 §7.2.6 の頭の 16〜19 バイト目。GWG 2022-R1 の R0035)。満たさなければ誤りとして投げる
  */
-function checkCmykProfile(profile: Uint8Array | undefined) {
-  if (!profile) throw new Error(msg('PDF/X-4 では、出力の ICC プロファイル (CMYK) が要ります (pdfx.profile)。印刷所の指定するプロファイル (Japan Color 2001 Coated など) を渡してください', 'PDF/X-4 requires an output ICC profile (CMYK) (pdfx.profile). Pass the profile your printer specifies (such as Japan Color 2001 Coated)'));
+function checkCmykProfile(profile: Uint8Array | undefined, label: string) {
+  if (!profile) throw new Error(msg(`${label} では、出力の ICC プロファイル (CMYK) が要ります (pdfx.profile)。印刷所の指定するプロファイル (Japan Color 2001 Coated など) を渡してください`, `${label} requires an output ICC profile (CMYK) (pdfx.profile). Pass the profile your printer specifies (such as Japan Color 2001 Coated)`));
   const space = profile.length >= 20 ? String.fromCharCode(...profile.subarray(16, 20)) : '';
-  if (space !== 'CMYK') throw new Error(msg(`PDF/X-4 の出力の ICC プロファイルは、CMYK のものにしてください (渡されたプロファイルの色空間: ${space.trim() || '読めない'})`, `The output ICC profile for PDF/X-4 must be a CMYK profile (color space of the given profile: ${space.trim() || 'unreadable'})`));
+  if (space !== 'CMYK') throw new Error(msg(`${label} の出力の ICC プロファイルは、CMYK のものにしてください (渡されたプロファイルの色空間: ${space.trim() || '読めない'})`, `The output ICC profile for ${label} must be a CMYK profile (color space of the given profile: ${space.trim() || 'unreadable'})`));
 }
 
 /**
@@ -141,6 +186,7 @@ export function markPdfStandard(pdf: PDFDocument, std: PdfStandard, o: PdfXOptio
   pdf.catalog.set(PDFName.of('OutputIntents'), ctx.obj([ctx.obj(intent as never)]));
   const info = ctx.lookup(ctx.trailerInfo.Info) as PDFDict;
   info.set(PDFName.of('GTS_PDFXVersion'), PDFString.of(std.version));
+  if (std.conformance) info.set(PDFName.of('GTS_PDFXConformance'), PDFString.of(std.conformance));
   info.set(PDFName.of('Trapped'), PDFName.of('False'));
   // XMP を書く規格では、Info の題・作者・主題・キーワードと XMP の値を同じにする (PDF/X-4 の決まり。公開の説明による。
   // Info の辞書は ISO 32000-2 §14.3.3、XMP は §14.3.2)。XMP は XML なので、XML 1.0 で使えない字 (xmlChars) を書けない。

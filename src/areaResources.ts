@@ -6,10 +6,10 @@
  */
 import type { AssetStore } from './assets';
 import type { FontManager, LoadedFont } from './fontManager';
-import { walkAreaTree } from './areaTree';
+import { walkAreas, type AreaNode } from './areaTree';
 import { checkGlyphData } from './fontSanity';
 import { sha256 } from './sha256';
-import type { AreaTree, FontResource, ImageResource } from './types';
+import type { AreaTree, FontResource, ImageResource, SheetArea } from './types';
 
 const fontHash = new WeakMap<ArrayBuffer, string>();
 const imageHash = new WeakMap<Uint8Array, string>();
@@ -46,6 +46,16 @@ export function uprightPositions(fk: LoadedFont['fk'], text: string, features: R
 
 /** tree.resources と、字の fontId・glyphIds を付ける */
 export function attachResources(tree: AreaTree, fonts: FontManager, assets?: AssetStore): void {
+  const r = resourceAttacher(fonts, assets);
+  for (const s of tree.sheets) r.visit(s);
+  tree.resources = r.resources();
+}
+
+/**
+ * ページ (シート) ごとに、字の fontId・glyphIds を付け、使った書体・画像を集めるもの (attachResources を、ページを 1 枚ずつ作るとき
+ * (LayoutEngine.layoutSheets) にも使う)。字の字形の番号の覚えは、ページをまたいで使い回す。同じページを 2 度渡してもよい (同じ値を付ける)
+ */
+export function resourceAttacher(fonts: FontManager, assets?: AssetStore): { visit(sheet: SheetArea): void; resources(): NonNullable<AreaTree['resources']> } {
   const fontRes = new Map<string, FontResource>();
   const images = new Map<string, ImageResource>();
   const glyphCache = new Map<LoadedFont, Map<string, { ids: number[]; pos?: Array<[number, number, number]> }>>();
@@ -59,7 +69,7 @@ export function attachResources(tree: AreaTree, fonts: FontManager, assets?: Ass
     }
     images.set(src, { src, ...(a?.mime ? { mime: a.mime } : {}), ...(h ? { sha256: h } : {}), ...(a ? { width: a.width, height: a.height } : {}) });
   };
-  walkAreaTree(tree, (a) => {
+  const visitArea = (a: AreaNode) => {
     if (a.type === 'image' && a.src) addImage(a.src);
     if (a.backgroundImage?.src) addImage(a.backgroundImage.src);
     // 後ろに重ねる背景の画像 (複数の背景)
@@ -103,6 +113,9 @@ export function attachResources(tree: AreaTree, fonts: FontManager, assets?: Ass
     }
     if (hit.ids.length) a.glyphIds = hit.ids;
     if (hit.pos) a.glyphPositions = hit.pos;
-  });
-  tree.resources = { fonts: [...fontRes.values()], images: [...images.values()] };
+  };
+  return {
+    visit: (sheet) => walkAreas(sheet, visitArea),
+    resources: () => ({ fonts: [...fontRes.values()], images: [...images.values()] }),
+  };
 }

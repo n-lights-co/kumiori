@@ -381,6 +381,15 @@ const tooComplex = () =>
     `複合セレクタが ${MAX_BACKTRACK_COMPOUNDS} 個を超える、結合子の種類の混ざったセレクタ (当てない) (selectors with more than ${MAX_BACKTRACK_COMPOUNDS} compound selectors mixing kinds of combinators; not matched)`,
     `selectors with more than ${MAX_BACKTRACK_COMPOUNDS} compound selectors mixing kinds of combinators (not matched)`,
   );
+/**
+ * 照合の覚えの合計が予算 (cssSelector の BT_MEMO_BUDGET) を超えたので、それより後は当てなかった、結合子の種類の混ざったセレクタ
+ * (未対応の CSS の通知に入る。tooComplex と同じ扱い)
+ */
+export const tooComplexTotal = () =>
+  msg(
+    '照合の手間の合計が大きすぎるため、途中から当てなかった、結合子の種類の混ざったセレクタ (selectors mixing kinds of combinators, not matched after their total matching cost grew too large)',
+    'selectors mixing kinds of combinators, not matched after their total matching cost grew too large',
+  );
 /** @layer の名前の、点で区切った段の数の上限 (layerRanks) */
 const MAX_LAYER_DEPTH = 32;
 /** 入れ子の規則を展開したセレクタの数の上限 (styleRule) */

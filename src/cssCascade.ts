@@ -11,12 +11,13 @@
  * 百分率の幅・余白は、包含ブロックの幅を親から順に見積もって px にする。
  */
 import { MAX_VAR_LENGTH, parseCss, parseSpacingTrim, setSupportsDecl, serializeCssString, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
-import { fmtColor, parseColor, replaceUrls, resolveLightDark, splitTop, stripImportant, UNIT_PX, type RGBA } from './cssText';
+import { fmtColor, gridTrackListInvalid, parseColor, replaceUrls, resolveLightDark, splitTop, stripImportant, UNIT_PX, type RGBA } from './cssText';
 import { parseVariationSettings } from './fontVariation';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { is3dTransformValue } from './cssTransform';
-import { asciiLower, createSelectorMemo, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
+import { asciiLower, BT_MEMO_BUDGET, createSelectorMemo, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
+import { blockLevelDisplay, bodyPageSwitchHolder, ownPageName, pageSwitchBox, pageSwitchHolder } from './pageFlow';
 
 /** 計算値を持つ疑似要素 */
 type PseudoName = 'before' | 'after' | 'first-letter' | 'first-line' | 'marker';
@@ -326,14 +327,31 @@ interface Computed {
   cw: number;
   /** 絶対配置の子の包含ブロックの幅 (位置の基準の祖先の padding box の幅。無ければページの領域の幅) */
   pcw: number;
+  /** この要素を置くページの領域の幅 (px。名前付きのページ (page) を指定した要素から下は、そのページの領域の幅。無ければ viewport の幅) */
+  pw?: number;
+  /** 子が、名前付きのページの切り替えを置ける箱の並びか (pageFlow.ts の pageSwitchHolder。読み込みの pageFlowEls と同じ) */
+  pf?: boolean;
+  /**
+   * この要素を、領域の幅が w (px) のページに置いたときの内容の幅の見積もり (根元の要素と、切り替えを置く箱だけ)。
+   * 子が別のページに切り替わると、読み込みが祖先の箱を切り替えの所で分け、断片をそのページに置くので、そのページの幅で見積もり直す
+   */
+  cwAt?: (w: number) => number;
   /** 子の高さの百分率の基準 (px。決まらなければ undefined で、子の百分率の高さは auto) */
   ch?: number;
+  /**
+   * 百分率 (と、百分率を含む calc() の線形の和) で指定した width・min-width・max-width・margin-*・padding-*・text-indent の、
+   * 割合 (f: 基準 1px あたりの px) と長さの部分 (px)。計算値 (v) には見積もりの基準で長さにした値を入れ、これは、組むときに
+   * 実際の包含ブロックの大きさで解き直すために読み込みへ渡す (CSS 2.1 §10.2・§8.3・§8.4・§16.1)
+   */
+  pct?: Record<string, { f: number; px: number }>;
   /** カスタム プロパティ (--名前) */
   vars: VarTable;
   /** 明示した性質 (auto かどうか) */
   specified: Map<string, string>;
   /** SVG の表示の性質 (と color・opacity) の、勝った宣言 (文書の中の <svg> に渡すかを決める) */
   svgFrom?: Map<string, DeclaredValue>;
+  /** 箱の大きさの性質 (SIZING_PROPS) の、勝った宣言の出どころ (StyleSource.sizeOrigin) */
+  sizeFrom?: Map<string, SizeOrigin>;
   /** style() が返す読み手 (1 度作って使い回す) */
   view?: { getPropertyValue(name: string): string };
 }
@@ -790,6 +808,81 @@ function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
   if (k < toks.length) return undefined;
   if (r && r.unitless && r.n !== 0) return undefined;
   return r?.n;
+}
+
+/** absoluteLengths が関数ごとに中へ入る、数学の関数の入れ子の深さの上限 */
+const MAX_MATH_NEST = 32;
+/** 値の中の数学の関数 (calc()・min()・max()・clamp()) の始まり (minmax( の中の max( には当たらない) */
+const MATH_FN_START = /(?<![\w-])(calc|min|max|clamp)\(/gi;
+/** 値の中の、単位の付いた数 (名前・#色・url() の中の字の並びの一部は除く) */
+const DIMENSION_TOKEN = /(?<![\w.#-])[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?[a-z]+(?![\w(-])/gi;
+
+/**
+ * 値の中の長さ (em・rem・vw・calc() など) を、絶対の長さ (px) にする。計算値の “lengths made absolute” (CSS Values 4 §4.5。
+ * grid-template-columns (CSS Grid 1 §7.2)・box-shadow (CSS Backgrounds 3 §6.1)・filter (Filter Effects 1 §5) などの計算値)。
+ * 百分率・fr・数・角度・語は、そのまま。百分率を含む calc() は、基準の大きさが組むまで決まらないので、式の中の長さだけを px にして
+ * 式のまま残す (CSS Values 4 §10.11: 計算値は、百分率と長さの和に簡約した式)。url() の中は変えない。
+ * nonNegative: 負の値の書けない所 (grid-template-columns の列の大きさ) で、数学の関数 (calc()・min() など) を解いた負の結果は 0 に切り詰める
+ * (CSS Values 4 §10.12。負の数で書いた値は、読めない宣言として捨ててある)。範囲に収めるのは、いちばん外の式の結果だけで、百分率を含む式の
+ * 中の、入れ子の関数 (calc(50% + min(-10px, 5px)) の min()) の負の値は、そのまま (§10.12: 範囲は、いちばん外の式の最後の値にだけ当て、式の中の途中の値には当てない)
+ */
+export function absoluteLengths(raw: string, ctx: LenCtx, nonNegative = false, nest = 0): string {
+  const c: LenCtx = { ...ctx, pct: undefined };
+  // 絶対の単位 (pt・mm など) の長さは、書いたままにする (読み手 cssLen が読める。px に直して丸めると、8pt が 8.000025pt になる)
+  const dims = (s: string) =>
+    s.replace(DIMENSION_TOKEN, (t) => {
+      if (UNIT_PX[/[a-z]+$/i.exec(t)![0].toLowerCase()] !== undefined) return t;
+      const px = lengthPx(t, c);
+      return px !== undefined ? fmtPx(px) : t;
+    });
+  let out = '';
+  let i = 0;
+  const s = raw.trim();
+  // 入れ子の深い数学の関数は、関数ごとに中へ入らず、単位の付いた数だけを 1 度に px にする (深さごとに式を読み直すと、深さ × 長さの手間になり、
+  // 再帰でスタックがあふれて文書全体が組めない)。式の意味 (長さを絶対の長さにした式) は同じ
+  if (nest >= MAX_MATH_NEST) return absoluteLengthsOutsideUrl(s, dims);
+  MATH_FN_START.lastIndex = 0;
+  for (let m = MATH_FN_START.exec(s); m; m = MATH_FN_START.exec(s)) {
+    // 対になる「)」まで
+    let depth = 0;
+    let j = m.index + m[0].length - 1;
+    for (; j < s.length; j++) {
+      if (s[j] === '(') depth++;
+      else if (s[j] === ')' && --depth === 0) break;
+    }
+    if (j >= s.length) break;
+    const fn = s.slice(m.index, j + 1);
+    const px = lengthPx(fn, c);
+    out += absoluteLengthsOutsideUrl(s.slice(i, m.index), dims) + (px !== undefined ? fmtPx(nonNegative ? Math.max(px, 0) : px) : `${m[1].toLowerCase()}(${absoluteLengths(fn.slice(m[0].length, -1), ctx, false, nest + 1)})`);
+    i = j + 1;
+    MATH_FN_START.lastIndex = i;
+  }
+  return out + absoluteLengthsOutsideUrl(s.slice(i), dims);
+}
+/**
+ * url(…) の外の字の並びにだけ f を当てる。閉じない url( は、値の終わりで閉じる (CSS Syntax 3 §4.3.6: url はファイルの終わりでも終わる。
+ * 閉じの「)」を必ず探すと、閉じない url( の並びで、出てくる所ごとに終わりまで読んで、長さの 2 乗の手間になる)
+ */
+function absoluteLengthsOutsideUrl(s: string, f: (s: string) => string): string {
+  if (!/url\(/i.test(s)) return f(s);
+  return s
+    .split(/(url\((?:"[^"]*"|'[^']*'|[^)]*)(?:\)|$))/i)
+    .map((part, k) => (k % 2 ? part : f(part)))
+    .join('');
+}
+
+/**
+ * 計算値の、長さ・百分率・百分率と長さの和の calc() (calc(50% + 10px) など。CSS Values 4 §10.11 の、百分率と長さの和に簡約した式) を、
+ * 百分率 (pct。50% なら 50) と長さ (px) の和に分ける。min()・max()・clamp() の中の百分率など、和に分けられないものは undefined。
+ * ctx は、計算値でない値 (ページの文脈の宣言など) の em・rem などの基準
+ */
+export function percentPlusLength(v: string, ctx: LenCtx = { fs: 16, rootFs: 16, vw: 0, vh: 0 }): { pct: number; px: number } | undefined {
+  const s = v.trim().toLowerCase();
+  if (/%/.test(s) && /(?<![\w-])(min|max|clamp)\(/.test(s)) return undefined;
+  const px = lengthPx(s, { ...ctx, pct: 0 });
+  const at100 = lengthPx(s, { ...ctx, pct: 100 });
+  if (px === undefined || at100 === undefined) return undefined;
+  return { pct: +(at100 - px).toFixed(6), px };
 }
 
 /** 値を語に分ける (括弧・文字列の外の空白で) */
@@ -1517,7 +1610,7 @@ export function logicalToPhysical(prop: string, wm: string, dir: string): string
  * 3・4 値 (bottom 10px right 20px など) は、語の後の長さ・百分率をその端からの距離とする (Backgrounds 3 §3.6)。
  * 右・下の端からの長さは "right 10px" のように端の語を付けて返す (百分率は 100% から引く)
  */
-function positionXY(ts: string[]): [string, string] {
+export function positionXY(ts: string[]): [string, string] {
   const kw = { __proto__: null, left: '0%', right: '100%', top: '0%', bottom: '100%', center: '50%' } as unknown as Record<string, string>;
   let x = '0%';
   let y = '0%';
@@ -1579,8 +1672,13 @@ export interface CascadeOptions {
    */
   quirksMode?: 'no-quirks' | 'limited-quirks' | 'quirks';
   /**
+   * 名前付きのページ (@page <名前>) の領域の幅 (px)。page でそのページを指定した要素から下は、百分率の幅の基準を、viewport の幅でなく
+   * そのページの領域の幅で見積もる (CSS Paged Media 3 §10.1・§3.3: ページの領域が、そのページの中身の包含ブロック)
+   */
+  pageWidths?: ReadonlyMap<string, number>;
+  /**
    * 罫線の太さを画素に丸めない (ブラウザ (Chrome) は 1px 未満を 1px に切り上げ、それ以上は端数を切り捨てる)。
-   * アンテナハウス互換で使う (border: 0.3pt の枠は 0.3pt の太さで描く)
+   * 既定のスタイル (kumiori)・WeasyPrint・アンテナハウス互換で使う (border: 0.3pt の枠は 0.3pt の太さで描く。compat.ts の styleCascadeOptions)
    */
   noBorderSnap?: boolean;
   /**
@@ -1613,6 +1711,10 @@ export interface CascadeOptions {
   ahPagedValues?: boolean;
   /** attr() を置き換えた結果、計算値の時点で無効になった宣言 (その性質は unset) を知らせる。prop・value は書かれたままの宣言 */
   onInvalidAttr?: (prop: string, value: string) => void;
+  /**
+   * 結合子の種類が混ざったセレクタの照合の覚えの予算 (cssSelector の BT_MEMO_BUDGET) を使い切り、それより後はそのようなセレクタを当てなくなったことを知らせる (1 度だけ)
+   */
+  onSelectorBudget?: () => void;
 }
 
 /**
@@ -1736,6 +1838,9 @@ class ComputedValues {
 
 /** 宣言の強さ (rank) が既定のスタイル (UA) の出どころか */
 const isUa = (rank: number) => rank < 1 || rank === 5;
+
+/** 宣言の出どころ (StyleSource.sizeOrigin): 既定のスタイル・HTML の属性による指定 (presentational hints)・作成者 (style 属性も) */
+type SizeOrigin = 'ua' | 'hint' | 'author';
 
 /** 要素に当たる宣言 (declsFor)。rank は出どころと !important による強さ、lay は層、spec は詳細度、order は書いた順 */
 interface DeclaredValue {
@@ -2064,7 +2169,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     return out;
   };
   /** :has()・:nth-child(… of S) の照合の覚え。このカスケードの間だけ持つ (計算値と同じく、文書の木は変わらない前提) */
-  const selectorMemo = createSelectorMemo();
+  // 結合子の種類の混ざったセレクタの覚えは、合計に予算を置く (SelectorMemo.btBudget。規則の数 × 要素の数 で増えるので)
+  const selectorMemo = createSelectorMemo({ btBudget: BT_MEMO_BUDGET, ...(opts.onSelectorBudget ? { onBtOver: opts.onSelectorBudget } : {}) });
 
   const cache = new Map<Element, Computed>();
   const pseudoCache = new Map<Element, Partial<Record<PseudoName, Computed>>>();
@@ -2078,6 +2184,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     return h;
   };
   const rootEl = doc.documentElement;
+  /** 文書の body (読み込み (htmlImport) と同じ見つけ方。無ければ根元の要素) */
+  const bodyEl: Element = (doc as { body?: Element | null }).body ?? doc.getElementsByTagName?.('body')[0] ?? rootEl;
   /** ページの色の組 (CSS Color Adjust 1 §2.1: <meta name="color-scheme"> の content。最初の読めるもの)。無ければ normal */
   let pageScheme: string | undefined;
   const pageColorScheme = (): string => {
@@ -2258,12 +2366,16 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
    * どれか 1 つでも読めなければ宣言ごと捨てる。revert は既定のスタイルの宣言まで戻す。
    * 返す rank は、性質ごとの、決まった宣言の強さの順 (小さいほど強い)
    */
-  const cascadeDecls = (decls: DeclaredValue[], vars: VarTable, fsCtx: () => LenCtx, el: Element): { cascaded: Map<string, string>; rank: Map<string, number>; svgFrom?: Map<string, DeclaredValue> } => {
+  const cascadeDecls = (decls: DeclaredValue[], vars: VarTable, fsCtx: () => LenCtx, el: Element): { cascaded: Map<string, string>; rank: Map<string, number>; svgFrom?: Map<string, DeclaredValue>; sizeFrom?: Map<string, SizeOrigin> } => {
     const cascaded = new Map<string, string>();
     const rank = new Map<string, number>();
     let svgFrom: Map<string, DeclaredValue> | undefined;
+    let sizeFrom: Map<string, SizeOrigin> | undefined;
     const noteSvg = (p: string, d: DeclaredValue) => {
       if (SVG_STYLE_PROPS[p] || p === 'color' || p === 'opacity') (svgFrom ??= new Map()).set(p, d);
+      // 大きさの性質の出どころ: 既定のスタイル (UA)・HTML の属性による指定 (作成者の出どころの、詳細度 -1 の規則として足したもの)・作成者
+      // 論理の名前 (inline-size・max-inline-size など) も覚え、論理→物理 (mapLogical) で、写した物理の名前の出どころにする
+      if (SIZING_PROPS.has(p) || LOGICAL_SIZING.test(p)) (sizeFrom ??= new Map()).set(p, isUa(d.rank) ? 'ua' : d.rank === 1 && d.spec < 0 ? 'hint' : 'author');
     };
     // 値の無い (必ず無効な値の) カスタム プロパティを fallback なしで参照した宣言は、計算値の時点で無効 (Variables 1 §3・§3.1)。
     // 残りの語だけで読める値になっても、有効な宣言にしない
@@ -2321,11 +2433,11 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
         noteSvg(p, d);
       }
     }
-    return { cascaded, rank, ...(svgFrom ? { svgFrom } : {}) };
+    return { cascaded, rank, ...(svgFrom ? { svgFrom } : {}), ...(sizeFrom ? { sizeFrom } : {}) };
   };
 
   /** ③ 論理→物理: 論理的な性質を、この要素の書字方向で物理的な性質に写す。同じ辺の物理的な性質と両方あれば、強い (先に決まった) 方 */
-  const mapLogical = (cascaded: Map<string, string>, rank: Map<string, number>, parent: Computed | undefined) => {
+  const mapLogical = (cascaded: Map<string, string>, rank: Map<string, number>, parent: Computed | undefined, sizeFrom?: Map<string, SizeOrigin>) => {
     const pick = (p: string) => {
       const v = cascaded.get(p);
       return v === undefined || /^(inherit|initial|unset|revert|revert-layer)$/i.test(v) ? undefined : v.toLowerCase();
@@ -2337,9 +2449,13 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       if (!phys) continue;
       cascaded.delete(p);
       const rp = rank.get(p)!;
+      const from = sizeFrom?.get(p);
+      sizeFrom?.delete(p);
       if (!cascaded.has(phys) || (rank.get(phys) ?? Infinity) > rp) {
         cascaded.set(phys, v);
         rank.set(phys, rp);
+        // 大きさの性質の出どころも写す (縦書きでは inline-size が height、block-size が width: Logical 1 §4.1)
+        if (from) sizeFrom!.set(phys, from);
       }
     }
   };
@@ -2348,19 +2464,25 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
    * ④ 幅・高さの見積もり: 内容の幅 (cw。子の百分率の基準)・位置の基準の幅 (pcw)・子の高さの基準 (ch) を、
    * 包含ブロックの幅 cbw と自分の計算値から見積もる。text-indent の百分率と、互換モードの表のセルの高さもここで決める
    */
-  const estimateBoxSizes = (out: Computed, cbw: number, parent: Computed | undefined, isRoot: boolean, floated: boolean, abs: boolean, rootFs: number) => {
+  const estimateBoxSizes = (out: Computed, cbw: number, parent: Computed | undefined, isRoot: boolean, floated: boolean, abs: boolean, rootFs: number, cbwAt?: (w: number) => number) => {
     // 内容の幅 (百分率の基準) の見積もり
     const pxOf = (p: string) => parseFloat(out.v.get(p) ?? '0') || 0;
     const hb = pxOf('padding-left') + pxOf('padding-right') + pxOf('border-left-width') + pxOf('border-right-width');
     const w = out.v.get('width')!;
-    if (w !== 'auto' && /px$/.test(w)) out.cw = Math.max(0, parseFloat(w) - (out.v.get('box-sizing') === 'border-box' ? hb : 0));
-    else if (/^(block|list-item|flex|grid|table|flow-root)$/.test(out.v.get('display')!) && !floated && !abs) out.cw = Math.max(0, cbw - pxOf('margin-left') - pxOf('margin-right') - hb);
-    else out.cw = cbw;
+    const fromCb = (cb: number) => {
+      if (w !== 'auto' && /px$/.test(w)) return Math.max(0, parseFloat(w) - (out.v.get('box-sizing') === 'border-box' ? hb : 0));
+      if (/^(block|list-item|flex|grid|table|flow-root)$/.test(out.v.get('display')!) && !floated && !abs) return Math.max(0, cb - pxOf('margin-left') - pxOf('margin-right') - hb);
+      return cb;
+    };
+    out.cw = fromCb(cbw);
     // text-indent の百分率: 基準は自分の内側の幅 (Text 3 §8.1)
     {
       const sp = splitTextIndent(out.v.get('text-indent') ?? '');
       if (sp && /%/.test(sp.len)) {
-        const px = lengthPx(sp.len, { fs: out.fs, rootFs, vw, vh, pct: out.cw });
+        const tctx = (pct?: number): LenCtx => ({ fs: out.fs, rootFs, vw, vh, pct });
+        const pp = percentParts(sp.len, tctx);
+        if (pp) (out.pct ??= {})['text-indent'] = pp;
+        const px = lengthPx(sp.len, tctx(out.cw));
         out.v.set('text-indent', [px !== undefined ? fmtPx(px) : '0px', ...sp.kws].join(' '));
       }
     }
@@ -2370,8 +2492,17 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       const bs = out.v.get('box-sizing') === 'border-box' ? hb : 0;
       const mx = out.v.get('max-width') ?? 'none';
       const mn = out.v.get('min-width') ?? 'auto';
-      if (/px$/.test(mx)) out.cw = Math.min(out.cw, Math.max(0, parseFloat(mx) - bs));
-      if (/px$/.test(mn)) out.cw = Math.max(out.cw, Math.max(0, parseFloat(mn) - bs));
+      const limit = (c: number) => {
+        if (/px$/.test(mx)) c = Math.min(c, Math.max(0, parseFloat(mx) - bs));
+        if (/px$/.test(mn)) c = Math.max(c, Math.max(0, parseFloat(mn) - bs));
+        return c;
+      };
+      out.cw = limit(out.cw);
+      // ほかのページの領域の幅での内容の幅: そのページでの包含ブロックの幅から同じ式で、上限・下限 (max-width・min-width) で抑える。
+      // 幅の指定のある箱は、その幅のまま (百分率の幅は、計算値で、置いたページの幅から決めた長さになっている)。上限・下限の効いた auto の幅の
+      // 箱は、組むときに、置く場所の幅を上限・下限で抑えた幅になる (読み込み (htmlImport の boxStyle) の estimatedSize。CSS 2.1 §10.4) ので、
+      // そのページの幅から同じく抑える
+      if (cbwAt) out.cwAt = (x: number) => limit(fromCb(cbwAt(x)));
     }
     out.pcw = out.v.get('position') !== 'static' ? out.cw + pxOf('padding-left') + pxOf('padding-right') : (parent?.pcw ?? vw);
     // 互換モードの表のセルの高さ (Quirks Mode Standard §3.13。https://quirks.spec.whatwg.org/ 、2026-11-04 取得)。
@@ -2405,8 +2536,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     const rootFs = cache.get(rootEl)?.fs ?? 16;
     const vars = resolveCustomProps(decls, parent);
     const fsCtx = (): LenCtx => ({ fs: parent?.fs ?? 16, rootFs: isRoot ? 16 : rootFs, vw, vh, pct: parent?.fs ?? 16 });
-    const { cascaded, rank, svgFrom } = cascadeDecls(decls, vars, fsCtx, el);
-    mapLogical(cascaded, rank, parent);
+    const { cascaded, rank, svgFrom, sizeFrom } = cascadeDecls(decls, vars, fsCtx, el);
+    mapLogical(cascaded, rank, parent, sizeFrom);
     // light-dark() (CSS Color 5 §7) は、要素の色の組の側の色にする。宣言が無ければ親の color-scheme を継ぐ
     if ([...cascaded.values()].some((v) => /light-dark\(/i.test(v))) {
       const csv = cascaded.get('color-scheme');
@@ -2414,7 +2545,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       const dark = usedColorScheme(scheme, pageColorScheme()) === 'dark';
       for (const [p, v] of cascaded) if (/light-dark\(/i.test(v)) cascaded.set(p, resolveLightDark(v, dark));
     }
-    const out: Computed = { v: new ComputedValues(parent?.v), fs: 16, fsKeyword: true, cw: parent?.cw ?? vw, pcw: parent?.pcw ?? vw, vars, specified: cascaded, ...(svgFrom ? { svgFrom } : {}) };
+    const out: Computed = { v: new ComputedValues(parent?.v), fs: 16, fsKeyword: true, cw: parent?.cw ?? vw, pcw: parent?.pcw ?? vw, vars, specified: cascaded, ...(svgFrom ? { svgFrom } : {}), ...(sizeFrom ? { sizeFrom } : {}) };
     const pv = (p: string) => parent?.v.get(p);
     const valueOf = (p: string): string => {
       const def = PROPS[p];
@@ -2446,7 +2577,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
         // lh は親の行の高さ、rlh は根元の行の高さ (Values 4 §6.1.1。font-size の中では、自身の行の高さはまだ決まらない)
         const px = lengthPx(fsRaw, { fs: pfs, rootFs: isRoot ? 16 : rootFs, vw, vh, pct: pfs, lh: parent?.lh, rootLh: isRoot ? undefined : cache.get(rootEl)?.lh });
         if (px !== undefined) {
-          fs = px;
+          // calc() の負の結果は 0 に切り詰める (CSS Values 4 §10.12。負の数で書いた値は、読めない宣言として捨ててある)
+          fs = Math.max(px, 0);
           fsKw = /em|%/.test(k) && fsKw;
         }
       }
@@ -2521,7 +2653,20 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
 
     // 包含ブロックの幅 (百分率の基準)。絶対配置は位置の基準の祖先の padding box、固定配置はページの領域
     const posv = valueOf('position').toLowerCase();
-    const cbw = posv === 'fixed' ? vw : posv === 'absolute' ? (parent?.pcw ?? vw) : parent ? parent.cw : vw;
+    // 名前付きのページ (page): ページの領域が、そのページの中身の包含ブロック (CSS Paged Media 3 §10.1・§3.3)。
+    // page が効くのは、読み込み (htmlImport) がページを切り替える箱だけ (見分け方は pageFlow.ts で、読み込みと同じ): 根元の要素 (html・body の page は、
+    // 文書の最初のページの名前) と、切り替えを置ける箱の並び (親の pf) の中の、流れの中のブロック (float・絶対配置・固定配置・行内の箱・
+    // 表のセルや flex の項目の中の箱では、ページは切り替わらないので、親のページの幅のまま)。
+    // 切り替える箱の包含ブロックの幅は、親の内容の幅を、そのページの領域の幅で見積もり直したもの (cwAt。幅の指定のある祖先、上限・下限の
+    // 効いた祖先は、その幅のまま)。名前の無い (@page <名前> の無い) ページは、名前の無いページ (viewport の幅)
+    const ppw = parent?.pw ?? vw;
+    const isBody = !pseudo && el === bodyEl;
+    const flowBox = !pseudo && !isRoot && !isBody && !!parent?.pf && pageSwitchBox(blockLevelDisplay(shortDisplay(valueOf('display').trim().toLowerCase())), posv, valueOf('float').trim().toLowerCase());
+    const pgName = isRoot || isBody || flowBox ? ownPageName(cascaded.get('page')) : undefined;
+    out.pw = pgName !== undefined ? (opts.pageWidths?.get(pgName) ?? vw) : ppw;
+    const cbwAt = isRoot ? (x: number) => x : isBody || flowBox ? (parent?.cwAt ?? (() => parent?.cw ?? vw)) : undefined;
+    const flowCbw = isRoot ? out.pw : !parent ? vw : out.pw !== ppw && cbwAt ? cbwAt(out.pw) : parent.cw;
+    const cbw = posv === 'fixed' ? out.pw : posv === 'absolute' ? (parent?.pcw ?? vw) : flowCbw;
     // 宣言の無いプロパティの近道: 継承するものは親の計算値をそのまま、継承しないものは初期値の計算値 (要素によらないもの) をそのまま使う。
     // 計算値は既に絶対値 (px・rgb()・語) なので、親の値を解釈し直しても同じ値になる。142 のプロパティを要素ごとに解釈し直す手間を省く。
     // その値は計算値の表 (ComputedValues) が親の表・初期値の表から引くので、ここでは決めない (根元の要素は、すべて決める)。
@@ -2575,6 +2720,14 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
             val = raw.trim();
             break;
           }
+          // 字間・語間の百分率は、字の大きさに対する割合 (CSS Text 4 §8.1・§8.2。https://www.w3.org/TR/2026/WD-css-text-4-20260814/ 、
+          // 2026-11-18 取得: “Percentages: relative to used font-size”、計算値は長さと百分率のまま (“Percentages inherit intact”)。
+          // CSS Text 3 は長さだけ)。百分率のまま受け継ぎ、htmlImport が、その要素の字の大きさで長さにする。
+          // 前は包含ブロックの幅に対する割合にしていた (10% で 45pt)
+          if ((p === 'letter-spacing' || p === 'word-spacing') && /%/.test(raw)) {
+            val = /%$/.test(raw.trim()) ? raw.trim() : absoluteLengths(raw, ctx());
+            break;
+          }
           // 飾りの線の太さ・下線のずらし (Text Decoration 4 §2.4・§2.8): 百分率は 1em に対する割合。% のまま返し (受け継ぐ先の字の大きさで変わる)、
           // htmlImport が、線を指定した要素の字の大きさで決める。from-font は語のまま
           if (p === 'text-decoration-thickness' || p === 'text-underline-offset') {
@@ -2589,6 +2742,10 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           const heightBase = isRoot ? vh : parent?.ch;
           const base = /^(height|min-height|max-height)$/.test(p) ? heightBase : /^(top|bottom)$/.test(p) ? undefined : cbVertical && /^(margin|padding)-/.test(p) ? vh : cbw;
           const px = lengthPx(raw, ctx(base));
+          if (px !== undefined && PCT_LAYOUT_PROPS.has(p) && /%/.test(raw)) {
+            const pp = percentParts(raw, ctx);
+            if (pp) (out.pct ??= {})[p] = pp;
+          }
           // 内容による大きさの語 (CSS Sizing 3 §3.2 の min-content・max-content・fit-content) は、語のまま。fit-content(<長さ>)
           // (CSS Sizing 4 §3.2) は、引数を長さにして残す (百分率は、長さ・百分率だけの値と同じ基準)
           if (px === undefined && SIZING_PROPS.has(p)) {
@@ -2598,7 +2755,8 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
             else val = /^(min-content|max-content|fit-content)$/.test(lv) ? lv : p === 'width' || p === 'min-width' || p === 'max-width' ? raw : initial;
             break;
           }
-          val = px !== undefined ? fmtPx(px) : p === 'height' || p === 'min-height' || p === 'max-height' ? initial : raw;
+          // 負が無効な性質の calc() などの負の結果は、0 に切り詰める (CSS Values 4 §10.12。負の数で書いた値は、読めない宣言として捨ててある)
+          val = px !== undefined ? fmtPx(px < 0 && NON_NEGATIVE_LENGTH.has(p) ? 0 : px) : p === 'height' || p === 'min-height' || p === 'max-height' ? initial : raw;
           break;
         }
         case 'border-width': {
@@ -2609,7 +2767,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
             const kw = opts.borderKeywords ?? { thin: 1, medium: 3, thick: 5 };
             const px = lv === 'thin' ? kw.thin : lv === 'medium' ? kw.medium : lv === 'thick' ? kw.thick : lengthPx(raw, ctx());
             // Chrome は 1px 未満を 1px に切り上げ、それ以上は端数を切り捨てる (noBorderSnap では丸めない)
-            val = fmtPx(px === undefined ? kw.medium : opts.noBorderSnap ? px : px > 0 && px < 1 ? 1 : Math.floor(px));
+            // calc() の負の結果は 0 に切り詰める (CSS Values 4 §10.12)
+            const w = px === undefined ? kw.medium : Math.max(px, 0);
+            val = fmtPx(opts.noBorderSnap ? w : w > 0 && w < 1 ? 1 : Math.floor(w));
           }
           break;
         }
@@ -2665,7 +2825,10 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     // 絶対配置の箱の height の百分率: 基準は包含ブロック (位置の基準の祖先) の padding の箱の高さで、その高さが中身で決まるときも決まる
     // (CSS 2.1 §10.5)。組版で決めるので、百分率そのものも渡す (上で親の高さから見積もった値は、中の箱の百分率の基準に使う)
     if (abs && /^\+?[\d.]+%$/.test(valueOf('height').trim())) out.v.set('-kumiori-height-percent', valueOf('height').trim());
-    estimateBoxSizes(out, cbw, parent, isRoot, floated, abs, rootFs);
+    estimateBoxSizes(out, cbw, parent, isRoot, floated, abs, rootFs, cbwAt);
+    // 子が切り替えを置ける箱の並びか: body (flex・grid でなければ) と、切り替えを置く箱のうちのふつうのブロック (読み込みの pageFlowEls と同じ)
+    if (isBody) out.pf = bodyPageSwitchHolder(out.v.get('display')!);
+    else if (flowBox) out.pf = pageSwitchHolder(out.v.get('display')!, out.v.get('column-count') ?? '', out.v.get('column-width') ?? '', el.localName ?? '');
     // 一括指定の値 (htmlImport が読むもの)
     out.v.set('text-decoration', out.v.get('text-decoration-line')!);
     // font-variant は個別の性質から (ligatures が none で、ほかが normal なら none)
@@ -2776,6 +2939,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       const v = get(el).specified.get(prop);
       return v === undefined || /^(auto|initial|unset|inherit)$/i.test(v.trim());
     },
+    isPercent: (el, prop) => /%/.test(get(el).specified.get(prop) ?? ''),
+    percentOf: (el, prop) => get(el).pct?.[prop],
+    sizeOrigin: (el, prop) => get(el).sizeFrom?.get(prop),
     // 要素の索引は最初に選ぶときに作る (collectPaged が規則ごとに呼ぶ。全要素の照合を規則の数だけ繰り返さない)
     select: (selector) => (selIndex ??= selectorIndex(doc))(selector),
     contentWidth: (el) => get(el).cw,
@@ -2879,6 +3045,50 @@ export function parseInitialLetter(v: string): { size: number; sink: number } | 
 
 /** 箱の大きさの性質 (内容による大きさの語を取る。CSS Sizing 3 §3.1) */
 const SIZING_PROPS = new Set(['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height']);
+/** 大きさの性質の論理の名前 (Logical 1 §4.1)。出どころ (StyleSource.sizeOrigin) を、写した物理の名前に移す */
+const LOGICAL_SIZING = /^(min-|max-)?(inline|block)-size$/;
+/**
+ * 長さの値が負なら無効な性質 (物理的な名前。論理的な名前は、写した物理的な名前で引く): padding (CSS 2.1 §8.4)、width・height と
+ * min-*・max-* (§10.2・§10.4・§10.5・§10.7)、column-width (Multicol 1 §3.1)、column-gap・row-gap (Box Alignment 3 §8.1)、flex-basis
+ * (Flexbox 1 §7.2.3: width と同じ値)、罫線の太さ (Backgrounds 3 §3.3 の <line-width>)・段間罫の太さ (Multicol 1 §4.2)、font-size (Fonts 4 §2.4)。
+ * 負の長さの宣言は捨てて、カスケードの前の値 (UA の既定など) を使う。calc() などの数学の関数は、結果が負でも有効で、計算値で 0 に切り詰める
+ * (CSS Values 4 §10.12)。負が有効な性質 (margin・text-indent・letter-spacing・word-spacing・top などの位置・vertical-align・outline-offset) は含めない
+ */
+/**
+ * 組むときに、実際の包含ブロックの幅で百分率を解き直す性質 (Computed.pct)。left・right は、基準がページの領域の絶対配置・固定配置の箱
+ * (LBlockContainer.pageArea) だけが読む (置くページの領域の幅で解く)
+ */
+const PCT_LAYOUT_PROPS = new Set(['width', 'min-width', 'max-width', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'left', 'right']);
+
+/**
+ * 百分率を含む長さ (10%・calc(50% + 2px) など) を、割合 (基準 1px あたりの px) と長さの部分 (px) に分ける。基準を 0・100・1000 として
+ * 解き、線形でない式 (min()・max()・clamp() で基準により項が変わるもの) は分けない (undefined。見積もりのまま)
+ */
+function percentParts(v: string, ctx: (pct?: number) => LenCtx): { f: number; px: number } | undefined {
+  const a = lengthPx(v, ctx(0));
+  const b = lengthPx(v, ctx(100));
+  const c = lengthPx(v, ctx(1000));
+  if (a === undefined || b === undefined || c === undefined) return undefined;
+  const f = (b - a) / 100;
+  if (Math.abs(a + f * 1000 - c) > 1e-6 * Math.max(1, Math.abs(c))) return undefined;
+  return { f, px: a };
+}
+
+const NON_NEGATIVE_LENGTH = new Set([
+  'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+  ...SIZING_PROPS,
+  'column-width', 'column-gap', 'row-gap', 'flex-basis',
+  'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'column-rule-width',
+  'font-size',
+]);
+/**
+ * 長さ (か百分率) の値が、負の数で書いたもの (数学の関数は含まない。その結果は計算値で切り詰める)。範囲の検査は数の値で見るので、
+ * -0・-0px・-0% は 0 で、負ではない (CSS Values 4 §4.1・§5: 範囲は値に対するもので、符号の字に対するものではない)
+ */
+const negativeLiteral = (v: string) => {
+  const m = /^\s*(-(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?)/i.exec(v);
+  return !!m && parseFloat(m[1]) < 0 && !HAS_MATH_FUNCTION.test(v);
+};
 
 /** 値が読めるかを調べるための、仮の長さの基準 */
 const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
@@ -2944,6 +3154,10 @@ function validByGrammar(prop: string, lv: string, ws: string[], ctx: LenCtx): bo
   switch (prop) {
     case 'color-scheme':
       return validColorScheme(lv);
+    case 'grid-template-columns':
+      // none | <track-list> | <auto-track-list> (CSS Grid 1 §7.2)。無効な並び (minmax(1fr, 2fr)・負の大きさ・入れ子の repeat() など) の宣言は捨てる
+      // (前の宣言が残る。CSS 2.1 §4.2)。語の読み方は、列の幅を決める gridTrackPlan と同じ (gridTrackListInvalid)
+      return lv === 'none' || !gridTrackListInvalid(lv, (t) => HAS_MATH_FUNCTION.test(t) || lengthPx(t, { ...ctx, pct: 100 }) !== undefined);
     case 'text-spacing-trim':
       // <spacing-trim> | auto (CSS Text 4 §8.5。位置ごとの語の組 trim-start trim-end なども。htmlPaged の parseSpacingTrim)
       return lv === 'auto' || parseSpacingTrim(lv) !== undefined;
@@ -3233,13 +3447,22 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       if (s0 === 'normal') return true;
       if (num.test(s0)) return parseFloat(s0) >= 0;
       return !/^-/.test(s0) && lengthPx(s0, { ...ctx, pct: 100 }) !== undefined;
+    case 'background-size':
+      // <bg-size># = [ <length-percentage [0,∞]> | auto ]{1,2} | cover | contain (Backgrounds 3 §3.9: 負の値は無効)。
+      // 前は値を調べず、負の大きさで画像が消えていた (無効な宣言は捨て、前の値 (初期値 auto) のまま、画像本来の大きさで描く)
+      return splitTop(s0, ',', { keepEmpty: true }).every((layer) => {
+        const ws = tokens(layer.trim());
+        if (ws.length === 1 && /^(cover|contain)$/.test(ws[0])) return true;
+        return ws.length >= 1 && ws.length <= 2 && ws.every((w) => w === 'auto' || (!negativeLiteral(w) && lengthPx(w, { ...ctx, pct: 100 }) !== undefined));
+      });
   }
   // 論理的な性質 (margin-inline-start・inline-size など。表には無い) は、対応する物理的な性質 (横書き・ltr のとき) の値として調べる
   const def = PROPS[prop] ?? PROPS[logicalToPhysical(prop, 'horizontal-tb', 'ltr') ?? ''];
   if (!def) return SVG_STYLE_PROPS[prop] ? svgStyleValue(prop, v, ctx) !== undefined : true;
   const kind = def[2];
   if (kind === 'color') return parseColor(v) !== undefined;
-  if (prop === 'font-size') return /^(xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger)$/i.test(v.trim()) || lengthPx(v, { ...ctx, pct: 16 }) !== undefined;
+  // 負の長さは無効 (Fonts 4 §2.4: “Negative values are invalid”)
+  if (prop === 'font-size') return /^(xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger)$/i.test(v.trim()) || (!negativeLiteral(v) && lengthPx(v, { ...ctx, pct: 16 }) !== undefined);
   if (prop === 'text-indent') {
     const sp = splitTextIndent(v.toLowerCase());
     return !!sp && lengthPx(sp.len, { ...ctx, pct: 100 }) !== undefined;
@@ -3250,6 +3473,8 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
     // fit-content(<長さ・百分率>) (CSS Sizing 4 §3.2): 大きさの性質だけ。負の値は読めない
     const fc = SIZING_PROPS.has(prop) ? /^fit-content\(\s*([^()]+?)\s*\)$/.exec(s) : null;
     if (fc) return (lengthPx(fc[1], { ...ctx, pct: 100 }) ?? -1) >= 0;
+    // 負の値が無効な性質 (padding・width・gap など。NON_NEGATIVE_LENGTH) の負の長さ・百分率は、読めない宣言 (前は負の値のまま使っていた)
+    if (negativeLiteral(s) && NON_NEGATIVE_LENGTH.has(logicalToPhysical(prop, 'horizontal-tb', 'ltr') ?? prop)) return false;
     return lengthPx(s, { ...ctx, pct: 100 }) !== undefined;
   }
   return true;
@@ -3286,11 +3511,15 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       const kw = { __proto__: null, left: '0%', top: '0%', center: '50%', right: '100%', bottom: '100%' } as unknown as Record<string, string>;
       if (kw[lv]) return kw[lv];
       if (/%$/.test(lv)) return lv;
+      // 百分率を含む calc() は、式の中の長さだけを絶対の長さにして、式のまま残す (Backgrounds 3 §3.6 の計算値: 長さと百分率の和。
+      // 読み手 (setBackgroundPosition) が、百分率と長さに分ける)
+      if (/%/.test(lv) && !/^(left|right|top|bottom)\s/.test(lv)) return absoluteLengths(raw, ctx);
       // 端の語と距離 (right 10px など)。左・上からなら距離だけ。右・下からの百分率は 100% から引き、長さは端の語を残す
-      const edge = /^(left|right|top|bottom)\s+(\S+)$/.exec(lv);
+      const edge = /^(left|right|top|bottom)\s+(\S+|calc\(.*\))$/.exec(lv);
       if (edge) {
         const far = edge[1] === 'right' || edge[1] === 'bottom';
         if (/%$/.test(edge[2])) return far ? `${100 - parseFloat(edge[2])}%` : edge[2];
+        if (/%/.test(edge[2])) return far ? `${edge[1]} ${absoluteLengths(edge[2], ctx)}` : absoluteLengths(edge[2], ctx);
         const px = lengthPx(edge[2], ctx);
         if (px === undefined) return raw;
         return far ? `${edge[1]} ${+px.toFixed(4)}px` : `${+px.toFixed(4)}px`;
@@ -3335,8 +3564,9 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
     case 'border-top-right-radius':
     case 'border-bottom-right-radius':
     case 'border-bottom-left-radius': {
-      // 長さは px に (百分率はそのまま)。水平と垂直が同じなら 1 つ (Chrome と同じ)
-      const vals = tokens(raw).map((t) => (/%$/.test(t) ? t : `${+(lengthPx(t, { ...ctx, pct: undefined }) ?? 0).toFixed(4)}px`));
+      // 長さは px に (百分率はそのまま)。水平と垂直が同じなら 1 つ (Chrome と同じ)。百分率を含む calc() は、式の中の長さだけを px にして、
+      // 式のまま残す (Backgrounds 3 §5.1 の計算値: 百分率は、箱の大きさに対する割合のまま。読み手 (radiusOf) が箱の大きさで解く)
+      const vals = tokens(raw).map((t) => (/%$/.test(t) ? t : /%/.test(t) ? absoluteLengths(t, ctx) : `${+(lengthPx(t, { ...ctx, pct: undefined }) ?? 0).toFixed(4)}px`));
       return vals.length === 2 && vals[0] === vals[1] ? vals[0] : vals.join(' ');
     }
     case 'counter-reset':
@@ -3364,10 +3594,31 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       // 層ごとの値 (コンマ区切り。Backgrounds 3 §2.1) は、層ごとに計算値にする
       const layers = splitTop(raw, ',');
       if (layers.length > 1) return layers.map((l) => computeKeyword(p, l, parent, ctx)).join(', ');
+      // 長さは絶対の長さ (px) にする (Backgrounds 3 §3.9 の計算値: “as specified, but with lengths made absolute”)。
+      // em・rem などを残すと、読む側 (cssLen) が絶対の単位しか読まないので、大きさの指定が無いものとして画像本来の大きさで描いていた。
+      // 百分率と auto・cover・contain はそのまま
+      const ts = tokens(raw).map((t) => {
+        if (/^(auto|cover|contain)$/i.test(t) || /%$/.test(t)) return t;
+        // 百分率を含む calc() は、式の中の長さだけを絶対の長さにして、式のまま残す (読み手が、背景の領域の大きさで解く)
+        if (/%/.test(t)) return absoluteLengths(t, ctx);
+        const px = lengthPx(t, { ...ctx, pct: undefined });
+        // calc() の負の結果は 0 に切り詰める (CSS Values 4 §10.12)
+        return px !== undefined ? `${+Math.max(px, 0).toFixed(4)}px` : t;
+      });
       // 1 つだけの大きさは、高さが auto (Chrome は「125% auto」と返す)
-      const ts = tokens(raw);
-      return ts.length === 1 && !/^(auto|cover|contain)$/i.test(ts[0]) ? `${ts[0]} auto` : raw.trim();
+      return ts.length === 1 && !/^(auto|cover|contain)$/i.test(ts[0]) ? `${ts[0]} auto` : ts.join(' ');
     }
+    case 'grid-template-columns':
+      // 計算値は、指定のまま、長さを絶対の長さにしたもの (CSS Grid 1 §7.2 の Computed value: “as specified, with lengths made absolute”)。
+      // repeat()・minmax()・fit-content() の中の長さも。百分率・fr・語・線の名前はそのまま (読み手 gridTracks は px と百分率を読む)。
+      // 列の大きさは負にならないので、min(10px, -5px) などの負の結果は 0px にする (CSS Grid 1 §7.2.1・CSS Values 4 §10.12。負のまま渡すと、
+      // 読み手が負の大きさの無効な並びとして捨てる)
+      return lv === 'none' ? 'none' : absoluteLengths(raw, ctx, true);
+    case 'box-shadow':
+    case 'filter':
+      // 計算値は、長さを絶対の長さにしたもの (Backgrounds 3 §6.1 の box-shadow: “any <length> made absolute”。Filter Effects 1 §5 の
+      // filter: “as specified”、関数の中の長さは絶対の長さ)。em・calc() のままだと、読み手 (shadowsOf) が影を読めず、影が消えていた
+      return lv === 'none' ? 'none' : absoluteLengths(raw, ctx);
     case 'background-image':
     case 'list-style-image':
       return replaceUrls(raw, (u) => `url("${u}")`);

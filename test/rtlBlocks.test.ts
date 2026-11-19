@@ -45,6 +45,14 @@ describe('幅の決まったブロックの左右の余白 (CSS 2.1 §10.3.3)', 
     // 余白が auto でなければ、左から置く (margin-right を捨てる)
     expect(ltr(`<div style="width: 100pt; margin-left: 30pt; margin-right: 10pt; ${RED}">x</div>`)).toEqual([30, 100]);
   });
+  it('表のセルの中の、左右とも auto の余白の箱: 列の幅に余白は入らず (auto の余白は内容の幅では 0)、箱はセルの中央に置く', () => {
+    // 列 1・3 は同じ中身なので、残りの 160pt を等分する。列 2 は箱の幅 40pt
+    const words = 'aaa '.repeat(20);
+    const cell = (s: string) => `<td style="padding: 0">${s}</td>`;
+    expect(red(`<table style="width: 200pt; border-spacing: 0">${cell(words)}${cell(`<div style="width: 40pt; margin: 0 auto; ${RED}">x</div>`)}${cell(words)}</table>`)).toEqual([80, 40]);
+    // セルが箱より広ければ、セルの中で中央に置く (セルの幅 100pt の中の 40pt の箱は 30pt から)
+    expect(red(`<table style="width: 200pt; border-spacing: 0"><td style="padding: 0; width: 100pt"><div style="width: 40pt; margin: 0 auto; ${RED}">x</div></td>${cell(words)}</table>`)).toEqual([30, 40]);
+  });
   it('rtl の包含ブロックでは、余白が auto でない箱を右端から置く (margin-left を捨てる)', () => {
     expect(rtl(`<div style="width: 100pt; ${RED}">x</div>`)).toEqual([100, 100]);
     expect(rtl(`<div style="width: 100pt; margin-right: 10pt; margin-left: 30pt; ${RED}">x</div>`)).toEqual([90, 100]);

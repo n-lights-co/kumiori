@@ -9,7 +9,7 @@
  */
 import { parsePageRule } from './htmlImport';
 import { msg } from './messages';
-import { concatCss, matchMedia, matchSupports, mediaDependsOnPageSize, mediaPageOf, parseCss, type ParsedCss } from './htmlPaged';
+import { concatCss, matchMedia, matchSupports, mediaDependsOnPageSize, mediaPageOf, parseCss, resolvePageRules, type PageRule, type ParsedCss } from './htmlPaged';
 import { rebaseFontFaceUrls, resolveRef } from './resources';
 import { ALL_AH } from './cssCascade';
 
@@ -25,10 +25,15 @@ import { ALL_AH } from './cssCascade';
  * 行内の箱の背景・罫線 (内容の領域) は line-height に関わらず書体の上下で決まる (CSS 2.1 §10.6.1) ので、見た目は変わらない。
  * pre などの中は、ブロック全体が等幅なので、規則の無いときと同じく親の line-height を受け継ぐ (pre の中の display: block の code の行を詰めない)。
  * 既定のスタイルのときだけ (browser・ah などは、それぞれのお手本の既定のまま)
+ *
+ * 書体 (font-family) と行揃え (text-align) は、body ではなく html に当てる。どちらも受け継がれる性質で、body は html から受け継ぐので、
+ * 作成者が何も書かない文書では同じ。作成者が html (:root) に書いたときは、作成者スタイルシートが既定のスタイルに勝ち (CSS Cascade 4 §6.1 の Origin and Importance・§6.2)、
+ * body に既定の値が無いので、作成者の値が受け継がれる (同 §7.2 Inheritance)。body に当てていると、作成者の html { font-family: … } が body で既定の値に
+ * 上書きされて、文書の中に届かなかった (ブラウザの既定のスタイルは body に書体も行揃えも当てないので、ブラウザでは作成者の値になる)
  */
 export const KUMIORI_BOOK_CSS = `
-html { font-size: 10pt; line-height: 1.75; hanging-punctuation: allow-end; }
-body { margin: 0; font-family: serif; text-align: justify; }
+html { font-size: 10pt; line-height: 1.75; hanging-punctuation: allow-end; font-family: serif; text-align: justify; }
+body { margin: 0; }
 h1, h2, h3, h4, h5, h6 { font-weight: bold; line-height: 1.4; text-align: start; break-after: avoid; }
 h1 { font-size: 1.6em; margin: 2em 0 1em; }
 h2 { font-size: 1.3em; margin: 1.5em 0 0.75em; }
@@ -180,6 +185,8 @@ export interface PreparedHtml {
   sheet: ParsedCss;
   /** 本文の領域の幅と高さ (px)。iframe の大きさ、vw・vh の基準 */
   bodyWidthPx: number;
+  /** 名前付きのページ (@page <名前>) の領域の幅 (px。名前ごと) */
+  pageWidthsPx: Map<string, number>;
   pageHeightPx: number;
 }
 
@@ -463,8 +470,35 @@ export async function prepareHtml(
   // 本文の幅 (px) で組ませる。高さはページの領域 (余白を除く) の高さ (CSS の印刷では、vh はページの領域の高さに対して決まる)
   const page = parsePageRule(sheet, defaultPage);
   const bodyWidthPx = ((page.width - page.margins.left - page.margins.right) / 25.4) * 96;
+  // 名前付きのページ (@page <名前>) の領域の幅 (px)。page でそのページを指定した要素の百分率の幅の基準 (cascadeStyles の pageWidths)
+  // (Map: __proto__ などの名前も、ふつうの名前として入れる)
+  const pageWidthsPx = new Map<string, number>();
+  for (const [name, pg] of namedPageBoxes(sheet, defaultPage)) pageWidthsPx.set(name, ((pg.width - pg.margins.left - pg.margins.right) / 25.4) * 96);
   const pageHeightPx = ((page.height - page.margins.top - page.margins.bottom) / 25.4) * 96;
-  return { doc: parsed, css, authorCss, uaCss: base, uaSheet, authorSheet, sheet, bodyWidthPx, pageHeightPx, warnings };
+  return { doc: parsed, css, authorCss, uaCss: base, uaSheet, authorSheet, sheet, bodyWidthPx, pageWidthsPx, pageHeightPx, warnings };
+}
+
+/**
+ * 名前付きのページ (@page <名前>) ごとの、用紙の大きさと余白 (擬似クラスの無い、その名前のページ)。
+ * 名前ごとに parsePageRule を呼ぶと、名前ごとに全部の @page の規則を見るので、手間が 名前の数 × 規則の数 になる
+ * (@page a1{} … を 2 万個 (269KB) 並べた CSS で 6.5 秒)。そこで、規則を名前ごとにまとめ、名前の無い規則は 1 度だけ重ねる。
+ * 結果は名前ごとに parsePageRule(sheet, def, { name }) を呼ぶのと同じ: 擬似クラスの無いページの選び方 ({ name }) に当てはまるのは、
+ * 擬似クラスの無い規則だけで (:first・:left・:right・:blank は当てはまらない)、名前の無いもの (詳細度 0) が、その名前のもの (詳細度は名前の分だけ高い)
+ * より前に、それぞれ出てくる順に重なる (CSS Paged Media 3 §7: 詳細度、同じなら出てくる順のカスケード)。
+ * 名前の無い規則を重ねた結果 (余白は物理の辺に分けてある) は、1 つの名前の無い規則として先頭に置いて重ね直しても、同じ宣言になる
+ */
+function namedPageBoxes(sheet: ParsedCss, def: { width: number; height: number; margin: number }): Map<string, ReturnType<typeof parsePageRule>> {
+  const unnamed: PageRule[] = [];
+  const byName = new Map<string, PageRule[]>();
+  for (const r of sheet.pages) {
+    if (!r.name) unnamed.push(r);
+    else (byName.get(r.name) ?? byName.set(r.name, []).get(r.name)!).push(r);
+  }
+  const base = resolvePageRules(unnamed, {});
+  const baseRule: PageRule = { pseudos: [], decls: base.decls, boxes: base.boxes };
+  const out = new Map<string, ReturnType<typeof parsePageRule>>();
+  for (const [name, rules] of byName) out.set(name, parsePageRule({ ...sheet, pages: [baseRule, ...rules] }, def, { name }));
+  return out;
 }
 
 /** 互換モード (quirks mode) にする公開識別子 (HTML Living Standard §13.2.6.4.1。2026-11-04 取得。大文字小文字を区別しない) */
