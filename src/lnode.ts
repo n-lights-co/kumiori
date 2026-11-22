@@ -265,6 +265,8 @@ export interface ResolvedStyle {
   textAlign: TextAlign;
   textAlignLast?: TextAlign;
   noWrap?: boolean;
+  /** 行の並べ方の選び方 (TextStyle.textWrapStyle) */
+  textWrapStyle?: 'auto' | 'balance' | 'pretty';
   alignOverflow?: boolean;
   overflowWrap?: 'normal' | 'break-word' | 'anywhere';
   wordBreak?: 'normal' | 'break-all' | 'keep-all';
@@ -472,6 +474,7 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     textAlign: n.textAlign ?? parent.textAlign,
     textAlignLast: n.textAlignLast ?? parent.textAlignLast,
     noWrap: n.noWrap ?? parent.noWrap,
+    textWrapStyle: n.textWrapStyle ?? parent.textWrapStyle,
     alignOverflow: n.alignOverflow ?? parent.alignOverflow,
     overflowWrap: n.overflowWrap ?? parent.overflowWrap,
     wordBreak: n.wordBreak ?? parent.wordBreak,

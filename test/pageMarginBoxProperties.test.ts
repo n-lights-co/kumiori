@@ -134,7 +134,7 @@ describe('@footnote の max-height (GCPM 3 §2.4.2)', () => {
   });
 });
 
-describe('@page の背景画像の位置 (CSS Backgrounds 3 §3.6)', () => {
+describe('@page の背景画像の位置 (CSS Backgrounds 3 §2.6)', () => {
   /** 用紙の背景画像の位置 (x・y の値) */
   const pos = async (decl: string) => {
     const r = await typesetHtml(`<!doctype html><html><head><style>@page { size: 120mm 80mm; margin: 20mm; ${decl} }</style></head><body><p>B</p></body></html>`, {

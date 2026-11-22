@@ -582,7 +582,7 @@ describe('HTML: display: contents・background-size の百分率・定義済み�
     expect(flow).toContain('"color":"#0000ff"');
   });
 
-  it('background-size の百分率は、ブラウザの配置が無くても箱の大きさで決める (CSS Backgrounds 3 §3.9)', () => {
+  it('background-size の百分率は、ブラウザの配置が無くても箱の大きさで決める (CSS Backgrounds 3 §2.9)', () => {
     const r = imp('<div style="width: 200pt; height: 100pt; background: url(a.png) no-repeat; background-size: 50%"></div>');
     const bi = JSON.stringify(r.document.sequences[0].flow);
     expect(bi).toContain('"widthPct":0.5');

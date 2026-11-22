@@ -59,6 +59,8 @@ describe('書体のキャッシュ', () => {
     const cache = path.join(dir, 'cache');
     const load = localFont(dir, cache, (s) => logs.push(s), 1);
     await expect(load(specOf('Noto Sans JP', 400))).rejects.toThrow(/書体を取得できません: Noto Sans JP .*--font-dir .*NotoSansJP-Regular\.ttf/);
+    // 誤りの型は、ほかの書体の誤りと同じ KumioriFontError (code: font/load-failed)。前は code の無い Error
+    await expect(load(specOf('Noto Sans JP', 400))).rejects.toMatchObject({ name: 'KumioriFontError', code: 'font/load-failed', args: { font: 'Noto Sans JP' } });
     expect(fs.existsSync(cache)).toBe(false);
     // 壊れたキャッシュは捨てる (取り直しは 1ms で失敗するので投げるが、ファイルは消えている)
     fs.mkdirSync(cache);

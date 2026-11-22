@@ -9,6 +9,7 @@
 import { disabledAlternateStylesheet, linkRelTokens } from './htmlPrepare';
 import { EPUB_MAX_ENTRIES, EPUB_MAX_ENTRY_BYTES, EPUB_MAX_TOTAL_BYTES } from './imageLimits';
 import { msg } from './messages';
+import { KumioriInputError, KumioriLimitError } from './errors';
 
 export interface ZipEntry {
   name: string;
@@ -30,12 +31,12 @@ const DEFAULT_LIMITS: ZipLimits = { maxEntryBytes: EPUB_MAX_ENTRY_BYTES, maxTota
  * 展開の上限を超えた誤り。scope: entry は 1 つの項目が大きすぎる (その項目だけ読めないものとして扱える)、
  * total は合計が大きすぎる・entries は項目が多すぎる (その zip は読まない)
  */
-export class ZipLimitError extends Error {
+export class ZipLimitError extends KumioriLimitError {
   constructor(
     message: string,
     readonly scope: 'entry' | 'total' | 'entries',
   ) {
-    super(message);
+    super(scope === 'entries' ? 'limit/zip-entries' : 'limit/zip-size', message);
     this.name = 'ZipLimitError';
   }
 }
@@ -44,9 +45,9 @@ export class ZipLimitError extends Error {
  * zip の項目が読めない誤り (位置・大きさが zip の外を指す、暗号化されている、ZIP64 の項目、対応していない圧縮方式)。
  * EPUB の章・CSS・画像なら、その項目だけを読めないものとして飛ばす (readEpub の warnings に書く)
  */
-export class ZipEntryError extends Error {
+export class ZipEntryError extends KumioriInputError {
   constructor(message: string) {
-    super(message);
+    super('input/zip-entry', message);
     this.name = 'ZipEntryError';
   }
 }
@@ -86,11 +87,11 @@ export function readZip(bytes: Uint8Array, limits: Partial<ZipLimits> = {}): Zip
       break;
     }
   }
-  if (eocd < 0) throw new Error(msg('zip ではありません', 'not a zip file'));
+  if (eocd < 0) throw new KumioriInputError('input/not-zip', msg('zip ではありません', 'not a zip file'));
   const count = v.getUint16(eocd + 10, true);
   const cdStart = v.getUint32(eocd + 16, true);
   // ZIP64 (項目の数・中央ディレクトリの位置が 16・32 ビットの最大値で、本当の値は ZIP64 の記録にある。APPNOTE 6.3 §4.4.1.4) は読まない
-  if (count === 0xffff || cdStart === 0xffffffff) throw new Error(msg('ZIP64 の zip は読めません', 'ZIP64 archives are not supported'));
+  if (count === 0xffff || cdStart === 0xffffffff) throw new KumioriInputError('input/not-zip', msg('ZIP64 の zip は読めません', 'ZIP64 archives are not supported'));
   if (count > lim.maxEntries) throw new ZipLimitError(msg(`zip の項目が多すぎます (${count} 個。上限 ${lim.maxEntries} 個)`, `the zip has too many entries (${count}; the limit is ${lim.maxEntries})`), 'entries');
   let p = cdStart;
   // 項目のデータは、中央ディレクトリより前にある (APPNOTE 6.3 §4.3.6 の並び)。データの範囲は、そこまでで切る
@@ -221,7 +222,7 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
     }
   };
   const container = await text('META-INF/container.xml');
-  if (!container) throw new Error(msg('EPUB ではありません (META-INF/container.xml がありません)', 'not an EPUB (no META-INF/container.xml)'));
+  if (!container) throw new KumioriInputError('input/not-epub', msg('EPUB ではありません (META-INF/container.xml がありません)', 'not an EPUB (no META-INF/container.xml)'));
   // container.xml は XML として読む (属性の値の引用符は " でも ' でもよい。XML 1.0 §2.3 の AttValue)。最初の rootfile が既定の版
   // (EPUB 3.3 の OCF §4.2.6.3.1 の rootfile 要素)。XML として読めなければ、full-path の属性を文字として探す
   let opfPath: string | undefined;
@@ -234,7 +235,7 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
   }
   opfPath ||= /full-path\s*=\s*(?:"([^"]+)"|'([^']+)')/.exec(container)?.slice(1).find(Boolean);
   const opfText = opfPath ? await text(opfPath) : undefined;
-  if (!opfPath || !opfText) throw new Error(msg('EPUB の OPF が読めません', 'cannot read the OPF of the EPUB'));
+  if (!opfPath || !opfText) throw new KumioriInputError('input/not-epub', msg('EPUB の OPF が読めません', 'cannot read the OPF of the EPUB'));
   const opf = parse(opfText, 'application/xml');
   const base = dirOf(opfPath);
   const items = new Map<string, { href: string; type: string }>();

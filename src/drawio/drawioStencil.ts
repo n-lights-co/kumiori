@@ -270,6 +270,7 @@ export class StencilRegistry {
    * 下の層 base の上に重ねる、新しい層。足したもの (addImage など) は、この層にだけ入り、base は変えない。
    * 文書ごとの決まり (fetchImages・resolveResource) で取った URL の画像を、文書をまたいで使い回す共有の登録所に入れないために使う
    * (入れると、fetchImages: true の文書のために取った画像が、fetchImages: false の別の文書に、取らずに描かれていた)
+   * @internal
    */
   static overlay(base?: StencilRegistry): StencilRegistry {
     const r = new StencilRegistry();
@@ -310,7 +311,10 @@ export class StencilRegistry {
     return n;
   }
 
-  /** 名前の形 (mxgraph.flowchart.decision など)。配布物にあれば、そのライブラリを戻して足す */
+  /**
+   * 名前の形 (mxgraph.flowchart.decision など)。配布物にあれば、そのライブラリを戻して足す
+   * @internal
+   */
   get(name: string): XEl | undefined {
     const key = name.toLowerCase();
     const hit = this.shapes.get(key);
@@ -332,7 +336,10 @@ export class StencilRegistry {
     return this.shapes.get(key) ?? this.base?.get(name);
   }
 
-  /** そのライブラリのファイルが、どれか 1 つでも手元にあるか (形が無いときの警告を分ける) */
+  /**
+   * そのライブラリのファイルが、どれか 1 つでも手元にあるか (形が無いときの警告を分ける)
+   * @internal
+   */
   hasLibrary(lib: string): boolean {
     if (this.base?.hasLibrary(lib)) return true;
     const files = libraryFiles(lib);
@@ -355,11 +362,18 @@ export class StencilRegistry {
     return true;
   }
 
-  /** 画像 (src: 配布物の中の道か URL)。道そのもので無ければ、渡されたファイルの名前 (道の最後) で引く。無ければ undefined */
+  /**
+   * 画像 (src: 配布物の中の道か URL)。道そのもので無ければ、渡されたファイルの名前 (道の最後) で引く。無ければ undefined
+   * @internal
+   */
   image(src: string): DrawioImage | undefined {
     return this.images.get(src) ?? (isRemoteImage(src) ? undefined : this.images.get(nameKey(src))) ?? this.base?.image(src);
   }
 
+  /**
+   * 形・ライブラリ・画像が 1 つも無いか (下の層も含めて)
+   * @internal
+   */
   get empty(): boolean {
     return !this.shapes.size && !this.bundles.length && !this.images.size && (this.base?.empty ?? true);
   }
@@ -791,18 +805,15 @@ export async function fetchDrawioImage(fetch: Fetcher, path: string, bundleUrl: 
 }
 
 /** 取った配布物 (URL ごと。プロセス・画面の中で使い回す。取れなかったものは覚えない) */
-const bundles = new Map<string, Promise<string | undefined>>();
+const bundles = new Map<string, Promise<Uint8Array | undefined>>();
 
-/** draw.io の配布物 (stencils.min.js) をネットワークから取る (呼ぶのは、利用者が許したときだけ: drawio.fetchStencils) */
-export async function fetchStencilBundle(fetch: Fetcher, url: string = DRAWIO_STENCILS_URL): Promise<string | undefined> {
-  if (!bundles.has(url))
-    bundles.set(
-      url,
-      fetch(url)
-        .then((b) => (b ? new TextDecoder().decode(b) : undefined))
-        .catch(() => undefined),
-    );
-  const text = await bundles.get(url);
-  if (text === undefined) bundles.delete(url);
-  return text;
+/**
+ * draw.io の配布物 (stencils.min.js) をネットワークから取る (呼ぶのは、利用者が許したときだけ: drawio.fetchStencils)。
+ * 中身はバイト列のまま返す (既定の取り先から取ったものは、呼ぶ側 (load.ts) が SHA-256 の一覧と照らす。drawioPin.ts)
+ */
+export async function fetchStencilBundle(fetch: Fetcher, url: string = DRAWIO_STENCILS_URL): Promise<Uint8Array | undefined> {
+  if (!bundles.has(url)) bundles.set(url, fetch(url).catch(() => undefined));
+  const got = await bundles.get(url);
+  if (got === undefined) bundles.delete(url);
+  return got;
 }

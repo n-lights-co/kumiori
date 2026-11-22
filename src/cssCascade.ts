@@ -15,7 +15,7 @@ import { fmtColor, gridTrackListInvalid, parseColor, replaceUrls, resolveLightDa
 import { parseVariationSettings } from './fontVariation';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { is3dTransformValue } from './cssTransform';
-import { asciiLower, BT_MEMO_BUDGET, createSelectorMemo, matches, parseSelectorList, selectorIndex, setDocumentMode, type Selector } from './cssSelector';
+import { asciiLower, BT_MEMO_BUDGET, createSelectorMemo, matches, matchesAbove, matchesRightmost, parentDecides, parseSelectorList, selectorIndex, setDocumentMode, splitsAtParent, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
 import { blockLevelDisplay, bodyPageSwitchHolder, ownPageName, pageSwitchBox, pageSwitchHolder } from './pageFlow';
 
@@ -308,6 +308,11 @@ interface RuleEntry {
   order: number;
   /** カスケードの層の順位 (層の無い規則は undefined) */
   layer?: number;
+  /** 照合を、右端と、その左の部分 (要素の親で決まる) に分けられる (cssSelector の splitsAtParent) */
+  split?: boolean;
+  /** 左の部分を最後に照合した要素の親と、その答え (split の規則。兄弟に使い回す) */
+  abovePar?: Node | null;
+  aboveOk?: boolean;
 }
 
 /** 計算値 (要素 1 つ分) */
@@ -461,6 +466,10 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   // 下線をずらす量 (Text Decoration 4 §2.8: auto | <length> | <percentage>。受け継ぐ。百分率は % のまま受け継ぎ、線を指定した要素の 1em で決める)
   'text-underline-offset': [true, 'auto', 'len-auto'],
   'white-space': [true, 'normal', 'raw'],
+  // 折り返すか (CSS Text 4 §5.1: wrap | nowrap。初期値 wrap。受け継ぐ)。white-space と text-wrap の両方の個別の性質 (一括指定は下の SHORTHANDS)
+  'text-wrap-mode': [true, 'wrap', 'raw'],
+  // 行の並べ方の選び方 (CSS Text 4 §5.4: auto | balance | stable | pretty | avoid-short-last-line。初期値 auto。受け継ぐ)
+  'text-wrap-style': [true, 'auto', 'raw'],
   'word-break': [true, 'normal', 'raw'],
   'overflow-wrap': [true, 'normal', 'raw'],
   'line-break': [true, 'auto', 'raw'],
@@ -485,6 +494,9 @@ const PROPS: Record<string, [boolean, string, Kind]> = {
   // 初期値は normal (CSS Text 4 §8.4 https://www.w3.org/TR/css-text-4/ 2026-11-05 取得。ideograph-alpha ideograph-numeric と同じ)
   'text-autospace': [true, 'normal', 'raw'],
   'ruby-position': [true, 'over', 'raw'],
+  // 割注 (Kumiori の拡張。htmlImport.ts の warichuOf): none | auto、括弧は auto | none | <string> <string>。どちらも受け継がない
+  '-kumiori-warichu': [false, 'none', 'raw'],
+  '-kumiori-warichu-brackets': [false, 'auto', 'raw'],
   'list-style-type': [true, 'disc', 'raw'],
   'list-style-position': [true, 'outside', 'raw'],
   'list-style-image': [true, 'none', 'raw'],
@@ -740,15 +752,22 @@ export function lengthPx(v: string, ctx: LenCtx): number | undefined {
   return undefined;
 }
 
-/** calc() / min() / max() / clamp() を px に */
-function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
+/**
+ * calc() の中の括弧と数学の関数の入れ子の深さの上限。超えたら読めない値にする (読みは呼び出しの入れ子なので、細工した値
+ * (calc( を 5,000 段) で RangeError になり、文書の全体が組めなかった。実在の値の入れ子は数段)
+ */
+const MAX_CALC_DEPTH = 64;
+
+/** calc() / min() / max() / clamp() を px に。depth: 外の calc() の中の入れ子の深さ */
+function calcPx(fn: string, body: string, ctx: LenCtx, depth = 0): number | undefined {
+  if (depth > MAX_CALC_DEPTH) return undefined;
   if (fn !== 'calc') {
     // 読むのは min()・max()・clamp() だけ (ほかの関数を clamp() として読まない)。引数は、min()・max() が 1 つ以上、
     // clamp() はちょうど 3 つ (Values 4 §10.2。空の引数は読めない)
     if (fn !== 'min' && fn !== 'max' && fn !== 'clamp') return undefined;
     const raw = splitTop(body, ',', { keepEmpty: true });
     if (fn === 'clamp' ? raw.length !== 3 : raw.length < 1) return undefined;
-    const args = raw.map((a) => (a ? calcPx('calc', a, ctx) : undefined));
+    const args = raw.map((a) => (a ? calcPx('calc', a, ctx, depth + 1) : undefined));
     if (args.some((a) => a === undefined)) return undefined;
     const n = args as number[];
     return fn === 'min' ? Math.min(...n) : fn === 'max' ? Math.max(...n) : Math.max(n[0], Math.min(n[1], n[2]));
@@ -759,19 +778,23 @@ function calcPx(fn: string, body: string, ctx: LenCtx): number | undefined {
   // 項にならない字 (calc(10px foo) の foo など) が残れば、式として読めない (読める所だけを拾って値にしない)
   if (toks.join('').replace(/\s+/g, '') !== body.replace(/\s+/g, '')) return undefined;
   let k = 0;
+  /** 括弧の入れ子の深さ (外の calc() の中の深さ depth から数える) */
+  let level = depth;
   // 単位の無い数は { n, unitless: true }
   type Val = { n: number; unitless: boolean } | undefined;
   const primary = (): Val => {
     const t = toks[k++];
     if (t === undefined) return undefined;
     if (t === '(') {
+      if (++level > MAX_CALC_DEPTH) return undefined;
       const v = expr();
+      level--;
       k++; // )
       return v;
     }
     if (/^[a-z-]+\(/i.test(t)) {
       const inner = /^([a-z-]+)\((.*)\)$/i.exec(t)!;
-      const r = inner[1].toLowerCase() === 'var' ? undefined : calcPx(inner[1].toLowerCase(), inner[2], ctx);
+      const r = inner[1].toLowerCase() === 'var' ? undefined : calcPx(inner[1].toLowerCase(), inner[2], ctx, level + 1);
       return r === undefined ? undefined : { n: r, unitless: false };
     }
     if (/^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/.test(t)) return { n: parseFloat(t), unitless: true };
@@ -1081,7 +1104,10 @@ const FONT_RESET_ONLY: Array<[string, string]> = [
 export function isKnownCssProperty(prop: string, value = '', ah: AhFlags = NO_AH): boolean {
   const known = (p: string) => !!PROPS[p] || !!SVG_STYLE_PROPS[p] || !!PROPS[logicalToPhysical(p, 'horizontal-tb', 'ltr') ?? ''];
   if (known(prop)) return true;
-  const parts = expand(prop, value, ah);
+  // 一括指定は、値が読めなくて分けられないとき (text-wrap: bogus など) も、名前は知っているので、初期値で分けた性質で見る
+  // (読めない値の宣言は、ほかの性質と同じく、知らない性質としては数えずに捨てる。CSS 2.1 §4.2)
+  let parts = expand(prop, value, ah);
+  if (!parts.length) parts = expand(prop, 'initial', ah);
   return parts.length > 0 && parts.every(([p]) => p !== prop && known(p));
 }
 
@@ -1101,8 +1127,7 @@ export function isKnownCssProperty(prop: string, value = '', ah: AhFlags = NO_AH
  *  - カスタム プロパティ (--x: 何でも) は、ここへ来る前に真 (htmlPaged の matchSupports。Variables 1 §2.1: 値の構文はほぼ何でも受け付ける)
  * アンテナハウスの拡張の値 (線種 dot-dash など・counter() の physical・reverse) は、互換の指定 (--style ah) のときだけカスケードが読むので、
  * @supports もそのときだけ真にする (ah = カスケードに渡すのと同じ読み方。省けば拡張を読まない)。§6.1 の注記: 機能を入り切りする
- * 開発者向けの設定は、対応の定義に効く (「a developer-facing preference whose purpose is to enable or disable support for
- * an experimental CSS feature does affect this definition of support」)。
+ * 開発者向けの設定は、対応の定義に効く (試しの機能を入り切りする設定で、対応しているかどうかが変わってよい)。
  * 互換の指定によらず読む拡張 (-ah- の付いたプロパティなど) は、どちらのときも受け付けるので、どちらのときも真。
  * counter() の拡張は、互換の指定のときも、使える書き方 (counter(page physical)) だけを真にする。
  * display: grid のように、性質と値は読み、働きの一部が未対応のものも真のまま
@@ -1430,8 +1455,7 @@ shorthand(['margin-block', 'padding-block', 'margin-inline', 'padding-inline'], 
 shorthand(['border', 'border-top', 'border-right', 'border-bottom', 'border-left', 'column-rule'], borderShorthand);
 /**
  * clip の rect() の 4 つの値 (top・right・bottom・left) を取り出す。CSS 2.1 §11.1.2: 値はコンマで区切る。コンマ無し (空白区切り) の書き方も
- * 受け付けるが、混ぜた書き方は受け付けない (「User agents must support separation with commas, but may also support separation
- * without commas (but not a combination)」)。rect() でない・値が 4 つでないなら undefined
+ * 受け付けるが、混ぜた書き方は受け付けない (コンマ区切りは必須、コンマ無しは任意で、両者を混ぜた書き方は認めない)。rect() でない・値が 4 つでないなら undefined
  */
 function clipRectParts(lv: string): string[] | undefined {
   const m = /^rect\(([\s\S]*)\)$/.exec(lv.trim());
@@ -1573,6 +1597,24 @@ shorthand(['page-break-before', 'page-break-after', 'page-break-inside'], (prop,
 });
 shorthand(['break-before', 'break-after'], (prop, v) => [[prop, v], [`page-break-${prop.slice(6)}`, v === 'page' || v === 'always' ? 'always' : /^(auto|avoid|left|right)$/.test(v) ? v : 'auto']]);
 shorthand(['break-inside'], (prop, v) => [[prop, v], ['page-break-inside', /avoid/.test(v) ? 'avoid' : 'auto']]);
+// white-space (CSS Text 4 §3): white-space-collapse・text-wrap-mode・white-space-trim の一括指定。Kumiori は、空白の扱いを
+// white-space の 1 つの値 (normal・pre・nowrap・pre-wrap・pre-line・break-spaces) に持ち、折り返すかを text-wrap-mode にも分ける
+// (§3 の表: normal → wrap、pre → nowrap、pre-wrap → wrap、pre-line → wrap。nowrap は collapse と nowrap)。
+// text-wrap-style は white-space の個別の性質ではないので、戻さない
+shorthand(['white-space'], (_p, v, global) => [['white-space', v], ['text-wrap-mode', global ? v : /^(pre|nowrap)$/i.test(v) ? 'nowrap' : 'wrap']]);
+// text-wrap (CSS Text 4 §5.5): <'text-wrap-mode'> || <'text-wrap-style'>。書かなかった性質は初期値 (wrap・auto)
+shorthand(['text-wrap'], (_p, v, global) => {
+  if (global) return [['text-wrap-mode', v], ['text-wrap-style', v]];
+  let mode: string | undefined;
+  let style: string | undefined;
+  for (const t of tokens(v)) {
+    const k = t.toLowerCase();
+    if (/^(wrap|nowrap)$/.test(k) && mode === undefined) mode = k;
+    else if (/^(auto|balance|stable|pretty|avoid-short-last-line)$/.test(k) && style === undefined) style = k;
+    else return [];
+  }
+  return mode === undefined && style === undefined ? [] : [['text-wrap-mode', mode ?? 'wrap'], ['text-wrap-style', style ?? 'auto']];
+});
 shorthand(['white-space-collapse'], (_p, v) => [['white-space', v === 'preserve' ? 'pre-wrap' : v === 'collapse' ? 'normal' : v]]);
 shorthand(['word-wrap'], (_p, v) => [['overflow-wrap', v]]);
 // font-width (Fonts 4 §2.3)。font-stretch は、その古い名前 (legacy name alias)。計算値は font-stretch に持つ
@@ -1607,7 +1649,7 @@ export function logicalToPhysical(prop: string, wm: string, dir: string): string
 
 /**
  * 背景の位置の語 (left center 20% など) → [x, y]。
- * 3・4 値 (bottom 10px right 20px など) は、語の後の長さ・百分率をその端からの距離とする (Backgrounds 3 §3.6)。
+ * 3・4 値 (bottom 10px right 20px など) は、語の後の長さ・百分率をその端からの距離とする (Backgrounds 3 §2.6)。
  * 右・下の端からの長さは "right 10px" のように端の語を付けて返す (百分率は 100% から引く)
  */
 export function positionXY(ts: string[]): [string, string] {
@@ -1715,6 +1757,8 @@ export interface CascadeOptions {
    * 結合子の種類が混ざったセレクタの照合の覚えの予算 (cssSelector の BT_MEMO_BUDGET) を使い切り、それより後はそのようなセレクタを当てなくなったことを知らせる (1 度だけ)
    */
   onSelectorBudget?: () => void;
+  /** 照合の手間を数える (試験で、規則と要素の組を照合した回数 (selectorMatches) を確かめる) */
+  stats?: { selectorMatches: number };
 }
 
 /**
@@ -2094,8 +2138,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   addSheet(authorCss, 1);
 
   // 右端の単純セレクタで分ける (要素ごとに調べる規則を減らす)
-  interface RuleGroup { byId: Map<string, RuleEntry[]>; byClass: Map<string, RuleEntry[]>; byTag: Map<string, RuleEntry[]>; rest: RuleEntry[] }
-  const newGroup = (): RuleGroup => ({ byId: new Map(), byClass: new Map(), byTag: new Map(), rest: [] });
+  // byParent は、照合の結果が要素の親で決まる規則 (右端が条件の無い * の、div *・g > * など。cssSelector の parentDecides)。親ごとに 1 度だけ照合する (parentRules)
+  interface RuleGroup { byId: Map<string, RuleEntry[]>; byClass: Map<string, RuleEntry[]>; byTag: Map<string, RuleEntry[]>; rest: RuleEntry[]; byParent: RuleEntry[] }
+  const newGroup = (): RuleGroup => ({ byId: new Map(), byClass: new Map(), byTag: new Map(), rest: [], byParent: [] });
   const add = (m: Map<string, RuleEntry[]>, k: string, r: RuleEntry) => (m.get(k) ?? m.set(k, []).get(k)!).push(r);
   // 互換モードでは、ID とクラスの大文字小文字を区別しないので、小文字にした名前で分ける
   const keyName = (n: string) => (quirks ? asciiLower(n) : n);
@@ -2128,8 +2173,11 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     if (c.ids.length) add(g.byId, keyName(c.ids[0]), r);
     else if (c.classes.length) add(g.byClass, keyName(c.classes[0]), r);
     else if (c.tag) add(g.byTag, c.tag, r);
+    else if (parentDecides(r.sel)) g.byParent.push(r);
     else g.rest.push(r);
+    if (splitsAtParent(r.sel)) r.split = true;
   }
+  const anyByParent = plain.byParent.length > 0 || [...byAncestor.values()].some((g) => g.byParent.length > 0);
   /** 要素の祖先が持つ名前のうち、byAncestor にあるもの。兄弟は同じなので、直前に調べた親の分を覚える (祖先ごとの表は持たない: 深い木で、深さの 2 乗の記憶を使わない) */
   let lastParent: Node | null = null;
   let lastAncestorKeys: string[] = [];
@@ -2152,7 +2200,9 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   const candidates = (el: Element): RuleEntry[] => {
     const out: RuleEntry[] = [];
     const id = el.getAttribute('id');
-    const classes = (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+    // 同じ名前のクラスを 2 度書いても (class="a a")、規則を 2 度候補にしない (どの規則も 1 つの組の 1 つの引き出しにだけ入り、
+    // 祖先の名前 (ancestorKeys) も重ならないので、候補は重ならない。要素ごとに候補の集まりを作って重なりを除くと、規則の数 × 要素の数 の手間が大きい)
+    const classes = [...new Set((el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean).map(keyName))];
     const tag = (el.localName ?? el.nodeName).toLowerCase();
     // 配列を引数に広げて push しない (規則が十数万個あると、引数の数の上限を超える)
     const all = (list: RuleEntry[] | undefined) => {
@@ -2161,7 +2211,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     const from = (g: RuleGroup) => {
       all(g.rest);
       if (id) all(g.byId.get(keyName(id)));
-      for (const c of classes) all(g.byClass.get(keyName(c)));
+      for (const c of classes) all(g.byClass.get(c));
       all(g.byTag.get(tag));
     };
     from(plain);
@@ -2171,6 +2221,48 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   /** :has()・:nth-child(… of S) の照合の覚え。このカスケードの間だけ持つ (計算値と同じく、文書の木は変わらない前提) */
   // 結合子の種類の混ざったセレクタの覚えは、合計に予算を置く (SelectorMemo.btBudget。規則の数 × 要素の数 で増えるので)
   const selectorMemo = createSelectorMemo({ btBudget: BT_MEMO_BUDGET, ...(opts.onSelectorBudget ? { onBtOver: opts.onSelectorBudget } : {}) });
+  /**
+   * 要素が規則のセレクタに合うか (matches と同じ答え)。右端と左の部分に分けられる規則 (RuleEntry.split) は、左の部分の答えを、
+   * 最後に照合した親の分だけ覚えて、同じ親の子 (兄弟) に使い回す (計算値は木の順に求めるので、兄弟は続けて照合することが多い。
+   * 親が替われば照合し直すので、答えは要素ごとに照合したのと同じ)。opts.stats には、右端を除いた照合 (祖先をたどるもの) の回数を数える
+   */
+  const ruleMatches = (el: Element, r: RuleEntry): boolean => {
+    if (!r.split) {
+      if (opts.stats) opts.stats.selectorMatches++;
+      return matches(el, r.sel, undefined, selectorMemo);
+    }
+    if (!matchesRightmost(el, r.sel, selectorMemo)) return false;
+    const parent = el.parentNode;
+    if (parent && r.abovePar === parent) return r.aboveOk!;
+    if (opts.stats) opts.stats.selectorMatches++;
+    const ok = matchesAbove(el, r.sel, selectorMemo);
+    r.abovePar = parent;
+    r.aboveOk = ok;
+    return ok;
+  };
+  /**
+   * 照合の結果が要素の親で決まる規則 (RuleGroup.byParent) のうち、親 → その子に合うもの (疑似要素の規則も含む。疑似要素は declsFor で分ける)。
+   * 最初の子を照合した結果を、兄弟に使い回す (cssSelector の parentDecides。答えは、子ごとに照合したのと同じ)
+   */
+  const parentRules = new WeakMap<Node, RuleEntry[]>();
+  const byParentFor = (el: Element): RuleEntry[] => {
+    const parent = el.parentNode;
+    // 親が要素でなければ (根元の要素)、祖先が無いので、どの規則にも合わない
+    if (!anyByParent || !parent || parent.nodeType !== 1) return [];
+    let hit = parentRules.get(parent);
+    if (hit) return hit;
+    hit = [];
+    const from = (g: RuleGroup) => {
+      for (const r of g.byParent) {
+        if (opts.stats) opts.stats.selectorMatches++;
+        if (matches(el, r.sel, undefined, selectorMemo)) hit!.push(r);
+      }
+    };
+    from(plain);
+    if (byAncestor.size) for (const k of ancestorKeys(el)) from(byAncestor.get(k)!);
+    parentRules.set(parent, hit);
+    return hit;
+  };
 
   const cache = new Map<Element, Computed>();
   const pseudoCache = new Map<Element, Partial<Record<PseudoName, Computed>>>();
@@ -2215,13 +2307,14 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       const l = layer ?? Infinity;
       out.push({ prop, value, rank, lay: important ? -l : l, spec: specificity, order: ord });
     };
-    const seen = new Set<RuleEntry>();
     for (const r of candidates(el)) {
-      if (seen.has(r)) continue;
-      seen.add(r);
-      const pe = r.sel.pseudoElement;
-      if ((pe ?? undefined) !== pseudo) continue;
-      if (!matches(el, r.sel, undefined, selectorMemo)) continue;
+      if ((r.sel.pseudoElement ?? undefined) !== pseudo) continue;
+      if (!ruleMatches(el, r)) continue;
+      r.decls.forEach(([p, v, imp], k) => push(p, v, imp, r.origin, r.sel.specificity, r.order + k / 1e4, r.layer));
+    }
+    // 親で決まる規則は、親ごとに照合した結果から (どの規則も 1 つの組の 1 つの引き出しにだけ入るので、上の候補と重ならない。宣言は下で並べ直すので、加える順によらない)
+    for (const r of byParentFor(el)) {
+      if ((r.sel.pseudoElement ?? undefined) !== pseudo) continue;
       r.decls.forEach(([p, v, imp], k) => push(p, v, imp, r.origin, r.sel.specificity, r.order + k / 1e4, r.layer));
     }
     if (!pseudo) {
@@ -2610,7 +2703,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
     }
     out.v.set('color', colorVal);
     // 圏点の色 (Text Decoration 3 §3.2): currentcolor は語のまま受け継ぎ、受け継いだ要素の字の色になる
-    // (「currentcolor keyword computes to itself and is resolved to the value of color after inheritance」)。
+    // (currentcolor の計算値は currentcolor の語のままで、受け継いだ後に、その要素の color の値に解決する)。
     // 返す値は色 (この要素の字の色) にし、currentcolor であることは別に覚えて子へ渡す
     {
       const ecRaw = cascaded.get('text-emphasis-color');
@@ -2721,7 +2814,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
             break;
           }
           // 字間・語間の百分率は、字の大きさに対する割合 (CSS Text 4 §8.1・§8.2。https://www.w3.org/TR/2026/WD-css-text-4-20260814/ 、
-          // 2026-11-18 取得: “Percentages: relative to used font-size”、計算値は長さと百分率のまま (“Percentages inherit intact”)。
+          // 2026-11-18 取得: 百分率は、使われる字の大きさに対する割合で、計算値は長さと百分率のまま受け継ぐ)。
           // CSS Text 3 は長さだけ)。百分率のまま受け継ぎ、htmlImport が、その要素の字の大きさで長さにする。
           // 前は包含ブロックの幅に対する割合にしていた (10% で 45pt)
           if ((p === 'letter-spacing' || p === 'word-spacing') && /%/.test(raw)) {
@@ -2982,6 +3075,8 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'text-align': 'start end left right center justify justify-all match-parent -webkit-center -webkit-left -webkit-right -internal-center',
     'text-align-last': 'auto start end left right center justify match-parent',
     'white-space': 'normal pre nowrap pre-wrap pre-line break-spaces',
+    'text-wrap-mode': 'wrap nowrap',
+    'text-wrap-style': 'auto balance stable pretty avoid-short-last-line',
     'list-style-position': 'inside outside',
     'box-sizing': 'content-box border-box',
     'box-decoration-break': 'slice clone',
@@ -3013,10 +3108,10 @@ const KEYWORDS: Record<string, Set<string>> = Object.fromEntries(
     'line-break': 'auto loose normal strict anywhere',
     'overflow-wrap': 'normal break-word anywhere',
     'word-break': 'normal keep-all break-all break-word manual auto-phrase',
-    // overflow-x・overflow-y (Overflow 3 §3.1。overlay は auto の古い別名: “UAs must also support the overlay keyword as a legacy value alias of auto”)
+    // overflow-x・overflow-y (Overflow 3 §3.1。overlay は auto の古い別名で、処理系は受け付けなければならない)
     'overflow-x': 'visible hidden clip scroll auto overlay',
     'overflow-y': 'visible hidden clip scroll auto overlay',
-    // text-orientation (Writing Modes 4 §5.1。sideways-right は sideways の古い別名: “UAs may accept sideways-right as a value that computes to sideways”)
+    // text-orientation (Writing Modes 4 §5.1。sideways-right は sideways の古い別名で、受け付けるなら計算値は sideways)
     'text-orientation': 'mixed upright sideways sideways-right',
     // unicode-bidi (Writing Modes 4 §2.2)
     'unicode-bidi': 'normal embed isolate bidi-override isolate-override plaintext',
@@ -3095,7 +3190,7 @@ const ANY_CTX: LenCtx = { fs: 16, rootFs: 16, vw: 800, vh: 800, pct: 100 };
 
 /** 1 語だけを取るキーワードの性質 */
 const SINGLE_KEYWORD = new Set([
-  'float', 'clear', 'position', 'visibility', 'box-sizing', 'box-decoration-break', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'word-break', 'overflow-wrap', 'hyphens', 'hyphenate-limit-last',
+  'float', 'clear', 'position', 'visibility', 'box-sizing', 'box-decoration-break', 'table-layout', 'border-collapse', 'caption-side', 'empty-cells', 'list-style-position', 'direction', 'overflow-x', 'overflow-y', 'white-space', 'text-wrap-mode', 'text-wrap-style', 'word-break', 'overflow-wrap', 'hyphens', 'hyphenate-limit-last',
   'text-align', 'text-align-last', 'writing-mode', 'column-span', 'column-fill', 'content-visibility', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style', 'column-rule-style', 'outline-style',
   'flex-direction', 'flex-wrap', 'font-kerning', 'font-variant-caps', 'font-variant-position', 'line-break', 'text-orientation', 'unicode-bidi',
 ]);
@@ -3229,7 +3324,7 @@ function validByGrammar(prop: string, lv: string, ws: string[], ctx: LenCtx): bo
       // <length-percentage [0,∞]>{1,2} (Backgrounds 3 §4.1: 負の値は不正)
       return ws.length >= 1 && ws.length <= 2 && ws.every((w) => lenPct(w, true));
     case 'border-spacing':
-      // <length>{1,2} (CSS 2.1 §17.6.1: “Lengths may not be negative.”。百分率は取らない)
+      // <length>{1,2} (CSS 2.1 §17.6.1: 負の長さは取らない。百分率も取らない)
       return ws.length >= 1 && ws.length <= 2 && ws.every((w) => !/%$/.test(w) && lenPct(w, true));
     case 'flex-grow':
     case 'flex-shrink':
@@ -3448,7 +3543,7 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
       if (num.test(s0)) return parseFloat(s0) >= 0;
       return !/^-/.test(s0) && lengthPx(s0, { ...ctx, pct: 100 }) !== undefined;
     case 'background-size':
-      // <bg-size># = [ <length-percentage [0,∞]> | auto ]{1,2} | cover | contain (Backgrounds 3 §3.9: 負の値は無効)。
+      // <bg-size># = [ <length-percentage [0,∞]> | auto ]{1,2} | cover | contain (Backgrounds 3 §2.9: 負の値は無効)。
       // 前は値を調べず、負の大きさで画像が消えていた (無効な宣言は捨て、前の値 (初期値 auto) のまま、画像本来の大きさで描く)
       return splitTop(s0, ',', { keepEmpty: true }).every((layer) => {
         const ws = tokens(layer.trim());
@@ -3461,7 +3556,7 @@ function validUncached(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boole
   if (!def) return SVG_STYLE_PROPS[prop] ? svgStyleValue(prop, v, ctx) !== undefined : true;
   const kind = def[2];
   if (kind === 'color') return parseColor(v) !== undefined;
-  // 負の長さは無効 (Fonts 4 §2.4: “Negative values are invalid”)
+  // 負の長さは無効 (Fonts 4 §2.4)
   if (prop === 'font-size') return /^(xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger)$/i.test(v.trim()) || (!negativeLiteral(v) && lengthPx(v, { ...ctx, pct: 16 }) !== undefined);
   if (prop === 'text-indent') {
     const sp = splitTextIndent(v.toLowerCase());
@@ -3511,7 +3606,7 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       const kw = { __proto__: null, left: '0%', top: '0%', center: '50%', right: '100%', bottom: '100%' } as unknown as Record<string, string>;
       if (kw[lv]) return kw[lv];
       if (/%$/.test(lv)) return lv;
-      // 百分率を含む calc() は、式の中の長さだけを絶対の長さにして、式のまま残す (Backgrounds 3 §3.6 の計算値: 長さと百分率の和。
+      // 百分率を含む calc() は、式の中の長さだけを絶対の長さにして、式のまま残す (Backgrounds 3 §2.6 の計算値: 長さと百分率の和。
       // 読み手 (setBackgroundPosition) が、百分率と長さに分ける)
       if (/%/.test(lv) && !/^(left|right|top|bottom)\s/.test(lv)) return absoluteLengths(raw, ctx);
       // 端の語と距離 (right 10px など)。左・上からなら距離だけ。右・下からの百分率は 100% から引き、長さは端の語を残す
@@ -3565,7 +3660,7 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
     case 'border-bottom-right-radius':
     case 'border-bottom-left-radius': {
       // 長さは px に (百分率はそのまま)。水平と垂直が同じなら 1 つ (Chrome と同じ)。百分率を含む calc() は、式の中の長さだけを px にして、
-      // 式のまま残す (Backgrounds 3 §5.1 の計算値: 百分率は、箱の大きさに対する割合のまま。読み手 (radiusOf) が箱の大きさで解く)
+      // 式のまま残す (Backgrounds 3 §4.1 の計算値: 百分率は、箱の大きさに対する割合のまま。読み手 (radiusOf) が箱の大きさで解く)
       const vals = tokens(raw).map((t) => (/%$/.test(t) ? t : /%/.test(t) ? absoluteLengths(t, ctx) : `${+(lengthPx(t, { ...ctx, pct: undefined }) ?? 0).toFixed(4)}px`));
       return vals.length === 2 && vals[0] === vals[1] ? vals[0] : vals.join(' ');
     }
@@ -3594,7 +3689,7 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
       // 層ごとの値 (コンマ区切り。Backgrounds 3 §2.1) は、層ごとに計算値にする
       const layers = splitTop(raw, ',');
       if (layers.length > 1) return layers.map((l) => computeKeyword(p, l, parent, ctx)).join(', ');
-      // 長さは絶対の長さ (px) にする (Backgrounds 3 §3.9 の計算値: “as specified, but with lengths made absolute”)。
+      // 長さは絶対の長さ (px) にする (Backgrounds 3 §2.9 の計算値は、指定のとおりの値の長さを絶対の長さにしたもの)。
       // em・rem などを残すと、読む側 (cssLen) が絶対の単位しか読まないので、大きさの指定が無いものとして画像本来の大きさで描いていた。
       // 百分率と auto・cover・contain はそのまま
       const ts = tokens(raw).map((t) => {
@@ -3638,6 +3733,8 @@ function computeKeyword(p: string, raw: string, parent: Computed | undefined, ct
     case 'float':
     case 'clear':
     case 'white-space':
+    case 'text-wrap-mode':
+    case 'text-wrap-style':
     case 'list-style-position':
     case 'font-style':
     case 'box-sizing':

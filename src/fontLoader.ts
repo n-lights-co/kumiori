@@ -8,6 +8,7 @@
 import { toSfnt } from './webFont';
 import { msg } from './messages';
 import fontkit from '@pdf-lib/fontkit';
+import { KumioriFontError } from './errors';
 
 export interface UserFont {
   /** 英語のファミリ名 (例: "MS Mincho") */
@@ -46,7 +47,11 @@ export function faceShapeOf(fk: FaceTables): { style?: 'italic' | 'oblique'; wid
 const tagOf = (v: DataView, o: number) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
 
 /** 壊れた書体ファイル (短い・表の位置が範囲外) の誤り。呼ぶ側は読めない書体として扱う */
-export class FontFileError extends Error {}
+export class FontFileError extends KumioriFontError {
+  constructor(message: string) {
+    super('font/broken-file', message);
+  }
+}
 
 /** 位置と長さがファイルの中に収まっているか。収まっていなければ FontFileError (DataView の RangeError を外に出さない) */
 const check = (buf: ArrayBuffer, offset: number, length: number) => {

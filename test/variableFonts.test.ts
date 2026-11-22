@@ -421,7 +421,7 @@ describe('書体の選び方: 可変フォントは、太さ・軸の値ごと�
   it('輪郭の差分 (gvar の表・CFF2 の輪郭) を持たない可変フォント: 知らせを出して、既定の形の 1 つの書体として使う', async () => {
     const fonts = new FontManager();
     const notices: string[] = [];
-    fonts.onNotice = (m) => notices.push(m);
+    fonts.onNotice = (d) => notices.push(d.message);
     const f = await fonts.registerBuffer('NoGvar', 400, renameTable(varBuf, 'gvar', 'xvar'), false);
     expect(f.variable).toBeUndefined();
     expect(notices).toHaveLength(1);

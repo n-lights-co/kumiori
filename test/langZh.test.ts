@@ -5,11 +5,11 @@
  *   「:root:lang(zh), [lang|=zh] { text-emphasis-position: under right; }」「[lang|=ja], [lang|=ko] { text-emphasis-position: over right; }」。
  *   clreq §5.3.1 https://www.w3.org/TR/clreq/ 2026-11-10 取得: 横書きの着重号は字の下、縦書きは字の右)
  * - ルビの注音符号 (ボポモフォ)・拼音 (ラテン文字) は、字の間を空けずにまとめて中央に置く (CSS Ruby 1 §4.3 https://drafts.csswg.org/css-ruby-1/
- *   2026-11-10 取得: 「defining justification opportunities between every adjacent pair of CJK characters but not between adjacent pairs of
- *   Latin or Bopomofo characters. Thus, the space-around and space-between values will nevertheless result in Latin or Bopomofo characters centered」)。
+ *   2026-11-10 取得: 配る機会は、隣り合う漢字の間にはあるが、ラテン文字・注音符号どうしの間には無いので、
+ *   space-around・space-between でも、ラテン文字・注音符号の注釈は中央にまとまる)。
  *   配り方そのものは ruby-align の対応 (rubyOffsets) による。ここでは、注音符号の声調の記号と、声調の記号つきのラテン文字 (拼音) を確かめる
  * - <html lang> の言語を、文書の字の言語にする (HTML Standard §3.2.6.2 https://html.spec.whatwg.org/multipage/dom.html 2026-11-10 取得:
- *   「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element, if any」)
+ *   要素にこれらの属性が無ければ、その要素の言語は親の要素の言語と同じ)
  * - quotes: auto の引用符 (q 要素): 簡体字の中国語は “ ” ‘ ’、繁体字は 「 」 『 』 (CSS Content 3 §4.1 https://drafts.csswg.org/css-content-3/
  *   2026-11-10 取得: auto は言語に合う引用符を UA が選ぶ。注は CLDR を挙げる。CLDR 46 の zh は親 (root) の “ ” ‘ ’、zh_Hant は 「 」 『 』)
  */

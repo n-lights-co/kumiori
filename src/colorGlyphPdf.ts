@@ -28,10 +28,11 @@ import { invert, type Seg } from './matrix';
 import { embedCmykImage } from './pdfLibPatches';
 import { pngDataComplete, pngWithinLimits } from './pixels';
 import { areaGlyphs, boxThrough, colorFontOf, COMPOSITE, paletteKey, plainStops, segsBox, sweepSampler, unrollStops, type Box, type ColorFill, type ColorFont, type ColorOp, type ColorStop, type Rgb } from './colorGlyph';
-import { svgGlyphReader } from './colorGlyphSvg';
+import { ensureSvgGlyphReader } from './colorGlyphSvg';
 import { msg } from './messages';
 import type { XmlNode } from './svg';
 import type { AreaTree, GlyphArea } from './types';
+import { diag, type Diagnostic } from './diagnostics';
 
 /** RGB → CMYK の変換 (PDF/X の出力。icc.ts の CmykConverter と同じ形) */
 type ToCmyk = (r: number, g: number, b: number) => number[];
@@ -39,10 +40,10 @@ type ToCmyk = (r: number, g: number, b: number) => number[];
 export interface PdfColorGlyphOptions {
   /** RGB の色を CMYK にして書く (PDF/X)。無ければ DeviceRGB */
   cmyk?: ToCmyk;
-  /** 警告を足す配列 (PDF/X の透明など) */
-  warnings?: string[];
+  /** PDF/X の知らせの出し先 (透明など。無ければ出さない) */
+  pdfxWarn?: (d: Diagnostic) => void;
   /** 色つきで描けない字形などの知らせの出し先 (renderPdf の警告。無ければ console.warn) */
-  warn?: (message: string) => void;
+  warn?: (d: Diagnostic) => void;
   /** 透明を使えない規格の名前 (PDF/X-3 など)。あれば、透明を使う字形があるとき warnings に書く */
   alphaWarning?: string;
   /** XML を読む関数 (SVG の表の字形を読むのに使う。無ければブラウザの DOMParser。どちらも無ければ、SVG だけの字形は輪郭で描く) */
@@ -153,8 +154,6 @@ export class PdfColorGlyphs {
     // たどる関数は、初めからたどり直すときに restart を呼ぶ (それまでに集めたものを捨てる)
     const walk = typeof tree === 'function' ? tree : (visit: (a: AreaNode) => void) => walkAreaTree(tree, visit);
     const self = new PdfColorGlyphs(pdf, fonts, opts);
-    const xml = opts.parseXml ?? (typeof DOMParser !== 'undefined' ? (t: string) => new DOMParser().parseFromString(t, 'image/svg+xml') as unknown as XmlNode : undefined);
-    const svgReader = xml && svgGlyphReader(xml);
     const pending = new Map<string, { kind: 'png' | 'jpg'; data: Uint8Array }>();
     let any = false;
     walk((a) => {
@@ -163,7 +162,7 @@ export class PdfColorGlyphs {
       const cf = colorFontOf(font);
       if (!cf) return;
       any = true;
-      if (svgReader && !cf.svgReader) cf.svgReader = svgReader;
+      ensureSvgGlyphReader(cf, opts.parseXml);
       if (!cf.tables.cbdt && !cf.tables.sbix && !cf.tables.svg) return;
       const collect = (ops: readonly ColorOp[]) => {
         for (const o of ops) {
@@ -189,7 +188,7 @@ export class PdfColorGlyphs {
       } catch (e) {
         // 埋め込めない画像は、字形の中で描かない (emit の image)。同じ理由の知らせは 1 度だけ
         const why = e instanceof Error ? e.message : String(e);
-        self.warnOnce(`image:${why}`, msg(`PDF: 色つきの字形の画像を埋め込めません (${why})。その画像は描きません`, `PDF: cannot embed the image of a color glyph (${why}); that image is not drawn`));
+        self.warnOnce(`image:${why}`, diag('pdf/color-glyph-image', msg(`PDF: 色つきの字形の画像を埋め込めません (${why})。その画像は描きません`, `PDF: cannot embed the image of a color glyph (${why}); that image is not drawn`)));
       }
     }
     if (alpha) self.usedAlpha = true;
@@ -314,7 +313,7 @@ export class PdfColorGlyphs {
     } else {
       // 色つきでない字形: 輪郭を、文字の色 (置くときの塗りの色) で塗る。
       // SVG の表に絵があるのに読めなかった字形 (XML を読む関数が無い、SVG の読み手が扱えない機能を使っている) は、書体ごとに 1 度知らせる
-      if (cf.tables.svg && cf.svgDocument(gid)) this.warnOnce(`svg:${font.key}`, msg(`PDF: ${font.family} の SVG の表の字形に、図形にできないものがあります。その字は、輪郭を文字の色で描きます`, `PDF: some glyphs in the SVG table of ${font.family} cannot be converted to shapes; those glyphs are drawn as outlines in the text color`));
+      if (cf.tables.svg && cf.svgDocument(gid)) this.warnOnce(`svg:${font.key}`, diag('pdf/color-glyph-svg', msg(`PDF: ${font.family} の SVG の表の字形に、図形にできないものがあります。その字は、輪郭を文字の色で描きます`, `PDF: some glyphs in the SVG table of ${font.family} cannot be converted to shapes; those glyphs are drawn as outlines in the text color`), { font: font.family }));
       const outline = cf.outline(gid);
       box = segsBox(outline);
       body = outline.length ? `${pathOps(outline)}f\n` : '';
@@ -360,10 +359,11 @@ export class PdfColorGlyphs {
     return this.pdf.context.obj(o as never) as unknown as PDFDict;
   }
 
-  private warnOnce(key: string, message: string) {
+  private warnOnce(key: string, d: Diagnostic) {
     if (this.warned.has(key)) return;
     this.warned.add(key);
-    (this.opts.warn ?? console.warn)(message);
+    if (this.opts.warn) this.opts.warn(d);
+    else console.warn(d.message);
   }
 
   /** 色を塗りの色にする命令 (前景色は、置くときの色を引き継ぐので、何も書かない) */
@@ -489,7 +489,7 @@ export class PdfColorGlyphs {
       case COMPOSITE.XOR:
         return masked(o.source, o.backdrop, true) + masked(o.backdrop, o.source, true);
       default:
-        this.warnOnce('plus', msg('PDF: 色つきの字形の合成の種類 PLUS (足し算) は、ふつうの重ねで描きます', 'PDF: the color glyph composite mode PLUS is drawn as normal source-over compositing'));
+        this.warnOnce('plus', diag('pdf/color-glyph-plus', msg('PDF: 色つきの字形の合成の種類 PLUS (足し算) は、ふつうの重ねで描きます', 'PDF: the color glyph composite mode PLUS is drawn as normal source-over compositing')));
         return `/${form(o.backdrop)} Do\n/${form(o.source)} Do\n`;
     }
   }
@@ -695,6 +695,6 @@ export class PdfColorGlyphs {
         ctx.assign(t3.ref, dict);
       }
     }
-    if (this.usedAlpha && this.opts.alphaWarning) this.opts.warnings?.push(msg(`${this.opts.alphaWarning} では透明 (色つきの字形の不透明度) を使えません`, `${this.opts.alphaWarning} does not allow transparency (opacity of color glyphs)`));
+    if (this.usedAlpha && this.opts.alphaWarning) this.opts.pdfxWarn?.(diag('pdfx/transparency', msg(`${this.opts.alphaWarning} では透明 (色つきの字形の不透明度) を使えません`, `${this.opts.alphaWarning} does not allow transparency (opacity of color glyphs)`)));
   }
 }

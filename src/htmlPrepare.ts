@@ -12,6 +12,7 @@ import { msg } from './messages';
 import { concatCss, matchMedia, matchSupports, mediaDependsOnPageSize, mediaPageOf, parseCss, resolvePageRules, type PageRule, type ParsedCss } from './htmlPaged';
 import { rebaseFontFaceUrls, resolveRef } from './resources';
 import { ALL_AH } from './cssCascade';
+import { diag, type Diagnostic } from './diagnostics';
 
 /**
  * 本の組版向けの既定のスタイル (作成者スタイルシート で上書きできる)。
@@ -168,7 +169,7 @@ export interface CssFile {
 
 export interface PreparedHtml {
   /** 用意の途中で出した警告 (深すぎる入れ子・多すぎる @import)。typeset の warnings と、画面の警告の欄に出す */
-  warnings: string[];
+  warnings: Diagnostic[];
   /** <style> に置き換えた文書 (既定のスタイルも先頭の <style>) */
   doc: Document;
   /** 文書の CSS の文字列 (既定のスタイル + <style> + 差し込んだ CSS ファイル)。@page・@font-face の読み取りに使う */
@@ -316,10 +317,10 @@ export async function prepareHtml(
   // アンテナハウス互換: 接頭辞の付いた MathML・SVG の要素 (<m:math xmlns:m="…/MathML">) を、名前空間に従って読む
   const parsed = parse(defaults === 'ah' ? prefixedForeignToHtml(html) : html);
   parsed.querySelectorAll('script').forEach((s) => s.remove());
-  const warnings: string[] = [];
+  const warnings: Diagnostic[] = [];
   // 上限を超えた入れ子は、木の形 (と組版の結果) が変わるので、黙って進めずに知らせる
   if (parsed.documentElement && limitTreeDepth(parsed))
-    warnings.push(msg(`要素の入れ子が深すぎます。${MAX_TREE_DEPTH} 段より深い要素は、${MAX_TREE_DEPTH} 段目の要素の後ろに並べて組みます`, `elements are nested too deeply; elements deeper than ${MAX_TREE_DEPTH} levels are laid out after their ancestor at level ${MAX_TREE_DEPTH}`));
+    warnings.push(diag('limit/nesting-depth', msg(`要素の入れ子が深すぎます。${MAX_TREE_DEPTH} 段より深い要素は、${MAX_TREE_DEPTH} 段目の要素の後ろに並べて組みます`, `elements are nested too deeply; elements deeper than ${MAX_TREE_DEPTH} levels are laid out after their ancestor at level ${MAX_TREE_DEPTH}`)));
   // CSS の表。鍵は、参照から取った CSS (url あり) は参照の URL の全体、ほか (一緒に渡したファイル) はファイル名 (小文字)
   const cssFiles = new Map<string, string>();
   /** 鍵 → その CSS の場所 (中の相対の @import を解決する基準)。分からなければ無い */
@@ -396,7 +397,7 @@ export async function prepareHtml(
           if (reading.includes(name)) return '';
           if (t.length > budget.length || budget.count <= 0) {
             if (!budget.warned)
-              warnings.push(msg(`@import ${name}: 読み込む CSS が多すぎる (合計 ${MAX_IMPORTED_CSS_LENGTH} 字・${MAX_IMPORTS} 回まで) ので、これ以上の @import は読みません`, `@import ${name}: too much imported CSS (up to ${MAX_IMPORTED_CSS_LENGTH} characters and ${MAX_IMPORTS} imports in total); further @import rules are ignored`));
+              warnings.push(diag('limit/css-import', msg(`@import ${name}: 読み込む CSS が多すぎる (合計 ${MAX_IMPORTED_CSS_LENGTH} 字・${MAX_IMPORTS} 回まで) ので、これ以上の @import は読みません`, `@import ${name}: too much imported CSS (up to ${MAX_IMPORTED_CSS_LENGTH} characters and ${MAX_IMPORTS} imports in total); further @import rules are ignored`), { file: name }));
             budget.warned = true;
             return '';
           }
@@ -439,10 +440,10 @@ export async function prepareHtml(
   }
   if (ignored.length)
     warnings.push(
-      msg(
+      diag('css/unreferenced-stylesheet', msg(
         `文書から参照されていない CSS は当てません: ${ignored.join('、')} (--css で名指しすれば、利用者のスタイルシートとして足します)`,
         `CSS not referenced from the document is not applied: ${ignored.join(', ')} (name it with --css to add it as a user stylesheet)`,
-      ),
+      )),
     );
   parsed.querySelectorAll('style').forEach((s) => {
     if (screenOnly(s.getAttribute('media'))) s.remove();

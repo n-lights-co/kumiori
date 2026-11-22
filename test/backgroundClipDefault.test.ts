@@ -192,7 +192,7 @@ describe('XSL-FO: 背景は padding の矩形まで (XSL 1.1 §4.9.4)', () => {
       // XSL-FO のブロックは、行の向きの罫線と padding が内容の箱 (15 から) の外へ出る: border の箱の左上は (3, 15)、padding の箱は (9, 21)
       near(layer.clip.slice(0, 2), [9, 21]);
       expect([layer.xs[0], layer.ys[0]]).toEqual([9, 21]);
-      // 背景の色も padding の箱 (§4.9.4: The background, if any, is rendered in the padding-rectangle。test/foBackgroundPaddingRect.test.ts)
+      // 背景の色も padding の箱 (§4.9.4: 背景は padding-rectangle に塗る。test/foBackgroundPaddingRect.test.ts)
       const fill = log.find((l) => l[0] === 'fillRect' && l[5] === '#00ff00')!;
       near(fill.slice(1, 3) as number[], [9, 21]);
     }

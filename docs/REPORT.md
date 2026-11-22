@@ -202,7 +202,7 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
   (行幅で組む → 最も長い行 `max(contentLength)` を測る → その幅で組み直す)。内部は独立した Flow (`writing-mode` が親と違ってもよい)。
   横書き同士なら `firstBaseline()` で最初の文字の基線までの距離を求め `above = fb` として、周囲の基線に揃える。
 - 行の em の上下 (`lineMetrics`) は箱の `above/below` も含めて max を取るので、背の高い箱は行を押し広げる。
-- 描画: `ImageArea` を新設。Canvas は `drawImage`、PDF は PNG/JPEG をそのまま `embedPng/embedJpg` (PNG は IDAT をそのまま FlateDecode の画像に)、他形式 (GIF・BMP・WebP・TIFF など) は PNG に変換して埋め込む (画素を復号して元の大きさの PNG にするか、ブラウザで出力サイズ × 300dpi に描き直す。同じ画像は 1 度だけ)。SVG は `svg.ts` で図形リスト (path を M/L/C/Z に正規化、円弧はベジエに変換、transform は座標に焼き込み) にして、PDF の描画命令として出力する (グラデーションは shading pattern、字は字形の輪郭、mask はソフトマスク)。filter など図形にできないものは、ブラウザではラスタライズし、Node では影・ぼかし・色の変換・重ねを図形で近似し、図形で近似できないものは画素で計算して画像にする (`svgFilterRaster.ts`。`BACKLOG.md` O-01)。
+- 描画: `ImageArea` を新設。Canvas は `drawImage`、PDF は PNG/JPEG をそのまま `embedPng/embedJpg` (PNG は IDAT をそのまま FlateDecode の画像に)、他形式 (GIF・BMP・WebP・TIFF など) は PNG に変換して埋め込む (画素を復号して元の大きさの PNG にするか、ブラウザで出力サイズ × 300dpi に描き直す。同じ画像は 1 度だけ)。SVG は `svg.ts` で図形リスト (path を M/L/C/Z に正規化、円弧はベジエに変換、transform は座標に焼き込み) にして、PDF の描画命令として出力する (グラデーションは shading pattern、字は字形の輪郭、mask はソフトマスク)。filter など図形にできないものは、ブラウザではラスタライズし、Node では影・ぼかし・色の変換・重ねを図形で近似し、図形で近似できないものは画素で計算して画像にする (`svgFilterRaster.ts`。`BACKLOG.md` の「SVG: グラデーション・clipPath・mask・filter・text・use・クラス CSS」の項)。
 
 ## 7.11 背景の層 (`layer: 'behind'`)
 

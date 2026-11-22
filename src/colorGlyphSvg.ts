@@ -112,6 +112,17 @@ function shapesOps(shapes: SvgShape[]): ColorOp[] {
 }
 
 /**
+ * 書体の SVG の表の字形の読み手を、まだ無ければ設定する。parseXml (呼ぶ側に渡された XML のパーサ) を先に使い、無ければブラウザの DOMParser を使う。
+ * どちらも無ければ設定しない (SVG の表の字は、色つきでない字形で描く)。PDF・SVG・PNG・Canvas の描き手が同じ読み手を使うので、
+ * どの書き出しを先に呼んでも、同じ絵になる
+ */
+export function ensureSvgGlyphReader(cf: { svgReader?: SvgGlyphReader }, parseXml?: (xml: string) => XmlNode): void {
+  if (cf.svgReader) return;
+  const xml = parseXml ?? (typeof DOMParser !== 'undefined' ? (t: string) => new DOMParser().parseFromString(t, 'image/svg+xml') as unknown as XmlNode : undefined);
+  if (xml) cf.svgReader = svgGlyphReader(xml);
+}
+
+/**
  * SVG の表の字形の読み手を作る。parseXml は XML を読む関数 (ブラウザの DOMParser、Node では @xmldom/xmldom)。
  * 文書ごとに 1 度だけ読み (複数の字形の入った文書は、字形ごとに読み直す)、結果は ColorFont が字形ごとに覚える
  */

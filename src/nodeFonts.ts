@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetchFont } from './api';
 import { msg } from './messages';
+import { KumioriFontError } from './errors';
 import type { FontSpec } from './types';
 
 /** ネットワークからの取得の時限 (ミリ秒) */
@@ -16,6 +17,8 @@ export const FETCH_TIMEOUT_MS = 30_000;
 
 /** 読んだ既定の書体 (変換ごとに使い回す) */
 const fontCache = new Map<string, ArrayBuffer>();
+/** fontCache の書体を読んだ (か保存した) ファイルの道 (localFont の onRead に、覚えた書体を使うときも知らせる) */
+const fontCachePath = new Map<string, string>();
 
 /**
  * 書体のキャッシュの既定の場所: 環境変数 KUMIORI_FONT_CACHE があればそこ。無ければ OS のキャッシュ ディレクトリの kumiori/fonts
@@ -51,7 +54,10 @@ function fontFileName(spec: FontSpec): string {
  * ネットワークから取った書体は、キャッシュに保存する (書体のファイルらしいものだけ。一時ファイルに書いてから名前を変える)。
  * キャッシュに書けなくても変換は続ける (1 度だけ知らせる)。ネットワークからも取れなければ、理由を添えて投げる
  */
-export function localFont(fontDir: string | undefined, cacheDir: string | undefined, log: (s: string) => void = (s) => console.error(s), timeoutMs = FETCH_TIMEOUT_MS) {
+/**
+ * onRead: 書体を読んだファイル (置き場・キャッシュの道。取ってキャッシュに保存したものも) を知らせる (コマンドが、出力でそのファイルを上書きしないように覚える)
+ */
+export function localFont(fontDir: string | undefined, cacheDir: string | undefined, log: (s: string) => void = (s) => console.error(s), timeoutMs = FETCH_TIMEOUT_MS, onRead?: (file: string) => void) {
   let cacheWriteFailed = false;
   const readFile = (p: string): ArrayBuffer | undefined => {
     try {
@@ -65,16 +71,24 @@ export function localFont(fontDir: string | undefined, cacheDir: string | undefi
     // 置き場が違えば別の書体として読む (ライブラリから、置き場を変えて何度も作るときに)
     const key = `${fontDir ?? ''}|${cacheDir ?? ''}|${spec.family}|${spec.weight ?? 400}`;
     const hit = fontCache.get(key);
-    if (hit) return hit;
+    if (hit) {
+      const p = fontCachePath.get(key);
+      if (p !== undefined) onRead?.(p);
+      return hit;
+    }
+    let from: string | undefined;
     const names = [...new Set(spec.urls.map((u) => path.basename(u)))];
     const local = fontDir && names.map((n) => path.join(fontDir, n)).find((p) => fs.existsSync(p));
     let buf = local ? readFile(local) : undefined;
+    if (buf) from = local;
     // キャッシュ: 壊れたファイル (途中で切れた取得など) は捨てて取り直す
     const cached = !buf && cacheDir ? names.map((n) => path.join(cacheDir, n)).find((p) => fs.existsSync(p)) : undefined;
     if (cached) {
       buf = readFile(cached);
+      if (buf) from = cached;
       if (buf && !looksLikeFont(buf)) {
         buf = undefined;
+        from = undefined;
         try {
           fs.unlinkSync(cached);
         } catch {
@@ -85,11 +99,14 @@ export function localFont(fontDir: string | undefined, cacheDir: string | undefi
     if (!buf) {
       buf = await fetchFont(spec, timeoutMs);
       if (!buf || !looksLikeFont(buf)) {
-        throw new Error(
+        // 書体の誤りの型 (code: font/load-failed)。ライブラリの呼び手が、ほかの書体の誤りと同じく code で見分けられるように
+        throw new KumioriFontError(
+          'font/load-failed',
           msg(
             `書体を取得できません: ${spec.family}${spec.weight && spec.weight !== 400 ? ` (${spec.weight})` : ''} (ネットワークに接続できないときは、--font-dir で手元の書体 (${fontFileName(spec)}) を渡してください)`,
             `cannot fetch the font ${spec.family}${spec.weight && spec.weight !== 400 ? ` (${spec.weight})` : ''} (without network access, pass a local copy (${fontFileName(spec)}) with --font-dir)`,
           ),
+          { args: { font: spec.family } },
         );
       }
       if (cacheDir) {
@@ -99,6 +116,7 @@ export function localFont(fontDir: string | undefined, cacheDir: string | undefi
           const tmp = `${file}.${process.pid}.tmp`;
           fs.writeFileSync(tmp, new Uint8Array(buf));
           fs.renameSync(tmp, file);
+          from = file;
           log(msg(`書体 ${path.basename(file)} を取得して ${cacheDir} に保存しました`, `fetched the font ${path.basename(file)} and saved it to ${cacheDir}`));
         } catch (e) {
           if (!cacheWriteFailed) log(msg(`書体のキャッシュに書けません: ${cacheDir} (${e instanceof Error ? e.message : String(e)})`, `cannot write to the font cache: ${cacheDir} (${e instanceof Error ? e.message : String(e)})`));
@@ -107,6 +125,10 @@ export function localFont(fontDir: string | undefined, cacheDir: string | undefi
       }
     }
     fontCache.set(key, buf);
+    if (from !== undefined) {
+      fontCachePath.set(key, from);
+      onRead?.(from);
+    }
     return buf;
   };
 }

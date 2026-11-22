@@ -5,6 +5,7 @@
 import { walkAreas } from '../src/areaTree';
 import fs from 'node:fs';
 import path from 'node:path';
+import { decodePDFRawStream, PDFArray, PDFDict, PDFName, PDFRawStream, type PDFDocument } from 'pdf-lib';
 import { FontManager } from '../src/fontManager';
 import { Measurer } from '../src/measurer';
 import { LayoutEngine } from '../src/layoutEngine';
@@ -194,4 +195,26 @@ export const extraTestFont = (name: keyof typeof EXTRA_TEST_FONTS): Promise<stri
 /** 数式の書体 (STIX Two Math)。置き場に無ければ Google Fonts 配信元から取得する */
 export async function mathFontBuffer(): Promise<ArrayBuffer> {
   return toArrayBuffer(fs.readFileSync(await cachedFont('STIXTwoMath-Regular.ttf', 'https://fonts.gstatic.com/s/stixtwomath/v12/pONg1hwwL_6M9EkZySr_yteUi1o.ttf')));
+}
+
+/**
+ * PDF のページの内容の命令 (文字列)。使い回す SVG の Form XObject (/KmV… Do。PdfPainter.drawVector) は、その中身に置き換える
+ * (SVG の図形の命令は、ページではなく Form に書かれる)
+ */
+export function pageOps(pdf: PDFDocument, index = 0): string {
+  const page = pdf.getPage(index);
+  const contents = page.node.Contents()!;
+  const streams = contents instanceof PDFArray ? contents.asArray().map((r) => pdf.context.lookup(r)) : [contents];
+  const text = streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as PDFRawStream).decode())).join('\n');
+  const xo = page.node.Resources()?.lookupMaybe(PDFName.of('XObject'), PDFDict);
+  return text.replace(/(\/KmV[^\s/]*)\s+Do/g, (all, name: string) => {
+    const form = xo?.lookup(PDFName.of(name.slice(1)));
+    return form instanceof PDFRawStream ? new TextDecoder().decode(decodePDFRawStream(form).decode()) : all;
+  });
+}
+
+/** ページの資源の XObject のうち、使い回す SVG の Form XObject (/KmV…) でないもの (画像・ほかの Form) の名前 */
+export function pageXObjectsBesidesVectors(pdf: PDFDocument, index = 0): string[] {
+  const xo = pdf.getPage(index).node.Resources()?.lookupMaybe(PDFName.of('XObject'), PDFDict);
+  return (xo?.keys() ?? []).map(String).filter((k) => !k.startsWith('/KmV'));
 }

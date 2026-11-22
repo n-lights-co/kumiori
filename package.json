@@ -1,6 +1,6 @@
 {
   "name": "kumiori",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Kumiori (組み織り) — Japanese typesetting engine for browsers and Node: HTML+CSS / XSL-FO -> Area Tree -> Canvas / PDF",
   "keywords": [
     "typesetting",
@@ -67,6 +67,7 @@
     "build:browser": "vite build --config vite.browser.config.ts",
     "build:dist": "npm run build:lib && npm run build:cli && npm run build:browser",
     "docs:conformance": "node scripts/build-conformance.mjs",
+    "docs:api": "node scripts/build-api-docs.mjs",
     "ci:local": "node scripts/ci-local.mjs",
     "prepublishOnly": "npm run typecheck && npm test && npm run build:dist"
   },

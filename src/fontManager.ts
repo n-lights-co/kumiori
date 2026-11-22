@@ -18,6 +18,8 @@ import { instantiateFont, readVariationInfo, staticCff2ToCff, variationNamePrefi
 import { splitVariation, variationNumber as num, variationSuffix, type VariationRequest } from './fontVariation';
 import fontkit from '@pdf-lib/fontkit';
 import type { FontSpec } from './types';
+import { diag, type DiagnosticCode, type Diagnostic } from './diagnostics';
+import { KumioriFontError } from './errors';
 
 /** 差し替え済みの印 (fontkit の原型に付ける。pdfLibPatches.ts と同じ決まり) */
 const UVS_PATCHED = Symbol.for('kumiori.fontkitUvsPatched');
@@ -263,7 +265,7 @@ function fontMetricsOf(fk: LoadedFont['fk']): Pick<LoadedFont, 'unitsPerEm' | 'b
   }
   const asc = Math.abs(fk.ascent ?? upm * 0.88) / upm;
   const desc = Math.abs(fk.descent ?? upm * 0.12) / upm;
-  // 行間 (line gap) は 0 を下限にする (CSS Inline 3 §3.2.2: "UAs must floor the line gap metric at zero")
+  // 行間 (line gap) は 0 を下限にする (CSS Inline 3 §3.2.2: 負の line gap は 0 として扱う)
   const gap = Math.max((fk as unknown as { lineGap?: number }).lineGap ?? 0, 0) / upm;
   return { unitsPerEm: upm, baselineRatio, ascentMinusDescent: asc - desc, ascent: asc, descent: desc, lineGap: gap };
 }
@@ -288,8 +290,8 @@ export function cssBaselineRatio(font: Pick<LoadedFont, 'ascent' | 'descent' | '
  * line-height: normal の行内の箱の中の、代わりの書体 (最初に使える書体でない書体) の字が、行の高さに求める基線の上・下 (em に対する比)。
  *
  * CSS Inline 3 §5.3 (Working Draft 2024-12-18): 計算値が normal の行内の箱の layout bounds は、中の字すべてを囲む
- * ("the layout bounds of an inline box encloses all its glyphs, going from the highest A to the deepest D. (Note that glyphs in a single box
- * can come from different fonts and thus might not all have the same A and D.)")。A・D は、その字の書体の上の高さ・下の深さ。
+ * (字ごとの A のいちばん高い所から、D のいちばん深い所まで。1 つの箱の字が別々の書体から来て、A・D が字ごとに違うことがあると注にある)。
+ * A・D は、その字の書体の上の高さ・下の深さ。
  * normal のときは、書体の行間 (line gap) を半分ずつ A・D に足してよい (同じ節)。§5.1 の注・§6.4 の注も、代わりの書体の値が
  * normal の行の箱の大きさに効くと書く。CSS 2.1 §10.8.1 も、字ごとに A・D を決めるとする。
  * normal でないときは、最初に使える書体の値だけで決める (§5.3) ので、この関数は使わない。
@@ -316,6 +318,22 @@ export function normalLineBounds(font: Pick<LoadedFont, 'ascent' | 'descent' | '
 /** 実体を作れない可変フォントを知らせたか (書体のファイルごとに 1 度) */
 const unsupportedWarned = new WeakSet<ArrayBuffer>();
 
+/** 書体の知らせの種類 (fontSanity.ts の fontNotice の kind) の診断の名前 */
+function fontNoticeCode(kind: string): DiagnosticCode {
+  switch (kind) {
+    case 'table-unused':
+      return 'font/table-unused';
+    case 'layout':
+    case 'layout-run':
+      return 'font/shaping-failed';
+    case 'color-budget':
+      return 'font/color-glyph-too-complex';
+    default:
+      // cff-glyph・glyph-data (読めない字形の輪郭)
+      return 'font/glyph-unreadable';
+  }
+}
+
 /**
  * 書体のファイル buffer を fontkit で読み、組版に使う差し替えを掛ける (登録と、可変フォントの実体で同じ)。
  * fontkit は表を使うときに読むので、ここで使う表を読んでみる (fontSanity.ts の probeFont): 読めない書体は FontFileError (呼ぶ側は、その書体を使わない)。
@@ -323,7 +341,7 @@ const unsupportedWarned = new WeakSet<ArrayBuffer>();
  * (その書体は、その表の機能 (合字・カーニングなど) なしで組む)。notice: 利用者に知らせる文の出し先。
  * probe が偽なら読んでみない (可変フォントの実体: 表は、検査を通った元の書体のものを写すので、実体ごとに読み直さない)
  */
-function openFontkit(buffer: ArrayBuffer, notice: (m: string) => void, probe = true): { buffer: ArrayBuffer; fk: ReturnType<typeof fontkit.create> } {
+function openFontkit(buffer: ArrayBuffer, notice: (m: string, kind: string) => void, probe = true): { buffer: ArrayBuffer; fk: ReturnType<typeof fontkit.create> } {
   const create = (b: ArrayBuffer) => {
     const fk = fontkit.create(new Uint8Array(b));
     (fk as unknown as Record<symbol, unknown>)[FONT_NOTICE] = notice;
@@ -348,6 +366,7 @@ function openFontkit(buffer: ArrayBuffer, notice: (m: string) => void, probe = t
         `表 (${over.map((t) => t.trim()).join('・')}) の読みが大きすぎるので、その表を使いません (合字・カーニングなどの機能が効かないことがあります)`,
         `the table(s) ${over.map((t) => t.trim()).join(', ')} take too much to read and are not used (ligatures, kerning and other features may not apply)`,
       ),
+      'table-unused',
     );
     buffer = dropTables(buffer, over);
     fk = create(buffer);
@@ -404,7 +423,7 @@ export class FontManager {
     if (isCollection(buffer)) buffer = extractFromCollection(buffer, 0);
     // 表の目録と、必ず使う表の形を確かめる。部品の展開が大きすぎる複合の字形は空にする (fontSanity.ts)
     const checked = checkFontFile(buffer);
-    for (const n of checked.notes) this.onNotice(`${family}: ${n}`);
+    for (const n of checked.notes) this.onNotice(diag('font/repaired', `${family}: ${n}`, { font: family }));
     buffer = checked.buffer;
     // 可変でない CFF2 の書体 (fvar の無い、輪郭が CFF2 の OpenType) は、静的な CFF に作り直して登録する (CFF2 の輪郭は PDF に埋め込めない)
     try {
@@ -412,13 +431,13 @@ export class FontManager {
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       this.onNotice(
-        msg(
+        diag('font/cff2-not-converted', msg(
           `${family}: CFF2 の輪郭の書体を、PDF に埋め込める形 (CFF) にできません (${why})。PDF では字が正しく出ないことがあります`,
           `${family}: cannot convert the font with CFF2 outlines to an embeddable form (CFF) (${why}). Glyphs may not render correctly in the PDF`,
-        ),
+        ), { font: family }),
       );
     }
-    const notice = (m: string) => this.onNotice(`${family}: ${m}`);
+    const notice = (m: string, kind: string) => this.onNotice(diag(fontNoticeCode(kind), `${family}: ${m}`, { font: family }));
     // 壊れた・細工した書体を、組む前に見分ける (fontSanity.ts)。使えない書体は FontFileError (呼ぶ側が知らせて、その書体を使わない)
     const opened = openFontkit(buffer, notice);
     buffer = opened.buffer;
@@ -433,10 +452,10 @@ export class FontManager {
       // 輪郭の差分 (TrueType の gvar か、CFF2) を持たない可変フォントの実体は作れない: 既定の形のまま 1 つの太さの書体として使う
       unsupportedWarned.add(buffer);
       this.onNotice(
-        msg(
+        diag('font/variable-unsupported', msg(
           `${family}: 輪郭の差分 (gvar の表か CFF2 の輪郭) を持たない可変フォントには対応していません。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
           `${family}: variable fonts without outline variations (a gvar table or CFF2 outlines) are not supported; the default instance is used and the weight, width and other axes have no effect`,
-        ),
+        ), { font: family }),
       );
     }
     // 傾き・幅を持つ書体は、その書体だけを指す印を付けた名前で登録する (名前と太さで引き直すと、同じ書体になる)
@@ -496,8 +515,8 @@ export class FontManager {
   }
   /** 可変フォントの実体も、ブラウザ (document.fonts) に登録するか (可変フォントを canvas: true で登録したとき) */
   private canvasInstances = false;
-  /** 書体について利用者に知らせること (対応していない可変フォントなど) の出し先。既定は console.warn (API は、結果の warnings に入れる) */
-  onNotice: (message: string) => void = (m) => console.warn(m);
+  /** 書体について利用者に知らせること (対応していない可変フォントなど) の出し先。既定は console.warn (API は、結果の warnings と diagnostics に入れる) */
+  onNotice: (d: Diagnostic) => void = (d) => console.warn(d.message);
 
   /** URL (複数ならフォールバック順) から fetch して登録 */
   async load(spec: FontSpec, onProgress?: (msg: string) => void): Promise<LoadedFont> {
@@ -513,14 +532,14 @@ export class FontManager {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const buf = await res.arrayBuffer();
-        if (!looksLikeFont(buf)) throw new Error(msg('フォントファイルではありません', 'not a font file'));
+        if (!looksLikeFont(buf)) throw new KumioriFontError('font/load-failed', msg('フォントファイルではありません', 'not a font file'));
         return buf;
       } catch (e) {
         lastErr = e;
         onProgress?.(msg(`  失敗 (${String(e)}) → 次の候補へ`, `  failed (${String(e)}) → trying the next one`));
       }
     }
-    throw new Error(msg(`フォント ${spec.family}@${weight} を取得できませんでした: ${String(lastErr)}`, `could not fetch the font ${spec.family}@${weight}: ${String(lastErr)}`));
+    throw new KumioriFontError('font/load-failed', msg(`フォント ${spec.family}@${weight} を取得できませんでした: ${String(lastErr)}`, `could not fetch the font ${spec.family}@${weight}: ${String(lastErr)}`));
   }
 
   /**
@@ -716,10 +735,10 @@ export class FontManager {
         if (!this.instanceCapWarned.has(master)) {
           this.instanceCapWarned.add(master);
           this.onNotice(
-            msg(
+            diag('font/variable-instances-capped', msg(
               `${master.family}: 可変フォントの実体 (軸の値の組) が多すぎます (${capN} 個まで)。それより後の指定は、軸の値の最も近い実体で組みます`,
               `${master.family}: too many instances (combinations of axis values) of the variable font (at most ${capN}); later requests use the instance with the nearest axis values`,
-            ),
+            ), { font: master.family }),
           );
         }
         this.handed.set(id, best);
@@ -752,10 +771,10 @@ export class FontManager {
             v.failed = true;
             const why = e instanceof Error ? e.message : String(e);
             this.onNotice(
-              msg(
+              diag('font/variable-failed', msg(
                 `${master.family}: 可変フォントの実体を作れません (${why})。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
                 `${master.family}: cannot instantiate the variable font (${why}); the default instance is used and the weight, width and other axes have no effect`,
-              ),
+              ), { font: master.family }),
             );
             return master;
           }
@@ -763,22 +782,22 @@ export class FontManager {
           v.failed = true;
           const why = e instanceof Error ? e.message : String(e);
           this.onNotice(
-            msg(
+            diag('font/variable-failed', msg(
               `${master.family}: CFF2 の可変フォント (輪郭が CFF2 の OpenType) の実体を作れません (${why})。既定の形 (default instance) で組み、太さ・幅などの軸は効きません。PDF では字が正しく出ないことがあります (TrueType の輪郭の可変フォントか、静的な書体を使ってください)`,
               `${master.family}: cannot instantiate the CFF2 variable font (${why}); the default instance is used and the weight, width and other axes have no effect. Glyphs may not render correctly in the PDF (use a variable font with TrueType outlines, or static fonts)`,
-            ),
+            ), { font: master.family }),
           );
           return master;
         }
-        for (const n of r.notes) this.onNotice(`${master.family}: ${n}`);
+        for (const n of r.notes) this.onNotice(diag('font/repaired', `${master.family}: ${n}`, { font: master.family }));
         buffer = r.buffer;
         try {
-          ({ buffer, fk } = openFontkit(buffer, (m) => this.onNotice(`${master.family}: ${m}`), false));
+          ({ buffer, fk } = openFontkit(buffer, (m, kind) => this.onNotice(diag(fontNoticeCode(kind), `${master.family}: ${m}`, { font: master.family })), false));
         } catch (e) {
           // 作った実体が読めない (元の表の壊れ方による): 既定の形のまま使う
           v.failed = true;
           const why = e instanceof Error ? e.message : String(e);
-          this.onNotice(msg(`${master.family}: 可変フォントの実体を作れません (${why})。既定の形 (default instance) で組みます`, `${master.family}: cannot instantiate the variable font (${why}); the default instance is used`));
+          this.onNotice(diag('font/variable-failed', msg(`${master.family}: 可変フォントの実体を作れません (${why})。既定の形 (default instance) で組みます`, `${master.family}: cannot instantiate the variable font (${why}); the default instance is used`), { font: master.family }));
           return master;
         }
         metrics = fontMetricsOf(fk);
@@ -866,7 +885,7 @@ export class FontManager {
         real = st.base;
       }
       const fam = real && this.isLoaded(real) ? real : this.fallbackFamily;
-      if (!fam) throw new Error(msg('フォントが 1 つも登録されていません', 'no font is registered'));
+      if (!fam) throw new KumioriFontError('font/none-registered', msg('フォントが 1 つも登録されていません', 'no font is registered'));
       // 幅 → 傾き → 太さの順に絞る (Fonts 4 §5.2)。傾き・幅を持つ書体の無いファミリーは、太さだけ (今までと同じ)
       const faces = this.matchShape(this.facesOf(fam));
       // 可変フォントのあるファミリーは、太さの範囲で選ぶ (Fonts 4 §5.2)。選んだ書体が可変フォントなら、その太さ・指定の実体
@@ -888,7 +907,7 @@ export class FontManager {
    * ファミリーの別名 (別名 → その名前で指す書体の key)。幅の違う書体が 1 つのファミリーにまとまっているとき
    * (Arial Narrow は、ファミリー名 (name 表の nameID 16) が Arial で、幅 (OS/2 の usWidthClass) が condensed の書体)、
    * その書体だけを指す元の名前 (nameID 1 の "Arial Narrow") を別名として覚える。CSS Fonts 4 §5.2: ファミリー名は、入っている書体から探す
-   * ("this may include font aliases")。別名で引いたときは、その書体の中だけで傾き・太さを照合する
+   * (書体の別名を含めてよい)。別名で引いたときは、その書体の中だけで傾き・太さを照合する
    */
   private aliases = new Map<string, Set<string>>();
   /** いま読み込んであるファミリー family のすべての書体を、別名 alias でも指す (addFamilyAlias をそれぞれに) */
@@ -1223,7 +1242,7 @@ export class FontManager {
     const shown = presentationOf(unit);
     const suits = (f: LoadedFont) => !shown?.explicit || (shown.want === 'emoji') === !!colorFontOf(f);
     if (!covers(base) || !suits(base)) {
-      // 順のある書体の列 (defineStack の list) は、列の前から順に、並びの字をすべて持つ書体を探す (§5.3 の手順 1: For each family in the font list)
+      // 順のある書体の列 (defineStack の list) は、列の前から順に、並びの字をすべて持つ書体を探す (§5.3 の手順 1: 並びのファミリーを 1 つずつ見る)
       const latinWord = !!family?.endsWith(LATIN_WORD);
       const named = latinWord ? family!.slice(0, -LATIN_WORD.length) : family;
       hit = this.withRequest(named, (plain) => {

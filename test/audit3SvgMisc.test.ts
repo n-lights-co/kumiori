@@ -4,12 +4,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
-import { PDFArray, PDFDocument, PDFName, decodePDFRawStream } from 'pdf-lib';
+import { PDFArray, PDFDocument, PDFName } from 'pdf-lib';
 import { evaluateCalc, parseSvg, substituteVars, systemLanguageKey } from '../src/svg';
 import { AssetStore } from '../src/assets';
 import { renderPdf } from '../src/pdfRenderer';
 import { LayoutEngine } from '../src/layoutEngine';
-import { FAMILY, doc, makeEngine } from './helpers';
+import { FAMILY, doc, makeEngine, pageOps } from './helpers';
 
 const parse = (s: string) => new DOMParser().parseFromString(s, 'image/svg+xml') as never;
 const svg = (body: string) => `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">${body}</svg>`;
@@ -88,8 +88,9 @@ describe('<style> の単純でない選択子の照合', () => {
     expect(d2.shapes[0].stroke).toBe('#0000ff');
   });
 
-  it('索引で引けない規則を照らす回数に上限があり、超えた SVG は描けないものとする', () => {
-    const rules = Array.from({ length: 1000 }, (_, i) => `*:nth-child(${i + 1}n+${i + 1}) * {fill:#001}`).join('\n');
+  it('索引で絞れない規則を照らす回数に上限があり、超えた SVG は描けないものとする', () => {
+    // 右端が * の規則は、親ごとに 1 度だけ照らすので (parentDecidedSelectors.test.ts)、どの図形も候補になる右端の要素名で数える
+    const rules = Array.from({ length: 1000 }, (_, i) => `*:nth-child(${i + 1}n+${i + 1}) rect {fill:#001}`).join('\n');
     const rects = '<rect width="1" height="1"/>'.repeat(2000);
     let why = '';
     const [d, ms] = timed(() => parseSvg(svg(`<style>${rules}</style><g>${rects}</g>`), parse, { onUnsupported: (m) => (why = m) }));
@@ -171,9 +172,7 @@ describe('PDF: SVG の組み直し・組む量・リンクの数', () => {
     const src = svg('<switch><rect systemLanguage="ja" width="200" height="100" fill="#f00"/><rect width="200" height="100" fill="#00f"/></switch>');
     const ops = async (langs: string[]) => {
       const { pdf } = await render(src, langs.map((language) => ({ language })));
-      const c = pdf.getPage(0).node.Contents()!;
-      const streams = 'asArray' in c ? (c as PDFArray).asArray().map((r) => pdf.context.lookup(r)) : [c];
-      return streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n');
+      return pageOps(pdf);
     };
     const all = await ops(['en', 'de', 'ja', 'fr', 'ko', 'jpn']);
     expect((all.match(/1 0 0 rg/g) ?? []).length).toBe(2);

@@ -210,7 +210,7 @@ function rgbOf(css: string): [number, number, number] {
 }
 
 /** グラデーションの色 (乗算していない RGBA)。p は SVG の根の座標 */
-function gradientAt(g: SvgGradient, inv: Matrix, px: number, py: number, rgb: (css: string) => number[] = rgbOf, stopRgb?: number[][]): [number, number, number, number] {
+export function gradientAt(g: SvgGradient, inv: Matrix, px: number, py: number, rgb: (css: string) => number[] = rgbOf, stopRgb?: number[][]): [number, number, number, number] {
   const [x, y] = apply(inv, px, py);
   const c = g.coords;
   let t: number;
@@ -220,7 +220,13 @@ function gradientAt(g: SvgGradient, inv: Matrix, px: number, py: number, rgb: (c
     const l2 = dx * dx + dy * dy;
     t = l2 > 0 ? ((x - c[0]) * dx + (y - c[1]) * dy) / l2 : 1;
   } else {
-    // 焦点の円 (fx, fy, fr) から外の円 (cx, cy, r) へ: 点を通る円の t (二次方程式の大きい根)
+    // 焦点の円 (fx, fy, fr) から外の円 (cx, cy, r) へ: 円 C(t) は、中心 f + t (c − f)・半径 r(t) = fr + t (r − fr)。
+    // 点の色は、点を通る円のうち、r(t) ≥ 0 で t の最も大きいものの t で決まる (SVG 2 §14.2.3.2 (radialGradient の注) の焦点の円と、
+    // 同じ定め方の Canvas の createRadialGradient (HTML Living Standard の「fill and stroke styles」): r(ω) > 0 の ω のうち最大のもの)。
+    // PDF の放射の網かけ (ISO 32000-1 §8.7.4.5.4 の Type 3。Extend [true true]) も、t の大きい円を後から塗るので同じ)。
+    // |p − f − t (c − f)|² = r(t)² を整理した a t² − 2 b t + cc = 0 の 2 つの根 (b ± √disc) / a のうち、a > 0 なら + の根、
+    // a < 0 (焦点の円が外の円の中: fr = 0・焦点が中心なら a = −r²) なら − の根が大きい。大きい根の半径が負なら、小さい根を見る。
+    // 点を通る円が無い所 (焦点の円が外の円の外にあるときの、2 つの円に接する円錐の外) は、塗らない (透明の黒。SVG 2 §14.2.3.2)
     const [fx, fy, fr, cx, cy, r] = c;
     const cdx = cx - fx;
     const cdy = cy - fy;
@@ -230,11 +236,23 @@ function gradientAt(g: SvgGradient, inv: Matrix, px: number, py: number, rgb: (c
     const a = cdx * cdx + cdy * cdy - dr * dr;
     const b = pdx * cdx + pdy * cdy + fr * dr;
     const cc = pdx * pdx + pdy * pdy - fr * fr;
-    if (Math.abs(a) < 1e-9) t = b !== 0 ? cc / (2 * b) : 0;
-    else {
+    const ok = (v: number) => Number.isFinite(v) && fr + v * dr >= -1e-9;
+    let found: number | undefined;
+    if (Math.abs(a) < 1e-9) {
+      // 1 次の式 (焦点の円が外の円に内側から接する): t = cc / (2 b)
+      const v = b !== 0 ? cc / (2 * b) : NaN;
+      if (ok(v)) found = v;
+    } else {
       const disc = b * b - a * cc;
-      t = disc < 0 ? 0 : (b + Math.sqrt(disc)) / a;
+      if (disc >= 0) {
+        const q = Math.sqrt(disc);
+        const hi = Math.max((b + q) / a, (b - q) / a);
+        const lo = Math.min((b + q) / a, (b - q) / a);
+        found = ok(hi) ? hi : ok(lo) ? lo : undefined;
+      }
     }
+    if (found === undefined) return [0, 0, 0, 0];
+    t = found;
   }
   t = clamp01(t);
   const s = g.stops;
@@ -316,7 +334,7 @@ function blendChannels(mode: SvgBlend | 'normal', cb: number[], cs: number[]): n
 }
 
 /** 乗算済みの色 src を dst の上に、描画モードで重ねる (Compositing and Blending 1 §5・§10) */
-function compositeOver(dst: Float32Array, i: number, sr: number, sg: number, sb: number, sa: number, mode: SvgBlend | 'normal' = 'normal') {
+export function compositeOver(dst: Float32Array, i: number, sr: number, sg: number, sb: number, sa: number, mode: SvgBlend | 'normal' = 'normal') {
   if (sa <= 0) return;
   const da = dst[i + 3];
   if (mode === 'normal' || da <= 0) {
@@ -352,6 +370,12 @@ interface Painter {
    * 呼ぶ側が同じものを渡すと、割合を計算し直さない
    */
   cache?: Map<object, Float32Array>;
+  /**
+   * 読めない画像 (decode・decodeImage が undefined を返すもの: CMYK の JPEG・インターレースの PNG・壊れた画像など) の画素。
+   * 渡せば、例外にせず、返した画素で描く (undefined を返せば、その画像だけを描かない)。渡さなければ、例外 (Error('image')) にする
+   * (透明を平らにする処理は、例外を受けて、別の道で描く)。マスク・模様・グループの中の画像にも当てる
+   */
+  missingImage?: (img: NonNullable<SvgShape['image']>) => { w: number; h: number; rgba: Uint8Array } | undefined;
 }
 
 /** 画像 (PNG・JPEG) の画素 (RGBA 8 ビット)。読めなければ undefined */
@@ -403,7 +427,7 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
     covered = now;
     const nowMasks = new Map<object, Img>();
     for (const mk of sh.masks ?? []) {
-      const mi = maskImgs.get(mk) ?? nowMasks.get(mk) ?? paintShapes(mk.shapes, { m: P.m, w: P.w, h: P.h, meter: P.meter });
+      const mi = maskImgs.get(mk) ?? nowMasks.get(mk) ?? paintShapes(mk.shapes, { m: P.m, w: P.w, h: P.h, meter: P.meter, ...(P.missingImage ? { missingImage: P.missingImage } : {}) });
       nowMasks.set(mk, mi);
       charge(meter, W * H * 2);
       if (!mask) mask = new Float32Array(W * H).fill(1);
@@ -426,8 +450,11 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
       continue;
     }
     if (sh.image) {
-      const px = P.decode ? P.decode(sh.image) : decodeImage(sh.image);
-      if (!px) throw new Error('image');
+      const px = (P.decode ? P.decode(sh.image) : decodeImage(sh.image)) ?? P.missingImage?.(sh.image);
+      if (!px) {
+        if (P.missingImage) continue;
+        throw new Error('image');
+      }
       // 画素の中心 → 画像の単位正方形 (左下が原点、上の辺が 1 行目) → 画像の画素
       const toUnit = invert(mul(P.m, sh.image.matrix));
       if (!toUnit) continue;
@@ -454,7 +481,7 @@ function paintShapes(shapes: SvgShape[], P: Painter, out: Img = newImg(P.w, P.h)
         const pinv = invert(pattern.matrix);
         if (pinv) {
           if (!(lastTile && lastTile.pattern === pattern && lastTile.tw === tw && lastTile.th === th))
-            lastTile = { pattern, tw, th, img: paintShapes(pattern.shapes, { m: [tw / pattern.width, 0, 0, th / pattern.height, 0, 0], w: tw, h: th, meter, color: P.color, decode: P.decode }) };
+            lastTile = { pattern, tw, th, img: paintShapes(pattern.shapes, { m: [tw / pattern.width, 0, 0, th / pattern.height, 0, 0], w: tw, h: th, meter, color: P.color, decode: P.decode, missingImage: P.missingImage }) };
           tile = { img: lastTile.img, inv: pinv, tw, th };
         }
       }
@@ -523,9 +550,46 @@ export function paintShapesToPixels(
   m: Matrix,
   w: number,
   h: number,
-  hooks: Pick<Painter, 'color' | 'decode' | 'cache'> = {},
+  hooks: Pick<Painter, 'color' | 'decode' | 'cache' | 'missingImage'> = {},
 ): Float32Array {
   return paintShapes(shapes, { m, w, h, meter: { limit: Infinity }, ...hooks }).d;
+}
+
+/**
+ * paintShapesToPixels の、手間に上限のあるもの。描く手間 (charge の単位) が limit を超えたら、描くのをやめて undefined を返す
+ * (Web Worker の中の renderPage の SVG の画像: canvasRenderer.ts の drawSvgShapes)
+ */
+export function paintShapesToPixelsWithin(
+  shapes: SvgShape[],
+  m: Matrix,
+  w: number,
+  h: number,
+  limit: number,
+  hooks: Pick<Painter, 'color' | 'decode' | 'cache' | 'missingImage'> = {},
+): { pixels: Float32Array; used: number } | undefined {
+  const meter: Meter = { limit };
+  try {
+    return { pixels: paintShapes(shapes, { m, w, h, meter, ...hooks }).d, used: meter.used ?? 0 };
+  } catch (e) {
+    if (e instanceof OverBudget) return undefined;
+    throw e;
+  }
+}
+
+/**
+ * 図形の並びを画素にする手間の見積もり (1 画素あたり。charge の単位)。paintShapes は、図形ごとに画像の全体を回す
+ * (覆う割合を 2、塗りを 4、ほかに 1) ので、図形の数 (グループ・マスク・模様の中も数える) × 7。模様は、タイル (画像より小さい) も
+ * 画像の大きさで数える (多めの見積もり)
+ */
+export function shapesCostPerPixel(shapes: readonly SvgShape[], seen = new Set<object>()): number {
+  let n = 1;
+  for (const sh of shapes) {
+    n += 7 * (1 + (sh.clips?.length ?? 0));
+    if (sh.group) n += shapesCostPerPixel(sh.group.shapes, seen);
+    for (const mk of sh.masks ?? []) if (!seen.has(mk)) (seen.add(mk), (n += shapesCostPerPixel(mk.shapes, seen)));
+    if (sh.fillPattern && !seen.has(sh.fillPattern)) (seen.add(sh.fillPattern), (n += shapesCostPerPixel(sh.fillPattern.shapes, seen)));
+  }
+  return n;
 }
 
 /** 画像 (PNG・JPEG) の画素 (RGBA 8 ビット)。読めなければ undefined */

@@ -17,7 +17,7 @@
  */
 import { fromBase64 } from './base64';
 import { parseColor } from './color';
-import { createSelectorMemo, matches, parseSelectorList, type Selector, type SelectorMemo } from './cssSelector';
+import { createSelectorMemo, matches, parentDecides, parseSelectorList, type Selector, type SelectorMemo } from './cssSelector';
 import { decodeBmp, decodeGif, encodePngStored } from './pixels';
 import { decodeWebp } from './webp';
 import { lineBreakActions } from './lineBreak';
@@ -184,15 +184,53 @@ export interface FilterRasterResult {
 }
 
 /**
+ * 拡大しない線・大きさ (vector-effect の non-scaling-stroke・non-scaling-size。SVG 2 §13.3.1) の図形を、ふつうの図形にする。
+ * f は、ページの上の 1 CSS px にあたる SVG の根の座標の長さ (0.75pt を、SVG を置く拡大率で割ったもの)。線の太さ・破線の長さとずれを f 倍し、
+ * 拡大しない大きさの図形は、原点 (nonScalingAnchor) の周りに f 倍に縮める。PDF・SVG・PNG の書き出しで同じ式を使う
+ */
+export function resolveNonScaling(sh: SvgShape, f: number): SvgShape {
+  if (sh.nonScalingStroke) sh = { ...sh, nonScalingStroke: false, strokeWidth: sh.strokeWidth * f, ...(sh.dash ? { dash: sh.dash.map((x) => x * f) } : {}), ...(sh.dashOffset ? { dashOffset: sh.dashOffset * f } : {}) };
+  const a = sh.nonScalingAnchor;
+  if (a) {
+    const sc = (x: number, y: number) => ({ x: a[0] + (x - a[0]) * f, y: a[1] + (y - a[1]) * f });
+    const segs = sh.segs.map((g) =>
+      g.op === 'Z' ? g : g.op === 'C' ? { op: 'C' as const, ...sc(g.x, g.y), ...((p1, p2) => ({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }))(sc(g.x1, g.y1), sc(g.x2, g.y2)) } : { op: g.op, ...sc(g.x, g.y) },
+    );
+    sh = { ...sh, segs, nonScalingAnchor: undefined };
+  }
+  return sh;
+}
+
+/**
  * 図形の並びを、グループ (SvgShape.group) を開いた並びにする (グループを描けない描き手のため)。グループの不透明度は子の図形に掛け、
- * 描画モードは、自分の描画モードの無い子に付ける (重なった子の重ね方は、グループで描いたものと少し違う)
+ * 描画モードは、自分の描画モードの無い子に付ける。グループの切り抜き・マスクは、子の切り抜き・マスクの前 (外側) に足す
+ * (重なった子の重ね方・マスクの掛かり方は、グループで描いたものと少し違う。子ごとに掛かる)
  */
 export function flattenGroups(shapes: SvgShape[]): SvgShape[] {
   return shapes.flatMap((sh) =>
     sh.group
-      ? flattenGroups(sh.group.shapes).map((c) => ({ ...c, fillOpacity: c.fillOpacity * sh.fillOpacity, strokeOpacity: c.strokeOpacity * sh.fillOpacity, ...(sh.blend && !c.blend ? { blend: sh.blend } : {}) }))
+      ? flattenGroups(sh.group.shapes).map((c) => ({
+          ...c,
+          fillOpacity: c.fillOpacity * sh.fillOpacity,
+          strokeOpacity: c.strokeOpacity * sh.fillOpacity,
+          ...(sh.blend && !c.blend ? { blend: sh.blend } : {}),
+          ...(sh.clips?.length ? { clips: [...sh.clips, ...(c.clips ?? [])] } : {}),
+          ...(sh.masks?.length ? { masks: [...sh.masks, ...(c.masks ?? [])] } : {}),
+        }))
       : [sh],
   );
+}
+
+/**
+ * filter の近似 (影・色の変換) のために、グループを開く (flattenGroups と同じ)。ただし、切り抜き・マスクの付いたグループは開かずに残す
+ * (中のグループは開く)。そのグループは、近似の写しを作る所 (blurredCopies) が、グループのまま写す
+ */
+function openForFilter(shapes: SvgShape[]): SvgShape[] {
+  return shapes.flatMap((sh) => {
+    if (!sh.group) return [sh];
+    if (sh.clips?.length || sh.masks?.length) return [{ ...sh, group: { shapes: openForFilter(sh.group.shapes) } }];
+    return openForFilter(sh.group.shapes).map((c) => ({ ...c, fillOpacity: c.fillOpacity * sh.fillOpacity, strokeOpacity: c.strokeOpacity * sh.fillOpacity, ...(sh.blend && !c.blend ? { blend: sh.blend } : {}) }));
+  });
 }
 
 /**
@@ -658,7 +696,7 @@ interface Style {
   context?: { fill: Style['fill']; stroke: Style['stroke']; fillAlpha?: number; strokeAlpha?: number; fillFrame?: PaintFrame; strokeFrame?: PaintFrame };
   /**
    * 塗り・線が context-fill・context-stroke から来た模様・グラデーションのときの、塗りの座標系と外接矩形 (context element のもの。
-   * SVG 2 §13.2: 「the coordinate space and the bounding box used to scale the paint server elements are those of the context element」)。
+   * SVG 2 §13.2: 塗りの要素を当てる座標系と、大きさを合わせる外接矩形は、context element のものを使う)。
    * 無ければ、塗る図形そのものの座標系と外接矩形
    */
   fillFrame?: PaintFrame;
@@ -1223,6 +1261,13 @@ interface CssIndex {
    */
   complexBy: Map<string, ComplexRule[]>;
   complexAny: ComplexRule[];
+  /**
+   * 単純でない選択子の規則のうち、照合の結果が要素の親で決まるもの (右端が条件の無い * の、g *・*:nth-child(…) > * など。cssSelector の parentDecides)。
+   * 索引で引けないので、要素ごとに照らすと 規則の数 × 要素の数 の手間になる。親ごとに 1 度だけ照らして (complexByParent)、兄弟に使い回す
+   */
+  complexUp: ComplexRule[];
+  /** 親 → その子に当たる complexUp の規則 */
+  complexByParent: WeakMap<object, ComplexRule[]>;
   /** 単純でない選択子を要素に照らす回数の残り (CSS_MAX_MATCHES から減らす)。尽きたら、その SVG は描けないものとする */
   matchLeft: number;
   /**
@@ -1248,7 +1293,7 @@ interface ComplexRule {
 /** rules は parseCss の結果 (当てる順に並んでいる) */
 function indexCss(rules: CssRule[]): CssIndex | undefined {
   if (!rules.length) return undefined;
-  const ix: CssIndex = { byId: new Map(), byClass: new Map(), byTag: new Map(), any: [], cache: new Map(), complexBy: new Map(), complexAny: [], matchLeft: CSS_MAX_MATCHES, memo: createSelectorMemo() };
+  const ix: CssIndex = { byId: new Map(), byClass: new Map(), byTag: new Map(), any: [], cache: new Map(), complexBy: new Map(), complexAny: [], complexUp: [], complexByParent: new WeakMap(), matchLeft: CSS_MAX_MATCHES, memo: createSelectorMemo() };
   const groups = new Map<string, CssGroup>();
   rules.forEach((r, pos) => {
     if (r.complex) {
@@ -1257,7 +1302,8 @@ function indexCss(rules: CssRule[]): CssIndex | undefined {
       const attr = right.attrs.find((a) => !a.name.includes('|'))?.name;
       const key = right.ids[0] !== undefined ? `#${right.ids[0]}` : right.classes[0] !== undefined ? `.${right.classes[0]}` : attr !== undefined ? `[${attr}` : right.tag ? right.tag : undefined;
       const rule = { sel: r.complex, pos, decls: r.decls };
-      if (key === undefined) ix.complexAny.push(rule);
+      if (key === undefined && parentDecides(r.complex)) ix.complexUp.push(rule);
+      else if (key === undefined) ix.complexAny.push(rule);
       else {
         const list = ix.complexBy.get(key);
         if (list) list.push(rule);
@@ -1304,16 +1350,32 @@ function cssDeclsOf(n: XmlNode, ix: CssIndex): Record<string, string> {
     if (list) for (const r of list) cands.push(r);
   }
   let merged = win;
+  const apply = (r: ComplexRule) => {
+    if (merged === win) merged = new Map(win);
+    for (const [k, value] of Object.entries(r.decls)) {
+      const w = merged.get(k);
+      if (!w || w.pos < r.pos) merged.set(k, { pos: r.pos, value });
+    }
+  };
+  // 親で決まる規則は、親ごとに 1 度だけ照らした結果から (答えは、子ごとに照らしたのと同じ。当てる順は下の pos の比べ方で決まる)
+  const parent = (n as { parentNode?: { nodeType?: number } | null }).parentNode;
+  if (ix.complexUp.length && parent && parent.nodeType === 1) {
+    let up = ix.complexByParent.get(parent);
+    if (!up) {
+      up = [];
+      for (const r of ix.complexUp) {
+        if (--ix.matchLeft < 0) throw new Unsupported('css selectors: too many matches');
+        if (matches(n as unknown as Element, r.sel, undefined, ix.memo)) up.push(r);
+      }
+      ix.complexByParent.set(parent, up);
+    }
+    for (const r of up) apply(r);
+  }
   if (cands.length && typeof (n as { parentNode?: unknown }).parentNode !== 'undefined') {
     // 当てる順は pos (規則の順) で決まり、照らす順にはよらない (下の pos の比べ方)
     for (const r of new Set(cands)) {
       if (--ix.matchLeft < 0) throw new Unsupported('css selectors: too many matches');
-      if (!matches(n as unknown as Element, r.sel, undefined, ix.memo)) continue;
-      if (merged === win) merged = new Map(win);
-      for (const [k, value] of Object.entries(r.decls)) {
-        const w = merged.get(k);
-        if (!w || w.pos < r.pos) merged.set(k, { pos: r.pos, value });
-      }
+      if (matches(n as unknown as Element, r.sel, undefined, ix.memo)) apply(r);
     }
   }
   const out: Record<string, string> = {};
@@ -2184,8 +2246,13 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         return ref && depth < 8 ? kidsOf(ref, depth + 1) : [];
       };
       const saved = target;
+      const savedMasks = masks;
       const inner: SvgShape[] = [];
       target = inner;
+      // 中身は、模様の座標系の新しい状態で描く: 模様で塗る要素 (とその祖先) の切り抜き・マスクは受け継がない (SVG 2 §14.3.1: pattern の中身は、
+      // pattern の要素の祖先から性質を受け継ぎ、参照する要素からは受け継がない。切り抜き・マスクは、模様で塗った結果に、塗った要素の側で当たる)。
+      // 前は、mask を付けたグループの中の要素の模様の塗りが、外のマスクを中身の図形に持ち込み、下の「pattern content」で読めなかった
+      masks = [];
       // 中身の walk は深さを 1 から数え直すので、pattern の入れ子はここで数える (中身が自分自身で塗られている pattern で止まらなくなる)
       if (patternNest >= MAX_PATTERN_NEST) throw new Unsupported('too deep');
       patternNest++;
@@ -2194,6 +2261,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       } finally {
         patternNest--;
         target = saved;
+        masks = savedMasks;
       }
       // マスク・大きさの変わらない線や形 (vector-effect) は、タイルの中では描けない
       if (inner.some((sh) => sh.masks || sh.nonScalingStroke || sh.nonScalingAnchor)) throw new Unsupported('pattern content');
@@ -2294,6 +2362,8 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       | { kind: 'source'; dx: number; dy: number; std: number; opacity: number; recolor: Array<(c: number[]) => number[]>; blend?: SvgBlend; uncut?: true; cut?: Box[] }
       | { kind: 'alpha'; dx: number; dy: number; std: number; color: number[]; opacity: number; blend?: SvgBlend; uncut?: true; cut?: Box[] }
       | { kind: 'flood'; color: number[]; opacity: number; blend?: SvgBlend; cut?: Box[] };
+    /** filter を画素で計算するときの組み立て: filter の要素の並び (feImage の画像を引く関数を受け取る) と、primitiveUnits が objectBoundingBox か */
+    type FilterRasterPlan = { prims: (image: (e: XmlNode, box: Box) => SvgShape[] | undefined) => FilterRasterRequest['prims']; obb: boolean };
     /**
      * filter の領域 (filterUnits の既定は objectBoundingBox、x・y・width・height の既定は −10%・−10%・120%・120%。Filter Effects 1 §8)。
      * box は要素の外接矩形を受け取って、領域 (要素の座標) を返す関数
@@ -2310,7 +2380,11 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     /**
      * filter を読む。box は要素の外接矩形を求める関数、view は viewport の幅・高さ (filter の領域と、要素の部分領域の百分率に使う)
      */
-    const filterOf = (ref: string, box: () => Box | undefined, view: { w: number; h: number }): { layers: FilterLayer[]; region: ReturnType<typeof filterRegion>; raster?: { prims: (image: (e: XmlNode, box: Box) => SvgShape[] | undefined) => FilterRasterRequest['prims']; obb: boolean } } => {
+    const filterOf = (
+      ref: string,
+      box: () => Box | undefined,
+      view: { w: number; h: number },
+    ): { layers: FilterLayer[]; region: ReturnType<typeof filterRegion>; raster?: FilterRasterPlan; rasterFallback?: FilterRasterPlan } => {
       const u = /url\(\s*['"]?#([^'")\s]+)/.exec(ref);
       const f = u ? byId.get(u[1]) : undefined;
       if (!f || nm(f) !== 'filter') throw new Unsupported('filter');
@@ -2644,7 +2718,8 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           };
         });
       try {
-        return { layers: vectorLayers(), region: filterRegion(f) };
+        // 図形に当てる段で近似できないと分かったとき (画像・模様の色を変えるなど) に、画素の計算に回せるように、その組み立ても返す
+        return { layers: vectorLayers(), region: filterRegion(f), ...(opts.rasterFilter ? { rasterFallback: { prims: rasterPrims, obb: obbUnits } } : {}) };
       } catch (err) {
         // 図形で近似できない filter は、画素で計算する (呼ぶ側が svgFilterRaster.ts を渡したとき)
         if (!(err instanceof Unsupported) || !opts.rasterFilter) throw err;
@@ -2678,42 +2753,84 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       });
       if (sh.fillPaint) out.fillPaint = grad(sh.fillPaint, sh.fillOpacity);
       if (sh.strokePaint) out.strokePaint = grad(sh.strokePaint, sh.strokeOpacity);
+      // 切り抜き・マスクの付いたグループ (openForFilter が開かずに残したもの) は、中の図形の色を変える (マスクの中身は変えない)
+      if (sh.group) out.group = { shapes: sh.group.shapes.map((x) => recolorShape(x, fns)) };
       return out;
     };
     /**
      * 影: 図形の写しを (ox, oy) ずらし、ぼかしの幅 std (ルートの座標) を、少しずつ太らせた半透明の写し (5 枚) の重ねで表す。
-     * color が無ければ図形の色のまま
+     * color が無ければ図形の色のまま (模様・グラデーションの塗りと線も、図形と一緒にずらして写す。Filter Effects 1 §9.19 の feOffset は、
+     * 入力の画像をそのままずらすので、塗りの中身も動く)
      */
-    const blurredCopies = (shapes: SvgShape[], ox: number, oy: number, std: number, color: string | undefined, opacity: number): SvgShape[] => {
+    const blurredCopies = (shapes: SvgShape[], ox: number, oy: number, std: number, color: string | undefined, opacity: number, memo = new Map<SvgClip, SvgClip>()): SvgShape[] => {
+      const move: M = [1, 0, 0, 1, ox, oy];
+      // 図形の切り抜き・マスク (filter の付いた要素の子孫のもの。SourceGraphic の一部) は、写しと一緒にずらす (Filter Effects 1 §9.19 の
+      // feOffset は、入力の画像をそのままずらす)。同じ切り抜き・マスクは、同じ 1 つの写しにする (描く側が使い回せるように)
+      const maskMemo = new Map<SvgMask, SvgMask>();
+      const movedClips = (cs: SvgClip[] | undefined) =>
+        cs?.map((c) => {
+          let t = memo.get(c);
+          if (!t) memo.set(c, (t = ox || oy ? { ...c, segs: transformSegs(c.segs, move) } : c));
+          return t;
+        });
+      const movedMasks = (ms: SvgMask[] | undefined) =>
+        ms?.map((mk) => {
+          let t = maskMemo.get(mk);
+          if (!t) maskMemo.set(mk, (t = ox || oy ? { ...mk, shapes: mk.shapes.map((x) => transformShape(x, move, 1, memo)) } : mk));
+          return t;
+        });
       // 太らせる量 (外の層から) と、そこまで重ねたときの濃さ (ガウスぼかしの縁の外の濃さ: 縁で約半分、2σ でほぼ 0)
       const steps = std > 0 ? [2, 1.5, 1, 0.5, 0].map((k) => k * std) : [0];
       const cum = std > 0 ? [0.03, 0.08, 0.17, 0.32, 0.6].map((c) => c * opacity) : [opacity];
       const alphas = cum.map((c, k) => 1 - (1 - c) / (1 - (k ? cum[k - 1] : 0)));
       const out: SvgShape[] = [];
+      // 切り抜き・マスクの付いたグループ (openForFilter が開かずに残したもの) は、グループのまま写す: 中の図形の写し (太らせた層の全部) を
+      // 1 つのグループにして、グループの切り抜き・マスクを 1 度だけ掛ける (開いて子ごとに掛けると、子の数 × 層の数だけマスクを描き直す)。
+      // 写しは、ほかの図形の写しとの重なりの順を保つように、元の並びの位置 (太らせない最後の層の中) に入れる
+      const groupCopy = (sh: SvgShape): SvgShape => {
+        const clips = movedClips(sh.clips);
+        const masks = movedMasks(sh.masks);
+        return { ...sh, ...(clips ? { clips } : {}), ...(masks ? { masks } : {}), group: { shapes: blurredCopies(sh.group!.shapes, ox, oy, std, color, opacity, memo) } };
+      };
       // 画像は輪郭を太らせられないので、色を変えないぼかしでは、ぼかさずにそのまま (ずらして) 描く。影 (色を付けた写し) には使わない
       if (color === undefined)
         for (const sh of shapes) {
           if (!sh.image) continue;
           const [a, b, c, d, e, f] = sh.image.matrix;
-          out.push({ ...sh, image: { ...sh.image, matrix: [a, b, c, d, e + ox, f + oy] }, fillOpacity: sh.fillOpacity * opacity, strokeOpacity: sh.strokeOpacity * opacity });
+          const clips = movedClips(sh.clips);
+          const masks = movedMasks(sh.masks);
+          out.push({ ...sh, ...(clips ? { clips } : {}), ...(masks ? { masks } : {}), image: { ...sh.image, matrix: [a, b, c, d, e + ox, f + oy] }, fillOpacity: sh.fillOpacity * opacity, strokeOpacity: sh.strokeOpacity * opacity });
         }
       steps.forEach((grow, k) => {
         const alpha = alphas[k];
         for (const sh of shapes) {
+          if (sh.group) {
+            if (k === steps.length - 1) out.push(groupCopy(sh));
+            continue;
+          }
           if (sh.image) continue;
           // 写しは「効果で増える分」に数える (filter の付いた g を 8 段重ねると、1 つの図形が 6 の 8 乗 = 168 万個になる)
           charge(sh.segs.length + 1);
           const filled = sh.fill !== undefined || !!sh.fillPaint || !!sh.fillPattern;
           const fillColor = color ?? sh.fill;
-          const strokeColor = color ?? sh.stroke ?? sh.fill;
+          // 色を変えない写しは、模様・グラデーションの塗りと線を、ずらして持たせる (持たせないと、模様は代わりの灰色、グラデーションは
+          // 終わりの色の一面になっていた)。太らせる線 (ぼかしの近似) は、線が無ければ塗りで描く: グラデーションの塗りは線のグラデーションに
+          // できるが、模様の線は描けないので、模様で塗った図形は太らせない (ぼかしだけの filter は元の図形のまま描くのと同じ)
+          const fillPaint = color === undefined && sh.fillPaint ? { ...sh.fillPaint, matrix: mul(move, sh.fillPaint.matrix) } : undefined;
+          const fillPattern = color === undefined && sh.fillPattern ? { ...sh.fillPattern, matrix: mul(move, sh.fillPattern.matrix) } : undefined;
+          const strokePaint = color !== undefined ? undefined : sh.strokePaint ? { ...sh.strokePaint, matrix: mul(move, sh.strokePaint.matrix) } : sh.stroke === undefined && grow > 0 ? fillPaint : undefined;
+          const strokeColor = color ?? sh.stroke ?? (sh.stroke === undefined && fillPattern ? undefined : sh.fill);
           const width = (sh.stroke !== undefined ? sh.strokeWidth : 0) + 2 * grow;
           out.push({
             segs: sh.segs.map((g) => (g.op === 'Z' ? g : g.op === 'C' ? { ...g, x1: g.x1 + ox, y1: g.y1 + oy, x2: g.x2 + ox, y2: g.y2 + oy, x: g.x + ox, y: g.y + oy } : { ...g, x: g.x + ox, y: g.y + oy })),
             ...(filled && fillColor ? { fill: fillColor } : {}),
-            ...(sh.clips ? { clips: sh.clips } : {}),
-            ...(sh.masks ? { masks: sh.masks } : {}),
+            ...(filled && fillPaint ? { fillPaint } : {}),
+            ...(filled && fillPattern ? { fillPattern } : {}),
+            ...(sh.clips ? { clips: movedClips(sh.clips) } : {}),
+            ...(sh.masks ? { masks: movedMasks(sh.masks) } : {}),
             evenOdd: sh.evenOdd,
             ...(width > 0 && strokeColor ? { stroke: strokeColor } : {}),
+            ...(width > 0 && strokeColor && strokePaint ? { strokePaint } : {}),
             strokeWidth: width,
             lineCap: 1,
             lineJoin: 1,
@@ -3041,130 +3158,15 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       if (depth > 32) throw new Unsupported('too deep');
       const p = props(n);
       if (p.display === 'none') return;
-      if (p.filter && p.filter !== 'none' && !(opts.approximateFilters && filtering.has(n)) && !measuring.has(n)) {
-        if (!opts.approximateFilters) throw new Unsupported('filter');
-        const fr = filterOf(p.filter, () => bboxOf(n, st, m, op, isRoot, depth, m), vp);
-        const { layers, region: regionOf } = fr;
-        // 要素の図形を集めてから、層を下から順に足す (影 (ずらしてぼかした写し) が先、元の図形が後)
-        const savedTarget = target;
-        const own: SvgShape[] = [];
-        target = own;
-        filtering.add(n);
-        try {
-          walk(n, st, m, op, isRoot, clips, depth);
-        } finally {
-          filtering.delete(n);
-          target = savedTarget;
-        }
-        if (fr.raster) {
-          // 画素で計算する: 要素の図形を filter の領域 (要素の座標) の画素にして、filter の要素を順に計算し、結果の画像を領域に置く
-          const tr1 = isRoot ? ID : (elementTransform(n, () => bboxOf(n, st, m, op, isRoot, depth, m)) ?? ID);
-          const lm1 = mul(m, tr1);
-          const bb = bboxOf(n, st, m, op, isRoot, depth, m);
-          const reg = regionOf(() => bb, vp);
-          if (!reg || !(reg.w > 0 && reg.h > 0)) return;
-          const scale = Math.sqrt(Math.abs(lm1[0] * lm1[3] - lm1[1] * lm1[2])) || 1;
-          const s0 = inherit(st, p);
-          const paintOf = (v: Style['fill']): number[] | undefined => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? [...[1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16) / 255), 1] : undefined);
-          // feImage: 画像 (data: と、呼ぶ側の引く外のファイル) は部分領域に preserveAspectRatio で合わせ、#id の要素はその要素を描く
-          const imageFor = (e: XmlNode, box: Box): SvgShape[] | undefined => {
-            const href = (e.getAttribute?.('href') ?? e.getAttribute?.('xlink:href') ?? '').trim();
-            const saved = target;
-            const tmp: SvgShape[] = [];
-            target = tmp;
-            try {
-              if (href.startsWith('#')) {
-                const el = byId.get(href.slice(1));
-                if (el) walk(el, ROOT_STYLE, lm1, 1, false, [], depth + 1);
-              } else if (href) {
-                const fake = { nodeType: 1, nodeName: 'image', localName: 'image', childNodes: [], getAttribute: (k: string) => ({ href, x: String(box.x), y: String(box.y), width: String(box.w), height: String(box.h), preserveAspectRatio: e.getAttribute?.('preserveAspectRatio') ?? null })[k] ?? null } as XmlNode;
-                walk(fake, ROOT_STYLE, lm1, 1, false, [], depth + 1);
-              }
-            } finally {
-              target = saved;
-            }
-            return tmp.length ? tmp : undefined;
-          };
-          const result = opts.rasterFilter!({
-            prims: fr.raster.prims(imageFor),
-            source: own,
-            region: reg,
-            toRoot: lm1,
-            pxPerUnit: (opts.filterResolution ?? 4) * scale,
-            ...(bb ? { bbox: bb } : {}),
-            primitiveUnits: fr.raster.obb ? 'objectBoundingBox' : 'userSpaceOnUse',
-            viewport: { w: vp.w, h: vp.h },
-            ...(paintOf(s0.fill) ? { fillPaint: paintOf(s0.fill) } : {}),
-            ...(paintOf(s0.stroke) ? { strokePaint: paintOf(s0.stroke) } : {}),
-            budget: filterBudget,
-          });
-          if (!result) throw new Unsupported('filter');
-          target.push({
-            segs: [],
-            evenOdd: false,
-            strokeWidth: 0,
-            lineCap: 0,
-            lineJoin: 0,
-            fillOpacity: 1,
-            strokeOpacity: 1,
-            ...(clips.length ? { clips } : {}),
-            image: { kind: 'png', bytes: encodePngStored(result), pixels: result, matrix: mul(lm1, [reg.w, 0, 0, -reg.h, reg.x, reg.y + reg.h]) },
-          });
-          return;
-        }
-        // 影・色の変換は図形ごとに作るので、グループは開いて扱う
-        const flat = flattenGroups(own);
-        own.length = 0;
-        own.push(...flat);
-        const tr0 = isRoot ? ID : (elementTransform(n, () => bboxOf(n, st, m, op, isRoot, depth, m)) ?? ID);
-        const lm = mul(m, tr0);
-        const scale = Math.sqrt(Math.abs(lm[0] * lm[3] - lm[1] * lm[2]));
-        const hex = (c: number[]) => `#${c.map((x) => Math.round(Math.min(1, Math.max(0, x)) * 255).toString(16).padStart(2, '0')).join('')}`;
-        // ぼかしだけ (ずらさず、色も変えない元の図形 1 つ) は、元の図形のまま描く
-        const only = layers.length === 1 && layers[0].kind === 'source' ? layers[0] : undefined;
-        if (only && !only.dx && !only.dy && !only.recolor.length && only.opacity === 1 && !only.blend && !only.cut) {
-          target.push(...own);
-          return;
-        }
-        // 結果を集めて、filter の領域で切り抜く (領域の外は描かない。Filter Effects 1 §8)。描画モードがあれば透明のグループにする
-        const outer = target;
-        const result: SvgShape[] = [];
-        target = result;
-        for (const l of layers) {
-          if (l.kind === 'flood') continue;
-          // ずらす量は要素の座標系で (移動を除いた変換を掛ける)、ぼかしの幅は拡大率を掛ける
-          const ox = lm[0] * l.dx + lm[2] * l.dy;
-          const oy = lm[1] * l.dx + lm[3] * l.dy;
-          const before = target.length;
-          if (l.kind === 'alpha') {
-            if (l.opacity > 0) target.push(...blurredCopies(own, ox, oy, l.std * scale, hex(l.color), l.opacity));
-          } else {
-            const shapes = l.recolor.length ? own.map((sh) => recolorShape(sh, l.recolor)) : own;
-            if (!l.std && !ox && !oy && l.opacity === 1) target.push(...shapes);
-            else target.push(...blurredCopies(shapes, ox, oy, l.std * scale, undefined, l.opacity));
-          }
-          if (l.blend) for (let i = before; i < target.length; i++) target[i] = { ...target[i], blend: l.blend };
-          // 部分領域で切る (要素の座標の矩形を、ルートの座標にして切り抜きに足す)
-          if (l.cut) {
-            const cuts = l.cut.map((c): SvgClip => ({ segs: transformSegs(rectSegs(c), lm), evenOdd: false }));
-            for (let i = before; i < target.length; i++) target[i] = { ...target[i], clips: [...(target[i].clips ?? []), ...cuts] };
-          }
-        }
-        target = outer;
-        const reg = regionOf(() => bboxOf(n, st, m, op, isRoot, depth, m), vp);
-        if (!reg || !(reg.w > 0 && reg.h > 0)) return;
-        const regionClip: SvgClip = { segs: transformSegs(rectSegs(reg), lm), evenOdd: false };
-        if (layers.some((l) => l.blend)) target.push({ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: 1, strokeOpacity: 1, clips: [regionClip], group: { shapes: result } });
-        else for (const x of result) target.push({ ...x, clips: [...(x.clips ?? []), regionClip] });
-        return;
-      }
+      // filter は、clip-path・mask・opacity より先に (内側で) 当てる (下の「filter」の所)。画像にできる環境では、SVG ごと画像にする
+      if (p.filter && p.filter !== 'none' && !filtering.has(n) && !measuring.has(n) && !opts.approximateFilters) throw new Unsupported('filter');
       // 外接矩形を測っている要素は、自分の変換を掛けずに測る (外接矩形は要素の座標で求める。transform-box の fill-box もこれで測る)
       const tr = isRoot || measuring.has(n) ? ID : elementTransform(n, () => bboxOf(n, st, m, op, isRoot, depth, m));
       if (!tr) throw new Unsupported('transform');
       const mm = mul(m, tr);
       // マスク: 中身をこの要素の座標系 (transform 適用後) で図形にし、この要素の図形すべてに付けて、もう一度この要素を描く
       // (マスクの領域 x・y・width・height は見ない)
-      if (p.mask && p.mask !== 'none' && !masking.has(n) && !measuring.has(n)) {
+      if (p.mask && p.mask !== 'none' && !masking.has(n) && !filtering.has(n) && !measuring.has(n)) {
         const u = /url\(\s*['"]?#([^'")\s]+)/.exec(p.mask);
         const mk = u ? byId.get(u[1]) : undefined;
         if (!mk || nm(mk) !== 'mask') throw new Unsupported('mask');
@@ -3209,24 +3211,38 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           target = savedTarget;
         }
         const alpha = (props(mk)['mask-type'] ?? '').trim() === 'alpha';
-        masks = [...savedMasks, { shapes: content, ...(alpha ? { alpha: true } : {}) }];
+        const allMasks = [...savedMasks, { shapes: content, ...(alpha ? { alpha: true } : {}) }];
+        const cl = [...clips, regionClip];
+        // マスクは、要素の全体 (子を重ねた絵) に掛ける (CSS Masking 1 §7.1)。子ごとに掛けると、重なった子の下の色が透けるので、
+        // 子の図形をまとめて透明のグループにし、そのグループに切り抜き・マスクを掛ける。図形が 1 つなら、その図形に掛けても同じ。
+        // 線の太さ・形の大きさが変わらない図形 (vector-effect) はグループの中で描けないので、子ごとに掛ける (前と同じ)
+        const inner: SvgShape[] = [];
+        target = inner;
+        masks = [];
         masking.add(n);
         try {
-          walk(n, st, m, op, isRoot, [...clips, regionClip], depth);
+          walk(n, st, m, op, isRoot, [], depth);
         } finally {
+          target = savedTarget;
           masks = savedMasks;
           masking.delete(n);
         }
+        // 塗りと線のある図形 1 つも、塗りと線に別々に掛けると重なった所 (線の内側の半分) で塗りが透けるので、グループにする (透明のグループの所と同じ判定)
+        const paintsBoth = (x: SvgShape) => (x.fill !== undefined || !!x.fillPaint || !!x.fillPattern) && x.stroke !== undefined && x.strokeWidth > 0;
+        if ((inner.length > 1 || (inner.length === 1 && paintsBoth(inner[0]))) && !inner.some((x) => x.nonScalingStroke || x.nonScalingAnchor))
+          target.push({ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: 1, strokeOpacity: 1, clips: cl, masks: allMasks, group: { shapes: inner } });
+        else for (const x of inner) target.push({ ...x, clips: [...cl, ...(x.clips ?? [])], masks: [...allMasks, ...(x.masks ?? [])] });
         return;
       }
-      visit(n); // (filter・mask でこの要素を描き直す分は、ここまで来ないので 1 回と数える)
+      // (mask でこの要素を描き直す分は、ここまで来ないので、filter の元の図形を集める分 (filtering) と合わせて 1 回と数える)
+      if (!filtering.has(n)) visit(n);
       const s = inherit(st, p);
       // 透明のグループ (Compositing and Blending 1 §3.3): opacity が 1 未満の要素・mix-blend-mode の付いた子を持つ要素・isolation: isolate の要素は、
       // 子をまとめて描いてから、不透明度・描画モードで置く (子ごとに不透明度を掛けると、重なった所が濃くなる)
       const bm = (p['mix-blend-mode'] ?? 'normal').trim();
       const container = ['g', 'svg', 'a', 'use', 'text'].includes(name);
       const blend = container && (SVG_BLENDS as readonly string[]).includes(bm) ? (bm as SvgBlend) : undefined;
-      if (!grouping.has(n) && !measuring.has(n) && (s.opacity < 1 || blend || (container && p.isolation === 'isolate'))) {
+      if (!grouping.has(n) && !filtering.has(n) && !measuring.has(n) && (s.opacity < 1 || blend || (container && p.isolation === 'isolate'))) {
         const saved = target;
         const inner: SvgShape[] = [];
         target = inner;
@@ -3250,10 +3266,10 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
         target.push({ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: s.opacity, strokeOpacity: s.opacity, ...(blend ? { blend } : {}), group: { shapes: inner } });
         return;
       }
-      const o = op * (grouping.has(n) ? 1 : s.opacity);
+      const o = op * (grouping.has(n) || filtering.has(n) ? 1 : s.opacity);
       // 切り抜き: この要素の座標系 (transform 適用後) で clipPath の形を作る
       let cl = clips;
-      if (p['clip-path'] && p['clip-path'] !== 'none' && !measuring.has(n)) {
+      if (p['clip-path'] && p['clip-path'] !== 'none' && !filtering.has(n) && !measuring.has(n)) {
         const cp = p['clip-path'].trim();
         const u = /^url\(\s*['"]?#([^'")\s]+)['"]?\s*\)$/.exec(cp);
         const bbox = () => bboxOf(n, st, m, op, isRoot, depth, m);
@@ -3265,6 +3281,163 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
           if (!c.segs.length) return;
           cl = [...clips, c];
         }
+      }
+      // filter (Filter Effects 1 §5・CSS Masking 1 §2・SVG 2 §3.6): 要素の図形 (SourceGraphic) に filter を当ててから、その結果を
+      // clip-path で切り抜き、mask で隠し、opacity で薄める。だから filter の元の図形は、この要素の clip-path・mask・opacity と、祖先から
+      // 受け継いだ切り抜き・マスク・不透明度を当てずに集め (filtering の間は、上の mask・opacity・clip-path の所を飛ばす)、
+      // filter の結果に place で当てる。opacity と、mix-blend-mode・isolation のグループは、上の透明のグループの所で、filter の結果を包む
+      if (p.filter && p.filter !== 'none' && !filtering.has(n) && !measuring.has(n)) {
+        if (!opts.approximateFilters) throw new Unsupported('filter');
+        const fr = filterOf(p.filter, () => bboxOf(n, st, m, op, isRoot, depth, m), vp);
+        const { layers, region: regionOf } = fr;
+        // 要素の図形を集めてから、層を下から順に足す (影 (ずらしてぼかした写し) が先、元の図形が後)
+        const savedTarget = target;
+        const savedMasks = masks;
+        const own: SvgShape[] = [];
+        target = own;
+        masks = [];
+        filtering.add(n);
+        try {
+          walk0(n, st, m, 1, isRoot, [], depth);
+        } finally {
+          filtering.delete(n);
+          target = savedTarget;
+          masks = savedMasks;
+        }
+        /**
+         * filter の結果に、この要素と祖先の切り抜き (cl)・マスク (masks)・不透明度 (o) を当てて描く。結果が図形の重なり (影と元の図形など) で、
+         * マスクか不透明度があるときは、重なりをまとめて隠す・薄めるように、透明のグループにする (図形ごとに掛けると、下の図形が透ける)
+         */
+        const place = (shapes: SvgShape[]) => {
+          if (!shapes.length) return;
+          const clipped = (x: SvgShape): SvgShape => (cl.length ? { ...x, clips: [...cl, ...(x.clips ?? [])] } : x);
+          if ((masks.length || o < 1) && shapes.length > 1 && !shapes.some((x) => x.nonScalingStroke || x.nonScalingAnchor)) {
+            target.push(clipped({ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: o, strokeOpacity: o, ...(masks.length ? { masks } : {}), group: { shapes } }));
+            return;
+          }
+          for (const x of shapes)
+            target.push(clipped({ ...x, ...(o < 1 ? { fillOpacity: x.fillOpacity * o, strokeOpacity: x.strokeOpacity * o } : {}), ...(masks.length ? { masks: [...masks, ...(x.masks ?? [])] } : {}) }));
+        };
+        // 色の変換 (feColorMatrix・feComponentTransfer) を図形ごとに当てられない図形 (画像・模様の塗り・CMYK の色。recolorShape) があれば、
+        // 図形で近似せず、画素で計算する (Filter Effects 1 §9.6・§9.7 の変換は画素の色に当たる。画素で計算すれば、画像・模様の色も変えられる)
+        let raster = fr.raster;
+        if (!raster && fr.rasterFallback && layers.some((l) => l.kind === 'source' && l.recolor.length)) {
+          try {
+            const flat = flattenGroups(own);
+            for (const l of layers) if (l.kind === 'source' && l.recolor.length) for (const sh of flat) recolorShape(sh, l.recolor);
+          } catch (err) {
+            if (!(err instanceof Unsupported)) throw err;
+            raster = fr.rasterFallback;
+          }
+        }
+        if (raster) {
+          // 画素で計算する: 要素の図形を filter の領域 (要素の座標) の画素にして、filter の要素を順に計算し、結果の画像を領域に置く
+          const tr1 = isRoot ? ID : (elementTransform(n, () => bboxOf(n, st, m, op, isRoot, depth, m)) ?? ID);
+          const lm1 = mul(m, tr1);
+          const bb = bboxOf(n, st, m, op, isRoot, depth, m);
+          const reg = regionOf(() => bb, vp);
+          if (!reg || !(reg.w > 0 && reg.h > 0)) return;
+          const scale = Math.sqrt(Math.abs(lm1[0] * lm1[3] - lm1[1] * lm1[2])) || 1;
+          const s0 = inherit(st, p);
+          const paintOf = (v: Style['fill']): number[] | undefined => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? [...[1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16) / 255), 1] : undefined);
+          // feImage: 画像 (data: と、呼ぶ側の引く外のファイル) は部分領域に preserveAspectRatio で合わせ、#id の要素はその要素を描く
+          const imageFor = (e: XmlNode, box: Box): SvgShape[] | undefined => {
+            const href = (e.getAttribute?.('href') ?? e.getAttribute?.('xlink:href') ?? '').trim();
+            const saved = target;
+            const tmp: SvgShape[] = [];
+            target = tmp;
+            try {
+              if (href.startsWith('#')) {
+                const el = byId.get(href.slice(1));
+                if (el) walk(el, ROOT_STYLE, lm1, 1, false, [], depth + 1);
+              } else if (href) {
+                const fake = { nodeType: 1, nodeName: 'image', localName: 'image', childNodes: [], getAttribute: (k: string) => ({ href, x: String(box.x), y: String(box.y), width: String(box.w), height: String(box.h), preserveAspectRatio: e.getAttribute?.('preserveAspectRatio') ?? null })[k] ?? null } as XmlNode;
+                walk(fake, ROOT_STYLE, lm1, 1, false, [], depth + 1);
+              }
+            } finally {
+              target = saved;
+            }
+            return tmp.length ? tmp : undefined;
+          };
+          const result = opts.rasterFilter!({
+            prims: raster.prims(imageFor),
+            source: own,
+            region: reg,
+            toRoot: lm1,
+            pxPerUnit: (opts.filterResolution ?? 4) * scale,
+            ...(bb ? { bbox: bb } : {}),
+            primitiveUnits: raster.obb ? 'objectBoundingBox' : 'userSpaceOnUse',
+            viewport: { w: vp.w, h: vp.h },
+            ...(paintOf(s0.fill) ? { fillPaint: paintOf(s0.fill) } : {}),
+            ...(paintOf(s0.stroke) ? { strokePaint: paintOf(s0.stroke) } : {}),
+            budget: filterBudget,
+          });
+          if (!result) throw new Unsupported('filter');
+          place([
+            {
+              segs: [],
+              evenOdd: false,
+              strokeWidth: 0,
+              lineCap: 0,
+              lineJoin: 0,
+              fillOpacity: 1,
+              strokeOpacity: 1,
+              image: { kind: 'png', bytes: encodePngStored(result), pixels: result, matrix: mul(lm1, [reg.w, 0, 0, -reg.h, reg.x, reg.y + reg.h]) },
+            },
+          ]);
+          return;
+        }
+        // 影・色の変換は図形ごとに作るので、グループは開いて扱う。ただし切り抜き・マスクの付いたグループは開かない (blurredCopies が、
+        // グループのまま写して、マスクを 1 度だけ掛ける。開くと、子の数 × 影の写しの数だけマスクを描き直す)。
+        // 色の変換が不透明度 (アルファ) を変えるとき (feColorMatrix の 4 行目・feComponentTransfer の feFuncA が恒等でないとき) は、
+        // 残したグループの不透明度に変換を掛けられない (a' = 0.5a + 0.5 のように定数を足す変換は、グループの不透明度に掛けても同じにならない) ので、
+        // 前と同じに開く (子ごとに色と不透明度を変える)
+        const probe = [0, 0.3, 1].flatMap((c) => [0, 0.5, 1].map((a) => [c, 1 - c, c, a]));
+        const keepsAlpha = layers.every((l) => l.kind !== 'source' || l.recolor.every((fn) => probe.every((v) => Math.abs(fn([...v])[3] - v[3]) < 1e-9)));
+        const flat = keepsAlpha ? openForFilter(own) : flattenGroups(own);
+        own.length = 0;
+        own.push(...flat);
+        const tr0 = isRoot ? ID : (elementTransform(n, () => bboxOf(n, st, m, op, isRoot, depth, m)) ?? ID);
+        const lm = mul(m, tr0);
+        const scale = Math.sqrt(Math.abs(lm[0] * lm[3] - lm[1] * lm[2]));
+        const hex = (c: number[]) => `#${c.map((x) => Math.round(Math.min(1, Math.max(0, x)) * 255).toString(16).padStart(2, '0')).join('')}`;
+        // ぼかしだけ (ずらさず、色も変えない元の図形 1 つ) は、元の図形のまま描く
+        const only = layers.length === 1 && layers[0].kind === 'source' ? layers[0] : undefined;
+        if (only && !only.dx && !only.dy && !only.recolor.length && only.opacity === 1 && !only.blend && !only.cut) {
+          place(own);
+          return;
+        }
+        // 結果を集めて、filter の領域で切り抜く (領域の外は描かない。Filter Effects 1 §8)。描画モードがあれば透明のグループにする
+        const outer = target;
+        const result: SvgShape[] = [];
+        target = result;
+        for (const l of layers) {
+          if (l.kind === 'flood') continue;
+          // ずらす量は要素の座標系で (移動を除いた変換を掛ける)、ぼかしの幅は拡大率を掛ける
+          const ox = lm[0] * l.dx + lm[2] * l.dy;
+          const oy = lm[1] * l.dx + lm[3] * l.dy;
+          const before = target.length;
+          if (l.kind === 'alpha') {
+            if (l.opacity > 0) target.push(...blurredCopies(own, ox, oy, l.std * scale, hex(l.color), l.opacity));
+          } else {
+            const shapes = l.recolor.length ? own.map((sh) => recolorShape(sh, l.recolor)) : own;
+            if (!l.std && !ox && !oy && l.opacity === 1) target.push(...shapes);
+            else target.push(...blurredCopies(shapes, ox, oy, l.std * scale, undefined, l.opacity));
+          }
+          if (l.blend) for (let i = before; i < target.length; i++) target[i] = { ...target[i], blend: l.blend };
+          // 部分領域で切る (要素の座標の矩形を、ルートの座標にして切り抜きに足す)
+          if (l.cut) {
+            const cuts = l.cut.map((c): SvgClip => ({ segs: transformSegs(rectSegs(c), lm), evenOdd: false }));
+            for (let i = before; i < target.length; i++) target[i] = { ...target[i], clips: [...(target[i].clips ?? []), ...cuts] };
+          }
+        }
+        target = outer;
+        const reg = regionOf(() => bboxOf(n, st, m, op, isRoot, depth, m), vp);
+        if (!reg || !(reg.w > 0 && reg.h > 0)) return;
+        const regionClip: SvgClip = { segs: transformSegs(rectSegs(reg), lm), evenOdd: false };
+        if (layers.some((l) => l.blend)) place([{ segs: [], evenOdd: false, strokeWidth: 0, lineCap: 0, lineJoin: 0, fillOpacity: 1, strokeOpacity: 1, clips: [regionClip], group: { shapes: result } }]);
+        else place(result.map((x) => ({ ...x, clips: [...(x.clips ?? []), regionClip] })));
+        return;
       }
       if (name === 'svg' && !isRoot) {
         // 入れ子の svg: 枠 (x・y・width・height。既定は 0・0・100%・100%) に viewBox を合わせた座標系で、中身を描く

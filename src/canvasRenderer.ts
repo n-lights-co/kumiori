@@ -5,13 +5,21 @@
 import type { FontManager } from './fontManager';
 import { uprightPositions } from './areaResources';
 import { toCss } from './color';
-import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
+import { FAKE_BOLD, ITALIC_SLANT, paintPlaceholder, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
 import type { AssetStore, ImageAsset } from './assets';
 import { readGradientSvg, type GradientPaint } from './cssGradient';
 import { colorFontOf } from './colorGlyph';
 import { drawColorGlyphArea } from './colorGlyphCanvas';
 import type { Area, GlyphArea, ImageArea, Rect, SheetArea } from './types';
 import { msg } from './messages';
+import { diag, type Diagnostic } from './diagnostics';
+import { parseSvg, type SvgDoc, type XmlNode } from './svg';
+import { paintShapesToPixelsWithin, rasterFilter, shapesCostPerPixel } from './svgFilterRaster';
+import { outlineText, registerSvgFonts, svgLanguageTag } from './pdfRenderer';
+import { fromBase64 } from './base64';
+import { resolveRef } from './resources';
+import { decodeBmp, decodeGif, encodePngStored } from './pixels';
+import { decodeWebp } from './webp';
 
 export interface CanvasRenderOptions {
   /** 1pt あたりの CSS px (既定 1.3333 = 96dpi) */
@@ -26,6 +34,421 @@ export interface CanvasRenderOptions {
    * 書体をブラウザに登録していないとき (公開 API の renderPage) に使う
    */
   glyphOutlines?: boolean;
+  /**
+   * SVG の画像を図形にして描くときの XML のパーサ。ブラウザの画像 (<img>) で SVG を読めない所 (Web Worker の中) の SVG の画像は、
+   * ブラウザの画像 (ImageAsset.element) を持たないので、これで図形にして、画素にして描く (drawSvgShapes)
+   */
+  parseXml?: (xml: string) => XmlNode;
+  /** 描けない SVG の画像などの警告を足す先 */
+  warn?: (d: Diagnostic) => void;
+  /** SVG の画像 1 つを画素にする手間の上限 (既定 SVG_RASTER_BUDGET。1 回の描画の合計は、この 4 倍)。試しで小さくするためのもの */
+  svgRasterBudget?: number;
+}
+
+/** 描く先の Canvas (画面の canvas 要素か、Web Worker の中でも使える OffscreenCanvas) */
+export type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
+
+/**
+ * SVG の画像を図形にしたもの。書体 (字の輪郭) ごと・SVG の中身ごと・置いた所の言語ごと (読めなければ null)。
+ * 書体が足されたら (SVG の @font-face を後から読み込んだときなど。fonts の数で見分ける)、作り直す (古い書体の輪郭のまま描かない)
+ */
+const svgShapeCache = new WeakMap<FontManager, { fontCount: number; byBytes: WeakMap<Uint8Array, Map<string, SvgDoc | null>> }>();
+/**
+ * SVG の画像を画素にしたもの。図形 (SvgDoc) ごとに、画素の大きさ・置き方ごとに覚える (同じ SVG を 2 つの大きさで置いても、
+ * 描き直すたびに画素にし直さない)。画素は SvgDoc の弱い表に持つので、組んだ結果を捨てて SvgDoc が消えれば、一緒に消える
+ * (長く使う Web Worker で組み直しても、前の文書の画素を持ち続けない)。
+ * 覚える画素の合計は SVG_RASTER_CACHE_PIXELS まで: 合計の数と、使った順の表 (svgRasterOrder) だけを外に持ち、超えたら、
+ * 最も前に使ったものから捨てる。表は SvgDoc を弱く指す (WeakRef。ECMAScript 2021 §26.1) ので、表が画素を生かしておくことはない
+ */
+type SvgRaster = { pixels: number; image: CanvasImageSource };
+const svgRasters = new WeakMap<SvgDoc, Map<string, SvgRaster>>();
+/** 使った順の表 (初めが最も前に使ったもの)。鍵は図形の番号と画素の鍵 */
+const svgRasterOrder = new Map<string, { doc: WeakRef<SvgDoc>; key: string; pixels: number }>();
+/** 使った順の表にある画素の数の合計 (消えた SvgDoc の分は、消えたと分かったときに引く) */
+let svgRasterPixels = 0;
+/** 図形の番号 → 使った順の表の鍵 (SvgDoc が消えたときに、表から除く) */
+const svgRasterKeysOfDoc = new Map<number, Set<string>>();
+/**
+ * SvgDoc が消えたら、その画素の数を合計から引く (FinalizationRegistry。ECMAScript 2021 §26.2)。
+ * 無い環境では、消えた SvgDoc の分は、表の初めから捨てるときに引く (それまでは合計に数えたまま: 覚える量が控えめになるだけ)
+ */
+const svgRasterGone =
+  typeof FinalizationRegistry === 'function'
+    ? new FinalizationRegistry<number>((id) => {
+        for (const k of svgRasterKeysOfDoc.get(id) ?? []) {
+          const e = svgRasterOrder.get(k);
+          if (!e) continue;
+          svgRasterOrder.delete(k);
+          svgRasterPixels -= e.pixels;
+        }
+        svgRasterKeysOfDoc.delete(id);
+      })
+    : undefined;
+/**
+ * WeakRef の無い環境 (古いブラウザ) では、使った順の表を持てない (強く指すと、画素が消えない) ので、SvgDoc ごとに、
+ * 最後に使った SVG_RASTER_FALLBACK_PER_DOC 枚だけを覚える (合計の上限は無いが、どれも SvgDoc と一緒に消える)
+ */
+const SVG_RASTER_FALLBACK_PER_DOC = 2;
+/** 画素にした図形の番号 (使った順の表の鍵) */
+const svgDocIds = new WeakMap<SvgDoc, number>();
+let svgDocNext = 0;
+/** SVG の画像を画素にするときの画素の数の上限 (大きく置いた画像は、解像度を下げて描く) */
+const SVG_RASTER_MAX_PIXELS = 16_000_000;
+/**
+ * 覚えておく、画素にした SVG の画素の数の合計の上限。RGBA 8 ビットで 128MB (1 画素 4 バイト × 3,200 万)。1 枚の上限 (SVG_RASTER_MAX_PIXELS) の
+ * 2 枚分: いちばん大きく置いた画像を覚えたまま、もう 1 つの画像も覚えられる (A4 のページ全体の SVG を 300dpi 相当 (約 870 万画素) で描いても、3 枚は持てる)
+ */
+const SVG_RASTER_CACHE_PIXELS = 32_000_000;
+/**
+ * SVG の画像 1 つを画素にする手間の上限 (svgFilterRaster.ts の charge の単位。1 単位はおよそ 0.5ns (2026 年の x86 の Node 22) で、
+ * 80 億単位は数秒)。図形を画素にする処理 (paintShapes) は、図形ごとに画像の全体を回すので、手間は「図形の数 × 画素の数」になる
+ * (ページ全体の矩形 1,000 個の 1KB 足らずの SVG を 1,600 万画素で描くと、数分かかっていた)。
+ * 見積もり (shapesCostPerPixel × 画素の数) がこれを超える画像は、超えない画素の数まで解像度を下げて描く。
+ * 1 回の描画 (renderSheetToCanvas) の手間の合計は、この 4 倍まで。超えた後の画像と、見積もりを外れて 1 つの上限の 2 倍を超えた画像は、
+ * 仮の枠で描いて警告に出す
+ */
+const SVG_RASTER_BUDGET = 8_000_000_000;
+
+/** 図形 doc を key (画素の大きさ・置き方) で画素にしたもの (覚えていなければ undefined)。見つけたら、最近に使ったものにする */
+function rasterOf(doc: SvgDoc, key: string): SvgRaster | undefined {
+  const own = svgRasters.get(doc);
+  const hit = own?.get(key);
+  if (!own || !hit) return undefined;
+  // 最近に使ったものを、表の終わりへ (捨てるのは、表の初めから)
+  own.delete(key);
+  own.set(key, hit);
+  const id = svgDocIds.get(doc);
+  const k = `${id}\u0000${key}`;
+  const e = svgRasterOrder.get(k);
+  if (e) {
+    svgRasterOrder.delete(k);
+    svgRasterOrder.set(k, e);
+  }
+  return hit;
+}
+
+/** 図形 doc を key で画素にしたもの r を覚える。合計が上限を超えたら、最も前に使ったものから捨てる (いま覚えたものは捨てない) */
+function keepRaster(doc: SvgDoc, key: string, r: SvgRaster) {
+  let own = svgRasters.get(doc);
+  if (!own) svgRasters.set(doc, (own = new Map()));
+  own.set(key, r);
+  if (typeof WeakRef !== 'function') {
+    for (const k of own.keys()) {
+      if (own.size <= SVG_RASTER_FALLBACK_PER_DOC) break;
+      own.delete(k);
+    }
+    return;
+  }
+  let id = svgDocIds.get(doc);
+  if (id === undefined) {
+    svgDocIds.set(doc, (id = svgDocNext++));
+    svgRasterGone?.register(doc, id);
+  }
+  const k = `${id}\u0000${key}`;
+  let keys = svgRasterKeysOfDoc.get(id);
+  if (!keys) svgRasterKeysOfDoc.set(id, (keys = new Set()));
+  keys.add(k);
+  const prev = svgRasterOrder.get(k);
+  if (prev) svgRasterPixels -= prev.pixels;
+  svgRasterOrder.delete(k);
+  svgRasterOrder.set(k, { doc: new WeakRef(doc), key, pixels: r.pixels });
+  svgRasterPixels += r.pixels;
+  for (const [k2, e] of svgRasterOrder) {
+    if (svgRasterPixels <= SVG_RASTER_CACHE_PIXELS || k2 === k) break;
+    svgRasterOrder.delete(k2);
+    svgRasterPixels -= e.pixels;
+    // 消えた SvgDoc の分 (FinalizationRegistry がまだ知らせていないもの・FinalizationRegistry の無い環境) は、数を引くだけ
+    const d = e.doc.deref();
+    if (d) svgRasters.get(d)?.delete(e.key);
+    const id2 = k2.slice(0, k2.indexOf('\u0000'));
+    const ks = svgRasterKeysOfDoc.get(+id2);
+    ks?.delete(k2);
+    if (ks && !ks.size) svgRasterKeysOfDoc.delete(+id2);
+  }
+}
+
+/** 画像の画素 (RGBA 8 ビット。乗算していない値) */
+type Pixels = { w: number; h: number; rgba: Uint8Array };
+/**
+ * SVG の中の画像のうち、組版の画素の読み取り (decodeShapeImage) で読めないもの (CMYK の JPEG・インターレースの PNG など) を、
+ * Web Worker の中で前もって createImageBitmap で読んだ画素 (prepareSvgImagesForCanvas)。画像の置き場ごと (組んだ結果と一緒に消える)・
+ * 中身ごと (鍵は中身の長さと散らし値)。pixels は、読んだ画素の数の合計
+ */
+const preparedPixels = new WeakMap<AssetStore, { pixels: number; byKey: Map<string, Array<{ bytes: Uint8Array; px: Pixels }>> }>();
+/**
+ * 前もって読む画像 1 枚の画素の数の上限 (これより大きい画像は、縦横を同じ割合で縮めて読む)。SVG の中の画像は、SVG を画素にするときの
+ * 上限 (SVG_RASTER_MAX_PIXELS の 1,600 万画素) より細かくは描かれず、どの大きさで描かれるかは、組んだ時点では分からないので、
+ * その 1/4 の 400 万画素 (A4 のページ全体に置いても 200dpi 相当。画面の確かめには足りる) で読む
+ */
+const SVG_IMAGE_PREPARE_MAX_PIXELS = 4_000_000;
+/**
+ * 1 つの組んだ結果で、前もって読む画像の画素の数の合計の上限。画素にした SVG の覚え (SVG_RASTER_CACHE_PIXELS) と同じ、
+ * RGBA 8 ビットで 128MB。読んだ画素は、結果のある間 (描かれないページの分も、toPdf だけを使うときも) 持つので、上限を置く。
+ * 超える分は読まない (その画像は描かない。ほかの図形は描く: 読めない画像と同じ)
+ */
+const SVG_IMAGE_PREPARE_TOTAL_PIXELS = 32_000_000;
+/** SVG の外の画像のファイル (登録した画像) の中身 → その画像のブラウザの画像 (Worker の中では createImageBitmap で読んだもの) */
+const elementOfBytes = new WeakMap<Uint8Array, CanvasImageSource>();
+/** ブラウザの画像から読んだ画素 (読めなければ null) */
+const elementPixels = new WeakMap<Uint8Array, Pixels | null>();
+
+/** 中身の鍵 (長さと FNV-1a の散らし値) */
+function bytesKey(b: Uint8Array): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193);
+  return `${b.length}:${(h >>> 0).toString(36)}`;
+}
+
+/**
+ * 文字列 s の start からの base64 の字の並び (data: の URL の中身。base64 の字と空白が続く所まで) の、頭のバイトだけを戻すもの
+ * (画像の頭を見るのに、全部を戻さない)。要るだけ、初めから順に戻す。空白 (HTML の ASCII の空白) は除く。誤りは fromBase64 と同じく投げる
+ */
+class Base64Head {
+  private got = new Uint8Array(0);
+  private pos: number;
+  private end = Infinity;
+  private rest = '';
+  constructor(
+    private readonly s: string,
+    start: number,
+  ) {
+    this.pos = start;
+  }
+  /** 頭の n バイト (全体が n バイトより短ければ、全体) */
+  bytes(n: number): Uint8Array {
+    while (this.got.length < n && this.pos < Math.min(this.end, this.s.length)) {
+      // 4 字が 3 バイト。少しずつ戻し直さないように、少なくとも 4,096 字、または戻した分と同じだけ戻す
+      const want = Math.max(4096, this.got.length, Math.ceil(((n - this.got.length) * 4) / 3) + 8);
+      let chunk = this.s.slice(this.pos, Math.min(this.end, this.pos + want));
+      const stop = chunk.search(/[^A-Za-z0-9+/=\s]/);
+      if (stop >= 0) {
+        chunk = chunk.slice(0, stop);
+        this.end = this.pos + stop;
+      }
+      this.pos += chunk.length;
+      const t = this.rest + chunk.replace(/[\t\n\f\r ]+/g, '');
+      const last = this.pos >= Math.min(this.end, this.s.length);
+      const take = last ? t.length : t.length - (t.length % 4);
+      this.rest = t.slice(take);
+      const b = fromBase64(t.slice(0, take));
+      const g = new Uint8Array(this.got.length + b.length);
+      g.set(this.got);
+      g.set(b, this.got.length);
+      this.got = g;
+    }
+    return this.got;
+  }
+}
+
+/**
+ * 画像の頭から、組版の画素の読み取り (decodeShapeImage) が読まない画像か (前もって読むものを選ぶ。読める画像を 2 度読まない) と、
+ * 画素の大きさを見る。PNG はインターレース (PNG §8.2 の Adam7。IHDR (§11.2.2) の interlace method が 0 でない)、JPEG は CMYK・YCCK
+ * (成分が 4 つ。T.81 §B.2.2 の Nf) と、ハフマンの基本・拡張・プログレッシブ (SOF0・SOF1・SOF2) のほかの符号化 (算術符号・ロスレスなど)。
+ * JPEG の SOF は、APP の区切り (EXIF・ICC など) の後にあるので、区切りの長さで飛ばしながら、要る所までを戻す (§B.1.1.4。区切りの中身は戻すが、
+ * 符号化された画像の本体 (SOS の後) は戻さない)。見分けられなければ undefined
+ */
+function imageHead(r: Base64Head, kind: 'png' | 'jpeg'): { undecodable: boolean; w: number; h: number } | undefined {
+  if (kind === 'png') {
+    const b = r.bytes(29);
+    if (b.length <= 28 || b[12] !== 0x49 || b[13] !== 0x48 || b[14] !== 0x44 || b[15] !== 0x52) return undefined;
+    const u32 = (o: number) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
+    return { undecodable: b[28] !== 0, w: u32(16), h: u32(20) };
+  }
+  let b = r.bytes(2);
+  if (b[0] !== 0xff || b[1] !== 0xd8) return undefined;
+  for (let p = 2; ; ) {
+    b = r.bytes(p + 10);
+    if (p + 9 >= b.length || b[p] !== 0xff) return undefined;
+    const m = b[p + 1];
+    if (m === 0xff) {
+      p++;
+      continue;
+    }
+    if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) {
+      p += 2;
+      continue;
+    }
+    // SOF (§B.2.2): 長さ・精度の後に、行の数 Y・列の数 X・成分の数 Nf
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc)
+      return { undecodable: m > 0xc2 || b[p + 9] === 4, h: (b[p + 5] << 8) | b[p + 6], w: (b[p + 7] << 8) | b[p + 8] };
+    if (m === 0xda || m === 0xd9) return undefined;
+    p += 2 + ((b[p + 2] << 8) | b[p + 3]);
+  }
+}
+
+/**
+ * ブラウザの画像 (ImageBitmap など) の画素。描けなければ undefined。
+ * maxPixels を渡せば、それより大きい画像は、縦横を同じ割合で縮めて読む (渡さなければ、SVG_RASTER_MAX_PIXELS より大きい画像は読まない)
+ */
+function pixelsOfElement(el: CanvasImageSource, maxPixels?: number): Pixels | undefined {
+  const size = el as { width?: number | SVGAnimatedLength; height?: number | SVGAnimatedLength };
+  let w = typeof size.width === 'number' ? size.width : 0;
+  let h = typeof size.height === 'number' ? size.height : 0;
+  if (!(w > 0 && h > 0)) return undefined;
+  const scaled = maxPixels !== undefined && w * h > maxPixels;
+  if (scaled) {
+    const k = Math.sqrt(maxPixels / (w * h));
+    w = Math.max(1, Math.floor(w * k));
+    h = Math.max(1, Math.floor(h * k));
+  } else if (w * h > SVG_RASTER_MAX_PIXELS) return undefined;
+  const c = scratchCanvas(w, h);
+  const ctx = c?.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D | null | undefined;
+  if (!ctx) return undefined;
+  try {
+    if (scaled) {
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(el, 0, 0, w, h);
+    } else ctx.drawImage(el, 0, 0);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    return { w, h, rgba: new Uint8Array(d.buffer, d.byteOffset, d.length) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Web Worker の中で Canvas に描く (renderPage) SVG の画像 (ブラウザの画像を持たないもの。drawSvgShapes で図形を画素にして描くもの) の、
+ * 描く前に待つ用意 (Canvas の描画は同期なので、組んだ後に、ここで待っておく)。
+ * - SVG の style の @font-face (data: の書体) を読み込む (PDF の toVectors と同じ registerSvgFonts。組んだ後に読むので、本文の書体は変わらない)
+ * - SVG の中の data: の画像のうち、組版の画素の読み取りで読めないもの (CMYK の JPEG・インターレースの PNG) を、createImageBitmap で画素にしておく。
+ *   どの画像も、base64 の頭だけを戻して見分ける (読める画像は、全部を戻さない)。同じ中身の画像は 1 度だけ読む。
+ *   1 枚は SVG_IMAGE_PREPARE_MAX_PIXELS まで縮めて読み、合わせて SVG_IMAGE_PREPARE_TOTAL_PIXELS を超える分は読まない (描かない)
+ * ブラウザの画面 (Image がある) と Node (OffscreenCanvas が無い) では、何もしない
+ */
+export async function prepareSvgImagesForCanvas(assets: AssetStore, fonts: FontManager): Promise<void> {
+  if (typeof Image !== 'undefined' || typeof OffscreenCanvas === 'undefined') return;
+  let store = preparedPixels.get(assets);
+  /** この呼び出しで見た、読めない画像の base64 (同じ data: の URL が何度も出ても、1 度だけ戻して読む) */
+  const seen = new Set<string>();
+  for (const a of [...assets.values()]) {
+    if (a.mime !== 'image/svg+xml' || !a.bytes || a.element || a.drawable === false) continue;
+    const text = new TextDecoder().decode(a.bytes);
+    // @ の無い SVG は、大文字・小文字を区別しない探し方で読み通さない (base64 の中身に @ は無い)
+    if (text.includes('@') && /@font-face/i.test(text)) await registerSvgFonts(fonts, text);
+    if (typeof createImageBitmap === 'undefined' || (store && store.pixels >= SVG_IMAGE_PREPARE_TOTAL_PIXELS)) continue;
+    // data: の URL の初めだけを探し、中身 (base64) は、頭だけを見る (読める画像の中身を、全部は読み通さない)
+    const re = /data:image\/(png|jpe?g);base64,/gi;
+    for (let m: RegExpExecArray | null; (m = re.exec(text)); ) {
+      const kind = m[1].toLowerCase() === 'png' ? ('png' as const) : ('jpeg' as const);
+      const start = re.lastIndex;
+      let head: ReturnType<typeof imageHead>;
+      try {
+        head = imageHead(new Base64Head(text, start), kind);
+      } catch {
+        continue;
+      }
+      if (!head?.undecodable) continue;
+      const body = /[A-Za-z0-9+/=\s]*/y;
+      body.lastIndex = start;
+      const b64 = body.exec(text)?.[0] ?? '';
+      re.lastIndex = start + b64.length;
+      if (seen.has(b64)) continue;
+      seen.add(b64);
+      if (!store) preparedPixels.set(assets, (store = { pixels: 0, byKey: new Map() }));
+      // 読む前に、頭の大きさで合計の上限を見る (大きさの分からない画像は、1 枚の上限として数える)
+      const est = head.w > 0 && head.h > 0 ? Math.min(head.w * head.h, SVG_IMAGE_PREPARE_MAX_PIXELS) : SVG_IMAGE_PREPARE_MAX_PIXELS;
+      if (store.pixels + est > SVG_IMAGE_PREPARE_TOTAL_PIXELS) continue;
+      let bytes: Uint8Array;
+      try {
+        bytes = fromBase64(b64);
+      } catch {
+        continue;
+      }
+      const key = bytesKey(bytes);
+      if (store.byKey.get(key)?.some((e) => sameBytes(e.bytes, bytes))) continue;
+      let px: Pixels | undefined;
+      try {
+        // 縮めるのは、読んだ後 (pixelsOfElement)。ただし、頭の縦横が 1 枚の上限を超える画像は、元の大きさで戻さず、読むときに縮める
+        // (HTML §8.10 の createImageBitmap の resizeWidth・resizeHeight)。
+        // 読んだ画像の幅は、EXIF の向き (createImageBitmap の imageOrientation の既定の from-image) が縦横を入れ替える (5〜8) なら頭の高さなので、
+        // 向きを読んで、読んだ後の幅を上限の画素の数に合わせて縮めた長さにする。
+        // 高さも渡す: 幅だけを渡すと、高さは読んだ画像の縦横の比で決まる (§8.10.1 の手順) ので、向きの読みがブラウザと食い違うと
+        // (読み違えの例: 標識の前の埋め草 0xFF。ITU-T T.81 B.1.1.2)、読んだ画像が上限を縦横の比の 2 乗倍に超える。
+        // 高さは、幅だけを渡したときと同じ式 (§8.10.1: 元の高さ × 縮めた幅 ÷ 元の幅 の切り上げ) で決めるので、向きを正しく読めたときは、
+        // 幅だけを渡したときと同じ縦横の比 (ブラウザの計算の丸めで、高さが 1 画素違うことはある。Chromium は単精度で計算する) になり、
+        // 読み違えても、画像が歪むだけで、上限 (の 1 行ぶん) を超えない
+        const over = head.w > 0 && head.h > 0 && head.w * head.h > SVG_IMAGE_PREPARE_MAX_PIXELS;
+        const swapped = exifSwapsAxes(bytes, kind);
+        const [srcW, srcH] = swapped ? [head.h, head.w] : [head.w, head.h];
+        const resizeWidth = Math.max(1, Math.floor(srcW * Math.sqrt(SVG_IMAGE_PREPARE_MAX_PIXELS / (head.w * head.h))));
+        const resize: ImageBitmapOptions | undefined = over
+          ? { resizeWidth, resizeHeight: Math.max(1, Math.ceil((srcH * resizeWidth) / srcW)), resizeQuality: 'high' }
+          : undefined;
+        const blob = new Blob([bytes as BlobPart], { type: kind === 'png' ? 'image/png' : 'image/jpeg' });
+        const bmp = await (resize ? createImageBitmap(blob, resize) : createImageBitmap(blob));
+        px = pixelsOfElement(bmp, SVG_IMAGE_PREPARE_MAX_PIXELS);
+        bmp.close();
+      } catch {
+        // ブラウザも読めない画像 (壊れた画像) は、描かない (PDF も描かない: pdfRenderer.ts の embedSvgImages)
+      }
+      if (!px) continue;
+      store.pixels += px.w * px.h;
+      store.byKey.set(key, [...(store.byKey.get(key) ?? []), { bytes, px }]);
+    }
+  }
+}
+
+/**
+ * 画像の EXIF の向き (TIFF 6.0 Section 8 の Orientation。札 274 = 0x0112) が、縦横を入れ替える値 (5〜8) か。JPEG は APP1 の「Exif\0\0」の後の
+ * TIFF の構造 (CIPA DC-008 (Exif) の APP1)、PNG は eXIf の塊 (PNG 第 3 版) の TIFF の構造の、最初の IFD を読む。読めなければ false
+ */
+export function exifSwapsAxes(b: Uint8Array, kind: 'png' | 'jpeg'): boolean {
+  const tiff = (o: number, end: number): boolean => {
+    if (o + 8 > end) return false;
+    const le = b[o] === 0x49 && b[o + 1] === 0x49;
+    if (!le && !(b[o] === 0x4d && b[o + 1] === 0x4d)) return false;
+    const u16 = (i: number) => (i + 2 <= end ? (le ? b[i] | (b[i + 1] << 8) : (b[i] << 8) | b[i + 1]) : -1);
+    const u32 = (i: number) => (i + 4 <= end ? (le ? (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16)) + b[i + 3] * 0x1000000 : b[i] * 0x1000000 + ((b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3])) : -1);
+    const ifd = o + u32(o + 4);
+    const n = u16(ifd);
+    for (let k = 0; k < n && k < 1000; k++) {
+      const e = ifd + 2 + k * 12;
+      if (e + 12 > end) return false;
+      if (u16(e) === 0x0112) {
+        const v = u16(e + 8);
+        return v >= 5 && v <= 8;
+      }
+    }
+    return false;
+  };
+  if (kind === 'jpeg') {
+    let p = 2;
+    while (p + 4 <= b.length && b[p] === 0xff) {
+      // 標識の前の埋め草 (0xFF の続き。ITU-T T.81 B.1.1.2) は読み飛ばす
+      if (b[p + 1] === 0xff) {
+        p++;
+        continue;
+      }
+      const m = b[p + 1];
+      if (m === 0xda || m === 0xd9) break;
+      const len = (b[p + 2] << 8) | b[p + 3];
+      if (m === 0xe1 && len >= 8 && b[p + 4] === 0x45 && b[p + 5] === 0x78 && b[p + 6] === 0x69 && b[p + 7] === 0x66 && b[p + 8] === 0 && b[p + 9] === 0) return tiff(p + 10, Math.min(b.length, p + 2 + len));
+      p += 2 + len;
+    }
+    return false;
+  }
+  let p = 8;
+  while (p + 8 <= b.length) {
+    const len = ((b[p] << 24) >>> 0) + ((b[p + 1] << 16) | (b[p + 2] << 8) | b[p + 3]);
+    const type = String.fromCharCode(b[p + 4], b[p + 5], b[p + 6], b[p + 7]);
+    if (type === 'eXIf') return tiff(p + 8, Math.min(b.length, p + 8 + len));
+    if (type === 'IDAT' || type === 'IEND') break;
+    p += 12 + len;
+  }
+  return false;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** w × h の画像を描ける Canvas (OffscreenCanvas が無ければ canvas 要素)。作れなければ undefined */
+function scratchCanvas(w: number, h: number): OffscreenCanvas | HTMLCanvasElement | undefined {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
+  if (typeof document === 'undefined') return undefined;
+  return Object.assign(document.createElement('canvas'), { width: w, height: h });
 }
 
 /** SVG の根の preserveAspectRatio (無ければ既定の xMidYMid meet)。根の開始タグだけを見る */
@@ -63,14 +486,24 @@ type Outline = { paths: Path2D[]; offsets: { x: number; y: number }[] };
 
 class CanvasPainter implements Painter {
   private outlineCache = new Map<string, Outline>();
+  /** この描画で、SVG の画像を画素にするのに使った手間 (svgBudget の 4 倍まで) */
+  private svgWork = 0;
+  /** SVG の画像 1 つを画素にする手間の上限 (CanvasRenderOptions.svgRasterBudget) */
+  svgBudget = SVG_RASTER_BUDGET;
   constructor(
     private ctx: CanvasRenderingContext2D,
     private fonts: FontManager,
     private assets?: AssetStore,
     private outlines = false,
+    private parseXml?: (xml: string) => XmlNode,
+    private warn?: (d: Diagnostic) => void,
   ) {
-    this.colorFonts = fonts.all().some((f) => colorFontOf(f));
+    const all = fonts.all();
+    this.colorFonts = all.some((f) => colorFontOf(f));
+    this.fontCount = all.length;
   }
+  /** 読み込んだ書体の数 (SVG の図形の覚え (svgShapeCache) を、書体が足されたら作り直す) */
+  private fontCount: number;
   /** 色つきの表 (COLR・CBDT・sbix・SVG) を持つ書体を読み込んでいるか (無ければ、色つきの字形の処理を通らない) */
   private colorFonts: boolean;
   /** 書体 f で text を組んだ字形の輪郭 (OpenType の機能 features を当てる) */
@@ -153,6 +586,7 @@ class CanvasPainter implements Painter {
     if (!el) {
       const g = asset && gradientOf(asset);
       if (g) this.drawGradient(g, x, y, a.width, a.height);
+      else if (asset) this.drawSvgShapes(asset, a, x, y);
       return;
     }
     // SVG: ブラウザは <img> を枠の大きさに引き伸ばすので、preserveAspectRatio (SVG 1.1 §7.8。既定 xMidYMid meet) を自分で当てる
@@ -180,9 +614,166 @@ class CanvasPainter implements Painter {
     this.ctx.drawImage(el, x, y, a.width, a.height);
   }
   /**
+   * ブラウザの画像 (element) の無い SVG の画像 (Web Worker の中で読んだもの) を、図形にして、画素にして描く。
+   * 図形は PDF に描くもの (pdfRenderer.ts の toVectors) と同じ選択肢で作る: 字は書体の輪郭、中の画像は登録した画像、
+   * 外のファイルの use は登録した SVG、近似できない filter は画素で計算する。foreignObject の中は、HTML の文字だけを近似して描く
+   * (PDF は本文と同じ組版で組む)。置き方は preserveAspectRatio どおり (PDF の drawVector と同じ)。
+   * 画素の大きさは、画像の領域を今の変換で画面の画素にした大きさ (倍率を変えて描き直せば、その解像度で描き直す)。
+   * 画像の領域で切り抜く (根の overflow が visible の SVG (SvgDoc.noClip) も、領域の外は描かない)
+   */
+  private drawSvgShapes(asset: ImageAsset, a: ImageArea, x: number, y: number) {
+    if (asset.mime !== 'image/svg+xml' || !asset.bytes || asset.drawable === false) return;
+    const doc = this.svgShapesOf(asset, a.language);
+    if (!doc) return;
+    const ctx = this.ctx;
+    const t = ctx.getTransform();
+    // 組版の丸め・浮動小数の誤差 (HTML の 200pt の画像の幅が 200.000025pt になるなど) で 1 画素大きくして、縮めて描いてぼかさないように、
+    // 1/100 画素までの端数は切り捨てる (それより大きい端数は切り上げる)
+    let w = Math.ceil(a.width * Math.hypot(t.a, t.b) - 0.01);
+    let h = Math.ceil(a.height * Math.hypot(t.c, t.d) - 0.01);
+    if (w < 1 || h < 1) return;
+    if (w * h > SVG_RASTER_MAX_PIXELS) {
+      const k = Math.sqrt(SVG_RASTER_MAX_PIXELS / (w * h));
+      w = Math.max(1, Math.floor(w * k));
+      h = Math.max(1, Math.floor(h * k));
+    }
+    // 画素にする手間の見積もりが上限を超えるなら、超えない画素の数まで解像度を下げる (図形の多い SVG を大きく置いたとき)
+    const budget = this.svgBudget;
+    const perPixel = shapesCostPerPixel(doc.shapes);
+    if (perPixel * w * h > budget) {
+      const k = Math.sqrt(budget / (perPixel * w * h));
+      w = Math.max(1, Math.floor(w * k));
+      h = Math.max(1, Math.floor(h * k));
+    }
+    // 置く位置 (preserveAspectRatio。PDF の drawVector と同じ): 画像の領域の中の、viewBox の原点の位置と拡大率。
+    // SVG 2 §8.2 (SVG の viewport の equivalent transform を求める手順。viewBox は §8.6): none は縦横を別々に合わせ、meet は小さい方・
+    // slice は大きい方の倍率にそろえ、xMin・xMid・xMax (YMin・YMid・YMax) で、余り (はみ出し) の 0・半分・すべてを左 (上) に置く
+    // (preserveAspectRatio は §8.7)
+    const [vx, vy, vw, vh] = doc.viewBox;
+    let sx = a.width / vw;
+    let sy = a.height / vh;
+    let ox = 0;
+    let oy = 0;
+    const align = a.stretch ? 'none' : (doc.aspect?.align ?? 'xMidYMid');
+    if (align !== 'none' && Math.abs(sx - sy) > 1e-9) {
+      const s = doc.aspect?.slice ? Math.max(sx, sy) : Math.min(sx, sy);
+      ox = (a.width - vw * s) * (/xMid/.test(align) ? 0.5 : /xMax/.test(align) ? 1 : 0);
+      oy = (a.height - vh * s) * (/YMid/.test(align) ? 0.5 : /YMax/.test(align) ? 1 : 0);
+      sx = sy = s;
+    }
+    const key = `${w}x${h}:${a.width},${a.height},${align},${ox},${oy},${sx},${sy}`;
+    let hit = rasterOf(doc, key);
+    if (!hit) {
+      const kx = w / a.width;
+      const ky = h / a.height;
+      // SVG の座標 → 画素の座標。読めない画像は、前もって読んだ画素か、登録した画像のブラウザの画像の画素で描き、
+      // それも無ければ、その画像だけを描かない (ほかの図形は描く。PDF も、埋め込めない SVG の中の画像だけを描かない: pdfRenderer.ts の embedSvgImages)
+      // 手間の上限: 1 つの画像は見積もりの 2 倍 (見積もりは多めだが、模様・マスクの入れ子で外れることがある) まで、かつ、この描画の残りまで
+      const limit = Math.min(2 * budget, 4 * budget - this.svgWork);
+      const r =
+        limit > 0
+          ? paintShapesToPixelsWithin(doc.shapes, [sx * kx, 0, 0, sy * ky, (ox - sx * vx) * kx, (oy - sy * vy) * ky], w, h, limit, { missingImage: (img) => this.missingImage(img.bytes) })
+          : undefined;
+      if (!r) {
+        // 上限を超えた: 使った手間を数え、仮の枠で描いて知らせる (覚えない: 次の描画で、残りがあれば描き直す)
+        this.svgWork += Math.max(0, limit);
+        paintPlaceholder(a, x, y, this);
+        this.warn?.(
+          diag(
+            'canvas/svg-not-drawn',
+            msg(`SVG の画像 ${a.src.startsWith('data:') ? a.src.slice(0, 40) + '…' : a.src} は、画素にする手間が上限を超えるので、仮の枠で描きます`, `SVG image ${a.src.startsWith('data:') ? a.src.slice(0, 40) + '…' : a.src} would take too much work to rasterize, so a placeholder frame is drawn`),
+            { src: a.src.startsWith('data:') ? a.src.slice(0, 40) + '…' : a.src },
+          ),
+        );
+        return;
+      }
+      this.svgWork += r.used;
+      const px = r.pixels;
+      const canvas = scratchCanvas(w, h);
+      const c2 = canvas?.getContext('2d') as CanvasRenderingContext2D | null | undefined;
+      if (!canvas || !c2) return;
+      // 乗算済みの浮動小数 (0〜1) → 乗算しない 8 ビット (ImageData)
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let i = 0; i < data.length; i += 4) {
+        const al = px[i + 3];
+        if (al <= 0) continue;
+        data[i] = (px[i] / al) * 255 + 0.5;
+        data[i + 1] = (px[i + 1] / al) * 255 + 0.5;
+        data[i + 2] = (px[i + 2] / al) * 255 + 0.5;
+        data[i + 3] = al * 255 + 0.5;
+      }
+      c2.putImageData(new ImageData(data, w, h), 0, 0);
+      hit = { pixels: w * h, image: canvas };
+      keepRaster(doc, key, hit);
+    }
+    ctx.drawImage(hit.image, x, y, a.width, a.height);
+  }
+
+  /** SVG の中の、組版の画素の読み取りで読めない画像の画素 (前もって読んだもの・登録した画像のブラウザの画像から読んだもの)。無ければ undefined */
+  private missingImage(bytes: Uint8Array): Pixels | undefined {
+    const el = elementOfBytes.get(bytes);
+    if (el) {
+      let px = elementPixels.get(bytes);
+      if (px === undefined) elementPixels.set(bytes, (px = pixelsOfElement(el) ?? null));
+      if (px) return px;
+    }
+    const byKey = this.assets && preparedPixels.get(this.assets)?.byKey;
+    return byKey?.get(bytesKey(bytes))?.find((e) => sameBytes(e.bytes, bytes))?.px;
+  }
+
+  /** SVG の画像を図形にしたもの (svgShapeCache)。置いた所の言語 lang で systemLanguage を照らす。読めなければ undefined */
+  private svgShapesOf(asset: ImageAsset, lang: string | undefined): SvgDoc | undefined {
+    const parse = this.parseXml;
+    const bytes = asset.bytes;
+    if (!parse || !bytes) return undefined;
+    let cached = svgShapeCache.get(this.fonts);
+    if (!cached || cached.fontCount !== this.fontCount) svgShapeCache.set(this.fonts, (cached = { fontCount: this.fontCount, byBytes: new WeakMap() }));
+    const byBytes = cached.byBytes;
+    let byLang = byBytes.get(bytes);
+    if (!byLang) byBytes.set(bytes, (byLang = new Map()));
+    const langKey = lang ?? '';
+    let doc = byLang.get(langKey);
+    if (doc === undefined) {
+      const src = asset.key;
+      const assets = this.assets;
+      const fonts = this.fonts;
+      // SVG の image・use の外のファイル: SVG の場所を基準に、登録した画像を引く (pdfRenderer.ts の toVectors と同じ)
+      const base = /^data:/i.test(src) ? undefined : src;
+      const image = (href: string) => {
+        const r = assets?.get(resolveRef(href, base));
+        if (!r?.bytes) return undefined;
+        // 組版の画素の読み取りで読めない形 (CMYK の JPEG など) は、登録した画像のブラウザの画像 (Worker の中では createImageBitmap で読んだもの) で描く (missingImage)
+        if (r.element) elementOfBytes.set(r.bytes, r.element);
+        if (r.mime === 'image/png' || r.mime === 'image/jpeg') return { kind: r.mime === 'image/png' ? ('png' as const) : ('jpeg' as const), bytes: r.bytes };
+        const p = r.mime === 'image/gif' ? decodeGif(r.bytes) : r.mime === 'image/bmp' ? decodeBmp(r.bytes) : r.mime === 'image/webp' ? decodeWebp(r.bytes) : undefined;
+        return p ? { kind: 'png' as const, bytes: encodePngStored(p) } : undefined;
+      };
+      const resource = (href: string) => {
+        const r = assets?.get(resolveRef(href, base));
+        return r?.bytes && r.mime === 'image/svg+xml' ? new TextDecoder().decode(r.bytes) : undefined;
+      };
+      try {
+        doc =
+          parseSvg(new TextDecoder().decode(bytes), parse, {
+            outline: (t, fam, wt, size, style, vertical) => outlineText(fonts, t, fam, wt, size, false, style, vertical),
+            image,
+            resource,
+            approximateFilters: true,
+            rasterFilter,
+            ...(lang ? { languages: [svgLanguageTag(lang)] } : {}),
+          }) ?? null;
+      } catch {
+        doc = null;
+      }
+      byLang.set(langKey, doc);
+    }
+    return doc ?? undefined;
+  }
+
+  /**
    * CSS のグラデーションの画像 (幅 g.width・高さ g.height の SVG) を、(x, y) に幅 w・高さ h で描く。PDF は同じ SVG を図形として描く (同じ線・同じ止まり)。
    * 止まりの外は、端の色で塗る (SVG の spreadMethod の初期値 pad。Canvas のグラデーションも同じ)。
-   * 色の補間は、SVG も Canvas も乗算しない値 (HTML の「CanvasGradient」: without premultiplying the alpha value)。乗算済みの補間 (CSS Images 3 §3.4.4) に
+   * 色の補間は、SVG も Canvas も乗算しない値 (HTML の CanvasGradient の決まり: 不透明度を掛けない値で補間する)。乗算済みの補間 (CSS Images 3 §3.4.4) に
    * 近づける止まりは、SVG を作るときに足してある
    */
   private drawGradient(g: GradientPaint, x: number, y: number, w: number, h: number) {
@@ -256,7 +847,7 @@ class CanvasPainter implements Painter {
     ctx.fillStyle = toCss(g.color);
     ctx.textBaseline = 'alphabetic';
     // 色つきの書体の字を、輪郭から描くとき・パレットを指定したとき・ブラウザが色つきに描けない表のときは、PDF と同じ図形・画像で描く
-    if (this.colorFonts && drawColorGlyphArea(ctx, this.fonts, g, !!g.features?.length || this.outlines)) {
+    if (this.colorFonts && drawColorGlyphArea(ctx, this.fonts, g, !!g.features?.length || this.outlines, this.parseXml)) {
       ctx.restore();
       return;
     }
@@ -457,19 +1048,28 @@ class CanvasPainter implements Painter {
   }
 }
 
-export function renderSheetToCanvas(sheet: SheetArea, canvas: HTMLCanvasElement, fonts: FontManager, opts: CanvasRenderOptions = {}) {
+/**
+ * ページを canvas に描く。canvas は画面の canvas 要素か OffscreenCanvas (Web Worker の中でも描ける)。
+ * 画素の大きさは、ページの大きさ × scale × devicePixelRatio。canvas 要素は、画面の大きさ (style の width・height) も
+ * ページの大きさ × scale にする (OffscreenCanvas は画面に出ないので、大きさは画素の大きさだけ)。
+ * devicePixelRatio の既定は window.devicePixelRatio (window の無い Web Worker の中では 1)
+ */
+export function renderSheetToCanvas(sheet: SheetArea, canvas: RenderCanvas, fonts: FontManager, opts: CanvasRenderOptions = {}) {
   const scale = opts.scale ?? 96 / 72;
   const dpr = opts.devicePixelRatio ?? (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
   canvas.width = Math.ceil(sheet.width * scale * dpr);
   canvas.height = Math.ceil(sheet.height * scale * dpr);
-  canvas.style.width = `${sheet.width * scale}px`;
-  canvas.style.height = `${sheet.height * scale}px`;
-  const ctx = canvas.getContext('2d')!;
+  if ('style' in canvas) {
+    canvas.style.width = `${sheet.width * scale}px`;
+    canvas.style.height = `${sheet.height * scale}px`;
+  }
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
   ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
   ctx.fontKerning = 'none';
   // 用紙
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, sheet.width, sheet.height);
-  const painter = new CanvasPainter(ctx, fonts, opts.assets, !!opts.glyphOutlines);
+  const painter = new CanvasPainter(ctx, fonts, opts.assets, !!opts.glyphOutlines, opts.parseXml, opts.warn);
+  if (opts.svgRasterBudget !== undefined) painter.svgBudget = opts.svgRasterBudget;
   paintSheet(sheet, painter, { guides: opts.guides });
 }

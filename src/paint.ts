@@ -7,6 +7,7 @@ import { parseColor } from './color';
 import type { Matrix, Seg } from './matrix';
 import type { Area, BorderRadius, BorderSide, GlyphArea, ImageArea, RadiusLength, Rect, SheetArea, TateChuYokoArea } from './types';
 import { msg } from './messages';
+import { KumioriLimitError } from './errors';
 
 export type { Matrix } from './matrix';
 
@@ -110,6 +111,28 @@ export interface Painter {
   strokePath(path: PathSeg[], width: number, color: string, dash?: [number, number]): void;
   /** リンク・注釈・フォームの欄 (a.link / a.annotation / a.formField を持つ領域)。PDF は注釈・欄を作り、Canvas は目印・欄の見本を描く */
   mark?(a: Area, x: number, y: number): void;
+  /**
+   * タグ付き PDF の印: この後に描くものが、飾り ('decor'。背景・罫線・影・輪郭線・トンボ) か、中身 (字・画像) か。中身は、それを含む
+   * 最も近い Area の入力の節の番号 (ref。sourceRef) と、繰り返した表の見出し・脚の中か (pagination)。描画先は、印の変わる所で、
+   * 内容を印の付いた内容 (ISO 32000-1 §14.6) に分ける。実装しない描画先 (Canvas・SVG) には呼ばない
+   */
+  tag?(t: PaintTag): void;
+}
+
+/** タグ付き PDF の印 (Painter.tag) */
+export type PaintTag = 'decor' | TagCtx;
+/** 中身の印: 入力の節の番号 (無ければ文書)、繰り返した表の見出し・脚の中か */
+export interface TagCtx {
+  readonly ref?: number;
+  readonly pagination?: boolean;
+}
+
+/** 領域 a の中身の印 (a の sourceRef。無ければ親の印を受け継ぐ。繰り返した表の見出し・脚の行の中は pagination) */
+function tagCtxOf(a: Area, up: TagCtx | undefined): TagCtx {
+  const pagination = !!up?.pagination || (a.type === 'table-row' && a.isRepeatedHeader);
+  const ref = a.sourceRef ?? up?.ref;
+  if (up && ref === up.ref && pagination === !!up.pagination) return up;
+  return pagination ? { ref, pagination } : { ref };
 }
 
 /**
@@ -139,6 +162,8 @@ export function paintSheet(sheet: SheetArea, p: Painter, opts: { guides?: boolea
   // 紙の端まで塗る箱・画像の辺を、端の外へ少し伸ばす (塗り足し (bleedBox) が用紙そのものの (トンボの無い) ときだけ)
   const bb = sheet.bleedBox;
   edgeSnap = !sheet.trimMarks && Math.abs(bb.x) < 0.02 && Math.abs(bb.y) < 0.02 && Math.abs(bb.width - sheet.width) < 0.02 && Math.abs(bb.height - sheet.height) < 0.02 ? bb : undefined;
+  // 用紙の背景・トンボは飾り
+  p.tag?.('decor');
   // 1) 塗り足しを含む領域に用紙全体の背景
   if (sheet.backgroundColor) {
     const b = snapToEdge(sheet.backgroundBox ?? sheet.bleedBox);
@@ -159,6 +184,7 @@ export function paintSheet(sheet: SheetArea, p: Painter, opts: { guides?: boolea
   paintArea(sheet.page, 0, 0, p);
   p.restore();
   edgeSnap = undefined;
+  p.tag?.('decor');
   // 3) トンボ
   if (sheet.trimMarks) for (const l of trimMarkLines(sheet)) p.strokeLine(l, sheet.trimMarkLineWidth ?? TRIM_MARK_WIDTH);
   if (opts.guides) {
@@ -173,7 +199,7 @@ export function paintSheet(sheet: SheetArea, p: Painter, opts: { guides?: boolea
 
 export const TRIM_MARK_WIDTH = 0.3; // pt ≒ 0.1mm
 
-/** 角の半径 (長さ・百分率・百分率と長さの和) を、基準の大きさ base (pt) で長さにする (負にはしない。CSS Backgrounds 3 §5.1) */
+/** 角の半径 (長さ・百分率・百分率と長さの和) を、基準の大きさ base (pt) で長さにする (負にはしない。CSS Backgrounds 3 §4.1) */
 export function radiusLen(v: RadiusLength, base: number): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'string') return (parseFloat(v) * base) / 100;
@@ -182,7 +208,7 @@ export function radiusLen(v: RadiusLength, base: number): number {
 
 /**
  * 角丸の箱の形を作る関数 (rad が無ければ角の無い矩形)。boxW × boxH は百分率の基準 (border の箱の大きさ)。
- * inset は内側の形 (padding の箱など) にするときに角の半径から引く量 (CSS Backgrounds 3 §5.1: 内側の半径 = 外側の半径 − 罫線の太さ)
+ * inset は内側の形 (padding の箱など) にするときに角の半径から引く量 (CSS Backgrounds 3 §4.2: 内側の半径 = 外側の半径 − 罫線の太さ)
  */
 export function radiusShape(rad: BorderRadius | undefined, boxW: number, boxH: number) {
   const corners = rad?.corners?.map(([h, v]) => [radiusLen(h, boxW), radiusLen(v, boxH)] as [number, number]);
@@ -202,7 +228,8 @@ function rectLines(r: Rect): Line[] {
 }
 
 /** 画像データが無いとき: 薄い灰色の枠に対角線 */
-function paintPlaceholder(a: ImageArea, x: number, y: number, p: Painter) {
+/** 描けない画像の仮の枠 (灰色の矩形と、縁・対角の線) */
+export function paintPlaceholder(a: ImageArea, x: number, y: number, p: Painter) {
   p.fillRect(x, y, a.width, a.height, '#f0f0f0');
   const c = '#b0b0b0';
   const corners = [
@@ -260,6 +287,8 @@ interface OpenBox {
   i: number;
   /** 輪郭線 (outline) を描くか (背景の段 'bg' では描かない: 中身より後に描く) */
   over?: boolean;
+  /** 中身の印 (タグ付き PDF。Painter.tag の無い描画先では undefined) */
+  tc?: TagCtx;
 }
 
 /**
@@ -299,8 +328,8 @@ function childOrder(kids: Area[], phase: PaintPhase): { kids: Area[]; phases: Pa
 }
 
 /** 領域 a (とその子孫) を描く。(ox, oy) は a の親の content-box の左上 (Sheet 座標) */
-export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase = 'all') {
-  const first = openArea(a, ox, oy, p, phase);
+export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase = 'all', up?: TagCtx) {
+  const first = openArea(a, ox, oy, p, phase, up);
   if (!first) return;
   const stack: OpenBox[] = [first];
   while (stack.length) {
@@ -308,13 +337,16 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
     if (top.i >= top.kids.length) {
       stack.pop();
       closeArea(top, p);
-      if (top.over && top.a.outline) paintOutline(top.a, top.x, top.y, p);
+      if (top.over && top.a.outline) {
+        p.tag?.('decor');
+        paintOutline(top.a, top.x, top.y, p);
+      }
       // 切り抜きの矩形 (clipRect) の終わり: 輪郭線も切り抜く (CSS 2.1 §11.1.2)
       if (top.a.clipRect) p.restore();
       continue;
     }
     const k = top.i++;
-    const child = openArea(top.kids[k], top.cx, top.cy, p, top.phases ? top.phases[k] : 'all');
+    const child = openArea(top.kids[k], top.cx, top.cy, p, top.phases ? top.phases[k] : 'all', top.tc);
     if (child) stack.push(child);
   }
 }
@@ -323,7 +355,8 @@ export function paintArea(a: Area, ox: number, oy: number, p: Painter, phase: Pa
  * 領域の、子より前に描くもの (影・背景・切り抜きの始まり) を描く。子を持つ領域なら、続き (子と、子より後に描く罫線) のための
  * OpenBox を返す。子の無い領域 (字・画像) と、この段では描かない領域は、ここで描き終えて undefined を返す
  */
-function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase): OpenBox | undefined {
+function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase, up?: TagCtx): OpenBox | undefined {
+  const tc = p.tag ? tagCtxOf(a, up) : undefined;
   if (a.transform || a.opacity !== undefined) {
     // 変換・不透明度の付いた箱 (CSS の transform・opacity) は、重ね合わせの文脈を作る (Transforms 1 §3・Color 4 §3.3):
     // 背景の段と中身の段に分けず、中身の段でまるごと描く (位置指定の箱と同じく、回り込みと行内の中身より後)
@@ -332,8 +365,10 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
     const plain = rest as Area;
     // 逆行列の無い変換 (scale(0) など) の箱と中身は描かない (Transforms 1 §10)。不透明度 0 の箱も見えない
     if ((t && Math.abs(t[0] * t[3] - t[1] * t[2]) < 1e-12) || (opacity !== undefined && opacity <= 0)) return undefined;
-    const body = () => (opacity !== undefined && opacity < 1 && p.group ? p.group(opacity, () => paintArea(plain, ox, oy, p, 'all')) : paintArea(plain, ox, oy, p, 'all'));
-    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(msg(`変換・回転した領域 (transform・opacity・orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`, `transformed or rotated areas (transform, opacity, orientation) are nested too deeply (up to ${MAX_NESTED_ORIENTATIONS} levels)`));
+    // 不透明度のグループ (Form XObject) は、まるごと、この箱の中身の印で包む (描画先が、グループの中を印で分けないとき)
+    if (tc) p.tag!(tc);
+    const body = () => (opacity !== undefined && opacity < 1 && p.group ? p.group(opacity, () => paintArea(plain, ox, oy, p, 'all', up)) : paintArea(plain, ox, oy, p, 'all', up));
+    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new KumioriLimitError('limit/transform-nesting', msg(`変換・回転した領域 (transform・opacity・orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`, `transformed or rotated areas (transform, opacity, orientation) are nested too deeply (up to ${MAX_NESTED_ORIENTATIONS} levels)`));
     orientationDepth++;
     try {
       if (t) {
@@ -350,10 +385,10 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
   if (a.orientation) {
     // 局所座標系 (原点 = 箱の左上) へ移って、回転なしの箱として描く
     const m = rotationMatrix(a.orientation as 90 | 180 | 270, ox + a.x, oy + a.y, a.width, a.height);
-    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new Error(msg(`回転した領域 (orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`, `rotated areas (orientation) are nested too deeply (up to ${MAX_NESTED_ORIENTATIONS} levels)`));
+    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new KumioriLimitError('limit/transform-nesting', msg(`回転した領域 (orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`, `rotated areas (orientation) are nested too deeply (up to ${MAX_NESTED_ORIENTATIONS} levels)`));
     orientationDepth++;
     try {
-      p.transform(m, () => paintArea({ ...a, x: 0, y: 0, orientation: undefined } as Area, 0, 0, p, phase));
+      p.transform(m, () => paintArea({ ...a, x: 0, y: 0, orientation: undefined } as Area, 0, 0, p, phase, up));
     } finally {
       orientationDepth--;
     }
@@ -369,7 +404,10 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
   const box = phase !== 'fg';
   if (a.type === 'glyph') {
     // 見えない字 (CSS の visibility: hidden。色が transparent) は描かない
-    if (a.color !== 'transparent') p.drawGlyph(a, x, y);
+    if (a.color !== 'transparent') {
+      if (tc) p.tag!(tc);
+      p.drawGlyph(a, x, y);
+    }
     return undefined;
   }
   if (a.type === 'image' && a.hidden) return undefined;
@@ -378,7 +416,8 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
   if (a.clipRect && !(a.clipRect.width > 0 && a.clipRect.height > 0)) return undefined;
   if (a.clipRect) p.clipRect({ x: x + a.clipRect.x, y: y + a.clipRect.y, width: a.clipRect.width, height: a.clipRect.height });
   if (a.type === 'image') {
-    // 角丸 (border-radius): 画像 (置換要素の中身) も角丸で切り抜く (CSS Backgrounds 3 §5.3)
+    if (tc) p.tag!(tc);
+    // 角丸 (border-radius): 画像 (置換要素の中身) も角丸で切り抜く (CSS Backgrounds 3 §4.3)
     const round = a.borderRadius && !a.missing;
     if (round) p.clipPath(radiusShape(a.borderRadius, a.width, a.height)(x, y, a.width, a.height));
     if (a.missing) paintPlaceholder(a, x, y, p);
@@ -399,11 +438,20 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
       p.restore();
     } else p.drawImage(a, x, y);
     if (round) p.restore();
-    if (a.outline) paintOutline(a, x, y, p);
+    if (a.outline) {
+      p.tag?.('decor');
+      paintOutline(a, x, y, p);
+    }
     if (a.clipRect) p.restore();
     return undefined;
   }
-  if (box && (a.link || a.annotation || a.formField)) p.mark?.(a, x, y);
+  if (box && (a.link || a.annotation || a.formField)) {
+    // 注釈を、この箱の中身の構造に結ぶ (リンクの注釈は Link の構造の節の子。ISO 32000-1 §14.7.4.3)
+    if (tc) p.tag!(tc);
+    p.mark?.(a, x, y);
+  }
+  // 箱の影・背景・罫線は飾り (ISO 32000-1 §14.8.2.2 の Layout の Artifact)
+  if (tc) p.tag!('decor');
   // 角丸 (axf:border-radius)
   const rad = a.borderRadius;
   // 角ごとの半径 (百分率は箱の大きさに対して)
@@ -429,7 +477,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
         const outer = shape(x + sh.dx - e, y + sh.dy - e, a.width + 2 * e, a.height + 2 * e, round);
         if (a.backgroundColor && !/^#[0-9a-f]{8}$/i.test(a.backgroundColor)) p.fillPath(outer, sh.color, false, alpha);
         else {
-          // 箱の外だけに塗る (CSS Backgrounds 3 §7.1: 外側の影は、箱の境界の箱の内側では切り取る): 影と箱を囲む矩形から箱を抜いた形で切り抜く
+          // 箱の外だけに塗る (CSS Backgrounds 3 §6.1: 外側の影は、箱の境界の箱の内側では切り取る): 影と箱を囲む矩形から箱を抜いた形で切り抜く
           const bx = Math.min(x, x + sh.dx - e) - 1;
           const by = Math.min(y, y + sh.dy - e) - 1;
           const bw = Math.max(x + a.width, x + sh.dx + a.width + e) + 1 - bx;
@@ -469,7 +517,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
   const br = a.border.right?.width ?? 0;
   const bb = a.border.bottom?.width ?? 0;
   const bl = a.border.left?.width ?? 0;
-  // 内側の影 (box-shadow: inset。CSS Backgrounds 3 §7.1): 背景の上・中身の下に、padding の箱の内側だけに描く。
+  // 内側の影 (box-shadow: inset。CSS Backgrounds 3 §6.1): 背景の上・中身の下に、padding の箱の内側だけに描く。
   // 影の形 = padding の箱を dx・dy だけずらし、広がり (spread) とぼかしの層の分だけ縮めた矩形。その外側 (padding の箱との間) を塗る。
   // ぼかしは外側の影と同じく、0・0.5σ・σ・1.5σ・2σ 縮めた層の重ねで表す (縁がいちばん濃い)
   if (box && a.boxShadow) {
@@ -501,7 +549,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
   const cx = x + bl + a.padding.left;
   const cy = y + bt + a.padding.top;
   // overflow="hidden": 子を padding の外端 (border の内側) で切り抜く
-  // 角丸の箱は、padding の箱の角丸 (外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §5.3)
+  // 角丸の箱は、padding の箱の角丸 (外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §4.3)
   if (a.clip && rad) p.clipPath(shape(x + bl, y + bt, Math.max(a.width - bl - br, 0), Math.max(a.height - bt - bb, 0), bt));
   else if (a.clip) p.clipRect({ x: x + bl, y: y + bt, width: Math.max(a.width - bl - br, 0), height: Math.max(a.height - bt - bb, 0) });
   // 子は、paintArea の繰り返しが描く (描く順は areaTree.ts の childrenOf と同じ)
@@ -514,6 +562,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
       order = { kids: [...a.base, ...a.ruby], phases: undefined };
       break;
     case 'tate-chu-yoko':
+      if (tc) p.tag!(tc);
       order = { kids: p.drawTateChuYoko?.(a, cx, cy) ? [] : a.glyphs, phases: undefined };
       break;
     case 'sheet':
@@ -522,7 +571,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
     default:
       order = childOrder(a.children, phase);
   }
-  return { a, x, y, box, cx, cy, kids: order.kids, phases: order.phases, i: 0, over: phase !== 'bg' };
+  return { a, x, y, box, cx, cy, kids: order.kids, phases: order.phases, i: 0, over: phase !== 'bg', ...(tc ? { tc } : {}) };
 }
 
 const NO_EDGES = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -545,7 +594,7 @@ function paintOutline(a: Area, x: number, y: number, p: Painter) {
   let radius: BorderRadius | undefined;
   if (a.borderRadius) {
     const r = a.borderRadius;
-    // 角ごとの半径 (百分率は箱の大きさに対して)。隣り合う半径の和が辺より長ければ、同じ比で縮める (CSS Backgrounds 3 §4.2)
+    // 角ごとの半径 (百分率は箱の大きさに対して)。隣り合う半径の和が辺より長ければ、同じ比で縮める (CSS Backgrounds 3 §4.5)
     const cs = (r.corners ?? [[r.rx, r.ry], [r.rx, r.ry], [r.rx, r.ry], [r.rx, r.ry]]).map(([h, v]) => [radiusLen(h, a.width), radiusLen(v, a.height)] as [number, number]);
     const f = Math.min(1, a.width / Math.max(cs[0][0] + cs[1][0], cs[3][0] + cs[2][0], 1e-9), a.height / Math.max(cs[0][1] + cs[3][1], cs[1][1] + cs[2][1], 1e-9));
     const corners = cs.map(([h, v]) => (h > 0 && v > 0 ? [Math.max(h * f + ex, 0), Math.max(v * f + ey, 0)] : [0, 0]) as [number, number]);
@@ -574,6 +623,7 @@ function closeArea(o: OpenBox, p: Painter) {
   const { a, x, y, box } = o;
   if (a.clip) p.restore();
   if (!box) return;
+  p.tag?.('decor');
   // 半透明の罫線 (色が #rrggbbaa。CSS の rgba() の border-color): 同じ濃さの辺をまとめて、不透明の色で描いたものを、その濃さで重ねる
   // (Painter.group。角で辺が重なっても濃くならない)。濃さごとに、ほかの辺は描かない辺 (transparent) にして描く
   const alphaOf = (sd: BorderSide | undefined) => (sd && /^#[0-9a-f]{8}$/i.test(sd.color) ? parseInt(sd.color.slice(7), 16) / 255 : 1);
@@ -1190,7 +1240,7 @@ function paintBackgroundLayer(a: Area, layer: NonNullable<Area['backgroundImage'
   const startX = rx ? ox - Math.ceil((ox - minX) / bi.width - 1e-9) * bi.width : ox;
   const startY = ry ? oy - Math.ceil((oy - minY) / bi.height - 1e-9) * bi.height : oy;
   const tile = { type: 'image', src: bi.src, missing: false, x: 0, y: 0, width: bi.width, height: bi.height, margin: a.margin, padding: a.padding, border: {}, writingMode: a.writingMode } as ImageArea;
-  // 角丸の箱の背景画像は、描く範囲の箱の角丸 (padding の箱なら、外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §4.2・§5.3)
+  // 角丸の箱の背景画像は、描く範囲の箱の角丸 (padding の箱なら、外側の半径 − 罫線の太さ) で切り抜く (CSS Backgrounds 3 §4.2・§4.3)
   if (a.borderRadius) p.clipPath(radiusShape(a.borderRadius, a.width, a.height)(clipR.x, clipR.y, clipR.width, clipR.height, clipK === 0 ? 0 : clipK === 1 ? bt : bt + a.padding.top));
   else p.clipRect(clipR);
   // 繰り返す方向だけ箱いっぱいに、繰り返さない方向は 1 枚の幅だけの範囲を、1 つの模様で埋める (タイルの数だけ命令を出さない)

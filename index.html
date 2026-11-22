@@ -77,6 +77,9 @@
       #warnings:empty { display: none; }
       #warnings summary { cursor: pointer; font-weight: 700; }
       #warnings ul { margin: 4px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; }
+      #warnings li .diag { opacity: 0.75; font-size: 11px; }
+      #warnings li[data-page] { cursor: pointer; }
+      #warnings li[data-page]:hover { text-decoration: underline; }
       #report { font-size: 12px; color: #cfd8e6; }
       #report summary { cursor: pointer; font-weight: 700; }
       #report table { border-collapse: collapse; margin-top: 6px; }
@@ -169,6 +172,10 @@
           <legend>印刷</legend>
           <label class="check"><input type="checkbox" id="foprint" /><span>トンボと塗り足し 3mm を付ける</span></label>
           <label class="check"><input type="checkbox" id="guides" checked /><span>仕上がり・塗り足しのガイドを表示する</span></label>
+        </fieldset>
+        <fieldset>
+          <legend>PDF</legend>
+          <label class="check"><input type="checkbox" id="tagged" checked /><span>タグ付き PDF にする<br /><span class="hint">オン (既定): 文書の構造 (見出し・段落・リスト・表・図・リンク・脚注)・読む順・図の代わりの文・言語を PDF に入れます (画面の読み上げなどで使えます。見た目は変わりません)。オフ: タグを付けません (PDF が 1〜2 割小さくなります)</span></span></label>
         </fieldset>
         <fieldset>
           <legend>書体</legend>

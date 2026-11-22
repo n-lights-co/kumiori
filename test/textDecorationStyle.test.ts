@@ -62,7 +62,7 @@ describe('text-decoration-style (CSS Text Decoration 3 §2.2)', () => {
     expect(computed('<p><u style="text-decoration-style: wavy">a</u></p>', 'u', 'text-decoration-style')).toBe('wavy');
     expect(computed('<p><u style="text-decoration: underline dotted red">a</u></p>', 'u', 'text-decoration-style')).toBe('dotted');
     expect(computed('<p><u style="text-decoration-style: wavy; text-decoration-style: groove">a</u></p>', 'u', 'text-decoration-style')).toBe('wavy');
-    // 一括指定は、書いていない線の種類を初期値に戻す (§2.4: Omitted values are set to their initial values)
+    // 一括指定は、書いていない線の種類を初期値に戻す (§2.4: 書いていない値は初期値になる)
     expect(computed('<p><u style="text-decoration-style: wavy; text-decoration: underline">a</u></p>', 'u', 'text-decoration-style')).toBe('solid');
     // 受け継がない
     expect(computed('<p style="text-decoration-style: double"><u>a</u></p>', 'u', 'text-decoration-style')).toBe('solid');
@@ -123,7 +123,7 @@ describe('text-decoration-style (CSS Text Decoration 3 §2.2)', () => {
       decoLines(areas(body))
         .sort((a, b) => a.x - b.x)
         .map((l) => l.a.border?.top?.style ?? 'solid');
-    // 子孫の text-decoration-style は、祖先の線を変えない (§2.2「even if descendant boxes specify a different style」)
+    // 子孫の text-decoration-style は、祖先の線を変えない (§2.2: 子孫の箱が別の線種を指定しても、祖先の線はそのまま)
     expect(kinds(`<p style="${P}"><u style="text-decoration-style: dotted">あ<span style="text-decoration-style: dashed">い</span></u></p>`)).toEqual(['dotted', 'dotted']);
     expect(kinds(`<p style="${P}"><u style="text-decoration-style: dotted">あ<u>い</u></u></p>`)).toEqual(['dotted', 'solid']);
     expect(kinds(`<p style="${P}"><u>あ<u style="text-decoration-style: dashed">い</u></u></p>`)).toEqual(['solid', 'dashed']);

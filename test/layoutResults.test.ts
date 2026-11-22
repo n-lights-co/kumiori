@@ -223,7 +223,7 @@ describe('ページをまたぐ段組のコンテナの断片の飾り: 背景�
 });
 
 describe('行内の箱の背景は、中の inline-block・画像の所も塗る (LAY-20 (3))', () => {
-  it('背景の色の span の中の inline-block の所も、span の内容の領域の高さで塗る (CSS 2.1 §9.2.2・§14.2、CSS Backgrounds 3 §3.7)', () => {
+  it('背景の色の span の中の inline-block の所も、span の内容の領域の高さで塗る (CSS 2.1 §9.2.2・§14.2、CSS Backgrounds 3 §2.7)', () => {
     const box = { type: 'inline-container', width: 100, height: 10, children: [] };
     const t = E.engine.layout(doc([{ type: 'block', textAlign: 'start', fontSize: 20, children: [{ type: 'inline', backgroundColor: '#f00', children: ['AB', box, 'CD'] }] }] as never));
     const line = (kids(t)[0].children as Area[])[0] as unknown as { children: Area[] };

@@ -17,7 +17,8 @@ export interface RegionProps {
   /** overflow="hidden" 等: リージョンからはみ出した内容を切り抜く */
   clip?: boolean;
 }
-export type RegionRect = { x: number; y: number; w: number; h: number } & Partial<RegionProps>;
+/** リージョンの矩形。side は、どのリージョンか (before・after・start・end) */
+export type RegionRect = { x: number; y: number; w: number; h: number; side?: 'before' | 'after' | 'start' | 'end' } & Partial<RegionProps>;
 
 /** リージョンの背景 (色・画像) */
 export interface RegionBg {
@@ -86,8 +87,17 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
     return pct ? (base * parseFloat(pct[1])) / 100 : (fo.len(v, base) ?? base);
   };
   const fs = fsOf(m, fsOf(lms, fsOf(root, fo.defaultFontSize)));
-  const W = fo.len(fo.attr(m, 'page-width'), fs) ?? DEFAULT_PAGE_WIDTH;
-  const H = fo.len(fo.attr(m, 'page-height'), fs) ?? DEFAULT_PAGE_HEIGHT;
+  // page-width・page-height (XSL 1.1 §7.27.15・§7.27.13) は用紙の大きさなので、1pt 未満の長さは組めない。読めない値と同じく、
+  // 既定の大きさ (auto: §7.27.13 の「UA が決める」大きさ) にして知らせる (前は、負の幅のまま組み、SVG・PNG の書き出しが負の大きさになっていた)
+  const pageLen = (k: 'page-width' | 'page-height', dflt: number) => {
+    const v = fo.len(fo.attr(m, k), fs);
+    if (v === undefined) return dflt;
+    if (v >= 1 && Number.isFinite(v)) return v;
+    fo.miss(`${k}:${(fo.attr(m, k) ?? '').slice(0, 20)}`);
+    return dflt;
+  };
+  const W = pageLen('page-width', DEFAULT_PAGE_WIDTH);
+  const H = pageLen('page-height', DEFAULT_PAGE_HEIGHT);
   // margin の略記は 1〜4 値 (上 右 下 左)
   const side4 = (el: XEl, p: string) => fo.box4(el, 'margin')?.[['top', 'right', 'bottom', 'left'].indexOf(p)];
   // margin の百分率は、包含ブロックの幅に対する割合 (simple-page-master はページの幅)
@@ -131,7 +141,7 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
       if (fo.attr(r, 'axf:footnote-position') === 'outside') sideNotes = true;
       // 末尾の段の釣り合わせ (アンテナハウスの拡張 axf:column-fill。値は CSS Multi-column 1 §7.1 の column-fill と同じ)。
       // 接頭辞の無い column-fill は XSL 1.1 に無い名前だが、互換の指定に関わらず読む (CLAUDE.md の「接頭辞の無い名前の拡張は互換の指定のときだけ」の例外)。
-      // 最初の公開から対応仕様説明書 (docs/conformance/fo の region-body の段組) と BACKLOG の E-13 に、どのモードでも効く書き方として書いてきたため
+      // 最初の公開から対応仕様説明書 (docs/conformance/fo の region-body の段組) と開発の計画の表に、どのモードでも効く書き方として書いてきたため
       if ((fo.attr(r, 'axf:column-fill') ?? fo.attr(r, 'column-fill')) === 'balance') colFill = true;
       colRule = fo.columnRule(r, fs);
       // 互換モード: 段罫が段の間隔より太ければ、段の間隔に段罫の太さを足す (例: 段罫 0.25in なら、
@@ -240,7 +250,7 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
     const w = bwOf(k);
     const r = rect[k];
     const inset = { x: r.x + w.left, y: r.y + w.top, w: Math.max(0, r.w - w.left - w.right), h: Math.max(0, r.h - w.top - w.bottom) };
-    byName.set(nm, { ...inset, ...(regionProps[k] ?? { ro: 0 as Rotation }) });
+    byName.set(nm, { ...inset, side: k, ...(regionProps[k] ?? { ro: 0 as Rotation }) });
   }
   // 背景色を持つリージョン (本文の背面に敷く)
   const bgs: RegionBg[] = [];

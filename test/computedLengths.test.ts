@@ -140,7 +140,7 @@ describe('計算値の長さを絶対の長さにする', () => {
     expect(shadowsOf('none', computed('filter', 'filter: drop-shadow(1em 1em 0 red)'))).toEqual([{ dx: 7.5, dy: 7.5, color: 'red' }]);
   });
 
-  it('border-radius の百分率を含む calc() は、式のまま残し、箱の大きさで解く (CSS Backgrounds 3 §5.1)', () => {
+  it('border-radius の百分率を含む calc() は、式のまま残し、箱の大きさで解く (CSS Backgrounds 3 §4.1)', () => {
     expect(computed('border-top-left-radius', 'border-radius: calc(10% + 1em)')).toBe('calc(10% + 10px)');
     const doc = imp('<div style="width:100px;height:50px;border:1px solid;border-radius: calc(10% + 10px)">x</div>');
     const r = find(doc, (o) => !!o.borderRadius)!.borderRadius as { corners: unknown[] };
@@ -162,7 +162,7 @@ const bgOf = (t: AreaTree) => {
   return hit?.backgroundImage;
 };
 
-describe('グラデーションの背景の大きさ (CSS Backgrounds 3 §3.9)', () => {
+describe('グラデーションの背景の大きさ (CSS Backgrounds 3 §2.9)', () => {
   const grad = async (size: string) => {
     const b = bgOf((await set(page(`<div style="height:20pt;background:linear-gradient(red,blue) no-repeat;background-size:${size}">a</div>`))).areaTree);
     return b && { width: Math.round(b.width! * 100) / 100, height: Math.round(b.height! * 100) / 100 };

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node scripts/verapdf.mjs:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 node scripts/verapdf.mjs:*)"
+    ]
+  }
+}

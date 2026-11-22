@@ -3,7 +3,7 @@
  *  - @page の背景画像の位置・大きさ・繰り返しの並べ始めは、ページの箱の padding の領域 (余白と罫線の内側) で決め、塗るのは塗り足しまで
  *    (CSS Paged Media 3 §3.1)。PDF の内容の命令で、画像を置く座標を確かめる
  *  - 位置の em・rem・calc() (CSS Values 4 §5・§10)。読めない値は宣言ごと無効にする
- *  - @page・余白の箱の罫線の太さの初期値は medium (CSS Backgrounds 3 §3.2)。文書の要素の罫線と同じ太さ
+ *  - @page・余白の箱の罫線の太さの初期値は medium (CSS Backgrounds 3 §3.3)。文書の要素の罫線と同じ太さ
  *  - 包む箱を名前付きページの所で分けた断片の、高さの指定 (CSS Break 3 §5.3・§5.4)
  *  - 入れ子の深さの上限の所の名前付きページ (深すぎる入れ子を平らにした所で、空のページを出さない)
  */
@@ -177,6 +177,46 @@ describe('@page の背景の background-attachment: fixed は、余白を含む�
   it('scroll (初期値) は、これまでどおり余白の内側', async () => {
     near((await pdfImages(await set('margin: 15mm; background: url(a.png) no-repeat scroll')))[0][0], [15 * MM, H - 15 * MM - 12, 12, 12]);
   });
+  it('個別の指定と一括指定は、後に書いたほうが勝つ (CSS Cascade 4 §6.1。一括指定は、前の個別の指定を初期値に戻す。CSS Backgrounds 3 §2.10)', async () => {
+    // 直す前は、個別の指定を先に見て scroll と読んだ
+    near((await pdfImages(await set('margin: 15mm; background-attachment: scroll; background: url(a.png) no-repeat fixed')))[0][0], [0, H - 12, 12, 12]);
+    near((await pdfImages(await set('margin: 15mm; background: url(a.png) no-repeat fixed; background-attachment: scroll')))[0][0], [15 * MM, H - 15 * MM - 12, 12, 12]);
+    // 別の @page 規則に書いても同じ (後の規則の一括指定が、前の規則の個別の指定を戻す)
+    near((await pdfImages(await set('margin: 15mm; background-attachment: scroll } @page { background: url(a.png) no-repeat fixed')))[0][0], [0, H - 12, 12, 12]);
+    // 一括指定の後の個別の繰り返しは効く。前の個別の繰り返しは、一括指定が初期値 (repeat) に戻す
+    expect((await set('background: url(a.png); background-repeat: no-repeat')).areaTree.sheets[0].backgroundImage?.repeat).toBe('no-repeat');
+    expect((await set('background-repeat: no-repeat; background: url(a.png)')).areaTree.sheets[0].backgroundImage?.repeat).toBeUndefined();
+  });
+});
+
+describe('@page の背景の background-repeat の repeat-x・repeat-y と 2 値 (CSS Backgrounds 3 §2.4)', () => {
+  const rep = async (css: string) => (await set(css)).areaTree.sheets[0].backgroundImage?.repeat;
+  it('個別の指定と一括指定の中の repeat-x・repeat-y (直す前は repeat として、縦横に並べた)', async () => {
+    expect(await rep('background: url(a.png); background-repeat: repeat-x')).toBe('repeat-x');
+    expect(await rep('background: url(a.png); background-repeat: repeat-y')).toBe('repeat-y');
+    expect(await rep('background: url(a.png) repeat-x')).toBe('repeat-x');
+    expect(await rep('background: url(a.png) repeat-y')).toBe('repeat-y');
+    expect(await rep('background-image: url(a.png); background-repeat: REPEAT-X')).toBe('repeat-x');
+  });
+  it('2 値は横・縦の順', async () => {
+    expect(await rep('background: url(a.png); background-repeat: repeat no-repeat')).toBe('repeat-x');
+    expect(await rep('background: url(a.png); background-repeat: no-repeat repeat')).toBe('repeat-y');
+    expect(await rep('background: url(a.png); background-repeat: no-repeat no-repeat')).toBe('no-repeat');
+    expect(await rep('background: url(a.png) space no-repeat')).toBe('repeat-x');
+    expect(await rep('background: url(a.png); background-repeat: repeat repeat')).toBeUndefined();
+  });
+  it('最初の重ねの値を使い、url() の名前の中の語は読まない', async () => {
+    expect(await rep('background: url(a.png); background-repeat: repeat-y, no-repeat')).toBe('repeat-y');
+    expect(await rep('background: url(no-repeat.png)')).toBeUndefined();
+  });
+  it('repeat-x は横にだけ、repeat-y は縦にだけ並べる (1 段・1 列)', async () => {
+    const x = sheetImages((await set('margin: 15mm; background: url(a.png) repeat-x')).areaTree.sheets[0]);
+    expect(x.length).toBeGreaterThan(1);
+    expect(new Set(x.map((t) => t[1].toFixed(2))).size).toBe(1);
+    const y = sheetImages((await set('margin: 15mm; background: url(a.png) repeat-y')).areaTree.sheets[0]);
+    expect(y.length).toBeGreaterThan(1);
+    expect(new Set(y.map((t) => t[0].toFixed(2))).size).toBe(1);
+  });
 });
 
 describe('@page の背景の background-size は、繰り返しを変えない (CSS Backgrounds 3 §2.4: background-repeat の初期値は repeat)', () => {
@@ -243,7 +283,7 @@ describe('@page・余白の箱の背景の位置の長さ (em・rem・calc())', 
   });
 });
 
-describe('@page・余白の箱の罫線の太さの初期値は medium (CSS Backgrounds 3 §3.2)', () => {
+describe('@page・余白の箱の罫線の太さの初期値は medium (CSS Backgrounds 3 §3.3)', () => {
   /** ページの箱の罫線の箱 (本文の背面の箱) と、余白の箱の罫線の太さ */
   const widths = async (css: string, style?: 'ah') => {
     const r = await set(css, style ? { style } : {});

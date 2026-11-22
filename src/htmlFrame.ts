@@ -21,6 +21,7 @@ import { cascadeStyles, HTML_UA_CSS } from './cssCascade';
 import { styleCascadeOptions } from './compat';
 import { faceFileWeights } from './fontMapping';
 import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
+import type { Diagnostic } from './diagnostics';
 
 export { KUMIORI_BOOK_CSS, PRINT_UA_CSS, CSS21_DEFAULT_CSS, type HtmlDefaults } from './htmlPrepare';
 
@@ -32,7 +33,7 @@ export interface LoadedHtml {
   /** 読んだ作成者スタイルシート (未対応・知らない CSS の宣言を数えるのに使う。cssUnsupported.ts) */
   authorSheet: ParsedCss;
   /** 用意の途中の警告 (深すぎる入れ子・多すぎる @import)。画面の警告の欄に出す */
-  warnings: string[];
+  warnings: Diagnostic[];
   /** 使い終わったら iframe を消す */
   dispose(): void;
 }

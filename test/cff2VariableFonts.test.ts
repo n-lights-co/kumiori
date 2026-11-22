@@ -249,7 +249,7 @@ describe('書体の選び方: CFF2 の可変フォントも、太さ・軸の値
   const setup = async () => {
     const fonts = new FontManager();
     const notices: string[] = [];
-    fonts.onNotice = (m) => notices.push(m);
+    fonts.onNotice = (d) => notices.push(d.message);
     const f = await fonts.registerBuffer('K2', 400, font, false);
     return { fonts, f, notices };
   };
@@ -289,7 +289,7 @@ describe('書体の選び方: CFF2 の可変フォントも、太さ・軸の値
   it('可変でない CFF2 の書体 (fvar が無い) は、登録のときに静的な CFF にする (blend は既定の値)', async () => {
     const fonts = new FontManager();
     const notices: string[] = [];
-    fonts.onNotice = (m) => notices.push(m);
+    fonts.onNotice = (d) => notices.push(d.message);
     const f = await fonts.registerBuffer('S', 400, buildCff2Font({ noVariations: true }), false);
     expect(notices).toEqual([]);
     expect(f.variable).toBeUndefined();
@@ -302,7 +302,7 @@ describe('書体の選び方: CFF2 の可変フォントも、太さ・軸の値
   it('実体を作れない CFF2 の書体は、知らせを出して、既定の形のまま使う', async () => {
     const fonts = new FontManager();
     const notices: string[] = [];
-    fonts.onNotice = (m) => notices.push(m);
+    fonts.onNotice = (d) => notices.push(d.message);
     const f = await fonts.registerBuffer('Bad', 400, buildCff2Font({ glyphs: { 1: charString(50, 1, 'blend', 'hmoveto') } }), false);
     expect(fonts.get('Bad', 700)).toBe(f);
     expect(fonts.get('Bad', 400)).toBe(f);

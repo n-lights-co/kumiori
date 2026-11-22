@@ -5,7 +5,7 @@ import { parsePathData, parseSvg } from '../src/svg';
 import { AssetStore } from '../src/assets';
 import { renderPdf } from '../src/pdfRenderer';
 import { LayoutEngine } from '../src/layoutEngine';
-import { FAMILY, doc, makeEngine } from './helpers';
+import { FAMILY, doc, makeEngine, pageOps, pageXObjectsBesidesVectors } from './helpers';
 
 const parse = (s: string) => new DOMParser().parseFromString(s, 'image/svg+xml') as never;
 const svg = (body: string, attrs = 'width="100" height="50" viewBox="0 0 100 50"') => `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" ${attrs}>${body}</svg>`;
@@ -84,8 +84,7 @@ describe('SVG → ベクタ', () => {
     const bytes = await renderPdf(tree, fonts, { assets, parseXml: parse });
     const pdf = await PDFDocument.load(bytes);
     const res = pdf.getPage(0).node.Resources();
-    const xo = res?.lookup(PDFName.of('XObject')) as { keys(): unknown[] } | undefined;
-    expect(xo?.keys().length ?? 0).toBe(0);
+    expect(pageXObjectsBesidesVectors(pdf)).toHaveLength(0);
     expect(res?.lookup(PDFName.of('ExtGState'))).toBeDefined();
 
     // パースできない SVG (グラデーション) はラスタライズに回る = ブラウザ無しの Node では画像が出ない
@@ -145,8 +144,7 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     const res = pdf.getPage(0).node.Resources();
     const pat = res?.lookup(PDFName.of('Pattern')) as { keys(): unknown[] } | undefined;
     expect(pat?.keys().length).toBe(3);
-    const xo = res?.lookup(PDFName.of('XObject')) as { keys(): unknown[] } | undefined;
-    expect(xo?.keys().length ?? 0).toBe(0);
+    expect(pageXObjectsBesidesVectors(pdf)).toHaveLength(0);
   });
 
   it('<style> の規則 (要素名・.class・#id、詳細度と出現順、style 属性が最優先) を当てる', () => {
@@ -183,8 +181,12 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
       '<defs><mask id="m" fill="#fff"><rect width="10" height="10"/></mask></defs><g transform="translate(5 0)" mask="url(#m)"><rect width="20" height="20" fill="#f00"/><circle r="3" fill="#00f"/></g><rect width="1" height="1"/>',
     );
     const d = parseSvg(src, parse)!;
-    expect(d.shapes.map((x) => x.masks?.length ?? 0)).toEqual([1, 1, 0]);
-    expect(d.shapes[0].masks![0]).toBe(d.shapes[1].masks![0]);
+    // g の子 2 つは、まとめた透明のグループにして、そのグループにマスクを掛ける (子ごとに掛けると、重なった子の下が透ける)
+    expect(d.shapes.map((x) => [x.masks?.length ?? 0, x.group?.shapes.length ?? 0])).toEqual([
+      [1, 2],
+      [0, 0],
+    ]);
+    expect(d.shapes[0].group!.shapes.every((x) => !x.masks)).toBe(true);
     // マスクの中身は、マスクの要素の fill を受け継ぎ、g の translate の中で描く
     expect(d.shapes[0].masks![0].shapes[0]).toMatchObject({ fill: '#ffffff', segs: [{ op: 'M', x: 5, y: 0 }, { op: 'L', x: 15, y: 0 }, {}, {}, {}] });
     // 参照先が mask でなければ、図形にできない
@@ -450,13 +452,8 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
     const tree = engine.layout(doc([{ type: 'block', children: [{ type: 'image', src: 't.svg', width: 100, height: 50 }] }]));
     const pdf = await PDFDocument.load(await renderPdf(tree, fonts, { assets, parseXml: parse }));
-    const res = pdf.getPage(0).node.Resources();
-    const xo = res?.lookup(PDFName.of('XObject')) as { keys(): unknown[] } | undefined;
-    expect(xo?.keys().length ?? 0).toBe(0);
-    const { decodePDFRawStream } = await import('pdf-lib');
-    const contents = pdf.getPage(0).node.Contents()!;
-    const streams = 'asArray' in contents ? (contents as import('pdf-lib').PDFArray).asArray().map((r) => pdf.context.lookup(r)) : [contents];
-    const ops = streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n');
+    expect(pageXObjectsBesidesVectors(pdf)).toHaveLength(0);
+    const ops = pageOps(pdf);
     expect(ops).toMatch(/0\.2 0\.4 0\.6 rg/);
     // 単色の塗りの字は、埋め込んだ書体の文字 (BT … Tf … Tm … Tj … ET)
     expect(ops).toMatch(/BT[\s\S]*Tf[\s\S]*Tm[\s\S]*Tj[\s\S]*ET/);
@@ -467,9 +464,7 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     assets2.register('t.svg', { mime: 'image/svg+xml', bytes: new TextEncoder().encode(src2), width: 100, height: 50 });
     const engine2 = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets: assets2 });
     const pdf2 = await PDFDocument.load(await renderPdf(engine2.layout(doc([{ type: 'block', children: [{ type: 'image', src: 't.svg', width: 100, height: 50 }] }])), fonts, { assets: assets2, parseXml: parse }));
-    const c2 = pdf2.getPage(0).node.Contents()!;
-    const st2 = 'asArray' in c2 ? (c2 as import('pdf-lib').PDFArray).asArray().map((r) => pdf2.context.lookup(r)) : [c2];
-    const ops2 = st2.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n');
+    const ops2 = pageOps(pdf2);
     expect((ops2.match(/ c\n/g) ?? []).length).toBeGreaterThan(10);
   });
 
@@ -482,10 +477,7 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
     const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
     const tree = engine.layout(doc([{ type: 'block', children: [{ type: 'image', src: 't.svg', width: 100, height: 50 }] }]));
     const pdf = await PDFDocument.load(await renderPdf(tree, fonts, { assets, parseXml: parse }));
-    const { decodePDFRawStream } = await import('pdf-lib');
-    const contents = pdf.getPage(0).node.Contents()!;
-    const streams = 'asArray' in contents ? (contents as import('pdf-lib').PDFArray).asArray().map((r) => pdf.context.lookup(r)) : [contents];
-    const ops = streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n');
+    const ops = pageOps(pdf);
     // 字ごとの位置 (Tm の x) と符号 (Tj)
     const shown = [...ops.matchAll(/1 0 0 -1 ([\d.]+) (\d+) Tm\n<([0-9A-F]+)> Tj/g)].map((m) => ({ x: +m[1], y: +m[2], hex: m[3] }));
     const first = shown.filter((s) => s.y === 20);
@@ -525,11 +517,9 @@ describe('SVG のグラデーション・clipPath・use (O-01)', () => {
       const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
       const tree = engine.layout(doc([{ type: 'block', children: [{ type: 'image', src: 'r.svg', width: 100, height: 100, fit: 'fill' }] }] as never));
       const pdf = await PDFDocument.load(await renderPdf(tree, fonts, { assets, parseXml: parse }));
-      const { decodePDFRawStream } = await import('pdf-lib');
-      const contents = pdf.getPage(0).node.Contents()!;
-      const streams = 'asArray' in contents ? (contents as import('pdf-lib').PDFArray).asArray().map((r) => pdf.context.lookup(r)) : [contents];
-      const ops = streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n');
-      return /([-\d.]+) 0 0 ([-\d.]+) [-\d.]+ [-\d.]+ cm\n[\s\S]*?1 0 0 rg/.exec(ops)!;
+      const ops = pageOps(pdf);
+      // 塗りの前の、最後の拡大の cm (使い回す Form の中では、平行移動の cm の後に拡大だけの cm がある)
+      return /([-\d.]+) 0 0 ([-\d.]+) [-\d.]+ [-\d.]+ cm\n(?:(?!cm\n)[\s\S])*?1 0 0 rg/.exec(ops)!;
     };
     const meet = await draw('');
     expect(Number(meet[1])).toBeCloseTo(1, 3); // 縦横 1 倍 (100×50 を 100×100 の中央に)

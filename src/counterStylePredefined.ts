@@ -1,6 +1,8 @@
 /**
  * CSS Counter Styles 3 の定義済みの数え方 (§6 Simple Predefined Counter Styles と、§7.1.1 和文・§7.1.2 韓国語の規則)。
- * 規則の文字列は、仕様書 (https://www.w3.org/TR/css-counter-styles-3/ 、2026-11-06 取得) の例の @counter-style を書き換えずに写したもの。
+ * 規則の文字列は、仕様書 (https://www.w3.org/TR/css-counter-styles-3/ 、2026-11-06 取得) の例の @counter-style を写したもの
+ * (規則 (記述子と値) は書き換えていない。注釈のうち、字を並べただけのもの (記号の字の一覧) は写したまま残し、
+ * 英文の注釈 (hebrew・disclosure-open・disclosure-closed・韓国語の 3 つ) だけを、日本語の自分の言葉に置き換えた)。
  * §7.1.3 の中国語の書式と §7.2 の ethiopic-numeric は @counter-style で書けない手順なので、complexCounterText で作る
  *
  * This software includes material copied from or derived from CSS Counter Styles Level 3 (https://www.w3.org/TR/2021/CR-css-counter-styles-3-20210727/).
@@ -100,8 +102,8 @@ const PREDEFINED_COUNTER_CSS = String.raw`
   range: 1 10999;
   additive-symbols: 10000 \5D9\5F3, 9000 \5D8\5F3, 8000 \5D7\5F3, 7000 \5D6\5F3, 6000 \5D5\5F3, 5000 \5D4\5F3, 4000 \5D3\5F3, 3000 \5D2\5F3, 2000 \5D1\5F3, 1000 \5D0\5F3, 400 \5EA, 300 \5E9, 200 \5E8, 100 \5E7, 90 \5E6, 80 \5E4, 70 \5E2, 60 \5E1, 50 \5E0, 40 \5DE, 30 \5DC, 20 \5DB, 19 \5D9\5D8, 18 \5D9\5D7, 17 \5D9\5D6, 16 \5D8\5D6, 15 \5D8\5D5, 10 \5D9, 9 \5D8, 8 \5D7, 7 \5D6, 6 \5D5, 5 \5D4, 4 \5D3, 3 \5D2, 2 \5D1, 1 \5D0;
   /* 10000 י׳, 9000 ט׳, 8000 ח׳, 7000 ז׳, 6000 ו׳, 5000 ה׳, 4000 ד׳, 3000 ג׳, 2000 ב׳, 1000 א׳, 400 ת, 300 ש, 200 ר, 100 ק, 90 צ, 80 פ, 70 ע, 60 ס, 50 נ, 40 מ, 30 ל, 20 כ, 19 יט, 18 יח, 17 יז, 16 טז, 15 טו, 10 י, 9 ט, 8 ח, 7 ז, 6 ו, 5 ה, 4 ד, 3 ג, 2 ב, 1 א */
-  /* This system manually specifies the values for 19-15 to force the correct display of 15 and 16, which are commonly rewritten to avoid a close resemblance to the Tetragrammaton. */
-  /* Implementations MAY choose to implement this manually to a higher range; see note below. */
+  /* 19〜15 を個別に書いて、15 と 16 を、神の名に似ないよう慣例で書き換える形 (טו・טז) にしている */
+  /* 実装は、これより大きな範囲を手順で作ってもよい (仕様書の続きの注を参照) */
 }
 
 @counter-style kannada {
@@ -256,13 +258,13 @@ const PREDEFINED_COUNTER_CSS = String.raw`
 @counter-style disclosure-open {
   system: cyclic;
   suffix: " ";
-  /* for symbols, see normative text below */
+  /* 記号は書字の向きで変わるので、この規則には書かず、仕様書の本文 (§6.3) で決める */
 }
 
 @counter-style disclosure-closed {
   system: cyclic;
   suffix: " ";
-  /* for symbols, see normative text below */
+  /* 記号は書字の向きで変わるので、この規則には書かず、仕様書の本文 (§6.3) で決める */
 }
 @counter-style cjk-earthly-branch {
   system: fixed;
@@ -307,7 +309,7 @@ const PREDEFINED_COUNTER_CSS = String.raw`
   /* 9000 구천, 8000 팔천, 7000 칠천, 6000 육천, 5000 오천, 4000 사천, 3000 삼천, 2000 이천, 1000 일천, 900 구백, 800 팔백, 700 칠백, 600 육백, 500 오백, 400 사백, 300 삼백, 200 이백, 100 일백, 90 구십, 80 팔십, 70 칠십, 60 육십, 50 오십, 40 사십, 30 삼십, 20 이십, 10 일십, 9 구, 8 팔, 7 칠, 6 육, 5 오, 4 사, 3 삼, 2 이, 1 일, 0 영 */
   suffix: ', ';
   negative: "\B9C8\C774\B108\C2A4  ";
-  /* 마이너스 (followed by a space) */
+  /* 마이너스 (後ろに空白を 1 つ置く) */
 }
 
 @counter-style korean-hanja-informal {
@@ -317,7 +319,7 @@ const PREDEFINED_COUNTER_CSS = String.raw`
   /* 9000 九千, 8000 八千, 7000 七千, 6000 六千, 5000 五千, 4000 四千, 3000 三千, 2000 二千, 1000 千, 900 九百, 800 八百, 700 七百, 600 六百, 500 五百, 400 四百, 300 三百, 200 二百, 100 百, 90 九十, 80 八十, 70 七十, 60 六十, 50 五十, 40 四十, 30 三十, 20 二十, 10 十, 9 九, 8 八, 7 七, 6 六, 5 五, 4 四, 3 三, 2 二, 1 一, 0 零 */
   suffix: ', ';
   negative: "\B9C8\C774\B108\C2A4  ";
-  /* 마이너스 (followed by a space) */
+  /* 마이너스 (後ろに空白を 1 つ置く) */
 }
 
 @counter-style korean-hanja-formal {
@@ -327,7 +329,7 @@ const PREDEFINED_COUNTER_CSS = String.raw`
   /* 9000 九仟, 8000 八仟, 7000 七仟, 6000 六仟, 5000 五仟, 4000 四仟, 3000 參仟, 2000 貳仟, 1000 壹仟, 900 九百, 800 八百, 700 七百, 600 六百, 500 五百, 400 四百, 300 參百, 200 貳百, 100 壹百, 90 九拾, 80 八拾, 70 七拾, 60 六拾, 50 五拾, 40 四拾, 30 參拾, 20 貳拾, 10 壹拾, 9 九, 8 八, 7 七, 6 六, 5 五, 4 四, 3 參, 2 貳, 1 壹, 0 零 */
   suffix: ', ';
   negative: "\B9C8\C774\B108\C2A4  ";
-  /* 마이너스 (followed by a space) */
+  /* 마이너스 (後ろに空白を 1 つ置く) */
 }
 `;
 

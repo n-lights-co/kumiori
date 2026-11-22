@@ -201,6 +201,29 @@ export function cssRefs(css: string): ResourceRef[] {
   return out;
 }
 
+/**
+ * 値 v の全体が url(…) なら、その中身 (前後の空白と引用符を外したもの)。そうでなければ undefined。
+ *  - quotes: 'match' は、前と後ろが同じ引用符のときだけ外す (/^url\(\s*(['"]?)(.*?)\1\s*\)$/i と同じ結果)。
+ *    'any' は、前と後ろの引用符を 1 つずつ、別々に外す (/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i と同じ結果)
+ *  - lineBreaks: false なら、中身に改行 (LF・CR・U+2028・U+2029) のある値は url(…) と見なさない (正規表現の . と同じ)
+ * それらの正規表現は、前の \s* と中身と後ろの \s* が同じ空白を取り合うので、「url(」と空白の長い並びの後に「)」の無い値で
+ * 2 乗・3 乗の手間になる (空白 2,000 個で 8 秒、6,000 個で 200 秒を超えた)。前後を外してから中身を見る (空白は \s と同じ字の trim)
+ */
+export function urlFunctionBody(v: string, quotes: 'match' | 'any', lineBreaks = true): string | undefined {
+  if (!/^url\(/i.test(v) || !v.endsWith(')')) return undefined;
+  const inner = v.slice(4, -1).trimStart();
+  let body: string;
+  if (quotes === 'match') {
+    const t = inner.trimEnd();
+    body = t.length >= 2 && (t[0] === '"' || t[0] === "'") && t.endsWith(t[0]) ? t.slice(1, -1) : t;
+  } else {
+    const head = inner[0] === '"' || inner[0] === "'" ? inner.slice(1) : inner;
+    const t = head.trimEnd();
+    body = t.endsWith('"') || t.endsWith("'") ? t.slice(0, -1) : t;
+  }
+  return !lineBreaks && /[\n\r\u2028\u2029]/.test(body) ? undefined : body;
+}
+
 /** url(…) で包んだ値 (XSL-FO の src="url('a.png')") の中身 */
 function unwrapUrl(v: string): string {
   // /^url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')]*))\s*\)$/i と同じ照合。その正規表現は、空白の長い並びを含む値で 2 乗の時間がかかるので、

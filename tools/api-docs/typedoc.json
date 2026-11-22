@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/typedoc/typedoc-config.schema.json",
+  "name": "Kumiori API",
+  "lang": "ja",
+  "entryPoints": [
+    "../../src/index.ts",
+    "../../src/node.ts"
+  ],
+  "tsconfig": "../../tsconfig.lib.json",
+  "out": "../../dist/api",
+  "readme": "./index.md",
+  "includeVersion": true,
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "treatWarningsAsErrors": true,
+  "intentionallyNotExported": [
+    "LDocument"
+  ],
+  "navigationLinks": {
+    "画面": "../",
+    "GitHub": "https://github.com/n-lights-co/kumiori"
+  },
+  "markdownItOptions": {
+    "html": false
+  }
+}

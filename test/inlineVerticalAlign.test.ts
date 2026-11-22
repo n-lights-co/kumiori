@@ -88,7 +88,7 @@ describe('行内の箱の vertical-align: top・bottom (行の箱の上端・下
 });
 
 // 中の top・bottom の子孫は、外側の部分木に入らず、それ自身の部分木になる (CSS 2.1 §10.8.1 の aligned subtree:
-// "the aligned subtree ... includes ... all inline-level descendant elements and boxes ... whose computed 'vertical-align' is not 'top' or 'bottom'")
+// 部分木には、vertical-align の計算値が top でも bottom でもない行内の子孫だけが入る)
 describe('top・bottom の行内の要素の中の、top・bottom の箱', () => {
   const img = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="40"><rect width="10" height="40"/></svg>');
   /** 1 行目の箱 (画像・inline-block の箱) の上端・下端 */

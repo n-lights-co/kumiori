@@ -127,7 +127,7 @@ describe('自前で読む宣言もカスケードで決める', () => {
   });
 });
 
-describe('background-position の 3・4 値 (Backgrounds 3 §3.6)', () => {
+describe('background-position の 3・4 値 (Backgrounds 3 §2.6)', () => {
   it('語の後の距離はその端から。3 値の欠けた距離は 0。右・下からの百分率は 100% から引く', () => {
     const xy = (v: string) => {
       const c = styleOf('<p id="a">x</p>', `#a { background-position: ${v} }`);

@@ -18,7 +18,7 @@ const dir = path.join(root, 'src/drawio');
  * Node のコマンドの道具 (nodeFiles)・配布物の表示の文 (notice)・途中の和の表 (prefixSums)・pako の型 (pako.d.ts)。
  * ここにファイルを足すのは、そのファイルが draw.io と mxGraph のコードを含まないと確かめたときだけ
  */
-const OWN = ['base64.ts', 'drawioText.ts', 'drawioXml.ts', 'index.ts', 'inflate.ts', 'load.ts', 'messages.ts', 'nodeFiles.ts', 'notice.ts', 'options.ts', 'pako.d.ts', 'prefixSums.ts', 'sniff.ts'];
+const OWN = ['base64.ts', 'drawioHashes.ts', 'drawioPin.ts', 'drawioText.ts', 'drawioXml.ts', 'index.ts', 'inflate.ts', 'load.ts', 'messages.ts', 'nodeFiles.ts', 'notice.ts', 'options.ts', 'pako.d.ts', 'prefixSums.ts', 'sniff.ts'];
 
 const SHAPES = 'v24.7.5';
 const OTHERS = 'v32.6.10';

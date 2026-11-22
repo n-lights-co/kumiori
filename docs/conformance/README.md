@@ -2,12 +2,12 @@
 
 # Kumiori 対応仕様説明書
 
-XSL-FO 1.1・CSS・MathML の要素とプロパティごとに、仕様の定義と原文、Kumiori での扱い、Kumiori で組んだ例と、その見本のコードを並べた文書です。対応していない要素・プロパティ・値も、名前を挙げて一覧にしています。文書そのものも、それぞれの言語で書かれ、Kumiori で組まれます。
+XSL-FO 1.1・CSS・MathML の要素とプロパティごとに、仕様の定義と、仕様がそこで何を決めているかの要約 (節の番号を添えたもの)、Kumiori での扱い、Kumiori で組んだ例と、その見本のコードを並べた文書です。対応していない要素・プロパティ・値も、名前を挙げて一覧にしています。文書そのものも、それぞれの言語で書かれ、Kumiori で組まれます。
 
 | 文書 | 原稿 | 内容 |
 | --- | --- | --- |
 | XSL-FO 1.1 編 | `fo/kumiori-xsl-fo.fo` | XSL-FO の要素とプロパティ、FO の中の MathML、画像の形式、対応していない要素とプロパティ、付録に AH Formatter 向けの拡張 (axf:) の解釈・互換の設定・出典 |
-| HTML と CSS 編 | `html/kumiori-html-css.html`・`html/kumiori-html-css.css` | CSS のプロパティ (ページ・箱・回り込み・書体・文字と行・飾り・縦書き・ルビ・リスト・表・段組・flex と grid・改ページと脚注・画像と数式)、対応していないプロパティ、付録にAH Formatter 向けの拡張 (-ah- の一覧を含む)・互換の設定・出典 |
+| HTML と CSS 編 | `html/kumiori-html-css.html`・`html/kumiori-html-css.css` | CSS のプロパティ (ページ・箱・回り込み・書体・文字と行・飾り・縦書き・ルビ・リスト・表・段組・flex と grid・改ページと脚注・画像と数式)、対応していないプロパティ、付録に AH Formatter 向けの拡張 (-ah- の一覧を含む)・互換の設定・出典 |
 | XSL-FO 1.1 編 (英語版) | `fo/kumiori-xsl-fo.en.fo` | 上の英訳 (見本は同じ。本文・表・目次・しおりが英語)。`out/kumiori-xsl-fo.en.pdf` |
 | HTML と CSS 編 (英語版) | `html/kumiori-html-css.en.html` (CSS は共通) | 上の英訳 (見本は同じ)。`out/kumiori-html-css.en.pdf` |
 
@@ -25,7 +25,7 @@ npm run docs:conformance
 - XSL-FO 編は、コマンドの既定の `--compat spec` (XSL-FO 1.1 の初期値) で組みます。
 - 本文の書体は Kumiori の既定です。和文は Noto Serif JP・Noto Sans JP、欧文は Tinos・Arimo (それぞれ Regular と Bold)、等幅は Cousine、数式は STIX Two Math、どの書体にも無い記号・絵文字は Noto Sans Symbols 2・Noto Emoji を使います。Kumiori が配信元から取得します。
 - 言語・文字ごとの見本、絵文字の見本、可変フォントの見本 (HTML と CSS 編の 5.6〜5.8 節、XSL-FO 1.1 編の 5.1 節・5.6 節) は、既定の書体に無い字・機能を使うので、`scripts/conformance-fonts.mjs` の一覧の書体で組みます (Noto Sans の各文字の書体、Noto Serif Tibetan、Noto Color Emoji、Noto Emoji、Nabla、Anybody、Roboto Flex。合わせて約 29MB)。書体のファイルはリポジトリに入れず、`scripts/build-conformance.mjs` が、Google Fonts の配信元 (fonts.gstatic.com) の、版の付いた URL から置き場に取得します (無いものだけ。置き場は、環境変数 `KUMIORI_FONT_CACHE` か、無ければ `.cache/fonts`)。HTML と CSS 編の見本は、`@font-face` でその URL を指し、XSL-FO 1.1 編の見本には、コマンドの `--font` で渡します。取得できない書体があれば組まずに、コマンドが警告を出せば組んだ後に、誤りで終わります。
-- 組んだ PDF には、使った字だけを取り出した書体 (部分集合) が埋め込まれます。書体のライセンスは、Noto Serif JP・Noto Sans JP・STIX Two Math・Noto Sans Symbols 2・Noto Emoji と、見本の書体 (`scripts/conformance-fonts.mjs` の一覧のもの) が SIL Open Font License 1.1、Tinos・Arimo・Cousine が Apache License 2.0 です (README の「フォント」)。書体の著作権は、それぞれの著作権者にあります。
+- 組んだ PDF には、使った字だけを取り出した書体 (部分集合) が埋め込まれます。書体のライセンスは、Noto Serif JP・Noto Sans JP・STIX Two Math・Noto Sans Symbols 2・Noto Emoji と、見本の書体 (`scripts/conformance-fonts.mjs` の一覧のもの) が SIL Open Font License 1.1、Tinos・Arimo・Cousine が Apache License 2.0 です ([`docs/fonts.md`](../fonts.md))。書体の著作権は、それぞれの著作権者にあります。
 
 ## 見本の書き方
 
@@ -40,7 +40,7 @@ npm run docs:conformance
 
 「対応」「一部」「未対応」は、要素やプロパティを指定した文書と指定しない文書を Kumiori で読み込み、組版に渡す中身 (論理的な木) を比べて確かめています。指定しても中身が変わらないものを未対応とし、各文書の「対応していない…」の章に名前を挙げています。
 
-節の番号、目次、プロパティの定義の行 (仕様のプロパティの表の Initial・Applies to・Inherited などの原文)、未対応の一覧は、取得した仕様からスクリプトで生成し、原稿に書き込んでいます (`gen` の印の間。スクリプトと取得した仕様はリポジトリに入れていません)。拡張 (axf:・-ah-) の説明と値の意味の表は、Kumiori の解釈を Kumiori 自身の言葉で書いたものです。
+節の番号、目次、プロパティの定義の行 (仕様のプロパティの表の Initial・Applies to・Inherited などの値。英語のまま)、未対応の一覧は、取得した仕様からスクリプトで生成し、原稿に書き込んでいます (`gen` の印の間。スクリプトと取得した仕様はリポジトリに入れていません)。拡張 (axf:・-ah-) の説明と値の意味の表は、Kumiori の解釈を Kumiori 自身の言葉で書いたものです。
 
 ## 画像
 
@@ -55,6 +55,6 @@ npm run docs:conformance
 python3 scripts/make-conformance-images.py
 ```
 
-## 引用
+## 引用と要約
 
-W3C の仕様の文は、取得した原文のまま引用しています。取得元と取得日は、各文書の付録「出典」に記しています。引用した文の著作権は W3C にあり、付録「出典」には、各文書の取得した版・元の文書の著作権表示・ライセンスと、ライセンスの本文も載せています。製品のマニュアルは引用していません。
+W3C の仕様の文は引用していません。項目ごとに仕様の節の番号を示し、仕様がそこで何を決めているかを、自分の言葉の 1 文の要約にしています (原文を訳しただけの文にはしていません。英語版の要約も、原文の英文に戻さずに書いています)。プロパティの定義の行には、仕様の定義の表の値 (初期値など) を英語のまま載せています。参照した仕様書は、各文書の付録「出典」に、名前・参照した版 (版の種類と日付) とその URL・取得元の URL と取得日の一覧にしています。製品のマニュアルも引用していません。

@@ -19,13 +19,17 @@ import { parseTextJustifyTrim } from './textJustifyTrim';
 import { msg } from './messages';
 import { countDroppedLink, judgeExternalLink, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { evalExpr, evalLength } from './foExpr';
-import { FO_NS, serializeSvg, utf8Base64, type XEl, type XNode } from './foDom';
+import { FO_NS, KUMIORI_NS, serializeSvg, utf8Base64, type XEl, type XNode } from './foDom';
+import { dropWarichuBoxes, parseWarichuBrackets } from './warichu';
 import { WS_INITIAL, type Ctx, type WhiteSpace } from './foContext';
 import { DEFAULT_PAGE_HEIGHT, DEFAULT_PAGE_WIDTH, readPageMaster, type MasterInfo } from './foPageMaster';
 import { FoMathFallback } from './foMathFallback';
 // 最小 DOM の型は foDom.ts に移した (api.ts・main.ts・テストは従来どおりここから読める)
 export type { XNode } from './foDom';
 import { applyTextTransform } from './textTransform';
+import { STANDARD_STRUCT_TYPES, type StructNode } from './structure';
+import { StructureBuilder, type StructDesc } from './structureBuilder';
+import { urlFunctionBody } from './resources';
 import type {
   Annotation,
   BoxShadow,
@@ -50,6 +54,7 @@ import type {
   LIndexPageCitationList,
   LInlineContainer,
   LInline,
+  LWarichu,
   LPageNumberCitation,
   LInlineLevel,
   LLeader,
@@ -82,6 +87,9 @@ import { layoutMathML, type MNode } from './mathLayout';
 import { isAntennaCompat, type FoCompat } from './compat';
 import { pushAll } from './arrayLoop';
 import { firstLetterOf, stripDoctype } from './linearText';
+import { KumioriInputError, KumioriLimitError } from './errors';
+import type { Diagnostic, DiagnosticSource } from './diagnostics';
+import { elementSource, tagNodeSource } from './sourceLocation';
 
 /** 表の列の番号・数の上限 */
 const MAX_TABLE_COLUMNS = 1000;
@@ -101,7 +109,7 @@ const MAX_LIFTED_SPAN_PIECES = 20000;
  * アンテナハウスの拡張の hsl(H, S, L)・hsla(H, S, L, A) → 色 (rgb(r,g,b)、透明度が 1 未満なら #rrggbbaa)。読めなければ undefined。
  * アンテナハウスの公開の説明 (サンプル FO 集の color-hsl-1 の本文。https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html#hsl) のとおり:
  * 色相 H は単位の無い角度 (0・360 が赤、120 が緑、240 が青)。彩度 S・輝度 L・透明度 A は 0%〜100% か 0.0〜1.0 で、範囲の外は切り詰める
- * (「彩度120%は100%に切り詰められます」)。HSL から RGB へは CSS Color 4 §7.1 の式 (hslToRgb) と同じ。
+ * (たとえば 100% を超える彩度は 100% として扱う。サンプル FO 集の color-hsl-1 の例による)。HSL から RGB へは CSS Color 4 §7.1 の式 (hslToRgb) と同じ。
  * 色相は、説明 (ahf-ext.html の「関数」の hsl()・hsla()) のとおり単位の無い数だけを読む。角度の単位 (CSS Values 4 §7.1 の deg・grad・rad・turn)
  * や知らない字の付いた値は、互換の指定のときだけ読む拡張の値で、製品が読む書き方でないので、読めない色にする (呼ぶ側が知らせる)
  */
@@ -137,10 +145,21 @@ function rgbOf(p: string[]): [number, number, number] | undefined {
   const ch = p.slice(0, 3).map((x) => (x.endsWith('%') ? (parseFloat(x) * 255) / 100 : parseFloat(x)));
   return ch.length === 3 && ch.every((x) => Number.isFinite(x)) ? (ch as [number, number, number]) : undefined;
 }
+/** 割注にできる fo:inline の判定 (XslFoImporter.warichuCandidate): ブロック水準の要素・中をたどる行の中の要素・中身に数える要素 */
+const WARICHU_BLOCKS = /^(block|table|table-and-caption|block-container|float|list-block)$/;
+const WARICHU_INLINES = /^(inline|wrapper|basic-link|bidi-override)$/;
+const WARICHU_CONTENT = /^(character|page-number|page-number-citation|page-number-citation-last|footnote)$/;
 /** 入れ子が深すぎる文書の誤り */
-const tooDeep = () => new Error(msg(`要素の入れ子が深すぎます (${MAX_FO_NEST} 段まで)`, `elements are nested too deeply (up to ${MAX_FO_NEST} levels)`));
+const tooDeep = () => new KumioriLimitError('limit/nesting-depth', msg(`要素の入れ子が深すぎます (${MAX_FO_NEST} 段まで)`, `elements are nested too deeply (up to ${MAX_FO_NEST} levels)`));
 
 export interface ImportOptions {
+  /** 入力のファイルの名前 (診断の場所 source.file に入れる) */
+  sourceName?: string;
+  /**
+   * タグ付き PDF の構造の木を作る (LDocument.structure と、入力の節の tag。structure.ts)。FO の要素を PDF の標準の構造の型 (ISO 32000-1 §14.8.4) に
+   * 当て、fo:static-content と fo:leader を飾り (Artifact) にする。既定 false (構造の木を作らない)
+   */
+  tagged?: boolean;
   /**
    * 文書の外への飛び先のうち、通すもの (linkPolicy.ts)。既定では、http・https・mailto・tel の URL と相対の PDF だけをリンクにする。
    * 通さない飛び先はリンクにせず (字はそのまま組む)、report.droppedLinks に数える
@@ -177,6 +196,8 @@ export interface ImportOptions {
 export interface ImportReport {
   /** 変換できなかった要素・属性の種類ごとの出現数 */
   unsupported: Record<string, number>;
+  /** unsupported の項目ごとの、最初に現れた所 (診断の場所) */
+  unsupportedAt?: Record<string, DiagnosticSource>;
   /** 近似や既定値で代用した箇所の説明 */
   notes: string[];
   /** 参照している画像の src (正規化済み)。UI が、同時に選択されたファイルと突き合わせる */
@@ -185,6 +206,8 @@ export interface ImportReport {
   files?: string[];
   /** リンクにしなかった、文書の外への飛び先 (ImportOptions の links で通さないもの)。理由の見出しごとの件数 */
   droppedLinks?: DroppedLinks;
+  /** 読み込みの診断 (タグ付き PDF の構造の木を作るときに上限に当たったことなど) */
+  diagnostics?: Diagnostic[];
   counts: { sequences: number; blocks: number; tables: number; footnotes: number; floats: number; rubies: number };
 }
 
@@ -250,7 +273,7 @@ const ENUMERATED_VALUES: Record<string, readonly string[]> = {
 };
 /**
  * 組版に効かない性質 (読まなくても結果は変わらないので、報告しない)。role・source-document は、視覚でない媒体のための手がかり
- * (XSL 1.1 §7.5 Common Accessibility Properties。§7.5.2 role: “provides a hint for alternate renderers (aural readers, etc.)”)
+ * (XSL 1.1 §7.5 Common Accessibility Properties。§7.5.2 の role は、音声で読む機械などの別の表し方への手がかりで、組版には効かない)
  */
 const NO_FORMATTING_EFFECT = new Set(['role', 'source-document']);
 
@@ -559,8 +582,17 @@ class Importer {
   }
 
   // ── 報告 ──
-  miss(what: string, n = 1) {
+  miss(what: string, n = 1, where: XEl | undefined = this.curEl) {
     this.report.unsupported[what] = (this.report.unsupported[what] ?? 0) + n;
+    // 最初に現れた所を、診断の場所にする (読んでいる要素の行・列。読み終えてから見直すところ (読まなかった属性) は、その要素を渡す)
+    const at = (this.report.unsupportedAt ??= Object.create(null) as Record<string, DiagnosticSource>);
+    if (!(what in at) && where) at[what] = this.locate(where);
+  }
+  /** 読んでいる要素 (診断の場所に使う。element の間) */
+  private curEl?: XEl;
+  /** 要素の場所 (行・列は xmldom の locator。ブラウザの DOMParser では無い) */
+  private locate(el: XEl): DiagnosticSource {
+    return elementSource(el as unknown as Parameters<typeof elementSource>[0], this.opts.sourceName);
   }
   /** 読まずに捨てる要素を、読み込みの報告に数える (FO の要素は fo:名前、ほかは書いたとおりの名前) */
   missElement(el: XEl, label?: string) {
@@ -618,7 +650,7 @@ class Importer {
       }
       const asked = this.asked.get(el);
       if (!live.has(el) && !TEXT_ONLY_FO.has(qn(el))) {
-        this.miss(parent ? msg(`${qn(el)} (${qn(parent)} の中)`, `${qn(el)} (in ${qn(parent)})`) : qn(el));
+        this.miss(parent ? msg(`${qn(el)} (${qn(parent)} の中)`, `${qn(el)} (in ${qn(parent)})`) : qn(el), 1, el as XEl);
         dead.add(el);
         continue;
       }
@@ -630,17 +662,16 @@ class Importer {
           // (読む所は知らない値を初期値・継承した値のままにする)
           const ok = ENUMERATED_VALUES[k];
           const v = a.value.trim();
-          if (ok && v !== 'inherit' && !ok.includes(v) && !(k === 'force-page-count' && /^\d+$/.test(v))) this.miss(`${k}="${v.slice(0, 30)}"`);
+          if (ok && v !== 'inherit' && !ok.includes(v) && !(k === 'force-page-count' && /^\d+$/.test(v))) this.miss(`${k}="${v.slice(0, 30)}"`, 1, el as XEl);
           continue;
         }
-        this.miss(this.asked.has(el) && !this.askedNames.has(k) ? k : `${k} (${qn(el)})`);
+        this.miss(this.asked.has(el) && !this.askedNames.has(k) ? k : `${k} (${qn(el)})`, 1, el as XEl);
       }
     }
   }
   /**
    * 「正の整数」の <number> の値 (column-count・column-number・number-columns-repeated・number-columns-spanned・number-rows-spanned)。
-   * 正でない値・整数でない値は、1 以上の最も近い整数に丸める (XSL 1.1 §7.27.2・§7.28.8・§7.28.12・§7.28.13・§7.28.14:
-   * “rounded to the nearest integer value greater than or equal to 1”)。ちょうど半分の値の丸め方は仕様に無いので、Math.round (大きい方) にする。
+   * 正でない値・整数でない値は、1 以上の最も近い整数に丸める (XSL 1.1 §7.27.2・§7.28.8・§7.28.12・§7.28.13・§7.28.14)。ちょうど半分の値の丸め方は仕様に無いので、Math.round (大きい方) にする。
    * 数として読めなければ NaN (呼ぶ側が初期値を使う)
    */
   posInt(v: string | undefined): number {
@@ -690,6 +721,125 @@ class Importer {
       if (written) s.add(k);
     } else if (s === undefined || written) this.asked.set(n, written ? new Set([k]) : null);
   }
+  /**
+   * Kumiori の拡張の属性 (名前空間 KUMIORI_NS の、局所名 local の属性)。接頭辞の名前は文書が決める。名前空間を宣言せずに kumiori: の属性を
+   * 書いた文書は、XML の読み取り (xmlParse.ts) が誤りにする (Namespaces in XML 1.0 §5.1。誤りの文で、宣言の書き方を案内する)
+   */
+  kumioriAttr(n: XNode, local: string): string | undefined {
+    for (const a of Array.from((n.attributes ?? []) as ArrayLike<{ name: string; value: string; namespaceURI?: string | null; localName?: string | null }>)) {
+      if (a.namespaceURI === KUMIORI_NS && (a.localName ?? a.name.replace(/^.*:/, '')) === local) {
+        this.markAsked(n, a.name);
+        return a.value.trim();
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 割注 (Kumiori の拡張。warichu.ts): fo:inline の kumiori:warichu="auto" (既定は none) で、中身を 2 行に割って行の中に入れる。前後の括弧は
+   * kumiori:warichu-brackets (auto | none | 2 つの文字列。既定は auto = 全角の丸括弧)。XSL 1.1 にもアンテナハウスの拡張にも割注の書き方が無いので、
+   * Kumiori の名前空間の属性にしている (どの互換の指定でも読む)
+   */
+  private warichuOf(n: XEl): LWarichu | undefined {
+    const v = this.kumioriAttr(n, 'warichu');
+    if (v === undefined || v === 'none') return undefined;
+    if (v !== 'auto') {
+      this.miss(`kumiori:warichu="${v.slice(0, 30)}"`);
+      return undefined;
+    }
+    if (!this.isWarichuInline(n)) {
+      // 割注の中の割注 (入れ子) は、割注の 2 行の中に、さらに 2 行を割って置けないので、内側は割注にしない。指定を読まなかったことを知らせる
+      if (this.warichuCandidate(n) && this.inWarichu(n)) this.miss(msg('kumiori:warichu (割注の中の割注)', 'kumiori:warichu (warichu inside warichu)'));
+      return undefined;
+    }
+    const bv = this.kumioriAttr(n, 'warichu-brackets');
+    let b = parseWarichuBrackets(bv);
+    if (!b) {
+      this.miss(`kumiori:warichu-brackets="${(bv ?? '').slice(0, 30)}"`);
+      b = parseWarichuBrackets('auto')!;
+    }
+    const w: LWarichu = { ...b };
+    const parts = this.sb?.warichuParts(n, b);
+    if (parts) w.tagParts = parts;
+    return w;
+  }
+
+  /**
+   * 割注として組む fo:inline か: 割注にできる fo:inline (warichuCandidate) で、割注の中の fo:inline でないもの (入れ子の内側は割注にしない)。
+   * 構造の型 (Warichu) と組版 (warichuOf) は、どちらもこれで決める
+   */
+  private isWarichuInline(e: XEl): boolean {
+    return this.warichuCandidate(e) && !this.inWarichu(e);
+  }
+
+  /**
+   * 祖先に、割注にできる fo:inline (warichuCandidate) があるか。要素ごとに覚え、親の結果から決める (割注の fo:inline ごとに祖先を
+   * たどり、祖先ごとに部分木を見直していたので、割注の数の 2 乗 × 入れ子の段数の手間になっていた)
+   */
+  private inWarichu(e: XEl): boolean {
+    // 覚えた要素 (か根元) まで上り、そこから下りながら決める: 要素の答え = 親が要素なら、親の答えか、親が候補か
+    const chain: XEl[] = [];
+    for (let x: XEl | null = e; x && x.nodeType === 1 && !this.inWarichuMemo.has(x); x = x.parentNode as XEl | null) chain.push(x);
+    for (let k = chain.length - 1; k >= 0; k--) {
+      const p = chain[k].parentNode as XEl | null;
+      // 祖先をたどるのは、行の中の要素 (WARICHU_INLINES) の間だけ (HTML の isWarichuElement が inline・contents の間だけたどるのと同じ)。
+      // fo:inline-container などの字でない箱の中は、割注の中では箱ごと組まない (dropWarichuBoxes が知らせる) ので、割注の中に数えない
+      const through = !!p && p.nodeType === 1 && this.isFo(p) && WARICHU_INLINES.test(this.name(p));
+      this.inWarichuMemo.set(chain[k], !!p && p.nodeType === 1 && ((through && this.inWarichuMemo.get(p)!) || (this.isFo(p) && this.warichuCandidate(p))));
+    }
+    return this.inWarichuMemo.get(e)!;
+  }
+  /** 要素 → 祖先に割注にできる fo:inline があるか (inWarichu) */
+  private inWarichuMemo = new WeakMap<XEl, boolean>();
+  /** 要素 → 子の並び (行の中の要素の中も) にブロック水準の要素・中身があるか (warichuCandidate) */
+  private warichuContentMemo = new WeakMap<XEl, { block: boolean; content: boolean }>();
+
+  /**
+   * 割注にできる fo:inline か: kumiori:warichu="auto" で、ブロック水準の要素を含まず (fo:wrapper・fo:inline など、行の中の要素の中も見る。
+   * 読み込みは、ブロックを含む行の中の要素をブロックにする)、中身 (空白でない字・fo:character・ページ番号・脚注) があるもの。
+   * 画像・fo:inline-container などの字でない箱は、割注の中では組まない (warichu.ts の dropWarichuBoxes) ので、中身に数えない
+   */
+  private warichuCandidate(e: XEl): boolean {
+    if (this.name(e) !== 'inline' || this.kumioriAttr(e, 'warichu') !== 'auto') return false;
+    const r = this.warichuContent(e);
+    return !r.block && r.content;
+  }
+
+  /**
+   * 要素の子の並び (行の中の要素 fo:inline・fo:wrapper などの中も) に、ブロック水準の要素と、中身 (空白でない字・fo:character・ページ番号・脚注)
+   * があるか (warichuCandidate)。要素ごとに覚える (入れ子の割注の候補ごとに部分木を見直すと、入れ子の段数 × 大きさの手間になる)
+   */
+  private warichuContent(e: XEl): { block: boolean; content: boolean } {
+    const memo = this.warichuContentMemo.get(e);
+    if (memo) return memo;
+    let block = false;
+    let content = false;
+    for (const c of Array.from(e.childNodes)) {
+      if (c.nodeType === 3 || c.nodeType === 4) {
+        if (/\S/.test(c.textContent ?? '')) content = true;
+        continue;
+      }
+      if (c.nodeType !== 1 || !this.isFo(c as XEl)) continue;
+      const nm = this.name(c as XEl);
+      if (WARICHU_BLOCKS.test(nm)) {
+        block = true;
+        break;
+      }
+      if (WARICHU_CONTENT.test(nm)) content = true;
+      if (WARICHU_INLINES.test(nm)) {
+        const r = this.warichuContent(c as XEl);
+        if (r.content) content = true;
+        if (r.block) {
+          block = true;
+          break;
+        }
+      }
+    }
+    const r = { block, content };
+    this.warichuContentMemo.set(e, r);
+    return r;
+  }
+
   attr(n: XNode, k: string): string | undefined {
     this.markAsked(n, k);
     if (n.hasAttribute && n.getAttribute && n.hasAttribute(k)) {
@@ -697,7 +847,7 @@ class Importer {
       return v === null ? undefined : v.trim();
     }
     // 一括指定 (font・background・page-break-*・size) から決まる個別の性質。個別に書いた性質が勝つ (XSL 1.1 §5.2:
-    // “The individual properties are always more precise than any shorthand.”)
+    // 個別の性質は、どの一括指定よりも細かい指定として勝つ)
     return this.shorthandsOf(n)?.[k];
   }
 
@@ -813,7 +963,7 @@ class Importer {
    * 分綴の特性を、親から受け継いだ組 (parent) に重ねる。この要素に指定が無ければ undefined (親の組をそのまま受け継ぐ)。
    *  - hyphenation-character (XSL 1.1 §7.10.5): 行末に出す字 (1 字)
    *  - hyphenation-push-character-count (§7.10.6): 切れ目の後 (次の行へ送る側) の最小の字数。hyphenation-remain-character-count (§7.10.7): 前の最小の字数。
-   *    どちらも 1 以上の整数に丸める (“rounded to the nearest integer value greater than or equal to 1”)
+   *    どちらも 1 以上の最も近い整数に丸める (§7.10.6・§7.10.7)
    *  - hyphenation-ladder-count (§7.16.2): 続けて分綴する行の数の上限 (no-limit か、1 以上の整数に丸めた数)
    *  - hyphenation-keep (§7.16.1): auto だけ。column・page (分綴した語の前後を同じ段・ページに置く) は読まず、未対応として報告する
    */
@@ -867,15 +1017,15 @@ class Importer {
   }
 
   /**
-   * word-spacing の .minimum・.maximum (XSL 1.1 §7.17.8 の <space>。仕様モード): “This allows the user to specify a range of adjustments in
-   * addition to the default space between words. The minimum and maximum values specify the limits of the adjustment.”
+   * word-spacing の .minimum・.maximum (XSL 1.1 §7.17.8 の <space>。仕様モード): 既定の語間に加える調整の
+   * 幅を、範囲で書ける。.minimum と .maximum が、その範囲の両端。
    * この要素に word-spacing (一括の値・成分) を書いたときだけ決め直す (書かなければ、親の限りを受け継ぐ: 継承される性質)。
-   *  - 一括の値 (normal・<length>) は、3 つの成分を同じ値にする (§5.11 の <space> の短い形: “Such a specification gives that value to each of
-   *    the <length> components”)。成分を書けば、その成分が勝つ (“the complete forms have precedence over the expansion of a short form”)
+   *  - 一括の値 (normal・<length>) は、3 つの成分を同じ値にする (§5.11 の <space> の短い形: その値を、
+   *    どの <length> の成分にも与える)。成分を書けば、その成分が勝つ (§5.11: 成分を書いた形が、短い形を広げたものより優先する)
    *  - .minimum が .optimum より大きければ .optimum、.maximum が .optimum より小さければ .optimum とする (§5.11)
    *  - 縮める限り = .optimum − .minimum (inlineLayout の wordSpaceShrinkLimit。.minimum を書かなければ 0: 縮めない)
    *  - 広げる限り = .maximum − .optimum (wordSpaceStretchLimit)。.maximum を書かなければ限り無し ('none'): normal も <length> も
-   *    .maximum = .optimum だが、両端揃えの行は語間を広げて埋める (§7.16.9 の justify: “the UA may stretch the inline boxes”。Kumiori の今までの動き)
+   *    .maximum = .optimum だが、両端揃えの行は語間を広げて埋める (§7.16.9 の justify: 行の中の箱を伸ばしてよい。Kumiori の今までの動き)
    * 互換モードは読まない (今までどおり、未対応の指定として報告する)
    */
   private readWordSpacingRange(el: XEl, s: TextStyle, opt: number, fs: number): void {
@@ -1010,7 +1160,7 @@ class Importer {
 
   /**
    * reference-orientation (反時計回りの度数)。90 の倍数以外は 0 として報告する。
-   * inherit は親の要素の計算値 (XSL 1.1 §5.9.10.1: “The property takes the same computed value as the property for the formatting object's parent object.”)。
+   * inherit は親の要素の計算値 (XSL 1.1 §5.9.10.1: 親の formatting object の、同じ性質の計算値を取る)。
    * reference-orientation は継承しない性質 (§7.21.3 Inherited: no) なので、親に指定が無ければ初期値の 0
    */
   refOrientation(el: XEl): Rotation {
@@ -1029,9 +1179,8 @@ class Importer {
   }
 
   /**
-   * <angle> (§5.11: 符号・数・単位 deg / grad / rad。“The specified values are normalized to the range 0deg to 360deg.”) を、
-   * 0・90・180・270 度の最も近い値に丸める (§7.29.2・§7.29.3: “The User Agent shall round the value of the angle to the closest
-   * of the permitted values.”)。<angle> として読めなければ undefined
+   * <angle> (§5.11: 符号・数・単位 deg / grad / rad。指定の値は 0deg〜360deg の範囲に直す) を、
+   * 0・90・180・270 度の最も近い値に丸める (§7.29.2・§7.29.3: 角度は、許された値のうち最も近いものに丸める)。<angle> として読めなければ undefined
    */
   private angle90(v: string): 0 | 90 | 180 | 270 | undefined {
     const m = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(deg|grad|rad)$/.exec(v.trim());
@@ -1175,7 +1324,7 @@ class Importer {
    * 寸法の下限・上限の指定 (属性の値)。絶対の min-height・max-height・min-width・max-width (§7.15.8〜§7.15.11) は、書字方向で
    * block-progression-dimension か inline-progression-dimension の .minimum・.maximum に当たる (XSL 1.1 §5.3.3: block の進む向きが
    * 上下なら height の組が block、width の組が inline。左右なら逆)。絶対の指定があればそれを使い、無ければ相対の成分。
-   * max-* の none は上限なし (“if "max-height" is specified as "none", reset: block-progression-dimension.maximum=auto”)
+   * max-* の none は上限なし (§5.3.3 の対応の表: max-height が none なら、block-progression-dimension.maximum を auto に戻す)
    */
   private dimLimit(el: XEl, wm: WritingMode, axis: 'inline' | 'block', which: 'minimum' | 'maximum'): string | undefined {
     const abs = this.attrInh(el, `${which === 'minimum' ? 'min' : 'max'}-${(wm === 'horizontal-tb') === (axis === 'block') ? 'height' : 'width'}`);
@@ -1437,8 +1586,8 @@ class Importer {
       before = m[0];
       let letter = m[1];
       let rest = k.slice(m[0].length + m[1].length);
-      // オランダ語の語頭の IJ (CSS 2.1 §5.12.2: “if the letter combination "ij" appears at the beginning of a word, both letters
-      // should be considered within the :first-letter pseudo-element”)
+      // オランダ語の語頭の IJ (CSS 2.1 §5.12.2: 語頭の ij の 2 字は、
+      // どちらも :first-letter の中に入れる)
       if (/^nl\b/i.test(ctx.lang ?? '') && /[Ii]$/.test(letter) && /^[Jj]/.test(rest)) {
         letter += rest[0];
         rest = rest.slice(1);
@@ -1607,8 +1756,8 @@ class Importer {
 
   /**
    * ページ番号の字の前後に、fo:folio-prefix・fo:folio-suffix の中身を付ける (XSL 1.1 §6.6.10: ページ番号の行内の領域の中身は、
-   * “the content of any fo:folio-prefix child of the reference-page-sequence, followed by fo:character flow objects; one for each
-   * character in the folio-number string …, followed by the content of any fo:folio-suffix child of the reference-page-sequence”)。
+   * 基準の page-sequence の子の fo:folio-prefix の中身、番号の文字列の字ごとの fo:character、基準の page-sequence の子の
+   * fo:folio-suffix の中身の順)。
    * seq は基準の page-sequence: fo:page-number はそれを含む page-sequence (§6.6.10)、fo:page-number-citation・-last は引いたページを
    * 作った page-sequence (§6.6.11・§6.6.12)。中身は、ページ番号の位置の書式 (ctx) で読む。付けるものが無ければ undefined
    */
@@ -1661,7 +1810,7 @@ class Importer {
   /**
    * index-key (§7.24.2) の付いた要素を、索引の鍵の付いた所として控え、その要素の id (無ければ作る) を返す。
    * id の置かれたページの記録 (ページ番号の参照と同じ仕組み) から、その要素の領域のあるページを引く。
-   * index-class (§7.24.1) は “ignored on any formatting object for which an index-key property has not been specified”
+   * index-class (§7.24.1) は、index-key の付いていない要素では読まない (仕様がそう決めている)
    */
   private indexEntryOf(n: XEl, key: string, id: string | undefined): LIndexEntry {
     let e = this.indexEls.get(n);
@@ -1714,8 +1863,8 @@ class Importer {
     if (leave('merge-pages-across-index-key-references')) list.mergePagesAcrossReferences = false;
     for (const c of this.els(n)) {
       const name = this.isFo(c) ? this.name(c) : '';
-      // 区切りの字の書式は、区切りの要素から受け継ぐ (§6.10.7: “The traits of the fo:inline are inherited from the
-      // fo:index-page-citation-list-separator”)。2 つ目からは読まない
+      // 区切りの字の書式は、区切りの要素から受け継ぐ (§6.10.7: 区切りを包む fo:inline の性質は、
+      // fo:index-page-citation-list-separator から受け継ぐ)。2 つ目からは読まない
       if (name === 'index-page-citation-list-separator' && !list.listSeparator) list.listSeparator = this.indexInlineContent(c, c2);
       else if (name === 'index-page-citation-range-separator' && !list.rangeSeparator) list.rangeSeparator = this.indexInlineContent(c, c2);
       else if (name === 'index-key-reference') {
@@ -1725,7 +1874,7 @@ class Importer {
           this.miss(msg('fo:index-key-reference (ref-index-key が無い)', 'fo:index-key-reference (no ref-index-key)'));
           continue;
         }
-        // ページ番号と前後の字の書式は、fo:index-key-reference から受け継ぐ (§6.10.7: “The traits of the fo:inline are inherited from R”)
+        // ページ番号と前後の字の書式は、fo:index-key-reference から受け継ぐ (§6.10.7: 番号を包む fo:inline の性質は、その fo:index-key-reference から受け継ぐ)
         const { style: rs, ctx: cr } = this.textStyle(c, c2);
         const ref: LIndexKeyReference = { refKey };
         // page-number-treatment (§7.24.3): link | no-link。初期値 no-link、継承される
@@ -1740,8 +1889,7 @@ class Importer {
           else this.missElement(p, this.isFo(p) ? msg(`fo:${pn} (fo:index-key-reference の中)`, `fo:${pn} (in fo:index-key-reference)`) : undefined);
         }
         // ページ番号は §6.6.10 の中身 (引いたページを作った page-sequence の fo:folio-prefix・番号・fo:folio-suffix。§6.10.7 の Step C:
-        // “using the page referenced by the cited page item as the reference-page, and the fo:page-sequence that generated the
-        // referenced page as the reference-page-sequence”)。どの page-sequence のページを引くかは組んでみないと分からないので、
+        // 項目の引いたページを基準のページに、そのページを作った fo:page-sequence を基準の page-sequence にする)。どの page-sequence のページを引くかは組んでみないと分からないので、
         // 前後の字を持つ page-sequence ごとに、この位置の書式で読んでおく
         for (const ps of this.folioSeqs) {
           const { prefix, suffix } = this.folioEls(ps);
@@ -1776,8 +1924,7 @@ class Importer {
       for (let k = kids.length - 1; k >= 0; k--) todo.push(kids[k]);
     }
     doc.indexEntries = [...order.keys()];
-    // “If there is no such fo:index-range-end, it is an error, and the implementation should recover by assuming the equivalent of a
-    // matching fo:index-range-end at the end of the document.” (§6.10.4)
+    // 組になる fo:index-range-end が無いのは誤りで、文書の終わりにそれがあるとみなして続ける (§6.10.4)
     for (const e of doc.indexEntries)
       if (e.range && e.endId === undefined) this.note(msg(`fo:index-range-begin id="${e.id}" と組になる fo:index-range-end がありません (文書の終わりまでを範囲にします)`, `fo:index-range-begin id="${e.id}" has no matching fo:index-range-end (the range extends to the end of the document)`));
     for (const [ps, key] of this.folioKeys) {
@@ -1789,6 +1936,7 @@ class Importer {
   convert(root: XEl): LDocument {
     const doc: LDocument = { type: 'document', sequences: [], spaceResolution: 'xsl' };
     this.indexParents(root);
+    if (this.opts.tagged) this.startStructure(root);
     if (this.hasChangeBars) this.prepareChangeBars(root);
     const lms = this.els(root).find((e) => this.name(e) === 'layout-master-set');
     const masters = new Map<string, MasterInfo>();
@@ -1807,12 +1955,21 @@ class Importer {
     }
     this.readPunctuationSpacing(root);
     // fo:page-sequence-wrapper (§6.4.6) は、中の page-sequence を順に組む (入れ子もよい)
-    // axf:document-info (PDF の文書情報)
+    // axf:document-info (PDF の文書情報)。name の値は、アンテナハウスの公開の説明 (AH Formatter のオンラインマニュアル「拡張仕様」の
+    // axf:document-info。https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html#axf.document-info 、2026-11-20 取得) の一覧による:
+    // 文書の題は document-title、ほかに author・subject・keywords。一覧に無い name="title" は、これまで Kumiori が題として読んでいたので、
+    // 書いた文書の題を変えないように読み続けるが、説明に無い名前なので、document-title に書き換えるよう知らせる。両方を書いたときは、
+    // 説明にある document-title を使う (書いた順によらない)
+    let titleFrom: 'document-title' | 'title' | undefined;
     const docInfo = (c: XEl) => {
       const key = this.attr(c, 'name');
       const value = this.attr(c, 'value') ?? '';
-      if (key === 'title' || key === 'author' || key === 'subject' || key === 'keywords') (doc.info ??= {})[key] = value;
-      if (key === 'title' && value) doc.title = value;
+      if (key === 'title') this.note(msg('axf:document-info name="title" は、アンテナハウスの説明に無い名前です。文書の題は name="document-title" で書いてください (title も、題として読みます)', 'axf:document-info name="title" is not a name in the Antenna House documentation; write the document title with name="document-title" (title is still read as the title)'));
+      if (key === 'document-title' || (key === 'title' && titleFrom !== 'document-title')) {
+        titleFrom = key;
+        (doc.info ??= {}).title = value;
+        if (value) doc.title = value;
+      } else if (key === 'author' || key === 'subject' || key === 'keywords') (doc.info ??= {})[key] = value;
     };
     const sequencesOf = (el: XEl): XEl[] => this.els(el).flatMap((c) => (this.name(c) === 'page-sequence-wrapper' ? sequencesOf(c) : [c]));
     this.indexFolios(sequencesOf(root).filter((c) => this.name(c) === 'page-sequence'));
@@ -1847,6 +2004,11 @@ class Importer {
     this.finishIndex(doc, root);
     this.report.counts.sequences = doc.sequences.length;
     if (!doc.sequences.length) this.note(msg('page-sequence が見つかりませんでした', 'no page-sequence was found'));
+    if (this.sb) {
+      doc.structure = this.sb.finish(doc);
+      const ds = this.sb.limitDiagnostics();
+      if (ds.length) this.report.diagnostics = [...(this.report.diagnostics ?? []), ...ds];
+    }
     return doc;
   }
 
@@ -1969,11 +2131,11 @@ class Importer {
       // で、アンテナハウスは MS 明朝で組んだ「fo:table-body≧fo:table-row」を ≧ の後ろで改行する。仕様モードは UAX #14 の既定 (AL)
       ...(this.spec ? {} : { ambiguousWideBreak: true }),
       // 仕様モード: 追込みで欧文の語間 (空白) を詰めるのは、両端揃えで組む行だけ (inlineLayout の markWordSqueeze)。
-      // XSL 1.1 §7.17.8: word-spacing="normal" の語間 (空白の字の前後の space-start・space-end) は “.maximum = .optimum, .minimum = .optimum”
-      // で、縮める幅が無い。§7.16.9: 字の並びに手を入れてよいのは justify のとき (“In the case of 'justify', the UA may stretch the inline
-      // boxes in addition to adjusting their positions.”)。start・end・center・inside・outside (left・right) は、行の中身を寄せるだけ。
-      // CSS Text 3 §6.1 (“In the case of justify, the UA may stretch or shrink any inline boxes by adjusting their text.”)・§6.4.1・
-      // §7.1 (word-spacing: normal は “No additional spacing is applied.”) も同じ。
+      // XSL 1.1 §7.17.8: word-spacing="normal" の語間 (空白の字の前後の space-start・space-end) は .maximum も .minimum も .optimum と同じ
+      // で、縮める幅が無い。§7.16.9: 字の並びに手を入れてよいのは justify のとき (箱の位置を変えるほかに、行の中の箱を伸ばしてよい)。
+      // start・end・center・inside・outside (left・right) は、行の中身を寄せるだけ。
+      // CSS Text 3 §6.1 (justify のときは、字の間を変えて箱を伸び縮みさせてよい)・§6.4.1・
+      // §7.1 (word-spacing: normal は語間を足さない) も同じ。
       // 約物のアキの追込みは、揃えによらず行う。
       // 互換モードは、揃えによらず語間・和欧間を詰めない (上の noSpaceSqueeze) ので、この指定は要らない
       ...(this.spec ? { wordSqueezeJustifiedOnly: true } : {}),
@@ -2101,6 +2263,8 @@ class Importer {
         if (r.clip) cont.overflow = 'hidden';
         if (r.align === 'center') cont.blockAlign = 'center';
         else if (r.align === 'after') cont.blockAlign = 'end';
+        // タグ付き PDF: region-before・region-after の柱は、ページの上・下の柱 (Artifact の Pagination の Subtype Header・Footer。ISO 32000-1 §14.8.2.2.2)
+        if (this.sb) cont.tag = this.sb.artifact(r.side === 'before' ? 'header' : r.side === 'after' ? 'footer' : 'pagination');
         out.push(cont);
       }
       return out;
@@ -2144,9 +2308,8 @@ class Importer {
     }
     const sepBodyW = def.pageW - (def.master.margins.left + def.master.margins.right) * PT_PER_MM;
     if (bfSepEl) seq.beforeFloatSeparator = this.children(bfSepEl, { ...ctx, width: sepBodyW });
-    // 脚注の区切り (XSL 1.1 §6.12.1.3「Conditional Sub-Regions」: “If there is an fo:static-content whose "flow-name" property value is
-    // "xsl-footnote-separator", then the areas returned by formatting the fo:static-content are inserted in the proper order as the initial
-    // children of a footnote-reference-area”。§6.4.1.4・§6.4.5 も、区切りの領域は、この static-content を組んで返る領域だけ)。
+    // 脚注の区切り (XSL 1.1 §6.12.1.3「Conditional Sub-Regions」: flow-name が xsl-footnote-separator の
+    // fo:static-content があれば、それを組んで返る領域を、順に footnote-reference-area の最初の子として入れる。§6.4.1.4・§6.4.5 も、区切りの領域は、この static-content を組んで返る領域だけ)。
     // 区切りを描くのは、この static-content を組んだ結果だけで、仕様に既定の区切り線は無い:
     //  - static-content が無ければ (組む子が無ければ)、区切りを描かない
     //  - あれば、中身をいつもそのまま組む。罫線・アキ・背景を、どの書き方 (longhand・shorthand・絶対の向き・相対の向き) で書いても、
@@ -2155,8 +2318,8 @@ class Importer {
     //    前は属性の名前の並びで「空か」を決めていて、border-after-style などで書いた罫線の区切りを捨てていた
     const sepContent = sepEl ? this.children(sepEl, { ...ctx, width: sepBodyW }) : [];
     // 区切りの領域は、脚注の参照領域 (footnote-reference-area) の最初の子になる (§6.12.1.3)。参照領域の始めの、
-    // conditionality が discard の space-before は 0 にする (§4.3.1 の空きの解決: “If any of the space-specifiers in S is conditional,
-    // and begins a reference-area or line-area, then it is set to zero”)。組版の側は区切りを先頭の空きを残して組むので、ここで落とす。
+    // conditionality が discard の space-before は 0 にする (§4.3.1 の空きの解決: 参照領域・行の領域の
+    // 始めにある conditional の空きは 0 にする)。組版の側は区切りを先頭の空きを残して組むので、ここで落とす。
     // 落とすのは、先頭のブロックと、前側に罫線・パディングの無い入れ子の先頭のブロックの space-before だけ
     // (margin-top などから来る space-before と space-before.conditionality="retain" は retainSpaceBefore で、残す)
     {
@@ -2209,8 +2372,7 @@ class Importer {
     }
     if (fmt && fmt !== '1') seq.pageNumberFormat = fmt;
     // 桁区切り (§7.26.2 grouping-separator・§7.26.3 grouping-size。XSLT 1.0 §7.7.1): 10 進の番号を、後ろから grouping-size 桁ごとに
-    // grouping-separator (1 字) で区切る。片方だけの指定は無視する (“If only one of the grouping-separator and grouping-size attributes
-    // is specified, then it is ignored.”)
+    // grouping-separator (1 字) で区切る。片方だけの指定は無視する (XSLT 1.0 §7.7.1)
     this.markAsked(ps, 'grouping-separator');
     const gSep = ps.getAttribute?.('grouping-separator') ?? undefined;
     const gSizeAttr = this.attr(ps, 'grouping-size');
@@ -2561,13 +2723,13 @@ class Importer {
     else if (ttAttr === 'none') textTransform = undefined;
     else if (ttAttr) this.miss(`text-transform:${ttAttr}`);
     // font-variant (§7.9.8): small-caps は、字の並びに small caps の印を付けて運ぶ (children。字形を使うか、縮めた大文字で代えるかは組むときに
-    // 書体を見て決める: “If a genuine small-caps font is not available, user agents should simulate a small-caps font”)。継承される
+    // 書体を見て決める: 本物の small caps の書体が無ければ、処理系が似せて作る)。継承される
     let smallCaps = ctx.smallCaps;
     const fv = this.attrInh(el, 'font-variant');
     if (fv === 'small-caps') smallCaps = true;
     else if (fv === 'normal') smallCaps = false;
     else if (fv) this.miss(`font-variant:${fv.slice(0, 20)}`);
-    // word-spacing (§7.17.8): <length> は、語の間の空白の既定の幅に足す量 (“inter-word space in addition to the default space between words”)。
+    // word-spacing (§7.17.8): <length> は、語の間の空白の既定の幅に足す量 (§7.17.8)。
     // <space> (.minimum・.optimum・.maximum) は optimum を足し、.minimum・.maximum は、両端揃えで縮める・広げる限り (仕様モード。
     // 下の wordSpaceShrinkLimit・wordSpaceStretchLimit)。normal は足さない。継承される
     let wordSpacing = ctx.wordSpacing;
@@ -2957,7 +3119,7 @@ class Importer {
   }
 
   /**
-   * 背景を塗る範囲 (XSL 1.1 §4.9.4 Border, Padding, and Background: “The background, if any, is rendered in the padding-rectangle”。
+   * 背景を塗る範囲 (XSL 1.1 §4.9.4 Border, Padding, and Background: 背景は padding-rectangle に塗る。
    * 罫線は border-rectangle と padding-rectangle の間に描く。§7.8.5・§7.8.6 の背景の位置の百分率も padding-rectangle が基準)。
    * 互換の指定によらない (アンテナハウスの組版結果も padding の矩形まで)。
    * 不透明の、すき間の無い罫線 (実線と、立体の線種 groove・ridge・inset・outset) は下の背景を隠すので、どちらの矩形まで塗っても見た目は同じ:
@@ -3012,9 +3174,9 @@ class Importer {
   }
 
   /**
-   * visibility (§7.30.17): hidden・collapse は、場所を残して描かない (“The generated box is invisible (fully transparent), but still affects
-   * layout.”)。継承される (XSL は “made it an inherited property”)。collapse は、表の行・列のほかでは hidden と同じ
-   * (“If used on elements other than rows or columns, "collapse" has the same meaning as "hidden".”)。表の行・列を取り除く動き
+   * visibility (§7.30.17): hidden・collapse は、場所を残して描かない (箱は見えない (透明な) まま、
+   * 組み方には効く)。継承される (XSL は継承する性質に変えたと書く)。collapse は、表の行・列のほかでは hidden と同じ
+   * (同じ節)。表の行・列を取り除く動き
    * (CSS2 の dynamic row and column effects) は組まないので、hidden として扱って報告する。読めない値も報告する
    */
   private hiddenOf(el: XEl, inherited: boolean | undefined): boolean {
@@ -3032,7 +3194,7 @@ class Importer {
   /**
    * relative-position="relative" (§7.13.5) のずらし (pt。右・下が正)。left・top をそのまま使い、left が無く right があれば −right、
    * top が無く bottom があれば −bottom、どちらも無ければ 0 (§5.5.5)。組んだ後の箱を動かし、前後の配置は変えない
-   * (“Only during rendering is the area rendered offset relative to this position.”)。static (初期値) なら undefined
+   * (§7.13.5: 領域を描くときにだけ、その位置からずらす)。static (初期値) なら undefined
    */
   private relativeOffsetOf(el: XEl, ctx: Ctx): { x: number; y: number } | undefined {
     const rp = this.attr(el, 'relative-position');
@@ -3054,8 +3216,8 @@ class Importer {
   }
 
   /**
-   * z-index (§7.30.18) の、親の値に足した値 (§5.4.5: “the refined value is the specified value plus the refined value of z-index of its
-   * parent formatting object, if any”)。auto は足さない
+   * z-index (§7.30.18) の、親の値に足した値 (§5.4.5: 精錬した値は、指定の値に、親の formatting object の
+   * z-index の精錬した値を足したもの)。auto は足さない
    */
   private zIndexOf(el: XEl): number {
     let z = 0;
@@ -3069,7 +3231,7 @@ class Importer {
 
   /**
    * clear (§7.19.1): その側の先の fo:float (side-float) の下まで下げる。left は start、right は end と読む
-   * (“left Interpreted as "clear='start'". right Interpreted as "clear='end'".”)。
+   * (仕様は、left を clear="start"、right を clear="end" と同じに扱うと決めている)。
    * 組版が受けられるのは fo:block の start・end・both だけ。inside・outside (ページの偶奇で側が決まる) と、ほかの要素
    * (fo:float・fo:table・fo:block-container・fo:list-block など。supported = false) の clear は、読まずに報告する
    */
@@ -3117,7 +3279,7 @@ class Importer {
         // 外への飛び先は href に入れる (PDF のしおりの動作になる。fo:basic-link の external-destination と同じ扱い)
         const ext = this.attr(b, 'external-destination');
         // 通さない飛び先 (linkPolicy) は、しおりの動作にしない (題だけのしおりになる)
-        const href = !bm.ref && ext ? this.allowedExternal(ext.replace(/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i, '$1')) : undefined;
+        const href = !bm.ref && ext ? this.allowedExternal(urlFunctionBody(ext, 'any') ?? ext) : undefined;
         if (href !== undefined) bm.href = href;
         if (this.attr(b, 'starting-state') === 'hide') bm.open = false;
         const kids = this.bookmarks(b);
@@ -3228,7 +3390,7 @@ class Importer {
   }
 
   /**
-   * axf:background-size (アンテナハウスの拡張。CSS Backgrounds 3 §3.9 の background-size と同じ値:
+   * axf:background-size (アンテナハウスの拡張。CSS Backgrounds 3 §2.9 の background-size と同じ値:
    * [ <length> | <percentage> | auto ]{1,2} | cover | contain)。axf: の付いた名前なので、どのモードでも読む。
    * 参照: https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html の axf:background-size。読むのは最初の層だけ (複数の背景は未対応)。
    * 百分率は、背景を置く領域 (padding の箱) の幅・高さに対する割合で、組版で箱の大きさが決まってから長さにする
@@ -3389,6 +3551,25 @@ class Importer {
   }
 
   private element(n: XEl, ctx: Ctx): Array<{ v: LBlockLevel | LInlineLevel; block: boolean }> {
+    const prevEl = this.curEl;
+    this.curEl = n;
+    let out: Array<{ v: LBlockLevel | LInlineLevel; block: boolean }>;
+    try {
+      out = this.element0(n, ctx);
+    } finally {
+      this.curEl = prevEl;
+    }
+    // 診断の場所: 要素から作った入力の節に、要素の行・列を結び付ける (中の要素から作った節は、それぞれの要素の場所を先に持つ)
+    if (out.length) {
+      const src = this.locate(n);
+      for (const o of out) tagNodeSource(o.v, src);
+    }
+    // タグ付き PDF: 要素から作った入力の節に、要素の構造の節の番号を付ける (中の要素から作った節は、それぞれの要素の番号を先に持つ)
+    if (this.sb && this.isFo(n)) for (const o of out) this.sb.tag(o.v, n);
+    return out;
+  }
+
+  private element0(n: XEl, ctx: Ctx): Array<{ v: LBlockLevel | LInlineLevel; block: boolean }> {
     // アンテナハウスの自動脚注番号: 参照側の axf:footnote-number は脚注の自動連番 (footnote() で扱う)、本体の citation は番号に置き換わる
     const axf = n.nodeName.startsWith('axf:') ? this.name(n) : '';
     if (axf === 'footnote-number') return [];
@@ -3400,7 +3581,7 @@ class Importer {
       // axf:form・axf:form-field の属性は、接頭辞の無い名前でも読む (formField の注を参照)
       const method = this.attr(n, 'axf:field-submit-method') ?? this.attr(n, 'field-submit-method');
       // 送り先の URL も、リンクと同じ決まりでスキームを見る (スキームの無い相対の送り先は、そのまま)
-      const dest = url ? this.allowedSubmitUrl(url.replace(/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i, '$1')) : undefined;
+      const dest = url ? this.allowedSubmitUrl(urlFunctionBody(url, 'any') ?? url) : undefined;
       this.form = { ...(dest ? { url: dest } : {}), ...(method === 'get' || method === 'post' ? { method } : {}) };
       const kids = this.children(n, ctx);
       this.form = saved;
@@ -3498,9 +3679,15 @@ class Importer {
           this.trimInlineEdge(kids, 'start');
           this.trimInlineEdge(kids, 'end');
         }
+        // ブロックを含む fo:inline は、割注にしない (割注の 2 行の中にブロックは置けない)。指定を読まなかったことを知らせる
+        if (blockish && tag === 'inline' && this.kumioriAttr(n, 'warichu') === 'auto') this.miss(msg('kumiori:warichu (ブロックを含む fo:inline)', 'kumiori:warichu (fo:inline containing blocks)'));
         if (blockish) return one({ type: 'block', ...this.idOf(n), ...style, ...(link ? { link } : {}), children: kids } as LBlock, true);
         const bg = c2.hidden ? undefined : this.color(this.attr(n, 'background-color'));
         const inl: LInline = { type: 'inline', ...this.idOf(n), ...style, children: kids as LInlineLevel[] };
+        const wari = tag === 'inline' ? this.warichuOf(n) : undefined;
+        if (wari) inl.warichu = wari;
+        // 割注の中の字でない箱 (画像・fo:inline-container など) は組まない (warichu.ts の dropWarichuBoxes)。知らせる
+        if (wari && dropWarichuBoxes(inl.children)) this.miss(msg('割注の中の字でない箱 (画像・fo:inline-container など)', 'non-character boxes in warichu (images, fo:inline-container, etc.)'));
         // index-key の付いた行内の要素がページをまたぐとき、領域のあるページすべてを引く (§6.10.6)。行内の id の記録は最初の字の
         // ページだけなので、中身の終わりに目印 (幅の無い行内の箱) を置いて、最後のページを引けるようにする
         // 中身の無いもの (索引の位置だけを示す fo:wrapper) は、領域を作らない目印
@@ -3564,8 +3751,8 @@ class Importer {
       case 'index-page-citation-list':
         return one(this.indexCitationList(n, ctx), false);
       case 'index-range-begin': {
-        // “Each fo:index-range-begin formatting object must specify both an id and an index-key property.” (§6.10.4)
-        // 領域を作らない (“does not generate any area”) ので、id の位置を記録するだけの、幅の無い目印にする
+        // fo:index-range-begin には、id と index-key の両方が要る (§6.10.4)
+        // 領域を作らない (同じ節) ので、id の位置を記録するだけの、幅の無い目印にする
         const id = this.attr(n, 'id');
         if (!id || !n.hasAttribute?.('index-key')) {
           this.miss(msg('fo:index-range-begin (id と index-key が要る)', 'fo:index-range-begin (id and index-key are required)'));
@@ -3579,7 +3766,7 @@ class Importer {
       }
       case 'index-range-end': {
         // 組になるのは、ref-id が id と同じ fo:index-range-begin で、文書の中で前にあるもの。無ければ
-        // “it is an error, and the implementation should recover by ignoring this fo:index-range-end” (§6.10.5)
+        // 誤りで、その fo:index-range-end を無視して続ける (§6.10.5)
         let endId = this.indexEnds.get(n);
         if (endId === undefined) {
           const b = this.indexRanges.get(this.attr(n, 'ref-id') ?? '');
@@ -3616,7 +3803,7 @@ class Importer {
           // 要素自身の字の書式 (color・font-size など。§6.6.11 の共通フォント特性・color) は、行内の箱で包んで当てる
           const { style, ctx: c2 } = this.textStyle(n, ctx);
           // 番号の前後には、引いたページを作った page-sequence の fo:folio-prefix・fo:folio-suffix の中身を付ける (§6.6.11・§6.6.12:
-          // “using the cited page as the reference-page, and the fo:page-sequence that generated the cited-page as the reference-page-sequence”)。
+          // 引いたページを基準のページに、そのページを作った fo:page-sequence を基準の page-sequence にする)。
           // 引いた先は、ref-id の要素を含む page-sequence (-last は最後のもの)。物理的なページ番号 (axf:physical-page-number) には付けない
           const cited = this.idSeqs?.get(cit.refId);
           const parts = cit.physical ? undefined : this.withFolio(cit, cit.last ? cited?.last : cited?.first, c2);
@@ -3941,10 +4128,16 @@ class Importer {
     return undefined;
   }
 
-  /** フォームの送り先の URL。スキームが通さないものなら undefined (数える)。スキームの無い相対の送り先は、そのまま返す */
+  /**
+   * フォームの送り先の URL。スキームが通さないものなら undefined (数える)。スキームの無い相対の送り先は、そのまま返す。
+   * ただし、絶対パス (/…・C:…) と UNC の道 (\\host\…) は、リンクの方針と同じく links.launch のときだけ通す (前はそのまま SubmitForm に
+   * 書いていたので、手元の別のファイルや、ほかの機械の共有フォルダへ、フォームの中身を送らせられた)
+   */
   private allowedSubmitUrl(url: string): string | undefined {
-    const j = judgeExternalLink(url, this.opts.links);
-    if (j.kind !== 'uri' || j.allowed) return url;
+    const first = judgeExternalLink(url, this.opts.links);
+    // 相対の送り先は、相対参照のままの URI として見る (絶対パスは launch のときだけ通る)
+    const j = first.kind === 'uri' ? first : judgeExternalLink(url, { ...this.opts.links, relative: 'uri' });
+    if (j.allowed) return url;
     countDroppedLink((this.report.droppedLinks ??= {}), j);
     return undefined;
   }
@@ -3953,7 +4146,7 @@ class Importer {
   private linkOf(n: XEl): LinkTarget | undefined {
     const ext = this.attr(n, 'external-destination');
     if (ext) {
-      const url = this.allowedExternal(ext.replace(/^url\(\s*['"]?([\s\S]*?)['"]?\s*\)$/i, '$1'));
+      const url = this.allowedExternal(urlFunctionBody(ext, 'any') ?? ext);
       return url !== undefined ? { external: url } : undefined;
     }
     const int = this.attr(n, 'internal-destination');
@@ -3974,7 +4167,8 @@ class Importer {
     const an: Annotation = { kind };
     if (kind === 'file-attachment') {
       // 添付するファイル (uri-specification: url(...) か、そのままの URI) と、PDF の中のファイル名
-      const fa = this.attr(n, 'axf:annotation-file-attachment')?.trim().replace(/^url\(\s*['"]?(.*?)['"]?\s*\)$/i, '$1');
+      const faRaw = this.attr(n, 'axf:annotation-file-attachment')?.trim();
+      const fa = faRaw === undefined ? undefined : (urlFunctionBody(faRaw, 'any', false) ?? faRaw);
       if (fa) {
         const name = this.attr(n, 'axf:annotation-file-name') || (fa.startsWith('data:') ? undefined : fa.split(/[\\/]/).pop());
         an.file = { src: fa, ...(name ? { name } : {}) };
@@ -4038,6 +4232,8 @@ class Importer {
         this.report.counts.rubies++;
         const r: LRuby = { type: 'ruby', baseText: text(blocks[1]), rubyText: text(blocks[0]) };
         if (fsRel(blocks[0]) > 0 && fsRel(blocks[0]) !== 0.5) r.rubyScale = fsRel(blocks[0]);
+        // タグ付き PDF: ルビ (Ruby・RB・RT。ISO 32000-1 §14.8.4.3.5)
+        if (this.sb) this.sb.ruby(r, this.sb.st(n), (this.foOrder.get(n) ?? 0) + 1e-3);
         return [{ v: r, block: false }];
       }
     }
@@ -4198,7 +4394,7 @@ class Importer {
     if (Object.keys(length).length) l.length = length;
     if (Object.keys(pct).length) l.lengthPct = pct;
     // leader-alignment (§7.22.1。継承される): 点・中身の繰り返しの周期を、参照領域・ページの始めの端からの格子に合わせる
-    // (“For fo:leaders where the "leader-pattern" property is specified as "dot" or as "use-content", this property will be honored.”)
+    // (leader-pattern が dot か use-content のリーダーにだけ効く)
     const la = this.inheritedAttr(n, 'leader-alignment');
     if (la === 'reference-area' || la === 'page') {
       if (l.pattern !== 'dots') {
@@ -4290,7 +4486,7 @@ class Importer {
         else c.layer = 'behind';
       }
       const fs = c2.fontSize;
-      // fixed はページを基準にする (§7.6.1「fixed with respect to the page」)。absolute は最も近い祖先の参照領域
+      // fixed はページを基準にする (§7.6.1: fixed はページに対して固定する)。absolute は最も近い祖先の参照領域
       const fixedPage = absPos === 'fixed' && ctx.pageSize ? ctx.pageSize : undefined;
       const refOrigin = fixedPage ? { x: 0, y: 0 } : ctx.refOrigin;
       const refSize = fixedPage ? { w: fixedPage.w, h: fixedPage.h } : ctx.refSize;
@@ -4400,6 +4596,12 @@ class Importer {
     // 脚注本体の文字の大きさは、周りから受け継いだ値 (FO の継承。HTML 向けの既定の 0.8 倍は使わない)
     if (out.fontSize === undefined) out.fontSize = c2.fontSize;
     if (label) out.label = label;
+    // タグ付き PDF: 本体 (fo:footnote-body) は注 (Note)、参照の印は、その前の参照 (Reference)。頭の番号は、本体の中に書いたもの
+    // (組版は番号を付けない: bodyLabel が false)
+    if (this.sb && body) {
+      out.tag = this.sb.st(body);
+      this.sb.footnote(out, out.tag, false);
+    }
     // 参照記号は、FO の参照側 inline の書式 (文字の大きさ・baseline-shift) で組む
     const refInline = refEl && this.name(refEl) === 'inline' ? refEl : refEl ? this.els(refEl).find((e) => this.name(e) === 'inline') : undefined;
     if (refEl) {
@@ -4428,6 +4630,233 @@ class Importer {
       } else out.referenceShift = 'none';
     }
     return out;
+  }
+
+  // ───────────────────────── タグ付き PDF の構造 ─────────────────────────
+
+  /** タグ付き PDF の構造の木を作る仕組み (ImportOptions.tagged のときだけ) */
+  private sb?: StructureBuilder<XEl>;
+  /** FO の要素の文書の順 (前順の番号) */
+  private foOrder = new Map<XEl, number>();
+  /** 要素の言語 (自分か祖先の xml:lang・language と country。無ければ '') */
+  private langMemo = new Map<XEl, string>();
+
+  /**
+   * 構造の木を作り始める (根元は文書。ISO 32000-1 §14.8.4.2 の Document)。文書の言語は fo:root の言語、無ければ最初の
+   * fo:page-sequence の言語 (XSL 1.1 §7.10.1 の language・country、§7.31.24 の xml:lang)
+   */
+  private startStructure(root: XEl) {
+    // 要素を前順にたどって、文書の順を振る (明示のスタック。入れ子の深さは indexParents が MAX_FO_NEST で抑えている)
+    const stack: XEl[] = [root];
+    let k = 0;
+    while (stack.length) {
+      const e = stack.pop()!;
+      this.foOrder.set(e, k++);
+      const kids = this.els(e);
+      for (let j = kids.length - 1; j >= 0; j--) stack.push(kids[j]);
+    }
+    const firstSeq = (function find(this: Importer, el: XEl): XEl | undefined {
+      for (const c of this.els(el)) {
+        const n = this.name(c);
+        if (n === 'page-sequence') return c;
+        if (n === 'page-sequence-wrapper') {
+          const f = find.call(this, c);
+          if (f) return f;
+        }
+      }
+      return undefined;
+    }).call(this, root);
+    const lang = this.structLang(root) || (firstSeq ? this.structLang(firstSeq) : '');
+    if (lang) this.langMemo.set(root, lang);
+    this.sb = new StructureBuilder<XEl>(
+      {
+        parent: (e) => this.parents.get(e),
+        order: (e) => this.foOrder.get(e) ?? this.foOrder.size,
+        describe: (e) => this.structDesc(e),
+        // fo:list-item の子 (fo:list-item-label・fo:list-item-body) は、自分で記号・本文になる
+        liBody: false,
+      },
+      root,
+      lang ? { lang } : {},
+    );
+  }
+
+  /** 要素の言語 (BCP 47 の形。xml:lang か language、地域の無い言語には country を足す。無ければ '') */
+  private structLang(e: XEl | undefined): string {
+    if (!e) return '';
+    const memo = this.langMemo.get(e);
+    if (memo !== undefined) return memo;
+    const own = this.ownLang(e);
+    const v = own ?? this.structLang(this.parents.get(e));
+    this.langMemo.set(e, v);
+    return v;
+  }
+
+  /** 要素そのものに書いた言語 (書いていなければ undefined。language="none" は '') */
+  private ownLang(e: XEl): string | undefined {
+    const x = e.getAttribute?.('xml:lang')?.trim() || e.getAttribute?.('language')?.trim();
+    if (!x) return undefined;
+    if (x === 'none') return '';
+    const country = e.getAttribute?.('country')?.trim();
+    return !x.includes('-') && country && country !== 'none' ? `${x}-${country}` : x;
+  }
+
+  /**
+   * FO の要素の構造の型 (XSL 1.1 の各要素の節の意味から、ISO 32000-1 §14.8.4 の標準の型に当てる)。undefined は構造を作らない
+   * (中身は親の構造に入る)、'Artifact' は飾り。
+   * - role (XSL 1.1 §7.5.2: 代わりの描き方への手がかり) の値が標準の型の名前なら、その型にする
+   * - アンテナハウスの拡張 (AH Formatter のオンラインマニュアル「PDF出力」のタグ付きPDF・「拡張仕様」。
+   *   https://www.antenna.co.jp/AHF/help/ja/ahf-pdf.html#taggedpdf 、https://www.antenna.co.jp/AHF/help/ja/ahf-ext.html 、2026-11-20 取得):
+   *   axf:pdftag は構造の型の名前 (Artifact なら飾り、空 ('' と書いたもの) なら構造を作らない)、axf:alttext は図の代わりの文、
+   *   axf:expansion-text は略語の展開。どれも接頭辞の付いた拡張なので、互換の指定に関わらず読む。
+   *   標準の型でない名前 (role・axf:pdftag) は、独自の型として書き、RoleMap で既定の型に写す (§14.7.3)
+   */
+  private structDesc(e: XEl): StructDesc | 'Artifact' | undefined {
+    if (!this.isFo(e)) return undefined;
+    const name = this.name(e);
+    let role: string | undefined;
+    switch (name) {
+      case 'page-sequence':
+        role = 'Part';
+        break;
+      // 柱 (fo:static-content) は、ページの飾り (組版の木の staticContent。StructureBuilder.finish が Pagination にする)
+      case 'static-content':
+      case 'leader':
+        return 'Artifact';
+      case 'block':
+        role = this.blockHasLine(e) ? 'P' : 'Div';
+        break;
+      case 'block-container':
+      case 'float':
+      case 'table-and-caption':
+        role = 'Div';
+        break;
+      case 'table-caption':
+        role = 'Caption';
+        break;
+      case 'table':
+        role = 'Table';
+        break;
+      case 'table-header':
+        role = 'THead';
+        break;
+      case 'table-body':
+        role = 'TBody';
+        break;
+      case 'table-footer':
+        role = 'TFoot';
+        break;
+      case 'table-row':
+        role = 'TR';
+        break;
+      case 'table-cell':
+        // fo:table-header の中のセルは見出しのセル (列の見出し)
+        role = this.inTableHeader(e) ? 'TH' : 'TD';
+        break;
+      case 'list-block':
+        role = 'L';
+        break;
+      case 'list-item':
+        role = 'LI';
+        break;
+      case 'list-item-label':
+        role = 'Lbl';
+        break;
+      case 'list-item-body':
+        role = 'LBody';
+        break;
+      case 'basic-link':
+        role = 'Link';
+        break;
+      // 割注 (kumiori:warichu="auto" の fo:inline。warichuOf) は Warichu (ISO 32000-1 §14.8.4.4)。中身は WT、前後の括弧は WP
+      // (割注として組まない fo:inline (ブロックを含むもの・中身の無いもの) は、構造も作らない。isWarichuInline)
+      case 'inline':
+        if (this.isWarichuInline(e)) role = 'Warichu';
+        break;
+      case 'footnote-body':
+        role = 'Note';
+        break;
+      case 'external-graphic': {
+        // MathML の外部ファイル (externalMath と同じ見分け方。ファイルは読まない) は数式
+        const src = this.attr(e, 'src') ?? '';
+        role = /mathml/i.test(this.attr(e, 'content-type') ?? '') || /\.mml\W*\)?\W*$/i.test(src) ? 'Formula' : 'Figure';
+        break;
+      }
+      case 'instream-foreign-object': {
+        const fr = this.foreignRoot(e);
+        role = fr && this.name(fr) === 'math' ? 'Formula' : 'Figure';
+        break;
+      }
+    }
+    const node: StructDesc['node'] = { role: role ?? '' };
+    // 言語: 要素に書いた言語が、親の要素の言語と違うときだけ (§14.9.2)
+    const own = this.ownLang(e);
+    if (own && own !== this.structLang(this.parents.get(e))) node.lang = own;
+    const expansion = this.attr(e, 'axf:expansion-text');
+    if (expansion) node.expansion = expansion;
+    // 構造の型の名前の指定: axf:pdftag (拡張)、role (標準の性質。標準の型の名前のときだけ型にし、ほかの名前は独自の型)
+    const pdftag = this.attr(e, 'axf:pdftag');
+    const named = pdftag !== undefined ? pdftag.replace(/^(['"])(.*)\1$/, '$2').trim() : this.attr(e, 'role');
+    if (pdftag !== undefined && named === '') return undefined;
+    if (named === 'Artifact') return 'Artifact';
+    const inline = /^(inline|wrapper|bidi-override|character|page-number|page-number-citation|page-number-citation-last|inline-container)$/.test(name);
+    if (named && STANDARD_STRUCT_TYPES.has(named)) node.role = named;
+    // 名前の長さの上限は 127 バイト (ISO 32000-1 付録 C.2 Table C.1・ISO 19005-2 §6.1.13)。PDF の名前は UTF-8 のバイトで書くので、
+    // 字の数でなくバイトの数で数える (和字は 1 字 3 バイト)。超える名前は独自の型にせず、標準の型にする
+    else if (named && named.length <= 127 && new TextEncoder().encode(named).length <= 127 && /^[^\s()<>[\]{}/%#]+$/.test(named)) {
+      node.custom = named;
+      node.role ||= inline ? 'Span' : 'Div';
+    }
+    // 行の中の要素は、言語・展開の違うときだけ Span にする (言語・展開は構造の節に書く)
+    if (!node.role) {
+      if (!inline || (!node.lang && !node.expansion)) return undefined;
+      node.role = 'Span';
+    }
+    if (node.role === 'Figure' || node.role === 'Formula') {
+      const fr = name === 'instream-foreign-object' ? this.foreignRoot(e) : undefined;
+      const alt = this.attr(e, 'axf:alttext') || (fr && this.name(fr) === 'math' ? fr.getAttribute?.('alttext') : undefined);
+      if (alt) node.alt = alt;
+    } else if (node.role === 'Link') {
+      const alt = this.attr(e, 'axf:alttext');
+      if (alt) node.alt = alt;
+    }
+    if (node.role === 'TH' || node.role === 'TD') this.cellStruct(e, node);
+    // 注 (Note) は ID を持つ (ISO 14289-1 §7.9)。要素 (か fo:footnote) の id、無ければ作る
+    if (node.role === 'Note') {
+      const fn = this.parents.get(e);
+      node.sid = e.getAttribute?.('id') || (fn && this.name(fn) === 'footnote' ? fn.getAttribute?.('id') : undefined) || `note-${this.foOrder.get(e) ?? 0}`;
+    }
+    return { node };
+  }
+
+  /** fo:block が行を持つか (子に、空白でない字か行の中の要素がある): 段落 (P)。ブロックだけを持つなら Div */
+  private blockHasLine(e: XEl): boolean {
+    for (const c of Array.from(e.childNodes)) {
+      if ((c.nodeType === 3 || c.nodeType === 4) && !isXmlSpaceOnly(c.textContent ?? '')) return true;
+      if (c.nodeType !== 1) continue;
+      if (!this.isFo(c)) return true;
+      if (!/^(block|block-container|table|table-and-caption|list-block|float|marker|wrapper|change-bar-begin|change-bar-end|initial-property-set)$/.test(this.name(c))) return true;
+    }
+    return false;
+  }
+
+  /** 表のセルが fo:table-header の中か */
+  private inTableHeader(e: XEl): boolean {
+    for (let a = this.parents.get(e); a; a = this.parents.get(a)) {
+      const n = this.name(a);
+      if (n === 'table-header') return true;
+      if (n === 'table-body' || n === 'table-footer' || n === 'table') return false;
+    }
+    return false;
+  }
+
+  /** 表のセルの構造の属性 (ISO 32000-1 §14.8.5.7): またぐ行・列の数と、見出しのセルの向き (fo:table-header の中のセルは列の見出し) */
+  private cellStruct(e: XEl, n: Omit<StructNode, 'kids' | 'parent'>) {
+    const cs = parseInt(e.getAttribute?.('number-columns-spanned') ?? '1', 10);
+    const rs = parseInt(e.getAttribute?.('number-rows-spanned') ?? '1', 10);
+    if (cs > 1) n.colSpan = Math.min(cs, 1000);
+    if (rs > 1) n.rowSpan = Math.min(rs, 65534);
+    if (n.role === 'TH') n.scope = 'Column';
   }
 
   // ───────────────────────── 表・リスト ─────────────────────────
@@ -4667,7 +5096,15 @@ class Importer {
         out = [];
         let cur: LTableCell[] = [];
         const flush = () => {
-          if (cur.length) out.push({ type: 'table-row', cells: cur });
+          if (cur.length) {
+            const row: LTableRow = { type: 'table-row', cells: cur };
+            // タグ付き PDF: 行の要素が無いので、セルの構造の節を入れる行 (TR) を作る
+            if (this.sb) {
+              const tr = this.sb.group('TR', cur.map((c) => (c as { tag?: number }).tag ?? -1));
+              if (tr !== undefined) row.tag = tr;
+            }
+            out.push(row);
+          }
           cur = [];
         };
         for (const c of cells) {
@@ -4751,6 +5188,7 @@ class Importer {
         return cell;
       });
     const row: LTableRow = { type: 'table-row', ...this.idOf(r), ...style, cells };
+    this.sb?.tag(row, r);
     // 行の罫線は、罫線を重ねる表 (collapse) でだけ使われる (§6.7.9)。使うかどうかは組むときに決まる
     const rb = this.border(r, c2);
     if (rb) row.border = rb;
@@ -4833,7 +5271,7 @@ class Importer {
     // セルは参照領域 (§6.7.10) なので、中で明示した start-indent・end-indent は、セルの内容の端から測る (§7.11.7・§7.11.8)。
     // 外の字下げを引かない (引くと、外の字下げの分だけセルの外へはみ出す)。
     // 仕様モード: 指定の無いブロックも、セルの start-indent・end-indent の値 (表から受け継いだ値か、表の中の要素に書いた値) を受け継ぐ
-    // (§5.3.2・§7.11.7) ので、セルの内容の端からその分だけ下げる (block-container の中と同じ形。S-07)。
+    // (§5.3.2・§7.11.7) ので、セルの内容の端からその分だけ下げる (block-container の中と同じ形)。
     // 互換モードは従来どおり、指定の無いブロックをセルの端に置く
     const [si, ei] = this.spec ? [c2.startIndent, c2.endIndent] : [0, 0];
     const cw0 = cellW ?? tw;
@@ -4863,6 +5301,7 @@ class Importer {
     if (box.width !== undefined) this.cellWidth.set(cell, box.width);
     if (cs > 1) cell.colSpan = cs;
     if (rs > 1) cell.rowSpan = rs;
+    this.sb?.tag(cell, c);
     return cell;
   }
 
@@ -4986,7 +5425,11 @@ class Importer {
       const mk = (e: XEl | undefined, which: 'label' | 'body', extra: Partial<LTableCell> = {}): LTableCell => {
         if (!e) return { type: 'table-cell', ...extra, children: [] };
         const { style: es, ctx: ec } = this.textStyle(e, c3);
-        return { type: 'table-cell', ...this.idOf(e), ...es, ...extra, children: this.children(e, { ...ec, ...indentsOf(which) }) };
+        // タグ付き PDF: ラベル・本体のセルは、項目の記号 (Lbl)・本文 (LBody)
+        const cell: LTableCell = { type: 'table-cell', ...this.idOf(e), ...es, ...extra, children: [] };
+        this.sb?.tag(cell, e);
+        cell.children = this.children(e, { ...ec, ...indentsOf(which) });
+        return cell;
       };
       const labelCell = mk(label, 'label', { textAlign: 'start' });
       if (labelEndPad > 0) labelCell.padding = { [endSide]: labelEndPad };
@@ -4997,6 +5440,7 @@ class Importer {
       // relative-align="baseline" の項目 (§7.14.6): ラベルと本体の 1 行目の基線をそろえる
       if (c3.relAlign === 'baseline') labelCell.blockAlign = bodyCell.blockAlign = 'baseline';
       const row: LTableRow = { type: 'table-row', ...this.idOf(it), ...s2, cells: [labelCell, bodyCell] };
+      this.sb?.tag(row, it);
       if (itemBox.margin) {
         // 項目の space-before / space-after は、行の前後の余白にする (隣の項目・リストの前後の余白と重ね合わせる。§4.3.1)
         const sb = (itemBox.margin as Record<string, number>)[this.phys('before', c3.wm, c3.rtl)] ?? 0;
@@ -5032,7 +5476,7 @@ export function importXslFo(xml: string, parse: (xml: string) => XNode, opts: Im
   // 先頭の BOM・空白は XML 宣言の前に置けない (サンプルにも存在する) ので取り除く
   const dom = parse(xml.replace(/^[\uFEFF\s]+/, ''));
   const root = dom.nodeType === 9 ? (Array.from(dom.childNodes).find((c) => c.nodeType === 1) as XEl) : dom;
-  if (!root || (importer.name(root) !== 'root' && !root.nodeName.endsWith('root'))) throw new Error(msg('fo:root が見つかりません (XSL-FO ではないようです)', 'fo:root was not found (this does not look like XSL-FO)'));
+  if (!root || (importer.name(root) !== 'root' && !root.nodeName.endsWith('root'))) throw new KumioriInputError('input/not-xsl-fo', msg('fo:root が見つかりません (XSL-FO ではないようです)', 'fo:root was not found (this does not look like XSL-FO)'));
   let document: LDocument;
   try {
     document = importer.convert(root);
@@ -5046,13 +5490,6 @@ export function importXslFo(xml: string, parse: (xml: string) => XNode, opts: Im
   return { document, report: importer.report };
 }
 
-/** ブラウザ用: DOMParser を使うパーサ */
-export const browserParse = (xml: string): XNode => {
-  const d = new DOMParser().parseFromString(xml, 'application/xml');
-  const err = d.getElementsByTagName('parsererror')[0];
-  if (err) throw new Error(msg(`XML の解析に失敗しました: ${err.textContent?.slice(0, 200)}`, `XML parse error: ${err.textContent?.slice(0, 200)}`));
-  return d as unknown as XNode;
-};
 
 /**
  * writing-mode の値の裏返し (XSL 1.1 §7.29.7)。横・縦 (と右から左) で組めるもの (lr-tb・rl-tb・tb-rl・tb-lr と略記) は undefined

@@ -9,6 +9,7 @@
  *  5. PDFFlateStream の contentsCache を差し替えて、圧縮の関数を替える (useDeflate)
  *  6. PDFPage の内容の流れ (getContentStream) の命令の並び (operators) をじかに読み書きする (pageOperators。描いた命令を Form XObject に移す)
  *  7. 描き終えたページの内容の流れ (PDFPage の contentStream・contentStreamRef) を、圧縮したバイト列の流れに置き換える (sealPageContents)
+ *  8. PDFNumber.of: 絶対値が PDF の実数の最も小さい正規の値 (約 1.175e-38) より小さい数を 0 に、有限でない数・最も大きい値 (約 3.403e38) を超える数を抑える (patchSmallNumbers)
  * (fontkit の異体字の並びの字形の引き方 (CmapProcessor.getVariationSelector) の差し替えは、PDF を作らないときの組版・描画にも
  *  要るので、書体を読む fontManager.ts の patchFontkitVariationSelector にある。同じ理由で、CFF の字形の輪郭の読み
  *  (CFFGlyph の _getPath の hflex・hflex1 と、CFFFont の fdForGlyph の FDSelect の範囲) の差し替えは fontkitCffFlex.ts にある)
@@ -16,19 +17,40 @@
  * 前提 (差し替えるメソッドの存在) は、このモジュールを読み込んだときに assertPdfLibInternals で確かめる。
  * 「差し替え済み」の印はモジュールの変数でなく、差し替えた原型 (prototype) 自体に付ける (テストで同じ pdf-lib を複数回読み込んでも二重に包まない)
  */
-import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFContentStream, PDFContext, PDFDict, PDFDocument, PDFFlateStream, PDFFont, PDFHexString, PDFImage, PDFPage, PDFRawStream, PDFRef, PngEmbedder } from 'pdf-lib';
+import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFContentStream, PDFContext, PDFDict, PDFDocument, PDFFlateStream, PDFFont, PDFHexString, PDFImage, PDFNumber, PDFPage, PDFRawStream, PDFRef, PngEmbedder } from 'pdf-lib';
 import type { PDFOperator } from 'pdf-lib';
 import type { FontManager } from './fontManager';
 import { decodeJpeg } from './jpeg';
 import { decodePngForPdf, pngDataComplete, pngWithinLimits } from './pixels';
 import { cffGidToCid, cffTable, subsetCff } from './cff';
 import { msg } from './messages';
+import { KumioriError } from './errors';
 
 /** 差し替え済みの印 (原型に付ける) */
 const PATCHED = Symbol.for('kumiori.pdfLibPatched');
 
 /** pdf-lib の中の欄・メソッドが見つからないときの誤り (pdf-lib の版が変わったことをはっきり知らせる) */
-const internalsChanged = (what: string) => new Error(msg(`pdf-lib の ${what} が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)`, `pdf-lib ${what} not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)`));
+const internalsChanged = (what: string) => new KumioriError('internal/patch-mismatch', msg(`pdf-lib の ${what} が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)`, `pdf-lib ${what} not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)`));
+
+/** PDF の実数の最も大きい値 (ISO 32000-1 の附属書 C の表 C.1 の 32 ビットの浮動小数の値) */
+export const PDF_REAL_MAX = 3.403e38;
+
+/**
+ * PDF の数 (PDFNumber.of) で、絶対値が PDF の実数の最も小さい正規の値 (約 1.175e-38。ISO 32000-1 の附属書 C の表 C.1 が示す、
+ * 32 ビットの浮動小数の値) より小さい数を 0 にする。pdf-lib の numberToString は、指数の形の数を小数に書き直すとき、10 の 308 乗を
+ * 超える桁 (1e-320 などの非正規化数) で Infinity を掛け、「0.000…finity」のような PDF の数でない字を書いていた (ISO 32000-2 §7.3.3 の実数は、
+ * 指数を書かない小数)。それより大きい小さな数 (大きな viewBox の SVG を置く倍率 5e-8 など) は、0 にすると絵が消えるので、そのまま書く。
+ * 有限でない数も PDF の数でない字 (「Infinity」「NaN」) になり、読み手が構文の誤りで止まる (viewBox 1e300 の SVG を scale(1e10) で置くなど) ので、
+ * NaN は 0 に、無限大と、最も大きい値を超える数は、最も大きい値 (符号は残す) にする
+ */
+export function patchSmallNumbers() {
+  const cls = PDFNumber as unknown as Record<symbol, unknown> & { of(n: number): PDFNumber };
+  if (cls[PATCHED]) return;
+  if (typeof cls.of !== 'function') throw internalsChanged('PDFNumber.of');
+  const orig = cls.of.bind(PDFNumber);
+  cls.of = (n: number) => orig(Number.isNaN(n) ? 0 : Math.abs(n) < 1.175494e-38 ? 0 : Math.max(-PDF_REAL_MAX, Math.min(PDF_REAL_MAX, n)));
+  cls[PATCHED] = true;
+}
 
 /**
  * 差し替えるメソッドが pdf-lib にあることを確かめる (無ければ、版が変わったことをはっきり知らせる)。
@@ -58,7 +80,7 @@ assertPdfLibInternals();
 export function pageOperators(page: PDFPage): PDFOperator[] {
   const p = page as unknown as { getContentStream?: () => { operators?: PDFOperator[] } };
   const ops = typeof p.getContentStream === 'function' ? p.getContentStream().operators : undefined;
-  if (!Array.isArray(ops)) throw new Error(msg('pdf-lib の PDFPage.getContentStream().operators が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)', 'pdf-lib PDFPage.getContentStream().operators not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)'));
+  if (!Array.isArray(ops)) throw new KumioriError('internal/patch-mismatch', msg('pdf-lib の PDFPage.getContentStream().operators が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)', 'pdf-lib PDFPage.getContentStream().operators not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   return ops;
 }
 
@@ -81,7 +103,7 @@ export function patchFontkitSubset(font: FontManager) {
     [PATCHED]?: boolean;
   };
   if (proto[PATCHED]) return;
-  if (typeof proto._addGlyph !== 'function') throw new Error(msg('@pdf-lib/fontkit の部分書体の _addGlyph が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)', '_addGlyph of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
+  if (typeof proto._addGlyph !== 'function') throw new KumioriError('internal/patch-mismatch', msg('@pdf-lib/fontkit の部分書体の _addGlyph が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)', '_addGlyph of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   const orig = proto._addGlyph;
   proto._addGlyph = function (gid: number) {
     const r = addGlyphOrEmpty(this as unknown as SubsetGlyphs, gid, orig);
@@ -136,7 +158,7 @@ function addGlyphOrEmpty(s: SubsetGlyphs, gid: number, orig: (this: SubsetGlyphs
     }
     // 書き出しの流れ (restructure の EncodeStream) は、fontkit の中の Buffer の型だけを受けるので、fontkit の読みで長さ 0 のものを作る
     const empty = emptyFontkitBuffer(s);
-    if (!empty) throw new Error(msg('fontkit の部分書体の字形のデータの型が分かりません', 'unknown type of glyph data in the fontkit subset'));
+    if (!empty) throw new KumioriError('internal/patch-mismatch', msg('fontkit の部分書体の字形のデータの型が分かりません', 'unknown type of glyph data in the fontkit subset'));
     s.glyf.push(empty);
     s.loca.offsets.push(s.offset);
     s.hmtx.metrics.push({ advance, bearing: 0 });
@@ -168,7 +190,7 @@ type SubsetLike = { encode(s: EncodeStreamLike): void; encodeStream(): EncodeStr
 function patchSubsetSerialize(sample: SubsetLike) {
   const proto = CustomFontSubsetEmbedder.prototype as unknown as { serializeFont(this: { subset: SubsetLike }): Promise<Uint8Array>; [PATCHED]?: boolean };
   if (proto[PATCHED]) return;
-  if (typeof sample.encodeStream !== 'function' || typeof sample.encode !== 'function') throw new Error(msg('@pdf-lib/fontkit の部分書体の encodeStream が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)', 'encodeStream of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
+  if (typeof sample.encodeStream !== 'function' || typeof sample.encode !== 'function') throw new KumioriError('internal/patch-mismatch', msg('@pdf-lib/fontkit の部分書体の encodeStream が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)', 'encodeStream of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   // 流れの型 (restructure の EncodeStream) は、fontkit の外からは見えないので、何も書かない encode で 1 つ作らせて、その型を取る
   const Stream = sample.encodeStream.call({ encode() {} } as unknown as SubsetLike).constructor as new () => EncodeStreamLike;
   proto.serializeFont = function () {
@@ -579,16 +601,22 @@ export function sealPageContents(pdf: PDFDocument, page: PDFPage, deflate?: (dat
   // pdf-lib の形が変わっている (黙って置き換えずにいると、命令を保存まで持ち続ける)
   if (s === undefined && ref === undefined && page.node.Contents() === undefined) return;
   if (!(s instanceof PDFContentStream) || !(ref instanceof PDFRef)) throw internalsChanged('PDFPage.contentStream・contentStreamRef');
-  const f = s as unknown as { encode: unknown; getUnencodedContents(): Uint8Array; dict: unknown };
-  if (typeof f.encode !== 'boolean' || !(f.dict instanceof PDFDict)) throw internalsChanged('PDFContentStream.encode・dict');
-  const contents = !f.encode ? f.getUnencodedContents() : deflate ? deflate(f.getUnencodedContents()) : s.getContents();
-  pdf.context.assign(ref, PDFRawStream.of(f.dict, contents));
+  pdf.context.assign(ref, sealContentStream(s, deflate));
   p.contentStream = SEALED_CONTENTS;
   // pdf-lib がページの内容の流れを、この欄から引いていること (引いていなければ、置き換えた後の命令が黙って捨てられる)
   if (p.getContentStream() !== SEALED_CONTENTS) throw internalsChanged('PDFPage.getContentStream (contentStream)');
 }
+/**
+ * 内容の流れ (Form XObject など) を、圧縮したバイト列の流れにする (sealPageContents と同じ圧縮。命令を保存まで持たない)
+ */
+export function sealContentStream(s: PDFContentStream, deflate?: (data: Uint8Array) => Uint8Array): PDFRawStream {
+  const f = s as unknown as { encode: unknown; getUnencodedContents(): Uint8Array; dict: unknown };
+  if (typeof f.encode !== 'boolean' || !(f.dict instanceof PDFDict)) throw internalsChanged('PDFContentStream.encode・dict');
+  const contents = !f.encode ? f.getUnencodedContents() : deflate ? deflate(f.getUnencodedContents()) : s.getContents();
+  return PDFRawStream.of(f.dict, contents);
+}
 const sealed = () => {
-  throw new Error(msg('PDF: 描き終えたページに命令を足そうとしました (sealPageContents の後)', 'PDF: tried to add operators to a page that was already finished (after sealPageContents)'));
+  throw new KumioriError('internal/page-sealed', msg('PDF: 描き終えたページに命令を足そうとしました (sealPageContents の後)', 'PDF: tried to add operators to a page that was already finished (after sealPageContents)'));
 };
 /** 置き換えた後のページの内容の流れの印 (命令を足す・読むと誤り) */
 const SEALED_CONTENTS = {

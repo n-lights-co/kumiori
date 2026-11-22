@@ -260,11 +260,11 @@ describe('XSL-FO: table-and-caption で寄せた、幅の指定の無い、罫�
       });
     }
   }
-  it('幅を書いた表・外周の罫線をセルが持つ表・罫線を分ける表の寄せは、変わらない', () => {
+  it('幅を書いた表は本文の中央 (150) に寄り、外周の罫線をセルが持つ表・罫線を分ける表の寄せは、変わらない', () => {
     for (const compat of ['spec', 'antenna'] as const) {
-      // 直す前と同じ値 (表の罫線の箱の左端・右端)
+      // 表の罫線の箱の左端・右端。幅を書いた表は、外周のグリッド線の間の箱を寄せる (台帳の FO-45。前は外へ出る罫線の半分だけ左の 104〜190)
       const w = measure(`<fo:table-and-caption text-align="center">${table('border="6pt solid" width="80pt"')}</fo:table-and-caption>`, compat);
-      expect([w.x0, w.x1]).toEqual([expect.closeTo(104, 2), expect.closeTo(190, 2)]);
+      expect([w.x0, w.x1]).toEqual([expect.closeTo(107, 2), expect.closeTo(193, 2)]);
       const cells = measure(`<fo:table-and-caption text-align="center">${table('')}</fo:table-and-caption>`, compat);
       expect([cells.x0, cells.x1]).toEqual([expect.closeTo(109, 2), expect.closeTo(191, 2)]);
       expect(cells.rows[0].lastCell).toBeCloseTo(191, 2);

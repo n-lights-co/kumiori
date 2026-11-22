@@ -310,13 +310,33 @@ describe('公開 API: typeset', () => {
       // 参照そのものは問い合わせている (集めた中身がある) が、添付にはしない
       expect(asked).toContain('file:///etc/passwd');
       expect(asked).toContain('http://169.254.169.254/latest/meta-data/');
-      expect(r.warnings.some((w) => /添付するファイルが見つかりません/.test(w))).toBe(true);
+      // スキームのある URL は文書の場所の外を指すと、名前 (passwd) は見つからないと知らせる
+      expect(r.warnings.some((w) => (src === 'passwd' ? /添付するファイルが見つかりません/ : /文書の場所の外を指すので、添付しません/).test(w)), src).toBe(true);
       expect(await embedded(await r.toPdf())).toBe(false);
     }
     // files に渡したファイルは、これまでどおり添付する
     const ok = await typesetFo(fo('data/passwd'), { loadFont, fetchImages: false, resolveResource, files: [{ name: 'data/passwd', data: 'given' }] });
     expect(ok.warnings.some((w) => /添付するファイル/.test(w))).toBe(false);
     expect(await embedded(await ok.toPdf())).toBe(true);
+    // 名前の末尾だけでは、ディレクトリ付きの名前で渡したファイルに当てない (前は ../../x/.env が、files の sub/.env を添付した)
+    const env = await typesetFo(fo('url(../../x/.env)'), { loadFont, fetchImages: false, files: [{ name: 'sub/.env', data: 'SECRET=1' }] });
+    expect(env.warnings.some((w) => /文書の場所の外を指すので、添付しません/.test(w))).toBe(true);
+    expect(await embedded(await env.toPdf())).toBe(false);
+    // ディレクトリ無しの名前で渡したファイルは、参照のディレクトリによらず名前で当てる (これまでどおり)
+    const flat = await typesetFo(fo('url(attach/note.txt)'), { loadFont, fetchImages: false, files: [{ name: 'note.txt', data: 'n' }] });
+    expect(await embedded(await flat.toPdf())).toBe(true);
+    // 文書の場所の外を指す参照 (file:・絶対パス・..) は、名前でも当てない (docs/xslfo-import.md: file: のファイルは添付しない)
+    for (const src of ['url(file:///tmp/note.txt)', 'url(/tmp/note.txt)', 'url(../note.txt)', 'url(C:\\x\\note.txt)', "url('../doc/note.txt')"]) {
+      const r = await typesetFo(fo(src), { loadFont, fetchImages: false, files: [{ name: 'note.txt', data: 'n' }] });
+      expect(await embedded(await r.toPdf()), src).toBe(false);
+      // 「見つかりません」ではなく、外を指すので添付しないと知らせる
+      expect(r.warnings.some((w) => /文書の場所の外を指すので、添付しません/.test(w)), src).toBe(true);
+    }
+    // 道の書き方の揺れ (./・//・sub/./) は、両側を整えて比べる (0.4 と同じく当たる)
+    for (const [src, name] of [['url(sub/./note.txt)', 'sub/note.txt'], ['url(sub//note.txt)', 'sub/note.txt'], ['url(sub/x.txt)', './sub/x.txt']]) {
+      const r = await typesetFo(fo(src), { loadFont, fetchImages: false, files: [{ name, data: 'n' }] });
+      expect(await embedded(await r.toPdf()), src).toBe(true);
+    }
   });
   it('拡張子の無い URL の画像: 中身が返らなければ、これまでどおり fetchImages の判定でネットワークから取る (種類は中身の先頭と Content-Type で決める)', async () => {
     const png = encodePngStored({ width: 8, height: 8, rgba: new Uint8Array(Array.from({ length: 64 }, () => [0, 0, 0, 255]).flat()) });

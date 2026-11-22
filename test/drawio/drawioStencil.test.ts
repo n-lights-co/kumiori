@@ -374,7 +374,8 @@ describe('draw.io の図形ライブラリの選択肢 (API・コマンド)', ()
     const given = await typeset(html, { loadFont, files: [{ name: 'fig.drawio', data: fig }], drawio: { stencils: [{ name: 'test.xml', data: LIBRARY }] } });
     expect(given.warnings.filter((w) => w.includes('fig.drawio'))).toEqual([]);
     let calls = 0;
-    const once = { fetchStencils: async () => (calls++, LIBRARY) };
+    // 取り先を決めた関数 (既定の取り先の版の中身でない、試しの図形ライブラリを返すので、SHA-256 の一覧と照らさない取り先にする)
+    const once = { stencilsUrl: 'https://example.com/w/js/stencils.min.js', fetchStencils: async () => (calls++, LIBRARY) };
     const fetched = await typeset(html + '<p><img src="g.drawio"></p>', {
       loadFont,
       files: [
@@ -413,7 +414,7 @@ describe('draw.io の図形ライブラリの選択肢 (API・コマンド)', ()
       loadFont,
       files: [{ name: 'fig.drawio', data: fig2 }],
       resolveResource: (u) => (asked.push(u), u === 'https://example.com/a.png' ? png : undefined),
-      drawio: { fetchStencils: async (p) => (asked.push(p), png) },
+      drawio: { stencilsUrl: 'https://example.com/w/js/stencils.min.js', fetchStencils: async (p) => (asked.push(p), png) },
     });
     expect(r.warnings.filter((w) => w.includes('drawio') || w.includes('draw.io'))).toEqual([]);
     expect(asked.sort()).toEqual(['https://example.com/a.png', 'img/lib/clip_art/a/b.png']);

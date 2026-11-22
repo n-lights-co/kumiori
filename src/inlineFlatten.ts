@@ -20,11 +20,12 @@ import { borderToLogicalWidths, normBorder, normEdges, toLogical } from './geome
 import { sourceRef } from './sourceRef';
 import type { Atom, FlattenState, InlineChild, InlineContentArea, InlineFrame } from './inlineLayout';
 import { pushAll } from './arrayLoop';
+import { warichuArea, type WarichuGroup } from './warichu';
 
 /**
  * 分綴した行の終わりに出す字の atom の並び。字は hyphenate-character (CSS Text 4 §6.3.2)・hyphenation-character (XSL 1.1 §7.10.5) の
  * 文字列 (hyphenLimits.character)、無ければ U+002D。空の文字列なら空の並び (何も出さずに分ける)。
- * 書式は、その字を含む並びの書式 (XSL §7.10.5: “The styling properties of this character are those inherited from its containing flow object”)。
+ * 書式は、その字を含む並びの書式 (XSL §7.10.5: その字の書式は、その字を含む流れの要素から受け継ぐ)。
  * 書体に無い字は、ほかの字と同じく、字を持つ書体で代える (Measurer.glyph)。和欧の混植の組では、U+2010 を、語の字と同じ欧文の書体から
  * 取る (glyphOf に latinWord の印を付けて呼ぶ。印が無いと、U+2010 は和文の書体の全角の字になる)
  */
@@ -261,7 +262,7 @@ function ligFeatureSet(active0: readonly string[], style: string[], memoKey?: st
 }
 /**
  * 必須の合字 (rlig) だけ。任意の合字が無効でも (font-variant-ligatures: none・字間のあるとき・axf:ligature-mode の無い XSL-FO)、必須の合字は当てる
- * (Fonts 4 §6.4「Required ligatures … are not affected by the settings above, including none」・§7.1、Text 3 §7.2 の注: 必須の合字は rlig)。
+ * (Fonts 4 §6.4: 必須の合字は、none を含むこれらの指定に左右されない。§7.1、Text 3 §7.2 の注: 必須の合字は rlig)。
  * 語をアイコンにする書体には、名前の合字を rlig に入れたものがある (Material Icons 4.0.0)
  */
 const REQUIRED_LIGATURES: LigatureFeatures = { active: ['rlig'], table: ['rlig'], tableKey: 'rlig', key: 'rlig', standard: false };
@@ -791,9 +792,12 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
         return out;
       });
   }
-  const kids = flattenInline(children, s2, m, state, c.backgroundColor ?? bg);
+  let kids = flattenInline(children, s2, m, state, c.backgroundColor ?? bg);
+  if (c.warichu) kids = warichuAtoms(c, kids, cx, s2);
   // 内容の領域 (CSS の inline): 背景・枠・リンクの範囲の、block 方向の広がり。この inline の最初に使える書体と字の大きさで決まる
-  const area = c.backgroundColor || c.border || c.padding || c.link || c.annotation || c.outline ? inlineContentArea(s2, m, wm) : undefined;
+  // 割注の inline の内容の領域は、割注の 2 行と括弧の範囲 (warichu.ts の warichuArea)。どの文書の行でも、その範囲に罫線・余白・背景を付ける
+  const wariArea = c.warichu ? kids.find((a) => a.wari)?.wari?.g.area : undefined;
+  const area = c.backgroundColor || c.border || c.padding || c.link || c.annotation || c.outline ? (wariArea ?? inlineContentArea(s2, m, wm)) : undefined;
   // この inline の背景を引き継いだ字 (中の inline の字も。自分の背景を持つ inline の字は、その inline の領域が付いている) に、領域を付ける
   if (area && c.backgroundColor) {
     for (const a of kids) {
@@ -824,6 +828,10 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     const frame: InlineFrame = { id: ++frameSeq, border: normBorder(c.border), padding: normEdges(c.padding), bg: c.backgroundColor, ...(c.backgroundClip ? { bgClip: c.backgroundClip } : {}), box: hasBox, ...(c.borderRadius ? { radius: c.borderRadius } : {}), ...(hasBox && c.boxDecorationBreak === 'clone' ? { clone: true } : {}), ...(hasBox && c.paintEffect ? { fx: c.paintEffect } : {}) };
     if (c.link) frame.link = c.link;
     if (c.annotation) frame.annot = c.annotation;
+    if (c.link || c.annotation) {
+      const r = sourceRef(c);
+      if (r !== undefined) frame.linkRef = r;
+    }
     if (c.outline) {
       frame.outline = c.outline;
       const r = sourceRef(c);
@@ -907,6 +915,53 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
     }
   }
   state.run++;
+}
+
+/**
+ * 割注 (LInline.warichu。warichu.ts): 中身の atom に割注の印を付け、前後に括弧の atom (割注の字の 2 倍の大きさ。JLREQ §3.4.2) を置く。
+ * 中身の強制改行と leader は、割注の 2 行の中に置けないので捨てる。中身 (空白でない字) が無ければ、割注にしない (括弧も置かず、中身は
+ * ふつうの inline として組む。読み込みが構造 (Warichu) を作らないのと同じ: htmlImport.ts の hasWarichuContent・xslfoImport.ts の warichuCandidate)
+ */
+function warichuAtoms(c: LInline, kids: Atom[], cx: FlattenCtx, s2: ResolvedStyle): Atom[] {
+  const w = c.warichu!;
+  const { st, m, wm } = cx;
+  const text = kids.filter((a) => a.kind !== 'break' && a.kind !== 'leader');
+  const blankAtom = (a: Atom) => !!a.idMark || a.isSpace || (/^\s$/u.test(a.first) && /^\s$/u.test(a.last));
+  if (text.every(blankAtom)) return text;
+  const outerRatio = fontBaselineRatio(st, m, wm) ?? m.glyph(primaryChar(st), runStyleOf(st), wm).font.baselineRatio;
+  // 字を描く em の箱の基線の比 (字の領域は、字の書体の基線の比で置く: inlineLayout.ts の buildLineNode・glyphNode)
+  const emRatio = (x: ResolvedStyle) => (wm === 'horizontal-tb' ? m.glyph(primaryChar(x), runStyleOf(x), wm).font.baselineRatio : 0.5);
+  const outerEmRatio = emRatio(st);
+  const innerRatio = emRatio(s2);
+  const area = warichuArea(s2.fontSize, st.fontSize, outerEmRatio, wm);
+  const g: WarichuGroup = {
+    st: s2,
+    outer: st,
+    outerRatio,
+    outerEmRatio,
+    innerRatio,
+    wm,
+    rtl: wm === 'horizontal-tb' && st.direction === 'rtl',
+    area,
+    ...(c.backgroundColor ? { bg: c.backgroundColor } : {}),
+    ...(cx.bg ? { outerBg: cx.bg } : {}),
+  };
+  const bst = resolveStyle(s2, { fontSize: s2.fontSize * 2 });
+  const brackets = (str: string, part: 'open' | 'close', tag: LInline | undefined): Atom[] => {
+    if (!str) return [];
+    // 括弧の字の背景は、割注の inline の背景 (中身の字と同じ。無ければ、まわりから引き継いだ背景)
+    const sub: FlattenCtx = { ...cx, st: bst, bg: c.backgroundColor ?? cx.bg, out: [] };
+    flattenText(str, sub);
+    const ref = sourceRef(tag);
+    for (const a of sub.out) {
+      a.wari = { g, part };
+      if (ref !== undefined) a.ref = ref;
+    }
+    return sub.out;
+  };
+  // 中の inline の枠 (この時点で付いている枠) の数を覚える。割注の inline とその祖先の枠は、この後で前に足される
+  for (const a of text) a.wari = { g, part: 'text', ...(a.frames?.length ? { inner: a.frames.length } : {}) };
+  return [...brackets(w.open, 'open', w.tagParts?.open), ...text, ...brackets(w.close, 'close', w.tagParts?.close)];
 }
 
 /** atom の中の inline の内容の領域 (この inline と、中の inline のもの。外側の inline の領域は、まだ付いていない) */
@@ -1014,6 +1069,7 @@ function flattenRuby(c: LRuby, cx: FlattenCtx): void {
     bg,
     r,
     src: c.id,
+    ...(c.tagParts ? { rubyRefs: { base: sourceRef(c.tagParts.base), text: sourceRef(c.tagParts.text) } } : {}),
     ...(c.rubyColor || c.rubyColorUnder ? { rubyColors: colors as [string | undefined, string | undefined] } : {}),
     ...(aligns.some((x) => x) ? { rubyAligns: aligns as NonNullable<Atom['rubyAligns']> } : {}),
     ...(primary && baseFont && primary !== baseFont ? { primaryRatio: primary.baselineRatio, primaryFont: { ascent: primary.ascent, descent: primary.descent, baselineRatio: primary.baselineRatio } } : {}),
@@ -1045,7 +1101,7 @@ function flattenInlineBox(c: LImage | LInlineContainer, cx: FlattenCtx): void {
     // 行の中の、分けられない箱 (画像・inline-block) そのものには、飾りの線を引かない (CSS Text Decoration 3 §2。HTML の読み込みが decorateBox: false を付ける)
     const boxSt = c.decorateBox === false && s2.textDecoration ? { ...s2, textDecoration: undefined } : s2;
     // 囲む inline の背景 (bg) は、箱の所も塗る: 行内の箱 (inline) の背景は、その内容の領域に、中の分けられない箱の所も含めて続けて塗る
-    // (CSS 2.1 §9.2.2・§14.2・CSS Backgrounds 3 §3.7。塗る高さは、囲む inline の内容の領域 (bgArea。flattenInlineElement が付ける) で、
+    // (CSS 2.1 §9.2.2・§14.2・CSS Backgrounds 3 §2.7。塗る高さは、囲む inline の内容の領域 (bgArea。flattenInlineElement が付ける) で、
     // 箱の高さではない)。箱そのものの背景は、箱が自分で描く
     out.push({ kind: 'box', first: '\uFFFC', last: '\uFFFC', advance: spec.adv, isSpace: false, runId: state.run, st: boxSt, bg, box: spec, ...(c.type === 'image' && c.noWrapInCellMin ? { noWrapInCellMin: true } : {}), ...(lineAlign ? { lineAlign } : {}), ...(c.type === 'inline-container' && c.ownLineAlign ? { ownLineAlign: true } : {}) });
     state.run++;
@@ -1090,6 +1146,8 @@ function flattenFootnoteRef(c: LFootnote, cx: FlattenCtx): void {
   const s2 = { ...base, fontSize: refSize, ...(base.varAxes ? { fontFamily: withOpticalSize(base.fontFamily, refSize, base.fontOpticalSizeUnit) } : {}), ...(c.referenceWeight ? { fontWeight: c.referenceWeight } : {}), ...(c.referenceLineHeight ? { lineHeightPt: c.referenceLineHeight } : {}), ...(c.referenceAutospace !== undefined ? { textAutospace: c.referenceAutospace } : {}) };
   const rs = c.referenceShift;
   const shift = rs === 'none' ? 0 : rs === 'sub' ? -st.fontSize * 0.2 : typeof rs === 'number' ? rs : st.fontSize * 0.35;
+  // タグ付き PDF: 参照の印の字は、参照 (Reference) の構造の節の番号 (読み込みが付けた、中身の無い節の番号)
+  const callRef = c.tagParts ? sourceRef(c.tagParts.call) : undefined;
   state.run++;
   [...label].forEach((ch, k) => {
     const g = m.glyph(ch, runStyle(s2), wm);
@@ -1106,6 +1164,7 @@ function flattenFootnoteRef(c: LFootnote, cx: FlattenCtx): void {
       glue: true,
       shift,
       fnRef: k === 0 ? c : undefined,
+      ...(callRef !== undefined ? { ref: callRef } : {}),
       ...primaryPropsOf(m, wm, s2, g),
     });
   });

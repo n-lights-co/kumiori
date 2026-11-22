@@ -6,6 +6,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import { routeFontCache } from './fontCache';
@@ -162,5 +163,182 @@ test('dist-browser/kumiori.js: CGM・EPS・WMF の処理は、文書にその画
   expect(r.pages).toBe(1);
   expect(r.warnings.filter((w) => /CGM|EPS|WMF|読めない|描けない|unsupported/i.test(w))).toEqual([]);
   expect(r.pdfLength).toBeGreaterThan(1000);
+  expect(errors).toEqual([]);
+});
+
+/**
+ * Web Worker の中で動かすスクリプト: 文書の SVG の画像 (data: の URI) と、HTML の中の svg 要素 (どちらも、ブラウザの <img> を使えない所で読む) と
+ * 字のある HTML を組み、OffscreenCanvas に描いて、画素を返す。PDF も作る。
+ * 画面は CSP (script-src 'self') で blob: の Worker を作れないので、同じオリジンの URL (/e2e-worker.js) で返す
+ */
+const WORKER_SOURCE = `
+self.onmessage = async () => {
+  try {
+    const kumiori = await import('/dist-browser/kumiori.js');
+    const red = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50" viewBox="0 0 100 50"><rect width="100" height="50" fill="#ff0000"/><text x="5" y="30" font-size="10" fill="#ffffff">SVG</text></svg>');
+    const html = '<!DOCTYPE html><html><head><title>w</title><style>@page { size: 200pt 200pt; margin: 0 } body { margin: 0 } img, svg { display: block }</style></head><body>'
+      + '<img src="' + red + '" style="width: 100pt; height: 50pt">'
+      + '<svg width="100" height="50" viewBox="0 0 100 50" style="width: 100pt; height: 50pt"><rect width="100" height="50" fill="#0000ff"/></svg>'
+      + '<p style="margin: 0">Worker の中で組む。</p></body></html>';
+    const typesetter = await kumiori.createTypesetter();
+    const res = await typesetter.typeset(html, { name: 'w.html', style: 'browser' });
+    const canvas = new OffscreenCanvas(1, 1);
+    res.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    const ctx = canvas.getContext('2d');
+    const at = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data);
+    const size = [canvas.width, canvas.height];
+    const result = { pages: res.pageCount, warnings: res.warnings, size, redAt: at(80, 5), blueAt: at(80, 75) };
+    const bitmap = canvas.transferToImageBitmap();
+    result.bitmap = [bitmap.width, bitmap.height];
+    const pdf = await res.toPdf({ title: 'w' });
+    result.pdfHead = String.fromCharCode(...pdf.slice(0, 5));
+    result.pdfLength = pdf.length;
+    const only = await typesetter.typesetToPdf(html, { name: 'w.html', style: 'browser' });
+    result.onlyPages = only.pageCount;
+    result.onlyHead = String.fromCharCode(...only.pdf.slice(0, 5));
+    self.postMessage(result);
+  } catch (e) {
+    self.postMessage({ error: String((e && e.stack) || e) });
+  }
+};
+self.postMessage('ready');
+`;
+
+test('dist-browser/kumiori.js を Web Worker の中で読み、組んで、OffscreenCanvas に描き、PDF を作れる (SVG の画像も)', async ({ page }) => {
+  const errors = await openWithBundle(page);
+  await page.route('**/e2e-worker.js', (route) => route.fulfill({ body: WORKER_SOURCE, contentType: 'text/javascript' }));
+  const chunks: string[] = [];
+  page.on('request', (r) => {
+    const m = /\/dist-browser\/chunks\/([\w-]+)\.js/.exec(r.url());
+    if (m) chunks.push(m[1]);
+  });
+  // 画面の中で組むときは、linkedom (Web Worker の中で HTML を読むもの) の別ファイルを読まない
+  await page.evaluate(async () => {
+    const url = '/dist-browser/kumiori.js';
+    const mod = (await import(/* @vite-ignore */ url)) as typeof import('../src/index');
+    await mod.typesetHtml('<p>a</p>', { name: 't.html' });
+  });
+  const linkedomChunk = (name: string) => /^esm-/.test(name);
+  expect(chunks.filter(linkedomChunk)).toEqual([]);
+  const r = await page.evaluate(async () => {
+    const worker = new Worker('/e2e-worker.js', { type: 'module' });
+    return await new Promise<Record<string, unknown>>((resolve) => {
+      worker.onerror = (e) => resolve({ error: `worker error: ${e.message}` });
+      worker.onmessage = (e) => {
+        if (e.data === 'ready') worker.postMessage('go');
+        else resolve(e.data);
+      };
+    });
+  });
+  expect(r.error).toBeUndefined();
+  expect(r.pages).toBe(1);
+  expect((r.warnings as string[]).filter((w) => /未対応|知らない|読めません|見つから/.test(w))).toEqual([]);
+  // 200pt 四方を 1pt = 1px で描く。上の 50pt は SVG の画像 (赤)、その下の 50pt は HTML の中の svg 要素 (青)
+  expect(r.size).toEqual([200, 200]);
+  expect(r.bitmap).toEqual([200, 200]);
+  expect(r.redAt).toEqual([255, 0, 0, 255]);
+  expect(r.blueAt).toEqual([0, 0, 255, 255]);
+  expect(r.pdfHead).toBe('%PDF-');
+  expect(r.pdfLength).toBeGreaterThan(1000);
+  expect(r.onlyPages).toBe(1);
+  expect(r.onlyHead).toBe('%PDF-');
+  // Worker の中では、HTML を linkedom の別ファイルで読む
+  expect(chunks.filter(linkedomChunk).length).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+/**
+ * Web Worker の中で、ブラウザの画像を持たない SVG の画像 (図形を画素にして描くもの) を描くスクリプト:
+ * 放射グラデーション・組版の画素の読み取りで読めない画像 (インターレースの PNG)・SVG の @font-face の書体を描いて、画素を返す
+ */
+const WORKER_SVG_SOURCE = `
+self.onmessage = async (ev) => {
+  try {
+    const { png } = ev.data;
+    const kumiori = await import('/dist-browser/kumiori.js');
+    const NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"';
+    const uri = (s) => 'data:image/svg+xml,' + encodeURIComponent(s);
+    const radial = '<svg ' + NS + ' width="100" height="50" viewBox="0 0 100 50"><defs><radialGradient id="r"><stop offset="0" stop-color="#ffff00"/><stop offset="1" stop-color="#008000"/></radialGradient></defs><rect width="100" height="50" fill="url(#r)"/></svg>';
+    const image = '<svg ' + NS + ' width="100" height="50" viewBox="0 0 100 50"><rect width="100" height="50" fill="#0000ff"/><image width="50" height="50" preserveAspectRatio="none" xlink:href="' + png + '"/></svg>';
+    // SVG の @font-face の書体 (Arimo の太字を、data: の URI で埋め込む) と、無い名前の書体の SVG (既定の書体で描く。読み込んだ書体は、
+    // 同じ文書のほかの SVG からも名前で引けるので、別の名前にする)
+    const spec = kumiori.DEFAULT_FONTS.base.find((s) => s.family === 'Arimo' && s.weight === 700);
+    const bytes = new Uint8Array(await (await fetch(spec.urls.find((u) => /^https:/.test(u)))).arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    const text = (family, face) => '<svg ' + NS + ' width="150" height="50" viewBox="0 0 150 50">' + face + '<text x="5" y="40" font-family="' + family + '" font-size="36">iiWW</text></svg>';
+    const withFace = text('EmbX', '<style>@font-face { font-family: EmbX; src: url(data:font/ttf;base64,' + btoa(bin) + ') }</style>');
+    const html = '<!DOCTYPE html><html><head><style>@page { size: 300pt 120pt; margin: 0 } body { margin: 0 } img { position: absolute }</style></head><body>'
+      + '<img src="' + uri(radial) + '" style="left: 0; top: 0; width: 100pt; height: 50pt">'
+      + '<img src="' + uri(image) + '" style="left: 110pt; top: 0; width: 100pt; height: 50pt">'
+      + '<img src="' + uri(withFace) + '" style="left: 0; top: 60pt; width: 150pt; height: 50pt">'
+      + '<img src="' + uri(text('EmbY', '')) + '" style="left: 150pt; top: 60pt; width: 150pt; height: 50pt">'
+      + '</body></html>';
+    const typesetter = await kumiori.createTypesetter();
+    const res = await typesetter.typeset(html, { name: 'w.html', style: 'browser' });
+    const canvas = new OffscreenCanvas(1, 1);
+    // toPdf より先に描く (SVG の書体は、組んだときに読み込んでおく)
+    res.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    const ctx = canvas.getContext('2d');
+    const at = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data);
+    const region = (x) => Array.from(ctx.getImageData(x, 60, 150, 50).data);
+    self.postMessage({ center: at(50, 25), edge: at(99, 25), pngAt: at(130, 25), rectAt: at(190, 25), sameText: region(0).join() === region(150).join() });
+  } catch (e) {
+    self.postMessage({ error: String((e && e.stack) || e) });
+  }
+};
+self.postMessage('ready');
+`;
+
+/** 1 × 1 の赤のインターレース (Adam7) の PNG。1 画素の絵は、最初の段だけで、行の並びはインターレースでないものと同じ (PNG §8.2) */
+function interlacedPng(): string {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const v of b) c = crcTable[(c ^ v) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, body: Buffer) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(body.length);
+    const tb = Buffer.concat([Buffer.from(type, 'latin1'), body]);
+    const tail = Buffer.alloc(4);
+    tail.writeUInt32BE(crc(tb));
+    return Buffer.concat([head, tb, tail]);
+  };
+  // 幅 1・高さ 1・8 ビット・RGBA (6)・圧縮 0・フィルター 0・インターレース 1 (Adam7)
+  const ihdr = Buffer.from([0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 1]);
+  const idat = zlib.deflateSync(Buffer.from([0, 255, 0, 0, 255]));
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
+  return `data:image/png;base64,${png.toString('base64')}`;
+}
+
+test('Web Worker の中の Canvas: SVG の放射グラデーション・読めない形の中の画像 (インターレースの PNG)・SVG の @font-face を描く', async ({ page }) => {
+  const errors = await openWithBundle(page);
+  await page.route('**/e2e-worker-svg.js', (route) => route.fulfill({ body: WORKER_SVG_SOURCE, contentType: 'text/javascript' }));
+  const r = await page.evaluate(async (png) => {
+    const worker = new Worker('/e2e-worker-svg.js', { type: 'module' });
+    return await new Promise<Record<string, unknown>>((resolve) => {
+      worker.onerror = (e) => resolve({ error: `worker error: ${e.message}` });
+      worker.onmessage = (e) => {
+        if (e.data === 'ready') worker.postMessage({ png });
+        else resolve(e.data);
+      };
+    });
+  }, interlacedPng());
+  expect(r.error).toBeUndefined();
+  const near = (a: unknown, b: number[], tol: number) => (a as number[]).every((v, i) => Math.abs(v - b[i]) <= tol);
+  // 放射グラデーション: 中心は最初の止まり (黄)、端は最後の止まり (緑) に近い
+  expect(near(r.center, [255, 255, 0, 255], 12), String(r.center)).toBe(true);
+  expect(near(r.edge, [0, 128, 0, 255], 24), String(r.edge)).toBe(true);
+  // インターレースの PNG は、createImageBitmap で読んで描く (例外にしない)。ほかの図形 (青の四角) も描く
+  expect(r.pngAt).toEqual([255, 0, 0, 255]);
+  expect(r.rectAt).toEqual([0, 0, 255, 255]);
+  // SVG の @font-face の書体で描く (既定の書体の SVG と違う絵になる)
+  expect(r.sameText).toBe(false);
   expect(errors).toEqual([]);
 });

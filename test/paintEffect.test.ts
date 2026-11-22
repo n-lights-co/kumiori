@@ -44,13 +44,15 @@ const near = (a: readonly number[], b: readonly number[]) => a.forEach((v, k) =>
 function recorder(): { p: Painter; log: string[] } {
   const log: string[] = [];
   const p = new Proxy({} as Painter, {
-    get:
-      (_t, name) =>
-      (...args: unknown[]) => {
-        log.push(`${String(name)} ${JSON.stringify(args.map((a) => (typeof a === 'function' ? 'fn' : a)))}`);
-        for (const a of args) if (typeof a === 'function') (a as () => void)();
-        if (typeof name === 'string' && args.some((a) => typeof a === 'function')) log.push(`end ${name}`);
-      },
+    // タグ付き PDF の印 (tag) は持たない (Canvas と同じ描画先)
+    get: (_t, name) =>
+      name === 'tag'
+        ? undefined
+        : (...args: unknown[]) => {
+            log.push(`${String(name)} ${JSON.stringify(args.map((a) => (typeof a === 'function' ? 'fn' : a)))}`);
+            for (const a of args) if (typeof a === 'function') (a as () => void)();
+            if (typeof name === 'string' && args.some((a) => typeof a === 'function')) log.push(`end ${name}`);
+          },
   });
   return { p, log };
 }

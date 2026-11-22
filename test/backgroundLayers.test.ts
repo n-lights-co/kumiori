@@ -258,7 +258,7 @@ describe('対応しない値は知らせる', () => {
 });
 
 describe('行内ブロック (inline-block) の角丸・影 (HTM-64)', () => {
-  it('border-radius と box-shadow を、ブロックの箱と同じく行内ブロックの箱に付ける (背景・罫線・背景のグラデーションを角丸で切り抜く。CSS Backgrounds 3 §5.3)', async () => {
+  it('border-radius と box-shadow を、ブロックの箱と同じく行内ブロックの箱に付ける (背景・罫線・背景のグラデーションを角丸で切り抜く。CSS Backgrounds 3 §4.3)', async () => {
     const r = await set(page('<p><span style="display: inline-block; width: 60pt; height: 60pt; border-radius: 30pt; box-shadow: 4pt 4pt 0 #888; background: linear-gradient(red, blue)">x</span></p>'));
     const found: Array<{ borderRadius?: unknown; boxShadow?: unknown }> = [];
     const rec = (a: Area) => {

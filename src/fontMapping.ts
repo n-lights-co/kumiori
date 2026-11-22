@@ -6,6 +6,7 @@ import { fontFileStyle, type FaceStyle, type FontManager, type RangedFace } from
 import { MONO_GENERIC, SANS, SERIF } from './sampleData';
 import { normalizeFamily } from './fontLoader';
 import { parseCss, type ParsedCss } from './htmlPaged';
+import { diag } from './diagnostics';
 
 /**
  * 組版用フォント (和文): Google Fonts の gstatic (TTF) を ArrayBuffer として取得。ローカル /fonts を後備に。
@@ -362,8 +363,8 @@ export function createFontMapping(
     if (GOTHIC.test(first)) return SANS;
     // 明朝系・未指定の太字: 同じファミリーの太い書体で組む。和文は Noto Serif JP の太字、欧文は明朝系の欧文の書体 (既定は Tinos) の太字。
     // ゴシック (Noto Sans JP) には替えない。CSS Fonts 4 §5.2: 太さは、font-family の並びで選んだファミリーの書体の中で照合する
-    // ("font-weight is matched next")。§2.2.2: 太い書体の無いファミリーの太字は、処理系が作り、そのファミリーにあるものとして扱う
-    // ("bold faces are often synthesized by user agents for families that lack actual bold faces") = inlineLayout の fakeBold。
+    // (§5.2 の手順で、幅・傾きの後に太さを照合する)。§2.2.2: 太い書体の無いファミリーの太字は、処理系が作り、そのファミリーにあるものとして扱う
+    // (処理系が太字を作ることが多い、と同じ節にある) = inlineLayout の fakeBold。
     // XSL 1.1 §7.9.9 も、太さの値を同じファミリーの書体に割り当てる (無い太さは、同じファミリーの近い太さの書体)。
     // 太字のときは、いつも明朝を名指しで返す (親がゴシックでも、明朝系の太字の指定は明朝にする)
     if (bold) return SERIF;
@@ -373,7 +374,7 @@ export function createFontMapping(
 
   /**
    * XSL-FO の font-family の並びを、順のある書体の列にする (読み込んだ書体が 2 つ以上並ぶときだけ。ほかは undefined で、今までの組)。
-   * XSL 1.1 §7.9.2 ("a list of fonts ... that are tried in sequence to see if they contain a glyph for a certain character")。
+   * XSL 1.1 §7.9.2 (並びの書体を順に試し、その字の字形を持つ書体を使う)。
    * 並びの項目の決め方は HTML (htmlFontList) と同じ: 読み込んだ書体はその書体、総称 (serif・sans-serif・monospace) と既定の和文の書体の名前は
    * その位置に写し先の組、既定の欧文の書体の名前と別名 (Times New Roman → Tinos など) はその位置に欧文の書体、ほかの名前は飛ばす。
    * 最後に既定の書体 (飛ばした名前から決める明朝・ゴシック・等幅。無ければ、並びにゴシック系の名前があればゴシック、ほかは明朝)。
@@ -502,7 +503,7 @@ export function createFontMapping(
       } catch (e) {
         // 読めない書体 (壊れた・細工した書体を含む) は、書体の組の知らせ (onNotice) に出す。API・コマンドでは、結果の警告 (warnings) に入る
         // (console.warn に出すだけだと、ライブラリの利用者には見えなかった)。画面では、これまでどおりコンソールに出る
-        fonts.onNotice(`@font-face ${ff.family}: ${e instanceof Error ? e.message : String(e)}`);
+        fonts.onNotice(diag('font/file-unreadable', `@font-face ${ff.family}: ${e instanceof Error ? e.message : String(e)}`, { font: ff.family }));
       }
     }
     // 前の文書だけにあった face を外す (画面は、書体の組と割り当てを 1 つだけ作って使い回す。前の文書の太字の face が、
@@ -554,7 +555,7 @@ export function createFontMapping(
 
   /**
    * font-family の並びの中の位置で引く総称 (CSS Fonts 4 §2.1.5)。serif・sans-serif・monospace は、必ず書体に写す総称
-   * ("must always map to at least one matched font face")。ui-* は、同じ写し先にする。
+   * (少なくとも 1 つの書体に当たらなければならない)。ui-* は、同じ写し先にする。
    * ほかの総称 (cursive・fantasy・system-ui・emoji・math・fangsong など) は、当たる書体を持たないので、読み込んでいない書体の名前と同じに飛ばす
    */
   const POSITIONED_GENERIC = /^(serif|sans-serif|monospace|ui-serif|ui-sans-serif|ui-monospace)$/i;

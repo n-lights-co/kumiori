@@ -7,7 +7,9 @@ export type DrawioFileData = Uint8Array | ArrayBuffer | string;
 
 /** ファイル (名前と中身。中身は、要るときに呼ぶ関数でもよい) */
 export interface DrawioFile {
+  /** ファイルの名前 (js/stencils.min.js・ライブラリの XML・配布物の画像のファイル名など) */
   name: string;
+  /** 中身か、中身を返す関数 (使うときだけ呼ぶ) */
   data: DrawioFileData | (() => Promise<DrawioFileData>);
 }
 
@@ -18,6 +20,7 @@ export interface DrawioFile {
  */
 export type DrawioStencilFetcher = (path: string, ctx: { url: string; fetch: (url: string) => Promise<Uint8Array | undefined> }) => Promise<DrawioFileData | undefined>;
 
+/** draw.io (diagrams.net) の図のファイル (.drawio・.dio) の選択肢 (TypesetOptions.drawio) */
 export interface DrawioOptions {
   /**
    * 図形ライブラリのファイル: draw.io の配布物の js/stencils.min.js (draw.io のすべてのライブラリ) か、ライブラリの XML (<shapes name="mxgraph.…">)。
@@ -31,7 +34,9 @@ export interface DrawioOptions {
    * 描けない形は文字だけ描いて警告する)。true なら、版を決めた draw.io の公開のリポジトリから (図形ライブラリは stencils.min.js。約 6.6MB)、
    * 文字列なら、その URL の stencils.min.js と、同じ場所の下の画像 (…/js/stencils.min.js に対して …/img/lib/…) から取る。
    * 関数なら、要るときに配布物の中の道を渡して呼ぶ (取り先は stencilsUrl か、文字列の fetchStencils)。
-   * 取ったものは、同じ URL について、プロセス・画面の中で使い回す
+   * 取ったものは、同じ URL について、プロセス・画面の中で使い回す。
+   * 既定の取り先 (版を決めたタグの URL) から取ったもの (関数が既定の取り先の URL で返したものも) は、中身の SHA-256 を、その版の一覧と
+   * 照らし、合わないもの・一覧に無いものは使わずに警告する (タグは付け替えられるため)。取り先を決めたとき (文字列・stencilsUrl) は照らさない
    */
   fetchStencils?: boolean | string | DrawioStencilFetcher;
   /** 取り先の stencils.min.js の URL (fetchStencils が true か関数のとき。無ければ、版を決めた draw.io の公開のリポジトリ) */

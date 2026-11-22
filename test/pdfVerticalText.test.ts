@@ -44,7 +44,8 @@ interface Shown {
 
 /** HTML を組んで、PDF と 1 ページ目の内容 (命令の文字列) を返す */
 async function build(body: string, root = ''): Promise<{ pdf: PDFDocument; content: string; bytes: Uint8Array }> {
-  const r = await typeset(`<!doctype html><html lang="ja"${root}><head><meta charset="utf-8">${PAGE}</head><body>${body}</body></html>`, { loadFont });
+  // タグ (構造の印の BDC・EMC) を付けない: 字の並びと ActualText の BDC・EMC だけを見る
+  const r = await typeset(`<!doctype html><html lang="ja"${root}><head><meta charset="utf-8">${PAGE}</head><body>${body}</body></html>`, { loadFont, tagged: false });
   const bytes = await r.toPdf();
   const pdf = await PDFDocument.load(bytes);
   const ref = pdf.getPages()[0].node.get(PDFName.of('Contents'));

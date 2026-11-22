@@ -6,7 +6,7 @@
  *  - 読む: ハフマン符号の逐次 (SOF0・SOF1) と漸進 (SOF2) の 8 ビットの画像。成分は 1 (濃淡) か 3 (JFIF の YCbCr)。
  *    手順は Annex F.2 (逐次の復号)・Annex G.1.2 (漸進の復号)・Annex C (符号表の作り方)・A.3.3 (IDCT)
  *  - 書く: 基本の逐次 (SOF0)。量子化表は Annex K の Table K.1・K.2 の値を半分にしたもの
- *    (K.1 の注記「この値を 2 で割ると、元の画像とほとんど区別できない」)、ハフマン符号は Table K.3〜K.6。手順は Annex F.1
+ *    (K.1 の注記の要約: 値を半分にすると、元の画像とほとんど見分けのつかない画質になる)、ハフマン符号は Table K.3〜K.6。手順は Annex F.1
  *  - 色の変換は JFIF の「Conversion to and from RGB」の式
  *
  *  - APP14 (Adobe) の印は Adobe Technical Note #5116 (24 November 1992) の §18 の並び

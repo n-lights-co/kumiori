@@ -26,7 +26,7 @@ export const FONT_NOTICE = Symbol.for('kumiori.fontNotice');
 
 /** fontkit の書体 fk に付いた出し先に、知らせ message を出す (書体と種類 kind ごとに 1 度だけ) */
 export function fontNotice(fk: unknown, kind: string, message: () => string) {
-  const f = fk as { [FONT_NOTICE]?: (m: string) => void } | null;
+  const f = fk as { [FONT_NOTICE]?: (m: string, kind: string) => void } | null;
   const out = f?.[FONT_NOTICE];
   if (!f || typeof out !== 'function') return;
   let kinds = noticed.get(f);
@@ -34,7 +34,7 @@ export function fontNotice(fk: unknown, kind: string, message: () => string) {
   if (kinds.has(kind)) return;
   kinds.add(kind);
   try {
-    out(message());
+    out(message(), kind);
   } catch {
     // 知らせの出し先の誤りは、組版に持ち込まない
   }

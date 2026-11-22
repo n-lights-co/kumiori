@@ -92,6 +92,25 @@ describe('lang: en の警告に日本語が残らない', () => {
     expect(all.some((w) => w.includes('SVG elements'))).toBe(true);
   });
 
+  it('PDF/A の知らせと誤り (ファイルを開く動作・CMYK の色・字形の無い字・フォームの欄・添付ファイル・PDF/X との組み合わせ・知らない版)', async () => {
+    const fo = `<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions">
+      <fo:layout-master-set><fo:simple-page-master master-name="m" page-width="150mm" page-height="100mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>
+      <fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body">
+      <fo:block color="cmyk(0, 0.5, 1, 0)">a\u0f0b <fo:basic-link external-destination="url('x.mp3')">x</fo:basic-link></fo:block>
+      <axf:form><fo:block><axf:form-field axf:field-name="n" axf:field-type="text" width="50mm" height="6mm"/></fo:block></axf:form>
+      <fo:block axf:annotation-type="FileAttachment" axf:annotation-file-attachment="url(note.txt)" axf:annotation-file-name="note.txt">a</fo:block>
+      </fo:flow></fo:page-sequence></fo:root>`;
+    const r = await typeset(fo, { loadFont, lang: 'en', kind: 'fo', links: { launch: true }, files: [{ name: 'note.txt', data: new TextEncoder().encode('n') }] });
+    const pdfa: string[] = [];
+    await r.toPdf({ pdfa: { version: 'A-2b', warnings: pdfa } });
+    expect(pdfa.length).toBeGreaterThanOrEqual(4);
+    expect(japanese([...r.warnings, ...pdfa])).toEqual([]);
+    const errors: string[] = [];
+    for (const o of [{ pdfx: { version: 'X-3' as const }, pdfa: { version: 'A-2b' as const } }, { pdfa: { version: 'A-1b' as never } }]) await r.toPdf(o).catch((e) => errors.push(String(e)));
+    expect(errors.length).toBe(2);
+    expect(japanese(errors)).toEqual([]);
+  });
+
   it('XSL-FO: 未対応の要素・プロパティ・単位、溢れ', async () => {
     const fo = `<?xml version="1.0"?>
 <fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions">

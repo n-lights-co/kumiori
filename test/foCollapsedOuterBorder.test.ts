@@ -1,8 +1,8 @@
 /**
  * 罫線をつぶした表 (border-collapse="collapse") の、外側の罫線の外へ出る半分 (台帳の FO-22 の H)。
  * 仕様: XSL 1.1 §6.7.3 (collapse の表の罫線は、セルの段階で決める)・§7.28.3 (border-collapse は CSS2 の定義を引く)、
- * CSS2 (1998) §17.6.2「Borders are centered on the grid lines between the cells」「only half of the two exterior borders are counted in
- * the table width; the other half of these two borders lies in the margin area」(https://www.w3.org/TR/xsl11/・
+ * CSS2 (1998) §17.6.2 (罫線の中心はセルの間の格子の線に置く。外側の 2 本の罫線は、半分だけを表の幅に数え、残りの半分は
+ * 余白の領域にある。https://www.w3.org/TR/xsl11/・
  * https://www.w3.org/TR/1998/REC-CSS2-19980512/tables.html 2026-11-11 取得)。
  * 表の箱の端は罫線の中央なので、前後の余白が罫線の半分より小さくても、表の位置は変わらない (外の半分は前後の内容の側へ出る)
  */

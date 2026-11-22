@@ -218,7 +218,7 @@ describe('脚注の続きのページの守り', () => {
 
   it('守り: 送るものが 3 ページ続けて変わらなければ止め、欠けた脚注・float の数を警告に出す', () => {
     const warns: string[] = [];
-    const host = { warn: (m: string) => warns.push(m) };
+    const host = { warn: (d: { message: string }) => warns.push(d.message) };
     const g = new ContinuationGuard();
     const e = (height: number, cont = false) => ({ node: {} as never, height, ...(cont ? { cont } : {}) });
     // 進むあいだは足す

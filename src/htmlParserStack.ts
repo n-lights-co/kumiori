@@ -1,5 +1,5 @@
 /**
- * Node で HTML を読む構文解析器 (linkedom が使う htmlparser2) の、開いた要素の列の持ち方を軽くする。
+ * Node と Web Worker の中で HTML を読む構文解析器 (linkedom が使う htmlparser2) の、開いた要素の列の持ち方を軽くする。
  *
  * htmlparser2 の Parser は、開いた要素の名前の列 (stack) と、外来の要素 (svg・math) の中かどうかの列 (foreignContext) を、
  * 先頭を「いちばん内側」とする配列で持ち、要素を開くたびに先頭へ足し (unshift)、閉じるたびに先頭から取る (shift)。
@@ -11,6 +11,7 @@
  * 中では末尾で足し引きする入れ物 (TopFirstList) に替える。構文解析の結果 (DOM) は変わらない。
  * Parser の作りが、ここで受け持つ使い方 (上の操作だけ) から外れていれば (htmlparser2 の版が変わったときなど)、替えずにそのまま使う
  */
+import { importHtmlparser2 } from './linkedomModules';
 
 /** 添字 0 を末尾の要素とする列 (配列を逆に見る)。先頭への足し引きが、配列の末尾への足し引きになる */
 class TopFirstList {
@@ -98,7 +99,6 @@ let wrapped = 0;
 export const parserListsWrapped = () => wrapped;
 
 let patched: Promise<boolean> | undefined;
-const HTMLPARSER2 = 'htmlparser2';
 
 /**
  * htmlparser2 の Parser に、2 つの配列を入れ物に替える仕掛けを入れる (1 度だけ。linkedom を読み込む前後のどちらでもよい)。
@@ -108,7 +108,7 @@ export function patchHtmlParserStack(): Promise<boolean> {
   return (patched ??= (async () => {
     let Parser: unknown;
     try {
-      Parser = ((await import(/* @vite-ignore */ /* webpackIgnore: true */ HTMLPARSER2)) as { Parser?: unknown }).Parser;
+      Parser = (await importHtmlparser2()).Parser;
     } catch {
       return false;
     }

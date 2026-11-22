@@ -11,6 +11,7 @@
 import type { ImageFormatContext, ImageFormatResult } from '../imageFormats';
 import { drawioPage, drawioToSvg } from './drawio';
 import { DRAWIO_STENCILS_PATH, DRAWIO_STENCILS_URL, drawioImageUrl, fetchDrawioImage, fetchStencilBundle, isDrawioImagePath, isRemoteImage, StencilRegistry, type Fetcher } from './drawioStencil';
+import { checkPinned, DRAWIO_HASH_TAG } from './drawioPin';
 import type { DrawioFile, DrawioFileData, DrawioOptions } from './options';
 import { msgIn, type Lang } from './messages';
 
@@ -91,28 +92,46 @@ export function createState(options: DrawioOptions): DrawioState {
       if (!fs || !fetch) return registry.empty ? undefined : registry;
       const bundleUrl = typeof fs === 'string' ? fs : (options.stencilsUrl ?? DRAWIO_STENCILS_URL);
       /** 配布物の中の道のファイル (関数なら呼ぶ。そうでなければ、配布物の URL からの道で取る) */
-      const get = async (path: string): Promise<Uint8Array | undefined> => {
-        const url = path === DRAWIO_STENCILS_PATH ? bundleUrl : drawioImageUrl(path, bundleUrl);
+      const fetchFile = async (path: string, url: string): Promise<Uint8Array | undefined> => {
         if (typeof fs === 'function') {
           const d = await fs(path, { url, fetch }).catch(() => undefined);
           return d === undefined ? undefined : bytesOf(d);
         }
-        if (path === DRAWIO_STENCILS_PATH) {
-          const t = await fetchStencilBundle(fetch, bundleUrl);
-          return t === undefined ? undefined : new TextEncoder().encode(t);
-        }
+        if (path === DRAWIO_STENCILS_PATH) return fetchStencilBundle(fetch, bundleUrl);
         return fetchDrawioImage(fetch, path, bundleUrl);
+      };
+      /**
+       * 配布物の中の道のファイルを取る。取れなければ undefined。既定の取り先 (版を決めたタグの URL) から取ったものは、版の SHA-256 の
+       * 一覧 (drawioPin.ts) と照らし、合わない (一覧に無い) ものは使わずに警告して null (取れないの警告は重ねない)。
+       * 関数の fetchStencils も、既定の取り先の URL を渡したときは照らす (手元に覚えたものも、その版の中身であること)
+       */
+      const get = async (path: string): Promise<Uint8Array | undefined | null> => {
+        const url = path === DRAWIO_STENCILS_PATH ? bundleUrl : drawioImageUrl(path, bundleUrl);
+        const b = await fetchFile(path, url);
+        if (b === undefined) return undefined;
+        const pin = checkPinned(path, url, b);
+        if (pin === 'mismatch' || pin === 'unlisted') {
+          const p = path.slice(0, 200);
+          warn(
+            pin === 'mismatch'
+              ? msgIn(ctx.lang, `draw.io の配布物 (${DRAWIO_HASH_TAG}) から取ったファイルの中身が、版の SHA-256 の一覧と合わないので使いません (fetchStencils): ${p}`, `the file fetched from draw.io's distribution (${DRAWIO_HASH_TAG}) does not match the SHA-256 listed for that version, so it is not used (fetchStencils): ${p}`)
+              : msgIn(ctx.lang, `draw.io の配布物 (${DRAWIO_HASH_TAG}) の SHA-256 の一覧に無いファイルなので使いません (fetchStencils): ${p}`, `the file is not in the SHA-256 list of draw.io's distribution (${DRAWIO_HASH_TAG}), so it is not used (fetchStencils): ${p}`),
+          );
+          return null;
+        }
+        return b;
       };
       if (!fetched && libraries.some((l) => !registry!.hasLibrary(l))) {
         fetched = true;
         const b = await get(DRAWIO_STENCILS_PATH);
-        if (b === undefined || !registry.add(new TextDecoder().decode(b))) warn(msgIn(ctx.lang, 'draw.io の図形ライブラリを取れません (fetchStencils)', 'could not fetch the draw.io shape libraries (fetchStencils)'));
+        if (b !== null && (b === undefined || !registry.add(new TextDecoder().decode(b)))) warn(msgIn(ctx.lang, 'draw.io の図形ライブラリを取れません (fetchStencils)', 'could not fetch the draw.io shape libraries (fetchStencils)'));
       }
       const want = images.filter((p) => isDrawioImagePath(p) && !registry!.image(p) && !tried.has(p)).slice(0, Math.max(0, MAX_BUNDLE_IMAGES - tried.size));
       for (const p of want) tried.add(p);
       const got = await Promise.all(want.map((p) => get(p)));
       want.forEach((p, k) => {
         const b = got[k];
+        if (b === null) return;
         if (b === undefined) warn(msgIn(ctx.lang, `draw.io の配布物の画像を取れません (fetchStencils): ${p.slice(0, 200)}`, `could not fetch the image from draw.io's distribution (fetchStencils): ${p.slice(0, 200)}`));
         else if (!registry!.addImage(p, b)) warn(msgIn(ctx.lang, `draw.io の図の画像として読めません (PNG・JPEG・SVG でない): ${p.slice(0, 200)}`, `not a PNG, JPEG or SVG image for a draw.io diagram: ${p.slice(0, 200)}`));
       });

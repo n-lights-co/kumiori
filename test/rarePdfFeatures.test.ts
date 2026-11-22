@@ -53,6 +53,19 @@ describe('まれな PDF の機能 (I-04)', () => {
     expect(new TextDecoder().decode(decodePDFRawStream(ef).decode())).toBe('添付の中身');
   });
 
+  it('同じファイルを指す添付ファイルの注釈は、1 つの埋め込みファイルの流れを指す (注釈ごとに中身を埋め込まない)', async () => {
+    const assets = new AssetStore();
+    assets.registerFile('data/note.txt', new TextEncoder().encode('添付の中身'));
+    const one = '<fo:block axf:annotation-type="FileAttachment" axf:annotation-file-attachment="url(data/note.txt)" axf:annotation-file-name="メモ.txt">a</fo:block>';
+    const { pdf } = await pdfOf(one.repeat(3), assets);
+    const files = annots(pdf).filter((an) => String(an.get(PDFName.of('Subtype'))) === '/FileAttachment');
+    const efs = files.map((an) => ((an.lookup(PDFName.of('FS')) as PDFDict).lookup(PDFName.of('EF')) as PDFDict).get(PDFName.of('F')) as PDFRef);
+    expect(efs.length).toBe(3);
+    expect(new Set(efs.map(String)).size).toBe(1);
+    const streams = pdf.context.enumerateIndirectObjects().filter(([, o]) => o instanceof PDFRawStream && String(o.dict.get(PDFName.of('Type'))) === '/EmbeddedFile');
+    expect(streams.length).toBe(1);
+  });
+
   it('data: の URI の添付ファイルも埋め込む。ファイルが無ければテキスト注釈にする', async () => {
     const data = `data:text/plain;base64,${Buffer.from('abc').toString('base64')}`;
     const { pdf } = await pdfOf(`<fo:block axf:annotation-type="FileAttachment" axf:annotation-file-attachment="${data}" axf:annotation-file-name="a.txt">a</fo:block>`);

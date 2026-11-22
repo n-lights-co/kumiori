@@ -4,6 +4,7 @@
  * 番号は documentNodes が返す並び (深さ優先・前順。欄の並びは入力の物のまま) の位置。
  * type の欄 (文字列) を持つ物を節とみなし、配列と type の無い物 (ページの指定など) の中もたどる。
  */
+import type { DiagnosticSource } from './diagnostics';
 import type { GridItemFloor, LDocument, LTable, LTableCell } from './types';
 
 /** 入力の節 (type の欄を持つ物) を、深さ優先・前順に並べる */
@@ -38,10 +39,23 @@ export function sourceRef(node: unknown): number | undefined {
   return node && typeof node === 'object' ? REFS.get(node) : undefined;
 }
 
-/** 写した節 (静的な内容の複製など) に、元の節の番号を引き継ぐ */
+/** 写した節 (静的な内容の複製など) に、元の節の番号と入力の場所 (診断の source) を引き継ぐ */
 export function copySourceRef(from: unknown, to: object) {
   const r = sourceRef(from);
   if (r !== undefined) REFS.set(to, r);
+  const s = nodeSource(from);
+  if (s) NODE_SOURCES.set(to, s);
+}
+
+/** 組版の節 → 入力の場所 (読み込みが、要素から作った節に結び付ける。sourceLocation.ts) */
+const NODE_SOURCES = new WeakMap<object, DiagnosticSource>();
+/** 組版の節に、入力の場所を結び付ける (もう結び付いていれば変えない: 内の要素の節は、その要素の場所のまま) */
+export function tagNodeSource(node: unknown, src: DiagnosticSource): void {
+  if (node && typeof node === 'object' && !NODE_SOURCES.has(node)) NODE_SOURCES.set(node, src);
+}
+/** 組版の節の入力の場所 */
+export function nodeSource(node: unknown): DiagnosticSource | undefined {
+  return node && typeof node === 'object' ? NODE_SOURCES.get(node) : undefined;
 }
 
 type GridTemplate = NonNullable<LTable['gridTemplate']>;
