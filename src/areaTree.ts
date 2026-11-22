@@ -12,6 +12,7 @@
  */
 import type { Area, AreaTree, SheetArea } from "./types";
 import { msg } from './messages';
+import { KumioriInputError } from './errors';
 
 /** 入力 (LDocument) の節の並び。Area の sourceRef はこの並びの位置 (sourceRef.ts) */
 export { documentNodes } from "./sourceRef";
@@ -130,8 +131,14 @@ export function serializeAreaTree(tree: AreaTree): string {
   }
 }
 
-/** 読み直した Area Tree の形の誤り */
-export class AreaTreeFormatError extends Error {}
+/** 読み直した Area Tree の形の誤り (code は area-tree/format) */
+export class AreaTreeFormatError extends KumioriInputError {
+  // name は文字で決め打つ (errors.ts の KumioriError を見る)
+  override name = 'AreaTreeFormatError';
+  constructor(message: string) {
+    super('area-tree/format', message);
+  }
+}
 
 /**
  * JSON の文字列から Area Tree を読む。版 (schemaVersion) と、節の形 (種類・位置と大きさの数・子の欄) を確かめる。

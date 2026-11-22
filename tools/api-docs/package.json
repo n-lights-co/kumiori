@@ -1,0 +1,10 @@
+{
+  "name": "kumiori-api-docs",
+  "private": true,
+  "description": "Kumiori の API の説明書 (型の宣言のコメントから作る頁) を作る道具。リポジトリの直下の npm run docs:api が、ここに依存を入れて使う",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "typedoc": "~0.28.20",
+    "typescript": "~6.0.3"
+  }
+}

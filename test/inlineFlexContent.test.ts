@@ -230,7 +230,6 @@ describe('inline-flex・inline-grid のブロックの項目の間の、空白�
 });
 
 /** ブロックの項目が無い容器の、直す前 (main 4dd9c39) の最初の行の字と位置 */
-const EXPECT_COMMENT = ['E@66.69', 'E@72.58', 'E@78.47', ' @84.36', 'A@86.60', 'x@92.61', ' @97.59', ' @99.83', 'y@102.07', 'B@107.28', ' @113.85', 't@116.09', 'a@119.59', 'i@125.22', 'l@127.97'];
 const EXPECT_CONTENTS = ['E@66.69', 'E@72.58', 'E@78.47', ' @84.36', 'A@86.60', 'x@92.61', ' @97.59', 'c@99.83', ' @104.93', 'y@107.17', 'B@112.38', ' @118.95', 't@121.19', 'a@124.69', 'i@130.32', 'l@133.07'];
 
 describe('inline-flex・inline-grid の、空白だけの並びは元の字で見分け、コメントと display: contents の字は並びを切らない', () => {
@@ -296,10 +295,11 @@ describe('inline-flex・inline-grid の、空白だけの並びは元の字で�
     expect(b.lines[0]).toBe('AxcyB');
     expect(b.boxes).toBe(4);
   });
-  it('ブロックの項目が無い容器は、コメント・display: contents を挟んでも、これまでと字も位置も同じ', async () => {
+  it('ブロックの項目が無い容器は、コメント・display: contents を挟んでも、これまでと字も位置も同じ (コメントの所の空白は 1 つに詰める)', async () => {
     const a = await run('<p>EEE <span style="display:inline-flex"><span>A</span>x <!-- c --> y<span>B</span></span> tail</p>');
-    expect(a.lines[0]).toBe('EEE Ax  yB tail');
-    expect(row(a)).toEqual(EXPECT_COMMENT);
+    // コメントを挟んだ空白は、コメントの無い「x  y」と同じく 1 つに詰める (CSS Text 3 §4.1.1。直す前は空白 2 つ)
+    expect(a.lines[0]).toBe('EEE Ax yB tail');
+    expect(row(a)).toEqual(row(await run('<p>EEE <span style="display:inline-flex"><span>A</span>x  y<span>B</span></span> tail</p>')));
     expect(a.boxes).toBe(0);
     const b = await run('<p>EEE <span style="display:inline-flex"><span>A</span>x <span style="display:contents">c</span> y<span>B</span></span> tail</p>');
     expect(b.lines[0]).toBe('EEE Ax c yB tail');

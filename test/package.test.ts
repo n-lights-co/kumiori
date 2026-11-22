@@ -2,6 +2,8 @@
  * npm の配布物 (tarball) を、利用者の側から確かめるテスト: ライブラリとブラウザ用のバンドルを作り (build:lib・build:browser)、
  * `npm pack` の tarball を一時のディレクトリの node_modules/kumiori に展開して、
  *  - `import`・`require()` の両方で kumiori・kumiori/node・kumiori/browser・kumiori/package.json が読めること
+ *  - 公開の誤りの型の name が、ビルドで縮めたクラスの名前でなく型の名前になり、instanceof で見分けられること
+ *  - 使うときだけ import() で読む別ファイル (CGM・EPS・WMF/EMF・draw.io・linkedom など) が、包みの中で読めること
  *  - 利用者役の TypeScript のプロジェクト (moduleResolution が NodeNext・Node16・Bundler、skipLibCheck が false・true) で型が効くこと
  * を見る。
  *
@@ -104,6 +106,64 @@ describe('配布物を Node から読む', () => {
     const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { cwd: app, encoding: 'utf8' });
     expect(r.stderr).toBe('');
     expect(JSON.parse(r.stdout)).toEqual(['function', 'function', 'function', pkg.version]);
+  });
+
+  // 配る形では、ビルドがクラスの名前を縮める。誤りの name がクラスの名前に頼らず、型の名前になることを、配った入口で確かめる
+  // (src を読む単体テストでは、縮める前の名前なので見つからない)
+  for (const entry of ['kumiori', 'kumiori/browser']) {
+    it(`${entry}: 公開の誤りの型の name が型の名前で、instanceof で見分けられる`, () => {
+      const code = `
+        const m = await import(${JSON.stringify(entry)});
+        const out = {};
+        for (const n of ['KumioriError', 'KumioriInputError', 'KumioriLimitError', 'KumioriFontError', 'KumioriPdfError']) {
+          const e = new m[n]('internal/x', 'msg');
+          out[n] = [e.name, e instanceof m.KumioriError, e instanceof Error, m.isKumioriError(e), String(e)];
+        }
+        const o = new m.KumioriOptionError('msg', 'opt');
+        out.KumioriOptionError = [o.name, o instanceof TypeError, m.isKumioriError(o), String(o)];
+        try { m.parseAreaTree('{}'); } catch (e) {
+          out.parseAreaTree = [e.name, e.code, e instanceof m.AreaTreeFormatError, e instanceof m.KumioriInputError];
+        }
+        try { await m.typeset('<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:x>', { fonts: [] }); } catch (e) {
+          out.typeset = [e.name, e.code, e instanceof m.KumioriInputError];
+        }
+        console.log(JSON.stringify(out));
+      `;
+      const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { cwd: app, encoding: 'utf8' });
+      expect(r.stderr).toBe('');
+      const out = JSON.parse(r.stdout) as Record<string, unknown[]>;
+      for (const n of ['KumioriError', 'KumioriInputError', 'KumioriLimitError', 'KumioriFontError', 'KumioriPdfError']) {
+        expect(out[n]).toEqual([n, true, true, true, `${n}: msg`]);
+      }
+      expect(out.KumioriOptionError).toEqual(['KumioriOptionError', true, true, 'KumioriOptionError: msg']);
+      expect(out.parseAreaTree).toEqual(['AreaTreeFormatError', 'area-tree/format', true, true]);
+      expect(out.typeset).toEqual(['KumioriInputError', 'input/xml-parse', true]);
+    });
+  }
+
+  it('使うときだけ読む別ファイル (CGM・EPS・WMF/EMF・draw.io・linkedom など) が、配った包みの中で読める', () => {
+    // 別ファイルは、その形式の画像を組むときに初めて import() で読む。包みに入っていない・中の import が解けないと、
+    // その形式を使ったときだけ失敗するので、どれも読めることを確かめる (dist-lib の各ファイルと、dist-browser/chunks の各ファイル)
+    const pkgDir = path.join(app, 'node_modules', 'kumiori');
+    const files = packed.filter((f) => /^dist-(lib\/[^/]+|browser\/chunks\/[^/]+)\.js$/.test(f));
+    // 主な別ファイルが分かれて入っていること (名前はビルドの付ける「名前-ハッシュ.js」)。load は draw.io を描く部分、esm は linkedom
+    for (const name of ['cgm', 'eps', 'metafile', 'load']) {
+      expect(files.some((f) => f.startsWith(`dist-lib/${name}-`))).toBe(true);
+      expect(files.some((f) => f.startsWith(`dist-browser/chunks/${name}-`))).toBe(true);
+    }
+    expect(files.some((f) => f.startsWith('dist-browser/chunks/esm-') && fs.readFileSync(path.join(pkgDir, f), 'utf8').includes('linkedom'))).toBe(true);
+    const code = `
+      const { pathToFileURL } = await import('node:url');
+      const files = ${JSON.stringify(files)};
+      const bad = [];
+      for (const f of files) {
+        try { await import(pathToFileURL(${JSON.stringify(pkgDir)} + '/' + f).href); } catch (e) { bad.push(f + ': ' + e.message); }
+      }
+      console.log(JSON.stringify(bad));
+    `;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { cwd: app, encoding: 'utf8' });
+    expect(r.stderr).toBe('');
+    expect(JSON.parse(r.stdout)).toEqual([]);
   });
 
   // require() で ES モジュールを読めるのは、Node 20.19.0 以降と 22.12.0 以降 (フラグ無し)。

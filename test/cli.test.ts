@@ -63,6 +63,87 @@ describe('Node のコマンド', () => {
     expect([Math.round(width), Math.round(height)]).toEqual([420, 595]); // A5 (pt)
   }, 120_000);
 
+  it('--format svg: ページを SVG にする (複数ページの文書は -番号を付けた名前。--pages で選ぶ。標準出力は 1 ページだけ)', async () => {
+    const dir = fs.mkdtempSync(path.join(work, 'svg-'));
+    const html = path.join(dir, 'doc.html');
+    fs.writeFileSync(html, '<!doctype html><html lang="ja"><style>@page { size: A6 }</style><p>一頁目</p><p style="break-before: page">二頁目</p><p style="break-before: page">三頁目</p></html>');
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const all = execFileSync(process.execPath, [cli, html, '--format', 'svg', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(all).toContain('3 ページを SVG に書きました');
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.svg')).sort()).toEqual(['doc-1.svg', 'doc-2.svg', 'doc-3.svg']);
+    const svg = fs.readFileSync(path.join(dir, 'doc-2.svg'), 'utf8');
+    // A6 (105mm × 148mm) を pt で
+    expect(svg).toMatch(/<svg [^>]*width="297\.638pt" height="419\.528pt"/);
+    expect(svg).toContain('<path');
+    expect(svg).not.toContain('<text');
+    // -o の拡張子が .svg なら --format は要らない。--pages で 1 ページだけ選んでも、複数ページの文書なら番号を付ける
+    execFileSync(process.execPath, [cli, html, '-o', path.join(dir, 'p.svg'), '--pages', '3', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(fs.readdirSync(dir).filter((f) => f.startsWith('p'))).toEqual(['p-3.svg']);
+    // 文書に無いページを指すと、何も書かずに誤り (1 ページ目も書かない)
+    const bad = spawnSync(process.execPath, [cli, html, '-o', path.join(dir, 'q.svg'), '--pages', '1,9', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toContain('--pages の 9 は文書にありません (文書は 3 ページ)');
+    expect(fs.readdirSync(dir).filter((f) => f.startsWith('q'))).toEqual([]);
+    // -o の拡張子と --format が食い違うのは誤り
+    const mismatch = spawnSync(process.execPath, [cli, html, '-o', path.join(dir, 'r.pdf'), '--format', 'svg', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(mismatch.status).toBe(1);
+    expect(mismatch.stderr).toContain('-o の拡張子 .pdf と --format svg が食い違います');
+    // 標準出力には 1 ページだけ
+    const one = execFileSync(process.execPath, [cli, html, '-o', '-', '--format', 'svg', '--pages', '1', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(one.startsWith('<?xml')).toBe(true);
+    const many = spawnSync(process.execPath, [cli, html, '-o', '-', '--format', 'svg', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(many.status).toBe(1);
+    expect(many.stderr).toContain('1 ページだけ');
+  }, 120_000);
+
+  it('入力のファイルの名前の改行・制御文字は、報告の行と誤りの行で見える形にする ({ で始まる偽の行を出さない)', () => {
+    if (process.platform === 'win32') return; // Windows のファイルの名前には改行を使えない
+    const dir = fs.mkdtempSync(path.join(work, 'name-'));
+    const html = path.join(dir, 'a\n{"code":"fake"}.html');
+    fs.writeFileSync(html, '<!doctype html><html lang="ja"><p>字</p></html>');
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const ok = spawnSync(process.execPath, [cli, html, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV, cwd: dir });
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toContain('a\\x0a{"code":"fake"}.pdf: 1 ページ');
+    expect(ok.stdout.split('\n').some((l) => l.startsWith('{'))).toBe(false);
+    const bad = path.join(dir, 'b\n{"code":"fake"}.fo');
+    fs.writeFileSync(bad, '<fo:root');
+    const ng = spawnSync(process.execPath, [cli, bad, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV, cwd: dir });
+    expect(ng.status).toBe(1);
+    expect(ng.stderr).toContain('b\\x0a{"code":"fake"}.fo: ');
+    expect(ng.stderr.split('\n').some((l) => l.startsWith('{'))).toBe(false);
+  }, 120_000);
+
+  it('--format svg・png では構造の木を作らず、タグ付き PDF にだけ関わる診断 (表の構造の上限) を出さない', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'svg-tag-'));
+    const html = path.join(dir, 'doc.html');
+    fs.writeFileSync(html, `<!doctype html><html lang="ja"><style>@page { size: A4 }</style><table><tr><td colspan="1000">a</td></tr>${'<tr><td>b</td></tr>'.repeat(20)}</table></html>`);
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const svg = spawnSync(process.execPath, [cli, html, '-o', path.join(dir, 'd.svg'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(svg.status).toBe(0);
+    expect(svg.stderr).not.toContain('limit/table-structure-cells');
+    // PDF では出る
+    const pdf = spawnSync(process.execPath, [cli, html, '-o', path.join(dir, 'd.pdf'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(pdf.stderr).toContain('limit/table-structure-cells');
+  }, 120_000);
+
+  it('--format png: ページを PNG にする (-o の .png でも。--dpi で解像度。--pages で選ぶ)', async () => {
+    const dir = fs.mkdtempSync(path.join(work, 'png-'));
+    const html = path.join(dir, 'doc.html');
+    fs.writeFileSync(html, '<!doctype html><html lang="ja"><style>@page { size: 144pt 72pt; margin: 0 } p { margin: 0; background: #f00; height: 36pt }</style><p>一</p><p style="break-before: page">二</p></html>');
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const out = execFileSync(process.execPath, [cli, html, '-o', path.join(dir, 'p.png'), '--dpi', '144', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(out).toContain('2 ページを PNG に書きました');
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.png')).sort()).toEqual(['p-1.png', 'p-2.png']);
+    const b = fs.readFileSync(path.join(dir, 'p-2.png'));
+    expect(b.subarray(1, 4).toString('latin1')).toBe('PNG');
+    // 144pt × 72pt を 144dpi で: 288 × 144 画素 (IHDR の幅・高さ)
+    expect([b.readUInt32BE(16), b.readUInt32BE(20)]).toEqual([288, 144]);
+    const one = spawnSync(process.execPath, [cli, html, '-o', '-', '--format', 'png', '--pages', '1', '--font-dir', fontDir], { env: JA_ENV });
+    expect(one.status).toBe(0);
+    expect(one.stdout.subarray(1, 4).toString('latin1')).toBe('PNG');
+  }, 120_000);
+
   it('HTML+CSS を組む (別ファイルの CSS・head と body の無い HTML)', async () => {
     const dir = fs.mkdtempSync(path.join(work, 'html-'));
     fs.writeFileSync(path.join(dir, 'style.css'), '@page { size: A5 } h1 { break-before: page }');
@@ -84,13 +165,40 @@ describe('Node のコマンド', () => {
     fs.writeFileSync(html, '<!doctype html><html lang="ja"><link rel="stylesheet" href="style.css"><p>本文。</p></html>');
     const out = path.join(dir, 'doc.pdf');
     const a = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
-    // 警告は標準エラー出力
-    expect(a.stderr).toContain('文書から参照されていない CSS は当てません: other.css');
+    // 知らせ (重さ info) は、--verbose のときだけ標準エラー出力に出す
+    expect(a.stderr).not.toContain('参照されていない CSS');
+    const v = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir, '--verbose'], { encoding: 'utf8', env: JA_ENV });
+    expect(v.stderr).toContain('  知らせ [css/unreferenced-stylesheet] 文書から参照されていない CSS は当てません: other.css');
+    // --diagnostics json: 1 件 1 行の JSON (知らせも書く)
+    const j = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir, '--diagnostics', 'json'], { encoding: 'utf8', env: JA_ENV });
+    const lines = j.stderr.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
+    expect(lines).toContainEqual(expect.objectContaining({ input: html, code: 'css/unreferenced-stylesheet', severity: 'info' }));
     expect(Math.round((await PDFDocument.load(fs.readFileSync(out))).getPage(0).getSize().width)).toBe(420); // A5
     // --css で名指しすれば、参照されていなくても利用者のスタイルシートとして足す
     const b = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir, '--css', 'style.css,other.css'], { encoding: 'utf8', env: JA_ENV });
     expect(b.stderr).not.toContain('参照されていない CSS');
     expect(Math.round((await PDFDocument.load(fs.readFileSync(out))).getPage(0).getSize().width)).toBe(842); // A3 (利用者のスタイルシートが後)
+  }, 120_000);
+
+  it('--diagnostics json: 組めずに止まる誤りも、診断と同じ形の JSON の 1 行 (重さ fatal) で書き、終了コード 1 で終わる', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'fatal-'));
+    const bad = path.join(dir, 'bad.fo');
+    fs.writeFileSync(bad, '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:x>');
+    const missing = path.join(dir, 'missing.fo');
+    const r = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), bad, missing, '-o', dir, '--font-dir', fontDir, '--diagnostics', 'json'], { encoding: 'utf8', env: JA_ENV });
+    expect(r.status).toBe(1);
+    const lines = r.stderr.split('\n').filter((l) => l.trim());
+    // 標準エラーの行は、どれも JSON
+    const recs = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(recs).toContainEqual(expect.objectContaining({ input: bad, name: 'KumioriInputError', code: 'input/xml-parse', severity: 'fatal', message: expect.stringContaining('XML の解析に失敗しました') }));
+    // Kumiori の誤りでないもの (ファイルが無い) は code を持たない
+    const m = recs.find((x) => x.input === missing);
+    expect(m).toMatchObject({ name: 'Error', severity: 'fatal' });
+    expect(m).not.toHaveProperty('code');
+    // 文字の出力 (既定) は、前のとおり「ファイル名: 文」
+    const t = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), bad, '-o', path.join(dir, 'x.pdf'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(t.status).toBe(1);
+    expect(t.stderr).toContain('bad.fo: XML の解析に失敗しました');
   }, 120_000);
 
   it('--spot-colors: 名前の特色を PDF の Separation (代わりの色は DeviceCMYK) にする', async () => {
@@ -136,11 +244,18 @@ describe('Node のコマンド', () => {
     const dir = fs.mkdtempSync(path.join(work, 'math-'));
     const body = (p: string) =>
       `<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><body><p>式 <${p}math xmlns${p ? ':m' : ''}="http://www.w3.org/1998/Math/MathML"><${p}mfrac><${p}mi>a</${p}mi><${p}mi>b</${p}mi></${p}mfrac></${p}math> です</p></body></html>`;
-    /** 描いた図形の曲線 (c) の数 (数式は字の輪郭の図形で描く。本文の字は書体で描くので曲線は無い) */
+    /**
+     * 描いた図形の曲線 (c) の数 (数式は字の輪郭の図形で描く。本文の字は書体で描くので曲線は無い)。
+     * 図形の命令は、ページの内容の流れか、使い回す Form XObject (Subtype が Form) にある
+     */
     const curves = (pdf: PDFDocument) => {
       const contents = [...pdf.context.enumerateIndirectObjects()]
         .map(([, o]) => o)
-        .filter((o): o is PDFRawStream => o instanceof PDFRawStream && !o.dict.get(PDFName.of('Subtype')) && !o.dict.get(PDFName.of('Length1')) && !o.dict.get(PDFName.of('Type')));
+        .filter((o): o is PDFRawStream => {
+          if (!(o instanceof PDFRawStream) || o.dict.get(PDFName.of('Length1'))) return false;
+          const form = o.dict.get(PDFName.of('Subtype')) === PDFName.of('Form');
+          return form || (!o.dict.get(PDFName.of('Subtype')) && !o.dict.get(PDFName.of('Type')));
+        });
       return contents.reduce((n, o) => {
         const flate = String(o.dict.get(PDFName.of('Filter'))) === '/FlateDecode';
         const text = Buffer.from(flate ? zlib.inflateSync(o.contents) : o.contents).toString('latin1');
@@ -256,6 +371,231 @@ describe('Node のコマンド', () => {
     }
   }, 120_000);
 
+  it('--watch と --format svg: 複数ページの文書で、書いたページの SVG (a-1.svg …) の変更では組み直さない', async () => {
+    const dir = fs.mkdtempSync(path.join(work, 'watch-svg-'));
+    const html = path.join(dir, 'w.html');
+    fs.writeFileSync(html, '<p>一</p><p style="break-before: page">二</p>');
+    const child = spawn(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '--format', 'svg', '--watch', '--font-dir', fontDir], { stdio: ['ignore', 'pipe', 'pipe'], env: JA_ENV });
+    let log = '';
+    child.stdout.on('data', (d) => (log += d));
+    child.stderr.on('data', (d) => (log += d));
+    const until = async (re: RegExp) => {
+      for (let i = 0; i < 300 && !re.test(log); i++) await new Promise((r) => setTimeout(r, 100));
+      return re.test(log);
+    };
+    try {
+      expect(await until(/見張って/), log).toBe(true);
+      fs.writeFileSync(html, '<p>一</p><p style="break-before: page">二</p><p style="break-before: page">三</p>');
+      expect(await until(/3 ページを SVG/), log).toBe(true);
+      // 前は、書いた w-1.svg などの変更で組み直しが続いた (見張りが除いていたのは w.svg だけ)
+      await new Promise((r) => setTimeout(r, 2000));
+      expect(log.match(/ページを SVG に書きました/g)?.length, log).toBe(2);
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  it('出力は、その変換で読んだファイル (文書の画像・入力) と、別の入力の出力を上書きしない', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'guard-'));
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>';
+    // 文書の使う画像 fig.svg と、--format svg の出力 fig.svg (前は画像をページの SVG で上書きし、終了 0)
+    fs.writeFileSync(path.join(dir, 'fig.html'), '<p>図<img src="fig.svg"></p>');
+    fs.writeFileSync(path.join(dir, 'fig.svg'), svg);
+    const r1 = spawnSync(process.execPath, [cli, path.join(dir, 'fig.html'), '--format', 'svg', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r1.status, r1.stderr).toBe(1);
+    expect(r1.stderr).toContain('上書きしません');
+    expect(fs.readFileSync(path.join(dir, 'fig.svg'), 'utf8')).toBe(svg);
+    // -o に入力と同じ名前 (前は入力を PDF で上書きした)
+    const one = path.join(dir, 'one.html');
+    fs.writeFileSync(one, '<p>一</p>');
+    const r2 = spawnSync(process.execPath, [cli, one, '-o', one, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r2.status, r2.stderr).toBe(1);
+    expect(fs.readFileSync(one, 'utf8')).toBe('<p>一</p>');
+    // 3 ページの a.html と a.fo を一緒に組む (前は a.fo の出力が a-2.svg になり、a.html の 2 ページ目を消した)
+    fs.writeFileSync(path.join(dir, 'a.html'), '<p>一</p><p style="break-before: page">二</p><p style="break-before: page">三</p>');
+    fs.writeFileSync(path.join(dir, 'a.fo'), '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block>FO</fo:block></fo:flow></fo:page-sequence></fo:root>');
+    const r3 = spawnSync(process.execPath, [cli, path.join(dir, 'a.html'), path.join(dir, 'a.fo'), '--format', 'svg', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r3.status, r3.stderr).toBe(0);
+    expect(fs.readdirSync(dir).filter((f) => /^a[.-].*\.svg$/.test(f)).sort()).toEqual(['a-1.svg', 'a-2.svg', 'a-3.svg', 'a.fo.svg']);
+    expect(fs.readFileSync(path.join(dir, 'a-2.svg'), 'utf8')).not.toBe(fs.readFileSync(path.join(dir, 'a.fo.svg'), 'utf8'));
+    // 名前がそれでも重なるとき (x.html の 2 ページ目と、x-2.html の出力): 後の入力は書かずに誤り
+    fs.writeFileSync(path.join(dir, 'x.html'), '<p>一</p><p style="break-before: page">二</p>');
+    fs.writeFileSync(path.join(dir, 'x-2.html'), '<p>別</p>');
+    const r4 = spawnSync(process.execPath, [cli, path.join(dir, 'x.html'), path.join(dir, 'x-2.html'), '--format', 'svg', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r4.status, r4.stderr).toBe(1);
+    expect(r4.stderr).toMatch(/x-2\.html: 書く先 x-2\.svg は、この実行で別の入力 \(x\.html\)/);
+    // --format svg を同じ文書でもう 1 度組む (前に書いた出力は、参照していなければ読んだファイルではない)
+    const r5 = spawnSync(process.execPath, [cli, path.join(dir, 'a.html'), '--format', 'svg', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r5.status, r5.stderr).toBe(0);
+  }, 120_000);
+
+  it('引数の誤りの文の制御文字 (ESC) は見える形にする。-o の値の所のオプション (-o --print) は値の誤り。--xhtml は .xml の入力でも効く', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'args-'));
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const html = path.join(dir, 'a.html');
+    fs.writeFileSync(html, '<p>a</p>');
+    const r1 = spawnSync(process.execPath, [cli, html, '--pages', '\u001b[2J'], { encoding: 'utf8', env: JA_ENV });
+    expect(r1.status).toBe(1);
+    expect(r1.stderr).not.toContain('\u001b');
+    expect(r1.stderr).toContain('\\x1b[2J');
+    // 前は --print という名前の PDF を書いて終了 0
+    const r2 = spawnSync(process.execPath, [cli, html, '-o', '--print', '--font-dir', fontDir], { cwd: dir, encoding: 'utf8', env: JA_ENV });
+    expect(r2.status).toBe(1);
+    expect(r2.stderr).toContain('-o の値がありません (続く --print はオプションです');
+    expect(fs.existsSync(path.join(dir, '--print'))).toBe(false);
+    // 前は --xhtml を見ずに、.xml を XSL-FO として読んで誤りになった
+    const xml = path.join(dir, 'x.xml');
+    fs.writeFileSync(xml, '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>XHTML</p></body></html>');
+    const r3 = spawnSync(process.execPath, [cli, xml, '--xhtml', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r3.status, r3.stderr).toBe(0);
+    expect(r3.stdout).toContain('x.pdf: 1 ページ');
+  }, 120_000);
+
+  it('出力は、ハードリンクの別名・標準入力の元のファイル・--font-dir の書体も上書きしない。同じ入力を何度も渡したら 1 度だけ組む', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'guard2-'));
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const h = path.join(dir, 'h.html');
+    fs.writeFileSync(h, '<p>h</p>');
+    // ハードリンクの別名 (前は終了 0 で h.html が PDF になった)
+    fs.linkSync(h, path.join(dir, 'hard.pdf'));
+    const r1 = spawnSync(process.execPath, [cli, h, '-o', path.join(dir, 'hard.pdf'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r1.status, r1.stderr).toBe(1);
+    expect(fs.readFileSync(h, 'utf8')).toBe('<p>h</p>');
+    // 標準入力の元のファイル (kumiori - -o one.html < one.html)
+    const one = path.join(dir, 'one.html');
+    fs.writeFileSync(one, '<p>one</p>');
+    const fd = fs.openSync(one, 'r');
+    try {
+      const r2 = spawnSync(process.execPath, [cli, '-', '-o', one, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV, stdio: [fd, 'pipe', 'pipe'] });
+      expect(r2.status, r2.stderr).toBe(1);
+    } finally {
+      fs.closeSync(fd);
+    }
+    expect(fs.readFileSync(one, 'utf8')).toBe('<p>one</p>');
+    // --font-dir の書体 (前は SVG で上書きした)
+    const fdir = path.join(dir, 'fd');
+    fs.mkdirSync(fdir);
+    const font = path.join(fdir, 'NotoSerifJP-Regular.ttf');
+    fs.copyFileSync(path.join(fontDir, 'NotoSerifJP-Regular.ttf'), font);
+    const size = fs.statSync(font).size;
+    const r3 = spawnSync(process.execPath, [cli, h, '--font-dir', fdir, '-o', font, '--format', 'svg'], { encoding: 'utf8', env: JA_ENV });
+    expect(r3.status, r3.stderr).toBe(1);
+    expect(fs.statSync(font).size).toBe(size);
+    // 同じ入力を 3 度 (前は h.pdf・h.html.pdf・h.html.2.pdf を書いた)
+    const before = fs.readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort();
+    const r4 = spawnSync(process.execPath, [cli, h, h, path.join(dir, '.', 'h.html'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r4.status, r4.stderr).toBe(0);
+    expect(r4.stderr.match(/同じ入力 .* を何度も渡したので、1 度だけ組みます/g)?.length, r4.stderr).toBe(2);
+    expect(r4.stdout.match(/ページ \(組版/g)?.length).toBe(1);
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()).toEqual([...new Set([...before, 'h.pdf'])].sort());
+  }, 120_000);
+
+  it('同じ入力をまとめても -o はディレクトリ。--watch で入力を名前の変更で保存しても組み直せる。-o /dev/stdout では報告を標準エラーに', async () => {
+    const dir = fs.mkdtempSync(path.join(work, 'guard3-'));
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const a = path.join(dir, 'a.html');
+    fs.writeFileSync(a, '<p>a</p>');
+    // 前は outdir という拡張子の無いファイルに PDF を書いて終了 0
+    const r1 = spawnSync(process.execPath, [cli, a, a, '-o', path.join(dir, 'outdir'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r1.status, r1.stderr).toBe(0);
+    expect(fs.statSync(path.join(dir, 'outdir')).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'outdir', 'a.pdf'))).toBe(true);
+    // -o /dev/stdout > out.pdf: 報告の行で PDF の先頭を壊さない
+    const out = path.join(dir, 'out.pdf');
+    const fd = fs.openSync(out, 'w');
+    try {
+      const r2 = spawnSync(process.execPath, [cli, a, '-o', '/dev/stdout', '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV, stdio: ['ignore', fd, 'pipe'] });
+      expect(r2.status, r2.stderr).toBe(0);
+      expect(r2.stderr).toContain('1 ページ');
+    } finally {
+      fs.closeSync(fd);
+    }
+    expect(fs.readFileSync(out).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    // -o /dev/stdout をパイプで受ける (前は報告の行が PDF の末尾に付いた)
+    // (Node の子プロセスの標準出力はソケットで、/dev/stdout として開けないので、シェルのパイプを通す)
+    if (process.platform !== 'win32') {
+      const piped = path.join(dir, 'p.pdf');
+      const r3 = spawnSync('sh', ['-c', 'exec "$0" "$1" "$2" -o /dev/stdout --font-dir "$3" | cat > "$4"', process.execPath, cli, a, fontDir, piped], { encoding: 'utf8', env: JA_ENV });
+      expect(r3.status, r3.stderr).toBe(0);
+      const pdf = fs.readFileSync(piped).toString('latin1');
+      expect(pdf.startsWith('%PDF-')).toBe(true);
+      expect(pdf.trimEnd().endsWith('%%EOF'), pdf.slice(-80)).toBe(true);
+      expect(r3.stderr).toContain('1 ページ');
+    }
+    // 同じ入力を 2 つと -o - (前は作業のディレクトリに - という空のディレクトリを作った)
+    const r4 = spawnSync(process.execPath, [cli, a, a, '-o', '-', '--font-dir', fontDir], { env: JA_ENV, cwd: dir });
+    expect(r4.status, String(r4.stderr)).toBe(0);
+    expect(r4.stdout.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(fs.existsSync(path.join(dir, '-'))).toBe(false);
+    // --watch: 新しいファイルに書いて名前を変える保存 (i ノードが変わる) の後も組み直せる。入力の i ノードを確かめるたびに取り直すこと
+    // (前は、起動のときの i ノードを受け継いだ新しい出力を誤りにした) は、i ノードの使い回しに頼らずに試せる test/cliOutputGuard.test.ts で
+    // 確かめる (ここの PDF の出力は同じ i ノードに書くので、その直しを外しても落ちない)
+    const w = path.join(dir, 'w.html');
+    fs.writeFileSync(w, '<p>1</p>');
+    const child = spawn(process.execPath, [cli, w, '--watch', '--font-dir', fontDir], { stdio: ['ignore', 'pipe', 'pipe'], env: JA_ENV });
+    let log = '';
+    child.stdout.on('data', (d) => (log += d));
+    child.stderr.on('data', (d) => (log += d));
+    const until = async (re: RegExp) => {
+      for (let i = 0; i < 300 && !re.test(log); i++) await new Promise((r) => setTimeout(r, 100));
+      return re.test(log);
+    };
+    try {
+      expect(await until(/見張って/), log).toBe(true);
+      const save = (body: string) => {
+        fs.writeFileSync(`${w}.tmp`, body);
+        fs.renameSync(`${w}.tmp`, w);
+      };
+      save('<p>1</p><p style="break-before: page">2</p>');
+      expect(await until(/w\.pdf: 2 ページ/), log).toBe(true);
+      expect(log).not.toContain('上書きしません');
+    } finally {
+      child.kill();
+    }
+  }, 120_000);
+
+  it('同じ文書の SVG・PNG の書き出しを 2 度続けられる (使っていない画像は「読んだファイル」に数えない)。--drawio-stencils のディレクトリの中は上書きしない', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'twice-'));
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const go = (...a: string[]) => spawnSync(process.execPath, [cli, ...a, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV, cwd: dir });
+    // 参照は img/a.svg、出力は a.svg (前は、名前の末尾だけで当たった a.svg を「読んだ」として、2 度目が誤り)
+    fs.mkdirSync(path.join(dir, 'img'));
+    fs.writeFileSync(path.join(dir, 'img', 'a.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>');
+    fs.writeFileSync(path.join(dir, 'a.html'), '<p>x<img src="img/a.svg"></p>');
+    for (let k = 0; k < 2; k++) {
+      const r = go('a.html', '--format', 'svg');
+      expect(r.status, `${k}: ${r.stderr}`).toBe(0);
+    }
+    // 本文の字に名前が出てくるだけ (前は、2 度目に出力の b.png を「読んだ」として誤り)
+    fs.writeFileSync(path.join(dir, 'b.html'), '<p>See b.png</p>');
+    for (let k = 0; k < 2; k++) {
+      const r = go('b.html', '--format', 'png');
+      expect(r.status, `${k}: ${r.stderr}`).toBe(0);
+    }
+    // 文書が実際に使う画像は、これまでどおり守る
+    fs.writeFileSync(path.join(dir, 'c.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>');
+    fs.writeFileSync(path.join(dir, 'c.html'), '<p><img src="c.svg"></p>');
+    expect(go('c.html', '--format', 'svg').status).toBe(1);
+    // --drawio-stencils のディレクトリの中のファイル (前は st/x-1.svg を上書きして終了 0)
+    fs.mkdirSync(path.join(dir, 'st'));
+    fs.writeFileSync(path.join(dir, 'st', 'x-1.svg'), '<mxlibrary>[]</mxlibrary>');
+    fs.writeFileSync(path.join(dir, 'm.html'), '<p>1</p><p style="break-before: page">2</p>');
+    const r = go('m.html', '--drawio-stencils', 'st', '-o', path.join('st', 'x.svg'));
+    expect(r.status, r.stderr).toBe(1);
+    expect(fs.readFileSync(path.join(dir, 'st', 'x-1.svg'), 'utf8')).toBe('<mxlibrary>[]</mxlibrary>');
+  }, 120_000);
+
+  it('相対参照に %2F のある画像は、読めない画像として警告し、PDF を作る (前は変換が止まり終了 1)', () => {
+    const dir = fs.mkdtempSync(path.join(work, 'pct2f-'));
+    const html = path.join(dir, 'p.html');
+    fs.writeFileSync(html, '<p>x<img src="a%2Fb.png"><img src="../a%2Fb.png"></p>');
+    const r = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toContain('image/not-found');
+    expect(fs.existsSync(path.join(dir, 'p.pdf'))).toBe(true);
+  }, 120_000);
+
   it('--help は使い方を、--version は版 (package.json の version) を標準出力に書いて 0 で終わる', () => {
     const cli = path.join(root, 'dist-cli/cli.js');
     const help = execFileSync(process.execPath, [cli, '--help'], { stdio: 'pipe', encoding: 'utf8', env: JA_ENV });
@@ -294,6 +634,31 @@ describe('Node のコマンド', () => {
     expect(fs.existsSync(path.join(cache, 'Tinos-Bold.ttf'))).toBe(false);
   }, 120_000);
 
+  it('--ignore-warning: 名前を指定した診断を出さない (知らない名前は警告して続ける)。--fail-on: 当たる診断があれば、出力を書いた上で終了コード 2', () => {
+    const cli = path.join(root, 'dist-cli/cli.js');
+    const html = path.join(work, 'failon.html');
+    fs.writeFileSync(html, '<!DOCTYPE html><html lang="ja"><head><title>t</title><style>p { colr: red }</style></head><body><p>x</p></body></html>');
+    const out = path.join(work, 'failon.pdf');
+    const plain = spawnSync(process.execPath, [cli, html, '-o', out, '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
+    expect(plain.status).toBe(0);
+    expect(plain.stderr).toContain('[css/unknown-property]');
+    // --fail-on warning: 警告があれば 2 (PDF は書く)。--fail-on error: 誤り (重さ error) が無ければ 0
+    fs.rmSync(out, { force: true });
+    const w = spawnSync(process.execPath, [cli, html, '-o', out, '--font-dir', fontDir, '--fail-on', 'warning'], { encoding: 'utf8', env: JA_ENV });
+    expect(w.status).toBe(2);
+    expect(fs.existsSync(out)).toBe(true);
+    expect(spawnSync(process.execPath, [cli, html, '-o', out, '--font-dir', fontDir, '--fail-on', 'error'], { encoding: 'utf8', env: JA_ENV }).status).toBe(0);
+    // 出さない診断は、書かず、--fail-on でも数えない。知らない名前は警告して続ける
+    const ig = spawnSync(process.execPath, [cli, html, '-o', out, '--font-dir', fontDir, '--ignore-warning', 'css/unknown-property', '--fail-on', 'warning'], { encoding: 'utf8', env: JA_ENV });
+    expect(ig.status).toBe(0);
+    expect(ig.stderr).not.toContain('colr');
+    const bad = spawnSync(process.execPath, [cli, html, '-o', out, '--font-dir', fontDir, '--ignore-warning', 'css/unknown-property,nope/x'], { encoding: 'utf8', env: JA_ENV });
+    expect(bad.status).toBe(0);
+    expect(bad.stderr).toContain('[api/unknown-diagnostic-code]');
+    expect(bad.stderr).not.toContain('colr');
+    // 値の誤りは使い方の誤り
+    expect(spawnSync(process.execPath, [cli, html, '--fail-on', 'info'], { encoding: 'utf8', env: JA_ENV }).status).toBe(1);
+  }, 120_000);
   it('--lang en・KUMIORI_LANG・LANG で、使い方・報告・警告・誤りの文が英語になる (既定と LANG=C は日本語)', () => {
     const cli = path.join(root, 'dist-cli/cli.js');
     // 言語を決める環境変数は、すべてここで明示する (テストを走らせる機械の値を持ち込まない)
@@ -313,7 +678,8 @@ describe('Node のコマンド', () => {
     const r = spawnSync(process.execPath, [cli, html, '-o', out, '--font-dir', fontDir, '--lang', 'en'], { encoding: 'utf8', env });
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/^lang\.pdf: 1 page \(layout \d+ms\)/);
-    expect(r.stderr).toContain('warning: ignored unsupported CSS: grid-template-areas');
+    // 診断は 1 件 1 行: 重さ・名前・場所 (ファイル:行:列)・文
+    expect(r.stderr).toContain('  warning [css/unsupported] lang.html:1:71: ignored unsupported CSS: grid-template-areas');
     // 使い方の誤り (--lang は、どこに書いても誤りの文に効く)
     const bad = spawnSync(process.execPath, [cli, html, '--style', 'nope', '--lang', 'en'], { encoding: 'utf8', env });
     expect(bad.status).toBe(1);
@@ -343,6 +709,9 @@ describe('Node のコマンド', () => {
     expect(a).toContain('知らないオプションです: --fontdir');
     expect(a).toContain('使い方');
     expect(fail('a.html', '-o')).toContain('-o の値がありません');
+    const empty = fail('a.html', '-o', '');
+    expect(empty).toContain('-o の値が空です');
+    expect(empty).toContain('使い方');
     const bad = path.join(work, 'bad-spots.json');
     fs.writeFileSync(bad, JSON.stringify({ X: [0, 0, 1] }));
     expect(fail('a.html', '--spot-colors', bad)).toContain('--spot-colors の「X」の値は CMYK');

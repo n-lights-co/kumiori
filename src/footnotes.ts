@@ -8,6 +8,7 @@
  */
 import type { FootnoteOptions, LFootnote } from './types';
 import { newNode, type LNode } from './lnode';
+import { copySourceRef } from './sourceRef';
 import { circledNumber, formatPageNumber, kanjiNumber } from './pageNumber';
 
 export interface FootEntry {
@@ -38,13 +39,19 @@ export function formatNumber(n: number, fmt: NonNullable<FootnoteOptions['number
   }
 }
 
-/** 本体の中の footnote-citation を、その脚注のラベルに置き換える */
+/**
+ * 本体の中の footnote-citation を、その脚注のラベルに置き換える。写した節には、元の節の入力の番号 (sourceRef) を引き継ぐ
+ * (本体の中のリンク・要素の Area が、元の要素の番号を持つ。タグ付き PDF の構造と、描く効果を引く)
+ */
 export function withLabel(children: unknown[], label: string): unknown[] {
   return children.map((c) => {
     if (!c || typeof c !== 'object') return c;
     const o = c as { type?: string; children?: unknown[] };
     if (o.type === 'footnote-citation') return label;
-    return Array.isArray(o.children) ? { ...o, children: withLabel(o.children, label) } : c;
+    if (!Array.isArray(o.children)) return c;
+    const copy = { ...o, children: withLabel(o.children, label) };
+    copySourceRef(o, copy);
+    return copy;
   });
 }
 
@@ -157,7 +164,10 @@ export class FootnoteCtx {
     let e = byWidth.get(key);
     if (!e) {
       const label = this.markerLabel(fn);
-      e = this.layoutBody({ ...fn, children: withLabel(fn.children, label) as LFootnote['children'] }, label, width);
+      const body: LFootnote = { ...fn, children: withLabel(fn.children, label) as LFootnote['children'] };
+      // 写しに元の節の番号を引き継ぐ (本体の箱の Area が、脚注の節の番号を持つ。タグ付き PDF では、本体を脚注の構造 (Note) に入れる)
+      copySourceRef(fn, body);
+      e = this.layoutBody(body, label, width);
       byWidth.set(key, e);
     }
     return e;

@@ -1,7 +1,7 @@
 /**
  * 字の組の詰め (カーニング) を当てる所。
  * 既定: 書式が同じなら inline の境目をまたいでも詰める (CSS Text 3 §7.3 https://www.w3.org/TR/css-text-3/ 2026-11-05 取得:
- * "Text shaping must not be broken across inline box boundaries when there is no effective change in formatting")。
+ * 書式が実質的に変わらないなら、inline の箱の境目で字の整形を切ってはならない)。
  * アンテナハウス互換 (kernAh): 要素の境目では詰めない。組の表 (PairPos 形式 2) で最初の字がクラス 0 の組も詰めない
  * (OpenType の仕様では、どのクラスにも割り当てていない字はクラス 0 で、クラス 0 から始まる組の値も当てる。
  * https://learn.microsoft.com/en-us/typography/opentype/spec/chapter2 ・ …/spec/gpos 2026-11-05 取得)

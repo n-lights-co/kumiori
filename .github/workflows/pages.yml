@@ -36,6 +36,10 @@ jobs:
         run: |
           case "$REPO" in *.github.io) BASE="/" ;; *) BASE="/$REPO/" ;; esac
           npx vite build --base="$BASE"
+      # API の説明書 (型の宣言のコメントから作る一覧の頁) を、画面の下の /api/ に置く。
+      # TypeDoc は tools/api-docs の package.json で入れる (直下の依存と分ける。スクリプトがそこで npm ci をする)
+      - name: API docs
+        run: npm run docs:api -- --out dist/api
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: dist

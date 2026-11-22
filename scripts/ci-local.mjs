@@ -10,6 +10,7 @@
  *    node-min は、動かせる Node の下限 (package.json の engines) で確かめるジョブなので、Node 20.19.x で走らせたときだけ動く
  *    (このスクリプトは Node を切り替えない。nvm などで切り替えてから走らせる)。
  *    pages は、pages.yml の build のジョブと同じく、アセットの土台 (base) をリポジトリ名にして画面を作る (下の pagesBase)。
+ *    続けて、API の説明書を画面の下の api/ に作る (npm run docs:api。TypeDoc を tools/api-docs に入れる npm ci も、そのスクリプトがする)。
  *    出力は一時の場所に出して、終われば消す (build のジョブの dist/ と混ざらず、dist/ も変えない)
  *  - --no-install: 初めの npm ci (package-lock.json のとおりに依存を入れ直す) をしない
  *  - --worktree: いまのコミット (HEAD) を一時的な場所に取り出して (git worktree)、そこで走らせる。CI と同じく、コミットした中身だけを試す
@@ -84,19 +85,37 @@ function checkPagesBase(base) {
 }
 
 /**
+ * pages のジョブで作った API の説明書 (api/) に、一覧の頁 (index.html) と、主な API (typeset・TypesetOptions) の頁があることを確かめる
+ */
+function checkApiDocs() {
+  const need = ['index.html', 'functions/kumiori.typeset.html', 'interfaces/kumiori.TypesetOptions.html'];
+  const missing = need.filter((f) => !fs.existsSync(path.join(pagesOut, 'api', f)));
+  if (missing.length) {
+    console.error(`API の説明書に無い頁: ${missing.join(' ')}`);
+    return false;
+  }
+  console.log(`API の説明書の頁 ${need.join('・')} がある`);
+  return true;
+}
+
+/**
  * ci.yml・pages.yml のジョブ (npm ci の後の手順)。
  * 手順は npm の引数の配列か、それを返す関数 (走らせる場所 dir を受け取る)、または { label, fn } (このスクリプトの中で確かめるもの。真を返せば通った)
  */
 const JOBS = {
   // Node 22。画面・ライブラリ・ブラウザ用の 1 ファイルを作り、単体テスト (中で Node のコマンドも作る) を走らせる
   build: [['run', 'build'], ['run', 'build:lib'], ['run', 'build:browser'], ['test']],
-  // pages.yml の build のジョブ。土台をリポジトリ名にした画面のビルド (npx vite build --base=… に当たる) と、その土台が効いていることの確かめ
+  // pages.yml の build のジョブ。土台をリポジトリ名にした画面のビルド (npx vite build --base=… に当たる) と、その土台が効いていることの確かめ、
+  // API の説明書のビルド
   pages: [
     (dir) => {
       pagesOut = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-ci-pages-'));
       return ['exec', '--', 'vite', 'build', `--base=${pagesBase(dir)}`, '--outDir', pagesOut, '--emptyOutDir'];
     },
     { label: '土台の確かめ (index.html のアセットの参照)', fn: (dir) => checkPagesBase(pagesBase(dir)) },
+    // pages.yml の API docs。API の説明書を、画面の下の api/ に作る
+    () => ['run', 'docs:api', '--', '--out', path.join(pagesOut, 'api')],
+    { label: 'API の説明書の確かめ (api/index.html)', fn: () => checkApiDocs() },
   ],
   // Node の下限 (20.19.0)。型の検査と単体テスト (require('kumiori') の確かめは dist-lib を読む)
   'node-min': [['run', 'typecheck'], ['run', 'build:lib'], ['run', 'build:browser'], ['test']],

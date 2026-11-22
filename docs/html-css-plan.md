@@ -201,7 +201,7 @@ node scripts/compare-pdf.mjs --html <見本>.html --ref <見本>.pdf --out <出�
 - PDF の SVG の字: 単色の塗りだけの字は、字形の輪郭ではなく、その書体を埋め込んだ PDF の文字として描く (輪郭では、ビューアのヒンティングの有無で低い解像度の位置の見え方が違っていた)
 - 縦書きの float: `top`・`bottom` は、包含ブロックが縦書きなら inline-start・inline-end (行頭・行末) にし、float-reference の初期値 inline のとおり本文を回り込ませる (CSS Page Floats 3 §3.2。以前は横書きと同じく段の先頭・末尾に置いていた)。`before`・`after` (拡張の値) は書字方向によらず段の先頭・末尾。`inside`・`outside` は物理の左右 (綴じ側・小口側) なので、縦書きでは段の先頭・末尾になる。縦書きの箱の中の先頭・末尾の float は、箱の内容の端に置く (後に書いた末尾の float ほど端に寄せる)。`float-y` は読まない (通常のブロックとして組む)
 - 行内の画像の `vertical-align: bottom`・`top` は、ほかの中身で行の高さを決めてから、行の箱の下端・上端に揃える (CSS 2.1 §10.8.1。揃える画像が行より高ければ、その分だけ行を広げる)。以前は `text-bottom`・`text-top` と同じに字面に揃えていた
-- 拡張の `float: multicol top` (と before): 段組の箱の先頭へ、段をまたぐブロック (`column-span: all` と同じ) として移し、段の本文はどれもその下から始める。幅の単位 `gr` は、段の幅と段の間の幅を段・間・段… の順に数えた長さ (n 段で (2n − 1)gr)。段組の箱に行グリッド (`-ah-baseline-grid` の `new`・`root`) があれば、フロートの中身は表のセルと同じに半行間を付けずに組み、フロートの下の段の本文は、段組の箱の内容の上端から引いた格子に載せる。一部の段だけをまたぐ置き方 (またがない段は段の上端から組む) は未対応 (`BACKLOG.md` の E-21)
+- 拡張の `float: multicol top` (と before): 段組の箱の先頭へ、段をまたぐブロック (`column-span: all` と同じ) として移し、段の本文はどれもその下から始める。幅の単位 `gr` は、段の幅と段の間の幅を段・間・段… の順に数えた長さ (n 段で (2n − 1)gr)。段組の箱に行グリッド (`-ah-baseline-grid` の `new`・`root`) があれば、フロートの中身は表のセルと同じに半行間を付けずに組み、フロートの下の段の本文は、段組の箱の内容の上端から引いた格子に載せる。一部の段だけをまたぐ置き方 (またがない段は段の上端から組む) は未対応 (`BACKLOG.md` の「段組フロート (`float: multicol top`) の、一部の段だけをまたぐ置き方」の項)
 - `@counter-style` (CSS Counter Styles 3): system (cyclic・numeric・alphabetic・symbolic・additive・fixed・extends)・symbols・additive-symbols・negative・prefix・suffix・range・pad・fallback を読み、`list-style-type` と `counter()`・`counters()`・`target-counter()` で使う (`src/counterStyle.ts`)。定義の無い名前は decimal と同じ (§5。以前は「•」になっていた)。decimal・disc などの名前の規則は無効 (§2)。名前は大文字・小文字を区別する。speak-as と記号の画像は扱わない
 - 斜線 (UAX #14 の SY) の後ろの改行の機会は、次の改行の機会まで 5 字未満なら、ほかに改行できる位置が無いときだけ使う (UAX #14 §5.1 SY の推奨。最小の距離は実装で決める)。「and/or」は分けず、表の見出しの「PDF/A-1a」は列の最小の幅なら「PDF/」の後ろで分ける
 - string-set の `content()`・`target-text()` の content・しおりの題の文字は、子孫の `::before`・`::after` の文字を含め、`content` で中身を置き換えた子孫は置き換えた文字にし、display: none の子孫を除く。要素自身の `::before`・`::after` は含めない (GCPM 3 §1.1.1 の例)。子孫の生成した内容の扱いは GCPM 3 に定めが無く、Kumiori はこのように決めた
@@ -463,7 +463,7 @@ htmlImport がブラウザから受け取るのは StyleSource (`style()`・`isA
    | WeasyPrint 請求書・手紙・報告書 | ページ数が一致 | ほぼ同じ |
    | WeasyPrint チケット・ポスター・本 | ページ数が一致 | ほぼ同じ (中身の幅を字幅で測る・margin: auto の中央寄せの後) |
 
-5. **Node のコマンド (済み)**: `npm run build:cli` → `node dist-cli/cli.js book.html -o book.pdf` (README)。ブラウザを使わない。
+5. **Node のコマンド (済み)**: `npm run build:cli` → `node dist-cli/cli.js book.html -o book.pdf` ([`docs/cli.md`](cli.md))。ブラウザを使わない。
    - HTML は linkedom で読む。linkedom は HTML の仕様の読み取りと違うところがあるので、書かれていない `<head>`・`<body>` を補い、
      `<pre>` の開始タグの直後の改行を捨てる (`fixImplicitStructure`)。`<table>` の `<tbody>` は補わない (htmlImport は無くても組める)
    - 共通にしたもの: CSS の集め方 (`src/htmlPrepare.ts`)、書体の割り当てと `@font-face` (`src/fontMapping.ts`)

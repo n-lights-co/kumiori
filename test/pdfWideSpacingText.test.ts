@@ -28,7 +28,8 @@ const PAGE = '<style>@page { size: 120mm 80mm; margin: 10mm } body { font-size: 
 
 /** HTML を組んで、1 ページ目の内容 (命令の文字列) を返す */
 async function contentOf(body: string): Promise<string> {
-  const r = await typeset(`<!doctype html><html lang="ja"><head><meta charset="utf-8">${PAGE}</head><body>${body}</body></html>`, { loadFont });
+  // タグ (構造の印の BDC・EMC) を付けない: ActualText の BDC・EMC だけを数える
+  const r = await typeset(`<!doctype html><html lang="ja"><head><meta charset="utf-8">${PAGE}</head><body>${body}</body></html>`, { loadFont, tagged: false });
   const pdf = await PDFDocument.load(await r.toPdf());
   const ref = pdf.getPages()[0].node.get(PDFName.of('Contents'));
   const st = ([pdf.context.lookup(ref)] as unknown[]).flatMap((o) => ((o as { asArray?: () => unknown[] }).asArray ? (o as { asArray: () => unknown[] }).asArray().map((x) => pdf.context.lookup(x as never)) : [o]));

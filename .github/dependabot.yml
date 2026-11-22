@@ -33,3 +33,17 @@ updates:
         update-types: ['version-update:semver-major']
       - dependency-name: pako
         update-types: ['version-update:semver-major']
+  # API の説明書を作る道具 (tools/api-docs。TypeDoc と、それが使う TypeScript)。npm のパッケージには入らない
+  # (GitHub Pages の API の説明書には、TypeDoc の頁の JavaScript・CSS が入る。THIRD_PARTY_NOTICES.md の 14 節)。
+  # TypeDoc 0.28 は TypeScript 6.0 までにしか対応していないので、TypeScript の 6.1 以上への上げ (主な版・小さな版) を PR にしない。
+  # TypeDoc が TypeScript 7 に対応したら、TypeDoc を上げるコミットで、ここの ignore も一緒に外す (直下の依存に移せるかも考える)。
+  - package-ecosystem: npm
+    directory: /tools/api-docs
+    schedule:
+      interval: weekly
+    groups:
+      api-docs:
+        patterns: ['*']
+    ignore:
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major', 'version-update:semver-minor']

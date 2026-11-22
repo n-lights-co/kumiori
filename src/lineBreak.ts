@@ -108,8 +108,8 @@ function resolveClass(cp: number, o: LineBreakOptions): string {
   const s = o.strictness ?? 'normal';
   let c = raw;
   // AI (East_Asian_Width が A の記号: ≧・①・※・§・∞ など): 東アジアの文脈 (日本語・中国語の文) で、全角の字として組むもの
-  // (aiWide。アンテナハウス互換のときだけ立てる) は ID、ほかは AL (UAX #14 §5.1 の AI: "treated like ideographs (line breaking class ID) in certain
-  // East Asian legacy contexts ... In the absence of appropriate context information, they are treated as class AL"。LB1 は、AI の
+  // (aiWide。アンテナハウス互換のときだけ立てる) は ID、ほかは AL (UAX #14 §5.1 の AI: 東アジアの古くからの文脈では ID と同じに扱い、
+  // 文脈が分からなければ AL として扱う。LB1 は、AI の
   // 解決をアルゴリズムの外の判断に任せる。UAX #11: A の字の幅は文脈で決まる)。全角で組む字は和字 (JLREQ 付録 A の cl-19) で、
   // 前後で改行してよい。欧文の書体で半角に組む字 (§7.20.2 の § など) は、欧文の字として前後の字とつなぐ
   if (raw === 'AI') c = o.cjk && o.aiWide ? 'ID' : 'AL';

@@ -6,7 +6,8 @@ import { renderPdf } from './pdfRenderer';
 import { AssetStore } from './assets';
 import { resetEpsBudget } from './epsInfo';
 import { SERIF, buildSampleDocument } from './sampleData';
-import { browserParse, importXslFo, type ImportReport } from './xslfoImport';
+import { importXslFo, type ImportReport } from './xslfoImport';
+import { xmlParse } from './xmlParse';
 import type { AreaTree, LDocument } from './types';
 import { splitFontFile, type UserFont } from './fontLoader';
 import { clearUserFonts, loadUserFonts, saveUserFont } from './userFonts';
@@ -18,6 +19,8 @@ import { importHtml, parsePageSize } from './htmlImport';
 import { droppedLinkWarning, summarizeDroppedLinks } from './linkPolicy';
 import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
 import { msg } from './messages';
+import { countedDiagnostics, diag, type Diagnostic } from './diagnostics';
+import { walkAreas } from './areaTree';
 import { loadHtml } from './htmlFrame';
 import { readEpub } from './epub';
 import { FONT_SPECS, FontNameTable, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, EMOJI_SPEC, createFontMapping, hasMissingEmoji, hasMissingGlyphs, setupDefaultFonts } from './fontMapping';
@@ -77,6 +80,7 @@ const resetBtn = $<HTMLButtonElement>('resetsample');
 const folderFile = $<HTMLInputElement>('folderfile');
 const settingsBtn = $<HTMLButtonElement>('settingsbtn');
 const drawioOn = $<HTMLInputElement>('drawio-on');
+const taggedEl = $<HTMLInputElement>('tagged');
 const drawioOpts = $('drawioopts');
 const stencilFile = $<HTMLInputElement>('stencilfile');
 const clearStencilsBtn = $<HTMLButtonElement>('clearstencils');
@@ -153,6 +157,7 @@ async function drawioChanged() {
   assets.setFormats(formatsOf(undefined, currentDrawio()));
   formatWarnings.clear();
   for (const [name, blob] of drawioCandidates) if (!(await addImage(name, blob))) assets.unregister(name);
+  if (deferWhileOpening()) return;
   if (lastSource) reloadCurrent();
   else if (currentDoc) showDocument(currentDoc, currentName);
 }
@@ -186,14 +191,55 @@ function addStencils(files: UserStencilFile[]): number {
  * 用意の途中の警告 (深すぎる入れ子・多すぎる @import)、EPUB の飛ばした項目、未対応・知らない CSS、未対応の XSL-FO、動作を書かなかったリンク、
  * 取らなかった画像、書体の知らせ (取得できなかった書体・可変フォントの軸など)。文書を読み始めるときに空にする
  */
-let loadWarnings: string[] = [];
+let loadWarnings: WarnEntry[] = [];
 /** PDF を書き出したときの警告 (動作を書かなかったリンク)。文書を組み直したら空にする */
-let pdfWarnings: string[] = [];
+let pdfWarnings: WarnEntry[] = [];
 const noteError = (e: unknown) => {
-  loadWarnings.push(String(e instanceof Error ? e.message : e));
+  loadWarnings.push({ text: String(e instanceof Error ? e.message : e), diags: [] });
 };
 // 書体の知らせ (既定はコンソール) を、画面の警告に出す
-fonts.onNotice = (m) => loadWarnings.push(m);
+fonts.onNotice = (d) => loadWarnings.push(entryOf(d));
+
+/** 警告の欄の 1 行の元: 文 (typeset の warnings と同じ文) と、同じ出来事の診断 (名前・重さ・場所。まとめた文なら項目ごと) */
+type WarnEntry = { text: string; diags: Diagnostic[] };
+const entryOf = (d: Diagnostic): WarnEntry => ({ text: d.message, diags: [d] });
+/** 画像の形式の読み取り (draw.io など) の警告 */
+const formatEntries = (): WarnEntry[] => [...formatWarnings].map((m) => entryOf(diag('image/format-warning', m)));
+/**
+ * 組版の警告 (tree.warnings) と、同じ出来事の診断 (tree.diagnostics) の組。文が同じ診断を結ぶ。文の合わない診断 (見つからない id を
+ * 種類ごとに 1 行にまとめた文の、id ごとの診断) は、合わなかった文に、名前の同じものを結ぶ
+ */
+function treeEntries(t: AreaTree, warnings: readonly string[] = t.warnings, ds: readonly Diagnostic[] = t.diagnostics ?? []): WarnEntry[] {
+  const used = new Set<Diagnostic>();
+  const out = warnings.map((w) => {
+    const hit = ds.filter((d) => d.message === w);
+    hit.forEach((d) => used.add(d));
+    return { text: w, diags: hit };
+  });
+  const rest = ds.filter((d) => !used.has(d));
+  for (const e of out) if (!e.diags.length) e.diags = rest.filter((d) => d.code === 'layout/missing-id');
+  return out;
+}
+/** 重さの印 (重いほうを先に) */
+const SEVERITY_MARK: Record<Diagnostic['severity'], string> = { error: '✖', warning: '⚠', info: 'ℹ' };
+const SEVERITY_ORDER: Diagnostic['severity'][] = ['error', 'warning', 'info'];
+/** sourceRef → その箱が初めて現れるページ (0 から)。警告の行を押してページへ移るため (木ごとに 1 度だけ作る) */
+const refPages = new WeakMap<AreaTree, Map<number, number>>();
+function pageOfRef(t: AreaTree, ref: number): number | undefined {
+  let m = refPages.get(t);
+  if (!m) {
+    m = new Map();
+    const mm = m;
+    t.sheets.forEach((sheet, k) =>
+      walkAreas(sheet, (a) => {
+        const r = (a as { sourceRef?: number }).sourceRef;
+        if (r !== undefined && !mm.has(r)) mm.set(r, k);
+      }),
+    );
+    refPages.set(t, m);
+  }
+  return m.get(ref);
+}
 
 /** 警告をこの数まで、開いた形で出す。多ければ畳んで、件数だけを見せる (開けば読める) */
 const WARNINGS_OPEN_MAX = 3;
@@ -206,9 +252,13 @@ const warningCountText = (n: number) => msg(`⚠ 警告 ${n} 件`, `⚠ ${n} war
  * 警告を、左の欄 (#warnings) に出す。同じ文は 1 つにまとめて数を添える。WARNINGS_OPEN_MAX 件より多ければ畳む。
  * 警告が無ければ欄を空にする (空の欄は見えない)。戻り値は警告の種類の数
  */
-function showWarnings(list: string[]): number {
+function showWarnings(list: WarnEntry[]): number {
   const counts = new Map<string, number>();
-  for (const w of list) counts.set(w, (counts.get(w) ?? 0) + 1);
+  const diagsOf = new Map<string, Diagnostic[]>();
+  for (const w of list) {
+    counts.set(w.text, (counts.get(w.text) ?? 0) + 1);
+    diagsOf.set(w.text, [...(diagsOf.get(w.text) ?? []), ...w.diags]);
+  }
   warnEl.replaceChildren();
   if (!counts.size) return 0;
   const details = document.createElement('details');
@@ -219,7 +269,30 @@ function showWarnings(list: string[]): number {
   const items = [...counts];
   for (const [w, n] of items.slice(0, WARNINGS_LIST_MAX)) {
     const li = document.createElement('li');
-    li.textContent = n > 1 ? `${w} (×${n})` : w;
+    const ds = diagsOf.get(w) ?? [];
+    // 重さの印 (いちばん重い診断の重さ)・文・名前と場所 (要素・行・ページ)
+    const sev = SEVERITY_ORDER.find((x) => ds.some((d) => d.severity === x));
+    if (sev) {
+      li.dataset.severity = sev;
+      li.append(`${SEVERITY_MARK[sev]} `);
+    }
+    li.append(n > 1 ? `${w} (×${n})` : w);
+    if (ds.length) {
+      const codes = [...new Set(ds.map((d) => d.code))];
+      const src = ds.find((d) => d.source)?.source;
+      const page = src?.page ?? (src?.sourceRef !== undefined && tree ? pageOfRef(tree, src.sourceRef) : undefined);
+      const where = [src?.element, src?.line !== undefined ? msg(`${src.line} 行`, `line ${src.line}`) : undefined, page !== undefined ? msg(`${page + 1} ページ`, `page ${page + 1}`) : undefined].filter(Boolean).join(msg('・', ', '));
+      const meta = document.createElement('span');
+      meta.className = 'diag';
+      meta.textContent = ` [${codes.join(', ')}]${where ? ` (${where})` : ''}`;
+      li.append(meta);
+      // ページが分かれば、押してそのページへ移る
+      if (page !== undefined) {
+        li.dataset.page = String(page);
+        li.title = msg(`${page + 1} ページへ`, `go to page ${page + 1}`);
+        li.addEventListener('click', () => document.getElementById(`page-${page + 1}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+      }
+    }
     ul.append(li);
   }
   if (items.length > WARNINGS_LIST_MAX) {
@@ -315,7 +388,7 @@ function showDocument(doc: LDocument, name: string, compat?: { kind: DocKind; ah
   tree = engine.layout(doc);
   const ms = performance.now() - t0;
   pdfWarnings = [];
-  const warned = showWarnings([...loadWarnings, ...formatWarnings, ...tree.warnings]);
+  const warned = showWarnings([...loadWarnings, ...formatEntries(), ...treeEntries(tree)]);
   render();
   // 警告の件数は、帯の状態の欄にも出す (左の欄をたたんでいても、狭い画面でも気付けるように)
   setStatus(`${name}: ${tree.sheets.length} ページ / 組版 ${ms.toFixed(0)}ms${warned ? ` / ${warningCountText(warned)}` : ''}`);
@@ -380,16 +453,20 @@ const readDocument = async (f: File) => decodeDocumentText(new Uint8Array(await 
 
 /** 取らなかった画像 (自分の計算機の URL) を、警告に足す (typeset の「画像を取りません」と同じ文) */
 function noteNotFetched(srcs: string[]) {
-  for (const src of srcs) loadWarnings.push(msg(`画像を取りません: ${src.slice(0, 200)}`, `image not fetched: ${src.slice(0, 200)}`));
+  for (const src of srcs) loadWarnings.push(entryOf(diag('resource/not-fetched', msg(`画像を取りません: ${src.slice(0, 200)}`, `image not fetched: ${src.slice(0, 200)}`), { url: src.slice(0, 200), kind: 'image' })));
 }
 /** 読み込みの報告のうち、黙って無視しないもの (未対応の指定・動作を書かなかったリンク) を、警告に足す (typeset の warnings と同じ文) */
 function noteReport(report: ImportReport, isFo: boolean, unknownCss?: Record<string, number>) {
+  const missText = (item: string) => msg(`${isFo ? '未対応の XSL-FO の要素・プロパティを' : '未対応の CSS を'}無視しました: ${item}`, `ignored unsupported ${isFo ? 'XSL-FO elements/properties' : 'CSS'}: ${item}`);
   const miss = summarizeCounts(report.unsupported);
-  if (miss) loadWarnings.push(msg(`${isFo ? '未対応の XSL-FO の要素・プロパティを' : '未対応の CSS を'}無視しました: ${miss}`, `ignored unsupported ${isFo ? 'XSL-FO elements/properties' : 'CSS'}: ${miss}`));
+  if (miss) loadWarnings.push({ text: missText(miss), diags: countedDiagnostics(report.unsupported, (item) => diag(isFo ? 'fo/unsupported' : 'css/unsupported', missText(item), { item }, report.unsupportedAt?.[item])) });
   const dropped = summarizeDroppedLinks(report.droppedLinks);
-  if (dropped) loadWarnings.push(droppedLinkWarning(dropped));
+  if (dropped) loadWarnings.push(entryOf(diag('link/action-dropped', droppedLinkWarning(dropped, 'read'))));
+  // 読み込みが上限に当たったことの診断 (タグ付き PDF の表の構造の上限など。ライブラリの typeset が出すものと同じ)
+  for (const d of report.diagnostics ?? []) loadWarnings.push(entryOf(d));
+  const unknownText = (p: string) => msg(`知らない CSS のプロパティを無視しました (綴りの誤りか未対応): ${p}`, `ignored unknown CSS properties (misspelled or unsupported): ${p}`);
   const unknown = summarizeCounts(unknownCss);
-  if (unknown) loadWarnings.push(msg(`知らない CSS のプロパティを無視しました (綴りの誤りか未対応): ${unknown}`, `ignored unknown CSS properties (misspelled or unsupported): ${unknown}`));
+  if (unknown) loadWarnings.push({ text: unknownText(unknown), diags: countedDiagnostics(unknownCss, (property) => diag('css/unknown-property', unknownText(property), { property })) });
 }
 
 /**
@@ -406,18 +483,75 @@ let lastFo: { text: string; name: string } | null = null;
 /** 画面に出している文書の元 (読み込んだ XSL-FO・HTML。サンプルなら null)。設定を変えたら、これを組み直す */
 let lastSource: 'fo' | 'html' | null = null;
 
+/**
+ * 読み込みの世代。読み込み (loadFo・loadHtmlFile) は、書体・分綴の規則・画像を待つ間に、次の読み込み (設定の変更での組み直し・別のファイル) が
+ * 始まりうる。待った後に世代が変わっていたら、古い読み込みの結果を画面に出さない (後から終わった古い結果が、新しい結果を上書きしないように)
+ */
+let loadGen = 0;
+class StaleLoad extends Error {}
+/**
+ * ファイルを開いた順の番号 (openFiles の呼び出しごと)、最新の文書を選んだ番号、選んだが読み込み (loadFo・loadHtmlFile) をまだ始めていない文書の番号 (無ければ 0)。
+ * pendingDocSeq は、openFiles がどの終わり方 (読み込みを始めた・stale・誤り) でも消す
+ */
+let openSeq = 0;
+let latestDocSeq = 0;
+let pendingDocSeq = 0;
+/** 文書を開く途中 (pendingDocSeq のある間) に、組み直しを見送った (設定の変更・画像だけの追加)。その文書を読み込まずに終わったら、そこで組み直す */
+let refreshDeferred = false;
+/** 走っている読み込み (loadFo・loadHtmlFile) の数。文書を選んで世代を上げると、走っている読み込み (設定の変更での組み直しなど) を捨てるので、見送りとして覚える */
+let runningLoads = 0;
+/** 文書を開く途中なら、組み直しを見送る (開いている文書は、読み込みを始める時点の設定・画像で組む)。見送ったら true */
+function deferWhileOpening(): boolean {
+  if (!pendingDocSeq) return false;
+  refreshDeferred = true;
+  return true;
+}
+/** openFiles が、選んだ文書 seq の読み込みを始める・始めずに終わる: 開く途中の印を消す。始めずに終わり、見送った組み直しがあれば、いまの文書を組み直す */
+function endPendingDoc(seq: number, started: boolean) {
+  if (pendingDocSeq !== seq) return;
+  pendingDocSeq = 0;
+  const deferred = refreshDeferred;
+  refreshDeferred = false;
+  if (started || !deferred) return;
+  if (lastSource) reloadCurrent();
+  else if (currentDoc) showDocument(currentDoc, currentName);
+}
+/** 読み込みを始め、待った後に呼ぶ確かめ (世代が変わっていたら StaleLoad を投げる) を返す */
+function beginLoad(): () => void {
+  const gen = ++loadGen;
+  return () => {
+    if (gen !== loadGen) throw new StaleLoad();
+  };
+}
+
 async function loadFo(text: string, name: string) {
+  runningLoads++;
+  try {
+    await loadFoBody(text, name);
+  } finally {
+    runningLoads--;
+  }
+}
+
+async function loadFoBody(text: string, name: string) {
+  const current = beginLoad();
   lastFo = { text, name };
   lastSource = 'fo';
   loadWarnings = [];
   try {
     // 分綴 (hyphenate="true") を使う文書なら、文書に出てくる言語の分綴の規則を先に読み込む (組版は同期で行うため)
     await loadFoHyphenators(text);
+    current();
     // MathML のある文書なら、数式の書体を読み込む (読めなければ、本文の書体で組む。API と同じ手順: documentResources)
     const mathOpts = await mathOptionsFor(text, fonts, loadMathFont);
+    current();
     const compat: FoCompat = foSpec.checked ? 'spec' : 'antenna';
-    const res = importXslFo(text, browserParse, {
+    // XML の読み取りは、ライブラリと同じ (@xmldom/xmldom。内部実体の展開と、診断の場所の行・列)
+    const res = importXslFo(text, (t) => xmlParse(t, name), {
+      sourceName: name,
       ...mathOpts,
+      // タグ付き PDF の構造の木 (設定の「タグ付き PDF にする」。既定で付ける)
+      tagged: taggedEl.checked,
       // ゴシック・サンセリフ系は Noto Sans JP、それ以外 (明朝・serif・未指定) は Noto Serif JP。太字は、同じ書体の Bold (明朝系は和文が Noto Serif JP の Bold、欧文が Tinos の Bold。読み込んでいるフォントだけで組む)
       mapFont: mapFoFont,
       compat,
@@ -427,13 +561,17 @@ async function loadFo(text: string, name: string) {
       readText: (src) => assets.getText(src),
     });
     // data URI / 絶対 URL の画像は、ここで読み込む (相対パスは、ユーザーが選んだファイルから解決する。API と同じ手順: documentResources)
-    noteNotFetched(await fetchReportedImages(assets, res.report.images, allowRemoteImage));
+    const notFetched = await fetchReportedImages(assets, res.report.images, allowRemoteImage);
+    current();
+    noteNotFetched(notFetched);
     noteReport(res.report, true);
-    showReport(name, res.report, 'fo');
     await ensureSymbolFont(res.document);
+    current();
+    showReport(name, res.report, 'fo');
     showDocument(res.document, name, { kind: 'fo', ah: isAntennaCompat(compat) });
     resetBtn.hidden = false;
   } catch (e) {
+    if (e instanceof StaleLoad) return;
     console.error(e);
     setStatus(`変換エラー: ${String(e)}`);
   }
@@ -443,9 +581,19 @@ let lastHtml: { text: string; name: string; files: File[]; warnings: string[] } 
 
 /** HTML を組む: 見えない iframe でスタイルを確定させ、論理ツリーに変換する。warnings は、HTML にする前の警告 (EPUB の飛ばした項目) */
 async function loadHtmlFile(text: string, name: string, files: File[], warnings: string[] = []) {
+  runningLoads++;
+  try {
+    await loadHtmlBody(text, name, files, warnings);
+  } finally {
+    runningLoads--;
+  }
+}
+
+async function loadHtmlBody(text: string, name: string, files: File[], warnings: string[]) {
+  const current = beginLoad();
   lastHtml = { text, name, files, warnings };
   lastSource = 'html';
-  loadWarnings = [...warnings];
+  loadWarnings = warnings.map((text) => ({ text, diags: [] }));
   try {
     const v = htmlStyle.value;
     // 既定の用紙 (読めない自由入力のときは A4。入力の欄で知らせてある)
@@ -455,6 +603,7 @@ async function loadHtmlFile(text: string, name: string, files: File[], warnings:
     const defaults = v === 'browser' || v === 'browser-margin' || v === 'ah' || v === 'vivliostyle' || v === 'weasyprint' ? v : 'kumiori';
     const loaded = await loadHtml(text, files, defaults, defaultPage, { noFrame: cssEngine.value === 'kumiori' });
     try {
+      current();
       // 検証用: 読み込んだ文書 (iframe を消す前) を渡す (scripts/compare-css.mjs がブラウザの計算値と自前のカスケードを比べる)
       await (window as unknown as { __kumioriOnHtmlLoaded?: (l: typeof loaded) => unknown }).__kumioriOnHtmlLoaded?.(loaded);
       await loadFontFaces(loaded.css, files, { ahFaceWeight: v === 'ah' });
@@ -462,8 +611,10 @@ async function loadHtmlFile(text: string, name: string, files: File[], warnings:
       await loadDocumentHyphenators(loaded.doc, loaded.css);
       // MathML のある文書なら、数式の書体を読み込む (読めなければ、math 要素の中の字を並べる。API と同じ手順: documentResources)
       const mathOpts = await mathOptionsFor(text, fonts, loadMathFont);
+      current();
       const res = importHtml(loaded.doc, loaded.styles, {
         ...mathOpts,
+        tagged: taggedEl.checked,
         mapFont: mapHtmlFont,
         hasAsset: (src) => !!assets.get(src),
         imageSize: (src) => assets.get(src),
@@ -478,22 +629,26 @@ async function loadHtmlFile(text: string, name: string, files: File[], warnings:
         trimMarks: foPrint.checked,
       });
       // ネットワーク上の画像 (絶対 URL)・data URI の画像は、ここで読み込む (相対パスは、一緒に選んだファイルから。API と同じ手順: documentResources)
-      noteNotFetched(await fetchReportedImages(assets, res.report.images, allowRemoteImage));
+      const notFetched = await fetchReportedImages(assets, res.report.images, allowRemoteImage);
+      current();
+      noteNotFetched(notFetched);
       // 用意の途中の警告 (深すぎる入れ子・多すぎる @import) と、作成者スタイルシート・style 属性の、読まない宣言 (未対応・知らないプロパティ。API と同じ数え方)
-      loadWarnings.push(...loaded.warnings);
+      loadWarnings.push(...loaded.warnings.map(entryOf));
       const cssRep = unsupportedCssReport(loaded.authorSheet, loaded.doc);
       const unsupported = { ...res.report.unsupported };
       for (const [k, n] of Object.entries(cssRep.unsupported)) unsupported[k] = (unsupported[k] ?? 0) + n;
       const report = { ...res.report, unsupported };
       noteReport(report, false, cssRep.unknown);
-      showReport(name, report, 'html');
       await ensureSymbolFont(res.document);
+      current();
+      showReport(name, report, 'html');
       showDocument(res.document, name, { kind: 'html', ah: v === 'ah' });
       resetBtn.hidden = false;
     } finally {
       loaded.dispose();
     }
   } catch (e) {
+    if (e instanceof StaleLoad) return;
     console.error(e);
     setStatus(`HTML の変換エラー: ${String(e)}`);
   }
@@ -509,6 +664,8 @@ async function main() {
     // draw.io の図の設定 (ブラウザに覚えたもの。既定で読む)
     drawioOn.checked = remember('kumiori.drawio') !== '0';
     drawioFetch.checked = remember('kumiori.drawioFetch') === '1';
+    // タグ付き PDF にするか (ブラウザに覚えたもの。既定で付ける)
+    taggedEl.checked = remember('kumiori.tagged') !== '0';
     addStencils(await loadUserStencils());
     await drawioChanged();
     showDocument(buildSampleDocument(), 'Kumiori サンプル', null);
@@ -539,6 +696,42 @@ function pickFromFolder(files: File[]): File[] {
 /** 選んだ (またはドラッグ&ドロップした) ファイルを開く */
 async function openFiles(files: File[]) {
   if (!files.length) return;
+  // 選んだ順の番号 (どの呼び出しでも取る) と、読み込みの世代 (loadGen) を分けて持つ。文書 (XSL-FO・HTML・EPUB。中身で XSL-FO と分かった
+  // .xml・.xsl も) と分かった時点で、自分より後に選んだ文書がまだ無ければ、自分を最新の文書として世代を上げる (claimDocument)。
+  // ファイルを読む・画像を登録する間に、後から選んだ文書の読み込み・「見本の文書に戻す」があれば、この文書は出さない (stale)。
+  // 画像・MathML・図形ライブラリだけの追加は、世代を上げずに覚えるだけにする (上げると、先に落とした文書の読み込みを捨てる)
+  const seq = ++openSeq;
+  let gen = loadGen;
+  const stale = () => gen !== loadGen;
+  const claimDocument = () => {
+    if (seq > latestDocSeq) {
+      latestDocSeq = seq;
+      // 見送った組み直しの印は消さない (前に選んだ文書の開く途中に見送ったものは、この文書が読み込みを始めずに終わったら行う)
+      pendingDocSeq = seq;
+      // 走っている読み込みは、世代を上げると捨てる。この文書が読み込みを始めずに終わったら、いまの文書を組み直す (捨てた組み直しを戻す)
+      if (runningLoads) refreshDeferred = true;
+      gen = ++loadGen;
+    } else gen = Number.NaN; // 後から選んだ文書が先に分かった: この文書は出さない
+  };
+  let claimed = false;
+  const claim = () => {
+    claimed = true;
+    claimDocument();
+  };
+  if (files.some(isDocument)) claim();
+  try {
+    await openClaimed(files, seq, () => claimed && stale(), claim, stale);
+  } finally {
+    // どの終わり方でも、開く途中の印を消す (壊れた EPUB・stale で終わった後も、画像だけの追加・設定の変更で組み直す)
+    endPendingDoc(seq, false);
+  }
+}
+
+/**
+ * openFiles の本体。stale: 文書を選んだ呼び出しで、世代が変わった (その文書を出さない)。
+ * genChanged: 世代が変わった (文書を選んでいない、画像・MathML だけの追加でも。登録の間に組み直しが走ったら、足した画像で組み直す)
+ */
+async function openClaimed(files: File[], seq: number, stale: () => boolean, claimDocument: () => void, genChanged: () => boolean) {
   // EPS の時間の予算 (eps.ts の EPS_DOCUMENT_MILLIS) は、画像の入れ物に結び付いている。入れ物は開き直しても使い続けるので、予算は文書を開くたびに戻す
   resetEpsBudget(assets);
   formatWarnings.clear();
@@ -566,6 +759,8 @@ async function openFiles(files: File[]) {
     try {
       const book = await readEpub(new Uint8Array(await epub.arrayBuffer()), (t, type) => new DOMParser().parseFromString(t, type));
       for (const im of book.images) await addImage(im.name, new Blob([im.data as BlobPart]));
+      if (stale()) return;
+      endPendingDoc(seq, true);
       // 上限を超えて飛ばした章・CSS・画像 (EpubBook.warnings) も、警告に出す
       await loadHtmlFile(book.html, epub.name, [], book.warnings ?? []);
     } catch (e) {
@@ -578,17 +773,39 @@ async function openFiles(files: File[]) {
   const html = files.find((f) => /\.(html?|xhtml)$/i.test(f.name));
   if (html) {
     for (const f of files) if (f !== html && !/\.(css|ttf|otf|ttc|woff2?)$/i.test(f.name)) await addImage(f.name, f);
-    await loadHtmlFile(await readDocument(html), html.name, files);
+    const text = await readDocument(html);
+    if (stale()) return;
+    endPendingDoc(seq, true);
+    await loadHtmlFile(text, html.name, files);
     return;
   }
   // FO は .fo を優先し、無ければ fo:root を含む .xml / .xsl (MathML の .xml と区別する)
   let fo = files.find((f) => /\.fo$/i.test(f.name));
   if (!fo) for (const f of files) if (!fo && /\.(xml|xsl)$/i.test(f.name) && /<([\w-]+:)?root[\s>]/.test(await f.text())) fo = f;
+  // 中身で XSL-FO と分かった .xml・.xsl も文書 (選んだ順で、自分より後の文書がまだ無ければ、最新の文書にする)
+  if (fo && !/\.fo$/i.test(fo.name)) claimDocument();
   // FO 以外のファイルは画像 (と MathML) として登録する (ファイル名で FO 中の相対パスと突き合わせる)
   for (const f of files) if (f !== fo) await addImage(f.name, f);
-  if (fo) await loadFo(await readDocument(fo), fo.name);
-  else if (lastFo && files.some((f) => assets.getText(f.name) !== undefined)) {
-    // MathML のファイルが追加された: 変換からやり直す (数式は変換時に行内の要素へ組み替えるため)
+  const foText = fo ? await readDocument(fo) : undefined;
+  if (stale()) return;
+  if (fo) {
+    endPendingDoc(seq, true);
+    await loadFo(foText!, fo.name);
+    return;
+  }
+  // 画像・MathML だけの追加: 先に選んだ文書をまだ開く途中なら、組み直さない (その文書が、足した画像・MathML で組む。組み直すと、
+  // 前の文書の読み込みが世代を上げて、先に選んだ文書を捨てていた)。その文書を読み込まずに終わったら、そこで組み直す (endPendingDoc)
+  if (deferWhileOpening()) return;
+  if (genChanged()) {
+    // 画像を登録する間に、組み直し (設定の変更・書体の追加など) が始まった・終わった: その組み直しが足した画像を見ていないことがあるので、
+    // いまの文書を組み直す (前は、戻ってしまい、画像を登録したのに「画像: 0 / 40 個」のままだった)
+    if (lastSource) reloadCurrent();
+    else if (currentDoc) showDocument(currentDoc, currentName);
+    return;
+  }
+  if (lastSource === 'fo' && lastFo && files.some((f) => assets.getText(f.name) !== undefined)) {
+    // MathML のファイルが追加された: 変換からやり直す (数式は変換時に行内の要素へ組み替えるため)。いま出している文書が XSL-FO のときだけ
+    // (HTML を開いた後に、前に開いた XSL-FO を組み直さない)
     await loadFo(lastFo.text, lastFo.name);
   } else if (currentDoc) {
     // 画像だけ追加された: 現在の文書を組み直す
@@ -695,8 +912,9 @@ fontFile.addEventListener('change', async () => {
   if (!added.length) return;
   clearFontsBtn.hidden = false;
   setStatus(`書体を読み込みました: ${added.join(', ')}`);
-  // 読み込み済みの XSL-FO を、新しい書体で組み直す
-  if (lastFo && !resetBtn.hidden) await loadFo(lastFo.text, lastFo.name);
+  // いま出している文書 (XSL-FO・HTML。見本なら見本) を組み直す (HTML を出しているときに、前に開いた XSL-FO に戻さない)
+  if (deferWhileOpening()) return;
+  if (lastSource) reloadCurrent();
   else if (currentDoc) showDocument(currentDoc, currentName);
 });
 drawioOn.addEventListener('change', async () => {
@@ -743,6 +961,8 @@ clearFontsBtn.addEventListener('click', async () => {
 });
 /** 設定を変えたら、画面に出している文書 (読み込んだ XSL-FO・HTML) をすぐ組み直す */
 function reloadCurrent() {
+  // 文書を開く途中なら、前の文書を組み直さない (組み直すと世代が上がり、開いている文書を捨てる。開いている文書は、読み込みを始める時点の設定で組む)
+  if (deferWhileOpening()) return;
   if (lastSource === 'fo' && lastFo) void loadFo(lastFo.text, lastFo.name);
   else if (lastSource === 'html' && lastHtml) void loadHtmlFile(lastHtml.text, lastHtml.name, lastHtml.files, lastHtml.warnings);
 }
@@ -751,8 +971,21 @@ foSpec.addEventListener('change', () => {
   if (lastSource === 'fo') reloadCurrent();
 });
 foPrint.addEventListener('change', reloadCurrent);
+// タグ付き PDF: 構造の木は読み込みで作るので、読み込み直す
+taggedEl.addEventListener('change', () => {
+  remember('kumiori.tagged', taggedEl.checked ? '1' : '0');
+  reloadCurrent();
+});
 resetBtn.addEventListener('click', () => {
+  // 世代を上げる (書体・画像を待っている読み込みが、後から終わって文書を出さないように)。選んだ順でも、いま選んだ文書として数える
+  beginLoad();
+  latestDocSeq = ++openSeq;
+  pendingDocSeq = 0;
+  refreshDeferred = false;
   lastSource = null;
+  // 前に開いた文書も忘れる (戻した後に MathML・画像のファイルだけを開いたとき、前の文書を組み直さないように)
+  lastFo = null;
+  lastHtml = null;
   loadWarnings = [];
   showReport('', null);
   showDocument(buildSampleDocument(), 'Kumiori サンプル', null);
@@ -800,9 +1033,10 @@ downloadBtn.addEventListener('click', async () => {
   try {
     // PDF に動作を書かなかったリンク (安全のため落としたもの) と、PDF を書く途中の警告 (描けない字・色つきの字形など) は、警告に足す
     const out: string[] = [];
-    const bytes = await renderPdf(tree, fonts, { assets, ...(currentCompat ? compatPdfOptions(currentCompat.kind, currentCompat.ah) : {}), linkWarnings: out, warnings: out });
-    pdfWarnings = out;
-    showWarnings([...loadWarnings, ...formatWarnings, ...tree.warnings, ...pdfWarnings]);
+    const outDiags: Diagnostic[] = [];
+    const bytes = await renderPdf(tree, fonts, { assets, ...(currentCompat ? compatPdfOptions(currentCompat.kind, currentCompat.ah) : {}), ...(taggedEl.checked ? { tagged: true } : {}), linkWarnings: out, warnings: out, diagnostics: outDiags });
+    pdfWarnings = out.map((w) => ({ text: w, diags: outDiags.filter((d) => d.message === w) }));
+    showWarnings([...loadWarnings, ...formatEntries(), ...treeEntries(tree), ...pdfWarnings]);
     const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/pdf' }));
     const a = document.createElement('a');
     a.href = url;

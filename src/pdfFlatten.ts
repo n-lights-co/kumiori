@@ -592,13 +592,22 @@ export function shapeUsesAlpha(sh: SvgShape, alphaImage: (img: NonNullable<SvgSh
 
 /**
  * 不透明度 1・描画モードもマスクも無いグループ (中を重ねる意味の無いもの) を開いて、子を並べる (グループの切り抜きは子に付ける)。
- * PDF に書くと透明のグループ (Group の S が Transparency) になるので、平らにするときは開く
+ * PDF に書くと透明のグループ (Group の S が Transparency) になるので、平らにするときは開く。
+ * ただし、描画モードの付いた子 (開いた後の子) のあるグループは開かない。グループ (isolation: isolate の要素など) は孤立した
+ * グループ (Compositing and Blending 1 §3.3・§5.3。PDF では Group の I が true。ISO 32000-2 §11.4.7.2) で、子はグループの中の
+ * 物とだけ混ぜる (グループの下の物とは混ぜない)。開くと、子がグループの下の物とも混ざって、色が変わる。描画モードの無い子だけなら、
+ * 孤立していてもいなくても、不透明度 1 で置けば、子をじかに描いたのと同じ (§5.3 の合成の式で、背景の分が消える)
  */
 export function openPlainGroups(shapes: readonly SvgShape[]): SvgShape[] {
   const out: SvgShape[] = [];
   for (const sh of shapes) {
     if (sh.group && sh.fillOpacity >= 1 && !sh.blend && !sh.masks?.length) {
-      for (const c of openPlainGroups(sh.group.shapes)) {
+      const inner = openPlainGroups(sh.group.shapes);
+      if (inner.some((c) => c.blend)) {
+        out.push(inner.length === sh.group.shapes.length && inner.every((c, i) => c === sh.group!.shapes[i]) ? sh : { ...sh, group: { ...sh.group, shapes: inner } });
+        continue;
+      }
+      for (const c of inner) {
         const clips: SvgClip[] = [...(sh.clips ?? []), ...(c.clips ?? [])];
         out.push({ ...c, ...(clips.length ? { clips } : {}), ...(sh.link && !c.link ? { link: sh.link } : {}) });
       }

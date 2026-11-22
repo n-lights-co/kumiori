@@ -93,7 +93,7 @@ describe('HTM-05: @import の循環と var() の多重参照', () => {
     expect(r.authorCss.length).toBeLessThanOrEqual(MAX_IMPORTED_CSS_LENGTH * 2);
     expect(r.authorCss).toContain('--k:0');
     // 捨てたことは、警告で 1 度だけ知らせる
-    expect(r.warnings.filter((w) => w.includes('@import'))).toHaveLength(1);
+    expect(r.warnings.filter((w) => w.message.includes('@import'))).toHaveLength(1);
   });
   it('ふつうの入れ子の @import は今までどおり', async () => {
     const r = await prep({ 'a.css': '@import "b.css"; p{color:red}', 'b.css': '@import url(c.css); p{color:blue}', 'c.css': 'p{color:green}' });
@@ -124,6 +124,19 @@ describe('HTM-06: 表の span の上限 (HTML の仕様)', () => {
   it('<col span> は 1000 まで', () => {
     const t = tables(imp('<table><col span="4000000"><tr><td>a</td></tr></table>').document)[0];
     expect(t.columns!.length).toBe(1000);
+  });
+  it('表の列 (<col span> の合計) も 1000 列まで。超えたら limit/table-columns の診断を表ごとに 1 件 (前は <col span="1000"> × 1,000 で百万の列を作った)', () => {
+    const t0 = performance.now();
+    const r = imp(`<table>${'<col span="1000">'.repeat(1000)}<tr><td>a</td></tr></table><table><col span="600"><col span="600"><tr><td>b</td></tr></table><table><col span="1000"><tr><td>c</td></tr></table>`);
+    expect(performance.now() - t0).toBeLessThan(2000);
+    const [a, b, c] = tables(r.document);
+    expect(a.columns!.length).toBe(1000);
+    expect(b.columns!.length).toBe(1000);
+    expect(c.columns!.length).toBe(1000);
+    const ds = (r.report.diagnostics ?? []).filter((d) => d.code === 'limit/table-columns');
+    expect(ds.length).toBe(2);
+    expect(ds[0].severity).toBe('warning');
+    expect(ds[0].source?.element).toBe('col');
   });
   it('<colgroup span> は 1000 まで', () => {
     const t = tables(imp('<table><colgroup span="4000000"></colgroup><tr><td>a</td></tr></table>').document)[0];
@@ -203,7 +216,7 @@ describe('HTM-16: 深い入れ子', () => {
     expect(depthOf(r.doc)).toBeLessThanOrEqual(MAX_TREE_DEPTH);
     // 木の形が変わるので、黙って進めずに警告する (上限に届かない文書では出さない)
     expect(r.warnings).toHaveLength(1);
-    expect(r.warnings[0]).toContain(`${MAX_TREE_DEPTH} 段`);
+    expect(r.warnings[0].message).toContain(`${MAX_TREE_DEPTH} 段`);
     const shallow = await prepareHtml(page('<div>'.repeat(MAX_TREE_DEPTH - 3) + 'x' + '</div>'.repeat(MAX_TREE_DEPTH - 3)), [], 'browser', DEF, lk);
     expect(shallow.warnings).toEqual([]);
   });

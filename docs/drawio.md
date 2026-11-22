@@ -93,6 +93,25 @@ kumiori doc.html --drawio-stencils ./stencils --fetch-drawio-stencils
 - v24.7.5 より後に draw.io に足された形と style のキーは読まない (形 (`mxgraph.archimate4.*`・`mxgraph.bpmn.task2` など) は、図形ライブラリを渡しても描かず、文字だけ描いて警告する。下の「図形ライブラリの利用の条件」)
 - 小さなファイルで時間・メモリを使い切る細工した図に備えて、読む量・描く量に上限がある (値と根拠は `src/drawio/drawio.ts` の `LIMITS` など)。上限を超えた部分は描かずに警告を出す
 
+## 取った図形ライブラリ・画像の確かめ
+
+`fetchStencils` が `true` (コマンドは `--fetch-drawio-stencils`) で、既定の取り先 (draw.io の公開のリポジトリの、v24.7.5 のタグの URL) から取ったファイルは、中身の SHA-256 を、Kumiori が持つ v24.7.5 の一覧 (`src/drawio/drawioHashes.ts`。図形ライブラリの `js/stencils.min.js` と、`img/` の下の画像 1,901 個) と照らします。
+タグは付け替えられる (同じ URL で中身が変わりうる) ので、一覧を作ったときの中身と同じものだけを使います。
+合わないファイルと、一覧に無いファイルは使わずに、「draw.io の配布物 (v24.7.5) から取ったファイルの中身が、版の SHA-256 の一覧と合わないので使いません」・「draw.io の配布物 (v24.7.5) の SHA-256 の一覧に無いファイルなので使いません」と警告します (その形・画像は、取れなかったときと同じく描きません)。
+
+- `fetchStencils` を関数にしたときも、既定の取り先の URL を渡して呼んだ分 (`stencilsUrl` を渡さないとき) は、返した中身を照らします (手元に覚えたものも、v24.7.5 の中身であること)。
+- コマンドの覚え (`--font-cache` の場所) も、合わない中身は覚えず、合わない覚えは使わずに取り直します。
+- 取り先を自分で決めたとき (`fetchStencils` の URL の文字列・`stencilsUrl`。コマンドは `--drawio-stencils-url`) は、その版の一覧を Kumiori が持たないので照らしません。
+- `stencils` (コマンドは `--drawio-stencils`) で渡すファイルは照らしません。
+
+### 取り先の版を上げるとき (Kumiori を直す人へ)
+
+一覧は、`scripts/drawio-hashes.mjs` が、draw.io のリポジトリのタグの指すコミットの中身 (git で、`src/main/webapp/img/` と `src/main/webapp/js/stencils.min.js` だけを取り出したもの) から作ります。
+
+1. `src/drawio/drawioStencil.ts` の `DRAWIO_STENCILS_URL` のタグを書き換える (その版の `stencils/`・`img/` の LICENSE を確かめ、この説明書の「図形ライブラリの利用の条件」と THIRD_PARTY_NOTICES.md の 13 節も合わせる)。
+2. `node scripts/drawio-hashes.mjs --tag <新しいタグ>` で一覧を作り直す (git が要る。数秒)。タグは `DRAWIO_STENCILS_URL` と同じにする (`test/drawio/drawioFetchHash.test.ts` が確かめる)。
+3. 一覧の頭に書かれたコミットが、draw.io のリポジトリのタグのコミットと同じことを確かめ、`npm test` を通す。
+
 ## 図形ライブラリの利用の条件
 
 Kumiori は draw.io の図形ライブラリのデータ (`stencils/` の XML と `js/stencils.min.js`) とアイコンの画像を含みません。

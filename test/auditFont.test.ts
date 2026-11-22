@@ -43,7 +43,7 @@ function table(font: ArrayBuffer, tag: string): Uint8Array {
 async function register(buffer: ArrayBuffer) {
   const fm = new FontManager();
   const notes: string[] = [];
-  fm.onNotice = (m) => notes.push(m);
+  fm.onNotice = (d) => notes.push(d.message);
   const lf = await fm.registerBuffer('T', 400, buffer, false);
   return { fm, lf, notes };
 }

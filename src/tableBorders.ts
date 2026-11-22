@@ -10,6 +10,7 @@
  * とする。勝ち負けは、太い方 → 線種 (double > solid > dashed > dotted > ridge > outset > groove > inset) の順。
  */
 import { normBorder } from './geometry';
+import { copySourceRef } from './sourceRef';
 import type { BorderInput, BorderSide, BorderStyle, LTable, LTableCell, LTableRow, WritingMode } from './types';
 
 type Side = 'top' | 'right' | 'bottom' | 'left';
@@ -96,7 +97,8 @@ export function collapseTableBorders(table: LTable, wm: WritingMode): LTable {
   if (table.borderCollapse !== 'collapse') return table;
   const S = sides(wm);
   // セルを複製し、罫線を辺ごとの BorderStyle に正規化しておく
-  const copyRows = (rows: LTableRow[]) => rows.map((r) => ({ ...r, cells: r.cells.map((c) => ({ ...c, border: { ...norm(c.border) } as BorderStyle })) }));
+  // 写しには、元の行・セルの入力の番号 (sourceRef) を引き継ぐ (Area の sourceRef。タグ付き PDF の構造と、描く効果を引く)
+  const copyRows = (rows: LTableRow[]) => rows.map((r) => withRef(r, { ...r, cells: r.cells.map((c) => withRef(c, { ...c, border: { ...norm(c.border) } as BorderStyle })) }));
   const hRows = copyRows(table.header?.rows ?? []);
   const bRows = copyRows(table.body.rows);
   const fRows = copyRows(table.footer?.rows ?? []);
@@ -308,7 +310,7 @@ export function collapseTableBorders(table: LTable, wm: WritingMode): LTable {
     } else delete tb[side];
   }
 
-  return {
+  return withRef(table, {
     ...table,
     border: tb,
     ...(table.collapseToAfterCell ? { collapseColumnLines: Array.from({ length: nCols }, (_, k) => (k > 0 ? (lineMax.get(`i${k}`) ?? 0) : 0)) } : {}),
@@ -316,7 +318,13 @@ export function collapseTableBorders(table: LTable, wm: WritingMode): LTable {
     ...(table.header ? { header: { ...table.header, rows: hRows } } : {}),
     body: { ...table.body, rows: bRows },
     ...(table.footer ? { footer: { ...table.footer, rows: fRows } } : {}),
-  };
+  });
+}
+
+/** 写した節 to に、元の節 from の入力の番号 (sourceRef) を引き継いで返す */
+function withRef<T extends object>(from: unknown, to: T): T {
+  copySourceRef(from, to);
+  return to;
 }
 
 /**

@@ -44,7 +44,9 @@ export type TextDecorationStyle = 'solid' | 'double' | 'dotted' | 'dashed' | 'wa
 /** 線種。dot-dash (一点鎖線)・dot-dot-dash (二点鎖線)・wave (波線) はアンテナハウスの拡張 */
 export type BorderLineStyle = 'solid' | 'dashed' | 'dotted' | 'double' | 'groove' | 'ridge' | 'inset' | 'outset' | 'hidden' | 'dot-dash' | 'dot-dot-dash' | 'wave';
 
+/** 1 辺の罫線 */
 export interface BorderSide {
+  /** 太さ (pt) */
   width: number;
   /** 色。'transparent' は描かない (太さは取る)。#rrggbbaa (半透明) は、その濃さで下の背景に重ねて描く */
   color: string;
@@ -83,6 +85,7 @@ export interface CollapsedSide {
 /** 入力用: 全辺共通 or 辺ごと */
 export type BorderInput = BorderSide | Partial<Record<keyof Edges, BorderSide>>;
 
+/** 箱の 4 辺の罫線 (無い辺は罫線なし) */
 export interface BorderStyle {
   top?: BorderSide;
   right?: BorderSide;
@@ -222,7 +225,7 @@ export interface TextStyle {
   /**
    * 行の調整 (追込み) で、欧文の語間 (空白 1 つ) を詰めてよい量の上限 (pt。継承する)。無ければ空白の字の幅の 1/3 まで。
    * XSL-FO の仕様モードの既定は 0 (詰めない。XSL 1.1 §7.17.8: word-spacing="normal" と <length> は .minimum = .optimum)。
-   * word-spacing.minimum の指定があれば、.optimum − .minimum (§7.17.8: “The minimum and maximum values specify the limits of the adjustment.”)
+   * word-spacing.minimum の指定があれば、.optimum − .minimum (§7.17.8: .minimum と .maximum が、調整してよい範囲の両端)
    */
   wordSpaceShrinkLimit?: number;
   /**
@@ -248,7 +251,8 @@ export interface TextStyle {
   punctuationTrimStartExceptFirst?: boolean;
   /**
    * punctuationTrimEnd を、句点 (U+3002 。・U+FF0E ．) には当てない
-   * (axf:punctuation-trim の end-except-fullstop: 「end と同じですが、次の2文字を除外します」)
+   * (axf:punctuation-trim の end-except-fullstop。end の詰めから、この 2 字を外したもの。
+   * 出どころは、アンテナハウスの公開の説明 ahf-ext.html の axf:punctuation-trim の項)
    */
   punctuationTrimEndExceptFullstop?: boolean;
   /**
@@ -470,6 +474,12 @@ export interface TextStyle {
   /** 強制改行のほかは行を折り返さない (fo の wrap-option="no-wrap")。はみ出した分はそのまま */
   noWrap?: boolean;
   /**
+   * 行の並べ方の選び方 (CSS の text-wrap-style。CSS Text 4 §5.4)。継承する。balance: 行の長さをそろえる。
+   * pretty (avoid-short-last-line も同じ扱い): 100 行までの段落は、段落全体を見て行を分ける (最後の行が短すぎないように)。100 行を超える段落は、
+   * 1 行ずつ先から決め、最後の行が短いときだけ、終わりの数行を分け直す。auto (stable も) は、1 行ずつ先から決める (既定)。行を持つブロックの値で決める
+   */
+  textWrapStyle?: 'auto' | 'balance' | 'pretty';
+  /**
    * 行に収まらない中身も、text-align の center・end でそろえる (はみ出した分を始めの側へ出す)。
    * CSS のリストの外側の目印 (::marker の箱は、項目の始めの端の外に置かれ、長ければ外へはみ出す。CSS Lists 3 §3.5) に使う
    */
@@ -528,6 +538,11 @@ export type BreakKind = 'page' | 'column' | 'odd-page' | 'even-page';
 
 export interface BaseNode extends TextStyle {
   id?: string;
+  /**
+   * タグ付き PDF の構造の節の番号 (LDocument.structure の位置。structure.ts)。読み込みが、構造の木を作るとき (HtmlImportOptions.tagged) だけ付ける。
+   * 構造を持たない包みの箱も、中身の入る構造の節 (いちばん近い祖先の要素のもの) の番号を持つ
+   */
+  tag?: number;
   writingMode?: WritingMode;
   /**
    * 描くときだけに効く効果 (CSS の transform・opacity)。組版 (箱の位置・大きさ・ページ分け) には関わらない。
@@ -887,6 +902,8 @@ export interface LDocument extends BaseNode {
   title?: string;
   info?: DocumentInfo;
   bookmarks?: LBookmark[];
+  /** タグ付き PDF の構造の木 (structure.ts。0 番が文書)。読み込みが構造の木を作るとき (HtmlImportOptions.tagged) だけある */
+  structure?: import('./structure').StructNode[];
   sequences: LPageSequence[];
   /**
    * 隣り合う余白 (space / margin) の解決の規則。
@@ -1162,6 +1179,11 @@ export interface LInline extends BaseNode {
   firstLine?: boolean;
   /** 行の途中で分割しない (fo の keep-together.within-line="always") */
   noBreak?: boolean;
+  /**
+   * 割注 (JLREQ §3.4。Kumiori の拡張の、CSS の -kumiori-warichu・XSL-FO の kumiori:warichu)。中身を、この inline の字の大きさで 2 行に割って、
+   * 本文の行の中に入れる (warichu.ts)
+   */
+  warichu?: LWarichu;
   /** ベースラインからの上げ下げ (super / sub / pt。正が上)。文字サイズは別に fontSize で指定する */
   baselineShift?: 'super' | 'sub' | number;
   /**
@@ -1307,6 +1329,25 @@ export interface LRuby extends BaseNode {
    */
   rubyAlignUnder?: RubyAlign;
   rubyAlignBase?: RubyAlign;
+  /**
+   * タグ付き PDF: 親文字 (base) とルビ (text。2 段目も) の、中身の無い入力の節。組版は、その通し番号 (sourceRef) を、親文字の字とルビの字に
+   * 付ける (読み込みが、それぞれに RB・RT の構造の節か、圏点なら飾りの番号を付ける。structureBuilder.ts の ruby)
+   */
+  tagParts?: { base: LInline; text: LInline };
+}
+
+/**
+ * 割注の指定 (LInline.warichu)。open・close は、割注の前後の括弧 (JLREQ §3.4.2 の割注始め括弧類 cl-28・割注終わり括弧類 cl-29)。
+ * 空の文字列なら付けない。括弧は割注の字の 2 倍の大きさで組む
+ */
+export interface LWarichu {
+  open: string;
+  close: string;
+  /**
+   * タグ付き PDF: 前後の括弧の、中身の無い入力の節 (WP の構造の節の番号が付く。ISO 32000-1 §14.8.4.4 の Table 338)。
+   * 割注の inline そのものは、中身 (WT) の構造の節の番号を持つ (structureBuilder.ts の warichuParts)
+   */
+  tagParts?: { open?: LInline; close?: LInline };
 }
 
 /**
@@ -1384,7 +1425,7 @@ export interface LIndexKeyReference {
 export interface LImage extends BaseNode {
   /**
    * false: この箱 (行の中の、分けられない箱) そのものには、飾りの線 (下線・上線・取り消し線) を引かない
-   * (CSS Text Decoration 3 §2: Atomic inlines, such as images and inline blocks, are not decorated)。HTML の読み込みが付ける。
+   * (CSS Text Decoration 3 §2: 画像やインラインブロックのような分けられないインラインの箱には、飾りの線を引かない)。HTML の読み込みが付ける。
    * 既定は、まわりの字と同じ線を箱にも引く (XSL-FO。XSL 1.1 §7.17.4)
    */
   decorateBox?: false;
@@ -1399,11 +1440,11 @@ export interface LImage extends BaseNode {
   type: 'image';
   /** AssetStore のキー (相対パス・ファイル名・data URI)。`url('...')` の包みは取り除いておく */
   src: string;
-  /** 角丸 (CSS の border-radius): 画像を角丸で切り抜く (CSS Backgrounds 3 §5.3)。百分率は画像の箱の大きさに対して */
+  /** 角丸 (CSS の border-radius): 画像を角丸で切り抜く (CSS Backgrounds 3 §4.3)。百分率は画像の箱の大きさに対して */
   borderRadius?: BorderRadius;
   /**
    * 画像の罫線・内側の余白 (border・padding。BaseNode) のある画像の、罫線の箱の角丸 (外側の半径)。borderRadius は、その内側で画像を
-   * 切り抜く半径 (外側の半径 − 罫線と余白。CSS Backgrounds 3 §5.1)
+   * 切り抜く半径 (外側の半径 − 罫線と余白。CSS Backgrounds 3 §4.2)
    */
   boxRadius?: BorderRadius;
   width?: number;
@@ -1545,7 +1586,7 @@ export interface LInlineContainer extends BaseNode, BoxStyle {
   baselineFrom?: 'first' | 'last';
   /**
    * false: この箱 (行の中の、分けられない箱) そのものには、飾りの線 (下線・上線・取り消し線) を引かない
-   * (CSS Text Decoration 3 §2: Atomic inlines, such as images and inline blocks, are not decorated)。HTML の読み込みが付ける。
+   * (CSS Text Decoration 3 §2: 画像やインラインブロックのような分けられないインラインの箱には、飾りの線を引かない)。HTML の読み込みが付ける。
    * 既定は、まわりの字と同じ線を箱にも引く (XSL-FO。XSL 1.1 §7.17.4)
    */
   decorateBox?: false;
@@ -1672,6 +1713,11 @@ export interface LFootnote extends BaseNode {
   /** この脚注の本文の頭の番号の置き方と、outside のときの空き (CSS の、この要素に当たる ::footnote-marker の list-style-position)。省略時は FootnoteOptions の値 */
   labelPosition?: FootnoteOptions['labelPosition'];
   labelGapEm?: number;
+  /**
+   * タグ付き PDF: 本文の参照の印 (call) と、本体の頭の番号 (label) の、中身の無い入力の節。組版は、その通し番号 (sourceRef) を、印の字と
+   * 番号の字に付ける (読み込みが、それぞれに参照 (Reference) と記号 (Lbl) の構造の節の番号を付ける。structure.ts)
+   */
+  tagParts?: { call: LInline; label: LInline };
   children: Array<LBlockLevel | LInlineLevel>;
 }
 
@@ -2345,12 +2391,18 @@ export interface BlockLikeArea extends AreaBase {
   children: Area[];
 }
 
+/** 字 (同じ書体・大きさ・色の字の並び)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface GlyphArea extends AreaBase {
   type: 'glyph';
+  /** 字の並び */
   text: string;
+  /** 書体のファミリー名 */
   fontFamily: string;
+  /** 書体の太さ (100〜900) */
   fontWeight: number;
+  /** 字の大きさ (pt) */
   fontSize: number;
+  /** 字の色 (CSS の色の書き方) */
   color: string;
   /**
    * 描画原点 (ベースライン左端) の glyph area ローカル座標。
@@ -2386,16 +2438,18 @@ export interface GlyphArea extends AreaBase {
    */
   glyphPositions?: Array<[number, number, number]>;
   /**
-   * 色つきの字形のパレットの選び方 (CSS の font-palette と @font-palette-values の結果。colorGlyph.ts の FontPalette)。
+   * 色つきの字形のパレットの選び方 (CSS の font-palette と `@font-palette-values` の結果。colorGlyph.ts の FontPalette)。
    * 既定のパレット (font-palette: normal) のときは付かない。色つきの表 (COLR/CPAL) を持つ書体の字だけに効く
    */
   fontPalette?: { base?: number | 'light' | 'dark'; colors?: Array<[number, string]> };
 }
 
+/** 行の中の箱 (枠・背景・変換の付いた行内の要素など)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface InlineArea extends BlockLikeArea {
   type: 'inline';
 }
 
+/** 画像 (SVG・MathML の数式を含む)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface ImageArea extends AreaBase {
   type: 'image';
   src: string;
@@ -2419,6 +2473,7 @@ export interface ImageArea extends AreaBase {
   hidden?: boolean;
 }
 
+/** ルビ (親文字とルビの字)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface RubyArea extends AreaBase {
   type: 'ruby';
   /** 親文字 glyph 群 (RubyArea ローカル座標) */
@@ -2429,6 +2484,7 @@ export interface RubyArea extends AreaBase {
   rubyExtent: number;
 }
 
+/** 縦中横 (縦書きの中に横に並べた字)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface TateChuYokoArea extends AreaBase {
   type: 'tate-chu-yoko';
   /** 横組みで並べた各文字 (TateChuYokoArea ローカル座標) */
@@ -2439,13 +2495,16 @@ export interface TateChuYokoArea extends AreaBase {
   frames: number;
 }
 
+/** 行。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface LineArea extends BlockLikeArea {
   type: 'line';
   /** 行内の inline-progression 方向の使用長 */
   contentLength: number;
+  /** 行にルビがあるか */
   hasRuby: boolean;
 }
 
+/** ブロック (段落・見出し・リストの項目・図の枠など)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface BlockArea extends BlockLikeArea {
   type: 'block';
   /** ページをまたいだ場合の継続断片か */
@@ -2454,26 +2513,34 @@ export interface BlockArea extends BlockLikeArea {
   continuesOnNext: boolean;
 }
 
+/** 表のセル。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface TableCellArea extends BlockLikeArea {
   type: 'table-cell';
 }
+/** 表の行。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface TableRowArea extends BlockLikeArea {
   type: 'table-row';
   /** ヘッダ繰り返しで複製された行か */
   isRepeatedHeader: boolean;
 }
+/** 表。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface TableArea extends BlockLikeArea {
   type: 'table';
+  /** 列の幅 (pt。左の列から) */
   columnSizes: number[];
+  /** ページをまたいだ場合の継続断片か */
   isContinuation: boolean;
 }
 
+/** ページの本文の領域。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface RegionBodyArea extends BlockLikeArea {
   type: 'region-body';
 }
 
+/** ページ (仕上がりの大きさ)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface PageArea extends AreaBase {
   type: 'page';
+  /** ページ番号の数 (振り直し (XSL-FO の initial-page-number・CSS の counter-reset: page) を反映したもの。シートの順の番号ではない) */
   pageNumber: number;
   /** 通常フローの本文領域 */
   regionBody: RegionBodyArea;
@@ -2486,6 +2553,7 @@ export interface PageArea extends AreaBase {
 
 export type BlockAreaLike = BlockArea;
 
+/** 用紙 (仕上がり・塗り足し・トンボの領域を含む。ページごとに 1 枚)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
 export interface SheetArea extends AreaBase {
   type: 'sheet';
   /** Sheet 全体 = 仕上がり + 塗り足し + トンボ領域 (pt) */
@@ -2513,13 +2581,19 @@ export interface SheetArea extends AreaBase {
   backgroundOriginBox?: Rect;
 }
 
+/** 矩形 (pt。y は下向き) */
 export interface Rect {
+  /** 左の位置 */
   x: number;
+  /** 上の位置 */
   y: number;
+  /** 幅 */
   width: number;
+  /** 高さ */
   height: number;
 }
 
+/** Area Tree の節 (type で種類を見分ける) */
 export type Area =
   | SheetArea
   | PageArea
@@ -2537,32 +2611,53 @@ export type Area =
 
 /** 飛び先のシートを解決したしおり */
 export interface BookmarkArea {
+  /** しおりの題 */
   title: string;
   /** 飛び先のシート (0 始まり)。見つからなければ -1 */
   sheet: number;
   /** 文書の外への飛び先 (URL か、相対のファイル)。文書の中の飛び先 (sheet) が無いしおりだけが持つ。扱いはリンクの external と同じ */
   external?: string;
+  /** 初めから開いておくか (子を見せる) */
   open: boolean;
+  /** 子のしおり */
   children: BookmarkArea[];
 }
 
+/**
+ * 組んだ結果 (Area Tree)。TypesetResult.areaTree。ページごとの用紙 (sheets) の木と、文書の情報・しおり・リンクの飛び先・使った書体と画像。
+ * walkAreaTree でたどり、serializeAreaTree・parseAreaTree で JSON にして読み書きできる。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある
+ */
 export interface AreaTree {
   /** 形の版 (areaTree.ts の AREA_TREE_SCHEMA_VERSION)。座標・単位の決まりも areaTree.ts の冒頭に書いてある */
   schemaVersion: number;
+  /** 文書の題 (HTML の title・XSL-FO の文書情報) */
   title?: string;
+  /** 文書の情報 (著者・主題・キーワードなど) */
   info?: DocumentInfo;
+  /** しおり (PDF のしおり) */
   bookmarks?: BookmarkArea[];
   /** 文書内リンクの飛び先: id → シートの番号 (0 始まり) */
   destinations?: Record<string, number>;
+  /** ページごとの用紙 (ページの順) */
   sheets: SheetArea[];
   /** レイアウト中の警告 (行溢れ等) */
   warnings: string[];
+  /**
+   * レイアウト中の診断 (warnings と同じ出来事を、名前・重さ・args で持つ。diagnostics.ts)。同じものは 1 件にして数える。
+   * 診断の無い木には無い
+   */
+  diagnostics?: import('./diagnostics').Diagnostic[];
   /** 木が使う書体と画像の一覧 (識別に SHA-256) */
   resources?: AreaResources;
+  /** タグ付き PDF の構造の木と、Area の sourceRef → 構造の節の番号の表 (structure.ts)。入力が構造の木を持つときだけある */
+  structure?: import('./structure').AreaStructure;
 }
 
+/** 木が使う書体と画像の一覧 (AreaTree.resources) */
 export interface AreaResources {
+  /** 書体 */
   fonts: FontResource[];
+  /** 画像 */
   images: ImageResource[];
 }
 
@@ -2570,7 +2665,9 @@ export interface AreaResources {
 export interface FontResource {
   /** GlyphArea.fontId で指す名前 */
   id: string;
+  /** 書体のファミリー名 */
   family: string;
+  /** 書体の太さ (100〜900) */
   weight: number;
   /** name 表の PostScript 名 (あれば) */
   postscriptName?: string;
@@ -2586,19 +2683,25 @@ export interface FontResource {
 
 /** 木が使う画像 (ImageArea.src・背景画像の src) */
 export interface ImageResource {
+  /** 画像の名前 (ImageArea.src と同じ) */
   src: string;
+  /** 画像の MIME タイプ */
   mime?: string;
   /** 画像のファイルのバイト列の SHA-256 (16 進)。バイト列が無い (大きさだけの登録) なら無い */
   sha256?: string;
-  /** 自然な大きさ (CSS px) */
+  /** 自然な大きさの幅 (CSS px) */
   width?: number;
+  /** 自然な大きさの高さ (CSS px) */
   height?: number;
 }
 
 // ───────────────────────── フォント ─────────────────────────
 
+/** 既定の書体の指定 (TypesetOptions.loadFont に渡すもの。DEFAULT_FONTS) */
 export interface FontSpec {
+  /** 書体のファミリー名 (Noto Serif JP など) */
   family: string;
+  /** 書体の太さ (100〜900。省けば 400) */
   weight?: number;
   /** TTF/OTF の URL (複数なら順にフォールバック) */
   urls: string[];

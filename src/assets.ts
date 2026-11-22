@@ -6,10 +6,11 @@ import { decodeBmp, decodeGif, encodePng, MAX_PIXELS, pngWithinLimits, type Pixe
 import { lzwBytes } from './psFilters';
 import { decodeWebp } from './webp';
 import { ccittFits, decodeModifiedHuffman } from './ccitt';
-import { fetchGuarded } from './resources';
+import { fetchGuarded, urlFunctionBody } from './resources';
 import { fetchLimits } from './imageLimits';
 import { FORMAT_MAX_SIZE, formatExtensions, formatLoadTimeoutMs, formatOf, formatSvgBudget, IMAGE_FORMATS, MAX_FORMAT_FRAGMENTS, type ImageFormat, type ImageFormatContext, type ImageFormatResult } from './imageFormats';
 import { msg } from './messages';
+import { diag, type Diagnostic } from './diagnostics';
 
 /**
  * assets — 画像データの登録所。レイアウト (自然なサイズの取得)・Canvas 描画・PDF 埋め込みが共有する。
@@ -50,8 +51,8 @@ export interface ImageAsset {
 
 export function normalizeSrc(src: string): string {
   let s = src.trim();
-  const m = /^url\(\s*(['"]?)(.*?)\1\s*\)$/i.exec(s);
-  if (m) s = m[2];
+  // url(…) の中身 (/^url\(\s*(['"]?)(.*?)\1\s*\)$/i と同じ結果を、空白の長い並びでも長さに比例した手間で。urlFunctionBody)
+  s = urlFunctionBody(s, 'match', false) ?? s;
   s = s.replace(/^['"]|['"]$/g, '').trim();
   if (/^data:/i.test(s)) return s;
   s = s.replace(/^\.\//, '').replace(/\\/g, '/');
@@ -164,10 +165,20 @@ export class AssetStore {
       formats?: readonly ImageFormat[];
       /** 本体の外の形式が使う道具 (文字の幅を測る・資源を取る・警告を出す) */
       formatContext?: ImageFormatContext;
+      /** 画像の置き場が出す警告の出し先 (名前の付いた診断。無ければ formatContext.warn に文を渡す) */
+      report?: (d: Diagnostic) => void;
       /** 本体の外の形式の読み込みの時限 (ミリ秒。既定は imageFormats.ts の formatLoadTimeoutMs。テストで縮める) */
       formatTimeoutMs?: number;
+      /** 画像を引いて当たったとき、その画像の鍵を知らせる (resourceUse.ts。コマンドが、組版が実際に使った画像を知るため) */
+      onUse?: (key: string) => void;
     } = {},
   ) {}
+
+  /** 警告を出す (report があれば診断で、無ければ formatContext.warn に文で) */
+  private warn(d: Diagnostic): void {
+    if (this.opts.report) this.opts.report(d);
+    else this.opts.formatContext?.warn?.(d.message);
+  }
 
   /**
    * 本体の外の形式を差し替える (画面で draw.io の図を読む・読まないや、その図形ライブラリを切り替えたとき)。
@@ -256,11 +267,11 @@ export class AssetStore {
     const n = this.fragmentsMade.get(base.bytes) ?? 0;
     if (n >= MAX_FORMAT_FRAGMENTS) {
       if (n === MAX_FORMAT_FRAGMENTS)
-        this.opts.formatContext?.warn?.(
-          msg(
+        this.warn(
+          diag('image/too-many-fragments', msg(
             `1 つのファイルを fragment の違う参照で指す数が多すぎます (${MAX_FORMAT_FRAGMENTS} 種類まで。それを超える参照は読みません): ${src.slice(0, 200)}`,
             `too many references to one file with different fragments (up to ${MAX_FORMAT_FRAGMENTS}; the others are not read): ${src.slice(0, 200)}`,
-          ),
+          ), { src: src.slice(0, 200) }),
         );
       this.fragmentsMade.set(base.bytes, n + 1);
       return undefined;
@@ -276,11 +287,18 @@ export class AssetStore {
     return asset;
   }
 
+  /** 登録した画像 (登録した順) */
+  values(): IterableIterator<ImageAsset> {
+    return this.map.values();
+  }
+
   get(src: string): ImageAsset | undefined {
     const key = normalizeSrc(src);
     const hit = this.map.get(key);
+    if (hit) this.opts.onUse?.(hit.key);
     if (hit || key.startsWith('data:')) return hit;
     const byName = this.byBase.get(basename(key).toLowerCase());
+    if (byName && !(byName.formatSource && fragmentOf(key) !== undefined)) this.opts.onUse?.(byName.key);
     // fragment の付いた参照で、ファイル名で当たったのが本体の外の形式の画像 (fragment で描くものを選ぶ形式) なら、まだ無いものとする
     // (addFragment で、そのページの画像を作るまで。読み込みの時点で、別のページ (ファイルの全体の画像) の大きさで組まないように:
     // ネットワークの画像と同じく、作ったあと、組むときに大きさを引く)
@@ -365,7 +383,7 @@ export class AssetStore {
       // 参照の名前の fragment (# の後ろ) は、形式に渡す (1 つのファイルの中の、どの図・ページを描くか。ImageFormatContext.fragment)
       const fragment = fragmentOf(name);
       const ctx: ImageFormatContext = { ...this.opts.formatContext, ...(fragment !== undefined ? { fragment } : {}) };
-      const warn = (m: string) => this.opts.formatContext?.warn?.(m);
+      const warn = (d: Diagnostic) => this.warn(d);
       const shown = name.slice(0, 200);
       // 読み込みは時限と競わせる (formatLoadTimeoutMs の説明。時限の setTimeout は、終わらない Promise でもイベントループを空にしない)
       const timedOut = Symbol('timeout');
@@ -380,14 +398,14 @@ export class AssetStore {
         .catch(() => undefined)
         .finally(() => clearTimeout(timer));
       if (r === timedOut) {
-        warn(msg(`画像 ${shown} の読み込み (${fmt.name}) が ${Math.round(limit / 1000)} 秒で終わらないので、読めない画像として扱います`, `loading the image ${shown} (${fmt.name}) did not finish in ${Math.round(limit / 1000)} seconds; it is treated as unreadable`));
+        warn(diag('image/timeout', msg(`画像 ${shown} の読み込み (${fmt.name}) が ${Math.round(limit / 1000)} 秒で終わらないので、読めない画像として扱います`, `loading the image ${shown} (${fmt.name}) did not finish in ${Math.round(limit / 1000)} seconds; it is treated as unreadable`), { src: shown, format: fmt.name }));
         return undefined;
       }
       if (!r || typeof r !== 'object') return undefined;
       // 大きさは有限で、上限 (FORMAT_MAX_SIZE) までの正の数 (前は Infinity を受け取り、文書の全体が誤りで終わった)
       if (!(r.width > 0 && r.height > 0)) return undefined;
       if (!(r.width <= FORMAT_MAX_SIZE && r.height <= FORMAT_MAX_SIZE)) {
-        warn(msg(`画像 ${shown} (${fmt.name}) の大きさが大きすぎるか有限でないので、読めない画像として扱います (${FORMAT_MAX_SIZE} px まで)`, `the size of the image ${shown} (${fmt.name}) is too large or not finite; it is treated as unreadable (up to ${FORMAT_MAX_SIZE} px)`));
+        warn(diag('image/invalid-size', msg(`画像 ${shown} (${fmt.name}) の大きさが大きすぎるか有限でないので、読めない画像として扱います (${FORMAT_MAX_SIZE} px まで)`, `the size of the image ${shown} (${fmt.name}) is too large or not finite; it is treated as unreadable (up to ${FORMAT_MAX_SIZE} px)`), { src: shown, format: fmt.name }));
         return undefined;
       }
       // 警告は文字列の並び (無い・壊れたものは無いものとする)
@@ -487,11 +505,14 @@ export class AssetStore {
         const label = mime === 'image/webp' ? 'WebP' : mime.replace(/^image\//, '').toUpperCase();
         return this.register(name, { mime, bytes, width: size.width, height: size.height, drawable: false, unsupported: label });
       }
-      if (mime === 'image/svg+xml' && this.opts.parseXml) {
-        let what = '';
-        if (!svgDrawableInPdf(new TextDecoder().decode(bytes), this.opts.parseXml, (w) => (what = w))) return this.register(name, { mime, bytes, width: size.width, height: size.height, drawable: false, unsupported: what, ...(size.noRatio ? { noRatio: true as const } : {}) });
-      }
+      if (mime === 'image/svg+xml') return this.registerSvgShapes(name, bytes, size, dpi);
       return this.register(name, { mime, bytes, width: size.width, height: size.height, ...(dpi ? { dpi } : {}), ...(size.noRatio ? { noRatio: true as const } : {}) });
+    }
+    // ブラウザの画像 (<img>) で SVG を読めない所 (Web Worker の中): Node と同じく、元のバイト列だけを持ち、図形で描く
+    // (PDF は図形で、Canvas も図形を画素にして描く: canvasRenderer.ts の drawSvgShapes)。ほかの形式は createImageBitmap で読む
+    if (mime === 'image/svg+xml' && noSvgImage()) {
+      const size = headerSize(bytes, mime);
+      return size ? this.registerSvgShapes(name, bytes, size, dpi) : undefined;
     }
     try {
       const { element, width, height } = await decode(bytes, mime);
@@ -505,13 +526,27 @@ export class AssetStore {
   }
 
   /**
+   * SVG を、図形で描く画像として登録する (画像を描けない環境 (Node) と、ブラウザの画像で SVG を読めない所 (Web Worker の中))。
+   * 図形にできない SVG (filter・marker など) は、大きさだけの画像 (仮の枠) にする
+   */
+  private registerSvgShapes(name: string, bytes: Uint8Array, size: { width: number; height: number; noRatio?: true }, dpi: number | undefined): ImageAsset {
+    const mime = 'image/svg+xml';
+    if (this.opts.parseXml) {
+      let what = '';
+      if (!svgDrawableInPdf(new TextDecoder().decode(bytes), this.opts.parseXml, (w) => (what = w))) return this.register(name, { mime, bytes, width: size.width, height: size.height, drawable: false, unsupported: what, ...(size.noRatio ? { noRatio: true as const } : {}) });
+    }
+    return this.register(name, { mime, bytes, width: size.width, height: size.height, ...(dpi ? { dpi } : {}), ...(size.noRatio ? { noRatio: true as const } : {}) });
+  }
+
+  /**
    * 変換した SVG を、元の形式の大きさの画像として登録する (WMF・EMF・EPS・CGM と、本体の外の形式)。
-   * 画像を描けない環境 (Node) は、図形にできれば SVG のまま (PDF には図形で描く)。ブラウザは描いた画像も持つ。描けなければ undefined (仮の枠にする)
+   * 画像を描けない環境 (Node) と、ブラウザの画像で SVG を読めない所 (Web Worker の中) は、図形にできれば SVG のまま (PDF には図形で描く)。
+   * ブラウザの画面は描いた画像も持つ。描けなければ undefined (仮の枠にする)
    */
   private async registerSvg(name: string, svg: string, width: number, height: number, extra: Partial<ImageAsset>): Promise<ImageAsset | undefined> {
     const sb = new TextEncoder().encode(svg);
     // 確かめは、ふつうの SVG の画像 (addBlob) と同じ (filter は画素で計算できるものとして通す)
-    if (noCanvas() && this.opts.parseXml && svgDrawableInPdf(svg, this.opts.parseXml))
+    if ((noCanvas() || noSvgImage()) && this.opts.parseXml && svgDrawableInPdf(svg, this.opts.parseXml))
       return this.register(name, { mime: 'image/svg+xml', bytes: sb, width, height, ...extra });
     try {
       const d = await decode(sb, 'image/svg+xml');
@@ -863,6 +898,12 @@ async function decodeTiff(bytes: Uint8Array): Promise<CanvasImageSource | undefi
 
 /** 画像を描けない環境 (Node) か */
 const noCanvas = () => typeof createImageBitmap === 'undefined' && typeof Image === 'undefined';
+/**
+ * ブラウザの画像 (<img>) で SVG を読めない所か (Node と、Web Worker の中。HTML Living Standard §4.8.3 の HTMLImageElement
+ * (Image) は [Exposed=Window] で、Worker には無い)。Worker の中の createImageBitmap には頼らない (§8.11.2: Blob の画像は、
+ * 大きさの無いベクタの画像を拒む。Chromium は、大きさのある SVG の Blob も読まない)
+ */
+const noSvgImage = () => typeof Image === 'undefined';
 
 async function decode(bytes: Uint8Array, mime: string): Promise<{ element: CanvasImageSource; width: number; height: number }> {
   let blob = new Blob([bytes as BlobPart], { type: mime });

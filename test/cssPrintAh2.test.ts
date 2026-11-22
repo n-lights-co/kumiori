@@ -116,18 +116,19 @@ describe('縦書きの箱の左右の auto の余白', () => {
 
 describe('段組の釣り合わせ', () => {
   it('後ろの段ほど短くするために伸ばして、使う段の数を減らさない (2 段目が 1 段目より長くても 3 段に組む)', async () => {
-    // CSS-Print 第 4 版の 5.2 の例と同じ形 (A4・--style ah・column-width: 12em の 3 段)
+    // CSS-Print 第 4 版の 5.2 の例の形を真似た自作の文書 (A4・--style ah・column-width: 12em の 3 段。段落・pre・段落の並びと、
+    // 文の長さ・全角の「，．」・欧文の混じり方をそろえ、本文は書き下ろした。直す前の組み方では、この文書も 2 段になる)
     const src = `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>t</title><style>div.M { column-width: 12em; column-gap: 1em; column-rule: solid 1pt; border: solid 0.3pt gray; padding: 3pt }</style></head><body>
-<div class="M"><p> column-width:を 12em と指定した段組のブロックです．段間 column-gap，段間罫 column-rule も指定しています．</p>
+<div class="M"><p> column-width:を 12em とした段組の箱を試す例です．段の間の column-gap，段の罫の column-rule も書いてあります．</p>
 <pre>
-div.MultiColW {
+div.WidthCols {
   column-width: 12em;
   column-gap: 1em;
   column-rule:
      solid 1pt;
 }
 </pre>
-<p>段組の指定には，column-count を指定する代わりに column-width を指定します．</p></div></body></html>`;
+<p>段の数は，column-count を書かずに column-width の幅から決まるようにします．</p></div></body></html>`;
     const r = scan((await typesetHtml(src, { loadFont: loadCachedFont, style: 'ah' })).areaTree);
     // 3 段目 (左端 385pt 付近) にも字がある (直す前は、1 段目を長くするために伸ばして 2 段だけになり、3 段目が空だった)
     expect(r.glyphs.filter((g) => g.text.trim() && g.x >= 380).length).toBeGreaterThan(0);

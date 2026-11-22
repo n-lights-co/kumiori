@@ -131,11 +131,11 @@ describe('OUT-08: CLI の入力のディレクトリの下の読めないディ�
   beforeAll(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-list-'));
     for (const d of ['img', 'locked', '.git', 'node_modules']) fs.mkdirSync(path.join(dir, d));
-    for (const f of ['a.html', 'img/a.png', 'locked/b.png', '.git/c', 'node_modules/d.css']) fs.writeFileSync(path.join(dir, f), '');
+    for (const f of ['a.html', 'img/a.png', 'locked/b.png', '.git/c', 'node_modules/d.css', '.env', 'img/.npmrc']) fs.writeFileSync(path.join(dir, f), '');
   });
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
   const rel = (files: string[]) => files.map((f) => path.relative(dir, f).split(path.sep).join('/')).sort();
-  it('読めるディレクトリは今までどおり (node_modules と . で始まるものは見ない)', () => {
+  it('読めるディレクトリは今までどおり (node_modules と . で始まるディレクトリ・ファイル (.env など) は見ない)', () => {
     expect(rel(listFiles(dir))).toEqual(['a.html', 'img/a.png', 'locked/b.png']);
   });
   it('読めないディレクトリ (EACCES) は飛ばし、ほかは読む', () => {

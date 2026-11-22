@@ -1,286 +1,91 @@
 <p align="center"><img src="assets/logo/kumiori-logo.svg" alt="Kumiori 組み織り" width="480"></p>
 
-> English translation of [README.md](README.md) (the Japanese text is the original).
+<p align="center"><b>A library for Japanese typesetting, refined with AI.</b></p>
+
+<p align="center"><a href="README.md">日本語</a> · English (a translation; the Japanese text is the original)</p>
 
 # Kumiori (組み織り)
 
-**A library for Japanese typesetting, refined with AI.**
+Kumiori is a typesetting engine that lays out the pages of books and documents from HTML+CSS and XSL-FO.
+It sets Japanese text — vertical writing, ruby, line-breaking rules (kinsoku) and more — following the standards.
+It runs both in the browser and in Node, and outputs a Canvas preview and PDF.
 
-A typesetting engine that runs both in the browser and in Node. It reads HTML+CSS and XSL-FO, typesets vertical writing, ruby, line-breaking rules (kinsoku), tables, footnotes and multi-column layouts,
-and outputs a Canvas preview and PDF.
+## Highlights
 
-## A typesetting engine refined with AI
+- **Japanese typesetting by the standards** — vertical writing, ruby, tate-chu-yoko, kinsoku, punctuation compression and warichu, based on W3C's JLREQ.
+- **All the way to PDF, inside the browser** — no server and no other typesetting software needed. Everything from layout to writing the PDF happens inside the browser, and documents are never sent out. The same engine also runs in Node.
+- **HTML+CSS and XSL-FO** — interprets CSS Paged Media and GCPM, and XSL-FO 1.1, with its own engine rather than the browser's rendering.
+- **PDF for print and archiving** — font embedding, trim marks, PDF/X, PDF/A, tagged PDF and PDF/UA-1.
+- **Many languages and scripts** — right-to-left scripts, Thai and Indic scripts, vertical Mongolian and more.
+- **Built from the specifications, refined with AI** — implemented from the definitions in the specifications and compared against published sample PDFs. Much of the code is written by AI ([Claude Code](https://claude.com/claude-code)); people decide and check.
 
-Kumiori is developed with an AI coding assistant ([Claude Code](https://claude.com/claude-code)) (see "[About the development method](#about-the-development-method)").
+## Getting started
 
-- **About 136,000 lines of TypeScript, about 4,400 tests**: Each time a feature is added, the AI adds tests, and CI (type checking, unit tests, and 26 browser integration tests) passes
-- **Implemented from the standards and specifications**: Kumiori is implemented by reading the standards and specifications as thoroughly as possible, including XSL-FO 1.1, the CSS modules (Paged Media, GCPM, Writing Modes, Text, Ruby, Fragmentation and others), MathML Core, the Unicode UAX #9 (bidirectional text) and UAX #14 (line breaking), W3C's JLREQ (Requirements for Japanese Text Layout, based on JIS X 4051) and PDF (ISO 32000), and following their definitions. The fine details of Japanese typesetting, such as punctuation compression, hanging punctuation and ruby overhang, are also based on these standards. The support status of each property, with the specification's definition and how Kumiori handles it, is collected in the Conformance Guide ([`docs/en/conformance.md`](docs/en/conformance.md))
-- **Behaviour checked against published PDFs**: The interpretation of the specifications and the finer points of layout are checked by comparing Kumiori's output with sample PDFs that XSL-FO and CSS typesetting tools have published
+**In the web app** — open <https://n-lights-co.github.io/kumiori/>, choose an HTML, XSL-FO or EPUB file and press "Save PDF" (PDF を保存).
+Typesetting happens inside the browser; documents are never sent out ([Using the web app](docs/en/app.md)).
+
+**On the command line** — turn documents into PDF from Node, without a browser. It also handles batch conversion, SVG and PNG per page, and diagnostics for CI ([command reference](docs/en/cli.md)).
+
+```bash
+npx kumiori book.html -o book.pdf     # or install it: npm install -g kumiori
+```
+
+**As a library** — typeset from your own program ([library guide](docs/en/library.md)).
+
+```ts
+import { typeset } from 'kumiori';   // npm install kumiori
+
+const result = await typeset(html, { name: 'book.html' });
+const pdf = await result.toPdf();    // Uint8Array
+```
+
+The default fonts (Noto Serif JP and others) are not included in the package; they are fetched from Google Fonts on first run (the Node CLI saves them to a local cache and reuses them; see [Fonts](docs/en/fonts.md)).
 
 ## Features
 
-- **Input**: HTML+CSS (own CSS cascade; no browser needed), XSL-FO (supports part of Antenna House's `axf:*` extensions, focusing on the commonly used ones), JSON logical tree. Images in PNG, JPEG, GIF, BMP, TIFF, WebP, SVG, WMF, EMF, EPS (PostScript) and CGM, and draw.io diagrams (`.drawio`, `.dio`; [`docs/en/drawio.md`](docs/en/drawio.md))
-- **Japanese typesetting**: vertical and horizontal writing, ruby, tate-chu-yoko, emphasis marks (kenten), line-breaking rules (kinsoku), hanging punctuation and pushing out, punctuation compression, spacing between Japanese and Latin text
-- **Other scripts**: right-to-left scripts such as Arabic and Hebrew (reordered with the Unicode Bidirectional Algorithm, UAX #9; Arabic letters take their joined forms. CSS `direction: rtl`, XSL-FO `writing-mode="rl-tb"`), Thai (wrapped at word boundaries found with the dictionary of the runtime's `Intl.Segmenter`), Devanagari (Hindi and others; conjuncts and other shaping by the font), Korean (Hangul), other Indic scripts (Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala), Lao, Khmer, Burmese (Myanmar script) and Tibetan, Mongolian script (horizontal and vertical), Chinese (Simplified and Traditional), Vietnamese, Greek and Cyrillic, hyphenation (English, Latin, Russian, Ukrainian, Modern Greek), and mixed Japanese and Latin text. Fonts for Arabic, Thai, Devanagari, Hangul, Simplified and Traditional Chinese, emoji and other scripts are passed with `--font` or `fonts` (the default fonts do not include them; color emoji fonts are typeset in color; Hebrew, Greek, Cyrillic and Vietnamese letters can be set with the default Latin fonts). A table of the font each language and script needs, how it wraps, vertical writing and limitations is in the section "Supported languages and scripts" of the Conformance Guide ([`docs/en/conformance.md`](docs/en/conformance.md); section 5.6 of the XSL-FO 1.1 volume, section 5.8 of the HTML and CSS volume). The same section has typeset samples for each script (Article 1 of the Universal Declaration of Human Rights set in the font of each script), and samples of variable fonts and emoji are in sections 5.6 and 5.7 of the HTML and CSS volume
-- **Pages**: page masters, running heads and page numbers (folios), footnotes, multi-column layout, floats, tables (splitting across rows and pages, repeated headers, automatic column width), page number references
-- **Output**: Canvas preview, PDF (subset font embedding, bookmarks, links, annotations, forms, trim marks, PDF/X-1a, PDF/X-3 and PDF/X-4 marking with conversion of RGB colors and images to CMYK)
-  - The PDF/X marking (`pdfx` in the API, `--pdfx` on the command line) has been verified only for the parts defined by the PDF specification ISO 32000-2 (such as the form of the output intent dictionary and the XMP metadata). It has not been verified against the text of the PDF/X standard ISO 15930, so conformance to that standard is not guaranteed. Check the output with a preflight tool (such as Acrobat Pro) before submitting it
-- **Environments**: browser (Vite) and the Node CLI (`dist-cli/cli.js`)
-
-Internally, every box is computed in pt following the XSL-FO **Area Model**, a **physical tree (Area Tree)** is assembled, and then it is drawn to
-Canvas and **PDF (pdf-lib + fontkit)**.
-
-## Usage
-
-Kumiori can be used in three forms.
-
-| Form | How to get it | Suited for |
-| --- | --- | --- |
-| **Web app (browser)** | Open the web app hosted on GitHub Pages (<https://n-lights-co.github.io/kumiori/>). Or put the `dist/` from `npm run build` on a static web server | Picking a document and saving a PDF |
-| **Node CLI** | `npm install -g kumiori`, or without installing, `npx kumiori book.html -o book.pdf` | Converting without a browser, or converting in batches |
-| **Library** | `npm install kumiori` (`import { typeset } from 'kumiori'`). In a browser without a bundler, `kumiori/browser` from a CDN | Typesetting from your own program |
-
-The default fonts (Noto Serif JP etc.) are not included in the package; they are fetched from Google Fonts on first run (the Node CLI saves them to a local cache and reuses them; see "[Fonts](#fonts)").
-
-To run this repository locally:
-
-```bash
-npm install
-npm run dev      # http://localhost:5173  (preview + "Save PDF")
-npm run build    # type check + production build (dist/; the web app)
-npm run build:dist   # build the library (dist-lib), the Node CLI (dist-cli) and the single browser file (dist-browser) together
-```
-
-Node 20.19.0 or later in the 20 line, or 22.12.0 or later, is required (CI tests with 20.19.0 and 22; the dependencies used to read HTML, such as css-select used by linkedom, require Node 20.19.0 or later. 22.0 to 22.11 are excluded because they cannot load ES modules with `require()`). The release procedure is in [`docs/en/RELEASING.md`](docs/en/RELEASING.md), and the changes in each version are in [`CHANGELOG.en.md`](CHANGELOG.en.md).
-
-### Web app (browser)
-
-- "Open" (開く) lets you select HTML, XSL-FO or EPUB files together with the CSS, images and fonts they use (several can be selected). "Open folder" (フォルダを開く) selects a whole folder; you can also open files or folders by dragging and dropping them onto the page. When a folder contains several documents, index.html (or, failing that, the document at the shallowest location) is opened
-- "Save PDF" (PDF を保存) writes out the PDF. On the left are page thumbnails and warnings (collapsible); "Settings" (設定) on the right has the default style, the default page size (the paper for HTML that does not specify `size` in `@page`: A4, A5, B5, JIS-B5, letter or free input; the same as the CLI's `--page-size`), the CSS interpretation, "Typeset with the spec's default values" (the XSL-FO default-value convention; the same as the CLI's `--compat`), trim marks, font loading and draw.io diagrams (reading them or not, shape libraries; [`docs/en/drawio.md`](docs/en/drawio.md))
-- Warnings are listed one by one in the left column (identical messages are merged; four or more are collapsed to a count and can be opened; the count also appears in the top bar). They are the same warnings as the CLI and the API give: layout warnings, unsupported CSS / XSL-FO and unknown CSS properties, links whose actions were not written to the PDF for safety, nesting deeper than 128 levels and too many `@import`s, EPUB items skipped for exceeding the limits, images not fetched, and font notices (fonts that could not be fetched and so on)
-- All typesetting happens inside the browser; documents and fonts are never sent out (the only things fetched from outside are the default fonts, the images the document references via `http(s):`, and the draw.io shape libraries when allowed in "設定" (Settings)). It also works when the `dist/` from `npm run build` is placed on a static web server
-
-### Node CLI (HTML+CSS and XSL-FO to PDF without a browser)
-
-When installed from npm the command is `kumiori` (or `npx kumiori` to use it without installing); when built in this repository, `node dist-cli/cli.js` is the same command.
-
-```bash
-npx kumiori book.html -o book.pdf
-npx kumiori book.fo -o book.pdf
-npx kumiori a.html b.fo c.html -o out
-npx kumiori book.html --watch
-```
-
-```bash
-npm run build:cli                       # when building in this repository
-node dist-cli/cli.js book.html -o book.pdf
-```
-
-```bash
-cat book.html | node dist-cli/cli.js - -o - --base . > book.pdf
-```
-
-- With several inputs, `-o` (`--output`) is the output directory (if omitted, a `.pdf` is written next to each input). If one fails, the others are still produced (the exit code is 1). Even with a single input, if `-o` is an existing directory, `<input name>.pdf` is written inside it
-- `-` reads from standard input (CSS, images and fonts come from the `--base` directory (default: the current directory); whether the input is FO is detected from its content). `-o -` writes the PDF to standard output
-- The character encoding of the input is determined from the BOM, the XML declaration's `encoding` (`Shift_JIS`, `EUC-JP`, etc.) and HTML's `<meta charset>` (UTF-8 if none)
-- Images the document references via `http(s):` are fetched from the network by default. `--no-fetch-images` disables this (e.g. when typesetting documents written by others on a server; they are typeset as unreadable images). Network images are fetched up to 8 at a time, and fetching the images of a document also has an overall time limit (10 times the limit of a single fetch, 5 minutes by default; images not fetched by then are typeset as unreadable images)
-- Stylesheets the document references via `http(s):` (`<link rel="stylesheet">`, `@import`) and the fonts of their `@font-face` rules (only those whose `unicode-range` overlaps the characters of the document) are also fetched by default. `--no-fetch-styles` disables this
-- Image sizes are limited (so that a small file cannot consume large amounts of memory and time; the values and their rationale are in `src/imageLimits.ts`). One image may have up to 100 million pixels. The images inside a WMF, EMF or CGM file (DIBs, cell arrays, tile arrays, patterns) may total up to 64 million pixels per file, and also no more than "260 thousand pixels (512 × 512) + 1,024 pixels per byte of the file" (a file of a few hundred bytes cannot produce a huge image; a file larger than about 61 KB may use the full 64 million pixels). Images beyond the limits are not drawn, and the rest of the document is typeset. GIF, WebP, JPEG, CCITT TIFF and RLE BMP images also have their pixel count bounded by the file size (per format, a value derived from the densest coding a legitimate file can have; a large, almost single-colour lossless WebP, a blank CCITT image wider than 16,384 pixels, or a large, almost blank RLE BMP is not drawn when it exceeds the limit), and a PNG whose decompressed size exceeds 1,032 times its compressed data (the deflate limit) is not drawn. A font unpacked from WOFF or WOFF2 may be up to 128 MB, and no more than 100 times the file size + 1 MB
-- Documents of thousands of pages use memory in proportion to the number of pages. The command and the API's `typesetToPdf` write the PDF page by page and release the layout results of each page once it is written, so the most memory is used when layout has finished, by the intermediate layout results (about 0.7MB per text-heavy page). `typeset`, which also returns the layout results (`areaTree`, `toPdf`, `renderPage`), holds the area tree of the whole document and uses correspondingly more (for the FO of the PostgreSQL documentation, 3,231 pages, the command peaks at about 2.3GB of live heap, and typesetting with `typeset` and calling `toPdf` at about 2.8GB). If Node stops at its heap limit (`JavaScript heap out of memory`; by default the limit depends on the machine's memory and is at most about 4GB), add `--low-memory` (see below) or raise the limit, as in `node --max-old-space-size=8192 dist-cli/cli.js book.fo -o book.pdf` (in MB). Image bytes are kept outside the V8 heap, so they do not count towards `--max-old-space-size`, but they use the machine's memory. When only the PDF is made (the command, `typesetToPdf`), the original bytes of each image are released once it has been embedded in the PDF, so a document with many images uses about 3 times the amount of image data (the size of the image files read; the embedded copies, the finished PDF and so on. With `typeset` the original bytes are also kept, about 3.5 times)
-- When typesetting documents written by others on a server, also put a time limit and a memory limit on the typesetting of each document, separately from the limits above (typeset each document in a separate process or worker and stop it when the time is up; use `node --max-old-space-size=…` or a container memory limit, and so on). The limits above apply to one image or font at a time: a single image at the limit can still take several seconds to over ten seconds and about 2 GB, and a document that references many images and fonts costs correspondingly more
-- Of the links that leave the document (HTML `<a href>`, and `external-destination` of XSL-FO `fo:basic-link` and `fo:bookmark`), by default only URLs whose scheme is `http`, `https`, `mailto` or `tel`, and relative references to a PDF (the action that opens another PDF), get an action in the PDF. Other schemes (`javascript:`, `data:`, `file:` and so on) and actions that open a file (relative non-PDF files, absolute paths, scheme-less `//host/…`) are typeset as plain text and counted in a "warning:" (to protect whoever opens a PDF made from a document written by someone else). `--link-schemes http,https,ftp` chooses the allowed schemes (`*` means all), and `--link-launch` also writes the actions that open a file (`--link-schemes '*' --link-launch` writes everything). `--link-relative uri` writes scheme-less relative links (`x.pdf`, `a.mp3`) as a URI action with the reference as written (`/S /URI /URI (x.pdf)`; `%xx` is not decoded) instead of the actions that open a file (GoToR, Launch): many PDF viewers inside browsers do not handle GoToR and Launch. Relative non-PDF files are then written without `--link-launch`; absolute paths and `//host/…` still need `--link-launch`. In the API it is `links: { relative: 'uri' }`
-- Files the document or the CSS references with a `file:` URL (`file:///…/style.css` etc.) are read from that file, even outside the input's directory. Relative references that point outside the input's directory (`url(../fonts/a.ttf)` in `sub/a.html` etc.) are read the same way (as when a browser opens a local HTML file). `--no-outside-files` stops reading files outside the input's directory (for documents written by others: an image, font or SVG the document points at is drawn into the PDF when it can be read, so this keeps other files of the machine from being copied out; files inside the input's directory are still read). When none of the files in the `src` of an `@font-face` is found, a warning is reported
-- `--low-memory`: typeset with less memory. The re-layouts that settle page number references (tables of contents and so on) do not reuse the pages of the previous pass, and the intermediate layout results of each page-sequence (for HTML, the document) are released once it has been laid out. The document is therefore laid out once more after the re-layouts to write the PDF. The PDF is the same. For the FO of the PostgreSQL documentation (3,231 pages), the maximum live heap goes from about 2.3GB to about 0.9GB (the most is used while reading the FO; it can be typeset with a 1GB heap limit), and the time from 160 s to 231 s. In the API, `lowMemory` of `typesetToPdf`
-- `--watch`: re-typesets whenever the HTML, FO, CSS, images or fonts in the input's directory change
-- `--help` (`-h`) prints the usage, `--version` (`-v`) prints the version
-- Unsupported CSS properties and values (listed in chapter 16 of the Conformance Guide), properties unknown to Kumiori (misspelled or unsupported), XSL-FO elements and properties that cannot be read, unreadable images and so on are not silently ignored but reported as `警告:` ("warning:") messages (in the library, `result.warnings`)
-
-- CSS, images and fonts in the same directory as the HTML (and in subdirectories) are used (the same as selecting them together in the web app). Only images whose names appear in the document and the CSS are read. Only CSS referenced by the HTML (`<link>`, `@import`) is used (unreferenced CSS is not applied, and a warning says so). `--css a.css,b.css` selects the CSS to use (comma-separated for several; `@import` targets are used too. CSS named there is added as a user stylesheet even if the HTML does not reference it)
-- `--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint`: the default style (the same as "Default style" under "Settings" in the web app; the default is kumiori)
-- `--page-size <size>`: the default paper for HTML (the paper of a document that does not specify `size` in `@page`; the default is A4). Written like the CSS `size` property: a paper name (`A5`, `JIS-B5`, `letter`, etc.), a name with an orientation (`"A5 landscape"`), or a width and height (`148mm,210mm`; separated by a space or a comma). A `@page { size: … }` in the document wins. `width` and `height` in `@media` are also evaluated against this paper. Not used for XSL-FO
-- `--svg-lang <ja,en>`: languages to match SVG `systemLanguage` (the condition that picks a child of `switch`) against (language tags separated by commas, in order of preference). A language given where the SVG is placed (`lang`, `xml:lang`, `language`) wins. The default is the environment language
-- `--font-dir <dir>`: the directory from which the default fonts (`NotoSerifJP-Regular.ttf`, `NotoSerifJP-Bold.ttf`, `NotoSansJP-Regular.ttf`, `NotoSansJP-Bold.ttf`, `Tinos-*.ttf`, `Arimo-*.ttf`, `Cousine-*.ttf` when monospace is specified, `STIXTwoMath-Regular.ttf` when there is MathML, and `NotoSansSymbols2-Regular.ttf` when there are symbols found in none of the fonts, and `NotoEmoji-Regular.ttf` when there are emoji found in none of them either) are read. If absent, the font cache is tried, then Google Fonts. If a bold file (`-Bold`) has the same contents as the `-Regular` file of the same font, the font is treated as having no bold face and bold text is drawn by emboldening Regular (for replacing a default font with one that has no bold face). When replacing the default fonts with your own, place the bold files too (`NotoSerifJP-Bold.ttf`, `NotoSansJP-Bold.ttf` and so on): a file that is not there comes from the cache or the network as the default font, and gets mixed with the replaced fonts
-- `--font-cache <dir>`: the directory in which the default fonts fetched from Google Fonts are saved and reused. The default is the environment variable `KUMIORI_FONT_CACHE`, or else the OS cache (on Linux `kumiori/fonts` under `$XDG_CACHE_HOME` or `~/.cache`, on macOS `~/Library/Caches/kumiori/fonts`, on Windows `%LOCALAPPDATA%\kumiori\fonts`). Fonts are fetched from the network only the first time, with the message `書体 … を取得して … に保存しました` ("fetched font … and saved it to …"). From the second run on, the network is not used. Anything that is not a font file, such as an interrupted download, is not saved, and a corrupt cache is discarded and fetched again. Conversion continues even where the cache cannot be written
-- `--no-font-cache`: neither reads nor writes the font cache (fetches from Google Fonts every time)
-- `--lang ja|en`: language of the usage text, reports, warnings and error messages. Without it, the environment variable `KUMIORI_LANG` is used, then the OS locale (`LC_ALL`, `LC_MESSAGES`, `LANG` starting with `en` means English). The default is Japanese
-- `--font <font file>` (repeatable): adds a font file (TTF, OTF, TTC, WOFF, WOFF2) (for a TTC, each font inside is added). Fonts are registered by the family name in the font's name table and the weight, width and slant in its OS/2 table, and used from `font-family` like fonts installed on the system. Faces within a family are matched by width (`font-stretch`), then slant (`font-style`), then weight (`font-weight`) (CSS Fonts 4 §5.2). When an italic or oblique font file is given, `font-style: italic` / `oblique` text is set in that face (otherwise the upright glyphs are slanted). A face of a different width (such as Arial Narrow, which shares the family name and has a narrower width) is selected by `font-stretch`, or by the name of that face alone (`font-family: "Arial Narrow"`); when the family has no face of another width, the glyphs are scaled horizontally. A variable font (OpenType Font Variations, with TrueType outlines or CFF2 outlines) is used over the full range of its axes such as weight and width: the shape matching `font-weight`, `font-stretch`, `font-variation-settings` and so on is built and used (each shape in use is embedded in the PDF as a static font; a CFF2 variable font is rebuilt as static CFF fonts). The `font-family` list is tried in order for each character, and the first font that has the character is used (generic names and the names of the default fonts are also looked up at their position in the list). Characters that no font in the list has are looked up in the default fonts and then in added fonts that are not in the list. In compatibility styles such as `--style ah`, fonts are also selected by the PostScript name written in SVG's `font-family` (e.g. `'CenturyGothic'`)
-- `--generic-font <generic>=<font name>`: the font used for a generic font family (the family name of a font added with `--font` or of a default font; repeatable). `serif`, `sans-serif` and `monospace` set the font for Latin text (by default Tinos, Arimo and Cousine); `serif-cjk` and `sans-serif-cjk` set the font for Japanese text (by default Noto Serif JP and Noto Sans JP). Japanese text in monospace uses the `sans-serif-cjk` font in HTML and the `serif-cjk` font in XSL-FO. Example: `--font BIZUDMincho-Regular.ttf --generic-font serif-cjk="BIZ UDMincho"`
-- `--drawio-stencils <files or directories,…>`: shape libraries (draw.io's `js/stencils.min.js` or library XML) and distributed images (`.svg`, `.png`, `.jpg`) for draw.io diagrams, separated by `,` (repeatable). `--fetch-drawio-stencils`: allows fetching the shape libraries and images a diagram needs from draw.io's distribution (v24.7.5) when they are missing (fetched files are saved in the font cache directory; not saved with `--no-font-cache`). `--drawio-stencils-url <URL>`: the URL of the `stencils.min.js` to fetch (implies `--fetch-drawio-stencils`). `--no-drawio`: do not read draw.io diagrams (`.drawio`, `.dio`) as images. See [`docs/en/drawio.md`](docs/en/drawio.md)
-- `--plugin <module>`: loads a plugin (the API's `plugins`): a file path or a package name, searched in this order: (1) a spec starting with `./` or `../`, an absolute path or a `file:` URL is a file path (`./plugin.js` and so on); (2) any other spec is first resolved as a package name, as `import()` does (from the current directory with the same conditions as `import()`: the `import`, `node` and `default` conditions of `exports`; `@scope/name`, `name/sub` and specs ending in an extension, such as `kp/dist/plugin.js` or `chart.js`, work too; a directory of the same name in the current directory does not make it a path); (3) if it cannot be loaded as a package (no such package, and also when the package does not export that subpath in `exports` or its entry file is missing), the file of that name in the current directory is loaded (`--plugin myplugin.js`). Whenever it can be loaded as a package, the package is loaded, so write `./` to be sure the file is loaded. When nothing is found, the error message says what was searched, in order. Repeatable. The module's `default` export is a plugin or a function returning one (`(options, { cacheDir, lang }) => plugin`; `lang` is the message language chosen by `--lang` or the environment). `--plugin-option <name>=<value>` passes an option to the function of the preceding `--plugin` (repeatable). A plugin is a program that runs with the same rights as Kumiori, so give only ones you trust
-- `--print`: trim marks and bleed (3mm)
-- `--image-max-dpi <dpi>`: JPEG photos finer than this relative to the size they are placed at are downscaled to this resolution and re-encoded (makes the PDF smaller; by default they are left as they are)
-- `--pdfx x1a|x1a:2003|x3|x4`: write PDF/X-1a:2001, PDF/X-1a:2003, PDF/X-3:2003 or PDF/X-4 markers for print submission. RGB colors and images are converted to CMYK, gray text, lines and fills become K-only CMYK, K-only black body text under 12pt (including text in the page margins) and lines and rules under 2pt are overprinted (as recommended by the Ghent Workgroup submission specification GWG 2022; text and lines inside images such as SVG and EPS are not), pages get a TrimBox only, and links, annotations and form fields on the pages are left out, with their number reported in a warning (anything that overlaps the area up to the bleed (BleedBox) even slightly is left out; the BleedBox encloses the whole artwork of the page, so practically all links are lost, both internal ones such as those of a table of contents and those to external URLs; bookmarks are kept; write PDFs for reading on screen without `--pdfx`). Of the GWG 2022 requirements, differing finished page sizes, spot colors and coarse images (149ppi or less, and 224ppi or less) are also reported as warnings (with the values of the sheet-fed commercial variant). PDF/X-4 keeps transparency as is and writes the version marker in the XMP metadata. For PDF/X-1a (CMYK and spot colors only, no transparency; :2001 is PDF 1.3, :2003 is PDF 1.4) and PDF/X-3 (no transparency; device-independent color (ICC, Lab) is allowed; PDF 1.4), the written PDF is read back and checked against the rules (version, markers, color spaces, transparency, font embedding, boxes, annotations), and writing fails if it does not meet them. Transparency is flattened: when only a single-color fill (a box background or the white page) lies under a transparent object (opacity, colors with alpha, images with alpha, translucency and masks in SVG), it is drawn as an opaque vector object in the composited CMYK color; otherwise that area is rasterized together with what lies under it into a CMYK image (300ppi; 600ppi where text under 12pt is involved), with a warning (also warning that text within rasterized areas loses quality and can no longer be selected as text). Writing fails if transparency that cannot be flattened remains (such as the transparency of color glyphs). Overlapping areas are composited in CMYK (as in printing), so they look slightly different from screen viewers that composite in RGB. Japanese printers mainly use PDF/X-4 and PDF/X-1a
-- `--output-profile <ICC file>`: the output CMYK ICC profile (the one the printer specifies, such as Japan Color 2001 Coated). It is embedded in the PDF, and RGB colors and images are converted to CMYK with its tables. Required with `--pdfx x4` (an error if missing or not a CMYK profile). `--output-condition <name>` gives the printing condition name (default: the ICC registry name JC200103)
-- `--spot-colors <JSON file>`: the names of spot colors and the alternate CMYK at 100% tint (`{"name": "cmyk(20%,40%,60%,80%)"}` or `{"name": [0.2,0.4,0.6,0.8]}`; the array holds numbers from 0 to 1, and a value over 1 is an error). Among `rgb-icc(r,g,b,#Separation,'name',tint)` colors, those whose name is listed here are written as a PDF Separation (the alternate color space is DeviceCMYK, and the tint transform is linear). `rgb-icc()` is read with either `--compat` in XSL-FO, and only with `--style ah` in HTML (it is an Antenna House form, not a CSS color function; with the other styles the declaration is ignored as an invalid value and reported in a warning). Those whose name is not listed are written with the alternate RGB as before. Names are written in UTF-8 (ISO 32000-2 §7.3.5). Spot color values (such as those of swatch books) are not included in Kumiori; the user supplies them
-- HTML is read with linkedom, and the CSS computed values come from the own cascade (the same as "CSS interpretation: Kumiori" in the web app)
-- XHTML (`.xhtml`, `.xht`) is read with XML syntax, rewritten according to namespaces, and then typeset the same as HTML (prefixed elements such as `<s:svg xmlns:s="http://www.w3.org/2000/svg">` also become SVG; `src/xhtml.ts`). `.html` is read with HTML syntax, so prefixed elements do not become SVG. With `--xhtml`, XML syntax is used regardless of the extension
-- MathML (`<math>`) is typeset with the math font (`STIXTwoMath-Regular.ttf`) and turned into glyph outline shapes (`src/mathLayout.ts`, shared with XSL-FO). Formulas with `display="block"` are centered on the line
-- XSL-FO (`.fo`, `.xml`, or `--fo`) is typeset the same as XSL-FO import in the web app. `--compat spec|antenna` is the default-value convention (XSL-FO 1.1 initial values (default) / AH Formatter compatible defaults; other values are an error). Font files (TTF, OTF, TTC) in the same directory are used by the name in the FO's `font-family`
-- Images in PNG, JPEG, GIF, BMP, TIFF, WebP, SVG, WMF, EMF, EPS (PostScript) and CGM, and draw.io diagrams (`.drawio`, `.dio`; as shapes and text; [`docs/en/drawio.md`](docs/en/drawio.md)), are placed in the PDF. SVG filters are either approximated with shapes (shadows, blur, color changes, compositing) or computed in pixels and placed as an image (feTurbulence, lighting and so on; the web app has the browser rasterize them). HTML in foreignObject is approximated as text in Node. SVG that cannot be converted to shapes (e.g. foreignObject with non-HTML content) is drawn as a placeholder frame with a warning
-
-### Using as a library (from TypeScript or JavaScript)
-
-```bash
-npm install kumiori
-```
-
-When building in this repository, `npm run build:lib` (dist-lib/; ES modules and type declarations).
-
-```ts
-import { typeset, typesetToPdf, walkAreaTree } from 'kumiori';
-
-// HTML+CSS (XSL-FO is typeset with the same function; the kind is detected from the extension of name or from the content)
-const result = await typeset(html, {
-  name: 'book.html',
-  files: [
-    { name: 'book.css', data: cssText },                        // CSS, images and fonts are { name, data }
-    { name: 'img/cover.jpg', data: async () => readBytes('img/cover.jpg') }, // a function that reads only when used is fine too
-  ],
-  loadFont: async (spec) => readLocalFont(spec),               // how to load the default fonts (if omitted, fetched from Google Fonts)
-});
-console.log(result.pageCount, result.warnings);
-walkAreaTree(result.areaTree, (area) => { /* walk the typeset result (Area Tree) */ });
-const pdf = await result.toPdf();                              // Uint8Array
-const { pdf: bytes } = await typesetToPdf(html, { name: 'book.html' }); // when only the PDF is needed (it keeps no layout result, so large documents use less memory)
-result.renderPage(canvas, 0);                                  // draw page 1 onto a canvas (browser)
-```
-
-- `typeset(text, options)` is the entry point (`typesetHtml` and `typesetFo` are variants that fix the kind). It does not touch the file system, and uses the network only to fetch the default fonts (replaceable with `loadFont`) and the images and stylesheets the document references via `http(s):` (can be stopped with `fetchImages` and `fetchStyles`), so it runs both in the browser and in Node
-- `text` is a string. When reading from a file, converting it to a string with `decodeDocumentText(bytes)` decodes it according to the BOM, the XML declaration's `encoding` and `<meta charset>` (reading as fixed UTF-8 garbles Shift_JIS FO and the like)
-- Main `options`: `kind` (`html`, `xhtml`, `fo`; if omitted, determined from `name` and the content), `name` (the input file name), `files` (CSS, images, fonts; fonts may be TTF, OTF, TTC, WOFF or WOFF2), `fonts` (fonts to add), `genericFonts` (fonts for the generic font families; the names are the same as for `--generic-font`: `serif`, `sans-serif`, `monospace`, `serif-cjk`, `sans-serif-cjk`), `style` (the default style for HTML), `pageSize` (the default paper for HTML: the paper of a document that does not specify `size` in `@page`, written like the CSS `size` property: `"A5"`, `"A5 landscape"`, `"148mm 210mm"`; the default is A4; a `@page { size }` in the document wins; `width` and `height` in `@media` are also evaluated against this paper), `compat` (the XSL-FO default-value convention), `print` (bleed and trim marks), `spotColors` (alternate CMYK for spot colors), `loadFont`, `fetchTimeoutMs` (timeout for fetching fonts and images; default 30 seconds), `fetchImages` (whether to fetch the images the document references via `http(s):`; default `true`; `false`, or a function that takes a URL and returns a boolean; when typesetting others' documents on a server, disable it or allow only certain URLs), `fetchStyles` (whether to fetch the stylesheets the document references via `http(s):` and the fonts of their `@font-face` rules; the same form as `fetchImages`), `resolveResource` (a function that returns the content of files the document or the CSS references that are not in `files`; see below), `links` (which links that leave the document get an action in the PDF: `{ schemes?: string[]; launch?: boolean; relative?: 'file' | 'uri' }`; by default only URLs whose scheme is `http`, `https`, `mailto` or `tel` and relative references to a PDF are written, and the rest are typeset as plain text and reported in `warnings`; `schemes` is the list of allowed schemes (it replaces the default; `'*'` means all), and `launch: true` also writes the actions that open a file (relative non-PDF files, absolute paths, `//host/…`); `{ schemes: ['*'], launch: true }` writes everything), `svgLanguages` (an array of language tags to match SVG `systemLanguage` against; the same as `--svg-lang`), `lang` (language of `warnings` and error messages: `ja` or `en`; default Japanese), `deflate` (in Node, passing `zlib.deflateSync` speeds up PDF output)
-- The function passed to `fetchImages` / `fetchStyles` is asked not only about the URL written in the document but also about every redirect target. On Node, redirects are followed one hop at a time (up to 20), and no request is sent to a target the function refuses. Redirects from `https:` to `http:` and redirects to non-`http(s):` targets are refused without asking the function (also when the option is `true`). In browsers, scripts cannot read a redirect target in advance, so the function is asked about the final URL after the browser has followed the redirects, and the response is discarded if it is refused (the request itself has already reached the redirect target). The function only sees the URL string: a host name that resolves to an internal address (including DNS rebinding) cannot be stopped by it. To protect an internal network when typesetting documents written by others on a server, also restrict the runtime itself (egress rules, an outbound proxy). Resources fetched from the network have size limits (images 256 MB, CSS 16 MB, fonts 128 MB); anything larger is abandoned mid-read and treated as an unreadable resource, even when the response has no `Content-Length`. The `fetchTimeoutMs` time limit applies until the body has been read completely
-- `result.toPdf({ title, pdfx, imageMaxDpi })`: the PDF title, the PDF/X marking (`pdfx: { version: 'X-1a' | 'X-1a:2003' | 'X-3' | 'X-4', condition, info, profile, warnings }`; RGB colors and images are converted to CMYK; X-3 by default; X-4 needs a CMYK ICC profile in `profile`; X-1a and X-3 flatten transparency and check the written PDF against their rules (see `--pdfx` on the command line); as with `--pdfx` on the command line, links, annotations and form fields on the pages are not written, and their number is added to `warnings`; bookmarks are kept), the upper limit of JPEG resolution. Warnings raised while writing the PDF (characters that cannot be drawn, color glyphs that cannot be drawn in color, etc.) are added to `result.warnings`. `result.renderPage(canvas, i, { scale, devicePixelRatio, guides })`: the scale, the device pixel density, and guide lines for the trim box and bleed
-- `typesetToPdf(text, options, pdfOptions)`: makes only the PDF (the same PDF, warnings and page count as calling `toPdf(pdfOptions)` after `typeset`). The result is `{ pdf, pageCount, warnings, layoutMs }` (type `TypesetPdfResult`; `pdfOptions` has the type `PdfOptions`, the same as for `toPdf`). It turns the pages into the layout result (Area Tree) one at a time, writes each to the PDF and releases it, so it never holds the layout result of the whole document, and documents of thousands of pages use less memory (the layout result of a page is built twice, once to collect the fonts and images used and once to draw it). There is no `areaTree` or `renderPage`. `layoutMs` does not include the time to turn the pages into layout results (it is part of writing the PDF). The Node command also makes PDFs with it. With `lowMemory: true` in `pdfOptions`, it typesets with less memory (type `TypesetPdfOptions`; the same as the command's `--low-memory`). The container from `createTypesetter()` also has `typesetter.typesetToPdf(text, options, pdfOptions)`
-- Internal entities declared in the internal subset of the FO's DOCTYPE (such as `<!ENTITY nbsp "&#160;">`) are expanded before import (external entities are not read)
-- Exceptions: `typeset` throws when the FO's XML cannot be parsed (`XML の解析に失敗しました: …`, "failed to parse XML: …") and when the default fonts cannot be read (`書体を読めません: …`, "cannot read font: …"). A corrupt font file passed in `fonts` does not throw but goes into `warnings`. A nonexistent page number for `renderPage` is a `RangeError`. Typesetting warnings (unreadable images, overflow, etc.) do not throw but go into `result.warnings` (an array of strings)
-- `resolveResource(url)`: asked for each file the document or the CSS references (`<link rel="stylesheet">`, `@import`, `url()`, `<img src>`, etc.) that is not in `files`. `url` is the reference as written (`file:///…/a.css`, `img/a.png`, `https://…`); relative references inside a CSS file are resolved against that CSS file's URL. If it returns content (a string, `Uint8Array` or `ArrayBuffer`), that is used; if it returns `undefined`, things work as before (`http(s):` images and stylesheets are fetched from the network). There is no need to rewrite the references and put the files into `files`. An image is recognized from the leading bytes of the returned content, even when its URL has no extension (such as `https://example.com/img?id=1`)
-- `drawio`: options for draw.io (diagrams.net) diagram files (`.drawio`, `.dio`; the type is `DrawioOptions`). By default, draw.io diagrams are read as images, and a page is converted to SVG and placed in the PDF as shapes and text (the code that draws diagrams is loaded only when a diagram appears). It has `stencils` (shape library and distributed image files), `fetchStencils` (whether to fetch missing shape libraries and images from draw.io's distribution; default `false`), `stencilsUrl` and `provideStencils`. With `false`, draw.io diagrams are not read as images. The syntax, page selection and what is drawn are described in [`docs/en/drawio.md`](docs/en/drawio.md)
-- `plugins`: an array of plugins. For now plugins can only add image formats (`{ apiVersion: 1, name, imageFormats: [{ name, mime, extensions, sniff, load }] }`; the types are `KumioriPlugin` and `ImageFormat`). When an image file matches a format's `sniff` (a synchronous check of the content), its `load` (asynchronous) returns SVG and a size, and Kumiori draws it as an SVG image (it goes into the PDF as shapes). Files named with the `extensions` are also read as images when the document mentions them. `load` receives `measureText` (measures text with the fonts that draw it), `fetchResource` (fetches under the same rules as the document's images: `resolveResource` and `fetchImages`), `fetch` (fetches what the user allowed through the plugin's own options), `warn` (reports a warning) `lang` (the language for warnings, `ja` or `en`; `TypesetOptions.lang`) and `fragment` (the part of the image reference after `#`, to select which diagram or page of a file to draw; when the same file is referenced with different fragments, `load` is called once per reference and each becomes its own image). Heavy code can be loaded with `import()` inside `load`, so that it is loaded only when a file of that format appears. `apiVersion` is the version of the plugin interface (`PLUGIN_API_VERSION`), raised on incompatible changes. The results of `load` have limits (the same applies to draw.io diagrams; `src/imageFormats.ts`): the size must be finite and at most 10 million px, the SVG may be about 33.6 million characters plus 128 characters per byte of the file (at most about 134 million characters), the time limit is 60 seconds plus three times the fetch time limit (`fetchTimeoutMs`) (150 seconds by default), and one file can be read through at most 64 references with different fragments after `#`. Anything beyond these is treated as an unreadable image, with a warning. A plugin runs with the same rights as Kumiori, so pass only plugins you chose and trust. Plugin formats are checked before the core's formats (draw.io diagrams)
-- In Node, the helpers in `kumiori/node` can be used: `createFontLoader({ fontDir, cacheDir, log, timeoutMs })` returns a `loadFont` that reads the default fonts the same way as the Node CLI (`fontDir` → the font cache → the network; fetched fonts are saved in the cache. `cacheDir` defaults to `defaultFontCacheDir()`; `null` disables the cache). `createFileResolver({ root })` returns a `resolveResource` that reads files referenced with `file:` URLs (with `root`, only files inside it are read; `root` may also be a list of directories, and containment is checked on the real paths after resolving symbolic links)
-
-  ```ts
-  import { typeset } from 'kumiori';
-  import { createFileResolver, createFontLoader } from 'kumiori/node';
-  const result = await typeset(html, { loadFont: createFontLoader(), resolveResource: createFileResolver() });
-  ```
-- The fonts used by default can be found in `DEFAULT_FONTS` (the `family`, `weight` and `urls` of the `spec` passed to `loadFont`)
-- Only what is exported from `src/index.ts` (and `src/node.ts` for Node) is public (the functions and types of other modules may change between versions)
-- `kumiori` (`dist-lib/index.js`) is an ES module that does not bundle its dependencies (pdf-lib, fontkit, xmldom, etc.). Use it with a bundler such as Vite or webpack, or load it from Node. It is ES module only, but `require('kumiori')` also works (on Node 20.19.0 or later and 22.12.0 or later, which can load ES modules with `require()`; Node 22.0 to 22.11 needs `--experimental-require-module`)
-- In a browser without a bundler, use `kumiori/browser`, a single file with the dependencies bundled (`dist-browser/kumiori.js`; about 2.8MB, 0.9MB gzipped, or about 3.4MB together with the separate files it loads at start (`chunks/`, such as pdf-lib and pako; pdf-lib is a separate file because it is shared with the code for draw.io diagrams); the hyphenation dictionaries, the CGM, EPS, WMF, EMF and draw.io diagram processing and the like are loaded as separate files only when used). The version published on npm can be loaded directly from the jsDelivr or unpkg CDN:
-
-  ```html
-  <script type="module">
-    import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.4.0/dist-browser/kumiori.js';
-    const result = await typesetHtml(html, { name: 'a.html' });
-    result.renderPage(document.querySelector('canvas'), 0);
-  </script>
-  ```
-
-#### Showing a print preview in the browser (renderPage)
-
-`result.renderPage(canvas, pageNumber, { scale })` draws a typeset page onto a canvas (page numbers start at 0). Glyphs are drawn from the outlines in the font files, so the page's CSS and `@font-face` have no effect on them. In the browser, HTML is parsed with the browser's DOMParser (linkedom is used only in Node).
-
-Example: typeset the HTML being edited in an editor each time the user pauses, and show it in a preview
-
-```ts
-import { typeset } from 'kumiori';
-
-const printCss = '@page { size: A4; margin: 20mm; @bottom-center { content: counter(page) } } body { font-family: serif }';
-const fontCache = new Map<string, Promise<ArrayBuffer>>();
-const loadFont = (spec) => {                                    // fetch the default fonts only once and reuse them
-  const key = `${spec.family}|${spec.weight ?? 400}`;
-  if (!fontCache.has(key)) fontCache.set(key, fetch(spec.urls.find((u) => u.startsWith('https:'))!).then((r) => r.arrayBuffer()));
-  return fontCache.get(key)!;
-};
-
-async function showPreview(bodyHtml: string, container: HTMLElement) {
-  const r = await typeset(`<!doctype html><html lang="ja"><body>${bodyHtml}</body></html>`, {
-    kind: 'html',
-    files: [{ name: 'print.css', data: printCss }],             // CSS not referenced from the document is added as a user stylesheet
-    loadFont,
-  });
-  container.replaceChildren();
-  for (let i = 0; i < r.pageCount; i++) {
-    const canvas = document.createElement('canvas');
-    r.renderPage(canvas, i, { scale: 1 });                      // 1pt = 1 CSS px (actual size is 96 / 72)
-    container.append(canvas);
-  }
-}
-```
-
-- When typesetting repeatedly (e.g. for an editor preview), create a container with `createTypesetter()` that loads the fonts only once, and typeset with `typesetter.typeset(html, options)`. This is faster because the fonts are not fetched and parsed every time (the math, monospace and symbol fonts are loaded the first time a document that uses them is typeset)
-- Working sample: after `npm run dev`, open http://localhost:5173/examples/preview/ (`examples/preview/`). Edit the editing area on the left, the "HTML" box below it (write headings, ruby, tables and so on directly; it and the editing area mirror each other) or the print CSS, and the right side is re-typeset when you pause. It uses only Kumiori's public API and has no other dependencies. To connect another editor, call the equivalent of the sample's `schedule(editor HTML)` from the notification that the editor's content has changed
-
-## Structure
-
-| File | Role |
+| Area | Main features |
 | --- | --- |
-| `src/index.ts`, `src/api.ts` | Public API (`typeset`, `createTypesetter`, `DEFAULT_FONTS`, etc. Only what is exported from `src/index.ts` is public) |
-| `src/node.ts`, `src/nodeFonts.ts`, `src/resources.ts` | Helpers for Node (`kumiori/node`: the font cache and reading `file:` references), and collecting the references of the document and the CSS (`resolveResource`, fetching stylesheets) |
-| `src/types.ts` | Types for the logical tree (Input), the physical tree (Area Tree) and page settings |
-| `src/areaTree.ts`, `src/areaResources.ts` | Walking the Area Tree and reading/writing it as JSON ([`docs/en/area-tree.md`](docs/en/area-tree.md)); the list of fonts and images used |
-| `src/fontManager.ts` | Fetches TTF/OTF → `FontFace` (Canvas) + `ArrayBuffer` (PDF) + fontkit (metrics) |
-| `src/fontInstancer.ts`, `src/fontVariation.ts` | Builds a static font for an instance of a variable font (OpenType Font Variations) at given axis values (gvar, HVAR, MVAR, GPOS values, FeatureVariations); carries the requested axis values |
-| `src/cff2Instancer.ts` | Turns an instance of a font with CFF2 (variable CFF) outlines into a static CFF (evaluates blend / vsindex in the glyphs and rewrites them as Type 2 CharStrings) |
-| `src/measurer.ts`, `src/jis.ts` | Character width measurement (both Canvas and fontkit backends), measurement for vertical writing, ruby and tate-chu-yoko, line-breaking rules (kinsoku) |
-| `src/geometry.ts`, `src/lnode.ts` | Conversion between logical (inline/block) and physical coordinates, intermediate layout tree |
-| `src/inlineLayout.ts`, `src/inlineFlatten.ts`, `src/lineMetrics.ts` | Line breaking (kinsoku, hanging punctuation, pushing out), inline placement, generation of line nodes for ruby/tate-chu-yoko, inline tree → sequence of characters (Atom), line height (three models: CSS, XSL and compatibility) |
-| `src/layoutEngine.ts` | Blocks, pagination, tables, absolute positioning; logical → physical (Area Tree) conversion |
-| `src/footnotes.ts`, `src/tableBorders.ts`, `src/lineBreak.ts`, `src/bidi.ts`, `src/hyphenation.ts`, `src/counterStyle.ts` | Footnotes, collapsing of table borders, line break opportunities (UAX #14), bidirectional text (UAX #9), hyphenation, CSS counter-style |
-| `src/paint.ts` | Area Tree traversal + trim mark geometry (shared by Canvas and PDF) |
-| `src/canvasRenderer.ts`, `src/pdfRenderer.ts`, `src/pdfLibPatches.ts`, `src/matrix.ts` | Canvas / PDF renderers, replacements of pdf-lib internals (gathered in one place), matrices and Seg |
-| `src/sampleData.ts`, `src/main.ts`, `index.html` | The ultimate sample and the preview UI |
-| `src/htmlImport.ts`, `src/htmlPaged.ts`, `src/htmlPrepare.ts`, `src/htmlFrame.ts` | HTML+CSS import (computed values → logical tree, CSS for paged typesetting, collecting the CSS, import in the web app (the own cascade by default, a browser iframe for comparison)) |
-| `src/cssCascade.ts`, `src/cssSelector.ts`, `src/cssText.ts` | CSS interpretation without a browser (cascade, computed values, selectors), CSS lexical helpers (separators, lengths, colors) |
-| `src/xslfoImport.ts`, `src/foExpr.ts`, `src/foDom.ts`, `src/foContext.ts`, `src/foPageMaster.ts`, `src/foMathFallback.ts` | XSL-FO import (attributes → logical tree, expression evaluation, minimal DOM, page masters, MathML typesetting when no math font is available) |
-| `src/svg.ts`, `src/svgFilterRaster.ts`, `src/mathLayout.ts` | Converting SVG to shapes (filters that cannot be approximated with shapes are computed in pixels), MathML typesetting |
-| `src/jpeg.ts`, `src/webp.ts`, `src/vp8.ts`, `src/pixels.ts`, `src/ccitt.ts`, `src/imageLimits.ts`, `src/metafile.ts`, `src/cgm.ts`, `src/eps.ts`, `src/ps*.ts` (`psInterp`, `psGraphics`, `psOps*` per operator group, `psResources`, `psColorSpace`, `psFonts`, `psCff`, `psEncodings`, `psShading`, `psFilters`), `src/imageInfo.ts`, `src/imageFormats.ts`, `src/base64.ts` | Image decoding (JPEG, WebP, GIF, BMP, TIFF) and limits, conversion of WMF/EMF, CGM and EPS (PostScript interpreter) to shapes, reading image dimensions, and the hook for image formats kept outside the core and loaded only when needed |
-| `src/epub.ts`, `src/xhtml.ts` | EPUB extraction, XHTML import |
-| `src/fontMapping.ts`, `src/compat.ts`, `src/documentResources.ts`, `src/documentText.ts`, `src/cli.ts` | Font assignment, compatibility mode settings, fetching the math font and images, character encoding detection (shared by the web app and Node); the Node CLI |
-| `src/webFont.ts`, `src/fontLoader.ts`, `src/userFonts.ts` | Converting WOFF and WOFF2 back to TTF and OTF, splitting the user's font files (including TTC) into single fonts and reading their names, storing the fonts loaded in the web app |
-| `src/colorGlyph.ts`, `src/colorGlyphPdf.ts`, `src/colorGlyphCanvas.ts`, `src/colorGlyphSvg.ts` | Reading color glyphs (color emoji and the like) from the font tables and drawing them to PDF and Canvas (including glyphs in the OpenType SVG table) |
-| `src/color.ts`, `src/cssColorFunctions.ts`, `src/cssGradient.ts`, `src/icc.ts`, `src/pdfStandard.ts` | Parsing color values, the CSS Color 4 and 5 color functions, CSS gradients, conversion to CMYK with an ICC profile, the policies for PDF/X-1a, PDF/X-3 and PDF/X-4 |
-| `src/assets.ts`, `src/linkPolicy.ts`, `src/messages.ts` | The image registry (shared by layout, Canvas and PDF), the policy for which PDF action a link leaving the document becomes, the user-facing messages (Japanese and English) |
-| `src/drawio/` | Reads draw.io diagrams (`.drawio`, `.dio`) and converts them to SVG (shape and edge drawing ported from the source of draw.io and mxGraph; loaded only when a diagram appears; [`docs/en/drawio.md`](docs/en/drawio.md)) |
+| Input | HTML+CSS, XSL-FO (with part of Antenna House's `axf:*` extensions), EPUB (web app), images (PNG, JPEG, SVG, EPS, CGM, WMF and more), draw.io diagrams |
+| Japanese typesetting | vertical and horizontal writing, ruby, tate-chu-yoko, emphasis marks, warichu, kinsoku, hanging punctuation and pushing out, punctuation compression, spacing between Japanese and Latin text |
+| Other scripts | Arabic and Hebrew, Thai, Indic and Southeast Asian scripts, Hangul, Chinese, Mongolian, hyphenation |
+| Pages | page masters, running heads and folios, footnotes, columns, floats, tables across pages, page number references |
+| Output | Canvas, PDF (bookmarks, links, forms, trim marks), tagged PDF and PDF/UA-1, PDF/X and PDF/A, SVG and PNG per page |
+| Environments | browser (with a bundler, or as a single file from a CDN) and Node |
 
-For details of the typesetting algorithms see [`docs/en/REPORT.md`](docs/en/REPORT.md), for XSL-FO import [`docs/en/xslfo-import.md`](docs/en/xslfo-import.md), and for the plan for HTML+CSS import [`docs/en/html-css-plan.md`](docs/en/html-css-plan.md).
-Per-item descriptions of the supported specifications are in the Conformance Guide ([`docs/conformance/`](docs/en/conformance.md); `npm run docs:conformance` turns it into PDFs; the PDFs for each version are attached to the GitHub release), features not yet available and known limitations are in [`docs/en/BACKLOG.md`](docs/en/BACKLOG.md), and the JSON of the typeset result (Area Tree) is described in [`docs/en/area-tree.md`](docs/en/area-tree.md).
+PDF/X-1a and PDF/X-4 were built from, and checked for conformance against, the texts of the standards (ISO 15930-1, ISO 15930-7). The written PDF is also checked against their rules. Before submitting the output, check it with a preflight tool.
+PDF/A has not yet been checked against the text of its standard, so check it with a validator before archiving it.
+The fonts each script needs, the image formats, the details of the PDF/X standards and more are in the [feature list](docs/en/features.md).
 
-## Fonts
+## Documentation
 
-The fonts for typesetting are not included in this repository. They are fetched at run time from Google Fonts' distribution host (`fonts.gstatic.com`).
+| Document | Contents |
+| --- | --- |
+| [Features](docs/en/features.md) | detailed list of features (input, Japanese typesetting, other scripts, pages, output) |
+| [Using the web app](docs/en/app.md) | opening, saving, settings, warnings |
+| [Command reference](docs/en/cli.md) | options, examples, environment variables, exit status |
+| [Library guide](docs/en/library.md) | `typeset` options; PDF, Canvas, SVG, PNG; Web Worker; Node helpers |
+| [API reference](https://n-lights-co.github.io/kumiori/api/) | every function, type and option (generated from the type declarations; Japanese only) |
+| [Conformance Guide](docs/en/conformance.md) | support and handling of each item of the specifications |
+| [Diagnostics](docs/en/diagnostics.md) | codes and severities of warnings and errors |
+| [Fonts](docs/en/fonts.md) | default fonts and their licenses, cache, offline use |
+| [draw.io diagrams](docs/en/drawio.md) | placing diagrams, choosing pages |
+| [Architecture](docs/en/architecture.md) · [Area Tree](docs/en/area-tree.md) | how it works inside and the role of each file; the shape of the typeset result |
+| [Development and testing](docs/en/development.md) | how Kumiori is developed, running it locally, tests, comparison with samples |
+| [Changelog](CHANGELOG.en.md) · [Releasing](docs/en/RELEASING.md) | changes in each version, how to release |
 
-| Font | Use | License |
-| --- | --- | --- |
-| Noto Serif JP, Noto Sans JP (Regular and Bold of each) | Japanese (Mincho, Gothic) | SIL Open Font License 1.1 |
-| Tinos, Arimo (Regular and Bold of each) | Latin (serif, sans-serif) | Apache License 2.0 |
-| Cousine | When monospace is specified | Apache License 2.0 |
-| STIX Two Math | When there are formulas (MathML). MathML is typeset with the values of this font's MATH table | SIL Open Font License 1.1 |
-| Noto Sans Symbols 2 | When the document contains symbols (such as ✈) found in none of the loaded fonts | SIL Open Font License 1.1 |
-| Noto Emoji | When the document contains emoji (such as 😀 or flags) not found in the symbol font either. Monochrome outline emoji (for colour emoji, pass a font such as Noto Color Emoji with `--font` or `@font-face`) | SIL Open Font License 1.1 |
+## Requirements
 
-Every document loads the eight files of the first two rows (four Japanese and four Latin; about 29MB in total, of which Noto Serif JP is 8.0MB per file and Noto Sans JP 5.7MB per file); the others are loaded only when the document needs them. Bold text is typeset in the Bold of the same font (bold text in Mincho uses Noto Serif JP Bold).
-
-The Node CLI saves the fetched fonts to the OS cache (`~/.cache/kumiori/fonts` etc.; can be changed with `--font-cache`) and does not use the network from the second run on. For offline use, in the web app (browser), TTFs with the same names placed in `public/fonts/` are used as a fallback (not tracked by git). With the Node CLI, either run once online to fill the cache, or specify the directory to read with `--font-dir`. The library's (`typeset`) default fetching tries only `https:` URLs, so pass local fonts via `loadFont`.
-Fonts placed in `public/fonts/` are also copied to the build output of the web app (`dist/fonts/`). If you do not want them in what you distribute, remove them before building. The contents of `public/` are not copied to the output distributed through npm (`dist-cli/`, `dist-lib/`, `dist-browser/`). The Node CLI looks only at the directory passed with `--font-dir`.
-
-The fonts used are embedded in the PDF. Check the license terms of each font with its distributor.
-
-## Units and coordinates
-
-- The internal unit is **pt** (only page settings use mm). An Area's `x,y` are physical coordinates relative to the top left of the parent's content-box (y pointing down).
-- Absolute positioning (`absolutePosition`) is relative to the **top left of the trim box**. To reach into the bleed, specify negative `top/left`.
-- `width/height` default to `content-box`. `boxSizing: 'border-box'` makes them include padding/border.
-
-## Reporting vulnerabilities
-
-If you find a vulnerability, please do not post it in a public issue. Report it privately as described in [SECURITY.en.md](SECURITY.en.md).
+Node 20.19.0 or later in the 20 line, or 22.12.0 or later (CI tests with 20.19.0 and 22).
 
 ## License
 
-The code is under the [Apache License 2.0](LICENSE) (Copyright 2026 Northern Lights Co.; see [NOTICE](NOTICE)). The fonts for typesetting are not bundled in this repository (for the fonts and their licenses, see the "[Fonts](#fonts)" section).
+The code is under the [Apache License 2.0](LICENSE) (Copyright 2026 Northern Lights Co.; see [NOTICE](NOTICE)).
+The fonts for typesetting are not bundled (for the fonts and their licenses, see [Fonts](docs/en/fonts.md)).
+The licenses and copyright notices of the third-party software Kumiori uses (pdf-lib, pako, utif, hyphen and others) are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The licenses and copyright notices of the third-party software Kumiori uses (pdf-lib, pako, utif, hyphen, etc.) are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The output of `npm run build`, `npm run build:cli`, `npm run build:lib` and `npm run build:browser` (`dist/`, `dist-cli/`, `dist-lib/`, `dist-browser/`) also contains `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md`. Every output JS file (including chunks) starts with a comment (`/*! … */`) giving the Kumiori version, its license and where `THIRD_PARTY_NOTICES.md` is (for when a single file is loaded from a CDN).
+## Reporting vulnerabilities
+
+Please do not post it in a public issue. Report it privately as described in [SECURITY.en.md](SECURITY.en.md).
 
 ## Relationship to other companies' products
 
@@ -288,56 +93,4 @@ Kumiori is an independent project, unrelated to Antenna House's products or to t
 
 Kumiori is also not affiliated with draw.io (JGraph Ltd, draw.io AG); draw.io is a registered trademark. The feature that reads draw.io diagram files was built by porting draw.io's public source code (section 13 of `THIRD_PARTY_NOTICES.md`), and is not approved or supported by draw.io.
 
-The product and company names appearing in the README and docs are the trademarks or names of their respective owners. Kumiori uses these names to describe its compatibility features (import of the `axf:*` extensions, the default values of `--compat antenna`, etc.). The name draw.io is used to describe the feature that reads draw.io diagram files (`.drawio`, `.dio`).
-
-## About the development method
-
-Kumiori is developed with an AI coding assistant (Anthropic's Claude Code).
-Much of the code, tests and documentation is written by the AI. People decide what to build and how to follow each specification,
-check the typesetting results, direct the fixes, and review changes before they are merged.
-Specifications are interpreted by reading them and comparing Kumiori's output with published sample PDFs.
-Third-party code and licenses are checked with tools before each release (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
-
-## Tests
-
-```bash
-npm test          # unit tests (Node + fontkit; fetches Noto Serif JP into .cache/fonts)
-npm run e2e       # browser integration tests (Playwright; on first run, npx playwright install chromium)
-npm run ci:local  # the same steps as the build and e2e jobs of CI (.github/workflows/ci.yml) and the web app build of GitHub Pages (.github/workflows/pages.yml): npm ci, the three builds, the web app build with the asset base changed, unit tests and integration tests
-```
-
-`npm run ci:local` (`scripts/ci-local.mjs`) runs the steps of the CI jobs locally in order and lists the result of each step at the end. Choose the jobs with `-- --job build|pages|node-min|e2e` (repeatable; build, pages and e2e when none is given; for node-min, switch to Node 20.19.x, the lowest supported version, first). Like `pages.yml`, pages builds the web app with the asset base set to the repository name (taken from `repository.url` in `package.json`: `/kumiori/`), and checks that the asset references in the output `index.html` start with that base (the output goes to a temporary place and is removed, so `dist/` is not changed). With `-- --worktree`, the current commit (HEAD) is checked out to a temporary place and tested there (as in CI, uncommitted changes and earlier build outputs are not mixed in). `-- --no-install` skips the initial `npm ci`.
-
-The fonts used by the tests are fetched on first run into `.cache/fonts` (changeable with `KUMIORI_FONT_DIR`). They come from Google Fonts (`fonts.gstatic.com`) and, for the PostScript font tests, Source Sans 3 (adobe-fonts/source-sans on `raw.githubusercontent.com`). Fetching is done in one place, `test/helpers.ts`; when a test needs another font, add it to the list there (the list is part of the CI cache key).
-The official Unicode conformance tests (`LineBreakTest.txt` for UAX #14, `GraphemeBreakTest.txt` for UAX #29, `BidiTest.txt` and `BidiCharacterTest.txt` for UAX #9) are likewise fetched on first run from `unicode.org` (`https://www.unicode.org/Public/<version>/ucd/`) into `.cache/unicode` (changeable with `KUMIORI_UCD_DIR`). Fetching is done in one place, `test/ucdTestData.ts`, and the version follows the UCD version the tables in `src/unicodeData.ts` were generated from. Where they cannot be fetched, the tests check only a small hand-written set of sequences in place of the official data.
-For the integration tests, setting `KUMIORI_E2E_FONT_CACHE` to a directory makes the browser's fetched fonts be stored there, so later runs do not use the network (CI uses this). `KUMIORI_E2E_FONT_DIR` is for supplying fonts by hand under fixed file names.
-The integration tests and the comparison scripts (`scripts/compare-pdf.mjs`, `scripts/compare-css.mjs`) use the Chromium executable that `KUMIORI_CHROMIUM` points at instead of the Chromium Playwright downloaded (for environments where the Playwright version and the installed Chromium do not match; for example `KUMIORI_CHROMIUM=/opt/pw-browsers/chromium npm run e2e`). Without it, they use the Chromium Playwright downloaded.
-
-Comparison with sample PDFs (prepare the sample FO and PDF files yourself; they are not in the repository. poppler's pdftoppm is required):
-
-```bash
-node scripts/compare-pdf.mjs --fo <FO directory> --ref <sample PDF directory> --img <image directory> --out compare-pdf-out
-```
-
-`scripts/fetch-samples.mjs` fetches the samples from their publishers into `.cache/samples` (ignored by git; add `NODE_USE_ENV_PROXY=1` when going through a proxy). It fetches Antenna House's "Sample FO collection" (the FO files and the PDFs AH Formatter produced) and the 4th edition of "CSS Page Composition Primer" (the PDF and its source files), and writes the source URL, size and SHA-256 of each file to `manifest.json`. The fetched files are laid out so they can be passed to compare-pdf.mjs as they are:
-
-```bash
-node scripts/fetch-samples.mjs
-node scripts/compare-pdf.mjs --fo .cache/samples/fo/fo --ref .cache/samples/fo/ref --img .cache/samples/fo/img --compat antenna --out compare-pdf-out
-```
-
-`.cache/samples/fo/groups.json` lists the sample names split by category into four groups (the grouping of the published comparison pages).
-`--pack <directory>` bundles the fetched files (the zips, the PDFs and `manifest.json`) into a tar, splits it into 10MB pieces and wraps each in base64 JavaScript (for stores that do not accept zip or tar files, such as a claude.ai Artifact). `--unpack <directory>` checks the pieces' SHA-256, restores them and extracts them without using the network (the same as `--offline`).
-When the comparison scripts cannot find the Chromium Playwright downloaded (when the Playwright version and the installed Chromium do not match), point `KUMIORI_CHROMIUM` at a Chromium executable, as for the integration tests.
-
-Each FO is paired with the PDF of the same name. `compare-pdf-out/report.md` lists the page count of each sample and the difference of each page (largest differences first). Add `--compat antenna` when comparing with Antenna House samples (the default is spec mode). To typeset with the same fonts as the samples, pass the font files with `--fonts <directory>`, and replace the default fonts used for the generic families (`serif`, `sans-serif`) with `--web-fonts <directory>` (put MS Mincho, MS Gothic, Times New Roman, Arial and Courier New under names such as `notoserif.ttf`, `notosans.ttf`, `tinos400.ttf`, `arimo400.ttf` and `cousine400.ttf`; extract the first font of a TTC as a TTF; fonts not in the directory are fetched from their source).
-
-When the samples are painted with spot colors (PDF Separation colors, such as PANTONE 627 PC in the 4th edition of "CSS Page Composition Primer"), extract the spot color names and the alternate CMYK at 100% tint written in the sample PDF with `node scripts/spot-colors-from-pdf.mjs <sample PDF> -o spot-colors.json`, and typeset with `--spot-colors spot-colors.json` on the Node command (Kumiori has no spot color values, so without it the colors are painted with the alternate RGB and differ from the samples). Compare the resulting PDF with `--pdf`.
-
-To build a page for comparing the samples and Kumiori's output by eye (the sample PDFs and Kumiori's PDFs are paired by the same name):
-
-```bash
-node scripts/compare-view.mjs --ref <sample PDF directory> --pdf <Kumiori PDF directory> --out compare-view-out
-```
-
-Open `compare-view-out/index.html` in a browser. The samples are sorted with the largest differences first, and for each page you can switch between "Side by side", "Overlay" (with adjustable opacity), "Blink" and "Diff" (blue where only the sample has text or lines, red where only Kumiori does). `--inline` produces a single HTML file with the images embedded. `--jpeg` makes the page images JPEG to reduce their size. `--artifact` writes it out in a form for publishing as a claude.ai Artifact (the diff images are drawn in the browser). `--ref-label` and `--pdf-label` change the names of the left and right sides (default "見本" (sample) and "Kumiori"), and `--title` changes the page title (for comparing home-made FO documents that have no sample, rendered in Kumiori's two modes or by another formatter; the home-made samples are in `samples/check/`).
+The product and company names appearing in the README and docs are the trademarks or names of their respective owners. These names are used to describe the compatibility features (import of the `axf:*` extensions, the default values of `--compat antenna`, etc.) and the feature that reads draw.io diagram files (`.drawio`, `.dio`).

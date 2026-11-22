@@ -505,8 +505,8 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
           // :nth() のページの擬似クラス (CSS GCPM 3 §3) は読まない (その規則はどのページにも当たらない)。未対応として知らせる
           if (/:nth\(/i.test(sel)) ignored.push('@page :nth()');
           const rule = parsePageBody(sel, body);
-          // 用紙の大きさに依るメディアクエリ (width・height・orientation など) で条件づけた size の宣言は無視する (Page 3 §7.1:
-          // 「the declaration must be ignored」)。ほかの宣言 (余白など) は読む
+          // 用紙の大きさに依るメディアクエリ (width・height・orientation など) で条件づけた size の宣言は無視する (Page 3 §7.1)。
+          // ほかの宣言 (余白など) は読む
           if (sizeQualified) delete rule.decls.size;
           pages.push(rule);
         }
@@ -759,13 +759,33 @@ function parsePageBody(sel: string, body: string): PageRule {
   while ((mm = re.exec(body))) {
     rest += body.slice(i, mm.index);
     const close = matchBrace(body, re.lastIndex);
-    rule.boxes[mm[1].toLowerCase()] = Object.fromEntries(splitDecls(body.slice(re.lastIndex, close)));
+    rule.boxes[mm[1].toLowerCase()] = declTable(splitDecls(body.slice(re.lastIndex, close)));
     i = close + 1;
     re.lastIndex = i;
   }
   rest += body.slice(i);
-  rule.decls = Object.fromEntries(splitDecls(rest));
+  rule.decls = declTable(splitDecls(rest));
   return rule;
+}
+
+/** 背景の個別の性質 (background の一括指定が値を決めるもの。CSS Backgrounds 3 §2.10) */
+const BACKGROUND_LONGHAND = /^background-(color|image|repeat|attachment|position(-x|-y)?|size|origin|clip)$/;
+
+/**
+ * 宣言 (名前 k・値 v) を表 out に足す。後の宣言が勝つ (CSS Cascade 4 §6.1)。表は書いた順を持たないので、background の一括指定は、
+ * それより前に足した背景の個別の性質を除いてから足す (一括指定は、書かなかった個別の性質も初期値にする。CSS Backgrounds 3 §2.10)。
+ * こうすると、表に一括指定と個別の性質の両方があれば、個別の性質は一括指定より後に書いたもので、読む側は個別の性質を先に見ればよい
+ */
+export function setDecl(out: Record<string, string>, k: string, v: string): void {
+  if (k === 'background') for (const n of Object.keys(out)) if (BACKGROUND_LONGHAND.test(n)) delete out[n];
+  out[k] = v;
+}
+
+/** 宣言の並びを、名前で引く表にする (setDecl で書いた順に足す) */
+function declTable(list: Decl[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of list) setDecl(out, k, v);
+  return out;
 }
 
 /** ページの選び方 (名前・先頭・左右・白) */
@@ -824,10 +844,18 @@ export function resolvePageRules(pages: PageRule[], sel: PageSelect, wm = 'horiz
         if (sides) {
           const ws = splitWords(v);
           sides.forEach((sd, n) => (decls[`margin-${sd}`] = ws[n] ?? ws[0]));
-        } else decls[k] = v;
+        } else if (k === 'size' && splitWords(v).some((w) => /^(-[\d.]|\+?0*\.?0+(?![\d.])[a-z]*$)/i.test(w.trim()))) {
+          // 負の長さ・0 の長さの size は無効 (CSS Paged Media 3 §7.1: 負の長さは無効。0 の用紙は組めない)。
+          // 無効な宣言は読み捨てる (CSS Syntax 3 §5.4.6) ので、前の規則の size が残る
+          continue;
+        } else setDecl(decls, k, v);
       }
     }
-    for (const [b, d] of Object.entries(r.boxes)) boxes[b] = { ...boxes[b], ...d };
+    for (const [b, d] of Object.entries(r.boxes)) {
+      const box: Record<string, string> = { ...boxes[b] };
+      for (const [k, v] of Object.entries(d)) setDecl(box, k, v);
+      boxes[b] = box;
+    }
   }
   return { decls, boxes };
 }
@@ -1046,7 +1074,7 @@ function oneOfEach(words: string[], groups: RegExp[]): boolean {
 const isAutospace = (ws: string[]) => (ws.length === 1 && ws[0] === 'no-autospace') || oneOfEach(ws, [/^ideograph-alpha$/, /^ideograph-numeric$/, /^punctuation$/, /^(insert|replace)$/]);
 /**
  * text-spacing-trim の値を、行頭・隣り合う約物・行末の 3 つの位置ごとの組み方にしたもの (CSS Text 4 §8.5 の計算値:
- * 「the keyword auto, the keyword trim-all, or three keywords, one per controlled position (start, adjacent, end)」)
+ * auto か trim-all の 1 語か、行頭 (start)・隣り合う所 (adjacent)・行末 (end) の位置ごとの 3 語)
  *  - start: space (space-start: 始め括弧類を全角)・trim (trim-start: 二分)・first (space-first: 段落の 1 行目と強制改行の後の行は全角、ほかは二分)
  *  - adjacent: trim (trim-adjacent: 隣り合う約物のアキを詰める)・space (space-adjacent: 詰めない)
  *  - end: allow (allow-end: 入らないときだけ二分)・trim (trim-end: 二分)・space (space-end: 全角)

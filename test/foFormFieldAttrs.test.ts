@@ -75,6 +75,33 @@ describe('axf:form-field の接頭辞の無い属性 (FO-25 (1))', () => {
     }
   });
 
+  it('フォームの送り先の絶対パス・UNC の道は、リンクと同じく links.launch のときだけ書く (相対の送り先と URL はそのまま)', () => {
+    const submit = (dest: string, launch = false) => {
+      const xml = `<?xml version="1.0"?><fo:root ${NS} font-size="10pt">${PM}<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><axf:form external-destination="${dest}"><fo:block><axf:form-field field-type="button" field-name="S" action-type="submit" width="50pt"/></fo:block></axf:form></fo:flow></fo:page-sequence></fo:root>`;
+      const r = importXslFo(xml, parse, launch ? { links: { launch: true } } : {});
+      const found: Array<string | undefined> = [];
+      const walk = (n: unknown) => {
+        if (!n || typeof n !== 'object') return;
+        const o = n as { formField?: FormField; children?: unknown[] };
+        if (o.formField) found.push(o.formField.submitUrl);
+        for (const c of o.children ?? []) walk(c);
+      };
+      walk(r.document.sequences[0].flow);
+      return { url: found[0], dropped: r.report.droppedLinks };
+    };
+    // 前は、どれもそのまま SubmitForm の送り先に書いていた
+    for (const d of ['\\\\host\\share\\x.fdf', '/etc/collect', 'C:\\data\\x.fdf', 'url(/etc/collect)']) {
+      const r = submit(d);
+      expect(r.url, d).toBeUndefined();
+      expect(r.dropped, d).toBeDefined();
+      // C:… は、スキームのある URL (c:) として、スキームの方針で決まる (launch では通らない)
+      if (!/^C:/.test(d)) expect(submit(d, true).url, d).toBeDefined();
+    }
+    expect(submit('post.cgi').url).toBe('post.cgi');
+    expect(submit('https://example.com/post').url).toBe('https://example.com/post');
+    expect(submit('javascript:alert(1)').url).toBeUndefined();
+  });
+
   it('axf: の付いた名前 (説明の正式の名前) も今までどおり読む。両方あれば axf: の付いた方', () => {
     const r = imp('<fo:block><axf:form-field axf:field-type="checkbox" field-type="text" axf:field-name="a" field-name="b"/></fo:block>', 'spec');
     expect(r.fields[0]).toMatchObject({ kind: 'checkbox', name: 'a' });

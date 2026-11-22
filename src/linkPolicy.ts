@@ -155,8 +155,17 @@ export function summarizeDroppedLinks(d: DroppedLinks | undefined): string | und
   return parts.length ? parts.join(', ') : undefined;
 }
 
-/** 動作を書かなかった飛び先の警告の文 (summary は summarizeDroppedLinks の結果) */
-export function droppedLinkWarning(summary: string): string {
+/**
+ * 動作を書かなかった飛び先の警告の文 (summary は summarizeDroppedLinks の結果)。
+ * stage: pdf は PDF を書いたとき (書かなかったと言う)。read は文書を読んだとき (出力の形式がまだ決まっていない。SVG・PNG には
+ * もともとリンクを書かないので、「PDF に書きませんでした」とは言わずに、PDF に書くときの扱いを言う)
+ */
+export function droppedLinkWarning(summary: string, stage: 'pdf' | 'read' = 'pdf'): string {
+  if (stage === 'read')
+    return msg(
+      `安全のため、リンクの動作を通しません (PDF に書くときは、リンクにせず、字だけを組みます。links の設定で許せます): ${summary}`,
+      `for safety, these link actions are not allowed (when writing a PDF, the text is typeset without the link; the links option can allow them): ${summary}`,
+    );
   return msg(
     `安全のため、リンクの動作を PDF に書きませんでした (字はそのまま組みます。links の設定で許せます): ${summary}`,
     `for safety, link actions were not written to the PDF (the text is typeset as is; the links option can allow them): ${summary}`,

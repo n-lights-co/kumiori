@@ -132,6 +132,7 @@ describe('分綴の制限 (組版)', () => {
     // ほかの行は変わらない
     expect(last.slice(0, 7)).toEqual(base.slice(0, 7));
     // 仕様の例: 「to show Antarc-/tica.」は「to show/Antarctica.」になる
+    // (例文は CSS Text Module Level 4 §6.3.5 の例の 1 文。仕様の例と照らすため、そのまま使う)
     const ex = 'This is just a simple example to show Antarctica.';
     const w = 72;
     expect(lay(ex, w).slice(-2)).toEqual(['to show Antarc-', 'tica.']);
@@ -256,6 +257,7 @@ describe('分綴の制限 (CSS)', () => {
     for (let k = 1; k < one.length; k++) expect(one[k] - one[k - 1]).toBeGreaterThan(1);
     expect(hyphenated((await run('hyphenate-limit-lines: 0', TEXT, '100pt')).lines)).toEqual([]);
     // 仕様の例 (§6.3.5): 「to show Antarc-/tica.」が「to show/Antarctica.」になる
+    // (例文は CSS Text Module Level 4 §6.3.5 の例の 1 文。仕様の例と照らすため、そのまま使う)
     const ex = 'This is just a simple example to show Antarctica.';
     expect((await run('', ex, '72pt')).lines.slice(-2)[0]).toMatch(/^to show Antarc(ti)?-$/);
     expect((await run('hyphenate-limit-last: always', ex, '72pt')).lines.slice(-2)).toEqual(['to show', 'Antarctica.']);

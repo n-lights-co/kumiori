@@ -29,10 +29,10 @@ kumiori pages.fo -o pages-fo.pdf
 ```
 
 Each results in a 3-page A4 PDF. The small text at the lower left of each diagram ("2 ページ目「組版の流れ」" and so on) tells which page was drawn.
-The last diagram (`#page=9`) refers to a page that does not exist, so the first page is drawn and a warning is reported (in English with `--lang en`):
+The last diagram (`#page=9`) refers to a page that does not exist, so the first page is drawn and a warning is reported (in English with `--lang en`; this is for `pages.html`, and for `pages.fo` the message is preceded by the place in the FO, `pages.fo:62:19 (fo:external-graphic):`):
 
 ```
-warning: part of image diagrams.drawio#page=9 cannot be drawn: the draw.io diagram has no page 9 (it has 3; the first page is drawn)
+  warning [image/partial] part of image diagrams.drawio#page=9 cannot be drawn: the draw.io diagram has no page 9 (it has 3; the first page is drawn)
 ```
 
 In the web app (demo), open `pages.html` or `pages.fo` together with `diagrams.drawio`.

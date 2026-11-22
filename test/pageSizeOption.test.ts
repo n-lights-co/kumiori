@@ -1,8 +1,8 @@
 /**
  * 既定の用紙 (HTM-26): @page で size を指定していない文書の用紙を、API (pageSize)・CLI (--page-size) から変える。
  *  - 値は CSS の size と同じ書き方 (CSS Paged Media 3 §7.1: <length>{1,2} | auto | [ <page-size> || [ portrait | landscape ] ])
- *  - @media の width・height・orientation は、その用紙で評価する (同 §7.1: Media queries do not honor size: they assume the paper size
- *    that would be chosen if no @page rules were specified)
+ *  - @media の width・height・orientation は、その用紙で評価する (同 §7.1: メディアクエリは size に従わず、
+ *    @page の規則が無いときに選ばれる用紙を前提にする)
  *  - 文書の @page { size } があれば、そちらが勝つ
  */
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -71,7 +71,7 @@ describe('API: pageSize (@page の無い文書の用紙)', () => {
     const r = await typesetHtml(`<style>@page { margin: 10mm }</style>${body}`, { loadFont, pageSize: 'A5' });
     expect(sheetMm(r)).toEqual([[148, 210]]);
     expect(mm(r.areaTree.sheets[0].page.regionBody.width)).toBeCloseTo(128, 1);
-    // 向きだけの size は、pageSize の用紙の向きを変える (§7.1: landscape — the size of the page sheet is chosen by the UA)
+    // 向きだけの size は、pageSize の用紙の向きを変える (§7.1: 向きだけの指定では、用紙の大きさは処理系が選ぶ)
     expect(sheetMm(await typesetHtml(`<style>@page { size: landscape }</style>${body}`, { loadFont, pageSize: 'A5' }))).toEqual([[210, 148]]);
     // 名前付きページ・:first の size も、文書の指定が勝つ
     const named = await typesetHtml(`<style>@page wide { size: A4 landscape } .w { page: wide }</style><p>一</p><p class="w">二</p>`, { loadFont, pageSize: 'A5' });

@@ -1,6 +1,6 @@
 /**
  * 切り抜きの矩形 (CSS の clip)。CSS 2.1 §11.1.2 (https://www.w3.org/TR/CSS21/visufx.html#clipping 、2026-11-11 取得) と
- * CSS Masking 1 付録 A「The deprecated clip property」(非推奨だが「UAs must support the clip property」):
+ * CSS Masking 1 付録 A「The deprecated clip property」(非推奨だが、処理系は clip に対応しなければならない):
  *  - 値は auto か rect(<top>, <right>, <bottom>, <left>)。コンマ区切りと、コンマ無しの書き方 (混ぜたものは不可)。値は <length> | auto (負の長さも可)
  *  - 絶対配置の要素にだけ効く。top・bottom は罫線の箱の上端から、right・left は左端からの距離。auto は、罫線の箱のその辺
  *  - 中身・子・背景・罫線・輪郭線を、その矩形で切り抜く。left と right が同じ値なら、何も見えない

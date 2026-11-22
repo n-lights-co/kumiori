@@ -93,6 +93,25 @@ Not drawn, or possibly different:
 - Shapes and style keys added to draw.io after v24.7.5 are not read (such shapes (`mxgraph.archimate4.*`, `mxgraph.bpmn.task2` and so on) get only their text, with a warning, even when shape libraries are given; see "Terms of the shape libraries" below)
 - To guard against crafted diagrams that exhaust time or memory from small files, there are limits on how much is read and drawn (the values and reasons are in `LIMITS` in `src/drawio/drawio.ts` and elsewhere). Parts beyond a limit are not drawn and a warning is given
 
+## Checking fetched shape libraries and images
+
+Files fetched from the default source (the URL of the v24.7.5 tag in draw.io's public repository) with `fetchStencils: true` (`--fetch-drawio-stencils` on the command line) are checked: the SHA-256 of their content is compared with the list for v24.7.5 that Kumiori holds (`src/drawio/drawioHashes.ts`: the shape libraries `js/stencils.min.js` and the 1,901 images under `img/`).
+A tag can be moved (the same URL can serve different content), so only content identical to what the list was made from is used.
+Files that do not match, and files not in the list, are not used, with the warnings "the file fetched from draw.io's distribution (v24.7.5) does not match the SHA-256 listed for that version, so it is not used" and "the file is not in the SHA-256 list of draw.io's distribution (v24.7.5), so it is not used" (those shapes and images are not drawn, as when they cannot be fetched).
+
+- When `fetchStencils` is a function, what it returns for a call with the default source's URL (when `stencilsUrl` is not given) is checked too (files kept locally must also be the v24.7.5 content).
+- The command line's cache (in the `--font-cache` directory) does not keep content that does not match, and fetches again instead of using a cached file that does not match.
+- When you choose the source yourself (a URL string in `fetchStencils`, or `stencilsUrl`; `--drawio-stencils-url` on the command line), nothing is checked, as Kumiori has no list for that version.
+- Files given with `stencils` (`--drawio-stencils` on the command line) are not checked.
+
+### Raising the version of the source (for Kumiori's developers)
+
+The list is made by `scripts/drawio-hashes.mjs` from the content of the commit the tag points to in draw.io's repository (only `src/main/webapp/img/` and `src/main/webapp/js/stencils.min.js` are checked out with git).
+
+1. Change the tag in `DRAWIO_STENCILS_URL` in `src/drawio/drawioStencil.ts` (check the LICENSE of `stencils/` and `img/` in that version, and update "Terms of the shape libraries" in this guide and section 13 of THIRD_PARTY_NOTICES.md to match).
+2. Remake the list with `node scripts/drawio-hashes.mjs --tag <new tag>` (needs git; takes a few seconds). Use the same tag as in `DRAWIO_STENCILS_URL` (`test/drawio/drawioFetchHash.test.ts` checks this).
+3. Check that the commit written at the top of the list is the commit of the tag in draw.io's repository, and run `npm test`.
+
 ## Terms of the shape libraries
 
 Kumiori does not include the data of draw.io's shape libraries (the XML in `stencils/` and `js/stencils.min.js`) or the icon images.

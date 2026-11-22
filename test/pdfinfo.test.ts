@@ -41,6 +41,28 @@ describe('PDF の文書情報・しおり (I-04)', () => {
   });
 });
 
+describe('axf:document-info の文書の題', () => {
+  const withInfo = (decl: string) =>
+    `<?xml version="1.0"?><fo:root ${NS}><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="100mm" page-height="100mm"><fo:region-body margin="10mm"/></fo:simple-page-master></fo:layout-master-set><fo:declarations>${decl}</fo:declarations><fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block>本文</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+  const parse = (s: string) => new DOMParser().parseFromString(s, 'text/xml') as never;
+  it('アンテナハウスの説明の name="document-title" を題として読む (知らせは出さない)', () => {
+    const r = importXslFo(withInfo('<axf:document-info name="document-title" value="文書の題"/>'), parse);
+    expect(r.document.title).toBe('文書の題');
+    expect(r.document.info?.title).toBe('文書の題');
+    expect(r.report.notes.join('\n')).not.toMatch(/document-title/);
+  });
+  it('説明に無い name="title" も題として読み、document-title に書き換えるよう知らせる。両方あれば、書いた順によらず document-title', () => {
+    const t = importXslFo(withInfo('<axf:document-info name="title" value="古い書き方"/>'), parse);
+    expect(t.document.title).toBe('古い書き方');
+    expect(t.report.notes.join('\n')).toMatch(/name="document-title"/);
+    for (const decl of ['<axf:document-info name="title" value="古い"/><axf:document-info name="document-title" value="新しい"/>', '<axf:document-info name="document-title" value="新しい"/><axf:document-info name="title" value="古い"/>']) {
+      const r = importXslFo(withInfo(decl), parse);
+      expect(r.document.title).toBe('新しい');
+      expect(r.document.info?.title).toBe('新しい');
+    }
+  });
+});
+
 describe('リンクと注釈 (I-04)', () => {
   const linkXml = `<?xml version="1.0"?><fo:root ${NS}>
   <fo:layout-master-set><fo:simple-page-master master-name="m" page-width="100mm" page-height="100mm"><fo:region-body margin="10mm"/></fo:simple-page-master></fo:layout-master-set>
@@ -72,7 +94,8 @@ describe('リンクと注釈 (I-04)', () => {
     const internal = dicts.find((d) => d.get(PDFName.of('Dest')))!;
     const dest = internal.get(PDFName.of('Dest')) as import('pdf-lib').PDFArray;
     expect(dest.get(0)).toBe(p2.ref);
-    const uri = dicts.find((d) => d.get(PDFName.of('A')))!.get(PDFName.of('A')) as import('pdf-lib').PDFDict;
+    // 動作は、同じ飛び先の注釈で 1 つの間接の物 (ISO 32000-1 §7.3.10)
+    const uri = dicts.find((d) => d.get(PDFName.of('A')))!.lookup(PDFName.of('A')) as import('pdf-lib').PDFDict;
     expect(String(uri.get(PDFName.of('URI')))).toContain('https://example.com/');
     const text = dicts.find((d) => String(d.get(PDFName.of('Subtype'))) === '/Text')!;
     expect(String(text.get(PDFName.of('Name')))).toBe('/Key');
@@ -112,7 +135,7 @@ describe('リンクの URI の書き方 (ISO 32000-2 §7.3.4.2・§12.6.4.8)', (
       .getPages()[0]
       .node.Annots()!
       .asArray()
-      .map((ref) => (pdf.context.lookup(ref) as import('pdf-lib').PDFDict).get(PDFName.of('A')) as import('pdf-lib').PDFDict)
+      .map((ref) => (pdf.context.lookup(ref) as import('pdf-lib').PDFDict).lookup(PDFName.of('A')) as import('pdf-lib').PDFDict)
       .map((a) => String(a.get(PDFName.of('URI'))));
     expect(uris).toEqual(['(http://example.com/a\\(b)', '(https://ja.wikipedia.org/wiki/%E7%B5%84%E7%89%88)']);
   });

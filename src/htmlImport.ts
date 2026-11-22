@@ -54,6 +54,7 @@ import type {
   LPageSequence,
   LRetrieveMarker,
   LRuby,
+  LWarichu,
   RubyAlign,
   LTable,
   LTableCell,
@@ -70,6 +71,8 @@ import type {
   BoxStyle,
 } from './types';
 import { TOTAL_PAGES_ID } from './types';
+import type { StructNode } from './structure';
+import { StructureBuilder, type StructDesc } from './structureBuilder';
 import { parseIndividualTransform, parseTransformList, parseTransformOrigin } from './cssTransform';
 import type { ImportReport, ImportResult } from './xslfoImport';
 import { normalizeSrc } from './assets';
@@ -89,8 +92,9 @@ import { UNIT_PT, cssColor, cssColorAlpha, cssLen, fmtColor, parseColor as parse
 // url(…) は、閉じない url( を並べた値で 2 乗の手間になる正規表現でなく、同じ結果を線形の手間で返す関数で探す (cssUrlScan.ts)
 import { firstCssUrl, wholeCssUrl } from './cssUrlScan';
 import { parseTextJustifyTrim } from './textJustifyTrim';
+import { dropWarichuBoxes, parseWarichuBrackets } from './warichu';
 import { graphemeClusters } from './grapheme';
-import { AH_ALIASES, compatOnlyValue, counterText, isPagedDecl, parseSpacingTrim, SPACING_TRIM_WORD, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type PageSelect, type ParsedCss, type StyleRule } from './htmlPaged';
+import { AH_ALIASES, unescapeCss, compatOnlyValue, counterText, isPagedDecl, parseSpacingTrim, SPACING_TRIM_WORD, validPagedValue, mediaPageOf, printColor, type SpotColors, pageNumberFormatOf, parseContent, parseCss, resolvePageRules, splitDecls, substituteRootVars, unquote, type ContentToken, type PageRule, type PageSelect, type ParsedCss, type StyleRule } from './htmlPaged';
 import { documentModeOf, isQuirksDoc, matches, parseSelectorList, type Selector } from './cssSelector';
 import { maxOf, pushAll } from './arrayLoop';
 import { autospaceNonIdeographic, isAutospaceIdeograph, isLatinAlnum } from './jis';
@@ -98,6 +102,8 @@ import { CSS_SPACE, firstLetterOf, splitCommasOutsideParens, trailingResolution,
 import { msg } from './messages';
 import { MAX_TREE_DEPTH } from './htmlPrepare';
 import { blockLevelDisplay, bodyPageSwitchHolder, ownPageName, pageSwitchBox, pageSwitchHolder, rootPageName } from './pageFlow';
+import { diag, type DiagnosticSource } from './diagnostics';
+import { elementSource, tagNodeSource } from './sourceLocation';
 
 /** ブロック水準の部品か (行内の並びを区切る) */
 /**
@@ -202,6 +208,89 @@ const isBlockLevel = (n: unknown): boolean =>
 export type PseudoSel = '::before' | '::after' | '::first-letter' | '::first-line' | '::marker';
 
 /** ルビの性質の値 (CSS Ruby 1 §4.1〜§4.3・§5.1 の構文)。ほかの値 (initial・revert など) は、指定が無いものとして扱う */
+/**
+ * タグ付き PDF: 要素の名前 → PDF の標準の構造の型 (ISO 32000-1 §14.8.4。HTML の要素の意味は HTML Living Standard の各要素の節、
+ * 当て方は HTML-AAM の役の対応にならう)。'Artifact' は飾り (§14.8.2.2)。ここに無い要素は、構造を作らない (中身は親の構造に入る)。
+ * 表の要素 (table・caption・thead・tbody・tfoot・tr・th・td) は、表の構造 (§14.8.4.3.4) にする。構造の型は要素 (と role) で決め、
+ * CSS の display では決めない (HTML-AAM: 要素の役は要素の意味から決まる)。display: table・grid で並べた div は Div のまま (表の意味を持たない)、
+ * display を変えた table は表のまま
+ */
+const STRUCT_ROLES: Record<string, string> = {
+  h1: 'H1',
+  h2: 'H2',
+  h3: 'H3',
+  h4: 'H4',
+  h5: 'H5',
+  h6: 'H6',
+  p: 'P',
+  address: 'P',
+  pre: 'P',
+  dt: 'P',
+  div: 'Div',
+  main: 'Div',
+  nav: 'Div',
+  aside: 'Div',
+  header: 'Div',
+  footer: 'Div',
+  dl: 'Div',
+  dd: 'Div',
+  figure: 'Div',
+  section: 'Sect',
+  article: 'Art',
+  blockquote: 'BlockQuote',
+  figcaption: 'Caption',
+  ul: 'L',
+  ol: 'L',
+  li: 'LI',
+  svg: 'Figure',
+  math: 'Formula',
+  q: 'Quote',
+  code: 'Code',
+  hr: 'Artifact',
+  table: 'Table',
+  caption: 'Caption',
+  thead: 'THead',
+  tbody: 'TBody',
+  tfoot: 'TFoot',
+  tr: 'TR',
+  th: 'TH',
+  td: 'TD',
+};
+
+/** 割注にしない要素 (置換要素・ルビ・改行・フォームの部品など。htmlImport の isWarichuElement) */
+const NOT_WARICHU_ELEMENTS = new Set(['img', 'svg', 'math', 'ruby', 'rt', 'rp', 'rb', 'rtc', 'br', 'wbr', 'input', 'select', 'textarea', 'button', 'video', 'audio', 'canvas', 'iframe', 'object', 'embed', 'picture']);
+
+/** 表の部分の要素 (表が role="presentation"・"none" なら、構造を作らない。WAI-ARIA 1.2 §5.3.4 の役を受け継ぐ子) */
+const TABLE_PART_ELEMENTS = new Set(['caption', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'colgroup', 'col']);
+
+/** WAI-ARIA 1.2 の役 (role) → 構造の型。ここに無い役は読まない (要素の既定の型のまま) */
+const ARIA_STRUCT_ROLES: Record<string, string> = {
+  img: 'Figure',
+  figure: 'Div',
+  list: 'L',
+  listitem: 'LI',
+  link: 'Link',
+  paragraph: 'P',
+  blockquote: 'BlockQuote',
+  math: 'Formula',
+  article: 'Art',
+  region: 'Sect',
+  code: 'Code',
+  table: 'Table',
+  grid: 'Table',
+  treegrid: 'Table',
+  rowgroup: 'TBody',
+  row: 'TR',
+  cell: 'TD',
+  gridcell: 'TD',
+  columnheader: 'TH',
+  rowheader: 'TH',
+  // DPUB-ARIA 1.1 §4: 脚注と、脚注への参照 (doc-endnote は 1.1 で非推奨だが、同じ意味で読む)
+  'doc-footnote': 'Note',
+  'doc-endnote': 'Note',
+  'doc-noteref': 'Reference',
+};
+
 const RUBY_VALUES = {
   'ruby-position': /^(alternate|over|under|alternate (over|under)|(over|under) alternate|inter-character)$/,
   'ruby-align': /^(start|center|space-between|space-around)$/,
@@ -248,6 +337,13 @@ export interface StyleSource {
 }
 
 export interface HtmlImportOptions {
+  /** 入力のファイルの名前 (診断の場所 source.file。文書が読んだ字とファイルの名前を持つとき (setDocumentSource) は、そちら) */
+  sourceName?: string;
+  /**
+   * タグ付き PDF の構造の木を作る (LDocument.structure と、入力の節の tag。structure.ts)。要素を PDF の標準の構造の型 (ISO 32000-1 §14.8.4) に
+   * 当て、柱 (余白の箱・running()・position: fixed) を飾り (Artifact) にする。既定 false (構造の木を作らない)
+   */
+  tagged?: boolean;
   /**
    * 文書の外への飛び先のうち、通すもの (linkPolicy.ts)。既定では、http・https・mailto・tel の URL と相対の PDF だけをリンクにする。
    * 通さない飛び先はリンクにせず (字はそのまま組む)、report.droppedLinks に数える
@@ -459,7 +555,7 @@ export interface HtmlImportOptions {
   /**
    * position: running() の要素の書体 (font-family) を、要素に指定が無ければ、その要素を出す余白の箱 (content: element(…)) から受け継ぐ
    * (アンテナハウス互換。その余白の箱の font-family、無ければページ文脈 (@page) の font-family)。既定は、文書の中の元の場所から受け継ぐ
-   * (CSS GCPM 3 §1.2.1: "The element inherits from its original position in the document")。
+   * (CSS GCPM 3 §1.2.1: その要素は、文書の中の元の場所から受け継ぐ)。
    * 余白の箱の指定が箱ごとに違う・無いときは、既定と同じ
    */
   runningFontFromPageContextAh?: boolean;
@@ -483,7 +579,7 @@ const MM_PER_PT = 25.4 / 72;
 /** CSS の長さ (px・pt・mm・cm・in・pc・q) → pt。単位の無い 0 も可 */
 /**
  * 計算値の background-position-x・-y (最初の層) を背景画像の位置にする。
- * "right 10px"・"bottom 10px" は右・下の端からの距離 (Backgrounds 3 §3.6)
+ * "right 10px"・"bottom 10px" は右・下の端からの距離 (Backgrounds 3 §2.6)
  */
 /** 組んだ節 (LNode の木) の中の id を、文書の順に集める */
 function collectIds(n: unknown, out: string[] = []): string[] {
@@ -524,7 +620,7 @@ function objectPositionOf(v: string): ObjectPosition | undefined {
  */
 /**
  * 輪郭線 (outline。CSS UI 4 §3) を、計算値から読む。線種が none か、太さが 0 なら undefined。
- *  - 線種 (§3.3): auto は実線として描く (「User agents may treat auto as solid」)。hidden は無い
+ *  - 線種 (§3.3): auto は実線として描く (処理系は auto を実線として扱ってよい)。hidden は無い
  *  - 色 (§3.4): auto は、線種が auto でなければ currentColor (線種 auto は実線として描くので、同じく currentColor にする)
  *  - outline-offset (§3.5): 罫線の箱の端からの距離 (負の値は内側)
  */
@@ -650,7 +746,7 @@ function hyphenLimitsOf(c: (name: string) => string): HyphenLimits {
 
 /**
  * letter-spacing・word-spacing の計算値 → pt (normal は 0)。百分率 (と、百分率と長さの和) は、その要素の字の大きさに対する割合
- * (CSS Text 4 §8.1・§8.2: “relative to used font-size”。計算値は百分率のまま受け継ぐので、受け継いだ要素の字の大きさで解く)
+ * (CSS Text 4 §8.1・§8.2: 使われる字の大きさに対する割合。計算値は百分率のまま受け継ぐので、受け継いだ要素の字の大きさで解く)
  */
 function spacingPt(c: (p: string) => string, prop: 'letter-spacing' | 'word-spacing'): number {
   const v = c(prop);
@@ -681,6 +777,11 @@ function firstGrapheme(s: string): string {
 }
 
 const MAX_COL_SPAN = 1000;
+/**
+ * 1 つの表の列 (<col>・display: table-column の span の合計) の上限。XSL-FO の読み込みの列の数の上限 (xslfoImport.ts の MAX_TABLE_COLUMNS) と同じ。
+ * 1 つの <col> の span は MAX_COL_SPAN までだが、<col span="1000"> を千個並べると百万の列になり、組むのに数秒・数 GB かかった
+ */
+const MAX_TABLE_COLUMNS = 1000;
 const MAX_ROW_SPAN = 65534;
 
 /**
@@ -808,7 +909,7 @@ const PAGE_SIZES: Record<string, [number, number]> = {
  * @page の無い文書の用紙 (公開 API の pageSize・Node のコマンドの --page-size) を読むのに使う。値の全体が文法に合わなければ undefined
  * (@page の中の size と違い、合わない語を読み飛ばさない)。
  *  - 用紙の名前 (A5・A4・A3・B5・B4・JIS-B5・JIS-B4・letter・legal・ledger と、Kumiori が足している A6) は、大文字・小文字を区別しない
- *  - 長さは、絶対の単位 (mm・cm・Q・in・pt・pc・px) の正の値。1 つなら正方形 (§7.1 の <length>)。em・ex (ページの文脈の書体に対する長さ) と百分率は読まない
+ *  - 長さは、絶対の単位 (mm・cm・Q・in・pt・pc・px) の 1pt 以上の値。1 つなら正方形 (§7.1 の <length>)。em・ex (ページの文脈の書体に対する長さ) と百分率は読まない
  *  - auto と、向きだけの値 (portrait・landscape) は、def (既定は A4) の用紙に対して (§7.1: 用紙は UA が選ぶ)
  */
 export function parsePageSize(value: string, def: { width: number; height: number } = { width: 210, height: 297 }): { width: number; height: number } | undefined {
@@ -819,7 +920,8 @@ export function parsePageSize(value: string, def: { width: number; height: numbe
   const lens = parts.map((t) => {
     const m = /^\+?(\d+(?:\.\d*)?|\.\d+)(mm|cm|q|in|pt|pc|px)$/.exec(t);
     const n = m ? parseFloat(m[1]) * UNIT_PT[m[2]] * MM_PER_PT : undefined;
-    return n !== undefined && n > 0 && Number.isFinite(n) ? n : undefined;
+    // 1pt 未満の長さは、組める用紙にならないので読まない
+    return n !== undefined && n >= MM_PER_PT && Number.isFinite(n) ? n : undefined;
   });
   if (lens.every((n) => n !== undefined)) return { width: lens[0]!, height: lens[1] ?? lens[0]! };
   if (lens.some((n) => n !== undefined)) return undefined;
@@ -868,6 +970,10 @@ function pageBox(
       const parts = words(val);
       const named = parts.find((p) => PAGE_SIZES[p]);
       const lens = parts.map(lenPt).filter((n): n is number => n !== undefined);
+      // 負の長さは無効 (CSS Paged Media 3 §7.1)。0 と 1pt 未満の長さも、組める用紙にならないので、同じく読まない (既定の用紙になる)
+      // (宣言を読まない。字面で分かる負・0 の長さは、規則を重ねるときに読み捨てる (resolvePageRules)。ここは calc() などの計算の結果と、
+      // 1e-320pt のような小さい長さ。前は、負の幅のまま組み、SVG・PNG の書き出しが負の大きさに、小さすぎる用紙は PDF の MediaBox の数が壊れていた)
+      if (lens.some((n) => !(n >= 1 && Number.isFinite(n)))) continue;
       if (named) [width, height] = PAGE_SIZES[named];
       else if (lens.length >= 1) {
         width = lens[0] * MM_PER_PT;
@@ -1064,6 +1170,8 @@ function axisMapper(writingMode: string): (n: string) => string {
  * (U+3000 は詰めない字で、幅は 1 字分)
  */
 const CSS_WS = /[ \t\n\r\f]+/g;
+/** document white space characters (空白・タブ・改行。CSS Text 3 §4.1) だけの文字列か。NBSP・全角の空白などは含まない (String.prototype.trim は含む) */
+const DOC_WS_ONLY = /^[ \t\n\r\f]*$/;
 
 /** aspect-ratio の値 (CSS Sizing 4 §5.1: auto || <ratio>。<ratio> は「数」か「数 / 数」)。比が無い・0 なら undefined */
 function parseAspectRatio(v: string): { ratio: number; auto: boolean } | undefined {
@@ -1134,13 +1242,37 @@ interface PageSwitch {
 
 /**
  * @page の背景の background-attachment が fixed か (個別の指定か、無ければ background の一括指定の中の fixed。CSS Backgrounds 3 §2.5)。
- * 繰り返しの読み方 (pageBackground) と同じに、個別の指定を一括指定より先に見る
+ * 繰り返しの読み方 (pageBackground) と同じに、個別の指定を一括指定より先に見る。宣言の表 (resolvePageRules) は、一括指定を足すときに、
+ * それより前の個別の指定を除く (setDecl) ので、表に個別の指定があれば、それは一括指定より後に書いたもの (後に書いた宣言が勝つ。
+ * CSS Cascade 4 §6.1。「background-attachment: scroll; background: url(a.png) fixed」は fixed)
  */
 function pageBackgroundFixed(decls: Record<string, string>): boolean {
   const a = decls['background-attachment'];
   if (a !== undefined) return a.trim().toLowerCase().split(/\s*,\s*/)[0] === 'fixed';
   // 重ねの区切りは、括弧の外のカンマだけ (色の rgb(…, …) の中のカンマで切らない。CSS Backgrounds 3 §2.10 の <bg-layer> の並び)
-  return splitWords(splitTop((decls.background ?? '').replace(/url\([^)]*(?:\)|$)/gi, ' '), ',')[0] ?? '').some((t) => t.toLowerCase() === 'fixed');
+  // url() の中は見ない (引用符の中の括弧・カンマも url() の中)
+  return splitWords(splitTop((decls.background ?? '').replace(/url\((?:"[^"]*"|'[^']*'|[^)])*(?:\)|$)/gi, ' '), ',')[0] ?? '').some((t) => t.toLowerCase() === 'fixed');
+}
+
+/**
+ * @page・余白の箱の背景の、最初の重ねの繰り返し (CSS Backgrounds 3 §2.4: <repeat-style> = repeat-x | repeat-y | [repeat | space | round | no-repeat]{1,2})。
+ * background-repeat があればそれ、無ければ background の一括指定の中の繰り返しの語 (url()・グラデーションの中は見ない)。
+ * 1 値の repeat-x は「repeat no-repeat」、repeat-y は「no-repeat repeat」、ほかの 1 値は横・縦とも同じ値。space・round は repeat として扱う。
+ * 初期値の repeat (横・縦とも並べる) なら undefined
+ */
+function pageRepeatOf(decls: Record<string, string>): BackgroundImage['repeat'] {
+  const src = decls['background-repeat'] ?? (decls.background ?? '').replace(/url\((?:"[^"]*"|'[^']*'|[^)])*(?:\)|$)/gi, ' ').replace(/(?:repeating-)?(?:linear|radial|conic)-gradient\((?:[^()]|\([^()]*\))*\)/gi, ' ');
+  const words = splitWords(splitTop(src, ',')[0] ?? '')
+    .map((t) => t.toLowerCase())
+    .filter((t) => /^(repeat|no-repeat|repeat-x|repeat-y|space|round)$/.test(t));
+  let x: string;
+  let y: string;
+  if (words[0] === 'repeat-x') [x, y] = ['repeat', 'no-repeat'];
+  else if (words[0] === 'repeat-y') [x, y] = ['no-repeat', 'repeat'];
+  else [x, y] = [words[0] ?? 'repeat', words[1] ?? words[0] ?? 'repeat'];
+  const rx = x !== 'no-repeat';
+  const ry = y !== 'no-repeat';
+  return rx && ry ? undefined : rx ? 'repeat-x' : ry ? 'repeat-y' : 'no-repeat';
 }
 
 /** 罫線の太さの thin・medium・thick の既定 (pt)。文書の要素の罫線の既定 (1px・3px・5px。cssCascade) と同じ */
@@ -1148,7 +1280,7 @@ const BORDER_KEYWORDS_PT = { thin: 0.75, medium: 2.25, thick: 3.75 };
 
 /**
  * CSS の border の一括指定 (幅・線種・色)。半透明の色は #rrggbbaa のまま (文書の要素の罫線と同じに、描くときに下の色と重ねる)。
- * 書かなかった太さは初期値の medium (CSS Backgrounds 3 §3.2・§3.4。kw は thin・medium・thick の太さ (pt))
+ * 書かなかった太さは初期値の medium (CSS Backgrounds 3 §3.3・§3.4。kw は thin・medium・thick の太さ (pt))
  */
 function parseBorder(v: string, fs: number, kw = BORDER_KEYWORDS_PT): BorderSide | undefined {
   let width = kw.medium;
@@ -1456,8 +1588,29 @@ class HtmlImporter {
   private pseudoTextSeen = new WeakMap<Element, Partial<Record<'::before' | '::after', string>>>();
   /** target-text() を使う文書 (1 回目の変換で、id を持つ要素の文字を集める) */
   private readonly wantText: boolean;
+  /** タグ付き PDF の構造の木を作る仕組み (HtmlImportOptions.tagged のときだけ) */
+  private sb?: StructureBuilder<Element>;
+  /** タグ付き PDF の構造の節の並び (0 番が文書) */
+  private get struct(): StructNode[] | undefined {
+    return this.sb?.nodes;
+  }
+  /** 要素の文書の順 (前順の番号) */
+  private elOrder = new Map<Element, number>();
   /** インラインの中で生じたマーカー (段落の外へ出す) */
   private pendingMarkers: LMarker[] = [];
+  /** 行内の要素の中で見つけた float (flowFloat)。行内の要素を出た所の並びに置く */
+  private pendingFloats: LFloat[] = [];
+  /**
+   * いま中身を並べている、行内でない要素 (flowChildren を inline でなく呼んだ要素)。行内の要素の中の float・絶対配置の箱は、この要素の
+   * 中身の並びに出して組むので、受け継ぐ書式 (字の大きさなど) は、この要素との違いで渡す (行内の親との違いで渡すと、組版はこの要素の
+   * 書式から受け継ぐので、行内の親の字の大きさなどが抜ける。CSS 2.1 §6.2: 受け継ぐ値は、文書の木の親の計算値)
+   */
+  private flowBlockEl: Element | undefined;
+  /**
+   * 中身を行内のまま読んで (flowChildren(el, true))、それ自体を 1 つのブロックの中身にする要素 (脚注の本体・行内の要素から作る float)。
+   * この要素の直下の並びは、行内でない要素の中身の並びと同じく、行内の子の中の float をその場で受け取る (ownFloats)
+   */
+  private floatHome: Element | undefined;
   private bodyEl?: Element;
   private curPage?: string;
   /**
@@ -1717,8 +1870,8 @@ class HtmlImporter {
   private emphasisMark(el: Element, vertical: boolean): string | undefined {
     const v = this.cs(el)('text-emphasis-style');
     if (!v || v === 'none') return undefined;
-    // 文字列の圏点: 最初の書記素クラスタだけを使う (CSS Text Decoration 4 §3.1 の <string>: “The UA may truncate or ignore strings
-    // consisting of more than one grapheme cluster.” ブラウザも最初の 1 つだけを描く)。文字列をまるごと各字に付けると、500 字の文字列と
+    // 文字列の圏点: 最初の書記素クラスタだけを使う (CSS Text Decoration 4 §3.1 の <string>: 2 つ以上の書記素クラスタの
+    // 文字列は、切り詰めても無視してもよい。ブラウザも最初の 1 つだけを描く)。文字列をまるごと各字に付けると、500 字の文字列と
     // 5000 字の本文 (6KB) で 250 万字を組むことになり、メモリを使い切った
     if (/^["']/.test(v)) return firstGrapheme(unquote(v)) || undefined;
     const shapes: Record<string, [string, string]> = { dot: ['•', '◦'], circle: ['●', '○'], 'double-circle': ['◉', '◎'], triangle: ['▲', '△'], sesame: ['﹅', '﹆'] };
@@ -1735,7 +1888,7 @@ class HtmlImporter {
     const mark = this.emphasisMark(el, vertical);
     if (!maxDigits && !mark) return this.smallCaps(t, el);
     // 圏点の側 (text-emphasis-position。Text Decoration 3 §3.4): 横書きは over (上)・under (下)、縦書きは right (右)・left (左。省略は right)。
-    // 圏点は、字ごとのルビとして置く (§3.4「as if each character was assigned the mark as its ruby annotation text」) ので、
+    // 圏点は、字ごとのルビとして置く (§3.4: 字ごとに、圏点をそのルビの注釈の字として付けたのと同じに置く) ので、
     // 下・左は 2 段目のルビの側に置く。
     // vertical-lr: 右・左は物理の向き (§3.4)。右 (省略のときも) は行の並ぶ向きの後ろ側、左は前の側なので、ルビと同じく側を入れ替えて渡す
     // (LRuby.rubyPosition: 'under' = 注釈を後ろ側に置く。行の高さへの効き方はルビと同じ: §3.4・CSS Ruby 1 §3.6)
@@ -1772,6 +1925,8 @@ class HtmlImporter {
       }
     }
     flush();
+    // タグ付き PDF: 圏点の親文字は、まわりの構造の字のまま、点は飾り (Artifact)
+    if (this.sb) for (const r of out) if (typeof r === 'object' && r.type === 'ruby') this.sb.ruby(r, this.st(el), 0, true);
     return out;
   }
 
@@ -1987,7 +2142,7 @@ class HtmlImporter {
       if (src.text !== undefined) {
         // 無名の項目: 文字の並びを包むブロック。字の書式は持ち主から受け継ぐ (持ち主が容器なら、容器の箱が持つ)
         const fi: FlowItem[] = this.decorateText(this.text(src.text, k), k).map((v) => ({ v, block: false }));
-        const children = this.collapseFlowWhitespace(fi, /^pre/.test(this.cs(k)('white-space')));
+        const children = this.collapseFlowWhitespace(fi, this.cs(k)('white-space'));
         items.push({ el: k, anon: true, node: { type: 'block', ...(k !== el ? this.textStyle(k, el) : {}), children } as LBlock, text: src.text, order: 0 });
         continue;
       }
@@ -2584,7 +2739,7 @@ class HtmlImporter {
       // 続いた文字の並び (空白だけのものは除く) は、無名の項目 (Flexbox 1 §4)。el は文字の持ち主 (display: contents の子の中ならその要素)
       let run = '';
       const flush = () => {
-        if (run.trim()) out.push({ el: e, text: run });
+        if (!DOC_WS_ONLY.test(run)) out.push({ el: e, text: run });
         run = '';
       };
       for (const n of Array.from(e.childNodes)) {
@@ -2698,8 +2853,8 @@ class HtmlImporter {
    * 欧文は空白で区切った語、和文 (CJK) は 1 字ずつ (字の間で改行できる。CSS Text 3 §5.1 の近似)。改行しない (nowrap・pre) なら行ごと
    */
   private minTextWidth(t: string, el: Element, pseudo?: '::before' | '::after'): number {
-    const ws = this.csA(el, pseudo)('white-space');
-    const nowrap = /^(nowrap|pre)$/.test(ws);
+    // 折り返さない (text-wrap-mode: nowrap。white-space の nowrap・pre を含む: CSS Text 4 §3・§5.1)
+    const nowrap = this.csA(el, pseudo)('text-wrap-mode') === 'nowrap';
     const chunks = nowrap ? t.split('\n') : t.split(/[ \t\n\r\f]+|(?<=[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef])|(?=[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef])/u);
     return chunks.reduce((m, w) => Math.max(m, w ? this.textWidth(this.transformText(w, el), el, pseudo) : 0), 0);
   }
@@ -3099,7 +3254,7 @@ class HtmlImporter {
                   ? 'before'
                   : (fl as LFloat['float']);
     const d = this.display(e);
-    const inner = (d === 'table' || this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', ...this.textStyle(e, parent), ...this.paragraphStyle(e, parent), ...this.boxStyle(e), children: this.asBlockContent(this.flowChildren(e, true), e) } as LBlock)) as LBlock;
+    const inner = (d === 'table' || this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', ...this.textStyle(e, parent), ...this.paragraphStyle(e, parent), ...this.boxStyle(e), children: this.asBlockContent(this.ownFloatsIn(e, e, true, () => this.flowChildren(e, true)), e) } as LBlock)) as LBlock;
     // (float はブロックの箱になるので、行内の要素から作るときも text-indent などの段落の書式を渡す。渡さないと
     // span.sidenote { text-indent: 0 } のような指定が効かず、本文の字下げを受け継いでしまう)
     // 置き換え要素 (画像など) の float は行の箱を持たないので、受け継いだ text-indent を掛けない
@@ -3632,7 +3787,8 @@ class HtmlImporter {
     }
     const wm = this.wm(c('writing-mode'));
     if (wm) cont.writingMode = wm;
-    return cont;
+    // タグ付き PDF: 箱の中身は要素の構造の節に入れる (絶対配置の箱も、要素の構造の型 (H2 など) と文書の順を保つ。ISO 32000-1 §14.8.2.3)
+    return this.tagNode(cont, e);
   }
 
   /**
@@ -4110,6 +4266,28 @@ class HtmlImporter {
 
   private miss(what: string) {
     this.report.unsupported[what] = (this.report.unsupported[what] ?? 0) + 1;
+    // 最初に現れた所を、診断の場所にする (読んでいる要素)
+    const at = (this.report.unsupportedAt ??= Object.create(null) as Record<string, DiagnosticSource>);
+    if (!(what in at) && this.curEl) at[what] = elementSource(this.curEl, this.opts.sourceName);
+  }
+  /** 読んでいる要素 (診断の場所に使う。block・inline の間) */
+  private curEl?: Element;
+  /** 要素から作った節に、要素の場所を結び付ける (中の要素の節は、それぞれの要素の場所を先に持つ) */
+  private located<T>(el: Element, make: () => T): T {
+    const prev = this.curEl;
+    this.curEl = el;
+    let out: T;
+    try {
+      out = make();
+    } finally {
+      this.curEl = prev;
+    }
+    if (out) {
+      const src = elementSource(el, this.opts.sourceName);
+      if (Array.isArray(out)) for (const n of out) tagNodeSource(n, src);
+      else tagNodeSource(out, src);
+    }
+    return out;
   }
 
   /**
@@ -4309,10 +4487,14 @@ class HtmlImporter {
       const ts = c('tab-size').trim();
       s.tabSize = /^[\d.+-]+(e[+-]?\d+)?$/i.test(ts) ? parseFloat(ts) : { length: cssLen(ts) ?? 0 };
     }
-    // white-space: nowrap・pre は折り返さない (行内要素でも。Text 3 §3)。子の normal などで打ち消せる
-    if (diff('white-space')) {
-      s.noWrap = /^(nowrap|pre)$/.test(c('white-space'));
-      s.collapseSpaces = /^(normal|nowrap|pre-line)$/.test(c('white-space') || 'normal');
+    // 折り返すかは text-wrap-mode (CSS Text 4 §5.1。white-space の nowrap・pre は、その一括指定で nowrap になる: §3)。行内要素でも効く。
+    // 子の wrap などで打ち消せる。空白の扱いは white-space の値
+    if (diff('text-wrap-mode')) s.noWrap = c('text-wrap-mode') === 'nowrap';
+    if (diff('white-space')) s.collapseSpaces = /^(normal|nowrap|pre-line)$/.test(c('white-space') || 'normal');
+    // 行の並べ方の選び方 (CSS Text 4 §5.4)。stable は auto と同じ組み方、avoid-short-last-line は pretty と同じ扱い (inlineLayout の rewrap)
+    if (diff('text-wrap-style')) {
+      const ws = c('text-wrap-style');
+      s.textWrapStyle = ws === 'balance' ? 'balance' : ws === 'pretty' || ws === 'avoid-short-last-line' ? 'pretty' : 'auto';
     }
     // overflow-wrap (初期値 normal: 収まらない語は分けずにはみ出す。Text 3 §5.5)
     if (diff('overflow-wrap')) {
@@ -4366,7 +4548,7 @@ class HtmlImporter {
     }
     // 互換モード: 祖先の飾り線は表に伝えない (表に自分の飾り線があれば、それだけ。Quirks Mode §3.11)。
     // inline-block・inline-table (行の中の、分けられない箱) の中身にも、祖先の飾り線は伝わらない (CSS Text Decoration 3 §2:
-    // "text decorations are not propagated to ... the contents of atomic inline-level descendants such as inline blocks and inline tables")。
+    // 飾り線は、inline-block・inline-table のような分けられないインラインの子孫の中身には伝わらない)。
     // 箱に自分の飾り線があれば、それだけを中身に引く
     if ((!pseudo && isQuirksDoc(el.ownerDocument as Document | null) && /^(inline-)?table$/.test(c('display'))) || /^inline-(block|table)$/.test(c('display'))) {
       const own = deco && deco !== 'none' ? deco : '';
@@ -4452,7 +4634,7 @@ class HtmlImporter {
       // font-feature-settings で明示して有効にした合字の機能: 字間 (letter-spacing) があっても当てる。
       // 機能を決める順 (Fonts 4 §7.2) は、font-variant の機能 → ほかの性質が決める機能 (letter-spacing が 0 でなければ任意の合字を止める) →
       // font-feature-settings なので、font-variant-ligatures の明示 (common-ligatures など) は字間で止まり、font-feature-settings の明示は止まらない
-      // (Text 3 §7.2 にも「font-feature-settings で指定した合字は、この決まりより優先する」とある)
+      // (Text 3 §7.2 も、font-feature-settings で指定した合字を、この決まりより優先させる)
       const forced: string[] = [];
       for (const m of c('font-feature-settings').matchAll(/["'](liga|clig|dlig|hlig)["']\s*(on|off|\d+)?/gi)) {
         const tag = m[1].toLowerCase();
@@ -4520,6 +4702,160 @@ class HtmlImporter {
    * 要素が属する言語 (自身か祖先の lang / xml:lang)。アンテナハウスの拡張の -ah-lang (CSS で言語を指定する。XSL 1.1 §7.9.2 の language と同じ。
    * 受け継ぐ) も読み、同じ要素では lang 属性より優先する。pseudo を渡すと、その擬似要素 (::before・::after・::marker) の -ah-lang も見る
    */
+  /**
+   * タグ付き PDF: 要素の構造の型。undefined は構造を作らない (中身は親の構造に入る)、'Artifact' は飾り。
+   * aria-hidden="true" の要素と、alt が空の画像・役が presentation の画像は飾り (WAI-ARIA 1.2 §6.6 aria-hidden・§5.3.3 presentation、
+   * HTML Living Standard §4.8.4.4: alt が空の画像は飾り)
+   */
+  private structRole(el: Element): string | undefined {
+    const name = el.localName;
+    if (el.getAttribute('aria-hidden')?.trim() === 'true') return 'Artifact';
+    const role = el.getAttribute('role')?.trim().toLowerCase().split(/\s+/)[0];
+    // 画像として組む object (objectImage) は、img と同じ図。代わりの内容を組む object は、構造を作らない (中身は親の構造に入る)
+    const objImage = name === 'object' && !!this.objectImage(el);
+    if (role === 'presentation' || role === 'none') return name === 'img' || name === 'svg' || objImage ? 'Artifact' : undefined;
+    // 並べるための表 (role="presentation" の table) の部分は、表の構造を作らない (中身は外の構造に入る)
+    if (!role && TABLE_PART_ELEMENTS.has(name)) {
+      const t = el.closest?.('table');
+      const tr = t?.getAttribute('role')?.trim().toLowerCase().split(/\s+/)[0];
+      if (tr === 'presentation' || tr === 'none') return undefined;
+    }
+    // 脚注 (float: footnote。CSS GCPM 3 §2.2) は注 (Note。ISO 32000-1 §14.8.4.4.1)。本文の参照の所に置く (flowFootnote)
+    if (this.pg(el).float === 'footnote') return 'Note';
+    if (role === 'heading') {
+      // aria-level が無ければ 2 (WAI-ARIA 1.2 の heading の既定の値)
+      const lv = parseInt(el.getAttribute('aria-level') ?? '2', 10);
+      return `H${Math.min(Math.max(Number.isNaN(lv) ? 2 : lv, 1), 6)}`;
+    }
+    if (role && Object.hasOwn(ARIA_STRUCT_ROLES, role)) return ARIA_STRUCT_ROLES[role];
+    if (Object.hasOwn(STRUCT_ROLES, name)) return STRUCT_ROLES[name];
+    if (name === 'img') return el.getAttribute('alt') === '' ? 'Artifact' : 'Figure';
+    if (objImage) return 'Figure';
+    if (name === 'a' && el.hasAttribute('href')) return 'Link';
+    // 割注 (割注として組む行内の要素。warichuOf) は Warichu (ISO 32000-1 §14.8.4.4)。中身は WT、前後の括弧は WP。
+    // 役 (role)・リンク・図などの型を持つ要素は、その型のまま (割注の括弧は、その構造の中身になる)
+    if (this.isWarichuElement(el) && this.hasWarichuContent(el)) return 'Warichu';
+    if (name === 'a') return undefined;
+    // 言語の変わる要素・略語: 言語 (Lang。ISO 32000-1 §14.9.2)・展開 (E。§14.9.5) は構造の節に書くので、Span を作る
+    if (el.hasAttribute('lang') || el.hasAttribute('xml:lang')) return 'Span';
+    if (name === 'abbr' && el.getAttribute('title')) return 'Span';
+    return undefined;
+  }
+
+  /**
+   * タグ付き PDF の脚注の構造 (StructureBuilder.footnote): 本文の参照の印は Reference、本体は、その後ろに置く注 (Note)、
+   * 頭の番号は注の記号 (Lbl)
+   */
+  private footnoteStructure(fn: LFootnote, e: Element) {
+    this.tagNode(fn, e);
+    this.sb!.footnote(fn, this.st(e), true);
+  }
+
+  /**
+   * 表のセルの構造の属性 (ISO 32000-1 §14.8.5.7 の Table 349): またぐ行・列の数と、見出しのセルの向き (Scope)。向きは scope 属性
+   * (HTML §4.9.10: row・rowgroup は行、col・colgroup は列)、ARIA の rowheader・columnheader、無ければ HTML §4.9.12.2 の auto の決め方に
+   * ならう: thead の中か、行のセルがみな見出しなら列、そうでなければ行
+   */
+  private cellAttrs(x: Element, role: string, n: Omit<StructNode, 'kids' | 'parent'>) {
+    const cs = Math.min(MAX_COL_SPAN, parseInt(x.getAttribute('colspan') ?? '1', 10));
+    const rs = parseInt(x.getAttribute('rowspan') ?? '1', 10);
+    const tr = x.parentNode as Element | null;
+    if (cs > 1) n.colSpan = cs;
+    if (rs > 1) n.rowSpan = Math.min(MAX_ROW_SPAN, rs);
+    else if (rs === 0 && tr?.localName === 'tr') n.rowSpan = Math.min(MAX_ROW_SPAN, this.rowsFrom(tr));
+    if (role !== 'TH') return;
+    const aria = x.getAttribute('role')?.trim().toLowerCase().split(/\s+/)[0];
+    const sc = x.getAttribute('scope')?.trim().toLowerCase();
+    if (aria === 'rowheader' || sc === 'row' || sc === 'rowgroup') n.scope = 'Row';
+    else if (aria === 'columnheader' || sc === 'col' || sc === 'colgroup') n.scope = 'Column';
+    else {
+      const inHead = (tr?.parentNode as Element | null)?.localName === 'thead';
+      n.scope = inHead || (!!tr && !this.rowHasTd(tr)) ? 'Column' : 'Row';
+    }
+  }
+
+  /**
+   * 行 tr の子に td があるか (行ごとに 1 度だけ調べて覚える。見出しのセルごとに行の子を全部たどると、1 行に見出しのセルを多く並べた表で
+   * セルの数の 2 乗の手間になっていた)
+   */
+  private rowHasTd(tr: Element): boolean {
+    let v = this.rowTd.get(tr);
+    if (v === undefined) this.rowTd.set(tr, (v = Array.from(tr.children ?? []).some((c) => c.localName === 'td')));
+    return v;
+  }
+  private rowTd = new WeakMap<Element, boolean>();
+
+  /**
+   * 要素の中身の入る構造の節の番号 (構造を作らない要素は、親の要素の番号。項目 (LI) の中の要素は、その LBody)。
+   * 構造の木を作らないときは 0
+   */
+  private st(el: Element | null | undefined): number {
+    if (!this.sb || !el || !el.getAttribute) return 0;
+    return this.sb.st(el);
+  }
+
+  /** 要素の構造 (StructureBuilder の describe) */
+  private structDesc(x: Element): StructDesc | 'Artifact' | undefined {
+    const role = this.structRole(x);
+    if (role === undefined || role === 'Artifact') return role;
+    const n: StructDesc['node'] = { role };
+    const lang = x.getAttribute('lang') || x.getAttribute('xml:lang');
+    if (lang) n.lang = lang;
+    // 代わりの説明: alt・aria-label・title (図)、alttext (数式。MathML Core §2.1)、SVG の title の子 (SVG 2 §5.9)
+    if (role === 'Figure' && x.localName === 'object') {
+      // 画像として組む object: 名前は aria-label (WAI-ARIA 1.2 §6.7 の aria-label)、無ければ title 属性 (HTML-AAM 1.0 §4.1 の、
+      // 要素ごとの名前の決め方の、そのほかの要素の title。aria-labelledby は読まない (img と同じ))。中の代わりの内容は、
+      // 画像を置けないときの中身 (HTML Living Standard §4.8.7) なので、代わりの文に使わない
+      const alt = x.getAttribute('aria-label')?.trim() || x.getAttribute('title')?.trim();
+      if (alt) n.alt = alt;
+    } else if (role === 'Figure' || role === 'Formula') {
+      const svgTitle = x.localName === 'svg' ? Array.from(x.children ?? []).find((c) => c.localName === 'title')?.textContent?.trim() : undefined;
+      const alt = x.getAttribute('alt') || x.getAttribute('aria-label') || x.getAttribute('alttext') || svgTitle || x.getAttribute('title');
+      if (alt) n.alt = alt;
+    } else if (role === 'Link') {
+      const label = x.getAttribute('aria-label') || x.getAttribute('title');
+      if (label) n.alt = label;
+    }
+    if (x.localName === 'abbr' && x.getAttribute('title')) n.expansion = x.getAttribute('title')!;
+    if (role === 'TH' || role === 'TD') this.cellAttrs(x, role, n);
+    // 注 (Note) は ID を持つ (ISO 14289-1 §7.9)。要素の id、無ければ作る
+    if (role === 'Note') n.sid = x.getAttribute('id') || `note-${this.sb!.nodes.length}`;
+    const d: StructDesc = { node: n };
+    const elId = x.getAttribute('id');
+    if (elId) d.elementId = elId;
+    const hs = x.getAttribute('headers')?.trim();
+    if (hs) d.headers = hs.split(/\s+/);
+    return d;
+  }
+
+  /** 要素の文書の順 (前順の番号。初めて引いたときに文書全体に振る) */
+  private orderOf(el: Element): number {
+    if (!this.elOrder.size) {
+      // 文書の要素を前順にたどる (明示のスタック。DOM の getElementsByTagName('*') の添字で引くと、linkedom では 1 つ引くたびに
+      // 前から数え直し、要素の数の 2 乗の手間になる)
+      const root = (el.ownerDocument as Document | null)?.documentElement;
+      const stack: Element[] = root ? [root] : [];
+      let k = 0;
+      while (stack.length) {
+        const e = stack.pop()!;
+        this.elOrder.set(e, k++);
+        const kids = e.children;
+        if (kids) for (let j = kids.length - 1; j >= 0; j--) stack.push(kids[j]);
+      }
+    }
+    return this.elOrder.get(el) ?? this.elOrder.size;
+  }
+
+  /** 項目 (LI) の構造の節の、記号 (Lbl) か本文 (LBody) の構造の節 (無ければ作る) */
+  private liPart(li: number, part: 'lbl' | 'lbody'): number {
+    return this.sb!.liPart(li, part);
+  }
+
+  /** 入力の節に、要素の構造の節の番号を付ける (付いていなければ。構造の木を作らないときは何もしない) */
+  private tagNode<T>(node: T, el: Element): T {
+    return this.sb ? this.sb.tag(node, el) : node;
+  }
+
   private langOf(el: Element, pseudo?: string): string | undefined {
     const own = pseudo === '::before' || pseudo === '::after' || pseudo === '::marker' ? this.pagedPseudo.get(el)?.[pseudo]?.['-ah-lang']?.trim() : undefined;
     if (own) return own;
@@ -4627,7 +4963,8 @@ class HtmlImporter {
       const n = parseInt(c(k), 10);
       if (Number.isFinite(n) && diff(k)) s[k] = n;
     }
-    if (diff('white-space') && /^(nowrap|pre)$/.test(c('white-space'))) s.noWrap = true;
+    // 折り返さない (text-wrap-mode: nowrap。white-space の nowrap・pre を含む: CSS Text 4 §3・§5.1)
+    if (diff('text-wrap-mode') && c('text-wrap-mode') === 'nowrap') s.noWrap = true;
     return s;
   }
 
@@ -5024,7 +5361,7 @@ class HtmlImporter {
     // 特殊な空白: 改行する幅の空白 (U+2000〜U+200A など) は普通の空白にする。改行しない U+202F・U+2007 はそのまま
     // (書体が持たなければ、決まった幅の空白として測る)
     // 生成した内容 (pseudo) の字は、作成者が逃がし (\2003 など) で選んだ字なので変えない。U+2000 だけは、改行の印 (SEG_BREAK) と紛れるので空白にする
-    // 生成した内容の CR (\D) は空白と同じ (CSS Text 3 §4.1: "Carriage returns (U+000D) are treated identically to spaces")。
+    // 生成した内容の CR (\D) は空白と同じ (CSS Text 3 §4.1: CR (U+000D) は空白と同じに扱う)。
     // 文書の字の CR は、HTML の構文解析が改行 (LF) にするので、ここでは改行として扱う
     let t = raw.replace(pseudo ? /[\u2000\r]/g : /[\u2000-\u2006\u2008-\u200A\u205F]/g, ' ');
     // アンテナハウスの -ah-linefeed-treatment: ignore (XSL §7.16.7): 改行を捨てる (空白にもしない)
@@ -5043,10 +5380,10 @@ class HtmlImporter {
     this.pseudo(e, '::before', items);
     let run = '';
     const flush = () => {
-      if (run.trim()) {
+      if (!DOC_WS_ONLY.test(run)) {
         marks.push({ at: items.length, order: 0 });
         const fi: FlowItem[] = this.decorateText(this.text(run, e), e).map((v) => ({ v, block: false }));
-        items.push({ v: { type: 'block', ...this.textStyle(e, el), children: this.collapseFlowWhitespace(fi, /^pre/.test(this.cs(e)('white-space'))) } as LBlock, block: true });
+        items.push({ v: { type: 'block', ...this.textStyle(e, el), children: this.collapseFlowWhitespace(fi, this.cs(e)('white-space')) } as LBlock, block: true });
       }
       run = '';
     };
@@ -5200,7 +5537,7 @@ class HtmlImporter {
     return kids.flatMap((n) => {
       const e = n.nodeType === 1 ? (n as Element) : undefined;
       if (!e || this.display(e) !== 'contents') return [n];
-      if (Array.from(e.childNodes).some((x) => (x.nodeType === 3 || x.nodeType === 4) && (x.textContent ?? '').trim())) return [n];
+      if (Array.from(e.childNodes).some((x) => (x.nodeType === 3 || x.nodeType === 4) && !DOC_WS_ONLY.test(x.textContent ?? ''))) return [n];
       if (this.hasPseudoContent(e, '::before') || this.hasPseudoContent(e, '::after')) return [n];
       return this.expandContents(Array.from(e.childNodes));
     });
@@ -5252,7 +5589,7 @@ class HtmlImporter {
    */
   private flexItemInline(k: Element, el: Element, strip: boolean): Array<LBlockLevel | LInlineLevel> {
     // 中のブロック (CSS 2.1 §9.2.1.1) は、行内の箱を分けて項目の中のブロックとして並べる (splitAtBlocks)
-    const kids = this.splitAtBlocks(this.inline(k, el), k).map((x) => x.v);
+    const kids = this.ownFloatsIn(k, k, false, () => this.splitAtBlocks(this.inline(k, el), k).map((x) => x.v));
     const out = strip ? kids.map((x) => (isBlockLevel(x) ? x : stripInlineFrame(x as LInlineLevel))) : kids;
     return this.asBlockContent(out, k);
   }
@@ -5284,7 +5621,48 @@ class HtmlImporter {
     return out;
   }
 
+  /**
+   * 1 つのブロックの中身として組む要素 e (脚注の本体・柱に出す要素・flex・grid の項目にした行内の要素・行内の要素から作る float) の中身を
+   * read で読み、中の行内の要素の中の float (pendingFloats) を、e の外 (包むブロックの並び) に出さずに、e の中身の並びに置く。
+   * 外に出すと、脚注・柱・項目の中の float が、脚注の領域・柱・項目の外の本文に組まれる (CSS 2.1 §10.1 の 2: float の包含ブロックは、
+   * いちばん近いブロックの容器の祖先。GCPM 3 §2.2: float: footnote の要素は、中身ごと脚注の領域に移される。GCPM 3 §1.2: running() の
+   * 要素は、中身ごと本文から外れて余白の箱に置かれる。Flexbox 1 §4: flex の項目はブロックの容器)。
+   * base: 中の float の受け継ぐ書式の基準 (中身を入れる箱の書式の元の要素。flowBlockEl)。
+   * inPlace: e の直下の並び (flowChildren(e, true)) で、その場に置く (行内の子の後に置く。行内でない要素の中身と同じ)。
+   * そうでない (inline(e) で行内の箱にして読む) ときは、行内の箱の子に入れると組版が読まずに捨てるので、返す floats を中身の並びの後に足す
+   */
+  private ownFloats<T>(e: Element, base: Element, inPlace: boolean, read: () => T): { v: T; floats: LFloat[] } {
+    const prev = { pending: this.pendingFloats, block: this.flowBlockEl, home: this.floatHome };
+    this.pendingFloats = [];
+    this.flowBlockEl = base;
+    this.floatHome = inPlace ? e : undefined;
+    try {
+      const v = read();
+      return { v, floats: this.pendingFloats };
+    } finally {
+      this.pendingFloats = prev.pending;
+      this.flowBlockEl = prev.block;
+      this.floatHome = prev.home;
+    }
+  }
+
+  /** ownFloats で読み、残った float を中身の並びの後に足す */
+  private ownFloatsIn(e: Element, base: Element, inPlace: boolean, read: () => Array<LBlockLevel | LInlineLevel>): Array<LBlockLevel | LInlineLevel> {
+    const { v, floats } = this.ownFloats(e, base, inPlace, read);
+    return floats.length ? [...v, ...floats] : v;
+  }
+
   private flowChildren(el: Element, inline = false, part?: Node[]): Array<LBlockLevel | LInlineLevel> {
+    if (inline) return this.flowChildren0(el, inline, part);
+    const prev = this.flowBlockEl;
+    this.flowBlockEl = el;
+    try {
+      return this.flowChildren0(el, inline, part);
+    } finally {
+      this.flowBlockEl = prev;
+    }
+  }
+  private flowChildren0(el: Element, inline: boolean, part?: Node[]): Array<LBlockLevel | LInlineLevel> {
     const items: FlowItem[] = [];
     // flex・grid の容器をふつうのブロックとして組むとき (縦並びの flex など) も、項目は order の順 (order-modified document order。
     // CSS Flexbox 1 §5.4) に並べる。::before・::after も項目 (§4)。項目ごとに items の区切り (at) と order を覚え、最後に並べ替える。
@@ -5346,6 +5724,7 @@ class HtmlImporter {
     }
     // display: contents の子 (直下に文字が無く、::before・::after も無いもの) は、その子を項目として並べる (CSS Display 3 §2.5)
     if (flexBox) kids = this.expandContents(kids) as ChildNode[];
+    kids = joinTextAcrossComments(kids);
     let listStarted = false;
     for (let i = 0; i < kids.length; i++) {
       const n = kids[i];
@@ -5354,12 +5733,16 @@ class HtmlImporter {
         if (blockify) {
           // flex・grid の容器の直下の、続いた文字の並びは、1 つの無名の項目 (ブロック)。空白だけの並びは項目にしない (Flexbox 1 §4)
           const fi: FlowItem[] = [];
+          let raw = '';
           for (; i < kids.length && (kids[i].nodeType === 3 || kids[i].nodeType === 4); i++) {
+            raw += kids[i].textContent ?? '';
             const t = this.text(kids[i].textContent ?? '', el);
             if (t) for (const v of this.decorateText(t, el)) fi.push({ v, block: false });
           }
           i--;
-          if (fi.some((x) => typeof x.v !== 'string' || x.v.trim())) items.push({ v: { type: 'block', children: this.collapseFlowWhitespace(fi, /^pre/.test(this.cs(el)('white-space'))) } as LBlock, block: true });
+          // 空白だけかは、元の字 (空白の処理・字の変換の前) で見る。空白は document white space characters (空白・タブ・改行) だけで、
+          // NBSP (U+00A0)・全角の空白 (U+3000) などは字 (Flexbox 1 §4・CSS Text 3 §4.1)
+          if (!DOC_WS_ONLY.test(raw)) items.push({ v: { type: 'block', children: this.collapseFlowWhitespace(fi, this.cs(el)('white-space')) } as LBlock, block: true });
           continue;
         }
         if (inlineFlex) {
@@ -5432,7 +5815,7 @@ class HtmlImporter {
       for (const m of this.stringSet(e)) this.pushMarker(m, inline, items);
       if (this.flowRunning(e, el, d, pg, inline, items)) continue;
       if (this.flowFootnote(e, el, pg, items)) continue;
-      if (this.flowFloat(e, el, pg, items)) continue;
+      if (this.flowFloat(e, el, pg, inline, items)) continue;
       // position: absolute は本文領域を基準にそのページへ、fixed は全ページに置く
       const pos = this.cs(e)('position');
       if ((pos === 'absolute' || pos === 'fixed') && this.cs(e)('visibility') === 'hidden') {
@@ -5487,12 +5870,13 @@ class HtmlImporter {
         items.push({ v: this.withFlexGrow(node, e, el), block: true });
       } else {
         // 中にブロックを持つ行内の要素 (<span><p>…</p></span>・<a><div>…</div></a> など) は、ブロックの前後で分ける (CSS 2.1 §9.2.1.1)
-        const split = this.splitAtBlocks(this.inline(e, el), e);
-        // 行内の flex・grid の容器の項目にした行内の要素で、中にブロックを持つもの: 項目は 1 つのブロックの箱 (Flexbox 1 §4) なので、分けた並びを
-        // 中身にした、行の中の分けられない箱にする。罫線・内側の余白・背景・余白は箱に付け、中身の行内の箱からは外す (flexItemInline と同じ)
-        if (inlineFlex && split.some((x) => x.block)) {
+        // 行内の flex・grid の容器の項目は、中の float を項目の中に組む (ownFloats。項目の外の行に出さない)
+        const { v: split, floats: itemFloats } = inlineFlex ? this.ownFloats(e, el, false, () => this.splitAtBlocks(this.inline(e, el), e)) : { v: this.splitAtBlocks(this.inline(e, el), e), floats: [] as LFloat[] };
+        // 行内の flex・grid の容器の項目にした行内の要素で、中にブロックか float を持つもの: 項目は 1 つのブロックの箱 (Flexbox 1 §4) なので、分けた並び
+        // (と中の float) を中身にした、行の中の分けられない箱にする。罫線・内側の余白・背景・余白は箱に付け、中身の行内の箱からは外す (flexItemInline と同じ)
+        if (inlineFlex && (split.some((x) => x.block) || itemFloats.length)) {
           const kids = this.asBlockContent(
-            split.map((x) => (x.block ? x.v : stripInlineFrame(x.v as LInlineLevel))),
+            [...split.map((x) => (x.block ? x.v : stripInlineFrame(x.v as LInlineLevel))), ...itemFloats],
             e,
           );
           const box = this.boxStyle(e);
@@ -5508,6 +5892,8 @@ class HtmlImporter {
         }
       }
       if (!inline) for (const m of this.pendingMarkers.splice(0)) items.push({ v: m, block: false });
+      // 行内の子の中の float は、行内でない要素の中身の並びか、1 つのブロックの中身にする要素 (floatHome) の直下の並びに置く (ownFloats)
+      if (!inline || el === this.floatHome) for (const f of this.pendingFloats.splice(0)) items.push({ v: f, block: false });
       this.flushPendingAbs(el, inline, items);
     }
     if (flexBox) marks.push({ at: items.length, order: orderOf(el, '::after') });
@@ -5543,7 +5929,7 @@ class HtmlImporter {
     if (inlineFlex) this.flexInlineItems(items, textRuns, el);
     if (snap && elId) this.record.set(elId, { counters: snap, text: this.wantText ? this.plainText(el) : '', before, after: this.lastPseudoText['::after'] });
     if (!part) this.leaveCounters(el);
-    return this.collapseFlowWhitespace(items, /^pre/.test(this.cs(el)('white-space')), inline);
+    return this.collapseFlowWhitespace(items, this.cs(el)('white-space'), inline);
   }
 
   /**
@@ -5571,35 +5957,6 @@ class HtmlImporter {
     }
     if (!wrapped || !textRuns.length) return;
     const ws = this.cs(el)('white-space') || 'normal';
-    const pre = /^pre/.test(ws);
-    // 空白を詰める値か (CSS Text 3 §3 の表: normal・nowrap・pre-line は詰め、pre・pre-wrap・break-spaces は詰めない)。pre とは別 (pre-line は
-    // 空白を詰めるが、collapseFlowWhitespace には、これまでどおり pre として渡す)
-    const collapse = /^(normal|nowrap|pre-line)$/.test(ws);
-    // つなぎ目で詰める字: 空白と、節の端の改行の印 SEG_BREAK (normal・nowrap)。pre-line では、改行は残すので印にならず、改行のまま (§4.1.1)
-    const preLine = ws === 'pre-line';
-    const brCode = preLine ? 0x0a : SEG_BREAK.charCodeAt(0);
-    /** つなぎ目で詰める字か (空白と、改行の印か改行) */
-    const isEdge = (c: number) => c === 0x20 || c === brCode;
-    /** s の頭から続く、詰める字の数 */
-    const headLen = (s: string) => {
-      let i = 0;
-      while (i < s.length && isEdge(s.charCodeAt(i))) i++;
-      return i;
-    };
-    /** s の終わりに続く、詰める字の始まりの位置 (正規表現の `[…]*$` は頭から 1 字ずつ試すので、長い文字列で遅い。終わりから戻る) */
-    const tailStart = (s: string) => {
-      let i = s.length;
-      while (i > 0 && isEdge(s.charCodeAt(i - 1))) i--;
-      return i;
-    };
-    /** s の中の改行の印か改行の数 */
-    const countBr = (s: string) => {
-      let n = 0;
-      for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === brCode) n++;
-      return n;
-    };
-    /** つなぎ目の前の終わりと次の頭の、詰める字の続き (改行の印か改行が br 個、全部で len 字) を、まとめた字 */
-    const midOf = (br: number, len: number) => (br ? (preLine ? '\n'.repeat(br) : SEG_BREAK) : len ? ' ' : '');
     // 並びの最初の項目を、無名の項目 (空白だけなら無し) に置き換え、残りの項目は除く
     const head = new Map<FlowItem, FlowItem | undefined>();
     const drop = new Set<FlowItem>();
@@ -5607,60 +5964,8 @@ class HtmlImporter {
       if (!run.length) continue;
       // 空白だけかは、元の字 (空白の処理・字の変換の前) で見る (Flexbox 1 §4: document white space characters だけの並び)
       const blank = /^[ \t\n\r\f]*$/.test(raw);
-      // 並びの中の、コメントなどで分かれた文字の節は、1 つの並びとして空白を処理する (CSS Text 3 §4.1.1)。collapseFlowWhitespace は隣り合う
-      // 文字列をそのままつなぎ、その後の collapseAcrossInlines は 1 つの文字列の中の続いた空白を詰めない (text() が節ごとに詰めている) ので、
-      // 空白を詰める値では、ここで、つなぎ目の前の終わりと次の頭の、空白・改行の続きを 1 つにまとめる (§4.1.1 の 4: 詰める空白の直後の詰める空白は消す):
-      //  - 改行の印 SEG_BREAK を含めば、印 1 つにする。改行の前後の空白は消し (§4.1.1 の 1)、印は後で resolveSegmentBreaks が、前後の字で
-      //    消すか空白にする (§4.1.3。コメントの無い「あ \nい」と同じく、和文の間では消える)
-      //  - pre-line で改行を含めば、改行は残し (§4.1.1・§3 の表)、前後の空白は消す (§4.1.1 の 1)
-      //  - 空白だけなら、空白 1 つにする
-      // pre・pre-wrap・break-spaces は、空白も改行も残すので、そのままつなぐ
-      // つなぐ文字列は、断片を配列に貯めて最後に 1 度だけつなぐ (つなぐたびに長い文字列を作り直すと、節の数の 2 乗の手間になる)。
-      // cur は、いまつないでいる文字列の項目 (joined の最後) で、中身は body を順につないだ後に、終わりの詰める字の続き (tail) を足したもの。
-      // tail は、元の字のまま (raw) か、つなぎ目でまとめた字 (raw が undefined。字は midOf(br, len) で作る) で、どちらも改行の印か改行の数 br と
-      // 字の数 len を持つ (pre-line で、まとめた長い改行の続きを、つなぐたびに作り直したり数え直したりしない)
-      const joined: FlowItem[] = [];
-      let cur: { item: FlowItem; body: string[]; raw: string | undefined; br: number; len: number } | undefined;
-      const flush = () => {
-        if (cur) cur.item.v = cur.body.join('') + (cur.raw ?? midOf(cur.br, cur.len));
-        cur = undefined;
-      };
-      for (const x of run) {
-        if (!(collapse && typeof x.v === 'string')) {
-          flush();
-          joined.push({ ...x });
-          continue;
-        }
-        if (!cur) {
-          const item = { ...x };
-          joined.push(item);
-          const e = tailStart(x.v);
-          const raw = x.v.slice(e);
-          cur = { item, body: [x.v.slice(0, e)], raw, br: countBr(raw), len: raw.length };
-          continue;
-        }
-        const b = headLen(x.v);
-        const br = cur.br + countBr(x.v.slice(0, b));
-        const len = cur.len + b;
-        const rest = x.v.slice(b);
-        if (rest) {
-          // rest は詰める字で始まらないので、つなぎ目でまとめた字は、ここで中身に入る
-          const mid = midOf(br, len);
-          if (mid) cur.body.push(mid);
-          const e = tailStart(rest);
-          cur.body.push(rest.slice(0, e));
-          cur.raw = rest.slice(e);
-          cur.br = countBr(cur.raw);
-          cur.len = cur.raw.length;
-        } else {
-          // 次の節も詰める字だけ: まとめた字が、そのまま終わりの詰める字の続きになる (midOf の字の改行の数と字の数)
-          cur.raw = undefined;
-          cur.br = br ? (preLine ? br : 1) : 0;
-          cur.len = br ? cur.br : len ? 1 : 0;
-        }
-      }
-      flush();
-      const anon = { type: 'block', children: this.collapseFlowWhitespace(joined, pre) } as LBlock;
+      // 並びの中の、コメントなどで分かれた文字の節のつなぎ目の空白は、collapseFlowWhitespace (joinTextItems) が詰める
+      const anon = { type: 'block', children: this.collapseFlowWhitespace(run, ws) } as LBlock;
       head.set(run[0], blank ? undefined : { v: { type: 'inline-container', decorateBox: false, baselineFrom: 'first', children: [anon] } as LInlineContainer, block: false });
       for (const x of run.slice(1)) drop.add(x);
     }
@@ -5887,7 +6192,7 @@ class HtmlImporter {
     // 左へ出る)。ページの外へ出た分は、塗り足しの端で切れる。
     // 小口の余白に置く章の印 (ツメ) を、左右のページで対称に出す書き方 (-ah-float-x: inside)
     const side = this.ahFloatX(pg, true);
-    const content = side ? this.float(e, parent, side) : this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', children: this.asBlockContent(this.splitAtBlocks(this.inline(e, parent), e).map((x) => x.v), e) } as LBlock);
+    const content = side ? this.float(e, parent, side) : this.isBlock(d, e) ? this.block(e, parent) : ({ type: 'block', children: this.asBlockContent(this.ownFloatsIn(e, parent, false, () => this.splitAtBlocks(this.inline(e, parent), e).map((x) => x.v)), e) } as LBlock);
     this.inRunning = false;
     this.runningFamily = undefined;
     const m: LMarker = { type: 'marker', className: `running:${run[1]}`, children: content ? [content] : [] };
@@ -5931,12 +6236,13 @@ class HtmlImporter {
     this.report.counts.footnotes++;
     // 脚注の本文は、要素の書式 (字の大きさ・行送り・揃え) で組む (書式は脚注に付ける。本文の前に番号が付く)
     // 段落の書式 (揃え・字下げ) は親と比べずに全部渡す (脚注の領域の既定は始め揃えなので、親と同じ両端揃えでも渡す)
-    const fn: LFootnote = { type: 'footnote', ...this.textStyle(e, parent), ...this.paragraphStyle(e, undefined), children: this.asBlockContent(this.flowChildren(e, true), e) };
+    const fn: LFootnote = { type: 'footnote', ...this.textStyle(e, parent), ...this.paragraphStyle(e, undefined), children: this.asBlockContent(this.ownFloatsIn(e, e, true, () => this.flowChildren(e, true)), e) };
     // 参照番号 (::footnote-call) は、脚注の要素の場所に差し込む擬似要素 (GCPM 3 §2.2・§2.6)。元の脚注の要素から受け継ぐと読み、字の大きさ・太さは脚注の要素の値を
     // ::footnote-call の規則で上書きする (見出しの中の脚注でも、見出しの太字・字の大きさにはならない)
     Object.assign(fn, this.footnoteCallStyle(e, parent));
     // 番号の書式は、この要素に当たる ::footnote-call・::footnote-marker の content (脚注ごとに違ってよい)
     Object.assign(fn, this.footnoteFormatOf(e));
+    if (this.struct) this.footnoteStructure(fn, e);
     items.push({ v: fn, block: false });
     return true;
   }
@@ -5951,7 +6257,7 @@ class HtmlImporter {
     const disp = this.display(el);
     if (!/^inline/.test(disp) || this.floatSideOf(el, this.pg(el))) return img;
     // 画像の罫線・内側の余白・背景色 (img { border: … }): 画像の箱に付ける (下)。
-    // 角丸 (border-radius) は罫線の箱に付け、画像は内側の角丸 (外側の半径 − 罫線と余白) で切り抜く (CSS Backgrounds 3 §5.1・§5.3)
+    // 角丸 (border-radius) は罫線の箱に付け、画像は内側の角丸 (外側の半径 − 罫線と余白) で切り抜く (CSS Backgrounds 3 §4.1・§4.2・§4.3)
     const bs = this.boxStyle(el);
     // 外側の余白 (margin): 行内の置換要素には 4 辺とも効く (CSS 2.1 §8.3。上下の margin が効かないのは、置換要素でない行内の箱だけ)。
     // auto は 0 (§10.3.2)。百分率は、包含ブロックの幅に対する値として、カスケードで解いた長さ (§8.3)
@@ -6015,19 +6321,24 @@ class HtmlImporter {
    * float: sidenote (アンテナハウスの拡張) は、@page の @sidenote の float (left・right・inside・outside・start・end) の側へ。指定が無ければ end。
    * float: inline-start・inline-end (Logical 1 §2.1) は start・end と同じ
    */
-  private flowFloat(e: Element, parent: Element, pg: Record<string, string>, items: FlowItem[]): boolean {
+  private flowFloat(e: Element, parent: Element, pg: Record<string, string>, inline: boolean, items: FlowItem[]): boolean {
     const fl = this.floatSideOf(e, pg);
     // 読まない -ah-float-x・-ah-float-y の値は、未対応として知らせる (ahFloatX)
     if (!fl && pg['-ah-float-x'] && pg.float !== 'footnote') this.ahFloatX(pg, true);
     if (!fl) return false;
-    const fv = this.float(e, parent, fl, !!pg.float && /\bsidenote\b/i.test(pg.float));
+    const fv = this.float(e, inline ? (this.flowBlockEl ?? parent) : parent, fl, !!pg.float && /\bsidenote\b/i.test(pg.float));
     if (pg.float && /\bmulticol\b/i.test(pg.float) && (fl === 'top' || fl === 'before')) {
       this.multicolTop.set(fv, /^\s*([\d.]+)gr\s*$/i.exec(pg.width ?? '')?.[1]);
       if (this.cs(e)('box-sizing') === 'border-box') this.multicolTopBorderBox.add(fv);
       const grid = this.inheritedGrid(e);
       if (grid) this.multicolTopGrid.set(fv, grid);
     }
-    items.push({ v: fv, block: false });
+    // 行内の要素の中の float (CSS 2.1 §9.5: float は行内の要素の中にも置け、その行の箱を基準に左右へ寄せる) は、行内の節の子に
+    // 入れると組版が読まずに捨てるので、行内の要素を出た所 (包むブロックの中身の並び) に出す (pendingFloats。マーカーと同じ)。
+    // 組版は、段落の並びの中の float を、その段落の頭の高さに置く (layoutChildren の placeFloat)。行内の要素の直下に書いたときと同じ
+    // 1 つのブロックの中身にする要素 (floatHome) の直下の float は、その場に置く (ownFloats)
+    if (inline && parent !== this.floatHome) this.pendingFloats.push(fv);
+    else items.push({ v: fv, block: false });
     return true;
   }
 
@@ -6037,13 +6348,20 @@ class HtmlImporter {
    * 左右の回り込みにする (ページを基準にする代わりに、親の中の位置を回り込みで近づける)。ほかの absolute は本文領域を基準にそのページへ、fixed は全ページに置く
    */
   private flowPositioned(e: Element, parent: Element, pos: string, items: FlowItem[], inline = false): boolean {
+    // 行内の要素の中の箱は、行内の要素を出た所の並び (flowBlockEl の中身) に置くので、受け継ぐ書式はその要素との違いで渡す (flowBlockEl)
+    const styleParent = inline ? (this.flowBlockEl ?? parent) : parent;
     if (pos === 'absolute' && !this.localCb(e.parentElement) && !this.inlineCbOf(e.parentElement) && this.positionedAncestor(e) && this.src.isAuto?.(e, 'top') !== false && this.src.isAuto?.(e, 'bottom') !== false) {
       const right = this.src.isAuto?.(e, 'right') === false;
       const left = this.src.isAuto?.(e, 'left') === false;
       if (right || left) {
-        const f = this.float(e, parent, right ? 'right' : 'left');
+        const f = this.float(e, styleParent, right ? 'right' : 'left');
         const off = cssLen(this.cs(e)(right ? 'right' : 'left')) ?? 0;
         f.margin = { ...(typeof f.margin === 'object' ? f.margin : {}), [right ? 'right' : 'left']: off };
+        // 行内の要素の中では、行内の要素を出た所に置く (flowFloat と同じ。行内の節の子に入れると、組版が読まずに捨てる)
+        if (inline && parent !== this.floatHome) {
+          this.pendingFloats.push(f);
+          return true;
+        }
         // 上下の位置は、同じ行の高さ (static position): 回り込みを、いまの行の並び (直前のブロックの後) の先頭に入れる
         let at = items.length;
         while (at > 0 && !items[at - 1].block) at--;
@@ -6052,7 +6370,7 @@ class HtmlImporter {
       }
     }
     if (pos !== 'absolute' && pos !== 'fixed') return false;
-    const cont = this.positioned(e, parent);
+    const cont = this.positioned(e, styleParent);
     if (pos === 'fixed') this.fixed.push(cont);
     // 行内の要素の中の箱・行内の箱を基準にする箱は、行内の要素 (基準の要素) を出た所の行の並びに置く (行内の節の中には置けない)
     else if (inline || this.inlineCbEl.has(cont)) this.pendingAbs.push(cont);
@@ -6084,17 +6402,13 @@ class HtmlImporter {
   }
 
   /**
-   * 隣り合う文字列をつなぎ、ブロック境界の空白を除く (pre は white-space: pre*。空白をそのまま残す)。
+   * 隣り合う文字列をつなぎ (つなぎ目の空白は joinTextItems が詰める)、ブロック境界の空白を除く (ws は white-space の値。pre* は空白をそのまま残す)。
    * inline: 行内の要素の中身の並び。並びの端は要素の境目で、行の頭・終わりではないので、端の空白は残す (CSS Text 3 §4.1.1: 空白を詰めるのは、
    * 要素の境目をまたいだ並びで行う。行の頭・終わりの空白は §4.1.2 で行を組むときに消す)。消すと「word <b>bold </b>word」が「boldword」になる
    */
-  private collapseFlowWhitespace(items: FlowItem[], pre: boolean, inline = false): Array<LBlockLevel | LInlineLevel> {
-    const merged: FlowItem[] = [];
-    for (const it of items) {
-      const last = merged[merged.length - 1];
-      if (typeof it.v === 'string' && last && typeof last.v === 'string') last.v += it.v;
-      else merged.push({ ...it });
-    }
+  private collapseFlowWhitespace(items: FlowItem[], ws: string, inline = false): Array<LBlockLevel | LInlineLevel> {
+    const pre = /^pre/.test(ws);
+    const merged = joinTextItems(items, ws);
     const out: Array<LBlockLevel | LInlineLevel> = [];
     merged.forEach((it, k) => {
       if (typeof it.v !== 'string' || pre) {
@@ -6181,10 +6495,10 @@ class HtmlImporter {
     const src = `data:image/svg+xml;base64,${btoa(bin)}`;
     if (!this.report.images.includes(src)) this.report.images.push(src);
     const r2 = (v: number) => Math.round(v * 100) / 100;
-    const img: LImage = { type: 'image', src, width: r2(r.width), height: r2(r.ascent + r.descent) };
+    const img: LImage = this.tagNode({ type: 'image', src, width: r2(r.width), height: r2(r.ascent + r.descent) }, el);
     const alt = el.getAttribute('alttext');
     if (alt) img.alt = alt;
-    return r.descent > 0 ? { type: 'inline', baselineShift: -r2(r.descent), children: [img] } : img;
+    return r.descent > 0 ? this.tagNode({ type: 'inline', baselineShift: -r2(r.descent), children: [img] } as LInline, el) : img;
   }
 
   /** ::before / ::after の content (文字列・counter()・attr()・target-counter()・leader()) */
@@ -6387,7 +6701,7 @@ class HtmlImporter {
   private radiusOf(c: (p: string) => string): BorderRadius | undefined {
     const corners = (['top-left', 'top-right', 'bottom-right', 'bottom-left'] as const).map((k) => {
       const [h, v = h] = splitTop((c(`border-${k}-radius`) || '0px').trim(), ' ').filter(Boolean);
-      // 百分率を含む calc() (計算値は calc(10% + 10px) の形のまま。CSS Backgrounds 3 §5.1) は、百分率と長さの和
+      // 百分率を含む calc() (計算値は calc(10% + 10px) の形のまま。CSS Backgrounds 3 §4.1) は、百分率と長さの和
       const one = (x: string): RadiusLength => {
         if (/%$/.test(x)) return x as `${number}%`;
         const pl = /%/.test(x) ? percentPlusLength(x) : undefined;
@@ -6423,7 +6737,10 @@ class HtmlImporter {
 
   /** ブロックの箱を組む。<a href> なら箱にリンクを付ける (ブロック・flex・表の <a> も、箱の全体が飛び先へのリンクになる) */
   private block(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
-    const b = this.blockBox(el, parent, plain);
+    return this.located(el, () => this.block0(el, parent, plain));
+  }
+  private block0(el: Element, parent: Element, plain = false): LBlockLevel | undefined {
+    const b = this.tagNode(this.blockBox(el, parent, plain), el);
     // 最初の子 (その最初の子…) の break-before は、箱の前の区切りと同じ所の値 (CSS Fragmentation 3 §3.1.1: 最初の子の値は容器へ伝わる)。
     // 箱自身の値と合わせて (§4.3: 左右のページの指定は、流れの中で後ろ = 内側の子の値が勝つ) 箱の値にし、子からは外す。
     // 別々に効かせると、break-before: right の箱の中の break-before: left の子で、右ページへ送ってから、さらに左ページへ送っていた。
@@ -6437,7 +6754,7 @@ class HtmlImporter {
       return b;
     }
     // 表・高さの決まった箱などは、書式を持たないブロックで包んでリンクにする (包んだ箱の前後の区切りは、中の箱と同じ所)
-    const wrap = { type: 'block', link, children: [b] } as LBlock;
+    const wrap = this.tagNode({ type: 'block', link, children: [b] } as LBlock, el);
     this.propagateEdgeAvoids(wrap);
     return wrap;
   }
@@ -6786,12 +7103,12 @@ class HtmlImporter {
   private image(el: Element, src: string): LImage {
     const key = normalizeSrc(src);
     this.report.images.push(key);
-    const img: LImage = { type: 'image', src: key, decorateBox: false };
+    const img: LImage = this.tagNode({ type: 'image', src: key, decorateBox: false }, el);
     const alt = el.getAttribute('alt') ?? el.getAttribute('title');
     if (alt) img.alt = alt;
     const c = this.cs(el);
     if (el.localName === 'img' && this.inAutoCellIfc(el)) img.noWrapInCellMin = true;
-    // 角丸 (border-radius): 画像を角丸で切り抜く (CSS Backgrounds 3 §5.3)
+    // 角丸 (border-radius): 画像を角丸で切り抜く (CSS Backgrounds 3 §4.3)
     const rad = this.radiusOf(c);
     if (rad) img.borderRadius = rad;
     // 寸法: 幅・高さの指定 (auto でなければ確定した値)、無ければ width / height 属性 (px)
@@ -6966,7 +7283,11 @@ class HtmlImporter {
 
   /** インライン要素 */
   private inline(el: Element, parent: Element): LInlineLevel[] {
+    return this.located(el, () => this.inline0(el, parent));
+  }
+  private inline0(el: Element, parent: Element): LInlineLevel[] {
     const out = this.inlineBox(el, parent);
+    if (this.struct) for (const n of out) this.tagNode(n, el);
     // position: relative の行内の箱 (CSS 2.1 §9.4.3): 組んだ箱を left・top (無ければ right・bottom の逆) だけずらす。ずらしは、まわりの
     // 配置を変えない (後に続く字は、ずらす前の位置のまま)。組版には関わらないので、描くときだけの移動 (PaintEffect の translate) にする。
     // 行内の箱は、行ごとの断片とその中の箱がそれぞれ別の領域になるので、中の行内の節のそれぞれに同じ移動を付ける
@@ -6998,9 +7319,8 @@ class HtmlImporter {
     if (name === 'wbr') return ['​'];
     // <object data="図.svg"> は、その画像が読み込まれていれば画像として、無ければ中の代わりの内容を組む
     if (name === 'object') {
-      const data = el.getAttribute('data') ?? '';
-      const isImage = /^image\//i.test(el.getAttribute('type') ?? '') || /\.(svgz?|png|jpe?g|gif|webp|bmp|tiff?)$/i.test(data);
-      if (data && isImage && this.opts.hasAsset?.(normalizeSrc(data)) !== false) return [this.replacedBox(el, this.image(el, data))];
+      const data = this.objectImage(el);
+      if (data) return [this.replacedBox(el, this.image(el, data))];
     }
     if (name === 'img') {
       const src = el.getAttribute('data-kumiori-src') ?? el.getAttribute('src') ?? '';
@@ -7174,6 +7494,14 @@ class HtmlImporter {
           ...(oh ? { rubyOverhang: oh === 'auto' } : {}),
         } as LRuby);
       }
+      // タグ付き PDF: 親文字とルビの組ごとに Ruby (RB・RT。ISO 32000-1 §14.8.4.3.5)。rp (括弧) は描かないので書かない
+      if (this.sb) {
+        const parent = this.st(el);
+        const base = this.orderOf(el);
+        out.forEach((r, k) => {
+          if (typeof r === 'object' && r.type === 'ruby') this.sb!.ruby(r, parent, base + (k + 1) * 1e-3);
+        });
+      }
       return out;
     }
     const c = this.cs(el);
@@ -7228,6 +7556,10 @@ class HtmlImporter {
     if (c('display') === 'contents') return [{ type: 'inline', ...this.textStyle(el, parent), children: this.flowChildren(el, true) as LInlineLevel[] }];
     const inl: LInline = { type: 'inline', ...this.textStyle(el, parent), children: this.flowChildren(el, true) as LInlineLevel[] };
     this.inlineBoxInto(inl, el, parent);
+    const wari = this.warichuOf(el);
+    if (wari) inl.warichu = wari;
+    // 割注の中の字でない箱 (画像・数式・inline-block など) は組まない (warichu.ts の dropWarichuBoxes)。知らせる
+    if (wari && dropWarichuBoxes(inl.children)) this.miss(msg('割注の中の字でない箱 (画像・inline-block など)', 'non-character boxes in warichu (images, inline-block, etc.)'));
     const inlId = el.getAttribute('id');
     if (inlId) inl.id = inlId;
     // 中身の無い行内要素も、字の大きさと行の高さを行の箱に入れる (CSS 2.1 §10.8)
@@ -7235,6 +7567,140 @@ class HtmlImporter {
     const link = this.linkOf(el);
     if (link) inl.link = link;
     return [inl];
+  }
+
+  /**
+   * 割注 (Kumiori の拡張。warichu.ts): -kumiori-warichu: none | auto (初期値 none。受け継がない) が auto の行内の要素は、中身を 2 行に割って
+   * 行の中に入れる。前後の括弧は -kumiori-warichu-brackets: auto | none | <string> <string> (初期値 auto = 全角の丸括弧。受け継がない)。
+   * 標準の CSS にも、他の組版ソフトの拡張にも割注の書き方が無いので、Kumiori の接頭辞の付いた名前にしている (どの互換の指定でも読む)
+   */
+  private warichuOf(el: Element): LWarichu | undefined {
+    const c = this.cs(el);
+    const v = c('-kumiori-warichu').trim();
+    if (v === 'none' || v === '') return undefined;
+    if (v !== 'auto') {
+      this.miss(`-kumiori-warichu: ${v}`);
+      return undefined;
+    }
+    if (!this.isWarichuElement(el)) {
+      // 割注の中の割注 (入れ子) は、割注の 2 行の中に、さらに 2 行を割って置けないので、内側は割注にしない。指定を読まなかったことを知らせる
+      // (割注にできない要素は、組む前に warnIneffectiveWarichu が知らせる)
+      if (this.warichuCandidate(el)) this.miss(msg('-kumiori-warichu (割注の中の割注)', '-kumiori-warichu (warichu inside warichu)'));
+      return undefined;
+    }
+    const bv = c('-kumiori-warichu-brackets');
+    let b = parseWarichuBrackets(bv, unescapeCss);
+    if (!b) {
+      this.miss(`-kumiori-warichu-brackets: ${bv.slice(0, 30)}`);
+      b = parseWarichuBrackets('auto')!;
+    }
+    const w: LWarichu = { ...b };
+    const parts = this.sb?.warichuParts(el, b);
+    if (parts) w.tagParts = parts;
+    return w;
+  }
+
+  /**
+   * <object> を画像として組むときの、その画像 (data 属性)。画像の型 (type 属性が image/…、または data の拡張子) で、読み込まれているもの。
+   * 無ければ undefined (中の代わりの内容を組む。HTML Living Standard §4.8.7 の object 要素)
+   */
+  private objectImage(el: Element): string | undefined {
+    const data = el.getAttribute('data') ?? '';
+    const isImage = /^image\//i.test(el.getAttribute('type') ?? '') || /\.(svgz?|png|jpe?g|gif|webp|bmp|tiff?)$/i.test(data);
+    return data && isImage && this.opts.hasAsset?.(normalizeSrc(data)) !== false ? data : undefined;
+  }
+
+  /**
+   * 割注として組む要素か: 割注にできる要素 (warichuCandidate) で、割注の中の要素でないもの (入れ子の内側は割注にしない)。
+   * 祖先をたどるのは、同じ行の並び (inline formatting context) の中だけ: 間に行内でない箱 (ブロック・inline-block・表のセルなど) が
+   * あれば、そこで止める。外側の割注がブロックを含むときは、ブロックの前後で分かれ、ブロックの中の行は外側の割注の 2 行の中に無いので、
+   * その中の割注は入れ子でない (CSS 2.1 §9.2.1.1: ブロックを含む行内の箱は、ブロックの前後で分かれる)。
+   * display: contents の祖先は箱を作らないので、越えてたどる (CSS Display 3 §2.5)
+   */
+  private isWarichuElement(el: Element): boolean {
+    if (!this.warichuCandidate(el)) return false;
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      if (this.warichuCandidate(p)) return false;
+      const d = this.display(p);
+      if (d !== 'inline' && d !== 'contents') break;
+    }
+    return true;
+  }
+
+  /**
+   * 割注にできる要素か: -kumiori-warichu の値が auto で (読めない値は warichuOf が警告に出す)、行内の箱 (display: inline) を作る、
+   * 置換要素・ルビ・縦中横・改行などでない要素。計算値が inline でも、ブロック化される要素 (blockified) は行内の箱を作らないので除く
+   */
+  private warichuCandidate(el: Element): boolean {
+    const c = this.cs(el);
+    if (c('-kumiori-warichu').trim() !== 'auto') return false;
+    if (c('display') !== 'inline' || NOT_WARICHU_ELEMENTS.has(el.localName) || this.blockified(el)) return false;
+    return c('text-combine-upright') !== 'all' && c('-webkit-text-combine') !== 'horizontal';
+  }
+
+  /**
+   * display の値が inline でも、ブロックの箱を作る (ブロック化される) 要素か (CSS Display 3 §2.7 Automatic Box Type Transformations):
+   * 絶対配置・固定配置の要素と、float が none でない要素 (CSS 2.1 §9.7 の表: display を block にする。ページの組版の float・脚注
+   * (CSS GCPM 3 §2) と、柱へ移す要素 (position: running()。CSS GCPM 3 §1.3) も、流れの外のブロックとして組む)、
+   * flex・grid の容器の子 (CSS Flexbox 1 §4: 子はフレックスの項目になり、display をブロック化する。CSS Grid 1 §6.1 も同じ)。
+   * 親が display: contents なら、その親が容器の子の代わりになる (CSS Display 3 §2.5: 箱を作らず、子が祖先の箱の子になる)
+   */
+  private blockified(el: Element): boolean {
+    if (this.outOfFlow(el) || (this.cs(el)('float') || 'none') !== 'none') return true;
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const d = this.display(p);
+      if (d !== 'contents') return /\b(flex|grid)\b/.test(d);
+    }
+    return false;
+  }
+
+  /**
+   * -kumiori-warichu: auto が、割注にできない要素 (display が inline でない要素・ブロック化される要素・置換要素・ルビ・縦中横・改行など) に
+   * 付いていれば知らせる (要素ごとに 1 回)。割注は行内の要素にだけ効く (ブロック・inline-block の中身は、割注の 2 行に割れない)。
+   * リスト項目・絶対配置・フレックスの項目などは、ブロック・行内の箱を組む入口 (block・inline) を通らずに組むので、組む前に文書の
+   * 要素をまとめて調べる。組まない要素 (display: none の要素とその中) は調べない
+   */
+  private warnIneffectiveWarichu(root: Element): void {
+    const stack: Element[] = [root];
+    const prev = this.curEl;
+    try {
+      while (stack.length) {
+        const e = stack.pop()!;
+        const c = this.cs(e);
+        if (c('display') === 'none') continue;
+        if (c('-kumiori-warichu').trim() === 'auto' && !this.warichuCandidate(e)) {
+          this.curEl = e;
+          this.miss(msg('-kumiori-warichu (行内の要素 (display: inline) でないもの・置換要素・ルビ・縦中横)', '-kumiori-warichu (elements other than inline elements (display: inline), replaced elements, ruby, text-combine-upright)'));
+        }
+        const kids = e.children;
+        if (kids) for (let j = kids.length - 1; j >= 0; j--) stack.push(kids[j]);
+      }
+    } finally {
+      this.curEl = prev;
+    }
+  }
+
+  /**
+   * 割注の構造 (Warichu) を作る中身があるか: 空白でない字、::before・::after の生成内容。中身の無い割注は組まない
+   * (inlineFlatten.ts の warichuAtoms) ので、構造も作らない。画像・inline-block などの字でない箱は、割注の中では組まない
+   * (warichu.ts の dropWarichuBoxes) ので、その中の字も数えない
+   */
+  private hasWarichuContent(el: Element): boolean {
+    const hasText = (x: Element): boolean => {
+      for (const n of Array.from(x.childNodes)) {
+        if (n.nodeType === 3 || n.nodeType === 4) {
+          if (/\S/.test(n.textContent ?? '')) return true;
+        } else if (n.nodeType === 1) {
+          const e = n as Element;
+          const d = this.cs(e)('display');
+          // 行内の要素とルビ (ruby・rb・rt) の中の字は、割注の字。ほか (inline-block・置換要素・display: none など) は数えない
+          if ((d === 'inline' || d === 'contents' || /^ruby/.test(d) || /^(ruby|rb|rt|rtc)$/.test(e.localName)) && !/^(img|svg|math|video|audio|canvas|iframe|object|embed|picture|input|select|textarea|button)$/.test(e.localName) && hasText(e)) return true;
+        }
+      }
+      return false;
+    };
+    if (hasText(el)) return true;
+    return (['::before', '::after'] as const).some((p) => !/^(none|normal|)$/.test(this.cs(el, p)('content').trim()));
   }
 
   /**
@@ -7333,6 +7799,11 @@ class HtmlImporter {
         } else if (!pageFlowNone) this.pageIgnored(li, ['表のセル・段組などの中のリストの項目', 'list items in table cells, multi-column containers and so on']);
         pushAll(blocks, enter(li, k));
         const b = this.block(li, container);
+        // 記号の無い項目: 中身は項目の本文 (LBody)
+        if (b && this.struct) {
+          const id = this.st(li);
+          if (this.struct[id].role === 'LI') (b as { tag?: number }).tag = this.liPart(id, 'lbody');
+        }
         if (b) blocks.push(b);
       });
       // 項目を並べる無名の箱: 最初の項目の前・最後の項目の後ろの区切りは、この箱の前後と同じ所 (CSS Fragmentation 3 §3.1.1)
@@ -7445,20 +7916,27 @@ class HtmlImporter {
       const lastOut = k === lis.length - 1 && !(cssLen(lc('padding-bottom')) ?? 0) && !(cssLen(lc('border-bottom-width')) ?? 0) && !(cssLen(c('padding-bottom')) ?? 0) && !(cssLen(c('border-bottom-width')) ?? 0);
       if (box.margin) body.padding = { top: (box.margin as Record<string, number>).top ?? 0, bottom: lastOut ? 0 : liMb };
       if (lastOut) body.trailingSpaceOut = liMb;
+      // タグ付き PDF: 項目 (LI) の行、記号 (Lbl) のセル、本文 (LBody) のセル (ISO 32000-1 §14.8.4.3 のリストの要素)
+      const liTag = this.struct ? this.st(li) : undefined;
+      const isLi = liTag !== undefined && this.struct![liTag].role === 'LI';
+      const tags = liTag === undefined ? undefined : { row: liTag, lbl: isLi ? this.liPart(liTag, 'lbl') : liTag, lbody: isLi ? this.liPart(liTag, 'lbody') : liTag };
+      if (tags) body.tag = tags.lbody;
       return {
         type: 'table-row',
+        ...(tags ? { tag: tags.row } : {}),
         // 描くときだけの効果 (li の transform・opacity): 項目の行 (記号と本文) に掛ける
         ...(box.paintEffect ? { paintEffect: box.paintEffect } : {}),
         ...rowBreaks(li, k, body),
         ...(marker ? { listMarkerRow: true } : {}),
         // 記号・番号は、本文の最初の行の基線にそろえる (CSS Lists: 外側の記号は最初の行の箱に置く)
         // 本文の最後の子の下の余白は、li の外へ抜けて次の項目との間に残る (CSS 2.1 §8.3.1)。セルの高さに含める
-        cells: [{ type: 'table-cell', textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, ...(liRel ? { relativeOffset: liRel } : {}), children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', ...(body.trailingSpaceOut === undefined ? { keepTrailingSpace: true } : {}) }],
+        cells: [{ type: 'table-cell', ...(tags ? { tag: tags.lbl } : {}), textAlign: 'end', blockAlign: 'baseline', padding: { right: fs * 0.5 }, ...this.textStyle(li, container), noWrap: true, alignOverflow: true, ...(liRel ? { relativeOffset: liRel } : {}), children: marker ? [marker] : [] }, { ...body, blockAlign: 'baseline', ...(body.trailingSpaceOut === undefined ? { keepTrailingSpace: true } : {}) }],
       };
     });
     const tableOf = (rs: LTableRow[]) =>
       ({
         type: 'table',
+        ...(this.struct ? { tag: this.st(container) } : {}),
         listTable: true,
         columns: [
           { type: 'table-column', width: Math.max(indent, 1) },
@@ -7532,6 +8010,8 @@ class HtmlImporter {
     const footer: LTableRow[] = [];
     const body: LTableRow[] = [];
     const columns: LTableColumn[] = [];
+    /** 列の数の上限 (MAX_TABLE_COLUMNS) に当たったか (診断は表ごとに 1 度) */
+    let columnsCapped = false;
     const captions: NonNullable<LTable['captions']> = [];
     const collapse = c('border-collapse') === 'collapse';
     /** empty-cells: hide で、罫線・背景を描かないセル */
@@ -7629,7 +8109,7 @@ class HtmlImporter {
       // 行の罫線は、罫線を重ねる表でだけ使う (CSS 2.1 §17.6.1: 罫線を分ける表の行・行グループには罫線が無い)
       const rb = collapse ? this.boxStyle(tr).border : undefined;
       if (rb) row.border = rb;
-      return row;
+      return this.tagNode(row, tr);
     };
     const rowOf0 = (tr: Element, anonCells?: CellPart[]): LTableRow => ({
       type: 'table-row',
@@ -7656,7 +8136,9 @@ class HtmlImporter {
           enter(td, tr);
           const pre = takeMarks();
           // セルの中の最初・最後のブロックの margin は捨てない (CSS 2.1 §17.5: セルは新しい整形文脈で、中の margin はセルの外と重ならない。<td><p> の上下の margin)
-          const cell: LTableCell = { type: 'table-cell', keepEdgeSpace: true, ...this.textStyle(td, tr), ...this.paragraphStyle(td, tr), ...this.boxStyle(td), children: this.flowChildren(td) };
+          // タグ付き PDF: セルの構造の節 (TH・TD) を、中身より先に決める (中身の構造の節は、その子)
+          const cell: LTableCell = this.tagNode({ type: 'table-cell', keepEdgeSpace: true, ...this.textStyle(td, tr), ...this.paragraphStyle(td, tr), ...this.boxStyle(td), children: [] } as LTableCell, td);
+          cell.children = this.flowChildren(td);
           if (pre.length) cell.children.unshift(...pre);
           // アンテナハウスの行グリッド (-ah-baseline-grid。継承する): セル・行・行グループ・表に new・root の指定があれば、セルの中身も
           // 行グリッドの領域にする (中身を、その指定のブロックで包む)。行グリッドの領域では、最初の行の前と最後の行の後ろに半行間を
@@ -7796,7 +8278,15 @@ class HtmlImporter {
           const cw = this.cs(ch)('width');
           const w: LTableColumn['width'] | undefined =
             this.src.isAuto?.(ch, 'width') !== false ? undefined : /%$/.test(cw.trim()) ? (`${parseFloat(cw)}*` as const) : cssLen(cw);
-          for (let k = 0; k < span; k++) columns.push({ type: 'table-column', ...(w ? { width: w } : {}) });
+          const room = MAX_TABLE_COLUMNS - columns.length;
+          if (span > room && !columnsCapped) {
+            columnsCapped = true;
+            this.report.diagnostics = [
+              ...(this.report.diagnostics ?? []),
+              diag('limit/table-columns', msg(`表の列 (col・colgroup の span の合計) が多すぎるので、${MAX_TABLE_COLUMNS} 列までにします`, `the table has too many columns (the sum of col and colgroup spans); using the first ${MAX_TABLE_COLUMNS}`), { limit: MAX_TABLE_COLUMNS }, elementSource(ch, this.opts.sourceName)),
+            ];
+          }
+          for (let k = 0; k < Math.min(span, room); k++) columns.push({ type: 'table-column', ...(w ? { width: w } : {}) });
         } else if (d === 'table-caption' || ch.localName === 'caption') {
           // 見出し: 表の子 (表の部分の中ではない) のときだけ。caption-side は top・bottom (CSS Tables 3 §3.5.3)
           if (n !== el || anon) continue;
@@ -7805,7 +8295,7 @@ class HtmlImporter {
           enter(ch, el);
           const pre = takeMarks();
           marks = held;
-          const block: LBlock = { type: 'block', ...this.textStyle(ch, el), ...this.paragraphStyle(ch, el), ...this.boxStyle(ch), children: [] };
+          const block: LBlock = this.tagNode({ type: 'block', ...this.textStyle(ch, el), ...this.paragraphStyle(ch, el), ...this.boxStyle(ch), children: [] } as LBlock, ch);
           this.blockStack.push(block);
           block.children = [...pre, ...this.flowChildren(ch)];
           this.blockStack.pop();
@@ -8001,8 +8491,8 @@ class HtmlImporter {
       margins: pb.margins,
       ...(pb.marginBoxMargins ? { marginBoxMargins: pb.marginBoxMargins } : {}),
       // 背景画像 (url()) の位置の基準の領域 (ページの箱の padding の領域。pageBox)。background-attachment: fixed なら、余白を含むページの箱
-      // (仕上がりの用紙の全体。塗り足しがあっても、仕上がりの角が基準。CSS Paged Media 3 §3.1: "if background-attachment is fixed then
-      // the image is positioned relative to the page box including its margins")。百分率・cover・contain の大きさの基準も同じ箱
+      // (仕上がりの用紙の全体。塗り足しがあっても、仕上がりの角が基準。CSS Paged Media 3 §3.1: background-attachment が fixed なら、
+      // 画像の位置の基準は、余白を含むページの箱)。百分率・cover・contain の大きさの基準も同じ箱
       ...(pb.backgroundOrigin && firstCssUrl(decls['background-image'] ?? decls.background ?? '')
         ? { backgroundOrigin: pageBackgroundFixed(decls) ? { top: 0, right: 0, bottom: 0, left: 0 } : pb.backgroundOrigin }
         : {}),
@@ -8373,7 +8863,7 @@ class HtmlImporter {
     const v = decls['background-image'] ?? decls.background ?? '';
     const u = firstCssUrl(v);
     // グラデーションは、ページの背景の領域の大きさで組版のときに画像にする。大きさ (background-size の百分率・長さ)・繰り返し・位置は、
-    // url() の画像と同じに読む (CSS Backgrounds 3 §3.9: グラデーションも背景の画像。前は読まずに、領域いっぱいに塗っていた)
+    // url() の画像と同じに読む (CSS Backgrounds 3 §2.3・§2.9: グラデーションも背景の画像。前は読まずに、領域いっぱいに塗っていた)
     const grad = u ? undefined : firstGradient(v);
     if (!u && !grad) return undefined;
     const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(decls['font-size'] ?? '') ?? 12 } : { src: normalizeSrc(u![1]) };
@@ -8404,10 +8894,13 @@ class HtmlImporter {
       if (img.widthPct !== undefined && (parts[1] ?? 'auto') === 'auto') img.pctAuto = 'height';
       else if (img.heightPct !== undefined && parts[0] === 'auto') img.pctAuto = 'width';
     }
-    // 繰り返し (一括指定の no-repeat も)。大きさ (cover・contain) を書いても、繰り返しは書いたとおり (書かなければ初期値の repeat。
-    // CSS Backgrounds 3 §2.4・§2.9。前は cover・contain で no-repeat にしていた。ページの背景は、位置の基準の領域から並べて塗り足しまで覆う)
-    if (/no-repeat/.test(v) || /no-repeat/.test(decls['background-repeat'] ?? '')) img.repeat = 'no-repeat';
-    // 位置 (CSS Backgrounds 3 §3.6): background-position か、一括指定の中の位置の語・百分率・長さ (/ の後の大きさは除く)。
+    // 繰り返し (background-repeat か、無ければ一括指定の中の繰り返しの語。最初の重ね)。大きさ (cover・contain) を書いても、繰り返しは
+    // 書いたとおり (書かなければ初期値の repeat。CSS Backgrounds 3 §2.4・§2.9。前は cover・contain で no-repeat にしていた。ページの背景は、
+    // 位置の基準の領域から並べて塗り足しまで覆う)。repeat-x・repeat-y と、横・縦の 2 値 (repeat no-repeat など) も読む (§2.4)。
+    // space・round は、repeat として並べる (これまでどおり)
+    const rep = pageRepeatOf(decls);
+    if (rep) img.repeat = rep;
+    // 位置 (CSS Backgrounds 3 §2.6): background-position か、一括指定の中の位置の語・百分率・長さ (/ の後の大きさは除く)。
     // 1〜4 値は文書の要素の背景と同じに x・y に分ける (値が 1 つなら、もう一方は center)。指定が無ければ、初期値の左上 (0% 0%)
     // (前は、指定が無ければ中央に置き、値が 1 つのときの残りの軸を center にしていなかった)
     // 長さ (em・rem・calc() も) は pt にしてから分ける。百分率を含む calc() など、読めない値があれば、宣言ごと無効にして初期値にする
@@ -8439,7 +8932,7 @@ class HtmlImporter {
   /** ページ余白の箱 (@top-center など) → 静的コンテンツ (ページの左上を原点に、pt で置く) */
   private marginBoxes(master: PageMaster, boxes: Record<string, Record<string, string>>, rootFs: number, pageDecls: Record<string, string> = {}): LBlockContainer[] {
     // 余白の箱は、@page (ページ文脈) に書いた受け継ぐ性質 (字の大きさ・書体・行送り・font-variant・text-transform など) を受け継ぐ
-    // (CSS Page 3 §6: "page-margin boxes inherit from the page context. The page context inherits from the root element.")。
+    // (CSS Page 3 §6: 余白の箱はページ文脈から受け継ぎ、ページ文脈は根の要素から受け継ぐ)。
     // 字の書式の一括指定 (font・font-variant・text-decoration) は、個別の性質に分けてから読む
     const inherited = Object.fromEntries(Object.entries(marginTextDecls(pageDecls)).filter(([k]) => MARGIN_TEXT_PROPS.test(k) && !MARGIN_TEXT_NOT_INHERITED.test(k)));
     const rootEl = (this.bodyEl?.ownerDocument as Document | undefined)?.documentElement ?? this.bodyEl;
@@ -8663,6 +9156,8 @@ class HtmlImporter {
       if (rad) box.borderRadius = rad;
       if (box.children[0] && (box.children[0] as LBlock).color) (box.children[0] as LBlock).color = fade((box.children[0] as LBlock).color);
       if (ol) box.paintEffect = { ...box.paintEffect, outline: ol };
+      // タグ付き PDF: 上の余白の箱はページの上の柱、下の余白の箱は下の柱 (Artifact の Pagination の Subtype Header・Footer。ISO 32000-1 §14.8.2.2.2)
+      if (this.sb) box.tag = this.sb.artifact(name.startsWith('top') ? 'header' : name.startsWith('bottom') ? 'footer' : 'pagination');
       out.push(box);
     }
     return out;
@@ -8670,7 +9165,7 @@ class HtmlImporter {
 
   /**
    * 余白の箱の字の書式のうち、marginBoxes が自分で読むもの (字の大きさ・書体・太さ・傾き・色・行送り・字間) のほか:
-   * word-spacing・white-space・text-decoration・font-variant-*・font-feature-settings・font-kerning・font-stretch・
+   * word-spacing・white-space・text-wrap (text-wrap-mode・text-wrap-style)・text-decoration・font-variant-*・font-feature-settings・font-kerning・font-stretch・
    * font-variation-settings・font-optical-sizing・font-palette・hyphens・line-break・word-break・overflow-wrap。
    * 本文と同じ所 (textStyle) で読む。宣言の無い性質は、静的コンテンツが受け継ぐ本文の根の書式 (body) のままにする
    * (decls は、ページ文脈から受け継いだ宣言と、余白の箱の宣言。fs は箱の字の大きさ (pt))
@@ -8678,9 +9173,20 @@ class HtmlImporter {
   private marginTextStyle(decls: Record<string, string>, fs: number): TextStyle {
     const body = this.bodyEl;
     if (!body) return {};
-    const READ = /^(word-spacing|white-space|font-variant-(numeric|east-asian|ligatures|position)|font-feature-settings|font-kerning|font-stretch|font-optical-sizing|font-variation-settings|font-palette|hyphens|line-break|word-break|overflow-wrap|text-decoration-(line|style|color|thickness)|text-underline-offset)$/;
+    const READ = /^(word-spacing|white-space|text-wrap(-mode|-style)?|font-variant-(numeric|east-asian|ligatures|position)|font-feature-settings|font-kerning|font-stretch|font-optical-sizing|font-variation-settings|font-palette|hyphens|line-break|word-break|overflow-wrap|text-decoration-(line|style|color|thickness)|text-underline-offset)$/;
     if (!Object.keys(decls).some((k) => READ.test(k))) return {};
     const bodyC = this.cs(body);
+    // 折り返すか (text-wrap-mode) と行の並べ方 (text-wrap-style) は、一括指定の white-space (CSS Text 4 §3) と text-wrap (§5.5) を
+    // 書いた順に展開して決める (本文の要素と同じ展開。decls は一括指定を展開していない宣言の表)。初期値・無効の値は、本文の根の値のままにする
+    const wrap: Record<string, string> = {};
+    for (const [k, v] of Object.entries(decls)) {
+      if (!/^(white-space|text-wrap(-mode|-style)?)$/.test(k)) continue;
+      for (const [p, x] of expand(k, v)) {
+        const lv = x.trim().toLowerCase();
+        if (p === 'text-wrap-mode') wrap[p] = /^(wrap|nowrap)$/.test(lv) ? lv : lv === 'initial' ? 'wrap' : '';
+        else if (p === 'text-wrap-style') wrap[p] = /^(auto|balance|stable|pretty|avoid-short-last-line)$/.test(lv) ? lv : lv === 'initial' ? 'auto' : '';
+      }
+    }
     // em の長さは、箱の字の大きさで pt にする (textStyle は計算値を読む)
     const len = (v: string) => {
       const n = lenEm(v, fs);
@@ -8695,6 +9201,7 @@ class HtmlImporter {
         return !v || /^currentcolor$/i.test(v) ? c('color') : v;
       }
       if (name === 'color') return decls.color?.trim() ?? bodyC('color');
+      if (name === 'text-wrap-mode' || name === 'text-wrap-style') return wrap[name] || bodyC(name);
       const v = READ.test(name) ? decls[name] : undefined;
       if (v === undefined) return bodyC(name);
       if (/^(word-spacing|text-decoration-thickness|text-underline-offset)$/.test(name)) return len(v.trim().toLowerCase());
@@ -8776,6 +9283,22 @@ class HtmlImporter {
   run(doc: Document): LDocument {
     const html = doc.documentElement;
     const bodyEl = doc.body ?? (doc.getElementsByTagName('body')[0] as HTMLElement | undefined) ?? html;
+    if (this.opts.tagged && html) {
+      // 構造の木の根元 (文書)。言語は文書の言語 (html の lang。無ければ body)
+      const lang = this.langOf(bodyEl ?? html);
+      this.sb = new StructureBuilder<Element>(
+        {
+          parent: (e) => {
+            const p = e.parentNode as (Element & { getAttribute?: unknown }) | null;
+            return p && typeof p.getAttribute === 'function' ? p : undefined;
+          },
+          order: (e) => this.orderOf(e),
+          describe: (e) => this.structDesc(e),
+        },
+        html,
+        lang ? { lang } : {},
+      );
+    }
     const { pages, rules, counterStyles, rootVars } = this.sheet;
     this.generatedLeft = GENERATED_TEXT_BASE + 2 * (html?.textContent?.length ?? 0) + GENERATED_TEXT_PER_ELEMENT * (html?.getElementsByTagName('*').length ?? 0);
     this.pageRules = pages;
@@ -8827,13 +9350,14 @@ class HtmlImporter {
     this.footnoteRules = rules.filter((r) => /::footnote-(call|marker)\s*$/.test(r.selector.trim()) && pseudoBaseMatches(r.selector));
     this.collectPaged(doc, rules, rootVars);
     this.bodyEl = bodyEl;
+    this.warnIneffectiveWarichu(bodyEl);
     const rootFs = cssLen(this.cs(html)('font-size')) ?? 12;
     // 本文 (body) の書式は、ページシーケンスの書式にする
     // ルビの字の配り方の既定は、ruby-align の初期値 space-around (CSS Ruby 1 §4.3。欧文・注音のルビは字の間を空けず中央にそろえる)
     // fontOpticalSizeUnit: CSS の font-optical-sizing: auto は、font-size の CSS px の数を opsz にする (CSS Fonts 4 §8.1 の試験 variable-opsz.html)
     const rootStyle: TextStyle = { ...this.textStyle(bodyEl, undefined), ...this.paragraphStyle(bodyEl, undefined), fontOpticalSizeUnit: 'px', wordSpaceShrink: this.opts.wordSpaceShrink ?? false, textAutospaceWidth: this.opts.autospaceWidth ?? 0.125, ...(this.opts.autospaceLatinOnly ? {} : { textAutospaceUnicode: true }), primaryFontMetrics: true, inlineBoxFontMetrics: true, ...(this.opts.emBoxBaselineAh ? {} : { fontBaseline: true }), ...(this.opts.normalLineHeightAllFonts ? { normalLineHeightAllFonts: true } : {}), rubyAlign: 'space-around', ...(this.opts.primaryFontByLangAh ? { primaryFontByLang: true } : {}) };
     // 文書の言語: body に lang が無ければ、祖先 (html) の lang を受け継ぐ (HTML Standard §3.2.6.2 The lang and xml:lang attributes:
-    // 「If these attributes are omitted from an element, then the language of this element is the same as the language of its parent element」)。
+    // 要素にこれらの属性が無ければ、その要素の言語は親の要素の言語と同じ)。
     // 字の言語 (TextStyle.language) で決まる動き (line-break の日本語・中国語だけの決まり = CSS Text 3 §5.2、分綴の言語、
     // アンテナハウス互換の行の基準線) が、<html lang="…"> だけの文書でも効く
     if (!rootStyle.language) {
@@ -8980,7 +9504,7 @@ class HtmlImporter {
       else roots.push(node);
       stack.push({ level: b.level, node });
     }
-    return {
+    const out: LDocument = {
       type: 'document',
       ...(title ? { title } : {}),
       ...(roots.length ? { bookmarks: roots } : {}),
@@ -8990,6 +9514,12 @@ class HtmlImporter {
       // ページの左右は、ページの順で決める (CSS Paged Media 3 §3.3。HtmlImportOptions.pageSidesByNumber)
       ...(this.opts.pageSidesByNumber ? {} : { pageSidesByOrder: true }),
     };
+    if (this.sb) {
+      out.structure = this.sb.finish(out);
+      const ds = this.sb.limitDiagnostics();
+      if (ds.length) this.report.diagnostics = [...(this.report.diagnostics ?? []), ...ds];
+    }
+    return out;
   }
 }
 
@@ -9250,6 +9780,128 @@ function finishSegmentBreaks(root: unknown): void {
 }
 
 /**
+ * 子の並び (kids) の、コメント・処理命令だけを挟んで続く、同じ親の文字の節を、1 つの文字の節 (中身の字だけを持つ代わりのもの) につなぐ。
+ * コメント・処理命令は CSS では無いものとして扱う (CSS Display 3 §1) ので、前後の字は 1 つの並びとして空白を処理し (CSS Text 3 §4.1.1)、
+ * その後で字を変える (§2.1: text-transform は、空白を詰める段の後。節ごとに変えると、full-width でつなぎ目の空白が全角の空白 2 つになる)
+ */
+function joinTextAcrossComments<T extends Node>(kids: T[]): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < kids.length; i++) {
+    const n = kids[i];
+    if (!isTextNode(n)) {
+      out.push(n);
+      continue;
+    }
+    let text = n.textContent ?? '';
+    let last = i;
+    for (let j = i + 1; j < kids.length; j++) {
+      const m = kids[j];
+      if (m.nodeType === 8 || m.nodeType === 7) continue;
+      if (!isTextNode(m) || m.parentNode !== n.parentNode) break;
+      text += m.textContent ?? '';
+      last = j;
+    }
+    if (last === i) out.push(n);
+    else {
+      out.push({ nodeType: 3, textContent: text, parentNode: n.parentNode } as unknown as T);
+      i = last;
+    }
+  }
+  return out;
+}
+
+/**
+ * 並び (items) の、隣り合う文字列を 1 つにつなぐ (入力の項目は変えない)。文字の節は text() が 1 つずつ空白を処理するので、コメント・処理命令
+ * (CSS Display 3 §1: CSS では、無いものとして扱う)・display: none の要素・字だけを持つ display: contents の要素で分かれた節のつなぎ目には、
+ * 詰める空白が続いて残る。空白を詰める white-space の値 (CSS Text 3 §3 の表: normal・nowrap・pre-line) では、つなぎ目の前の終わりと
+ * 次の頭の、空白・改行の続きを 1 つにまとめる (§4.1.1 の 4: 詰める空白の直後の詰める空白は消す。続いた空白は、要素の境目に関わらず 1 つの並び):
+ *  - 改行の印 SEG_BREAK を含めば、印 1 つにする。改行の前後の空白は消し (§4.1.1 の 1)、印は後で resolveSegmentBreaks が、前後の字で
+ *    消すか空白にする (§4.1.3。コメントの無い「あ \nい」と同じく、和文の間では消える)
+ *  - pre-line で改行を含めば、改行は残し (§4.1.1・§3 の表)、前後の空白は消す (§4.1.1 の 1)
+ *  - 空白だけなら、空白 1 つにする
+ * pre・pre-wrap・break-spaces は、空白も改行も残すので、そのままつなぐ。
+ * つなぐ文字列は、断片を配列に貯めて最後に 1 度だけつなぐ (つなぐたびに長い文字列を作り直すと、節の数の 2 乗の手間になる)。
+ * cur は、いまつないでいる文字列の項目 (out の最後) で、中身は body を順につないだ後に、終わりの詰める字の続き (tail) を足したもの。
+ * tail は、元の字のまま (raw) か、つなぎ目でまとめた字 (raw が undefined。字は midOf(br, len) で作る) で、どちらも改行の印か改行の数 br と
+ * 字の数 len を持つ (pre-line で、まとめた長い改行の続きを、つなぐたびに作り直したり数え直したりしない)
+ */
+function joinTextItems(items: FlowItem[], ws: string): FlowItem[] {
+  const collapse = /^(normal|nowrap|pre-line|)$/.test(ws);
+  // つなぎ目で詰める字: 空白と、節の端の改行の印 SEG_BREAK (normal・nowrap)。pre-line では、改行は残すので印にならず、改行のまま (§4.1.1)
+  const preLine = ws === 'pre-line';
+  const brCode = preLine ? 0x0a : SEG_BREAK.charCodeAt(0);
+  /** つなぎ目で詰める字か (空白と、改行の印か改行) */
+  const isEdge = (c: number) => c === 0x20 || c === brCode;
+  /** s の頭から続く、詰める字の数 */
+  const headLen = (s: string) => {
+    let i = 0;
+    while (i < s.length && isEdge(s.charCodeAt(i))) i++;
+    return i;
+  };
+  /** s の終わりに続く、詰める字の始まりの位置 (正規表現の `[…]*$` は頭から 1 字ずつ試すので、長い文字列で遅い。終わりから戻る) */
+  const tailStart = (s: string) => {
+    let i = s.length;
+    while (i > 0 && isEdge(s.charCodeAt(i - 1))) i--;
+    return i;
+  };
+  /** s の中の改行の印か改行の数 */
+  const countBr = (s: string) => {
+    let n = 0;
+    for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === brCode) n++;
+    return n;
+  };
+  /** つなぎ目の前の終わりと次の頭の、詰める字の続き (改行の印か改行が br 個、全部で len 字) を、まとめた字 */
+  const midOf = (br: number, len: number) => (br ? (preLine ? '\n'.repeat(br) : SEG_BREAK) : len ? ' ' : '');
+  const out: FlowItem[] = [];
+  let cur: { item: FlowItem; body: string[]; raw: string | undefined; br: number; len: number } | undefined;
+  const flush = () => {
+    if (cur) cur.item.v = cur.body.join('') + (cur.raw ?? midOf(cur.br, cur.len));
+    cur = undefined;
+  };
+  for (const x of items) {
+    if (typeof x.v !== 'string') {
+      flush();
+      out.push({ ...x });
+      continue;
+    }
+    if (!cur) {
+      const item = { ...x };
+      out.push(item);
+      // 詰めない値では、終わりの続きを分けずに、そのままつなぐ
+      const e = collapse ? tailStart(x.v) : x.v.length;
+      const raw = x.v.slice(e);
+      cur = { item, body: [x.v.slice(0, e)], raw, br: countBr(raw), len: raw.length };
+      continue;
+    }
+    if (!collapse) {
+      cur.body.push(x.v);
+      continue;
+    }
+    const b = headLen(x.v);
+    const br = cur.br + countBr(x.v.slice(0, b));
+    const len = cur.len + b;
+    const rest = x.v.slice(b);
+    if (rest) {
+      // rest は詰める字で始まらないので、つなぎ目でまとめた字は、ここで中身に入る
+      const mid = midOf(br, len);
+      if (mid) cur.body.push(mid);
+      const e = tailStart(rest);
+      cur.body.push(rest.slice(0, e));
+      cur.raw = rest.slice(e);
+      cur.br = countBr(cur.raw);
+      cur.len = cur.raw.length;
+    } else {
+      // 次の節も詰める字だけ: まとめた字が、そのまま終わりの詰める字の続きになる (midOf の字の改行の数と字の数)
+      cur.raw = undefined;
+      cur.br = br ? (preLine ? br : 1) : 0;
+      cur.len = br ? cur.br : len ? 1 : 0;
+    }
+  }
+  flush();
+  return out;
+}
+
+/**
  * ブロックの中身の並びで、行内の要素 (LInline) の境目をまたいで空白を詰める (CSS Text 3 §4.1.1 の 4: 詰める空白の直後の詰める空白は消す。
  * 要素の境目は関係しない)。行の頭 (ブロックの始め・強制改行の後・中のブロックの後) と行の終わりの空白も消す (§4.1.2 の 1・3)。
  * 行内の要素の中身は、端の空白を残して読む (collapseFlowWhitespace の inline) ので、「word <b> bold</b>」の二重の空白、
@@ -9348,7 +10000,7 @@ export function importHtml(doc: Document, src: StyleSource, opts: HtmlImportOpti
 }
 
 /**
- * 枠の内側 (padding の箱・内容の箱) の角丸: 外側の半径から、その角に接する辺の罫線と余白を引く (CSS Backgrounds 3 §5.1。0 未満は 0)。
+ * 枠の内側 (padding の箱・内容の箱) の角丸: 外側の半径から、その角に接する辺の罫線と余白を引く (CSS Backgrounds 3 §4.2。0 未満は 0)。
  * 百分率はそのまま (内側の箱の大きさに対する百分率として使う)
  */
 function innerRadius(rad: BorderRadius, border?: BorderInput, padding?: EdgesInput): BorderRadius {

@@ -21,6 +21,7 @@ import { atomAboveBelow, DEFAULT_BASELINE_RATIO, lineMetrics, type LineMetrics }
 import { hyphenationLetters } from './hyphenation';
 import { bidiControls, flattenInline, fontBaselineRatio, hyphenAtoms, joiningUnits, ligatureUnits, primaryChar, runStyleOf } from './inlineFlatten';
 import { pushAll } from './arrayLoop';
+import { packWarichu, type WarichuMark } from './warichu';
 
 // inline の木を atom に平らにする処理 (inlineFlatten.ts) も、ほかのファイルからは従来どおりここから使える
 export { bidiControls, flattenInline, joiningUnits, ligatureUnits, primaryChar, runStyleOf };
@@ -52,6 +53,8 @@ export interface Atom {
   noWordSqueeze?: number;
   /** 中身の無い inline の目印 (id の位置だけを記録する幅 0 の箱) */
   idMark?: boolean;
+  /** 割注の 2 行を入れた行内の箱 (warichu.ts の warichuBox。字を含む箱) */
+  wariBox?: boolean;
   /**
    * 行の中で見つけた絶対配置の箱の、見つけた所の目印 (idMark の箱。LInline.staticAnchor)。行末の空白を捨てるときは、目印を飛ばして
    * その前の空白も捨てる (目印は行に残す): 目印があっても、行の字の位置を変えない
@@ -179,6 +182,10 @@ export interface Atom {
   bidiReset?: 1 | 2;
   /** 元の入力の節の通し番号 (sourceRef.ts)。字を含む inline (無ければ block) */
   ref?: number;
+  /** ルビ: 親文字の字とルビの字に付ける入力の節の番号 (タグ付き PDF の RB・RT。LRuby.tagParts) */
+  rubyRefs?: { base?: number; text?: number };
+  /** 割注の字・括弧 (warichu.ts)。行を作るとき (makeLine) に、行の中の同じ割注の atom を 1 つの行内の箱にまとめる */
+  wari?: WarichuMark;
   /** この atom の前・後ろに入れる双方向の制御文字 (unicode-bidi の inline の始まり・終わり。Writing Modes 3 §2.4.2) */
   bidiOpen?: number[];
   bidiClose?: number[];
@@ -220,6 +227,8 @@ export interface InlineFrame {
   outline?: import('./types').Outline;
   /** 輪郭線の箱を、この inline の効果 (opacity) に入れるための、節の番号 (字の背景の fxRef と同じ) */
   outlineRef?: number;
+  /** リンク・注釈の範囲の箱の、元の inline の節の番号 (Area の sourceRef。タグ付き PDF で、注釈を Link の構造に結ぶ) */
+  linkRef?: number;
   /** 行で分かれた断片のそれぞれを、罫線・余白で包む (box-decoration-break: clone。CSS Fragmentation 3 §5.4) */
   clone?: boolean;
   /**
@@ -469,7 +478,7 @@ export interface RawLine {
 
 /** breakOne に渡す、その行の分綴の扱い (breakOneLimited が決める) */
 export interface HyphenBreak {
-  /** この行は分綴しない (ほかに分けられる位置があるとき。無ければ分綴する: CSS Text 4 §6.3.5 “user agents may not be able to honor the specified value”) */
+  /** この行は分綴しない (ほかに分けられる位置があるとき。無ければ分綴する: CSS Text 4 §6.3.5: 指定どおりにできないこともある) */
   noHyphen?: boolean;
   /** 分綴せずに分けたときの行末の空きがこの長さ以下なら、分綴しない (hyphenate-limit-zone。CSS Text 4 §6.3.3) */
   zone?: number;
@@ -516,7 +525,9 @@ function makeLine(items: Atom[], last: boolean, indent: number): RawLine {
     if (items[e - 1].staticMark) marks.unshift(items[e - 1]);
     e--;
   }
-  return { items: marks.length ? [...items.slice(0, e), ...marks] : items.slice(0, e), last, indent };
+  const kept = marks.length ? [...items.slice(0, e), ...marks] : items.slice(0, e);
+  // 割注の字は、行ごとに 2 行に割った箱にする (warichu.ts)
+  return { items: packWarichu(kept), last, indent };
 }
 
 /**
@@ -538,7 +549,8 @@ function makeLine(items: Atom[], last: boolean, indent: number): RawLine {
 export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) => number, kernAh = false) {
   for (let k = 0; k < atoms.length; k++) {
     const a = atoms[k];
-    if (a.kind === 'ruby' && a.r && a.st.rubyOverhang && a.st.direction !== 'rtl') rubyOverhang(a, atoms[k - 1], atoms[k + 1]);
+    // 割注の括弧・中身の字と、その外の字の間は詰めない (割注の括弧と前後の字の間はベタ。JLREQ §3.4.2)
+    if (a.kind === 'ruby' && a.r && a.st.rubyOverhang && a.st.direction !== 'rtl') rubyOverhang(a, sameWarichuText(a, atoms[k - 1]) ? atoms[k - 1] : undefined, sameWarichuText(a, atoms[k + 1]) ? atoms[k + 1] : undefined);
     // axf:punctuation-trim="all":
     // 全角の字幅の約物 1 字を二分にする。始め括弧類は前の二分を、終わり括弧類・句読点類は後ろの二分を、中点類は前後の四分ずつを詰める。
     // 半角にした約物は、後の約物の連続の詰め・行頭行末の詰め (字幅が全角のときだけ詰める) の対象にならない
@@ -558,6 +570,7 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
     const a = atoms[k];
     const b = atoms[k + 1];
     if (a.kind !== 'glyph' || b.kind !== 'glyph') continue;
+    if (!sameWarichuText(a, b)) continue;
     const fa = a.st.fontSize;
     const fb = b.st.fontSize;
     // 字の組の詰め (kern): 書式が同じなら、inline の境目をまたいでも詰める (CSS Text 3 §7.3: 書式の実際の変化が無い境目では、
@@ -618,6 +631,16 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
       }
     }
   }
+}
+
+/**
+ * 2 つの atom の間を、和文の字間の調整で扱ってよいか: どちらも割注の外か、どちらも同じ割注の中身の字。割注の括弧の前後と、割注の中身と外の間は
+ * 扱わない (括弧は prepareWarichu が詰め、括弧と前後の字の間はベタ。JLREQ §3.4.2)
+ */
+function sameWarichuText(a: Atom, b: Atom | undefined): boolean {
+  if (!b) return true;
+  if (!a.wari && !b.wari) return true;
+  return !!a.wari && !!b.wari && a.wari.g === b.wari.g && a.wari.part === 'text' && b.wari.part === 'text';
 }
 
 /** 句読点 (、。，．) とコロン類 (：；): 字形の墨の位置で、終わり括弧類の仲間か中点類の仲間かが変わる字 (CSS Text 4 §8.5.3 の fullwidth dot punctuation・fullwidth colon punctuation) */
@@ -743,7 +766,7 @@ function rubyOverhang(a: Atom, prev: Atom | undefined, next: Atom | undefined) {
 
 /** 行頭の全角の始め括弧類の前の二分アキを詰める量 (punctuationTrimStart。全角の字面のときだけ) */
 function startTrimOf(a: Atom | undefined): number {
-  if (!a || a.kind !== 'glyph') return 0;
+  if (!a || a.kind !== 'glyph' || a.wari) return 0;
   // hanging-punctuation: first (CSS Text 3 §8.2.1): 要素の 1 行目の行頭の始め括弧類・引用符 (Ps・Pi・Pf と ' ")・全角空白は、
   // 字全体を行の外へぶら下げる (字下げがあれば、その中に置く)
   if (a.paraStart && a.st.hangFirst && /^[\p{Ps}\p{Pi}\p{Pf}'"\u3000]$/u.test(a.first)) return a.advance;
@@ -758,7 +781,7 @@ function startTrimOf(a: Atom | undefined): number {
 
 /** 行末の全角の終わり括弧類・句読点の後ろのアキを捨てる量 (punctuationTrimEnd。字面の外に残っているアキの分、最大で二分) */
 function endTrimOf(a: Atom | undefined): number {
-  if (!a || a.kind !== 'glyph' || !a.st.punctuationTrimEnd || !closingAt(a, a.last)) return 0;
+  if (!a || a.kind !== 'glyph' || a.wari || !a.st.punctuationTrimEnd || !closingAt(a, a.last)) return 0;
   // axf:punctuation-trim="end-except-fullstop": 句点 (。．) は除く
   if (a.st.punctuationTrimEndExceptFullstop && isFullStop(a.last)) return 0;
   const fs = a.st.fontSize;
@@ -903,6 +926,7 @@ export function breakOne(atoms: Atom[], start: number, L: number, indent: number
   }
   if (
     cand.kind === 'glyph' &&
+    !cand.wari &&
     isHangable(cand.first) &&
     cand.st.hanging &&
     hangingDefault &&
@@ -1302,11 +1326,11 @@ const WSQ_LAST = 2;
 /**
  * 段落の字の並びの空白に、語間を追込みで詰めない行の種類の印を付ける (ブロックの wordSqueezeJustifiedOnly: XSL-FO の仕様モード)。
  * 語間を詰めるのは、両端揃えで組む行だけ:
- *  - XSL 1.1 §7.17.8: word-spacing="normal" の語間は “.maximum = .optimum, .minimum = .optimum” (縮める幅も伸ばす幅も無い)
- *  - XSL 1.1 §7.16.9: “In the case of 'justify', the UA may stretch the inline boxes in addition to adjusting their positions.”
+ *  - XSL 1.1 §7.17.8: word-spacing="normal" の語間は .maximum も .minimum も .optimum と同じ (縮める幅も伸ばす幅も無い)
+ *  - XSL 1.1 §7.16.9: justify のときは、箱の位置を変えるほかに、行の中の箱を伸ばしてもよい。
  *    start・end・center・inside・outside は、行の中身を寄せるだけ
- *  - CSS Text 3 §6.1: “In the case of justify, the UA may stretch or shrink any inline boxes by adjusting their text.”、
- *    §6.4.1: 字の間に手を入れるのは “When justifying text”、§7.1: word-spacing: normal は “No additional spacing is applied.”
+ *  - CSS Text 3 §6.1: justify のときは、字の間を変えて行の中の箱を伸び縮みさせてよい。
+ *    §6.4.1: 字の間に手を入れるのは両端揃えのとき、§7.1: word-spacing: normal は語間を足さない
  * どの行が両端揃えで組まれるかは、positionLine と同じ: 途中の行は text-align が justify のとき、最後の行と改行 (U+000A) で終わる行は
  * text-align-last が justify のとき (XSL 1.1 §7.16.10。relative は、text-align が justify でも start)。
  * 揃えは、行を持つブロック (st) の値で決める (行内の要素に書いた text-align は、中のブロックへ継承するための値で、この行の揃えではない)。
@@ -1362,7 +1386,8 @@ function punctAki(a: Atom): number {
 const SQUEEZE_LEVELS = 6;
 function squeezeParts(a: Atom, tail: boolean, head: boolean, last: boolean): number[] {
   const out = new Array<number>(SQUEEZE_LEVELS).fill(0);
-  if (a.kind !== 'glyph') return out;
+  // 割注の字の送りは、2 行に割ったときの見積もり (prepareWarichu) なので、詰めない
+  if (a.kind !== 'glyph' || a.wari) return out;
   out[0] = wordSpaceSqueeze(a, last);
   const fs = a.st.fontSize;
   // -ah-text-justify-trim (アンテナハウスの拡張。textJustifyTrim.ts): 約物のアキを詰めない指定 (none など) と、句点類・中点類を除く指定
@@ -1476,23 +1501,48 @@ export function breakOneLast(
   return took.r;
 }
 
+/** 行を切り出し始めるときの状態 (breakRun が行ごとに記録し、途中の行から切り直すのに使う) */
+interface BreakState {
+  /** 行の始まりの atom の番号 */
+  start: number;
+  /** 要素の最初の行か (字下げを決める) */
+  first: boolean;
+  /** 強制改行の直後の行か (each-line の字下げを決める) */
+  afterForced: boolean;
+  /** 直前まで続けて分綴した行の数 (hyphenate-limit-lines) */
+  run: number;
+}
+
+/** breakLines・breakRun の、行の並びによらない引数 */
+interface BreakContext {
+  atoms: Atom[];
+  firstIndent: number;
+  hangingDefault: boolean;
+  indentOf?: { st: Parameters<typeof lineIndent>[0] & { lastLineEndIndent?: number }; first: boolean };
+  lim?: HyphenLimits;
+  wm?: WritingMode;
+}
+
 /**
- * 行に切り分ける。firstIndent は 1 行目の字下げ。st を渡すと、行ごとの字下げを lineIndent で決める
- * (first: この並びの 1 行目が要素の最初の行か)
+ * s0 の状態から、atoms[stop] (の手前) まで行を切り出す。width(i) は i 行目 (s0 から数えて 0 から) の行の長さ。
+ * states を渡すと、行ごとの切り出し始めの状態を足す (states[i] が i 行目)。maxLines 行まで切り出したら止める。
+ * after を渡すと、切り出し終えた所 (次の行の切り出し始め) の状態を書く
  */
-export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: { st: Parameters<typeof lineIndent>[0] & { lastLineEndIndent?: number }; first: boolean }, lim?: HyphenLimits, wm?: WritingMode): RawLine[] {
+function breakRun(ctx: BreakContext, s0: BreakState, width: (i: number) => number, stop: number, states?: BreakState[], maxLines = Infinity, after?: BreakState): RawLine[] {
+  const { atoms, firstIndent, hangingDefault, indentOf, lim, wm } = ctx;
   const lines: RawLine[] = [];
-  const hyState = { run: 0 };
-  let start = 0;
-  let first = true;
-  let afterForced = false;
-  if (atoms[0]) atoms[0].paraStart = true;
-  while (start < atoms.length) {
+  const hyState = { run: s0.run };
+  let start = s0.start;
+  let first = s0.first;
+  let afterForced = s0.afterForced;
+  while (start < stop && lines.length < maxLines) {
     // 行頭の控えめな改行 (soft。行内の要素のブロックの ::before / ::after): 空の行を作らない
     if (atoms[start].kind === 'break' && atoms[start].soft) {
       start = afterForcedBreak(atoms, start);
       continue;
     }
+    states?.push({ start, first, afterForced, run: hyState.run });
+    const L = width(lines.length);
     const indent: number = indentOf ? lineIndent(indentOf.st, first && indentOf.first, afterForced) : first ? firstIndent : 0;
     // 分綴の制限 (行の数の上限・最後の行・行末の幅) は、段落のブロックの値で決める (CSS Text 4 §6.3.3・§6.3.5 の Applies to: block containers)
     // box-decoration-break: clone の枠 (breakOneBoxed) が外、最後の行の端のずらし (breakOneLast)・分綴の制限 (breakOneLimited) が内。
@@ -1512,7 +1562,297 @@ export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangin
     lines.push(line);
     start = next;
   }
+  if (after) Object.assign(after, { start, first, afterForced, run: hyState.run });
   return lines;
+}
+
+/**
+ * 行の並べ方の選び方 (CSS Text 4 §5.4 の text-wrap-style。W3C Working Draft 2026-08-14 の節の番号)。
+ * auto・stable は、1 行ずつ先から決める (breakLines の既定。stable は「後ろの行の中身を見ない」なので、auto と同じ組み方)。
+ * st は、行を持つブロックの書式 (行の長さを測るのに使う)
+ */
+export interface WrapStyle {
+  style: 'balance' | 'pretty';
+  st: ResolvedStyle;
+}
+
+/** balance で行の長さをそろえる、行の数の上限 (§5.4: 釣り合わせる行が 10 を超えるなら、auto として扱ってよい) */
+const BALANCE_MAX_LINES = 10;
+/** pretty で切り直す、段落 (強制改行で区切った組) の終わりの行の数 */
+const PRETTY_TAIL_LINES = 4;
+/** pretty: 最後の行がこの割合 (行の長さに対する) より短ければ、短すぎるとみなして切り直す */
+const PRETTY_SHORT_RATIO = 1 / 4;
+/** pretty: 切り直すときに、行の長さを狭める限り (行の長さに対する割合。これより狭くはしない) */
+const PRETTY_MIN_WIDTH_RATIO = 3 / 4;
+/**
+ * pretty: 切り直すときに試す行の長さの数の上限 (組ごと)。ふだんは字の大きさの 1/4 ずつ狭めるが、上限を超える長い行では
+ * (行の長さが字の大きさの 200 倍を超える所。字が 1pt より小さいときは 200pt。幅 16000pt に 1pt の字など)、試す数が行の長さに比例して増え、1 回ごとに終わりの行を切り直すので、手間が行の長さの 2 乗になっていた
+ * (49KB の文書で 56 秒)。上限を超える組は、狭める幅を広げて、この数で 3/4 まで試す
+ */
+const PRETTY_MAX_TRIALS = 200;
+
+/**
+ * 行を切り出したときの中身の長さ (行の長さ W に収めたとき。追込みで詰めた分は引き、揃えで空けた分は数えない)。
+ * 行の長さ W に収まらなければ undefined
+ */
+function lineFitLength(raw: RawLine, W: number, st: ResolvedStyle): number | undefined {
+  const pl = positionLine(raw, W, { ...st, textAlign: 'start', textAlignLast: 'start' });
+  const avail = Math.max(W - raw.indent - (raw.endIndent ?? 0), 0);
+  const used = pl.widths.reduce((a, b) => a + b, 0);
+  return used <= avail + FIT_EPS ? raw.indent + used : undefined;
+}
+
+/**
+ * 長さ L より短い長さで切った行を、長さ L の行として置くときの、行末のぶら下げの扱い。ぶら下げは、行に収まらない句読点を
+ * 行の外へ出す組み方 (JLREQ §3.8.1 の 2 の a。CSS Text 3 §9.2 の hanging-punctuation: allow-end も、ぶら下げないと収まらないときだけ)
+ * なので、ぶら下げた字まで長さ L に収まるなら、ぶら下げずに行の中に入れる。前は、短い長さで切ったときのぶら下げを残したまま
+ * 長さ L に置いたので、行の字間を空けて両端を揃えたうえで、句読点を行の外へ出した。
+ * atEnd: 段落 (強制改行で区切った組) の終わりの行。ぶら下げを入れた行は、最後の行 (両端を揃えない行) にする
+ * (breakOne は、ぶら下げた行を段落の終わりでも最後の行にしない。長さ L の行では、ぶら下げた行は満ちているので、揃えても空かない)
+ */
+function settleHang(raw: RawLine, L: number, st: ResolvedStyle, atEnd: boolean): RawLine {
+  if (!raw.hang) return raw;
+  const merged: RawLine = { ...raw, items: [...raw.items, raw.hang], last: raw.last || atEnd };
+  delete merged.hang;
+  return lineFitLength(merged, L, st) !== undefined ? merged : raw;
+}
+
+/** 組の行 ls (長さ L より短い長さで切った行) を、長さ L の行として置く形にする (settleHang。組の終わりの行は last) */
+const settleGroup = (ls: RawLine[], L: number, st: ResolvedStyle, last: boolean): RawLine[] => ls.map((l, k) => settleHang(l, L, st, last && k === ls.length - 1));
+
+/**
+ * text-wrap-style の balance・pretty で、段落の行を切り直す (CSS Text 4 §5.4)。lines・states は、行の長さ L で 1 行ずつ先から切り出した結果。
+ * 強制改行で区切った組ごとに扱う (§5.4 の balance: 強制改行で区切った組ごとに、別々に釣り合わせる)。
+ *  - balance: 組の行の数を変えずに、行の長さを狭めて切り直し、行の数の変わらない最も狭い長さで切った行にする (どの行も同じ長さで
+ *    切るので、行末の空きがそろう。§5.4: 行ごとの残りの空きがそろうように改行の位置を選ぶ)。
+ *    行の数は変えない (5 行以下は変えてはならない)。行が 10 を超える組は auto のまま
+ *  - pretty (avoid-short-last-line も): ふつうは段落全体で行を分ける (totalFit)。行が PRETTY_TOTAL_FIT_MAX_LINES を超える段落だけ、
+ *    ここで、組の最後の行が短すぎる (行の長さの 1/4 未満) なら、終わりの 4 行を、行の長さを少しずつ狭めて切り直し、
+ *    行の数を変えずに最後の行が 1/4 以上になる最も広い長さで切った行にする (§5.4 は方法を決めず、
+ *    処理系に任せている。狭めるのは 3/4 まで。見つからなければ auto のまま)
+ * 切り直した行も、行の長さ L の行として置く (揃え・両端揃えは L で行う。§5.4: 残りの空きは、両端揃えで調整する前の空き)。
+ * 字の改行の機会・禁則・追込み・ぶら下げ・分綴は、どの行も breakOne の決まりのまま (切る長さが変わるだけ)。ただし、短い長さで切って
+ * ぶら下げた字が長さ L に収まる行は、ぶら下げずに行の中に入れる (settleHang)
+ */
+function rewrap(ctx: BreakContext, L: number, lines: RawLine[], states: BreakState[], wrap: WrapStyle): RawLine[] {
+  const out: RawLine[] = [];
+  const st = wrap.st;
+  // 組 (強制改行で終わる行・段落の最後の行で区切る) の、最初の行の番号
+  let g = 0;
+  while (g < lines.length) {
+    let e = g;
+    while (e < lines.length - 1 && !lines[e].last) e++;
+    // 組は lines[g..e]。組の次の行の始まり (組の切り出しを止める所)
+    const stop = e + 1 < states.length ? states[e + 1].start : ctx.atoms.length;
+    const group = lines.slice(g, e + 1);
+    const n = group.length;
+    let chosen: RawLine[] | undefined;
+    // 行の長さ L で収まらない行 (長い語のはみ出し) のある組は、切り直さない
+    const fitsAll = (ls: RawLine[], W: number) => ls.every((l) => lineFitLength(l, W, st) !== undefined);
+    // リーダーのある行 (目次など) は、リーダーが空きを埋めるので、切り直さない
+    const plain = (ls: RawLine[]) => !ls.some((l) => l.items.some((a) => a.kind === 'leader'));
+    if (n >= 2) {
+      if (wrap.style === 'balance' && n <= BALANCE_MAX_LINES && plain(group) && fitsAll(group, L)) {
+        const tryW = (W: number) => {
+          const ls = breakRun(ctx, states[g], () => W, stop);
+          return ls.length === n && fitsAll(ls, W) ? ls : undefined;
+        };
+        let lo = 0;
+        let hi = L;
+        let best: RawLine[] | undefined;
+        // 行の長さの二分探し (0.25pt まで)。行の数が変わる (または行に収まらない) 長さは、狭すぎる
+        for (let it = 0; it < 24 && hi - lo > 0.25; it++) {
+          const mid = (lo + hi) / 2;
+          const ls = tryW(mid);
+          if (ls) {
+            hi = mid;
+            best = ls;
+          } else lo = mid;
+        }
+        chosen = best && settleGroup(best, L, st, group[n - 1].last);
+      } else if (wrap.style === 'pretty') {
+        const tailLen = (ls: RawLine[]) => lineFitLength(ls[ls.length - 1], L, st) ?? L;
+        const k = Math.min(PRETTY_TAIL_LINES, n);
+        const tail = group.slice(n - k);
+        if (tailLen(group) < L * PRETTY_SHORT_RATIO && plain(tail) && fitsAll(tail, L)) {
+          const s = states[g + n - k];
+          const step = Math.max(st.fontSize / 4, 0.25, (L * (1 - PRETTY_MIN_WIDTH_RATIO)) / PRETTY_MAX_TRIALS);
+          // 3/4 の長さちょうども試す (step を足し引きした誤差で、ちょうどの所がわずかに下回って試されないことがある)
+          for (let W = L - step; W >= L * PRETTY_MIN_WIDTH_RATIO - step * 1e-6; W -= step) {
+            const ls = breakRun(ctx, s, () => W, stop);
+            if (ls.length !== k || !fitsAll(ls, W)) continue;
+            if (tailLen(ls) >= L * PRETTY_SHORT_RATIO) {
+              chosen = [...group.slice(0, n - k), ...settleGroup(ls, L, st, group[n - 1].last)];
+              break;
+            }
+          }
+        }
+      }
+    }
+    pushAll(out, chosen ?? group);
+    g = e + 1;
+  }
+  return out;
+}
+
+/** pretty を段落全体で行を分ける方式 (totalFit) で組む、段落の行の数の上限 (1 行ずつ先から決めたときの数。超えたら rewrap の終わりの数行の切り直し) */
+const PRETTY_TOTAL_FIT_MAX_LINES = 100;
+/** totalFit: 両端揃え・行末の空きを広げてよい量 (和字などの字間 1 か所あたり、字の大きさに対する比) */
+const TF_CJK_STRETCH = 0.25;
+/** totalFit: 欧文の語間を広げてよい量 (空白の幅に対する比。TeX の語間の伸びと同じ 1/2) */
+const TF_SPACE_STRETCH = 0.5;
+/** totalFit: 追い出す側の候補の数 */
+const TF_SHORTER = 2;
+/** totalFit: 行ごとの重み・分綴した行の重み・続けて分綴した行の重み (TeX の \linepenalty・\hyphenpenalty・\doublehyphendemerits の考え方) */
+const TF_LINE_PENALTY = 10;
+const TF_HYPHEN_PENALTY = 50;
+const TF_DOUBLE_HYPHEN = 3000;
+/** totalFit: 悪さの上限 (はみ出す行・広げられない行) */
+const TF_MAX_BADNESS = 10000;
+/**
+ * totalFit: 行の番号ごとに残す行頭の数。調べる行頭の数は、行の番号 (1 行ずつ先から決めた行の数の 2 倍まで) × この数で抑えられ、
+ * totalFit に入る段落 (PRETTY_TOTAL_FIT_MAX_LINES 行まで) では、2 × 100 × 6 = 1,200 個まで (行頭ごとに切り出す候補は 5 本まで)
+ */
+const TF_BEAM = 6;
+
+/** 行の字の自然な長さ (詰めも広げもしない。字下げを含む) */
+function lineNatural(raw: RawLine, st: ResolvedStyle): number {
+  const pl = positionLine(raw, 1e7, { ...st, textAlign: 'start', textAlignLast: 'start' });
+  return raw.indent + (raw.endIndent ?? 0) + pl.widths.reduce((a, b) => a + b, 0);
+}
+
+/** 行の空きを広げてよい量の合計 (字間ごとに、欧文の語間は空白の幅の 1/2、ほかの広げられる字間は字の大きさの 1/4) */
+function lineStretch(raw: RawLine): number {
+  const items = raw.items;
+  let t = 0;
+  for (let k = 0; k + 1 < items.length; k++) {
+    const a = items[k];
+    if (!stretchable(a, items[k + 1])) continue;
+    t += a.isSpace ? a.advance * TF_SPACE_STRETCH : a.st.fontSize * TF_CJK_STRETCH;
+  }
+  return t;
+}
+
+/**
+ * 段落全体で行を分ける (text-wrap-style: pretty。CSS Text 4 §5.4: 速さより組みの良さを重んじ、
+ * 改行の位置は幾つもの行を見て決める)。Knuth–Plass の型: 行ごとの悪さ (badness) から決めた重み (demerits) の和が
+ * 小さい分け方を、行の番号ごとに軽い行頭を TF_BEAM 個残して探す (行頭ごとに最も軽い道を残す動的計画法を、幅を限って行う)。
+ * 行の候補は、breakOne が長さを変えて切った行 (禁則・追込みの段階・ぶら下げ・分綴・枠の空き・最後の行の端のずらしは breakOne の決まりのまま):
+ *  - 長さ L の行 (1 行ずつ先から決める型と同じ行)
+ *  - その行の字を詰めきっても入らない長さで切った行 (追い出した行。TF_SHORTER 個まで)
+ *  - 1 行の詰めの上限 (squeezeCap。アンテナハウス互換の二分) を超えれば入る行 (追い込んだ行。上限のある書式だけ。超えた分の詰めは squeezeMax で許す)
+ * 悪さは 100 × 比の 3 乗 (比 = 収まらない分 / 詰めてよい量、または空き / 広げてよい量 (lineStretch))。重みは (行の重み + 悪さ)^2 に、
+ * 分綴した行と、続けて分綴した行の重みを足す。最後の行 (強制改行で終わる行も) の空きは悪さに数えないが、行の長さの 1/4 より短い行は
+ * 悪さ 100 とする (avoid-short-last-line: “avoid excessively short last lines”)。両端揃えで組まない行も、行末の空きを同じに測る (行の長さのそろい)。
+ * 行の数は、1 行ずつ先から決めた行の数を超えない分け方から選ぶ
+ * 調べる行頭の数は、TF_BEAM の幅で抑える (段落の行の数に比例する)
+ */
+function totalFit(ctx: BreakContext, L: number, lines: RawLine[], st: ResolvedStyle): RawLine[] {
+  const n = ctx.atoms.length;
+  if (lines.length < 2) return lines;
+  type Node = { s: BreakState; cost: number; prev?: Node; line?: RawLine };
+  const one = (s: BreakState, W: number) => {
+    const after = { ...s };
+    const ls = breakRun(ctx, s, () => W, n, undefined, 1, after);
+    return ls.length ? { line: ls[0], after } : undefined;
+  };
+  const badness = (raw: RawLine): number | undefined => {
+    if (raw.items.some((a) => a.kind === 'leader')) return 0;
+    const nat = lineNatural(raw, st);
+    if (nat > L + FIT_EPS) {
+      const need = nat - L;
+      // 詰めの上限を超えて詰める (squeezeMax の無い) 行は、収まらない
+      if (raw.squeezeMax === undefined && need > lineSqueezable(raw.items, raw.last, true) + FIT_EPS) return undefined;
+      const cap = lineSqueezable(raw.items, raw.last, false);
+      if (need > cap + FIT_EPS) return undefined;
+      const r = cap > 0 ? need / cap : 1;
+      return Math.min(100 * r * r * r, TF_MAX_BADNESS);
+    }
+    const free = L - nat;
+    if (raw.last) return nat - raw.indent < L * PRETTY_SHORT_RATIO ? 100 : 0;
+    const stretch = lineStretch(raw);
+    const r = stretch > 0 ? free / stretch : free > FIT_EPS ? 10 : 0;
+    return Math.min(100 * r * r * r, TF_MAX_BADNESS);
+  };
+  // 行の番号ごとに、行頭を広げる。次の行の行頭は、重みの軽いものから TF_BEAM 個だけ残す (和文は字ごとに行頭がありうるので、
+  // 残さないと行頭の数が行の数の何倍にも膨らむ)。同じ行頭に来た道は、軽いほうだけ残す
+  let layer: Node[] = [{ s: { start: 0, first: true, afterForced: false, run: 0 }, cost: 0 }];
+  const finals: Node[] = [];
+  for (let depth = 0; layer.length && depth <= lines.length * 2; depth++) {
+    const next = new Map<number, Node>();
+    for (const node of layer) {
+      const at = node.s.start;
+      if (at >= n) {
+        finals.push(node);
+        continue;
+      }
+      const g = one(node.s, L);
+      if (!g) continue;
+      const cands = [g];
+      // 追い出した候補: 前の候補の字を詰めきっても入らない長さで切る。ぶら下げた字が長さ L に収まる行は、ぶら下げずに入れる (settleHang)。
+      // それでもぶら下げる行 (短く切って字間を空けたうえで、句読点を行の外へ出す行) は、候補にしない (ぶら下げは、ベタで満ちた行で
+      // 収まらない句読点に使う: JLREQ §3.8.1。前は、その行を多く選んだ)
+      let prev = g;
+      for (let k = 0; k < TF_SHORTER; k++) {
+        const minLen = lineNatural(prev.line, st) - lineSqueezable(prev.line.items, prev.line.last, true);
+        if (!(minLen > st.fontSize * 2)) break;
+        const c = one(node.s, minLen - 0.01);
+        if (!c || c.after.start >= prev.after.start || c.after.start <= at) break;
+        prev = c;
+        c.line = settleHang(c.line, L, st, c.after.start >= n);
+        if (!c.line.hang) cands.push(c);
+      }
+      // 追い込んだ候補: 1 行の詰めの上限を超えれば入る行 (上限のある書式だけ)
+      if (Number.isFinite(squeezeCap(g.line.items)))
+        for (const extra of [0.5, 1]) {
+          const c = one(node.s, L + extra * st.fontSize);
+          if (!c || c.line.hang || c.after.start <= g.after.start || cands.some((x) => x.after.start === c.after.start)) continue;
+          const need = lineNatural(c.line, st) - L;
+          if (need > lineSqueezable(c.line.items, c.line.last, false) + FIT_EPS) continue;
+          c.line.squeezeMax = need + FIT_EPS;
+          cands.push(c);
+        }
+      for (const c of cands) {
+        // 長さ L の行 (g) は、ほかに手が無いときの行として、はみ出しても採れる (長い語・折り返さない字)
+        const b = badness(c.line) ?? (c === g ? TF_MAX_BADNESS : undefined);
+        if (b === undefined) continue;
+        let d = (TF_LINE_PENALTY + b) ** 2;
+        if (c.line.hyphenated) d += TF_HYPHEN_PENALTY ** 2 + (node.line?.hyphenated ? TF_DOUBLE_HYPHEN : 0);
+        const to = c.after.start;
+        const cur = next.get(to);
+        if (!cur || node.cost + d < cur.cost) next.set(to, { s: c.after, cost: node.cost + d, prev: node, line: c.line });
+      }
+    }
+    layer = [...next.values()].sort((a, b) => a.cost - b.cost || b.s.start - a.s.start).slice(0, TF_BEAM);
+  }
+  // 行の数は、1 行ずつ先から決めた行の数 (lines) を超えない分け方から選ぶ (超えるものしか無ければ、1 行ずつの結果のまま)。
+  // CSS Text 4 §5.4 の pretty は、行の分け方の良さを優先してよいとするだけで、行を増やしてよいかは決めていない。
+  // 和文の段落は、追込み (句読点のアキを詰めて行に収める。JLREQ §3.8.2) の行の悪さが、行 1 本の重みより重いので、
+  // 追込みを避けて行を 1 本足す分け方を選び、段落ごとに 1 行ほど長くなった。組んだ分量が増えないことを優先する
+  const linesOf = (x: Node) => {
+    let k = 0;
+    for (let y: Node | undefined = x; y?.line; y = y.prev) k++;
+    return k;
+  };
+  const end = finals.filter((v) => linesOf(v) <= lines.length).reduce<Node | undefined>((m, v) => (!m || v.cost < m.cost ? v : m), undefined);
+  if (!end) return lines;
+  const out: RawLine[] = [];
+  for (let x: Node | undefined = end; x?.line; x = x.prev) out.push(x.line);
+  return out.reverse();
+}
+
+/**
+ * 行に切り分ける。firstIndent は 1 行目の字下げ。st を渡すと、行ごとの字下げを lineIndent で決める
+ * (first: この並びの 1 行目が要素の最初の行か)。wrap を渡すと、text-wrap-style の balance・pretty で切り直す (rewrap・totalFit)
+ */
+export function breakLines(atoms: Atom[], L: number, firstIndent: number, hangingDefault: boolean, indentOf?: BreakContext['indentOf'], lim?: HyphenLimits, wm?: WritingMode, wrap?: WrapStyle): RawLine[] {
+  if (atoms[0]) atoms[0].paraStart = true;
+  const ctx: BreakContext = { atoms, firstIndent, hangingDefault, indentOf, lim, wm };
+  const states: BreakState[] | undefined = wrap ? [] : undefined;
+  const lines = breakRun(ctx, { start: 0, first: true, afterForced: false, run: 0 }, () => L, atoms.length, states);
+  // pretty: 行の数が上限までの段落は、段落全体で行を分ける (totalFit)。超える段落は、終わりの数行だけ切り直す (rewrap)
+  if (wrap?.style === 'pretty' && lines.length <= PRETTY_TOTAL_FIT_MAX_LINES) return totalFit(ctx, L, lines, wrap.st);
+  return wrap ? rewrap(ctx, L, lines, states!, wrap) : lines;
 }
 
 // ───────────────────────── 行内配置 ─────────────────────────
@@ -1673,7 +2013,7 @@ export function reorderLine(pl: PositionedLine, L: number, rtl: boolean, paraLev
 /**
  * 両端揃えで配った字間の空き (gaps[k] は items[k] と items[k + 1] の間) のうち、広げる上限 (wordSpaceStretchLimit) のある語間 (空白の後ろ) を
  * 上限までにし、超えた分を、上限の無い (まだ上限に届かない) 空きのある字間に、今の空きに比べて配り直す。
- * XSL 1.1 §7.17.8: word-spacing の <space> は “The minimum and maximum values specify the limits of the adjustment.”
+ * XSL 1.1 §7.17.8: word-spacing の <space> は、.minimum と .maximum が調整してよい範囲の両端
  * 配る先が無くなったら、残りは配らない (行の終わりに残る。§7.16.9 の justify は詰め物で埋めることを求めない)
  */
 function capWordStretch(items: Atom[], gaps: number[]): number[] {
@@ -2072,7 +2412,8 @@ function rubyOffsets(glyphs: GlyphMetrics[], total: number, align: RubyAlign | u
 function leaderNode(a: Atom, off: number, gStart: number, w: number, bOff: number, wm: WritingMode, lineEnd?: number): LNode {
   const ld = a.leader!;
   const fs = a.st.fontSize;
-  const node = newNode('block', wm, { i: off - gStart, b: bOff, isize: w, bsize: fs, src: a.src });
+  // 元のリーダーの節の番号 (ref) を付ける (タグ付き PDF で、リーダーを飾りにする)
+  const node = newNode('block', wm, { i: off - gStart, b: bOff, isize: w, bsize: fs, src: a.src, ...(a.ref !== undefined ? { ref: a.ref } : {}) });
   // 繰り返しの数が上限を超えるリーダー (極端に小さな字・極端に長い行。0.001px の字で 1 行に何千万個) は、字を並べない (空きだけにする)
   if (ld.pattern === 'dots' && ld.g && ld.pitch > 0 && w / ld.pitch <= MAX_LEADER_REPEATS) {
     // 置く位置: 行頭からピッチの倍数の位置 (複数行で縦に揃う)。CSS の leader() は、終わり側の端から始め側へ並べる (Content 3 §2.5.3。
@@ -2119,8 +2460,8 @@ function leaderNode(a: Atom, off: number, gStart: number, w: number, bOff: numbe
       node.children.push(gn);
     }
   } else if (ld.pattern === 'rule' && w > 0) {
-    // 線の中心は基線 (横書き)・字面の中央 (縦書き)。太さはその上下に等しく付ける (§7.22.6「thickened equally above and
-    // below the line's alignment position」)
+    // 線の中心は基線 (横書き)・字面の中央 (縦書き)。太さはその上下に等しく付ける (§7.22.6: 線の位置の上下に、等しく
+    // 太らせる)
     const br = DEFAULT_BASELINE_RATIO;
     const center = wm !== 'horizontal-tb' ? fs / 2 : br * fs;
     // 線種 (dotted・dashed・double など) は、太さ = 線の幅の罫線で描く
@@ -2280,6 +2621,8 @@ export function buildLineNode(
           const gn = glyphNode(g, a.st, wm, g.ch, a.st.fontSize, a.st.color);
           gn.i = baseOff[idx];
           gn.b = r.rubyExtent;
+          // タグ付き PDF: 親文字の字は RB の構造の節 (LRuby.tagParts)
+          if (a.rubyRefs?.base !== undefined) gn.ref = a.rubyRefs.base;
           rn.children.push(gn);
         });
         const rubyOff = rubyOffsets(r.rubyGlyphs, r.advance, a.rubyAligns?.[0]);
@@ -2287,6 +2630,7 @@ export function buildLineNode(
           const gn = glyphNode(g, a.st, wm, g.ch, r.rubySize, a.rubyColors?.[0] ?? a.st.color);
           gn.i = rubyOff[idx];
           gn.b = 0;
+          if (a.rubyRefs?.text !== undefined) gn.ref = a.rubyRefs.text;
           rn.children.push(gn);
         });
         // 下側のルビ (2 段目): 親文字の下に置く
@@ -2296,6 +2640,7 @@ export function buildLineNode(
             const gn = glyphNode(g, a.st, wm, g.ch, r.rubySize, a.rubyColors?.[1] ?? a.st.color);
             gn.i = underOff[idx];
             gn.b = r.rubyExtent + a.st.fontSize;
+            if (a.rubyRefs?.text !== undefined) gn.ref = a.rubyRefs.text;
             rn.children.push(gn);
           });
         }
@@ -2405,7 +2750,7 @@ function drawInlineFrames(line: LNode, entries: { a: Atom; off: number; w: numbe
     const area = areaExtent(f.area, lm, emTop);
     if (f.link || (f.annot && sp.first)) {
       // リンク・注釈の範囲 (描画しない箱)
-      line.children.push(newNode('block', wm, { i: sp.lo, b: area?.top ?? emTop, isize: Math.max(sp.hi - sp.lo, 0), bsize: area?.size ?? lm.em, link: f.link, annot: sp.first ? f.annot : undefined }));
+      line.children.push(newNode('block', wm, { i: sp.lo, b: area?.top ?? emTop, isize: Math.max(sp.hi - sp.lo, 0), bsize: area?.size ?? lm.em, link: f.link, annot: sp.first ? f.annot : undefined, ...(f.linkRef !== undefined ? { ref: f.linkRef } : {}) }));
     }
     if (f.outline) {
       // 輪郭線 (CSS UI 4 §3.1): 行ごとの断片のそれぞれを、閉じた線で囲む。箱は、罫線の箱 (内容の領域に余白と罫線を足したもの。

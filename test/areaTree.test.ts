@@ -21,14 +21,16 @@ beforeAll(async () => {
 function recorder(): { p: Painter; log: string[] } {
   const log: string[] = [];
   const p = new Proxy({} as Painter, {
-    get:
-      (_t, name) =>
-      (...args: unknown[]) => {
-        log.push(
-          `${String(name)} ${JSON.stringify(args.map((a) => (typeof a === "function" ? "fn" : a)))}`,
-        );
-        for (const a of args) if (typeof a === "function") (a as () => void)();
-      },
+    // タグ付き PDF の印 (tag) は持たない (Canvas と同じ描画先)
+    get: (_t, name) =>
+      name === "tag"
+        ? undefined
+        : (...args: unknown[]) => {
+            log.push(
+              `${String(name)} ${JSON.stringify(args.map((a) => (typeof a === "function" ? "fn" : a)))}`,
+            );
+            for (const a of args) if (typeof a === "function") (a as () => void)();
+          },
   });
   return { p, log };
 }

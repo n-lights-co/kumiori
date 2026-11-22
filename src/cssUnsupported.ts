@@ -31,8 +31,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'ascent-override',
   'descent-override',
   'line-gap-override',
-  'text-wrap-mode',
-  'text-wrap-style',
   'text-decoration-skip-ink',
   'footnote-policy',
   'grid',
@@ -61,7 +59,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
 
   'text-align-all',
   'text-justify',
-  'text-wrap',
   'text-underline-position',
   'text-shadow',
 
@@ -189,7 +186,7 @@ export function splitStyleAttribute(text: string): Array<[string, string]> {
  */
 const SVG_ONLY_UNSUPPORTED: ReadonlySet<string> = new Set(['paint-order', 'color-interpolation', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y', 'd', 'color-interpolation-filters', 'flood-color', 'flood-opacity', 'lighting-color', 'mask-type']);
 /**
- * SVG の描き方の手がかり (SVG 2 §13.10.1 shape-rendering・§13.10.2 text-rendering:「provides a hint to the implementation」)。
+ * SVG の描き方の手がかり (SVG 2 §13.10.1 shape-rendering・§13.10.2 text-rendering: どちらも、処理系への描き方の手がかり)。
  * 手がかりに従わなくてもよいので、何もしない (未対応・知らないプロパティに数えない)
  */
 const SVG_RENDERING_HINTS: ReadonlySet<string> = new Set(['shape-rendering', 'text-rendering']);

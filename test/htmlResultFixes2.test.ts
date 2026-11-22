@@ -206,10 +206,10 @@ describe('PKG-16 @supports の答え (Conditional 3 §6.1)', () => {
   });
 
   it('対応している性質の答えは変わらない (grid・flex など、働きの一部が未対応のものも真のまま)', () => {
-    for (const c of ['display: grid', 'display: flex', 'grid-template-columns: 1fr 1fr', 'gap: 1em', 'columns: 2', 'hanging-punctuation: first', 'aspect-ratio: 1', 'object-fit: cover', 'inset: 0', 'margin-inline: auto', 'text-emphasis: dot', 'filter: blur(1px)', 'break-inside: avoid', 'string-set: a "x"', 'bookmark-level: 1', 'float: footnote', '--x: 1', '--色: 1'])
+    for (const c of ['display: grid', 'display: flex', 'grid-template-columns: 1fr 1fr', 'gap: 1em', 'columns: 2', 'hanging-punctuation: first', 'aspect-ratio: 1', 'object-fit: cover', 'inset: 0', 'margin-inline: auto', 'text-emphasis: dot', 'filter: blur(1px)', 'break-inside: avoid', 'string-set: a "x"', 'bookmark-level: 1', 'float: footnote', '--x: 1', '--色: 1', 'text-wrap: balance', 'text-wrap-style: pretty', 'text-wrap-mode: nowrap'])
       expect(matchSupports(`(${c})`), c).toBe(true);
     // 知らない性質・印刷に関わらない性質 (読まない) は、これまでどおり偽
-    for (const c of ['foo: bar', 'cursor: pointer', 'animation-name: x', 'transition: all 1s', 'scroll-behavior: smooth', 'user-select: none', 'grid-template-areas: "a"', 'text-wrap: balance'])
+    for (const c of ['foo: bar', 'cursor: pointer', 'animation-name: x', 'transition: all 1s', 'scroll-behavior: smooth', 'user-select: none', 'grid-template-areas: "a"', 'text-wrap: balance pretty'])
       expect(matchSupports(`(${c})`), c).toBe(false);
   });
 

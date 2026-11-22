@@ -1,7 +1,7 @@
 /**
  * XSL-FO の仕様モード (compat: 'spec'。既定) の行の調整: 両端揃えで組まない行では、欧文の語間 (空白) を詰めない。
  *  - XSL 1.1 §7.17.8: word-spacing="normal" の語間は optimum = maximum = minimum (縮める幅が無い)
- *  - XSL 1.1 §7.16.9: 字の並びを伸ばしてよいのは text-align="justify" のとき (“In the case of 'justify', the UA may stretch the inline boxes”)
+ *  - XSL 1.1 §7.16.9: 字の並びを伸ばしてよいのは text-align="justify" のとき (justify のときは、行の中の箱を伸ばしてよい)
  *  - XSL 1.1 §7.16.10: 最後の行・改行 (U+000A) で終わる行の揃えは text-align-last (relative は、text-align が justify なら start)
  *  - CSS Text 3 §6.1・§6.4.1: 字の間を伸び縮みさせるのは、両端揃えのとき
  * 両端揃えで組む行でも、語間は word-spacing.minimum の指定が無ければ詰めない (FO-26: §7.17.8 の normal・<length> は .minimum = .optimum)。
@@ -100,7 +100,7 @@ describe('XSL-FO 仕様モード: 両端揃えで組まない行は、語間を�
     expect(run(block(mixed + mixed, 'text-align="justify"'), mixedLen - 0.5)[0]).toBe('ああ あああああああ');
   });
 
-  it('word-spacing.minimum があれば、両端揃えで組む行の語間を、その幅まで詰めて収める (§7.17.8: “The minimum and maximum values specify the limits of the adjustment.”)', () => {
+  it('word-spacing.minimum があれば、両端揃えで組む行の語間を、その幅まで詰めて収める (§7.17.8: .minimum と .maximum が調整してよい範囲の両端)', () => {
     const lines = layout(block(`${latin} ${latin}`, `text-align="justify" ${MIN}`), latinLen - 2);
     expect(lines[0].text).toBe(latin);
     expect(lines[0].len).toBeCloseTo(latinLen - 2, 1);

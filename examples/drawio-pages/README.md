@@ -29,10 +29,10 @@ kumiori pages.fo -o pages-fo.pdf
 ```
 
 どちらも A4 の 3 ページの PDF になります。それぞれの図の左下の字 (「2 ページ目「組版の流れ」」など) で、どのページを描いたかが分かります。
-最後の図 (`#page=9`) は無いページなので、最初のページを描いて、次の警告が出ます。
+最後の図 (`#page=9`) は無いページなので、最初のページを描いて、次の警告が出ます (`pages.html` の場合。`pages.fo` では、文の前に FO の中の場所 (`pages.fo:62:19 (fo:external-graphic):`) が付きます)。
 
 ```
-警告: 画像 diagrams.drawio#page=9 の一部を描けません: draw.io の図に 9 ページ目がありません (3 ページ。最初のページを描きます)
+  警告 [image/partial] 画像 diagrams.drawio#page=9 の一部を描けません: draw.io の図に 9 ページ目がありません (3 ページ。最初のページを描きます)
 ```
 
 画面 (デモの Web アプリ) では、`pages.html` か `pages.fo` を、`diagrams.drawio` と一緒に開きます。

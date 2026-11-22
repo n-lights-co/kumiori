@@ -4,18 +4,21 @@ Kumiori の配布物に含まれる、または Kumiori の実行に使われる
 ライセンスの本文と著作権表示は、各パッケージ (node_modules の中) のファイルから、書き換えずに転記しています。
 パッケージにライセンスのファイルが無いものは、その事実と、パッケージの中の表示だけを書いています。
 
-- 対象の版: このリポジトリの `package-lock.json` で入る版 (下の各節に版を書いています)
+- 対象の版: このリポジトリの `package-lock.json` で入る版 (下の各節に版を書いています。14 節は `tools/api-docs/package-lock.json` で入る版)
 - この文書は、ライセンスの解釈や法的な判断を示すものではありません。
 
 ## 1. ブラウザ向けの配布物 (`dist/`・`dist-browser/`) に含まれるもの
 
 次の 2 つのブラウザ向けの配布物は、この節のパッケージを取り込んでいます (2026-11-16 に、ビルドのソースマップで取り込まれたパッケージを確かめました)。
 
-- 画面 (`npm run build` の `dist/`。GitHub Pages に置くもの)
-- ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も取り込んでいます (XSL-FO を読むため)
+- 画面 (`npm run build` の `dist/`。GitHub Pages に置くもの)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も取り込んでいます (XSL-FO と XHTML を読むため。2026-11-21 に、ビルドのソースマップで確かめました)。
+- ブラウザで単体で動くライブラリ (`npm run build:browser` の `dist-browser/`。npm の `kumiori/browser`)。この節のパッケージに加えて、下の 2 節の @xmldom/xmldom も取り込んでいます (XSL-FO を読むため)。
+  また、Web Worker の中で HTML・SVG を読むときだけ読み込む別ファイル (`chunks/esm-*.js`) に、下の 2 節の linkedom と、その依存 (htmlparser2・css-select・css-what・nth-check・boolbase・domhandler・domutils・domelementtype・dom-serializer・entities・cssomnom・uhyphen。2 節に挙げた版のすべて) を取り込んでいます (2026-11-19 に、ビルドのソースマップで確かめました。2 節の html-escaper は、使われないので取り込まれません)
 
 draw.io の図を描く処理 (`src/drawio/`。図が出てきたときだけ読み込む別のチャンク) は、roughjs (hachure-fill・path-data-parser・points-on-curve・points-on-path を含む) を取り込んでいます。
 その処理には、draw.io と mxGraph から移したコードが入っています (表示は下の 13 節)。そのチャンクの JavaScript のファイルの先頭にも、draw.io と mxGraph の著作権表示を書いています。
+
+GitHub Pages の画面の下に置く API の説明書 (`dist/api/`) に含まれるものは、下の 14 節に書いています。
 
 ライブラリ (`npm run build:lib` の `dist-lib/`。npm の `kumiori`) は依存パッケージを取り込まず、実行時に node_modules から読み込みます (下の 2 節と同じ)。
 
@@ -2015,10 +2018,110 @@ pdf-lib のパッケージには、Apache License 2.0 の本文は入ってい�
    limitations under the License.
 ```
 
+### 1.6 バンドラーが出力に書き込む手助けのコード (rolldown 1.2.18・vite 8.3.8)
+
+- package.json の license: `MIT` (rolldown・vite とも)
+- 場所: `node_modules/rolldown`・`node_modules/vite`
+
+画面 (`dist/`) とブラウザで単体で動くライブラリ (`dist-browser/`) を作るバンドラーは、出力に数十行の定型の手助けのコードを書き込みます。
+rolldown は CommonJS の包みを ES モジュールとして読むためのコード (`rolldown-runtime-*.js` など。`__commonJS`・`__toESM`・`__export` などの関数) を、
+Vite は、画面の出力に、別のチャンクを先読みするコード (`modulepreload` の補いと、動的な読み込みの前に先読みする手助け) を、
+ブラウザで単体で動くライブラリの出力に、入っていない任意の依存 (linkedom の `canvas`) を読もうとしたときに誤りを投げる数行の代わり
+(ソースマップの名前は `__vite-optional-peer-dep:canvas:linkedom`。`chunks/esm-*.js` に入ります) を書き込みます
+(2026-11-21 に、`npm run build`・`npm run build:browser` の出力と、`--sourcemap` を付けて作ったソースマップの `sources` で確かめました)。
+どちらも MIT のライセンスのコードなので、その表示をここに書きます。
+rolldown の手助けのコード (`\0rolldown/runtime.js`) は、esbuild の手助けのコードと同じ形のもので、rolldown のパッケージの
+`node_modules/rolldown/THIRD-PARTY-LICENSE` に、esbuild の MIT のライセンスの表示があるので、それも下に写します。
+
+`node_modules/rolldown/LICENSE` の本文:
+
+```text
+MIT License
+
+Copyright (c) 2024-present VoidZero Inc. & Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+end of terms and conditions
+
+The licenses of externally maintained libraries from which parts of the Software is derived are listed [here](https://github.com/rolldown/rolldown/blob/main/THIRD-PARTY-LICENSE).
+```
+
+`node_modules/rolldown/THIRD-PARTY-LICENSE` のうち、esbuild の表示 (手助けのコードの元の形の著作権の行とライセンスの本文):
+
+```text
+MIT License
+
+Copyright (c) 2020 Evan Wallace
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+`node_modules/vite/LICENSE.md` の初めの、Vite 本体のライセンスの部分 (その後ろの「Licenses of bundled dependencies」以降は、Vite のパッケージに同梱された依存の表示で、出力には入りません):
+
+```text
+# Vite core license
+Vite is released under the MIT license:
+
+MIT License
+
+Copyright (c) 2019-present, VoidZero Inc. and Vite contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## 2. Node のコマンド (`dist-cli/cli.js`) とライブラリ (`dist-lib/`) を配布するときの依存
 
 Node のコマンドとライブラリのビルドでは、次のパッケージはバンドルに入らず、実行時に node_modules から読み込まれます (上の 1 のパッケージも同じ)。npm の `kumiori` を入れると、これらも依存として一緒に入ります。
-このうち @xmldom/xmldom は、ブラウザで単体で動くライブラリ (`dist-browser/`) に取り込まれます (上の 1)。
+このうち @xmldom/xmldom と、linkedom とその依存 (html-escaper を除く) は、ブラウザで単体で動くライブラリ (`dist-browser/`) に取り込まれます (上の 1)。
 
 ### @xmldom/xmldom 0.9.12
 
@@ -2795,11 +2898,11 @@ authorization of the copyright holder.
 
 ## 7. Kumiori のコードに写した W3C の文書の CSS (CSS Counter Styles 3 の定義済みの数え方)
 
-`src/counterStylePredefined.ts` の `@counter-style` の規則 (§6 Simple Predefined Counter Styles と、§7.1.1 和文・§7.1.2 韓国語の規則) は、W3C の文書 CSS Counter Styles Level 3 の例の規則を、書き換えずに写したものです。
+`src/counterStylePredefined.ts` の `@counter-style` の規則 (§6 Simple Predefined Counter Styles と、§7.1.1 和文・§7.1.2 韓国語の規則) は、W3C の文書 CSS Counter Styles Level 3 の例の規則を写したものです (規則 (記述子と値) は書き換えていません。注釈のうち、字を並べただけのもの (記号の字の一覧) は写したまま残し、英文の注釈 (hebrew・disclosure-open・disclosure-closed・韓国語の 3 つ) だけを、日本語の要約に置き換えています)。
 
 This software includes material copied from or derived from CSS Counter Styles Level 3 (https://www.w3.org/TR/2021/CR-css-counter-styles-3-20210727/). Copyright © 2021 W3C® (MIT, ERCIM, Keio, Beihang).
 
-- 文書の取得元: https://www.w3.org/TR/css-counter-styles-3/ (取得日 2026-11-06。2026-11-07 に取り直した文書の版は W3C Candidate Recommendation Snapshot 27 July 2021、https://www.w3.org/TR/2021/CR-css-counter-styles-3-20210727/ で、Kumiori の規則 49 個はすべて、その文書の例の規則と同じだった (空白の違いを無視して比べた))
+- 文書の取得元: https://www.w3.org/TR/css-counter-styles-3/ (取得日 2026-11-06。2026-11-07 に取り直した文書の版は W3C Candidate Recommendation Snapshot 27 July 2021、https://www.w3.org/TR/2021/CR-css-counter-styles-3-20210727/ で、Kumiori の規則 49 個は、記述子と値がすべて、その文書の例の規則と同じだった (規則についての比べで、空白の違いを無視した。英文の注釈はその後で日本語に置き換えたので、注釈はいまは例と違う))
 - 文書の著作権表示 (原文): 「Copyright © 2021 W3C® (MIT, ERCIM, Keio, Beihang). W3C liability, trademark and permissive document license rules apply.」。permissive document license のリンク先は https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document (https://www.w3.org/copyright/software-license-2015/ に転送される)
 - 下はそのライセンスの本文です。取得元: https://www.w3.org/copyright/software-license-2015/ (取得日 2026-11-07)。HTML から文字だけを取り出しました (語句は書き換えていません。見出しと段落の区切りは改行にしています。末尾の版の一覧と変更点の説明は含めていません)。
 
@@ -3092,3 +3195,256 @@ Kumiori に移した `shapes/` の形を移した v24.7.5 (2024-07-25) には、
 
 そのため、`src/main/webapp/shapes/` の下のファイルは v24.7.5 から移し (13.1 節の表の「版」)、v24.7.5 より後に足されたものは入れていません。
 `shapes/` の外 (`js/grapheditor/`・`js/diagramly/`・`mxgraph/src/`) のファイルは、v32.6.10 でも Apache License 2.0 だけなので、v32.6.10 から移しています。
+
+## 14. GitHub Pages の API の説明書 (`dist/api/`) に含まれるもの
+
+GitHub Pages には、画面 (上の 1) の下の `api/` に、API の説明書 (型の宣言のコメントから作る一覧の頁。`npm run docs:api`) を置きます。
+説明書は TypeDoc で作り、頁の JavaScript (`assets/main.js` など)・CSS・アイコンは TypeDoc のものです。`assets/main.js` には lunr (頁の中の検索) が取り込まれています
+(2026-11-20 に、`assets/main.js` の終わりの、取り込んだパッケージの表示 (Bundled license information) で確かめました)。
+TypeDoc とそれが使うパッケージは、リポジトリの直下の依存と分けて、`tools/api-docs` の `package.json`・`package-lock.json` で入れます。npm の `kumiori` には入りません。
+TypeDoc 0.28.20 が使う minimatch (10.2.6) には、`tools/api-docs` の `npm audit` に moderate の知らせ (GHSA-g3hv-75wg-m249。glob の展開の増幅によるサービス拒否。直った版は 11.0.1 から) が出ます。
+説明書を作るときに手元で使うだけで、TypeDoc に渡す glob は `typedoc.json` の決まった値なので、外から届く経路はありません。minimatch は説明書の頁 (`dist/api/`) にも npm の `kumiori` にも入りません
+(2026-11-21 に、頁の中に minimatch の字が無いことと、`npm pack --dry-run` の一覧に `tools/` が無いことで確かめました)。
+`npm audit fix --force` は TypeDoc を 0.23.25 に下げ、minimatch を 11 に上書きすると TypeDoc 0.28.20 が動かない (`mini.matchOne is not a function`。minimatch 11 で無くなった関数を使う) ので、上げていません。
+TypeDoc が minimatch 11 を使う版を出したら、上げて、この節の版と本文を合わせます。
+
+### 14.1 typedoc (0.28.20)
+
+- package.json の license: `Apache-2.0`
+- 場所: `tools/api-docs/node_modules/typedoc`
+- パッケージに著作権表示のファイル (NOTICE など) はありません。`LICENSE` は Apache License 2.0 の本文です
+
+`tools/api-docs/node_modules/typedoc/LICENSE` の本文:
+
+```text
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "{}"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright {yyyy} {name of copyright owner}
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+```
+
+### 14.2 lunr (2.3.9)
+
+- package.json の license: `MIT`
+- 場所: `tools/api-docs/node_modules/lunr`
+
+`tools/api-docs/node_modules/lunr/LICENSE` の本文:
+
+```text
+Copyright (C) 2013 by Oliver Nightingale
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```

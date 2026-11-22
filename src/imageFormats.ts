@@ -24,7 +24,9 @@ export interface MeasureFont {
   family: string;
   /** 字の大きさ (px) */
   size: number;
+  /** 太字か */
   bold: boolean;
+  /** 斜体か */
   italic: boolean;
 }
 
@@ -60,13 +62,15 @@ export interface ImageFormatContext {
 export interface ImageFormatResult {
   /** SVG の文書 */
   svg: string;
-  /** 大きさ (CSS px) */
+  /** 幅 (CSS px) */
   width: number;
+  /** 高さ (CSS px) */
   height: number;
   /** 描けなかったもの (組版の警告に出す。画像の notes) */
   warnings: string[];
 }
 
+/** プラグインが足す画像の形式 (KumioriPlugin.imageFormats)。中身で見分け (sniff)、SVG にして読み込む (load) */
 export interface ImageFormat {
   /** 形式の名前 (警告に出す) */
   name: string;

@@ -1,6 +1,6 @@
 /**
  * XSL-FO の背景は、padding の矩形までに描く (台帳の OUT-22 の (1))。
- * XSL 1.1 §4.9.4 Border, Padding, and Background: “The background, if any, is rendered in the padding-rectangle” (罫線は
+ * XSL 1.1 §4.9.4 Border, Padding, and Background: 背景は padding-rectangle に塗る (罫線は
  * border-rectangle と padding-rectangle の間に描く)。§7.8.5・§7.8.6 の背景の位置の百分率も padding-rectangle の大きさが基準。
  * https://www.w3.org/TR/xsl11/ (2026-11-11 取得)。互換の指定によらない。
  * 不透明の、すき間の無い罫線 (実線と、立体の線種) は、下の背景を隠すので、border の矩形まで塗っても padding の矩形まで塗っても見た目は同じ: そのときは今までどおりに塗る

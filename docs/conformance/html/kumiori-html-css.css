@@ -117,6 +117,12 @@ html {
 }
 body {
   margin: 0;
+  /* 行の並べ方 (6.14 節): 説明書の本文は、段落全体を見て行を分ける (行末の空きをそろえ、最後の行が短すぎないようにする) */
+  text-wrap: pretty;
+}
+/* 組版例の中は、既定 (auto) に戻す (見本が、書いた指定だけで組んだ結果になるように) */
+.kumiori-result {
+  text-wrap: auto;
 }
 p {
   margin: 0;
@@ -382,27 +388,23 @@ ul.values code {
   font-weight: bold;
 }
 
-/* 仕様の原文の引用 */
-blockquote {
+/* 仕様の定め: 節の番号と、仕様が何を決めているかの 1 文の要約 (仕様の文は引用しない) */
+p.spec-summary {
+  text-indent: 0;
   margin: 0 0 1.5mm;
-  padding: 1.5mm 3mm;
-  background-color: #f4f6f5;
+  padding: 0.4mm 0 0.4mm 2.5mm;
+  border-left: 0.8pt solid #4f7a64;
   font-size: 7.8pt;
   line-height: 1.55;
   color: #3b4245;
   break-after: avoid;
   text-align: left;
 }
-blockquote.ah {
-  background-color: #fbf5ea;
-}
-blockquote cite {
-  display: block;
-  text-align: right;
+p.spec-summary .cite {
   font-family: sans-serif;
   font-size: 6.5pt;
-  font-style: normal;
   color: #6b7275;
+  white-space: nowrap;
 }
 
 /* 見本: 組版例 (枠) の後にコード (scripts/conformance-lib.mjs が差し込む) */
@@ -571,31 +573,6 @@ ul.sources li {
 ul.sources .url {
   font-family: monospace;
   font-size: 7pt;
-}
-ul.sources .copy {
-  font-size: 7pt;
-}
-/* 付録 C の終わりの、引用した文書のライセンスの本文 */
-p.license-h {
-  font-family: sans-serif;
-  font-weight: bold;
-  font-size: 9pt;
-  margin: 5mm 0 1.5mm;
-  text-indent: 0;
-  text-align: start;
-  break-after: avoid;
-}
-p.license-h .url {
-  font-family: monospace;
-  font-weight: normal;
-  font-size: 7pt;
-}
-p.license {
-  font-size: 7pt;
-  line-height: 1.45;
-  margin: 0 0 1mm;
-  text-indent: 0;
-  text-align: start;
 }
 
 /* 奥付 (最終ページの下のほう。CSS-Print の奥付と同じ置き方) */

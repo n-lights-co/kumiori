@@ -15,9 +15,10 @@ import { decodeJpeg } from './jpeg';
 import { invert } from './matrix';
 import { inflateBytes } from './psFilters';
 import { areaGlyphs, boxThrough, colorFontOf, COMPOSITE, plainStops, segsBox, sweepSampler, unrollStops, type Box, type ColorFill, type ColorOp, type Rgb } from './colorGlyph';
-import { svgGlyphReader } from './colorGlyphSvg';
+import { ensureSvgGlyphReader } from './colorGlyphSvg';
 import type { Seg } from './matrix';
 import type { GlyphArea } from './types';
+import type { XmlNode } from './svg';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -341,8 +342,8 @@ function drawOps(ctx: Ctx, ops: readonly ColorOp[], st: State) {
 
 /**
  * 合成 (COLR の PaintComposite): backdrop と source を別々の画面に描き、source を backdrop の上に、その種類の
- * globalCompositeOperation で重ねてから、元の画面に描く (COLR の「Format 32: PaintComposite」: conceptually, they are rendered into
- * bitmaps, and the source is composited or blended into the backdrop)
+ * globalCompositeOperation で重ねてから、元の画面に描く (COLR の「Format 32: PaintComposite」の項: 2 つを別々の
+ * 画像に描いたとみて、source を backdrop に合成する)
  */
 function drawComposite(ctx: Ctx, o: Extract<ColorOp, { op: 'composite' }>, st: State) {
   const m = ctx.getTransform();
@@ -382,14 +383,14 @@ function drawComposite(ctx: Ctx, o: Extract<ColorOp, { op: 'composite' }>, st: S
  * 描いたら true。この関数が描かない字 (色つきの表の無い書体、ブラウザの fillText に任せる字) は false。
  * outlines は、字を輪郭から描く指定 (書体をブラウザに登録していない・OpenType の機能を当てた字形)
  */
-export function drawColorGlyphArea(ctx: Ctx, fonts: FontManager, g: GlyphArea, outlines: boolean): boolean {
+export function drawColorGlyphArea(ctx: Ctx, fonts: FontManager, g: GlyphArea, outlines: boolean, parseXml?: (xml: string) => XmlNode): boolean {
   const font = fonts.get(g.fontFamily, g.fontWeight);
   const cf = colorFontOf(font);
   if (!cf) return false;
   // ブラウザが色つきに描ける表 (COLR・CBDT・sbix) を持つ書体を、既定のパレットで描くときは、ブラウザに任せる
   const browser = cf.tables.colr !== undefined || cf.tables.cbdt || cf.tables.sbix;
   if (!outlines && !g.fontPalette && browser) return false;
-  if (!cf.svgReader && typeof DOMParser !== 'undefined') cf.svgReader = svgGlyphReader((t) => new DOMParser().parseFromString(t, 'image/svg+xml') as never);
+  ensureSvgGlyphReader(cf, parseXml);
   const glyphs = areaGlyphs(g, font);
   // 色つきの絵の無い字形だけの並びは、ブラウザの fillText に任せる (書体をブラウザに登録しているとき。PDF の側と同じ分け方)
   if (!outlines && glyphs.every((gl) => cf.isPlain(gl.id, g.fontPalette))) return false;

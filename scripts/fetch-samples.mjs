@@ -11,6 +11,8 @@
  *
  * --pack は、取ったファイルを tar にまとめ、10MB ずつに切って base64 の JavaScript (samples-NN.js) に包む
  * (claude.ai の Artifact の置き場が、zip や tar をそのまま受け付けないため)。--unpack はその逆をして、--offline で展開する。
+ * どちらも GNU tar を使い、tar の中は通常のファイルとディレクトリだけにする。--unpack は、展開の前に tar の名前と種類を確かめ
+ * (絶対パス・..・リンク・装置ファイルなどがあれば何も展開せずに止まる)、所有者・権限を tar のままにせずに展開する (scripts/sampleTar.mjs)。
  * --offline は、ネットを使わず、manifest.json に書いた見本の一覧と、手元の zip・PDF だけで展開する。
  *
  * 取るもの:
@@ -30,7 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { packTar, unpackTar } from './sampleTar.mjs';
 
 const args = { out: '.cache/samples', only: 'fo,css-print', force: false, offline: false };
 for (let i = 2; i < process.argv.length; i++) {
@@ -50,10 +52,11 @@ const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const CHUNK = 10 * 1024 * 1024;
 
 if (args.pack) {
-  // 取ったもの (manifest に書いたファイルと manifest.json) を tar にまとめ、切って base64 の JS に包む
+  // 取ったもの (manifest に書いたファイルと manifest.json) を tar にまとめ、切って base64 の JS に包む。
+  // 通常のファイルだけを入れ、できた tar も確かめる (scripts/sampleTar.mjs の packTar)
   const m = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
   const list = ['manifest.json', ...Object.keys(m.files)];
-  const tar = execFileSync('tar', ['-cf', '-', '-C', out, ...list], { maxBuffer: 2 ** 31 });
+  const tar = packTar(out, list);
   fs.mkdirSync(args.pack, { recursive: true });
   const parts = [];
   for (let k = 0; k * CHUNK < tar.length; k++) {
@@ -69,7 +72,9 @@ if (args.pack) {
 }
 
 if (args.unpack) {
-  // 包んだものを確かめて tar に戻し、置き場に展開してから、ネットを使わずに展開を続ける
+  // 包んだものを確かめて tar に戻し、置き場に展開してから、ネットを使わずに展開を続ける。
+  // SHA-256 は同じ置き場の index と比べるので、確かめられるのは壊れていないことだけ (出どころではない)。
+  // なので、展開の前に tar の中身を確かめ、通常のファイルとディレクトリだけを、置き場の外に出ないように展開する (scripts/sampleTar.mjs の unpackTar)
   const index = JSON.parse(fs.readFileSync(path.join(args.unpack, 'samples-index.json'), 'utf8'));
   const bufs = index.parts.map((p) => {
     const src = fs.readFileSync(path.join(args.unpack, p.name), 'utf8');
@@ -79,8 +84,7 @@ if (args.unpack) {
   });
   const tar = Buffer.concat(bufs);
   if (sha256(tar) !== index.tarSha256) throw new Error('tar の中身が index と合いません');
-  fs.mkdirSync(out, { recursive: true });
-  execFileSync('tar', ['-xf', '-', '-C', out], { input: tar, maxBuffer: 2 ** 31 });
+  unpackTar(tar, out);
   args.offline = true;
 }
 const manifest = fs.existsSync(manifestFile) ? JSON.parse(fs.readFileSync(manifestFile, 'utf8')) : { files: {} };

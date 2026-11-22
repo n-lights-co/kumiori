@@ -45,12 +45,19 @@ export function cachedFetcher(cacheDir: string | undefined, lang?: Lang): Drawio
     const bundle = p.endsWith('stencils.min.js');
     const ext = bundle ? 'js' : (/\.(\w+)$/.exec(p)?.[1] ?? 'img').toLowerCase();
     const cached = cacheDir ? path.join(cacheDir, `drawio-${bundle ? 'stencils' : 'image'}-${createHash('sha256').update(url).digest('hex').slice(0, 16)}.${ext}`) : undefined;
-    if (cached && fs.existsSync(cached)) return fs.readFileSync(cached);
+    // 既定の取り先 (版を決めたタグの URL) のものは、版の SHA-256 の一覧と照らす (drawioPin.ts)。合わない覚えは使わずに取り直し、
+    // 合わない中身は覚えない (呼ぶ側の load.ts も照らして、使わずに警告する)
+    const { checkPinned } = await import('./drawioPin');
+    const bad = (b: Uint8Array) => ['mismatch', 'unlisted'].includes(checkPinned(p, url, b));
+    if (cached && fs.existsSync(cached)) {
+      const b = fs.readFileSync(cached);
+      if (!bad(b)) return b;
+    }
     const got = await fetch(url);
     if (!got) return undefined;
     // 図形ライブラリ・画像と読めるものだけを保存する (誤りの応答の HTML などを覚えない)
     const { StencilRegistry, imageMime } = await import('./drawioStencil');
-    if (cached && (bundle ? new StencilRegistry().add(new TextDecoder().decode(got)) : imageMime(got))) {
+    if (cached && !bad(got) && (bundle ? new StencilRegistry().add(new TextDecoder().decode(got)) : imageMime(got))) {
       try {
         fs.mkdirSync(cacheDir!, { recursive: true });
         fs.writeFileSync(cached, got);

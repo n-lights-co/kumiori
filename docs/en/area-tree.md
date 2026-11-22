@@ -12,6 +12,7 @@ This document collects the rules for the `AreaTree` returned by `LayoutEngine.la
   - 2: the way collapsed table borders are painted (`paintWidth`, `noPaint`, `tableEdge`) was moved from fields of `BorderSide` to under `BorderSide.collapse`.
   - 3: sides whose `paintWidth` is smaller than `width` (the line is painted inset from the box edge) were added (to align the centers of collapsed table borders of different widths).
 - `parseAreaTree` also reads version 1 trees and returns them converted to the current shape. Version 2 trees are read as trees of the current version as they are.
+- `diagnostics` ([diagnostics.md](diagnostics.md)), which holds the same events as `warnings` (the texts of the layout warnings) with codes and severities, is present only on trees that have diagnostics (it is an optional field, so the version was not changed; the shape of a tree without diagnostics is the same as before).
 
 ## Units and coordinates
 
@@ -60,7 +61,7 @@ To walk the tree, use `walkAreas()` (from one node) or `walkAreaTree()` (all she
 
 - `serializeAreaTree(tree)` turns the tree into a JSON string. Fields that are `undefined` are not written.
 - `parseAreaTree(json)` reads a tree from a JSON string. It checks the version (`schemaVersion`) and the shape of the nodes (the type, that `x`, `y`, `width` and `height` are numbers, and the children fields), and throws `AreaTreeFormatError` if they do not match.
-- A re-read tree can be passed as is to the painting routines (`paintSheet`, `renderPdf`). Note that these two, as well as FontManager and AssetStore, are internal functions and classes that are not exported from the package entry point (`kumiori`). The public API can only draw the result of `typeset` (`renderPage`, `toPdf`); for now there is no way to draw a tree re-read with `parseAreaTree` (a re-read tree is for inspecting, comparing and storing). Version 1 and 2 trees are converted to the current shape before being returned. Fonts and images require the same FontManager and AssetStore as when the tree was written (`test/areaTree.test.ts` verifies that a round-tripped tree is painted identically).
+- A re-read tree can be passed as is to the painting routines (`paintSheet`, `renderPdf`). Note that these two, as well as FontManager and AssetStore, are internal functions and classes that are not exported from the package entry point (`kumiori`). The public API can only draw the result of `typeset` (`renderPage`, `renderPageToSvg`, `renderPageToPng`, `toPdf`); for now there is no way to draw a tree re-read with `parseAreaTree` (a re-read tree is for inspecting, comparing and storing). Version 1 and 2 trees are converted to the current shape before being returned. Fonts and images require the same FontManager and AssetStore as when the tree was written (`test/areaTree.test.ts` verifies that a round-tripped tree is painted identically).
 
 ## Border side fields
 
@@ -80,6 +81,14 @@ To walk the tree, use `walkAreas()` (from one node) or `walkAreaTree()` (all she
 - Areas that carry it: blocks, tables, rows, cells, images, ruby, tate-chu-yoko, and glyphs. For a glyph, it is the index of the containing inline (for a glyph outside an inline, the index of the containing block).
 - Static content (running heads and the like) is typeset from nodes copied for each page, but the copied nodes inherit the index of the original node.
 - Areas made from nodes created during typesetting (footnote numbers, the table for list labels, etc.) may not carry it.
+- The box for the range of a link or annotation in a line (a `block` Area that is not drawn) carries the index of the inline that has the link or annotation.
+
+## Tagged PDF structure
+
+- `AreaTree.structure` is the structure tree for tagged PDF (`src/structure.ts`). It exists only when the input has a structure tree (`tagged` of the HTML and XSL-FO import; `tagged` and `--tagged` in the API and on the command line).
+  - `nodes`: the structure nodes (index 0 is the document). A node has the name of a PDF standard structure type (`role`; ISO 32000-1 §14.8.4; `Artifact` for decoration), the name of a custom type (`custom`; from `role` or `axf:pdftag` in XSL-FO, mapped to `role` by the RoleMap), the index of its parent (`parent`), the indexes of its children (`kids`, in document order), the language (`lang`), the alternate description (`alt`) and the expansion of an abbreviation (`expansion`). Table cells have the direction of header cells (`scope`), the number of rows and columns spanned (`rowSpan`, `colSpan`) and the indexes of their header cells (`headers`); notes (Note) and cells referenced by `headers` have an ID (`sid`). `anchor` is the index of the node that marks where the node is placed in its parent (a footnote body (Note) is placed after the reference mark (Reference) in the text).
+  - `tags`: the table from the index of an input node (`sourceRef`) to the index of a structure node (-1 for none). The content of an Area (glyphs, images) looks up its structure node from the `sourceRef` of the Area or of the nearest ancestor Area that has one.
+- When drawing (`src/paint.ts`), box shadows, backgrounds, borders and outlines, the sheet background and trim marks are drawn as decoration, and glyphs, images and tate-chu-yoko as content (`Painter.tag`). Inside table headers and footers that are repeated (`isRepeatedHeader`), everything is page decoration. Running heads marked as top or bottom (`artifact` is `header` or `footer`) are written as Pagination artifacts with the Subtype Header or Footer. The base and annotation glyphs of ruby carry the numbers of `LRuby.tagParts` (RB and RT; the dots of emphasis marks are artifacts). The glyphs of a footnote reference mark and of the number at the head of the footnote body carry the numbers of empty input nodes made by the import (`LFootnote.tagParts`), which map to the Reference and Lbl structure nodes.
 
 ## Font and image list, and glyph IDs
 

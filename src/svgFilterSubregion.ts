@@ -11,8 +11,8 @@ export const isStandardInput = (r: string) => /^(SourceGraphic|SourceAlpha|Backg
 
 /**
  * 部分領域の既定を決める、参照する結果 (§9.4: 既定は、参照する結果の部分領域の和)。参照の無い要素 (feImage・feTurbulence・feFlood) と、
- * feTile (入力を縦横に並べて、ふつうは入力より広い結果を作る要素) は空 (filter の領域。§9.4 の「0%,0%,100%,100% ... relative to the
- * dimensions of the filter region」)。name は小文字の要素名、mergeIns は feMerge の feMergeNode の in
+ * feTile (入力を縦横に並べて、ふつうは入力より広い結果を作る要素) は空 (filter の領域。§9.4: 既定は、filter の領域の
+ * 大きさに対する 0%,0%,100%,100%)。name は小文字の要素名、mergeIns は feMerge の feMergeNode の in
  */
 export function subregionRefs(name: string, attr: (k: string) => string | undefined, mergeIns: () => Array<string | undefined>): Array<string | undefined> {
   const ins = [attr('in'), attr('in2')];

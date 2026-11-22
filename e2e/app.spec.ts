@@ -396,6 +396,15 @@ test('画面: 読み込みの警告を左の欄に出す (落としたリンク�
   await expect(page.locator('#warnings li')).toHaveCount(1);
   await expect(page.locator('#warnings li')).toBeVisible();
   await expect(page.locator('#warnings li')).toContainText('javascript:');
+  // 診断の名前と重さの印を添える (docs/diagnostics.md)
+  await expect(page.locator('#warnings li')).toContainText('[link/action-dropped]');
+  await expect(page.locator('#warnings li')).toHaveAttribute('data-severity', 'warning');
+  // 組版の診断 (見つからない画像) は、要素とページを添え、押せばそのページへ移る
+  await drop('<!doctype html><p>a</p><p style="break-before: page"><img src="none.png" id="pic"></p>', 'img.html');
+  await expect(page.locator('#status')).toContainText('img.html');
+  await expect(page.locator('#warnings li')).toContainText('[image/not-found] (img#pic・2 ページ)');
+  await expect(page.locator('#warnings li')).toHaveAttribute('data-severity', 'error');
+  await expect(page.locator('#warnings li')).toHaveAttribute('data-page', '1');
   // 多いときは畳む (見出しに件数。開けば読める)
   const deep = '<div>'.repeat(300) + '<p>深い</p>' + '</div>'.repeat(300);
   await drop(`<!doctype html><style>p { image-rendering: pixelated; colr: red }</style><p><a href="javascript:alert(1)">危ないリンク</a></p>${deep}`, 'many.html');
@@ -412,6 +421,13 @@ test('画面: 読み込みの警告を左の欄に出す (落としたリンク�
   expect(text).toContain('未対応の CSS を無視しました: image-rendering');
   expect(text).toContain('知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr');
   expect(text).toContain('入れ子が深すぎます');
+  // 読み込みが上限に当たったことの診断 (タグ付き PDF の表の構造の上限): 列を 1000 またぐセル 1 つと 20 行の表。
+  // 読み込みの報告と組版の診断の両方から来ても、1 件だけ出す
+  const rows = '<tr><td>a</td></tr>'.repeat(20);
+  await drop(`<!doctype html><table><tr><td colspan="1000">広いセル</td></tr>${rows}</table>`, 'table.html');
+  await expect(page.locator('#status')).toContainText('table.html');
+  await expect(page.locator('#warnings li', { hasText: '[limit/table-structure-cells]' })).toHaveCount(1);
+  await expect(page.locator('#warnings li')).toHaveCount(1);
   // 警告の無い文書を開けば、欄は空に戻る
   await drop('<!doctype html><p>警告の無い文書</p>', 'clean.html');
   await expect(page.locator('#status')).toContainText('clean.html');
@@ -871,7 +887,7 @@ test('見本: 印刷プレビュー (examples/preview) で、編集すると組�
   expect(errors).toEqual([]);
 });
 
-test('画面: draw.io の図の図形ライブラリを設定で読み込み・消す。開くファイルと一緒にも渡せる。取るのは設定で許したときだけ', async ({ page }) => {
+test('画面: draw.io の図の図形ライブラリを設定で読み込み・消す。開くファイルと一緒にも渡せる。取るのは設定で許したときだけで、取った中身は版の SHA-256 の一覧と照らす', async ({ page }) => {
   const errors = await open(page);
   // 自作の小さな図形ライブラリ (draw.io の図形ライブラリはリポジトリに入れない)
   const lib = '<shapes name="mxgraph.e2e"><shape name="tri" w="10" h="10"><background><path><move x="0" y="10"/><line x="5" y="0"/><line x="10" y="10"/><close/></path></background><foreground><fillstroke/></foreground></shape></shapes>';
@@ -913,19 +929,27 @@ test('画面: draw.io の図の図形ライブラリを設定で読み込み・�
   // 開くファイルと一緒に渡したライブラリは、その画面の間だけ使う (設定の欄には出すが、覚えない)
   await openDoc([{ name: 'lib.xml', body: lib }]);
   await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
-  // 取るのを許すと、要るときに 1 回だけ取る (ここでは配信元を差し替えて、ライブラリの XML を返す)
+  // 取るのを許すと、要るときに 1 回だけ取る。ここでは配信元を差し替えて、自作のライブラリの XML を返す。既定の取り先 (draw.io の
+  // v24.7.5 のタグ) から取った中身は、版の SHA-256 の一覧と照らすので、v24.7.5 の中身でない差し替えは使わずに警告する
+  // (画面の中でも照らす。設定で読み込んだライブラリ・開くファイルと一緒に渡したライブラリは、上のとおり照らさずに使う)
+  const mismatch = 'draw.io の配布物 (v24.7.5) から取ったファイルの中身が、版の SHA-256 の一覧と合わないので使いません (fetchStencils): js/stencils.min.js';
   await page.click('#clearstencils');
   await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
   expect(fetched).toBe(0);
   await page.check('#drawiofetch');
-  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  await expect(page.locator('#warnings')).toContainText(mismatch, { timeout: 30_000 });
+  await expect(page.locator('#warnings')).toContainText(missing);
   expect(fetched).toBe(1);
+  // 開き直しても、取り直さない (取った中身は、画面の中で使い回す)
   await openDoc();
-  await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
+  await expect(page.locator('#status')).toContainText('a.html', { timeout: 30_000 });
+  await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
   expect(fetched).toBe(1);
-  // 切ると、取ったライブラリを使わない
+  // 切ると、取りに行かず、照らしの警告も出ない
   await page.uncheck('#drawiofetch');
   await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
+  await expect(page.locator('#warnings')).not.toContainText('SHA-256');
+  expect(fetched).toBe(1);
   expect(errors).toEqual([]);
 });
 
@@ -1032,5 +1056,325 @@ test('画面: draw.io の図を読む設定を切ると、図を画像として�
   await page.check('#drawio-on');
   await expect(page.locator('#warnings')).toBeEmpty({ timeout: 30_000 });
   await expect(page.locator('#stencilfile')).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test('画面: タグ付き PDF は既定で付け、設定で切ると付けない。選んだものはブラウザに覚える', async ({ page }) => {
+  const errors = await open(page);
+  const load = () =>
+    page.evaluate(async () => {
+      await (window as unknown as { __kumioriLoadHtml: (t: string, n: string) => Promise<void> }).__kumioriLoadHtml('<!DOCTYPE html><html lang="ja"><title>t</title><h1>見出し</h1><p>本文</p></html>', 'tagged.html');
+    });
+  await openSettings(page);
+  await expect(page.locator('#tagged')).toBeChecked();
+  await load();
+  await expect(page.locator('#status')).toContainText('tagged.html', { timeout: 30_000 });
+  // 既定: 構造の木 (StructTreeRoot) と MarkInfo を書く
+  const tagged = await downloadPdf(page);
+  expect(tagged.catalog.get(PDFName.of('StructTreeRoot'))).toBeDefined();
+  expect(tagged.catalog.lookup(PDFName.of('MarkInfo'), PDFDict).get(PDFName.of('Marked'))?.toString()).toBe('true');
+  // 切ると、読み込み直して、タグを付けない
+  await page.uncheck('#tagged');
+  await expect(page.locator('#status')).toContainText('tagged.html', { timeout: 30_000 });
+  const plain = await downloadPdf(page);
+  expect(plain.catalog.get(PDFName.of('StructTreeRoot'))).toBeUndefined();
+  // 開き直しても切ったまま (ブラウザに覚える)
+  await page.reload();
+  await page.waitForSelector('html[data-ready="1"]', { timeout: 150_000 });
+  await openSettings(page);
+  await expect(page.locator('#tagged')).not.toBeChecked();
+  expect(errors).toEqual([]);
+});
+
+test('画面: 読み込みが画像を待つ間に、次の読み込みやサンプルに戻すと、後から終わった古い読み込みの文書を出さない', async ({ page }) => {
+  const errors = await open(page);
+  // 遅い画像 (2 秒待たせてから返す 1×1 の PNG)
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  await page.route('https://slow.example/**', async (route) => {
+    await new Promise((r) => setTimeout(r, 2000));
+    await route.fulfill({ body: png, contentType: 'image/png' });
+  });
+  const load = (html: string, name: string) => page.evaluate(([h, n]) => (window as unknown as { __kumioriLoadHtml: (t: string, n: string) => Promise<void> }).__kumioriLoadHtml(h, n), [html, name]);
+  const docText = () => page.evaluate(() => JSON.stringify((window as unknown as { __kumiori: { doc: unknown } }).__kumiori.doc));
+  await load('<!DOCTYPE html><p>最初の文書</p>', 'first.html');
+  await expect(page.locator('#status')).toContainText('first.html', { timeout: 30_000 });
+  // 遅い読み込みを始め、待つ間に次の読み込みを終える
+  const slow = load('<!DOCTYPE html><p>古い文書</p><img src="https://slow.example/a.png">', 'old.html');
+  await load('<!DOCTYPE html><p>新しい文書</p>', 'new.html');
+  await slow;
+  expect(await docText()).toContain('新しい文書');
+  expect(await docText()).not.toContain('古い文書');
+  // 遅い読み込みを始め、待つ間にサンプルに戻す
+  const slow2 = load('<!DOCTYPE html><p>古い文書</p><img src="https://slow.example/b.png">', 'old2.html');
+  // (ボタンは設定の引き出しの中にあるので、DOM の click で押す)
+  await page.evaluate(() => document.getElementById('resetsample')!.click());
+  await slow2;
+  expect(await docText()).not.toContain('古い文書');
+  expect(await page.evaluate(() => document.getElementById('resetsample')!.hidden)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('画面: 「見本の文書に戻す」の後に MathML のファイルだけを開いても、前に開いた XSL-FO を組み直さない', async ({ page }) => {
+  const errors = await open(page);
+  const fo =
+    '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+    '<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block>前に開いた FO</fo:block></fo:flow></fo:page-sequence></fo:root>';
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'before.fo'), fo);
+  await expect(page.locator('#status')).toContainText('before.fo', { timeout: 30_000 });
+  const docText = () => page.evaluate(() => JSON.stringify((window as unknown as { __kumiori: { doc: unknown } }).__kumiori.doc));
+  expect(await docText()).toContain('前に開いた FO');
+  // 見本に戻す (ボタンは設定の引き出しの中にあるので、DOM の click で押す)
+  await page.evaluate(() => document.getElementById('resetsample')!.click());
+  expect(await docText()).not.toContain('前に開いた FO');
+  // MathML のファイルだけを開く (前は、前に開いた FO を、MathML を足して組み直していた)
+  await page.locator('#fofile').setInputFiles({ name: 'eq.mml', mimeType: 'application/xml', buffer: Buffer.from('<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>') });
+  await page.waitForTimeout(1500);
+  expect(await docText()).not.toContain('前に開いた FO');
+  expect(errors).toEqual([]);
+});
+
+test('画面: 2 度続けてドロップすると、後から落としたファイルの文書を出す (先に読み終えた方で、後の方を捨てない)', async ({ page }) => {
+  const errors = await open(page);
+  const fo = (t: string) =>
+    '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+    `<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block>${t}</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  await page.evaluate(
+    ([a, b, p]) => {
+      const bytes = Uint8Array.from(atob(p), (c) => c.charCodeAt(0));
+      const drop = (files: File[]) => {
+        const dt = new DataTransfer();
+        for (const f of files) dt.items.add(f);
+        window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      };
+      // 先に小さな a.fo、続けて b.fo と画像 40 個 (登録に時間のかかる方) を落とす
+      drop([new File([a], 'a.fo', { type: 'application/xml' })]);
+      drop([new File([b], 'b.fo', { type: 'application/xml' }), ...Array.from({ length: 40 }, (_, i) => new File([bytes], `i${i}.png`, { type: 'image/png' }))]);
+    },
+    [fo('先に落とした a'), fo('後から落とした b'), png],
+  );
+  await expect(page.locator('#status')).toContainText('b.fo', { timeout: 30_000 });
+  await page.waitForTimeout(1000);
+  const doc = await page.evaluate(() => JSON.stringify((window as unknown as { __kumiori: { doc: unknown } }).__kumiori.doc));
+  expect(doc).toContain('後から落とした b');
+  expect(doc).not.toContain('先に落とした a');
+  expect(errors).toEqual([]);
+});
+
+test('画面: 文書を落とし、続けてその文書の使う画像だけを落とすと、文書を出す (画像だけの追加で、先の文書の読み込みを捨てない)', async ({ page }) => {
+  const errors = await open(page);
+  const fo =
+    '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+    '<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block>画像を使う a<fo:external-graphic src="i0.png"/></fo:block></fo:flow></fo:page-sequence></fo:root>';
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  await page.evaluate(
+    ([a, p]) => {
+      const bytes = Uint8Array.from(atob(p), (c) => c.charCodeAt(0));
+      const drop = (files: File[]) => {
+        const dt = new DataTransfer();
+        for (const f of files) dt.items.add(f);
+        window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      };
+      drop([new File([a], 'a.fo', { type: 'application/xml' })]);
+      drop([new File([bytes], 'i0.png', { type: 'image/png' })]);
+    },
+    [fo, png],
+  );
+  await expect(page.locator('#status')).toContainText('a.fo', { timeout: 30_000 });
+  await page.waitForTimeout(1000);
+  const doc = await page.evaluate(() => JSON.stringify((window as unknown as { __kumiori: { doc: unknown } }).__kumiori.doc));
+  expect(doc).toContain('画像を使う a');
+  expect(errors).toEqual([]);
+});
+
+/** 画面にファイルを落とす (DataTransfer の drop)。files は [名前, 中身 (文字列か base64 の画像), MIME] の並びの並び (1 つの並びが 1 度のドロップ) */
+async function dropFiles(page: Page, drops: Array<Array<[string, string, string]>>) {
+  await page.evaluate((ds) => {
+    for (const d of ds) {
+      const dt = new DataTransfer();
+      for (const [name, data, type] of d) dt.items.add(new File([type.startsWith('image/') ? Uint8Array.from(atob(data), (c) => c.charCodeAt(0)) : data], name, { type }));
+      window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }
+  }, drops);
+}
+const foDoc = (t: string) =>
+  '<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+  `<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block>${t}</fo:block></fo:flow></fo:page-sequence></fo:root>`;
+const onePng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const shownDoc = (page: Page) => page.evaluate(() => JSON.stringify((window as unknown as { __kumiori: { doc: unknown } }).__kumiori.doc));
+
+for (const [first, firstType, firstText] of [
+  ['a.fo', 'application/xml', foDoc('先の文書')],
+  ['a.html', 'text/html', '<!DOCTYPE html><p>先の文書</p>'],
+] as const)
+  test(`画面: ${first} を落とし、続けて中身が XSL-FO の b.xml を落とすと、後の b.xml を出す`, async ({ page }) => {
+    const errors = await open(page);
+    await dropFiles(page, [[[first, firstText, firstType]], [['b.xml', foDoc('後の文書'), 'application/xml']]]);
+    await expect(page.locator('#status')).toContainText('b.xml', { timeout: 30_000 });
+    await page.waitForTimeout(1000);
+    expect(await shownDoc(page)).toContain('後の文書');
+    expect(await shownDoc(page)).not.toContain('先の文書');
+    expect(errors).toEqual([]);
+  });
+
+test('画面: 文書を開く途中に MathML だけを落としても、前の XSL-FO を組み直さず、開いている文書を出す', async ({ page }) => {
+  const errors = await open(page);
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'x.fo'), foDoc('前の文書 x'));
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
+  const math = '<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>';
+  await dropFiles(page, [
+    [['a.fo', foDoc('いま開く a'), 'application/xml'], ...Array.from({ length: 40 }, (_, i): [string, string, string] => [`i${i}.png`, onePng, 'image/png'])],
+    [['m.xml', math, 'application/xml']],
+  ]);
+  await expect(page.locator('#status')).toContainText('a.fo', { timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  expect(await shownDoc(page)).toContain('いま開く a');
+  expect(errors).toEqual([]);
+});
+
+test('画面: XSL-FO、続けて HTML を開いた後に MathML だけを落としても、前の XSL-FO を出さない', async ({ page }) => {
+  const errors = await open(page);
+  await dropFiles(page, [[['a.fo', foDoc('前の FO'), 'application/xml']]]);
+  await expect(page.locator('#status')).toContainText('a.fo', { timeout: 30_000 });
+  await dropFiles(page, [[['b.html', '<!DOCTYPE html><p>いまの HTML</p>', 'text/html']]]);
+  await expect(page.locator('#status')).toContainText('b.html', { timeout: 30_000 });
+  await dropFiles(page, [[['m.xml', '<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>', 'application/xml']]]);
+  await page.waitForTimeout(1500);
+  expect(await shownDoc(page)).toContain('いまの HTML');
+  expect(await shownDoc(page)).not.toContain('前の FO');
+  expect(errors).toEqual([]);
+});
+
+/** いまの画面の文書に印を付ける (組み直すと __kumiori が作り直されて、印が消える) */
+const markShown = (page: Page) => page.evaluate(() => ((window as unknown as { __kumiori: { mark?: number } }).__kumiori.mark = 1));
+const stillMarked = (page: Page) => page.evaluate(() => (window as unknown as { __kumiori: { mark?: number } }).__kumiori.mark === 1);
+const lib = '<shapes name="mxgraph.e2e"><shape name="tri" w="10" h="10"><background><path><move x="0" y="10"/><line x="5" y="0"/><line x="10" y="10"/><close/></path></background><foreground><fillstroke/></foreground></shape></shapes>';
+const withImages = (name: string, text: string): Array<[string, string, string]> => [[name, text, 'application/xml'], ...Array.from({ length: 40 }, (_, i): [string, string, string] => [`i${i}.png`, onePng, 'image/png'])];
+
+test('画面: 壊れた EPUB を開いた後も、いまの文書の画像だけを落とすと組み直す', async ({ page }) => {
+  const errors = await open(page);
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'x.fo'), foDoc('いまの文書 x<fo:external-graphic src="p.png"/>'));
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
+  await dropFiles(page, [[['broken.epub', 'これは EPUB ではない', 'application/epub+zip']]]);
+  await expect(page.locator('#status')).toContainText('エラー', { timeout: 30_000 });
+  await markShown(page);
+  await dropFiles(page, [[['p.png', onePng, 'image/png']]]);
+  await expect.poll(() => stillMarked(page), { timeout: 30_000 }).toBe(false);
+  expect(await shownDoc(page)).toContain('いまの文書 x');
+  expect(errors).toEqual([]);
+});
+
+test('画面: 文書を開く途中に設定 (タグ付き PDF) を変えると、開いている文書を変えた設定で組み、その後の画像だけの追加でも組み直す', async ({ page }) => {
+  const errors = await open(page);
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'x.fo'), foDoc('前の文書 x'));
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
+  await openSettings(page);
+  await expect(page.locator('#tagged')).toBeChecked();
+  await dropFiles(page, [withImages('a.fo', foDoc('いま開く a<fo:external-graphic src="q.png"/>'))]);
+  // 画像を登録している間に切る (前の文書を組み直して、開いている文書を捨てていた)
+  await page.evaluate(() => document.getElementById('tagged')!.click());
+  await expect(page.locator('#status')).toContainText('a.fo', { timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  expect(await shownDoc(page)).toContain('いま開く a');
+  expect(await shownDoc(page)).not.toContain('前の文書 x');
+  // 読み込みが、切った設定で組んだ (構造の木を作らない)。PDF を書くときのチェックボックスでなく、読み込んだ文書で確かめる
+  expect(JSON.parse(await shownDoc(page)).structure).toBeUndefined();
+  await markShown(page);
+  await dropFiles(page, [[['q.png', onePng, 'image/png']]]);
+  await expect.poll(() => stillMarked(page), { timeout: 30_000 }).toBe(false);
+  expect(await shownDoc(page)).toContain('いま開く a');
+  // 入れ直すと、読み込み直して構造の木を作る
+  await page.evaluate(() => document.getElementById('tagged')!.click());
+  await expect.poll(async () => JSON.parse(await shownDoc(page)).structure !== undefined, { timeout: 30_000 }).toBe(true);
+  expect(await shownDoc(page)).toContain('いま開く a');
+  expect(errors).toEqual([]);
+});
+
+test('画面: 文書を開く途中に図形ライブラリだけを落としても、前の文書を組み直さず、開いている文書を出す', async ({ page }) => {
+  const errors = await open(page);
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'x.fo'), foDoc('前の文書 x'));
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
+  await dropFiles(page, [withImages('a.fo', foDoc('いま開く a')), [['lib.xml', lib, 'application/xml']]]);
+  await expect(page.locator('#status')).toContainText('a.fo', { timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  expect(await shownDoc(page)).toContain('いま開く a');
+  expect(await shownDoc(page)).not.toContain('前の文書 x');
+  expect(errors).toEqual([]);
+});
+
+test('画面: 文書を開く途中に設定を変え、続けて選んだ文書が読み込みを始めずに終わると、いまの文書を変えた設定で組み直す', async ({ page }) => {
+  const errors = await open(page);
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'x.fo'), foDoc('いまの文書 x'));
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
+  await openSettings(page);
+  await expect(page.locator('#fospec')).toBeChecked();
+  await markShown(page);
+  // a.fo (と画像 40 個) を開く途中に「仕様どおりの既定値で組む」を切り、続けて壊れた EPUB を落とす (a.fo は捨て、EPUB は誤りで終わる)
+  await dropFiles(page, [withImages('a.fo', foDoc('捨てる a'))]);
+  await page.evaluate(() => document.getElementById('fospec')!.click());
+  await dropFiles(page, [[['broken.epub', 'これは EPUB ではない', 'application/epub+zip']]]);
+  // 見送った設定の変更で、いまの文書 x を組み直す (後から選んだ文書の claim で、見送りを忘れない)
+  await expect.poll(() => stillMarked(page), { timeout: 30_000 }).toBe(false);
+  await page.waitForTimeout(1500);
+  expect(await shownDoc(page)).toContain('いまの文書 x');
+  expect(await shownDoc(page)).not.toContain('捨てる a');
+  await page.evaluate(() => document.getElementById('fospec')!.click());
+  expect(errors).toEqual([]);
+});
+
+test('画面: HTML を出しているときに書体を足すと、その HTML を組み直す (前に開いた XSL-FO に戻さない)', async ({ page }) => {
+  const errors = await open(page);
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'x.fo'), foDoc('前の FO x'));
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
+  await page.evaluate(() => (window as unknown as { __kumioriLoadHtml: (t: string, n: string) => Promise<void> }).__kumioriLoadHtml('<!DOCTYPE html><p>いまの HTML y</p>', 'y.html'));
+  await expect(page.locator('#status')).toContainText('y.html', { timeout: 30_000 });
+  await markShown(page);
+  await page.locator('#fontfile').setInputFiles(await extraTestFont('Anybody-wdth-wght-5bb2873.ttf'));
+  await expect.poll(() => stillMarked(page), { timeout: 30_000 }).toBe(false);
+  await expect(page.locator('#status')).toContainText('y.html', { timeout: 30_000 });
+  expect(await shownDoc(page)).toContain('いまの HTML y');
+  expect(await shownDoc(page)).not.toContain('前の FO x');
+  expect(errors).toEqual([]);
+});
+
+test('画面: 画像だけを落として登録する間に設定を変えても、足した画像で組み直す', async ({ page }) => {
+  const errors = await open(page);
+  const refs = Array.from({ length: 40 }, (_, i) => `<fo:external-graphic src="i${i}.png"/>`).join('');
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'x.fo'), foDoc(`画像を使う x${refs}`));
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
+  await expect(page.locator('#report')).toContainText('画像: 0 / 40');
+  await openSettings(page);
+  // 画像 40 個だけを落とし、登録している間に「タグ付き PDF にする」を切る (前は、組み直しが先に終わり、画像を登録したのに 0 / 40 のままだった)
+  await dropFiles(page, [Array.from({ length: 40 }, (_, i): [string, string, string] => [`i${i}.png`, onePng, 'image/png'])]);
+  await page.evaluate(() => document.getElementById('tagged')!.click());
+  await expect(page.locator('#report')).toContainText('画像: 40 / 40', { timeout: 30_000 });
+  await page.evaluate(() => document.getElementById('tagged')!.click());
+  expect(errors).toEqual([]);
+});
+
+test('画面: 設定の変更で組み直す途中に壊れた EPUB を落としても、組み直しを捨てたままにしない', async ({ page }) => {
+  const errors = await open(page);
+  // 遅い画像を使う FO: 初めの読み込みでは取れず (登録しない)、組み直しでは 2 秒待たせて返す。組み直しが画像を待つ間に、EPUB を落とす
+  const png = Buffer.from(onePng, 'base64');
+  let first = true;
+  await page.route('https://slow.example/**', async (route) => {
+    if (first) {
+      first = false;
+      await route.fulfill({ status: 404, body: '' });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+    await route.fulfill({ body: png, contentType: 'image/png' });
+  });
+  await page.evaluate((t) => (window as unknown as { __kumioriLoadFo: (t: string, n: string) => Promise<void> }).__kumioriLoadFo(t, 'x.fo'), foDoc('いまの文書 x<fo:external-graphic src="https://slow.example/a.png"/>'));
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
+  expect(JSON.parse(await shownDoc(page)).structure).toBeDefined();
+  await openSettings(page);
+  await page.evaluate(() => document.getElementById('tagged')!.click());
+  await dropFiles(page, [[['broken.epub', 'これは EPUB ではない', 'application/epub+zip']]]);
+  // 切った設定で x を組み直す (構造の木が無い)
+  await expect.poll(async () => JSON.parse(await shownDoc(page)).structure === undefined, { timeout: 30_000 }).toBe(true);
+  expect(await shownDoc(page)).toContain('いまの文書 x');
+  await page.evaluate(() => document.getElementById('tagged')!.click());
   expect(errors).toEqual([]);
 });

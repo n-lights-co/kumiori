@@ -61,12 +61,12 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 ## 未対応 (レポートに件数を出す)
 
 知らない要素 (`fo:*`・MathML・`instream-foreign-object` の中身)・知らないリージョン名、`reference-orientation` の 90 の倍数以外の値 (0 として組む)、長さの式の知らない関数、読めない色、`font-variant`・`word-spacing`・`font-stretch` の読めない値、`text-decoration`・`text-transform`・`baseline-shift` の読めない値、`overflow` の auto・visible 以外、`axf:punctuation-trim`・`axf:field-type`・`axf:field-checked-style`・`axf:field-font-size`・`axf:annotation-type`・`axf:annotation-flags` の知らない値、`axf:printer-marks` の画像、添付するファイルの無い FileAttachment の注釈 (テキスト注釈にする)。
-アンテナハウスのフロートの拡張 (`axf:float-x`・`axf:float-y`・`axf:float-reference`・`axf:float-move` など。ページ・段を基準に置く回り込み) は読まず、属性の名前で件数に出す (`fo:float` は `float` の値 (before・start・end・left・right・inside・outside) だけで組む。`BACKLOG.md` の I-11)。
-数式の書体が読めないときの後備の組み方では、数式の細部 (Content MathML・maligngroup・mlabeledtr) は、件数には出さずに描けないまま (`BACKLOG.md` の I-02。数式の書体で組むときは対応する)。
+アンテナハウスのフロートの拡張 (`axf:float-x`・`axf:float-y`・`axf:float-reference`・`axf:float-move` など。ページ・段を基準に置く回り込み) は読まず、属性の名前で件数に出す (`fo:float` は `float` の値 (before・start・end・left・right・inside・outside) だけで組む。`BACKLOG.md` の「アンテナハウスのフロートの拡張」の項)。
+数式の書体が読めないときの後備の組み方では、数式の細部 (Content MathML・maligngroup・mlabeledtr) は、件数には出さずに描けないまま (`BACKLOG.md` の「`fo:instream-foreign-object`」の項。数式の書体で組むときは対応する)。
 
 未対応の一覧と優先度は [BACKLOG.md](BACKLOG.md) に記録している。
 
-読まずに捨てた属性・要素も、件数に出す (黙って捨てない)。読み込みは、要素ごとに値を尋ねた属性を記録し、読み終えた後で、1 度も尋ねなかった属性を数える: どの要素でも読まない性質 (未対応の `axf:` の拡張・綴りの誤り) は「属性の名前」、ほかの要素では読む性質は「属性の名前 (要素の名前)」。中の要素ごと読まなかった要素は「要素の名前 (親の要素の名前 の中)」で 1 度だけ数える。要素ごと捨てて報告済みのものの中、ページマスターに領域が無くて組まれない `fo:static-content` (XSL 1.1 §6.4.1.4)、組版に効かない `role`・`source-document` (§7.5) は数えない。`text-align` の文字列の値 (§7.16.9 の `<string>`。表の列のセルを文字列の位置でそろえる) は未対応で、`start` として組み、`text-align:<string>` として数える。
+読まずに捨てた属性・要素も、件数に出す (黙って捨てない)。読み込みは、要素ごとに値を尋ねた属性を記録し、読み終えた後で、1 度も尋ねなかった属性を数える: どの要素でも読まない性質 (未対応の `axf:` の拡張・綴りの誤り) は「属性の名前」、ほかの要素では読む性質は「属性の名前 (要素の名前)」。中の要素ごと読まなかった要素は「要素の名前 (親の要素の名前 の中)」で 1 度だけ数える。要素ごと捨てて報告済みのものの中、ページマスターに領域が無くて組まれない `fo:static-content` (XSL 1.1 §6.4.1.4)、組版に効かない `role`・`source-document` (§7.5) は数えない (`role` は、タグ付き PDF の構造の型に使う)。`text-align` の文字列の値 (§7.16.9 の `<string>`。表の列のセルを文字列の位置でそろえる) は未対応で、`start` として組み、`text-align:<string>` として数える。
 
 読み込んだどの書体にも字形の無い字 (字形の無い字の形 = 豆腐で出る) は、警告に字と数を出す (多い順。20 種を超える分は数だけ。HTML も同じ)。空白・制御文字・書式の文字 (ゼロ幅の字・双方向の制御・異体字セレクタ) は数えない。
 
@@ -110,7 +110,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
   文字の大文字の高さは 0.72em とする。線種 2〜5 の線と隙間の長さは線の太さの倍数。RESTRICTED TEXT (basic) は、文字の高さを箱の高さまでに縮め、幅を超えるときだけ横に縮める。
   scaled・mm の線・辺の太さと印の大きさは、表示装置の上の大きさとして、絵を拡大縮小しても変えない (`vector-effect="non-scaling-stroke"`・`"non-scaling-size"`。PDF の描画で、絵を置く拡大率の逆数を掛ける。scaled の印の大きさの基準は 1.34pt)。fractional (表示面に対する割合) は絵と一緒に拡大縮小する。
   閉じた図形 (BEGIN FIGURE 〜 END FIGURE・NEW REGION) は、中の線・塗りの要素をつないで領域にし、END FIGURE で内側の塗り方に従って 1 つの塗りとして描き、辺は辺の属性で描く。
-  CELL ARRAY・模様 (pattern)・ESCAPE 22・45 (透明度)・三角形の色の補間・TEXT PATH (left・up・down) も描く (`BACKLOG.md` の I-09)。まだ描かないもの: GDP・POLYSYMBOL・ほかの ESCAPE (登録された中身が無い)・最初より後の絵。
+  CELL ARRAY・模様 (pattern)・ESCAPE 22・45 (透明度)・三角形の色の補間・TEXT PATH (left・up・down) も描く (`BACKLOG.md` の「CGM 画像のまだ描かない要素」の項)。まだ描かないもの: GDP・POLYSYMBOL・ほかの ESCAPE (登録された中身が無い)・最初より後の絵。
 - **.svgz** (gzip の SVG) は展開して SVG として読む。
 
 言語ごとの約物のアキ: `fo:declarations` の `axf:space-before-punctuation`・`axf:space-after-punctuation`・`axf:space-between-punctuation-and-digit`・`axf:space-between-digit-and-punctuation` (code・space・language) を読み、言語 (`xml:lang` / `language`) が合う文字列で、記号の前後に行内の余白でアキを入れる。space の百分率は字の大きさに対する割合、`thin` は 1/6em。記号の隣が空白なら入れない。
@@ -122,7 +122,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 ## 公開されている見本の FO での結果
 
 公開されている XSL-FO の見本の `.fo` (見本そのものは同梱していない) を変換して組版した結果。
-下の箇条書きは XSL-FO の読み込みを作った初期 (2026-10 末) の記録で、挙げた未対応・崩れはその後の PR で対応した (`BACKLOG.md` の E-01〜E-06・E-10〜E-13・I-01・I-03・I-08)。組んだ結果は、`scripts/compare-pdf.mjs` (`--ref` に見本の PDF のディレクトリ) で見本の PDF と見比べて確かめている (手順は README)。
+下の箇条書きは XSL-FO の読み込みを作った初期 (2026-10 末) の記録で、挙げた未対応・崩れはその後の PR で対応した (`BACKLOG.md` の完了の項)。組んだ結果は、`scripts/compare-pdf.mjs` (`--ref` に見本の PDF のディレクトリ) で見本の PDF と見比べて確かめている (手順は [`docs/development.md`](development.md) の「見本の PDF との比較」)。
 
 初期の記録:
 
@@ -182,8 +182,9 @@ mask (中身を、マスクを使う要素の座標で図形にし、PDF では 
 filter・マスクを含む模様・読めない CSS 選択子を含む SVG は、従来どおり 300dpi でラスタライズする。
 Node のコマンド (`dist-cli/cli.js`) ではラスタライズできないので、filter は、要素の結果 (in・in2・result) をたどって、元の図形・影 (SourceAlpha から作った 1 色の形)・塗りつぶしの層の並びとして求め、図形で近似する
 (feDropShadow・feGaussianBlur・feOffset・feFlood・feColorMatrix・feComponentTransfer・feComposite の over・in・out・atop・feBlend (16 通りの描画モード)・feMerge。結果は filter の領域で切り抜く。
-feColorMatrix・feComponentTransfer は図形の色を変える (color-interpolation-filters の linearRGB・sRGB)。Figma の書き出す影もこの形。
+feColorMatrix・feComponentTransfer は図形の色を変える (color-interpolation-filters の linearRGB・sRGB。画像・模様の塗りの色は図形では変えられないので、下の画素の計算に回す)。Figma の書き出す影もこの形。
 ぼかしは、0・0.5σ・σ・1.5σ・2σ 太らせた半透明の写しの重ね。ぼかしだけのものは元の図形のまま)。図形で近似できない filter (feTurbulence・feMorphology・feDiffuseLighting・feSpecularLighting・feDisplacementMap・feConvolveMatrix・feImage・feTile・feComposite の arithmetic など) は、要素の図形を filter の領域の画素に描いてから、Filter Effects 1 のとおりに画素で計算し、結果を画像として置く (src/svgFilterRaster.ts)。
+どちらの道でも、filter の元の図形には、その要素と祖先の clip-path・mask・opacity を掛けず、filter の結果を切り抜き、マスクで隠し、不透明度で薄める (Filter Effects 1 §5・CSS Masking 1 §2 の順)。
 foreignObject の中身 (HTML・MathML) は、API・コマンドでは本文と同じ HTML の組版で、foreignObject の幅のページとして組み、組んだページを SVG の図形にして描く (背景・罫線・表・画像・数式も。枠の外は切る)。組む仕組みの無いとき (renderPdf を直に使うときなど) は、HTML の文字だけを近似して描き、HTML でない中身は仮の枠で描いて警告する。
 
 ## 区切り領域・斜体・上付き
@@ -247,7 +248,7 @@ PDF には、使った書体だけをサブセットで埋め込む。書体の�
 
 letter-spacing: 値 (長さ) で指定した行は字間が固定なので、`text-align="justify"` でも字間を伸縮せず、行を左 (start) に詰める (`fixedLetterSpacing`)。`letter-spacing="normal"` で解除する。
 
-根拠 (XSL-FO 1.1 §7.17.2): `letter-spacing` が `normal` のときだけ、処理系は両端揃えのために字間を調整してよい。`<length>` では「User agents may not further increase or decrease the inter-character space in order to justify text」で、`.minimum` = `.optimum` = `.maximum` となる。
+根拠 (XSL-FO 1.1 §7.17.2): `letter-spacing` が `normal` のときだけ、処理系は両端揃えのために字間を調整してよい。`<length>` では、両端揃えのために字間をそれ以上広げも縮めもしてはならないので、`.minimum` = `.optimum` = `.maximum` となる。
 `<space>` 形式 (`letter-spacing.minimum` / `.maximum`) は、その範囲内で調整できる。ここでは `.maximum − .optimum` を、1 字間あたりの広げる上限 (`letterSpacingStretch`) として扱う (縮める側 `.minimum` は未対応)。
 単語間の空白との調整順序は処理系依存 (仕様)。Kumiori は、字間を長さで指定した行では空白も伸ばさない。
 
@@ -350,7 +351,7 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - 回転・縦書きのブロックコンテナの中の絶対配置の基準 (コンテナに切り替えない)
 - `simple-page-master` の `reference-orientation`
 
-## その他の仕様対応 (S-12)
+## その他の仕様対応
 
 - ページ番号の書式 `format` (§7.26.1): `1` `01` `i` `I` `a` `A` `１` `一` と前後の文字 (XSLT 1.0 §7.7.1 どおり、最初のトークンだけを使う)。page-number・page-number-citation とも、参照先のページの書式で出す。
 - `page-number-citation-last`: 参照先が置かれた最後のページ。
@@ -391,15 +392,15 @@ keep-with-next が連なる並び: 並びの先頭ブロックと、並びの次
 - ペアカーニング: `axf:kerning-mode` (または `font-kerning`) が none 以外なら、横書きの欧文にフォントのカーニングを掛ける。既定はオフ。
 - 傍注 (marginal-notes の見本の書き方): float の中身が負の `start-indent` / `end-indent` で本文の外へはみ出すときは、本文の行幅を変えずに余白へ置く。`float="inside" / "outside"` は組むページの偶奇で start / end を決める。
 - `simple-page-master` と `region-body` の `margin` の略記 (2〜4 値) を、上・右・下・左に展開する (これまでは 1 値しか読めなかった)。
-- `axf:document-info` (title・author・subject・keywords) を PDF の文書情報に入れる。
+- `axf:document-info` (document-title・author・subject・keywords) を PDF の文書情報に入れる。name の値は、アンテナハウスの説明の一覧による (題は document-title)。説明に無い title も題として読むが、document-title に書き換えるよう知らせる (両方あれば document-title)。
 - しおり: `fo:bookmark-tree` (`internal-destination`・`starting-state`) と、拡張 (`axf:*`) の `axf:outline-level` / `axf:outline-title` / `axf:outline-group` から、PDF のアウトラインを作る (飛び先は、その id が最初に置かれたページ)。
 - 背景画像: `background-image`・`background-repeat`・`background-position(-horizontal/-vertical)`、大きさは `axf:background-content-width/height` か `axf:background-size` (長さ・百分率・`auto`・`cover`・`contain`。最初の層だけ。無ければ画像本来の大きさ)。ブロック・セル・ブロックコンテナ・リージョン (`fo:region-body`・`fo:region-before` など。XSL 1.1 §6.4.14〜§6.4.18) に対応。PDF にも埋め込む (SVG はベクタのまま)。
-- 背景を塗る範囲: 背景の色・画像は padding の矩形まで (XSL 1.1 §4.9.4: “The background, if any, is rendered in the padding-rectangle”。罫線の下には塗らない。`--compat` によらない)。破線・点線・二重線などの罫線のすき間や、透明の色の罫線の下には、背景が見えない。不透明の実線と立体の線種 (`groove`・`ridge`・`inset`・`outset`) の罫線は下の背景を隠して見た目が同じなので、塗り方は今までどおり (罫線の箱まで)。行内の箱 (`fo:inline`) の背景の色と、罫線をつぶした表 (`border-collapse="collapse"`) の外枠の罫線に重なるセルの背景は、まだ罫線の下まで塗る。
+- 背景を塗る範囲: 背景の色・画像は padding の矩形まで (XSL 1.1 §4.9.4: 背景は padding-rectangle に塗る。罫線の下には塗らない。`--compat` によらない)。破線・点線・二重線などの罫線のすき間や、透明の色の罫線の下には、背景が見えない。不透明の実線と立体の線種 (`groove`・`ridge`・`inset`・`outset`) の罫線は下の背景を隠して見た目が同じなので、塗り方は今までどおり (罫線の箱まで)。行内の箱 (`fo:inline`) の背景の色と、罫線をつぶした表 (`border-collapse="collapse"`) の外枠の罫線に重なるセルの背景は、まだ罫線の下まで塗る。
 - `background-image` のグラデーション (`linear-gradient()`・`radial-gradient()`・`repeating-` の付いたもの): XSL 1.1 §7.8.3 の値 (`<uri-specification> | none`) ではなく、アンテナハウスの足した値なので、互換モード (`--compat antenna`) のときだけ読んで、HTML と同じグラデーションの背景として描く。仕様モードでは描かずに報告する (`background-image:linear-gradient()`)。
 - `fo:simple-page-master` の `background-color`・`background-image`・`background-repeat`・`background-position(-horizontal/-vertical)`: 背景の性質は `fo:simple-page-master` に当たらない (§6.4.13) ので、互換モードのときだけ、ページの背景の色・画像として読む (`axf:background-color` はどのモードでも読む) (`fo:page-sequence` の `axf:background-image` より優先)。仕様モードでは読まずに報告する。
 - 段罫: `region-body` の `axf:column-rule-width/style/color`。
 - リンク: `fo:basic-link` の `external-destination` (URI) と `internal-destination` (その id が置かれたページ) を、PDF のリンク注釈にする。行をまたぐリンクは行ごとの範囲。外への飛び先は、既定では、スキームが `http`・`https`・`mailto`・`tel` の URL と相対参照の PDF だけをリンクにする (`src/linkPolicy.ts`。ほかは字だけを組み、警告に知らせる。`links` の設定で選べる)。
-- 注釈: `axf:annotation-type` (Text・FreeText・Stamp。FileAttachment は `axf:annotation-file-attachment` のファイルを添付する。添付するのは、`files` に渡したファイル (コマンドでは入力のディレクトリの中のファイル) と `data:` の URI だけで、`file:` の URL・ネットワークの URL のファイルは添付しない。ファイルが無ければテキスト注釈にする) と `axf:annotation-contents/title/color/text-color/font-size/icon-name/open/position-horizontal/position-vertical/width/height`。inline は最初の行、block は最初の断片の左上が基準。FreeText は埋め込み済みの書体で表示 (appearance) を作る。画面には注釈の目印を描く。
+- 注釈: `axf:annotation-type` (Text・FreeText・Stamp。FileAttachment は `axf:annotation-file-attachment` のファイルを添付する。添付するのは、`files` に渡したファイル (コマンドでは入力のディレクトリの中のファイル。`.` で始まるファイル・ディレクトリと `node_modules` は除く) と `data:` の URI だけで、ファイルは道の全体で探し (`./`・`//`・`sub/./` の書き方の揺れは整えて比べる)、名前だけで当てるのは、ディレクトリ無しの名前で渡したファイルだけ (文書の場所の外を指す参照 (`file:` などのスキームのある URL・`/` か `\` で始まる道・`..` で上へ出る道。上へ出てから入力のディレクトリの中へ戻る `../doc/note.txt` も) は、名前でも当てず、外を指すので添付しないと警告で知らせる)。`file:` の URL・ネットワークの URL のファイルは添付しない。ファイルが無ければテキスト注釈にする) と `axf:annotation-contents/title/color/text-color/font-size/icon-name/open/position-horizontal/position-vertical/width/height`。inline は最初の行、block は最初の断片の左上が基準。FreeText は埋め込み済みの書体で表示 (appearance) を作る。画面には注釈の目印を描く。
 - 行番号: `axf:line-number` (show / hide / none) と `axf:line-number-format/initial/interval/start/reset/position/offset/font-family/font-size/font-weight/font-style/color`。page-sequence・flow・ブロックのどこに書いても子へ引き継ぐ。番号は段の端の外側に、行の基線をそろえて置く (縦書きは、本文の欧文と同じく時計回りに 90° 寝かせて、行の中央をそろえて段の上に)。段の端から番号までの間隔 (`offset`) の既定は 0。最初に出す番号 (`start`) の既定は数え始めの番号 (`initial`) で、`interval="2"` なら 1, 3, 5…と出す。番号の字の大きさの既定は、互換モードでは 10pt (本文の大きさによらない)。
 - 角丸と影: `axf:border-radius` (水平半径・垂直半径。四隅共通) と角ごとの `axf:border-top-left-radius` など、`axf:box-shadow` (横・縦のずれ・ぼかし・広がり・色・inset。カンマで並べた複数の影)。角丸の罫線は、4 辺が同じ太さ・線種・色のときだけ丸めて描く。
 - 斜めの罫線: `axf:diagonal-border-style/width/color` (対角罫。before-start の角から after-end の角へ) と `axf:reverse-diagonal-border-*` (逆対角罫。before-end の角から after-start の角へ)。一括指定 (`axf:diagonal-border="1pt solid black"`) も読む。表のセル・ブロック・ブロックコンテナに引く。

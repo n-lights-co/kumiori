@@ -1,6 +1,6 @@
 /**
  * 罫線をつぶした表 (border-collapse="collapse") で、太さの違う罫線の中心をそろえる (台帳の FO-36)。
- * 仕様: CSS2 §17.6.2「Borders are centered on the grid lines between the cells」(XSL 1.1 §7.28.3 が CSS2 の定義を引く)。
+ * 仕様: CSS2 §17.6.2 (罫線の中心は、セルの間の格子の線に置く。XSL 1.1 §7.28.3 が CSS2 の定義を引く)。
  * XSL 1.1 §6.7.10: セルの内容の矩形は、グリッド線から、そのセルの辺の罫線の太さの半分だけ内側。
  * 表に罫線の無い辺 (表の外周の罫線をセルが持つ) でも、互換の組み方 (--compat antenna) の内側の線でも、細い線を太い線の外の縁に
  * そろえず、グリッド線を中心に置く。アンテナハウスの見本 (サンプル FO 集の table-border-conflict-resolution-1) も中心をそろえる

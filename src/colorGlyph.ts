@@ -71,7 +71,7 @@ export interface ColorGlyph {
   ops: ColorOp[];
   /** 描く範囲 [xMin, yMin, xMax, yMax]。COLR の ClipBox があればそれ、無ければ中身の外接枠 */
   bbox: Box;
-  /** bbox の外を描かない (COLR の ClipBox: 「Any content drawn outside the clip box must not render」) */
+  /** bbox の外を描かない (OpenType 仕様「COLR」の ClipBox の項: 枠の外に描いた所は見せない) */
   clip: boolean;
   /** 前景色 (文字の色) を使う */
   usesForeground: boolean;
@@ -339,8 +339,8 @@ function colorAt(stops: readonly ColorStop[], t: number, fg: Rgb): { rgb: Rgb; a
  * グラデーションの止まり点を、描く側 (PDF の関数・Canvas の addColorStop。どちらも、止まり点の間を RGB と不透明度それぞれの
  * 一次補間にする) がそのまま使える形にする:
  *  - 前景色の止まり点を fg に置き換える
- *  - 隣り合う止まり点の不透明度が違う区間は、不透明度を掛けた値での補間 (CPAL の「Interpolation of colors」: interpolation must be
- *    done with alpha pre-multiplied) になるように、区間を分けて途中の色を足す (透明な黒へ向かう影が、途中で黒ずまない)
+ *  - 隣り合う止まり点の不透明度が違う区間は、不透明度を掛けた値での補間 (CPAL の「Interpolation of colors」の項: 不透明度を
+ *    掛けた値で補間する) になるように、区間を分けて途中の色を足す (透明な黒へ向かう影が、途中で黒ずまない)
  * 色の補間は、sRGB の値のまま行う (PDF の DeviceRGB の関数・Canvas のグラデーションと同じ。CPAL の章は光の強さに直した値での
  * 補間を求めるが、Chromium などの実装も sRGB の値のまま補間する)
  */
@@ -669,7 +669,7 @@ export class ColorFont {
   /**
    * パレットの番号。'light'・'dark' は、CPAL version 1 のパレットの種類 (USABLE_WITH_LIGHT_BACKGROUND = 0x0001・
    * USABLE_WITH_DARK_BACKGROUND = 0x0002) の付いた最初のパレット。無い番号・印の付いたパレットが無いときは 0
-   * (CSS Fonts 4 §9.2.2: 「it behaves as if 0 were specified」)
+   * (CSS Fonts 4 §9.2.2: そのときは 0 を指定したのと同じに扱う)
    */
   paletteIndex(base: FontPalette['base']): number {
     const cpal = this.cpal;
@@ -770,8 +770,8 @@ export class ColorFont {
   private finish(ops: ColorOp[], source: ColorGlyph['source'], clipBox?: Box): ColorGlyph | undefined {
     const state = { unbounded: false };
     const content = opsBox(ops, undefined, clipBox, state);
-    // ClipBox の無い、範囲の決まらない字形は描かない (COLR の「Glyph metrics and boundedness」: must not render the color glyph if the
-    // defining graph is not bounded)
+    // ClipBox の無い、範囲の決まらない字形は描かない (COLR の「Glyph metrics and boundedness」の項: 範囲の決まらない
+    // 絵で定めた色の字形は描かない)
     if (!clipBox && state.unbounded) return undefined;
     const bbox = clipBox ?? content;
     if (!bbox) return { ops: [], bbox: [0, 0, 0, 0], clip: false, usesForeground: false, foregroundInGradient: false, source };

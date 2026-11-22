@@ -127,7 +127,7 @@ export function lineMetrics(
 /**
  * 後ろ側 (横書きは下) に置いた注釈のある CSS の行 (ruby-position: under など。RubyMetrics.roomExtent のあるルビ): CSS Ruby 1 §3.6。
  * line-height が、前の側の注釈の端から後ろ側の注釈の端までより小さいとき、同じ行を重ねても注釈が重ならないだけの空き (注釈の厚さの合計 − 行間) を、
- * 注釈のある側に足す (「additional leading is added on the appropriate side(s) of the ruby base container」)。両側にあれば、厚さの割合で分ける。
+ * 注釈のある側に足す (§3.6: 足す行間は、ルビの基底の入れ物の、注釈のある側に置く)。両側にあれば、厚さの割合で分ける。
  * 前の側だけの行は、これまでどおり (足りない分をすべて行の前に足す。layoutEngine の rubyRoom)
  */
 function withAfterRubyRoom(m: LineMetrics, pl: PositionedLine): LineMetrics {
@@ -259,7 +259,8 @@ function scanLine(all: Atom[], wm: WritingMode, excludeBoxLineHeight: boolean): 
     const bs = a.kind === 'box' ? (a.shift ?? 0) : 0;
     above = Math.max(above, ab.above + bs);
     below = Math.max(below, ab.below - bs);
-    if (!(excludeBoxLineHeight && isInlineBox(a) && a.box)) lh = Math.max(lh, lineHeightOf(a.st));
+    // 割注の箱 (wariBox) は字を含む行内の箱で、行の高さへの効き方は、まわりの字 1 字と同じ (warichu.ts。line-height も数える)
+    if (!(excludeBoxLineHeight && isInlineBox(a) && a.box && !a.wariBox)) lh = Math.max(lh, lineHeightOf(a.st));
     if (a.r) rubyExtent = Math.max(rubyExtent, a.r.roomExtent ?? a.r.rubyExtent);
   }
   return { above, below, lh, rubyExtent };
@@ -479,7 +480,10 @@ function layoutBoundsMetrics(all: Atom[], sc: LineScan, leading: number, strut: 
         add(r * fs + half, (1 - r) * fs + half);
       } else if (a.box && (a.box.above || a.box.below)) {
         const sh = a.shift ?? 0;
-        add(a.box.above + sh, a.box.below - sh);
+        // 割注の箱 (wariBox) は、まわりの字 1 字と同じく、字の上下 (em の箱) に半行間を足す (warichu.ts)。互換モードの、line-height を 0 と
+        // みなす例外 (Quirks Mode §3.3) は、字を含まない箱だけなので、字を含む割注の箱には当てない
+        const half = a.wariBox ? (lineHeightOf(a.st) - (a.box.above + a.box.below)) / 2 : 0;
+        add(a.box.above + half + sh, a.box.below + half - sh);
       }
       continue;
     }

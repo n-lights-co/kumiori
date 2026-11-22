@@ -13,6 +13,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { DOMParser } from '@xmldom/xmldom';
 import { importXslFo, type ImportOptions } from '../src/xslfoImport';
 import { createTypesetter, decodeDocumentText, typeset, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
@@ -166,6 +167,38 @@ describe('M5: DOCTYPE の内部実体', () => {
     const lol = `<!DOCTYPE r [<!ENTITY a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;"><!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;"><!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">]><r>&d;&d;&d;&d;&d;&d;&d;&d;</r>`;
     expect(() => expandInternalEntities(lol)).toThrow(/大きすぎ/);
   });
+  it('実体は 1 度だけ展開して覚える: 空に展開される実体を入れ子で多く参照しても、手間が段数乗にならない', () => {
+    // e0 は空、e_k は e_{k-1} を 20 個参照する (7 段)。参照のたびに展開し直すと 20^7 回になる
+    const ents = ['<!ENTITY e0 "">', ...Array.from({ length: 7 }, (_, k) => `<!ENTITY e${k + 1} "${`&e${k};`.repeat(20)}">`)].join('');
+    const t0 = Date.now();
+    expect(expandInternalEntities(`<!DOCTYPE r [${ents}]><r>a&e7;&e7;b</r>`)).toBe(`<!DOCTYPE r [${ents}]><r>ab</r>`);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+  it('覚えた実体を深い所で参照しても、入れ子の深さの上限 (8 段) を守る', () => {
+    // a (中で b を参照する 2 段の実体) を浅い所で先に展開して覚え、7 段目でもう 1 度参照する: b は 8 段目になる
+    const deep = (n: number) => Array.from({ length: n }, (_, k) => `<!ENTITY d${k + 1} "${k + 1 < n ? `&d${k + 2};` : '&a;'}">`).join('');
+    const head = '<!ENTITY a "x&b;"><!ENTITY b "y">';
+    expect(() => expandInternalEntities(`<!DOCTYPE r [${head}${deep(7)}]><r>&a;&d1;</r>`)).toThrow(/入れ子が深すぎ/);
+    expect(expandInternalEntities(`<!DOCTYPE r [${head}${deep(6)}]><r>&a;&d1;</r>`)).toBe(`<!DOCTYPE r [${head}${deep(6)}]><r>xyxy</r>`);
+  });
+  it('覚えた実体で上限に当たったときも、覚えずに展開したときと同じ実体 (上限の深さで参照されるもの) を誤りに名指す', () => {
+    const entityOf = (xml: string) => {
+      try {
+        expandInternalEntities(xml);
+      } catch (e) {
+        return { message: (e as Error).message, entity: (e as { args?: { entity?: string } }).args?.entity };
+      }
+      return undefined;
+    };
+    const deep = (n: number, last: string) => Array.from({ length: n }, (_, k) => `<!ENTITY d${k + 1} "${k + 1 < n ? `&d${k + 2};` : `&${last};`}">`).join('');
+    // t → u → v の鎖を先に覚え、d1〜d6 の 6 段目から t を参照する: v が 9 段目 (上限の 8 段を超える所) で参照される
+    const chain = '<!ENTITY t "&u;"><!ENTITY u "&v;"><!ENTITY v "V">';
+    expect(entityOf(`<!DOCTYPE r [${chain}${deep(6, 't')}]><r>&t;&d1;</r>`)).toEqual({ message: expect.stringContaining('&v;'), entity: 'v' });
+    // 中で 2 つの実体を参照するときは、前にあって上限を超えるもの (覚えずに展開したときに先に当たるもの)
+    const two = '<!ENTITY a "&p;&q;"><!ENTITY p "P"><!ENTITY q "&r;"><!ENTITY r "R">';
+    expect(entityOf(`<!DOCTYPE r [${two}${deep(6, 'a')}]><r>&a;&d1;</r>`)?.entity).toBe('r');
+    expect(entityOf(`<!DOCTYPE r [${two}${deep(7, 'a')}]><r>&a;&d1;</r>`)?.entity).toBe('p');
+  });
   it('typeset (xmldom) で内部実体を使う FO が組める', async () => {
     const doc = `<?xml version="1.0"?><!DOCTYPE fo:root [<!ENTITY co "Kumiori"><!ENTITY nb "&#160;">]><fo:root ${NS}>${PM}<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block>&co;&nb;X</fo:block></fo:flow></fo:page-sequence></fo:root>`;
     const r = await typeset(doc, { kind: 'fo', loadFont });
@@ -199,14 +232,108 @@ describe('M6: http(s) の画像の取得 (fetchImages)', () => {
 });
 
 describe('M9・L8: CLI の出力先と使い方の誤り', () => {
-  const isDir = (p: string) => /outdir$/.test(p);
+  const isDir = (p: string) => /outdir[\\/]?$/.test(p);
   it('入力が 1 つでも -o が既存のディレクトリなら、その中に <入力名>.pdf を書く', () => {
     expect(planJobs({ inputs: ['/doc/plain.fo'], output: '/x/outdir', watch: false }, isDir)).toEqual([{ input: path.resolve('/doc/plain.fo'), output: path.resolve('/x/outdir/plain.pdf') }]);
     expect(planJobs({ inputs: ['/doc/plain.fo'], output: '/x/out.pdf', watch: false }, isDir)).toEqual([{ input: path.resolve('/doc/plain.fo'), output: path.resolve('/x/out.pdf') }]);
     expect(planJobs({ inputs: ['/doc/plain.fo'], watch: false }, isDir)).toEqual([{ input: path.resolve('/doc/plain.fo'), output: path.resolve('/doc/plain.pdf') }]);
   });
-  it('入力が複数なら -o はディレクトリ (無くても)。同じ名前の出力には -2・-3 を付ける', () => {
-    expect(planJobs({ inputs: ['/a/doc.fo', '/b/doc.html'], output: '/x/new', watch: false }, isDir).map((j) => j.output)).toEqual([path.resolve('/x/new/doc.pdf'), path.resolve('/x/new/doc-2.pdf')]);
+  it('入力が 1 つで -o が / で終わるときは、ディレクトリと見なす (あればその中に <入力名>.<形式>、無ければ誤り)', () => {
+    // 無いディレクトリ: 末尾の / を落とした名前の、拡張子の無いファイルを書かずに、UsageError
+    expect(() => planJobs({ inputs: ['/doc/plain.fo'], output: '/x/newdir/', watch: false }, isDir)).toThrow(UsageError);
+    expect(() => planJobs({ inputs: ['/doc/plain.fo'], output: `/x/newdir${path.sep}`, watch: false }, isDir)).toThrow(/newdir/);
+    // あるディレクトリ: 末尾の / があっても無くても、その中に書く。拡張子は出力の形式に合わせる
+    expect(planJobs({ inputs: ['/doc/plain.fo'], output: '/x/outdir/', watch: false }, isDir)).toEqual([{ input: path.resolve('/doc/plain.fo'), output: path.resolve('/x/outdir/plain.pdf') }]);
+    expect(planJobs({ inputs: ['/doc/a.html'], output: '/x/outdir/', watch: false, format: 'svg' }, isDir)[0].output).toBe(path.resolve('/x/outdir/a.svg'));
+    expect(planJobs({ inputs: ['/doc/a.html'], output: '/x/outdir/', watch: false, format: 'png' }, isDir)[0].output).toBe(path.resolve('/x/outdir/a.png'));
+    // 入力が複数なら、/ で終わる無いディレクトリも、今までどおり出力先 (main が作る)
+    expect(planJobs({ inputs: ['/a/doc.fo', '/b/x.html'], output: '/x/new/', watch: false }, isDir).map((j) => j.output)).toEqual([path.resolve('/x/new/doc.pdf'), path.resolve('/x/new/x.pdf')]);
+    // 実際のファイルの仕組みで (既定の isDir)
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-outdir-'));
+    try {
+      expect(() => planJobs({ inputs: ['/doc/plain.fo'], output: path.join(tmp, 'newdir') + '/', watch: false })).toThrow(UsageError);
+      expect(planJobs({ inputs: ['/doc/plain.fo'], output: tmp + '/', watch: false })[0].output).toBe(path.join(tmp, 'plain.pdf'));
+      expect(planJobs({ inputs: ['/doc/plain.fo'], output: tmp, watch: false })[0].output).toBe(path.join(tmp, 'plain.pdf'));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+  it('-o が / で終わるか既にあるディレクトリなら、出力の形式を -o の拡張子で決めない (d.svg という名前のディレクトリ)', () => {
+    const dirs = (p: string) => /d\.svg[\\/]?$/.test(p);
+    // 既にあるディレクトリ d.svg: 拡張子で SVG にしない (中に PDF を書く)。--format pdf とも食い違わない
+    expect(parseArgs(['in.html', '-o', 'd.svg'], dirs).format).toBe('pdf');
+    expect(parseArgs(['in.html', '-o', 'd.svg/'], dirs).format).toBe('pdf');
+    expect(() => parseArgs(['in.html', '--format', 'pdf', '-o', 'd.svg'], dirs)).not.toThrow();
+    expect(parseArgs(['in.html', '--format', 'png', '-o', 'd.svg'], dirs).format).toBe('png');
+    // / で終わる無い名前も、ディレクトリと見なすので拡張子を見ない (planJobs が無いディレクトリの誤りにする)
+    expect(parseArgs(['in.html', '-o', 'new.svg/'], () => false).format).toBe('pdf');
+    // ファイルの名前は、今までどおり拡張子で決める
+    expect(parseArgs(['in.html', '-o', 'x.svg'], () => false).format).toBe('svg');
+    expect(() => parseArgs(['in.html', '--format', 'pdf', '-o', 'x.svg'], () => false)).toThrow(UsageError);
+    // 実際のファイルの仕組みで (既定の isDir)
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-dsvg-'));
+    try {
+      const d = path.join(tmp, 'd.svg');
+      fs.mkdirSync(d);
+      expect(parseArgs(['in.html', '-o', d]).format).toBe('pdf');
+      expect(planJobs({ inputs: ['/doc/a.html'], output: d, watch: false, format: 'pdf' })[0].output).toBe(path.join(d, 'a.pdf'));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+  it('入力が 1 つで / で終わる -o が既にあるファイルなら、「ディレクトリではない」誤りにする', () => {
+    const files = (p: string) => /book\.pdf[\\/]?$/.test(p);
+    expect(() => planJobs({ inputs: ['/doc/plain.fo'], output: '/x/book.pdf/', watch: false }, () => false, files)).toThrow(/ディレクトリではありません|is not a directory/);
+    // 無いときは、今までどおり「ディレクトリが無い」
+    expect(() => planJobs({ inputs: ['/doc/plain.fo'], output: '/x/newdir/', watch: false }, () => false, () => false)).toThrow(/ディレクトリがありません|does not exist/);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-ofile-'));
+    try {
+      const f = path.join(tmp, 'book.pdf');
+      fs.writeFileSync(f, '');
+      expect(() => planJobs({ inputs: ['/doc/plain.fo'], output: f + '/', watch: false })).toThrow(/ディレクトリではありません|is not a directory/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+  it('入力が複数で -o が既にあるファイル (/ 付きも) なら、UsageError にする (mkdir の EEXIST を出さない)', () => {
+    const files = (p: string) => /book\.pdf[\\/]?$/.test(p);
+    expect(() => planJobs({ inputs: ['/a/x.fo', '/b/y.html'], output: '/x/book.pdf', watch: false }, () => false, files)).toThrow(UsageError);
+    expect(() => planJobs({ inputs: ['/a/x.fo', '/b/y.html'], output: '/x/book.pdf/', watch: false }, () => false, files)).toThrow(/ファイルは使えません|cannot be a file/);
+    // 無い名前・ディレクトリは、今までどおり出力先
+    expect(planJobs({ inputs: ['/a/x.fo', '/b/y.html'], output: '/x/new', watch: false }, () => false, () => false).map((j) => j.output)).toEqual([path.resolve('/x/new/x.pdf'), path.resolve('/x/new/y.pdf')]);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-mfile-'));
+    try {
+      const f = path.join(tmp, 'book.pdf');
+      fs.writeFileSync(f, '');
+      expect(() => planJobs({ inputs: ['/a/x.fo', '/b/y.html'], output: f, watch: false })).toThrow(UsageError);
+      expect(() => planJobs({ inputs: ['/a/x.fo', '/b/y.html'], output: f + '/', watch: false })).toThrow(UsageError);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+  it('標準入力 (-) に、/ で終わるかディレクトリの -o を付けると、ファイルの名前を書くよう促す誤りにする', () => {
+    // 標準入力の文書には名前が無いので、ディレクトリの中の <入力名>.pdf を決められない
+    expect(() => planJobs({ inputs: ['-'], output: '/x/newdir/', watch: false }, isDir)).toThrow(/-o/);
+    expect(() => planJobs({ inputs: ['-'], output: `/x/newdir${path.sep}`, watch: false }, isDir)).toThrow(UsageError);
+    expect(() => planJobs({ inputs: ['-'], output: '/x/outdir/', watch: false }, isDir)).toThrow(UsageError);
+    expect(() => planJobs({ inputs: ['-'], output: '/x/outdir', watch: false }, isDir)).toThrow(UsageError);
+    // ファイルの名前・標準出力・-o 無しは、今までどおり
+    expect(planJobs({ inputs: ['-'], output: '/x/out.pdf', watch: false }, isDir)).toEqual([{ input: '-', output: '/x/out.pdf' }]);
+    expect(planJobs({ inputs: ['-'], output: '-', watch: false }, isDir)).toEqual([{ input: '-', output: '-' }]);
+    expect(planJobs({ inputs: ['-'], watch: false }, isDir)).toEqual([{ input: '-', output: '-' }]);
+  });
+  it('空の -o (-o \'\') は値の誤り (UsageError) にする (-o 無しと同じに、入力の隣へ書かない)', () => {
+    for (const o of ['-o', '--output']) {
+      expect(() => parseArgs(['a.html', o, ''])).toThrow(UsageError);
+      expect(() => parseArgs(['a.html', o, ''])).toThrow(new RegExp(`${o} の値が空です|${o} cannot be empty`));
+      expect(() => parseArgs(['-', o, ''])).toThrow(UsageError);
+    }
+    expect(parseArgs(['a.html', '-o', 'out.pdf']).output).toBe('out.pdf');
+    expect(parseArgs(['a.html']).output).toBeUndefined();
+  });
+  it('入力が複数なら -o はディレクトリ (無くても)。同じ名前の出力は、後のものに入力の名前を拡張子ごと残し、それでもぶつかれば .2・.3 を足す', () => {
+    expect(planJobs({ inputs: ['/a/doc.fo', '/b/doc.html'], output: '/x/new', watch: false }, isDir).map((j) => j.output)).toEqual([path.resolve('/x/new/doc.pdf'), path.resolve('/x/new/doc.html.pdf')]);
+    expect(planJobs({ inputs: ['/a/doc.html', '/b/doc.html', '/c/doc.html'], output: '/x/new', watch: false }, isDir).map((j) => j.output)).toEqual([path.resolve('/x/new/doc.pdf'), path.resolve('/x/new/doc.html.pdf'), path.resolve('/x/new/doc.html.2.pdf')]);
   });
   it('使い方の誤りは UsageError (スタックトレースを出さない)', () => {
     expect(() => planJobs({ inputs: ['a.fo', '-'], watch: false }, isDir)).toThrow(UsageError);

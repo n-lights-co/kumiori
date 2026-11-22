@@ -504,6 +504,50 @@ const BT_ROW_BYTES = 40;
  */
 export const BT_MEMO_BUDGET = 30_000_000;
 
+/**
+ * 照合の結果が要素の親で決まるセレクタか: 右端の複合セレクタが条件の無い * (要素名・id・class・属性・疑似クラスが無い) で、
+ * その左が子孫か子の結合子 (div *・*:nth-child(2n) > * など)。
+ * 右端は、どの要素にも合うので (Selectors 4 §5.2)、合うかどうかは、子孫の結合子なら祖先のどれかが、子の結合子なら親が、
+ * 左の部分に合うかで決まる (§16.1・§16.2)。要素の祖先は「親と、親の祖先」なので、同じ親の子 (兄弟) どうしで答えが同じ。
+ * 規則の索引 (右端の id・class・要素名) で候補を絞れない規則なので、要素ごとに照合すると、規則の数 × 要素の数 × 祖先の段の数 の手間になる
+ * (*:nth-child(kn+k) * を 1000 規則と、200 個の g に分けた図形 2 万個で 25 秒)。カスケードは、親ごとに 1 度だけ照合して、兄弟に使い回す。
+ * 結合子の種類の混ざった backtrack のセレクタ (btMixed) は除く (覚えの予算を使い切った後の答えが、照合する順で変わるので、使い回さない)
+ */
+export function parentDecides(sel: Selector): boolean {
+  const c = sel.compounds[0];
+  return (
+    sel.compounds.length > 1 &&
+    (sel.combs[0] === ' ' || sel.combs[0] === '>') &&
+    !sel.btMixed &&
+    !c.tag &&
+    !c.ids.length &&
+    !c.classes.length &&
+    !c.attrs.length &&
+    !c.pseudos.length
+  );
+}
+
+/**
+ * 照合を「要素自身の右端の複合セレクタ」(matchesRightmost) と「その左の部分」(matchesAbove) に分けられるセレクタか:
+ * 右端の左が子孫か子の結合子で、結合子の種類の混ざった backtrack のセレクタ (btMixed) でないもの。
+ * 左の部分は、子孫の結合子なら祖先のどれかが、子の結合子なら親が合うかなので (Selectors 4 §16.1・§16.2)、要素の親で決まり、兄弟どうしで同じ。
+ * 右端に要素名などがあっても、同じ名前の兄弟がそろって候補になると (*:nth-child(kn+k) span を 1000 規則と、200 個の section に分けた span 2 万個で 26 秒)、
+ * 規則の数 × 要素の数 × 祖先の段の数 の手間になるので、カスケードは、左の部分の答えを親ごとに覚えて、兄弟に使い回す
+ */
+export const splitsAtParent = (sel: Selector): boolean => sel.compounds.length > 1 && (sel.combs[0] === ' ' || sel.combs[0] === '>') && !sel.btMixed;
+
+/** el が、セレクタの右端の複合セレクタに合うか (splitsAtParent のセレクタ。基準の無い照合) */
+export const matchesRightmost = (el: Element, sel: Selector, memo: SelectorMemo): boolean => matchCompound(el, sel.compounds[0], undefined, memo);
+
+/**
+ * matches(el, sel) のうち、el の右端の複合セレクタより左の部分 (splitsAtParent のセレクタ。基準の無い照合)。
+ * matches(el, sel, undefined, memo) は matchesRightmost(el, sel, memo) && matchesAbove(el, sel, memo) と同じ
+ */
+export function matchesAbove(el: Element, sel: Selector, memo: SelectorMemo): boolean {
+  if (sel.chain) return chainPrefix(el, sel, undefined, memo) >= sel.compounds.length - 1;
+  return matchAbove(el, sel, 0, undefined, memo);
+}
+
 /** 要素がセレクタに合うか (疑似要素の部分は見ない)。memo は、木が変わらない間に続けて呼ぶときの覚え (SelectorMemo) */
 export function matches(el: Element, sel: Selector, scope?: Element, memo?: SelectorMemo): boolean {
   if (sel.tooComplex) return false;
@@ -527,7 +571,11 @@ function matchFrom(el: Element, sel: Selector, k: number, scope: Element | undef
     }
     return matchBt(el, sel, k, scope, memo, btTable(memo, sel, scope));
   }
-  if (!matchCompound(el, sel.compounds[k], scope, memo)) return false;
+  return matchCompound(el, sel.compounds[k], scope, memo) && matchAbove(el, sel, k, scope, memo);
+}
+
+/** matchFrom(el, sel, k) のうち、el 自身の複合セレクタ (sel.compounds[k]) より左の部分 (backtrack でないセレクタ) */
+function matchAbove(el: Element, sel: Selector, k: number, scope: Element | undefined, memo: SelectorMemo | undefined): boolean {
   if (k === sel.compounds.length - 1) return true;
   const comb = sel.combs[k];
   if (comb === '>') {

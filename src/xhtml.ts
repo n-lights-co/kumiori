@@ -9,6 +9,7 @@
  */
 import { msg } from './messages';
 import { DOMParser } from '@xmldom/xmldom';
+import { KumioriInputError } from './errors';
 
 const NS = {
   html: 'http://www.w3.org/1999/xhtml',
@@ -42,8 +43,15 @@ const escAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').
 /** XHTML の文字列 → HTML の文字列。XML として読めなければ例外 */
 export function xhtmlToHtml(text: string): string {
   const errors: string[] = [];
-  const doc = new DOMParser({ onError: (level: string, msg: string) => void (level !== 'warning' && errors.push(msg)) }).parseFromString(text, 'application/xhtml+xml') as unknown as XNode;
-  if (errors.length || !doc.documentElement) throw new Error(msg(`XHTML (XML) の解析に失敗しました: ${(errors[0] ?? '文書の要素がありません').slice(0, 200)}`, `XHTML (XML) parse error: ${(errors[0] ?? 'no document element').slice(0, 200)}`));
+  let doc: XNode;
+  try {
+    doc = new DOMParser({ onError: (level: string, msg: string) => void (level !== 'warning' && errors.push(msg)) }).parseFromString(text, 'application/xhtml+xml') as unknown as XNode;
+  } catch (e) {
+    // 致命的な誤りでは、xmldom が自分の ParseError を投げる: 入力の誤りとして、同じ文にする
+    const m = errors[0] ?? (e instanceof Error ? e.message : String(e));
+    throw new KumioriInputError('input/xml-parse', msg(`XHTML (XML) の解析に失敗しました: ${m.slice(0, 200)}`, `XHTML (XML) parse error: ${m.slice(0, 200)}`), { cause: e });
+  }
+  if (errors.length || !doc.documentElement) throw new KumioriInputError('input/xml-parse', msg(`XHTML (XML) の解析に失敗しました: ${(errors[0] ?? '文書の要素がありません').slice(0, 200)}`, `XHTML (XML) parse error: ${(errors[0] ?? 'no document element').slice(0, 200)}`));
   // xml-stylesheet の処理命令 (type が text/css のもの) は、HTML の link 要素にする
   const sheets: string[] = [];
   for (const n of Array.from(doc.childNodes)) {
@@ -55,6 +63,9 @@ export function xhtmlToHtml(text: string): string {
     }
   }
   const out: string[] = ['<!DOCTYPE html>'];
+  // 要素の入れ子を、呼び出しの深さを使わずにたどる (再帰だと、4,000 段ほどの入れ子で RangeError になり、組めなかった。深すぎる入れ子は、
+  // HTML として読んだ後の limitTreeDepth が平らにする)。並びには、書く節 (と、その親が字をそのまま書く要素か) と、閉じるタグの文字列を積む
+  const todo: Array<{ n: XNode; raw: boolean } | string> = [{ n: doc.documentElement, raw: false }];
   const write = (n: XNode, rawParent: boolean) => {
     if (n.nodeType === 3 || n.nodeType === 4) {
       const t = n.nodeValue ?? n.data ?? '';
@@ -98,10 +109,15 @@ export function xhtmlToHtml(text: string): string {
     // "textarea" の開始タグ)。XML の構文では中身の字なので、中身が改行で始まるときは、改行をもう 1 つ書く (§13.3 の書き出しの注意)
     const first = kids[0];
     if (ns === NS.html && /^(pre|textarea|listing)$/.test(name) && first && (first.nodeType === 3 || first.nodeType === 4) && (first.nodeValue ?? first.data ?? '').startsWith('\n')) out.push('\n');
-    for (const c of kids) write(c, raw);
-    out.push(`</${name}>`);
+    // 閉じるタグを先に積み、子を後ろから積む (前から順に取り出して書く)
+    todo.push(`</${name}>`);
+    for (let k = kids.length - 1; k >= 0; k--) todo.push({ n: kids[k], raw });
   };
-  write(doc.documentElement, false);
+  while (todo.length) {
+    const t = todo.pop()!;
+    if (typeof t === 'string') out.push(t);
+    else write(t.n, t.raw);
+  }
   return out.join('');
 }
 

@@ -17,8 +17,8 @@
  *
  * 2. タイ文字の SARA AM (U+0E33) の前に声調記号などがあると、記号の重なる順が逆になる
  *    SARA AM は、丸 (NIKHAHIT U+0E4D) と SARA AA (U+0E32) の 2 つの字形に分け、丸が基底の字のすぐ上、声調記号がその上に来るように
- *    並べ替えてから書体に渡す (Microsoft「Developing OpenType Fonts for Thai Script」の Invalid Combining Marks の表の AM:
- *    「The AM character needs to be broken into two glyphs and some reordering might be required so that the ring is the base glyph」。
+ *    並べ替えてから書体に渡す (Microsoft「Developing OpenType Fonts for Thai Script」の Invalid Combining Marks の表の AM の行:
+ *    SARA AM は 2 つの字形に分け、丸が基底の字に付くように並べ替えることがある、という説明。
  *    HarfBuzz のタイ文字の整形も同じ: 丸を、前にある上付きの記号 (U+0E31・U+0E34〜0E37・U+0E47〜0E4E) の並びの前へ移す)。
  *    fontkit にはタイ文字用の整形が無く、書体の ccmp が SARA AM を分けるだけなので、丸が声調記号の上に載ってしまう。
  *    並べ替えるのは書体に渡す文字列だけで、組版の字 (GlyphArea の text。PDF の文字の取り出し) は元のまま。
@@ -46,8 +46,8 @@
  *
  * 6. 記号を載せる規則で、相手の字形に記号の位置が無いと落ちる (マラヤーラムの「子音 + ヴィラーマ」などが組めない)
  *    記号を基底の字・合字・別の記号に載せる規則 (GPOS の MarkBasePos・MarkLigPos・MarkMarkPos) は、相手の字形ごとに、記号の種類の数だけ
- *    位置 (Anchor) の表への参照を持ち、その参照は NULL でもよい (OpenType 仕様「GPOS」の BaseRecord・ComponentRecord・Mark2Record:
- *    「offsets may be NULL」。その種類の記号を載せる位置が無い字形)。fontkit は NULL を確かめずに座標を読むので、
+ *    位置 (Anchor) の表への参照を持ち、その参照は NULL でもよい (OpenType 仕様「GPOS」の BaseRecord・ComponentRecord・Mark2Record の項。
+ *    NULL は、その種類の記号を載せる位置が無い字形)。fontkit は NULL を確かめずに座標を読むので、
  *    「Cannot read properties of null (reading 'xCoordinate')」で落ち、その字の並びを測れず描けない (Noto Sans Malayalam・Noto Serif Malayalam:
  *    ട് (U+0D1F U+0D4D) のような「子音 + ヴィラーマ」で終わる並び・സ്ത のような結合子音の多く)、Noto Sans Khmer の NIKAHIT U+17C6・下に付く子音)。位置が無いときは、その規則を
  *    当たらなかったことにして、次の規則へ進む (HarfBuzz も同じ: Anchor が見つからなければ、その副表は当たらない)。
@@ -63,22 +63,22 @@
  *
  * 8. 汎用の整形で、音節の先頭のレフを基底の字の後ろへ動かす処理が、字形の並びを壊す
  *    レフ (ラ + ヴィラーマ (+ ZWJ) が rphf で 1 つの字形になったもの) は、音節の最初の基底の字形の後ろへ動かす (Microsoft
- *    「Creating and supporting OpenType fonts for the Universal Shaping Engine」の Reordering: 「Repha … is reordered … to after the base」)。
+ *    「Creating and supporting OpenType fonts for the Universal Shaping Engine」の Reordering の節: レフは基底の字の後ろへ並べ替える)。
  *    fontkit は、間の字形を前へ詰めた後に、詰める前の番号で字形を読んで差し込むので、基底の字形が消える・ほかの字形が 2 つになる・
  *    並びに穴が開いて落ちる (シンハラ文字のレパヤ ර්‍ක・ධර්‍ම)。fontkit の並べ替えの前に、こちらで正しく動かす。
  *
  * 9. ベンガル文字の、語の途中の音節の前に置く母音記号が、語頭の形になる
  *    ベンガル文字の書体は、前に置く母音記号 ে (E)・ৈ (AI) に、語頭の形 (前の字とつなぐ横線が左に出ない形) を持ち、機能 init で選ぶ
- *    (Microsoft「Developing OpenType Fonts for Bengali Script」の Features の Initial form: 「This feature is used to substitute
- *    initial forms of the vowels E and Ai … a glyph variant that does not have a connecting bar on the leading side」)。
+ *    (Microsoft「Developing OpenType Fonts for Bengali Script」の Features の Initial form の項: 語頭の母音記号 E・AI を、前の側に
+ *    つなぎの横線の無い字形に置き換える機能)。
  *    init を当てるのは語頭の音節だけだが、組版は字の単位 (音節) ごとに書体へ渡すので、fontkit は、どの音節も文字列の先頭 = 語頭と見て
  *    init を当て、語の途中の ে・ো などの頭の線が、前の字とつながらない。組版が、語の途中の単位に印 (NOT_WORD_INITIAL) を付けて渡すので、
  *    その印があるときは init を当てない。
  *
  * 10. 字形を「0 個の字形」に置き換える規則で、番号の無い字形が残る
  *    1 つの字形を字形の並びに置き換える規則 (GSUB の Multiple Substitution) で、並びの長さが 0 のもの (字形を消す) は、OpenType 仕様
- *    「GSUB」の Lookup type 2 が禁じている (「The use of multiple substitution for deletion of an input glyph is prohibited. The glyphCount
- *    value must always be greater than 0」) が、これを使う書体がある (Noto Serif Bengali: レフと前に置く母音記号 ি をまとめた字形を
+ *    「GSUB」の Lookup type 2 が禁じている (この規則で字形を消してはならず、置き換えの並びの数 glyphCount は 1 以上とする) が、
+ *    これを使う書体がある (Noto Serif Bengali: レフと前に置く母音記号 ি をまとめた字形を
  *    作った後、元のレフの字形を消す。র্কি・কার্তিক)。fontkit は、並びの最初の番号 (無い) を字形の番号にするので、番号の無い字形が
  *    並びに残り、その字の単位を描けない。番号の無い字形は描きようが無いので、並びから取り除く (HarfBuzz も、この規則を字形の削除として扱う)。
  *

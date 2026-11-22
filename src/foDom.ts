@@ -11,6 +11,8 @@ export interface XNode {
   namespaceURI?: string | null;
   textContent?: string | null;
   childNodes: ArrayLike<XNode>;
+  /** 親の節 (xmldom の節は持つ) */
+  parentNode?: XNode | null;
   hasAttribute?(name: string): boolean;
   getAttribute?(name: string): string | null;
   attributes?: ArrayLike<{ name: string; value: string }>;
@@ -19,6 +21,11 @@ export interface XNode {
 export const FO_NS = 'http://www.w3.org/1999/XSL/Format';
 export const SVG_NS = 'http://www.w3.org/2000/svg';
 export const XLINK_NS = 'http://www.w3.org/1999/xlink';
+/**
+ * Kumiori の拡張の名前空間 (XSL-FO の要素に付ける属性。接頭辞は文書が決める。例: xmlns:kumiori="https://github.com/n-lights-co/kumiori/ns")。
+ * 標準にも他の組版ソフトの拡張にも無い書き方 (割注の kumiori:warichu など) だけに使う
+ */
+export const KUMIORI_NS = 'https://github.com/n-lights-co/kumiori/ns';
 
 const escXml = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escAttr = (t: string) => escXml(t).replace(/"/g, '&quot;');

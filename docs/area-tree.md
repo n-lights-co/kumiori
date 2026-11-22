@@ -12,6 +12,7 @@
   - 2: 表の罫線の重ね合わせの描き方 (`paintWidth`・`noPaint`・`tableEdge`) を、`BorderSide` の欄から `BorderSide.collapse` の下に移しました。
   - 3: `paintWidth` が `width` より小さい辺 (線を箱の縁から内へずらして描く) を足しました (表の太さの違う罫線の中心をそろえるため)。
 - `parseAreaTree` は版 1 の木も読み、今の版の形に直して返します。版 2 の木は、そのまま今の版の木として読みます。
+- `warnings` (組版の警告の文) と同じ出来事を、名前・重さで持つ `diagnostics` ([diagnostics.md](diagnostics.md)) は、診断のある木にだけ付きます (無くてもよい欄なので、版は変えていません。診断の無い木の形は前と同じです)。
 
 ## 単位と座標
 
@@ -60,7 +61,7 @@
 
 - `serializeAreaTree(tree)` は、木を JSON の文字列にします。`undefined` の欄は書きません。
 - `parseAreaTree(json)` は、JSON の文字列から木を読みます。版 (`schemaVersion`) と、節の形 (種類・`x`・`y`・`width`・`height` が数であること・子の欄) を確かめ、合わなければ `AreaTreeFormatError` を投げます。
-- 読み直した木は、描く処理 (`paintSheet`・`renderPdf`) にそのまま渡せます。ただし、この 2 つと FontManager・AssetStore は内部の関数・クラスで、パッケージの入口 (`kumiori`) からは出していません。公開 API で描けるのは、`typeset` の結果 (`renderPage`・`toPdf`) だけで、`parseAreaTree` で読み直した木を描く口は、いまはありません (読み直した木は、調べる・比べる・保存するために使います)。版 1・版 2 の木は、今の版の形に直してから返します。書体と画像は、書き出したときと同じ FontManager・AssetStore が要ります (`test/areaTree.test.ts` で、往復した木の描き方が同じことを確かめています)。
+- 読み直した木は、描く処理 (`paintSheet`・`renderPdf`) にそのまま渡せます。ただし、この 2 つと FontManager・AssetStore は内部の関数・クラスで、パッケージの入口 (`kumiori`) からは出していません。公開 API で描けるのは、`typeset` の結果 (`renderPage`・`renderPageToSvg`・`renderPageToPng`・`toPdf`) だけで、`parseAreaTree` で読み直した木を描く口は、いまはありません (読み直した木は、調べる・比べる・保存するために使います)。版 1・版 2 の木は、今の版の形に直してから返します。書体と画像は、書き出したときと同じ FontManager・AssetStore が要ります (`test/areaTree.test.ts` で、往復した木の描き方が同じことを確かめています)。
 
 ## 罫線の辺の欄
 
@@ -80,6 +81,14 @@
 - 付く Area: block・表・行・セル・画像・ルビ・縦中横、と字。字は、それを含む inline の番号 (inline の外の字は、それを含む block の番号) です。
 - 静的な内容 (柱など) は、ページごとに写した節から組みますが、写した節にも元の節の番号を引き継ぎます。
 - 組版の中で作る節 (脚注の番号、リストのラベルの表など) から作った Area には、付かないことがあります。
+- 行の中のリンク・注釈の範囲の箱 (描かない `block` の Area) には、そのリンク・注釈を持つ inline の番号が付きます。
+
+## タグ付き PDF の構造
+
+- `AreaTree.structure` は、タグ付き PDF の構造の木です (`src/structure.ts`)。入力が構造の木を持つとき (HTML・XSL-FO の読み込みの `tagged`。API・コマンドの `tagged`・`--tagged`) だけあります。
+  - `nodes`: 構造の節の並び (0 番が文書)。節は、PDF の標準の構造の型の名前 (`role`。ISO 32000-1 §14.8.4。飾りは `Artifact`)・独自の型の名前 (`custom`。XSL-FO の `role`・`axf:pdftag`。RoleMap で `role` に写す)・親の番号 (`parent`)・子の番号 (`kids`。文書の順)・言語 (`lang`)・代わりの説明 (`alt`)・略語の展開 (`expansion`) を持ちます。表のセルは、見出しのセルの向き (`scope`)・またぐ行と列の数 (`rowSpan`・`colSpan`)・見出しのセルの番号 (`headers`)、注 (Note) と `headers` で指されたセルは ID (`sid`) を持ちます。`anchor` は、親の中で置く所の目印の節の番号です (脚注の本体 (Note) を、本文の参照の印 (Reference) の後ろに置く)。
+  - `tags`: 入力の節の番号 (`sourceRef`) → 構造の節の番号の表です (-1 は無し)。Area の中身 (字・画像) は、その Area か、いちばん近い祖先の Area の `sourceRef` から、構造の節を引きます。
+- 描くとき (`src/paint.ts`)、箱の影・背景・罫線・輪郭線と用紙の背景・トンボは飾り、字・画像・縦中横は中身として描き分けます (`Painter.tag`)。繰り返した表の見出し・脚 (`isRepeatedHeader`) の中は、ページの飾りです。柱の飾りは、上・下の柱 (`artifact` が `header`・`footer`) を Pagination の Subtype Header・Footer で書きます。ルビの親文字の字とルビの字は `LRuby.tagParts` の番号 (RB・RT。圏点の点は飾り) を持ちます。脚注の参照の印の字と、脚注の本体の頭の番号の字は、読み込みが作った中身の無い入力の節 (`LFootnote.tagParts`) の番号を持ち、それぞれ Reference・Lbl の構造の節に当たります。
 
 ## 書体・画像の一覧と字形の番号
 

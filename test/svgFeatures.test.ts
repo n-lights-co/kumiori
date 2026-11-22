@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
-import { PDFDocument, decodePDFRawStream, type PDFArray } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
 import { parseSvg, type Seg, type TextOutliner } from '../src/svg';
 import { AssetStore } from '../src/assets';
 import { renderPdf } from '../src/pdfRenderer';
 import { LayoutEngine } from '../src/layoutEngine';
-import { FAMILY, doc, makeEngine } from './helpers';
+import { FAMILY, doc, makeEngine, pageOps, pageXObjectsBesidesVectors } from './helpers';
 
 const parse = (s: string) => new DOMParser().parseFromString(s, 'image/svg+xml') as never;
 const svg = (body: string, attrs = 'width="200" height="100" viewBox="0 0 200 100"') => `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" ${attrs}>${body}</svg>`;
@@ -25,9 +25,7 @@ async function pdfOps(src: string): Promise<string> {
   const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
   const tree = engine.layout(doc([{ type: 'block', children: [{ type: 'image', src: 't.svg', width: 200, height: 100 }] }]));
   const pdf = await PDFDocument.load(await renderPdf(tree, fonts, { assets, parseXml: parse }));
-  const contents = pdf.getPage(0).node.Contents()!;
-  const streams = 'asArray' in contents ? (contents as PDFArray).asArray().map((r) => pdf.context.lookup(r)) : [contents];
-  return streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n');
+  return pageOps(pdf);
 }
 
 describe('SVG の text の font-style', () => {
@@ -232,9 +230,7 @@ describe('SVG の image の外のファイル', () => {
     const tree = engine.layout(doc([{ type: 'block', children: [{ type: 'image', src: 'img/a.svg', width: 200, height: 100 }] }]));
     expect(tree.warnings ?? []).toEqual([]);
     const pdf = await PDFDocument.load(await renderPdf(tree, fonts, { assets, parseXml: parse }));
-    const { PDFName } = await import('pdf-lib');
-    const xo = pdf.getPage(0).node.Resources()?.lookup(PDFName.of('XObject')) as { keys(): unknown[] } | undefined;
-    expect(xo?.keys().length).toBe(1);
+    expect(pageXObjectsBesidesVectors(pdf)).toHaveLength(1);
   });
 });
 
@@ -304,9 +300,7 @@ describe('SVG の systemLanguage と、置いた所の言語', () => {
       const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
       const tree = engine.layout(doc([{ type: 'block', ...(language ? { language } : {}), children: [{ type: 'image', src: 's.svg', width: 200, height: 100 }] }] as never));
       const pdf = await PDFDocument.load(await renderPdf(tree, fonts, { assets, parseXml: parse }));
-      const contents = pdf.getPage(0).node.Contents()!;
-      const streams = 'asArray' in contents ? (contents as PDFArray).asArray().map((r) => pdf.context.lookup(r)) : [contents];
-      return streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n');
+      return pageOps(pdf);
     };
     expect(await draw('ja')).toMatch(/1 0 0 rg/);
     expect(await draw('jpn')).toMatch(/1 0 0 rg/);
@@ -500,9 +494,7 @@ describe('SVG の use の外のファイル', () => {
     expect(tree.warnings.filter((w) => w.includes('missing.svg'))).toHaveLength(1);
     expect(tree.warnings.some((w) => w.includes('icons.svg'))).toBe(false);
     const pdf = await PDFDocument.load(await renderPdf(tree, fonts, { assets, parseXml: parse }));
-    const contents = pdf.getPage(0).node.Contents()!;
-    const streams = 'asArray' in contents ? (contents as PDFArray).asArray().map((r) => pdf.context.lookup(r)) : [contents];
-    expect(streams.map((st) => new TextDecoder().decode(decodePDFRawStream(st as never).decode())).join('\n')).toMatch(/1 0 0 rg/);
+    expect(pageOps(pdf)).toMatch(/1 0 0 rg/);
   });
 });
 
@@ -599,7 +591,14 @@ describe('SVG の a のリンク', () => {
     const pdf = await PDFDocument.load(await renderPdf(engine.layout(doc([{ type: 'block', children: [{ type: 'image', src: 't.svg', width: 200, height: 100 }] }])), fonts, { assets, parseXml: parse }));
     const { PDFName, PDFArray: Arr } = await import('pdf-lib');
     const annots = pdf.getPage(0).node.lookup(PDFName.of('Annots'), Arr);
-    const all = annots.asArray().map((r) => String(pdf.context.lookup(r))).join(' ');
+    // 動作 (A) は間接の物なので、たどって書き出す
+    const all = annots
+      .asArray()
+      .map((r) => {
+        const d = pdf.context.lookup(r) as import('pdf-lib').PDFDict;
+        return `${String(d)} ${String(d.lookup(PDFName.of('A')))}`;
+      })
+      .join(' ');
     expect(all).toContain('https://example.com/x');
     expect(all).not.toContain('javascript');
     expect(annots.size()).toBe(1);

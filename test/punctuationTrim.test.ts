@@ -8,9 +8,8 @@
  * - text-autospace の初期値は normal (CSS Text 4 §8.4: ideograph-alpha ideograph-numeric と同じ)。none は値に無い (無効)。
  *   アンテナハウス互換 (jaDefaultsAh) では none を「空きを入れない」と読み、段落の 1 行目の行頭の始め括弧類を詰める
  * - 句読点 (、。，．) とコロン類 (：；) を、終わり括弧類として詰めるか・中点類として詰めるかは、字形の墨が字の枠のどこにあるかで決める
- *   (CSS Text 4 §8.5.3 https://drafts.csswg.org/css-text-4/ 2026-11-10 取得: 「If the punctuation is centered, then it should be considered
- *   middle dot punctuation. If the punctuation is drawn to one side … and the other half is therefore blank then the punctuation should be
- *   considered closing punctuation and trimmed accordingly」「The UA may rely on language conventions and the writing mode …, and/or font information」。
+ *   (CSS Text 4 §8.5.3 https://drafts.csswg.org/css-text-4/ 2026-11-10 取得: 墨が字の枠の中央にあれば中点類、片側に寄って
+ *   残りの半分が空いていれば終わり括弧類として詰める。どちらかは、言語の慣習・書字の向き・書体の情報で決めてよい)。
  *   繁体字の書体の句読点は字の枠の中央 (clreq §5.1 https://www.w3.org/TR/clreq/ 2026-11-10 取得)。
  *   繁体字・簡体字の書体は大きい (7〜10MB) のでテストでは取得せず、字形の外接枠を返す仮の書体で確かめる。実際の書体では日本語の書体が今までどおりであることを確かめる)
  */
