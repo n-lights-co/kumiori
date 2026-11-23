@@ -6,8 +6,10 @@
  * 言語ごとの見本・絵文字の見本・可変フォントの見本の書体 (既定の書体に無い字・機能) は、scripts/conformance-fonts.mjs の一覧のもの。
  * 置き場 (.cache/fonts) に取得して (取得できなければ失敗する)、HTML には @font-face の URL の中身として (resolveResource)、XSL-FO には fonts で渡す。
  * テストの中からは、ネットワークへ書体を取りに行かせない (fetchStyles: false。一覧に無い URL を見本に書くと、警告が出て失敗する)。
+ * 見本と文書の全体の領域の木の指紋を、test/fingerprints/conformance.json と比べる (test/fingerprint.ts。組版の結果が変わったら気づく。
+ * 意図して変えたときは npm run fingerprints:update で書き直す)。
  */
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_FONTS, typesetFo, typesetHtml, walkAreaTree, type FontSpec, type GlyphArea } from '../src/index';
@@ -16,6 +18,7 @@ import { expand, extractSamples, standalone } from '../scripts/conformance-lib.m
 // @ts-expect-error 型の無い JavaScript のモジュール
 import { CONFORMANCE_FONTS, fontUrlsIn } from '../scripts/conformance-fonts.mjs';
 import { cachedFont, ensureFonts, fontDir } from './helpers';
+import { fingerprintStore, updatingFingerprints } from './fingerprint';
 
 type Sample = { id: string; raw: string; code: string };
 
@@ -89,6 +92,9 @@ const docs = [
   { kind: 'html' as const, dir: 'html', file: 'kumiori-html-css.en.html' },
 ].filter((d) => fs.existsSync(path.join(root, d.dir, d.file)));
 
+/** 領域の木の指紋 (見本は <文書>#<見本の名前>、文書の全体は <文書>) */
+const fingerprints = fingerprintStore('conformance');
+
 for (const d of docs) {
   const src = fs.readFileSync(path.join(root, d.dir, d.file), 'utf8');
   const samples: Sample[] = extractSamples(src, d.kind);
@@ -101,17 +107,21 @@ for (const d of docs) {
       expect(samples.length).toBeGreaterThan(10);
     });
     for (const s of samples) {
+      fingerprints.expect(`${d.file}#${s.id}`);
       it(`見本 ${s.id} を組める`, async () => {
         const r = await run(standalone(s, d.kind));
         expect(r.warnings).toEqual([]);
         expect(r.areaTree.sheets.length).toBeGreaterThan(0);
+        expect(fingerprints.check(`${d.file}#${s.id}`, r.areaTree)).toBeUndefined();
       }, 60_000);
     }
+    fingerprints.expect(d.file);
     it('文書の全体を組める (コードの表示を差し込んだもの)', async () => {
       const full = expand(src, d.kind);
       const r = await run(full);
       expect(r.warnings).toEqual([]);
       expect(r.areaTree.sheets.length).toBeGreaterThan(10);
+      expect(fingerprints.check(d.file, r.areaTree)).toBeUndefined();
       const text = textOf(r.areaTree);
       // 見本ごとに、組版例の後にコードの表示が差し込まれ、組まれている (コードの 1 行目の始まりが字としてある)
       const flat = text.replace(/\s+/g, '');
@@ -125,3 +135,12 @@ for (const d of docs) {
     }, 120_000);
   });
 }
+
+// 試験の終わりに (同じファイルの試験は、書いた順に 1 つずつ走る): 書き直すときは指紋を書き、比べるときは、指紋のファイルに、もう組まない文書が残っていないことを確かめる
+it('指紋のファイル (test/fingerprints/conformance.json) に、組まなかった文書が無い', () => {
+  expect(fingerprints.finish(), updatingFingerprints ? '指紋を書けなかった文書があります' : '消した見本・文書の指紋が残っています。npm run fingerprints:update で書き直す').toEqual([]);
+});
+// 書き直すときは、上の試験が絞り (-t) で飛ばされても書く
+afterAll(() => {
+  if (updatingFingerprints) fingerprints.finish();
+});

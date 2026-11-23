@@ -10,6 +10,7 @@ import { childrenOf } from '../src/areaTree';
 import { encodeJpeg } from '../src/jpeg';
 import { encodePngStored } from '../src/pixels';
 import { DEFAULT_FONTS, createTypesetter, typeset, typesetFo, typesetHtml, walkAreaTree, serializeAreaTree, parseAreaTree, type FontSpec, type GlyphArea } from '../src/index';
+import { testIccProfile } from './iccTestProfile';
 import { ensureFonts, fontDir } from './helpers';
 
 const fileOf = (spec: FontSpec) => path.join(fontDir, path.basename(spec.urls.find((u) => !/^https:/.test(u)) ?? spec.urls[0]));
@@ -608,7 +609,15 @@ describe('公開 API: typeset', () => {
     put(16, 'CMYK');
     put(20, 'Lab ');
     put(36, 'acsp');
-    const profile = Uint8Array.from([...head, ...u32(1), ...Array.from('B2A1', (c) => c.charCodeAt(0)), ...u32(144, body.length), ...body]);
+    // タグは B2A1 と、どのプロファイルにも要る説明 (desc。textDescriptionType。ICC.1:2010 §8.2)。中身は 4 バイトの境に置く
+    const sig = (t: string) => Array.from(t, (c) => c.charCodeAt(0));
+    const text = 'Kumiori test: fixed CMYK';
+    const desc = [...sig('desc'), 0, 0, 0, 0, ...u32(text.length + 1), ...sig(text), 0, ...u32(0, 0), 0, 0, 0, ...new Array(67).fill(0)];
+    const padded = [...body, ...new Array((4 - (body.length % 4)) % 4).fill(0)];
+    const tableEnd = 128 + 4 + 24;
+    const tail = [...u32(2), ...sig('B2A1'), ...u32(tableEnd, body.length), ...sig('desc'), ...u32(tableEnd + padded.length, desc.length), ...padded, ...desc];
+    const sized = [...u32(128 + tail.length), ...head.slice(4)];
+    const profile = Uint8Array.from([...sized, ...tail]);
     const r = await typesetHtml('<p style="color: #c03020">色の字</p>', { loadFont });
     const contentOf = async (bytes: Uint8Array) => {
       const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
@@ -628,7 +637,7 @@ describe('公開 API: typeset', () => {
     expect(await contentOf(await r.toPdf({ pdfx: { profile, warnings } }))).toMatch(/0\.1 0\.2 0\.3 0\.4 k/);
     expect(warnings).toEqual([]);
     // 表の無いプロファイル: 式で変換して、警告する
-    const bad = Uint8Array.from([...head, ...u32(0)]);
+    const bad = testIccProfile({ omit: ['B2A0', 'B2A1', 'B2A2'] });
     const w2: string[] = [];
     expect(await contentOf(await r.toPdf({ pdfx: { profile: bad, warnings: w2 } }))).not.toMatch(/0\.1 0\.2 0\.3 0\.4 k/);
     expect(w2.some((w) => w.includes('ICC'))).toBe(true);

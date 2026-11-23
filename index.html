@@ -50,6 +50,7 @@
       .actions { display: flex; align-items: center; gap: 8px; flex: none; }
       .btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 6px; border: 1px solid var(--line); background: transparent; cursor: pointer; font-weight: 700; white-space: nowrap; }
       .btn:hover { background: #2b313a; }
+      a.btn { color: inherit; text-decoration: none; }
       .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
       .btn.primary:hover { filter: brightness(1.06); }
       .btn:disabled { opacity: .45; cursor: default; }
@@ -114,6 +115,7 @@
         .zoom { display: none; }
         #settings { position: fixed; top: var(--bar-h); right: 0; bottom: 0; z-index: 10; width: min(300px, 100%); }
         .btn.folder { display: none; }
+        .btn.docs { display: none; }
       }
     </style>
   </head>
@@ -128,6 +130,7 @@
         <label class="btn" title="XSL-FO・HTML・EPUB を、使う CSS・画像・書体 (と draw.io の図形ライブラリ) と一緒に選ぶ (複数選べます。画面にドラッグ&ドロップしても開けます)">開く<input type="file" id="fofile" multiple accept=".fo,.xml,.xsl,.html,.htm,.xhtml,.epub,.css,.otf,.ttf,.png,.jpg,.jpeg,.gif,.bmp,.svg,.svgz,.webp,.tif,.tiff,.wmf,.emf,.eps,.cgm,.drawio,.dio,.js,.mml,text/xml,application/xml,text/html,image/*" hidden /></label>
         <label class="btn folder" title="文書・CSS・画像の入ったフォルダを選ぶ">フォルダを開く<input type="file" id="folderfile" webkitdirectory multiple hidden /></label>
         <button id="download" class="btn primary" disabled>PDF を保存</button>
+        <a class="btn docs" href="api/" target="_blank" rel="noopener" title="ライブラリの関数・型・選択肢の一覧 (新しいタブで開きます)">API の説明書</a>
         <button id="settingsbtn" class="btn" aria-expanded="false" aria-controls="settings">設定</button>
       </div>
     </header>
@@ -203,6 +206,7 @@
           <div class="row">
             <button id="savejson" class="btn" disabled>論理ツリーを JSON で保存</button>
             <button id="resetsample" class="btn" hidden>見本の文書に戻す</button>
+            <a class="btn" href="api/" target="_blank" rel="noopener" title="ライブラリの関数・型・選択肢の一覧 (新しいタブで開きます)">API の説明書</a>
           </div>
         </fieldset>
       </aside>

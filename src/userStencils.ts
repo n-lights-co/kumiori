@@ -1,4 +1,5 @@
-/**
+
+import { rejoin, thisCall } from './callContext';/**
  * userStencils — 利用者が画面で読み込んだ draw.io の図形ライブラリ (stencils.min.js・ライブラリの XML) と、
  * 配布物の画像 (img/lib/… の .svg・.png・.jpg) の保存。
  * ブラウザの IndexedDB に置くので、次に開いたときも読み込み直さずに使える。外部には送らない (userFonts.ts と同じ形)
@@ -32,9 +33,9 @@ function open(): Promise<IDBDatabase> {
 
 /** 接続を開いて fn を行い、途中で失敗しても必ず閉じる */
 async function withDb<T>(fn: (db: IDBDatabase) => Promise<T>): Promise<T> {
-  const db = await open();
+  const db = rejoin(thisCall(), await open());
   try {
-    return await fn(db);
+    return rejoin(thisCall(), await fn(db));
   } finally {
     db.close();
   }
@@ -58,7 +59,7 @@ const write = (fn: (store: IDBObjectStore) => void) =>
 
 export async function saveUserStencil(f: UserStencilFile): Promise<void> {
   try {
-    await write((s) => s.put({ name: f.name, data: f.data } satisfies StoredStencil));
+    rejoin(thisCall(), await write((s) => s.put({ name: f.name, data: f.data } satisfies StoredStencil)));
   } catch {
     /* 保存できなくても、今回の組版には使える */
   }
@@ -66,7 +67,7 @@ export async function saveUserStencil(f: UserStencilFile): Promise<void> {
 
 export async function loadUserStencils(): Promise<UserStencilFile[]> {
   try {
-    return await withDb(
+    return rejoin(thisCall(), await withDb(
       (db) =>
         new Promise<UserStencilFile[]>((res, rej) => {
           const req = db.transaction(STORE).objectStore(STORE).getAll();
@@ -79,7 +80,7 @@ export async function loadUserStencils(): Promise<UserStencilFile[]> {
             );
           req.onerror = () => rej(req.error);
         }),
-    );
+    ));
   } catch {
     return [];
   }
@@ -87,7 +88,7 @@ export async function loadUserStencils(): Promise<UserStencilFile[]> {
 
 export async function clearUserStencils(): Promise<void> {
   try {
-    await write((s) => s.clear());
+    rejoin(thisCall(), await write((s) => s.clear()));
   } catch {
     /* 消せなくても、画面の中では使わなくなる */
   }

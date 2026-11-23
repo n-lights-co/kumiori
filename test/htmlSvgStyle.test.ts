@@ -141,7 +141,7 @@ describe('SVG の color と currentColor (単独の SVG でも同じ)', () => {
 describe('未対応の一覧と @supports', () => {
   it('fill・stroke などは、未対応・知らないプロパティとして数えない', () => {
     const r = unsupportedCssReport(parseCss('svg { fill: currentColor; stroke: red; stroke-width: 2; fill-opacity: .5; stroke-opacity: .5; fill-rule: evenodd; stroke-linecap: round; stroke-linejoin: round; stroke-miterlimit: 2; stroke-dasharray: 1 2; stroke-dashoffset: 1 }'));
-    expect(r).toEqual({ unsupported: {}, unknown: {} });
+    expect(r).toEqual({ unsupported: {}, unknown: {}, invalid: {} });
   });
   it('@supports (fill: …) は、読める値なら真', () => {
     expect(supportsCssDeclaration('fill', 'currentColor')).toBe(true);
@@ -193,14 +193,14 @@ describe('SVG の要素にだけ当てはまる性質の数え方', () => {
   it('HTML の要素に書いた SVG の性質は、当てはまらないので何もしない (未対応にも、知らないプロパティにも数えない)', () => {
     const css = parseCss(`div { fill: green; stroke: red; text-anchor: middle; stop-color: red; marker: none; clip-rule: evenodd; vector-effect: none; shape-rendering: crispEdges; text-rendering: optimizeLegibility; ${SVG_ONLY} }`);
     // 文書に <svg> が無い (文書を渡さないときも同じ)
-    expect(unsupportedCssReport(css, doc(`<div style="${SVG_ONLY}; fill: red">a</div>`))).toEqual({ unsupported: {}, unknown: {} });
-    expect(unsupportedCssReport(css)).toEqual({ unsupported: {}, unknown: {} });
+    expect(unsupportedCssReport(css, doc(`<div style="${SVG_ONLY}; fill: red">a</div>`))).toEqual({ unsupported: {}, unknown: {}, invalid: {} });
+    expect(unsupportedCssReport(css)).toEqual({ unsupported: {}, unknown: {}, invalid: {} });
   });
   it('文書の中に <svg> があれば、届けない性質を「<名前> (SVG の要素)」として未対応に数える。描き方の手がかり (shape-rendering・text-rendering) は数えない', () => {
     const css = parseCss('svg circle { paint-order: stroke; r: 4px; shape-rendering: crispEdges; fill: red } text { text-rendering: geometricPrecision; text-anchor: middle }');
     const d = doc(`<div style="paint-order: stroke">a</div><svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="2" style="cx: 3px; fill: blue"/></svg>`);
     // style 属性は、SVG の要素のものだけを数える (div の paint-order は数えない)
-    expect(unsupportedCssReport(css, d)).toEqual({ unsupported: { 'paint-order (SVG の要素)': 1, 'r (SVG の要素)': 1, 'cx (SVG の要素)': 1 }, unknown: {} });
+    expect(unsupportedCssReport(css, d)).toEqual({ unsupported: { 'paint-order (SVG の要素)': 1, 'r (SVG の要素)': 1, 'cx (SVG の要素)': 1 }, unknown: {}, invalid: {} });
   });
   it('SVG の性質でない、知らない名前は、これまでどおり知らないプロパティに数える', () => {
     expect(unsupportedCssReport(parseCss('div { filll: red; strok: 1 }')).unknown).toEqual({ filll: 1, strok: 1 });

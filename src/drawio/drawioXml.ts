@@ -53,7 +53,7 @@ export function decodeEntities(s: string, table: Record<string, string> = ENT): 
  * 小さな XML の読み取り (要素・属性・文字。コメント・処理命令・DOCTYPE は飛ばし、CDATA は文字にする)。
  * 形式の判定 (ImageFormat.sniff) は同期で、XML のパーサを渡されないので、ここで読む。壊れた所からあとは捨てる
  */
-export function parseXml(src: string, maxNodes = MAX_NODES): XEl | undefined {
+export function parseXml(src: string, maxNodes = MAX_NODES, maxDepth = MAX_DEPTH): XEl | undefined {
   const root: XEl = { name: '#root', attrs: new Map(), children: [], text: '' };
   const stack: XEl[] = [root];
   // 開いている要素の名前ごとの数 (閉じのタグが、開いていない名前なら、並びをたどらずに飛ばす)。
@@ -129,7 +129,7 @@ export function parseXml(src: string, maxNodes = MAX_NODES): XEl | undefined {
       const gt = src.indexOf('>', p);
       if (gt < 0) break;
       // 深すぎる要素は木に入れない (閉じのタグを合わせるために、開いている並びには入れる。中身は、木に無い要素の下に入るので捨てる)
-      if (stack.length <= MAX_DEPTH) top.children.push(el);
+      if (stack.length <= maxDepth) top.children.push(el);
       if (src[gt - 1] !== '/') {
         stack.push(el);
         open.set(el.name, (open.get(el.name) ?? 0) + 1);

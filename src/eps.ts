@@ -7,14 +7,15 @@
  * 座標は %%HiResBoundingBox (無ければ %%BoundingBox) の範囲を SVG の viewBox にする (y は下向きに直す)。
  * 画像は PNG (JPEG はそのまま) の data: URI にして SVG の image に入れる。
  */
+import { limits } from './limits';
 import { Interp, latin1 } from './psInterp';
 import { Graphics, type Clip, type DisplayItem } from './psGraphics';
 import { encodePng } from './pixels';
 import { invert, type Matrix as Mat, type Seg } from './matrix';
 import { base64 } from './base64';
-import { PS_MAX_SVG_CHARS } from './imageLimits';
 import { EpsBudget, epsBoundingBox, fontFamilyOf } from './epsInfo';
 import { msg } from './messages';
+import { rejoin, thisCall } from './callContext';
 
 export { EPS_DOCUMENT_MILLIS, EpsBudget, epsBoundingBox, epsBudgetOf, fontFamilyOf, resetEpsBudget } from './epsInfo';
 
@@ -80,7 +81,7 @@ export function runEps(
 ): { items: DisplayItem[]; bbox: [number, number, number, number]; warnings: string[]; notes: string[]; error?: string } | undefined {
   const prog = epsProgram(b);
   if (!prog) return undefined;
-  const I = new Interp({ maxMillis: opts.maxMillis ?? 20_000, maxVM: opts.maxVM, maxFilterBytes: opts.maxFilterBytes, maxMemory: opts.maxMemory });
+  const I = new Interp({ maxMillis: opts.maxMillis ?? limits().epsMs, maxVM: opts.maxVM, maxFilterBytes: opts.maxFilterBytes, maxMemory: opts.maxMemory });
   const G = new Graphics(I, { bbox: prog.bbox, maxPathPoints: opts.maxPathPoints });
   // EPSF 3.0 §3.2: save で囲み、userdict を begin し、showpage を空にする (グラフィックス状態は初期値)
   const head = latin1('save userdict begin /showpage {} def 0 setgray 0 setlinecap 1 setlinewidth 0 setlinejoin 10 setmiterlimit [] 0 setdash newpath\n');
@@ -151,7 +152,7 @@ export async function epsToSvg(b: Uint8Array, opts: EpsLimits = {}): Promise<Eps
   if (!(budget.millisLeft > 0) || !epsProgram(b)) return undefined;
   const t0 = Date.now();
   try {
-    return await epsToSvg1(b, { ...opts, maxMillis: Math.min(opts.maxMillis ?? 20_000, budget.millisLeft) });
+    return rejoin(thisCall(), await epsToSvg1(b, { ...opts, maxMillis: Math.min(opts.maxMillis ?? limits().epsMs, budget.millisLeft) }));
   } finally {
     // 実行の後の SVG にする時間も引く
     budget.millisLeft -= Date.now() - t0;
@@ -167,7 +168,7 @@ async function epsToSvg1(b: Uint8Array, opts: EpsLimits): Promise<EpsResult | un
   const defs = new Pieces();
   const body = new Pieces();
   // 出力の長さを数える (PS_MAX_SVG_CHARS の説明)。上限を超える断片は足さずに、そこで止める
-  const maxChars = opts.maxSvgChars ?? PS_MAX_SVG_CHARS;
+  const maxChars = opts.maxSvgChars ?? limits().epsSvgChars;
   let chars = 0;
   const TOO_LONG = new Error('svg too long');
   const emit = (to: Pieces, piece: string) => {
@@ -186,7 +187,7 @@ async function epsToSvg1(b: Uint8Array, opts: EpsLimits): Promise<EpsResult | un
     shared.set(rgba, left);
     let data = pngs.get(rgba);
     if (!data) {
-      data = await encodePng({ width, height, rgba });
+      data = rejoin(thisCall(), await encodePng({ width, height, rgba }));
       if (left > 0) pngs.set(rgba, data);
     }
     if (left <= 0) {
@@ -255,7 +256,7 @@ async function epsToSvg1(b: Uint8Array, opts: EpsLimits): Promise<EpsResult | un
         );
       } else if (it.k === 'image') {
         // base64 にする前に長さを確かめる (上限を超える画像を、文字列にしない)
-        const data = it.jpeg ?? (await pngOf(it.rgba!, it.width, it.height));
+        const data = it.jpeg ?? rejoin(thisCall(), await pngOf(it.rgba!, it.width, it.height));
         if (chars + Math.ceil(data.length / 3) * 4 > maxChars) throw TOO_LONG;
         const uri = `data:image/${it.jpeg ? 'jpeg' : 'png'};base64,${base64(data)}`;
         // 画素は、SVG にしたら手放す (描画の並びはこの関数の中だけのもの。画像の多い絵で、画素と PNG を 2 重に持ち続けない)

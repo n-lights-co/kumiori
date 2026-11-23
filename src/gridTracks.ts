@@ -3,6 +3,7 @@
  * 組版エンジン (grid の行の表を置くときの、容器の実際の内容の幅で、列の幅を決める: LTable.gridTemplate) の両方から呼ぶ。
  * どちらからも循環せずに import できるように、CSS の字句と長さの読み手だけに頼る
  */
+import { limits, noteLimitReached } from './limits';
 import { lengthPx } from './cssCascade';
 import { cssLen, gridMinmaxArgs, GRID_REPEAT, gridTrackListInvalid, gridTrackTokens } from './cssText';
 
@@ -43,6 +44,8 @@ export interface GridTrackPlan {
   w: number[];
   b: number[];
   c: number[];
+  /** 列の数を上限 (limits.gridTracks) で切った。使うたびに、上限に当たったことを知らせる (覚えた計画を使い回すときも。noteLimitReached) */
+  capped?: boolean;
 }
 
 /**
@@ -116,14 +119,21 @@ const planMemo = new Map<string, PlanMemoEntry>();
  */
 export function gridTrackPlan(v: string, W: number, gap: number, floorOf?: (k: number) => number, rep?: { times?: number }, opt?: GridTrackOptions): GridTrackPlan | undefined {
   const hit = planMemoEntry(v, W, gap, floorOf, rep, opt);
-  return hit ? hit.plan : computeTrackPlan(v, W, gap, floorOf, rep, opt);
+  return noteCapped(hit ? hit.plan : computeTrackPlan(v, W, gap, floorOf, rep, opt));
+}
+
+/** 列の数を上限で切った計画なら、上限に当たったことを知らせる (組版の結果の診断 limit/reached。呼び出しごとに 1 度) */
+function noteCapped(plan: GridTrackPlan | undefined): GridTrackPlan | undefined {
+  if (plan?.capped) noteLimitReached('gridTracks');
+  return plan;
 }
 
 /** 覚えた計画 (planMemo) を引く。覚えられない呼び出し (列の下限を渡すもの) は undefined。rep.times は、計画を作ったときと同じに入れる */
 function planMemoEntry(v: string, W: number, gap: number, floorOf: ((k: number) => number) | undefined, rep: { times?: number } | undefined, opt: GridTrackOptions | undefined): PlanMemoEntry | undefined {
   // (-0 は鍵の文字列で 0 と区別できないので覚えない)
   if (floorOf || opt?.minOf || Object.is(W, -0) || Object.is(gap, -0)) return undefined;
-  const key = JSON.stringify([v ?? '', W, gap, rep?.times ?? null, !!opt?.indefinite]);
+  // 列の数の上限 (limits.gridTracks) で結果が変わるので、鍵に入れる
+  const key = JSON.stringify([v ?? '', W, gap, rep?.times ?? null, !!opt?.indefinite, limits().gridTracks]);
   let hit = planMemo.get(key);
   if (hit) {
     // 新しく使ったものを後ろへ (捨てるのは前から)
@@ -151,13 +161,16 @@ const baseMemo = new Map<string, { base: TrackBase | undefined; times?: number }
 interface TrackBase {
   toks: readonly string[];
   ix: TrackInfo[];
+  /** 列の数を上限で切った */
+  capped?: boolean;
 }
 
 function computeTrackPlan(v: string, W: number, gap: number, floorOf?: (k: number) => number, rep?: { times?: number }, opt?: GridTrackOptions): GridTrackPlan | undefined {
   let base: TrackBase | undefined;
   if (Object.is(W, -0) || Object.is(gap, -0)) base = trackBase(v, W, gap, rep, opt?.indefinite);
   else {
-    const key = JSON.stringify([v ?? '', W, gap, rep?.times ?? null, !!opt?.indefinite]);
+    // 列の数の上限 (limits.gridTracks) で結果が変わるので、鍵に入れる
+  const key = JSON.stringify([v ?? '', W, gap, rep?.times ?? null, !!opt?.indefinite, limits().gridTracks]);
     let hit = baseMemo.get(key);
     if (hit) {
       baseMemo.delete(key);
@@ -216,7 +229,7 @@ function computeTrackPlan(v: string, W: number, gap: number, floorOf?: (k: numbe
     for (const x of w) if (x > top) top = x;
     if (top > 1e6) for (let k = 0; k < w.length; k++) w[k] = top === Infinity ? (w[k] === Infinity ? 1 : 0) : w[k] / top;
   }
-  return { toks: base.toks as string[], fixed, pct, w, b, c };
+  return { toks: base.toks as string[], fixed, pct, w, b, c, ...(base.capped ? { capped: true } : {}) };
 }
 
 /** 列の並びを展開し、語ごとに読む (computeTrackPlan の前半)。none・無効な並びは undefined */
@@ -229,6 +242,8 @@ function trackBase(v: string, W: number, gap: number, rep: { times?: number } | 
   // repeat(auto-fill | auto-fit, …) (§7.2.3.2) の回数は、容器の幅に入る最大の数 (1 以上): 列の大きさは、最大の大きさの関数が
   // 決まった長さならそれ、そうでなければ最小の大きさの関数 (minmax(80px, 1fr) は 80px)。どちらも決まらなければ 1 回。
   // auto-fit の空の列を畳む (§7.2.3.2) のは見ず、auto-fill と同じに数える
+  // 列の数を上限 (limits.gridTracks) で切ったか
+  let capped = false;
   const trackTokens = gridTrackTokens;
   const repeatOf = GRID_REPEAT;
   const minmaxOf = gridMinmaxArgs;
@@ -255,10 +270,16 @@ function trackBase(v: string, W: number, gap: number, rep: { times?: number } | 
         times = rep?.times ?? (one !== undefined && one > 0 ? Math.max(1, Math.floor((W - used + gap) / one + 1e-6)) : 1);
         if (rep) rep.times = times;
       } else times = parseInt(m[1], 10) || 1;
-      times = Math.min(times, Math.max(1, Math.floor(MAX_GRID_REPEAT / Math.max(body.length, 1))));
+      const most = Math.max(1, Math.floor(limits().gridTracks / Math.max(body.length, 1)));
+      if (times > most) {
+        capped = true;
+        times = most;
+      }
       return Array.from({ length: times }, () => body).flat();
     });
-  const toks = expandTracks(trackTokens(src)).slice(0, MAX_GRID_REPEAT);
+  const all = expandTracks(trackTokens(src));
+  if (all.length > limits().gridTracks) capped = true;
+  const toks = all.slice(0, limits().gridTracks);
   const isFr = (t: string) => /fr$/i.test(t);
   // 0fr の列は余りを取らず、項目の自動の最小の大きさ (floorOf。min-content) になる (CSS Grid 1 §7.2.4・§12.7.1: fr の列の基準の大きさは、
   // 最小の大きさの関数 auto による中身の大きさ。0fr ではそれより広がらない)
@@ -275,7 +296,7 @@ function trackBase(v: string, W: number, gap: number, rep: { times?: number } | 
     if (!x) infos.set(t, (x = trackInfo(t, W, isFr, pctOf, indefinite)));
     return x;
   });
-  return { toks: Object.freeze(toks), ix };
+  return { toks: Object.freeze(toks), ix, ...(capped ? { capped: true } : {}) };
 }
 
 /**
@@ -384,7 +405,8 @@ function distribute(L: number, idx: number[], w: number[], b: number[], c: numbe
  */
 export function gridTracks(v: string, W: number, gap: number, floorOf?: (k: number) => number, rep?: { times?: number }, opt?: GridTrackOptions): number[] {
   const hit = planMemoEntry(v, W, gap, floorOf, rep, opt);
-  if (!hit) return trackSizes(computeTrackPlan(v, W, gap, floorOf, rep, opt), W, gap);
+  if (!hit) return trackSizes(noteCapped(computeTrackPlan(v, W, gap, floorOf, rep, opt)), W, gap);
+  noteCapped(hit.plan);
   // (覚えた列の幅は、呼び手が書き換えても覚えが変わらないように、写しを返す)
   return (hit.tracks ??= trackSizes(hit.plan, W, gap)).slice();
 }

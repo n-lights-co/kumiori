@@ -198,14 +198,15 @@ describe('renderPageToSvg', () => {
     expect(Array.from(doc.getElementsByTagName('use')).filter((u) => ids.get(u.getAttribute('xlink:href')!.slice(1)) === 'image')).toHaveLength(12);
   });
 
-  it('SVG の画像の中のリンク (a 要素) は書かない (ページのリンクと同じく、リンクを書き出さない)', async () => {
+  it('SVG の画像の中のリンク (a 要素) は、リンクの決まり (links) を通したものだけを書く (既定では ftp: を通さない)', async () => {
     const svgA =
       '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="30" height="10">' +
       '<a xlink:href="ftp://example.com/x"><rect width="10" height="10" fill="red"/></a><a href="https://example.com/"><rect x="20" width="10" height="10"/></a></svg>';
     const r = await typeset('<p><img src="a.svg"> <a href="https://example.com/">x</a></p>', { kind: 'html', loadFont, files: [{ name: 'a.svg', data: svgA }] });
     const svg = await r.renderPageToSvg(0);
-    expect(svg).not.toMatch(/<a[\s>]/);
-    expect(svg).not.toContain('example.com');
+    // 決まりを通さない飛び先は、SVG を見る側で開けるリンクにしない
+    expect(svg).not.toContain('ftp:');
+    expect(svg.match(/<a [^>]*>/g)).toEqual(['<a xlink:href="https://example.com/">', '<a xlink:href="https://example.com/">']);
     // 図形は描く
     expect(svg).toContain('fill="#ff0000"');
   });

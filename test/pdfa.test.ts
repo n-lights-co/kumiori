@@ -15,25 +15,17 @@ import { renderPdf } from '../src/pdfRenderer';
 import { AssetStore } from '../src/assets';
 import { verifyPdfA } from '../src/pdfaVerify';
 import { srgbProfile } from '../src/srgbIcc';
+import { testIccProfile } from './iccTestProfile';
 import { ensureFonts, loadCachedFont, makeEngine } from './helpers';
 
 /**
- * ICC のプロファイルの頭とタグの表だけのもの (色空間 space・機器の種類 cls。タグは署名だけで、中身は無い。ICC.1:2010 §7.2・§7.3)。
- * 既定のタグ A2B1 (AtoB1 の表) は、PDF/X-1a の出力意図のプロファイルに要る (ISO 15930-1 §6.3.2)
+ * 試験の CMYK の出力機器のプロファイル (iccTestProfile.ts。頭・タグの表・desc・色の表まで ICC.1:2010 の形どおり) の、
+ * 色空間 (space)・機器の種類 (cls) を変えたもの。noA2B1 なら AtoB1 の表 (A2B1。PDF/X-1a の出力意図のプロファイルに要る。ISO 15930-1 §6.3.2) を除く
  */
-function iccHeader(space: string, cls = 'prtr', tags: string[] = ['A2B1']): Uint8Array {
-  const head = new Array(132 + tags.length * 12).fill(0);
-  const put = (o: number, t: string) => [...t].forEach((c, k) => (head[o + k] = c.charCodeAt(0)));
-  head[8] = 2;
-  put(12, cls);
-  put(16, space);
-  put(20, 'Lab ');
-  put(36, 'acsp');
-  head[131] = tags.length;
-  tags.forEach((t, k) => put(132 + k * 12, t));
-  return Uint8Array.from(head);
+function iccProfile(space: string, cls = 'prtr', noA2B1 = false): Uint8Array {
+  return testIccProfile({ colorSpace: space, deviceClass: cls, omit: noA2B1 ? ['A2B1'] : [] });
 }
-const CMYK_PROFILE = iccHeader('CMYK');
+const CMYK_PROFILE = iccProfile('CMYK');
 
 const load = (bytes: Uint8Array) => PDFDocument.load(bytes, { updateMetadata: false });
 const infoOf = (pdf: PDFDocument, key: string) => {

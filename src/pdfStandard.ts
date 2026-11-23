@@ -29,19 +29,22 @@ import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFString } from 'pdf-lib'
 import { GWG_SHEET_CMYK, type GwgVariant } from './pdfCheck';
 import { msg } from './messages';
 import { verifyPdfX1a, verifyPdfX3, verifyPdfX4 } from './pdfxVerify';
-import { ICC_CMYK_REGISTRY, ICC_REGISTRY_NAME, iccDeviceClass, iccHasTag } from './iccRegistry';
+import { ICC_CMYK_REGISTRY, ICC_REGISTRY_NAME, iccDescription, iccDeviceClass, iccHasTag, iccProfileProblem } from './iccRegistry';
 import { SRGB_DESCRIPTION, srgbProfile } from './srgbIcc';
 import { KumioriOptionError, KumioriPdfError } from './errors';
+import { sha256 } from './sha256';
 
 /** 入稿用 (PDF/X) の出力の指定 (PdfRenderOptions.pdfx) */
 export interface PdfXOptions {
   /** 版: 'X-3' (PDF/X-3:2003。既定)、'X-4' (PDF/X-4)、'X-1a' (PDF/X-1a:2001)、'X-1a:2003' (PDF/X-1a:2003)。ほかの値は誤り (KumioriOptionError) */
   version?: 'X-3' | 'X-4' | 'X-1a' | 'X-1a:2003';
   /**
-   * 印刷条件の名前 (OutputConditionIdentifier。ICC の登録名など。既定 JC200103 = Japan Color 2001 Coated)。
+   * 印刷条件の名前 (OutputConditionIdentifier。ICC の登録名など)。書かなければ、プロファイル (profile) を渡したときはその説明 (desc のタグの文) にし、
+   * プロファイルも無ければ JC200103 (Japan Color 2001 Coated の登録名)。
    * 登録名は、ICC の登録簿 (registry.color.org の CMYK Characterization Data) の Reference name: JC200103 は Japan Color 2001 Coated
    * (オフセット、光沢・マットのコート紙)。ほかに Japan Color 2011 (JCS2011)・Japan Color 2001 Uncoated (JC200104) などがある。
-   * 登録簿に載っている名前 (ICC_CMYK_REGISTRY) のときだけ、出力意図に RegistryName を書く。載っていない名前なら、プロファイル (profile) が要る
+   * ここに書いた名前か既定の JC200103 が登録簿に載っている (ICC_CMYK_REGISTRY) ときだけ、出力意図に RegistryName を書く
+   * (プロファイルの説明を名前にしたときは書かない)。載っていない名前なら、プロファイル (profile) が要る
    */
   condition?: string;
   /** 印刷条件の説明 (OutputCondition・Info。無ければ condition) */
@@ -84,8 +87,31 @@ export function iccSpace(profile: Uint8Array): { space: string; n: number } {
   return { space, n: space === 'CMYK' ? 4 : space === 'GRAY' ? 1 : 3 };
 }
 
-/** 印刷条件の既定の名前 (Japan Color 2001 Coated の登録名) */
+/** 印刷条件の既定の名前 (Japan Color 2001 Coated の登録名。プロファイルも名前も無いとき) */
 const DEFAULT_CONDITION = 'JC200103';
+
+/**
+ * 出力意図の印刷条件 (OutputConditionIdentifier) の名前と、RegistryName を書くか。
+ * 名前を渡せばその名前。渡さずにプロファイルを渡せば、プロファイルの説明 (desc。ICC.1:2010 §9.2.41) を名前にし、RegistryName は書かない
+ * (そのプロファイルの印刷条件が登録簿のどれかは分からず、既定の JC200103 と書くと、埋め込むプロファイルと違う印刷条件を名乗るため。
+ * ISO 15930-7 §6.4.2.1 は、RegistryName を書くなら OutputConditionIdentifier を登録簿の名前と一致させる)。
+ * どちらも無ければ JC200103。RegistryName は、名前が登録簿に載っているとき (ISO 15930-1 §6.3.2・ISO 15930-7 §6.4.2.1)
+ */
+function conditionOf(o: PdfXOptions): { condition: string; registered: boolean } {
+  if (o.condition !== undefined) return { condition: o.condition, registered: ICC_CMYK_REGISTRY.has(o.condition) };
+  const desc = o.profile ? iccDescription(o.profile) : undefined;
+  if (desc !== undefined) return { condition: desc, registered: false };
+  return { condition: DEFAULT_CONDITION, registered: true };
+}
+
+/**
+ * 印刷条件が登録簿に無いのにプロファイルが無ければ、誤りとして投げる (DestOutputProfile が要る。ISO 15930-1 §6.3.2)。
+ * PDF/X-3:2003 (ISO 15930-6) の本文は確かめていないので、PDF/X-1a:2001 と同じ決まりを当てる
+ */
+function requireProfileIfUnregistered(o: PdfXOptions, label: string) {
+  if (o.profile || conditionOf(o).registered) return;
+  throw new KumioriPdfError('pdfx/profile-required', msg(`${label} では、印刷条件 "${o.condition}" が ICC の登録簿に無いので、出力の ICC プロファイル (CMYK) が要ります (pdfx.profile)。登録簿の名前 (JC200103 など) にするか、プロファイルを渡してください`, `${label}: the printing condition "${o.condition}" is not in the ICC registry, so an output ICC profile (CMYK) is required (pdfx.profile). Use a registered name (such as JC200103) or pass a profile`));
+}
 
 /** PDF の出力の規格の方針 */
 export interface PdfStandard {
@@ -168,9 +194,9 @@ function pdfX1a(year: '2001' | '2003'): PdfStandard {
         // 出力意図のプロファイルは、AtoB1 の表 (タグ A2B1。ICC.1:2010 §9.2.2) を持たなければならない (ISO 15930-1 §6.3.2)
         if (!iccHasTag(o.profile, 'A2B1'))
           throw new KumioriPdfError('pdfx/profile-invalid', msg('PDF/X-1a の出力の ICC プロファイルは、AtoB1 の表 (タグ A2B1) を持つものにしてください', 'The output ICC profile for PDF/X-1a must have an AtoB1 table (the A2B1 tag)'));
-      } else if (!ICC_CMYK_REGISTRY.has(o.condition ?? DEFAULT_CONDITION))
-        // 印刷条件が登録簿に無ければ、DestOutputProfile が要る (ISO 15930-1 §6.3.2)
-        throw new KumioriPdfError('pdfx/profile-required', msg(`PDF/X-1a では、印刷条件 "${o.condition}" が ICC の登録簿に無いので、出力の ICC プロファイル (CMYK) が要ります (pdfx.profile)。登録簿の名前 (JC200103 など) にするか、プロファイルを渡してください`, `PDF/X-1a: the printing condition "${o.condition}" is not in the ICC registry, so an output ICC profile (CMYK) is required (pdfx.profile). Use a registered name (such as JC200103) or pass a profile`));
+      }
+      // 印刷条件が登録簿に無ければ、DestOutputProfile が要る (ISO 15930-1 §6.3.2)
+      requireProfileIfUnregistered(o, 'PDF/X-1a');
     },
     verify: (bytes) => verifyPdfX1a(bytes, year === '2001' ? 'X-1a:2001' : 'X-1a:2003'),
   };
@@ -180,7 +206,8 @@ const PDF_X1A_2003 = pdfX1a('2003');
 
 /**
  * PDF/X-3:2003 (ISO 15930-6。PDF 1.4 が元。透明は使えない。機器によらない色 (ICC・Lab) は使える)。透明は平らにし (X-1a と同じ)、
- * 書き出した PDF を読み直して決まりに合うかを調べる
+ * 書き出した PDF を読み直して決まりに合うかを調べる。出力意図は X-1a と同じ決まり (ISO 15930-1 §6.3.2) を当てる: 印刷条件が登録簿に
+ * 載っていれば登録名だけでよく、載っていなければプロファイルが要る。プロファイルを渡すなら CMYK のもの (AtoB1 の表は求めない)
  */
 const PDF_X3: PdfStandard = {
   label: 'PDF/X-3',
@@ -196,7 +223,10 @@ const PDF_X3: PdfStandard = {
   noNotdef: false,
   xmp: false,
   gwg: GWG_SHEET_CMYK,
-  check: () => {},
+  check: (o) => {
+    if (o.profile) checkCmykProfile(o.profile, 'PDF/X-3');
+    requireProfileIfUnregistered(o, 'PDF/X-3');
+  },
   verify: (bytes) => verifyPdfX3(bytes),
 };
 
@@ -237,11 +267,13 @@ export function pdfStandardOf(o: PdfXOptions | undefined): PdfStandard | undefin
 }
 
 /**
- * 出力の ICC プロファイルを確かめる: 埋め込みが要り (DestOutputProfile)、色空間は CMYK
- * (ICC.1:2010 §7.2.6 の頭の 16〜19 バイト目。GWG 2022-R1 の R0035)。満たさなければ誤りとして投げる
+ * 出力の ICC プロファイルを確かめる: 埋め込みが要り (DestOutputProfile)、頭とタグの表が ICC.1:2010 の形どおりで (§7.2・§7.3・§8.2 の desc。
+ * iccProfileProblem)、色空間は CMYK (§7.2.6 の頭の 16〜19 バイト目。GWG 2022-R1 の R0035)。満たさなければ誤りとして投げる
  */
 function checkCmykProfile(profile: Uint8Array | undefined, label: string) {
   if (!profile) throw new KumioriPdfError('pdfx/profile-required', msg(`${label} では、出力の ICC プロファイル (CMYK) が要ります (pdfx.profile)。印刷所の指定するプロファイル (Japan Color 2001 Coated など) を渡してください`, `${label} requires an output ICC profile (CMYK) (pdfx.profile). Pass the profile your printer specifies (such as Japan Color 2001 Coated)`));
+  const problem = iccProfileProblem(profile);
+  if (problem) throw new KumioriPdfError('pdfx/profile-invalid', msg(`${label} の出力の ICC プロファイルを読めません (ICC.1 の形に合いません: ${problem.ja})`, `The output ICC profile for ${label} cannot be read (it does not follow the ICC.1 format: ${problem.en})`));
   const space = profile.length >= 20 ? String.fromCharCode(...profile.subarray(16, 20)) : '';
   if (space !== 'CMYK') throw new KumioriPdfError('pdfx/profile-required', msg(`${label} の出力の ICC プロファイルは、CMYK のものにしてください (渡されたプロファイルの色空間: ${space.trim() || '読めない'})`, `The output ICC profile for ${label} must be a CMYK profile (color space of the given profile: ${space.trim() || 'unreadable'})`));
 }
@@ -261,7 +293,7 @@ export function pdfText(s: string): PDFString | PDFHexString {
  * std・o は PDF/X (無ければ PDF/A だけ)、pdfa は PDF/A (無ければ PDF/X だけ)。pdfua は PDF/UA-1 (ISO 14289-1 §5: XMP の pdfuaid:part に版の印。
  * §7.1: 題を dc:title に書き、ViewerPreferences の DisplayDocTitle を true にする)
  */
-export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, o: PdfXOptions | undefined, pdfa?: PdfA, pdfua?: boolean) {
+export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, o: PdfXOptions | undefined, pdfa: PdfA | undefined, pdfua: boolean, date: Date) {
   const ctx = pdf.context;
   const x = std && o ? { std, o } : undefined;
   // 出力意図のプロファイル: PDF/X の出力の CMYK のプロファイル。PDF/A だけなら sRGB (srgbIcc.ts)。
@@ -269,22 +301,22 @@ export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, 
   const profile = x ? x.o.profile : pdfa ? srgbProfile() : undefined;
   const profileRef = profile ? ctx.register(ctx.stream(profile, { N: iccSpace(profile).n })) : undefined;
   const intents: PDFDict[] = [];
-  const intentOf = (s: string, condition: string, info: string) =>
+  const intentOf = (s: string, condition: string, registered: boolean, info: string) =>
     ctx.obj({
       Type: 'OutputIntent',
       S: s,
       OutputConditionIdentifier: pdfText(condition),
       OutputCondition: pdfText(info),
-      // RegistryName は、印刷条件が ICC の登録簿に載っているときだけ書く (ISO 15930-1 §6.3.2・ISO 15930-7 §6.4.2.1)
-      ...(ICC_CMYK_REGISTRY.has(condition) ? { RegistryName: PDFString.of(ICC_REGISTRY_NAME) } : {}),
+      // RegistryName は、印刷条件が ICC の登録簿に載っているときだけ書く (ISO 15930-1 §6.3.2・ISO 15930-7 §6.4.2.1。プロファイルの説明を名前にしたときは書かない。conditionOf)
+      ...(registered ? { RegistryName: PDFString.of(ICC_REGISTRY_NAME) } : {}),
       Info: pdfText(info),
       ...(profileRef ? { DestOutputProfile: profileRef } : {}),
     } as never) as unknown as PDFDict;
-  const condition = x ? (x.o.condition ?? DEFAULT_CONDITION) : SRGB_DESCRIPTION;
+  const { condition, registered } = x ? conditionOf(x.o) : { condition: SRGB_DESCRIPTION, registered: false };
   const conditionInfo = x ? (x.o.info ?? condition) : SRGB_DESCRIPTION;
-  if (x) intents.push(intentOf('GTS_PDFX', condition, conditionInfo));
+  if (x) intents.push(intentOf('GTS_PDFX', condition, registered, conditionInfo));
   // PDF/A の出力意図 (S が GTS_PDFA1。PDF/A-2・3 でも同じ名前。ISO 19005-2 §6.2.3)。DestOutputProfile は要る
-  if (pdfa) intents.push(intentOf('GTS_PDFA1', condition, conditionInfo));
+  if (pdfa) intents.push(intentOf('GTS_PDFA1', condition, registered, conditionInfo));
   if (intents.length) pdf.catalog.set(PDFName.of('OutputIntents'), ctx.obj(intents));
   const info = ctx.lookup(ctx.trailerInfo.Info) as PDFDict;
   if (x) {
@@ -309,12 +341,13 @@ export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, 
   if (x && !pdf.getTitle()) pdf.setTitle('Untitled');
   // PDF/UA-1: 窓の題に、ファイルの名前でなく文書の題を出す (ISO 14289-1 §7.1。ViewerPreferences は ISO 32000-1 §12.2 の Table 150)
   if (pdfua) pdf.catalog.set(PDFName.of('ViewerPreferences'), ctx.obj({ DisplayDocTitle: true }));
-  // 作った日時と変えた日時を同じ秒にそろえて (Info と XMP で同じ値にする)
-  const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+  // 作った日時と変えた日時 (pdfDocumentDate で秒にそろえたもの) を、Info と XMP で同じ値にする
+  const now = date;
   pdf.setCreationDate(now);
   pdf.setModificationDate(now);
-  // 文書の ID (trailer。ISO 32000-2 §14.4)。XMP の DocumentID・InstanceID にも同じ値を使う
-  const hex = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+  // 文書の ID (trailer。ISO 32000-2 §14.4)。XMP の DocumentID・InstanceID にも同じ値を使う。
+  // ここでは印の値を書き、書き出した後に、中身から作った ID に書き換える (finishDocumentId)
+  const hex = DOCUMENT_ID_MARK;
   ctx.trailerInfo.ID = ctx.obj([PDFHexString.of(hex), PDFHexString.of(hex)]);
   if (xmpWanted) {
     const xmp = pdfXmp({
@@ -325,7 +358,7 @@ export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, 
       producer: pdf.getProducer() ?? '',
       creator: pdf.getCreator() ?? '',
       date: now,
-      uuid: hex.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+      uuid: uuidOf(hex),
       pdfx: x?.std.version,
       pdfa,
       pdfua,
@@ -333,6 +366,58 @@ export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, 
     // メタデータの流れは圧縮しない (XMP の包み (xpacket) を、PDF を読まずに探せるように)
     pdf.catalog.set(PDFName.of('Metadata'), ctx.register(ctx.stream(new TextEncoder().encode(xmp), { Type: 'Metadata', Subtype: 'XML' })));
   }
+}
+
+/**
+ * 文書の ID (trailer の ID。ISO 32000-1 §14.4) の印の値 (16 バイトの 16 進)。書き出す前にこの値を書いておき、書き出したバイト列の
+ * SHA-256 から作った ID に、finishDocumentId で書き換える。§14.4 は、ID を作るたびに違う値にすることを勧めるが、作り方は決めていない。
+ * 乱数で作ると同じ入力から同じバイトの PDF にならないので、中身から作る (中身が同じなら同じ ID。日時が変われば中身が変わり、ID も変わる)
+ */
+export const DOCUMENT_ID_MARK = '4b756d696f72692d646f632d69642d00';
+/** 印の値の XMP の形 (xmpMM:DocumentID・InstanceID の uuid: の後ろ。8-4-4-4-12 の形) */
+const uuidOf = (hex: string) => hex.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+
+/** bytes の中の、ASCII の字の並び s の位置をすべて返す */
+function findAscii(bytes: Uint8Array, s: string): number[] {
+  const pat = Array.from(s, (c) => c.charCodeAt(0));
+  const at: number[] = [];
+  for (let i = bytes.indexOf(pat[0]); i >= 0 && i <= bytes.length - pat.length; i = bytes.indexOf(pat[0], i + 1)) {
+    let k = 1;
+    while (k < pat.length && bytes[i + k] === pat[k]) k++;
+    if (k === pat.length) at.push(i);
+  }
+  return at;
+}
+
+/**
+ * 書き出した PDF の文書の ID の印の値 (DOCUMENT_ID_MARK) を、バイト列の SHA-256 の初めの 16 バイトに書き換える (同じ長さなので、
+ * 相互参照のオフセットは変わらない)。trailer の辞書 (相互参照の流れの辞書も) と XMP の流れ (圧縮しない) は平文なので、そのまま探せる。
+ * trailer の 2 つ (と、XMP があれば DocumentID・InstanceID の 2 つ) の印の値が、その数だけ見つからなければ誤り
+ */
+export function finishDocumentId(bytes: Uint8Array): Uint8Array {
+  const hexAt = findAscii(bytes, `<${DOCUMENT_ID_MARK}>`);
+  const uuidAt = findAscii(bytes, `uuid:${uuidOf(DOCUMENT_ID_MARK)}<`);
+  if (hexAt.length !== 2 || (uuidAt.length !== 0 && uuidAt.length !== 2))
+    // 書き出しの作りの誤り (入力では起きない) なので、診断の名前を持つ誤りにはしない
+    throw new Error(`Kumiori: the document ID mark was not found in the written PDF (${hexAt.length} in the trailer, ${uuidAt.length} in XMP)`);
+  const id = sha256(bytes).slice(0, 32);
+  const enc = (s: string) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  for (const i of hexAt) bytes.set(enc(id), i + 1);
+  for (const i of uuidAt) bytes.set(enc(uuidOf(id)), i + 5);
+  return bytes;
+}
+
+/**
+ * PDF に書く作成日・更新日 (Info の CreationDate・ModDate、XMP の xmp:CreateDate・ModifyDate・MetadataDate、添付の ModDate)。
+ * 渡した日時 (PdfOptions.date) か、無ければいまの時刻を、秒より下を切り捨てて返す (PDF の日付は秒まで。ISO 32000-1 §7.9.4)。
+ * 正しくない Date (NaN) と、4 桁の年で書けない日時 (0〜9999 年の外) は、選択肢の誤り
+ */
+export function pdfDocumentDate(d: Date | undefined): Date {
+  if (d === undefined) return new Date(Math.floor(Date.now() / 1000) * 1000);
+  const t = d instanceof Date ? d.getTime() : NaN;
+  if (!Number.isFinite(t) || d.getUTCFullYear() < 0 || d.getUTCFullYear() > 9999)
+    throw new KumioriOptionError(msg('date は 0〜9999 年の正しい Date にします', 'date must be a valid Date between the years 0 and 9999'), 'date');
+  return new Date(Math.floor(t / 1000) * 1000);
 }
 
 /**

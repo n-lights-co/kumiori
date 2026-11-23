@@ -77,6 +77,23 @@ test('標準サンプル: 組版でき、Canvas と PDF のページ数が一致
   expect(errors).toEqual([]);
 });
 
+test('API の説明書へのリンク: 画面と同じ場所の api/ を新しいタブで開く。狭い画面では設定の中に置く', async ({ page }) => {
+  const errors = await open(page);
+  const bar = page.locator('header.bar a.docs');
+  await expect(bar).toBeVisible();
+  await expect(bar).toHaveAttribute('target', '_blank');
+  // 相対の参照なので、GitHub Pages の土台 (/kumiori/) の下の api/ に届く
+  expect(await bar.getAttribute('href')).toBe('api/');
+  expect(await bar.evaluate((a) => new URL((a as HTMLAnchorElement).href).pathname)).toBe(new URL('api/', page.url()).pathname);
+  const inSettings = page.locator('#settings a[href="api/"]');
+  await expect(inSettings).toHaveCount(1);
+  await page.setViewportSize({ width: 600, height: 800 });
+  await expect(bar).toBeHidden();
+  await page.locator('#settingsbtn').click();
+  await expect(inSettings).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('XSL-FO の読み込み: 段組・脚注・表・ページ番号の書式・仕様モードの切り替え', async ({ page }) => {
   const errors = await open(page);
   const fo = fs.readFileSync(path.join(import.meta.dirname, 'fixtures/basic.fo'), 'utf8');

@@ -6,6 +6,7 @@
  *  - PDF/X で透明を平らにするとき、画像の画素の数の上限を守り、下の物を探す手間が描いた物の数の 2 乗にならない
  */
 import { describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import { typeset } from '../src/index';
 import { loadCachedFont } from './helpers';
 import { GRID_REPEAT } from '../src/cssText';
@@ -36,9 +37,9 @@ describe('正規表現の手間', () => {
       expect(GRID_REPEAT.test(c), c).toBe(!!a);
     }
     const sp = ' '.repeat(200_000);
-    const t0 = Date.now();
+    const t0 = cpuClock();
     for (const s of [`repeat(a${sp}b)`, `repeat(1,${sp}x`, `repeat( 1${sp},${sp}a b${sp}`]) GRID_REPEAT.exec(s);
-    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(1000));
   });
 
   it('grid-template-columns の、カンマの無い repeat( と長い空白で、組むのが遅くならない', async () => {

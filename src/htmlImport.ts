@@ -19,6 +19,7 @@
  * ブラウザが知らない指定 (string-set など) は CSS から自前で読み、セレクタで要素に当てはめる (collectPaged。勝ち負けは通常のカスケード:
  * !important・層 (@layer)・詳細度・書いた順。Cascade 5 §6)。
  */
+import { nestLimit, limits, noteLimitReached } from './limits';
 import { firstGradient } from './cssGradient';
 import { applyTextTransform } from './textTransform';
 import type {
@@ -142,12 +143,44 @@ function withoutSide<T extends object>(v: T | number | undefined, side: 'top' | 
  * 保つ (CSS 2.1 §9.2.1.1: 行内の箱の性質は、中のブロックの箱に受け継がれる)。
  * 中身が空になった分けた箱は置かない。入れ子の行内の箱の中のブロックも、外の箱まで分けて出す。ブロックの無い箱はそのまま返す
  */
+/**
+ * 並び list に、行内の要素の中から出した float・絶対配置の箱 (floats) を置く: 各箱を、書いた所の目印 (LInline.floatAnchor・staticAnchor。
+ * 番号は LFloat.inlineAnchor・LBlockContainer.inlineAnchor) を含む子の後に置く (同じ子の後の箱は、書いた順)。目印が見つからない float は、並びの後に置く。node: 子の行内の節 (ブロックなどは undefined)、
+ * wrap: float を並びの子にしたもの
+ */
+function placeAtAnchors<T, F extends { inlineAnchor?: number }>(list: T[], floats: F[], node: (x: T) => LInlineLevel | LBlockLevel | undefined, wrap: (f: F) => T): T[] {
+  const at = new Map<number, number>();
+  const visit = (n: LInlineLevel | LBlockLevel | undefined, i: number) => {
+    if (!n || typeof n === 'string' || n.type !== 'inline') return;
+    if (n.floatAnchor !== undefined) at.set(n.floatAnchor, i);
+    // 絶対配置の箱の目印 (LBlockContainer.inlineAnchor。読み込みが付けるのは負の番号)
+    if (n.staticAnchor !== undefined && n.staticAnchor < 0) at.set(n.staticAnchor, i);
+    for (const k of n.children) visit(k, i);
+  };
+  list.forEach((x, i) => visit(node(x), i));
+  const after = new Map<number, F[]>();
+  const rest: F[] = [];
+  for (const f of floats) {
+    const i = f.inlineAnchor !== undefined ? at.get(f.inlineAnchor) : undefined;
+    if (i === undefined) rest.push(f);
+    else (after.get(i) ?? after.set(i, []).get(i)!).push(f);
+  }
+  if (!after.size) return [...list, ...rest.map(wrap)];
+  const out: T[] = [];
+  list.forEach((x, i) => {
+    out.push(x);
+    for (const f of after.get(i) ?? []) out.push(wrap(f));
+  });
+  for (const f of rest) out.push(wrap(f));
+  return out;
+}
+
 function splitInlineAtBlocks(n: LInlineLevel, start: 'top' | 'right' | 'bottom' | 'left', end: 'top' | 'right' | 'bottom' | 'left'): FlowItem[] {
   if (isInFlowBlock(n)) return [{ v: n, block: true }];
   if (typeof n === 'string' || n.type !== 'inline' || !hasBlockInside(n)) return [{ v: n, block: false }];
   const parts: FlowItem[] = [];
   for (const k of n.children) pushAll(parts, splitInlineAtBlocks(k, start, end));
-  const { type: _t, children: _c, id, cbKey: _k, staticAnchor: _a, softBreak: _sb, smallCaps: _sc, backgroundColor: _bg, backgroundClip: _bc, emptyStrut: _es, firstLine: _fl, noBreak: _nb, baselineShift: _bs, border: _bo, padding: _pa, boxDecorationBreak: _d, borderRadius: _r, outline: _o, inlineMargin: _m, width: _w, link, annotation: _an, paintEffect: _fx, writingMode: _wm, ...text } = n;
+  const { type: _t, children: _c, id, cbKey: _k, staticAnchor: _a, floatAnchor: _fa, softBreak: _sb, smallCaps: _sc, backgroundColor: _bg, backgroundClip: _bc, emptyStrut: _es, firstLine: _fl, noBreak: _nb, baselineShift: _bs, border: _bo, padding: _pa, boxDecorationBreak: _d, borderRadius: _r, outline: _o, inlineMargin: _m, width: _w, link, annotation: _an, paintEffect: _fx, writingMode: _wm, ...text } = n;
   const isSide = (x: object) => 'width' in x;
   const out: FlowItem[] = [];
   let idUsed = !id;
@@ -776,12 +809,23 @@ function firstGrapheme(s: string): string {
   return graphemeClusters(s.slice(0, 64).replace(/[\uD800-\uDBFF]$/, ''))[0] ?? '';
 }
 
-const MAX_COL_SPAN = 1000;
+/** col の span・colspan の上限 (呼び出しの上限 limits.tableColumns。既定 1,000。HTML の仕様の colspan・span の上限も 1,000) */
+const colSpanMax = () => limits().tableColumns;
+/**
+ * col の span・colspan を上限で抑える。上限を HTML の仕様の上限 (1,000。HTML Living Standard §4.9.11・§4.9.3 の span・colspan は 1,000 まで) より
+ * 下げたときに切ったら、上限に当たったことを知らせる (仕様の上限で抑えるのは、仕様どおりの動きなので知らせない)
+ */
+function capSpan(n: number): number {
+  const max = colSpanMax();
+  if (n > max && max < MAX_TABLE_COLUMNS) noteLimitReached('tableColumns');
+  return Math.min(max, n);
+}
 /**
  * 1 つの表の列 (<col>・display: table-column の span の合計) の上限。XSL-FO の読み込みの列の数の上限 (xslfoImport.ts の MAX_TABLE_COLUMNS) と同じ。
  * 1 つの <col> の span は MAX_COL_SPAN までだが、<col span="1000"> を千個並べると百万の列になり、組むのに数秒・数 GB かかった
  */
-const MAX_TABLE_COLUMNS = 1000;
+/** 表の列の数の上限の既定 (呼び出しの上限 limits.tableColumns で動く) */
+export const MAX_TABLE_COLUMNS = 1000;
 const MAX_ROW_SPAN = 65534;
 
 /**
@@ -1598,8 +1642,13 @@ class HtmlImporter {
   private elOrder = new Map<Element, number>();
   /** インラインの中で生じたマーカー (段落の外へ出す) */
   private pendingMarkers: LMarker[] = [];
-  /** 行内の要素の中で見つけた float (flowFloat)。行内の要素を出た所の並びに置く */
+  /**
+   * 行内の要素の中で見つけた float (flowFloat)。行内の要素を出た所の並びの、書いた所の目印 (LInline.floatAnchor。番号は
+   * LFloat.inlineAnchor) を含む子の後に置く (placeAtAnchors)
+   */
   private pendingFloats: LFloat[] = [];
+  /** 行内の要素の中の float の、書いた所の目印の通し番号 */
+  private floatAnchorSeq = 0;
   /**
    * いま中身を並べている、行内でない要素 (flowChildren を inline でなく呼んだ要素)。行内の要素の中の float・絶対配置の箱は、この要素の
    * 中身の並びに出して組むので、受け継ぐ書式 (字の大きさなど) は、この要素との違いで渡す (行内の親との違いで渡すと、組版はこの要素の
@@ -3052,7 +3101,7 @@ class HtmlImporter {
         const kc = this.csA(cell);
         let w = this.maxContentWidth(cell);
         if (collapse) w -= ((cssLen(kc('border-left-width')) ?? 0) + (cssLen(kc('border-right-width')) ?? 0)) / 2;
-        const span = Math.min(MAX_COL_SPAN, Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1));
+        const span = capSpan(Math.max(1, parseInt(cell.getAttribute('colspan') ?? '1', 10) || 1));
         const rs = Math.min(MAX_ROW_SPAN, Math.max(1, parseInt(cell.getAttribute('rowspan') ?? '1', 10) || 1));
         if (span === 1) cols[col] = Math.max(cols[col] ?? 0, w);
         else spans.push([col, span, w]);
@@ -3766,9 +3815,15 @@ class HtmlImporter {
         pa[p] = len;
         if (f !== undefined) pa[p === 'left' ? 'pctLeft' : 'pctRight'] = f;
       };
+      // left・right・top・bottom が auto の向きは static position (CSS 2.1 §10.3.7・§10.6.4)。組版が見つけた所で決める (pageArea.staticLeft・
+      // staticTop。position: absolute のときだけ。fixed の箱は、どのページにも同じ位置に置くので、ページの領域の端に置く)
+      const abs = c('position') === 'absolute';
       if (left !== undefined) setSide('left', left);
       else if (right !== undefined) setSide('right', right);
-      else pa.left = staticI;
+      else {
+        pa.left = staticI;
+        if (abs) pa.staticLeft = true;
+      }
       if (left !== undefined && right !== undefined && cont.autoMargins) setSide('right', right);
       if (top !== undefined) {
         pa.top = top;
@@ -3776,7 +3831,10 @@ class HtmlImporter {
       } else if (bottom !== undefined) {
         pa.bottom = bottom;
         if (pct.bottom !== undefined) pa.pctBottom = pct.bottom;
-      } else pa.top = 0;
+      } else {
+        pa.top = 0;
+        if (abs) pa.staticTop = true;
+      }
       if (pct.height !== undefined) pa.pctHeight = pct.height;
       if (pa.left !== undefined) cont.left = a.left + pa.left + (pa.pctLeft ?? 0) * a.width;
       if (pa.right !== undefined) cont.right = a.right + pa.right + (pa.pctRight ?? 0) * a.width;
@@ -4739,6 +4797,10 @@ class HtmlImporter {
     // 言語の変わる要素・略語: 言語 (Lang。ISO 32000-1 §14.9.2)・展開 (E。§14.9.5) は構造の節に書くので、Span を作る
     if (el.hasAttribute('lang') || el.hasAttribute('xml:lang')) return 'Span';
     if (name === 'abbr' && el.getAttribute('title')) return 'Span';
+    // 絶対配置・固定配置の要素 (行内の span など): 中身をまとめる Span を作る。箱は後で描くが、構造の木では、書いた所 (目印。
+    // flowPositioned の structMark) に置き、親の字の間に入れる (読む順は文書の順。ISO 32000-1 §14.8.2.3)。構造を作らないと、
+    // 中身の字が親のじかの字になり、描いた順 (親の字の後ろ) に並ぶ
+    if (/^(?:absolute|fixed)$/.test(this.cs(el)('position'))) return 'Span';
     return undefined;
   }
 
@@ -4757,7 +4819,7 @@ class HtmlImporter {
    * ならう: thead の中か、行のセルがみな見出しなら列、そうでなければ行
    */
   private cellAttrs(x: Element, role: string, n: Omit<StructNode, 'kids' | 'parent'>) {
-    const cs = Math.min(MAX_COL_SPAN, parseInt(x.getAttribute('colspan') ?? '1', 10));
+    const cs = capSpan(parseInt(x.getAttribute('colspan') ?? '1', 10));
     const rs = parseInt(x.getAttribute('rowspan') ?? '1', 10);
     const tr = x.parentNode as Element | null;
     if (cs > 1) n.colSpan = cs;
@@ -5646,10 +5708,22 @@ class HtmlImporter {
     }
   }
 
-  /** ownFloats で読み、残った float を中身の並びの後に足す */
+  /** ownFloats で読み、残った float を中身の並びの、書いた所の目印を含む子の後に置く (placeAtAnchors) */
   private ownFloatsIn(e: Element, base: Element, inPlace: boolean, read: () => Array<LBlockLevel | LInlineLevel>): Array<LBlockLevel | LInlineLevel> {
     const { v, floats } = this.ownFloats(e, base, inPlace, read);
-    return floats.length ? [...v, ...floats] : v;
+    return floats.length ? placeAtAnchors(v, floats, (x) => x, (f) => f) : v;
+  }
+
+  /**
+   * 行内の要素の中の float fv を、行内の要素を出た所に置くよう溜め (pendingFloats)、書いた所 (行内の要素の中身の並び items) に、
+   * 中身の無い目印 (LInline.floatAnchor) を置く。組版は、目印を含む行を組むときに float を置く (CSS 2.1 §9.5.1 の規則 6・8)。
+   * 目印は、行内の要素の中のブロックで並びを分けても (splitAtBlocks。CSS 2.1 §9.2.1.1)、書いた所の側の匿名のブロックに残る
+   */
+  private pendFloat(fv: LFloat, items: FlowItem[]) {
+    const key = ++this.floatAnchorSeq;
+    fv.inlineAnchor = key;
+    items.push({ v: { type: 'inline', children: [], floatAnchor: key } as LInline, block: false });
+    this.pendingFloats.push(fv);
   }
 
   private flowChildren(el: Element, inline = false, part?: Node[]): Array<LBlockLevel | LInlineLevel> {
@@ -5728,6 +5802,8 @@ class HtmlImporter {
     let listStarted = false;
     for (let i = 0; i < kids.length; i++) {
       const n = kids[i];
+      // この子の並びの始まり (行内の子の中の float を、書いた所の目印を含む子の後に置くときに、ここから探す)
+      const at0 = items.length;
       if (flexBox && (n.nodeType !== 3 || i === 0 || kids[i - 1].nodeType !== 3) && !(inlineFlex && isTextNode(n) && i > 0 && isTextNode(kids[i - 1]))) marks.push({ at: items.length, order: n.nodeType === 1 ? orderOf(n as Element) : 0 });
       if (n.nodeType === 3 || n.nodeType === 4) {
         if (blockify) {
@@ -5876,7 +5952,12 @@ class HtmlImporter {
         // (と中の float) を中身にした、行の中の分けられない箱にする。罫線・内側の余白・背景・余白は箱に付け、中身の行内の箱からは外す (flexItemInline と同じ)
         if (inlineFlex && (split.some((x) => x.block) || itemFloats.length)) {
           const kids = this.asBlockContent(
-            [...split.map((x) => (x.block ? x.v : stripInlineFrame(x.v as LInlineLevel))), ...itemFloats],
+            placeAtAnchors(
+              split.map((x) => (x.block ? x.v : stripInlineFrame(x.v as LInlineLevel))),
+              itemFloats,
+              (x) => x,
+              (f) => f,
+            ),
             e,
           );
           const box = this.boxStyle(e);
@@ -5893,8 +5974,12 @@ class HtmlImporter {
       }
       if (!inline) for (const m of this.pendingMarkers.splice(0)) items.push({ v: m, block: false });
       // 行内の子の中の float は、行内でない要素の中身の並びか、1 つのブロックの中身にする要素 (floatHome) の直下の並びに置く (ownFloats)
-      if (!inline || el === this.floatHome) for (const f of this.pendingFloats.splice(0)) items.push({ v: f, block: false });
-      this.flushPendingAbs(el, inline, items);
+      // 中のブロックで分けた並びでは、書いた所の目印のある匿名のブロックの側 (CSS 2.1 §9.2.1.1・§9.5.1 の規則 6)
+      if ((!inline || el === this.floatHome) && this.pendingFloats.length) {
+        const mine = placeAtAnchors(items.slice(at0), this.pendingFloats.splice(0), (x) => (x.block ? undefined : (x.v as LInlineLevel)), (f): FlowItem => ({ v: f, block: false }));
+        items.splice(at0, items.length - at0, ...mine);
+      }
+      this.flushPendingAbs(el, inline, items, at0);
     }
     if (flexBox) marks.push({ at: items.length, order: orderOf(el, '::after') });
     this.lastPseudoText['::after'] = '';
@@ -5985,17 +6070,22 @@ class HtmlImporter {
    * 行内の要素の中で見つけた絶対配置の箱 (pendingAbs) を、el の中身の並びに置く。行内の要素の中 (inline) では置かない。
    * 行内の箱を基準にする箱は、基準の要素の外に出てから置く (el が基準の要素か、その中なら、まだ置かない)
    */
-  private flushPendingAbs(el: Element, inline: boolean, items: FlowItem[]) {
+  private flushPendingAbs(el: Element, inline: boolean, items: FlowItem[], from = items.length) {
     if (inline || !this.pendingAbs.length) return;
     const keep: LBlockContainer[] = [];
+    const out: LBlockContainer[] = [];
     for (const a of this.pendingAbs) {
       const cbEl = this.inlineCbEl.get(a);
       let inside = false;
       for (let p: Element | null = el; cbEl && p; p = p.parentElement) if (p === cbEl) inside = true;
       if (inside) keep.push(a);
-      else items.push({ v: a, block: false });
+      else out.push(a);
     }
     this.pendingAbs = keep;
+    if (!out.length) return;
+    // 見つけた所に目印のある箱は、目印を含む子の後 (中のブロックで分けた並びでは、見つけた所の側の匿名のブロック) に置く
+    const mine = placeAtAnchors(items.slice(from), out, (x) => (x.block ? undefined : (x.v as LInlineLevel)), (a): FlowItem => ({ v: a, block: false }));
+    items.splice(from, items.length - from, ...mine);
   }
 
   /** マーカー (string-set・running) を置く: インラインの中なら段落の外へ出す (pendingMarkers)、ブロックの中ならその場所に */
@@ -6098,8 +6188,9 @@ class HtmlImporter {
   /** 要素が、入れ子の深さの上限 (MAX_TREE_DEPTH。html 要素を 1 と数える) の段にあるか (それより深い要素は、読み込みの前に平らにしてある) */
   private atDepthLimit(e: Element): boolean {
     let depth = 1;
-    for (let p = e.parentElement; p && depth < MAX_TREE_DEPTH; p = p.parentElement) depth++;
-    return depth >= MAX_TREE_DEPTH;
+    const max = nestLimit(MAX_TREE_DEPTH);
+    for (let p = e.parentElement; p && depth < max; p = p.parentElement) depth++;
+    return depth >= max;
   }
   /** 流れの中のブロックの、ページの名前の使用値 (page が auto なら親の値。CSS Page 3 §8.1) */
   private pageUsed = new WeakMap<Element, string>();
@@ -6335,9 +6426,9 @@ class HtmlImporter {
     }
     // 行内の要素の中の float (CSS 2.1 §9.5: float は行内の要素の中にも置け、その行の箱を基準に左右へ寄せる) は、行内の節の子に
     // 入れると組版が読まずに捨てるので、行内の要素を出た所 (包むブロックの中身の並び) に出す (pendingFloats。マーカーと同じ)。
-    // 組版は、段落の並びの中の float を、その段落の頭の高さに置く (layoutChildren の placeFloat)。行内の要素の直下に書いたときと同じ
+    // 書いた所には目印を置き (pendFloat)、組版は、目印のある行に float を置く (CSS 2.1 §9.5.1 の規則 6・8。layoutChildren の runFloats)。
     // 1 つのブロックの中身にする要素 (floatHome) の直下の float は、その場に置く (ownFloats)
-    if (inline && parent !== this.floatHome) this.pendingFloats.push(fv);
+    if (inline && parent !== this.floatHome) this.pendFloat(fv, items);
     else items.push({ v: fv, block: false });
     return true;
   }
@@ -6359,7 +6450,7 @@ class HtmlImporter {
         f.margin = { ...(typeof f.margin === 'object' ? f.margin : {}), [right ? 'right' : 'left']: off };
         // 行内の要素の中では、行内の要素を出た所に置く (flowFloat と同じ。行内の節の子に入れると、組版が読まずに捨てる)
         if (inline && parent !== this.floatHome) {
-          this.pendingFloats.push(f);
+          this.pendFloat(f, items);
           return true;
         }
         // 上下の位置は、同じ行の高さ (static position): 回り込みを、いまの行の並び (直前のブロックの後) の先頭に入れる
@@ -6372,9 +6463,24 @@ class HtmlImporter {
     if (pos !== 'absolute' && pos !== 'fixed') return false;
     const cont = this.positioned(e, styleParent);
     if (pos === 'fixed') this.fixed.push(cont);
-    // 行内の要素の中の箱・行内の箱を基準にする箱は、行内の要素 (基準の要素) を出た所の行の並びに置く (行内の節の中には置けない)
-    else if (inline || this.inlineCbEl.has(cont)) this.pendingAbs.push(cont);
-    else items.push({ v: cont, block: false });
+    // 行内の要素の中の箱・行内の箱を基準にする箱は、行内の要素 (基準の要素) を出た所の行の並びに置く (行内の節の中には置けない)。
+    // ページを基準にする箱で、位置が static position の向きのあるもの (pageArea.staticTop・staticLeft) は、見つけた所 (行内の要素の中身の並び)
+    // に目印 (LInline.staticAnchor。負の番号) を置く。組版は、目印のある行の、目印の位置を static position にする (CSS 2.1 §10.3.7・§10.6.4)
+    else if (inline || this.inlineCbEl.has(cont)) {
+      // タグ付き PDF: 目印に箱の要素の構造の節を付け、構造の木で、その節を目印の所 (書いた所) に置く。static position の目印の無い箱にも、
+      // 構造の順のためだけの目印 (structMark) を置く (幅 0 で、改行の機会も行の高さも変えない。inlineFlatten.ts の目印の箱)
+      if (inline && !this.inlineCbEl.has(cont) && (cont.pageArea?.staticTop || cont.pageArea?.staticLeft)) {
+        const key = -++this.floatAnchorSeq;
+        cont.inlineAnchor = key;
+        items.push({ v: this.tagNode({ type: 'inline', children: [], staticAnchor: key } as LInline, e), block: false });
+      } else if (inline && this.sb) items.push({ v: this.tagNode({ type: 'inline', children: [], structMark: true } as LInline, e), block: false });
+      this.pendingAbs.push(cont);
+    } else {
+      // 字のある親 (段落など。行の中身がある) の、じかの子の箱: 書いた所に、構造の順のためだけの目印を置く (上と同じ。字の無い親の子の
+      // ブロックの箱 (見出しなど) は、行を作らないよう置かない。構造の木では、兄弟のブロックの間の、中身を描いた所に並ぶ)
+      if (this.sb && Array.from(parent.childNodes ?? []).some((k) => k.nodeType === 3 && (k.textContent ?? '').trim())) items.push({ v: this.tagNode({ type: 'inline', children: [], structMark: true } as LInline, e), block: false });
+      items.push({ v: cont, block: false });
+    }
     return true;
   }
 
@@ -8153,7 +8259,7 @@ class HtmlImporter {
           // position: relative のセルのずらし (CSS 2.1 §9.4.3): 表を組んだ後のセルの箱を動かす (行の高さ・ほかのセルは変えない)
           const tdRel = this.relativeOffsetOf(td);
           if (tdRel) cell.relativeOffset = tdRel;
-          const cs = Math.min(MAX_COL_SPAN, parseInt(td.getAttribute('colspan') ?? '1', 10));
+          const cs = capSpan(parseInt(td.getAttribute('colspan') ?? '1', 10));
           let rs = Math.min(MAX_ROW_SPAN, parseInt(td.getAttribute('rowspan') ?? '1', 10));
           // rowspan="0" は、行のまとまり (thead・tbody・tfoot。表の直下の tr の並びは、その並び) の残りの行すべて
           // (HTML §4.9.11 の rowspan・§4.9.12.1 の「cell grows downward」。前は 1 行として扱っていた)
@@ -8273,17 +8379,17 @@ class HtmlImporter {
         // 列グループの子は、列だけ (ほかの子は display: none と同じ。§17.2.1)
         else if (d === 'table-column-group' || ch.localName === 'colgroup') walk(ch, body, Array.from(ch.children).filter((k) => this.display(k) === 'table-column' || k.localName === 'col'));
         else if (d === 'table-column' || ch.localName === 'col') {
-          const span = Math.min(MAX_COL_SPAN, parseInt(ch.getAttribute('span') ?? '1', 10) || 1);
+          const span = capSpan(parseInt(ch.getAttribute('span') ?? '1', 10) || 1);
           // 幅の % (自前のカスケードは % のまま返す) は、比例の列幅にする (表の幅を % の比で分ける)
           const cw = this.cs(ch)('width');
           const w: LTableColumn['width'] | undefined =
             this.src.isAuto?.(ch, 'width') !== false ? undefined : /%$/.test(cw.trim()) ? (`${parseFloat(cw)}*` as const) : cssLen(cw);
-          const room = MAX_TABLE_COLUMNS - columns.length;
+          const room = limits().tableColumns - columns.length;
           if (span > room && !columnsCapped) {
             columnsCapped = true;
             this.report.diagnostics = [
               ...(this.report.diagnostics ?? []),
-              diag('limit/table-columns', msg(`表の列 (col・colgroup の span の合計) が多すぎるので、${MAX_TABLE_COLUMNS} 列までにします`, `the table has too many columns (the sum of col and colgroup spans); using the first ${MAX_TABLE_COLUMNS}`), { limit: MAX_TABLE_COLUMNS }, elementSource(ch, this.opts.sourceName)),
+              diag('limit/table-columns', msg(`表の列 (col・colgroup の span の合計) が多すぎるので、${limits().tableColumns} 列までにします`, `the table has too many columns (the sum of col and colgroup spans); using the first ${limits().tableColumns}`), { limit: limits().tableColumns }, elementSource(ch, this.opts.sourceName)),
             ];
           }
           for (let k = 0; k < Math.min(span, room); k++) columns.push({ type: 'table-column', ...(w ? { width: w } : {}) });

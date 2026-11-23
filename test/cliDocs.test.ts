@@ -142,9 +142,40 @@ describe('コマンドの説明書 (docs/cli.md・docs/en/cli.md)', () => {
       expect([...parsed].filter((o) => !rowsJa.has(o)), '使い方 (日本語) のオプションの行に無いオプション').toEqual([]);
       expect([...parsed].filter((o) => !rowsEn.has(o)), '使い方 (英語) のオプションの行に無いオプション').toEqual([]);
     });
+    it('値をとるオプションは、どれも空の値 (\'\') を黙って受けない (値の誤りにする)', () => {
+      // 値をとるかは、parseArgs(['in.html', o, '']) の '' が入力に入るかで見分ける (入力に入れば、値をとらないオプション)。
+      // 空の値を受けるオプションを足すときは、ここに理由を付けて除く
+      const allowEmpty = new Set<string>();
+      const taking: string[] = [];
+      const silent: string[] = [];
+      for (const o of parsed) {
+        if (['--help', '-h', '--version', '-v', '--list-limits'].includes(o)) continue;
+        let err: unknown;
+        let inputs: string[] = [];
+        try {
+          inputs = parseArgs(['in.html', o, '']).inputs;
+        } catch (e) {
+          err = e;
+        }
+        if (!err && inputs.includes('')) continue;
+        taking.push(o);
+        if (!err && !allowEmpty.has(o)) silent.push(o);
+      }
+      expect(taking.length).toBeGreaterThan(30);
+      for (const o of ['--font-dir', '--base', '--plugin', '--limit', '--max-pages', '--css']) expect(taking).toContain(o);
+      expect(silent, '空の値を受けるオプション').toEqual([]);
+    });
   });
 
   for (const [file, lang] of [['docs/cli.md', '日本語'], ['docs/en/cli.md', '英語']] as const) {
+    it(`${lang}の説明書の終了の状態に、--watch でもプラグインを読めなければ終了コード 1 で終わることを書く`, () => {
+      // コマンドは、--watch でもプラグインを読めなければ見張らずに 1 で終わる (test/cli.test.ts で確かめる)。説明書の「--watch のときは
+      // 終了コードは変わらない」と食い違わないように、断りを書く
+      const text = fs.readFileSync(path.join(root, file), 'utf8');
+      const exit = text.slice(text.search(/^## (終了の状態|Exit status)$/m));
+      const watch = exit.split(/\r?\n/).find((l) => l.startsWith('With `--watch`') || l.startsWith('`--watch` のときは')) ?? '';
+      expect(watch, file).toMatch(/`--plugin`[^。.]*(終了コード 1|exit code is 1)/);
+    });
     it(`${lang}の説明書の表に、使い方のオプションがすべてある`, () => {
       const documented = documentedOptions(file);
       const missing = [...ja].filter((o) => !documented.has(o));

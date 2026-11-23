@@ -2,10 +2,11 @@
  * canvasRenderer — SheetArea を Canvas 2D に描画する。
  * ctx を scale(px/pt) して pt 単位のまま描くため、レイアウトと画素の対応が崩れない。
  */
+import { limits } from './limits';
 import type { FontManager } from './fontManager';
 import { uprightPositions } from './areaResources';
 import { toCss } from './color';
-import { FAKE_BOLD, ITALIC_SLANT, paintPlaceholder, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
+import { FAKE_BOLD, ITALIC_SLANT, paintPlaceholder, paintSheet, pdfPlaceholderDiagnostic, type Line, type Matrix, type Painter, type PathSeg } from './paint';
 import type { AssetStore, ImageAsset } from './assets';
 import { readGradientSvg, type GradientPaint } from './cssGradient';
 import { colorFontOf } from './colorGlyph';
@@ -20,6 +21,7 @@ import { fromBase64 } from './base64';
 import { resolveRef } from './resources';
 import { decodeBmp, decodeGif, encodePngStored } from './pixels';
 import { decodeWebp } from './webp';
+import { rejoin, thisCall } from './callContext';
 
 export interface CanvasRenderOptions {
   /** 1pt あたりの CSS px (既定 1.3333 = 96dpi) */
@@ -93,7 +95,7 @@ const SVG_RASTER_FALLBACK_PER_DOC = 2;
 const svgDocIds = new WeakMap<SvgDoc, number>();
 let svgDocNext = 0;
 /** SVG の画像を画素にするときの画素の数の上限 (大きく置いた画像は、解像度を下げて描く) */
-const SVG_RASTER_MAX_PIXELS = 16_000_000;
+export const SVG_RASTER_MAX_PIXELS = 16_000_000;
 /**
  * 覚えておく、画素にした SVG の画素の数の合計の上限。RGBA 8 ビットで 128MB (1 画素 4 バイト × 3,200 万)。1 枚の上限 (SVG_RASTER_MAX_PIXELS) の
  * 2 枚分: いちばん大きく置いた画像を覚えたまま、もう 1 つの画像も覚えられる (A4 のページ全体の SVG を 300dpi 相当 (約 870 万画素) で描いても、3 枚は持てる)
@@ -107,7 +109,7 @@ const SVG_RASTER_CACHE_PIXELS = 32_000_000;
  * 1 回の描画 (renderSheetToCanvas) の手間の合計は、この 4 倍まで。超えた後の画像と、見積もりを外れて 1 つの上限の 2 倍を超えた画像は、
  * 仮の枠で描いて警告に出す
  */
-const SVG_RASTER_BUDGET = 8_000_000_000;
+export const SVG_RASTER_BUDGET = 8_000_000_000;
 
 /** 図形 doc を key (画素の大きさ・置き方) で画素にしたもの (覚えていなければ undefined)。見つけたら、最近に使ったものにする */
 function rasterOf(doc: SvgDoc, key: string): SvgRaster | undefined {
@@ -290,7 +292,7 @@ function pixelsOfElement(el: CanvasImageSource, maxPixels?: number): Pixels | un
     const k = Math.sqrt(maxPixels / (w * h));
     w = Math.max(1, Math.floor(w * k));
     h = Math.max(1, Math.floor(h * k));
-  } else if (w * h > SVG_RASTER_MAX_PIXELS) return undefined;
+  } else if (w * h > limits().canvasSvgPixels) return undefined;
   const c = scratchCanvas(w, h);
   const ctx = c?.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D | null | undefined;
   if (!ctx) return undefined;
@@ -324,7 +326,7 @@ export async function prepareSvgImagesForCanvas(assets: AssetStore, fonts: FontM
     if (a.mime !== 'image/svg+xml' || !a.bytes || a.element || a.drawable === false) continue;
     const text = new TextDecoder().decode(a.bytes);
     // @ の無い SVG は、大文字・小文字を区別しない探し方で読み通さない (base64 の中身に @ は無い)
-    if (text.includes('@') && /@font-face/i.test(text)) await registerSvgFonts(fonts, text);
+    if (text.includes('@') && /@font-face/i.test(text)) rejoin(thisCall(), await registerSvgFonts(fonts, text));
     if (typeof createImageBitmap === 'undefined' || (store && store.pixels >= SVG_IMAGE_PREPARE_TOTAL_PIXELS)) continue;
     // data: の URL の初めだけを探し、中身 (base64) は、頭だけを見る (読める画像の中身を、全部は読み通さない)
     const re = /data:image\/(png|jpe?g);base64,/gi;
@@ -375,7 +377,7 @@ export async function prepareSvgImagesForCanvas(assets: AssetStore, fonts: FontM
           ? { resizeWidth, resizeHeight: Math.max(1, Math.ceil((srcH * resizeWidth) / srcW)), resizeQuality: 'high' }
           : undefined;
         const blob = new Blob([bytes as BlobPart], { type: kind === 'png' ? 'image/png' : 'image/jpeg' });
-        const bmp = await (resize ? createImageBitmap(blob, resize) : createImageBitmap(blob));
+        const bmp = rejoin(thisCall(), await (resize ? createImageBitmap(blob, resize) : createImageBitmap(blob)));
         px = pixelsOfElement(bmp, SVG_IMAGE_PREPARE_MAX_PIXELS);
         bmp.close();
       } catch {
@@ -489,7 +491,8 @@ class CanvasPainter implements Painter {
   /** この描画で、SVG の画像を画素にするのに使った手間 (svgBudget の 4 倍まで) */
   private svgWork = 0;
   /** SVG の画像 1 つを画素にする手間の上限 (CanvasRenderOptions.svgRasterBudget) */
-  svgBudget = SVG_RASTER_BUDGET;
+  // 既定は、呼び出しの上限 (limits.canvasSvgWork。既定 SVG_RASTER_BUDGET)
+  svgBudget = limits().canvasSvgWork;
   constructor(
     private ctx: CanvasRenderingContext2D,
     private fonts: FontManager,
@@ -582,6 +585,11 @@ class CanvasPainter implements Painter {
   }
   drawImage(a: ImageArea, x: number, y: number) {
     const asset = this.assets?.get(a.src);
+    // PDF の画像は、PDF の出力だけが描く (design/pdf-as-image.md の 3 節)。画面は仮の枠
+    if (asset?.pdfSource) {
+      this.warn?.(pdfPlaceholderDiagnostic(a.src, 'screen'));
+      return paintPlaceholder(a, x, y, this);
+    }
     const el = asset?.element;
     if (!el) {
       const g = asset && gradientOf(asset);
@@ -632,8 +640,9 @@ class CanvasPainter implements Painter {
     let w = Math.ceil(a.width * Math.hypot(t.a, t.b) - 0.01);
     let h = Math.ceil(a.height * Math.hypot(t.c, t.d) - 0.01);
     if (w < 1 || h < 1) return;
-    if (w * h > SVG_RASTER_MAX_PIXELS) {
-      const k = Math.sqrt(SVG_RASTER_MAX_PIXELS / (w * h));
+    const maxPx = limits().canvasSvgPixels;
+    if (w * h > maxPx) {
+      const k = Math.sqrt(maxPx / (w * h));
       w = Math.max(1, Math.floor(w * k));
       h = Math.max(1, Math.floor(h * k));
     }

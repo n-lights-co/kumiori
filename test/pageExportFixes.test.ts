@@ -5,6 +5,7 @@
  *  - PNG の画素化で、入れ子の不透明度のグループの板が同時に持つ画素の数に上限があり、超えるものは板を作る前に止める
  */
 import { beforeAll, describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PNG } from 'pngjs';
@@ -58,10 +59,10 @@ describe('PNG の画素化の、描く範囲の外の線', () => {
     const lines = Array.from({ length: 200 }, (_, i) => `<line x1="0" y1="${-200 - i}" x2="400" y2="${-200 - i}" stroke="#000" stroke-width="2" stroke-dasharray="0.01"/>`).join('');
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100">${lines}<rect width="40" height="40" fill="#ff0000"/></svg>`;
     const r = await typeset('<style>@page { size: 300pt 75pt; margin: 0 } body { margin: 0 } img { display: block }</style><img src="o.svg" style="width: 400px; height: 100px">', { kind: 'html', loadFont, files: [{ name: 'o.svg', data: svg }] });
-    const t = performance.now();
+    const t = cpuClock();
     const out = decode(await r.renderPageToPng(0, { dpi: 96 }));
     // 前は、200 本の輪郭 (1 本 8 万のかけら) を作って 5 秒ほどかかっていた (CHANGELOG の数)
-    expect(performance.now() - t).toBeLessThan(3000);
+    expect(cpuClock() - t).toBeLessThan(scaled(3000));
     expect(px(out, 20, 20)).toSatisfy((c: number[]) => near(c, [255, 0, 0]));
   });
 });
@@ -252,21 +253,22 @@ describe('書体の SVG の表の字 (Node。DOMParser が無い)', () => {
 });
 
 describe('PNG の画素化の板の上限', () => {
-  it('入れ子の不透明度のグループ (60 段) は、上限を超える所から板を作らずに描き、警告を出す (板を確保する前に止める)', async () => {
+  it('入れ子の不透明度のグループ (60 段。段ごとにページ全体の背景) は、上限を超える所から板を作らずに描き、警告を出す (板を確保する前に止める)', async () => {
     const depth = 60;
-    // 300 × 225pt を 288dpi で 1200 × 900 画素 (108 万画素)。上限は 1,600 万画素 (下駄) なので、ページ全体で数える板は 14 段ほどまで
+    // 300 × 225pt を 288dpi で 1200 × 900 画素 (108 万画素)。上限は 1,600 万画素 (下駄) なので、ページ全体に広がる板は 14 段ほどまで
     const html =
-      '<style>@page { size: 300pt 225pt; margin: 0 } body { margin: 0 } div { opacity: 0.99 } .red { background: #ff0000; width: 20pt; height: 20pt; margin: 0; opacity: 1 }</style>' +
+      '<style>@page { size: 300pt 225pt; margin: 0 } body { margin: 0 } div { opacity: 0.99; background: #ffffff; height: 225pt } .red { background: #ff0000; width: 20pt; height: 20pt; margin: 0; opacity: 1 }</style>' +
       '<div>'.repeat(depth) +
       '<p class="red"></p>' +
       '</div>'.repeat(depth);
     const r = await typeset(html, { kind: 'html', loadFont });
-    // 赤の箱 (80 × 80 画素) の大きさの板 (1 画素 4 つの数) を作った数を数える
+    // ページの大きさの板 (1 画素 4 つの数) を作った数を数える
+    const page = 1200 * 900 * 4;
     const Orig = globalThis.Float32Array;
     let layers = 0;
     globalThis.Float32Array = new Proxy(Orig, {
       construct(t, args) {
-        if (typeof args[0] === 'number' && args[0] >= 80 * 80 * 4 && args[0] <= 90 * 90 * 4) layers++;
+        if (typeof args[0] === 'number' && args[0] >= page * 0.9 && args[0] <= page * 1.1) layers++;
         return Reflect.construct(t, args);
       },
     });
@@ -276,13 +278,29 @@ describe('PNG の画素化の板の上限', () => {
     } finally {
       globalThis.Float32Array = Orig;
     }
-    // 直す前は 60 段の全部の板を同時に持った (この大きさのページでは、150dpi の A4 で 2GB ほどになる入れ子)
+    // 直す前は 60 段の全部の板を同時に持った (この大きさのページでは、150dpi の A4 で 2GB ほどになる入れ子)。ページそのものと、上限までの 14 段ほど
     expect(layers).toBeGreaterThan(5);
-    expect(layers).toBeLessThanOrEqual(20);
+    expect(layers).toBeLessThanOrEqual(1 + 16);
     expect(r.diagnostics.filter((d) => d.code === 'png/layer-limit')).toHaveLength(1);
-    // 中の図形は 1 つなので、板を作らずに不透明度を掛けても同じ色 (0.99 の 60 乗 ≒ 0.547 の赤)
+    // 赤の箱は最後に描くので、板を作らずに不透明度を掛けても同じ色 (白の上の、0.99 の 60 乗 ≒ 0.547 の赤)
     const a = 0.99 ** depth;
     const w = Math.round(255 * (1 - a));
+    expect(px(out, 40, 40)).toSatisfy((c: number[]) => near(c, [255, w, w], 3));
+    expect(px(out, 600, 600)).toSatisfy((c: number[]) => near(c, [255, 255, 255], 2));
+  });
+
+  it('入れ子の不透明度のグループ (60 段) の中の小さな箱は、実際に広げた板の大きさで数えるので、上限に当たらない', async () => {
+    const depth = 60;
+    const html =
+      '<style>@page { size: 300pt 225pt; margin: 0 } body { margin: 0 } div { opacity: 0.99 } .red { background: #ff0000; width: 20pt; height: 20pt; margin: 0; opacity: 1 }</style>' +
+      '<div>'.repeat(depth) +
+      '<p class="red"></p>' +
+      '</div>'.repeat(depth);
+    const r = await typeset(html, { kind: 'html', loadFont });
+    const out = decode(await r.renderPageToPng(0, { dpi: 288 }));
+    // 前は、板を作るときの描ける範囲 (ページ全体) で数え、14 段ほどで上限に当たって警告を出していた
+    expect(r.diagnostics.filter((d) => d.code === 'png/layer-limit')).toEqual([]);
+    const w = Math.round(255 * (1 - 0.99 ** depth));
     expect(px(out, 40, 40)).toSatisfy((c: number[]) => near(c, [255, w, w], 3));
   });
 

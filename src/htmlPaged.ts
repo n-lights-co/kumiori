@@ -7,6 +7,7 @@
  *  - content の値の字句解析
  */
 
+import { cssNestLimit, limits, noteLimitReached } from './limits';
 import { MAX_BACKTRACK_COMPOUNDS, parseSelectorList } from './cssSelector';
 import { spotColor } from './color';
 import { hex2, parseColor as parseCssColor, rgbHex, skipString, splitTop, splitWords, stripImportant, UNIT_PX, urlsIn } from './cssText';
@@ -309,7 +310,7 @@ export function matchSupports(cond: string, ah?: AhFlags): boolean {
 function supportsCondition(cond: string, ah: AhFlags | undefined, depth: number, state: { tooDeep: boolean }): boolean {
   // 括弧・not・and・or の入れ子ごとに再帰し、段ごとに条件の全体を見るので、(not (not (… を 3 万段に重ねた条件 (180KB) で、
   // 呼び出しの段を使い切った (その前に、段の数 × 長さの時間もかかる)。実在の条件の入れ子は数段なので、MAX_CSS_NESTING で止める
-  if (depth > MAX_CSS_NESTING) {
+  if (depth > cssNestLimit(MAX_CSS_NESTING)) {
     state.tooDeep = true;
     return false;
   }
@@ -370,7 +371,7 @@ function splitTopWord(s: string, word: string): string[] {
  * CSS の仕様に入れ子の深さの上限は無い (CSS Nesting 1・Conditional 3)。実在のスタイルシートの入れ子は数段 (手で書く入れ子で 5〜6 段、
  * @layer・@media・@supports を重ねても 10 段ほど) なので、64 段あれば届かない
  */
-const MAX_CSS_NESTING = 64;
+export const MAX_CSS_NESTING = 64;
 /** 深すぎる入れ子の規則を捨てたことの知らせ (未対応の CSS の通知に入る。言語は読むときのもの) */
 const tooDeep = () => msg('深すぎる入れ子の規則 (rules nested too deeply)', 'rules nested too deeply');
 /**
@@ -393,7 +394,7 @@ export const tooComplexTotal = () =>
 /** @layer の名前の、点で区切った段の数の上限 (layerRanks) */
 const MAX_LAYER_DEPTH = 32;
 /** 入れ子の規則を展開したセレクタの数の上限 (styleRule) */
-const MAX_NESTED_SELECTORS = 10_000;
+export const MAX_NESTED_SELECTORS = 10_000;
 
 /**
  * カスケードの層の順位 (Cascade 5 §6.4)。名前 (入れ子は a.b) の集まり (初めて現れた順) → 0 からの順位 (大きいほど強い)。
@@ -410,7 +411,8 @@ export function layerRanks(names: Iterable<string>): Map<string, number> {
   const deep = new Map<string, string>();
   for (const full of names) {
     const fullParts = full.split('.');
-    const parts = fullParts.length > MAX_LAYER_DEPTH ? fullParts.slice(0, MAX_LAYER_DEPTH) : fullParts;
+    const layerDepth = cssNestLimit(MAX_LAYER_DEPTH);
+    const parts = fullParts.length > layerDepth ? fullParts.slice(0, layerDepth) : fullParts;
     if (parts !== fullParts) deep.set(full, parts.join('.'));
     for (let i = 1; i <= parts.length; i++) {
       const parent = parts.slice(0, i - 1).join('.');
@@ -462,7 +464,7 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
   // 規則の入れ子の深さ (walk と styleRule で共通に数える)
   let nesting = 0;
   const walk = (text: string) => {
-    if (nesting >= MAX_CSS_NESTING) {
+    if (nesting >= cssNestLimit(MAX_CSS_NESTING)) {
       if (/\S/.test(text)) ignored.push(tooDeep());
       return;
     }
@@ -601,7 +603,7 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
    * 中の規則を除いた宣言が、この規則の宣言
    */
   function styleRule(selectors: string[], body: string) {
-    if (nesting >= MAX_CSS_NESTING) {
+    if (nesting >= cssNestLimit(MAX_CSS_NESTING)) {
       ignored.push(tooDeep());
       return;
     }
@@ -648,7 +650,10 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
       const nested = splitTop(head, ',');
       // 入れ子の規則のセレクタは、親の並び × 子の並びに展開する (CSS Nesting 1 §3.1) ので、並びを入れ子にすると掛け算で増える
       // (4 つの並びを 5 段で 4^5 × … 。316 バイトの CSS でヒープを使い切った)。展開した数が上限を超える規則は読まない
-      if (selectors.length * nested.length > MAX_NESTED_SELECTORS) continue;
+      if (selectors.length * nested.length > limits().nestedSelectors) {
+        noteLimitReached('nestedSelectors');
+        continue;
+      }
       const full = selectors.flatMap((p) => nested.map((n) => (n.includes('&') ? n.replace(/&/g, p) : `${p} ${n}`)));
       later.push(() => styleRule(full, inner));
     }

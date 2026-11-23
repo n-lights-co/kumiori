@@ -7,6 +7,7 @@ import { MONO_GENERIC, SANS, SERIF } from './sampleData';
 import { normalizeFamily } from './fontLoader';
 import { parseCss, type ParsedCss } from './htmlPaged';
 import { diag } from './diagnostics';
+import { rejoin, thisCall } from './callContext';
 
 /**
  * 組版用フォント (和文): Google Fonts の gstatic (TTF) を ArrayBuffer として取得。ローカル /fonts を後備に。
@@ -114,6 +115,43 @@ export function missingGlyphChars(fonts: FontManager, doc: LDocument, min = 0): 
   const all = fonts.all();
   for (const ch of [...chars.keys()]) if (all.some((f) => fonts.hasGlyph(f, ch))) chars.delete(ch);
   return chars;
+}
+
+/**
+ * 字 (chars) が文書のどの種類の書体の指定の所に出るか (OS の書体の後備を探す種類。FontManager.systemKindFor)。
+ * 文書の木を、書体の指定 (fontFamily・fontWeight。子が書かなければ親のものを受け継ぐ) を持ち回ってたどる (missingGlyphChars と同じ所の字を見る)。
+ * 組む前に見るので、組版が選ぶ書体の見込み: 見込みが外れても、組版は字を持つほかの種類の OS の書体で補う (kindRank の順)
+ */
+export function missingCharKinds(fonts: FontManager, doc: LDocument, chars: readonly string[]): Map<string, Set<'serif' | 'sans'>> {
+  const TEXT = new Set(['children', 'text', 'baseText', 'rubyText', 'rubyTextUnder', 'label']);
+  const want = new Set(chars);
+  const out = new Map<string, Set<'serif' | 'sans'>>();
+  const kindMemo = new Map<string, 'serif' | 'sans'>();
+  const kindOf = (family: string | undefined, weight: number) => {
+    const key = `${family ?? ''}\u0000${weight}`;
+    let k = kindMemo.get(key);
+    if (!k) kindMemo.set(key, (k = fonts.systemKindFor(family, weight)));
+    return k;
+  };
+  const walk = (v: unknown, key: string, family: string | undefined, weight: number) => {
+    if (typeof v === 'string') {
+      if (!TEXT.has(key)) return;
+      for (const ch of v) {
+        if (!want.has(ch)) continue;
+        let set = out.get(ch);
+        if (!set) out.set(ch, (set = new Set()));
+        set.add(kindOf(family, weight));
+      }
+    } else if (Array.isArray(v)) for (const x of v) walk(x, key, family, weight);
+    else if (v && typeof v === 'object') {
+      const o = v as { fontFamily?: unknown; fontWeight?: unknown };
+      const f = typeof o.fontFamily === 'string' ? o.fontFamily : family;
+      const w = typeof o.fontWeight === 'number' ? o.fontWeight : weight;
+      for (const [k, x] of Object.entries(v)) walk(x, k, f, w);
+    }
+  };
+  walk(doc, '', undefined, 400);
+  return out;
 }
 
 /** 文書の文字に、読み込み済みのどの書体も持たない字 (記号など) があるか。あれば記号の書体 (SYMBOL_SPEC) を読み込む */
@@ -293,7 +331,7 @@ export async function faceFileWeights(css: string | ParsedCss, files: FontFile[]
     const file = ff.weightRange ? undefined : ff.srcs.map(fileOf).find(Boolean);
     if (file) {
       try {
-        const st = fontFileStyle(await file.arrayBuffer());
+        const st = fontFileStyle(rejoin(thisCall(), await file.arrayBuffer()));
         if (!st.variable && st.weight !== undefined) weight = st.weight;
       } catch {
         // 読めない書体は記述子の値のまま (loadFontFaces が警告に出す)
@@ -459,14 +497,14 @@ export function createFontMapping(
         let width = ff.widthRange ? Math.min(ff.widthRange[1], Math.max(ff.widthRange[0], 100)) : undefined;
         if (width === 100) width = undefined;
         if (opts.ahFaceWeight && (!ff.weightRange || ff.styleAuto)) {
-          const st = fontFileStyle(await file.arrayBuffer());
+          const st = fontFileStyle(rejoin(thisCall(), await file.arrayBuffer()));
           sfnt = st.sfnt;
           if (!ff.weightRange && !st.variable && st.weight !== undefined) weight = st.weight;
           // アンテナハウス互換: font-style の記述子の無い face は、書体のファイルの傾きで登録する
           if (ff.styleAuto && !st.variable && st.style) style = st.style;
         }
         // 可変フォントの幅は、軸と記述子の範囲で決まる (FontManager の instance)。静的な書体だけ、幅の違う書体として登録する
-        if (width !== undefined && (sfnt ? fontFileStyle(sfnt).variable : fontFileStyle(await file.arrayBuffer()).variable)) width = undefined;
+        if (width !== undefined && (sfnt ? fontFileStyle(sfnt).variable : fontFileStyle(rejoin(thisCall(), await file.arrayBuffer())).variable)) width = undefined;
         const shapeKey = `${style ? `/${style}` : ''}${width !== undefined ? `/w${width}` : ''}`;
         // 記述子の組 (太さ・範囲) が同じ face の 2 つ目からは、別の名前 (…~2・…~3) で登録し、先の定義の face に重ねる (§4.5・§5.2)。
         // 同じファイルの繰り返しは、足さない
@@ -484,13 +522,13 @@ export function createFontMapping(
         used.add(key);
         if (!had || had.file !== file || (fileId !== undefined && had.id !== fileId)) {
           // 可変フォントの記述子 (Fonts 4 §4.4: 記述子が無い (auto) ときは、選ぶときは normal、軸の値は制限しない)
-          const lf = await fonts.registerBuffer(family, weight, sfnt ?? (await file.arrayBuffer()), canvas, {
+          const lf = rejoin(thisCall(), await fonts.registerBuffer(family, weight, sfnt ?? rejoin(thisCall(), await file.arrayBuffer()), canvas, {
             weight: ff.weightRange ?? 'auto',
             width: ff.widthRange ?? 'auto',
             ...(ff.obliqueRange ? { oblique: ff.obliqueRange } : {}),
             ...(ff.variationSettings ? { settings: ff.variationSettings } : {}),
             ...(ff.namedInstance ? { namedInstance: ff.namedInstance } : {}),
-          }, style || width !== undefined ? { ...(style ? { style } : {}), ...(width !== undefined ? { width } : {}) } : undefined);
+          }, style || width !== undefined ? { ...(style ? { style } : {}), ...(width !== undefined ? { width } : {}) } : undefined));
           // line-height: normal の行の高さを、書体の値から決める書体 (htmlNormalLineHeight と同じ。代わりの書体として使われたときも)
           lf.metricsLineHeight = true;
           // 外すとき (fonts.remove) は、登録された名前 (傾き・幅を持つ書体は、印の付いた名前) で引く
@@ -503,7 +541,8 @@ export function createFontMapping(
       } catch (e) {
         // 読めない書体 (壊れた・細工した書体を含む) は、書体の組の知らせ (onNotice) に出す。API・コマンドでは、結果の警告 (warnings) に入る
         // (console.warn に出すだけだと、ライブラリの利用者には見えなかった)。画面では、これまでどおりコンソールに出る
-        fonts.onNotice(diag('font/file-unreadable', `@font-face ${ff.family}: ${e instanceof Error ? e.message : String(e)}`, { font: ff.family }));
+        // args は、ほかの所 (API の fonts の書体ファイル) と同じく、読めなかったファイルの名前 (file)。書体の名前の分かる @font-face では font も
+        fonts.onNotice(diag('font/file-unreadable', `@font-face ${ff.family}: ${e instanceof Error ? e.message : String(e)}`, { file: file.name, ...(ff.family ? { font: ff.family } : {}) }));
       }
     }
     // 前の文書だけにあった face を外す (画面は、書体の組と割り当てを 1 つだけ作って使い回す。前の文書の太字の face が、

@@ -17,7 +17,8 @@ import { compatLayoutOptions, htmlImportCompatOptions, compatPdfOptions, isAnten
 import { fetchReportedImages, mathOptionsFor } from './documentResources';
 import { importHtml, parsePageSize } from './htmlImport';
 import { droppedLinkWarning, summarizeDroppedLinks } from './linkPolicy';
-import { summarizeCounts, unsupportedCssReport } from './cssUnsupported';
+import { ALL_AH } from './cssCascade';
+import { invalidValueText, splitInvalidValueKey, summarizeCounts, unsupportedCssReport } from './cssUnsupported';
 import { msg } from './messages';
 import { countedDiagnostics, diag, type Diagnostic } from './diagnostics';
 import { walkAreas } from './areaTree';
@@ -456,7 +457,7 @@ function noteNotFetched(srcs: string[]) {
   for (const src of srcs) loadWarnings.push(entryOf(diag('resource/not-fetched', msg(`画像を取りません: ${src.slice(0, 200)}`, `image not fetched: ${src.slice(0, 200)}`), { url: src.slice(0, 200), kind: 'image' })));
 }
 /** 読み込みの報告のうち、黙って無視しないもの (未対応の指定・動作を書かなかったリンク) を、警告に足す (typeset の warnings と同じ文) */
-function noteReport(report: ImportReport, isFo: boolean, unknownCss?: Record<string, number>) {
+function noteReport(report: ImportReport, isFo: boolean, unknownCss?: Record<string, number>, invalidCss?: Record<string, number>) {
   const missText = (item: string) => msg(`${isFo ? '未対応の XSL-FO の要素・プロパティを' : '未対応の CSS を'}無視しました: ${item}`, `ignored unsupported ${isFo ? 'XSL-FO elements/properties' : 'CSS'}: ${item}`);
   const miss = summarizeCounts(report.unsupported);
   if (miss) loadWarnings.push({ text: missText(miss), diags: countedDiagnostics(report.unsupported, (item) => diag(isFo ? 'fo/unsupported' : 'css/unsupported', missText(item), { item }, report.unsupportedAt?.[item])) });
@@ -467,6 +468,8 @@ function noteReport(report: ImportReport, isFo: boolean, unknownCss?: Record<str
   const unknownText = (p: string) => msg(`知らない CSS のプロパティを無視しました (綴りの誤りか未対応): ${p}`, `ignored unknown CSS properties (misspelled or unsupported): ${p}`);
   const unknown = summarizeCounts(unknownCss);
   if (unknown) loadWarnings.push({ text: unknownText(unknown), diags: countedDiagnostics(unknownCss, (property) => diag('css/unknown-property', unknownText(property), { property })) });
+  const invalid = summarizeCounts(invalidCss);
+  if (invalid) loadWarnings.push({ text: invalidValueText(invalid), diags: countedDiagnostics(invalidCss, (item) => diag('css/invalid-value', invalidValueText(item), splitInvalidValueKey(item))) });
 }
 
 /**
@@ -634,11 +637,11 @@ async function loadHtmlBody(text: string, name: string, files: File[], warnings:
       noteNotFetched(notFetched);
       // 用意の途中の警告 (深すぎる入れ子・多すぎる @import) と、作成者スタイルシート・style 属性の、読まない宣言 (未対応・知らないプロパティ。API と同じ数え方)
       loadWarnings.push(...loaded.warnings.map(entryOf));
-      const cssRep = unsupportedCssReport(loaded.authorSheet, loaded.doc);
+      const cssRep = unsupportedCssReport(loaded.authorSheet, loaded.doc, v === 'ah' ? ALL_AH : undefined);
       const unsupported = { ...res.report.unsupported };
       for (const [k, n] of Object.entries(cssRep.unsupported)) unsupported[k] = (unsupported[k] ?? 0) + n;
       const report = { ...res.report, unsupported };
-      noteReport(report, false, cssRep.unknown);
+      noteReport(report, false, cssRep.unknown, cssRep.invalid);
       await ensureSymbolFont(res.document);
       current();
       showReport(name, report, 'html');

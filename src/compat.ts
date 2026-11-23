@@ -9,6 +9,8 @@ import type { HtmlImportOptions } from './htmlImport';
 import type { LayoutOptions } from './layoutEngine';
 import type { PdfRenderOptions } from './pdfRenderer';
 import { loadHyphenator } from './hyphenation';
+import { countryToRegion } from './languageTag';
+import { rejoin, thisCall } from './callContext';
 
 /** 文書の種類 (XSL-FO・HTML) */
 export type DocKind = 'fo' | 'html';
@@ -198,9 +200,13 @@ export async function loadFoHyphenators(text: string): Promise<void> {
   const langs = ['en', ...foLanguages(text)];
   // country (XSL 1.1 §7.10.1) を足した言語 (language="en" country="GB" → en-GB) の規則も読み込む
   const countries = new Set<string>();
-  for (const m of text.matchAll(/\bcountry\s*=\s*["']([A-Za-z]{2,3})["']/g)) countries.add(m[1]);
+  // (取り込みと同じく、ISO 3166 の 3 字・3 桁の数字の符号は 2 字に直す)
+  for (const m of text.matchAll(/\bcountry\s*=\s*["']\s*([A-Za-z]{2,3}|\d{3})\s*["']/g)) {
+    const c = countryToRegion(m[1]);
+    if (c) countries.add(c);
+  }
   for (const l of langs) {
-    await loadHyphenator(l);
-    if (!l.includes('-')) for (const c of countries) await loadHyphenator(`${l}-${c}`);
+    rejoin(thisCall(), await loadHyphenator(l));
+    if (!l.includes('-')) for (const c of countries) rejoin(thisCall(), await loadHyphenator(`${l}-${c}`));
   }
 }

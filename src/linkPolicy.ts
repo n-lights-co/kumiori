@@ -157,14 +157,19 @@ export function summarizeDroppedLinks(d: DroppedLinks | undefined): string | und
 
 /**
  * 動作を書かなかった飛び先の警告の文 (summary は summarizeDroppedLinks の結果)。
- * stage: pdf は PDF を書いたとき (書かなかったと言う)。read は文書を読んだとき (出力の形式がまだ決まっていない。SVG・PNG には
- * もともとリンクを書かないので、「PDF に書きませんでした」とは言わずに、PDF に書くときの扱いを言う)
+ * stage: pdf・svg は PDF・SVG を書いたとき (書かなかったと言う)。read は文書を読んだとき (出力の形式がまだ決まっていない。
+ * 「PDF に書きませんでした」とは言わずに、PDF・SVG に書くときの扱いを言う。PNG にはリンクを書かない)
  */
-export function droppedLinkWarning(summary: string, stage: 'pdf' | 'read' = 'pdf'): string {
+export function droppedLinkWarning(summary: string, stage: 'pdf' | 'svg' | 'read' = 'pdf'): string {
   if (stage === 'read')
     return msg(
-      `安全のため、リンクの動作を通しません (PDF に書くときは、リンクにせず、字だけを組みます。links の設定で許せます): ${summary}`,
-      `for safety, these link actions are not allowed (when writing a PDF, the text is typeset without the link; the links option can allow them): ${summary}`,
+      `安全のため、リンクの動作を通しません (PDF・SVG に書くときは、リンクにせず、字だけを組みます。links の設定で許せます): ${summary}`,
+      `for safety, these link actions are not allowed (when writing a PDF or SVG, the text is typeset without the link; the links option can allow them): ${summary}`,
+    );
+  if (stage === 'svg')
+    return msg(
+      `安全のため、リンクを SVG に書きませんでした (字・図形はそのまま描きます。links の設定で許せます): ${summary}`,
+      `for safety, links were not written to the SVG (the text and shapes are drawn as is; the links option can allow them): ${summary}`,
     );
   return msg(
     `安全のため、リンクの動作を PDF に書きませんでした (字はそのまま組みます。links の設定で許せます): ${summary}`,

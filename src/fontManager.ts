@@ -6,9 +6,10 @@
  * を同一バイト列から作る。Canvas と PDF が「同じフォントファイル」を見るため、
  * 文字幅の食い違いが原理的に発生しない。
  */
+import { limitsKey } from './limits';
 import { extractFromCollection, isCollection } from './fontLoader';
 import { toSfnt } from './webFont';
-import { msg } from './messages';
+import { messageLang, msg } from './messages';
 import { patchFontkitShaping } from './fontkitShaping';
 import { patchFontkitCffFlex } from './fontkitCffFlex';
 import { patchFontkitEmptyGlyph } from './fontkitEmptyGlyph';
@@ -20,6 +21,9 @@ import fontkit from '@pdf-lib/fontkit';
 import type { FontSpec } from './types';
 import { diag, type DiagnosticCode, type Diagnostic } from './diagnostics';
 import { KumioriFontError } from './errors';
+import { rejoin, thisCall } from './callContext';
+import { classifyFontKind, kindRank } from './fontKind';
+import type { SystemFontKind } from './types';
 
 /** 差し替え済みの印 (fontkit の原型に付ける。pdfLibPatches.ts と同じ決まり) */
 const UVS_PATCHED = Symbol.for('kumiori.fontkitUvsPatched');
@@ -315,8 +319,108 @@ export function normalLineBounds(font: Pick<LoadedFont, 'ascent' | 'descent' | '
   return vertical ? { above: (a + d) / 2, below: (a + d) / 2 } : { above: a, below: d };
 }
 
-/** 実体を作れない可変フォントを知らせたか (書体のファイルごとに 1 度) */
-const unsupportedWarned = new WeakSet<ArrayBuffer>();
+/**
+ * 書体のファイルの下ごしらえ (registerBuffer の初め: WOFF・WOFF2 の戻し、集まりからの取り出し、表の目録の確かめ、可変でない CFF2 の作り直し) の結果。
+ * どれもファイルの中身だけで決まるので、同じ中身のファイルには同じ結果を使い回す (FontPrepCache)。知らせの文は書体の名前を含むので、
+ * 名前を入れる前の中身 (repaired・cff2Error) を持ち、登録のたびに、その登録の名前で知らせ直す
+ */
+interface PreparedFont {
+  buffer: ArrayBuffer;
+  /** 表の確かめで直したこと (checkFontFile の notes) */
+  repaired: string[];
+  /** CFF2 の輪郭を CFF にできなかった理由 */
+  cff2Error?: string;
+}
+
+/**
+ * 書体のファイルの下ごしらえの覚え。鍵は、ファイルの長さと中身の短いハッシュ。当たったら、覚えた元の中身とバイトごとに比べて確かめる
+ * (ハッシュの衝突で別の書体を使わない)。元の中身は写して持つ (渡したバッファを、使う側が後で書き換えても、覚えは変わらない)。
+ * 器 (createTypesetter の reuse) が作り、文書をまたいで 1 つの覚えを使う (FontManager.sharePrep。器の初めの書体の読み込みには使わない)。
+ * WOFF2 の戻し (Brotli の展開) が重く、@font-face の書体の多い文書で、組み直すたびに数百ミリ秒かかっていた。使い回すと、書体のバッファも
+ * 同じものになるので、エリアツリーの書体の SHA-256 (areaResources.ts。バッファごとに覚える) も計算し直さない
+ */
+export class FontPrepCache {
+  private entries = new Map<string, Array<{ input: Uint8Array; prepared: PreparedFont; used: number }>>();
+  /** 文書の通し番号 (startDocument で進める) */
+  private doc = 0;
+
+  /**
+   * 知らせの文 (repaired・cff2Error) は、そのときの言語 (TypesetOptions.lang) で作るので、鍵に言語を入れる。
+   * 下ごしらえ (WOFF の戻しなど) は上限 (TypesetOptions.limits) で変わりうるので、上限の指紋も入れる
+   */
+  private keyOf(u: Uint8Array): string {
+    return `${messageLang()}|${limitsKey()}|${bytesKey(u)}`;
+  }
+
+  get(input: ArrayBuffer): PreparedFont | undefined {
+    const u = new Uint8Array(input);
+    const e = this.entries.get(this.keyOf(u))?.find((x) => sameU8(x.input, u));
+    if (!e) return undefined;
+    e.used = this.doc;
+    return e.prepared;
+  }
+
+  set(input: ArrayBuffer, prepared: PreparedFont): void {
+    const u = new Uint8Array(input);
+    const k = this.keyOf(u);
+    const list = this.entries.get(k) ?? [];
+    list.push({ input: u.slice(), prepared, used: this.doc });
+    this.entries.set(k, list);
+  }
+
+  /**
+   * 次の文書を組み始める (器が文書ごとに呼ぶ)。前の文書でも、その前の文書でも使わなかったものを捨てる
+   * (エディタで別の文書に移ったとき、前の文書の書体を持ち続けない。持つのは、続けて組んだ 2 つの文書の書体まで)
+   */
+  startDocument(): void {
+    this.doc++;
+    for (const [k, list] of this.entries) {
+      const keep = list.filter((e) => e.used >= this.doc - 1);
+      if (keep.length) this.entries.set(k, keep);
+      else this.entries.delete(k);
+    }
+  }
+
+  /**
+   * 組み始めた文書を止めた (TypesetOptions.signal): その文書を世代に数えない (次の文書から見て、止めた文書の前の文書を「前の文書」のままにする)。
+   * 止めた文書で使ったもの・覚えたものは、中身で引く覚えなので、そのまま残してよい (次の文書の世代で使ったものとして数える)
+   */
+  cancelDocument(): void {
+    if (this.doc > 0) this.doc--;
+  }
+}
+
+/** 書体のバッファの通し番号 (FontManager.signature。同じバッファには同じ番号) */
+const bufferSerials = new WeakMap<ArrayBuffer, number>();
+let nextBufferSerial = 1;
+function bufferSerial(b: ArrayBuffer): number {
+  let n = bufferSerials.get(b);
+  if (n === undefined) bufferSerials.set(b, (n = nextBufferSerial++));
+  return n;
+}
+
+/** バイト列の長さと、短いハッシュ (FNV-1a を 4 バイトずつ。覚えの鍵だけに使い、同じかどうかは sameU8 で確かめる) */
+function bytesKey(u: Uint8Array): string {
+  let h = 0x811c9dc5;
+  const n4 = u.length & ~3;
+  const words = u.byteOffset % 4 === 0 ? new Uint32Array(u.buffer, u.byteOffset, n4 / 4) : undefined;
+  if (words) for (let i = 0; i < words.length; i++) h = Math.imul(h ^ words[i], 0x01000193);
+  else for (let i = 0; i < n4; i += 4) h = Math.imul(h ^ (u[i] | (u[i + 1] << 8) | (u[i + 2] << 16) | (u[i + 3] << 24)), 0x01000193);
+  for (let i = n4; i < u.length; i++) h = Math.imul(h ^ u[i], 0x01000193);
+  return `${u.length}:${(h >>> 0).toString(36)}`;
+}
+
+function sameU8(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  const n4 = a.length & ~3;
+  if (a.byteOffset % 4 === 0 && b.byteOffset % 4 === 0) {
+    const wa = new Uint32Array(a.buffer, a.byteOffset, n4 / 4);
+    const wb = new Uint32Array(b.buffer, b.byteOffset, n4 / 4);
+    for (let i = 0; i < wa.length; i++) if (wa[i] !== wb[i]) return false;
+  } else for (let i = 0; i < n4; i++) if (a[i] !== b[i]) return false;
+  for (let i = n4; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 /** 書体の知らせの種類 (fontSanity.ts の fontNotice の kind) の診断の名前 */
 function fontNoticeCode(kind: string): DiagnosticCode {
@@ -394,11 +498,31 @@ export class FontManager {
     f.ranged = new Map(this.ranged);
     f.aliases = new Map([...this.aliases].map(([k, v]) => [k, new Set(v)]));
     f.canvasInstances = this.canvasInstances;
+    f.limitedChars = new Map(this.limitedChars);
+    f.limitedKinds = new Map(this.limitedKinds);
+    // 書体の下ごしらえの覚え: 器 (sharePrep) なら写しと分け合う
+    f.sharePrep = this.sharePrep;
+    if (this.sharePrep) f.prepCache = this.prepCache;
     return f;
   }
 
-  /** 別の組で読み込んだ書体を、この組にも入れる (解析し直さない) */
-  adopt(lf: LoadedFont) {
+  /**
+   * 字を限った書体 (書体の key → 組むのに使ってよい字)。OS の書体 (systemFonts) を、文書で欠けていた字だけの後備にする (adopt の onlyChars)。
+   * hasGlyph は、限った書体については、この字のほかは持たないものとして答える
+   */
+  private limitedChars = new Map<string, ReadonlySet<string>>();
+  /** 字を限った書体 (OS の書体) の種類 (書体の key → 種類)。後備の順 (fallbackOrder) で、指定の書体と同じ種類の書体を先にする */
+  private limitedKinds = new Map<string, SystemFontKind>();
+
+  /**
+   * 別の組で読み込んだ書体を、この組にも入れる (解析し直さない)。onlyChars を渡せば、その字のほかには使わない
+   * (OS の書体を、文書で欠けていた字だけに使う。ほかの字の書体の選び方を変えない)
+   */
+  adopt(lf: LoadedFont, o: { onlyChars?: readonly string[]; kind?: SystemFontKind } = {}) {
+    if (o.onlyChars) {
+      this.limitedChars.set(lf.key, new Set(o.onlyChars));
+      this.limitedKinds.set(lf.key, o.kind ?? 'unknown');
+    }
     this.charFallback.clear();
     this.forCharMemo.clear();
     this.clusterMemo.clear();
@@ -419,17 +543,29 @@ export class FontManager {
   async registerBuffer(family: string, weight: number, buffer: ArrayBuffer, canvas = true, face?: FaceDescriptors, shape?: FaceShape): Promise<LoadedFont> {
     // WOFF・WOFF2 は、ふつうの書体のファイル (TTF・OTF) に戻してから登録する (PDF にはそのまま埋め込めない。webFont.ts)。
     // 書体の集まり (TTC と、WOFF2 の書体の集まりを戻したもの) は、最初の書体を使う (@font-face で集まりを指したとき)
-    buffer = toSfnt(buffer);
-    if (isCollection(buffer)) buffer = extractFromCollection(buffer, 0);
-    // 表の目録と、必ず使う表の形を確かめる。部品の展開が大きすぎる複合の字形は空にする (fontSanity.ts)
-    const checked = checkFontFile(buffer);
-    for (const n of checked.notes) this.onNotice(diag('font/repaired', `${family}: ${n}`, { font: family }));
-    buffer = checked.buffer;
-    // 可変でない CFF2 の書体 (fvar の無い、輪郭が CFF2 の OpenType) は、静的な CFF に作り直して登録する (CFF2 の輪郭は PDF に埋め込めない)
-    try {
-      buffer = staticCff2ToCff(buffer) ?? buffer;
-    } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
+    // 下ごしらえは、同じ中身のファイルなら覚えたものを使う (FontPrepCache)。知らせは、この登録の名前で出し直す
+    const input = buffer;
+    let prepared = this.prepCache?.get(buffer);
+    if (!prepared) {
+      let b = toSfnt(buffer);
+      if (isCollection(b)) b = extractFromCollection(b, 0);
+      // 表の目録と、必ず使う表の形を確かめる。部品の展開が大きすぎる複合の字形は空にする (fontSanity.ts)
+      const checked = checkFontFile(b);
+      b = checked.buffer;
+      // 可変でない CFF2 の書体 (fvar の無い、輪郭が CFF2 の OpenType) は、静的な CFF に作り直して登録する (CFF2 の輪郭は PDF に埋め込めない)
+      let cff2Error: string | undefined;
+      try {
+        b = staticCff2ToCff(b) ?? b;
+      } catch (e) {
+        cff2Error = e instanceof Error ? e.message : String(e);
+      }
+      prepared = { buffer: b, repaired: checked.notes, ...(cff2Error !== undefined ? { cff2Error } : {}) };
+      this.prepCache?.set(input, prepared);
+    }
+    buffer = prepared.buffer;
+    for (const n of prepared.repaired) this.onNotice(diag('font/repaired', `${family}: ${n}`, { font: family }));
+    if (prepared.cff2Error !== undefined) {
+      const why = prepared.cff2Error;
       this.onNotice(
         diag('font/cff2-not-converted', msg(
           `${family}: CFF2 の輪郭の書体を、PDF に埋め込める形 (CFF) にできません (${why})。PDF では字が正しく出ないことがあります`,
@@ -437,7 +573,10 @@ export class FontManager {
         ), { font: family }),
       );
     }
-    const notice = (m: string, kind: string) => this.onNotice(diag(fontNoticeCode(kind), `${family}: ${m}`, { font: family }));
+    const notice = (m: string, kind: string) => {
+      this.noticeCount++;
+      this.onNotice(diag(fontNoticeCode(kind), `${family}: ${m}`, { font: family }));
+    };
     // 壊れた・細工した書体を、組む前に見分ける (fontSanity.ts)。使えない書体は FontFileError (呼ぶ側が知らせて、その書体を使わない)
     const opened = openFontkit(buffer, notice);
     buffer = opened.buffer;
@@ -448,9 +587,9 @@ export class FontManager {
     this.getMemo.clear();
     this.generation++;
     const info = readVariationInfo(buffer);
-    if (info?.unsupported && !unsupportedWarned.has(buffer)) {
+    if (info?.unsupported && !this.unsupportedWarned.has(input)) {
       // 輪郭の差分 (TrueType の gvar か、CFF2) を持たない可変フォントの実体は作れない: 既定の形のまま 1 つの太さの書体として使う
-      unsupportedWarned.add(buffer);
+      this.unsupportedWarned.add(input);
       this.onNotice(
         diag('font/variable-unsupported', msg(
           `${family}: 輪郭の差分 (gvar の表か CFF2 の輪郭) を持たない可変フォントには対応していません。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
@@ -471,7 +610,7 @@ export class FontManager {
       if (old) dropBrowserFaces(old);
       // ブラウザには、印の付いた名前のまま、立体の書体として登録する (ctx.font にその名前を書いて選ぶ。ブラウザの側で傾き・幅を照合させない)
       fontFace = new FontFace(family, buffer.slice(0), { weight: String(weight) });
-      await fontFace.load();
+      rejoin(thisCall(), await fontFace.load());
       document.fonts.add(fontFace);
     }
     const names = fk as unknown as { postscriptName?: string; fullName?: string };
@@ -515,12 +654,29 @@ export class FontManager {
   }
   /** 可変フォントの実体も、ブラウザ (document.fonts) に登録するか (可変フォントを canvas: true で登録したとき) */
   private canvasInstances = false;
+  /**
+   * 書体の下ごしらえの覚え (FontPrepCache) と、それを写し (fork) と分け合うか。分け合うのは器 (createTypesetter の reuse) のときで、
+   * 文書をまたいで、同じ中身の書体の下ごしらえを使い回す
+   */
+  prepCache?: FontPrepCache;
+  sharePrep = false;
+  /**
+   * 実体を作れない可変フォントを知らせた書体のファイル (書体の組ごとに、渡されたバッファごとに 1 度)。写しは新しい組なので、また知らせる。
+   * 渡されたバッファ (下ごしらえの前) で覚える: 下ごしらえを使い回すと、下ごしらえの後のバッファは文書をまたいで同じものになるので、
+   * それで覚えると、使い回すかどうかで知らせる回数が変わる
+   */
+  private unsupportedWarned = new WeakSet<ArrayBuffer>();
+  /**
+   * この組に登録した書体の fontkit の書体が、組む途中 (字の整形・字形の読み込み) で出した知らせの数 (fontSanity.ts の fontNotice は、書体と種類ごとに 1 度だけ出す)。
+   * 文書をまたぐ行分けの覚え (layoutEngine.ts の SharedLineMemo) は、組む間にこれが増えた段落を覚えない (覚えから使うと、次の文書で字を整形せず、知らせが出なくなる)
+   */
+  noticeCount = 0;
   /** 書体について利用者に知らせること (対応していない可変フォントなど) の出し先。既定は console.warn (API は、結果の warnings と diagnostics に入れる) */
   onNotice: (d: Diagnostic) => void = (d) => console.warn(d.message);
 
   /** URL (複数ならフォールバック順) から fetch して登録 */
   async load(spec: FontSpec, onProgress?: (msg: string) => void): Promise<LoadedFont> {
-    return this.registerBuffer(spec.family, spec.weight ?? 400, await this.fetchSpec(spec, onProgress));
+    return this.registerBuffer(spec.family, spec.weight ?? 400, rejoin(thisCall(), await this.fetchSpec(spec, onProgress)));
   }
   /** spec の書体のファイルを取る (urls を順に試す。書体のファイルらしくないものは飛ばす) */
   private async fetchSpec(spec: FontSpec, onProgress?: (msg: string) => void): Promise<ArrayBuffer> {
@@ -529,17 +685,17 @@ export class FontManager {
     for (const url of spec.urls) {
       try {
         onProgress?.(msg(`フォント取得: ${spec.family} ${weight} ← ${url}`, `fetching font: ${spec.family} ${weight} ← ${url}`));
-        const res = await fetch(url);
+        const res = rejoin(thisCall(), await fetch(url));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buf = await res.arrayBuffer();
-        if (!looksLikeFont(buf)) throw new KumioriFontError('font/load-failed', msg('フォントファイルではありません', 'not a font file'));
+        const buf = rejoin(thisCall(), await res.arrayBuffer());
+        if (!looksLikeFont(buf)) throw new KumioriFontError('font/load-failed', msg('フォントファイルではありません', 'not a font file'), { args: { font: spec.family } });
         return buf;
       } catch (e) {
         lastErr = e;
         onProgress?.(msg(`  失敗 (${String(e)}) → 次の候補へ`, `  failed (${String(e)}) → trying the next one`));
       }
     }
-    throw new KumioriFontError('font/load-failed', msg(`フォント ${spec.family}@${weight} を取得できませんでした: ${String(lastErr)}`, `could not fetch the font ${spec.family}@${weight}: ${String(lastErr)}`));
+    throw new KumioriFontError('font/load-failed', msg(`フォント ${spec.family}@${weight} を取得できませんでした: ${String(lastErr)}`, `could not fetch the font ${spec.family}@${weight}: ${String(lastErr)}`), { args: { font: spec.family } });
   }
 
   /**
@@ -547,8 +703,8 @@ export class FontManager {
    * (fallbackOrder) を決めるので、取得の終わった順にしない)。太字の枠の扱いは registerDefaults (API の既定の書体と同じ)
    */
   async loadAll(specs: FontSpec[], onProgress?: (msg: string) => void): Promise<void> {
-    const bufs = await Promise.all(specs.map((s) => this.fetchSpec(s, onProgress)));
-    await this.registerDefaults(specs.map((spec, i) => ({ spec, buf: bufs[i] })));
+    const bufs = rejoin(thisCall(), await Promise.all(specs.map((s) => this.fetchSpec(s, onProgress))));
+    rejoin(thisCall(), await this.registerDefaults(specs.map((spec, i) => ({ spec, buf: bufs[i] }))));
   }
 
   /**
@@ -563,7 +719,7 @@ export class FontManager {
       const weight = spec.weight ?? 400;
       if (weight < 600) regular.set(spec.family, buf);
       else if (sameBytes(regular.get(spec.family), buf)) continue;
-      await this.registerBuffer(spec.family, weight, buf, canvas);
+      rejoin(thisCall(), await this.registerBuffer(spec.family, weight, buf, canvas));
     }
   }
 
@@ -575,6 +731,32 @@ export class FontManager {
   uniqueName(name: string): LoadedFont | undefined {
     const n = name.toLowerCase();
     return [...this.fonts.values()].find((f) => f.postscriptName?.toLowerCase() === n || f.fullName?.toLowerCase() === n);
+  }
+
+  /** 登録の鍵 (「名前@太さ」。LoadedFont.key) で、登録した書体を引く (名前の読み替え・代わりの書体は使わない) */
+  byKey(key: string): LoadedFont | undefined {
+    return this.fonts.get(key);
+  }
+
+  /**
+   * 書体の組の印: 登録した書体 (名前・太さ・傾き・幅と、書体のファイルの中身の番号)、欧文の書体・別名・総称の書体の並び・範囲の指定・字を限った書体の字。
+   * 印の同じ組は、同じ字の並びと書式に、同じ書体と同じ字の送りを返す (行分けの結果を文書をまたいで使い回すときに比べる: layoutEngine.ts の
+   * SharedLineMemo)。書体のファイルの中身の番号は、バッファごとに振る (同じ中身の書体でも、下ごしらえを使い回さずに別のバッファになったものは、
+   * 違う書体とみなす。違うとみなしても、使い回さないだけで、結果は変わらない)
+   */
+  signature(): string {
+    const fonts = [...this.fonts].map(([k, f]) =>
+      JSON.stringify([k, f.family, f.weight, bufferSerial(f.buffer), f.style ?? '', f.width ?? '', f.baseFamily ?? '', !!f.metricsLineHeight, f.variable ? f.variable.face : 0]),
+    );
+    return JSON.stringify([
+      fonts,
+      this.fallbackFamily,
+      [...this.latinFor],
+      [...this.aliases].map(([k, v]) => [k, [...v]]),
+      [...this.stacks],
+      [...this.ranged].map(([k, faces]) => [k, faces.map((f) => [f.family, f.ranges ?? 0, f.same ?? 0])]),
+      [...this.limitedChars].map(([k, chars]) => [k, [...chars].join(''), this.limitedKinds.get(k)]),
+    ]);
   }
 
   /** 読み込んだ書体と、その後に、これまでに作った可変フォントの実体 (作った順) */
@@ -952,7 +1134,46 @@ export class FontManager {
    * 太さの近い順 (今までと同じ)。同じ近さの中では、ファミリーの登録の順で、同じファミリーの中は、いまの指定の傾き・幅に合う書体が先
    * (立体の指定の字に、先に登録した斜体の書体・幅の狭い書体を使わない)。傾き・幅を持つ書体が無ければ、今までと同じ順
    */
-  private fallbackOrder(weight: number): LoadedFont[] {
+  /**
+   * 後備の順。base (指定の書体) を渡せば、字を限った書体 (OS の書体。adopt の onlyChars) を、ほかの書体の後ろに、
+   * base と同じ種類の書体 → 種類の分からない書体 → ほかの種類の書体の順で並べる (fontKind.ts の kindRank)。ほかの書体の順は変えない
+   */
+  private fallbackOrder(weight: number, base?: LoadedFont): LoadedFont[] {
+    const order = this.plainFallbackOrder(weight);
+    if (!this.limitedKinds.size) return order;
+    const want = base ? this.kindOf(base) : 'serif';
+    const rank = (f: LoadedFont) => kindRank(want, this.limitedKinds.get(f.key)!);
+    const limited = order.filter((f) => this.limitedKinds.has(f.key));
+    // 同じ順位の中は、登録の順のまま (sort は安定)
+    return [...order.filter((f) => !this.limitedKinds.has(f.key)), ...limited.sort((a, b) => rank(a) - rank(b))];
+  }
+
+  /**
+   * 書体の指定 (family・weight) の所の字に、OS の書体の後備を探すときの種類 (fallbackOrder が先にする種類。kindRank と同じく、
+   * sans のほかは serif として扱う)。組む前に、文書の字がどの種類の OS の書体を要るかを見込むのに使う (fontMapping.ts の missingCharKinds)
+   */
+  systemKindFor(family: string | undefined, weight: number): 'serif' | 'sans' {
+    return this.kindOf(this.get(family, weight)) === 'sans' ? 'sans' : 'serif';
+  }
+
+  /**
+   * 書体の種類 (指定の書体として。OS の書体の後備の順を決める)。既定の書体は、値によらず決めておく (明朝の組は serif、ゴシックの組は sans)。
+   * ほかの書体は、OS/2 の panose・sFamilyClass と名前から (fontKind.ts の classifyFontKind)
+   */
+  private kindOf(lf: LoadedFont): SystemFontKind {
+    const master = lf.instanceOf?.master ?? lf;
+    const fixed = DEFAULT_FONT_KINDS.get(master.baseFamily ?? master.family) ?? DEFAULT_FONT_KINDS.get(master.family);
+    if (fixed) return fixed;
+    let k = fontKinds.get(master);
+    if (!k) {
+      const os2 = (master.fk as unknown as { 'OS/2'?: { panose?: number[]; sFamilyClass?: number } })['OS/2'];
+      k = classifyFontKind({ panose: os2?.panose ?? [], familyClass: os2?.sFamilyClass ?? 0, family: master.family });
+      fontKinds.set(master, k);
+    }
+    return k;
+  }
+
+  private plainFallbackOrder(weight: number): LoadedFont[] {
     const all = [...this.fonts.values()];
     const byWeight = (a: LoadedFont, b: LoadedFont) => Math.abs(a.weight - weight) - Math.abs(b.weight - weight);
     if (!all.some((f) => f.style || f.width !== undefined)) return all.sort(byWeight);
@@ -1119,7 +1340,7 @@ export class FontManager {
       if (hit === undefined) {
         const cands = [
           ...(lf && this.isLoaded(lf) ? [this.get(lf, weight)] : []),
-          ...this.fallbackOrder(weight),
+          ...this.fallbackOrder(weight, base),
         ];
         // 既定で絵文字の表示になる字 (UTS #51) は、色つきの書体を先に探す (色つきの書体が無ければ、順は変わらない)
         hit = orderByPresentation(cands, ch).find((f) => f !== base && f !== base.instanceOf?.master && this.hasGlyph(f, ch)) ?? null;
@@ -1212,7 +1433,7 @@ export class FontManager {
       if (f) return f;
     }
     if (!/[\s\u0000-\u001f]/.test(ch)) {
-      const hit = orderByPresentation(this.fallbackOrder(weight), ch).find((f) => this.hasGlyph(f, ch));
+      const hit = orderByPresentation(this.fallbackOrder(weight, this.get(family, weight)), ch).find((f) => this.hasGlyph(f, ch));
       if (hit) return this.use(hit, weight);
     }
     return this.get(family, weight);
@@ -1255,7 +1476,7 @@ export class FontManager {
         } finally {
           this.latinWordNow = was;
         }
-        const cands = [...listed, ...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...this.fallbackOrder(weight)];
+        const cands = [...listed, ...need.slice(1).map((c) => this.getForChar(family, weight, c)), ...this.fallbackOrder(weight, base)];
         const other = (f: LoadedFont) => f !== base && f !== base.instanceOf?.master;
         const ordered = orderByPresentation(cands, unit);
         // 基底の字の書体が並びを持つのにここへ来るのは、表示の指定 (U+FE0F・U+FE0E) と書体の種類が合わないとき: 合う書体が無ければ、基底の字の書体のまま
@@ -1280,10 +1501,28 @@ export class FontManager {
   }
 
   hasGlyph(font: LoadedFont, ch: string): boolean {
+    if (this.limitedChars.size) {
+      const only = this.limitedChars.get(font.instanceOf?.master.key ?? font.key);
+      if (only && !only.has(ch)) return false;
+    }
     const cp = ch.codePointAt(0)!;
     return font.fk.hasGlyphForCodePoint(cp);
   }
 }
+
+/**
+ * 既定の書体の種類 (書体の値で決めると、版の違いで変わりうるので、名前で決めておく)。明朝の組 (Noto Serif JP・Tinos・XSL-FO の等幅の和文) は serif、
+ * ゴシックの組 (Noto Sans JP・Arimo) は sans
+ */
+const DEFAULT_FONT_KINDS = new Map<string, SystemFontKind>([
+  ['Noto Serif JP', 'serif'],
+  ['Tinos', 'serif'],
+  ['Kumiori Mono Serif', 'serif'],
+  ['Noto Sans JP', 'sans'],
+  ['Arimo', 'sans'],
+]);
+/** 書体の種類の覚え (書体ごと。fork の間で分け合う) */
+const fontKinds = new WeakMap<LoadedFont, SystemFontKind>();
 
 /** 幅を持つ空白の字 (字形で幅が決まる。改行・タブ・行と段落の区切りは含めない) */
 const WIDE_SPACE = /^[ \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]$/;

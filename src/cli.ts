@@ -3,8 +3,8 @@
  *
  * 使い方 (npm run build:cli の後):
  *   node dist-cli/cli.js <HTML ファイル> [-o <PDF ファイル>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css]
- *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4] [--pdfa 2b|3b] [--xhtml] [--watch]
- *   node dist-cli/cli.js <FO ファイル (.fo・.xml)> [-o <PDF ファイル>] [--compat spec|antenna] [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4] [--pdfa 2b|3b] [--watch]
+ *                        [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4] [--pdfa 2b|3b] [--xhtml] [--watch]
+ *   node dist-cli/cli.js <FO ファイル (.fo・.xml)> [-o <PDF ファイル>] [--compat spec|antenna] [--font-dir <ディレクトリ>] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4] [--pdfa 2b|3b] [--watch]
  *   node dist-cli/cli.js a.html b.fo c.html -o <出力先のディレクトリ>      (まとめて変換)
  *   cat a.html | node dist-cli/cli.js - -o - [--base <ディレクトリ>] > a.pdf  (標準入力から読み、標準出力へ書く)
  *
@@ -31,6 +31,9 @@
  *  - --no-fetch-images: 文書が http(s) で参照する画像をネットワークから取らない (既定は取る。他人の文書をサーバーで組むときに)
  *  - --no-fetch-styles: 文書が http(s) で参照する CSS (<link>・@import) をネットワークから取らない (既定は取る)
  *  - --no-outside-files: 文書が file: の URL・../ で指した、入力のディレクトリの外のファイルを読まない (既定は読む。他人の文書を組むときに)
+ *  - --max-pages <N>: 先頭から N ページまで組んだら止める (長い文書のプレビュー。API の maxPages。N より後ろを指すページ番号の参照は "?")
+ *  - --system-fonts: 読み込んだどの書体にも字形の無い字を、OS の書体で組む (既定は使わない。組んだ結果が機械の書体で変わる)。
+ *    --no-outside-files と一緒には使えない (OS の書体のフォルダは、入力のディレクトリの外)
  *  - --low-memory: メモリを節約して組む (ページ番号の参照を決める組み直しで、前の回のページを使い回さない。数千ページの文書で、
  *    使うメモリが 4 割ほどになり、時間は 1.5 倍ほどになる。PDF は同じ)
  *  - --link-schemes http,https,…: PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて)
@@ -54,7 +57,8 @@
  *  - --pdfx x1a|x1a:2003|x3|x4: 入稿用の PDF/X-1a:2001・PDF/X-1a:2003・PDF/X-3:2003・PDF/X-4 の印を付ける (RGB の色・画像は CMYK にする。
  *    ページの中のリンク・注釈・フォームの欄と、動作 (しおりの外への飛び先など) は書かない。X-1a・X-3 は、透明を平らにする。どの版も、書き出した PDF を調べて
  *    決まりに合わなければ誤り)。--output-profile <ICC> で出力の CMYK の ICC プロファイル (X-4 では必須で、出力機器のもの。X-1a は AtoB1 の表を持つもの)、
- *    --output-condition <名前> で印刷条件の名前 (既定 JC200103。ICC の登録簿に無い名前なら、X-1a でもプロファイルが要る) を渡す
+ *    --output-condition <名前> で印刷条件の名前 (既定は、プロファイルを渡せばその説明 (desc)、無ければ JC200103。ICC の登録簿に無い名前なら、
+ *    X-1a・X-3 でもプロファイルが要る) を渡す
  *  - --tagged (既定) / --no-tagged: タグ付き PDF にする・しない (文書の構造・読む順・図の代わりの文・言語を PDF に入れ、背景・罫線・柱を飾り (Artifact) にする。
  *    HTML・XSL-FO の入力)。--tagged と書いたときは --pdfx x1a・x3 とは一緒に使えない。書かなければ、x1a・x3 ではタグを付けない
  *  - --pdfua: PDF/UA-1 (ISO 14289-1) の印を付ける (--tagged を含む。XMP の pdfuaid・dc:title、DisplayDocTitle。字形の無い字は描かない。
@@ -68,6 +72,8 @@
  *    環境変数 KUMIORI_FONT_CACHE、OS のキャッシュ ディレクトリ (Linux: $XDG_CACHE_HOME か ~/.cache の kumiori/fonts、
  *    macOS: ~/Library/Caches/kumiori/fonts、Windows: %LOCALAPPDATA%\kumiori\fonts) の順。--no-font-cache で使わない
  *  - --help (-h) は使い方、--version (-v) は版を標準出力に書いて終わる (終了コード 0)
+ *  - 環境変数 SOURCE_DATE_EPOCH (reproducible-builds.org の決まり: 1970-01-01 UTC からの秒の 10 進の整数) があれば、PDF の作成日・更新日に、その日時を書く
+ *    (PdfOptions.date。同じ入力から同じバイトの PDF を作る)。正しくない値は誤りで終わる (終了コード 1)
  *  - 文言の言語: --lang ja|en → 環境変数 KUMIORI_LANG → OS のロケール (LC_ALL・LC_MESSAGES・LANG が en… なら英語)。既定は日本語 (messages.ts)
  *  - 未対応の CSS・XSL-FO の指定は、黙って無視せずに、診断 (typeset の diagnostics) として「警告 [名前] ファイル:行:列: 文」の形で知らせる
  */
@@ -91,7 +97,13 @@ import type { DrawioOptions } from './drawio/index';
 import { cachedFetcher, stencilFiles } from './drawio/nodeFiles';
 import { pluginNotFoundMessage, resolvePlugin } from './pluginResolve';
 import { GENERIC_FONT_KEYS } from './fontMapping';
+import { DEFAULT_LIMITS, LIMIT_DEFS, LIMIT_NAMES, limitDescription, resolveLimits, type LimitName } from './limits';
 import { createFileResolver, defaultFontCacheDir, FETCH_TIMEOUT_MS, localFont } from './nodeFonts';
+import { createSystemFonts } from './nodeSystemFonts';
+import type { SystemFontSource } from './types';
+
+/** --system-fonts の、OS の書体を探す部品 (初めて使うときに作り、コマンドの間使い回す) */
+let systemFontSource: SystemFontSource | undefined;
 // テストと、これまで cli から読んでいた利用者のために出し直す
 export { defaultFontCacheDir, localFont, looksLikeFont } from './nodeFonts';
 import { MESSAGE_LANGS, detectMessageLang, messageLang, msg, setMessageLang, type MessageLang } from './messages';
@@ -123,8 +135,10 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     format?: 'pdf' | 'svg' | 'png';
     /** PNG の解像度 (--dpi。PNG だけ。無ければ 96) */
     dpi?: number;
-    /** 書き出すページ (--pages。1 から数える。SVG だけ。無ければすべて) */
+    /** 書き出すページ (--pages。1 から数える。SVG と PNG の出力だけ。無ければすべて) */
     pages?: PageRange[];
+    /** 先頭から何ページまで組むか (--max-pages。API の maxPages。無ければ全体) */
+    maxPages?: number;
     style: HtmlDefaults;
     /** HTML の既定の用紙 (--page-size。@page で size を指定していない文書の用紙。CSS の size の書き方) */
     pageSize?: string;
@@ -156,6 +170,8 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     optionFiles?: string[];
     /** JPEG の解像度の上限 (dpi) */
     imageMaxDpi?: number;
+    /** PDF の作成日・更新日 (環境変数 SOURCE_DATE_EPOCH。main が sourceDateEpoch で読む) */
+    date?: Date;
     /** 入稿用の PDF/X の版 (--pdfx x1a|x1a:2003|x3|x4) */
     pdfx?: 'X-1a' | 'X-1a:2003' | 'X-3' | 'X-4';
     /** タグ付き PDF にするか (--tagged で true、--no-tagged で false。書かなければ既定 (付ける。PDF/X-1a・X-3 では付けない)) */
@@ -176,6 +192,8 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     fetchStyles: boolean;
     /** 文書が file: の URL・入力のディレクトリの外を指す相対参照で指したファイルを読む (--no-outside-files で止める) */
     outsideFiles: boolean;
+    /** どの書体にも字形の無い字を、OS の書体で組む (--system-fonts) */
+    systemFonts: boolean;
     /** メモリ節約 (--low-memory): 組み直しで前の回のページを使い回さず、組み終えたページの組版の途中の結果を手放す (時間は増える) */
     lowMemory: boolean;
     /** PDF に動作を書くリンクの URL のスキーム (--link-schemes。無ければ既定の http・https・mailto・tel) */
@@ -204,12 +222,18 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     help: boolean;
     /** --version: 版を書いて終わる */
     version: boolean;
+    /** 入力の上限 (--limit <名前>=<値>。何度でも。TypesetOptions.limits) */
+    limits: Partial<Record<LimitName, number>>;
+    /** --list-limits: 上限の名前・既定の値・上げられるかを書いて終わる */
+    listLimits: boolean;
     /** --lang: 文言の言語 (無ければ環境から決める) */
     lang?: MessageLang;
   } = {
     inputs: [],
     fontFiles: [],
     genericFonts: {},
+    limits: {},
+    listLimits: false,
     style: 'kumiori',
     print: false,
     fo: false,
@@ -218,6 +242,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     fetchImages: true,
     fetchStyles: true,
     outsideFiles: true,
+    systemFonts: false,
     lowMemory: false,
     verbose: false,
     diagnostics: 'text',
@@ -243,6 +268,21 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     if (optionNames().has(v)) throw new UsageError(msg(`${argv[k]} の値がありません (続く ${v} はオプションです。${v} という名前を値にするときは、./${v} のように書いてください)`, `${argv[k]} needs a value (the following ${v} is an option; to use ${v} as the value, write it like ./${v})`));
     return v;
   };
+  // 道の名前をとるオプションの値。空の値 ('') は、黙って今のディレクトリ (path.resolve('')) や「書いていない」として扱わずに、値の誤りにする
+  // (--font-dir '' は今のディレクトリの書体を読み、--base '' は今のディレクトリを基準にしていた)。what は、書くもの (日英)
+  const pathValue = (k: number, what: readonly [string, string]) => {
+    const v = value(k);
+    if (v === '') throw new UsageError(msg(`${argv[k]} の値が空です (${what[0]}を書いてください)`, `${argv[k]} cannot be empty (give ${what[1]})`));
+    return v;
+  };
+  // , で区切った道の名前の並び (--css・--drawio-stencils)。項目が 1 つも無い値 ('' や ',') も、空の値と同じく誤り
+  const pathListValue = (k: number, what: readonly [string, string]) => {
+    const v = pathValue(k, what);
+    if (!cssOptionFiles(v).length) throw new UsageError(msg(`${argv[k]} の値が空です (${what[0]}を書いてください)`, `${argv[k]} cannot be empty (give ${what[1]})`));
+    return v;
+  };
+  const DIR = ['ディレクトリの名前', 'a directory name'] as const;
+  const FILE = ['ファイルの名前', 'a file name'] as const;
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k];
     if (a === '-o' || a === '--output') {
@@ -263,6 +303,13 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       out.dpi = n;
     }
     else if (a === '--pages') out.pages = parsePageRanges(value(k++));
+    else if (a === '--max-pages') {
+      const v = value(k++);
+      // 1 以上の整数を数字だけで書く (0x10・1e3・+3 などは誤り)
+      const n = Number(v.trim());
+      if (!/^\d+$/.test(v.trim()) || !Number.isSafeInteger(n) || n < 1) throw new UsageError(msg(`--max-pages の値 "${v}" は使えません (1 以上の整数を、3・100 のように数字で書きます)`, `--max-pages cannot be "${v}" (an integer of 1 or more, written in digits such as 3 or 100)`));
+      out.maxPages = n;
+    }
     else if (a === '--style') {
       const v = value(k++);
       // 使える値は公開 API と同じ (compat.ts の HTML_STYLES)
@@ -282,11 +329,11 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       if (!langs.length || !langs.every((l) => /^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/.test(l))) throw new UsageError(msg(`--svg-lang の値 "${v}" は使えません (ja,en のように、言語タグをカンマで区切る)`, `--svg-lang cannot be "${v}" (language tags separated by commas, such as ja,en)`));
       out.svgLanguages = langs;
     }
-    else if (a === '--css') out.css = value(k++);
-    else if (a === '--font-dir') out.fontDir = value(k++);
-    else if (a === '--font-cache') out.fontCache = value(k++);
+    else if (a === '--css') out.css = pathListValue(k++, ['CSS のファイルの名前 (, で区切る)', 'CSS file names separated by commas']);
+    else if (a === '--font-dir') out.fontDir = pathValue(k++, DIR);
+    else if (a === '--font-cache') out.fontCache = pathValue(k++, DIR);
     else if (a === '--no-font-cache') out.noFontCache = true;
-    else if (a === '--font') out.fontFiles.push(value(k++));
+    else if (a === '--font') out.fontFiles.push(pathValue(k++, FILE));
     else if (a === '--generic-font') {
       const v = value(k++);
       const m = /^([a-z-]+)=(.+)$/.exec(v);
@@ -307,13 +354,20 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     else if (a === '--no-fetch-images') out.fetchImages = false;
     else if (a === '--no-fetch-styles') out.fetchStyles = false;
     else if (a === '--no-outside-files') out.outsideFiles = false;
+    else if (a === '--system-fonts') out.systemFonts = true;
     else if (a === '--low-memory') out.lowMemory = true;
     else if (a === '--verbose') out.verbose = true;
     else if (a === '--diagnostics') {
       const v = value(k++);
       if (v !== 'text' && v !== 'json') throw new UsageError(msg(`--diagnostics の値 "${v}" は使えません (text・json)`, `--diagnostics cannot be "${v}" (text, json)`));
       out.diagnostics = v;
-    } else if (a === '--ignore-warning') out.ignoreWarnings.push(...value(k++).split(',').map((x) => x.trim()).filter(Boolean));
+    } else if (a === '--ignore-warning') {
+      // 名前が 1 つも無い値 ('' や ',') は、書き誤りと見なして誤りにする (黙って何も外さないままにしない)
+      const v = value(k++);
+      const names = v.split(',').map((x) => x.trim()).filter(Boolean);
+      if (!names.length) throw new UsageError(msg(`${a} の値が空です (css/unknown-property のような診断の名前を書いてください)`, `${a} cannot be empty (give a diagnostic code such as css/unknown-property)`));
+      out.ignoreWarnings.push(...names);
+    }
     else if (a === '--fail-on') {
       const v = value(k++);
       if (v !== 'error' && v !== 'warning') throw new UsageError(msg(`--fail-on の値 "${v}" は使えません (error・warning)`, `--fail-on cannot be "${v}" (error, warning)`));
@@ -342,7 +396,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       if (v !== 'file' && v !== 'uri') throw new UsageError(msg(`--link-relative の値 "${v}" は使えません (file か uri)`, `--link-relative cannot be "${v}" (file or uri)`));
       out.linkRelative = v;
     }
-    else if (a === '--drawio-stencils') out.drawioStencils.push(value(k++));
+    else if (a === '--drawio-stencils') out.drawioStencils.push(pathListValue(k++, ['ファイルかディレクトリの名前 (, で区切る)', 'file or directory names separated by commas']));
     else if (a === '--fetch-drawio-stencils') out.drawioFetch ||= true;
     else if (a === '--drawio-stencils-url') {
       const v = value(k++);
@@ -350,7 +404,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       out.drawioFetch = v;
     }
     else if (a === '--no-drawio') out.noDrawio = true;
-    else if (a === '--plugin') out.plugins.push({ spec: value(k++), options: {} });
+    else if (a === '--plugin') out.plugins.push({ spec: pathValue(k++, ['パッケージの名前かファイルの道', 'a package name or a file path']), options: {} });
     else if (a === '--plugin-option') {
       const v = value(k++);
       const eq = v.indexOf('=');
@@ -359,9 +413,9 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       if (eq <= 0) throw new UsageError(msg(`--plugin-option の値 "${v}" は使えません (名前=値)`, `--plugin-option cannot be "${v}" (name=value)`));
       last.options[v.slice(0, eq)] = v.slice(eq + 1);
     }
-    else if (a === '--base') out.base = value(k++);
+    else if (a === '--base') out.base = pathValue(k++, DIR);
     else if (a === '--spot-colors') {
-      const f = value(k++);
+      const f = pathValue(k++, FILE);
       out.spotColors = readSpotColors(f);
       (out.optionFiles ??= []).push(path.resolve(f));
     }
@@ -385,7 +439,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       out.pdfa = m[1] === '3' ? 'A-3b' : 'A-2b';
     }
     else if (a === '--output-profile') {
-      const f = value(k++);
+      const f = pathValue(k++, FILE);
       try {
         out.outputProfile = new Uint8Array(fs.readFileSync(f));
         (out.optionFiles ??= []).push(path.resolve(f));
@@ -393,13 +447,20 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
         throw new UsageError(msg(`--output-profile のファイルを読めません: ${f} (${(e as Error).message})`, `cannot read the --output-profile file: ${f} (${(e as Error).message})`));
       }
     }
-    else if (a === '--output-condition') out.outputCondition = value(k++);
+    else if (a === '--output-condition') {
+      // 空の名前 (OutputConditionIdentifier が空の出力意図) は書かない
+      const v = value(k++);
+      if (!v.trim()) throw new UsageError(msg(`${a} の値が空です (JC200103 のような印刷条件の名前を書いてください)`, `${a} cannot be empty (give a printing condition name such as JC200103)`));
+      out.outputCondition = v;
+    }
     else if (a === '--lang') {
       const v = value(k++);
       if (!(MESSAGE_LANGS as readonly string[]).includes(v)) throw new UsageError(msg(`--lang の値 "${v}" は使えません (${MESSAGE_LANGS.join('・')})`, `--lang cannot be "${v}" (${MESSAGE_LANGS.join(', ')})`));
       out.lang = v as MessageLang;
       setMessageLang(out.lang);
     }
+    else if (a === '--limit') out.limits = { ...out.limits, ...parseLimit(value(k++)) };
+    else if (a === '--list-limits') out.listLimits = true;
     else if (a === '--help' || a === '-h') out.help = true;
     else if (a === '--version' || a === '-v') out.version = true;
     else if (a === '-' || !a.startsWith('-')) out.inputs.push(a);
@@ -420,6 +481,9 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     const pdfOnly = [out.pdfx && '--pdfx', out.pdfa && '--pdfa', out.pdfua && '--pdfua', out.outputProfile && '--output-profile', out.outputCondition !== undefined && '--output-condition', out.tagged && '--tagged', out.imageMaxDpi && '--image-max-dpi', out.lowMemory && '--low-memory'].filter((x): x is string => !!x);
     if (pdfOnly.length) throw new UsageError(msg(`${pdfOnly.join('・')} は PDF の出力にだけ使えます (--format ${out.format} とは一緒に使えません)`, `${pdfOnly.join(', ')} can only be used for PDF output (not with --format ${out.format})`));
   } else if (out.pages) throw new UsageError(msg('--pages は --format svg か png と一緒に使ってください (PDF は、すべてのページを書きます)', '--pages needs --format svg or png (PDF output always has all pages)'));
+  // OS の書体のフォルダは入力のディレクトリの外なので、外のファイルを読まない指定とは一緒に使えない (黙ってどちらかを外さない)
+  if (out.systemFonts && !out.outsideFiles)
+    throw new UsageError(msg('--system-fonts は --no-outside-files と一緒に使えません (OS の書体のフォルダは、入力のディレクトリの外です)', '--system-fonts cannot be combined with --no-outside-files (the OS font folders are outside the input directory)'));
   if (out.dpi !== undefined && out.format !== 'png') throw new UsageError(msg('--dpi は --format png と一緒に使ってください', '--dpi needs --format png'));
   if ((out.outputProfile || out.outputCondition !== undefined) && !out.pdfx) {
     throw new UsageError(msg('--output-profile・--output-condition は --pdfx と一緒に使ってください', '--output-profile and --output-condition need --pdfx'));
@@ -732,6 +796,9 @@ async function convert(input: string, output: string, args: Args, text: string) 
     ...(cssNames ? {} : { unreferencedCss: 'ignore' as const }),
     fonts: args.fontFiles.map((f) => lazy(f, path.basename(f))),
     genericFonts: args.genericFonts,
+    // OS の書体を探す部品は、コマンドの間 1 つ (索引を作るのは 1 度だけ。--watch で組み直すときも、入力が複数のときも)
+    ...(args.systemFonts ? { systemFonts: (systemFontSource ??= createSystemFonts()) } : {}),
+    ...(Object.keys(args.limits).length ? { limits: args.limits } : {}),
     style: args.style,
     ...(args.pageSize ? { pageSize: args.pageSize } : {}),
     ...(args.svgLanguages ? { svgLanguages: args.svgLanguages } : {}),
@@ -749,6 +816,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
     ...(args.tagged !== undefined ? { tagged: args.tagged } : args.format === 'svg' || args.format === 'png' ? { tagged: false } : {}),
     ...(args.pdfua ? { pdfua: { warnings: pdfxWarnings } } : {}),
     ...(args.documentLang ? { documentLang: args.documentLang } : {}),
+    ...(args.maxPages !== undefined ? { maxPages: args.maxPages } : {}),
     // 書体の置き場・キャッシュから読んだ書体のファイルも、出力で上書きしない (note)
     loadFont: localFont(args.fontDir, args.noFontCache ? undefined : args.fontCache ? path.resolve(args.fontCache) : defaultFontCacheDir(), undefined, undefined, note),
     lang: messageLang(),
@@ -766,6 +834,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
   const res = await typesetToPdf(text, docOptions, {
     ...(args.lowMemory ? { lowMemory: true } : {}),
     ...(args.imageMaxDpi ? { imageMaxDpi: args.imageMaxDpi } : {}),
+    ...(args.date ? { date: args.date } : {}),
     ...(args.pdfx
       ? {
           pdfx: {
@@ -789,16 +858,28 @@ async function convert(input: string, output: string, args: Args, text: string) 
   const log = reportLog(output);
   // ファイルの名前の改行・制御文字も見える形にする (名前に改行と { があると、{ で始まる偽の行に見える)
   const target = output === '-' ? msg('(標準出力)', '(stdout)') : printable(path.basename(output));
-  log(msg(`${target}: ${res.pageCount} ページ (組版 ${res.layoutMs}ms)`, `${target}: ${res.pageCount} page${res.pageCount === 1 ? '' : 's'} (layout ${res.layoutMs}ms)`));
+  log(msg(`${target}: ${res.pageCount} ページ${truncatedNote(res.truncated, args)} (組版 ${res.layoutMs}ms)`, `${target}: ${res.pageCount} page${res.pageCount === 1 ? '' : 's'}${truncatedNote(res.truncated, args)} (layout ${res.layoutMs}ms)`));
   // PDF/X・PDF/A・PDF/UA の知らせ (pdfxWarnings) も、診断 (res.diagnostics) に入っている
   reportDiagnostics(input, res.diagnostics, args);
+}
+
+/**
+ * ライブラリの診断の文を、コマンドの言葉に直す: 知らない診断の名前 (api/unknown-diagnostic-code) の文は、ライブラリの選択肢の名前
+ * (diagnostics.ignore) で書かれているので、コマンドで渡した名前 (--ignore-warning) で書き直す (コマンドから使う人には、
+ * diagnostics.ignore が何か分からない)。名前・重さ・args はそのまま
+ */
+export function cliDiagnostic(d: Diagnostic): Diagnostic {
+  if (d.code !== 'api/unknown-diagnostic-code' || typeof d.args?.code !== 'string') return d;
+  const name = d.args.code;
+  return { ...d, message: msg(`--ignore-warning の名前 "${name}" は、診断の名前にありません (止めずに続けます)`, `--ignore-warning has "${name}", which is not a diagnostic code (nothing is suppressed for it)`) };
 }
 
 /**
  * 診断を標準エラーに書く。text: 1 件 1 行の「  警告 [名前] ファイル:行:列 (要素): 文」(重さで誤り・警告・知らせ。知らせは --verbose のときだけ)。
  * json: 1 件 1 行の JSON (入力のファイル input と、診断の欄。知らせも書く)。どちらも、文書の字 (制御文字) は見える形にする (printable)
  */
-export function reportDiagnostics(input: string, ds: readonly Diagnostic[], args: Pick<Args, 'verbose' | 'diagnostics' | 'failOn'>): void {
+export function reportDiagnostics(input: string, diagnostics: readonly Diagnostic[], args: Pick<Args, 'verbose' | 'diagnostics' | 'failOn'> & Partial<Pick<Args, 'systemFonts'>>): void {
+  const ds = diagnostics.map(cliDiagnostic);
   // --fail-on: その重さ以上の診断があったか (出さない診断 --ignore-warning は、組版の結果に入らないので数えない)
   if (args.failOn && ds.some((d) => d.severity === 'error' || (args.failOn === 'warning' && d.severity === 'warning'))) failOnHit = true;
   if (args.diagnostics === 'json') {
@@ -807,6 +888,7 @@ export function reportDiagnostics(input: string, ds: readonly Diagnostic[], args
     return;
   }
   for (const line of diagnosticTextLines(args.verbose ? ds : ds.filter((d) => d.severity !== 'info'))) console.warn(line);
+  if (!args.systemFonts && ds.some((d) => d.code === 'font/missing-glyph')) console.warn(msg('  (--system-fonts で、OS の書体から字形を探せます)', '  (--system-fonts looks for the glyphs in the OS fonts)'));
 }
 
 /** 文字の出力で、1 つの名前につき 1 件 1 行で書く数 (超えた分は「ほかに n 件 (m 種)」の 1 行にまとめる) */
@@ -911,6 +993,11 @@ export function diagnosticLine(d: Diagnostic): string {
   return printable(`  ${label} [${d.code}]${where ? ` ${where}:` : ''} ${d.message}${times}`);
 }
 
+/** --max-pages で途中で止めたときの、報告の行に足す言葉 */
+function truncatedNote(truncated: boolean, args: Args): string {
+  return truncated ? msg(`。--max-pages ${args.maxPages} で止めた`, ` (stopped by --max-pages ${args.maxPages})`) : '';
+}
+
 /**
  * 1 つの入力を組んで、ページを SVG か PNG にする (--format svg|png)。文書が 1 ページなら output に、複数ページならページごとに -<番号> を
  * 付けた名前に書く (pageFile。--pages で 1 ページだけ選んでも番号を付ける)。標準出力 (-) には、書くページが 1 つのときだけ書ける
@@ -922,7 +1009,7 @@ async function convertToPages(input: string, output: string, args: Args, text: s
   const missing = missingPageRanges(args.pages, res.pageCount);
   if (missing.length) {
     const list = missing.map((r) => (r.to === r.from ? `${r.from}` : `${r.from}-${r.to ?? ''}`)).join(',');
-    throw new Error(msg(`--pages の ${list} は文書にありません (文書は ${res.pageCount} ページ)`, `--pages ${list} is not in the document (it has ${res.pageCount} page${res.pageCount === 1 ? '' : 's'})`));
+    throw new Error(msg(`--pages の ${list} は文書にありません (文書は ${res.pageCount} ページ${truncatedNote(res.truncated, args)})`, `--pages ${list} is not in the document (it has ${res.pageCount} page${res.pageCount === 1 ? '' : 's'}${truncatedNote(res.truncated, args)})`));
   }
   const pages = selectPages(args.pages, res.pageCount);
   if (!pages.length) throw new Error(msg(`--pages のページがありません (文書は ${res.pageCount} ページ)`, `no page matches --pages (the document has ${res.pageCount} page${res.pageCount === 1 ? '' : 's'})`));
@@ -937,7 +1024,10 @@ async function convertToPages(input: string, output: string, args: Args, text: s
   const names: string[] = [];
   for (const p of pages) {
     // SVG は、1 つの HTML に並べて入れても id がぶつからないように、id の頭にページの番号を付ける
-    const data = format === 'svg' ? await res.renderPageToSvg(p, { idPrefix: `p${p + 1}-` }) : await res.renderPageToPng(p, args.dpi !== undefined ? { dpi: args.dpi } : {});
+    // 文書の中の、別のページへのリンクは、そのページを書くファイルの名前 (pageFile。同じディレクトリ) に #id を付けて書く。
+    // 選んでいないページも、名前は選び方によらないので、その名前にする。標準出力に書くときは、ファイルの名前が無いので書かない
+    const pageHref = output === '-' ? undefined : (k: number) => encodeURIComponent(path.basename(pageFile(output, k, res.pageCount, numbered, '.svg')));
+    const data = format === 'svg' ? await res.renderPageToSvg(p, { idPrefix: `p${p + 1}-`, ...(pageHref ? { pageHref } : {}) }) : await res.renderPageToPng(p, args.dpi !== undefined ? { dpi: args.dpi } : {});
     if (output === '-') process.stdout.write(data);
     else {
       const file = pageFile(output, p, res.pageCount, numbered, `.${format}`);
@@ -947,7 +1037,7 @@ async function convertToPages(input: string, output: string, args: Args, text: s
   }
   const log = reportLog(output);
   const target = output === '-' ? msg('(標準出力)', '(stdout)') : printable(names.length > 1 ? `${names[0]} … ${names[names.length - 1]}` : names[0]);
-  log(msg(`${target}: ${pages.length} ページを ${label} に書きました (文書は ${res.pageCount} ページ。組版 ${res.layoutMs}ms)`, `${target}: wrote ${pages.length} page${pages.length === 1 ? '' : 's'} as ${label} (the document has ${res.pageCount} page${res.pageCount === 1 ? '' : 's'}; layout ${res.layoutMs}ms)`));
+  log(msg(`${target}: ${pages.length} ページを ${label} に書きました (文書は ${res.pageCount} ページ${truncatedNote(res.truncated, args)}。組版 ${res.layoutMs}ms)`, `${target}: wrote ${pages.length} page${pages.length === 1 ? '' : 's'} as ${label} (the document has ${res.pageCount} page${res.pageCount === 1 ? '' : 's'}${truncatedNote(res.truncated, args)}; layout ${res.layoutMs}ms)`));
   reportDiagnostics(input, res.diagnostics, args);
 }
 
@@ -1108,6 +1198,75 @@ function writeOutput(file: string, input: string, data: Uint8Array | string): vo
   for (const id of fileIdKeys(file)) writtenFiles.set(id, pathKey(input));
 }
 
+/**
+ * --watch: ディレクトリ root と、その下のディレクトリの変更を見張る (onChange の名前は root からの相対の道)。
+ * Linux では、ディレクトリごとに再帰でない fs.watch を張る: Node の再帰の fs.watch (Linux では Node の中でファイルごとに inotify を張る) は、
+ * エディタが新しいファイルに書いて名前を変える保存をすると、元のファイルの見張りを失い、2 回目からの保存を拾わなかった。
+ * ディレクトリの見張りは、中の名前の変更 (rename) も拾う。後から作ったディレクトリにも見張りを張る。node_modules と . で始まるディレクトリは見ない。
+ * ほかの OS (macOS・Windows) は、OS の再帰の見張りをそのまま使う (下のディレクトリまで見張れない環境では、root だけを見張る)
+ */
+export function watchInputDir(root: string, onChange: (ev: string, file: string) => void, platform: NodeJS.Platform = process.platform): () => void {
+  const watchers = new Map<string, fs.FSWatcher>();
+  const close = () => {
+    for (const w of watchers.values()) w.close();
+    watchers.clear();
+  };
+  if (platform !== 'linux') {
+    const relay = (ev: string, f: string | Buffer | null) => {
+      if (f) onChange(ev, f.toString());
+    };
+    try {
+      watchers.set(root, fs.watch(root, { recursive: true }, relay));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM') throw e;
+      console.error(msg(`${root}: 下のディレクトリの変更は見張れません (Node 20 以上で使えます)`, `${root}: changes in subdirectories cannot be watched (needs Node 20 or later)`));
+      watchers.set(root, fs.watch(root, relay));
+    }
+    return close;
+  }
+  const add = (d: string) => {
+    if (watchers.has(d)) return;
+    let w: fs.FSWatcher;
+    try {
+      w = fs.watch(d, (ev, f) => {
+        if (!f) return;
+        const full = path.join(d, f.toString());
+        // 新しく現れたディレクトリ (作った・名前を変えて持ってきた) にも見張りを張る
+        if (ev === 'rename' && !watchers.has(full)) {
+          try {
+            if (fs.statSync(full).isDirectory() && !/^(node_modules$|\.)/.test(path.basename(full))) addTree(full);
+          } catch {
+            // 消えた名前 (名前の変更の元) は飛ばす
+          }
+        }
+        onChange(ev, path.relative(root, full));
+      });
+    } catch {
+      // 見張れないディレクトリ (権限が無い・たどる途中で消えた) は飛ばす (root のほかは)
+      if (d === root) throw new Error(msg(`${root}: 変更を見張れません`, `${root}: cannot watch for changes`));
+      return;
+    }
+    // 見張っているディレクトリが消えたら、見張りを外す (同じ名前で作り直されたら、親の見張りがまた張る)
+    w.on('error', () => {
+      w.close();
+      watchers.delete(d);
+    });
+    watchers.set(d, w);
+  };
+  const addTree = (d: string) => {
+    add(d);
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) if (e.isDirectory() && e.name !== 'node_modules' && !e.name.startsWith('.')) addTree(path.join(d, e.name));
+  };
+  addTree(root);
+  return close;
+}
+
 /** --watch で見張るファイル */
 const WATCHED = /\.(x?html?|fo|xml|xsl|css|png|jpe?g|gif|svgz?|webp|tiff?|bmp|emf|wmf|eps|cgm|drawio|dio|mml|ttf|otf|ttc|otc|woff2?)$/i;
 
@@ -1120,10 +1279,25 @@ function optionNames(): Set<string> {
 /** 引数の誤り (使い方を表示して終わる。スタックトレースは出さない) */
 export class UsageError extends Error {}
 
+/**
+ * 環境変数 SOURCE_DATE_EPOCH (reproducible-builds.org の SOURCE_DATE_EPOCH の決まり: 1970-01-01 00:00:00 UTC からの秒を、
+ * 小数の無い 10 進の整数で書いたもの) を読む。無ければ undefined。決まりに合わない値 (空・符号・小数・数でない字・9999 年より後) は、
+ * 決まりのとおり誤りにする (UsageError)
+ */
+export function sourceDateEpoch(env: Record<string, string | undefined>): Date | undefined {
+  const v = env.SOURCE_DATE_EPOCH;
+  if (v === undefined) return undefined;
+  const n = /^[0-9]+$/.test(v) ? Number(v) : NaN;
+  // 9999-12-31T23:59:59Z (PDF の日付の年は 4 桁)
+  if (!Number.isSafeInteger(n) || n > 253402300799)
+    throw new UsageError(msg(`環境変数 SOURCE_DATE_EPOCH の値 "${v}" は、1970-01-01 UTC からの秒の整数 (0〜253402300799) にします`, `SOURCE_DATE_EPOCH "${v}" must be an integer number of seconds since 1970-01-01 UTC (0 to 253402300799)`));
+  return new Date(n * 1000);
+}
+
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--dpi <値>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--xhtml] [--watch] [--lang ja|en]',
-  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--dpi <値>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--watch] [--lang ja|en]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--xhtml] [--watch] [--lang ja|en]',
+  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--watch] [--lang ja|en]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
   '        kumiori --help | --version',
@@ -1132,6 +1306,7 @@ export const USAGE_JA = [
   '  --format pdf|svg|png      出力の形式 (既定 pdf。-o の拡張子が .svg・.png ならその形式。-o がディレクトリのときは拡張子を見ない)。svg・png はページごとに書く (字は書体の輪郭、画像は埋め込み。複数ページの文書は、1 ページだけ選んでも <名前>-<番号>.svg。-o の拡張子と食い違う形式は誤り)',
   '  --pages <範囲>            SVG・PNG に書くページ (1 から数える。1-3,5,7- のように , で区切る。既定はすべて)',
   '  --dpi <値>                PNG の解像度 (1 インチあたりの画素の数。既定 96)',
+  '  --max-pages <N>           先頭から N ページまで組んだら止める (長い文書のプレビュー。N より後ろを指すページ番号の参照・総ページ数は "?" で組み、警告を出す)',
   '  --style <名前>            HTML の既定のスタイル (kumiori・browser・browser-margin・ah・vivliostyle・weasyprint。既定 kumiori)',
   '  --page-size <用紙>        HTML の既定の用紙 (@page で size を指定していない文書の用紙。A5・"A5 landscape"・148mm,210mm など。既定 A4)',
   '  --svg-lang <ja,en>        SVG の systemLanguage を照らす言語 (SVG を置いた所に言語の指定が無いとき。既定は実行環境の言語)',
@@ -1142,6 +1317,7 @@ export const USAGE_JA = [
   '  --no-font-cache           書体のキャッシュを読まず、保存もしない (毎回 Google Fonts から取る)',
   '  --font <書体ファイル>     書体を足す (TTF・OTF・TTC・WOFF・WOFF2。可変フォントは font-weight などに合う形で組む。何度でも)',
   '  --generic-font <総称>=<書体名>  総称の書体に使う書体 (serif・sans-serif・monospace は欧文、serif-cjk・sans-serif-cjk は和文。何度でも)',
+  '  --system-fonts            どの書体にも字形の無い字を、OS の書体で組む (組んだ結果が機械の書体で変わる。--no-outside-files とは一緒に使えない)',
   '  --compat spec|antenna     XSL-FO の既定値の流儀 (XSL-FO 1.1 の初期値 / アンテナハウスに合わせる。既定 spec)',
   '  --fo                      拡張子によらず XSL-FO として読む',
   '  --xhtml                   拡張子によらず XML の構文 (XHTML) で読む',
@@ -1150,7 +1326,7 @@ export const USAGE_JA = [
   '  --image-max-dpi <dpi>     JPEG の解像度の上限',
   '  --pdfx x1a|x1a:2003|x3|x4 入稿用の PDF/X-1a:2001・PDF/X-1a:2003・PDF/X-3:2003・PDF/X-4 の印を付ける (RGB は CMYK にする。ページの中のリンク・注釈・フォームの欄と、動作 (しおりの外への飛び先など) は書かない。x1a・x3 は透明を平らにする (一部を画像にすることがある))',
   '  --output-profile <ICC>    出力の CMYK の ICC プロファイル (PDF/X。x4 では必須で出力機器 (prtr) のもの。x1a は AtoB1 の表 (A2B1) を持つもの)',
-  '  --output-condition <名前>  印刷条件の名前 (既定 JC200103。ICC の登録簿に無い名前なら、x1a でも --output-profile が要る)',
+  '  --output-condition <名前>  印刷条件の名前 (既定は --output-profile の説明 (desc)、それも無ければ JC200103。ICC の登録簿に無い名前なら、x1a・x3 でも --output-profile が要る)',
   '  --tagged                  タグ付き PDF にする (既定。見出し・段落・リスト・図・リンク・表・脚注の構造、読む順、図の代わりの文、言語を入れる。--pdfx x1a・x3 とは使えない。指定しなければ、x1a・x3 ではタグを付けない)',
   '  --no-tagged               タグを付けない (0.4 までの既定と同じ PDF)',
   '  --pdfua                   PDF/UA-1 の印を付ける (--tagged を含む。XMP の pdfuaid・DisplayDocTitle を書き、字形の無い字を描かない。題・言語・図と数式の代わりの文・見出しの順の足りないものを警告に出す)',
@@ -1171,6 +1347,8 @@ export const USAGE_JA = [
   '  --plugin-option <名前=値> その前の --plugin に渡す選択肢 (何度でも)',
   '  --base <dir>              標準入力の文書の CSS・画像・書体を探すディレクトリ (既定は今のディレクトリ)',
   '  --watch                   入力のディレクトリの変更を見張って組み直す (Ctrl+C で終わる)',
+  '  --limit <名前>=<値>       入力の上限を変える (何度でも。…Bytes は 64MB のように K・M・G を付けられる。入れ子の深さの上限は下げるだけ。上げると時間とメモリを多く使いうる)',
+  '  --list-limits             上限の名前・既定の値・上げられるかを書いて終わる',
   '  --verbose                 知らせ (重さ info の診断。選択肢で止めた取得など) も書く',
   '  --diagnostics text|json   診断の書き方 (既定 text。json は 1 件 1 行の JSON で、知らせも書く)。どちらも標準エラーに書く',
   '  --ignore-warning <名前>   その名前の診断を出さない (css/unknown-property など。, で区切る・何度でも。知らない名前は警告して続ける)',
@@ -1179,14 +1357,15 @@ export const USAGE_JA = [
   '  -h, --help                この使い方を書いて終わる',
   '  -v, --version             版を書いて終わる',
   '',
+  '  環境変数 SOURCE_DATE_EPOCH (1970-01-01 UTC からの秒) があれば、PDF の作成日・更新日にその日時を書きます (同じ入力から同じバイトの PDF になります)',
   '  未対応の CSS・XSL-FO の指定、読めない画像などは、「警告 [名前] ファイル:行:列: 文」の形で標準エラー (-o - のときも) に出ます',
   '  (重さで 誤り・警告・知らせ。名前の一覧は docs/diagnostics.md)。',
 ].join('\n');
 
 /** 使い方。英語 */
 export const USAGE_EN = [
-  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--format pdf|svg|png] [--pages <range>] [--dpi <value>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <lang>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--xhtml] [--watch] [--lang ja|en]',
-  '       kumiori <FO file> [-o|--output <PDF file>] [--format pdf|svg|png] [--pages <range>] [--dpi <value>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <lang>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--watch] [--lang ja|en]',
+  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--format pdf|svg|png] [--pages <range>] [--max-pages <N>] [--dpi <value>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <lang>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--xhtml] [--watch] [--lang ja|en]',
+  '       kumiori <FO file> [-o|--output <PDF file>] [--format pdf|svg|png] [--pages <range>] [--max-pages <N>] [--dpi <value>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--system-fonts] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <lang>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--watch] [--lang ja|en]',
   '       kumiori a.html b.fo … -o <output directory>',
   '       kumiori - -o - [--base <dir>] < input > output.pdf',
   '       kumiori --help | --version',
@@ -1195,6 +1374,7 @@ export const USAGE_EN = [
   '  --format pdf|svg|png      output format (default pdf; svg or png when -o ends with .svg or .png, unless -o is a directory). svg and png write each page (text as glyph outlines, images embedded; a document of several pages goes to <name>-<number>.svg, even when one page is chosen; a format that does not match the -o extension is an error)',
   '  --pages <range>           pages to write as SVG or PNG (1-based, separated by commas such as 1-3,5,7-; default all)',
   '  --dpi <value>             PNG resolution (pixels per inch; default 96)',
+  '  --max-pages <N>           stop after laying out the first N pages (previewing long documents; page number references and the total page count pointing beyond them are set as "?", with a warning)',
   '  --style <name>            default style sheet for HTML (kumiori, browser, browser-margin, ah, vivliostyle, weasyprint; default kumiori)',
   '  --page-size <size>        default paper for HTML (used when the document has no @page size; A5, "A5 landscape", 148mm,210mm, etc.; default A4)',
   '  --svg-lang <ja,en>        languages to match SVG systemLanguage against (when the place of the SVG has no language; default: the environment language)',
@@ -1205,6 +1385,7 @@ export const USAGE_EN = [
   '  --no-font-cache           do not read or write the font cache (fetch from Google Fonts every time)',
   '  --font <font file>        add a font (TTF, OTF, TTC, WOFF, WOFF2; a variable font is used at the shape matching font-weight etc.; repeatable)',
   '  --generic-font <generic>=<family>  font used for a generic family (serif, sans-serif, monospace: Latin text; serif-cjk, sans-serif-cjk: Japanese text; repeatable)',
+  '  --system-fonts            set characters no font has a glyph for in OS fonts (the result depends on the fonts of the machine; cannot be combined with --no-outside-files)',
   '  --compat spec|antenna     XSL-FO default-value convention (XSL-FO 1.1 initial values / AH Formatter compatible; default spec)',
   '  --fo                      read as XSL-FO regardless of the extension',
   '  --xhtml                   read with XML syntax (XHTML) regardless of the extension',
@@ -1213,7 +1394,7 @@ export const USAGE_EN = [
   '  --image-max-dpi <dpi>     resolution limit for JPEG images',
   '  --pdfx x1a|x1a:2003|x3|x4 write PDF/X-1a:2001, PDF/X-1a:2003, PDF/X-3:2003 or PDF/X-4 markers for print submission (RGB is converted to CMYK; links, annotations and form fields on the pages and actions (such as external bookmark destinations) are not written; x1a and x3 flatten transparency, rasterizing some areas if needed)',
   '  --output-profile <ICC>    output CMYK ICC profile (PDF/X; required for x4, and must be an output device (prtr) profile; for x1a it must have an AtoB1 table (A2B1))',
-  '  --output-condition <name>  printing condition name (default JC200103; a name not in the ICC registry needs --output-profile even for x1a)',
+  '  --output-condition <name>  printing condition name (default: the description (desc) of --output-profile, or JC200103 without one; a name not in the ICC registry needs --output-profile even for x1a and x3)',
   '  --tagged                  write tagged PDF (the default; structure of headings, paragraphs, lists, figures, links, tables and footnotes, reading order, alternate text for figures, language; not with --pdfx x1a or x3; when not given, no tags are added for x1a and x3)',
   '  --no-tagged               do not add tags (the same PDF as the default up to 0.4)',
   '  --pdfua                   write PDF/UA-1 markers (implies --tagged; writes the XMP pdfuaid and DisplayDocTitle, does not draw characters with no glyph, and warns about a missing title, language, alternate text for figures and formulas, and heading order)',
@@ -1234,6 +1415,8 @@ export const USAGE_EN = [
   '  --plugin-option <name=value> an option passed to the preceding --plugin (repeatable)',
   '  --base <dir>              directory where CSS, images and fonts of a document read from standard input are looked up (default: current directory)',
   '  --watch                   watch the input directories and re-typeset on changes (Ctrl+C to stop)',
+  '  --limit <name>=<value>    change an input limit (repeatable; …Bytes values may end with K, M or G, such as 64MB; nesting-depth limits can only be lowered; raising may use more time and memory)',
+  '  --list-limits             print the limit names, defaults and whether each can be raised, and exit',
   '  --verbose                 also print notices (diagnostics of severity info, such as fetches turned off by options)',
   '  --diagnostics text|json   how to print diagnostics (default text; json prints one JSON object per line, notices included). Both go to standard error',
   '  --ignore-warning <code>   do not report diagnostics with that code (such as css/unknown-property; comma-separated, repeatable; unknown codes are warned about)',
@@ -1242,9 +1425,44 @@ export const USAGE_EN = [
   '  -h, --help                print this usage and exit',
   '  -v, --version             print the version and exit',
   '',
+  '  When SOURCE_DATE_EPOCH (seconds since 1970-01-01 UTC) is set, the PDF creation and modification dates are that time (the same input gives the same PDF bytes)',
   '  Unsupported CSS/XSL-FO, unreadable images and the like are reported on standard error (also with -o -) as "warning [code] file:line:column: text"',
   '  (error, warning or info by severity; the codes are listed in docs/en/diagnostics.md).',
 ].join('\n');
+
+/**
+ * --limit の値 (<名前>=<値>) を読む。名前は TypesetOptions.limits と同じ。値は 1 以上の整数で、…Bytes の名前は K・M・G (1,024 倍) を付けて書ける。
+ * 知らない名前・数でない値・下げるだけの上限を上げた値は、UsageError (何もせずに誤りで終わる)
+ */
+export function parseLimit(v: string): Partial<Record<LimitName, number>> {
+  const m = /^([A-Za-z]+)=(.*)$/.exec(v);
+  if (!m) throw new UsageError(msg(`--limit の値 "${v}" は使えません (<名前>=<値>。名前は kumiori --list-limits で一覧が出ます)`, `--limit cannot be "${v}" (<name>=<value>; kumiori --list-limits shows the names)`));
+  const name = m[1];
+  if (!(LIMIT_NAMES as string[]).includes(name)) throw new UsageError(msg(`--limit の ${name} は知らない上限の名前です (kumiori --list-limits で一覧が出ます)`, `--limit: ${name} is not a known limit name (kumiori --list-limits shows the list)`));
+  const bytes = name.endsWith('Bytes');
+  const n = (bytes ? /^(\d+)([KMG]B?)?$/i : /^(\d+)$/).exec(m[2].trim());
+  const unit = n?.[2] ? 1024 ** ('KMG'.indexOf(n[2][0].toUpperCase()) + 1) : 1;
+  const value = n ? Number(n[1]) * unit : NaN;
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new UsageError(msg(`--limit ${name} の値 "${m[2]}" は使えません (1 以上の整数${bytes ? '。64MB・1GB のように K・M・G を付けられます' : ''})`, `--limit ${name} cannot be "${m[2]}" (an integer of 1 or more${bytes ? '; K, M or G may be appended, such as 64MB or 1GB' : ''})`));
+  try {
+    resolveLimits({ [name]: value }, DEFAULT_LIMITS, '--limit');
+  } catch (e) {
+    throw new UsageError(e instanceof Error ? e.message : String(e));
+  }
+  return { [name]: value };
+}
+
+/** --list-limits の表 (名前・既定の値・上げられるか・説明) */
+export function limitList(): string {
+  const rows = LIMIT_NAMES.map((k) => {
+    const d = LIMIT_DEFS[k];
+    const def = d.def === 0 ? msg('(説明のとおり)', '(see text)') : String(d.def);
+    const kind = d.kind === 'depth' ? msg('下げるだけ', 'lower only') : msg('上げ下げ', 'raise/lower');
+    return `  ${k.padEnd(20)} ${def.padStart(12)}  ${kind.padEnd(messageLang() === 'en' ? 12 : 6)}  ${limitDescription(k)}`;
+  });
+  return [msg('入力の上限 (--limit <名前>=<値> で変える。名前・既定の値・上げられるか・説明):', 'Input limits (change with --limit <name>=<value>; name, default, whether it can be raised, description):'), ...rows].join('\n');
+}
 
 /** 今の言語の使い方 */
 export function usage(): string {
@@ -1365,8 +1583,20 @@ async function main() {
     console.log(usage());
     return;
   }
+  if (args.listLimits) {
+    console.log(limitList());
+    return;
+  }
   if (!args.inputs.length) {
     console.error(usage());
+    process.exit(1);
+  }
+  try {
+    const date = sourceDateEpoch(process.env);
+    if (date) args.date = date;
+  } catch (e) {
+    if (!(e instanceof UsageError)) throw e;
+    console.error(printable(e.message));
     process.exit(1);
   }
   const planNotes: string[] = [];
@@ -1432,9 +1662,8 @@ async function main() {
   for (const job of jobs) byDir.set(path.dirname(job.input), [...(byDir.get(path.dirname(job.input)) ?? []), job]);
   for (const [dir, dirJobs] of byDir) {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const onChange = (_ev: string, file: string | Buffer | null) => {
+    const onChange = (_ev: string, f: string) => {
       // 組版に関わるファイル (HTML・FO・CSS・画像・書体) だけ。書き出した PDF・node_modules・. で始まるものは見ない
-      const f = file?.toString();
       if (!f || outputs.has(path.resolve(dir, f)) || writtenFiles.has(pathKey(path.resolve(dir, f))) || /(^|[\\/])(node_modules|\.)/.test(f) || !(WATCHED.test(f) || pluginWatched?.test(f))) return;
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -1443,14 +1672,7 @@ async function main() {
         });
       }, 300);
     };
-    try {
-      fs.watch(dir, { recursive: true }, onChange);
-    } catch (e) {
-      // 下のディレクトリまで見張れない環境 (Node 20 より前の Linux など) では、入力のディレクトリだけを見張る
-      if ((e as NodeJS.ErrnoException).code !== 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM') throw e;
-      console.error(msg(`${dir}: 下のディレクトリの変更は見張れません (Node 20 以上で使えます)`, `${dir}: changes in subdirectories cannot be watched (needs Node 20 or later)`));
-      fs.watch(dir, onChange);
-    }
+    watchInputDir(dir, onChange);
   }
   console.error(msg('変更を見張っています (Ctrl+C で終わる)', 'watching for changes (Ctrl+C to stop)'));
 }

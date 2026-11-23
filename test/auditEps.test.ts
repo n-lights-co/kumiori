@@ -3,6 +3,7 @@
  * 上限は小さな値に差し替えて試す (既定の値のままだと、数百 MB・数十秒を使ってから止まる)
  */
 import { describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import { Interp, latin1, strText, type InterpOptions } from '../src/psInterp';
 import { Graphics, type GraphicsOptions } from '../src/psGraphics';
 import { EpsBudget, epsBudgetOf, epsToSvg, runEps } from '../src/eps';
@@ -19,13 +20,13 @@ function run(src: string, opts: InterpOptions & Partial<GraphicsOptions> = {}) {
 
 describe('模様の線の輪郭', () => {
   it('模様を選んでいない「/Pattern setcolorspace」だけの線は、輪郭を作らずに警告にする', () => {
-    const t = Date.now();
+    const t = cpuClock();
     const r = run('/Pattern setcolorspace 1 setlinejoin 0 0 moveto 100000 { 1 0 rlineto 0 1 rlineto } repeat stroke');
     expect(r.error).toBeUndefined();
     expect(r.G.items.length).toBe(0);
     expect([...r.I.warnings]).toContain('模様の塗り');
     // 前は 20 万点の輪郭 (丸いつなぎ目で 1 つ 25 点) を作ってから捨てていた
-    expect(Date.now() - t).toBeLessThan(3000);
+    expect(cpuClock() - t).toBeLessThan(scaled(3000));
   });
   it('模様の線の輪郭は、作りながら点の上限を確かめる (作り切ってから数えない)', () => {
     const r = run(

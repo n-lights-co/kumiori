@@ -9,6 +9,7 @@
  * MathML Core に無い要素・属性 (mtable の属性・mfenced・menclose・maligngroup・mstack など) は、MathML 3 の要素として、
  * 形の決まりの無いところは Kumiori の決めた値で組む。
  */
+import { nestLimit, limits } from './limits';
 import type { FkFont, FkGlyph, MathConstantName, MathFont } from './mathFont';
 import { isFenceOperator, isSeparatorOperator, operatorProps, stretchesInline, type OpForm } from './mathOperators';
 import { mathVariantChar } from './mathVariants';
@@ -311,7 +312,8 @@ class MathLayouter {
   private depthTo(ctx: Ctx, depth0: number): Ctx {
     // 深さは上下限の中に収める (MAX_MATH_DEPTH)。数でない深さは変えない
     if (Number.isNaN(depth0)) return ctx;
-    const depth = Math.min(Math.max(depth0, -MAX_MATH_DEPTH), MAX_MATH_DEPTH);
+    const maxDepth = nestLimit(MAX_MATH_DEPTH);
+    const depth = Math.min(Math.max(depth0, -maxDepth), maxDepth);
     let a = ctx.depth;
     let b = depth;
     if (a === b) return ctx;
@@ -354,7 +356,7 @@ class MathLayouter {
     const nm = nameOf(n);
     if (nm === 'mtext' || nm === 'mspace') return true;
     // 深すぎる入れ子は空白のようなものとみなさない (layout の深さの上限と同じ。JS の呼び出しの深さを使い切らない)
-    if (depth > MAX_MATH_NEST) return false;
+    if (depth > nestLimit(MAX_MATH_NEST)) return false;
     if (nm === 'mrow' || nm === 'mstyle' || nm === 'mphantom' || nm === 'mpadded') {
       // 深さ 0 から読んだ結果だけを覚える (深さの上限で打ち切った結果は、読み始めの深さで変わる)
       if (depth === 0) {
@@ -383,7 +385,7 @@ class MathLayouter {
   coreOp(n: MNode, depth = 0): MNode | undefined {
     const nm = nameOf(n);
     if (nm === 'mo') return n;
-    if (depth > MAX_MATH_NEST) return undefined; // 深すぎる入れ子は追わない (JS の呼び出しの深さを使い切らない)
+    if (depth > nestLimit(MAX_MATH_NEST)) return undefined; // 深すぎる入れ子は追わない (JS の呼び出しの深さを使い切らない)
     if (SCRIPTED.has(nm) || nm === 'mfrac') {
       const els = this.flow(n);
       return els[0] ? this.coreOp(els[0], depth + 1) : undefined;
@@ -714,7 +716,7 @@ class MathLayouter {
   /** 要素の入れ子の深さ (JS の呼び出しの深さを使い切らないよう、深すぎる要素は空にする) */
   private nest = 0;
   layout(n: MNode, ctx0: Ctx, c?: Constraint): Box {
-    if (this.nest >= MAX_MATH_NEST) return this.empty();
+    if (this.nest >= nestLimit(MAX_MATH_NEST)) return this.empty();
     this.nest++;
     try {
       const ctx = this.enter(n, ctx0);
@@ -1693,7 +1695,7 @@ class MathLayouter {
     const cellsOf = (e: MNode, c: Ctx, depth = 0): Box[] => {
       const nm = nameOf(e);
       if (nm === 'mn') return [...(e.textContent ?? '').trim()].map((ch) => this.textBox(ch, c));
-      if (nm === 'msrow' || nm === 'mrow') return depth >= MAX_MATH_NEST ? [] : this.flow(e).flatMap((k) => cellsOf(k, c, depth + 1));
+      if (nm === 'msrow' || nm === 'mrow') return depth >= nestLimit(MAX_MATH_NEST) ? [] : this.flow(e).flatMap((k) => cellsOf(k, c, depth + 1));
       if (nm === 'none') return [this.empty()];
       return [this.layout(e, c)];
     };
@@ -1715,7 +1717,7 @@ class MathLayouter {
       else if (nm === 'mscarries') rows.push(carries(e, shift));
       else if (nm === 'msgroup') {
         const sh = parseInt(attr(e, 'shift') ?? '0', 10) || 0;
-        if (depth < MAX_MATH_NEST) this.flow(e).forEach((k, i) => addRow(rows, k, shift + pos + i * sh, depth + 1));
+        if (depth < nestLimit(MAX_MATH_NEST)) this.flow(e).forEach((k, i) => addRow(rows, k, shift + pos + i * sh, depth + 1));
       } else rows.push({ cells: cellsOf(e, ctx), shift: shift + pos });
     };
     // mlongdiv: 繰り上がりを除いた最初の 2 つが、割る数と商 (その前の繰り上がりは、それぞれに付く)
@@ -1843,11 +1845,12 @@ class MathLayouter {
       l.push(d);
     };
     let glyphs = 0;
+    const maxGlyphs = limits().mathGlyphs;
     let truncated = false;
     for (const it of box.items) {
       if (it.t === 'g') {
         // 字の数の上限 (MAX_MATH_GLYPHS の説明)
-        if (++glyphs > MAX_MATH_GLYPHS) {
+        if (++glyphs > maxGlyphs) {
           truncated = true;
           continue;
         }

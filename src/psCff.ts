@@ -238,6 +238,9 @@ function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: numbe
   const transient: number[] = [];
   let done = false;
   let steps = 0;
+  // random 演算子 (escape 23) の乱数: 字形ごとに決まった種から始める xorshift32 (Type 2 Charstring Format (Adobe TN #5177) の random は、
+  // 0 より大きく 1 以下の値を返すとだけ決めている。Math.random だと、同じ字形が組むたびに違う形になり、同じバイトの PDF にならない)
+  let rand = 0x9e3779b9;
   const lbias = bias(priv.subrs.length, f.charstringType);
   const gbias = bias(f.gsubrs.length, f.charstringType);
   const moveTo = (dx: number, dy: number) => {
@@ -498,7 +501,10 @@ function runType2(cs: Uint8Array, f: CffFont, priv: CffPrivate, seacDepth: numbe
               st.push(-(st.pop() ?? 0));
               break;
             case 23:
-              st.push(Math.random() || 1);
+              rand ^= rand << 13;
+              rand ^= rand >>> 17;
+              rand ^= rand << 5;
+              st.push(((rand >>> 0) + 1) / 0x100000000);
               break;
             case 24: {
               const b2 = st.pop() ?? 0;

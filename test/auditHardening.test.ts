@@ -3,6 +3,7 @@
  * すぐに「読めない画像」か PostScript のエラーで終わること。どの入力も、直す前は、数十秒〜時限なし・数 GB を使っていた
  */
 import { describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Interp, latin1, type InterpOptions } from '../src/psInterp';
@@ -97,9 +98,9 @@ describe('画像: 頭の値だけで通る検査', () => {
     dv.setInt32(22, 10000, true);
     dv.setUint16(26, 1, true);
     dv.setUint16(28, 0, true);
-    const t0 = Date.now();
+    const t0 = cpuClock();
     expect(decodeBmp(b)).toBeUndefined();
-    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(1000));
   });
   it('TIFF: 次の IFD が自分自身を指すもの・値の数がファイルに収まらないものは、utif に渡さない', () => {
     const tiff = (next: number, count: number) => {
@@ -126,9 +127,9 @@ describe('画像: 頭の値だけで通る検査', () => {
 
 describe('文字の走査・書体の集まり', () => {
   it('mentionedFiles: 区切りの無い長い並び (data: の URL) でも、長さに比例した時間で終わる。拾う名前はこれまでと同じ', () => {
-    const t0 = Date.now();
+    const t0 = cpuClock();
     const got = mentionedFiles([`@font-face { src: url(data:font/ttf;base64,${'A'.repeat(2_000_000)}) } p { background: url(img/a%20b.png) } <img src=c.jpg> x.png.bak d.gif?x=1 e/f.svg,g.webp`]);
-    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(3000));
     expect([...got].sort()).toEqual(['a b.png', 'c.jpg', 'd.gif', 'f.svg', 'g.webp']);
     // 引用符の中の名前 (空白を含む。空白の後ろだけの名前も拾う: 多めに拾う決まり)、名前の無い拡張子だけの並び
     expect([...mentionedFiles(['<img src="my pic.png"> (.png) a.b.tiff'])].sort()).toEqual(['a.b.tiff', 'my pic.png', 'pic.png']);

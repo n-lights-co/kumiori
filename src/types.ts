@@ -1152,10 +1152,23 @@ export interface LInline extends BaseNode {
   /** 絶対配置の箱 (LBlockContainer.inlineCb が同じ番号のもの) の基準になる行内の箱の番号 */
   cbKey?: number;
   /**
-   * 行の中で見つけた絶対配置の箱の、見つけた所の目印 (組版が段落の並びに入れる、中身の無い inline。読み込みは付けない)。
+   * 行の中で見つけた絶対配置の箱の、見つけた所の目印 (組版が段落の並びに入れる、中身の無い inline。読み込みも、行内の要素の中の
+   * ページを基準にする箱に、負の番号で付ける: LBlockContainer.inlineAnchor)。
    * 幅 0 の箱 (LNode.absAnchor が同じ番号) になり、組んだ後で、その箱の位置を static position にする (CSS 2.1 §10.3.7・§10.6.4)
    */
   staticAnchor?: number;
+  /**
+   * タグ付き PDF: 行内の要素の中の絶対配置の箱を書いた所の目印 (読み込みが、中身の無い inline に付ける。staticAnchor の目印のときは付けない)。
+   * 幅 0 の箱になり、構造の木で、その箱の要素の構造の節を、ここに置く (箱は後で描くが、読む順は書いた所。ISO 32000-1 §14.8.2.3)。
+   * 目印の inline には、その要素の構造の節の番号 (tag) が付く
+   */
+  structMark?: boolean;
+  /**
+   * 行の中に書いた CSS の float の、書いた所の目印 (中身の無い inline。読み込みが、行内の要素の中の float を行内の要素の外へ出すとき
+   * (LFloat.inlineAnchor) と、組版が、段落の並びの途中の float を見つけたときに入れる)。幅 0 の箱になり、組版は、この目印を含む行を組む
+   * ときに float を置く (CSS 2.1 §9.5.1 の規則 6・8: float の上端は、float より前の中身を含む行の上端より上にしない。そのうえでできるだけ上)
+   */
+  floatAnchor?: number;
   /** 行を分ける改行 (children は '\n')。行頭 (空の行になるとき) では無視する (行内の要素のブロックの ::before / ::after) */
   softBreak?: boolean;
   /**
@@ -1665,6 +1678,11 @@ export interface LFloat extends BaseNode, BoxStyle {
    * 入れば並べる (入らなければ下へずらす)。幅の指定が無ければ shrink-to-fit。省略時は XSL-FO の置き方 (本文領域の端に積む)
    */
   cssPlacement?: boolean;
+  /**
+   * 行の中に書いた float の、書いた所の目印の番号 (LInline.floatAnchor が同じ番号の、中身の無い inline)。読み込みが、行内の要素の
+   * 中の float を行内の要素の外 (包むブロックの並び) へ出したときに付ける。組版は、目印のある行を組むときに置く (cssPlacement のときだけ)
+   */
+  inlineAnchor?: number;
   /** CSS の clear (cssPlacement のとき): その側の先の float の下に置く (CSS 2.1 §9.5.2) */
   clear?: 'start' | 'end' | 'both';
   /** CSS の min-width・max-width (pt。内容の幅。cssPlacement で幅の指定が無いとき、shrink-to-fit の幅を抑える。下限が勝つ) */
@@ -1933,7 +1951,24 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
    * 位置に直した値が入っていて、組版エンジンは、箱を置くページの領域 (:first・:left・:right・名前付きのページで違う) で決め直し、百分率の
    * 幅・margin・padding (BoxStyle.percent) も、そのページの領域の幅で解く (CSS Paged Media 3 §3)
    */
-  pageArea?: { left?: number; right?: number; top?: number; bottom?: number; pctLeft?: number; pctRight?: number; pctTop?: number; pctBottom?: number; pctHeight?: number };
+  pageArea?: {
+    left?: number;
+    right?: number;
+    top?: number;
+    bottom?: number;
+    pctLeft?: number;
+    pctRight?: number;
+    pctTop?: number;
+    pctBottom?: number;
+    pctHeight?: number;
+    /**
+     * top・bottom が両方 auto (staticTop)、left・right が両方 auto (staticLeft) の、position: absolute の箱: その向きの位置は static position
+     * (CSS 2.1 §10.3.7・§10.6.4)。組版が、見つけた所 (ページの本文の流れの位置・行の中の位置) で決める。left は static position からの
+     * ずれ (margin-left など)、top は 0 (組版が static position を決められないときに使う)
+     */
+    staticTop?: boolean;
+    staticLeft?: boolean;
+  };
   /**
    * 幅の指定が無く、left と right の片方しか無いとき、幅を中身に合わせて縮める (CSS の絶対配置の shrink-to-fit。CSS 2.1 §10.3.7):
    * min(max(最小の内容の幅, 使える幅), 内容の幅)。指定が無ければ、使える幅いっぱい (XSL-FO の absolute-position)
@@ -1964,6 +1999,11 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
   blockAlign?: 'start' | 'center' | 'end' | 'space-between' | 'space-around' | 'space-evenly';
   /** top も bottom も無い絶対配置の箱 (static position に置く) を、その位置から block 方向へずらす量 (pt。箱の margin-top) */
   staticOffset?: number;
+  /**
+   * 行内の要素の中で見つけた、ページを基準にする絶対配置の箱の、見つけた所の目印の番号 (LInline.staticAnchor が同じ番号の、中身の無い
+   * inline。負の数)。読み込みが、箱を行内の要素の外へ出したときに付ける。組版は、目印のある行の目印の位置を static position にする
+   */
+  inlineAnchor?: number;
   keepWithNext?: boolean;
   keepWithPrevious?: boolean;
   breakBefore?: BreakKind;
@@ -2442,6 +2482,17 @@ export interface GlyphArea extends AreaBase {
    * 既定のパレット (font-palette: normal) のときは付かない。色つきの表 (COLR/CPAL) を持つ書体の字だけに効く
    */
   fontPalette?: { base?: number | 'light' | 'dark'; colors?: Array<[number, string]> };
+  /**
+   * 分綴で行末に足した字 (CSS Text 4 §6.3.2 の hyphenate-character・XSL 1.1 §7.10.5 の hyphenation-character。入力の字ではない)。
+   * タグ付き PDF では、置き換えの文字列 (ActualText) をソフトハイフン (U+00AD) にして、読む字のハイフンにしない (ISO 32000-1 §14.8.2.5・§14.9.4)
+   */
+  hyphen?: boolean;
+  /**
+   * この字の後ろで行を分け、行末で捨てた空白の字 (行の最後の字にだけ付く。段落の終わりと強制改行の行には付かない)。
+   * タグ付き PDF では、この字の後ろに、その空白を見えない字として書き、構造の順に読む字で、前の行の終わりの語と次の行の初めの語が
+   * つながらないようにする (ISO 32000-1 §14.8.2.5: 語の区切りは空白の字で表す)
+   */
+  breakSpace?: string;
 }
 
 /** 行の中の箱 (枠・背景・変換の付いた行内の要素など)。欄の意味・単位 (pt)・座標の決まりは、リポジトリの docs/area-tree.md (組んだ結果の形) にある */
@@ -2542,6 +2593,11 @@ export interface PageArea extends AreaBase {
   type: 'page';
   /** ページ番号の数 (振り直し (XSL-FO の initial-page-number・CSS の counter-reset: page) を反映したもの。シートの順の番号ではない) */
   pageNumber: number;
+  /**
+   * ページ番号の書式 (XSL-FO の page-sequence の format、CSS の余白の箱の counter(page, <型>) の型。"i"・"I"・"a"・"A"・"01"・"一"・"①" など。
+   * 前後の字も含む。pageNumber.ts の formatPageNumber の書式)。10 進 ("1") のページには無い。PDF のページラベル (/PageLabels) を書くのに使う
+   */
+  pageNumberFormat?: string;
   /** 通常フローの本文領域 */
   regionBody: RegionBodyArea;
   /** フローから切り離された絶対配置 (PageArea 原点基準) */
@@ -2651,6 +2707,8 @@ export interface AreaTree {
   resources?: AreaResources;
   /** タグ付き PDF の構造の木と、Area の sourceRef → 構造の節の番号の表 (structure.ts)。入力が構造の木を持つときだけある */
   structure?: import('./structure').AreaStructure;
+  /** 先頭から maxPages ページで止めた木 (TypesetOptions.maxPages) だけにある。止めない木には無い */
+  truncated?: { maxPages: number };
 }
 
 /** 木が使う書体と画像の一覧 (AreaTree.resources) */
@@ -2705,4 +2763,59 @@ export interface FontSpec {
   weight?: number;
   /** TTF/OTF の URL (複数なら順にフォールバック) */
   urls: string[];
+}
+
+/**
+ * OS の書体を探す部品 (TypesetOptions.systemFonts)。Node では kumiori/node の createSystemFonts() が作る。
+ * 読み込んだどの書体にも字形の無い字を持つ書体を探す (CSS Fonts 4 §5.2 の処理系の後備の書体)
+ */
+export interface SystemFontSource {
+  /** 字形の無い字 (request.chars) を持つ書体を探す。見つからない字は、返す書体に入れない。探せなければ空の並び */
+  find(request: SystemFontRequest): Promise<SystemFontMatch[]>;
+}
+
+/** 書体の種類。serif: 明朝・セリフ体、sans: ゴシック・サンセリフ体、other: 手書き・装飾・記号の書体、unknown: 分からない */
+export type SystemFontKind = 'serif' | 'sans' | 'other' | 'unknown';
+
+/** SystemFontSource.find に渡す求め */
+export interface SystemFontRequest {
+  /** 読み込んだどの書体にも字形の無い字 (符号位置 1 つの字。重ならず、符号位置の順) */
+  chars: string[];
+  /** 文書の言語 (BCP 47)。漢字の書体を選ぶ手がかりにする (無ければ日本語) */
+  lang?: string;
+  /**
+   * 探す書体の種類 (既定 ['serif', 'sans'])。種類ごとに、chars を覆う書体を選ぶ: その種類の書体を先に、覆えなかった字は
+   * 種類の分からない書体、ほかの種類の書体の順で補う
+   */
+  kinds?: readonly SystemFontKind[];
+  /**
+   * 種類ごとに探す字 (chars のうち、その種類の書体を指定した所に出る字)。種類が無い項は chars の全部を探す。
+   * 組版は、明朝の文脈にしか無い字にゴシックの書体を要らないので、要らない書体を選ばない (読み込まない) ために渡す
+   */
+  charsByKind?: Partial<Record<SystemFontKind, readonly string[]>>;
+  /** 返す書体 (埋め込める書体) の数の上限 */
+  maxFaces?: number;
+  /** 呼び出しの止める合図 */
+  signal?: AbortSignal;
+}
+
+/** SystemFontSource.find が返す書体 */
+export interface SystemFontMatch {
+  /** 同じ書体の印 (実体のパス・TTC の中の番号・大きさ・更新の時刻)。文書をまたいで、読み込んだ書体を使い回すのに使う */
+  key: string;
+  /** 知らせに出す名前 (書体のファミリー名とファイル名) */
+  name: string;
+  /** この書体で組む字 (request.chars のうち、この書体が持つもの) */
+  chars: string[];
+  /** この書体の種類 (OS/2 の panose・sFamilyClass と名前から決めたもの)。組版は、指定の書体と同じ種類の書体を先に使う */
+  kind: SystemFontKind;
+  /** どの種類の求め (request.kinds) に選ばれた書体か (いくつかの求めに選ばれたら、初めのもの。種類の合う書体が無くて補ったときは kind と違う) */
+  forKind: SystemFontKind;
+  /**
+   * PDF に埋め込めるか (OpenType の OS/2 の fsType)。false の書体は、字を持つが使えないことを知らせるためだけに返す
+   * (data を呼ばない。chars は、埋め込める書体のどれも持たない字)
+   */
+  embeddable: boolean;
+  /** 書体の中身 (TTC なら、取り出した 1 つの書体の sfnt)。初めて使うときに 1 度だけ呼ぶ */
+  data(): Promise<ArrayBuffer>;
 }

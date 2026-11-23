@@ -3,6 +3,7 @@
  * 対応: ci・cn・csymbol・fn・lambda・apply (plus・minus・times・divide・power・root・abs・factorial・not・関係 (eq・lt など)・
  * 集合の演算・int・sum・product・関数の適用)。置き換えの形 (演算子の字・括弧の付け方) は Kumiori の決めたもの
  */
+import { nestLimit } from './limits';
 import { attr, elements, nameOf, virtual, MAX_MATH_NEST, type MNode } from './mathLayout';
 
 const mo = (t: string, a: Record<string, string> = {}) => virtual('mo', a, [], t);
@@ -49,7 +50,7 @@ let nest = 0;
 export function contentToPresentation(n: MNode): MNode {
   const nm = nameOf(n);
   if (!CONTENT.has(nm)) return n;
-  if (nest >= MAX_MATH_NEST) return mrow([]);
+  if (nest >= nestLimit(MAX_MATH_NEST)) return mrow([]);
   nest++;
   try {
     return convert(nm, n);

@@ -9,6 +9,7 @@
  *  - CSS-01 @counter-style の symbolic・additive と roman の、長すぎる表記
  */
 import { beforeAll, describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import { parseHTML } from 'linkedom';
 import { DOMParser } from '@xmldom/xmldom';
 import { makeEngine } from './helpers';
@@ -126,9 +127,9 @@ describe('HTM-06: 表の span の上限 (HTML の仕様)', () => {
     expect(t.columns!.length).toBe(1000);
   });
   it('表の列 (<col span> の合計) も 1000 列まで。超えたら limit/table-columns の診断を表ごとに 1 件 (前は <col span="1000"> × 1,000 で百万の列を作った)', () => {
-    const t0 = performance.now();
+    const t0 = cpuClock();
     const r = imp(`<table>${'<col span="1000">'.repeat(1000)}<tr><td>a</td></tr></table><table><col span="600"><col span="600"><tr><td>b</td></tr></table><table><col span="1000"><tr><td>c</td></tr></table>`);
-    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(2000));
     const [a, b, c] = tables(r.document);
     expect(a.columns!.length).toBe(1000);
     expect(b.columns!.length).toBe(1000);

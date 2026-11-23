@@ -63,7 +63,7 @@ PDF/A は、規格の本文ではまだ確かめていないので、保存の�
 | [できること](docs/features.md) | 機能の詳しい一覧 (入力・日本語組版・多言語・ページ・出力) |
 | [画面の使い方](docs/app.md) | 開く・保存・設定・警告 |
 | [コマンド](docs/cli.md) | オプションの一覧・例・環境変数・終了の状態 |
-| [ライブラリ](docs/library.md) | `typeset` の選択肢、PDF・Canvas・SVG・PNG、Web Worker、Node の部品 |
+| [ライブラリ](docs/library.md) | `typeset` の選択肢、PDF・Canvas・SVG・PNG、Web Worker、Node の部品、[API の安定性](docs/library.md#api-の安定性-版をまたいだ約束) (版をまたいで保つもの) |
 | [API の説明書](https://n-lights-co.github.io/kumiori/api/) | すべての関数・型・選択肢 (型の宣言から作った一覧) |
 | [対応仕様説明書](docs/conformance/README.md) | 仕様の項目ごとの対応と扱い |
 | [診断](docs/diagnostics.md) | 警告と誤りの名前・重さ |
@@ -76,6 +76,7 @@ PDF/A は、規格の本文ではまだ確かめていないので、保存の�
 ## 動く環境
 
 Node は 20.19.0 以上の 20 系か、22.12.0 以上です (CI は 20.19.0 と 22 で確かめています)。
+Deno (2.x) と Bun (1.x) でも、ライブラリとコマンドが動きます (Node の互換の API で動きます)。ブラウザでは、Web Worker の中でも組めます。確かめた範囲は [パッケージの形と動く環境](docs/library.md#パッケージの形と動く環境) にあります。
 
 ## ライセンス
 

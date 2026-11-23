@@ -12,11 +12,12 @@ export interface Pixels {
 }
 
 import { inflateFast, inflatedLength } from './inflateFast';
-import { BMP_RLE_PIXELS_PER_BYTE, DEFLATE_MAX_RATIO, MAX_PIXELS, gifPixelBudget, pixelBudget } from './imageLimits';
+import { BMP_RLE_PIXELS_PER_BYTE, DEFLATE_MAX_RATIO, maxPixels, gifPixelBudget, pixelBudget } from './imageLimits';
 import { msg } from './messages';
+import { rejoin, thisCall } from './callContext';
 
 /** 画素の数の上限 (imageLimits.ts。ここからも引けるようにしてある) */
-export { MAX_PIXELS } from './imageLimits';
+export { MAX_PIXELS, maxPixels } from './imageLimits';
 
 /** GIF の最初の画像の画素。読めなければ undefined */
 export function decodeGif(b: Uint8Array): Pixels | undefined {
@@ -180,7 +181,7 @@ export function pngWithinLimits(b: Uint8Array): boolean {
       const fh = dv.getUint32(at + 16);
       if (!fw || !fh || fw + dv.getUint32(at + 20) > width || fh + dv.getUint32(at + 24) > height) return false;
       framePixels += fw * fh + width * height;
-      if (framePixels > MAX_PIXELS) return false;
+      if (framePixels > maxPixels()) return false;
     }
     if (type === 'IHDR' && len >= 13 && at + 21 <= b.length) {
       width = dv.getUint32(at + 8);
@@ -193,7 +194,7 @@ export function pngWithinLimits(b: Uint8Array): boolean {
     else if (type === 'IEND') break;
     at += 12 + len;
   }
-  return pixels > 0 && pixelBits > 0 && pixels <= MAX_PIXELS && (pixels * pixelBits) / 8 <= DEFLATE_MAX_RATIO * idat;
+  return pixels > 0 && pixelBits > 0 && pixels <= maxPixels() && (pixels * pixelBits) / 8 <= DEFLATE_MAX_RATIO * idat;
 }
 
 /**
@@ -241,7 +242,7 @@ export function decodeBmp(b: Uint8Array): Pixels | undefined {
   const comp = core ? 0 : dv.getUint32(30, true);
   const W = Math.abs(w);
   const H = Math.abs(h);
-  if (!W || !H || W * H > MAX_PIXELS) return undefined;
+  if (!W || !H || W * H > maxPixels()) return undefined;
   // 1 画素のビット数は 1・4・8・16・24・32 だけ ([MS-WMF] 2.1.1.3 の BitCount。0 は JPEG・PNG を入れる形で、ここでは読まない)。
   // 0 を通すと、1 行のバイト数が 0 になって、下のファイルの大きさの検査を、54 バイトのファイルの 10000 × 10000 が通る
   if (![1, 4, 8, 16, 24, 32].includes(bpp)) return undefined;
@@ -405,7 +406,7 @@ function pngFile(width: number, height: number, zLength: number, body: (out: Uin
 export async function encodePng(px: Pixels): Promise<Uint8Array> {
   const rgb = opaque(px.rgba);
   const raw = pngRaw(px, rgb);
-  const z = new Uint8Array(await new Response(new Blob([raw as BlobPart]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+  const z = new Uint8Array(rejoin(thisCall(), await new Response(new Blob([raw as BlobPart]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer()));
   return pngFile(px.width, px.height, z.length, (out, at) => out.set(z, at), rgb ? 2 : 6);
 }
 
@@ -472,7 +473,7 @@ export function encodePngStored(px: Pixels): Uint8Array {
  */
 export function expandRle(src: Uint8Array, width: number, height: number, bpp: 4 | 8): Uint8Array {
   const stride = Math.floor((bpp * width + 31) / 32) * 4;
-  if (width * height > MAX_PIXELS) throw new RangeError(msg(`画像が大きすぎます (${width}×${height})`, `the image is too large (${width}×${height})`));
+  if (width * height > maxPixels()) throw new RangeError(msg(`画像が大きすぎます (${width}×${height})`, `the image is too large (${width}×${height})`));
   const out = new Uint8Array(stride * height);
   let x = 0;
   let y = 0;

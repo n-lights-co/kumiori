@@ -2,13 +2,14 @@
  * psOpsImage — 画像の演算子 (§4.10: image・colorimage・imagemask) と、画像の辞書の読み方・標本の読み手・画素の展開 (paintImage)。
  * 展開した画素は DisplayItem (RGBA) として Graphics.items に積む
  */
+import { limits } from './limits';
 import { invert, mul } from './matrix';
 import { type Interp, type PSDict, type PSObj, PSError, arrItems, procSource, strBytes } from './psInterp';
 import type { Graphics, Mat } from './psGraphics';
 import { DEVICE_GRAY, DEVICE_RGB, DEVICE_CMYK, clamp01, type ColorSpace, type RGB } from './psColorSpace';
 import { popMatrix } from './psOpsMatrix';
 import type { ByteSource } from './psFilters';
-import { PS_IMAGE_MAX_PIXELS, PS_TOTAL_IMAGE_PIXELS } from './imageLimits';
+import { psTotalImagePixels } from './imageLimits';
 import { msg } from './messages';
 
 /** 画像の演算子を登録する */
@@ -161,18 +162,18 @@ function paintImage(I: Interp, G: Graphics, s: ImageSpec) {
   if (!Number.isInteger(w) || !Number.isInteger(h)) throw new PSError('typecheck');
   if (w <= 0 || h <= 0) return;
   if (![1, 2, 4, 8, 12, 16].includes(bpc)) throw new PSError('rangecheck');
-  if (w * h > PS_IMAGE_MAX_PIXELS) throw new PSError('limitcheck');
+  if (w * h > limits().epsImagePixels) throw new PSError('limitcheck');
   // 画像の画素は重いので、手間として数える (64 画素で 1 ステップ)。文書の中の画像の画素の合計にも上限を置く
   // (同じ大きな画像を何度も描くループで、時間とメモリを使い切らない)
   I.charge((w * h) / 64);
   G.imagePixels = (G.imagePixels ?? 0) + w * h;
-  if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
+  if (G.imagePixels > psTotalImagePixels()) throw new PSError('limitcheck');
   // 明示したマスク (Type 3 の画像の MaskDict。§4.10.6) の寸法にも、画像と同じ上限と手間を当てる。
   // マスクの寸法は画像と別に指定でき (InterleaveType 1 は画像と同じ、2 は行の数が整数倍、3 は別の元で寸法も自由)、
   // マスクの画素ごとにループと確保をする
   const em0 = s.explicitMask;
   if (em0) {
-    if (em0.w * em0.h > PS_IMAGE_MAX_PIXELS) throw new PSError('limitcheck');
+    if (em0.w * em0.h > limits().epsImagePixels) throw new PSError('limitcheck');
     I.charge((em0.w * em0.h) / 64);
   }
   G.countItem();

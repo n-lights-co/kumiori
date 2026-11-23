@@ -11,6 +11,7 @@
  *  - warning: 指定を読まずに無視した・別の形で組んだ
  *  - info: 出力は意図どおりで、知っておくとよいこと (選択肢で止めた取得など)
  */
+import { limits } from './limits';
 import { msg } from './messages';
 
 /** 診断の重さ */
@@ -25,18 +26,25 @@ export type DiagnosticCode =
   | 'resource/attachment-not-found'
   | 'link/action-dropped'
   | 'fo/unsupported'
+  | 'fo/note'
+  | 'fo/master-reference-not-found'
   | 'css/unsupported'
   | 'css/unknown-property'
+  | 'css/invalid-value'
   | 'css/invalid-attr-value'
   | 'css/unreferenced-stylesheet'
   | 'font/face-not-found'
   | 'limit/nesting-depth'
   | 'limit/css-import'
+  | 'limit/raised'
+  | 'limit/reached'
   | 'font/file-unreadable'
   | 'font/family-unreadable'
   | 'font/generic-not-loaded'
   | 'font/load-failed'
   | 'font/missing-glyph'
+  | 'font/system-fallback'
+  | 'font/system-font-not-embeddable'
   | 'font/repaired'
   | 'font/table-unused'
   | 'font/cff2-not-converted'
@@ -54,6 +62,15 @@ export type DiagnosticCode =
   | 'image/invalid-size'
   | 'image/too-many-fragments'
   | 'image/format-warning'
+  | 'image/pdf-invalid'
+  | 'image/pdf-encrypted'
+  | 'image/pdf-page'
+  | 'image/pdf-page-range'
+  | 'image/pdf-fragment'
+  | 'image/pdf-repaired'
+  | 'image/pdf-dropped'
+  | 'image/pdf-font'
+  | 'image/pdf-placeholder'
   | 'layout/line-overflow'
   | 'layout/box-overflow'
   | 'layout/float-overflow'
@@ -72,6 +89,8 @@ export type DiagnosticCode =
   | 'layout/missing-id'
   | 'layout/index-key-missing'
   | 'layout/not-converged'
+  | 'layout/max-pages-reached'
+  | 'layout/beyond-max-pages'
   | 'limit/measure-nesting'
   | 'limit/table-row-span'
   | 'limit/table-columns'
@@ -99,16 +118,28 @@ export type DiagnosticCode =
   | 'pdfx/annotations-dropped'
   | 'pdfx/actions-dropped'
   | 'pdfx/check'
+  | 'pdfx/embedded-pdf'
   | 'pdfa/launch-dropped'
   | 'pdfa/cmyk-converted'
   | 'pdfa/forms-dropped'
   | 'pdfa/attachments-dropped'
   | 'pdfa/freetext-appearance'
+  | 'pdfa/embedded-pdf'
   | 'pdfua/missing-title'
   | 'pdfua/missing-lang'
   | 'pdfua/missing-figure-alt'
   | 'pdfua/missing-formula-alt'
-  | 'pdfua/heading-skipped';
+  | 'pdfua/heading-skipped'
+  | 'pdfua/embedded-pdf'
+  | 'snapshot/wait-timeout'
+  | 'snapshot/iframe-skipped'
+  | 'snapshot/canvas-tainted'
+  | 'snapshot/canvas-too-large'
+  | 'snapshot/stylesheet-rule-removed'
+  | 'snapshot/blob-unreadable'
+  | 'snapshot/limit'
+  | 'snapshot/shadow-root-closed'
+  | 'snapshot/font-face-source-unknown';
 
 /** 診断の名前と重さの表 */
 const DIAGNOSTIC_TABLE: Record<DiagnosticCode, DiagnosticSeverity> = {
@@ -121,20 +152,27 @@ const DIAGNOSTIC_TABLE: Record<DiagnosticCode, DiagnosticSeverity> = {
   'link/action-dropped': 'warning',
   // 読み込み: XSL-FO
   'fo/unsupported': 'warning',
+  'fo/note': 'warning',
+  'fo/master-reference-not-found': 'error',
   // 読み込み: HTML・CSS・EPUB
   'css/unsupported': 'warning',
   'css/unknown-property': 'warning',
+  'css/invalid-value': 'warning',
   'css/invalid-attr-value': 'warning',
   'css/unreferenced-stylesheet': 'info',
   'font/face-not-found': 'warning',
   'limit/nesting-depth': 'warning',
   'limit/css-import': 'error',
+  'limit/raised': 'info',
+  'limit/reached': 'warning',
   // 書体
   'font/file-unreadable': 'warning',
   'font/family-unreadable': 'warning',
   'font/generic-not-loaded': 'warning',
   'font/load-failed': 'warning',
   'font/missing-glyph': 'error',
+  'font/system-fallback': 'info',
+  'font/system-font-not-embeddable': 'warning',
   'font/repaired': 'warning',
   'font/table-unused': 'warning',
   'font/cff2-not-converted': 'warning',
@@ -153,6 +191,16 @@ const DIAGNOSTIC_TABLE: Record<DiagnosticCode, DiagnosticSeverity> = {
   'image/invalid-size': 'error',
   'image/too-many-fragments': 'warning',
   'image/format-warning': 'warning',
+  // PDF の画像 (pdfImage.ts)
+  'image/pdf-invalid': 'error',
+  'image/pdf-encrypted': 'error',
+  'image/pdf-page': 'warning',
+  'image/pdf-page-range': 'warning',
+  'image/pdf-fragment': 'warning',
+  'image/pdf-repaired': 'info',
+  'image/pdf-dropped': 'info',
+  'image/pdf-font': 'info',
+  'image/pdf-placeholder': 'error',
   // 組版
   'layout/line-overflow': 'error',
   'layout/box-overflow': 'error',
@@ -172,6 +220,8 @@ const DIAGNOSTIC_TABLE: Record<DiagnosticCode, DiagnosticSeverity> = {
   'layout/missing-id': 'warning',
   'layout/index-key-missing': 'warning',
   'layout/not-converged': 'warning',
+  'layout/max-pages-reached': 'info',
+  'layout/beyond-max-pages': 'warning',
   'limit/measure-nesting': 'warning',
   'limit/table-row-span': 'warning',
   'limit/table-columns': 'warning',
@@ -200,16 +250,29 @@ const DIAGNOSTIC_TABLE: Record<DiagnosticCode, DiagnosticSeverity> = {
   'pdfx/annotations-dropped': 'info',
   'pdfx/actions-dropped': 'info',
   'pdfx/check': 'warning',
+  'pdfx/embedded-pdf': 'warning',
   'pdfa/launch-dropped': 'info',
   'pdfa/cmyk-converted': 'info',
   'pdfa/forms-dropped': 'warning',
   'pdfa/attachments-dropped': 'warning',
   'pdfa/freetext-appearance': 'warning',
+  'pdfa/embedded-pdf': 'warning',
   'pdfua/missing-title': 'warning',
   'pdfua/missing-lang': 'warning',
   'pdfua/missing-figure-alt': 'warning',
   'pdfua/missing-formula-alt': 'warning',
   'pdfua/heading-skipped': 'warning',
+  'pdfua/embedded-pdf': 'warning',
+  // ブラウザの画面で文書を写す (snapshotDocument)
+  'snapshot/wait-timeout': 'warning',
+  'snapshot/iframe-skipped': 'warning',
+  'snapshot/canvas-tainted': 'warning',
+  'snapshot/canvas-too-large': 'warning',
+  'snapshot/stylesheet-rule-removed': 'warning',
+  'snapshot/blob-unreadable': 'warning',
+  'snapshot/limit': 'warning',
+  'snapshot/shadow-root-closed': 'warning',
+  'snapshot/font-face-source-unknown': 'warning',
 };
 
 /** 誤り (例外) の名前。診断と同じ名前の体系 (投げる型の分けは ERROR_TABLE) */
@@ -348,8 +411,8 @@ function omittedMessage(severity: DiagnosticSeverity, omitted: number, kinds: nu
   const ja = severity === 'error' ? '誤り' : severity === 'warning' ? '警告' : '知らせ';
   const en = severity === 'error' ? 'error' : severity === 'warning' ? 'warning' : 'notice';
   return msg(
-    `同じ種類の${ja}がほかに ${omitted} 件 (${kinds} 種) あります (1 つの名前につき ${MAX_DIAGNOSTICS_PER_CODE} 件まで残します)`,
-    `${omitted} more ${en}${omitted === 1 ? '' : 's'} of the same kind (${kinds} distinct) were omitted (up to ${MAX_DIAGNOSTICS_PER_CODE} are kept per code)`,
+    `同じ種類の${ja}がほかに ${omitted} 件 (${kinds} 種) あります (1 つの名前につき ${limits().diagnosticsPerCode} 件まで残します)`,
+    `${omitted} more ${en}${omitted === 1 ? '' : 's'} of the same kind (${kinds} distinct) were omitted (up to ${limits().diagnosticsPerCode} are kept per code)`,
   );
 }
 
@@ -380,7 +443,7 @@ export class DiagnosticList {
       return;
     }
     const c = this.perCode.get(d.code) ?? 0;
-    if (c >= MAX_DIAGNOSTICS_PER_CODE) {
+    if (c >= limits().diagnosticsPerCode) {
       const o = this.omitted(d);
       o.omitted += n;
       o.keys.add(k);

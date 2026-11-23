@@ -3,6 +3,7 @@
  * ブラウザの IndexedDB に置くので、次に開いたときも読み込み直さずに使える。外部には送らない。
  */
 import type { UserFont } from './fontLoader';
+import { rejoin, thisCall } from './callContext';
 
 const DB = 'kumiori-user-fonts';
 const STORE = 'fonts';
@@ -24,9 +25,9 @@ function open(): Promise<IDBDatabase> {
 
 /** 接続を開いて fn を行い、途中で失敗しても必ず閉じる */
 async function withDb<T>(fn: (db: IDBDatabase) => Promise<T>): Promise<T> {
-  const db = await open();
+  const db = rejoin(thisCall(), await open());
   try {
-    return await fn(db);
+    return rejoin(thisCall(), await fn(db));
   } finally {
     db.close();
   }
@@ -34,7 +35,7 @@ async function withDb<T>(fn: (db: IDBDatabase) => Promise<T>): Promise<T> {
 
 export async function saveUserFont(f: UserFont): Promise<void> {
   try {
-    await withDb(
+    rejoin(thisCall(), await withDb(
       (db) =>
         new Promise<void>((res, rej) => {
           const tx = db.transaction(STORE, 'readwrite');
@@ -44,7 +45,7 @@ export async function saveUserFont(f: UserFont): Promise<void> {
           tx.onerror = () => rej(tx.error);
           tx.onabort = () => rej(tx.error);
         }),
-    );
+    ));
   } catch {
     /* 保存できなくても、今回の組版には使える */
   }
@@ -52,14 +53,14 @@ export async function saveUserFont(f: UserFont): Promise<void> {
 
 export async function loadUserFonts(): Promise<UserFont[]> {
   try {
-    return await withDb(
+    return rejoin(thisCall(), await withDb(
       (db) =>
         new Promise<UserFont[]>((res, rej) => {
           const req = db.transaction(STORE).objectStore(STORE).getAll();
           req.onsuccess = () => res(req.result as UserFont[]);
           req.onerror = () => rej(req.error);
         }),
-    );
+    ));
   } catch {
     return [];
   }
@@ -67,7 +68,7 @@ export async function loadUserFonts(): Promise<UserFont[]> {
 
 export async function clearUserFonts(): Promise<void> {
   try {
-    await withDb(
+    rejoin(thisCall(), await withDb(
       (db) =>
         new Promise<void>((res, rej) => {
           const tx = db.transaction(STORE, 'readwrite');
@@ -76,7 +77,7 @@ export async function clearUserFonts(): Promise<void> {
           tx.onerror = () => rej(tx.error);
           tx.onabort = () => rej(tx.error);
         }),
-    );
+    ));
   } catch {
     /* 無視 */
   }

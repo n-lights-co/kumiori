@@ -15,10 +15,10 @@ const dir = path.join(root, 'src/drawio');
  * draw.io と mxGraph のソースを移していない、Kumiori で書いたファイル (src/drawio の下の道)。
  * 1 つずつ中を読んで確かめたもの: 見分け (sniff)・選択肢の型 (options)・形式の受け口 (index・load)・小さな XML の読み取り (drawioXml)・
  * 圧縮を解く (inflate。pako を呼ぶ)・base64・警告の文の言語 (messages)・文字の幅 (drawioText。描く側の測り方か Helvetica の幅の見積もり)・
- * Node のコマンドの道具 (nodeFiles)・配布物の表示の文 (notice)・途中の和の表 (prefixSums)・pako の型 (pako.d.ts)。
+ * Node のコマンドの道具 (nodeFiles)・配布物の表示の文 (notice)・途中の和の表 (prefixSums)。
  * ここにファイルを足すのは、そのファイルが draw.io と mxGraph のコードを含まないと確かめたときだけ
  */
-const OWN = ['base64.ts', 'drawioHashes.ts', 'drawioPin.ts', 'drawioText.ts', 'drawioXml.ts', 'index.ts', 'inflate.ts', 'load.ts', 'messages.ts', 'nodeFiles.ts', 'notice.ts', 'options.ts', 'pako.d.ts', 'prefixSums.ts', 'sniff.ts'];
+const OWN = ['base64.ts', 'drawioHashes.ts', 'drawioPin.ts', 'drawioText.ts', 'drawioXml.ts', 'index.ts', 'inflate.ts', 'load.ts', 'messages.ts', 'nodeFiles.ts', 'notice.ts', 'options.ts', 'prefixSums.ts', 'sniff.ts'];
 
 const SHAPES = 'v24.7.5';
 const OTHERS = 'v32.6.10';

@@ -67,20 +67,21 @@ function pagesBase(dir) {
 let pagesOut;
 
 /**
- * pages のジョブで作った index.html の、アセットの参照 (src・href) が土台で始まることを確かめる
+ * pages のジョブで作った index.html の、アセットの参照 (src・href) のうち、絶対のパス (/ で始まるもの) が土台で始まることを確かめる
  * (土台が効いていない・絶対の /assets/… で書いたものが残っている、という誤りを見つける)。
+ * 相対の参照 (画面から API の説明書へのリンクの api/ など) は、置いた場所 (土台) から解決されるので確かめない。
  * 確かめるのは index.html の参照だけで、JS の中で組み立てるパス (分かれたチャンク・worker・fetch で読むファイル) は確かめない
  */
 function checkPagesBase(base) {
   const html = fs.readFileSync(path.join(pagesOut, 'index.html'), 'utf8');
-  const refs = [...html.matchAll(/\b(?:src|href)\s*=\s*["']([^"']+)["']/g)].map((m) => m[1]).filter((r) => !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(r));
+  const refs = [...html.matchAll(/\b(?:src|href)\s*=\s*["']([^"']+)["']/g)].map((m) => m[1]).filter((r) => r.startsWith('/') && !r.startsWith('//'));
   const bad = refs.filter((r) => !r.startsWith(base));
   if (bad.length) console.error(`土台 ${base} で始まらない参照: ${bad.join(' ')}`);
   if (!refs.some((r) => r.startsWith(`${base}assets/`))) {
     console.error(`${base}assets/ を指す参照がありません`);
     return false;
   }
-  console.log(`index.html の参照 ${refs.length} 個は、どれも ${base} で始まる`);
+  console.log(`index.html の絶対のパスの参照 ${refs.length} 個は、どれも ${base} で始まる`);
   return !bad.length;
 }
 

@@ -12,23 +12,31 @@
  *  - 不透明度の付いた箱 (CSS の opacity) は、opacity を付けた g (SVG 1.1 §14.5: 中身を 1 枚の絵にしてから重ねる)
  *  - 切り抜きは clipPath (clipPathUnits の既定 userSpaceOnUse。SVG 1.1 §14.3.5: 参照した要素の座標で読む)
  *  - 同じ画像は、defs に 1 度だけ書き、置く所は use で参照する
- * 描かないもの: リンク・注釈・フォームの欄 (PDF の注釈。Canvas の画面の見本と同じ扱いにはしない)。SVG の画像の中のリンク (a 要素) も書かない。
+ *  - リンク: 本文のリンク (a.link) と SVG の画像の中のリンク (a 要素。SvgShape.link) を、SVG の a 要素 (SVG 2 §16.2) にする。
+ *    外への飛び先は、PDF と同じリンクの決まり (linkPolicy.ts の judgeExternalLink。TypesetOptions.links) に通したものだけを書き、
+ *    通さないものは書かずに警告する。文書の中の飛び先は、同じページなら #id、別のページなら pageHref で名前を付けた SVG の #id。
+ *    本文のリンクは、PDF のリンクの注釈と同じく、領域の矩形 (透明。押せる) を、ページの中身の上に重ねて書く
+ * 描かないもの: 注釈・フォームの欄 (PDF の注釈。Canvas の画面の見本と同じ扱いにはしない)。
  */
 import type { FontManager } from './fontManager';
 import { parseColor } from './color';
-import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type Painter, type PathSeg } from './paint';
+import { FAKE_BOLD, ITALIC_SLANT, paintPlaceholder, paintSheet, pdfPlaceholderDiagnostic, type Line, type Matrix, type Painter, type PathSeg } from './paint';
+import type { Diagnostic } from './diagnostics';
 import type { AssetStore } from './assets';
 import { areaGlyphs, colorFontOf, COMPOSITE, plainStops, type ColorFill, type ColorOp, type Rgb } from './colorGlyph';
 import { ensureSvgGlyphReader } from './colorGlyphSvg';
-import type { GlyphArea, ImageArea, Rect, SheetArea } from './types';
+import type { Area, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea } from './types';
 import { parseSvg, resolveNonScaling, type FilterRasterResult, type SvgClip, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type XmlNode } from './svg';
 import { rasterFilter } from './svgFilterRaster';
-import { outlineText, registerSvgFonts, svgLanguageTag } from './pdfRenderer';
+import { foreignObjectShapes, outlineText, registerSvgFonts, svgLanguageTag, type PdfRenderOptions } from './pdfRenderer';
 import { base64 } from './base64';
 import { resolveRef } from './resources';
 import { decodeBmp, decodeGif, encodePng } from './pixels';
 import { decodeWebp } from './webp';
 import { msg } from './messages';
+import { rejoin, thisCall } from './callContext';
+import { countDroppedLink, droppedLinkWarning, judgeExternalLink, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
+import { diag } from './diagnostics';
 
 export interface SvgRenderOptions {
   /** 画像 (fo:external-graphic・img) の登録所 */
@@ -42,7 +50,54 @@ export interface SvgRenderOptions {
    * 1 つの HTML に、書き出した SVG を何枚も直に入れるときは、ページごとに違う値にする (id がぶつからないように)
    */
   idPrefix?: string;
+  /** systemLanguage を照らす言語 (SvgImageOptions.svgLanguages) */
+  svgLanguages?: readonly string[];
+  /** SVG の画像の foreignObject の中身を組む (SvgImageOptions.typesetForeign) */
+  typesetForeign?: PdfRenderOptions['typesetForeign'];
+  /** 描く途中の知らせの出し先 (PDF の画像を仮の枠で描いたこと、foreignObject の中身を近似したこと、書かなかったリンクなど) */
+  warn?: (d: Diagnostic) => void;
+  /** 外へのリンクのうち、書いてよいもの (PDF と同じ決まり。TypesetOptions.links)。既定は linkPolicy.ts の既定 */
+  links?: LinkPolicy;
+  /** このページの番号 (0 から。文書の中の飛び先が同じページかを見る) */
+  pageIndex?: number;
+  /** 文書の中の飛び先 (id → ページの番号。AreaTree.destinations)。無ければ、文書の中のリンクは書かない */
+  destinations?: Record<string, number>;
+  /** 別のページへのリンクの書き先: ページの番号を受け、そのページの SVG の URL を返す。無ければ (undefined を返せば)、別のページへのリンクは書かない */
+  pageHref?: (pageIndex: number) => string | undefined;
 }
+
+/**
+ * XML 1.0 に書けない字 (§2.2 の Char でないもの: C0 の制御文字 (タブ・改行を含む。属性の値の中では空白に正規化される。§3.3.3)・
+ * 対になっていないサロゲート・U+FFFE・U+FFFF) と、DEL を、URL の %xx (UTF-8。対になっていないサロゲートは U+FFFD) にする
+ */
+function xmlSafeUrl(u: string): string {
+  return u.replace(/[\u0000-\u001f\u007f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, (c) => {
+    try {
+      return encodeURIComponent(c);
+    } catch {
+      return '%EF%BF%BD';
+    }
+  });
+}
+
+/**
+ * 文書の中の飛び先の id を、URL の飛び先 (fragment。WHATWG URL §1.3 の fragment percent-encode set) に書く。空白・引用符・<>・`・% と、
+ * 区切りの #・XML に書けない字を %xx にする (ブラウザは、%xx を戻した id でも要素を探す。HTML の §7.4.6.4 indicated part)
+ */
+const fragmentOf = (id: string) => xmlSafeUrl(id.replace(/[\u0000-\u0020"<>`%#\u007f]/g, (c) => encodeURIComponent(c)));
+
+/** id の値に書けるか (XML に書けない字を含まない。空でない) */
+const XML_CHARS = /^(?:[\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd]|[\ud800-\udbff][\udc00-\udfff])+$/;
+
+/** 2 つの変換の積 (m を先に、a を後に掛ける) */
+const mulMatrix = (a: Matrix, m: Matrix): Matrix => [
+  a[0] * m[0] + a[2] * m[1],
+  a[1] * m[0] + a[3] * m[1],
+  a[0] * m[2] + a[2] * m[3],
+  a[1] * m[2] + a[3] * m[3],
+  a[0] * m[4] + a[2] * m[5] + a[4],
+  a[1] * m[4] + a[3] * m[5] + a[5],
+];
 
 /**
  * いまの座標の 1 単位の、ページの上の長さ (pt)。SVG の画像の中で、SVG の根の座標の 1 単位が長い (小さな viewBox を大きく置く) ときは、
@@ -152,7 +207,8 @@ const ID_PREFIX = new RegExp(`^[${NAME_START}][${NAME_START}\\-.0-9\\u00B7\\u030
 const TILED_SIZES_MAX = 8;
 
 /** 埋め込む画像 (data: の URI) */
-type Prepared = { kind: 'raster'; uri: string } | { kind: 'svg'; doc: SvgDoc };
+/** pdf: PDF の画像 (PDF の出力だけが描く。SVG の書き出しは仮の枠。design/pdf-as-image.md の 3 節) */
+type Prepared = { kind: 'raster'; uri: string } | { kind: 'svg'; doc: SvgDoc } | { kind: 'pdf' };
 
 /** fontkit の字形の道の命令 */
 type GlyphCommand = { command: string; args: number[] };
@@ -191,12 +247,29 @@ export function pageImages(sheet: SheetArea): Map<string, Set<string>> {
 /** 画像の表の鍵 (src と、置いた所の言語。SVG の systemLanguage を照らす言語ごとに図形を分ける) */
 export const imageKey = (src: string, lang: string) => `${src}\u0000${lang}`;
 
+/** SVG の画像を図形にする設定 (ページの SVG・PNG の書き出しで同じもの) */
+export interface SvgImageOptions {
+  /** 画像の登録所 */
+  assets?: AssetStore;
+  /** XML のパーサ */
+  parseXml: (xml: string) => XmlNode;
+  /** systemLanguage を照らす言語 (置いた所に言語の指定が無いとき。TypesetOptions.svgLanguages。PDF と同じ) */
+  svgLanguages?: readonly string[];
+  /** foreignObject の中身を組む (PdfRenderOptions.typesetForeign と同じもの)。無ければ、中身の文字だけを近似して描く */
+  typesetForeign?: PdfRenderOptions['typesetForeign'];
+  /** foreignObject の中身を近似したときなどの警告を足す先 */
+  warn?: (d: Diagnostic) => void;
+}
+
 /**
- * SVG の画像 (登録した src の中身 text) を、置いた所の言語 lang で図形にする (pdfRenderer.ts の toVectors・canvasRenderer.ts と同じ選択肢:
- * 字は書体の輪郭、近似できない filter は画素で計算する)。SVG の @font-face の書体は、呼ぶ側が先に読み込んでおく (registerSvgFonts)。
- * 読めなければ null
+ * SVG の画像 (登録した src の中身 text) を、置いた所の言語 langs ごとに図形にする (pdfRenderer.ts の toVectors・canvasRenderer.ts と同じ選択肢:
+ * 字は書体の輪郭、近似できない filter は画素で計算する)。systemLanguage (SVG 2 §5.6.5) は、置いた所の言語で照らし、言語の指定が無ければ
+ * svgLanguages で照らす (どちらも無ければ実行環境の言語)。foreignObject (SVG 2 §23.2) の中身は、typesetForeign で本文と同じ組版で組む
+ * (PDF と同じく、中身は svgLanguages で照らして 1 度だけ組む)。
+ * SVG の @font-face の書体は、先に読み込む (registerSvgFonts)。結果は言語 ('' は言語の指定の無い所) → 図形。読めない言語は入れない
  */
-export function svgImageDoc(src: string, text: string, lang: string, fonts: FontManager, assets: AssetStore | undefined, parseXml: (xml: string) => XmlNode): SvgDoc | null {
+export async function svgImageDocs(src: string, text: string, langs: Iterable<string>, fonts: FontManager, opts: SvgImageOptions): Promise<Map<string, SvgDoc>> {
+  const { assets, parseXml } = opts;
   // SVG の image・use の外のファイル: SVG の場所を基準に、登録した画像を引く (pdfRenderer.ts の toVectors と同じ)
   const base = /^data:/i.test(src) ? undefined : src;
   const image = (href: string) => {
@@ -209,18 +282,31 @@ export function svgImageDoc(src: string, text: string, lang: string, fonts: Font
     const r = assets?.get(resolveRef(href, base));
     return r?.bytes && r.mime === 'image/svg+xml' ? new TextDecoder().decode(r.bytes) : undefined;
   };
-  try {
-    return parseSvg(text, parseXml, {
-      outline: (t, fam, wt, size, style, vertical) => outlineText(fonts, t, fam, wt, size, false, style, vertical),
-      image,
-      resource,
-      approximateFilters: true,
-      rasterFilter,
-      ...(lang ? { languages: [svgLanguageTag(lang)] } : {}),
-    });
-  } catch {
-    return null;
+  const fallback = opts.svgLanguages?.length ? opts.svgLanguages.map(svgLanguageTag) : undefined;
+  rejoin(thisCall(), await registerSvgFonts(fonts, text));
+  // foreignObject の中身を、先に組んでおく (文書の順の番号で引く。parseSvg は同期なので)
+  const foreign = opts.typesetForeign
+    ? rejoin(thisCall(), await foreignObjectShapes(text, parseXml, opts.typesetForeign, fonts, assets, opts.warn ?? (() => {}), { resource, ...(fallback ? { languages: fallback } : {}) }))
+    : [];
+  const out = new Map<string, SvgDoc>();
+  for (const lang of langs) {
+    const languages = lang ? [svgLanguageTag(lang)] : fallback;
+    try {
+      const doc = parseSvg(text, parseXml, {
+        outline: (t, fam, wt, size, style, vertical) => outlineText(fonts, t, fam, wt, size, false, style, vertical),
+        image,
+        resource,
+        approximateFilters: true,
+        rasterFilter,
+        ...(foreign.length ? { foreignShapes: (i: number) => foreign[i] } : {}),
+        ...(languages ? { languages } : {}),
+      });
+      if (doc) out.set(lang, doc);
+    } catch {
+      // 読めない SVG は描かない
+    }
   }
+  return out;
 }
 
 /**
@@ -237,6 +323,11 @@ async function prepareImages(
   const assets = opts.assets;
   for (const [src, langs] of pageImages(sheet)) {
     const asset = assets?.get(src);
+    if (asset?.pdfSource) {
+      images.set(imageKey(src, ''), { kind: 'pdf' });
+      opts.warn?.(pdfPlaceholderDiagnostic(src, 'SVG'));
+      continue;
+    }
     if (!asset?.bytes || asset.drawable === false) continue;
     const bytes = asset.bytes;
     if (asset.mime === 'image/png' || asset.mime === 'image/jpeg') {
@@ -245,16 +336,14 @@ async function prepareImages(
     }
     if (asset.mime === 'image/gif' || asset.mime === 'image/bmp' || asset.mime === 'image/webp') {
       const px = asset.mime === 'image/gif' ? decodeGif(bytes) : asset.mime === 'image/bmp' ? decodeBmp(bytes) : decodeWebp(bytes);
-      if (px) images.set(imageKey(src, ''), { kind: 'raster', uri: `data:image/png;base64,${base64(await encodePng(px))}` });
+      if (px) images.set(imageKey(src, ''), { kind: 'raster', uri: `data:image/png;base64,${base64(rejoin(thisCall(), await encodePng(px)))}` });
       continue;
     }
     if (asset.mime !== 'image/svg+xml' || !opts.parseXml) continue;
     const text = new TextDecoder().decode(bytes);
     // SVG の style の @font-face の書体を読み込んでから、図形にする (PDF と同じ)
-    await registerSvgFonts(fonts, text);
-    for (const lang of langs) {
-      const doc = svgImageDoc(src, text, lang, fonts, assets, opts.parseXml);
-      if (!doc) continue;
+    const docs = rejoin(thisCall(), await svgImageDocs(src, text, langs, fonts, { ...opts, parseXml: opts.parseXml }));
+    for (const [lang, doc] of docs) {
       images.set(imageKey(src, lang), { kind: 'svg', doc });
       // filter を画素で計算した画像は、PNG にしておく (書き出しは同期で行うため)
       const visit = (shapes: SvgShape[]) => {
@@ -268,7 +357,7 @@ async function prepareImages(
       visit(doc.shapes);
     }
   }
-  for (const px of pixels.keys()) pixels.set(px, `data:image/png;base64,${base64(await encodePng({ width: px.width, height: px.height, rgba: px.rgba }))}`);
+  for (const px of pixels.keys()) pixels.set(px, `data:image/png;base64,${base64(rejoin(thisCall(), await encodePng({ width: px.width, height: px.height, rgba: px.rgba })))}`);
   return { images, pixels };
 }
 
@@ -295,16 +384,64 @@ class SvgPainter implements Painter {
   /** いまの座標の拡大率 (ページの座標 pt に対して。変換の行列式の平方根の積)。SVG の画像の中では、SVG の根の座標の拡大率 */
   private scale = 1;
 
+  /** いまの変換 (ページの座標 → SVG の根の座標)。本文のリンクの矩形を、ページの中身の上 (本体の後) に、置いた所の変換で書くため */
+  private ctm: Matrix = [1, 0, 0, 1, 0, 0];
+  /** 本文のリンクの a 要素 (本体の後に書く) */
+  private linkEls: string[] = [];
+  /** 本体の外 (defs の中の模様・マスクなど) を書いている深さ。その中のリンクは書かない */
+  private capturing = 0;
+  /** 書かなかった外への飛び先 (警告にする) */
+  readonly dropped: DroppedLinks = {};
+
   constructor(
     private fonts: FontManager,
     private images: Map<string, Prepared>,
     private pixels: Map<FilterRasterResult, string>,
     private prefix: string,
     private parseXml?: (xml: string) => XmlNode,
+    private linkOpts: Pick<SvgRenderOptions, 'links' | 'pageIndex' | 'destinations' | 'pageHref'> = {},
+    /** 文書の id (このページの飛び先)。中で付ける id は、これとぶつからないものにする */
+    private reserved: ReadonlySet<string> = new Set(),
   ) {}
 
   private id(): string {
-    return `${this.prefix}${this.nextId++}`;
+    let id: string;
+    do id = `${this.prefix}${this.nextId++}`;
+    while (this.reserved.has(id));
+    return id;
+  }
+
+  /**
+   * リンクの飛び先を、a 要素の href の値 (エスケープの前) にする。書かないものは undefined。
+   * 外への飛び先は、PDF と同じ決まり (judgeExternalLink) に通し、通さないものは数える (判定に使った、前処理の後の文字列を書く)。
+   * 文書の中の飛び先は、同じページなら #id、別のページなら pageHref の名前に #id を付ける
+   */
+  private hrefOf(link: LinkTarget): string | undefined {
+    if (link.external !== undefined) {
+      const j = judgeExternalLink(link.external, this.linkOpts.links);
+      if (!j.allowed) {
+        countDroppedLink(this.dropped, j);
+        return undefined;
+      }
+      return xmlSafeUrl(j.url);
+    }
+    if (link.internal === undefined || !XML_CHARS.test(link.internal)) return undefined;
+    const page = this.linkOpts.destinations?.[link.internal];
+    if (page === undefined) return undefined;
+    const frag = `#${fragmentOf(link.internal)}`;
+    if (page === this.linkOpts.pageIndex) return frag;
+    const file = this.linkOpts.pageHref?.(page);
+    return typeof file === 'string' ? xmlSafeUrl(file) + frag : undefined;
+  }
+
+  /** 本文のリンク: 領域の矩形 (透明で押せる。pointer-events の既定 visiblePainted は、塗りが none でなければ当たる。SVG 2 §16.6) */
+  mark(a: Area, x: number, y: number) {
+    if (!a.link || this.capturing || !(a.width > 0 && a.height > 0)) return;
+    const href = this.hrefOf(a.link);
+    if (href === undefined) return;
+    const c = this.ctm;
+    const tf = c[0] === 1 && c[1] === 0 && c[2] === 0 && c[3] === 1 && c[4] === 0 && c[5] === 0 ? '' : ` transform="${matrixAttr(c)}"`;
+    this.linkEls.push(`<a xlink:href="${esc(href)}"><rect x="${num(x)}" y="${num(y)}" width="${num(a.width)}" height="${num(a.height)}"${tf} fill="#ffffff" fill-opacity="0"/></a>`);
   }
 
   /**
@@ -352,9 +489,9 @@ class SvgPainter implements Painter {
     return `<use xlink:href="#${id}" transform="${matrixAttr(m)}"${attrs}/>`;
   }
 
-  result(): { defs: string; body: string } {
+  result(): { defs: string; body: string; links: string } {
     this.closeClips();
-    return { defs: this.defs.join(''), body: this.out.join('') };
+    return { defs: this.defs.join(''), body: this.out.join(''), links: this.linkEls.join('') };
   }
 
   private closeClips() {
@@ -378,11 +515,14 @@ class SvgPainter implements Painter {
 
   transform(m: Matrix, draw: () => void) {
     const saved = this.scale;
+    const savedCtm = this.ctm;
     this.scale *= Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2])) || 1;
+    this.ctm = mulMatrix(savedCtm, m);
     try {
       this.scope(`<g transform="${matrixAttr(m)}">`, draw);
     } finally {
       this.scale = saved;
+      this.ctm = savedCtm;
     }
   }
 
@@ -622,6 +762,7 @@ class SvgPainter implements Painter {
   drawImage(a: ImageArea, x: number, y: number) {
     const p = this.images.get(imageKey(a.src, a.language ?? '')) ?? this.images.get(imageKey(a.src, ''));
     if (!p) return;
+    if (p.kind === 'pdf') return paintPlaceholder(a, x, y, this);
     if (p.kind === 'raster') {
       // 領域の大きさに引き伸ばす (組版が、置く大きさを決めてある。Canvas の drawImage と同じ)
       // 置く大きさの image を参照する (大きさの違う置き方が多い画像は、単位正方形を変換で引き伸ばす。sizedImageId)
@@ -709,20 +850,27 @@ class SvgPainter implements Painter {
   private capture(draw: () => void): string {
     const saved = this.out;
     this.out = [];
+    this.capturing++;
     try {
       draw();
       return this.out.join('');
     } finally {
       this.out = saved;
+      this.capturing--;
     }
   }
 
   /** 図形の並び (svg.ts の SvgShape。座標は SVG の根の座標) を書く */
   private shapes(shapes: readonly SvgShape[]) {
     for (let sh of shapes) {
-      // SVG の画像の中のリンク (a 要素。sh.link) は書かない: ページのリンクと同じく、リンク・注釈は書き出さない
-      // (書けば、PDF のリンクの決まり (--link-schemes) を通らない URI が、SVG を見る側で開けるリンクになる)
+      // SVG の画像の中のリンク (a 要素。sh.link): 本文のリンクと同じ決まりに通したものだけを、図形を包む a にする
+      // (決まりを通さずに書くと、--link-schemes で止めた URI が、SVG を見る側で開けるリンクになる)。模様・マスクの中には書かない
+      const href = sh.link !== undefined && !this.capturing ? this.hrefOf({ external: sh.link }) : undefined;
       let close = '';
+      if (href !== undefined) {
+        this.out.push(`<a xlink:href="${esc(href)}">`);
+        close = '</a>';
+      }
       for (const c of sh.clips ?? []) {
         this.out.push(`<g clip-path="url(#${this.clipId(c)})">`);
         close = '</g>' + close;
@@ -788,10 +936,16 @@ export async function renderSheetToSvg(sheet: SheetArea, fonts: FontManager, opt
         `idPrefix must be an XML name without colons (starting with a letter, _ or another name-start character, followed by name characters such as digits, - and .): ${JSON.stringify(prefix.slice(0, 40))}`,
       ),
     );
-  const { images, pixels } = await prepareImages(sheet, fonts, opts);
-  const painter = new SvgPainter(fonts, images, pixels, prefix, opts.parseXml);
+  const { images, pixels } = rejoin(thisCall(), await prepareImages(sheet, fonts, opts));
+  // このページの飛び先の id (文書の中のリンクの #id の先)。ページの上の端を指す (PDF のリンクの飛び先 (XYZ のページの上) と同じ)
+  const anchors = Object.entries(opts.destinations ?? {})
+    .filter(([id, k]) => k === opts.pageIndex && XML_CHARS.test(id))
+    .map(([id]) => id);
+  const painter = new SvgPainter(fonts, images, pixels, prefix, opts.parseXml, opts, new Set(anchors));
   paintSheet(sheet, painter, { guides: opts.guides });
-  const { defs, body } = painter.result();
+  const { defs, body, links } = painter.result();
+  const summary = summarizeDroppedLinks(painter.dropped);
+  if (summary) opts.warn?.(diag('link/action-dropped', droppedLinkWarning(summary, 'svg')));
   const w = num(sheet.width);
   const h = num(sheet.height);
   return (
@@ -799,7 +953,10 @@ export async function renderSheetToSvg(sheet: SheetArea, fonts: FontManager, opt
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}pt" height="${h}pt" viewBox="0 0 ${w} ${h}">` +
     (defs ? `<defs>${defs}</defs>` : '') +
     `<rect width="${w}" height="${h}" fill="#ffffff"/>` +
+    // 飛び先: ページの全体の、塗らない矩形 (押しても当たらない。HTML に直に入れたときも、そこへ送られる)
+    anchors.map((id) => `<rect id="${esc(id)}" width="${w}" height="${h}" fill="none"/>`).join('') +
     body +
+    links +
     `</svg>\n`
   );
 }

@@ -11,6 +11,15 @@ import { Parser } from 'htmlparser2';
 import { parserListsWrapped, parserUsesSupportedListOps, patchHtmlParserStack, topFirstArray } from '../src/htmlParserStack';
 
 describe('開いた要素の列の入れ物', () => {
+  it('直下の依存の htmlparser2 が、linkedom の使うものと同じ (linkedom の下に別の版が置かれていない)', () => {
+    // 仕掛け (htmlParserStack.ts・sourceLocation.ts) は直下の htmlparser2 の Parser に入れるので、linkedom が別の版を使うと効かない。
+    // htmlparser2 は linkedom の依存の版 (package.json の範囲) に合わせて上げる (.github/dependabot.yml の htmlparser2 の項)
+    const lock = JSON.parse(fs.readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8')) as { packages: Record<string, { version?: string; dependencies?: Record<string, string> }> };
+    expect(lock.packages['node_modules/linkedom/node_modules/htmlparser2'], 'linkedom の下の htmlparser2').toBeUndefined();
+    expect(lock.packages['node_modules/htmlparser2']?.version).toBeDefined();
+    expect(lock.packages['node_modules/linkedom']?.dependencies?.htmlparser2).toBeDefined();
+  });
+
   it('shift・unshift・indexOf・length・添字が、配列と同じ答えを返す (でたらめな操作の列で比べる)', () => {
     let seed = 1;
     const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2147483648), seed % n);

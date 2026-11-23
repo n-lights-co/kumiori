@@ -159,7 +159,7 @@ describe('outline の値を読む (cssCascade)', () => {
   it('未対応の CSS の一覧に無い (警告に数えない)', () => {
     for (const p of ['outline', 'outline-width', 'outline-style', 'outline-color', 'outline-offset']) expect(UNSUPPORTED_CSS_PROPERTIES.has(p), p).toBe(false);
     const r = unsupportedCssReport(parseCss('p { outline: 1px solid red; outline-offset: 2px; outline-color: blue; outline-style: dotted; outline-width: thin }'));
-    expect(r).toEqual({ unsupported: {}, unknown: {} });
+    expect(r).toEqual({ unsupported: {}, unknown: {}, invalid: {} });
   });
 });
 

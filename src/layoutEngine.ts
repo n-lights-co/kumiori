@@ -10,6 +10,7 @@
  *  4. 行は widows/orphans を考慮して分割。ルビ付き行は前行との行間アキを調整する。
  *  5. 表は行単位でページをまたぎ、ヘッダ行を各ページ先頭に複製する。
  */
+import { limitsKey } from './limits';
 import { TableMarkerScope, collectTableRetrieves, extendAreas, replaceRetrieves, type GroupMarkers, type MarkerArea } from './tableMarkers';
 import { msg } from './messages';
 import { cssBaselineRatio, type LoadedFont } from './fontManager';
@@ -141,11 +142,99 @@ import { maxOf, minOf, pushAll } from './arrayLoop';
 import { prepareWarichu } from './warichu';
 import { diag, mergeDiagnostics, type Diagnostic } from './diagnostics';
 import { withSource } from './sourceLocation';
+import { rejoin, thisCall } from './callContext';
 
 /** 行の並びの最初の節 (字でないもの。診断の場所に使う) */
 const firstNode = (run: readonly unknown[]): object | undefined => run.find((x): x is object => !!x && typeof x === 'object');
 
+/**
+ * 組版の見張り (api.ts が、止める合図・進み具合 (TypesetOptions.signal・onProgress) を渡したときに作る)。
+ * page は、置くページを 1 枚作るたびに呼ぶ (pass は組み直しの回 (1 から)、pages はその回でいままでに作ったページの数。
+ * page-sequence を条件付きのマスターのために組み直すときと、段組の釣り合わせで組み直すときは、数え直すので減ることがある)。
+ * 止めるときは投げる。先頭から N ページで止める (LayoutOptions.maxPages) のは、LayoutEngine.notePage が数を見て、内向きの印 (PAGE_LIMIT) を投げる。
+ * boundary は、組み直しの回と page-sequence の境目で呼ぶ (layoutPaced・layoutSheetsPaced のとき。間をあけるときは Promise を返す)。
+ * 1 つの page-sequence の組版は、同期の再帰の中で進むので、その途中では間をあけられない
+ */
+export interface LayoutControl {
+  page(pass: number, pages: number): void;
+  boundary(): void | Promise<void>;
+}
+
+/**
+ * 先頭から N ページで止める (LayoutOptions.maxPages) ときに、N + 2 ページ目を作った所 (notePage) で投げる印。誤りではなく、
+ * onceSteps (1 段の page-sequence) と layoutColumnPass (段組の page-sequence) が受けて、そこまでのページで、その回を終える
+ */
+const PAGE_LIMIT: unique symbol = Symbol('kumiori.pageLimit');
+
+/** N ページで止めたときに決まらないものの種類 (診断 layout/beyond-max-pages の kind) */
+type BeyondKind = 'page-number-citation' | 'page-number-citation-last' | 'total-pages' | 'index' | 'bookmark';
+
+/**
+ * 組版の途中で投げた印 (PAGE_LIMIT) で抜けたときに、流れの手間の数え (入れ子の深さ・測りの中か) を、組版の外の値に戻す
+ * (止めた後に、同じ host で柱などを組むため。抜けた所の深さのままにすると、入れ子の上限・測りの覚えの判定がずれる)
+ */
+function resetFlowDepth(host: FlowHost): void {
+  if (host.volatile) {
+    host.volatile.active = 0;
+    host.volatile.cites.length = 0;
+  }
+  if (host.nest) host.nest.d = host.nest.cd = 0;
+  if (host.condense) host.condense.depth = host.condense.win = host.condense.trial = 0;
+}
+
+/** 2 つの集まりが同じ要素を持つか */
+function sameSet<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+/** 先頭から N ページで止めたので決まらなかったものの診断 (layout/beyond-max-pages。種類ごとに 1 件) */
+function beyondDiagnostic(max: number, kind: BeyondKind, ids: string[], mark: string): Diagnostic {
+  const count = ids.length;
+  const shown = mark === '' ? msg('空', 'empty') : `"${mark}"`;
+  const m: Record<BeyondKind, [string, string]> = {
+    'page-number-citation': [`ページ番号の参照 ${count} 件`, `${count} page number reference(s)`],
+    'page-number-citation-last': [`最後のページの番号の参照 ${count} 件`, `${count} last-page number reference(s)`],
+    'total-pages': ['総ページ数', 'the total page count'],
+    index: [`索引 ${count} 個`, `${count} index list(s)`],
+    bookmark: [`しおり ${count} 件`, `${count} bookmark(s)`],
+  };
+  const [ja, en] = m[kind];
+  const text =
+    kind === 'index'
+      ? msg(`先頭の ${max} ページで止めたので、${ja}には ${max} ページまでの所だけを並べました`, `stopped after the first ${max} pages, so ${en} list only the places within those pages`)
+      : kind === 'bookmark'
+        ? msg(`先頭の ${max} ページで止めたので、それより後ろを指す${ja}を、飛び先の無いしおりにしました`, `stopped after the first ${max} pages, so ${en} pointing beyond them have no destination`)
+        : msg(`先頭の ${max} ページで止めたので、それより後ろを指す${ja}が決まらず、${shown}で組みました`, `stopped after the first ${max} pages, so ${en} pointing beyond them could not be resolved and were set as ${shown}`);
+  return diag('layout/beyond-max-pages', text, { maxPages: max, kind, count, ...(kind === 'index' ? {} : { ids: ids.slice(0, 10).join(' ') }) });
+}
+
+/** 回・page-sequence の境目で yield するジェネレーター (passSteps・onceSteps) を、同期で最後まで走らせる */
+function runSteps<R>(g: Generator<void, R>): R {
+  for (;;) {
+    const r = g.next();
+    if (r.done) return r.value;
+  }
+}
+
+/** 同じジェネレーターを、境目ごとに boundary を待ちながら走らせる */
+async function runPaced<R>(g: Generator<void, R>, boundary: () => void | Promise<void>): Promise<R> {
+  for (;;) {
+    const r = g.next();
+    if (r.done) return r.value;
+    rejoin(thisCall(), await boundary());
+  }
+}
+
 export interface LayoutOptions {
+  /** 組版の見張り (LayoutControl。止める合図・進み具合) */
+  control?: LayoutControl;
+  /**
+   * 先頭から maxPages ページまで組んだら、組むのをやめる (TypesetOptions.maxPages)。1 以上の整数。無ければ全体を組む。
+   * ページ maxPages + 1 (見張りのページ) まで組み、その次のページを作る所で止め、見張りのページは捨てる (LayoutEngine.notePage)
+   */
+  maxPages?: number;
   /** 出さない診断の名前 (TypesetOptions.diagnostics.ignore)。その名前の警告は、木の warnings と diagnostics のどちらにも入れない */
   ignoreDiagnostics?: ReadonlySet<string>;
   /** 画像 (fo:external-graphic) の登録所。自然なサイズの取得に使う */
@@ -189,6 +278,11 @@ export interface LayoutOptions {
    * (結果は変わらない。既定 LINE_MEMO_ATOMS。0 で覚えない)。テストで、捨てても結果が同じことを確かめるため
    */
   lineMemoAtoms?: number;
+  /**
+   * 段落の行分けの結果を、段落の中身で覚えて、文書をまたいで使い回すもの (器: createTypesetter の reuse。SharedLineMemo)。
+   * 無ければ使い回さない。使い回しても、組んだ結果は変わらない
+   */
+  sharedLineMemo?: SharedLineMemo;
   /**
    * 段組の入れ子の深さの上限。これより深い段組は 1 段に組む (警告を出す)。既定 4。Infinity で上限なし。
    * 中身がページからあふれる段組の入れ子は、外側の段の高さの探索の値ごとに内側の探索をやり直すので、段ごとに組む回数が増える
@@ -828,6 +922,8 @@ interface FlowHost {
   measureMemo?: WeakMap<object, Map<string, MeasureEntry[]>>;
   /** 行分けの結果の覚え (lineMemos) の、覚えている量と古さの順 (LineMemoLru。LayoutEngine.layout ごとに作り直す) */
   lineMemoLru?: LineMemoLru;
+  /** 段落の中身で引く行分けの結果の覚え (文書をまたぐ。LayoutOptions.sharedLineMemo) と、いまの書体の組の印 (FontManager.signature) */
+  sharedLines?: { memo: SharedLineMemo; env: string; fonts: FontManager };
   /**
    * 計測の覚え (measureMemo) のための記録。
    *  - n: 覚えてはいけない計測の数え上げ。結果のほかに跡を残すこと (試し組みの中の絶対配置の箱) が起きるたびに増やす。
@@ -859,6 +955,13 @@ interface CiteUse {
 }
 
 /** 計測の覚えの 1 件: 値と、鍵の文字列に入れない条件 (中身に継がせるスタイル・脚注の番号付け・計測の中で引いたページ番号の参照の値) */
+/** 1 行の組の高さの覚え (Flow.rowHeightRecord)。trail: その行が表の外へ出す末尾の余白。clean: 組みを省いてよい (表の外に跡を残さない) */
+interface RowHeight {
+  h: number;
+  trail: number | undefined;
+  clean: boolean;
+}
+
 interface MeasureEntry {
   st: ResolvedStyle;
   foot: FootnoteCtx | undefined;
@@ -877,6 +980,8 @@ interface MeasureEntry {
 export interface SheetSource {
   /** ページ (シート) の数 */
   readonly count: number;
+  /** 先頭から maxPages ページで止めたら、その数 (AreaTree の truncated) */
+  readonly truncatedAt?: number;
   /** 文書の題・情報 (AreaTree の title・info) */
   readonly title?: string;
   readonly info?: AreaTree['info'];
@@ -898,6 +1003,8 @@ export interface LowMemorySheets {
   readonly structure?: AreaTree['structure'];
   /** ページ (シート) の数 (scan の後で決まる) */
   readonly count: number;
+  /** 先頭から maxPages ページで止めたら、その数 (scan の後で決まる) */
+  readonly truncatedAt?: number;
   /** 組み直しの回を組むのにかかった時間 (ミリ秒。scan の後で決まる。2 回目からの回でページを領域の木にする時間を含む) */
   readonly layoutMs: number;
   /** 組み直しの回を組み、ページを順に領域の木にして visit に渡す。初めから渡し直すときは、先に restart を呼ぶ */
@@ -922,6 +1029,8 @@ export interface LayoutStats {
   /** 行分けの結果の覚えが、いちばん大きかったときの大きさ (LineMemoLru。上限 LayoutOptions.lineMemoAtoms の効き方を確かめる) と、覚えから使い回した回数 */
   lineMemoPeak?: number;
   lineMemoHits?: number;
+  /** 段落の中身で引く覚え (SharedLineMemo) から使い回した回数 */
+  sharedLineHits?: number;
 }
 
 /** keep-with-next の試し組みを、次のブロックの最初の行が置かれた時点で打ち切る合図 (Flow.onPlaced が投げる) */
@@ -1145,6 +1254,8 @@ interface FlowInit {
   firstLineMinBelow?: number;
   /** 参照領域 (ブロックコンテナ・インラインコンテナ・表のセル) の中身: 閉じるとき、最後の行の下の半行間を line-height.conditionality に従って捨てる */
   referenceArea?: boolean;
+  /** 表のセルの中身を組む流れ (layoutCell・splitRow)。この流れの中の表の行だけ、行の高さを覚える (Flow.rowHeightRecord) */
+  inCell?: boolean;
   /** 強制改ページの後の、ページ・段の先頭の余白を捨てる (XSL。省略時は discardLeading と同じ) */
   discardAfterForced?: boolean;
   /** 前の群の末尾の余白 (使った高さに含めてある)。先頭の space-before からその分を差し引く (XSL の相殺: 大きい方) */
@@ -1356,6 +1467,7 @@ class Flow {
   /** まだ何も置いていない先頭の余白を捨てるか (FlowInit.discardLeading) */
   private discardLeading: boolean;
   private referenceArea: boolean;
+  private inCell: boolean;
   /** 強制改ページの後の、ページ先頭の余白も捨てるか (XSL §4.3.1: conditional な space は参照領域の先頭で捨てる。FO のフロー) */
   private discardAfterForced: boolean;
   /** 最後の段の終わりに残った余白 */
@@ -1383,6 +1495,16 @@ class Flow {
   private cbAbs?: CbAbs;
   /** 行の途中で見つけた絶対配置の箱を組む間の、見つけた所の目印の番号 (CbItem.staticKey) */
   private staticKey?: number;
+  /**
+   * いま組む行の並びの中の、書いた所に目印 (LInline.floatAnchor) のある CSS の float (目印の番号 → float と包むブロックの書式)。
+   * 行の並び (layoutChildren の run) を組む間だけ置き、目印を含む行を組むときに置いて除く (layoutInlineRunFloating の placeLineFloats)
+   */
+  private lineFloats?: Map<number, { node: LFloat; st: ResolvedStyle }>;
+  /**
+   * いま組む行の並びの中の、ページを基準にする絶対配置の箱 (位置の決まった祖先の無い CSS の箱) で、見つけた所に目印 (LInline.staticAnchor)
+   * を置いたもの (目印の番号 → 箱と包むブロックの書式)。目印を含む行を置いたときに、その位置を static position にして置く (placeLine)
+   */
+  private lineAbs?: Map<number, { node: LBlockContainer; st: ResolvedStyle }>;
   /** この流れ (表のセルの中) で見つけた、基準の箱がこの流れの外にある絶対配置の箱 (FlowInit.collectAbs) */
   private collectAbs: boolean;
   foreignAbs: CbItem[] = [];
@@ -1428,6 +1550,8 @@ class Flow {
   private tableBreak?: { header: boolean; compat: boolean } & NonNullable<LTable['breakBorders']>;
   /** 組んでいる表の、外へ出す末尾の余白 (LTableCell.trailingSpaceOut。リストの最後の項目) */
   private tableTrailOut?: number;
+  /** layoutCell が、セルの中の絶対配置の箱を外へ渡した回数 (rowHeightRecord が、組みが跡を残したかを見る) */
+  private absHanded = 0;
   /** 組んだ行のセルの、占める列 (c から cs 列) と、改ページの境目で使う前側・後ろ側の線 (LTableCell.breakEdges) */
   private cellCols = new WeakMap<LNode, { c: number; cs: number; before?: BorderSide; after?: BorderSide }>();
   private intrinsic: boolean;
@@ -1559,6 +1683,7 @@ class Flow {
     this.discardLeading = !!init.discardLeading;
     this.firstLineMinBelow = init.firstLineMinBelow;
     this.referenceArea = !!init.referenceArea;
+    this.inCell = !!init.inCell;
     this.intrinsic = !!init.intrinsic;
     this.minContent = !!init.minContent;
     this.gridItemMin = !!init.gridItemMin;
@@ -1587,6 +1712,17 @@ class Flow {
     let keep = 0;
     for (const f of this.stack) if (f.opened) keep += f.desc.keepEnd.size;
     return this.limit - this.footReserve - keep;
+  }
+
+  /**
+   * 次のページ (段) の block 方向の上限。ページの流れでは、いまのページの上限と同じ。セルの中の流れ (リストの項目の本文など。splitRow) では、
+   * 最初の断片の上限 (外側の行を置くページの残り) と、続きの断片の上限 (次のページで使える高さ) が違うので、pages.nextLimit を使う。
+   * 入れ子の表の行をページで分けるとき、続きの断片の高さを、いまのページの残りで出すと、続きの断片が、どれもその残りの高さで切られ、
+   * 断片ごとに改ページして、数行だけのページが続く (XSL 1.1 §6.8・§6.7 のリストと表の行は、ページの上限まで中身を置いて分ける。
+   * CSS 2.1 §13.3.3 の区切ってよい所のうち、§13.3.5 のとおり、ページに入る最後の所で改ページする)
+   */
+  private get nextLimit() {
+    return this.pages?.nextLimit?.() ?? this.limit;
   }
 
   /** 下端の float を、脚注の領域の上に書いた順に積む (段・ページを離れるとき) */
@@ -1778,11 +1914,15 @@ class Flow {
     return x;
   }
 
-  private placeFloat(node: LFloat, ps: ResolvedStyle) {
-    return this.nested(() => this.placeFloatIn(node, ps));
+  /**
+   * float を組んで置く。fits があれば、置く前に float の外側の大きさ (行の向き) で入るかを尋ね、入らなければ置かずに、組んだ箱を返す
+   * (呼ぶ側が後で anchorFloat で置く。行の中に書いた float を、行の後に置くとき: placeLineFloats)
+   */
+  private placeFloat(node: LFloat, ps: ResolvedStyle, fits?: (outerI: number) => boolean): FloatBox | undefined {
+    return this.nested(() => this.placeFloatIn(node, ps, fits));
   }
 
-  private placeFloatIn(node: LFloat, ps: ResolvedStyle) {
+  private placeFloatIn(node: LFloat, ps: ResolvedStyle, fits?: (outerI: number) => boolean): FloatBox | undefined {
     // 百分率の寸法は、いまの箱 (包含ブロック) の内容の幅で解く (CSS 2.1 §10.1・§10.2)。幅が auto の float の、百分率の上限・下限
     // (LFloat.maxWidth・minWidth は内容の幅) も、同じ基準で解き直す (§10.4)
     if (node.percent) {
@@ -1803,7 +1943,10 @@ class Flow {
     }
     const st = resolveStyle(ps, node);
     const ortho = st.wm !== this.wm && (st.wm === 'horizontal-tb') !== (this.wm === 'horizontal-tb');
-    if (node.marginal && node.float !== 'before' && !ortho) return this.placeMarginal(node, st);
+    if (node.marginal && node.float !== 'before' && !ortho) {
+      this.placeMarginal(node, st);
+      return undefined;
+    }
     const original = node;
     if (node.float === 'inside' || node.float === 'outside') {
       // 綴じ側・小口側は、組むページの偶奇 (左右。sideNumber) で start / end に読み替える
@@ -1904,7 +2047,7 @@ class Flow {
     const ph = bboxOf(box);
     const inl = horizontal ? ph.width : ph.height;
     const blk = horizontal ? ph.height : ph.width;
-    this.anchorFloat({
+    const fb: FloatBox = {
       box,
       side: node.float as 'start' | 'end' | 'before' | 'after' | 'center',
       outerI: inl + desc.m.is + desc.m.ie,
@@ -1917,7 +2060,9 @@ class Flow {
       // XSL-FO の start・end の float も、包含ブロック (アンカーのあるブロック) の内容の端に寄せる (XSL 1.1 §6.12.2 は CSS 2.1 §9.5 の規則を使う)
       ...(!node.cssPlacement && (node.float === 'start' || node.float === 'end') ? { edge: { off: this.contentIOffset(), width: this.contentI() } } : {}),
       ...(node.cssPlacement && node.clear ? { clear: node.clear } : {}),
-    });
+    };
+    if (fits && !il && !fits(fb.outerI)) return fb;
+    this.anchorFloat(fb);
     if (il) {
       const placed = this.floats[this.floats.length - 1];
       if (placed && placed.b1 - placed.b0 > EPS) {
@@ -2922,11 +3067,50 @@ class Flow {
     let firstRun = !continued;
     // 行内の箱を基準にする絶対配置の箱 (LBlockContainer.inlineCb): 行の並びを組んでから、その行内の箱の断片を探して置く
     let runAbs: LBlockContainer[] = [];
+    // 行の並びの途中に書いた CSS の float (左右に寄せるもの): 段落の頭に置かず、書いた所の目印 (LInline.floatAnchor) を含む行を組むときに置く
+    // (CSS 2.1 §9.5.1 の規則 6・8: float の上端は、float より前の中身を含む行の上端より上にしない。そのうえでできるだけ上に置く)。
+    // 読み込みが行内の要素の中の float を外へ出したもの (LFloat.inlineAnchor) は、読み込みが書いた所に置いた目印を使う。
+    // runAnchors: run の中にある読み込みの目印 (run に足した子を 1 度ずつ調べる)
+    let runFloats: Map<number, { node: LFloat; st: ResolvedStyle }> | undefined;
+    // 行の並びの途中の、ページを基準にする絶対配置の箱 (位置の決まった祖先の無い CSS の箱) で、top・bottom か left・right が auto のもの:
+    // 見つけた所に目印を置き、目印を含む行を置いたときに、その位置を static position にして置く (CSS 2.1 §10.3.7・§10.6.4。lineAbs)
+    let runPageAbs: Map<number, { node: LBlockContainer; st: ResolvedStyle }> | undefined;
+    const runAnchors = new Set<number>();
+    const runAbsAnchors = new Set<number>();
+    let scanned = 0;
+    const anchorInRun = (key: number, abs = false) => {
+      for (; scanned < run.length; scanned++) collectFloatAnchors(run[scanned], runAnchors, runAbsAnchors);
+      return (abs ? runAbsAnchors : runAnchors).has(key);
+    };
     const flushRun = () => {
       if (run.length) {
-        this.layoutInlineRun(run, style, firstRun, { arr: children, at: runAt });
+        const prevLF = this.lineFloats;
+        const prevLA = this.lineAbs;
+        this.lineFloats = runFloats;
+        this.lineAbs = runPageAbs;
+        try {
+          this.layoutInlineRun(run, style, firstRun, { arr: children, at: runAt });
+        } finally {
+          this.lineFloats = prevLF;
+          this.lineAbs = prevLA;
+        }
         firstRun = false;
         run = [];
+        runAnchors.clear();
+        runAbsAnchors.clear();
+        scanned = 0;
+      }
+      // 目印を含む行を組まなかった float (目印と空白だけの並びは行を作らない) は、並びの後のいまの位置に置く
+      if (runFloats) {
+        const left = [...runFloats.values()];
+        runFloats = undefined;
+        for (const f of left) this.placeFloat(f.node, f.st);
+      }
+      // 目印を含む行を置かなかった箱 (目印と空白だけの並び) は、いまの位置に置く
+      if (runPageAbs) {
+        const left = [...runPageAbs.values()];
+        runPageAbs = undefined;
+        for (const a of left) this.layoutContainer(a.node, a.st);
       }
       if (runAbs.length) {
         this.placeInlineAbs(runAbs, style);
@@ -2945,8 +3129,16 @@ class Flow {
         if (key) markerParents.add(key);
         this.markerSink.push({ className: c.className, marker: c, ...(key ? { key } : {}) });
       } else if (typeof c !== 'string' && c.type === 'float') {
-        // マーカーと同様、段落 (run) を分断せずにその場へ固定する
-        this.placeFloat(c, style);
+        // マーカーと同様、段落 (run) を分断しない。行の並びの途中の CSS の左右の float は、書いた所の行を組むときに置く (上の runFloats)。
+        // 並びの頭の float・ほかの float (XSL-FO の float・前方 float・傍注・段落の最初の字) は、いまの位置 (段落の頭) に置く
+        if (run.length && c.cssPlacement && !c.marginal && !c.initialLetter && /^(start|end|inside|outside)$/.test(c.float) && !this.host.xslSpace) {
+          let key = c.inlineAnchor !== undefined && anchorInRun(c.inlineAnchor) ? c.inlineAnchor : undefined;
+          if (key === undefined) {
+            key = -++floatAnchorSeq;
+            run.push({ type: 'inline', children: [], floatAnchor: key } as LInline);
+          }
+          (runFloats ??= new Map()).set(key, { node: c, st: style });
+        } else this.placeFloat(c, style);
       } else if (typeof c !== 'string' && c.type === 'block-container' && c.absolutePosition && c.inlineCb !== undefined) {
         // 行内の箱を基準にする絶対配置の箱: 段落 (run) を分断しない。行を組んだ後で置く
         runAbs.push(c);
@@ -2956,6 +3148,16 @@ class Flow {
         // 行の途中で見つけた、基準の箱を組んでから置く箱は、見つけた所に目印 (幅 0 の箱) を入れ、組んだ後でその位置を static position にする
         // (CSS 2.1 §10.3.7・§10.6.4: 位置が static だったときの仮の箱の位置。行の中の箱は、行の中の見つけた所)
         const anchored = run.length > 0 && c.positionInContainer && (this.cbAbs || (this.collectAbs && !this.localAbs));
+        if (run.length > 0 && this.pageStatic(c)) {
+          // 読み込みが見つけた所に置いた目印 (LBlockContainer.inlineAnchor) が並びにあれば、それを使う
+          let key = c.inlineAnchor !== undefined && anchorInRun(c.inlineAnchor, true) ? c.inlineAnchor : undefined;
+          if (key === undefined) {
+            key = ++staticAnchorSeq;
+            run.push({ type: 'inline', children: [], staticAnchor: key } as LInline);
+          }
+          (runPageAbs ??= new Map()).set(key, { node: c, st: style });
+          continue;
+        }
         if (anchored) {
           const key = ++staticAnchorSeq;
           run.push({ type: 'inline', children: [], staticAnchor: key } as LInline);
@@ -3041,7 +3243,7 @@ class Flow {
     if (typeof next === 'string' || !next || (next.type !== 'block' && next.type !== 'table' && next.type !== 'block-container')) return false;
     if ((next.type === 'block' || next.type === 'block-container') && next.breakBefore) return false;
     const reserve = this.stack.reduce((a, f) => a + f.desc.bpEnd, 0);
-    const pageLimit = this.pages?.nextLimit?.() ?? this.limit;
+    const pageLimit = this.nextLimit;
     const host: FlowHost = { ...this.host, warn: () => {} };
     const lineCount = (n: LNode): number => (n.kind === 'line' ? 1 : n.children.reduce((a, c) => a + lineCount(c), 0));
     // 行の無い並び (色の帯・画像だけの組版例など) は、大きさのある箱 (行・画像・中身の無い箱) で載ったページを見る
@@ -3191,19 +3393,19 @@ class Flow {
    *    (1 回目の組版の仮の値は、いまのページ番号・置き済みの id で変わる。引き直すので、参照を引いた記録・見つからない id の警告も、
    *    計測をやり直したときと同じに残る)
    * 書体・ハイフネーション・互換の指定は、1 回の組版の中で変わらない。脚注の番号は最初に見た順に 1 度だけ振る (FootnoteCtx.label) ので、
-   * 2 度目の計測を省いても番号は変わらない。試し組みが絶対配置の箱を置いたとき (跡が残る) は覚えない (host.volatile.n)
+   * 2 度目の計測を省いても番号は変わらない。試し組みが絶対配置の箱を置いたとき (跡が残る) は覚えない (host.volatile.n)。
+   * record が真なら、覚えを引かずに必ず compute を呼び、その値を覚える (組んだ結果そのものも要る所で、値だけを後で memoPeek で引くため)
    */
-  private memoMeasure<T>(site: string, arr: object, st: ResolvedStyle, parts: ReadonlyArray<string | number | boolean | undefined>, foot: FootnoteCtx | undefined, compute: () => T): T {
+  private memoMeasure<T>(site: string, arr: object, st: ResolvedStyle, parts: ReadonlyArray<string | number | boolean | undefined>, foot: FootnoteCtx | undefined, compute: () => T, record = false): T {
     const memo = this.host.measureMemo;
     const vol = this.host.volatile;
     if (!memo || !vol) return compute();
-    const page = this.pageSize();
-    const pn = this.host.pageNumber?.();
-    const side = this.sideNumber();
-    const key = `${site}|${parts.join('|')}|${page.width}|${page.height}|${side === undefined ? '' : side % 2}`;
+    const key = this.memoKey(site, parts);
     let m = memo.get(arr);
-    const list = m?.get(key);
-    if (list) for (const e of list) if (e.foot === foot && sameStyle(e.st, st) && e.cites.every((c) => this.host.cite(...c.args, pn) === c.value)) return e.v as T;
+    if (!record) {
+      const hit = this.memoFind<T>(m, key, st, foot);
+      if (hit) return hit.v;
+    }
     const before = vol.n;
     const from = vol.cites.length;
     let v: T;
@@ -3218,10 +3420,32 @@ class Flow {
     }
     if (vol.n !== before) return v;
     if (!m) memo.set(arr, (m = new Map()));
-    const into = m.get(key);
+    // record のときは、同じ条件の前の値を置き換える (組み直すたびに、同じ条件の値を積まない)
+    const into = record ? m.get(key)?.filter((e) => !(e.foot === foot && sameStyle(e.st, st))) : m.get(key);
+    if (record && into) m.set(key, into);
     if (into) into.push({ st, foot, cites, v });
     else m.set(key, [{ st, foot, cites, v }]);
     return v;
+  }
+
+  /** memoMeasure の鍵 (計測の場所・条件・ページの大きさ・左右) */
+  private memoKey(site: string, parts: ReadonlyArray<string | number | boolean | undefined>): string {
+    const page = this.pageSize();
+    const side = this.sideNumber();
+    return `${site}|${parts.join('|')}|${page.width}|${page.height}|${side === undefined ? '' : side % 2}`;
+  }
+  private memoFind<T>(m: Map<string, MeasureEntry[]> | undefined, key: string, st: ResolvedStyle, foot: FootnoteCtx | undefined): { v: T } | undefined {
+    const list = m?.get(key);
+    if (!list) return undefined;
+    const pn = this.host.pageNumber?.();
+    for (const e of list) if (e.foot === foot && sameStyle(e.st, st) && e.cites.every((c) => this.host.cite(...c.args, pn) === c.value)) return { v: e.v as T };
+    return undefined;
+  }
+  /** memoMeasure が覚えた値を引くだけ (無ければ undefined。組まない) */
+  private memoPeek<T>(site: string, arr: object, st: ResolvedStyle, parts: ReadonlyArray<string | number | boolean | undefined>, foot: FootnoteCtx | undefined): T | undefined {
+    const memo = this.host.measureMemo;
+    if (!memo || !this.host.volatile) return undefined;
+    return this.memoFind<T>(memo.get(arr), this.memoKey(site, parts), st, foot)?.v;
   }
 
   /**
@@ -3234,7 +3458,7 @@ class Flow {
     // (CSS Sizing 3 §5.1。表のセルの中身の幅と同じ測り方。maxLineLength の countFixed)。XSL-FO の文書は、これまでどおり中の行を測る
     const fixed = !this.host.xslSpace;
     return this.memoMeasure(fixed ? 'iwx' : 'iw', children, st, [r, minContent], undefined, () =>
-      maxLineLength(this.measureSub(children, st, r, { intrinsic: true, ...(minContent ? { minContent: true } : {}) }).sub.root, true, false, fixed),
+      maxLineLength(this.measureSub(children, st, r, { intrinsic: true, ...(minContent ? { minContent: true } : {}) }).sub.root, true, false, fixed, !minContent),
     );
   }
 
@@ -3255,7 +3479,7 @@ class Flow {
     const ceil = (v: number) => (v > 0 ? Math.ceil(v * 100) / 100 + 0.01 : 0);
     // 中の、大きさの指定のある箱は、その箱の大きさを数える (maxLineLength の countFixed)
     const widthAt = (rootI: number, min: boolean) =>
-      this.memoMeasure('iwx', node.children, st, [rootI, min], undefined, () => maxLineLength(this.measureSub(node.children, st, rootI, { intrinsic: true, ...(min ? { minContent: true } : {}) }).sub.root, true, false, true));
+      this.memoMeasure('iwx', node.children, st, [rootI, min], undefined, () => maxLineLength(this.measureSub(node.children, st, rootI, { intrinsic: true, ...(min ? { minContent: true } : {}) }).sub.root, true, false, true, !min));
     const minOf = () => (minC ??= ceil(widthAt(1, true)));
     // 折り返さない幅が最も狭い幅より小さくなるとき (負の余白など) は、最も狭い幅 (§2.1)
     const maxOf = () => (maxC ??= Math.max(ceil(widthAt(MAX_CONTENT_ROOT, false)), minOf()));
@@ -3853,14 +4077,16 @@ class Flow {
       // (CSS 2.1 §10.7: min-height が max-height より大きければ、min-height が勝つ。height を書いた容器は、その高さ)
       return { n: done(c.clip ? withRef(cur, { ...cur, overflow: 'hidden' as const, height: node.height ?? Math.max(limit - edges, node.minBlockSize ?? 0, 0) }) : cur), over: true };
     });
-    if (r.over && !this.measureOnly) this.host.warn(withSource(diag('layout/condense-overflow', msg('overflow="condense" の fo:block-container の中身が、詰めても収まりません (はみ出します)', 'the content of an fo:block-container with overflow="condense" does not fit even when condensed (it overflows)')), node));
-    // 上限のせいで詰めなかった、収まらない容器を組むとき。収まらないときの警告と同じく、測る流れでは出さず、keep-together の確かめは
+    // 測る組み (行内の箱・脚注の本体) でも出す: 結果をそのまま置く組みだから。結果を捨てる試しの組みは、警告の出し先を空にした host で組む
+    // (画像の警告と同じ。keepTogetherNeed・keepTogetherCheck・中身の幅で組み直す fo:inline-container の試し組みなど) ので、どこに置いても 1 件
+    if (r.over) this.host.warn(withSource(diag('layout/condense-overflow', msg('overflow="condense" の fo:block-container の中身が、詰めても収まりません (はみ出します)', 'the content of an fo:block-container with overflow="condense" does not fit even when condensed (it overflows)')), node));
+    // 上限のせいで詰めなかった、収まらない容器を組むとき。収まらないときの警告と同じく、測る流れ (結果をそのまま置く組み) でも出し、keep-together の確かめは
     // trial を上げる (condenseTrial) ので出さない。ほかの、結果を捨てることのある組みは、警告の出し先を空にした host で組む (keep-with-next の
     // 試し組み・段組の段の高さを決める試し組みなど) か、この警告だけを取り置く host (holdCondenseWarnings) で組み、置くと決めたときだけ出す
     // (表の行の高さを測る組み: 行をページで分けるときは、分けた組みの分を出す。layoutTableRows) ので、ページに置く結果に、詰めなかったために
     // 収まらない容器が残るときだけ出る。組み直すたびに、覚えた中の容器の結果を使って先へ進み、最後の組みでは詰め切ることがあるので、当たった所
     // (測る途中) では出さない。文は上限によらず同じにして、文書で 1 度にする (同じ文の警告は LayoutEngine.treeInfo がまとめる)
-    if (r.capped && !this.measureOnly && !budget?.trial) this.host.warn(condenseCappedMessage(budget?.opt));
+    if (r.capped && !budget?.trial) this.host.warn(condenseCappedMessage(budget?.opt));
     return r.n;
   }
 
@@ -4018,13 +4244,29 @@ class Flow {
     // 索引のページ番号の並び (XSL 1.1 §6.10.7) は、ここで字と行内の箱に置き換える (索引を使う文書だけ)
     if (this.host.index) run = this.host.index(run);
     const L = this.contentI();
-    const floating = this.deferredFloats.length > 0 || this.floats.some((f) => f.b1 > this.cursor + this.pendingValue() + EPS);
+    // 書いた所の行に置く float (lineFloats) のある並びも、行ごとに使える幅が変わるので 1 行ずつ組む
+    const floating = this.deferredFloats.length > 0 || !!this.lineFloats?.size || this.floats.some((f) => f.b1 > this.cursor + this.pendingValue() + EPS);
     // 同じ段落を同じ幅で組み直すとき (段の高さ揃え・keep-with-next の試し組みなど) は、行分けの結果を使い回す
-    const memo = !floating && from ? lineMemoGet(from.arr, from.at, run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent) : undefined;
+    let memo = !floating && from ? lineMemoGet(from.arr, from.at, run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent) : undefined;
+    // 文書をまたぐ覚え (SharedLineMemo): 前の文書で、中身の同じ段落を同じ幅・書式・書体の組で組んだ結果。入力の節の番号の無い字は、
+    // それを含む block の番号を持つので、その番号も鍵に入れる
+    const shared = !floating && from && !memo ? this.host.sharedLines : undefined;
+    const blockRef0 = this.stack[this.stack.length - 1]?.desc.ref;
+    const sharedKey = shared ? sharedLineKey(run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, blockRef0) : undefined;
+    if (shared && sharedKey !== undefined) {
+      memo = shared.memo.get(sharedKey, shared.env, shared.fonts, this.host.hyphenate);
+      if (memo) {
+        if (this.host.stats) this.host.stats.sharedLineHits = (this.host.stats.sharedLineHits ?? 0) + 1;
+        // 同じ文書の中で組み直すときは、これまでどおり、子の配列で引く覚えから使う
+        lineMemoSet(from!.arr, from!.at, run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, memo);
+      }
+    }
     let atoms: Atom[];
     let raws: RawLine[];
     let pls: PositionedLine[];
     let lms: LineMetrics[];
+    // 組む間に書体の知らせ (整形の表の誤りなど) が出た段落は、文書をまたぐ覚えに入れない (FontManager.noticeCount)
+    const notices0 = shared ? shared.fonts.noticeCount : 0;
     if (memo) ({ atoms, raws, pls, lms } = memo);
     else {
       const flat = (r: InlineChild[]) => flattenInline(r, st, this.host.measurer, {
@@ -4140,6 +4382,8 @@ class Flow {
       const nominalDiff = this.nominalDiff(st);
       lms = pls.map((pl) => lineMetrics(pl, wm, st, nominal, strut, nominalDiff));
       if (from) lineMemoSet(from.arr, from.at, run, st, L, first, wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, { atoms, raws, pls, lms });
+      // 文書をまたぐ覚えにも入れる (子の配列で引く覚えに入れられないもの (組む状況で中身の変わる子・行内の箱・脚注) と、組む間に書体の知らせが出たものは入れない)
+      if (shared && sharedKey !== undefined && shared.fonts.noticeCount === notices0 && !hasDynamicInline(run) && !atoms.some((a) => a.kind === 'box' || a.fnRef)) shared.memo.set(sharedKey, shared.env, this.host.hyphenate, { atoms, raws, pls, lms });
     }
     // 行ごとの脚注 (ページを持つ Flow だけが本体を積む)
     const useFoot = !!this.foot && !!this.pages && this.ownFoot && !this.measureOnly;
@@ -4297,6 +4541,7 @@ class Flow {
     }
     this.containerNode().children.push(node);
     this.noteIds(node);
+    if (this.lineAbs?.size) this.placeLineAbs(node);
     this.cursor += node.bsize;
     // 行グリッドの中の、背景・罫線のある箱の最後の行: 字の下端より下 (半行間など) は箱に入れない (次の行はグリッドに揃うので位置は変わらない)
     const trail = this.gridTrailOf(lm, st);
@@ -4520,11 +4765,16 @@ class Flow {
         this.overflowCount++;
         this.host.warn(withSource(diag('layout/line-overflow', msg('行がページに収まりません', 'a line does not fit on the page')), this.blockAt));
       }
+      // 行の中に書いた float (目印 floatMark) を置く。入るなら行の上端に置き、この行を組み直す (continue)。入らない float は行の後に置く
+      const below = this.lineFloats?.size ? this.placeLineFloats(atoms, start, next, range.width, indentHere) : undefined;
+      if (below === true) continue;
       const before = { cursor: this.cursor, adjacent: this.adjacent };
       this.flush();
       this.commitMarkers();
       // 行を置く (回り込みの無い経路と共通)。幅は回り込みを避けた range の幅、始端は range.shift
       const node = this.placeLine(pl, lm, st, { cut, firstOnPage: !placedHere.length, last: next >= n, width: range.width, shift: range.shift, refs, useFoot, holdFoot });
+      if (below) for (const f of below) if (f.fb) this.anchorFloat(f.fb);
+        else this.placeFloat(f.node, f.st);
       placedHere.push({ node, start, first: firstLine, cursor: before.cursor, adjacent: before.adjacent, fns: refs.length > 0, lm, hyRun });
       hyRun = hyState.run;
       // clear のある強制改行 (br): 次の行を、その側の回り込みの下から始める
@@ -4536,6 +4786,86 @@ class Flow {
       start = next;
       firstLine = false;
     }
+  }
+
+  /**
+   * ページを基準にする CSS の絶対配置の箱 (位置の決まった祖先の無い箱。包含ブロックは初めの包含ブロック = ページの領域。CSS 2.1 §10.1 の 1・
+   * CSS Paged Media 3 §3.3) で、top・bottom の両方か left・right の両方が auto のもの: その向きの位置は static position (箱を流れの中に
+   * 置いたとしたときの位置。CSS 2.1 §10.3.7・§10.6.4)。ページの本文を組む流れ (段組でない、ページの領域を根にする流れ) のときだけ
+   * (ほかの流れの位置は、ページの領域の位置に直せない)。XSL-FO の箱 (§7.6.1 の top の初期値 auto は、参照領域の端) は従来どおり
+   */
+  private pageStatic(c: LBlockContainer): boolean {
+    const pa = c.pageArea;
+    if (!c.absolutePosition || !pa || !(pa.staticTop || pa.staticLeft) || c.positionInContainer || c.inlineCb !== undefined || c.areaOffset || this.host.xslSpace) return false;
+    return this.paginating && !this.measureOnly && this.wm === 'horizontal-tb' && !this.pageLevel && !this.spanAreas;
+  }
+
+  /**
+   * ページを基準にする絶対配置の箱を、このページの領域で置き直し (atPageArea)、pageStatic の箱の auto の位置を static position
+   * (流れの根 = ページの領域の内容の左上からの位置: y は block、x は inline の向き) にして組み、ページの絶対配置の箱に足す
+   */
+  private placePageAbs(node: LBlockContainer, st: ResolvedStyle, at?: { y: number; x: number }) {
+    const page = this.pageSize();
+    let src = node.pageArea ? atPageArea(node, page) : node;
+    const pa = node.pageArea;
+    if (at && pa) {
+      // ページの領域の、用紙の端からの距離 (分からなければ、読み込みの見積もり: 箱の位置から、領域の端からの距離を引いたもの)
+      const top = page.area?.top ?? (node.top ?? 0) - (pa.top ?? 0);
+      const left = page.area?.left ?? (node.left ?? 0) - (pa.left ?? 0);
+      src = withRef(src, {
+        ...src,
+        ...(pa.staticTop ? { top: top + at.y + (node.staticOffset ?? 0) } : {}),
+        ...(pa.staticLeft ? { left: left + at.x + (pa.left ?? 0) } : {}),
+      });
+    }
+    const n = this.buildContainer(src, st, page.width, page.height);
+    this.abs().push(n);
+    this.noteIds(n);
+    this.placeHeldFootnotes(n);
+  }
+
+  /** 置いた行 line の中の、ページを基準にする絶対配置の箱の目印 (lineAbs) の所を static position にして、箱を置く (CSS 2.1 §10.3.7・§10.6.4: 行の上端と、行の中の目印の位置) */
+  private placeLineAbs(line: LNode) {
+    const la = this.lineAbs!;
+    for (const [key, a] of [...la]) {
+      const mark = locateStaticAnchor([{ ...line, children: [line] } as LNode], key);
+      if (!mark) continue;
+      la.delete(key);
+      this.placePageAbs(a.node, resolveStyle(a.st, a.node), { y: this.cursor, x: this.contentIOffset() + mark.i });
+    }
+  }
+
+  /**
+   * 行 (atoms の start から next の前まで。使える幅 width、行の頭の字下げ indent) の中に、書いた所の目印 (Atom.floatMark) のある
+   * float (lineFloats) があれば置く。CSS 2.1 §9.5.1 の規則 6・8 のとおり、float の上端は、float より前の中身を含む行の上端より上にせず、
+   * そのうえでできるだけ上に置く: 目印より前の行の中身の横に入る (目印が行の頭にある・目印までの幅と float の幅の和が行の幅以下) なら、
+   * 行の上端に置いて true を返す (呼ぶ側は、float を避けた幅でこの行を組み直す)。入らなければ、この行の後 (次の行の上端) に置く
+   * float を返す (後に書いた float も、先の float より上には置けない (規則 5) ので、一緒に行の後に置く)。目印が無ければ undefined
+   */
+  private placeLineFloats(atoms: Atom[], start: number, next: number, width: number, indent: number): true | Array<{ node: LFloat; st: ResolvedStyle; fb?: FloatBox }> | undefined {
+    const lf = this.lineFloats!;
+    let used = indent;
+    let head = true;
+    let after: Array<{ node: LFloat; st: ResolvedStyle; fb?: FloatBox }> | undefined;
+    for (let a = start; a < next; a++) {
+      const at = atoms[a];
+      const key = at.floatMark;
+      if (key === undefined || !lf.has(key)) {
+        used += at.advance;
+        if (!at.idMark && !at.isSpace) head = false;
+        continue;
+      }
+      const f = lf.get(key)!;
+      lf.delete(key);
+      if (after) {
+        after.push(f);
+        continue;
+      }
+      const fb = this.placeFloat(f.node, f.st, head ? undefined : (outerI) => used + outerI <= width + EPS);
+      if (fb === undefined) return true;
+      after = [{ ...f, fb }];
+    }
+    return after;
   }
 
   /**
@@ -4699,7 +5029,8 @@ class Flow {
       // 大きさだけ分かって描けない画像 (TIFF・WMF などの未対応の形式) も、仮の枠で描く
       image: {
         src: c.src,
-        missing: !asset || asset.drawable === false,
+        // PDF の画像 (pdfSource) は、PDF の出力が Form XObject で描く (画面・SVG・PNG は、描くときに仮の枠にする)
+        missing: !asset || (asset.drawable === false && !asset.pdfSource),
         alt: c.alt,
         // 画像を置いた所の言語 (SVG の systemLanguage を照らす)
         ...(st.language ? { language: st.language } : {}),
@@ -5225,7 +5556,8 @@ class Flow {
         }
         node = this.condenseContainer(node, ps);
         if (keep) this.keepTogetherCheck(node, ps);
-      } else if (!this.measureOnly) {
+      } else {
+        // 測る組みでも出す (上の condense-overflow と同じ)
         this.host.warn(withSource(diag('layout/condense-height-unknown', msg('overflow="condense" の fo:block-container は、高さ (height・max-height) が決まらないため詰めません', 'an fo:block-container with overflow="condense" is not condensed because its height (height, max-height) is not determined')), node));
       }
     }
@@ -5281,6 +5613,10 @@ class Flow {
         off > EPS && node.top != null
           ? withRef(node, { ...node, top: node.top + off, ...(node.areaOffset === 'fill' && node.height != null ? { height: Math.max(node.height - off, 0) } : {}) })
           : node;
+      if (this.pageStatic(node)) {
+        this.placePageAbs(node, st, { y: this.cursor + this.pendingValue(), x: this.contentIOffset() });
+        return;
+      }
       const n = this.buildContainer(src, st, page.width, page.height);
       this.abs().push(n);
       this.noteIds(n);
@@ -6580,7 +6916,7 @@ class Flow {
    */
   private cellContentI(cell: LTableCell, cst: ResolvedStyle, min: boolean): number {
     const rootI = min ? 1 : MAX_CONTENT_ROOT;
-    const w = this.memoMeasure('iwx', cell.children, cst, [rootI, min], undefined, () => maxLineLength(this.measureSub(cell.children, cst, rootI, { intrinsic: true, ...(min ? { minContent: true } : {}) }).sub.root, true, false, true));
+    const w = this.memoMeasure('iwx', cell.children, cst, [rootI, min], undefined, () => maxLineLength(this.measureSub(cell.children, cst, rootI, { intrinsic: true, ...(min ? { minContent: true } : {}) }).sub.root, true, false, true, !min));
     return Math.ceil(w * 100) / 100 + 0.01 + describeBox(cell, cst.wm).bpI;
   }
 
@@ -6658,7 +6994,7 @@ class Flow {
       const min = rootI <= 1;
       const r = Math.max(rootI, 1);
       const w =
-        Math.ceil(this.memoMeasure('iwx', cell.children, cst, [r, min], undefined, () => maxLineLength(this.measureSub(cell.children, cst, r, { intrinsic: true, ...(min ? { minContent: true } : {}) }).sub.root, true, false, true)) * 100) / 100 + 0.01;
+        Math.ceil(this.memoMeasure('iwx', cell.children, cst, [r, min], undefined, () => maxLineLength(this.measureSub(cell.children, cst, r, { intrinsic: true, ...(min ? { minContent: true } : {}) }).sub.root, true, false, true, !min)) * 100) / 100 + 0.01;
       if (memo) {
         let m = memo.get(cell);
         if (!m) memo.set(cell, (m = new Map()));
@@ -7090,7 +7426,34 @@ class Flow {
       // 行の高さを測る組み。行をページで分ける (splitRow) ・行をまたぐセルを分けて組み直すときは、この組みを捨てるので、入れ子の詰め込みの
       // 上限の警告は取り置き、この組みを置くと決めたときだけ出す (useGrp。Flow.condenseContainer)
       const held: Diagnostic[] = [];
-      const grp = this.layoutRowGroup(rows.slice(i, end + 1), sizes, bst, holdCondenseWarnings(this.host, held));
+      // 下の splitRow を、測る組みの前に同じ条件で呼び、分けられなかった (null。同じ条件なら、下でも分けられない。2 度呼ぶと、入れ子の段ごとに倍になる)
+      let splitTried = false;
+      // 1 行だけの組で、前に同じ条件で測った高さがあり (rowHeightRecord)、その高さがページの残りに入らず、行を分けると決まるなら、測る組みを省いて
+      // 分ける (splitRow)。入れ子の表 (閉じない <li>・<td> を並べた HTML など) では、外の段の行を測る組みが、中の段の行も測っている。
+      // 外の段の行を分けるとき、中の段を組み直すので、省かないと、中の段の行を、外の段の数だけ測り直す (段の数 × 中身の手間)。
+      // 覚えるのは、セルの中の表 (inCell の流れ) の行だけ (外の段の行を測る組みと、分ける組みは、どちらもセルの中の流れ。ほかの表で覚える手間を掛けない)
+      if (end === i && !tm && this.inCell && this.paginating && !pending.length && !(i > 0 && combineBreaks(rows[i - 1].breakAfter, rows[i].breakBefore)) && !hasInnerForcedBreak(rows[i])) {
+        const known = this.rowHeightPeek(rows[i], sizes, bst);
+        // 下の、測った組みで分けるかを決める所と同じ条件 (ページに入らない 1 行で、keep-together でないか、緩めてよい強さで新しいページにも入らない)
+        const avail = this.room - this.cursor - this.pendingValue() - closeBorder() - reserve;
+        const nextAvail = this.nextLimit - repeatedHeaderH([]) - closeBorder() - reserve;
+        const yields = !!known && !!rows[i].keepTogetherYields && known.h > nextAvail + EPS;
+        if (known && (!rows[i].keepTogether || yields) && !rows[i].keepWithNext && known.h > avail + EPS) {
+          const splitHeld: Diagnostic[] = [];
+          const frags = this.splitRow(rows[i], sizes, bst, avail, nextAvail, undefined, undefined, splitHeld);
+          if (frags) {
+            // 省いた組みが残すはずの、表の外へ出す末尾の余白 (layoutCell の tableTrailOut)
+            if (known.trail !== undefined) this.tableTrailOut = Math.max(this.tableTrailOut ?? 0, known.trail);
+            for (const m of splitHeld) this.host.warn(m);
+            frags.forEach((f, k) => place([f], k > 0));
+            pendingLinked = false;
+            i = end + 1;
+            continue;
+          }
+          splitTried = true;
+        }
+      }
+      const grp = end === i && !tm && this.inCell ? this.rowHeightRecord(rows[i], sizes, bst, () => this.layoutRowGroup(rows.slice(i, end + 1), sizes, bst, holdCondenseWarnings(this.host, held))) : this.layoutRowGroup(rows.slice(i, end + 1), sizes, bst, holdCondenseWarnings(this.host, held));
       const useGrp = () => {
         for (const m of held) this.host.warn(m);
         held.length = 0;
@@ -7123,7 +7486,7 @@ class Flow {
       // 行をまたぐセルを含む塊が 1 ページに入らないときは、またぐセルを行ごとのセルに分け (中身は最初の行、間の罫線は消す)、
       // 行の境目で改ページできるようにする
       if (this.paginating && end > i) {
-        const fullPage = this.limit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
+        const fullPage = this.nextLimit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
         if (height(grp) > fullPage + EPS) {
           rows = [...rows.slice(0, i), ...unspanRows(rows.slice(i, end + 1), this.wm), ...rows.slice(end + 1)];
           continue;
@@ -7132,11 +7495,11 @@ class Flow {
       if (!(linkedToPrev && pending.length && height(pending) + height(grp) <= maxKeep)) flushPending();
       // ページに入らない 1 行 (rowSpan 無し・keep-together 無し) は、セルの中身を行単位で分けてページをまたぐ (§7.20.3 の既定 auto)。
       // keep-together の行でも、緩めてよい強さ (keepTogetherYields) で、新しいページ (段) にも入らない高さなら、送らずにいまの位置から分ける
-      const nextFull = () => this.limit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
+      const nextFull = () => this.nextLimit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
       const yields = !!rows[i].keepTogetherYields && grp[0].bsize > nextFull() + EPS;
       if (this.paginating && end === i && !pending.length && (!rows[i].keepTogether || yields) && !rows[i].keepWithNext) {
         const avail = this.room - this.cursor - this.pendingValue() - closeBorder() - (tm ? tm.reserveNow(grp) : reserve);
-        if (grp[0].bsize > avail + EPS) {
+        if (grp[0].bsize > avail + EPS && !splitTried) {
           const nextAvail = nextFull();
           const splitMk: SplitMarkers | undefined = tm ? [] : undefined;
           const splitHeld: Diagnostic[] = [];
@@ -7179,7 +7542,7 @@ class Flow {
     useGrp?: () => void,
   ): boolean {
     const closeBorder = this.stack.reduce((a, f) => a + (f.node.kind === 'table' ? f.desc.bw.be : 0), 0);
-    const nextAvail = this.limit - fixed - closeBorder;
+    const nextAvail = this.nextLimit - fixed - closeBorder;
     const attempt = (fresh: boolean) => {
       const kinds: Array<BreakKind | undefined> = [];
       const splitMk: SplitMarkers | undefined = tm ? [] : undefined;
@@ -7949,6 +8312,7 @@ class Flow {
         footnotes: this.foot,
         holdFootnotes: true,
         collectAbs: true,
+        inCell: true,
       });
       flow.layoutChildren(cell.children, resolveStyle(rst, cell));
       flow.finishPaginated();
@@ -8025,6 +8389,49 @@ class Flow {
    *     「必要高 − 現在の合計高」の不足分を最終行へ加算
    *  4. セルの bsize = 結合した行高の合計 (行ノードからはみ出す形で、開始行の子として保持)
    */
+  /** 行の高さの覚え (rowHeightRecord・rowHeightPeek) の鍵の条件: 列の幅・書字方向・セルの間隔・互換の指定・flex の項目の幅の上限 */
+  private rowHeightParts(row: LTableRow, sizes: number[]): Array<string | number | boolean | undefined> {
+    return [sizes.join(','), this.wm, this.spacing?.i, this.spacing?.b, this.rowspanMiddleAh, row.cells.map((c) => this.flexItemCaps.get(c) ?? '').join(',')];
+  }
+
+  /**
+   * 1 行の組 (layoutRowGroup) を組み、その高さを覚える (同じ組版の中で、同じ行・同じ条件。memoMeasure)。
+   * 組みが表の外に跡を残したとき (マーカー・絶対配置の箱) は、使えない印 (clean が偽) を付ける (組みを省くと、跡が残らない)。
+   * 表の外へ出す末尾の余白 (tableTrailOut) は、この行の分を覚え、組みを省いたときに足す
+   */
+  private rowHeightRecord(row: LTableRow, sizes: number[], st: ResolvedStyle, layout: () => LNode[]): LNode[] {
+    let grp: LNode[] = [];
+    this.memoMeasure<RowHeight>(
+      'rowh',
+      row,
+      st,
+      this.rowHeightParts(row, sizes),
+      this.foot,
+      () => {
+        const marks = this.markerSink.length;
+        const abs = this.absHanded;
+        const saved = this.tableTrailOut;
+        this.tableTrailOut = undefined;
+        let trail: number | undefined;
+        try {
+          grp = layout();
+        } finally {
+          trail = this.tableTrailOut;
+          this.tableTrailOut = saved === undefined ? trail : trail === undefined ? saved : Math.max(saved, trail);
+        }
+        return { h: grp[0]?.bsize ?? 0, trail, clean: grp.length === 1 && this.markerSink.length === marks && this.absHanded === abs };
+      },
+      true,
+    );
+    return grp;
+  }
+
+  /** rowHeightRecord が覚えた、1 行の組の高さ (使えないもの・無ければ undefined。組まない) */
+  private rowHeightPeek(row: LTableRow, sizes: number[], st: ResolvedStyle): RowHeight | undefined {
+    const r = this.memoPeek<RowHeight>('rowh', row, st, this.rowHeightParts(row, sizes), this.foot);
+    return r?.clean ? r : undefined;
+  }
+
   layoutRowGroup(rows: LTableRow[], sizes: number[], st: ResolvedStyle, host: FlowHost = this.host): LNode[] {
     const sp = this.spacing;
     const si = sp?.i ?? 0;
@@ -8122,7 +8529,7 @@ class Flow {
     const contentI = Math.max(width - desc.bpI, 0);
     const itemCap = this.flexItemCaps.get(cell);
     // セルは参照領域: 先頭の余白 (space-before) は捨てる (XSL §4.3.1)。CSS のセル (keepEdgeSpace) は残す
-    const sub = new Flow(host, { wm: this.wm, rootI: contentI, abs: this.abs, pageSize: this.pageSize, markerSink: this.markerSink, footnotes: this.foot, ...(cell.keepEdgeSpace ? {} : { discardLeading: true }), referenceArea: true, collectAbs: true, ...(firstLineMinBelow !== undefined ? { firstLineMinBelow } : {}), ...(itemCap !== undefined ? { itemAtMaxWidth: width >= itemCap - EPS } : {}) });
+    const sub = new Flow(host, { wm: this.wm, rootI: contentI, abs: this.abs, pageSize: this.pageSize, markerSink: this.markerSink, footnotes: this.foot, ...(cell.keepEdgeSpace ? {} : { discardLeading: true }), referenceArea: true, inCell: true, collectAbs: true, ...(firstLineMinBelow !== undefined ? { firstLineMinBelow } : {}), ...(itemCap !== undefined ? { itemAtMaxWidth: width >= itemCap - EPS } : {}) });
     sub.layoutChildren(cell.children, cst);
     // 末尾の内容の後ろの余白 (space-after) も捨てる (keepTrailingSpace・keepEdgeSpace のセルは残す)
     const fin = sub.finishWithTrailing();
@@ -8148,6 +8555,7 @@ class Flow {
     // セルの中で見つけた絶対配置の箱: セルが基準 (position が static でないセル) なら、行の高さが決まってからセルの中に置く
     // (layoutRowGroup)。そうでなければ、外の基準の箱 (表・表を含むブロック) へ渡す
     if (sub.foreignAbs.length) {
+      this.absHanded++;
       if (cell.containingBlock) this.cellAbs.set(cn, sub.foreignAbs);
       else this.handOffAbs(sub.foreignAbs, cn);
     }
@@ -8479,7 +8887,10 @@ function orthogonalExtent(n: LNode, c: LNode): number {
   return n.wm === 'horizontal-tb' ? s.width + pos(c.margin.left) + pos(c.margin.right) : s.height + pos(c.margin.top) + pos(c.margin.bottom);
 }
 
-function maxLineLength(n: LNode, root = true, tableByColumns = false, countFixed = false): number {
+function maxLineLength(n: LNode, root = true, tableByColumns = false, countFixed = false, beside = false): number {
+  // max-content を測るとき (beside): 行と高さの重なる float の幅を、その行の長さに足す (CSS Sizing 3 §5.1・CSS 2.1 §10.3.5: max-content は
+  // 折り返さないときの幅で、float は、同じ行の中身の横に並ぶ。Flexbox 1 §9.2 の項目の中身による大きさも同じ)
+  if (root && beside) return Math.max(maxLineLength(n, true, tableByColumns, countFixed), besideFloatsLength(n, tableByColumns, countFixed));
   // 行の長さには、行頭の字下げも入れる (CSS Text 3 §8.1: 字下げは、行の箱の始めの端に付けた余白として扱う。
   // 字下げを受け継いだ inline-block・回り込みの箱の幅 (CSS 2.1 §10.3.5・§10.3.9 の shrink-to-fit) が字下げの分だけ足りず、中の行が折り返すのを防ぐ)
   // 負の字下げは、行の長さから引く (行の箱は字下げの分だけ短くて済む。0 を下回らない)
@@ -8537,6 +8948,37 @@ function maxLineLength(n: LNode, root = true, tableByColumns = false, countFixed
   if (cl?.max !== undefined) box = Math.min(box, cl.max);
   if (cl?.min !== undefined) box = Math.max(box, cl.min);
   return box + margins;
+}
+
+/**
+ * 組んだ流れの根 root の float (根の子の LNode.float の箱) と、高さの重なる行の長さに、その float の外側の幅を足した長さの最大
+ * (float が無ければ 0)。行は、根から流れの中のブロックだけをたどって探す (表・行内の箱などの中の行は、それぞれの箱の幅で数える)。
+ * 行の長さには、行を包むブロックの行の向きの余白・罫線・margin を足す (maxLineLength と同じ)
+ */
+function besideFloatsLength(root: LNode, tableByColumns: boolean, countFixed: boolean): number {
+  const fs = root.children.filter((c) => c.float && !c.outOfFlow).map((f) => ({ b0: f.b, b1: f.b + f.bsize, w: maxLineLength(f, false, tableByColumns, countFixed) }));
+  if (!fs.length) return 0;
+  const pos = (v: number) => Math.max(v, 0);
+  let best = 0;
+  const visit = (n: LNode, b: number, edges: number) => {
+    for (const c of n.children) {
+      if (c.float || c.outOfFlow) continue;
+      if (c.kind === 'line') {
+        const y0 = b + c.b;
+        const y1 = y0 + c.bsize;
+        let len = maxLineLength(c, false, tableByColumns, countFixed);
+        for (const f of fs) if (f.b0 < y1 - EPS && f.b1 > y0 + EPS) len += f.w;
+        best = Math.max(best, len + edges);
+      } else if (c.kind === 'block' && !c.fixedI && c.wm === root.wm) {
+        const e = logicalEdges(c);
+        const h = c.wm === 'horizontal-tb';
+        const m = h ? pos(c.margin.left) + pos(c.margin.right) : pos(c.margin.top) + pos(c.margin.bottom);
+        visit(c, b + c.b + e.bs, edges + e.is + e.ie + m);
+      }
+    }
+  };
+  visit(root, 0, 0);
+  return best;
 }
 
 /** 横書きの箱の上端から、最初の文字の基線までの距離 */
@@ -8846,6 +9288,16 @@ function percentImage<T extends BackgroundImage & { width: number; height: numbe
 let gradientsMade = 0;
 /** 行の中で見つけた絶対配置の箱の目印 (LInline.staticAnchor) の通し番号 */
 let staticAnchorSeq = 0;
+/** 組版が行の並びの途中の float に入れる目印 (LInline.floatAnchor) の通し番号。読み込みの付ける番号 (正の数) と分けるため、負の数にして使う */
+let floatAnchorSeq = 0;
+
+/** 行内の子 c の中の、float の目印 (LInline.floatAnchor) の番号を out に、読み込みの付けた絶対配置の箱の目印 (staticAnchor の負の番号) を abs に足す */
+function collectFloatAnchors(c: InlineChild, out: Set<number>, abs: Set<number>) {
+  if (typeof c === 'string' || c.type !== 'inline') return;
+  if (c.floatAnchor !== undefined) out.add(c.floatAnchor);
+  if (c.staticAnchor !== undefined && c.staticAnchor < 0) abs.add(c.staticAnchor);
+  for (const k of c.children) collectFloatAnchors(k as InlineChild, out, abs);
+}
 /** グラデーションの背景の画像の大きさ: background-size の指定 (cover・contain・auto は背景の領域の大きさ)。CSS Images 3 §3 の画像は本来の大きさを持たない */
 function gradientImage(bi: BackgroundImage, W: number, H: number): BackgroundImage & { width: number; height: number } {
   gradientsMade++;
@@ -8887,7 +9339,8 @@ function plainGlyph(n: LNode, rot: number): boolean {
   const g = n.glyph;
   return (
     !!g && !rot && n.bg === undefined && n.src === undefined && !n.relShift && !n.bgImage && !n.bgClip && !n.clip && !n.float && !n.radius && !n.diag && !n.shadow && !n.outline && !n.fx &&
-    !(n.fxRef !== undefined && paintEffectState.on) && !n.link && !n.annot && !n.form && !g.italic && !g.fakeBold && !g.features && !g.fontPalette
+    !(n.fxRef !== undefined && paintEffectState.on) && !n.link && !n.annot && !n.form && !g.italic && !g.fakeBold && !g.features && !g.fontPalette &&
+    !g.hyphen && g.breakSpace === undefined
   );
 }
 function plainGlyphArea(n: LNode, g: GlyphPayload, pos: { x: number; y: number }, width: number, height: number): GlyphArea {
@@ -9145,6 +9598,177 @@ interface ColumnPassCtx {
   sizeAt: (abs: number) => PageSizeInfo;
   /** 偶奇合わせの白ページにする (blank-or-not-blank="blank" のマスターを選ぶ。§6.4.12) */
   markBlank: (abs: number) => void;
+  /**
+   * abs のページの脚注の予約 (本文領域の下に空ける高さ)。ページの始まり (start) で、本文の並びの位置 s と前方 float の高さ top から決め、
+   * そのページの残りの段では同じ値を使う。試し組みは、その組みの脚注 (trialItems) を見て決める
+   */
+  botAt: (abs: number, s: number, top: number, start: boolean, trial: { items: Map<number, ColumnPageItems>; conts: Map<number, FootEntry[]> } | undefined) => number;
+  /** 本番の組版の、本文の並びの位置 (群の初めまでに、段・span が使った高さの和。span は段の数を掛ける) */
+  lin: { v: number };
+  /** 本番の組版の、脚注の参照 (本文の並びの位置の順) */
+  refs: Array<{ pos: number; e: FootEntry }>;
+}
+
+/** 段組のページに脚注を置いた結果 (placeColumnFoots) */
+interface ColumnFootPlacement {
+  placed: FootEntry[];
+  b: number;
+  out: FootEntry[];
+  warns: FootEntry[];
+}
+
+/**
+ * 段組のページの脚注を置く (layoutColumnPass の本番の配置と上限を付けない配置、予約を決める見積もりで使う)。
+ * cap は、脚注領域の高さの上限 (本番は、このページの本文が実際に使った高さの下まで)。conts は前のページからの続き、foots・footEnds は
+ * このページで参照する脚注と、参照までの本文を段に収めるのに要る高さ。reserve は、このページに空けた予約。
+ * 置いた脚注・その高さ・次のページへ送る脚注を返す。dry なら箱の位置を書かない (見積もり)
+ */
+function placeColumnFoots(p: {
+  foot: FootnoteCtx;
+  room: number;
+  limit: number;
+  reserve: number;
+  cap: number;
+  conts: readonly FootEntry[];
+  foots: readonly FootEntry[];
+  footEnds: readonly number[];
+  dry?: boolean;
+}): ColumnFootPlacement {
+  const { foot, room, limit, reserve, cap } = p;
+  let b = 0;
+  const placed: FootEntry[] = [];
+  const out: FootEntry[] = [];
+  /** 溢れの警告を出す脚注 (ページに入らないまま置いたもの) */
+  const warns: FootEntry[] = [];
+  const put = (e: FootEntry) => {
+    b += foot.gapAfter(placed[placed.length - 1]);
+    if (!p.dry) {
+      e.node.i = 0;
+      e.node.b = b;
+    }
+    placed.push(e);
+    b += e.height;
+  };
+  /**
+   * e を、脚注領域の高さが budget を超えない所で分けて置き、残りを次のページへ送る。分けられなければ false。
+   * strict なら、先頭の単位 (行) も budget に入らないときは分けずに丸ごと送る (本文の行と重ねない)
+   */
+  const splitPut = (e: FootEntry, budget: number, strict: boolean): boolean => {
+    const sp = splitEntry(e, budget - b - foot.gapAfter(placed[placed.length - 1]));
+    if (!sp) return false;
+    if (strict && b + foot.gapAfter(placed[placed.length - 1]) + sp.head.height > budget + EPS) out.push(e);
+    else {
+      put(sp.head);
+      out.push(sp.rest);
+    }
+    return true;
+  };
+  const over = (e: FootEntry, lim: number) => b + foot.gapAfter(placed[placed.length - 1]) + e.height > lim + EPS;
+  /** 本文の行と重ねないための上限 (cap) が、ページに入る高さ (room) より低いか */
+  const strict = cap < room - EPS;
+  // 前のページからの続き: 脚注領域の先頭に置く。本文領域の 6 割まで (1 段のページと同じ上限)
+  // 分けられない続きは、もう脚注を置いたページなら次のページへ送る。丸ごと置くのは、このページにまだ何も置いていないときだけ
+  // (前は、本文の後に足したページで、分けられない続きを次々に丸ごと積み、脚注の領域が本文領域より高くなって、上の行が
+  // ページの外へ出て描かれなかった。警告も無かった)。何も置いていないページに入らない続きは、溢れの警告を出して置く
+  for (const e of p.conts) {
+    const lim = Math.min(room, limit * 0.6, cap);
+    if (out.length) out.push(e);
+    else if (!over(e, lim)) put(e);
+    else if (!splitPut(e, lim, strict)) {
+      if (strict || placed.length) out.push(e);
+      else {
+        if (over(e, room)) warns.push(e);
+        put(e);
+      }
+    }
+  }
+  /** 前のページからの続きのうち、次のページへ送ったものの数 (ここより後ろの out は、このページの脚注) */
+  const contsOut = out.length;
+  p.foots.forEach((e, k) => {
+    // このページの前の脚注を分けて送ったら、後ろの脚注も順に次のページへ送る (脚注の順を保つ)。前のページからの続きを送っても、
+    // このページで参照する脚注の頭は、このページに置く (XSL 1.1 §6.12.3・CSS GCPM 3 §2: 脚注の本体は参照のあるページから。
+    // 1 段のページの Flow.pushFootnote と同じ。脚注の領域の高さに上限 (max-height) があるときだけ、続きの後ろの脚注も順に送る。
+    // 前は、続きを 1 つ送ると、そのページで参照する脚注もすべて次のページへ送ったので、長い脚注の続きが何ページも続くと、
+    // 後ろの脚注が参照のページから離れていった)
+    if (out.length > contsOut || (out.length && foot.maxHeight !== undefined)) {
+      out.push(e);
+      return;
+    }
+    // 参照の行の下に残る高さに収まらなければ分け、残りを次のページへ続ける (1 段のページの Flow.pushFootnote と同じ。
+    // XSL 1.1 §6.12.3・CSS GCPM 3 §2: 脚注の本体は、参照のあるページから始める)。参照までの本文を段に収めた高さ (footEnds) の
+    // 下が残る高さ (もう空けてある高さがあれば、そこまで)。前は、脚注がページに入る高さなら丸ごと置き、参照の行を置く高さを残さない
+    // 予約をしたので、組み直すたびに参照が次のページへ送られて、1 段に数行ずつのページが続き、組み直しの回数の上限で止めた
+    // ページでは、予約の無い本文の上に脚注を重ねた
+    const lim = Math.min(room, Math.max(limit - p.footEnds[k], reserve), cap);
+    if (!over(e, lim)) put(e);
+    else if (!splitPut(e, lim, strict)) {
+      // 分けられない脚注: 本文の行と重なるなら、丸ごと次のページへ送る。ページに入らないときも、もう脚注を置いたページなら
+      // 次のページへ送る (脚注の領域を本文領域より高くしない)。何も置いていないページに入らなければ、溢れの警告を出して置く
+      if ((strict && over(e, cap)) || (placed.length && over(e, room))) out.push(e);
+      else {
+        if (over(e, room)) warns.push(e);
+        put(e);
+      }
+    }
+  });
+  return { placed, b, out, warns };
+}
+
+/** 予約を 1 度試した結果: 予約 r と、その回の組版で要った高さ need */
+interface ReserveTry {
+  r: number;
+  need: number;
+}
+
+/**
+ * 段組のページの脚注の予約を、組み直しの回をまたいで決めるための覚え (layoutColumnSequence が持ち、layoutColumnPass が読む)。
+ * - 前の回の組版の脚注の参照と、その本文の並びの位置 (段の区切りによらない、前の段までに使った高さの和 + 段の中の位置)。
+ *   ページの始まりの位置から、そのページに入る参照と要る高さを見積もり、収まる最小の予約を求める (layoutColumnPass の estimateBot)。
+ *   本文の並びの位置は予約で変わらないので、前のページの予約が変わってページの始まりがずれても、見積もりはずれない
+ * - ページの始まり (本文の並びの位置・前方 float の高さ・本文領域の高さ・段の数・前のページから続く脚注) ごとに試した予約と、
+ *   その回に要った高さ。同じ所から始まるページは、収まった予約に固め、収まらなければ上げる (choose)。
+ *   前は、予約と要る高さを入れ替えるだけだったので、予約を上げると参照が次のページへ移って要る高さが下がり、下げるとまた上がる
+ *   ページで振れ、高い方に固まって、本文が数行だけで脚注の無いページが残った
+ */
+export class ColumnReservePlan {
+  refs: Array<{ pos: number; e: FootEntry }> = [];
+  readonly tries = new Map<string, ReserveTry[]>();
+
+  static key(s: number, top: number, limit: number, n: number, conts: readonly FootEntry[]): string {
+    return `${s.toFixed(1)}|${top.toFixed(1)}|${limit.toFixed(1)}|${n}|${conts.map((e) => e.height.toFixed(1)).join(',')}`;
+  }
+
+  /** 本文の並びの位置が pos 以上の、最初の参照 */
+  lowerBound(pos: number): number {
+    let lo = 0;
+    let hi = this.refs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.refs[mid].pos < pos) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /**
+   * 試した予約 (tried) と見積もり (model) から、次に使う予約を選ぶ。maxR は予約の上限 (本文の 1 行半を残す)。
+   * 収まった予約 (要った高さが予約を超えなかったもの) があれば、そのうち最も低いものに固める。予約を下げると本文が増えて参照も増えるので、
+   * 収まった予約の余り (参照の行を次のページへ移すために越えた分。1 行ほど) を詰めようとすると、たいてい収まらなくなり、そのページの
+   * 始まりより後ろのページがすべてずれて、組み直しが収まらない。収まった予約がまだ無ければ、見積もり、収まらなかった予約の回に要った高さ
+   * (その回の参照の脚注は、そこまで上げれば収まる)、上限との間の順に試し、最後は上限
+   */
+  choose(tried: readonly ReserveTry[], model: number, maxR: number): number {
+    if (!tried.length) return model;
+    let hi: ReserveTry | undefined;
+    for (const t of tried) if (t.need <= t.r + 0.01 && (!hi || t.r < hi.r)) hi = t;
+    if (hi) return hi.r;
+    let lo = tried[0];
+    for (const t of tried) if (t.r > lo.r) lo = t;
+    const fresh = (c: number) => c <= maxR + 0.01 && tried.every((t) => Math.abs(t.r - c) > 0.05);
+    for (const c of [model, lo.need]) if (c > lo.r + 0.05 && fresh(c)) return Math.min(c, maxR);
+    const mid = (lo.r + maxR) / 2;
+    return mid > lo.r + 0.05 && fresh(mid) ? mid : maxR;
+  }
 }
 
 /** ページ番号の参照の 1 つの値と、その字の書式 (SeqMemo.cites) */
@@ -9177,6 +9801,8 @@ interface SeqMemo {
   idPageBuildLast: Array<[string, PageBuild]>;
   /** この sequence で組んだ索引のページ番号の並び (組み直さないときは、いまのページで作り直しても同じ並びになることを確かめる) */
   indexLists?: Map<LIndexPageCitationList, IndexExpansion>;
+  /** この sequence で、先頭から N ページで止めたので決まらなかった参照 (組み直さないときに、同じものを数える) */
+  beyond?: Array<[BeyondKind, string]>;
 }
 
 /** 索引のページ番号の並び 1 つを、字と行内の箱に置き換えた結果 */
@@ -9201,6 +9827,8 @@ const DEFAULT_TRIM_MARK_MARGIN_MM = 10;
 
 export class LayoutEngine {
   private warnings: Diagnostic[] = [];
+  /** 書体の組の印 (FontManager.signature。文書をまたぐ行分けの覚えの鍵。組版ごとに 1 度だけ作る) */
+  private fontEnv?: string;
   /** 直前の layout() で組んだ回数 (試し組み・計測も含む。ページ番号の参照などで組み直した分も足す) */
   readonly stats: LayoutStats = { flows: 0, blocks: 0, tables: 0 };
 
@@ -9260,6 +9888,62 @@ export class LayoutEngine {
   /** メモリ節約: 組版 (layoutPasses) の中で組んだ回の数と、最後の回でページを lowScan に渡したか */
   private passNo = 0;
   private lastPassScanned = false;
+  /** 組版 (layoutPasses) の中の組み直しの回の番号 (1 から。進み具合の pass) */
+  private passIndex = 0;
+
+  /**
+   * 置くページを作った (LayoutControl.page に知らせる)。local は、組んでいる page-sequence の中でいままでに作ったページの数
+   * (pagesBuilt は、この回で組み終えた page-sequence のページ)。メモリ節約の組み直し (決まった回を PDF に描くために組み直すもの) では知らせない
+   */
+  private notePage(local: number): void {
+    const n = this.pagesBuilt.length + local;
+    const max = this.options.maxPages;
+    if (max !== undefined && n > max) {
+      // 先頭から N ページで止める: N + 1 ページ目 (見張りのページ) は組み、N + 2 ページ目を作った所で止める。
+      // 見張りのページは捨てる (進み具合にも数えない)。そのページを組む間の警告は、捨てるページのものなので、止めたときに除く
+      if (n === max + 1) this.lookaheadMark = this.warnings.length;
+      else {
+        this.stopPass = true;
+        throw PAGE_LIMIT;
+      }
+      return;
+    }
+    const c = this.options.control;
+    if (c && !this.replaySink) c.page(this.passIndex, n);
+  }
+  /** 先頭から N ページで止める (maxPages): この回で止めたか */
+  private stopPass = false;
+  /** 止めたときの、組んでいた page-sequence のページの並び (layoutSequence・layoutColumnPass・forcePageCount が置く) */
+  private seqBuilding: PageBuild[] = [];
+  /** 見張りのページを作ったときの警告の数 (-1 なら作っていない) */
+  private lookaheadMark = -1;
+  /**
+   * 止めた回の、N ページより後ろにある id (最初に置かれたページが後ろか、置かれていない) と、後ろへ続く id (最後のページが後ろ)。
+   * 止めなかった回は undefined
+   */
+  private cutInfo: { first: Set<string>; last: Set<string> } | undefined;
+  /** 前の回の cutInfo (ページ番号の参照の値を引くときに使う。citations と同じ回のもの) */
+  private citeCut: { first: Set<string>; last: Set<string> } | undefined;
+  /** この回で、N ページより後ろを指して決まらなかったもの (種類と id) */
+  private beyondHits: Array<[BeyondKind, string]> = [];
+  /** 文書の中の id (入力の節の id。止めたときに、後ろにある id と、文書に無い id を見分ける) */
+  private docIdSet: Set<string> | undefined;
+  private docIds(): Set<string> {
+    if (!this.docIdSet) {
+      this.docIdSet = new Set();
+      for (const n of this.docNodes) {
+        const id = (n as { id?: unknown }).id;
+        if (typeof id === 'string') this.docIdSet.add(id);
+      }
+    }
+    return this.docIdSet;
+  }
+  /** 決まらない参照の字 ("?"。WeasyPrint の組み方では空。LDocument.unresolvedCitationEmpty) */
+  private unresolvedMark = '?';
+  /** 直前の組版を、先頭から N ページで止めたか (止めたら N。TypesetResult.truncated) */
+  get truncatedAt(): number | undefined {
+    return this.cutInfo ? this.options.maxPages : undefined;
+  }
   /** メモリ節約: ページを領域の木にするときの、書体・字形の番号を付けるもの (組版ごと) */
   private lowResources?: ReturnType<typeof resourceAttacher>;
 
@@ -9502,6 +10186,15 @@ export class LayoutEngine {
   }
 
   /**
+   * 前の回を先頭から N ページで止めたとき (citeCut)、その参照が N ページより後ろを指すか (決まらない参照にするもの): 総ページ数、
+   * N ページより後ろにある id の最初のページ、N ページより後ろへ続く id の最後のページ (page-number-citation-last)、N ページまでに置かれなかった文書の id
+   */
+  private citeBeyond(id: string, last: boolean | undefined): boolean {
+    const cut = this.citeCut;
+    return !!cut && !!this.citations && (id === TOTAL_PAGES_ID || cut.first.has(id) || (last && cut.last.has(id)) || (!this.citations.has(id) && this.docIds().has(id)));
+  }
+
+  /**
    * ページ番号の参照の値と書式の組の印 (SeqMemo.cites の seen)。字の計測と描き方に効く書式の欄を並べる。
    * 印が同じになる違う書式があっても、reuseCites は字の節がどの組のものかを描き方で確かめ、確かめられなければ組み直すので、結果は変わらない
    */
@@ -9519,6 +10212,9 @@ export class LayoutEngine {
    * (1 回目の組版の仮の値はページごとに違い、桁数の違う値が 1 つの sequence に混じる)。途中で止めるときは、何も書き換えない
    */
   private reuseCites(memo: SeqMemo): boolean {
+    // 前の回を先頭から N ページで止めたとき、N ページより後ろを指す参照 (citeBeyond) は、決まらない参照の字 (「?」など) にして警告を出すので、
+    // 前の回のページを使い回さずに組み直す (使い回すと、前の回の値か、N ページより後ろのページの数を、警告なしに組む)
+    if (this.citeCut) for (const c of memo.cites.values()) if (this.citeBeyond(c.args[0], c.args[1])) return false;
     // 字の種類: 置き換えても、改行の機会 (UAX #14)・和欧間のアキ (JLREQ §3.2)・字間 (XSL 1.1 §7.17.2 の Alphabetic) の決まりが変わらない字の組。
     // ページ番号の書式 (pageNumber.ts の formatToken) の数字・全角の数字・漢数字は、それぞれの中で置き換えられる。ほかの字 (ローマ数字・アルファベットは、
     // 合字・分綴・字の組の詰めが字で変わる) は、同じ字のときだけ
@@ -9618,7 +10314,8 @@ export class LayoutEngine {
       nodes.forEach((n, k) => swaps.push([n, made![k]]));
     }
     // 字の描き方は、同じ中身の字で共有している (inlineLayout.ts の internGlyph) ので、書き換えずに、作り直したものに替える
-    for (const [n, g] of swaps) n.glyph = g;
+    // 行末の印 (分綴で足した字・行末で捨てた空白。inlineLayout.ts の buildLineNode) は、字の描き方の中身と別に、元の節のものを残す
+    for (const [n, g] of swaps) n.glyph = n.glyph!.hyphen || n.glyph!.breakSpace !== undefined ? { ...g, ...(n.glyph!.hyphen ? { hyphen: true } : {}), ...(n.glyph!.breakSpace !== undefined ? { breakSpace: n.glyph!.breakSpace } : {}) } : g;
     for (const [key, { value }] of plan) {
       const c = memo.cites.get(key)!;
       const uses = c.uses;
@@ -9734,10 +10431,25 @@ export class LayoutEngine {
   }
 
   layout(doc: LDocument): AreaTree {
+    this.beginLayout();
+    return this.endLayout(doc, this.layoutPasses(doc));
+  }
+
+  /** layout と同じ組版を、組み直しの回と page-sequence の境目で control.boundary を待ちながら組む (止める合図・進み具合を渡したとき) */
+  async layoutPaced(doc: LDocument): Promise<AreaTree> {
+    this.beginLayout();
+    return this.endLayout(doc, rejoin(thisCall(), await this.passesPaced(doc)));
+  }
+
+  private beginLayout(): void {
+    this.fontEnv = undefined;
     this.lineMemoLru = new LineMemoLru(this.options.lineMemoAtoms ?? LINE_MEMO_ATOMS);
     this.stats.flows = this.stats.blocks = this.stats.tables = 0;
     this.stats.nestMax = this.stats.columnNestMax = 0;
-    const unsettled = this.layoutPasses(doc);
+    this.stats.sharedLineHits = 0;
+  }
+
+  private endLayout(doc: LDocument, unsettled: Diagnostic[]): AreaTree {
     const tree = this.finishTree(doc);
     addTreeDiagnostics(tree, this.kept(unsettled));
     this.stats.lineMemoPeak = this.lineMemoLru.peak;
@@ -9754,10 +10466,24 @@ export class LayoutEngine {
    * 同じページを何度作ってもよい。release(i) の後は、そのページを作れない。finish は、作ったページの後で、文書の情報 (しおり・飛び先・警告) を返す
    */
   layoutSheets(doc: LDocument): SheetSource {
+    this.beginSheets();
+    return this.endSheets(doc, this.layoutPasses(doc));
+  }
+
+  /** layoutSheets と同じ組版を、境目で control.boundary を待ちながら組む (layoutPaced と同じ) */
+  async layoutSheetsPaced(doc: LDocument): Promise<SheetSource> {
+    this.beginSheets();
+    return this.endSheets(doc, rejoin(thisCall(), await this.passesPaced(doc)));
+  }
+
+  private beginSheets(): void {
+    this.fontEnv = undefined;
     this.lineMemoLru = new LineMemoLru(this.options.lineMemoAtoms ?? LINE_MEMO_ATOMS);
     this.stats.flows = this.stats.blocks = this.stats.tables = 0;
     this.stats.nestMax = this.stats.columnNestMax = 0;
-    const unsettled = this.layoutPasses(doc);
+  }
+
+  private endSheets(doc: LDocument, unsettled: Diagnostic[]): SheetSource {
     this.stats.lineMemoPeak = this.lineMemoLru.peak;
     this.stats.lineMemoHits = this.lineMemoLru.hits;
     const pages = this.pagesBuilt;
@@ -9767,6 +10493,7 @@ export class LayoutEngine {
     const released = new Set<number>();
     return {
       count: pages.length,
+      truncatedAt: this.truncatedAt,
       title: doc.title ?? doc.info?.title,
       info: doc.info,
       structure: areaStructure(doc, this.docNodes),
@@ -9799,6 +10526,7 @@ export class LayoutEngine {
    * しおり・文書内リンクの飛び先・警告を返す
    */
   layoutLowMemory(doc: LDocument): LowMemorySheets {
+    this.fontEnv = undefined;
     const engine = this;
     let unsettled: Diagnostic[] = [];
     let layoutMs = 0;
@@ -9817,6 +10545,9 @@ export class LayoutEngine {
       structure: areaStructure(doc),
       get count() {
         return engine.pagesBuilt.length;
+      },
+      get truncatedAt() {
+        return engine.truncatedAt;
       },
       get layoutMs() {
         return layoutMs;
@@ -9886,12 +10617,27 @@ export class LayoutEngine {
    * 返すのは、決まらなかったときの警告 (領域の木の警告の終わりに足すもの)
    */
   private layoutPasses(doc: LDocument): Diagnostic[] {
+    return runSteps(this.passSteps(doc));
+  }
+
+  /** layoutPasses を、境目で control.boundary を待ちながら走らせる (control が無ければ同期のまま) */
+  private passesPaced(doc: LDocument): Promise<Diagnostic[]> {
+    const c = this.options.control;
+    return c ? runPaced(this.passSteps(doc), () => c.boundary()) : Promise.resolve(this.layoutPasses(doc));
+  }
+
+  /** layoutPasses の中身 (組み直しの回と page-sequence の境目で yield する) */
+  private *passSteps(doc: LDocument): Generator<void, Diagnostic[]> {
+    this.passIndex = 0;
     // 入力の節に通し番号を付ける (Area の sourceRef)
     // 描くときだけの効果 (transform・opacity) を持つ節 (無い文書では undefined。組んだ後で Area に付ける)
     const docNodes = indexDocument(doc);
     this.paintEffects = collectPaintEffects(docNodes);
     this.gradientNames = new Map();
     this.docNodes = docNodes;
+    this.docIdSet = undefined;
+    this.citeCut = undefined;
+    this.unresolvedMark = doc.unresolvedCitationEmpty ? '' : '?';
     this.inlineCbRanges = undefined;
     paintEffectState.on = !!this.paintEffects;
     this.seqMemo = [];
@@ -9916,7 +10662,7 @@ export class LayoutEngine {
     // 組み直しの回の結果は、ページの論理の木 (PageBuild) までにして、領域の木 (Area) にするのは収束した回だけにする (finishTree)。
     // 収束の判定は、ページの数と、組んだ中で記録した id のページ・脚注・索引の並びだけを見るので、途中の回の領域の木は要らない
     // (毎回作ると、前の回の領域の木を持ったまま次の回を組むので、数千ページの文書で、文書全体の木を 3 つ同時に持っていた)
-    this.layoutOnce(doc);
+    yield* this.onceSteps(doc);
     let indexView: IndexView | undefined;
     // 索引の並びが、組み終えたページで作り直しても同じなら、索引は収束している (索引の無い文書は、いつも true)
     const indexDone = () => !this.indexUsed.size || this.indexSettled((indexView = this.indexSnapshot()));
@@ -9924,25 +10670,80 @@ export class LayoutEngine {
       const next = this.idPages;
       this.notePhysicalPages(next);
       const total = this.pagesBuilt.length;
-      next.set(TOTAL_PAGES_ID, { first: String(total), last: String(total), firstN: total, lastN: total, firstP: total, lastP: total });
+      // 先頭から N ページで止めた回は、総ページ数が分からない (参照は決まらない参照にする。cite)
+      if (!this.cutInfo) next.set(TOTAL_PAGES_ID, { first: String(total), last: String(total), firstN: total, lastN: total, firstP: total, lastP: total });
+      const sameCut = !this.cutInfo === !this.citeCut && (!this.cutInfo || sameSet(this.cutInfo.last, this.citeCut!.last));
       const sameCite =
         !this.citationUsed ||
-        (this.citations && next.size === this.citations.size && [...next].every(([k, v]) => { const c = this.citations!.get(k); return c?.first === v.first && c?.last === v.last && c?.firstP === v.firstP && c?.lastP === v.lastP; }));
+        (sameCut && this.citations && next.size === this.citations.size && [...next].every(([k, v]) => { const c = this.citations!.get(k); return c?.first === v.first && c?.last === v.last && c?.firstP === v.firstP && c?.lastP === v.lastP; }));
       const order = this.footnoteOrder();
       const sameFoot = !this.fnResetUsed || (order.size === this.fnOrder.size && [...order].every(([k, v]) => this.fnOrder.get(k) === v));
       const sameIndex = indexDone();
       if (sameCite && sameFoot && sameIndex) return [];
       this.citations = next;
+      this.citeCut = this.cutInfo;
       this.fnOrder = order;
       if (indexView) this.indexPrev = indexView;
       // 次の回を組む間、この関数の変数は、いまの回のページ (PageBuild) を指さない (組み直す page-sequence の前の回の論理の木を、組みながら手放す)
-      this.layoutOnce(doc);
+      yield* this.onceSteps(doc);
     }
     const unsettled: Diagnostic[] = [];
     // 索引のページ番号の並びが伸びてページが増え、引くページがまた変わる、を繰り返して決まらないときは、上限の回数で止めて知らせる
     if (!indexDone()) unsettled.push(diag('layout/not-converged', msg('索引のページ番号の並びが収束しませんでした (索引が伸びてページが増え、引くページが変わるなど)', 'the index page number lists did not converge (e.g. the index grew, adding pages and changing the cited pages)'), { what: 'index' }));
     if (this.citationUsed || this.fnResetUsed) unsettled.push(diag('layout/not-converged', msg('ページ番号参照・ページごとの脚注番号が収束しませんでした (目次の桁数が変わるなど)', 'page number references / per-page footnote numbers did not converge (e.g. the number of digits in a table of contents changed)'), { what: 'page-number-citation' }));
     return unsettled;
+  }
+
+  /**
+   * メモリ節約: 組み終えた page-sequence のページ (pages の from から) の、組版の途中の木を手放す (渡す先があれば、先に柱などを組んで領域の木にして渡す)。
+   * 柱などのマーカーは、そのページと前のページのものしか引かない (findMarker) ので、後ろの page-sequence を組む前に組める。
+   * 先頭から N ページで止めるときは、見張りのページ (N + 1 ページ目) を渡さない (止めたときに捨てる)
+   */
+  private releaseLow(pages: PageBuild[], from: number, sink: ((sheet: SheetArea) => void) | undefined, prevTotal: number, host: FlowHost, docStyle: ResolvedStyle, staticWarnings: Diagnostic[]): void {
+    const max = this.options.maxPages;
+    for (let i = from; i < pages.length; i++) {
+      if (sink && (max === undefined || i < max)) {
+        const st = this.sheetStatics(pages[i], prevTotal, { ...host, warn: (m) => staticWarnings.push(m) }, docStyle, pages, i);
+        sink(this.lowSheet(pages[i], st));
+      }
+      releasePage(pages[i]);
+    }
+  }
+
+  /**
+   * 先頭から N ページで止めた (maxPages): 組み終えた page-sequence のページ (pages) と、組んでいた page-sequence のページ (built) のうち、
+   * 文書の初めから N ページを pages に残し、見張りのページ (N + 1 ページ目) と、作りかけの N + 2 ページ目を捨てる。
+   * 捨てたページに置いた id から、N ページより後ろにある id と、後ろへ続く id を分け (cutInfo)、後ろにある id のページの記録を消す
+   * (しおり・リンクの飛び先・ページ番号の参照が、捨てたページを指さないように)
+   */
+  private cutPages(pages: PageBuild[], built: PageBuild[], max: number, seq: LPageSequence): void {
+    const all = [...pages, ...built];
+    const kept = new Set(all.slice(0, max));
+    // page-sequence・flow の id は、最初のページだけ記録する (最後のページは分からない。後ろへ続く id にする)
+    const firstKept = built.find((pb) => kept.has(pb));
+    const cutSeq = built.length > 0;
+    if (cutSeq) for (const id of [seq.id, seq.flow.id]) if (id && firstKept) this.noteIdPage(id, firstKept.number, seq.pageNumberFormat, firstKept);
+    const first = new Set<string>();
+    const last = new Set<string>();
+    for (const [id, pb] of this.idPageBuild) if (!kept.has(pb)) first.add(id);
+    for (const [id, pb] of this.idPageBuildLast) if (!first.has(id) && !kept.has(pb)) last.add(id);
+    if (cutSeq) for (const id of [seq.id, seq.flow.id]) if (id && !first.has(id) && this.idPageBuild.has(id)) last.add(id);
+    // ページ番号を記録したのに、ページの節の無い id (idPageBuild に無いもの) は、記録したページ番号で、残したページの範囲かを見る
+    const lastKept = all[Math.min(max, all.length) - 1];
+    for (const [id, v] of this.idPages) {
+      if (this.idPageBuild.has(id) || first.has(id) || !lastKept || lastKept.seq !== seq) continue;
+      if (v.firstN !== undefined && v.firstN > lastKept.number) first.add(id);
+      else if (v.lastN !== undefined && v.lastN > lastKept.number) last.add(id);
+    }
+    for (const id of first) {
+      this.idPages.delete(id);
+      this.idPageBuild.delete(id);
+      this.idPageBuildLast.delete(id);
+    }
+    if (this.indexKeys) built.forEach((pb, k) => this.pageOrdinal.set(pb, pages.length + k));
+    pages.length = Math.min(pages.length, max);
+    pushAll(pages, built.slice(0, Math.max(0, max - pages.length)));
+    this.cutInfo = { first, last };
   }
 
   /** id の置かれたページの、物理的なページ番号 (文書の中での順番) を記録する */
@@ -9958,9 +10759,22 @@ export class LayoutEngine {
 
   /** 1 回の組版: ページの論理の木 (pagesBuilt) と、ページごとの柱など (passStatics) を作る。領域の木にするのは finishTree */
   private layoutOnce(doc: LDocument): void {
+    runSteps(this.onceSteps(doc));
+  }
+
+  /** layoutOnce の中身 (page-sequence を組み始める前に yield する) */
+  private *onceSteps(doc: LDocument): Generator<void, void> {
+    this.passIndex++;
     // メモリ節約: page-sequence を組み終えるごとに、柱などを組んでページを領域の木にし、渡す先 (sink)。柱の中の総ページ数は、前の回のページ数
     // (収束した回では、この回のページ数と同じ。収束しない回の結果は使わない)。1 回目は総ページ数が分からないので渡さない
-    const prevTotal = this.pagesBuilt.length;
+    // 前の回を先頭から N ページで止めていたら、総ページ数は分からない (-1。sheetStatics が決まらない字にする)
+    const prevTotal = this.cutInfo ? -1 : this.pagesBuilt.length;
+    // 先頭から N ページで止める (maxPages) ための、回ごとの状態
+    this.stopPass = false;
+    this.cutInfo = undefined;
+    this.beyondHits = [];
+    this.lookaheadMark = -1;
+    const maxPages = this.options.maxPages;
     let sink: ((sheet: SheetArea) => void) | undefined = this.replaySink;
     if (!sink && this.lowScan && this.passNo > 0) {
       this.lowScan.restart();
@@ -10005,6 +10819,8 @@ export class LayoutEngine {
       ...(this.indexPoints.size ? { indexPoint: (id: string) => this.indexPoints.get(id) } : {}),
       measurer: this.measurer,
       lineMemoLru: this.lineMemoLru,
+      // 文書をまたぐ覚え: メモリ節約の組版では使わない (ページを PDF に書く間に組むので、組み終える前に、ほかの文書の組版が覚えの書体を差し替えうる)
+      ...(this.options.sharedLineMemo && !this.lowMemory ? { sharedLines: { memo: this.options.sharedLineMemo, env: (this.fontEnv ??= `${this.fonts.signature()}|${limitsKey()}`), fonts: this.fonts } } : {}),
       cellMeasure: new WeakMap(),
       stats: this.stats,
       inlineCbRange: (key) => this.inlineCbRange(key),
@@ -10016,6 +10832,10 @@ export class LayoutEngine {
           // (参照先のページ番号と桁数が同じになりやすく、2 回目に字だけ差し替えて済む)
           const n = !last && !physical ? this.idPages.get(id) : undefined;
           v = n ? (format !== undefined && n.firstN !== undefined ? formatPageNumber(n.firstN, format) : n.first) : formatPageNumber(Math.max(1, pageNumber ?? 1), format ?? '1');
+        } else if (this.citeBeyond(id, last)) {
+          // 前の回を先頭から N ページで止めた: N ページより後ろにある所 (と総ページ数) は決まらない。見つからない id と同じ字で組む
+          v = this.unresolvedMark;
+          this.beyondHits.push([id === TOTAL_PAGES_ID ? 'total-pages' : last ? 'page-number-citation-last' : 'page-number-citation', id]);
         } else {
           v = this.citeValue(id, last, format, physical);
           if (v === undefined) {
@@ -10046,7 +10866,9 @@ export class LayoutEngine {
     let pageNo = 1;
     this.sidesByOrder = !!doc.pageSidesByOrder;
 
-    doc.sequences.forEach((seq, si) => {
+    for (const [si, seq] of doc.sequences.entries()) {
+      // 組み直しの回と page-sequence の境目 (間をあけるときは、ここで control.boundary を待つ)
+      yield;
       // 行グリッドの root (-ah-baseline-grid: root・axf:baseline-grid="root") の書式: この並びの流れの根元の書式 (HTML は根元の要素の書式)
       host.gridRootStyle = resolveStyle(resolveStyle(docStyle, seq), seq.flow);
       // initial-page-number (§7.27.7): auto-odd / auto-even は、続きの番号の偶奇が合わなければ 1 足す
@@ -10073,14 +10895,16 @@ export class LayoutEngine {
         for (const [k, v] of memo.idPageBuild) this.idPageBuild.set(k, v);
         for (const [k, v] of memo.idPageBuildLast) this.idPageBuildLast.set(k, v);
         pushAll(this.warnings, memo.warnings);
+        if (memo.beyond) pushAll(this.beyondHits, memo.beyond);
         if (memo.cites.size) this.citationUsed = true;
         pageNo = first + memo.built.length;
         this.fnCarry = memo.fnCarryOut;
         this.lastFoot = undefined;
-        return;
+        continue;
       }
       const fnCarryIn = this.fnCarry;
       const warnStart = this.warnings.length;
+      const beyondStart = this.beyondHits.length;
       const idsBefore = this.lowMemory ? undefined : this.snapshotIds();
       this.citeLog = new Map();
       if (this.indexKeys) {
@@ -10094,7 +10918,8 @@ export class LayoutEngine {
       const layoutSequence = (s: LPageSequence, d: ResolvedStyle, h: FlowHost, f: number, li: number | null) => {
         const body = this.layoutSequence(s, d, h, f, li);
         flowPages = body.length;
-        return this.forcePageCount(body, s, d, f, li, nextIpn);
+        // 段組の page-sequence を先頭から N ページで止めた (layoutColumnPass が受けた): 白ページは足さない
+        return this.stopPass ? body : this.forcePageCount(body, s, d, f, li, nextIpn);
       };
       const conds = conditionalMasters(seq);
       // rest も、最後のページかどうかで決まる (§7.27.14: 最初でも最後でもないページ)
@@ -10108,16 +10933,37 @@ export class LayoutEngine {
         for (const k of this.idPages.keys()) if (!idKeys.has(k)) this.idPages.delete(k);
         for (const k of this.idPageBuild.keys()) if (!idKeys.has(k)) this.idPageBuild.delete(k);
       };
-      let built = layoutSequence(seq, docStyle, host, first, lastIndex);
-      if (needsLast) {
-        for (let k = 0; k < 3 && built.length !== lastIndex; k++) {
-          lastIndex = built.length;
-          this.warnings.length = mark;
-          forgetIds();
-          built = layoutSequence(seq, docStyle, host, first, lastIndex);
-          if (built.length === lastIndex) break;
-          if (k === 2) this.warnings.push(diag('layout/not-converged', msg('最終ページ用ページマスターの適用でページ数が収束しませんでした', 'the page count did not converge while applying the last-page page master'), { what: 'last-page-master' }));
+      let built: PageBuild[];
+      try {
+        built = layoutSequence(seq, docStyle, host, first, lastIndex);
+        if (needsLast && !this.stopPass) {
+          for (let k = 0; k < 3 && built.length !== lastIndex; k++) {
+            lastIndex = built.length;
+            this.warnings.length = mark;
+            if (this.lookaheadMark > mark) this.lookaheadMark = -1;
+            forgetIds();
+            built = layoutSequence(seq, docStyle, host, first, lastIndex);
+            if (built.length === lastIndex || this.stopPass) break;
+            if (k === 2) this.warnings.push(diag('layout/not-converged', msg('最終ページ用ページマスターの適用でページ数が収束しませんでした', 'the page count did not converge while applying the last-page page master'), { what: 'last-page-master' }));
+          }
         }
+      } catch (e) {
+        if (e !== PAGE_LIMIT) throw e;
+        // 先頭から N ページで止めた (notePage): 組んでいたページの並びを取り、見張りのページを組む間の警告を除く。
+        // 最後のページは分からないままなので、条件付きのマスター (§7.27.14) は、最後でないページとして選んだまま
+        built = this.seqBuilding;
+        resetFlowDepth(host);
+        if (this.lookaheadMark >= 0) this.warnings.length = Math.min(this.warnings.length, this.lookaheadMark);
+      }
+      if (this.stopPass) {
+        const before = Math.min(pages.length, maxPages!);
+        this.cutPages(pages, built, maxPages!, seq);
+        this.citeLog = undefined;
+        this.indexLog = undefined;
+        this.indexSeq = undefined;
+        this.lastFoot = undefined;
+        if (this.lowMemory) this.releaseLow(pages, before, sink, prevTotal, host, docStyle, staticWarnings);
+        break;
       }
       // page-sequence・flow の id (XSL 1.1 §7.30.8) を引くページ番号の参照 (§6.6.11・§6.6.12): page-sequence の id は、
       // その page-sequence の作った最初と最後のページ (「全 N ページ」の page-number-citation-last)。flow の id は、本文の置かれた最初と最後のページ
@@ -10132,24 +10978,21 @@ export class LayoutEngine {
       pageNo = first + built.length;
       this.fnCarry = this.lastFoot?.lastNumber ?? this.fnCarry;
       this.lastFoot = undefined;
-      if (!this.lowMemory) this.seqMemo[si] = { first, sideDelta, fnCarryIn, cites: this.citeLog, built, fnCarryOut: this.fnCarry, warnings: this.warnings.slice(warnStart), ...this.idDiff(idsBefore!), ...(this.indexLog?.size ? { indexLists: this.indexLog } : {}) };
+      if (!this.lowMemory) this.seqMemo[si] = { first, sideDelta, fnCarryIn, cites: this.citeLog, built, fnCarryOut: this.fnCarry, warnings: this.warnings.slice(warnStart), ...this.idDiff(idsBefore!), ...(this.indexLog?.size ? { indexLists: this.indexLog } : {}), ...(this.beyondHits.length > beyondStart ? { beyond: this.beyondHits.slice(beyondStart) } : {}) };
       this.citeLog = undefined;
       this.indexLog = undefined;
       this.indexSeq = undefined;
-      if (this.lowMemory) {
-        // メモリ節約: 組み終えた page-sequence のページの、組版の途中の木を手放す (渡す先があれば、先に柱などを組んで領域の木にして渡す)。
-        // 柱などのマーカーは、そのページと前のページのものしか引かない (findMarker) ので、後ろの page-sequence を組む前に組める
-        for (let i = pages.length - built.length; i < pages.length; i++) {
-          if (sink) {
-            const st = this.sheetStatics(pages[i], prevTotal, { ...host, warn: (m) => staticWarnings.push(m) }, docStyle, pages, i);
-            sink(this.lowSheet(pages[i], st));
-          }
-          releasePage(pages[i]);
-        }
-      }
-    });
+      if (this.lowMemory) this.releaseLow(pages, pages.length - built.length, sink, prevTotal, host, docStyle, staticWarnings);
+    }
 
-    const total = pages.length;
+    // 先頭から N ページで止める: 文書がちょうど N + 1 ページで終わった (N + 2 ページ目を作らなかった) ときも、見張りのページを捨てる
+    if (maxPages !== undefined && !this.stopPass && pages.length > maxPages) {
+      this.stopPass = true;
+      if (this.lookaheadMark >= 0) this.warnings.length = Math.min(this.warnings.length, this.lookaheadMark);
+      this.cutPages(pages, [], maxPages, doc.sequences[doc.sequences.length - 1]);
+    }
+    // 止めた回は、総ページ数が分からない (-1。柱の中の総ページ数は、決まらない字にする)
+    const total = this.cutInfo ? -1 : pages.length;
     if (sink) pushAll(this.warnings, staticWarnings);
     else {
       this.lineCount.clear();
@@ -10162,6 +11005,23 @@ export class LayoutEngine {
     this.staticMemo = new Map();
     this.stats.nestMax = Math.max(this.stats.nestMax ?? 0, nest.maxSeen);
     this.stats.columnNestMax = Math.max(this.stats.columnNestMax ?? 0, nest.cSeen);
+    if (this.cutInfo) this.noteCut(maxPages!);
+  }
+
+  /**
+   * 先頭から N ページで止めた回の診断: 止めたこと (info) と、N ページより後ろを指して決まらなかったものを、種類ごとに 1 件 (warning)。
+   * 索引は、止めた回で索引の並びを組んだら (後ろのページの所が抜ける)
+   */
+  private noteCut(max: number): void {
+    this.warnings.push(diag('layout/max-pages-reached', msg(`先頭の ${max} ページまで組み、そこで止めました (maxPages)`, `stopped after the first ${max} pages (maxPages)`), { maxPages: max }));
+    const byKind = new Map<BeyondKind, Set<string>>();
+    for (const [k, id] of this.beyondHits) {
+      let set = byKind.get(k);
+      if (!set) byKind.set(k, (set = new Set()));
+      set.add(id);
+    }
+    if (this.indexUsed.size) byKind.set('index', new Set([...this.indexUsed.keys()].map((_, k) => String(k))));
+    for (const [kind, ids] of byKind) this.warnings.push(beyondDiagnostic(max, kind, [...ids], this.unresolvedMark));
   }
 
   /**
@@ -10191,16 +11051,20 @@ export class LayoutEngine {
       warnings,
       // 診断は、あるときだけ書く (警告の無い文書の木は、診断を足す前と同じ)
       ...(diagnostics?.length ? { diagnostics } : {}),
+      ...(this.cutInfo ? { truncated: { maxPages: this.options.maxPages! } } : {}),
     };
   }
 
   /** 領域の木の、ページ (sheets) のほかの情報: しおり (飛び先をシートの番号に解決したもの)・文書内リンクの飛び先・警告 */
   private treeInfo(doc: LDocument, pages: PageBuild[]): Pick<AreaTree, 'bookmarks' | 'destinations' | 'warnings' | 'diagnostics'> & { destinations: Record<string, number> } {
     // しおりの飛び先 (id) を、シートの番号に解決する
+    const beyondBookmarks = new Set<string>();
     const resolve = (bs: LBookmark[] | undefined): BookmarkArea[] =>
       (bs ?? []).map((b) => {
         const pb = this.idPageBuild.get(b.ref);
-        if (!pb && b.ref) this.warnings.push(diag('layout/missing-id', msg(`しおりの飛び先 id="${b.ref}" が見つかりません`, `bookmark destination id="${b.ref}" was not found`), { id: b.ref, kind: 'bookmark' }));
+        // 先頭から N ページで止めた組版で、N ページより後ろにある飛び先は、見つからない飛び先にしない (決まらないしおりとして数える)
+        if (!pb && b.ref && this.cutInfo && (this.cutInfo.first.has(b.ref) || this.docIds().has(b.ref))) beyondBookmarks.add(b.ref);
+        else if (!pb && b.ref) this.warnings.push(diag('layout/missing-id', msg(`しおりの飛び先 id="${b.ref}" が見つかりません`, `bookmark destination id="${b.ref}" was not found`), { id: b.ref, kind: 'bookmark' }));
         // 文書の外への飛び先 (fo:bookmark の external-destination。XSL 1.1 §6.11.2・§7.23.6) は、文書の中の飛び先 (ref) が無いときだけ通す
         return { title: b.title, sheet: pb ? pages.indexOf(pb) : -1, ...(!b.ref && b.href ? { external: b.href } : {}), open: b.open ?? true, children: resolve(b.children) };
       });
@@ -10214,6 +11078,7 @@ export class LayoutEngine {
     // 索引のページ番号のリンクのうち、ページそのものを飛び先にするもの (範囲の途中のページ・ページをまたぐ所の 2 ページ目から)
     for (const ex of this.indexUsed.values()) for (const n of ex.pageDests) if (n < pages.length) destinations[indexPageDest(n)] = n;
     const bookmarks = doc.bookmarks?.length ? resolve(doc.bookmarks) : undefined;
+    if (beyondBookmarks.size) this.warnings.push(beyondDiagnostic(this.options.maxPages!, 'bookmark', [...beyondBookmarks], this.unresolvedMark));
     // 同じ警告 (同じ画像を何度も置いたときなど) は 1 つにまとめ、見つからない飛び先の警告は、種類ごとに 1 行にまとめる
     // 診断は、同じもの (名前・文・場所が同じ) を 1 件にして数を数え、見つからない飛び先も 1 件ずつ残す
     const kept = this.kept(this.warnings);
@@ -10233,9 +11098,13 @@ export class LayoutEngine {
    */
   private forcePageCount(built: PageBuild[], seq: LPageSequence, docStyle: ResolvedStyle, first: number, lastIndex: number | null, nextIpn: LPageSequence['initialPageNumber']): PageBuild[] {
     const mode = seq.forcePageCount ?? 'auto';
+    this.seqBuilding = built;
     // 数値 (アンテナハウスの拡張): そのページ数になるまで白ページを足す
     if (typeof mode === 'number') {
-      while (built.length < Math.min(mode, 10000)) built.push(this.blankPage(seq, docStyle, built.length + 1, first + built.length, lastIndex));
+      while (built.length < Math.min(mode, 10000)) {
+        built.push(this.blankPage(seq, docStyle, built.length + 1, first + built.length, lastIndex));
+        this.notePage(built.length);
+      }
       return built;
     }
     const ok = (count: number) => {
@@ -10258,7 +11127,10 @@ export class LayoutEngine {
         default: return true;
       }
     };
-    for (let guard = 0; !ok(built.length) && guard < 2; guard++) built.push(this.blankPage(seq, docStyle, built.length + 1, first + built.length, lastIndex));
+    for (let guard = 0; !ok(built.length) && guard < 2; guard++) {
+      built.push(this.blankPage(seq, docStyle, built.length + 1, first + built.length, lastIndex));
+      this.notePage(built.length);
+    }
     return built;
   }
 
@@ -10340,53 +11212,69 @@ export class LayoutEngine {
   private layoutColumnSequence(seq: LPageSequence, docStyle: ResolvedStyle, host: FlowHost, firstNumber: number, lastIndex: number | null): PageBuild[] {
     // 脚注・前方 float はページ全体 (全段を貫く) の領域に置く。その高さは組んでみないと分からないので、ページごとの予約を直しながら、
     // 安定するまで組み直す。
-    // 初めの回 (FRONT_PASSES まで) は、前から順に固める: 予約と要る高さが初めて食い違うページ (前線) より前は変えず (組版は決まっていて、
-    // 次の回も同じに組まれる)、前線のページは要る高さにし (減らすのはページごとに 1 度だけ。減らしては増やすことを繰り返さない)、
-    // 前線より後ろのページは、この回の要る高さに置き換える (前の回の組版で脚注があったページに、要らなくなった予約を残さない)。
-    // 前は、どのページも予約を増やすだけだったので、1 回目の組版 (予約が無く、本文がページの下端まで埋まる) で脚注のあったページの予約が、
-    // 本文が後ろへずれた後も残り、本文が数行だけで脚注の無いページができ、脚注が参照のページから離れた。
-    // それでも収まらなければ、残りの回 (MAX_PASSES まで) は予約を増やすだけにして止める (回数の上限で終わっても、本番の脚注は
-    // 本文が実際に使った高さの下に限るので、本文と重ならない)。前から固める回はページの数ほど要ることがあり、上限は組版の時間との兼ね合い
+    // 脚注の予約 (本文領域の下) は、組版の中で、ページの始まりごとに決める (layoutColumnPass の botAt): 前の回の脚注の参照の、本文の
+    // 並びの位置から、そのページに入る参照と要る高さを見積もり、収まる最小の予約にする。同じ所から始まるページは、前の回に収まった
+    // 予約に固め、収まらなかったら上げる (ColumnReservePlan)。ページの始まりから決めるので、前のページの予約が変わって本文がずれても、
+    // 後ろのページの予約はずれた本文に合わせて決まり、長い文書でも数回で収まる。
+    // 前は、ページの番号ごとに、前の回の要る高さを予約にし、初めの 10 回は前から 1 ページずつ固め、残りの回 (全部で 16 回まで) は
+    // 増やすだけにしたので、脚注の多い長い文書では、前から固める回が文書の初めの数ページしか進まず、増やすだけの回が、ずれる前の
+    // 要る高さを予約に積んで、本文が数行だけで脚注の無いページが文書じゅうにでき、ページと時間が増えた。
+    // 前方 float の予約 (本文領域の上) は、前から順に固める: 予約と要る高さが初めて食い違うページ (前線) より前は変えず、
+    // 前線のページは要る高さにし (減らすのはページごとに 1 度だけ)、前線より後ろのページは、この回の要る高さに置き換える。
+    // FRONT_PASSES を超えたら増やすだけにする (前方 float の組み直しは前と同じ)。
+    // 回数の上限で終わっても、本番の脚注は本文が実際に使った高さの下に限るので、本文と重ならない (入らない分は次のページへ続ける)
     const FRONT_PASSES = 10;
     const MAX_PASSES = 16;
     const reserves = { top: new Map<number, number>(), bot: new Map<number, number>() };
-    /** 予約を 1 度減らしたページ (top・bot ごと) */
-    const lowered = { top: new Set<number>(), bot: new Set<number>() };
-    let out = this.layoutColumnPass(seq, docStyle, host, firstNumber, lastIndex, reserves);
+    /** 前方 float の予約を 1 度減らしたページ */
+    const lowered = new Set<number>();
+    const plan = new ColumnReservePlan();
+    let out = this.layoutColumnPass(seq, docStyle, host, firstNumber, lastIndex, reserves, plan);
     for (let pass = 1; pass < MAX_PASSES; pass++) {
-      const need = (abs: number, side: 'top' | 'bot') => out.needs.get(abs)?.[side] ?? 0;
-      const has = (abs: number, side: 'top' | 'bot') => reserves[side].get(abs) ?? 0;
-      /** 前線として直すか (増やすか、まだ 1 度も減らしていない予約を減らす) */
-      const moves = (abs: number, side: 'top' | 'bot') =>
-        need(abs, side) > has(abs, side) + 0.01 || (need(abs, side) < has(abs, side) - 0.01 && !lowered[side].has(abs));
-      const abss = [...new Set([...out.needs.keys(), ...reserves.top.keys(), ...reserves.bot.keys()])].sort((x, y) => x - y);
-      const front = abss.find((abs) => moves(abs, 'top') || moves(abs, 'bot'));
-      if (front === undefined) break;
+      // 脚注: この回に試した予約と要った高さを覚え、次の回に予約を変えるページがあるか
+      // 参照は組んだ順に足すので、ふつうは位置の順に並んでいる (表・入れ子の箱の中の参照は、前後することがあるので並べる)
+      plan.refs = out.refs.sort((x, y) => x.pos - y.pos);
       let changed = false;
-      for (const abs of abss) {
-        if (abs < front) continue;
-        for (const side of ['top', 'bot'] as const) {
-          const w = need(abs, side);
-          const h = has(abs, side);
+      for (const [abs, d] of out.decided) {
+        const r = reserves.bot.get(abs) ?? 0;
+        const need = out.needs.get(abs)?.bot ?? 0;
+        let list = plan.tries.get(d.key);
+        if (!list) plan.tries.set(d.key, (list = []));
+        if (!list.some((t) => Math.abs(t.r - r) < 0.05)) list.push({ r, need });
+        if (Math.abs(plan.choose(list, d.model, d.maxR) - r) > 0.01) changed = true;
+      }
+      // 前方 float
+      const need = (abs: number) => out.needs.get(abs)?.top ?? 0;
+      const has = (abs: number) => reserves.top.get(abs) ?? 0;
+      /** 前線として直すか (増やすか、まだ 1 度も減らしていない予約を減らす) */
+      const moves = (abs: number) => need(abs) > has(abs) + 0.01 || (need(abs) < has(abs) - 0.01 && !lowered.has(abs));
+      const abss = [...new Set([...out.needs.keys(), ...reserves.top.keys()])].sort((x, y) => x - y);
+      const front = abss.find(moves);
+      if (front !== undefined) {
+        for (const abs of abss) {
+          if (abs < front) continue;
+          const w = need(abs);
+          const h = has(abs);
           let v = Math.max(w, h);
           if (pass < FRONT_PASSES) {
             if (abs !== front) v = w;
-            else if (moves(abs, side)) {
-              if (w < h) lowered[side].add(abs);
+            else {
+              if (w < h) lowered.add(abs);
               v = w;
-            } else v = h;
+            }
           }
           if (Math.abs(v - h) <= 0.01) continue;
           changed = true;
-          if (v > 0.01) reserves[side].set(abs, v);
-          else reserves[side].delete(abs);
+          if (v > 0.01) reserves.top.set(abs, v);
+          else reserves.top.delete(abs);
         }
       }
       if (!changed) break;
       this.warnings.length = out.mark;
+      if (this.lookaheadMark > out.mark) this.lookaheadMark = -1;
       for (const k of this.idPages.keys()) if (!out.idKeys.has(k)) this.idPages.delete(k);
       for (const k of this.idPageBuild.keys()) if (!out.idKeys.has(k)) this.idPageBuild.delete(k);
-      out = this.layoutColumnPass(seq, docStyle, host, firstNumber, lastIndex, reserves);
+      out = this.layoutColumnPass(seq, docStyle, host, firstNumber, lastIndex, reserves, plan);
     }
     return out.pages;
   }
@@ -10413,9 +11301,14 @@ export class LayoutEngine {
     const usedOn = new Map<number, number>();
     /** いまの段の高さ (脚注の参照までの本文の量を数える) */
     let colLimit = 0;
+    /** 本文の並びの位置 (いまの段の始まりまでに、段・span が使った高さの和。脚注の予約の見積もりに使う) */
+    let lin = cx.lin.v;
+    /** 試し組みの脚注と、その見積もりの続き (試し組みのページの予約を、本番と同じに決める) */
+    const trialFoots = o.trial ? { items: new Map<number, ColumnPageItems>(), conts: new Map<number, FootEntry[]>() } : undefined;
     const colRoot = () => {
       const g = geoAt(abs);
-      let limit = g.limit - top - (reserves.bot.get(abs) ?? 0);
+      const start = col === 0 && top <= (reserves.top.get(abs) ?? 0) + EPS;
+      let limit = g.limit - top - cx.botAt(abs, lin, top, start, trialFoots);
       if (o.lastLimit && o.lastLimit.abs === abs) limit = Math.min(limit, o.lastLimit.h);
       colLimit = limit;
       const single = o.span || g.n === 1;
@@ -10468,6 +11361,8 @@ export class LayoutEngine {
           if (!o.trial) this.noteIdPage(id, firstNumber + abs, seq.pageNumberFormat, ensurePage(abs));
         },
         columnEnd: (used) => {
+          // span は全段を貫くので、段の数を掛けて数える (段に分けたときの本文の量にそろえる)
+          lin += used * (o.span ? geoAt(abs).n : 1);
           usedOn.set(abs, Math.max(usedOn.get(abs) ?? 0, top + used));
           if (!o.trial) bodyEnds.set(abs, Math.max(bodyEnds.get(abs) ?? 0, top + used));
         },
@@ -10490,13 +11385,20 @@ export class LayoutEngine {
         ? {
             pageRootI: () => geoAt(abs).rootI,
             addFootnote: (e, at) => {
-              if (o.trial) return;
-              const it = itemsAt(abs);
-              it.foots.push(e);
               // 参照までの本文 (前の段の全部と、この段の at まで) を、このページの段に分けて収めるのに要る高さ。
               // 行は分けられないので、1 行の高さの余裕を足す (段組でなければ、参照する行の終わりまで)
               const n = o.span ? 1 : geoAt(abs).n;
-              it.footEnds.push(top + (n === 1 ? at : (col * Math.max(colLimit, 0) + at) / n + lineHeightOf(flowSt)));
+              const end = top + (n === 1 ? at : (col * Math.max(colLimit, 0) + at) / n + lineHeightOf(flowSt));
+              let it: ColumnPageItems | undefined;
+              if (trialFoots) {
+                it = trialFoots.items.get(abs);
+                if (!it) trialFoots.items.set(abs, (it = { floats: [], foots: [], footEnds: [] }));
+              } else {
+                it = itemsAt(abs);
+                cx.refs.push({ pos: lin + at * (o.span ? geoAt(abs).n : 1), e });
+              }
+              it.foots.push(e);
+              it.footEnds.push(end);
             },
             addBeforeFloat: (f) => {
               if (!o.trial) itemsAt(abs).floats.push(f);
@@ -10512,7 +11414,10 @@ export class LayoutEngine {
     };
     // 試し組みは、脚注を積み済みにしない (表のセル・コンテナの中の脚注を、本番の組版で積めるように)
     if (o.trial) foot.trial(go);
-    else go();
+    else {
+      go();
+      cx.lin.v = lin;
+    }
     return { lastAbs: abs, lastUsed: usedOn.get(abs) ?? top, trailing: flow.trailingSpace, over: flow.overflowCount };
   }
 
@@ -10523,13 +11428,17 @@ export class LayoutEngine {
     firstNumber: number,
     lastIndex: number | null,
     reserves: { top: Map<number, number>; bot: Map<number, number> },
+    plan: ColumnReservePlan,
   ) {
     const mark = this.warnings.length;
+    // 脚注の予約は、この回の組版の中で、ページの始まりごとに決める (botAt)
+    reserves.bot.clear();
     const idKeys = new Set(this.idPages.keys());
     const needs = new Map<number, { top: number; bot: number }>();
     const pageItems = new Map<number, ColumnPageItems>();
     const bodyEnds = new Map<number, number>();
     const pages: PageBuild[] = [];
+    this.seqBuilding = pages;
     const flowSt = resolveStyle(resolveStyle(docStyle, seq), seq.flow);
     const wm = flowSt.wm;
     /** 偶奇合わせで挟んだ白ページ (段組の並びでも、白ページの条件 blank-or-not-blank="blank" のマスターを選ぶ) */
@@ -10552,6 +11461,7 @@ export class LayoutEngine {
         const g = geoAt(pages.length);
         const root = newNode('region-body', wm, { isize: g.rootI, bsize: g.limit, ...(g.brot ? { rot: g.brot } : {}) });
         pages.push({ seq, number: firstNumber + pages.length, root, abs: [], markers: [], master: g.m, staticContent: g.alt.staticContent ?? seq.staticContent ?? [] });
+        this.notePage(pages.length);
       }
       return pages[abs];
     };
@@ -10606,7 +11516,83 @@ export class LayoutEngine {
       return (beforeSepEntry ??= foot.layoutBlocksPublic(seq.beforeFloatSeparator));
     };
 
-    const cx: ColumnPassCtx = { seq, host, firstNumber, reserves, pageItems, bodyEnds, wm, flowSt, foot, beforeSep, pageMode, geoAt, ensurePage, sizeAt, markBlank };
+    const lh = lineHeightOf(flowSt);
+    /** 予約を決めたページの、始まりの位置と、選んだときの見積もり (layoutColumnSequence が、試した予約を覚えるのに使う) */
+    const decided = new Map<number, { s: number; key: string; trial: boolean; model: number; maxR: number }>();
+    /** 見積もりの、前のページから続く脚注 (上限を付けない配置の残り。本番の組版のページから求めたもの) */
+    const estConts = new Map<number, FootEntry[]>([[0, []]]);
+    /** abs のページへ前のページから続く脚注の見積もり (この回の、abs より前のページの脚注と予約から) */
+    const contsAt = (abs: number, trial: { items: Map<number, ColumnPageItems>; conts: Map<number, FootEntry[]> } | undefined): FootEntry[] => {
+      const get = (a: number) => trial?.conts.get(a) ?? estConts.get(a);
+      let a = abs;
+      while (a > 0 && !get(a)) a--;
+      let cur = get(a) ?? [];
+      for (; a < abs; a++) {
+        if (!blankAbs.has(a)) {
+          const real = pageItems.get(a);
+          const t = trial?.items.get(a);
+          const foots = t ? [...(real?.foots ?? []), ...t.foots] : (real?.foots ?? []);
+          const footEnds = t ? [...(real?.footEnds ?? []), ...t.footEnds] : (real?.footEnds ?? []);
+          if (cur.length || foots.length) {
+            const g = geoAt(a);
+            const room = g.limit - (reserves.top.get(a) ?? 0);
+            cur = placeColumnFoots({ foot, room, limit: g.limit, reserve: reserves.bot.get(a) ?? 0, cap: Infinity, conts: cur, foots, footEnds, dry: true }).out;
+          }
+        }
+        (trial ? trial.conts : estConts).set(a + 1, cur);
+      }
+      return cur;
+    };
+    /**
+     * 始まりの位置が s のページに入る脚注と、収まる最小の予約を見積もる。前の回の参照 (plan.refs) のうち、本文の並びの位置が s より後ろのものを、
+     * 参照までの本文を段に収めるのに要る高さ (footEnds と同じ数え方) で並べ、その高さが予約の下に入る参照だけの脚注を置いて、
+     * 要る高さが予約を超えない最小の予約を探す (参照が入るかは、予約が参照の位置を越えるところで変わり、その間の要る高さは変わらない)
+     */
+    const estimateBot = (g: ColumnGeo, s: number, top: number, conts: FootEntry[], maxR: number): number => {
+      const n = g.n;
+      const room = g.limit - top;
+      const cand: Array<{ e: FootEntry; end: number; b: number }> = [];
+      // 参照の位置は、参照する行の下端 (ページの始まりと同じ位置の参照は、前のページの最後の行にある)
+      for (let k = plan.lowerBound(s + 0.05); k < plan.refs.length; k++) {
+        const end = top + (plan.refs[k].pos - s) / n + lh;
+        if (end > g.limit + EPS) break;
+        cand.push({ e: plan.refs[k].e, end, b: Math.max(0, g.limit - end) });
+      }
+      if (!cand.length && !conts.length) return 0;
+      const need = (fs: typeof cand, r: number) =>
+        Math.min(maxR, placeColumnFoots({ foot, room, limit: g.limit, reserve: r, cap: Infinity, conts, foots: fs.map((c) => c.e), footEnds: fs.map((c) => c.end), dry: true }).b);
+      const pts = [...new Set(cand.map((c) => c.b))].sort((x, y) => x - y);
+      /**
+       * 参照の行を次のページへ移す予約の、参照の位置 (end に入る予約の上限) から越える量。参照までの本文が、段をすき間なく
+       * 埋めても入らない予約 (end から 1 行の高さを引いた位置を越える予約)
+       */
+      const drop = lh + 0.01;
+      for (let i = 0; i <= pts.length; i++) {
+        const low = i === 0 ? 0 : pts[i - 1] + drop;
+        const high = Math.min(i < pts.length ? pts[i] : Infinity, maxR);
+        if (low > high + EPS) continue;
+        const fs = i < pts.length ? cand.filter((c) => c.b >= pts[i] - EPS) : [];
+        const r = Math.max(low, need(fs, low));
+        if (r <= high + EPS) return Math.min(r, maxR);
+      }
+      return maxR;
+    };
+    const botAt: ColumnPassCtx['botAt'] = (abs, s, top, start, trial) => {
+      const d = decided.get(abs);
+      if (d && (!start || Math.abs(d.s - s) < 0.05 || (trial && !d.trial))) return reserves.bot.get(abs) ?? 0;
+      const g = geoAt(abs);
+      const maxR = Math.max(0, g.limit - top - lh * 1.5);
+      const cts: FootEntry[] = pageMode ? contsAt(abs, trial) : [];
+      const model = pageMode ? estimateBot(g, s, top, cts, maxR) : 0;
+      const key = ColumnReservePlan.key(s, top, g.limit, g.n, cts);
+      const r = pageMode ? plan.choose(plan.tries.get(key) ?? [], model, maxR) : 0;
+      decided.set(abs, { s, key, trial: !!trial, model, maxR });
+      if (r > 0.01) reserves.bot.set(abs, r);
+      else reserves.bot.delete(abs);
+      return r;
+    };
+    const refs: ColumnPassCtx['refs'] = [];
+    const cx: ColumnPassCtx = { seq, host, firstNumber, reserves, pageItems, bodyEnds, wm, flowSt, foot, beforeSep, pageMode, geoAt, ensurePage, sizeAt, markBlank, botAt, lin: { v: 0 }, refs };
     /** items を abs ページの top から組み、最後のページ番号とその使用量 (ページ先頭から) を返す */
     const run = (items: Array<LBlockLevel | LInlineLevel>, startAbs: number, startTop: number, o: RunOpts) => this.runColumnGroup(cx, items, startAbs, startTop, o);
 
@@ -10625,55 +11611,65 @@ export class LayoutEngine {
     let top = 0;
     let forceNew: BreakKind | null = null;
     let carry = 0;
-    groups.forEach((g, gi) => {
-      const blocks = g.items.filter((c): c is LBlock => typeof c !== 'string' && c.type === 'block');
-      // グループの先頭での強制改ページ (段の先頭なので column は不要)。odd-page / even-page は偶奇が合うまで白ページを挟む
-      const before = blocks[0] === g.items[0] ? blocks[0]?.breakBefore : undefined;
-      const kind = forceNew && forceNew !== 'column' ? forceNew : before && before !== 'column' ? before : null;
-      forceNew = null;
-      if (kind) {
-        carry = 0;
-        if (top > (reserves.top.get(abs) ?? 0) + EPS) abs++;
-        if ((kind === 'odd-page' || kind === 'even-page') && ((firstNumber + abs + this.sideDelta) % 2 === 1) !== (kind === 'odd-page')) markBlank(abs++);
-        top = reserves.top.get(abs) ?? 0;
-      }
-      const opt: RunOpts = { span: g.span, trial: false, carry };
-      // span の直前と、(column-fill="balance" なら) フローの末尾のグループの最後のページの段を釣り合わせる
-      const balanceEnd = gi === groups.length - 1 && geoAt(abs).m.columns?.fill === 'balance';
-      // span のグループが改ページで始まる (または、このグループが改ページで終わる) なら、span は次のページに置くので、
-      // このページの段は釣り合わせない
-      const pageBreak = (k: BreakKind | undefined | null) => !!k && k !== 'column';
-      const nextG = groups[gi + 1];
-      const nextFirst = nextG?.items[0];
-      const lastItem = g.items[g.items.length - 1];
-      const breaksBeforeSpan =
-        (typeof nextFirst !== 'string' && nextFirst?.type === 'block' && pageBreak(nextFirst.breakBefore)) ||
-        (typeof lastItem !== 'string' && lastItem?.type === 'block' && pageBreak(lastItem.breakAfter));
-      if (!g.span && ((nextG?.span && !breaksBeforeSpan) || balanceEnd) && geoAt(abs).n > 1) {
-        const t0 = run(g.items, abs, top, { span: false, trial: true, carry });
-        const A = t0.lastAbs;
-        if (geoAt(A).n > 1) {
-          let lo = 0;
-          let hi = geoAt(A).limit - (reserves.bot.get(A) ?? 0) - (A === abs ? top : reserves.top.get(A) ?? 0);
-          // 段数に収まる (最後のページから次のページへ送られない) 最小の高さを探す。空の段の先頭でも入らずにはみ出させた行・箱が、
-          // 高さを限らない試し組み (t0) より増える高さは、収まるとみなさない (その高さで本番を組むと、行が段からはみ出して
-          // 「行がページに収まりません」と警告し、段の高さ・段間の罫も、はみ出した行より短くなる。1 つの箱に組む段組の釣り合わせの
-          // balanced と同じ。CSS Multi-column 1 §7.1 の balance は、内容を段に収めたうえで、段の高さをできるだけそろえる)
-          for (let k = 0; k < 14 && hi - lo > 0.1; k++) {
-            const mid = (lo + hi) / 2;
-            const r = run(g.items, abs, top, { span: false, trial: true, carry, lastLimit: { abs: A, h: mid } });
-            if (r.lastAbs === A && r.over <= t0.over) hi = mid;
-            else lo = mid;
-          }
-          opt.lastLimit = { abs: A, h: hi };
+    // 先頭から N ページで止める (maxPages): 組み直しの回ごとに数え直す (前の回で止めても、この回で止まらなければ止めない)。
+    // N + 2 ページ目を作った所で notePage が投げたら、そこまでのページに、脚注・前方 float を置いて返す
+    this.stopPass = false;
+    /** この page-sequence の中で作ってよいページの数 (見張りのページまで) */
+    const pageCap = this.options.maxPages !== undefined ? this.options.maxPages + 1 - this.pagesBuilt.length : Infinity;
+    try {
+      groups.forEach((g, gi) => {
+        const blocks = g.items.filter((c): c is LBlock => typeof c !== 'string' && c.type === 'block');
+        // グループの先頭での強制改ページ (段の先頭なので column は不要)。odd-page / even-page は偶奇が合うまで白ページを挟む
+        const before = blocks[0] === g.items[0] ? blocks[0]?.breakBefore : undefined;
+        const kind = forceNew && forceNew !== 'column' ? forceNew : before && before !== 'column' ? before : null;
+        forceNew = null;
+        if (kind) {
+          carry = 0;
+          if (top > (reserves.top.get(abs) ?? 0) + EPS) abs++;
+          if ((kind === 'odd-page' || kind === 'even-page') && ((firstNumber + abs + this.sideDelta) % 2 === 1) !== (kind === 'odd-page')) markBlank(abs++);
+          top = reserves.top.get(abs) ?? 0;
         }
-      }
-      const r = run(g.items, abs, top, opt);
-      abs = r.lastAbs;
-      top = r.lastUsed;
-      carry = r.trailing;
-      if (blocks[blocks.length - 1] === g.items[g.items.length - 1]) forceNew = blocks[blocks.length - 1]?.breakAfter ?? null;
-    });
+        const opt: RunOpts = { span: g.span, trial: false, carry };
+        // span の直前と、(column-fill="balance" なら) フローの末尾のグループの最後のページの段を釣り合わせる
+        const balanceEnd = gi === groups.length - 1 && geoAt(abs).m.columns?.fill === 'balance';
+        // span のグループが改ページで始まる (または、このグループが改ページで終わる) なら、span は次のページに置くので、
+        // このページの段は釣り合わせない
+        const pageBreak = (k: BreakKind | undefined | null) => !!k && k !== 'column';
+        const nextG = groups[gi + 1];
+        const nextFirst = nextG?.items[0];
+        const lastItem = g.items[g.items.length - 1];
+        const breaksBeforeSpan =
+          (typeof nextFirst !== 'string' && nextFirst?.type === 'block' && pageBreak(nextFirst.breakBefore)) ||
+          (typeof lastItem !== 'string' && lastItem?.type === 'block' && pageBreak(lastItem.breakAfter));
+        if (!g.span && ((nextG?.span && !breaksBeforeSpan) || balanceEnd) && geoAt(abs).n > 1) {
+          const t0 = run(g.items, abs, top, { span: false, trial: true, carry });
+          const A = t0.lastAbs;
+          if (geoAt(A).n > 1) {
+            let lo = 0;
+            let hi = geoAt(A).limit - (reserves.bot.get(A) ?? 0) - (A === abs ? top : reserves.top.get(A) ?? 0);
+            // 段数に収まる (最後のページから次のページへ送られない) 最小の高さを探す。空の段の先頭でも入らずにはみ出させた行・箱が、
+            // 高さを限らない試し組み (t0) より増える高さは、収まるとみなさない (その高さで本番を組むと、行が段からはみ出して
+            // 「行がページに収まりません」と警告し、段の高さ・段間の罫も、はみ出した行より短くなる。1 つの箱に組む段組の釣り合わせの
+            // balanced と同じ。CSS Multi-column 1 §7.1 の balance は、内容を段に収めたうえで、段の高さをできるだけそろえる)
+            for (let k = 0; k < 14 && hi - lo > 0.1; k++) {
+              const mid = (lo + hi) / 2;
+              const r = run(g.items, abs, top, { span: false, trial: true, carry, lastLimit: { abs: A, h: mid } });
+              if (r.lastAbs === A && r.over <= t0.over) hi = mid;
+              else lo = mid;
+            }
+            opt.lastLimit = { abs: A, h: hi };
+          }
+        }
+        const r = run(g.items, abs, top, opt);
+        abs = r.lastAbs;
+        top = r.lastUsed;
+        carry = r.trailing;
+        if (blocks[blocks.length - 1] === g.items[g.items.length - 1]) forceNew = blocks[blocks.length - 1]?.breakAfter ?? null;
+      });
+    } catch (e) {
+      if (e !== PAGE_LIMIT) throw e;
+      resetFlowDepth(host);
+    }
     // ページ単位の領域: 前方 float は本文領域の上端、脚注は下端に、全段を貫いて置く。必要な高さは呼び出し側へ返す。
     // 本文領域に収まらない脚注は、行の単位で分けて、残りを次のページの脚注領域の先頭へ続ける (XSL 1.1 §6.12.3: 脚注の 2 つ目からの
     // 領域は、続くページに、ほかの内容より先に置く。1 段のページの Flow.pushFootnote と同じ決まり)
@@ -10721,87 +11717,9 @@ export class LayoutEngine {
       if (it.foots.length || conts.length || contsWant.length) {
         /** このページの本文領域で、脚注領域に使える高さ (前方 float の下から) */
         const room = g.limit - topH;
-        /**
-         * 脚注を置く。cap は、脚注領域の高さの上限 (本番は、このページの本文が実際に使った高さの下まで)。conts は前のページからの続き。
-         * 置いた脚注・その高さ・次のページへ送る脚注を返す (carried は書き換えない)
-         */
-        const layoutFoots = (cap: number, conts: FootEntry[]) => {
-          let b = 0;
-          const placed: FootEntry[] = [];
-          const out: FootEntry[] = [];
-          /** 溢れの警告を出す脚注 (ページに入らないまま置いたもの) */
-          const warns: FootEntry[] = [];
-          const put = (e: FootEntry) => {
-            b += foot.gapAfter(placed[placed.length - 1]);
-            e.node.i = 0;
-            e.node.b = b;
-            placed.push(e);
-            b += e.height;
-          };
-          /**
-           * e を、脚注領域の高さが budget を超えない所で分けて置き、残りを次のページへ送る。分けられなければ false。
-           * strict なら、先頭の単位 (行) も budget に入らないときは分けずに丸ごと送る (本文の行と重ねない)
-           */
-          const splitPut = (e: FootEntry, budget: number, strict: boolean): boolean => {
-            const sp = splitEntry(e, budget - b - foot.gapAfter(placed[placed.length - 1]));
-            if (!sp) return false;
-            if (strict && b + foot.gapAfter(placed[placed.length - 1]) + sp.head.height > budget + EPS) out.push(e);
-            else {
-              put(sp.head);
-              out.push(sp.rest);
-            }
-            return true;
-          };
-          const over = (e: FootEntry, lim: number) => b + foot.gapAfter(placed[placed.length - 1]) + e.height > lim + EPS;
-          /** 本文の行と重ねないための上限 (cap) が、ページに入る高さ (room) より低いか */
-          const strict = cap < room - EPS;
-          // 前のページからの続き: 脚注領域の先頭に置く。本文領域の 6 割まで (1 段のページと同じ上限)
-          // 分けられない続きは、もう脚注を置いたページなら次のページへ送る。丸ごと置くのは、このページにまだ何も置いていないときだけ
-          // (前は、本文の後に足したページで、分けられない続きを次々に丸ごと積み、脚注の領域が本文領域より高くなって、上の行が
-          // ページの外へ出て描かれなかった。警告も無かった)。何も置いていないページに入らない続きは、溢れの警告を出して置く
-          for (const e of conts) {
-            const lim = Math.min(room, g.limit * 0.6, cap);
-            if (out.length) out.push(e);
-            else if (!over(e, lim)) put(e);
-            else if (!splitPut(e, lim, strict)) {
-              if (strict || placed.length) out.push(e);
-              else {
-                if (over(e, room)) warns.push(e);
-                put(e);
-              }
-            }
-          }
-          /** 前のページからの続きのうち、次のページへ送ったものの数 (ここより後ろの out は、このページの脚注) */
-          const contsOut = out.length;
-          it.foots.forEach((e, k) => {
-            // このページの前の脚注を分けて送ったら、後ろの脚注も順に次のページへ送る (脚注の順を保つ)。前のページからの続きを送っても、
-            // このページで参照する脚注の頭は、このページに置く (XSL 1.1 §6.12.3・CSS GCPM 3 §2: 脚注の本体は参照のあるページから。
-            // 1 段のページの Flow.pushFootnote と同じ。脚注の領域の高さに上限 (max-height) があるときだけ、続きの後ろの脚注も順に送る。
-            // 前は、続きを 1 つ送ると、そのページで参照する脚注もすべて次のページへ送ったので、長い脚注の続きが何ページも続くと、
-            // 後ろの脚注が参照のページから離れていった)
-            if (out.length > contsOut || (out.length && foot.maxHeight !== undefined)) {
-              out.push(e);
-              return;
-            }
-            // 参照の行の下に残る高さに収まらなければ分け、残りを次のページへ続ける (1 段のページの Flow.pushFootnote と同じ。
-            // XSL 1.1 §6.12.3・CSS GCPM 3 §2: 脚注の本体は、参照のあるページから始める)。参照までの本文を段に収めた高さ (footEnds) の
-            // 下が残る高さ (もう空けてある高さがあれば、そこまで)。前は、脚注がページに入る高さなら丸ごと置き、参照の行を置く高さを残さない
-            // 予約をしたので、組み直すたびに参照が次のページへ送られて、1 段に数行ずつのページが続き、組み直しの回数の上限で止めた
-            // ページでは、予約の無い本文の上に脚注を重ねた
-            const lim = Math.min(room, Math.max(g.limit - it.footEnds[k], reserves.bot.get(a) ?? 0), cap);
-            if (!over(e, lim)) put(e);
-            else if (!splitPut(e, lim, strict)) {
-              // 分けられない脚注: 本文の行と重なるなら、丸ごと次のページへ送る。ページに入らないときも、もう脚注を置いたページなら
-              // 次のページへ送る (脚注の領域を本文領域より高くしない)。何も置いていないページに入らなければ、溢れの警告を出して置く
-              if ((strict && over(e, cap)) || (placed.length && over(e, room))) out.push(e);
-              else {
-                if (over(e, room)) warns.push(e);
-                put(e);
-              }
-            }
-          });
-          return { placed, b, out, warns };
-        };
+        /** 脚注を置く (placeColumnFoots)。carried は書き換えない */
+        const layoutFoots = (cap: number, conts: FootEntry[]) =>
+          placeColumnFoots({ foot, room, limit: g.limit, reserve: reserves.bot.get(a) ?? 0, cap, conts, foots: it.foots, footEnds: it.footEnds });
         // 本文に空ける高さ (needs) は、上限を付けずに置いたときの高さ。本番では、それに加えて、このページの本文が実際に使った
         // 高さの下に限る (組み直しが安定しないまま終わっても、脚注を本文の行に重ねない。入らない分は次のページへ続ける)
         // 上限を付けない配置は、上限を付けない配置の続き (carriedWant) から組む
@@ -10812,9 +11730,10 @@ export class LayoutEngine {
         for (const e of r.warns) host.warn(withSource(diag('layout/footnote-overflow', msg('脚注がページに収まらないため溢れます', 'a footnote does not fit on the page and overflows')), e.node));
         carried.push(...r.out);
         carriedWant.push(...want.out);
-        // 予約は、本文のあるページでは本文の 1 行の高さを残す (脚注の領域が本文の領域をすべて締め出すと、段の高さが 1 行より低くなり、
-        // 本文の行がはみ出して「行がページに収まりません」になる。入らない脚注は、本番の配置で次のページへ続ける)
-        botH = bodyEnd === undefined ? want.b : Math.min(want.b, Math.max(0, room - lineHeightOf(flowSt)));
+        // 予約は、本文のあるページでは本文の 1 行半の高さを残す (脚注の領域が本文の領域をすべて締め出すと、段の高さが 1 行より低くなり、
+        // 本文の行がはみ出して「行がページに収まりません」になる。脚注の参照の印を上付きにした行は、行の高さより高くなることがあるので、
+        // 半行の余裕を足す。入らない脚注は、本番の配置で次のページへ続ける。予約を決める botAt の上限と同じ)
+        botH = bodyEnd === undefined ? want.b : Math.min(want.b, Math.max(0, room - lineHeightOf(flowSt) * 1.5));
         if (r.placed.length) {
           const area = newNode('block', wm, { isize: g.rootI, bsize: r.b, i: 0, b: g.limit - r.b });
           const sepNode = foot.makeSeparator(wm, g.rootI);
@@ -10830,13 +11749,18 @@ export class LayoutEngine {
         // 本文の途中 (次のページも本文のページ) では止めない: ページの数は本文のページの数までで、必ず終わる。
         // 本文の後に足すページだけ、進まなくなったら・上限を超えたら止める (1 段のページと同じ守り。ContinuationGuard)。
         // 本文の途中の呼び出しを数えると、離れたページで 1 つの脚注の残りの高さがたまたま同じになっただけで止め、置けるはずの残りを捨てた
-        if (a + 1 >= contentPages && !contGuard.next(host, carried)) carried = [];
+        // 先頭から N ページで止めるときは、見張りのページ (N + 1 ページ目) より後ろへ続けない (後ろのページは作らずに捨てる。
+        // 続きがあるので、文書はそれより長い)
+        if (a + 1 >= pageCap) {
+          carried = [];
+          this.stopPass = true;
+        } else if (a + 1 >= contentPages && !contGuard.next(host, carried)) carried = [];
         else queue.splice(qi + 1, 0, a + 1);
       }
       // 次のページを見ないなら、上限を付けないときだけの続きは捨てる (離れたページの予約に数えない)
       if (queue[qi + 1] !== a + 1) carriedWant = [];
     }
-    return { pages, needs, mark, idKeys };
+    return { pages, needs, mark, idKeys, decided, refs };
   }
 
   private layoutSequence(seq: LPageSequence, docStyle: ResolvedStyle, host: FlowHost, firstNumber: number, lastIndex: number | null): PageBuild[] {
@@ -10844,6 +11768,7 @@ export class LayoutEngine {
       return this.layoutColumnSequence(seq, docStyle, host, firstNumber, lastIndex);
     }
     const pages: PageBuild[] = [];
+    this.seqBuilding = pages;
     const flowSt = resolveStyle(resolveStyle(docStyle, seq), seq.flow);
     const wm = flowSt.wm;
     const mkPage = (blank = false) => {
@@ -10863,6 +11788,7 @@ export class LayoutEngine {
       const root = newNode('region-body', wm, { isize: rootI, bsize: limit, ...(brot ? { rot: brot } : {}) });
       const p: PageBuild = { seq, number, root, abs: [], markers: [], master: m, staticContent: alt.staticContent ?? seq.staticContent ?? [] };
       pages.push(p);
+      this.notePage(pages.length);
       return { p, rootI, limit };
     };
     const firstPage = mkPage();
@@ -11138,7 +12064,10 @@ export class LayoutEngine {
       const pageSize = { width: W, height: H, body: { width: W - area.left - area.right, height: H - area.top - area.bottom }, area };
       const sub = new Flow({ ...host, warn, pageNumber: () => p.number }, { wm, rootI: W, abs: () => own, pageSize: () => pageSize });
       // マーカーを展開してからページ番号を差し替える (マーカーの中身のページ番号 (HTML の running() の中の counter(page)) も差し替える)
-      const sc = substitute(resolveMarkers(c, allPages, index), { pageNumber: formatPageNumber(p.number, p.seq.pageNumberFormat), totalPages: String(total) }, p.number);
+      // 総ページ数が分からない (先頭から N ページで止めた。total が -1) ときは、決まらない字にして、使ったら数える
+      const used = { totalPages: false };
+      const sc = substitute(resolveMarkers(c, allPages, index), { pageNumber: formatPageNumber(p.number, p.seq.pageNumberFormat), totalPages: total < 0 ? this.unresolvedMark : String(total) }, p.number, used);
+      if (total < 0 && used.totalPages) this.beyondHits.push(['total-pages', TOTAL_PAGES_ID]);
       const forced: LBlockContainer = { ...sc, absolutePosition: true };
       // 写した箱にも元の節の番号を引き継ぐ (描くときだけの効果 (paintEffect) を、柱・余白の箱・fixed の箱の Area にも付けるため)
       copySourceRef(sc, forced);
@@ -11202,6 +12131,8 @@ export class LayoutEngine {
       border: {},
       writingMode: wm,
       pageNumber: p.number,
+      // ページ番号の書式 (紙面のノンブルと同じもの)。10 進のページには書かない (PDF のページラベルの範囲を分けるのに使う)
+      ...(p.seq.pageNumberFormat && p.seq.pageNumberFormat !== '1' ? { pageNumberFormat: p.seq.pageNumberFormat } : {}),
       regionBody,
       absoluteAreas,
       behindAreas,
@@ -11506,7 +12437,7 @@ function resolveMarkers<T>(node: T, pages: PageBuild[], index: number): T {
 }
 
 /** 静的コンテンツ内の {pageNumber} / {totalPages} を置換した複製を返す */
-function substitute<T>(node: T, vars: Record<string, string>, pageNo?: number): T {
+function substitute<T>(node: T, vars: Record<string, string>, pageNo?: number, used?: Record<string, boolean>): T {
   // grid の項目の並び (列挙しない性質) を、写した木のセルに付け直す (gridCopies)
   const gc = gridCopies();
   const walk = (v: unknown): unknown => {
@@ -11515,7 +12446,11 @@ function substitute<T>(node: T, vars: Record<string, string>, pageNo?: number): 
     if (typeof v === 'string')
       return v
         .replace(/\{pageNumber\|([^|}]*)\|([^}]*)\}/g, (m, fmt: string, tt: string) => (pageNo === undefined ? m : tt ? applyTextTransform(formatPageNumber(pageNo, fmt || undefined), tt) : formatPageNumber(pageNo, fmt || undefined)))
-        .replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m))
+        .replace(/\{(\w+)\}/g, (m, k) => {
+          if (!(k in vars)) return m;
+          if (used && k in used) used[k] = true;
+          return vars[k];
+        })
         .replace(/\u0000(\w+)\u0000/g, '{$1}');
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
@@ -11611,6 +12546,156 @@ function lineMemoSet(arr: object, at: number, run: InlineChild[], st: ResolvedSt
 }
 
 /**
+ * 段落の行分けの結果を、段落の中身で覚えるもの (文書をまたいで使い回す。器 (createTypesetter の reuse) が作り、LayoutOptions.sharedLineMemo で渡す)。
+ * 子の配列で引く覚え (lineMemos) は、同じ文書を組み直す間 (組み直しの回・試し組み) にしか当たらない (文書を読み直すと、中身が同じでも別の配列になる)。
+ * こちらは、行の中身と書式・行の長さ・組み方の設定を並べた鍵 (sharedLineKey) で引く。
+ * 当たるのは、書体の組の印 (FontManager.signature) が覚えたときと同じときだけ。覚えた結果の中の書体 (字の測りの LoadedFont) は、覚えた文書の
+ * 書体の組のものなので、いまの組の、同じ鍵の書体に差し替えて使う (印が同じなら、同じ中身のファイルを同じ設定で登録した書体)。
+ * 軸の値の実体 (可変フォントの instanceOf) を使った結果は、実体の作り方が組ごとなので覚えない。
+ * 持つのは、いまの文書と前の文書で使ったものだけ (startDocument)。使い回しても、組んだ結果は使い回さないときと同じ
+ * (test/reuse.test.ts が、領域の木と PDF のバイト列で確かめる)
+ */
+export class SharedLineMemo {
+  /** 覚えた段落 (Map の並びは使った順。使うたびに後ろへ移し、捨てるときは前から捨てる) */
+  private entries = new Map<string, SharedLineEntry>();
+  private doc = 0;
+  /** 覚えている大きさ (lineMemoSize と同じ数え方) */
+  private atoms = 0;
+
+  /** limit: 覚えておく大きさの上限 (atom の数と、項目ごとの行の分。既定 SHARED_LINE_MEMO_ATOMS)。超えたら、古く使ったものから捨てる */
+  constructor(readonly limit = SHARED_LINE_MEMO_ATOMS) {}
+
+  /** 次の文書を組み始める (器が文書ごとに呼ぶ)。前の文書でも、その前の文書でも使わなかったものを捨てる */
+  startDocument(): void {
+    this.doc++;
+    for (const [k, e] of this.entries) if (e.used < this.doc - 1) this.drop(k, e);
+  }
+
+  /**
+   * 組み始めた文書を止めた (TypesetOptions.signal): その文書を世代に数えない (次の文書から見て、止めた文書の前の文書を「前の文書」のままにする)。
+   * 止めた文書で使ったもの・覚えたものは、中身で引く覚えなので、そのまま残してよい (次の文書の世代で使ったものとして数える)
+   */
+  cancelDocument(): void {
+    if (this.doc > 0) this.doc--;
+  }
+
+  private drop(k: string, e: SharedLineEntry): void {
+    this.entries.delete(k);
+    this.atoms -= lineMemoSize(e.memo);
+  }
+
+  /** 覚えている段落の数 (試験で見る) */
+  get size(): number {
+    return this.entries.size;
+  }
+
+  get(key: string, env: string, fonts: FontManager, hyphenate: FlowHost['hyphenate']): LineMemo | undefined {
+    const e = this.entries.get(key);
+    if (!e || e.env !== env || e.hyphenate !== hyphenate) return undefined;
+    // 結果の中の書体を、いまの書体の組の同じ鍵の書体に差し替える (同じ組なら、そのまま)
+    const now = new Map<LoadedFont, LoadedFont>();
+    for (const old of e.fonts) {
+      const cur = fonts.byKey(old.key);
+      if (!cur || cur.buffer !== old.buffer) return undefined;
+      if (cur !== old) now.set(old, cur);
+    }
+    if (now.size) {
+      for (const [obj, k] of e.slots) {
+        const v = obj[k] as LoadedFont;
+        const cur = now.get(v);
+        if (cur) obj[k] = cur;
+      }
+      e.fonts = e.fonts.map((f) => now.get(f) ?? f);
+    }
+    e.used = this.doc;
+    // 使った順の後ろへ移す
+    this.entries.delete(key);
+    this.entries.set(key, e);
+    return e.memo;
+  }
+
+  set(key: string, env: string, hyphenate: FlowHost['hyphenate'], memo: LineMemo): void {
+    // 結果の中の書体の置き場所 (差し替えるときに書き換える所) を集める
+    const slots: Array<[Record<string, unknown>, string]> = [];
+    const fonts = new Set<LoadedFont>();
+    const seen = new Set<object>();
+    let instance = false;
+    const walk = (v: unknown) => {
+      if (!v || typeof v !== 'object' || seen.has(v)) return;
+      seen.add(v);
+      if (Array.isArray(v)) {
+        for (const x of v) walk(x);
+        return;
+      }
+      const o = v as Record<string, unknown>;
+      for (const k in o) {
+        const x = o[k];
+        if (x && typeof x === 'object' && isLoadedFont(x)) {
+          if (x.instanceOf) instance = true;
+          fonts.add(x);
+          slots.push([o, k]);
+        } else walk(x);
+      }
+    };
+    walk(memo);
+    if (instance) return;
+    const prev = this.entries.get(key);
+    if (prev) this.drop(key, prev);
+    this.entries.set(key, { memo, env, hyphenate, used: this.doc, fonts: [...fonts], slots });
+    this.atoms += lineMemoSize(memo);
+    for (const [k, e] of this.entries) {
+      if (this.atoms <= this.limit || this.entries.size <= 1) break;
+      this.drop(k, e);
+    }
+  }
+}
+
+interface SharedLineEntry {
+  memo: LineMemo;
+  env: string;
+  /** 分綴の位置を返す関数 (同じ関数のときだけ使う) */
+  hyphenate: FlowHost['hyphenate'];
+  used: number;
+  fonts: LoadedFont[];
+  slots: Array<[Record<string, unknown>, string]>;
+}
+
+/** 字の測りの書体 (LoadedFont) か (書体の組の登録の鍵・fontkit の書体・em の大きさを持つもの) */
+function isLoadedFont(x: object): x is LoadedFont {
+  const f = x as Partial<LoadedFont>;
+  return typeof f.key === 'string' && typeof f.unitsPerEm === 'number' && !!f.fk && f.buffer instanceof ArrayBuffer;
+}
+
+/**
+ * 文書をまたぐ行分けの覚えの鍵: 行の中身 (子の並びの全部の欄)・書式 (ResolvedStyle の全部の欄)・行の長さ・最初の行か・書字方向・
+ * 中身の幅を測る組版か・block の入力の節の番号と、行分けに効く組版の設定 (互換のカーニング・XSL の空白の扱い・字の測り方)。
+ * 関数の欄を持つ中身は、比べられないので覚えない (undefined)
+ */
+function sharedLineKey(run: InlineChild[], st: ResolvedStyle, L: number, first: boolean, wm: WritingMode, host: FlowHost, intrinsic: boolean, minContent: boolean | 'grid', blockRef: number | undefined): string | undefined {
+  let bad = false;
+  const replacer = (_k: string, v: unknown) => {
+    if (typeof v === 'function' || typeof v === 'symbol') bad = true;
+    return v;
+  };
+  let body: string;
+  try {
+    body = JSON.stringify([run, st], replacer);
+  } catch {
+    return undefined;
+  }
+  if (bad) return undefined;
+  const backend = host.measurer.version().split(':')[0];
+  return `${lineMemoKey(0, L, first, wm, intrinsic, minContent)}|${blockRef ?? ''}|${host.kernAh ? 1 : 0}${host.xslSpace ? 1 : 0}|${backend}|${body}`;
+}
+
+/**
+ * 文書をまたぐ行分けの覚え (SharedLineMemo) に置いておく大きさの上限の既定 (lineMemoSize の数え方)。
+ * 覚えは、前の文書の全部の段落を持つので、文書の大きさの分のメモリを使う (142 ページの和文の本で、大きさ約 46 万・メモリ約 190MB。1 あたり 400 バイトほど)。
+ * 100 万 (メモリ約 400MB まで) は、そのような本の 300 ページほど。それより長い文書は、古く使ったものから捨てるので、当たる段落が減る
+ */
+export const SHARED_LINE_MEMO_ATOMS = 1_000_000;
+
+/**
  * 行分けの結果の覚えに置いておく atom の数の上限の既定。覚えは、同じ段落を続けて組み直すとき (段の高さ揃えの二分探索・
  * keep-with-next の試し組み・表のセルの計測など) に効くので、近くに組んだ段落の分だけ持てばよい。上限が無いと、文書の全部の段落の
  * 字ごとの atom・行・行の位置を、組み終えるまで持ち続け、ふつうの文章 1MB で約 170MB、表 1MB (10 万セル) で約 870MB を使った (組み終えた時点の、GC の後に残る量)。
@@ -11624,7 +12709,7 @@ export const LINE_MEMO_ATOMS = 50000;
  * Map の入れ直しで順を持つと、先頭から取り出すたびに、消した項目の跡をたどり直すので、取り出す数の 2 乗の手間になる
  */
 /** 覚えの項目の大きさの見積もり (atom の数に、項目ごとの行・行の位置などの分を足す。小さな段落 (表のセルなど) が多いとき、項目の数でも抑える) */
-const lineMemoSize = (e: LineMemoEntry) => e.atoms.length + 32 * (1 + e.raws.length);
+const lineMemoSize = (e: LineMemo) => e.atoms.length + 32 * (1 + e.raws.length);
 
 class LineMemoLru {
   private queue: Array<{ e: LineMemoEntry; arr: object; m: Map<string, LineMemoEntry>; key: string; n: number }> = [];

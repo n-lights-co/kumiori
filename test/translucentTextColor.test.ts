@@ -3,6 +3,7 @@
  * 前は白い紙に重ねた不透明の色にしていたので、背景の上の字の色が違った。字の色を使う下線、余白の箱の字も同じ。
  * 色を読む parseColor は #rrggbbaa・#rgba・rgba() の透明度を持つ (前は 8 桁の色を読めずに黒にした)
  */
+import { testIccProfile } from './iccTestProfile';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { PDFDocument, PDFName, decodePDFRawStream, type PDFArray, type PDFDict } from 'pdf-lib';
 import { DEFAULT_FONTS, childrenOf, typesetHtml, type AreaNode, type GlyphArea } from '../src/index';
@@ -84,13 +85,7 @@ describe('PDF の出力の半透明の字の色', () => {
   });
 });
 
-/** ICC のプロファイルの頭だけの CMYK のもの (PDF/X-4 の出力の検査を通すため。ICC.1:2010 §7.2) */
+/** 試験の CMYK の出力機器のプロファイル (iccTestProfile.ts。PDF/X-4 の出力の検査を通すため) */
 function cmykProfile(): Uint8Array {
-  const head = new Array(132).fill(0);
-  const put = (o: number, t: string) => [...t].forEach((c, k) => (head[o + k] = c.charCodeAt(0)));
-  put(12, 'prtr');
-  put(16, 'CMYK');
-  put(20, 'Lab ');
-  put(36, 'acsp');
-  return Uint8Array.from(head);
+  return testIccProfile();
 }

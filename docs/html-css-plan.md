@@ -56,7 +56,7 @@ HTML + CSS ──▶ ① スタイルの確定 ──▶ ② 論理ツリーへ�
 | `float: left / right` | `LFloat` (start / end) |
 | `break-before / after / inside`・`orphans`・`widows` | 改ページ・keep・孤立行の制御。最初の子の `break-before`・最後の子の `break-after` は、強制の区切りも避ける値 (`avoid` 系) も、親の箱の前後の区切りに伝える (CSS Fragmentation 3 §3.1.1。同じ所の強制の区切りは避ける値に勝つ = §4.3。`avoid-column` は段組の容器で止まる。`htmlImport.ts` の `propagateEdgeAvoids`)。表のセルの中身の最初・最後の子の区切りは行の前後へ、表の最初・最後の行 (と `thead`・`tbody`・`tfoot`) の区切りは表の前後へ、flex・grid の項目の区切りは項目のある行 (行ごとの 1 行の表) の前後へ、最初・最後の行の区切りは容器の前後へ伝える。同じ所の `left`・`right` は、後ろの値で 1 度だけ効かせる (§4.3) |
 | `column-count`・`column-gap`・`column-rule` | 段組 (ページ・コンテナ) |
-| `hyphens: auto` + `lang` | 分綴 (英語・ラテン語・ロシア語・ウクライナ語・現代ギリシャ語。文書の中の lang・xml:lang の言語の分綴の表を読み込む) |
+| `hyphens: auto` + `lang` | 分綴 (英語・ラテン語・ロシア語・ウクライナ語・現代ギリシャ語・ドイツ語・フランス語・スペイン語・イタリア語・ポルトガル語・オランダ語・ポーランド語・デンマーク語・スウェーデン語・ノルウェー語・フィンランド語・ハンガリー語・スロバキア語・スロベニア語・クロアチア語・セルビア語・ブルガリア語・エストニア語・リトアニア語・アイルランド語・ウェールズ語・カタルーニャ語・ガリシア語・バスク語・アイスランド語・トルコ語。文書の中の lang・xml:lang の言語の分綴の表を読み込む) |
 | `hyphenate-character`・`hyphenate-limit-chars`・`hyphenate-limit-lines`・`hyphenate-limit-last: always`・`hyphenate-limit-zone` | 分綴の制限 (CSS Text 4 §6.3.2〜§6.3.5。行末に出す字・字数・続く行の数・段落の最後の行の手前・行末の空きの幅)。`hyphenate-limit-last` の `column`・`page`・`spread` は未対応 |
 | `vertical-align: super / sub`・`text-decoration` | `baselineShift`・`textDecoration` |
 | `outline`・`outline-offset` (CSS UI 4 §3) | `PaintEffect.outline` (ブロック・表・画像など。組んだ後で Area の `outline` に付ける)・`LInline.outline` (行内の要素。行ごとの断片に描く)。組版には関わらない |

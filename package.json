@@ -1,7 +1,7 @@
 {
   "name": "kumiori",
-  "version": "0.5.0",
-  "description": "Kumiori (組み織り) — Japanese typesetting engine for browsers and Node: HTML+CSS / XSL-FO -> Area Tree -> Canvas / PDF",
+  "version": "0.6.0",
+  "description": "Kumiori (組み織り) — Japanese typesetting engine for browsers and Node: HTML+CSS / XSL-FO -> Area Tree -> Canvas / PDF / SVG / PNG",
   "keywords": [
     "typesetting",
     "japanese",
@@ -69,6 +69,9 @@
     "docs:conformance": "node scripts/build-conformance.mjs",
     "docs:api": "node scripts/build-api-docs.mjs",
     "ci:local": "node scripts/ci-local.mjs",
+    "compare:base": "node scripts/compare-base.mjs",
+    "perf:compare": "node scripts/perf-compare.mjs",
+    "fingerprints:update": "node scripts/update-fingerprints.mjs",
     "prepublishOnly": "npm run typecheck && npm test && npm run build:dist"
   },
   "license": "Apache-2.0",
@@ -79,7 +82,7 @@
     "htmlparser2": "^10.1.0",
     "hyphen": "^1.14.1",
     "linkedom": "^0.18.14",
-    "pako": "^1.0.11",
+    "pako": "^3.0.3",
     "pdf-lib": "^1.17.1",
     "roughjs": "^4.6.6",
     "utif": "^3.1.0"
@@ -91,7 +94,7 @@
     "pngjs": "^7.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.1"
   },
   "bin": {
     "kumiori": "dist-cli/cli.js"

@@ -33,6 +33,7 @@ import { msg } from './messages';
 import type { XmlNode } from './svg';
 import type { AreaTree, GlyphArea } from './types';
 import { diag, type Diagnostic } from './diagnostics';
+import { rejoin, thisCall } from './callContext';
 
 /** RGB → CMYK の変換 (PDF/X の出力。icc.ts の CmykConverter と同じ形) */
 type ToCmyk = (r: number, g: number, b: number) => number[];
@@ -180,11 +181,11 @@ export class PdfColorGlyphs {
     let alpha = false;
     for (const [key, { kind, data }] of pending) {
       try {
-        const cmyk = opts.cmyk ? await embedCmykImage(pdf, data, kind, opts.cmyk) : undefined;
+        const cmyk = opts.cmyk ? rejoin(thisCall(), await embedCmykImage(pdf, data, kind, opts.cmyk)) : undefined;
         if (cmyk?.hasAlpha) alpha = true;
         // 上限を超える PNG は展開しない (pixels.ts の pngWithinLimits)
         if (kind === 'png' && !cmyk && !(pngWithinLimits(data) && pngDataComplete(data))) throw new Error(msg('PNG: 画素の数か展開の大きさが上限を超えるか、画素のデータが壊れています', 'PNG: the number of pixels or the decompressed size exceeds the limit, or the pixel data is broken'));
-        self.images.set(key, cmyk?.image ?? (kind === 'png' ? await pdf.embedPng(data) : await pdf.embedJpg(data)));
+        self.images.set(key, cmyk?.image ?? (kind === 'png' ? rejoin(thisCall(), await pdf.embedPng(data)) : rejoin(thisCall(), await pdf.embedJpg(data))));
       } catch (e) {
         // 埋め込めない画像は、字形の中で描かない (emit の image)。同じ理由の知らせは 1 度だけ
         const why = e instanceof Error ? e.message : String(e);

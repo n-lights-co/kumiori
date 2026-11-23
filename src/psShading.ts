@@ -17,7 +17,7 @@ import { type Interp, type PSDict, type PSObj, PSError, arrItems, isProc, strByt
 import type { Clip, DisplayItem, Graphics, RGB } from './psGraphics';
 import { drawWeight } from './psGraphics';
 import type { ColorSpace } from './psColorSpace';
-import { PS_TOTAL_IMAGE_PIXELS } from './imageLimits';
+import { psTotalImagePixels } from './imageLimits';
 import { msg } from './messages';
 
 type Fn = (x: number[]) => number[];
@@ -263,7 +263,7 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
   G.I.charge((w * h) / 16);
   // 網かけの画像も、文書の画像の画素の合計の上限に数える (網かけを描き続けるループで、メモリを使い切らない)
   G.imagePixels = (G.imagePixels ?? 0) + w * h;
-  if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
+  if (G.imagePixels > psTotalImagePixels()) throw new PSError('limitcheck');
   G.countItem();
   G.I.memAlloc(w * h * 4);
   const rgba = new Uint8Array(w * h * 4);
@@ -783,7 +783,7 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
           // 画像の写しは画素を共有するが、PDF に描くまでには写しごとに画素を読むので、画像の画素の合計の上限に数える
           // (前は、模様の絵の 1 枚ぶんしか数えず、2,500 万画素の画像を 1 万枚並べる 297 バイトの EPS が 200 秒を超えた)
           G.imagePixels = (G.imagePixels ?? 0) + it.width * it.height;
-          if (G.imagePixels > PS_TOTAL_IMAGE_PIXELS) throw new PSError('limitcheck');
+          if (G.imagePixels > psTotalImagePixels()) throw new PSError('limitcheck');
         }
         G.emit(moveItem(it, dx, dy, clipOf(it.clip), color));
       }

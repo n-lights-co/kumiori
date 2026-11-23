@@ -6,11 +6,13 @@
  *  - 未対応の値: 対応しているプロパティのうち、特定の値だけ読まないもの (16 章の 2 つ目の表のうち、値で見分けられるもの)
  *  - 知らないプロパティ: Kumiori のカスケード (cssCascade の PROPS と一括指定) にも、自前で読む宣言 (htmlPaged の isPagedDecl) にも
  *    無い名前。綴りの誤りか未対応。カスタム プロパティ (--*) と、接頭辞付き (-webkit-* など) は数えない
+ *  - 読めない値: 知っているプロパティの宣言のうち、カスケードが読めない値として捨てるもの (display: foo・color: notacolor など。
+ *    CSS 2.1 §4.2 で宣言ごと無視する)。値の誤りか、Kumiori が読まない値。数え方は valueVerdict
  * 結果は typeset の warnings に 1 行ずつ出す (ブラウザの画面の「変換レポート」と同じ数え方)
  */
-import { isKnownCssProperty } from './cssCascade';
+import { ALL_AH, isDroppedCssDeclaration, isKnownCssProperty, type AhFlags } from './cssCascade';
 import { stripImportant } from './cssText';
-import { isPagedDecl, type ParsedCss } from './htmlPaged';
+import { compatOnlyValue, isPagedDecl, validPagedValue, type ParsedCss } from './htmlPaged';
 import { msg } from './messages';
 
 /** 対応していないプロパティ (対応仕様説明書 HTML と CSS 編 16 章) */
@@ -148,6 +150,85 @@ export interface UnsupportedCssReport {
   unsupported: Record<string, number>;
   /** 知らないプロパティ → 宣言の数 */
   unknown: Record<string, number>;
+  /** 読めない値の宣言 (「prop: value」。値は空白を 1 つにまとめ、長ければ切る。invalidValueKey) → 宣言の数 */
+  invalid: Record<string, number>;
+}
+
+/**
+ * CSS の文法としては正しいが、Kumiori が読まない値 ([性質, 値] の形)。読めない値ではなく、未対応の値 (「prop: value」) に数える
+ *  - font のシステムの書体の名前 (CSS 2.1 §15.8・CSS Fonts 4 §2.8 の caption・icon・menu・message-box・small-caption・status-bar)。
+ *    Kumiori は、利用者の機械の画面の部品の書体を持たないので、一括指定を分けられない
+ *  - font-size の math (CSS Fonts 4 §2.4: math-depth に従って字の大きさを縮める値。MathML Core §3.2.1)。Kumiori は math-depth を読まない
+ */
+const VALID_BUT_UNREAD: ReadonlyArray<readonly [RegExp, RegExp]> = [
+  [/^font$/, /^(caption|icon|menu|message-box|small-caption|status-bar)$/i],
+  [/^font-size$/, /^math$/i],
+];
+
+/** 読めない値の項目の鍵 (「prop: value」。値は空白を 1 つにまとめ、200 字で切る) */
+function invalidValueKey(p: string, v: string): string {
+  const t = v.replace(/\s+/g, ' ');
+  return `${p}: ${t.length > 200 ? `${t.slice(0, 200)}…` : t}`;
+}
+/** 読めない値の宣言の警告の文 (items は「prop: value」か、その並び) */
+export function invalidValueText(items: string): string {
+  return msg(`読めない値の CSS の宣言を無視しました (値の誤りか未対応): ${items}`, `ignored CSS declarations with invalid values (mistyped or unsupported): ${items}`);
+}
+/** 読めない値の項目の鍵を、性質と値に分ける (診断の args) */
+export function splitInvalidValueKey(key: string): { property: string; value: string } {
+  const k = key.indexOf(': ');
+  return k < 0 ? { property: key, value: '' } : { property: key.slice(0, k), value: key.slice(k + 2) };
+}
+
+/** 接頭辞付きの値 (-webkit-box・-moz-available・-webkit-linear-gradient() など)。ブラウザ向けの予備の値なので、読めなくても数えない */
+const PREFIXED_VALUE = /(^|[\s,(\/])-(webkit|moz|ms|o|epub|apple|khtml)-/i;
+
+/**
+ * 1 つの宣言の値の判定。ok: 読める (か、ほかの所で数える・数えない宣言)。invalid: 読めない値 (値の誤りか、読まない値)。
+ * unsupported: CSS として正しいが読まない値 (VALID_BUT_UNREAD)。ah-only: 互換の指定 (--style ah) のときだけ読む、接頭辞の無い名前に書いた
+ * 拡張の値 (線種 dot-dash など。CLAUDE.md の「仕様の根拠」: 互換の指定の無いときは無効の値として扱い、警告に出す)。
+ * 数えないもの: カスタム プロパティ・接頭辞付きのプロパティ・印刷に関わらないプロパティ・未対応のプロパティと値 (count が数える)・
+ * 知らないプロパティ (count が数える)・var()・attr() を含む値 (計算値の時点で決まる)・接頭辞付きの値 (PREFIXED_VALUE)・
+ * 自前で読む拡張の値 (compatOnlyValue。互換の指定の無いときは読み込み (htmlImport の dropCompatOnly) が未対応に数える)
+ */
+function valueVerdict(p: string, value: string, ah: AhFlags | undefined): 'ok' | 'invalid' | 'unsupported' | 'ah-only' {
+  if (!p || p.startsWith('-') || isPrintIrrelevantCssProperty(p) || SVG_RENDERING_HINTS.has(p) || SVG_ONLY_UNSUPPORTED.has(p) || UNSUPPORTED_CSS_PROPERTIES.has(p)) return 'ok';
+  const v = stripImportant(value);
+  if (/var\(|attr\(/i.test(v) || PREFIXED_VALUE.test(v)) return 'ok';
+  const lv = v.toLowerCase();
+  if (UNSUPPORTED_CSS_VALUES[p]?.includes(lv) || SUPPORTED_ONLY_VALUES[p]?.includes(lv) || compatOnlyValue(p, v)) return 'ok';
+  const paged = isPagedDecl(p, v);
+  // 自前で読む宣言 (htmlPaged の isPagedDecl) は、自前の値の検査 (validPagedValue) で読めるなら読める
+  if (paged && validPagedValue(p, v)) return 'ok';
+  const flags = ah ?? { ahBorderStyles: false, ahCounterFlags: false };
+  if (isKnownCssProperty(p, v, flags)) {
+    if (!isDroppedCssDeclaration(p, v, flags)) return 'ok';
+  } else if (!paged) return 'ok'; // 知らないプロパティ (count が数える)
+  if (VALID_BUT_UNREAD.some(([rp, rv]) => rp.test(p) && rv.test(v))) return 'unsupported';
+  if (!ah?.ahBorderStyles && isKnownCssProperty(p, v, ALL_AH) && !isDroppedCssDeclaration(p, v, ALL_AH)) return 'ah-only';
+  return 'invalid';
+}
+
+/**
+ * 1 つの宣言の塊 (規則の宣言の並び・1 つの style 属性) の、読めない値の宣言を数える。同じ塊に、同じ性質の読める宣言があれば数えない
+ * (ブラウザ向けの CSS は、新しい書き方の前後に予備の値を並べる: color: #333; color: oklch(…) など。カスケードは読めない方を捨て、
+ * 読める方を使うので、組版の結果に欠けは無い)
+ */
+function countValues(rep: UnsupportedCssReport, decls: ReadonlyArray<readonly [string, string, boolean?]>, ah: AhFlags | undefined) {
+  const judged = decls.map(([p0, v]) => {
+    const p = p0.toLowerCase();
+    return { p, v: stripImportant(v), verdict: valueVerdict(p, v, ah) };
+  });
+  for (const d of judged) {
+    if (d.verdict === 'ok' || judged.some((o) => o !== d && o.p === d.p && o.verdict === 'ok')) continue;
+    if (d.verdict === 'invalid') {
+      const k = invalidValueKey(d.p, d.v);
+      rep.invalid[k] = (rep.invalid[k] ?? 0) + 1;
+      continue;
+    }
+    const k = d.verdict === 'unsupported' ? `${d.p}: ${d.v.toLowerCase()}` : msg(`${d.p}: ${d.v} (--style ah のときだけ解釈する値)`, `${d.p}: ${d.v} (a value read only with --style ah)`);
+    rep.unsupported[k] = (rep.unsupported[k] ?? 0) + 1;
+  }
 }
 
 /** style 属性の宣言を分ける (括弧・引用符の中の ; と : は区切りにしない) */
@@ -235,10 +316,12 @@ function count(rep: UnsupportedCssReport, prop: string, value: string, svg = fal
  * 作成者スタイルシート (読んだスタイルシート) と、文書の style 属性の宣言を数える。
  * @page の宣言と余白の箱の宣言、@font-face の記述子は、知らないプロパティとしては数えない (別の決まりで読む)。
  * @page の未対応の記述子 (page-orientation) と、余白の箱の content の未対応の関数 (target-counters()) は数える。
- * 読まずに捨てた規則・書き方 (@namespace・@page :nth()。parseCss の ignored) も数える
+ * 読まずに捨てた規則・書き方 (@namespace・@page :nth()。parseCss の ignored) も数える。
+ * 読めない値の宣言 (invalid) は、規則と style 属性の宣言だけを数える (@page・余白の箱・@font-face は数えない)。
+ * ah: カスケードに渡すのと同じ拡張の読み方 (互換の指定 --style ah のときは ALL_AH。省けば読まない)
  */
-export function unsupportedCssReport(sheet: ParsedCss | undefined, doc?: Document): UnsupportedCssReport {
-  const rep: UnsupportedCssReport = { unsupported: Object.create(null), unknown: Object.create(null) };
+export function unsupportedCssReport(sheet: ParsedCss | undefined, doc?: Document, ah?: AhFlags): UnsupportedCssReport {
+  const rep: UnsupportedCssReport = { unsupported: Object.create(null), unknown: Object.create(null), invalid: Object.create(null) };
   const add = (k: string) => (rep.unsupported[k] = (rep.unsupported[k] ?? 0) + 1);
   for (const k of sheet?.ignored ?? []) add(k);
   for (const pg of sheet?.pages ?? []) {
@@ -247,14 +330,20 @@ export function unsupportedCssReport(sheet: ParsedCss | undefined, doc?: Documen
   }
   // 文書の中にじかに書いた <svg> があるか (SVG の要素にだけ当てはまる性質を、未対応に数えるかを決める)
   const hasSvg = !!doc && Array.from((doc.getElementsByTagName?.('svg') ?? []) as ArrayLike<Element>).length > 0;
-  for (const r of sheet?.rules ?? []) for (const [p, v] of Object.entries(r.decls)) count(rep, p, v, hasSvg);
+  for (const r of sheet?.rules ?? []) {
+    for (const [p, v] of Object.entries(r.decls)) count(rep, p, v, hasSvg);
+    countValues(rep, r.list, ah);
+  }
   if (doc) {
     const els = doc.querySelectorAll?.('[style]') ?? [];
     for (const el of Array.from(els) as Element[]) {
       const st = el.getAttribute('style');
       // style 属性は、その要素が SVG の要素 (<svg> とその中の要素) のときだけ、SVG の性質が当たる
       const inSvg = hasSvg && (el.namespaceURI === SVG_NS || !!el.closest?.('svg'));
-      if (st) for (const [p, v] of splitStyleAttribute(st)) count(rep, p, v, inSvg);
+      if (!st) continue;
+      const decls = splitStyleAttribute(st);
+      for (const [p, v] of decls) count(rep, p, v, inSvg);
+      countValues(rep, decls, ah);
     }
   }
   return rep;

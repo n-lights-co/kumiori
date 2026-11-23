@@ -5,6 +5,7 @@
  * 数式用の書体があるときは使われない (xslfoImport の mathFormula が mathLayout で組む)。
  * 属性・長さ・色の読み方は Importer (xslfoImport.ts) のものを FoMathHost として借りる。処理は Importer にあったものをそのまま移した
  */
+import { nestLimit } from './limits';
 import type { LBlock, LInline, LInlineContainer, LInlineLevel, LTable, LTableCell, TextAlign } from './types';
 import { toCss } from './color';
 import { utf8Base64, type XEl } from './foDom';
@@ -46,7 +47,7 @@ export class FoMathFallback {
 
   /** MathML を行内の要素に組み替える。深すぎる入れ子 (MAX_MATH_NEST) は空にして、読み込みの報告に数える */
   mathml(n: XEl, fs: number): LInlineLevel {
-    if (this.nest >= MAX_MATH_NEST) {
+    if (this.nest >= nestLimit(MAX_MATH_NEST)) {
       this.fo.miss(msg('MathML の深すぎる入れ子', 'MathML nested too deeply'));
       return '';
     }
@@ -120,7 +121,7 @@ export class FoMathFallback {
     const hit = memo?.get(key);
     if (hit !== undefined) return hit;
     // 深すぎる入れ子は測らない (字 1 つ分の高さにする)
-    if (this.extentNest >= MAX_MATH_NEST) return fs;
+    if (this.extentNest >= nestLimit(MAX_MATH_NEST)) return fs;
     this.extentNest++;
     let v: number;
     try {

@@ -10,8 +10,9 @@
  * 描かないもの (描かずに飛ばす): 色の成分が 0・255 以外の元や型を描き先と混ぜるラスター演算、模様のブラシを使う PATCOPY 以外のラスター演算、
  * Bitmap16 の模様のブラシ、装置の画素の大きさが決まらないときの模様のブラシ、EMF+ (GDI コメントの記録)。
  */
+import { limits } from './limits';
 import { decodeBmp, encodePngStored, expandRle, type Pixels } from './pixels';
-import { MAX_PIXELS, METAFILE_CLIP_PATH_WORK, METAFILE_REGION_WORK, metafilePixelBudget, metafileSvgBudget } from './imageLimits';
+import { maxPixels, METAFILE_CLIP_PATH_WORK, METAFILE_REGION_WORK, metafilePixelBudget, metafileSvgBudget } from './imageLimits';
 import { apply as applyXf, isIdentity, mul, type Matrix } from './matrix';
 import { base64 } from './base64';
 import { flattenPath, polyBool, ringsPath, type Rings } from './regionBool';
@@ -320,9 +321,10 @@ class SvgOut {
     return n;
   }
   /** 切り抜きの領域の演算に使える残りの手間 (imageLimits.ts の METAFILE_REGION_WORK。regionOp が引く) */
-  private regionWork = { left: METAFILE_REGION_WORK };
+  // 既定は、呼び出しの上限 (limits.metafileClipWork。既定 METAFILE_REGION_WORK)。パスの切り抜きの手間も、同じ比で動かす
+  private regionWork = { left: limits().metafileClipWork };
   /** 切り抜きのパスの演算 (OR・XOR の多角形の演算) に使える残りの手間 (点の数。imageLimits.ts の METAFILE_CLIP_PATH_WORK) */
-  private clipPathWork = METAFILE_CLIP_PATH_WORK;
+  private clipPathWork = Math.round((METAFILE_CLIP_PATH_WORK * limits().metafileClipWork) / METAFILE_REGION_WORK);
   /** fileBytes: メタファイルの大きさ (バイト)。画素にできる数と、SVG の長さの上限を決める */
   constructor(private readonly fileBytes: number) {
     this.pixelBudget = metafilePixelBudget(fileBytes);
@@ -940,7 +942,7 @@ function dibImage(out: SvgOut, b: Uint8Array, s: DibSrc): { px: Pixels } | { mim
   const W = Math.abs(w);
   const rows = s.scans ?? Math.abs(h);
   // 画素の数の上限 (ヘッダの寸法だけで大量のメモリ・時間を使わない)
-  if (!W || !rows || W * rows > MAX_PIXELS || !out.takePixels(W * rows, msg('DIB の画像', 'a DIB image'))) return undefined;
+  if (!W || !rows || W * rows > maxPixels() || !out.takePixels(W * rows, msg('DIB の画像', 'a DIB image'))) return undefined;
   const stride = Math.floor((bpp * W + 31) / 32) * 4;
   let pixels: Uint8Array;
   let newComp = comp;

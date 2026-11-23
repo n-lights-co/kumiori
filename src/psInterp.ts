@@ -6,8 +6,9 @@
  * ファイルの書き込みと名前付きファイルの読み込みも持たない (外から受け取ったプログラムが、手元のファイルに触れないように)。
  * 図形の演算子は psGraphics.ts が足す。
  */
+import { limits } from './limits';
 import { FilterError, UnsupportedFilter, filterSource, type ByteSource } from './psFilters';
-import { PS_FILTER_MAX_BYTES, PS_MAX_MEMORY_BYTES, PS_MAX_VM_BYTES } from './imageLimits';
+import { PS_FILTER_MAX_BYTES } from './imageLimits';
 import { msg } from './messages';
 
 // ───────────────────────── オブジェクト (PLRM §3.3) ─────────────────────────
@@ -647,10 +648,10 @@ export class Interp {
 
   constructor(opts: InterpOptions = {}) {
     this.maxSteps = opts.maxSteps ?? 50_000_000;
-    this.deadline = Date.now() + (opts.maxMillis ?? 20_000);
-    this.maxVM = opts.maxVM ?? PS_MAX_VM_BYTES;
+    this.deadline = Date.now() + (opts.maxMillis ?? limits().epsMs);
+    this.maxVM = opts.maxVM ?? limits().epsMemoryBytes;
     this.maxFilterBytes = opts.maxFilterBytes ?? PS_FILTER_MAX_BYTES;
-    this.maxMemory = opts.maxMemory ?? PS_MAX_MEMORY_BYTES;
+    this.maxMemory = opts.maxMemory ?? limits().epsMemoryBytes;
     this.systemdict = new PSDict(this, 500);
     this.globaldict = new PSDict(this, 100);
     this.globaldict.global = true;
@@ -2136,7 +2137,9 @@ function installCoreOperators(I: Interp) {
   // languagelevel: 演算子ではなく整数 3 として定義する。名前を実行すると 3 が積まれるのは演算子と同じで、
   // Adobe CoolType の手続き集の「systemdict /languagelevel get 2 ge」(get のあと exec しない) も通る
   I.systemdict.map.set('languagelevel', { k: name('languagelevel'), v: int(3) });
-  d('realtime', (I) => I.push(int(Date.now() & 0x7fffffff)));
+  // realtime の値は、暦の時刻と関わりの無い、ミリ秒の数え上げ (PLRM 3rd ed. の realtime)。時計を読むと、時刻で描き分ける EPS が組むたびに違う絵になり、
+  // 同じバイトの PDF にならないので、usertime と同じく手続きの歩数から作る
+  d('realtime', (I) => I.push(int(I.steps & 0x7fffffff)));
   d('usertime', (I) => I.push(int(I.steps & 0x7fffffff)));
   d('product', (I) => constStr(I, 'Kumiori'));
   d('revision', (I) => I.push(int(1)));

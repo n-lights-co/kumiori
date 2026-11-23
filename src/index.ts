@@ -19,7 +19,8 @@
  */
 
 export { typeset, typesetHtml, typesetFo, typesetToPdf, createTypesetter, decodeDocumentText } from './api';
-export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, PdfOptions, RenderPageOptions, RenderPageSvgOptions, RenderPagePngOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec, LinkPolicy } from './api';
+export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, PdfOptions, RenderPageOptions, RenderPageSvgOptions, RenderPagePngOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec, LinkPolicy, KumioriLimits, ResourceContext, TypesetProgress } from './api';
+export type { SystemFontSource, SystemFontRequest, SystemFontMatch, SystemFontKind } from './types';
 // 選択肢の値の型 (TypesetOptions の compat・lang、PdfOptions の pdfx・pdfa)
 export type { FoCompat } from './compat';
 export type { MessageLang } from './messages';
@@ -34,6 +35,10 @@ export type { KumioriErrorDetails } from './errors';
 // プラグイン (TypesetOptions.plugins。いまは画像の形式を足すものだけ。imageFormats.ts)
 export { PLUGIN_API_VERSION } from './imageFormats';
 export type { KumioriPlugin, ImageFormat, ImageFormatContext, ImageFormatResult, MeasureFont } from './imageFormats';
+
+// ブラウザの画面で、JS が組み上げた後の文書を、typeset に渡せる形にする (snapshot.ts。DOM のある所だけで使える)
+export { snapshotDocument } from './snapshot';
+export type { SnapshotOptions, DocumentSnapshot } from './snapshot';
 
 // draw.io の図 (TypesetOptions.drawio。drawio/index.ts)
 export { DRAWIO_MIME, isDrawio, createDrawioStencilRegistry } from './drawio/index';

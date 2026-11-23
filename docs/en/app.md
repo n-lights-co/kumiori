@@ -17,6 +17,8 @@ The app's interface is in Japanese; the labels are given below with their Englis
 
 "Save PDF" (PDF を保存) writes out the PDF. "Save logical tree as JSON" (論理ツリーを JSON で保存) writes out the logical tree of the loaded document (its structure and formatting before typesetting) as JSON (<document name>.json). On the left are page thumbnails and warnings (collapsible).
 
+"API reference" (API の説明書) at the top opens the list of the library's functions, types and options (the [API reference](https://n-lights-co.github.io/kumiori/api/)) in a new tab. On narrow screens, it is under "Other" (そのほか) in "Settings" (設定).
+
 ## Settings
 
 "Settings" (設定) on the right has the following.
@@ -28,6 +30,8 @@ The app's interface is in Japanese; the labels are given below with their Englis
 | CSS interpretation | The own cascade (default), or a browser iframe for comparison | |
 | "Typeset with the spec's default values" | The XSL-FO default-value convention | `--compat` |
 | Trim marks | Add trim marks and a 3mm bleed | `--print` |
+| Guides | Draw the trim and bleed guide lines on the pages on screen (on by default; with trim marks; not included in the PDF) | (`guides` of `renderPage` and others in the API) |
+| Tagged PDF | Put the document structure, reading order, alternative text for figures and language into the PDF (on by default; the appearance does not change). When off, no tags are added | `--tagged`, `--no-tagged` |
 | Font loading | Load fonts on your PC (TTF, OTF, TTC; MS Mincho, MS Gothic and so on) and use them. They are never sent outside the PC | `--font` |
 | draw.io diagrams | Reading them or not, shape libraries ([`docs/en/drawio.md`](drawio.md)) | `--no-drawio` and others |
 
@@ -37,7 +41,8 @@ Warnings are listed one by one in the left column.
 
 - Identical messages are merged. Four or more are collapsed to a count and can be opened. The count also appears in the top bar.
 - Each line shows a severity mark (✖ content missing from the output, ⚠ warning, ℹ notice) and the diagnostic code ([`docs/en/diagnostics.md`](diagnostics.md)) and, when known, the element, line and page.
-- Clicking a line with a page moves to that page (HTML in the app is read through an iframe, so no line is shown).
+- Clicking a line with a page moves to that page.
+- Warnings for HTML show no line. The app reads HTML with the browser's HTML parser (`DOMParser`), which keeps no character positions (the same with either CSS interpretation, "Kumiori" or "ブラウザ (比較用)" (browser, for comparison)). Warnings for XSL-FO show the line. When you need the line, typeset with the command or the API.
 
 They are the same warnings as the CLI and the API give:
 

@@ -17,7 +17,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, decodePDFRawStream, type PDFObject } from 'pdf-lib';
-import { DEFAULT_FONTS, typesetFo, typesetHtml, typesetToPdf } from '../src/index';
+import { DEFAULT_FONTS, childrenOf, typesetFo, typesetHtml, typesetToPdf, type AreaNode } from '../src/index';
 import { ensureFonts, loadCachedFont } from './helpers';
 
 beforeAll(async () => {
@@ -118,6 +118,34 @@ describe('タグ付き PDF: 構造の木', () => {
     const td = find(structTree(pdf), 'TD')[0];
     // じかの字 (MCID)・P (絶対)・P (段落)・じかの字 (前は、じかの字が 2 つ並んでから、P が 2 つ並んだ)
     expect(td.kids.map((k) => ('role' in k ? k.role : 'mcid' in k ? 'MC' : 'annot'))).toEqual(['MC', 'P', 'P', 'MC']);
+  });
+
+  it('行内の絶対配置の要素は Span にし、親の字の間の、書いた所に置く (位置の指定の有無・行内の要素の中でも。描いた順でなく文書の順)', async () => {
+    const body =
+      '<p>前の字<span style="position: absolute">絶対1</span>最後</p>' +
+      '<p>次の<span style="position: absolute; top: 200pt; left: 100pt">絶対2</span>終わり</p>' +
+      '<p>入れ子の<em>強調の<span style="position: absolute; left: 150pt">絶対3</span>中</em>後ろ</p>';
+    const pdf = await pdfOf(body);
+    const ps = find(structTree(pdf), 'P');
+    expect(ps).toHaveLength(3);
+    for (const p of ps) expect(p.kids.map((k) => ('role' in k ? k.role : 'mcid' in k ? 'MC' : 'annot'))).toEqual(['MC', 'Span', 'MC']);
+    // 組版の結果 (ページの上の字の位置) は、タグを付けないときと同じ (目印の箱は幅 0 で、改行の機会も行の高さも変えない。
+    // 字の並びの箱 (InlineArea) は目印の所で分かれるので、親からの位置でなく、ページの上の位置で比べる)
+    const glyphsOf = async (tagged: boolean) => {
+      const r = await typesetHtml(doc(body), { loadFont: loadCachedFont, tagged });
+      const out: string[] = [];
+      const go = (a: AreaNode, x: number, y: number) => {
+        const ax = x + a.x;
+        const ay = y + a.y;
+        if (a.type === 'glyph') out.push(`${a.text}@${ax.toFixed(2)},${ay.toFixed(2)}`);
+        const cx = ax + (a.border?.left?.width ?? 0) + (a.padding?.left ?? 0);
+        const cy = ay + (a.border?.top?.width ?? 0) + (a.padding?.top ?? 0);
+        for (const c of childrenOf(a)) go(c, cx, cy);
+      };
+      for (const sh of r.areaTree.sheets) go(sh, 0, 0);
+      return out.sort();
+    };
+    expect(await glyphsOf(true)).toEqual(await glyphsOf(false));
   });
 
   it('絶対配置の要素・段抜きの見出し・直交する縦書きの箱も、要素の構造の型と入力の順を保つ', async () => {

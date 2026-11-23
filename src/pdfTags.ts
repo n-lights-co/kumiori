@@ -116,7 +116,7 @@ export class PdfTagger {
   }
 
   /** 印の付いた内容の始まり (BDC) の命令。中身なら MCID を振って覚える */
-  begin(t: PdfTag, page: number): PDFOperator {
+  begin(t: PdfTag, page: number, actualText?: string): PDFOperator {
     const ctx = this.pdf.context;
     // ページの上・下の柱は、Pagination の Subtype Header・Footer (§14.8.2.2.2 の Table 330)
     if (t.art) return PDFOperator.of('BDC' as never, [PDFName.of('Artifact'), ctx.obj(t.art === 'layout' ? { Type: 'Layout' } : { Type: 'Pagination', ...(t.art === 'header' ? { Subtype: 'Header' } : t.art === 'footer' ? { Subtype: 'Footer' } : {}) })] as never);
@@ -127,7 +127,8 @@ export class PdfTagger {
     list.push(t.id);
     this.seqOwner.push(t.id);
     this.items[t.id].push({ seq: this.seq++, page, mcid, ...(form !== undefined ? { form } : {}) });
-    return PDFOperator.of('BDC' as never, [PDFName.of(nameBytes(this.s.nodes[t.id].custom ?? this.s.nodes[t.id].role)), ctx.obj({ MCID: mcid })] as never);
+    // actualText: 置き換えの文字列 (ISO 32000-1 §14.9.4。印の付いた内容の辞書の ActualText。分綴のハイフンのソフトハイフンなど)
+    return PDFOperator.of('BDC' as never, [PDFName.of(nameBytes(this.s.nodes[t.id].custom ?? this.s.nodes[t.id].role)), ctx.obj({ MCID: mcid, ...(actualText !== undefined ? { ActualText: PDFHexString.fromText(actualText) } : {}) })] as never);
   }
 
   /** Form XObject (不透明度のグループ) を描き始める。この後の印の付いた内容は、その Form の中のもの */
@@ -162,6 +163,17 @@ export class PdfTagger {
   nextSeq(): number {
     this.seqOwner.push(-1);
     return this.seq++;
+  }
+
+  /** 構造の節の、読む順の置き場所 (描いた順の番号。place で付けたもの。いちばん先のもの) */
+  private places = new Map<number, number>();
+
+  /**
+   * 構造の節 id を、親の中身の項目の間の、いまの所に置く (行の中の、絶対配置の箱を書いた所の目印。箱の中身は後で描くので、
+   * 中身の最初の項目の所ではなく、ここを使う。finish の place)
+   */
+  place(id: number) {
+    if (!this.places.has(id)) this.places.set(id, this.nextSeq());
   }
 
   /**
@@ -255,9 +267,12 @@ export class PdfTagger {
     const used = (id: number) => keep[id] === 1;
     // 子の構造の節を、親の中身の項目の間に置く所 (描いた順の番号): その中で最初に描いた項目の所。目印 (anchor) のある節は、目印の節の
     // 最初の項目のすぐ後ろ (脚注の本体は、本文の参照の印の後ろ)。中身の無い節 (空のセル) は、前の兄弟と同じ所
+    // 置き場所の目印 (places) のある節は、その所 (中身より前なら。行の中の絶対配置の箱は、書いた所)
     const place = (id: number, prev: number): number => {
       const a = s.nodes[id].anchor;
       if (a !== undefined && a >= 0 && a < n && first[a] < Infinity) return first[a] + 0.5;
+      const mark = this.places.get(id);
+      if (mark !== undefined && first[id] < Infinity && mark < first[id]) return mark;
       return first[id] < Infinity ? first[id] : prev;
     };
     // ID (§14.7.2): 同じ値の 2 つ目からは、後ろに番号を足して、文書の中で 1 つにする (IDTree は ID ごとに 1 つの節)

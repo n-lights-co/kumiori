@@ -7,9 +7,9 @@
  *  字の形を持たない書体 (埋め込まれていない書体) は、書体の名前から代わりの書体で描く。
  *  模様 (§4.9) と網かけ (shfill) は psShading で描く (網かけは画素の画像、並べる模様は PaintProc の絵の写し)。模様の線 (stroke) は、線の輪郭を模様で塗る。
  */
+import { limits } from './limits';
 import { apply, IDENTITY, invert, mul, type Matrix, type Seg } from './matrix';
 import { type Interp, type PSObj, PSError, VM_GSTATE, arr, arrItems, dictObj, name, real, strBytes, strText, NULL } from './psInterp';
-import { PS_MAX_PATH_POINTS } from './imageLimits';
 
 import { DEVICE_GRAY, DEVICE_RGB, DEVICE_CMYK, clamp01, type ColorSpace, type RGB } from './psColorSpace';
 export type { RGB } from './psColorSpace';
@@ -184,7 +184,7 @@ export class Graphics {
     public I: Interp,
     public opts: GraphicsOptions,
   ) {
-    this.maxPathPoints = opts.maxPathPoints ?? PS_MAX_PATH_POINTS;
+    this.maxPathPoints = opts.maxPathPoints ?? limits().epsPathPoints;
     this.maxDrawCost = opts.maxDrawCost ?? MAX_DRAW_COST;
     this.g = this.initial();
     I.gfx = {

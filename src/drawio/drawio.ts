@@ -83,7 +83,7 @@ import { msg, withLang, type Lang } from './messages';
 
 export { DRAWIO_MIME, isDrawio };
 import { inflateBytes } from './inflate';
-import { decodeEntities, esc, f, HTML_ENT, kids, num, parseXml, type XEl } from './drawioXml';
+import { decodeEntities, esc, f, HTML_ENT, kids, MAX_DEPTH, num, parseXml, type XEl } from './drawioXml';
 import { decodeInlineStencil, isDrawioImagePath, isRemoteImage, libraryOf, stencilSvg, type DrawioImage, type StencilContext, type StencilRegistry } from './drawioStencil';
 import { base64 } from './base64';
 import { ShapeCanvas, SvgBudgetExceeded } from './drawioCanvas';
@@ -120,6 +120,22 @@ export interface DrawioOptions {
    * 無い・空なら最初のページ
    */
   page?: string;
+  /**
+   * 上限 (呼び出しの TypesetOptions.limits の drawio*・formatSize。ImageFormatContext.limits)。無い名前は既定 (BASE_LIMITS)。
+   * 図を SVG にする間 (同期の区間) だけ、LIMITS をこの値にする
+   */
+  limits?: DrawioLimits;
+}
+
+/** 上限のうち、呼び出しごとに変えられるもの (limits.ts の drawioChars・drawioCells・drawioLabelChars・drawioSvgChars・formatSize) */
+export interface DrawioLimits {
+  chars?: number;
+  cells?: number;
+  labelChars?: number;
+  svgChars?: number;
+  size?: number;
+  /** XML の入れ子の深さ (drawioXml.ts の MAX_DEPTH と、limits.nestingDepth の小さい方) */
+  depth?: number;
 }
 
 /**
@@ -131,7 +147,7 @@ const NEWER_SHAPES = new Set(['mxgraph.c4.mobileDeviceContainer', 'mxgraph.bpmn.
 const isNewerShape = (shape: string) => shape.startsWith('mxgraph.archimate4.') || NEWER_SHAPES.has(shape);
 
 /** 読む上限 (小さなファイルで大量のメモリ・時間を使わせない) */
-const LIMITS = {
+const BASE_LIMITS = {
   /** 圧縮した図を戻した大きさ (字) */
   inflated: 64 << 20,
   /** セルの数 */
@@ -191,7 +207,39 @@ const LIMITS = {
    * 1 億組は、5 つの線分の線を 2,000 本 (どれも jumpStyle の付いた大きな図) 描くときの組の数 (約 5,000 万) の倍で、1〜2 秒で調べられる
    */
   jumpPairs: 100_000_000,
+  /** XML の要素の数 (drawioXml.ts の MAX_NODES と同じ既定。セルの数の上限の 10 倍) */
+  nodes: 200_000,
+  /** XML の入れ子の深さ (drawioXml.ts の MAX_DEPTH) */
+  depth: MAX_DEPTH,
 };
+/** いまの上限 (既定は BASE_LIMITS。drawioToSvg・drawioPage の間だけ、DrawioOptions.limits を重ねたものにする) */
+let LIMITS: typeof BASE_LIMITS = BASE_LIMITS;
+
+/** fn の間だけ、上限を l にする (fn は同期の関数なので、ほかの呼び出しと混ざらない) */
+function withLimits<T>(l: DrawioLimits | undefined, fn: () => T): T {
+  if (!l) return fn();
+  const saved = LIMITS;
+  const size = l.size ?? BASE_LIMITS.size;
+  const svgChars = l.svgChars ?? BASE_LIMITS.svgChars;
+  const cells = l.cells ?? BASE_LIMITS.cells;
+  LIMITS = {
+    ...BASE_LIMITS,
+    inflated: l.chars ?? BASE_LIMITS.inflated,
+    cells,
+    nodes: cells * 10,
+    labelTotal: l.labelChars ?? BASE_LIMITS.labelTotal,
+    svgChars,
+    svgWork: svgChars * 2,
+    size,
+    coord: size,
+    depth: l.depth ?? BASE_LIMITS.depth,
+  };
+  try {
+    return fn();
+  } finally {
+    LIMITS = saved;
+  }
+}
 
 // ───────────── ファイル → 図のモデル ─────────────
 
@@ -257,7 +305,7 @@ function graphModel(root: XEl, fragment: string | undefined, warn: (m: string) =
   } catch {
     /* encodeURIComponent をしていない古い形は、そのまま読む */
   }
-  const m = parseXml(text);
+  const m = parseXml(text, LIMITS.nodes, LIMITS.depth);
   return m?.name === 'mxGraphModel' ? m : undefined;
 }
 
@@ -711,7 +759,7 @@ const OTHER_EDGE_STYLES = new Set(['loopEdgeStyle', 'sequenceEdgeStyle']);
 /** draw.io のファイルを SVG にする。draw.io のファイルでない・セルが無ければ undefined */
 export function drawioToSvg(bytes: Uint8Array, opts: DrawioOptions = {}): DrawioResult | undefined {
   try {
-    return isDrawio(bytes) ? withLang(opts.lang, () => withMeasure(opts.measureText, () => render(bytes, opts))) : undefined;
+    return isDrawio(bytes) ? withLimits(opts.limits, () => withLang(opts.lang, () => withMeasure(opts.measureText, () => render(bytes, opts)))) : undefined;
   } catch {
     return undefined;
   }
@@ -721,17 +769,17 @@ export function drawioToSvg(bytes: Uint8Array, opts: DrawioOptions = {}): Drawio
 function rootOf(bytes: Uint8Array): XEl | undefined {
   let text = new TextDecoder().decode(bytes);
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  return parseXml(text);
+  return parseXml(text, LIMITS.nodes, LIMITS.depth);
 }
 
 /**
  * 描くページの番号 (0 から) と、選ぶときの警告 (fragment の指すページが無いなど。pageOf)。draw.io のファイルでない・ページが無ければ undefined。
  * 同じファイルを fragment の違う参照で指したとき、同じページになる参照の図を、描き直さずに使い回すため (load.ts)
  */
-export function drawioPage(bytes: Uint8Array, fragment: string | undefined, lang?: Lang): { index: number; warnings: string[] } | undefined {
+export function drawioPage(bytes: Uint8Array, fragment: string | undefined, lang?: Lang, limits?: DrawioLimits): { index: number; warnings: string[] } | undefined {
   try {
     if (!isDrawio(bytes)) return undefined;
-    return withLang(lang, () => {
+    return withLimits(limits, () => withLang(lang, () => {
       const root = rootOf(bytes);
       const warnings: string[] = [];
       const warn = (m: string) => void (warnings.includes(m) || warnings.push(m));
@@ -743,7 +791,7 @@ export function drawioPage(bytes: Uint8Array, fragment: string | undefined, lang
       const pages = kids(root, 'diagram');
       const page = pageOf(pages, fragment, warn);
       return page ? { index: pages.indexOf(page), warnings } : undefined;
-    });
+    }));
   } catch {
     return undefined;
   }

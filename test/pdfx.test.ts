@@ -17,6 +17,7 @@ import { verifyPdfX1a, verifyPdfX3, verifyPdfX4 } from '../src/pdfxVerify';
 import { ICC_CMYK_REGISTRY } from '../src/iccRegistry';
 import { ensureFonts, fontDir } from './helpers';
 import { encodeJpeg } from '../src/jpeg';
+import { TEST_ICC_DESCRIPTION, testIccProfile } from './iccTestProfile';
 
 /** 書体を手元の置き場から読む (ネットワークを使わない) */
 const loadFont = async (spec: FontSpec) => {
@@ -27,21 +28,13 @@ const loadFont = async (spec: FontSpec) => {
 };
 
 /**
- * ICC のプロファイルの頭とタグの表だけのもの (色空間 space・機器の種類 cls。タグは署名だけで、中身は無い。ICC.1:2010 §7.2・§7.3)。
- * 既定のタグ A2B1 (AtoB1 の表) は、PDF/X-1a の出力意図のプロファイルに要る (ISO 15930-1 §6.3.2)
+ * 試験の CMYK の出力機器のプロファイル (iccTestProfile.ts。頭・タグの表・desc・色の表まで ICC.1:2010 の形どおり) の、
+ * 色空間 (space)・機器の種類 (cls) を変えたもの。noA2B1 なら AtoB1 の表 (A2B1。PDF/X-1a の出力意図のプロファイルに要る。ISO 15930-1 §6.3.2) を除く
  */
-function iccHeader(space: string, cls = 'prtr', tags: string[] = ['A2B1']): Uint8Array {
-  const head = new Array(132 + tags.length * 12).fill(0);
-  const put = (o: number, t: string) => [...t].forEach((c, k) => (head[o + k] = c.charCodeAt(0)));
-  put(12, cls);
-  put(16, space);
-  put(20, 'Lab ');
-  put(36, 'acsp');
-  head[131] = tags.length;
-  tags.forEach((t, k) => put(132 + k * 12, t));
-  return Uint8Array.from(head);
+function iccProfile(space: string, cls = 'prtr', noA2B1 = false): Uint8Array {
+  return testIccProfile({ colorSpace: space, deviceClass: cls, omit: noA2B1 ? ['A2B1'] : [] });
 }
-const CMYK_PROFILE = iccHeader('CMYK');
+const CMYK_PROFILE = iccProfile('CMYK');
 
 /** 1 ページ目の注釈の数 (Annots が無いか空なら 0) */
 const annotCount = (pdf: PDFDocument) => {
@@ -91,19 +84,19 @@ describe('PDF/X-4 の出力 (O-06)', () => {
     const page = pdf.getPage(0).node;
     expect(page.get(PDFName.of('TrimBox'))).toBeDefined();
     expect(page.get(PDFName.of('ArtBox'))).toBeUndefined();
-    // 透明は警告しない。表の無いプロファイルなので、RGB を式で変換する警告は出る
+    // 透明は警告しない。プロファイルの表 (B2A1) で RGB を CMYK にするので、式で変換する警告は出ない
     expect(warnings.some((w) => w.includes('透明'))).toBe(false);
-    expect(warnings.some((w) => w.includes('ICC'))).toBe(true);
+    expect(warnings.some((w) => w.includes('ICC'))).toBe(false);
   });
 
   it('出力の ICC プロファイルが無いか CMYK でなければ、誤りとして投げる', async () => {
     const r = await typesetHtml('<p>本文</p>', { loadFont });
     await expect(r.toPdf({ pdfx: { version: 'X-4' } })).rejects.toThrow(/ICC プロファイル/);
-    await expect(r.toPdf({ pdfx: { version: 'X-4', profile: iccHeader('RGB ') } })).rejects.toThrow(/CMYK/);
+    await expect(r.toPdf({ pdfx: { version: 'X-4', profile: iccProfile('RGB ') } })).rejects.toThrow(/CMYK/);
     // 誤りの文は、組んだときの言語 (lang) で書く
     const en = await typesetHtml('<p>本文</p>', { loadFont, lang: 'en' });
     await expect(en.toPdf({ pdfx: { version: 'X-4' } })).rejects.toThrow(/requires an output ICC profile/);
-    await expect(en.toPdf({ pdfx: { version: 'X-4', profile: iccHeader('RGB ') } })).rejects.toThrow(/must be a CMYK profile.*RGB/);
+    await expect(en.toPdf({ pdfx: { version: 'X-4', profile: iccProfile('RGB ') } })).rejects.toThrow(/must be a CMYK profile.*RGB/);
     // X-3 はこれまでどおり、登録名だけで出せる
     await expect(r.toPdf({ pdfx: {} })).resolves.toBeInstanceOf(Uint8Array);
   });
@@ -293,10 +286,10 @@ describe('PDF/X-1a の出力', () => {
 
   it('出力の ICC プロファイルを渡すなら、CMYK のものに限る', async () => {
     const r = await typesetHtml('<p>本文</p>', { loadFont });
-    await expect(r.toPdf({ pdfx: { version: 'X-1a', profile: iccHeader('RGB ') } })).rejects.toThrow(/PDF\/X-1a の出力の ICC プロファイルは、CMYK/);
+    await expect(r.toPdf({ pdfx: { version: 'X-1a', profile: iccProfile('RGB ') } })).rejects.toThrow(/PDF\/X-1a の出力の ICC プロファイルは、CMYK/);
     await expect(r.toPdf({ pdfx: { version: 'X-1a', profile: CMYK_PROFILE } })).resolves.toBeInstanceOf(Uint8Array);
     // AtoB1 の表 (A2B1) の無いプロファイルは使えない (ISO 15930-1 §6.3.2)
-    await expect(r.toPdf({ pdfx: { version: 'X-1a', profile: iccHeader('CMYK', 'prtr', ['B2A0']) } })).rejects.toThrow(/AtoB1 の表 \(タグ A2B1\)/);
+    await expect(r.toPdf({ pdfx: { version: 'X-1a', profile: iccProfile('CMYK', 'prtr', true) } })).rejects.toThrow(/AtoB1 の表 \(タグ A2B1\)/);
   });
 });
 
@@ -408,7 +401,7 @@ describe('PDF/X-4 の XMP に、XML 1.0 で使えない字を書かない', () =
     pdf.setKeywords(['k\u0008w', '😀']);
     pdf.setProducer('p');
     pdf.setCreator('c');
-    markPdfStandard(pdf, pdfStandardOf({ version: 'X-4' })!, { version: 'X-4', profile: CMYK_PROFILE });
+    markPdfStandard(pdf, pdfStandardOf({ version: 'X-4' })!, { version: 'X-4', profile: CMYK_PROFILE }, undefined, false, new Date(0));
     const out = await PDFDocument.load(await pdf.save({ useObjectStreams: false }), { updateMetadata: false });
     const x = readXmp(xmpOf(out));
     expect(x).toEqual({ title: 'Untitled', author: '作者名\ufffd', subject: '主題\t1\r\n2\ufffd', keywords: 'kw 😀' });
@@ -791,7 +784,7 @@ describe('PDF/X の出力を規格 (ISO 15930-1・ISO 15930-7) に合わせる',
   it('RegistryName は、印刷条件が ICC の登録簿に載っているときだけ書く', async () => {
     expect(['JC200103', 'JCS2011', 'JC200104', 'JCW2003', 'JCN2002', 'FOGRA39'].every((n) => ICC_CMYK_REGISTRY.has(n))).toBe(true);
     const r = await typesetHtml('<title>題</title><p>本文</p>', { loadFont });
-    const reg = await PDFDocument.load(await r.toPdf({ pdfx: { version: 'X-4', profile: CMYK_PROFILE } }), { updateMetadata: false });
+    const reg = await PDFDocument.load(await r.toPdf({ pdfx: { version: 'X-4', profile: CMYK_PROFILE, condition: 'JC200103' } }), { updateMetadata: false });
     expect(String(pdfxIntentOf(reg).get(PDFName.of('RegistryName')))).toBe('(http://www.color.org)');
     // 登録簿に無い名前 (大文字と小文字の違いも、一致しない)
     for (const condition of ['My Press 2026', 'jc200103']) {
@@ -821,9 +814,9 @@ describe('PDF/X の出力を規格 (ISO 15930-1・ISO 15930-7) に合わせる',
 
   it('X-4: 出力の ICC プロファイルは、出力機器のもの (機器の種類 prtr) に限る (ISO 15930-7 §6.4.2.1)', async () => {
     const r = await typesetHtml('<p>本文</p>', { loadFont });
-    await expect(r.toPdf({ pdfx: { version: 'X-4', profile: iccHeader('CMYK', 'mntr') } })).rejects.toMatchObject({ code: 'pdfx/profile-invalid', message: expect.stringMatching(/prtr.*mntr/) });
+    await expect(r.toPdf({ pdfx: { version: 'X-4', profile: iccProfile('CMYK', 'mntr') } })).rejects.toMatchObject({ code: 'pdfx/profile-invalid', message: expect.stringMatching(/prtr.*mntr/) });
     const en = await typesetHtml('<p>本文</p>', { loadFont, lang: 'en' });
-    await expect(en.toPdf({ pdfx: { version: 'X-4', profile: iccHeader('CMYK', 'scnr') } })).rejects.toThrow(/output device profile \(device class prtr\).*scnr/);
+    await expect(en.toPdf({ pdfx: { version: 'X-4', profile: iccProfile('CMYK', 'scnr') } })).rejects.toThrow(/output device profile \(device class prtr\).*scnr/);
   });
 
   const NS = 'xmlns:fo="http://www.w3.org/1999/XSL/Format"';
@@ -953,8 +946,8 @@ describe('PDF/X の検査が、わざと入れた違反を見つける', () => {
   let x1a: Uint8Array;
   beforeAll(async () => {
     const r = await typesetHtml('<title>題</title><p>本文</p>', { loadFont });
-    x4 = await r.toPdf({ pdfx: { version: 'X-4', profile: CMYK_PROFILE } });
-    x1a = await r.toPdf({ pdfx: { version: 'X-1a', profile: CMYK_PROFILE } });
+    x4 = await r.toPdf({ pdfx: { version: 'X-4', profile: CMYK_PROFILE, condition: 'JC200103' } });
+    x1a = await r.toPdf({ pdfx: { version: 'X-1a', profile: CMYK_PROFILE, condition: 'JC200103' } });
     expect(await verifyPdfX4(x4)).toEqual([]);
     expect(await verifyPdfX1a(x1a, 'X-1a:2001')).toEqual([]);
   });
@@ -999,10 +992,10 @@ describe('PDF/X の検査が、わざと入れた違反を見つける', () => {
       intent.delete(PDFName.of('RegistryName'));
       intent.delete(PDFName.of('DestOutputProfile'));
     }, /DestOutputProfile がありません/],
-    ['X-1a: プロファイルに AtoB1 の表が無い', 'x1a', (pdf) => pdfxIntentOf(pdf).set(PDFName.of('DestOutputProfile'), pdf.context.register(pdf.context.stream(iccHeader('CMYK', 'prtr', []), { N: 4 }))), /AtoB1/],
+    ['X-1a: プロファイルに AtoB1 の表が無い', 'x1a', (pdf) => pdfxIntentOf(pdf).set(PDFName.of('DestOutputProfile'), pdf.context.register(pdf.context.stream(iccProfile('CMYK', 'prtr', true), { N: 4 }))), /AtoB1/],
     ['X-4: DestOutputProfileRef', 'x4', (pdf) => pdfxIntentOf(pdf).set(PDFName.of('DestOutputProfileRef'), pdf.context.obj({ URLs: [] })), /DestOutputProfileRef/],
     ['X-4: プロファイルが出力機器のものでない', 'x4', (pdf) => {
-      const p = iccHeader('CMYK', 'mntr');
+      const p = iccProfile('CMYK', 'mntr');
       const ref = pdf.context.register(pdf.context.stream(p, { N: 4 }));
       pdfxIntentOf(pdf).set(PDFName.of('DestOutputProfile'), ref);
     }, /機器の種類 prtr/],
@@ -1120,5 +1113,109 @@ describe('区切りだけのキーワード', () => {
     expect(await verifyPdfX4(x4)).toEqual([]);
     expect((await PDFDocument.load(x4, { updateMetadata: false })).getKeywords()).toBeUndefined();
     expect(await verifyPdfA(await r.toPdf({ pdfa: { version: 'A-2b' } }), 2)).toEqual([]);
+  });
+});
+
+describe('出力の ICC プロファイルと、出力意図の印刷条件', () => {
+  /** 頭とタグの表だけで、タグの中身の無いもの (前の試験の作り。ICC.1:2010 §7.3 の位置・大きさが 0) */
+  const headerOnly = (() => {
+    const head = new Array(144).fill(0);
+    const put = (o: number, t: string) => [...t].forEach((c, k) => (head[o + k] = c.charCodeAt(0)));
+    put(12, 'prtr');
+    put(16, 'CMYK');
+    put(20, 'Lab ');
+    put(36, 'acsp');
+    head[131] = 1;
+    put(132, 'A2B1');
+    return Uint8Array.from(head);
+  })();
+  /** プロファイルの写しの、ofs バイト目から 4 バイトを v (大きい方が先) にする */
+  const patched = (p: Uint8Array, ofs: number, v: number) => {
+    const q = p.slice();
+    new DataView(q.buffer).setUint32(ofs, v);
+    return q;
+  };
+  const good = testIccProfile();
+  /** タグの表の k 番目の位置 (132 + 12k + 4) */
+  const tagOffsetAt = (k: number) => 132 + 12 * k + 4;
+
+  it('自作のプロファイルは、タグの表まで ICC.1:2010 の形どおりで、表で CMYK にできる', async () => {
+    const { iccProfileProblem, iccDescription } = await import('../src/iccRegistry');
+    const { iccRgbToCmyk } = await import('../src/icc');
+    expect(iccProfileProblem(good)).toBeUndefined();
+    expect(iccDescription(good)).toBe(TEST_ICC_DESCRIPTION);
+    expect(iccDescription(testIccProfile({ version: 4, description: 'Kumiori v4 test' }))).toBe('Kumiori v4 test');
+    const conv = iccRgbToCmyk(good)!;
+    expect(conv).toBeDefined();
+    // 白は何も刷らず、黒は K だけに近い (表は式をおおまかに表にしたもの)
+    expect(conv(1, 1, 1).every((v) => v < 0.02)).toBe(true);
+    const k = conv(0, 0, 0);
+    expect(k[3]).toBeGreaterThan(0.95);
+  });
+
+  it('頭だけ・表の壊れたプロファイルは誤り (pdfx/profile-invalid。ICC.1:2010 §7.2・§7.3・§8.2)', async () => {
+    const r = await typesetHtml('<title>題</title><p>本文</p>', { loadFont });
+    const bad: Array<[string, Uint8Array, RegExp]> = [
+      ['頭とタグの署名だけ (中身の無いタグ)', headerOnly, /大きさ|タグ/],
+      ['頭の大きさの欄が、ファイルより大きい', patched(good, 0, good.length + 4), /大きさ/],
+      ['acsp が無い', patched(good, 36, 0), /acsp/],
+      ['タグの数が表に収まらない', patched(good, 128, 100000), /タグの表/],
+      ['タグの中身がファイルの外', patched(good, tagOffsetAt(3), good.length - 4), /タグ A2B0/],
+      ['説明 (desc) が無い', testIccProfile({ omit: ['desc'] }), /desc/],
+    ];
+    for (const [name, profile, re] of bad)
+      for (const version of ['X-4', 'X-1a', 'X-3'] as const) {
+        const e = await r.toPdf({ pdfx: { version, profile } }).then(() => undefined, (x: unknown) => x as { code?: string; message?: string });
+        expect(e, `${name} (${version})`).toMatchObject({ code: 'pdfx/profile-invalid' });
+        expect(e!.message, name).toMatch(re);
+      }
+    const en = await typesetHtml('<p>body</p>', { loadFont, lang: 'en' });
+    await expect(en.toPdf({ pdfx: { version: 'X-4', profile: headerOnly } })).rejects.toThrow(/ICC profile/);
+    for (const version of ['X-4', 'X-1a', 'X-3'] as const) await expect(r.toPdf({ pdfx: { version, profile: good } })).resolves.toBeInstanceOf(Uint8Array);
+  });
+
+  it('X-3 でも、プロファイルを渡すなら CMYK のものに限る', async () => {
+    const r = await typesetHtml('<p>本文</p>', { loadFont });
+    await expect(r.toPdf({ pdfx: { version: 'X-3', profile: testIccProfile({ colorSpace: 'RGB ' }) } })).rejects.toThrow(/CMYK/);
+  });
+
+  it('X-3: 印刷条件が登録簿に無ければ、出力の ICC プロファイルが要る (X-1a と同じ決まり)', async () => {
+    const r = await typesetHtml('<title>題</title><p>本文</p>', { loadFont });
+    await expect(r.toPdf({ pdfx: { version: 'X-3', condition: 'MyPress' } })).rejects.toMatchObject({ code: 'pdfx/profile-required', message: expect.stringMatching(/PDF\/X-3.*MyPress/) });
+    await expect(r.toPdf()).resolves.toBeInstanceOf(Uint8Array);
+    // 登録簿の名前なら、これまでどおり登録名だけで出せる
+    await expect(r.toPdf({ pdfx: { version: 'X-3', condition: 'JCS2011' } })).resolves.toBeInstanceOf(Uint8Array);
+    const bytes = await r.toPdf({ pdfx: { version: 'X-3', condition: 'MyPress', profile: good } });
+    expect(await verifyPdfX3(bytes)).toEqual([]);
+    // 書き出した後の検査も、登録簿に無い印刷条件の DestOutputProfile の無い出力意図を見つける
+    const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
+    pdfxIntentOf(pdf).delete(PDFName.of('DestOutputProfile'));
+    expect((await verifyPdfX3(await pdf.save({ useObjectStreams: false }))).some((p) => /DestOutputProfile がありません/.test(p))).toBe(true);
+  });
+
+  it('プロファイルだけを渡すと、印刷条件の名前はプロファイルの説明 (desc) にし、RegistryName は書かない', async () => {
+    const r = await typesetHtml('<title>題</title><p>本文</p>', { loadFont });
+    for (const [version, profile, desc] of [
+      ['X-4', good, TEST_ICC_DESCRIPTION],
+      ['X-1a', testIccProfile({ version: 4, description: 'Kumiori v4 test' }), 'Kumiori v4 test'],
+      ['X-3', good, TEST_ICC_DESCRIPTION],
+    ] as const) {
+      const bytes = await r.toPdf({ pdfx: { version, profile } });
+      const intent = pdfxIntentOf(await PDFDocument.load(bytes, { updateMetadata: false }));
+      const text = (k: string) => (intent.lookup(PDFName.of(k)) as PDFString | PDFHexString).decodeText();
+      expect(text('OutputConditionIdentifier'), version).toBe(desc);
+      expect(text('OutputCondition')).toBe(desc);
+      expect(text('Info')).toBe(desc);
+      expect(intent.get(PDFName.of('RegistryName'))).toBeUndefined();
+      expect(intent.get(PDFName.of('DestOutputProfile'))).toBeDefined();
+    }
+    // 名前を渡せば、これまでどおりその名前 (登録簿の名前なら RegistryName も書く)
+    const named = pdfxIntentOf(await PDFDocument.load(await r.toPdf({ pdfx: { version: 'X-4', profile: good, condition: 'JC200103' } }), { updateMetadata: false }));
+    expect(String(named.get(PDFName.of('OutputConditionIdentifier')))).toBe('(JC200103)');
+    expect(String(named.get(PDFName.of('RegistryName')))).toBe('(http://www.color.org)');
+    // プロファイルも名前も無ければ、これまでどおり JC200103 (X-1a・X-3)
+    const plain = pdfxIntentOf(await PDFDocument.load(await r.toPdf({ pdfx: {} }), { updateMetadata: false }));
+    expect(String(plain.get(PDFName.of('OutputConditionIdentifier')))).toBe('(JC200103)');
+    expect(String(plain.get(PDFName.of('RegistryName')))).toBe('(http://www.color.org)');
   });
 });

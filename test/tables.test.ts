@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import { ColumnRuns, collapseTableBorders, placeCells, winningBorder } from '../src/tableBorders';
 import { doc, makeEngine, pt, walk } from './helpers';
 import type { Area, BorderStyle, LBlock, LTable, LTableCell } from '../src/types';
@@ -164,10 +165,10 @@ describe('列をまたぐセルを範囲のまま扱う (LAY-23)', () => {
     const { grid, nCols } = placeCells([t.body.rows]);
     expect(nCols).toBe(n * 1000);
     expect(grid.every((r) => r.length === n)).toBe(true);
-    const t0 = performance.now();
+    const t0 = cpuClock();
     const out = collapseTableBorders(t, 'horizontal-tb');
     // 以前は列ごとのマスを見ていた (1000 万マス)。範囲ごとなら 1 万セルぶんで、ずっと短い
-    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(2000));
     const [A, B] = out.body.rows[1].cells.map((c) => c.border as BorderStyle);
     expect(A.left!.width).toBe(1);
     expect(A.right!.collapse?.noPaint).toBe(true);

@@ -14,3 +14,6 @@
  */
 export { createFontLoader, createFileResolver, defaultFontCacheDir, looksLikeFont } from './nodeFonts';
 export type { FontLoaderOptions } from './nodeFonts';
+export { createSystemFonts, systemFontDirs } from './nodeSystemFonts';
+export type { SystemFontOptions } from './nodeSystemFonts';
+export type { SystemFontSource, SystemFontRequest, SystemFontMatch, SystemFontKind } from './types';

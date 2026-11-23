@@ -14,6 +14,8 @@
  * W3C liability, trademark and permissive document license rules apply.
  * 許諾 (W3C Software and Document license - 2015 version) の本文は THIRD_PARTY_NOTICES.md の 12 節
  */
+import { stopSpan } from './gradientStops';
+import { limits } from './limits';
 import { apply, invert, mul, type Matrix, type Seg } from './matrix';
 import { strokeOutline } from './strokeOutline';
 import { decodePng } from './colorGlyphCanvas';
@@ -48,7 +50,7 @@ const MAX_PIXELS = 4_000_000;
  * 残りが足りない filter は解像度を下げて計算し (rasterFilter0)、それでも尽きたら null を返す (呼ぶ側は、計算できない filter として、
  * SVG を読めないもの (仮の枠と警告) にする)
  */
-const BUDGET = 400_000_000;
+export const BUDGET = 400_000_000;
 /**
  * 同時に持つ、名前を付けた結果 (result) の画素の合計の上限。1 画素は 16 バイト (RGBA の Float32) なので 24M 画素で 384MB。
  * result を付けた要素 200 個で 7GB を使っていた。後で参照する結果だけを持つ (参照の無いものは捨てる) うえで、
@@ -61,7 +63,7 @@ class OverBudget extends Error {}
 type Meter = { used?: number; /** 予算の上限 (無ければ BUDGET) */ limit?: number };
 function charge(meter: Meter, n: number) {
   meter.used = (meter.used ?? 0) + n;
-  if (!(meter.used <= (meter.limit ?? BUDGET))) throw new OverBudget();
+  if (!(meter.used <= (meter.limit ?? limits().svgFilterWork))) throw new OverBudget();
 }
 
 const newImg = (w: number, h: number, linear = false): Img => ({ w, h, d: new Float32Array(w * h * 4), linear });
@@ -256,8 +258,8 @@ export function gradientAt(g: SvgGradient, inv: Matrix, px: number, py: number, 
   }
   t = clamp01(t);
   const s = g.stops;
-  let i = 0;
-  while (i < s.length - 1 && s[i + 1].offset < t) i++;
+  // t を含む区間 (止まり点は位置の昇順。二分で探す)
+  const i = stopSpan(s.length - 1, (j) => s[j].offset, t);
   const a0 = s[i];
   const a1 = s[Math.min(i + 1, s.length - 1)];
   const k = a1.offset > a0.offset ? clamp01((t - a0.offset) / (a1.offset - a0.offset)) : 0;
@@ -963,7 +965,7 @@ function rasterFilter0(req: FilterRasterRequest): FilterRasterResult | null {
   // 同時に持つ画像 (名前を付けた結果、SourceGraphic、前の結果、計算の途中の写し) の画素の合計を MAX_LIVE_PIXELS に抑える
   // 予算の残りが、この filter を今の解像度で計算するのに足りなければ、足りるように解像度を下げる (前の filter で予算を使った SVG の、
   // 続く filter はぼやける。見積もり (perPixelCost) を外れて使い過ぎたときは、charge が止める)
-  const left = BUDGET - (meter.used ?? 0);
+  const left = limits().svgFilterWork - (meter.used ?? 0);
   const maxPixels = Math.min(MAX_PIXELS, MAX_LIVE_PIXELS / (maxLive + 4), left / (2 * perPixelCost(req)));
   if (!(maxPixels >= 1)) return null;
   let res = req.pxPerUnit;

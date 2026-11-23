@@ -12,6 +12,7 @@
  * Parser の作りが、ここで受け持つ使い方 (上の操作だけ) から外れていれば (htmlparser2 の版が変わったときなど)、替えずにそのまま使う
  */
 import { importHtmlparser2 } from './linkedomModules';
+import { rejoin, thisCall } from './callContext';
 
 /** 添字 0 を末尾の要素とする列 (配列を逆に見る)。先頭への足し引きが、配列の末尾への足し引きになる */
 class TopFirstList {
@@ -108,7 +109,7 @@ export function patchHtmlParserStack(): Promise<boolean> {
   return (patched ??= (async () => {
     let Parser: unknown;
     try {
-      Parser = (await importHtmlparser2()).Parser;
+      Parser = rejoin(thisCall(), await importHtmlparser2()).Parser;
     } catch {
       return false;
     }

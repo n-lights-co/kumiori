@@ -16,6 +16,9 @@
  *  - 注釈 (§6.3): 使えない種類 (3D・Sound・Screen・Movie など) を使わない、Popup のほかは F を持ち、印刷の印 (Print) があり、
  *    隠す印 (Invisible・Hidden・NoView・ToggleNoView) が無い (§6.3.2)。Popup・Link と大きさ 0 のもののほかは外観 (AP) を持ち、外観の辞書は N だけ (§6.3.3)
  *  - フォーム (§6.4): NeedAppearances を true にしない、XFA を使わない
+ *  - 任意の内容 (§6.9): 任意の内容のグループ (Type OCG・OCMD) か、OC の項目があるのに、カタログに OCProperties が無い
+ *    (ISO 32000-1 §8.11.4.1: 任意の内容を使う文書は OCProperties を持つ。§6.9 は、その設定の辞書の決まりを足す。Kumiori は OCProperties を書かないので、
+ *    任意の内容があれば合わないとする。PDF の画像の、埋め込む前の検査で、任意の内容を持つページを断るのに使う: design/pdf-as-image.md の 2.2 節)
  *  - 動作 (§6.5): Launch・Sound・Movie・ResetForm・ImportData・JavaScript・Hide・SetOCGState・Rendition・Trans・GoTo3DView を使わない。
  *    名前の動作 (Named) は NextPage・PrevPage・FirstPage・LastPage だけ。AA (追加の動作) を使わない
  *  - メタデータ (§6.6): カタログの Metadata (XMP) があり、pdfaid:part・pdfaid:conformance が版と水準に合い (§6.6.4)、Info の項目と XMP の値が同じ (§6.6.3)。
@@ -29,6 +32,7 @@ import { PDFArray, PDFDict, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFR
 import { msg } from './messages';
 import { contentStreams } from './pdfContentStreams';
 import { loadWithoutCopy, pdfDate } from './pdfxVerify';
+import { rejoin, thisCall } from './callContext';
 
 /** 使えない動作 (ISO 19005-2 §6.5.1) */
 const FORBIDDEN_ACTIONS = new Set(['Launch', 'Sound', 'Movie', 'ResetForm', 'ImportData', 'JavaScript', 'Hide', 'SetOCGState', 'Rendition', 'Trans', 'GoTo3DView']);
@@ -49,7 +53,7 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
   const head = new TextDecoder('latin1').decode(bytes.subarray(0, 32));
   const m = /^%PDF-1\.([0-7])(\r\n|\r|\n)%([\s\S]{4})/.exec(head);
   if (!m || [...m[3]].some((c) => c.charCodeAt(0) < 128)) add('ファイルの頭 (%PDF-1.0〜1.7 と、次の行の 128 以上のバイト 4 つの注釈) が決まりに合いません', 'the file header (%PDF-1.0 to 1.7, then a comment line with four bytes of 128 or more) does not meet the requirements');
-  const pdf = await loadWithoutCopy(bytes);
+  const pdf = rejoin(thisCall(), await loadWithoutCopy(bytes));
   const ctx = pdf.context;
   if (ctx.trailerInfo.Encrypt) add('暗号化しています', 'the file is encrypted');
   if (!ctx.trailerInfo.ID) add('文書の ID (trailer の ID) がありません', 'the document ID (trailer ID) is missing');
@@ -190,10 +194,14 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
     const x = d.get(PDFName.of(key));
     return x instanceof PDFName ? x.asString().slice(1) : undefined;
   };
+  /** 任意の内容を使っている所 (はじめの 1 つ) */
+  let optionalContent: string | undefined;
   const scanDict = (d: PDFDict, path: string): void => {
     if (skip.has(d)) return;
     const type = nameOf(d, 'Type');
     const subtype = nameOf(d, 'Subtype');
+    // 任意の内容 (ISO 32000-1 §8.11.2: グループ OCG・OCMD。§8.11.3: XObject・注釈の OC)
+    if (!optionalContent && (type === 'OCG' || type === 'OCMD' || d.get(PDFName.of('OC')) !== undefined)) optionalContent = path;
     // 動作 (§6.5)
     if (d.get(PDFName.of('AA'))) add(`追加の動作 (AA) があります (${path})`, `contains additional actions (AA) (${path})`);
     // 構造の節 (Type StructElem) の S は構造の型で、動作の種類ではない (ISO 32000-1 §14.7.2 の Table 323。role="JavaScript" の独自の型など)
@@ -303,6 +311,8 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
       fileSpecRef = undefined;
     }
   }
+  if (optionalContent && !pdf.catalog.get(PDFName.of('OCProperties')))
+    add(`任意の内容 (Optional Content) を使っていますが、カタログに OCProperties がありません (${optionalContent})`, `uses optional content, but the catalog has no OCProperties (${optionalContent})`);
   return [...out];
 }
 

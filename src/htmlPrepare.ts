@@ -7,12 +7,14 @@
  *  - 印刷の媒体として読む: screen だけの CSS は使わず、@media print の規則は常に効く
  *  - 既定のスタイル (HtmlDefaults) を作成者スタイルシート より前に入れる
  */
+import { limits, nestLimit, noteLimitReached } from './limits';
 import { parsePageRule } from './htmlImport';
 import { msg } from './messages';
 import { concatCss, matchMedia, matchSupports, mediaDependsOnPageSize, mediaPageOf, parseCss, resolvePageRules, type PageRule, type ParsedCss } from './htmlPaged';
 import { rebaseFontFaceUrls, resolveRef } from './resources';
 import { ALL_AH } from './cssCascade';
 import { diag, type Diagnostic } from './diagnostics';
+import { rejoin, thisCall } from './callContext';
 
 /**
  * 本の組版向けの既定のスタイル (作成者スタイルシート で上書きできる)。
@@ -208,7 +210,7 @@ const basename = (s: string) => safeDecode(s.split(/[?#]/)[0].split('/').pop() ?
  * CSS は段の数の累乗で膨らむ。ふつうの文書の CSS (大きな枠組みの CSS でも数十万字) がまず届かない値にする
  */
 export const MAX_IMPORTED_CSS_LENGTH = 8 * 1024 * 1024;
-const MAX_IMPORTS = 10000;
+export const MAX_IMPORTS = 10000;
 
 /**
  * 要素の入れ子の深さの上限 (html 要素を 1 と数える)。HTML Living Standard §13.2.6「Tree construction」は、実装が実用上の理由から
@@ -233,7 +235,7 @@ export const MAX_TREE_DEPTH = 128;
  * 要素を上限の深さの要素の子にせず、その親に付けるのと同じ考え方)。上限までの深さの文書は変えない。再帰を使わない
  * 戻り値: 上限を超えた要素があって、木の形を変えたか (呼び出し側が警告を出す)
  */
-export function limitTreeDepth(doc: Document, max = MAX_TREE_DEPTH): boolean {
+export function limitTreeDepth(doc: Document, max = nestLimit(MAX_TREE_DEPTH)): boolean {
   const root = doc.documentElement;
   let node: Node | null = root;
   let depth = 1;
@@ -319,8 +321,9 @@ export async function prepareHtml(
   parsed.querySelectorAll('script').forEach((s) => s.remove());
   const warnings: Diagnostic[] = [];
   // 上限を超えた入れ子は、木の形 (と組版の結果) が変わるので、黙って進めずに知らせる
-  if (parsed.documentElement && limitTreeDepth(parsed))
-    warnings.push(diag('limit/nesting-depth', msg(`要素の入れ子が深すぎます。${MAX_TREE_DEPTH} 段より深い要素は、${MAX_TREE_DEPTH} 段目の要素の後ろに並べて組みます`, `elements are nested too deeply; elements deeper than ${MAX_TREE_DEPTH} levels are laid out after their ancestor at level ${MAX_TREE_DEPTH}`)));
+  const treeDepth = nestLimit(MAX_TREE_DEPTH);
+  if (parsed.documentElement && limitTreeDepth(parsed, treeDepth))
+    warnings.push(diag('limit/nesting-depth', msg(`要素の入れ子が深すぎます。${treeDepth} 段より深い要素は、${treeDepth} 段目の要素の後ろに並べて組みます`, `elements are nested too deeply; elements deeper than ${treeDepth} levels are laid out after their ancestor at level ${treeDepth}`)));
   // CSS の表。鍵は、参照から取った CSS (url あり) は参照の URL の全体、ほか (一緒に渡したファイル) はファイル名 (小文字)
   const cssFiles = new Map<string, string>();
   /** 鍵 → その CSS の場所 (中の相対の @import を解決する基準)。分からなければ無い */
@@ -332,7 +335,7 @@ export async function prepareHtml(
     const key = f.url ?? f.name.toLowerCase();
     const at = f.url ?? f.path?.split('\\').join('/');
     // @font-face の相対の url() は、この CSS の場所を基準に解決した参照にしておく (CSS Fonts 4 §4.3。<style> に差し込むと、どの CSS に書かれていたかが分からなくなる)
-    cssFiles.set(key, at ? rebaseFontFaceUrls(await f.text(), at) : await f.text());
+    cssFiles.set(key, at ? rebaseFontFaceUrls(rejoin(thisCall(), await f.text()), at) : rejoin(thisCall(), await f.text()));
     if (at) cssBases.set(key, at);
     if (f.url !== undefined && !cssByName.has(basename(f.url))) cssByName.set(basename(f.url), key);
   }
@@ -376,13 +379,14 @@ export async function prepareHtml(
   // reading は読んでいる途中のファイル (@import の鎖の祖先): その中のファイルを読む @import は循環なので読まない
   // (仕様に循環の決まりは無い。ブラウザも、祖先の鎖にある URL の @import は読み込まない)。
   // 読み込んだ CSS の長さ・回数の合計が上限 (MAX_IMPORTED_CSS_LENGTH・MAX_IMPORTS) を超える @import は、捨てて警告する
-  const budget = { length: MAX_IMPORTED_CSS_LENGTH, count: MAX_IMPORTS, warned: false };
+  const lim = limits();
+  const budget = { length: lim.importedCssChars, count: lim.cssImports, warned: false };
   // @import の文は「;」で終わるので、最後の「;」までだけを探す (その後ろは写すだけ)。「;」の無い「@import "aaa…(30 万字)」で、
   // 参照の字を 1 つ減らすたびに末尾まで「;」を探し直して、長さの 2 乗の時間 (この正規表現だけで約 40 秒) がかかった。
   // 後ろに「;」があれば、参照を読んだ後の「;」までの部分は必ず合うので、探し直さない
   const inlineImports = (css: string, reading: string[] = [], depth = 0, base?: string): string =>
-    depth > 8
-      ? css
+    depth > lim.importDepth
+      ? (/@import\b/i.test(css) && noteLimitReached('importDepth'), css)
       : css.slice(0, css.lastIndexOf(';') + 1).replace(/@import\s+(?:url\(\s*)?["']?([^"')\s;]+)["']?\s*\)?([^;]*);/gi, (_m, href: string, cond: string) => {
           // media・supports() の条件が合わない @import は読まない (Cascade 5 §2)。layer() は読み飛ばす
           // 条件に合わずに読まない CSS も、参照された CSS として数える (参照されていない CSS = 利用者のスタイルシートとして足さない)
@@ -397,7 +401,7 @@ export async function prepareHtml(
           if (reading.includes(name)) return '';
           if (t.length > budget.length || budget.count <= 0) {
             if (!budget.warned)
-              warnings.push(diag('limit/css-import', msg(`@import ${name}: 読み込む CSS が多すぎる (合計 ${MAX_IMPORTED_CSS_LENGTH} 字・${MAX_IMPORTS} 回まで) ので、これ以上の @import は読みません`, `@import ${name}: too much imported CSS (up to ${MAX_IMPORTED_CSS_LENGTH} characters and ${MAX_IMPORTS} imports in total); further @import rules are ignored`), { file: name }));
+              warnings.push(diag('limit/css-import', msg(`@import ${name}: 読み込む CSS が多すぎる (合計 ${lim.importedCssChars} 字・${lim.cssImports} 回まで) ので、これ以上の @import は読みません`, `@import ${name}: too much imported CSS (up to ${lim.importedCssChars} characters and ${lim.cssImports} imports in total); further @import rules are ignored`), { file: name }));
             budget.warned = true;
             return '';
           }

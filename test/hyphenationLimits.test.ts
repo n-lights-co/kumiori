@@ -433,6 +433,12 @@ describe('分綴の特性 (XSL-FO)', () => {
     expect(await lang('language="en" country="GB"')).toEqual(gb);
     expect(await lang('language="en" country="US"')).toEqual(us);
     expect(await lang('language="en" country="none"')).toEqual(us);
+    // ISO 3166 の 3 字・3 桁の数字の符号も、2 字の地域として読む (3 字のまま足すと、言語のタグの拡張の言語と読まれ、地域が外れた)
+    expect(await lang('language="en" country="GBR"')).toEqual(gb);
+    expect(await lang('language="en" country="gbr"')).toEqual(gb);
+    expect(await lang('language="en" country="826"')).toEqual(gb);
+    expect(await lang('language="eng" country="GBR"')).toEqual(gb);
+    expect(await lang('language="en" country="USA"')).toEqual(us);
     expect(gb).not.toEqual(us);
   });
 });
