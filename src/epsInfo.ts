@@ -6,6 +6,7 @@
  * ここに置くものは解釈系を読まないので、EPS の無い文書では、解釈系を読み込まずに済む (画面・ブラウザ向けのライブラリでは、解釈系は別のチャンクになる)。
  * eps.ts は、ここのものを同じ名前で出し直す (前から eps.ts を読んでいた所は、そのまま使える)
  */
+import { limits } from './limits';
 
 /** DSC の注釈の外接矩形 [x0, y0, x1, y1] (pt)。%%HiResBoundingBox を優先し、無ければ %%BoundingBox。どちらも無ければ undefined */
 export function epsBoundingBox(head: string): [number, number, number, number] | undefined {
@@ -28,7 +29,8 @@ export const EPS_DOCUMENT_MILLIS = 60_000;
 
 /** 文書あたりの EPS の時間の予算 (EPS_DOCUMENT_MILLIS の説明) */
 export class EpsBudget {
-  constructor(public millisLeft = EPS_DOCUMENT_MILLIS) {}
+  // 既定は、呼び出しの上限 (limits.epsDocumentMs。既定 EPS_DOCUMENT_MILLIS)
+  constructor(public millisLeft = limits().epsDocumentMs) {}
 }
 const budgets = new WeakMap<object, EpsBudget>();
 /**

@@ -56,6 +56,7 @@ HTML+CSS ・ XSL-FO
 | `src/colorGlyph.ts`, `src/colorGlyphPdf.ts`, `src/colorGlyphCanvas.ts`, `src/colorGlyphSvg.ts` | 色つきの字形 (カラーの絵文字など) を書体の表から読み、PDF と Canvas に描く (OpenType の SVG の表の字形を含む) |
 | `src/color.ts`, `src/cssColorFunctions.ts`, `src/cssGradient.ts`, `src/icc.ts`, `src/pdfStandard.ts`, `src/iccRegistry.ts`, `src/pdfxVerify.ts`, `src/srgbIcc.ts`, `src/pdfaVerify.ts` | 色の指定の読み取り、CSS Color 4・5 の色の関数、CSS のグラデーション、ICC プロファイルでの CMYK への変換、PDF/X-1a・PDF/X-3・PDF/X-4 の方針 (ICC の登録簿の印刷条件の名前と、書き出した PDF の検査も)、PDF/A-2b・3b の印 (出力意図の sRGB の ICC プロファイルを作るもの、書き出した PDF の検査) |
 | `src/assets.ts`, `src/linkPolicy.ts`, `src/messages.ts` | 画像の登録所 (組版・Canvas・PDF で共有)、文書の外へのリンクを PDF のどの動作にするかの方針、利用者に見せる文言 (日本語・英語) |
+| `src/callContext.ts` | 呼び出しごとの文脈 (警告・誤りの文の言語など、1 回の `typeset`・`toPdf` の間だけ効く設定)。Node では AsyncLocalStorage で持ち、ブラウザではモジュールの変数で持つ。そのため、呼び出しの道筋の async の関数の await は、どれも `rejoin(thisCall(), await …)` と書いて、await の後で文脈を置き直す (`test/callContextAwait.test.ts` が書き忘れを拾う) |
 | `tools/api-docs/`, `scripts/build-api-docs.mjs` | API の説明書 (`npm run docs:api`。型の宣言のコメントから TypeDoc で作る一覧の頁。GitHub Pages の画面の下の `/api/` に置く。TypeDoc は、直下の依存と分けて `tools/api-docs` に入れる) |
 | `src/drawio/` | draw.io の図 (`.drawio`・`.dio`) を読んで SVG にする (draw.io と mxGraph のソースから移した形・線の描き方。図が出てきたときだけ読み込む。[`docs/drawio.md`](drawio.md)) |
 

@@ -33,9 +33,11 @@ Kumiori は 3 つの形で公開します。
 main はルールセットで守っているので、版の変更も PR で入れる。npm への公開は、タグを push すると GitHub Actions (`.github/workflows/publish.yml`) が行う (Trusted Publishing。下の「Trusted Publishing の設定」)。
 
 1. 作業用のブランチで、`CHANGELOG.md`・`CHANGELOG.en.md` にその版の項目を書き (見出しは「0.1.1 (公開の日付)」)、`package.json` の `version` を上げる。
+   項目の漏れは、`node scripts/changelog-unreleased.mjs` の並べる候補 (src を変えて変更の記録を変えていないコミットなど) で確かめる ([`docs/development.md`](development.md) の「読み直しの確かめ」)。
    `npm version patch|minor|major --no-git-tag-version` を使う (タグはマージした後の main に付けるので、ここでは作らない)。
    ライブラリの説明書 (`docs/library.md`・`docs/en/library.md`) の、CDN から読む例の URL の版 (`kumiori@0.2.0` など) も、出す版に直す。
    README と docs (日本語・英語) で、まだ出していない機能を「次の版 (未公開) から」(英語版は "the next (unreleased) version") と書いた文も、その版の番号 (「0.5.0 から」など) に直す (`grep -rn '未公開' README.md docs/*.md`・`grep -rn 'unreleased' README.en.md docs/en/*.md` で探す)
+   その版の項目で、安定の API ([`docs/library.md`](library.md) の「API の安定性」) を互換の無い形に変えたものには「**互換が変わる**」と書き、変わりうるもの (Area Tree の欄・新しい選択肢など) を変えたものも、項目に書く。`PLUGIN_API_VERSION`・`AREA_TREE_SCHEMA_VERSION` を上げたら、上げたことと、何が変わったかを書く (どの版から読めなくなるか。`git diff v<前の版> -- src/imageFormats.ts src/areaTree.ts` で確かめる)
 2. 公開前の確認:
 
    ```bash
@@ -45,7 +47,9 @@ main はルールセットで守っているので、版の変更も PR で入�
    `prepublishOnly` が型検査・テスト・3 つのビルド (`build:dist`) を走らせ、tarball に入るファイルの一覧が出る。`dist-lib`・`dist-cli`・`dist-browser`・README・LICENSE などが入っていること、`src` やテスト・sourcemap (`.map`) が入っていないことを見る (sourcemap は配らない。`npm test` の `test/package.test.ts` も、`.map` と `//# sourceMappingURL=` の行が無いことを見る)。
    前の版から依存パッケージ (`package-lock.json`) や、ソースに写した仕様書・データが変わっていれば、`THIRD_PARTY_NOTICES.md` を合わせる。`npm ls --omit=dev --all` の版が 2 節と、ブラウザ向けのビルドと画面のビルドに取り込まれたパッケージ (`npx vite build --config vite.browser.config.ts --sourcemap` と `npx vite build --sourcemap --outDir <別の場所>` の `.map` の `sources` の `node_modules/…`) が 1 節と合っていることを見る。バンドラー (vite・rolldown) の版が変わったら、1.6 節の版と転記した本文も合わせる。実行時の依存と 1.6 節のバンドラーの版・license と、転記したライセンスの本文が node_modules のファイルと同じことは、`npm test` の `test/thirdPartyNotices.test.ts` も見る (食い違うと落ちる)。
    API の説明書を作る道具 (`tools/api-docs/package-lock.json`。TypeDoc) の版が変わっていれば、`THIRD_PARTY_NOTICES.md` の 14 節 (説明書の頁に入る TypeDoc と lunr) を合わせる (同じテストが、版・license と、`npm run docs:api` の後なら転記した本文も見る)。
-   API の説明書が作れること (`npm run docs:api`。TypeDoc の警告 (コメントの中の知らないタグ・公開の型が参照しているのに `src/index.ts` から出していない型など) は誤りになる) も見る
+   API の説明書が作れること (`npm run docs:api`。TypeDoc の警告 (コメントの中の知らないタグ・公開の型が参照しているのに `src/index.ts` から出していない型など) は誤りになる) も見る。
+   組版の速さが前の版から落ちていないことを、`npm run perf:compare -- --base v<前の版>` (前の版のタグと、いまの HEAD の組版の時間を交互に測り比べる。4 つの CPU で 15 分ほど) で確かめる。
+   遅いと出た文書があれば、どのコミットで遅くなったかと、その理由を確かめてから出す ([`docs/development.md`](development.md) の「組版の時間の比べ」)
 3. PR を作り、CI が通ったらマージする
 4. マージした後の main にタグを付けて push する:
 

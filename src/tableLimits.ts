@@ -14,6 +14,7 @@
  *  - 1 つの表で、またいだ先のマス ((rowSpan − 1) × colSpan の合計) を、MAX_SPANNED_SLOTS + セルの数 × SPANNED_SLOTS_PER_CELL までにする。
  *    超える分のセルは、残りの分だけまたぐ (0 なら、またがない)。
  */
+import { limits } from './limits';
 import type { LTable, LTableCell } from './types';
 
 /**
@@ -42,7 +43,7 @@ export function limitTableSpans(table: LTable): boolean {
       if (!spanning) for (const c of r.cells) if ((c.rowSpan ?? 1) > 1) spanning = true;
     }
   if (!spanning) return false;
-  let budget = MAX_SPANNED_SLOTS + cells * SPANNED_SLOTS_PER_CELL;
+  let budget = limits().tableSpannedCells + cells * SPANNED_SLOTS_PER_CELL;
   let cut = false;
   for (const rows of groups) {
     if (!rows) continue;

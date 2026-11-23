@@ -13,8 +13,14 @@
 ## 確かめ方
 
 - 変えたら `npm run typecheck` と `npm test` を通す。画面 (`index.html`・`src/main.ts`) の動きを変えたら `npm run e2e` も通す。
-- 組版の結果 (字・線・画像の位置や形) が変わる修正をしたら、見本と組み比べて、どこがどう変わったかを確かめ、PR に書く。
-  見本との比べ方は、`docs/development.md` の「見本の PDF との比較」(`scripts/compare-pdf.mjs`・`scripts/compare-view.mjs`) にある。
+- 組版の結果 (字・線・画像の位置や形) が変わる修正をしたら、直す前のコミットと組み比べて (`npm run compare:base -- --base <直す前のコミット> --head .`。
+  リポジトリの文書と、手元にある見本 (アンテナハウスのサンプル FO 集・『CSSページ組版入門』第 4 版・WeasyPrint の見本) を前と後で組み、変わった文書とページを一覧にする)、
+  変わった文書とページが直したかった所だけかを確かめ、どこがどう変わったかを、PR に書く。
+  領域の木の指紋の試験 (`test/fingerprints/`) が落ちたら、意図した変更なら `npm run fingerprints:update` で書き直し、指紋の変わった文書と理由をコミットの文に書く
+  (意図していない文書の指紋が変わったら、書き直さずに確かめる)。
+  道具の使い方は `docs/development.md` の「前と後の組み比べ」「領域の木の指紋」に、見本の PDF そのものとの比べ方は「見本の PDF との比較」(`scripts/compare-pdf.mjs`・`scripts/compare-view.mjs`) にある。
+- 組版の時間が変わりうる直し (組み直しの回・手間の伸び方・止める合図の確かめ・作り直しの省き方など) をしたら、`npm run perf:compare -- --base <直す前のコミット> --head .` で前と後の時間を比べ、
+  結果 (文書ごとの比と、遅いと出た文書) を PR に書く (道具の使い方は `docs/development.md` の「組版の時間の比べ」)。
 - 見本の比較ページ (`scripts/compare-view.mjs --artifact` で作るもの) を公開して見ている場合は、変化の及ぶ比較ページを作り直して公開し直す。
 - タグ付き PDF (構造の木・印の付いた内容・注釈と構造の結び付き・言語・代わりの文) を変えたら、`--tagged` で組んだ PDF を `node scripts/verapdf.mjs <PDF>` (veraPDF の PDF/UA-1 の検査) にかけ、
   落ちた規則 (節と検査の番号) を、変える前と比べて、PR に書く。`pdfinfo -struct-text <PDF>` (Poppler) で、構造の木と読む順も見る。

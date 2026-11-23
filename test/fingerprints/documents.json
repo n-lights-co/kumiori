@@ -1,0 +1,32 @@
+{
+ "examples/drawio-pages/pages.fo": {
+  "sha256": "f9fa2250d9750a1929570047116e9b227fbdb44ed9ab201a9e4a281eed22d166",
+  "pages": [
+   "35d654106b2f19ab56f4e5fdca08eff071401155e38e436d481652b24e82e9b2",
+   "aa4253869e1d24da76b73f585358ccf74ae445daba7dccfd89f1c35b905c9e8a",
+   "88e5c7c8378ff42ea014be8e4b78f05ed3a8eda167280d2c7b4f43fd5cee1c42"
+  ]
+ },
+ "examples/drawio-pages/pages.html": {
+  "sha256": "f19f3bf366b5cc4e00cbb4128bfe027bbe2ad5d0b787df4a7a521a578b7d82bd",
+  "pages": [
+   "d6a4b514376bee902c95a31a139fce5be5a41ec76b02b2efb6d4885edfd07d1d",
+   "61077d0aa017d08879be17415b5c253729d99d5192100c5b7820678057ae756f",
+   "7ba1767229e3092cf29459e558087a15ae5c23f6e2ab4aefd0567c65caf76d2f"
+  ]
+ },
+ "samples/check/fo/indent-inheritance-1.fo (--compat antenna)": {
+  "sha256": "b768b7a40e8b7b253127dc3434020399b717c576ad15dd0aea23b052e9ca6f9a",
+  "pages": [
+   "bb79ce3338f7567902db1d2edcef26173e11dd64e147216cbdefd111a63e22c2",
+   "6f572ee46da1a90375880db63690a331d5de2b494fb7f29defa665783e338b35"
+  ]
+ },
+ "samples/check/fo/indent-inheritance-1.fo (--compat spec)": {
+  "sha256": "252eb0ec3275338d07fc8b1a1ebe5fb64c4af5cb6eb196eddfebf08e63a8ae00",
+  "pages": [
+   "140979532d05434279ed5d18724f5e3d8f3ccecc315ebe04ac491db00a404aa5",
+   "6331bdf92192520928138c869660220d0acc7360b2f13a4f09baecb44c9754db"
+  ]
+ }
+}

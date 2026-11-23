@@ -14,6 +14,7 @@
  *
  * 色つきの表を持たない書体では、何もしない: 書体ごとに 1 度だけ表の一覧を見て覚える (colorFontOf)。
  */
+import { stopSpan } from './gradientStops';
 import type { Matrix, Seg } from './matrix';
 import { apply, mul } from './matrix';
 import { msg } from './messages';
@@ -396,7 +397,7 @@ export function unrollStops(stops: readonly ColorStop[], extend: Extend, t0: num
  *  - sample(deg, side): 角度 deg の色。side は、その角度のすぐ手前 (−1)・すぐ後 (+1) (色の段差の位置で、どちら側の色かを決める)
  * 描かないグラデーション (止まり点が無い・角度の幅が 0) は undefined
  */
-export function sweepSampler(fill: Extract<ColorFill, { kind: 'sweep' }>, fg: Rgb): { angles: number[]; sample(deg: number, side: number): { rgb: Rgb; a: number } } | undefined {
+export function sweepSampler(fill: Extract<ColorFill, { kind: 'sweep' }>, fg: Rgb): { angles: number[]; stopCount: number; sample(deg: number, side: number): { rgb: Rgb; a: number } } | undefined {
   const span = fill.end - fill.start;
   if (span === 0) return undefined;
   const tAt = (deg: number) => (deg - fill.start) / span;
@@ -407,9 +408,8 @@ export function sweepSampler(fill: Extract<ColorFill, { kind: 'sweep' }>, fg: Rg
     const t = Math.min(Math.max((tAt(deg) - lo) / (hi - lo), 0), 1);
     // 角度が増える向きと、色の線の位置が増える向きが逆のとき (始まりの角度 > 終わりの角度) は、手前・後が入れ替わる
     const dir = span > 0 ? side : -side;
-    let i = 0;
-    // t を含む区間 [i, i + 1] を探す。段差 (同じ位置の止まり点) では、dir の側の区間
-    while (i < plain.length - 2 && (dir > 0 ? plain[i + 1].offset <= t : plain[i + 1].offset < t)) i++;
+    // t を含む区間 [i, i + 1] を探す (二分で)。段差 (同じ位置の止まり点) では、dir の側の区間
+    const i = stopSpan(plain.length - 2, (j) => plain[j].offset, t, dir > 0);
     const p = plain[i];
     const q = plain[Math.min(i + 1, plain.length - 1)];
     const u = q.offset > p.offset ? Math.min(Math.max((t - p.offset) / (q.offset - p.offset), 0), 1) : dir > 0 ? 1 : 0;
@@ -420,7 +420,7 @@ export function sweepSampler(fill: Extract<ColorFill, { kind: 'sweep' }>, fg: Rg
     const deg = fill.start + span * (lo + (hi - lo) * s.offset);
     if (deg > 0 && deg < 360) angles.add(deg);
   }
-  return { angles: [...angles].sort((p, q) => p - q), sample };
+  return { angles: [...angles].sort((p, q) => p - q), stopCount: plain.length, sample };
 }
 
 /**

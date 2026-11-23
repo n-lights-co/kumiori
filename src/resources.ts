@@ -11,7 +11,9 @@
  *  - XSL-FO: src の url()、CSS と同じ url()
  * CSS の中の相対参照は、その CSS の URL を基準に解決する (CSS Values 4 §4.5.1: url() の相対 URL は、スタイルシートの URL が基準)
  */
+import { limits, noteLimitReached } from './limits';
 import { fetchLimits } from './imageLimits';
+import { fetchSignal, rejoin, thisCall } from './callContext';
 
 /**
  * 参照の種類: css は CSS として読む (拡張子が .css でなくても。https://fonts.googleapis.com/css2?family=… など)。
@@ -326,9 +328,12 @@ export interface CollectedFile {
   css: boolean;
 }
 
-/** 集める参照の数の上限 (CSS の @import の輪などで、際限なく問い合わせない) */
-const MAX_REFS = 500;
-const MAX_DEPTH = 8;
+/**
+ * 集める参照の数の上限の既定 (CSS の @import の輪などで、際限なく問い合わせない) と、CSS の中の参照をたどる深さの上限の既定。
+ * 呼び出しの上限 (limits.styleRefs・importDepth) で変えられる (深さは下げるだけ)
+ */
+export const MAX_REFS = 500;
+export const MAX_DEPTH = 8;
 
 /**
  * 文書の参照をたどってファイルを集める。CSS は中の参照もたどる (深さ 8 まで)。
@@ -338,6 +343,7 @@ export async function collectResources(text: string, o: CollectOptions): Promise
   const files: CollectedFile[] = [];
   const warnings: string[] = [];
   const seen = new Set<string>();
+  const { styleRefs: maxRefs, importDepth: maxDepth } = limits();
   type Item = ResourceRef & { depth: number };
   const queue: Item[] = documentRefs(text).map((r) => ({ ...r, depth: 0 }));
   // 使う字: 文書の字に、CSS の文字列 (content の値など) の字を足す
@@ -354,11 +360,11 @@ export async function collectResources(text: string, o: CollectOptions): Promise
     if (o.has(url)) return;
     // unicode-range が使う字と重ならない書体は使われないので、取らない (CSS Fonts 4 §4.5)
     if (it.kind === 'font' && it.ranges && chars && !it.ranges.some(([a, b]) => [...chars].some((c) => c >= a && c <= b))) return;
-    let data = toBytes(o.resolve ? await o.resolve(url) : undefined);
+    let data = toBytes(o.resolve ? rejoin(thisCall(), await o.resolve(url)) : undefined);
     if (!data && (it.kind === 'css' || it.kind === 'font') && /^https?:/i.test(url)) {
       if (o.fetchStyle(url)) {
         // 転送の先も fetchStyle に聞く。大きさの上限は種類ごと (fetchLimits)
-        data = (await fetchGuarded(url, { timeoutMs: o.timeoutMs, maxBytes: it.kind === 'css' ? fetchLimits.cssBytes : fetchLimits.fontBytes, allow: o.fetchStyle }))?.bytes;
+        data = rejoin(thisCall(), await fetchGuarded(url, { timeoutMs: o.timeoutMs, maxBytes: it.kind === 'css' ? fetchLimits.cssBytes : fetchLimits.fontBytes, allow: o.fetchStyle }))?.bytes;
         if (!data) warnings.push(`${it.kind}-fetch-failed\t${url}`);
       } else warnings.push(`${it.kind}-not-fetched\t${url}`);
     }
@@ -368,17 +374,19 @@ export async function collectResources(text: string, o: CollectOptions): Promise
     if (it.kind === 'css') {
       const css = new TextDecoder().decode(data);
       if (chars) cssStringChars(css, chars);
-      if (it.depth < MAX_DEPTH) for (const r of cssRefs(css)) queue.push({ ...r, url: resolveRef(r.url, url), depth: it.depth + 1 });
+      if (it.depth < maxDepth) for (const r of cssRefs(css)) queue.push({ ...r, url: resolveRef(r.url, url), depth: it.depth + 1 });
+      // 段の上限より深い参照は取らない (上限に当たったことを知らせる)
+      else if (cssRefs(css).length) noteLimitReached('importDepth');
     }
   };
   // 書体は、CSS をすべて集めてから取る (使う字は、後から読む CSS の content の字でも増えるので、先には決まらない)
   const fonts: Item[] = [];
   const seenFonts = new Set<string>();
   for (let fontPass = false; ; fontPass = true) {
-    while (queue.length && seen.size < MAX_REFS) {
+    while (queue.length && seen.size < maxRefs) {
       // 同時に PARALLEL 個まで (Google Fonts の CSS は、字の範囲で分けた書体をたくさん参照する)
       const batch: Item[] = [];
-      while (queue.length && batch.length < PARALLEL && seen.size < MAX_REFS) {
+      while (queue.length && batch.length < PARALLEL && seen.size < maxRefs) {
         const it = queue.shift()!;
         if (skip(it.url)) continue;
         if (it.kind === 'font' && !fontPass) {
@@ -391,8 +399,10 @@ export async function collectResources(text: string, o: CollectOptions): Promise
         seen.add(it.url);
         batch.push(it);
       }
-      await Promise.all(batch.map(one));
+      rejoin(thisCall(), await Promise.all(batch.map(one)));
     }
+    // 参照の数の上限で、取らずに残した参照があれば、上限に当たったことを知らせる
+    if (seen.size >= maxRefs && queue.some((it) => !skip(it.url) && !(it.kind === 'font' ? seenFonts.has(it.url) || have.has(it.url) : seen.has(it.url)))) noteLimitReached('styleRefs');
     if (fontPass || !fonts.length) break;
     queue.push(...fonts);
   }
@@ -449,24 +459,25 @@ const inBrowser = () => typeof document !== 'undefined';
  */
 export async function fetchGuarded(url: string, o: GuardedFetchOptions): Promise<FetchedResource | undefined> {
   // 時限は 1 つの合図で、転送の連なりの全体と本体の読み取りに効かせる (fetch に渡した合図は、本体を読んでいる間も効く)
-  const signal = o.timeoutMs ? AbortSignal.timeout(o.timeoutMs) : undefined;
+  // 呼び出しの止める合図 (TypesetOptions.signal) も合わせる: 止めたら、読みかけの応答も止まる
+  const signal = fetchSignal(o.timeoutMs);
   const init = (redirect: RequestRedirect): RequestInit => ({ redirect, ...(signal ? { signal } : {}) });
   try {
     let res: Response;
-    if (inBrowser()) res = await fetch(url, init('follow'));
+    if (inBrowser()) res = rejoin(thisCall(), await fetch(url, init('follow')));
     else {
       let cur = url;
       for (let n = 0; ; n++) {
-        res = await fetch(cur, init('manual'));
+        res = rejoin(thisCall(), await fetch(cur, init('manual')));
         // Location を読めない実行環境 (ブラウザと同じ扱いの所): たどり直して、最後の URL を確かめる (下)
         if (res.type === 'opaqueredirect') {
-          res = await fetch(url, init('follow'));
+          res = rejoin(thisCall(), await fetch(url, init('follow')));
           break;
         }
         const loc = REDIRECT_STATUS.has(res.status) ? res.headers.get('location') : null;
         if (loc === null) break;
         // 転送の応答の本体は使わない (接続を放す)
-        await res.body?.cancel().catch(() => undefined);
+        rejoin(thisCall(), await res.body?.cancel().catch(() => undefined));
         if (n >= fetchLimits.redirects) return undefined;
         const next = new URL(loc, cur);
         if (!/^https?:$/.test(next.protocol)) return undefined;
@@ -479,15 +490,15 @@ export async function fetchGuarded(url: string, o: GuardedFetchOptions): Promise
     if (res.redirected) {
       const ok = /^https?:/i.test(res.url) && !(/^http:/i.test(res.url) && /^https:/i.test(url)) && (!o.allow || o.allow(res.url));
       if (!ok) {
-        await res.body?.cancel().catch(() => undefined);
+        rejoin(thisCall(), await res.body?.cancel().catch(() => undefined));
         return undefined;
       }
     }
     if (!res.ok) {
-      await res.body?.cancel().catch(() => undefined);
+      rejoin(thisCall(), await res.body?.cancel().catch(() => undefined));
       return undefined;
     }
-    const bytes = await readLimited(res, o.maxBytes);
+    const bytes = rejoin(thisCall(), await readLimited(res, o.maxBytes));
     return bytes ? { bytes, type: res.headers.get('content-type') ?? '' } : undefined;
   } catch {
     return undefined;
@@ -498,22 +509,22 @@ export async function fetchGuarded(url: string, o: GuardedFetchOptions): Promise
 async function readLimited(res: Response, max: number): Promise<Uint8Array | undefined> {
   // Content-Length は、送られてくる (圧縮されたままの) 本体の長さ。それだけで上限を超えていれば、読まない
   if (Number(res.headers.get('content-length') ?? 0) > max) {
-    await res.body?.cancel().catch(() => undefined);
+    rejoin(thisCall(), await res.body?.cancel().catch(() => undefined));
     return undefined;
   }
   if (!res.body) {
-    const all = new Uint8Array(await res.arrayBuffer());
+    const all = new Uint8Array(rejoin(thisCall(), await res.arrayBuffer()));
     return all.length > max ? undefined : all;
   }
   const reader = res.body.getReader();
   const parts: Uint8Array[] = [];
   let total = 0;
   for (;;) {
-    const { done, value } = await reader.read();
+    const { done, value } = rejoin(thisCall(), await reader.read());
     if (done) break;
     total += value.length;
     if (total > max) {
-      await reader.cancel().catch(() => undefined);
+      rejoin(thisCall(), await reader.cancel().catch(() => undefined));
       return undefined;
     }
     parts.push(value);

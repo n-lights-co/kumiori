@@ -16,9 +16,10 @@
  * 描かないもの: リンク・注釈・フォームの欄 (PDF の注釈)、CMYK の JPEG・インターレースの PNG (画素に戻せない。警告に出す)。
  * 上限: 1 ページを画素にする手間 (PNG_RASTER_WORK_PER_PIXEL)・1 ページで画素に戻す画像 (PNG_PAGE_DECODE_PIXELS)・覚える画像 (PNG_IMAGE_CACHE_PIXELS)
  */
+import { limits } from './limits';
 import type { FontManager } from './fontManager';
 import { parseColor } from './color';
-import { FAKE_BOLD, ITALIC_SLANT, paintPlaceholder, paintSheet, type Line, type Painter, type PathSeg } from './paint';
+import { FAKE_BOLD, ITALIC_SLANT, paintPlaceholder, paintSheet, pdfPlaceholderDiagnostic, type Line, type Painter, type PathSeg } from './paint';
 import type { AssetStore } from './assets';
 import { areaGlyphs, colorFontOf, COMPOSITE, plainStops, sweepSampler, type ColorFill, type ColorOp, type Rgb } from './colorGlyph';
 import { ensureSvgGlyphReader } from './colorGlyphSvg';
@@ -28,14 +29,16 @@ import { apply, invert, mul, IDENTITY, type Matrix } from './matrix';
 import type { GlyphArea, ImageArea, Rect, SheetArea } from './types';
 import { resolveNonScaling, type SvgBlend, type SvgDoc, type SvgGradient, type SvgPattern, type SvgShape, type XmlNode } from './svg';
 import { compositeOver, decodeShapeImage, gradientAt } from './svgFilterRaster';
+import { stopSearchWork, stopSpan } from './gradientStops';
 import { strokeOutline } from './strokeOutline';
-import { registerSvgFonts } from './pdfRenderer';
 import { decodeBmp, decodeGif, encodePng, type Pixels } from './pixels';
 import { decodeWebp } from './webp';
-import { imageKey, pageImages, svgImageDoc } from './svgRenderer';
+import { imageKey, pageImages, svgImageDocs } from './svgRenderer';
+import type { PdfRenderOptions } from './pdfRenderer';
 import { msg } from './messages';
 import { diag, type Diagnostic } from './diagnostics';
 import { MAX_PIXELS as IMAGE_MAX_PIXELS } from './imageLimits';
+import { rejoin, thisCall } from './callContext';
 
 export interface PngRenderOptions {
   /** 解像度 (1 インチ = 72pt あたりの画素の数)。既定 96 */
@@ -48,6 +51,10 @@ export interface PngRenderOptions {
   guides?: boolean;
   /** 描けない画像などの警告を足す先 */
   warn?: (d: Diagnostic) => void;
+  /** SVG の画像の systemLanguage を照らす言語 (svgRenderer.ts の SvgImageOptions.svgLanguages) */
+  svgLanguages?: readonly string[];
+  /** SVG の画像の foreignObject の中身を組む (SvgImageOptions.typesetForeign) */
+  typesetForeign?: PdfRenderOptions['typesetForeign'];
 }
 
 /** 1 枚の PNG の画素の数の上限 (1 画素あたり 16 バイトの板を持つので、4,000 万画素で 640MB。A4 を 600dpi で描ける大きさ) */
@@ -63,6 +70,15 @@ const SS = 5;
  */
 class Layer {
   d: Float32Array;
+  /** 同時に持つ板の勘定 (RasterShared.layerPixels) に数えている画素の数 (広がる板は、いま広げた大きさ。ページ・模様のタイルの板は 0) */
+  held = 0;
+  /**
+   * 広げると板の上限を超えるときに、板のそこまでの中身を、外側の板に重ねるもの (不透明度のグループの板だけ。呼んだ後、板は空にして続きを描く)。
+   * 無ければ、広げられない所の図形は描かない
+   */
+  flush?: () => void;
+  /** flush で中身を重ねたことがある (描き直せない) */
+  flushed = false;
   constructor(
     public x0: number,
     public y0: number,
@@ -82,30 +98,35 @@ class Layer {
    * 広がる板を、box (extent の中) を覆う大きさにした後の矩形 (広げなくてよければ undefined)。広げる向きには、半分の余りを付ける
    * (少しずつ広がる描き方 (字を並べる) で、広げ直しの写しが何度も起きないように)
    */
-  grownBox(box: IBox): IBox | undefined {
+  grownBox(box: IBox, margin = true): IBox | undefined {
     if (!this.limit || empty(box)) return undefined;
     const cur = layerBox(this);
     const has = this.w > 0 && this.h > 0;
     if (has && box.x0 >= cur.x0 && box.y0 >= cur.y0 && box.x1 <= cur.x1 && box.y1 <= cur.y1) return undefined;
     if (!has) return box;
     const u = { x0: Math.min(cur.x0, box.x0), y0: Math.min(cur.y0, box.y0), x1: Math.max(cur.x1, box.x1), y1: Math.max(cur.y1, box.y1) };
-    const mw = (u.x1 - u.x0) >> 1;
-    const mh = (u.y1 - u.y0) >> 1;
+    const mw = margin ? (u.x1 - u.x0) >> 1 : 0;
+    const mh = margin ? (u.y1 - u.y0) >> 1 : 0;
     return meet({ x0: u.x0 - (u.x0 < cur.x0 ? mw : 0), y0: u.y0 - (u.y0 < cur.y0 ? mh : 0), x1: u.x1 + (u.x1 > cur.x1 ? mw : 0), y1: u.y1 + (u.y1 > cur.y1 ? mh : 0) }, this.limit);
   }
 
   /** 板を矩形 nb にする (今の中身は写す) */
   resize(nb: IBox) {
-    const w = nb.x1 - nb.x0;
-    const h = nb.y1 - nb.y0;
+    const w = Math.max(0, nb.x1 - nb.x0);
+    const h = Math.max(0, nb.y1 - nb.y0);
     const d = new Float32Array(w * h * 4);
-    for (let y = 0; y < this.h; y++) d.set(this.d.subarray(y * this.w * 4, (y + 1) * this.w * 4), ((y + this.y0 - nb.y0) * w + this.x0 - nb.x0) * 4);
+    if (w > 0 && h > 0) for (let y = 0; y < this.h; y++) d.set(this.d.subarray(y * this.w * 4, (y + 1) * this.w * 4), ((y + this.y0 - nb.y0) * w + this.x0 - nb.x0) * 4);
     this.d = d;
     this.x0 = nb.x0;
     this.y0 = nb.y0;
     this.w = w;
     this.h = h;
   }
+}
+
+/** 広げられない、まだ空の不透明度のグループの板 layer をやめる合図 (RasterPainter.grow が投げ、その板を作った withLayer が受ける) */
+class LayerAbort {
+  constructor(readonly layer: Layer) {}
 }
 
 /** 覆う割合 (0〜1)。ページの画素の座標の矩形 (x0, y0)〜(x0 + w, y0 + h) の中の値 (外は 0) */
@@ -324,7 +345,8 @@ function intersectCov(p: Cov, q: Cov): Cov {
 
 /** 塗りの色 (乗算していない RGBA。0〜1)。画素の中心のページの画素の座標で引く。塗らない画素は undefined */
 type Sampler = (x: number, y: number) => readonly number[] | undefined;
-type Paint = { solid: readonly number[] } | { at: Sampler };
+/** 塗り: 色の決まったものか、画素ごとに色を引くもの (extra は、1 画素の手間 4 単位に足す分。止まり点の多いグラデーションの止まり点を探す手間) */
+type Paint = { solid: readonly number[] } | { at: Sampler; extra?: number };
 
 /** 画像の画素 (RGBA 8 ビット。乗算していない) と、縮めたものの覚え */
 interface Img {
@@ -520,7 +542,8 @@ const BLEND_OF: Record<number, SvgBlend> = {
 type GlyphCommand = { command: string; args: number[] };
 
 /** 描く前に用意した画像: 画素の画像 (PNG・JPEG など。画素に戻すのは描くとき: RasterImages) か、SVG の図形 */
-type Prepared = { kind: 'raster'; src: string; mime: string; bytes: Uint8Array } | { kind: 'svg'; doc: SvgDoc };
+/** pdf: PDF の画像 (PDF の出力だけが描く。PNG は仮の枠。design/pdf-as-image.md の 3 節) */
+type Prepared = { kind: 'raster'; src: string; mime: string; bytes: Uint8Array } | { kind: 'svg'; doc: SvgDoc } | { kind: 'pdf' };
 
 /**
  * 画素に戻した画像の覚えの、画素の数の合計の上限 (RGBA 8 ビットで 400MB)。ページをまたいで覚える (同じ画像を背景にしたページごとに、
@@ -547,8 +570,9 @@ export class RasterImages {
    * @param decodeLimit 1 ページで戻す画素の数の上限 (既定 PNG_PAGE_DECODE_PIXELS)
    */
   constructor(
-    private cacheLimit = PNG_IMAGE_CACHE_PIXELS,
-    private decodeLimit = PNG_PAGE_DECODE_PIXELS,
+    // 既定は、呼び出しの上限 (limits.imagePixels。PNG_IMAGE_CACHE_PIXELS と同じ既定) に連動する
+    private cacheLimit = limits().pngImageCachePixels || limits().imagePixels,
+    private decodeLimit = limits().pngPageImagePixels,
   ) {}
   /**
    * 中身の鍵 (長さと散らし値) → 中身・元の大きさ・割合ごとの画素。中身で引くので、ページごとに作り直されるバイト列 (SVG の中の data: の画像は、
@@ -743,10 +767,12 @@ export const PNG_TILE_CACHE_PIXELS = 16_000_000;
 
 /**
  * 1 ページを画素にする間に、同時に持つ板 (不透明度のグループ・マスク・色つきの字形の合成の板。ページそのものは数えない) の画素の数の合計の上限:
- * ページの画素の数の 8 倍 (ただし 1,600 万画素より少なくはしない)、かつ 6,400 万画素 (板は 1 画素 16 バイトなので 1GB) まで。板は、作るときに、描ける範囲 (いまの板と切り抜きの重なり) の
- * 画素の数で数える (描くうちに広がっても、その範囲を超えない)。上限が無いと、不透明度の箱を 60 段入れ子にした 4KB ほどの HTML で、150dpi で 2GB、
- * 300dpi で 6GB ほどの板を同時に持っていた。超える不透明度のグループは、板を作らずに中の図形ごとに不透明度を掛けて描き (中の重なりは濃くなる)、
- * 超えるマスク・合成は描かない (png/layer-limit の警告。ページに 1 度)
+ * ページの画素の数の 8 倍 (ただし 1,600 万画素より少なくはしない)、かつ 6,400 万画素 (板は 1 画素 16 バイトなので 1GB) まで。中身の外接矩形だけを持つ
+ * 広がる板 (不透明度のグループ・マスク) は、実際に広げた大きさで数え、広げるときに確かめる (作るときの描ける範囲で数えると、小さな不透明度の箱でも、
+ * ページが大きい・解像度が高いと、浅い入れ子で上限に当たっていた)。上限が無いと、ページ全体の背景のある不透明度の箱を 60 段入れ子にした 4KB ほどの
+ * HTML で、150dpi で 2GB、300dpi で 6GB ほどの板を同時に持っていた。勘定が上限にあるときの不透明度のグループは、板を作らずに中の図形ごとに不透明度を
+ * 掛けて描き、広げると超える不透明度のグループの板は、そこまでの中身を重ねてから空にして続きを描き (どちらも中の重なりは濃くなる)、
+ * 広げると超えるマスク・合成の板の図形は描かない (png/layer-limit の警告。ページに 1 度)
  */
 export const PNG_LAYER_PIXELS_PER_PAGE = 8;
 export const PNG_LAYER_MAX_PIXELS = 64_000_000;
@@ -822,9 +848,14 @@ interface RasterShared {
   warned: boolean;
   /** XML のパーサ (PngRenderOptions.parseXml。書体の SVG の表の字を読む) */
   parseXml?: (xml: string) => XmlNode;
-  /** 同時に持つ板の画素の数 (作るときの描ける範囲で数える) と、その上限 (PNG_LAYER_MAX_PIXELS) */
+  /** 同時に持つ板の画素の数 (広がる板は実際に広げた大きさ、大きさを決めて作る板は作るときの大きさ。切り抜きの配列も含める) と、その上限 (PNG_LAYER_MAX_PIXELS) */
   layerPixels: number;
   layerLimit: number;
+  /**
+   * 広がる板を作らない、勘定の量 (広げられない空のグループの板をやめたときの量。勘定がそれより減ったら Infinity に戻す)。
+   * 入れ子のグループで、板を作っては描き直すのを、段ごとに繰り返さない
+   */
+  layerBlocked: number;
   /** 板の上限を超えたときの警告を出したか */
   layerWarned: boolean;
   /** 切り抜きの上限 (板と同じ勘定) を超えたときの警告を出したか */
@@ -900,13 +931,57 @@ class RasterPainter implements Painter {
     return coverageOf(polys, evenOdd, bounds, this.spend);
   }
 
-  /** 広がる板 l を、矩形 b を覆う大きさにする (広げた分の手間を払えなければ false) */
+  /**
+   * 広がる板 l を、矩形 b を覆う大きさにする (広げた分の手間を払えなければ false)。広げた大きさを、同時に持つ板の勘定 (RasterShared.layerPixels) に数える。
+   * 上限を超えるなら、余りを付けずに広げ、それでも超えるなら、ページに 1 度警告を出し (png/layer-limit)、不透明度のグループの板 (flush のあるもの) は、
+   * そこまでの中身を外側の板に重ねてから空にして、続きを描く (グループが 2 つに分かれ、その間の重なりは濃くなる)。それでも超えるか、
+   * flush の無い板 (マスク・合成の板) なら、広げずに false (呼ぶ側は、その図形を描かない)
+   */
   private grow(l: Layer, b: IBox): boolean {
-    const nb = l.grownBox(b);
+    let nb = l.grownBox(b);
     if (!nb) return true;
+    const sh = this.shared;
+    const fits = (box: IBox) => sh.layerPixels - l.held + area(box) <= sh.layerLimit;
+    if (!fits(nb)) {
+      nb = l.grownBox(b, false)!;
+      if (!fits(nb)) {
+        this.layerLimitWarn();
+        if (!l.flush) return false;
+        // まだ何も描いていない (重ねてもいない) グループの板は、板をやめて、グループの初めから板を作らずに描き直す (withLayer が受ける)
+        if (l.w * l.h === 0 && !l.flushed) throw new LayerAbort(l);
+        if (l.w * l.h === 0) return false;
+        l.flush();
+        l.flushed = true;
+        sh.layerPixels -= l.held;
+        l.held = 0;
+        l.resize({ x0: l.x0, y0: l.y0, x1: l.x0, y1: l.y0 });
+        nb = l.grownBox(b);
+        if (!nb) return true;
+        if (!fits(nb)) nb = l.grownBox(b, false)!;
+        if (!fits(nb)) return false;
+      }
+    }
     if (!this.spend(area(nb))) return false;
+    sh.layerPixels += area(nb) - l.held;
+    l.held = area(nb);
     l.resize(nb);
     return true;
+  }
+
+  /** 板の上限を超えたときの警告 (ページに 1 度) */
+  private layerLimitWarn() {
+    const sh = this.shared;
+    if (sh.layerWarned) return;
+    sh.layerWarned = true;
+    this.warn(
+      diag(
+        'png/layer-limit',
+        msg(
+          `同時に持つ板の画素の数 (切り抜きを含めて) が上限 (${sh.layerLimit.toLocaleString('en')} 画素) を超えるので、不透明度のグループは、板に描いた所までを重ねてから続きを描くか、板を作らずに中の図形ごとに不透明度を掛けて描き (どちらも中の重なりは濃くなる)、広げられないマスク・合成の板の図形は描きません`,
+          `the layers held at once (clips included) would exceed the limit (${sh.layerLimit.toLocaleString('en')} pixels), so opacity groups are composited as far as drawn and then continued, or drawn with the opacity applied to each shape inside (overlaps inside get darker either way), and shapes that would need a larger mask or compositing layer are not drawn`,
+        ),
+      ),
+    );
   }
 
   // ───────── 塗りの基本 ─────────
@@ -925,8 +1000,8 @@ class RasterPainter implements Painter {
     let b = meet(covBox(cov), L.extent);
     if (clip) b = meet(b, covBox(clip));
     if (empty(b)) return;
-    // 手間: 画素ごとに、色の決まった塗りは 1、色を引く塗り (画像・グラデーション・模様) は 4
-    if (!this.spend(area(b) * ('solid' in paint ? 1 : 4)) || !this.grow(L, b)) return;
+    // 手間: 画素ごとに、色の決まった塗りは 1、色を引く塗り (画像・グラデーション・模様) は 4 (止まり点の多いグラデーションは、止まり点を二分で探す分を足す)
+    if (!this.spend(area(b) * ('solid' in paint ? 1 : 4 + (paint.extra ?? 0))) || !this.grow(L, b)) return;
     const d = L.d;
     const solid = 'solid' in paint ? paint.solid : undefined;
     const at = 'at' in paint ? paint.at : undefined;
@@ -981,36 +1056,44 @@ class RasterPainter implements Painter {
   /**
    * draw を新しい板に描き、use にその板を渡す。描く間、いまの板はその板になる。bounds を渡せば、いまの切り抜き (無ければ板) と bounds の重なりの大きさの板。
    * 渡さなければ、その範囲の中で、描いた所の外接矩形だけを持つ広がる板 (空のまま渡すこともある)。
-   * 板は、use が終わるまで、描ける範囲の画素の数を同時に持つ板の数に数える。上限 (PNG_LAYER_MAX_PIXELS) を超えるなら、板を作らず、
-   * draw も use も呼ばずに false を返す (呼ぶ側が、板を使わずに描くか、描かないかを決める)
+   * 板は、use が終わるまで、同時に持つ板の勘定 (RasterShared.layerPixels) に数える: bounds を渡した板は作るときの大きさ、広がる板は実際に広げた大きさ (grow)。
+   * 作るときに上限を超える (広がる板は、勘定がもう上限にある) なら、板を作らず、draw も use も呼ばずに false を返す
+   * (呼ぶ側が、板を使わずに描くか、描かないかを決める)。flush を渡せば、広がる板を広げると上限を超えるときに、板のそこまでの中身を use の代わりに渡す
+   * (呼んだときの板・不透明度は、この板を作ったときのもの。不透明度のグループの板を、2 つに分けて重ねる)。
+   * fallback を渡せば、板を使えないとき (作るときに上限を超える・広がる板を広げられないまま空で諦める) に、板を使わずに描くものとして呼んでから false を返す
    */
-  private withLayer(draw: () => void, use: (l: Layer) => void, bounds?: IBox): boolean {
+  private withLayer(draw: () => void, use: (l: Layer) => void, bounds?: IBox, flush?: (l: Layer) => void, fallback?: () => void): boolean {
     let b = this.layer.extent;
     if (this.clip) b = meet(b, covBox(this.clip));
     if (bounds) b = meet(b, bounds);
-    const px = empty(b) ? 0 : area(b);
+    const px = bounds && !empty(b) ? area(b) : 0;
     const sh = this.shared;
-    if (sh.layerPixels + px > sh.layerLimit) {
-      if (!sh.layerWarned) {
-        sh.layerWarned = true;
-        this.warn(
-          diag(
-            'png/layer-limit',
-            msg(
-              `入れ子の不透明度のグループ・マスクが多く、同時に持つ板の画素の数 (切り抜きを含めて) が上限 (${sh.layerLimit.toLocaleString('en')} 画素) を超えるので、深い所の不透明度のグループは中の図形ごとに不透明度を掛けて描き (中の重なりは濃くなる)、マスク・合成は描きません`,
-              `nested opacity groups and masks would hold more layer pixels at once (clips included) than the limit (${sh.layerLimit.toLocaleString('en')} pixels), so deeper opacity groups are drawn with the opacity applied to each shape inside (overlaps inside get darker) and masks and compositing are not drawn`,
-            ),
-          ),
-        );
-      }
+    if (bounds ? sh.layerPixels + px > sh.layerLimit : sh.layerPixels >= Math.min(sh.layerLimit, sh.layerBlocked)) {
+      this.layerLimitWarn();
+      fallback?.();
       return false;
     }
     if (bounds && px && !this.spend(px)) b = { x0: 0, y0: 0, x1: 0, y1: 0 };
-    sh.layerPixels += px;
     const savedAlpha = this.alpha;
+    const saved = this.layer;
+    const l = bounds ? new Layer(b.x0, b.y0, Math.max(0, b.x1 - b.x0), Math.max(0, b.y1 - b.y0)) : new Layer(0, 0, 0, 0, b);
+    l.held = bounds ? l.w * l.h : 0;
+    sh.layerPixels += l.held;
+    if (flush && !bounds)
+      l.flush = () => {
+        const inner = this.layer;
+        const innerAlpha = this.alpha;
+        this.layer = saved;
+        this.alpha = savedAlpha;
+        try {
+          flush(l);
+        } finally {
+          this.layer = inner;
+          this.alpha = innerAlpha;
+        }
+      };
+    let aborted = false;
     try {
-      const l = bounds ? new Layer(b.x0, b.y0, Math.max(0, b.x1 - b.x0), Math.max(0, b.y1 - b.y0)) : new Layer(0, 0, 0, 0, b);
-      const saved = this.layer;
       this.layer = l;
       // 板の中は不透明度を掛けずに描き、板を重ねるときに掛ける
       this.alpha = 1;
@@ -1019,12 +1102,31 @@ class RasterPainter implements Painter {
       } finally {
         this.layer = saved;
         this.alpha = savedAlpha;
+        l.flush = undefined;
       }
       use(l);
+    } catch (e) {
+      if (!(e instanceof LayerAbort && e.layer === l)) throw e;
+      aborted = true;
     } finally {
-      sh.layerPixels -= px;
+      sh.layerPixels -= l.held;
+      l.held = 0;
+      if (sh.layerPixels < sh.layerBlocked) sh.layerBlocked = Infinity;
     }
-    return true;
+    if (!aborted) return true;
+    // 広げられないまま空のグループの板: 板を使わずに描き直す (fallback) 間は、勘定が今の量より減るまで、広がる板を作らない
+    // (描き直す中の入れ子のグループも、板を作らずに描く。作っては投げるのを、入れ子の段ごとに繰り返さない)。
+    // 描き直し終えたら、前の量に戻す (戻さないと、勘定が 0 のときに止めた量 0 が残り、そのページの後のグループも、小さくても板を作らずに平らに描く)
+    if (fallback) {
+      const prev = sh.layerBlocked;
+      sh.layerBlocked = sh.layerPixels;
+      try {
+        fallback();
+      } finally {
+        sh.layerBlocked = prev;
+      }
+    }
+    return false;
   }
 
   /** draw の間だけ、切り抜きを外す (描く板の範囲は、呼ぶ側の withLayer が、いまの切り抜きの範囲にしてある) */
@@ -1058,7 +1160,10 @@ class RasterPainter implements Painter {
   /**
    * 切り抜きを積む。積んだ切り抜きの配列は、閉じるまで持つので、板と同じ勘定 (RasterShared.layerPixels。板の 1 画素 16 バイトに対して、
    * 切り抜きの 1 画素は 4 バイトなので 1/4 で数える) に入れる。上限を超えるなら、配列を作らずに、外側の切り抜きのまま (新しい切り抜きが外側を
-   * 囲むとき。新しい切り抜きの縁は描き分けない) か、何も描かない切り抜きにして、ページに 1 度警告を出す (png/clip-limit)
+   * 囲むとき。新しい切り抜きの縁は描き分けない) か、何も描かない切り抜きにして、ページに 1 度警告を出す (png/clip-limit)。
+   * いちばん外の切り抜き (いまの切り抜きが無いとき) は、代えられる外側の切り抜きが無いので、上限を超えても持つ (勘定には数える)。
+   * 配列は coverageOf が作ったもので、描く範囲 (いまの板の描ける範囲) より大きくならない。勘定が上限を超えると、その後の板は作らないので、
+   * 切り抜きを外して描く板 (unclipped) の中の、いちばん外の切り抜きも重ならない
    */
   private pushClip(cov: Cov | undefined) {
     const empty0: Cov = { x0: 0, y0: 0, w: 0, h: 0, a: new Float32Array(0), held: 0 };
@@ -1067,7 +1172,8 @@ class RasterPainter implements Painter {
     if (!cur) {
       // いちばん外の切り抜き: coverageOf の作った配列を、そのまま持つ
       const units = Math.ceil(c.a.length / 4);
-      c = this.holdClip(units) ? { ...c, held: units } : empty0;
+      this.shared.layerPixels += units;
+      c = { ...c, held: units };
     } else {
       const b = meet(covBox(cur), covBox(c));
       // 切り抜きの重なり: 重なりの画素の数の手間 (払えなければ、何も描かない切り抜き)
@@ -1134,7 +1240,8 @@ class RasterPainter implements Painter {
   /** 不透明度の付いた箱: 別の板に描いてから、不透明度を掛けて重ねる (Color 4 §3.3。中の重なりは濃くならない) */
   group(opacity: number, draw: () => void) {
     const inner = () => this.scoped(undefined, draw);
-    if (!this.withLayer(inner, (l) => this.compositeLayer(l, opacity))) this.flat(opacity, inner);
+    const put = (l: Layer) => this.compositeLayer(l, opacity);
+    this.withLayer(inner, put, undefined, put, () => this.flat(opacity, inner));
   }
 
   fillRect(x: number, y: number, w: number, h: number, color: string) {
@@ -1333,6 +1440,7 @@ class RasterPainter implements Painter {
       const s = sweepSampler(fill, fg);
       if (!s) return undefined;
       return {
+        extra: stopSearchWork(s.stopCount),
         at: (x, y) => {
           const [u, v] = apply(inv, x, y);
           let deg = (Math.atan2(v - fill.cy, u - fill.cx) * 180) / Math.PI;
@@ -1348,6 +1456,7 @@ class RasterPainter implements Painter {
     // 止まり点の外の延ばし方 (COLR の Extend: pad・repeat・reflect。SVG 1.1 §13.2.2 の spreadMethod と同じ)
     const extend = (t: number) => (fill.extend === 1 ? t - Math.floor(t) : fill.extend === 2 ? 1 - Math.abs((((t % 2) + 2) % 2) - 1) : Math.min(1, Math.max(0, t)));
     return {
+      extra: stopSearchWork(stops.length),
       at: (x, y) => {
         const [u, v] = apply(inv, x, y);
         let t: number | undefined;
@@ -1359,8 +1468,8 @@ class RasterPainter implements Painter {
         } else t = radialT(fill.x0, fill.y0, fill.r0, fill.x1, fill.y1, fill.r1, u, v);
         if (t === undefined) return undefined;
         t = extend(t);
-        let i = 0;
-        while (i < stops.length - 1 && stops[i + 1].offset < t) i++;
+        // t を含む区間 (止まり点は位置の昇順。二分で探す)
+        const i = stopSpan(stops.length - 1, (j) => stops[j].offset, t);
         const p = stops[i];
         const q = stops[Math.min(i + 1, stops.length - 1)];
         const r = q.offset > p.offset ? Math.min(1, Math.max(0, (t - p.offset) / (q.offset - p.offset))) : 0;
@@ -1449,10 +1558,11 @@ class RasterPainter implements Painter {
           diag(
             'png/image-limit',
             msg(
-              `1 ページで画素に戻す画像が多すぎるので (合わせて ${PNG_PAGE_DECODE_PIXELS.toLocaleString('en')} 画素まで)、画像${name ? ` ${name}` : ''}を PNG に描きません`,
-              `too many image pixels to decode on one page (up to ${PNG_PAGE_DECODE_PIXELS.toLocaleString('en')} pixels in total), so image${name ? ` ${name}` : ''} is not drawn in the PNG`,
+              `1 ページで画素に戻す画像が多すぎるので (合わせて ${limits().pngPageImagePixels.toLocaleString('en')} 画素まで)、画像${name ? ` ${name}` : ''}を PNG に描きません`,
+              `too many image pixels to decode on one page (up to ${limits().pngPageImagePixels.toLocaleString('en')} pixels in total), so image${name ? ` ${name}` : ''} is not drawn in the PNG`,
             ),
-            name ? { src: name } : {},
+            // SVG の中の画像は、その画像を含む SVG の画像の src (shapeSampler)
+            { src: name },
           ),
         );
       }
@@ -1491,6 +1601,7 @@ class RasterPainter implements Painter {
   drawImage(a: ImageArea, x: number, y: number) {
     const p = this.images.get(imageKey(a.src, a.language ?? '')) ?? this.images.get(imageKey(a.src, ''));
     if (!p) return;
+    if (p.kind === 'pdf') return paintPlaceholder(a, x, y, this);
     if (p.kind === 'raster') {
       if (this.over) return;
       // 領域の大きさに引き伸ばす (組版が、置く大きさを決めてある。Canvas の drawImage と同じ)
@@ -1515,10 +1626,13 @@ class RasterPainter implements Painter {
     }
     const n = this.clips.length;
     this.clipRect({ x, y, width: a.width, height: a.height });
+    const outer = this.svgSrc;
+    this.svgSrc = a.src;
     try {
       // 線の太さの単位 (ページの CSS px) → 画素: 1px = 0.75pt。ページの倍率だけで、CSS の transform の倍率は掛けない (PDF・SVG の書き出しと同じ)
       this.shapes(doc.shapes, mul(this.m, [sx, 0, 0, sy, x + ox - sx * vx, y + oy - sy * vy]), this.pageScale * 0.75);
     } finally {
+      this.svgSrc = outer;
       this.closeClips(n);
     }
     // 手間を使い切って描き切れなかった (か、描けなかった) SVG の画像は、仮の枠で描く (手間は、仮の枠の分の別の上限から払う)
@@ -1572,7 +1686,8 @@ class RasterPainter implements Painter {
           const group = sh.group;
           const clip = this.clip;
           const inner = () => this.shapes(group.shapes, m, pxScale);
-          if (!this.withLayer(() => this.unclipped(inner), (l) => this.compositeLayer(l, sh.fillOpacity, blend, clip))) this.flat(sh.fillOpacity, inner);
+          const put = (l: Layer) => this.compositeLayer(l, sh.fillOpacity, blend, clip);
+          this.withLayer(() => this.unclipped(inner), put, undefined, put, () => this.flat(sh.fillOpacity, inner));
           continue;
         }
         if (sh.image) {
@@ -1609,6 +1724,7 @@ class RasterPainter implements Painter {
       if (!ginv) return undefined;
       const stopRgb = grad.stops.map((s) => rgbOfCss(s.color));
       return {
+        extra: stopSearchWork(grad.stops.length),
         at: (x, y) => {
           const [rx, ry] = apply(inv, x, y);
           return gradientAt(grad, ginv, rx, ry, rgbOfCss, stopRgb);
@@ -1652,6 +1768,8 @@ class RasterPainter implements Painter {
     return color !== undefined ? { solid: rgbaOf(color) } : undefined;
   }
 
+  /** いま描いている SVG の画像の src (SVG の中の画像の警告の args) */
+  private svgSrc?: string;
   /** SVG の中の画像の Sampler (画素で計算した filter の画像は、その画素。ほかは、覚えを通して戻す: cachedSampler) */
   private shapeSampler(image: NonNullable<SvgShape['image']>, m: Matrix): Sampler | undefined {
     if (image.pixels) {
@@ -1668,10 +1786,13 @@ class RasterPainter implements Painter {
       m,
       false,
       () => {
-        if (this.warned.has('\u0000svg')) return;
-        this.warned.add('\u0000svg');
-        this.warn(diag('png/image-not-drawn', msg('SVG の中の画像のうち、画素に戻せないもの (CMYK の JPEG・インターレースの PNG など) は描きません', 'images inside SVG that cannot be decoded to pixels (CMYK JPEG, interlaced PNG, etc.) are not drawn')));
+        // SVG の画像ごとに 1 度。src は、その画像を含む SVG の画像の src (ほかの所の png/image-not-drawn と同じ args)
+        const src = (this.svgSrc ?? '').slice(0, 200);
+        if (this.warned.has(`\u0000svg\u0000${src}`)) return;
+        this.warned.add(`\u0000svg\u0000${src}`);
+        this.warn(diag('png/image-not-drawn', msg(`SVG の画像 ${src} の中の画像のうち、画素に戻せないもの (CMYK の JPEG・インターレースの PNG など) は描きません`, `images inside the SVG image ${src} that cannot be decoded to pixels (CMYK JPEG, interlaced PNG, etc.) are not drawn`), { src }));
       },
+      this.svgSrc,
     );
   }
 }
@@ -1779,16 +1900,18 @@ async function prepareImages(sheet: SheetArea, fonts: FontManager, opts: PngRend
   const assets = opts.assets;
   for (const [src, langs] of pageImages(sheet)) {
     const asset = assets?.get(src);
+    if (asset?.pdfSource) {
+      images.set(imageKey(src, ''), { kind: 'pdf' });
+      opts.warn?.(pdfPlaceholderDiagnostic(src, 'PNG'));
+      continue;
+    }
     if (!asset?.bytes || asset.drawable === false) continue;
     const bytes = asset.bytes;
     if (asset.mime === 'image/svg+xml') {
       if (!opts.parseXml) continue;
       const text = new TextDecoder().decode(bytes);
-      await registerSvgFonts(fonts, text);
-      for (const lang of langs) {
-        const doc = svgImageDoc(src, text, lang, fonts, assets, opts.parseXml);
-        if (doc) images.set(imageKey(src, lang), { kind: 'svg', doc });
-      }
+      const docs = rejoin(thisCall(), await svgImageDocs(src, text, langs, fonts, { ...opts, parseXml: opts.parseXml }));
+      for (const [lang, doc] of docs) images.set(imageKey(src, lang), { kind: 'svg', doc });
       continue;
     }
     images.set(imageKey(src, ''), { kind: 'raster', src, mime: asset.mime, bytes });
@@ -1806,10 +1929,11 @@ export async function renderSheetToPixels(sheet: SheetArea, fonts: FontManager, 
   const dpi = opts.dpi ?? 96;
   if (!(dpi > 0) || !Number.isFinite(dpi)) throw new RangeError(msg(`解像度 (dpi) は正の数にしてください: ${dpi}`, `the resolution (dpi) must be a positive number: ${dpi}`));
   const { width, height } = pngSize(sheet, dpi);
-  if (width * height > PNG_MAX_PIXELS)
-    throw new RangeError(msg(`画像が大きすぎます (${width} × ${height} 画素。${PNG_MAX_PIXELS.toLocaleString('en')} 画素まで)。dpi を下げてください`, `the image is too large (${width} × ${height} pixels; up to ${PNG_MAX_PIXELS.toLocaleString('en')} pixels). Lower the dpi`));
+  const lim = limits();
+  if (width * height > lim.pngPixels)
+    throw new RangeError(msg(`画像が大きすぎます (${width} × ${height} 画素。${lim.pngPixels.toLocaleString('en')} 画素まで)。dpi を下げてください`, `the image is too large (${width} × ${height} pixels; up to ${lim.pngPixels.toLocaleString('en')} pixels). Lower the dpi`));
   const warn = opts.warn ?? (() => {});
-  const images = await prepareImages(sheet, fonts, opts);
+  const images = rejoin(thisCall(), await prepareImages(sheet, fonts, opts));
   const page = new Layer(0, 0, width, height);
   // 用紙 (Canvas と同じく白)
   page.d.fill(1);
@@ -1822,14 +1946,16 @@ export async function renderSheetToPixels(sheet: SheetArea, fonts: FontManager, 
   raster.decoded = 0;
   const pixels = width * height;
   const shared: RasterShared = {
-    work: { used: 0, limit: PNG_RASTER_BASE_WORK + PNG_RASTER_WORK_PER_PIXEL * pixels, over: false, inReserve: false, reserveUsed: 0, reserve: PNG_PLACEHOLDER_WORK_PER_PIXEL * pixels },
+    // 手間の上限: 1 画素あたりの手間 (limits.pngRasterWork。既定 PNG_RASTER_WORK_PER_PIXEL) と、基本の手間を同じ比で動かす
+    work: { used: 0, limit: (PNG_RASTER_BASE_WORK * lim.pngRasterWork) / PNG_RASTER_WORK_PER_PIXEL + lim.pngRasterWork * pixels, over: false, inReserve: false, reserveUsed: 0, reserve: PNG_PLACEHOLDER_WORK_PER_PIXEL * pixels },
     tiles: new Map(),
     tilePixels: 0,
     keys: new PatternKeys(),
     warned: false,
     parseXml: opts.parseXml,
     layerPixels: 0,
-    layerLimit: Math.min(PNG_LAYER_MAX_PIXELS, Math.max(PNG_LAYER_PIXELS_PER_PAGE * pixels, PNG_LAYER_MIN_PIXELS)),
+    layerBlocked: Infinity,
+    layerLimit: Math.min(lim.pngLayerPixels, Math.max(PNG_LAYER_PIXELS_PER_PAGE * pixels, PNG_LAYER_MIN_PIXELS)),
     layerWarned: false,
     clipWarned: false,
   };
@@ -1845,5 +1971,5 @@ export async function renderSheetToPixels(sheet: SheetArea, fonts: FontManager, 
 
 /** ページ (SheetArea) を PNG にする (8 ビットの RGB。紙は白) */
 export async function renderSheetToPng(sheet: SheetArea, fonts: FontManager, opts: PngRenderOptions = {}): Promise<Uint8Array> {
-  return encodePng(await renderSheetToPixels(sheet, fonts, opts));
+  return encodePng(rejoin(thisCall(), await renderSheetToPixels(sheet, fonts, opts)));
 }

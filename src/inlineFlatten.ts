@@ -32,7 +32,7 @@ import { warichuArea, type WarichuGroup } from './warichu';
 export function hyphenAtoms(st: ResolvedStyle, glyphOf: (ch: string) => GlyphMetrics, runId: number, bg: Atom['bg'], primaryRatio?: number): Atom[] {
   return [...(st.hyphenLimits?.character ?? '-')].map((ch) => {
     const g = glyphOf(ch);
-    return { kind: 'glyph', first: ch, last: ch, advance: g.advance, isSpace: false, runId, st, bg, g, ...(primaryRatio !== undefined ? { primaryRatio } : {}) };
+    return { kind: 'glyph', first: ch, last: ch, advance: g.advance, isSpace: false, runId, st, bg, g, insertedHyphen: true, ...(primaryRatio !== undefined ? { primaryRatio } : {}) };
   });
 }
 
@@ -882,9 +882,17 @@ function flattenInlineElement(c: LInline, cx: FlattenCtx): void {
   }
   // inline の id は、最初の atom に付けて、その行が置かれたページで記録する (page-number-citation の参照先)
   if (c.id && kids.length && !kids[0].src) kids[0].src = c.id;
-  // 行の中で見つけた絶対配置の箱の目印: 幅 0 の箱 (前の字との間で改行しない)。組んだ後で、この箱の位置を static position にする
-  if (c.staticAnchor !== undefined && !kids.length)
-    kids.push({ kind: 'box', idMark: true, staticMark: true, first: '\uFFFC', last: '\uFFFC', advance: 0, isSpace: false, runId: ++state.run, st: s2, glue: true, box: { node: newNode('block', wm, { isize: 0, bsize: 0, absAnchor: c.staticAnchor }), adv: 0, cross: 0, above: 0, below: 0 } });
+  // 行の中で見つけた絶対配置の箱の目印: 幅 0 の箱 (前の字との間で改行しない)。組んだ後で、この箱の位置を static position にする。
+  // タグ付き PDF の、構造の順の置き場所だけの目印 (structMark) も同じ箱。目印に構造の節が付いていれば (tag)、箱に入力の節の番号を付け、
+  // 描くときに、その所を構造の節の置き場所にする (paint.ts の Painter.place)
+  if ((c.staticAnchor !== undefined || c.structMark) && !kids.length) {
+    const r = c.tag !== undefined ? sourceRef(c) : undefined;
+    kids.push({ kind: 'box', idMark: true, staticMark: true, first: '\uFFFC', last: '\uFFFC', advance: 0, isSpace: false, runId: ++state.run, st: s2, glue: true, box: { node: newNode('block', wm, { isize: 0, bsize: 0, ...(c.staticAnchor !== undefined ? { absAnchor: c.staticAnchor } : {}), ...(r !== undefined ? { ref: r } : {}) }), adv: 0, cross: 0, above: 0, below: 0 } });
+  }
+  // 行の中に書いた float の目印: 幅 0 の箱 (前の字との間で改行しない。絶対配置の箱の目印と同じく、行末の空白を捨てるときは飛ばす)。
+  // 組版は、この箱を含む行を組むときに float を置く (layoutInlineRunFloating)
+  if (c.floatAnchor !== undefined && !kids.length)
+    kids.push({ kind: 'box', idMark: true, staticMark: true, floatMark: c.floatAnchor, first: '\uFFFC', last: '\uFFFC', advance: 0, isSpace: false, runId: ++state.run, st: s2, glue: true, box: { node: newNode('block', wm, { isize: 0, bsize: 0 }), adv: 0, cross: 0, above: 0, below: 0 } });
   // 中身の無い inline (HTML の <a id="…"></a> のような目印) は、幅 0 の箱で位置を記録する (前の字との間で改行しない)
   if (c.id && !kids.length)
     kids.push({ kind: 'box', idMark: true, first: '\uFFFC', last: '\uFFFC', advance: 0, isSpace: false, runId: ++state.run, st: s2, glue: true, src: c.id, box: { node: newNode('block', wm, { isize: 0, bsize: 0 }), adv: 0, cross: 0, above: 0, below: 0 } });

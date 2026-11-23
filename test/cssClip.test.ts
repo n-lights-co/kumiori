@@ -80,7 +80,7 @@ describe('clip の値を読む (cssCascade)', () => {
   });
   it('未対応の CSS の一覧に無い (警告に数えない)', () => {
     expect(UNSUPPORTED_CSS_PROPERTIES.has('clip')).toBe(false);
-    expect(unsupportedCssReport(parseCss('.sr { clip: rect(0 0 0 0) } p { clip: auto }'))).toEqual({ unsupported: {}, unknown: {} });
+    expect(unsupportedCssReport(parseCss('.sr { clip: rect(0 0 0 0) } p { clip: auto }'))).toEqual({ unsupported: {}, unknown: {}, invalid: {} });
   });
 });
 

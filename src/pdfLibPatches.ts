@@ -25,6 +25,7 @@ import { decodePngForPdf, pngDataComplete, pngWithinLimits } from './pixels';
 import { cffGidToCid, cffTable, subsetCff } from './cff';
 import { msg } from './messages';
 import { KumioriError } from './errors';
+import { rejoin, thisCall } from './callContext';
 
 /** 差し替え済みの印 (原型に付ける) */
 const PATCHED = Symbol.for('kumiori.pdfLibPatched');
@@ -295,7 +296,7 @@ export function patchCffEmbedding() {
       return context.register(context.flateStream(this.fontData, { Subtype: 'OpenType' }));
     }
     const subtype = isCff.call(this) ? 'CIDFontType0C' : undefined;
-    return context.register(context.flateStream(await this.serializeFont(), { Subtype: subtype }));
+    return context.register(context.flateStream(rejoin(thisCall(), await this.serializeFont()), { Subtype: subtype }));
   };
   (proto as Record<symbol, unknown>)[PATCHED] = true;
 }
@@ -366,7 +367,7 @@ export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array): Promise<P
   });
   try {
     const img = PDFImage.of(pdf.context.nextRef(), pdf, embedder);
-    await img.embed();
+    rejoin(thisCall(), await img.embed());
     return img;
   } catch {
     // 埋め込めなければ、pdf-lib の embedPng (展開して埋め込む) に任せる
@@ -392,14 +393,14 @@ function decodedPngEmbedder(png: Uint8Array): PngEmbedder | 'broken' | undefined
  */
 export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array): Promise<PDFImage> {
   if (!pngWithinLimits(png)) throw new Error(msg('PNG: 画素の数か展開の大きさが上限を超えます', 'PNG: the number of pixels or the decompressed size exceeds the limit'));
-  const asIs = await embedPngAsIs(pdf, png);
+  const asIs = rejoin(thisCall(), await embedPngAsIs(pdf, png));
   if (asIs) return asIs;
   // 8 ビットの α の付いた PNG は、自前で展開して、pdf-lib と同じ RGB・α の画像にする (pdf-lib の展開は、1 億画素で 10 秒かかる)
   const own = decodedPngEmbedder(png);
   if (own === 'broken') throw new Error(msg('PNG: 画素のデータが壊れています', 'PNG: the pixel data is broken'));
   if (own) {
     const img = PDFImage.of(pdf.context.nextRef(), pdf, own);
-    await img.embed();
+    rejoin(thisCall(), await img.embed());
     return img;
   }
   // 展開して埋め込む前に、画素のデータが終わりまで展開できることを確かめる (壊れたデータで、pdf-lib の展開が止まらなくなる。pngDataComplete)
@@ -444,7 +445,7 @@ export async function embedCmykImage(
     try {
       const own = decodedPngEmbedder(bytes);
       if (own === 'broken') return undefined;
-      e = own ?? (await PngEmbedder.for(bytes));
+      e = own ?? rejoin(thisCall(), await PngEmbedder.for(bytes));
     } catch {
       return undefined;
     }
@@ -460,12 +461,12 @@ export async function embedCmykImage(
   if (!colourful) {
     // 8 ビットの灰色 (IHDR の色の型 0) の PNG は、展開せずにそのまま DeviceGray で入れる (透明度が無いとき。tRNS があれば embedPngAsIs が断る)
     if (kind === 'png' && !alpha && bytes[25] === 0) {
-      const asIs = await embedPngAsIs(pdf, bytes);
+      const asIs = rejoin(thisCall(), await embedPngAsIs(pdf, bytes));
       if (asIs) return { image: asIs, hasAlpha: false };
     }
     const gray = new Uint8Array(width * height);
     for (let i = 0, o = 0; o < gray.length; i += 3, o++) gray[o] = rgb[i];
-    return { image: await embedImageStream(pdf, gray, width, height, 'DeviceGray', alpha), hasAlpha: !!alpha };
+    return { image: rejoin(thisCall(), await embedImageStream(pdf, gray, width, height, 'DeviceGray', alpha)), hasAlpha: !!alpha };
   }
   const cmyk = new Uint8Array(width * height * 4);
   const memo = new Map<number, number[]>();
@@ -478,7 +479,7 @@ export async function embedCmykImage(
     }
     cmyk.set(c, o);
   }
-  return { image: await embedImageStream(pdf, cmyk, width, height, 'DeviceCMYK', alpha), hasAlpha: !!alpha };
+  return { image: rejoin(thisCall(), await embedImageStream(pdf, cmyk, width, height, 'DeviceCMYK', alpha)), hasAlpha: !!alpha };
 }
 
 /** 8 ビットの画素 data (色空間 colorSpace の成分の並び) を、FlateDecode の画像として埋め込む。alpha があれば SMask (DeviceGray) にする */
@@ -499,7 +500,7 @@ async function embedImageStream(pdf: PDFDocument, data: Uint8Array, width: numbe
     },
   });
   const image = PDFImage.of(pdf.context.nextRef(), pdf, embedder);
-  await image.embed();
+  rejoin(thisCall(), await image.embed());
   return image;
 }
 

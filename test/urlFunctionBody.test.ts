@@ -3,6 +3,7 @@
  * 長さに比例した手間で終わること (前は、正規表現の前後の \s* と中身が同じ空白を取り合い、空白 2,000 個で 8 秒、6,000 個で 200 秒を超えた)
  */
 import { describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import { DOMParser } from '@xmldom/xmldom';
 import { urlFunctionBody } from '../src/resources';
 import { normalizeSrc } from '../src/assets';
@@ -42,24 +43,24 @@ describe('urlFunctionBody', () => {
 
   it('「url(」と空白の長い並びの値でも、すぐに終わる', () => {
     const long = 'url(' + ' '.repeat(200_000) + 'x';
-    const t = performance.now();
+    const t = cpuClock();
     expect(urlFunctionBody(long, 'match', false)).toBeUndefined();
     expect(urlFunctionBody(long, 'any')).toBeUndefined();
     expect(urlFunctionBody(long + ')', 'any')).toBe('x');
     normalizeSrc(long);
-    expect(performance.now() - t).toBeLessThan(500);
+    expect(cpuClock() - t).toBeLessThan(scaled(500));
   });
 
   it('画像の src (normalizeSrc) と XSL-FO の external-destination・送り先・添付の url(…) が、空白の長い並びで時間をかけない', () => {
     const spaces = ' '.repeat(6000);
-    let t = performance.now();
+    let t = cpuClock();
     normalizeSrc(`url(${spaces}x`);
-    expect(performance.now() - t).toBeLessThan(500);
+    expect(cpuClock() - t).toBeLessThan(scaled(500));
     const fo = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"><fo:layout-master-set><fo:simple-page-master master-name="p"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>
 <fo:bookmark-tree><fo:bookmark external-destination="url(${spaces}x"><fo:bookmark-title>b</fo:bookmark-title></fo:bookmark></fo:bookmark-tree>
 <fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block><fo:basic-link external-destination="url(${spaces}x">a</fo:basic-link><fo:inline axf:annotation-file-attachment="url(${spaces}x">f</fo:inline></fo:block></fo:flow></fo:page-sequence></fo:root>`;
-    t = performance.now();
+    t = cpuClock();
     importXslFo(fo, (x) => new DOMParser().parseFromString(x, 'text/xml') as never);
-    expect(performance.now() - t).toBeLessThan(3000);
+    expect(cpuClock() - t).toBeLessThan(scaled(3000));
   });
 });

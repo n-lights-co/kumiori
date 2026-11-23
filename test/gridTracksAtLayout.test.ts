@@ -8,6 +8,7 @@
  *  - SVG の開始タグを、注釈などを飛ばして、文書の長さに比例する手間で探す
  */
 import { beforeAll, describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import { DEFAULT_FONTS, childrenOf, typesetHtml, type AreaNode } from '../src/index';
 import { headerSize, svgStartTag } from '../src/assets';
 import { gridTrackPlan, gridTracks } from '../src/gridTracks';
@@ -123,20 +124,20 @@ describe('auto-fill の列 (回数は見積もりの幅で決まる)', () => {
 
 describe('列の幅を決める手間', () => {
   it('上限に当たる列が多くても、手間は列の数に比例する (1 本ずつ止めて分け直さない)', () => {
-    const t0 = performance.now();
+    const t0 = cpuClock();
     const a = gridTracks('repeat(10000, minmax(0, 1px))', 1e5, 0);
-    const t1 = performance.now();
+    const t1 = cpuClock();
     expect(a.length).toBe(10000);
     expect(a.every((w) => w === 0.75)).toBe(true);
     const b = gridTracks('repeat(10000, 1fr)', 7500, 0);
     expect(b.every((w) => Math.abs(w - 0.75) < 1e-9)).toBe(true);
     // 前は 1 回に 750ms ほど (列の数の 2 乗)。いまは数 ms
-    expect(t1 - t0).toBeLessThan(300);
+    expect(t1 - t0).toBeLessThan(scaled(300));
     // 下限と上限の区切りが列ごとに違う並びも
     const tpl = Array.from({ length: 3000 }, (_, k) => `minmax(${k % 7}px, ${10 + (k % 13)}px) ${1 + (k % 3)}fr`).join(' ');
-    const t2 = performance.now();
+    const t2 = cpuClock();
     const c = gridTracks(tpl, 20000, 1);
-    expect(performance.now() - t2).toBeLessThan(300);
+    expect(cpuClock() - t2).toBeLessThan(scaled(300));
     expect(c.every((w) => Number.isFinite(w) && w >= 0)).toBe(true);
   });
 });
@@ -256,9 +257,9 @@ describe('SVG の開始タグ', () => {
   it('> の無い <svg が続く細工したファイルでも、手間は長さに比例する', () => {
     const enc = (s: string) => new TextEncoder().encode(s);
     const evil = enc('<!--' + ' '.repeat(5000) + '-->' + '<svg '.repeat(80_000));
-    const t0 = performance.now();
+    const t0 = cpuClock();
     expect(headerSize(evil, 'image/svg+xml')).toEqual({ width: 300, height: 150, noRatio: true });
     // 前は 400KB で 14 秒ほど (正規表現の 2 乗の手間)
-    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(1000));
   });
 });

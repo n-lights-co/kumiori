@@ -94,3 +94,25 @@ describe('結合子の種類が混ざったセレクタの、複合セレクタ�
     expect(Date.now() - t).toBeLessThan(10_000);
   }, 30_000);
 });
+
+describe('後続の兄弟の結合子 (~) が 1 つのセレクタ', () => {
+  it('親ごとに覚えた、初めに合う子の位置で照合しても、前の兄弟を 1 つずつ見るのと同じ要素に当たる (Selectors 4 §16.4)', () => {
+    // 親が 2 つ。前の親では 5 番目と 30 番目の子が .a、後の親には .a が無い。右端が .b・:not(.b) のもの (照合しない兄弟を飛ばす) と、
+    // 左に子孫の結合子のあるもの (.x .a ~ .b) も確かめる
+    const kids = (as: number[]) => Array.from({ length: 40 }, (_, i) => `<i${as.includes(i) ? ' class="a"' : ''}${i % 7 === 0 ? ' class="b"' : ''}>x</i>`).join('');
+    const doc = parse(`<div class="x">${kids([5, 30])}</div><div>${kids([])}</div>`);
+    const css = '.a ~ i { color: red } .x .a ~ .b { background-color: blue } .a ~ :not(.b) { text-decoration-line: underline }';
+    const s = cascadeStyles(doc, css, { viewport: { width: 600, height: 800 } });
+    const divs = Array.from(doc.getElementsByTagName('div'));
+    for (const [d, div] of divs.entries()) {
+      const is = Array.from(div.getElementsByTagName('i'));
+      for (const [i, e] of is.entries()) {
+        const after = d === 0 && i > 5;
+        const st = s.style(e);
+        expect(st.getPropertyValue('color') === 'rgb(255, 0, 0)', `${d}:${i} ~ i`).toBe(after);
+        expect(st.getPropertyValue('background-color') === 'rgb(0, 0, 255)', `${d}:${i} .x .a ~ .b`).toBe(after && i % 7 === 0);
+        expect(st.getPropertyValue('text-decoration-line') === 'underline', `${d}:${i} ~ :not(.b)`).toBe(after && i % 7 !== 0);
+      }
+    }
+  });
+});

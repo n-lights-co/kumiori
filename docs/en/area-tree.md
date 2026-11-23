@@ -57,6 +57,12 @@ Children are returned by `childrenOf()`. The order is the painting order; earlie
 
 To walk the tree, use `walkAreas()` (from one node) or `walkAreaTree()` (all sheets of the document). Both are depth-first, pre-order.
 
+## Page numbers
+
+- `pageNumber` of a `page` is the page number (reflecting renumbering by XSL-FO `initial-page-number` and CSS `counter-reset: page` and `counter-set: page`). It is not the position of the sheet.
+- `pageNumberFormat` of a `page` is the page number format of that page (the `format` of the XSL-FO `fo:page-sequence`; in CSS, the type of `counter(page, <type>)` in the margin boxes turned into a format; such as `i`, `I`, `a`, `A`, `01`, `一` or `①`, including the characters around it). Decimal (`1`) pages do not have it (it is an optional field, so the schema version is unchanged).
+- The PDF page labels (the page numbers a viewer shows; ISO 32000-1 §12.4.2) are made from these two.
+
 ## Writing to and reading from JSON
 
 - `serializeAreaTree(tree)` turns the tree into a JSON string. Fields that are `undefined` are not written.
@@ -101,6 +107,8 @@ To walk the tree, use `walkAreas()` (from one node) or `walkAreaTree()` (all she
 - `GlyphArea.glyphIds` are the IDs of the glyphs to draw. They are the result of shaping `text` with the font's OpenType features (`features`), in left-to-right drawing order (the same way as when writing the PDF).
 - `GlyphArea.glyphPositions` is [advance, horizontal offset, vertical offset] per glyph (in font units; `unitsPerEm` is 1 em). These are positions adjusted by the font's GPOS, and are present only when there are two or more glyphs and either an advance differs from the font's advance width or there is an offset (e.g. the positioning of Arabic marks, or of combining marks placed on their base character). If present, the PDF is written with the position of each glyph set individually.
 - `GlyphArea.fontPalette` is the palette selection for colored glyphs (the OpenType COLR/CPAL and SVG tables): the result of applying the CSS `font-palette` and `@font-palette-values` to the font of that character. `base` is the palette index, and `colors` is the list of color overrides ([color index, `#rrggbb` or `#rrggbbaa`]). It is absent for the default palette (palette 0 with no overrides) and for characters in fonts without palettes. The colored glyphs themselves (layers, gradients, images) are not stored in the tree; they are read from the font file when drawing.
+- `GlyphArea.hyphen` marks a character added at the end of a line by hyphenation (CSS `hyphenate-character`, XSL-FO `hyphenation-character`; `-` by default). It is not a character of the input. In tagged PDF, its replacement text (`ActualText`) is written as a soft hyphen (U+00AD) (ISO 32000-1 §14.8.2.5 and §14.9.4).
+- `GlyphArea.breakSpace` is the space character removed at the end of a line that was broken at a space (usually `" "`). It is on the last character of the line (in reading order; the hanging character if there is one), and not on the last line of a paragraph or a line ended by a forced break. In tagged PDF, the space is written as an invisible character after that character, so that words across lines do not run together when read in structure order (§14.8.2.5). When extracting text, dropping the `hyphen` characters and adding `breakSpace` gives back the input characters (after spaces are collapsed).
 - Glyph IDs and positions are shaped with the same set of features as when measuring during typesetting (kerning between characters and optional ligatures are not applied, since typesetting handles them separately).
 - SHA-256 is computed in `src/sha256.ts` (FIPS 180-4). Tests verify that it gives the same values as Node's crypto.
 

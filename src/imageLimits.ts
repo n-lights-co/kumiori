@@ -3,8 +3,15 @@
  * ここの値を見る (ファイルの頭に書かれた寸法をそのまま信じると、小さなファイルで大量のメモリを確保するため)。
  */
 
-/** 1 枚の画像の画素の数の上限 (1 億画素。RGBA で 400MB)。これを超える画像は読まない (描けない画像として扱う) */
+import { limits } from './limits';
+
+/**
+ * 1 枚の画像の画素の数の上限の既定 (1 億画素。RGBA で 400MB)。これを超える画像は読まない (描けない画像として扱う)。
+ * 呼び出しの上限 (TypesetOptions.limits の imagePixels) で変えられるので、読む所は maxPixels() を使う
+ */
 export const MAX_PIXELS = 1e8;
+/** いまの呼び出しの、1 枚の画像の画素の数の上限 (limits.imagePixels。既定 MAX_PIXELS) */
+export const maxPixels = (): number => limits().imagePixels;
 
 /** PostScript の image 1 枚の画素の数の上限 (6,400 万画素。超えれば limitcheck) */
 export const PS_IMAGE_MAX_PIXELS = 64_000_000;
@@ -14,6 +21,8 @@ export const PS_IMAGE_MAX_PIXELS = 64_000_000;
  * 文書の画像の上限 MAX_PIXELS と同じにする (RGBA で 400MB まで)
  */
 export const PS_TOTAL_IMAGE_PIXELS = MAX_PIXELS;
+/** いまの呼び出しの PS_TOTAL_IMAGE_PIXELS (limits.imagePixels に連動) */
+export const psTotalImagePixels = (): number => limits().imagePixels;
 
 /**
  * メタファイル (WMF・EMF) と CGM の 1 つの文書の中で、画素にする画像 (DIB・CELL ARRAY・PATTERN TABLE の模様・タイルの並び) の画素の合計の上限。
@@ -54,7 +63,7 @@ export const GIF_FREE_PIXELS = 1024 * 1024;
 export const GIF_PIXELS_PER_BYTE = 4096;
 
 /** fileBytes バイトの GIF が、画素にできる数 (論理画面と、画像の画素の数の、それぞれの上限) */
-export const gifPixelBudget = (fileBytes: number): number => Math.min(MAX_PIXELS, GIF_FREE_PIXELS + GIF_PIXELS_PER_BYTE * fileBytes);
+export const gifPixelBudget = (fileBytes: number): number => Math.min(maxPixels(), GIF_FREE_PIXELS + GIF_PIXELS_PER_BYTE * fileBytes);
 
 /**
  * ほかの画素の形式も、GIF と同じ考え方で、画素の数をファイル (符号のデータ) の大きさで縛る。
@@ -65,7 +74,7 @@ export const gifPixelBudget = (fileBytes: number): number => Math.min(MAX_PIXELS
 export const IMAGE_FREE_PIXELS = GIF_FREE_PIXELS;
 
 /** fileBytes バイトのデータが、1 バイトあたり perByte 画素の形式で、画素にできる数 */
-export const pixelBudget = (fileBytes: number, perByte: number): number => Math.min(MAX_PIXELS, IMAGE_FREE_PIXELS + perByte * fileBytes);
+export const pixelBudget = (fileBytes: number, perByte: number): number => Math.min(maxPixels(), IMAGE_FREE_PIXELS + perByte * fileBytes);
 
 /**
  * VP8 (WebP の非可逆) の 1 バイトあたりの画素の数 (VP8 のチャンクの大きさに当てる)。キーフレームのマクロブロック (16 × 16 画素) は、
@@ -126,6 +135,16 @@ export const BMP_RLE_PIXELS_PER_BYTE = METAFILE_PIXELS_PER_BYTE;
 export const DEFLATE_MAX_RATIO = 1032;
 
 /**
+ * PDF の画像を読むときに解く、オブジェクトの流れ (ObjStm。ISO 32000-1 §7.5.7) と相互参照の流れ (XRef。§7.5.8) の、解いた大きさの合計の縛り
+ * (pdfImage.ts。上限 pdfImageStreamBytes との小さい方)。ファイルの大きさの PDF_OBJSTM_MAX_RATIO 倍 + PDF_OBJSTM_FREE_BYTES まで。
+ * 流れは二重の Flate などで重ねて圧縮でき、deflate の比の上限 (DEFLATE_MAX_RATIO) を掛け合わせられるので、比の実用の上限で縛る
+ * (1MB の PDF の ObjStm が、解くと 1GB になった)。オブジェクトの流れに入るのは辞書・配列・数などの字の並びで、ふつうの PDF の比は
+ * 数倍から十数倍なので、100 倍 (WEBFONT_MAX_RATIO と同じ考え方) にする
+ */
+export const PDF_OBJSTM_MAX_RATIO = 100;
+export const PDF_OBJSTM_FREE_BYTES = 1024 * 1024;
+
+/**
  * WOFF・WOFF2 を戻した書体 (sfnt) の大きさの上限 (webFont.ts)。
  *  - 合計は WEBFONT_MAX_SFNT_BYTES (128MB) まで: ネットワークから取る書体の上限 (fetchLimits.fontBytes) と同じ。それより大きな書体を
  *    WOFF に包んでも読まない。WOFF の表の目録の origLength (WOFF 1.0 §5) と WOFF2 の目録の origLength・transformLength (WOFF2 §4.1) は
@@ -139,10 +158,10 @@ export const WEBFONT_MAX_SFNT_BYTES = 128 * 1024 * 1024;
 export const WEBFONT_MAX_RATIO = 100;
 export const WEBFONT_FREE_BYTES = 1024 * 1024;
 /** fileBytes バイトの WOFF・WOFF2 を戻した書体の大きさの上限 */
-export const webFontSfntBudget = (fileBytes: number): number => Math.min(WEBFONT_MAX_SFNT_BYTES, WEBFONT_FREE_BYTES + WEBFONT_MAX_RATIO * fileBytes);
+export const webFontSfntBudget = (fileBytes: number): number => Math.min(limits().fontBytes, WEBFONT_FREE_BYTES + WEBFONT_MAX_RATIO * fileBytes);
 
 /** fileBytes バイトのメタファイル・CGM が、画素にできる数 (その文書の画像の画素の合計の上限) */
-export const metafilePixelBudget = (fileBytes: number): number => Math.min(METAFILE_TOTAL_IMAGE_PIXELS, METAFILE_FREE_PIXELS + METAFILE_PIXELS_PER_BYTE * fileBytes);
+export const metafilePixelBudget = (fileBytes: number): number => Math.min(limits().metafileImagePixels, METAFILE_FREE_PIXELS + METAFILE_PIXELS_PER_BYTE * fileBytes);
 
 /**
  * PostScript の 1 つの文書 (EPS) が確保できる VM (配列・文字列・辞書など、合成オブジェクトの値を置く所。PLRM §3.7) の量の上限 (512MB。超えれば VMerror)。
@@ -207,7 +226,8 @@ export const PS_MAX_SVG_CHARS = 128 * 1024 * 1024;
 
 /**
  * ネットワークから取る資源 (文書が http(s) の URL で参照する CSS・書体・画像) の、1 件の大きさの上限 (バイト) と、転送 (redirect) をたどる回数の上限。
- * 取得 (resources.ts の fetchGuarded) がここの値を見る。値を書き換えられる入れ物にしてあるのは、テストが小さな値で試すため (利用者向けの設定ではない)。
+ * 取得 (resources.ts の fetchGuarded) がここの値を見る。値は、いまの呼び出しの上限 (TypesetOptions.limits の fileBytes・cssBytes・fontBytes・redirects) から読む
+ * (下の値は既定。呼び出しの外では既定の値)。
  *  - cssBytes: 16MB。実在の大きな CSS (CSS の枠組みをまとめたもの・書体を data URI で埋め込んだもの) は数 MB なので、それを弾かない
  *  - fontBytes: 128MB。和文・CJK の書体は 1 書体で 5〜25MB、いくつもの書体をまとめた集まり (TTC・OTC。CJK の全ウェイトを入れたもの) は
  *    数十 MB から 100MB ほどなので、それを弾かない
@@ -215,10 +235,18 @@ export const PS_MAX_SVG_CHARS = 128 * 1024 * 1024;
  *  - redirects: 20。ブラウザが転送をたどる回数の上限 (Fetch Standard §4.5 HTTP-redirect fetch の redirect count。Node の fetch も同じ 20)
  */
 export const fetchLimits = {
-  cssBytes: 16 * 1024 * 1024,
-  fontBytes: 128 * 1024 * 1024,
-  imageBytes: 256 * 1024 * 1024,
-  redirects: 20,
+  get cssBytes(): number {
+    return limits().cssBytes;
+  },
+  get fontBytes(): number {
+    return limits().fontBytes;
+  },
+  get imageBytes(): number {
+    return limits().fileBytes;
+  },
+  get redirects(): number {
+    return limits().redirects;
+  },
 };
 
 /**
@@ -262,7 +290,7 @@ export const METAFILE_SVG_FREE_CHARS = 2 * 1024 * 1024;
 export const METAFILE_SVG_CHARS_PER_BYTE = 128;
 export const METAFILE_MAX_SVG_CHARS = PS_MAX_SVG_CHARS;
 /** fileBytes バイトのメタファイル・CGM を SVG にした文字列 (画像の中身を除く) の長さの上限 */
-export const metafileSvgBudget = (fileBytes: number): number => Math.min(METAFILE_MAX_SVG_CHARS, METAFILE_SVG_FREE_CHARS + METAFILE_SVG_CHARS_PER_BYTE * fileBytes);
+export const metafileSvgBudget = (fileBytes: number): number => Math.min(limits().epsSvgChars, METAFILE_SVG_FREE_CHARS + METAFILE_SVG_CHARS_PER_BYTE * fileBytes);
 
 /**
  * メタファイル (WMF・EMF) の 1 つの文書で、切り抜きの領域の演算 (metafile.ts の regionOp) に使える手間の合計の上限。

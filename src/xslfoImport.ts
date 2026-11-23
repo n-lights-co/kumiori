@@ -15,6 +15,7 @@
  * ファイルの分け方: 親から子へ渡す文脈 (Ctx) は foContext.ts、fo:simple-page-master の読み取りは foPageMaster.ts、
  * 数式用の書体が無いときの MathML の組み替えは foMathFallback.ts。どちらも Importer の読み方 (attr・len・color など) を借りて動く
  */
+import { nestLimit, limits } from './limits';
 import { parseTextJustifyTrim } from './textJustifyTrim';
 import { msg } from './messages';
 import { countDroppedLink, judgeExternalLink, type DroppedLinks, type LinkPolicy } from './linkPolicy';
@@ -88,17 +89,18 @@ import { isAntennaCompat, type FoCompat } from './compat';
 import { pushAll } from './arrayLoop';
 import { firstLetterOf, stripDoctype } from './linearText';
 import { KumioriInputError, KumioriLimitError } from './errors';
-import type { Diagnostic, DiagnosticSource } from './diagnostics';
+import { diag, type Diagnostic, type DiagnosticSource } from './diagnostics';
 import { elementSource, tagNodeSource } from './sourceLocation';
+import { countryToRegion } from './languageTag';
 
-/** 表の列の番号・数の上限 */
-const MAX_TABLE_COLUMNS = 1000;
+/** 表の列の番号・数の上限の既定 (呼び出しの上限 limits.tableColumns で動く) */
+export const MAX_TABLE_COLUMNS = 1000;
 /**
  * 要素の入れ子の深さ (fo:root から数える) の上限。読み込み・組版は、要素の入れ子を関数の再帰でたどるので、深すぎる文書は
  * JS の呼び出しの深さを使い切る (RangeError)。測ったところ、fo:block だけの入れ子で 800〜1000 段、fo:block-container と
  * fo:block の交互で 600〜800 段で切れるので、その 1/3 ほどにする。実在の文書の入れ子は数十段まで
  */
-const MAX_FO_NEST = 250;
+export const MAX_FO_NEST = 250;
 /**
  * 段組のコンテナの中の、入れ子のブロックの中の span="all" を外へ出すときに作る、包むブロックの断片の数 (span ごとに 2 × 入れ子の深さ) の上限。
  * 実在の文書は、数段の入れ子の中に数十の span ほど。細工した FO (深い入れ子の一番下に何千もの span) で、断片を何十万も作らない
@@ -150,7 +152,7 @@ const WARICHU_BLOCKS = /^(block|table|table-and-caption|block-container|float|li
 const WARICHU_INLINES = /^(inline|wrapper|basic-link|bidi-override)$/;
 const WARICHU_CONTENT = /^(character|page-number|page-number-citation|page-number-citation-last|footnote)$/;
 /** 入れ子が深すぎる文書の誤り */
-const tooDeep = () => new KumioriLimitError('limit/nesting-depth', msg(`要素の入れ子が深すぎます (${MAX_FO_NEST} 段まで)`, `elements are nested too deeply (up to ${MAX_FO_NEST} levels)`));
+const tooDeep = () => new KumioriLimitError('limit/nesting-depth', msg(`要素の入れ子が深すぎます (${nestLimit(MAX_FO_NEST)} 段まで)`, `elements are nested too deeply (up to ${nestLimit(MAX_FO_NEST)} levels)`));
 
 export interface ImportOptions {
   /** 入力のファイルの名前 (診断の場所 source.file に入れる) */
@@ -684,13 +686,25 @@ class Importer {
    */
   colInt(v: string | undefined, what: string): number {
     const n = this.posInt(v);
-    if (!(n > MAX_TABLE_COLUMNS)) return n;
-    this.note(msg(`${what}="${n}" は大きすぎるので ${MAX_TABLE_COLUMNS} にします`, `${what}="${n}" is too large; using ${MAX_TABLE_COLUMNS}`));
-    return MAX_TABLE_COLUMNS;
+    const max = limits().tableColumns;
+    if (!(n > max)) return n;
+    this.note(msg(`${what}="${n}" は大きすぎるので ${max} にします`, `${what}="${n}" is too large; using ${max}`));
+    return max;
   }
 
-  note(msg: string) {
-    if (!this.report.notes.includes(msg) && this.report.notes.length < 200) this.report.notes.push(msg);
+  /**
+   * 近似や既定値で代用したことを、読み込みの報告 (notes。画面の変換レポート) と、組版の結果の診断 (fo/note。重さは警告: 指定を読まずに
+   * 別の形で組んだ) に足す。同じ文は 1 度だけ、200 件まで。d を渡せば、fo/note の代わりにその診断を足す (master-reference の無い名前など)。
+   * 場所は読んでいる要素
+   */
+  note(text: string, d?: Diagnostic) {
+    if (this.report.notes.includes(text) || this.report.notes.length >= 200) return;
+    this.report.notes.push(text);
+    (this.report.diagnostics ??= []).push(d ?? diag('fo/note', text, undefined, this.here()));
+  }
+  /** 診断の場所: 要素 (省けば読んでいる要素) の行・列。どちらも無ければ入力のファイルだけ */
+  private here(where: XEl | undefined = this.curEl): DiagnosticSource | undefined {
+    return where ? this.locate(where) : this.opts.sourceName !== undefined ? { file: this.opts.sourceName } : undefined;
   }
   /** 参照する画像の src (正規化済み・data URI) を、読み込みの報告に足す (同じものは 1 度だけ) */
   addImage(src: string) {
@@ -1148,7 +1162,7 @@ class Importer {
     // fo:instream-foreign-object の中身 (MathML・SVG) は、FO の要素としては読まないので数えない (それぞれの読み方に深さの上限がある)
     const todo: Array<{ el: XEl; depth: number; foreign: boolean }> = [{ el: root, depth: 0, foreign: false }];
     for (let t = todo.pop(); t; t = todo.pop()) {
-      if (t.depth >= MAX_FO_NEST) throw tooDeep();
+      if (t.depth >= nestLimit(MAX_FO_NEST)) throw tooDeep();
       const foreign = t.foreign || (this.isFo(t.el) && this.name(t.el) === 'instream-foreign-object');
       for (const c of this.els(t.el)) {
         this.parents.set(c, t.el);
@@ -2083,7 +2097,10 @@ class Importer {
       )?.info;
     }
     if (!def) {
-      this.note(msg(`master-reference "${ref}" が見つかりません`, `master-reference "${ref}" was not found`));
+      // 組むページのマスターが無いので、この page-sequence の中身を組まない (XSL 1.1 §6.4.5: master-reference は、
+      // fo:simple-page-master か fo:page-sequence-master の master-name に当たらなければならない)。出力から中身が欠けるので誤り
+      const text = msg(`master-reference "${ref}" が見つからないので、この page-sequence を組みません`, `master-reference "${ref}" was not found; this page-sequence is not typeset`);
+      this.note(text, diag('fo/master-reference-not-found', text, { name: ref }, this.here(ps)));
       return undefined;
     }
     const seqWm = this.wmOf(this.attr(ps, 'writing-mode') ?? '');
@@ -2618,9 +2635,10 @@ class Importer {
     const lang = this.attr(el, 'xml:lang') ?? this.attr(el, 'language');
     if (lang && lang !== 'none') s.language = lang;
     // country (§7.10.1: 言語と組で、分綴などの規則を選ぶ): 地域の付いていない言語に足して、言語の名前にする (language="en" country="GB" → en-GB。
-    // 英語の分綴は GB だけ英国式)。xml:lang="en-GB" のように地域まで書いた言語は、そのまま。script (§7.10.3) は、規則の選び分けには使わない
+    // 英語の分綴は GB だけ英国式)。xml:lang="en-GB" のように地域まで書いた言語は、そのまま。script (§7.10.3) は、規則の選び分けには使わない。
+    // country は ISO 3166 の符号で、3 字 (GBR)・3 桁の数字 (826) でもよいので、言語のタグの地域の 2 字に直す (3 字のまま足すと、拡張の言語と読まれる)
     const countryAttr = this.attrInh(el, 'country');
-    const country = countryAttr === undefined ? ctx.country : /^([A-Za-z]{2,3}|\d{3})$/.test(countryAttr) ? countryAttr : undefined;
+    const country = countryAttr === undefined ? ctx.country : countryToRegion(countryAttr);
     const langBase = (lang && lang !== 'none' ? lang : undefined) ?? ctx.langBase ?? ctx.lang;
     if (countryAttr !== undefined || (country && lang && lang !== 'none')) {
       if (langBase && !langBase.includes('-')) s.language = country ? `${langBase}-${country}` : langBase;
@@ -4697,8 +4715,10 @@ class Importer {
     const x = e.getAttribute?.('xml:lang')?.trim() || e.getAttribute?.('language')?.trim();
     if (!x) return undefined;
     if (x === 'none') return '';
-    const country = e.getAttribute?.('country')?.trim();
-    return !x.includes('-') && country && country !== 'none' ? `${x}-${country}` : x;
+    // country は ISO 3166 の符号 (3 字・3 桁の数字でもよい)。言語のタグの地域の 2 字に直す (RFC 5646 §2.2.4)
+    const c = e.getAttribute?.('country')?.trim();
+    const country = c && c !== 'none' ? countryToRegion(c) : undefined;
+    return !x.includes('-') && country ? `${x}-${country}` : x;
   }
 
   /**

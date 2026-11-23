@@ -9,6 +9,7 @@
  */
 
 import { epsBoundingBox } from './epsInfo';
+import { rejoin, thisCall } from './callContext';
 
 export interface ImageInfo {
   mime: string;
@@ -21,7 +22,7 @@ const PX_PER_MM = 96 / 25.4;
 
 export async function imageInfo(b: Uint8Array): Promise<ImageInfo | undefined> {
   try {
-    return tiffInfo(b) ?? wmfInfo(b) ?? emfInfo(b) ?? epsInfo(b) ?? (isCgm(b) ? await cgmInfo(b) : undefined);
+    return tiffInfo(b) ?? wmfInfo(b) ?? emfInfo(b) ?? epsInfo(b) ?? (isCgm(b) ? rejoin(thisCall(), await cgmInfo(b)) : undefined);
   } catch {
     return undefined;
   }
@@ -179,7 +180,7 @@ export function epsPreview(b: Uint8Array): Uint8Array | undefined {
  * 描くとき (cgm.ts の cgmToSvg) と同じ大きさになるように、精度の指定・倍率の型などの読みは cgm.ts の cgmPictureSize に任せる
  */
 async function cgmInfo(b: Uint8Array): Promise<ImageInfo | undefined> {
-  const { cgmPictureSize } = await import('./cgm');
+  const { cgmPictureSize } = rejoin(thisCall(), await import('./cgm'));
   const size = cgmPictureSize(b);
   return size && { mime: 'image/cgm', width: size.width, height: size.height };
 }
@@ -188,3 +189,17 @@ async function cgmInfo(b: Uint8Array): Promise<ImageInfo | undefined> {
 export function isCgm(b: Uint8Array): boolean {
   return b.length >= 4 && ((b[0] << 8) | b[1]) >> 5 === 1;
 }
+
+/**
+ * PDF の頭 (%PDF-。ISO 32000-1 §7.5.2) の位置。先頭の 1,024 バイトの中に無ければ -1。
+ * 仕様は頭をファイルの先頭に置くとするが、前に余分なバイトの付いたファイル (メールの頭・BOM など) が実際にあり、pdf-lib の読み手も頭を探して読むので、
+ * 先頭の 1,024 バイトまでは探す (先頭でなければ、読む側が image/pdf-repaired を出す)
+ */
+export function pdfHeaderOffset(b: Uint8Array): number {
+  const end = Math.min(b.length - 5, 1024);
+  for (let i = 0; i <= end; i++) if (b[i] === 0x25 && b[i + 1] === 0x50 && b[i + 2] === 0x44 && b[i + 3] === 0x46 && b[i + 4] === 0x2d) return i;
+  return -1;
+}
+
+/** PDF か (中身の頭で見分ける。拡張子・Content-Type は見ない) */
+export const isPdf = (b: Uint8Array): boolean => pdfHeaderOffset(b) >= 0;

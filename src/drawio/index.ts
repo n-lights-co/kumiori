@@ -13,6 +13,7 @@ import type { DrawioFile, DrawioOptions } from './options';
 import type { StencilRegistry as DrawioStencilRegistry } from './drawioStencil';
 import { DRAWIO_MIME, isDrawio } from './sniff';
 import type { DrawioState } from './load';
+import { rejoin, thisCall } from '../callContext';
 
 export type { DrawioFile, DrawioFileData, DrawioOptions, DrawioStencilFetcher } from './options';
 export { DRAWIO_MIME, isDrawio } from './sniff';
@@ -29,7 +30,7 @@ export type { StencilRegistry as DrawioStencilRegistry } from './drawioStencil';
  * 図を描く処理と一緒に読み込む (import())
  */
 export async function createDrawioStencilRegistry(files: DrawioFile[] = [], options: { lang?: 'ja' | 'en' } = {}): Promise<DrawioStencilRegistry> {
-  const m = await import('./load');
+  const m = rejoin(thisCall(), await import('./load'));
   return m.createStencilRegistry(files, options.lang);
 }
 
@@ -53,7 +54,7 @@ export function drawioFormat(options: DrawioOptions = {}): ImageFormat {
     extensions: ['drawio', 'dio'],
     sniff: isDrawio,
     load: async (bytes, ctx) => {
-      const m = await import('./load');
+      const m = rejoin(thisCall(), await import('./load'));
       state ??= m.createState(options);
       return m.loadDrawio(bytes, ctx, state);
     },

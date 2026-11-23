@@ -28,6 +28,10 @@ export interface GlyphPayload {
   features?: string[];
   /** 色つきの字形のパレット (GlyphArea.fontPalette) */
   fontPalette?: import('./colorGlyph').FontPalette;
+  /** 分綴で行末に足した字 (GlyphArea.hyphen) */
+  hyphen?: boolean;
+  /** 行末で捨てた空白の字 (GlyphArea.breakSpace) */
+  breakSpace?: string;
 }
 
 export interface LNode {

@@ -11,6 +11,7 @@
  *    L5: files の書体の太さは usWeightClass、L6: --spot-colors の配列の 1 を超える値は誤り
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -23,7 +24,8 @@ import { FontManager, nearestWeightIndex } from '../src/fontManager';
 import { collectionFaces, countFonts, splitFontFile, FontFileError } from '../src/fontLoader';
 import { createFontMapping } from '../src/fontMapping';
 import { evalLength } from '../src/foExpr';
-import { UsageError, parseArgs, parseSpotColors, planJobs } from '../src/cli';
+import { UsageError, cliDiagnostic, parseArgs, parseSpotColors, planJobs, watchInputDir } from '../src/cli';
+import { diag } from '../src/diagnostics';
 import type { LBlockContainer, LPageSequence } from '../src/types';
 import { ensureFonts, fontDir } from './helpers';
 
@@ -170,9 +172,9 @@ describe('M5: DOCTYPE の内部実体', () => {
   it('実体は 1 度だけ展開して覚える: 空に展開される実体を入れ子で多く参照しても、手間が段数乗にならない', () => {
     // e0 は空、e_k は e_{k-1} を 20 個参照する (7 段)。参照のたびに展開し直すと 20^7 回になる
     const ents = ['<!ENTITY e0 "">', ...Array.from({ length: 7 }, (_, k) => `<!ENTITY e${k + 1} "${`&e${k};`.repeat(20)}">`)].join('');
-    const t0 = Date.now();
+    const t0 = cpuClock();
     expect(expandInternalEntities(`<!DOCTYPE r [${ents}]><r>a&e7;&e7;b</r>`)).toBe(`<!DOCTYPE r [${ents}]><r>ab</r>`);
-    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(2000));
   });
   it('覚えた実体を深い所で参照しても、入れ子の深さの上限 (8 段) を守る', () => {
     // a (中で b を参照する 2 段の実体) を浅い所で先に展開して覚え、7 段目でもう 1 度参照する: b は 8 段目になる
@@ -330,6 +332,65 @@ describe('M9・L8: CLI の出力先と使い方の誤り', () => {
     }
     expect(parseArgs(['a.html', '-o', 'out.pdf']).output).toBe('out.pdf');
     expect(parseArgs(['a.html']).output).toBeUndefined();
+  });
+  it('道の名前をとるオプションの空の値 (\'\') は値の誤り (今のディレクトリや、書いていないものとして扱わない)', () => {
+    // 前は --font-dir '' で今のディレクトリの書体を読み、--base '' で今のディレクトリを基準にし、--css '' は --css 無しと同じだった
+    for (const o of ['--font-dir', '--font-cache', '--font', '--css', '--base', '--spot-colors', '--output-profile', '--drawio-stencils', '--plugin']) {
+      expect(() => parseArgs(['a.html', o, '']), o).toThrow(UsageError);
+      expect(() => parseArgs(['a.html', o, '']), o).toThrow(new RegExp(`${o} の値が空です|${o} cannot be empty`));
+    }
+    // , で区切る並びで、項目が 1 つも無いもの
+    for (const o of ['--css', '--drawio-stencils']) expect(() => parseArgs(['a.html', o, ' , ']), o).toThrow(new RegExp(`${o} の値が空です`));
+    // 名前をとるもの (診断の名前・印刷条件の名前) の空の値も
+    expect(() => parseArgs(['a.html', '--ignore-warning', ',']), '--ignore-warning').toThrow(/--ignore-warning の値が空です/);
+    expect(() => parseArgs(['a.html', '--pdfx', 'x1a', '--output-condition', '']), '--output-condition').toThrow(/--output-condition の値が空です/);
+    // 英語の文
+    expect(() => parseArgs(['a.html', '--lang', 'en', '--base', ''])).toThrow('--base cannot be empty (give a directory name)');
+    // 空でない値は、これまでどおり
+    const ok = parseArgs(['a.html', '--font-dir', 'fonts', '--font-cache', 'c', '--font', 'f.ttf', '--css', 'a.css', '--base', 'b', '--drawio-stencils', 's', '--plugin', './p.js', '--ignore-warning', 'css/unknown-property']);
+    expect([ok.fontDir, ok.fontCache, ok.fontFiles, ok.css, ok.base, ok.drawioStencils, ok.plugins[0].spec, ok.ignoreWarnings]).toEqual(['fonts', 'c', ['f.ttf'], 'a.css', 'b', ['s'], './p.js', ['css/unknown-property']]);
+  });
+  it('--ignore-warning の知らない名前の警告は、コマンドの名前 (--ignore-warning) で書く (API の diagnostics.ignore で書かない)', () => {
+    const d = diag('api/unknown-diagnostic-code', 'diagnostics.ignore の名前 "nope/x" は、診断の名前にありません (止めずに続けます)', { code: 'nope/x' });
+    const c = cliDiagnostic(d);
+    expect(c.message).toMatch(/^--ignore-warning の名前 "nope\/x" は|^--ignore-warning has "nope\/x"/);
+    expect(c.message).not.toContain('diagnostics.ignore');
+    expect([c.code, c.severity, c.args]).toEqual([d.code, d.severity, d.args]);
+    // ほかの診断は、そのまま
+    const other = diag('css/unknown-property', 'x', { property: 'colr' });
+    expect(cliDiagnostic(other)).toBe(other);
+  });
+  it.runIf(process.platform === 'linux')('--watch の見張り: 名前の変更で保存しても、2 回目からも拾う (下のディレクトリと、後から作ったディレクトリも)', async () => {
+    // Node の再帰の fs.watch (Linux) は、新しいファイルに書いて名前を変える保存の 2 回目から、変更を拾わなかった
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-watch-'));
+    fs.mkdirSync(path.join(dir, 'css'));
+    fs.writeFileSync(path.join(dir, 'a.html'), '0');
+    fs.writeFileSync(path.join(dir, 'css', 'a.css'), '0');
+    const seen: string[] = [];
+    const close = watchInputDir(dir, (_ev, f) => seen.push(f.split(path.sep).join('/')));
+    const settle = () => new Promise((r) => setTimeout(r, 150));
+    const save = async (rel: string, body: string) => {
+      seen.length = 0;
+      const f = path.join(dir, rel);
+      fs.writeFileSync(`${f}.tmp`, body);
+      fs.renameSync(`${f}.tmp`, f);
+      for (let i = 0; i < 40 && !seen.includes(rel); i++) await settle();
+      return seen.includes(rel);
+    };
+    try {
+      await settle();
+      for (let i = 1; i <= 3; i++) {
+        expect(await save('a.html', String(i)), `a.html の ${i} 回目`).toBe(true);
+        expect(await save('css/a.css', String(i)), `css/a.css の ${i} 回目`).toBe(true);
+      }
+      fs.mkdirSync(path.join(dir, 'img'));
+      await settle();
+      fs.writeFileSync(path.join(dir, 'img', 'b.svg'), '<svg/>');
+      for (let i = 1; i <= 2; i++) expect(await save('img/b.svg', `<svg id="${i}"/>`), `img/b.svg の ${i} 回目`).toBe(true);
+    } finally {
+      close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
   it('入力が複数なら -o はディレクトリ (無くても)。同じ名前の出力は、後のものに入力の名前を拡張子ごと残し、それでもぶつかれば .2・.3 を足す', () => {
     expect(planJobs({ inputs: ['/a/doc.fo', '/b/doc.html'], output: '/x/new', watch: false }, isDir).map((j) => j.output)).toEqual([path.resolve('/x/new/doc.pdf'), path.resolve('/x/new/doc.html.pdf')]);

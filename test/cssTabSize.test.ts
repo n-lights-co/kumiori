@@ -84,7 +84,7 @@ describe('tab-size の値を読む (cssCascade)', () => {
   });
   it('未対応の CSS の一覧に無い (警告に数えない)。接頭辞の付いた古い名前 (-moz-tab-size・-o-tab-size) は読まない (警告にも数えない)', () => {
     expect(UNSUPPORTED_CSS_PROPERTIES.has('tab-size')).toBe(false);
-    expect(unsupportedCssReport(parseCss('pre { tab-size: 4; -moz-tab-size: 4; -o-tab-size: 4 }'))).toEqual({ unsupported: {}, unknown: {} });
+    expect(unsupportedCssReport(parseCss('pre { tab-size: 4; -moz-tab-size: 4; -o-tab-size: 4 }'))).toEqual({ unsupported: {}, unknown: {}, invalid: {} });
     expect(cs('p { -moz-tab-size: 2; -o-tab-size: 2 }')).toBe('8');
   });
 });

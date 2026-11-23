@@ -3,6 +3,8 @@
  * Canvas / PDF レンダラーは Painter を実装するだけで、座標計算は完全に共有される。
  * 座標はすべて「Sheet 左上原点・y 下向き・pt」。PDF 側で下原点に変換する。
  */
+import { diag, type Diagnostic } from './diagnostics';
+import { nestLimit } from './limits';
 import { parseColor } from './color';
 import type { Matrix, Seg } from './matrix';
 import type { Area, BorderRadius, BorderSide, GlyphArea, ImageArea, RadiusLength, Rect, SheetArea, TateChuYokoArea } from './types';
@@ -117,6 +119,11 @@ export interface Painter {
    * 内容を印の付いた内容 (ISO 32000-1 §14.6) に分ける。実装しない描画先 (Canvas・SVG) には呼ばない
    */
   tag?(t: PaintTag): void;
+  /**
+   * タグ付き PDF: 構造の節の、読む順の置き場所の目印 (行の中の、絶対配置の箱を書いた所の、幅も高さも中身も無い箱)。描画先は、
+   * ここで中身の印の付いた内容を分け、t の構造の節を、親の中身の項目の間のこの所に置く。実装しない描画先には呼ばない
+   */
+  place?(t: PaintTag): void;
 }
 
 /** タグ付き PDF の印 (Painter.tag) */
@@ -368,7 +375,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
     // 不透明度のグループ (Form XObject) は、まるごと、この箱の中身の印で包む (描画先が、グループの中を印で分けないとき)
     if (tc) p.tag!(tc);
     const body = () => (opacity !== undefined && opacity < 1 && p.group ? p.group(opacity, () => paintArea(plain, ox, oy, p, 'all', up)) : paintArea(plain, ox, oy, p, 'all', up));
-    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new KumioriLimitError('limit/transform-nesting', msg(`変換・回転した領域 (transform・opacity・orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`, `transformed or rotated areas (transform, opacity, orientation) are nested too deeply (up to ${MAX_NESTED_ORIENTATIONS} levels)`));
+    if (orientationDepth >= nestLimit(MAX_NESTED_ORIENTATIONS)) throw new KumioriLimitError('limit/transform-nesting', msg(`変換・回転した領域 (transform・opacity・orientation) の入れ子が深すぎます (${nestLimit(MAX_NESTED_ORIENTATIONS)} 段まで)`, `transformed or rotated areas (transform, opacity, orientation) are nested too deeply (up to ${nestLimit(MAX_NESTED_ORIENTATIONS)} levels)`));
     orientationDepth++;
     try {
       if (t) {
@@ -385,7 +392,7 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
   if (a.orientation) {
     // 局所座標系 (原点 = 箱の左上) へ移って、回転なしの箱として描く
     const m = rotationMatrix(a.orientation as 90 | 180 | 270, ox + a.x, oy + a.y, a.width, a.height);
-    if (orientationDepth >= MAX_NESTED_ORIENTATIONS) throw new KumioriLimitError('limit/transform-nesting', msg(`回転した領域 (orientation) の入れ子が深すぎます (${MAX_NESTED_ORIENTATIONS} 段まで)`, `rotated areas (orientation) are nested too deeply (up to ${MAX_NESTED_ORIENTATIONS} levels)`));
+    if (orientationDepth >= nestLimit(MAX_NESTED_ORIENTATIONS)) throw new KumioriLimitError('limit/transform-nesting', msg(`回転した領域 (orientation) の入れ子が深すぎます (${nestLimit(MAX_NESTED_ORIENTATIONS)} 段まで)`, `rotated areas (orientation) are nested too deeply (up to ${nestLimit(MAX_NESTED_ORIENTATIONS)} levels)`));
     orientationDepth++;
     try {
       p.transform(m, () => paintArea({ ...a, x: 0, y: 0, orientation: undefined } as Area, 0, 0, p, phase, up));
@@ -443,6 +450,11 @@ function openArea(a: Area, ox: number, oy: number, p: Painter, phase: PaintPhase
       paintOutline(a, x, y, p);
     }
     if (a.clipRect) p.restore();
+    return undefined;
+  }
+  // 行の中の目印の箱 (幅も高さも中身も無く、入力の節の番号の付いた箱。inlineFlatten.ts の目印): 構造の節の読む順の置き場所
+  if (tc && a.type === 'block' && a.width === 0 && a.height === 0 && a.sourceRef !== undefined && !a.children.length) {
+    p.place?.(tc);
     return undefined;
   }
   if (box && (a.link || a.annotation || a.formField)) {
@@ -1258,3 +1270,17 @@ function paintBackgroundLayer(a: Area, layer: NonNullable<Area['backgroundImage'
   }
   p.restore();
 }
+
+/**
+ * PDF の画像を仮の枠で描いた知らせ (画面・SVG・PNG。PDF の画像は PDF の出力だけが描く: design/pdf-as-image.md の 3 節)。
+ * output は描いた出力 (screen・SVG・PNG)
+ */
+export const pdfPlaceholderDiagnostic = (src: string, output: 'screen' | 'SVG' | 'PNG'): Diagnostic =>
+  diag(
+    'image/pdf-placeholder',
+    msg(
+      `PDF の画像 ${src.slice(0, 200)} は PDF の出力でだけ描けるので、この出力 (${output === 'screen' ? '画面' : output}) では仮の枠で描きます`,
+      `PDF image ${src.slice(0, 200)} can be drawn only in PDF output, so a placeholder frame is drawn in this output (${output})`,
+    ),
+    { src: src.slice(0, 200), output },
+  );

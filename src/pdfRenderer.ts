@@ -10,9 +10,12 @@
  *   cm = [ sx·cosφ, sx·sinφ, −sinφ, cosφ, P.x, H−P.y ]   (φ = −θ : y 上向きでは時計回り = 負の回転)
  * を求め、その内側で原点 (0,0) に drawText する。縦書きの横倒し字・縦中横の圧縮が同じ式で表現できる。
  */
+import { limits } from './limits';
+import { primaryLanguage } from './languageTag';
 import { fromBase64 } from './base64';
 import { gwgWarnings } from './pdfCheck';
-import { markPdfStandard, pdfAOf, pdfStandardOf, pdfText, type PdfA, type PdfAOptions, type PdfStandard, type PdfXOptions } from './pdfStandard';
+import { pageLabelRanges, type PageNumbering } from './pdfPageLabels';
+import { DOCUMENT_ID_MARK, finishDocumentId, markPdfStandard, pdfAOf, pdfDocumentDate, pdfStandardOf, pdfText, type PdfA, type PdfAOptions, type PdfStandard, type PdfXOptions } from './pdfStandard';
 import { verifyPdfA } from './pdfaVerify';
 import { LINK_DESCRIPTION_MAX, PdfTagger, sameTag, type PdfTag } from './pdfTags';
 import {
@@ -62,7 +65,9 @@ import { decodeWebp } from './webp';
 import { alphaOf, parseColor, type SpotColor } from './color';
 import { walkAreas, type AreaNode } from './areaTree';
 import { MONO_GENERIC, SANS } from './sampleData';
-import { FAKE_BOLD, ITALIC_SLANT, paintSheet, type Line, type Matrix, type PaintTag, type Painter, type PathSeg } from './paint';
+import { FAKE_BOLD, ITALIC_SLANT, paintPlaceholder, paintSheet, type Line, type Matrix, type PaintTag, type Painter, type PathSeg } from './paint';
+import { embedPdfPage, pdfEmbedCache, pdfImageMatrix, pdfPageProblems, type PdfPageGate } from './pdfImageEmbed';
+import type { PdfRect } from './pdfImage';
 import { AssetStore } from './assets';
 import { msg } from './messages';
 import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, referencePath, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
@@ -76,6 +81,7 @@ import { clipRuns, eachSvgShape, flattenGroups, foreignObjectContexts, parseSvg,
 import { diag, type Diagnostic } from './diagnostics';
 import type { Annotation, Area, AreaTree, BookmarkArea, FormField, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea, TateChuYokoArea } from './types';
 import { KumioriPdfError } from './errors';
+import { checkAbort, pacing, pause, rejoin, reportProgress, thisCall } from './callContext';
 
 export interface PdfRenderOptions {
   title?: string;
@@ -115,6 +121,11 @@ export interface PdfRenderOptions {
    * (jpeg.ts。PDF が小さくなるときだけ)。既定は指定なし (元の JPEG をそのまま埋め込む)
    */
   imageMaxDpi?: number;
+  /**
+   * PDF の作成日・更新日 (Info と XMP) と、添付ファイルの更新日 (PDF/A-3 の Params の ModDate) に書く日時 (秒より下は切り捨てる)。
+   * 無ければ、書き出すときの時刻。同じ日時と同じ入力からは、同じバイトの PDF になる
+   */
+  date?: Date;
   /** SVG をベクタのまま埋め込むための XML パーサ。省略時はブラウザの DOMParser (無ければ SVG もラスタライズ) */
   parseXml?: (xml: string) => XmlNode;
   /**
@@ -133,9 +144,10 @@ export interface PdfRenderOptions {
   /**
    * 入稿用 (PDF/X) の印: OutputIntent (印刷条件)・GTS_PDFXVersion・Trapped。version は 'X-3' (PDF/X-3:2003。既定)・'X-4' (PDF/X-4)・
    * 'X-1a' (PDF/X-1a:2001)・'X-1a:2003' (PDF/X-1a:2003)。
-   * condition は印刷条件の名前 (既定 JC200103 = Japan Color 2001 Coated)。ICC の登録簿に載っている名前のときだけ、出力意図に RegistryName を書く
-   * (ISO 15930-1 §6.3.2・ISO 15930-7 §6.4.2.1)。登録簿の名前なら、X-1a・X-3 では ICC プロファイルを省略できる。X-1a で登録簿に無い名前なら、
-   * profile が要る (無ければ誤りとして投げる。ISO 15930-1 §6.3.2)。
+   * condition は印刷条件の名前 (書かなければ、profile があればその説明 (desc)、無ければ JC200103 = Japan Color 2001 Coated)。ICC の登録簿に載っている
+   * 名前のときだけ、出力意図に RegistryName を書く (ISO 15930-1 §6.3.2・ISO 15930-7 §6.4.2.1。profile の説明を名前にしたときは書かない)。
+   * 登録簿の名前なら、X-1a・X-3 では ICC プロファイルを省略できる。X-1a・X-3 で登録簿に無い名前なら、profile が要る (無ければ誤りとして投げる。
+   * ISO 15930-1 §6.3.2)。profile は、頭とタグの表が ICC.1:2010 の形どおり (説明のタグ desc もある) のものに限る。
    * profile (CMYK の ICC プロファイルのバイト列) を渡せば DestOutputProfile として埋め込み、RGB の色と画像は、そのプロファイルの BToA の表で
    * CMYK にする (src/icc.ts。表が読めなければ warnings に書き、rgbToCmyk の式で変換する)。X-1a のプロファイルは AtoB1 の表 (A2B1) を持つものに限る。
    * X-1a・X-3: 透明を平らにする。X-1a:2001 は PDF 1.3、ほかは PDF 1.4 で、オブジェクトストリームを使わない。
@@ -1009,8 +1021,8 @@ class PdfPainter implements Painter {
         const r = [Math.max(b[0], area[0]), Math.max(b[1], area[1]), Math.min(b[2], area[2]), Math.min(b[3], area[3])];
         if (!(r[2] > r[0] && r[3] > r[1])) continue;
         // 1 ページの SVG のリンクの数の上限 (SVG_MAX_LINKS_PER_PAGE)。超えた分はリンクにしない (絵はそのまま描く)
-        if (++this.svgLinks > SVG_MAX_LINKS_PER_PAGE) {
-          this.warn(diag('pdf/svg-links-capped', msg(`SVG のリンクが 1 ページに ${SVG_MAX_LINKS_PER_PAGE} 個を超えたので、それより後の SVG の a はリンクにしません`, `More than ${SVG_MAX_LINKS_PER_PAGE} SVG links on one page; later SVG a elements are not made into links`)));
+        if (++this.svgLinks > limits().svgLinksPerPage) {
+          this.warn(diag('pdf/svg-links-capped', msg(`SVG のリンクが 1 ページに ${limits().svgLinksPerPage} 個を超えたので、それより後の SVG の a はリンクにしません`, `More than ${limits().svgLinksPerPage} SVG links on one page; later SVG a elements are not made into links`)));
           break;
         }
         this.marks.push({ rect: r, link: { external: link }, ...(this.tags ? { tag: this.tagOpen ?? this.tagWant, seq: this.tags.tagger.nextSeq() } : {}) });
@@ -1226,6 +1238,18 @@ class PdfPainter implements Painter {
     if (this.tags) this.tagWant = this.tags.tagger.resolve(t);
   }
 
+  /**
+   * 構造の節の読む順の置き場所 (Painter.place): いまの中身の印の付いた内容をここで閉じ (後ろの字は、新しい MCID になる)、
+   * t の構造の節を、親の中身の項目の間のこの所に置く (PdfTagger.place)
+   */
+  place(t: PaintTag) {
+    if (!this.tags || t === 'decor') return;
+    const tag = this.tags.tagger.resolve(t);
+    if (tag.art) return;
+    this.endTag();
+    this.tags.tagger.place(tag.id);
+  }
+
   /** 描く前に、内容の流れの印を、いまの印 (tagWant) に合わせる (字の並び BT〜ET の中では印を変えない) */
   private syncTag() {
     if (!this.tags || sameTag(this.tagWant, this.tagOpen)) return;
@@ -1385,6 +1409,22 @@ class PdfPainter implements Painter {
 
   /** ページの資源の画像 (XObject) の名前 (画像ごとに 1 つ。pdf-lib の page.drawImage は描くたびに新しい名前を登録するので使わない) */
   private imageKeys = new Map<PDFImage, PDFName>();
+  /**
+   * PDF の画像を埋め込んだ Form XObject (src ごと。embedImages が作る)。null は、埋め込めなかった PDF の画像 (仮の枠で描く)
+   */
+  pdfForms?: ReadonlyMap<string, PdfFormPlacement | null>;
+  /** ページの資源の、PDF の画像の Form の名前 (Form ごとに 1 つ) */
+  private pdfFormNames = new Map<PDFRef, PDFName>();
+  /** PDF の画像を置く: 箱の左下を原点に寄せ、/Rotate の分を回し、領域の大きさに伸ばして Do する (pdfImageMatrix) */
+  private drawPdfForm(f: PdfFormPlacement, a: ImageArea, x: number, y: number) {
+    let name = this.pdfFormNames.get(f.ref);
+    if (!name) {
+      name = this.page.node.newXObject('KmP', f.ref);
+      this.pdfFormNames.set(f.ref, name);
+    }
+    const m = pdfImageMatrix(f.box, f.rotate, x, this.H - y - a.height, a.width, a.height);
+    this.page.pushOperators(pushGraphicsState(), concatTransformationMatrix(...m), PDFOperator.of(Ops.DrawObject, [name]), popGraphicsState());
+  }
   private imageName(img: PDFImage): PDFName {
     let name = this.imageKeys.get(img);
     if (!name) {
@@ -1401,6 +1441,9 @@ class PdfPainter implements Painter {
     // 置いた所の言語で図形にした SVG があればそれ (systemLanguage を照らしたもの)
     const vec = (a.language && this.vectorOf(`${a.src}\0${a.language}`)) || this.vectorOf(a.src);
     if (vec) return this.drawVector(vec, a, x, y);
+    // PDF の画像 (Form XObject)。埋め込めなかったものは仮の枠
+    const form = this.pdfForms?.get(a.src);
+    if (form !== undefined) return form ? this.drawPdfForm(form, a, x, y) : paintPlaceholder(a, x, y, this);
     const img = this.imageOf(a.src);
     // 単位正方形の画像を (幅, 高さ) に伸ばして左下 (x, H − y − 高さ) に置く: q w 0 0 h x y cm /KmI Do Q
     if (img) this.page.pushOperators(pushGraphicsState(), concatTransformationMatrix(a.width, 0, 0, a.height, x, this.H - y - a.height), PDFOperator.of(Ops.DrawObject, [this.imageName(img)]), popGraphicsState());
@@ -1413,7 +1456,7 @@ class PdfPainter implements Painter {
    */
   drawImageTiled(a: ImageArea, x: number, y: number, region: Rect): boolean {
     this.syncTag();
-    if (this.vectorOf(a.src)) return false;
+    if (this.vectorOf(a.src) || this.pdfForms?.has(a.src)) return false;
     const fl = this.fl;
     // 平らにする出力: 透明のグループの中・透明度つきの画像は、1 枚ずつ描く (drawImage で平らにする)
     if (fl && !fl.direct && (fl.recording || fl.alphaMul < 1 || fl.doc.alphaImages.has(a.src))) return false;
@@ -1504,6 +1547,36 @@ class PdfPainter implements Painter {
   colorGlyphs?: PdfColorGlyphs;
 
   drawGlyph(g: GlyphArea, x: number, y: number) {
+    this.syncTag();
+    const want = this.tagWant;
+    if (g.hyphen && this.tags && want && !want.art) {
+      // 分綴で行末に足したハイフン (GlyphArea.hyphen): タグ付き PDF では、置き換えの文字列 (ActualText。ISO 32000-1 §14.9.4) を
+      // ソフトハイフン (U+00AD) にする。行を分けるために足したハイフンはソフトハイフンで表し、語の一部のハイフン (U+002D) と区別する (§14.8.2.5)。
+      // 構造の順に読む字では、語が「inter-national」でなく、見えない区切りの付いた 1 つの語になる。
+      // 印の付いた内容を入れ子にせず、構造の節の印の付いた内容 (MCID の BDC) を、ハイフンの所で分けて、その辞書に ActualText を書く
+      // (入れ子の印の付いた内容 (/Span の BDC) の後ろの字を、構造の節の字として読まない読み手 (Poppler 24 の pdfinfo -struct-text) がある)
+      this.endTag();
+      this.page.pushOperators(this.tags.tagger.begin(want, this.tags.page, '\u00AD'));
+      this.tagOpen = want;
+      this.drawGlyphText(g, x, y);
+      this.endTag();
+      return;
+    }
+    this.drawGlyphText(g, x, y);
+    // 行末で捨てた空白 (GlyphArea.breakSpace): タグ付き PDF では、行の最後の字の後ろに、その空白を字として書く。構造の順に読む字では
+    // 行の区切りが見えないので、空白が無いと、前の行の終わりの語と次の行の初めの語がつながる。語の区切りは空白の字で表す (ISO 32000-1 §14.8.2.5)。
+    // 空白の字形は描いても何も見えず、置く位置は字の送りの後ろ (縦書きは下)。書体に空白の字形が無ければ (PDF/A などの .notdef)、書かない
+    if (g.breakSpace !== undefined && this.tags) {
+      const horizontal = g.writingMode === 'horizontal-tb';
+      this.drawGlyphText(
+        { ...g, text: g.breakSpace, glyphIds: undefined, glyphPositions: undefined, hyphen: undefined, breakSpace: undefined, baselineX: g.baselineX + (horizontal ? g.advance : 0), baselineY: g.baselineY + (horizontal ? 0 : g.advance) },
+        x,
+        y,
+      );
+    }
+  }
+
+  private drawGlyphText(g: GlyphArea, x: number, y: number) {
     this.syncTag();
     if (this.tagOpen && this.tags) this.tags.tagger.text(this.tagOpen, g.text);
     const fl = this.fl;
@@ -2530,7 +2603,10 @@ function rectClipOps(x: number, y: number, w: number, h: number): PDFOperator[] 
 }
 
 /** 文書の情報 (Info 辞書: 題名・著者・主題・キーワード・作成したソフト) */
-function setDocumentInfo(pdf: PDFDocument, tree: Pick<AreaTree, 'title' | 'info'>, opts: PdfRenderOptions) {
+function setDocumentInfo(pdf: PDFDocument, tree: Pick<AreaTree, 'title' | 'info'>, opts: PdfRenderOptions, date: Date) {
+  // 作った日時と変えた日時 (pdf-lib の PDFDocument.create は、いまの時刻を書く。PDF/X・PDF/A でも、markPdfStandard が同じ値を書く)
+  pdf.setCreationDate(date);
+  pdf.setModificationDate(date);
   if (tree.title ?? opts.title) pdf.setTitle(tree.title ?? opts.title ?? '');
   if (tree.info?.author) pdf.setAuthor(tree.info.author);
   if (tree.info?.subject) pdf.setSubject(tree.info.subject);
@@ -2540,6 +2616,13 @@ function setDocumentInfo(pdf: PDFDocument, tree: Pick<AreaTree, 'title' | 'info'
   if (keywords?.length) pdf.setKeywords(keywords);
   pdf.setProducer('Kumiori (組み織り) typesetting engine');
   pdf.setCreator('Kumiori');
+}
+
+/** PDF の画像を埋め込んだ Form XObject と、置き方 (箱と回転。pdfImageMatrix) */
+interface PdfFormPlacement {
+  ref: PDFRef;
+  box: PdfRect;
+  rotate: 0 | 90 | 180 | 270;
 }
 
 /** 木で使われている画像を集めるもの (embedImages の前に、領域を順にたどって visit に渡す): src ごとの、置かれる大きさ (最大) と言語 */
@@ -2592,11 +2675,15 @@ async function embedImages(
   vectors: Map<string, SvgDoc>;
   svgImages: Map<object, PDFImage>;
   placed: Map<string, { width: number; height: number }>;
+  /** PDF の画像を埋め込んだ Form XObject (src ごと。null は埋め込めなかったもの) */
+  pdfForms: Map<string, PdfFormPlacement | null>;
   /** 透明を平らにする出力のときだけ: 透明度つきの画像 (埋め込まない)・埋め込んだ画像のデータ・SVG の中の透明度つきの画像 */
   flat?: Pick<FlatDoc, 'alphaImages' | 'imageData' | 'alphaShapeImages'>;
 }> {
   const { sizes, heights, langs } = scan;
   const images = new Map<string, PDFImage>();
+  const pdfForms = new Map<string, PdfFormPlacement | null>();
+  const pdfCache = pdfEmbedCache();
   const vectors = new Map<string, SvgDoc>();
   /** SVG の中の画像 (SvgShape.image) を埋め込んだもの (この文書のもの) */
   const svgImages = new Map<object, PDFImage>();
@@ -2612,13 +2699,39 @@ async function embedImages(
    * ISO 32000-2 §10.4.2.4 の式 (rgbToCmyk) で変換する
    */
   const std = pdfStandardOf(opts.pdfx);
+  /**
+   * PDF の画像の、埋め込む前の検査 (design/pdf-as-image.md の 2.4 節)。PDF/X・PDF/A では、そのページだけを描いた PDF を、書き出した PDF と同じ検査に
+   * かけ (pdfPageProblems)、合わなければ埋め込まずに仮の枠にする (文書の全体を誤りにしない)。PDF/UA-1 では、埋め込んでいない書体のあるページを断る
+   * (ISO 14289-1 §7.21.4.1)。埋め込んだページの色を CMYK に直すことはしない (中身の流れの色を書き直すことになるため)
+   */
+  const pdfaStd = pdfAOf(opts.pdfa);
+  const pdfGate: PdfPageGate | undefined =
+    std?.verify || pdfaStd || opts.pdfua
+      ? async (p) => {
+          // 透明を平らにする出力 (PDF/X-1a・X-3) は、置いた物を重なりごとに画素にする。PDF の画像は画素にする描き手が無い (3 節) ので、重なりに入れられない。
+          // 順を崩して描かないように、貼らずに仮の枠にする
+          if (std?.transparency === 'flatten')
+            return { which: 'pdfx', detail: msg(`${std.label} (透明を平らにする出力) では、PDF の画像を貼れません。PDF/X-4 を使ってください`, `PDF images cannot be placed in ${std.label} (output that flattens transparency); use PDF/X-4`) };
+          if (opts.pdfua && p.unembeddedFonts.length) return { which: 'pdfua', detail: msg(`埋め込まれていない書体があります (${p.unembeddedFonts.join('・')})`, `there are fonts that are not embedded (${p.unembeddedFonts.join(', ')})`) };
+          const first = (problems: string[]) => problems.slice(0, 3).join(' / ') + (problems.length > 3 ? msg(` ほか ${problems.length - 3} 件`, ` and ${problems.length - 3} more`) : '');
+          if (std?.verify) {
+            const problems = rejoin(thisCall(), await pdfPageProblems(p, std.verify, { s: 'GTS_PDFX', space: 'CMYK' }));
+            if (problems.length) return { which: 'pdfx', detail: first(problems) };
+          }
+          if (pdfaStd) {
+            const problems = rejoin(thisCall(), await pdfPageProblems(p, (b) => verifyPdfA(b, pdfaStd.part), { s: 'GTS_PDFA1', space: std ? 'CMYK' : 'RGB' }));
+            if (problems.length) return { which: 'pdfa', detail: first(problems) };
+          }
+          return undefined;
+        }
+      : undefined;
   const cmykOf = pdfxConverter(opts, std);
   // 透明を平らにする出力 (PDF/X-1a・X-3): 透明度つきの画像は埋め込まない (ソフトマスクは透明)。画像は、置くときに下の物と合わせて画素にする
   const flat = std?.transparency === 'flatten' ? { alphaImages: new Map<string, FlatImageData>(), imageData: new Map<string, FlatImageData>(), alphaShapeImages: new Set<object>() } : undefined;
   /** 画像を埋め込む。透明を平らにする出力で、透明度つきの画像なら、埋め込まずに大きさだけを返す (image が undefined) */
   const embedAny = async (bytes: Uint8Array, kind: 'png' | 'jpg'): Promise<{ image?: PDFImage; width: number; height: number }> => {
     if (opts.pdfx && cmykOf) {
-      const r = await embedCmykImage(pdf, bytes, kind, cmykOf, flat ? 'skip' : 'smask');
+      const r = rejoin(thisCall(), await embedCmykImage(pdf, bytes, kind, cmykOf, flat ? 'skip' : 'smask'));
       if (r && !r.image) return { width: r.width, height: r.height };
       if (r) {
         if (r.hasAlpha && !alphaWarned && std?.transparency === 'warn') {
@@ -2628,7 +2741,7 @@ async function embedImages(
         return { image: r.image, width: r.image.width, height: r.image.height };
       }
     }
-    const image = kind === 'png' ? await embedPngChecked(pdf, bytes) : await pdf.embedJpg(bytes);
+    const image = kind === 'png' ? rejoin(thisCall(), await embedPngChecked(pdf, bytes)) : rejoin(thisCall(), await pdf.embedJpg(bytes));
     return { image, width: image.width, height: image.height };
   };
   /**
@@ -2645,7 +2758,7 @@ async function embedImages(
     const got = embeddedBytes.get(bytes) ?? {};
     let r = got[kind];
     if (!r) {
-      r = await embedAny(bytes, kind);
+      r = rejoin(thisCall(), await embedAny(bytes, kind));
       got[kind] = r;
       embeddedBytes.set(bytes, got);
     }
@@ -2656,7 +2769,7 @@ async function embedImages(
    * (同じバイト列を 2 度目に引いた参照も、src ごとに覚える。描くときは src で引くので)
    */
   const embedRaster = async (src: string, bytes: Uint8Array, kind: 'png' | 'jpg') => {
-    const r = await embedOnce(bytes, kind);
+    const r = rejoin(thisCall(), await embedOnce(bytes, kind));
     if (r.image) images.set(src, r.image);
     if (flat) (r.image ? flat.imageData : flat.alphaImages).set(src, { kind: kind === 'png' ? 'png' : 'jpeg', bytes, width: r.width, height: r.height });
   };
@@ -2669,8 +2782,8 @@ async function embedImages(
       if (!sh.image || svgImages.has(sh.image)) continue;
       try {
         // filter を画素で計算した画像は、圧縮した PNG にして埋め込む
-        const bytes = sh.image.pixels ? await encodePng(sh.image.pixels) : sh.image.bytes;
-        const r = await embedOnce(bytes, sh.image.kind === 'png' ? 'png' : 'jpg');
+        const bytes = sh.image.pixels ? rejoin(thisCall(), await encodePng(sh.image.pixels)) : sh.image.bytes;
+        const r = rejoin(thisCall(), await embedOnce(bytes, sh.image.kind === 'png' ? 'png' : 'jpg'));
         if (r.image) svgImages.set(sh.image, r.image);
         else flat?.alphaShapeImages.add(sh.image);
       } catch {
@@ -2720,6 +2833,43 @@ async function embedImages(
       if (left > 1) pending.set(asset.bytes!, left - 1);
       else pending.delete(asset.bytes!);
     }
+    // PDF の画像: ページを Form XObject として埋め込む (pdfImageEmbed.ts。design/pdf-as-image.md の 2 節)
+    if (asset?.pdfSource) {
+      const shown = src.slice(0, 200);
+      const r = rejoin(thisCall(), await embedPdfPage(pdf, pdfCache, asset.pdfSource, pdfGate));
+      if ('refused' in r) {
+        const { which, detail } = r.refused;
+        const label = which === 'pdfx' ? std?.label : which === 'pdfa' ? pdfaStd?.label : 'PDF/UA-1';
+        const m = msg(`PDF の画像 ${shown} は ${label} の決まりに合わないので、埋め込まずに仮の枠で描きます: ${detail}`, `PDF image ${shown} does not meet the ${label} requirements, so it is not embedded and a placeholder frame is drawn: ${detail}`);
+        if (which === 'pdfx') pdfxWarning(opts, diag('pdfx/embedded-pdf', m, { src: shown, detail }));
+        else {
+          const d = which === 'pdfa' ? diag('pdfa/embedded-pdf', m, { src: shown, detail }) : diag('pdfua/embedded-pdf', m, { src: shown, detail });
+          const sink = which === 'pdfa' ? opts.pdfa?.warnings : opts.pdfua?.warnings;
+          if (!opts.ignoreDiagnostics?.has(d.code)) {
+            if (sink) {
+              sink.push(d.message);
+              opts.diagnostics?.push(d);
+            } else warn(d);
+          }
+        }
+        pdfForms.set(src, null);
+        continue;
+      }
+      if ('error' in r) {
+        const detail = r.error;
+        warn(diag('image/pdf-invalid', msg(`PDF の画像 ${shown} を埋め込めません (${detail})。仮の枠で描きます`, `PDF image ${shown} cannot be embedded (${detail}); a placeholder frame is drawn`), { src: shown, detail }));
+        pdfForms.set(src, null);
+        continue;
+      }
+      pdfForms.set(src, { ref: r.ref, box: asset.pdfSource.box, rotate: asset.pdfSource.rotate });
+      if (r.annots) {
+        const detail = msg(`注釈 ${r.annots} 個`, `${r.annots} annotation(s)`);
+        warn(diag('image/pdf-dropped', msg(`PDF の画像 ${shown} の注釈 (リンク・注記・フォームの欄など) ${r.annots} 個は持ち込みません`, `the ${r.annots} annotation(s) (links, notes, form fields and so on) of PDF image ${shown} are not carried over`), { src: shown, detail }));
+      }
+      for (const font of r.unembeddedFonts)
+        warn(diag('image/pdf-font', msg(`PDF の画像 ${shown} の書体 ${font} は埋め込まれていません (ビューアが代わりの書体で描きます)`, `the font ${font} in PDF image ${shown} is not embedded (viewers draw it with a substitute font)`), { src: shown, font }));
+      continue;
+    }
     // SVG の image の外のファイル: SVG の場所を基準に、登録した画像を引く (文書の中の SVG (data: の URI) は、文書の場所が基準)
     const image = (href: string) => {
       const a = opts.assets?.get(resolveRef(href, /^data:/i.test(src) ? undefined : src));
@@ -2754,7 +2904,7 @@ async function embedImages(
         });
       const doc = parseAt();
       if (!doc) return false;
-      await embedSvgImages(doc);
+      rejoin(thisCall(), await embedSvgImages(doc));
       vectors.set(src, doc);
       if (/systemLanguage/.test(svgText!)) {
         // systemLanguage の照らし方の結果が同じ言語は、組んだものを使い回す (systemLanguageKey の説明)。鍵が無ければ、言語ごとに組む
@@ -2766,7 +2916,7 @@ async function embedImages(
           let d = key !== undefined ? byKey.get(key) : undefined;
           if (d === undefined) {
             d = parseAt(lang);
-            if (d) await embedSvgImages(d);
+            if (d) rejoin(thisCall(), await embedSvgImages(d));
             if (key !== undefined) byKey.set(key, d);
           }
           if (d) vectors.set(`${src}\0${lang}`, d);
@@ -2777,7 +2927,7 @@ async function embedImages(
     // foreignObject の中身を、本文と同じ組版で組んでおく (文書の順の番号で引く。parseSvg は同期なので、先に組む)
     const foreign: Array<SvgShape[] | undefined> =
       svgText && xml && opts.typesetForeign
-        ? await typesetForeignObjects(
+        ? rejoin(thisCall(), await typesetForeignObjects(
             svgText,
             xml,
             opts.typesetForeign,
@@ -2786,33 +2936,33 @@ async function embedImages(
             (b) => parseSvg(new TextDecoder().decode(b), xml, { outline: (t, fam, w, size, style, vertical) => outlineText(fonts, t, fam, w, size, !!opts.svgFontUniqueNames, style, vertical), approximateFilters: true, rasterFilter }),
             warn,
             { resource, ...(opts.svgLanguages?.length ? { languages: opts.svgLanguages.map(svgLanguageTag) } : {}) },
-          )
+          ))
         : [];
     if (svgText) {
-      await registerSvgFonts(fonts, svgText);
-      if (await toVectors(false)) continue;
+      rejoin(thisCall(), await registerSvgFonts(fonts, svgText));
+      if (rejoin(thisCall(), await toVectors(false))) continue;
     }
-    const data = await opts.assets?.forPdf(src, (wPt / 72) * dpi);
+    const data = rejoin(thisCall(), await opts.assets?.forPdf(src, (wPt / 72) * dpi));
     if (!data) {
       // ラスタライズできない (Node): filter を近似して図形にする (影・ぼかし)
-      if (svgText) await toVectors(true);
+      if (svgText) rejoin(thisCall(), await toVectors(true));
       continue;
     }
     try {
       // 置かれる大きさに対して解像度の高すぎる JPEG は、縮めて符号化し直す (imageMaxDpi を指定したときだけ)
       const jpg = data.type === 'jpg' && opts.imageMaxDpi ? (shrinkJpeg(data.bytes, wPt, heights.get(src) ?? 0, opts.imageMaxDpi) ?? data.bytes) : data.bytes;
-      await embedRaster(src, data.type === 'png' ? data.bytes : jpg, data.type === 'png' ? 'png' : 'jpg');
+      rejoin(thisCall(), await embedRaster(src, data.type === 'png' ? data.bytes : jpg, data.type === 'png' ? 'png' : 'jpg'));
     } catch {
       // 埋め込めない JPEG (CMYK 等) は PNG に変換して再試行
       const a = opts.assets?.get(src);
-      const r = a && (await opts.assets?.rasterize(a, (wPt / 72) * dpi));
-      if (r) await embedRaster(src, r.bytes, 'png');
+      const r = a && rejoin(thisCall(), await opts.assets?.rasterize(a, (wPt / 72) * dpi));
+      if (r) rejoin(thisCall(), await embedRaster(src, r.bytes, 'png'));
     }
     if (images.has(src) || flat?.alphaImages.has(src)) releaseEmbedded(src);
   }
   /** 画像ごとの、いちばん大きく置かれた大きさ (入稿の検査の解像度に使う) */
   const placed = new Map([...sizes].map(([src, w]) => [src, { width: w, height: heights.get(src) ?? 0 }]));
-  return { images, vectors, svgImages, placed, ...(flat ? { flat } : {}) };
+  return { images, vectors, svgImages, placed, pdfForms, ...(flat ? { flat } : {}) };
 }
 
 /**
@@ -2827,8 +2977,13 @@ export interface PdfPageSource {
   readonly structure?: AreaTree['structure'];
   /** ページを順に visit に渡す。初めから渡し直すときは、先に restart を呼ぶ (それまでに集めたものを捨てる) */
   scan(visit: (sheet: SheetArea) => void, restart: () => void): void;
-  /** ページを順に paint に渡す (scan で渡したのと同じページ) */
-  paint(paint: (sheet: SheetArea) => void): void;
+  /**
+   * ページを順に paint に渡す (scan で渡したのと同じページ)。止める合図・進み具合を渡した呼び出しでは、ページの間で間をあけてよい
+   * (Promise を返す。callContext.ts の pause)
+   */
+  paint(paint: (sheet: SheetArea) => void): void | Promise<void>;
+  /** ページの数 (進み具合の total。分からなければ無し) */
+  readonly count?: number;
   finish(): Pick<AreaTree, 'bookmarks' | 'destinations'>;
   /** 先のたどり (書体・色つきの字・画像を集めるもの) を終えたとき */
   scanned?(): void;
@@ -2836,7 +2991,16 @@ export interface PdfPageSource {
 
 export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRenderOptions = {}): Promise<Uint8Array> {
   const each = (visit: (sheet: SheetArea) => void) => tree.sheets.forEach((s) => visit(s));
-  return renderPdfPages({ title: tree.title, info: tree.info, structure: tree.structure, scan: each, paint: each, finish: () => tree }, fonts, opts);
+  // 止める合図・進み具合を渡した呼び出しでは、ページを描く間で間をあける (渡さなければ、前と同じく同期で描く)
+  const paint = pacing()
+    ? async (visit: (sheet: SheetArea) => void) => {
+        for (const s of tree.sheets) {
+          visit(s);
+          rejoin(thisCall(), await pause());
+        }
+      }
+    : each;
+  return renderPdfPages({ title: tree.title, info: tree.info, structure: tree.structure, scan: each, paint, finish: () => tree, count: tree.sheets.length }, fonts, opts);
 }
 
 /** ページを 1 枚ずつ作りながら PDF を書く (renderPdf と同じ PDF。文書全体の領域の木を、1 度に持たなくてよい) */
@@ -2846,13 +3010,14 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   if (std && opts.pdfx) std.check(opts.pdfx);
   // 長期保存用 (PDF/A) の版と水準。PDF/X と合わせるなら、2 つの出力意図に同じ ICC プロファイルを指させるので、プロファイルが要る (ISO 19005-2 §6.2.3)
   const pdfa = pdfAOf(opts.pdfa);
+  const date = pdfDocumentDate(opts.date);
   if (pdfa && std && !opts.pdfx?.profile) throw new KumioriPdfError('pdfx/profile-required', msg(`${std.label} と ${pdfa.label} を合わせるときは、出力の ICC プロファイル (pdfx.profile。CMYK のもの) が要ります (2 つの出力意図に同じプロファイルを指させるため)`, `Combining ${std.label} with ${pdfa.label} requires an output ICC profile (pdfx.profile, CMYK), because both output intents must refer to the same profile`));
   if (opts.subset ?? true) patchFontkitSubset(fonts);
   patchCffEmbedding();
   patchSmallNumbers();
-  const pdf = await PDFDocument.create();
+  const pdf = rejoin(thisCall(), await PDFDocument.create());
   pdf.registerFontkit(fontkit);
-  setDocumentInfo(pdf, src, opts);
+  setDocumentInfo(pdf, src, opts, date);
   // PDF を書く途中の警告: opts.warnings があればそこに足す (同じ文は 1 度だけ)。無ければ console.warn
   const warned = new Set<string>();
   const warn = (d: Diagnostic) => {
@@ -2904,7 +3069,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     );
     src.scanned?.();
   };
-  const colorGlyphs = await PdfColorGlyphs.create(pdf, scan, fonts, { cmyk: pdfxConverter(opts, std), alphaWarning: std?.transparency === 'warn' ? std.label : undefined, pdfxWarn: (d) => pdfxWarning(opts, d), warn, parseXml: opts.parseXml });
+  const colorGlyphs = rejoin(thisCall(), await PdfColorGlyphs.create(pdf, scan, fonts, { cmyk: pdfxConverter(opts, std), alphaWarning: std?.transparency === 'warn' ? std.label : undefined, pdfxWarn: (d) => pdfxWarning(opts, d), warn, parseXml: opts.parseXml }));
   // 色つきの書体を使わない文書では、描き手を作らない (たどらない) ので、ここでたどる
   if (!scanned) scan();
   const embedded = new Map<string, PDFFont>();
@@ -2920,14 +3085,14 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     // (PDF の書体の種類に可変フォントは無い。ISO 32000-2 §9.6・§9.7)
     const ps = String((f.instanceOf ? f.postscriptName : undefined) ?? (f.fk as { postscriptName?: string }).postscriptName ?? f.family).replace(/[^!-~]|[()<>[\]{}/%#]/g, '');
     const customName = wantSubset ? `${subsetTag(embedded.size)}+${ps}` : undefined;
-    const pf = await pdf.embedFont(new Uint8Array(f.buffer), { subset: !cff && wantSubset, ...(customName ? { customName } : {}) });
+    const pf = rejoin(thisCall(), await pdf.embedFont(new Uint8Array(f.buffer), { subset: !cff && wantSubset, ...(customName ? { customName } : {}) }));
     if (cff && wantSubset) markCffSubset(pf);
     embedded.set(f.key, memoEncode(pf));
   };
-  for (const f of fonts.all()) if (used.has(f.key)) await embedFont(f);
+  for (const f of fonts.all()) if (used.has(f.key)) rejoin(thisCall(), await embedFont(f));
   const fontOf = (g: GlyphArea) => embedded.get(fonts.get(g.fontFamily, g.fontWeight).key)!;
 
-  const { images, vectors, svgImages, placed, flat } = await embedImages(pdf, imageScan, fonts, opts, warn);
+  const { images, vectors, svgImages, placed, pdfForms, flat } = rejoin(thisCall(), await embedImages(pdf, imageScan, fonts, opts, warn));
   // PDF だけを作るときは、埋め込んだラスター画像の、画像の置き場の中身を捨てる (同じ画像を、置き場と PDF の両方に持たない)
   if (opts.releaseImageBytes) opts.assets?.releaseImageBytes(images.keys());
 
@@ -2940,7 +3105,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   for (const key of svgKeys) {
     if (embedded.has(key)) continue;
     const f = fonts.all().find((x) => x.key === key);
-    if (f) await embedFont(f);
+    if (f) rejoin(thisCall(), await embedFont(f));
   }
   const svgFontOf = (key: string) => embedded.get(key);
 
@@ -2961,12 +3126,18 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   const failedFonts = new Set<string>();
   const verticalFonts = new Map<PDFFont, VerticalFont>();
   const trimSizes: Array<{ width: number; height: number }> = [];
-  src.paint((sheet) => {
+  /** ページの番号と書式 (ページラベルを作る) */
+  const numbering: PageNumbering[] = [];
+  rejoin(thisCall(), await src.paint((sheet) => {
+    // 止める合図 (ページを描く前に確かめる)
+    checkAbort();
     trimSizes.push({ width: sheet.trimBox.width, height: sheet.trimBox.height });
+    numbering.push({ number: sheet.page.pageNumber, ...(sheet.page.pageNumberFormat ? { format: sheet.page.pageNumberFormat } : {}) });
     const page = pdf.addPage([sheet.width, sheet.height]);
     setBoxes(page, sheet, std?.artBox ?? true);
     const painter = new PdfPainter(page, sheet.height, fontOf, (src) => images.get(src), (src) => vectors.get(src), pdf, svgFontOf, svgImages);
     painter.svgForms = svgForms;
+    painter.pdfForms = pdfForms;
     painter.deflate = opts.deflate;
     if (cmykOf) painter.cmykOutput = cmykOf;
     if (std?.blackOverprint) painter.blackOverprint = std.blackOverprint;
@@ -2991,7 +3162,12 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     painters.push(painter);
     // 描き終えたページの命令を、保存のときと同じに圧縮したバイト列にして手放す (命令を保存まで持たない)
     sealPageContents(pdf, page, opts.deflate);
-  });
+    // 進み具合 (書いたページの数)
+    reportProgress({ phase: 'pdf', pages: painters.length, ...(src.count !== undefined ? { total: src.count } : {}) });
+  }));
+  // 保存 (書体の部分集合・圧縮) の前に、止める合図を確かめる
+  checkAbort();
+  writePageLabels(pdf, numbering);
   const tree = src.finish();
   if (flatDoc) {
     // 平らにできなかった透明が残ったら、PDF/X-1a の PDF にしない
@@ -3024,7 +3200,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     return undefined;
   };
   colorGlyphs?.finish();
-  if ((std && opts.pdfx) || pdfa || opts.pdfua) markPdfStandard(pdf, std, opts.pdfx, pdfa, !!opts.pdfua);
+  if ((std && opts.pdfx) || pdfa || opts.pdfua) markPdfStandard(pdf, std, opts.pdfx, pdfa, !!opts.pdfua, date);
   if (std && opts.pdfx) {
     if (std.transparency === 'warn' && painters.some((p) => p.usedAlpha)) pdfxWarning(opts, diag('pdfx/transparency', msg(`${std.label} では透明 (不透明度) を使えません`, `${std.label} does not allow transparency (opacity)`)));
     // 入稿の仕様 (GWG 2022-R1) の検査: 仕上がりの大きさ・特色・画像の解像度 (出力は変えずに、合わないものを警告に書く)
@@ -3040,9 +3216,10 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
       for (const m of checked) pdfxWarning(opts, diag('pdfx/check', m));
     }
   }
-  // ファイルの識別子 (trailer の ID)。PDF 2.0 では必須、それより前の版では任意 (ISO 32000-2 §7.5.5 の Table 15・§14.4)
+  // ファイルの識別子 (trailer の ID)。PDF 2.0 では必須、それより前の版では任意 (ISO 32000-2 §7.5.5 の Table 15・§14.4)。
+  // 印の値を書いておき、書き出した後に中身から作った ID に書き換える (pdfStandard.ts の finishDocumentId)
   if (!pdf.context.trailerInfo.ID) {
-    const id = PDFHexString.of(Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''));
+    const id = PDFHexString.of(DOCUMENT_ID_MARK);
     pdf.context.trailerInfo.ID = pdf.context.obj([id, id]);
   }
   if (std?.marksInBleed === 'drop') dropMarksInBleed(pdf, painters, (d) => pdfxWarning(opts, d));
@@ -3054,7 +3231,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   let droppedBookmarks = 0;
   /** しおりの外への飛び先の動作。PDF/X では書かずに数える (題と、文書の中の飛び先 Dest だけのしおりになる) */
   const bookmarkAction: LinkAction = noActions ? () => (droppedBookmarks++, undefined) : linkAction;
-  addAnnotations(pdf, painters, tree.destinations ?? {}, textFont, (src) => (opts.assets ?? new AssetStore()).getFile(src), linkAction, tagger, pdfa && { pdfa, cmyk: cmykOf, rgbOnly, warn: pdfaWarn });
+  addAnnotations(pdf, painters, tree.destinations ?? {}, textFont, (src) => (opts.assets ?? new AssetStore()).getFile(src), linkAction, tagger, pdfa && { pdfa, cmyk: cmykOf, rgbOnly, warn: pdfaWarn, modDate: date });
   if (pdfa && rgbOnly?.converted)
     pdfaWarn(diag('pdfa/cmyk-converted', msg(`${pdfa.label} (出力意図は sRGB) では CMYK の色を使えないので、CMYK の色・特色の代わりの色 (${rgbOnly.converted} か所) を RGB に直しました。CMYK のまま書くには、PDF/X と CMYK の ICC プロファイルを合わせてください (コマンドなら --pdfx x4 --output-profile <ICC>)`, `${pdfa.label} (sRGB output intent) does not allow CMYK colors, so ${rgbOnly.converted} CMYK color(s) and spot color alternates were converted to RGB. To keep CMYK, combine it with PDF/X and a CMYK ICC profile (on the command line: --pdfx x4 --output-profile <ICC>)`)));
   if (pdfa) {
@@ -3063,12 +3240,12 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     const forms = painters.reduce((n, p) => n + p.marks.filter((m) => m.form).length, 0);
     if (forms) pdfaWarn(diag('pdfa/forms-dropped', msg(`${pdfa.label} では、フォームの欄 (${forms} 件) を書きません (枠の見た目は残ります)`, `${pdfa.label}: form fields (${forms}) are not written (their drawn frames remain)`)));
   } else
-    await addFormFields(pdf, painters, textFont, (u) => {
+    rejoin(thisCall(), await addFormFields(pdf, painters, textFont, (u) => {
       // 送り先の URL も、リンクと同じ決まりでスキームを見る (スキームの無い相対の送り先は、そのまま書く)
       const j = judgeExternalLink(u, links);
       if (j.kind === 'uri' && !j.allowed) countDroppedLink(droppedLinks, j);
       return j.kind !== 'uri' || j.allowed;
-    }, warn, tagger, !!opts.pdfua);
+    }, warn, tagger, !!opts.pdfua));
   if (tree.bookmarks?.length) addOutline(pdf, tree.bookmarks, bookmarkAction);
   if (std && (droppedActions || droppedBookmarks)) {
     const ja = [droppedBookmarks && `しおりの外への飛び先 ${droppedBookmarks} 件`, droppedActions && `動作を持つ注釈 ${droppedActions} 件`].filter(Boolean);
@@ -3094,28 +3271,47 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   }
   // 縦書きの書体の辞書は、書体の辞書 (save の中の flush で作られる) から作る
   if (verticalFonts.size) {
-    await pdf.flush();
+    rejoin(thisCall(), await pdf.flush());
     finishVerticalFonts(pdf, verticalFonts);
   }
   // 書体のストリーム (FontFile・ToUnicode) は save の中の flush で作られるので、先に flush してから圧縮の仕方を差し替える
   // (しないと、いちばん大きい書体のストリームが pako のまま圧縮される)
   if (opts.deflate) {
-    await pdf.flush();
+    rejoin(thisCall(), await pdf.flush());
     useDeflate(pdf, opts.deflate);
   }
   if (pdfa) {
-    await pdf.flush();
+    rejoin(thisCall(), await pdf.flush());
     addTrueTypeLength1(pdf);
   }
-  if (!std && !pdfa) return pdf.save();
+  if (!std && !pdfa) return finishDocumentId(rejoin(thisCall(), await pdf.save()));
   // 規格の版で書く: PDF/X-4 は PDF 1.6 が元 (オブジェクトストリームは PDF 1.5 の機能 (PDF Reference の PDF 1.6 版 §3.4.6) なので使える)。PDF/X-3 (PDF 1.4) では使わない。
   // PDF/A-2・3 は PDF 1.7 が元 (ISO 19005-2 §6.1.2 は版 1.0〜1.7 を許す) なので、PDF/A だけなら pdf-lib の書き出しのまま (1.7・オブジェクトストリーム)
-  const bytes = await pdf.save({ useObjectStreams: std?.objectStreams ?? true });
+  const bytes = rejoin(thisCall(), await pdf.save({ useObjectStreams: std?.objectStreams ?? true }));
   // 版数を書き換える (pdf-lib の書き出しは 1.7 固定。同じ長さなので、相互参照のオフセットは変わらない)
   if (std) bytes.set(new TextEncoder().encode(std.header), 0);
-  if (std) await verifyStandard(bytes, std);
-  if (pdfa) await verifyStandardA(bytes, pdfa, !!std);
+  finishDocumentId(bytes);
+  if (std) rejoin(thisCall(), await verifyStandard(bytes, std));
+  if (pdfa) rejoin(thisCall(), await verifyStandardA(bytes, pdfa, !!std));
   return bytes;
+}
+
+/**
+ * ページラベル (カタログの PageLabels。ISO 32000-1 §12.4.2 の数の木。§7.9.7) を書く。範囲は pdfPageLabels.ts の pageLabelRanges で作り、
+ * 数の木は葉に分けず、根の Nums に [ページの順の番号 ラベルの辞書 …] を並べる。ビューアの既定と同じ (1 からの 10 進の通し) なら書かない
+ */
+function writePageLabels(pdf: PDFDocument, pages: readonly PageNumbering[]) {
+  const ranges = pageLabelRanges(pages);
+  if (!ranges) return;
+  const ctx = pdf.context;
+  const nums = ranges.flatMap((r) => {
+    const d = ctx.obj({});
+    if (r.style) d.set(PDFName.of('S'), PDFName.of(r.style));
+    if (r.prefix) d.set(PDFName.of('P'), pdfText(r.prefix));
+    if (r.first !== undefined) d.set(PDFName.of('St'), PDFNumber.of(r.first));
+    return [PDFNumber.of(r.start), d];
+  });
+  pdf.catalog.set(PDFName.of('PageLabels'), ctx.obj({ Nums: ctx.obj(nums) }));
 }
 
 /**
@@ -3134,7 +3330,7 @@ function addTrueTypeLength1(pdf: PDFDocument) {
 
 /** 書き出した PDF を読み直して、PDF/X の決まりに合うかを調べる (PDF/X-1a・X-3・X-4)。合わなければ、規格の印の付いた PDF を返さずに誤りとして投げる */
 async function verifyStandard(bytes: Uint8Array, std: PdfStandard) {
-  const problems = (await std.verify?.(bytes)) ?? [];
+  const problems = rejoin(thisCall(), await std.verify?.(bytes)) ?? [];
   if (problems.length) {
     const shown = problems.slice(0, 10).map((p) => `  - ${p}`).join('\n');
     const more = problems.length > 10 ? msg(`\n  ほか ${problems.length - 10} 件`, `\n  and ${problems.length - 10} more`) : '';
@@ -3155,7 +3351,7 @@ async function verifyStandard(bytes: Uint8Array, std: PdfStandard) {
  * withX は PDF/X と合わせたか (CMYK の出力意図)
  */
 async function verifyStandardA(bytes: Uint8Array, pdfa: PdfA, withX: boolean) {
-  const problems = await verifyPdfA(bytes, pdfa.part);
+  const problems = rejoin(thisCall(), await verifyPdfA(bytes, pdfa.part));
   if (!problems.length) return;
   const shown = problems.slice(0, 10).map((p) => `  - ${p}`).join('\n');
   const more = problems.length > 10 ? msg(`\n  ほか ${problems.length - 10} 件`, `\n  and ${problems.length - 10} more`) : '';
@@ -3199,7 +3395,7 @@ export async function registerSvgFonts(fonts: FontManager, svg: string) {
     done.add(key);
     try {
       const bytes = fromBase64(data);
-      await fonts.registerBuffer(fam, weight, bytes.buffer, false, undefined, style ? { style } : undefined);
+      rejoin(thisCall(), await fonts.registerBuffer(fam, weight, bytes.buffer, false, undefined, style ? { style } : undefined));
     } catch {
       // 読めない書体は使わない (読み込み済みの書体で描く)
     }
@@ -3208,16 +3404,11 @@ export async function registerSvgFonts(fonts: FontManager, svg: string) {
 
 /**
  * 文書の言語の符号を、SVG の systemLanguage と照らす言語タグ (BCP 47。RFC 5646 §2.2.1: 2 字の符号のある言語は 2 字) にする。
- * XSL-FO の language は ISO 639-2 の 3 字でもよい (XSL 1.1 §7.10.1) ので、よく使う言語の 3 字の符号 (書誌用 B と用語用 T の両方) を 2 字に直す
+ * XSL-FO の language は ISO 639-2 の 3 字でもよいので、3 字の符号を 2 字に直す (languageTag.ts の primaryLanguage)
  */
-const ISO639_2_TO_1: Record<string, string> = {
-  jpn: 'ja', eng: 'en', zho: 'zh', chi: 'zh', kor: 'ko', fra: 'fr', fre: 'fr', deu: 'de', ger: 'de', spa: 'es', ita: 'it', por: 'pt', rus: 'ru', nld: 'nl', dut: 'nl',
-  swe: 'sv', dan: 'da', nor: 'no', fin: 'fi', pol: 'pl', ces: 'cs', cze: 'cs', ell: 'el', gre: 'el', tur: 'tr', ara: 'ar', heb: 'he', hin: 'hi', tha: 'th', vie: 'vi',
-};
 export function svgLanguageTag(lang: string): string {
   const [base, ...rest] = lang.trim().replace(/_/g, '-').split('-');
-  const b = base.toLowerCase();
-  return [ISO639_2_TO_1[b] ?? b, ...rest].join('-');
+  return [primaryLanguage(base), ...rest].join('-');
 }
 
 /** SVG の祖先の要素の名前を、組む文書の入れ物の名前にする。HTML の構文で特別に読まれる名前 (svg・a・image など) は div にする */
@@ -3265,7 +3456,7 @@ async function typesetForeignObjects(
       close = `</${name}>${close}`;
     });
     try {
-      const sheet = await typeset(open + c.content + close, c.width, c.height, { css: c.css.replace(/<\/(style)/gi, '<\\/$1') });
+      const sheet = rejoin(thisCall(), await typeset(open + c.content + close, c.width, c.height, { css: c.css.replace(/<\/(style)/gi, '<\\/$1') }));
       const shapes = sheet ? sheetToSvgShapes(sheet, fonts, assets, svgDoc) : undefined;
       // 中身に字があるのに、組んだ結果が枠の中に何も描かない (枠の外に出た・組めずに落ちた) ときは、黙って消さずに知らせて、
       // 文字だけの近似にする (Mermaid のラベルの <span><p>…</p></span> の形など)
@@ -3285,6 +3476,24 @@ async function typesetForeignObjects(
     }
   }
   return out;
+}
+
+/**
+ * ページの SVG・PNG の書き出し (svgRenderer.ts・pageRaster.ts) の、SVG の画像の foreignObject の中身を組んだ図形 (文書の順)。
+ * PDF の toVectors と同じ組み方 (typesetForeignObjects)。中身の画像の SVG も、PDF と同じく図形にする
+ */
+export function foreignObjectShapes(
+  svg: string,
+  xml: (text: string) => XmlNode,
+  typeset: NonNullable<PdfRenderOptions['typesetForeign']>,
+  fonts: FontManager,
+  assets: AssetStore | undefined,
+  warn: (d: Diagnostic) => void,
+  parseOpts: { languages?: string[]; resource?: (href: string) => string | undefined },
+): Promise<Array<SvgShape[] | undefined>> {
+  const svgDoc = (b: Uint8Array) =>
+    parseSvg(new TextDecoder().decode(b), xml, { outline: (t, fam, w, size, style, vertical) => outlineText(fonts, t, fam, w, size, false, style, vertical), approximateFilters: true, rasterFilter });
+  return typesetForeignObjects(svg, xml, typeset, fonts, assets, svgDoc, warn, parseOpts);
 }
 
 /** 図形の並び (グループの中も) の外接矩形が、(0, 0)〜(w, h) の枠と重なるか */
@@ -3656,7 +3865,7 @@ async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont:
   if (!all.length) return;
   const form = pdf.getForm();
   const pages = pdf.getPages();
-  const helv = await pdf.embedFont(StandardFonts.Helvetica);
+  const helv = rejoin(thisCall(), await pdf.embedFont(StandardFonts.Helvetica));
   let dingbats: PDFFont | undefined;
   const latin = (t: string) => /^[\x20-\x7e]*$/.test(t);
   const used = new Set<string>();
@@ -3706,7 +3915,7 @@ async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont:
         const c = form.createCheckBox(unique(f.name));
         c.addToPage(page, opts);
         if (f.checked) c.check();
-        if (!embedded) dingbats ??= await pdf.embedFont(StandardFonts.ZapfDingbats);
+        if (!embedded) dingbats ??= rejoin(thisCall(), await pdf.embedFont(StandardFonts.ZapfDingbats));
         for (const w of c.acroField.getWidgets()) checkAppearance(pdf, w, f, dingbats, opts.textColor);
       } else if (f.kind === 'radio') {
         // 同じ名前の radio は 1 つの組
@@ -3715,7 +3924,7 @@ async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont:
         const value = f.value ?? `option${g.getOptions().length + 1}`;
         g.addOptionToPage(value, page, opts);
         if (f.checked) g.select(value);
-        if (!embedded) dingbats ??= await pdf.embedFont(StandardFonts.ZapfDingbats);
+        if (!embedded) dingbats ??= rejoin(thisCall(), await pdf.embedFont(StandardFonts.ZapfDingbats));
         const ws = g.acroField.getWidgets();
         checkAppearance(pdf, ws[ws.length - 1], f, dingbats, opts.textColor);
       } else if (f.kind === 'listbox' || f.kind === 'combobox') {
@@ -3997,7 +4206,7 @@ function dropActionMarks(painters: PdfPainter[]): number {
  * 注釈が 40 万個・PDF が 13MB・1.9GB になった。押せるリンクは数 mm 角はあるので、A4 の 1 ページに並ぶのは 3mm 角で 7000 個ほど
  * (210 × 297 / 9)。5000 個は、実在の図 (地図・系統図のリンク) の届かない数
  */
-const SVG_MAX_LINKS_PER_PAGE = 5000;
+export const SVG_MAX_LINKS_PER_PAGE = 5000;
 
 /** PDF の注釈の色 (C は RGB の配列) */
 function annotColor(css: string): number[] {
@@ -4040,6 +4249,8 @@ interface PdfAAnnotations {
   /** RGB だけで書く出力 (PDF/A だけのとき)。外観の CMYK の色を RGB に直す */
   rgbOnly?: RgbOnly;
   warn: (d: Diagnostic) => void;
+  /** 埋め込むファイルの変えた日時 (Params の ModDate。文書の作成日と同じ値) */
+  modDate: Date;
 }
 
 /**
@@ -4198,7 +4409,7 @@ function addAnnotations(
         let ef = embedded.get(key);
         if (!ef) {
           ef = ctx.register(
-            ctx.flateStream(bytes, { Type: 'EmbeddedFile', ...(a ? { Subtype: PDFName.of(mimeOf(name)), Params: { Size: bytes.length, ModDate: PDFString.of(pdfDateString(new Date())) } } : { Params: { Size: bytes.length } }) }),
+            ctx.flateStream(bytes, { Type: 'EmbeddedFile', ...(a ? { Subtype: PDFName.of(mimeOf(name)), Params: { Size: bytes.length, ModDate: PDFString.of(pdfDateString(a.modDate)) } } : { Params: { Size: bytes.length } }) }),
           );
           embedded.set(key, ef);
         }

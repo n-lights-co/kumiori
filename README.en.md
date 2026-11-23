@@ -63,7 +63,7 @@ The fonts each script needs, the image formats, the details of the PDF/X standar
 | [Features](docs/en/features.md) | detailed list of features (input, Japanese typesetting, other scripts, pages, output) |
 | [Using the web app](docs/en/app.md) | opening, saving, settings, warnings |
 | [Command reference](docs/en/cli.md) | options, examples, environment variables, exit status |
-| [Library guide](docs/en/library.md) | `typeset` options; PDF, Canvas, SVG, PNG; Web Worker; Node helpers |
+| [Library guide](docs/en/library.md) | `typeset` options; PDF, Canvas, SVG, PNG; Web Worker; Node helpers; [API stability](docs/en/library.md#api-stability-what-is-kept-across-versions) (what is kept across versions) |
 | [API reference](https://n-lights-co.github.io/kumiori/api/) | every function, type and option (generated from the type declarations; Japanese only) |
 | [Conformance Guide](docs/en/conformance.md) | support and handling of each item of the specifications |
 | [Diagnostics](docs/en/diagnostics.md) | codes and severities of warnings and errors |
@@ -76,6 +76,7 @@ The fonts each script needs, the image formats, the details of the PDF/X standar
 ## Requirements
 
 Node 20.19.0 or later in the 20 line, or 22.12.0 or later (CI tests with 20.19.0 and 22).
+The library and the command also run on Deno (2.x) and Bun (1.x), through their Node compatibility APIs. In browsers, it can also typeset inside a Web Worker. What has been checked is in [Package entry points and requirements](docs/en/library.md#package-entry-points-and-requirements).
 
 ## License
 

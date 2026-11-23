@@ -11,8 +11,8 @@
  *  - 印: X-1a・X-3 は Info の GTS_PDFXVersion (X-1a:2001 は GTS_PDFXConformance も)・Title・CreationDate・ModDate・Trapped (True か False)。
  *    X-4 は XMP (下の X-4 だけのもの)
  *  - 出力意図: S が GTS_PDFX のものがちょうど 1 つで、OutputConditionIdentifier がある (ISO 15930-1 §6.3.2・ISO 15930-7 §6.4.2.1)。
- *    RegistryName が ICC の登録簿なら、OutputConditionIdentifier は登録簿の名前と完全に一致する。X-1a は、登録簿に無い印刷条件なら
- *    DestOutputProfile が要り、プロファイルは AtoB1 の表 (A2B1) を持つ (ISO 15930-1 §6.3.2)
+ *    RegistryName が ICC の登録簿なら、OutputConditionIdentifier は登録簿の名前と完全に一致する。X-1a・X-3 は、登録簿に無い印刷条件なら
+ *    DestOutputProfile が要る (ISO 15930-1 §6.3.2。X-3 にも同じ決まりを当てる)。X-1a のプロファイルは AtoB1 の表 (A2B1) を持つ (§6.3.2)
  *  - ページ: TrimBox か ArtBox のどちらか一方 (両方は不可)。TrimBox (か ArtBox) は BleedBox と CropBox の中 (ISO 15930-1 §6.14)、
  *    BleedBox・TrimBox は MediaBox の中。X-4 は、さらに BleedBox が CropBox の中で、どの箱も MediaBox の中 (ISO 15930-7 §6.12)
  *  - 色: X-1a は CMYK・灰色・特色 (Separation・DeviceN。代わりの色空間も同じ) だけ。DeviceRGB・CalRGB・CalGray・Lab・ICCBased を
@@ -42,6 +42,7 @@ import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFPa
 import { msg } from './messages';
 import { contentStreams } from './pdfContentStreams';
 import { ICC_CMYK_REGISTRY, iccDeviceClass, iccHasTag } from './iccRegistry';
+import { rejoin, thisCall } from './callContext';
 
 /** PDF/X-1a で使えない色空間の名前 (内容の流れの中の略記 RGB も) */
 const FORBIDDEN_SPACES_X1A = new Set(['DeviceRGB', 'CalRGB', 'CalGray', 'Lab', 'ICCBased', 'RGB']);
@@ -67,7 +68,7 @@ export async function loadWithoutCopy(bytes: Uint8Array): Promise<PDFDocument> {
   const parser = PDFParser.forBytesWithOptions(bytes, 100);
   const stream = (parser as unknown as { bytes?: { slice?: (start: number, end: number) => Uint8Array } }).bytes;
   if (stream && typeof stream.slice === 'function') stream.slice = (start: number, end: number) => bytes.subarray(start, end);
-  const context = await parser.parseDocument();
+  const context = rejoin(thisCall(), await parser.parseDocument());
   // PDFDocument.load と同じに、読んだ文脈から文書を作る (作り方の関数は公開されていない)
   const Doc = PDFDocument as unknown as new (context: unknown, ignoreEncryption: boolean, updateMetadata: boolean) => PDFDocument;
   return new Doc(context, true, false);
@@ -114,7 +115,7 @@ async function verifyPdfX(bytes: Uint8Array, version: PdfXVersion): Promise<stri
   const maxVersion = version === 'X-1a:2001' ? 1.3 : x4 ? 1.6 : 1.4;
   const head = /^%PDF-(\d\.\d)/.exec(new TextDecoder('latin1').decode(bytes.subarray(0, 16)));
   if (!head || Number(head[1]) > maxVersion) add(`PDF の版が ${head?.[1] ?? '不明'} です (${maxVersion} 以下にします)`, `the PDF version is ${head?.[1] ?? 'unknown'} (must be ${maxVersion} or lower)`);
-  const pdf = await loadWithoutCopy(bytes);
+  const pdf = rejoin(thisCall(), await loadWithoutCopy(bytes));
   const ctx = pdf.context;
   if (ctx.trailerInfo.Encrypt) add('暗号化しています', 'the file is encrypted');
   if (!ctx.trailerInfo.ID) add('文書の ID (trailer の ID) がありません', 'the document ID (trailer ID) is missing');
@@ -159,9 +160,10 @@ async function verifyPdfX(bytes: Uint8Array, version: PdfXVersion): Promise<stri
       profile = undefined;
     }
   }
+  // 登録簿に無い印刷条件なら DestOutputProfile が要る (ISO 15930-1 §6.3.2。PDF/X-3:2003 にも同じ決まりを当てる。X-4 はいつも要る)
+  if (intent && !x4 && !profileObj && condition !== undefined && !registered)
+    add(`印刷条件 "${condition}" が ICC の登録簿に無いのに、出力意図に DestOutputProfile がありません`, `the printing condition "${condition}" is not in the ICC registry, but the output intent has no DestOutputProfile`);
   if (intent && x1a) {
-    if (!profileObj && condition !== undefined && !registered)
-      add(`印刷条件 "${condition}" が ICC の登録簿に無いのに、出力意図に DestOutputProfile がありません`, `the printing condition "${condition}" is not in the ICC registry, but the output intent has no DestOutputProfile`);
     if (profileObj && (!profile || !iccHasTag(profile, 'A2B1'))) add('出力意図の ICC プロファイルが AtoB1 の表 (タグ A2B1) を持ちません', 'the ICC profile of the output intent has no AtoB1 table (the A2B1 tag)');
   }
   if (intent && x4) {

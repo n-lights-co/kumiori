@@ -12,3 +12,4 @@ compare-css-out/
 dist-lib
 docs/conformance/out
 dist-browser
+compare-base-out/

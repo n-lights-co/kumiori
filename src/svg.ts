@@ -15,6 +15,7 @@
  *
  * 変換は座標に焼き込む (transform を適用済みの 点列) ので、描画側は cm のネストを持たなくてよい。
  */
+import { nestLimit, cssNestLimit, limits } from './limits';
 import { fromBase64 } from './base64';
 import { parseColor } from './color';
 import { createSelectorMemo, matches, parentDecides, parseSelectorList, type Selector, type SelectorMemo } from './cssSelector';
@@ -907,7 +908,7 @@ class Unsupported extends Error {}
  * 文書に書かれた要素を 1 回ずつ訪ねる分は数えない (上限 = 要素の数 + この値) ので、要素が数十万ある地図・図面はそのまま読める。
  * 記号 (symbol) を数万回置く地図でも、参照で増える分は数十万までなので、50 万にする
  */
-const MAX_EXPANDED_VISITS = 500_000;
+export const MAX_EXPANDED_VISITS = 500_000;
 /**
  * 訪ね直す要素の重さ: 2 回目からの訪問は、属性の値の字数を、この字数ごとに 1 回分として余分に数える。
  * 要素を訪ねるたびに、属性 (stroke-dasharray・x の並び・書式の値など) を読み直すので、数十万字の属性を持つ要素を use で何千回も
@@ -934,7 +935,7 @@ const EXPANDED_SEGS_BASE = 250_000;
  */
 const SVG_FONT_MAX_LIGATURE = 64;
 const EXPANDED_SEGS_PER_CHAR = 2;
-const MAX_EXPANDED_SEGS = 5_000_000;
+export const MAX_EXPANDED_SEGS = 5_000_000;
 /**
  * SVG の要素の入れ子の上限 (250 段。XSL-FO の入れ子の上限 (xslfoImport.ts の MAX_FO_NEST) と同じ値)。
  * 図形になる要素の入れ子は、もともと 32 段まで (walk の depth。超えれば「図形にできない」) なので、これより深い SVG は、どのみち描けない。
@@ -946,7 +947,7 @@ export const SVG_MAX_NEST = 250;
  * SVG (XML) の文字列の要素の入れ子が limit 段を超えるか。解析せずに、字の上で開始タグ・終了タグを数える (文字列の長さに比例する手間)。
  * 注釈・CDATA・処理命令・DOCTYPE は飛ばし、開始タグの中の引用符で囲んだ値は > で終わらせない
  */
-export function svgNestTooDeep(text: string, limit = SVG_MAX_NEST): boolean {
+export function svgNestTooDeep(text: string, limit = nestLimit(SVG_MAX_NEST)): boolean {
   const n = text.length;
   let depth = 0;
   let i = text.indexOf('<');
@@ -1283,7 +1284,7 @@ interface CssIndex {
  * d3・draw.io の出力) の単純でない規則は、右端に class か要素名があって索引で引け、引けない規則は数個までなので、照らす回数は
  * 要素の数 (数万) の数倍で、50 万に届かない。50 万回は 1.5 秒ほどで終わる量 (描けないときは、filter を近似してもう 1 度読むので、その 2 倍)
  */
-const CSS_MAX_MATCHES = 500_000;
+export const CSS_MAX_MATCHES = 500_000;
 interface ComplexRule {
   sel: Selector;
   pos: number;
@@ -1293,7 +1294,7 @@ interface ComplexRule {
 /** rules は parseCss の結果 (当てる順に並んでいる) */
 function indexCss(rules: CssRule[]): CssIndex | undefined {
   if (!rules.length) return undefined;
-  const ix: CssIndex = { byId: new Map(), byClass: new Map(), byTag: new Map(), any: [], cache: new Map(), complexBy: new Map(), complexAny: [], complexUp: [], complexByParent: new WeakMap(), matchLeft: CSS_MAX_MATCHES, memo: createSelectorMemo() };
+  const ix: CssIndex = { byId: new Map(), byClass: new Map(), byTag: new Map(), any: [], cache: new Map(), complexBy: new Map(), complexAny: [], complexUp: [], complexByParent: new WeakMap(), matchLeft: limits().svgCssMatches, memo: createSelectorMemo() };
   const groups = new Map<string, CssGroup>();
   rules.forEach((r, pos) => {
     if (r.complex) {
@@ -1509,7 +1510,7 @@ function calcValue(src: string): CalcVal | undefined {
     const t = toks[i++];
     if (t === undefined) return undefined;
     if (t === '(' || /^calc\($/i.test(t) || t === '-' || t === '+') {
-      if (++depth > CALC_MAX_DEPTH) return undefined;
+      if (++depth > cssNestLimit(CALC_MAX_DEPTH)) return undefined;
       try {
         if (t === '-' || t === '+') {
           const v = atom();
@@ -1799,7 +1800,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
     // id → 要素 (グラデーション・clipPath・use の参照先)
     const byId = new Map<string, XmlNode>();
     /** 要素を訪ねられる残りの回数 (文書の要素の数 + MAX_EXPANDED_VISITS)。尽きたら Unsupported */
-    let visitsLeft = MAX_EXPANDED_VISITS;
+    let visitsLeft = limits().svgElements;
     /** n を訪ねる。2 回目からは、属性の字数に応じて余分に数える (VISIT_WEIGHT_CHARS の説明) */
     const visit = (n: XmlNode) => {
       const e = entryOf(n);
@@ -1823,7 +1824,7 @@ export function parseSvg(text: string, parse: (xml: string) => XmlNode, opts: Pa
       if ((visitsLeft -= cost) < 0) throw new Unsupported('too many elements');
     };
     /** 参照や効果で増える線分の残り (MAX_EXPANDED_SEGS の説明)。尽きたら Unsupported */
-    let segsLeft = Math.min(MAX_EXPANDED_SEGS, EXPANDED_SEGS_BASE + text.length * EXPANDED_SEGS_PER_CHAR);
+    let segsLeft = Math.min(limits().svgPathSegments, EXPANDED_SEGS_BASE + text.length * EXPANDED_SEGS_PER_CHAR);
     const charge = (k: number) => {
       if ((segsLeft -= k) < 0) throw new Unsupported('too many path segments');
     };

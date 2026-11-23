@@ -16,6 +16,7 @@
  * それらの処理 (cgm.ts・eps.ts・metafile.ts) も、ここの load と同じく、その画像が出てきたときだけ import() で読み込む
  */
 
+import { limits, type Limits } from './limits';
 import { DRAWIO_FORMAT, drawioFormat, type DrawioOptions } from './drawio/index';
 
 /** 文字の書体 (文字の幅を測るとき) */
@@ -56,6 +57,11 @@ export interface ImageFormatContext {
   fragment?: string;
   /** 警告の文の言語 (TypesetOptions.lang。コマンドは --lang・環境で決めたもの)。プラグインは、この言語で警告を書く */
   lang?: 'ja' | 'en';
+  /**
+   * 入力の上限 (TypesetOptions.limits を既定で埋めたもの。読むだけ)。形式が自分の手間を合わせられるように渡す
+   * (draw.io の図は drawio* の上限を使う)。結果の大きさ・SVG の長さ・時限は、Kumiori の側でも format* の上限で確かめる
+   */
+  limits?: Limits;
 }
 
 /** 読み込んだ結果 */
@@ -96,7 +102,7 @@ export const FORMAT_SVG_FREE_CHARS = 32 * 1024 * 1024;
 export const FORMAT_SVG_CHARS_PER_BYTE = 128;
 export const FORMAT_MAX_SVG_CHARS = 128 * 1024 * 1024;
 /** fileBytes バイトのファイルを、形式が SVG にした文字列の長さの上限 */
-export const formatSvgBudget = (fileBytes: number): number => Math.min(FORMAT_MAX_SVG_CHARS, FORMAT_SVG_FREE_CHARS + FORMAT_SVG_CHARS_PER_BYTE * fileBytes);
+export const formatSvgBudget = (fileBytes: number): number => Math.min(limits().formatSvgChars, FORMAT_SVG_FREE_CHARS + FORMAT_SVG_CHARS_PER_BYTE * fileBytes);
 
 /**
  * 形式の返す大きさ (CSS px) の上限。有限でない値 (Infinity・NaN) と、これを超える値は、読めない画像として扱う。
@@ -111,7 +117,7 @@ export const FORMAT_MAX_SIZE = 1e7;
  * 読み込みの中で資源を取る (図形ライブラリの配布物・配布物の画像・図が URL で指す画像を、順に 3 度まで) ので、取得の時限
  * (fetchTimeoutMs。既定 30 秒) の 3 倍に、描く時間の 60 秒を足す。プラグインの処理が同期で止まらない (無限の繰り返し) ものは、時限では止められない
  */
-export const formatLoadTimeoutMs = (fetchTimeoutMs: number | undefined): number => 60_000 + 3 * (fetchTimeoutMs && fetchTimeoutMs > 0 ? fetchTimeoutMs : 30_000);
+export const formatLoadTimeoutMs = (fetchTimeoutMs: number | undefined): number => limits().formatLoadMs + 3 * (fetchTimeoutMs && fetchTimeoutMs > 0 ? fetchTimeoutMs : 30_000);
 
 /**
  * 1 つのファイルを fragment の違う参照 (図.drawio#page=2 など) で読み直す数の上限 (AssetStore.addFragment)。参照ごとに形式が読み直す

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import { DOMParser } from '@xmldom/xmldom';
 import { DOMParser as HtmlDomParser } from 'linkedom';
 import { cascadeStyles } from '../src/cssCascade';
@@ -89,10 +90,10 @@ describe('名前付きのページの幅 (検査 5 回目)', () => {
 
   it('@page の名前 2 万個 (269KB) を、すぐに読む (直す前は 6.5 秒)', async () => {
     const css = Array.from({ length: 20000 }, (_, i) => `@page a${i}{}`).join('');
-    const t = Date.now();
+    const t = cpuClock();
     const w = await widthsOf(css);
     expect(w.size).toBe(20000);
-    expect(Date.now() - t).toBeLessThan(3000);
+    expect(cpuClock() - t).toBeLessThan(scaled(3000));
   });
 
   it('カスケードの順 (詳細度・出てくる順) は、名前ごとに全部の規則を重ねるのと同じ', async () => {

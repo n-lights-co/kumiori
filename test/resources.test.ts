@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import http from 'node:http';
 import { collectResources, cssRefs, documentRefs, fetchGuarded, resolveRef } from '../src/resources';
 import { fetchLimits } from '../src/imageLimits';
+import { resolveLimits } from '../src/limits';
+import { runInCall } from '../src/callContext';
 
 describe('参照の集め方', () => {
   it('文書の参照: <link rel=stylesheet> と @import は CSS、@font-face の url() は書体、src・data・SVG の href・ほかの url() はそのほか。<a href> は拾わない', () => {
@@ -252,10 +254,9 @@ describe('ネットワークからの取得: 転送の先と大きさの上限',
     expect(a.files).toEqual([]);
     expect(a.warnings).toEqual([`css-fetch-failed\t${base}/r/secret`]);
     expect(hits.get('/secret.css')).toBeUndefined();
-    const saved = { ...fetchLimits };
-    try {
-      fetchLimits.cssBytes = 2000;
-      fetchLimits.fontBytes = 4000;
+    // 上限は呼び出しの文脈の limits (TypesetOptions.limits の cssBytes・fontBytes) から読む
+    const ctx = { lang: 'ja' as const, limits: resolveLimits({ cssBytes: 2000, fontBytes: 4000 }) };
+    await runInCall(ctx, async () => {
       expect((await run(link('/sized/2000'))).files.map((f) => f.data.length)).toEqual([2000]);
       const b = await run(link('/sized/2001'));
       expect(b.files).toEqual([]);
@@ -266,8 +267,7 @@ describe('ネットワークからの取得: 転送の先と大きさの上限',
       const c = await run(face(4001));
       expect(c.files).toEqual([]);
       expect(c.warnings).toEqual([`font-fetch-failed\t${base}/sized/4001`]);
-    } finally {
-      Object.assign(fetchLimits, saved);
-    }
+    });
+    expect(fetchLimits.cssBytes).toBe(16 * 1024 * 1024);
   });
 });

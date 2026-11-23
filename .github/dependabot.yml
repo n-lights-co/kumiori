@@ -22,16 +22,13 @@ updates:
         dependency-type: development
       runtime-dependencies:
         dependency-type: production
-    # htmlparser2 と pako は、主な版の上げ (htmlparser2 10 → 11 以上・pako 1 → 2 以上) を PR にしない。上げるには、コードの側の対応が要るため
-    # (pako は src/drawio/inflate.ts で使い、新しい版では API と取り込み方が変わる。htmlparser2 は Parser の内部の作りに当てている守り src/htmlParserStack.ts が合わなくなる)。
+    # htmlparser2 は、linkedom の依存の版と合わせる。主な版の上げ (htmlparser2 の 11 以上) を PR にしない。
+    # 直下の依存の htmlparser2 は、linkedom が使う構文解析器 (Parser) に仕掛けを入れるため (src/htmlParserStack.ts・src/sourceLocation.ts) だけにあり、
+    # linkedom と違う版にすると、仕掛けが linkedom の使わない Parser に入って効かなくなる (linkedom 0.18.15 は htmlparser2 ^10.1.0 を使う)。
+    # linkedom が htmlparser2 を上げたら、その版に合わせて上げ、htmlParserStack.ts・sourceLocation.ts が新しい Parser の作りに合うかを確かめ、ここの項を外す。
     # 小さな版・修正の版の上げと、脆弱性の修正 (security updates) は、これまでどおり受ける。
-    # pako は、pdf-lib・@pdf-lib/fontkit・@pdf-lib/standard-fonts・@pdf-lib/upng・utif も自分の依存として 1.x を持つので、本体だけ上げると 2 つの版が同時に入る (上げるときに考える。
-    # htmlparser2 も、linkedom が自分の依存として 10.x を持つので同じ)。
-    # コードの側の対応をしたら、その対応のコミットで、ここの項も一緒に外す。
     ignore:
       - dependency-name: htmlparser2
-        update-types: ['version-update:semver-major']
-      - dependency-name: pako
         update-types: ['version-update:semver-major']
   # API の説明書を作る道具 (tools/api-docs。TypeDoc と、それが使う TypeScript)。npm のパッケージには入らない
   # (GitHub Pages の API の説明書には、TypeDoc の頁の JavaScript・CSS が入る。THIRD_PARTY_NOTICES.md の 14 節)。

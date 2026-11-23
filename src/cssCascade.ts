@@ -10,12 +10,13 @@
  * レイアウトはしないので、幅・高さが auto の要素の寸法 (ブラウザが返す使用値) は返さない (auto のまま)。
  * 百分率の幅・余白は、包含ブロックの幅を親から順に見積もって px にする。
  */
+import { cssNestLimit, limits, limitsKey } from './limits';
 import { MAX_VAR_LENGTH, parseCss, parseSpacingTrim, setSupportsDecl, serializeCssString, splitDecls, unescapeCss, type ParsedCss } from './htmlPaged';
 import { fmtColor, gridTrackListInvalid, parseColor, replaceUrls, resolveLightDark, splitTop, stripImportant, UNIT_PX, type RGBA } from './cssText';
 import { parseVariationSettings } from './fontVariation';
 import { UNSUPPORTED_CSS_PROPERTIES, UNSUPPORTED_CSS_VALUES } from './cssUnsupported';
 import { is3dTransformValue } from './cssTransform';
-import { asciiLower, BT_MEMO_BUDGET, createSelectorMemo, matches, matchesAbove, matchesRightmost, parentDecides, parseSelectorList, selectorIndex, setDocumentMode, splitsAtParent, type Selector } from './cssSelector';
+import { asciiLower, createSelectorMemo, matches, matchesAbove, matchesRightmost, parentDecides, parseSelectorList, selectorIndex, setDocumentMode, splitsAtParent, type Selector } from './cssSelector';
 import type { StyleSource } from './htmlImport';
 import { blockLevelDisplay, bodyPageSwitchHolder, ownPageName, pageSwitchBox, pageSwitchHolder } from './pageFlow';
 
@@ -760,7 +761,7 @@ const MAX_CALC_DEPTH = 64;
 
 /** calc() / min() / max() / clamp() を px に。depth: 外の calc() の中の入れ子の深さ */
 function calcPx(fn: string, body: string, ctx: LenCtx, depth = 0): number | undefined {
-  if (depth > MAX_CALC_DEPTH) return undefined;
+  if (depth > cssNestLimit(MAX_CALC_DEPTH)) return undefined;
   if (fn !== 'calc') {
     // 読むのは min()・max()・clamp() だけ (ほかの関数を clamp() として読まない)。引数は、min()・max() が 1 つ以上、
     // clamp() はちょうど 3 つ (Values 4 §10.2。空の引数は読めない)
@@ -786,7 +787,7 @@ function calcPx(fn: string, body: string, ctx: LenCtx, depth = 0): number | unde
     const t = toks[k++];
     if (t === undefined) return undefined;
     if (t === '(') {
-      if (++level > MAX_CALC_DEPTH) return undefined;
+      if (++level > cssNestLimit(MAX_CALC_DEPTH)) return undefined;
       const v = expr();
       level--;
       k++; // )
@@ -863,7 +864,7 @@ export function absoluteLengths(raw: string, ctx: LenCtx, nonNegative = false, n
   const s = raw.trim();
   // 入れ子の深い数学の関数は、関数ごとに中へ入らず、単位の付いた数だけを 1 度に px にする (深さごとに式を読み直すと、深さ × 長さの手間になり、
   // 再帰でスタックがあふれて文書全体が組めない)。式の意味 (長さを絶対の長さにした式) は同じ
-  if (nest >= MAX_MATH_NEST) return absoluteLengthsOutsideUrl(s, dims);
+  if (nest >= cssNestLimit(MAX_MATH_NEST)) return absoluteLengthsOutsideUrl(s, dims);
   MATH_FN_START.lastIndex = 0;
   for (let m = MATH_FN_START.exec(s); m; m = MATH_FN_START.exec(s)) {
     // 対になる「)」まで
@@ -1166,6 +1167,21 @@ export function supportsCssDeclaration(prop: string, value: string, ah: AhFlags 
   return parts.every(([lp, lv]) => valid(lp, lv, ANY_CTX, ah));
 }
 setSupportsDecl(supportsCssDeclaration);
+
+/**
+ * 作成者の宣言を、カスケードが読めない値の宣言として捨てるか (cascadeDecls と同じ判定: 一括指定は、分けられない値・分けた性質のどれかが
+ * 読めない値なら捨てる。CSS 2.1 §4.2・CSS Syntax 3 §8.1)。値の無い宣言も捨てる。
+ * var()・attr() を含む値は偽 (Variables 1 §3・Values 5 §7.7.1: 置き換えた後の計算値の時点で調べるので、字面では決まらない)。
+ * ah はカスケードに渡すのと同じ読み方 (互換の指定のときの拡張の線種など)
+ */
+export function isDroppedCssDeclaration(prop: string, value: string, ah: AhFlags = NO_AH): boolean {
+  const p = prop.toLowerCase();
+  const v = stripImportant(value);
+  if (/var\(/i.test(v) || (substitutesAttr(p) && ATTR_FN_RE.test(v))) return false;
+  if (!v) return true;
+  const parts = expand(p, v, ah);
+  return !parts.length || parts.some(([lp, lv]) => !valid(lp, lv, ANY_CTX, ah));
+}
 
 /** 一括指定を分けた結果 ([性質, 値] の並び) */
 type Longhands = Array<[string, string]>;
@@ -2103,6 +2119,8 @@ const sheetOf = (css: string | ParsedCss, ah?: AhFlags): ParsedCss => {
   if (typeof css !== 'string') return css;
   // 文字列の CSS は、このカスケードの拡張の読み方で @supports を読む (読んだものを渡されたときは、読んだ側の読み方)
   if (css !== HTML_UA_CSS && css !== QUIRKS_UA_CSS) return parseCss(css, undefined, ah);
+  // 読み方は上限 (limits.cssNesting など) で変わりうるので、既定でない上限の呼び出しでは覚えたものを使わない
+  if (limitsKey()) return parseCss(css);
   let hit = BUILTIN_UA_SHEETS.get(css);
   if (!hit) BUILTIN_UA_SHEETS.set(css, (hit = parseCss(css)));
   return hit;
@@ -2220,7 +2238,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   };
   /** :has()・:nth-child(… of S) の照合の覚え。このカスケードの間だけ持つ (計算値と同じく、文書の木は変わらない前提) */
   // 結合子の種類の混ざったセレクタの覚えは、合計に予算を置く (SelectorMemo.btBudget。規則の数 × 要素の数 で増えるので)
-  const selectorMemo = createSelectorMemo({ btBudget: BT_MEMO_BUDGET, ...(opts.onSelectorBudget ? { onBtOver: opts.onSelectorBudget } : {}) });
+  const selectorMemo = createSelectorMemo({ btBudget: limits().selectorWork, ...(opts.onSelectorBudget ? { onBtOver: opts.onSelectorBudget } : {}) });
   /**
    * 要素が規則のセレクタに合うか (matches と同じ答え)。右端と左の部分に分けられる規則 (RuleEntry.split) は、左の部分の答えを、
    * 最後に照合した親の分だけ覚えて、同じ親の子 (兄弟) に使い回す (計算値は木の順に求めるので、兄弟は続けて照合することが多い。
@@ -3409,7 +3427,8 @@ function validByGrammar(prop: string, lv: string, ws: string[], ctx: LenCtx): bo
 /** valid の結果 (同じ規則の宣言を、当たる要素ごとに検査し直さない。読めるかは長さの基準の値にはよらない。モードの旗には左右されるので鍵に入れる) */
 const VALID_CACHE = new Map<string, boolean>();
 function valid(prop: string, v: string, ctx: LenCtx, ah: AhFlags): boolean {
-  const key = `${ctx === ANY_CTX ? 'a' : 'f'}${ah.ahBorderStyles ? 'b' : ''}${ah.ahCounterFlags ? 'c' : ''}|${prop}|${v}`;
+  // calc() の入れ子の上限 (limits.cssNesting) で読めるかが変わるので、上限の指紋も鍵に入れる
+  const key = `${ctx === ANY_CTX ? 'a' : 'f'}${ah.ahBorderStyles ? 'b' : ''}${ah.ahCounterFlags ? 'c' : ''}|${limitsKey()}|${prop}|${v}`;
   let hit = VALID_CACHE.get(key);
   if (hit === undefined) {
     if (VALID_CACHE.size > 50000) VALID_CACHE.clear();

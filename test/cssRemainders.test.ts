@@ -135,7 +135,7 @@ describe('未対応の指定を警告に出す', () => {
     return unsupportedCssReport(parseCss(css), d);
   };
   it('@page の page-orientation (CSS Paged Media 3 §7.1.2)', () => {
-    expect(rep('@page wide { page-orientation: rotate-left; size: A4 landscape }')).toEqual({ unsupported: { 'page-orientation': 1 }, unknown: {} });
+    expect(rep('@page wide { page-orientation: rotate-left; size: A4 landscape }')).toEqual({ unsupported: { 'page-orientation': 1 }, unknown: {}, invalid: {} });
   });
   it('@page :nth() (CSS GCPM 3 §3)', () => {
     expect(rep('@page :nth(2n+1) { margin: 1in } @page :first { margin: 2in }').unsupported).toEqual({ '@page :nth()': 1 });
@@ -152,7 +152,7 @@ describe('未対応の指定を警告に出す', () => {
     expect(r.unsupported).toEqual({ 'hanging-punctuation: last': 2 });
   });
   it('shape-outside・shape-margin・shape-image-threshold は未対応 (知らないプロパティではない。CSS Shapes 1 §6)', () => {
-    expect(rep('.f { float: left; shape-outside: circle(50%); shape-margin: 1em; shape-image-threshold: 0.5 }')).toEqual({ unsupported: { 'shape-outside': 1, 'shape-margin': 1, 'shape-image-threshold': 1 }, unknown: {} });
+    expect(rep('.f { float: left; shape-outside: circle(50%); shape-margin: 1em; shape-image-threshold: 0.5 }')).toEqual({ unsupported: { 'shape-outside': 1, 'shape-margin': 1, 'shape-image-threshold': 1 }, unknown: {}, invalid: {} });
   });
   it('typeset の warnings に「未対応」として出る', async () => {
     await ensureFonts(DEFAULT_FONTS.base);

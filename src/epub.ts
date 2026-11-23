@@ -6,6 +6,7 @@
  *  - META-INF/container.xml → OPF (manifest・spine) → spine の順に XHTML の本文をつなぐ。章ごとに改ページする
  *  - CSS は <style> にしてまとめる (章の <link> と <style> を、最初に出た順に 1 度ずつ)。画像は名前つきで返す
  */
+import { limits as callLimits } from './limits';
 import { disabledAlternateStylesheet, linkRelTokens } from './htmlPrepare';
 import { EPUB_MAX_ENTRIES, EPUB_MAX_ENTRY_BYTES, EPUB_MAX_TOTAL_BYTES } from './imageLimits';
 import { msg } from './messages';
@@ -67,7 +68,8 @@ const mb = (n: number) => (n >= 1024 * 1024 ? `${Math.round(n / 1024 / 1024)}MB`
  * (中央ディレクトリに書かれた展開後の大きさは、偽れるので見ない)
  */
 export function readZip(bytes: Uint8Array, limits: Partial<ZipLimits> = {}): ZipEntry[] {
-  const lim = { ...DEFAULT_LIMITS, ...limits };
+  const c = callLimits();
+  const lim = { ...DEFAULT_LIMITS, maxEntryBytes: c.fileBytes, maxTotalBytes: c.epubTotalBytes, maxEntries: c.epubEntries, ...limits };
   /** これまでに展開した量の合計 */
   let total = 0;
   const tooLarge = (name: string) => new ZipLimitError(msg(`${name}: 展開した大きさが上限 (${mb(lim.maxEntryBytes)}) を超えます`, `${name}: the uncompressed size exceeds the limit (${mb(lim.maxEntryBytes)})`), 'entry');
@@ -199,8 +201,8 @@ type ParseXml = (text: string, type: 'application/xml' | 'text/html') => Documen
  * 合計の上限を超えたら、誤りで止める (ZipLimitError)。container.xml・OPF が上限を超えるときも、読めないので誤りで止める
  */
 export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Partial<ZipLimits> & { maxTextChars?: number } = {}): Promise<EpubBook> {
-  const maxEntries = limits.maxEntries ?? EPUB_MAX_ENTRIES;
-  const maxTextChars = limits.maxTextChars ?? EPUB_MAX_TEXT_CHARS;
+  const maxEntries = limits.maxEntries ?? callLimits().epubEntries;
+  const maxTextChars = limits.maxTextChars ?? callLimits().epubTextChars;
   /** これまでに読んだ章と CSS の字の数 */
   let textChars = 0;
   // 項目の名前は、メモリの上の表の鍵にするだけ (ファイルには書き出さない)。名前に ../ があっても、表の外には出ない。

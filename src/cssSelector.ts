@@ -9,6 +9,7 @@
  *  - 疑似要素: ::before ::after (:before :after も)。ほかの疑似要素は名前だけ持つ
  *  - 詳細度は [id, class, type] を 1 つの数 (a×10⁶ + b×10³ + c) にする
  */
+import { cssNestLimit } from './limits';
 import { splitTop } from './cssText';
 
 type AttrOp = '' | '=' | '~=' | '|=' | '^=' | '$=' | '*=';
@@ -114,7 +115,7 @@ const IDENT = new RegExp(String.raw`^-?(?:[_a-zA-Z\u0080-\uffff]|${ESC})(?:[-_a-
 const unesc = (s: string) => s.replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\(.)/g, (_m, h: string | undefined, ch: string | undefined) => (h ? cssCodePoint(h) : (ch ?? '')));
 
 function parseComplex(text: string): Selector | undefined {
-  if (selectorNesting >= MAX_SELECTOR_NESTING) return undefined;
+  if (selectorNesting >= cssNestLimit(MAX_SELECTOR_NESTING)) return undefined;
   selectorNesting++;
   try {
     return parseComplex1(text);
@@ -437,6 +438,12 @@ export interface SelectorMemo {
    */
   anc?: Map<Selector, Array<WeakMap<Element, boolean> | undefined>>;
   /**
+   * 後続の兄弟の結合子の左側: セレクタ → 複合セレクタの位置 k → 親 → 子のうち、セレクタの k から先に初めに合うものの位置 (first。無ければ −1) と、
+   * 初めから幾つの子を照合したか (scanned)。兄弟の多い文書で、要素ごとに前の兄弟を初めまでたどると、規則の数 × 要素の数 × 兄弟の数の手間になる
+   * (.cN ~ * の規則 4,500 個と <p> 400 個で 40 秒ほど)。親ごとに 1 つの項目なので、覚えは小さい。scope の無い照合だけで使う
+   */
+  prev?: Map<Selector, Array<WeakMap<Node, { scanned: number; first: number }> | undefined>>;
+  /**
    * 結合子がすべて同じ backtrack のセレクタ (Selector.chain) の照合の途中の結果: セレクタ → 基準 (:scope を見ないセレクタは基準によらず 1 つ)
    * → 要素 → chainPrefix の数 (祖先 (前の兄弟) に、左端から順に貪欲に合わせられた複合セレクタの数)。
    * 覚えが無いと、div を子孫の結合子で 60 個つないだセレクタ 500 個と 60 段の入れ子の div (126KB) で、合わない祖先の選び方を
@@ -597,8 +604,29 @@ function matchAbove(el: Element, sel: Selector, k: number, scope: Element | unde
     const p = prevEl(el);
     return !!p && matchFrom(p, sel, k + 1, scope, memo);
   }
+  // 後続の兄弟の結合子 (Selectors 4 §16.4): 前の兄弟のどれかが k + 1 から先に合うか。
+  // 覚え (SelectorMemo.prev) があれば、親ごとに、初めに合う子の位置を覚えて使う (兄弟が多い文書で、要素ごとに前の兄弟を全部たどると、
+  // 規則の数 × 要素の数 × 兄弟の数の手間になる)
+  const parent = el.parentNode;
+  if (memo && !scope && parent) return prevSiblingMatches(el, parent, sel, k + 1, memo);
   for (let p = prevEl(el); p; p = prevEl(p)) if (matchFrom(p, sel, k + 1, scope, memo)) return true;
   return false;
+}
+
+/**
+ * el の前の兄弟のどれかが matchFrom(・, sel, k) に合うか (scope の無い照合)。親の子を初めから順に照合し、初めに合う子の位置と、どこまで照合したかを、
+ * 親ごとに覚える (SelectorMemo.prev)。前の兄弟に合うものがあるのは、初めに合う子が el より前にあるとき。
+ * 照合は el の前までで止め、後の兄弟を照合したときに続きから進めるので、1 つの親の子を照合するのは、セレクタの位置ごとに 1 回ずつ
+ */
+function prevSiblingMatches(el: Element, parent: Node, sel: Selector, k: number, memo: SelectorMemo): boolean {
+  const bySel = (memo.prev ??= new Map()).get(sel) ?? memo.prev.set(sel, []).get(sel)!;
+  const m = (bySel[k] ??= new WeakMap());
+  const info = sibInfo(parent, el);
+  const at = info.pos.get(el) ?? 0;
+  let st = m.get(parent);
+  if (!st) m.set(parent, (st = { scanned: 0, first: -1 }));
+  for (; st.first < 0 && st.scanned < at; st.scanned++) if (matchFrom(info.all[st.scanned], sel, k, undefined, memo)) st.first = st.scanned;
+  return st.first >= 0 && st.first < at;
 }
 
 /** :scope を見ないセレクタは、基準によらない覚えを使う */

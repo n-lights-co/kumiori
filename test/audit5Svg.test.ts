@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { cpuClock, scaled } from './timing';
 import { DOMParser } from '@xmldom/xmldom';
 import { parseSvg } from '../src/svg';
 import { rasterFilter } from '../src/svgFilterRaster';
@@ -19,9 +20,9 @@ describe('filter の部分領域で切る矩形の並び (Filter Effects 1 §9.4
     // 最後の色の層を SourceAlpha の形で塗り、図形で描く (切る矩形の重なりの中だけ)
     p += '<feComposite in="r40" in2="SourceAlpha" operator="in"/>';
     const rss0 = process.memoryUsage().rss;
-    const t0 = performance.now();
+    const t0 = cpuClock();
     const doc = vec(p);
-    expect(performance.now() - t0).toBeLessThan(3000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(3000));
     expect(process.memoryUsage().rss - rss0).toBeLessThan(200e6);
     // 切る矩形 (5,5)-(25,25) の重なりの中だけ、図形 (20,20)-(40,40) を赤で塗る
     const red = doc.shapes.filter((s) => s.fill === '#ff0000');
@@ -59,9 +60,9 @@ describe('filter の近似の層の数 (Filter Effects 1 §9.8・§9.10)', () =>
     ['feMerge', (i: number) => `<feMerge result="r${i}"><feMergeNode in="r${i - 1}"/><feMergeNode in="r${i - 1}"/></feMerge>`],
   ])('%s に同じ結果を 2 つ渡して 40 回重ねても、層が指数で増えず、画素で計算する', (_name, step) => {
     const rss0 = process.memoryUsage().rss;
-    const t0 = performance.now();
+    const t0 = cpuClock();
     const doc = vec(chain(40, step));
-    expect(performance.now() - t0).toBeLessThan(3000);
+    expect(cpuClock() - t0).toBeLessThan(scaled(3000));
     expect(process.memoryUsage().rss - rss0).toBeLessThan(200e6);
     expect(doc.shapes).toHaveLength(1);
     expect(doc.shapes[0].image).toBeDefined();

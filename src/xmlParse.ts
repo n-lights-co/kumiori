@@ -2,6 +2,7 @@
  * XML (XSL-FO) の読み取り: DOCTYPE の内部実体を展開してから、@xmldom/xmldom で読む (ライブラリ・コマンド・画面で同じ)。
  * xmldom は、要素の行・列 (lineNumber・columnNumber) を持つので、診断の場所に使える (sourceLocation.ts)
  */
+import { limits } from './limits';
 import { DOMParser as XmlDOMParser } from '@xmldom/xmldom';
 import { KumioriInputError, KumioriLimitError } from './errors';
 import { KUMIORI_NS, type XNode } from './foDom';
@@ -9,13 +10,13 @@ import { msg } from './messages';
 import { setDocumentSource } from './sourceLocation';
 
 /** 内部実体の展開の上限: 入れ子の深さと、展開後の長さ (元の長さの倍数) */
-const ENTITY_MAX_DEPTH = 8;
+export const ENTITY_MAX_DEPTH = 8;
 const ENTITY_MAX_GROWTH = 16;
 /**
  * 展開で増える長さの上限 (字の数)。展開後の長さを V8 の文字列の長さの上限 (約 2^29 字) より十分小さくする (それを超えると、
  * 分かる文の誤りの前に「Invalid string length」で終わる)。2^27 字 (約 1.3 億字) 増える展開は、実在の FO・XHTML には無い
  */
-const ENTITY_MAX_ADDED = 2 ** 27;
+export const ENTITY_MAX_ADDED = 2 ** 27;
 /**
  * 内部サブセットのある DOCTYPE (正規表現 /<!DOCTYPE\s[^[>]*\[([\s\S]*?)\]\s*>/i の exec と同じ結果: index・[0] 全体・[1] 内部サブセット)。
  * 正規表現のままだと、閉じない '<!DOCTYPE a' のたびに文字列の終わりまで読むので、長さの 2 乗の手間になった ('<!DOCTYPE a' を
@@ -91,7 +92,9 @@ export function expandInternalEntities(xml: string): string {
   for (const m of dt[1].matchAll(/<!ENTITY\s+([A-Za-z_:][\w.:-]*)\s+(?:"([^"]*)"|'([^']*)')\s*>/g)) if (!ents.has(m[1])) ents.set(m[1], m[2] ?? m[3] ?? '');
   if (!ents.size) return xml;
   // 上限は、元の長さの ENTITY_MAX_GROWTH 倍と、元の長さ + ENTITY_MAX_ADDED の小さい方
-  const limit = Math.min(xml.length * ENTITY_MAX_GROWTH, xml.length + ENTITY_MAX_ADDED);
+  const lim = limits();
+  const entityDepth = lim.entityDepth;
+  const limit = Math.min(xml.length * ENTITY_MAX_GROWTH, xml.length + lim.entityChars);
   const tooLarge = () => new KumioriLimitError('limit/entity-expansion', msg('XML の解析に失敗しました: 内部実体の展開が大きすぎます', 'XML parse error: the expansion of internal entities is too large'));
   const tooDeep = (name: string) => new KumioriLimitError('limit/entity-expansion', msg(`XML の解析に失敗しました: 実体 &${name}; の入れ子が深すぎます`, `XML parse error: entity &${name}; is nested too deeply`), { args: { entity: name } });
   // 実体ごとに、展開した値と入れ子の高さ (自分を 1 段と数え、中で参照する実体の段を足したもの) を 1 度だけ作って覚える
@@ -103,8 +106,8 @@ export function expandInternalEntities(xml: string): string {
   /** 実体 name を深さ depth で参照したとき、前から順に展開して最初に上限に当たる参照の名前 */
   const tooDeepAt = (name: string, depth: number): string => {
     for (let n = name, d = depth; ; d++) {
-      if (d >= ENTITY_MAX_DEPTH) return n;
-      const next = memo.get(n)?.refs.find((r) => d + 1 + (memo.get(r)?.height ?? 0) > ENTITY_MAX_DEPTH);
+      if (d >= entityDepth) return n;
+      const next = memo.get(n)?.refs.find((r) => d + 1 + (memo.get(r)?.height ?? 0) > entityDepth);
       if (next === undefined) return n;
       n = next;
     }
@@ -120,7 +123,7 @@ export function expandInternalEntities(xml: string): string {
       const v = ents.get(name);
       if (v === undefined) return all;
       // 入れ子の深さ: 参照した所の深さ depth と、実体の高さの和が ENTITY_MAX_DEPTH まで (覚える前と同じ決まり。循環する実体も、ここで止まる)
-      if (depth >= ENTITY_MAX_DEPTH) throw tooDeep(name);
+      if (depth >= entityDepth) throw tooDeep(name);
       refs.push(name);
       let e = memo.get(name);
       if (!e) {
@@ -128,7 +131,7 @@ export function expandInternalEntities(xml: string): string {
         e = { text: inner.text, height: inner.height + 1, refs: inner.refs };
         if (e.text.length > limit) throw new KumioriLimitError('limit/entity-expansion', msg(`XML の解析に失敗しました: 実体 &${name}; の展開が大きすぎます`, `XML parse error: the expansion of entity &${name}; is too large`), { args: { entity: name } });
         memo.set(name, e);
-      } else if (depth + e.height > ENTITY_MAX_DEPTH) throw tooDeep(tooDeepAt(name, depth));
+      } else if (depth + e.height > entityDepth) throw tooDeep(tooDeepAt(name, depth));
       height = Math.max(height, e.height);
       size += e.text.length - all.length;
       if (size > limit) throw tooLarge();

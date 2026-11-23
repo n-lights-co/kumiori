@@ -35,6 +35,7 @@ import { inflateBytes } from './inflate';
 import { msg } from './messages';
 import { esc, f, kids, MAX_DEPTH, num, parseXml, type XEl } from './drawioXml';
 import { XML_COMMENT } from './sniff';
+import { rejoin, thisCall } from '../callContext';
 
 /**
  * fetchStencils: true のときに取る、draw.io の配布物の図形ライブラリ (draw.io の公開のリポジトリの、版を決めたファイル。
@@ -799,7 +800,7 @@ export async function fetchDrawioImage(fetch: Fetcher, path: string, bundleUrl: 
         .then((b) => (b && imageMime(b) ? b : undefined))
         .catch(() => undefined),
     );
-  const got = await images.get(url);
+  const got = rejoin(thisCall(), await images.get(url));
   if (got === undefined) images.delete(url);
   return got;
 }
@@ -813,7 +814,7 @@ const bundles = new Map<string, Promise<Uint8Array | undefined>>();
  */
 export async function fetchStencilBundle(fetch: Fetcher, url: string = DRAWIO_STENCILS_URL): Promise<Uint8Array | undefined> {
   if (!bundles.has(url)) bundles.set(url, fetch(url).catch(() => undefined));
-  const got = await bundles.get(url);
+  const got = rejoin(thisCall(), await bundles.get(url));
   if (got === undefined) bundles.delete(url);
   return got;
 }

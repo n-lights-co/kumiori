@@ -251,7 +251,7 @@ describe('HTML: ルビの配置 (CSS Ruby 1 §4・§5.1)', () => {
       expect(pairs('ruby-merge: auto')).toEqual(['無:む', '常:じょう']);
       // @supports: 対応した値は真、ruby-merge: auto は偽
       expect(['(ruby-position: under)', '(ruby-align: center)', '(ruby-overhang: auto)', '(ruby-merge: merge)', '(ruby-merge: auto)'].map((c) => matchSupports(c))).toEqual([true, true, true, true, false]);
-      expect(unsupportedCssReport(parseCss('ruby { ruby-merge: auto } .a { ruby-merge: merge; ruby-position: under; ruby-align: center; ruby-overhang: auto }'))).toEqual({ unsupported: { 'ruby-merge: auto': 1 }, unknown: {} });
+      expect(unsupportedCssReport(parseCss('ruby { ruby-merge: auto } .a { ruby-merge: merge; ruby-position: under; ruby-align: center; ruby-overhang: auto }'))).toEqual({ unsupported: { 'ruby-merge: auto': 1 }, unknown: {}, invalid: {} });
     });
   });
 });

@@ -5,6 +5,7 @@
  * そのままでは扱えないので、選んだ書体のテーブルだけを集めて単独の sfnt に組み直す。
  * フォントは利用者の PC からだけ読み込み、リポジトリや配布物には含めない。
  */
+import { limits } from './limits';
 import { toSfnt } from './webFont';
 import { msg } from './messages';
 import fontkit from '@pdf-lib/fontkit';
@@ -109,8 +110,11 @@ export function countFonts(buf: ArrayBuffer): number {
   return n;
 }
 
-/** 書体の集まりから取り出す書体の、合計の大きさの上限 (1GB。実在の大きな集まり: 100MB ほどの和文の書体 × 数個までは入る) */
-const COLLECTION_MAX_BYTES = 1024 * 1024 * 1024;
+/**
+ * 書体の集まりから取り出す書体の、合計の大きさの上限の既定 (1GB。実在の大きな集まり: 100MB ほどの和文の書体 × 数個までは入る)。
+ * 呼び出しの上限 (limits.fontCollectionBytes) で変えられる
+ */
+export const COLLECTION_MAX_BYTES = 1024 * 1024 * 1024;
 
 /**
  * ファイルの中の書体を 1 つずつの sfnt にする (TTF・OTF はそのまま 1 つ、TTC は中の書体をすべて取り出す)。
@@ -128,7 +132,7 @@ export function collectionFaces(buf: ArrayBuffer): ArrayBuffer[] {
   for (let i = 0; i < n; i++) {
     const face = extractFromCollection(buf, i);
     total += face.byteLength;
-    if (total > COLLECTION_MAX_BYTES) throw new FontFileError(msg('TTC の書体の合計が大きすぎます', 'the fonts in the TTC are too large in total'));
+    if (total > limits().fontCollectionBytes) throw new FontFileError(msg('TTC の書体の合計が大きすぎます', 'the fonts in the TTC are too large in total'));
     faces.push(face);
   }
   return faces;

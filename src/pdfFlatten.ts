@@ -21,6 +21,7 @@
  * 不透明な塗り・線・字だけで、透明な子が前の子と重ならず、どの子の下も 1 色の塗りなら、子ごとに不透明度を掛けて平らにしたものと同じ
  * (重なった所は後の子が覆う) なので、ベクタにする。そうでなければ、グループの全体を画素にする。
  */
+import { limits } from './limits';
 import { parseColor, spotColor, type SpotColor } from './color';
 import { apply, type Matrix } from './matrix';
 import { decodeShapeImage, paintShapesToPixels } from './svgFilterRaster';
@@ -572,7 +573,8 @@ export function flattenPpi(items: readonly FlatItem[], box: Box): number {
   const area = ((box.x1 - box.x0) / 72) * ((box.y1 - box.y0) / 72);
   // 上限は必ず守る (72ppi などの下限で止めると、広い範囲 (大きなページ) で上限を何倍も超えて、時間とメモリを使い果たす)。
   // 1ppi でも上限を超える範囲は 0 を返す (呼ぶ側は画像にできないとする)。下げた解像度は、呼ぶ側の警告に出る
-  if (!(area * ppi * ppi <= FLATTEN_MAX_PIXELS)) ppi = area > 0 ? Math.floor(Math.sqrt(FLATTEN_MAX_PIXELS / area)) : 0;
+  const maxPx = limits().flattenPixels;
+  if (!(area * ppi * ppi <= maxPx)) ppi = area > 0 ? Math.floor(Math.sqrt(maxPx / area)) : 0;
   return ppi;
 }
 

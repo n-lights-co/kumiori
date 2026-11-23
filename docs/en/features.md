@@ -12,7 +12,7 @@ Features not yet available and known limitations are in [`docs/en/BACKLOG.md`](B
 | HTML+CSS | Read with Kumiori's own CSS cascade (no browser needed) |
 | XSL-FO | XSL-FO 1.1. Supports part of Antenna House's `axf:*` extensions, focusing on the commonly used ones |
 | EPUB | Can be opened in the web app (browser) ([`docs/en/app.md`](app.md)) |
-| Images | PNG, JPEG, GIF, BMP, TIFF, WebP, SVG, WMF, EMF, EPS (PostScript), CGM |
+| Images | PNG, JPEG, GIF, BMP, TIFF, WebP, SVG, WMF, EMF, EPS (PostScript), CGM, PDF (a page placed as an image; drawn only in PDF output, placeholder frames on screen and in SVG and PNG; "PDF images" in [`docs/en/library.md`](library.md)) |
 | Diagrams | draw.io diagrams (`.drawio`, `.dio`; [`docs/en/drawio.md`](drawio.md)) |
 
 Image formats can be added with plugins ("Plugins" in [`docs/en/library.md`](library.md)).
@@ -39,7 +39,7 @@ It is described in section 9.2 of the HTML and CSS volume and section 4.6 of the
 | Mongolian script | Horizontal and vertical |
 | Korean and Chinese | Hangul; Simplified and Traditional Chinese |
 | Vietnamese, Greek, Cyrillic | Can be set with the default Latin fonts |
-| Hyphenation | English, Latin, Russian, Ukrainian, Modern Greek |
+| Hyphenation | English, Latin, Russian, Ukrainian, Modern Greek, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Danish, Swedish, Norwegian, Finnish, Hungarian, Slovak, Slovenian, Croatian, Serbian, Bulgarian, Estonian, Lithuanian, Irish, Welsh, Catalan, Galician, Basque, Icelandic, Turkish (Czech and a few others are not hyphenated, because the licences of their rules do not fit) |
 | Mixed Japanese and Latin text | Set with spacing between Japanese and Latin text |
 
 About fonts:

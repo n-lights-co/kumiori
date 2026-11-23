@@ -53,8 +53,41 @@ const { document, report } = importXslFo(foText, browserParse, { bleedMm: 3, tri
 
 ## 既定値と書体
 
-FO で指定が無いときの値は、Kumiori の HTML の既定 (10pt・行送り 1.75・両端揃え・ぶら下げ組み) ではなく **XSL-FO の既定** を使う。既定値の流儀は `compat` (コマンドの `--compat`) で選ぶ: 仕様モード `spec` (既定) は XSL-FO 1.1 の初期値どおり (`font-size` = medium = 12pt・行送り 1.2・start・ぶら下げ無し)、互換モード `antenna` は AH Formatter 向けに書かれた文書も組めるようにするための既定値 (以下は互換モードの値)。
-`fo:root` → `fo:page-sequence` の順に重ねる: `font-size` = 10pt (medium。XSL-FO の仕様では処理系依存)、`line-height` = 1.2 (normal の代用。10pt の行は 12pt、12pt の行は 14.4pt の行送り。和欧混在の行も行送りは line-height のまま。行の中の字の基線は、ブロックの nominal-font (§5.5.7。日本語の文書の `serif`・`sans-serif` は和文の書体) の上下の高さに line-height を割り振った位置で、和文だけ・欧文だけ・混在の行で変わらない。`defaultLineHeight` で変更可)、`text-align` = start (XSL-FO の初期値と同じ。指定の無い段落は両端揃えにしない)、行末の 、。 はぶら下げない (`axf:hanging-punctuation` の初期値 none。`end` などで有効)。行の調整は、日本語組版処理の要件 (JLREQ。https://www.w3.org/TR/jlreq/) §3.8 に従う (互換モード・仕様モードとも): 行があふれるときは、追い出す前に、次の分割点までを詰めて行に収められるか試す (追込みを優先する。§3.8.2)。詰める順と限界は §3.8.3 のとおりで、欧文の語間 (空白の 1/3 まで) → 行末の終わり括弧類・読点類・句点類の後ろの二分アキ → 行末の中点類の前後の四分アキ → 行中の中点類の前後の四分アキ → 行中の始め括弧類の前・終わり括弧類と読点類の後ろの二分アキ → 和字と欧字・数字の間の四分アキ (八分まで)。行中の句点類の後ろのアキと、行頭の始め括弧類の前のアキは詰めない。和字どうしの字間 (ベタ組) は詰めない。互換モードでは、追込みで詰める量の合計 (語間・約物のアキ・和欧間のアキ) を 1 行に二分 (約物 1 つ分) までに限る (`lineSqueezeMax` = 0.5。たとえば、読点 2 つを詰めれば入る 1 字や、和欧間のアキを多くの所で少しずつ詰めれば入る 1 字は、追い込まずに次の行へ送り、読点 1 つで足りる分は追い込む。仕様モードでは JLREQ のとおり限らない)。互換モードでは、さらに、欧文の語間と、和字と欧字・数字の間の四分アキを詰めない (`noSpaceSqueeze`。ブロックの揃えによらず、両端揃えの行も同じ。語間・和欧間のアキは本来の幅より狭くせず、詰めれば入る字・語は次の行へ送る。アンテナハウスの組版結果に合わせたもので、約物のアキの追込みは行う)。仕様モードでは、欧文の語間を詰めるのは、両端揃えで組む行だけ (`wordSqueezeJustifiedOnly`。`text-align` が `justify` のブロックの途中の行と、`text-align-last` が `justify` のブロックの最後の行・改行で終わる行)。両端揃えで組まない行 (`start`・`end`・`center`・`inside`・`outside`・`left`・`right` のブロックの行、両端揃えのブロックの最後の行) の語間は空白の字の幅のままにし、詰めれば入る字・語は次の行へ送る (XSL 1.1 §7.17.8: `word-spacing="normal"` の語間は optimum = maximum = minimum で、縮める幅が無い。§7.16.9: 字の並びを伸ばしてよいのは `justify` のとき。CSS Text 3 §6.1・§6.4.1 も、字の間を伸び縮みさせるのは両端揃えのとき)。約物のアキと和欧間のアキは、仕様モードでは揃えによらず上の順のとおり詰める。
+FO で指定が無いときの値は、Kumiori の HTML の既定 (10pt・行送り 1.75・両端揃え・ぶら下げ組み) ではなく **XSL-FO の既定** を使う。既定値の流儀は `compat` (コマンドの `--compat`) で選ぶ。
+
+- 仕様モード `spec` (既定): XSL-FO 1.1 の初期値どおり (`font-size` = medium = 12pt・行送り 1.2・start・ぶら下げ無し)。
+- 互換モード `antenna`: AH Formatter 向けに書かれた文書も組めるようにするための既定値。`fo:root` → `fo:page-sequence` の順に重ねる。
+  - `font-size` = 10pt (medium。XSL-FO の仕様では処理系依存)。
+  - `line-height` = 1.2 (normal の代用。10pt の行は 12pt、12pt の行は 14.4pt の行送り。`defaultLineHeight` で変えられる)。和欧混在の行も、行送りは line-height のまま。
+    行の中の字の基線は、ブロックの nominal-font (§5.5.7。日本語の文書の `serif`・`sans-serif` は和文の書体) の上下の高さに line-height を割り振った位置で、和文だけ・欧文だけ・混在の行で変わらない。
+  - `text-align` = start (XSL-FO の初期値と同じ。指定の無い段落は両端揃えにしない)。
+  - 行末の 、。 はぶら下げない (`axf:hanging-punctuation` の初期値 none。`end` などで有効)。
+
+### 行の調整 (追込み)
+
+行の調整は、日本語組版処理の要件 (JLREQ。https://www.w3.org/TR/jlreq/) §3.8 に従う (互換モード・仕様モードとも)。
+
+- 行があふれるときは、追い出す前に、次の分割点までを詰めて行に収められるか試す (追込みを優先する。§3.8.2)。
+- 詰める順と限界は §3.8.3 のとおり。
+  1. 欧文の語間 (空白の 1/3 まで)
+  2. 行末の終わり括弧類・読点類・句点類の後ろの二分アキ
+  3. 行末の中点類の前後の四分アキ
+  4. 行中の中点類の前後の四分アキ
+  5. 行中の始め括弧類の前・終わり括弧類と読点類の後ろの二分アキ
+  6. 和字と欧字・数字の間の四分アキ (八分まで)
+- 行中の句点類の後ろのアキと、行頭の始め括弧類の前のアキは詰めない。和字どうしの字間 (ベタ組) は詰めない。
+- 互換モードでは、次の 2 つの限りを置く。
+  - 追込みで詰める量の合計 (語間・約物のアキ・和欧間のアキ) を、1 行に二分 (約物 1 つ分) までに限る (`lineSqueezeMax` = 0.5)。
+    たとえば、読点 2 つを詰めれば入る 1 字や、和欧間のアキを多くの所で少しずつ詰めれば入る 1 字は、追い込まずに次の行へ送り、読点 1 つで足りる分は追い込む (仕様モードでは JLREQ のとおり限らない)。
+  - 欧文の語間と、和字と欧字・数字の間の四分アキを詰めない (`noSpaceSqueeze`)。ブロックの揃えによらず、両端揃えの行も同じで、語間・和欧間のアキは本来の幅より狭くせず、詰めれば入る字・語は次の行へ送る。
+    アンテナハウスの組版結果に合わせたもので、約物のアキの追込みは行う。
+- 仕様モードでは、欧文の語間を詰めるのは、両端揃えで組む行だけにする (`wordSqueezeJustifiedOnly`。`text-align` が `justify` のブロックの途中の行と、`text-align-last` が `justify` のブロックの最後の行・改行で終わる行)。
+  - 両端揃えで組まない行 (`start`・`end`・`center`・`inside`・`outside`・`left`・`right` のブロックの行、両端揃えのブロックの最後の行) の語間は、空白の字の幅のままにし、詰めれば入る字・語は次の行へ送る。
+  - 根拠: XSL 1.1 §7.17.8 (`word-spacing="normal"` の語間は optimum = maximum = minimum で、縮める幅が無い)・§7.16.9 (字の並びを伸ばしてよいのは `justify` のとき)。CSS Text 3 §6.1・§6.4.1 も、字の間を伸び縮みさせるのは両端揃えのとき。
+  - 約物のアキと和欧間のアキは、揃えによらず上の順のとおり詰める。
+
+### 書体
+
 書体は、画面側で `mapFont` に与える規則で決める: ゴシック系・sans-serif は Noto Sans JP (Regular / Bold)、それ以外 (明朝・serif・未指定) は Noto Serif JP (Regular / Bold)。太字は、同じ書体の Bold で組む (明朝の太字を、ゴシックに替えない。XSL 1.1 §7.9.9・CSS Fonts 4 §5.2)。
 FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できない (Microsoft の書体)。画面の「書体を読み込む」から、お使いの PC の書体ファイルを選ぶと使える (次節)。読み込まない場合は、欧文の字幅などが元の組版結果と少しずれる。
 
@@ -79,19 +112,22 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 ブラウザが開けない形式も読む:
 
 - **TIFF**: utif (MIT) で画素を読む (非圧縮・PackBits・LZW、RGB・CMYK・YCbCr・パレット)。読み取りの処理は、TIFF を読むときだけ読み込む。
-  CCITT の符号 (Compression=2 の Modified Huffman、Compression=3 の T.4 の 1 次元・2 次元、Compression=4 の T.6) は、TIFF 6.0 Specification の Section 10・11 と ITU-T T.4 (07/96) の 4.1・4.2 から書いた `src/ccitt.ts` で読む (1 次元の符号表は TIFF 6.0 の Section 10 の表を写したもの。T.4 の表と同じことを確かめた。FillOrder=2、PhotometricInterpretation が BlackIsZero のときの白黒の入れ替えにも対応)。非圧縮の形 (T4Options・T6Options の bit 1。T.4 の Table 5/T.4) と、タイルに分けた画像 (TIFF 6.0 Section 15) にも対応する。
-- **WMF・EMF**: 描画命令 (`src/metafile.ts`) を SVG にして描く。PDF にはベクタのまま入る。対応はペン・ブラシ・フォント、線・多角形・矩形・楕円・弧・弦・扇形・パス・文字、
-  座標系 (window。EMF の世界変換)、切り抜き (矩形・領域・パス。RegionMode の組み合わせはすべて。パスを含む OR・XOR は多角形の演算 (`src/regionBool.ts`) で 1 つの形にする。
-  SAVEDC・RESTOREDC で戻る)、領域の塗り、画素、画像 (DIB。RLE4・RLE8・JPEG・PNG、論理パレットの番号の DIB_PAL_COLORS・DIB_PAL_INDICES を含む)、
-  EMR_ALPHABLEND (不透明度で重ねる)、模様のブラシ (DIB の模様。装置の 1 画素の大きさのタイルの pattern。EMF はヘッダの Device と Millimeters、WMF は写像モードから決める)。
-  ラスター演算: 描き先に依らないものは色を計算して描く。描き先に依るもの (SRCAND・SRCPAINT・SRCINVERT・DSTINVERT など) は、元と型の色の成分が 0 か 255 なら、
-  乗算・スクリーン・差の描画モード (SVG の mix-blend-mode、PDF の BM) の層で同じ結果にする。SRCAND のマスクと同じ所への SRCINVERT の組は、透明の部分を持つ画像 1 枚にする。
-  描かないもの: 色の成分が 0・255 以外の元を描き先と混ぜる演算 (ビット演算は重ね方で表せない)、Bitmap16 の模様のブラシ (装置に依る形式で画素の色の決まりが無い)、
-  写像モードから装置の画素の大きさが決まらない WMF の模様のブラシ、DEFAULT_PALETTE (装置に依る) の番号の DIB、EMF+。
-  ハッチのブラシ (BS_HATCHED): 仕様書は模様の向きだけを決め、線の間隔の決まりが無い。利用者の指定により、装置の 8 画素ごとに太さ 1 画素の線を引く
-  (模様のブラシと同じく、装置の画素の大きさが決まるときだけ。線の間は、背景のモードが OPAQUE で背景色があればその色、そうでなければ塗らない)。
-  仕様書 ([MS-WMF]・[MS-EMF]) に値の決まりが無いので推し量らないもの: PS_DASH などの破線の長さ、背景色の初期値 (SETBKCOLOR が無いとき)、
-  SETTEXTJUSTIFICATION の区切りの字。
+  - CCITT の符号 (Compression=2 の Modified Huffman、Compression=3 の T.4 の 1 次元・2 次元、Compression=4 の T.6) は、`src/ccitt.ts` で読む。
+    TIFF 6.0 Specification の Section 10・11 と ITU-T T.4 (07/96) の 4.1・4.2 から書いた。1 次元の符号表は TIFF 6.0 の Section 10 の表を写したもので、T.4 の表と同じことを確かめた。
+  - FillOrder=2 と、PhotometricInterpretation が BlackIsZero のときの白黒の入れ替えにも対応する。
+  - 非圧縮の形 (T4Options・T6Options の bit 1。T.4 の Table 5/T.4) と、タイルに分けた画像 (TIFF 6.0 Section 15) にも対応する。
+- **WMF・EMF**: 描画命令 (`src/metafile.ts`) を SVG にして描く。PDF にはベクタのまま入る。
+  - 描くもの: ペン・ブラシ・フォント、線・多角形・矩形・楕円・弧・弦・扇形・パス・文字、座標系 (window。EMF の世界変換)、領域の塗り、画素。
+  - 切り抜き: 矩形・領域・パス。RegionMode の組み合わせはすべて。パスを含む OR・XOR は、多角形の演算 (`src/regionBool.ts`) で 1 つの形にする。SAVEDC・RESTOREDC で戻る。
+  - 画像: DIB (RLE4・RLE8・JPEG・PNG。論理パレットの番号の DIB_PAL_COLORS・DIB_PAL_INDICES を含む) と、EMR_ALPHABLEND (不透明度で重ねる)。
+  - 模様のブラシ: DIB の模様。装置の 1 画素の大きさのタイルの pattern にする (EMF はヘッダの Device と Millimeters、WMF は写像モードから決める)。
+  - ハッチのブラシ (BS_HATCHED): 仕様書は模様の向きだけを決め、線の間隔の決まりが無い。利用者の指定により、装置の 8 画素ごとに太さ 1 画素の線を引く
+    (模様のブラシと同じく、装置の画素の大きさが決まるときだけ。線の間は、背景のモードが OPAQUE で背景色があればその色、そうでなければ塗らない)。
+  - ラスター演算: 描き先に依らないものは、色を計算して描く。描き先に依るもの (SRCAND・SRCPAINT・SRCINVERT・DSTINVERT など) は、元と型の色の成分が 0 か 255 なら、
+    乗算・スクリーン・差の描画モード (SVG の mix-blend-mode、PDF の BM) の層で同じ結果にする。SRCAND のマスクと同じ所への SRCINVERT の組は、透明の部分を持つ画像 1 枚にする。
+  - 描かないもの: 色の成分が 0・255 以外の元を描き先と混ぜる演算 (ビット演算は重ね方で表せない)、Bitmap16 の模様のブラシ (装置に依る形式で、画素の色の決まりが無い)、
+    写像モードから装置の画素の大きさが決まらない WMF の模様のブラシ、DEFAULT_PALETTE (装置に依る) の番号の DIB、EMF+。
+  - 仕様書 ([MS-WMF]・[MS-EMF]) に値の決まりが無いので、推し量らないもの: PS_DASH などの破線の長さ、背景色の初期値 (SETBKCOLOR が無いとき)、SETTEXTJUSTIFICATION の区切りの字。
 - **EPS**: PostScript を実行して描く (`src/psInterp.ts`・`src/psFilters.ts`・`src/psGraphics.ts`・`src/eps.ts`。PostScript Language Reference 第 3 版と EPSF 3.0 の仕様から書いた)。
   塗り・線・クリップ・色空間 (DeviceGray・DeviceRGB・DeviceCMYK・Indexed・Separation・DeviceN。CIE ベースは成分をそのまま使う)・画像 (image・colorimage・imagemask・type 3・4)・フィルタ (ASCIIHex・ASCII85・RunLength・LZW・Flate・SubFile・ReusableStream。DCT は JPEG のまま) に対応。CCITTFaxDecode (ファクシミリの符号) のフィルタは未対応で、使うと PostScript の undefined のエラーになる (そこまでに描いたものは描く)。
   描いたものは SVG にし、PDF には図形のまま入れる。DeviceCMYK で決まる色は、PDF にも DeviceCMYK で入れる。
@@ -115,7 +151,7 @@ FO が指定する MS 明朝・MS ゴシックなどの書体は同梱できな�
 
 言語ごとの約物のアキ: `fo:declarations` の `axf:space-before-punctuation`・`axf:space-after-punctuation`・`axf:space-between-punctuation-and-digit`・`axf:space-between-digit-and-punctuation` (code・space・language) を読み、言語 (`xml:lang` / `language`) が合う文字列で、記号の前後に行内の余白でアキを入れる。space の百分率は字の大きさに対する割合、`thin` は 1/6em。記号の隣が空白なら入れない。
 
-分綴: `hyphenate="true"` の欧文の語は、分綴の位置で行末にハイフンを付けて分ける。分綴の規則は hyphen (ISC、TeX のパターン) で、今は英語 (`xml:lang` / `language` が en・en-US・en-GB、指定が無ければ英語) ・ラテン語 (la)・ロシア語 (ru)・ウクライナ語 (uk)・現代ギリシャ語 (el。単調の綴り) だけ (ロシア語・ウクライナ語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字の語も分ける)。規則は分綴を使う文書を開いたときだけ読み込む。5 字未満の語は分けない。 `country` を指定すると、`language` と合わせて規則を選ぶ (`language="en" country="GB"` は en-GB。XSL 1.1 §7.10.1)。`script` は規則の選び分けに使わない。分綴の制限: `hyphenation-character` (行末に出す字。指定が無ければ、仕様モードは初期値の U+2010 (§7.10.5)、互換モードは U+002D。U+2010 の字形は、語の字と同じ欧文の書体から取る。ソフトハイフンで分けた行にも出す)、`hyphenation-remain-character-count`・`hyphenation-push-character-count` (分け目の前・後の最小の字数。§7.10.6・§7.10.7)、`hyphenation-ladder-count` (分綴した行が続く数の上限。§7.16.2。超える行は語を次の行へ送る。ほかに折り返せる位置の無い行は、上限を超えても分ける) を読む。CSS の `hyphenate-character`・`hyphenate-limit-*` と同じ受け皿 (`hyphenLimits`) に写す。`hyphenation-keep` の `column`・`page` (§7.16.1) は読まず、未対応として報告する (行を分けた後のページ分けで、行を分け直さないため)。
+分綴: `hyphenate="true"` の欧文の語は、分綴の位置で行末にハイフンを付けて分ける。分綴の規則は hyphen (ISC、TeX のパターン) で、規則のある言語は、英語 (`xml:lang` / `language` が en・en-US・en-GB、指定が無ければ英語)・ラテン語 (la)・ロシア語 (ru)・ウクライナ語 (uk)・現代ギリシャ語 (el。単調の綴り)・ドイツ語 (de。旧正書法の de-1901・スイスの旧正書法の de-CH-1901 も)・フランス語 (fr)・スペイン語 (es)・イタリア語 (it)・ポルトガル語 (pt)・オランダ語 (nl)・ポーランド語 (pl)・デンマーク語 (da)・スウェーデン語 (sv)・ノルウェー語 (nb・nn・no)・フィンランド語 (fi)・ハンガリー語 (hu)・スロバキア語 (sk)・スロベニア語 (sl)・クロアチア語 (hr)・セルビア語 (sr。ラテン文字とキリル文字)・ブルガリア語 (bg)・エストニア語 (et)・リトアニア語 (lt)・アイルランド語 (ga)・ウェールズ語 (cy)・カタルーニャ語 (ca)・ガリシア語 (gl)・バスク語 (eu)・アイスランド語 (is)・トルコ語 (tr) (キリル文字の言語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字の語も分ける)。チェコ語 (cs)・ラトビア語 (lv)・ルーマニア語 (ro)・インドネシア語 (id)・マケドニア語 (mk) は、使える規則のライセンスが Kumiori と合わない (GPL・LGPL だけか、ライセンスの表示が無い) ので、分綴しません。`language` は ISO 639-2 の 3 字の符号 (`eng`・`deu` など) でもよい。規則は分綴を使う文書を開いたときだけ読み込む。5 字未満の語は分けない。 `country` を指定すると、`language` と合わせて規則を選ぶ (`language="en" country="GB"` は en-GB。XSL 1.1 §7.10.1)。`script` は規則の選び分けに使わない。分綴の制限: `hyphenation-character` (行末に出す字。指定が無ければ、仕様モードは初期値の U+2010 (§7.10.5)、互換モードは U+002D。U+2010 の字形は、語の字と同じ欧文の書体から取る。ソフトハイフンで分けた行にも出す)、`hyphenation-remain-character-count`・`hyphenation-push-character-count` (分け目の前・後の最小の字数。§7.10.6・§7.10.7)、`hyphenation-ladder-count` (分綴した行が続く数の上限。§7.16.2。超える行は語を次の行へ送る。ほかに折り返せる位置の無い行は、上限を超えても分ける) を読む。CSS の `hyphenate-character`・`hyphenate-limit-*` と同じ受け皿 (`hyphenLimits`) に写す。`hyphenation-keep` の `column`・`page` (§7.16.1) は読まず、未対応として報告する (行を分けた後のページ分けで、行を分け直さないため)。
 
 描けない形式でも、大きさはファイルの先頭から読む (`src/imageInfo.ts`) ので、仮の枠は正しい寸法になる。`fo:external-graphic` の `border`・`padding`・`background-color` は、画像 (width / height の枠があれば枠) の外側に描く。
 
@@ -199,7 +235,7 @@ foreignObject の中身 (HTML・MathML) は、API・コマンドでは本文と�
 - 回転した (reference-orientation="90"・"270") ブロックコンテナを中身の大きさでページごとに置くときも、中の先頭の余白 (space-before) は捨てる (参照領域の先頭)。
 
 段組での脚注・前方 float・区切り: 既定では、前方 float とその区切りは本文領域の上端、脚注とその区切りは下端に、
-全段を貫く幅で置き、段はその間に組む。領域の高さは組んでみないと分からないので、ページごとの予約を増やしながら安定するまで (最大 6 回) 組み直す。
+全段を貫く幅で置き、段はその間に組む。領域の高さは組んでみないと分からないので、組み直して決める。脚注の領域の高さ (ページごとの予約) は、組版の中で、ページの始まりごとに決める: 前の回の組版の脚注の参照の、本文の並びの位置から、そのページに入る脚注と要る高さを見積もって、収まる最小の予約にし、同じ所から始まるページは、前の回に収まった予約に固め、収まらなかったら上げる (ふつうは 2〜4 回で収まる)。本文のあるページの予約は、本文の 1 行半の高さを残す。前方 float の領域の高さは、前のページから順に固める。組み直しは最大 16 回で、上限で終わっても、脚注は本文が使った高さの下に置き、入らない分は次のページへ続ける (本文と重ねない)。
 `axf:footnote-position="column"` を `fo:region-body` に指定したときだけ、脚注を段ごとに置く (`PageMaster.columns.footnotePosition`)。
 `axf:footnote-position="outside"` (横書きのページ・段組でない本文) は傍注にする (`PageMaster.sideNotes`)。奇数ページは region-end、偶数ページは region-start の領域の幅で脚注の本体を組み、参照する行の上端の高さから置く。前の傍注に重なるときは、その下へ送る。そのページに領域が無ければ、ふだんの脚注にする。
 段組でない流れでも、ページの頭に来る流れの最初のブロックの `space-before` (`conditionality="discard"`) はそこで捨てるので、行がページに入るかの判定でも数えない (§4.3.1)。

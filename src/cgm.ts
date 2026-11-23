@@ -21,7 +21,7 @@ import { decodeModifiedHuffman } from './ccitt';
 import { fontFamilyOf } from './epsInfo';
 import { isCgm } from './imageInfo';
 export { isCgm };
-import { MAX_PIXELS, metafilePixelBudget, metafileSvgBudget } from './imageLimits';
+import { maxPixels, metafilePixelBudget, metafileSvgBudget } from './imageLimits';
 import { decodeJpeg } from './jpeg';
 import { encodePngStored } from './pixels';
 import { inflateBytes, lzwBytes } from './psFilters';
@@ -1529,7 +1529,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
    */
   const tablePattern = (): string | undefined => {
     const t = s.patternTable.get(s.patternIndex) ?? (s.patternIndex === 1 ? { nx: 1, ny: 1, uid: 0, palette: [s.colourSelection === 1 ? ({ rgb: DEVICE_FOREGROUND } as Colour) : { index: 1 }], cells: new Uint32Array(1) } : undefined);
-    if (!t || t.nx < 1 || t.ny < 1 || t.nx * t.ny > MAX_PIXELS) return undefined;
+    if (!t || t.nx < 1 || t.ny < 1 || t.nx * t.ny > maxPixels()) return undefined;
     const box = patternBox();
     if (!box) return undefined;
     const cells = t.nx * t.ny;
@@ -2281,7 +2281,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const nx = p.I();
         const ny = p.I();
         const prec = p.I();
-        if (!(nx > 0 && ny > 0) || nx * ny > MAX_PIXELS || ![0, 1, 2, 4, 8, 16, 24, 32].includes(prec)) break;
+        if (!(nx > 0 && ny > 0) || nx * ny > maxPixels() || ![0, 1, 2, 4, 8, 16, 24, 32].includes(prec)) break;
         // セルの数は、データに入る数まで (色の足りないセルは 1 番の色で埋めるが、それは 65,536 個の表まで)。大きさだけを書いた表
         // (10000 × 10000 で色が無い) は、塗るたびに 1 億個のセルの色を調べさせる
         const indexed = st.colourSelection === 0;
@@ -2804,7 +2804,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const ny = p.I();
     const prec = p.I();
     const mode = p.E();
-    if (!(nx > 0 && ny > 0) || nx * ny > MAX_PIXELS || ![0, 1, 2, 4, 8, 16, 24, 32].includes(prec)) {
+    if (!(nx > 0 && ny > 0) || nx * ny > maxPixels() || ![0, 1, 2, 4, 8, 16, 24, 32].includes(prec)) {
       warn(msg('CELL ARRAY の大きさか精度が読めないので描きません', 'CELL ARRAY is not drawn because its size or precision cannot be read'));
       return;
     }
@@ -2851,7 +2851,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const [offp, offl, ncp, ncl] = [p.I(), p.I(), p.I(), p.I()];
     const w = ntp * ctp;
     const h = ntl * ctl;
-    if (!(ntp > 0 && ntl > 0 && ctp > 0 && ctl > 0) || w * h > MAX_PIXELS || !(csp > 0 && csl > 0)) {
+    if (!(ntp > 0 && ntl > 0 && ctp > 0 && ctl > 0) || w * h > maxPixels() || !(csp > 0 && csl > 0)) {
       warn(msg('BEGIN TILE ARRAY の大きさが読めないので、タイルの並びを描きません', 'the size of BEGIN TILE ARRAY cannot be read; the tile array is not drawn'));
       return;
     }
@@ -2886,7 +2886,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const rowLen = pad > 0 ? Math.ceil(t.ctp / pad) * pad : t.ctp;
     // 行の埋めで増えるセルも画素の合計に数える (埋めの数 pad が巨大だと、1 行の長さ rowLen が pad そのものになり、
     // 連なりのループや、LZW・deflate を展開する長さの上限 (rowLen から決める) が、タイルの大きさと関係なく膨らむ)
-    if (!(rowLen * t.ctl <= MAX_PIXELS) || !takePixels((rowLen - t.ctp) * t.ctl, msg('TILE (行の埋め)', 'TILE (row padding)'))) return;
+    if (!(rowLen * t.ctl <= maxPixels()) || !takePixels((rowLen - t.ctp) * t.ctl, msg('TILE (行の埋め)', 'TILE (row padding)'))) return;
     // セルは、色のオブジェクトの配列にためず、タイルの並びの画素 (t.rgba) へじかに書く (読まれなかったセル・透明のセルの色は、元のまま)。
     // 前は、タイルごとに「セルの数の配列」と、セルごとの色のオブジェクトを作っていたので、deflate で縮めた 8000 × 8000 のタイル (62KB) で
     // 52 秒・3GB を使い、ヒープを使い切った

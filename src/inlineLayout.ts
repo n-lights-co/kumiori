@@ -7,6 +7,7 @@
  *   5. buildLineNode : 行 → LNode (Line > Inline > Glyph/Ruby/TCY)
  * Atom と、その周りの型 (InlineFrame・BoxSpec・LeaderSpec・FlattenState・RawLine・PositionedLine) はここで定める
  */
+import { limits, noteLimitReached } from './limits';
 import type { Annotation, LinkTarget, LFootnote, LFootnoteCitation, LImage, LIndexPageCitationList, LInline, LInlineContainer, LLeader, LPageNumberCitation, LRuby, LTateChuYoko, RubyAlign } from './types';
 import type { GlyphMetrics, Measurer, RubyMetrics, TateChuYokoMetrics } from './measurer';
 import { autospaceNonIdeographic, isAutospaceIdeograph, isClosingPunct, isHangable, isLatinAlnum, isLineEndProhibited, isLineHeadProhibited, isMiddlePunct, isOpeningPunct } from './jis';
@@ -18,7 +19,7 @@ import type { BorderLineStyle, BorderRadius, BorderStyle, Edges, HyphenLimits, W
 import { borderToLogicalWidths, toLogical } from './geometry';
 import { mirrorChar, resolveLevels, visualOrder } from './bidi';
 import { atomAboveBelow, DEFAULT_BASELINE_RATIO, lineMetrics, type LineMetrics } from './lineMetrics';
-import { hyphenationLetters } from './hyphenation';
+import { hyphenationLetters, hyphenationMinimums } from './hyphenation';
 import { bidiControls, flattenInline, fontBaselineRatio, hyphenAtoms, joiningUnits, ligatureUnits, primaryChar, runStyleOf } from './inlineFlatten';
 import { pushAll } from './arrayLoop';
 import { packWarichu, type WarichuMark } from './warichu';
@@ -60,6 +61,8 @@ export interface Atom {
    * その前の空白も捨てる (目印は行に残す): 目印があっても、行の字の位置を変えない
    */
   staticMark?: boolean;
+  /** 行の中に書いた CSS の float の、書いた所の目印の番号 (staticMark の箱。LInline.floatAnchor)。組版は、この目印を含む行を組むときに float を置く */
+  floatMark?: number;
   /**
    * 行内の箱の外側の空き (CSS の margin。LInline.inlineMargin の bound) の箱: 箱の始まりの側 (start) か終わりの側 (end)。
    * 改行の機会の計算 (markLineBreaks) では字の並びに入れず、前後の字の間の機会を、箱の margin の端の外に付ける
@@ -155,6 +158,8 @@ export interface Atom {
   autospaceAfter?: number;
   /** 分綴: この字の後ろで、ハイフン (この atom の並び。hyphenate-character が空の文字列なら空) を付けて行を分けてよい */
   hyphen?: Atom[];
+  /** 分綴で行末に足した字 (hyphenAtoms で作ったもの。入力の字ではない)。字の節の GlyphArea.hyphen になる */
+  insertedHyphen?: boolean;
   /** この字の後ろにソフトハイフン (U+00AD) がある (その語は自動の分綴をしない。CSS Text 3 §5.3) */
   softHyphen?: boolean;
   /** 字形を inline 方向にずらす量 (始め括弧類の前のアキを詰めたとき、字面を前へ寄せる) */
@@ -470,6 +475,11 @@ export interface RawLine {
   indent: number;
   /** 分綴の位置 (自動の分綴・ソフトハイフン) で分けた行 */
   hyphenated?: boolean;
+  /**
+   * 行を分けた所の、行末で捨てた空白の字 (段落の終わりと強制改行の行には付けない)。行の最後の字の節の GlyphArea.breakSpace になる
+   * (タグ付き PDF で、構造の順に読む字に、語の区切りの空白を書くため。ISO 32000-1 §14.8.2.5)
+   */
+  breakSpace?: string;
   /** 行の終わりの端をずらす量 (正で内へ、負で外へ。XSL 1.1 §7.16.3 の last-line-end-indent を当てた最後の行) */
   endIndent?: number;
   /** この行で詰めてよい量の合計 (squeezeCap を超えて追い込んだ行。breakOne の lineSqueezeBeyondMax) */
@@ -486,7 +496,7 @@ export interface HyphenBreak {
 
 const EPS = 1e-6;
 /** 1 つのリーダーに並べる字の数の上限 (A4 の行に 1pt の間隔で並べても 500 個ほど) */
-const MAX_LEADER_REPEATS = 20_000;
+export const MAX_LEADER_REPEATS = 20_000;
 /**
  * 行に入るかの判定の許容差 (pt)。CSS の計算値は px で小数 4 桁に丸めるので、9.5pt の字は 9.500025pt、16em の幅は 152.000025pt になり、
  * ぴったり入るはずの 16 字がわずかに溢れる。1/1000 pt までは入るとみなす
@@ -836,6 +846,24 @@ function fitWithNegativeMargin(atoms: Atom[], k: number, x: number, avail: numbe
 }
 
 export function breakOne(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, hb?: HyphenBreak): { line: RawLine; next: number } {
+  const r = breakOneAt(atoms, start, L, indent, hangingDefault, hb);
+  markBreakSpace(atoms, start, r);
+  return r;
+}
+
+/**
+ * 切り出した行 r が、空白の所で分けた行なら (次の行の始まりの直前の atom が、行末で捨てる空白なら)、その空白の字を RawLine.breakSpace に書く。
+ * 行末に残す空白 (keepLineEndSpace) は行の中にあるので付けない。段落の終わり・強制改行の行 (last) と、分綴した行にも付けない
+ */
+function markBreakSpace(atoms: Atom[], start: number, r: { line: RawLine; next: number }) {
+  if (r.line.last || r.line.hyphenated || r.next >= atoms.length) return;
+  let p = r.next - 1;
+  while (p > start && atoms[p].staticMark) p--;
+  const a = atoms[p];
+  if (p > start && a?.kind === 'glyph' && a.isSpace && !a.st.keepLineEndSpace) r.line.breakSpace = a.first;
+}
+
+function breakOneAt(atoms: Atom[], start: number, L: number, indent: number, hangingDefault: boolean, hb?: HyphenBreak): { line: RawLine; next: number } {
   const n = atoms.length;
   const avail = Math.max(L - indent, 0);
   // 折り返した行 (強制改行の後でない行) の先頭に来た、捨てる空き (dropAtWrap。アンテナハウス互換) は、行に入れない
@@ -1218,7 +1246,7 @@ export function limitSoftHyphens(atoms: Atom[]) {
  */
 export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: string | undefined, minWordLength?: number) => number[] | undefined, m: Measurer, wm: WritingMode) {
   const textOf = hyphenTextOf;
-  // 語の字: ラテン文字。ロシア語・ウクライナ語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字も (その言語の規則があるときだけ。
+  // 語の字: ラテン文字。キリル文字の言語の文ではキリル文字、現代ギリシャ語の文ではギリシャ文字なども (その言語の規則があるときだけ。hyphenationLetters。
   // CSS Text 3 §5.3: 自動の分綴は、文の言語が分かり、その言語に合う分綴の資源があるときだけ行う)
   const isLetter = (a: Atom | undefined) => {
     if (!a || a.kind !== 'glyph' || !a.g || a.st.hyphenate !== true) return false;
@@ -1255,6 +1283,12 @@ export function markHyphenation(atoms: Atom[], hyphenate: (word: string, lang: s
       if (limited && pos.length) {
         const cps = [...all];
         pos = pos.filter((p) => limitCharCount(cps.slice(0, p + 1).join('')) >= (limited.minBefore ?? 0) && limitCharCount(cps.slice(p + 1).join('')) >= (limited.minAfter ?? 0));
+      }
+      // 切れ目の前後の字数を指定しない (auto) ときは、その言語の規則の hyphenmins (上流の値。2・2 と違う言語だけ) を守る
+      const mins = pos.length ? hyphenationMinimums(st.language) : undefined;
+      if (mins) {
+        const n = [...all].length;
+        pos = pos.filter((p) => (limited?.minBefore !== undefined || p + 1 >= mins[0]) && (limited?.minAfter !== undefined || n - p - 1 >= mins[1]));
       }
       if (pos.length) {
         // 字の位置 → その字で終わる atom (合字の途中の位置では分けない)
@@ -2415,7 +2449,9 @@ function leaderNode(a: Atom, off: number, gStart: number, w: number, bOff: numbe
   // 元のリーダーの節の番号 (ref) を付ける (タグ付き PDF で、リーダーを飾りにする)
   const node = newNode('block', wm, { i: off - gStart, b: bOff, isize: w, bsize: fs, src: a.src, ...(a.ref !== undefined ? { ref: a.ref } : {}) });
   // 繰り返しの数が上限を超えるリーダー (極端に小さな字・極端に長い行。0.001px の字で 1 行に何千万個) は、字を並べない (空きだけにする)
-  if (ld.pattern === 'dots' && ld.g && ld.pitch > 0 && w / ld.pitch <= MAX_LEADER_REPEATS) {
+  const tooMany = ld.pattern === 'dots' && ld.g && ld.pitch > 0 && w / ld.pitch > limits().leaderRepeats;
+  if (tooMany) noteLimitReached('leaderRepeats');
+  if (ld.pattern === 'dots' && ld.g && ld.pitch > 0 && !tooMany) {
     // 置く位置: 行頭からピッチの倍数の位置 (複数行で縦に揃う)。CSS の leader() は、終わり側の端から始め側へ並べる (Content 3 §2.5.3。
     // 終わり側が揃う行どうしで縦に揃う)
     const xs: number[] = [];
@@ -2557,6 +2593,11 @@ export function buildLineNode(
   const entries: { a: Atom; off: number; w: number; ov?: number[]; dx?: number }[] = pl.raw.items.map((a, k) => ({ a, off: pl.offsets[k], w: pl.widths[k], ov: pl.overhang?.[k], dx: pl.shrinkDx?.[k] }));
   if (pl.raw.hang && pl.hangOffset !== undefined) entries.push({ a: pl.raw.hang, off: pl.hangOffset, w: pl.raw.hang.advance });
 
+  // 行末で捨てた空白 (RawLine.breakSpace) を書き添える字: 行の最後 (読む順。ぶら下げた字があればそれ) の atom が、描く字のときだけ
+  // (箱・ルビ・描かない字で終わる行には付けない)
+  let tailAtom = pl.raw.hang;
+  for (let t = pl.raw.items.length - 1; !tailAtom && t >= 0; t--) if (!pl.raw.items[t].staticMark) tailAtom = pl.raw.items[t];
+  const breakSpaceAt = pl.raw.breakSpace !== undefined && tailAtom?.kind === 'glyph' && tailAtom.g && !tailAtom.hidden ? tailAtom : undefined;
   let k = 0;
   while (k < entries.length) {
     // 同一 run の連続する atom を 1 つの InlineArea にまとめる
@@ -2589,6 +2630,9 @@ export function buildLineNode(
       } else if (a.kind === 'glyph' && a.g) {
         const gn = glyphNode(a.g, a.st, wm, a.first, a.st.fontSize, a.st.color, a.src, a.cite);
         if (a.ref !== undefined) gn.ref = a.ref;
+        // 分綴で足した字と、行末で捨てた空白の前の字 (行の最後の字) の印。字の描き方 (glyph) はまとめて使い回すので、写してから書く
+        if (a.insertedHyphen) gn.glyph = { ...gn.glyph!, hyphen: true };
+        if (a === breakSpaceAt) gn.glyph = { ...gn.glyph!, breakSpace: pl.raw.breakSpace };
         gn.i = off - gStart + (a.dx ?? 0) + (dx ?? 0);
         gn.b = bOff - (a.shift ?? 0);
         inline.children.push(gn);

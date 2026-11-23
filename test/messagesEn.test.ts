@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_FONTS, typeset, type FontSpec } from '../src/index';
 import { ensureFonts, fontDir } from './helpers';
+import { testIccProfile } from './iccTestProfile';
 import { encodePngStored } from '../src/pixels';
 import { withMessageLang } from '../src/messages';
 import { cgmToSvg } from '../src/cgm';
@@ -27,15 +28,9 @@ const JAPANESE = /[　-〿぀-ヿ㐀-鿿＀-￯]/;
 /** 日本語の字の残る警告 (文書の中の字を引いて出す警告は、その字を除いて調べる) */
 const japanese = (warnings: string[], allow: string[] = []) => warnings.filter((w) => JAPANESE.test(allow.reduce((s, a) => s.split(a).join(''), w)));
 
-/** ICC のプロファイルの頭だけのもの (色空間 space。変換の表は無い。ICC.1:2010 §7.2) */
+/** 試験の CMYK の出力機器のプロファイル (iccTestProfile.ts) の色空間を space にしたもの */
 function iccHeader(space: string): Uint8Array {
-  const head = new Array(132).fill(0);
-  const put = (o: number, t: string) => [...t].forEach((c, k) => (head[o + k] = c.charCodeAt(0)));
-  put(12, 'prtr');
-  put(16, space);
-  put(20, 'Lab ');
-  put(36, 'acsp');
-  return Uint8Array.from(head);
+  return testIccProfile({ colorSpace: space });
 }
 
 beforeAll(async () => {

@@ -4,13 +4,14 @@
  * 頭の付いた zlib (RFC 1950) も読む。戻した大きさが limit を超えたら、そこでやめて undefined を返す (小さなファイルで大量のメモリを使わせない)
  */
 
-import pako from 'pako';
+// pako 2 以降は、名前付きの書き出しだけを持つ (既定の書き出しが無い)
+import { Inflate } from 'pako';
 
 /** 戻した大きさが上限を超えた (投げて、圧縮を解くのを止める) */
 class TooLarge extends Error {}
 
 function run(b: Uint8Array, limit: number, raw: boolean, stats?: { bytes: number }): Uint8Array | undefined {
-  const inf = new pako.Inflate({ raw, chunkSize: 1 << 16 });
+  const inf = new Inflate({ raw, chunkSize: 1 << 16 });
   const chunks: Uint8Array[] = [];
   let total = 0;
   inf.onData = (c: Uint8Array) => {

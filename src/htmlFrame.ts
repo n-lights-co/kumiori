@@ -22,6 +22,7 @@ import { styleCascadeOptions } from './compat';
 import { faceFileWeights } from './fontMapping';
 import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
 import type { Diagnostic } from './diagnostics';
+import { rejoin, thisCall } from './callContext';
 
 export { KUMIORI_BOOK_CSS, PRINT_UA_CSS, CSS21_DEFAULT_CSS, type HtmlDefaults } from './htmlPrepare';
 
@@ -59,7 +60,7 @@ export async function loadHtml(
   defaultPage = { width: 210, height: 297, margin: 20 },
   opts: { noFrame?: boolean } = {},
 ): Promise<LoadedHtml> {
-  const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageWidthsPx, pageHeightPx, warnings } = await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html'));
+  const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageWidthsPx, pageHeightPx, warnings } = rejoin(thisCall(), await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html')));
   // @font-face の書体のファイルは、一緒に選んだファイルの blob URL にする (iframe の中でも書体を読み、その字幅で flex・grid などを置かせる)
   const fontFiles = new Map(files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)).map((f) => [f.name.toLowerCase(), f]));
   const fontUrls = new Map<string, string>();
@@ -93,7 +94,7 @@ export async function loadHtml(
   });
 
   // アンテナハウス互換の bolder・lighter は、@font-face の書体の太さで決める (記述子の無い face は、書体のファイルの太さ。compat.ts の ahCascadeOptions)
-  const ahWeights = defaults === 'ah' ? await faceFileWeights(css, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name))) : undefined;
+  const ahWeights = defaults === 'ah' ? rejoin(thisCall(), await faceFileWeights(css, files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)))) : undefined;
   // iframe を使わない: 読んだ文書に、自前のカスケードの計算値 (vw・vh と根元の幅は、ページの領域の大きさ。名前付きのページを指定した箱から下の
   // 百分率の幅は、そのページの領域の幅で見積もる。Node のコマンド・API (api.ts) と同じ)
   if (opts.noFrame) {
@@ -112,14 +113,14 @@ export async function loadHtml(
   frame.setAttribute('sandbox', 'allow-same-origin');
   frame.style.cssText = `position:absolute;left:-100000px;top:0;width:${Math.max(bodyWidthPx, 100)}px;height:${Math.round(pageHeightPx)}px;border:0;visibility:hidden`;
   document.body.append(frame);
-  await new Promise<void>((res) => {
+  rejoin(thisCall(), await new Promise<void>((res) => {
     frame.onload = () => res();
     frame.srcdoc = '<!doctype html>' + parsed.documentElement.outerHTML;
-  });
+  }));
   const doc = frame.contentDocument!;
   const win = frame.contentWindow!;
   // 書体の読み込み (@font-face) を待つ
-  await doc.fonts?.ready;
+  rejoin(thisCall(), await doc.fonts?.ready);
   // 変換 (transform・translate・rotate・scale) は組版に影響しない (CSS Transforms 1 §3) が、getBoundingClientRect は変換した後の
   // 矩形を返す。変換の付いた要素は、変換の計算値を控えてから、何もしない変換 (translate(0)) に置き換えて測る
   // (何もしない変換でも、中の絶対配置の箱の基準になることは変わらない)。計算値は、控えた値で答える
