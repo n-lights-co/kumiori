@@ -14,6 +14,8 @@ const utf16 = (s: string) => [...s].flatMap((c) => u16(c.charCodeAt(0)));
 export interface TestFontOptions {
   /** ファミリー名 (nameID 1・16) */
   family: string;
+  /** nameID 16 (タイポグラフィのファミリー名) を、この名前と言語 (Windows の言語の ID) にする。無ければ family の英語 (0x409) */
+  typographicFamily?: { name: string; lang: number };
   /** 持たせる字 (符号位置) */
   chars: readonly number[];
   /** OS/2 の値 */
@@ -87,19 +89,19 @@ function cmap4(chars: readonly number[]): number[] {
   return [...u16(0), ...u16(1), ...u16(3), ...u16(1), ...u32(12), ...sub];
 }
 
-function nameTable(family: string): number[] {
-  const recs: Array<[number, string]> = [
-    [1, family],
-    [2, 'Regular'],
-    [4, `${family} Regular`],
-    [6, family.replace(/[^A-Za-z0-9]/g, '') + '-Regular'],
-    [16, family],
+function nameTable(family: string, typographic?: { name: string; lang: number }): number[] {
+  const recs: Array<[number, string, number]> = [
+    [1, family, 0x409],
+    [2, 'Regular', 0x409],
+    [4, `${family} Regular`, 0x409],
+    [6, family.replace(/[^A-Za-z0-9]/g, '') + '-Regular', 0x409],
+    [16, typographic?.name ?? family, typographic?.lang ?? 0x409],
   ];
   const strings: number[] = [];
   const records: number[] = [];
-  for (const [id, s] of recs) {
+  for (const [id, s, lang] of recs) {
     const b = utf16(s);
-    records.push(...u16(3), ...u16(1), ...u16(0x409), ...u16(id), ...u16(b.length), ...u16(strings.length));
+    records.push(...u16(3), ...u16(1), ...u16(lang), ...u16(id), ...u16(b.length), ...u16(strings.length));
     strings.push(...b);
   }
   return [...u16(0), ...u16(recs.length), ...u16(6 + records.length), ...records, ...strings];
@@ -165,7 +167,7 @@ export function buildTestFont(o: TestFontOptions): Uint8Array {
     hmtx,
     loca,
     maxp,
-    name: nameTable(o.family),
+    name: nameTable(o.family, o.typographicFamily),
     post,
   });
 }

@@ -18,8 +18,8 @@
  * @module kumiori
  */
 
-export { typeset, typesetHtml, typesetFo, typesetToPdf, createTypesetter, decodeDocumentText } from './api';
-export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, PdfOptions, RenderPageOptions, RenderPageSvgOptions, RenderPagePngOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec, LinkPolicy, KumioriLimits, ResourceContext, TypesetProgress } from './api';
+export { typeset, typesetHtml, typesetFo, typesetToPdf, typesetToPdfStream, createTypesetter, decodeDocumentText } from './api';
+export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, TypesetPdfStreamResult, PdfOutput, PdfOptions, RenderPageOptions, RenderPageSvgOptions, RenderPagePngOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec, LinkPolicy, KumioriLimits, ResourceContext, TypesetProgress } from './api';
 export type { SystemFontSource, SystemFontRequest, SystemFontMatch, SystemFontKind } from './types';
 // 選択肢の値の型 (TypesetOptions の compat・lang、PdfOptions の pdfx・pdfa)
 export type { FoCompat } from './compat';

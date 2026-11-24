@@ -76,7 +76,7 @@ import type { StructNode } from './structure';
 import { StructureBuilder, type StructDesc } from './structureBuilder';
 import { parseIndividualTransform, parseTransformList, parseTransformOrigin } from './cssTransform';
 import type { ImportReport, ImportResult } from './xslfoImport';
-import { normalizeSrc } from './assets';
+import { backgroundPdfSrc, normalizeSrc } from './assets';
 import { constrainReplaced } from './geometry';
 import { gridTrackPlan, gridTracks } from './gridTracks';
 import { setGridItems } from './sourceRef';
@@ -370,6 +370,10 @@ export interface StyleSource {
 }
 
 export interface HtmlImportOptions {
+  /**
+   * 背景の画像の、PDF のページの範囲 (アンテナハウスの拡張) を、範囲の最初のページにする (--style ah。assets.ts の backgroundPdfSrc)
+   */
+  pdfRangeFirstPage?: boolean;
   /** 入力のファイルの名前 (診断の場所 source.file。文書が読んだ字とファイルの名前を持つとき (setDocumentSource) は、そちら) */
   sourceName?: string;
   /**
@@ -1673,6 +1677,8 @@ class HtmlImporter {
   private firstPageInitial?: number;
   /** counter(page, 書式) の書式 (ページシーケンスごとに、最初に出たもの。null はまだ出ていない) */
   private pageFormat: string | null = null;
+  /** いま余白の箱を組んでいる @page の規則 (マスター) の、最初の counter(page) の書式 (ページラベルの書式。PageMaster.pageNumberFormat) */
+  private masterPageFormat: string | null = null;
   /** body の段組 (ページの段組にする) */
   private pageColumns?: PageMaster['columns'];
   /** ページが右から左へ進む (本文が vertical-rl)。:left・:right と同じく、左ページが奇数ページになる */
@@ -5071,7 +5077,7 @@ class HtmlImporter {
       const bi = firstCssUrl(bimg);
       const grad = !bi || bimg.search(/(linear|radial|conic)-gradient\(/i) < bimg.search(/url\(/i) ? firstGradient(bimg) : undefined;
       if (!bi && !grad) continue;
-      const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(c('font-size')) ?? 12 } : { src: normalizeSrc(bi![1]) };
+      const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(c('font-size')) ?? 12 } : { src: this.bgSrc(bi![1]) };
       const rep = L.repeat;
       if (rep === 'no-repeat' || rep === 'repeat-x' || rep === 'repeat-y') img.repeat = rep;
       else if (rep === 'no-repeat no-repeat') img.repeat = 'no-repeat';
@@ -6648,7 +6654,7 @@ class HtmlImporter {
         if (h) boxC.height = h;
         if (bgc) boxC.backgroundColor = bgc;
         if (bu) {
-          const img: BackgroundImage = { src: normalizeSrc(bu[1]) };
+          const img: BackgroundImage = { src: this.bgSrc(bu[1]) };
           const bsz = c('background-size').split(',')[0].trim();
           if (bsz === 'cover' || bsz === 'contain') img.size = bsz;
           else {
@@ -6779,7 +6785,7 @@ class HtmlImporter {
     if (bg) cont.backgroundColor = bg;
     const bi = firstCssUrl(c('background-image'));
     if (bi) {
-      const img: BackgroundImage = { src: normalizeSrc(bi[1]) };
+      const img: BackgroundImage = { src: this.bgSrc(bi[1]) };
       const bsz = c('background-size').split(',')[0].trim();
       if (bsz === 'cover' || bsz === 'contain') img.size = bsz;
       setBackgroundPosition(img, c('background-position-x'), c('background-position-y'));
@@ -7203,6 +7209,12 @@ class HtmlImporter {
       if (d !== 'inline' && d !== 'contents') return false;
     }
     return false;
+  }
+
+  /** 背景の画像の参照 (互換の指定の pdfRangeFirstPage のとき、PDF のページの範囲は最初のページにする。assets.ts の backgroundPdfSrc) */
+  private bgSrc(raw: string): string {
+    const src = normalizeSrc(raw);
+    return this.opts.pdfRangeFirstPage ? backgroundPdfSrc(src) : src;
   }
 
   /** 画像 (<img> と、画像を指す <object>) */
@@ -8625,6 +8637,7 @@ class HtmlImporter {
       else if (t.name === 'counter' && t.args[0] === 'page') {
         const fmt = pageNumberFormatOf(t.args[1]) ?? '1';
         if (this.pageFormat === null) this.pageFormat = fmt;
+        if (this.masterPageFormat === null) this.masterPageFormat = fmt;
         // 箱ごとの数の書式 (counter(page, lower-roman) など) と text-transform は、印に持たせて、組むときに当てる
         // (文書の最初の counter(page) の書式だけを全部の箱に使わない。数を字にした後に text-transform を当てる: CSS Text 3 §2.1)
         const ttx = tt && tt !== 'none' ? tt : '';
@@ -8972,7 +8985,7 @@ class HtmlImporter {
     // url() の画像と同じに読む (CSS Backgrounds 3 §2.3・§2.9: グラデーションも背景の画像。前は読まずに、領域いっぱいに塗っていた)
     const grad = u ? undefined : firstGradient(v);
     if (!u && !grad) return undefined;
-    const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(decls['font-size'] ?? '') ?? 12 } : { src: normalizeSrc(u![1]) };
+    const img: BackgroundImage = grad ? { src: '', gradient: grad, gradientFontSize: cssLen(decls['font-size'] ?? '') ?? 12 } : { src: this.bgSrc(u![1]) };
     /** 長さ → pt。em は箱 (@page・余白の箱) の字の大きさ fs (pt)、rem は根元の要素の字の大きさ。calc() も (百分率を含まないもの) */
     const lenOf = (t: string) => {
       const px = lengthPx(t, { fs: fs / PT_PER_PX, rootFs: this.rootFsPx, vw: 0, vh: 0 });
@@ -9349,6 +9362,8 @@ class HtmlImporter {
     // 固定配置 (position: fixed) の箱は、どのページにも出す内容として運ぶので、描くときだけの効果が付かない。その輪郭線 (outline)・
     // 切り抜きの矩形 (clip) は描けないので、知らせる
     const alts: ConditionalPageMaster[] = [];
+    /** マスターごとの、余白の箱の最初の counter(page) の書式 (無ければ null) */
+    const formats: Array<[PageMaster, string | null]> = [];
     for (const kind of blanks)
       for (const first of firsts)
         for (const side of sides) {
@@ -9367,7 +9382,9 @@ class HtmlImporter {
           if (side) when.oddOrEven = (side === 'right') !== rtl ? 'odd' : 'even';
           const pbg = this.pageBackground(r.decls, fontSizePt(r.decls['font-size'], rootFs, rootFs) ?? rootFs);
           if (pbg) master.backgroundImage = pbg;
+          this.masterPageFormat = null;
           alts.push({ when, master, staticContent: [...this.marginBoxes(master, r.boxes, rootFs, r.decls), ...this.fixed] });
+          formats.push([master, this.masterPageFormat]);
         }
     const base = alts[alts.length - 1];
     const seq: LPageSequence = {
@@ -9382,6 +9399,10 @@ class HtmlImporter {
     // CSS の footnote カウンターは文書全体で 1 つ: 名前付きページで page-sequence が分かれても番号を続ける
     seq.footnotes = { ...fo, continueNumbering: true };
     if (this.pageFormat && this.pageFormat !== '1') seq.pageNumberFormat = this.pageFormat;
+    // ページラベルの書式は、ページのマスター (@page の規則) ごとの counter(page) の型。page-sequence の書式は、最初に見つかった型なので、
+    // @page :first { … counter(page, lower-roman) } と @page { … counter(page) } では、2 ページ目からのラベルも i・ii… になっていた
+    // (counter(page) の無いマスターは、page-sequence の書式のまま)
+    for (const [m, f] of formats) if (f !== null && f !== (this.pageFormat ?? '1')) m.pageNumberFormat = f;
     return seq;
   }
 

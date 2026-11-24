@@ -8,13 +8,14 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
 import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFRawStream, PDFString, decodePDFRawStream } from 'pdf-lib';
 import { sourceDateEpoch, UsageError } from '../src/cli';
-import { DEFAULT_FONTS, KumioriOptionError } from '../src/index';
+import { DEFAULT_FONTS, KumioriOptionError, typesetToPdf } from '../src/index';
+import { runInNewContext } from 'node:vm';
 import { importXslFo } from '../src/xslfoImport';
 import { renderPdf, type PdfRenderOptions } from '../src/pdfRenderer';
 import { AssetStore } from '../src/assets';
 import { cffGlyph, type CffFont } from '../src/psCff';
 import { Interp, latin1 } from '../src/psInterp';
-import { ensureFonts, makeEngine } from './helpers';
+import { ensureFonts, loadCachedFont, makeEngine } from './helpers';
 
 const parse = (s: string) => new DOMParser().parseFromString(s, 'text/xml') as never;
 const NS = 'xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"';
@@ -110,6 +111,26 @@ describe('PDF の作成日・更新日 (PdfOptions.date)', () => {
       expect((e as KumioriOptionError).option).toBe('date');
     }
   });
+
+  it('typesetToPdf は、正しくない date を組む前に誤りにする。別の realm (vm) の Date は受ける', async () => {
+    const onProgress = vi.fn();
+    const e = await typesetToPdf(fo('<fo:block>本文</fo:block>'), { loadFont: loadCachedFont, onProgress }, { date: new Date(NaN) }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(KumioriOptionError);
+    expect((e as KumioriOptionError).option).toBe('date');
+    // 組み始めていない (進み具合を 1 度も知らせない)
+    expect(onProgress).not.toHaveBeenCalled();
+    const other = runInNewContext('new Date(Date.UTC(2024, 0, 2, 3, 4, 5))') as Date;
+    expect(other instanceof Date).toBe(false);
+    const pdf = await PDFDocument.load(await pdfAt(0, '<fo:block>本文</fo:block>', { date: other }), { updateMetadata: false });
+    expect(infoOf(pdf, 'CreationDate')).toBe('D:20240102030405Z');
+  });
+
+  it('Symbol.toStringTag を Date に偽った値は、TypeError でなく date の KumioriOptionError にする', async () => {
+    const fake = { [Symbol.toStringTag]: 'Date' } as unknown as Date;
+    const e = await typesetToPdf(fo('<fo:block>本文</fo:block>'), { loadFont: loadCachedFont }, { date: fake }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(KumioriOptionError);
+    expect((e as KumioriOptionError).option).toBe('date');
+  });
 });
 
 describe('同じ入力・同じ日時から同じバイトの PDF', () => {
@@ -142,6 +163,23 @@ describe('同じ入力・同じ日時から同じバイトの PDF', () => {
     // 日時が違えば中身が違うので、ID も違う。本文が違っても違う
     const other = [await pdfAt(T1, body, { date: new Date(0), pdfa: { version: 'A-2b' } }), await pdfAt(T1, '<fo:block>別</fo:block>', { date: DATE, pdfa: { version: 'A-2b' } })];
     for (const o of other) expect(trailerIds(await PDFDocument.load(o, { updateMetadata: false }))[0]).not.toBe(id1);
+  });
+
+  it('PDF/X-1a・X-3: 平文の文字列 (出力の条件の説明) に印の値と同じ字があっても、trailer と XMP の印だけを書き換える', async () => {
+    const mark = '4b756d696f72692d646f632d69642d00';
+    const uuidMark = mark.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+    const condition = `x <${mark}> uuid:${uuidMark}<`;
+    for (const version of ['X-1a', 'X-3'] as const) {
+      // 前は、印が 3 つ見つかって、名前の無い Error で止まった
+      const a = await pdfAt(T1, body, { date: DATE, pdfx: { version, info: condition } } as PdfRenderOptions);
+      const pdf = await PDFDocument.load(a, { updateMetadata: false });
+      const [id1, id2] = trailerIds(pdf);
+      expect(id1).toMatch(/^[0-9a-f]{32}$/);
+      expect(id1).not.toBe(mark);
+      expect(id2).toBe(id1);
+      // 利用者の値はそのまま
+      expect(latin(a)).toContain(condition);
+    }
   });
 
   it('日時を渡さないふつうの PDF も、ID は乱数でなく中身から作る (同じ時刻の 2 度は同じバイト)', async () => {

@@ -66,12 +66,6 @@ afterAll(() => {
   if (work) fs.rmSync(work, { recursive: true, force: true });
 });
 
-/** Node の版が major.minor 以上か */
-function nodeAtLeast(major: number, minor: number): boolean {
-  const [M, m] = process.versions.node.split('.').map(Number) as [number, number];
-  return M > major || (M === major && m >= minor);
-}
-
 describe('配布物を Node から読む', () => {
   const entries = ['kumiori', 'kumiori/node', 'kumiori/browser', 'kumiori/package.json'];
 
@@ -166,10 +160,9 @@ describe('配布物を Node から読む', () => {
     expect(JSON.parse(r.stdout)).toEqual([]);
   });
 
-  // require() で ES モジュールを読めるのは、Node 20.19.0 以降と 22.12.0 以降 (フラグ無し)。
+  // require() で ES モジュールを読めるのは、Node 22.12.0 以降 (フラグ無し。動かせる Node の下限)。
   // Node の文書 Modules: CommonJS modules の「Loading ECMAScript modules using require()」の変更の履歴による
-  const requireEsm = nodeAtLeast(22, 12) || (process.versions.node.startsWith('20.') && nodeAtLeast(20, 19));
-  it.skipIf(!requireEsm)('require() で kumiori・kumiori/node・kumiori/browser・kumiori/package.json が読める', () => {
+  it('require() で kumiori・kumiori/node・kumiori/browser・kumiori/package.json が読める', () => {
     // require() は、top-level await を含む ES モジュールを読めない (ERR_REQUIRE_ASYNC_MODULE)。配る入口に無いことも、ここで確かまる
     const code = `
       const lib = require('kumiori');
@@ -178,7 +171,8 @@ describe('配布物を Node から読む', () => {
       const meta = require('kumiori/package.json');
       console.log(JSON.stringify([typeof lib.typeset, typeof node.createFontLoader, typeof browser.typeset, meta.version]));
     `;
-    const r = spawnSync(process.execPath, ['--input-type=commonjs', '-e', code], { cwd: app, encoding: 'utf8' });
+    // Node 22.12 は、require() で ES モジュールを読むと ExperimentalWarning を出す (22.13 から出さない)。読めることだけを見るので、その警告は止める
+    const r = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=commonjs', '-e', code], { cwd: app, encoding: 'utf8' });
     expect(r.stderr).toBe('');
     expect(JSON.parse(r.stdout)).toEqual(['function', 'function', 'function', pkg.version]);
   });

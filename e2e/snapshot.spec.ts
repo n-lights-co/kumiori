@@ -27,7 +27,10 @@ async function open(page: Page, html: string): Promise<string[]> {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await routeFontCache(page);
-  await page.route('http://other.test/**', (route) => route.fulfill({ body: PNG, contentType: 'image/png' }));
+  // 別の origin (CORS の見出しを付けない): CSS は規則を読めないスタイルシートになる
+  await page.route('http://other.test/**', (route) =>
+    /\.css$/.test(new URL(route.request().url()).pathname) ? route.fulfill({ body: 'b { color: rgb(1, 2, 3) }', contentType: 'text/css' }) : route.fulfill({ body: PNG, contentType: 'image/png' }),
+  );
   await page.route('http://snap.test/**', (route) => {
     const u = new URL(route.request().url());
     if (u.pathname.startsWith('/dist-browser/')) {
@@ -38,6 +41,20 @@ async function open(page: Page, html: string): Promise<string[]> {
     if (u.pathname === '/sub/page.html') return route.fulfill({ body: html, contentType: 'text/html; charset=utf-8' });
     if (/\.png$/.test(u.pathname)) return route.fulfill({ body: PNG, contentType: 'image/png' });
     if (u.pathname === '/other/a.css') return route.fulfill({ body: '.linked { color: rgb(0, 0, 255) }', contentType: 'text/css' });
+    // 末端だけが大きなシートの 8 段の入れ子 (/deep/0.css → … → /deep/8.css。末端は約 100 万字)
+    const deep = /^\/deep\/(\d+)\.css$/.exec(u.pathname);
+    if (deep) {
+      const k = Number(deep[1]);
+      const body = k < 8 ? `@import "/deep/${k + 1}.css";` : '.deep { color: rgb(0, 0, 255) }\n' + '.pad { color: red }\n'.repeat(52_000);
+      return route.fulfill({ body, contentType: 'text/css' });
+    }
+    // 同じシートを 2 度ずつ読み込む入れ子 (/dup/0.css → /dup/1.css を 2 度 → … → /dup/16.css)
+    const dup = /^\/dup\/(\d+)\.css$/.exec(u.pathname);
+    if (dup) {
+      const k = Number(dup[1]);
+      const body = k < 16 ? `@import "/dup/${k + 1}.css"; @import "/dup/${k + 1}.css";` : '.dup { color: rgb(0, 0, 255) }';
+      return route.fulfill({ body, contentType: 'text/css' });
+    }
     return route.fulfill({ status: 404, body: '' });
   });
   await page.goto('http://snap.test/sub/page.html');
@@ -199,6 +216,95 @@ test('snapshotDocument: Shadow DOM を平らな木に展開し、影の木のス
   expect(errors).toEqual([]);
 });
 
+test('snapshotDocument: 入れ子の slot の途中の ::slotted()・影の木の @import を囲う・読めない影の木の link を知らせる・:host-context() は host そのものにも当たる', async ({ page }) => {
+  const errors = await open(
+    page,
+    `<!doctype html><html><head><title>t</title></head><body>
+<outer-el><i>光の子</i></outer-el><p class="linked">外の段落</p><ctx-el class="night"></ctx-el>
+<script>
+  customElements.define('outer-el', class extends HTMLElement { constructor() { super();
+    this.attachShadow({ mode: 'open' }).innerHTML = '<style>@import "/other/a.css"; ::slotted(i) { color: rgb(255, 0, 0) }</style><link rel="stylesheet" href="http://other.test/s.css"><inner-sl><slot></slot></inner-sl><p class="linked">中の段落</p>'; } });
+  customElements.define('inner-sl', class extends HTMLElement { constructor() { super();
+    this.attachShadow({ mode: 'open' }).innerHTML = '<style>::slotted(i) { font-weight: bold }</style><slot></slot>'; } });
+  customElements.define('ctx-el', class extends HTMLElement { constructor() { super();
+    this.attachShadow({ mode: 'open' }).innerHTML = '<style>:host-context(.night) b { color: rgb(0, 128, 0) }</style><b>夜</b>'; } });
+  addEventListener('load', () => { window.ready = true; });
+</script></body></html>`,
+  );
+  const r = await snapshot(page, '({ waitFor: () => window.ready })', true);
+  // 光の子は、外の影の木の slot を通って中の影の木の slot に割り当てられる: 2 つの影の木の印を付ける
+  expect(r.html).toContain('<i data-ks-sl="1 2">光の子</i>');
+  // 影の木の @import は、読み込んだ先の規則を囲って置く (@import のまま文書に置かない)
+  expect(r.html).not.toContain('@import');
+  expect(r.codes).toEqual(['snapshot/shadow-stylesheet-unreadable']);
+  expect(r.args).toEqual([{ element: 'outer-el', url: 'http://other.test/s.css' }]);
+  // 外の影の木の ::slotted(i) も当たる (前は、最後の slot の影の木の ::slotted() だけだった)
+  expect(colorOf(r, '光の子')).toEqual([255, 0, 0]);
+  // 影の木の @import の規則は、その影の木の中だけに当たる
+  expect(colorOf(r, '中の段落')).toEqual([0, 0, 255]);
+  expect(colorOf(r, '外の段落')).not.toEqual([0, 0, 255]);
+  // :host-context(.night) は、host そのものが .night のときにも当たる
+  expect(colorOf(r, '夜')).toEqual([0, 128, 0]);
+  expect(errors).toEqual([]);
+});
+
+test('snapshotDocument: 影の木の @import を、同じシートを 2 度ずつ読み込む入れ子でも、数の上限で止める (snapshot/limit)', async ({ page }) => {
+  const errors = await open(
+    page,
+    `<!doctype html><html><head><title>t</title></head><body><dup-el></dup-el>
+<script>
+  customElements.define('dup-el', class extends HTMLElement { constructor() { super();
+    this.attachShadow({ mode: 'open' }).innerHTML = '<style>@import "/dup/0.css";</style><p class="dup">中</p>'; } });
+  addEventListener('load', () => { window.ready = true; });
+</script></body></html>`,
+  );
+  const t = Date.now();
+  const r = await snapshot(page, '({ waitFor: () => window.ready })', true);
+  expect(Date.now() - t).toBeLessThan(20_000);
+  // 深さ (16 段) と、1 つの影の木でたどる数 (1,000 個) の上限に当たったことを、上限ごとに 1 度知らせる
+  expect(r.codes).toEqual(['snapshot/limit', 'snapshot/limit']);
+  expect(r.args).toEqual([{ limit: 16, name: 'shadowImportDepth' }, { limit: 1000, name: 'shadowImports' }]);
+  // 写した影の木の CSS は、たどった数の上限 (1,000) ほどの大きさまで (2 の 16 乗の 65,536 個は写さない)
+  expect(r.html.length).toBeLessThan(2_000_000);
+  expect(errors).toEqual([]);
+});
+
+test('snapshotDocument: 同じシートを @import する部品が 1,000 個を超えても、どの部品の影の木にも読み込んだ先の規則を写す', async ({ page }) => {
+  const errors = await open(
+    page,
+    `<!doctype html><html><head><title>t</title></head><body><div id="list"></div>
+<script>
+  customElements.define('theme-el', class extends HTMLElement { connectedCallback() {
+    if (!this.shadowRoot) this.attachShadow({ mode: 'open' }).innerHTML = '<style>@import "/other/a.css";</style><p class="linked">' + this.dataset.n + '</p>'; } });
+  for (let i = 0; i < 1100; i++) { const e = document.createElement('theme-el'); e.dataset.n = '部品' + i; list.append(e); }
+  addEventListener('load', () => { window.ready = true; });
+</script></body></html>`,
+  );
+  const r = await snapshot(page, '({ waitFor: () => window.ready })', true);
+  expect(r.codes).toEqual([]);
+  // 前は、写しの全体で 1,000 個を数えたので、1,001 個目からの部品の規則が落ちた
+  expect(colorOf(r, '部品1099')).toEqual([0, 0, 255]);
+  expect(errors).toEqual([]);
+});
+
+test('snapshotDocument: 影の木の @import の字の上限は、入れ子の字を段ごとに数え直さない', async ({ page }) => {
+  const errors = await open(
+    page,
+    `<!doctype html><html><head><title>t</title></head><body><div id="list"></div>
+<script>
+  customElements.define('deep-el', class extends HTMLElement { connectedCallback() {
+    if (!this.shadowRoot) this.attachShadow({ mode: 'open' }).innerHTML = '<style>@import "/deep/0.css";</style><p class="deep">深い' + this.dataset.n + '</p>'; } });
+  for (let i = 1; i <= 6; i++) { const e = document.createElement('deep-el'); e.dataset.n = String(i); list.append(e); }
+  addEventListener('load', () => { window.ready = true; });
+</script></body></html>`,
+  );
+  const r = await snapshot(page, '({ waitFor: () => window.ready })');
+  // 写す字は 6 つの影の木で約 600 万字 (上限の 33,554,432 字より十分小さい)。前は 1 つの影の木で約 800 万字と数え、6 つ目で上限に当たった
+  expect(r.codes).toEqual([]);
+  expect(r.html).toContain('[data-ks-s="6"]');
+  expect(errors).toEqual([]);
+});
+
 test('snapshotDocument: フォームのいまの値を属性に書き戻す (password・file・hidden の値は書かない)', async ({ page }) => {
   const errors = await open(
     page,
@@ -240,6 +346,49 @@ test('snapshotDocument: blob: の URL の中身を取り込む。消された UR
   expect(r.codes).toEqual(['snapshot/blob-unreadable']);
   expect(String(r.args[0]?.url)).toMatch(/^blob:http:\/\/snap\.test\//);
   expect(r.images?.map((i) => i.src)).toEqual(['kumiori-snapshot/blob-1.png', 'kumiori-snapshot/blob-2.png']);
+  expect(errors).toEqual([]);
+});
+
+test('snapshotDocument: 組むのに使わない属性 (a の href・video の src) の blob: は読まずに残し、上限を超える blob: は読む前に警告する', async ({ page }) => {
+  const errors = await open(
+    page,
+    `<!doctype html><html><head><title>t</title></head><body><a id="dl">保存</a><video id="v"></video><img id="big">
+<script>
+  const zip = URL.createObjectURL(new Blob([new Uint8Array(1000)], { type: 'application/zip' }));
+  dl.href = zip; v.src = URL.createObjectURL(new Blob([new Uint8Array(1000)], { type: 'video/mp4' }));
+  big.src = URL.createObjectURL(new Blob([new Uint8Array(5000)], { type: 'image/png' }));
+  window.ready = true;
+</script></body></html>`,
+  );
+  const r = await snapshot(page, '({ waitFor: () => window.ready, limits: { fileBytes: 2000 } })');
+  // a・video の blob: は files に入れず、URL のまま。img の blob: は上限 (fileBytes) を超えるので警告して、URL のまま
+  expect(r.files).toEqual([]);
+  expect(r.html).toMatch(/<a id="dl" href="blob:http:\/\/snap\.test\/[^"]+">保存<\/a><video id="v" src="blob:http:\/\/snap\.test\/[^"]+"><\/video><img id="big" src="blob:/);
+  expect(r.codes).toEqual(['snapshot/blob-unreadable']);
+  expect(r.warnings[0]).toContain('5000 バイト');
+  expect(errors).toEqual([]);
+});
+
+test('snapshotDocument: 中身も記述子も同じ書体 (FontFace) を 2 つ足しても、ファイルと @font-face は 1 つ。fontSources の javascript: は警告する', async ({ page }) => {
+  const errors = await open(page, `<!doctype html><html><head><title>t</title></head><body><p style="font-family: TwinFace">Face</p><p style="font-family: JsFace">Js</p></body></html>`);
+  const ready = await page.evaluate(async () => {
+    const mod = (await import(/* @vite-ignore */ String('/dist-browser/kumiori.js'))) as typeof import('../src/index');
+    const spec = mod.DEFAULT_FONTS.base.find((f) => f.family === 'Tinos' && (f.weight ?? 400) === 400)!;
+    const buf = await (await fetch(spec.urls.find((u) => u.startsWith('https:'))!)).arrayBuffer();
+    const faces = [new FontFace('TwinFace', buf), new FontFace('TwinFace', buf), new FontFace('JsFace', buf)];
+    for (const f of faces) {
+      document.fonts.add(f);
+      await f.load();
+    }
+    (window as unknown as { faceBuf: ArrayBuffer }).faceBuf = buf;
+    return faces.map((f) => f.status);
+  });
+  expect(ready).toEqual(['loaded', 'loaded', 'loaded']);
+  const r = await snapshot(page, '({ fontSources: (f) => (f.family.replace(/"/g, "") === "TwinFace" ? window.faceBuf.slice(0) : "javascript:alert(1)") })');
+  expect(r.files).toEqual([['kumiori-snapshot/font-1.ttf', expect.any(Number), expect.any(String)]]);
+  expect(r.html).toContain('<style data-kumiori-fonts="">@font-face { font-family: "TwinFace"; src: url("kumiori-snapshot/font-1.ttf") }</style>');
+  expect(r.codes).toEqual(['snapshot/font-face-source-unknown']);
+  expect(r.args).toEqual([{ family: 'JsFace' }]);
   expect(errors).toEqual([]);
 });
 

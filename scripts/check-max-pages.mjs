@@ -4,7 +4,7 @@
  * 違うページは、その理由で分ける (N より後ろを指す参照の字だけが違うのか、行分けまで変わったのか)。
  *
  * 使い方 (リポジトリの直下で):
- *   node scripts/check-max-pages.mjs [--pages 1,3,10] [--only <群>,…] [--filter <正規表現>] [--jobs <数>] [--dpi <解像度>]
+ *   node scripts/check-max-pages.mjs [--pages 1,3,10] [--only <群>,…] [--filter <文字列>] [--jobs <数>] [--dpi <解像度>]
  *                                    [--samples <dir>] [--weasyprint <dir>] [--out <dir>] [--timeout <秒>]
  *
  *  - Node のコマンド (dist-cli/cli.js。無ければ npm run build:cli で作る) で、文書を全体と --max-pages N で組み、PDF を比べる。
@@ -47,7 +47,7 @@ for (let i = 2; i < process.argv.length; i++) {
   };
   if (a === '--pages') opt.pages = v().split(',').map((x) => Number(x));
   else if (a === '--only') opt.only = v().split(',');
-  else if (a === '--filter') opt.filter = new RegExp(v());
+  else if (a === '--filter') opt.filter = v(); // 文書の名前に含まれる文字列で絞る (正規表現にはしない)
   else if (a === '--jobs') opt.jobs = Number(v());
   else if (a === '--dpi') opt.dpi = Number(v());
   else if (a === '--samples') opt.samples = v();
@@ -55,7 +55,7 @@ for (let i = 2; i < process.argv.length; i++) {
   else if (a === '--out') opt.out = v();
   else if (a === '--timeout') opt.timeout = Number(v());
   else if (a === '--help' || a === '-h') {
-    console.log('使い方: node scripts/check-max-pages.mjs [--pages 1,3,10] [--only ah,css-print,weasyprint,conformance] [--filter <正規表現>] [--jobs <数>] [--dpi <解像度>] [--samples <dir>] [--weasyprint <dir>] [--out <dir>] [--timeout <秒>]');
+    console.log('使い方: node scripts/check-max-pages.mjs [--pages 1,3,10] [--only ah,css-print,weasyprint,conformance] [--filter <文字列>] [--jobs <数>] [--dpi <解像度>] [--samples <dir>] [--weasyprint <dir>] [--out <dir>] [--timeout <秒>]');
     process.exit(0);
   } else throw new Error(`知らない引数: ${a}`);
 }
@@ -126,7 +126,7 @@ if (opt.only.includes('conformance')) {
   for (const [id, f] of [['conformance/html', 'html/kumiori-html-css.html'], ['conformance/fo', 'fo/kumiori-xsl-fo.fo']])
     if (fs.existsSync(path.join(conf, f))) docs.push({ id, input: path.join(conf, f), args: f.endsWith('.fo') ? ['--compat', 'spec'] : [] });
 }
-const chosen = docs.filter((d) => !opt.filter || opt.filter.test(d.id));
+const chosen = docs.filter((d) => !opt.filter || d.id.includes(opt.filter));
 
 // ---- 組む・比べる ----
 const safe = (id) => id.replace(/[^\w.-]+/g, '_');

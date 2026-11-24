@@ -32,7 +32,7 @@ import { verifyPdfX1a, verifyPdfX3, verifyPdfX4 } from './pdfxVerify';
 import { ICC_CMYK_REGISTRY, ICC_REGISTRY_NAME, iccDescription, iccDeviceClass, iccHasTag, iccProfileProblem } from './iccRegistry';
 import { SRGB_DESCRIPTION, srgbProfile } from './srgbIcc';
 import { KumioriOptionError, KumioriPdfError } from './errors';
-import { sha256 } from './sha256';
+import { createSha256, sha256 } from './sha256';
 
 /** 入稿用 (PDF/X) の出力の指定 (PdfRenderOptions.pdfx) */
 export interface PdfXOptions {
@@ -390,21 +390,118 @@ function findAscii(bytes: Uint8Array, s: string): number[] {
 }
 
 /**
+ * bytes の中の XMP の包み (<?xpacket begin= から <?xpacket end= まで) の範囲 [初め, 終わり] (XMP Specification Part 1 §7.3.2)。
+ * 始まりと終わりの位置の並び (どちらも昇順) を 1 度ずつなめる (字を並べた入力でも、手間は字の数に比例する)
+ */
+function xmpPackets(bytes: Uint8Array): Array<[number, number]> {
+  const ends = findAscii(bytes, '<?xpacket end=');
+  const out: Array<[number, number]> = [];
+  let k = 0;
+  for (const b of findAscii(bytes, '<?xpacket begin=')) {
+    while (k < ends.length && ends[k] <= b) k++;
+    if (k < ends.length) out.push([b, ends[k]]);
+  }
+  return out;
+}
+
+/**
+ * 印を探す所 (finishDocumentId・DocumentIdStream.finish)。Kumiori が書いた所だけを探し、利用者のバイト列 (画像の中身・PDF の画像の流れ・
+ * 平文の文字列) の中の同じ字の並びは、数えも書き換えもしない。
+ *  - xmp: XMP の流れ (catalog の Metadata。Kumiori が作り、圧縮しない) のオブジェクトの、ファイルの中の範囲 [初め, 終わり)。
+ *    null は XMP が無いこと (XMP の印を探さない)。undefined は範囲が分からないこと (ファイルの全体の XMP の包みの中を探す。試験で pdf-lib の save に替えたとき)
+ */
+export interface DocumentIdPlaces {
+  xmp?: readonly [number, number] | null;
+}
+
+/**
  * 書き出した PDF の文書の ID の印の値 (DOCUMENT_ID_MARK) を、バイト列の SHA-256 の初めの 16 バイトに書き換える (同じ長さなので、
  * 相互参照のオフセットは変わらない)。trailer の辞書 (相互参照の流れの辞書も) と XMP の流れ (圧縮しない) は平文なので、そのまま探せる。
- * trailer の 2 つ (と、XMP があれば DocumentID・InstanceID の 2 つ) の印の値が、その数だけ見つからなければ誤り
+ * 同じ字の並びは、文書の中身 (画像のバイト列、PDF/X-1a・X-3 の平文の利用者の値 (リンクの URI・OutputCondition など)) にもありうるので、
+ * trailer の印は、最後の相互参照の所 (startxref の指す位置。ISO 32000-1 §7.5.5) から後ろの初めの 2 つを使い、XMP の印は、XMP の流れの
+ * オブジェクトの中の包み (xpacket) の中のものだけを使う (places.xmp)。trailer の 2 つ (と、XMP があれば DocumentID・InstanceID の 2 つ) の
+ * 印の値が見つからなければ誤り
  */
-export function finishDocumentId(bytes: Uint8Array): Uint8Array {
-  const hexAt = findAscii(bytes, `<${DOCUMENT_ID_MARK}>`);
-  const uuidAt = findAscii(bytes, `uuid:${uuidOf(DOCUMENT_ID_MARK)}<`);
-  if (hexAt.length !== 2 || (uuidAt.length !== 0 && uuidAt.length !== 2))
-    // 書き出しの作りの誤り (入力では起きない) なので、診断の名前を持つ誤りにはしない
-    throw new Error(`Kumiori: the document ID mark was not found in the written PDF (${hexAt.length} in the trailer, ${uuidAt.length} in XMP)`);
-  const id = sha256(bytes).slice(0, 32);
-  const enc = (s: string) => Uint8Array.from(s, (c) => c.charCodeAt(0));
-  for (const i of hexAt) bytes.set(enc(id), i + 1);
-  for (const i of uuidAt) bytes.set(enc(uuidOf(id)), i + 5);
+export function finishDocumentId(bytes: Uint8Array, places: DocumentIdPlaces = {}): Uint8Array {
+  const at = documentIdMarks(bytes, 0, places);
+  writeDocumentId(bytes, at, sha256(bytes).slice(0, 32));
   return bytes;
+}
+
+/**
+ * 最後の相互参照の位置 (ファイルの終わりの startxref の値。ISO 32000-1 §7.5.5)。bytes はファイルの base バイト目から後ろ。
+ * 読めないか、bytes の外なら undefined
+ */
+function lastXrefOffset(bytes: Uint8Array, base: number): number | undefined {
+  const tail = new TextDecoder('latin1').decode(bytes.subarray(Math.max(0, bytes.length - 1024)));
+  const m = /startxref\s+(\d+)\s+%%EOF\s*$/.exec(tail);
+  if (!m) return undefined;
+  const at = Number(m[1]) - base;
+  return at >= 0 && at < bytes.length ? at : undefined;
+}
+
+/**
+ * 書いた PDF (の base バイト目から後ろ) の中の、文書の ID の印の値の位置 (trailer の 2 つと、XMP の包みの中の 0 か 2 つ)。
+ * 位置は bytes の中の位置。places.xmp はファイルの中の位置
+ */
+function documentIdMarks(bytes: Uint8Array, base: number, places: DocumentIdPlaces): { hexAt: number[]; uuidAt: number[] } {
+  const xref = lastXrefOffset(bytes, base);
+  const hexAll = xref === undefined ? findAscii(bytes, `<${DOCUMENT_ID_MARK}>`) : findAscii(bytes.subarray(xref), `<${DOCUMENT_ID_MARK}>`).map((i) => i + xref);
+  // 最後の相互参照の所が分かれば、その初めの 2 つ (trailer・相互参照の流れの辞書は、流れのデータより前)。分からなければ、ファイルの終わりの 2 つ
+  const hexAt = xref === undefined ? hexAll.slice(-2) : hexAll.slice(0, 2);
+  let uuidAt: number[] = [];
+  if (places.xmp === undefined) uuidAt = xmpUuidMarks(bytes);
+  else if (places.xmp) {
+    const [a, b] = [places.xmp[0] - base, places.xmp[1] - base];
+    if (a < 0 || b > bytes.length || a >= b) throw new Error('Kumiori: the XMP stream is not in the last part of the written PDF');
+    uuidAt = xmpUuidMarks(bytes.subarray(a, b)).map((i) => i + a);
+  }
+  // trailer の ID の 2 つの値は、続けて書く (< 印 > < 印 > の間は空白と [ ] だけ)
+  const adjacent = hexAt.length === 2 && hexAt[1] - hexAt[0] <= DOCUMENT_ID_MARK.length + 2 + 8;
+  if (!adjacent || (uuidAt.length !== 0 && uuidAt.length !== 2))
+    // 書き出しの作りの誤り (入力では起きない) なので、診断の名前を持つ誤りにはしない
+    throw new Error(`Kumiori: the document ID mark was not found in the written PDF (${hexAll.length} in the trailer, ${uuidAt.length} in XMP)`);
+  return { hexAt, uuidAt };
+}
+
+/** bytes の中の、XMP の包み (xpacket) の中にある印の値 (uuid:…<) の位置 (印と包みの並びを、どちらも 1 度ずつなめる) */
+function xmpUuidMarks(bytes: Uint8Array): number[] {
+  const packets = xmpPackets(bytes);
+  const out: number[] = [];
+  let k = 0;
+  for (const i of findAscii(bytes, `uuid:${uuidOf(DOCUMENT_ID_MARK)}<`)) {
+    // 包みは始まりの昇順で、包みどうしは重なりうる (始まりの後の最初の終わりまで) ので、i より前で終わった包みだけを飛ばす
+    while (k < packets.length && packets[k][1] <= i) k++;
+    if (k < packets.length && packets[k][0] < i) out.push(i);
+  }
+  return out;
+}
+
+/** 印の値の位置に、ID (16 進 32 字) を書く */
+function writeDocumentId(bytes: Uint8Array, at: { hexAt: number[]; uuidAt: number[] }, id: string): void {
+  const enc = (s: string) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  for (const i of at.hexAt) bytes.set(enc(id), i + 1);
+  for (const i of at.uuidAt) bytes.set(enc(uuidOf(id)), i + 5);
+}
+
+/**
+ * 流して書く PDF の文書の ID (finishDocumentId と同じ ID を、書いた塊を順に足す SHA-256 で作る)。
+ * 先に書いた塊 (see。書き出し先へ渡した後は書き換えられない) は、ハッシュに足すだけ (中を探さない)。印の値は、最後の塊 (finish。残りの流れ・
+ * オブジェクトの流れ・相互参照の流れ・trailer) の中で、finishDocumentId と同じ所を探して書き換える。XMP の流れは最後に作るので、最後の塊に入る
+ * (先に書いていたら、書き手 (pdfWriter.ts) が誤りにする)
+ */
+export class DocumentIdStream {
+  private readonly hash = createSha256();
+  /** 先に書いた塊 (オブジェクト 1 つか、見出し。ファイルの順に) */
+  see(piece: Uint8Array): void {
+    this.hash.update(piece);
+  }
+  /** 最後の塊 (ファイルの base バイト目から後ろ) の印の値を、ファイルの全体の SHA-256 から作った ID に書き換える */
+  finish(tail: Uint8Array, base: number, places: DocumentIdPlaces): Uint8Array {
+    const at = documentIdMarks(tail, base, places);
+    writeDocumentId(tail, at, this.hash.update(tail).digest().slice(0, 32));
+    return tail;
+  }
 }
 
 /**
@@ -414,8 +511,17 @@ export function finishDocumentId(bytes: Uint8Array): Uint8Array {
  */
 export function pdfDocumentDate(d: Date | undefined): Date {
   if (d === undefined) return new Date(Math.floor(Date.now() / 1000) * 1000);
-  const t = d instanceof Date ? d.getTime() : NaN;
-  if (!Number.isFinite(t) || d.getUTCFullYear() < 0 || d.getUTCFullYear() > 9999)
+  // 別の realm (iframe・vm) の Date も受ける (instanceof では、その realm の Date を誤りにした)。中の時刻は Date.prototype.getTime で読む。
+  // getTime は、内部の [[DateValue]] を持たない値に TypeError を投げる (ECMA-262 §21.4.4 の thisTimeValue) ので、
+  // Symbol.toStringTag を 'Date' に偽った値も Date でないと分かる (Object.prototype.toString では見分けられない)
+  let t: number;
+  try {
+    t = Date.prototype.getTime.call(d);
+  } catch {
+    t = NaN;
+  }
+  const year = Number.isFinite(t) ? new Date(t).getUTCFullYear() : NaN;
+  if (!Number.isFinite(t) || year < 0 || year > 9999)
     throw new KumioriOptionError(msg('date は 0〜9999 年の正しい Date にします', 'date must be a valid Date between the years 0 and 9999'), 'date');
   return new Date(Math.floor(t / 1000) * 1000);
 }

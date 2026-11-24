@@ -82,10 +82,12 @@ export interface KumioriLimits {
   pdfImagePages?: number;
   /** PDF の画像のページの木の段・資源の入れ子の深さ。下げるだけ */
   pdfImageDepth?: number;
-  /** PDF の画像の 1 つのページで圧縮を解く流れの合計 (バイト)。上げ下げできる */
+  /** PDF の画像の 1 つのページ (ページの範囲は、範囲の全体) で圧縮を解く流れの合計 (バイト)。上げ下げできる */
   pdfImageStreamBytes?: number;
-  /** 1 つの PDF の画像を読み込む時限 (ミリ秒)。上げ下げできる */
+  /** 1 つの PDF の画像を読み込む時限 (ミリ秒。ページの範囲の埋め込みは、範囲の全体で)。上げ下げできる */
   pdfImageLoadMs?: number;
+  /** PDF の画像のページの範囲 (互換の指定の page=2-5・all など) で並べるページの数。上げ下げできる */
+  pdfImageRangePages?: number;
   // EPS・メタファイル・EPUB
   /** 1 つの EPS の実行の時限 (ミリ秒)。上げ下げできる */
   epsMs?: number;
@@ -206,8 +208,9 @@ export const LIMIT_DEFS = {
   pdfImageObjects: { def: 1_000_000, kind: 'size', ja: '1 つの PDF の画像の間接オブジェクトの数', en: 'indirect objects in one PDF image' },
   pdfImagePages: { def: 100_000, kind: 'size', ja: '1 つの PDF の画像のページの数 (ページの木をたどる数)', en: 'pages in one PDF image (pages visited in its page tree)' },
   pdfImageDepth: { def: 64, kind: 'depth', ja: 'PDF の画像のページの木の段・資源の入れ子の深さ', en: 'depth of the page tree and of nested resources in a PDF image' },
-  pdfImageStreamBytes: { def: 256 * MB, kind: 'size', ceiling: BYTES_CEILING, ja: 'PDF の画像の 1 つのページで圧縮を解く流れの合計 (バイト)', en: 'total decompressed size of the streams of one page of a PDF image (bytes)' },
-  pdfImageLoadMs: { def: 60_000, kind: 'size', ja: '1 つの PDF の画像を読み込む時限 (ミリ秒)', en: 'time limit for loading one PDF image (ms)' },
+  pdfImageStreamBytes: { def: 256 * MB, kind: 'size', ceiling: BYTES_CEILING, ja: 'PDF の画像の 1 つのページ (ページの範囲は、範囲の全体) で圧縮を解く流れの合計 (バイト)', en: 'total decompressed size of the streams of one page of a PDF image (for a page range, of the whole range) (bytes)' },
+  pdfImageLoadMs: { def: 60_000, kind: 'size', ja: '1 つの PDF の画像を読み込む時限 (ミリ秒。ページの範囲の埋め込みは、範囲の全体で)', en: 'time limit for loading one PDF image (ms; for embedding a page range, for the whole range)' },
+  pdfImageRangePages: { def: 64, kind: 'size', ja: 'PDF の画像のページの範囲 (互換の指定の page=2-5・all など) で並べるページの数', en: 'pages placed side by side for a page range of a PDF image (page=2-5, all and so on, in compatibility mode)' },
   // EPS・メタファイル・EPUB
   epsMs: { def: 20_000, kind: 'size', ja: '1 つの EPS の実行の時限 (ミリ秒)', en: 'time limit for running one EPS (ms)' },
   epsDocumentMs: { def: 60_000, kind: 'size', ja: '1 つの文書の EPS の実行の時間の合計 (ミリ秒)', en: 'total time for running the EPS files of one document (ms)' },
@@ -279,7 +282,14 @@ export function limits(): Limits {
  */
 export function noteLimitReached(name: LimitName): void {
   currentCall()?.limitsReached?.add(name);
+  limitTap.fn?.(name);
 }
+
+/**
+ * 上限に当たった名前を、記録と別に知らせる先 (組版エンジンが、page-sequence を組む間に当たった上限を集める。器が前の文書のページを
+ * 使い回すとき、組まずに済ませた page-sequence の分も、同じ記録を残すため)
+ */
+export const limitTap: { fn?: (name: LimitName) => void } = {};
 
 const optionError = (m: string, option: string) => new KumioriOptionError(msg(`選択肢の誤り: ${m}`, `invalid option: ${m}`), option);
 

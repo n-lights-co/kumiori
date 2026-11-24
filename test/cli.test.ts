@@ -23,6 +23,67 @@ let work = '';
  */
 const JA_ENV = { ...process.env, KUMIORI_LANG: 'ja' };
 
+/** 子のプロセスを動かす別の利用者 (nobody) の uid・gid */
+const NOBODY = 65534;
+
+/** test のコマンド (シェルを通さずに、引数で渡して動かす) */
+const TEST_BIN = ['/usr/bin/test', '/bin/test'].find((p) => fs.existsSync(p));
+
+/** nobody が読めるか (ancestors をたどれて、読めて、x なら動かせるか) を、nobody で動かす test で確かめる */
+function nobodyCan(test: '-r' | '-x', p: string): boolean {
+  const r = spawnSync(TEST_BIN!, [test, p], { uid: NOBODY, gid: NOBODY });
+  return r.status === 0;
+}
+
+/**
+ * nobody で動かすコマンドの node の本体・cli.js・書体のディレクトリ。nobody が届かない物 (npx の node は /root の下、
+ * ci:local --worktree の取り出し先は 0700 の一時のディレクトリ) は、dir (nobody がたどれる) の下に写して、その場所を返す。
+ * cli.js は、dist-cli の全体と、package.json の実行時の依存 (とその依存) を node_modules に写す。写してもたどれなければ、飛ばす理由の文を返す
+ */
+function nobodyTools(dir: string): { node: string; cli: string; fonts: string } | string {
+  if (!TEST_BIN) return 'test のコマンドが無いので、nobody で確かめられない';
+  const copy = (from: string, to: string) => fs.cpSync(from, to, { recursive: true, dereference: true });
+  let node = process.execPath;
+  if (!nobodyCan('-x', node)) {
+    node = path.join(dir, 'tools', 'node');
+    fs.mkdirSync(path.dirname(node), { recursive: true });
+    fs.copyFileSync(process.execPath, node);
+    fs.chmodSync(node, 0o755);
+  }
+  let cli = path.join(root, 'dist-cli', 'cli.js');
+  if (!nobodyCan('-r', cli)) {
+    const base = path.join(dir, 'tools', 'app');
+    copy(path.join(root, 'dist-cli'), path.join(base, 'dist-cli'));
+    cli = path.join(base, 'dist-cli', 'cli.js');
+    // 実行時の依存を、たどり着いた順に写す (npm の平らな node_modules。入れ子の node_modules は、包みごと写る)
+    const queue = Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).dependencies ?? {});
+    const done = new Set<string>();
+    while (queue.length) {
+      const name = queue.shift()!;
+      if (done.has(name)) continue;
+      done.add(name);
+      const from = path.join(root, 'node_modules', name);
+      if (!fs.existsSync(from)) continue;
+      copy(from, path.join(base, 'node_modules', name));
+      const pkg = JSON.parse(fs.readFileSync(path.join(from, 'package.json'), 'utf8'));
+      queue.push(...Object.keys({ ...pkg.dependencies, ...pkg.optionalDependencies }));
+    }
+  }
+  let fonts = fontDir;
+  if (!nobodyCan('-x', fonts)) {
+    fonts = path.join(dir, 'tools', 'fonts');
+    copy(fontDir, fonts);
+  }
+  for (const [what, ok] of [
+    ['node の本体', nobodyCan('-x', node)],
+    ['cli.js', nobodyCan('-r', cli)],
+    ['書体のディレクトリ', nobodyCan('-x', fonts)],
+  ] as const) {
+    if (!ok) return `${what} を nobody がたどれる場所に置けなかった`;
+  }
+  return { node, cli, fonts };
+}
+
 /** コマンドを動かし、標準出力と PDF を返す */
 async function run(input: string, ...args: string[]) {
   const out = path.join(work, path.basename(input).replace(/\.\w+$/, '.pdf'));
@@ -586,6 +647,52 @@ describe('Node のコマンド', () => {
     }
   }, 120_000);
 
+  it('PDF を一時のファイルに流して書く途中で、合図 (SIGINT・SIGTERM) で止めても、一時のファイルを残さず、合図で終わる', async () => {
+    const dir = fs.mkdtempSync(path.join(work, 'signal-'));
+    const cli = path.join(root, 'dist-cli/cli.js');
+    // PDF を書く間が長い文書 (ページが多い)。一時のファイルが出来た所で止める
+    fs.writeFileSync(path.join(dir, 'big.html'), `<p>${'組み織りの見本の段落。'.repeat(40)}</p>`.repeat(6000));
+    for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+      const out = path.join(dir, `big-${sig}.pdf`);
+      const child = spawn(process.execPath, [cli, path.join(dir, 'big.html'), '-o', out, '--font-dir', fontDir], { stdio: 'ignore', env: JA_ENV });
+      const exited = new Promise<{ code: number | null; signal: string | null }>((r) => child.on('exit', (code, signal) => r({ code, signal })));
+      const parts = () => fs.readdirSync(dir).filter((n) => n.startsWith(`big-${sig}.pdf.part-`));
+      let seen = false;
+      for (let i = 0; i < 3000 && !seen; i++) {
+        seen = parts().length > 0;
+        if (!seen) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(seen, `${sig}: 一時のファイルが出来なかった`).toBe(true);
+      child.kill(sig);
+      const r = await exited;
+      expect(r.signal, `${sig}: ${JSON.stringify(r)}`).toBe(sig);
+      expect(parts()).toEqual([]);
+      expect(fs.existsSync(out)).toBe(false);
+    }
+  }, 300_000);
+
+  // 読み取り専用の前の出力は、名前を替えて置き換えずに、前のとおり書けない誤りにする。root では読み取り専用のファイルにも書けるので、
+  // 子のプロセスを別の利用者 (nobody) で動かす (root の Linux でだけ試せる)
+  it.runIf(process.platform === 'linux' && process.getuid?.() === 0)('読み取り専用の前の出力は置き換えず、書けない誤りにする (前の中身が残る)', (ctx) => {
+    // 試験の作業のディレクトリ (0700) は nobody がたどれないので、/tmp の直下に作る
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-ro-'));
+    fs.chmodSync(dir, 0o777);
+    ctx.onTestFinished(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const tools = nobodyTools(dir);
+    if (typeof tools === 'string') return ctx.skip(tools);
+    const input = path.join(dir, 'a.html');
+    fs.writeFileSync(input, '<p>あ</p>');
+    const out = path.join(dir, 'a.pdf');
+    fs.writeFileSync(out, 'old');
+    fs.chmodSync(out, 0o444);
+    const r = spawnSync(tools.node, [tools.cli, input, '-o', out, '--font-dir', tools.fonts, '--no-font-cache'], { encoding: 'utf8', env: { ...JA_ENV, HOME: dir }, uid: NOBODY, gid: NOBODY });
+    expect(r.error).toBeUndefined();
+    expect(r.status, r.stderr).not.toBe(0);
+    expect(r.stderr).toMatch(/EACCES|permission/i);
+    expect(fs.readFileSync(out, 'utf8')).toBe('old');
+    expect(fs.readdirSync(dir).filter((n) => n.includes('.part-'))).toEqual([]);
+  });
+
   it('同じ文書の SVG・PNG の書き出しを 2 度続けられる (使っていない画像は「読んだファイル」に数えない)。--drawio-stencils のディレクトリの中は上書きしない', () => {
     const dir = fs.mkdtempSync(path.join(work, 'twice-'));
     const cli = path.join(root, 'dist-cli/cli.js');
@@ -970,6 +1077,11 @@ describe('Node のコマンド', () => {
     expect(plain.status).toBe(0);
     expect(plain.stderr).toContain('[font/missing-glyph]');
     expect(plain.stderr).toContain('--system-fonts で、OS の書体から字形を探せます');
+    // --no-outside-files のときは、一緒に使えない --system-fonts を勧めない
+    const inside = spawnSync(process.execPath, [cli, html, '-o', path.join(dir, 'd.pdf'), '--font-dir', fontDir, '--no-outside-files'], { encoding: 'utf8', env });
+    expect(inside.status).toBe(0);
+    expect(inside.stderr).toContain('[font/missing-glyph]');
+    expect(inside.stderr).not.toContain('--system-fonts');
     const sys = spawnSync(process.execPath, [cli, html, '-o', path.join(dir, 'b.pdf'), '--font-dir', fontDir, '--system-fonts', '--verbose'], { encoding: 'utf8', env });
     expect(sys.status).toBe(0);
     expect(sys.stderr).not.toContain('[font/missing-glyph]');

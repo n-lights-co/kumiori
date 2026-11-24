@@ -69,6 +69,28 @@ describe('プラグイン (plugins)', () => {
     expect(r.warnings.filter((w) => w.includes('読めない') || w.includes('見つかりません'))).toEqual([]);
   }, 60000);
 
+  it('形式が URL の資源を取るときに onProgress が投げた誤りは、形式の読み込みに飲まれずに、返す Promise の失敗になる。その後は onProgress を呼ばない', async () => {
+    const oops = new Error('進み具合の誤り');
+    let after = 0;
+    let thrown = false;
+    const e = await typeset('<p><img src="a.box"></p>', {
+      loadFont,
+      files: [{ name: 'a.box', data: 'BOX 10 10 https://example.com/x.png' }],
+      plugins: [boxPlugin()],
+      resolveResource: async () => new Uint8Array([1, 2, 3]),
+      onProgress: (p) => {
+        if (thrown) after++;
+        if (p.phase === 'resources') {
+          thrown = true;
+          throw oops;
+        }
+      },
+    }).catch((x: unknown) => x);
+    expect(thrown).toBe(true);
+    expect(e).toBe(oops);
+    expect(after).toBe(0);
+  }, 60000);
+
   it('lang: \'en\' なら、プラグインに渡す言語も英語', async () => {
     const seen: ImageFormatContext[] = [];
     await typeset('<p><img src="a.box"></p>', { loadFont, lang: 'en', files: [{ name: 'a.box', data: 'BOX 10 10 x' }], plugins: [boxPlugin(seen)] });

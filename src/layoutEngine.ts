@@ -10,13 +10,13 @@
  *  4. 行は widows/orphans を考慮して分割。ルビ付き行は前行との行間アキを調整する。
  *  5. 表は行単位でページをまたぎ、ヘッダ行を各ページ先頭に複製する。
  */
-import { limitsKey } from './limits';
+import { limitsKey, limitTap, noteLimitReached, type LimitName } from './limits';
 import { TableMarkerScope, collectTableRetrieves, extendAreas, replaceRetrieves, type GroupMarkers, type MarkerArea } from './tableMarkers';
-import { msg } from './messages';
+import { messageLang, msg } from './messages';
 import { cssBaselineRatio, type LoadedFont } from './fontManager';
 import { gradientSvg } from './cssGradient';
 import { AREA_TREE_SCHEMA_VERSION, walkAreas, type AreaNode } from './areaTree';
-import { copySourceRef, documentNodes, gridCopies, indexDocument, sourceRef } from './sourceRef';
+import { copySourceRef, documentNodes, gridCopies, indexDocument, sourceRef, sourceRefEnd } from './sourceRef';
 import { areaStructure } from './structure';
 import { applyPaintEffects, collectPaintEffects, PAINT_EFFECT_MARK, PAINT_REF_MARK, paintEffectState, type PaintEffectEntry } from './paintEffect';
 import type { PaintEffect } from './types';
@@ -132,7 +132,7 @@ import { fontFeaturesBetweenUnits } from './inlineFlatten';
 import { mm } from './units';
 import type { AssetStore } from './assets';
 import { resolveRef } from './resources';
-import { FootnoteCtx, footUnits, splitEntry, withLabel, type FootEntry } from './footnotes';
+import { FootnoteCtx, footUnits, splitEntry, withLabel, type FootEntry, type FootnoteMark } from './footnotes';
 import { breakEdgeBorder, collapsedOuterHalves, collapseTableBorders, firstRowBorderWidths, placeCells } from './tableBorders';
 import { limitTableSpans } from './tableLimits';
 import { gridTrackPlan, gridTracks, type GridTrackPlan } from './gridTracks';
@@ -143,6 +143,7 @@ import { prepareWarichu } from './warichu';
 import { diag, mergeDiagnostics, type Diagnostic } from './diagnostics';
 import { withSource } from './sourceLocation';
 import { rejoin, thisCall } from './callContext';
+import { hrefOfTag } from './xmlAttr';
 
 /** 行の並びの最初の節 (字でないもの。診断の場所に使う) */
 const firstNode = (run: readonly unknown[]): object | undefined => run.find((x): x is object => !!x && typeof x === 'object');
@@ -283,6 +284,17 @@ export interface LayoutOptions {
    * 無ければ使い回さない。使い回しても、組んだ結果は変わらない
    */
   sharedLineMemo?: SharedLineMemo;
+  /**
+   * 前の文書の組版を覚え、中身の同じ page-sequence のページを使い回すもの (器: createTypesetter の reuse。LayoutReuse。
+   * design/resumable-flow.md の 6)。無ければ使い回さない。使い回しても、組んだ結果は変わらない
+   */
+  layoutReuse?: LayoutReuse;
+  /**
+   * 試験のための印 (公開しない): 1 段の page-sequence の、続きから組める境目のすべてで、1 ページ先まで組んでから境目に戻り、
+   * 境目の写しから続けて組む (design/resumable-flow.md の 4.4)。結果は印の無いときと同じになるはず (違えば続きから組む作りの誤り)。
+   * 数は LayoutStats.resume に入る。無ければ resumeProbe.check
+   */
+  resumeCheck?: boolean;
   /**
    * 段組の入れ子の深さの上限。これより深い段組は 1 段に組む (警告を出す)。既定 4。Infinity で上限なし。
    * 中身がページからあふれる段組の入れ子は、外側の段の高さの探索の値ごとに内側の探索をやり直すので、段ごとに組む回数が増える
@@ -795,6 +807,205 @@ function cutEnd(n: LNode, keepBorder = false, keepPadding = false) {
 
 // ───────────────────────── Flow (フラグメンタ) ─────────────────────────
 
+/**
+ * 続きの位置の記録の 1 段 (design/resumable-flow.md の 2.2)。Flow の再帰の関数が、入るときに積み、出るときに降ろす (Flow.rs)。
+ * phase は、その段がいま何をしているか: 下の段の関数を呼んでいる所 (続きの位置の鎖が下の段へ続く) か、改ページを呼んだ所 (鎖の最後)。
+ * '' は、そのどちらでもない (関数の中の、続きから組めない所を組んでいる)。境目では、外から順に鎖をたどって、続きから組めるかを決める
+ * (Flow.resumeReason)
+ */
+type ResumeStep = ChildrenStep | BlockStep | TableStep | InlineStep | ForceStep;
+
+/** 表 (layoutBlockLevel → layoutTable)。fo:retrieve-table-marker の無い表の、行の塊を置く所の改ページから続けられる */
+interface TableStep {
+  k: 'table';
+  orig: LBlockLevel;
+  /** layoutTable が受けた表と、組んでいる表 (罫線をつぶし、百分率を解いた後) */
+  table: LTable;
+  node?: LTable;
+  /** pre: break-before の区切りの中。ktc: 分けない指定の試しの改ページ。open: 箱を開く所の前の箱の break-after。break: 行の塊を置く所の改ページ */
+  /** fblank・fpage: 行の前の強制の区切り (page など) の、白ページと区切りのページの改ページ */
+  phase: '' | 'pre' | 'ktc' | 'open' | 'break' | 'fblank' | 'fpage';
+  open?: TableOpen;
+  ctx?: TableCtx;
+  rs?: TableRows;
+}
+
+/** 組んでいる collapse の表の、改ページの境目で罫線を決め直すための線 (Flow.tableBreak) */
+type TableBreakLines = { header: boolean; compat: boolean } & NonNullable<LTable['breakBorders']>;
+
+/** 表の行の塊を置く所 (layoutTableRows)。site は、どこで置いているか ('' は、続きから組めない所) */
+interface TableRows {
+  /**
+   * final: 終わりの並び。linked: 塊を足す前の並び。lead-flush・lead: 行の前の強制の区切りの前の並びと、その塊。frags: 分けた行の k 番目の断片
+   */
+  site: '' | 'final' | 'linked' | 'lead-flush' | 'lead' | 'frags';
+  rows: LTableRow[];
+  i: number;
+  end: number;
+  pending: LNode[];
+  pendingLinked: boolean;
+  grp: LNode[];
+  held: Diagnostic[];
+  splitTried: boolean;
+  frags: LNode[];
+  k: number;
+  lead: true | BreakKind | undefined;
+}
+
+/** 表の箱を開く所 (layoutTable の中ほど) に要る、前半で決めた値 */
+interface TableOpen {
+  /** layoutTable が受けた表 (診断の場所) */
+  table: LTable;
+  node: LTable;
+  st: ResolvedStyle;
+  desc: BoxDesc;
+  out: ReturnType<typeof collapsedOuterHalves>;
+  autoFree: number | undefined;
+  autoRtl: true | undefined;
+  caps: NonNullable<LTable['captions']>;
+  capIs: number;
+  capTableI: number;
+  bottomMargin: number;
+  bottomCaptions: boolean;
+  gridMeasure: GridColumnMeasure[] | undefined;
+  gridWhole: GridLineMeasure | undefined;
+  outerI: number;
+}
+
+/** 表の行を組む所と後半 (layoutTable の後ろ) に要る値 */
+interface TableCtx {
+  node: LTable;
+  st: ResolvedStyle;
+  desc: BoxDesc;
+  out: ReturnType<typeof collapsedOuterHalves>;
+  caps: NonNullable<LTable['captions']>;
+  capIs: number;
+  capTableI: number;
+  bottomMargin: number;
+  bottomCaptions: boolean;
+  frame: Frame;
+  cb: CbAbs | undefined;
+  outerCb: CbAbs | undefined;
+  sp: { i: number; b: number } | undefined;
+  sizes: number[];
+  savedSpacing: { i: number; b: number } | undefined;
+  savedRowspanAh: boolean;
+  savedTableBreak: TableBreakLines | undefined;
+  savedTrailOut: number | undefined;
+  headerRows: LNode[];
+  footerRows: LNode[];
+  repeatFooter: boolean;
+  reserve: number;
+}
+
+/** 子の並び (layoutChildren) */
+interface ChildrenStep {
+  k: 'children';
+  children: Array<LBlockLevel | LInlineLevel>;
+  /**
+   * run: 行の並び run を組んでいる (flushRun の中。at はその後に組む子。並びの終わりなら children.length)。
+   * child: at 番目の子のブロックを組んでいる。kwp・kwn: at 番目の子の前の keep-with-previous・keep-with-next の改ページ
+   */
+  phase: '' | 'run' | 'child' | 'kwp' | 'kwn';
+  at: number;
+  run: InlineChild[];
+  runAt: number;
+  firstRun: boolean;
+  topAt: number;
+  topPage: number;
+  /** 行の並びに、書いた所に目印のある float・絶対配置の箱がある (続きから組めない。2.4) */
+  anchored: boolean;
+}
+
+/** ブロック (layoutBlockLevel → layoutBlock) */
+interface BlockStep {
+  k: 'block';
+  /** 子の並びの節 (layoutBlockLevel が受けたもの) と、組んでいる節 (百分率を解いた後) */
+  orig: LBlockLevel;
+  node: LBlock;
+  /** pre: break-before の区切り (forceBreak) の中。ktc: 分けない指定の試しの改ページ (keepTogetherCheck)。body: 中身 (layoutChildren) */
+  phase: '' | 'pre' | 'ktc' | 'open' | 'body';
+  /** open の所に要る、前半で決めた値 */
+  open?: BlockOpen;
+  ctx?: BlockCtx;
+}
+
+/** ブロックの箱を開く所 (layoutBlock の中ほど) に要る、前半で決めた値 */
+interface BlockOpen {
+  node: LBlock;
+  st: ResolvedStyle;
+  desc: BoxDesc;
+  est: { min?: number; max?: number; auto?: boolean } | undefined;
+  autoOk: boolean;
+  autoFree: number | undefined;
+  outerI: number;
+  autoRtl: boolean;
+}
+
+/** 行の並び (layoutInlineRun) */
+interface InlineStep {
+  k: 'inline';
+  /** layoutInlineRun が受けた並び */
+  src: InlineChild[];
+  /** pending: 行の前の、保留の区切り (applyPendingBreak → forceBreak) の中。top・bottom: 行を置く前・置いた後の改ページ */
+  phase: '' | 'pending' | 'top' | 'bottom';
+  ctx?: InlineCtx;
+  /** 次に置く行の番号 */
+  idx: number;
+}
+
+/** 強制の区切り (forceBreak)。kind は合わせた後の区切りの種類 */
+interface ForceStep {
+  k: 'force';
+  kind: BreakKind;
+  /** col: 段の区切り。blank: 偶奇合わせの白ページ。page: 区切りの改ページ。empty: 何も無いページの偶奇が合わないときの改ページ */
+  phase: '' | 'col' | 'blank' | 'page' | 'empty';
+}
+
+/** ブロックの中身を組む所 (layoutBlock の後半) に要る、前半で決めた値 */
+interface BlockCtx {
+  node: LBlock;
+  /** 中身に継ぐ書式 (百分率の text-indent を解いたもの) */
+  cst: ResolvedStyle;
+  desc: BoxDesc;
+  frame: Frame;
+  cb: CbAbs | undefined;
+  outerCb: CbAbs | undefined;
+  floatsBefore: number;
+  fence: boolean | undefined;
+  outerRef: number;
+  refLines: boolean | undefined;
+  outerBlocked: boolean;
+  blockAt: object | undefined;
+}
+
+/** 行を置く所 (layoutInlineRun の後半) に要る、前半で決めた値 */
+interface InlineCtx {
+  run: InlineChild[];
+  st: ResolvedStyle;
+  first: boolean;
+  L: number;
+  atoms: Atom[];
+  raws: RawLine[];
+  pls: PositionedLine[];
+  lms: LineMetrics[];
+  refs: ReturnType<typeof lineFootnotes>[];
+  useFoot: boolean;
+  holdFoot: boolean;
+}
+
+/** Flow の、ページの境目の写し (design/resumable-flow.md の 4.2 の flow と resume) */
+interface FlowBoundary {
+  /** 改ページの種類 (openPage に渡す) */
+  level: 'column' | 'page' | 'blank';
+  /** 欄の写し (配線の欄を除く。Flow.captureFields) */
+  fields: Record<string, unknown>;
+  /** 続きの位置 (外から順。写した段。ブロックの箱は stack の添字で持つ) */
+  steps: ResumeStep[];
+  /** 続きから組めない理由 (組めるなら undefined) */
+  reason?: string;
+}
+
 interface Frame {
   /**
    * ブロックの終わりまで字下げするドロップキャップの回り込みの範囲 (axf:initial-letters の adjacent)。箱を閉じるとき、終わりの位置で切る
@@ -932,10 +1143,31 @@ interface FlowHost {
    */
   volatile?: { n: number; active: number; cites: CiteUse[] };
   /**
+   * 組むときに読んだ、いちばん後ろの入力の節の番号 (design/resumable-flow.md の 5.1)。境目を写す page-sequence の間だけ置く。
+   * 試し組み・測る組みの流れも、同じ物を持つ ({ ...host } で写す) ので、読んだ分が入る
+   */
+  read?: { to: number };
+  /**
    * 組む手間の上限: 幅を中身で決める箱・段組の入れ子のいまの深さ (d・段組は cd)、段組の深さの上限 (cmax)、
    * この通しの始めの流れの数 (base) と流れの数の上限 (budget)、簡略に組んだか (hit)、いちばん深いところ (maxSeen・cSeen)、警告の出し先
    */
-  nest?: { d: number; cd: number; cmax: number; base: number; budget: number; hit: boolean; maxSeen: number; cSeen: number; warn: (m: Diagnostic) => void };
+  nest?: {
+    d: number;
+    cd: number;
+    cmax: number;
+    base: number;
+    budget: number;
+    hit: boolean;
+    maxSeen: number;
+    cSeen: number;
+    warn: (m: Diagnostic) => void;
+    /**
+     * 上限の数えの直し (流れの数に足す。負にもなる)。最後のページのマスターの組み直しを、上限から遠い所で行ったとき (SeqRun.relayout の守りの内)、
+     * 組み直しで作った流れを数えから除く。境目から続けて組んでも初めから組んでも、組み直しの後の数えを同じにする
+     * (初めから組み直す流れの数は、計測の覚えに当たって 1 度目の組みより少なく、境目までの数を足して真似ることができないため)
+     */
+    charged?: number;
+  };
   /**
    * 詰め込み (Flow.condenseContainer) の、組版の 1 回の通しの中の状態: いまの、いちばん外の詰め込みの容器の測りの中で、入れ子の中の容器が
    * 中身を測った回数 (n) とその上限 (max)、その上限に当たったか (hit)、渡された上限 (opt。LayoutOptions.maxCondenseMeasures。無ければ容器ごとに
@@ -1031,7 +1263,57 @@ export interface LayoutStats {
   lineMemoHits?: number;
   /** 段落の中身で引く覚え (SharedLineMemo) から使い回した回数 */
   sharedLineHits?: number;
+  /** ページの境目の数え (続きから組む作り。design/resumable-flow.md の 4.4。写した境目があるときだけ) */
+  resume?: ResumeStats;
 }
+
+/** ページの境目の数え (LayoutStats.resume) */
+export interface ResumeStats {
+  /** 写した境目の数 (1 段の page-sequence で、境目を写したもの) */
+  boundaries: number;
+  /** そのうち、続きから組める境目の数 */
+  resumable: number;
+  /** 続きから組めない境目の、理由ごとの数 */
+  reasons: Record<string, number>;
+  /** 続きから組んだ回数 (組版の中で使った分と、resumeCheck の分) */
+  resumed: number;
+  /** resumeCheck で、続きから組んで同じ境目に来たとき、指紋が初めのときと違った数 (0 でなければ誤り) */
+  mismatched: number;
+  /** 最後のページのマスター (needsLast) の組み直しを、境目から続けて組んだ数と、初めから組んだ数 */
+  lastFromBoundary: number;
+  lastFromStart: number;
+  /** 上限から遠い所の、最後のページのマスターの組み直しで作り、組む手間の上限の数えから除いた流れの数 (FlowHost.nest.charged) */
+  uncounted?: number;
+}
+
+/**
+ * 試験と道具のための口 (公開しない)。check を真にすると、LayoutOptions.resumeCheck を付けたのと同じになる。
+ * 組版の器を作り直さずに、ビルドした layoutEngine.js から切り替える (scripts/check-resume.mjs)
+ */
+export const resumeProbe: {
+  check: boolean;
+  /** 試す境目を、境目の前のページの数で限る (違いを探すとき) */
+  only?: number;
+  /** 組版の中で境目から続けて組まず、初めから組む (続けて組んだときと結果が同じかを比べるとき) */
+  fromStart?: boolean;
+  /**
+   * 遅く戻る試し: 1 段の page-sequence を終わりまで組んだ後、続きから組める境目のうち、この数ほど (散らして選ぶ) を後ろから順に選び、
+   * 境目のときの状態に戻して、終わりまで組み直す (組版の中で境目から組み直す使い方と同じ。境目の後で、写しと共有の物を書き換える誤りを探す)。
+   * 組み直すたびに、その組み直しの流れが写した次の境目からも、もう 1 度終わりまで組み直す (続けた流れが写す境目の誤りを探す)。
+   * 結果は、試しの無いときと同じになるはず。戻って同じ境目に来たときの指紋も比べる (ResumeStats.mismatched)
+   */
+  late?: number;
+  /** 遅く戻る試しで、戻る境目を、境目の前のページの数で限る (違いを探すとき) */
+  lateOnly?: number;
+  onStats?: (s: ResumeStats) => void;
+  /** 前の組版と繋ぐか比べた境目の状態が違ったとき、違った所 (欄の道筋) を知らせる (繋がない訳を探すとき) */
+  spliceWhy?: (path: string) => void;
+  /**
+   * 繋ぐ確かめ: 境目の状態が前の組版と揃っても繋がずに終わりまで組み、繋いだはずの前の組版のページ・ページごとの記録・警告と、
+   * 組んだものが、節の番号の対応の下で同じかを知らせる (違えば、比べる状態に漏れがある)。結果は、確かめないときの、繋がない組版と同じ
+   */
+  spliceVerify?: (r: { same: boolean; at: number; pages: number; prefix?: boolean; why?: string }) => void;
+} = { check: false };
 
 /** keep-with-next の試し組みを、次のブロックの最初の行が置かれた時点で打ち切る合図 (Flow.onPlaced が投げる) */
 const KEEP_TRIAL_STOP = Symbol('keep-trial-stop');
@@ -1178,6 +1460,11 @@ interface PageHost {
    * (もう次のページの最初の段にいる) なら false
    */
   pageBreakInColumns?(kind: BreakKind, hasContent: boolean): boolean;
+  /**
+   * ページの境目 (いまのページを閉じ、次のページを作る前。Flow.breakPage)。1 段の page-sequence の流れだけが受ける
+   * (境目の記録を取る。design/resumable-flow.md の 4.2)
+   */
+  boundary?(level: 'column' | 'page' | 'blank'): void;
 }
 
 /** 段組のページで、脚注・前方 float を「全段を貫く」ページ単位の領域に集めるための窓口 */
@@ -1189,6 +1476,8 @@ interface PageLevelHost {
 }
 
 interface FlowInit {
+  /** 続きの位置を記録する (1 段の page-sequence の流れ。境目で写して、続きから組む。design/resumable-flow.md の 4.2) */
+  record?: boolean;
   /** 指定すると、脚注と前方 float は Flow では置かず、ここへ渡す (置き場所の確保は呼び出し側) */
   pageLevel?: PageLevelHost;
   wm: WritingMode;
@@ -1460,6 +1749,93 @@ function discardsLeading(st: ResolvedStyle): boolean {
   return !!st.lineHeightDiscard && st.lineStackingStrategy !== 'line-height';
 }
 
+/**
+ * ページの境目の写しの、欄の値の写し (Flow.captureBoundary・resumeFrom)。配列・Set・Map は 1 段だけ写す (後で中身を足し引きされるので)。
+ * ほかの物 (入力の節・書式・組んだ箱など) は、そのまま持つ (境目の後で書き換えないもの)
+ */
+function copyField(v: unknown): unknown {
+  if (Array.isArray(v)) return v.slice();
+  if (v instanceof Set) return new Set(v);
+  if (v instanceof Map) return new Map(v);
+  return v;
+}
+
+/**
+ * 送った float (Flow.deferredFloats) の写し。まだ置いていない箱は、次のページで置くときに位置 (i・b・float) を書くので、
+ * 箱 (外側の節だけ) も写す (境目の写しが、境目の後で置いた位置に書き換わらないように。design/resumable-flow.md の 18.4)
+ */
+function copyDeferredFloats(list: readonly FloatBox[]): FloatBox[] {
+  return list.map((f) => ({ ...f, box: { ...f.box } }));
+}
+
+/**
+ * 続きの位置の鎖の写し (境目の後で、段の欄と、子の並びの段が持つ行の並び (run) に足すので)。行の並びを組んでいる段 (phase が run) の
+ * 次の段 (行の並び) は、写した並びを指す (layoutInlineRun が、受けた並びと段の並びが同じかを見る)。block は、ブロックの段の写し方
+ */
+function copySteps(steps: readonly ResumeStep[], block: (st: BlockStep) => BlockStep, table: (ctx: TableCtx) => TableCtx): ResumeStep[] {
+  const out: ResumeStep[] = [];
+  for (const st of steps) {
+    if (st.k === 'children') out.push({ ...st, run: st.run.slice() });
+    else if (st.k === 'table') out.push({ ...st, ...(st.ctx ? { ctx: table(st.ctx) } : {}), ...(st.rs ? { rs: { ...st.rs, pending: st.rs.pending.slice(), held: st.rs.held.slice() } } : {}) });
+    else if (st.k === 'inline') {
+      const prev = out[out.length - 1];
+      out.push({ ...st, ...(prev?.k === 'children' && prev.phase === 'run' ? { src: prev.run } : {}) });
+    } else if (st.k === 'block' && st.ctx) out.push(block(st));
+    else out.push({ ...st });
+  }
+  return out;
+}
+
+/**
+ * 開いている箱の写し (境目の後で、欄を書き換えるので)。まだ開いていない箱 (opened が偽) の節は、境目の後で開いてページに置き、中身を足すので、
+ * 節も写す (開いた箱の節は、閉じた前のページの断片で、続きのページでは openPage が新しい節を作る)
+ */
+function copyFrame(f: Frame): Frame {
+  return { ...f, ...(f.frags ? { frags: f.frags.slice() } : {}), ...(f.opened ? {} : { node: { ...f.node, children: f.node.children.slice() } }) };
+}
+
+/**
+ * ページの境目の指紋 (design/resumable-flow.md の 5.3): 写した欄と続きの位置から作る短い字。同じ文書を同じに組めば、同じ境目で同じになる。
+ * 組んだ箱 (LNode) は、入力の節の番号と大きさだけを入れる
+ */
+function boundaryDigest(b: FlowBoundary, extra: ReadonlyArray<unknown>): string {
+  const out: unknown[] = [b.level, ...extra];
+  const val = (v: unknown, deep: boolean): unknown => {
+    if (v === null || v === undefined || typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') return v;
+    if (typeof v !== 'object') return typeof v;
+    const r = sourceRef(v);
+    if (r !== undefined) return `#${r}`;
+    if (Array.isArray(v)) return deep ? v.map((x) => val(x, false)) : `[${v.length}]`;
+    if (v instanceof Set || v instanceof Map) return `{${v.size}}`;
+    const o = v as { height?: unknown; node?: { ref?: unknown; bsize?: unknown }; ref?: unknown; bsize?: unknown };
+    if (typeof o.height === 'number' && o.node) return ['e', o.height, o.node.ref];
+    if (typeof o.bsize === 'number') return ['n', o.ref, o.bsize];
+    return '*';
+  };
+  for (const k of Object.keys(b.fields).sort()) {
+    if (k === 'stack') continue;
+    out.push(k, val(b.fields[k], true));
+  }
+  for (const f of b.fields.stack as Frame[]) out.push(['f', f.desc.ref, f.opened, f.usedB, f.contentI, f.startB, f.contentStartB, f.node.kind]);
+  for (const st of b.steps) {
+    if (st.k === 'children') out.push(['c', st.phase, st.at, st.runAt, st.firstRun, st.topAt, st.topPage, sourceRef(st.children[st.at]) ?? -1]);
+    else if (st.k === 'block') out.push(['b', st.phase, sourceRef(st.orig) ?? -1]);
+    else if (st.k === 'inline') out.push(['i', st.phase, st.idx, st.ctx?.pls.length ?? -1]);
+    else if (st.k === 'table') out.push(['t', st.phase, sourceRef(st.orig) ?? -1, st.rs?.site, st.rs?.i, st.rs?.k, st.rs?.pending.length]);
+    else out.push(['f', st.phase, st.kind]);
+  }
+  // FNV-1a (32 ビット) を 2 つ (種を変えて) 並べる
+  const text = JSON.stringify(out);
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193 ^ text.length;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193);
+    h2 = Math.imul(h2 ^ c, 0x5bd1e995);
+  }
+  return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
+}
+
 /** 支柱だけの箱 (LBlock.phantom) の中身の節 → 測った block の大きさ (同じ行の支柱どうしで使い回す) */
 const phantomSizes = new WeakMap<object, number>();
 
@@ -1547,7 +1923,7 @@ class Flow {
    * 組んでいる collapse の表の、改ページの境目で罫線を決め直すための線 (layoutTable が設定)。
    * header: 続きのページで表ヘッダーを繰り返すか、compat: 内側の線を後ろのセルが全体の太さで持つ組み方 (collapseToAfterCell) か
    */
-  private tableBreak?: { header: boolean; compat: boolean } & NonNullable<LTable['breakBorders']>;
+  private tableBreak?: TableBreakLines;
   /** 組んでいる表の、外へ出す末尾の余白 (LTableCell.trailingSpaceOut。リストの最後の項目) */
   private tableTrailOut?: number;
   /** layoutCell が、セルの中の絶対配置の箱を外へ渡した回数 (rowHeightRecord が、組みが跡を残したかを見る) */
@@ -1661,9 +2037,16 @@ class Flow {
   private pageItems = 0;
   private headerOnly = false;
   private breakNext: BreakKind | null = null;
+  /** 続きの位置の記録 (FlowInit.record。外から順。design/resumable-flow.md の 2.2) */
+  private rs?: ResumeStep[];
+  /** 続きから組むときの、続きの位置と、境目の改ページの種類 (resumeFrom が置き、続きの所で openPage したら外す) */
+  private resume?: { steps: ResumeStep[]; at: number; level: 'column' | 'page' | 'blank' };
+  /** layoutBlockLevel が、ブロックコンテナのために積んだブロックの段と、そのコンテナ (layoutContainerIn がブロックとして組むときに使う) */
+  private boxStep?: { step: BlockStep; via: LBlockContainer };
 
   constructor(private host: FlowHost, init: FlowInit) {
     if (host.stats) host.stats.flows++;
+    if (init.record) this.rs = [];
     this.wm = init.wm;
     this.rootI = init.rootI;
     this.limit = init.limit ?? Infinity;
@@ -2851,6 +3234,56 @@ class Flow {
 
   /** 強制改ページ (break-before / break-after)。odd-page / even-page は、偶奇が合うまで白ページを挟む */
   forceBreak(kind: BreakKind = 'page') {
+    // 続きの位置の記録 (ForceStep)。続きから組むときは、記録の区切りの、改ページの後から組む
+    const r = this.takeStep('force');
+    if (!r && !this.rs) return this.forceBreakIn(kind, undefined, undefined);
+    const depth = this.rs!.length;
+    const step: ForceStep = r ?? { k: 'force', kind, phase: '' };
+    this.rs!.push(step);
+    try {
+      this.forceBreakIn(r ? r.kind : kind, step, r?.phase || undefined);
+    } finally {
+      this.rs!.length = depth;
+    }
+  }
+
+  private forceBreakIn(kind: BreakKind, step: ForceStep | undefined, entry: ForceStep['phase'] | undefined) {
+    /** 改ページを呼ぶ所 (続きから組むときは、ここで次のページを開く) */
+    const brk = (phase: ForceStep['phase'], level: 'column' | 'page' | 'blank') => {
+      if (entry === phase) {
+        entry = undefined;
+        this.resumeOpen();
+        // 初めから組む道の改ページの後と同じく、印を戻す (戻った境目の印のまま、後ろの境目を写さないように)
+        if (step) step.phase = '';
+        return;
+      }
+      if (step) {
+        step.phase = phase;
+        step.kind = kind;
+      }
+      this.breakPage(level);
+      if (step) step.phase = '';
+    };
+    if (entry) {
+      // 続きから組む: 記録の改ページの所まで飛ぶ
+      if (entry === 'col') {
+        brk('col', 'column');
+        if (this.discardAfterForced) this.discardLeading = true;
+        return;
+      }
+      if (entry === 'empty') {
+        brk('empty', 'page');
+        return;
+      }
+      if (entry === 'blank') {
+        brk('blank', 'blank');
+        this.pages!.forcedBreak?.(kind);
+      }
+      brk('page', 'page');
+      if (!this.host.xslSpace && !this.discardAfterForced) for (const f of this.stack) if (!f.opened) this.addMargin(f.desc.m.bs, f.desc.precBs);
+      if (this.discardAfterForced) this.discardLeading = true;
+      return;
+    }
     if (!this.paginating) return;
     // CSS: まだ効かせていない前の箱の break-after (breakNext) は、この区切りと同じ所の値。合わせてから 1 度だけ効かせる
     // (CSS Fragmentation 3 §4.3: 左右のページの指定は、流れの中で後ろの要素の値が勝つ。順に効かせると、break-after: right の後の
@@ -2862,7 +3295,7 @@ class Flow {
     if (kind === 'column') {
       if (this.pageHasContent) {
         this.pages!.forcedBreak?.(kind);
-        this.breakPage('column');
+        brk('col', 'column');
         if (this.discardAfterForced) this.discardLeading = true;
       }
       return;
@@ -2882,9 +3315,9 @@ class Flow {
     const parityOk = (k: number) => wantOdd === undefined || n === undefined || (k % 2 === 1) === wantOdd;
     if (this.pageHasContent || !(this.pages!.atPageStart?.() ?? true)) {
       // 次のページの偶奇が合わなければ、白ページ (blank-or-not-blank="blank" のマスター) を挟む
-      if (n !== undefined && !parityOk(n + 1)) this.breakPage('blank');
+      if (n !== undefined && !parityOk(n + 1)) brk('blank', 'blank');
       this.pages!.forcedBreak?.(kind);
-      this.breakPage('page');
+      brk('page', 'page');
       // CSS: 強制改ページの後の余白は残す (Fragmentation 3 §5.2)。改ページの後にある、まだ開いていない祖先の上の余白を足し直す
       // (改ページの前の要素の下の余白は捨てる)
       if (!this.host.xslSpace && !this.discardAfterForced) for (const f of this.stack) if (!f.opened) this.addMargin(f.desc.m.bs, f.desc.precBs);
@@ -2892,7 +3325,7 @@ class Flow {
       if (this.discardAfterForced) this.discardLeading = true;
     } else if (n !== undefined && !parityOk(n)) {
       // まだ何も置いていないページの偶奇が合わない: このページを白ページとして残し、次へ
-      this.breakPage('page');
+      brk('empty', 'page');
     }
   }
 
@@ -2912,8 +3345,19 @@ class Flow {
     }
   }
 
+  /**
+   * 改ページ (改段)。いまのページを閉じ (closePage)、次のページを開く (openPage)。閉じてから開くまでが、ページの境目
+   * (続きから組むときは、境目で写した状態を戻して openPage から入る。design/resumable-flow.md の 4.2)
+   */
   breakPage(level: 'column' | 'page' | 'blank' = 'column') {
     if (!this.pages) return;
+    this.closePage();
+    this.pages.boundary?.(level);
+    this.openPage(level);
+  }
+
+  /** 改ページの前半: 開いている断片をいまのページで閉じ、後ろの float・段の終わりの知らせ・脚注を出す */
+  private closePage() {
     this.breakCount++;
     // 開いている断片を現ページで閉じる (内側から)
     for (let k = this.stack.length - 1; k >= 0; k--) {
@@ -2955,7 +3399,11 @@ class Flow {
     this.emitAfterFloats();
     this.reportColumnEnd(true);
     this.emitFootnotes();
-    const np = this.pages.nextPage(level);
+  }
+
+  /** 改ページの後半: 次のページを作り、ページごとの欄を戻し、開いていた箱を開き直し、持ち越しの脚注と送った float を置く */
+  private openPage(level: 'column' | 'page' | 'blank') {
+    const np = this.pages!.nextPage(level);
     this.root = np.root;
     this.limit = np.limit;
     const gapTop = np.gap ?? 0;
@@ -3058,10 +3506,146 @@ class Flow {
     }
   }
 
+  // ── ページの境目の写しと、続きから組む口 (design/resumable-flow.md の 2・4) ──
+
+  /** 写さない欄: 組版の器・page-sequence が作って渡すもの (続きから組む流れは、新しい流れに作り直したものを使う) と、続きの位置の記録 */
+  private static readonly WIRING = new Set(['host', 'pages', 'foot', 'side', 'abs', 'pageSize', 'beforeSep', 'pageLevel', 'onPlaced', 'markerSink', 'rs', 'resume', 'boxStep', 'wm', 'trialAbs']);
+
+  /** いまのページの境目の写し (breakPage の closePage の後。PageHost.boundary の中で呼ぶ) */
+  captureBoundary(level: 'column' | 'page' | 'blank'): FlowBoundary {
+    const reason = this.resumeReason();
+    if (reason) return { level, fields: {}, steps: [], reason };
+    const fields: Record<string, unknown> = {};
+    const self = this as unknown as Record<string, unknown>;
+    for (const k of Object.keys(this)) {
+      if (Flow.WIRING.has(k)) continue;
+      const v = self[k];
+      if (typeof v !== 'function') fields[k] = copyField(v);
+    }
+    fields.stack = this.stack.map(copyFrame);
+    fields.markerSink = this.markerSink.slice();
+    fields.deferredFloats = copyDeferredFloats(this.deferredFloats);
+    const steps = copySteps(
+      this.rs!,
+      (st) => ({ ...st, ctx: { ...st.ctx!, frame: undefined as unknown as Frame, frameAt: this.stack.indexOf(st.ctx!.frame) } as BlockCtx }),
+      (c) => ({ ...c, frame: undefined as unknown as Frame, frameAt: this.stack.indexOf(c.frame) }) as TableCtx,
+    );
+    return { level, fields, steps };
+  }
+
+  /**
+   * 境目の写しを戻し、続きから組む用意をする (新しく作った流れで呼ぶ)。この後、page-sequence の流れと同じく layoutChildren を呼ぶと、
+   * 各所が続きの位置まで飛び、境目の所で openPage してから続きを組む
+   */
+  resumeFrom(b: FlowBoundary) {
+    const self = this as unknown as Record<string, unknown>;
+    for (const [k, v] of Object.entries(b.fields)) {
+      if (k === 'stack' || k === 'markerSink') continue;
+      self[k] = copyField(v);
+    }
+    this.stack = (b.fields.stack as Frame[]).map(copyFrame);
+    if (b.fields.deferredFloats) this.deferredFloats = copyDeferredFloats(b.fields.deferredFloats as FloatBox[]);
+    this.markerSink.length = 0;
+    pushAll(this.markerSink, b.fields.markerSink as PendingMarker[]);
+    const steps = copySteps(
+      b.steps,
+      (st) => ({ ...st, ctx: { ...st.ctx!, frame: this.stack[(st.ctx as BlockCtx & { frameAt: number }).frameAt] } }),
+      (c) => ({ ...c, frame: this.stack[(c as TableCtx & { frameAt: number }).frameAt] }),
+    );
+    this.resume = { steps, at: 0, level: b.level };
+    this.rs = [];
+  }
+
+  /**
+   * 境目から続けて組めない理由 (組めるなら undefined。design/resumable-flow.md の 2.4)。続きの位置の鎖を外から順にたどり、各段が下の段を
+   * 呼んでいる所 (下の段と結び付いていること) か、最後の段が改ページを呼んだ所かを確かめる。ほかの関数の中の改ページは、続きから組めない
+   */
+  private resumeReason(): string | undefined {
+    const rs = this.rs;
+    if (!rs?.length) return 'outside';
+    if (this.keepHold) return 'keep-hold';
+    if (this.keepTrial || this.measureOnly || this.foot?.inTrial) return 'trial';
+    if (this.lineFloats || this.lineAbs) return 'line-anchor';
+    if (this.cbAbs || this.staticKey !== undefined || this.localAbs || this.collectAbs) return 'absolute';
+    if (this.stack.some((f) => f.frags || f.ilBands || f.ilFloats)) return 'fragments';
+    const c = this.host.condense;
+    if (c && (c.depth > 0 || c.win > 0)) return 'condense';
+    if (this.host.volatile?.active) return 'measure';
+    for (let i = 0; i < rs.length; i++) {
+      const st = rs[i];
+      const next = rs[i + 1] as ResumeStep | undefined;
+      const last = !next;
+      let ok = false;
+      switch (st.k) {
+        case 'children':
+          if (st.anchored) return 'line-anchor';
+          if (st.phase === 'run') ok = next?.k === 'inline' && next.src === st.run;
+          else if (st.phase === 'child') ok = (next?.k === 'block' || next?.k === 'table') && next.orig === st.children[st.at];
+          else ok = last && (st.phase === 'kwp' || st.phase === 'kwn');
+          break;
+        case 'block':
+          if (st.phase === 'pre' || st.phase === 'open') ok = next?.k === 'force';
+          else if (st.phase === 'body') ok = next?.k === 'children' && next.children === st.ctx!.node.children;
+          else ok = last && st.phase === 'ktc';
+          break;
+        case 'table':
+          if (st.phase === 'pre' || st.phase === 'open') ok = next?.k === 'force';
+          else ok = last && (st.phase === 'ktc' || ((st.phase === 'break' || st.phase === 'fblank' || st.phase === 'fpage') && !!st.rs?.site && !!st.ctx));
+          break;
+        case 'inline':
+          if (st.phase === 'pending') ok = next?.k === 'force';
+          else ok = last && (st.phase === 'top' || st.phase === 'bottom');
+          break;
+        case 'force':
+          ok = last && st.phase !== '';
+          break;
+      }
+      if (!ok) {
+        // 子のブロックの中なら、その種類も書く (続きから組めない所の数え。scripts/check-resume.mjs)
+        const ch = st.k === 'children' && st.phase === 'child' ? st.children[st.at] : undefined;
+        const kind = ch && typeof ch === 'object' ? `:${ch.type}${ch.type === 'block-container' && (ch as LBlockContainer).columns ? '-columns' : ''}` : '';
+        return `site:${st.k}${st.phase ? '/' + st.phase : ''}${kind}`;
+      }
+    }
+    return undefined;
+  }
+
+  /** 続きから組むとき、k の段を取る (続きの位置の鎖の次の段。続きから組んでいなければ undefined) */
+  private takeStep<K extends ResumeStep['k']>(k: K): Extract<ResumeStep, { k: K }> | undefined {
+    const r = this.resume;
+    if (!r) return undefined;
+    const st = r.steps[r.at];
+    if (!st || st.k !== k) throw new Error(`kumiori: the resume position does not match (${st?.k ?? 'end'} expected, ${k} reached)`);
+    r.at++;
+    return st as Extract<ResumeStep, { k: K }>;
+  }
+
+  /** 続きから組むとき、境目の所に来た: 次のページを開く (breakPage の後半) */
+  private resumeOpen() {
+    const r = this.resume!;
+    if (r.at !== r.steps.length) throw new Error('kumiori: the resume position ended early');
+    this.resume = undefined;
+    this.openPage(r.level);
+  }
+
   // ── 子要素の振り分け ──
 
   /** continued: 分けたブロックの 2 つ目からの断片の中身 (最初の行内の並びを、ブロックの最初の行として扱わない。LBlock.spanContinued) */
   layoutChildren(children: Array<LBlockLevel | LInlineLevel>, style: ResolvedStyle, continued = false) {
+    // 続きの位置の記録 (design/resumable-flow.md の 2.2)。続きから組むときは、記録の段を取り、その位置から組む
+    const resumed = this.takeStep('children');
+    if (resumed && resumed.children !== children) throw new Error('kumiori: the resume position does not match (children)');
+    const depth = this.rs?.length ?? 0;
+    const step: ChildrenStep | undefined = resumed ?? (this.rs ? { k: 'children', children, phase: '', at: 0, run: [], runAt: 0, firstRun: true, topAt: -1, topPage: -1, anchored: false } : undefined);
+    if (step) this.rs!.push(step);
+    try {
+      this.layoutChildrenIn(children, style, continued, step, resumed);
+    } finally {
+      if (this.rs) this.rs.length = depth;
+    }
+  }
+
+  private layoutChildrenIn(children: Array<LBlockLevel | LInlineLevel>, style: ResolvedStyle, continued: boolean, step: ChildrenStep | undefined, resumed: ChildrenStep | undefined) {
     let run: InlineChild[] = [];
     let runAt = 0;
     let firstRun = !continued;
@@ -3088,11 +3672,22 @@ class Flow {
         const prevLA = this.lineAbs;
         this.lineFloats = runFloats;
         this.lineAbs = runPageAbs;
+        if (step) {
+          step.phase = 'run';
+          step.at = ci;
+          step.run = run;
+          step.runAt = runAt;
+          step.firstRun = firstRun;
+          step.topAt = topAt;
+          step.topPage = topPage;
+          step.anchored = !!runFloats || !!runPageAbs || runAbs.length > 0;
+        }
         try {
           this.layoutInlineRun(run, style, firstRun, { arr: children, at: runAt });
         } finally {
           this.lineFloats = prevLF;
           this.lineAbs = prevLA;
+          if (step) step.phase = '';
         }
         firstRun = false;
         run = [];
@@ -3120,8 +3715,111 @@ class Flow {
     /** ページの先頭に置いたブロックの位置 (children の添字) と、そのページ (keepOverflow の判定に使う) */
     let topAt = -1;
     let topPage = -1;
-    for (let ci = 0; ci < children.length; ci++) {
+    let ci = 0;
+    /** 段の記録を書く (続きから組めるのは、記録を書いた所だけ) */
+    const mark = (phase: ChildrenStep['phase']) => {
+      if (!step) return;
+      step.phase = phase;
+      step.at = ci;
+      step.run = run;
+      step.runAt = runAt;
+      step.firstRun = firstRun;
+      step.topAt = topAt;
+      step.topPage = topPage;
+      step.anchored = !!runFloats || !!runPageAbs || runAbs.length > 0;
+    };
+    /**
+     * ブロックの子 c (children[ci]) を組む。from は、続きから組むときの入る所 (start: 初めから。kwp・kwn: その改ページの後。
+     * run: 前の行の並びを組んでいる所。child: ブロックを組んでいる所)
+     */
+    const blockChild = (c: LBlockLevel, from: 'start' | 'kwp' | 'run' | 'kwn' | 'child') => {
+      if (from === 'start') {
+        // 字の並び (無名のブロック) の直後のブロックが keep-with-previous (CSS の break-before: avoid) なら、
+        // 並びと、そのブロックの先頭を同じページに置く。入らず、改ページすれば入るなら、並びの前で改ページする
+        if (run.length && (c as { keepWithPrevious?: boolean }).keepWithPrevious) {
+          const anon = { type: 'block', ...(firstRun ? {} : { textIndent: 0 }), children: run } as LBlock;
+          if (this.keepWithNextBreak([anon, ...children.slice(ci)], 0, style)) {
+            mark('kwp');
+            this.breakPage();
+            mark('');
+          }
+        }
+      } else if (from === 'kwp') {
+        // 初めから組む道の改ページの後 (mark('')) と同じく、印を戻す
+        this.resumeOpen();
+        mark('');
+      }
+      if (from !== 'kwn' && from !== 'child') {
+        flushRun();
+        // 流れの直下のブロックの span の切り替わりは、参照領域の境 (絶対配置の箱は流れの外なので、境を作らない)
+        if (this.spanAreas && !this.stack.length && !(c.type === 'block-container' && c.absolutePosition)) {
+          const sp = c.type === 'block' && c.span === 'all';
+          if (this.prevSpan !== undefined && sp !== this.prevSpan) this.areaBoundary();
+          this.prevSpan = sp;
+        }
+      }
+      if (from !== 'child') {
+        if (from === 'kwn' || this.keepWithNextBreak(children, ci, style)) {
+          if (from === 'kwn') {
+            this.resumeOpen();
+            mark('');
+          } else {
+            mark('kwn');
+            this.breakPage();
+            mark('');
+          }
+          // 送ったブロックの先頭の余白は、強制でない改ページに接するので捨てる (ふだんの改ページと同じ。retain の余白は残す)
+          if (!(c as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
+        }
+        if (this.paginating && (!this.pageHasContent || (c.type === 'block' && c.breakBefore))) {
+          topAt = ci;
+          topPage = this.pageSerial + (this.pageHasContent ? 1 : 0); // break-before で改めた次のページ
+        }
+      }
+      const hold = from !== 'child' && c.type === 'block' && c.keepOverflow && c.keepTogether ? this.holdKeepTogether(children, ci, topAt, topPage, style) : undefined;
+      if (hold !== undefined) {
+        // 並びの後ろに、分けずに置く: 置く間だけ、ページの上限をブロックの終わりまで延ばす (はみ出す)
+        this.limit += hold;
+        this.keepHold = true;
+        try {
+          this.layoutBlockLevel(c, style);
+        } finally {
+          this.keepHold = false;
+          this.limit -= hold;
+        }
+      } else {
+        mark('child');
+        try {
+          this.layoutBlockLevel(c, style);
+        } finally {
+          mark('');
+        }
+      }
+    };
+    // 続きから組む: 記録の位置から入る
+    if (resumed) {
+      ci = resumed.at;
+      run = resumed.run;
+      runAt = resumed.runAt;
+      firstRun = resumed.firstRun;
+      topAt = resumed.topAt;
+      topPage = resumed.topPage;
+      if (ci >= children.length) {
+        flushRun();
+        return;
+      }
+      blockChild(children[ci] as LBlockLevel, resumed.phase as 'kwp' | 'run' | 'kwn' | 'child');
+      ci++;
+    }
+    // 読んだ先 (design/resumable-flow.md の 5.1): 行内の子は中身まで (字を平らにして行に分けるときに読む)、ブロックは節そのもの
+    // (中身は、組むときにその子の並びで数える)
+    const rd = this.host.read;
+    for (; ci < children.length; ci++) {
       const c = children[ci];
+      if (rd && typeof c === 'object') {
+        const e = isInlineChild(c) ? sourceRefEnd(c) : sourceRef(c);
+        if (e !== undefined && e > rd.to) rd.to = e;
+      }
       if (!run.length) runAt = ci;
       if (typeof c !== 'string' && c.type === 'marker') {
         // 段落の途中でも行を分断しないよう、run には触れずに保留する
@@ -3174,42 +3872,7 @@ class Flow {
         // 表の header・footer の中のものは、組む前に中身に置き換えてある (layoutTableWithMarkers)。ここへ来るのは、それ以外の所に置いたもの
         this.host.warn(withSource(diag('layout/marker-misplaced', msg('retrieve-table-marker は表の header・footer の中でのみ使えます', 'retrieve-table-marker can be used only in a table header or footer')), c));
       } else if (isInlineChild(c)) run.push(c);
-      else {
-        // 字の並び (無名のブロック) の直後のブロックが keep-with-previous (CSS の break-before: avoid) なら、
-        // 並びと、そのブロックの先頭を同じページに置く。入らず、改ページすれば入るなら、並びの前で改ページする
-        if (run.length && (c as { keepWithPrevious?: boolean }).keepWithPrevious) {
-          const anon = { type: 'block', ...(firstRun ? {} : { textIndent: 0 }), children: run } as LBlock;
-          if (this.keepWithNextBreak([anon, ...children.slice(ci)], 0, style)) this.breakPage();
-        }
-        flushRun();
-        // 流れの直下のブロックの span の切り替わりは、参照領域の境 (絶対配置の箱は流れの外なので、境を作らない)
-        if (this.spanAreas && !this.stack.length && !(c.type === 'block-container' && c.absolutePosition)) {
-          const sp = c.type === 'block' && c.span === 'all';
-          if (this.prevSpan !== undefined && sp !== this.prevSpan) this.areaBoundary();
-          this.prevSpan = sp;
-        }
-        if (this.keepWithNextBreak(children, ci, style)) {
-          this.breakPage();
-          // 送ったブロックの先頭の余白は、強制でない改ページに接するので捨てる (ふだんの改ページと同じ。retain の余白は残す)
-          if (!(c as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
-        }
-        if (this.paginating && (!this.pageHasContent || (c.type === 'block' && c.breakBefore))) {
-          topAt = ci;
-          topPage = this.pageSerial + (this.pageHasContent ? 1 : 0); // break-before で改めた次のページ
-        }
-        const hold = c.type === 'block' && c.keepOverflow && c.keepTogether ? this.holdKeepTogether(children, ci, topAt, topPage, style) : undefined;
-        if (hold !== undefined) {
-          // 並びの後ろに、分けずに置く: 置く間だけ、ページの上限をブロックの終わりまで延ばす (はみ出す)
-          this.limit += hold;
-          this.keepHold = true;
-          try {
-            this.layoutBlockLevel(c, style);
-          } finally {
-            this.keepHold = false;
-            this.limit -= hold;
-          }
-        } else this.layoutBlockLevel(c, style);
-      }
+      else blockChild(c, 'start');
     }
     flushRun();
   }
@@ -3223,6 +3886,8 @@ class Flow {
     if (!this.paginating || (!this.pageHasContent && (this.pages?.atPageStart?.() ?? true)) || this.keepTrial) return false;
     const blockAt = (k: number): LBlock | LTable | LBlockContainer | undefined => {
       const c = children[k];
+      // 先の子の keep を見たら、その子まで読んだとする (design/resumable-flow.md の 5.1。前の文書の境目から続けるかを決める読んだ先に入れる)
+      this.noteRead(c);
       return typeof c !== 'string' && (c?.type === 'block' || c?.type === 'table' || (c?.type === 'block-container' && !c.absolutePosition)) ? c : undefined;
     };
     const linked = (k: number) => {
@@ -3372,7 +4037,7 @@ class Flow {
    */
   private simplified(column = false): boolean {
     const c = this.host.nest;
-    if (!c || (!(column && c.cd > c.cmax) && !((this.host.stats?.flows ?? 0) - c.base > c.budget))) return false;
+    if (!c || (!(column && c.cd > c.cmax) && !((this.host.stats?.flows ?? 0) - c.base + (c.charged ?? 0) > c.budget))) return false;
     if (!c.hit) {
       c.hit = true;
       c.warn(diag('limit/measure-nesting', msg(`幅を中身で決める箱・段組の入れ子が深すぎます (組む回数 ${c.budget} 回・段組の入れ子 ${c.cmax} 段まで)。以後の箱は中身の幅を測らずに組み、段組は 1 段に組みました`, `boxes sized by their content and multi-column containers are nested too deeply (up to ${c.budget} layout passes, ${c.cmax} nested multi-column containers); the remaining boxes were laid out without measuring their content, and multi-column containers as a single column`)));
@@ -3552,9 +4217,49 @@ class Flow {
 
   layoutBlockLevel(node: LBlockLevel, ps: ResolvedStyle) {
     // 百分率の寸法は、いまの箱 (包含ブロック) の内容の幅で解く (CSS 2.1 §10.1・§10.2)。絶対配置の箱は、基準の箱を組んでから解く
-    if (node.type === 'block') this.layoutBlock(this.resolvePercent(node, true), ps);
-    else if (node.type === 'table') this.layoutTable(this.resolvePercent(node, false), ps);
+    if (node.type === 'block') {
+      // 続きの位置の記録 (BlockStep)。続きから組むときは、記録の段の節 (百分率を解いた後のもの) から組む
+      const r = this.takeStep('block');
+      if (r && r.orig !== node) throw new Error('kumiori: the resume position does not match (block)');
+      if (!r && !this.rs) return this.layoutBlock(this.resolvePercent(node, true), ps);
+      const depth = this.rs!.length;
+      const step: BlockStep = r ?? { k: 'block', orig: node, node: node as LBlock, phase: '' };
+      this.rs!.push(step);
+      try {
+        this.layoutBlock(r ? r.node : this.resolvePercent(node, true), ps, step, !!r);
+      } finally {
+        this.rs!.length = depth;
+      }
+    } else if (node.type === 'table') {
+      // 続きの位置の記録 (TableStep)。続きから組むときは、記録の段の表 (百分率を解いた後のもの) から組む
+      const r = this.takeStep('table');
+      if (r && r.orig !== node) throw new Error('kumiori: the resume position does not match (table)');
+      if (!r && !this.rs) return this.layoutTable(this.resolvePercent(node, false), ps);
+      const depth = this.rs!.length;
+      const table = r ? r.table : this.resolvePercent(node, false);
+      const step: TableStep = r ?? { k: 'table', orig: node, table, phase: '' };
+      this.rs!.push(step);
+      try {
+        this.layoutTable(table, ps, step, !!r);
+      } finally {
+        this.rs!.length = depth;
+      }
+    }
     else if (node.type === 'block-container') {
+      // ページをまたいでブロックとして組むコンテナ (layoutContainerIn) は、ブロックの段で続ける。続きから組むときは、そのブロックから組む
+      const orig = node;
+      const r = this.rs || this.resume ? this.takeStep('block') : undefined;
+      if (r) {
+        if (r.orig !== node) throw new Error('kumiori: the resume position does not match (block-container)');
+        const depth = this.rs!.length;
+        this.rs!.push(r);
+        try {
+          this.layoutBlock(r.node, ps, r, true);
+        } finally {
+          this.rs!.length = depth;
+        }
+        return;
+      }
       if (!node.absolutePosition) node = this.resolveColumns(this.resolvePercent(node, false));
       // 流れの中のブロックコンテナ (高さの決まった flex の容器など) も、rtl では右端から置く (左の余白を残りに合わせる)
       if (!node.absolutePosition && !node.rotation && resolveStyle(ps, node).wm === this.wm) {
@@ -3562,22 +4267,56 @@ class Flow {
         const e = this.rtlEdge(d, node, ps);
         if (e !== d) node = withRef(node, { ...node, margin: { ...d.marginP, left: e.m.is } });
       }
-      this.layoutContainer(node, ps);
+      if (!this.rs || node.absolutePosition) return this.layoutContainer(node, ps);
+      const depth = this.rs.length;
+      const step: BlockStep = { k: 'block', orig, node: undefined as unknown as LBlock, phase: '' };
+      this.rs.push(step);
+      this.boxStep = { step, via: node };
+      try {
+        this.layoutContainer(node, ps);
+      } finally {
+        this.boxStep = undefined;
+        this.rs.length = depth;
+      }
     }
   }
 
   // ── ブロック ──
 
-  layoutBlock(node: LBlock, ps: ResolvedStyle) {
-    if (this.host.stats) this.host.stats.blocks++;
+  /** step は続きの位置の記録の段 (layoutBlockLevel が積んだもの)。resuming なら、その段の位置から組む */
+  layoutBlock(node: LBlock, ps: ResolvedStyle, step?: BlockStep, resuming = false) {
+    if (resuming && step!.phase === 'body') return this.blockBody(step!.ctx!, step);
+    if (resuming && step!.phase === 'open') return this.blockOpen(step!.open!, step, true);
+    if (this.host.stats && !resuming) this.host.stats.blocks++;
+    if (step) step.node = node;
     const st = resolveStyle(ps, node);
     if (st.wm !== this.wm) return this.layoutOrthogonal(node, st, ps);
-    if (node.breakBefore) {
-      this.forceBreak(node.breakBefore);
+    if (node.breakBefore && (!resuming || step!.phase === 'pre')) {
+      if (step) step.phase = 'pre';
+      try {
+        this.forceBreak(node.breakBefore);
+      } finally {
+        if (step) step.phase = '';
+      }
       // 百分率の寸法は、区切った後のページの包含ブロックで解き直す (ページごとに領域の幅が違うとき。CSS Fragmentation 3 §5.1)
       node = this.resolvePercent(node, true);
+      if (step) step.node = node;
     }
-    if (node.keepTogether && this.paginating) this.keepTogetherCheck(node, ps);
+    if (node.keepTogether && this.paginating) {
+      if (resuming && step!.phase === 'ktc') {
+        // 分けない指定の試しの改ページ (keepTogetherCheck) の後から。初めから組む道と同じく、印を戻す
+        this.resumeOpen();
+        step!.phase = '';
+        if (!(node as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
+      } else {
+        if (step) step.phase = 'ktc';
+        try {
+          this.keepTogetherCheck(node, ps);
+        } finally {
+          if (step) step.phase = '';
+        }
+      }
+    }
     if (node.clear) {
       // float の下まで進める (保留マージンの下限として扱うので、既存マージンとは max で畳まれる)
       const y = this.floatBottom(node.clear);
@@ -3674,6 +4413,27 @@ class Flow {
     // float を避けて余白を広げた箱 (上の bfc) は、寄せ直さない
     const autoOk = autoFree !== undefined && node.autoMargins && desc.isizeExplicit != null && !(node.bfc && this.floats.length);
     const outerI = this.contentI();
+    this.blockOpen({ node, st, desc, est, autoOk: !!autoOk, autoFree, outerI, autoRtl }, step, false);
+  }
+
+  /**
+   * ブロックの中ほど: 前の箱の break-after (保留の区切り) を効かせ、箱を開き、中身を組む (blockBody)。o は前半で決めた値
+   * (続きから組むときは、写した値から入り、保留の区切りの改ページの後から組む)
+   */
+  private blockOpen(o: BlockOpen, step: BlockStep | undefined, resuming: boolean) {
+    const { node, st, desc, est, autoOk, autoFree, outerI, autoRtl } = o;
+    const estAdj = (v: number | undefined) => (v === undefined ? undefined : node.boxSizing === 'border-box' ? Math.max(v - desc.bpI, 0) : v);
+    // 前の箱の break-after (openFrame の初めと同じ所。ここで効かせるので、openFrame の中では効かせるものが無い)
+    if (step) {
+      step.open = o;
+      step.phase = 'open';
+    }
+    try {
+      if (resuming) this.forceBreak();
+      else this.applyPendingBreak();
+    } finally {
+      if (step) step.phase = '';
+    }
     const frame = this.openFrame(desc, 'block', !est && !node.inlineSizing);
     const PW = node.percent;
     if (PW && (PW.width || PW.maxWidth || PW.minWidth) && this.wm === 'horizontal-tb' && !this.intrinsic && !node.inlineSizing && !node.aspectRatio) frame.pctI = { P: PW, borderBox: node.boxSizing === 'border-box' };
@@ -3721,13 +4481,23 @@ class Flow {
     }
     // 百分率の text-indent: 基準は、この箱の内容の幅 (CSS Text 3 §8.1。測る組版で、その幅が測る幅によるときは 0。CSS Sizing 3 §5.2.1)
     const ti = node.percent?.textIndent;
+    this.blockBody({ node, cst: ti ? { ...st, textIndent: ti.pct * (frame.indefI ? 0 : frame.contentI) + ti.len } : st, desc, frame, cb, outerCb, floatsBefore, fence, outerRef, refLines, outerBlocked, blockAt: this.blockAt }, step);
+  }
+
+  /** ブロックの後半: 中身を組み、箱を閉じる (続きから組むときは、写した値 (BlockCtx) から入る) */
+  private blockBody(ctx: BlockCtx, step: BlockStep | undefined) {
+    const { node, desc, frame, cb, outerCb, floatsBefore, fence, outerRef, refLines, outerBlocked } = ctx;
     // 診断の場所: 中の行の警告 (行が収まらないなど) は、この箱の場所にする
-    const blockAt = this.blockAt;
     this.blockAt = node;
+    if (step) {
+      step.ctx = ctx;
+      step.phase = 'body';
+    }
     try {
-      this.layoutChildren(node.children, ti ? { ...st, textIndent: ti.pct * (frame.indefI ? 0 : frame.contentI) + ti.len } : st, !!node.spanContinued);
+      this.layoutChildren(node.children, ctx.cst, !!node.spanContinued);
     } finally {
-      this.blockAt = blockAt;
+      this.blockAt = ctx.blockAt;
+      if (step) step.phase = '';
     }
     // 参照領域の末尾の conditional な余白も捨てる (外の余白と重ね合わせない)
     if (fence) {
@@ -3905,6 +4675,13 @@ class Flow {
     }
   }
 
+  /** 読んだ先 (FlowHost.read) を、節 n まで進める (n の欄を見て組み方を決めたとき) */
+  private noteRead(n: unknown) {
+    const rd = this.host.read;
+    const r = sourceRef(n);
+    if (rd && r !== undefined && r > rd.to) rd.to = r;
+  }
+
   /**
    * keep-together="always" のブロック (keepOverflow。アンテナハウス互換) を、前の keep-with-next の並びの後ろに、分けずに置くか。
    * 並び (children の topAt から ci の前まで、keep-with-next・keep-with-previous でつながる) がページの先頭から始まり、まだ同じページにあり、
@@ -3916,6 +4693,8 @@ class Flow {
     if (!this.paginating || this.keepTrial || topAt < 0 || topAt >= ci || topPage !== this.pageSerial || !this.pageHasContent) return undefined;
     const blockAt = (k: number): LBlock | LTable | LBlockContainer | undefined => {
       const c = children[k];
+      // 先の子の keep を見たら、その子まで読んだとする (design/resumable-flow.md の 5.1。前の文書の境目から続けるかを決める読んだ先に入れる)
+      this.noteRead(c);
       return typeof c !== 'string' && (c?.type === 'block' || c?.type === 'table' || (c?.type === 'block-container' && !c.absolutePosition)) ? c : undefined;
     };
     for (let k = topAt; k < ci; k++) if (!blockAt(k)?.keepWithNext && !blockAt(k + 1)?.keepWithPrevious) return undefined;
@@ -4235,6 +5014,22 @@ class Flow {
   // ── インライン行 ──
 
   private layoutInlineRun(run: InlineChild[], st: ResolvedStyle, first: boolean, from?: { arr: object; at: number }) {
+    // 続きの位置の記録 (InlineStep)。続きから組むときは、前半 (字を平らにし、行に分ける) を飛ばし、写した行から置く
+    const r = this.takeStep('inline');
+    if (r && r.src !== run) throw new Error('kumiori: the resume position does not match (inline)');
+    if (!r && !this.rs) return this.layoutInlineRunIn(run, st, first, from, undefined);
+    const depth = this.rs!.length;
+    const step: InlineStep = r ?? { k: 'inline', src: run, phase: '', idx: 0 };
+    this.rs!.push(step);
+    try {
+      if (r) this.placeInlineLines(r.ctx!, step, r.phase as 'pending' | 'top' | 'bottom');
+      else this.layoutInlineRunIn(run, st, first, from, step);
+    } finally {
+      this.rs!.length = depth;
+    }
+  }
+
+  private layoutInlineRunIn(run: InlineChild[], st: ResolvedStyle, first: boolean, from: { arr: object; at: number } | undefined, step: InlineStep | undefined) {
     this.rootStyle ??= st;
     // 段落の最初の字 (initial-letter) の箱に、最初の行の字下げを移した: 続く行内の並びには掛けない
     if (this.skipIndent) {
@@ -4247,18 +5042,20 @@ class Flow {
     // 書いた所の行に置く float (lineFloats) のある並びも、行ごとに使える幅が変わるので 1 行ずつ組む
     const floating = this.deferredFloats.length > 0 || !!this.lineFloats?.size || this.floats.some((f) => f.b1 > this.cursor + this.pendingValue() + EPS);
     // 同じ段落を同じ幅で組み直すとき (段の高さ揃え・keep-with-next の試し組みなど) は、行分けの結果を使い回す
-    let memo = !floating && from ? lineMemoGet(from.arr, from.at, run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent) : undefined;
+    // 入力の節の番号の無い字は、それを含む block の番号を持つ (下の blockRef) ので、その番号も覚えの鍵に入れる (包むブロックの違う組み
+    // (試し組み・測る組みの流れなど) の覚えを使うと、字の番号が変わる)
+    const blockRef0 = this.stack[this.stack.length - 1]?.desc.ref;
+    let memo = !floating && from ? lineMemoGet(from.arr, from.at, run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, blockRef0) : undefined;
     // 文書をまたぐ覚え (SharedLineMemo): 前の文書で、中身の同じ段落を同じ幅・書式・書体の組で組んだ結果。入力の節の番号の無い字は、
     // それを含む block の番号を持つので、その番号も鍵に入れる
     const shared = !floating && from && !memo ? this.host.sharedLines : undefined;
-    const blockRef0 = this.stack[this.stack.length - 1]?.desc.ref;
     const sharedKey = shared ? sharedLineKey(run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, blockRef0) : undefined;
     if (shared && sharedKey !== undefined) {
       memo = shared.memo.get(sharedKey, shared.env, shared.fonts, this.host.hyphenate);
       if (memo) {
         if (this.host.stats) this.host.stats.sharedLineHits = (this.host.stats.sharedLineHits ?? 0) + 1;
         // 同じ文書の中で組み直すときは、これまでどおり、子の配列で引く覚えから使う
-        lineMemoSet(from!.arr, from!.at, run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, memo);
+        lineMemoSet(from!.arr, from!.at, run, st, L, first, this.wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, memo, blockRef0);
       }
     }
     let atoms: Atom[];
@@ -4381,19 +5178,49 @@ class Flow {
       const strut = this.strutOf(st);
       const nominalDiff = this.nominalDiff(st);
       lms = pls.map((pl) => lineMetrics(pl, wm, st, nominal, strut, nominalDiff));
-      if (from) lineMemoSet(from.arr, from.at, run, st, L, first, wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, { atoms, raws, pls, lms });
-      // 文書をまたぐ覚えにも入れる (子の配列で引く覚えに入れられないもの (組む状況で中身の変わる子・行内の箱・脚注) と、組む間に書体の知らせが出たものは入れない)
-      if (shared && sharedKey !== undefined && shared.fonts.noticeCount === notices0 && !hasDynamicInline(run) && !atoms.some((a) => a.kind === 'box' || a.fnRef)) shared.memo.set(sharedKey, shared.env, this.host.hyphenate, { atoms, raws, pls, lms });
+      if (from) lineMemoSet(from.arr, from.at, run, st, L, first, wm, this.host, this.intrinsic, this.gridItemMin ? 'grid' : this.minContent, { atoms, raws, pls, lms }, blockRef0);
+      // 文書をまたぐ覚えにも入れる (子の配列で引く覚えに入れられないもの (組む状況で中身の変わる子・行内の箱・脚注) と、組む間に書体の知らせが出たものは入れない)。
+      // 改訂バー (axf:revision-bar-*)・変更バー (XSL 1.1 §6.13.2 fo:change-bar-begin) の付いた字も入れない: 行の箱のバーは、文書の中のバーのオブジェクト (RevisionBar) の同じものどうしで
+      // 隣の行と繋ぐので、前の文書のバーを持つ行は、いまの文書の行と繋がらず、バーが途中で切れる
+      if (shared && sharedKey !== undefined && shared.fonts.noticeCount === notices0 && !hasDynamicInline(run) && !atoms.some((a) => a.kind === 'box' || a.fnRef || a.st.revisionBar || a.st.changeBars?.length)) shared.memo.set(sharedKey, shared.env, this.host.hyphenate, { atoms, raws, pls, lms });
     }
     // 行ごとの脚注 (ページを持つ Flow だけが本体を積む)
     const useFoot = !!this.foot && !!this.pages && this.ownFoot && !this.measureOnly;
     const refs = pls.map((pl) => lineFootnotes(pl.raw.items));
     // セル・コンテナの中 (ページを持たない Flow): 脚注は行に持たせ、親がその行を含む箱をページに置くときに積む
     const holdFoot = this.holdsFootnotes(useFoot);
+    this.placeInlineLines({ run, st, first, L, atoms, raws, pls, lms, refs, useFoot, holdFoot }, step, undefined);
+  }
+
+  /**
+   * 行分けした行を、ページに置く (layoutInlineRun の後半)。entry は、続きから組むときの入る所 (pending: 行の前の保留の区切りの中。
+   * top・bottom: 行を置く前・置いた後の改ページの後)。step は続きの位置の記録の段
+   */
+  private placeInlineLines(c: InlineCtx, step: InlineStep | undefined, entry: 'pending' | 'top' | 'bottom' | undefined) {
+    const { run, st, first, L, atoms, raws, pls, lms, refs, useFoot, holdFoot } = c;
+    if (step) step.ctx = c;
     const n = pls.length;
-    let idx = 0;
+    let idx = step && entry ? step.idx : 0;
     while (idx < n) {
-      this.applyPendingBreak();
+      if (entry === 'top' || entry === 'bottom') {
+        const e = entry;
+        entry = undefined;
+        this.resumeOpen();
+        // 初めから組む道の改ページの後 (下の 2 か所) と同じく、印を戻す。戻さないと、行の長さが変わって残りを組み直す間の改ページの境目が、
+        // 戻った境目の続きの位置 (同じ行の番号) のまま「続けられる」と写され、そこから続けると段落の前の行から組み直して本文が重なる
+        if (step) step.phase = '';
+        if (this.relayoutIfWidthChanged(L, atoms, raws[idx], st, e === 'top' ? first && idx === 0 : false)) return;
+        continue;
+      }
+      if (step) {
+        step.phase = 'pending';
+        step.idx = idx;
+      }
+      if (entry === 'pending') {
+        entry = undefined;
+        this.forceBreak();
+      } else this.applyPendingBreak();
+      if (step) step.phase = '';
       // 行の前に空ける余白 (領域の先頭で捨てる余白は数えない: XSL 1.1 §4.3.1。数えると、段の頭の行を、余白の分だけ入らないとみなす)
       const pv = this.flushValue();
       // 現ページに入る行数をシミュレート
@@ -4444,7 +5271,12 @@ class Flow {
       }
       if (take === 0) {
         if (this.pageHasContent) {
+          if (step) {
+            step.phase = 'top';
+            step.idx = idx;
+          }
           this.breakPage();
+          if (step) step.phase = '';
           if (this.relayoutIfWidthChanged(L, atoms, raws[idx], st, first && idx === 0)) return;
           continue;
         }
@@ -4470,7 +5302,12 @@ class Flow {
       }
       idx += take;
       if (idx < n) {
+        if (step) {
+          step.phase = 'bottom';
+          step.idx = idx;
+        }
         this.breakPage();
+        if (step) step.phase = '';
         if (this.relayoutIfWidthChanged(L, atoms, raws[idx], st, false)) return;
       }
     }
@@ -4974,12 +5811,20 @@ class Flow {
     if (this.host.assets && !asset && !c.src.startsWith('instream-foreign-object:')) this.host.warn(withSource(diag('image/not-found', msg(`画像 ${c.src} が見つからないか、中身を画像として読めません`, `image ${c.src} is not found or its content cannot be read as an image`), { src: c.src }), c));
     // SVG の image が指す外のファイルのうち、描けないもの (文書のファイルに無い・PNG と JPEG でない) を知らせる (その image は描かない。svg.ts)
     if (asset?.mime === 'image/svg+xml' && asset.bytes && !asset.unsupported) {
-      for (const { href, use } of svgMissingImages(c.src, asset.bytes, this.host.assets!))
+      // 文と args の src・href は 200 字で切る (インラインの svg の src は SVG の全体の data: の URL なので、切らないと、見つからない参照の数 ×
+      // SVG の大きさ (数の 2 乗) の字になる)。1 つの SVG の分は SVG_MISSING_SHOWN 件までを 1 件ずつ出し、残りは数だけの 1 件にまとめる
+      const missing = svgMissingImages(c.src, asset.bytes, this.host.assets!);
+      const src = c.src.slice(0, 200);
+      for (const { href: h, use } of missing.slice(0, SVG_MISSING_SHOWN)) {
+        const href = h.slice(0, 200);
         this.host.warn(
           use
-            ? withSource(diag('image/reference-not-found', msg(`画像 ${c.src} の use が指すファイル ${href} が見つからないか、SVG でないため、描きません`, `file ${href} referenced by use in image ${c.src} is not found or is not SVG, so it is not drawn`), { src: c.src, href }), c)
-            : withSource(diag('image/reference-not-found', msg(`画像 ${c.src} の中の画像 ${href} が見つからないか、PNG・JPEG・GIF・BMP・WebP でないため、描きません`, `image ${href} in image ${c.src} is not found or is not PNG, JPEG, GIF, BMP or WebP, so it is not drawn`), { src: c.src, href }), c),
+            ? withSource(diag('image/reference-not-found', msg(`画像 ${src} の use が指すファイル ${href} が見つからないか、SVG でないため、描きません`, `file ${href} referenced by use in image ${src} is not found or is not SVG, so it is not drawn`), { src, href, count: 1 }), c)
+            : withSource(diag('image/reference-not-found', msg(`画像 ${src} の中の画像 ${href} が見つからないか、PNG・JPEG・GIF・BMP・WebP でないため、描きません`, `image ${href} in image ${src} is not found or is not PNG, JPEG, GIF, BMP or WebP, so it is not drawn`), { src, href, count: 1 }), c),
         );
+      }
+      const rest = missing.length - SVG_MISSING_SHOWN;
+      if (rest > 0) this.host.warn(withSource(diag('image/reference-not-found', msg(`画像 ${src} の中で、ほかに ${rest} 個の参照 (画像・use) が見つからないか描けない形式なので、描きません`, `${rest} more references (images, use) in image ${src} are not found or not in a drawable format, so they are not drawn`), { src, href: '', count: rest }), c));
     }
     // 画像本来の大きさ (pt)。intrinsicFromImage なら、画像に書かれた解像度で決める
     const k = c.intrinsicFromImage && asset?.dpi ? 96 / asset.dpi : 1;
@@ -5534,6 +6379,7 @@ class Flow {
     // (アンテナハウスの説明に、高さの決まらない容器での動きは無い。製品の動きは未照合)。
     // 中身の幅を測る流れ (表の列の幅など) では詰めない (詰める前の中身の幅を測る)
     if (node.condense && !this.intrinsic) {
+      this.boxStep = undefined;
       const c = node.condense;
       const keep = !!(node as { keepTogether?: boolean }).keepTogether && this.paginating;
       if (node.height !== undefined || c.maxBlock !== undefined || (c.maxBlockPct !== undefined && this.paginating) || keep) {
@@ -5569,6 +6415,7 @@ class Flow {
     const multi = !!(node.columns && node.columns.count > 1);
     const counts = !!node.absolutePosition || !!node.rotation || multi || !!node.shrinkToFit;
     if (!counts) return this.layoutContainerIn(node, ps);
+    this.boxStep = undefined;
     return this.nested(() => this.layoutContainerIn(multi && this.simplified(true) ? withRef(node, { ...node, columns: undefined }) : node, ps), multi);
   }
 
@@ -5675,8 +6522,11 @@ class Flow {
     }
     if (this.paginating && desc.bsizeExplicit == null && !node.rotation && !(node.columns && node.columns.count > 1) && node.overflow !== 'hidden' && st.wm === this.wm && !flips) {
       const { columns: _c, rotation: _r, blockAlign: _a, layer: _l, top: _t, left: _x, right: _rt, bottom: _b, absolutePosition: _p, ...rest } = node;
+      // layoutBlockLevel が積んだブロックの段 (このコンテナを、そのまま組むときだけ。続きから組めるブロックにする)
+      const bs = this.boxStep?.via === node ? this.boxStep.step : undefined;
+      this.boxStep = undefined;
       // ブロックコンテナは参照領域を作る (XSL §6.5.3): 中の余白と外の余白を重ね合わせない (§4.2.5 の fence)
-      return this.layoutBlock({ ...rest, type: 'block', refLines: true, ...(this.host.xslSpace ? { refArea: true } : {}) } as LBlock, ps);
+      return this.layoutBlock({ ...rest, type: 'block', refLines: true, ...(this.host.xslSpace ? { refArea: true } : {}) } as LBlock, ps, bs);
     }
     // XSL-FO の段組のコンテナ (axf:column-count) の、最初の子の break-before・最後の子の break-after のページの区切り (page・even-page・
     // odd-page) は、コンテナの前・後ろの区切りでもある (XSL 1.1 §7.20.2・§7.20.1・§4.8: 子の最初の領域をページの最初に置くには、それを入れる
@@ -7403,11 +8253,19 @@ class Flow {
    * 行単位で分けてページをまたぐ。改ページのたびに placeHeader (繰り返す見出し) と placeFooterAtBreak (ページ末尾のフッター) を呼び、
    * reserve はフッターのために空けておく高さ
    */
-  private layoutTableRows(node: LTable, st: ResolvedStyle, sizes: number[], headerRows: LNode[], reserve: number, placeHeader: (repeated: boolean) => void, placeFooterAtBreak: (() => void) | undefined, tm?: TableMarkerHooks) {
+  /**
+   * step は続きの位置の記録の段 (表の段。fo:retrieve-table-marker の無い表だけ)。行の塊を置く所ごとに、どこで置いているか (TableRows.site) と、
+   * 置いた後に続ける値を書く。resuming なら、記録の所の改ページの後から組む (置いていた塊の残りを置き、その所の後から続ける)
+   */
+  private layoutTableRows(node: LTable, st: ResolvedStyle, sizes: number[], headerRows: LNode[], reserve: number, placeHeader: (repeated: boolean) => void, placeFooterAtBreak: (() => void) | undefined, tm?: TableMarkerHooks, step?: TableStep, resuming = false) {
     // rowSpan で結びついた行は 1 つの塊 (グループ) として配置する
     let rows = node.body.rows;
     const bst = resolveStyle(st, node.body);
-    const place = tm ? tm.place : (grp: LNode[], forceNewPage: boolean | BreakKind = false) => this.placeRows(grp, false, () => placeHeader(true), { reserve, beforeBreak: placeFooterAtBreak, forceNewPage });
+    const rec = tm ? undefined : step;
+    const placeOpts = (forceNewPage: boolean | BreakKind) => ({ reserve, beforeBreak: placeFooterAtBreak, forceNewPage });
+    const place = tm ? tm.place : (grp: LNode[], forceNewPage: boolean | BreakKind = false) => this.placeRows(grp, false, () => placeHeader(true), placeOpts(forceNewPage), rec);
+    /** 行の塊を置く所の記録 (続きから組むとき、その所の後から続ける)。site が '' の所の改ページからは、続きから組めない */
+    const rs: TableRows | undefined = rec ? (rec.rs ??= { site: '', rows, i: 0, end: 0, pending: [], pendingLinked: false, grp: [], held: [], splitTried: false, frags: [], k: 0, lead: undefined }) : undefined;
     // 続きのページで繰り返す見出しの高さ (fo:retrieve-table-marker のある表では、grp で始まる断片の見出しの高さ)
     const repeatedHeaderH = (grp: LNode[]) => (tm ? tm.nextHeaderH(grp) : height(headerRows.length && !node.omitHeaderAtBreak ? headerRows : []));
     const height = (ns: LNode[]) => ns.reduce((a, r) => a + r.bsize, 0);
@@ -7415,12 +8273,116 @@ class Flow {
     const maxKeep = Number.isFinite(this.limit) ? this.limit * 0.9 : Infinity;
     let pending: LNode[] = [];
     let pendingLinked = false;
-    const flushPending = () => {
-      if (pending.length) place(pending);
+    const flushPending = (site: TableRows['site'] = '') => {
+      if (pending.length) {
+        if (rs) {
+          rs.site = site;
+          rs.pending = pending;
+          rs.pendingLinked = pendingLinked;
+        }
+        place(pending);
+      }
+      if (rs) rs.site = '';
       pending = [];
     };
+    /** 行の塊を置く所を書く (置く前に呼ぶ。置いた後は site を '' に戻す) */
+    const mark = (site: TableRows['site'], i: number, end: number, grp: LNode[], held: Diagnostic[], splitTried: boolean, frags: LNode[] = [], k = 0, lead?: true | BreakKind) => {
+      if (!rs) return;
+      rs.site = site;
+      rs.rows = rows;
+      rs.i = i;
+      rs.end = end;
+      rs.pending = pending;
+      rs.pendingLinked = pendingLinked;
+      rs.grp = grp;
+      rs.held = held;
+      rs.splitTried = splitTried;
+      rs.frags = frags;
+      rs.k = k;
+      rs.lead = lead;
+    };
     const closeBorder = () => this.stack.reduce((a, f) => a + (f.node.kind === 'table' ? f.desc.bw.be : 0), 0);
-    for (let i = 0; i < rows.length; ) {
+    /** 分けた行の断片を、k 番目から置く (前の断片の後ろでは改ページする) */
+    const placeFrags = (frags: LNode[], from: number, i: number, end: number) => {
+      for (let k = from; k < frags.length; k++) {
+        mark('frags', i, end, [], [], false, frags, k);
+        place([frags[k]], k > 0);
+        if (rs) rs.site = '';
+      }
+    };
+    /**
+     * 行 i〜end の塊 grp の、前の塊を置いた後 (flushPending の後) の続き: ページに入らない 1 行を分けて置くか、塊を並びに足す。
+     * 次に組む行の番号を返す
+     */
+    const afterFlush = (i: number, end: number, grp: LNode[], splitTried: boolean, useGrp: () => void): number => {
+      // ページに入らない 1 行 (rowSpan 無し・keep-together 無し) は、セルの中身を行単位で分けてページをまたぐ (§7.20.3 の既定 auto)。
+      // keep-together の行でも、緩めてよい強さ (keepTogetherYields) で、新しいページ (段) にも入らない高さなら、送らずにいまの位置から分ける
+      const nextFull = () => this.nextLimit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
+      const yields = !!rows[i].keepTogetherYields && grp[0].bsize > nextFull() + EPS;
+      if (this.paginating && end === i && !pending.length && (!rows[i].keepTogether || yields) && !rows[i].keepWithNext) {
+        const avail = this.room - this.cursor - this.pendingValue() - closeBorder() - (tm ? tm.reserveNow(grp) : reserve);
+        if (grp[0].bsize > avail + EPS && !splitTried) {
+          const nextAvail = nextFull();
+          const splitMk: SplitMarkers | undefined = tm ? [] : undefined;
+          const splitHeld: Diagnostic[] = [];
+          const frags = this.splitRow(rows[i], sizes, bst, avail, nextAvail, splitMk, undefined, splitHeld);
+          if (frags) {
+            for (const m of splitHeld) this.host.warn(m);
+            if (splitMk) tm?.noteSplit(frags, rows[i], splitMk);
+            placeFrags(frags, 0, i, end);
+            pendingLinked = false;
+            return end + 1;
+          }
+        }
+      }
+      useGrp();
+      pending.push(...grp);
+      pendingLinked = !!rows[end].keepWithNext;
+      return end + 1;
+    };
+    let i = 0;
+    // 続きから組む: 記録の所で置いていた塊の、改ページの後を置き、その所の後から続ける
+    if (resuming && rs) {
+      rows = rs.rows;
+      i = rs.i;
+      const end = rs.end;
+      pending = rs.pending;
+      pendingLinked = rs.pendingLinked;
+      const { grp, held, splitTried, frags, k, lead } = rs;
+      const site = rs.site;
+      const group = site === 'frags' ? [frags[k]] : site === 'lead' ? grp : pending;
+      this.placeRowsAfterBreak(group, false, () => placeHeader(true), placeOpts(site === 'frags' ? k > 0 : site === 'lead' ? lead! : false), rec);
+      rs.site = '';
+      const useGrp = () => {
+        for (const m of held) this.host.warn(m);
+        held.length = 0;
+      };
+      if (site === 'final') {
+        pending = [];
+        return;
+      }
+      if (site === 'linked') {
+        pending = [];
+        i = afterFlush(i, end, grp, splitTried, useGrp);
+      } else if (site === 'lead-flush') {
+        pending = [];
+        useGrp();
+        mark('lead', i, end, grp, held, splitTried, [], 0, lead);
+        place(grp, lead);
+        if (rs) rs.site = '';
+        pendingLinked = !!rows[end].keepWithNext;
+        i = end + 1;
+      } else if (site === 'lead') {
+        pendingLinked = !!rows[end].keepWithNext;
+        i = end + 1;
+      } else {
+        placeFrags(frags, k + 1, i, end);
+        pendingLinked = false;
+        i = end + 1;
+      }
+    }
+    while (i < rows.length) {
+      if (rs) rs.site = '';
       const end = groupEnd(rows, i);
       const sinkAt = this.markerSink.length;
       // 行の高さを測る組み。行をページで分ける (splitRow) ・行をまたぐセルを分けて組み直すときは、この組みを捨てるので、入れ子の詰め込みの
@@ -7445,7 +8407,7 @@ class Flow {
             // 省いた組みが残すはずの、表の外へ出す末尾の余白 (layoutCell の tableTrailOut)
             if (known.trail !== undefined) this.tableTrailOut = Math.max(this.tableTrailOut ?? 0, known.trail);
             for (const m of splitHeld) this.host.warn(m);
-            frags.forEach((f, k) => place([f], k > 0));
+            placeFrags(frags, 0, i, end);
             pendingLinked = false;
             i = end + 1;
             continue;
@@ -7467,7 +8429,7 @@ class Flow {
       // セルの中の強制の区切り (セルの中のブロック・入れ子の表の行の break-before・break-after): 行を、その所で分ける。
       // セルの中身は、並んだ流れとして別々に区切る (CSS Fragmentation 3 §2.1・§4.3)。リストの項目 (記号のセルと本文のセル) の中のブロックも同じ
       if (this.paginating && end === i && hasInnerForcedBreak(rows[i])) {
-        flushPending();
+        flushPending('');
         if (this.placeRowWithInnerBreaks(rows[i], grp, sizes, bst, lead, place, repeatedHeaderH(grp) + (tm ? tm.nextReserve(grp) : reserve), tm ? tm.reserveNow(grp) : reserve, tm, useGrp)) {
           pendingLinked = false;
           i = end + 1;
@@ -7475,9 +8437,12 @@ class Flow {
         }
       }
       if (lead) {
-        flushPending();
+        mark('lead-flush', i, end, grp, held, splitTried, [], 0, lead);
+        flushPending('lead-flush');
         useGrp();
+        mark('lead', i, end, grp, held, splitTried, [], 0, lead);
         place(grp, lead);
+        if (rs) rs.site = '';
         pendingLinked = !!rows[end].keepWithNext;
         i = end + 1;
         continue;
@@ -7492,34 +8457,14 @@ class Flow {
           continue;
         }
       }
-      if (!(linkedToPrev && pending.length && height(pending) + height(grp) <= maxKeep)) flushPending();
-      // ページに入らない 1 行 (rowSpan 無し・keep-together 無し) は、セルの中身を行単位で分けてページをまたぐ (§7.20.3 の既定 auto)。
-      // keep-together の行でも、緩めてよい強さ (keepTogetherYields) で、新しいページ (段) にも入らない高さなら、送らずにいまの位置から分ける
-      const nextFull = () => this.nextLimit - repeatedHeaderH(grp) - closeBorder() - (tm ? tm.nextReserve(grp) : reserve);
-      const yields = !!rows[i].keepTogetherYields && grp[0].bsize > nextFull() + EPS;
-      if (this.paginating && end === i && !pending.length && (!rows[i].keepTogether || yields) && !rows[i].keepWithNext) {
-        const avail = this.room - this.cursor - this.pendingValue() - closeBorder() - (tm ? tm.reserveNow(grp) : reserve);
-        if (grp[0].bsize > avail + EPS && !splitTried) {
-          const nextAvail = nextFull();
-          const splitMk: SplitMarkers | undefined = tm ? [] : undefined;
-          const splitHeld: Diagnostic[] = [];
-          const frags = this.splitRow(rows[i], sizes, bst, avail, nextAvail, splitMk, undefined, splitHeld);
-          if (frags) {
-            for (const m of splitHeld) this.host.warn(m);
-            if (splitMk) tm?.noteSplit(frags, rows[i], splitMk);
-            frags.forEach((f, k) => place([f], k > 0));
-            pendingLinked = false;
-            i = end + 1;
-            continue;
-          }
-        }
+      if (!(linkedToPrev && pending.length && height(pending) + height(grp) <= maxKeep)) {
+        mark('linked', i, end, grp, held, splitTried);
+        flushPending('linked');
       }
-      useGrp();
-      pending.push(...grp);
-      pendingLinked = !!rows[end].keepWithNext;
-      i = end + 1;
+      i = afterFlush(i, end, grp, splitTried, useGrp);
     }
-    flushPending();
+    mark('final', i, i, [], [], false);
+    flushPending('final');
   }
 
   /**
@@ -7574,32 +8519,62 @@ class Flow {
     return true;
   }
 
-  layoutTable(table: LTable, ps: ResolvedStyle) {
-    if (this.host.stats) this.host.stats.tables++;
+  /** step は続きの位置の記録の段 (layoutBlockLevel が積んだもの)。resuming なら、その段の位置から組む */
+  layoutTable(table: LTable, ps: ResolvedStyle, step?: TableStep, resuming = false) {
+    if (resuming && (step!.phase === 'break' || step!.phase === 'fblank' || step!.phase === 'fpage')) return this.tableResume(step!);
+    if (resuming && step!.phase === 'open') return this.tableOpen(step!.open!, step, true);
+    if (this.host.stats && !resuming) this.host.stats.tables++;
     const st = resolveStyle(ps, table);
     // 行をまたぐセルの広がりを、行グループの終わりと、表ごとの上限で切る (tableLimits.ts。どの行のセルも表の終わりまでまたぐ表の、行数の 2 乗のマス)
     if (limitTableSpans(table)) this.host.warn(withSource(diag('limit/table-row-span', msg(`表の、行をまたぐセルの広がりが上限を超えたので、超えた分のセルはまたがせません (number-rows-spanned・rowspan)`, `the row spans of table cells exceed the limit; the excess cells do not span (number-rows-spanned, rowspan)`)), table));
     if (st.wm !== this.wm) return this.layoutOrthogonal(table, st, ps);
-    let node = collapseTableBorders(table, st.wm);
-    // アンテナハウス互換 (collapse): 行の高さの指定は、罫線の中心から中心まで (trimEdgeRowHeights)
-    if (node.collapseToAfterCell) node = trimEdgeRowHeights(node, st.wm);
-    if (node.breakBefore) {
-      this.forceBreak(node.breakBefore);
+    let node: LTable;
+    if (resuming) node = step!.node!;
+    else {
+      node = collapseTableBorders(table, st.wm);
+      // アンテナハウス互換 (collapse): 行の高さの指定は、罫線の中心から中心まで (trimEdgeRowHeights)
+      if (node.collapseToAfterCell) node = trimEdgeRowHeights(node, st.wm);
+    }
+    if (step) step.node = node;
+    const resumeKtc = resuming && step!.phase === 'ktc';
+    if (node.breakBefore && (!resuming || step!.phase === 'pre')) {
+      if (step) step.phase = 'pre';
+      try {
+        this.forceBreak(node.breakBefore);
+      } finally {
+        if (step) step.phase = '';
+      }
       node = this.resolvePercent(node, false);
+      if (step) step.node = node;
     }
     // clear: その側の回り込みの下まで下げる (CSS 2.1 §9.5.2。ブロックの clear (layoutBlock) と同じく、保留の余白の下限として扱う)。
     // 表は読み込みで clear を持つ (HTML の table の clear) が、これまで読まず、回り込みの範囲に重ねて置いていた
     const clr = (node as { clear?: 'start' | 'end' | 'both' }).clear;
-    if (clr) {
+    if (clr && !resumeKtc) {
       const y = this.floatBottom(clr);
       if (y > this.cursor + this.pendingValue()) this.pendMin = Math.max(this.pendMin, y - this.cursor);
     }
-    if (node.keepTogether && this.paginating) this.keepTogetherCheck(table, ps);
+    /** 分けない指定の試し (keepTogetherCheck)。続きから組むときは、その改ページの後から */
+    const ktc = (check: () => void) => {
+      if (resumeKtc) {
+        this.resumeOpen();
+        if (step) step.phase = '';
+        if (!(table as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
+        return;
+      }
+      if (step) step.phase = 'ktc';
+      try {
+        check();
+      } finally {
+        if (step) step.phase = '';
+      }
+    };
+    if (node.keepTogether && this.paginating) ktc(() => this.keepTogetherCheck(table, ps));
     else if (this.paginating && table.body.rows.length && (table.header?.rows.length || (node.keepHeaderWithBodyAh && table.captions?.some((c) => c.side === 'top')))) {
       // 上の見出し・表ヘッダー・本体の最初の行の塊を、まとめて置けるか調べる (表ヘッダーだけをページ末に残さない。
       // アンテナハウス互換 (LTable.keepHeaderWithBodyAh) では、ヘッダーが無くても上の見出しと最初の行を離さない)
       const first = table.body.rows.slice(0, groupEnd(table.body.rows, 0) + 1);
-      this.keepTogetherCheck({ ...table, footer: undefined, captions: table.captions?.filter((c) => c.side === 'top'), body: { ...table.body, rows: first } }, ps);
+      ktc(() => this.keepTogetherCheck({ ...table, footer: undefined, captions: table.captions?.filter((c) => c.side === 'top'), body: { ...table.body, rows: first } }, ps));
     }
     let desc = describeBox(node, this.wm);
     // grid の 1 行の表 (LTable.gridTemplate): 列の幅を、表を置くときの内容の幅で決める (gridLineColumns)。中身の幅を測る組版で、
@@ -7670,6 +8645,28 @@ class Flow {
     else this.pendAdjust -= node.collapseSpillAh ? 0 : out.bs;
     desc = this.rtlEdge(desc, node, ps);
     const outerI = this.contentI();
+    this.tableOpen({ table, node, st, desc, out, autoFree, autoRtl, caps, capIs, capTableI, bottomMargin, bottomCaptions, gridMeasure, gridWhole, outerI }, step, false);
+  }
+
+  /**
+   * 表の中ほど: 前の箱の break-after (保留の区切り) を効かせ、表の箱を開き、行を組み、閉じる。o は前半で決めた値
+   * (続きから組むときは、写した値から入り、保留の区切りの改ページの後から組む)
+   */
+  private tableOpen(o: TableOpen, step: TableStep | undefined, resuming: boolean) {
+    const { table, st, out, autoFree, autoRtl, caps, capIs, capTableI, bottomMargin, bottomCaptions, gridMeasure, gridWhole, outerI } = o;
+    let { node } = o;
+    const desc = o.desc;
+    // 前の箱の break-after (openFrame の初めと同じ所。ここで効かせるので、openFrame の中では効かせるものが無い)
+    if (step) {
+      step.open = o;
+      step.phase = 'open';
+    }
+    try {
+      if (resuming) this.forceBreak();
+      else this.applyPendingBreak();
+    } finally {
+      if (step) step.phase = '';
+    }
     const frame = this.openFrame(desc, 'table');
     // auto の余白で寄せた表: ページごとに本文領域の幅が違うとき、続きの断片を寄せ直す (表の幅は最初の断片のまま。Frame.autoM)
     if (autoFree !== undefined && node.autoMargins && this.wm === 'horizontal-tb') frame.autoM = { am: node.autoMargins, free: autoFree, parentI: outerI, boxI: 0, ...(autoRtl ? { rtl: true as const } : {}) };
@@ -7800,6 +8797,7 @@ class Flow {
     this.spacing = sp;
     this.rowspanMiddleAh = !!node.rowspanMiddleAh;
     this.tableBreak = node.breakBorders ? { ...node.breakBorders, header: !!node.header?.rows.length && !node.omitHeaderAtBreak, compat: !!node.collapseToAfterCell } : undefined;
+    const ctx: TableCtx = { node, st, desc, out, caps, capIs, capTableI, bottomMargin, bottomCaptions, frame, cb, outerCb, sp, sizes, savedSpacing, savedRowspanAh, savedTableBreak, savedTrailOut, headerRows: [], footerRows: [], repeatFooter: false, reserve: 0 };
     // fo:retrieve-table-marker のある表は、見出し・フッターを断片ごとに組む (layoutTableWithMarkers)。無い表は、いままでどおり 1 度だけ組んで繰り返す
     if ((node.header && collectTableRetrieves(node.header.rows).length) || (node.footer && collectTableRetrieves(node.footer.rows).length)) this.layoutTableWithMarkers(node, st, sizes);
     else {
@@ -7824,37 +8822,71 @@ class Flow {
           this.host.warn(withSource(diag('layout/table-header-not-repeated', msg('表の見出しとフッターがページの高さを超えるので、続きのページでは繰り返しません', 'the table header and footer exceed the page height, so they are not repeated on the following pages')), table));
         }
       }
-      const reserve = repeatFooter ? footerH : 0;
-      const placeFooterAtBreak = repeatFooter
-        ? () => {
-            const clones = footerRows.map((f) => Object.assign(cloneNode(f), { repeated: true }));
-            this.reborderFooterAtBreak(footerRows[0], clones[0]);
-            this.placeRowsRaw(clones);
-          }
-        : undefined;
-      const placeHeader = (repeated: boolean) => {
-        if (!headerRows.length || (repeated && node.omitHeaderAtBreak)) return;
-        const clones = headerRows.map((h) => {
-          const c = cloneNode(h);
-          c.repeated = repeated;
-          return c;
-        });
-        this.placeRows(clones, true, () => {});
-        // ページ内容がヘッダ行だけ (ヘッダを置く前はページに何も無かった = 置いた個数がヘッダの行数と一致) なら、
-        // 以降の行は (入らなくても) 改ページしない (ヘッダだけのページが続くのを防ぐ)
-        this.headerOnly = this.pageItems === headerRows.length;
-      };
-      placeHeader(false);
-      this.layoutTableRows(node, st, sizes, headerRows, reserve, placeHeader, placeFooterAtBreak);
-      // 表の末尾のフッター (改ページで繰り返す場合も、最後のページにはここで置く)。本体の最後の行の後ろの強制の区切りは、本体とフッターの
-      // 間で区切る (CSS Fragmentation 3 §3.1・§4.3)。次のページには、見出しを繰り返してから置く。フッターの側 (フッターの最初の行の前) の
-      // 区切りは、見出しの側と同じに見ない
-      if (footerRows.length) {
-        // XSL-FO の表 (fo:table-footer) では、これまでどおり区切らない (本体の最後の行の break-after は、表の後ろで効かない)
-        const lead = this.paginating && !this.host.xslSpace ? node.body.rows[node.body.rows.length - 1]?.breakAfter : undefined;
-        this.placeRows(footerRows, true, () => {}, lead ? { forceNewPage: lead, onBreak: () => placeHeader(true) } : {});
-      }
+      ctx.node = node;
+      ctx.headerRows = headerRows;
+      ctx.footerRows = footerRows;
+      ctx.repeatFooter = repeatFooter;
+      ctx.reserve = repeatFooter ? footerH : 0;
+      const hooks = this.tableHooks(ctx);
+      hooks.placeHeader(false);
+      if (step) step.ctx = ctx;
+      this.layoutTableRows(node, st, sizes, headerRows, ctx.reserve, hooks.placeHeader, hooks.placeFooterAtBreak, undefined, step);
+      this.tableFooter(ctx, hooks.placeHeader);
     }
+    this.tableTail(ctx);
+  }
+
+  /** 表の見出しを置く関数と、改ページの前に表フッターを置く関数 (繰り返すとき) */
+  private tableHooks(c: TableCtx): { placeHeader: (repeated: boolean) => void; placeFooterAtBreak: (() => void) | undefined } {
+    const { node, headerRows, footerRows } = c;
+    const placeFooterAtBreak = c.repeatFooter
+      ? () => {
+          const clones = footerRows.map((f) => Object.assign(cloneNode(f), { repeated: true }));
+          this.reborderFooterAtBreak(footerRows[0], clones[0]);
+          this.placeRowsRaw(clones);
+        }
+      : undefined;
+    const placeHeader = (repeated: boolean) => {
+      if (!headerRows.length || (repeated && node.omitHeaderAtBreak)) return;
+      const clones = headerRows.map((h) => {
+        const n = cloneNode(h);
+        n.repeated = repeated;
+        return n;
+      });
+      this.placeRows(clones, true, () => {});
+      // ページ内容がヘッダ行だけ (ヘッダを置く前はページに何も無かった = 置いた個数がヘッダの行数と一致) なら、
+      // 以降の行は (入らなくても) 改ページしない (ヘッダだけのページが続くのを防ぐ)
+      this.headerOnly = this.pageItems === headerRows.length;
+    };
+    return { placeHeader, placeFooterAtBreak };
+  }
+
+  /** 続きから組むとき: 表の行の塊を置く所の改ページの後から (行の残りを組み、フッターを置き、閉じる) */
+  private tableResume(step: TableStep) {
+    const c = step.ctx!;
+    const hooks = this.tableHooks(c);
+    this.layoutTableRows(c.node, c.st, c.sizes, c.headerRows, c.reserve, hooks.placeHeader, hooks.placeFooterAtBreak, undefined, step, true);
+    this.tableFooter(c, hooks.placeHeader);
+    this.tableTail(c);
+  }
+
+  /** 表の末尾のフッター (改ページで繰り返す場合も、最後のページにはここで置く) */
+  private tableFooter(c: TableCtx, placeHeader: (repeated: boolean) => void) {
+    const { node, footerRows } = c;
+    // 本体の最後の行の後ろの強制の区切りは、本体とフッターの
+    // 間で区切る (CSS Fragmentation 3 §3.1・§4.3)。次のページには、見出しを繰り返してから置く。フッターの側 (フッターの最初の行の前) の
+    // 区切りは、見出しの側と同じに見ない
+    if (footerRows.length) {
+      // XSL-FO の表 (fo:table-footer) では、これまでどおり区切らない (本体の最後の行の break-after は、表の後ろで効かない)
+      const lead = this.paginating && !this.host.xslSpace ? node.body.rows[node.body.rows.length - 1]?.breakAfter : undefined;
+      this.placeRows(footerRows, true, () => {}, lead ? { forceNewPage: lead, onBreak: () => placeHeader(true) } : {});
+    }
+  }
+
+  /** 表の後半: 表の端の間隔を足し、箱を閉じ、下の見出しを置く */
+  private tableTail(c: TableCtx) {
+    const { node, sp, savedSpacing, savedRowspanAh, savedTableBreak, savedTrailOut, cb, outerCb, out, bottomCaptions, caps, st, capIs, capTableI, bottomMargin } = c;
+    let desc = c.desc;
     // 最後の行と表の端の間の間隔
     if (sp?.b) this.cursor += sp.b;
     this.spacing = savedSpacing;
@@ -8037,6 +9069,7 @@ class Flow {
       /** 改ページした直後に呼ぶ (見出しの行でも) */
       onBreak?: () => void;
     } = {},
+    rec?: TableStep,
   ) {
     this.applyPendingBreak();
     const forcedKind = typeof opts.forceNewPage === 'string' ? opts.forceNewPage : undefined;
@@ -8062,14 +9095,24 @@ class Flow {
           opts.beforeBreak?.();
           if (forcedKind && forcedKind !== 'column') {
             // 段組の段の流れの中: 段の流れに知らせる (白ページは、段の行を置く側が挟む)
+            const site = !!rec?.rs?.site && !this.pages!.pageBreakInColumns;
             if (this.pages!.pageBreakInColumns) this.pages!.pageBreakInColumns(forcedKind, true);
             // 次のページの偶奇が合わなければ、白ページを挟む (表の枠・見出しは、白ページには置かない: 空の断片は breakPage が外す)
-            else if (pageNo !== undefined && !parityOk(pageNo + 1)) this.breakPage('blank');
+            else if (pageNo !== undefined && !parityOk(pageNo + 1)) {
+              if (site) rec!.phase = 'fblank';
+              this.breakPage('blank');
+              if (rec) rec.phase = '';
+            }
             this.pages!.forcedBreak?.(forcedKind);
+            if (site) rec!.phase = 'fpage';
             this.breakPage('page');
+            if (rec) rec.phase = '';
           } else {
             if (forcedKind) this.pages!.forcedBreak?.(forcedKind);
+            // 表の行の塊を置く所 (layoutTableRows が記録した所) の改ページは、続きから組める (placeRowsAfterBreak から入る)
+            if (rec?.rs?.site) rec.phase = 'break';
             this.breakPage();
+            if (rec) rec.phase = '';
           }
           opts.onBreak?.();
           if (!isHeader) {
@@ -8085,6 +9128,32 @@ class Flow {
         this.breakPage('page');
       }
     }
+    this.placeRowsPut(group, isHeader);
+  }
+
+  /** 続きから組むとき: placeRows の、行の前の改ページの後から (次のページを開き、見出しを繰り返し、行を置く) */
+  private placeRowsAfterBreak(group: LNode[], isHeader: boolean, afterBreak: () => void, opts: { onBreak?: () => void; reserve?: number; beforeBreak?: () => void; forceNewPage?: boolean | BreakKind }, rec: TableStep | undefined) {
+    const phase = rec?.phase;
+    if (rec) rec.phase = '';
+    this.resumeOpen();
+    // 強制の区切りの白ページの後: 区切りのページの改ページをする
+    if (phase === 'fblank') {
+      const kind = opts.forceNewPage as BreakKind;
+      this.pages!.forcedBreak?.(kind);
+      if (rec) rec.phase = 'fpage';
+      this.breakPage('page');
+      if (rec) rec.phase = '';
+    }
+    opts.onBreak?.();
+    if (!isHeader) {
+      afterBreak();
+      this.reborderAfterHeader(group[0]);
+    }
+    this.placeRowsPut(group, isHeader);
+  }
+
+  /** placeRows の後半: 行をいまの位置に置く */
+  private placeRowsPut(group: LNode[], isHeader: boolean) {
     this.flush();
     this.commitMarkers();
     for (const row of group) {
@@ -9777,12 +10846,137 @@ interface CiteValueUse {
   style?: ResolvedStyle;
 }
 
+/** 1 段の page-sequence の組み (LayoutEngine.sequenceRun) */
+interface SeqRun {
+  /** 初めから組む (lastIndex は最後のページの番号。分からなければ null) */
+  layout(lastIndex: number | null): PageBuild[];
+  /** 写した境目から続けて組む (最後のページのマスターの選び直し)。続けられる境目が無ければ undefined (呼ぶ側が初めから組む) */
+  relayout(lastIndex: number | null, reset: () => void, uncount: (far: boolean) => void): PageBuild[] | undefined;
+  /** k ページの後の境目 (写していなければ undefined) */
+  boundaryAt(k: number): SeqBoundary | undefined;
+  /** 次の文書が、前の組版と繋ぐための記録 (最後の layout の。最後のページのマスターで組み直す page-sequence は undefined) */
+  record(): SeqRunRecord | undefined;
+  /** 前の組版から繋いだ (境目の前のページの数と、繋いだページの数) */
+  spliced?: { at: number; pages: number };
+}
+
+/** 1 段の page-sequence の組みの、次の文書が繋ぐための記録 (SeqMemo.run) */
+interface SeqRunRecord {
+  bounds: SeqBoundary[];
+  recs: PageRecord[];
+  /** 組みの初めと終わりの警告の数 (組みの間の警告は、SeqMemo.warnings の、初めから warnEnd - warnStart 個) */
+  warnStart: number;
+  warnEnd: number;
+  /** 組みの終わりの、脚注の最後の番号 */
+  footEnd: number;
+  /** 組んだページの数 (SeqMemo.built の初めの pages 個。後ろは force-page-count の白ページ) */
+  pages: number;
+  /** 最初のページの本文領域の inline の大きさと block の上限 (前を飛ばして続きから組むとき、流れを作るのに使う) */
+  rootI?: number;
+  limit?: number;
+  /** 組みの初めの、書体の組が返した実体の数と、組みの間に返した実体 (境目の hand から、使うページの分を返し直す) */
+  handStart: number;
+  handed: Array<[string, LoadedFont]>;
+}
+
+/** 前の組版から繋ぐ相手 (sequenceRun に渡す) */
+interface SpliceTarget {
+  memo: SeqMemo;
+  rec: SeqRunRecord;
+  map: ReuseMap;
+  /** この page-sequence の最初のページの、この文書の先頭からの通し番号 */
+  ordinal: number;
+}
+
+/** page-sequence の、ページの境目の記録 (design/resumable-flow.md の 4.2 の PageBoundary) */
+interface SeqBoundary {
+  /** 境目の前のページの数 (この境目の後に作るページは index + 1 ページ目) */
+  index: number;
+  /** 流れの写しと続きの位置 (続きから組めない境目は flow.reason) */
+  flow: FlowBoundary;
+  /** 脚注の番号付けと、その位置 */
+  foot: FootnoteCtx;
+  footMark: FootnoteMark;
+  /** 境目のときの警告の数 */
+  warn: number;
+  /** 境目までに読んだ、いちばん後ろの入力の節の番号 (5.1) */
+  readTo: number;
+  /** 指紋 (5.3。続きから組めない境目は空) */
+  digest: string;
+  /** 前方 float の区切りの内容を、境目までに組んだときの、組んだもの (続きから組むとき、境目の後に組んだものを使わない) */
+  beforeSep?: FootEntry;
+  /** 境目のときの、書体の組が返した可変フォントの実体の数 (FontManager.handedCount。前の組版のページを使うとき、その分を返し直す) */
+  hand: number;
+  /** 境目のときの、組版の器の数え (組んだ回数・手間の上限の数え) */
+  counts: { flows: number; blocks: number; tables: number; nestHit: boolean; nestD: number; nestCd: number; trial: number };
+  /** resumeCheck のときだけ: 境目のときの id のページの記録 */
+  ids?: { pages: Map<string, IdPages>; build: Map<string, PageBuild>; last: Map<string, PageBuild> };
+}
+
+/** resumeCheck: 次の境目で、前の境目に戻る合図 (sequenceRun の drive が受ける) */
+const RESUME_CHECK: unique symbol = Symbol('kumiori.resumeCheck');
+/** 前の組版と揃ってから、繋ぐまでに組み続けるページの数 (sequenceRun の onBoundary) */
+const SPLICE_LEAD = 3;
+/** 境目の状態が前の組版と揃ったので、組むのを止めて、残りのページを前の組版から繋ぐ合図 (sequenceRun の drive が受ける) */
+const SPLICE: unique symbol = Symbol('kumiori.splice');
+
+/**
+ * 続きの位置の、組んでいる入力の節の番号 pos (いちばん深い、節を持つ段の節: 組んでいるブロック・表か、keep の改ページの後に組む子。
+ * 行の並びの字は節を持たないので、その並びを持つブロック)。前の組版と繋ぐとき、この節が直した所より後ろ (直した所を組み終えた) かを見る。
+ * 行の塊を置いている表は、まだ置いていない最初の行 (保留の行・組んでいる塊・分けた断片を含む) で、表 (table) が直した所の前から始まるときは、
+ * 直した所が表の本体の行の中 (lo より後ろ) であることも要る (見出し・フッター・表の題は、続きのページでも組み直して置くので、直した所の外であること)
+ */
+function resumePos(steps: readonly ResumeStep[]): { pos: number; lo: number; table: number } | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const st = steps[i];
+    if (st.k === 'table') {
+      const rs = st.rs;
+      const first = sourceRef(rs?.rows[0]);
+      const table = sourceRef(st.orig);
+      if (rs && st.phase !== 'pre' && st.phase !== 'open' && st.phase !== 'ktc' && first !== undefined && table !== undefined) {
+        let pos = rs.i < rs.rows.length ? sourceRef(rs.rows[rs.i]) : (sourceRefEnd(st.orig) ?? -2) + 1;
+        if (pos === undefined) return undefined;
+        for (const n of [...rs.pending, ...rs.grp, ...rs.frags]) if (n.ref !== undefined) pos = Math.min(pos, n.ref);
+        return { pos, lo: first, table };
+      }
+    }
+    if (st.k === 'block' || st.k === 'table') {
+      const r = sourceRef(st.orig);
+      return r === undefined ? undefined : { pos: r, lo: -Infinity, table: Infinity };
+    }
+    if (st.k === 'children' && (st.phase === 'kwp' || st.phase === 'kwn')) {
+      const r = sourceRef(st.children[st.at]);
+      if (r !== undefined) return { pos: r, lo: -Infinity, table: Infinity };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * ページごとの記録 (design/resumable-flow.md の 5.2): 1 段の page-sequence を組む間に、器の側へ書いたものを、書いたページごとに並べる。
+ * ページは、そのページを作ってから次のページを作るまで (ページの境目は、その間にある: Flow.breakPage)。
+ * 続きから組むとき、続ける境目より前のページの分を書き直す (組み直したときに、同じ順に書くもの)
+ */
+interface PageRecord {
+  /** このページを作ったときの警告の数 */
+  warnStart: number;
+  /** 記録した id のページ (noteIdPage の引数。書いた順) */
+  ids: Array<[id: string, n: number, fmt: string | undefined, page: PageBuild | undefined]>;
+  /**
+   * 引いたページ番号の参照と、返した値・字の書式・引いたときのページ番号 (試し組み・測る組みの中で引いたものも入る)。書式とページ番号は、
+   * 前の組版から繋ぐページの参照を、この文書で引き直して同じかを確かめ、参照の記録 (SeqMemo.cites) に足すのに使う
+   */
+  cites: Array<[id: string, last: boolean | undefined, format: string | undefined, physical: boolean | undefined, value: string, style: ResolvedStyle | undefined, pageNumber: number | undefined]>;
+}
+
 /**
  * 前回の組版での page-sequence の結果。2 回目以降の組版 (ページ番号参照の収束) で、開始ページ・脚注の続き番号・
  * 中で参照したページ番号の値が前回と同じ sequence は、組み直さずに前回のページをそのまま使う (目次の sequence だけを組み直す)
  */
 interface SeqMemo {
   first: number;
+  /** この sequence の最初のページの、文書の先頭からの通し番号 (0 始まり) */
+  ordinal: number;
   /** ページの左右のずれ (FlowHost.sideDelta)。前の page-sequence のページ数が変わると、番号が同じでも左右が変わる */
   sideDelta: number;
   fnCarryIn: number;
@@ -9799,10 +10993,26 @@ interface SeqMemo {
   idPages: Array<[string, IdPages]>;
   idPageBuild: Array<[string, PageBuild]>;
   idPageBuildLast: Array<[string, PageBuild]>;
+  /**
+   * 上の記録の id のうち、この sequence より前で記録していたもの (同じ id が文書に 2 度あるときなど)。その id の最初のページは、前の
+   * sequence のものなので、書くときは、いまの記録の最初のページを残す。前の文書から使い回すときは、いまの文書でも、この sequence より前で
+   * 記録した id が同じでなければ使い回さない (記録の順が、初めから組んだときと違う)
+   */
+  idBefore?: string[];
   /** この sequence で組んだ索引のページ番号の並び (組み直さないときは、いまのページで作り直しても同じ並びになることを確かめる) */
   indexLists?: Map<LIndexPageCitationList, IndexExpansion>;
   /** この sequence で、先頭から N ページで止めたので決まらなかった参照 (組み直さないときに、同じものを数える) */
   beyond?: Array<[BeyondKind, string]>;
+  /** 1 段の page-sequence の組みの、境目とページごとの記録 (器の使い回しで、次の文書が前の組版と繋ぐ) */
+  run?: SeqRunRecord;
+  /** この sequence を組む間に、書体の組が返した可変フォントの実体 (前の文書から使い回すとき、返し直す) */
+  handed?: Array<[string, LoadedFont]>;
+  /** この sequence を組む間に当たった上限の名前 (limit/reached。前の文書から使い回すとき、記録し直す。当たったものは繋がない) */
+  limits?: LimitName[];
+  /** この sequence を組む間に、書体の知らせ (FontManager.noticeCount) が出た (前の文書から使い回さない。知らせが抜けるので) */
+  notices?: boolean;
+  /** 組んだときの、次の page-sequence の initial-page-number (force-page-count の白ページの数が、これで決まる。違えば使い回さない) */
+  nextIpn?: LPageSequence['initialPageNumber'];
 }
 
 /** 索引のページ番号の並び 1 つを、字と行内の箱に置き換えた結果 */
@@ -9918,6 +11128,25 @@ export class LayoutEngine {
   /** 見張りのページを作ったときの警告の数 (-1 なら作っていない) */
   private lookaheadMark = -1;
   /**
+   * 見張りのページを作った後に出た警告のうち、見張りのページのものでないもの (page-sequence の全体の警告: 最後のページのマスターの収束)。
+   * 止めたときに、見張りのページの警告を除いても残す。
+   * 段組の page-sequence の組み終わりに置く脚注の溢れは、本文の後に足した脚注の続きのページ (見張りのページより後ろ) でしか出ないので、ここには入れない
+   */
+  private lookaheadKeep = new Set<Diagnostic>();
+  /** 止めたとき: 見張りのページを作った後の警告を除く (残す 1〜N ページのもの (lookaheadKeep) は除かない) */
+  private dropLookaheadWarnings(): void {
+    const m = this.lookaheadMark;
+    if (m < 0) return;
+    const keep = this.warnings.slice(m).filter((w) => this.lookaheadKeep.has(w));
+    this.warnings.length = Math.min(this.warnings.length, m);
+    pushAll(this.warnings, keep);
+  }
+  /** 見張りのページを作った後なら、from 番目からの警告を、止めても残すもの (lookaheadKeep) にする */
+  private keepLookaheadWarnings(from: number): void {
+    if (this.lookaheadMark < 0) return;
+    for (let k = Math.max(from, this.lookaheadMark); k < this.warnings.length; k++) this.lookaheadKeep.add(this.warnings[k]);
+  }
+  /**
    * 止めた回の、N ページより後ろにある id (最初に置かれたページが後ろか、置かれていない) と、後ろへ続く id (最後のページが後ろ)。
    * 止めなかった回は undefined
    */
@@ -9949,6 +11178,8 @@ export class LayoutEngine {
 
   /** id を持つ要素が、番号 n (書式 fmt) のページに置かれたことを記録する。最初のページは初回だけ、最後のページは毎回更新 */
   private noteIdPage(id: string, n: number, fmt: string | undefined, page?: PageBuild) {
+    const recs = this.pageRecs;
+    if (recs?.length) recs[recs.length - 1].ids.push([id, n, fmt, page]);
     if (page && !this.idPageBuild.has(id)) this.idPageBuild.set(id, page);
     if (page) this.idPageBuildLast.set(id, page);
     const label = formatPageNumber(n, fmt);
@@ -10166,10 +11397,62 @@ export class LayoutEngine {
   private lastFoot?: FootnoteCtx;
   /** 前回の組版での page-sequence ごとの結果 (layoutPasses の中でだけ使う) */
   private seqMemo: Array<SeqMemo | undefined> = [];
+  /** 前の文書の組版 (LayoutReuse.prev。この文書と書体・選択肢・画像・文書の欄が同じときだけ) と、この文書の指紋 (覚えるとき) */
+  private reusePrev?: PrevLayout;
+  private reuseNow?: Omit<PrevLayout, 'seqs' | 'cost' | 'hit'> & { prints: string[] };
+  /** 前の文書とこの文書の入力の節の番号の対応 (前の文書を使えるときだけ) */
+  private reuseMapCache?: ReuseMap | null;
+  /** 前の文書とこの文書の、入力の節の番号の対応 (要る所で初めて作る。節の指紋を作る手間を、中身の同じ文書では省く) */
+  private get reuseMap(): ReuseMap | undefined {
+    if (this.reuseMapCache === undefined) {
+      const prev = this.reusePrev;
+      const now = this.reuseNow;
+      this.reuseMapCache = prev && now && this.docNodes && prev.nodes.length ? diffTokens(prev.tokens(), now.tokens()) : null;
+    }
+    return this.reuseMapCache ?? undefined;
+  }
+  /** 組む手間の上限の数えの、この文書の回ごとの最大と、上限に当たったか (PrevLayout.cost・hit) */
+  private reuseCost = { cost: 0, hit: false };
+  /**
+   * 前の文書の効果 (入力の節の paintEffect) → この文書の同じ節の効果。使い回すページの箱の効果 (LNode.fx) を、この文書の物に替える
+   * (PDF の書き手は、効果を物ごとに書くので、前の文書の物のままだと、同じ値の効果を 2 つ書く)
+   */
+  private reuseFx?: Map<object, PaintEffect>;
+  private swapFx(n: LNode, seen = new Set<LNode>()) {
+    if (!this.paintEffects || !this.reusePrev || seen.has(n)) return;
+    seen.add(n);
+    if (!this.reuseFx) {
+      const m = new Map<object, PaintEffect>();
+      const old = this.reusePrev.nodes;
+      const nodes = this.docNodes ?? [];
+      const map = this.reuseMap;
+      old.forEach((o, r) => {
+        const fx = (o as { paintEffect?: PaintEffect }).paintEffect;
+        const nr = map ? mapRef(map, r) : undefined;
+        const nfx = nr === undefined ? undefined : (nodes[nr] as { paintEffect?: PaintEffect } | undefined)?.paintEffect;
+        if (fx && nfx) m.set(fx, nfx);
+      });
+      this.reuseFx = m;
+    }
+    if (n.fx) n.fx = this.reuseFx.get(n.fx) ?? n.fx;
+    for (const c of n.children) this.swapFx(c, seen);
+  }
+  /** 前の文書とこの文書の、入力の節の欄の配列の持ち主 (境目の状態を比べるときに作る) */
+  private reuseOwnerMaps?: { old: ArrayOwners; now: ArrayOwners };
+  private reuseOwners(): { old: ArrayOwners; now: ArrayOwners } | undefined {
+    if (!this.reuseOwnerMaps && this.reusePrev && this.docNodes) this.reuseOwnerMaps = { old: arrayOwners(this.reusePrev.nodes), now: arrayOwners(this.docNodes) };
+    return this.reuseOwnerMaps;
+  }
+  /** 前の文書から使い回した page-sequence (組み直しの回の間は、文書の中の seqMemo で使い回す) */
+  private foreignSeqs = new Set<number>();
+  /** 組んでいる文書 (passSteps が置く) */
+  private lastDoc?: LDocument;
   /** 行分けの結果の覚えの、覚えている量と古さの順 (組版 (layout) ごと) */
   private lineMemoLru = new LineMemoLru(LINE_MEMO_ATOMS);
   /** いま組んでいる sequence の中で参照したページ番号 (cite の引数 → 返した値) */
   private citeLog?: SeqMemo['cites'];
+  /** 組んでいる 1 段の page-sequence の、ページごとの記録 (layoutSequence が置く。ほかの所では undefined) */
+  private pageRecs?: PageRecord[];
 
   /** page-number-citation の値 (前回の組版の結果から)。参照先が無ければ undefined */
   private citeValue(id: string, last?: boolean, format?: string, physical?: boolean): string | undefined {
@@ -10335,13 +11618,34 @@ export class LayoutEngine {
   private snapshotIds() {
     return { pages: new Map([...this.idPages].map(([k, v]) => [k, { ...v }] as [string, IdPages])), build: new Map(this.idPageBuild), last: new Map(this.idPageBuildLast) };
   }
-  private idDiff(before: ReturnType<LayoutEngine['snapshotIds']>): Pick<SeqMemo, 'idPages' | 'idPageBuild' | 'idPageBuildLast'> {
+  private idDiff(before: ReturnType<LayoutEngine['snapshotIds']>): Pick<SeqMemo, 'idPages' | 'idPageBuild' | 'idPageBuildLast' | 'idBefore'> {
     const same = (a: IdPages | undefined, b: IdPages) => !!a && a.first === b.first && a.last === b.last && a.firstN === b.firstN && a.lastN === b.lastN && a.firstP === b.firstP && a.lastP === b.lastP;
-    return {
-      idPages: [...this.idPages].filter(([k, v]) => !same(before.pages.get(k), v)).map(([k, v]) => [k, { ...v }] as [string, IdPages]),
+    const idPageBuildLast = [...this.idPageBuildLast].filter(([k, v]) => before.last.get(k) !== v);
+    // この sequence で置いた id (noteIdPage はページを渡すので、最後のページの物が替わる) は、値が前と同じでも記録に入れる
+    // (同じ id の 2 度目が、前の sequence の 1 度目と同じ番号のページにあるとき。使い回すときに書かないと、前の文書の値が残る)
+    const placed = new Set(idPageBuildLast.map(([k]) => k));
+    const d = {
+      idPages: [...this.idPages].filter(([k, v]) => placed.has(k) || !same(before.pages.get(k), v)).map(([k, v]) => [k, { ...v }] as [string, IdPages]),
       idPageBuild: [...this.idPageBuild].filter(([k, v]) => before.build.get(k) !== v),
-      idPageBuildLast: [...this.idPageBuildLast].filter(([k, v]) => before.last.get(k) !== v),
+      idPageBuildLast,
     };
+    const had = new Set<string>();
+    for (const list of [d.idPages, d.idPageBuild, d.idPageBuildLast]) for (const [k] of list) if (before.pages.has(k) || before.build.has(k)) had.add(k);
+    return had.size ? { ...d, idBefore: [...had] } : d;
+  }
+
+  /**
+   * sequence の記録 memo の id のページを、いまの記録に書く (その sequence を組んだときに noteIdPage が書くのと同じ結果にする)。
+   * この sequence より前で記録していた id (memo.idBefore) は、最初のページをいまの記録のまま残し、最後のページだけを書く
+   */
+  private writeMemoIds(memo: SeqMemo) {
+    const had = new Set(memo.idBefore);
+    for (const [k, v] of memo.idPages) {
+      const cur = had.has(k) ? this.idPages.get(k) : undefined;
+      this.idPages.set(k, cur ? { ...v, first: cur.first, firstN: cur.firstN, firstP: cur.firstP } : { ...v });
+    }
+    for (const [k, v] of memo.idPageBuild) if (!had.has(k) || !this.idPageBuild.has(k)) this.idPageBuild.set(k, v);
+    for (const [k, v] of memo.idPageBuildLast) this.idPageBuildLast.set(k, v);
   }
 
   /** 今回の組版で置いた脚注の、ページの中の順番 */
@@ -10451,6 +11755,13 @@ export class LayoutEngine {
 
   private endLayout(doc: LDocument, unsettled: Diagnostic[]): AreaTree {
     const tree = this.finishTree(doc);
+    this.storeReuse(doc);
+    // 前の文書の組版は、次の文書が覚えから引かないように手放す (この文書の記録の閉包がこの器を指すので、持ったままだと、文書が鎖のように残る)
+    this.reusePrev = undefined;
+    this.reuseMapCache = undefined;
+    this.reuseOwnerMaps = undefined;
+    this.reuseFx = undefined;
+    limitTap.fn = undefined;
     addTreeDiagnostics(tree, this.kept(unsettled));
     this.stats.lineMemoPeak = this.lineMemoLru.peak;
     this.stats.lineMemoHits = this.lineMemoLru.hits;
@@ -10617,18 +11928,26 @@ export class LayoutEngine {
    * 返すのは、決まらなかったときの警告 (領域の木の警告の終わりに足すもの)
    */
   private layoutPasses(doc: LDocument): Diagnostic[] {
-    return runSteps(this.passSteps(doc));
+    return runSteps(this.reportResume(this.passSteps(doc)));
+  }
+
+  /** 組版を終えたら、境目の数え (LayoutStats.resume) を試験の口 (resumeProbe.onStats) に渡す */
+  private *reportResume(steps: Generator<void, Diagnostic[]>): Generator<void, Diagnostic[]> {
+    const r = yield* steps;
+    if (this.stats.resume) resumeProbe.onStats?.(this.stats.resume);
+    return r;
   }
 
   /** layoutPasses を、境目で control.boundary を待ちながら走らせる (control が無ければ同期のまま) */
   private passesPaced(doc: LDocument): Promise<Diagnostic[]> {
     const c = this.options.control;
-    return c ? runPaced(this.passSteps(doc), () => c.boundary()) : Promise.resolve(this.layoutPasses(doc));
+    return c ? runPaced(this.reportResume(this.passSteps(doc)), () => c.boundary()) : Promise.resolve(this.layoutPasses(doc));
   }
 
   /** layoutPasses の中身 (組み直しの回と page-sequence の境目で yield する) */
   private *passSteps(doc: LDocument): Generator<void, Diagnostic[]> {
     this.passIndex = 0;
+    this.stats.resume = undefined;
     // 入力の節に通し番号を付ける (Area の sourceRef)
     // 描くときだけの効果 (transform・opacity) を持つ節 (無い文書では undefined。組んだ後で Area に付ける)
     const docNodes = indexDocument(doc);
@@ -10641,6 +11960,8 @@ export class LayoutEngine {
     this.inlineCbRanges = undefined;
     paintEffectState.on = !!this.paintEffects;
     this.seqMemo = [];
+    this.lastDoc = doc;
+    this.setupReuse(doc);
     this.citations = undefined;
     this.citationUsed = false;
     this.fnOrder = new Map();
@@ -10757,6 +12078,458 @@ export class LayoutEngine {
     }
   }
 
+  // ── 前の文書の組版の使い回し (器の reuse。design/resumable-flow.md の 6) ──
+
+  /** 組版の初め: 前の文書の組版を使えるか決め、この文書の指紋を作る (覚えるため) */
+  private setupReuse(doc: LDocument) {
+    const lr = this.options.layoutReuse;
+    const prev = lr?.prev;
+    if (lr) lr.prev = undefined;
+    this.reusePrev = undefined;
+    this.reuseNow = undefined;
+    this.reuseMapCache = undefined;
+    this.reuseOwnerMaps = undefined;
+    this.reuseFx = undefined;
+    this.reuseCost = { cost: 0, hit: false };
+    this.foreignSeqs = new Set();
+    if (!lr || this.lowMemory || this.options.maxPages !== undefined) return;
+    const skip = new Set(['assets', 'control', 'sharedLineMemo', 'layoutReuse', 'hyphenate', 'resumeCheck']);
+    const opts = JSON.stringify(this.options, (k, v) => (skip.has(k) || typeof v === 'function' ? undefined : v instanceof Set ? [...v] : v));
+    // 警告の文は組んだときの言語で作るので、言語も入れる (違う言語の文書では、前の文書の警告を使わない)
+    const env = `${this.fonts.signature()}|${limitsKey()}|${this.measurer.version()}|${opts}|${this.options.assets?.layoutSignature() ?? ''}|${messageLang()}`;
+    const { sequences: _s, ...rest } = doc;
+    const docPrint = contentPrint(rest);
+    // 節ごとの指紋は、要る所 (前の文書と節の番号の対応を作るとき) で初めて作る
+    const nodes = this.docNodes ?? [];
+    let tokens: string[] | undefined;
+    this.reuseNow = { env, hyphenate: this.options.hyphenate, docPrint, prints: doc.sequences.map((q) => contentPrint(q)), tokens: () => (tokens ??= nodeTokens(nodes)), nodes };
+    // 組む手間の上限 (maxMeasureFlows) の近くの文書では使い回さない: 使い回すと組む流れの数が減り、初めから組めば上限に当たる所で当たらなくなる
+    // (前の文書の数えの 2 倍に余裕を足しても上限に届かないとき。直した文書の数えは、前の文書と大きくは違わない)
+    const budget = this.options.maxMeasureFlows ?? Math.max(100000, 2 * (this.docNodes?.length ?? 0));
+    if (prev && prev.env === env && prev.hyphenate === this.options.hyphenate && prev.docPrint === docPrint && !prev.hit && 2 * prev.cost + 1000 <= budget) {
+      this.reusePrev = prev;
+    }
+  }
+
+  /** 前の文書の、page-sequence si と中身の同じ page-sequence の記録 (ページ番号の参照・索引・止めた組版のものは使わない) */
+  private prevSeqMemo(si: number): SeqMemo | undefined {
+    const e = this.reusePrev?.seqs[si];
+    if (!e || e.print !== this.reuseNow?.prints[si] || this.indexKeys) return undefined;
+    const m = e.memo;
+    // ページ番号の参照のあるものは、組み直しの 1 回目だけ使う (ページの参照を、1 回目の組版の決まりで引き直して確かめる。adoptPrev)
+    if (m.cites.size && (this.citations || !m.run)) return undefined;
+    // 書体の知らせが出たものは使わない (知らせが抜ける)。次の page-sequence の始まりの番号が違えば使わない (force-page-count の白ページが変わりうる)
+    if (m.notices || m.nextIpn !== this.lastDoc?.sequences[si + 1]?.initialPageNumber) return undefined;
+    return m.indexLists?.size || m.beyond ? undefined : m;
+  }
+
+  /**
+   * 前の文書の記録 memo のページを、この文書の page-sequence si のページにする: 入力の節の番号を、この文書の番号にずらし、柱と
+   * マーカーの入力の節・page-sequence の節を、この文書のものに付け替え、警告の場所を引き直す。付け替えられなければ false (組む)。
+   * ordinal は、この page-sequence の最初のページの、文書の先頭からの通し番号
+   */
+  private adoptPrev(si: number, memo: SeqMemo, ordinal: number): boolean {
+    const e = this.reusePrev?.seqs[si];
+    const seq = this.docNodes ? (this.lastDoc?.sequences[si] as LPageSequence | undefined) : undefined;
+    const start = sourceRef(seq);
+    if (!e || e.memo !== memo || !seq || start === undefined) return false;
+    const delta = start - e.start;
+    const nodes = this.docNodes;
+    // id のページ: 記録の id のうち、この page-sequence より前で記録していたものが、いまの文書でも同じでなければ使わない
+    // (同じ id が文書に 2 度あるとき、最初のページがどちらの page-sequence のものかが、初めから組んだときと違う)
+    const had = new Set(memo.idBefore);
+    for (const list of [memo.idPages, memo.idPageBuild, memo.idPageBuildLast]) for (const [k] of list) if (had.has(k) !== (this.idPages.has(k) || this.idPageBuild.has(k))) return false;
+    /** 前の文書の入力の節 → この文書の同じ所の節 (同じ部分木の中だけ) */
+    const remap = <T extends object>(n: T): T | undefined => {
+      const r = sourceRef(n);
+      if (r === undefined || r < e.start || r > e.end) return undefined;
+      const m = nodes[r + delta] as T | undefined;
+      return m && (m as { type?: unknown }).type === (n as { type?: unknown }).type ? m : undefined;
+    };
+    // 付け替えられるかを先に確かめる (確かめてから書き換える)
+    const inR = (r: number | undefined) => r === undefined || (r >= e.start && r <= e.end);
+    const inRange = (n: LNode): boolean => inR(n.ref) && inR(n.fxRef) && n.children.every(inRange);
+    for (const p of memo.built) {
+      if (!inRange(p.root) || !p.abs.every(inRange)) return false;
+      if (p.staticContent.some((c) => !remap(c))) return false;
+      if (p.markers.some((m) => m.marker && !remap(m.marker))) return false;
+    }
+    // ページ番号の参照: ページの参照を、組み直しの 1 回目の決まりで引き直し、ページに組んだ字と同じか (spliceCites)。同じなら、参照の記録を
+    // 引き直した値で作り直す (初めから組んだときの記録と同じにする)。id のページは、呼ぶ側が memo の記録から書く
+    if (memo.cites.size) {
+      const run = memo.run;
+      const log: Array<[PageRecord['cites'][number], string]> = [];
+      if (!run || run.pages > memo.built.length || !this.spliceCites(memo, run.recs, 0, run.pages, false, log)) return false;
+      const cites: SeqMemo['cites'] = new Map();
+      const saved = this.citeLog;
+      this.citeLog = cites;
+      for (const [[id, last, format, physical, , style], v] of log) this.logCite(id, last, format, physical, v, style);
+      this.citeLog = saved;
+      memo.cites = cites;
+    }
+    const shift = (n: LNode) => {
+      if (n.ref !== undefined) n.ref += delta;
+      if (n.fxRef !== undefined) n.fxRef += delta;
+      for (const c of n.children) shift(c);
+    };
+    const assets = this.options.assets;
+    const noteImages = (n: LNode) => {
+      if (n.image?.src) assets?.get(n.image.src);
+      for (const c of n.children) noteImages(c);
+    };
+    for (const p of memo.built) {
+      if (delta) {
+        shift(p.root);
+        p.abs.forEach(shift);
+      }
+      p.seq = seq;
+      // 箱の効果を、この文書の物に替える
+      if (this.paintEffects) {
+        const seen = new Set<LNode>();
+        this.swapFx(p.root, seen);
+        for (const a of p.abs) this.swapFx(a, seen);
+      }
+      p.staticContent = p.staticContent.map((c) => remap(c)!);
+      p.markers = p.markers.map((m) => (m.marker ? { ...m, marker: remap(m.marker)! } : m));
+      // 画像を使ったことを、画像の置き場に知らせる (組んだときと同じ。コマンドが、見張るファイルを決める)
+      if (assets) {
+        noteImages(p.root);
+        p.abs.forEach(noteImages);
+      }
+    }
+    const pageShift = ordinal - memo.ordinal;
+    memo.warnings = memo.warnings.map((d) => {
+      const r = d.source?.sourceRef;
+      if (r === undefined) return d;
+      const node = r >= e.start && r <= e.end ? nodes[r + delta] : undefined;
+      const { line: _l, column: _c, element: _e, file: _f, sourceRef: _r, ...keep } = d.source!;
+      const base = { ...d, source: { ...keep, ...(keep.page !== undefined ? { page: keep.page + pageShift } : {}) } };
+      return node ? withSource(base, node) : base;
+    });
+    memo.ordinal = ordinal;
+    // その sequence を組んだときに返した可変フォントの実体を、同じ順に返し直し、当たった上限を記録し直す
+    if (memo.handed) this.fonts.rehand(memo.handed);
+    for (const n of memo.limits ?? []) noteLimitReached(n);
+    // 境目の記録は前の文書の節を指すので、次の文書が繋ぐのには使わない
+    memo.run = undefined;
+    this.seqMemo[si] = memo;
+    this.foreignSeqs.add(si);
+    const lr = this.options.layoutReuse!;
+    lr.stats.sequences++;
+    lr.stats.pages += memo.built.length;
+    return true;
+  }
+
+  /**
+   * 前の文書の page-sequence si の組みと、境目から後ろを繋ぐ相手 (design/resumable-flow.md の 6.2 の 2・3)。中身が違い (直した所を含み)、
+   * 始まりの条件が同じで、索引・止めた組版・ページごとの脚注番号・最後のページのマスターの無いもの (ページ番号の参照は、組み直しの 1 回目だけ)
+   */
+  private spliceTarget(si: number, seq: LPageSequence, first: number, sideDelta: number, ordinal: number, needsLast: boolean): SpliceTarget | undefined {
+    const map = this.reuseMap;
+    const m = this.reusePrev?.seqs[si]?.memo;
+    const rec = m?.run;
+    if (!map || !m || !rec || needsLast || this.passIndex !== 1 || this.seqMemo[si] || this.indexKeys || this.fnResetUsed || seq.footnotes?.reset === 'page') return undefined;
+    // ページ番号の参照は、1 回目の組版 (this.citations が無い) だけで繋ぐ (繋ぐページの参照を、1 回目の組版の決まりで引き直して確かめる。spliceCites)
+    // 上限に当たったもの・書体の知らせが出たものは繋がない (繋ぐページの分の知らせを、ページごとに持っていないので)
+    if (m.first !== first || m.sideDelta !== sideDelta || m.fnCarryIn !== this.fnCarry || this.citations || m.indexLists?.size || m.beyond || m.limits || m.notices) return undefined;
+    // page-sequence の節そのもの (ページのマスター・柱の並び・塗り足しなど、本文の外の欄) が前の文書と同じときだけ繋ぐ。節の対応では、
+    // 直した所が page-sequence の節だけになり、本文は全部「直した所の後ろ」になるので、繋いだページが前のマスターのまま残る
+    const e = this.reusePrev!.seqs[si];
+    const at = sourceRef(seq);
+    if (!e || at === undefined || this.reusePrev!.tokens()[e.start] !== this.reuseNow?.tokens()[at]) return undefined;
+    return { memo: m, rec, map, ordinal };
+  }
+
+  /** 引いたページ番号の参照を、page-sequence の参照の記録 (citeLog) に足す。値と、字の計測・描き方に効く書式の組ごとに 1 つ覚える (reuseCites が、組ごとに差し替えられるかを確かめる) */
+  private logCite(id: string, last: boolean | undefined, format: string | undefined, physical: boolean | undefined, v: string, style: ResolvedStyle | undefined) {
+    this.citationUsed = true;
+    if (!this.citeLog) return;
+    const key = JSON.stringify([id, last, format, physical]);
+    const mark = this.citeMark(v, style);
+    const e = this.citeLog.get(key);
+    if (!e) this.citeLog.set(key, { args: [id, last, format, physical], uses: [{ value: v, style }], seen: new Set([mark]) });
+    else if (!e.seen.has(mark)) {
+      e.seen.add(mark);
+      e.uses.push({ value: v, style });
+    }
+  }
+
+  /**
+   * 前の組版の境目 pb から後ろのページの、id のページを書き (初めから組んだときと同じ順)、ページの中のページ番号の参照を、組み直しの 1 回目の
+   * 決まり (host.cite: 置いた id はそのページ、まだ置いていない id と last・physical の参照は、引いたときのページ番号) で引き直し、ページに組んだ字の
+   * 値 (前の組版の参照の記録で、値が 1 つにそろっていればその値 (字を差し替えたもの)、そろっていなければ引いたときの値) と同じかを確かめる。
+   * ページの中で id を置く前に引いたか後に引いたかで値が変わる参照は、どちらでも同じときだけ同じとする。commit でなければ、確かめた後に id を戻す。
+   * ページは recs の [from, to)、ページに組んだ字の値は memo の参照の記録から引く。out に、参照と引き直した値を並べる (参照の記録に足すため)
+   */
+  private spliceCites(memo: SeqMemo, recs: readonly PageRecord[], from: number, to: number, commit: boolean, out?: Array<[PageRecord['cites'][number], string]>): boolean {
+    const copy = <K, V extends object>(m: Map<K, V>) => new Map([...m].map(([k, v]) => [k, { ...v }] as [K, V]));
+    const saved = { pages: copy(this.idPages), build: new Map(this.idPageBuild), last: new Map(this.idPageBuildLast) };
+    const recsSaved = this.pageRecs;
+    this.pageRecs = undefined;
+    const value = (c: PageRecord['cites'][number]): string => {
+      const [id, last, format, physical, , , pn] = c;
+      const n = !last && !physical ? this.idPages.get(id) : undefined;
+      return n ? (format !== undefined && n.firstN !== undefined ? formatPageNumber(n.firstN, format) : n.first) : formatPageNumber(Math.max(1, pn ?? 1), format ?? '1');
+    };
+    const shown = (c: PageRecord['cites'][number]): string | undefined => {
+      const u = memo.cites.get(JSON.stringify(c.slice(0, 4)))?.uses;
+      if (!u?.length) return undefined;
+      return u.every((x) => x.value === u[0].value) ? u[0].value : c[4];
+    };
+    let ok = true;
+    for (let j = from; j < to && ok; j++) {
+      const r = recs[j];
+      const before = r.cites.map(value);
+      for (const [id, n, fmt, page] of r.ids) this.noteIdPage(id, n, fmt, page);
+      r.cites.forEach((c, i) => {
+        if (before[i] !== value(c) || before[i] !== shown(c)) ok = false;
+        out?.push([c, before[i]]);
+      });
+    }
+    this.pageRecs = recsSaved;
+    if (!ok || !commit) {
+      this.idPages = saved.pages;
+      this.idPageBuild = saved.build;
+      this.idPageBuildLast = saved.last;
+    }
+    return ok;
+  }
+
+  /**
+   * 前の文書の境目の写し fb を、いまの文書の物に移す (前を飛ばす)。前の文書の入力の節は、同じ番号のいまの文書の節に、入力の節の欄の配列
+   * (子の並びなど) は、持ち主の節の同じ欄に替え、それらを含む物 (続きの位置の段・開いている箱・行の並びなど) は写して替える。含まない物
+   * (書式・書体・組んだ箱など) は、そのまま使う (書き換えない物)。境目は直した所より前 (読んだ先が P より前) なので、節の番号は同じ。
+   * 直した所より後ろの番号・関数・中を見られない覚えを含む物があれば undefined (移さない)
+   */
+  private remapBoundary(fb: FlowBoundary, m: ReuseMap): FlowBoundary | undefined {
+    const owners = this.reuseOwners();
+    const nodes = this.docNodes;
+    const old = this.reusePrev?.nodes;
+    if (!owners || !nodes || !old) return undefined;
+    /** 前の文書の物を含むか (含めば写す) */
+    const has = new Map<object, boolean>();
+    const contains = (v: unknown): boolean => {
+      if (!v || typeof v !== 'object') return false;
+      const o = v as object;
+      const h = has.get(o);
+      if (h !== undefined) return h;
+      const r = sourceRef(o);
+      if ((r !== undefined && old[r] === o) || owners.old.has(o)) return has.set(o, true), true;
+      has.set(o, false);
+      const proto = Object.getPrototypeOf(o);
+      let c = false;
+      if (Array.isArray(o)) c = o.some(contains);
+      else if (o instanceof Map) c = [...o].some(([k, x]) => contains(k) || contains(x));
+      else if (o instanceof Set) c = [...o].some(contains);
+      else if (proto === Object.prototype || proto === null) c = Object.values(o).some(contains) || r !== undefined;
+      has.set(o, c);
+      return c;
+    };
+    const memo = new Map<object, unknown>();
+    let bad = false;
+    const go = (v: unknown, key?: string): unknown => {
+      if (bad) return v;
+      if (typeof v === 'function') {
+        bad = true;
+        return v;
+      }
+      if (key !== undefined && REF_KEYS.has(key) && typeof v === 'number') {
+        if (mapRef(m, v) !== v || v >= m.P) bad = true;
+        return v;
+      }
+      if (!v || typeof v !== 'object') return v;
+      const o = v as object;
+      if (memo.has(o)) return memo.get(o);
+      const r = sourceRef(o);
+      if (r !== undefined && old[r] === o) {
+        const n = r < m.P ? nodes[r] : undefined;
+        if (!n || (n as { type?: unknown }).type !== (o as { type?: unknown }).type) bad = true;
+        memo.set(o, n);
+        return n;
+      }
+      const own = owners.old.get(o);
+      if (own) {
+        const rr = sourceRef(own[0]);
+        const n = rr !== undefined && rr < m.P ? (nodes[rr] as Record<string, unknown>) : undefined;
+        const arr = n?.[own[1]];
+        if (!Array.isArray(arr)) bad = true;
+        memo.set(o, arr);
+        return arr;
+      }
+      if (o instanceof WeakMap || o instanceof WeakSet || o instanceof WeakRef) return o;
+      if (!contains(o)) return o;
+      if (Array.isArray(o)) {
+        const out: unknown[] = [];
+        memo.set(o, out);
+        for (const x of o) out.push(go(x));
+        return out;
+      }
+      if (o instanceof Map) {
+        const out = new Map();
+        memo.set(o, out);
+        for (const [k, x] of o) out.set(go(k), go(x));
+        return out;
+      }
+      if (o instanceof Set) {
+        const out = new Set();
+        memo.set(o, out);
+        for (const x of o) out.add(go(x));
+        return out;
+      }
+      const out: Record<string, unknown> = {};
+      memo.set(o, out);
+      for (const [k, x] of Object.entries(o)) out[k] = go(x, k);
+      if (r !== undefined) copySourceRef(o, out);
+      return out;
+    };
+    const fields: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(fb.fields)) fields[k] = go(x, k);
+    const steps = fb.steps.map((x) => go(x)) as ResumeStep[];
+    return bad ? undefined : { level: fb.level, fields, steps };
+  }
+
+  /**
+   * 組んでいる表のセルの flexItemCaps (鍵は、罫線をつぶした後の表のセル) が、前の組版の、対応するセルと同じか。
+   * 直した所の中のセル (続きでは組まない行) は比べない。入力の節の番号を持たないセルに値があれば、揃わないとする
+   */
+  private spliceSideOk(t: SpliceTarget, olds: TableStep[], nows: TableStep[], old: WeakMap<object, unknown>, now: WeakMap<object, unknown>): boolean {
+    const cells = (root: unknown, out: object[]) => {
+      const seen = new Set<object>();
+      const go = (v: unknown) => {
+        if (!v || typeof v !== 'object' || seen.has(v)) return;
+        seen.add(v);
+        if ((v as { type?: unknown }).type === 'table-cell') out.push(v);
+        for (const x of Array.isArray(v) ? v : Object.values(v)) go(x);
+      };
+      go(root);
+      return out;
+    };
+    for (let k = 0; k < nows.length; k++) {
+      const byRef = new Map<number, unknown>();
+      for (const c of cells(nows[k].node ?? nows[k].table, [])) {
+        const r = sourceRef(c);
+        const v = now.get(c);
+        if (r === undefined) {
+          if (v !== undefined) return false;
+        } else byRef.set(r, v);
+      }
+      for (const c of cells(olds[k].node ?? olds[k].table, [])) {
+        const r = sourceRef(c);
+        const v = old.get(c);
+        const nr = r === undefined ? undefined : mapRef(t.map, r);
+        if (nr === undefined) {
+          if (r === undefined && v !== undefined) return false;
+          continue;
+        }
+        if (byRef.get(nr) !== v) return false;
+      }
+    }
+    return true;
+  }
+
+  /** 前の組版の境目 pb から後ろのページと警告を、この文書の節に付け替えられるか (直した所の中の節を指していないか) */
+  private spliceCheck(t: SpliceTarget, from: number, to: number, warnFrom: number, warnTo: number): boolean {
+    const m = t.map;
+    const nodes = this.docNodes;
+    if (!nodes) return false;
+    // 行番号 (axf:line-number) の行は、番号をページをまたいで数えるので (addLineMarks)、繋がない (直した所で行の数が変わると、番号がずれる)
+    const okRef = (n: LNode): boolean => !n.lnum && (n.ref === undefined || mapRef(m, n.ref) !== undefined) && (n.fxRef === undefined || mapRef(m, n.fxRef) !== undefined) && n.children.every(okRef);
+    const okNode = (x: object): boolean => {
+      const r = sourceRef(x);
+      const nr = r === undefined ? undefined : mapRef(m, r);
+      return nr !== undefined && (nodes[nr] as { type?: unknown } | undefined)?.type === (x as { type?: unknown }).type;
+    };
+    for (let j = from; j < to; j++) {
+      const p = t.memo.built[j];
+      if (!okRef(p.root) || !p.abs.every(okRef) || !p.staticContent.every(okNode) || !p.markers.every((mk) => !mk.marker || okNode(mk.marker))) return false;
+    }
+    const W = t.rec.warnStart;
+    for (const d of t.memo.warnings.slice(warnFrom - W, warnTo - W)) {
+      const r = d.source?.sourceRef;
+      if (r !== undefined && mapRef(m, r) === undefined) return false;
+    }
+    return true;
+  }
+
+  /**
+   * 前の組版の境目 pb から後ろのページを、この文書の page-sequence seq のページにし (入力の節の番号をずらし、柱・マーカーの節と seq を付け替え、
+   * 画像を知らせ直す)、その間の警告を、場所を引き直して足す (spliceCheck が通ったもの)
+   */
+  private spliceAdopt(t: SpliceTarget, from: number, to: number, warnFrom: number, warnTo: number, seq: LPageSequence): PageBuild[] {
+    const m = t.map;
+    const nodes = this.docNodes!;
+    const seen = new Set<LNode>();
+    const shift = (n: LNode) => {
+      if (seen.has(n)) return;
+      seen.add(n);
+      if (n.ref !== undefined) n.ref = mapRef(m, n.ref)!;
+      if (n.fxRef !== undefined) n.fxRef = mapRef(m, n.fxRef)!;
+      for (const c of n.children) shift(c);
+    };
+    const remap = <T extends object>(x: T): T => nodes[mapRef(m, sourceRef(x)!)!] as T;
+    const assets = this.options.assets;
+    const noteImages = (n: LNode) => {
+      if (n.image?.src) assets?.get(n.image.src);
+      for (const c of n.children) noteImages(c);
+    };
+    const out = t.memo.built.slice(from, to);
+    for (const p of out) {
+      if (m.delta) {
+        shift(p.root);
+        p.abs.forEach(shift);
+      }
+      p.seq = seq;
+      // 箱の効果を、この文書の物に替える
+      if (this.paintEffects) {
+        const seen = new Set<LNode>();
+        this.swapFx(p.root, seen);
+        for (const a of p.abs) this.swapFx(a, seen);
+      }
+      p.staticContent = p.staticContent.map(remap);
+      p.markers = p.markers.map((mk) => (mk.marker ? { ...mk, marker: remap(mk.marker) } : mk));
+      if (assets) {
+        noteImages(p.root);
+        p.abs.forEach(noteImages);
+      }
+    }
+    const W = t.rec.warnStart;
+    const pageShift = t.ordinal - t.memo.ordinal;
+    for (const d of t.memo.warnings.slice(warnFrom - W, warnTo - W)) {
+      const r = d.source?.sourceRef;
+      if (r === undefined) {
+        this.warnings.push(d);
+        continue;
+      }
+      const { line: _l, column: _c, element: _e, file: _f, sourceRef: _r, ...keep } = d.source!;
+      const base = { ...d, source: { ...keep, ...(keep.page !== undefined ? { page: keep.page + pageShift } : {}) } };
+      this.warnings.push(withSource(base, nodes[mapRef(m, r)!]));
+    }
+    return out;
+  }
+
+  /** 組版の終わり: この文書の組版を、次の文書のために覚える (領域の木にしたページを手放さない) */
+  private storeReuse(doc: LDocument) {
+    const lr = this.options.layoutReuse;
+    const now = this.reuseNow;
+    // 索引のある文書は、次の文書で使い回さない (prevSeqMemo・spliceTarget) ので覚えない
+    if (!lr || !now || this.cutInfo || this.indexKeys) return;
+    lr.prev = {
+      env: now.env,
+      hyphenate: now.hyphenate,
+      docPrint: now.docPrint,
+      tokens: now.tokens,
+      nodes: this.docNodes ?? [],
+      cost: this.reuseCost.cost,
+      hit: this.reuseCost.hit,
+      seqs: doc.sequences.map((q, si) => {
+        const memo = this.seqMemo[si];
+        const start = sourceRef(q);
+        const end = sourceRefEnd(q);
+        return memo && start !== undefined && end !== undefined ? { print: now.prints[si], start, end, memo } : undefined;
+      }),
+    };
+  }
+
   /** 1 回の組版: ページの論理の木 (pagesBuilt) と、ページごとの柱など (passStatics) を作る。領域の木にするのは finishTree */
   private layoutOnce(doc: LDocument): void {
     runSteps(this.onceSteps(doc));
@@ -10773,7 +12546,10 @@ export class LayoutEngine {
     this.stopPass = false;
     this.cutInfo = undefined;
     this.beyondHits = [];
+    // 前の回を、page-sequence の最初のページで止めた (notePage) ときの、ページごとの記録を外す
+    this.pageRecs = undefined;
     this.lookaheadMark = -1;
+    this.lookaheadKeep.clear();
     const maxPages = this.options.maxPages;
     let sink: ((sheet: SheetArea) => void) | undefined = this.replaySink;
     if (!sink && this.lowScan && this.passNo > 0) {
@@ -10844,17 +12620,9 @@ export class LayoutEngine {
             v = doc.unresolvedCitationEmpty ? '' : '?';
           }
         }
-        if (this.citeLog) {
-          // 値と、字の計測・描き方に効く書式の組ごとに 1 つ覚える (reuseCites が、組ごとに差し替えられるかを確かめる)
-          const key = JSON.stringify([id, last, format, physical]);
-          const mark = this.citeMark(v, style);
-          const e = this.citeLog.get(key);
-          if (!e) this.citeLog.set(key, { args: [id, last, format, physical], uses: [{ value: v, style }], seen: new Set([mark]) });
-          else if (!e.seen.has(mark)) {
-            e.seen.add(mark);
-            e.uses.push({ value: v, style });
-          }
-        }
+        this.logCite(id, last, format, physical, v, style);
+        const recs = this.pageRecs;
+        if (recs?.length) recs[recs.length - 1].cites.push([id, last, format, physical, v, style, pageNumber]);
         // 覚える計測の途中なら、引いた参照と値を記録する (Flow.memoMeasure が、覚えを使い回す前に引き直して確かめる)
         if (volatile.active > 0) volatile.cites.push({ args: [id, last, format, physical, style], value: v });
         return v;
@@ -10884,16 +12652,16 @@ export class LayoutEngine {
       // 前回の組版と同じ条件 (開始ページ・左右のずれ・脚注の続き番号・参照したページ番号の値) なら、前回のページをそのまま使う。
       // ページごとに脚注番号を振り直す文書は、脚注の置き場所が前回の結果に依るので使い回さない
       // メモリ節約のときは、前の回のページを持たないので使い回さない
-      const memo = this.lowMemory ? undefined : this.seqMemo[si];
+      // 組み直しの 1 回目は、前の文書の、中身の同じ page-sequence の記録 (器の使い回し)
+      const memo = this.lowMemory ? undefined : (this.seqMemo[si] ?? (this.passIndex === 1 ? this.prevSeqMemo(si) : undefined));
       // 索引の並びを持つ sequence は、いまのページで作り直しても同じ並びになるときだけ使い回す (索引の無い sequence は、いつも同じ)
       const sameIndexLists = (m: SeqMemo) => !m.indexLists?.size || (!!this.indexPrev && [...m.indexLists].every(([list, ex]) => (this.indexUsed.get(list) ?? this.buildIndexList(list, this.indexPrev!)).sig === ex.sig));
-      if (memo && !this.fnResetUsed && memo.first === first && memo.sideDelta === sideDelta && memo.fnCarryIn === this.fnCarry && sameIndexLists(memo) && this.reuseCites(memo)) {
+      // 前の文書の記録は、参照の値を adoptPrev が確かめる (reuseCites は、前の回の値と引き比べるもので、組み直しの 1 回目には使えない)
+      if (memo && !this.fnResetUsed && memo.first === first && memo.sideDelta === sideDelta && memo.fnCarryIn === this.fnCarry && sameIndexLists(memo) && (this.seqMemo[si] === memo ? this.reuseCites(memo) : this.adoptPrev(si, memo, pages.length))) {
         if (this.indexKeys) memo.built.forEach((pb, k) => this.pageOrdinal.set(pb, pages.length + k));
         for (const [list, ex] of memo.indexLists ?? []) this.indexUsed.set(list, ex);
         pushAll(pages, memo.built);
-        for (const [k, v] of memo.idPages) this.idPages.set(k, { ...v });
-        for (const [k, v] of memo.idPageBuild) this.idPageBuild.set(k, v);
-        for (const [k, v] of memo.idPageBuildLast) this.idPageBuildLast.set(k, v);
+        this.writeMemoIds(memo);
         pushAll(this.warnings, memo.warnings);
         if (memo.beyond) pushAll(this.beyondHits, memo.beyond);
         if (memo.cites.size) this.citationUsed = true;
@@ -10906,6 +12674,10 @@ export class LayoutEngine {
       const warnStart = this.warnings.length;
       const beyondStart = this.beyondHits.length;
       const idsBefore = this.lowMemory ? undefined : this.snapshotIds();
+      const handBefore = this.fonts.handedCount;
+      const noticesBefore = this.fonts.noticeCount;
+      const limitsHit = new Set<LimitName>();
+      limitTap.fn = (n) => limitsHit.add(n);
       this.citeLog = new Map();
       if (this.indexKeys) {
         this.indexLog = new Map();
@@ -10913,14 +12685,6 @@ export class LayoutEngine {
         this.indexSeq = seq;
       }
       const nextIpn = doc.sequences[si + 1]?.initialPageNumber;
-      // 本文 (flow) の置かれたページの数 (force-page-count で末尾に足す白ページを含まない)
-      let flowPages = 0;
-      const layoutSequence = (s: LPageSequence, d: ResolvedStyle, h: FlowHost, f: number, li: number | null) => {
-        const body = this.layoutSequence(s, d, h, f, li);
-        flowPages = body.length;
-        // 段組の page-sequence を先頭から N ページで止めた (layoutColumnPass が受けた): 白ページは足さない
-        return this.stopPass ? body : this.forcePageCount(body, s, d, f, li, nextIpn);
-      };
       const conds = conditionalMasters(seq);
       // rest も、最後のページかどうかで決まる (§7.27.14: 最初でも最後でもないページ)
       const needsLast = conds.some((a) => a.when.pagePosition === 'last' || a.when.pagePosition === 'only' || a.when.pagePosition === 'rest');
@@ -10933,18 +12697,60 @@ export class LayoutEngine {
         for (const k of this.idPages.keys()) if (!idKeys.has(k)) this.idPages.delete(k);
         for (const k of this.idPageBuild.keys()) if (!idKeys.has(k)) this.idPageBuild.delete(k);
       };
+      // 組む手間の上限に当たったか (この page-sequence を組む前)。捨てる組版で当たったなら、組み直すときに当たり直して警告を出し直す
+      // (警告は捨てるので、当たった印だけが残ると、警告が出なくなる)
+      const hitBefore = host.nest?.hit ?? false;
+      /** 組み直す前に、捨てる組版の警告 (見張りのページの印も) と id のページを消す */
+      const resetFor = () => {
+        if (this.lookaheadMark > mark) this.lookaheadMark = -1;
+        forgetIds();
+        if (host.nest) host.nest.hit = hitBefore;
+      };
+      // 1 段の page-sequence は、ページの境目を写して組み、最後のページのマスターを選び直すとき、境目から続けて組む (design/resumable-flow.md の 4.3 の 1)
+      // 器の使い回しで、前の文書のこの page-sequence と、直した所の後ろの境目で揃ったら、残りのページを前の組版から繋ぐ
+      const run = sequenceMasters(seq).some((m) => (m.columns?.count ?? 1) > 1) ? undefined : this.sequenceRun(seq, docStyle, host, first, needsLast, this.spliceTarget(si, seq, first, sideDelta, pages.length, needsLast));
+      // 本文 (flow) の置かれたページの数 (force-page-count で末尾に足す白ページを含まない)
+      let flowPages = 0;
+      const layoutSequence = (li: number | null, again: boolean) => {
+        // 上限から遠い所の組み直しなら、組み直しで作った流れを、組む手間の上限の数えから除く (FlowHost.nest.charged)
+        let uncount = false;
+        const flows0 = this.stats.flows;
+        let body = again ? run?.relayout(li, resetFor, (far) => (uncount = far)) : undefined;
+        if (again) {
+          const rs = (this.stats.resume ??= { boundaries: 0, resumable: 0, reasons: {}, resumed: 0, mismatched: 0, lastFromBoundary: 0, lastFromStart: 0 });
+          if (body) rs.lastFromBoundary++;
+          else rs.lastFromStart++;
+        }
+        if (!body) {
+          if (again) {
+            this.warnings.length = mark;
+            resetFor();
+          }
+          body = this.layoutSequence(seq, docStyle, host, first, li, run);
+        }
+        if (uncount && host.nest) {
+          const n = this.stats.flows - flows0;
+          host.nest.charged = (host.nest.charged ?? 0) - n;
+          const rs = this.stats.resume!;
+          rs.uncounted = (rs.uncounted ?? 0) + n;
+        }
+        flowPages = body.length;
+        // 段組の page-sequence を先頭から N ページで止めた (layoutColumnPass が受けた): 白ページは足さない
+        return this.stopPass ? body : this.forcePageCount(body, seq, docStyle, first, li, nextIpn);
+      };
       let built: PageBuild[];
       try {
-        built = layoutSequence(seq, docStyle, host, first, lastIndex);
+        built = layoutSequence(lastIndex, false);
         if (needsLast && !this.stopPass) {
           for (let k = 0; k < 3 && built.length !== lastIndex; k++) {
             lastIndex = built.length;
-            this.warnings.length = mark;
-            if (this.lookaheadMark > mark) this.lookaheadMark = -1;
-            forgetIds();
-            built = layoutSequence(seq, docStyle, host, first, lastIndex);
+            built = layoutSequence(lastIndex, true);
             if (built.length === lastIndex || this.stopPass) break;
-            if (k === 2) this.warnings.push(diag('layout/not-converged', msg('最終ページ用ページマスターの適用でページ数が収束しませんでした', 'the page count did not converge while applying the last-page page master'), { what: 'last-page-master' }));
+            if (k === 2) {
+              this.warnings.push(diag('layout/not-converged', msg('最終ページ用ページマスターの適用でページ数が収束しませんでした', 'the page count did not converge while applying the last-page page master'), { what: 'last-page-master' }));
+              // page-sequence の全体の警告なので、文書がちょうど N + 1 ページで終わって見張りのページを捨てるときも残す
+              this.keepLookaheadWarnings(this.warnings.length - 1);
+            }
           }
         }
       } catch (e) {
@@ -10953,7 +12759,7 @@ export class LayoutEngine {
         // 最後のページは分からないままなので、条件付きのマスター (§7.27.14) は、最後でないページとして選んだまま
         built = this.seqBuilding;
         resetFlowDepth(host);
-        if (this.lookaheadMark >= 0) this.warnings.length = Math.min(this.warnings.length, this.lookaheadMark);
+        this.dropLookaheadWarnings();
       }
       if (this.stopPass) {
         const before = Math.min(pages.length, maxPages!);
@@ -10978,17 +12784,24 @@ export class LayoutEngine {
       pageNo = first + built.length;
       this.fnCarry = this.lastFoot?.lastNumber ?? this.fnCarry;
       this.lastFoot = undefined;
-      if (!this.lowMemory) this.seqMemo[si] = { first, sideDelta, fnCarryIn, cites: this.citeLog, built, fnCarryOut: this.fnCarry, warnings: this.warnings.slice(warnStart), ...this.idDiff(idsBefore!), ...(this.indexLog?.size ? { indexLists: this.indexLog } : {}), ...(this.beyondHits.length > beyondStart ? { beyond: this.beyondHits.slice(beyondStart) } : {}) };
+      const runRec = this.reuseNow ? run?.record() : undefined;
+      if (!this.lowMemory) this.seqMemo[si] = { first, ordinal: pages.length - built.length, sideDelta, fnCarryIn, cites: this.citeLog, built, fnCarryOut: this.fnCarry, warnings: this.warnings.slice(warnStart), ...this.idDiff(idsBefore!), ...(this.indexLog?.size ? { indexLists: this.indexLog } : {}), ...(this.beyondHits.length > beyondStart ? { beyond: this.beyondHits.slice(beyondStart) } : {}), ...(runRec ? { run: runRec } : {}), ...(this.reuseNow && this.fonts.handedCount > handBefore ? { handed: this.fonts.handedSince(handBefore) } : {}), ...(limitsHit.size ? { limits: [...limitsHit] } : {}), ...(this.fonts.noticeCount > noticesBefore ? { notices: true } : {}), ...(nextIpn !== undefined ? { nextIpn } : {}) };
+      limitTap.fn = undefined;
       this.citeLog = undefined;
       this.indexLog = undefined;
       this.indexSeq = undefined;
       if (this.lowMemory) this.releaseLow(pages, pages.length - built.length, sink, prevTotal, host, docStyle, staticWarnings);
     }
 
+    // 組む手間の上限の数えの、回ごとの最大 (器の使い回しは、上限の近くの文書では使わない。setupReuse)
+    if (host.nest) {
+      this.reuseCost.cost = Math.max(this.reuseCost.cost, this.stats.flows - host.nest.base + (host.nest.charged ?? 0));
+      if (host.nest.hit) this.reuseCost.hit = true;
+    }
     // 先頭から N ページで止める: 文書がちょうど N + 1 ページで終わった (N + 2 ページ目を作らなかった) ときも、見張りのページを捨てる
     if (maxPages !== undefined && !this.stopPass && pages.length > maxPages) {
       this.stopPass = true;
-      if (this.lookaheadMark >= 0) this.warnings.length = Math.min(this.warnings.length, this.lookaheadMark);
+      this.dropLookaheadWarnings();
       this.cutPages(pages, [], maxPages, doc.sequences[doc.sequences.length - 1]);
     }
     // 止めた回は、総ページ数が分からない (-1。柱の中の総ページ数は、決まらない字にする)
@@ -11032,9 +12845,11 @@ export class LayoutEngine {
     const pages = this.pagesBuilt;
     const statics = this.passStatics;
     this.passStatics = [];
+    // 器が次の文書のために覚えるときは、ページの論理の木を手放さない (storeReuse)
+    const keep = !!this.reuseNow && !this.cutInfo;
     const sheets: SheetArea[] = pages.map((p, i) => {
       const sheet = this.buildSheet(p, statics[i]);
-      releasePage(p);
+      if (!keep) releasePage(p);
       return sheet;
     });
     this.registerGradients(sheets);
@@ -11763,15 +13578,45 @@ export class LayoutEngine {
     return { pages, needs, mark, idKeys, decided, refs };
   }
 
-  private layoutSequence(seq: LPageSequence, docStyle: ResolvedStyle, host: FlowHost, firstNumber: number, lastIndex: number | null): PageBuild[] {
+  /** page-sequence を初めから組む。run は 1 段の page-sequence の組み (onceSteps が、境目から続けて組むために作って渡す) */
+  private layoutSequence(seq: LPageSequence, docStyle: ResolvedStyle, host: FlowHost, firstNumber: number, lastIndex: number | null, run?: SeqRun): PageBuild[] {
     if (sequenceMasters(seq).some((m) => (m.columns?.count ?? 1) > 1)) {
       return this.layoutColumnSequence(seq, docStyle, host, firstNumber, lastIndex);
     }
-    const pages: PageBuild[] = [];
-    this.seqBuilding = pages;
+    return (run ?? this.sequenceRun(seq, docStyle, host, firstNumber, false)).layout(lastIndex);
+  }
+
+  /**
+   * 1 段の page-sequence の組み (design/resumable-flow.md の 4.2)。layout は初めから組み、relayout は、写したページの境目から続けて組む
+   * (最後のページのマスターを選び直すとき。続けられる境目が無ければ undefined)。capture なら、ページの境目を写す
+   * (LayoutOptions.resumeCheck のときも写し、続きから組める境目のすべてで、1 ページ先まで組んでから境目に戻って続きから組む)
+   */
+  private sequenceRun(seq: LPageSequence, docStyle: ResolvedStyle, host: FlowHost, firstNumber: number, capture: boolean, splice?: SpliceTarget): SeqRun {
+    const check = this.options.resumeCheck ?? resumeProbe.check;
+    const late = check ? 0 : (resumeProbe.late ?? 0);
+    /** 試し (指紋を比べ、境目のときの id の記録を持つ) */
+    const probe = check || late > 0;
+    // 器が次の文書のために覚えるときも、境目を写す (次の文書が、この組版と繋ぐ)
+    const keep = capture || probe || (!!this.reuseNow && !this.indexKeys);
+    if (probe) splice = undefined;
+    /** 次の文書が繋ぐための記録 (record) の、組みの初めと終わりの警告の数・脚注の最後の番号・ページの数 */
+    const recAt: { warnStart: number; warnEnd: number; footEnd: number; pages: number; rootI?: number; limit?: number; handStart: number; handed: Array<[string, LoadedFont]> } = { warnStart: 0, warnEnd: 0, footEnd: 0, pages: 0, handStart: 0, handed: [] };
+    /** 前の組版と揃った、前の組版の境目 (SPLICE を投げた所) と、繋いだ結果 */
+    let spliceAt: SeqBoundary | undefined;
+    let spliced: { at: number; pages: number } | undefined;
+    /** 繋ぐ確かめ (resumeProbe.spliceVerify): 揃った境目と、そのときの警告の数 */
+    let verifyAt: { pb: SeqBoundary; warn: number } | undefined;
+    /** 前の組版と初めに揃った境目 (そこから SPLICE_LEAD ページまで組んでから繋ぐ) */
+    let alignedAt: number | undefined;
+    /** 繋ぐ確かめで、前を飛ばしたはずの境目 (そこまで組んだら、前の組版と同じかを確かめる) */
+    let prefixAt: SeqBoundary | undefined;
+    let lastIndex: number | null = null;
+    let pages: PageBuild[] = [];
+    let recs: PageRecord[] = [];
     const flowSt = resolveStyle(resolveStyle(docStyle, seq), seq.flow);
     const wm = flowSt.wm;
     const mkPage = (blank = false) => {
+      recs.push({ warnStart: this.warnings.length, ids: [], cites: [] });
       const index = pages.length + 1;
       const number = firstNumber + pages.length;
       const alt = this.selectMaster(seq, index, number, lastIndex, blank);
@@ -11791,8 +13636,10 @@ export class LayoutEngine {
       this.notePage(pages.length);
       return { p, rootI, limit };
     };
-    const firstPage = mkPage();
-    let cur = firstPage.p;
+    let firstPage!: ReturnType<typeof mkPage>;
+    let cur!: PageBuild;
+    let foot!: FootnoteCtx;
+    let flow!: Flow;
     const pageSize = (): PageSizeInfo => {
       const r = cur.root;
       const h = wm === 'horizontal-tb';
@@ -11801,25 +13648,28 @@ export class LayoutEngine {
     // 脚注本体: 脚注用スタイル (既定は本文の 0.8 倍・左/上揃え) で、本文領域の inline サイズいっぱいに組む
     const fo = seq.footnotes ?? {};
     const footSt = resolveStyle(flowSt, { textAlign: 'start', textIndent: 0, ...fo.style, fontSize: fo.style?.fontSize ?? flowSt.fontSize * 0.8 });
-    // 脚注本体の幅は、参照する行のあるページの本文領域の幅 (幅の違うページマスターへ続いた段落の脚注は、そのページの幅で組む)
-    const foot = new FootnoteCtx(fo.continueNumbering ? { ...fo, startNumber: this.fnCarry + 1 } : fo, (fn: LFootnote, label: string, width = firstPage.rootI) => {
-      const sub = new Flow(host, { wm, rootI: width, abs: () => [], pageSize, measure: true });
-      sub.layoutBlock(footBlock(fn, fo, label, footSt.fontSize, wm), footSt);
-      const { height, after } = sub.finishWithTrailing();
-      return { node: newNode('block', wm, { isize: width, bsize: height, children: sub.root.children }), height, ...(after > 0 ? { after } : {}) };
-    }, (children) => {
-      const sub = new Flow(host, { wm, rootI: firstPage.rootI, abs: () => [], pageSize, measure: true });
-      sub.layoutChildren(children, flowSt);
-      const height = sub.finishAtomic();
-      return { node: newNode('block', wm, { isize: firstPage.rootI, bsize: height, children: sub.root.children }), height };
-    });
-    this.lastFoot = foot;
-    if (fo.reset === 'page') {
-      this.fnResetUsed = true;
-      foot.pageOrder = this.fnOrder;
-      const seqKey = this.seqKey(seq);
-      foot.onPlaced = (fn, page) => this.fnPlaced.set(fn, seqKey * 1e6 + page); // ページ番号は page-sequence ごとに重なりうる
-    }
+    const makeFoot = () => {
+      // 脚注本体の幅は、参照する行のあるページの本文領域の幅 (幅の違うページマスターへ続いた段落の脚注は、そのページの幅で組む)
+      const f = new FootnoteCtx(fo.continueNumbering ? { ...fo, startNumber: this.fnCarry + 1 } : fo, (fn: LFootnote, label: string, width = firstPage.rootI) => {
+        const sub = new Flow(host, { wm, rootI: width, abs: () => [], pageSize, measure: true });
+        sub.layoutBlock(footBlock(fn, fo, label, footSt.fontSize, wm), footSt);
+        const { height, after } = sub.finishWithTrailing();
+        return { node: newNode('block', wm, { isize: width, bsize: height, children: sub.root.children }), height, ...(after > 0 ? { after } : {}) };
+      }, (children) => {
+        const sub = new Flow(host, { wm, rootI: firstPage.rootI, abs: () => [], pageSize, measure: true });
+        sub.layoutChildren(children, flowSt);
+        const height = sub.finishAtomic();
+        return { node: newNode('block', wm, { isize: firstPage.rootI, bsize: height, children: sub.root.children }), height };
+      });
+      this.lastFoot = f;
+      if (fo.reset === 'page') {
+        this.fnResetUsed = true;
+        f.pageOrder = this.fnOrder;
+        const seqKey = this.seqKey(seq);
+        f.onPlaced = (fn, page) => this.fnPlaced.set(fn, seqKey * 1e6 + page); // ページ番号は page-sequence ごとに重なりうる
+      }
+      return f;
+    };
     let beforeSepEntry: FootEntry | undefined;
     const beforeSep = () => {
       if (!seq.beforeFloatSeparator?.length) return undefined;
@@ -11844,34 +13694,447 @@ export class LayoutEngine {
           },
         }
       : undefined;
-    const flow: Flow = new Flow({ ...host, pageNumber: () => cur.number, ...(seq.spanAreas ? { areaOrigin: () => flow.areaTop } : {}) }, {
-      wm,
-      footnotes: foot,
-      ...(sideNotes ? { sideNotes } : {}),
-      beforeSep,
-      discardLeading: !!seq.discardLeadingSpace,
-      ...(seq.spanAreas ? { spanAreas: true } : {}),
-      rootI: firstPage.rootI,
-      root: cur.root,
-      limit: firstPage.limit,
-      pages: {
-        addMarkers: (list) => pushAll(cur.markers, this.takeIndexPoints(list, (id) => this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur))),
-        markerEnd: (key) => (cur.markerEnds ??= []).push(key),
-        noteId: (id) => {
-          this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur);
+    // ── ページの境目の写し (design/resumable-flow.md の 4.2) ──
+    /** 写した境目 (ページの数で引く。続きから組んだら、続けた境目より後ろのものは捨てる) */
+    const bounds: SeqBoundary[] = [];
+    /** 組むときに読んだ、いちばん後ろの入力の節の番号 (5.1) */
+    const read = { to: -1 };
+    /** resumeCheck: 次の境目で戻る境目と、戻ったか。戻って続きから組んだときの、境目の指紋 (初めのときの指紋と比べる) */
+    let checkAt: SeqBoundary | undefined;
+    let checkDone = false;
+    const firstDigests = new Map<number, string>();
+    const rstats = (): ResumeStats => (this.stats.resume ??= { boundaries: 0, resumable: 0, reasons: {}, resumed: 0, mismatched: 0, lastFromBoundary: 0, lastFromStart: 0 });
+    const onBoundary = (level: 'column' | 'page' | 'blank') => {
+      const fb = flow.captureBoundary(level);
+      const rs = rstats();
+      rs.boundaries++;
+      if (fb.reason) rs.reasons[fb.reason] = (rs.reasons[fb.reason] ?? 0) + 1;
+      else rs.resumable++;
+      const fm = foot.mark();
+      const nest = host.nest;
+      const b: SeqBoundary = {
+        index: pages.length,
+        flow: fb,
+        foot,
+        footMark: fm,
+        warn: this.warnings.length,
+        readTo: read.to,
+        ...(beforeSepEntry ? { beforeSep: beforeSepEntry } : {}),
+        hand: this.fonts.handedCount,
+        digest: fb.reason || !probe ? '' : boundaryDigest(fb, [pages.length, fm.counter, fm.assigned, lastIndex, read.to, this.warnings.length - recs[0].warnStart]),
+        counts: { flows: this.stats.flows, blocks: this.stats.blocks, tables: this.stats.tables, nestHit: !!nest?.hit, nestD: nest?.d ?? 0, nestCd: nest?.cd ?? 0, trial: host.condense?.trial ?? 0 },
+        // 試し: 境目のときの id のページの記録 (戻るとき、そのまま戻す)
+        ...(probe && !fb.reason ? { ids: this.snapshotIds() } : {}),
+      };
+      bounds.length = b.index;
+      bounds[b.index] = b;
+      // 前の組版の同じページの後の境目と、状態が揃ったら、組むのを止めて、残りのページを前の組版から繋ぐ
+      // 繋ぐ確かめ (前を飛ばす): 飛ばしたはずの境目まで組んだら、そこまでのページ・id の記録・警告の数と、境目の状態が、前の組版と同じか
+      if (prefixAt && b.index === prefixAt.index) {
+        const pb = prefixAt;
+        prefixAt = undefined;
+        const t = splice!;
+        const owners = this.reuseOwners()!;
+        let why: string | undefined;
+        const note = (w: string) => (why ??= w);
+        const view = (ps: PageBuild[]) => ps.map(({ lineMarked: _m, ...p }) => p);
+        const idsOf = (rs: PageRecord[], ps: PageBuild[]) => rs.map((r) => r.ids.map(([id, n, fmt, page]) => [id, n, fmt, page && ps.indexOf(page)]));
+        const same =
+          !fb.reason &&
+          sameMapped(view(t.memo.built.slice(0, b.index)), view(pages.slice(0, b.index)), t.map, owners, (w) => note(`pages${w}`)) &&
+          sameMapped(idsOf(t.rec.recs.slice(0, b.index), t.memo.built), idsOf(recs.slice(0, b.index), pages), t.map, owners, (w) => note(`ids${w}`)) &&
+          (pb.warn - t.rec.warnStart === b.warn - recAt.warnStart || !note('warnings')) &&
+          sameMapped(pb.foot.marked(pb.footMark), b.foot.marked(b.footMark), t.map, owners, (w) => note(`foot${w}`)) &&
+          sameMapped(spliceSteps(pb.flow.steps), spliceSteps(fb.steps), t.map, owners, (w) => note(`steps${w}`)) &&
+          sameMapped(spliceView(pb.flow.fields), spliceView(fb.fields), t.map, owners, (w) => note(`fields${w}`));
+        resumeProbe.spliceVerify?.({ same, at: b.index, pages: b.index, prefix: true, ...(why ? { why } : {}) });
+      }
+      // 揃っても、前の組版の境目が後ろにある間は、SPLICE_LEAD ページまで組み続けてから繋ぐ (次の文書が、同じ所を直したとき、揃う境目が少し後ろにずれても
+      // 繋げるように、この組みの境目を後ろまで持つ。揃った後の組みは、前の組版と同じになるので、繋ぐ所はどこでもよい)
+      if (splice && !spliceAt && !fb.reason && b.index > 0) {
+        const pb = splice.rec.bounds[b.index];
+        // 次の境目が前の組版にあり、続きから組めるときだけ先へ延ばす (揃った後は、この組みの境目も前の組版と同じになる)
+        const next = splice.rec.bounds[b.index + 1];
+        const defer = (alignedAt === undefined || b.index < alignedAt + SPLICE_LEAD) && !!next && !next.flow.reason && b.index + 1 < splice.rec.pages;
+        if (pb && !pb.flow.reason && (alignedAt === undefined || !defer) && spliceOk(b, pb, !defer && !resumeProbe.spliceVerify)) {
+          if (defer) alignedAt = b.index;
+          else {
+            spliceAt = pb;
+            if (resumeProbe.spliceVerify) verifyAt = { pb, warn: this.warnings.length };
+            else throw SPLICE;
+          }
+        }
+      }
+      if (!probe) return;
+      if (!fb.reason) {
+        const d0 = firstDigests.get(b.index);
+        if (d0 === undefined) firstDigests.set(b.index, b.digest);
+        else if (d0 !== b.digest) rs.mismatched++;
+      }
+      if (!check) return;
+      if (checkAt && !checkDone) {
+        checkDone = true;
+        throw RESUME_CHECK;
+      }
+      checkAt = fb.reason || (resumeProbe.only !== undefined && resumeProbe.only !== b.index) ? undefined : b;
+      checkDone = false;
+    };
+    /**
+     * この組みの境目 b と、前の組版の境目 pb が揃ったか: 続きの位置が直した所の後ろで、流れの欄・続きの位置・脚注の番号付けが、
+     * 節の番号の対応の下で同じ。組んだ結果を変えないため、少しでも違えば揃わないとする (繋がずに組み続ける)
+     */
+    const spliceOk = (b: SeqBoundary, pb: SeqBoundary, commit: boolean): boolean => {
+      const t = splice!;
+      const m = t.map;
+      const why = resumeProbe.spliceWhy;
+      if (lastIndex !== null || b.flow.level !== pb.flow.level || b.counts.nestHit || pb.counts.nestHit || b.index >= t.rec.pages) return void why?.('(level)'), false;
+      const at = resumePos(b.flow.steps);
+      // 表の中の位置なら、表が直した所の後ろか、直した所が表の本体の行の中 (lo より後ろ) であること
+      if (!at || at.pos < m.newEnd || (at.table < m.newEnd && m.P < at.lo)) return void why?.(!at ? '(pos)' : '(before-edit)'), false;
+      const fa = b.footMark;
+      const fp = pb.footMark;
+      if (fa.counter !== fp.counter || fa.assigned !== fp.assigned || fa.claimed !== fp.claimed || !!b.beforeSep !== !!pb.beforeSep) return void why?.('(foot)'), false;
+      const owners = this.reuseOwners();
+      if (!owners || !sameMapped(pb.foot.marked(fp), b.foot.marked(fa), m, owners, why)) return false;
+      // 組んでいる表があれば、組んだ箱・セルを鍵にする覚えも比べる (SPLICE_SIDE)
+      const tables = b.flow.steps.filter((x): x is TableStep => x.k === 'table');
+      const fo = pb.flow.fields as Record<string, WeakMap<object, unknown>>;
+      const fn = b.flow.fields as Record<string, WeakMap<object, unknown>>;
+      const side: Array<[WeakMap<object, unknown>, WeakMap<object, unknown>]> = tables.length ? [[fo.cellCols, fn.cellCols], [fo.cellAbs, fn.cellAbs]] : [];
+      if (!sameMapped(spliceSteps(pb.flow.steps), spliceSteps(b.flow.steps), m, owners, why, side) || !sameMapped(spliceView(pb.flow.fields), spliceView(b.flow.fields), m, owners, why, side)) return false;
+      if (tables.length && !this.spliceSideOk(t, pb.flow.steps.filter((x): x is TableStep => x.k === 'table'), tables, fo.flexItemCaps, fn.flexItemCaps)) return void why?.('(flexItemCaps)'), false;
+      if (!this.spliceCheck(t, pb.index, t.rec.pages, pb.warn, t.rec.warnEnd)) return void why?.('(pages)'), false;
+      // 繋ぐページの id のページを書き、ページ番号の参照を引き直して確かめる (確かめだけのときと、揃わないときは、書いた id を戻す)
+      spliceLog = [];
+      if (!this.spliceCites(t.memo, t.rec.recs, pb.index, t.rec.pages, commit, spliceLog)) return void why?.('(cites)'), false;
+      return true;
+    };
+    /** 繋ぐページの参照と、引き直した値 (spliceCites。applySplice が参照の記録に足す) */
+    let spliceLog: Array<[PageRecord['cites'][number], string]> = [];
+    /** 前の組版の境目 pb から後ろのページを、この組みに繋ぐ (ページ・ページごとの記録・id のページ・警告・脚注の番号) */
+    const applySplice = (pb: SeqBoundary) => {
+      const t = splice!;
+      const k = pb.index;
+      const w0 = this.warnings.length;
+      this.pageRecs = undefined;
+      this.fonts.rehand(t.rec.handed.slice(pb.hand - t.rec.handStart));
+      const adopted = this.spliceAdopt(t, pb.index, t.rec.pages, pb.warn, t.rec.warnEnd, seq);
+      for (let j = 0; j < adopted.length; j++) {
+        const r = t.rec.recs[k + j];
+        pages.push(adopted[j]);
+        recs.push({ ...r, warnStart: w0 + (r.warnStart - pb.warn) });
+        this.notePage(pages.length);
+      }
+      // id のページは spliceCites が書いた。参照は、初めから組んだときと同じく、引き直した値で参照の記録に足す (ページの記録の値は、前の組版で
+      // 引いた値で、字を差し替えた後のページの字と違いうる)
+      for (const [[id, last, format, physical, , style], v] of spliceLog) this.logCite(id, last, format, physical, v, style);
+      this.pageRecs = recs;
+      foot.continueAt(t.rec.footEnd);
+      spliced = { at: k, pages: adopted.length };
+      const st = this.options.layoutReuse!.stats;
+      st.spliced++;
+      st.splicedPages += adopted.length;
+    };
+    /**
+     * 前を飛ばす境目: 前の組版の境目のうち、そこまでのページを組むのに読んだ先 (readTo) が直した所より前で、続きから組め、
+     * 組んでいる表の無い (組んだ箱を鍵にする覚えを移せないので)、いちばん後ろのもの。そこまでのページは、いまの文書でも同じに組める
+     * (入力が同じで、読んだ所が同じ。design/resumable-flow.md の 5.1)
+     */
+    const skipFrom = (): SeqBoundary | undefined => {
+      const t = splice!;
+      for (let k = Math.min(t.rec.bounds.length, t.rec.pages) - 1; k >= 1; k--) {
+        const b = t.rec.bounds[k];
+        if (b && !b.flow.reason && b.readTo < t.map.P && !b.counts.nestHit && !b.flow.steps.some((x) => x.k === 'table')) return b;
+      }
+      return undefined;
+    };
+    /**
+     * 前の組版の境目 pb までのページを前の組版から使い (ページごとの記録・id のページ・参照・警告)、境目の写しを、いまの文書の節に移して、
+     * そこから続けて組む用意をする。移せないとき・ページの参照が揃わないときは false (初めから組む)
+     */
+    const skipTo = (pb: SeqBoundary): boolean => {
+      const t = splice!;
+      const k = pb.index;
+      if (t.rec.rootI === undefined || t.rec.limit === undefined) return false;
+      const fb = this.remapBoundary(pb.flow, t.map);
+      if (!fb || !this.spliceCheck(t, 0, k, t.rec.warnStart, pb.warn)) return false;
+      const nodes = this.docNodes!;
+      const nf = makeFoot();
+      if (!nf.adoptMapped(pb.foot, pb.footMark, (fn) => nodes[sourceRef(fn) ?? -1] as LFootnote | undefined)) return false;
+      // ページの参照を引き直して確かめ、id のページを書く (揃わなければ、書いた id を戻して初めから組む)
+      const log: Array<[PageRecord['cites'][number], string]> = [];
+      if (!this.spliceCites(t.memo, t.rec.recs, 0, k, true, log)) return false;
+      foot = nf;
+      const w0 = recAt.warnStart;
+      this.pageRecs = undefined;
+      this.fonts.rehand(t.rec.handed.slice(0, pb.hand - t.rec.handStart));
+      const adopted = this.spliceAdopt(t, 0, k, t.rec.warnStart, pb.warn, seq);
+      for (let j = 0; j < adopted.length; j++) {
+        const r = t.rec.recs[j];
+        pages.push(adopted[j]);
+        recs.push({ ...r, warnStart: w0 + (r.warnStart - t.rec.warnStart) });
+        this.notePage(pages.length);
+      }
+      for (const [[id, last, format, physical, , style], v] of log) this.logCite(id, last, format, physical, v, style);
+      this.pageRecs = recs;
+      firstPage = { p: pages[0], rootI: t.rec.rootI, limit: t.rec.limit };
+      cur = pages[k - 1];
+      read.to = pb.readTo;
+      beforeSepEntry = pb.beforeSep;
+      if (host.nest) {
+        host.nest.d = pb.counts.nestD;
+        host.nest.cd = pb.counts.nestCd;
+      }
+      if (host.condense) host.condense.trial = pb.counts.trial;
+      flow = makeFlow();
+      flow.resumeFrom(fb);
+      // 次の文書のために、この境目を、いまの文書の節で覚える (前を飛ばすときに使う)
+      bounds[k] = { ...pb, flow: fb, foot, footMark: foot.mark(), warn: this.warnings.length, hand: this.fonts.handedCount, digest: '', counts: { ...pb.counts, flows: this.stats.flows, blocks: this.stats.blocks, tables: this.stats.tables }, ids: undefined };
+      const st = this.options.layoutReuse!.stats;
+      st.skipped++;
+      st.skippedPages += k;
+      return true;
+    };
+    const makeFlow = () => {
+      const f: Flow = new Flow({ ...host, pageNumber: () => cur.number, ...(seq.spanAreas ? { areaOrigin: () => f.areaTop } : {}) }, {
+        wm,
+        footnotes: foot,
+        ...(sideNotes ? { sideNotes } : {}),
+        beforeSep,
+        discardLeading: !!seq.discardLeadingSpace,
+        ...(seq.spanAreas ? { spanAreas: true } : {}),
+        rootI: firstPage.rootI,
+        root: cur.root,
+        limit: firstPage.limit,
+        ...(keep ? { record: true } : {}),
+        pages: {
+          addMarkers: (list) => pushAll(cur.markers, this.takeIndexPoints(list, (id) => this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur))),
+          markerEnd: (key) => (cur.markerEnds ??= []).push(key),
+          noteId: (id) => {
+            this.noteIdPage(id, cur.number, seq.pageNumberFormat, cur);
+          },
+          nextPage: (level) => {
+            const n = mkPage(level === 'blank');
+            cur = n.p;
+            return { root: n.p.root, limit: n.limit, rootI: n.rootI };
+          },
+          ...(keep ? { boundary: onBoundary } : {}),
         },
-        nextPage: (level) => {
-          const n = mkPage(level === 'blank');
-          cur = n.p;
-          return { root: n.p.root, limit: n.limit, rootI: n.rootI };
-        },
+        abs: () => cur.abs,
+        pageSize,
+      });
+      return f;
+    };
+    /**
+     * 境目 b に戻る: 境目までのページ・ページごとの記録・脚注の番号付け・器の側の記録を、境目のときのものにし、写しから流れを作る。
+     * mode が check なら、境目のときの器の状態にすっかり戻す (id のページ・警告・組んだ回数)。relayout なら、組み直すときと同じ状態にする
+     * (警告と id のページは、呼ぶ側が組み直す前と同じに戻してある。そこに、境目までのページの分を書き直す)
+     */
+    const resumeAt = (b: SeqBoundary, mode: 'check' | 'relayout') => {
+      pages.length = b.index;
+      cur = pages[b.index - 1];
+      recs.length = b.index;
+      this.seqBuilding = pages;
+      this.pageRecs = recs;
+      if (mode === 'check') {
+        this.warnings.length = b.warn;
+        this.idPages = new Map([...b.ids!.pages].map(([k, v]) => [k, { ...v }] as [string, IdPages]));
+        this.idPageBuild = new Map(b.ids!.build);
+        this.idPageBuildLast = new Map(b.ids!.last);
+        this.stats.flows = b.counts.flows;
+        this.stats.blocks = b.counts.blocks;
+        this.stats.tables = b.counts.tables;
+        if (host.nest) host.nest.hit = b.counts.nestHit;
+      }
+      if (mode === 'relayout') {
+        // 境目までのページで記録した id を、同じ順に書き直す (初めから組み直したときに、境目までに書くもの)
+        this.pageRecs = undefined;
+        for (const r of recs) for (const [id, n, fmt, page] of r.ids) this.noteIdPage(id, n, fmt, page);
+        this.pageRecs = recs;
+        // 進み具合の知らせ (組み直すときは、境目までのページも、作るたびに知らせていた)
+        for (let k = 1; k <= b.index; k++) this.notePage(k);
+      }
+      if (host.nest) {
+        host.nest.d = b.counts.nestD;
+        host.nest.cd = b.counts.nestCd;
+      }
+      if (host.condense) host.condense.trial = b.counts.trial;
+      read.to = b.readTo;
+      beforeSepEntry = b.beforeSep;
+      foot = makeFoot();
+      foot.adopt(b.foot, b.footMark);
+      flow = makeFlow();
+      flow.resumeFrom(b.flow);
+      rstats().resumed++;
+    };
+    const runFlow = () => {
+      flow.layoutChildren(seq.flow.children, flowSt);
+      flow.finishPaginated();
+    };
+    /** go を組む。resumeCheck なら、境目で戻る合図 (RESUME_CHECK) を受けて、戻る境目から続けて組む */
+    const drive = (go: () => void) => {
+      const prevRead = host.read;
+      if (keep) host.read = read;
+      try {
+        for (;;) {
+          try {
+            go();
+          } catch (e) {
+            if (e === SPLICE) {
+              applySplice(spliceAt!);
+              return;
+            }
+            if (e !== RESUME_CHECK) throw e;
+            const b = checkAt!;
+            go = () => {
+              resumeAt(b, 'check');
+              runFlow();
+            };
+            continue;
+          }
+          // 最後の境目からは、page-sequence の終わりまで組んでから戻る
+          if (check && checkAt && !checkDone) {
+            checkDone = true;
+            const b = checkAt;
+            go = () => {
+              resumeAt(b, 'check');
+              runFlow();
+            };
+            continue;
+          }
+          return;
+        }
+      } finally {
+        this.pageRecs = undefined;
+        host.read = prevRead;
+      }
+    };
+    /** 初めから組んだときの、page-sequence の流れの数 (relayout が、組む手間の上限に当たらないかを見積もる) */
+    let seqFlows = 0;
+    return {
+      layout: (li) => {
+        lastIndex = li;
+        pages = [];
+        recs = [];
+        this.seqBuilding = pages;
+        this.pageRecs = recs;
+        bounds.length = 0;
+        checkAt = undefined;
+        checkDone = false;
+        firstDigests.clear();
+        read.to = -1;
+        beforeSepEntry = undefined;
+        spliceAt = undefined;
+        spliced = undefined;
+        alignedAt = undefined;
+        prefixAt = undefined;
+        recAt.warnStart = this.warnings.length;
+        recAt.handStart = this.fonts.handedCount;
+        const flows0 = this.stats.flows;
+        drive(() => {
+          // 前を飛ばす: 前の組版の、直した所を読む前の境目から続けて組む
+          const pb = splice && li === null ? skipFrom() : undefined;
+          // 繋ぐ確かめのときは飛ばさずに組み、その境目で、前の組版のページと境目の状態が同じかを確かめる (onBoundary)
+          if (pb && resumeProbe.spliceVerify) {
+            if (this.spliceCheck(splice!, 0, pb.index, splice!.rec.warnStart, pb.warn) && this.spliceCites(splice!.memo, splice!.rec.recs, 0, pb.index, false)) prefixAt = pb;
+          }
+          else if (pb && skipTo(pb)) {
+            runFlow();
+            return;
+          }
+          firstPage = mkPage();
+          cur = firstPage.p;
+          foot = makeFoot();
+          flow = makeFlow();
+          runFlow();
+        });
+        if (late > 0) {
+          // 遅く戻る試し: 続きから組める境目を散らして選び、後ろから順に、その境目から終わりまで組み直す
+          const all = bounds.filter((b) => b && !b.flow.reason && (resumeProbe.lateOnly === undefined || b.index === resumeProbe.lateOnly));
+          const pick = all.length <= late ? all : Array.from({ length: late }, (_, k) => all[Math.floor(((k + 0.5) * all.length) / late)]);
+          for (const b of [...new Set(pick)].reverse()) {
+            drive(() => {
+              resumeAt(b, 'check');
+              runFlow();
+            });
+            // 続けた流れが写した境目 (b の後ろの、続きから組める最初の境目) から、もう 1 度続ける。続けた流れが写す境目の誤り
+            // (続きの位置の印を戻し忘れて、古い位置のまま写すなど) は、1 度続けただけでは結果に出ず、その境目から続けたときに出る
+            const again = bounds.find((x, k) => k > b.index && x && !x.flow.reason);
+            if (again)
+              drive(() => {
+                resumeAt(again, 'check');
+                runFlow();
+              });
+          }
+        }
+        seqFlows = this.stats.flows - flows0;
+        recAt.warnEnd = this.warnings.length;
+        recAt.footEnd = foot.lastNumber;
+        recAt.pages = pages.length;
+        recAt.rootI = firstPage.rootI;
+        recAt.limit = firstPage.limit;
+        recAt.handed = this.fonts.handedSince(recAt.handStart);
+        if (verifyAt) {
+          const { pb, warn } = verifyAt;
+          verifyAt = undefined;
+          const t = splice!;
+          const k = pb.index;
+          const owners = this.reuseOwners()!;
+          let why: string | undefined;
+          const note = (w: string) => (why ??= w);
+          const W = t.rec.warnStart;
+          const oldWarn = t.memo.warnings.slice(pb.warn - W, t.rec.warnEnd - W).map((d) => ({ ...d, source: d.source && { ...d.source, line: undefined, column: undefined, element: undefined, file: undefined } }));
+          const newWarn = this.warnings.slice(warn).map((d) => ({ ...d, source: d.source && { ...d.source, line: undefined, column: undefined, element: undefined, file: undefined, ...(d.source.page !== undefined ? { page: d.source.page - (t.ordinal - t.memo.ordinal) } : {}) } }));
+          const same =
+            t.rec.pages === pages.length &&
+            t.rec.footEnd === foot.lastNumber &&
+            // 柱などを組むときに足す印 (lineMarked) は、前の組版のページにだけある (組んだ中身ではない)
+            sameMapped(t.memo.built.slice(k, t.rec.pages).map(({ lineMarked: _m, ...p }) => p), pages.slice(k).map(({ lineMarked: _m, ...p }) => p), t.map, owners, (w) => note(`pages${w}`)) &&
+            // id の記録のページは、ページの並びの中の番号で比べる (ページそのものは上で比べた)
+            sameMapped(
+              t.rec.recs.slice(k).map((r) => r.ids.map(([id, n, fmt, page]) => [id, n, fmt, page && t.memo.built.indexOf(page)])),
+              recs.slice(k).map((r) => r.ids.map(([id, n, fmt, page]) => [id, n, fmt, page && pages.indexOf(page)])),
+              t.map,
+              owners,
+              (w) => note(`ids${w}`),
+            ) &&
+            (oldWarn.length === newWarn.length ? oldWarn.every((d, i) => (d.source?.sourceRef === undefined ? undefined : mapRef(t.map, d.source.sourceRef)) === newWarn[i].source?.sourceRef && JSON.stringify({ ...d, source: { ...d.source, sourceRef: 0 } }) === JSON.stringify({ ...newWarn[i], source: { ...newWarn[i].source, sourceRef: 0 } })) || !!note('warnings') && false : !!note(`warnings.length ${oldWarn.length}/${newWarn.length}`) && false);
+          resumeProbe.spliceVerify?.({ same, at: k, pages: t.rec.pages - k, ...(why ? { why } : {}) });
+        }
+        return pages;
       },
-      abs: () => cur.abs,
-      pageSize,
-    });
-    flow.layoutChildren(seq.flow.children, flowSt);
-    flow.finishPaginated();
-    return pages;
+      relayout: (li, reset, uncount) => {
+        // 最後のページのマスターを変えても、それより前のページのマスターは変わらない (§7.27.14 の page-position)。前の組みと新しい組みの、
+        // どちらでも最後でないページまでは同じに組めるので、その終わりより前の、続きから組める境目から続ける
+        const target = Math.min(lastIndex ?? Infinity, li ?? Infinity) - 1;
+        let b: SeqBoundary | undefined;
+        for (let k = Math.min(target, bounds.length - 1); k >= 1 && !b; k--) if (bounds[k] && !bounds[k].flow.reason) b = bounds[k];
+        // 組む手間の上限 (FlowHost.nest の budget): 初めから組み直したときに上限に当たりうるなら、初めから組む (当たり方を変えない。5.3)
+        const nest = host.nest;
+        // 上限から遠ければ (組み直しの全部を初めから組んでも、上限に当たらない見込み)、組み直しの流れは上限の数えに入れない (呼ぶ側が uncount で除く)。
+        // 境目から続けて組んでも、初めから組んでも、組み直しの中では上限に当たらず、組み直しの後の数えも同じになる
+        const far = !nest || (!nest.hit && this.stats.flows - nest.base + (nest.charged ?? 0) + 2 * seqFlows + 1000 <= nest.budget);
+        uncount(far);
+        if (!b || resumeProbe.fromStart || !far) return undefined;
+        // 組み直すときと同じく、警告と id のページを、組み直す前に戻す (境目までの警告は、そのまま残す)
+        this.warnings.length = b.warn;
+        reset();
+        lastIndex = li;
+        const target2 = b;
+        checkAt = undefined;
+        checkDone = false;
+        drive(() => {
+          resumeAt(target2, 'relayout');
+          runFlow();
+        });
+        return pages;
+      },
+      boundaryAt: (k) => bounds[k],
+      record: () => (capture || probe ? undefined : { bounds: bounds.slice(), recs: recs.slice(), ...recAt }),
+      get spliced() {
+        return spliced;
+      },
+    };
   }
 
   /** 行番号の数 (page-sequence ごと。reset="none" のときページをまたいで続ける) */
@@ -12093,6 +14356,9 @@ export class LayoutEngine {
 
   /** ページを領域の木 (SheetArea) にする: 本文 (p.root)・絶対配置の箱 (p.abs)・柱など (sheetStatics の結果) */
   private buildSheet(p: PageBuild, statics: SheetStatics): SheetArea {
+    // 効果の印 (toArea が PAINT_REF_MARK を付けるか) は、この器の文書のものを、領域の木にする同期の区間の初めに置き直す
+    // (器の組版は境目で待つので、同時に組むほかの文書が、組み始めに書き換えている)
+    paintEffectState.on = !!this.paintEffects;
     const m: PageMaster = p.master;
     const W = mm(m.width);
     const H = mm(m.height);
@@ -12131,8 +14397,12 @@ export class LayoutEngine {
       border: {},
       writingMode: wm,
       pageNumber: p.number,
-      // ページ番号の書式 (紙面のノンブルと同じもの)。10 進のページには書かない (PDF のページラベルの範囲を分けるのに使う)
-      ...(p.seq.pageNumberFormat && p.seq.pageNumberFormat !== '1' ? { pageNumberFormat: p.seq.pageNumberFormat } : {}),
+      // ページ番号の書式 (紙面のノンブルと同じもの。マスターに書式があれば、そのマスターの書式)。10 進のページには書かない
+      // (PDF のページラベルの範囲を分けるのに使う)
+      ...(() => {
+        const f = p.master.pageNumberFormat ?? p.seq.pageNumberFormat;
+        return f && f !== '1' ? { pageNumberFormat: f } : {};
+      })(),
       regionBody,
       absoluteAreas,
       behindAreas,
@@ -12514,13 +14784,13 @@ function sameStyle(a: ResolvedStyle, b: ResolvedStyle): boolean {
 }
 
 /** 鍵には、行分けの結果を変える Flow の設定 (中身の長さを測る intrinsic・最小の幅 minContent。'grid' は grid の項目の min-content: FlowInit.gridItemMin) も含める */
-function lineMemoKey(at: number, L: number, first: boolean, wm: WritingMode, intrinsic: boolean, minContent: boolean | 'grid') {
-  return `${at}|${L}|${first ? 1 : 0}|${wm}|${intrinsic ? 1 : 0}${minContent === 'grid' ? 2 : minContent ? 1 : 0}`;
+function lineMemoKey(at: number, L: number, first: boolean, wm: WritingMode, intrinsic: boolean, minContent: boolean | 'grid', blockRef: number | undefined) {
+  return `${at}|${L}|${first ? 1 : 0}|${wm}|${intrinsic ? 1 : 0}${minContent === 'grid' ? 2 : minContent ? 1 : 0}|${blockRef ?? ''}`;
 }
 
-function lineMemoGet(arr: object, at: number, run: InlineChild[], st: ResolvedStyle, L: number, first: boolean, wm: WritingMode, host: FlowHost, intrinsic: boolean, minContent: boolean | 'grid'): LineMemo | undefined {
+function lineMemoGet(arr: object, at: number, run: InlineChild[], st: ResolvedStyle, L: number, first: boolean, wm: WritingMode, host: FlowHost, intrinsic: boolean, minContent: boolean | 'grid', blockRef: number | undefined): LineMemo | undefined {
   const m = lineMemos.get(arr);
-  const key = lineMemoKey(at, L, first, wm, intrinsic, minContent);
+  const key = lineMemoKey(at, L, first, wm, intrinsic, minContent, blockRef);
   const e = m?.get(key);
   if (!e || e.measurer !== host.measurer || e.hyphenate !== host.hyphenate || e.kernAh !== !!host.kernAh || e.version !== host.measurer.version()) return undefined;
   if (e.run.length !== run.length || e.run.some((c, k) => c !== run[k])) return undefined;
@@ -12532,17 +14802,368 @@ function lineMemoGet(arr: object, at: number, run: InlineChild[], st: ResolvedSt
   return e;
 }
 
-function lineMemoSet(arr: object, at: number, run: InlineChild[], st: ResolvedStyle, L: number, first: boolean, wm: WritingMode, host: FlowHost, intrinsic: boolean, minContent: boolean | 'grid', memo: LineMemo) {
+function lineMemoSet(arr: object, at: number, run: InlineChild[], st: ResolvedStyle, L: number, first: boolean, wm: WritingMode, host: FlowHost, intrinsic: boolean, minContent: boolean | 'grid', memo: LineMemo, blockRef: number | undefined) {
   if (host.lineMemoLru?.limit === 0) return;
   if (hasDynamicInline(run) || memo.atoms.some((a) => a.kind === 'box' || a.fnRef)) return;
   let m = lineMemos.get(arr);
   if (!m) lineMemos.set(arr, (m = new Map()));
-  const key = lineMemoKey(at, L, first, wm, intrinsic, minContent);
+  const key = lineMemoKey(at, L, first, wm, intrinsic, minContent, blockRef);
   const e: LineMemoEntry = { ...memo, run: run.slice(), st, measurer: host.measurer, hyphenate: host.hyphenate, kernAh: !!host.kernAh, version: host.measurer.version() };
   const prev = m.get(key);
   if (prev) host.lineMemoLru?.forget(prev);
   m.set(key, e);
   host.lineMemoLru?.touch(arr, m, key, e);
+}
+
+/**
+ * 器 (createTypesetter の reuse) が覚える、前の文書の組版 (design/resumable-flow.md の 6.1・16・17)。次の文書の組み直しの 1 回目で、
+ * 中身の指紋と始まりの条件 (開始ページ・左右・脚注の続き番号) が同じ page-sequence は、前の文書のページを使う (入力の節の番号・柱と
+ * マーカーの入力の節を、いまの文書のものに付け替える)。中身の違う page-sequence も、ページの区切りの組みの状態が前の文書と揃えば、
+ * 前の文書のページを繋ぐ。ページ番号の参照のあるページは、参照を引き直して組んだ字と同じときだけ使う。索引・ページごとの脚注番号のある
+ * 文書・page-sequence は使わない。前の文書のページの論理の木と、ページの区切りの記録を手放さずに持つので、メモリはその分増える。
+ * メモリ節約の組版 (layoutLowMemory)・先頭から N ページで止める組版では、覚えも使いもしない (typesetToPdf は覚えないが、前に覚えたものは使う)
+ */
+export class LayoutReuse {
+  /** 前の文書の組版 (使ったら外す: 次の文書の組版が、そのページを書き換えて使うので) */
+  prev?: PrevLayout;
+  /** 使い回した page-sequence とページの数 (試験・道具が見る) */
+  readonly stats = { sequences: 0, pages: 0, spliced: 0, splicedPages: 0, skipped: 0, skippedPages: 0 };
+
+  /** 組み始めた文書を止めた: 前の文書の覚えを捨てる (止めた組版が、前の文書のページを書き換えたかもしれない) */
+  cancelDocument(): void {
+    this.prev = undefined;
+  }
+}
+
+/** 前の文書の組版 (LayoutReuse.prev) */
+interface PrevLayout {
+  /** 書体・上限・計測・選択肢・画像の印 (同じときだけ使い回す) */
+  env: string;
+  hyphenate: LayoutOptions['hyphenate'];
+  /** 文書の page-sequence の外の欄の指紋 */
+  docPrint: string;
+  /** page-sequence ごとの、中身の指紋・入力の節の番号の範囲 (page-sequence の節と、その部分木の最後の節)・最後の組みの記録 */
+  seqs: Array<{ print: string; start: number; end: number; memo: SeqMemo } | undefined>;
+  /** 入力の節ごとの指紋 (nodeTokens。この文書との節の番号の対応を作る) と、入力の節の並び (番号の順) */
+  tokens: () => string[];
+  nodes: readonly object[];
+  /** 組む手間の上限の数えの、回ごとの最大と、上限に当たったか (上限の近くの文書では使い回さない) */
+  cost: number;
+  hit: boolean;
+}
+
+/**
+ * 組版の入力の部分木の中身の指紋 (design/resumable-flow.md の 6.4): 欄の全部 (関数は除く) を、深さ優先にたどって短い字にする。
+ * 同じ物は 1 度だけたどる (書式の物を、要素の間で使い回す読み込みでも、手間は物の数ほど)
+ */
+function contentPrint(root: unknown): string {
+  const memo = new Map<object, string>();
+  const go = (v: unknown): string => {
+    if (v === null) return 'n';
+    switch (typeof v) {
+      case 'string':
+        return `s${hashText(v)}`;
+      case 'number':
+        return `d${v}`;
+      case 'boolean':
+        return v ? 'T' : 'F';
+      case 'undefined':
+        return 'u';
+      case 'object':
+        break;
+      default:
+        return 'x';
+    }
+    const o = v as object;
+    const hit = memo.get(o);
+    if (hit !== undefined) return hit;
+    memo.set(o, 'c'); // 巡るときの止め
+    let text: string;
+    if (Array.isArray(o)) text = `[${o.map(go).join(',')}]`;
+    else if (o instanceof Map) text = `M[${[...o].map(([k, x]) => `${go(k)}:${go(x)}`).join(',')}]`;
+    else if (o instanceof Set) text = `S[${[...o].map(go).join(',')}]`;
+    else if (ArrayBuffer.isView(o)) text = `B${hashText(Array.from(new Uint8Array(o.buffer, o.byteOffset, o.byteLength), (b) => String.fromCharCode(b)).join(''))}`;
+    else {
+      const parts: string[] = [];
+      for (const [k, x] of Object.entries(o)) if (typeof x !== 'function') parts.push(`${k}=${go(x)}`);
+      text = `{${parts.join(',')}}`;
+    }
+    const h = `h${hashText(text)}`;
+    memo.set(o, h);
+    return h;
+  };
+  return go(root);
+}
+
+/** 字の並びの短い指紋 (FNV-1a の 32 ビットを、種を変えて 2 つ) */
+function hashText(text: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193 ^ text.length;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193);
+    h2 = Math.imul(h2 ^ c, 0x5bd1e995);
+  }
+  return (h1 >>> 0).toString(36) + '.' + (h2 >>> 0).toString(36);
+}
+
+/**
+ * 入力の節ごとの、節そのものの指紋 (design/resumable-flow.md の 6.4)。節の欄を、子の節 (type の字を持つ物) は中身に降りずに、
+ * 自分の番号からの差 (documentNodes の順の番号) だけを入れて、短い字にする。部分木の終わりの番号の差も入れる。
+ * 2 つの文書の指紋の並びの、初めの同じ所と終わりの同じ所の外の節は、部分木ごと同じ (節の並びと形が、指紋で決まる)
+ */
+function nodeTokens(nodes: readonly object[]): string[] {
+  /** 節を含まない物の指紋 (含む物は、どの節から見たかで字が変わるので覚えない) */
+  const memo = new Map<object, string>();
+  const out: string[] = new Array(nodes.length);
+  for (let i = 0; i < nodes.length; i++) {
+    const self = nodes[i];
+    const stack = new Set<object>();
+    /** [字, 節を含んだか] */
+    const go = (v: unknown, top: boolean): [string, boolean] => {
+      if (v === null) return ['n', false];
+      switch (typeof v) {
+        case 'string':
+          return [`s${hashText(v)}`, false];
+        case 'number':
+          return [`d${v}`, false];
+        case 'boolean':
+          return [v ? 'T' : 'F', false];
+        case 'undefined':
+          return ['u', false];
+        case 'object':
+          break;
+        default:
+          return ['x', false];
+      }
+      const o = v as object;
+      if (!top && typeof (o as { type?: unknown }).type === 'string') return [`N${(sourceRef(o) ?? -1e9) - i}`, true];
+      const hit = memo.get(o);
+      if (hit !== undefined) return [hit, false];
+      if (stack.has(o)) return ['c', true];
+      stack.add(o);
+      let has = false;
+      const sub = (x: unknown) => {
+        const [t, h] = go(x, false);
+        if (h) has = true;
+        return t;
+      };
+      let text: string;
+      if (Array.isArray(o)) text = `[${o.map(sub).join(',')}]`;
+      else if (o instanceof Map) text = `M[${[...o].map(([k, x]) => `${sub(k)}:${sub(x)}`).join(',')}]`;
+      else if (o instanceof Set) text = `S[${[...o].map(sub).join(',')}]`;
+      else if (ArrayBuffer.isView(o)) text = `B${hashText(Array.from(new Uint8Array(o.buffer, o.byteOffset, o.byteLength), (b) => String.fromCharCode(b)).join(''))}`;
+      else {
+        const parts: string[] = [];
+        for (const [k, x] of Object.entries(o)) if (typeof x !== 'function') parts.push(`${k}=${sub(x)}`);
+        text = `{${parts.join(',')}}`;
+      }
+      stack.delete(o);
+      const h = `h${hashText(text)}`;
+      if (!has && !top) memo.set(o, h);
+      return [h, has];
+    };
+    out[i] = `${go(self, true)[0]}|${(sourceRefEnd(self) ?? i) - i}`;
+  }
+  return out;
+}
+
+/**
+ * 前の文書と、この文書の入力の節の番号の対応 (design/resumable-flow.md の 6.2 の 2)。節の指紋の並びの、初めの同じ所 (P 個) と
+ * 終わりの同じ所の外 (前の文書の [P, oldEnd)、この文書の [P, newEnd)) が、直した所。初めの同じ所は同じ番号、終わりの同じ所は delta だけずれる
+ */
+interface ReuseMap {
+  P: number;
+  oldEnd: number;
+  newEnd: number;
+  delta: number;
+}
+
+function diffTokens(a: readonly string[], b: readonly string[]): ReuseMap {
+  const n = Math.min(a.length, b.length);
+  let P = 0;
+  while (P < n && a[P] === b[P]) P++;
+  let S = 0;
+  while (S < n - P && a[a.length - 1 - S] === b[b.length - 1 - S]) S++;
+  return { P, oldEnd: a.length - S, newEnd: b.length - S, delta: b.length - a.length };
+}
+
+/** 前の文書の節の番号 → この文書の同じ節の番号 (直した所の中は undefined) */
+function mapRef(m: ReuseMap, r: number): number | undefined {
+  return r < m.P ? r : r >= m.oldEnd ? r + m.delta : undefined;
+}
+
+/** 組んだ箱・行内の枠の、入力の節の番号を持つ欄 (ref・効果の印の fxRef・輪郭線の outlineRef・リンクの linkRef) */
+const REF_KEYS = new Set(['ref', 'fxRef', 'outlineRef', 'linkRef']);
+
+/** 入力の節の欄の配列 → 持ち主の節と欄の名前 (sameMapped) */
+type ArrayOwners = WeakMap<object, [object, string]>;
+
+function arrayOwners(nodes: readonly object[]): ArrayOwners {
+  const out: ArrayOwners = new WeakMap();
+  for (const n of nodes) for (const [k, v] of Object.entries(n)) if (Array.isArray(v) && !out.has(v)) out.set(v, [n, k]);
+  return out;
+}
+
+/**
+ * 境目の流れの欄のうち、続きの組みが読む前に openPage が書き換えるもの (前の組版と揃ったかの比べに入れない)。閉じたページの本文の木・
+ * 保留の余白 (resetPending)・ページごとに戻す欄
+ */
+const SPLICE_IGNORED = new Set(['root', 'limit', 'cursor', 'pendPos', 'pendNeg', 'pendAny', 'pendPrec', 'pendForce', 'pendMin', 'pendAdjust', 'pendSpill', 'pendKeep', 'adjacent', 'areaTop', 'pageHasContent', 'pageItems', 'refStartItems', 'edgeBlocked', 'headerOnly', 'floats', 'beforeNodes', 'beforeUsed', 'beforeLast', 'afterFloats', 'afterUsed', 'afterBase', 'beforeSepNode', 'beforeSepH', 'marginalBottom']);
+
+/**
+ * 境目の流れの欄のうち、組んだ箱・セルを鍵にする覚え (WeakMap。中を並べられない)。前の組版と比べるときは、比べる物の組 (前の組版の物と
+ * この組みの物) のそれぞれで、覚えの有無と値を比べる (sameMapped の side)。入力のセルを鍵にする flexItemCaps は、組んでいる表のセルで比べる
+ * (spliceSideOk)。組んでいる表の無い境目では、どれも続きの組みで読まない (表を組むときに、その表のセルで作る)
+ */
+const SPLICE_SIDE = new Set(['cellAbs', 'cellCols', 'flexItemCaps']);
+
+/**
+ * 境目の流れの欄の、比べる形 (SPLICE_IGNORED を除き、開いた箱は、openPage が次の断片を作るのに読む欄だけにする。開いた箱の節は、
+ * 閉じたページの断片で、中身は読まない)
+ */
+function spliceView(fields: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(fields)) if (!SPLICE_IGNORED.has(k) && !SPLICE_SIDE.has(k)) out[k] = v;
+  out.stack = (fields.stack as Frame[]).map((f) => {
+    if (!f.opened) return f;
+    const n = f.node;
+    return { ...f, node: { kind: n.kind, wm: n.wm, isize: n.isize, colSizes: n.colSizes, flexContentI: n.flexContentI, gridContent: n.gridContent }, startB: 0, contentStartB: 0 };
+  });
+  return out;
+}
+
+/**
+ * 続きの位置の鎖の、比べる形: 表の行の塊の、保留の行・組んでいる塊・分けた断片の位置 (i・b) は、続きのページで置くときに書き直すので比べない
+ * (行の節の中身は変えない。design/resumable-flow.md の 14)
+ */
+function spliceSteps(steps: readonly ResumeStep[]): unknown[] {
+  const at = (ns: LNode[]) => ns.map((n) => ({ ...n, i: 0, b: 0 }));
+  // 行の並びを置く所の、まだ置いていない行の中の箱 (行内の箱・画像) の位置も、その行を置くときに書き直す (境目の後で、写しの中の同じ箱に書くので、
+  // 比べると前の組版の値が違って見える)。行を置く所の欄 (字・行分け・行) の中の組んだ箱は、位置を除いて比べる
+  const memo = new Map<object, unknown>();
+  const unplace = (v: unknown): unknown => {
+    if (!v || typeof v !== 'object' || sourceRef(v) !== undefined) return v;
+    const o = v as Record<string, unknown>;
+    if (memo.has(o)) return memo.get(o);
+    if (Array.isArray(o)) {
+      const out: unknown[] = [];
+      memo.set(o, out);
+      for (const x of o) out.push(unplace(x));
+      return out;
+    }
+    const proto = Object.getPrototypeOf(o);
+    if (proto !== Object.prototype && proto !== null) return o;
+    const out: Record<string, unknown> = {};
+    memo.set(o, out);
+    const box = typeof o.kind === 'string' && Array.isArray(o.children) && typeof o.b === 'number';
+    for (const [k, x] of Object.entries(o)) out[k] = box && (k === 'i' || k === 'b') ? 0 : unplace(x);
+    return out;
+  };
+  return steps.map((st) =>
+    st.k === 'table' && st.rs
+      ? { ...st, rs: { ...st.rs, pending: at(st.rs.pending), grp: at(st.rs.grp), frags: at(st.rs.frags) } }
+      : st.k === 'inline' && st.ctx
+        ? { ...st, ctx: unplace(st.ctx) }
+        : st,
+  );
+}
+
+/**
+ * 前の文書の組みの状態 a と、この文書の組みの状態 b が、節の番号の対応 m の下で同じか (design/resumable-flow.md の 5.3。
+ * 境目から先を前の組版から繋いでよいかを決める)。入力の節 (番号を持つ物) は、番号が対応すること、組んだ箱の番号の欄 (ref) は、
+ * 番号が対応することを見る。ほかの物は、欄の全部を降りて比べる。関数・WeakMap など、中を見られない物は、同じ物のときだけ同じとする
+ * (違うと見る誤りは、繋がないだけで結果を変えない)
+ */
+function sameMapped(a: unknown, b: unknown, m: ReuseMap, owners: { old: ArrayOwners; now: ArrayOwners }, why?: (path: string) => void, side: ReadonlyArray<[WeakMap<object, unknown>, WeakMap<object, unknown>]> = []): boolean {
+  // 比べた物の組 (巡る物の止め)。物の共有のしかたは比べない (同じ値の書式を、片方では 1 つの物で、もう片方では別の物で持つことがある)
+  const pairs = new Map<object, Set<object>>();
+  const path: Array<string | number> = [];
+  const eq = (x: unknown, y: unknown, key: string | number | undefined): boolean => {
+    if (!why) return same(x, y, key);
+    path.push(key ?? '');
+    const r = same(x, y, key);
+    if (!r && path.length) {
+      why(path.join('.'));
+      path.length = 0;
+    }
+    path.pop();
+    return r;
+  };
+  const same = (x: unknown, y: unknown, key: string | number | undefined): boolean => {
+    if (typeof key === 'string' && REF_KEYS.has(key) && typeof x === 'number' && typeof y === 'number') return mapRef(m, x) === y;
+    if (x === y) return true;
+    if (typeof x !== 'object' || typeof y !== 'object' || x === null || y === null) return typeof x === 'number' && typeof y === 'number' && Number.isNaN(x) && Number.isNaN(y);
+    const rx = sourceRef(x);
+    const ry = sourceRef(y);
+    if (rx !== undefined || ry !== undefined) return rx !== undefined && mapRef(m, rx) === ry && (x as { type?: unknown }).type === (y as { type?: unknown }).type;
+    let seen = pairs.get(x);
+    if (seen?.has(y)) return true;
+    if (Object.getPrototypeOf(x) !== Object.getPrototypeOf(y)) return false;
+    if (!seen) pairs.set(x, (seen = new Set()));
+    seen.add(y);
+    for (const [wo, wn] of side) {
+      const hx = wo.has(x);
+      if (hx !== wn.has(y) || (hx && !eq(wo.get(x), wn.get(y), 'side'))) return false;
+    }
+    // 入力の節の欄の配列 (子の並びなど): 持ち主の節が対応し、同じ欄なら同じ (直した所の祖先の子の並びは、直した子を含むが、
+    // 続きの位置が直した所の後ろなら、続きで読むのは後ろの子だけで、それは同じ)
+    const ox = owners.old.get(x);
+    const oy = owners.now.get(y);
+    if (ox || oy) return !!ox && !!oy && ox[1] === oy[1] && mapRef(m, sourceRef(ox[0])!) === sourceRef(oy[0]);
+    if (Array.isArray(x)) {
+      const ya = y as unknown[];
+      if (x.length !== ya.length) return false;
+      for (let i = 0; i < x.length; i++) if (!eq(x[i], ya[i], i)) return false;
+      return true;
+    }
+    if (x instanceof Map) {
+      const ym = y as Map<unknown, unknown>;
+      if (x.size !== ym.size) return false;
+      const ye = [...ym];
+      let i = 0;
+      for (const [k, v] of x) {
+        if (!eq(k, ye[i][0], undefined) || !eq(v, ye[i][1], undefined)) return false;
+        i++;
+      }
+      return true;
+    }
+    if (x instanceof Set) {
+      const ys = [...(y as Set<unknown>)];
+      if (x.size !== ys.length) return false;
+      let i = 0;
+      for (const v of x) if (!eq(v, ys[i++], undefined)) return false;
+      return true;
+    }
+    if (ArrayBuffer.isView(x)) {
+      const xa = new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
+      const yv = y as ArrayBufferView;
+      const yb = new Uint8Array(yv.buffer, yv.byteOffset, yv.byteLength);
+      return xa.length === yb.length && xa.every((v, i) => v === yb[i]);
+    }
+    if (x instanceof WeakMap || x instanceof WeakSet || x instanceof WeakRef) return false;
+    // 書体 (LoadedFont): 器が前の文書と同じ書体の組 (FontManager.signature。同じバッファ) のときだけ繋ぐので、前の文書の書体といまの文書の書体は、
+    // 同じバッファから作った別の物になる (文書ごとに @font-face の書体を作り直す)。中の fontkit の物 (fk) は、読んだ所 (stream.pos) や覚えが
+    // 読み方で変わり、組んだ結果でないので比べない。同じ鍵と同じバッファ (と可変フォントの実体の元) なら同じ書体とする
+    if ('fk' in x && 'buffer' in x && (x as { buffer: unknown }).buffer instanceof ArrayBuffer) {
+      const fx = x as { key?: unknown; buffer: unknown; instanceOf?: unknown };
+      const fy = y as { key?: unknown; buffer?: unknown; instanceOf?: unknown };
+      return fx.key === fy.key && fx.buffer === fy.buffer && eq(fx.instanceOf, fy.instanceOf, 'instanceOf');
+    }
+    const kx = Object.keys(x);
+    const ky = Object.keys(y);
+    if (kx.length !== ky.length) {
+      if (why) why(`${path.join('.')}{keys ${kx.filter((k) => !ky.includes(k)).join(',')} / ${ky.filter((k) => !kx.includes(k)).join(',')}}`);
+      return false;
+    }
+    const yo = y as Record<string, unknown>;
+    for (const k of kx) {
+      if (!Object.prototype.hasOwnProperty.call(yo, k)) return false;
+      if (!eq((x as Record<string, unknown>)[k], yo[k], k)) return false;
+    }
+    return true;
+  };
+  return eq(a, b, undefined);
 }
 
 /**
@@ -12553,30 +15174,43 @@ function lineMemoSet(arr: object, at: number, run: InlineChild[], st: ResolvedSt
  * 書体の組のものなので、いまの組の、同じ鍵の書体に差し替えて使う (印が同じなら、同じ中身のファイルを同じ設定で登録した書体)。
  * 軸の値の実体 (可変フォントの instanceOf) を使った結果は、実体の作り方が組ごとなので覚えない。
  * 持つのは、いまの文書と前の文書で使ったものだけ (startDocument)。使い回しても、組んだ結果は使い回さないときと同じ
- * (test/reuse.test.ts が、領域の木と PDF のバイト列で確かめる)
+ * (test/reuse.test.ts が、領域の木と PDF のバイト列で確かめる)。
+ * 大きさの上限に達したら、いまの文書でまだ 1 つも当たっていなければ、前の文書の項目を捨てて覚え、当たっていれば新しい段落を覚えない
+ * (当たっている間に古く使ったものから捨てると、上限より大きな文書を頭から組み直すとき、次に使う段落 (前の文書の前の方の段落) から順に捨てる
+ * ことになり、文書をまたいで 1 つも当たらない。表の多い 89 ページの文書で、前の文書の段落の覚えを全部捨てていた)。使わなくなった段落は、
+ * 次の文書の初めに捨てる (startDocument)
  */
 export class SharedLineMemo {
-  /** 覚えた段落 (Map の並びは使った順。使うたびに後ろへ移し、捨てるときは前から捨てる) */
+  /** 覚えた段落 (Map の並びは使った順。使うたびに後ろへ移す) */
   private entries = new Map<string, SharedLineEntry>();
   private doc = 0;
   /** 覚えている大きさ (lineMemoSize と同じ数え方) */
   private atoms = 0;
+  /** いまの文書で、覚えから使い回した数 (上限に達したとき、前の文書の項目を捨てて覚えるかを決める。set) */
+  private docHits = 0;
 
-  /** limit: 覚えておく大きさの上限 (atom の数と、項目ごとの行の分。既定 SHARED_LINE_MEMO_ATOMS)。超えたら、古く使ったものから捨てる */
+  /** 同じ器が覚える、前の文書の組版 (page-sequence の使い回し。LayoutOptions.layoutReuse に渡す) */
+  readonly layout = new LayoutReuse();
+
+  /** limit: 覚えておく大きさの上限 (atom の数と、項目ごとの行の分。既定 SHARED_LINE_MEMO_ATOMS)。超えるものは覚えない */
   constructor(readonly limit = SHARED_LINE_MEMO_ATOMS) {}
 
-  /** 次の文書を組み始める (器が文書ごとに呼ぶ)。前の文書でも、その前の文書でも使わなかったものを捨てる */
-  startDocument(): void {
+  /** 次の文書を組み始める (器が文書ごとに呼ぶ)。その文書の印 (番号) を返す。前の文書でも、その前の文書でも使わなかったものを捨てる */
+  startDocument(): number {
     this.doc++;
+    this.docHits = 0;
     for (const [k, e] of this.entries) if (e.used < this.doc - 1) this.drop(k, e);
+    return this.doc;
   }
 
   /**
-   * 組み始めた文書を止めた (TypesetOptions.signal): その文書を世代に数えない (次の文書から見て、止めた文書の前の文書を「前の文書」のままにする)。
-   * 止めた文書で使ったもの・覚えたものは、中身で引く覚えなので、そのまま残してよい (次の文書の世代で使ったものとして数える)
+   * 印 doc の文書を止めた (TypesetOptions.signal): その文書を世代に数えない (次の文書から見て、止めた文書の前の文書を「前の文書」のままにする)。
+   * 止めた文書で使ったもの・覚えたものは、中身で引く覚えなので、そのまま残してよい (次の文書の世代で使ったものとして数える)。
+   * 止めた知らせが、次の文書の startDocument の後に遅れて来たとき (印が、いまの文書でないとき) は、世代を戻さない (戻すと、いまの文書の世代が 1 つずれる)
    */
-  cancelDocument(): void {
-    if (this.doc > 0) this.doc--;
+  cancelDocument(doc: number): void {
+    if (doc === this.doc && this.doc > 0) this.doc--;
+    this.layout.cancelDocument();
   }
 
   private drop(k: string, e: SharedLineEntry): void {
@@ -12608,6 +15242,7 @@ export class SharedLineMemo {
       e.fonts = e.fonts.map((f) => now.get(f) ?? f);
     }
     e.used = this.doc;
+    this.docHits++;
     // 使った順の後ろへ移す
     this.entries.delete(key);
     this.entries.set(key, e);
@@ -12615,6 +15250,19 @@ export class SharedLineMemo {
   }
 
   set(key: string, env: string, hyphenate: FlowHost['hyphenate'], memo: LineMemo): void {
+    const prev = this.entries.get(key);
+    // 上限を超えるなら覚えない (覚えの中を調べる手間もかけない)。1 つも覚えていないときは、上限より大きくても覚える
+    const over = () => this.entries.size > (prev ? 1 : 0) && this.atoms - (prev ? lineMemoSize(prev.memo) : 0) + lineMemoSize(memo) > this.limit;
+    if (over()) {
+      // いまの文書で 1 つも使い回していない (器で、別の文書に移った): 前の文書の項目を、古く使ったものから捨てて覚える
+      // (覚えずにいると、前の文書の項目が次の文書の初めまで残り、いまの文書も次の文書も当たらない)。同じ文書の組み直し (当たりがある) では捨てない
+      if (this.docHits > 0) return;
+      for (const [k, e] of this.entries) {
+        if (!over()) break;
+        if (e.used < this.doc && k !== key) this.drop(k, e);
+      }
+      if (over()) return;
+    }
     // 結果の中の書体の置き場所 (差し替えるときに書き換える所) を集める
     const slots: Array<[Record<string, unknown>, string]> = [];
     const fonts = new Set<LoadedFont>();
@@ -12639,14 +15287,9 @@ export class SharedLineMemo {
     };
     walk(memo);
     if (instance) return;
-    const prev = this.entries.get(key);
     if (prev) this.drop(key, prev);
     this.entries.set(key, { memo, env, hyphenate, used: this.doc, fonts: [...fonts], slots });
     this.atoms += lineMemoSize(memo);
-    for (const [k, e] of this.entries) {
-      if (this.atoms <= this.limit || this.entries.size <= 1) break;
-      this.drop(k, e);
-    }
   }
 }
 
@@ -12685,13 +15328,13 @@ function sharedLineKey(run: InlineChild[], st: ResolvedStyle, L: number, first: 
   }
   if (bad) return undefined;
   const backend = host.measurer.version().split(':')[0];
-  return `${lineMemoKey(0, L, first, wm, intrinsic, minContent)}|${blockRef ?? ''}|${host.kernAh ? 1 : 0}${host.xslSpace ? 1 : 0}|${backend}|${body}`;
+  return `${lineMemoKey(0, L, first, wm, intrinsic, minContent, blockRef)}|${host.kernAh ? 1 : 0}${host.xslSpace ? 1 : 0}|${backend}|${body}`;
 }
 
 /**
  * 文書をまたぐ行分けの覚え (SharedLineMemo) に置いておく大きさの上限の既定 (lineMemoSize の数え方)。
  * 覚えは、前の文書の全部の段落を持つので、文書の大きさの分のメモリを使う (142 ページの和文の本で、大きさ約 46 万・メモリ約 190MB。1 あたり 400 バイトほど)。
- * 100 万 (メモリ約 400MB まで) は、そのような本の 300 ページほど。それより長い文書は、古く使ったものから捨てるので、当たる段落が減る
+ * 100 万 (メモリ約 400MB まで) は、そのような本の 300 ページほど。それより長い文書は、上限までの段落だけを覚えるので、後ろの方の段落は当たらない
  */
 export const SHARED_LINE_MEMO_ATOMS = 1_000_000;
 
@@ -12754,6 +15397,8 @@ function sameFeatures(a: string[] | undefined, b: string[] | undefined): boolean
   return x.length === y.length && x.every((f, i) => f === y[i]);
 }
 
+/** 1 つの SVG の、見つからない参照の警告を 1 件ずつ出す数 (残りは数だけの 1 件にまとめる) */
+const SVG_MISSING_SHOWN = 20;
 /** SVG の中で見つからない外の画像を調べた結果 (SVG の中身ごと。同じ SVG を何度置いても、1 度だけ調べる) */
 const svgMissingMemo = new WeakMap<Uint8Array, Array<{ href: string; use: boolean }>>();
 /**
@@ -12765,14 +15410,17 @@ function svgMissingImages(src: string, bytes: Uint8Array, assets: AssetStore): A
   let out = svgMissingMemo.get(bytes);
   if (out) return out;
   out = [];
+  // 重なりの確かめは Set で (配列の some だと、違う参照の数の 2 乗の手間になる)
+  const seen = new Set<string>();
   const text = new TextDecoder().decode(bytes);
   // image の外の画像 (PNG・JPEG) と、use の外のファイル (file.svg#id の SVG)
   for (const m of text.matchAll(/<(?:[\w-]+:)?(image|use)\b[^>]*>/gi)) {
     const use = m[1].toLowerCase() === 'use';
-    const h = /\s(?:xlink:)?href\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(m[0]);
-    let href = (h?.[1] ?? h?.[2] ?? '').trim();
+    // 属性の文字参照は戻して引く (描く所と同じ名前。xmlAttr.ts)
+    let href = hrefOfTag(m[0]);
     if (use) href = href.split('#')[0];
-    if (!href || /^data:/i.test(href) || out.some((x) => x.href === href)) continue;
+    if (!href || /^data:/i.test(href) || seen.has(href)) continue;
+    seen.add(href);
     const a = assets.get(resolveRef(href, /^data:/i.test(src) ? undefined : src));
     // 中身を捨てた画像 (PDF に埋め込み済み。AssetStore.releaseImageBytes) は、読めた画像として扱う
     const read = !!a?.bytes || !!a?.released;

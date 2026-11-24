@@ -41,7 +41,7 @@ npm run build:dist   # ライブラリ (dist-lib)・Node のコマンド (dist-c
 npm run docs:api     # API の説明書 (dist/api/)
 ```
 
-Node は 20.19.0 以上の 20 系か、22.12.0 以上が要ります (理由は [`docs/library.md`](library.md) の「パッケージの形と動く環境」)。
+Node は 22.12.0 以上が要ります (理由は [`docs/library.md`](library.md) の「パッケージの形と動く環境」)。
 ソースのファイルの役割は [`docs/architecture.md`](architecture.md) にあります。
 
 ### 配る出力とライセンスの表示
@@ -76,7 +76,7 @@ npm run fingerprints:update            # 領域の木の指紋を書き直す (�
 
 | 付けるもの | 中身 |
 | --- | --- |
-| `-- --job build\|pages\|node-min\|e2e` | 走らせるジョブを選ぶ (何度でも書ける)。選ばなければ build・pages・e2e。node-min は、動かせる Node の下限の 20.19.x に切り替えてから走らせる |
+| `-- --job build\|pages\|node-min\|e2e` | 走らせるジョブを選ぶ (何度でも書ける)。選ばなければ build・pages・e2e。node-min は、動かせる Node の下限の 22.12.x に切り替えてから走らせる |
 | `-- --worktree` | いまのコミット (HEAD) を一時的な場所に取り出して試す (CI と同じく、まだコミットしていない変更や前のビルドの出力が混ざらない) |
 | `-- --no-install` | 初めの `npm ci` を飛ばす |
 
@@ -212,7 +212,7 @@ npm run compare:base -- --base main --only conformance,examples,samples
   コミットの `package-lock.json` がいまのものと同じなら、このリポジトリの `node_modules` を、その置き場の隣に結んで (リンクにして) 使い、違えば、依存をその置き場に `npm ci` で入れます。
   `--head .` のコマンドは `--out` の `build/` に作り、隣に `node_modules` を結ぶので、`--out` はリポジトリの外でもかまいません。
   `.cache` を別の作業の場所へのリンクにしても、組むときの依存は、走らせた作業の場所のものです (置き場の隣の結びを、走らせるたびに結び直す。同じ置き場を 2 つの作業の場所から同時に使うと、結びを取り合うので避ける)。
-- 組む文書は、群ごとに選べます (`--only`・`--skip`。`--filter <正規表現>` で文書の名前で絞る)。手元に見本が無い群は飛ばし、報告に飛ばした理由を書きます。
+- 組む文書は、群ごとに選べます (`--only`・`--skip`。`--filter <文字列>` で、名前にその文字列を含む文書に絞る)。手元に見本が無い群は飛ばし、報告に飛ばした理由を書きます。
 
 | 群 | 文書 |
 | --- | --- |
@@ -275,6 +275,24 @@ npm run perf:compare -- --base main --doc fo-spec --rounds 7
 - 種を決めた乱数の文書の指標 (ページ数・数行だけのページの数・警告) と伸び方は `test/stressDocs.test.ts` (段組の脚注の文書は `test/columnFootnoteReserve.test.ts`) で確かめます。
   大きな版は `node scripts/gen-stress-docs.mjs <ディレクトリ>` で書き出せ、`compare:base` の `generated` の群でも組みます。
 
+## メモリの山の測り (measure-memory.mjs)
+
+PDF を作るときのメモリの山を、`typesetToPdf` と、流して書く `typesetToPdfStream` (書き出し先は `fs.writeSync`) で、メモリ節約 (`lowMemory`) の有り無しで測ります (`scripts/measure-memory.mjs`)。
+PDF の書き出しやメモリ節約を変えたときに、山が上がっていないかを見ます。
+
+```bash
+node scripts/measure-memory.mjs                                  # 既定の文書を 4 つの形で
+node scripts/measure-memory.mjs --doc images:200 --mode pdf --mode stream
+node scripts/measure-memory.mjs --doc text:11200 --json mem.json  # 文だけの 1,600 ページの文書
+```
+
+- 文書は、対応仕様説明書の HTML と XSL-FO (`html-spec`・`fo-spec`)、文だけの文書 (`text[:節の数]`。作る)、画像の多い文書 (`images[:枚数]`。圧縮の効かない 600×600 の PNG を作る)、
+  手元にあれば『CSSページ組版入門』第 4 版 (`css-print`) です。形は `pdf`・`stream`・`pdf-low`・`stream-low` です。
+- 文書と形ごとに新しい Node のプロセス (`--expose-gc`) で組み、20ms ごとと進み具合の呼び返しのたびに `process.memoryUsage()` を見ます。表には、ヒープ・外のバイト列 (`arrayBuffers`)・RSS の山と、
+  PDF を書く間の生きている量 (片付けてから見た量) を書きます。ヒープの山は片付けの時機で揺れるので、流すか流さないかの比べには、生きている量を使います。
+  JSON には、進み具合の段 (`resources`・`import`・`layout`・`pdf`) ごとの外のバイト列の山も書きます。`--no-build` で、前に作ったビルド (`.cache/measure-memory-build`) を使います。
+- 画像の多い文書は、道具が作った画像のバイト列を、組む間ずっと持っています (外のバイト列の初めの量に入ります)。
+
 ## 先頭から N ページの組版の確かめ (check-max-pages.mjs)
 
 先頭から N ページで止めて組んだ 1〜N ページ (`--max-pages N`・API の `maxPages`) が、全体を組んだときの 1〜N ページと同じかを、文書ごとに数えます。
@@ -293,6 +311,48 @@ node scripts/check-max-pages.mjs --only weasyprint,conformance --pages 2,5
   - 絵だけ違う: 字は同じで、絵だけ違う
 - N より後ろを指す参照の警告 (`layout/beyond-max-pages`) が出なかったのに違うページは「警告が無いのに違うページ」として数えます。0 でなければ、組版の作りの誤りを疑います。
 - `--out` (既定 `.cache/check-max-pages`) に `report.md`・`report.json` を書きます。
+
+## 使い回しの有無の組み比べ (check-relayout.mjs)
+
+器 (`createTypesetter`) が前の文書の組版の覚えを使い回して組んだ結果が、使い回さないとき (`reuse: false`) と同じかを確かめます。
+文書を、種を決めた乱数の所で少しずつ直し (字を足す・消す・置き換える。タグと文字参照は壊さない。ときどき、ブロックに組み方の属性を足す直しと、ページのマスター (XSL-FO の領域・HTML の `@page`) に背景の色を足すだけの直しもする)、「元の文書・直したもの (`--edits` 個。重ねて直す)・元の文書に戻したもの」を、
+使い回す器と使い回さない器で順に組んで、領域の木・診断 (場所の行と桁まで)・警告・PDF のバイト列 (時計と乱数は止める) を比べます。違えば、使い回しの側の誤りです。
+器の使い回しや、途中から組み直す作りを直したときに使います (部品は `scripts/relayout-check-lib.mjs`。比べる器と、組んだ結果から報告に出す数を足せる形にしてあります)。
+
+```bash
+node scripts/check-relayout.mjs --jobs 4                          # 手元にある群をすべて組む
+node scripts/check-relayout.mjs --only conformance,css-print --seed 2 --edits 5
+```
+
+- 群は `conformance` (対応仕様説明書の日本語と英語)・`examples`・`samples`・`generated` (`scripts/gen-stress-docs.mjs` の文書)・`ah`・`css-print`・`weasyprint` です。
+  見本の置き場は、前と後の組み比べと同じです (`--samples`・`--weasyprint`)。書体は既定の書体で組みます。
+- 文書ごとに 1 行 (版の数・ページ数・使い回した段落の数・時間) を出し、違った版は、どこが違うか (領域の木は最初に違うページ、PDF は最初に違うバイト) を出します。
+  違う版があれば、終わりの状態が 1 になります。`--json` で結果を書きます。
+- `--skip` で群を除き、`--no-pdf` で PDF のバイト列を比べずに速く回します。`--src`・`--no-build` は `scripts/profile-relayout.mjs` と同じです (組版のソースの場所・前に作ったビルドを使う)。
+- 小さな文書の速い版は `test/relayoutCheck.test.ts` で、`npm test` に入っています。
+
+### 続きから組む作りの確かめ (check-resume.mjs)
+
+組版は、1 段の page-sequence を、ページの境目で止めて、写した状態から続きを組めます (最後のページのマスターを選び直すとき、続きから組める境目から組み直します)。
+`scripts/check-resume.mjs` は、続きから組める境目のすべてで、1 ページ先まで組んでから境目に戻り、写した状態から続けて組む器 (`--subjects resume`) で組み、
+使い回さない器で組んだものと、上と同じものを比べます。戻って同じ境目に来たときの、境目の指紋も比べます。続きから組む作りを直したときに使います。
+
+```bash
+node scripts/check-resume.mjs --jobs 4                            # 手元にある群をすべて組む (check-relayout.mjs を --subjects resume --edits 0 で走らせる)
+node scripts/check-resume.mjs --only ah --filter keep             # 群・名前で絞る (引数は check-relayout.mjs と同じ)
+node scripts/check-resume.mjs --late 4 --jobs 4                   # 遅く戻る試し (下)
+```
+
+- `--late N` は、page-sequence を終わりまで組んだ後、続きから組める境目を N 個ほど散らして選び、後ろから順に、境目に戻って終わりまで組み直す器
+  (`--subjects resume-late`) で試します。組版の中で境目から組み直す使い方 (最後のページのマスター) と同じ形で、境目の 1 ページより後で、
+  写しと共有の物を書き換える誤りを探します。組み直すたびに、その組み直しの流れが写した次の境目からも、もう 1 度終わりまで組み直します
+  (続けた流れが写す境目の誤りは、1 度続けただけでは結果に出ず、その境目から続けたときに出るため)。
+- `generated` の群には、左右 (HTML の `@page :left`)・奇数偶数のマスターで本文の幅が違い、ページをまたぐ長い段落の続く文書 (`generated/sidewidth`・`generated/fosidewidth`) も入ります。
+  段落の途中の境目から続けると、行の長さの変わるページで残りの行を組み直すので、その間に写す境目の誤りを探せます。
+
+- 文書ごとの行に、写した境目・続きから組めた境目・続けた回数と、続きから組めない境目の理由ごとの数 (`site:children/child:<種類>` は続きから組めない子のブロックの中 (`block-container-columns` は段組のブロックコンテナ)、
+  `site:inline` は回り込みのある行の並びの中、など) を出します。
+- 小さな文書の速い版は `test/resume.test.ts` で、`npm test` に入っています。
 
 ## 領域の木の指紋 (npm run fingerprints:update)
 

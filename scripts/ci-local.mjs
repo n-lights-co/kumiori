@@ -3,11 +3,11 @@
  *
  * 使い方 (リポジトリの直下で):
  *   node scripts/ci-local.mjs                     (npm run ci:local と同じ。build・pages・e2e のジョブ。node-min は Node の下限に切り替えて、下のように別に走らせる)
- *   node scripts/ci-local.mjs --job node-min      (Node の下限のジョブ。Node 20.19.x で走らせる)
+ *   node scripts/ci-local.mjs --job node-min      (Node の下限のジョブ。Node 22.12.x で走らせる)
  *   node scripts/ci-local.mjs --job build --job e2e --no-install --worktree
  *
  *  - --job <名前> (何度でも): 走らせるジョブ (build・pages・node-min・e2e)。無ければ build・pages・e2e。
- *    node-min は、動かせる Node の下限 (package.json の engines) で確かめるジョブなので、Node 20.19.x で走らせたときだけ動く
+ *    node-min は、動かせる Node の下限 (package.json の engines) で確かめるジョブなので、Node 22.12.x で走らせたときだけ動く
  *    (このスクリプトは Node を切り替えない。nvm などで切り替えてから走らせる)。
  *    pages は、pages.yml の build のジョブと同じく、アセットの土台 (base) をリポジトリ名にして画面を作る (下の pagesBase)。
  *    続けて、API の説明書を画面の下の api/ に作る (npm run docs:api。TypeDoc を tools/api-docs に入れる npm ci も、そのスクリプトがする)。
@@ -118,7 +118,7 @@ const JOBS = {
     () => ['run', 'docs:api', '--', '--out', path.join(pagesOut, 'api')],
     { label: 'API の説明書の確かめ (api/index.html)', fn: () => checkApiDocs() },
   ],
-  // Node の下限 (20.19.0)。型の検査と単体テスト (require('kumiori') の確かめは dist-lib を読む)
+  // Node の下限 (22.12.0)。型の検査と単体テスト (require('kumiori') の確かめは dist-lib を読む)
   'node-min': [['run', 'typecheck'], ['run', 'build:lib'], ['run', 'build:browser'], ['test']],
   // ブラウザでの結合テスト (dist-browser も読んで試す)
   e2e: [['run', 'build:browser'], ['run', 'e2e']],
@@ -147,10 +147,10 @@ for (let i = 0; i < argv.length; i++) {
 }
 if (!jobs.length) jobs.push('build', 'pages', 'e2e');
 
-// node-min は Node 20.19.x で走らせたときだけ (ほかの版で走らせても、下限で確かめたことにならない)
+// node-min は Node 22.12.x で走らせたときだけ (ほかの版で走らせても、下限で確かめたことにならない)
 const [major, minor] = process.versions.node.split('.').map(Number);
-if (jobs.includes('node-min') && !(major === 20 && minor === 19)) {
-  console.error(`node-min のジョブは Node 20.19.x で走らせてください (いまは ${process.version})。例: nvm install 20.19.0 && nvm use 20.19.0`);
+if (jobs.includes('node-min') && !(major === 22 && minor === 12)) {
+  console.error(`node-min のジョブは Node 22.12.x で走らせてください (いまは ${process.version})。例: nvm install 22.12.0 && nvm use 22.12.0`);
   process.exit(2);
 }
 

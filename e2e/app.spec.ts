@@ -1369,7 +1369,7 @@ test('画面: 画像だけを落として登録する間に設定を変えても
   expect(errors).toEqual([]);
 });
 
-test('画面: 設定の変更で組み直す途中に壊れた EPUB を落としても、組み直しを捨てたままにしない', async ({ page }) => {
+test('画面: 設定の変更で組み直す途中に壊れた EPUB を落としても、組み直しを捨てたままにせず、状態の欄の誤りの文も消さない', async ({ page }) => {
   const errors = await open(page);
   // 遅い画像を使う FO: 初めの読み込みでは取れず (登録しない)、組み直しでは 2 秒待たせて返す。組み直しが画像を待つ間に、EPUB を落とす
   const png = Buffer.from(onePng, 'base64');
@@ -1392,6 +1392,11 @@ test('画面: 設定の変更で組み直す途中に壊れた EPUB を落とし
   // 切った設定で x を組み直す (構造の木が無い)
   await expect.poll(async () => JSON.parse(await shownDoc(page)).structure === undefined, { timeout: 30_000 }).toBe(true);
   expect(await shownDoc(page)).toContain('いまの文書 x');
+  // 組み直しの進みと結果の文 (x.fo: … ページ) で、EPUB の誤りの文を上書きしない
+  await page.waitForTimeout(1500);
+  await expect(page.locator('#status')).toContainText('エラー');
+  // 次に利用者が始めた読み込みの文は出す
   await page.evaluate(() => document.getElementById('tagged')!.click());
+  await expect(page.locator('#status')).toContainText('x.fo', { timeout: 30_000 });
   expect(errors).toEqual([]);
 });

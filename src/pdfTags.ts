@@ -143,7 +143,14 @@ export class PdfTagger {
   popForm(k: number, ref: PDFRef | undefined) {
     this.formStack.pop();
     this.forms[k].ref = ref;
+    if (ref && this.forms[k].parents.length) this.markedForms.add(ref.objectNumber);
   }
+
+  /**
+   * 中に印の付いた内容を持つ Form XObject の番号 (finish で辞書に StructParents を書き足すもの)。PDF を流して書くとき、これらは先に書かずに最後に書く
+   * (ISO 32000-1 §14.7.4.4)
+   */
+  readonly markedForms = new Set<number>();
 
   /** 字を描いた (Link の中の字を、注釈の代わりの説明のために集める) */
   text(t: PdfTag, text: string) {

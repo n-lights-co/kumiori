@@ -171,6 +171,28 @@ describe('systemFonts (OS の書体を後備に使う)', () => {
     const one = await typeset(`<p>${PUA1}${PUA2}</p>`, { loadFont: loadCachedFont, systemFonts: src, limits: { systemFontFaces: 1 } });
     expect(codes(one).filter((c) => c === 'font/system-fallback')).toHaveLength(1);
     expect(one.diagnostics.filter((d) => d.code === 'font/missing-glyph').map((d) => d.args?.char)).toEqual([PUA2]);
+    // 上限に当たったことを知らせる (前は、字形の無い字になるだけだった)。上限に当たらなければ知らせない
+    expect(one.diagnostics.find((d) => d.code === 'limit/reached')?.args?.limit).toBe('systemFontFaces');
+    expect(codes(all)).not.toContain('limit/reached');
+    // 上限を守らない部品でも、読むのは上限まで
+    const loaded: string[] = [];
+    const greedy: SystemFontSource = {
+      find: async (req) => (await src.find({ ...req, maxFaces: Infinity })).map((m): SystemFontMatch => ({ ...m, data: () => (loaded.push(m.name), m.data()) })),
+    };
+    const g = await typeset(`<p>${PUA1}${PUA2}</p>`, { loadFont: loadCachedFont, systemFonts: greedy, limits: { systemFontFaces: 1 } });
+    expect(loaded).toHaveLength(1);
+    expect(codes(g)).toContain('limit/reached');
+  });
+
+  it('上限で選ばなかった書体の字は、埋め込めない書体が持っていても font/system-font-not-embeddable にしない', async () => {
+    const dir = dirOf('faces-refused', [
+      ['a.ttf', buildTestFont({ family: 'Test Cap A', chars: [0xf0101] })],
+      ['b.ttf', buildTestFont({ family: 'Test Cap B', chars: [0xf0102] })],
+      ['c.ttf', buildTestFont({ family: 'Test Cap Restricted', chars: [0xf0102], fsType: 0x0002 })],
+    ]);
+    const r = await typeset(`<p>${PUA1}${PUA2}</p>`, { loadFont: loadCachedFont, systemFonts: createSystemFonts({ dirs: [dir] }), limits: { systemFontFaces: 1 } });
+    expect(codes(r)).toContain('limit/reached');
+    expect(codes(r)).not.toContain('font/system-font-not-embeddable');
   });
 
   it('探すのに失敗したら font/load-failed にして組み続ける', async () => {

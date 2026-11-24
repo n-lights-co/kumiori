@@ -4,9 +4,10 @@
  * pdf-lib の版が上がると壊れうる差し替えは、すべてこのファイルにある:
  *  1. fontkit の TrueType の部分書体 (createSubset の _addGlyph): 字形を 4 バイト境界にそろえる (patchFontkitSubset)
  *  2. CustomFontEmbedder.prototype (isCFF・encodeText・glyphId・embedFontStream): CFF の OpenType を CIDFontType0C で埋め込む (patchCffEmbedding)
- *  3. PngEmbedder.prototype の上に作る、PNG の IDAT をそのまま FlateDecode の画像にする埋め込み部品 (embedPngAsIs)
+ *  3. PngEmbedder.prototype の上に作る、圧縮の済んだ画像の流れを入れる埋め込み部品 (streamEmbedder。PNG の IDAT をそのまま FlateDecode の画像にする
+ *     embedPngAsIs と、展開した画素を pdf-lib の pako でなく imageDeflate.ts の関数で圧縮して入れる embedRgbAlpha・embedImageStream)
  *  4. PDFFont の encodeText を結果を覚えるものに差し替え、fontkit の layout を一時的にすり替えて字形の番号から符号にする (memoEncode)
- *  5. PDFFlateStream の contentsCache を差し替えて、圧縮の関数を替える (useDeflate)
+ *  (5. 圧縮の関数の差し替え (PDFFlateStream の contentsCache) は、書き出しを自前にしたので、書き手 (pdfWriter.ts の deflate) に移した)
  *  6. PDFPage の内容の流れ (getContentStream) の命令の並び (operators) をじかに読み書きする (pageOperators。描いた命令を Form XObject に移す)
  *  7. 描き終えたページの内容の流れ (PDFPage の contentStream・contentStreamRef) を、圧縮したバイト列の流れに置き換える (sealPageContents)
  *  8. PDFNumber.of: 絶対値が PDF の実数の最も小さい正規の値 (約 1.175e-38) より小さい数を 0 に、有限でない数・最も大きい値 (約 3.403e38) を超える数を抑える (patchSmallNumbers)
@@ -17,11 +18,13 @@
  * 前提 (差し替えるメソッドの存在) は、このモジュールを読み込んだときに assertPdfLibInternals で確かめる。
  * 「差し替え済み」の印はモジュールの変数でなく、差し替えた原型 (prototype) 自体に付ける (テストで同じ pdf-lib を複数回読み込んでも二重に包まない)
  */
-import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFContentStream, PDFContext, PDFDict, PDFDocument, PDFFlateStream, PDFFont, PDFHexString, PDFImage, PDFNumber, PDFPage, PDFRawStream, PDFRef, PngEmbedder } from 'pdf-lib';
+import { Cache, CustomFontEmbedder, CustomFontSubsetEmbedder, PDFContentStream, PDFContext, PDFDict, PDFDocument, PDFFont, PDFHexString, PDFImage, PDFNumber, PDFPage, PDFRawStream, PDFRef, PngEmbedder } from 'pdf-lib';
 import type { PDFOperator } from 'pdf-lib';
 import type { FontManager } from './fontManager';
 import { decodeJpeg } from './jpeg';
-import { decodePngForPdf, pngDataComplete, pngWithinLimits } from './pixels';
+import { decodePngForPdf, pngDataComplete, pngFilterBytesOk, pngWithinLimits } from './pixels';
+import { imageDeflater, inflateNode, type ImageDeflate } from './imageDeflate';
+import { inflateFast } from './inflateFast';
 import { cffGidToCid, cffTable, subsetCff } from './cff';
 import { msg } from './messages';
 import { KumioriError } from './errors';
@@ -311,53 +314,111 @@ export function markCffSubset(f: PDFFont) {
   };
 }
 
+/** 展開せずに入れる PNG の選び方と、展開して入れる画像の圧縮 (embedPngChecked・embedCmykImage) */
+export interface PngEmbedOptions {
+  /**
+   * 16 ビットの PNG も、展開せずに BitsPerComponent 16 の画像として入れるか。16 は PDF 1.5 から (PDF Reference の PDF 1.5 版 §4.8.4)
+   * なので、PDF 1.3・1.4 が元の PDF/X-1a・X-3 では false (展開して 8 ビットにする。pdf-lib と同じ、上位の 8 ビット)。既定 false
+   */
+  bits16?: boolean;
+  /** 展開した画素を圧縮する関数 (imageDeflate.ts の imageDeflater。既定は imageDeflater()) */
+  deflate?: ImageDeflate;
+}
+
+/** 展開せずに入れられる PNG の中身 (pngAsIs) */
+interface PngAsIs {
+  width: number;
+  height: number;
+  /** ビットの深さ (BitsPerComponent) */
+  depth: number;
+  /** 1 画素の成分の数 (DecodeParms の Colors) */
+  colors: number;
+  /** 色空間 (DeviceGray・DeviceRGB・色の表の Indexed) */
+  colorSpace: unknown[] | string;
+  /** IDAT をつないだもの (PNG の予測のフィルタ付きの zlib) */
+  data: Uint8Array;
+}
+
 /**
- * 8 ビットのグレー・RGB で、インターレース・透明度 (tRNS) の無い PNG は、展開せずに埋め込む:
- * PNG の圧縮データ (IDAT) は、PNG の予測のフィルタ付きの zlib なので、そのまま FlateDecode (Predictor 15) の画像になる。
- * 条件に合わなければ undefined (pdf-lib の embedPng で、展開して埋め込む)
+ * IDAT をつないだ zlib の列 data が、走査線の大きさ need バイト (飛び越しでない並びの「(1 行のバイト数 + フィルタの 1 バイト) × 高さ」。
+ * PNG の仕様 §7.2・§9.1) まで展開できるか。そのまま入れる PNG でも、切れた・壊れた画素のデータは、PDF を見る側で画像の流れの誤りになるので、
+ * 入れる前に確かめる (pixels.ts の pngDataComplete と同じ確かめ)。Node では zlib で展開して見る (自前の展開より速い)。
+ * zlib が断ったとき (Node でない・壊れた・need より長い) は、自前の展開 (inflateFast.ts の inflateFast) で、need まで出るかを見る
  */
-export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array): Promise<PDFImage | undefined> {
+function idatComplete(data: Uint8Array, width: number, height: number, bpp: number): boolean {
+  const need = (Math.ceil((width * bpp) / 8) + 1) * height;
+  // 長さに加えて、各行の頭のフィルタの種類のバイトが 0〜4 かも見る (pixels.ts の pngFilterBytesOk。5 以上の行のある PNG を、
+  // そのまま Predictor 15 の画像として入れない)。zlib が断ったときの自前の展開も、走査線の大きさまでのバイト列を作って見る
+  let raw = inflateNode(data, need);
+  if (!raw || raw.length < need) raw = inflateFast(data, need);
+  return raw.length >= need && pngFilterBytesOk(raw, width, height, bpp, false);
+}
+
+/**
+ * 展開せずに FlateDecode (Predictor 15) の画像にできる PNG か。PNG の圧縮データ (IDAT をつないだもの) は、走査線ごとに PNG の予測の
+ * フィルタの種類のバイトが付いた zlib (W3C の PNG の仕様 (Second Edition) §9・§10) なので、PDF の Flate の PNG の予測 (Predictor 15。
+ * ISO 32000-2 §7.4.4.4 の表 10) の入力と同じ形になる。予測の 1 画素のバイト数は、どちらも成分の数 × ビットの深さを 8 で割って切り上げたもの。
+ * 入れられるのは、飛び越しでなく、透明度 (tRNS) の無い、次の形 (§11.2.2 の表 11.1):
+ *  - 灰 (色の型 0): 1・2・4・8 ビット (と、bits16 なら 16 ビット)。DeviceGray。PNG の灰の値 v / (2^深さ − 1) は、
+ *    PDF の既定の Decode [0 1] の値と同じ (ISO 32000-2 §8.9.5.2)
+ *  - RGB (色の型 2): 8 ビット (と、bits16 なら 16 ビット)。DeviceRGB
+ *  - 色の表 (色の型 3): 1・2・4・8 ビット。Indexed (ISO 32000-2 §8.6.6.3)。表 (PLTE。§11.2.3) は 2^深さ の項に 0 (黒) で埋める
+ *    (表に無い番号の画素は、pdf-lib の展開 (UPNG) が黒にするのと同じ)
+ * 16 ビットの成分は、PNG も PDF も、上位のバイトが先 (PNG の §7.1・ISO 32000-2 §8.9.5.2)。
+ * α・tRNS・飛び越しのあるもの、IHDR が最初のチャンクでない・長さが 13 でないもの (§5.6・§11.2.2)、色の表が IDAT の後・項の数が合わないものは undefined。
+ * 形は合うが、画素のデータが終わりまで展開できない (切れた・壊れた) ものは 'broken' (checked のときは確かめない。呼ぶ側で確かめたもの)
+ */
+function pngAsIs(png: Uint8Array, bits16: boolean, checked = false): PngAsIs | 'broken' | undefined {
   const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
   if (png.length < 33 || sig.some((b, i) => png[i] !== b)) return undefined;
   const dv = new DataView(png.buffer, png.byteOffset, png.byteLength);
-  let width = 0;
-  let height = 0;
-  let colors = 0;
+  if (dv.getUint32(8) !== 13 || String.fromCharCode(png[12], png[13], png[14], png[15]) !== 'IHDR') return undefined;
+  const width = dv.getUint32(16);
+  const height = dv.getUint32(20);
+  const [depth, colorType, compression, filter, interlace] = png.subarray(24, 29);
+  if (!width || !height || compression || filter || interlace) return undefined;
+  const depths = colorType === 0 ? [1, 2, 4, 8, ...(bits16 ? [16] : [])] : colorType === 2 ? [8, ...(bits16 ? [16] : [])] : colorType === 3 ? [1, 2, 4, 8] : [];
+  if (!depths.includes(depth)) return undefined;
+  let plte: Uint8Array | undefined;
   const idat: Uint8Array[] = [];
-  for (let at = 8; at + 8 <= png.length; ) {
+  for (let at = 33; at + 8 <= png.length; ) {
     const len = dv.getUint32(at);
     const type = String.fromCharCode(png[at + 4], png[at + 5], png[at + 6], png[at + 7]);
     const body = png.subarray(at + 8, at + 8 + len);
     if (body.length < len) return undefined;
-    if (type === 'IHDR') {
-      width = dv.getUint32(at + 8);
-      height = dv.getUint32(at + 12);
-      const [depth, colorType, , , interlace] = body.subarray(8, 13);
-      if (depth !== 8 || interlace !== 0 || (colorType !== 0 && colorType !== 2)) return undefined;
-      colors = colorType === 2 ? 3 : 1;
-    } else if (type === 'tRNS') return undefined;
-    else if (type === 'IDAT') idat.push(body);
+    if (type === 'tRNS' || type === 'IHDR') return undefined;
+    if (type === 'PLTE') {
+      // 色の表は IDAT の前に 1 つ (§5.6)。項の数は 1〜2^深さ (§11.2.3)
+      if (plte || idat.length || len % 3 || !len || len / 3 > 2 ** Math.min(depth, 8)) return undefined;
+      plte = body;
+    } else if (type === 'IDAT') idat.push(body);
     else if (type === 'IEND') break;
     at += 12 + len;
   }
-  if (!width || !height || !colors || !idat.length) return undefined;
-  const data = new Uint8Array(idat.reduce((a, b) => a + b.length, 0));
-  idat.reduce((o, b) => (data.set(b, o), o + b.length), 0);
-  // PDFImage は pdf-lib の PngEmbedder しか受け付けないので、その原型の上に、埋め込み方だけを差し替えた部品を作る
-  const embedder = Object.assign(Object.create(PngEmbedder.prototype) as PngEmbedder, {
+  if (!idat.length || (colorType === 3 && !plte)) return undefined;
+  const data = idat.length === 1 ? idat[0] : new Uint8Array(idat.reduce((a, b) => a + b.length, 0));
+  if (idat.length > 1) idat.reduce((o, b) => (data.set(b, o), o + b.length), 0);
+  const colors = colorType === 2 ? 3 : 1;
+  if (!checked && !idatComplete(data, width, height, colors * depth)) return 'broken';
+  let colorSpace: PngAsIs['colorSpace'] = colorType === 2 ? 'DeviceRGB' : 'DeviceGray';
+  if (colorType === 3 && plte) {
+    const table = new Uint8Array(3 << depth);
+    table.set(plte);
+    colorSpace = ['Indexed', 'DeviceRGB', (1 << depth) - 1, PDFHexString.of(Array.from(table, (b) => b.toString(16).padStart(2, '0')).join(''))];
+  }
+  return { width, height, depth, colors, colorSpace, data };
+}
+
+/**
+ * 画像の XObject の流れを作って入れる部品。PDFImage は pdf-lib の PngEmbedder しか受け付けないので、その原型の上に、埋め込み方だけを差し替えた部品を作る。
+ * make は、圧縮の済んだ流れ (context.stream。PDFRawStream) を返す (pdf-lib の圧縮 (pako) を通さない)
+ */
+function streamEmbedder(width: number, height: number, make: (context: PDFContext) => PDFRawStream): PngEmbedder {
+  return Object.assign(Object.create(PngEmbedder.prototype) as PngEmbedder, {
     width,
     height,
-    async embedIntoContext(context: PDFDocument['context'], ref?: PDFRef) {
-      const stream = context.stream(data, {
-        Type: 'XObject',
-        Subtype: 'Image',
-        Width: width,
-        Height: height,
-        BitsPerComponent: 8,
-        ColorSpace: colors === 3 ? 'DeviceRGB' : 'DeviceGray',
-        Filter: 'FlateDecode',
-        DecodeParms: { Predictor: 15, Colors: colors, BitsPerComponent: 8, Columns: width },
-      });
+    async embedIntoContext(context: PDFContext, ref?: PDFRef) {
+      const stream = make(context);
       if (ref) {
         context.assign(ref, stream);
         return ref;
@@ -365,47 +426,114 @@ export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array): Promise<P
       return context.register(stream);
     },
   });
+}
+
+/**
+ * JPEG を、いま埋め込む (pdf-lib の embedJpg は番号だけを取り、流れは保存の前の flush で入れる)。JPEG の埋め込みは、取った番号に流れを入れるだけで
+ * 新しい番号を取らないので、いま入れても保存のときに入れても、同じ PDF になる。PDF を流して書くとき、埋め込んだ画像をすぐ書き出し先へ書けるようにする
+ */
+export async function embedJpgNow(pdf: PDFDocument, jpg: Uint8Array): Promise<PDFImage> {
+  const img = rejoin(thisCall(), await pdf.embedJpg(jpg));
+  rejoin(thisCall(), await img.embed());
+  return img;
+}
+
+/** 部品 embedder の画像を、いま埋め込む (番号を取って、流れを入れる) */
+async function embedNow(pdf: PDFDocument, embedder: PngEmbedder): Promise<PDFImage> {
+  const img = PDFImage.of(pdf.context.nextRef(), pdf, embedder);
+  rejoin(thisCall(), await img.embed());
+  return img;
+}
+
+/**
+ * 展開せずに埋め込める PNG (pngAsIs) は、IDAT をそのまま FlateDecode (Predictor 15) の画像にする。
+ * 条件に合わなければ undefined (展開して埋め込む)。画素の数と展開の大きさの上限 (pixels.ts の pngWithinLimits) は、呼ぶ側で確かめる
+ * (そのまま入れても、PDF を見る側が同じだけ展開する)。
+ * 画素のデータが終わりまで展開できない PNG は、埋め込まずに投げる (展開して埋め込むときの pngDataComplete と同じ断り。
+ * 確かめないと、切れた画素のデータが、知らせなしに壊れた画像の流れとして PDF に入る)。checked は、呼ぶ側で展開して確かめた PNG (確かめを省く)
+ */
+export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array, o: Pick<PngEmbedOptions, 'bits16'> = {}, checked = false): Promise<PDFImage | undefined> {
+  const a = pngAsIs(png, o.bits16 ?? false, checked);
+  if (a === 'broken') throw brokenPng();
+  if (!a) return undefined;
+  const { width, height, depth, colors, colorSpace, data } = a;
+  const embedder = streamEmbedder(width, height, (context) =>
+    context.stream(data, {
+      Type: 'XObject',
+      Subtype: 'Image',
+      Width: width,
+      Height: height,
+      BitsPerComponent: depth,
+      ColorSpace: colorSpace,
+      Filter: 'FlateDecode',
+      DecodeParms: { Predictor: 15, Colors: colors, BitsPerComponent: depth, Columns: width },
+    } as never),
+  );
   try {
-    const img = PDFImage.of(pdf.context.nextRef(), pdf, embedder);
-    rejoin(thisCall(), await img.embed());
-    return img;
+    return rejoin(thisCall(), await embedNow(pdf, embedder));
   } catch {
-    // 埋め込めなければ、pdf-lib の embedPng (展開して埋め込む) に任せる
+    // 埋め込めなければ、展開して埋め込む
     return undefined;
   }
 }
 
-/**
- * 8 ビット・飛び越しでない、α の付いた PNG を自前で展開 (pixels.ts の decodePngForPdf) して、pdf-lib の PngEmbedder と同じ形の部品にする。
- * 部品の image (rgbChannel・alphaChannel) は pdf-lib の PNG と同じ中身なので、埋め込んだ PDF も同じになる。形の違う PNG は undefined
- */
-function decodedPngEmbedder(png: Uint8Array): PngEmbedder | 'broken' | undefined {
-  const px = decodePngForPdf(png);
-  if (!px || px === 'broken') return px;
-  const image = { rgbChannel: px.rgb, alphaChannel: px.alpha, width: px.width, height: px.height, bitsPerComponent: 8 };
-  return Object.assign(Object.create(PngEmbedder.prototype) as PngEmbedder, { image, bitsPerComponent: 8, width: px.width, height: px.height, colorSpace: 'DeviceRGB' });
+/** 画素のデータが終わりまで展開できない PNG の誤り */
+const brokenPng = () => new Error(msg('PNG: 画素のデータが壊れています', 'PNG: the pixel data is broken'));
+
+/** 展開した PNG の画素 (8 ビットの RGB と、透明な画素があれば α) */
+interface PngPixels {
+  width: number;
+  height: number;
+  rgb: Uint8Array;
+  alpha?: Uint8Array;
 }
 
 /**
- * PNG を埋め込む: 展開せずに入れられるものは embedPngAsIs、ほかは pdf-lib の embedPng (展開する)。
- * どちらも、画素の数と展開の大きさの上限 (pixels.ts の pngWithinLimits) を超える PNG は埋め込まずに投げる
- * (pdf-lib は IHDR の寸法のとおりに配列を作る。PDF に入れても、PDF を見る側が同じだけ展開する)
+ * PNG を、8 ビットの RGB と α に展開する。8 ビット・飛び越しでない、α の付いた PNG は自前で展開し (pixels.ts の decodePngForPdf。
+ * pdf-lib の展開は、1 億画素で 10 秒かかる)、ほかの形 (16 ビット・色の表・tRNS・飛び越しなど) は pdf-lib の展開 (UPNG。PngEmbedder.for) に任せる。
+ * どちらも、pdf-lib の embedPng と同じ RGB と α (α が全部 255 なら無し) になる。
+ * 画素のデータが終わりまで展開できなければ 'broken'。pngWithinLimits を通った PNG に使う
  */
-export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array): Promise<PDFImage> {
+async function decodePngPixels(png: Uint8Array): Promise<PngPixels | 'broken'> {
+  const own = decodePngForPdf(png);
+  if (own) return own;
+  // pdf-lib の展開に渡す前に、画素のデータが終わりまで展開できることを確かめる (壊れたデータで、pdf-lib の展開が止まらなくなる。pngDataComplete)
+  if (!pngDataComplete(png)) return 'broken';
+  const e = rejoin(thisCall(), await PngEmbedder.for(png));
+  const img = (e as unknown as { image?: { rgbChannel: Uint8Array; alphaChannel?: Uint8Array; bitsPerComponent: number; width: number; height: number } }).image;
+  if (!img || img.bitsPerComponent !== 8 || img.rgbChannel.length !== img.width * img.height * 3) throw internalsChanged('PngEmbedder の image');
+  return { width: img.width, height: img.height, rgb: img.rgbChannel, ...(img.alphaChannel ? { alpha: img.alphaChannel } : {}) };
+}
+
+/**
+ * 展開した RGB と α を、圧縮してから埋め込む。辞書は pdf-lib の PngEmbedder (embedIntoContext・embedAlphaChannel) の作るものと同じ
+ * (α は DeviceGray・Decode [0 1] の SMask)。圧縮は deflate (pdf-lib の pako でなく)
+ */
+async function embedRgbAlpha(pdf: PDFDocument, px: PngPixels, deflate: ImageDeflate): Promise<PDFImage> {
+  const { width, height } = px;
+  const rgb = rejoin(thisCall(), await deflate(px.rgb));
+  const alpha = px.alpha ? rejoin(thisCall(), await deflate(px.alpha)) : undefined;
+  const embedder = streamEmbedder(width, height, (context) => {
+    const smask = alpha
+      ? context.register(context.stream(alpha, { Type: 'XObject', Subtype: 'Image', Height: height, Width: width, BitsPerComponent: 8, ColorSpace: 'DeviceGray', Decode: [0, 1], Filter: 'FlateDecode' }))
+      : undefined;
+    return context.stream(rgb, { Type: 'XObject', Subtype: 'Image', BitsPerComponent: 8, Width: width, Height: height, ColorSpace: 'DeviceRGB', ...(smask ? { SMask: smask } : {}), Filter: 'FlateDecode' });
+  });
+  return embedNow(pdf, embedder);
+}
+
+/**
+ * PNG を埋め込む: 展開せずに入れられるもの (pngAsIs) は embedPngAsIs、ほかは展開して (decodePngPixels)、RGB と α を o.deflate で圧縮して入れる。
+ * どちらも、画素の数と展開の大きさの上限 (pixels.ts の pngWithinLimits) を超える PNG は埋め込まずに投げる
+ * (展開せずに入れても、PDF を見る側が同じだけ展開する)
+ */
+export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array, o: PngEmbedOptions = {}): Promise<PDFImage> {
   if (!pngWithinLimits(png)) throw new Error(msg('PNG: 画素の数か展開の大きさが上限を超えます', 'PNG: the number of pixels or the decompressed size exceeds the limit'));
-  const asIs = rejoin(thisCall(), await embedPngAsIs(pdf, png));
+  const asIs = rejoin(thisCall(), await embedPngAsIs(pdf, png, o));
   if (asIs) return asIs;
-  // 8 ビットの α の付いた PNG は、自前で展開して、pdf-lib と同じ RGB・α の画像にする (pdf-lib の展開は、1 億画素で 10 秒かかる)
-  const own = decodedPngEmbedder(png);
-  if (own === 'broken') throw new Error(msg('PNG: 画素のデータが壊れています', 'PNG: the pixel data is broken'));
-  if (own) {
-    const img = PDFImage.of(pdf.context.nextRef(), pdf, own);
-    rejoin(thisCall(), await img.embed());
-    return img;
-  }
-  // 展開して埋め込む前に、画素のデータが終わりまで展開できることを確かめる (壊れたデータで、pdf-lib の展開が止まらなくなる。pngDataComplete)
-  if (!pngDataComplete(png)) throw new Error(msg('PNG: 画素のデータが壊れています', 'PNG: the pixel data is broken'));
-  return pdf.embedPng(png);
+  const px = rejoin(thisCall(), await decodePngPixels(png));
+  if (px === 'broken') throw brokenPng();
+  return embedRgbAlpha(pdf, px, o.deflate ?? imageDeflater());
 }
 
 /**
@@ -414,9 +542,9 @@ export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array): Promis
  * 灰色だけの画像 (画素がすべて R = G = B。RGB・RGBA の PNG、16 ビット・1 ビットの灰色の PNG、灰色 + α の PNG も、展開すると RGB の
  * 3 つの成分になる) は、DeviceGray (8 ビット・FlateDecode) の画像にする (pdfStandard.ts の PdfStandard.cmyk: 灰色の画像は DeviceGray。
  * 値は R の成分そのものなので、濃さは変わらない。ISO 32000-2 §8.6.4.2・§10.4.2.2: DeviceRGB の r = g = b と、DeviceGray の同じ値は同じ灰色)。
- * 呼ぶ側のふつうの埋め込みは、8 ビットの灰色 (色の型 0) の PNG のほかを DeviceRGB で書くので、PDF/X-1a・X-3 の検査で止まっていた。
- * 展開せずにそのまま DeviceGray で入れられる PNG (8 ビットの灰色・インターレース無し・tRNS 無し) は、そのまま入れる (embedPngAsIs)。
- * CMYK・灰色の JPEG (成分が 3 でないもの)・読めない画像は undefined (呼ぶ側で、ふつうに埋め込む)
+ * 呼ぶ側のふつうの埋め込みは、灰色 (色の型 0) の PNG のほかを DeviceRGB で書くので、PDF/X-1a・X-3 の検査で止まっていた。
+ * 展開せずにそのまま DeviceGray で入れられる PNG (灰色・インターレース無し・tRNS 無し。16 ビットは o.bits16 のときだけ) は、そのまま入れる (embedPngAsIs)。
+ * 展開した画素は o.deflate で圧縮する。CMYK・灰色の JPEG (成分が 3 でないもの)・読めない画像は undefined (呼ぶ側で、ふつうに埋め込む)
  */
 export async function embedCmykImage(
   pdf: PDFDocument,
@@ -428,6 +556,7 @@ export async function embedCmykImage(
    * (透明を平らにする出力。画像は、下の物と合わせて画素にする)
    */
   alphaMode: 'smask' | 'skip' = 'smask',
+  o: PngEmbedOptions = {},
 ): Promise<{ image: PDFImage; hasAlpha: boolean } | { image?: undefined; hasAlpha: true; width: number; height: number } | undefined> {
   let width = 0;
   let height = 0;
@@ -440,33 +569,31 @@ export async function embedCmykImage(
     rgb = px.data;
   } else {
     // 上限を超える PNG は展開しない (呼ぶ側のふつうの埋め込み (embedPngChecked) も断る)
-    if (!pngWithinLimits(bytes) || !pngDataComplete(bytes)) return undefined;
-    let e: PngEmbedder;
+    if (!pngWithinLimits(bytes)) return undefined;
+    let px: PngPixels | 'broken';
     try {
-      const own = decodedPngEmbedder(bytes);
-      if (own === 'broken') return undefined;
-      e = own ?? rejoin(thisCall(), await PngEmbedder.for(bytes));
+      px = rejoin(thisCall(), await decodePngPixels(bytes));
     } catch {
       return undefined;
     }
-    const png = (e as unknown as { image: { rgbChannel: Uint8Array; alphaChannel?: Uint8Array; bitsPerComponent: number; width: number; height: number } }).image;
-    if (!png || png.bitsPerComponent !== 8 || png.rgbChannel.length !== png.width * png.height * 3) return undefined;
-    ({ width, height } = png);
-    rgb = png.rgbChannel;
-    alpha = png.alphaChannel && png.alphaChannel.some((v) => v !== 255) ? png.alphaChannel : undefined;
+    if (px === 'broken') return undefined;
+    ({ width, height, rgb } = px);
+    alpha = px.alpha;
   }
   if (alpha && alphaMode === 'skip') return { hasAlpha: true, width, height };
   let colourful = false;
   for (let i = 0; i < rgb.length && !colourful; i += 3) colourful = rgb[i] !== rgb[i + 1] || rgb[i + 1] !== rgb[i + 2];
+  const deflate = o.deflate ?? imageDeflater();
   if (!colourful) {
-    // 8 ビットの灰色 (IHDR の色の型 0) の PNG は、展開せずにそのまま DeviceGray で入れる (透明度が無いとき。tRNS があれば embedPngAsIs が断る)
+    // 灰色 (IHDR の色の型 0) の PNG は、展開せずにそのまま DeviceGray で入れる (透明度が無いとき。tRNS があれば embedPngAsIs が断る)
     if (kind === 'png' && !alpha && bytes[25] === 0) {
-      const asIs = rejoin(thisCall(), await embedPngAsIs(pdf, bytes));
+      // 画素のデータは、上の展開 (decodePngPixels) で確かめてある
+      const asIs = rejoin(thisCall(), await embedPngAsIs(pdf, bytes, o, true));
       if (asIs) return { image: asIs, hasAlpha: false };
     }
     const gray = new Uint8Array(width * height);
     for (let i = 0, o = 0; o < gray.length; i += 3, o++) gray[o] = rgb[i];
-    return { image: rejoin(thisCall(), await embedImageStream(pdf, gray, width, height, 'DeviceGray', alpha)), hasAlpha: !!alpha };
+    return { image: rejoin(thisCall(), await embedImageStream(pdf, gray, width, height, 'DeviceGray', alpha, deflate)), hasAlpha: !!alpha };
   }
   const cmyk = new Uint8Array(width * height * 4);
   const memo = new Map<number, number[]>();
@@ -479,31 +606,19 @@ export async function embedCmykImage(
     }
     cmyk.set(c, o);
   }
-  return { image: rejoin(thisCall(), await embedImageStream(pdf, cmyk, width, height, 'DeviceCMYK', alpha)), hasAlpha: !!alpha };
+  return { image: rejoin(thisCall(), await embedImageStream(pdf, cmyk, width, height, 'DeviceCMYK', alpha, deflate)), hasAlpha: !!alpha };
 }
 
-/** 8 ビットの画素 data (色空間 colorSpace の成分の並び) を、FlateDecode の画像として埋め込む。alpha があれば SMask (DeviceGray) にする */
-async function embedImageStream(pdf: PDFDocument, data: Uint8Array, width: number, height: number, colorSpace: 'DeviceCMYK' | 'DeviceGray', alpha: Uint8Array | undefined): Promise<PDFImage> {
-  const embedder = Object.assign(Object.create(PngEmbedder.prototype) as PngEmbedder, {
-    width,
-    height,
-    async embedIntoContext(context: PDFDocument['context'], ref?: PDFRef) {
-      const smask = alpha
-        ? context.register(context.flateStream(alpha, { Type: 'XObject', Subtype: 'Image', Width: width, Height: height, BitsPerComponent: 8, ColorSpace: 'DeviceGray' }))
-        : undefined;
-      const stream = context.flateStream(data, { Type: 'XObject', Subtype: 'Image', Width: width, Height: height, BitsPerComponent: 8, ColorSpace: colorSpace, ...(smask ? { SMask: smask } : {}) });
-      if (ref) {
-        context.assign(ref, stream);
-        return ref;
-      }
-      return context.register(stream);
-    },
+/** 8 ビットの画素 data (色空間 colorSpace の成分の並び) を、deflate で圧縮して FlateDecode の画像として埋め込む。alpha があれば SMask (DeviceGray) にする */
+async function embedImageStream(pdf: PDFDocument, data: Uint8Array, width: number, height: number, colorSpace: 'DeviceCMYK' | 'DeviceGray', alpha: Uint8Array | undefined, deflate: ImageDeflate): Promise<PDFImage> {
+  const z = rejoin(thisCall(), await deflate(data));
+  const za = alpha ? rejoin(thisCall(), await deflate(alpha)) : undefined;
+  const embedder = streamEmbedder(width, height, (context) => {
+    const smask = za ? context.register(context.stream(za, { Type: 'XObject', Subtype: 'Image', Width: width, Height: height, BitsPerComponent: 8, ColorSpace: 'DeviceGray', Filter: 'FlateDecode' })) : undefined;
+    return context.stream(z, { Type: 'XObject', Subtype: 'Image', Width: width, Height: height, BitsPerComponent: 8, ColorSpace: colorSpace, ...(smask ? { SMask: smask } : {}), Filter: 'FlateDecode' });
   });
-  const image = PDFImage.of(pdf.context.nextRef(), pdf, embedder);
-  rejoin(thisCall(), await image.embed());
-  return image;
+  return embedNow(pdf, embedder);
 }
-
 
 /**
  * 字を符号にする関数を、結果を覚えるものにする。features を渡すと、その OpenType の機能を当てた字形の符号にする
@@ -586,11 +701,10 @@ export function decomposeLigatures(cps: number[]): number[] {
 /** 機能の組を渡せる encodeText と、字形の番号から符号にする encodeGlyphs を持つ書体 (memoEncode) */
 export type FeatureFont = PDFFont & { encodeText(t: string, features?: string[]): PDFHexString; encodeGlyphs(ids: number[], text: string): PDFHexString; glyphText(id: number): string };
 
-/** 保存のときに圧縮する流れ (ページの中身など) の圧縮を、渡した関数に替える (pdf-lib は保存のときに中身を作って圧縮する) */
 /**
  * 描き終えたページの内容の流れを、保存のときと同じに圧縮したバイト列の流れ (PDFRawStream) に、同じ番号のまま置き換える。
  * pdf-lib は、ページの命令 (PDFOperator) を保存まで持つので、数千ページの文書では、命令だけで数百 MB になっていた。
- * 圧縮は、保存のときと同じ: deflate を渡せば deflate (useDeflate で差し替えるもの)、無ければ pdf-lib の圧縮 (pako)。
+ * 圧縮は、保存のときと同じ: deflate を渡せば deflate (書き手 (pdfWriter.ts) が圧縮する流れに当てるもの)、無ければ pdf-lib の圧縮 (pako)。
  * 辞書は、内容の流れの辞書をそのまま使う (圧縮の印 Filter は作ったときに入っていて、長さ Length は保存のときに入る) ので、書き出す PDF は同じ。
  * 置き換えた後で、そのページに命令を足そうとしたら誤りにする (黙って捨てない)
  */
@@ -626,11 +740,3 @@ const SEALED_CONTENTS = {
     return sealed();
   },
 };
-
-export function useDeflate(pdf: PDFDocument, deflate: (data: Uint8Array) => Uint8Array) {
-  for (const [, obj] of pdf.context.enumerateIndirectObjects()) {
-    if (!(obj instanceof PDFFlateStream)) continue;
-    const s = obj as unknown as { encode: boolean; contentsCache: Cache<Uint8Array>; getUnencodedContents(): Uint8Array };
-    if (s.encode) s.contentsCache = Cache.populatedBy(() => deflate(s.getUnencodedContents()));
-  }
-}

@@ -11,7 +11,8 @@ export interface Pixels {
   rgba: Uint8Array;
 }
 
-import { inflateFast, inflatedLength } from './inflateFast';
+import { inflateFast } from './inflateFast';
+import { inflateNode } from './imageDeflate';
 import { BMP_RLE_PIXELS_PER_BYTE, DEFLATE_MAX_RATIO, maxPixels, gifPixelBudget, pixelBudget } from './imageLimits';
 import { msg } from './messages';
 import { rejoin, thisCall } from './callContext';
@@ -200,31 +201,79 @@ export function pngWithinLimits(b: Uint8Array): boolean {
 /**
  * PNG の画素のデータ (IDAT をつないだ zlib の列) が、終わりまで展開できるか。pdf-lib の embedPng (UPNG) の展開は、壊れたデータ
  * (割り当ての無い符号) に当たると、読む位置が進まないまま回り続けて止まらない。UPNG に渡す前に、誤りで止まる自前の展開
- * (inflateFast.ts の inflatedLength。壊れた所までの長さを、展開したバイト列を持たずに数える) で、走査線の大きさ (飛び越しでない並びの「(1 行のバイト数 + フィルタの 1 バイト) × 高さ」。
- * PNG の仕様 §7.2・§9.1。飛び越しの並びはこれより大きい) まで出ることを確かめる。pngWithinLimits を通った PNG に使う
+ * (inflateFast.ts の inflateFast) で、走査線の大きさ (飛び越しでなければ「(1 行のバイト数 + フィルタの 1 バイト) × 高さ」、飛び越しなら
+ * パスごとの和。PNG の仕様 §7.2・§8.2・§9.1) まで出ることと、各行のフィルタの種類のバイトが 0〜4 であること (§9.2) を確かめる。pngWithinLimits を通った PNG に使う
  */
 export function pngDataComplete(b: Uint8Array): boolean {
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const parts: Uint8Array[] = [];
   let need = 0;
+  let geom: { width: number; height: number; bpp: number; interlace: boolean } | undefined;
   for (let at = 8; at + 12 <= b.length; ) {
     const len = dv.getUint32(at);
     const type = String.fromCharCode(b[at + 4], b[at + 5], b[at + 6], b[at + 7]);
     if (type === 'IHDR' && len === 13) {
       const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[b[at + 17]] ?? 0;
-      need = (Math.ceil((dv.getUint32(at + 8) * channels * b[at + 16]) / 8) + 1) * dv.getUint32(at + 12);
+      geom = { width: dv.getUint32(at + 8), height: dv.getUint32(at + 12), bpp: channels * b[at + 16], interlace: b[at + 20] === 1 };
+      need = geom.interlace ? adam7Size(geom.width, geom.height, geom.bpp) : (Math.ceil((geom.width * geom.bpp) / 8) + 1) * geom.height;
     } else if (type === 'IDAT') parts.push(b.subarray(at + 8, Math.min(at + 8 + len, b.length)));
     else if (type === 'IEND') break;
     at += 12 + len;
   }
-  if (!need || !parts.length) return false;
+  if (!need || !parts.length || !geom) return false;
   const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let at = 0;
   for (const p of parts) {
     all.set(p, at);
     at += p.length;
   }
-  return inflatedLength(all, need) >= need;
+  // 長さに加えて、各行の頭のフィルタの種類のバイトも見る (展開したバイト列が要るので、走査線の大きさまでを持つ)
+  const raw = inflateFast(all, need);
+  return raw.length >= need && pngFilterBytesOk(raw, geom.width, geom.height, geom.bpp, geom.interlace);
+}
+
+/** 飛び越し (Adam7。PNG の仕様 §8.2) の 7 つのパスの、始めの位置と間隔 (x0, y0, dx, dy) */
+const ADAM7 = [
+  [0, 0, 8, 8],
+  [4, 0, 8, 8],
+  [0, 4, 4, 8],
+  [2, 0, 4, 4],
+  [0, 2, 2, 4],
+  [1, 0, 2, 2],
+  [0, 1, 1, 2],
+] as const;
+
+/** 飛び越しの PNG の、展開した走査線の大きさ (パスごとの「(1 行のバイト数 + 1) × 行の数」の和。画素の無いパスは行も無い。§8.2) */
+function adam7Size(width: number, height: number, bpp: number): number {
+  let n = 0;
+  for (const [x0, y0, dx, dy] of ADAM7) {
+    const pw = Math.ceil((width - x0) / dx);
+    const ph = Math.ceil((height - y0) / dy);
+    if (pw > 0 && ph > 0) n += (Math.ceil((pw * bpp) / 8) + 1) * ph;
+  }
+  return n;
+}
+
+/**
+ * 展開した PNG の走査線の、各行の頭のフィルタの種類のバイトが 0〜4 か (PNG の仕様 §9.2。5 以上は無い種類で、PDF の PNG の予測
+ * (Predictor 15) の読み手によって描き方が違う)。bpp は 1 画素のビット数、interlace は Adam7 の飛び越し
+ */
+export function pngFilterBytesOk(raw: Uint8Array, width: number, height: number, bpp: number, interlace: boolean): boolean {
+  const check = (pw: number, ph: number, at: number): number => {
+    const stride = Math.ceil((pw * bpp) / 8) + 1;
+    for (let y = 0; y < ph; y++) if (raw[at + y * stride] > 4) return -1;
+    return at + stride * ph;
+  };
+  if (!interlace) return check(width, height, 0) >= 0;
+  let at = 0;
+  for (const [x0, y0, dx, dy] of ADAM7) {
+    const pw = Math.ceil((width - x0) / dx);
+    const ph = Math.ceil((height - y0) / dy);
+    if (pw <= 0 || ph <= 0) continue;
+    at = check(pw, ph, at);
+    if (at < 0) return false;
+  }
+  return true;
 }
 
 /** BMP の画素 (圧縮なし、16・32 ビットのビットフィールド、または RLE8・RLE4)。読めなければ undefined */
@@ -552,32 +601,44 @@ export function decodePngForPdf(b: Uint8Array): { width: number; height: number;
   if (parts.length > 1) parts.reduce((o, p) => (all.set(p, o), o + p.length), 0);
   const stride = width * channels;
   const need = (stride + 1) * height;
-  const raw = inflateFast(all, need);
+  // Node では zlib で展開する (自前の展開の 5 倍ほど速い)。zlib が断る (壊れた・長すぎる) ものは、自前の展開で、壊れた所まで読む
+  const fast = inflateNode(all, need);
+  const raw = fast && fast.length >= need ? fast : inflateFast(all, need);
   if (raw.length < need) return 'broken';
-  // フィルタを戻す (§9.2: a 左・b 上・c 左上。1 画素のバイト数 = channels)。戻した行は raw の中に上書きする
+  // フィルタを戻す (§9.2: a 左・b 上・c 左上。1 画素のバイト数 = channels)。戻した行は raw の中に上書きする。
+  // フィルタの種類ごとに回を分ける (画素ごとに種類を見分けない)。1 行目の上の行は 0 (§9.2)
   const bpp = channels;
   for (let y = 0; y < height; y++) {
     const r = y * (stride + 1) + 1;
     const p = r - (stride + 1);
     const f = raw[r - 1];
+    const end = r + stride;
     if (f === 0) continue;
     if (f > 4) return undefined;
-    for (let i = 0; i < stride; i++) {
-      const a = i >= bpp ? raw[r + i - bpp] : 0;
-      const up = y ? raw[p + i] : 0;
-      let v: number;
-      if (f === 1) v = a;
-      else if (f === 2) v = up;
-      else if (f === 3) v = (a + up) >> 1;
-      else {
-        // Paeth (§9.4)
-        const c = y && i >= bpp ? raw[p + i - bpp] : 0;
-        const pa = Math.abs(up - c);
+    if (f === 1) {
+      for (let i = r + bpp; i < end; i++) raw[i] = (raw[i] + raw[i - bpp]) & 0xff;
+    } else if (f === 2) {
+      if (y) for (let i = r, j = p; i < end; i++, j++) raw[i] = (raw[i] + raw[j]) & 0xff;
+    } else if (f === 3) {
+      if (y) {
+        for (let i = r, j = p; i < r + bpp; i++, j++) raw[i] = (raw[i] + (raw[j] >> 1)) & 0xff;
+        for (let i = r + bpp, j = p + bpp; i < end; i++, j++) raw[i] = (raw[i] + ((raw[i - bpp] + raw[j]) >> 1)) & 0xff;
+      } else for (let i = r + bpp; i < end; i++) raw[i] = (raw[i] + (raw[i - bpp] >> 1)) & 0xff;
+    } else if (y) {
+      // Paeth (§9.4)。左の画素の無い所では a = c = 0 なので、上 (b) になる
+      for (let i = r, j = p; i < r + bpp; i++, j++) raw[i] = (raw[i] + raw[j]) & 0xff;
+      for (let i = r + bpp, j = p + bpp; i < end; i++, j++) {
+        const a = raw[i - bpp];
+        const b = raw[j];
+        const c = raw[j - bpp];
+        const pa = Math.abs(b - c);
         const pb = Math.abs(a - c);
-        const pc = Math.abs(a + up - 2 * c);
-        v = pa <= pb && pa <= pc ? a : pb <= pc ? up : c;
+        const pc = Math.abs(a + b - 2 * c);
+        raw[i] = (raw[i] + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 0xff;
       }
-      raw[r + i] = (raw[r + i] + v) & 0xff;
+    } else {
+      // 1 行目の Paeth: 上の行が 0 なので、左 (a) になる
+      for (let i = r + bpp; i < end; i++) raw[i] = (raw[i] + raw[i - bpp]) & 0xff;
     }
   }
   const rgb = new Uint8Array(width * height * 3);

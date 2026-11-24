@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFName, PDFRawStream } from 'pdf-lib';
 import { routeFontCache } from './fontCache';
 
 const dist = fileURLToPath(new URL('../dist-browser/', import.meta.url));
@@ -340,5 +340,112 @@ test('Web Worker の中の Canvas: SVG の放射グラデーション・読め�
   expect(r.rectAt).toEqual([0, 0, 255, 255]);
   // SVG の @font-face の書体で描く (既定の書体の SVG と違う絵になる)
   expect(r.sameText).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+/** PNG のチャンク (CRC は PNG の仕様 §5.5) */
+function pngChunk(type: string, data: Uint8Array): Buffer {
+  const out = Buffer.alloc(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'latin1');
+  Buffer.from(data).copy(out, 8);
+  let c = ~0;
+  for (const x of out.subarray(4, 8 + data.length)) {
+    c ^= x;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  }
+  out.writeUInt32BE(~c >>> 0, 8 + data.length);
+  return out;
+}
+/** 走査線にフィルタ 0 を付けた PNG (色の型 ct・8 ビット)。palette があれば PLTE を足す */
+function makePng(w: number, h: number, ct: number, px: (x: number, y: number) => number[], palette?: number[][]): { png: Buffer; raw: Buffer; idat: Buffer } {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = ct;
+  const rows: number[] = [];
+  for (let y = 0; y < h; y++) {
+    rows.push(0);
+    for (let x = 0; x < w; x++) rows.push(...px(x, y));
+  }
+  const raw = Buffer.from(rows);
+  const idat = zlib.deflateSync(raw);
+  const list = [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), pngChunk('IHDR', ihdr)];
+  if (palette) list.push(pngChunk('PLTE', Uint8Array.from(palette.flat())));
+  list.push(pngChunk('IDAT', idat), pngChunk('IEND', new Uint8Array(0)));
+  return { png: Buffer.concat(list), raw, idat };
+}
+
+/** Web Worker の中で、渡した HTML を組んで PDF にするスクリプト */
+const WORKER_PNG_SOURCE = `
+self.onmessage = async (ev) => {
+  try {
+    const kumiori = await import('/dist-browser/kumiori.js');
+    const res = await kumiori.typesetHtml(ev.data.html, { name: 'p.html', style: 'browser' });
+    const pdf = await res.toPdf({ date: new Date(0) });
+    self.postMessage({ pdf: Array.from(pdf), warnings: res.warnings });
+  } catch (e) {
+    self.postMessage({ error: String((e && e.stack) || e) });
+  }
+};
+self.postMessage('ready');
+`;
+
+test('dist-browser/kumiori.js: Web Worker と画面の中で、α 付きの PNG (CompressionStream で圧縮) と色の表の PNG (IDAT をそのまま) を PDF に入れ、切れた PNG は断る', async ({ page }) => {
+  const errors = await openWithBundle(page);
+  await page.route('**/e2e-png-worker.js', (route) => route.fulfill({ body: WORKER_PNG_SOURCE, contentType: 'text/javascript' }));
+  const W = 37;
+  const H = 23;
+  const rgba = makePng(W, H, 6, (x, y) => [(x * 7) & 255, (y * 11) & 255, (x * y) & 255, x % 3 ? 255 : 90]);
+  const palette = Array.from({ length: 16 }, (_, i) => [i * 16, 255 - i * 16, (i * 37) & 255]);
+  const indexed = makePng(W, H, 3, (x, y) => [(x + y) & 15], palette);
+  const broken = makePng(W, H, 3, (x, y) => [(x * y) & 15], palette);
+  const cut = Buffer.concat([broken.png.subarray(0, 8), pngChunk('IHDR', broken.png.subarray(16, 29)), pngChunk('PLTE', Uint8Array.from(palette.flat())), pngChunk('IDAT', broken.idat.subarray(0, broken.idat.length >> 1)), pngChunk('IEND', new Uint8Array(0))]);
+  const uri = (b: Buffer) => `data:image/png;base64,${b.toString('base64')}`;
+  const html = `<!DOCTYPE html><html><head><title>p</title></head><body><img src="${uri(rgba.png)}" style="width: 74pt"><img src="${uri(indexed.png)}" style="width: 74pt"><img src="${uri(cut)}" style="width: 74pt"></body></html>`;
+  const inWorker = await page.evaluate(async (html) => {
+    const worker = new Worker('/e2e-png-worker.js', { type: 'module' });
+    return await new Promise<{ pdf?: number[]; warnings?: string[]; error?: string }>((resolve) => {
+      worker.onerror = (e) => resolve({ error: `worker error: ${e.message}` });
+      worker.onmessage = (e) => (e.data === 'ready' ? worker.postMessage({ html }) : resolve(e.data));
+    });
+  }, html);
+  const inPage: { pdf?: number[]; warnings?: string[]; error?: string } = await page.evaluate(async (html) => {
+    const url = '/dist-browser/kumiori.js';
+    const mod = (await import(/* @vite-ignore */ url)) as typeof import('../src/index');
+    const res = await mod.typesetHtml(html, { name: 'p.html', style: 'browser' });
+    return { pdf: Array.from(await res.toPdf({ date: new Date(0) })), warnings: res.warnings };
+  }, html);
+  for (const r of [inWorker, inPage]) {
+    expect(r.error).toBeUndefined();
+    // 切れた PNG は、知らせて描かない (ブラウザでは、組むときの画像の読み取りで断る。PDF の埋め込みの断りは test/pngEmbed.test.ts)
+    expect(r.warnings!.filter((w) => /読めません|壊れて/.test(w)).length).toBe(1);
+    const doc = await PDFDocument.load(new Uint8Array(r.pdf!));
+    const images = doc.context
+      .enumerateIndirectObjects()
+      .map(([, o]) => o)
+      .filter((o) => o instanceof PDFRawStream && o.dict.get(PDFName.of('Subtype')) === PDFName.of('Image')) as PDFRawStream[];
+    const byName = (cs: string) => images.filter((s) => String(s.dict.get(PDFName.of('ColorSpace'))).includes(cs));
+    // α 付きの PNG: RGB と α を、ブラウザの CompressionStream (zlib の形) で圧縮した FlateDecode の流れ。展開すると元の画素
+    const rgb = byName('DeviceRGB').filter((s) => !s.dict.get(PDFName.of('DecodeParms')) && !String(s.dict.get(PDFName.of('ColorSpace'))).includes('Indexed'));
+    expect(rgb.length).toBe(1);
+    expect(rgb[0].dict.get(PDFName.of('Filter'))).toBe(PDFName.of('FlateDecode'));
+    const want = Buffer.alloc(W * H * 3);
+    const wantAlpha = Buffer.alloc(W * H);
+    for (let i = 0, y = 0; y < H; y++) for (let x = 0; x < W; x++, i++) {
+      const at = y * (W * 4 + 1) + 1 + x * 4;
+      rgba.raw.copy(want, i * 3, at, at + 3);
+      wantAlpha[i] = rgba.raw[at + 3];
+    }
+    expect(Buffer.from(zlib.inflateSync(rgb[0].contents)).equals(want)).toBe(true);
+    const smask = doc.context.lookup(rgb[0].dict.get(PDFName.of('SMask'))) as PDFRawStream;
+    expect(Buffer.from(zlib.inflateSync(smask.contents)).equals(wantAlpha)).toBe(true);
+    // 色の表の PNG: IDAT をそのまま Indexed の画像にする (Predictor 15)
+    const ix = byName('Indexed');
+    expect(ix.length).toBe(1);
+    expect(Buffer.from(ix[0].contents).equals(indexed.idat)).toBe(true);
+    expect(Buffer.from(zlib.inflateSync(ix[0].contents)).equals(indexed.raw)).toBe(true);
+  }
   expect(errors).toEqual([]);
 });

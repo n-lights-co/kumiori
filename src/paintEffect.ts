@@ -28,7 +28,10 @@ export const PAINT_EFFECT_MARK = '__paintEffect';
  * applyPaintEffects が読んで消す
  */
 export const PAINT_REF_MARK = '__paintRef';
-/** いま組んでいる文書に、効果を持つ節があるか (組版エンジンが組み始めに決める。組版は同期なので、文書ごとに混ざらない) */
+/**
+ * いま領域の木にしている文書に、効果を持つ節があるか (組版エンジンが、組み始めと、ページを領域の木にするたびに置く。組版は境目で待つので、
+ * 同時に組むほかの文書が書き換えうる。ページを領域の木にする間は同期なので、その初めに置き直せば混ざらない)
+ */
 export const paintEffectState = { on: false };
 type Marked = { [PAINT_EFFECT_MARK]?: PaintEffect; [PAINT_REF_MARK]?: number };
 
@@ -138,7 +141,7 @@ function boundsOf(a: Area): { x0: number; y0: number; x1: number; y1: number } {
 }
 
 /** 行の中の Area を、1 つの inline の Area (枠・余白の無い箱) にまとめる。子の座標は、まとめた箱の左上からに直す */
-function wrapRun(run: Area[]): InlineArea {
+function wrapRun(run: Area[], type: 'inline' | 'block' = 'inline'): InlineArea {
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;
@@ -152,7 +155,7 @@ function wrapRun(run: Area[]): InlineArea {
   }
   const zero = { top: 0, right: 0, bottom: 0, left: 0 };
   return {
-    type: 'inline',
+    type: type as 'inline',
     x: x0,
     y: y0,
     width: x1 - x0,
@@ -298,6 +301,44 @@ export function applyPaintEffects(sheets: readonly SheetArea[], entries: readonl
     }
     stack.push({ a: c, active: act });
   };
+  /**
+   * ページの直下の Area (絶対配置の箱・後ろの層): 不透明度の箱の子孫で、その箱の外 (ページの直下) に出した Area が続いて並ぶときは、
+   * 1 つの Area にまとめてから不透明度を掛ける (CSS Color 4 §3.2: opacity は、要素と子孫を 1 枚の絵にしてから掛ける。
+   * opacity が 1 未満の箱は重ね合わせの文脈を作り (CSS 2 付録 E・Positioned Layout 3)、絶対配置の子孫はその中で描く。
+   * 子ごとに掛けると、子の重なりが濃くなる)。まとめるのは並びの続いたものだけ (重ねる順を変えない)。
+   * 不透明度の箱そのものの中身 (流れの中の背景など) は、本文の側に残るので、それとは別々に掛かる
+   */
+  const pageRuns = (kids: Area[], active: Active): Area[] => {
+    for (const c of kids) unmark(c);
+    const eff = kids.map((c) => match(c, active));
+    const grouped = (i: number) => {
+      const e = eff[i];
+      return !!e && fades(e) && !isBox(kids[i], e) ? e.fx : undefined;
+    };
+    const out: Area[] = [];
+    for (let i = 0; i < kids.length; ) {
+      const fx = grouped(i);
+      let j = i + 1;
+      if (fx) while (j < kids.length && grouped(j) === fx) j++;
+      if (j - i < 2) {
+        out.push(kids[i]);
+        if (eff[i]) settle(kids[i], eff[i]!, active);
+        else stack.push({ a: kids[i], active });
+        i = j;
+        continue;
+      }
+      const run = kids.slice(i, j);
+      const w = wrapRun(run, 'block');
+      run.forEach((c0, n) => {
+        if (marks.has(c0)) marks.set(w.children[n], marks.get(c0)!);
+        if (refMarks.has(c0)) refMarks.set(w.children[n], refMarks.get(c0)!);
+      });
+      out.push(w);
+      settle(w, eff[i]!, active);
+      i = j;
+    }
+    return out;
+  };
   const list = (kids: Area[], active: Active, inLine: boolean): Area[] => {
     for (const c of kids) unmark(c);
     const eff = kids.map((c) => (inLine ? lifted(c, active) : match(c, active)));
@@ -345,9 +386,9 @@ export function applyPaintEffects(sheets: readonly SheetArea[], entries: readonl
         stack.push({ a: a.page, active });
         break;
       case 'page':
-        a.behindAreas = list(a.behindAreas, active, false) as typeof a.behindAreas;
+        a.behindAreas = pageRuns(a.behindAreas, active) as typeof a.behindAreas;
         list([a.regionBody], active, false);
-        a.absoluteAreas = list(a.absoluteAreas, active, false) as typeof a.absoluteAreas;
+        a.absoluteAreas = pageRuns(a.absoluteAreas, active) as typeof a.absoluteAreas;
         break;
       case 'glyph':
       case 'image':

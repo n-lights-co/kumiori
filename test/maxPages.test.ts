@@ -145,6 +145,20 @@ describe('1〜N ページは、全体を組んだときと同じ', () => {
   });
 });
 
+describe('止めたときの警告', () => {
+  it('文書がちょうど N + 1 ページで終わるとき、見張りのページを捨てても、page-sequence の layout/not-converged は残す', async () => {
+    // 最後のページのマスターの本文領域がほとんど無いと、最後のページを決めるたびにページ数が 1 つ増えては減り、収束しない
+    const last = spm('l', '<fo:region-body margin-top="170pt"/>');
+    const alts = `<fo:page-sequence-master master-name="m"><fo:repeatable-page-master-alternatives><fo:conditional-page-master-reference master-reference="l" page-position="last"/><fo:conditional-page-master-reference master-reference="r"/></fo:repeatable-page-master-alternatives></fo:page-sequence-master>`;
+    const d = fo(spm('r') + last + alts, seq('m', blocks(12)));
+    const full = await typeset(d, base);
+    expect(full.diagnostics.some((x) => x.code === 'layout/not-converged' && x.args?.what === 'last-page-master')).toBe(true);
+    const r = await typeset(d, { ...base, maxPages: full.pageCount - 1 });
+    expect(r.truncated).toBe(true);
+    expect(r.diagnostics.some((x) => x.code === 'layout/not-converged' && x.args?.what === 'last-page-master')).toBe(true);
+  });
+});
+
 describe('N より後ろを指すものは決まらない', () => {
   const masters = spm('p', '<fo:region-body margin-top="20pt"/>', '<fo:region-before extent="15pt"/>');
   const statics = '<fo:static-content flow-name="xsl-region-before"><fo:block>柱 <fo:page-number/> / <fo:page-number-citation-last ref-id="end"/></fo:block></fo:static-content>';

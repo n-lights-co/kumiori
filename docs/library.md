@@ -12,6 +12,7 @@ TypeScript・JavaScript のプログラムから、HTML+CSS・XSL-FO を組み�
 - [組んだ結果 (TypesetResult)](#組んだ結果-typesetresult)
   - [PDF にする (toPdf)](#pdf-にする-topdf) ・ [PDF/X と PDF/A](#pdfx-と-pdfa) ・ [Canvas に描く (renderPage)](#canvas-に描く-renderpage) ・ [SVG にする (renderPageToSvg)](#svg-にする-renderpagetosvg) ・ [PNG にする (renderPageToPng)](#png-にする-renderpagetopng)
 - [PDF だけを作る (typesetToPdf)](#pdf-だけを作る-typesettopdf)
+- [PDF を流して書く (typesetToPdfStream)](#pdf-を流して書く-typesettopdfstream)
 - [ファイルと外部の資源](#ファイルと外部の資源)
 - [誤りと診断](#誤りと診断)
 - [draw.io の図](#drawio-の図)
@@ -63,7 +64,8 @@ const png = await result.renderPageToPng(0, { dpi: 150 });     // 1 ページ目
 | `typeset(text, options)` | 文書を組み、組んだ結果 (`TypesetResult`) を返す。種類は `options.kind` か、`name` と中身で決める |
 | `typesetHtml`・`typesetFo` | 種類を決め打ちする `typeset` |
 | `typesetToPdf(text, options, pdfOptions)` | PDF だけを作る ([下](#pdf-だけを作る-typesettopdf)) |
-| `await createTypesetter(setup)` | 書体を 1 度だけ読み込んだ器を作る。`typesetter.typeset(...)`・`typesetter.typesetToPdf(...)` で組む |
+| `typesetToPdfStream(text, options, output, pdfOptions)` | PDF をページごとに書き出し先へ流して書く ([下](#pdf-を流して書く-typesettopdfstream)) |
+| `await createTypesetter(setup)` | 書体を 1 度だけ読み込んだ器を作る。`typesetter.typeset(...)`・`typesetter.typesetToPdf(...)`・`typesetter.typesetToPdfStream(...)` で組む |
 | `decodeDocumentText(bytes)` | ファイルのバイト列を、BOM・XML 宣言の `encoding`・`<meta charset>` に従って文字列にする |
 | `walkAreaTree(tree, fn)` | 組んだ結果 (Area Tree) をたどる ([`docs/area-tree.md`](area-tree.md)) |
 | `snapshotDocument(document, options)` | ブラウザの画面で、JS が組み上げた後の文書を、`typeset` に渡せる形にする ([下](#js-が組み上げたページを組む-snapshotdocument)) |
@@ -127,7 +129,7 @@ const png = await result.renderPageToPng(0, { dpi: 150 });     // 1 ページ目
 | `print` | 塗り足しとトンボ | `--print` |
 | `spotColors` | 特色の代わりの CMYK | `--spot-colors` |
 | `links` | 文書の外へのリンクのうち、PDF に動作を書くもの (下。ページの SVG の書き出しのリンクも同じ決まり) | `--link-schemes`・`--link-launch`・`--link-relative` |
-| `deflate` | 圧縮の関数。Node なら `zlib.deflateSync` を渡すと PDF の書き出しが速い | |
+| `deflate` | 圧縮の関数 (zlib の形)。ページの中身・書体・画像の流れの圧縮に使う。Node なら `zlib.deflateSync` を渡すと PDF の書き出しが速い。省くと、画像の流れは Node では Node の zlib、ブラウザ・Web Worker では `CompressionStream` で圧縮し、ほかの流れは pdf-lib の圧縮 (pako) で圧縮する | |
 
 `links` は `{ schemes?: string[]; launch?: boolean; relative?: 'file' | 'uri' }` です。
 
@@ -140,7 +142,7 @@ const png = await result.renderPageToPng(0, { dpi: 150 });     // 1 ページ目
 
 | 選択肢 | 中身 | コマンド |
 | --- | --- | --- |
-| `fetchImages` | 文書が `http(s):` で参照する画像を取るか。既定 `true`。`false` か、URL を受けて真偽を返す関数 | `--no-fetch-images` |
+| `fetchImages` | 文書が `http(s):` で参照する画像 (SVG の画像・インラインの `svg` の中の `image` が指す画像も) を取るか。既定 `true`。`false` か、URL を受けて真偽を返す関数 | `--no-fetch-images` |
 | `fetchStyles` | 文書が `http(s):` で参照する CSS と、その `@font-face` の書体を取るか。`fetchImages` と同じ形 | `--no-fetch-styles` |
 | `fetchTimeoutMs` | 書体・画像の取得の時限 (ミリ秒)。既定 30 秒。本体を読み終えるまで効く。プラグインの `load` にも渡る ([プラグイン](#プラグイン)) | |
 | `limits` | 入力の上限 (画像の画素の数・ファイルの大きさ・入れ子の深さなど) を変える ([入力の上限](#入力の上限-limits)) | `--limit` |
@@ -163,6 +165,7 @@ const png = await result.renderPageToPng(0, { dpi: 150 });     // 1 ページ目
 | `layoutMs` | 組版にかかった時間 (ミリ秒。読み込みと PDF の書き出しは含まない) |
 | `truncated` | `maxPages` で途中で止めたか ([先頭の数ページだけを組む](#先頭の数ページだけを組む-maxpages)) |
 | `toPdf(options)` | PDF のバイト列 (`Uint8Array`) を返す |
+| `toPdfStream(output, options)` | `toPdf` と同じ PDF を書き出し先へ流して書き、`{ bytes }` (書いたバイト数) を返す ([PDF を流して書く](#pdf-を流して書く-typesettopdfstream)) |
 | `renderPage(canvas, i, options)` | ページを canvas に描く (ブラウザ) |
 | `renderPageToSvg(i, options)` | ページを SVG の文字列にする (ブラウザでも Node でも) |
 | `renderPageToPng(i, options)` | ページを PNG のバイト列にする (ブラウザでも Node でも) |
@@ -179,7 +182,7 @@ const png = await result.renderPageToPng(0, { dpi: 150 });     // 1 ページ目
 | `pdfx` | 入稿用の PDF/X の印 (下) |
 | `pdfa` | 長期保存用の PDF/A の印 (下) |
 | `imageMaxDpi` | JPEG の解像度の上限 |
-| `date` | PDF の作成日・更新日 (Info と XMP) と、添付ファイルの更新日に書く日時 (`Date`。秒より下は切り捨てる)。無ければ PDF を書き出す時刻。同じ版の Kumiori で、同じ入力・同じ書体・同じ設定と同じ `date` で組めば、同じバイトの PDF になる。正しくない `Date` と 0〜9999 年の外は `KumioriOptionError` (`option` は `'date'`)。コマンドでは環境変数 `SOURCE_DATE_EPOCH` |
+| `date` | PDF の作成日・更新日 (Info と XMP) と、添付ファイルの更新日に書く日時 (`Date`。秒より下は切り捨てる)。無ければ PDF を書き出す時刻。同じ版の Kumiori で、同じ入力・同じ書体・同じ設定と同じ `date` で組めば、同じ環境 (Node の版・ブラウザ) では同じバイトの PDF になる。`deflate` を渡さないとき、画像の流れは環境の zlib (Node の zlib・ブラウザの `CompressionStream`) で圧縮するので、環境をまたぐと、画像のある PDF のバイトが違いうる (見た目は同じ)。どこでも同じバイトにしたいときは、`deflate` に決まった関数 (pako の `deflate` など) を渡す。正しくない `Date` と 0〜9999 年の外は `KumioriOptionError` (`option` は `'date'`)。コマンドでは環境変数 `SOURCE_DATE_EPOCH` |
 | `signal` | PDF の書き出しを止める合図 (組んだときの合図は引き継がない。[組版を止める・進み具合](#組版を止める進み具合-signalonprogress)) |
 | `onProgress` | PDF の書き出しの進み具合 (`phase` は `pdf`) |
 
@@ -272,6 +275,66 @@ id は、頭の文字に番号を続けたもので、切り抜き・グラデ�
 - `layoutMs` は、ページを組んだ結果にする時間を含みません (PDF を書く時間に入ります)。
 - Node のコマンドも、これで PDF を作ります。`createTypesetter()` の器にも `typesetter.typesetToPdf(text, options, pdfOptions)` があります。
 
+## PDF を流して書く (typesetToPdfStream)
+
+`typesetToPdfStream(text, options, output, pdfOptions)` は、`typesetToPdf` と同じ組み方で、PDF をページごとに書き出し先 `output` へ流して書きます。
+PDF の全体を 1 つの `Uint8Array` に持たないので、画像の多い文書で、PDF を書く間のメモリが少なくなります。
+
+- 書き出し先 (型は `PdfOutput`) は、`WritableStream` か、バイト列の塊 (`Uint8Array`) を受ける関数です。関数が `Promise` を返したら、次の塊を渡す前に待ちます。
+  値を返さなければ待ちません。渡した塊は、渡した後に書き換えません。
+- 結果は `{ bytes, pageCount, warnings, diagnostics, layoutMs, truncated }` です (型は `TypesetPdfStreamResult`。`typesetToPdf` の結果の `pdf` の代わりに、書いたバイト数 `bytes`)。
+- 組んだ結果からは `result.toPdfStream(output, pdfOptions)`、器からは `typesetter.typesetToPdfStream(text, options, output, pdfOptions)` で同じように書けます。
+  `toPdfStream` は組んだ結果を持ったままなので、下がるのは PDF の側のメモリだけです。
+- 書き終えた流れ (画像・ページの中身・SVG などの描き置き) を、埋め込んだ所・ページを描き終えた所で書き出し先へ書きます。書体 (部分書体は全部のページの字を見てから作る)・注釈・フォームの欄・しおり・構造の木などは、最後に書きます。
+  書き出し先へは、64KB までためてから渡します。
+- 出来る PDF は `typesetToPdf` と同じです。ふつうは 1 バイトも違いません。タグ付き PDF で、不透明度のある箱の中に字がある文書など
+  (中に印の付いた内容を持つ Form XObject が後で辞書を書き足される文書) では、その Form をファイルの後ろに書くので、オブジェクトの並びと位置の数だけが違います (番号ごとのオブジェクトの中身は同じ)。
+- `WritableStream` の扱いは、`ReadableStream.pipeTo` の既定と同じです: 書くたびに書き手の `ready` を待ち (遅い書き出し先では、ページの間で待ちます)、書き終えたら `close()`、
+  誤り・止める合図で終えたら `abort(理由)` を呼び、終えたら書き手のロックを放します。書き始める前の誤り (選択肢の誤り・PDF/X・PDF/A・前に止めた合図・書体の読み込みの誤り) でも `abort(理由)` を呼びます。
+  ほかの書き手がロックしている `WritableStream` と、`WritableStream` でも関数でもない書き出し先は `KumioriOptionError` (`option` は `output`) で、書き出し先には触りません。
+- 止める合図 (`options.signal`) で止めたり、組版が誤りになったりしたときは、返す `Promise` がその理由で失敗します。書き出し先には途中までのバイト列が残り、PDF としては読めないので、捨ててください。
+  書き出し先が誤りになったとき (関数が投げた・`Promise` が失敗した・`WritableStream` の書き込みが失敗した) は、組版と書き出しを止め、その誤りを包まずに投げます (`abort` は呼びません)。
+- PDF/X・PDF/A (`pdfOptions.pdfx`・`pdfa`) は流して書けません。書いた PDF の全体を読み直して確かめ、合わなければ PDF を返さないためです。渡すと、何も書く前に `KumioriOptionError`
+  (`option` は `pdf.pdfx`・`pdf.pdfa`。`toPdfStream` では `pdfx`・`pdfa`) になります。`typesetToPdf`・`toPdf` を使ってください。PDF/UA-1 とタグ付き PDF は流して書けます。
+- メモリ節約 (`lowMemory`) と合わせて使えます。メモリ節約の組版はページの間で待てない所があるので、`Promise` を返す書き出し先・`WritableStream` では、待てる所まで塊をためます。
+  メモリ節約と合わせるときは、値を返さない関数 (Node の `fs.writeSync` など) を勧めます。
+- 下がるのは PDF の側のメモリだけです。測った値 (`scripts/measure-memory.mjs`。Node 22): 画像の多い文書 (圧縮の効かない PNG 200 枚、PDF 196MB) で、PDF を書く間の外のバイト列 (`arrayBuffers`) の山が 660MB から 266MB に、
+  RSS の山が 1,176MB から 961MB に下がりました。文の多い文書 (1,600 ページ、PDF 2.2MB) では、PDF を書く間の生きているヒープは 522MB のままで変わりません (山は組版の途中の結果で、PDF の側は小さいため)。
+  画像の多い文書の山のいちばん高い所 (約 780MB) は、組む前に画像を読み込む所にあり、流しても変わりません。
+  文の多い文書の山 (組版の途中の木) を下げる作りは、まだありません (これからの版で扱います)。
+
+Node でファイルに書く例:
+
+```ts
+import fs from 'node:fs';
+import { Writable } from 'node:stream';
+import { typesetToPdfStream } from 'kumiori';
+
+// WritableStream にして渡す (Node の Writable は、じかには受けない)
+await typesetToPdfStream(html, { name: 'book.html' }, Writable.toWeb(fs.createWriteStream('book.pdf')));
+
+// 同期で書く関数を渡す
+const fd = fs.openSync('book.pdf', 'w');
+try {
+  await typesetToPdfStream(html, { name: 'book.html' }, (chunk) => {
+    // writeSync は、書けたバイト数を返す (ふつうのファイルでは、まず全部書ける)
+    for (let at = 0; at < chunk.length; ) at += fs.writeSync(fd, chunk, at);
+  });
+} finally {
+  fs.closeSync(fd);
+}
+```
+
+ブラウザでは、保存の窓の書き手 (`await (await showSaveFilePicker()).createWritable()`) が `WritableStream` なので、そのまま渡せます。
+`ReadableStream` が欲しいときは、`TransformStream` を挟みます。組版の誤りは、読む側では `readable` の誤り (abort) で分かりますが、返す `Promise` も失敗するので、受け手を付けます
+(付けないと、Node では受け手の無い失敗 (`unhandledRejection`) で止まります)。
+
+```ts
+const { readable, writable } = new TransformStream();
+typesetToPdfStream(html, {}, writable).catch((e) => console.error(e)); // 誤りは readable の側でも分かる
+return new Response(readable);
+```
+
 ## 組版を止める・進み具合 (signal・onProgress)
 
 `signal` (`AbortSignal`) を渡すと、組版を途中で止められます。`onProgress` を渡すと、進み具合を受け取れます。
@@ -315,7 +378,7 @@ async function preview(html: string) {
 - 結果の `toPdf`・`renderPageToSvg`・`renderPageToPng` は、組んだときの合図を引き継ぎません。それぞれの設定に `signal` (`toPdf` は `onProgress` も) を渡します。
   `typesetToPdf` は、組む設定 (`options`) の `signal`・`onProgress` が PDF の書き出しまで効きます (PDF の設定 (3 つ目の引数) には渡せません。渡すと `KumioriOptionError`。`option` は `pdf.signal`・`pdf.onProgress`)。`createTypesetter` の `setup.signal`・`setup.onProgress` は、器を作る間だけ効きます。
 
-`onProgress` は、次の形の値を同期で受け取ります (型は `TypesetProgress`)。投げた誤りは、組版を止めて、そのまま返す Promise の失敗になります。
+`onProgress` は、次の形の値を同期で受け取ります (型は `TypesetProgress`)。投げた誤りは、組版を止めて、そのまま返す Promise の失敗になります。止めた後 (止める合図・投げた誤り) は、並べて読んでいた資源が後から読み終えても、`onProgress` を呼びません。
 
 | `phase` | いつ | ほかの欄 |
 | --- | --- | --- |
@@ -444,8 +507,9 @@ const s = await typeset(html, { limits: { nestingDepth: 64, pngPixels: 4_000_000
 | `pdfImageObjects` | 1,000,000 | 上げ下げ | 1 つの PDF の画像の間接オブジェクトの数 |
 | `pdfImagePages` | 100,000 | 上げ下げ | 1 つの PDF の画像のページの数 (ページの木をたどる数) |
 | `pdfImageDepth` | 64 | 下げるだけ | PDF の画像のページの木の段・資源の入れ子の深さ |
-| `pdfImageStreamBytes` | 256MB | 上げ下げ | PDF の画像の 1 つのページで圧縮を解く流れの合計 (バイト) |
-| `pdfImageLoadMs` | 60,000 | 上げ下げ | 1 つの PDF の画像を読み込む時限 (ミリ秒) |
+| `pdfImageStreamBytes` | 256MB | 上げ下げ | PDF の画像の 1 つのページ (ページの範囲は、範囲の全体) で圧縮を解く流れの合計 (バイト) |
+| `pdfImageLoadMs` | 60,000 | 上げ下げ | 1 つの PDF の画像を読み込む時限 (ミリ秒。ページの範囲の埋め込みは、範囲の全体で) |
+| `pdfImageRangePages` | 64 | 上げ下げ | PDF の画像のページの範囲 (互換の指定の `page=2-5`・`all` など) で並べるページの数 |
 | `epsMs` | 20,000 | 上げ下げ | 1 つの EPS の実行の時限 (ミリ秒) |
 | `epsDocumentMs` | 60,000 | 上げ下げ | 1 つの文書の EPS の実行の時間の合計 (ミリ秒) |
 | `epsMemoryBytes` | 512MB | 上げ下げ | 1 つの EPS のメモリの合計と VM の上限 (バイト) |
@@ -530,12 +594,12 @@ Kumiori の投げる誤りは、種類の名前 `code` を持つ `KumioriError` 
 - **ページ**: `a.pdf#page=2` (RFC 8118 の `page=`)。無ければ 1 ページ目です。
 - **大きさ**: ページの CropBox (無ければ MediaBox) です。`/Rotate` (90 度ごとの回転) と `UserUnit` も見ます。
 - **互換の指定** (`compat: 'antenna'`・`style: 'ah'`、コマンドの `--compat antenna`・`--style ah`) のときだけ、アンテナハウスの拡張を読みます。
-  - ページの範囲 (`#page=2-3`・`#page=2-`・`#page=all`): 範囲の最初のページだけを貼り、`image/pdf-page-range` で知らせます。
+  - ページの範囲 (`#page=2-3`・`#page=2-`・`#page=all`): 範囲のページを、間を空けずに 1 行に横に並べ (下端をそろえる)、1 つの図として貼ります (アンテナハウスの見本と同じ並べ方。ページを流しはしません)。大きさの指定 (`content-height` など) は、並べた全体に掛かります。背景の画像 (`background-image`) に範囲を指したときは、範囲の最初のページだけを敷きます (見本と同じ)。並べるのは、範囲の初めから上限 `pdfImageRangePages` (既定 64) のページまでで、超えた分は貼らずに `image/pdf-page-range` と `limit/reached` で知らせます。範囲のページの圧縮を解く大きさ (`pdfImageStreamBytes`) と時間 (`pdfImageLoadMs`) は、範囲の全体で分け合い、同じ中身の流れ・資源を共有するページは 1 つの Form XObject にします。
   - 箱の選び方 (`#bbox=MediaBox|CropBox|BleedBox|TrimBox|ArtBox`)。
   - data: の URI の `page=` (`data:application/pdf;page=3;base64,…`)。
 - **読めない PDF**: 壊れた PDF は `image/pdf-invalid`、暗号化した PDF は `image/pdf-encrypted` で知らせ、仮の枠で描きます。
 - **PDF/X・PDF/A・PDF/UA-1**: 埋め込む前に、そのページだけを検査します。決まりに合わないページ (PDF/X の DeviceRGB、sRGB の PDF/A の CMYK、埋め込んでいない書体、透明、PDF/A の任意の内容 (Optional Content) など) は、埋め込まずに仮の枠で描き、`pdfx/embedded-pdf`・`pdfa/embedded-pdf`・`pdfua/embedded-pdf` で知らせます。埋め込んだページの色を CMYK に直すことはしません。透明を平らにする出力 (PDF/X-1a・X-3) では、PDF の画像を貼りません (PDF/X-4 を使ってください)。
-- **上限**: `pdfImageObjects`・`pdfImagePages`・`pdfImageDepth`・`pdfImageStreamBytes`・`pdfImageLoadMs` (「入力の上限」の表)。圧縮した流れは、解く前・解く間に縛ります。読み込むときに解くオブジェクトの流れ・相互参照の流れの合計は、`pdfImageStreamBytes` と、ファイルの大きさの 100 倍 (+ 1MB) の小さい方までです (上限を上げても、ファイルの大きさによる縛りは変わりません)。
+- **上限**: `pdfImageObjects`・`pdfImagePages`・`pdfImageDepth`・`pdfImageStreamBytes`・`pdfImageLoadMs`・`pdfImageRangePages` (「入力の上限」の表)。圧縮した流れは、解く前・解く間に縛ります。読み込むときに解くオブジェクトの流れ・相互参照の流れの合計は、`pdfImageStreamBytes` と、ファイルの大きさの 100 倍 (+ 1MB) の小さい方までです (上限を上げても、ファイルの大きさによる縛りは変わりません)。
 
 ## draw.io の図
 
@@ -616,7 +680,7 @@ const result = await typeset(html, { loadFont: createFontLoader(), resolveResour
 | `defaultFontCacheDir(env, platform, home)` | 書体のキャッシュの既定の場所。環境変数 `KUMIORI_FONT_CACHE` があればそこ、無ければ OS のキャッシュのディレクトリの `kumiori/fonts` (Windows は `%LOCALAPPDATA%`、macOS は `~/Library/Caches`、ほかは `$XDG_CACHE_HOME` か `~/.cache`)。home が分からなければ `undefined`。引数は省けば、いまの環境のもの |
 | `looksLikeFont(bytes)` | 書体のファイルらしいか (TrueType・OpenType (CFF)・TrueType Collection の先頭 4 バイトを見る)。途中で切れた取得や壊れたキャッシュを見分ける |
 | `createFileResolver({ root })` | `resolveResource` に渡す、`file:` の URL のファイルを読む関数。`root` を渡すと、その中のファイルだけを読む。`root` はいくつかの並びでもよく、中にあるかはシンボリックリンクをたどった実体のパスで見る |
-| `createSystemFonts({ dirs, maxFiles })` | `systemFonts` に渡す、OS の書体を探す部品。読み込んだどの書体にも字形の無い字を持つ書体を、OS の書体の場所から探す。`dirs` は探すディレクトリの文字列の配列 (既定は `systemFontDirs()`。配列でない値・文字列でない項・空の文字列は `TypeError`。相対の道は、部品を作ったときのカレントディレクトリから。空の配列なら、どこも探さない)、`maxFiles` は探すファイルの数の上限 (既定 20000)。書体のファイルは、字の範囲の表 (`cmap`) などの要る表だけを読み、索引は部品が持つ (初めて探すときに 1 度だけ作る)。明朝とゴシックの種類ごとに書体を選び、PDF に埋め込めない書体 (OS/2 の `fsType`) は選ばない |
+| `createSystemFonts({ dirs, maxFiles })` | `systemFonts` に渡す、OS の書体を探す部品。読み込んだどの書体にも字形の無い字を持つ書体を、OS の書体の場所から探す。`dirs` は探すディレクトリの文字列の配列 (既定は `systemFontDirs()`。配列でない値・文字列でない項・空の文字列は `TypeError`。相対の道は、部品を作ったときのカレントディレクトリから。空の配列なら、どこも探さない)、`maxFiles` は探すファイルの数の上限 (既定 20000)。書体のファイルは、字の範囲の表 (`cmap`) などの要る表だけを読み、索引は部品が持つ (初めて探すときに 1 度だけ作る。間をあけながら作るので、書体の多い機械でもイベントループを長く止めない。止める合図 (`signal`) が来たら待つのをやめる。索引を作った後に書体のファイルが変わったと分かったら、次に探すときに作り直す)。明朝とゴシックの種類ごとに書体を選び、PDF に埋め込めない書体 (OS/2 の `fsType`) は選ばない |
 | `systemFontDirs(env, platform, home)` | OS の書体の場所。Windows は `%WINDIR%\Fonts` と `%LOCALAPPDATA%\Microsoft\Windows\Fonts`、macOS は `/System/Library/Fonts`・`/Library/Fonts`・`~/Library/Fonts`、ほか (Linux など) は fontconfig の設定 (`FONTCONFIG_FILE`・`FONTCONFIG_PATH`・`/etc/fonts/fonts.conf`) の `<dir>` (設定が無ければ XDG の決まりの場所)。引数は省けば、いまの環境のもの |
 
 ## パッケージの形と動く環境
@@ -628,8 +692,8 @@ const result = await typeset(html, { loadFont: createFontLoader(), resolveResour
 | `kumiori/browser` | `dist-browser/kumiori.js` | 依存まで 1 つにまとめた、バンドラーを使わないブラウザ向けのファイル |
 
 - 公開しているのは `src/index.ts` (と Node 用の `src/node.ts`) から出しているものだけです。ほかのモジュールの関数・型は、版の間で変わることがあります。
-- ES モジュールだけですが、`require('kumiori')` でも読めます (ES モジュールを `require()` で読める Node 20.19.0 以降・22.12.0 以降)。
-- 動く Node は、20.19.0 以上の 20 系か、22.12.0 以上です。HTML を読むための依存パッケージ (linkedom の使う css-select など) が Node 20.19.0 以降を求めます。22.0〜22.11 は、`--experimental-require-module` を付けないと ES モジュールを `require()` で読めないので、対象から外しています。
+- ES モジュールだけですが、`require('kumiori')` でも読めます (ES モジュールを、フラグ無しで `require()` で読める Node 22.12.0 以降。22.12 は、読むときに Node が `ExperimentalWarning` を出します。22.13 からは出しません)。
+- 動く Node は、22.12.0 以上です。Node 20 は、支え (保守) が 2026 年 4 月に終わったので、0.7.0 で対象から外しました。22.0〜22.11 は、`--experimental-require-module` を付けないと ES モジュールを `require()` で読めないので、対象から外しています。
 - Deno と Bun でも動きます (Node の互換の API で動きます。Deno 2.9・Bun 1.4 で確かめました)。npm から入れた包みを、Node と同じく `import { typeset } from 'kumiori'` (Deno では `npm:kumiori` でも) で読みます。
   確かめたのは、`kumiori`・`kumiori/node`・`kumiori/browser` の読み込み、HTML・XSL-FO の組版、PDF・SVG・PNG の書き出し、`createTypesetter`、`createFontLoader` での書体の読み込み (置き場のファイルからも、ネットワークからも)、重ねた呼び出しの言語 (Deno・Bun の持つ `AsyncLocalStorage` を `process.getBuiltinModule` で取って使う) と、
   コマンド (`deno run -A node_modules/kumiori/dist-cli/cli.js`・`bun node_modules/kumiori/dist-cli/cli.js`) の PDF・PNG・SVG の書き出し・標準入力・`--system-fonts`・`--watch` です。
@@ -644,7 +708,7 @@ npm に公開したものは、jsDelivr や unpkg の CDN からそのまま読�
 
 ```html
 <script type="module">
-  import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.6.0/dist-browser/kumiori.js';
+  import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
   const result = await typesetHtml(html, { name: 'a.html' });
   result.renderPage(document.querySelector('canvas'), 0);
 </script>
@@ -687,7 +751,21 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 - 何度も組むときは、`await createTypesetter(setup)` で書体を 1 度だけ読み込んだ器を作り、`typesetter.typeset(html, options)` で組むと速くなります (`loadFont` などの書体まわりの選択肢は、`setup` に渡します)。
   - 器は、前の文書を組んだときの結果のうち、中身が同じなら同じになるもの (`@font-face` の書体のファイルの下ごしらえ (WOFF2 の展開など) と、中身・書式・幅の同じ段落の行分け) を覚え、次の文書で使い回します。
     少しずつ直した文書を組み直すとき、2 回目からの組み直しが速くなります (151 ページの文書で約 13 秒が約 9 秒)。使い回しても、組んだ結果 (領域の木・PDF) は変わりません。
-    覚える分のメモリ (前の文書 1 つ分。140 ページほどの本で約 200MB、上限は約 400MB) を使うので、要らなければ `createTypesetter({ reuse: false })` で切れます。
+    `typeset` では、中身・始まりの条件 (開始ページ・左右・脚注の続き番号) の変わらない page-sequence のページも、前の文書から使い回します。
+    直した page-sequence も、直した所の前のページ (前向きのページ番号の参照のあるページより後ろ) は前の文書のページを使って、その区切りから組み、
+    直した所の後ろで、ページの区切りの所の組みの状態が前の文書と揃ったら、残りのページを前の文書から使います
+    (直した所でページの数が変わり、後ろのページの番号がずれたときは、残りを組みます。段組・最後のページのマスターのある page-sequence は、直したら全部を組みます)。
+    ページ番号の参照のある page-sequence・ページは、参照の値が前の文書と同じになるときだけ使います。索引・ページごとの脚注番号のある文書・page-sequence では使い回しません。
+    ページを前の文書から使うのは、字や属性を直したときです。ブロック (段落・見出し・表など) を足す・消す直しでは、どの page-sequence のページも前の文書から使わずに組みます
+    (前の文書と文書の形を照らせないため。直していない page-sequence も、直した所の前と後のページも、組み直します)。
+    page-sequence の外の、文書の全体の欄を直したときも同じです: しおりの題 (HTML の `h1`〜`h6` は既定でしおりになるので、見出しの字を直したときも。XSL-FO の `fo:bookmark-title`)、
+    文書の題と情報 (HTML の `<title>`・`meta`、XSL-FO の `axf:document-info`)、タグ付きの PDF (`tagged`) を作るときの構造の木の欄 (代わりの文 (`alt`)・略語の展開・言語など)。
+    これらは文書の指紋に入るので、直すと、どの page-sequence のページも前の文書から使わずに組みます (組んだ結果は変わりません)。
+    組む手間の内部の上限の近くの文書、組む間に上限 (`limits`) に当たったか書体の知らせ (書体の整形の表の誤りなど) の出た page-sequence、警告の言語の違う文書でも、使い回さずに組みます。
+    `typesetToPdf`・`typesetToPdfStream` (ページごとに書いて手放す組版) はページを覚えません (前に `typeset` で覚えたページは使います)。
+    HTML と CSS 編の対応仕様説明書 (147 ページ・page-sequence 1) で 1 段落を直して組み直すと、`typeset` が約 9.5〜9.9 秒から約 6.0〜6.3 秒 (組版の分は約 5.6〜6.1 秒から約 2.0〜2.1 秒) になります (`scripts/profile-relayout.mjs --edit` の 3・4 回目)。
+    覚える分のメモリ (前の文書 1 つ分の段落の行分けで、140 ページほどの本で約 200MB、上限は約 400MB。ページを使い回すときは、前の文書のページの木とページの区切りの記録もその分持ちます) を使うので、要らなければ `createTypesetter({ reuse: false })` で切れます。
+    前の文書のページの木は、文書 1 つ分を上限なしに持ちます (大きな文書を組み直すときは、ヒープに余裕を見てください)。
 - 動く見本: `npm run dev` の後、http://localhost:5173/examples/preview/ を開きます (`examples/preview/`)。
   左の編集欄、その下の「HTML」欄 (見出し・ルビ・表などを直接書ける。編集欄と互いに写し合う)、印刷の CSS を書き換えると、手が止まったところで右に組み直します。
   Kumiori の公開 API だけを使い、ほかの依存はありません。
@@ -747,9 +825,9 @@ Chart.js などの、JS で自分で動かすアニメーション (`requestAnim
 - canvas の絵は PNG にして `files` に入れ、`<img data-kumiori-canvas>` に置き換えます (属性はそのまま写すので、`style` の大きさはそのまま当たります)。文書の `<style>` の、`canvas` を名指しした規則は、置き換えた `img` にも当て、`img` を名指しした規則は、置き換えた `img` に当てません (`<link>` で読むスタイルシートの規則は書き換えないので、その `img` の規則は当たります)。別の origin の画像で汚れた canvas は画像にできないので、canvas のまま残します (`snapshot/canvas-tainted`)。WebGL の canvas は、`preserveDrawingBuffer: true` で作らないと、空の絵になることがあります。
 - `<style>` は元の字を残し (ブラウザの知らない指定 (`string-set`・`-ah-*` など) が消えないように)、JS が CSSOM で足した規則 (`insertRule`。styled-components・emotion の本番の作りなど) だけを、直後の `<style data-kumiori-cssom>` に書き足します。CSSOM で消された規則は、元の字から消せないので残します (`snapshot/stylesheet-rule-removed`)。
 - 作ったスタイルシート (`document.adoptedStyleSheets`) は、規則を書き出して `<style data-kumiori-adopted>` にします (元の字が無いので、ブラウザの知らない指定は戻せません)。`<link rel="stylesheet">` は URL を絶対にして残し、Kumiori が自分で取ります (JS で書き換えた規則は写りません)。無効にしたスタイルシートは取り除きます。
-- Shadow DOM (Web Components) は、平らな木に展開します (host の子を影の木の写しにし、`<slot>` は割り当てられた節に置き換えます)。影の木のスタイル (`:host`・`::slotted()` を含む) は、セレクタを属性で囲って、その影の木の中だけに当たるように書き換えます。詳しさ (specificity) が少し上がる近似です。`::part()` は扱いません。閉じた影の根は見えないので、`shadowRoots` で渡したものだけ写します (渡さないと、ありそうな所に `snapshot/shadow-root-closed` の警告を出します)。
-- CSS の `@font-face` の書体は、CSS のまま (URL を絶対にして) 残し、Kumiori が取ります。JS で足した書体 (`new FontFace` を `document.fonts.add`) は、中身も URL もブラウザが返さないので、`fontSources` で渡してください。渡した中身は `files` に入れ、同じ名前・太さ・傾きの `@font-face` を書き足します (渡さないと `snapshot/font-face-source-unknown`)。
-- blob: の URL (属性と CSS の `url()`) は、中身を読んで `files` に入れます。消された URL でも、読み終わった `img` の絵は PNG にして取り込みます (SVG の画像も、画素の PNG になります)。読めないものは `snapshot/blob-unreadable` の警告を出します。
+- Shadow DOM (Web Components) は、平らな木に展開します (host の子を影の木の写しにし、`<slot>` は割り当てられた節に置き換えます)。影の木のスタイル (`:host`・`::slotted()` を含む) は、セレクタを属性で囲って、その影の木の中だけに当たるように書き換えます。詳しさ (specificity) が少し上がる近似です。入れ子の `<slot>` の途中の影の木の `::slotted()` も当て、`:host-context()` は host そのものにも当てます。影の木の中の `@import` は、読み込んだ先の規則を同じように囲います (影の木の中の `@font-face` は、文書の全体に当たります)。規則を読めない影の木の中のスタイルシート (別の origin の `<link>`・`@import`) は写さずに `snapshot/shadow-stylesheet-unreadable` の警告を出します。`::part()` は扱いません。閉じた影の根は見えないので、`shadowRoots` で渡したものだけ写します (渡さないと、ありそうな所に `snapshot/shadow-root-closed` の警告を出します)。
+- CSS の `@font-face` の書体は、CSS のまま (URL を絶対にして) 残し、Kumiori が取ります。JS で足した書体 (`new FontFace` を `document.fonts.add`) は、中身も URL もブラウザが返さないので、`fontSources` で渡してください。渡した中身は `files` に入れ、同じ名前・太さ・傾きの `@font-face` を書き足します (渡さないと `snapshot/font-face-source-unknown`。同じ中身の書体は 1 つのファイルにし、同じ規則は 1 つにします。`javascript:` の URL を返しても `snapshot/font-face-source-unknown`)。
+- blob: の URL (属性と CSS の `url()`) は、中身を読んで `files` に入れます (組むのに使う所だけ: 画像 (`img`・`picture` の `source`・`input` の `src`・`video` の `poster`・SVG の `href`)・`link`・`object`・`embed` と CSS。`a`・`area` の `href`、`video`・`audio` の `src` などの blob: は、中身を読まずに URL のまま残します)。大きさは読む前に確かめます。消された URL でも、読み終わった `img` の絵は PNG にして取り込みます (SVG の画像も、画素の PNG になります)。読めないものは `snapshot/blob-unreadable` の警告を出します。
 - `srcset`・`<picture>` の画像は、画面で選ばれた画像 (`currentSrc`) を `src` にします (画面の幅で選んだ画像になります)。
 - フォームのいまの値を、属性 (`value`・`checked`・`selected`・`textarea` の中身) に書き戻します。`password` と `hidden` の値と `file` は書きません (CSRF の鍵などを写しに残さないように)。いまの Kumiori は `input` の中の値の字を描きません (`textarea` の中身と `select` の `option` の字は描きます)。
 - `<script>` (データの島も)・`on…` の属性・`javascript:` の URL (空白・制御字で隠したものも。SVG のアニメーション (`set`・`animate` など) で `href` を `javascript:` に動かすものも)・`<iframe>`・`<object>`・`<embed>` の `data:` の URL (画像の `data:` は残します)・`<noscript>`・`<meta http-equiv="refresh">`・注釈を取り除きます。`<template>` の中身も同じように取り除いて写します。`<style>` の字の中の `</style` は逃がし、`<xmp>` は `<pre>` にして、写しを読み直したときに要素が差し込まれないようにします。写しには画面に出ていた中身 (利用者の入れた値など) が入るので、サーバーへ送るときは、その扱いに気を付けてください。
@@ -765,7 +843,7 @@ worker.postMessage({ type: 'typeset', html: snap.html, options: snap.options }, 
 
 上限と、別の origin の資源:
 
-- 取り込むもの (canvas の PNG・blob: の中身・`fontSources` の書体) は、ファイル 1 つが `fileBytes`、canvas の画素の数が `imagePixels`、合わせて `snapshotBytes` までです (超えたものは取り込まずに警告します)。`typeset` で `limits` を上げて組むときは、同じ値を `snapshotDocument` の `limits` にも渡してください。
+- 取り込むもの (canvas の PNG・blob: の中身・`fontSources` の書体。`fontSources` の返した `data:` の URL も数えます) は、ファイル 1 つが `fileBytes`、canvas の画素の数が `imagePixels`、合わせて `snapshotBytes` までです (超えたものは取り込まずに警告します)。`typeset` で `limits` を上げて組むときは、同じ値を `snapshotDocument` の `limits` にも渡してください。
 - `snapshotDocument` が自分で読むのは、同じ文書の中のもの (canvas・blob: の URL・CSSOM) だけで、ネットワークへは出ません。`http(s)` の画像・CSS は URL を絶対にするだけで、取るのは `typeset` です (`fetchImages`・`fetchStyles` の決まりが効きます)。
 - そのため、画面では見えていても、CORS の応答の頭の無い別の origin の画像は、ブラウザで組むと読めない画像になります (`<img>` は CORS が無くても画面に出せますが、`fetch` では中身を読めません)。同じ origin に置くか、CORS の応答の頭を付けてください。
 
@@ -781,7 +859,7 @@ worker.postMessage({ type: 'typeset', html: snap.html, options: snap.options }, 
 
 ```js
 // worker.js (new Worker('worker.js', { type: 'module' }) で作る)
-import { createTypesetter } from 'https://cdn.jsdelivr.net/npm/kumiori@0.6.0/dist-browser/kumiori.js';
+import { createTypesetter } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
 const typesetter = createTypesetter();                          // Promise<Typesetter>。書体を読み込むのは 1 度だけ
 let result;
 self.onmessage = async ({ data }) => {
@@ -881,7 +959,8 @@ Worker の中の知らせ (`onmessage`) が走るのは、組版が間をあけ�
 - 書き出した PDF・SVG・PNG の中の作り (PDF のオブジェクトの並び・SVG の要素の組み方など)
 - 新しい選択肢と、実験的な選択肢:
   `systemFonts`・`spotColors`・`svgLanguages`・`deflate`・`unreferencedCss`・`diagnostics`・`plugins`・`drawio` (と `createDrawioStencilRegistry`・`DRAWIO_MIME`・`isDrawio`)・`reuse`・`TypesetPdfOptions.lowMemory`・`RenderPageOptions.guides`、
-  0.6.0 で足した `RenderPageSvgOptions.pageHref` と、ページの SVG のリンクの書き方、0.6.0 で足した `snapshotDocument`
+  0.6.0 で足した `RenderPageSvgOptions.pageHref` と、ページの SVG のリンクの書き方、0.6.0 で足した `snapshotDocument`、
+  0.7.0 で足した PDF の流し書き (`typesetToPdfStream`・器の `typesetToPdfStream`・`TypesetResult.toPdfStream`・`PdfOutput`・`TypesetPdfStreamResult`。書き出し先の扱い・塊の大きさ・書く順を含む)
 - `src/index.ts`・`src/node.ts` から出していないもの (公開の API ではありません)
 
 ### 2 つの版の番号

@@ -84,7 +84,7 @@ interface Diagnostic {
 | `limit/nesting-depth` | warning | 要素の入れ子が深すぎるので、深い要素を浅い所に並べて組んだ | — |
 | `limit/css-import` | error | 読み込む CSS (`@import`) が多すぎるので、残りを読まなかった | `file` |
 | `limit/raised` | info | 入力の上限 (`limits`・コマンドの `--limit`) を既定より上げた (時間とメモリを多く使いうる。1 回の組版で 1 件) | `limits` |
-| `limit/reached` | warning | 入力の上限 (`limits`・コマンドの `--limit`) に当たって、入力の一部を切るか近似して組んだ (上限の名前ごとに 1 回の組版で 1 件。いまは `gridTracks` (grid の列の並びを切った)・`leaderRepeats` (字を並べるリーダーを空きにした)・`nestedSelectors` (展開したセレクタの多すぎる入れ子の規則を読まなかった)・`styleRefs`・`importDepth` (CSS・書体の参照を取らなかった)・`tableColumns` (`col` の `span`・`colspan` を、HTML の仕様の上限の 1,000 より下げた上限で切った)・`pdfImageObjects`・`pdfImagePages`・`pdfImageDepth`・`pdfImageStreamBytes`・`pdfImageLoadMs` (PDF の画像を描かなかった。`pdfImageStreamBytes` は PDF を書くときに当たるので、結果の `toPdf` の後の `warnings`・`diagnostics` に足す))。専用の診断のある上限 (`limit/table-columns`・`limit/css-import` など) は、そちらに出す | `limit`・`value` |
+| `limit/reached` | warning | 入力の上限 (`limits`・コマンドの `--limit`) に当たって、入力の一部を切るか近似して組んだ (上限の名前ごとに 1 回の組版で 1 件。いまは `gridTracks` (grid の列の並びを切った)・`leaderRepeats` (字を並べるリーダーを空きにした)・`nestedSelectors` (展開したセレクタの多すぎる入れ子の規則を読まなかった)・`styleRefs`・`importDepth` (CSS・書体の参照を取らなかった)・`tableColumns` (`col` の `span`・`colspan` を、HTML の仕様の上限の 1,000 より下げた上限で切った)・`pdfImageObjects`・`pdfImagePages`・`pdfImageDepth`・`pdfImageStreamBytes`・`pdfImageLoadMs` (PDF の画像を描かなかった。`pdfImageStreamBytes` は PDF を書くときに当たるので、結果の `toPdf` の後の `warnings`・`diagnostics` に足す)・`pdfImageRangePages` (PDF の画像のページの範囲を、初めから上限の数のページまでにした)・`systemFontFaces` (OS の書体 (`systemFonts`) のうち、上限を超える書体を使わなかった。その書体の字は `font/missing-glyph` になる))。専用の診断のある上限 (`limit/table-columns`・`limit/css-import` など) は、そちらに出す | `limit`・`value` |
 | `font/file-unreadable` | warning | 渡した書体ファイル (`fonts`・`@font-face`) を読めない | `file`・`font` (`font` は、書体の名前の分かる `@font-face` のときだけ) |
 | `font/family-unreadable` | warning | 渡した書体ファイルのファミリー名を読めない | `file` |
 | `font/generic-not-loaded` | warning | `genericFonts` に書いた書体が読み込まれていない | `font`・`generic` |
@@ -104,7 +104,7 @@ interface Diagnostic {
 | `image/not-found` | error | 画像が見つからないか、画像として読めない | `src` |
 | `image/unsupported` | error | 画像を描けないので、仮の枠で描いた | `src`・`detail` |
 | `image/partial` | warning | 画像の一部を描けない (形式の読み取りの細かい中身は `detail`) | `src`・`detail` |
-| `image/reference-not-found` | warning | SVG の画像の中の `image`・`use` が指すファイルが無い・読めない | `src`・`href` |
+| `image/reference-not-found` | warning | SVG の画像の中の `image`・`use` が指すファイルが無い・読めない。1 つの SVG の分は 20 件まで 1 件ずつ出し、残りは数 (`count`。`href` は空) の 1 件にまとめる (1 件ずつのものの `count` は 1)。`src`・`href` は 200 字で切る | `src`・`href`・`count` |
 | `image/timeout` | error | 画像の形式の読み込みが時限内に終わらない | `src`・`format` |
 | `image/invalid-size` | error | 画像の形式が返した大きさが大きすぎる・有限でない | `src`・`format` |
 | `image/too-many-fragments` | warning | 1 つのファイルを fragment の違う参照で指す数が多すぎる | `src` |
@@ -112,7 +112,7 @@ interface Diagnostic {
 | `image/pdf-invalid` | error | PDF の画像を読めない (壊れている・ページが無い・入れ子が深すぎる・上限を超えたなど。理由は `detail`)。仮の枠で描いた | `src`・`detail` |
 | `image/pdf-encrypted` | error | PDF の画像が暗号化されているので読めない。仮の枠で描いた | `src` |
 | `image/pdf-page` | warning | PDF の画像の `#page=` の値が読めない・ページの数を超えるので、1 ページ目を貼った | `src`・`detail` |
-| `image/pdf-page-range` | warning | PDF の画像の `#page=` がページの範囲なので、範囲の最初のページだけを貼った (互換の指定のとき) | `src`・`detail` |
+| `image/pdf-page-range` | warning | PDF の画像の `#page=` のページの範囲 (互換の指定のとき) のページの数が上限 `pdfImageRangePages` を超えたので、範囲の初めから上限の数のページまでを並べた (0.6.0 では、範囲の最初のページだけを貼ったことを知らせた。0.7.0 からは範囲のページを横に並べて貼る) | `src`・`detail` |
 | `image/pdf-fragment` | warning | PDF の画像の `#` の後ろに、読まない引数・値がある (アンテナハウスの `bbox=` や範囲は、互換の指定のときだけ読む) | `src`・`detail` |
 | `image/pdf-repaired` | info | PDF の画像に仕様に合わない所があったが、直して読んだ (頭の前の余分なバイト・90 の倍数でない回転など) | `src`・`detail` |
 | `image/pdf-dropped` | info | PDF の画像の注釈 (リンク・注記・フォームの欄など) を、組んだ PDF に持ち込まなかった (図の中身だけを貼る) | `src`・`detail` |
@@ -184,9 +184,10 @@ interface Diagnostic {
 | `snapshot/canvas-too-large` | warning | `snapshotDocument` で、canvas の画素の数 (`imagePixels`)・PNG の大きさ (`fileBytes`) が上限を超えたか、ブラウザが PNG を作れなかったので、画像にしなかった (`size` は画素の数かバイト) | `element`・`size`・`limit` |
 | `snapshot/stylesheet-rule-removed` | warning | `snapshotDocument` で、`<style>` の元の字にあって CSSOM から消された規則を、元の字から消せないので残した | `count` |
 | `snapshot/blob-unreadable` | warning | `snapshotDocument` で、blob: の URL の中身を読めなかったか (消された URL など)、上限 (`fileBytes`) を超えたので、取り込まなかった | `url` |
-| `snapshot/limit` | warning | `snapshotDocument` で、取り込んだものの合計が上限 (`snapshotBytes`) に届いたので、その後の canvas・blob: の中身・書体を取り込まなかった | `limit` |
+| `snapshot/limit` | warning | `snapshotDocument` で上限に当たって、その後を写さなかった。`name` が上限の名前、`limit` がその値: `snapshotBytes` (取り込んだものの合計。その後の canvas・blob: の中身・書体を取り込まなかった)・`shadowImports` (1 つの影の木で、スタイルシートの `@import` をたどる数。1,000 個。その影の木のその後の `@import`)・`shadowImportDepth` (`@import` の入れ子の深さ。16 段。それより深いシート)・`shadowImportChars` (影の木の `@import` から写す字の数。写しの全体で 33,554,432 字。その後の `@import`)。上限ごとに 1 度だけ出す | `limit`・`name` |
 | `snapshot/shadow-root-closed` | warning | `snapshotDocument` で、閉じた影の根 (Shadow DOM) がありそうなカスタム要素の中身を写せなかった (推し量り。`shadowRoots` で根を渡せば写す) | `element` |
-| `snapshot/font-face-source-unknown` | warning | `snapshotDocument` で、JS で足した書体 (`new FontFace`) の中身を取れなかったか、上限 (`fileBytes`) を超えたので、取り込まなかった (組むと別の書体になる) | `family` |
+| `snapshot/shadow-stylesheet-unreadable` | warning | `snapshotDocument` で、影の木 (Shadow DOM) の中のスタイルシート (`<link rel=stylesheet>`・`@import`) の規則を読めない (別の origin で CORS の無いものなど) ので、写さなかった (影の木の中だけに囲えないので、文書の全体に当てないために写さない) | `element`・`url` |
+| `snapshot/font-face-source-unknown` | warning | `snapshotDocument` で、JS で足した書体 (`new FontFace`) の中身を取れなかったか (`fontSources` が `javascript:` の URL を返したときも)、上限 (`fileBytes`) を超えたので、取り込まなかった (組むと別の書体になる) | `family` |
 
 ## 誤りの型と名前
 
@@ -225,5 +226,5 @@ interface Diagnostic {
 | `pdfx/not-conforming` | `KumioriPdfError` | PDF/X の決まりに合わないので、PDF/X の PDF にできない |
 | `pdfx/flatten-failed` | `KumioriPdfError` | 平らにできない透明が残った |
 | `pdfa/not-conforming` | `KumioriPdfError` | PDF/A の決まりに合わないので、PDF/A の PDF にできない |
-| `internal/patch-mismatch` | `KumioriError` | pdf-lib・fontkit の版が変わり、差し替えが合わない |
+| `internal/patch-mismatch` | `KumioriError` | pdf-lib・fontkit の版が変わり、差し替え (`pdfLibPatches.ts`・`fontkitCffFlex.ts`) か、pdf-lib の書き手を写した PDF の書き手 (`pdfWriter.ts`) が合わない (pdf-lib の中の欄が無い・数えた大きさと書いた大きさが違う) |
 | `internal/page-sealed` | `KumioriError` | 描き終えたページに命令を足そうとした (中の誤り) |

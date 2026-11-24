@@ -12,6 +12,7 @@ Every function, type and option is listed in the API reference (<https://n-light
 - [The typeset result (TypesetResult)](#the-typeset-result-typesetresult)
   - [PDF (toPdf)](#pdf-topdf) · [PDF/X and PDF/A](#pdfx-and-pdfa) · [Canvas (renderPage)](#canvas-renderpage) · [SVG (renderPageToSvg)](#svg-renderpagetosvg) · [PNG (renderPageToPng)](#png-renderpagetopng)
 - [Making only the PDF (typesetToPdf)](#making-only-the-pdf-typesettopdf)
+- [Writing the PDF as a stream (typesetToPdfStream)](#writing-the-pdf-as-a-stream-typesettopdfstream)
 - [Files and external resources](#files-and-external-resources)
 - [Errors and diagnostics](#errors-and-diagnostics)
 - [draw.io diagrams](#drawio-diagrams)
@@ -63,7 +64,8 @@ const png = await result.renderPageToPng(0, { dpi: 150 });     // page 1 as PNG 
 | `typeset(text, options)` | Typesets a document and returns the typeset result (`TypesetResult`). The kind comes from `options.kind`, or from `name` and the content |
 | `typesetHtml`, `typesetFo` | `typeset` with the kind fixed |
 | `typesetToPdf(text, options, pdfOptions)` | Makes only the PDF ([below](#making-only-the-pdf-typesettopdf)) |
-| `await createTypesetter(setup)` | Creates a container that loads the fonts only once. Typeset with `typesetter.typeset(...)` and `typesetter.typesetToPdf(...)` |
+| `typesetToPdfStream(text, options, output, pdfOptions)` | Writes the PDF to an output page by page, as a stream ([below](#writing-the-pdf-as-a-stream-typesettopdfstream)) |
+| `await createTypesetter(setup)` | Creates a container that loads the fonts only once. Typeset with `typesetter.typeset(...)`, `typesetter.typesetToPdf(...)` and `typesetter.typesetToPdfStream(...)` |
 | `decodeDocumentText(bytes)` | Turns the bytes of a file into a string according to the BOM, the XML declaration's `encoding` and `<meta charset>` |
 | `walkAreaTree(tree, fn)` | Walks the typeset result (Area Tree) ([`docs/en/area-tree.md`](area-tree.md)) |
 | `snapshotDocument(document, options)` | In the browser window, turns the document as JavaScript left it into a form that can be passed to `typeset` ([below](#typesetting-a-page-built-by-javascript-snapshotdocument)) |
@@ -127,7 +129,7 @@ The tables below list all the options. Their types and the finer rules are in th
 | `print` | Bleed and trim marks | `--print` |
 | `spotColors` | Alternate CMYK for spot colors | `--spot-colors` |
 | `links` | Which links that leave the document get an action in the PDF (below; links in page SVG output follow the same rules) | `--link-schemes`, `--link-launch`, `--link-relative` |
-| `deflate` | A compression function. In Node, passing `zlib.deflateSync` speeds up PDF output | |
+| `deflate` | A compression function (zlib format), used for the streams of page contents, fonts and images. In Node, passing `zlib.deflateSync` speeds up PDF output. When omitted, image streams are compressed with Node's zlib in Node and with `CompressionStream` in browsers and Web Workers, and the other streams with pdf-lib's compression (pako) | |
 
 `links` is `{ schemes?: string[]; launch?: boolean; relative?: 'file' | 'uri' }`.
 
@@ -140,7 +142,7 @@ The tables below list all the options. Their types and the finer rules are in th
 
 | Option | Contents | Command |
 | --- | --- | --- |
-| `fetchImages` | Whether to fetch the images the document references via `http(s):`. `true` by default; `false`, or a function that takes a URL and returns a boolean | `--no-fetch-images` |
+| `fetchImages` | Whether to fetch the images the document references via `http(s):` (including those referenced by `image` in SVG images and inline `svg`). `true` by default; `false`, or a function that takes a URL and returns a boolean | `--no-fetch-images` |
 | `fetchStyles` | Whether to fetch the stylesheets the document references via `http(s):` and the fonts of their `@font-face` rules. The same form as `fetchImages` | `--no-fetch-styles` |
 | `fetchTimeoutMs` | Timeout for fetching fonts and images (milliseconds). 30 seconds by default. It applies until the body has been read completely. It is also passed to a plugin's `load` ([Plugins](#plugins)) | |
 | `limits` | Change the input limits (image pixels, file sizes, nesting depths and so on; [Input limits](#input-limits-limits)) | `--limit` |
@@ -163,6 +165,7 @@ Check the exact names and syntax of the options in the Command column in the lis
 | `layoutMs` | The time spent typesetting, in milliseconds (loading and writing the PDF are not included) |
 | `truncated` | Whether layout stopped early because of `maxPages` ([Laying out only the first pages](#laying-out-only-the-first-pages-maxpages)) |
 | `toPdf(options)` | Returns the PDF bytes (`Uint8Array`) |
+| `toPdfStream(output, options)` | Writes the same PDF as `toPdf` to an output as a stream and returns `{ bytes }` (the number of bytes written) ([Writing the PDF as a stream](#writing-the-pdf-as-a-stream-typesettopdfstream)) |
 | `renderPage(canvas, i, options)` | Draws a page onto a canvas (browser) |
 | `renderPageToSvg(i, options)` | Turns a page into an SVG string (browser or Node) |
 | `renderPageToPng(i, options)` | Turns a page into PNG bytes (browser or Node) |
@@ -179,7 +182,7 @@ Pages are counted from 0.
 | `pdfx` | PDF/X marking for print submission (below) |
 | `pdfa` | PDF/A marking for long-term archiving (below) |
 | `imageMaxDpi` | The upper limit of JPEG resolution |
-| `date` | The time written as the PDF creation and modification dates (Info and XMP) and as the modification date of attached files (a `Date`; anything below a second is dropped). Without it, the time the PDF is written. The same version of Kumiori gives the same PDF bytes for the same input, fonts, settings and `date`. An invalid `Date` or one outside the years 0 to 9999 is a `KumioriOptionError` (`option` is `'date'`). On the command line, the `SOURCE_DATE_EPOCH` environment variable |
+| `date` | The time written as the PDF creation and modification dates (Info and XMP) and as the modification date of attached files (a `Date`; anything below a second is dropped). Without it, the time the PDF is written. The same version of Kumiori gives the same PDF bytes for the same input, fonts, settings and `date` in the same environment (Node version, browser). Without `deflate`, image streams are compressed with the zlib of the environment (Node's zlib, the browser's `CompressionStream`), so across environments the bytes of PDFs with images can differ (they look the same). To get the same bytes everywhere, pass a fixed function to `deflate` (such as pako's `deflate`). An invalid `Date` or one outside the years 0 to 9999 is a `KumioriOptionError` (`option` is `'date'`). On the command line, the `SOURCE_DATE_EPOCH` environment variable |
 | `signal` | A signal to stop writing the PDF (the signal used for typesetting is not inherited; [Stopping and progress](#stopping-and-progress-signal-onprogress)) |
 | `onProgress` | Progress of writing the PDF (`phase` is `pdf`) |
 
@@ -272,6 +275,66 @@ For a nonexistent page number, the returned Promise is rejected with a `RangeErr
 - `layoutMs` does not include the time to turn the pages into layout results (it is part of writing the PDF).
 - The Node command also makes PDFs with it. The container from `createTypesetter()` also has `typesetter.typesetToPdf(text, options, pdfOptions)`.
 
+## Writing the PDF as a stream (typesetToPdfStream)
+
+`typesetToPdfStream(text, options, output, pdfOptions)` typesets the same way as `typesetToPdf` and writes the PDF page by page to the output `output`.
+It never holds the whole PDF in one `Uint8Array`, so documents with many images use less memory while the PDF is written.
+
+- The output (type `PdfOutput`) is a `WritableStream` or a function that takes chunks of bytes (`Uint8Array`). If the function returns a `Promise`, it is awaited before the next chunk is passed;
+  if it returns nothing, it is not awaited. A chunk is not changed after it is passed.
+- The result is `{ bytes, pageCount, warnings, diagnostics, layoutMs, truncated }` (type `TypesetPdfStreamResult`; instead of `pdf` in the result of `typesetToPdf`, it has `bytes`, the number of bytes written).
+- From a typeset result, `result.toPdfStream(output, pdfOptions)` writes the same way, and from a container, `typesetter.typesetToPdfStream(text, options, output, pdfOptions)`.
+  `toPdfStream` keeps the typeset result, so only the memory on the PDF side goes down.
+- Streams that are finished (images, page contents, drawings such as SVG) are written to the output where they are embedded or where a page has been drawn. Fonts (a subset is made after seeing the characters of every page), annotations, form fields, bookmarks, the structure tree and so on are written at the end.
+  Up to 64KB is gathered before it is passed to the output.
+- The PDF is the same as from `typesetToPdf`; usually not a single byte differs. In a tagged PDF with text inside a box with opacity, for example
+  (a document where a Form XObject holding marked content has its dictionary completed later), that Form is written at the end of the file, so only the order of objects and the offsets differ (each numbered object has the same contents).
+- A `WritableStream` is handled as `ReadableStream.pipeTo` does by default: before each write it waits for the writer's `ready` (with a slow output, it waits between pages); when done it calls `close()`;
+  when ending on an error or the stop signal it calls `abort(reason)`; in every case it releases the writer's lock at the end. It also calls `abort(reason)` on errors before anything is written (option errors, PDF/X and PDF/A, a signal stopped beforehand, errors loading fonts).
+  A `WritableStream` locked by another writer, and an output that is neither a `WritableStream` nor a function, are a `KumioriOptionError` (`option` is `output`), and the output is not touched.
+- When stopped by the signal (`options.signal`) or when typesetting fails, the returned `Promise` rejects with that reason. The output keeps the bytes written so far, which are not a readable PDF, so discard them.
+  When the output itself fails (the function throws, its `Promise` rejects, or a write to the `WritableStream` fails), typesetting and writing stop and that error is thrown unwrapped (`abort` is not called).
+- PDF/X and PDF/A (`pdfOptions.pdfx`, `pdfa`) cannot be written as a stream, because the whole written PDF is read back and checked, and no PDF is returned if it does not conform. Giving them throws `KumioriOptionError` before anything is written
+  (`option` is `pdf.pdfx` or `pdf.pdfa`; for `toPdfStream`, `pdfx` or `pdfa`). Use `typesetToPdf` or `toPdf`. PDF/UA-1 and tagged PDF can be written as a stream.
+- It can be combined with `lowMemory`. Low-memory typesetting cannot wait between pages in some places, so with an output that returns a `Promise` or a `WritableStream`, chunks are gathered until it can wait.
+  With `lowMemory`, a function that returns nothing (such as Node's `fs.writeSync`) is recommended.
+- Only the memory on the PDF side goes down. Measured values (`scripts/measure-memory.mjs`, Node 22): for a document with many images (200 PNGs that do not compress, a 196MB PDF), the peak of external bytes (`arrayBuffers`) while the PDF is written went down from 660MB to 266MB,
+  and the RSS peak from 1,176MB to 961MB. For a text-heavy document (1,600 pages, a 2.2MB PDF), the live heap while the PDF is written stays at 522MB (the peak is the intermediate layout result, and the PDF side is small).
+  The highest point for the document with many images (about 780MB) is where the images are read before typesetting, and streaming does not change it.
+  There is not yet a way to lower the peak of text-heavy documents (the intermediate layout tree); a later version will deal with it.
+
+Writing to a file in Node:
+
+```ts
+import fs from 'node:fs';
+import { Writable } from 'node:stream';
+import { typesetToPdfStream } from 'kumiori';
+
+// Pass it as a WritableStream (a Node Writable is not taken directly)
+await typesetToPdfStream(html, { name: 'book.html' }, Writable.toWeb(fs.createWriteStream('book.pdf')));
+
+// Pass a function that writes synchronously
+const fd = fs.openSync('book.pdf', 'w');
+try {
+  await typesetToPdfStream(html, { name: 'book.html' }, (chunk) => {
+    // writeSync returns the number of bytes written (for a regular file, normally all of them)
+    for (let at = 0; at < chunk.length; ) at += fs.writeSync(fd, chunk, at);
+  });
+} finally {
+  fs.closeSync(fd);
+}
+```
+
+In the browser, the writer of a save dialog (`await (await showSaveFilePicker()).createWritable()`) is a `WritableStream`, so it can be passed as it is.
+When you want a `ReadableStream`, put a `TransformStream` in between. A typesetting error shows up on the reading side as an error (abort) of `readable`, but the returned `Promise` also rejects, so attach a handler
+(without one, Node stops on an unhandled rejection, `unhandledRejection`).
+
+```ts
+const { readable, writable } = new TransformStream();
+typesetToPdfStream(html, {}, writable).catch((e) => console.error(e)); // the error also shows up on readable
+return new Response(readable);
+```
+
 ## Stopping and progress (signal, onProgress)
 
 Pass `signal` (an `AbortSignal`) to stop typesetting part way, and `onProgress` to receive progress.
@@ -315,7 +378,7 @@ async function preview(html: string) {
 - The result's `toPdf`, `renderPageToSvg` and `renderPageToPng` do not inherit the signal used for typesetting. Pass `signal` (and, for `toPdf`, `onProgress`) in their own options.
   For `typesetToPdf`, the `signal` and `onProgress` of the typesetting options (`options`) apply through writing the PDF (they cannot be given in the PDF options, the third argument; doing so throws `KumioriOptionError` with `option` set to `pdf.signal` or `pdf.onProgress`). `setup.signal` and `setup.onProgress` of `createTypesetter` apply only while the container is created.
 
-`onProgress` receives values of the following shape synchronously (type `TypesetProgress`). An error it throws stops typesetting and becomes the rejection of the returned Promise.
+`onProgress` receives values of the following shape synchronously (type `TypesetProgress`). An error it throws stops typesetting and becomes the rejection of the returned Promise. Once stopped (by the stop signal or a thrown error), `onProgress` is not called again, even if resources that were being loaded in parallel finish later.
 
 | `phase` | When | Other fields |
 | --- | --- | --- |
@@ -444,8 +507,9 @@ The limits (also printed by `kumiori --list-limits`). A default shown as "(see t
 | `pdfImageObjects` | 1,000,000 | raise or lower | indirect objects in one PDF image |
 | `pdfImagePages` | 100,000 | raise or lower | pages in one PDF image (pages visited in its page tree) |
 | `pdfImageDepth` | 64 | lower only | depth of the page tree and of nested resources in a PDF image |
-| `pdfImageStreamBytes` | 256MB | raise or lower | total decompressed size of the streams of one page of a PDF image (bytes) |
-| `pdfImageLoadMs` | 60,000 | raise or lower | time limit for loading one PDF image (ms) |
+| `pdfImageStreamBytes` | 256MB | raise or lower | total decompressed size of the streams of one page of a PDF image (for a page range, of the whole range) (bytes) |
+| `pdfImageLoadMs` | 60,000 | raise or lower | time limit for loading one PDF image (ms; for embedding a page range, for the whole range) |
+| `pdfImageRangePages` | 64 | raise or lower | pages placed side by side for a page range of a PDF image (`page=2-5`, `all` and so on, in compatibility mode) |
 | `epsMs` | 20,000 | raise or lower | time limit for running one EPS (ms) |
 | `epsDocumentMs` | 60,000 | raise or lower | total time for running the EPS files of one document (ms) |
 | `epsMemoryBytes` | 512MB | raise or lower | total memory and VM of one EPS (bytes) |
@@ -530,12 +594,12 @@ You can place a page of a PDF as an image with `<img src="a.pdf">`, `fo:external
 - **Page**: `a.pdf#page=2` (`page=` of RFC 8118). Without it, the first page is used.
 - **Size**: the CropBox of the page (or the MediaBox if there is none). `/Rotate` (rotation in steps of 90 degrees) and `UserUnit` are applied.
 - **Compatibility mode** (`compat: 'antenna'`, `style: 'ah'`; `--compat antenna`, `--style ah` on the command line) reads these Antenna House extensions; other modes do not.
-  - Page ranges (`#page=2-3`, `#page=2-`, `#page=all`): only the first page of the range is placed, and `image/pdf-page-range` is reported.
+  - Page ranges (`#page=2-3`, `#page=2-`, `#page=all`): the pages of the range are placed side by side in one row without gaps (bottoms aligned), as one image (the same arrangement as in Antenna House's samples; the pages are not flowed). Size properties (such as `content-height`) apply to the whole row. For a range given to a background image (`background-image`), only the first page of the range is used (as in the samples). Pages are placed from the start of the range up to the limit `pdfImageRangePages` (default 64); the rest are not placed, and `image/pdf-page-range` and `limit/reached` are reported. The decompressed size (`pdfImageStreamBytes`) and time (`pdfImageLoadMs`) for the pages of a range are shared by the whole range, and pages sharing the same content streams and resources become one Form XObject.
   - The box to use (`#bbox=MediaBox|CropBox|BleedBox|TrimBox|ArtBox`).
   - `page=` in a data: URI (`data:application/pdf;page=3;base64,…`).
 - **Unreadable PDF**: broken PDFs are reported with `image/pdf-invalid` and encrypted PDFs with `image/pdf-encrypted`, and a placeholder frame is drawn.
 - **PDF/X, PDF/A and PDF/UA-1**: each page is checked before it is embedded. A page that does not meet the requirements (DeviceRGB in PDF/X, CMYK in PDF/A with an sRGB output intent, fonts that are not embedded, transparency, optional content in PDF/A and so on) is not embedded; a placeholder frame is drawn and `pdfx/embedded-pdf`, `pdfa/embedded-pdf` or `pdfua/embedded-pdf` is reported. The colors of embedded pages are not converted to CMYK. In output that flattens transparency (PDF/X-1a, X-3), PDF images are not placed (use PDF/X-4).
-- **Limits**: `pdfImageObjects`, `pdfImagePages`, `pdfImageDepth`, `pdfImageStreamBytes`, `pdfImageLoadMs` (the "Input limits" table). Compressed streams are limited before and while they are decompressed. The object streams and cross-reference streams decompressed while loading are limited in total to the smaller of `pdfImageStreamBytes` and 100 times the file size (+ 1MB) (raising the limit does not change the limit by file size).
+- **Limits**: `pdfImageObjects`, `pdfImagePages`, `pdfImageDepth`, `pdfImageStreamBytes`, `pdfImageLoadMs`, `pdfImageRangePages` (the "Input limits" table). Compressed streams are limited before and while they are decompressed. The object streams and cross-reference streams decompressed while loading are limited in total to the smaller of `pdfImageStreamBytes` and 100 times the file size (+ 1MB) (raising the limit does not change the limit by file size).
 
 ## draw.io diagrams
 
@@ -616,7 +680,7 @@ The helpers in `kumiori/node` are these.
 | `defaultFontCacheDir(env, platform, home)` | The default location of the font cache: the environment variable `KUMIORI_FONT_CACHE` if set, otherwise `kumiori/fonts` in the OS cache directory (`%LOCALAPPDATA%` on Windows, `~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or `~/.cache` elsewhere). `undefined` if the home directory is unknown. Omitted arguments default to the current environment |
 | `looksLikeFont(bytes)` | Whether the bytes look like a font file (by the first 4 bytes of TrueType, OpenType (CFF) or TrueType Collection), to detect truncated downloads and broken caches |
 | `createFileResolver({ root })` | A `resolveResource` that reads files referenced with `file:` URLs. With `root`, only files inside it are read. `root` may also be a list of directories, and containment is checked on the real paths after resolving symbolic links |
-| `createSystemFonts({ dirs, maxFiles })` | An OS font finder for `systemFonts`. It looks in the OS font locations for fonts that have the characters no loaded font has a glyph for. `dirs` is an array of the directories to search, as strings (default `systemFontDirs()`; a value that is not an array, an item that is not a string, or an empty string is a `TypeError`; relative paths are resolved against the current directory when the finder is created; an empty array searches nowhere), and `maxFiles` caps the number of files searched (default 20000). It reads only the tables it needs from each font file (the character map `cmap` and a few others), and the finder keeps the index (built once, on the first search). It picks fonts for the serif and sans-serif kinds separately, and never picks fonts that cannot be embedded in PDF (OS/2 `fsType`) |
+| `createSystemFonts({ dirs, maxFiles })` | An OS font finder for `systemFonts`. It looks in the OS font locations for fonts that have the characters no loaded font has a glyph for. `dirs` is an array of the directories to search, as strings (default `systemFontDirs()`; a value that is not an array, an item that is not a string, or an empty string is a `TypeError`; relative paths are resolved against the current directory when the finder is created; an empty array searches nowhere), and `maxFiles` caps the number of files searched (default 20000). It reads only the tables it needs from each font file (the character map `cmap` and a few others), and the finder keeps the index (built once, on the first search; it is built in small steps so that it does not hold the event loop for long on a machine with many fonts, waiting for it stops on the stop signal (`signal`), and when a font file turns out to have changed after the index was built, the index is rebuilt on the next search). It picks fonts for the serif and sans-serif kinds separately, and never picks fonts that cannot be embedded in PDF (OS/2 `fsType`) |
 | `systemFontDirs(env, platform, home)` | The OS font locations. On Windows, `%WINDIR%\Fonts` and `%LOCALAPPDATA%\Microsoft\Windows\Fonts`; on macOS, `/System/Library/Fonts`, `/Library/Fonts` and `~/Library/Fonts`; elsewhere (Linux and so on), the `<dir>` entries of the fontconfig configuration (`FONTCONFIG_FILE`, `FONTCONFIG_PATH`, `/etc/fonts/fonts.conf`), or the XDG locations without a configuration. Arguments left out are taken from the current environment |
 
 ## Package entry points and requirements
@@ -628,8 +692,8 @@ The helpers in `kumiori/node` are these.
 | `kumiori/browser` | `dist-browser/kumiori.js` | A single file with the dependencies bundled, for browsers without a bundler |
 
 - Only what is exported from `src/index.ts` (and `src/node.ts` for Node) is public. The functions and types of other modules may change between versions.
-- It is ES module only, but `require('kumiori')` also works (on Node 20.19.0 or later and 22.12.0 or later, which can load ES modules with `require()`).
-- Node 20.19.0 or later in the 20 line, or 22.12.0 or later, is required. The dependencies used to read HTML (such as css-select used by linkedom) require Node 20.19.0 or later. 22.0 to 22.11 are excluded because they cannot load ES modules with `require()` without `--experimental-require-module`.
+- It is ES module only, but `require('kumiori')` also works (on Node 22.12.0 or later, which can load ES modules with `require()` without a flag; 22.12 prints an `ExperimentalWarning` from Node when doing so, and 22.13 and later do not).
+- Node 22.12.0 or later is required. Node 20 was dropped in 0.7.0, as its support (maintenance) ended in April 2026. 22.0 to 22.11 are excluded because they cannot load ES modules with `require()` without `--experimental-require-module`.
 - It also runs on Deno and Bun, through their Node compatibility APIs (checked on Deno 2.9 and Bun 1.4). Load the package installed from npm with `import { typeset } from 'kumiori'`, as on Node (on Deno, `npm:kumiori` also works).
   What was checked: loading `kumiori`, `kumiori/node` and `kumiori/browser`; typesetting HTML and XSL-FO; writing PDF, SVG and PNG; `createTypesetter`; loading fonts with `createFontLoader` (from the cache directory and from the network); the language of overlapping calls (it takes the `AsyncLocalStorage` that Deno and Bun provide through `process.getBuiltinModule`);
   and the command (`deno run -A node_modules/kumiori/dist-cli/cli.js`, `bun node_modules/kumiori/dist-cli/cli.js`) writing PDF, PNG and SVG, reading standard input, `--system-fonts` and `--watch`.
@@ -644,7 +708,7 @@ The version published on npm can be loaded directly from the jsDelivr or unpkg C
 
 ```html
 <script type="module">
-  import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.6.0/dist-browser/kumiori.js';
+  import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
   const result = await typesetHtml(html, { name: 'a.html' });
   result.renderPage(document.querySelector('canvas'), 0);
 </script>
@@ -687,7 +751,21 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
 - When typesetting repeatedly, create a container with `await createTypesetter(setup)` that loads the fonts only once, and typeset with `typesetter.typeset(html, options)`; it is faster (pass the font-related options such as `loadFont` in `setup`).
   - The container remembers the parts of the previous document's typesetting that come out the same when their input is the same (the preparation of `@font-face` font files, such as decompressing WOFF2, and the line breaking of paragraphs with the same content, style and width) and reuses them for the next document.
     When a document is edited a little at a time and typeset again, typesetting is faster from the second time on (about 13 s → about 9 s for a 151-page document). Reuse does not change the result (the area tree or the PDF).
-    It uses memory for what it remembers (one previous document: about 200 MB for a book of about 140 pages, at most about 400 MB); turn it off with `createTypesetter({ reuse: false })` if not needed.
+    With `typeset`, the pages of page sequences whose content and starting conditions (first page number, left/right, footnote numbering carried over) do not change are also reused from the previous document.
+    An edited page sequence also takes the pages before the edit (after any page with a forward page number reference) from the previous document and lays out from that page break,
+    and takes its remaining pages from the previous document once the layout state at a page break after the edit matches the previous document
+    (when the edit changes the page count so that later page numbers shift, the rest is laid out; edited page sequences with columns or a last-page master are laid out in full).
+    Pages are taken from the previous document when text or attributes are edited. An edit that adds or removes a block (a paragraph, heading, table and so on) makes the container lay out every page sequence without taking pages from the previous document
+    (it cannot match the structure of the document with the previous one, so unedited page sequences and the pages before and after the edit are laid out again).
+    The same applies to edits of the document-wide fields outside the page sequences: bookmark titles (HTML `h1`–`h6` become bookmarks by default, so this includes editing the text of a heading; `fo:bookmark-title` in XSL-FO),
+    the document title and information (`<title>` and `meta` in HTML, `axf:document-info` in XSL-FO), and, when a tagged PDF (`tagged`) is made, the fields of the structure tree (alternative text (`alt`), abbreviation expansions, languages and so on).
+    These are part of the document fingerprint, so after such an edit no page sequence takes pages from the previous document (the result does not change).
+    Page sequences and pages with page number references are used only when the references give the same values as in the previous document. Documents and page sequences with indexes or per-page footnote numbers do not reuse pages.
+    Nor do documents near the internal layout effort limit, page sequences that reached a limit (`limits`) or gave a font notice (errors in a font's shaping tables and so on) while being laid out, and documents whose warnings are in another language; these are laid out without reuse.
+    `typesetToPdf` and `typesetToPdfStream` (which write and release each page) do not remember pages (pages remembered by an earlier `typeset` are used).
+    Re-typesetting the HTML and CSS Conformance Guide (147 pages, one page sequence) after editing one paragraph takes about 6.0–6.3 s instead of about 9.5–9.9 s for `typeset` (about 2.0–2.1 s instead of about 5.6–6.1 s for the layout; the 3rd and 4th runs of `scripts/profile-relayout.mjs --edit`).
+    It uses memory for what it remembers (the line breaking of one previous document: about 200 MB for a book of about 140 pages, at most about 400 MB; when pages are reused, the page trees and page-break records of the previous document are kept as well); turn it off with `createTypesetter({ reuse: false })` if not needed.
+    The page trees of the previous document are kept for one whole document with no size limit (leave room in the heap when re-typesetting large documents).
 - Working sample: after `npm run dev`, open http://localhost:5173/examples/preview/ (`examples/preview/`).
   Edit the editing area on the left, the "HTML" box below it (write headings, ruby, tables and so on directly; it and the editing area mirror each other) or the print CSS, and the right side is re-typeset when you pause.
   It uses only Kumiori's public API and has no other dependencies.
@@ -747,9 +825,9 @@ What it fixes while copying:
 - The drawing of a canvas is turned into a PNG, put in `files`, and the canvas is replaced with `<img data-kumiori-canvas>` (the attributes are copied as they are, so a size in `style` still applies). Rules in the document's `<style>` that name `canvas` are applied to the replacing `img` as well, and rules that name `img` are not applied to it (rules in stylesheets loaded with `<link>` are not rewritten, so their `img` rules do apply). A canvas tainted by a cross-origin image cannot be turned into an image, so it is left as a canvas (`snapshot/canvas-tainted`). A WebGL canvas may come out blank unless it is created with `preserveDrawingBuffer: true`.
 - A `<style>` keeps its source text (so that declarations the browser does not know, such as `string-set` and `-ah-*`, are not lost), and only the rules JavaScript added through the CSSOM (`insertRule`; the production build of styled-components and emotion, etc.) are written into a `<style data-kumiori-cssom>` right after it. Rules removed through the CSSOM cannot be removed from the source text, so they are kept (`snapshot/stylesheet-rule-removed`).
 - Constructed stylesheets (`document.adoptedStyleSheets`) are written out as their rules in a `<style data-kumiori-adopted>` (there is no source text, so declarations the browser does not know cannot be recovered). A `<link rel="stylesheet">` is kept with its URL made absolute, and Kumiori fetches it itself (rules changed by JavaScript are not copied). Disabled stylesheets are removed.
-- Shadow DOM (Web Components) is expanded into the flat tree (the host's children become a copy of the shadow tree, and each `<slot>` is replaced with the nodes assigned to it). The shadow tree's styles (including `:host` and `::slotted()`) are rewritten with their selectors enclosed by attributes, so that they apply only inside that shadow tree. This is an approximation that slightly raises specificity. `::part()` is not handled. Closed shadow roots cannot be seen, so only those passed in `shadowRoots` are copied (otherwise a `snapshot/shadow-root-closed` warning is given where one seems to be).
-- Fonts from CSS `@font-face` are kept as CSS (with their URLs made absolute) and Kumiori fetches them. For fonts added by JavaScript (`new FontFace` added with `document.fonts.add`) the browser returns neither the content nor the URL, so pass them with `fontSources`. The content is put in `files` and an `@font-face` with the same family, weight and style is added (otherwise `snapshot/font-face-source-unknown`).
-- blob: URLs (in attributes and in CSS `url()`) are read and their content put in `files`. Even for a revoked URL, the picture of an `img` that has finished loading is taken in as a PNG (an SVG image becomes a pixel PNG too). Those that cannot be read give a `snapshot/blob-unreadable` warning.
+- Shadow DOM (Web Components) is expanded into the flat tree (the host's children become a copy of the shadow tree, and each `<slot>` is replaced with the nodes assigned to it). The shadow tree's styles (including `:host` and `::slotted()`) are rewritten with their selectors enclosed by attributes, so that they apply only inside that shadow tree. This is an approximation that slightly raises specificity. `::slotted()` of the shadow trees in between nested `<slot>`s also applies, and `:host-context()` also matches the host itself. `@import` in a shadow tree has the rules of the imported sheet enclosed in the same way (`@font-face` in a shadow tree applies to the whole document). A stylesheet in a shadow tree whose rules cannot be read (a `<link>` or `@import` from another origin) is not copied, with a `snapshot/shadow-stylesheet-unreadable` warning. `::part()` is not handled. Closed shadow roots cannot be seen, so only those passed in `shadowRoots` are copied (otherwise a `snapshot/shadow-root-closed` warning is given where one seems to be).
+- Fonts from CSS `@font-face` are kept as CSS (with their URLs made absolute) and Kumiori fetches them. For fonts added by JavaScript (`new FontFace` added with `document.fonts.add`) the browser returns neither the content nor the URL, so pass them with `fontSources`. The content is put in `files` and an `@font-face` with the same family, weight and style is added (otherwise `snapshot/font-face-source-unknown`; fonts with the same content share one file and identical rules are written once; returning a `javascript:` URL also gives `snapshot/font-face-source-unknown`).
+- blob: URLs (in attributes and in CSS `url()`) are read and their content put in `files` (only where they are used for typesetting: images (`img`, `source` in `picture`, `src` of `input`, `poster` of `video`, SVG `href`), `link`, `object`, `embed`, and CSS; blob: URLs in the `href` of `a` and `area`, the `src` of `video` and `audio`, and so on are left as URLs without reading their content). The size is checked before reading. Even for a revoked URL, the picture of an `img` that has finished loading is taken in as a PNG (an SVG image becomes a pixel PNG too). Those that cannot be read give a `snapshot/blob-unreadable` warning.
 - For `srcset` and `<picture>` images, the image the screen chose (`currentSrc`) becomes `src` (the image chosen for the screen width).
 - The current values of forms are written back to attributes (`value`, `checked`, `selected` and the content of `textarea`). The values of `password` and `hidden` and `file` are not written (so that CSRF tokens and the like are not left in the copy). Kumiori currently does not draw the text of the value inside an `input` (it draws the content of a `textarea` and the text of the `option`s of a `select`).
 - `<script>` (data islands too), `on…` attributes, `javascript:` URLs (including those hidden with spaces or control characters, and SVG animations (`set`, `animate` and so on) that change `href` to `javascript:`), `data:` URLs of `<iframe>`, `<object>` and `<embed>` (image `data:` URLs are kept), `<noscript>`, `<meta http-equiv="refresh">` and comments are removed. The content of `<template>` is copied with the same removals. `</style` inside the text of a `<style>` is escaped and `<xmp>` becomes `<pre>`, so that no elements are injected when the copy is parsed again. The copy contains what was on the screen (such as values the user entered), so take care with it when sending it to a server.
@@ -765,7 +843,7 @@ worker.postMessage({ type: 'typeset', html: snap.html, options: snap.options }, 
 
 Limits and cross-origin resources:
 
-- What is taken in (canvas PNGs, blob: contents, `fontSources` fonts) is limited to `fileBytes` per file, `imagePixels` per canvas, and `snapshotBytes` in total (anything over is not taken in, with a warning). When you raise `limits` for `typeset`, pass the same values to the `limits` of `snapshotDocument` too.
+- What is taken in (canvas PNGs, blob: contents, `fontSources` fonts, including `data:` URLs returned by `fontSources`) is limited to `fileBytes` per file, `imagePixels` per canvas, and `snapshotBytes` in total (anything over is not taken in, with a warning). When you raise `limits` for `typeset`, pass the same values to the `limits` of `snapshotDocument` too.
 - `snapshotDocument` itself reads only what is inside the same document (canvases, blob: URLs, the CSSOM) and does not go to the network. For `http(s)` images and stylesheets it only makes the URLs absolute; `typeset` fetches them (the `fetchImages` and `fetchStyles` rules apply).
 - So a cross-origin image without CORS response headers becomes an unreadable image when typeset in the browser, even though it shows on the screen (an `<img>` can show it without CORS, but `fetch` cannot read its content). Put it on the same origin or add CORS response headers.
 
@@ -781,7 +859,7 @@ This works from 0.5.0 (0.4.0 cannot typeset in a worker).
 
 ```js
 // worker.js (created with new Worker('worker.js', { type: 'module' }))
-import { createTypesetter } from 'https://cdn.jsdelivr.net/npm/kumiori@0.6.0/dist-browser/kumiori.js';
+import { createTypesetter } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
 const typesetter = createTypesetter();                          // Promise<Typesetter>; fonts are loaded only once
 let result;
 self.onmessage = async ({ data }) => {
@@ -881,7 +959,8 @@ The following may change, even incompatibly, in a minor version. Changes are wri
 - The internal structure of the PDF, SVG and PNG output (the order of PDF objects, how SVG elements are built, and so on)
 - New and experimental options:
   `systemFonts`, `spotColors`, `svgLanguages`, `deflate`, `unreferencedCss`, `diagnostics`, `plugins`, `drawio` (and `createDrawioStencilRegistry`, `DRAWIO_MIME`, `isDrawio`), `reuse`, `TypesetPdfOptions.lowMemory`, `RenderPageOptions.guides`,
-  `RenderPageSvgOptions.pageHref` and how links are written in page SVG, added in 0.6.0, and `snapshotDocument`, added in 0.6.0
+  `RenderPageSvgOptions.pageHref` and how links are written in page SVG, added in 0.6.0, `snapshotDocument`, added in 0.6.0,
+  and writing the PDF as a stream, added in 0.7.0 (`typesetToPdfStream`, the container's `typesetToPdfStream`, `TypesetResult.toPdfStream`, `PdfOutput`, `TypesetPdfStreamResult`, including how the output is handled, the chunk size and the order of writing)
 - Anything not exported from `src/index.ts` or `src/node.ts` (it is not public API)
 
 ### The two version numbers

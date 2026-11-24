@@ -133,6 +133,25 @@ describe('組んだ PDF のページラベル', () => {
       [2, { S: 'D' }],
     ]);
   });
+  it('HTML: 同じページの中で @page の規則ごとに counter(page) の型が違えば、ページごとのラベルもその型 (:first だけローマ数字)', async () => {
+    const html = `<html><head><style>
+      @page { size: 100mm 80mm; margin: 10mm; @bottom-center { content: counter(page) } }
+      @page :first { @bottom-center { content: counter(page, lower-roman) } }
+      p + p { break-before: page }
+    </style></head><body><p>a</p><p>b</p><p>c</p></body></html>`;
+    const r = await typesetHtml(html, { loadFont });
+    // 前は、page-sequence の書式 (最初に見つかった :first の型) を全部のページに使い、2・3 ページ目のラベルも ii・iii になった
+    expect(r.areaTree.sheets.map((s) => [s.page.pageNumber, s.page.pageNumberFormat])).toEqual([
+      [1, 'i'],
+      [2, undefined],
+      [3, undefined],
+    ]);
+    expect(await labelsOf(await r.toPdf())).toEqual([
+      [0, { S: 'r' }],
+      [1, { S: 'D', St: 2 }],
+    ]);
+  });
+
   it('タグ付き PDF・PDF/A-2b でも書く (カタログの項だけで、構造の木と関わらない)', async () => {
     const r = await typesetFo(fo(seq('format="I" force-page-count="no-force"', 1), seq('initial-page-number="1"', 1)), { loadFont, tagged: true });
     expect(await labelsOf(await r.toPdf({ pdfa: { version: 'A-2b' } }))).toEqual([

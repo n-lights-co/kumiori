@@ -1,6 +1,6 @@
 {
   "name": "kumiori",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Kumiori (組み織り) — Japanese typesetting engine for browsers and Node: HTML+CSS / XSL-FO -> Area Tree -> Canvas / PDF / SVG / PNG",
   "keywords": [
     "typesetting",
@@ -22,7 +22,7 @@
     "url": "https://github.com/n-lights-co/kumiori/issues"
   },
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": ">=22.12.0"
   },
   "type": "module",
   "main": "./dist-lib/index.js",
@@ -83,7 +83,7 @@
     "hyphen": "^1.14.1",
     "linkedom": "^0.18.14",
     "pako": "^3.0.3",
-    "pdf-lib": "^1.17.1",
+    "pdf-lib": "1.17.1",
     "roughjs": "^4.6.6",
     "utif": "^3.1.0"
   },

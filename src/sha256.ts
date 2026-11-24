@@ -16,31 +16,105 @@ const H0 = new Uint32Array(8);
   for (let i = 0; i < 8; i++) H0[i] = frac32(Math.sqrt(primes[i]));
 }
 
-export function sha256(data: Uint8Array): string {
-  const len = data.length;
-  // §5.1.1 の詰め物: 1 ビットの 1、0 の並び、長さ (ビット) を 64 ビットで。最後の 1〜2 個のブロックだけを写す
-  const tailStart = len - (len % 64);
-  const tail = new Uint8Array(len % 64 < 56 ? 64 : 128);
-  tail.set(data.subarray(tailStart));
-  tail[len - tailStart] = 0x80;
-  const bits = len * 8;
-  const hi = Math.floor(bits / 0x100000000);
-  const lo = bits >>> 0;
-  const n = tail.length;
-  tail[n - 8] = hi >>> 24;
-  tail[n - 7] = (hi >>> 16) & 0xff;
-  tail[n - 6] = (hi >>> 8) & 0xff;
-  tail[n - 5] = hi & 0xff;
-  tail[n - 4] = lo >>> 24;
-  tail[n - 3] = (lo >>> 16) & 0xff;
-  tail[n - 2] = (lo >>> 8) & 0xff;
-  tail[n - 1] = lo & 0xff;
+type NodeCrypto = { createHash(alg: 'sha256'): { update(d: Uint8Array): { digest(enc: 'hex'): string } } };
+/** Node の crypto (Node でなければ undefined。process.getBuiltinModule で取るので、ブラウザ向けの束にも入らない) */
+const nodeCrypto = (() => {
+  try {
+    const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+    const c = proc?.getBuiltinModule?.('node:crypto') as NodeCrypto | undefined;
+    return typeof c?.createHash === 'function' ? c : undefined;
+  } catch {
+    return undefined;
+  }
+})();
 
-  const h = Int32Array.from(H0);
-  const w = new Int32Array(64);
-  for (let off = 0; off < tailStart; off += 64) compress(h, w, data, off);
-  for (let off = 0; off < tail.length; off += 64) compress(h, w, tail, off);
-  return Array.from(h, (x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
+/**
+ * SHA-256 の 16 進。大きなバイト列 (書き出した PDF の全体など。文書の ID の finishDocumentId) は、Node なら crypto で計算する
+ * (同じ値。数十 MB の PDF で、自前の計算は 0.5 秒ほどかかる)
+ */
+export function sha256(data: Uint8Array): string {
+  if (nodeCrypto && data.length >= 1 << 16) return nodeCrypto.createHash('sha256').update(data).digest('hex');
+  return sha256Js(data);
+}
+
+/** SHA-256 の 16 進 (自前の計算。FIPS 180-4 §6.2) */
+export function sha256Js(data: Uint8Array): string {
+  return new Sha256Js().update(data).digest();
+}
+
+/** SHA-256 を、バイト列を順に足して計算するもの (流して書いた PDF の文書の ID。pdfStandard.ts の DocumentIdStream) */
+export interface Sha256 {
+  update(data: Uint8Array): Sha256;
+  /** 16 進の小文字 64 字 (この後は update を呼べない) */
+  digest(): string;
+}
+
+/** 足していく SHA-256 を作る (Node なら crypto、ほかは自前の計算。どちらも同じ値) */
+export function createSha256(): Sha256 {
+  if (!nodeCrypto) return new Sha256Js();
+  const h = (nodeCrypto as unknown as { createHash(alg: 'sha256'): { update(d: Uint8Array): unknown; digest(enc: 'hex'): string } }).createHash('sha256');
+  const out: Sha256 = {
+    update: (d) => (h.update(d), out),
+    digest: () => h.digest('hex'),
+  };
+  return out;
+}
+
+/** 足していく SHA-256 の自前の計算 (FIPS 180-4 §6.2。64 バイトに満たない残りを持ち、digest で §5.1.1 の詰め物を足す) */
+export class Sha256Js implements Sha256 {
+  private readonly h = Int32Array.from(H0);
+  private readonly w = new Int32Array(64);
+  /** 64 バイトに満たない残り */
+  private readonly rest = new Uint8Array(64);
+  private restLen = 0;
+  /** 足したバイト数 */
+  private len = 0;
+  private done = false;
+
+  update(data: Uint8Array): this {
+    if (this.done) throw new Error('Kumiori: Sha256.update after digest');
+    this.len += data.length;
+    let off = 0;
+    if (this.restLen) {
+      const n = Math.min(64 - this.restLen, data.length);
+      this.rest.set(data.subarray(0, n), this.restLen);
+      this.restLen += n;
+      off = n;
+      if (this.restLen < 64) return this;
+      compress(this.h, this.w, this.rest, 0);
+      this.restLen = 0;
+    }
+    for (; off + 64 <= data.length; off += 64) compress(this.h, this.w, data, off);
+    if (off < data.length) {
+      this.rest.set(data.subarray(off), 0);
+      this.restLen = data.length - off;
+    }
+    return this;
+  }
+
+  digest(): string {
+    if (this.done) throw new Error('Kumiori: Sha256.digest twice');
+    this.done = true;
+    // §5.1.1 の詰め物: 1 ビットの 1、0 の並び、長さ (ビット) を 64 ビットで
+    const r = this.restLen;
+    const tail = new Uint8Array(r < 56 ? 64 : 128);
+    tail.set(this.rest.subarray(0, r));
+    tail[r] = 0x80;
+    const bits = this.len * 8;
+    const hi = Math.floor(bits / 0x100000000);
+    const lo = bits >>> 0;
+    const n = tail.length;
+    tail[n - 8] = hi >>> 24;
+    tail[n - 7] = (hi >>> 16) & 0xff;
+    tail[n - 6] = (hi >>> 8) & 0xff;
+    tail[n - 5] = hi & 0xff;
+    tail[n - 4] = lo >>> 24;
+    tail[n - 3] = (lo >>> 16) & 0xff;
+    tail[n - 2] = (lo >>> 8) & 0xff;
+    tail[n - 1] = lo & 0xff;
+    for (let off = 0; off < n; off += 64) compress(this.h, this.w, tail, off);
+    return Array.from(this.h, (x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
+  }
 }
 
 /** §6.2.2 の 1 ブロック (64 バイト) の計算。h は途中の値 (8 語)、w は作業用の 64 語 */

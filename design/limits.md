@@ -66,7 +66,8 @@ draw.io の JavaScript の形 (`src/drawio/drawioJs/`) の 15 個と、画面 (`
 | pdfImage.ts | (同) | 10 万 | 1 つの PDF の画像のページの数 | 時間・大きさ | `pdfImagePages` | 可 | L | `image/pdf-invalid`・`limit/reached` |
 | pdfImage.ts | (同) | 64 | PDF の画像のページの木・資源の入れ子の深さ | 落ちない | `pdfImageDepth` | 下 | L | `image/pdf-invalid`・`limit/reached` |
 | pdfImage.ts | (同) | 256MB | PDF の画像の 1 ページで圧縮を解く流れの合計 | 時間・大きさ | `pdfImageStreamBytes` | 可 | L | `image/pdf-invalid`・`limit/reached` |
-| pdfImage.ts | (同) | 60 秒 | 1 つの PDF の画像の読み込みの時限 | 時間・大きさ | `pdfImageLoadMs` | 可 | L | `image/pdf-invalid`・`limit/reached` |
+| pdfImage.ts | (同) | 60 秒 | 1 つの PDF の画像の読み込みの時限 (ページの範囲の埋め込みは、範囲の全体で) | 時間・大きさ | `pdfImageLoadMs` | 可 | L | `image/pdf-invalid`・`limit/reached` |
+| pdfImage.ts | (0.7.0 で足した上限。ページの範囲を並べる図) | 64 | PDF の画像のページの範囲で並べるページの数 (圧縮を解く大きさ・時間は範囲の全体で分け合う) | 時間・大きさ | `pdfImageRangePages` | 可 | L | `image/pdf-page-range`・`limit/reached` |
 | jpeg.ts | `MAX_SCANS`・`MAX_BLOCK_VISITS_PER_BLOCK` | 500・64 | 漸進の JPEG の走査 | 仕様に近い (正当な JPEG の数十倍) | — | — | — | (画像) |
 | ccitt.ts | `MAX_CODE` | 13 | 符号の長さ | 仕様 (T.4) | — | — | — | — |
 
@@ -539,6 +540,9 @@ export function limitsKey(l: Limits): string;
 
 置き場所の決め (7 節の 3 の推奨): `limits` は、L1 の作る呼び出しごとの文脈 `CallContext` (`src/callContext.ts`。`lang`・`signal`・`onProgress`・`pace` を持つ) に載せる。
 全体の時限は `limits` に入れない (L1 の `signal` の側)。3.2 の入れ物には、`Limits` を直に持たせずに、`CallContext` を渡す。
+
+その後に足した名前: 0.6.0 で `systemFontFaces` (OS の書体の後備 `systemFonts` で、1 つの文書で使う OS の書体の数。既定 16)、0.7.0 で `pdfImageRangePages` (PDF の画像のページの範囲で並べるページの数。`design/pdf-as-image.md` の 4.2)。
+`pdfImageStreamBytes`・`pdfImageLoadMs` は、ページの範囲の埋め込みでは範囲の全体で分け合うようにした (名前と既定の値は同じ)。いまの名前の一覧は `kumiori --list-limits` で出る。
 
 以下は、決める前に並べた候補 (記録のため残す)。
 

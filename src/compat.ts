@@ -79,6 +79,8 @@ function ahRelativeWeight(faces: Map<string, number[]>): (family: string, parent
 
 /** HTML の読み込み (importHtml) のアンテナハウス互換の設定。白ページは前のページの名前のページにする など */
 export const AH_HTML_IMPORT_OPTIONS: Readonly<Partial<HtmlImportOptions>> = {
+  // 背景の画像の、PDF のページの範囲は、最初のページだけを敷く (見本の PDF の並べ方。assets.ts の backgroundPdfSrc)
+  pdfRangeFirstPage: true,
   blankPageName: 'previous',
   autospaceWidth: 0.25,
   // 和欧間のアキの相手は、ラテン文字・数字だけ (これまでの範囲)。見本の PDF (CSS-Print 第 4 版) には、和字とギリシャ文字・キリル文字などが

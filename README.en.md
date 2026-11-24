@@ -75,7 +75,7 @@ The fonts each script needs, the image formats, the details of the PDF/X standar
 
 ## Requirements
 
-Node 20.19.0 or later in the 20 line, or 22.12.0 or later (CI tests with 20.19.0 and 22).
+Node 22.12.0 or later (CI tests with the minimum, 22.12.0, and with a recent Node 22).
 The library and the command also run on Deno (2.x) and Bun (1.x), through their Node compatibility APIs. In browsers, it can also typeset inside a Web Worker. What has been checked is in [Package entry points and requirements](docs/en/library.md#package-entry-points-and-requirements).
 
 ## License
