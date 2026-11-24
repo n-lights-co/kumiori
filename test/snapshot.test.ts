@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { KumioriOptionError, snapshotDocument } from '../src/index';
 import { activeDataUrl, animatesToScript, escapeStyleText, resolveSnapshotUrl } from '../src/snapshot';
-import { mapStyleRuleSelectors, renameTypeSelector, rewriteCssUrls, ruleDiff, scopeSelectorList, splitSelectorList } from '../src/snapshotCss';
+import { mapStyleRuleSelectors, renameTypeSelector, rewriteCssUrls, ruleDiff, scopeSelectorList, splitSelectorList, stripImports } from '../src/snapshotCss';
 
 const abs = (base: string) => (u: string) => (u.startsWith('#') || u.startsWith('data:') ? undefined : new URL(u, base).href);
 
@@ -54,13 +54,21 @@ describe('scopeSelectorList', () => {
   it(':host・:host(X)・:host-context(X)・::slotted(X)', () => {
     expect(scopeSelectorList(':host', scope)).toBe('[data-ks-h="1"]');
     expect(scopeSelectorList(':host(.dark) .t', scope)).toBe('.dark[data-ks-h="1"] .t[data-ks-s="1"]');
-    expect(scopeSelectorList(':host-context(.night) p', scope)).toBe('.night [data-ks-h="1"] p[data-ks-s="1"]');
+    // :host-context(X) は、host の祖先か host そのものが X (CSS Scoping 1 §3.2.1)
+    expect(scopeSelectorList(':host-context(.night) p', scope)).toBe(':is(.night [data-ks-h="1"], .night[data-ks-h="1"]) p[data-ks-s="1"]');
     expect(scopeSelectorList('::slotted(img)', scope)).toBe('img[data-ks-sl="1"]');
     expect(scopeSelectorList('slot::slotted(*)', scope)).toBe('*[data-ks-sl="1"]');
   });
   it('属性の中・文字列の中の , と結合子で分けない', () => {
     expect(splitSelectorList('a[title="x, y"], b')).toEqual(['a[title="x, y"]', 'b']);
     expect(scopeSelectorList('a[title="x > y"]', scope)).toBe('a[title="x > y"][data-ks-s="1"]');
+  });
+});
+
+describe('stripImports', () => {
+  it('いちばん外の @import の文を除く (文字列・url() の中の ; と、ブロックの中は見ない)', () => {
+    expect(stripImports('@import url("a;b.css") screen; /* c */ @import \'d.css\';\np { color: red }')).toBe('\np { color: red }');
+    expect(stripImports('@media print { p { content: "@import x;" } }')).toBe('@media print { p { content: "@import x;" } }');
   });
 });
 

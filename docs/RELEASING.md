@@ -84,8 +84,8 @@ npm の Trusted Publishing では、GitHub Actions が OIDC で npm に認証す
 
 ## 補足
 
-- API の説明書 (`npm run docs:api`。`scripts/build-api-docs.mjs`) は、公開の API の型の宣言のコメントから TypeDoc で作る。コメントが日本語なので、説明書も日本語だけにし、英語はライブラリの説明書 (`docs/en/library.md`) で主な関数と選択肢を補う。TypeDoc 0.28 は TypeScript 6.0 までにしか対応していないので、TypeDoc とそれが使う TypeScript は、直下の依存 (TypeScript 7) と分けて `tools/api-docs` の `package.json`・`package-lock.json` で入れる (スクリプトが、そこで `npm ci` をする。npm のパッケージには入らない)
+- API の説明書 (`npm run docs:api`。`scripts/build-api-docs.mjs`) は、公開の API の型の宣言のコメントから TypeDoc で作る。コメントが日本語なので、説明書も日本語だけにし、英語はライブラリの説明書 (`docs/en/library.md`) で主な関数と選択肢を補う。TypeDoc 0.28 は TypeScript 6.0 までにしか対応していないので、TypeDoc とそれが使う TypeScript は、直下の依存 (TypeScript 7) と分けて `tools/api-docs` の `package.json`・`package-lock.json` で入れる (スクリプトが、そこで `npm ci` をする。npm のパッケージには入らない)。`tools/api-docs` の `npm audit` は、TypeDoc 0.28.20 の使う minimatch 10.2.6 に moderate (GHSA-g3hv-75wg-m249) を出す。直った minimatch は 11.0.1 以降で、TypeDoc の求める範囲 (`^10.2.5`) の外なので、TypeDoc が上げるのを待つ (説明書を作る道具だけで、配るものには入らない。直下の `npm audit` は 0 件)
 - 書体は npm のパッケージにも Pages にも入れていない。初回の実行時に Google Fonts から取る (Node のコマンドはキャッシュに保存する)
-- ライブラリは ES モジュールだけ。`require()` でも読める (ES モジュールを `require()` で読める Node 20.19.0 以降・22.12.0 以降。`exports` の条件は `types` と `default`)。動かせる Node は 20.19.0 以降の 20 系と 22.12.0 以降 (`engines` は `^20.19.0 || >=22.12.0`。依存パッケージの求める版で、`require()` で ES モジュールを読める版。CI は下限の 20.19.0 と 22 で確かめる)
+- ライブラリは ES モジュールだけ。`require()` でも読める (ES モジュールを、フラグ無しで `require()` で読める Node 22.12.0 以降。`exports` の条件は `types` と `default`)。動かせる Node は 22.12.0 以降 (`engines` は `>=22.12.0`。`require()` で ES モジュールを読める版。Node 20 は支えが終わったので 0.7.0 で外した。CI は下限の 22.12.0 と、22 の新しい版で確かめる)
 - Trusted Publishing の仕組みと条件 (npm 11.5.1 以上・Node 22.14.0 以上・GitHub のホストのランナー) は npm の説明 ([Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers)) にある
 - ワークフローの Action は、コミットの SHA で固定している (`uses: actions/checkout@<SHA> # v6.1.0`)。版を上げるのは Dependabot の PR (`.github/dependabot.yml`。週に 1 度)。手で上げるときは、`git ls-remote --tags https://github.com/actions/<名前>` でタグの指すコミットを確かめ、SHA と版のコメントを一緒に書き換える

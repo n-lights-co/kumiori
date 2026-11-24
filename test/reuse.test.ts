@@ -203,23 +203,61 @@ describe('createTypesetter の reuse: 使い回しても、組んだ結果は使
     expect(set).not.toHaveBeenCalled();
   }, 300_000);
 
-  it('行分けの覚え: 上限を超えたら古く使ったものから捨て、2 つ前の文書から使わないものも捨てる。書体の組の印が違えば当たらない', async () => {
+  it('行分けの覚え: 上限を超えるものは覚えず (覚えたものは捨てない)、前の文書で使わなかったものは次の文書の初めに捨てる。書体の組の印が違えば当たらない', async () => {
     const fonts = (await import('../src/fontManager')).FontManager;
     const fm = new fonts();
     const memo = (n: number) => ({ atoms: Array.from({ length: n }, () => ({})), raws: [], pls: [], lms: [] }) as never;
     const c = new SharedLineMemo(100 + 32 * 3);
-    c.set('a', 'env', undefined, memo(50));
+    // 1 つも覚えていないときは、上限より大きくても覚える
+    c.set('big', 'env', undefined, memo(500));
+    expect(c.size).toBe(1);
+    // 同じ鍵の覚え直しは、前のものを除いた大きさで数える
+    c.set('big', 'env', undefined, memo(50));
+    expect(c.size).toBe(1);
     c.set('b', 'env', undefined, memo(50));
-    expect(c.get('a', 'env', fm, undefined)).toBeDefined();
-    // a を使ったので、上限を超えたときに捨てるのは b
+    expect(c.size).toBe(2);
+    // 上限を超えるので、c は覚えず、a・b は捨てない (上限より大きな文書を頭から組み直しても、前の方の段落が当たる)
     c.set('c', 'env', undefined, memo(50));
-    expect(c.get('b', 'env', fm, undefined)).toBeUndefined();
-    expect(c.get('a', 'env', fm, undefined)).toBeDefined();
-    expect(c.get('a', 'other', fm, undefined)).toBeUndefined();
-    c.startDocument();
-    c.startDocument();
+    expect(c.size).toBe(2);
     expect(c.get('c', 'env', fm, undefined)).toBeUndefined();
+    expect(c.get('big', 'env', fm, undefined)).toBeDefined();
+    expect(c.get('b', 'env', fm, undefined)).toBeDefined();
+    expect(c.get('big', 'other', fm, undefined)).toBeUndefined();
+    // 次の文書で big だけを使うと、その次の文書の初めに b を捨て、空いた分に新しい段落を覚えられる
+    c.startDocument();
+    expect(c.get('big', 'env', fm, undefined)).toBeDefined();
+    c.startDocument();
+    expect(c.size).toBe(1);
+    expect(c.get('b', 'env', fm, undefined)).toBeUndefined();
+    c.set('c', 'env', undefined, memo(50));
+    expect(c.get('c', 'env', fm, undefined)).toBeDefined();
+    // 2 つの文書のあいだ使わなければ、みな捨てる
+    c.startDocument();
+    c.startDocument();
     expect(c.size).toBe(0);
+  });
+
+  it('行分けの覚え: 上限に達した後に別の文書へ移ると (いまの文書で 1 つも当たらない)、前の文書の項目を古いものから捨てて覚える', async () => {
+    const fonts = (await import('../src/fontManager')).FontManager;
+    const fm = new fonts();
+    const memo = (n: number) => ({ atoms: Array.from({ length: n }, () => ({})), raws: [], pls: [], lms: [] }) as never;
+    const c = new SharedLineMemo(3 * (50 + 32));
+    // 文書 1 (B): 上限まで覚える
+    for (const k of ['b1', 'b2', 'b3', 'b4']) c.set(k, 'env', undefined, memo(50));
+    expect(c.size).toBe(3);
+    // 文書 2 (A): B の段落を 1 つも使わないので、B の古いものから捨てて A を覚える
+    c.startDocument();
+    c.set('a1', 'env', undefined, memo(50));
+    c.set('a2', 'env', undefined, memo(50));
+    expect(c.size).toBe(3);
+    expect(c.get('b1', 'env', fm, undefined)).toBeUndefined();
+    expect(c.get('b3', 'env', fm, undefined)).toBeDefined();
+    // 文書 3 (A を直したもの): 文書 2 で覚えた段落が当たる。当たりがあるので、上限では捨てずに断る
+    c.startDocument();
+    expect(c.get('a1', 'env', fm, undefined)).toBeDefined();
+    c.set('a3', 'env', undefined, memo(50));
+    expect(c.get('a3', 'env', fm, undefined)).toBeUndefined();
+    expect(c.get('a2', 'env', fm, undefined)).toBeDefined();
   });
 
   it('書体の下ごしらえの覚え: 同じ中身なら、別のバッファでも当たり、中身が 1 バイトでも違えば当たらない。2 つ前の文書から使わないものは捨てる', () => {
@@ -239,5 +277,72 @@ describe('createTypesetter の reuse: 使い回しても、組んだ結果は使
     c.startDocument();
     c.startDocument();
     expect(c.get(new Uint8Array([1, 2, 3, 4, 5, 6, 7]).buffer)).toBeUndefined();
+  });
+
+  it('書体の下ごしらえの覚え: 止めた文書 (maxPages・止める合図) だけを続けても、使わなくなった書体は捨て、最後に組み終えた文書の書体は残す', () => {
+    const c = new FontPrepCache();
+    const font = (n: number) => new Uint8Array([n, 1, 2, 3]).buffer;
+    const prepared = { buffer: new ArrayBuffer(4), repaired: [] };
+    // 組み終えた文書 F が書体 0 を使う
+    c.finishDocument((c.startDocument(), c.set(font(0), prepared), 1));
+    // 止めた文書を、別々の書体で 5 つ続ける
+    for (let n = 1; n <= 5; n++) {
+      const d = c.startDocument();
+      c.set(font(n), prepared);
+      c.cancelDocument(d);
+    }
+    // 前の文書 (5) と、最後に組み終えた文書 (F の 0) の書体だけが残る (前は 0〜5 のすべてが残った)
+    c.startDocument();
+    expect(c.size).toBe(2);
+    expect(c.get(font(5))).toBe(prepared);
+    expect(c.get(font(0))).toBe(prepared);
+    expect(c.get(font(3))).toBeUndefined();
+  });
+
+  it('書体の下ごしらえの覚え: 最後に組み終えた文書の書体は、止めた文書で 1 度使った後、それを使わない止めた文書が続いても残す', () => {
+    const c = new FontPrepCache();
+    const F = new Uint8Array([7, 1, 2, 3]).buffer;
+    const G = new Uint8Array([8, 1, 2, 3]).buffer;
+    const prepared = { buffer: new ArrayBuffer(4), repaired: [] };
+    // 1: 組み終える (F を使う)
+    const d1 = c.startDocument();
+    c.set(F, prepared);
+    c.finishDocument(d1);
+    // 2: 止めた文書で F を使う
+    const d2 = c.startDocument();
+    expect(c.get(F)).toBe(prepared);
+    c.cancelDocument(d2);
+    // 3: 止めた文書で G だけを使う
+    const d3 = c.startDocument();
+    c.set(G, prepared);
+    c.cancelDocument(d3);
+    // 4: F は、最後に組み終えた文書 (1) の書体なので残る (前は、2 で使った番号で上書きされて捨てられた)
+    c.startDocument();
+    expect(c.get(F)).toBe(prepared);
+    expect(c.get(G)).toBe(prepared);
+  });
+
+  it('書体の下ごしらえの覚え: 前の組版を止めてすぐ次を組む (止めた知らせが、次の文書の初めの後に遅れて来る) ときも、最後に組み終えた文書の書体を残す', () => {
+    const c = new FontPrepCache();
+    const X = new Uint8Array([9, 1, 2, 3]).buffer;
+    const Y = new Uint8Array([10, 1, 2, 3]).buffer;
+    const prepared = { buffer: new ArrayBuffer(4), repaired: [] };
+    // 1: 組み終える (X・Y を使う)
+    const d1 = c.startDocument();
+    c.set(X, prepared);
+    c.set(Y, prepared);
+    c.finishDocument(d1);
+    // 2 (A): Y だけを使い、止める。止めた知らせは、次の文書 (B) の初めの後に来る
+    const a = c.startDocument();
+    expect(c.get(Y)).toBe(prepared);
+    const b = c.startDocument();
+    c.cancelDocument(a);
+    // B の初めに X を捨てない (前は、止めた A を組み終えた文書と数えて、X を捨てた)
+    expect(c.get(X)).toBe(prepared);
+    // B を組み終えると、B が最後に組み終えた文書になる (前は、遅れて来た止めた印が B に付いた)
+    c.finishDocument(b);
+    c.startDocument();
+    c.startDocument();
+    expect(c.get(X)).toBe(prepared);
   });
 });

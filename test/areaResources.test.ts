@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { sha256 } from '../src/sha256';
+import { sha256, sha256Js } from '../src/sha256';
 import { walkAreaTree, parseAreaTree, serializeAreaTree } from '../src/areaTree';
 import { AssetStore } from '../src/assets';
 import { doc, makeEngine } from './helpers';
@@ -13,6 +13,8 @@ describe('SHA-256 (FIPS 180-4)', () => {
     for (const n of [0, 1, 3, 55, 56, 63, 64, 65, 119, 120, 1000, 100003]) {
       const b = new Uint8Array(n).map((_, k) => (k * 131 + n) & 0xff);
       expect(sha256(b)).toBe(node(b));
+      // 自前の計算 (大きなバイト列は、Node では crypto で計算するので、自前の計算も別に確かめる)
+      expect(sha256Js(b)).toBe(node(b));
     }
     expect(sha256(new TextEncoder().encode('abc'))).toBe(node(new TextEncoder().encode('abc')));
   });

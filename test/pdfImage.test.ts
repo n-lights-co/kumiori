@@ -4,7 +4,7 @@
  * (design/pdf-as-image.md の 1 節)。試験の PDF は pdf-lib で作る (pdfImageFixtures.ts)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
-import { AssetStore } from '../src/assets';
+import { AssetStore, backgroundPdfSrc } from '../src/assets';
 import { runInCall } from '../src/callContext';
 import type { Diagnostic } from '../src/diagnostics';
 import { isPdf, pdfHeaderOffset } from '../src/imageInfo';
@@ -95,14 +95,74 @@ describe('PDF の画像の大きさ', () => {
     expect(codes(ds)).toEqual(['image/pdf-page']);
     expect(ds[0].args).toMatchObject({ src: 'a.pdf#page=9' });
   });
-  it('互換の指定: bbox=TrimBox と範囲 (最初のページと image/pdf-page-range)', async () => {
+  it('互換の指定: bbox=TrimBox と範囲 (範囲のページを横に並べた 1 つの図。幅は和、高さは最大)', async () => {
     const { assets, ds } = store(true);
-    await add(assets, 'a.pdf', await makePdf([{ media: [0, 0, 300, 200], trim: [10, 10, 110, 60] }, {}, {}]));
+    await add(assets, 'a.pdf', await makePdf([{ media: [0, 0, 300, 200], trim: [10, 10, 110, 60] }, { media: [0, 0, 100, 50] }, { media: [0, 0, 120, 80] }, { media: [0, 0, 60, 60] }]));
     const t = await assets.addFragment('a.pdf#bbox=TrimBox');
     expect(t!.pdfSource!.box).toEqual([10, 10, 110, 60]);
+    expect(t!.pdfSource!.row).toBeUndefined();
     const r = await assets.addFragment('a.pdf#page=2-3');
     expect(r!.pdfSource!.page).toBe(1);
-    expect(codes(ds)).toEqual(['image/pdf-page-range']);
+    expect(r!.pdfSource!.row!.map((p) => p.page)).toEqual([1, 2]);
+    expect(r!.width).toBeCloseTo(220 * PX);
+    expect(r!.height).toBeCloseTo(80 * PX);
+    // 終わりの無い範囲は最後のページまで。all は全部
+    expect((await assets.addFragment('a.pdf#page=2-'))!.pdfSource!.row!.map((p) => p.page)).toEqual([1, 2, 3]);
+    expect((await assets.addFragment('a.pdf#page=all'))!.pdfSource!.row!.map((p) => p.page)).toEqual([0, 1, 2, 3]);
+    // 1 ページだけの範囲は、並べない
+    expect((await assets.addFragment('a.pdf#page=4-'))!.pdfSource!.row).toBeUndefined();
+    expect(ds).toEqual([]);
+  });
+  it('指定の無いときの範囲は、1 ページ目だけと image/pdf-fragment', async () => {
+    const { assets, ds } = store(false);
+    await add(assets, 'a.pdf', await makePdf([{}, {}, {}]));
+    const r = await assets.addFragment('a.pdf#page=2-3');
+    expect(r!.pdfSource!.page).toBe(0);
+    expect(r!.pdfSource!.row).toBeUndefined();
+    expect(codes(ds)).toEqual(['image/pdf-fragment']);
+  });
+});
+
+describe('背景の画像のページの範囲 (backgroundPdfSrc)', () => {
+  it('PDF の範囲は最初のページにする (背景には最初のページだけを敷く)。PDF でない参照・範囲でない参照はそのまま', () => {
+    expect(backgroundPdfSrc('a.pdf#page=2-3')).toBe('a.pdf#page=2');
+    expect(backgroundPdfSrc('a.PDF#page=2-')).toBe('a.PDF#page=2');
+    expect(backgroundPdfSrc('a.pdf#page=all&bbox=TrimBox')).toBe('a.pdf#page=1&bbox=TrimBox');
+    expect(backgroundPdfSrc('a.pdf#bbox=TrimBox&page=3-4')).toBe('a.pdf#bbox=TrimBox&page=3');
+    expect(backgroundPdfSrc('a.pdf#page=2')).toBe('a.pdf#page=2');
+    expect(backgroundPdfSrc('a.pdf')).toBe('a.pdf');
+    expect(backgroundPdfSrc('a.drawio#page=2-3')).toBe('a.drawio#page=2-3');
+    // クエリの付いた URL・拡張子の無い URL (中身で PDF と分かるもの) も書き換える。拡張子が .pdf でないものは、クエリが付いても書き換えない
+    expect(backgroundPdfSrc('https://example.com/a.pdf?v=1#page=2-3')).toBe('https://example.com/a.pdf?v=1#page=2');
+    expect(backgroundPdfSrc('https://example.com/doc?id=7#page=all')).toBe('https://example.com/doc?id=7#page=1');
+    expect(backgroundPdfSrc('https://example.com/files/a#page=3-')).toBe('https://example.com/files/a#page=3');
+    expect(backgroundPdfSrc('https://example.com/a.png?x=a.pdf#page=2-3')).toBe('https://example.com/a.png?x=a.pdf#page=2-3');
+    expect(backgroundPdfSrc('data:image/svg+xml,<svg/>#page=2-3')).toBe('data:image/svg+xml,<svg/>#page=2-3');
+    expect(backgroundPdfSrc('data:application/pdf;page=2-3;base64,AAAA')).toBe('data:application/pdf;page=2;base64,AAAA');
+  });
+  it('XSL-FO (互換の指定): fo:table-cell の背景は最初のページ、fo:external-graphic は範囲を並べる。仕様モードは書き換えない', async () => {
+    const pdf = await makePdf([{ media: [0, 0, 100, 100] }, { media: [0, 0, 100, 100] }, { media: [0, 0, 100, 100] }]);
+    const fo =
+      '<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="400pt" page-height="300pt" margin="10pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+      '<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:table><fo:table-body><fo:table-row>' +
+      '<fo:table-cell background-image="a.pdf#page=2-3" height="50pt"><fo:block><fo:external-graphic src="a.pdf#page=2-3" content-height="20pt"/></fo:block></fo:table-cell>' +
+      '</fo:table-row></fo:table-body></fo:table></fo:flow></fo:page-sequence></fo:root>';
+    for (const compat of ['antenna', 'spec'] as const) {
+      const r = await typeset(fo, { kind: 'fo', compat, files: [{ name: 'a.pdf', data: pdf }], loadFont: loadCachedFont });
+      const bgs: string[] = [];
+      const imgs: Array<[string, number]> = [];
+      walkAreaTree(r.areaTree, (a) => {
+        if ('backgroundImage' in a && a.backgroundImage) bgs.push(a.backgroundImage.src);
+        if (a.type === 'image') imgs.push([a.src, Math.round(a.width)]);
+      });
+      if (compat === 'antenna') {
+        expect(bgs).toEqual(['a.pdf#page=2']);
+        expect(imgs).toEqual([['a.pdf#page=2-3', 40]]);
+      } else {
+        expect(bgs).toEqual(['a.pdf#page=2-3']);
+        expect(imgs).toEqual([['a.pdf#page=2-3', 20]]);
+      }
+    }
   });
 });
 

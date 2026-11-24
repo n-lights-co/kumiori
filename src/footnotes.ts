@@ -55,6 +55,16 @@ export function withLabel(children: unknown[], label: string): unknown[] {
   });
 }
 
+/** 脚注の番号付けの位置 (FootnoteCtx.mark) */
+export interface FootnoteMark {
+  counter: number;
+  assigned: number;
+  claimed: number;
+  /** 組んだ本体の覚えの数 (entryLog の長さ) と、区切りの内容を組んだか */
+  entries: number;
+  sep: boolean;
+}
+
 export class FootnoteCtx {
   readonly format: NonNullable<FootnoteOptions['numberFormat']>;
   readonly referenceScale: number;
@@ -66,6 +76,12 @@ export class FootnoteCtx {
   /** 組んだ本体。脚注領域の幅 (本文領域の inline サイズ) ごとに覚える (幅の違うページマスターへ続いたときは、その幅で組み直す) */
   private entries = new Map<LFootnote, Map<number, FootEntry>>();
   private counter: number;
+  /** 番号を振った脚注と番号 (振った順)。続きから組むとき、境目までの番号を新しい ctx に移す (adopt) */
+  private assigned: Array<[LFootnote, number]> = [];
+  /** 積んだ印を付けた脚注 (claim。付けた順。試し組みの印は入れない) */
+  private claimLog: LFootnote[] = [];
+  /** 組んだ本体 (entries に入れた順) */
+  private entryLog: Array<[LFootnote, number, FootEntry]> = [];
   /** ページごとに番号を振り直すとき: 前回の組版で、その脚注がページの中で何番目だったか (0 始まり) */
   pageOrder?: Map<LFootnote, number>;
   /** 脚注を置いたページを知らせる先 (次の組版で pageOrder を作る) */
@@ -116,6 +132,7 @@ export class FootnoteCtx {
       const k = this.opts.reset === 'page' ? this.pageOrder?.get(fn) : undefined;
       if (k !== undefined) n = (this.opts.startNumber ?? 1) + k;
       this.numbers.set(fn, n);
+      this.assigned.push([fn, n]);
     }
     const f = fn.numberFormat ?? this.opts.format;
     return f ? formatPageNumber(n, f) : formatNumber(n, this.format);
@@ -141,8 +158,87 @@ export class FootnoteCtx {
   /** セル・コンテナの中の脚注: まだどのページにも積んでいなければ true (繰り返す表の見出しなどで二重に積まない) */
   claim(fn: LFootnote): boolean {
     if (this.claimed.has(fn) || this.trialClaimed?.has(fn)) return false;
-    (this.trialClaimed ?? this.claimed).add(fn);
+    if (this.trialClaimed) this.trialClaimed.add(fn);
+    else {
+      this.claimed.add(fn);
+      this.claimLog.push(fn);
+    }
     return true;
+  }
+
+  /** いまの番号付けの位置 (ページの境目の記録に入れる。design/resumable-flow.md の 2.1) */
+  mark(): FootnoteMark {
+    return { counter: this.counter, assigned: this.assigned.length, claimed: this.claimLog.length, entries: this.entryLog.length, sep: !!this.sepEntry };
+  }
+
+  /**
+   * from の、印 m の所までの番号付け (振った番号と、積んだ印) と、組んだ本体の覚えを、この ctx に移す (続きから組むとき。この ctx は新しく作ったもの)。
+   * 本体の覚えも移すのは、初めから組み直せば、境目より前に組んだ本体を、境目より後ろで使い回すため (移さないと、組む流れの数が変わる)
+   */
+  adopt(from: FootnoteCtx, m: FootnoteMark) {
+    this.counter = m.counter;
+    for (let k = 0; k < m.assigned; k++) {
+      const [fn, n] = from.assigned[k];
+      this.numbers.set(fn, n);
+      this.assigned.push([fn, n]);
+    }
+    for (let k = 0; k < m.claimed; k++) {
+      const fn = from.claimLog[k];
+      this.claimed.add(fn);
+      this.claimLog.push(fn);
+    }
+    for (let k = 0; k < m.entries; k++) {
+      const [fn, key, e] = from.entryLog[k];
+      let byWidth = this.entries.get(fn);
+      if (!byWidth) this.entries.set(fn, (byWidth = new Map()));
+      byWidth.set(key, e);
+      this.entryLog.push([fn, key, e]);
+    }
+    // 区切りの内容も、境目までに組んでいれば移す (後に組んだものは使わない)
+    if (m.sep) this.sepEntry = from.sepEntry;
+  }
+
+  /**
+   * adopt と同じく、from の印 m の所までの番号付けと本体の覚えを移すが、脚注の節を map で、いまの文書の節に替える (前の文書の境目から、
+   * いまの文書の続きを組むとき。前を飛ばす)。替えられない節があれば false (何も移さない)
+   */
+  adoptMapped(from: FootnoteCtx, m: FootnoteMark, map: (fn: LFootnote) => LFootnote | undefined): boolean {
+    const assigned = from.assigned.slice(0, m.assigned).map(([fn, n]) => [map(fn), n] as const);
+    const claimed = from.claimLog.slice(0, m.claimed).map(map);
+    const entries = from.entryLog.slice(0, m.entries).map(([fn, key, e]) => [map(fn), key, e] as const);
+    if (assigned.some(([fn]) => !fn) || claimed.some((fn) => !fn) || entries.some(([fn]) => !fn)) return false;
+    this.counter = m.counter;
+    for (const [fn, n] of assigned) {
+      this.numbers.set(fn!, n);
+      this.assigned.push([fn!, n]);
+    }
+    for (const fn of claimed) {
+      this.claimed.add(fn!);
+      this.claimLog.push(fn!);
+    }
+    for (const [fn, key, e] of entries) {
+      let byWidth = this.entries.get(fn!);
+      if (!byWidth) this.entries.set(fn!, (byWidth = new Map()));
+      byWidth.set(key, e);
+      this.entryLog.push([fn!, key, e]);
+    }
+    if (m.sep) this.sepEntry = from.sepEntry;
+    return true;
+  }
+
+  /** 印 m までに振った番号と、積んだ印 (境目の状態を、前の組版の境目と比べる) */
+  marked(m: FootnoteMark): { assigned: Array<[LFootnote, number]>; claimed: LFootnote[] } {
+    return { assigned: this.assigned.slice(0, m.assigned), claimed: this.claimLog.slice(0, m.claimed) };
+  }
+
+  /** 振った最後の番号を n にする (境目から先のページを前の組版から繋いだとき、そのページで振った番号の続き。lastNumber だけが読む) */
+  continueAt(n: number) {
+    this.counter = n;
+  }
+
+  /** 試し組みの中か (試し組みの中の境目からは、続きから組まない) */
+  get inTrial(): boolean {
+    return this.trialClaimed !== null;
   }
 
   /** まだどのページにも積んでいない脚注か (claim と違い、印は付けない) */
@@ -169,6 +265,7 @@ export class FootnoteCtx {
       copySourceRef(fn, body);
       e = this.layoutBody(body, label, width);
       byWidth.set(key, e);
+      this.entryLog.push([fn, key, e]);
     }
     return e;
   }

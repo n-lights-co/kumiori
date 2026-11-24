@@ -27,6 +27,11 @@ updates:
     # linkedom と違う版にすると、仕掛けが linkedom の使わない Parser に入って効かなくなる (linkedom 0.18.15 は htmlparser2 ^10.1.0 を使う)。
     # linkedom が htmlparser2 を上げたら、その版に合わせて上げ、htmlParserStack.ts・sourceLocation.ts が新しい Parser の作りに合うかを確かめ、ここの項を外す。
     # 小さな版・修正の版の上げと、脆弱性の修正 (security updates) は、これまでどおり受ける。
+    # pdf-lib は 1.17.1 に止めている (package.json の版に ^ を付けない)。PDF の書き手 (src/pdfWriter.ts) は、pdf-lib 1.17.1 の書き手
+    # (PDFWriter・PDFStreamWriter) を写したもので、pdf-lib の部品の sizeInBytes・copyBytesInto・PDFCrossRefStream などの書き方と、
+    # PDFDocument.save と同じバイト列になることに頼る (test/pdfWriter.test.ts が確かめる)。src/pdfLibPatches.ts も pdf-lib の中の欄に差し替えを入れる。
+    # 版を上げる PR が来たら、pdfWriter.ts・pdfLibPatches.ts が新しい版の書き方に合うかを読み、test/pdfWriter.test.ts を通し、
+    # THIRD_PARTY_NOTICES.md の 3.5 節の版も合わせる (合わなければ internal/patch-mismatch で止まる)。
     ignore:
       - dependency-name: htmlparser2
         update-types: ['version-update:semver-major']

@@ -237,6 +237,42 @@ export function tableFo(n, seed = 7) {
   return foRoot(s + '</fo:table-body></fo:table>');
 }
 
+/**
+ * 左右のページで本文の幅が違い (HTML の @page :left の余白)、ページをまたぐ長い段落の続く HTML。n は段落の数。
+ * 続きから組む作りの確かめ (scripts/check-resume.mjs・check-relayout.mjs の generated の群) に使う: 段落の途中の境目から続けると、
+ * 行の長さの変わるページで残りの行を組み直す。その間の境目の続きの位置の誤りを探す
+ */
+export function sideWidthHtml(n, seed = 9) {
+  return paraHtml(n, seed).replace('@page { size: A5; margin: 15mm }', '@page { size: A5; margin: 15mm } @page :left { margin-left: 30mm }');
+}
+
+/**
+ * 奇数・偶数のページで本文の幅が違うマスターと、最後のページのマスター (page-position="last"。余白が広い) のある XSL-FO。
+ * ページをまたぐ長い段落が n 個続く。最後のページのマスターの組み直しが、段落の途中の境目から続けて組む (sideWidthHtml と同じ確かめに使う)
+ */
+export function sideWidthFo(n, seed = 10) {
+  const { int, text } = tools(seed);
+  let s = '';
+  for (let i = 0; i < n; i++) s += `<fo:block text-align="justify" text-indent="1em" space-after="4pt">${text(int(800, 2400))}</fo:block>`;
+  const spm = (name, extra) => `<fo:simple-page-master master-name="${name}" page-width="148mm" page-height="210mm" margin="15mm"${extra}><fo:region-body/></fo:simple-page-master>`;
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja"><fo:layout-master-set>` +
+    spm('odd', '') +
+    spm('even', ' margin-left="30mm"') +
+    spm('last', ' margin-bottom="60mm"') +
+    `<fo:page-sequence-master master-name="m"><fo:repeatable-page-master-alternatives><fo:conditional-page-master-reference master-reference="last" page-position="last"/>` +
+    `<fo:conditional-page-master-reference master-reference="even" odd-or-even="even"/><fo:conditional-page-master-reference master-reference="odd"/></fo:repeatable-page-master-alternatives></fo:page-sequence-master></fo:layout-master-set>` +
+    `<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body" font-size="10pt" line-height="1.6">${s}</fo:flow></fo:page-sequence></fo:root>`
+  );
+}
+
+/** 続きから組む作りの確かめに使う形 (SHAPES と同じ形。書き出す一揃い・指標の試験には入れない)。大きさは RESUME_SIZES */
+export const RESUME_SHAPES = {
+  sidewidth: { make: sideWidthHtml, ext: 'html' },
+  fosidewidth: { make: sideWidthFo, ext: 'fo' },
+};
+export const RESUME_SIZES = { sidewidth: 12, fosidewidth: 12 };
+
 /** 形の一覧: 名前 → { make(n, seed), ext } */
 export const SHAPES = {
   nest: { make: nestHtml, ext: 'html' },

@@ -439,6 +439,9 @@ class PdfStreamOut {
 - 同: そのほかは、どれも推奨のとおり。`truncated` (`TypesetResult`・`TypesetPdfResult`・`AreaTree`)、診断 `layout/max-pages-reached` (info)・`layout/beyond-max-pages` (warning)、
   コマンドの `--max-pages`、止めた文書の器の覚えは残して世代を進めない、`CallContext` に載せず `LayoutOptions.maxPages` で渡す。
 - 作る段は、6 のコミット 1〜2 (maxPages) だけ。
+- 2026-11-23 (0.7.0 の決め D-067): PDF の流し書きは、この覚え書きの 3 節の調べを元に `design/pdf-writer.md` で設計し直し、そこに決めを書いた
+  (書き出し先は `WritableStream` と塊を受ける関数・PDF/X と PDF/A は流せない・コマンドはいつも一時のファイルに流して名前を替える、など)。
+  1.2 の口の案のうち、入ったのは `typesetToPdfStream`・器の `typesetToPdfStream`・`TypesetResult.toPdfStream` (`design/pdf-writer.md` の 3.1・9)。
 
 ## 10. 作った段
 
@@ -477,3 +480,5 @@ class PdfStreamOut {
   (7.1-8・7.1-10・7.3-1・7.4.2-1・7.7-1。`--pdfua` を付けていないので、文書の情報の規則も落ちる) が落ち、止めた PDF は 2 つ (7.1-8・7.1-10。全体でも落ちるもの)。
   止めて増えた規則は無い。構造の木 (`pdfinfo -struct`) は 7,509 行から 250 行になり、残したページの節だけになる (印の無い節を省く今の作りで絞られる。2.5)。
 - 速さの例: 対応仕様説明書 (HTML。121 ページ) のコマンドの組版の時間が、全体 10,242ms・`--max-pages 3` 651ms (読み込み・カスケードの時間は入らない)。
+- 0.7.0 (流し書き): `design/pdf-writer.md` の 8 (束 P1。自前の書き手) と 9 (束 P2。流し書きの口・コマンドの一時のファイル・メモリの測り) に書いた。
+  測った値では、流して下がるのは画像の多い文書の PDF を書く間のメモリだけで、文の多い文書の山は組版の途中の木にある (`design/pdf-writer.md` の 9.1)。

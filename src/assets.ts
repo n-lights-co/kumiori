@@ -13,6 +13,7 @@ import { formatExtensions, formatLoadTimeoutMs, formatOf, formatSvgBudget, IMAGE
 import { msg } from './messages';
 import { diag, type Diagnostic } from './diagnostics';
 import { rejoin, thisCall } from './callContext';
+import { decodeXmlAttr } from './xmlAttr';
 
 /**
  * assets — 画像データの登録所。レイアウト (自然なサイズの取得)・Canvas 描画・PDF 埋め込みが共有する。
@@ -46,7 +47,15 @@ export interface ImageAsset {
    * PDF のページを図にした画像 (pdfImage.ts)。元のファイルの中身と、貼るページ・箱・回転。PDF の出力だけが描く (Form XObject にする)。
    * 画面・SVG・PNG は仮の枠で描く (drawable は false)
    */
-  pdfSource?: { bytes: Uint8Array; page: number; box: [number, number, number, number]; rotate: 0 | 90 | 180 | 270; userUnit: number };
+  pdfSource?: {
+    bytes: Uint8Array;
+    page: number;
+    box: [number, number, number, number];
+    rotate: 0 | 90 | 180 | 270;
+    userUnit: number;
+    /** ページの範囲 (page=2-3 など。互換の指定のときだけ) を 1 行に横に並べるときの各ページ (先頭が page。大きさは CSS px。pdfImage.ts の PdfRowPage) */
+    row?: Array<{ page: number; box: [number, number, number, number]; rotate: 0 | 90 | 180 | 270; userUnit: number; width: number; height: number }>;
+  };
   /** 本体の外の形式 (imageFormats.ts) で読んだ画像の、形式の名前と元のファイルの中身 (形式の選択肢が変わったときに描き直す: AssetStore.redrawFormat) */
   formatSource?: { format: string; bytes: Uint8Array };
   /**
@@ -54,6 +63,24 @@ export interface ImageAsset {
    * (組版は、画像が読めるかを、中身の有無で見る所がある)
    */
   released?: true;
+}
+
+/**
+ * 背景の画像の参照の、PDF のページの範囲 (アンテナハウスの拡張の page=2-3・page=2-・page=all。互換の指定のときだけ読む) を、範囲の最初のページにする。
+ * 図 (fo:external-graphic・img) では範囲のページを横に並べるが、背景には最初のページだけを敷く (見本の PDF: サンプル FO 集の graphics-pdf-1 の
+ * 「背景」の列は、page=2-3・2-・1- のどれも範囲の最初のページだけ)。範囲でない参照と、PDF でないと名前で分かる参照 (.pdf でない拡張子のもの) はそのまま。
+ * 名前は、クエリ (? の後ろ) を除いた道の最後の部分で見る (a.pdf?v=1#page=2-3 も書き換える)。拡張子の無い名前 (中身で PDF と分かる URL) も書き換える
+ * (PDF でない画像は page= の範囲を読まないので、書き換えても変わらない)
+ */
+export function backgroundPdfSrc(src: string): string {
+  if (/^data:application\/pdf/i.test(src)) return src.replace(/^(data:[^,]*?;\s*page=)(\d+)-\d*|^(data:[^,]*?;\s*page=)all\b/i, (_, a?: string, n?: string, b?: string) => (a ? `${a}${n}` : `${b}1`));
+  const hash = src.indexOf('#');
+  if (hash < 0 || /^data:/i.test(src)) return src;
+  const path = src.slice(0, hash).replace(/\?.*$/s, '');
+  const last = path.slice(path.lastIndexOf('/') + 1);
+  if (last.includes('.') && !/\.pdf$/i.test(last)) return src;
+  const frag = src.slice(hash + 1).replace(/(^|&)page=(?:(\d+)-\d*|all)(?=&|$)/i, (_, sep: string, n?: string) => `${sep}page=${n ?? 1}`);
+  return `${src.slice(0, hash)}#${frag}`;
 }
 
 export function normalizeSrc(src: string): string {
@@ -90,7 +117,16 @@ export const IMAGE_EXTENSIONS = imageExtensions();
 export function mentionedFiles(texts: string[], formats: readonly ImageFormat[] = IMAGE_FORMATS): Set<string> {
   const IMAGE_EXT = `(?:${imageExtensions(formats).join('|')})`;
   const out = new Set<string>();
-  const add = (raw: string) => {
+  const add = (raw0: string) => {
+    // 属性の値の文字参照 (a&amp;b.png。HTML・SVG の字面) は、戻した名前 (a&b.png) でも突き合わせる (xmlAttr.ts。HTML の属性の
+    // 文字参照も、決まった実体参照と数の参照は同じ字になる)
+    if (raw0.includes('&')) {
+      const dec = decodeXmlAttr(raw0);
+      if (dec !== raw0) add1(dec);
+    }
+    add1(raw0);
+  };
+  const add1 = (raw: string) => {
     let name = raw;
     try {
       name = decodeURIComponent(name);
@@ -137,6 +173,22 @@ function svgDrawableInPdf(text: string, parseXml: (xml: string) => XmlNode, onUn
 }
 
 const basename = (s: string) => s.split(/[?#]/)[0].split('/').pop() ?? s;
+
+/** バイト列の指紋 (長さと、FNV-1a の 32 ビットを 2 つの初めの値で。同じ中身かを見るためのもので、暗号の強さは要らない)。同じバイト列は覚えて返す */
+const printMemo = new WeakMap<Uint8Array, string>();
+function bytesPrint(b: Uint8Array): string {
+  let p = printMemo.get(b);
+  if (p !== undefined) return p;
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193 ^ b.length;
+  for (let i = 0; i < b.length; i++) {
+    h1 = Math.imul(h1 ^ b[i], 0x01000193);
+    h2 = Math.imul(h2 ^ b[i], 0x5bd1e995);
+  }
+  p = `${b.length}:${(h1 >>> 0).toString(36)}:${(h2 >>> 0).toString(36)}`;
+  printMemo.set(b, p);
+  return p;
+}
 
 export class AssetStore {
   private map = new Map<string, ImageAsset>();
@@ -296,6 +348,21 @@ export class AssetStore {
     }
     if (asset) this.derived.set(asset.key, from!);
     return asset;
+  }
+
+  /**
+   * 組版に効く、登録した画像と文字のファイルの印 (名前・形式・自然な大きさ・解像度・描けるか・知らせ・文字の中身)。器が前の文書の組版を使い回すとき、
+   * 画像が同じかを見る (組版は画像の大きさ・描けるか・知らせと、SVG の中身を読み、ほかの画像の描く中身は PDF を書くときにこの置き場から引く)
+   */
+  layoutSignature(): string {
+    const parts: string[] = [];
+    // 組版が読む欄: 大きさ・解像度 (dpi)・縦横比を保たないか・描けるか・未対応の知らせ・描けなかった所の知らせ (画素の中身は、組版でなく PDF の書き出しが、
+    // いまの文書の画像から読む)
+    // SVG は、組版も中身を読む (中の参照の確かめと、その警告。layoutEngine の画像の箱) ので、バイト列の指紋も入れる
+    for (const a of this.map.values())
+      parts.push(`${a.key}|${a.mime}|${a.width}|${a.height}|${a.drawable === false ? 0 : 1}|${a.dpi ?? ''}|${a.noRatio ? 1 : 0}|${a.unsupported ?? ''}|${(a.notes ?? []).join('\u0001')}|${a.mime === 'image/svg+xml' && a.bytes ? bytesPrint(a.bytes) : ''}`);
+    for (const [k, t] of this.texts) parts.push(`t|${k}|${t.length}|${t}`);
+    return parts.join('\n');
   }
 
   /** 登録した画像 (登録した順) */
@@ -642,8 +709,8 @@ export class AssetStore {
       );
       return this.register(name, { mime: 'application/pdf', bytes, width: 80, height: 160 / 3, drawable: false });
     }
-    const { page, box, rotate, userUnit, width, height } = r.image;
-    return this.register(name, { mime: 'application/pdf', bytes, width, height, drawable: false, pdfSource: { bytes, page, box, rotate, userUnit } });
+    const { page, box, rotate, userUnit, width, height, row } = r.image;
+    return this.register(name, { mime: 'application/pdf', bytes, width, height, drawable: false, pdfSource: { bytes, page, box, rotate, userUnit, ...(row ? { row } : {}) } });
   }
 
   /**

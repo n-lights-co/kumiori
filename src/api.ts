@@ -15,7 +15,8 @@ import { FontManager, FontPrepCache, type LoadedFont } from './fontManager';
 import { Measurer } from './measurer';
 import { LayoutEngine, SharedLineMemo, type LayoutControl } from './layoutEngine';
 import { renderPdf, renderPdfPages, svgTextWidth, type PdfRenderOptions } from './pdfRenderer';
-import { pdfStandardOf, type PdfAOptions, type PdfXOptions } from './pdfStandard';
+import { PdfOutputPort, type PdfOutput } from './pdfOutput';
+import { pdfDocumentDate, pdfStandardOf, type PdfAOptions, type PdfXOptions } from './pdfStandard';
 import { prepareSvgImagesForCanvas, renderSheetToCanvas } from './canvasRenderer';
 import { renderSheetToSvg } from './svgRenderer';
 import { renderSheetToPng } from './pageRaster';
@@ -44,7 +45,7 @@ import { invalidValueText, splitInvalidValueKey, summarizeCounts, unsupportedCss
 import { MESSAGE_LANGS, messageLang, msg, type MessageLang } from './messages';
 import { bound, checkAbort, currentCall, fetchSignal, pacing, pause, rejoin, reportProgress, runInCall, thisCall, untilAbort, type CallContext, type TypesetProgress } from './callContext';
 export type { TypesetProgress } from './callContext';
-import { DEFAULT_LIMITS, limits, raisedLimits, resolveLimits, type KumioriLimits, type LimitName, type Limits } from './limits';
+import { DEFAULT_LIMITS, limits, noteLimitReached, raisedLimits, resolveLimits, type KumioriLimits, type LimitName, type Limits } from './limits';
 import { tooComplexTotal } from './htmlPaged';
 import { FO_COMPATS, HTML_STYLES, styleCascadeOptions, compatLayoutOptions, compatPdfOptions, htmlImportCompatOptions, isAhCompat, loadFoHyphenators, type FoCompat } from './compat';
 import { FONT_SPECS, FontNameTable, GENERIC_FONT_KEYS, LATIN_SPECS, MATH_SPEC, MONO_SPECS, SYMBOL_SPEC, EMOJI_SPEC, createFontMapping, faceFileWeights, hasMissingEmoji, hasMissingGlyphs, missingCharKinds, missingGlyphChars, setGenericFont, setupDefaultFonts, type GenericFontKey } from './fontMapping';
@@ -52,6 +53,7 @@ import { hyphenPositions, loadDocumentHyphenators } from './hyphenation';
 import { xhtmlToHtml } from './xhtml';
 import { collectResources, documentChars, fetchGuarded, refBasename } from './resources';
 import { fetchLimits } from './imageLimits';
+import { decodeXmlAttributes } from './xmlAttr';
 
 export type { HtmlDefaults } from './htmlPrepare';
 export type { KumioriLimits } from './limits';
@@ -218,7 +220,10 @@ export interface TypesetOptions {
    * 転送の先の URL の扱い・関数で防げないもの (名前の解決)・大きさの上限は、fetchImages と同じ
    */
   fetchStyles?: boolean | ((url: string) => boolean);
-  /** PDF の圧縮 (zlib の deflate)。Node なら zlib.deflateSync を渡すと速い。既定は pdf-lib の圧縮 */
+  /**
+   * PDF の圧縮 (zlib の deflate)。ページの中身・書体・画像の流れに使う。Node なら zlib.deflateSync を渡すと速い。
+   * 省くと、画像の流れは Node の zlib (Node)・CompressionStream (ブラウザ・Web Worker) で、ほかの流れは pdf-lib の圧縮 (pako) で圧縮する
+   */
   deflate?: (data: Uint8Array) => Uint8Array;
   /**
    * 文書の外へのリンク (HTML の <a href>・XSL-FO の fo:basic-link・fo:bookmark の external-destination) のうち、PDF に動作を書くもの。
@@ -280,6 +285,12 @@ export interface TypesetResult {
   truncated: boolean;
   /** PDF にする */
   toPdf(options?: PdfOptions): Promise<Uint8Array>;
+  /**
+   * toPdf と同じ PDF を、output へ流して書く (typesetToPdfStream と同じ書き出し先・同じ扱い)。返すのは書いたバイト数。
+   * 組んだ結果 (領域の木) は持ったままなので、下がるのは PDF の側のメモリだけ。PDF/X・PDF/A (options.pdfx・options.pdfa) は流して書けない
+   * (何も書く前に KumioriOptionError)
+   */
+  toPdfStream(output: PdfOutput, options?: PdfOptions): Promise<{ bytes: number }>;
   /**
    * ページ (0 から数える) を canvas に描く (ブラウザ。印刷プレビューなど)。canvas の大きさは、ページの大きさ × scale に合わせて設定し直す。
    * canvas は、画面の canvas 要素か OffscreenCanvas (Web Worker の中で組んで描くとき。画素にした結果は transferToImageBitmap で画面へ渡せる)。
@@ -439,7 +450,12 @@ function parsers(): Promise<Parsers> {
         fixImplicitStructure(d);
         return d;
       },
-      svg: (t: string) => new lk.DOMParser().parseFromString(t, 'image/svg+xml'),
+      // linkedom の XML の読み取りは、属性の値の文字参照 (&amp; など) を戻さないので、ブラウザの DOMParser と同じに戻す (xmlAttr.ts)
+      svg: (t: string) => {
+        const d = new lk.DOMParser().parseFromString(t, 'image/svg+xml');
+        decodeXmlAttributes(d);
+        return d;
+      },
     };
   })());
 }
@@ -585,14 +601,16 @@ function callControl(o: { signal?: unknown; onProgress?: unknown }, prefix = '')
 }
 
 /**
- * typesetToPdf の PDF の設定 (TypesetPdfOptions) に、止める合図・進み具合が渡されていないかを確かめる。
- * 型では受けないが、JavaScript からは渡せるので、黙って捨てずに選択肢の誤りにする (合図は、組む設定 (options) の側で効く)
+ * typesetToPdf の PDF の設定 (TypesetPdfOptions) を、組む前に確かめる。
+ * 止める合図・進み具合は、型では受けないが、JavaScript からは渡せるので、黙って捨てずに選択肢の誤りにする (合図は、組む設定 (options) の側で効く)。
+ * 日時 (date) は、組んだ後の PDF の書き出しでも確かめるが、文書を全部組んでから誤りにしないよう、ここでも確かめる
  */
-function checkPdfOnlyControl(pdf: object): void {
+function checkPdfOnlyOptions(pdf: TypesetPdfOptions): void {
   for (const k of ['signal', 'onProgress'] as const) {
     if ((pdf as Record<string, unknown>)[k] !== undefined)
       throw optionError(msg(`typesetToPdf では、${k} は PDF の設定 (3 つ目の引数) でなく、組む設定 (2 つ目の引数) に渡してください`, `pass ${k} to typesetToPdf in the typesetting options (the second argument), not in the PDF options (the third argument)`), `pdf.${k}`);
   }
+  if (pdf.date !== undefined) pdfDocumentDate(pdf.date);
 }
 
 /**
@@ -608,9 +626,11 @@ const LIMIT_REACHED_WHAT: Partial<Record<LimitName, readonly [string, string]>> 
   tableColumns: ['表の col の span・セルの colspan を、上限の数までにしました', 'the span of table columns (col) and the colspan of cells were cut to the limit'],
   pdfImageObjects: ['上限を超える PDF の画像を描きませんでした (オブジェクトの数)', 'PDF images over the limit were not drawn (number of objects)'],
   pdfImagePages: ['上限を超える PDF の画像を描きませんでした (ページの数)', 'PDF images over the limit were not drawn (number of pages)'],
+  systemFontFaces: ['OS の書体 (systemFonts) のうち、上限の数を超える書体を使いませんでした (その書体の字は、字形の無い字になります)', 'OS fonts (systemFonts) over the limit were not used (their characters are left without glyphs)'],
   pdfImageDepth: ['上限を超える PDF の画像を描きませんでした (ページの木・資源の入れ子の深さ)', 'PDF images over the limit were not drawn (depth of the page tree or of nested resources)'],
   pdfImageStreamBytes: ['上限を超える PDF の画像を描きませんでした (圧縮を解いた中身の流れの大きさ)', 'PDF images over the limit were not drawn (decompressed size of the content streams)'],
   pdfImageLoadMs: ['上限を超える PDF の画像を描きませんでした (読み込みの時間)', 'PDF images over the limit were not drawn (loading time)'],
+  pdfImageRangePages: ['PDF の画像のページの範囲を、初めから上限の数のページまでにしました', 'the page ranges of PDF images were cut to the first pages up to the limit'],
 };
 
 /** この呼び出しで当たった上限 (CallContext.limitsReached) を、名前ごとに 1 件の診断 limit/reached にする (名前の順) */
@@ -729,17 +749,91 @@ export async function typesetToPdf(text: string, options: TypesetOptions = {}, p
   options = optionsObject(options, 'options');
   pdf = optionsObject(pdf, 'pdf');
   return runInCall(beginCall(options), async () => {
-    checkPdfOnlyControl(pdf);
+    checkPdfOnlyOptions(pdf);
     return rejoin(thisCall(), await buildTypesetter({ ...options, reuse: false }))(text, options, pdf) as Promise<TypesetPdfResult>;
   });
+}
+
+/** 流して書く PDF の書き出し先 (typesetToPdfStream の output) を、TypesetPdfOptions に入れて組版へ渡す鍵 (公開しない) */
+const PDF_OUTPUT = Symbol('kumiori.pdfOutput');
+type StreamPdfOptions = TypesetPdfOptions & { [PDF_OUTPUT]?: PdfOutputPort };
+
+export type { PdfOutput };
+
+/** typesetToPdfStream の結果 (TypesetPdfResult から、PDF のバイト列 (pdf) を除き、書き出し先に書いたバイト数を足したもの) */
+export interface TypesetPdfStreamResult extends Omit<TypesetPdfResult, 'pdf'> {
+  /** 書き出し先に書いたバイト数 */
+  bytes: number;
+}
+
+/**
+ * 流して書けない PDF の設定 (PDF/X・PDF/A。後の検査が書いた全体を読み直し、合わなければ PDF を返さないので) を、何も書く前に断る。
+ * null は、typesetToPdf・toPdf と同じく、PDF/X・PDF/A 無しとして通す
+ */
+function checkStreamablePdf(pdf: Pick<PdfOptions, 'pdfx' | 'pdfa'>, path: string): void {
+  for (const k of ['pdfx', 'pdfa'] as const)
+    if (pdf[k] != null)
+      throw optionError(msg(`PDF/X・PDF/A は流して書けません (${path}${k})。typesetToPdf・toPdf を使ってください`, `PDF/X and PDF/A cannot be written as a stream (${path}${k}); use typesetToPdf or toPdf`), `${path}${k}`);
+}
+
+/**
+ * 流して書く: 書き出し先を確かめて口を作り (WritableStream ならロックする)、run に渡し、終えたら閉じる。誤り・止める合図で終えたら、
+ * 書き始める前の誤り (選択肢の誤り・PDF/X・PDF/A・前に止めた合図・書体の読み込みの誤り) でも、書き出し先を abort(理由) する
+ * (書き出し先の誤りで終えたときは abort しない)。WritableStream の扱いは ReadableStream.prototype.pipeTo の既定 (WHATWG Streams §4.2.5。
+ * 元が誤りなら書き先を abort する) に合わせる。書き出し先そのものの形の誤り (WritableStream でも関数でもない・ほかの書き手がロックしている) では、書き出し先に触らない
+ */
+async function streamTo<T>(output: PdfOutput, run: (port: PdfOutputPort) => Promise<T>): Promise<{ result: T; bytes: number }> {
+  const port = new PdfOutputPort(output);
+  try {
+    const result = rejoin(thisCall(), await run(port));
+    rejoin(thisCall(), await port.close());
+    return { result, bytes: port.bytes };
+  } catch (e) {
+    // 書き出し先の誤りなら abort せず、ロックだけを放す (port.abort が見分ける)
+    rejoin(thisCall(), await port.abort(e));
+    throw e;
+  }
+}
+
+/**
+ * 文書を組み、PDF をページごとに output へ流して書く (typesetToPdf と同じ組み方・同じ PDF。PDF の全体を 1 つの配列に持たない)。
+ * 書き終えた流れ (画像・ページの中身・Form XObject) を、埋め込んだ・描いた所で書き出し先へ書き、書体・注釈・辞書などの残りを最後に書く。
+ * 中に印の付いた内容を持つ Form XObject (タグ付き PDF で、不透明度のある箱の中の字など) が無い文書は、typesetToPdf と同じバイト列。
+ * ある文書は、番号ごとのオブジェクトは同じで、その Form がファイルの後ろに回る (並びと位置の数だけが違う)。
+ * 書き出し先は WritableStream か、バイト列の塊を受ける関数 (Promise を返したら、次の塊の前に待つ)。Node のファイルなら
+ * Writable.toWeb(fs.createWriteStream(path)) か (c) => fs.writeSync(fd, c)。書き終えたら WritableStream を close し、誤り・止める合図
+ * (options.signal) で終えたら abort(理由) する (書き出し先には途中までのバイト列が残り、PDF としては読めない)。書き出し先の誤りは、そのまま投げる。
+ * PDF/X・PDF/A (pdf.pdfx・pdf.pdfa) は流して書けない (何も書く前に KumioriOptionError)
+ */
+export async function typesetToPdfStream(text: string, options: TypesetOptions = {}, output: PdfOutput, pdf: TypesetPdfOptions = {}): Promise<TypesetPdfStreamResult> {
+  const { result, bytes } = rejoin(thisCall(), await streamTo(output, async (port) => {
+      options = optionsObject(options, 'options');
+      pdf = optionsObject(pdf, 'pdf');
+      return runInCall(beginCall(options), async () => {
+        checkPdfOnlyOptions(pdf);
+        checkStreamablePdf(pdf, 'pdf.');
+        const run = rejoin(thisCall(), await buildTypesetter({ ...options, reuse: false }));
+        return run(text, options, { ...pdf, [PDF_OUTPUT]: port } as StreamPdfOptions) as Promise<TypesetPdfResult>;
+      });
+    }));
+  return withoutPdf(result, bytes);
+}
+
+/** typesetToPdf の結果を、流して書いた結果にする (pdf を除き、書いたバイト数を足す) */
+function withoutPdf(r: TypesetPdfResult, bytes: number): TypesetPdfStreamResult {
+  const { pdf: _pdf, ...rest } = r;
+  return { ...rest, bytes };
 }
 
 /** createTypesetter の設定: 書体まわり (何度組んでも同じもの) */
 export type TypesetterOptions = Pick<TypesetOptions, 'fonts' | 'genericFonts' | 'loadFont' | 'systemFonts' | 'fetchTimeoutMs' | 'deflate' | 'limits'> & {
   /**
-   * 前の文書を組んだときの結果のうち、中身が同じなら同じ結果になるもの (書体のファイルの下ごしらえ、段落の行分け) を、次の文書を組むときに
-   * 使い回す (既定 true)。使い回しても、組んだ結果 (領域の木・PDF) は使い回さないときと同じ。false にすると、文書ごとに初めから組む
-   * (使い回しを疑うときに比べる。前の文書の結果を持たないので、使うメモリも少ない)
+   * 前の文書を組んだときの結果のうち、中身が同じなら同じ結果になるものを、次の文書を組むときに使い回す (既定 true)。使い回すのは、
+   * 書体のファイルの下ごしらえ、段落の行分け、中身の変わらない page-sequence のページ (直した page-sequence も、直した所の前のページを使い、
+   * 直した所から組み直して、組みの状態が揃ったら残りのページを使う)。使い回しても、組んだ結果 (領域の木・PDF) は使い回さないときと同じ。
+   * 使い回すために、前の文書の段落の行分け (上限は約 400MB) と、ページを使い回すときは前の文書のページの木とページの区切りの記録を、
+   * 次の typeset まで持つ (ページの木は文書 1 つ分を上限なしに持つ)。false にすると、文書ごとに初めから組み、前の文書の結果を持たない
+   * (使い回しを疑うときに比べる。使うメモリも少ない)。使い回さない場面と詳しい条件は、ライブラリの説明書の「器」の節
    */
   reuse?: boolean;
   /** 器を作る間 (既定の書体の取得と、fonts の書体の解析) の止める合図 (TypesetOptions.signal と同じ)。作った後の typeset には効かない */
@@ -756,6 +850,8 @@ export interface Typesetter {
   typeset(text: string, options?: DocumentOptions): Promise<TypesetResult>;
   /** 文書を組み、PDF だけを作る (typesetToPdf と同じ。書体は読み込み済みのものを使い回す) */
   typesetToPdf(text: string, options?: DocumentOptions, pdf?: TypesetPdfOptions): Promise<TypesetPdfResult>;
+  /** 文書を組み、PDF を output へ流して書く (typesetToPdfStream と同じ。書体は読み込み済みのものを使い回す) */
+  typesetToPdfStream(text: string, options: DocumentOptions | undefined, output: PdfOutput, pdf?: TypesetPdfOptions): Promise<TypesetPdfStreamResult>;
 }
 
 /**
@@ -789,13 +885,29 @@ export async function createTypesetter(setup: TypesetterOptions = {}): Promise<T
       const options = optionsObject(given, 'options');
       const pdf = optionsObject(givenPdf, 'pdf');
       return runInCall(beginCall(options, setupLimits), async () => {
-        checkPdfOnlyControl(pdf);
+        checkPdfOnlyOptions(pdf);
         const r = rejoin(thisCall(), await run(text, options, pdf)) as TypesetPdfResult;
         const ignored = setupOnlyWarnings(options, 'Typesetter.typesetToPdf');
         r.warnings.unshift(...ignored.map((d) => d.message));
         r.diagnostics.unshift(...ignored);
         return r;
       });
+    },
+    typesetToPdfStream: async (text, given = {}, output, givenPdf = {}) => {
+      const { result: r, bytes } = rejoin(thisCall(), await streamTo(output, async (port) => {
+          const options = optionsObject(given, 'options');
+          const pdf = optionsObject(givenPdf, 'pdf');
+          return runInCall(beginCall(options, setupLimits), async () => {
+            checkPdfOnlyOptions(pdf);
+            checkStreamablePdf(pdf, 'pdf.');
+            const res = rejoin(thisCall(), await run(text, options, { ...pdf, [PDF_OUTPUT]: port } as StreamPdfOptions)) as TypesetPdfResult;
+            const ignored = setupOnlyWarnings(options, 'Typesetter.typesetToPdfStream');
+            res.warnings.unshift(...ignored.map((d) => d.message));
+            res.diagnostics.unshift(...ignored);
+            return res;
+          });
+        }));
+      return withoutPdf(r, bytes);
     },
   };
 }
@@ -1010,15 +1122,22 @@ async function useSystemFonts(source: SystemFontSource, loadSystem: SystemFaceLo
   for (const ch of chars) for (const k of contexts.get(ch) ?? ['serif' as const]) charsByKind[k].push(ch);
   const kinds = (['serif', 'sans'] as const).filter((k) => charsByKind[k].length);
   let found: SystemFontMatch[] = [];
+  const maxFaces = limits().systemFontFaces;
   try {
-    found = rejoin(thisCall(), await source.find({ chars, kinds, charsByKind, ...(lang ? { lang } : {}), maxFaces: limits().systemFontFaces, ...(signal ? { signal } : {}) }));
+    // 上限より 1 つ多く求め、上限を超えて返れば、上限に当たったことを知らせる (部品が上限を守らなくても、読むのは上限まで)
+    found = rejoin(thisCall(), await source.find({ chars, kinds, charsByKind, ...(lang ? { lang } : {}), maxFaces: maxFaces + 1, ...(signal ? { signal } : {}) }));
   } catch (e) {
     failed('systemFonts')(e);
     return undefined;
   }
   checkAbort();
   const use = new SystemFallbackUse();
+  let embeddable = 0;
   for (const m of Array.isArray(found) ? found : []) {
+    if (m.embeddable && ++embeddable > maxFaces) {
+      noteLimitReached('systemFontFaces');
+      continue;
+    }
     if (!m.embeddable) {
       const list = charList(m.chars);
       report(
@@ -1103,23 +1222,29 @@ async function typesetDocument(
   loadSystem?: SystemFaceLoader,
 ): Promise<TypesetResult | TypesetPdfResult> {
   const call = currentCall();
+  // 器の覚えの、この文書の印 (typesetDocumentBody の初めに、同期で startDocument して入れる)。止めた・組み終えたの知らせは、この印に付ける
+  // (止めた文書の知らせは、すぐ次の文書の startDocument の後に来ることがあるので、「いまの文書」に付けない)
+  const marks: DocumentMarks = {};
   try {
-    const r = rejoin(thisCall(), await typesetDocumentBody(text, options, base, loadSpec, baseWarnings, baseNames, pdfOnly, sharedLines, loadSystem));
+    const r = rejoin(thisCall(), await typesetDocumentBody(text, options, base, loadSpec, baseWarnings, baseNames, pdfOnly, sharedLines, loadSystem, marks));
     // 先頭から N ページで止めた文書は、器の覚えの世代を進めない (止める合図で止めた文書と同じ)。覚えたものは、中身で引く覚えなので残す。
     // プレビュー (maxPages) を何度組んでも、前に全体を組んだ文書の後ろのページの覚えを捨てないため
     if (r.truncated) {
-      base.prepCache?.cancelDocument();
-      sharedLines?.cancelDocument();
-    }
+      if (marks.prep !== undefined) base.prepCache?.cancelDocument(marks.prep);
+      if (marks.lines !== undefined) sharedLines?.cancelDocument(marks.lines);
+    } else if (marks.prep !== undefined) base.prepCache?.finishDocument(marks.prep);
     return r;
   } catch (e) {
     if (call?.signal?.aborted && e === call.signal.reason) {
-      base.prepCache?.cancelDocument();
-      sharedLines?.cancelDocument();
+      if (marks.prep !== undefined) base.prepCache?.cancelDocument(marks.prep);
+      if (marks.lines !== undefined) sharedLines?.cancelDocument(marks.lines);
     }
     throw e;
   }
 }
+
+/** 器の覚え (書体の下ごしらえ・行分け) の、1 つの文書の印 (startDocument が返す番号) */
+type DocumentMarks = { prep?: number; lines?: number };
 
 /** 文書を 1 つ組む: base (読み込み済みの書体) の写しに、文書ごとの書体を足して組む */
 async function typesetDocumentBody(
@@ -1135,12 +1260,14 @@ async function typesetDocumentBody(
   sharedLines?: SharedLineMemo,
   /** OS の書体 (systemFonts) の読み込み (器が、書体ごとに 1 度だけ読む) */
   loadSystem?: SystemFaceLoader,
+  /** 器の覚えの、この文書の印を入れる所 (typesetDocument が、止めた・組み終えたの知らせに使う) */
+  marks: DocumentMarks = {},
 ): Promise<TypesetResult | TypesetPdfResult> {
   // 選択肢は入口で検証し、compat は 1 つの真偽値 (ah) に正規化して下流 (組版・PDF の設定) に渡す (読み込みの Importer も同じ判定 isAntennaCompat を使う)
   checkOptions(options);
   // 文書をまたぐ使い回しの覚え: 前の文書でも、その前の文書でも使わなかったものを捨てる
-  base.prepCache?.startDocument();
-  sharedLines?.startDocument();
+  marks.prep = base.prepCache?.startDocument();
+  marks.lines = sharedLines?.startDocument();
   // タグ付き PDF は既定で付ける (tagged: false で外す)。PDF/UA-1 はタグ付き PDF を含む (構造の木は読み込みで作る)。
   // 作成者が tagged: true・pdfua と書いたか (透明を平らにする PDF/X-1a・X-3 と合わせたときに、誤りにするか、黙ってタグを外すかを分ける)
   const taggedAsked = options.tagged === true || !!options.pdfua;
@@ -1447,7 +1574,7 @@ async function typesetDocumentBody(
   const control: LayoutControl | undefined = paced
     ? { page: (pass, pages) => reportProgress({ phase: 'layout', pass, pages }, layoutCall), boundary: () => pause(layoutCall) }
     : undefined;
-  const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah), ...(ignore.size ? { ignoreDiagnostics: ignore } : {}), ...(sharedLines ? { sharedLineMemo: sharedLines } : {}), ...(control ? { control } : {}), ...(options.maxPages !== undefined ? { maxPages: options.maxPages } : {}) });
+  const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah), ...(ignore.size ? { ignoreDiagnostics: ignore } : {}), ...(sharedLines ? { sharedLineMemo: sharedLines, layoutReuse: sharedLines.layout } : {}), ...(control ? { control } : {}), ...(options.maxPages !== undefined ? { maxPages: options.maxPages } : {}) });
   /**
    * SVG の foreignObject の中身 (HTML・MathML) を、本文と同じ HTML の組版で、幅 width・高さ height (CSS px) の余白の無いページとして組む
    * (SVG 2 の foreignObject: 中身は CSS の組版で、foreignObject の枠を初めの包含ブロックとして組む)。中身の文書の警告は出さない。
@@ -1491,9 +1618,10 @@ async function typesetDocumentBody(
   const t0 = Date.now();
   if (pdfOnly) {
     // PDF だけを作る (typesetToPdf): ページを 1 枚ずつ領域の木にして書き、書いたページを手放す (文書全体の領域の木を 1 度に持たない)
-    const { lowMemory, ...pdfOpts } = pdfOnly;
+    const { lowMemory, [PDF_OUTPUT]: port, ...pdfOpts } = pdfOnly as StreamPdfOptions;
+    const output = port ? { output: port } : {};
     // PDF に描くページ (決まった回のページ) の字の領域で、使った OS の書体を数える (組み直しの途中の回は数えない)
-    const countSystem = (visit: (sheet: SheetArea) => void) => (systemUse ? (sheet: SheetArea) => (systemUse.visit(sheet), visit(sheet)) : visit);
+    const countSystem = (visit: (sheet: SheetArea) => void | Promise<void>) => (systemUse ? (sheet: SheetArea) => (systemUse.visit(sheet), visit(sheet)) : visit);
     // 書体の知らせ: ページを集めるたどり (layout の attachResources に当たる) の間は組版の警告に、ページを描く間は PDF を書く途中の知らせに入れる
     // (typeset の後に toPdf を呼んだときと同じ順にする)
     const pdfNotices: Diagnostic[] = [];
@@ -1513,7 +1641,7 @@ async function typesetDocumentBody(
       bytes = rejoin(thisCall(), await renderPdfPages(
         { title: pages.title, info: pages.info, structure: pages.structure, scan: (v, r) => pages.scan(v, r), paint: (v) => pages.paint(countSystem(v)), finish: () => (info = pages.finish()), scanned, get count() { return pages.count; } },
         fonts,
-        { ...pdfOptions(pdfOpts, pdfWarnings, pdfDiagnostics), releaseImageBytes: true },
+        { ...pdfOptions(pdfOpts, pdfWarnings, pdfDiagnostics), releaseImageBytes: true, ...output },
       ));
       pageCount = pages.count;
       truncatedAt = pages.truncatedAt;
@@ -1529,27 +1657,29 @@ async function typesetDocumentBody(
           scan: (visit) => {
             for (let i = 0; i < pages.count; i++) visit(pages.sheet(i));
           },
-          paint: paced
-            ? async (visit) => {
-                // 止める合図・進み具合を渡した呼び出しでは、ページを描く間で間をあける
-                for (let i = 0; i < pages.count; i++) {
-                  countSystem(visit)(pages.sheet(i));
-                  pages.release(i);
-                  rejoin(thisCall(), await pause());
+          paint:
+            paced || port
+              ? async (visit) => {
+                  // 止める合図・進み具合を渡した呼び出しでは、ページを描く間で間をあける。流して書くときは、書き出し先が待たせたら待つ
+                  for (let i = 0; i < pages.count; i++) {
+                    const wait = countSystem(visit)(pages.sheet(i));
+                    pages.release(i);
+                    if (wait) rejoin(thisCall(), await wait);
+                    if (paced) rejoin(thisCall(), await pause());
+                  }
                 }
-              }
-            : (visit) => {
-                for (let i = 0; i < pages.count; i++) {
-                  countSystem(visit)(pages.sheet(i));
-                  pages.release(i);
-                }
-              },
+              : (visit) => {
+                  for (let i = 0; i < pages.count; i++) {
+                    countSystem(visit)(pages.sheet(i));
+                    pages.release(i);
+                  }
+                },
           count: pages.count,
           finish: () => (info = pages.finish()),
           scanned,
         },
         fonts,
-        { ...pdfOptions(pdfOpts, pdfWarnings, pdfDiagnostics), releaseImageBytes: true },
+        { ...pdfOptions(pdfOpts, pdfWarnings, pdfDiagnostics), releaseImageBytes: true, ...output },
       ));
       pageCount = pages.count;
       truncatedAt = pages.truncatedAt;
@@ -1603,6 +1733,24 @@ async function typesetDocumentBody(
   };
   // toPdf は typeset の後に呼ばれるので、警告の言語 (TypesetOptions.lang) を、組んだときの言語に戻して書く
   const call: CallContext = currentCall() ?? { lang: messageLang() };
+  /** 結果の toPdf・toPdfStream の書き出し (laterCall の文脈の中で呼ぶ)。流して書くときは、書き出し先の口 (port) を渡す */
+  const laterPdf = async (o: PdfOptions, port?: PdfOutputPort): Promise<Uint8Array> => {
+    const pdfWarnings: string[] = [];
+    const pdfDiagnostics: Diagnostic[] = [];
+    const later = thisCall();
+    try {
+      return rejoin(thisCall(), await renderPdf(tree, fonts, { ...pdfOptions(o, pdfWarnings, pdfDiagnostics), ...(port ? { output: port } : {}) }));
+    } finally {
+      laterLimitsReached(later);
+      // 警告の文は、前と同じに足す (同じ文は 1 度)。診断は、文を足したものと、warnings に出さない知らせ (pdfx.warnings など) を足す
+      for (const m of pdfWarnings) {
+        const d = pdfDiagnostics.find((x) => x.message === m);
+        if (d) addWarning(d);
+        else if (!resultWarnings.includes(m)) resultWarnings.push(m);
+      }
+      for (const d of pdfDiagnostics) if (!pdfWarnings.includes(d.message)) resultDiags.add(d);
+    }
+  };
   return {
     areaTree: tree,
     pageCount: tree.sheets.length,
@@ -1610,24 +1758,11 @@ async function typesetDocumentBody(
     diagnostics: resultDiags.list,
     layoutMs,
     truncated: !!tree.truncated,
-    toPdf: async (o = {}) =>
-      runInCall(laterCall(call, optionsObject(o, 'options'), ''), async () => {
-        const pdfWarnings: string[] = [];
-        const pdfDiagnostics: Diagnostic[] = [];
-        const later = thisCall();
-        try {
-          return rejoin(thisCall(), await renderPdf(tree, fonts, pdfOptions(o, pdfWarnings, pdfDiagnostics)));
-        } finally {
-          laterLimitsReached(later);
-          // 警告の文は、前と同じに足す (同じ文は 1 度)。診断は、文を足したものと、warnings に出さない知らせ (pdfx.warnings など) を足す
-          for (const m of pdfWarnings) {
-            const d = pdfDiagnostics.find((x) => x.message === m);
-            if (d) addWarning(d);
-            else if (!resultWarnings.includes(m)) resultWarnings.push(m);
-          }
-          for (const d of pdfDiagnostics) if (!pdfWarnings.includes(d.message)) resultDiags.add(d);
-        }
-      }),
+    toPdf: async (o = {}) => runInCall(laterCall(call, optionsObject(o, 'options'), ''), () => laterPdf(o)),
+    toPdfStream: async (output, o = {}) => {
+      const { bytes } = rejoin(thisCall(), await streamTo(output, (port) => runInCall(laterCall(call, optionsObject(o, 'options'), ''), () => (checkStreamablePdf(o, ''), laterPdf(o, port)))));
+      return { bytes };
+    },
     // renderPage (同期) も、組んだときの言語で書く (toPdf と同じ)
     renderPage: (canvas, pageIndex, o = {}) =>
       runInCall(call, () => {

@@ -15,7 +15,7 @@
  * 「Resolution Algorithm Specification」の PACKAGE_RESOLVE・PACKAGE_EXPORTS_RESOLVE・PACKAGE_TARGET_RESOLVE・LEGACY_MAIN_RESOLVE) で、
  * 今のディレクトリ (コマンドを動かした所) を基準に解決する。条件は import() と同じ (import・node・module-sync・default)。
  * createRequire().resolve は require の条件で解決するので、exports に import の条件しか無い ESM のパッケージを見つけられない。
- * import.meta.resolve の 2 つ目の引数 (基準の URL) は、動かせる Node (^20.19.0 || >=22.12.0) では、
+ * import.meta.resolve の 2 つ目の引数 (基準の URL) は、動かせる Node (>=22.12.0) では、
  * --experimental-import-meta-resolve を付けないと使えないので、自前で解決する。
  */
 import fs from 'node:fs';

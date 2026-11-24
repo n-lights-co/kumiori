@@ -225,7 +225,7 @@ interface CallContext {
 
 - `messages.ts` の `messageLang()` が、いまの文脈の言語を返す。`msg()` (566 か所。55 のファイル) は変えない。
 - **AsyncLocalStorage がある環境** (Node。Deno・Bun も Node の互換で持つ): `globalThis.process?.getBuiltinModule?.('node:async_hooks')` で取る
-  (Node 20.16 から。下限の 20.19 で使える)。`import` で書かないので、ブラウザ向けのビルド (`kumiori/browser`) は変わらず、束ねる道具も node の部品を探さない。
+  (Node 20.16・22.3 から。下限の 22.12 で使える)。`import` で書かないので、ブラウザ向けのビルド (`kumiori/browser`) は変わらず、束ねる道具も node の部品を探さない。
   `runInCall(ctx, fn)` は `als.run(ctx, fn)`。await をまたいでも文脈がついてくるので、深い所の `msg` も呼び出しごとの言語になる。
 - **無い環境** (ブラウザ・Web Worker): 文脈を引数で渡し、同期の区間の初めで「いまの文脈」(モジュールの変数) に置く。
   - 同期の区間の途中では、ほかの呼び出しが割り込まない (JS は 1 本の流れ) ので、区間の初めに置けば、その区間の `msg` は正しい。

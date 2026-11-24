@@ -83,6 +83,73 @@ describe('PDF の出力に埋め込む', () => {
     expect(first).toBeDefined();
     expect(dec(decodePDFRawStream(first!).decode())).not.toMatch(/MCID/);
   });
+  it('ページの範囲 (互換の指定): 範囲のページを、それぞれの Form にして、間を空けずに左から並べ、下端をそろえる', async () => {
+    const src = await makePdf([{ media: [0, 0, 100, 100] }, { media: [0, 0, 100, 50] }, { media: [0, 0, 200, 100], color: [0, 0, 1] }]);
+    const fo =
+      '<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="400pt" page-height="300pt" margin="0"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+      '<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block><fo:external-graphic src="a.pdf#page=2-3" content-height="50pt"/></fo:block></fo:flow></fo:page-sequence></fo:root>';
+    const r = await typesetToPdf(fo, { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: src }], loadFont });
+    expect(r.diagnostics.map((d) => d.code).filter((c) => c.startsWith('image/'))).toEqual([]);
+    const out = await PDFDocument.load(r.pdf);
+    expect(forms(out)).toHaveLength(2);
+    // 全体 (300 × 100) を高さ 50pt に縮める (0.5 倍): 2 ページ目は 50 × 25 を左に、3 ページ目は 100 × 50 をその右に。下端はそろう
+    const cms = [...pageOps(out).matchAll(/\n([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) cm\n\/KmP[-\d]* Do/g)].map((m) => m.slice(1).map(Number));
+    expect(cms).toHaveLength(2);
+    const [a, b] = cms;
+    expect(a[0]).toBeCloseTo(0.5, 3);
+    expect(b[0]).toBeCloseTo(0.5, 3);
+    expect(b[4] - a[4]).toBeCloseTo(50, 3);
+    expect(b[5]).toBeCloseTo(a[5], 3);
+  });
+  /** n ページの PDF。shared なら、全部のページが 1 つの中身の流れ (解くと bytes バイトほど) を共有する。でなければページごとに別の流れ */
+  async function rangePdf(n: number, bytes: number, shared: boolean): Promise<Uint8Array> {
+    const doc = await PDFDocument.create();
+    const line = '0 0 m 10 10 l S\n';
+    const body = line.repeat(Math.ceil(bytes / line.length));
+    const one = shared ? doc.context.register(doc.context.flateStream(body)) : undefined;
+    for (let i = 0; i < n; i++) {
+      const page = doc.addPage([100, 100]);
+      page.node.set(PDFName.of('Contents'), one ?? doc.context.register(doc.context.flateStream(`${i} w\n${body}`)));
+    }
+    return doc.save({ useObjectStreams: false });
+  }
+  const rangeFo = (src: string) =>
+    '<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="400pt" page-height="300pt" margin="0"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+    `<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block><fo:external-graphic src="${src}" content-width="300pt"/></fo:block></fo:flow></fo:page-sequence></fo:root>`;
+  it('ページの範囲は、並べるページの数を上限 pdfImageRangePages までにし、同じ中身の流れを共有するページは 1 つの Form にする', async () => {
+    // 3,000 ページが、解くと 1MB の中身の流れを共有する小さな PDF (前は、範囲のページごとに解いて写したので、時間と出力がページの数の倍になった)
+    const src = await rangePdf(3000, 1_000_000, true);
+    const t0 = Date.now();
+    const r = await typesetToPdf(rangeFo('a.pdf#page=1-'), { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: src }], loadFont });
+    expect(Date.now() - t0).toBeLessThan(30_000);
+    const reached = r.diagnostics.filter((d) => d.code === 'limit/reached').map((d) => d.args?.limit);
+    expect(reached).toEqual(['pdfImageRangePages']);
+    expect(r.diagnostics.filter((d) => d.code === 'image/pdf-page-range')).toHaveLength(1);
+    const out = await PDFDocument.load(r.pdf);
+    expect(forms(out)).toHaveLength(1);
+    expect(pageOps(out).match(/\/KmP[-\d]* Do/g)).toHaveLength(64);
+    expect(r.pdf.length).toBeLessThan(200_000);
+    // 上限は limits で変えられる
+    const r3 = await typesetToPdf(rangeFo('a.pdf#page=all'), { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: src }], loadFont, limits: { pdfImageRangePages: 3 } });
+    expect(pageOps(await PDFDocument.load(r3.pdf)).match(/\/KmP[-\d]* Do/g)).toHaveLength(3);
+    // 上限以下の範囲は知らせない
+    const r2 = await typesetToPdf(rangeFo('a.pdf#page=2-3'), { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: src }], loadFont, limits: { pdfImageRangePages: 3 } });
+    expect(r2.diagnostics.map((d) => d.code).filter((c) => c === 'limit/reached' || c.startsWith('image/'))).toEqual([]);
+  }, 120_000);
+  it('ページの範囲は、圧縮を解く大きさ (pdfImageStreamBytes) を範囲の全体で分け合う', async () => {
+    // ページごとに別の流れ (解くと 40 万バイトほど) の 3 ページ。1 ページずつなら 100 万バイトに収まるが、範囲の全体では超える
+    const src = await rangePdf(3, 400_000, false);
+    const limits = { pdfImageStreamBytes: 1_000_000 };
+    const one = await typesetToPdf(rangeFo('a.pdf#page=3'), { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: src }], loadFont, limits });
+    expect(one.diagnostics.map((d) => d.code).filter((c) => c === 'limit/reached' || c.startsWith('image/'))).toEqual([]);
+    const r = await typesetToPdf(rangeFo('a.pdf#page=1-3'), { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: src }], loadFont, limits });
+    expect(r.diagnostics.filter((d) => d.code === 'limit/reached').map((d) => d.args?.limit)).toEqual(['pdfImageStreamBytes']);
+    expect(r.diagnostics.filter((d) => d.code === 'image/pdf-invalid')).toHaveLength(1);
+    expect(forms(await PDFDocument.load(r.pdf))).toHaveLength(0);
+    // 2 ページなら収まる
+    const two = await typesetToPdf(rangeFo('a.pdf#page=1-2'), { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: src }], loadFont, limits });
+    expect(forms(await PDFDocument.load(two.pdf))).toHaveLength(2);
+  }, 120_000);
   it('埋め込んでいない書体は image/pdf-font (書体の名前)', async () => {
     const src = await makePdf([{ text: 'Hello' }]);
     const r = await typesetToPdf(html('<img src="a.pdf">'), { name: 'd.html', files: [{ name: 'a.pdf', data: src }], loadFont });

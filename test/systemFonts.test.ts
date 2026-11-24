@@ -88,6 +88,54 @@ describe('createSystemFonts (索引と書体の選び方)', () => {
     expect(await src.find({ chars: cp(0xf0009) })).toEqual([]);
   });
 
+  it('名前は英語のファミリー名: 英語の nameID 1 を、英語でない nameID 16 より先にする', async () => {
+    write('names/a.ttf', buildTestFont({ family: 'English Family', chars: [0xf0050], typographicFamily: { name: '日本語の名前', lang: 0x411 } }));
+    write('names/b.ttf', buildTestFont({ family: 'Family One', chars: [0xf0051], typographicFamily: { name: 'Typographic', lang: 0x409 } }));
+    const r = await createSystemFonts({ dirs: [path.join(tmp, 'names')] }).find({ chars: cp(0xf0050, 0xf0051) });
+    expect(r.map((m) => m.name).sort()).toEqual(['English Family (a.ttf)', 'Typographic (b.ttf)']);
+  });
+
+  it('索引の作り直し: 索引を作った後に書体のファイルが変わったら、読むのは誤りにし、次に探すときに索引を作り直す', async () => {
+    const dir = path.join(tmp, 'rescan');
+    write('rescan/a.ttf', buildTestFont({ family: 'Rescan A', chars: [0xf0060] }));
+    const src = createSystemFonts({ dirs: [dir] });
+    const [a] = await src.find({ chars: cp(0xf0060, 0xf0061) });
+    expect(a.name).toBe('Rescan A (a.ttf)');
+    // 書体を入れ直す (大きさが変わる) と、索引の書体は読めない
+    write('rescan/a.ttf', buildTestFont({ family: 'Rescan A', chars: [0xf0060, 0xf0061] }));
+    await expect(a.data()).rejects.toThrow(/changed|変わりました/);
+    // 次に探すときは、作り直した索引で探す (入れ直した書体の字も見つかり、読める)
+    const again = await src.find({ chars: cp(0xf0060, 0xf0061) });
+    expect(again.map((m) => m.chars)).toEqual([cp(0xf0060, 0xf0061)]);
+    expect((await again[0].data()).byteLength).toBeGreaterThan(0);
+  });
+
+  it('索引の作り直し: 索引を作った後に書体のファイルを消したら、読むのは誤りにし、次に探すときは消えた書体を選ばない', async () => {
+    const dir = path.join(tmp, 'removed');
+    write('removed/a.ttf', buildTestFont({ family: 'Removed A', chars: [0xf0062] }));
+    write('removed/b.ttf', buildTestFont({ family: 'Removed B', chars: [0xf0062] }));
+    const src = createSystemFonts({ dirs: [dir] });
+    const [a] = await src.find({ chars: cp(0xf0062) });
+    fs.rmSync(path.join(dir, path.basename(a.name.replace(/^.*\((.*)\)$/, '$1'))));
+    await expect(a.data()).rejects.toThrow(/無くなりました|disappeared/);
+    // 前は、作り直さずに、消えた書体を選び続けた
+    const again = await src.find({ chars: cp(0xf0062) });
+    expect(again.map((m) => m.name)).not.toContain(a.name);
+    expect(again).toHaveLength(1);
+    expect((await again[0].data()).byteLength).toBeGreaterThan(0);
+  });
+
+  it('索引は間をあけて作り、止める合図で待つのをやめる (作るのは続け、次に探すときに使う)', async () => {
+    for (let i = 0; i < 300; i++) write(`slow/n${String(i).padStart(3, '0')}.txt`, 'x');
+    write('slow/z.ttf', buildTestFont({ family: 'Slow Z', chars: [0xf0070] }));
+    const src = createSystemFonts({ dirs: [path.join(tmp, 'slow')] });
+    const ac = new AbortController();
+    const p = src.find({ chars: cp(0xf0070), signal: ac.signal });
+    ac.abort();
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+    expect((await src.find({ chars: cp(0xf0070) })).map((m) => m.name)).toEqual(['Slow Z (z.ttf)']);
+  });
+
   it('cmap の format 4 も読む', async () => {
     write('fmt4/a.ttf', buildTestFont({ family: 'Test Fmt4', chars: [0xe001, 0xe005], cmapFormat: 4 }));
     const r = await createSystemFonts({ dirs: [path.join(tmp, 'fmt4')] }).find({ chars: cp(0xe001, 0xe002, 0xe005) });

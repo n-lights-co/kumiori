@@ -202,7 +202,7 @@ describe('PDF に入れるための PNG の展開 (decodePngForPdf)', () => {
     expect(decodePngForPdf(other(24, 16))).toBeUndefined();
     expect(decodePngForPdf(other(28, 1))).toBeUndefined();
   });
-  it('PDF に入れた画像 (RGB と SMask の流れ) は、pdf-lib の embedPng と同じになる', async () => {
+  it('PDF に入れた画像 (RGB と SMask の流れ) は、pdf-lib の embedPng と同じ辞書と、展開すると同じ中身になる (圧縮は pako でないので、バイト列は違う)', async () => {
     const px = new Uint8Array(37 * 23 * 4).map((_, i) => (i * 13) & 255);
     const png = filteredPng(37, 23, 4, px, 2);
     const streams = async (embed: (pdf: PDFDocument) => Promise<unknown>) => {
@@ -212,7 +212,7 @@ describe('PDF に入れるための PNG の展開 (decodePngForPdf)', () => {
         .enumerateIndirectObjects()
         .map(([, o]) => o)
         .filter((o): o is PDFRawStream => o instanceof PDFRawStream)
-        .map((o) => [o.dict.toString(), Buffer.from(o.contents).toString('hex')]);
+        .map((o) => [o.dict.toString().replace(/\/Length \d+/, ''), inflateSync(o.contents).toString('hex')]);
     };
     const mine = await streams((pdf) => embedPngChecked(pdf, png));
     expect(mine.length).toBe(2);

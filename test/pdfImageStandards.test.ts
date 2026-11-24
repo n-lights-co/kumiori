@@ -49,6 +49,36 @@ describe('PDF/X-4', () => {
   });
 });
 
+describe('ページの範囲 (互換の指定) と埋め込む前の検査', () => {
+  it('範囲の途中のページが断られたら、範囲の全体を仮の枠にし、先のページの Form も PDF に残さない', async () => {
+    const fo =
+      '<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="400pt" page-height="300pt" margin="10pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+      '<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block><fo:external-graphic src="a.pdf#page=1-2" content-height="50pt"/></fo:block></fo:flow></fo:page-sequence></fo:root>';
+    const r = await typeset(fo, { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: await makePdf([{ cmyk: true }, { cmyk: false }]) }], loadFont });
+    const bytes = await r.toPdf({ pdfx: { version: 'X-4', profile: iccHeader('CMYK'), warnings: [] } });
+    expect(codes(r.diagnostics)).toEqual(['pdfx/embedded-pdf']);
+    const pdf = await PDFDocument.load(bytes);
+    const forms = pdf.context
+      .enumerateIndirectObjects()
+      .filter(([, o]) => 'dict' in o && (o as { dict: PDFDict }).dict.get(PDFName.of('Subtype')) === PDFName.of('Form'));
+    expect(forms).toHaveLength(0);
+  });
+  it('範囲で分け合った予算で落ちたページも、後で 1 ページだけ貼るときは、そのページの予算で埋め込む (落ちた誤りを覚えない)', async () => {
+    // 1 ページの中身の流れは pdfImageStreamBytes (8,000) に収まり、2 ページを合わせると収まらない
+    const pdf = await makePdf([{ text: 'x'.repeat(3000) }, { text: 'y'.repeat(3000) }]);
+    const fo =
+      '<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="400pt" page-height="300pt" margin="10pt"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>' +
+      '<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block><fo:external-graphic src="a.pdf#page=1-2" content-height="50pt"/><fo:external-graphic src="a.pdf#page=2" content-height="50pt"/></fo:block></fo:flow></fo:page-sequence></fo:root>';
+    const r = await typeset(fo, { kind: 'fo', compat: 'antenna', files: [{ name: 'a.pdf', data: pdf }], loadFont, limits: { pdfImageStreamBytes: 8000 } });
+    const out = await PDFDocument.load(await r.toPdf());
+    // 範囲だけが仮の枠 (前は、範囲で落ちた 2 ページ目の誤りを覚えて、後ろの 1 ページも仮の枠にした)
+    expect(r.diagnostics.filter((d) => d.code === 'image/pdf-invalid').map((d) => d.args?.src)).toEqual(['a.pdf#page=1-2']);
+    expect(await embedded(await r.toPdf())).toBe(true);
+    const forms = out.context.enumerateIndirectObjects().filter(([, o]) => 'dict' in o && (o as { dict: PDFDict }).dict.get(PDFName.of('Subtype')) === PDFName.of('Form'));
+    expect(forms).toHaveLength(1);
+  });
+});
+
 describe('PDF/X-3 (透明を平らにする出力)', () => {
   it('PDF の画像は貼らずに pdfx/embedded-pdf (PDF/X-4 を勧める)', async () => {
     const r = await typeset(html, { name: 'd.html', files: [{ name: 'a.pdf', data: await makePdf([{ cmyk: true }]) }], loadFont });

@@ -7,7 +7,7 @@
  * - ページの選び方: 参照の fragment (RFC 3986 §3.5)。RFC 8118 §3 の page=N (1 から数える) はどのモードでも読む。
  *   アンテナハウスの拡張 (公開の説明書の「PDF の埋め込み」の節): ページの範囲 (page=3-5・page=3-・page=all) と、図の大きさにする箱
  *   (bbox=MediaBox|CropBox|BleedBox|TrimBox|ArtBox。既定は CropBox) は、接頭辞の無い名前に足された値・引数なので、互換の指定のときだけ読む
- *   (CLAUDE.md の「仕様の根拠」)。範囲は流さずに (流し書きは今後の版)、範囲の最初のページだけを貼る
+ *   (CLAUDE.md の「仕様の根拠」)。範囲のページは、ページを流さずに 1 行に横に並べた 1 つの図にする (見本の PDF の並べ方。pageImage)
  * - 箱: 既定は CropBox (無ければ MediaBox)。箱は MediaBox と重なる所に切り詰める (ISO 32000-1 §14.11.2)。MediaBox・CropBox・Rotate・Resources は
  *   親から受け継ぐ (§7.7.3.4、Table 30)。UserUnit (Table 30。PDF 1.6) があれば、1 単位を UserUnit/72 インチにする
  * - 回転: /Rotate (Table 30。90 の倍数。表示するときに時計回りに回す)。90・270 なら、図の幅と高さを入れ替える
@@ -273,7 +273,19 @@ export interface PdfPageImage {
   boxName: PdfBoxName;
   rotate: 0 | 90 | 180 | 270;
   userUnit: number;
-  /** 図の大きさ (CSS px。回した後) */
+  /** 図の大きさ (CSS px。回した後。ページの範囲なら、並べた全体) */
+  width: number;
+  height: number;
+  /** ページの範囲 (2 ページ以上) を横に並べるときの、各ページ (先頭が page) */
+  row?: PdfRowPage[];
+}
+
+/** 横に並べる 1 つのページ (ページは 0 から数える。大きさは CSS px。回した後) */
+export interface PdfRowPage {
+  page: number;
+  box: PdfRect;
+  rotate: 0 | 90 | 180 | 270;
+  userUnit: number;
   width: number;
   height: number;
 }
@@ -293,17 +305,46 @@ export async function readPdfImage(bytes: Uint8Array, fragment: string | undefin
 }
 
 function pageImage(pdf: Extract<LoadedPdf, { ok: true }>, choice: PdfFragmentChoice, notes: PdfNote[]): PdfPageImage | { detail: string } {
-  const context = pdf.doc.context;
   const pageCount = pdf.pages.length;
   let page = choice.page - 1;
   if (page >= pageCount) {
     notes.push({ code: 'image/pdf-page', detail: msg(`${choice.page} ページ目がありません (${pageCount} ページ)。1 ページ目を貼ります`, `there is no page ${choice.page} (${pageCount} pages); the first page is used`) });
     page = 0;
-  } else if (choice.range) {
-    const last = Math.min(choice.range.last ?? pageCount, pageCount);
-    if (last > choice.range.first)
-      notes.push({ code: 'image/pdf-page-range', detail: msg(`ページの範囲 (${choice.range.first}〜${last} ページ) の最初のページだけを貼ります (範囲を流して貼るのは今後の版)`, `only the first page of the range (pages ${choice.range.first} to ${last}) is used (flowing a range is planned for a later version)`) });
   }
+  // ページの範囲 (アンテナハウスの拡張。互換の指定のときだけ): 範囲のページを、ページを流さずに 1 行に横に並べた 1 つの図にする
+  // (見本の PDF: サンプル FO 集の pdf-embedding-2・graphics-pdf-1 は、page=2-3 なら 2・3 ページを、間を空けずに横に並べ、下端をそろえる)
+  let last = choice.range && page === choice.page - 1 ? Math.min(choice.range.last ?? pageCount, pageCount) : page + 1;
+  // 並べるページの数を縛る (pdfImageRangePages)。範囲のページは、どれも埋め込むので、小さな PDF の多くのページが中身を共有すると、
+  // 組版の時間と出力がページの数の倍になる。超えた分は貼らず、初めから上限の数のページまでを並べる
+  const cap = limits().pdfImageRangePages;
+  if (last - page > cap) {
+    noteLimitReached('pdfImageRangePages');
+    notes.push({
+      code: 'image/pdf-page-range',
+      detail: msg(
+        `ページの範囲の ${last - page} ページのうち、上限 pdfImageRangePages (${cap}) までの、初めの ${cap} ページ (${page + 1}〜${page + cap} ページ) を並べます`,
+        `of the ${last - page} pages in the page range, the first ${cap} pages (pages ${page + 1} to ${page + cap}) are placed, up to the limit pdfImageRangePages (${cap})`,
+      ),
+    });
+    last = page + cap;
+  }
+  const row: PdfRowPage[] = [];
+  for (let k = page; k < Math.max(last, page + 1); k++) {
+    const g = pageGeom(pdf, choice, k, notes);
+    if ('detail' in g) return g;
+    row.push(g);
+  }
+  const first = row[0];
+  const width = row.reduce((a, g) => a + g.width, 0);
+  const height = Math.max(...row.map((g) => g.height));
+  const max = limits().formatSize;
+  if (!(width <= max)) return { detail: msg(`並べたページの幅が大きすぎます (${max} px まで)`, `the pages placed side by side are too wide (up to ${max} px)`) };
+  return { page: first.page, pageCount, box: first.box, boxName: choice.box, rotate: first.rotate, userUnit: first.userUnit, width, height, ...(row.length > 1 ? { row } : {}) };
+}
+
+/** 1 つのページの、図にする箱・回転・大きさ */
+function pageGeom(pdf: Extract<LoadedPdf, { ok: true }>, choice: PdfFragmentChoice, page: number, notes: PdfNote[]): PdfRowPage | { detail: string } {
+  const context = pdf.doc.context;
   const { dict, inherited } = pdf.pages[page];
   let media = rectOf(context, inherited.MediaBox);
   if (!media) {
@@ -330,5 +371,5 @@ function pageImage(pdf: Extract<LoadedPdf, { ok: true }>, choice: PdfFragmentCho
   const [width, height] = rotate === 90 || rotate === 270 ? [h, w] : [w, h];
   const max = limits().formatSize;
   if (!(width > 0 && height > 0 && width <= max && height <= max)) return { detail: msg(`ページの大きさが大きすぎます (${max} px まで)`, `the page is too large (up to ${max} px)`) };
-  return { page, pageCount, box, boxName: choice.box, rotate, userUnit, width, height };
+  return { page, box, rotate, userUnit, width, height };
 }

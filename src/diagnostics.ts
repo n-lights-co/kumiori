@@ -65,6 +65,7 @@ export type DiagnosticCode =
   | 'image/pdf-invalid'
   | 'image/pdf-encrypted'
   | 'image/pdf-page'
+  /** 0.7.0 からは、範囲のページの数が上限 pdfImageRangePages を超えたときだけ出す (0.6.0 は、範囲の最初のページだけを貼ったときに出した) */
   | 'image/pdf-page-range'
   | 'image/pdf-fragment'
   | 'image/pdf-repaired'
@@ -139,6 +140,7 @@ export type DiagnosticCode =
   | 'snapshot/blob-unreadable'
   | 'snapshot/limit'
   | 'snapshot/shadow-root-closed'
+  | 'snapshot/shadow-stylesheet-unreadable'
   | 'snapshot/font-face-source-unknown';
 
 /** 診断の名前と重さの表 */
@@ -272,6 +274,7 @@ const DIAGNOSTIC_TABLE: Record<DiagnosticCode, DiagnosticSeverity> = {
   'snapshot/blob-unreadable': 'warning',
   'snapshot/limit': 'warning',
   'snapshot/shadow-root-closed': 'warning',
+  'snapshot/shadow-stylesheet-unreadable': 'warning',
   'snapshot/font-face-source-unknown': 'warning',
 };
 

@@ -113,6 +113,39 @@ describe('止める合図', () => {
     expect(isAbortError(await reasonOf(typeset(html, { name: 'a.html', loadFont: loadCachedFont, signal: ac.signal, onProgress: (p) => p.phase === 'import' && ac.abort() })))).toBe(true);
   }, 120_000);
 
+  it('並べて読む資源の 1 つで止めると、返す Promise が失敗した後に、残りの資源の読み込みが onProgress を呼ばない', async () => {
+    const ac = new AbortController();
+    const links = ['a', 'b', 'c', 'd'].map((n) => `<link rel="stylesheet" href="${n}.css">`).join('');
+    let late = 0;
+    let slow!: Promise<void>;
+    const done = new Promise<void>((ok) => {
+      slow = new Promise<void>((r) => setTimeout(r, 50)).then(ok);
+    });
+    const e = await reasonOf(
+      typeset(`<!DOCTYPE html><html><head>${links}</head><body><p>本文</p></body></html>`, {
+        name: 'a.html',
+        loadFont: loadCachedFont,
+        signal: ac.signal,
+        resolveResource: async (url) => {
+          if (url.endsWith('a.css')) {
+            ac.abort();
+            return 'p { color: red }';
+          }
+          await slow;
+          return 'p { color: blue }';
+        },
+        onProgress: () => {
+          if (ac.signal.aborted) late++;
+        },
+      }),
+    );
+    expect(isAbortError(e)).toBe(true);
+    // 残りの資源が読み終えるのを待つ
+    await done;
+    await new Promise((r) => setTimeout(r, 10));
+    expect(late).toBe(0);
+  }, 60_000);
+
   it('止めた後も器はそのまま使え、文書をまたぐ覚えの世代を進めない', async () => {
     const t = await createTypesetter({ loadFont: loadCachedFont });
     const plain = await createTypesetter({ loadFont: loadCachedFont, reuse: false });

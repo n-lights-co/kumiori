@@ -41,7 +41,7 @@ npm run build:dist   # build the library (dist-lib), the Node CLI (dist-cli) and
 npm run docs:api     # the API reference (dist/api/)
 ```
 
-Node 20.19.0 or later in the 20 line, or 22.12.0 or later, is required (for the reasons, see "Package entry points and requirements" in [`docs/en/library.md`](library.md)).
+Node 22.12.0 or later is required (for the reasons, see "Package entry points and requirements" in [`docs/en/library.md`](library.md)).
 The role of each source file is described in [`docs/en/architecture.md`](architecture.md).
 
 ### Build output and license notices
@@ -76,7 +76,7 @@ The steps are npm ci, the three builds, the web app build with the asset base ch
 
 | Option | Contents |
 | --- | --- |
-| `-- --job build\|pages\|node-min\|e2e` | Chooses the jobs (repeatable). build, pages and e2e when none is given. For node-min, switch to Node 20.19.x, the lowest supported version, first |
+| `-- --job build\|pages\|node-min\|e2e` | Chooses the jobs (repeatable). build, pages and e2e when none is given. For node-min, switch to Node 22.12.x, the lowest supported version, first |
 | `-- --worktree` | Checks out the current commit (HEAD) to a temporary place and tests it there (as in CI, uncommitted changes and earlier build outputs are not mixed in) |
 | `-- --no-install` | Skips the initial `npm ci` |
 
@@ -275,6 +275,24 @@ Tests in `npm test` that check time measure it with the helpers in `test/timing.
 - `test/stressDocs.test.ts` checks the metrics (page count, number of pages with only a few lines, warnings) and growth of the seeded random documents (the multi-column footnote documents are in `test/columnFootnoteReserve.test.ts`).
   The large versions can be written with `node scripts/gen-stress-docs.mjs <directory>`, and `compare:base` also typesets them in the `generated` group.
 
+## Measuring memory peaks (measure-memory.mjs)
+
+This measures the memory peak while making a PDF, with `typesetToPdf` and with `typesetToPdfStream`, which writes the PDF as a stream (to `fs.writeSync`), each with and without `lowMemory` (`scripts/measure-memory.mjs`).
+Use it to check that a change to PDF writing or to low-memory typesetting does not raise the peak.
+
+```bash
+node scripts/measure-memory.mjs                                  # the default documents in all 4 modes
+node scripts/measure-memory.mjs --doc images:200 --mode pdf --mode stream
+node scripts/measure-memory.mjs --doc text:11200 --json mem.json  # a text-only document of 1,600 pages
+```
+
+- The documents are the HTML and XSL-FO conformance documents (`html-spec`, `fo-spec`), a text-only document (`text[:sections]`, generated), a document with many images (`images[:count]`, generated 600×600 PNGs that do not compress),
+  and, when it is available locally, the 4th edition of 『CSSページ組版入門』 (`css-print`). The modes are `pdf`, `stream`, `pdf-low` and `stream-low`.
+- Each document and mode is typeset in a fresh Node process (`--expose-gc`), and `process.memoryUsage()` is read every 20ms and at every progress callback. The table gives the peaks of the heap, of external bytes (`arrayBuffers`) and of RSS,
+  and the live amounts (read after garbage collection) while the PDF is written. The heap peak varies with the timing of garbage collection, so compare streaming and non-streaming by the live amounts.
+  The JSON also gives the peak of external bytes for each progress phase (`resources`, `import`, `layout`, `pdf`). `--no-build` uses the build made before (`.cache/measure-memory-build`).
+- For the document with many images, the tool keeps the image bytes it generated during the whole run (they are part of the starting amount of external bytes).
+
 ## Checking layout stopped after N pages (check-max-pages.mjs)
 
 It counts, for each document, whether pages 1 to N laid out with a stop after N pages (`--max-pages N`, `maxPages` of the API) are the same as pages 1 to N of the whole document.
@@ -293,6 +311,46 @@ node scripts/check-max-pages.mjs --only weasyprint,conformance --pages 2,5
   - image only: the text is the same and only the image differs
 - Differing pages for which no warning about references pointing after page N (`layout/beyond-max-pages`) was given are counted as "differing pages without the warning". If that is not 0, suspect a bug in layout.
 - It writes `report.md` and `report.json` to `--out` (default `.cache/check-max-pages`).
+
+## Comparing with and without reuse (check-relayout.mjs)
+
+This checks that what the container (`createTypesetter`) typesets while reusing what it remembers from the previous document is the same as without reuse (`reuse: false`).
+Each document is edited a little at a time at places chosen by a seeded random number generator (inserting, deleting and replacing text, without breaking tags or character references; now and then also adding a layout attribute to a block, or only adding a background color to a page master (an XSL-FO region or an HTML `@page`)), and "the original document, the edited versions (`--edits` of them, one on top of the other) and the original document again" are typeset in turn by a container that reuses and one that does not, comparing the area tree, the diagnostics (down to the line and column of their location), the warnings and the bytes of the PDF (with the clock and the random numbers fixed). A difference is a bug on the reuse side.
+Use it when changing the reuse of the container or the relayout from the middle of a document (the parts are in `scripts/relayout-check-lib.mjs`, made so that containers to compare and numbers taken from the results for the report can be added).
+
+```bash
+node scripts/check-relayout.mjs --jobs 4                          # typeset all groups available locally
+node scripts/check-relayout.mjs --only conformance,css-print --seed 2 --edits 5
+```
+
+- The groups are `conformance` (the Conformance Guides in Japanese and English), `examples`, `samples`, `generated` (documents from `scripts/gen-stress-docs.mjs`), `ah`, `css-print` and `weasyprint`.
+  The samples are found in the same places as for comparing before and after (`--samples`, `--weasyprint`). The default fonts are used.
+- It prints one line per document (the number of versions, the page counts, the number of paragraphs reused and the time), and for a version that differs, where it differs (the first differing page of the area tree, the first differing byte of the PDF).
+  If any version differs, the exit status is 1. `--json` writes the results.
+- `--skip` leaves out groups, and `--no-pdf` runs faster without comparing the PDF bytes. `--src` and `--no-build` are as in `scripts/profile-relayout.mjs` (where the typesetting source is, and using the build made before).
+- A fast version on small documents is `test/relayoutCheck.test.ts`, which is part of `npm test`.
+
+### Checking the resumable layout (check-resume.mjs)
+
+The layout can stop a single-column page-sequence at a page boundary and lay out the rest from the state saved there (when choosing the last-page master again, it relays out from a boundary it can resume from).
+`scripts/check-resume.mjs` typesets with a container that, at every boundary it can resume from, lays out one page further, goes back to the boundary and continues from the saved state (`--subjects resume`), and compares the same things as above with a container that does not reuse.
+It also compares the boundary fingerprints when the layout reaches the same boundary again. Use it when changing the resumable layout.
+
+```bash
+node scripts/check-resume.mjs --jobs 4                            # typeset all groups available locally (runs check-relayout.mjs with --subjects resume --edits 0)
+node scripts/check-resume.mjs --only ah --filter keep             # narrow by group and name (the arguments are those of check-relayout.mjs)
+node scripts/check-resume.mjs --late 4 --jobs 4                   # the late resume check (below)
+```
+
+- `--late N` typesets with a container that, after laying out a page-sequence to the end, picks about N boundaries it can resume from, spread out, and, from the last to the first,
+  goes back to each and lays out to the end again (`--subjects resume-late`). This is the same shape as the relayout from a boundary inside the layout (the last-page master), and finds bugs that change, more than one page after the boundary, things shared with the saved state.
+  After each relayout it also goes back once more to the next boundary saved by that relayout and lays out to the end again (a wrong boundary saved by a resumed flow does not change the result until layout resumes from it).
+- The `generated` group also has documents whose body width differs between left and right pages (HTML `@page :left`) or odd and even masters, with long paragraphs across pages (`generated/sidewidth`, `generated/fosidewidth`).
+  Resuming from a boundary inside such a paragraph lays out its remaining lines again on a page with a different line length, so they find bugs in the boundaries saved meanwhile.
+
+- The line for each document shows the boundaries saved, those it could resume from, the number of times it resumed, and the boundaries it could not resume from by reason
+  (`site:children/child:<kind>` is inside a child block that cannot be resumed (`block-container-columns` is a multi-column block container), `site:inline` is inside a run of lines with floats, and so on).
+- A fast version on small documents is `test/resume.test.ts`, which is part of `npm test`.
 
 ## Area tree fingerprints (npm run fingerprints:update)
 

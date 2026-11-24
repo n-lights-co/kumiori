@@ -135,19 +135,40 @@ export async function loadHyphenator(language: string | undefined): Promise<Sync
   return cache.get(key);
 }
 
+/** CSS の注釈 (/* … *\/) を除く (閉じない注釈は終わりまで。長さに比例する手間) */
+function withoutCssComments(s: string): string {
+  if (!s.includes('/*')) return s;
+  let out = '';
+  let at = 0;
+  for (;;) {
+    const open = s.indexOf('/*', at);
+    if (open < 0) return out + s.slice(at);
+    out += s.slice(at, open) + ' ';
+    const close = s.indexOf('*/', open + 2);
+    if (close < 0) return out;
+    at = close + 2;
+  }
+}
+
 /**
- * 分綴を使う文書 (CSS か要素の style 属性に hyphens: auto がある) なら、文書に出てくる言語 (lang・xml:lang。無ければ en) の分綴の規則を読み込む
+ * 分綴を使いうる指定か: hyphens: auto (大文字も。注釈を挟んだものも) と、値を var() で書いた hyphens (カスタムプロパティの値は、
+ * 組むまで分からないので、使うものとして読み込む。前は読み込まず、同じ文書が、プロセスで前に組んだ文書によって分綴されたりされなかったりした)
+ */
+const usesHyphens = (s: string): boolean => /hyphens\s*:\s*(?:auto|var\()/i.test(withoutCssComments(s));
+
+/**
+ * 分綴を使う文書 (CSS か要素の style 属性に hyphens: auto か、値を var() で書いた hyphens がある) なら、文書に出てくる言語
+ * (lang・xml:lang。無ければ en) の分綴の規則を読み込む
  */
 export async function loadDocumentHyphenators(doc: Document, css: string): Promise<void> {
-  const auto = /hyphens\s*:\s*auto/;
-  let used = auto.test(css);
+  let used = usesHyphens(css);
   const langs = new Set<string>([doc.documentElement.getAttribute('lang') || 'en']);
   const walk = (e: Element) => {
     for (const a of ['lang', 'xml:lang']) {
       const v = e.getAttribute(a);
       if (v) langs.add(v);
     }
-    if (!used && auto.test(e.getAttribute('style') ?? '')) used = true;
+    if (!used && usesHyphens(e.getAttribute('style') ?? '')) used = true;
     for (let c = e.firstElementChild; c; c = c.nextElementSibling) walk(c);
   };
   walk(doc.documentElement);

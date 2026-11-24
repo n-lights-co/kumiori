@@ -93,7 +93,16 @@ const sideToggle = $<HTMLButtonElement>('sidetoggle');
 const thumbsEl = $('thumbs');
 const dropzoneEl = $('dropzone');
 
+/**
+ * 状態の欄に出した、文書を開くときの誤りの文を守る印 (gen は守る間の読み込みの世代)。文書を開く途中に見送った組み直しを、
+ * 開くのが誤りで終わった後に行う (endPendingDoc) 間は、その組み直しと、前から走っていた読み込みの進みの文で上書きしない
+ * (上書きすると、誤りの文が見えずに消える)。利用者が次の読み込みを始めると (世代が変わると)、守るのをやめる
+ */
+let statusHold: { gen: number } | null = null;
+/** 文書を開くときの誤りの文 (seq は openFiles の選んだ順の番号)。endPendingDoc が、組み直しの間に守る */
+let openError: { seq: number } | null = null;
 const setStatus = (s: string) => {
+  if (statusHold && statusHold.gen === loadGen) return;
   statusEl.textContent = s;
   statusEl.title = s;
 };
@@ -516,8 +525,24 @@ function endPendingDoc(seq: number, started: boolean) {
   const deferred = refreshDeferred;
   refreshDeferred = false;
   if (started || !deferred) return;
-  if (lastSource) reloadCurrent();
-  else if (currentDoc) showDocument(currentDoc, currentName);
+  // 開くのが誤りで終わったなら、組み直しの間は誤りの文を守る (組み直しは、読み込みを始めた所で世代を上げるので、その世代を守る)
+  const failed = openError?.seq === seq;
+  if (lastSource) {
+    const p = reloadCurrent();
+    if (failed && p) {
+      const hold = (statusHold = { gen: loadGen });
+      void p.finally(() => {
+        if (statusHold === hold) statusHold = null;
+      });
+    }
+  } else if (currentDoc) {
+    if (failed) statusHold = { gen: loadGen };
+    try {
+      showDocument(currentDoc, currentName);
+    } finally {
+      if (failed) statusHold = null;
+    }
+  }
 }
 /** 読み込みを始め、待った後に呼ぶ確かめ (世代が変わっていたら StaleLoad を投げる) を返す */
 function beginLoad(): () => void {
@@ -769,6 +794,7 @@ async function openClaimed(files: File[], seq: number, stale: () => boolean, cla
     } catch (e) {
       console.error(e);
       setStatus(`エラー: ${String(e)}`);
+      openError = { seq };
     }
     return;
   }
@@ -963,11 +989,13 @@ clearFontsBtn.addEventListener('click', async () => {
   location.reload();
 });
 /** 設定を変えたら、画面に出している文書 (読み込んだ XSL-FO・HTML) をすぐ組み直す */
-function reloadCurrent() {
+/** いまの文書を読み込み直す。読み込みを始めたら、その Promise を返す (失敗は読み込みの中で状態の欄に出すので、拒まない) */
+function reloadCurrent(): Promise<void> | undefined {
   // 文書を開く途中なら、前の文書を組み直さない (組み直すと世代が上がり、開いている文書を捨てる。開いている文書は、読み込みを始める時点の設定で組む)
-  if (deferWhileOpening()) return;
-  if (lastSource === 'fo' && lastFo) void loadFo(lastFo.text, lastFo.name);
-  else if (lastSource === 'html' && lastHtml) void loadHtmlFile(lastHtml.text, lastHtml.name, lastHtml.files, lastHtml.warnings);
+  if (deferWhileOpening()) return undefined;
+  if (lastSource === 'fo' && lastFo) return loadFo(lastFo.text, lastFo.name);
+  if (lastSource === 'html' && lastHtml) return loadHtmlFile(lastHtml.text, lastHtml.name, lastHtml.files, lastHtml.warnings);
+  return undefined;
 }
 // XSL-FO の既定値の流儀は XSL-FO に、トンボと塗り足しは XSL-FO と HTML の両方に効く
 foSpec.addEventListener('change', () => {

@@ -7,8 +7,11 @@
 import type { DiagnosticSource } from './diagnostics';
 import type { GridItemFloor, LDocument, LTable, LTableCell } from './types';
 
-/** 入力の節 (type の欄を持つ物) を、深さ優先・前順に並べる */
-export function documentNodes(doc: LDocument): object[] {
+/**
+ * 入力の節 (type の欄を持つ物) を、深さ優先・前順に並べる。ends を渡すと、節ごとに、その部分木の最後の節の番号を入れる
+ * (節を初めて見つけた所の部分木。同じ物を 2 度目に見つけた所はたどらない)
+ */
+export function documentNodes(doc: LDocument, ends?: WeakMap<object, number>): object[] {
   const out: object[] = [];
   const seen = new Set<object>();
   const go = (v: unknown) => {
@@ -18,20 +21,31 @@ export function documentNodes(doc: LDocument): object[] {
       for (const x of v) go(x);
       return;
     }
-    if (typeof (v as { type?: unknown }).type === 'string') out.push(v);
+    const typed = typeof (v as { type?: unknown }).type === 'string';
+    if (typed) out.push(v);
     for (const x of Object.values(v)) go(x);
+    if (typed && ends) ends.set(v, out.length - 1);
   };
   go(doc);
   return out;
 }
 
 const REFS = new WeakMap<object, number>();
+const ENDS = new WeakMap<object, number>();
 
 /** 入力の節に通し番号を付ける (組版の始めに 1 回)。番号の順の節の並びを返す */
 export function indexDocument(doc: LDocument): object[] {
-  const nodes = documentNodes(doc);
+  const nodes = documentNodes(doc, ENDS);
   nodes.forEach((n, k) => REFS.set(n, k));
   return nodes;
+}
+
+/**
+ * 入力の節の部分木の、最後の節の通し番号 (indexDocument が付けたもの。付いていなければ undefined)。
+ * ページが後ろのどこまでの中身で決まったか (読んだ先。design/resumable-flow.md の 5.1) に使う
+ */
+export function sourceRefEnd(node: unknown): number | undefined {
+  return node && typeof node === 'object' ? ENDS.get(node) : undefined;
 }
 
 /** 入力の節の通し番号 (付いていなければ undefined) */

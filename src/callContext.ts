@@ -152,17 +152,33 @@ export function bound<A extends unknown[], R>(fn: (...a: A) => R): (...a: A) => 
 }
 
 /**
+ * 進み具合の呼び返し (onProgress) が投げた誤り (呼び出しごと)。投げた誤りは組版を止めて、返す Promise の失敗になる約束なので、
+ * 途中で誤りを飲む所 (画像の形式の読み込みなど: 形式の誤りを、読めない画像として扱う) を通っても、次の checkAbort・reportProgress で投げ直す
+ */
+const progressFailures = new WeakMap<CallContext, { error: unknown }>();
+
+/**
  * 止める合図が来ていれば、その理由を投げる (WHATWG DOM §3.2 の throwIfAborted: 理由 (reason) を投げる。理由を渡さずに abort() したときは
- * AbortError の名前の DOMException)。合図が無ければ何もしない
+ * AbortError の名前の DOMException)。合図が無ければ何もしない。進み具合の呼び返しが前に誤りを投げていれば、その誤りを投げる
  */
 export function checkAbort(ctx: CallContext | undefined = store.get()): void {
-  ctx?.signal?.throwIfAborted();
+  if (!ctx) return;
+  const failed = progressFailures.get(ctx);
+  if (failed) throw failed.error;
+  ctx.signal?.throwIfAborted();
 }
 
 /** 進み具合を知らせる (呼び返しは同期で呼び、投げた誤りはそのまま返す)。続けて止める合図を確かめる (呼び返しの中で abort() したら、すぐ止める) */
 export function reportProgress(p: TypesetProgress, ctx: CallContext | undefined = store.get()): void {
   if (!ctx) return;
-  ctx.onProgress?.(p);
+  // 止めた後 (止める合図・呼び返しの誤り) は、呼び返しを呼ばない (並べて走る資源の読み込みが、返す Promise の失敗の後に知らせない)
+  checkAbort(ctx);
+  try {
+    ctx.onProgress?.(p);
+  } catch (e) {
+    progressFailures.set(ctx, { error: e });
+    throw e;
+  }
   ctx.signal?.throwIfAborted();
 }
 

@@ -4811,9 +4811,10 @@ OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
-## 3. Kumiori のコードが参照している文書と、派生元のソフトウェア (VP8・WebP)
+## 3. Kumiori のコードが参照している文書と、派生元のソフトウェア (VP8・WebP・PDF の書き手)
 
 Kumiori の `src/vp8.ts`・`src/vp8Tables.ts`・`src/webp.ts` (WebP の画像を読むコード) が、ファイルの中のコメントで参照している文書と、関連するライセンスの表示です。
+PDF の書き手 (`src/pdfWriter.ts`) の派生元は、この節の終わりの 3.5 に書いています。
 
 - `src/vp8.ts` の一部は libwebp から派生しています。WHT と 4×4 の逆 DCT の組み立て (libwebp の `src/dsp/dec.c` の `TransformWHT_C`・`TransformOne_C`)、YUV → RGB の係数 (`src/dsp/yuv.h` の `VP8YUVToR`・`VP8YUVToG`・`VP8YUVToB`)、色差の補間 (`src/dsp/upsampling.c` の `UPSAMPLE_FUNC`)、予測の向きの番号が、libwebp と同じ手順・同じ値です。2026-11-08 に、libwebp の main ブランチのソース (GitHub の写し https://github.com/webmproject/libwebp) と比べて確かめました。
 - そのため libwebp のライセンス (下の 3.4。BSD 3-Clause) に従い、`src/vp8.ts` の冒頭に libwebp の著作権表示と条文を載せています。配布物には、この文書で同じ表示を添えます。
@@ -5020,6 +5021,13 @@ patent infringement, then any patent rights granted to you under this License
 for these implementations of WebM shall terminate as of the date such
 litigation is filed.
 ```
+
+
+### 3.5 PDF の書き手 (`src/pdfWriter.ts`) と pdf-lib 1.17.1
+
+- `src/pdfWriter.ts` (PDF のオブジェクトを並べ、相互参照の表・流れと trailer を書く所。ライブラリ `dist-lib/`・Node のコマンド `dist-cli/`・ブラウザ向けの配布物にも入る) は、pdf-lib 1.17.1 の書き手 `src/core/writers/PDFWriter.ts`・`src/core/writers/PDFStreamWriter.ts` (パッケージの中では `cjs/core/writers/PDFWriter.js`・`PDFStreamWriter.js` など) から派生しています。オブジェクトを並べる順、オブジェクトの流れ (object stream) に入れるものの選び方と 1 つの流れに入れる数 (50)、相互参照の表・流れと trailer の辞書の書き方が、pdf-lib と同じ手順です。2026-11-23 に、pdf-lib 1.17.1 のパッケージのソースと比べて確かめました。
+- pdf-lib は MIT ライセンスです。著作権表示とライセンスの本文は、1 節の「pdf-lib 1.17.1」にあります。`src/pdfWriter.ts` の冒頭のコメントが、pdf-lib の書き手を写したことと pdf-lib の著作権の表示を載せ、この文書を指しています。
+- 書き手は pdf-lib の部品 (`sizeInBytes`・`copyBytesInto`・`PDFCrossRefStream` など) の書き方を前提にするので、`package.json` の pdf-lib は 1.17.1 に止めています (版を上げるときの確かめは `.github/dependabot.yml` の npm の項のコメント)。
 
 ## 4. Kumiori のコードに写した W3C の文書の表 (MathML の演算子辞書)
 

@@ -6,7 +6,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import { deflateSync, inflateSync } from 'node:zlib';
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, fill, popGraphicsState, pushGraphicsState, rectangle, setFillingRgbColor } from 'pdf-lib';
-import { sealPageContents, useDeflate } from '../src/pdfLibPatches';
+import { sealPageContents } from '../src/pdfLibPatches';
+import { writePdf } from '../src/pdfWriter';
 import { encodePngStored } from '../src/pixels';
 import { DEFAULT_FONTS, createTypesetter, typeset, typesetToPdf, walkAreaTree, type FontSpec, type PdfOptions, type TypesetOptions } from '../src/index';
 import { colr0, cpal, withTables } from './colorFontBuilder';
@@ -328,11 +329,7 @@ describe('typesetToPdf (ページごとに書く PDF) は、typeset + toPdf と�
         page.pushOperators(pushGraphicsState(), setFillingRgbColor(k / 3, 0, 0), rectangle(10 * k, 10, 50, 50), fill(), popGraphicsState());
         if (seal) sealPageContents(pdf, page, deflate);
       }
-      if (deflate) {
-        await pdf.flush();
-        useDeflate(pdf, deflate);
-      }
-      return pdf.save();
+      return writePdf(pdf, deflate ? { deflate } : {});
     };
     expect(Buffer.from(await make(true)).equals(Buffer.from(await make(false)))).toBe(true);
     expect(Buffer.from(await make(true, (b) => deflateSync(b))).equals(Buffer.from(await make(false, (b) => deflateSync(b))))).toBe(true);

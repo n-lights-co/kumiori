@@ -340,9 +340,15 @@ interface PreparedFont {
  * 同じものになるので、エリアツリーの書体の SHA-256 (areaResources.ts。バッファごとに覚える) も計算し直さない
  */
 export class FontPrepCache {
-  private entries = new Map<string, Array<{ input: Uint8Array; prepared: PreparedFont; used: number }>>();
-  /** 文書の通し番号 (startDocument で進める) */
+  /**
+   * used は最後に使った文書の番号 (止めた文書も)、usedFull は最後に使った組み終えた文書の番号 (0 なら無い)。
+   * used だけで見ると、組み終えた文書の書体も、止めた文書で 1 度使うと used が上書きされ、組み終えた文書の書体と分からなくなる
+   */
+  private entries = new Map<string, Array<{ input: Uint8Array; prepared: PreparedFont; used: number; usedFull: number }>>();
+  /** 文書の通し番号 (startDocument で進め、その文書の印として返す。止めた文書も数える) */
   private doc = 0;
+  /** 最後に組み終えた (止めなかった) 文書の番号 (0 なら無い。finishDocument で決める) */
+  private lastFull = 0;
 
   /**
    * 知らせの文 (repaired・cff2Error) は、そのときの言語 (TypesetOptions.lang) で作るので、鍵に言語を入れる。
@@ -364,29 +370,50 @@ export class FontPrepCache {
     const u = new Uint8Array(input);
     const k = this.keyOf(u);
     const list = this.entries.get(k) ?? [];
-    list.push({ input: u.slice(), prepared, used: this.doc });
+    list.push({ input: u.slice(), prepared, used: this.doc, usedFull: 0 });
     this.entries.set(k, list);
   }
 
   /**
-   * 次の文書を組み始める (器が文書ごとに呼ぶ)。前の文書でも、その前の文書でも使わなかったものを捨てる
-   * (エディタで別の文書に移ったとき、前の文書の書体を持ち続けない。持つのは、続けて組んだ 2 つの文書の書体まで)
+   * 次の文書を組み始める (器が文書ごとに呼ぶ)。その文書の印 (番号) を返す。前の文書で使わず、最後に組み終えた文書でも使わなかったものを捨てる
+   * (エディタで別の文書に移ったとき、前の文書の書体を持ち続けない。持つのは、前の文書と、最後に組み終えた文書の書体まで)
    */
-  startDocument(): void {
+  startDocument(): number {
     this.doc++;
     for (const [k, list] of this.entries) {
-      const keep = list.filter((e) => e.used >= this.doc - 1);
+      const keep = list.filter((e) => e.used >= this.doc - 1 || (this.lastFull > 0 && e.usedFull === this.lastFull));
       if (keep.length) this.entries.set(k, keep);
       else this.entries.delete(k);
     }
+    return this.doc;
   }
 
   /**
-   * 組み始めた文書を止めた (TypesetOptions.signal): その文書を世代に数えない (次の文書から見て、止めた文書の前の文書を「前の文書」のままにする)。
-   * 止めた文書で使ったもの・覚えたものは、中身で引く覚えなので、そのまま残してよい (次の文書の世代で使ったものとして数える)
+   * 印 doc の文書を組み終えた (止めずに終わった): 最後に組み終えた文書にし、その文書で使ったものに印を覚えさせる (後の止めた文書で used が
+   * 上書きされても残せるように)。止めた文書 (TypesetOptions.signal・maxPages) では呼ばない (cancelDocument)。
+   * 組み終えたかを、次の文書の初めでなく、その文書の終わりに決める: 止めた文書の知らせは、すぐ次の文書の startDocument (同期で先に走る) の後に
+   * 来ることがある (前は、遅れて来た知らせが次の文書に付き、止めた文書を組み終えた文書と数えて、組み終えた文書の書体を捨てた)
    */
-  cancelDocument(): void {
-    if (this.doc > 0) this.doc--;
+  finishDocument(doc: number): void {
+    if (doc < this.lastFull) return;
+    this.lastFull = doc;
+    for (const list of this.entries.values()) for (const e of list) if (e.used === doc) e.usedFull = doc;
+  }
+
+  /**
+   * 印 doc の文書を止めた: その文書は「組み終えた文書」に数えない (finishDocument を呼ばない。この関数は印を受けるだけで、ほかの文書に触らない)。
+   * 止めた文書のプレビューを何度組んでも、最後に組み終えた文書の書体 (止めた文書では使わなかった後ろのページのものも) は捨てない。
+   * 止めた文書だけで使ったものは、次の文書の後は捨てる
+   */
+  cancelDocument(_doc: number): void {
+    // 何もしない (組み終えた印を付けないことで、止めたことになる)。呼ぶ所をそろえるために置く
+  }
+
+  /** 覚えている書体の数 (試験で見る) */
+  get size(): number {
+    let n = 0;
+    for (const list of this.entries.values()) n += list.length;
+    return n;
   }
 }
 
@@ -771,6 +798,27 @@ export class FontManager {
    * 古いものから忘れるが、この組が返した実体は、ここで持ち続ける (1 つの文書の中で、同じ指定は同じ実体)
    */
   private handed = new Map<string, LoadedFont>();
+  /**
+   * handed に入れた順の記録 (id と実体)。器が前の文書のページを組まずに使うとき、そのページを組んだときに返した実体を、同じ順に返し直す
+   * (rehand)。返し直さないと、PDF に埋める実体 (all) の順と、実体の数の上限の決め方が、初めから組んだときと違う
+   */
+  private handedLog: Array<[string, LoadedFont]> = [];
+  private hand(id: string, lf: LoadedFont) {
+    if (!this.handed.has(id)) this.handedLog.push([id, lf]);
+    this.handed.set(id, lf);
+  }
+  /** 返した実体の数 (handedLog の長さ) */
+  get handedCount(): number {
+    return this.handedLog.length;
+  }
+  /** 返した実体の、[from, to) 番目の記録 */
+  handedSince(from: number, to = this.handedLog.length): Array<[string, LoadedFont]> {
+    return this.handedLog.slice(from, to);
+  }
+  /** 記録の実体を、同じ順に返したことにする (まだ返していないものだけ) */
+  rehand(list: ReadonlyArray<[string, LoadedFont]>) {
+    for (const [id, lf] of list) if (!this.handed.has(id)) this.hand(id, lf);
+  }
   /** 実体の数の上限を知らせた可変フォント (元の書体) */
   private instanceCapWarned = new WeakSet<LoadedFont>();
 
@@ -887,7 +935,7 @@ export class FontManager {
     if (mine && (mine === master || mine.instanceOf?.master === master)) return mine;
     const hit = v.instances.get(key);
     if (hit) {
-      this.handed.set(id, hit);
+      this.hand(id, hit);
       return hit;
     }
     const isDefault = coords.every((c, i) => c === axes[i].default);
@@ -923,7 +971,7 @@ export class FontManager {
             ), { font: master.family }),
           );
         }
-        this.handed.set(id, best);
+        this.hand(id, best);
         return best;
       }
     }
@@ -1004,7 +1052,7 @@ export class FontManager {
     const cap = Math.max(4, Math.min(256, Math.floor(200e6 / Math.max(1, master.buffer.byteLength))));
     while (v.instances.size >= cap) v.instances.delete(v.instances.keys().next().value!);
     v.instances.set(key, lf);
-    this.handed.set(id, lf);
+    this.hand(id, lf);
     return lf;
   }
   /** lf が可変フォントの元の書体なら、いまの指定 (varNow) と太さの形。ほかの書体はそのまま */

@@ -80,7 +80,7 @@ import { PT_PER_MM } from './units';
 import { withGrouping } from './pageNumber';
 import { MAX_COUNTER_LENGTH } from './counterStyle';
 import { isColorName, spotColor, toCss } from './color';
-import { normalizeSrc } from './assets';
+import { backgroundPdfSrc, normalizeSrc } from './assets';
 import { gradientSvg, isCssGradient } from './cssGradient';
 import { normBorder } from './geometry';
 import type { FkFont, MathFont } from './mathFont';
@@ -260,9 +260,10 @@ const HANDLED_WITHOUT_ATTRS = new Set(['axf:footnote-number', 'axf:footnote-numb
  * 決まった値 (キーワード) しか取らない性質と、その値 (inherit を除く)。読み込みが読んだ属性の値がこの中に無ければ、無視したことを報告する
  * (reportUnreadAttributes)。値は XSL 1.1 の各節の Value の行: display-align §7.14.4、table-omit-header-at-break・-footer-at-break §7.28.14・
  * §7.28.13、force-page-count §7.27.6、hyphenate §7.10.4、white-space §7.16.8、page-position §7.27.11、odd-or-even §7.27.10、
- * blank-or-not-blank §7.27.1
+ * blank-or-not-blank §7.27.1、border-collapse §7.28.3
  */
 const ENUMERATED_VALUES: Record<string, readonly string[]> = {
+  'border-collapse': ['collapse', 'collapse-with-precedence', 'separate'],
   'display-align': ['auto', 'before', 'center', 'after'],
   'table-omit-header-at-break': ['true', 'false'],
   'table-omit-footer-at-break': ['true', 'false'],
@@ -278,6 +279,11 @@ const ENUMERATED_VALUES: Record<string, readonly string[]> = {
  * (XSL 1.1 §7.5 Common Accessibility Properties。§7.5.2 の role は、音声で読む機械などの別の表し方への手がかりで、組版には効かない)
  */
 const NO_FORMATTING_EFFECT = new Set(['role', 'source-document']);
+/**
+ * 表の、継承される性質で、表の要素の外にも書けるもの (XSL 1.1 §5.1.4: 継承される性質は、どの FO にも書け、子孫へ受け継ぐ)。
+ * 表を中に持たない要素に書いたものは効かないが、誤りではないので、値が値の表に合えば報告しない (border-collapse §7.28.3 は Inherited: yes)
+ */
+const INHERITED_TABLE_PROPS = new Set(['border-collapse']);
 
 
 /** ドロップキャップの、継承される性質 (axf:initial-letters- の後ろの名前。アンテナハウスの公開の説明のドロップキャップの節) */
@@ -659,7 +665,7 @@ class Importer {
       for (const a of Array.from(el.attributes ?? [])) {
         const k = a.name;
         if (k === 'xmlns' || k.startsWith('xmlns:') || k.startsWith('xml:') || NO_FORMATTING_EFFECT.has(k)) continue;
-        if (asked?.has(k)) {
+        if (asked?.has(k) || INHERITED_TABLE_PROPS.has(k)) {
           // 読んだ属性でも、決まった値しか取らない性質の値が、値の表に無いもの (綴りの誤り・他の組版ソフトの値) は、無視したことを報告する
           // (読む所は知らない値を初期値・継承した値のままにする)
           const ok = ENUMERATED_VALUES[k];
@@ -2936,7 +2942,12 @@ class Importer {
    * indents: start-indent / end-indent を margin にする (inline-container では使わない。行内の箱の位置は indent で決まらず、
    * indent は中のブロックのためのもの (XSL 1.1 §6.6.8 は inline の margin だけを持つ))
    */
-  private boxStyle(el: XEl, ctx: Ctx, inherited: Ctx, indents = true): Partial<LBlock> & { width?: number; height?: number } {
+  /**
+   * collapsedBorder: 罫線をつぶした表 (fo:table の border-collapse が collapse)。表の罫線は、外周のグリッド線を中心に描き
+   * (§6.7.10)、表の内容の矩形は外周のグリッド線の間 (§6.7.3) なので、start-indent・end-indent から margin を決めるとき (§5.3.2) に、
+   * 表の罫線の幅を引かない (引くと、グリッド線が罫線の太さだけ内容の端より外へずれ、外枠が本文の端より外へ出た)
+   */
+  private boxStyle(el: XEl, ctx: Ctx, inherited: Ctx, indents = true, collapsedBorder = false): Partial<LBlock> & { width?: number; height?: number } {
     const o: Partial<LBlock> & { width?: number; height?: number } = {};
     const fs = ctx.fontSize;
     const m: Record<string, number> = {};
@@ -3004,7 +3015,7 @@ class Importer {
     const b = this.border(el, ctx);
     const startP = this.phys('start', ctx.wm, ctx.rtl);
     const endP = this.phys('end', ctx.wm, ctx.rtl);
-    const edgeOf = (side: 'top' | 'right' | 'bottom' | 'left') => ((pad as Record<string, number> | undefined)?.[side] ?? 0) + (b?.[side]?.width ?? 0);
+    const edgeOf = (side: 'top' | 'right' | 'bottom' | 'left') => ((pad as Record<string, number> | undefined)?.[side] ?? 0) + (collapsedBorder ? 0 : (b?.[side]?.width ?? 0));
     if (si !== undefined) add(startP, si - inherited.startIndent - edgeOf(startP));
     if (ei !== undefined) add(endP, ei - inherited.endIndent - edgeOf(endP));
     // indent も margin も指定が無いとき: start-indent / end-indent は親の値を受け継ぐので、内容の端は親の内容の端のまま。
@@ -3360,7 +3371,8 @@ class Importer {
       }
       bi = { src: '', gradient: v.trim(), gradientFontSize: ctx.fontSize };
     } else {
-      const src = normalizeSrc(v);
+      // 互換の指定のときのページの範囲は、背景には最初のページだけを敷く (backgroundPdfSrc)
+      const src = this.spec ? normalizeSrc(v) : backgroundPdfSrc(normalizeSrc(v));
       if (!src) return undefined;
       this.addImage(src);
       bi = { src };
@@ -5013,7 +5025,8 @@ class Importer {
   private table(n: XEl, ctx: Ctx): LTable {
     const savedEC = [this.emptyCells, this.separateTable, this.grid] as const;
     this.emptyCells = this.attr(n, 'empty-cells') ?? this.emptyCells;
-    this.separateTable = this.attr(n, 'border-collapse') === 'separate';
+    // border-collapse は継承する性質 (XSL 1.1 §7.28.3 の Inherited: yes。CSS 2.1 §17.6 も)。表の要素に無ければ、指定のある最も近い祖先の値
+    this.separateTable = this.inheritedAttr(n, 'border-collapse') === 'separate';
     this.grid = undefined;
     try {
       return this.tableInner(n, ctx);
@@ -5025,14 +5038,18 @@ class Importer {
   private tableInner(n: XEl, ctx: Ctx): LTable {
     this.report.counts.tables++;
     const { style, ctx: c2a } = this.textStyle(n, ctx);
-    const box = this.boxStyle(n, c2a, ctx);
+    // 罫線をつぶした表 (border-collapse の初期値 collapse。§7.28.3) は、表の罫線をグリッド線に置く (boxStyle の collapsedBorder)。
+    // 互換モードも同じ: アンテナハウスの見本の PDF (サンプル FO 集の table-border-conflict-resolution-1。表の罫線 5pt) では、
+    // 外枠が本文の端より罫線の半分だけ外にあり、外周のグリッド線が本文の端にそろう
+    const collapsedBorder = !this.separateTable;
+    const box = this.boxStyle(n, c2a, ctx, true, collapsedBorder);
     // 仕様モード: 表の start-indent・end-indent の計算値 (§5.3.2: 受け継いだ値 + margin + border + padding、または指定の値) を、
     // 行グループ・行・セルを通して、セルの中のブロックへ受け継ぐ (§7.11.7・§7.11.8 は継承される性質。XSL 1.1 では fo:table は
     // 参照領域ではないので、外の字下げも受け継ぐ)。互換モードは従来どおり (セルの中は、セルの内容の端を 0 にして組む)
     let c2 = c2a;
     if (this.spec) {
       const edge = (side: 'top' | 'right' | 'bottom' | 'left') =>
-        ((box.margin as Record<string, number> | undefined)?.[side] ?? 0) + ((box.padding as Record<string, number> | undefined)?.[side] ?? 0) + ((box.border as Record<string, { width: number } | undefined> | undefined)?.[side]?.width ?? 0);
+        ((box.margin as Record<string, number> | undefined)?.[side] ?? 0) + ((box.padding as Record<string, number> | undefined)?.[side] ?? 0) + (collapsedBorder ? 0 : ((box.border as Record<string, { width: number } | undefined> | undefined)?.[side]?.width ?? 0));
       c2 = { ...c2a, startIndent: ctx.startIndent + edge(this.phys('start', ctx.wm, ctx.rtl)), endIndent: ctx.endIndent + edge(this.phys('end', ctx.wm, ctx.rtl)) };
     }
     // 表の幅: 指定が無ければ、親の内容の幅から inline 方向の余白 (start-indent・end-indent から決まる) を引いた幅
@@ -5081,8 +5098,8 @@ class Importer {
       tbl.fillContent = true;
       tbl.fitContentRule = 'max-ratio';
     }
-    // border-collapse の初期値は collapse (§7.28.3)
-    tbl.borderCollapse = this.attr(n, 'border-collapse') === 'separate' ? 'separate' : 'collapse';
+    // border-collapse の初期値は collapse (§7.28.3。継承する性質なので、祖先の値を受け継ぐ: table の separateTable)
+    tbl.borderCollapse = this.separateTable ? 'separate' : 'collapse';
     // 罫線を分ける表のセルの間隔 (border-separation §7.28.5。一括指定 border-spacing は「inline 方向 block 方向」の順)
     if (tbl.borderCollapse === 'separate') {
       const fsT = c2.fontSize;
@@ -5307,6 +5324,8 @@ class Importer {
     const hide = ec === 'hide' && this.separateTable && isEmptyContent(cell.children);
     if (box.border && !hide) cell.border = box.border;
     if (box.backgroundColor && !hide) cell.backgroundColor = box.backgroundColor;
+    // 背景の画像 (XSL 1.1 §7.8.3。fo:table-cell にも当たる)。前は写さず、描かなかった
+    if (box.backgroundImage && !hide) cell.backgroundImage = box.backgroundImage;
     if (box.backgroundClip && !hide) cell.backgroundClip = box.backgroundClip;
     if (box.diagonalBorder) cell.diagonalBorder = box.diagonalBorder;
     if (box.reverseDiagonalBorder) cell.reverseDiagonalBorder = box.reverseDiagonalBorder;

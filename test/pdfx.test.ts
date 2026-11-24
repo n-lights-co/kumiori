@@ -330,7 +330,7 @@ describe('PDF/X の灰色だけの画像', () => {
       .enumerateIndirectObjects()
       .map(([, o]) => o)
       .filter((o): o is PDFRawStream => o instanceof PDFRawStream && String(o.dict.get(PDFName.of('Subtype'))) === '/Image')
-      .map((o) => ({ cs: String(o.dict.get(PDFName.of('ColorSpace'))), filter: String(o.dict.get(PDFName.of('Filter'))), data: o.dict.get(PDFName.of('Filter'))?.toString() === '/FlateDecode' ? decodePDFRawStream(o).decode() : undefined }));
+      .map((o) => ({ cs: String(o.dict.get(PDFName.of('ColorSpace'))), filter: String(o.dict.get(PDFName.of('Filter'))), bpc: Number(String(o.dict.get(PDFName.of('BitsPerComponent')))), predictor: !!o.dict.get(PDFName.of('DecodeParms')), data: o.dict.get(PDFName.of('Filter'))?.toString() === '/FlateDecode' ? decodePDFRawStream(o).decode() : undefined }));
   };
   for (const [name, data] of Object.entries(cases)) {
     it(`${name}: X-1a・X-3・X-4 で DeviceGray にし、X-1a・X-3 の検査に通る`, async () => {
@@ -345,7 +345,11 @@ describe('PDF/X の灰色だけの画像', () => {
         if (version === 'X-1a') expect(await verifyPdfX1a(bytes, 'X-1a:2001')).toEqual([]);
         if (version === 'X-3') expect(await verifyPdfX3(bytes)).toEqual([]);
         // 濃さは変えない: 灰色の値は、元の R (= G = B) の成分そのもの
-        if (kind === 'png' && !name.startsWith('1 ') && imgs[0].data) expect([...imgs[0].data.slice(0, W)]).toEqual(Array.from({ length: W }, (_, x) => v(x, 0)));
+        // 16 ビットの灰色の PNG は、PDF 1.5 以上の X-4 では、展開せずに 16 ビットのまま入れる (IDAT そのもの。行の頭にフィルタの種類の 1 バイト、成分は上位のバイトが先)。
+        // PDF 1.3・1.4 が元の X-1a・X-3 では、展開して 8 ビット (上位のバイト) にする
+        if (name.startsWith('16 ')) expect(imgs[0].bpc).toBe(version === 'X-4' ? 16 : 8);
+        const first = imgs[0].bpc === 16 && imgs[0].predictor && imgs[0].data ? [...imgs[0].data.slice(1, 1 + 2 * W)].filter((_, i) => i % 2 === 0) : imgs[0].data && [...imgs[0].data.slice(0, W)];
+        if (kind === 'png' && !name.startsWith('1 ') && first) expect(first).toEqual(Array.from({ length: W }, (_, x) => v(x, 0)));
       }
     });
   }

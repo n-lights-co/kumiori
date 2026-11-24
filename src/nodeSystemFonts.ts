@@ -13,6 +13,7 @@ import path from 'node:path';
 import { Parser } from 'htmlparser2';
 import { extractFromCollection } from './fontLoader';
 import { classifyFontKind, kindRank } from './fontKind';
+import { rejoin, thisCall } from './callContext';
 import { limits } from './limits';
 import { msg } from './messages';
 import type { SystemFontKind, SystemFontMatch, SystemFontRequest, SystemFontSource } from './types';
@@ -32,6 +33,13 @@ export interface SystemFontOptions {
 const DEFAULT_MAX_FILES = 20_000;
 /** ディレクトリを下へたどる段の上限 */
 const MAX_DEPTH = 16;
+/**
+ * 見るディレクトリの数の上限。fontconfig の設定に <dir>~</dir> のような広い場所があると、家のディレクトリの全体をたどるので、
+ * 書体のファイルの数 (maxFiles) と段 (MAX_DEPTH) のほかに、ディレクトリの数も限る
+ */
+const MAX_DIRS = 10_000;
+/** 索引を作る間に、イベントループを空ける間隔 (ディレクトリかファイルを、この数だけ見るごと) */
+const SCAN_YIELD_EVERY = 64;
 /** 1 つのファイルから読む表 (cmap・name) の大きさの上限。壊れた目次で大きな読みを起こさない */
 const MAX_TABLE_BYTES = 16 * 1024 * 1024;
 /** fontconfig の設定の include の入れ子の上限 */
@@ -312,7 +320,10 @@ function cmapRanges(b: Buffer): Uint32Array | undefined {
   return out.length ? Uint32Array.from(out) : undefined;
 }
 
-/** name の表から、英語のファミリー名 (nameID 16、無ければ 1)。Windows (platform 3) の英語、Windows のほかの言語、Mac (platform 1) の英語の順 */
+/**
+ * name の表から、英語のファミリー名 (nameID 16、無ければ 1。OpenType の name の表の nameID 1・16)。Windows (platform 3) の英語、Mac (platform 1) の英語、
+ * Windows のほかの言語の順に探し、同じ言語の中では nameID 16 を先にする (前は nameID を先に見たので、英語でない nameID 16 を英語の nameID 1 より先に選んだ)
+ */
 function nameOf(b: Buffer | undefined): string | undefined {
   if (!b || b.length < 6) return undefined;
   const count = b.readUInt16BE(2);
@@ -330,18 +341,18 @@ function nameOf(b: Buffer | undefined): string | undefined {
     let rank: number;
     let text: string;
     if (pid === 3 && (eid === 1 || eid === 10)) {
-      rank = lang === 0x409 ? 0 : 1;
+      rank = lang === 0x409 ? 0 : 2;
       const s = b.subarray(off, off + len);
       text = '';
       for (let k = 0; k + 1 < s.length; k += 2) text += String.fromCharCode(s.readUInt16BE(k));
     } else if (pid === 1 && eid === 0 && lang === 0) {
-      rank = 2;
+      rank = 1;
       text = b.toString('latin1', off, off + len);
     } else continue;
     const key = `${id === 16 ? 0 : 1}|${rank}`;
     if (text && !found.has(key)) found.set(key, text);
   }
-  for (const id of [0, 1]) for (const rank of [0, 1, 2]) if (found.has(`${id}|${rank}`)) return found.get(`${id}|${rank}`);
+  for (const rank of [0, 1, 2]) for (const id of [0, 1]) if (found.has(`${id}|${rank}`)) return found.get(`${id}|${rank}`);
   return undefined;
 }
 
@@ -376,16 +387,38 @@ export function readFontFile(file: string, st: fs.Stats): SystemFace[] {
 
 /**
  * dirs の下の書体を探して、索引にする。リンクはたどるが、実体のパスで、同じディレクトリ・ファイルは 1 度だけ見る (循環で止まらない)。
- * 下へたどるのは MAX_DEPTH 段まで。ふつうのファイルだけを開く (FIFO などは開かない)。大きすぎるファイル (TTF・OTF は limits.fontBytes、
- * TTC・OTC は limits.fontCollectionBytes を超えるもの) は入れない
+ * 下へたどるのは MAX_DEPTH 段まで、見るディレクトリは MAX_DIRS まで。ふつうのファイルだけを開く (FIFO などは開かない)。
+ * 大きすぎるファイル (TTF・OTF は limits.fontBytes、TTC・OTC は limits.fontCollectionBytes を超えるもの) は入れない
  */
 export function scanSystemFonts(dirs: readonly string[], maxFiles = DEFAULT_MAX_FILES): SystemFace[] {
+  const steps = scanSteps(dirs, maxFiles);
+  for (let r = steps.next(); ; r = steps.next()) if (r.done) return r.value;
+}
+
+/**
+ * scanSystemFonts と同じ索引を、SCAN_YIELD_EVERY 個ごとにイベントループを空けながら作る (書体の多い機械で、索引を作る間、
+ * ほかの仕事 (画面・ほかの呼び出し) を止めない)
+ */
+export async function scanSystemFontsAsync(dirs: readonly string[], maxFiles = DEFAULT_MAX_FILES): Promise<SystemFace[]> {
+  const steps = scanSteps(dirs, maxFiles);
+  for (let r = steps.next(); ; r = steps.next()) {
+    if (r.done) return r.value;
+    rejoin(thisCall(), await new Promise<void>((done) => setImmediate(done)));
+  }
+}
+
+/** 索引を作る手順 (SCAN_YIELD_EVERY 個のディレクトリ・ファイルを見るごとに yield する) */
+function* scanSteps(dirs: readonly string[], maxFiles: number): Generator<void, SystemFace[]> {
   const seenDirs = new Set<string>();
   const seenFiles = new Set<string>();
   const faces: SystemFace[] = [];
+  // 上限は初めに読む (間を空けた後も、同じ上限で見る)
+  const maxFont = limits().fontBytes;
+  const maxCollection = limits().fontCollectionBytes;
   let files = 0;
-  const walk = (dir: string, depth: number) => {
-    if (depth > MAX_DEPTH || files >= maxFiles) return;
+  let seen = 0;
+  function* walk(dir: string, depth: number): Generator<void, void> {
+    if (depth > MAX_DEPTH || files >= maxFiles || seenDirs.size >= MAX_DIRS) return;
     let real: string;
     let names: string[];
     try {
@@ -398,6 +431,7 @@ export function scanSystemFonts(dirs: readonly string[], maxFiles = DEFAULT_MAX_
     }
     for (const name of names) {
       if (files >= maxFiles) return;
+      if (++seen % SCAN_YIELD_EVERY === 0) yield;
       const p = path.join(real, name);
       let st: fs.Stats;
       try {
@@ -405,7 +439,7 @@ export function scanSystemFonts(dirs: readonly string[], maxFiles = DEFAULT_MAX_
       } catch {
         continue;
       }
-      if (st.isDirectory()) walk(p, depth + 1);
+      if (st.isDirectory()) yield* walk(p, depth + 1);
       else if (st.isFile() && FONT_FILE.test(name)) {
         let file: string;
         try {
@@ -416,17 +450,18 @@ export function scanSystemFonts(dirs: readonly string[], maxFiles = DEFAULT_MAX_
         if (seenFiles.has(file)) continue;
         seenFiles.add(file);
         files++;
-        const max = /\.(ttc|otc)$/i.test(name) ? limits().fontCollectionBytes : limits().fontBytes;
+        const max = /\.(ttc|otc)$/i.test(name) ? maxCollection : maxFont;
         if (st.size > max) continue;
         faces.push(...readFontFile(file, st));
       }
     }
-  };
-  for (const d of dirs) walk(d, 0);
+  }
+  for (const d of dirs) yield* walk(d, 0);
   return faces;
 }
 
-// ───────────────────────── 書体の選び方 ─────────────────────────
+/** 書体のファイルが、索引を作った後に変わった (faceData)。索引を作り直す合図 */
+class FaceChangedError extends Error {}
 
 /** 字の範囲 (ranges) が cp を持つか (二分探索) */
 export function coversCodePoint(ranges: Uint32Array, cp: number): boolean {
@@ -545,13 +580,25 @@ function mergeKinds(lists: ReadonlyArray<{ kind: SystemFontKind; picks: Array<{ 
 /** 知らせに出す名前 */
 const faceName = (f: SystemFace) => `${f.family} (${path.basename(f.file)}${f.collection ? ` #${f.index}` : ''})`;
 
-/** 書体の中身を読む。索引を作った後にファイルが変わっていれば (大きさ・更新の時刻が違えば) 読まない */
+/**
+ * 書体の中身を読む。索引を作った後にファイルが変わっていれば (大きさ・更新の時刻が違えば) 読まない。
+ * 消された・ディレクトリになったなど、開けないファイル (ENOENT・ENOTDIR・EISDIR) も、変わったファイルとして扱う
+ * (索引を作り直す合図にする。前は、消した書体を、器を作り直すまで選び続けた)
+ */
 function faceData(f: SystemFace): ArrayBuffer {
-  const fd = fs.openSync(f.file, 'r');
+  let fd: number;
+  try {
+    fd = fs.openSync(f.file, 'r');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR')
+      throw new FaceChangedError(msg(`OS の書体のファイルが、探した後に無くなりました: ${f.file}`, `the OS font file disappeared after it was scanned: ${f.file}`));
+    throw e;
+  }
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile() || st.size !== f.size || st.mtimeMs !== f.mtimeMs)
-      throw new Error(msg(`OS の書体のファイルが、探した後に変わりました: ${f.file}`, `the OS font file changed after it was scanned: ${f.file}`));
+      throw new FaceChangedError(msg(`OS の書体のファイルが、探した後に変わりました: ${f.file}`, `the OS font file changed after it was scanned: ${f.file}`));
     const b = Buffer.alloc(st.size);
     let got = 0;
     while (got < st.size) {
@@ -570,7 +617,9 @@ function faceData(f: SystemFace): ArrayBuffer {
 
 /**
  * OS の書体を探す部品 (TypesetOptions.systemFonts に渡す)。字の範囲の索引は、初めて find を呼んだときに作り、この部品が持つ
- * (器 (createTypesetter) やコマンドの --watch で、1 つの部品を使い回せば、索引を作るのは 1 度だけ)。
+ * (器 (createTypesetter) やコマンドの --watch で、1 つの部品を使い回せば、索引を作るのは 1 度だけ)。索引は、間をあけながら作り
+ * (書体の多い機械でもイベントループを長く止めない)、止める合図 (signal) が来たら待つのをやめる。索引を作った後に書体のファイルが
+ * 変わったと分かったら (書体を読むときに、大きさ・更新の時刻が違う)、次の find で作り直す。
  *
  *   import { createTypesetter } from 'kumiori';
  *   import { createSystemFonts } from 'kumiori/node';
@@ -592,49 +641,83 @@ export function createSystemFonts(o: SystemFontOptions = {}): SystemFontSource {
     });
   }
   let index: SystemFace[] | undefined;
+  /** 作っている索引 (同時に呼んだ find は、同じものを待つ) */
+  let building: Promise<SystemFace[]> | undefined;
+  /** 索引 (無ければ作る)。止める合図が来たら、待つのをやめる (作るのは続け、次の find で使う) */
+  const indexFor = async (signal: AbortSignal | undefined): Promise<SystemFace[]> => {
+    if (index) return index;
+    if (!building) {
+      const b = scanSystemFontsAsync(dirs ?? systemFontDirs(), maxFiles).then(
+        (faces) => {
+          if (building === b) index = faces;
+          return faces;
+        },
+      );
+      b.finally(() => {
+        if (building === b) building = undefined;
+      }).catch(() => {});
+      building = b;
+    }
+    const b = building;
+    if (!signal) return b;
+    signal.throwIfAborted();
+    return new Promise<SystemFace[]>((ok, ng) => {
+      const onAbort = () => ng(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      b.then(
+        (v) => {
+          signal.removeEventListener('abort', onAbort);
+          ok(v);
+        },
+        (e) => {
+          signal.removeEventListener('abort', onAbort);
+          ng(e);
+        },
+      );
+    });
+  };
   return {
-    find(request: SystemFontRequest): Promise<SystemFontMatch[]> {
-      try {
-        request.signal?.throwIfAborted();
-        index ??= scanSystemFonts(dirs ?? systemFontDirs(), maxFiles);
-        const cps = [...new Set(request.chars.map((c) => c.codePointAt(0)!))].sort((a, b) => a - b);
-        const usable = index.filter((f) => f.outlines && embeddableFsType(f.fsType));
-        // 種類ごと (既定は serif と sans) に選び、まとめる (書体の種類を合わせる: 組版は、指定の書体と同じ種類の書体を先に使う)
-        const kinds: SystemFontKind[] = request.kinds?.length ? [...new Set(request.kinds)] : ['serif', 'sans'];
-        // 種類ごとに探す字 (charsByKind。その種類の文脈に出る字だけ。chars に無い字は探さない)
-        const cpsFor = (kind: SystemFontKind) => {
-          const only = request.charsByKind?.[kind];
-          if (!only) return cps;
-          const want = new Set(only.map((c) => c.codePointAt(0)!));
-          return cps.filter((cp) => want.has(cp));
-        };
-        const picks = mergeKinds(
-          kinds.map((kind) => ({ kind, picks: pickForKind(usable, cpsFor(kind), kind, request.lang) })),
-          request.maxFaces ?? Infinity,
-        );
-        const covered = new Set(picks.flatMap((p) => p.cps));
-        const rest = cps.filter((cp) => !covered.has(cp));
-        // 埋め込める書体のどれも持たない字を、埋め込めない書体が持つか (知らせるためだけに返す)
-        const refused = rest.length ? pickFaces(index.filter((f) => f.outlines && !embeddableFsType(f.fsType)), rest, request.lang, Infinity).picks.map((p) => ({ ...p, forKind: p.face.kind })) : [];
-        const match = (p: { face: SystemFace; cps: number[]; forKind: SystemFontKind }, embeddable: boolean): SystemFontMatch => ({
-          key: `${p.face.file}|${p.face.index}|${p.face.size}|${p.face.mtimeMs}`,
-          name: faceName(p.face),
-          chars: p.cps.map((cp) => String.fromCodePoint(cp)),
-          kind: p.face.kind,
-          forKind: p.forKind,
-          embeddable,
-          data: () => {
-            try {
-              return Promise.resolve(faceData(p.face));
-            } catch (e) {
-              return Promise.reject(e);
-            }
-          },
-        });
-        return Promise.resolve([...picks.map((p) => match(p, true)), ...refused.map((p) => match(p, false))]);
-      } catch (e) {
-        return Promise.reject(e);
-      }
+    async find(request: SystemFontRequest): Promise<SystemFontMatch[]> {
+      request.signal?.throwIfAborted();
+      const all = rejoin(thisCall(), await indexFor(request.signal));
+      request.signal?.throwIfAborted();
+      const cps = [...new Set(request.chars.map((c) => c.codePointAt(0)!))].sort((a, b) => a - b);
+      const usable = all.filter((f) => f.outlines && embeddableFsType(f.fsType));
+      // 種類ごと (既定は serif と sans) に選び、まとめる (書体の種類を合わせる: 組版は、指定の書体と同じ種類の書体を先に使う)
+      const kinds: SystemFontKind[] = request.kinds?.length ? [...new Set(request.kinds)] : ['serif', 'sans'];
+      // 種類ごとに探す字 (charsByKind。その種類の文脈に出る字だけ。chars に無い字は探さない)
+      const cpsFor = (kind: SystemFontKind) => {
+        const only = request.charsByKind?.[kind];
+        if (!only) return cps;
+        const want = new Set(only.map((c) => c.codePointAt(0)!));
+        return cps.filter((cp) => want.has(cp));
+      };
+      const perKind = kinds.map((kind) => ({ kind, picks: pickForKind(usable, cpsFor(kind), kind, request.lang) }));
+      const picks = mergeKinds(perKind, request.maxFaces ?? Infinity);
+      // 埋め込める書体のどれも持たない字を、埋め込めない書体が持つか (知らせるためだけに返す)。書体の数の上限 (maxFaces) で選ばなかった
+      // 埋め込める書体が持つ字は入れない (埋め込めないことが、字の無い理由ではないので)
+      const coverable = new Set(perKind.flatMap((k) => k.picks.flatMap((p) => p.cps)));
+      const rest = cps.filter((cp) => !coverable.has(cp));
+      const refused = rest.length ? pickFaces(all.filter((f) => f.outlines && !embeddableFsType(f.fsType)), rest, request.lang, Infinity).picks.map((p) => ({ ...p, forKind: p.face.kind })) : [];
+      const match = (p: { face: SystemFace; cps: number[]; forKind: SystemFontKind }, embeddable: boolean): SystemFontMatch => ({
+        key: `${p.face.file}|${p.face.index}|${p.face.size}|${p.face.mtimeMs}`,
+        name: faceName(p.face),
+        chars: p.cps.map((cp) => String.fromCodePoint(cp)),
+        kind: p.face.kind,
+        forKind: p.forKind,
+        embeddable,
+        data: () => {
+          try {
+            return Promise.resolve(faceData(p.face));
+          } catch (e) {
+            // 索引を作った後に書体のファイルが変わった (OS の書体を入れ直したなど): 次に探すときに索引を作り直す
+            // (長く使う器・--watch で、同じ誤りを文書ごとに出し続けない)
+            if (e instanceof FaceChangedError && index === all) index = undefined;
+            return Promise.reject(e);
+          }
+        },
+      });
+      return [...picks.map((p) => match(p, true)), ...refused.map((p) => match(p, false))];
     },
   };
 }

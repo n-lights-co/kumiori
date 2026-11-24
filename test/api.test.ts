@@ -378,6 +378,32 @@ describe('公開 API: typeset', () => {
       globalThis.fetch = orig;
     }
   });
+  it('インラインの svg の中の image の http(s) の画像も、fetchImages に聞いて取る (許さなければ resource/not-fetched)', async () => {
+    const png = encodePngStored({ width: 4, height: 4, rgba: new Uint8Array(64).fill(255) });
+    const calls: string[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const u = String(input);
+      calls.push(u);
+      return u === 'https://img.test/inner.png?a=1&b=2' ? new Response(png as BodyInit, { status: 200, headers: { 'content-type': 'image/png' } }) : new Response('', { status: 404 });
+    }) as typeof fetch;
+    try {
+      const html = '<p><img src="https://example.invalid/top.png"></p><svg width="10" height="10"><image href="https://img.test/inner.png?a=1&amp;b=2" width="10" height="10"/></svg>';
+      // 許すとき: 取って描く (中の画像が見つからないとは言わない)
+      const asked: string[] = [];
+      const ok = await typeset(html, { loadFont, resolveResource: () => undefined, fetchImages: (u) => (asked.push(u), u.startsWith('https://img.test/')) });
+      expect(asked).toContain('https://img.test/inner.png?a=1&b=2');
+      expect(calls).toContain('https://img.test/inner.png?a=1&b=2');
+      expect(ok.diagnostics.filter((d) => d.code === 'image/reference-not-found')).toEqual([]);
+      // 許さないとき: 取らずに、取らなかったと知らせる
+      calls.length = 0;
+      const no = await typeset(html, { loadFont, resolveResource: () => undefined, fetchImages: false });
+      expect(calls).toEqual([]);
+      expect(no.diagnostics.some((d) => d.code === 'resource/not-fetched' && (d.args as { url?: string } | undefined)?.url === 'https://img.test/inner.png?a=1&b=2')).toBe(true);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
   it('</body></html> の後ろに書いた内容は、body の続きとして組む (HTML Standard の after body・after after body の挿入モード。NC-28 の (6))', async () => {
     // 末尾の「1」は既定のノンブル
     const tail = await typeset('<html><body><p>a</p></body></html><p>b</p><p>c</p>', { loadFont });

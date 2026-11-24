@@ -214,6 +214,30 @@ export function mapStyleRuleSelectors(css: string, map: (selector: string) => st
   return out;
 }
 
+/**
+ * スタイルシートの文字から、いちばん外の @import の規則 (; で終わる文) を除く (中身は、呼ぶ側が、読み込んだ先の規則を囲って置く)。
+ * @import は、スタイルシートの初めにだけ書ける (CSS Cascade 5 §2.1。後ろにあるものは無効) ので、どこにあっても除いてよい
+ */
+export function stripImports(css: string): string {
+  let out = '';
+  let i = 0;
+  while (i < css.length) {
+    const stop = scanTo(css, i, '{;}');
+    if (stop >= css.length) {
+      out += css.slice(i);
+      break;
+    }
+    if (css[stop] === ';' && /^(\s|\/\*[\s\S]*?\*\/)*@import\b/i.test(css.slice(i, stop))) {
+      i = stop + 1;
+      continue;
+    }
+    const end = css[stop] === '{' ? blockEnd(css, stop) : stop + 1;
+    out += css.slice(i, end);
+    i = end;
+  }
+  return out;
+}
+
 /** セレクタの並びを、括弧と文字列の外の , で分ける */
 export function splitSelectorList(sel: string): string[] {
   const out: string[] = [];
@@ -318,7 +342,7 @@ export interface ShadowScope {
 /**
  * 影の木のスタイルの規則のセレクタを、その影の木の中だけに当たるように書き換える (CSS Scoping 1 §3)。
  *  - 複合セレクタごとに、影の木の中の印 (inside) を足す (擬似要素の前に)
- *  - :host → host の印、:host(X) → X と host の印、:host-context(X) → 「X の子孫の host」
+ *  - :host → host の印、:host(X) → X と host の印、:host-context(X) → 「X の子孫の host」か「X の host」 (:is() の 2 つの形)
  *  - ::slotted(X) → X と slot に割り当てられた印
  * 読めないセレクタ (括弧の対が無いなど) は undefined
  */
@@ -343,12 +367,9 @@ export function scopeSelectorList(sel: string, scope: ShadowScope): string | und
           rest = rest.slice(p.end);
         }
         if (host[1]) {
-          // :host-context(X): host の祖先 (か host そのもの) が X。祖先の形だけにする (近似)
-          if (arg) {
-            done.push(arg);
-            doneCombs.push(' ');
-          }
-          done.push(scope.host + rest);
+          // :host-context(X): host そのものか、host の祖先 (平らな木の祖先) が X (CSS Scoping 1 §3.2.1)。2 つの形を :is() にする
+          // (前は祖先の形だけで、host そのものが X のときに当たらなかった)
+          done.push(arg ? `:is(${arg} ${scope.host}, ${withAttr(arg, scope.host)})${rest}` : scope.host + rest);
         } else done.push(withAttr(arg, scope.host) + rest);
         continue;
       }

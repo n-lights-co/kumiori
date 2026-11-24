@@ -25,8 +25,7 @@ import { walkAreaTree, type AreaNode } from './areaTree';
 import { parseColor } from './color';
 import { ITALIC_SLANT } from './paint';
 import { invert, type Seg } from './matrix';
-import { embedCmykImage } from './pdfLibPatches';
-import { pngDataComplete, pngWithinLimits } from './pixels';
+import { embedCmykImage, embedJpgNow, embedPngChecked, type PngEmbedOptions } from './pdfLibPatches';
 import { areaGlyphs, boxThrough, colorFontOf, COMPOSITE, paletteKey, plainStops, segsBox, sweepSampler, unrollStops, type Box, type ColorFill, type ColorFont, type ColorOp, type ColorStop, type Rgb } from './colorGlyph';
 import { ensureSvgGlyphReader } from './colorGlyphSvg';
 import { msg } from './messages';
@@ -49,6 +48,8 @@ export interface PdfColorGlyphOptions {
   alphaWarning?: string;
   /** XML を読む関数 (SVG の表の字形を読むのに使う。無ければブラウザの DOMParser。どちらも無ければ、SVG だけの字形は輪郭で描く) */
   parseXml?: (xml: string) => XmlNode;
+  /** 字形の PNG の埋め込み方 (16 ビットをそのまま入れるか・展開した画素の圧縮。pdfLibPatches.ts の embedPngChecked) */
+  png?: PngEmbedOptions;
 }
 
 /** 1 つの Type 3 書体に入れる字形の符号: 0x21〜0xFF (空白 0x20 は、語の間隔 Tw が掛かるので使わない) */
@@ -181,11 +182,10 @@ export class PdfColorGlyphs {
     let alpha = false;
     for (const [key, { kind, data }] of pending) {
       try {
-        const cmyk = opts.cmyk ? rejoin(thisCall(), await embedCmykImage(pdf, data, kind, opts.cmyk)) : undefined;
+        const cmyk = opts.cmyk ? rejoin(thisCall(), await embedCmykImage(pdf, data, kind, opts.cmyk, 'smask', opts.png)) : undefined;
         if (cmyk?.hasAlpha) alpha = true;
-        // 上限を超える PNG は展開しない (pixels.ts の pngWithinLimits)
-        if (kind === 'png' && !cmyk && !(pngWithinLimits(data) && pngDataComplete(data))) throw new Error(msg('PNG: 画素の数か展開の大きさが上限を超えるか、画素のデータが壊れています', 'PNG: the number of pixels or the decompressed size exceeds the limit, or the pixel data is broken'));
-        self.images.set(key, cmyk?.image ?? (kind === 'png' ? rejoin(thisCall(), await pdf.embedPng(data)) : rejoin(thisCall(), await pdf.embedJpg(data))));
+        // 上限を超える PNG・壊れた PNG は、embedPngChecked が埋め込まずに投げる (pixels.ts の pngWithinLimits)
+        self.images.set(key, cmyk?.image ?? (kind === 'png' ? rejoin(thisCall(), await embedPngChecked(pdf, data, opts.png)) : rejoin(thisCall(), await embedJpgNow(pdf, data))));
       } catch (e) {
         // 埋め込めない画像は、字形の中で描かない (emit の image)。同じ理由の知らせは 1 度だけ
         const why = e instanceof Error ? e.message : String(e);

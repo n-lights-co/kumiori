@@ -826,6 +826,11 @@ export interface PageMaster {
   trimMarkMargin?: number;
   /** トンボ領域の幅を辺ごとに (mm。塗り足しの外側から紙の端まで)。trimMarkMargin より優先 */
   trimMarkMargins?: { top: number; right: number; bottom: number; left: number };
+  /**
+   * このマスターのページのページ番号の書式 (PDF のページラベルに使う)。無ければ page-sequence の書式 (LPageSequence.pageNumberFormat)。
+   * HTML の @page の規則ごと (:first・:left など) に、余白の箱の counter(page) の型が違うときに付ける
+   */
+  pageNumberFormat?: string;
   /** 角のトンボ (既定 true) とセンタートンボ (既定 true) を描くか */
   cornerMarks?: boolean;
   centerMarks?: boolean;
@@ -2793,7 +2798,10 @@ export interface SystemFontRequest {
    * 組版は、明朝の文脈にしか無い字にゴシックの書体を要らないので、要らない書体を選ばない (読み込まない) ために渡す
    */
   charsByKind?: Partial<Record<SystemFontKind, readonly string[]>>;
-  /** 返す書体 (埋め込める書体) の数の上限 */
+  /**
+   * 返す書体 (埋め込める書体) の数の上限。Kumiori は、上限 (limits.systemFontFaces) より 1 つ多く求め、上限を超えて返れば、
+   * 上限までを使って limit/reached を知らせる (上限を超えて返しても、読むのは上限まで)
+   */
   maxFaces?: number;
   /** 呼び出しの止める合図 */
   signal?: AbortSignal;

@@ -19,8 +19,9 @@ import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFObjectCopier, PD
 import { rejoin, thisCall } from './callContext';
 import { limits, noteLimitReached } from './limits';
 import { msg } from './messages';
-import { loadPdfImage, type PdfRect } from './pdfImage';
+import { loadPdfImage, type PdfPageEntry, type PdfRect } from './pdfImage';
 import { copierWith, decodeGuarded } from './pdfStreamGuard';
+import { writePdf } from './pdfWriter';
 
 /** 埋め込んだページ */
 export interface EmbeddedPdfPage {
@@ -50,18 +51,40 @@ export interface PdfPageRefusal {
 /** 埋め込む前の検査: 断るなら、その理由 */
 export type PdfPageGate = (page: PreparedPdfPage) => Promise<PdfPageRefusal | undefined>;
 
-/** 文書 1 つ分の、埋め込みの覚え (同じページを 1 つの XObject にし、同じ元の文書の資源 (書体など) を 1 度だけ写す) */
+type EmbedResult = EmbeddedPdfPage | { error: string } | { refused: PdfPageRefusal };
+
+/**
+ * 文書 1 つ分の、埋め込みの覚え (同じページを 1 つの XObject にし、同じ元の文書の資源 (書体など) を 1 度だけ写す)。
+ * forms は、中身の流れ・資源・透明のグループ・箱が同じページを 1 つの XObject にする覚え (違うページが同じ中身の流れを共有するとき、
+ * 解き直さず、出力にも 1 度だけ写す)
+ */
 export interface PdfEmbedCache {
   copiers: Map<PDFContext, PDFObjectCopier>;
-  pages: Map<string, Promise<EmbeddedPdfPage | { error: string } | { refused: PdfPageRefusal }>>;
+  pages: Map<string, Promise<EmbedResult>>;
+  forms: Map<string, Promise<EmbedResult>>;
 }
-export const pdfEmbedCache = (): PdfEmbedCache => ({ copiers: new Map(), pages: new Map() });
+export const pdfEmbedCache = (): PdfEmbedCache => ({ copiers: new Map(), pages: new Map(), forms: new Map() });
+
+/**
+ * 圧縮を解く大きさと時間の予算。ふつうはページごとに作り、ページの範囲 (横に並べる図) では、範囲の全体で 1 つを分け合う
+ * (範囲のページごとに新しく数えると、多くのページが同じ大きな流れを共有する小さな PDF で、手間がページの数の倍になる)。
+ * charged: 予算から引いた資源の中の流れ (範囲のページが共有する資源は、1 度だけ引く)
+ */
+export interface PdfStreamBudget {
+  left: number;
+  deadline: number;
+  charged: Set<PDFRawStream>;
+}
+export function pdfStreamBudget(): PdfStreamBudget {
+  const lim = limits();
+  return { left: lim.pdfImageStreamBytes, deadline: Date.now() + lim.pdfImageLoadMs, charged: new Set() };
+}
 
 /**
  * PDF の画像のページを埋め込む。読めない・上限を超えたときは { error }、埋め込む前の検査 (gate) が断ったときは { refused }
  * (どちらも、呼ぶ側が警告にし、仮の枠で描く。断ったページは、出力の PDF に何も写さない)
  */
-export function embedPdfPage(out: PDFDocument, cache: PdfEmbedCache, src: { bytes: Uint8Array; page: number; box: PdfRect }, gate?: PdfPageGate): Promise<EmbeddedPdfPage | { error: string } | { refused: PdfPageRefusal }> {
+export function embedPdfPage(out: PDFDocument, cache: PdfEmbedCache, src: { bytes: Uint8Array; page: number; box: PdfRect }, gate?: PdfPageGate, budget?: PdfStreamBudget): Promise<EmbedResult> {
   // 鍵: 同じバイト列の同じページと箱 (バイト列は、文書ごとの覚えの中で、オブジェクトとして見分ける)
   let ids = byteIds.get(cache);
   if (!ids) byteIds.set(cache, (ids = new Map()));
@@ -70,15 +93,46 @@ export function embedPdfPage(out: PDFDocument, cache: PdfEmbedCache, src: { byte
   const key = `${id}\0${src.page}\0${src.box.join(',')}`;
   let p = cache.pages.get(key);
   if (!p) {
-    p = embedOnce(out, cache, src, gate);
+    p = embedOnce(out, cache, src, gate, budget);
     cache.pages.set(key, p);
   }
   return p;
 }
 const byteIds = new WeakMap<PdfEmbedCache, Map<Uint8Array, number>>();
 
-async function embedOnce(out: PDFDocument, cache: PdfEmbedCache, src: { bytes: Uint8Array; page: number; box: PdfRect }, gate?: PdfPageGate): Promise<EmbeddedPdfPage | { error: string } | { refused: PdfPageRefusal }> {
-  const prepared = rejoin(thisCall(), await preparePdfPage(src));
+/**
+ * ページの範囲 (横に並べる図) を埋め込む前に、範囲のどのページも読めて、埋め込む前の検査 (gate) を通るかを確かめる (出力には何も写さない)。
+ * 範囲の全体で予算 (budget) を分け合う。どれかが読めない・断られたら、その結果を返す (呼ぶ側は範囲の全体を仮の枠にし、どのページも写さない。
+ * 先に写すと、どのページからも指されない Form と資源が PDF に残った)。全部が通れば undefined。
+ * 確かめの結果は覚えない (分け合った予算で落ちたページを覚えると、後で同じページを 1 ページだけ貼るときも、覚えた誤りで仮の枠になった)
+ */
+export async function checkPdfPages(srcs: ReadonlyArray<{ bytes: Uint8Array; page: number; box: PdfRect }>, gate: PdfPageGate | undefined, budget: PdfStreamBudget): Promise<{ error: string } | { refused: PdfPageRefusal } | undefined> {
+  for (const src of srcs) {
+    const prepared = rejoin(thisCall(), await preparePdfPage(src, budget));
+    if ('error' in prepared) return prepared;
+    const refused = gate && rejoin(thisCall(), await gate(prepared));
+    if (refused) return { refused };
+  }
+  return undefined;
+}
+
+async function embedOnce(out: PDFDocument, cache: PdfEmbedCache, src: { bytes: Uint8Array; page: number; box: PdfRect }, gate?: PdfPageGate, budget?: PdfStreamBudget): Promise<EmbedResult> {
+  // 中身の流れ・資源・透明のグループ・箱が、前に埋め込んだページと同じなら、その XObject を使う (注釈の数だけはページのもの)
+  const pdf = rejoin(thisCall(), await loadPdfImage(src.bytes));
+  const entry = pdf.ok ? pdf.pages[src.page] : undefined;
+  const key = pdf.ok && entry ? formKey(pdf.doc.context, entry, src.box) : undefined;
+  const hit = key !== undefined ? cache.forms.get(key) : undefined;
+  if (hit) {
+    const r = rejoin(thisCall(), await hit);
+    return 'ref' in r && entry && pdf.ok ? { ...r, annots: annotsOf(pdf.doc.context, entry.dict) } : r;
+  }
+  const p = embedPrepared(out, cache, src, gate, budget);
+  if (key !== undefined) cache.forms.set(key, p);
+  return p;
+}
+
+async function embedPrepared(out: PDFDocument, cache: PdfEmbedCache, src: { bytes: Uint8Array; page: number; box: PdfRect }, gate?: PdfPageGate, budget?: PdfStreamBudget): Promise<EmbedResult> {
+  const prepared = rejoin(thisCall(), await preparePdfPage(src, budget));
   if ('error' in prepared) return prepared;
   const refused = gate && rejoin(thisCall(), await gate(prepared));
   if (refused) return { refused };
@@ -87,8 +141,41 @@ async function embedOnce(out: PDFDocument, cache: PdfEmbedCache, src: { bytes: U
   return { ref: formInto(out, copier, prepared), annots: prepared.annots, unembeddedFonts: prepared.unembeddedFonts };
 }
 
-/** ページを読み、写すものの深さと数を確かめ、中身の流れを解いて MCID を外す */
-export async function preparePdfPage(src: { bytes: Uint8Array; page: number; box: PdfRect }): Promise<PreparedPdfPage | { error: string }> {
+/**
+ * Form にするものの見分け (中身の流れ (配列なら各要素)・資源・透明のグループのオブジェクトと、箱)。
+ * ページに直に書いた小さな辞書 (ページごとの空の資源など) は、書いた中身で見分ける (中の参照は、参照の番号のまま)
+ */
+function formKey(context: PDFContext, entry: PdfPageEntry, box: PdfRect): string {
+  const id = (o: PDFObject | undefined): string => {
+    if (o instanceof PDFDict) {
+      const text = o.toString();
+      if (text.length <= 4096) return `<${text}>`;
+    }
+    const v = o === undefined ? undefined : o instanceof PDFRef ? context.lookup(o) : o;
+    if (v === undefined) return '-';
+    let n = objectIds.get(v);
+    if (n === undefined) objectIds.set(v, (n = ++objectCount));
+    return String(n);
+  };
+  const raw = entry.dict.get(PDFName.of('Contents'));
+  const contents = raw === undefined ? undefined : context.lookup(raw);
+  const c = contents instanceof PDFArray ? `[${contents.asArray().map(id).join(' ')}]` : id(contents);
+  return `${c}\0${id(entry.inherited.Resources)}\0${id(entry.dict.get(PDFName.of('Group')))}\0${box.join(',')}`;
+}
+const objectIds = new WeakMap<object, number>();
+let objectCount = 0;
+
+/** ページの注釈の数 (持ち込まないもの) */
+function annotsOf(context: PDFContext, dict: PDFDict): number {
+  const annots = context.lookup(dict.get(PDFName.of('Annots')) ?? PDFArray.withContext(context));
+  return annots instanceof PDFArray ? annots.size() : 0;
+}
+
+/**
+ * ページを読み、写すものの深さと数を確かめ、中身の流れを解いて MCID を外す。
+ * budget: 圧縮を解く大きさと時間の予算 (ページの範囲で分け合うもの)。無ければ、このページだけの予算を作る
+ */
+export async function preparePdfPage(src: { bytes: Uint8Array; page: number; box: PdfRect }, shared?: PdfStreamBudget): Promise<PreparedPdfPage | { error: string }> {
   const pdf = rejoin(thisCall(), await loadPdfImage(src.bytes));
   if (!pdf.ok) return { error: pdf.detail };
   const entry = pdf.pages[src.page];
@@ -104,9 +191,10 @@ export async function preparePdfPage(src: { bytes: Uint8Array; page: number; box
     noteLimitReached(reach.limit);
     return { error: msg(`資源の${reach.limit === 'pdfImageDepth' ? '入れ子の深さ' : 'オブジェクトの数'}が上限 ${reach.limit} (${lim[reach.limit]}) を超えます`, `the ${reach.limit === 'pdfImageDepth' ? 'nesting depth' : 'number of objects'} of the resources exceeds the limit ${reach.limit} (${lim[reach.limit]})`) };
   }
-  // 中身の流れを解いてつなぐ (大きさは、資源の中の流れと合わせて pdfImageStreamBytes まで。時間は pdfImageLoadMs まで)
-  const deadline = Date.now() + lim.pdfImageLoadMs;
-  const budget = { left: lim.pdfImageStreamBytes };
+  // 中身の流れを解いてつなぐ (大きさは、資源の中の流れと合わせて pdfImageStreamBytes まで。時間は pdfImageLoadMs まで。
+  // ページの範囲では、範囲の全体で分け合う)
+  const budget = shared ?? pdfStreamBudget();
+  const deadline = budget.deadline;
   const failed = (r: 'limit' | 'time' | undefined, what: [string, string]) => {
     if (r === 'limit') {
       noteLimitReached('pdfImageStreamBytes');
@@ -119,6 +207,7 @@ export async function preparePdfPage(src: { bytes: Uint8Array; page: number; box
     return { error: msg(`${what[0]}の圧縮を解けません`, `cannot decompress the ${what[1]}`) };
   };
   const PAGE: [string, string] = ['中身の流れ', 'content streams'];
+  if (Date.now() > deadline) return failed('time', PAGE);
   const contents = context.lookup(entry.dict.get(PDFName.of('Contents')) ?? PDFArray.withContext(context));
   const streams = contents instanceof PDFArray ? contents.asArray().map((o) => context.lookup(o)) : [contents];
   const parts: Uint8Array[] = [];
@@ -142,8 +231,7 @@ export async function preparePdfPage(src: { bytes: Uint8Array; page: number; box
     if (r !== true) return failed(r, NESTED);
   }
   for (const x of reach.structItems) if (!replaced.has(x)) replaced.set(x, withoutStructKeys(x, x.contents));
-  const annots = context.lookup(entry.dict.get(PDFName.of('Annots')) ?? PDFArray.withContext(context));
-  return { context, ...(resources ? { resources } : {}), ...(group !== undefined ? { group } : {}), content, box: src.box, annots: annots instanceof PDFArray ? annots.size() : 0, unembeddedFonts: reach.unembeddedFonts };
+  return { context, ...(resources ? { resources } : {}), ...(group !== undefined ? { group } : {}), content, box: src.box, annots: annotsOf(context, entry.dict), unembeddedFonts: reach.unembeddedFonts };
 }
 
 /** 読んだページを、doc に Form XObject として写す (資源と透明のグループは copier で写す) */
@@ -189,7 +277,7 @@ export async function pdfPageProblems(p: PreparedPdfPage, verify: (bytes: Uint8A
       const name = page.node.newXObject('KmP', ref);
       page.pushOperators(pushGraphicsState(), concatTransformationMatrix(1, 0, 0, 1, -p.box[0], -p.box[1]), PDFOperator.of(Ops.DrawObject, [name]), popGraphicsState());
     }
-    return rejoin(thisCall(), await doc.save({ useObjectStreams: false, addDefaultPage: false }));
+    return rejoin(thisCall(), await writePdf(doc, { objectStreams: false, addDefaultPage: false }));
   };
   const base = new Set(rejoin(thisCall(), await verify(rejoin(thisCall(), await make(false)))));
   return rejoin(thisCall(), await verify(rejoin(thisCall(), await make(true)))).filter((m) => !base.has(m));
@@ -245,7 +333,8 @@ function withoutStructKeys(s: PDFRawStream, contents: Uint8Array, decoded = fals
 }
 
 /** 解いた長さを確かめる (覚えた長さがあれば、それで)。予算から引く */
-function checkedLength(s: PDFRawStream, budget: { left: number }, deadline: number): true | 'limit' | 'time' {
+function checkedLength(s: PDFRawStream, budget: PdfStreamBudget, deadline: number): true | 'limit' | 'time' {
+  if (budget.charged.has(s)) return true;
   let n = decodedLengths.get(s);
   if (n === undefined) {
     const d = decodeGuarded(s.dict, s.contents, budget.left, deadline);
@@ -261,15 +350,18 @@ function checkedLength(s: PDFRawStream, budget: { left: number }, deadline: numb
   }
   if (n > budget.left) return 'limit';
   budget.left -= n;
+  budget.charged.add(s);
   return true;
 }
 
 /** 資源の中の内容の流れ: 縛りの中で解き、MCID を外す。変わったか StructParents があれば、置き換えた流れを覚える */
-function nestedContent(s: PDFRawStream, resources: PDFDict | undefined, budget: { left: number }, deadline: number): true | 'limit' | 'time' | undefined {
+function nestedContent(s: PDFRawStream, resources: PDFDict | undefined, budget: PdfStreamBudget, deadline: number): true | 'limit' | 'time' | undefined {
+  if (budget.charged.has(s)) return true;
   const n = decodedLengths.get(s);
   if (n !== undefined) {
     if (n > budget.left) return 'limit';
     budget.left -= n;
+    budget.charged.add(s);
     return true;
   }
   const d = decodeGuarded(s.dict, s.contents, budget.left, deadline);
@@ -282,6 +374,7 @@ function nestedContent(s: PDFRawStream, resources: PDFDict | undefined, budget: 
   if (!(d instanceof Uint8Array)) return d;
   decodedLengths.set(s, d.length);
   budget.left -= d.length;
+  budget.charged.add(s);
   // MCID を外し、いつも解いたものに置き換えて写す。縛りの展開 (inflateFast) は壊れたデータ (出力の始まりより前を指す距離など) で止めるが、
   // pdf-lib の展開は止まらずに続けうるので、元の圧縮のまま写すと、写した後の検査 (pdfPageProblems の PDF/X・PDF/A の検査) や読み手が、縛り無しに解く
   replaced.set(s, withoutStructKeys(s, withoutMcids(d, resources), true));

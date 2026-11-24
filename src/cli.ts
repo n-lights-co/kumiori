@@ -78,6 +78,8 @@
  *  - 未対応の CSS・XSL-FO の指定は、黙って無視せずに、診断 (typeset の diagnostics) として「警告 [名前] ファイル:行:列: 文」の形で知らせる
  */
 import fs from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
@@ -86,7 +88,7 @@ import type { HtmlDefaults } from './htmlPrepare';
 import { parsePageSize } from './htmlImport';
 import { FO_COMPATS, HTML_STYLES, type FoCompat } from './compat';
 import { isXhtmlFile } from './xhtml';
-import { decodeDocumentText, typeset, typesetToPdf, type KumioriFile, type TypesetOptions } from './api';
+import { decodeDocumentText, typeset, typesetToPdf, typesetToPdfStream, type KumioriFile, type TypesetOptions, type TypesetPdfOptions } from './api';
 import { normalizeSrc } from './assets';
 import { RESOURCE_USE, type ResourceUse } from './resourceUse';
 import type { Diagnostic } from './diagnostics';
@@ -831,7 +833,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
   // SVG: 組んだ結果のページを SVG にする (PDF の圧縮 (deflate) は使わない)
   if (args.format === 'svg' || args.format === 'png') return convertToPages(input, output, args, text, docOptions, args.format, read, settleReads);
   // PDF だけを作る (typeset の後に toPdf を呼ぶのと同じ PDF。ページを書いたら手放すので、数千ページの文書でも、文書全体の領域の木を持たない)
-  const res = await typesetToPdf(text, docOptions, {
+  const pdfOptions: TypesetPdfOptions = {
     ...(args.lowMemory ? { lowMemory: true } : {}),
     ...(args.imageMaxDpi ? { imageMaxDpi: args.imageMaxDpi } : {}),
     ...(args.date ? { date: args.date } : {}),
@@ -846,13 +848,32 @@ async function convert(input: string, output: string, args: Args, text: string) 
         }
       : {}),
     ...(args.pdfa ? { pdfa: { version: args.pdfa, warnings: pdfxWarnings } } : {}),
-  });
-  const pdf = res.pdf;
-  if (output === '-') process.stdout.write(pdf);
-  else {
-    settleReads();
-    checkOutputFiles([output], input, read);
-    writeOutput(output, input, pdf);
+  };
+  // PDF/X・PDF/A のほかは、出力のファイルと同じディレクトリの一時のファイルへ流して書き、書き終えたら名前を替える
+  // (PDF の全体を 1 つの配列に持たない。途中で失敗・中断したら一時のファイルを消すので、書きかけの PDF を残さない)。
+  // PDF/X・PDF/A (後の検査が書いた全体を読み直す) と、標準出力・ふつうのファイルでない書き出し先 (/dev/stdout など) は、全体を作ってから書く
+  const dest = output !== '-' && !args.pdfx && !args.pdfa ? streamTarget(output) : undefined;
+  let res: { pageCount: number; truncated: boolean; layoutMs: number; diagnostics: Diagnostic[] };
+  if (dest) {
+    res = await streamOutput(
+      dest,
+      (write) => typesetToPdfStream(text, docOptions, write, pdfOptions),
+      () => {
+        settleReads();
+        checkOutputFiles([output], input, read);
+      },
+      args.lowMemory ? 0 : 50,
+    );
+    noteWritten(output, input);
+  } else {
+    const r = await typesetToPdf(text, docOptions, pdfOptions);
+    res = r;
+    if (output === '-') process.stdout.write(r.pdf);
+    else {
+      settleReads();
+      checkOutputFiles([output], input, read);
+      writeOutput(output, input, r.pdf);
+    }
   }
   // PDF を標準出力へ書くときは、報告は標準エラーへ
   const log = reportLog(output);
@@ -878,7 +899,7 @@ export function cliDiagnostic(d: Diagnostic): Diagnostic {
  * 診断を標準エラーに書く。text: 1 件 1 行の「  警告 [名前] ファイル:行:列 (要素): 文」(重さで誤り・警告・知らせ。知らせは --verbose のときだけ)。
  * json: 1 件 1 行の JSON (入力のファイル input と、診断の欄。知らせも書く)。どちらも、文書の字 (制御文字) は見える形にする (printable)
  */
-export function reportDiagnostics(input: string, diagnostics: readonly Diagnostic[], args: Pick<Args, 'verbose' | 'diagnostics' | 'failOn'> & Partial<Pick<Args, 'systemFonts'>>): void {
+export function reportDiagnostics(input: string, diagnostics: readonly Diagnostic[], args: Pick<Args, 'verbose' | 'diagnostics' | 'failOn'> & Partial<Pick<Args, 'systemFonts' | 'outsideFiles'>>): void {
   const ds = diagnostics.map(cliDiagnostic);
   // --fail-on: その重さ以上の診断があったか (出さない診断 --ignore-warning は、組版の結果に入らないので数えない)
   if (args.failOn && ds.some((d) => d.severity === 'error' || (args.failOn === 'warning' && d.severity === 'warning'))) failOnHit = true;
@@ -888,7 +909,8 @@ export function reportDiagnostics(input: string, diagnostics: readonly Diagnosti
     return;
   }
   for (const line of diagnosticTextLines(args.verbose ? ds : ds.filter((d) => d.severity !== 'info'))) console.warn(line);
-  if (!args.systemFonts && ds.some((d) => d.code === 'font/missing-glyph')) console.warn(msg('  (--system-fonts で、OS の書体から字形を探せます)', '  (--system-fonts looks for the glyphs in the OS fonts)'));
+  // --no-outside-files とは一緒に使えないので、そのときは勧めない
+  if (!args.systemFonts && args.outsideFiles !== false && ds.some((d) => d.code === 'font/missing-glyph')) console.warn(msg('  (--system-fonts で、OS の書体から字形を探せます)', '  (--system-fonts looks for the glyphs in the OS fonts)'));
 }
 
 /** 文字の出力で、1 つの名前につき 1 件 1 行で書く数 (超えた分は「ほかに n 件 (m 種)」の 1 行にまとめる) */
@@ -1198,6 +1220,152 @@ function writeOutput(file: string, input: string, data: Uint8Array | string): vo
   for (const id of fileIdKeys(file)) writtenFiles.set(id, pathKey(input));
 }
 
+/** 書いた出力を覚える (writtenFiles。writeOutput と同じ) */
+function noteWritten(file: string, input: string): void {
+  writtenFiles.set(pathKey(file), pathKey(input));
+  for (const id of fileIdKeys(file)) writtenFiles.set(id, pathKey(input));
+}
+
+/**
+ * 流して書く出力の、名前を替える先: まだ無いファイルか、ふつうのファイル (シンボリックリンクでないもの) で、隣に一時のファイルを作れるもの。
+ * シンボリックリンク (/dev/stdout・/dev/fd/1 も、その先の開いたファイルへのリンク) と、ふつうのファイルでないもの (名前付きパイプなど) は
+ * undefined (流さずに、前のとおりリンクの先へ書く。名前を替えると、リンクそのものや、開いたファイルの外の名前を置き換えてしまう)
+ */
+export function streamTarget(output: string): string | undefined {
+  const st = fs.lstatSync(output, { throwIfNoEntry: false });
+  return (!st || (st.isFile() && writable(output))) && canCreatePart(output) ? output : undefined;
+}
+
+/**
+ * 前の出力に書けるか。読み取り専用の出力 (chmod a-w) は、名前を替えれば置き換えられるが、流さずに前のとおり直に書いて、書けない誤り (EACCES) にする
+ * (誤って上書きしないよう読み取り専用にした出力を、黙って置き換えない)
+ */
+function writable(file: string): boolean {
+  try {
+    fs.accessSync(file, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 出力の隣に一時のファイル (<出力>.part-<乱数>) を作れるか (実際に作って、すぐ消して確かめる。ディレクトリの許可や名前の長さを見るだけでは、
+ * ACL・短い NAME_MAX のファイルシステムなどで、作れるかと食い違う)。作れなければ (ディレクトリに書けない・名前が長すぎる・ディレクトリが無い など)、
+ * 流さずに、前のとおり出力のファイルへ直に書く (誤りも前と同じ所で同じ文になる)。
+ * 作って消す間も、止める合図の受け手を置く (受け手の無いまま合図で終わると、確かめのファイルが残る)。
+ * 作れたが消せないとき (Windows で、作った直後のファイルをウイルス対策・索引の作り手が開いている間の EBUSY・EPERM など) は、少し待って
+ * 消し直し、それでも消せなければ、変換は続け (作れることは分かったので true)、コマンドの終わりにもう 1 度消す (消せない誤りで変換を失敗させない)
+ */
+function canCreatePart(output: string): boolean {
+  const probe = `${output}.part-${randomBytes(6).toString('hex')}`;
+  watchSignals(probe);
+  try {
+    try {
+      fs.closeSync(fs.openSync(probe, 'wx'));
+    } catch {
+      return false;
+    }
+    try {
+      fs.rmSync(probe, { force: true, maxRetries: 3, retryDelay: 50 });
+    } catch {
+      process.once('exit', () => {
+        try {
+          fs.rmSync(probe, { force: true });
+        } catch {
+          /* 消せなければ残す (中身は 0 バイト) */
+        }
+      });
+    }
+    return true;
+  } finally {
+    unwatchSignals(probe);
+  }
+}
+
+/**
+ * dest と同じディレクトリの一時のファイル (<dest>.part-<乱数>) へ流して書き、書き終えたら名前を dest に替える。
+ * 前の dest があれば、そのファイルの許可の印 (mode) を一時のファイルに写す (writeFileSync が前のファイルに書くのと同じ許可になる)。
+ * before は名前を替える前に呼ぶ (出力が読むファイルでないかの確かめ)。失敗・中断したら一時のファイルを消して、誤りを投げる。
+ * 一時のファイルは、最初に書くときに作る (組んでいる間は作らないので、その間の Ctrl+C は前のとおりすぐ止まる)。書いている間は、止める合図
+ * (SIGINT・SIGTERM・SIGHUP) を受けたら一時のファイルを消してから同じ合図で終わり (onStopSignal)、合図を扱えるよう、yieldMs (既定 50ms) ごとに間をあける。
+ * yieldMs が 0 なら間をあけない (メモリ節約の組版は、ページの間で待てない所があり、待たせると塊がたまるため。その間の合図は、待てる所まで遅れる)
+ */
+export async function streamOutput<T>(dest: string, run: (write: (chunk: Uint8Array) => void | Promise<void>) => Promise<T>, before: () => void = () => {}, yieldMs = 50): Promise<T> {
+  const tmp = `${dest}.part-${randomBytes(6).toString('hex')}`;
+  let fd: number | undefined;
+  const create = () => {
+    // 合図の受け手を、一時のファイルを作る前に置く (作った後に置くと、その間に来た合図で、受け手の無いまま終わってファイルが残る)
+    watchSignals(tmp);
+    fd = fs.openSync(tmp, 'wx');
+    return fd;
+  };
+  let last = Date.now();
+  try {
+    const r = await run((chunk) => {
+      const f = fd ?? create();
+      for (let at = 0; at < chunk.length; ) at += fs.writeSync(f, chunk, at);
+      // 合図を扱う間 (同期で書き続けると、合図の受け手が書き終えるまで動かない)
+      if (!yieldMs || Date.now() - last < yieldMs) return;
+      last = Date.now();
+      return new Promise<void>((resolve) => setImmediate(resolve));
+    });
+    fs.closeSync(fd ?? create());
+    fd = -1;
+    before();
+    const prev = fs.statSync(dest, { throwIfNoEntry: false });
+    if (prev) fs.chmodSync(tmp, prev.mode & 0o7777);
+    fs.renameSync(tmp, dest);
+    return r;
+  } catch (e) {
+    if (fd !== undefined && fd >= 0) fs.closeSync(fd);
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  } finally {
+    unwatchSignals(tmp);
+  }
+}
+
+/** 書いている途中の一時のファイル (合図で止めたときに消す) */
+const partFiles = new Set<string>();
+/** 止める合図 (Ctrl+C の SIGINT・kill の SIGTERM・端末を閉じた SIGHUP) */
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+/**
+ * 合図を受けたら、一時のファイルを消してから、受け手を外して同じ合図で終わる (既定の扱いと同じ終わり方。終了の状態は 128 + 合図の番号)。
+ * 受け手は、一時のファイルに書いている間だけ置く (置いている間だけ、Node の既定の扱い (すぐ終わる) を替える)
+ */
+function onStopSignal(sig: NodeJS.Signals): void {
+  for (const f of partFiles) fs.rmSync(f, { force: true });
+  partFiles.clear();
+  for (const s of STOP_SIGNALS) process.off(s, onStopSignal);
+  listening = false;
+  try {
+    process.kill(process.pid, sig);
+  } catch {
+    // 合図を自分に送り直せない (Windows の libuv は SIGHUP を送れない) ときは、合図で終わったときと同じ終了の状態で終わる
+    process.exit(128 + (os.constants.signals[sig] ?? 1));
+  }
+}
+/** 合図の受け手を置いているか */
+let listening = false;
+function watchSignals(tmp: string): void {
+  if (!listening) for (const s of STOP_SIGNALS) process.on(s, onStopSignal);
+  listening = true;
+  partFiles.add(tmp);
+}
+/**
+ * 一時のファイルを書き終えた (消した・名前を替えた)。受け手は、次の回り (setImmediate) で、書いている一時のファイルが無ければ外す。
+ * すぐ外すと、外す前に届いて、まだ受け手に渡っていない合図 (同期の処理の間に届いたもの) が落ち、合図で終わらなくなる
+ */
+function unwatchSignals(tmp: string): void {
+  partFiles.delete(tmp);
+  setImmediate(() => {
+    if (partFiles.size || !listening) return;
+    for (const s of STOP_SIGNALS) process.off(s, onStopSignal);
+    listening = false;
+  });
+}
+
 /**
  * --watch: ディレクトリ root と、その下のディレクトリの変更を見張る (onChange の名前は root からの相対の道)。
  * Linux では、ディレクトリごとに再帰でない fs.watch を張る: Node の再帰の fs.watch (Linux では Node の中でファイルごとに inotify を張る) は、
@@ -1219,7 +1387,7 @@ export function watchInputDir(root: string, onChange: (ev: string, file: string)
       watchers.set(root, fs.watch(root, { recursive: true }, relay));
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM') throw e;
-      console.error(msg(`${root}: 下のディレクトリの変更は見張れません (Node 20 以上で使えます)`, `${root}: changes in subdirectories cannot be watched (needs Node 20 or later)`));
+      console.error(msg(`${root}: この OS では、下のディレクトリの変更は見張れません`, `${root}: changes in subdirectories cannot be watched on this OS`));
       watchers.set(root, fs.watch(root, relay));
     }
     return close;

@@ -15,7 +15,7 @@ import { KumioriOptionError } from './errors';
 import { cleanUrl } from './linkPolicy';
 import { DEFAULT_LIMITS, LIMIT_DEFS } from './limits';
 import { MESSAGE_LANGS, messageLang, msg, type MessageLang } from './messages';
-import { mapStyleRuleSelectors, quoteCss, renameTypeSelector, rewriteCssUrls, ruleDiff, scopeSelectorList, splitSelectorList } from './snapshotCss';
+import { mapStyleRuleSelectors, quoteCss, renameTypeSelector, rewriteCssUrls, ruleDiff, scopeSelectorList, splitSelectorList, stripImports } from './snapshotCss';
 
 /** snapshotDocument の選択肢。どれも省略できる。知らない名前・型の違う値は KumioriOptionError (TypeError) で拒む */
 export interface SnapshotOptions {
@@ -277,6 +277,20 @@ const URL_ATTRS: Record<string, readonly string[]> = {
   ins: ['cite'],
 };
 
+/**
+ * URL を持つ属性のうち、blob: の URL の中身を取り込むもの (組むのに使う: 画像・CSS・埋め込む画像)。ほかの属性 (a・area の href
+ * (保存させるための zip・PDF など)・video・audio・track の src・form の action など) の blob: の URL は、中身を読まずにそのまま残す
+ * (数百 MB の動画を読んで捨てたり、組むのに使わないものを files に入れたりしない)
+ */
+const BLOB_READ_ATTRS: Record<string, readonly string[]> = {
+  link: ['href'],
+  img: ['src'],
+  input: ['src'],
+  video: ['poster'],
+  embed: ['src'],
+  object: ['data'],
+};
+
 /** 1 回の snapshotDocument の写し */
 class Snapshot {
   /** 写しを作る文書 (画面と関わりが無い) */
@@ -293,6 +307,15 @@ class Snapshot {
   private total = 0;
   /** 合計の上限に届いたか */
   private full = false;
+  /**
+   * 影の木のスタイルシートの @import の数え (importedShadowCss)。たどった数は影の木ごとに数え直し (同じテーマのシートを読み込む部品が
+   * 多いのは、ふつうのページなので、写し 1 回の全体では数えない)、写した字の数は写しの全体で数える
+   */
+  private treeImports = 0;
+  private treeImportsFull = false;
+  private shadowImportChars = 0;
+  /** 出した snapshot/limit の、上限の名前 (同じ上限は 1 度だけ知らせる) */
+  private readonly limitsNoted = new Set<string>();
   /** blob: の URL → 写しの中の仮の名前 */
   private blobs = new Map<string, string>();
   /** 仮の名前 → 取り込んだ後の名前 (拡張子を付けたもの。読めなければ元の blob: の URL) */
@@ -333,9 +356,9 @@ class Snapshot {
    *  - data: などの、基準に依らない URL はそのまま
    *  - javascript: は null (属性ごと取り除く)
    */
-  resolveUrl(value: string, base = this.base, img?: HTMLImageElement): string | null {
+  resolveUrl(value: string, base = this.base, img?: HTMLImageElement, readBlob = true): string | null {
     const t = cleanUrl(value);
-    if (/^blob:/i.test(t)) return this.blobName(t, img);
+    if (/^blob:/i.test(t)) return readBlob ? this.blobName(t, img) : t;
     return resolveSnapshotUrl(value, base, this.docUrl);
   }
 
@@ -454,7 +477,7 @@ class Snapshot {
     if (assigned.length) {
       for (const a of assigned) {
         const cc = this.copy(a, this.rootScope.get(a.getRootNode()));
-        if (cc && cc.nodeType === 1) (cc as Element).setAttribute('data-ks-sl', String(scope));
+        if (cc && cc.nodeType === 1) (cc as Element).setAttribute('data-ks-sl', this.slotScopes(a, o, scope).join(' '));
         if (cc) frag.appendChild(cc);
       }
     } else {
@@ -464,6 +487,24 @@ class Snapshot {
       }
     }
     return frag;
+  }
+
+  /**
+   * 割り当てられた節 a が、slot の入れ子 (a の assignedSlot から、その slot の assignedSlot … と o まで) で通る slot の影の木の印。
+   * ::slotted() は、平らにした後の割り当て (CSS Scoping 1 §3.2.2) に当たるので、途中の slot の影の木の ::slotted() も a に当たる
+   * (前は最後の slot (o) の印だけを付け、途中の影の木の ::slotted() が落ちた)
+   */
+  private slotScopes(a: Node, o: HTMLSlotElement, scope: number): number[] {
+    const out: number[] = [];
+    const seen = new Set<Node>();
+    for (let s = (a as Element | Text).assignedSlot; s && !seen.has(s); s = s.assignedSlot) {
+      seen.add(s);
+      const n = this.rootScope.get(s.getRootNode());
+      if (n !== undefined && !out.includes(n)) out.push(n);
+      if (s === o) break;
+    }
+    if (!out.includes(scope)) out.push(scope);
+    return out;
   }
 
   /**
@@ -487,6 +528,10 @@ class Snapshot {
   private collectShadowCss(root: ShadowRoot, n: number): void {
     const sheets = [...root.styleSheets, ...((root as ShadowRoot & { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets ?? [])];
     const texts: string[] = [];
+    const element = describeElement(root.host);
+    // @import をたどる数は、影の木ごと
+    this.treeImports = 0;
+    this.treeImportsFull = false;
     for (const sh of sheets) {
       if (sh.disabled) continue;
       const owner = sh.ownerNode as Element | null;
@@ -498,17 +543,91 @@ class Snapshot {
       } else {
         const raw = sheetText(sh);
         if (raw === undefined) {
+          // 別の origin で規則を読めないシート (影の木の中の <link rel=stylesheet>): 影の木の中だけに囲えないので、写さずに知らせる
+          // (文書の <link> なら URL を残して Kumiori が取るが、影の木の中のものを文書に置くと、文書の全体に当たる)
           this.unreadableSheets = true;
+          this.warnShadowSheet(element, sh.href ?? '');
           continue;
         }
         t = this.css(raw, sh.href ?? this.base);
       }
       this.noteFontFamilies(sh);
-      texts.push(t);
+      // @import は、読み込んだ先の規則を前に置き、同じように囲う (@import のまま文書に置くと、読み込んだ先が文書の全体に当たり、
+      // 2 つ目からの影の木の @import は、ほかの規則の後ろになって無効になる)
+      texts.push(this.importedShadowCss(sh, element, 0) + stripImports(t));
     }
     if (!texts.length) return;
-    const scope = { inside: `[data-ks-s="${n}"]`, host: `[data-ks-h="${n}"]`, slotted: `[data-ks-sl="${n}"]` };
+    const scope = { inside: `[data-ks-s="${n}"]`, host: `[data-ks-h="${n}"]`, slotted: `[data-ks-sl~="${n}"]` };
     this.shadowCss.push(mapStyleRuleSelectors(texts.join('\n'), (sel) => scopeSelectorList(sel, scope)));
+  }
+
+  /** 影の木のスタイルシートの @import の、読み込んだ先の規則 (条件 (media・supports)・層 (layer) を付けて。入れ子の @import もたどる) */
+  private importedShadowCss(sheet: CSSStyleSheet, element: string, depth: number): string {
+    let rules: CSSRule[];
+    try {
+      rules = [...sheet.cssRules];
+    } catch {
+      return '';
+    }
+    let out = '';
+    for (const r of rules) {
+      if (r.type !== 3) continue;
+      // たどる数と写す字の数を数える (深さだけでは、同じシートを 2 度ずつ読み込む入れ子で、写す字が 2 の深さ乗になる)。
+      // 数は 1 つの影の木で SHADOW_IMPORTS_MAX まで (超えたら、その影の木のその後の @import を写さない)。深さは SHADOW_IMPORT_DEPTH 段まで
+      // (超えたシートだけを写さない)。字は写しの全体で SHADOW_IMPORT_CHARS まで (JS の文字列の長さの上限より十分小さく)。
+      // どれも、写さなかったことを snapshot/limit で知らせる (上限ごとに 1 度)
+      if (this.treeImportsFull || this.shadowImportChars > SHADOW_IMPORT_CHARS) {
+        if (this.shadowImportChars > SHADOW_IMPORT_CHARS) this.noteShadowLimit('shadowImportChars', SHADOW_IMPORT_CHARS);
+        break;
+      }
+      if (++this.treeImports > SHADOW_IMPORTS_MAX) {
+        this.treeImportsFull = true;
+        this.noteShadowLimit('shadowImports', SHADOW_IMPORTS_MAX);
+        break;
+      }
+      if (depth >= SHADOW_IMPORT_DEPTH) {
+        this.noteShadowLimit('shadowImportDepth', SHADOW_IMPORT_DEPTH);
+        continue;
+      }
+      const ir = r as CSSImportRule & { layerName?: string | null; supportsText?: string | null };
+      const inner = ir.styleSheet;
+      const text = inner ? sheetText(inner) : undefined;
+      if (!inner || text === undefined) {
+        this.unreadableSheets = true;
+        this.warnShadowSheet(element, ir.href ?? '');
+        continue;
+      }
+      const nested = this.importedShadowCss(inner, element, depth + 1);
+      let t = nested + stripImports(this.css(text, inner.href ?? sheet.href ?? this.base));
+      const media = ir.media?.mediaText;
+      if (media) t = `@media ${media} {\n${t}\n}`;
+      if (ir.supportsText) t = `@supports ${ir.supportsText} {\n${t}\n}`;
+      if (ir.layerName !== undefined && ir.layerName !== null) t = `@layer ${ir.layerName} {\n${t}\n}`;
+      this.noteFontFamilies(inner);
+      // 数えるのは、この段で足した字だけ (入れ子の @import の字は、内側の呼び出しが数え終えている。足し直すと、深さ k のシートを k 回数えた)
+      this.shadowImportChars += t.length - nested.length;
+      out += t + '\n';
+    }
+    return out;
+  }
+
+  /** 影の木の @import の上限 (name の上限、値 limit) に当たって写さなかったことを、上限ごとに 1 度だけ知らせる (snapshot/limit) */
+  private noteShadowLimit(name: 'shadowImports' | 'shadowImportDepth' | 'shadowImportChars', limit: number): void {
+    if (this.limitsNoted.has(name)) return;
+    this.limitsNoted.add(name);
+    const what = { shadowImports: msg(`1 つの影の木で ${limit} 個`, `${limit} per shadow tree`), shadowImportDepth: msg(`${limit} 段`, `${limit} levels`), shadowImportChars: msg(`写しの全体で ${limit} 字`, `${limit} characters per snapshot`) }[name];
+    this.warn(diag('snapshot/limit', msg(`影の木 (Shadow DOM) のスタイルシートの @import が上限 (${name}: ${what}) を超えたので、超えた @import の規則を写しませんでした`, `@import rules in stylesheets of shadow trees (Shadow DOM) exceeded the limit (${name}: ${what}), so the rules of the @import rules beyond it were not copied`), { limit, name }));
+  }
+
+  /** 影の木の中の、規則を読めないスタイルシート (別の origin の link・@import) を、写さずに知らせる */
+  private warnShadowSheet(element: string, href: string): void {
+    const url = href.slice(0, 200);
+    this.warn(
+      diag('snapshot/shadow-stylesheet-unreadable', msg(`${element} の影の木 (Shadow DOM) の中のスタイルシートの規則を読めないので、写していません (別の origin で CORS の無いものなど): ${url || '(不明)'}`, `the rules of a stylesheet in the shadow tree (Shadow DOM) of ${element} cannot be read, so it was not copied (another origin without CORS, etc.): ${url || '(unknown)'}`), {
+        element,
+        url,
+      }),
+    );
   }
 
   /** 影の木のスタイル (囲った規則) を、<head> の初めの <style data-kumiori-shadow> に置く (文書の規則が後ろになり、!important でない限り文書の規則が勝つ。CSS Cascade 5 §6.1) */
@@ -555,25 +674,49 @@ class Snapshot {
     style.setAttribute('data-kumiori-fonts', '');
     const head = root.querySelector('head') ?? root;
     head.insertBefore(style, head.firstChild);
-    const rules: string[] = [];
+    const rules = new Set<string>();
+    /**
+     * 取り込んだ書体の中身 (同じ中身の書体は、1 つのファイルにする)。長さと中身のハッシュで引き、当たったものだけを比べる
+     * (前は、取り込むたびに全部の書体と比べたので、同じ長さの書体を多く足したページで、書体の数 × 合計の手間になった)
+     */
+    const taken = new Map<string, Array<{ data: Uint8Array; name: string }>>();
     for (const face of faces) {
       this.jobs.push(async () => {
         const family = familyKey(face.family, false);
         let got: KumioriFileData | undefined;
         if (sources) got = rejoin(thisCall(), await untilAbort(Promise.resolve(sources(face))));
         let src: string | undefined;
-        if (typeof got === 'string') src = this.resolveUrl(got) ?? undefined;
-        else if (got) {
+        const tooLarge = (size: number) => () =>
+          this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で足した書体 ${family} の中身 (${size} バイト) が上限 (fileBytes: ${this.limits.fileBytes}) を超えるので、取り込みませんでした`, `the content of the font ${family} added by JavaScript (${size} bytes) is larger than the limit (fileBytes: ${this.limits.fileBytes}), so it was not taken in`), { family }));
+        if (typeof got === 'string') {
+          src = this.resolveUrl(got) ?? undefined;
+          // javascript: の URL は使わない (黙って落とさずに知らせる)
+          if (!src) this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で足した書体 ${family} の、fontSources が返した URL を使えません (javascript: など)`, `the URL that fontSources returned for the font ${family} added by JavaScript cannot be used (javascript:, etc.)`), { family }));
+          // data: の URL も、ファイル 1 つの上限と合計の上限に数える (中身は写しの文字に入る)
+          else if (/^data:/i.test(src) && !this.count(dataUrlBytes(src), tooLarge(dataUrlBytes(src)))) src = undefined;
+        } else if (got) {
           const data = got instanceof Uint8Array ? got : new Uint8Array(got);
-          const name = `${SNAPSHOT_DIR}/font-${++this.counter}${fontExt(data)}`;
-          const tooLarge = () =>
-            this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で足した書体 ${family} の中身 (${data.length} バイト) が上限 (fileBytes: ${this.limits.fileBytes}) を超えるので、取り込みませんでした`, `the content of the font ${family} added by JavaScript (${data.length} bytes) is larger than the limit (fileBytes: ${this.limits.fileBytes}), so it was not taken in`), { family }));
-          if (this.take(name, data, tooLarge)) src = name;
+          const key = bytesHashKey(data);
+          const same = taken.get(key)?.find((t) => sameBytes(t.data, data));
+          if (same) src = same.name;
+          else {
+            const name = `${SNAPSHOT_DIR}/font-${++this.counter}${fontExt(data)}`;
+            if (this.take(name, data, tooLarge(data.length))) {
+              const list = taken.get(key);
+              if (list) list.push({ data, name });
+              else taken.set(key, [{ data, name }]);
+              src = name;
+            }
+          }
         } else if (!this.unreadableSheets)
           this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で足した書体 ${family} の中身を取れませんでした (fontSources の選択肢で渡してください。組むと、別の書体になります)`, `could not get the content of the font ${family} added by JavaScript (pass it with the fontSources option; it will be typeset with another font)`), { family }));
         if (!src) return;
-        rules.push(fontFaceRule(face, family, src));
-        style.textContent = rules.join('\n');
+        // 中身も記述子も同じ書体 (同じ FontFace を 2 度作って足したもの) は、規則を 1 つにする
+        const rule = fontFaceRule(face, family, src);
+        if (rules.has(rule)) return;
+        // 規則は書き足す (前は、足すたびに全部の規則をつないで置き直した)
+        style.appendChild(this.inert.createTextNode(`${rules.size ? '\n' : ''}${rule}`));
+        rules.add(rule);
       });
     }
   }
@@ -673,17 +816,30 @@ class Snapshot {
 
   /** 取り込んだファイルを files に足す (ファイル 1 つの上限 (超えれば tooLarge を呼ぶ)・合計の上限を超えれば、足さずに false) */
   private take(name: string, data: Uint8Array, tooLarge: () => void): boolean {
-    if (data.length > this.limits.fileBytes) {
+    if (!this.fits(data.length, tooLarge)) return false;
+    this.total += data.length;
+    this.files.push({ name, data });
+    return true;
+  }
+
+  /** 取り込むものの大きさを、合計の上限に数える (ファイルに入れないもの: 写しの文字に入る data: の URL)。数えられなければ false */
+  private count(size: number, tooLarge: () => void): boolean {
+    if (!this.fits(size, tooLarge)) return false;
+    this.total += size;
+    return true;
+  }
+
+  /** size バイトを取り込めるか (ファイル 1 つの上限 (超えれば tooLarge を呼ぶ)・合計の上限 (超えれば snapshot/limit を 1 度だけ出す)) */
+  private fits(size: number, tooLarge: () => void): boolean {
+    if (size > this.limits.fileBytes) {
       tooLarge();
       return false;
     }
-    if (this.full || this.total + data.length > this.limits.snapshotBytes) {
-      if (!this.full) this.warn(diag('snapshot/limit', msg(`取り込んだものの合計が上限 (snapshotBytes: ${this.limits.snapshotBytes}) に届いたので、その後の canvas・blob: の中身・書体を取り込みませんでした`, `the total taken in reached the limit (snapshotBytes: ${this.limits.snapshotBytes}), so later canvases, blob: contents and fonts were not taken in`), { limit: this.limits.snapshotBytes }));
+    if (this.full || this.total + size > this.limits.snapshotBytes) {
+      if (!this.full) this.warn(diag('snapshot/limit', msg(`取り込んだものの合計が上限 (snapshotBytes: ${this.limits.snapshotBytes}) に届いたので、その後の canvas・blob: の中身・書体を取り込みませんでした`, `the total taken in reached the limit (snapshotBytes: ${this.limits.snapshotBytes}), so later canvases, blob: contents and fonts were not taken in`), { limit: this.limits.snapshotBytes, name: 'snapshotBytes' }));
       this.full = true;
       return false;
     }
-    this.total += data.length;
-    this.files.push({ name, data });
     return true;
   }
 
@@ -702,7 +858,20 @@ class Snapshot {
       let ext = '';
       try {
         const res = rejoin(thisCall(), await untilAbort(win.fetch(url, { signal: thisCall()?.signal })));
+        // 大きさは、読む前に確かめる (上限を超える中身を全部読んでから捨てない)。blob: の応答には Content-Length の頭が付く
+        // (Fetch §4.2 の scheme fetch の blob:) ので、本体を Blob にする前にそれで見る (res.blob() が中身を読むブラウザでも、読む前に止める)
+        const length = res.headers.get('content-length');
+        const declared = length !== null && /^\d+$/.test(length.trim()) ? Number(length.trim()) : undefined;
+        if (declared !== undefined && !this.fits(declared, () => this.warn(blobTooLarge(url, declared, this.limits.fileBytes)))) {
+          void res.body?.cancel().catch(() => {});
+          this.renames.set(name, url);
+          return;
+        }
         const blob = rejoin(thisCall(), await untilAbort(res.blob()));
+        if (!this.fits(blob.size, () => this.warn(blobTooLarge(url, blob.size, this.limits.fileBytes)))) {
+          this.renames.set(name, url);
+          return;
+        }
         data = new Uint8Array(rejoin(thisCall(), await untilAbort(blob.arrayBuffer())));
         ext = extOf(blob.type);
       } catch {
@@ -722,8 +891,7 @@ class Snapshot {
         }
       }
       const final = name.replace(/\.bin$/, ext || '.bin');
-      const tooLarge = () =>
-        this.warn(diag('snapshot/blob-unreadable', msg(`blob: の URL の中身 (${data!.length} バイト) が上限 (fileBytes: ${this.limits.fileBytes}) を超えるので、取り込みませんでした: ${url}`, `the content of a blob: URL (${data!.length} bytes) is larger than the limit (fileBytes: ${this.limits.fileBytes}), so it was not taken in: ${url}`), { url }));
+      const tooLarge = () => this.warn(blobTooLarge(url, data!.length, this.limits.fileBytes));
       if (data && this.take(final, data, tooLarge)) this.renames.set(name, final);
       else {
         if (!data) this.warn(diag('snapshot/blob-unreadable', msg(`blob: の URL の中身を読めませんでした (消された URL など): ${url}`, `could not read the content of a blob: URL (a revoked URL, etc.): ${url}`), { url }));
@@ -795,10 +963,12 @@ class Snapshot {
     }
     const names = o.namespaceURI === HTML_NS ? URL_ATTRS[o.localName] : undefined;
     const img = o.namespaceURI === HTML_NS && o.localName === 'img' ? (o as HTMLImageElement) : undefined;
+    // picture の中の source は画像の候補 (fixImage が画面で選んだ画像にする)。video・audio の中の source は読まない
+    const reads = o.namespaceURI === HTML_NS ? (o.localName === 'source' && o.parentElement?.localName === 'picture' ? ['src'] : BLOB_READ_ATTRS[o.localName]) : undefined;
     for (const n of names ?? []) {
       const v = c.getAttribute(n);
       if (v === null) continue;
-      const r = this.resolveUrl(v, this.base, img);
+      const r = this.resolveUrl(v, this.base, img, !!reads?.includes(n));
       if (r === null || activeDataUrl(o.localName, r)) c.removeAttribute(n);
       else if (r !== v) c.setAttribute(n, r);
     }
@@ -921,6 +1091,39 @@ function fontExt(d: Uint8Array): string {
   const tag = String.fromCharCode(d[0] ?? 0, d[1] ?? 0, d[2] ?? 0, d[3] ?? 0);
   return tag === 'wOF2' ? '.woff2' : tag === 'wOFF' ? '.woff' : tag === 'OTTO' ? '.otf' : tag === 'ttcf' ? '.ttc' : '.ttf';
 }
+
+/** data: の URL の中身のおよそのバイト数 (base64 なら 4 字で 3 バイト。そうでなければ字の数。RFC 2397) */
+function dataUrlBytes(url: string): number {
+  const comma = url.indexOf(',');
+  const body = url.length - comma - 1;
+  return /;base64$/i.test(url.slice(0, comma)) ? Math.floor((body * 3) / 4) : body;
+}
+
+/** バイト列の長さと、中身のハッシュ (FNV-1a。同じ中身の書体を引く鍵。当たったものは sameBytes で確かめる) */
+function bytesHashKey(b: Uint8Array): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193);
+  return `${b.length}:${(h >>> 0).toString(36)}`;
+}
+
+/** 2 つのバイト列の中身が同じか */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** blob: の URL の中身が、ファイル 1 つの上限 (fileBytes) を超える (snapshot/blob-unreadable) */
+function blobTooLarge(url: string, size: number, limit: number): Diagnostic {
+  return diag('snapshot/blob-unreadable', msg(`blob: の URL の中身 (${size} バイト) が上限 (fileBytes: ${limit}) を超えるので、取り込みませんでした: ${url}`, `the content of a blob: URL (${size} bytes) is larger than the limit (fileBytes: ${limit}), so it was not taken in: ${url}`), { url });
+}
+
+/** 1 つの影の木で、スタイルシートの @import をたどる数の上限 */
+const SHADOW_IMPORTS_MAX = 1000;
+/** 影の木のスタイルシートの @import の入れ子の深さの上限 */
+const SHADOW_IMPORT_DEPTH = 16;
+/** 影の木のスタイルシートの @import から写す字の数の上限 (写しの全体。JS の文字列の長さの上限 (V8 の 64 ビットで約 5 億字) より十分小さく) */
+const SHADOW_IMPORT_CHARS = 32 * 1024 * 1024;
 
 /** FontFace と同じ記述子の @font-face の規則 (CSS Fonts 4 §4。既定の値の記述子は書かない) */
 function fontFaceRule(face: FontFace, family: string, src: string): string {
