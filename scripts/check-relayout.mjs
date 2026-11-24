@@ -5,7 +5,7 @@
  * 違えば、使い回しの側の誤り。速い版 (リポジトリの小さな文書) は test/relayoutCheck.test.ts で、npm test に入っている。
  *
  * 使い方:
- *   node scripts/check-relayout.mjs [--only <群>,…] [--skip <群>,…] [--filter <正規表現>] [--seed N] [--edits N] [--jobs N] [--no-pdf]
+ *   node scripts/check-relayout.mjs [--only <群>,…] [--skip <群>,…] [--filter <文字列>] [--seed N] [--edits N] [--jobs N] [--no-pdf]
  *                                  [--json <file>] [--samples <dir>] [--weasyprint <dir>] [--src <dir>] [--no-build]
  *   群 (既定はすべて。手元に無い見本の群は、理由を書いて飛ばす):
  *     conformance … 対応仕様説明書 (HTML と CSS 編・XSL-FO 編。日本語と英語)
@@ -58,7 +58,7 @@ for (let i = 2; i < process.argv.length; i++) {
   };
   if (a === '--only') args.only = v().split(',');
   else if (a === '--skip') args.skip = v().split(',');
-  else if (a === '--filter') args.filter = new RegExp(v());
+  else if (a === '--filter') args.filter = v(); // 文書の名前に含まれる文字列で絞る (正規表現にはしない)
   else if (a === '--seed') args.seed = Number(v());
   else if (a === '--edits') args.edits = Number(v());
   else if (a === '--subjects') args.subjects = v().split(',');
@@ -114,7 +114,7 @@ function listDocs() {
   const docs = [];
   const skipped = [];
   const add = (d) => {
-    if (!args.filter || args.filter.test(d.id)) docs.push(d);
+    if (!args.filter || d.id.includes(args.filter)) docs.push(d);
   };
   if (groups.includes('conformance')) {
     const conf = path.join(root, 'docs', 'conformance');

@@ -26,9 +26,12 @@ const JA_ENV = { ...process.env, KUMIORI_LANG: 'ja' };
 /** 子のプロセスを動かす別の利用者 (nobody) の uid・gid */
 const NOBODY = 65534;
 
-/** nobody が読めるか (ancestors をたどれて、読めて、x なら動かせるか) を、nobody の sh で確かめる */
+/** test のコマンド (シェルを通さずに、引数で渡して動かす) */
+const TEST_BIN = ['/usr/bin/test', '/bin/test'].find((p) => fs.existsSync(p));
+
+/** nobody が読めるか (ancestors をたどれて、読めて、x なら動かせるか) を、nobody で動かす test で確かめる */
 function nobodyCan(test: '-r' | '-x', p: string): boolean {
-  const r = spawnSync('/bin/sh', ['-c', `test ${test} "$1"`, 'sh', p], { uid: NOBODY, gid: NOBODY });
+  const r = spawnSync(TEST_BIN!, [test, p], { uid: NOBODY, gid: NOBODY });
   return r.status === 0;
 }
 
@@ -38,7 +41,7 @@ function nobodyCan(test: '-r' | '-x', p: string): boolean {
  * cli.js は、dist-cli の全体と、package.json の実行時の依存 (とその依存) を node_modules に写す。写してもたどれなければ、飛ばす理由の文を返す
  */
 function nobodyTools(dir: string): { node: string; cli: string; fonts: string } | string {
-  if (!fs.existsSync('/bin/sh')) return '/bin/sh が無いので、nobody で確かめられない';
+  if (!TEST_BIN) return 'test のコマンドが無いので、nobody で確かめられない';
   const copy = (from: string, to: string) => fs.cpSync(from, to, { recursive: true, dereference: true });
   let node = process.execPath;
   if (!nobodyCan('-x', node)) {

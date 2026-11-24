@@ -70,6 +70,16 @@ describe('stripImports', () => {
     expect(stripImports('@import url("a;b.css") screen; /* c */ @import \'d.css\';\np { color: red }')).toBe('\np { color: red }');
     expect(stripImports('@media print { p { content: "@import x;" } }')).toBe('@media print { p { content: "@import x;" } }');
   });
+
+  it('注釈の続く文でも、時間をかけない (前の空白と注釈を、前から 1 度だけ読む)', () => {
+    // 直す前の正規表現では、注釈 30 個で数秒、1 個増えるごとにおよそ倍になった
+    const t0 = performance.now();
+    for (const css of ['/**/'.repeat(30) + 'x; p { color: red }', '/*' + '*//*'.repeat(5000) + '*/x; p { color: red }']) expect(stripImports(css)).toBe(css);
+    expect(performance.now() - t0).toBeLessThan(500);
+    expect(stripImports('/* a */ /* b */\n@IMPORT "c.css";p{}')).toBe('p{}');
+    expect(stripImports('/* @import "a.css"; */p{}')).toBe('/* @import "a.css"; */p{}');
+    expect(stripImports('@importx;p{}')).toBe('@importx;p{}');
+  });
 });
 
 describe('renameTypeSelector', () => {

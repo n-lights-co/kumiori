@@ -212,7 +212,7 @@ npm run compare:base -- --base main --only conformance,examples,samples
   If a commit's `package-lock.json` is the same as the current one, this repository's `node_modules` is linked next to that place and used; if it differs, its dependencies are installed there with `npm ci`.
   The command for `--head .` is built in `build/` under `--out` with `node_modules` linked next to it, so `--out` may be outside the repository.
   Even when `.cache` is a link to another working copy, the dependencies used for typesetting are those of the working copy you run it in (the link next to the cache is redone on every run; avoid using the same cache from two working copies at once, as they would fight over the link).
-- The documents are chosen by group (`--only`, `--skip`; `--filter <regular expression>` narrows them by document name). Groups whose samples are not available locally are skipped, and the report says why.
+- The documents are chosen by group (`--only`, `--skip`; `--filter <string>` narrows them to the documents whose names contain the string). Groups whose samples are not available locally are skipped, and the report says why.
 
 | Group | Documents |
 | --- | --- |

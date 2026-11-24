@@ -215,6 +215,23 @@ export function mapStyleRuleSelectors(css: string, map: (selector: string) => st
 }
 
 /**
+ * css の from から stop までの文が @import の規則か (前の空白と注釈 (CSS Syntax 3 §4.3.2) を飛ばして、@import の語で始まるか)。
+ * 空白と注釈の繰り返しを 1 つの正規表現で書くと、注釈が続いて @import で始まらない文で後戻りが指数で増えるので、前から 1 度だけ読む
+ */
+function isImport(css: string, from: number, stop: number): boolean {
+  let j = from;
+  while (j < stop) {
+    if (/\s/.test(css[j])) j++;
+    else if (css[j] === '/' && css[j + 1] === '*') {
+      const e = css.indexOf('*/', j + 2);
+      if (e < 0 || e + 2 > stop) return false;
+      j = e + 2;
+    } else break;
+  }
+  return /^@import\b/i.test(css.slice(j, Math.min(stop, j + 8)));
+}
+
+/**
  * スタイルシートの文字から、いちばん外の @import の規則 (; で終わる文) を除く (中身は、呼ぶ側が、読み込んだ先の規則を囲って置く)。
  * @import は、スタイルシートの初めにだけ書ける (CSS Cascade 5 §2.1。後ろにあるものは無効) ので、どこにあっても除いてよい
  */
@@ -227,7 +244,7 @@ export function stripImports(css: string): string {
       out += css.slice(i);
       break;
     }
-    if (css[stop] === ';' && /^(\s|\/\*[\s\S]*?\*\/)*@import\b/i.test(css.slice(i, stop))) {
+    if (css[stop] === ';' && isImport(css, i, stop)) {
       i = stop + 1;
       continue;
     }
