@@ -190,6 +190,8 @@ export interface PreparedHtml {
   bodyWidthPx: number;
   /** 名前付きのページ (@page <名前>) の領域の幅 (px。名前ごと) */
   pageWidthsPx: Map<string, number>;
+  /** 名前付きのページ (@page <名前>) の領域の高さ (px)。文書の最初のページが名前付きのページのときの、根元の要素の百分率の高さの基準 (cascadeStyles の pageHeights) */
+  pageHeightsPx: Map<string, number>;
   pageHeightPx: number;
 }
 
@@ -478,9 +480,13 @@ export async function prepareHtml(
   // 名前付きのページ (@page <名前>) の領域の幅 (px)。page でそのページを指定した要素の百分率の幅の基準 (cascadeStyles の pageWidths)
   // (Map: __proto__ などの名前も、ふつうの名前として入れる)
   const pageWidthsPx = new Map<string, number>();
-  for (const [name, pg] of namedPageBoxes(sheet, defaultPage)) pageWidthsPx.set(name, ((pg.width - pg.margins.left - pg.margins.right) / 25.4) * 96);
+  const pageHeightsPx = new Map<string, number>();
+  for (const [name, pg] of namedPageBoxes(sheet, defaultPage)) {
+    pageWidthsPx.set(name, ((pg.width - pg.margins.left - pg.margins.right) / 25.4) * 96);
+    pageHeightsPx.set(name, ((pg.height - pg.margins.top - pg.margins.bottom) / 25.4) * 96);
+  }
   const pageHeightPx = ((page.height - page.margins.top - page.margins.bottom) / 25.4) * 96;
-  return { doc: parsed, css, authorCss, uaCss: base, uaSheet, authorSheet, sheet, bodyWidthPx, pageWidthsPx, pageHeightPx, warnings };
+  return { doc: parsed, css, authorCss, uaCss: base, uaSheet, authorSheet, sheet, bodyWidthPx, pageWidthsPx, pageHeightsPx, pageHeightPx, warnings };
 }
 
 /**

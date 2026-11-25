@@ -6,7 +6,7 @@
  *  - 参照を含む行は「行 + その脚注」が現ページに収まる場合だけ置く。収まらなければ参照行ごと次ページへ。
  *  - 脚注 1 つがページに収まらないほど長いときだけ、行単位で分割して続きを次ページの脚注領域の先頭へ回す。
  */
-import type { FootnoteOptions, LFootnote } from './types';
+import type { FootnoteOptions, LBlock, LFootnote, LInline, LInlineLevel } from './types';
 import { newNode, type LNode } from './lnode';
 import { copySourceRef } from './sourceRef';
 import { circledNumber, formatPageNumber, kanjiNumber } from './pageNumber';
@@ -19,6 +19,48 @@ export interface FootEntry {
   cont?: boolean;
   /** 本体の後ろに空ける量 (本体ブロックの space-after)。次の脚注との間隔になる。無ければ FootnoteOptions.spacing */
   after?: number;
+  /** 行内に並べる脚注 (footnote-display: inline・compact、axf:footnote-stacking="inline") の本体。後ろの脚注を、同じ段落に続けて組める */
+  inl?: FootInline;
+}
+
+/** 行内に並べる脚注の本体 (FootEntry.inl): 1 つの段落に続けて組んだ脚注と、それぞれを行の途中で分けないか */
+interface FootInline {
+  fns: readonly LFootnote[];
+  noBreak: readonly boolean[];
+  /** 組んだ幅 (FootnoteCtx.entry の width) と、その覚えの鍵 */
+  width: number | undefined;
+  key: number;
+}
+
+/** 脚注の本体の中身のうち、行内に並べられない (ブロックの) もの */
+const BLOCK_TYPES = new Set(['block', 'table', 'block-container', 'marker', 'retrieve-marker', 'retrieve-table-marker', 'float']);
+/** 行内の箱にするときに外す、脚注そのものの指定と、段落だけに効く書式 (段落の書式は、つないだ段落の最初の脚注のものを使う) */
+const NOT_INLINE_KEYS = [
+  'type', 'children', 'label', 'bodyLabel', 'tagParts', 'policy', 'footnoteDisplay', 'inlineBox', 'referenceScale', 'referenceWeight', 'referenceLineHeight',
+  'referenceShift', 'referenceAutospace', 'referenceStyle', 'callPrefix', 'callSuffix', 'markerPrefix', 'markerSuffix', 'numberFormat', 'labelPosition',
+  'labelGapEm', 'textAlign', 'textAlignLast', 'textIndent', 'lastLineEndIndent', 'margin', 'padding', 'border', 'backgroundColor', 'spaceBefore', 'spaceAfter',
+] as const;
+/** 包みのブロックをほどいて中身を行内に並べてよいか (罫線・余白・背景・大きさの無い、書式だけの包み) */
+const PLAIN_BLOCK_KEYS = ['margin', 'padding', 'border', 'backgroundColor', 'backgroundImage', 'width', 'height', 'spaceBefore', 'spaceAfter', 'breakBefore', 'breakAfter', 'id', 'link', 'annotation'] as const;
+
+function omit<T extends object>(o: T, keys: readonly string[]): Partial<T> {
+  const r = { ...o } as Record<string, unknown>;
+  for (const k of keys) delete r[k];
+  return r as Partial<T>;
+}
+
+/**
+ * 脚注 fn の本体を行内に並べるときの中身 (行内の並び) と、その包みの書式。本体が行内の並びだけならそのまま、書式だけの包みのブロック 1 つ
+ * (XSL-FO の fo:footnote-body の fo:block) なら、ほどいた中身と、そのブロックの書式。ブロックを含む本体は行内に並べられない (undefined)
+ */
+function inlineContent(fn: LFootnote): { style: Partial<LBlock>; content: LInlineLevel[] } | undefined {
+  const kids = fn.children.filter((c) => !(typeof c === 'string' && !c.trim()));
+  const isBlock = (c: unknown) => typeof c === 'object' && c !== null && BLOCK_TYPES.has((c as { type: string }).type);
+  if (!kids.some(isBlock)) return { style: {}, content: fn.children as LInlineLevel[] };
+  if (kids.length !== 1 || (kids[0] as { type: string }).type !== 'block') return undefined;
+  const b = kids[0] as LBlock;
+  if (PLAIN_BLOCK_KEYS.some((k) => b[k as keyof LBlock] !== undefined) || b.children.some(isBlock)) return undefined;
+  return { style: omit(b, ['type', 'children']), content: b.children as LInlineLevel[] };
 }
 
 /**
@@ -264,10 +306,81 @@ export class FootnoteCtx {
       // 写しに元の節の番号を引き継ぐ (本体の箱の Area が、脚注の節の番号を持つ。タグ付き PDF では、本体を脚注の構造 (Note) に入れる)
       copySourceRef(fn, body);
       e = this.layoutBody(body, label, width);
+      // 行内に並べる脚注: compact は、1 行に収まるものだけ (CSS GCPM 3 §2.3)。compact と axf:footnote-stacking="inline" の、1 行に収まる脚注は、
+      // 後ろにつないでも行の途中で分けない (収まらなければ次の行から置く。アンテナハウスのサンプル FO 集の axf-footnote-1 の脚注 (3))
+      const mode = fn.footnoteDisplay ?? (this.opts.stacking === 'inline' ? 'stack' : undefined);
+      if (mode && inlineContent(fn)) {
+        const one = nodeUnits(e.node) === 1;
+        if (mode !== 'compact' || one) e.inl = { fns: [fn], noBreak: [mode !== 'inline' && one], width, key };
+      }
       byWidth.set(key, e);
       this.entryLog.push([fn, key, e]);
     }
     return e;
+  }
+
+  /** つないだ本体 (join の覚え。前の本体 → 後ろの本体 → つないだもの。つなげなければ null) */
+  private joins = new WeakMap<FootEntry, WeakMap<FootEntry, FootEntry | null>>();
+
+  /**
+   * 脚注の領域で、本体 prev の後ろに e を置くとき、2 つを 1 つの段落に続けて組んだ本体 (行内に並べる脚注どうしのとき。CSS GCPM 3 §2.3 の
+   * footnote-display: inline・compact、アンテナハウスの axf:footnote-stacking="inline")。つながないなら undefined。
+   * prev の代わりに置き、増える高さは、つないだものと prev の高さの差 (間隔は空けない)。分けた残り (cont) にはつながない
+   */
+  join(prev: FootEntry | undefined, e: FootEntry): FootEntry | undefined {
+    const a = prev?.inl;
+    const b = e.inl;
+    if (!prev || !a || !b || prev.cont || e.cont || a.key !== b.key) return undefined;
+    let byNext = this.joins.get(prev);
+    if (!byNext) this.joins.set(prev, (byNext = new WeakMap()));
+    const had = byNext.get(e);
+    if (had !== undefined) return had ?? undefined;
+    const inl: FootInline = { fns: [...a.fns, ...b.fns], noBreak: [...a.noBreak, ...b.noBreak], width: a.width, key: a.key };
+    const m = this.layoutBody(this.inlineBody(inl), '', inl.width);
+    m.inl = inl;
+    if (e.after !== undefined) m.after = e.after;
+    else delete m.after;
+    byNext.set(e, m);
+    return m;
+  }
+
+  /**
+   * 行内に並べる脚注 inl.fns を、1 つの段落にした本体。段落の書式は最初の脚注 (と、その包みのブロック) のもの。脚注ごとに行内の箱にし、
+   * その脚注の字の書式と箱の書式 (inlineBox) を付け、頭に番号を置く。ブロックの本体と同じく、番号の後ろの空きは、置き方の指定が無ければ全角の空き
+   * (outside は、行内の箱には外側が無いので inside と同じ)
+   */
+  private inlineBody(inl: FootInline): LFootnote {
+    const parts = inl.fns.map((fn) => inlineContent(fn)!);
+    const kids: LInline[] = inl.fns.map((fn, k) => {
+      const label = this.markerLabel(fn);
+      let lab: string | LInline = label;
+      if (fn.tagParts) {
+        lab = { type: 'inline', children: [label] };
+        copySourceRef(fn.tagParts.label, lab);
+      }
+      const head: LInlineLevel[] = fn.bodyLabel === false ? [] : (fn.labelPosition ?? this.opts.labelPosition) ? [lab] : [lab, '\u3000'];
+      const w: LInline = {
+        ...(omit(fn, NOT_INLINE_KEYS) as object),
+        ...(omit(parts[k].style, NOT_INLINE_KEYS) as object),
+        ...fn.inlineBox,
+        ...(inl.noBreak[k] ? { noBreak: true } : {}),
+        type: 'inline',
+        children: [...head, ...(withLabel(parts[k].content, label) as LInlineLevel[])],
+      };
+      // 行内の箱に、脚注の節の番号を引き継ぐ (箱の Area が脚注の節の番号を持つ。タグ付き PDF では、それぞれの本体を、その脚注の構造 (Note) に入れる)
+      copySourceRef(fn, w);
+      return w;
+    });
+    // 脚注どうしの間は、改行してよい所にする (幅の無い空白。UAX #14 の LB8。前の脚注の終わりの句点と、後ろの脚注の頭の全角の空きの間のように、
+    // 字の並びだけでは改行の機会の無い所でも、後ろの脚注を次の行から置けるように)
+    const children: LInlineLevel[] = [];
+    kids.forEach((w, k) => {
+      if (k > 0) children.push('\u200B');
+      children.push(w);
+    });
+    const first = inl.fns[0];
+    // 段落は、どの脚注の節の番号も持たない (番号・リンクの飛び先・構造の節は、脚注ごとの行内の箱に付ける)
+    return { ...(omit(first, ['id', 'tag', 'tagParts', 'label']) as LFootnote), ...(omit(parts[0].style, ['id', 'tag']) as object), type: 'footnote', bodyLabel: false, children };
   }
 
   private sepEntry?: FootEntry;

@@ -165,6 +165,22 @@ export interface TextStyle {
   /** 和欧間のアキの大きさ (字の大きさに対する比)。既定 0.25 (四分)。CSS の text-autospace は 0.125 (CSS Text 4) */
   textAutospaceWidth?: number;
   /**
+   * 和欧間のアキを入れる相手の字の種類 (CSS の text-autospace の ideograph-alpha・ideograph-numeric。CSS Text 4 §8.4)。
+   * all (既定): 欧文の字と数字の両方。alpha: 欧文の字 (non-ideographic letters) だけ。numeric: 数字 (non-ideographic numerals) だけ
+   */
+  textAutospaceKinds?: 'all' | 'alpha' | 'numeric';
+  /**
+   * フランス語の約物の前後の空き (CSS の text-autospace の punctuation。CSS Text 4 §8.4: この段階の仕様では、内容の言語がフランス語のときだけ、
+   * フランス語の組版の決まりどおりに U+202F (細い非改行空白) と U+00A0 (非改行空白) を入れる)。HTML の読み込みが、lang が fr の所にだけ付ける。
+   * ; ! ? の前と « の後ろ・» の前は細い空き、: の前は語間の空き (どれも、そこで行を分けない)。間に空白の字があれば入れない (insert)
+   */
+  textAutospacePunct?: boolean;
+  /**
+   * text-autospace の replace (CSS Text 4 §8.4): 空きを入れる所にある U+0020 (空白 1 つ) を取り除いて、その空きにする (insert では空けない)。
+   * 和欧間のアキと、フランス語の約物の前後の空き (textAutospacePunct) に効く
+   */
+  textAutospaceReplace?: boolean;
+  /**
    * 和欧間のアキで、全角の空白 (U+3000) も和字として扱う (アンテナハウスの axf:text-autospace。XSL-FO が付ける)。
    * CSS の text-autospace は付けない (CSS Text 4 §8.4.1 の表意文字は漢字・仮名などの字で、空白の U+3000 は入らない)
    */
@@ -834,6 +850,11 @@ export interface PageMaster {
   /** 角のトンボ (既定 true) とセンタートンボ (既定 true) を描くか */
   cornerMarks?: boolean;
   centerMarks?: boolean;
+  /**
+   * 出力のページを、組んだ後に時計回りに回す角度 (CSS の page-orientation。CSS Paged Media 3 §7.1.2)。PDF ではページの /Rotate
+   * (ISO 32000-1 Table 30。表示するときに時計回りに回す)。組み方は変えない
+   */
+  rotation?: 90 | 270;
   /** トンボの線の太さ (pt。既定 0.3) */
   trimMarkLineWidth?: number;
   /** 本文領域 (region-body) の余白 (mm) */
@@ -872,6 +893,12 @@ export interface PageMaster {
    * 背景画像の位置・cover / contain もその範囲に対して決める (CSS の根元の要素 (html・body) の背景。WeasyPrint と同じ)
    */
   backgroundArea?: 'page' | 'content';
+  /**
+   * ページの余白の内側 (ページ領域) に、ページの背景 (backgroundColor・backgroundImage) の上に重ねて描く背景 (CSS の根元の要素 (html・body) の
+   * 背景で、@page にも背景があるとき。CSS Paged Media 3 §3.1: ページの箱の背景の上に、根元の要素の背景を、ページ領域 (canvas) に描く)。
+   * 背景画像の位置・大きさも、ページ領域で決める
+   */
+  rootBackground?: { backgroundColor?: string; backgroundImage?: BackgroundImage };
   /**
    * 背景画像の位置の基準の領域 (仕上がりの各辺から内側への幅、mm)。CSS の @page の背景は、塗り足しまでのページの箱の全体に描くが、
    * 位置・百分率の大きさ・cover / contain・繰り返しの並べ始めは、ページの箱の padding の領域 (余白と罫線の内側) で決める (CSS Paged Media 3 §3.1)。
@@ -932,6 +959,17 @@ export interface LDocument extends BaseNode {
    */
   pageSidesByOrder?: boolean;
   /**
+   * pageSidesByOrder の文書で、最初のページを左右の逆のページにする (1 なら、最初のページを、ページの進む向きで決まる側の逆にする)。
+   * 文書の最初の箱の強制の区切り (CSS の break-before: left・right など) は、空のページを挟まずに、最初のページの左右を決める
+   * (CSS Paged Media 3 §3.3: 根元に伝わった区切りの前の空のページは出さない。:first は最初に出すページに当たる)
+   */
+  firstPageSideShift?: 1;
+  /**
+   * ページが右から左へ進む本 (HTML の根元の要素が vertical-rl。CSS Paged Media 3 §3.3)。奇数ページ (順・番号の奇数) は左ページで、綴じ側は右になる
+   * (float の inside・outside の左右に使う)。省略: 左から右へ進む本 (奇数ページは右ページで、綴じ側は左)
+   */
+  rtlPageProgression?: true;
+  /**
    * 索引の鍵の付いた所 (XSL-FO の index-key・fo:index-range-begin〜-end。XSL 1.1 §6.10・§7.24)。文書の中の順に並べる。
    * LIndexPageCitationList が、ここに並んだ所の置かれたページを引く。無ければ索引を使わない文書
    */
@@ -976,6 +1014,11 @@ export interface PageMasterCondition {
   trailingBlank?: boolean;
   /** ページ番号の偶奇 (initialPageNumber を考慮)。LDocument.pageSidesByOrder のときは、文書の最初からのページの順の偶奇 */
   oddOrEven?: 'odd' | 'even' | 'any';
+  /**
+   * ページの順の An+B (CSS GCPM 3 §3.1 の :nth() のページの擬似クラス)。すべてに合うページだけに当てる。group が無ければ文書の先頭からの
+   * ページの順 (1 始まり)、group なら、このページシーケンス (名前付きページの組) の中の順。ページ番号 (page のカウンター) とは関わらない
+   */
+  nth?: Array<{ a: number; b: number; group?: boolean }>;
 }
 
 export interface ConditionalPageMaster {
@@ -1514,6 +1557,11 @@ export interface LImage extends BaseNode {
    * 作成者が auto を書いて属性の大きさを使わない向きも、画像本来の比が無いとき (読めない画像・大きさも viewBox も無い SVG) は、この比で決める
    */
   attrRatio?: number;
+  /**
+   * attrRatio を、画像本来の比より先に使う (CSS の aspect-ratio に auto を含まない比を書いたもの。CSS Sizing 4 §5.1: 置換要素でも、
+   * 指定の比が本来の比に代わる)。幅・高さが両方 auto なら、幅は画像本来の幅で、高さはその比で決める
+   */
+  ratioForced?: true;
   /** uniform (既定): width × height に収まるよう縦横比を保って縮尺 / non-uniform: 指定寸法へ引き伸ばす */
   scaling?: 'uniform' | 'non-uniform';
   /**
@@ -1708,6 +1756,20 @@ export interface LFloat extends BaseNode, BoxStyle {
  */
 export interface LFootnote extends BaseNode {
   type: 'footnote';
+  /**
+   * 脚注が参照のページに入らないときの扱い (CSS の footnote-policy。CSS GCPM 3 §2.8)。line: 参照の行の前で改ページし、参照の行と脚注を
+   * 次のページに置く。block: 参照を含む段落の前で改ページする。省略 (auto): 脚注の領域の高さの上限 (max-height) を超える分は、後のページへ送る
+   */
+  policy?: 'line' | 'block';
+  /**
+   * 脚注の領域での置き方 (CSS の footnote-display。CSS GCPM 3 §2.3)。省略 (block): 脚注ごとのブロックとして積む。
+   * inline: 脚注の本文を行内の箱にして、同じページ (段) の脚注の領域に続けて並べ、1 つの段落のように組む。
+   * compact: 本文が 1 行に収まる脚注は、行の途中で分けない行内の箱として並べ、収まらない脚注はブロックとして積む
+   * (§2.3 の compact: 処理系がブロックか行内かを決める。2 つ以上の脚注が 1 行に収まるなら行内に置くとよい)
+   */
+  footnoteDisplay?: 'inline' | 'compact';
+  /** footnoteDisplay が inline・compact のときの、行内の箱の罫線・内側の余白・行の進む方向の margin・背景 (CSS の脚注の要素の箱の書式) */
+  inlineBox?: Pick<LInline, 'border' | 'padding' | 'inlineMargin' | 'backgroundColor'>;
   /** 自動連番の代わりに使うラベル (例: '※')。参照記号と脚注本体の両方に使う */
   label?: string;
   /** false なら、本体 (children) が自分でラベルを含むものとして、エンジンはラベルを前置しない (既定 true) */
@@ -1796,6 +1858,12 @@ export interface FootnoteOptions {
    * 超える脚注は、行で分けて (分けられなければ丸ごと) 次のページへ送る。ページに脚注しか無いときは上限を超えてよい
    */
   maxHeight?: number;
+  /**
+   * 脚注の並べ方 (アンテナハウスの拡張 axf:footnote-stacking。fo:page-sequence・fo:region-body)。inline: 脚注を行の進む方向に並べる
+   * (アンテナハウスのサンプル FO 集の axf-footnote-1 に合わせ、1 行に収まる脚注は行の途中で分けず、収まらなければ次の行から置く。
+   * 長い脚注は行の途中で分けて続ける)。省略 (block): 脚注ごとのブロックとして積む。脚注ごとの LFootnote.footnoteDisplay が先
+   */
+  stacking?: 'inline';
 }
 
 /**
@@ -2042,6 +2110,11 @@ export interface LBlockContainer extends BaseNode, BoxStyle {
      * maxCount は column-count (auto なら無し)。gapPct は column-gap の百分率 (0.1 = 10%。基準は段組の箱の内容の幅。CSS Box Alignment 3 §8.1))
      */
     byWidth?: { width?: number; maxCount?: number; gapPct?: number };
+    /**
+     * auto: 高さの指定が無くても、ページで分けるときは段を順に埋める (CSS の column-fill: auto。CSS Multi-column 1 §7.1: ページの残りが
+     * 段の高さを決める。続く段の組も、ページの高さで順に埋める)。省略は、高さの指定の無い段組の段の高さを釣り合わせる
+     */
+    fill?: 'auto';
   };
   /** pt。absolutePosition 時は PageArea 原点基準。right/bottom 指定時は width/height から逆算 */
   top?: number;
@@ -2081,6 +2154,13 @@ export interface LTableColumn {
    * 所 (grid の項目・表のセル・inline-block・絶対配置の箱の中など) に置いた flex の容器)。width は見積もりで決めた幅 (外側の幅)
    */
   flexLate?: LFlexItemColumn;
+  /**
+   * flex の項目の列で、主軸の大きさ (flex-basis か width) が百分率のもの: 外側の幅 = f × 容器の内容の幅 + edge (pt。長さの部分と、余白・枠・内側の余白)。
+   * width は読み込みのときの容器の幅の見積もりで解いた幅。組版エンジンは、組むときの表の内容の幅で解き直す。中身の幅を測る組版では、
+   * 循環する百分率なので、中身の幅 (max-content) の列として測る (CSS Sizing 3 §5.2.1)。flexItem か flexLate のある列にだけ付く。
+   * basis は flex-basis の百分率 (width の百分率は、自動の最小の大きさの上限 (指定の大きさ。Flexbox 1 §4.5) にもなる)
+   */
+  percentWidth?: { f: number; edge: number; basis?: true };
   /**
    * grid の 1 行の表 (LTable.gridTemplate) の、項目 (か、項目の無い残り) の列が占める grid の列の範囲 [from, to)。組版エンジンが、表を置くときの
    * 内容の幅で列の幅を決め (gridTracks)、この範囲の列の幅と、間の間隔を足した幅にする
@@ -2634,12 +2714,16 @@ export interface SheetArea extends AreaBase {
   trimMarkMargins?: { top: number; right: number; bottom: number; left: number };
   cornerMarks?: boolean;
   centerMarks?: boolean;
+  /** 出力のページを時計回りに回す角度 (PageMaster.rotation) */
+  rotation?: 90 | 270;
   trimMarkLineWidth?: number;
   backgroundColor?: string;
   /** 用紙全体の背景画像 (PageMaster.backgroundImage。width / height は画像本来の大きさで決めたもの) */
   backgroundImage?: BackgroundImage & { width: number; height: number };
   /** 背景画像の位置の基準の領域 (PageMaster.backgroundOrigin。Sheet ローカル)。無ければ、描く範囲 (backgroundBox か bleedBox) */
   backgroundOriginBox?: Rect;
+  /** ページ領域 (box。Sheet ローカル) に、用紙の背景の上に重ねる背景 (PageMaster.rootBackground) */
+  rootBackground?: { box: Rect; backgroundColor?: string; backgroundImage?: BackgroundImage & { width: number; height: number } };
 }
 
 /** 矩形 (pt。y は下向き) */

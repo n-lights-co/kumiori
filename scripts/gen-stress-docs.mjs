@@ -348,7 +348,8 @@ export function collapseTableFo(n, seed = 12) {
 /**
  * 章ごとに page-sequence を分けた XSL-FO (n は章の数)。createTypesetter の使い回し (前の文書の page-sequence を、そのまま使い回す作り) の確かめに使う。
  * kind が footnote なら、本文の段落に脚注を付ける (タグ付きの PDF では、脚注の構造の要素を、文書の初めからの通し番号で名付ける)。
- * marker なら、章の段落にマーカーを置き、柱 (region-before) で retrieve-marker で引く
+ * marker なら、章の段落にマーカーを置き、柱 (region-before) で retrieve-marker で引く。
+ * footnote-inline なら、footnote と同じ脚注を、アンテナハウスの拡張 axf:footnote-stacking="inline" で行の進む方向に並べる (脚注の頭に番号を書く)
  */
 export function chaptersFo(n, seed = 13, kind = 'footnote') {
   const { r, int, text } = tools(seed);
@@ -357,7 +358,7 @@ export function chaptersFo(n, seed = 13, kind = 'footnote') {
     let body = `<fo:block font-size="14pt" space-after="6pt">第 ${c + 1} 章</fo:block>`;
     const m = int(6, 14);
     for (let i = 0; i < m; i++) {
-      const note = kind === 'footnote' && r() < 0.4 ? `<fo:footnote><fo:inline baseline-shift="super" font-size="6pt">*</fo:inline><fo:footnote-body><fo:block font-size="7pt">${text(int(20, 120))}</fo:block></fo:footnote-body></fo:footnote>` : '';
+      const note = (kind === 'footnote' || kind === 'footnote-inline') && r() < 0.4 ? `<fo:footnote><fo:inline baseline-shift="super" font-size="6pt">*</fo:inline><fo:footnote-body><fo:block font-size="7pt">${kind === 'footnote-inline' ? '＊　' : ''}${text(int(20, 120))}</fo:block></fo:footnote-body></fo:footnote>` : '';
       const marker = kind === 'marker' ? `<fo:marker marker-class-name="sec">${c + 1}.${i + 1} ${text(int(3, 10))}</fo:marker>` : '';
       body += `<fo:block space-after="4pt">${marker}${text(int(60, 400))}${note}${text(int(10, 80))}</fo:block>`;
     }
@@ -367,8 +368,8 @@ export function chaptersFo(n, seed = 13, kind = 'footnote') {
       `<fo:flow flow-name="xsl-region-body" font-size="9pt" line-height="1.5">${body}</fo:flow></fo:page-sequence>`;
   }
   return (
-    `<?xml version="1.0" encoding="UTF-8"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja"><fo:layout-master-set>` +
-    `<fo:simple-page-master master-name="p" page-width="105mm" page-height="148mm" margin="9mm"><fo:region-body margin-top="8mm"/><fo:region-before extent="6mm"/></fo:simple-page-master></fo:layout-master-set>` +
+    `<?xml version="1.0" encoding="UTF-8"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"${kind === 'footnote-inline' ? ' xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions"' : ''} xml:lang="ja"><fo:layout-master-set>` +
+    `<fo:simple-page-master master-name="p" page-width="105mm" page-height="148mm" margin="9mm"><fo:region-body margin-top="8mm"${kind === 'footnote-inline' ? ' axf:footnote-stacking="inline"' : ''}/><fo:region-before extent="6mm"/></fo:simple-page-master></fo:layout-master-set>` +
     seqs +
     '</fo:root>'
   );
@@ -420,14 +421,45 @@ export function tocFo(n, seed = 16) {
   );
 }
 
+/**
+ * 脚注を行内に並べる HTML (CSS GCPM 3 §2.3 の footnote-display: inline・compact。n 章。章は改ページで始める)。段落の脚注は、inline・compact・block を
+ * 混ぜ、短いもの (1 行) と長いもの (数行) を混ぜる。本文は 2 段組 (段組のページの脚注。1 段のページの脚注は、chaptersFo の footnote-inline で確かめる)
+ */
+export function footnoteDisplayHtml(n, seed = 17) {
+  const { r, int, text } = tools(seed);
+  let body = '';
+  for (let c = 0; c < n; c++) {
+    let sec = `<h2>第 ${c + 1} 章</h2>`;
+    const m = int(5, 12);
+    for (let i = 0; i < m; i++) {
+      const notes = int(0, 3);
+      let p = text(int(40, 240));
+      for (let k = 0; k < notes; k++) {
+        const kind = ['inline', 'inline', 'compact', 'block'][int(0, 3)];
+        p += `<span class="fn ${kind}">${text(r() < 0.6 ? int(4, 16) : int(30, 80))}</span>${text(int(5, 40))}`;
+      }
+      sec += `<p>${p}</p>`;
+    }
+    body += `<section>${sec}</section>`;
+  }
+  return (
+    `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>脚注を行内に並べる文書</title><style>` +
+    `@page { size: 105mm 148mm; margin: 10mm } body { font-size: 9pt; line-height: 1.5; column-count: 2; column-gap: 4mm } section { break-before: page } h2 { font-size: 13pt }` +
+    `.fn { float: footnote; font-size: 7pt } .fn.inline { footnote-display: inline; margin-right: 1em } .fn.compact { footnote-display: compact; margin-right: 1em }` +
+    `</style></head><body>${body}</body></html>`
+  );
+}
+
 /** createTypesetter の使い回しの確かめに使う形 (SHAPES と同じ形。書き出す一揃い・指標の試験には入れない)。大きさは REUSE_SIZES */
 export const REUSE_SHAPES = {
   fofootnotes: { make: (n, seed) => chaptersFo(n, seed ?? 13, 'footnote'), ext: 'fo' },
   fomarkers: { make: (n, seed) => chaptersFo(n, seed ?? 14, 'marker'), ext: 'fo' },
+  fofootinline: { make: (n, seed) => chaptersFo(n, seed ?? 18, 'footnote-inline'), ext: 'fo' },
+  footdisplay: { make: footnoteDisplayHtml, ext: 'html' },
   toc: { make: tocHtml, ext: 'html' },
   fotoc: { make: tocFo, ext: 'fo' },
 };
-export const REUSE_SIZES = { fofootnotes: 8, fomarkers: 8, toc: 14, fotoc: 14 };
+export const REUSE_SIZES = { fofootnotes: 8, fomarkers: 8, fofootinline: 8, footdisplay: 8, toc: 14, fotoc: 14 };
 
 /** 続きから組む作りの確かめに使う形 (SHAPES と同じ形。書き出す一揃い・指標の試験には入れない)。大きさは RESUME_SIZES */
 export const RESUME_SHAPES = {

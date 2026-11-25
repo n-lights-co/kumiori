@@ -86,8 +86,8 @@ describe('既定のスタイルの HTML: ページの左右は、ページの順
   it('ページ番号を振り直さない文書は、これまでと同じ', async () => {
     expect(await sides('<p>a</p><p style="break-before:right">b</p><p style="break-before:left">c</p><p style="break-before:recto">d</p><p style="break-before:verso">e</p>')).toEqual(['1R', '2', '3R', '4L', '5R', '6L']);
     expect(await sides('<p>a</p><section style="page:x"><p>b</p></section>')).toEqual(['1R', '2L']);
-    // 最初の子の break-before: left は、これまでどおり、最初に白ページを入れる
-    expect(await sides('<p style="break-before:left">a</p><p style="break-before:page">b</p>')).toEqual(['1', '2L', '3R']);
+    // 最初の子の break-before: left は、白ページを挟まずに、最初のページを左ページにする (CSS Paged Media 3 §3.3: 空の最初のページを出さない)
+    expect(await sides('<p style="break-before:left">a</p><p style="break-before:page">b</p>')).toEqual(['1L', '2R']);
   });
 });
 

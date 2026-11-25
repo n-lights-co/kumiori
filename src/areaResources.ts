@@ -115,7 +115,11 @@ export function resourceAttacher(fonts: FontManager, assets?: AssetStore): { vis
     if (hit.pos) a.glyphPositions = hit.pos;
   };
   return {
-    visit: (sheet) => walkAreas(sheet, visitArea),
+    visit: (sheet) => {
+      walkAreas(sheet, visitArea);
+      // ページ領域に重ねる背景の画像 (SheetArea.rootBackground)
+      if (sheet.rootBackground?.backgroundImage?.src) addImage(sheet.rootBackground.backgroundImage.src);
+    },
     resources: () => ({ fonts: [...fontRes.values()], images: [...images.values()] }),
   };
 }

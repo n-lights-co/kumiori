@@ -44,6 +44,8 @@ export interface MasterInfo {
   /** region-body (またはページ) が rl-tb */
   bodyRtl?: boolean;
   bodyName: string;
+  /** region-body の axf:footnote-stacking (アンテナハウスの拡張。脚注の並べ方。page-sequence に書いていなければ、これを使う) */
+  footnoteStacking?: string;
   pageW: number;
   pageH: number;
 }
@@ -117,6 +119,7 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
   let bodyWmAttr: string | undefined;
   let columns = 1;
   let sideNotes = false;
+  let footStacking: string | undefined;
   let columnGapPt: number | undefined;
   let footPos: 'page' | 'column' = 'page';
   let colFill = false;
@@ -139,6 +142,7 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
       columnGapPt = gapR === undefined ? undefined : Math.max(gapR, 0);
       if (fo.attr(r, 'axf:footnote-position') === 'column') footPos = 'column';
       if (fo.attr(r, 'axf:footnote-position') === 'outside') sideNotes = true;
+      footStacking = fo.attr(r, 'axf:footnote-stacking')?.trim();
       // 末尾の段の釣り合わせ (アンテナハウスの拡張 axf:column-fill。値は CSS Multi-column 1 §7.1 の column-fill と同じ)。
       // 接頭辞の無い column-fill は XSL 1.1 に無い名前だが、互換の指定に関わらず読む (CLAUDE.md の「接頭辞の無い名前の拡張は互換の指定のときだけ」の例外)。
       // 最初の公開から対応仕様説明書 (docs/conformance/fo の region-body の段組) と開発の計画の表に、どのモードでも効く書き方として書いてきたため
@@ -271,6 +275,7 @@ export function readPageMaster(fo: FoPageHost, m: XEl, root?: XEl, lms?: XEl): M
     bodyWmAttr,
     bodyRtl,
     bodyName,
+    ...(footStacking ? { footnoteStacking: footStacking } : {}),
     pageW: W,
     pageH: H,
   };

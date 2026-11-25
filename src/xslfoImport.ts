@@ -2371,6 +2371,11 @@ class Importer {
       this.miss(msg(`axf:footnote-number-format (${MAX_COUNTER_LENGTH} 字より長い書式)`, `axf:footnote-number-format (a format longer than ${MAX_COUNTER_LENGTH} characters)`));
       fnFmt = undefined;
     }
+    // 脚注の並べ方 (アンテナハウスの拡張 axf:footnote-stacking。page-sequence、無ければ region-body。block (既定) | inline)。
+    // 接頭辞の付いた名前なので、互換の指定に関わらず読む。inline は、アンテナハウスのサンプル FO 集の axf-footnote-1 に合わせる (FootnoteOptions.stacking)
+    const stacking = this.attr(ps, 'axf:footnote-stacking')?.trim() ?? (def ?? alts[0]?.info)?.footnoteStacking;
+    if (stacking === 'inline') seq.footnotes = { ...seq.footnotes, stacking: 'inline' };
+    else if (stacking !== undefined && stacking !== 'block') this.miss(`axf:footnote-stacking="${stacking}"`);
     const fnInit = parseInt(this.attr(ps, 'axf:footnote-number-initial') ?? '', 10);
     const fnReset = this.attr(ps, 'axf:footnote-number-reset');
     if (fnFmt || Number.isFinite(fnInit) || fnReset === 'page') {

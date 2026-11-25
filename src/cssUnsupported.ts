@@ -34,7 +34,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'descent-override',
   'line-gap-override',
   'text-decoration-skip-ink',
-  'footnote-policy',
   'grid',
   'grid-template',
   'grid-template-rows',
@@ -53,7 +52,6 @@ export const UNSUPPORTED_CSS_PROPERTIES: ReadonlySet<string> = new Set([
   'overflow-block',
   'overflow-inline',
   'overflow-clip-margin',
-  'page-orientation',
   // 回り込みの形 (CSS Shapes 1 §6.1〜§6.3)。Kumiori の回り込みは、いつも箱の形 (margin box)
   'shape-outside',
   'shape-image-threshold',
@@ -121,17 +119,13 @@ export const UNSUPPORTED_CSS_VALUES: Readonly<Record<string, readonly string[]>>
   // 描く範囲の text は CSS Backgrounds 4 の値 (Backgrounds 3 §2.7 の <visual-box> は border-box・padding-box・content-box)
   'background-clip': ['text'],
   'hyphenate-limit-last': ['column', 'page', 'spread'],
-  // 脚注の置き方 (CSS GCPM 3 §2.3)。block (初期値) は Kumiori の置き方そのもの (SUPPORTED_ONLY_VALUES)
-  'footnote-display': ['inline', 'compact'],
 };
 
 /**
  * カスケードでは読まないが、この値なら Kumiori の組み方そのものなので、未対応にも知らないプロパティにも数えない値 (prop → 値)。
- * footnote-display: block (CSS GCPM 3 §2.3 の初期値。脚注は、いつもブロックとして脚注の領域に置く)
+ * (いまは無い。footnote-display は、どの値も読む: htmlPaged の isPagedDecl)
  */
-const SUPPORTED_ONLY_VALUES: Readonly<Record<string, readonly string[]>> = {
-  'footnote-display': ['block'],
-};
+const SUPPORTED_ONLY_VALUES: Readonly<Record<string, readonly string[]>> = {};
 
 /**
  * 対応しているプロパティのうち、値の中の語で見分ける、読まない値 (ほかの語と組んで書ける値)。「prop: 語」として数える
@@ -140,10 +134,8 @@ const SUPPORTED_ONLY_VALUES: Readonly<Record<string, readonly string[]>> = {
 const UNSUPPORTED_CSS_VALUE_WORDS: Readonly<Record<string, readonly string[]>> = {
   'hanging-punctuation': ['last'],
 };
-/** 宣言の値の中の、読まない関数 (prop → 関数の名前)。「名前()」として数える。target-counters() (CSS Content 3 §6.2。入れ子のカウンターの値の並び) */
-const UNSUPPORTED_CSS_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
-  content: ['target-counters'],
-};
+/** 宣言の値の中の、読まない関数 (prop → 関数の名前)。「名前()」として数える。いまは無い (target-counters() は本文の生成内容で読む) */
+const UNSUPPORTED_CSS_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {};
 
 export interface UnsupportedCssReport {
   /** 未対応のプロパティ・値 (「prop」「prop: value」) → 宣言の数 */
@@ -315,8 +307,8 @@ function count(rep: UnsupportedCssReport, prop: string, value: string, svg = fal
 /**
  * 作成者スタイルシート (読んだスタイルシート) と、文書の style 属性の宣言を数える。
  * @page の宣言と余白の箱の宣言、@font-face の記述子は、知らないプロパティとしては数えない (別の決まりで読む)。
- * @page の未対応の記述子 (page-orientation) と、余白の箱の content の未対応の関数 (target-counters()) は数える。
- * 読まずに捨てた規則・書き方 (@namespace・@page :nth()。parseCss の ignored) も数える。
+ * @page の未対応の記述子と、余白の箱の content の未対応の関数 (target-counters()。余白の箱には参照元の要素が無い) は数える。
+ * 読まずに捨てた規則・書き方 (@namespace。parseCss の ignored) も数える。
  * 読めない値の宣言 (invalid) は、規則と style 属性の宣言だけを数える (@page・余白の箱・@font-face は数えない)。
  * ah: カスケードに渡すのと同じ拡張の読み方 (互換の指定 --style ah のときは ALL_AH。省けば読まない)
  */

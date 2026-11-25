@@ -49,7 +49,7 @@ const LPPL = (name: string, language: string, copyright: string, version: string
 /**
  * 分綴のパターン (npm の hyphen の patterns/<名前>.js。hyph-utf8 の hyph-<名前>.tex を JavaScript に変換したもの) を取り込んだ
  * チャンクの先頭に足す注記: パターンごとの著作権の表示と、ライセンスが求める表示。全文と上流の冒頭の表示は THIRD_PARTY_NOTICES.md §1.4。
- *  - MIT (en-gb・la・uk・el-monoton・de-*・fr・es・it・nl・pl・da・sk・sl・et・lt・ga・cy): 著作権の表示と許諾の表示を、すべての複製に含める。
+ *  - MIT (en-gb・la・uk・el-monoton・el-polyton・grc・de-*・fr・es・it・nl・pl・da・sk・sl・et・lt・ga・cy): 著作権の表示と許諾の表示を、すべての複製に含める。
  *    MIT とほかのライセンスから選べるものは、MIT を選んだと書く
  *  - BSD 3 条項 (pt)・BSD 3 条項に近い表示 (bg)・著作権の表示を残せば配ってよい表示 (nb。読み込む hyph-no.tex の表示も)・
  *    「自由に配ってよい」(fi)・Unlicense (gl): 上流の表示をそのまま含める
@@ -86,6 +86,18 @@ export const HYPHEN_NOTICES: Record<string, string[]> = {
   'el-monoton': [
     'Hyphenation patterns for Modern Greek, monotonic (hyph-el-monoton.tex of the hyph-utf8 package), converted to JavaScript by the npm package "hyphen".',
     'Copyright (C) 2008-2011 Dimitrios Filippou',
+    'Available under the LPPL or the MIT License; distributed here under the MIT License.',
+    ...MIT_TEXT,
+  ],
+  'el-polyton': [
+    'Hyphenation patterns for Modern Greek, polytonic (hyph-el-polyton.tex of the hyph-utf8 package), converted to JavaScript by the npm package "hyphen".',
+    'Copyright (C) 2008-2011 Dimitrios Filippou',
+    'Available under the LPPL or the MIT License; distributed here under the MIT License.',
+    ...MIT_TEXT,
+  ],
+  grc: [
+    'Hyphenation patterns for Ancient Greek (hyph-grc.tex of the hyph-utf8 package), converted to JavaScript by the npm package "hyphen".',
+    'Copyright (C) 2008-2016 Dimitrios Filippou',
     'Available under the LPPL or the MIT License; distributed here under the MIT License.',
     ...MIT_TEXT,
   ],

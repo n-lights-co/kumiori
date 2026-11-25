@@ -60,7 +60,7 @@ export async function loadHtml(
   defaultPage = { width: 210, height: 297, margin: 20 },
   opts: { noFrame?: boolean } = {},
 ): Promise<LoadedHtml> {
-  const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageWidthsPx, pageHeightPx, warnings } = rejoin(thisCall(), await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html')));
+  const { doc: parsed, css, uaSheet, authorSheet, bodyWidthPx, pageWidthsPx, pageHeightsPx, pageHeightPx, warnings } = rejoin(thisCall(), await prepareHtml(html, files, defaults, defaultPage, (t) => new DOMParser().parseFromString(t, 'text/html')));
   // @font-face の書体のファイルは、一緒に選んだファイルの blob URL にする (iframe の中でも書体を読み、その字幅で flex・grid などを置かせる)
   const fontFiles = new Map(files.filter((f) => /\.(ttf|otf|woff2?)$/i.test(f.name)).map((f) => [f.name.toLowerCase(), f]));
   const fontUrls = new Map<string, string>();
@@ -100,7 +100,7 @@ export async function loadHtml(
   if (opts.noFrame) {
     return {
       doc: parsed,
-      styles: cascadeStyles(parsed, authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: uaSheet, quirksMode: documentMode(parsed), viewport: { width: Math.max(bodyWidthPx, 100), height: pageHeightPx }, pageWidths: pageWidthsPx, ...styleCascadeOptions(defaults, css, ahWeights) }),
+      styles: cascadeStyles(parsed, authorSheet, { uaCss: HTML_UA_CSS, uaExtraCss: uaSheet, quirksMode: documentMode(parsed), viewport: { width: Math.max(bodyWidthPx, 100), height: pageHeightPx }, pageWidths: pageWidthsPx, pageHeights: pageHeightsPx, ...styleCascadeOptions(defaults, css, ahWeights) }),
       css,
       authorSheet,
       warnings,

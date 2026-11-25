@@ -4600,6 +4600,8 @@ function setBoxes(page: PDFPage, sheet: SheetArea, artBox = true) {
   if (artBox) page.setArtBox(...conv(sheet.trimBox));
   // CropBox は MediaBox のまま (トンボまで含めて表示)
   page.setCropBox(0, 0, sheet.width, sheet.height);
+  // page-orientation (CSS Paged Media 3 §7.1.2): 表示と印刷のときに時計回りに回す角度 (/Rotate。ISO 32000-1 §7.7.3.3 Table 30)
+  if (sheet.rotation) page.node.set(PDFName.of('Rotate'), PDFNumber.of(sheet.rotation));
 }
 /** PDF の中身に書く数値 (1/10000 に丸める。指数の表記にせず、PDF の実数の範囲に抑える: decimal) */
 function num(v: number): string {

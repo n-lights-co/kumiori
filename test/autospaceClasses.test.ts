@@ -131,3 +131,21 @@ describe('互換の指定 (--style ah・vivliostyle・weasyprint): これまで�
     });
   }
 });
+
+describe('text-autospace の値の区別 (CSS Text 4 §8.4: ideograph-alpha・ideograph-numeric)', () => {
+  it('normal は欧文の字と数字の両方、ideograph-alpha は欧文の字だけ、ideograph-numeric は数字だけに空ける', async () => {
+    expect(await gaps('あAい1う')).toEqual([S, S, S, S]);
+    expect(await gaps('あAい1う', { css: 'p { text-autospace: ideograph-alpha }' })).toEqual([S, S, 0, 0]);
+    expect(await gaps('あAい1う', { css: 'p { text-autospace: ideograph-numeric }' })).toEqual([0, 0, S, S]);
+    expect(await gaps('あAい1う', { css: 'p { text-autospace: ideograph-numeric ideograph-alpha insert }' })).toEqual([S, S, S, S]);
+  });
+  it('punctuation だけ (フランス語の約物の空き) なら、和字との間には空けない。text-spacing の autospace の語も同じに読む', async () => {
+    expect(await gaps('あAい1う', { css: 'p { text-autospace: punctuation }' })).toEqual([0, 0, 0, 0]);
+    expect(await gaps('あAい1う', { css: 'p { text-spacing: trim-start ideograph-numeric }' })).toEqual([0, 0, S, S]);
+  });
+  it('子の normal は、親の片方だけの指定を打ち消す。no-autospace の子孫の normal も両方に戻す', async () => {
+    const css = 'div { text-autospace: ideograph-alpha } span { text-autospace: no-autospace } b { font-weight: normal; text-autospace: normal }';
+    const gs = (await glyphs('<div><p><span><b>あ1い</b></span></p></div>', { css })).sort((a, b) => a.x - b.x);
+    expect(Math.round((gs[1].x - (gs[0].x + gs[0].g.width)) * 100) / 100).toBe(S);
+  });
+});

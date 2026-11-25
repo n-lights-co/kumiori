@@ -1735,6 +1735,12 @@ export interface CascadeOptions {
    */
   pageWidths?: ReadonlyMap<string, number>;
   /**
+   * 名前付きのページ (@page <名前>) の領域の高さ (px)。文書の最初のページが名前付きのページ (根元の要素か body の page) なら、
+   * 根元の要素の百分率の高さの基準 (初期包含ブロックの高さ) を、viewport の高さでなく、そのページの領域の高さにする
+   * (CSS Paged Media 3 §3.3: 根元の要素の包含ブロックは、最初のページのページ領域)
+   */
+  pageHeights?: ReadonlyMap<string, number>;
+  /**
    * 罫線の太さを画素に丸めない (ブラウザ (Chrome) は 1px 未満を 1px に切り上げ、それ以上は端数を切り捨てる)。
    * 既定のスタイル (kumiori)・WeasyPrint・アンテナハウス互換で使う (border: 0.3pt の枠は 0.3pt の太さで描く。compat.ts の styleCascadeOptions)
    */
@@ -2313,6 +2319,24 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
   };
 
   /** 要素 (と疑似要素) に当たる宣言を、優先度の高い順に */
+  /**
+   * 根元の要素の百分率の高さの基準 (初期包含ブロックの高さ。px)。文書の最初のページの名前 (根元の要素の page、無ければ body の page。
+   * 読み込み (htmlImport) の rootPage と同じ) の @page があれば、そのページの領域の高さ (CSS Paged Media 3 §3.3)。無ければ viewport の高さ
+   */
+  let rootVhMemo: number | undefined;
+  const rootVh = (): number => {
+    if (rootVhMemo !== undefined) return rootVhMemo;
+    let h = vh;
+    if (opts.pageHeights?.size) {
+      const pageOf = (el: Element) => {
+        const d = declsFor(el).find((x) => x.prop === 'page' && !/var\(/i.test(x.value));
+        return d ? ownPageName(d.value) : undefined;
+      };
+      const name = pageOf(rootEl) ?? (bodyEl !== rootEl ? pageOf(bodyEl) : undefined);
+      if (name !== undefined) h = opts.pageHeights.get(name) ?? vh;
+    }
+    return (rootVhMemo = h);
+  };
   const declsFor = (el: Element, pseudo?: string, parent?: Computed) => {
     const out: DeclaredValue[] = [];
     const push = (prop: string, value0: string, important: boolean, origin: Origin, specificity: number, ord: number, layer?: number) => {
@@ -2637,7 +2661,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
       if (/px$/.test(hv)) {
         const vb = out.v.get('box-sizing') === 'border-box' ? pxOf('padding-top') + pxOf('padding-bottom') + pxOf('border-top-width') + pxOf('border-bottom-width') : 0;
         out.ch = Math.max(0, parseFloat(hv) - vb);
-      } else if (quirks && !abs && /^(block|list-item|flow-root|inline-block|table-caption)$/.test(disp2)) out.ch = isRoot ? vh : parent?.ch;
+      } else if (quirks && !abs && /^(block|list-item|flow-root|inline-block|table-caption)$/.test(disp2)) out.ch = isRoot ? rootVh() : parent?.ch;
     }
   };
 
@@ -2850,7 +2874,7 @@ export function cascadeStyles(doc: Document, authorCss: string | ParsedCss, opts
           const cbVertical = /^(vertical|tb|sideways)/.test(parent?.v.get('writing-mode') ?? '');
           // 高さの百分率: 包含ブロックの高さが決まっていればその高さ、根元の要素は初期包含ブロック (ページの領域) の高さ (CSS 2.1 §10.5)。
           // 互換モードでは、高さの決まった祖先までさかのぼる (Quirks Mode §3.5。ch の決め方は下)
-          const heightBase = isRoot ? vh : parent?.ch;
+          const heightBase = isRoot ? rootVh() : parent?.ch;
           const base = /^(height|min-height|max-height)$/.test(p) ? heightBase : /^(top|bottom)$/.test(p) ? undefined : cbVertical && /^(margin|padding)-/.test(p) ? vh : cbw;
           const px = lengthPx(raw, ctx(base));
           if (px !== undefined && PCT_LAYOUT_PROPS.has(p) && /%/.test(raw)) {
@@ -3168,10 +3192,11 @@ const LOGICAL_SIZING = /^(min-|max-)?(inline|block)-size$/;
  * (CSS Values 4 §10.12)。負が有効な性質 (margin・text-indent・letter-spacing・word-spacing・top などの位置・vertical-align・outline-offset) は含めない
  */
 /**
- * 組むときに、実際の包含ブロックの幅で百分率を解き直す性質 (Computed.pct)。left・right は、基準がページの領域の絶対配置・固定配置の箱
+ * 組むときに、実際の包含ブロックの幅で百分率を解き直す性質 (Computed.pct)。flex-basis は、flex の項目の主軸の大きさ (htmlImport の
+ * LTableColumn.percentWidth。基準は flex の容器の内容の幅)。left・right は、基準がページの領域の絶対配置・固定配置の箱
  * (LBlockContainer.pageArea) だけが読む (置くページの領域の幅で解く)
  */
-const PCT_LAYOUT_PROPS = new Set(['width', 'min-width', 'max-width', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'left', 'right']);
+const PCT_LAYOUT_PROPS = new Set(['width', 'flex-basis', 'min-width', 'max-width', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'left', 'right']);
 
 /**
  * 百分率を含む長さ (10%・calc(50% + 2px) など) を、割合 (基準 1px あたりの px) と長さの部分 (px) に分ける。基準を 0・100・1000 として

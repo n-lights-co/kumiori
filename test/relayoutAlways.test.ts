@@ -37,6 +37,9 @@ function docs() {
     // 章ごとに page-sequence を分け、脚注・マーカーのある XSL-FO (page-sequence の使い回し)
     { name: 'gen:fofootnotes', resumes: true, text: REUSE_SHAPES.fofootnotes.make(4), options: { kind: 'fo' } },
     { name: 'gen:fomarkers', resumes: true, text: REUSE_SHAPES.fomarkers.make(4), options: { kind: 'fo' } },
+    // 脚注を行内に並べる XSL-FO (axf:footnote-stacking="inline") と HTML (footnote-display: inline・compact。2 段組のページで、続きから組む境目は無い)
+    { name: 'gen:fofootinline', resumes: true, text: REUSE_SHAPES.fofootinline.make(4), options: { kind: 'fo' } },
+    { name: 'gen:footdisplay', text: REUSE_SHAPES.footdisplay.make(4), options: { kind: 'html' } },
     // 初めに目次のある HTML・XSL-FO (前向きのページ番号の参照。組み直しの 2 回目からの回で前の回と繋ぐ)
     { name: 'gen:toc', resumes: true, text: REUSE_SHAPES.toc.make(12), options: { kind: 'html' } },
     { name: 'gen:fotoc', resumes: true, text: REUSE_SHAPES.fotoc.make(12), options: { kind: 'fo' } },

@@ -186,6 +186,10 @@ export function paintSheet(sheet: SheetArea, p: Painter, opts: { guides?: boolea
     const image = o ? { ...sheet.backgroundImage, origin: 'content-box' as const } : sheet.backgroundImage;
     paintBackgroundImage({ ...sheet, width: b.width, height: b.height, border: {}, padding, backgroundImage: image } as unknown as Area, b.x, b.y, p);
   }
+  // 1'') ページ領域に重ねる背景 (@page の背景の上の、根元の要素の背景。CSS Paged Media 3 §3.1)
+  const rb = sheet.rootBackground;
+  if (rb?.backgroundColor) p.fillRect(rb.box.x, rb.box.y, rb.box.width, rb.box.height, rb.backgroundColor);
+  if (rb?.backgroundImage) paintBackgroundImage({ ...sheet, width: rb.box.width, height: rb.box.height, border: {}, padding: { top: 0, right: 0, bottom: 0, left: 0 }, backgroundImage: rb.backgroundImage } as unknown as Area, rb.box.x, rb.box.y, p);
   // 2) 内容は塗り足し領域までで裁ち落とす (トンボ領域には描かない)
   p.clipRect(snapToEdge(sheet.bleedBox));
   paintArea(sheet.page, 0, 0, p);
