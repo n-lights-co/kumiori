@@ -38,7 +38,7 @@ async function render(bodyHtml: string) {
     for (let i = 0; i < r.pageCount; i++) {
       const c = document.createElement('canvas');
       c.setAttribute('aria-label', `${i + 1} ページ`);
-      r.renderPage(c, i, { scale: 1 });
+      await r.renderPage(c, i, { scale: 1 });
       canvases.push(c);
     }
     preview.replaceChildren(warningsEl, ...canvases);

@@ -45,6 +45,23 @@ function embedStream(context: PDFContext, width: number, height: number, make: (
   return { ref, width, height };
 }
 
+/**
+ * 用意した画像 (preparePng・prepareJpeg)。画像の流れの中身 (圧縮したもの) はできていて、PDF のオブジェクトはまだ作っていない。
+ * embedPrepared で、番号を取って PDF に入れる (同期。組みながらページを描画するときは、組版の中で待てないので、組む前に用意しておく。
+ * design/pdf-writer.md の 13)。同じ用意を 2 度埋め込むと、同じ中身の画像が 2 つになる (呼ぶ側が、埋め込んだものを覚えて使い回す)
+ */
+export interface PreparedImage {
+  readonly width: number;
+  readonly height: number;
+  /** 画像の流れを作る (SMask があれば、その流れを先に足す) */
+  readonly make: (context: PDFContext) => PDFRawStream;
+}
+
+/** 用意した画像を埋め込む (画像の番号を先に取り、SMask はその後。pdf-lib の埋め込みと同じ順) */
+export function embedPrepared(pdf: PDFDocument, p: PreparedImage): PdfImage {
+  return embedStream(pdf.context, p.width, p.height, p.make);
+}
+
 /** JPEG の頭 (SOF) から読んだもの */
 interface JpegHeader {
   width: number;
@@ -89,11 +106,16 @@ function jpegHeader(b: Uint8Array): JpegHeader | undefined {
  * 頭の読めない JPEG・成分の数が 1・3・4 でない JPEG は投げる
  */
 export function embedJpeg(pdf: PDFDocument, jpg: Uint8Array): PdfImage {
+  return embedPrepared(pdf, prepareJpeg(jpg));
+}
+
+/** JPEG を用意する (embedJpeg の、番号を取る前の所。頭を読むだけなので同期。読めない JPEG は投げる) */
+export function prepareJpeg(jpg: Uint8Array): PreparedImage {
   const h = jpegHeader(jpg);
   if (!h) throw new Error(msg('JPEG: 画像のヘッダー (SOF) が読めません', 'JPEG: cannot read the frame header (SOF)'));
   const colorSpace = ({ 1: 'DeviceGray', 3: 'DeviceRGB', 4: 'DeviceCMYK' } as Record<number, string>)[h.components];
   if (!colorSpace) throw new Error(msg(`JPEG: 成分の数 ${h.components} の画像は入れられません`, `JPEG: images with ${h.components} components are not supported`));
-  return embedStream(pdf.context, h.width, h.height, (context) =>
+  return { width: h.width, height: h.height, make: (context) =>
     context.stream(jpg, {
       Type: 'XObject',
       Subtype: 'Image',
@@ -103,8 +125,7 @@ export function embedJpeg(pdf: PDFDocument, jpg: Uint8Array): PdfImage {
       ColorSpace: colorSpace,
       Filter: 'DCTDecode',
       ...(colorSpace === 'DeviceCMYK' ? { Decode: [1, 0, 1, 0, 1, 0, 1, 0] } : {}),
-    }),
-  );
+    }) };
 }
 
 /** 展開せずに入れられる PNG の中身 (pngAsIs) */
@@ -117,8 +138,16 @@ interface PngAsIs {
   colors: number;
   /** 色空間 (DeviceGray・DeviceRGB・色の表の Indexed) */
   colorSpace: unknown[] | string;
-  /** IDAT をつないだもの (PNG の予測のフィルタ付きの zlib) */
-  data: Uint8Array;
+  /** IDAT の中身の並び (つなぐと、PNG の予測のフィルタ付きの zlib)。つなぐのは埋め込むとき (用意した画像が、元のファイルの写しを持たないように) */
+  idat: Uint8Array[];
+}
+
+/** IDAT の中身をつなぐ (1 つなら、そのもの) */
+function joinIdat(idat: readonly Uint8Array[]): Uint8Array {
+  if (idat.length === 1) return idat[0];
+  const data = new Uint8Array(idat.reduce((a, b) => a + b.length, 0));
+  idat.reduce((o, b) => (data.set(b, o), o + b.length), 0);
+  return data;
 }
 
 /**
@@ -176,17 +205,15 @@ async function pngAsIs(png: Uint8Array, bits16: boolean, checked = false): Promi
     at += 12 + len;
   }
   if (!idat.length || (colorType === 3 && !plte)) return undefined;
-  const data = idat.length === 1 ? idat[0] : new Uint8Array(idat.reduce((a, b) => a + b.length, 0));
-  if (idat.length > 1) idat.reduce((o, b) => (data.set(b, o), o + b.length), 0);
   const colors = colorType === 2 ? 3 : 1;
-  if (!checked && !rejoin(thisCall(), await idatComplete(data, width, height, colors * depth))) return 'broken';
+  if (!checked && !rejoin(thisCall(), await idatComplete(joinIdat(idat), width, height, colors * depth))) return 'broken';
   let colorSpace: PngAsIs['colorSpace'] = colorType === 2 ? 'DeviceRGB' : 'DeviceGray';
   if (colorType === 3 && plte) {
     const table = new Uint8Array(3 << depth);
     table.set(plte);
     colorSpace = ['Indexed', 'DeviceRGB', (1 << depth) - 1, PDFHexString.of(Array.from(table, (b) => b.toString(16).padStart(2, '0')).join(''))];
   }
-  return { width, height, depth, colors, colorSpace, data };
+  return { width, height, depth, colors, colorSpace, idat };
 }
 
 /**
@@ -197,12 +224,18 @@ async function pngAsIs(png: Uint8Array, bits16: boolean, checked = false): Promi
  * 確かめないと、切れた画素のデータが、知らせなしに壊れた画像の流れとして PDF に入る)。checked は、呼ぶ側で展開して確かめた PNG (確かめを省く)
  */
 export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array, o: Pick<PngEmbedOptions, 'bits16'> = {}, checked = false): Promise<PdfImage | undefined> {
+  const p = rejoin(thisCall(), await preparePngAsIs(png, o, checked));
+  return p && embedPrepared(pdf, p);
+}
+
+/** embedPngAsIs の、番号を取る前の所 (そのまま入れられない PNG は undefined。壊れた PNG は投げる) */
+async function preparePngAsIs(png: Uint8Array, o: Pick<PngEmbedOptions, 'bits16'> = {}, checked = false): Promise<PreparedImage | undefined> {
   const a = rejoin(thisCall(), await pngAsIs(png, o.bits16 ?? false, checked));
   if (a === 'broken') throw brokenPng();
   if (!a) return undefined;
-  const { width, height, depth, colors, colorSpace, data } = a;
-  return embedStream(pdf.context, width, height, (context) =>
-    context.stream(data, {
+  const { width, height, depth, colors, colorSpace, idat } = a;
+  return { width, height, make: (context) =>
+    context.stream(joinIdat(idat), {
       Type: 'XObject',
       Subtype: 'Image',
       Width: width,
@@ -211,8 +244,7 @@ export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array, o: Pick<Pn
       ColorSpace: colorSpace,
       Filter: 'FlateDecode',
       DecodeParms: { Predictor: 15, Colors: colors, BitsPerComponent: depth, Columns: width },
-    } as never),
-  );
+    } as never) };
 }
 
 /** 画素のデータが終わりまで展開できない PNG の誤り */
@@ -234,16 +266,16 @@ async function decodePngPixels(png: Uint8Array): Promise<PngPixelsForPdf> {
  * 展開した RGB と α を、圧縮してから埋め込む。辞書は pdf-lib の PngEmbedder (embedIntoContext・embedAlphaChannel) の作るものと同じ
  * (α は DeviceGray・Decode [0 1] の SMask)。圧縮は deflate
  */
-async function embedRgbAlpha(pdf: PDFDocument, px: PngPixelsForPdf, deflate: ImageDeflate): Promise<PdfImage> {
+async function prepareRgbAlpha(px: PngPixelsForPdf, deflate: ImageDeflate): Promise<PreparedImage> {
   const { width, height } = px;
   const rgb = rejoin(thisCall(), await deflate(px.rgb));
   const alpha = px.alpha ? rejoin(thisCall(), await deflate(px.alpha)) : undefined;
-  return embedStream(pdf.context, width, height, (context) => {
+  return { width, height, make: (context) => {
     const smask = alpha
       ? context.register(context.stream(alpha, { Type: 'XObject', Subtype: 'Image', Height: height, Width: width, BitsPerComponent: 8, ColorSpace: 'DeviceGray', Decode: [0, 1], Filter: 'FlateDecode' }))
       : undefined;
     return context.stream(rgb, { Type: 'XObject', Subtype: 'Image', BitsPerComponent: 8, Width: width, Height: height, ColorSpace: 'DeviceRGB', ...(smask ? { SMask: smask } : {}), Filter: 'FlateDecode' });
-  });
+  } };
 }
 
 /**
@@ -252,11 +284,16 @@ async function embedRgbAlpha(pdf: PDFDocument, px: PngPixelsForPdf, deflate: Ima
  * (展開せずに入れても、PDF を見る側が同じだけ展開する)
  */
 export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array, o: PngEmbedOptions = {}): Promise<PdfImage> {
+  return embedPrepared(pdf, rejoin(thisCall(), await preparePng(png, o)));
+}
+
+/** PNG を用意する (embedPngChecked の、番号を取る前の所。展開・圧縮をここでする。埋め込めない PNG は投げる) */
+export async function preparePng(png: Uint8Array, o: PngEmbedOptions = {}): Promise<PreparedImage> {
   if (!pngWithinLimits(png)) throw new Error(msg('PNG: ピクセルの数か展開の大きさが上限を超えます', 'PNG: the number of pixels or the decompressed size exceeds the limit'));
-  const asIs = rejoin(thisCall(), await embedPngAsIs(pdf, png, o));
+  const asIs = rejoin(thisCall(), await preparePngAsIs(png, o));
   if (asIs) return asIs;
   const px = rejoin(thisCall(), await decodePngPixels(png));
-  return embedRgbAlpha(pdf, px, o.deflate ?? imageDeflater());
+  return prepareRgbAlpha(px, o.deflate ?? imageDeflater());
 }
 
 /**

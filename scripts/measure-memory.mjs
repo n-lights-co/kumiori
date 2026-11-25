@@ -11,6 +11,8 @@
  *      css-print          … 『CSSページ組版入門』第 4 版 (.cache/samples/css-print/src。--style ah)
  *      text[:<節の数>]    … 文だけの文書 (作る。既定 6,000 節で 860 ページほど。11,200 節で 1,600 ページほど)
  *      images[:<枚数>]    … 画像の多い文書 (作る。圧縮の効かない 600×600 の PNG。既定 200 枚)
+ *      book[:<ページ>:<枚数>] … Tigral の書籍に近い文書 (既定 197 ページ・1600×1000 の 8 ビット RGBA の PNG 333 枚。画像は scripts/measure-png-embed.mjs が
+ *                           .cache/measure-png-embed/images に作ったもの。先に node scripts/measure-png-embed.mjs --env node を 1 度走らせる)
  *  - --mode: 測る形 (何度でも)。pdf (typesetToPdf)・stream (typesetToPdfStream。書き出し先は fs.writeSync)・pdf-low・stream-low (メモリ節約)。既定は 4 つとも
  *  - --no-build: 前に作ったビルド (.cache/measure-memory-build) を使う
  *
@@ -236,6 +238,21 @@ async function loadDoc(name) {
     }
     const body = files.map((f, i) => `<section style="break-after: page"><h2>図 ${i + 1}</h2><img src="${f.name}" alt="図 ${i + 1}" style="width: 12cm"></section>`).join('\n');
     return { text: `<!doctype html><html lang="ja"><head><title>画像の多い文書</title></head><body>${body}</body></html>`, setup: {}, options: { files } };
+  }
+  if (kind === 'book') {
+    // Tigral の書籍に近い試しの文書 (scripts/measure-png-embed.mjs と同じ。既定 197 ページ・1600×1000 の 8 ビット RGBA の PNG 333 枚)。
+    // 画像は measure-png-embed が作って .cache/measure-png-embed/images に置いたもの (先に node scripts/measure-png-embed.mjs --env node を 1 度走らせる)
+    const [, p, n] = name.split(':');
+    const pages = p ? Number(p) : 197;
+    const count = n ? Number(n) : 333;
+    const { bookHtml } = await import('./measure-png-embed-lib.mjs');
+    const dir = path.join(root, '.cache', 'measure-png-embed', 'images');
+    const files = Array.from({ length: count }, (_, i) => {
+      const f = path.join(dir, `img${i}.png`);
+      if (!fs.existsSync(f)) throw new Error(`book: ${path.relative(root, f)} がありません (先に node scripts/measure-png-embed.mjs --env node を走らせる)`);
+      return { name: `img${i}.png`, data: new Uint8Array(fs.readFileSync(f)) };
+    });
+    return { text: bookHtml(pages, count), setup: {}, options: { files } };
   }
   throw new Error(`知らない文書: ${name}`);
 }

@@ -72,19 +72,19 @@ import { MONO_GENERIC, SANS } from './sampleData';
 import { FAKE_BOLD, ITALIC_SLANT, paintPlaceholder, paintSheet, type Line, type Matrix, type PaintTag, type Painter, type PathSeg } from './paint';
 import { checkPdfPages, embedPdfPage, pdfEmbedCache, pdfImageMatrix, pdfPageProblems, pdfStreamBudget, type PdfPageGate } from './pdfImageEmbed';
 import type { PdfRect } from './pdfImage';
-import { AssetStore } from './assets';
+import { AssetStore, type ImageAsset } from './assets';
 import { msg } from './messages';
 import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, referencePath, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { iccRgbToCmyk, type CmykConverter } from './icc';
-import { embedCmykImage, embedJpeg, embedPngChecked, type PdfImage, type PngEmbedOptions } from './imageEmbed';
+import { embedCmykImage, embedJpeg, embedPngChecked, embedPrepared, prepareJpeg, preparePng, type PdfImage, type PngEmbedOptions, type PreparedImage } from './imageEmbed';
 import { markCffSubset, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, patchSmallNumbers, PDF_REAL_MAX, sealContentStream, sealPageContents, widthOfHex, type FeatureFont } from './pdfLibPatches';
 import { shrinkJpeg } from './jpeg';
-import { PdfColorGlyphs, type PdfColorGlyphOptions } from './colorGlyphPdf';
+import { PdfColorGlyphs, type PdfColorGlyphOptions, type PreparedGlyphImages } from './colorGlyphPdf';
 import { colorFontOf } from './colorGlyph';
 import { imageDeflater } from './imageDeflate';
 import { apply, invert, mul, transformSegs, type Seg } from './matrix';
 import { shapesOverlap, segsBox, blendNormal, exactBox, flatColorOf, flatCss, FlatPage, flattenPpi, intersect, meets, openPlainGroups, processCmyk, rasterCmyk, shapeBox, shapesBox, shapeUsesAlpha, coveredPolygon, transformBox, union, type Box, type FlatItem } from './pdfFlatten';
-import { clipRuns, eachSvgShape, flattenGroups, foreignObjectContexts, parseSvg, resolveNonScaling, systemLanguageKey, transformShape, type SvgClip, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type TextChars, type XmlNode } from './svg';
+import { clipRuns, eachSvgShape, flattenGroups, foreignObjectContexts, parseSvg, resolveNonScaling, systemLanguageKey, transformShape, type SvgClip, type SvgDoc, type SvgGradient, type SvgMask, type SvgPattern, type SvgShape, type TextChars, type XmlNode, type ParseSvgOptions } from './svg';
 import { diag, type Diagnostic } from './diagnostics';
 import type { Annotation, Area, AreaTree, BookmarkArea, FormField, GlyphArea, ImageArea, LinkTarget, Rect, SheetArea, TateChuYokoArea } from './types';
 import { KumioriOptionError, KumioriPdfError } from './errors';
@@ -3043,6 +3043,263 @@ async function embedImages(
 }
 
 /**
+ * 画像を「用意」してから、初めて使うページの直前で「埋め込む」もの (design/pdf-writer.md の 13)。組みながらページを描画するとき
+ * (PdfPageSource.layout) は、組版の中では待てないので、組む前に画像の格納先の画像を全部用意し、ページを描画する直前に、そのページで初めて使う画像を
+ * 同期で埋め込む (番号を取って PDF に入れるだけ)。組み終えてから描画するとき (typeset の後の toPdf など) も、同じ所で埋め込む
+ * (番号の並びは、ページの順だけで決まるので、組みながら描画しても、しなくても、同じバイト列になる)。
+ * 用意 (非同期) は、PDF のオブジェクトを作らない: ラスター画像 (PNG・JPEG) は、画像の流れの中身を作り (imageEmbed.ts の preparePng・prepareJpeg)、
+ * SVG は、図形にして (embedImages の toVectors と同じ選択肢)、中の画像を用意し、@font-face と foreignObject を読む。
+ * 置く大きさで中身が変わる画像 (imageMaxDpi で縮める JPEG・PNG に直してから入れる画像・filter を画素で計算する SVG・systemLanguage のある SVG)
+ * と PDF の画像があれば、ok は false (呼ぶ側が embedImages で、組み終えてから先に全部を埋め込む)。どの書き出しでも、画像の格納先にある画像で決める
+ * (使うかどうかは、組み終えるまで分からないので、使わない画像も見る)
+ */
+function lazyImages(pdf: PDFDocument, fonts: FontManager, opts: PdfRenderOptions, warn: (d: Diagnostic) => void) {
+  const assets = opts.assets;
+  const xml = opts.parseXml ?? (typeof DOMParser !== 'undefined' ? (t: string) => new DOMParser().parseFromString(t, 'image/svg+xml') as unknown as XmlNode : undefined);
+  const pngOpts = pngEmbedOptions(opts, undefined);
+  const images = new Map<string, PdfImage>();
+  const vectors = new Map<string, SvgDoc>();
+  const svgImages = new Map<object, PdfImage>();
+  /** 用意した画像の流れ (中身ごと。同じ中身の画像は 1 つの XObject にする: embedImages の embedOnce と同じ) と、埋め込んだもの */
+  type Raster = { prepared?: PreparedImage; image?: PdfImage };
+  const rasters = new WeakMap<Uint8Array, Partial<Record<'png' | 'jpg', Raster>>>();
+  type Prep =
+    | { kind: 'raster'; raster: Raster }
+    | { kind: 'svg'; doc: SvgDoc; inner: Array<{ shape: object; raster: Raster }>; uses: string[] }
+    | { kind: 'none' };
+  /** 画像の格納先の画像ごとの用意 */
+  const preps = new Map<ImageAsset, Prep>();
+  /** 埋め込んだ参照 (src ごと。2 度目からは何もしない) */
+  const committed = new Set<string>();
+  let ok = true;
+  /** 用意できない (置く大きさで中身が変わる) 画像か (用意する前に分かるもの) */
+  const unpreparable = (a: ImageAsset): boolean => {
+    if (a.pdfSource) return true;
+    if (a.bytes && a.mime === 'image/jpeg') return !!opts.imageMaxDpi;
+    if (a.bytes && a.mime === 'image/png') return false;
+    if (a.bytes && a.mime === 'image/svg+xml') return !xml || /systemLanguage/.test(new TextDecoder().decode(a.bytes));
+    // PNG・JPEG でないラスター画像は、ブラウザーの画像を置く大きさで PNG に直してから入れる (AssetStore.forPdf)。ブラウザーの画像の無いものは入れない
+    return (!!a.element || !!a.deferred) && !a.released;
+  };
+  const rasterOf = (bytes: Uint8Array, kind: 'png' | 'jpg'): Raster => {
+    const got = rasters.get(bytes) ?? {};
+    let r = got[kind];
+    if (!r) {
+      r = {};
+      got[kind] = r;
+      rasters.set(bytes, got);
+    }
+    return r;
+  };
+  /** ラスター画像を用意する (埋め込めない画像は prepared を持たない: 描画しない)。用意できなければ false (ブラウザーで、PNG に直して入れ直す画像) */
+  const prepareRaster = async (r: Raster, bytes: Uint8Array, kind: 'png' | 'jpg', retry: boolean): Promise<boolean> => {
+    if (r.prepared) return true;
+    try {
+      r.prepared = kind === 'png' ? rejoin(thisCall(), await preparePng(bytes, pngOpts)) : prepareJpeg(bytes);
+    } catch {
+      // 埋め込めない JPEG・PNG は、ブラウザーの画像があれば、置く大きさで PNG に直して入れ直す (embedImages と同じ)。それは置く大きさで変わるので、用意できない
+      if (retry) return false;
+    }
+    return true;
+  };
+  /** SVG の中の画像の参照を、SVG の場所 (src) を基準に引く (embedImages の toVectors と同じ。数えるのは埋め込むとき) */
+  const svgParts = (src: string, uses: string[]) => {
+    const base = /^data:/i.test(src) ? undefined : src;
+    const image = (href: string) => {
+      const ref = resolveRef(href, base);
+      const a = assets?.peek(ref);
+      uses.push(ref);
+      if (!a?.bytes) return undefined;
+      if (a.mime === 'image/png' || a.mime === 'image/jpeg') return { kind: a.mime === 'image/png' ? ('png' as const) : ('jpeg' as const), bytes: a.bytes };
+      const px = a.mime === 'image/gif' ? decodeGif(a.bytes) : a.mime === 'image/bmp' ? decodeBmp(a.bytes) : a.mime === 'image/webp' ? decodeWebp(a.bytes) : undefined;
+      return px ? { kind: 'png' as const, bytes: encodePngStored(px) } : undefined;
+    };
+    const resource = (href: string) => {
+      const ref = resolveRef(href, base);
+      const a = assets?.peek(ref);
+      uses.push(ref);
+      return a?.bytes && a.mime === 'image/svg+xml' ? new TextDecoder().decode(a.bytes) : undefined;
+    };
+    return { image, resource };
+  };
+  const parseOptions = (image: ReturnType<typeof svgParts>['image'], resource: ReturnType<typeof svgParts>['resource'], foreign: Array<SvgShape[] | undefined>): ParseSvgOptions => ({
+    outline: (t, fam, w, size, style, vertical) => outlineText(fonts, t, fam, w, size, !!opts.svgFontUniqueNames, style, vertical),
+    image,
+    resource,
+    ...(foreign.length ? { foreignShapes: (i: number) => foreign[i] } : {}),
+    ...(opts.svgLanguages?.length ? { languages: opts.svgLanguages.map(svgLanguageTag) } : {}),
+    ...(opts.svgMarkerOverflowVisible ? { markerOverflowVisible: true } : {}),
+    ...(opts.svgRootOverflowVisible ? { rootOverflowVisible: true } : {}),
+  });
+  /** SVG の中の画像 (data: の PNG・JPEG と、外の画像のファイル) の並び (embedImages の embedSvgImages と同じ順) */
+  const innerOf = (doc: SvgDoc) => {
+    const all: SvgShape[] = [];
+    eachSvgShape(doc.shapes, (sh) => all.push(sh));
+    return all.filter((sh) => sh.image);
+  };
+  /** SVG を用意する。図形にできなければ false (置く大きさの解像度で filter を計算することになる。embedImages の toVectors(true)) */
+  const prepareSvg = async (a: ImageAsset): Promise<Prep | false> => {
+    const text = new TextDecoder().decode(a.bytes!);
+    const uses: string[] = [];
+    const { image, resource } = svgParts(a.key, uses);
+    const foreign: Array<SvgShape[] | undefined> =
+      xml && opts.typesetForeign
+        ? rejoin(thisCall(), await typesetForeignObjects(text, xml, opts.typesetForeign, fonts, assets, (b) => parseSvg(new TextDecoder().decode(b), xml, { outline: (t, fam, w, size, style, vertical) => outlineText(fonts, t, fam, w, size, !!opts.svgFontUniqueNames, style, vertical), approximateFilters: true, rasterFilter }), warn, { resource, ...(opts.svgLanguages?.length ? { languages: opts.svgLanguages.map(svgLanguageTag) } : {}) }))
+        : [];
+    rejoin(thisCall(), await registerSvgFonts(fonts, text));
+    let doc = parseSvg(text, xml!, parseOptions(image, resource, foreign));
+    // 図形にできない SVG: ブラウザーの画像があれば、置く大きさで PNG に直して入れる (用意できない)。無ければ filter を近似して図形にする
+    // (embedImages の toVectors(true))。画素で計算する filter を使うと、置く大きさの解像度で計算するので、用意できない
+    if (!doc) {
+      if (a.element) return false;
+      let raster = false;
+      doc = parseSvg(text, xml!, { ...parseOptions(image, resource, foreign), approximateFilters: true, rasterFilter: (...args: Parameters<typeof rasterFilter>) => ((raster = true), rasterFilter(...args)), filterResolution: 1 });
+      if (raster) return false;
+      // 近似しても図形にできない SVG は、描画しない (embedImages と同じ)
+      if (!doc) return { kind: 'none' };
+    }
+    const inner: Array<{ shape: object; raster: Raster }> = [];
+    for (const sh of innerOf(doc)) {
+      const im = sh.image!;
+      try {
+        // filter を画素で計算した画像は、圧縮した PNG にして埋め込む (embedImages の embedSvgImages と同じ)
+        const bytes = im.pixels ? rejoin(thisCall(), await encodePng(im.pixels)) : im.bytes;
+        const kind = im.kind === 'png' ? 'png' : 'jpg';
+        const r = rasterOf(bytes, kind);
+        rejoin(thisCall(), await prepareRaster(r, bytes, kind, false));
+        inner.push({ shape: im, raster: r });
+      } catch {
+        /* 埋め込めない画像は描画しない */
+      }
+    }
+    return { kind: 'svg', doc, inner, uses };
+  };
+  /** 待たずに用意できる SVG (@font-face・foreignObject・中の画像の無いもの。組版の途中で足す背景のグラデーションの SVG など) なら用意する */
+  const prepareSvgSync = (a: ImageAsset): Prep | undefined => {
+    if (!xml || !a.bytes) return undefined;
+    const text = new TextDecoder().decode(a.bytes);
+    if (/@font-face|foreignObject|systemLanguage/i.test(text)) return undefined;
+    const uses: string[] = [];
+    const { image, resource } = svgParts(a.key, uses);
+    const doc = parseSvg(text, xml, parseOptions(image, resource, []));
+    if (!doc || innerOf(doc).length) return undefined;
+    return { kind: 'svg', doc, inner: [], uses };
+  };
+  const prepare = async (a: ImageAsset): Promise<void> => {
+    if (preps.has(a) || !ok) return;
+    if (unpreparable(a)) {
+      ok = false;
+      return;
+    }
+    if (a.bytes && (a.mime === 'image/png' || a.mime === 'image/jpeg')) {
+      const kind = a.mime === 'image/png' ? 'png' : 'jpg';
+      const r = rasterOf(a.bytes, kind);
+      if (!rejoin(thisCall(), await prepareRaster(r, a.bytes, kind, !!a.element || !!a.deferred))) {
+        ok = false;
+      }
+      else preps.set(a, { kind: 'raster', raster: r });
+      return;
+    }
+    if (a.bytes && a.mime === 'image/svg+xml') {
+      const p = rejoin(thisCall(), await prepareSvg(a));
+      if (p) preps.set(a, p);
+      else {
+        ok = false;
+      }
+      return;
+    }
+    // 入れない画像 (大きさだけの画像・読めない形式・グラデーションの無い画像など)
+    preps.set(a, { kind: 'none' });
+  };
+  /** src の画像を、待たずに埋め込めるか (用意してあるか、待たずに用意できるか) */
+  const ready = (src: string): boolean => {
+    if (committed.has(src)) return true;
+    const a = assets?.peek(src);
+    if (!a || preps.has(a)) return true;
+    const p = a.mime === 'image/svg+xml' ? prepareSvgSync(a) : undefined;
+    if (p) preps.set(a, p);
+    return !!p || (!unpreparable(a) && !a.bytes);
+  };
+  const embedRaster = (r: Raster): PdfImage | undefined => {
+    if (!r.image && r.prepared) {
+      r.image = embedPrepared(pdf, r.prepared);
+      // 埋め込んだら、用意した中身は PDF が持つ (ここでは引き留めない)
+      r.prepared = undefined;
+    }
+    return r.image;
+  };
+  /** 領域の木のページで使う画像の参照 (imageScanner と同じ順) */
+  const srcsOf = (sheet: SheetArea): string[] => {
+    const out: string[] = [];
+    walkAreas(sheet, (a) => {
+      if (a.type === 'image') {
+        if (!a.missing) out.push(a.src);
+        return;
+      }
+      const bgi = a.backgroundImage;
+      if (bgi) out.push(bgi.src);
+      for (const l of bgi?.under ?? []) out.push(l.src);
+    });
+    return out;
+  };
+  return {
+    images,
+    vectors,
+    svgImages,
+    /** どの画像も、用意して初めて使うページで埋め込める (false なら、embedImages で先に全部を埋め込む) */
+    get ok() {
+      return ok && !!assets;
+    },
+    /** 画像の格納先の画像を全部用意する (PDF だけを作るときは、用意したラスター画像の、格納先の中身を手放す) */
+    async prepareAll(): Promise<void> {
+      if (!assets) return;
+      // SVG を先に用意する (中から参照する画像のファイルの中身を読む)
+      const list = [...new Set(assets.values())];
+      for (const a of list) if (a.mime === 'image/svg+xml') rejoin(thisCall(), await prepare(a));
+      for (const a of list) if (a.mime !== 'image/svg+xml') rejoin(thisCall(), await prepare(a));
+      if (ok && opts.releaseImageBytes) assets.releaseImageBytes(list.filter((a) => preps.get(a)?.kind === 'raster').map((a) => a.key));
+    },
+    /** 組み終えてから描画するページで使う画像のうち、まだ用意していないもの (組版の途中で足した画像) を用意する */
+    async prepareSrcs(srcs: Iterable<string>): Promise<void> {
+      for (const src of srcs) {
+        const a = assets?.peek(src);
+        if (a) rejoin(thisCall(), await prepare(a));
+      }
+    },
+    /** ページの画像を、待たずに埋め込めるか (組みながら描画するページ) */
+    ready: (sheet: SheetArea) => srcsOf(sheet).every(ready),
+    /** ページで初めて使う画像を埋め込む (ページを描画する直前)。埋め込んだ SVG を返す (その中の文字のフォントを、呼ぶ側が埋め込む) */
+    commit(sheet: SheetArea): SvgDoc[] {
+      const docs: SvgDoc[] = [];
+      for (const src of srcsOf(sheet)) {
+        if (committed.has(src)) continue;
+        committed.add(src);
+        // 引いたことを数える (コマンドが、使った画像を知る)
+        const a = assets?.get(src);
+        if (!a) continue;
+        let p = preps.get(a);
+        if (!p && a.mime === 'image/svg+xml') p = prepareSvgSync(a);
+        if (!p || p.kind === 'none') continue;
+        if (p.kind === 'raster') {
+          const im = embedRaster(p.raster);
+          if (im) images.set(src, im);
+          continue;
+        }
+        for (const u of p.uses) assets?.get(u);
+        for (const { shape, raster } of p.inner) {
+          const im = embedRaster(raster);
+          if (im) svgImages.set(shape, im);
+        }
+        vectors.set(src, p.doc);
+        docs.push(p.doc);
+      }
+      return docs;
+    },
+  };
+}
+type LazyImages = ReturnType<typeof lazyImages>;
+
+/**
  * PDF に書くページの出どころ (renderPdfPages): ページを 1 枚ずつ作るもの (LayoutEngine.layoutSheets・layoutLowMemory) か、文書全体の領域の木 (renderPdf)。
  * PDF を書くときは、ページを 2 度たどる: 先に、使う書体・色つきの字・画像を集めるために作ってはたどり (scan。書体と画像を埋め込む順と、
  * 画像の解像度に要る)、次に、作って描く (paint)。どちらも、出どころがページを順に作って渡す (渡し終えたページは、出どころが手放してよい)
@@ -3201,12 +3458,26 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   };
   // 組みながら描画する (src.layout): 出どころが組みながら渡すページを、先のたどりの前に描画する。カラーフォントのある文書・PDF/X・PDF/A では描画しない
   // (色つきの文字の用意と、PDF/X・PDF/A の後の検査は、文書の全体を見てからする)。渡すページの画像・色つきの文字は early が断る
-  const early = !!src.layout && !std && !pdfa && !fonts.all().some((f) => colorFontOf(f));
+  // 画像は、用意してから初めて使うページの直前で埋め込む (lazyImages。design/pdf-writer.md の 13)。PDF/X・PDF/A は、いまのまま先に全部を埋め込む
+  // (画像の色を変換し、後の検査が文書の全体を見る)。組みながら描画するときは、組む前に用意し、用意できない画像があれば、組みながら描画しない
+  // 用意は、どの書き出しでも、組む前 (描画する前) に、画像の格納先の画像を全部 (使うかどうかは、組み終えるまで分からない)。用意できない画像があれば、
+  // いままでどおり、組み終えてから先に全部を埋め込む
+  // 色つきの文字 (カラーフォント) も同じ形: 字形の画像を用意し、色つきの字を初めて描くページの直前で描き手を作り、字形の画像は初めて描く所で埋め込む
+  let plan: LazyImages | undefined = !std && !pdfa ? lazyImages(pdf, fonts, opts, warn) : undefined;
+  if (plan) {
+    rejoin(thisCall(), await plan.prepareAll());
+    if (!plan.ok) plan = undefined;
+  }
+  const early = !!src.layout && !!plan;
   if (src.layout && !early) rejoin(thisCall(), await src.layout());
   const colorOptions: PdfColorGlyphOptions = { cmyk: pdfxConverter(opts, std), alphaWarning: std?.transparency === 'warn' ? std.label : undefined, pdfxWarn: (d) => pdfxWarning(opts, d), warn, parseXml: opts.parseXml, png: pngEmbedOptions(opts, std) };
-  let colorGlyphs = early ? undefined : rejoin(thisCall(), await PdfColorGlyphs.create(pdf, scan, fonts, colorOptions));
+  /** 色つきの字形の画像 (初めて描く所で埋め込む形のとき。先のたどりで集め、描画する前に用意する) */
+  const glyphImages: PreparedGlyphImages = new Map();
+  const glyphCollector = plan ? PdfColorGlyphs.imageCollector(fonts, opts.parseXml) : undefined;
+  let colorGlyphs = plan ? undefined : rejoin(thisCall(), await PdfColorGlyphs.create(pdf, scan, fonts, colorOptions));
   // 色つきの書体を使わない文書では、描き手を作らない (たどらない) ので、ここでたどる
-  if (!scanned && !early) scan();
+  if (!scanned && !early) scan(glyphCollector?.visit, glyphCollector?.restart);
+  if (glyphCollector && !early) rejoin(thisCall(), await PdfColorGlyphs.prepareGlyphImages(glyphImages, glyphCollector.images, colorOptions.png));
   const embedded = new Map<string, PDFFont>();
   /**
    * 書体を埋め込む (書体の key で覚える)。CFF の OpenType (先頭が OTTO) は、fontkit のサブセットが壊れた字形を出すので、
@@ -3227,7 +3498,8 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   // 画像・色つきの文字の無い文書 (先のたどりで見つからない文書と、組みながら描画する文書) は、フォントを、初めて使うページを描画する前に埋め込む
   // (pageFonts。組みながら描画するときは、組み終えるまで使うフォントが分からないので。どちらの道でも同じ番号と並びにする)。
   // それ以外の文書は、描画する前に、使うフォントを fonts.all() の順に埋め込む
-  const lazyFonts = early || (!colorGlyphs && imageScan.sizes.size === 0);
+  // 画像も、初めて使うページの直前で埋め込むか (色つきの文字のある文書は、いまのまま先に埋め込む)
+  const lazyFonts = !!plan || (!colorGlyphs && imageScan.sizes.size === 0);
   if (!lazyFonts) for (const f of fonts.all()) if (used.has(f.key)) embedFont(f);
   /** ページで初めて使うフォントを埋め込む (同じページで初めて使うフォントどうしは、fonts.all() の順。全部を 1 ページ目で使う文書は、先に埋め込むのと同じ並び) */
   const pageFonts = (sheet: SheetArea) => {
@@ -3240,6 +3512,16 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     if (fresh) for (const f of fonts.all()) if (fresh.has(f.key)) embedFont(f);
   };
   const fontOf = (g: GlyphArea) => embedded.get(fonts.get(g.fontFamily, g.fontWeight).key)!;
+  /** ページに、色つきの描き手が描く字があるか */
+  const hasColorGlyph = (sheet: SheetArea) => {
+    if (!fonts.all().some((f) => colorFontOf(f))) return false;
+    let hit = false;
+    walkAreas(sheet, (a) => {
+      if (!hit && a.type === 'glyph' && PdfColorGlyphs.drawsInColor(fonts, a)) hit = true;
+      return !hit;
+    });
+    return hit;
+  };
 
   // 既定で付けるタグ ('auto') は、透明を平らにする出力 (PDF/X-1a・X-3) では付けない
   const tagsOn = opts.tagged === true || !!opts.pdfua || (opts.tagged === 'auto' && std?.transparency !== 'flatten');
@@ -3247,21 +3529,26 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   if (streamWriter && opts.pdfua && !(tagsOn && src.structure)) throw new KumioriPdfError('pdfua/requires-tagged', msg('PDF/UA-1 には、構造ツリー (タグ付き PDF。tagged) が要ります', 'PDF/UA-1 requires a structure tree (tagged PDF; tagged)'));
   // 流して書くとき: 埋め込んだ画像を、すぐ書き出し先へ書いて除く (書体の番号は、まだ中身が無いので最後に書く)
   const afterEmbed = streamWriter && (() => (streamWriter.releaseAll(), streamWriter.drain()));
-  let { images, vectors, svgImages, placed, pdfForms, flat } = rejoin(thisCall(), await embedImages(pdf, imageScan, fonts, opts, warn, afterEmbed));
+  let { images, vectors, svgImages, placed, pdfForms, flat } = plan
+    ? { images: plan.images, vectors: plan.vectors, svgImages: plan.svgImages, placed: new Map<string, { width: number; height: number }>(), pdfForms: new Map<string, PdfFormPlacement | null>(), flat: undefined }
+    : rejoin(thisCall(), await embedImages(pdf, imageScan, fonts, opts, warn, afterEmbed));
   // PDF だけを作るときは、埋め込んだラスター画像の、画像の置き場の中身を捨てる (同じ画像を、置き場と PDF の両方に持たない)
-  if (opts.releaseImageBytes) opts.assets?.releaseImageBytes(images.keys());
+  if (opts.releaseImageBytes && !plan) opts.assets?.releaseImageBytes(images.keys());
 
-  // SVG の中の字の書体 (PDF の文字として描く)。本文で使っていない書体も埋め込む
-  const svgKeys = new Set<string>();
-  for (const v of vectors.values())
-    eachSvgShape(v.shapes, (sh) => {
-      for (const c of sh.text?.chars ?? []) svgKeys.add(c.font);
-    });
-  for (const key of svgKeys) {
-    if (embedded.has(key)) continue;
-    const f = fonts.all().find((x) => x.key === key);
-    if (f) embedFont(f);
-  }
+  // SVG の中の字の書体 (PDF の文字として描く)。本文で使っていない書体も埋め込む。画像を初めて使うページで埋め込むときは、そのページで
+  const svgFonts = (docs: Iterable<SvgDoc>) => {
+    const svgKeys = new Set<string>();
+    for (const v of docs)
+      eachSvgShape(v.shapes, (sh) => {
+        for (const c of sh.text?.chars ?? []) svgKeys.add(c.font);
+      });
+    for (const key of svgKeys) {
+      if (embedded.has(key)) continue;
+      const f = fonts.all().find((x) => x.key === key);
+      if (f) embedFont(f);
+    }
+  };
+  if (!plan) svgFonts(vectors.values());
   const svgFontOf = (key: string) => embedded.get(key);
 
   const cmykOf = pdfxConverter(opts, std);
@@ -3288,6 +3575,10 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     // 止める合図 (ページを描く前に確かめる)
     checkAbort();
     if (lazyFonts) pageFonts(sheet);
+    // そのページで初めて使う画像を埋め込み、その中の文字のフォントを埋め込む
+    if (plan) svgFonts(plan.commit(sheet));
+    // 色つきの字を初めて描くページで、描き手を作る (字形の画像は、描き手が初めて描く所で埋め込む)
+    if (plan && !colorGlyphs && hasColorGlyph(sheet)) colorGlyphs = PdfColorGlyphs.lazy(pdf, fonts, glyphImages, colorOptions);
     trimSizes.push({ width: sheet.trimBox.width, height: sheet.trimBox.height });
     numbering.push({ number: sheet.page.pageNumber, ...(sheet.page.pageNumberFormat ? { format: sheet.page.pageNumberFormat } : {}) });
     const page = pdf.addPage([sheet.width, sheet.height]);
@@ -3339,14 +3630,14 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     src.scanned?.();
     const pdfNotice = fonts.onNotice;
     fonts.onNotice = layoutNotice;
+    // 画像は、用意してあるか、待たずに用意できれば描画する (組版の途中で足した、まだ用意していない画像のあるページは断る)。
+    // 色つきの字形の画像 (ビットマップの字形など) は、組む前には分からないので、そのある字のページは断る (組み終えてから用意する)
     const heavy = (sheet: SheetArea) => {
-      const s = imageScanner();
-      let color = false;
+      let waits = false;
       walkAreas(sheet, (a) => {
-        s.visit(a);
-        if (a.type === 'glyph' && colorFontOf(fonts.get(a.fontFamily, a.fontWeight))) color = true;
+        if (!waits && a.type === 'glyph' && colorFontOf(fonts.get(a.fontFamily, a.fontWeight)) && !PdfColorGlyphs.ready(fonts, a, glyphImages, opts.parseXml)) waits = true;
       });
-      return color || s.sizes.size > 0;
+      return waits || !plan!.ready(sheet);
     };
     emitting = true;
     try {
@@ -3367,10 +3658,10 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     }
     // 残りのページ (組み終えてから描画するもの) をたどる。組版の間にカラーフォントを読んだ・画像のあるページが残ったときは、ここで用意する
     // (組みながら描画したページの後に埋め込むので、組みながら描画しないときと番号の並びが違う。PDF の中身は同じ)
-    colorGlyphs = rejoin(thisCall(), await PdfColorGlyphs.create(pdf, scan, fonts, colorOptions));
-    if (!scanned) scan();
-    if (imageScan.sizes.size) ({ images, vectors, svgImages, placed, pdfForms, flat } = rejoin(thisCall(), await embedImages(pdf, imageScan, fonts, opts, warn, afterEmbed)));
-    if (opts.releaseImageBytes) opts.assets?.releaseImageBytes(images.keys());
+    if (!scanned) scan(glyphCollector!.visit, glyphCollector!.restart);
+    // 残りのページで使う画像のうち、まだ用意していないもの (組版の途中で足した画像) と、色つきの字形の画像を用意する
+    if (imageScan.sizes.size) rejoin(thisCall(), await plan!.prepareSrcs(imageScan.sizes.keys()));
+    rejoin(thisCall(), await PdfColorGlyphs.prepareGlyphImages(glyphImages, glyphCollector!.images, colorOptions.png));
     if (painters.length) reportProgress({ phase: 'pdf', pages: painters.length, ...(src.count !== undefined ? { total: src.count } : {}) });
   }
   rejoin(thisCall(), await src.paint(paintPage));

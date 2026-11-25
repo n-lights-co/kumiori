@@ -156,6 +156,13 @@ describe('暗号化の辞書', () => {
     expect(await bad({ permissions: { printing: false } })).toBe('encrypt.permissions.printing');
     expect(await bad({ permissions: { print: 'no' } })).toBe('encrypt.permissions.print');
     expect(await bad({ ownerPassword: 'a\u0001b' })).toBe('encrypt.ownerPassword');
+    // 空の所有者のパスワードは、誰でもパスワード無しで開けるので断る (SASLprep で何にも写さない文字 (ソフトハイフンなど) だけのものも)
+    expect(await bad({ userPassword: 'secret', ownerPassword: '' })).toBe('encrypt.ownerPassword');
+    expect(await bad({ userPassword: 'secret', ownerPassword: '\u00ad\u200b' })).toBe('encrypt.ownerPassword');
+    // 空の利用者のパスワードは、書かないのと同じ (パスワード無しで開けて、権限の制限だけが付く)
+    await expect(PdfEncryption.create({ userPassword: '', ownerPassword: 'o' })).resolves.toBeDefined();
+    // RFC 4013 §2.3 の C.2.2 (U+2061〜2063)・C.6 (U+FFFD)・C.7 (U+2FF0〜2FFB) も禁じる
+    for (const c of ['\u2061', '\u2063', '\ufffd', '\u2ff0', '\u2ffb']) expect(await bad({ userPassword: `a${c}b` })).toBe('encrypt.userPassword');
   });
 });
 

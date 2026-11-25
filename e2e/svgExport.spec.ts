@@ -57,7 +57,7 @@ test('SVG に書き出したページを、画面の Canvas と同じ絵に描�
     const scale = 2;
     // 画面の Canvas に描く
     const canvas = document.createElement('canvas');
-    res.renderPage(canvas, 0, { scale, devicePixelRatio: 1 });
+    await res.renderPage(canvas, 0, { scale, devicePixelRatio: 1 });
     const w = canvas.width;
     const h = canvas.height;
     const a = canvas.getContext('2d')!.getImageData(0, 0, w, h).data;

@@ -33,6 +33,11 @@ export interface ImageAsset {
   height: number;
   /** Canvas に描ける画像 (ブラウザのみ) */
   element?: CanvasImageSource;
+  /**
+   * 画素は、描画するときに作る (ブラウザーで、読み込みのときに画素にしなかった画像。element は無い)。大きさは画像の頭から読んだもの。
+   * renderPage が、描画する前に画像のキャッシュ (imageCache.ts) から引く (AssetStore の deferDecode)
+   */
+  deferred?: true;
   /** false: 大きさだけ分かり、中身は描けない (未対応の形式)。仮の枠で描く */
   drawable?: false;
   /** 描けない理由 (画像を描けない環境 (Node) で、PDF に入れられない形式 (GIF など) や、図形にできない SVG の機能 (filter・marker など))。組版の警告に出す */
@@ -185,6 +190,9 @@ function svgDrawableInPdf(text: string, parseXml: (xml: string) => XmlNode, onUn
 
 const basename = (s: string) => s.split(/[?#]/)[0].split('/').pop() ?? s;
 
+/** 読み込みのときに画素にしない画像の形式 (AssetStore の deferDecode。createImageBitmap で読めるラスター画像) */
+const DEFERRED_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp']);
+
 /** バイト列の指紋 (長さと、FNV-1a の 32 ビットを 2 つの初めの値で。同じ中身かを見るためのもので、暗号の強さは要らない)。同じバイト列は覚えて返す */
 const printMemo = new WeakMap<Uint8Array, string>();
 function bytesPrint(b: Uint8Array): string {
@@ -243,6 +251,11 @@ export class AssetStore {
       onUse?: (key: string) => void;
       /** PDF の画像の fragment で、アンテナハウスの拡張 (ページの範囲・bbox=) を読むか (互換の指定。pdfImage.ts の parsePdfFragment) */
       pdfCompat?: boolean;
+      /**
+       * ブラウザーで、ラスター画像 (PNG・JPEG・GIF・WebP・BMP) を、読み込みのときに画素にしない (大きさは画像の頭から読む。ImageAsset.deferred)。
+       * 描画するときに画像のキャッシュ (imageCache.ts) で画素にする (api.ts の組んだ結果。画面 (main.ts) は、いままでどおり読み込みのときに画素にする)
+       */
+      deferDecode?: boolean;
     } = {},
   ) {}
 
@@ -381,6 +394,17 @@ export class AssetStore {
     return this.map.values();
   }
 
+  /** get と同じ画像を引くが、使ったとは数えない (onUse を呼ばない。PDF の書き出しが、画像を前もって用意するとき) */
+  peek(src: string): ImageAsset | undefined {
+    const onUse = this.opts.onUse;
+    this.opts.onUse = undefined;
+    try {
+      return this.get(src);
+    } finally {
+      this.opts.onUse = onUse;
+    }
+  }
+
   get(src: string): ImageAsset | undefined {
     const key = normalizeSrc(src);
     const hit = this.map.get(key);
@@ -399,8 +423,8 @@ export class AssetStore {
    * この置き場が持つものの大きさの見積もり (バイト。TypesetResult.memoryUsage の images)。
    * 画像のファイルの中身 (同じ中身は 1 度)・PDF の図の元のファイル・本体の外の形式の元のファイル・文字のファイル・添付のファイルと、
    * ブラウザの画像 (ImageBitmap・img。描くために画素にしたもの) の画素 (幅 × 高さ × 4 バイト)。
-   * 画像の中身は、渡されたもの (files・resolveResource) を写して持つので数える。given が真を返すバイト列 (呼ぶ側が渡したものを
-   * そのまま持つもの: 添付のファイル) は数えない (手放しても、呼ぶ側が持つ)。同じ ArrayBuffer を共有するバイト列は 1 度だけ数える
+   * given が真を返すバイト列 (呼ぶ側が渡したものをそのまま持つもの: files・resolveResource の画像の中身・添付のファイル) は数えない
+   * (手放しても、呼ぶ側が持つ)。同じ ArrayBuffer を共有するバイト列は 1 度だけ数える
    */
   memoryBytes(given: (b: Uint8Array) => boolean = () => false): number {
     const seen = new Set<object>();
@@ -492,14 +516,22 @@ export class AssetStore {
    */
   async addBlob(name: string, blob: Blob): Promise<ImageAsset | undefined> {
     if (blob.size > limits().fileBytes) return undefined;
-    let bytes: Uint8Array = new Uint8Array(rejoin(thisCall(), await blob.arrayBuffer()));
+    return this.addBytes(name, new Uint8Array(rejoin(thisCall(), await blob.arrayBuffer())), blob.type);
+  }
+
+  /**
+   * 中身 bytes の画像を登録する (addBlob と同じ。中身は写さずに、そのまま持つ: 呼ぶ側が渡した中身 (files・resolveResource) を、もう 1 つ持たない。
+   * 呼ぶ側は、渡した中身を、組んだ結果を使う間は書き換えない)。type は中身の種類 (Content-Type。分からなければ空)
+   */
+  async addBytes(name: string, bytes: Uint8Array, type = ''): Promise<ImageAsset | undefined> {
+    if (bytes.length > limits().fileBytes) return undefined;
     // gzip で圧縮した SVG (.svgz) は展開して SVG として読む (展開した大きさに上限を置く)
     if (bytes[0] === 0x1f && bytes[1] === 0x8b && typeof DecompressionStream !== 'undefined') {
       const out = rejoin(thisCall(), await gunzipLimited(bytes, limits().fileBytes));
       if (out) bytes = out;
     }
     try {
-      return rejoin(thisCall(), await this.decodeBytes(name, blob, bytes));
+      return rejoin(thisCall(), await this.decodeBytes(name, type, bytes));
     } catch {
       const info = rejoin(thisCall(), await imageInfo(bytes).catch(() => undefined));
       if (!info) return undefined;
@@ -508,7 +540,7 @@ export class AssetStore {
     }
   }
 
-  private async decodeBytes(name: string, blob: Blob, bytes: Uint8Array): Promise<ImageAsset | undefined> {
+  private async decodeBytes(name: string, type: string, bytes: Uint8Array): Promise<ImageAsset | undefined> {
     // 本体の外の形式 (imageFormats.ts): 形式が読み込んで SVG にする (大きさも形式が決める)。読めなければ画像でない
     const fmt = formatOf(bytes, this.opts.formats ?? IMAGE_FORMATS);
     if (fmt) {
@@ -618,7 +650,7 @@ export class AssetStore {
       const label = info.mime === 'application/postscript' ? 'EPS' : info.mime.replace(/^image\//, '').toUpperCase();
       return this.register(name, { mime: info.mime, bytes, width: info.width, height: info.height, drawable: false, ...(noCanvas() ? { unsupported: label } : {}) });
     }
-    const mime = sniffMime(bytes, blob.type || mimeFromName(name));
+    const mime = sniffMime(bytes, type || mimeFromName(name));
     if (!mime) {
       // MathML の文字のファイル (.mml / .xml) は、画像ではなく文字として登録する
       const text = new TextDecoder().decode(bytes);
@@ -649,6 +681,17 @@ export class AssetStore {
     if (mime === 'image/svg+xml' && noSvgImage()) {
       const size = headerSize(bytes, mime);
       return size ? this.registerSvgShapes(name, bytes, size, dpi) : undefined;
+    }
+    // 読み込みのときに画素を持たない画像 (deferDecode): 読めるかと大きさ (EXIF の向きを当てた大きさ) は、いままでどおり 1 度デコードして確かめ、
+    // デコードした画像はすぐ閉じる (描画するときに、画像のキャッシュでデコードし直す)
+    if (this.opts.deferDecode && DEFERRED_MIMES.has(mime)) {
+      try {
+        const { element, width, height } = rejoin(thisCall(), await decode(bytes, mime));
+        (element as { close?: () => void }).close?.();
+        return this.register(name, { mime, bytes, width, height, deferred: true, ...(dpi ? { dpi } : {}) });
+      } catch {
+        return undefined;
+      }
     }
     try {
       const { element, width, height } = rejoin(thisCall(), await decode(bytes, mime));
@@ -779,6 +822,18 @@ export class AssetStore {
   }
 
   async rasterize(a: ImageAsset, widthPx: number): Promise<{ type: 'png'; bytes: Uint8Array } | undefined> {
+    // 画素にしていない画像 (deferred) は、ここで 1 度だけ読み、PNG にしたら閉じる
+    if (!a.element && a.deferred && a.bytes) {
+      let bmp: ImageBitmap | undefined;
+      try {
+        bmp = rejoin(thisCall(), await createImageBitmap(new Blob([a.bytes as BlobPart], { type: a.mime })));
+        return rejoin(thisCall(), await this.rasterize({ ...a, element: bmp, deferred: undefined }, widthPx));
+      } catch {
+        return undefined;
+      } finally {
+        bmp?.close();
+      }
+    }
     if (!a.element) return undefined;
     const w = Math.max(1, Math.min(Math.round(widthPx), 6000));
     const h = Math.max(1, Math.round((w * a.height) / a.width));

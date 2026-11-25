@@ -73,6 +73,20 @@ describe('breakLines: 文書の中で組んだ行と同じ', () => {
     expect(m.overflow).toBe(true);
     expect(m.inlineSize).toBeGreaterThan(40);
   });
+
+  it('字下げ (textIndent) で行の長さを超えた行も overflow が true (inlineSize は字下げを含まないので、それだけでは超えて見えない)', async () => {
+    // 字下げ 60 + 語の長さ (100 より短い) で、行の長さ 100 を超える
+    const word = await t.breakLines('Supercalifragilistic', { lang: 'en', textIndent: 60 }, 100);
+    expect(word.lineCount).toBe(1);
+    expect(word.inlineSize).toBeLessThan(100);
+    expect(word.overflow).toBe(true);
+    // 折り返さない和文 (3em + 10 字の 100pt)。縦書きも同じ
+    for (const writingMode of ['horizontal-tb', 'vertical-rl'] as const)
+      expect((await t.breakLines('あいうえおかきくけこ', { textIndent: '3em', whiteSpace: 'nowrap', writingMode }, 100)).overflow).toBe(true);
+    // 字下げしても収まる行は false
+    expect((await t.breakLines('あいうえお', { textIndent: '3em' }, 100)).overflow).toBe(false);
+    expect((await t.breakLines('あいうえおかきくけこさしすせそ', {}, 100)).overflow).toBe(false);
+  });
 });
 
 describe('measureText: 1 行で組んだ長さ', () => {

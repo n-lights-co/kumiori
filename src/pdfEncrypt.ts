@@ -70,7 +70,7 @@ export const PDF_PERMISSION_NAMES = Object.keys(PERMISSION_BITS) as Array<keyof 
  * PDF の暗号化の設定 (PdfOptions.encrypt)。AES-256 (ISO 32000-2 の標準セキュリティハンドラーの R 6) で、文字列とストリームを暗号化する。
  *  - userPassword: 開くときのパスワード (利用者のパスワード)。無ければ空 (パスワード無しで開けて、permissions の制限だけが付く)
  *  - ownerPassword: 権限を外して開くパスワード (所有者のパスワード)。無ければ乱数 (権限を外して開ける人はいない)。
- *    userPassword と同じにすると、開いた人は誰でも権限を外せる
+ *    userPassword と同じにすると、開いた人は誰でも権限を外せる。空 (SASLprep で何にも写さない文字だけのものも) はエラー (誰でもパスワード無しで開けるため)
  *  - permissions: 許すこと (既定はどれも許す)
  * パスワードは、SASLprep (RFC 4013) で正規化した UTF-8 の、初めの 127 バイトを使う (ISO 32000-2 §7.6.4.3.2)。
  * PDF/A・PDF/X とは一緒に使えない (どちらも暗号化を許さない。KumioriPdfError の pdf/encrypt-incompatible)
@@ -94,7 +94,11 @@ export function checkEncryptOptions(o: unknown, path = 'encrypt'): asserts o is 
     if (e[k] === undefined) continue;
     if (typeof e[k] !== 'string') throw bad(`${path}.${k} は文字列にしてください`, `${path}.${k} must be a string`, `${path}.${k}`);
     // 使えない文字 (制御文字など) は、ここでエラーにする (saslprep が投げる)
-    saslprep(e[k], `${path}.${k}`);
+    const prepared = saslprep(e[k], `${path}.${k}`);
+    // 所有者のパスワードが空 (SASLprep で何にも写さない文字だけのものも) だと、読むソフトは空のパスワードを所有者のパスワードとして確かめるので、
+    // 誰でもパスワード無しで、権限を外して開ける (利用者のパスワードがあっても開ける)。黙って受けずにエラーにする (書かなければ乱数)
+    if (k === 'ownerPassword' && prepared === '')
+      throw bad(`${path}.ownerPassword が空です (空の所有者のパスワードでは、誰でもパスワード無しで開けます。権限を外せる人を無くすときは、ownerPassword を書かないでください)`, `${path}.ownerPassword is empty (with an empty owner password, anyone can open the PDF without a password; to let no one remove the permissions, leave out ownerPassword)`, `${path}.ownerPassword`);
   }
   if (e.permissions !== undefined) {
     const p = e.permissions;
@@ -121,8 +125,11 @@ export function permissionBits(p: PdfPermissions = {}): number {
  * 禁じる文字 (§2.3 の C.2〜C.9 のうち、制御文字・私用の文字・非文字・サロゲート・表示を変える文字・タグの文字) があればエラー。
  * 割り当てのない符号位置の確認と、双方向の文字の確認 (§2.4) はしない
  */
-/** SASLprep (RFC 4013 §2.3) で禁じる文字: C.2.1・C.2.2 (制御文字)・C.3 (私用)・C.4 (非文字。下の \p{Noncharacter_Code_Point} も)・C.5 (サロゲート)・C.8 (表示を変える文字)・C.9 (タグ) */
-const PROHIBITED = /[\u0000-\u001f\u007f-\u009f\u06dd\u070f\u180e\u200e\u200f\u2028-\u202e\u206a-\u206f\ufff9-\ufffc\ue000-\uf8ff\ufdd0-\ufdef\ufffe\uffff\u{1d173}-\u{1d17a}\u{e0001}\u{e0020}-\u{e007f}\u{f0000}-\u{10ffff}]|[\ud800-\udfff]/u;
+/**
+ * SASLprep (RFC 4013 §2.3) で禁じる文字: C.2.1・C.2.2 (制御文字)・C.3 (私用)・C.4 (非文字。下の \p{Noncharacter_Code_Point} も)・C.5 (サロゲート)・
+ * C.6 (プレーンテキストに向かない文字)・C.7 (漢字の構成を示す記述文字)・C.8 (表示を変える文字)・C.9 (タグ)。C.1.2 の空白と、B.1 で何にも写さない文字は、その前に写す
+ */
+const PROHIBITED = /[\u0000-\u001f\u007f-\u009f\u06dd\u070f\u180e\u200e\u200f\u2028-\u202e\u2061-\u2063\u206a-\u206f\u2ff0-\u2ffb\ufff9-\ufffd\ue000-\uf8ff\ufdd0-\ufdef\ufffe\uffff\u{1d173}-\u{1d17a}\u{e0001}\u{e0020}-\u{e007f}\u{f0000}-\u{10ffff}]|[\ud800-\udfff]/u;
 
 function saslprep(s: string, option: string): string {
   const mapped = s.replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, ' ').replace(/[\u00ad\u034f\u1806\u180b-\u180d\u200b-\u200d\u2060\ufe00-\ufe0f\ufeff]/g, '');

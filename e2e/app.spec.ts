@@ -499,14 +499,14 @@ test('公開 API: typeset した結果を renderPage で canvas に描く (書�
     const canvas = document.createElement('canvas');
     canvas.id = 'api-preview';
     document.body.append(canvas);
-    r.renderPage(canvas, 0, { scale: 2, devicePixelRatio: 1 });
+    await r.renderPage(canvas, 0, { scale: 2, devicePixelRatio: 1 });
     // 字の部分 (濃い画素) が描かれているか
     const d = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
     let dark = 0;
     for (let i = 0; i < d.length; i += 4) if (d[i] < 128 && d[i + 1] < 128 && d[i + 2] < 128) dark++;
     let bad = '';
     try {
-      r.renderPage(canvas, 5);
+      await r.renderPage(canvas, 5);
     } catch (e) {
       bad = (e as Error).name;
     }
@@ -536,7 +536,7 @@ test('公開 API: CSS のグラデーションの背景を renderPage で canvas
     const html = `<!doctype html><html><head><style>@page { size: 240pt 200pt; margin: 20pt } body { margin: 0 } div { width: 200pt; height: 20pt; margin-bottom: 10pt }</style></head><body>${boxes.map((b) => `<div style="${b}"></div>`).join('')}</body></html>`;
     const r = await k.typeset(html, { kind: 'html' });
     const canvas = document.createElement('canvas');
-    r.renderPage(canvas, 0, { scale: 2, devicePixelRatio: 1 });
+    await r.renderPage(canvas, 0, { scale: 2, devicePixelRatio: 1 });
     const ctx = canvas.getContext('2d')!;
     /** n 番目の箱の、左から x (pt) の所の、高さの中央の色 */
     const at = (n: number, x: number) => Array.from(ctx.getImageData(Math.round((20 + x) * 2), Math.round((20 + 30 * n + 10) * 2), 1, 1).data.slice(0, 3));

@@ -25,7 +25,7 @@ import { walkAreaTree, type AreaNode } from './areaTree';
 import { parseColor } from './color';
 import { ITALIC_SLANT } from './paint';
 import { invert, type Seg } from './matrix';
-import { embedCmykImage, embedJpeg, embedPngChecked, type PdfImage, type PngEmbedOptions } from './imageEmbed';
+import { embedCmykImage, embedJpeg, embedPngChecked, embedPrepared, prepareJpeg, preparePng, type PdfImage, type PngEmbedOptions, type PreparedImage } from './imageEmbed';
 import { areaGlyphs, boxThrough, colorFontOf, COMPOSITE, paletteKey, plainStops, segsBox, sweepSampler, unrollStops, type Box, type ColorFill, type ColorFont, type ColorOp, type ColorStop, type Rgb } from './colorGlyph';
 import { ensureSvgGlyphReader } from './colorGlyphSvg';
 import { msg } from './messages';
@@ -124,6 +124,9 @@ const BLEND_MODE: Record<number, string> = {
   [COMPOSITE.HSL_LUMINOSITY]: 'Luminosity',
 };
 
+/** 用意した色つきの字形の画像 (中身ごと。埋め込めない画像は、その理由。PdfColorGlyphs.prepareGlyphImages) */
+export type PreparedGlyphImages = Map<Uint8Array, PreparedImage | string>;
+
 export class PdfColorGlyphs {
   private sets = new Map<string, GlyphSet>();
   /** Type 3 書体が共有する資源 (ExtGState・Shading・XObject)。名前は文書の中で 1 つずつ */
@@ -136,6 +139,11 @@ export class PdfColorGlyphs {
   private warned = new Set<string>();
   /** 透明 (不透明度・ソフトマスク・描画モード) を使ったか (PDF/X の確認用) */
   usedAlpha = false;
+  /**
+   * 初めて描く所で埋め込む形 (PdfColorGlyphs.lazy) の、用意した字形の画像 (中身ごと。PDF のオブジェクトは、初めて描く所で作る)。
+   * 埋め込めない画像は、その理由
+   */
+  private prepared?: PreparedGlyphImages;
 
   private constructor(
     private pdf: PDFDocument,
@@ -197,6 +205,61 @@ export class PdfColorGlyphs {
   }
 
   /**
+   * 色つきの字の描き手を、先にたどらずに作る (design/pdf-writer.md の 13。組みながらページを描画するとき)。字形の画像は、prepared (prepareGlyphImages で用意したもの)
+   * から、初めて描く所で埋め込む。作るのは、色つきの字を初めて描くページの直前 (Type 3 書体の資源の番号を、そこで取る)
+   */
+  static lazy(pdf: PDFDocument, fonts: FontManager, prepared: PreparedGlyphImages, opts: PdfColorGlyphOptions = {}): PdfColorGlyphs {
+    const self = new PdfColorGlyphs(pdf, fonts, opts);
+    self.prepared = prepared;
+    return self;
+  }
+
+  /**
+   * 領域の木の字の、色つきの字形の画像 (CBDT・sbix・SVG の表の中の画像) を集めるもの。visit に領域を渡し、images に中身と形式を集める
+   * (create の先のたどりと同じ集め方)
+   */
+  static imageCollector(fonts: FontManager, parseXml?: (xml: string) => XmlNode) {
+    const images = new Map<Uint8Array, 'png' | 'jpg'>();
+    const visit = (a: AreaNode, out = images) => {
+      if (a.type !== 'glyph') return;
+      const font = fonts.get(a.fontFamily, a.fontWeight);
+      const cf = colorFontOf(font);
+      if (!cf) return;
+      ensureSvgGlyphReader(cf, parseXml);
+      if (!cf.tables.cbdt && !cf.tables.sbix && !cf.tables.svg) return;
+      const collect = (ops: readonly ColorOp[]) => {
+        for (const o of ops) {
+          if (o.op === 'image') out.set(o.data, o.kind);
+          else if (o.op === 'clip' || o.op === 'transform') collect(o.ops);
+          else if (o.op === 'composite') (collect(o.source), collect(o.backdrop));
+        }
+      };
+      for (const { id } of areaGlyphs(a, font)) collect(cf.glyph(id, a.fontPalette)?.ops ?? []);
+    };
+    return { images, visit, restart: () => images.clear() };
+  }
+
+  /** 集めた字形の画像を用意する (PDF のオブジェクトは作らない。もう用意したものは飛ばす) */
+  static async prepareGlyphImages(into: PreparedGlyphImages, images: ReadonlyMap<Uint8Array, 'png' | 'jpg'>, png?: PngEmbedOptions): Promise<void> {
+    for (const [data, kind] of images) {
+      if (into.has(data)) continue;
+      try {
+        into.set(data, kind === 'png' ? rejoin(thisCall(), await preparePng(data, png)) : prepareJpeg(data));
+      } catch (e) {
+        into.set(data, e instanceof Error ? e.message : String(e));
+      }
+    }
+  }
+
+  /** 字の領域 a の色つきの字形の画像が、どれも用意してあるか (組みながら描画するページで、待たずに描画できるか) */
+  static ready(fonts: FontManager, a: AreaNode, prepared: PreparedGlyphImages, parseXml?: (xml: string) => XmlNode): boolean {
+    const found = new Map<Uint8Array, 'png' | 'jpg'>();
+    PdfColorGlyphs.imageCollector(fonts, parseXml).visit(a, found);
+    for (const data of found.keys()) if (!prepared.has(data)) return false;
+    return true;
+  }
+
+  /**
    * 字の領域 g を、この描き手が描くか: 書体が色つきの表を持ち、並びに色つきの絵のある字形がある。
    * 色つきの絵の無い字形だけの並びは、ふつうの書体の字として書く (部分書体として埋め込む。Type 3 にしない):
    * 一部の字形にだけ絵を持つ書体 (Source Code Pro の SVG の表は 13 字形だけ) の本文の字が、すべて Type 3 になっていた
@@ -221,6 +284,26 @@ export class PdfColorGlyphs {
     return !!cf && !areaGlyphs(g, font).every((gl) => cf.isPlain(gl.id, g.fontPalette));
   }
   private handled = new WeakMap<GlyphArea, boolean>();
+
+  /** 字形の画像の XObject (初めて描く所で埋め込む形では、用意したものを、ここで埋め込む) */
+  private imageOf(data: Uint8Array): PdfImage | undefined {
+    const key = this.imageKey(data);
+    let img = this.images.get(key);
+    if (img || !this.prepared) return img;
+    const p = this.prepared.get(data);
+    if (p === undefined) return undefined;
+    if (typeof p === 'string') {
+      // 埋め込めない画像は、字形の中で描かない (create と同じ知らせ)
+      this.warnOnce(`image:${p}`, diag('pdf/color-glyph-image', msg(`PDF: 色つきの字形の画像を埋め込めません (${p})。その画像は描画しません`, `PDF: cannot embed the image of a color glyph (${p}); that image is not drawn`)));
+      this.prepared.delete(data);
+      return undefined;
+    }
+    img = embedPrepared(this.pdf, p);
+    this.images.set(key, img);
+    // 埋め込んだら、用意した中身は PDF が持つ
+    this.prepared.delete(data);
+    return img;
+  }
 
   /** 画像のバイト列ごとの鍵 (同じ画像の命令は、同じバイト列の物を指す。ColorFont が字形ごとに覚えている) */
   private imageKey(data: Uint8Array): string {
@@ -426,7 +509,7 @@ export class PdfColorGlyphs {
         s += `q\n${o.m.map(fine).join(' ')} cm\n${this.emit(o.ops, { ...st, box: boxThrough(st.box, inv) })}Q\n`;
       } else if (o.op === 'composite') s += this.composite(o, st);
       else if (o.op === 'image') {
-        const img = this.images.get(this.imageKey(o.data));
+        const img = this.imageOf(o.data);
         if (!img) continue;
         // 画像の XObject は単位正方形 (左下が原点) なので、(幅, 高さ) に伸ばして左下 (x, y) に置く
         s += `q\n${num(o.w)} 0 0 ${num(o.h)} ${num(o.x)} ${num(o.y)} cm\n/${this.imageName(img)} Do\nQ\n`;
