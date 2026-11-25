@@ -770,6 +770,38 @@ const startSide = (wm: WritingMode): keyof Edges => (wm === 'horizontal-tb' ? 't
 const endSide = (wm: WritingMode): keyof Edges => (wm === 'horizontal-tb' ? 'bottom' : wm === 'vertical-lr' ? 'right' : 'left');
 
 /**
+ * 改ページの境目で決め直した表のセルの罫線の、決め直す前の線 (セルごと・辺ごと。辺が無かったものは undefined)。
+ * collapse の表では、改ページの境目の罫線を、組んだ行のセルの辺を書き換えて決める (ページの最後の行の後ろ側の線: closeRowAtBreak。
+ * 表ヘッダーの後の最初の行の前側の線: reborderAfterHeader)。組んだ行のセルは、組み直すとき (最後のページのマスターの組み直しなど、
+ * 境目で保存した状態から続きを組むとき) にもう 1 度置くので、書き換えたままだと、組み直した流れが前の組みの境目の線を読んでしまう
+ * (次の行の前側の線を写す closeRowAtBreak が、前の組みで表ヘッダーの後に決め直した線を写すなど)。
+ * そこで、書き換える前の線を覚えておき、行を置くたびに戻してから (restoreBreakSides)、その置き方の境目の線を決め直す
+ */
+const BREAK_SIDE_ORIG = new WeakMap<LNode, Partial<Record<keyof Edges, BorderSide | undefined>>>();
+
+/** セルの side の辺を書き換える前に、元の線を覚える (2 度目からは、初めの線のまま) */
+function rememberBreakSide(cell: LNode, side: keyof Edges) {
+  let m = BREAK_SIDE_ORIG.get(cell);
+  if (!m) BREAK_SIDE_ORIG.set(cell, (m = {}));
+  if (!(side in m)) m[side] = cell.border[side];
+}
+
+/** 行のセルの、改ページの境目で書き換えた辺を、元の線に戻す */
+function restoreBreakSides(rows: LNode[]) {
+  for (const row of rows)
+    for (const cell of row.children) {
+      const m = BREAK_SIDE_ORIG.get(cell);
+      if (!m) continue;
+      for (const side of Object.keys(m) as Array<keyof Edges>) {
+        const b = m[side];
+        if (b) cell.border[side] = b;
+        else delete cell.border[side];
+      }
+      BREAK_SIDE_ORIG.delete(cell);
+    }
+}
+
+/**
  * 断片の切れ目の側 (side) の角を丸めない (box-decoration-break: slice。CSS Fragmentation 3 §5.4: 箱を分けずに描いてから切った形になるので、
  * border-radius の角は、箱の最初と最後の断片の外側の角にだけ付く)。角は 左上・右上・右下・左下 の順 (BorderRadius.corners)
  */
@@ -9071,6 +9103,8 @@ class Flow {
     } = {},
     rec?: TableStep,
   ) {
+    // 前の組みで、改ページの境目のために書き換えた罫線を戻す (BREAK_SIDE_ORIG)
+    if (!isHeader) restoreBreakSides(group);
     this.applyPendingBreak();
     const forcedKind = typeof opts.forceNewPage === 'string' ? opts.forceNewPage : undefined;
     // 左右のページの指定の偶奇 (forceBreak と同じ。ページ番号の分からない流れ = セルの中などでは、白ページは外の流れが挟む)
@@ -9135,6 +9169,8 @@ class Flow {
   private placeRowsAfterBreak(group: LNode[], isHeader: boolean, afterBreak: () => void, opts: { onBreak?: () => void; reserve?: number; beforeBreak?: () => void; forceNewPage?: boolean | BreakKind }, rec: TableStep | undefined) {
     const phase = rec?.phase;
     if (rec) rec.phase = '';
+    // 境目の後の組みで、改ページの境目のために書き換えた罫線を戻す (BREAK_SIDE_ORIG)
+    if (!isHeader) restoreBreakSides(group);
     this.resumeOpen();
     // 強制の区切りの白ページの後: 区切りのページの改ページをする
     if (phase === 'fblank') {
@@ -9204,6 +9240,7 @@ class Flow {
       // (線を内へずらして描く辺 (paintWidth が場所より細い) は、描く太さの線にする)
       const { collapse, ...rest } = b;
       if (collapse?.paintWidth !== undefined && collapse.paintWidth < rest.width) rest.width = collapse.paintWidth;
+      rememberBreakSide(cell, e);
       cell.border[e] = collapse?.tableEdge ? { ...rest, collapse: { tableEdge: true } } : rest;
     }
   }
@@ -9275,6 +9312,7 @@ class Flow {
    */
   private setBreakSide(cell: LNode, b: BorderSide | undefined, compat: boolean) {
     const s = startSide(this.wm);
+    rememberBreakSide(cell, s);
     if (!b) {
       delete cell.border[s];
       return;
@@ -10846,6 +10884,22 @@ interface CiteValueUse {
   style?: ResolvedStyle;
 }
 
+/** 参照したページ番号の記録の 1 項目 (SeqMemo.cites) */
+interface CiteEntry {
+  args: [string, boolean | undefined, string | undefined, boolean | undefined];
+  uses: CiteValueUse[];
+  seen: Set<string>;
+}
+
+/**
+ * 組み直しの 2 回目からの字の差し替え (reuseCites) で書き換えた所の、書き換える前の中身 (Typesetter が覚える前の文書の組版を、組み直しの 1 回目の
+ * 形に戻すため。PrevLayout.undo)。字の節の描き方と、参照の記録の値と書式の組。どちらも、初めに書き換える前のものだけを持つ
+ */
+interface CiteUndo {
+  glyphs: Map<LNode, GlyphPayload>;
+  cites: Map<CiteEntry, { uses: CiteValueUse[]; seen: Set<string> }>;
+}
+
 /** 1 段の page-sequence の組み (LayoutEngine.sequenceRun) */
 interface SeqRun {
   /** 初めから組む (lastIndex は最後のページの番号。分からなければ null) */
@@ -10886,6 +10940,11 @@ interface SpliceTarget {
   map: ReuseMap;
   /** この page-sequence の最初のページの、この文書の先頭からの通し番号 */
   ordinal: number;
+  /**
+   * 同じ文書の前の回の組みと繋ぐ (組み直しの 2 回目からの回。参照の値が変わった page-sequence)。map は番号をそのままにする対応で、
+   * owners は、この文書の入力の節の欄の配列の持ち主 (前と後が同じ)。直した所の代わりに、値の変わった参照を見る (skipFrom・spliceOk)
+   */
+  within?: { owners: { old: ArrayOwners; now: ArrayOwners } };
 }
 
 /** page-sequence の、ページの境目の記録 (design/resumable-flow.md の 4.2 の PageBoundary) */
@@ -10985,7 +11044,7 @@ interface SeqMemo {
    * 引くことがある (1 回目の組版の仮の値は、引いたページのページ番号なので、ページごとに違う。目次と本文で書式が違う、など)。
    * seen は、uses に入れた値と書式の組の印 (同じ組を 2 度入れない)
    */
-  cites: Map<string, { args: [string, boolean | undefined, string | undefined, boolean | undefined]; uses: CiteValueUse[]; seen: Set<string> }>;
+  cites: Map<string, CiteEntry>;
   built: PageBuild[];
   fnCarryOut: number;
   warnings: Diagnostic[];
@@ -11407,7 +11466,7 @@ export class LayoutEngine {
     if (this.reuseMapCache === undefined) {
       const prev = this.reusePrev;
       const now = this.reuseNow;
-      this.reuseMapCache = prev && now && this.docNodes && prev.nodes.length ? diffTokens(prev.tokens(), now.tokens()) : null;
+      this.reuseMapCache = prev && now && this.docNodes && prev.nodes.length ? diffShapes(prev.shapes(), now.shapes()) : null;
     }
     return this.reuseMapCache ?? undefined;
   }
@@ -11439,12 +11498,17 @@ export class LayoutEngine {
   }
   /** 前の文書とこの文書の、入力の節の欄の配列の持ち主 (境目の状態を比べるときに作る) */
   private reuseOwnerMaps?: { old: ArrayOwners; now: ArrayOwners };
+  /** この文書の入力の節の欄の配列の持ち主 (同じ文書の前の回の組みと繋ぐとき。SpliceTarget.within) */
+  private withinOwners?: ArrayOwners;
   private reuseOwners(): { old: ArrayOwners; now: ArrayOwners } | undefined {
     if (!this.reuseOwnerMaps && this.reusePrev && this.docNodes) this.reuseOwnerMaps = { old: arrayOwners(this.reusePrev.nodes), now: arrayOwners(this.docNodes) };
     return this.reuseOwnerMaps;
   }
   /** 前の文書から使い回した page-sequence (組み直しの回の間は、文書の中の seqMemo で使い回す) */
   private foreignSeqs = new Set<number>();
+  /** Typesetter が覚えるとき: 組み直しの 1 回目の page-sequence ごとの記録 (storeReuse が覚える) と、2 回目からの字の差し替えの戻し方 */
+  private passOneMemo?: Array<SeqMemo | undefined>;
+  private citeUndo?: CiteUndo;
   /** 組んでいる文書 (passSteps が置く) */
   private lastDoc?: LDocument;
   /** 行分けの結果の覚えの、覚えている量と古さの順 (組版 (layout) ごと) */
@@ -11598,10 +11662,13 @@ export class LayoutEngine {
     }
     // 字の描き方は、同じ中身の字で共有している (inlineLayout.ts の internGlyph) ので、書き換えずに、作り直したものに替える
     // 行末の印 (分綴で足した字・行末で捨てた空白。inlineLayout.ts の buildLineNode) は、字の描き方の中身と別に、元の節のものを残す
+    const undo = this.citeUndo;
+    if (undo) for (const [n] of swaps) if (!undo.glyphs.has(n)) undo.glyphs.set(n, n.glyph!);
     for (const [n, g] of swaps) n.glyph = n.glyph!.hyphen || n.glyph!.breakSpace !== undefined ? { ...g, ...(n.glyph!.hyphen ? { hyphen: true } : {}), ...(n.glyph!.breakSpace !== undefined ? { breakSpace: n.glyph!.breakSpace } : {}) } : g;
     for (const [key, { value }] of plan) {
       const c = memo.cites.get(key)!;
       const uses = c.uses;
+      if (undo && !undo.cites.has(c)) undo.cites.set(c, { uses, seen: c.seen });
       c.uses = [];
       c.seen = new Set();
       for (const u of uses) {
@@ -11760,6 +11827,7 @@ export class LayoutEngine {
     this.reusePrev = undefined;
     this.reuseMapCache = undefined;
     this.reuseOwnerMaps = undefined;
+    this.withinOwners = undefined;
     this.reuseFx = undefined;
     limitTap.fn = undefined;
     addTreeDiagnostics(tree, this.kept(unsettled));
@@ -11962,6 +12030,8 @@ export class LayoutEngine {
     this.seqMemo = [];
     this.lastDoc = doc;
     this.setupReuse(doc);
+    this.passOneMemo = undefined;
+    this.citeUndo = this.reuseNow ? { glyphs: new Map(), cites: new Map() } : undefined;
     this.citations = undefined;
     this.citationUsed = false;
     this.fnOrder = new Map();
@@ -11984,6 +12054,8 @@ export class LayoutEngine {
     // 収束の判定は、ページの数と、組んだ中で記録した id のページ・脚注・索引の並びだけを見るので、途中の回の領域の木は要らない
     // (毎回作ると、前の回の領域の木を持ったまま次の回を組むので、数千ページの文書で、文書全体の木を 3 つ同時に持っていた)
     yield* this.onceSteps(doc);
+    // 覚えるのは、組み直しの 1 回目の記録 (次の文書の 1 回目と比べる。2 回目からの回で組み直した page-sequence の、1 回目のページも持つ)
+    if (this.reuseNow) this.passOneMemo = [...this.seqMemo];
     let indexView: IndexView | undefined;
     // 索引の並びが、組み終えたページで作り直しても同じなら、索引は収束している (索引の無い文書は、いつも true)
     const indexDone = () => !this.indexUsed.size || this.indexSettled((indexView = this.indexSnapshot()));
@@ -12083,30 +12155,46 @@ export class LayoutEngine {
   /** 組版の初め: 前の文書の組版を使えるか決め、この文書の指紋を作る (覚えるため) */
   private setupReuse(doc: LDocument) {
     const lr = this.options.layoutReuse;
-    const prev = lr?.prev;
-    if (lr) lr.prev = undefined;
     this.reusePrev = undefined;
     this.reuseNow = undefined;
     this.reuseMapCache = undefined;
     this.reuseOwnerMaps = undefined;
+    this.withinOwners = undefined;
     this.reuseFx = undefined;
     this.reuseCost = { cost: 0, hit: false };
     this.foreignSeqs = new Set();
+    // メモリ節約の組版・先頭から N ページで止める組版 (プレビュー) は、前の文書の組版を使いも外しもしない (次に全体を組むときに使う)
     if (!lr || this.lowMemory || this.options.maxPages !== undefined) return;
+    // 使ったら外す (この文書の組版が、そのページを書き換えて使うので)
+    const prev = lr.prev;
+    lr.prev = undefined;
     const skip = new Set(['assets', 'control', 'sharedLineMemo', 'layoutReuse', 'hyphenate', 'resumeCheck']);
     const opts = JSON.stringify(this.options, (k, v) => (skip.has(k) || typeof v === 'function' ? undefined : v instanceof Set ? [...v] : v));
     // 警告の文は組んだときの言語で作るので、言語も入れる (違う言語の文書では、前の文書の警告を使わない)
     const env = `${this.fonts.signature()}|${limitsKey()}|${this.measurer.version()}|${opts}|${this.options.assets?.layoutSignature() ?? ''}|${messageLang()}`;
-    const { sequences: _s, ...rest } = doc;
+    // 文書の欄のうち、組版が読まないもの (しおり・文書の題と情報・タグ付き PDF の構造の木) は指紋に入れない。これらは組み終えた後の
+    // finishTree が、いまの文書から作り直す (しおりの飛び先と構造の木は、ページの領域の入力の節の番号から引くので、使い回したページでも
+    // いまの文書の節を指す)。HTML の見出しの字を直すと、しおりの題も変わるので、入れると、どの page-sequence も使い回さなかった
+    const { sequences: _s, title: _t, info: _i, bookmarks: _b, structure: _st, ...rest } = doc;
     const docPrint = contentPrint(rest);
     // 節ごとの指紋は、要る所 (前の文書と節の番号の対応を作るとき) で初めて作る
     const nodes = this.docNodes ?? [];
-    let tokens: string[] | undefined;
-    this.reuseNow = { env, hyphenate: this.options.hyphenate, docPrint, prints: doc.sequences.map((q) => contentPrint(q)), tokens: () => (tokens ??= nodeTokens(nodes)), nodes };
+    let shapes: NodeShapes | undefined;
+    this.reuseNow = { env, hyphenate: this.options.hyphenate, docPrint, prints: doc.sequences.map((q) => contentPrint(q)), shapes: () => (shapes ??= nodeShapes(nodes)), nodes };
     // 組む手間の上限 (maxMeasureFlows) の近くの文書では使い回さない: 使い回すと組む流れの数が減り、初めから組めば上限に当たる所で当たらなくなる
     // (前の文書の数えの 2 倍に余裕を足しても上限に届かないとき。直した文書の数えは、前の文書と大きくは違わない)
     const budget = this.options.maxMeasureFlows ?? Math.max(100000, 2 * (this.docNodes?.length ?? 0));
     if (prev && prev.env === env && prev.hyphenate === this.options.hyphenate && prev.docPrint === docPrint && !prev.hit && 2 * prev.cost + 1000 <= budget) {
+      // 前の文書の組み直しの 2 回目からの字の差し替えで書き換えたページを、1 回目の形に戻す (覚えた記録は 1 回目のもの)
+      const u = prev.undo;
+      if (u) {
+        for (const [n, g] of u.glyphs) n.glyph = g;
+        for (const [c, x] of u.cites) {
+          c.uses = x.uses;
+          c.seen = x.seen;
+        }
+        prev.undo = undefined;
+      }
       this.reusePrev = prev;
     }
   }
@@ -12225,6 +12313,17 @@ export class LayoutEngine {
    * 始まりの条件が同じで、索引・止めた組版・ページごとの脚注番号・最後のページのマスターの無いもの (ページ番号の参照は、組み直しの 1 回目だけ)
    */
   private spliceTarget(si: number, seq: LPageSequence, first: number, sideDelta: number, ordinal: number, needsLast: boolean): SpliceTarget | undefined {
+    // 組み直しの 2 回目からの回: 前の回の組み (字の差し替えができなかったもの) の、値の変わった参照を初めて引いたページの前の境目から組み、
+    // 後ろで前の回と揃ったら繋ぐ (design/resumable-flow.md の 4.3 の 2)。前の回の境目の記録は、Typesetter が覚えるときだけある
+    if (this.passIndex > 1) {
+      const m = this.seqMemo[si];
+      const rec = m?.run;
+      const nodes = this.docNodes;
+      if (!m || !rec || !nodes || needsLast || this.indexKeys || this.fnResetUsed || seq.footnotes?.reset === 'page' || this.citeCut) return undefined;
+      if (m.first !== first || m.sideDelta !== sideDelta || m.fnCarryIn !== this.fnCarry || m.indexLists?.size || m.beyond || m.limits || m.notices) return undefined;
+      const own = (this.withinOwners ??= arrayOwners(nodes));
+      return { memo: m, rec, map: { P: nodes.length, oldEnd: nodes.length, newEnd: nodes.length, delta: 0 }, ordinal, within: { owners: { old: own, now: own } } };
+    }
     const map = this.reuseMap;
     const m = this.reusePrev?.seqs[si]?.memo;
     const rec = m?.run;
@@ -12236,7 +12335,14 @@ export class LayoutEngine {
     // 直した所が page-sequence の節だけになり、本文は全部「直した所の後ろ」になるので、繋いだページが前のマスターのまま残る
     const e = this.reusePrev!.seqs[si];
     const at = sourceRef(seq);
-    if (!e || at === undefined || this.reusePrev!.tokens()[e.start] !== this.reuseNow?.tokens()[at]) return undefined;
+    // (祖先の節は、子の並びにブロックを足す・消すと変わるので、直した所より前 (初めの同じ所) にあることで見る。欄が同じで、子の並びの直した所の外が対応する)
+    if (!e || at === undefined || e.start !== at || at >= map.P) return undefined;
+    // 直した所は、本文 (flow) の部分木の中にあること。page-sequence の本文の外の節 (柱・領域の背景・脚注の区切りなど。どのページにも効く) を足す・消す・
+    // 直したときは繋がない (前の組版のページは、前の節のまま)
+    const f = sourceRef(seq.flow);
+    const fEndOld = f === undefined ? undefined : this.reusePrev!.shapes().ends[f];
+    const fEndNew = f === undefined ? undefined : this.reuseNow?.shapes().ends[f];
+    if (f === undefined || fEndOld === undefined || fEndNew === undefined || f >= map.P || map.oldEnd > fEndOld || map.newEnd > fEndNew) return undefined;
     return { memo: m, rec, map, ordinal };
   }
 
@@ -12255,6 +12361,21 @@ export class LayoutEngine {
   }
 
   /**
+   * 同じ文書の前の回の組み memo の、ページごとの記録 recs の [0, to) のうち、引いた参照の値が、いまの回の値 (前の回の結果。spliceCites の 2 回目からの
+   * 決まり) と同じでない最初のページ (どれも同じなら to)。ページに組んだ字の値は、spliceCites と同じく memo の参照の記録から引く
+   */
+  private citesSameUpTo(memo: SeqMemo, recs: readonly PageRecord[], to: number): number {
+    for (let j = 0; j < to; j++) for (const c of recs[j]?.cites ?? []) {
+      const [id, last, format, physical] = c;
+      const now = this.citeBeyond(id, last) ? undefined : this.citeValue(id, last, format, physical);
+      const u = memo.cites.get(JSON.stringify(c.slice(0, 4)))?.uses;
+      const shown = !u?.length ? undefined : u.every((x) => x.value === u[0].value) ? u[0].value : c[4];
+      if (now === undefined || now !== shown) return j;
+    }
+    return to;
+  }
+
+  /**
    * 前の組版の境目 pb から後ろのページの、id のページを書き (初めから組んだときと同じ順)、ページの中のページ番号の参照を、組み直しの 1 回目の
    * 決まり (host.cite: 置いた id はそのページ、まだ置いていない id と last・physical の参照は、引いたときのページ番号) で引き直し、ページに組んだ字の
    * 値 (前の組版の参照の記録で、値が 1 つにそろっていればその値 (字を差し替えたもの)、そろっていなければ引いたときの値) と同じかを確かめる。
@@ -12268,6 +12389,8 @@ export class LayoutEngine {
     this.pageRecs = undefined;
     const value = (c: PageRecord['cites'][number]): string => {
       const [id, last, format, physical, , , pn] = c;
+      // 組み直しの 2 回目からの回 (同じ文書の前の回と繋ぐ): 前の回の結果の値 (host.cite と同じ。決まらない参照・見つからない参照は、繋がない)
+      if (this.citations) return this.citeBeyond(id, last) ? '\u0000beyond' : (this.citeValue(id, last, format, physical) ?? '\u0000missing');
       const n = !last && !physical ? this.idPages.get(id) : undefined;
       return n ? (format !== undefined && n.firstN !== undefined ? formatPageNumber(n.firstN, format) : n.first) : formatPageNumber(Math.max(1, pn ?? 1), format ?? '1');
     };
@@ -12513,19 +12636,31 @@ export class LayoutEngine {
     const now = this.reuseNow;
     // 索引のある文書は、次の文書で使い回さない (prevSeqMemo・spliceTarget) ので覚えない
     if (!lr || !now || this.cutInfo || this.indexKeys) return;
+    // 覚える大きさの上限 (REUSE_LNODES): page-sequence を初めから順に、ページの論理の木の節の数を足し、上限を超える page-sequence からは覚えない
+    // (覚えない page-sequence は、次の文書でいまどおり組む)。数はページごとに覚える (使い回したページ・繋いだページは数え直さない)
+    let lnodes = 0;
+    let full = false;
     lr.prev = {
       env: now.env,
       hyphenate: now.hyphenate,
       docPrint: now.docPrint,
-      tokens: now.tokens,
+      shapes: now.shapes,
       nodes: this.docNodes ?? [],
       cost: this.reuseCost.cost,
       hit: this.reuseCost.hit,
+      ...(this.citeUndo && (this.citeUndo.glyphs.size || this.citeUndo.cites.size) ? { undo: this.citeUndo } : {}),
       seqs: doc.sequences.map((q, si) => {
-        const memo = this.seqMemo[si];
+        const memo = this.passOneMemo?.[si] ?? this.seqMemo[si];
         const start = sourceRef(q);
         const end = sourceRefEnd(q);
-        return memo && start !== undefined && end !== undefined ? { print: now.prints[si], start, end, memo } : undefined;
+        if (!memo || start === undefined || end === undefined || full) return undefined;
+        for (const p of memo.built) lnodes += pageLNodes(p);
+        if (lnodes > lr.limit) {
+          full = true;
+          lr.stats.overLimit++;
+          return undefined;
+        }
+        return { print: now.prints[si], start, end, memo };
       }),
     };
   }
@@ -13734,7 +13869,7 @@ export class LayoutEngine {
         const pb = prefixAt;
         prefixAt = undefined;
         const t = splice!;
-        const owners = this.reuseOwners()!;
+        const owners = t.within?.owners ?? this.reuseOwners()!;
         let why: string | undefined;
         const note = (w: string) => (why ??= w);
         const view = (ps: PageBuild[]) => ps.map(({ lineMarked: _m, ...p }) => p);
@@ -13789,12 +13924,13 @@ export class LayoutEngine {
       const why = resumeProbe.spliceWhy;
       if (lastIndex !== null || b.flow.level !== pb.flow.level || b.counts.nestHit || pb.counts.nestHit || b.index >= t.rec.pages) return void why?.('(level)'), false;
       const at = resumePos(b.flow.steps);
-      // 表の中の位置なら、表が直した所の後ろか、直した所が表の本体の行の中 (lo より後ろ) であること
-      if (!at || at.pos < m.newEnd || (at.table < m.newEnd && m.P < at.lo)) return void why?.(!at ? '(pos)' : '(before-edit)'), false;
+      // 表の中の位置なら、表が直した所の後ろか、直した所が表の本体の行の中 (lo より後ろ) であること。同じ文書の前の回と繋ぐときは、入力は同じで、
+      // 続きの組みが前の回と違いうるのは、後ろで引く参照の値だけ (繋ぐページの参照を spliceCites で確かめる)
+      if (!at || (!t.within && (at.pos < m.newEnd || (at.table < m.newEnd && m.P < at.lo)))) return void why?.(!at ? '(pos)' : '(before-edit)'), false;
       const fa = b.footMark;
       const fp = pb.footMark;
       if (fa.counter !== fp.counter || fa.assigned !== fp.assigned || fa.claimed !== fp.claimed || !!b.beforeSep !== !!pb.beforeSep) return void why?.('(foot)'), false;
-      const owners = this.reuseOwners();
+      const owners = t.within?.owners ?? this.reuseOwners();
       if (!owners || !sameMapped(pb.foot.marked(fp), b.foot.marked(fa), m, owners, why)) return false;
       // 組んでいる表があれば、組んだ箱・セルを鍵にする覚えも比べる (SPLICE_SIDE)
       const tables = b.flow.steps.filter((x): x is TableStep => x.k === 'table');
@@ -13832,8 +13968,13 @@ export class LayoutEngine {
       foot.continueAt(t.rec.footEnd);
       spliced = { at: k, pages: adopted.length };
       const st = this.options.layoutReuse!.stats;
-      st.spliced++;
-      st.splicedPages += adopted.length;
+      if (t.within) {
+        st.passSpliced++;
+        st.passSplicedPages += adopted.length;
+      } else {
+        st.spliced++;
+        st.splicedPages += adopted.length;
+      }
     };
     /**
      * 前を飛ばす境目: 前の組版の境目のうち、そこまでのページを組むのに読んだ先 (readTo) が直した所より前で、続きから組め、
@@ -13842,7 +13983,10 @@ export class LayoutEngine {
      */
     const skipFrom = (): SeqBoundary | undefined => {
       const t = splice!;
-      for (let k = Math.min(t.rec.bounds.length, t.rec.pages) - 1; k >= 1; k--) {
+      // 同じ文書の前の回と繋ぐときは、入力は同じなので、読んだ先の代わりに、値の変わった参照を見る: 境目 k までに引いた参照 (ページごとの記録の
+      // 0〜k - 1 ページ目。境目の後のページの中身を先に組んで引いた参照も、引いたときのページの記録に入る) の値が、どれもいまの回と同じ境目
+      const upTo = t.within ? this.citesSameUpTo(t.memo, t.rec.recs, t.rec.pages) : Infinity;
+      for (let k = Math.min(t.rec.bounds.length, t.rec.pages, upTo) - 1; k >= 1; k--) {
         const b = t.rec.bounds[k];
         if (b && !b.flow.reason && b.readTo < t.map.P && !b.counts.nestHit && !b.flow.steps.some((x) => x.k === 'table')) return b;
       }
@@ -13856,11 +14000,13 @@ export class LayoutEngine {
       const t = splice!;
       const k = pb.index;
       if (t.rec.rootI === undefined || t.rec.limit === undefined) return false;
-      const fb = this.remapBoundary(pb.flow, t.map);
+      // 同じ文書の前の回の境目は、この文書の節を指すので、そのまま続ける (resumeFrom が写す)
+      const fb = t.within ? pb.flow : this.remapBoundary(pb.flow, t.map);
       if (!fb || !this.spliceCheck(t, 0, k, t.rec.warnStart, pb.warn)) return false;
       const nodes = this.docNodes!;
       const nf = makeFoot();
-      if (!nf.adoptMapped(pb.foot, pb.footMark, (fn) => nodes[sourceRef(fn) ?? -1] as LFootnote | undefined)) return false;
+      if (t.within) nf.adopt(pb.foot, pb.footMark);
+      else if (!nf.adoptMapped(pb.foot, pb.footMark, (fn) => nodes[sourceRef(fn) ?? -1] as LFootnote | undefined)) return false;
       // ページの参照を引き直して確かめ、id のページを書く (揃わなければ、書いた id を戻して初めから組む)
       const log: Array<[PageRecord['cites'][number], string]> = [];
       if (!this.spliceCites(t.memo, t.rec.recs, 0, k, true, log)) return false;
@@ -13891,8 +14037,13 @@ export class LayoutEngine {
       // 次の文書のために、この境目を、いまの文書の節で覚える (前を飛ばすときに使う)
       bounds[k] = { ...pb, flow: fb, foot, footMark: foot.mark(), warn: this.warnings.length, hand: this.fonts.handedCount, digest: '', counts: { ...pb.counts, flows: this.stats.flows, blocks: this.stats.blocks, tables: this.stats.tables }, ids: undefined };
       const st = this.options.layoutReuse!.stats;
-      st.skipped++;
-      st.skippedPages += k;
+      if (t.within) {
+        st.passSkipped++;
+        st.passSkippedPages += k;
+      } else {
+        st.skipped++;
+        st.skippedPages += k;
+      }
       return true;
     };
     const makeFlow = () => {
@@ -14079,7 +14230,7 @@ export class LayoutEngine {
           verifyAt = undefined;
           const t = splice!;
           const k = pb.index;
-          const owners = this.reuseOwners()!;
+          const owners = t.within?.owners ?? this.reuseOwners()!;
           let why: string | undefined;
           const note = (w: string) => (why ??= w);
           const W = t.rec.warnStart;
@@ -14820,20 +14971,46 @@ function lineMemoSet(arr: object, at: number, run: InlineChild[], st: ResolvedSt
  * 中身の指紋と始まりの条件 (開始ページ・左右・脚注の続き番号) が同じ page-sequence は、前の文書のページを使う (入力の節の番号・柱と
  * マーカーの入力の節を、いまの文書のものに付け替える)。中身の違う page-sequence も、ページの区切りの組みの状態が前の文書と揃えば、
  * 前の文書のページを繋ぐ。ページ番号の参照のあるページは、参照を引き直して組んだ字と同じときだけ使う。索引・ページごとの脚注番号のある
- * 文書・page-sequence は使わない。前の文書のページの論理の木と、ページの区切りの記録を手放さずに持つので、メモリはその分増える。
- * メモリ節約の組版 (layoutLowMemory)・先頭から N ページで止める組版では、覚えも使いもしない (typesetToPdf は覚えないが、前に覚えたものは使う)
+ * 文書・page-sequence は使わない。前の文書のページの論理の木と、ページの区切りの記録を手放さずに持つので、メモリはその分増える
+ * (節の数の上限 limit を超える page-sequence からは覚えない)。覚えるのは組み直しの 1 回目の記録 (PrevLayout.undo)。
+ * メモリ節約の組版 (layoutLowMemory)・先頭から N ページで止める組版では、覚えも使いもせず、覚えたものを残す (次に全体を組むときに使う)。
+ * typesetToPdf は覚えないが、前に覚えたものは使う。組版を止めても、覚えたものは捨てない (止めた組版が使った前の文書の組版は、使い始めたときに外してある)
  */
 export class LayoutReuse {
   /** 前の文書の組版 (使ったら外す: 次の文書の組版が、そのページを書き換えて使うので) */
   prev?: PrevLayout;
   /** 使い回した page-sequence とページの数 (試験・道具が見る) */
-  readonly stats = { sequences: 0, pages: 0, spliced: 0, splicedPages: 0, skipped: 0, skippedPages: 0 };
+  readonly stats = { sequences: 0, pages: 0, spliced: 0, splicedPages: 0, skipped: 0, skippedPages: 0, passSpliced: 0, passSplicedPages: 0, passSkipped: 0, passSkippedPages: 0, overLimit: 0 };
+  /** 覚えるページの論理の木の節の数の上限 (既定 REUSE_LNODES。超える page-sequence からは覚えない。stats.overLimit に数える) */
+  limit = REUSE_LNODES;
 
-  /** 組み始めた文書を止めた: 前の文書の覚えを捨てる (止めた組版が、前の文書のページを書き換えたかもしれない) */
-  cancelDocument(): void {
-    this.prev = undefined;
-  }
 }
+
+/** ページの論理の木の節の数 (本文と絶対配置の箱。ページごとに覚える。LayoutReuse の上限の数え) */
+function pageLNodes(p: PageBuild): number {
+  let n = pageLNodeCounts.get(p);
+  if (n === undefined) {
+    const seen = new Set<LNode>();
+    let k = 0;
+    const go = (x: LNode) => {
+      if (seen.has(x)) return;
+      seen.add(x);
+      k++;
+      for (const c of x.children) go(c);
+    };
+    go(p.root);
+    p.abs.forEach(go);
+    pageLNodeCounts.set(p, (n = k));
+  }
+  return n;
+}
+const pageLNodeCounts = new WeakMap<PageBuild, number>();
+
+/**
+ * Typesetter が覚える前の文書のページの論理の木の、節の数の上限の既定 (LayoutReuse。超える page-sequence からは覚えない)。
+ * 1 つあたり約 200 バイト (Node。Chromium の Worker では約 0.6 倍) で、200 万はおよそ 400MB (行分けの覚えの上限 SHARED_LINE_MEMO_ATOMS と同じほど)
+ */
+export const REUSE_LNODES = 2_000_000;
 
 /** 前の文書の組版 (LayoutReuse.prev) */
 interface PrevLayout {
@@ -14844,17 +15021,24 @@ interface PrevLayout {
   docPrint: string;
   /** page-sequence ごとの、中身の指紋・入力の節の番号の範囲 (page-sequence の節と、その部分木の最後の節)・最後の組みの記録 */
   seqs: Array<{ print: string; start: number; end: number; memo: SeqMemo } | undefined>;
-  /** 入力の節ごとの指紋 (nodeTokens。この文書との節の番号の対応を作る) と、入力の節の並び (番号の順) */
-  tokens: () => string[];
+  /** 入力の節ごとの形 (nodeShapes。この文書との節の番号の対応を作る) と、入力の節の並び (番号の順) */
+  shapes: () => NodeShapes;
   nodes: readonly object[];
   /** 組む手間の上限の数えの、回ごとの最大と、上限に当たったか (上限の近くの文書では使い回さない) */
   cost: number;
   hit: boolean;
+  /**
+   * seqs の記録は、組み直しの 1 回目のもの (次の文書の組み直しの 1 回目と比べる。前向きのページ番号の参照のあるページも、1 回目の仮の値で組んだ
+   * ページとなら揃う)。2 回目からの回の字の差し替えが、その記録のページを書き換えていたら、書き換える前の中身 (使うときに戻す)
+   */
+  undo?: CiteUndo;
 }
 
 /**
  * 組版の入力の部分木の中身の指紋 (design/resumable-flow.md の 6.4): 欄の全部 (関数は除く) を、深さ優先にたどって短い字にする。
- * 同じ物は 1 度だけたどる (書式の物を、要素の間で使い回す読み込みでも、手間は物の数ほど)
+ * 同じ物は 1 度だけたどる (書式の物を、要素の間で使い回す読み込みでも、手間は物の数ほど)。
+ * 入力の節のタグ付き PDF の構造の節の番号 (BaseNode.tag) は入れない: 組版は読まず (構造の木は、領域の入力の節の番号から finishTree が引く)、
+ * 前の章に脚注や見出しを足すと、後ろの章の節の番号が全部ずれるので、入れると後ろの page-sequence を使い回さなかった
  */
 function contentPrint(root: unknown): string {
   const memo = new Map<object, string>();
@@ -14885,7 +15069,15 @@ function contentPrint(root: unknown): string {
     else if (ArrayBuffer.isView(o)) text = `B${hashText(Array.from(new Uint8Array(o.buffer, o.byteOffset, o.byteLength), (b) => String.fromCharCode(b)).join(''))}`;
     else {
       const parts: string[] = [];
-      for (const [k, x] of Object.entries(o)) if (typeof x !== 'function') parts.push(`${k}=${go(x)}`);
+      const type = (o as { type?: unknown }).type;
+      const typed = typeof type === 'string';
+      for (const [k, x] of Object.entries(o)) {
+        if (typeof x === 'function' || (typed && k === 'tag')) continue;
+        // 柱の fo:retrieve-marker の、マーカーごとの中身 (variants) は、節の数だけを入れる: 中身は、柱を組むとき (sheetStatics。回ごとに、
+        // いまの文書の節で組み直す) だけが読み、ページの本文の組みは読まない。文書の全部のマーカーの中身が入るので、入れると、どこかのマーカーを
+        // 直すだけで、どの page-sequence も使い回さなかった。節の数は入れる (page-sequence の中の節の番号のずれ方が、始まりの差と同じであるため)
+        parts.push(`${k}=${type === 'retrieve-marker' && k === 'variants' ? `V${countNodes(x)}` : go(x)}`);
+      }
       text = `{${parts.join(',')}}`;
     }
     const h = `h${hashText(text)}`;
@@ -14893,6 +15085,20 @@ function contentPrint(root: unknown): string {
     return h;
   };
   return go(root);
+}
+
+/** 物の中の入力の節 (type の字を持つ物) の数 (documentNodes と同じたどり方) */
+function countNodes(root: unknown): number {
+  const seen = new Set<object>();
+  let n = 0;
+  const go = (v: unknown) => {
+    if (!v || typeof v !== 'object' || seen.has(v)) return;
+    seen.add(v);
+    if (typeof (v as { type?: unknown }).type === 'string') n++;
+    for (const x of Array.isArray(v) ? v : Object.values(v)) go(x);
+  };
+  go(root);
+  return n;
 }
 
 /** 字の並びの短い指紋 (FNV-1a の 32 ビットを、種を変えて 2 つ) */
@@ -14908,62 +15114,139 @@ function hashText(text: string): string {
 }
 
 /**
- * 入力の節ごとの、節そのものの指紋 (design/resumable-flow.md の 6.4)。節の欄を、子の節 (type の字を持つ物) は中身に降りずに、
- * 自分の番号からの差 (documentNodes の順の番号) だけを入れて、短い字にする。部分木の終わりの番号の差も入れる。
- * 2 つの文書の指紋の並びの、初めの同じ所と終わりの同じ所の外の節は、部分木ごと同じ (節の並びと形が、指紋で決まる)
+ * 入力の節ごとの、節そのものの形 (design/resumable-flow.md の 6.4 と 19.3)。
+ *  - full: 節の欄を、子の節 (type の字を持つ物) は中身に降りずに、自分の番号からの差 (documentNodes の順の番号) だけを入れて、短い字にしたもの。
+ *    部分木の終わりの番号の差も入れる。2 つの文書の full の並びの終わりの同じ所の節は、部分木ごと同じ (節の並びと形が、指紋で決まる)
+ *  - weak: 子の節を指す所を、番号を入れずに字にしたもの (配列の中の子の節は、字に入れない。ブロックを足す・消すと、祖先の節の子の並びが
+ *    変わるが、祖先の節の欄そのものは同じ)。部分木の終わりの番号も入れない
+ *  - refs: 子の節を指す所の、[指す節の番号, 欄の道 (配列の中なら '[]' と、前にある節でない物の数で終わる)] の並び (diffShapes が、直した所の外の番号の対応で照らす)
+ *  - ends: 部分木の終わりの番号の次 (部分木の最後の節の番号 + 1)
+ * 構造の木の節の番号 (tag) と、文書の節の組版が読まない欄 (DOC_UNREAD) は入れない (前に節を足すとずれる。contentPrint・setupReuse の文書の指紋と同じ)
  */
-function nodeTokens(nodes: readonly object[]): string[] {
-  /** 節を含まない物の指紋 (含む物は、どの節から見たかで字が変わるので覚えない) */
+interface NodeShapes {
+  full: string[];
+  weak: string[];
+  refs: Array<Array<[number, string]>>;
+  ends: number[];
+}
+
+/** 文書の節の欄のうち、組版が読まないもの (setupReuse の文書の指紋にも入れない。nodeShapes の文書の節の形にも入れない) */
+const DOC_UNREAD = new Set(['title', 'info', 'bookmarks', 'structure']);
+
+function nodeShapes(nodes: readonly object[]): NodeShapes {
+  /** 節を含まない物の指紋 (含む物は、どの節から見たかで字が変わるので覚えない。節を含まない物は full と weak が同じ) */
   const memo = new Map<object, string>();
-  const out: string[] = new Array(nodes.length);
+  const out: NodeShapes = { full: new Array(nodes.length), weak: new Array(nodes.length), refs: new Array(nodes.length), ends: new Array(nodes.length) };
+  const isNode = (v: unknown) => !!v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string';
+  /** いまたどっている欄の道 (子の節を指す所を見つけたときだけ字にする) */
+  const path: Array<string | number> = [];
   for (let i = 0; i < nodes.length; i++) {
     const self = nodes[i];
     const stack = new Set<object>();
-    /** [字, 節を含んだか] */
-    const go = (v: unknown, top: boolean): [string, boolean] => {
-      if (v === null) return ['n', false];
+    const refs: Array<[number, string]> = [];
+    const docNode = (self as { type?: unknown }).type === 'document';
+    /** [full, weak, 節を含んだか] */
+    const go = (v: unknown, top: boolean): [string, string, boolean] => {
+      if (v === null) return ['n', 'n', false];
       switch (typeof v) {
-        case 'string':
-          return [`s${hashText(v)}`, false];
+        case 'string': {
+          const t = `s${hashText(v)}`;
+          return [t, t, false];
+        }
         case 'number':
-          return [`d${v}`, false];
+          return [`d${v}`, `d${v}`, false];
         case 'boolean':
-          return [v ? 'T' : 'F', false];
+          return v ? ['T', 'T', false] : ['F', 'F', false];
         case 'undefined':
-          return ['u', false];
+          return ['u', 'u', false];
         case 'object':
           break;
         default:
-          return ['x', false];
+          return ['x', 'x', false];
       }
       const o = v as object;
-      if (!top && typeof (o as { type?: unknown }).type === 'string') return [`N${(sourceRef(o) ?? -1e9) - i}`, true];
+      if (!top && isNode(o)) {
+        const r = sourceRef(o) ?? -1e9;
+        refs.push([r, path.join('.')]);
+        return [`N${r - i}`, 'N', true];
+      }
       const hit = memo.get(o);
-      if (hit !== undefined) return [hit, false];
-      if (stack.has(o)) return ['c', true];
+      if (hit !== undefined) return [hit, hit, false];
+      if (stack.has(o)) return ['c', 'c', true];
       stack.add(o);
       let has = false;
-      const sub = (x: unknown) => {
-        const [t, h] = go(x, false);
-        if (h) has = true;
-        return t;
+      const sub = (x: unknown, key: string | number) => {
+        path.push(key);
+        const r = go(x, false);
+        path.pop();
+        if (r[2]) has = true;
+        return r;
       };
-      let text: string;
-      if (Array.isArray(o)) text = `[${o.map(sub).join(',')}]`;
-      else if (o instanceof Map) text = `M[${[...o].map(([k, x]) => `${sub(k)}:${sub(x)}`).join(',')}]`;
-      else if (o instanceof Set) text = `S[${[...o].map(sub).join(',')}]`;
-      else if (ArrayBuffer.isView(o)) text = `B${hashText(Array.from(new Uint8Array(o.buffer, o.byteOffset, o.byteLength), (b) => String.fromCharCode(b)).join(''))}`;
+      let full: string;
+      let weak: string;
+      if (Array.isArray(o)) {
+        const f: string[] = [];
+        const w: string[] = [];
+        // 配列の中の子の節は weak に入れない (足す・消すで並びが変わる)。節でない物は、節でない物の中の順で道を付ける。
+        // 子の節の道には、前にある節でない物の数を入れる (`[]k`。行内の子と文字列の並べ方だけを変えた直し (<p>ABC<b>X</b></p> → <p><b>X</b>ABC</p>) を、
+        // 親の子を指す所の違いで見つける。節でない物の無い配列では、どれも `[]0` で、節を足す・消すのは前のとおり R として除く)
+        let k = 0;
+        for (const x of o) {
+          const node = isNode(x);
+          const [a, b] = sub(x, node ? `[]${k}` : k++);
+          f.push(a);
+          if (!node) w.push(b);
+        }
+        full = `[${f.join(',')}]`;
+        weak = `[${w.join(',')}]`;
+      } else if (o instanceof Map) {
+        const f: string[] = [];
+        const w: string[] = [];
+        let k = 0;
+        for (const [kk, x] of o) {
+          const [a1, b1] = sub(kk, `m${k}k`);
+          const [a2, b2] = sub(x, `m${k++}`);
+          f.push(`${a1}:${a2}`);
+          w.push(`${b1}:${b2}`);
+        }
+        full = `M[${f.join(',')}]`;
+        weak = `M[${w.join(',')}]`;
+      } else if (o instanceof Set) {
+        const f: string[] = [];
+        const w: string[] = [];
+        let k = 0;
+        for (const x of o) {
+          const [a, b] = sub(x, `s${k++}`);
+          f.push(a);
+          w.push(b);
+        }
+        full = `S[${f.join(',')}]`;
+        weak = `S[${w.join(',')}]`;
+      } else if (ArrayBuffer.isView(o)) full = weak = `B${hashText(Array.from(new Uint8Array(o.buffer, o.byteOffset, o.byteLength), (b) => String.fromCharCode(b)).join(''))}`;
       else {
-        const parts: string[] = [];
-        for (const [k, x] of Object.entries(o)) if (typeof x !== 'function') parts.push(`${k}=${sub(x)}`);
-        text = `{${parts.join(',')}}`;
+        const f: string[] = [];
+        const w: string[] = [];
+        for (const [k, x] of Object.entries(o)) {
+          if (typeof x === 'function' || (top && (k === 'tag' || (docNode && DOC_UNREAD.has(k))))) continue;
+          const [a, b] = sub(x, k);
+          f.push(`${k}=${a}`);
+          w.push(`${k}=${b}`);
+        }
+        full = `{${f.join(',')}}`;
+        weak = `{${w.join(',')}}`;
       }
       stack.delete(o);
-      const h = `h${hashText(text)}`;
-      if (!has && !top) memo.set(o, h);
-      return [h, has];
+      const hf = `h${hashText(full)}`;
+      const hw = has ? `h${hashText(weak)}` : hf;
+      if (!has && !top) memo.set(o, hf);
+      return [hf, hw, has];
     };
-    out[i] = `${go(self, true)[0]}|${(sourceRefEnd(self) ?? i) - i}`;
+    const [f, w] = go(self, true);
+    const end = (sourceRefEnd(self) ?? i) + 1;
+    out.full[i] = `${f}|${end - 1 - i}`;
+    out.weak[i] = w;
+    out.refs[i] = refs;
+    out.ends[i] = end;
   }
   return out;
 }
@@ -14979,13 +15262,42 @@ interface ReuseMap {
   delta: number;
 }
 
-function diffTokens(a: readonly string[], b: readonly string[]): ReuseMap {
-  const n = Math.min(a.length, b.length);
+/**
+ * 前の文書の節の形 a と、この文書の節の形 b から、直した所を求める (design/resumable-flow.md の 19.3)。
+ *  1. 初めの同じ所 P: weak の同じ節の並び (祖先の節は、子の並びが変わっても欄が同じなら同じとする)
+ *  2. 終わりの同じ所: full の同じ節の並び (部分木ごと同じ。P より前には入れない)
+ *  3. 初めの同じ所の節のそれぞれで、子の節を指す所と部分木の終わりを、直した所の外の番号の対応で照らす (直した所の中を指す所は R にし、
+ *     配列の中の R は除いて比べる: 子の並びに足した・消した節は、直した所の中にある)。照らせない節があれば、そこを P にして 2 からやり直す
+ */
+function diffShapes(a: NodeShapes, b: NodeShapes): ReuseMap {
+  const na = a.full.length;
+  const nb = b.full.length;
+  const n = Math.min(na, nb);
   let P = 0;
-  while (P < n && a[P] === b[P]) P++;
-  let S = 0;
-  while (S < n - P && a[a.length - 1 - S] === b[b.length - 1 - S]) S++;
-  return { P, oldEnd: a.length - S, newEnd: b.length - S, delta: b.length - a.length };
+  while (P < n && a.weak[P] === b.weak[P]) P++;
+  for (;;) {
+    let S = 0;
+    while (S < n - P && a.full[na - 1 - S] === b.full[nb - 1 - S]) S++;
+    const m: ReuseMap = { P, oldEnd: na - S, newEnd: nb - S, delta: nb - na };
+    const mapOld = (r: number) => (r < m.P ? `A${r}` : r >= m.oldEnd ? `A${r + m.delta}` : 'R');
+    const mapNew = (r: number) => (r < m.P || r >= m.newEnd ? `A${r}` : 'R');
+    // 部分木の終わり (の次): 直した所に触れる (直した所の初めから終わりまでの間) なら R
+    const endOld = (e: number) => (e < m.P ? `A${e}` : e > m.oldEnd ? `A${e + m.delta}` : 'R');
+    const endNew = (e: number) => (e < m.P || e > m.newEnd ? `A${e}` : 'R');
+    const view = (refs: Array<[number, string]>, f: (r: number) => string) => {
+      const out: string[] = [];
+      for (const [r, at] of refs) {
+        const x = f(r);
+        if (x === 'R' && /(?:^|\.)\[\]\d+$/.test(at)) continue;
+        out.push(`${at}=${x}`);
+      }
+      return out.join(',');
+    };
+    let bad = -1;
+    for (let i = 0; i < P && bad < 0; i++) if (endOld(a.ends[i]) !== endNew(b.ends[i]) || view(a.refs[i], mapOld) !== view(b.refs[i], mapNew)) bad = i;
+    if (bad < 0) return m;
+    P = bad;
+  }
 }
 
 /** 前の文書の節の番号 → この文書の同じ節の番号 (直した所の中は undefined) */
@@ -15062,11 +15374,26 @@ function spliceSteps(steps: readonly ResumeStep[]): unknown[] {
   };
   return steps.map((st) =>
     st.k === 'table' && st.rs
-      ? { ...st, rs: { ...st.rs, pending: at(st.rs.pending), grp: at(st.rs.grp), frags: at(st.rs.frags) } }
+      ? { ...st, rs: { ...st.rs, pending: at(st.rs.pending), grp: at(st.rs.grp), frags: at(st.rs.frags), i: childAt(st.rs.rows, st.rs.i), end: childAt(st.rs.rows, st.rs.end) } }
       : st.k === 'inline' && st.ctx
         ? { ...st, ctx: unplace(st.ctx) }
-        : st,
+        : st.k === 'children'
+          ? { ...st, at: childAt(st.children, st.at), runAt: childAt(st.children, st.runAt), topAt: childAt(st.children, st.topAt) }
+          : st,
   );
+}
+
+/**
+ * 子の並びの中の位置 (ChildrenStep の at・runAt・topAt と、表の行の塊を置く所の i・end) の、比べる形: その位置の子の節 (sameMapped が、節の番号の
+ * 対応で比べる)。並びの終わりは 'end'、無い位置 (負の数) は 'none'。前の子の並びにブロックを足す・消すと、後ろの子の位置の数はずれるが、指す子の節は
+ * 対応する (位置の数のまま比べると、消した節の後ろの別の子を同じ位置と見ることがある)
+ */
+function childAt(children: ReadonlyArray<unknown>, k: number): unknown {
+  if (k < 0) return 'none';
+  if (k >= children.length) return 'end';
+  const c = children[k];
+  // 字の子 (節でない物) は位置で見分けられないので、位置の数のまま比べる (ずれれば揃わないとする)
+  return c && typeof c === 'object' ? c : `#${k}`;
 }
 
 /**
@@ -15195,12 +15522,29 @@ export class SharedLineMemo {
   /** limit: 覚えておく大きさの上限 (atom の数と、項目ごとの行の分。既定 SHARED_LINE_MEMO_ATOMS)。超えるものは覚えない */
   constructor(readonly limit = SHARED_LINE_MEMO_ATOMS) {}
 
-  /** 次の文書を組み始める (器が文書ごとに呼ぶ)。その文書の印 (番号) を返す。前の文書でも、その前の文書でも使わなかったものを捨てる */
+  /**
+   * 次の文書を組み始める (Typesetter が文書ごとに呼ぶ)。その文書の印 (番号) を返す。前の文書で使わず、最後に組み終えた文書でも使わなかったものを捨てる
+   * (FontPrepCache と同じ。止めた文書の知らせが、次の文書の初めの後に遅れて来て、止めた文書を世代に数えても、最後に組み終えた文書の段落の覚えを、
+   * 止めた文書がまだ組んでいなかった所の分まで残す)
+   */
   startDocument(): number {
     this.doc++;
     this.docHits = 0;
-    for (const [k, e] of this.entries) if (e.used < this.doc - 1) this.drop(k, e);
+    for (const [k, e] of this.entries) if (e.used < this.doc - 1 && !(this.lastFull > 0 && e.usedFull === this.lastFull)) this.drop(k, e);
     return this.doc;
+  }
+
+  /** 最後に組み終えた (止めなかった) 文書の番号 (0 なら無い。finishDocument で決める) */
+  private lastFull = 0;
+
+  /**
+   * 印 doc の文書を組み終えた (止めずに終わった): 最後に組み終えた文書にし、その文書で使った段落に印を覚えさせる (後の止めた文書で used が
+   * 上書きされても残せるように。FontPrepCache.finishDocument と同じ)。止めた文書 (signal・maxPages) では呼ばない
+   */
+  finishDocument(doc: number): void {
+    if (doc < this.lastFull) return;
+    this.lastFull = doc;
+    for (const e of this.entries.values()) if (e.used === doc) e.usedFull = doc;
   }
 
   /**
@@ -15210,7 +15554,6 @@ export class SharedLineMemo {
    */
   cancelDocument(doc: number): void {
     if (doc === this.doc && this.doc > 0) this.doc--;
-    this.layout.cancelDocument();
   }
 
   private drop(k: string, e: SharedLineEntry): void {
@@ -15288,7 +15631,7 @@ export class SharedLineMemo {
     walk(memo);
     if (instance) return;
     if (prev) this.drop(key, prev);
-    this.entries.set(key, { memo, env, hyphenate, used: this.doc, fonts: [...fonts], slots });
+    this.entries.set(key, { memo, env, hyphenate, used: this.doc, usedFull: 0, fonts: [...fonts], slots });
     this.atoms += lineMemoSize(memo);
   }
 }
@@ -15298,7 +15641,9 @@ interface SharedLineEntry {
   env: string;
   /** 分綴の位置を返す関数 (同じ関数のときだけ使う) */
   hyphenate: FlowHost['hyphenate'];
+  /** 最後に使った文書の番号 (止めた文書も) と、最後に使った組み終えた文書の番号 (0 なら無い) */
   used: number;
+  usedFull: number;
   fonts: LoadedFont[];
   slots: Array<[Record<string, unknown>, string]>;
 }

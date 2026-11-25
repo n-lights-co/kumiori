@@ -5,6 +5,8 @@
  * 手元の大きな文書は scripts/check-resume.mjs で試す。
  */
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { DEFAULT_FONTS, serializeAreaTree, typeset } from '../src/index';
 import { resumeProbe, type ResumeStats } from '../src/layoutEngine';
 import { ensureFonts } from './helpers';
@@ -18,6 +20,7 @@ afterEach(() => {
   resumeProbe.check = false;
   resumeProbe.fromStart = false;
   resumeProbe.late = undefined;
+  resumeProbe.lateOnly = undefined;
   resumeProbe.onStats = undefined;
 });
 
@@ -107,6 +110,29 @@ describe('遅く戻る試し (page-sequence を終わりまで組んだ後、前
       expect(b.warnings).toEqual(a.warnings);
       expect(b.tree === a.tree, '領域の木').toBe(true);
       expect(b.stats!.resumed, `続けた境目 ${JSON.stringify(b.stats)}`).toBeGreaterThan(0);
+    }, 60_000);
+  }
+});
+
+describe('遅く戻る試し: 罫線をつぶした表の、改ページの境目で決め直す罫線', () => {
+  // 罫線をつぶした表 (rowspan のセル・break-inside: avoid の行・繰り返す見出しの行) がページをまたぐ文書。終わりまで組んだ後に前の境目から
+  // 組み直すと、前は、7 ページ目の最後の行のセルに下の罫線が 1 本増えた: 前の組みで、次のページの最初の行のセルの前側の線を、
+  // 表ヘッダーの後の線として書き換えたまま残り、組み直しで、ページの最後の行の後ろ側の線を決めるときに、その線を使っていた
+  // (書き換える前の線に戻してから決め直す。layoutEngine.ts の BREAK_SIDE_ORIG)
+  const text = fs.readFileSync(path.join(import.meta.dirname, 'relayout', 'collapse-rowspan-late.html'), 'utf8');
+  for (const [late, only] of [
+    [1, 6],
+    [4, undefined],
+  ] as const) {
+    it(`境目 ${late} 個${only ? ` (${only} ページ目の後の境目)` : ''}から組み直す`, async () => {
+      const a = await run(text, { kind: 'html' }, false);
+      resumeProbe.lateOnly = only;
+      const b = await run(text, { kind: 'html' }, false, false, late);
+      resumeProbe.lateOnly = undefined;
+      expect(b.stats!.resumed, '組み直した境目').toBeGreaterThan(0);
+      expect(b.stats!.mismatched, '指紋').toBe(0);
+      expect(b.warnings).toEqual(a.warnings);
+      expect(b.tree === a.tree, '領域の木').toBe(true);
     }, 60_000);
   }
 });

@@ -81,6 +81,92 @@ describe('page-sequence の使い回し', () => {
     }
   }, 300_000);
 
+  it('組版の読まない文書の欄 (しおりの題・文書の題と情報) と、構造の節の番号のずれ (タグ付き PDF) では、使い回しを妨げない', async () => {
+    const restore = freezeClockAndRandom();
+    try {
+      /** しおりと文書の情報のある文書 (章 k の初めに id を置き、しおりで指す)。note: 章 0 に脚注を足す (後ろの章の構造の節の番号がずれる) */
+      const doc = (title: string, info: string, note = '') =>
+        fo(
+          `<fo:declarations><axf:document-info xmlns:axf="http://www.antennahouse.com/names/XSL/Extensions" name="document-title" value="${info}"/></fo:declarations>` +
+            `<fo:bookmark-tree>${[0, 1, 2].map((k) => `<fo:bookmark internal-destination="c${k}"><fo:bookmark-title>${title} ${k}</fo:bookmark-title></fo:bookmark>`).join('')}</fo:bookmark-tree>` +
+            [0, 1, 2].map((k) => seq(`<fo:block id="c${k}">章 ${k}${k === 0 ? note : ''}</fo:block>${paras(k, 20)}`)).join(''),
+        );
+      const note = '<fo:footnote><fo:inline>*</fo:inline><fo:footnote-body><fo:block>注の本文</fo:block></fo:footnote-body></fo:footnote>';
+      for (const [label, a, b, want] of [
+        ['しおりの題', doc('章', '題'), doc('第 章', '題'), 3],
+        ['文書の題', doc('章', '題'), doc('章', '別の題'), 3],
+        // 章 0 は中身が変わるので、使い回すのは章 1・2 (タグ付き PDF の構造の節の番号は、脚注の分だけずれる)
+        ['前の章に脚注を足す', doc('章', '題'), doc('章', '題', note), 2],
+      ] as const) {
+        const t = await createTypesetter({ loadFont });
+        await t.typeset(a, { kind: 'fo', tagged: true });
+        const a0 = adopted;
+        const r = await t.typeset(b, { kind: 'fo', tagged: true });
+        expect(adopted - a0, `${label}: 使い回した page-sequence`).toBe(want);
+        const f = await (await createTypesetter({ loadFont, reuse: false })).typeset(b, { kind: 'fo', tagged: true });
+        const [x, y] = [await shape(r), await shape(f)];
+        expect(x, label).toEqual(y);
+        expect(JSON.stringify(r.areaTree.structure), `${label}: 構造の木`).toBe(JSON.stringify(f.areaTree.structure));
+        expect(JSON.stringify(r.areaTree.bookmarks), `${label}: しおり`).toBe(JSON.stringify(f.areaTree.bookmarks));
+      }
+    } finally {
+      restore();
+    }
+  }, 300_000);
+
+  it('柱の retrieve-marker のある文書でマーカーを直す・先頭から N ページのプレビューを挟む・覚える大きさの上限', async () => {
+    const restore = freezeClockAndRandom();
+    try {
+      const masters = '<fo:simple-page-master master-name="p" page-width="105mm" page-height="148mm" margin="10mm"><fo:region-body margin-top="8mm"/><fo:region-before extent="6mm"/></fo:simple-page-master>';
+      /** 章ごとの page-sequence の柱に、章の初めのマーカーを出す。mark: 章 0 のマーカーの字 */
+      const doc = (mark: string, edit = '') =>
+        fo(
+          [0, 1, 2]
+            .map(
+              (k) =>
+                `<fo:page-sequence master-reference="p"><fo:static-content flow-name="xsl-region-before"><fo:block><fo:retrieve-marker retrieve-class-name="h" retrieve-position="first-including-carryover"/></fo:block></fo:static-content>` +
+                `<fo:flow flow-name="xsl-region-body"><fo:block><fo:marker marker-class-name="h">${k === 0 ? mark : `章 ${k}`}</fo:marker>章 ${k}${k === 1 ? edit : ''}</fo:block>${paras(k, 20)}</fo:flow></fo:page-sequence>`,
+            )
+            .join(''),
+          masters,
+        );
+      const ref = await createTypesetter({ loadFont, reuse: false });
+      // マーカーの字を直す: 柱の中身は、どの page-sequence の retrieve-marker にも入るが、使い回しは妨げない (章 0 は中身が変わるので組む)
+      let t = await createTypesetter({ loadFont });
+      await t.typeset(doc('章 0'), { kind: 'fo' });
+      let a0 = adopted;
+      let r = await t.typeset(doc('第 0 章 (直した)'), { kind: 'fo' });
+      expect(adopted - a0, 'マーカーを直す: 使い回した page-sequence').toBe(2);
+      expect(await shape(r)).toEqual(await shape(await ref.typeset(doc('第 0 章 (直した)'), { kind: 'fo' })));
+      // 先頭から N ページのプレビュー (maxPages) を挟んでも、前に全体を組んだ文書の組版を捨てない
+      t = await createTypesetter({ loadFont });
+      await t.typeset(doc('章 0'), { kind: 'fo' });
+      await t.typeset(doc('章 0', '。直した'), { kind: 'fo', maxPages: 3 });
+      a0 = adopted;
+      r = await t.typeset(doc('章 0', '。直した'), { kind: 'fo' });
+      expect(adopted - a0, 'プレビューを挟む: 使い回した page-sequence').toBe(2);
+      expect(await shape(r)).toEqual(await shape(await ref.typeset(doc('章 0', '。直した'), { kind: 'fo' })));
+      // 覚える大きさの上限: 初めの page-sequence だけで上限を超えると、どの page-sequence も覚えない (結果は同じ)
+      t = await createTypesetter({ loadFont });
+      const { SharedLineMemo } = await import('../src/layoutEngine');
+      let lr: { limit: number; stats: { overLimit: number } } | undefined;
+      const spy = vi.spyOn(SharedLineMemo.prototype, 'startDocument').mockImplementation(function (this: { layout: typeof lr; doc: number }) {
+        lr = this.layout;
+        lr!.limit = 10;
+        return ++this.doc;
+      });
+      await t.typeset(doc('章 0'), { kind: 'fo' });
+      spy.mockRestore();
+      expect(lr?.stats.overLimit).toBe(1);
+      a0 = adopted;
+      r = await t.typeset(doc('章 0', '。直した'), { kind: 'fo' });
+      expect(adopted - a0, '上限を超えた: 使い回した page-sequence').toBe(0);
+      expect(await shape(r)).toEqual(await shape(await ref.typeset(doc('章 0', '。直した'), { kind: 'fo' })));
+    } finally {
+      restore();
+    }
+  }, 300_000);
+
   it('警告の文は、いまの文書の言語で出す (言語の違う文書では使い回さない)', async () => {
     const doc = chapters('').replace('<fo:block>章 2', '<fo:block font-size="400pt">字</fo:block><fo:block>章 2');
     const t = await createTypesetter({ loadFont });

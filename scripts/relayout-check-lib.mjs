@@ -174,6 +174,21 @@ export function editAttr(text, rng) {
   return { text: text.slice(0, at) + attr + text.slice(at), edit: { op: 'attr', at, line: lineAt(text, at), removed: '', inserted: attr.trim() } };
 }
 
+/**
+ * ブロックを 1 つ足すか消す (ブロックの足し消しの組み直しを試す): 文書の乱数の、中に同じ名前の要素の無いブロック (XSL-FO の fo:block、HTML の p・li) を、
+ * 半分の割合で消し、残りは、すぐ後ろに同じものをもう 1 つ足す。足せるブロックが無ければ、そのまま返す
+ */
+export function editBlock(text, rng) {
+  const blocks = [...text.matchAll(/<(fo:block|p|li)(?=[\s>])[^>]*>((?:(?!<(?:fo:block|p|li)[\s>/])[\s\S])*?)<\/\1>/g)];
+  if (!blocks.length) return { text, edit: undefined };
+  const m = blocks[Math.floor(rng() * blocks.length)];
+  const at = m.index;
+  const whole = m[0];
+  if (rng() < 0.5) return { text: text.slice(0, at) + text.slice(at + whole.length), edit: { op: 'block-delete', at, line: lineAt(text, at), removed: whole, inserted: '' } };
+  const end = at + whole.length;
+  return { text: text.slice(0, end) + whole + text.slice(end), edit: { op: 'block-insert', at: end, line: lineAt(text, end), removed: '', inserted: whole } };
+}
+
 /** ページのマスター (XSL-FO の領域・HTML の @page) に足す背景の色。直しごとに替える */
 const MASTER_COLORS = ['#fffbe8', '#eef6ff', '#f3fff0', '#fff0f3'];
 
@@ -202,15 +217,16 @@ export function editMaster(text, rng) {
 /**
  * 直した文書の並び: 元の文書・n 回まで重ねて直したもの・元の文書 (最後に戻すと、覚えの当たる組み直しになる)。直しは字の直し (editOnce) で、
  * attrRate (0〜1。既定 0) を渡すと、その割合で属性の直し (editAttr) にし、masterRate (0〜1。既定 0) を渡すと、その割合でページのマスターだけの直し
- * (editMaster) にする。返すのは [{ text, edit, label }]
+ * (editMaster) にし、blockRate (0〜1。既定 0) を渡すと、その割合でブロックの足し消し (editBlock) にする。返すのは [{ text, edit, label }]
  */
-export function editSequence(text, { seed = 1, edits = 3, revert = true, attrRate = 0, masterRate = 0 } = {}) {
+export function editSequence(text, { seed = 1, edits = 3, revert = true, attrRate = 0, masterRate = 0, blockRate = 0 } = {}) {
   const rng = seededRandom(seed);
   const out = [{ text, edit: undefined, label: '元の文書' }];
   let cur = text;
   for (let k = 0; k < edits; k++) {
     // 割合を使わないときは乱数を引かない (前からの種で、同じ直しの並びになるように)
-    let r = masterRate > 0 && rng() < masterRate ? editMaster(cur, rng) : undefined;
+    let r = blockRate > 0 && rng() < blockRate ? editBlock(cur, rng) : undefined;
+    if (!r?.edit) r = masterRate > 0 && rng() < masterRate ? editMaster(cur, rng) : undefined;
     if (!r?.edit) r = attrRate > 0 && rng() < attrRate ? editAttr(cur, rng) : undefined;
     if (!r?.edit) r = editOnce(cur, rng);
     const { text: next, edit } = r;
@@ -225,7 +241,7 @@ export function editSequence(text, { seed = 1, edits = 3, revert = true, attrRat
 /** 直し方の短い説明 (報告に出す) */
 export function describeEdit(e) {
   const clip = (s) => JSON.stringify(s.length > 16 ? `${s.slice(0, 16)}…` : s);
-  const name = { insert: '足す', delete: '消す', replace: '置き換える', attr: '属性を足す', master: 'ページのマスターを直す' }[e.op];
+  const name = { insert: '足す', delete: '消す', replace: '置き換える', attr: '属性を足す', master: 'ページのマスターを直す', 'block-insert': 'ブロックを足す', 'block-delete': 'ブロックを消す' }[e.op];
   return `${e.line} 行目で${name} (${e.removed ? `消す字 ${clip(e.removed)}` : ''}${e.removed && e.inserted ? '・' : ''}${e.inserted ? `足す字 ${clip(e.inserted)}` : ''})`;
 }
 

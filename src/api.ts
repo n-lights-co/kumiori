@@ -1232,7 +1232,10 @@ async function typesetDocument(
     if (r.truncated) {
       if (marks.prep !== undefined) base.prepCache?.cancelDocument(marks.prep);
       if (marks.lines !== undefined) sharedLines?.cancelDocument(marks.lines);
-    } else if (marks.prep !== undefined) base.prepCache?.finishDocument(marks.prep);
+    } else {
+      if (marks.prep !== undefined) base.prepCache?.finishDocument(marks.prep);
+      if (marks.lines !== undefined) sharedLines?.finishDocument(marks.lines);
+    }
     return r;
   } catch (e) {
     if (call?.signal?.aborted && e === call.signal.reason) {

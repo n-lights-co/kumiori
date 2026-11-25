@@ -37,6 +37,9 @@ function docs() {
     // 章ごとに page-sequence を分け、脚注・マーカーのある XSL-FO (page-sequence の使い回し)
     { name: 'gen:fofootnotes', resumes: true, text: REUSE_SHAPES.fofootnotes.make(4), options: { kind: 'fo' } },
     { name: 'gen:fomarkers', resumes: true, text: REUSE_SHAPES.fomarkers.make(4), options: { kind: 'fo' } },
+    // 初めに目次のある HTML・XSL-FO (前向きのページ番号の参照。組み直しの 2 回目からの回で前の回と繋ぐ)
+    { name: 'gen:toc', resumes: true, text: REUSE_SHAPES.toc.make(12), options: { kind: 'html' } },
+    { name: 'gen:fotoc', resumes: true, text: REUSE_SHAPES.fotoc.make(12), options: { kind: 'fo' } },
   ];
 }
 
@@ -44,7 +47,7 @@ describe('組み直しの再利用の確かめ (代表の文書)', () => {
   const subjects = probeSubjects(resumeProbe, { late: 4 });
   for (const d of docs()) {
     it(`${d.name}: 使い回しと繋ぐ所 (reuse・splice-verify)`, async () => {
-      const versions = editSequence(d.text, { seed: 5, edits: 2, attrRate: 0.2, masterRate: 0.15 });
+      const versions = editSequence(d.text, { seed: 5, edits: 2, attrRate: 0.2, masterRate: 0.15, blockRate: 0.2 });
       const r = await checkRelayout({ lib, setup: { loadFont: loadCachedFont }, options: d.options, versions, subjects: [{ name: 'reuse' }, subjects['splice-verify']] });
       expect(probeFailures(r.versions)).toEqual([]);
     }, 120_000);

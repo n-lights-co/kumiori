@@ -10,7 +10,7 @@ import { createTypesetter, DEFAULT_FONTS, serializeAreaTree } from '../src/index
 import fs from 'node:fs';
 import { EXTRA_TEST_FONTS, cachedFont, ensureFonts } from './helpers';
 import { checkRelayout, editSequence, type RelayoutRow } from '../scripts/relayout-check-lib.mjs';
-import { SHAPES } from '../scripts/gen-stress-docs.mjs';
+import { REUSE_SHAPES, SHAPES } from '../scripts/gen-stress-docs.mjs';
 import { LayoutEngine, resumeProbe } from '../src/layoutEngine';
 
 const lib = { createTypesetter, serializeAreaTree } as never;
@@ -22,6 +22,8 @@ let splicedPages = 0;
 let adopted = 0;
 // 前を飛ばした回数 (境目の写しを、いまの文書の物に移せた回数。LayoutEngine.remapBoundary)
 let skipped = 0;
+// 組み直しの 2 回目からの回で、同じ文書の前の回の組みと繋いだ回数
+let passSpliced = 0;
 const proto = LayoutEngine.prototype as unknown as { spliceAdopt: (...a: unknown[]) => unknown[]; adoptPrev: (...a: unknown[]) => boolean; remapBoundary: (...a: unknown[]) => unknown };
 const remapBoundary = proto.remapBoundary;
 proto.remapBoundary = function (...a: unknown[]) {
@@ -33,8 +35,10 @@ const adopt = proto.spliceAdopt;
 const adoptPrev = proto.adoptPrev;
 proto.spliceAdopt = function (...a: unknown[]) {
   const r = adopt.apply(this, a);
-  // 初めのページから使うのは前を飛ばしたとき (skipped で数える)
-  if ((a[1] as number) > 0) {
+  // 初めのページから使うのは前を飛ばしたとき (skipped で数える)。同じ文書の前の回と繋いだのは passSpliced で数える
+  if ((a[0] as { within?: unknown }).within) {
+    if ((a[1] as number) > 0) passSpliced++;
+  } else if ((a[1] as number) > 0) {
     spliced++;
     splicedPages += r.length;
   }
@@ -68,8 +72,8 @@ const foCites = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layou
 <fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body">${Array.from({ length: 200 }, (_, k) => `<fo:block id="b${k}">段落 ${k}。${'字を並べて行を作る。'.repeat(5 + (k % 4))}${k % 25 === 10 ? `(段落 ${k - 10} は <fo:page-number-citation ref-id="b${k - 10}"/> ページ${k % 50 === 10 ? `、段落 ${k + 30} は <fo:page-number-citation ref-id="b${k + 30}"/> ページ` : ''})` : ''}</fo:block>`).join('')}</fo:flow></fo:page-sequence></fo:root>`;
 const docs: Array<[string, string, 'html' | 'fo', boolean?]> = [
   ['段落の多い HTML', `<!DOCTYPE html><html><body>${paras}</body></html>`, 'html', true],
-  // 目次のページは、組み直しの 1 回目では仮の値で組むので、前の文書のページ (決まった値) と揃わず、前は飛ばせない
-  ['目次 (target-counter) のある HTML', toc, 'html'],
+  // 目次のページは、組み直しの 1 回目では仮の値で組む。Typesetter は前の文書の 1 回目のページ (仮の値のもの) を持つので、目次より後ろでも前を飛ばせる
+  ['目次 (target-counter) のある HTML', toc, 'html', true],
   ['本文にページ番号の参照のある XSL-FO', foCites, 'fo'],
   // 効果 (opacity・transform・outline) のある節: 組んだ箱の効果の印 (fxRef) も、入力の節の番号と同じくずらす
   [
@@ -184,6 +188,82 @@ describe('変わったページから組み直して、前の組版と繋ぐ', (
     const r = await checkRelayout({ lib, options: { kind: 'html' }, versions: [{ label: '元の文書', text }, { label: 'ページの増える直し', text: longer }] });
     expect(failures(r.versions)).toEqual([]);
     expect(spliced - s0).toBe(0);
+  }, 300_000);
+
+  for (const [name, text, kind] of [
+    ['HTML', REUSE_SHAPES.toc.make(14), 'html'],
+    ['XSL-FO', REUSE_SHAPES.fotoc.make(14), 'fo'],
+  ] as const)
+    it(`組み直しの 2 回目からの回で、目次の値の桁が変わった page-sequence を、境目から組んで前の回の組みと繋ぐ (${name})`, async () => {
+      // 1 つ目の文書から (前の文書が無くても)、目次の 2 回目の組みは、目次の後ろで前の回の組みと揃ったら繋ぐ
+      const p0 = passSpliced;
+      const versions = editSequence(text, { seed: 7, edits: 2 });
+      const r = await checkRelayout({ lib, options: { kind }, versions });
+      expect(failures(r.versions)).toEqual([]);
+      // (前の文書の page-sequence をそのまま使い回した版は、その境目の記録が前の文書の節を指すので、2 回目からの回でも繋がずに組む)
+      expect(passSpliced - p0, '前の回と繋いだ').toBeGreaterThan(0);
+      // 繋ぐ確かめ (前の回とも): 揃った境目で繋がずに組み、繋いだはずのページと同じか
+      const res: Array<{ same: boolean; prefix?: boolean; why?: string }> = [];
+      resumeProbe.spliceVerify = (x) => res.push(x);
+      try {
+        await checkRelayout({ lib, options: { kind }, versions, pdf: false });
+      } finally {
+        resumeProbe.spliceVerify = undefined;
+      }
+      expect(res.length, '揃った境目').toBeGreaterThan(0);
+      expect(res.filter((x) => !x.same).map((x) => JSON.stringify(x))).toEqual([]);
+    }, 300_000);
+
+  it('ブロック (段落・見出し) を足す・消す直しでも、直した所の前のページを前の文書から使い、後ろで揃ったら繋ぐ (HTML・XSL-FO、タグ付き)', async () => {
+    const html = (k: number, add: string) => `<!DOCTYPE html><html lang="ja"><head><title>t</title></head><body>${Array.from({ length: 200 }, (_, j) => `<p>段落 ${j}。${'字を並べて行を作る。'.repeat(6 + (j % 4))}</p>${j === k ? add : ''}`).join('')}</body></html>`;
+    const fo = (k: number, add: string) =>
+      `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="105mm" page-height="148mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body">${Array.from({ length: 200 }, (_, j) => `<fo:block>段落 ${j}。${'字を並べて行を作る。'.repeat(5 + (j % 4))}</fo:block>${j === k ? add : ''}`).join('')}</fo:flow></fo:page-sequence></fo:root>`;
+    for (const [kind, doc, para, head] of [
+      ['html', html, '<p>足した段落。</p>', '<h2>足した見出し</h2>'],
+      ['fo', fo, '<fo:block>足した段落。</fo:block>', '<fo:block font-size="14pt" keep-with-next="always">足した見出し</fo:block>'],
+    ] as const) {
+      const versions = [
+        { label: '元の文書', text: doc(-1, '') },
+        { label: '段落を足す', text: doc(120, para) },
+        { label: '見出しを足す', text: doc(120, para + head) },
+        { label: '段落を消す (元に戻す)', text: doc(-1, '') },
+      ];
+      const s0 = spliced;
+      const k0 = skipped;
+      const r = await checkRelayout({ lib, options: { kind, tagged: true }, versions });
+      expect(failures(r.versions), kind).toEqual([]);
+      expect(spliced - s0, `${kind}: 前の組版と繋いだ`).toBeGreaterThan(0);
+      expect(skipped - k0, `${kind}: 前を飛ばした`).toBeGreaterThan(0);
+      const res: Array<{ same: boolean; prefix?: boolean; why?: string }> = [];
+      resumeProbe.spliceVerify = (x) => res.push(x);
+      try {
+        await checkRelayout({ lib, options: { kind, tagged: true }, versions, pdf: false });
+      } finally {
+        resumeProbe.spliceVerify = undefined;
+      }
+      expect(res.some((x) => x.prefix), `${kind}: 前を飛ばす所の確かめ`).toBe(true);
+      expect(res.filter((x) => !x.same).map((x) => JSON.stringify(x)), kind).toEqual([]);
+    }
+  }, 300_000);
+
+  it('段落の中で、行内の要素と文字列の並べ方だけを変える直しも、再利用しないタイプセッターと同じ結果になる (HTML・XSL-FO)', async () => {
+    // 直す前は、親の節の形 (weak) と子を指す所の道が同じになり、直した所が見つからずに、直したページを前の文書から使った
+    const html = (last: string) => `<!DOCTYPE html><html><body>${Array.from({ length: 120 }, (_, j) => `<p>段落 ${j} の文。${'字を並べて行を作る。'.repeat(8)}</p>${j === 20 ? last : ''}`).join('')}</body></html>`;
+    const fo = (last: string) =>
+      `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="105mm" page-height="148mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body">${Array.from({ length: 120 }, (_, k) => `<fo:block>段落 ${k}。${'字を並べて行を作る。'.repeat(6)}</fo:block>${k === 20 ? last : ''}`).join('')}</fo:flow></fo:page-sequence></fo:root>`;
+    for (const [kind, doc, a, b] of [
+      ['html', html, '<p>終わりの文ABC<b>XYZ</b></p>', '<p><b>XYZ</b>終わりの文ABC</p>'],
+      ['fo', fo, '<fo:block>終わりの文ABC<fo:inline font-weight="bold">XYZ</fo:inline></fo:block>', '<fo:block><fo:inline font-weight="bold">XYZ</fo:inline>終わりの文ABC</fo:block>'],
+      ['html', html, '<p>前ABC<b>X</b>中DEF<b>X</b></p>', '<p>前ABC<b>X</b><b>X</b>中DEF</p>'],
+    ] as const) {
+      const versions = [
+        { label: '元の文書', text: doc(a) },
+        { label: '行内の要素を動かす', text: doc(b) },
+        { label: '元に戻す', text: doc(a) },
+      ];
+      const r = await checkRelayout({ lib, options: { kind }, versions });
+      expect(failures(r.versions), `${kind}: ${b}`).toEqual([]);
+    }
   }, 300_000);
 
   it('ページ番号の参照のある page-sequence も、中身が同じなら前の文書から使い回す (参照を引き直して、組んだ字と同じとき)', async () => {
