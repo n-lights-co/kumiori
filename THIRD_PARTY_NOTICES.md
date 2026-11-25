@@ -272,7 +272,7 @@ SOFTWARE.
 
 - package.json の license: `ISC`
 - 場所: `node_modules/hyphen`
-- 必要なときだけ読み込む (別のチャンク)。分綴のパターン (en-us・en-gb・la・ru・uk・el-monoton) の表示は下の 1.4。
+- 必要なときだけ読み込む (別のチャンク)。分綴のパターン (en-us・en-gb・la・ru・uk・el-monoton・el-polyton・grc など) の表示は下の 1.4。
 
 `node_modules/hyphen/LICENSE` の本文:
 
@@ -1289,7 +1289,7 @@ This file and the 14 PostScript(R) AFM files it accompanies may be used, copied,
 
 ### 1.4 hyphen の分綴のパターン
 
-Kumiori が読み込むのは、`hyphen/en-us`・`hyphen/en-gb`・`hyphen/la`・`hyphen/ru`・`hyphen/uk`・`hyphen/el-monoton`・`hyphen/de-1996`・`hyphen/de-1901`・`hyphen/de-ch-1901`・`hyphen/fr`・`hyphen/es`・`hyphen/it`・`hyphen/pt`・`hyphen/nl`・`hyphen/pl`・`hyphen/da`・`hyphen/nb`・`hyphen/fi`・`hyphen/sk`・`hyphen/sl`・`hyphen/hr`・`hyphen/et`・`hyphen/lt`・`hyphen/ga`・`hyphen/cy`・`hyphen/gl`・`hyphen/eu`・`hyphen/bg`・`hyphen/sv`・`hyphen/ca`・`hyphen/is`・`hyphen/tr`・`hyphen/sh-latn`・`hyphen/sh-cyrl`・`hyphen/hu` だけです (`src/hyphenation.ts` の `PATTERNS`)。ライセンスが GPL・LGPL だけのもの (`cs`・`id`・`mk`・`sr-cyrl`・`lv`) と、ライセンスの表示の無いもの (`ro`) は読み込みません。hyphen の README.md (12 行目) には "Patterns for this library were taken from ctan.org and ported to Javascript." とあります (リンクの書式を除いて引用)。npm の hyphen@1.14.1 の `patterns/en-us.js`・`patterns/en-gb.js` には、ライセンスや著作権の表示は入っていません。
+Kumiori が読み込むのは、`hyphen/en-us`・`hyphen/en-gb`・`hyphen/la`・`hyphen/ru`・`hyphen/uk`・`hyphen/el-monoton`・`hyphen/el-polyton`・`hyphen/grc`・`hyphen/de-1996`・`hyphen/de-1901`・`hyphen/de-ch-1901`・`hyphen/fr`・`hyphen/es`・`hyphen/it`・`hyphen/pt`・`hyphen/nl`・`hyphen/pl`・`hyphen/da`・`hyphen/nb`・`hyphen/fi`・`hyphen/sk`・`hyphen/sl`・`hyphen/hr`・`hyphen/et`・`hyphen/lt`・`hyphen/ga`・`hyphen/cy`・`hyphen/gl`・`hyphen/eu`・`hyphen/bg`・`hyphen/sv`・`hyphen/ca`・`hyphen/is`・`hyphen/tr`・`hyphen/sh-latn`・`hyphen/sh-cyrl`・`hyphen/hu` だけです (`src/hyphenation.ts` の `PATTERNS`)。ライセンスが GPL・LGPL だけのもの (`cs`・`id`・`mk`・`sr-cyrl`・`lv`) と、ライセンスの表示の無いもの (`ro`) は読み込みません。hyphen の README.md (12 行目) には "Patterns for this library were taken from ctan.org and ported to Javascript." とあります (リンクの書式を除いて引用)。npm の hyphen@1.14.1 の `patterns/en-us.js`・`patterns/en-gb.js` には、ライセンスや著作権の表示は入っていません。
 
 下に、上流の hyph-utf8 のパターンのファイルの冒頭の表示を転記します。パターンを取り込んだファイル (ブラウザ向けの配布物と画面の、言語ごとのチャンク) の先頭には、そのパターンの著作権の表示とライセンスの表示 (MIT は許諾の表示の全文、MIT 以外の許諾の表示は上流の表示、LPPL だけのもの (ru・sv・ca・is・tr・sh-latn・sh-cyrl) は LPPL の条件に従う注記、hu は MPL 1.1 の条件に従う注記) を入れています (`src/hyphenationNotices.ts` の `HYPHEN_NOTICES`)。
 
@@ -1746,7 +1746,7 @@ SOFTWARE.
 
 - 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-el-monoton.tex (master ブランチ。取得日 2026-11-10。コミットは特定していない)
 - npm の hyphen@1.14.1 の `patterns/el-monoton.js` には、ライセンスや著作権の表示は入っていません。hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
-- ライセンスは LPPL か MIT のどちらか (下の表示の licence の欄)。Kumiori は MIT で配布します。`lang` が `el` の文に使います (多調の綴り el-polyton・古典ギリシャ語 grc のパターンは読み込みません)。
+- ライセンスは LPPL か MIT のどちらか (下の表示の licence の欄)。Kumiori は MIT で配布します。`lang` が `el` の文 (異形 polyton のものを除く) に使います。
 
 ```text
 % title: Hyphenation patterns for Modern Greek, monotonic
@@ -1825,6 +1825,151 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+#### Modern Greek, polytonic (el-polyton): `hyph-el-polyton.tex` の 1〜55 行目 (パターンの前のコメントすべて)
+
+- 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-el-polyton.tex (master ブランチ。取得日 2026-11-25。コミットは特定していない)
+- npm の hyphen@1.14.1 の `patterns/el-polyton.js` には、ライセンスや著作権の表示は入っていません。hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
+- ライセンスは LPPL か MIT のどちらか (下の表示の licence の欄)。Kumiori は MIT で配布します。`lang` が `el-polyton` (異形 polyton) の文に使います。
+
+```text
+% title: Hyphenation patterns for Modern Greek, polytonic
+% copyright: Copyright (C) 2008-2011 Dimitrios Filippou
+% notice: This file is part of the hyph-utf8 package.
+%     See http://www.hyphenation.org/tex for more information.
+% language:
+%     name: Modern Greek, polytonic spelling
+%     tag: el-polyton
+% version: 5.0
+% authors:
+%   -
+%     name: Dimitrios Filippou
+%     contact: dimitrios.ap.filippou (at) gmail.com
+% licence:
+%     - This file is available under any of the following licences:
+%     -
+%         name: LPPL
+%         url: https://latex-project.org/lppl/
+%     -
+%         name: MIT
+%         url: https://opensource.org/licenses/MIT
+% hyphenmins:
+%     typesetting:
+%         left: 1
+%         right: 1
+% changes:
+%     - Created:       June 6, 2008
+%     - Last modified: Sept. 12, 2011
+% texlive:
+%     synonyms:
+%         - polygreek
+%     babelname: greek
+%     use_old_patterns_comment: Old patterns work in a different way, one-to-one conversion from UTF-8 is not possible.
+%     legacy_patterns: grphyph5.tex
+%     message: Hyphenation patterns for multi-accent (polytonic) Modern Greek
+%     package: greek
+% ==========================================
+% This file was first created by mechanical translation from
+% GRPhyph5.tex via "elhyph-utf8 -p -c" (version 0.1 by Peter
+% Heslin -- p.j.heslin at durham dot ac dot uk). Some additions
+% were also made by hand.
+%
+% Created by Dimitrios Filippou with some ideas borrowed from
+% Yannis Haralambous, Kostis Dryllerakis and Claudio Beccari.
+% Mojca Miklavec adapted it for the "hyph-utf8" package.
+%
+% These hyphenation patterns are explained in "modern.pdf", which
+% can be found in the "elhyphen" or "hyphenation-greek" package.
+% Questionable patterns are marked by three question marks "???".
+%
+% Documentation in English can be found in: D. Filippou,
+% "Hyphenation patterns for Ancient and Modern Greek," in
+% "TeX, XML, and Digital Typography" (A. Syropoulos et al.,
+% eds.), Lecture Notes in Computer Science 3130, Springer-Verlag
+% Berlin-Heidelberg, 2004. ISBN 3-540-22801-2.
+%
+```
+
+#### Ancient Greek (grc): `hyph-grc.tex` の 1〜72 行目 (パターンの前のコメントすべて)
+
+- 取得元: https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-grc.tex (master ブランチ。取得日 2026-11-25。コミットは特定していない)
+- npm の hyphen@1.14.1 の `patterns/grc.js` には、ライセンスや著作権の表示は入っていません。hyphen@1.14.1 のパターンが、上流のどの版から変換されたかは確認できていません。
+- ライセンスは LPPL か MIT のどちらか (下の表示の licence の欄)。Kumiori は MIT で配布します。`lang` が `grc` の文に使います。
+
+```text
+% title: Hyphenation patterns for Ancient Greek
+% copyright: Copyright (C) 2008-2016 Dimitrios Filippou
+% notice: This file is part of the hyph-utf8 package.
+%     See http://www.hyphenation.org/tex for more information.
+% language:
+%    name: Ancient Greek
+%    tag: grc
+% version: 2016-05-12
+% hyphenmins:
+%     typesetting:
+%         left: 1
+%         right: 1
+% authors:
+%   -
+%     name: Dimitrios Filippou
+%     contact: dimitrios.ap.filippou (at) gmail.com
+% licence:
+%     - This file is available under any of the following licences:
+%     -
+%         name: LPPL
+%         url: http://www.latex-project.org/lppl/
+%     -
+%         name: MIT
+%         url: https://opensource.org/licenses/MIT
+% changes:
+%   -
+%     date: 2016-05-12
+%     author: Arthur Reutenauer
+%     description: added support for curly beta
+%   -
+%     date: 2011-09-12
+%     author: Dimitrios Filippou
+%     description: updated headers and added the LPPL licence statement
+%   -
+%     date: 2008-06-06
+%     author: Dimitrios Filippou
+%     description: removed guillemets (»)
+%   -
+%     date: 2008-05-27
+%     author: Dimitrios Filippou
+% texlive:
+%     babelname: ancientgreek
+%     use_old_patterns_comment: Old patterns work in a different way, one-to-one conversion from UTF-8 is not possible.
+%     legacy_patterns: grahyph5.tex
+%     message: Hyphenation patterns for Ancient Greek
+%     package: ancient greek
+%
+% ==========================================
+% This file was first created by mechanical translation from
+% GRAhyph5.tex via "elhyph-utf8 -a -c" (version 0.1 by Peter
+% Heslin -- p.j.heslin at durham dot ac dot uk). Some additions
+% were also made by hand.
+%
+% Created by Dimitrios Filippou with some ideas borrowed from
+% Yannis Haralambous, Kostis Dryllerakis and Claudio Beccari.
+% Mojca Miklavec adapted it for the "hyph-utf8" package.
+%
+% These hyphenation patterns are explained in "ancient.pdf", which
+% can be found in the "elhyphen" or "hyphenation-greek" package.
+% Hyphenation examples are given in the file "anc-test.pdf", also
+% to be found in the "elhyphen" or "hyphenation-greek" package.
+% Questionable patterns are marked by three question marks "???".
+%
+% Documentation in English can be found in: D. Filippou,
+% "Hyphenation patterns for Ancient and Modern Greek," in
+% "TeX, XML, and Digital Typography" (A. Syropoulos et al.,
+% eds.), Lecture Notes in Computer Science 3130, Springer-Verlag
+% Berlin-Heidelberg, 2004. ISBN 3-540-22801-2.
+%
+% Thanks to Thomas Schmitz (thomas.schmitz at uni-bonn dot de)
+% for pointing out a few mistakes. (Marked by %%%TS%%%)
+%
 ```
 
 #### German, reformed spelling (de-1996): `hyph-de-1996.tex` の 1〜64 行目 (パターンの前のコメントすべて)

@@ -6,7 +6,7 @@
  * フォントの選び方 (足りない文字のフォールバック)、カーニング・合字は、文書の中で同じ文字列・同じスタイルを組んだときと同じになる。
  * 指定の無いプロパティは、Kumiori の HTML の既定のスタイル (htmlPrepare.ts の KUMIORI_BOOK_CSS: 10pt・line-height 1.75・serif・
  * text-align: justify・hanging-punctuation: allow-end) の本文と同じ。段落の字下げ (p の text-indent: 1em) は付けない (textIndent で付ける)。
- * ページは行の長さ (width) の幅で、余白は 0。測った値の単位は pt (領域の木と同じ)。
+ * ページは行の長さ (width) の幅で、余白は 0。測った値の単位は pt (エリアツリーと同じ)。
  */
 import { childrenOf, type AreaNode } from './areaTree';
 import { KumioriOptionError } from './errors';
@@ -14,7 +14,7 @@ import { msg } from './messages';
 
 /**
  * 測る文字列のスタイル (CSS のプロパティの一部。名前は CSS のプロパティを camelCase にしたもの)。値は CSS の値の文字列で、
- * 長さは数でも書ける (pt。fontSize・letterSpacing・wordSpacing・textIndent)。lineHeight の数は CSS と同じく倍率 (字の大きさに掛ける)。
+ * 長さは数でも書ける (pt。fontSize・letterSpacing・wordSpacing・textIndent)。lineHeight の数は CSS と同じく倍率 (文字の大きさに掛ける)。
  * fontWeight の数は CSS の太さ (400・700 など)。lang は言語のタグ (ja・en など。HTML の lang と同じに、禁則・ハイフネーション・字形の選び方に効く)。
  * フォントは、Typesetter を作ったときに読み込んだもの (既定のフォント・fonts・systemFonts) から選ぶ (@font-face は使えない)。
  * 1.0 までに形を変えることがある
@@ -133,7 +133,7 @@ export function checkMeasureArgs(text: unknown, style: unknown, width?: unknown)
       continue;
     }
     if (typeof v !== 'string') throw bad(`style.${k} は文字列${LENGTHS.has(k) || k === 'lineHeight' || k === 'fontWeight' ? 'か数' : ''}にしてください`, `style.${k} must be a string${LENGTHS.has(k) || k === 'lineHeight' || k === 'fontWeight' ? ' or a number' : ''}`, `style.${k}`);
-    // CSS の宣言の外に出る字 (; { } < >・\)・コメント・url() は使えない (ほかのプロパティや規則を書き足せないように)
+    // CSS の宣言の外に出る文字 (; { } < >・\)・コメント・url() は使えない (ほかのプロパティや規則を書き足せないように)
     if (k === 'lang' ? !/^[A-Za-z0-9-]{1,64}$/.test(v) : /[;{}<>\\]|\/\*|url\s*\(|@import/i.test(v) || v.length > 1000)
       throw bad(`style.${k} の値 ${JSON.stringify(v.slice(0, 100))} は使えません`, `style.${k} cannot be ${JSON.stringify(v.slice(0, 100))}`, `style.${k}`);
   }
@@ -172,7 +172,7 @@ export function measureDocument(text: string, style: TextStyle, width?: number):
   );
 }
 
-/** 領域の木の、行の領域を読んで、測った結果にする */
+/** エリアツリーの、行の領域を読んで、測った結果にする */
 export function measuredLines(sheets: readonly AreaNode[], vertical: boolean, width?: number): MeasuredText {
   const lines: MeasuredLine[] = [];
   // 行の中身の始まりと終わり (行の領域の原点から。行の領域は、内容の幅のブロックの行の進む方向いっぱいに置く)。

@@ -178,6 +178,7 @@ Diagnostics with the same code and text but different locations are separate dia
 | `pdfua/missing-formula-alt` | warning | PDF/UA-1: some formulas have no alternate text | — |
 | `pdfua/heading-skipped` | warning | PDF/UA-1: heading levels are skipped | — |
 | `pdfua/embedded-pdf` | warning | PDF/UA-1: a page of a PDF image uses fonts that are not embedded, so it was not embedded and a placeholder frame was drawn | `src`, `detail` |
+| `pdfua/encrypt-accessibility-kept` | warning | PDF/UA-1: encryption (`encrypt`) tried to remove the permission to extract content for accessibility (`permissions.accessibility`), so it was kept | — |
 | `snapshot/wait-timeout` | warning | `snapshotDocument` ran out of wait time (`timeoutMs`) and took the document as it was (`waiting` is what it was waiting for: `load`, `fonts`, `waitFor` or `animations`) | `waiting`, `ms` |
 | `snapshot/iframe-skipped` | warning | `snapshotDocument` does not copy the document inside an `<iframe>` | `src` |
 | `snapshot/canvas-tainted` | warning | `snapshotDocument` could not turn a canvas tainted by a cross-origin image into an image (it was left as a canvas) | `element` |
@@ -205,6 +206,7 @@ Errors are thrown with the following types, all carrying `code` (table below). `
 | Code | Type | Meaning |
 |---|---|---|
 | `api/invalid-option` | `KumioriOptionError` | the value of an option cannot be used |
+| `api/result-disposed` | `KumioriError` | a typeset result (`TypesetResult`) released with `dispose()` was used (`toPdf`, `toPdfStream`, `renderPage`, `renderPageToSvg`, `renderPageToPng`; calls started before `dispose()` run to the end) |
 | `input/xml-parse` | `KumioriInputError` | parsing XML (XSL-FO, XHTML) failed |
 | `input/not-xsl-fo` | `KumioriInputError` | no `fo:root` (not XSL-FO) |
 | `input/not-zip` | `KumioriInputError` | not a zip, or a ZIP64 archive |
@@ -220,6 +222,7 @@ Errors are thrown with the following types, all carrying `code` (table below). `
 | `font/none-registered` | `KumioriFontError` | no font is registered |
 | `font/broken-file` | `KumioriFontError` | a font file is broken (the caller usually makes it a warning) |
 | `pdf/tagged-incompatible` | `KumioriPdfError` | tagged PDF or PDF/UA-1 was combined with a PDF/X that flattens transparency |
+| `pdf/encrypt-incompatible` | `KumioriPdfError` | encryption (`encrypt`) was combined with PDF/X or PDF/A, which do not allow encryption (`standard` is the name of the standard) |
 | `pdfua/requires-tagged` | `KumioriPdfError` | PDF/UA-1 needs the structure tree (tagged PDF) |
 | `pdfx/profile-required` | `KumioriPdfError` | an output ICC profile (CMYK) is needed (X-4, and X-1a and X-3 when the printing condition is not in the ICC registry), or it is not CMYK |
 | `pdfx/profile-invalid` | `KumioriPdfError` | the output ICC profile is of the wrong kind (X-4 needs an output device profile (prtr), X-1a needs an AtoB1 table (A2B1)), or its header and tag table do not follow the ICC.1 format (including a missing desc description tag) |

@@ -65,6 +65,7 @@ main is protected by a ruleset, so version changes also go in through a PR. Publ
    When the release is published, `.github/workflows/conformance-pdf.yml` typesets the Conformance Guide at the tagged commit and attaches the four PDFs (for v0.1.1, `kumiori-xsl-fo-v0.1.1.pdf`, `kumiori-html-css-v0.1.1.pdf` and their `.en.pdf` versions) to the release. Check the result in the "Conformance PDF" run under Actions.
    If it fails, or to attach them again, run "Conformance PDF" with "Run workflow" and enter the tag (files with the same names are replaced)
 6. Verify: in another directory, `npx kumiori@<version> --version` works, `https://cdn.jsdelivr.net/npm/kumiori@<version>/dist-browser/kumiori.js` can be opened, and the GitHub Pages web app and the API reference (`/api/`) have been updated
+7. Empty the list of intended changes (`test/intended-changes.json`): put a commit on main that only sets `"changes": []`. The comparison for the next version (the compare job of `npm run ci:local`) checks the changes since that commit against the list
 
 ### Setting up Trusted Publishing (once)
 

@@ -63,28 +63,28 @@ PDF では色材名 All の Separation（レジストレーション色。すべ
   **表だけは `clone` 相当**: 断片ごとに外枠（横書きは上下、縦書きは右端・左端の罫線）を閉じる。終端の罫線の分だけ断片を伸ばし、行の収まり判定にもその分を見込む（余白・padding は slice のまま切る）。
 - **widows/orphans**（既定 2）: 現ページに入る行数 `fit` を、行ごとの実高（ルビ加算込み）+ 閉じる Frame の `bp_end` 予約でシミュレートし、
   `remaining < widows` なら `take = n − idx − widows`、`take < orphans` なら 0（次ページ送り。ページ先頭なら強制配置で進行保証）。
-- `breakBefore/After`（`page` / `column` / `odd-page` / `even-page`。連続指定は 1 回に畳む・末尾の空ページは作らない。odd / even は偶奇が合わなければ白ページを挟む）、`keepTogether`（別 Flow で試し組みして高さを測り、入らなければ先に改ページ）、`keepWithNext`（並びと次のブロックを別 Flow で試し組みし、次のブロックの最初の行が同じページに載らず、改ページすれば載るときだけ先に改ページ。試し組みは次のブロックの最初の行を置いた時点で打ち切り、表のセルの最小・最大の長さの計測は同じ組版の中で使い回す）。
+- `breakBefore/After`（`page` / `column` / `odd-page` / `even-page`。連続指定は 1 回に畳む・末尾の空ページは作らない。odd / even は偶奇が合わなければ白ページを挟む）、`keepTogether`（別 Flow で試し組みして高さを測り、入らなければ先に改ページ）、`keepWithNext`（並びと次のブロックを別 Flow で試し組みし、次のブロックの最初の行が同じページに載らず、改ページすれば載るときだけ先に改ページ。試し組みは次のブロックの最初の行を置いた時点で打ち切り、表のセルの最小・最大の長さの計測は同じ組版の中で再利用する）。
 
 ## 3. インライン組版 (`inlineLayout.ts`, `jis.ts`)
 
-**Atom 化**: 文字 / ルビ / 縦中横 / 強制改行。字ごとに計測し、カーニング (GPOS の `kernPairs`) と合字 (書体の liga で 1 つの字形になる並びを 1 単位に) は組版側で足すので、Canvas と PDF で同じ位置になる (当初は 1 文字ずつで合字・カーニングを使わなかった)。
+**Atom 化**: 文字 / ルビ / 縦中横 / 強制改行。文字ごとに計測し、カーニング (GPOS の `kernPairs`) と合字 (フォントの liga で 1 つの字形になる並びを 1 単位に) は組版側で足すので、Canvas と PDF で同じ位置になる (当初は 1 文字ずつで合字・カーニングを使わなかった)。
 
 **行分割（貪欲 + 禁則）**
 1. `x + advance ≤ avail` の間 atom を詰め、溢れる atom `k` に到達。
 2. `k` がスペース → 行末に吸収（行末スペースは捨てる）。
-3. `k` が 、。 かつ ぶら下げ有効 かつ `k+1` との間が禁則でない → **ぶら下げ**（`k` を行の最後の字のすぐ後ろ (両端揃えの行では版面端) に置き、版面幅は変えない）。
+3. `k` が 、。 かつ ぶら下げ有効 かつ `k+1` との間が禁則でない → **ぶら下げ**（`k` を行の最後の文字のすぐ後ろ (両端揃えの行では版面端) に置き、版面幅は変えない）。
 4. **追込み** (JLREQ §3.8.2。詰める処理を空ける処理より優先する): `k` から次の分割点までを、詰めてよい箇所 (欧文の語間 → 行末の約物の後ろのアキ → 中点類の前後 → 行中の括弧・読点のアキ → 和欧間のアキ。§3.8.3 の順と限界、`squeezeParts`。互換モードでは 1 行に二分まで。HTML+CSS の `--style ah` では、詰める量が、追い出したときに行に残る空き以下なら、二分を超えても詰める = `lineSqueezeBeyondMax`。XSL-FO の仕様モードでは、欧文の語間を詰めるのは両端揃えで組む行だけ = `markWordSqueeze` で、その量は既定で 0 (`word-spacing="normal"` は .minimum = .optimum。XSL 1.1 §7.17.8)。`word-spacing.minimum` があれば .optimum − .minimum まで、`axf:text-justify-trim` の `inter-word` があれば詰める = `wordSpaceShrinkLimit`。互換モードは語間・和欧間を詰めない) を詰めて行に収まるなら、そこまでを 1 行にする。
 5. それ以外は **追い出し**: `j = k` から `canBreakAtoms(atoms[j-1], atoms[j])` が真になるまで後退 (戻った分割点より後ろに、ハイフンを付けて収まる分綴の位置があれば、そこで分ける)。後退しきれないとき (行頭に立てられない約物の長い連続) は、先の分割点 (12 字以内) までを約物のアキを詰めて押し込み、それでも入らなければ禁則違反を承知で強制分割。
-`canBreakAtoms(a,b)` (`inlineLayout.ts`): 改行の機会は UAX #14 の規則 (`markLineBreaks` が `lineBreak.ts` の規則で字ごとに付ける `lbBefore`。行頭禁則・行末禁則・分離禁止・欧文の語の中を含む) で決め、`white-space: nowrap`・`word-break`・leader の扱いをその前に見る。
+`canBreakAtoms(a,b)` (`inlineLayout.ts`): 改行の機会は UAX #14 の規則 (`markLineBreaks` が `lineBreak.ts` の規則で文字ごとに付ける `lbBefore`。行頭禁則・行末禁則・分離禁止・欧文の語の中を含む) で決め、`white-space: nowrap`・`word-break`・leader の扱いをその前に見る。
 
-**行内配置**: `justify` は「段落の最終行でも強制改行の行でもない行」(最終行は `textAlignLast` があればその揃え。`justify` なら最終行も伸ばす) で、伸ばしてよい字間 (`stretchable`。欧文語内は伸ばさない) に余白を JLREQ §3.8.4 の順に配る (`expandGaps`: 欧文の語間を二分まで → 和欧間を二分まで → ほかの字間を四分まで → それでも余れば均等に。配る量は字の大きさに比例)。`center/end` は先頭オフセット。
+**行内配置**: `justify` は「段落の最終行でも強制改行の行でもない行」(最終行は `textAlignLast` があればその揃え。`justify` なら最終行も伸ばす) で、伸ばしてよい字間 (`stretchable`。欧文語内は伸ばさない) に余白を JLREQ §3.8.4 の順に配る (`expandGaps`: 欧文の語間を二分まで → 和欧間を二分まで → ほかの字間を四分まで → それでも余れば均等に。配る量は文字の大きさに比例)。`center/end` は先頭オフセット。
 
 **行ボックス**（`lineMetrics`）: 横書きは **ベースライン揃え**（`above = baselineRatio·fs`）、縦書きは **字面中央揃え**（`above = below = fs/2`）。
 `baselineRatio` は OS/2 の `typoAscender/upm`（Noto CJK は 0.88）。`em = max(above) + max(below)`、`leading = max(lh − em, 0)`、上下に `leading/2` ずつ配分。
 
 ## 4. 縦書きの字形と座標
 
-字の分類 (`jis.ts: verticalTreatment`): 正立 (かな・漢字・全角記号) / 横倒し (欧文・数字・`ー〜…―` 等)。送り長さ（advance）:
+文字の分類 (`jis.ts: verticalTreatment`): 正立 (かな・漢字・全角記号) / 横倒し (欧文・数字・`ー〜…―` 等)。送り長さ（advance）:
 全角正立 = `fs`、横倒し欧文 = 水平幅、横倒し全角記号 = `fs`。
 
 GlyphArea の描画原点（Area ローカル、y 下向き）:
@@ -96,7 +96,7 @@ rotate 90° : (bx, by) = ((1 − br)·fs,  (advance − naturalW)/2)      ※原
 ```
 `rotate` の導出: 時計回り 90° で `(x,y) → (−y, x)`。em ボックスの y 範囲 `[−br·fs, (1−br)·fs]` は x 範囲 `[−(1−br)·fs, br·fs]` に移るので、原点を `x = (1−br)·fs` に置くと em ボックスが `[0, fs]` に収まる。
 
-- 括弧・読点・句点・`︵︶﹁﹂` 等は、書体の GSUB `vert` の字形を先に使い、無ければ Unicode の **縦書き用字形 (U+FE10–FE48)** にフォントが対応していれば置換（Noto で確認済み）。それも無ければ括弧は横倒し、句読点は `(+0.55em, −0.6em)`、小書き仮名は `(+0.125em, −0.125em)` で補正。
+- 括弧・読点・句点・`︵︶﹁﹂` 等は、フォントの GSUB `vert` の字形を先に使い、無ければ Unicode の **縦書き用字形 (U+FE10–FE48)** にフォントが対応していれば置換（Noto で確認済み）。それも無ければ括弧は横倒し、句読点は `(+0.55em, −0.6em)`、小書き仮名は `(+0.125em, −0.125em)` で補正。
 - 行は右→左、文字は上→下。ブロックは右端から左へ積む（上表）。
 
 ## 5. ルビ
@@ -131,19 +131,19 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 
 - 列幅: 固定値の合計を引いた残りを `N*`（`auto` = `1*`）の重みで按分。自動の配置 (CSS の `table-layout: auto`) では、セルの最小・最大の幅を測って列に配る (列をまたぐセルの分も。CSS 2.1 §17.5.2.2)。**列は inline 方向、行は block 方向**に取るので、縦書きの表（行は右→左、セルは上→下）も同じコードで組める。
 - 行: 各セルを無改ページの独立 Flow で組み、`行高 = max(セル高)`、全セルの `bsize` を行高に揃える（背景・罫線が行全体を満たす）。`colSpan` 対応。
-- 改ページ: 行は原則そのまま次ページへ送る (ページより高い行は、セルの行の境目で分ける。`splitRow`)。`cursor + pending + 行高 > limit` なら `breakPage()`（表自身も Frame なので断片化）→ **ヘッダ行を複製**（`isRepeatedHeader`）→ 行を配置。
-  「ページ内容がヘッダだけ」の場合は無限ループ防止のため溢れを許容し警告。
+- 改ページ: 行は原則そのまま次ページへ送る (ページより高い行は、セルの行の境界で分ける。`splitRow`)。`cursor + pending + 行高 > limit` なら `breakPage()`（表自身も Frame なので断片化）→ **ヘッダー行を複製**（`isRepeatedHeader`）→ 行を配置。
+  「ページ内容がヘッダーだけ」の場合は無限ループ防止のため溢れを許容し警告。
 
 ## 7.5 rowSpan
 
-`rowSpan` で結びついた行は **行グループ** (`groupEnd` が連鎖を辿って決定) として 1 単位で組む (ページに入らなければ、行の境目でまたぐ)。
+`rowSpan` で結びついた行は **行グループ** (`groupEnd` が連鎖を辿って決定) として 1 単位で組む (ページに入らなければ、行の境界でまたぐ)。
 
 1. グリッド割り付け: `occupiedUntil[col]` に「その列を占有する最終行」を持ち、上から伸びたセルの列を飛ばして各セルの開始列を決める。
 2. 各セルを独立 Flow で組んで自然高 `h` を得る。
 3. 行高 = その行で始まる `rowSpan = 1` のセルの最大高。`rowSpan > 1` のセルはスパン数の小さい順に、`h − Σ(結合行の高さ)` の不足分を **最終行へ加算**。
 4. 結合セルの `bsize = Σ(結合行の高さ)`。開始行の子として持ち、次行以降へはみ出す（縦書きでは左へ伸びる）。
 
-グループ全体が現ページに入らなければグループごと次ページへ送り（ヘッダ複製あり）、ページより高ければ警告して溢れさせる。
+グループ全体が現ページに入らなければグループごと次ページへ送り（ヘッダー複製あり）、ページより高ければ警告して溢れさせる。
 
 ## 7.6 fo:leader
 
@@ -160,7 +160,7 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 
 - `LMarker{className, children}` はフロー中のどこにでも置け、何も出力しない。段落の途中に置いても行を分断しない（inline run を切らずに保留リストへ積む）。
 - **記録するページ**: 保留リスト `markerSink` に積み、次に行・表の行グループ・葉ボックスが実際に置かれた瞬間（改ページ判定の後）に `commitMarkers()` がそのページへ記録する。
-  マーカーを持つブロックが次ページへ送られれば、マーカーも次ページに記録される。セル・コンテナ内のマーカーは親 Flow と `markerSink` を共有して親ページへ届く。
+  マーカーを持つブロックが次ページへ送られれば、マーカーも次ページに記録される。セル・コンテナー内のマーカーは親 Flow と `markerSink` を共有して親ページへ届く。
 - `LRetrieveMarker{className, position, boundary}` は `staticContent` 内で、**全ページの組版が終わった後**（ページ番号置換と同じ二相目）にマーカー内容へ展開される。
   `position`: `first/last-starting-within-page`（そのページで始まるもの）、`first/last-including-carryover`（無ければ前ページからの持ち越し）。
   `boundary`: `page`（持ち越し無し）/ `page-sequence`（既定）/ `document`。
@@ -170,11 +170,11 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 
 `LFootnote{children, label?}`（インライン）。`PageSequence.footnotes`（`FootnoteOptions`）で書式を指定する。実装は `footnotes.ts` と `Flow`。
 
-- **番号**: `FootnoteCtx.label()` が文書順に 1 度だけ採番（`WeakMap` で冪等）。`numberFormat`: decimal / circled / kanji / asterisk、`startNumber`、`labelPrefix/Suffix`、`label` で個別上書き。ページごとのリセット (`reset: 'page'`) は、前回の組版で脚注が置かれたページの中の順番で振り直し、置き場所が変わらなくなるまで組み直す (§7.13.1 のページ番号参照と同じ組み直し。最大 4 回)。
-- **参照記号**: 本文より `referenceScale`（既定 0.7）小さい文字を、block-start 方向へ本文の字の大きさの `0.35em` 持ち上げて出力（横書きは上、縦書きは右。`inlineFlatten.ts` の `flattenFootnoteRef`）。持ち上げ方は `LFootnote.referenceShift` で変えられる（XSL-FO の参照の `baseline-shift`、`--style ah` の HTML では親の字の大きさの 1/3）。記号の前では改行しない（`glue`）。
+- **番号**: `FootnoteCtx.label()` が文書順に 1 度だけ採番（`WeakMap` で冪等）。`numberFormat`: decimal / circled / kanji / asterisk、`startNumber`、`labelPrefix/Suffix`、`label` で個別上書き。ページごとのリセット (`reset: 'page'`) は、前回の組版で脚注が置かれたページの中の順番で振り直し、置く位置が変わらなくなるまで組み直す (§7.13.1 のページ番号参照と同じ組み直し。最大 4 回)。
+- **参照記号**: 本文より `referenceScale`（既定 0.7）小さい文字を、block-start 方向へ本文の文字の大きさの `0.35em` 持ち上げて出力（横書きは上、縦書きは右。`inlineFlatten.ts` の `flattenFootnoteRef`）。持ち上げ方は `LFootnote.referenceShift` で変えられる（XSL-FO の参照の `baseline-shift`、`--style ah` の HTML では親の文字の大きさの 1/3）。記号の前では改行しない（`glue`）。
 - **領域の確保**: 脚注領域は region-body の block 方向末尾（横書き=下端 / 縦書き=左端）。確保量 `footReserve = 区切り線 + Σ高さ + 間隔×(n−1)`。本文の改ページ判定は `limit − footReserve` を使う（`room`）。
 - **参照行ごと送る**: 行の収まり判定に「その行の脚注の追加分」を含める（`c + h + tail + resv + inc ≤ limit`）。入らなければ行が次ページへ送られ、脚注も一緒に移る。widows/orphans とも整合する。
-- **長すぎる脚注**: ページ先頭に強制配置された行の脚注、または 1 つで入りきらない脚注は、行単位で分割（`splitEntry`）し、続きを次ページの脚注領域の先頭へ回す（本文用に 4 割を残す）。最後に残れば脚注だけのページを足す。
+- **長すぎる脚注**: ページ先頭に強制配置された行の脚注、または 1 つで入りきらない脚注は、行単位で分割（`splitEntry`）し、続きを次ページの脚注領域の先頭へ回す（本文用に 4 割を残す）。最後に残れば脚注だけのページを追加する。
 - **出力**: 脚注領域は `b = limit − footReserve` の block として region-body の子に追加。物理化で縦書きでは `x = PW − b − w = 0`、つまり左端になる。区切り線は背景色つきのブロック。
 
 ## 7.9 float (fo:float)
@@ -187,35 +187,35 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
   `shift = left − content 始端`、`width = right − left`。行は `breakOne` で 1 本ずつ切り出し、行ノードを `i = shift` に置く（行の幅は縮み、float の下端を過ぎれば元の幅に戻る）。
   幅が 2em 未満なら、その行は float の下端まで送る。Frame の content-box が region のどこにあるかは `contentIOffset()` で求める。
 - **before**: 置き済みの本文を `shiftContent(h)`（root の子・開いている Frame の `startB/contentStartB`・float の `b0/b1`・`cursor` を h だけずらす）で押し下げ、`b = beforeUsed + margin.bs` に積む。縦書きでは block-start = 右端。
-- **入らないとき**: 現ページの残りに収まらない float は `deferredFloats` に積み、**次ページの先頭**（`breakPage` の最後）に置く。本文は止まらず先へ進む。ページ先頭でも入らなければ警告して溢れさせる。最後に残れば float だけのページを足す。
-- **経路の切替**: 回り込みが有効な間は、行を 1 本ずつ組む経路（`layoutInlineRunFloating`）に入る。ページ跨ぎは行単位で判定し、次のページへ行く行が widows より少なければ、置き済みの行を送り直して widows / orphans を守る (`widowShift`。残りの行数は回り込みの無い幅で数える)。回り込みが無ければ従来の高速経路。
+- **入らないとき**: 現ページの残りに収まらない float は `deferredFloats` に積み、**次ページの先頭**（`breakPage` の最後）に置く。本文は止まらず先へ進む。ページ先頭でも入らなければ警告して溢れさせる。最後に残れば float だけのページを追加する。
+- **パスの切替**: 回り込みが有効な間は、行を 1 本ずつ組むパス（`layoutInlineRunFloating`）に入る。ページ跨ぎは行単位で判定し、次のページへ行く行が widows より少なければ、置き済みの行を送り直して widows / orphans を守る (`widowShift`。残りの行数は回り込みの無い幅で数える)。回り込みが無ければ従来の高速パス。
 - **制限**: 親と直交する書字方向の float (横書きの中の縦書きなど) は、行の長さの既定を、CSS (HTML) の float では使える長さの中の fit-content (CSS Writing Modes 3 §7.3)、XSL-FO の float ではページの残りの高さにして組む。float を含む行の脚注、ルビは通常どおり扱う。
 
-## 7.10 行内の箱: 画像 (`LImage`) と `LInlineContainer`
+## 7.10 行内のボックス: 画像 (`LImage`) と `LInlineContainer`
 
-どちらも行分割では「箱 atom」(`kind: 'box'`、前後で禁則なしに改行可) として扱い、寸法は `BoxSpec{adv, cross, above, below}`:
+どちらも行分割では「ボックス atom」(`kind: 'box'`、前後で禁則なしに改行可) として扱い、寸法は `BoxSpec{adv, cross, above, below}`:
 
-- `adv` = inline 方向の送り、`cross` = block 方向の厚み、`above/below` = 横書きでの、箱の上端/下端から基線までの距離。
+- `adv` = inline 方向の送り、`cross` = block 方向の厚み、`above/below` = 横書きでの、ボックスの上端/下端から基線までの距離。
 - **画像**: 自然なサイズ = 画像の px × 0.75 (96dpi → pt)。片方だけ指定なら縦横比で補い、両方指定なら `min(w/W, h/H)` で枠に収める (`uniform`)。
   横書きは `above = h, below = 0` (下端が基線)。縦書きは `above = below = cross/2` (字面の中央)。画像データが無ければプレースホルダ。大きさは、幅も高さも指定が無ければ 60×40pt、一方だけなら幅:高さ = 3:2 でもう一方を決める（`layoutEngine.ts` の `imageBox`）。
 - **inline-container**: `inline-progression-dimension` があればその幅、無ければ shrink-to-fit
   (行幅で組む → 最も長い行 `max(contentLength)` を測る → その幅で組み直す)。内部は独立した Flow (`writing-mode` が親と違ってもよい)。
   横書き同士なら `firstBaseline()` で最初の文字の基線までの距離を求め `above = fb` として、周囲の基線に揃える。
-- 行の em の上下 (`lineMetrics`) は箱の `above/below` も含めて max を取るので、背の高い箱は行を押し広げる。
-- 描画: `ImageArea` を新設。Canvas は `drawImage`、PDF は PNG/JPEG をそのまま `embedPng/embedJpg` (PNG は IDAT をそのまま FlateDecode の画像に)、他形式 (GIF・BMP・WebP・TIFF など) は PNG に変換して埋め込む (画素を復号して元の大きさの PNG にするか、ブラウザで出力サイズ × 300dpi に描き直す。同じ画像は 1 度だけ)。SVG は `svg.ts` で図形リスト (path を M/L/C/Z に正規化、円弧はベジエに変換、transform は座標に焼き込み) にして、PDF の描画命令として出力する (グラデーションは shading pattern、字は字形の輪郭、mask はソフトマスク)。filter など図形にできないものは、ブラウザではラスタライズし、Node では影・ぼかし・色の変換・重ねを図形で近似し、図形で近似できないものは画素で計算して画像にする (`svgFilterRaster.ts`。`BACKLOG.md` の「SVG: グラデーション・clipPath・mask・filter・text・use・クラス CSS」の項)。
+- 行の em の上下 (`lineMetrics`) はボックスの `above/below` も含めて max を取るので、背の高いボックスは行を押し広げる。
+- 描画: `ImageArea` を新設。Canvas は `drawImage`、PDF は PNG/JPEG をそのまま `embedPng/embedJpg` (PNG は IDAT をそのまま FlateDecode の画像に)、他形式 (GIF・BMP・WebP・TIFF など) は PNG に変換して埋め込む (ピクセルを復号して元の大きさの PNG にするか、ブラウザーで出力サイズ × 300dpi に描画し直す。同じ画像は 1 度だけ)。SVG は `svg.ts` で図形リスト (path を M/L/C/Z に正規化、円弧はベジエに変換、transform は座標に焼き込み) にして、PDF の描画命令として出力する (グラデーションは shading pattern、文字は字形のアウトライン、mask はソフトマスク)。filter など図形にできないものは、ブラウザーではラスタライズし、Node では影・ぼかし・色の変換・重ねを図形で近似し、図形で近似できないものはピクセルで計算して画像にする (`svgFilterRaster.ts`。`BACKLOG.md` の「SVG: グラデーション・clipPath・mask・filter・text・use・クラス CSS」の項)。
 
-## 7.11 背景の層 (`layer: 'behind'`)
+## 7.11 背景のレイヤー (`layer: 'behind'`)
 
-リージョン (`region-body` など) やページの背景色は、本文より背面に敷く必要がある。絶対配置コンテナに `layer: 'behind'` を付けると、
+リージョン (`region-body` など) やページの背景色は、本文より背面に敷く必要がある。絶対配置コンテナーに `layer: 'behind'` を付けると、
 `PageArea.behindAreas` に分けて保持され、描画は **behindAreas → 本文 (regionBody) → 前面の絶対配置** の順になる。
 ページ全体の背景は `PageMaster.backgroundColor` (塗り足し領域まで塗る)。
 
-## 7.12 箱の回転 (reference-orientation)
+## 7.12 ボックスの回転 (reference-orientation)
 
-回転する箱は、**回転前の局所座標系で組み、描画のときだけ回す**。レイアウトは回転を意識せず、箱の外寸だけが変わる。
+回転するボックスは、**回転前の局所座標系で組み、描画のときだけ回す**。レイアウトは回転を意識せず、ボックスの外寸だけが変わる。
 
 - `LNode.rot` (反時計回り 0/90/180/270)。`isize/bsize` は回転前の寸法。**外接矩形** = 90・270 のとき幅と高さが入れ替わる (`bboxOf`)。
-  通常フローの消費量・絶対配置の `left/right/top/bottom`・行内の箱の送りは、すべて外接矩形で計算する。
+  通常フローの消費量・絶対配置の `left/right/top/bottom`・行内のボックスの送りは、すべて外接矩形で計算する。
 - `Area.width/height` は回転前の局所サイズ、`x/y` は外接矩形の左上、子の座標は局所座標。`Area.orientation` に角度を持つ
   (GlyphArea.rotation は「文字」の回転なので別名にしている)。
 - 描画: `paintArea` が局所 → Sheet の変換を `Painter.transform` へ渡す。外接矩形の左上 (x, y)、局所サイズ w × h として
@@ -224,7 +224,7 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
   これにより、以降の描画コードは Sheet 座標 (y 下向き) のまま書ける。
 - 回転した block-container の幅 (回転前) の既定は、本文領域の block 方向いっぱい (ページの高さ)。
 - 本文領域の回転 (`PageMaster.bodyRotation`): 本文領域を回転前の寸法 (縦横入れ替え) で組み、`RegionBodyArea` ごと回す (用紙を横に使う)。
-- リージョンの `writing-mode` / `reference-orientation` / `display-align` は、static-content の箱の `writingMode` / `rotation` / `blockAlign` になる
+- リージョンの `writing-mode` / `reference-orientation` / `display-align` は、static-content のボックスの `writingMode` / `rotation` / `blockAlign` になる
   (回転する場合の局所の幅 = リージョンの長さ、局所の高さ = リージョンの幅)。
 
 ## 7.13 条件付きページマスター
@@ -238,37 +238,37 @@ x_k = (fs − W·scale)/2 + Σ(width_j·scale)_{j<k},   y = (advance − fs)/2, 
 
 ## 7.13.1 ページ番号参照の収束
 
-ページ番号参照 (目次・相互参照) があれば、参照先のページ番号が変わらなくなるまで組み直す (最大 4 回)。1 回目は、置き済みの参照先 (後ろから前への参照) はそのページ番号、まだ置いていない参照先はいまのページ番号を仮の値にする (桁数が同じになりやすい)。2 回目以降は、page-sequence ごとに「開始ページ・脚注の続き番号・中で参照した値」が前回と同じなら前回のページをそのまま使い、参照の値が変わっていても字数と字ごとの送りが同じ (桁数が同じ数字など) なら、その字 (`LNode.cite` の印) だけを差し替える。組み直すのは、条件の変わった sequence (ふつうは目次) だけになる。ページごとに脚注番号を振り直す文書は使い回さない。
+ページ番号参照 (目次・相互参照) があれば、参照先のページ番号が変わらなくなるまで組み直す (最大 4 回)。1 回目は、置き済みの参照先 (後ろから前への参照) はそのページ番号、まだ置いていない参照先はいまのページ番号を仮の値にする (桁数が同じになりやすい)。2 回目以降は、page-sequence ごとに「開始ページ・脚注の続き番号・中で参照した値」が前回と同じなら前回のページをそのまま使い、参照の値が変わっていても字数と文字ごとの送りが同じ (桁数が同じ数字など) なら、その文字 (`LNode.cite` の印) だけを差し替える。組み直すのは、条件の変わった sequence (ふつうは目次) だけになる。ページごとに脚注番号を振り直す文書は再利用しない。
 
 ## 7.14 段組
 
-- `layoutColumnSequence`: 段組のマスターを持つ page-sequence 専用。本文を「段組グループ」と「span=all のブロック」に分け、グループごとに Flow を 1 つ使う。Flow から見ると 1 段 = 1 ページで、`PageHost.nextPage` が次の段 (最後の段なら次ページの 1 段目) の根を返す。
+- `layoutColumnSequence`: 段組のマスターを持つ page-sequence 専用。本文を「段組グループ」と「span=all のブロック」に分け、グループごとに Flow を 1 つ使う。Flow から見ると 1 段 = 1 ページで、`PageHost.nextPage` が次の段 (最後の段なら次ページの 1 段目) のルートを返す。
 - 段の釣り合わせ: span=all の直前のグループは、(1) 通常どおり試し組みして最終ページ A を知り、(2) A の段の高さを二分探索で縮めた試し組みを繰り返し、A に収まる最小の高さを求め、(3) その高さで本組みする。試し組みは副作用の無い Flow で行う。
 - 次のグループ (span ブロック) は、直前グループの最終ページで「最も使った段」の下から始まる。
 
 ## 8. PDF 出力 (`pdfRenderer.ts`)
 
-- 座標: `pdfY = sheetH − y`。文字はテキスト行列 `Tm = [sx·cosφ, sx·sinφ, −sinφ, cosφ, P.x, H − P.y]`（`φ = −rotation`）で置く。同じ行列で同じ基線に並ぶ字 (横書きの 1 行、縦書きの横倒しの欧文) は 1 つの `TJ` にまとめ、字の間隔 (字間・両端揃え・カーニング) は字送りの調整 (1/1000 em) で表す。基線の違う字 (縦書きの正立の字など) は字ごとに `Tm` から書く。
+- 座標: `pdfY = sheetH − y`。文字はテキスト行列 `Tm = [sx·cosφ, sx·sinφ, −sinφ, cosφ, P.x, H − P.y]`（`φ = −rotation`）で置く。同じ行列で同じ基線に並ぶ文字 (横書きの 1 行、縦書きの横倒しの欧文) は 1 つの `TJ` にまとめ、文字の間隔 (字間・両端揃え・カーニング) は字送りの調整 (1/1000 em) で表す。基線の違う文字 (縦書きの正立の文字など) は文字ごとに `Tm` から書く。
 - ボックス: `MediaBox = Sheet`、`TrimBox = trimBox`、`BleedBox = bleedBox`、`ArtBox = trimBox`（PDF 座標へ y 反転済み。`pdfinfo -box` で確認）。
 - 色: `cmyk(c,m,y,k)` 指定を DeviceCMYK のまま出力（Canvas は RGB 近似）。特色 `spot(濃度,c,m,y,k,名前)` は Separation 色空間 (代わりの色空間は DeviceCMYK、濃度の変換は線形の FunctionType 2) で書く。
-- フォント: 使用フォントのみサブセット埋め込み。字は、Area Tree の `GlyphArea.glyphIds` (組版で OpenType の機能 (vert・liga・kern など) を当てて決めた字形の番号) があればそれを符号にして書き、`text` は ToUnicode に使う (無ければ字を書体で組み直す。[`area-tree.md`](area-tree.md))。**`@pdf-lib/fontkit` の TTF サブセットは、グリフデータを 4 バイト境界に揃えず short 形式 loca を書くため、奇数長グリフ以降が化ける**（Noto で再現: 「KUMIORI」が「KU K」になる）。
-  `TTFSubset.prototype._addGlyph` をパッチして各グリフを 4 バイトにパディングし、5 ページ全体で 204KB（フルフォント埋め込みなら数 MB）。CFF の OpenType (OTF) は fontkit のサブセットが使えないので、埋め込みを差し替えて CFF の表だけを FontFile3 (CIDFontType0C) に入れ、使わない字の字形を空にした部分書体 (`cff.ts: subsetCff`) にする (CID 方式の CFF は、符号・W・ToUnicode を GID でなく CID で書く)。
+- フォント: 使用フォントのみサブセット埋め込み。文字は、Area Tree の `GlyphArea.glyphIds` (組版で OpenType の機能 (vert・liga・kern など) を当てて決めた字形の番号) があればそれを符号にして書き、`text` は ToUnicode に使う (無ければ文字をフォントで組み直す。[`area-tree.md`](area-tree.md))。**`@pdf-lib/fontkit` の TTF サブセットは、グリフデータを 4 バイト境界に揃えず short 形式 loca を書くため、奇数長グリフ以降が化ける**（Noto で再現: 「KUMIORI」が「KU K」になる）。
+  `TTFSubset.prototype._addGlyph` をパッチして各グリフを 4 バイトにパディングし、5 ページ全体で 204KB（フルフォント埋め込みなら数 MB）。CFF の OpenType (OTF) は fontkit のサブセットが使えないので、埋め込みを差し替えて CFF の表だけを FontFile3 (CIDFontType0C) に入れ、使わない文字の字形を空にしたサブセットフォント (`cff.ts: subsetCff`) にする (CID 方式の CFF は、符号・W・ToUnicode を GID でなく CID で書く)。
 
 ## 9. 検証結果
 
 | 項目 | 結果 |
 | --- | --- |
-| Canvas `measureText` vs fontkit `advanceWidth`（158 字 × 2 書体） | 最大差 **1.7×10⁻⁵ pt** |
-| Canvas プレビュー vs PDF ラスタライズ (96dpi, 5 ページ) | インク不一致 1.4–5.5%（大半は CMYK ヘッダ帯の色差） |
+| Canvas `measureText` vs fontkit `advanceWidth`（158 字 × 2 フォント） | 最大差 **1.7×10⁻⁵ pt** |
+| Canvas プレビュー vs PDF ラスタライズ (96dpi, 5 ページ) | インク不一致 1.4–5.5%（大半は CMYK ヘッダー帯の色差） |
 | 禁則ファズ (ランダム 240 本 / 1359 行、横・縦) | 行頭禁則違反 9（スペース直後の約物など不正入力のみ）、はみ出し 0、ぶら下げ 99 |
 | 改ページ | 断片フラグ・罫線切り取り・widows/orphans・keepTogether・強制改ページを実測確認 |
 | 異常系 | 1 ページを超える表の行 → 警告のみで完走、空のフロー → 1 ページ |
 
 ## 10. 既知の制限
 
-未対応の機能と既知の制限の一覧は [`BACKLOG.md`](BACKLOG.md) にまとめている (このレポートの各節は、書いた時点の設計の記録なので、その後の実装で解けた制限がある。たとえば、表・コンテナ内の脚注、脚注番号のページごとのリセット、表の行の分割と `border-collapse`、直交する書字方向のブロックの分割、約物の連続のアキ・ルビのオーバーハング・和欧間アキ・カーニングは実装済み)。いまも残る主なもの:
+未対応の機能と既知の制限の一覧は [`BACKLOG.md`](BACKLOG.md) にまとめている (このレポートの各節は、書いた時点の設計の記録なので、その後の実装で解けた制限がある。たとえば、表・コンテナー内の脚注、脚注番号のページごとのリセット、表の行の分割と `border-collapse`、直交する書字方向のブロックの分割、約物の連続のアキ・ルビのオーバーハング・和欧間アキ・カーニングは実装済み)。いまも残る主なもの:
 
 - 禁則の後退でも行頭に立てられない場合 (約物の長い連続) は、先の分割点までを約物のアキで詰めて試し、それでも入らなければ違反を承知で強制分割する。
 - 表示用 Canvas は `fontKerning='none'` に固定し、カーニングは組版側の送りで表す (PDF と一致させるため)。
-- 回り込み (float) のある段落は行を 1 本ずつ組む経路になり、行グリッドを考慮しない (widows / orphans は、置き済みの行を送り直して守る)。
+- 回り込み (float) のある段落は行を 1 本ずつ組むパスになり、行グリッドを考慮しない (widows / orphans は、置き済みの行を送り直して守る)。
 - 対応していない仕様の項目ごとの説明は、対応仕様説明書 (`docs/conformance/`) の「対応していないもの」の章にある。
