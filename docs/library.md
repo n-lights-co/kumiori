@@ -921,7 +921,7 @@ npm に公開したものは、jsDelivr や unpkg の CDN からそのまま読�
 
 ```html
 <script type="module">
-  import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
+  import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.8.0/dist-browser/kumiori.js';
   const result = await typesetHtml(html, { name: 'a.html' });
   await result.renderPage(document.querySelector('canvas'), 0);
 </script>
@@ -1079,7 +1079,7 @@ worker.postMessage({ type: 'typeset', html: snap.html, options: snap.options }, 
 
 ```js
 // worker.js (new Worker('worker.js', { type: 'module' }) で作る)
-import { createTypesetter } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
+import { createTypesetter } from 'https://cdn.jsdelivr.net/npm/kumiori@0.8.0/dist-browser/kumiori.js';
 const typesetter = createTypesetter();                          // Promise<Typesetter>。フォントを読み込むのは 1 度だけ
 let result;
 self.onmessage = async ({ data }) => {
