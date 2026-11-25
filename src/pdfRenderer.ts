@@ -16,11 +16,14 @@ import { fromBase64 } from './base64';
 import { gwgWarnings } from './pdfCheck';
 import { pageLabelRanges, type PageNumbering } from './pdfPageLabels';
 import { PdfWriter, writePdf, writtenXmpRange } from './pdfWriter';
+import { PdfEncryption, type PdfEncryptOptions } from './pdfEncrypt';
 import type { PdfOutputPort } from './pdfOutput';
 import { DOCUMENT_ID_MARK, DocumentIdStream, finishDocumentId, markPdfStandard, pdfAOf, pdfDocumentDate, pdfStandardOf, pdfText, type PdfA, type PdfAOptions, type PdfStandard, type PdfXOptions } from './pdfStandard';
 import { verifyPdfA } from './pdfaVerify';
 import { LINK_DESCRIPTION_MAX, PdfTagger, sameTag, type PdfTag } from './pdfTags';
 import {
+  CustomFontEmbedder,
+  CustomFontSubsetEmbedder,
   PDFDocument,
   PDFFont,
   PDFArray,
@@ -31,7 +34,6 @@ import {
   PDFString,
   PDFName,
   PDFRef,
-  PDFImage,
   PDFNumber,
   PDFOperator,
   PDFOperatorNames as Ops,
@@ -74,9 +76,11 @@ import { AssetStore } from './assets';
 import { msg } from './messages';
 import { countDroppedLink, decodePath, droppedLinkWarning, judgeExternalLink, referencePath, summarizeDroppedLinks, type DroppedLinks, type LinkPolicy } from './linkPolicy';
 import { iccRgbToCmyk, type CmykConverter } from './icc';
-import { embedCmykImage, embedJpgNow, embedPngChecked, markCffSubset, type PngEmbedOptions, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, patchSmallNumbers, PDF_REAL_MAX, sealContentStream, sealPageContents, widthOfHex, type FeatureFont } from './pdfLibPatches';
+import { embedCmykImage, embedJpeg, embedPngChecked, type PdfImage, type PngEmbedOptions } from './imageEmbed';
+import { markCffSubset, memoEncode, pageOperators, patchCffEmbedding, patchFontkitSubset, patchSmallNumbers, PDF_REAL_MAX, sealContentStream, sealPageContents, widthOfHex, type FeatureFont } from './pdfLibPatches';
 import { shrinkJpeg } from './jpeg';
-import { PdfColorGlyphs } from './colorGlyphPdf';
+import { PdfColorGlyphs, type PdfColorGlyphOptions } from './colorGlyphPdf';
+import { colorFontOf } from './colorGlyph';
 import { imageDeflater } from './imageDeflate';
 import { apply, invert, mul, transformSegs, type Seg } from './matrix';
 import { shapesOverlap, segsBox, blendNormal, exactBox, flatColorOf, flatCss, FlatPage, flattenPpi, intersect, meets, openPlainGroups, processCmyk, rasterCmyk, shapeBox, shapesBox, shapeUsesAlpha, coveredPolygon, transformBox, union, type Box, type FlatItem } from './pdfFlatten';
@@ -89,6 +93,11 @@ import { hrefOfTag } from './xmlAttr';
 
 export interface PdfRenderOptions {
   title?: string;
+  /**
+   * 暗号化 (AES-256。pdfEncrypt.ts。ISO 32000-2 §7.6)。PDF/X・PDF/A とは一緒に使えない (エラー)。PDF/UA (pdfua) では、
+   * 支援技術のための抽出の権限 (permissions.accessibility) を外せない (外そうとしたら警告して残す)
+   */
+  encrypt?: PdfEncryptOptions;
   /**
    * タグ付き PDF にする (ISO 32000-1 §14.8): 領域の木の構造 (AreaTree.structure。HtmlImportOptions.tagged で作る) から、印の付いた内容
    * (BDC・EMC)・構造の木 (StructTreeRoot・ParentTree)・MarkInfo・Lang を書く (pdfTags.ts)。構造の無い木では何もしない。
@@ -685,14 +694,14 @@ class PdfPainter implements Painter {
     private page: PDFPage,
     private H: number,
     private fontOf: (g: GlyphArea) => PDFFont,
-    private imageOf: (src: string) => PDFImage | undefined,
+    private imageOf: (src: string) => PdfImage | undefined,
     private vectorOf: (src: string) => SvgDoc | undefined = () => undefined,
     /** PDF の文書 (ExtGState・Form・模様などを登録する所)。描き手は、いつも PDF の文書に描く */
     private ctx: PDFDocument,
     /** SVG の中の字の書体 (読み込んだ書体の鍵 → 埋め込んだ書体) */
     private svgFontOf: (key: string) => PDFFont | undefined = () => undefined,
     /** SVG の中の画像 (SvgShape.image) を埋め込んだもの (renderPdf が文書ごとに持つ) */
-    private svgImages: ReadonlyMap<object, PDFImage> = new Map(),
+    private svgImages: ReadonlyMap<object, PdfImage> = new Map(),
   ) {
     this.spots = { page, names: new Map() };
   }
@@ -1418,7 +1427,7 @@ class PdfPainter implements Painter {
   private gradientMasks = 0;
 
   /** ページの資源の画像 (XObject) の名前 (画像ごとに 1 つ。pdf-lib の page.drawImage は描くたびに新しい名前を登録するので使わない) */
-  private imageKeys = new Map<PDFImage, PDFName>();
+  private imageKeys = new Map<PdfImage, PDFName>();
   /**
    * PDF の画像を埋め込んだ Form XObject (src ごと。embedImages が作る)。null は、埋め込めなかった PDF の画像 (仮の枠で描く)
    */
@@ -1452,7 +1461,7 @@ class PdfPainter implements Painter {
     const m = pdfImageMatrix(f.box, f.rotate, x, this.H - y - a.height, a.width, a.height);
     this.page.pushOperators(pushGraphicsState(), concatTransformationMatrix(...m), PDFOperator.of(Ops.DrawObject, [name]), popGraphicsState());
   }
-  private imageName(img: PDFImage): PDFName {
+  private imageName(img: PdfImage): PDFName {
     let name = this.imageKeys.get(img);
     if (!name) {
       name = this.page.node.newXObject('KmI', img.ref);
@@ -2695,7 +2704,7 @@ function imageScanner() {
 type ImageScan = ReturnType<typeof imageScanner>;
 
 /**
- * PNG の埋め込み方 (pdfLibPatches.ts の embedPngChecked): 展開した画素は、PDF の圧縮の関数 (opts.deflate。無ければ Node の zlib・CompressionStream。
+ * PNG の埋め込み方 (imageEmbed.ts の embedPngChecked): 展開した画素は、PDF の圧縮の関数 (opts.deflate。無ければ Node の zlib・CompressionStream。
  * imageDeflate.ts) で圧縮する。16 ビットの PNG は、PDF 1.5 からの BitsPerComponent 16 (PDF Reference の PDF 1.5 版 §4.8.4) なので、
  * 版が 1.5 より前の規格 (PDF/X-1a は 1.3、PDF/X-3 は 1.4。pdfStandard.ts の header) では、展開して 8 ビットにする。
  * PDF/A-2・3 は PDF 1.7 が元 (ISO 19005-2 §6.1.2) で、画像の BitsPerComponent に 16 を許す (ISO 19005-2 §6.2.8) ので、そのまま入れる
@@ -2717,9 +2726,9 @@ async function embedImages(
   /** ラスター画像を 1 つ埋め込むたびに呼ぶ (流して書くときに、埋め込んだ画像を書き出し先へ書いて除く。待たせるなら Promise) */
   afterEmbed?: () => void | Promise<void>,
 ): Promise<{
-  images: Map<string, PDFImage>;
+  images: Map<string, PdfImage>;
   vectors: Map<string, SvgDoc>;
-  svgImages: Map<object, PDFImage>;
+  svgImages: Map<object, PdfImage>;
   placed: Map<string, { width: number; height: number }>;
   /** PDF の画像を埋め込んだ Form XObject (src ごと。null は埋め込めなかったもの) */
   pdfForms: Map<string, PdfFormPlacement | null>;
@@ -2727,12 +2736,12 @@ async function embedImages(
   flat?: Pick<FlatDoc, 'alphaImages' | 'imageData' | 'alphaShapeImages'>;
 }> {
   const { sizes, heights, langs } = scan;
-  const images = new Map<string, PDFImage>();
+  const images = new Map<string, PdfImage>();
   const pdfForms = new Map<string, PdfFormPlacement | null>();
   const pdfCache = pdfEmbedCache();
   const vectors = new Map<string, SvgDoc>();
   /** SVG の中の画像 (SvgShape.image) を埋め込んだもの (この文書のもの) */
-  const svgImages = new Map<object, PDFImage>();
+  const svgImages = new Map<object, PdfImage>();
   const xml = opts.parseXml ?? (typeof DOMParser !== 'undefined' ? (t: string) => new DOMParser().parseFromString(t, 'image/svg+xml') as unknown as XmlNode : undefined);
   const dpi = opts.imageDpi ?? 300;
   /**
@@ -2776,7 +2785,7 @@ async function embedImages(
   // 透明を平らにする出力 (PDF/X-1a・X-3): 透明度つきの画像は埋め込まない (ソフトマスクは透明)。画像は、置くときに下の物と合わせて画素にする
   const flat = std?.transparency === 'flatten' ? { alphaImages: new Map<string, FlatImageData>(), imageData: new Map<string, FlatImageData>(), alphaShapeImages: new Set<object>() } : undefined;
   /** 画像を埋め込む。透明を平らにする出力で、透明度つきの画像なら、埋め込まずに大きさだけを返す (image が undefined) */
-  const embedAny = async (bytes: Uint8Array, kind: 'png' | 'jpg'): Promise<{ image?: PDFImage; width: number; height: number }> => {
+  const embedAny = async (bytes: Uint8Array, kind: 'png' | 'jpg'): Promise<{ image?: PdfImage; width: number; height: number }> => {
     if (opts.pdfx && cmykOf) {
       const r = rejoin(thisCall(), await embedCmykImage(pdf, bytes, kind, cmykOf, flat ? 'skip' : 'smask', pngOpts));
       if (r && !r.image) return { width: r.width, height: r.height };
@@ -2788,7 +2797,7 @@ async function embedImages(
         return { image: r.image, width: r.image.width, height: r.image.height };
       }
     }
-    const image = kind === 'png' ? rejoin(thisCall(), await embedPngChecked(pdf, bytes, pngOpts)) : rejoin(thisCall(), await embedJpgNow(pdf, bytes));
+    const image = kind === 'png' ? rejoin(thisCall(), await embedPngChecked(pdf, bytes, pngOpts)) : embedJpeg(pdf, bytes);
     return { image, width: image.width, height: image.height };
   };
   /**
@@ -3056,6 +3065,27 @@ export interface PdfPageSource {
   finish(): Pick<AreaTree, 'bookmarks' | 'destinations'>;
   /** 先のたどり (書体・色つきの字・画像を集めるもの) を終えたとき */
   scanned?(): void;
+  /**
+   * 組みながら確定したページを渡す出どころ (api.ts の typesetToPdf・typesetToPdfStream。design/pdf-writer.md の 12)。renderPdfPages は、
+   * 先のたどりの前に、ページを描画する関数 (early) を渡して呼ぶ。出どころは、組み終えるまで、確定したページを順に early に渡し
+   * (early は同期で描画し、描画できないページ (画像・色つきの文字のあるページ) なら false を返す。そのページから後ろは渡さない)、組み終えたら返る。
+   * 後の scan・paint は、渡さなかった残りのページのもの (count は文書の全部のページの数)。構造の木 (structure) は、呼ぶ前に分かっていること。
+   * 組みながら描画しない文書 (カラーフォント・PDF/X・PDF/A) では、early を渡さずに、先のたどりの前に呼ぶ (出どころは組むだけ)
+   */
+  layout?(early?: (sheet: SheetArea) => boolean): void | Promise<void>;
+}
+
+/**
+ * フォントを埋め込む (pdf-lib の PDFDocument.embedFont と同じ物を同期で作る。ページを組みながら描画するときは、組版の中で待てないため)。
+ * embedFont の非同期の所は fontkit.create を待つだけで、作る物・番号の取り方 (埋め込むフォントの番号を、作ったときに 1 つ取る) は同じ
+ */
+function embedFontSync(pdf: PDFDocument, bytes: Uint8Array, subset: boolean, customName: string | undefined): PDFFont {
+  const font = fontkit.create(bytes);
+  type Embedder = Parameters<typeof PDFFont.of>[2];
+  const Make = (subset ? CustomFontSubsetEmbedder : CustomFontEmbedder) as unknown as new (font: unknown, data: Uint8Array, name?: string) => Embedder;
+  const pf = PDFFont.of(pdf.context.nextRef(), pdf, new Make(font, bytes, customName));
+  (pdf as unknown as { fonts: PDFFont[] }).fonts.push(pf);
+  return pf;
 }
 
 export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRenderOptions = {}): Promise<Uint8Array> {
@@ -3076,6 +3106,11 @@ export async function renderPdf(tree: AreaTree, fonts: FontManager, opts: PdfRen
   return renderPdfPages({ title: tree.title, info: tree.info, structure: tree.structure, scan: each, paint, finish: () => tree, count: tree.sheets.length }, fonts, opts);
 }
 
+/** 暗号化と PDF/X・PDF/A を一緒に頼まれたときのエラー (どちらの規格も暗号化を許さない) */
+export function encryptIncompatible(label: string): KumioriPdfError {
+  return new KumioriPdfError('pdf/encrypt-incompatible', msg(`${label} は暗号化を許さないので、暗号化 (encrypt) と一緒に使えません`, `${label} does not allow encryption, so it cannot be combined with encrypt`), { args: { standard: label } });
+}
+
 /** ページを 1 枚ずつ作りながら PDF を書く (renderPdf と同じ PDF。文書全体の領域の木を、1 度に持たなくてよい) */
 export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opts: PdfRenderOptions = {}): Promise<Uint8Array> {
   // PDF の出力の規格 (PDF/X-1a・X-3・X-4) の方針。指定が無ければ undefined (ふつうの PDF)
@@ -3090,11 +3125,11 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   patchSmallNumbers();
   // 流して書く (opts.output): PDF/X・PDF/A は、後の検査が書いた全体を読み直し、合わなければ PDF を返さないので、流せない (api.ts が先に断る)
   if (opts.output && (std || pdfa)) throw new KumioriOptionError(msg('PDF/X・PDF/A は流して書けません (typesetToPdf を使ってください)', 'PDF/X and PDF/A cannot be written as a stream (use typesetToPdf)'), opts.pdfx ? 'pdfx' : 'pdfa');
+  // 暗号化は、PDF/X・PDF/A と一緒に使えない (どちらも暗号化を禁じる。ISO 15930-1 §6.1.11・ISO 15930-7 §6.1.13 (PDF/X)・ISO 19005-2 §6.1.3 (PDF/A) の Encrypt の決まり)
+  if (opts.encrypt && (std || pdfa)) throw encryptIncompatible(std ? std.label : pdfa!.label);
   const pdf = rejoin(thisCall(), await PDFDocument.create());
   pdf.registerFontkit(fontkit);
   setDocumentInfo(pdf, src, opts, date);
-  // 流して書く書き手 (書き終えた流れを、埋め込んだ・描いた所で書き出し先へ書く。最後に残りを書く。文書の ID は、流した塊を順に足して作る)
-  const streamWriter = opts.output ? new PdfWriter(pdf, opts.deflate ? { deflate: opts.deflate } : {}, { output: opts.output, documentId: new DocumentIdStream() }) : undefined;
   // PDF を書く途中の警告: opts.warnings があればそこに足す (同じ文は 1 度だけ)。無ければ console.warn
   const warned = new Set<string>();
   const warn = (d: Diagnostic) => {
@@ -3104,6 +3139,24 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     else console.warn(d.message);
     opts.diagnostics?.push(d);
   };
+  // 暗号化: 鍵と暗号化の辞書を、書き始める前に作る (鍵を作る計算は、ブラウザーでは WebCrypto で非同期)。
+  // 文書の ID は、暗号化した PDF は毎回違うバイト列になるので、中身のハッシュ (finishDocumentId) でなく乱数 (PdfEncryption.documentId) にする
+  let encryption: PdfEncryption | undefined;
+  if (opts.encrypt) {
+    let encrypt = opts.encrypt;
+    // PDF/UA-1 (ISO 14289-1 §7.16): 暗号化した文書でも、支援技術が中身を読めるように、P の bit 10 (ISO 32000-2 §7.6.4.2 の Table 22) を 1 にする
+    if (opts.pdfua && encrypt.permissions?.accessibility === false) {
+      const d = diag('pdfua/encrypt-accessibility-kept', msg('PDF/UA-1 では、支援技術のための抽出の権限 (permissions.accessibility) を外せないので、許したままにします', 'PDF/UA-1 does not allow removing the permission to extract content for accessibility (permissions.accessibility), so it is kept'));
+      if (!opts.ignoreDiagnostics?.has(d.code)) (opts.pdfua.warnings ? (opts.pdfua.warnings.push(d.message), opts.diagnostics?.push(d)) : warn(d));
+      encrypt = { ...encrypt, permissions: { ...encrypt.permissions, accessibility: true } };
+    }
+    encryption = rejoin(thisCall(), await PdfEncryption.create(encrypt));
+    pdf.context.trailerInfo.ID = pdf.context.obj([PDFHexString.of(encryption.documentId), PDFHexString.of(encryption.documentId)]);
+  }
+  // 流して書く書き手 (書き終えた流れを、埋め込んだ・描いた所で書き出し先へ書く。最後に残りを書く。文書の ID は、流した塊を順に足して作る)
+  const streamWriter = opts.output
+    ? new PdfWriter(pdf, { ...(opts.deflate ? { deflate: opts.deflate } : {}), ...(encryption ? { encryption } : {}) }, { output: opts.output, ...(encryption ? {} : { documentId: new DocumentIdStream() }) })
+    : undefined;
   /** PDF/A の知らせ (opts.pdfa.warnings があればそこに、無ければ PDF を書く途中の警告に) */
   const pdfaWarn = (d: Diagnostic) => (opts.ignoreDiagnostics?.has(d.code) ? undefined : opts.pdfa?.warnings ? (opts.pdfa.warnings.push(d.message), opts.diagnostics?.push(d)) : warn(d));
   // PDF/A はファイルを開く動作 (Launch) を許さない (ISO 19005-2 §6.5.1)。links.launch で許していても書かない
@@ -3146,27 +3199,46 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     );
     src.scanned?.();
   };
-  const colorGlyphs = rejoin(thisCall(), await PdfColorGlyphs.create(pdf, scan, fonts, { cmyk: pdfxConverter(opts, std), alphaWarning: std?.transparency === 'warn' ? std.label : undefined, pdfxWarn: (d) => pdfxWarning(opts, d), warn, parseXml: opts.parseXml, png: pngEmbedOptions(opts, std) }));
+  // 組みながら描画する (src.layout): 出どころが組みながら渡すページを、先のたどりの前に描画する。カラーフォントのある文書・PDF/X・PDF/A では描画しない
+  // (色つきの文字の用意と、PDF/X・PDF/A の後の検査は、文書の全体を見てからする)。渡すページの画像・色つきの文字は early が断る
+  const early = !!src.layout && !std && !pdfa && !fonts.all().some((f) => colorFontOf(f));
+  if (src.layout && !early) rejoin(thisCall(), await src.layout());
+  const colorOptions: PdfColorGlyphOptions = { cmyk: pdfxConverter(opts, std), alphaWarning: std?.transparency === 'warn' ? std.label : undefined, pdfxWarn: (d) => pdfxWarning(opts, d), warn, parseXml: opts.parseXml, png: pngEmbedOptions(opts, std) };
+  let colorGlyphs = early ? undefined : rejoin(thisCall(), await PdfColorGlyphs.create(pdf, scan, fonts, colorOptions));
   // 色つきの書体を使わない文書では、描き手を作らない (たどらない) ので、ここでたどる
-  if (!scanned) scan();
+  if (!scanned && !early) scan();
   const embedded = new Map<string, PDFFont>();
   /**
    * 書体を埋め込む (書体の key で覚える)。CFF の OpenType (先頭が OTTO) は、fontkit のサブセットが壊れた字形を出すので、
    * 自前の部分書体 (cff.ts。字の番号を変えない) にする。部分書体の名前は「大文字 6 字の印 + "+" + PostScript 名」(ISO 32000-2 §9.6.4)。
    * 印は埋め込む順の番号から作る
    */
-  const embedFont = async (f: ReturnType<FontManager['all']>[number]) => {
+  const embedFont = (f: ReturnType<FontManager['all']>[number]) => {
     const cff = new Uint8Array(f.buffer, 0, 4).every((b, i) => b === 'OTTO'.charCodeAt(i));
     const wantSubset = opts.subset ?? true;
     // 可変フォントの実体は、軸の値の入った名前 (fontManager.ts の instance)。実体ごとに、静的な書体として埋める
     // (PDF の書体の種類に可変フォントは無い。ISO 32000-2 §9.6・§9.7)
     const ps = String((f.instanceOf ? f.postscriptName : undefined) ?? (f.fk as { postscriptName?: string }).postscriptName ?? f.family).replace(/[^!-~]|[()<>[\]{}/%#]/g, '');
     const customName = wantSubset ? `${subsetTag(embedded.size)}+${ps}` : undefined;
-    const pf = rejoin(thisCall(), await pdf.embedFont(new Uint8Array(f.buffer), { subset: !cff && wantSubset, ...(customName ? { customName } : {}) }));
+    const pf = embedFontSync(pdf, new Uint8Array(f.buffer), !cff && wantSubset, customName);
     if (cff && wantSubset) markCffSubset(pf);
     embedded.set(f.key, memoEncode(pf));
   };
-  for (const f of fonts.all()) if (used.has(f.key)) rejoin(thisCall(), await embedFont(f));
+  // 画像・色つきの文字の無い文書 (先のたどりで見つからない文書と、組みながら描画する文書) は、フォントを、初めて使うページを描画する前に埋め込む
+  // (pageFonts。組みながら描画するときは、組み終えるまで使うフォントが分からないので。どちらの道でも同じ番号と並びにする)。
+  // それ以外の文書は、描画する前に、使うフォントを fonts.all() の順に埋め込む
+  const lazyFonts = early || (!colorGlyphs && imageScan.sizes.size === 0);
+  if (!lazyFonts) for (const f of fonts.all()) if (used.has(f.key)) embedFont(f);
+  /** ページで初めて使うフォントを埋め込む (同じページで初めて使うフォントどうしは、fonts.all() の順。全部を 1 ページ目で使う文書は、先に埋め込むのと同じ並び) */
+  const pageFonts = (sheet: SheetArea) => {
+    let fresh: Set<string> | undefined;
+    walkAreas(sheet, (a) => {
+      if (a.type !== 'glyph' || PdfColorGlyphs.drawsInColor(fonts, a)) return;
+      const key = fonts.get(a.fontFamily, a.fontWeight).key;
+      if (!embedded.has(key)) (fresh ??= new Set()).add(key);
+    });
+    if (fresh) for (const f of fonts.all()) if (fresh.has(f.key)) embedFont(f);
+  };
   const fontOf = (g: GlyphArea) => embedded.get(fonts.get(g.fontFamily, g.fontWeight).key)!;
 
   // 既定で付けるタグ ('auto') は、透明を平らにする出力 (PDF/X-1a・X-3) では付けない
@@ -3175,7 +3247,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   if (streamWriter && opts.pdfua && !(tagsOn && src.structure)) throw new KumioriPdfError('pdfua/requires-tagged', msg('PDF/UA-1 には、構造の木 (タグ付き PDF。tagged) が要ります', 'PDF/UA-1 requires a structure tree (tagged PDF; tagged)'));
   // 流して書くとき: 埋め込んだ画像を、すぐ書き出し先へ書いて除く (書体の番号は、まだ中身が無いので最後に書く)
   const afterEmbed = streamWriter && (() => (streamWriter.releaseAll(), streamWriter.drain()));
-  const { images, vectors, svgImages, placed, pdfForms, flat } = rejoin(thisCall(), await embedImages(pdf, imageScan, fonts, opts, warn, afterEmbed));
+  let { images, vectors, svgImages, placed, pdfForms, flat } = rejoin(thisCall(), await embedImages(pdf, imageScan, fonts, opts, warn, afterEmbed));
   // PDF だけを作るときは、埋め込んだラスター画像の、画像の置き場の中身を捨てる (同じ画像を、置き場と PDF の両方に持たない)
   if (opts.releaseImageBytes) opts.assets?.releaseImageBytes(images.keys());
 
@@ -3188,7 +3260,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   for (const key of svgKeys) {
     if (embedded.has(key)) continue;
     const f = fonts.all().find((x) => x.key === key);
-    if (f) rejoin(thisCall(), await embedFont(f));
+    if (f) embedFont(f);
   }
   const svgFontOf = (key: string) => embedded.get(key);
 
@@ -3209,9 +3281,13 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   const trimSizes: Array<{ width: number; height: number }> = [];
   /** ページの番号と書式 (ページラベルを作る) */
   const numbering: PageNumbering[] = [];
-  rejoin(thisCall(), await src.paint((sheet) => {
+  /** 組みながら描画している (src.layout の間) */
+  let emitting = false;
+  /** ページを 1 枚描画する (書き出し先が待たせるなら、その Promise を返す) */
+  const paintPage = (sheet: SheetArea) => {
     // 止める合図 (ページを描く前に確かめる)
     checkAbort();
+    if (lazyFonts) pageFonts(sheet);
     trimSizes.push({ width: sheet.trimBox.width, height: sheet.trimBox.height });
     numbering.push({ number: sheet.page.pageNumber, ...(sheet.page.pageNumberFormat ? { format: sheet.page.pageNumberFormat } : {}) });
     const page = pdf.addPage([sheet.width, sheet.height]);
@@ -3247,13 +3323,57 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     // 中に印を持つ Form は、最後に StructParents を書き足すので、最後に書く
     if (streamWriter) streamWriter.releaseAll(tagger?.markedForms);
     // 進み具合 (書いたページの数)
-    reportProgress({ phase: 'pdf', pages: painters.length, ...(src.count !== undefined ? { total: src.count } : {}) });
+    // 組みながら描画する間は知らせない (組版の進み具合と混ぜない。組み終えた所で、描画したページの数を 1 度知らせる)
+    if (!emitting) reportProgress({ phase: 'pdf', pages: painters.length, ...(src.count !== undefined ? { total: src.count } : {}) });
     // 書き出し先が待たせるなら、次のページの前に待つ (出どころが待てるとき。待てない出どころ (メモリ節約の組み直し) では、ためて次に待てる所で渡す)。
     // 待たない出どころでも、書き出し先の誤りを見ないまま残さない (誤りは覚えてあり、次に書くときに投げる)
     const wait = streamWriter?.drain();
     wait?.catch(() => undefined);
     return wait;
-  }));
+  };
+  if (early) {
+    // 組みながら描画する: 出どころが組み終えるまで、確定したページを描画する。画像 (背景の画像も)・色つきの文字のあるページは描画せずに断る
+    // (画像の埋め込みは非同期で、組版は待てない。そのページから後ろは、組み終えてから、先にたどって描画する)。
+    // 描画する間のフォントの知らせは、PDF を書く途中の知らせに入れる (出どころの scanned が切り替える先)。組版の間の知らせは、組版のもの
+    const layoutNotice = fonts.onNotice;
+    src.scanned?.();
+    const pdfNotice = fonts.onNotice;
+    fonts.onNotice = layoutNotice;
+    const heavy = (sheet: SheetArea) => {
+      const s = imageScanner();
+      let color = false;
+      walkAreas(sheet, (a) => {
+        s.visit(a);
+        if (a.type === 'glyph' && colorFontOf(fonts.get(a.fontFamily, a.fontWeight))) color = true;
+      });
+      return color || s.sizes.size > 0;
+    };
+    emitting = true;
+    try {
+      rejoin(thisCall(), await src.layout!(earlyPaint));
+    } finally {
+      emitting = false;
+    }
+    function earlyPaint(sheet: SheetArea): boolean {
+      if (heavy(sheet)) return false;
+      const back = fonts.onNotice;
+      fonts.onNotice = pdfNotice;
+      try {
+        paintPage(sheet);
+      } finally {
+        fonts.onNotice = back;
+      }
+      return true;
+    }
+    // 残りのページ (組み終えてから描画するもの) をたどる。組版の間にカラーフォントを読んだ・画像のあるページが残ったときは、ここで用意する
+    // (組みながら描画したページの後に埋め込むので、組みながら描画しないときと番号の並びが違う。PDF の中身は同じ)
+    colorGlyphs = rejoin(thisCall(), await PdfColorGlyphs.create(pdf, scan, fonts, colorOptions));
+    if (!scanned) scan();
+    if (imageScan.sizes.size) ({ images, vectors, svgImages, placed, pdfForms, flat } = rejoin(thisCall(), await embedImages(pdf, imageScan, fonts, opts, warn, afterEmbed)));
+    if (opts.releaseImageBytes) opts.assets?.releaseImageBytes(images.keys());
+    if (painters.length) reportProgress({ phase: 'pdf', pages: painters.length, ...(src.count !== undefined ? { total: src.count } : {}) });
+  }
+  rejoin(thisCall(), await src.paint(paintPage));
   // 保存 (書体の部分集合・圧縮) の前に、止める合図を確かめる
   checkAbort();
   writePageLabels(pdf, numbering);
@@ -3289,7 +3409,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     return undefined;
   };
   colorGlyphs?.finish();
-  if ((std && opts.pdfx) || pdfa || opts.pdfua) markPdfStandard(pdf, std, opts.pdfx, pdfa, !!opts.pdfua, date);
+  if ((std && opts.pdfx) || pdfa || opts.pdfua) markPdfStandard(pdf, std, opts.pdfx, pdfa, !!opts.pdfua, date, encryption?.documentId);
   if (std && opts.pdfx) {
     if (std.transparency === 'warn' && painters.some((p) => p.usedAlpha)) pdfxWarning(opts, diag('pdfx/transparency', msg(`${std.label} では透明 (不透明度) を使えません`, `${std.label} does not allow transparency (opacity)`)));
     // 入稿の仕様 (GWG 2022-R1) の検査: 仕上がりの大きさ・特色・画像の解像度 (出力は変えずに、合わないものを警告に書く)
@@ -3372,9 +3492,10 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   // 規格の版で書く: PDF/X-4 は PDF 1.6 が元 (オブジェクトストリームは PDF 1.5 の機能 (PDF Reference の PDF 1.6 版 §3.4.6) なので使える)。PDF/X-3 (PDF 1.4) では使わない。
   // PDF/A-2・3 は PDF 1.7 が元 (ISO 19005-2 §6.1.2 は版 1.0〜1.7 を許す) なので、PDF/A だけなら 1.7・オブジェクトストリーム
   if (streamWriter) return rejoin(thisCall(), await streamWriter.finish());
-  const bytes = rejoin(thisCall(), await writePdf(pdf, { objectStreams: std?.objectStreams ?? true, version: std ? std.header.slice(5) : '1.7', ...(opts.deflate ? { deflate: opts.deflate } : {}) }));
-  // 印を探すのは、Kumiori が書いた所 (最後の相互参照の所と、XMP の流れ) だけ (画像のバイト列などの中の同じ字の並びは数えない)
-  finishDocumentId(bytes, { xmp: writtenXmpRange(bytes) });
+  const bytes = rejoin(thisCall(), await writePdf(pdf, { objectStreams: std?.objectStreams ?? true, version: std ? std.header.slice(5) : '1.7', ...(opts.deflate ? { deflate: opts.deflate } : {}), ...(encryption ? { encryption } : {}) }));
+  // 印を探すのは、Kumiori が書いた所 (最後の相互参照の所と、XMP の流れ) だけ (画像のバイト列などの中の同じ字の並びは数えない)。
+  // 暗号化した PDF は、ID を初めから書いてある (XMP は暗号化するので、後から書き換えられない)
+  if (!encryption) finishDocumentId(bytes, { xmp: writtenXmpRange(bytes) });
   if (!std && !pdfa) return bytes;
   if (std) rejoin(thisCall(), await verifyStandard(bytes, std));
   if (pdfa) rejoin(thisCall(), await verifyStandardA(bytes, pdfa, !!std));

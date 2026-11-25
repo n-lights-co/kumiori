@@ -14,8 +14,8 @@ import { PDFDocument, PDFRawStream } from 'pdf-lib';
 import { PNG } from 'pdf-lib/cjs/utils/png';
 import { inflateFast, inflatedLength } from '../src/inflateFast';
 import { inflate } from '../src/psFilters';
-import { decodePngForPdf, encodePng, encodePngStored, pngDataComplete } from '../src/pixels';
-import { embedPngChecked } from '../src/pdfLibPatches';
+import { decodePngForPdf, encodePng, encodePngStored } from '../src/pixels';
+import { embedPngChecked } from '../src/imageEmbed';
 import { fromBase64 } from '../src/base64';
 import { latin1 } from '../src/psInterp';
 import { runEps } from '../src/eps';
@@ -94,7 +94,7 @@ function chunks(png: Uint8Array): { type: string; data: Uint8Array; crc: number 
 }
 
 describe('画素の PNG (encodePngStored・encodePng)', () => {
-  it('無圧縮の PNG: チャンクの CRC と zlib の Adler-32 が正しく、走査線は元の画素 (ブロックの切れ目をまたぐ行も)', () => {
+  it('無圧縮の PNG: チャンクの CRC と zlib の Adler-32 が正しく、走査線は元の画素 (ブロックの切れ目をまたぐ行も)', async () => {
     for (const [w, h] of [[1, 1], [3, 7], [200, 300], [16384, 3], [16383, 5]]) {
       const rgba = new Uint8Array(w * h * 4).map((_, i) => (i * 37 + (i >> 9)) & 255);
       const png = encodePngStored({ width: w, height: h, rgba });
@@ -106,7 +106,7 @@ describe('画素の PNG (encodePngStored・encodePng)', () => {
         expect(raw[y * (w * 4 + 1)]).toBe(0);
         expect(Buffer.from(raw.subarray(y * (w * 4 + 1) + 1, (y + 1) * (w * 4 + 1))).equals(Buffer.from(rgba.subarray(y * w * 4, (y + 1) * w * 4)))).toBe(true);
       }
-      expect(pngDataComplete(png)).toBe(true);
+      expect(await decodePngForPdf(png)).toMatchObject({ width: w, height: h });
     }
   });
   it('不透明の画像は RGB (色の型 2)、α のある画像は RGBA (色の型 6)。どちらも画素は元のまま', async () => {
@@ -171,7 +171,7 @@ function filteredPng(w: number, h: number, ch: 2 | 4, px: Uint8Array, seed: numb
 }
 
 describe('PDF に入れるための PNG の展開 (decodePngForPdf)', () => {
-  it('フィルタ 0〜4 の灰と α・RGBA の PNG を、pdf-lib の展開と同じ RGB・α にする (α が全部 255 なら α は無し)', () => {
+  it('フィルタ 0〜4 の灰と α・RGBA の PNG を、pdf-lib の展開と同じ RGB・α にする (α が全部 255 なら α は無し)', async () => {
     for (let s = 0; s < 24; s++)
       for (const ch of [2, 4] as const) {
         const w = 1 + s * 3;
@@ -179,28 +179,28 @@ describe('PDF に入れるための PNG の展開 (decodePngForPdf)', () => {
         const px = new Uint8Array(w * h * ch).map((_, i) => ((i * (s + 13) * 7919) % 256) | (s % 3 === 0 && i % ch === ch - 1 ? 255 : 0));
         const png = filteredPng(w, h, ch, px, s, 1 + (s % 3));
         const ref = PNG.load(png);
-        const mine = decodePngForPdf(png);
-        if (!mine || mine === 'broken') throw new Error('展開できない');
+        const mine = await decodePngForPdf(png);
+        if (!mine || mine === 'broken' || mine === 'animated') throw new Error('展開できない');
         expect(Buffer.from(mine.rgb).equals(Buffer.from(ref.rgbChannel))).toBe(true);
         expect(!!mine.alpha).toBe(!!ref.alphaChannel);
         if (mine.alpha) expect(Buffer.from(mine.alpha).equals(Buffer.from(ref.alphaChannel!))).toBe(true);
       }
   });
-  it('画素のデータが足りない PNG は broken、形の違う PNG (RGB・16 ビット・飛び越し) は undefined (pdf-lib に任せる)', async () => {
+  it('画素のデータが足りない PNG は broken、IHDR の組の無い形 (RGBA の 4 ビット・飛び越しの方式 2) は undefined。RGB・16 ビットも展開する', async () => {
     const png = filteredPng(40, 30, 4, bytes(40 * 30 * 4, 3), 1, 1);
     const idat = chunks(png).find((c) => c.type === 'IDAT')!;
     const cut = Buffer.concat([png.subarray(0, 33), Buffer.from([0, 0, 0, 20]), Buffer.from('IDAT'), idat.data.subarray(0, 20), Buffer.alloc(4)]);
-    expect(decodePngForPdf(new Uint8Array(cut))).toBe('broken');
+    expect(await decodePngForPdf(new Uint8Array(cut))).toBe('broken');
     await expect(embedPngChecked(await PDFDocument.create(), new Uint8Array(cut))).rejects.toThrow(/壊れて/);
     const rgb = await encodePng({ width: 2, height: 2, rgba: new Uint8Array(16).fill(255) });
-    expect(decodePngForPdf(rgb)).toBeUndefined();
+    expect(await decodePngForPdf(rgb)).toMatchObject({ width: 2, height: 2, rgb: new Uint8Array(12).fill(255) });
     const other = (k: number, v: number) => {
       const b = png.slice();
       b[k] = v;
       return b;
     };
-    expect(decodePngForPdf(other(24, 16))).toBeUndefined();
-    expect(decodePngForPdf(other(28, 1))).toBeUndefined();
+    expect(await decodePngForPdf(other(24, 4))).toBeUndefined();
+    expect(await decodePngForPdf(other(28, 2))).toBeUndefined();
   });
   it('PDF に入れた画像 (RGB と SMask の流れ) は、pdf-lib の embedPng と同じ辞書と、展開すると同じ中身になる (圧縮は pako でないので、バイト列は違う)', async () => {
     const px = new Uint8Array(37 * 23 * 4).map((_, i) => (i * 13) & 255);

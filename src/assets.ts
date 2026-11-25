@@ -105,6 +105,17 @@ export function fragmentOf(src: string): string | undefined {
   return k < 0 || /^data:/i.test(s) ? undefined : s.slice(k + 1);
 }
 
+/**
+ * ブラウザの画像の画素の大きさ (幅 × 高さ × 4 バイト。RGBA 8 ビット)。img は自然な大きさ (naturalWidth)、
+ * SVG の要素など、大きさが数で分からないものは 0
+ */
+function elementBytes(el: CanvasImageSource): number {
+  const e = el as { naturalWidth?: number; naturalHeight?: number; width?: unknown; height?: unknown };
+  const w = typeof e.naturalWidth === 'number' && e.naturalWidth > 0 ? e.naturalWidth : typeof e.width === 'number' ? e.width : 0;
+  const h = typeof e.naturalHeight === 'number' && e.naturalHeight > 0 ? e.naturalHeight : typeof e.height === 'number' ? e.height : 0;
+  return w > 0 && h > 0 ? w * h * 4 : 0;
+}
+
 /** 画像 (と MathML の文字のファイル) の拡張子 (正規表現の選択肢の形)。formats: 本体の外の形式 (imageFormats.ts。既定は本体と一緒に配るもの) */
 export const imageExtensions = (formats: readonly ImageFormat[] = IMAGE_FORMATS) => ['png', 'jpe?g', 'gif', 'svgz?', 'webp', 'tiff?', 'bmp', 'emf', 'wmf', 'eps', 'ps', 'cgm', 'pdf', ...formatExtensions(formats), 'mml', 'xml'];
 /** 本体と一緒に配る形式までの、画像の拡張子 */
@@ -382,6 +393,48 @@ export class AssetStore {
     // (addFragment で、そのページの画像を作るまで。読み込みの時点で、別のページ (ファイルの全体の画像) の大きさで組まないように:
     // ネットワークの画像と同じく、作ったあと、組むときに大きさを引く)
     return pagesByFragment && fragmentOf(key) !== undefined ? undefined : byName;
+  }
+
+  /**
+   * この置き場が持つものの大きさの見積もり (バイト。TypesetResult.memoryUsage の images)。
+   * 画像のファイルの中身 (同じ中身は 1 度)・PDF の図の元のファイル・本体の外の形式の元のファイル・文字のファイル・添付のファイルと、
+   * ブラウザの画像 (ImageBitmap・img。描くために画素にしたもの) の画素 (幅 × 高さ × 4 バイト)。
+   * 画像の中身は、渡されたもの (files・resolveResource) を写して持つので数える。given が真を返すバイト列 (呼ぶ側が渡したものを
+   * そのまま持つもの: 添付のファイル) は数えない (手放しても、呼ぶ側が持つ)。同じ ArrayBuffer を共有するバイト列は 1 度だけ数える
+   */
+  memoryBytes(given: (b: Uint8Array) => boolean = () => false): number {
+    const seen = new Set<object>();
+    let n = 0;
+    const bytes = (b: Uint8Array | undefined) => {
+      if (!b || seen.has(b.buffer) || given(b)) return;
+      seen.add(b.buffer);
+      n += b.buffer.byteLength;
+    };
+    for (const m of [this.map, this.byBase, this.derived, this.formatSvgs])
+      for (const a of m.values()) {
+        bytes(a.bytes);
+        bytes(a.pdfSource?.bytes);
+        bytes(a.formatSource?.bytes);
+        if (a.element && !seen.has(a.element)) {
+          seen.add(a.element);
+          n += elementBytes(a.element);
+        }
+      }
+    for (const b of this.files.values()) bytes(b);
+    // 文字のファイルは、名前と basename の 2 つの鍵で同じ文字列を登録する (registerText)
+    for (const t of new Set(this.texts.values())) n += t.length * 2;
+    return n;
+  }
+
+  /**
+   * 持っているものを手放す (TypesetResult.dispose)。ブラウザの画像のうち、閉じられるもの (ImageBitmap) を閉じて
+   * (HTML §8.10 の close。GC を待たずに画素のメモリを返す)、登録を除く
+   */
+  dispose(): void {
+    const elements = new Set<CanvasImageSource>();
+    for (const m of [this.map, this.byBase, this.derived, this.formatSvgs]) for (const a of m.values()) if (a.element) elements.add(a.element);
+    for (const el of elements) (el as { close?: () => void }).close?.();
+    this.clear();
   }
 
   clear() {

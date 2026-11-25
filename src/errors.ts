@@ -2,7 +2,8 @@
  * Kumiori が投げる誤りの型。どれも code (diagnostics.ts の誤りの名前。診断と同じ体系) を持つ。
  * 名前 (code) と型は版をまたいで変えない約束で、一覧は docs/diagnostics.md にある。
  *
- *  - KumioriError: 基。中の誤り (pdf-lib・fontkit の差し替えが合わないなど。code は internal/…) はこの型のまま
+ *  - KumioriError: 基。中の誤り (pdf-lib・fontkit の差し替えが合わないなど。code は internal/…) と、使い方の順のエラー
+ *    (dispose した組んだ結果を使ったなど。code は api/result-disposed) はこの型のまま
  *  - KumioriInputError: 入力を読めない (XML の解析・XSL-FO でない・壊れた zip・Area Tree の形)
  *  - KumioriLimitError: 上限を超えたので止めた (入れ子の深さ・実体の展開の大きさ・zip の大きさ)
  *  - KumioriFontError: 書体を読めない・1 つも無い

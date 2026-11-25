@@ -1,7 +1,9 @@
 /**
- * PNG の埋め込み (pdfLibPatches.ts の embedPngChecked・embedPngAsIs・embedCmykImage) の確かめ。
+ * PNG の埋め込み (imageEmbed.ts の embedPngChecked・embedPngAsIs・embedCmykImage) の確かめ。
  *  - 展開せずに入れる形 (色の表・16 ビット・1/2/4 ビットの灰を含む) と、展開して入れる形 (α・tRNS・飛び越しなど) のどれも、
- *    PDF の画像の流れを読み戻した画素が、pdf-lib の展開 (UPNG) の画素と同じ (見た目が変わらない)
+ *    PDF の画像の流れを読み戻した画素が、仕様から求めた画素と同じ。pdf-lib の展開 (UPNG) の誤りに当たらない形は、UPNG の画素とも同じ
+ *    (いままでの埋め込みと見た目が変わらない)
+ *  - Node の zlib の無い環境 (ブラウザ・Web Worker と同じ道。DecompressionStream で展開する) でも同じ画素。動く PNG は断る
  *  - 16 ビットは bits16 のときだけそのまま入れる (PDF 1.5 からの BitsPerComponent 16)
  *  - 展開した画素は、渡した圧縮の関数 (deflate) で圧縮し、pdf-lib の pako を通さない
  *  - 同じ入力からは、同じバイト列の流れになる
@@ -13,8 +15,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { deflateSync, inflateSync } from 'node:zlib';
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef } from 'pdf-lib';
 import { PNG } from 'pdf-lib/cjs/utils/png';
-import { embedCmykImage, embedPngAsIs, embedPngChecked } from '../src/pdfLibPatches';
-import { imageDeflater } from '../src/imageDeflate';
+import { embedCmykImage, embedPngAsIs, embedPngChecked } from '../src/imageEmbed';
+import { imageDeflater, inflateZlib } from '../src/imageDeflate';
+import { decodePngForPdf } from '../src/pixels';
 
 const crcTable = Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -37,7 +40,7 @@ const chunk = (type: string, data: Uint8Array) => {
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 
 /** 走査線 (成分の値の並び) を、行ごとに違うフィルタ (0〜4) を掛けて詰める */
-function scanlines(w: number, h: number, ct: number, depth: number, sample: (x: number, y: number) => number[], xs = (x: number) => x, ys = (y: number) => y): Buffer {
+function scanlines(w: number, h: number, ct: number, depth: number, sample: (x: number, y: number) => number[], xs = (x: number) => x, ys = (y: number) => y, filterOf = (y: number) => y % 5): Buffer {
   const bits = CHANNELS[ct] * depth;
   const rowBytes = Math.ceil((w * bits) / 8);
   const bpp = Math.max(1, bits >> 3);
@@ -53,7 +56,7 @@ function scanlines(w: number, h: number, ct: number, depth: number, sample: (x: 
         else line[bit >> 3] |= v << (8 - depth - (bit & 7));
         bit += depth;
       }
-    const f = y % 5;
+    const f = filterOf(y);
     const r = y * (rowBytes + 1);
     out[r] = f;
     for (let i = 0; i < rowBytes; i++) {
@@ -82,6 +85,8 @@ interface PngSpec {
   interlace?: boolean;
   /** IDAT を分ける大きさ */
   split?: number;
+  /** 行 (飛び越しはパスの中の行) のフィルタの種類 (既定は y % 5。パスの最初の行は 0) */
+  filterOf?: (y: number) => number;
 }
 function png(s: PngSpec): Uint8Array {
   const ihdr = Buffer.alloc(13);
@@ -91,7 +96,7 @@ function png(s: PngSpec): Uint8Array {
   ihdr[9] = s.ct;
   ihdr[12] = s.interlace ? 1 : 0;
   let raw: Buffer;
-  if (!s.interlace) raw = scanlines(s.w, s.h, s.ct, s.depth, s.sample);
+  if (!s.interlace) raw = scanlines(s.w, s.h, s.ct, s.depth, s.sample, undefined, undefined, s.filterOf);
   else {
     // Adam7 (PNG の仕様 §8.2)
     const passes = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]];
@@ -99,7 +104,7 @@ function png(s: PngSpec): Uint8Array {
     for (const [x0, y0, dx, dy] of passes) {
       const pw = Math.ceil((s.w - x0) / dx);
       const ph = Math.ceil((s.h - y0) / dy);
-      if (pw > 0 && ph > 0) parts.push(scanlines(pw, ph, s.ct, s.depth, s.sample, (x) => x0 + x * dx, (y) => y0 + y * dy));
+      if (pw > 0 && ph > 0) parts.push(scanlines(pw, ph, s.ct, s.depth, s.sample, (x) => x0 + x * dx, (y) => y0 + y * dy, s.filterOf));
     }
     raw = Buffer.concat(parts);
   }
@@ -139,6 +144,17 @@ const CASES: [string, PngSpec, boolean, boolean][] = [
   ['RGBA 8 ビット', { w: W, h: H, ct: 6, depth: 8, sample: (x, y) => [v8(x, y), v8(x, y, 1), v8(x, y, 2), y % 4 ? 255 : 60] }, false, false],
   ['RGBA 8 ビット (不透明)', { w: W, h: H, ct: 6, depth: 8, sample: (x, y) => [v8(x, y), v8(x, y, 1), v8(x, y, 2), 255] }, false, false],
   ['RGBA 16 ビット', { w: W, h: H, ct: 6, depth: 16, sample: (x, y) => [0, 1, 2, 3].map((k) => (k === 3 ? (x % 2 ? 65535 : 30000) : v8(x, y, k) * 256)) }, false, false],
+  ['RGBA 8 ビット (1 行目が平均のフィルタ)', { w: W, h: H, ct: 6, depth: 8, filterOf: (y) => (y + 3) % 5, sample: (x, y) => [v8(x, y), v8(x, y, 1), v8(x, y, 2), (x * 9 + y) & 255] }, false, false],
+  ['RGBA 8 ビット (1 行目が Paeth のフィルタ)', { w: W, h: H, ct: 6, depth: 8, filterOf: (y) => (y + 4) % 5, sample: (x, y) => [v8(x, y), v8(x, y, 1), v8(x, y, 2), (x * 9 + y) & 255] }, false, false],
+  ['灰と α 8 ビット (1 行目が Paeth のフィルタ)', { w: W, h: H, ct: 4, depth: 8, filterOf: (y) => (y + 4) % 5, sample: (x, y) => [v8(x, y), x % 3 ? 255 : 100] }, false, false],
+  ['灰と α 16 ビット', { w: W, h: H, ct: 4, depth: 16, sample: (x, y) => [v8(x, y) * 256 + 7, (x % 3 ? 255 : 100) * 256] }, false, false],
+  ['RGB 16 ビットと tRNS', { w: W, h: H, ct: 2, depth: 16, trns: [1, 2, 3, 4, 5, 6], sample: (x, y) => (x === y ? [0x102, 0x304, 0x506] : [v8(x, y) * 256, 0, 1]) }, false, false],
+  ['灰 16 ビットと tRNS', { w: W, h: H, ct: 0, depth: 16, trns: [0x12, 0x34], sample: (x, y) => [x === y ? 0x1234 : 0x1200 + x] }, false, false],
+  ['灰 1 ビットと tRNS', { w: W, h: H, ct: 0, depth: 1, trns: [0, 1], sample: (x, y) => [(x + y) & 1] }, false, false],
+  ['色の表 2 ビットと短い tRNS', { w: W, h: H, ct: 3, depth: 2, palette: [[0, 0, 255], [255, 255, 0], [9, 9, 9]], trns: [30], sample: (x) => [x % 4] }, false, false],
+  ['飛び越しの RGBA (パスの最初の行も平均・Paeth のフィルタ)', { w: W, h: H, ct: 6, depth: 8, interlace: true, filterOf: (y) => (y + 3) % 5, sample: (x, y) => [v8(x, y), v8(x, y, 1), v8(x, y, 2), y % 4 ? 255 : 60] }, false, false],
+  ['飛び越しの灰 2 ビット', { w: W, h: H, ct: 0, depth: 2, interlace: true, filterOf: (y) => (y + 1) % 5, sample: (x, y) => [(x * 3 + y) & 3] }, false, false],
+  ['飛び越しの RGB 16 ビット', { w: 9, h: 11, ct: 2, depth: 16, interlace: true, sample: (x, y) => [0, 1, 2].map((k) => v8(x, y, k) * 256 + 3) }, false, false],
 ];
 
 /** 画像の流れの辞書の値 */
@@ -218,6 +234,44 @@ function readImage(pdf: PDFDocument, ref: PDFRef): { rgb: number[]; alpha?: numb
   return { rgb, alpha, bpc, asIs: !!parms };
 }
 
+/**
+ * 仕様 (W3C の PNG の仕様 (Second Edition) §11.2〜11.3・§13.12) から求めた画素: 8 ビットの RGB と α (全部 255 なら無し)。
+ * 16 ビットは上位の 8 ビット、色の表に無い番号は黒 (pdf-lib の展開と同じ決め)
+ */
+function expected(s: PngSpec) {
+  const rgb: number[] = [];
+  const alpha: number[] = [];
+  const max = (1 << Math.min(s.depth, 8)) - 1;
+  const hi = (v: number) => (s.depth === 16 ? v >> 8 : s.depth < 8 ? (v * 255) / max : v);
+  const t16 = (i: number) => (s.trns![i] << 8) | s.trns![i + 1];
+  for (let y = 0; y < s.h; y++)
+    for (let x = 0; x < s.w; x++) {
+      const v = s.sample(x, y);
+      let a = 255;
+      if (s.ct === 3) {
+        const c = s.palette![v[0]] ?? [0, 0, 0];
+        rgb.push(...c);
+        if (s.trns && v[0] < s.trns.length) a = s.trns[v[0]];
+      } else if (s.ct === 0 || s.ct === 4) {
+        rgb.push(hi(v[0]), hi(v[0]), hi(v[0]));
+        if (s.ct === 4) a = hi(v[1]);
+        else if (s.trns && v[0] === t16(0)) a = 0;
+      } else {
+        rgb.push(hi(v[0]), hi(v[1]), hi(v[2]));
+        if (s.ct === 6) a = hi(v[3]);
+        else if (s.trns && v[0] === t16(0) && v[1] === t16(2) && v[2] === t16(4)) a = 0;
+      }
+      alpha.push(a);
+    }
+  return { rgb, alpha: alpha.every((a) => a === 255) ? undefined : alpha };
+}
+
+/**
+ * pdf-lib の展開 (UPNG) が仕様と違う画素を出す形: 飛び越しの PNG (走査線の大きさを少なく見積もり、終わりの画素を落とすことがある。
+ * この大きさの 4 ビットの画像など。パスの最初の行の平均のフィルタも、1 つ目のパスの位置を戻す) と、16 ビットの灰の tRNS (違う位置の 2 バイトと比べる)
+ */
+const upngDiffers = (s: PngSpec) => !!s.interlace || (s.ct === 0 && s.depth === 16 && !!s.trns);
+
 /** pdf-lib の展開 (UPNG) の画素 (いままでの埋め込みの画素) */
 function upng(b: Uint8Array) {
   const p = PNG.load(b);
@@ -226,13 +280,15 @@ function upng(b: Uint8Array) {
 
 describe('PNG の埋め込み (embedPngChecked)', () => {
   for (const [name, spec, asIs16, asIs8] of CASES)
-    it(`${name}: 読み戻した画素が pdf-lib の展開と同じ${asIs16 ? ' (展開せずに入れる)' : ''}`, async () => {
+    it(`${name}: 読み戻した画素が仕様の画素と同じ${upngDiffers(spec) ? '' : ' (pdf-lib の展開とも同じ)'}${asIs16 ? ' (展開せずに入れる)' : ''}`, async () => {
       const b = png(spec);
-      const ref = upng(b);
+      const ref = expected(spec);
+      // いままでの埋め込み (pdf-lib の展開) と同じ画素 (pdf-lib の展開の誤りに当たる形のほか)
+      if (!upngDiffers(spec)) expect(upng(b)).toEqual(ref);
       for (const bits16 of [true, false]) {
         const pdf = await PDFDocument.create();
         const img = await embedPngChecked(pdf, b, { bits16 });
-        expect([img.width, img.height]).toEqual([W, H]);
+        expect([img.width, img.height]).toEqual([spec.w, spec.h]);
         const got = readImage(pdf, img.ref);
         expect(got.asIs).toBe(bits16 ? asIs16 : asIs8);
         if (!bits16) expect(got.bpc).toBeLessThanOrEqual(8);
@@ -445,5 +501,52 @@ describe('圧縮の関数を決める順 (imageDeflater) と sha256 の道', () 
     expect(bare.sha256).not.toBe(sha256);
     expect(bare.sha256(data)).toBe(ref(data));
     expect(bare.sha256(small)).toBe(ref(small));
+  });
+});
+
+describe('ブラウザ・Web Worker の展開の道 (DecompressionStream) と、動く PNG', () => {
+  it('Node の zlib の無い環境 (DecompressionStream で展開する) でも、どの形も同じ画素になる', async () => {
+    expect(typeof DecompressionStream).toBe('function');
+    for (const [, spec] of CASES) {
+      const b = png(spec);
+      const node = await decodePngForPdf(b);
+      const ds = await withoutBuiltins(() => decodePngForPdf(b));
+      expect(ds).toEqual(node);
+    }
+  });
+
+  it('inflateZlib: DecompressionStream の道は、走査線の大きさに届いたら読むのを止め、初めの limit バイトを返す。壊れた圧縮は、壊れた所まで (自前の展開)', async () => {
+    const data = new Uint8Array(300000).map((_, i) => (i * 7) ^ (i >> 9));
+    const z = new Uint8Array(deflateSync(data));
+    const head = await withoutBuiltins(() => inflateZlib(z, 1000));
+    expect(head.length).toBe(1000);
+    expect(Buffer.from(head).equals(Buffer.from(data.subarray(0, 1000)))).toBe(true);
+    const whole = await withoutBuiltins(() => inflateZlib(z, data.length));
+    expect(Buffer.from(whole).equals(Buffer.from(data))).toBe(true);
+    // 途中で切れた圧縮: 出せた所まで (limit に足りない)
+    const cut = await withoutBuiltins(() => inflateZlib(z.subarray(0, z.length >> 1), data.length));
+    expect(cut.length).toBeLessThan(data.length);
+    expect(cut.length).toBeGreaterThan(0);
+    expect(Buffer.from(cut).equals(Buffer.from(data.subarray(0, cut.length)))).toBe(true);
+    // 壊れた圧縮 (頭の後を乱す)
+    const bad = z.slice();
+    for (let i = 10; i < 40; i++) bad[i] = 0xff;
+    const broken = await withoutBuiltins(() => inflateZlib(bad, data.length));
+    expect(broken.length).toBeLessThan(data.length);
+  });
+
+  it('動く PNG (acTL のコマが 2 つ以上) は断る。コマが 1 つなら、IDAT の画像を入れる', async () => {
+    const spec = CASES.find((c) => c[0] === 'RGBA 8 ビット')![1];
+    const b = png(spec);
+    const actl = (frames: number) => {
+      const body = Buffer.alloc(8);
+      body.writeUInt32BE(frames, 0);
+      // IHDR の後に acTL を入れる
+      return new Uint8Array(Buffer.concat([Buffer.from(b.subarray(0, 33)), chunk('acTL', body), Buffer.from(b.subarray(33))]));
+    };
+    expect(await decodePngForPdf(actl(2))).toBe('animated');
+    await expect(embedPngChecked(await PDFDocument.create(), actl(2))).rejects.toThrow(/動く PNG/);
+    const one = await decodePngForPdf(actl(1));
+    expect(one).toEqual(await decodePngForPdf(b));
   });
 });

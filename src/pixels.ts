@@ -11,8 +11,7 @@ export interface Pixels {
   rgba: Uint8Array;
 }
 
-import { inflateFast } from './inflateFast';
-import { inflateNode } from './imageDeflate';
+import { inflateZlib } from './imageDeflate';
 import { BMP_RLE_PIXELS_PER_BYTE, DEFLATE_MAX_RATIO, maxPixels, gifPixelBudget, pixelBudget } from './imageLimits';
 import { msg } from './messages';
 import { rejoin, thisCall } from './callContext';
@@ -196,40 +195,6 @@ export function pngWithinLimits(b: Uint8Array): boolean {
     at += 12 + len;
   }
   return pixels > 0 && pixelBits > 0 && pixels <= maxPixels() && (pixels * pixelBits) / 8 <= DEFLATE_MAX_RATIO * idat;
-}
-
-/**
- * PNG の画素のデータ (IDAT をつないだ zlib の列) が、終わりまで展開できるか。pdf-lib の embedPng (UPNG) の展開は、壊れたデータ
- * (割り当ての無い符号) に当たると、読む位置が進まないまま回り続けて止まらない。UPNG に渡す前に、誤りで止まる自前の展開
- * (inflateFast.ts の inflateFast) で、走査線の大きさ (飛び越しでなければ「(1 行のバイト数 + フィルタの 1 バイト) × 高さ」、飛び越しなら
- * パスごとの和。PNG の仕様 §7.2・§8.2・§9.1) まで出ることと、各行のフィルタの種類のバイトが 0〜4 であること (§9.2) を確かめる。pngWithinLimits を通った PNG に使う
- */
-export function pngDataComplete(b: Uint8Array): boolean {
-  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
-  const parts: Uint8Array[] = [];
-  let need = 0;
-  let geom: { width: number; height: number; bpp: number; interlace: boolean } | undefined;
-  for (let at = 8; at + 12 <= b.length; ) {
-    const len = dv.getUint32(at);
-    const type = String.fromCharCode(b[at + 4], b[at + 5], b[at + 6], b[at + 7]);
-    if (type === 'IHDR' && len === 13) {
-      const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[b[at + 17]] ?? 0;
-      geom = { width: dv.getUint32(at + 8), height: dv.getUint32(at + 12), bpp: channels * b[at + 16], interlace: b[at + 20] === 1 };
-      need = geom.interlace ? adam7Size(geom.width, geom.height, geom.bpp) : (Math.ceil((geom.width * geom.bpp) / 8) + 1) * geom.height;
-    } else if (type === 'IDAT') parts.push(b.subarray(at + 8, Math.min(at + 8 + len, b.length)));
-    else if (type === 'IEND') break;
-    at += 12 + len;
-  }
-  if (!need || !parts.length || !geom) return false;
-  const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let at = 0;
-  for (const p of parts) {
-    all.set(p, at);
-    at += p.length;
-  }
-  // 長さに加えて、各行の頭のフィルタの種類のバイトも見る (展開したバイト列が要るので、走査線の大きさまでを持つ)
-  const raw = inflateFast(all, need);
-  return raw.length >= need && pngFilterBytesOk(raw, geom.width, geom.height, geom.bpp, geom.interlace);
 }
 
 /** 飛び越し (Adam7。PNG の仕様 §8.2) の 7 つのパスの、始めの位置と間隔 (x0, y0, dx, dy) */
@@ -567,100 +532,315 @@ export function expandRle(src: Uint8Array, width: number, height: number, bpp: 4
   return out;
 }
 
+/** PDF に入れるための PNG の画素 (8 ビットの RGB と、透明な画素があれば α) */
+export interface PngPixelsForPdf {
+  width: number;
+  height: number;
+  /** 8 ビットの RGB (灰は R = G = B) */
+  rgb: Uint8Array;
+  /** 8 ビットの α (全部 255 なら無し) */
+  alpha?: Uint8Array;
+}
+
 /**
- * PDF に入れるための、8 ビット・飛び越しでない、α の付いた PNG (色の型 4 灰と α・6 RGBA。PNG の仕様 §11.2.2) の画素。
- * pdf-lib の embedPng (UPNG で RGBA にしてから、RGB と α に分ける) と同じ RGB と α を返す (灰は R=G=B。α が全部 255 なら alpha は無し)。
- * pdf-lib の形は、RGBA の配列・RGB と α の配列を別に作り、反復子で数えるので、1 億画素の画像で 10 秒かかっていた。
- * ここでは、展開 (inflateFast.ts) した走査線から、フィルタ (§9.2〜9.4) を戻しながら RGB と α にじかに書く。
- * 形の違う PNG・知らないフィルタの種類は undefined (pdf-lib に任せる)。画素のデータが終わりまで展開できなければ 'broken'。
+ * PDF に入れるための PNG の画素: どの形の PNG (色の型 0 灰・2 RGB・3 色の表・4 灰と α・6 RGBA、ビットの深さ 1〜16、tRNS、
+ * Adam7 の飛び越し。W3C の PNG の仕様 (Second Edition) §11.2.2 の表 11.1) も、8 ビットの RGB と α にする。
+ * 値は、いままで使っていた pdf-lib の展開 (UPNG の toRGBA8 と、embedPng の RGB と α の分け方) と同じ:
+ *  - 16 ビットの成分は上位の 8 ビット (切り捨て)。1・2・4 ビットの灰は 255 / (2^深さ − 1) 倍 (§13.12 の拡げ方)
+ *  - 色の表に無い番号の画素は黒 (0, 0, 0)、tRNS の項の無い番号は不透明
+ *  - tRNS (§11.3.2.1): 灰・RGB は、成分の値 (元の深さのまま) が tRNS の値と同じ画素を透明 (α 0)、色の表は番号ごとの α
+ *  - α が全部 255 なら alpha は無し
+ * ただし、pdf-lib の展開の誤りは引き継がない: 16 ビットの灰の tRNS (pdf-lib は違う位置の 2 バイトと比べていた)、
+ * 飛び越しの 2 つ目からのパスの最初の行の平均のフィルタ (pdf-lib は 1 つ目のパスの位置を戻していた)、1・2・4 ビットの飛び越しの PNG の
+ * 走査線の大きさ (pdf-lib は少なく見積もり、終わりの画素を 0 にしていた。§8.2 のパスごとの行のバイト数の和) は、仕様のとおりにする。
+ * 展開 (imageDeflate.ts の inflateZlib。Node は zlib、ブラウザ・Web Worker は DecompressionStream) した走査線を、行ごとに、
+ * フィルタを戻して (§9.2〜9.4) すぐ RGB と α に書く (1 度の走査。行がキャッシュにあるうちに分ける)。
+ * 戻り値: 画素のデータが終わりまで展開できない・フィルタの種類が 0〜4 でない行がある PNG は 'broken'。
+ * 動く PNG (acTL のコマが 2 つ以上。APNG) は 'animated' (pdf-lib も断っていた。コマが 1 つなら IDAT の画像を使う)。
+ * PNG でない・IHDR が読めない・色の型とビットの深さの組が無いもの・圧縮やフィルタの方式が 0 でない・色の表の要る PNG に色の表が無いものは undefined。
  * pngWithinLimits を通った PNG に使う
  */
-export function decodePngForPdf(b: Uint8Array): { width: number; height: number; rgb: Uint8Array; alpha?: Uint8Array } | 'broken' | undefined {
+export async function decodePngForPdf(b: Uint8Array): Promise<PngPixelsForPdf | 'broken' | 'animated' | undefined> {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (b.length < 33 || sig.some((v, i) => b[i] !== v)) return undefined;
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const parts: Uint8Array[] = [];
   let width = 0;
   let height = 0;
-  let channels = 0;
+  let depth = 0;
+  let ct = -1;
+  let interlace = false;
+  let plte: Uint8Array | undefined;
+  let trns: Uint8Array | undefined;
   for (let at = 8; at + 12 <= b.length; ) {
     const len = dv.getUint32(at);
     const type = String.fromCharCode(b[at + 4], b[at + 5], b[at + 6], b[at + 7]);
-    if (type === 'IHDR' && len === 13) {
+    const body = b.subarray(at + 8, Math.min(at + 8 + len, b.length));
+    if (type === 'IHDR' && len === 13 && body.length === 13) {
       width = dv.getUint32(at + 8);
       height = dv.getUint32(at + 12);
-      // ビットの深さ 8、圧縮 0・フィルタの方式 0・飛び越し 0 (§11.2.2)
-      if (b[at + 16] !== 8 || b[at + 18] || b[at + 19] || b[at + 20]) return undefined;
-      channels = b[at + 17] === 6 ? 4 : b[at + 17] === 4 ? 2 : 0;
-      if (!channels) return undefined;
-    } else if (type === 'IDAT') parts.push(b.subarray(at + 8, Math.min(at + 8 + len, b.length)));
-    else if (type === 'acTL') return undefined; // 動く PNG は pdf-lib が断る (同じ誤りにする)
+      depth = b[at + 16];
+      ct = b[at + 17];
+      // 圧縮の方式 0・フィルタの方式 0・飛び越し 0 か 1 (§11.2.2)
+      if (b[at + 18] || b[at + 19] || b[at + 20] > 1) return undefined;
+      interlace = b[at + 20] === 1;
+    } else if (type === 'IDAT') parts.push(body);
+    else if (type === 'PLTE') plte = body;
+    else if (type === 'tRNS') trns = body;
+    else if (type === 'acTL' && body.length >= 4 && dv.getUint32(at + 8) > 1) return 'animated';
     else if (type === 'IEND') break;
     at += 12 + len;
   }
-  if (!channels || !width || !height || !parts.length) return undefined;
+  // 色の型ごとの、使えるビットの深さ (§11.2.2 の表 11.1)
+  const depths: Record<number, number[]> = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
+  if (!width || !height || !depths[ct]?.includes(depth) || (ct === 3 && !plte) || !parts.length) return undefined;
+  const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[ct];
+  const bits = channels * depth;
   const all = parts.length === 1 ? parts[0] : new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   if (parts.length > 1) parts.reduce((o, p) => (all.set(p, o), o + p.length), 0);
-  const stride = width * channels;
-  const need = (stride + 1) * height;
-  // Node では zlib で展開する (自前の展開の 5 倍ほど速い)。zlib が断る (壊れた・長すぎる) ものは、自前の展開で、壊れた所まで読む
-  const fast = inflateNode(all, need);
-  const raw = fast && fast.length >= need ? fast : inflateFast(all, need);
+  const need = interlace ? adam7Size(width, height, bits) : (Math.ceil((width * bits) / 8) + 1) * height;
+  const raw = rejoin(thisCall(), await inflateZlib(all, need));
   if (raw.length < need) return 'broken';
-  // フィルタを戻す (§9.2: a 左・b 上・c 左上。1 画素のバイト数 = channels)。戻した行は raw の中に上書きする。
-  // フィルタの種類ごとに回を分ける (画素ごとに種類を見分けない)。1 行目の上の行は 0 (§9.2)
-  const bpp = channels;
-  for (let y = 0; y < height; y++) {
-    const r = y * (stride + 1) + 1;
-    const p = r - (stride + 1);
-    const f = raw[r - 1];
-    const end = r + stride;
-    if (f === 0) continue;
-    if (f > 4) return undefined;
-    if (f === 1) {
-      for (let i = r + bpp; i < end; i++) raw[i] = (raw[i] + raw[i - bpp]) & 0xff;
-    } else if (f === 2) {
-      if (y) for (let i = r, j = p; i < end; i++, j++) raw[i] = (raw[i] + raw[j]) & 0xff;
-    } else if (f === 3) {
-      if (y) {
-        for (let i = r, j = p; i < r + bpp; i++, j++) raw[i] = (raw[i] + (raw[j] >> 1)) & 0xff;
-        for (let i = r + bpp, j = p + bpp; i < end; i++, j++) raw[i] = (raw[i] + ((raw[i - bpp] + raw[j]) >> 1)) & 0xff;
-      } else for (let i = r + bpp; i < end; i++) raw[i] = (raw[i] + (raw[i - bpp] >> 1)) & 0xff;
-    } else if (y) {
-      // Paeth (§9.4)。左の画素の無い所では a = c = 0 なので、上 (b) になる
-      for (let i = r, j = p; i < r + bpp; i++, j++) raw[i] = (raw[i] + raw[j]) & 0xff;
-      for (let i = r + bpp, j = p + bpp; i < end; i++, j++) {
-        const a = raw[i - bpp];
-        const b = raw[j];
-        const c = raw[j - bpp];
-        const pa = Math.abs(b - c);
-        const pb = Math.abs(a - c);
-        const pc = Math.abs(a + b - 2 * c);
-        raw[i] = (raw[i] + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 0xff;
-      }
-    } else {
-      // 1 行目の Paeth: 上の行が 0 なので、左 (a) になる
-      for (let i = r + bpp; i < end; i++) raw[i] = (raw[i] + raw[i - bpp]) & 0xff;
-    }
-  }
   const rgb = new Uint8Array(width * height * 3);
   const alpha = new Uint8Array(width * height);
-  let translucent = false;
+  if (ct === 6 && depth === 8 && !interlace && LITTLE_ENDIAN) {
+    const opaque = rgba8Rows(raw, width, height, rgb, alpha);
+    if (opaque === undefined) return 'broken';
+    return opaque ? { width, height, rgb } : { width, height, rgb, alpha };
+  }
+  const put = rowWriter(ct, depth, width, rgb, alpha, plte, trns);
+  // フィルタを戻す 1 画素のバイト数 (1 バイトより小さい画素は 1。§9.2)
+  const bpp = Math.max(1, bits >> 3);
+  let at = 0;
+  const passes = interlace ? ADAM7 : ([[0, 0, 1, 1]] as const);
+  for (const [x0, y0, dx, dy] of passes) {
+    const pw = Math.ceil((width - x0) / dx);
+    const ph = Math.ceil((height - y0) / dy);
+    if (pw <= 0 || ph <= 0) continue;
+    const stride = Math.ceil((pw * bits) / 8);
+    for (let y = 0; y < ph; y++) {
+      const r = at + y * (stride + 1) + 1;
+      if (!unfilterRow(raw, r, y ? r - stride - 1 : -1, stride, bpp)) return 'broken';
+      put(raw, r, pw, y0 + y * dy, x0, dx);
+    }
+    at += (stride + 1) * ph;
+  }
+  return put.opaque() ? { width, height, rgb } : { width, height, rgb, alpha };
+}
+
+/** 数の並び (Uint32Array) が、下位のバイトが先か (ほとんどの環境。そうでない環境は、rgba8Rows を使わない) */
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/**
+ * 8 ビット・飛び越しでない RGBA の PNG の走査線 (decodePngForPdf): 行ごとに、行を 4 バイト境界の作業の行に写し、フィルタを 1 画素 (4 バイト) ずつ
+ * まとめて戻して (§9.2〜9.4。1 画素のバイト数が 4 なので、左の画素は 1 つ前の数)、RGB と α に分ける。
+ * 4 つのバイトの足し算・平均は、桁の上がりがバイトをまたがない形で 32 ビットの数のまま計算する (足し算は下位の 7 ビットを足して最上位のビットを
+ * 排他的論理和で、平均は (a AND b) + ((a XOR b) の各バイトの 1 ビット右) で)。Paeth だけはバイトごと。
+ * α が全部 255 なら true、透明な画素があれば false、フィルタの種類が 0〜4 でない行があれば undefined
+ */
+function rgba8Rows(raw: Uint8Array, width: number, height: number, rgb: Uint8Array, alpha: Uint8Array): boolean | undefined {
+  const stride = width * 4;
+  // 前の行 (初めは 0。§9.2 の「1 行目の上の行は 0」) と、いまの行
+  let prevB = new Uint8Array(stride);
+  let curB = new Uint8Array(stride);
+  let prev = new Uint32Array(prevB.buffer);
+  let cur = new Uint32Array(curB.buffer);
+  const add = (x: number, y: number) => (((x & 0x7f7f7f7f) + (y & 0x7f7f7f7f)) ^ ((x ^ y) & 0x80808080)) >>> 0;
+  const avg = (x: number, y: number) => ((x & y) + (((x ^ y) & 0xfefefefe) >>> 1)) >>> 0;
+  let acc = 255;
   for (let y = 0, q = 0, k = 0; y < height; y++) {
     const r = y * (stride + 1) + 1;
-    if (channels === 4) {
-      for (let i = r, end = r + stride; i < end; i += 4, q += 3, k++) {
-        rgb[q] = raw[i];
-        rgb[q + 1] = raw[i + 1];
-        rgb[q + 2] = raw[i + 2];
-        alpha[k] = raw[i + 3];
-        if (raw[i + 3] !== 255) translucent = true;
-      }
-    } else {
-      for (let i = r, end = r + stride; i < end; i += 2, q += 3, k++) {
-        rgb[q] = rgb[q + 1] = rgb[q + 2] = raw[i];
-        alpha[k] = raw[i + 1];
-        if (raw[i + 1] !== 255) translucent = true;
+    const f = raw[r - 1];
+    if (f > 4) return undefined;
+    curB.set(raw.subarray(r, r + stride));
+    if (f === 1) {
+      for (let x = 1; x < width; x++) cur[x] = add(cur[x], cur[x - 1]);
+    } else if (f === 2) {
+      for (let x = 0; x < width; x++) cur[x] = add(cur[x], prev[x]);
+    } else if (f === 3) {
+      cur[0] = add(cur[0], (prev[0] >>> 1) & 0x7f7f7f7f);
+      for (let x = 1; x < width; x++) cur[x] = add(cur[x], avg(cur[x - 1], prev[x]));
+    } else if (f === 4) {
+      // Paeth (§9.4)。左の画素の無い所では a = c = 0 なので、上 (b) になる。前の行が 0 (1 行目) なら、左 (a) になる
+      cur[0] = add(cur[0], prev[0]);
+      for (let i = 4; i < stride; i++) {
+        const a = curB[i - 4];
+        const b = prevB[i];
+        const c = prevB[i - 4];
+        const db = b - c;
+        const da = a - c;
+        const pa = db < 0 ? -db : db;
+        const pb = da < 0 ? -da : da;
+        const s = da + db;
+        const pc = s < 0 ? -s : s;
+        curB[i] += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
       }
     }
+    for (let x = 0; x < width; x++, q += 3, k++) {
+      const w = cur[x];
+      rgb[q] = w;
+      rgb[q + 1] = w >>> 8;
+      rgb[q + 2] = w >>> 16;
+      const a = w >>> 24;
+      alpha[k] = a;
+      acc &= a;
+    }
+    [prevB, curB] = [curB, prevB];
+    [prev, cur] = [cur, prev];
   }
-  return translucent ? { width, height, rgb, alpha } : { width, height, rgb };
+  return acc === 255;
+}
+
+/**
+ * 1 行のフィルタを、その場で戻す (PNG の仕様 §9.2〜9.4)。r は行の画素の初め (フィルタの種類のバイトの次)、p は前の行の画素の初め
+ * (パスの最初の行は −1。前の行を 0 とみなす)、n は行のバイト数、bpp は 1 画素のバイト数 (1 より小さければ 1)。
+ * フィルタの種類が 0〜4 でなければ false
+ */
+function unfilterRow(raw: Uint8Array, r: number, p: number, n: number, bpp: number): boolean {
+  // 足した値は、Uint8Array に書くときに 256 の剰余になる (§9.2 の「mod 256」)
+  const f = raw[r - 1];
+  const end = r + n;
+  if (f === 0) return true;
+  if (f > 4) return false;
+  if (f === 1) {
+    for (let i = r + bpp; i < end; i++) raw[i] += raw[i - bpp];
+  } else if (f === 2) {
+    if (p >= 0) for (let i = r, j = p; i < end; i++, j++) raw[i] += raw[j];
+  } else if (f === 3) {
+    if (p >= 0) {
+      for (let i = r, j = p; i < r + bpp && i < end; i++, j++) raw[i] += raw[j] >> 1;
+      for (let i = r + bpp, j = p + bpp; i < end; i++, j++) raw[i] += (raw[i - bpp] + raw[j]) >> 1;
+    } else for (let i = r + bpp; i < end; i++) raw[i] += raw[i - bpp] >> 1;
+  } else if (p >= 0) {
+    // Paeth (§9.4): 予測は、左 a・上 b・左上 c のうち a + b − c に最も近いもの (同じなら a、b、c の順)。
+    // |p − a| = |b − c|、|p − b| = |a − c|、|p − c| = |(b − c) + (a − c)|。左の画素の無い所では a = c = 0 なので、上 (b) になる
+    for (let i = r, j = p; i < r + bpp && i < end; i++, j++) raw[i] += raw[j];
+    for (let i = r + bpp, j = p + bpp; i < end; i++, j++) {
+      const a = raw[i - bpp];
+      const b = raw[j];
+      const c = raw[j - bpp];
+      const db = b - c;
+      const da = a - c;
+      const pa = db < 0 ? -db : db;
+      const pb = da < 0 ? -da : da;
+      const s = da + db;
+      const pc = s < 0 ? -s : s;
+      raw[i] += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+    }
+  } else {
+    // パスの最初の行の Paeth: 上の行が 0 なので、左 (a) になる
+    for (let i = r + bpp; i < end; i++) raw[i] += raw[i - bpp];
+  }
+  return true;
+}
+
+/** フィルタを戻した 1 行を、RGB と α に書く関数 (row: 走査線、r: 行の画素の初め、n: 画素の数、y: 画像の行、x0・dx: 画素の列の初めと間隔)。opaque() は、α が全部 255 か */
+type RowWriter = ((row: Uint8Array, r: number, n: number, y: number, x0: number, dx: number) => void) & { opaque(): boolean };
+
+/** 色の型 ct・ビットの深さ depth の行を書く関数 (decodePngForPdf)。8 ビットの RGBA・灰と α・RGB は、飛び越しでなければ速い道を通る */
+function rowWriter(ct: number, depth: number, width: number, rgb: Uint8Array, alpha: Uint8Array, plte: Uint8Array | undefined, trns: Uint8Array | undefined): RowWriter {
+  // α の論理積 (全部 255 なら 255)
+  let all = 255;
+  const sample16 = (v: Uint8Array, i: number) => (v[i] << 8) | v[i + 1];
+  // tRNS の値 (§11.3.2.1: 灰は 2 バイト、RGB は 2 バイト × 3。足りない tRNS は無いものとする)
+  const tg = ct === 0 && trns && trns.length >= 2 ? sample16(trns, 0) : -1;
+  const trgb = ct === 2 && trns && trns.length >= 6 ? [sample16(trns, 0), sample16(trns, 2), sample16(trns, 4)] : undefined;
+  let write: (row: Uint8Array, r: number, n: number, y: number, x0: number, dx: number) => void;
+  if (ct === 6 && depth === 8) {
+    write = (row, r, n, y, x0, dx) => {
+      if (dx === 1) {
+        let acc = all;
+        for (let i = r, end = r + n * 4, q = (y * width + x0) * 3, k = y * width + x0; i < end; i += 4, q += 3, k++) {
+          rgb[q] = row[i];
+          rgb[q + 1] = row[i + 1];
+          rgb[q + 2] = row[i + 2];
+          const a = row[i + 3];
+          alpha[k] = a;
+          acc &= a;
+        }
+        all = acc;
+        return;
+      }
+      let q = (y * width + x0) * 3;
+      let k = y * width + x0;
+      const qs = dx * 3;
+      let acc = all;
+      for (let i = r, end = r + n * 4; i < end; i += 4, q += qs, k += dx) {
+        rgb[q] = row[i];
+        rgb[q + 1] = row[i + 1];
+        rgb[q + 2] = row[i + 2];
+        const a = row[i + 3];
+        alpha[k] = a;
+        acc &= a;
+      }
+      all = acc;
+    };
+  } else if (ct === 4 && depth === 8) {
+    write = (row, r, n, y, x0, dx) => {
+      let q = (y * width + x0) * 3;
+      let k = y * width + x0;
+      const qs = dx * 3;
+      let acc = all;
+      for (let i = r, end = r + n * 2; i < end; i += 2, q += qs, k += dx) {
+        rgb[q] = rgb[q + 1] = rgb[q + 2] = row[i];
+        const a = row[i + 1];
+        alpha[k] = a;
+        acc &= a;
+      }
+      all = acc;
+    };
+  } else if (ct === 2 && depth === 8 && !trgb) {
+    write = (row, r, n, y, x0, dx) => {
+      if (dx === 1) rgb.set(row.subarray(r, r + n * 3), (y * width + x0) * 3);
+      else for (let i = r, q = (y * width + x0) * 3, end = r + n * 3; i < end; i += 3, q += dx * 3) (rgb[q] = row[i]), (rgb[q + 1] = row[i + 1]), (rgb[q + 2] = row[i + 2]);
+      alpha.fill(255, y * width + x0, y * width + x0 + (n - 1) * dx + 1);
+    };
+  } else {
+    // ほかの形: 画素ごとに成分を読む。1・2・4 ビットは上位のビットから (§7.2)、16 ビットは上位のバイトが先 (§7.1)
+    const spp = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[ct];
+    const max = (1 << Math.min(depth, 8)) - 1;
+    const scale = depth < 8 ? 255 / max : 1;
+    write = (row, r, n, y, x0, dx) => {
+      let acc = all;
+      for (let x = 0; x < n; x++) {
+        const s = (c: number): number => {
+          if (depth === 16) return sample16(row, r + (x * spp + c) * 2);
+          if (depth === 8) return row[r + x * spp + c];
+          const bit = (x * spp + c) * depth;
+          return (row[r + (bit >> 3)] >> (8 - depth - (bit & 7))) & max;
+        };
+        const hi = (v: number) => (depth === 16 ? v >> 8 : depth < 8 ? v * scale : v);
+        const k = y * width + x0 + x * dx;
+        const q = k * 3;
+        let a = 255;
+        if (ct === 3) {
+          const j = s(0);
+          // 色の表に無い番号は黒、tRNS の項の無い番号は不透明 (pdf-lib の展開と同じ)
+          const c = j * 3;
+          rgb[q] = c + 2 < plte!.length ? plte![c] : 0;
+          rgb[q + 1] = c + 2 < plte!.length ? plte![c + 1] : 0;
+          rgb[q + 2] = c + 2 < plte!.length ? plte![c + 2] : 0;
+          if (trns && j < trns.length) a = trns[j];
+        } else if (ct === 0 || ct === 4) {
+          const v = s(0);
+          rgb[q] = rgb[q + 1] = rgb[q + 2] = hi(v);
+          if (ct === 4) a = hi(s(1));
+          else if (v === tg) a = 0;
+        } else {
+          const r0 = s(0);
+          const g0 = s(1);
+          const b0 = s(2);
+          rgb[q] = hi(r0);
+          rgb[q + 1] = hi(g0);
+          rgb[q + 2] = hi(b0);
+          if (ct === 6) a = hi(s(3));
+          else if (trgb && r0 === trgb[0] && g0 === trgb[1] && b0 === trgb[2]) a = 0;
+        }
+        alpha[k] = a;
+        acc &= a;
+      }
+      all = acc;
+    };
+  }
+  return Object.assign(write, { opaque: () => all === 255 });
 }

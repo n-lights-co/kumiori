@@ -25,7 +25,7 @@ import { decodeWebp } from '../src/webp';
 import { decodeJpeg } from '../src/jpeg';
 import { decodeModifiedHuffman } from '../src/ccitt';
 import { decodeBmp, encodePng, pngWithinLimits, type Pixels } from '../src/pixels';
-import { embedPngChecked } from '../src/pdfLibPatches';
+import { embedPngChecked } from '../src/imageEmbed';
 import { toSfnt } from '../src/webFont';
 import { AssetStore } from '../src/assets';
 import { LayoutEngine } from '../src/layoutEngine';

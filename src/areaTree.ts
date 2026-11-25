@@ -10,8 +10,9 @@
  *   - 子の並びは描く順 (先のものが下)。childrenOf が、どの欄が子かを決める唯一の場所。
  *   - sourceRef は、その Area を作った入力の節の位置 (documentNodes(doc) の添字)。
  */
-import type { Area, AreaTree, SheetArea } from "./types";
+import type { Area, AreaTree, BookmarkArea, SheetArea } from "./types";
 import { msg } from './messages';
+import { memoryRuntime } from './memoryEstimate';
 import { KumioriInputError } from './errors';
 
 /** 入力 (LDocument) の節の並び。Area の sourceRef はこの並びの位置 (sourceRef.ts) */
@@ -111,6 +112,54 @@ export function walkAreaTree(
   ) => boolean | void,
 ): void {
   for (const s of tree.sheets) walkAreas(s, visit);
+}
+
+/**
+ * 領域の木のメモリの見積もり (estimateAreaTreeBytes) の係数 (バイト)。組んだ結果を手放したときのヒープの差を、数にならした目安
+ * (scripts/measure-result-memory.mjs で測る。測った文書・処理系・条件は、docs/development.md の「組んだ結果のメモリの見積もりの測り」)。
+ *  - area: 領域 1 つ (物の欄・座標・様式の値・字の領域の字形の番号と位置など)。Node 22 (V8) で、Typesetter の再利用なしで組んだ結果を
+ *    dispose して減ったヒープから、画像と書体の分を除いて領域の数で割った値: プレビューをまねた HTML (200 ページ・領域 18.8 万) で約 340、
+ *    文だけの HTML (215 ページ) で約 330、対応仕様説明書の XSL-FO (100 ページ) で約 360 バイト (node の値)。Chromium 158 の Web Worker の中
+ *    (量は Worker の CDP の Runtime.getHeapUsage の usedSize) では、同じ文書で約 200・約 190・約 220 バイト (browser の値。V8 のポインタの圧縮で、物が小さい)。
+ *    どちらを使うかは memoryEstimate.ts の memoryRuntime (Firefox・Safari は測っていないが、browser の値を使う)
+ *  - structNode・tag: タグ付き PDF の構造の木の節 1 つと、入力の節ごとの構造の節の番号の表の 1 項目。
+ *    bookmark・destination: しおり 1 つと飛び先 1 つ (題・名前の字の分は別に、1 字 2 バイトで足す)。
+ *    この 4 つは、物の欄の数から決めた目安で、別には測っていない (どの文書でも、領域の数より 1 桁以上少なく、合計への寄与は 1〜2%。処理系で分けない)
+ */
+const AREA_TREE_BYTES = { area: { node: 340, browser: 200 }, structNode: 200, tag: 8, bookmark: 120, destination: 60 };
+
+/**
+ * 領域の木 (組んだ結果) が持つメモリの見積もり (バイト。TypesetResult.memoryUsage の layout)。
+ * 領域の数・構造の木の節の数・しおりと飛び先の数に、1 つあたりの大きさ (AREA_TREE_BYTES) を掛けたもの。処理系 (JavaScript のエンジン) によって違う、目安の値
+ */
+export function estimateAreaTreeBytes(tree: AreaTree): number {
+  let areas = 0;
+  walkAreaTree(tree, () => {
+    areas++;
+  });
+  let n = areas * AREA_TREE_BYTES.area[memoryRuntime()];
+  if (tree.structure) n += tree.structure.nodes.length * AREA_TREE_BYTES.structNode + tree.structure.tags.length * AREA_TREE_BYTES.tag;
+  const marks = (list: readonly BookmarkArea[]) => {
+    for (const b of list) {
+      n += AREA_TREE_BYTES.bookmark + b.title.length * 2 + (b.external?.length ?? 0) * 2;
+      marks(b.children);
+    }
+  };
+  marks(tree.bookmarks ?? []);
+  for (const k in tree.destinations ?? {}) n += AREA_TREE_BYTES.destination + k.length * 2;
+  return n;
+}
+
+/**
+ * 領域の木の中身を空にする (TypesetResult.dispose)。呼ぶ側が areaTree を持ち続けていても、ページ・構造の木・しおり・飛び先・資源の一覧の
+ * メモリを返せるように、木の物は残して中身を外す (ページの数などの数の欄は、結果の側に残る)
+ */
+export function clearAreaTree(tree: AreaTree): void {
+  tree.sheets.length = 0;
+  delete tree.structure;
+  delete tree.bookmarks;
+  delete tree.destinations;
+  delete tree.resources;
 }
 
 /** Area の種類 (types.ts の AreaType) */

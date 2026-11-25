@@ -6,6 +6,7 @@
  * を同一バイト列から作る。Canvas と PDF が「同じフォントファイル」を見るため、
  * 文字幅の食い違いが原理的に発生しない。
  */
+import { memoryRuntime } from './memoryEstimate';
 import { limitsKey } from './limits';
 import { extractFromCollection, isCollection } from './fontLoader';
 import { toSfnt } from './webFont';
@@ -415,6 +416,59 @@ export class FontPrepCache {
     for (const list of this.entries.values()) n += list.length;
     return n;
   }
+
+  /**
+   * 覚えている書体のファイルの大きさ (バイト。Typesetter.memoryUsage の caches)。写して持つ元の中身と、下ごしらえの後のファイル
+   * (元と同じ中身なら、呼ぶ側の ArrayBuffer をそのまま使う。given が真を返すもの (呼ぶ側が渡したもの) は数えない)
+   */
+  memoryBytes(given: (b: ArrayBuffer) => boolean = () => false): number {
+    let n = 0;
+    for (const list of this.entries.values())
+      for (const e of list) {
+        n += e.input.byteLength;
+        if (!given(e.prepared.buffer)) n += e.prepared.buffer.byteLength;
+      }
+    return n;
+  }
+
+  /** 下ごしらえの後のファイルとして持っているか (TypesetResult.memoryUsage の fonts: 持っていれば、結果を手放しても、そのファイルは残る) */
+  holds(buffer: ArrayBuffer): boolean {
+    for (const list of this.entries.values()) for (const e of list) if (e.prepared.buffer === buffer) return true;
+    return false;
+  }
+
+  /** 覚えたものをすべて捨てる (Typesetter.releaseCaches)。文書の番号は残す (組んでいる途中の文書の印は、そのまま使える) */
+  clear(): void {
+    this.entries.clear();
+  }
+}
+
+/**
+ * 読み込んだ書体 1 つが、ファイルのほかに持つもの (fontkit が読んだ表・字形のキャッシュ・組版で引いた字形の送りなど) の、
+ * 書体の字形 1 つあたりの大きさ (バイト。estimateFontBytes)。scripts/measure-result-memory.mjs で、文書の書体 (@font-face) を使う文書の
+ * 結果を手放したときに減ったヒープから、領域の木の分を除いて、文書の書体の字形の数で割った目安。Node 22 (V8) で、
+ * 欧文の TrueType の書体 3 つ (字形 8,813・0.9MB) の文書で 1 つ約 500 バイト、対応仕様説明書の HTML と CSS 編 (書体 58・字形 136,286・
+ * ファイル 33.9MB。CJK の大きな書体を含む) で約 520 バイト (ファイルの大きさに比べると 4.6 倍と 2.1 倍で、ファイルの大きさよりも、字形の数に揃う)。
+ * (node の値)。Chromium 158 の Web Worker の中 (量は Worker の CDP の Runtime.getHeapUsage の usedSize) では、同じ 2 つの文書で約 200 バイトと約 160 バイト
+ * (browser の値。V8 のポインタの圧縮で、物が小さい)。どちらを使うかは memoryEstimate.ts の memoryRuntime (Firefox・Safari は測っていないが、browser の値を使う)
+ * (docs/development.md の「組んだ結果のメモリの見積もりの測り」)
+ */
+export const FONT_BYTES_PER_GLYPH = { node: 500, browser: 180 };
+
+/**
+ * 読み込んだ書体のメモリの見積もり (バイト。TypesetResult.memoryUsage・Typesetter.memoryUsage の fonts)。
+ * 書体ごとに、読んだ表などの分 (字形の数 × FONT_BYTES_PER_GLYPH) と、ownsFile が真を返すファイル (同じファイルは 1 度) の大きさ
+ */
+export function estimateFontBytes(fonts: readonly LoadedFont[], ownsFile: (b: ArrayBuffer) => boolean = () => true): number {
+  const files = new Set<ArrayBuffer>();
+  const perGlyph = FONT_BYTES_PER_GLYPH[memoryRuntime()];
+  let n = 0;
+  for (const lf of fonts) {
+    n += ((lf.fk as { numGlyphs?: number }).numGlyphs ?? 0) * perGlyph;
+    if (!files.has(lf.buffer) && ownsFile(lf.buffer)) n += lf.buffer.byteLength;
+    files.add(lf.buffer);
+  }
+  return n;
 }
 
 /** 書体のバッファの通し番号 (FontManager.signature。同じバッファには同じ番号) */
@@ -527,6 +581,7 @@ export class FontManager {
     f.canvasInstances = this.canvasInstances;
     f.limitedChars = new Map(this.limitedChars);
     f.limitedKinds = new Map(this.limitedKinds);
+    f.adopted = new Set(this.adopted);
     // 書体の下ごしらえの覚え: 器 (sharePrep) なら写しと分け合う
     f.sharePrep = this.sharePrep;
     if (this.sharePrep) f.prepCache = this.prepCache;
@@ -556,8 +611,11 @@ export class FontManager {
     this.getMemo.clear();
     this.generation++;
     this.fonts.set(lf.key, lf);
+    this.adopted.add(lf);
     if (!this.fallbackFamily) this.fallbackFamily = lf.family;
   }
+  /** 別の組から入れた書体 (adopt。器が読み込んで持つ、数式・等幅・記号の書体と OS の書体)。文書ごとの書体に数えない (ownFonts) */
+  private adopted = new Set<LoadedFont>();
 
   /**
    * 既に読み込み済みの ArrayBuffer を登録 (Node テストやローカルファイル用)。
@@ -662,6 +720,54 @@ export class FontManager {
     if (!this.fallbackFamily) this.fallbackFamily = family;
     return lf;
   }
+  /**
+   * 読み込んだ書体 (同じ書体は 1 度。可変フォントの、引いたときに作った実体も入れる)。
+   * Typesetter.memoryUsage の fonts (器の書体の組) と、TypesetResult.memoryUsage の fonts (ownFonts) が数える
+   */
+  loadedFonts(): LoadedFont[] {
+    const out = new Set<LoadedFont>();
+    for (const lf of this.fonts.values()) {
+      out.add(lf);
+      for (const x of lf.variable?.instances.values() ?? []) out.add(x);
+    }
+    return [...out];
+  }
+
+  /**
+   * この組 (fork の写し) で足した書体: 文書ごとの書体 (CSS の @font-face・XSL-FO と一緒に渡した書体・SVG の @font-face)。
+   * 写しの元 base にある書体と、別の組から入れた書体 (adopt。器が持ち続ける数式・等幅・記号の書体と OS の書体) は入れない
+   * (結果を手放しても、器が持ち続ける)。元の可変フォントの実体も、元の書体の側に覚えるので入れない
+   */
+  ownFonts(base: FontManager): LoadedFont[] {
+    const shared = new Set(base.fonts.values());
+    const out = new Set<LoadedFont>();
+    for (const lf of this.fonts.values()) {
+      if (shared.has(lf) || this.adopted.has(lf)) continue;
+      out.add(lf);
+      for (const x of lf.variable?.instances.values() ?? []) out.add(x);
+    }
+    return [...out];
+  }
+
+  /**
+   * この組で足した書体 (ownFonts) を外し、字ごと・名前ごとの書体の選びのキャッシュを空にする (TypesetResult.dispose)。
+   * 元と共有する書体は外さない。外した後は、この組では組めない・描けない (dispose の後に使わない)
+   */
+  releaseOwnFonts(base: FontManager): void {
+    const own = new Set(this.ownFonts(base));
+    for (const [key, lf] of this.fonts)
+      if (own.has(lf)) {
+        this.fonts.delete(key);
+        dropBrowserFaces(lf);
+      }
+    this.charFallback.clear();
+    this.forCharMemo.clear();
+    this.clusterMemo.clear();
+    this.getMemo.clear();
+    this.axesMemo = undefined;
+    this.generation++;
+  }
+
   /**
    * 登録した書体 (ファミリー名と太さ) を外す。ブラウザに登録した FontFace (可変フォントの実体のものも) も外す。
    * 画面で、前に開いた文書の @font-face の書体を、次の文書に残さないために使う (API は、文書ごとの写し (fork) に登録するので要らない)。

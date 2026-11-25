@@ -9,7 +9,7 @@ import path from 'node:path';
 import { Interp, latin1, type InterpOptions } from '../src/psInterp';
 import { Graphics } from '../src/psGraphics';
 import { epsBoundingBox, epsProgram } from '../src/eps';
-import { decodeBmp, encodePngStored, pngDataComplete, pngWithinLimits } from '../src/pixels';
+import { decodeBmp, decodePngForPdf, encodePngStored, pngWithinLimits } from '../src/pixels';
 import { mentionedFiles, tiffStructureOk } from '../src/assets';
 import { collectionFaces, extractFromCollection } from '../src/fontLoader';
 
@@ -79,13 +79,13 @@ describe('画像: 頭の値だけで通る検査', () => {
     expect(pngWithinLimits(withChunk(fctl(4, 4)))).toBe(true);
     expect(pngWithinLimits(withChunk(fctl(16000, 16000)))).toBe(false);
   });
-  it('PNG: 画素のデータが途中で壊れているものは、展開する側 (pdf-lib) に渡さない', () => {
-    expect(pngDataComplete(png)).toBe(true);
+  it('PNG: 画素のデータが途中で壊れているものは、壊れた画像とする (展開が止まらなくならない)', async () => {
+    expect(await decodePngForPdf(png)).toMatchObject({ width: expect.any(Number) });
     // IDAT の中身 (zlib の列) を途中から壊す: 圧縮しない塊の長さを偽る
     const bad = png.slice();
     const at = bad.findIndex((_, i) => bad[i] === 0x49 && bad[i + 1] === 0x44 && bad[i + 2] === 0x41 && bad[i + 3] === 0x54);
     bad.fill(0xff, at + 6, at + 14);
-    expect(pngDataComplete(bad)).toBe(false);
+    expect(await decodePngForPdf(bad)).toBe('broken');
   });
   it('BMP: 1 画素のビット数が 0 のものは読まない (54 バイトで 10000 × 10000)', () => {
     const b = new Uint8Array(54);

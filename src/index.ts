@@ -19,12 +19,15 @@
  */
 
 export { typeset, typesetHtml, typesetFo, typesetToPdf, typesetToPdfStream, createTypesetter, decodeDocumentText } from './api';
-export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, TypesetPdfStreamResult, PdfOutput, PdfOptions, RenderPageOptions, RenderPageSvgOptions, RenderPagePngOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec, LinkPolicy, KumioriLimits, ResourceContext, TypesetProgress } from './api';
+export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, TypesetPdfStreamResult, PdfOutput, PdfOptions, RenderPageOptions, RenderPageSvgOptions, RenderPagePngOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec, LinkPolicy, KumioriLimits, ResourceContext, TypesetProgress, MemoryUsage, TypesetterMemoryUsage } from './api';
 export type { SystemFontSource, SystemFontRequest, SystemFontMatch, SystemFontKind } from './types';
 // 選択肢の値の型 (TypesetOptions の compat・lang、PdfOptions の pdfx・pdfa)
 export type { FoCompat } from './compat';
 export type { MessageLang } from './messages';
 export type { PdfXOptions, PdfAOptions } from './pdfStandard';
+export type { PdfEncryptOptions, PdfPermissions } from './pdfEncrypt';
+// 文書を作らずに文字列を測る (Typesetter.measureText・breakLines。textMeasure.ts)
+export type { TextStyle, MeasuredText, MeasuredLine } from './textMeasure';
 
 // 診断 (TypesetResult.diagnostics。名前・重さ・文に埋めた値・入力の場所) と、Kumiori が投げる誤りの型 (どれも code を持つ)。名前の一覧は docs/diagnostics.md
 export { DIAGNOSTIC_CODES, ERROR_CODES } from './diagnostics';

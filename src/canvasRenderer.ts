@@ -189,10 +189,44 @@ const SVG_IMAGE_PREPARE_MAX_PIXELS = 4_000_000;
  * 超える分は読まない (その画像は描かない。ほかの図形は描く: 読めない画像と同じ)
  */
 const SVG_IMAGE_PREPARE_TOTAL_PIXELS = 32_000_000;
-/** SVG の外の画像のファイル (登録した画像) の中身 → その画像のブラウザの画像 (Worker の中では createImageBitmap で読んだもの) */
-const elementOfBytes = new WeakMap<Uint8Array, CanvasImageSource>();
-/** ブラウザの画像から読んだ画素 (読めなければ null) */
-const elementPixels = new WeakMap<Uint8Array, Pixels | null>();
+/**
+ * SVG の外の画像のファイル (登録した画像) の中身 → その画像のブラウザの画像 (Worker の中では createImageBitmap で読んだもの) と、
+ * そこから読んだ画素 (読めなければ null)。画像の置き場 (AssetStore。組んだ結果ごと) ごとに分ける: 中身のバイト列だけを鍵にすると、
+ * 同じバイト列を持つ別の結果の画像 (dispose で閉じた ImageBitmap) を引くことがある (閉じた ImageBitmap は幅 0 で、画素が読めない)
+ */
+const elementsOf = new WeakMap<AssetStore, { element: WeakMap<Uint8Array, CanvasImageSource>; pixels: WeakMap<Uint8Array, Pixels | null> }>();
+function elementTable(assets: AssetStore) {
+  let t = elementsOf.get(assets);
+  if (!t) elementsOf.set(assets, (t = { element: new WeakMap(), pixels: new WeakMap() }));
+  return t;
+}
+/** 画像の置き場 assets で、中身 bytes の画像に覚えたブラウザの画像 (SVG の中の画像を描くとき。無ければ undefined) */
+export function elementOfImage(assets: AssetStore, bytes: Uint8Array): CanvasImageSource | undefined {
+  return elementsOf.get(assets)?.element.get(bytes);
+}
+/** 画像の置き場 assets で、中身 bytes の画像のブラウザの画像を覚える (SVG の画像を図形にするとき) */
+export function noteImageElement(assets: AssetStore, bytes: Uint8Array, element: CanvasImageSource): void {
+  elementTable(assets).element.set(bytes, element);
+}
+
+/** 前もって読んだ画素 (prepareSvgImagesForCanvas) の大きさ (バイト。TypesetResult.memoryUsage の images に足す): 画素 (RGBA) と、読んだ画像の中身 */
+export function preparedPixelBytes(assets: AssetStore): number {
+  const store = preparedPixels.get(assets);
+  if (!store) return 0;
+  let n = store.pixels * 4;
+  for (const list of store.byKey.values()) for (const e of list) n += e.bytes.byteLength;
+  return n;
+}
+
+/**
+ * 組んだ結果の、描くためのキャッシュを手放す (TypesetResult.dispose): 前もって読んだ画素・画像の置き場のブラウザの画像の表と画素・
+ * SVG の画像を図形と画素にしたもの (書体の組 fonts ごと)
+ */
+export function releaseRenderCaches(assets: AssetStore, fonts: FontManager): void {
+  preparedPixels.delete(assets);
+  elementsOf.delete(assets);
+  svgShapeCache.delete(fonts);
+}
 
 /** 中身の鍵 (長さと FNV-1a の散らし値) */
 function bytesKey(b: Uint8Array): string {
@@ -720,10 +754,11 @@ class CanvasPainter implements Painter {
 
   /** SVG の中の、組版の画素の読み取りで読めない画像の画素 (前もって読んだもの・登録した画像のブラウザの画像から読んだもの)。無ければ undefined */
   private missingImage(bytes: Uint8Array): Pixels | undefined {
-    const el = elementOfBytes.get(bytes);
-    if (el) {
-      let px = elementPixels.get(bytes);
-      if (px === undefined) elementPixels.set(bytes, (px = pixelsOfElement(el) ?? null));
+    const table = this.assets && elementsOf.get(this.assets);
+    const el = this.assets && elementOfImage(this.assets, bytes);
+    if (table && el) {
+      let px = table.pixels.get(bytes);
+      if (px === undefined) table.pixels.set(bytes, (px = pixelsOfElement(el) ?? null));
       if (px) return px;
     }
     const byKey = this.assets && preparedPixels.get(this.assets)?.byKey;
@@ -752,7 +787,7 @@ class CanvasPainter implements Painter {
         const r = assets?.get(resolveRef(href, base));
         if (!r?.bytes) return undefined;
         // 組版の画素の読み取りで読めない形 (CMYK の JPEG など) は、登録した画像のブラウザの画像 (Worker の中では createImageBitmap で読んだもの) で描く (missingImage)
-        if (r.element) elementOfBytes.set(r.bytes, r.element);
+        if (r.element && assets) noteImageElement(assets, r.bytes, r.element);
         if (r.mime === 'image/png' || r.mime === 'image/jpeg') return { kind: r.mime === 'image/png' ? ('png' as const) : ('jpeg' as const), bytes: r.bytes };
         const p = r.mime === 'image/gif' ? decodeGif(r.bytes) : r.mime === 'image/bmp' ? decodeBmp(r.bytes) : r.mime === 'image/webp' ? decodeWebp(r.bytes) : undefined;
         return p ? { kind: 'png' as const, bytes: encodePngStored(p) } : undefined;

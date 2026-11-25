@@ -4,7 +4,7 @@
  * 同じページは 1 つの Form、埋め込んでいない書体の知らせ、画面・SVG・PNG の仮の枠。試験の PDF は pdf-lib で作る (pdfImageFixtures.ts)
  */
 import { beforeAll, describe, expect, it } from 'vitest';
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, PDFRef, decodePDFRawStream } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFOperator, PDFRawStream, PDFRef, decodePDFRawStream } from 'pdf-lib';
 import { DEFAULT_FONTS, typeset, typesetToPdf } from '../src/index';
 import { pdfImageMatrix, withoutMcids } from '../src/pdfImageEmbed';
 import { ensureFonts, loadCachedFont, pageOps } from './helpers';
@@ -155,6 +155,28 @@ describe('PDF の出力に埋め込む', () => {
     const r = await typesetToPdf(html('<img src="a.pdf">'), { name: 'd.html', files: [{ name: 'a.pdf', data: src }], loadFont });
     const d = r.diagnostics.filter((x) => x.code === 'image/pdf-font');
     expect(d.map((x) => x.args)).toEqual([{ src: 'a.pdf', font: 'Helvetica' }]);
+  });
+  it('貼った PDF の書体の記述子の CIDSet は写さない (ISO 32000-2 §9.8.1 では任意。ほかの項目と書体のプログラムは写す)', async () => {
+    const pdf = await PDFDocument.create({ updateMetadata: false });
+    const page = pdf.addPage([200, 100]);
+    const ctx = pdf.context;
+    const file = ctx.register(ctx.stream(new Uint8Array(16), { Length1: 16 }));
+    const cidSet = ctx.register(ctx.stream(Uint8Array.of(0x80, 0x00, 0x0f)));
+    const desc = ctx.register(ctx.obj({ Type: 'FontDescriptor', FontName: 'ABCDEF+Test', Flags: 4, FontBBox: [0, 0, 1000, 1000], ItalicAngle: 0, Ascent: 800, Descent: -200, CapHeight: 700, StemV: 80, FontFile2: file, CIDSet: cidSet }));
+    const cid = ctx.register(ctx.obj({ Type: 'Font', Subtype: 'CIDFontType2', BaseFont: 'ABCDEF+Test', CIDSystemInfo: { Registry: PDFHexString.fromText('Adobe'), Ordering: PDFHexString.fromText('Identity'), Supplement: 0 }, FontDescriptor: desc, CIDToGIDMap: 'Identity' }));
+    const font = ctx.register(ctx.obj({ Type: 'Font', Subtype: 'Type0', BaseFont: 'ABCDEF+Test', Encoding: 'Identity-H', DescendantFonts: [cid] }));
+    page.node.Resources()!.set(PDFName.of('Font'), ctx.obj({ F1: font }));
+    page.pushOperators(PDFOperator.of('BT' as never), PDFOperator.of('Tf' as never, [PDFName.of('F1'), ctx.obj(12)]), PDFOperator.of('ET' as never));
+    const src = await pdf.save({ useObjectStreams: false });
+    const r = await typesetToPdf(html('<img src="a.pdf">'), { name: 'd.html', files: [{ name: 'a.pdf', data: src }], loadFont });
+    const out = await PDFDocument.load(r.pdf);
+    const descs = out.context.enumerateIndirectObjects().map(([, o]) => o).filter((o): o is PDFDict => o instanceof PDFDict && o.lookup(PDFName.of('FontName')) === PDFName.of('ABCDEF+Test'));
+    expect(descs).toHaveLength(1);
+    expect(descs[0].get(PDFName.of('CIDSet'))).toBeUndefined();
+    expect(descs[0].get(PDFName.of('FontFile2'))).toBeDefined();
+    // CIDSet の流れ (3 バイト 80 00 0F) も写っていない
+    const cidSets = out.context.enumerateIndirectObjects().filter(([, o]) => o instanceof PDFRawStream && o.contents.length === 3 && o.contents[0] === 0x80 && o.contents[2] === 0x0f);
+    expect(cidSets).toHaveLength(0);
   });
   it('回したページは、回した大きさで組み、回す行列で置く', async () => {
     const src = await makePdf([{ media: [0, 0, 200, 100], rotate: 90 }]);
