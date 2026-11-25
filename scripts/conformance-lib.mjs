@@ -1,6 +1,6 @@
 /**
  * 対応仕様説明書 (docs/conformance) の見本の取り出しと、コードの表示の差し込み。
- * scripts/build-conformance.mjs (PDF に組む) と test/conformance.test.ts (見本をテストとして組む) で使う。
+ * scripts/build-conformance.mjs (PDF に組む) と test/conformanceSuite.ts (見本をテストとして組む。test/conformance.test.ts・conformanceEn.test.ts が使う) で使う。
  *
  * 見本は文書の中に 1 回だけ書き、前後に印を付ける:
  *   XSL-FO: <?kumiori-sample id="名前"?> … <?kumiori-sample-end?>

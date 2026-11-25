@@ -1,0 +1,44 @@
+{
+  "description": "veraPDF の基準 (scripts/check-pdfs.mjs・test/pdfChecks.test.ts)。鍵は「文書 [組み方] 検査の種類」、値は落ちてよい規則 (規格の節-検査の番号)。基準に無い規則が落ちたら試験が落ちる。直すときは node scripts/check-pdfs.mjs --update",
+  "veraPDF": "1.28.2",
+  "rules": {
+    "conformance/kumiori-html-css.en.html [pdfua] ua1": [
+      "7.3-1",
+      "7.4.2-1",
+      "7.7-1"
+    ],
+    "conformance/kumiori-html-css.html [pdfua] ua1": [
+      "7.3-1",
+      "7.4.2-1",
+      "7.7-1"
+    ],
+    "conformance/kumiori-xsl-fo.en.fo [pdfua] ua1": [
+      "7.3-1",
+      "7.7-1"
+    ],
+    "conformance/kumiori-xsl-fo.fo [pdfua] ua1": [
+      "7.3-1",
+      "7.7-1"
+    ],
+    "examples/drawio-pages/pages.fo [pdfa-3b-ua] ua1": [
+      "7.1-9",
+      "7.3-1"
+    ],
+    "examples/drawio-pages/pages.fo [pdfua] ua1": [
+      "7.1-9",
+      "7.3-1"
+    ],
+    "samples/check/fo/indent-inheritance-1.fo (--compat antenna) [pdfa-3b-ua] ua1": [
+      "7.1-9"
+    ],
+    "samples/check/fo/indent-inheritance-1.fo (--compat antenna) [pdfua] ua1": [
+      "7.1-9"
+    ],
+    "samples/check/fo/indent-inheritance-1.fo (--compat spec) [pdfa-3b-ua] ua1": [
+      "7.1-9"
+    ],
+    "samples/check/fo/indent-inheritance-1.fo (--compat spec) [pdfua] ua1": [
+      "7.1-9"
+    ]
+  }
+}

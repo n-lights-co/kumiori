@@ -652,7 +652,8 @@ describe('Node のコマンド', () => {
     const cli = path.join(root, 'dist-cli/cli.js');
     // PDF を書く間が長い文書 (ページが多い)。一時のファイルが出来た所で止める
     fs.writeFileSync(path.join(dir, 'big.html'), `<p>${'組み織りの見本の段落。'.repeat(40)}</p>`.repeat(6000));
-    for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+    // 2 つの合図を、別の子のプロセスで並べて試す (組む間が長いので、続けて試すと倍の時間がかかる。一時のファイルの名前は合図ごとに違う)
+    const check = async (sig: 'SIGINT' | 'SIGTERM') => {
       const out = path.join(dir, `big-${sig}.pdf`);
       const child = spawn(process.execPath, [cli, path.join(dir, 'big.html'), '-o', out, '--font-dir', fontDir], { stdio: 'ignore', env: JA_ENV });
       const exited = new Promise<{ code: number | null; signal: string | null }>((r) => child.on('exit', (code, signal) => r({ code, signal })));
@@ -668,7 +669,8 @@ describe('Node のコマンド', () => {
       expect(r.signal, `${sig}: ${JSON.stringify(r)}`).toBe(sig);
       expect(parts()).toEqual([]);
       expect(fs.existsSync(out)).toBe(false);
-    }
+    };
+    await Promise.all([check('SIGINT'), check('SIGTERM')]);
   }, 300_000);
 
   // 読み取り専用の前の出力は、名前を替えて置き換えずに、前のとおり書けない誤りにする。root では読み取り専用のファイルにも書けるので、

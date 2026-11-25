@@ -329,6 +329,6 @@ describe('HTML・XSL-FO の入力でも同じに組める (同じ組版の道を
     // XSL-FO (合字の指定が無い) でも、クメール文字の必須の合字 (子音 + AA) は 1 つの字形
     const aa = f.flat().find((g) => g.text === 'សា');
     expect(aa?.glyphIds).toHaveLength(1);
-    expect(html.warnings.concat(fo.warnings).filter((w) => /描けません|字形/.test(w))).toEqual([]);
+    expect(html.warnings.concat(fo.warnings).filter((w) => /描画できません|字形/.test(w))).toEqual([]);
   }, 300_000);
 });

@@ -351,7 +351,7 @@ describe('HTML・XSL-FO の入力でも同じに組める (同じ組版の道を
       'html',
     );
     checkLines(linesOfTree(r.areaTree as never), hindiOf(r.areaTree as never));
-    expect(r.warnings.filter((w) => /描けません|字形/.test(w))).toEqual([]);
+    expect(r.warnings.filter((w) => /描画できません|字形/.test(w))).toEqual([]);
   }, 300_000);
   it('XSL-FO: 同じ文が、同じ所で折り返す', async () => {
     const run = await setup();

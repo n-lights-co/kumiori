@@ -11,7 +11,8 @@
  *     conformance … 対応仕様説明書 (HTML と CSS 編・XSL-FO 編。日本語と英語)
  *     examples    … examples の HTML と FO (examples/preview の画面のコードは除く)
  *     samples     … samples の FO (--compat spec と antenna)
- *     generated   … scripts/gen-stress-docs.mjs の種を決めた乱数の文書 (書き出す大きさ。続きから組む確かめの、左右で本文の幅の違うページの文書 (RESUME_SHAPES) も)
+ *     generated   … scripts/gen-stress-docs.mjs の種を決めた乱数の文書 (書き出す大きさ。続きから組む確かめの、左右で本文の幅の違うページの文書と、
+ *                   罫線をつぶした表がページをまたぐ文書 (RESUME_SHAPES) と、章ごとに page-sequence を分け、脚注・マーカーのある XSL-FO (REUSE_SHAPES) も)
  *     ah          … アンテナハウスのサンプル FO 集 (.cache/samples/fo/samples。--compat antenna)
  *     css-print   … 『CSSページ組版入門』第 4 版 (.cache/samples/css-print/src。--style ah)
  *     weasyprint  … WeasyPrint の見本 (既定はリポジトリの隣の weasyprint-samples。--style weasyprint。見本の printall.sh と同じ組み合わせ)
@@ -19,7 +20,7 @@
  *     組む並びは「元の文書・直したもの (edits 個)・元の文書に戻したもの」で、どれも 2 つの器で組んで比べる。直しは字の直しが多く、
  *     5 回に 1 回ほどは、ブロックの開きタグに組み方の属性 (keep・区切り・widows・orphans) を足す直し、7 回に 1 回ほどは、ページのマスターだけの直し
  *     (XSL-FO の領域・HTML の @page に背景の色を足す。本文は変えない)
- *   --jobs: 文書を分けて、いくつのプロセスで組むか (既定 1)。--no-pdf: PDF のバイト列を比べない (速い)
+ *   --jobs: 文書を分けて、いくつのプロセスで組むか (既定 1。空いたプロセスに、重い文書から 1 つずつ渡す。同時に組む文書のメモリの見積もりは、機械のメモリの 8 割まで)。--no-pdf: PDF のバイト列を比べない (速い)
  *   --subjects: 比べる器 (既定 reuse)。splice-verify … 使い回しをする器で、前の組版と揃った境目で繋がずに終わりまで組み、繋いだはずの
  *     前の組版のページ・id の記録・警告と同じかを確かめる (resumeProbe.spliceVerify。違えば、境目の状態の比べに漏れがある)。reuse … 使い回しをする器。resume … 使い回しをする器で、1 段の page-sequence の続きから組める境目の
  *     すべてで、1 ページ先まで組んでから境目に戻り、境目の写しから続けて組む (design/resumable-flow.md の 4.4。scripts/check-resume.mjs)。
@@ -40,8 +41,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'vite';
-import { expand } from './conformance-lib.mjs';
-import { CONFORMANCE_FONTS, ensureConformanceFonts, fontUrlsIn, urlBasename } from './conformance-fonts.mjs';
+import { docMemoryGB, heavyFirst, listDocs } from './doc-sources.mjs';
 import { checkRelayout, describeEdit, editSequence, seedOf } from './relayout-check-lib.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,7 +71,7 @@ for (let i = 2; i < process.argv.length; i++) {
   else if (a === '--src') args.src = path.resolve(v());
   else if (a === '--no-build') args.build = false;
   // 内部: 子のプロセスが組む分 (k/n: 文書の並びの k 番目から n おき)
-  else if (a === '--shard') args.shard = v().split('/').map(Number);
+  else if (a === '--shard') args.shard = v();
   else throw new Error(`知らない引数: ${a}`);
 }
 for (const n of args.subjects) if (!['reuse', 'resume', 'resume-late', 'splice-verify'].includes(n)) throw new Error(`知らない器: ${n} (reuse・resume・resume-late・splice-verify)`);
@@ -101,141 +101,56 @@ if (!args.shard && (args.build || !fs.existsSync(path.join(outDir, 'index.js')))
     },
   });
 
-// ── 文書の一覧 (名前・群・読み方)。読むのは組むときだけ
+// ── 文書の一覧 (名前・群・読み方。scripts/doc-sources.mjs)。読むのは組むときだけ
 const fontDir = process.env.KUMIORI_FONT_CACHE ? path.resolve(process.env.KUMIORI_FONT_CACHE) : path.join(root, '.cache', 'fonts');
-const walk = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)])) : []);
-/** dir の中のファイルを、dir からの名前で渡す (skip: 渡さないファイル) */
-const filesIn = (dir, skip = () => false) =>
-  walk(dir)
-    .filter((f) => !skip(f))
-    .map((f) => ({ name: path.relative(dir, f).split(path.sep).join('/'), data: new Uint8Array(fs.readFileSync(f)) }));
 
-function listDocs() {
-  const docs = [];
-  const skipped = [];
-  const add = (d) => {
-    if (!args.filter || d.id.includes(args.filter)) docs.push(d);
-  };
-  if (groups.includes('conformance')) {
-    const conf = path.join(root, 'docs', 'conformance');
-    for (const file of ['kumiori-html-css.html', 'kumiori-html-css.en.html'])
-      add({
-        id: `conformance/${file}`,
-        load: async () => {
-          const fontFiles = await ensureConformanceFonts(fontDir);
-          const src = fs.readFileSync(path.join(conf, 'html', file), 'utf8');
-          const fonts = fontUrlsIn(src).map((u) => ({ name: `fonts/${urlBasename(u)}`, data: new Uint8Array(fs.readFileSync(fontFiles.get(u))) }));
-          const files = filesIn(path.join(conf, 'html'), (f) => /\.html$/.test(f));
-          return { text: expand(src, 'html'), options: () => ({ kind: 'html', files: [...files, ...fonts] }) };
-        },
-      });
-    for (const file of ['kumiori-xsl-fo.fo', 'kumiori-xsl-fo.en.fo'])
-      add({
-        id: `conformance/${file}`,
-        load: async () => {
-          const fontFiles = await ensureConformanceFonts(fontDir);
-          const src = fs.readFileSync(path.join(conf, 'fo', file), 'utf8');
-          const fonts = CONFORMANCE_FONTS.filter((f) => f.fo).map((f) => ({ name: path.basename(fontFiles.get(f.url)), data: new Uint8Array(fs.readFileSync(fontFiles.get(f.url))) }));
-          const files = filesIn(path.join(conf, 'fo', 'images')).map((f) => ({ ...f, name: `images/${f.name}` }));
-          return { text: expand(src, 'fo'), setup: { fonts }, options: () => ({ kind: 'fo', compat: 'spec', files }) };
-        },
-      });
-  }
-  const repoDocs = (dir, re) => walk(path.join(root, dir)).filter((f) => re.test(f)).sort();
-  const fileDoc = (id, file, extra) => ({
-    id,
-    load: async () => {
-      const files = filesIn(path.dirname(file), (f) => f === file || /\.(md|pdf)$/i.test(f));
-      return { text: fs.readFileSync(file, 'utf8'), options: () => ({ kind: /\.fo$/.test(file) ? 'fo' : 'html', files, ...extra }) };
-    },
-  });
-  if (groups.includes('examples')) for (const f of repoDocs('examples', /\.(fo|x?html?)$/i).filter((f) => !f.includes(`${path.sep}preview${path.sep}`))) add(fileDoc(path.relative(root, f), f, {}));
-  if (groups.includes('samples'))
-    for (const f of repoDocs('samples', /\.(fo|x?html?)$/i)) {
-      if (f.endsWith('.fo')) for (const compat of ['spec', 'antenna']) add(fileDoc(`${path.relative(root, f)} (--compat ${compat})`, f, { compat }));
-      else add(fileDoc(path.relative(root, f), f, {}));
-    }
-  if (groups.includes('generated')) {
-    for (const shape of ['nest', 'table', 'rules', 'para', 'images', 'fonest', 'fotable'])
-      add({
-        id: `generated/${shape}`,
-        load: async () => {
-          const { SHAPES, STANDARD_SIZES } = await import('./gen-stress-docs.mjs');
-          return { text: SHAPES[shape].make(STANDARD_SIZES[shape]), options: { kind: SHAPES[shape].ext } };
-        },
-      });
-    // 左右・奇数偶数で本文の幅の違うページをまたぐ長い段落 (続きから組んだ流れが写す境目の確かめ。gen-stress-docs.mjs の RESUME_SHAPES)
-    for (const shape of ['sidewidth', 'fosidewidth'])
-      add({
-        id: `generated/${shape}`,
-        load: async () => {
-          const { RESUME_SHAPES, RESUME_SIZES } = await import('./gen-stress-docs.mjs');
-          return { text: RESUME_SHAPES[shape].make(RESUME_SIZES[shape]), options: { kind: RESUME_SHAPES[shape].ext } };
-        },
-      });
-  }
-  if (groups.includes('ah')) {
-    const dir = path.join(args.samples, 'fo', 'samples');
-    const fos = walk(dir).filter((f) => f.endsWith('.fo')).sort();
-    if (!fos.length) skipped.push({ group: 'ah', reason: `見本が無い (${dir}。CLAUDE.md の「見本と書体の置き場」の手順で戻す)` });
-    for (const f of fos) add(fileDoc(`ah/${path.basename(f, '.fo')}`, f, { compat: 'antenna' }));
-  }
-  if (groups.includes('css-print')) {
-    const dir = path.join(args.samples, 'css-print', 'src');
-    const html = path.join(dir, 'CSS-Print-ja.html');
-    if (!fs.existsSync(html)) skipped.push({ group: 'css-print', reason: `見本が無い (${html})` });
-    else
-      add({
-        id: 'css-print/CSS-Print-ja',
-        load: async () => {
-          const files = filesIn(dir, (f) => f === html || /LICENSE/i.test(f));
-          return { text: fs.readFileSync(html, 'utf8'), options: () => ({ kind: 'html', style: 'ah', files }) };
-        },
-      });
-  }
-  if (groups.includes('weasyprint')) {
-    // 見本の printall.sh と同じ組み合わせ (HTML と、weasyprint -s で足す CSS)。足す CSS は、利用者のスタイルシートとして当てる
-    // (同じ HTML に足すほかの CSS は渡さない)
-    const list = [
-      ['ticket', 'ticket/ticket.html'],
-      ['report', 'report/report.html'],
-      ['poster', 'poster/poster.html', 'poster.css', 'flyer.css'],
-      ['flyer', 'poster/poster.html', 'flyer.css', 'poster.css'],
-      ['letter', 'letter/letter.html'],
-      ['invoice', 'invoice/invoice.html'],
-      ['book-classical', 'book/book.html', 'book-classical.css', 'book.css'],
-      ['book', 'book/book.html', 'book.css', 'book-classical.css'],
-    ];
-    if (!fs.existsSync(path.join(weasyDir, 'ticket', 'ticket.html')))
-      skipped.push({ group: 'weasyprint', reason: `見本が無い (${weasyDir}。GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 https://github.com/CourtBouillon/weasyprint-samples <置き場> で取り、--weasyprint で渡す)` });
-    else
-      for (const [name, rel, , other] of list) {
-        const html = path.join(weasyDir, rel);
-        add({
-          id: `weasyprint/${name}`,
-          load: async () => {
-            const files = filesIn(path.dirname(html), (f) => f === html || (other && path.basename(f) === other) || /\.(pdf|md|rst|sh)$/i.test(f));
-            return { text: fs.readFileSync(html, 'utf8'), options: () => ({ kind: 'html', style: 'weasyprint', files, unreferencedCss: 'user-stylesheet' }) };
-          },
-        });
-      }
-  }
-  return { docs, skipped };
-}
+const { docs, skipped } = listDocs({ groups, filter: args.filter, samples: args.samples, weasyprint: weasyDir, fontDir });
 
-const { docs, skipped } = listDocs();
-
-// ── 分けて組む (--jobs): 子のプロセスに --shard k/n を渡し、結果の JSON を集める
+// ── 分けて組む (--jobs): 子のプロセスを --jobs 個動かし (--shard queue)、空いた子に、重い文書から順に 1 つずつ渡す (IPC)。結果の JSON を集める。
+// 決まった割り振り (i 番目を i % jobs 番目の子へ) にすると、重い文書 (対応仕様説明書の HTML 編・『CSSページ組版入門』) が同じ子に重なり、
+// 終わりにその子だけが長く走ることがあるため
 if (args.jobs > 1 && !args.shard) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'check-relayout-'));
   const pass = process.argv.slice(2).filter((a, i, all) => a !== '--json' && all[i - 1] !== '--json' && a !== '--jobs' && all[i - 1] !== '--jobs');
+  const queue = heavyFirst(docs);
+  // 同時に組む文書のメモリの見積もり (docMemoryGB) の合計を、機械のメモリの 8 割までに抑える (重い文書が重なって、メモリが足りずに止められないように)。
+  // 入る文書が残っていなければ、子は、ほかの子が文書を組み終えるまで待つ (ほかに組んでいる子が無ければ、入らなくても渡す)
+  const budget = (os.totalmem() / 2 ** 30) * 0.8;
+  /** 子 → 組んでいる文書のメモリの見積もり */
+  const running = new Map();
+  /** 次の文書を待っている子 */
+  const waiting = [];
+  const used = () => [...running.values()].reduce((n, g) => n + g, 0);
+  const dispatch = () => {
+    while (waiting.length) {
+      const at = queue.findIndex((i) => !running.size || used() + docMemoryGB(docs[i].id) <= budget);
+      if (at < 0 && queue.length) return;
+      const p = waiting.shift();
+      const i = at < 0 ? null : queue.splice(at, 1)[0];
+      if (i !== null) running.set(p, docMemoryGB(docs[i].id));
+      p.send(i);
+    }
+  };
   const all = await Promise.all(
-    Array.from({ length: args.jobs }, (_, k) => {
+    Array.from({ length: Math.min(args.jobs, Math.max(1, docs.length)) }, (_, k) => {
       const out = path.join(tmp, `${k}.json`);
       return new Promise((resolve, reject) => {
-        const p = spawn(process.execPath, [fileURLToPath(import.meta.url), ...pass, '--no-build', '--shard', `${k}/${args.jobs}`, '--json', out], { stdio: ['ignore', 'inherit', 'inherit'] });
+        const p = spawn(process.execPath, [fileURLToPath(import.meta.url), ...pass, '--no-build', '--shard', 'queue', '--json', out], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+        p.on('message', (m) => {
+          if (m !== 'next') return;
+          // 前に渡した文書は組み終えた
+          running.delete(p);
+          waiting.push(p);
+          dispatch();
+        });
         p.on('error', reject);
-        p.on('exit', () => resolve(fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : { docs: [], error: `${k} 番目のプロセスが結果を書かずに終わった` }));
+        p.on('exit', () => {
+          running.delete(p);
+          const w = waiting.indexOf(p);
+          if (w >= 0) waiting.splice(w, 1);
+          dispatch();
+          resolve(fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : { docs: [], error: `${k} 番目のプロセスが結果を書かずに終わった` });
+        });
       });
     }),
   );
@@ -281,9 +196,19 @@ if (args.jobs > 1 && !args.shard) {
     if (r) hits++;
     return r;
   };
-  const mine = args.shard ? docs.filter((_, i) => i % args.shard[1] === args.shard[0]) : docs;
+  /** 組む文書を 1 つずつ返す (子のプロセスなら、親に次の文書を尋ねる。無ければ undefined) */
+  const nextDoc = args.shard
+    ? () =>
+        new Promise((resolve) => {
+          process.once('message', (i) => resolve(i === null ? undefined : docs[i]));
+          process.send('next');
+        })
+    : (() => {
+        let i = 0;
+        return async () => docs[i++];
+      })();
   const results = [];
-  for (const d of mine) {
+  for (let d; (d = await nextDoc()); ) {
     const t0 = performance.now();
     const res = { id: d.id, versions: [], ok: true };
     try {
@@ -395,7 +320,11 @@ if (args.jobs > 1 && !args.shard) {
     results.push(res);
     console.log(line(res));
   }
-  if (args.shard) fs.writeFileSync(args.json, JSON.stringify({ docs: results }));
+  if (args.shard) {
+    fs.writeFileSync(args.json, JSON.stringify({ docs: results }));
+    // 親との IPC の口を閉じる (開いたままだと、子のプロセスが終わらない)
+    process.disconnect?.();
+  }
   else finish(results, []);
 }
 

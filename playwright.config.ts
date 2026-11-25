@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { defineConfig } from '@playwright/test';
 import { chromiumLaunchOptions } from './scripts/chromium.mjs';
 
@@ -10,7 +11,10 @@ import { chromiumLaunchOptions } from './scripts/chromium.mjs';
 export default defineConfig({
   testDir: 'e2e',
   timeout: 180_000,
-  fullyParallel: false,
+  // 試験は互いに状態を分け合わない (試験ごとに別のページ) ので、ファイルの中の試験も並べて走らせる。ワーカーは CPU の数と、メモリ 1.5GB に 1 つの小さい方
+  // (Playwright の既定は CPU の数の半分で、ファイルの中は 1 つずつ。4 つの CPU の機械で 136 秒 → 77 秒。docs/development.md の「確かめの時間」)
+  fullyParallel: true,
+  workers: Math.max(1, Math.min(os.availableParallelism(), Math.floor(os.totalmem() / (1.5 * 2 ** 30)))),
   reporter: [['list']],
   use: { baseURL: 'http://127.0.0.1:5174', headless: true, launchOptions: chromiumLaunchOptions() },
   webServer: {
