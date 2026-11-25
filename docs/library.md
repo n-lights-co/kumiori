@@ -693,7 +693,7 @@ const result = await typeset(html, { loadFont: createFontLoader(), resolveResour
 
 - 公開しているのは `src/index.ts` (と Node 用の `src/node.ts`) から出しているものだけです。ほかのモジュールの関数・型は、版の間で変わることがあります。
 - ES モジュールだけですが、`require('kumiori')` でも読めます (ES モジュールを、フラグ無しで `require()` で読める Node 22.12.0 以降。22.12 は、読むときに Node が `ExperimentalWarning` を出します。22.13 からは出しません)。
-- 動く Node は、22.12.0 以上です。Node 20 は、支え (保守) が 2026 年 4 月に終わったので、0.7.0 で対象から外しました。22.0〜22.11 は、`--experimental-require-module` を付けないと ES モジュールを `require()` で読めないので、対象から外しています。
+- 動く Node は、22.12.0 以上です。Node 20 は、サポート (保守) が 2026 年 4 月に終わったので、0.7.0 で対象から外しました。22.0〜22.11 は、`--experimental-require-module` を付けないと ES モジュールを `require()` で読めないので、対象から外しています。
 - Deno と Bun でも動きます (Node の互換の API で動きます。Deno 2.9・Bun 1.4 で確かめました)。npm から入れた包みを、Node と同じく `import { typeset } from 'kumiori'` (Deno では `npm:kumiori` でも) で読みます。
   確かめたのは、`kumiori`・`kumiori/node`・`kumiori/browser` の読み込み、HTML・XSL-FO の組版、PDF・SVG・PNG の書き出し、`createTypesetter`、`createFontLoader` での書体の読み込み (置き場のファイルからも、ネットワークからも)、重ねた呼び出しの言語 (Deno・Bun の持つ `AsyncLocalStorage` を `process.getBuiltinModule` で取って使う) と、
   コマンド (`deno run -A node_modules/kumiori/dist-cli/cli.js`・`bun node_modules/kumiori/dist-cli/cli.js`) の PDF・PNG・SVG の書き出し・標準入力・`--system-fonts`・`--watch` です。

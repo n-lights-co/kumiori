@@ -37,7 +37,7 @@
   - §14.7 論理構造: §14.7.1 (MarkInfo の辞書)、§14.7.2 (構造の木: StructTreeRoot・StructElem の K・P・Pg・ID・Lang・Alt・ActualText)、§14.7.3 (構造の型と RoleMap)、
     §14.7.4 (中身の項目: §14.7.4.2 marked content の項目 (MCID・MCR の Pg・Stm)、§14.7.4.3 PDF の物の項目 (OBJR)、§14.7.4.4 ParentTree・StructParents・StructParent)、§14.7.5 (構造の属性 A と O)。
   - §14.8 タグ付き PDF: §14.8.2 (本当の中身と Artifact。Artifact の Type: Pagination・Layout・Page と Subtype: Header・Footer・Watermark)、§14.8.4 (標準の構造の型)、§14.8.5 (標準の属性。表の Scope・Headers・RowSpan・ColSpan、リストの ListNumbering)。
-  - §14.9 アクセシビリティの支え: §14.9.2 (言語 Lang)、§14.9.3 (代わりの説明 Alt)、§14.9.4 (置き換えの文字列 ActualText)、§14.9.5 (略語の展開 E)。
+  - §14.9 アクセシビリティのサポート: §14.9.2 (言語 Lang)、§14.9.3 (代わりの説明 Alt)、§14.9.4 (置き換えの文字列 ActualText)、§14.9.5 (略語の展開 E)。
   - §12.5 注釈 (StructParent・Contents)、§12.5.6.5 リンク。
 - ISO 14289-1:2014 (PDF/UA-1): §5 (版の印: XMP の pdfuaid:part)、§7.1 (全体: 中身はタグか Artifact、MarkInfo、題 dc:title と DisplayDocTitle)、§7.2 (字と言語)、§7.3 (図の代わりの文)、
   §7.4 (見出し)、§7.5 (表)、§7.6 (リスト)、§7.7 (数式)、§7.8 (柱)、§7.9 (注と参照: Note は ID を持つ)、§7.17 (しおり)、§7.18 (注釈: §7.18.1 全体、§7.18.3 ページの Tabs が S、§7.18.5 リンク)、§7.20 (XObject)、§7.21 (書体: 埋め込み・ToUnicode・.notdef)。
