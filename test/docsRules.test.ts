@@ -15,6 +15,14 @@ import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
 const read = (f: string) => fs.readFileSync(path.join(root, f), 'utf8');
+/** HTML・XML のコメント (<!-- … -->) を外す。外した後に新しく <!-- … --> の並びができても残さないように、無くなるまで繰り返す */
+const stripComments = (t: string) => {
+  for (let prev = ''; prev !== t; ) {
+    prev = t;
+    t = t.replace(/<!--[\s\S]*?-->/g, '');
+  }
+  return t;
+};
 
 /** ディレクトリの下のファイル (リポジトリの中の道。node_modules・ビルドの出力・.cache は見ない) */
 function walk(dir: string): string[] {
@@ -159,8 +167,8 @@ describe('日英の対', () => {
   ] as const) {
     it(`${ja} と英語版の、塊の要素の並び・id・見本の印がそろう`, () => {
       const blocks = (t: string) =>
-        [...t.replace(/<!--[\s\S]*?-->/g, '').replace(/<head>[\s\S]*?<\/head>/, '').matchAll(/<([a-zA-Z][\w:.-]*)/g)].map((m) => m[1]).filter((n) => !INLINE.has(n));
-      const ids = (t: string) => [...t.replace(/<!--[\s\S]*?-->/g, '').matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+        [...stripComments(t).replace(/<head>[\s\S]*?<\/head>/, '').matchAll(/<([a-zA-Z][\w:.-]*)/g)].map((m) => m[1]).filter((n) => !INLINE.has(n));
+      const ids = (t: string) => [...stripComments(t).matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
       const samples = (t: string) => [...t.matchAll(/kumiori-sample id="([^"]+)"/g)].map((m) => m[1]);
       const a = read(ja);
       const b = read(en);

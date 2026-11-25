@@ -109,6 +109,10 @@ export async function loadHtml(
       },
     };
   }
+  // iframe は sandbox="allow-same-origin" だけで、allow-scripts を付けない。HTML Standard §4.8.5 (iframe 要素の sandbox 属性) と
+  // 「Sandboxing」の節の sandboxed scripts browsing context flag により、srcdoc に入れた文書の中では、スクリプト・イベントハンドラーの属性
+  // (on…)・javascript: の URL のどれも実行されない (allow-same-origin は、親から contentDocument を読んで計算値と配置を取るためだけに付ける)。
+  // srcdoc の文字列は DOMParser で読んだ文書を直列化したもの (<script> は htmlPrepare で取り除いてある) で、入力は利用者が自分で選んだファイル
   const frame = document.createElement('iframe');
   frame.setAttribute('sandbox', 'allow-same-origin');
   frame.style.cssText = `position:absolute;left:-100000px;top:0;width:${Math.max(bodyWidthPx, 100)}px;height:${Math.round(pageHeightPx)}px;border:0;visibility:hidden`;
