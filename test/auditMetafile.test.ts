@@ -174,7 +174,7 @@ describe('EMF', () => {
     const t = performance.now();
     expect(emfToSvg(cat(...parts), undefined, undefined, warnings)).toBeDefined();
     expect(performance.now() - t).toBeLessThan(15_000);
-    expect(warnings.some((w) => w.includes('切り抜きのパスの演算'))).toBe(true);
+    expect(warnings.some((w) => w.includes('クリップパスの演算'))).toBe(true);
   });
 
   it('パスの切り抜きの OR が少ないものは、上限に届かず、そのまま演算する', () => {

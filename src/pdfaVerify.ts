@@ -52,7 +52,7 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
   // ファイルの頭 (§6.1.2): %PDF-1.n (n は 0〜7) と、次の行の % と 128 以上のバイト 4 つ
   const head = new TextDecoder('latin1').decode(bytes.subarray(0, 32));
   const m = /^%PDF-1\.([0-7])(\r\n|\r|\n)%([\s\S]{4})/.exec(head);
-  if (!m || [...m[3]].some((c) => c.charCodeAt(0) < 128)) add('ファイルの頭 (%PDF-1.0〜1.7 と、次の行の 128 以上のバイト 4 つの注釈) が決まりに合いません', 'the file header (%PDF-1.0 to 1.7, then a comment line with four bytes of 128 or more) does not meet the requirements');
+  if (!m || [...m[3]].some((c) => c.charCodeAt(0) < 128)) add('ファイルのヘッダー (%PDF-1.0〜1.7 と、次の行の 128 以上のバイト 4 つの注釈) が要件に合いません', 'the file header (%PDF-1.0 to 1.7, then a comment line with four bytes of 128 or more) does not meet the requirements');
   const pdf = rejoin(thisCall(), await loadWithoutCopy(bytes));
   const ctx = pdf.context;
   if (ctx.trailerInfo.Encrypt) add('暗号化しています', 'the file is encrypted');
@@ -61,19 +61,19 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
   // 出力意図 (§6.2.3)
   const intents = (pdf.catalog.lookupMaybe(PDFName.of('OutputIntents'), PDFArray)?.asArray() ?? []).map((r) => ctx.lookup(r)).filter((d): d is PDFDict => d instanceof PDFDict);
   const profiles = new Set(intents.map((d) => d.get(PDFName.of('DestOutputProfile'))).filter((r) => r));
-  if (profiles.size > 1) add('出力意図が 2 つ以上あり、DestOutputProfile が同じものではありません', 'there are two or more output intents whose DestOutputProfile is not the same object');
+  if (profiles.size > 1) add('出力インテントが 2 つ以上あり、DestOutputProfile が同じものではありません', 'there are two or more output intents whose DestOutputProfile is not the same object');
   const pdfaIntent = intents.find((d) => String(d.get(PDFName.of('S'))) === '/GTS_PDFA1');
   const profile = pdfaIntent?.lookup(PDFName.of('DestOutputProfile'));
   let space: string | undefined;
-  if (!(profile instanceof PDFRawStream)) add('PDF/A の出力意図 (OutputIntents の GTS_PDFA1 と DestOutputProfile) がありません', 'the PDF/A output intent (GTS_PDFA1 with DestOutputProfile in OutputIntents) is missing');
+  if (!(profile instanceof PDFRawStream)) add('PDF/A の出力インテント (OutputIntents の GTS_PDFA1 と DestOutputProfile) がありません', 'the PDF/A output intent (GTS_PDFA1 with DestOutputProfile in OutputIntents) is missing');
   else {
     const p = decodePDFRawStream(profile).decode();
     const sig = (o: number) => (p.length >= o + 4 ? String.fromCharCode(...p.subarray(o, o + 4)) : '');
     space = sig(16).trim();
     if (p.length < 128 || p[8] > 4 || !['mntr', 'prtr'].includes(sig(12)) || !['RGB', 'CMYK', 'GRAY'].includes(space) || sig(36) !== 'acsp')
-      add('出力意図の ICC プロファイルが決まりに合いません (ICC の版 4 まで、機器の種類 prtr か mntr、色空間 RGB・CMYK・GRAY)', 'the ICC profile of the output intent does not meet the requirements (ICC version 4 or lower, device class prtr or mntr, color space RGB, CMYK or GRAY)');
+      add('出力インテントの ICC プロファイルが要件に合いません (ICC のバージョン 4 まで、機器の種類 prtr か mntr、色空間 RGB・CMYK・GRAY)', 'the ICC profile of the output intent does not meet the requirements (ICC version 4 or lower, device class prtr or mntr, color space RGB, CMYK or GRAY)');
     const n = profile.dict.get(PDFName.of('N'));
-    if (!(n instanceof PDFNumber) || n.asNumber() !== (space === 'CMYK' ? 4 : space === 'GRAY' ? 1 : 3)) add('出力意図の ICC プロファイルの流れの N が、プロファイルの色の数と違います', 'N of the output intent ICC profile stream does not match the number of color components of the profile');
+    if (!(n instanceof PDFNumber) || n.asNumber() !== (space === 'CMYK' ? 4 : space === 'GRAY' ? 1 : 3)) add('出力インテントの ICC プロファイルのストリームの N が、プロファイルの色の数と違います', 'N of the output intent ICC profile stream does not match the number of color components of the profile');
   }
   /** 使えない機器による色空間 (出力意図の色空間と違うもの。§6.2.4.3) */
   const forbiddenDevice = space === 'RGB' ? 'DeviceCMYK' : space === 'CMYK' ? 'DeviceRGB' : space === 'GRAY' ? 'DeviceRGB|DeviceCMYK' : undefined;
@@ -86,7 +86,7 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
   let xmp = '';
   if (!(meta instanceof PDFRawStream)) add('カタログに XMP のメタデータ (Metadata) がありません', 'the catalog has no XMP metadata (Metadata)');
   else {
-    if (meta.dict.get(PDFName.of('Filter'))) add('XMP のメタデータの流れを圧縮しています', 'the XMP metadata stream is compressed');
+    if (meta.dict.get(PDFName.of('Filter'))) add('XMP のメタデータのストリームを圧縮しています', 'the XMP metadata stream is compressed');
     xmp = new TextDecoder().decode(decodePDFRawStream(meta).decode());
   }
   const xmpValue = (re: RegExp) => {
@@ -163,7 +163,7 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
       const ap = an.lookupMaybe(PDFName.of('AP'), PDFDict);
       if (!ap && subtype !== 'Link' && !empty) add(`${n} ページ目: 注釈 (${subtype}) に外観 (AP) がありません`, `page ${n}: an annotation (${subtype}) has no appearance (AP)`);
       if (ap && ap.keys().some((key) => key.asString() !== '/N')) add(`${n} ページ目: 注釈 (${subtype}) の外観の辞書に N のほかの項目があります`, `page ${n}: the appearance dictionary of an annotation (${subtype}) has entries other than N`);
-      if (subtype === 'Widget' && an.get(PDFName.of('A'))) add(`${n} ページ目: フォームの欄に動作 (A) があります`, `page ${n}: a form field widget has an action (A)`);
+      if (subtype === 'Widget' && an.get(PDFName.of('A'))) add(`${n} ページ目: フォームフィールドに動作 (A) があります`, `page ${n}: a form field widget has an action (A)`);
     }
   });
 
@@ -177,7 +177,7 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
     if (v instanceof PDFName) {
       const name = v.asString().slice(1);
       if (decodedLength(v) > 127) add(`127 バイトを超える名前があります (${path})`, `a name longer than 127 bytes (${path})`);
-      if (key !== 'BaseFont' && key !== 'FontName' && forbiddenDeviceSet.has(name)) add(`出力意図の色空間 (${space}) と違う、機器による色空間 ${name} を使っています (${path})`, `uses the device color space ${name}, which differs from the output intent color space (${space}) (${path})`);
+      if (key !== 'BaseFont' && key !== 'FontName' && forbiddenDeviceSet.has(name)) add(`出力インテントの色空間 (${space}) と違う、機器による色空間 ${name} を使っています (${path})`, `uses the device color space ${name}, which differs from the output intent color space (${space}) (${path})`);
       return;
     }
     if (v instanceof PDFString || v instanceof PDFHexString) {
@@ -214,10 +214,10 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
     if (tr2 && !(tr2 instanceof PDFName && tr2.asString() === '/Default')) add(`描画の状態の TR2 が Default ではありません (${path})`, `TR2 of the graphics state is not Default (${path})`);
     if (d.get(PDFName.of('HTO'))) add(`描画の状態に HTO があります (${path})`, `the graphics state has HTO (${path})`);
     const bm = d.get(PDFName.of('BM'));
-    for (const b of bm instanceof PDFArray ? bm.asArray() : bm ? [bm] : []) if (!(b instanceof PDFName && BLEND_MODES.has(b.asString().slice(1)))) add(`決まりに無い描画モード (BM) があります (${path})`, `contains a blend mode (BM) that is not defined (${path})`);
+    for (const b of bm instanceof PDFArray ? bm.asArray() : bm ? [bm] : []) if (!(b instanceof PDFName && BLEND_MODES.has(b.asString().slice(1)))) add(`要件に無い描画モード (BM) があります (${path})`, `contains a blend mode (BM) that is not defined (${path})`);
     for (const key of ['RI', 'Intent']) {
       const ri = nameOf(d, key);
-      if (ri && !INTENTS.has(ri)) add(`決まりに無い描き方の意図 (${ri}) があります (${path})`, `contains a rendering intent that is not defined (${ri}) (${path})`);
+      if (ri && !INTENTS.has(ri)) add(`要件に無いレンダリングインテント (${ri}) があります (${path})`, `contains a rendering intent that is not defined (${ri}) (${path})`);
     }
     // 画像と XObject (§6.2.8・§6.2.9)
     if (subtype === 'Image' || subtype === 'Form' || subtype === 'PS') {
@@ -232,7 +232,7 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
     if (type === 'Font') checkFont(d, path);
     if (type === 'FontDescriptor') {
       const ff2 = d.lookup(PDFName.of('FontFile2'));
-      if (ff2 instanceof PDFRawStream && !ff2.dict.get(PDFName.of('Length1'))) add(`TrueType の書体のファイルに Length1 がありません (${path})`, `a TrueType font file lacks Length1 (${path})`);
+      if (ff2 instanceof PDFRawStream && !ff2.dict.get(PDFName.of('Length1'))) add(`TrueType のフォントのファイルに Length1 がありません (${path})`, `a TrueType font file lacks Length1 (${path})`);
     }
     // 埋め込みのファイル (§6.8)
     if (d.get(PDFName.of('EF'))) checkFileSpec(d, path);
@@ -251,10 +251,10 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
     const name = String(font.get(PDFName.of('BaseFont')) ?? '').slice(1);
     if (subtype === '/Type0') {
       const desc = font.lookupMaybe(PDFName.of('DescendantFonts'), PDFArray)?.lookup(0);
-      if (desc instanceof PDFDict && !embeddedFile(desc.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict))) add(`書体 ${name} を埋め込んでいません (${path})`, `the font ${name} is not embedded (${path})`);
+      if (desc instanceof PDFDict && !embeddedFile(desc.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict))) add(`フォント ${name} を埋め込んでいません (${path})`, `the font ${name} is not embedded (${path})`);
       return;
     }
-    if (!embeddedFile(font.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict))) add(`書体 ${name} を埋め込んでいません (${path})`, `the font ${name} is not embedded (${path})`);
+    if (!embeddedFile(font.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict))) add(`フォント ${name} を埋め込んでいません (${path})`, `the font ${name} is not embedded (${path})`);
   };
   /** 埋め込みのファイルのファイル指定 (ISO 32000-1 §7.11.3・§7.11.4) を調べる。ref はファイル指定の辞書の間接参照 (直に書いた辞書なら無い) */
   let fileSpecRef: PDFRef | undefined;
@@ -292,12 +292,12 @@ export async function verifyPdfA(bytes: Uint8Array, part: 2 | 3): Promise<string
       }
       // 字の符号 (<…>・(…)) を除いてから、命令を探す
       const ops = text.replace(/<[0-9A-Fa-f\s]*>|\((?:\\.|[^\\)])*\)/g, ' ');
-      for (const op of forbiddenOps) if (new RegExp(`(^|\\s)${op}(?=\\s|$)`).test(ops)) add(`出力意図の色空間 (${space}) と違う、機器による色 (${op}) を使っています (${where})`, `uses device colors (${op}) that differ from the output intent color space (${space}) (${where})`);
+      for (const op of forbiddenOps) if (new RegExp(`(^|\\s)${op}(?=\\s|$)`).test(ops)) add(`出力インテントの色空間 (${space}) と違う、機器による色 (${op}) を使っています (${where})`, `uses device colors (${op}) that differ from the output intent color space (${space}) (${where})`);
       for (const mm of ops.matchAll(/\/(DeviceRGB|DeviceCMYK|RGB|CMYK)(?![\w#.+-])/g)) {
         const full = mm[1] === 'RGB' ? 'DeviceRGB' : mm[1] === 'CMYK' ? 'DeviceCMYK' : mm[1];
-        if (forbiddenDeviceSet.has(full)) add(`出力意図の色空間 (${space}) と違う、機器による色空間 ${full} を使っています (${where})`, `uses the device color space ${full}, which differs from the output intent color space (${space}) (${where})`);
+        if (forbiddenDeviceSet.has(full)) add(`出力インテントの色空間 (${space}) と違う、機器による色空間 ${full} を使っています (${where})`, `uses the device color space ${full}, which differs from the output intent color space (${space}) (${where})`);
       }
-      for (const mm of ops.matchAll(/\/([^\s/[\]()<>{}%]+)\s+ri(?=\s|$)/g)) if (!INTENTS.has(mm[1])) add(`決まりに無い描き方の意図 (${mm[1]}) があります (${where})`, `contains a rendering intent that is not defined (${mm[1]}) (${where})`);
+      for (const mm of ops.matchAll(/\/([^\s/[\]()<>{}%]+)\s+ri(?=\s|$)/g)) if (!INTENTS.has(mm[1])) add(`要件に無いレンダリングインテント (${mm[1]}) があります (${where})`, `contains a rendering intent that is not defined (${mm[1]}) (${where})`);
       // q と Q の入れ子の深さ (§6.1.13: 28 段まで)
       let depth = 0;
       let max = 0;

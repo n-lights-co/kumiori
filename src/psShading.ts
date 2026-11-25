@@ -254,7 +254,7 @@ function rasterShading(G: Graphics, sh: PSDict, toDev: Matrix, box: [number, num
   const type = numOf(sh.get('ShadingType'), 0);
   const sc = shadingColour(G, sh);
   if (!sc) {
-    G.I.warn(msg('網かけの色空間・関数', 'color spaces and functions of shadings'));
+    G.I.warn(msg('シェーディングの色空間・関数', 'color spaces and functions of shadings'));
     return undefined;
   }
   const inv = invert(toDev);
@@ -636,7 +636,7 @@ export function patternFill(G: Graphics, segs: Seg[], evenOdd: boolean) {
   const p = dictOf(G.g.pattern);
   const pm = p ? patternMatrix(p) : undefined;
   if (!p || !pm) {
-    G.I.warn(msg('模様の塗り', 'pattern fills'));
+    G.I.warn(msg('パターンの塗り', 'pattern fills'));
     return;
   }
   G.countItem(segs.length);
@@ -698,7 +698,7 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
       }
     } catch (e) {
       if (!(e instanceof PSError)) throw e;
-      I.warn(msg('模様の PaintProc', 'PaintProc of patterns'));
+      I.warn(msg('パターンの PaintProc', 'PaintProc of patterns'));
     } finally {
       I.ostack.length = Math.min(I.ostack.length, depth);
       tile = { items: G.items, bboxClip, inside: false };
@@ -739,7 +739,7 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
   const count = (ib - ia + 1) * (jb - ja + 1);
   // 写しの数の上限 (描く要素の数で 10 万まで)
   if (count * tile.items.length > 100000) {
-    I.warn(msg('模様の写しが多すぎるので、途中まで描きます', 'too many copies of the pattern; only the first part is drawn'));
+    I.warn(msg('パターンのコピーが多すぎるので、途中まで描画します', 'too many copies of the pattern; only the first part is drawn'));
   }
   let budget = 100000;
   // 写し 1 つの描画の並びの手間 (要素・写しごとのクリップ・写したクリップ)。残りの手間で描ける写しまでで止め、警告にする。
@@ -751,7 +751,7 @@ function tilingFill(G: Graphics, p: PSDict, pm: Matrix, fillClip: Clip, region: 
   for (let j = ja; j <= jb && budget > 0; j++)
     for (let i = ia; i <= ib && budget > 0; i++) {
       if (G.drawCostLeft() - G.maxDrawCost / 10 < perCopy) {
-        if (!warned) I.warn(msg('模様の写しが多すぎるので、途中まで描きます', 'too many copies of the pattern; only the first part is drawn'));
+        if (!warned) I.warn(msg('パターンのコピーが多すぎるので、途中まで描画します', 'too many copies of the pattern; only the first part is drawn'));
         warned = true;
         budget = 0;
         break;

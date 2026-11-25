@@ -480,7 +480,7 @@ class Importer {
     if (keep.size)
       this.note(
         msg(
-          `段組のコンテナの中の、入れ子のブロックの中の span="all" が多すぎるので、後ろの ${keep.size} 個は段抜きにせず、段の中に組みます`,
+          `段組のコンテナーの中の、入れ子のブロックの中の span="all" が多すぎるので、後ろの ${keep.size} 個は段抜きにせず、段の中に組みます`,
           `too many span="all" blocks nested inside blocks in a multi-column container; the last ${keep.size} are set within the columns instead of spanning them`,
         ),
       );
@@ -1437,7 +1437,7 @@ class Importer {
     // 並びを分けない子 (回り込み・絶対配置の箱) が途中にあると、並びの全体を 1 つの inline で包めない
     const next = kids[b] as { type?: string; absolutePosition?: boolean } | undefined;
     if (next && (next.type === 'float' || next.type === 'marker' || (next.type === 'block-container' && next.absolutePosition))) {
-      this.miss(msg('fo:initial-property-set (最初の行の並びの途中に fo:float・絶対配置の箱がある)', 'fo:initial-property-set (an fo:float or absolutely positioned box within the first line)'));
+      this.miss(msg('fo:initial-property-set (最初の行の並びの途中に fo:float・絶対配置のボックスがある)', 'fo:initial-property-set (an fo:float or absolutely positioned box within the first line)'));
       return;
     }
     const has = (k: string) => {
@@ -1586,7 +1586,7 @@ class Importer {
         if (k.type === 'marker') continue;
         // 字より前の fo:float は飛ばす (字の前にアンカーのある float は、字の行の頭の側に置かれる)
         if (k.type === 'float' && !k.initialLetter) continue;
-        if (k.type === 'ruby') this.miss(msg('axf:initial-letters (最初の字がルビ)', 'axf:initial-letters (the first letter is ruby)'));
+        if (k.type === 'ruby') this.miss(msg('axf:initial-letters (最初の文字がルビ)', 'axf:initial-letters (the first letter is ruby)'));
         return 'stop';
       }
       return undefined;
@@ -1984,7 +1984,7 @@ class Importer {
     const docInfo = (c: XEl) => {
       const key = this.attr(c, 'name');
       const value = this.attr(c, 'value') ?? '';
-      if (key === 'title') this.note(msg('axf:document-info name="title" は、アンテナハウスの説明に無い名前です。文書の題は name="document-title" で書いてください (title も、題として読みます)', 'axf:document-info name="title" is not a name in the Antenna House documentation; write the document title with name="document-title" (title is still read as the title)'));
+      if (key === 'title') this.note(msg('axf:document-info name="title" は、アンテナハウスの説明に無い名前です。文書のタイトルは name="document-title" で書いてください (title も、タイトルとして読みます)', 'axf:document-info name="title" is not a name in the Antenna House documentation; write the document title with name="document-title" (title is still read as the title)'));
       if (key === 'document-title' || (key === 'title' && titleFrom !== 'document-title')) {
         titleFrom = key;
         (doc.info ??= {}).title = value;
@@ -3722,7 +3722,7 @@ class Importer {
         const wari = tag === 'inline' ? this.warichuOf(n) : undefined;
         if (wari) inl.warichu = wari;
         // 割注の中の字でない箱 (画像・fo:inline-container など) は組まない (warichu.ts の dropWarichuBoxes)。知らせる
-        if (wari && dropWarichuBoxes(inl.children)) this.miss(msg('割注の中の字でない箱 (画像・fo:inline-container など)', 'non-character boxes in warichu (images, fo:inline-container, etc.)'));
+        if (wari && dropWarichuBoxes(inl.children)) this.miss(msg('割注の中の文字でないボックス (画像・fo:inline-container など)', 'non-character boxes in warichu (images, fo:inline-container, etc.)'));
         // index-key の付いた行内の要素がページをまたぐとき、領域のあるページすべてを引く (§6.10.6)。行内の id の記録は最初の字の
         // ページだけなので、中身の終わりに目印 (幅の無い行内の箱) を置いて、最後のページを引けるようにする
         // 中身の無いもの (索引の位置だけを示す fo:wrapper) は、領域を作らない目印
@@ -3968,7 +3968,7 @@ class Importer {
       },
     });
     // 1 つの数式で描く字の数の上限 (mathLayout.ts の MAX_MATH_GLYPHS) を超えて、超えた分の字を描かなかったときは、報告する
-    if (r.truncated) this.miss(msg('数式の字の数が上限を超えたので、超えた分の字を描きません', 'the number of characters in the formula exceeds the limit; the excess characters are not drawn'));
+    if (r.truncated) this.miss(msg('数式の文字の数が上限を超えたので、超えた分の文字を描画しません', 'the number of characters in the formula exceeds the limit; the excess characters are not drawn'));
     const src = `data:image/svg+xml;base64,${utf8Base64(r.svg)}`;
     this.addImage(src);
     const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -4517,7 +4517,7 @@ class Importer {
       // z-index (§7.30.18): 親の値に足した値 (§5.4.5) が負の箱は、本文の背面に置く (HTML の負の z-index と同じ受け皿)。
       // 0 以上の値どうしの重なりの順は、文書の順のまま。コンテナの中の絶対配置の箱は、背面に置けないので報告する
       if (this.zIndexOf(n) < 0) {
-        if (c.positionInContainer) this.miss(msg('z-index (コンテナの中の絶対配置)', 'z-index (absolute positioning in a container)'));
+        if (c.positionInContainer) this.miss(msg('z-index (コンテナーの中の絶対配置)', 'z-index (absolute positioning in a container)'));
         else c.layer = 'behind';
       }
       const fs = c2.fontSize;

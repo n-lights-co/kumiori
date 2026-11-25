@@ -751,7 +751,7 @@ export class ColorFont {
         // 表が壊れている (範囲の外を指す) 字形は、その表では色つきにしない
         g = undefined;
         if (e instanceof ColorBudgetError) {
-          fontNotice(this.fk, 'color-budget', () => msg('色つきの字形の層・輪郭が多すぎる字があります。その字は、色つきでない字形として描きます', 'some color glyphs have too many layers or outlines; those glyphs are drawn without color'));
+          fontNotice(this.fk, 'color-budget', () => msg('色つきの字形のレイヤー・アウトラインが多すぎる文字があります。その文字は、色つきでない字形として描画します', 'some color glyphs have too many layers or outlines; those glyphs are drawn without color'));
           break;
         }
       }

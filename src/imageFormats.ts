@@ -152,7 +152,7 @@ export function pluginProblem(p: unknown, k: number): { ja: string; en: string }
   const o = p as Partial<KumioriPlugin>;
   if (typeof o.name !== 'string' || !o.name) return { ja: `${at} の name は空でない文字列にしてください`, en: `${at}.name must be a non-empty string` };
   if (o.apiVersion !== PLUGIN_API_VERSION)
-    return { ja: `プラグイン ${o.name} の apiVersion ${JSON.stringify(o.apiVersion)} は使えません (この版の Kumiori は ${PLUGIN_API_VERSION})`, en: `plugin ${o.name}: apiVersion ${JSON.stringify(o.apiVersion)} is not supported (this Kumiori uses ${PLUGIN_API_VERSION})` };
+    return { ja: `プラグイン ${o.name} の apiVersion ${JSON.stringify(o.apiVersion)} は使えません (このバージョンの Kumiori は ${PLUGIN_API_VERSION})`, en: `plugin ${o.name}: apiVersion ${JSON.stringify(o.apiVersion)} is not supported (this Kumiori uses ${PLUGIN_API_VERSION})` };
   if (o.imageFormats === undefined) return undefined;
   if (!Array.isArray(o.imageFormats)) return { ja: `プラグイン ${o.name} の imageFormats は配列にしてください`, en: `plugin ${o.name}: imageFormats must be an array` };
   for (const [j, f] of o.imageFormats.entries()) {

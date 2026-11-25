@@ -9,7 +9,7 @@ import { ensureFonts, loadCachedFont } from './helpers';
 
 beforeAll(() => ensureFonts([...DEFAULT_FONTS.base, DEFAULT_FONTS.symbol, DEFAULT_FONTS.emoji]), 300_000);
 
-const TOFU = /^読み込んだどの書体にも字形の無い字があります/;
+const TOFU = /^読み込んだどのフォントにも字形の無い文字があります/;
 const page = (body: string) => `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>t</title></head><body><p>${body}</p></body></html>`;
 const fo = (body: string) =>
   `<?xml version="1.0"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="m" page-width="100mm" page-height="100mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body"><fo:block>${body}</fo:block></fo:flow></fo:page-sequence></fo:root>`;

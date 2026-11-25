@@ -25,7 +25,7 @@ const isWritableStream = (o: unknown): o is WritableStream<Uint8Array> => typeof
 /** 書き出し先 (PdfOutput) を確かめる。形が違えば選択肢の誤り (KumioriOptionError。option は path) */
 export function checkPdfOutput(o: unknown, path = 'output'): asserts o is PdfOutput {
   if (typeof o === 'function' || isWritableStream(o)) {
-    if (isWritableStream(o) && o.locked) throw new KumioriOptionError(msg(`${path} の WritableStream は、ほかの書き手がロックしています`, `the WritableStream in ${path} is locked by another writer`), path);
+    if (isWritableStream(o) && o.locked) throw new KumioriOptionError(msg(`${path} の WritableStream は、ほかのライターがロックしています`, `the WritableStream in ${path} is locked by another writer`), path);
     return;
   }
   throw new KumioriOptionError(msg(`${path} は WritableStream か、バイト列の塊を受ける関数にしてください (Node の Writable は Writable.toWeb で WritableStream にして渡します)`, `${path} must be a WritableStream or a function that takes chunks of bytes (pass a Node Writable as Writable.toWeb(writable))`), path);

@@ -92,15 +92,15 @@ describe('draw.io の図 (mxGraph の XML)', () => {
     });
 
     it('無いページは、最初のページを描いて警告する', () => {
-      expect(page('page=4')).toMatchObject({ width: 11, warnings: ['draw.io の図に 4 ページ目がありません (3 ページ。最初のページを描きます)'] });
+      expect(page('page=4')).toMatchObject({ width: 11, warnings: ['draw.io の図に 4 ページ目がありません (3 ページ。最初のページを描画します)'] });
       expect(page('page=0').width).toBe(11);
-      expect(page('無い').warnings).toEqual(['draw.io の図に、指したページがありません: #無い (最初のページを描きます)']);
-      expect(page('page-id=x').warnings).toEqual(['draw.io の図に、指したページがありません: #page-id=x (最初のページを描きます)']);
+      expect(page('無い').warnings).toEqual(['draw.io の図に、指したページがありません: #無い (最初のページを描画します)']);
+      expect(page('page-id=x').warnings).toEqual(['draw.io の図に、指したページがありません: #page-id=x (最初のページを描画します)']);
       expect(drawioToSvg(enc(xml), { page: 'page=9', lang: 'en' })!.warnings).toEqual(['the draw.io diagram has no page 9 (it has 3; the first page is drawn)']);
       // ページの無い形 (<mxGraphModel> だけ) は 1 ページの図
       const one = model(vertex('a', '', 0, 0, 10, 10));
       expect(drawioToSvg(enc(one), { page: 'page=1' })!.warnings).toEqual([]);
-      expect(drawioToSvg(enc(one), { page: 'page=2' })).toMatchObject({ width: 11, warnings: ['draw.io の図に 2 ページ目がありません (1 ページ。最初のページを描きます)'] });
+      expect(drawioToSvg(enc(one), { page: 'page=2' })).toMatchObject({ width: 11, warnings: ['draw.io の図に 2 ページ目がありません (1 ページ。最初のページを描画します)'] });
     });
 
     it('登録所: fragment の付いた参照を、同じファイルの別の画像として作る (fetchReportedImages も同じ道を通る)', async () => {
@@ -114,7 +114,7 @@ describe('draw.io の図 (mxGraph の XML)', () => {
       expect(assets.get('other/a.drawio')?.width).toBe(11);
       expect(await assets.addFragment('fig/a.drawio#page=2')).toBe(assets.get('fig/a.drawio#page=2'));
       // 無いページは、最初のページを描いた画像に警告が付く
-      expect(await assets.addFragment('a.drawio#page=7')).toMatchObject({ width: 11, notes: ['draw.io の図に 7 ページ目がありません (3 ページ。最初のページを描きます)'] });
+      expect(await assets.addFragment('a.drawio#page=7')).toMatchObject({ width: 11, notes: ['draw.io の図に 7 ページ目がありません (3 ページ。最初のページを描画します)'] });
       // fragment の無い参照・元の画像の無い参照・本体の外の形式でない画像は作らない
       expect(await assets.addFragment('fig/a.drawio')).toBeUndefined();
       expect(await assets.addFragment('b.drawio#page=2')).toBeUndefined();
@@ -183,7 +183,7 @@ describe('draw.io の図 (mxGraph の XML)', () => {
     expect(pathDs(top.svg)[0]).toBe('M50 40L50 70L250 70L250 100');
     expect(side.warnings).toEqual([]);
     const odd = render(file(cells + edge('e', 'edgeStyle=myEdgeStyle;endArrow=none;', 'a', 'b')));
-    expect(odd.warnings).toEqual(['線の曲げ方 "myEdgeStyle" は知らない (まっすぐの線で描く)']);
+    expect(odd.warnings).toEqual(['線の曲げ方 "myEdgeStyle" は知らない (まっすぐの線で描画する)']);
   });
 
   it('まっすぐの線は、中心を結ぶ直線と図形の周の交わる点で始まり終わる (楕円・ひし形の周)。折れ点を通る', () => {
@@ -300,7 +300,7 @@ describe('draw.io の図 (mxGraph の XML)', () => {
     const r = render(file(cells + edge('e', 'endArrow=open;startArrow=diamond;startFill=0;', 'a', 'b')));
     expect(r.svg).toMatch(/<path d="M[^"Z]+" fill="none" stroke="#000000"[^>]*\/><path d="M[^"]+Z" fill="none"/);
     const hc = render(file(cells + edge('e', 'endArrow=myArrow;', 'a', 'b')));
-    expect(hc.warnings).toEqual(['線の端の形 "myArrow" は描けない']);
+    expect(hc.warnings).toEqual(['線の端の形 "myArrow" は描画できない']);
     expect(pathDs(hc.svg)).toEqual(['M40 20L200 20']);
   });
 
@@ -445,8 +445,8 @@ describe('draw.io の図 (mxGraph の XML)', () => {
   it('図形ライブラリの無いステンシルの形と、取っていない URL の画像は描かずに警告し、描く側に求める。文字は描く', () => {
     const r = render(file(vertex('a', 'shape=mxgraph.aws4.lambda;', 0, 0, 40, 40, 'λ') + vertex('b', 'shape=image;image=https://example.com/a.png;', 100, 0, 40, 40) + vertex('c', 'shape=image;image=../a.png;', 200, 0, 40, 40)));
     expect(r.warnings).toEqual([
-      '形 "mxgraph.aws4.lambda" は描けない (図形ライブラリ aws4 が無い。文字だけ描く)',
-      '画像 https://example.com/a.png は描けない (取れない・取るのを許していない)',
+      '形 "mxgraph.aws4.lambda" は描画できない (図形ライブラリ aws4 が無い。文字だけ描画する)',
+      '画像 https://example.com/a.png は描画できない (取得できない・取得するのを許していない)',
       '画像の URL は読まない (../a.png)',
     ]);
     expect(r.missingImages).toEqual(['https://example.com/a.png']);
@@ -456,8 +456,8 @@ describe('draw.io の図 (mxGraph の XML)', () => {
   it('draw.io の v24.7.5 より後に足された形は、図形ライブラリが無いのとは別の警告にし、ライブラリを求めない。文字は描く', () => {
     const r = render(file(vertex('a', 'shape=mxgraph.archimate4.application;', 0, 0, 60, 40, 'A') + vertex('b', 'shape=mxgraph.bpmn.task2;', 100, 0, 60, 40, 'B')));
     expect(r.warnings).toEqual([
-      '形 "mxgraph.archimate4.application" は描かない (draw.io の v24.7.5 より後に足された形。Kumiori は v24.7.5 の形を描く。文字だけ描く)',
-      '形 "mxgraph.bpmn.task2" は描かない (draw.io の v24.7.5 より後に足された形。Kumiori は v24.7.5 の形を描く。文字だけ描く)',
+      '形 "mxgraph.archimate4.application" は描画しない (draw.io の v24.7.5 より後に追加された形。Kumiori は v24.7.5 の形を描画する。文字だけ描画する)',
+      '形 "mxgraph.bpmn.task2" は描画しない (draw.io の v24.7.5 より後に追加された形。Kumiori は v24.7.5 の形を描画する。文字だけ描画する)',
     ]);
     expect(r.missingLibraries).toEqual([]);
     expect(r.svg).toContain('>A</tspan>');
@@ -481,7 +481,7 @@ describe('draw.io の図 (mxGraph の XML)', () => {
   it('画像の登録所: draw.io の図を SVG にして登録する (Node では図形で描く)', async () => {
     const assets = new AssetStore({ parseXml: parse, formats: [drawioFormat()] });
     const a = await assets.addBlob('fig.drawio', new Blob([file(vertex('a', 'shape=mxgraph.x.y;', 0, 0, 40, 40) + vertex('b', '', 50, 0, 40, 40))]));
-    expect(a).toMatchObject({ mime: 'image/svg+xml', width: 91, height: 41, notes: ['形 "mxgraph.x.y" は描けない (図形ライブラリ x が無い。文字だけ描く)'] });
+    expect(a).toMatchObject({ mime: 'image/svg+xml', width: 91, height: 41, notes: ['形 "mxgraph.x.y" は描画できない (図形ライブラリ x が無い。文字だけ描画する)'] });
     expect(a?.drawable).toBeUndefined();
     // 影のある図も、仮の枠にせず図形で描く (影は Node で近似する)
     const sh = await assets.addBlob('sh.drawio', new Blob([file(vertex('a', 'shadow=1;', 0, 0, 40, 40))]));

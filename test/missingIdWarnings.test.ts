@@ -21,11 +21,11 @@ describe('見つからない飛び先の警告のまとめ', () => {
     expect(groupMissingIdWarnings(['a', cite('x'), 'b', cite('y')])).toEqual(['a', 'ページ番号参照の対象が見つかりません (2 件): id="x"、id="y"', 'b']);
   });
   it('id は初めの 10 個を並べ、残りは「ほか N 件」。しおりの警告は別の行', () => {
-    const list = [...Array.from({ length: 13 }, (_, k) => cite(`i${k}`)), 'しおりの飛び先 id="p" が見つかりません', 'しおりの飛び先 id="q" が見つかりません'];
+    const list = [...Array.from({ length: 13 }, (_, k) => cite(`i${k}`)), 'しおりのリンク先 id="p" が見つかりません', 'しおりのリンク先 id="q" が見つかりません'];
     const out = groupMissingIdWarnings(list);
     expect(out).toHaveLength(2);
     expect(out[0]).toBe(`ページ番号参照の対象が見つかりません (13 件): ${Array.from({ length: 10 }, (_, k) => `id="i${k}"`).join('、')} …ほか 3 件`);
-    expect(out[1]).toBe('しおりの飛び先が見つかりません (2 件): id="p"、id="q"');
+    expect(out[1]).toBe('しおりのリンク先が見つかりません (2 件): id="p"、id="q"');
   });
   it('組版の警告: target-counter() の見つからない参照 3 つは 1 行', async () => {
     const r = await typesetHtml(

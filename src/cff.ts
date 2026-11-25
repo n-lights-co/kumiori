@@ -218,11 +218,11 @@ interface Parsed {
 }
 
 function parse(b: Uint8Array): Parsed {
-  if (b.length < 4 || b[0] !== 1) throw new Error(msg('CFF: 版 1 の CFF ではありません', 'CFF: not a version 1 CFF'));
+  if (b.length < 4 || b[0] !== 1) throw new Error(msg('CFF: バージョン 1 の CFF ではありません', 'CFF: not a version 1 CFF'));
   const hdrSize = b[2];
   const name = readIndex(b, hdrSize);
   const topIdx = readIndex(b, name.end);
-  if (name.items.length !== 1 || topIdx.items.length !== 1) throw new Error(msg('CFF: 書体が 1 つではありません', 'CFF: the font set does not hold exactly one font'));
+  if (name.items.length !== 1 || topIdx.items.length !== 1) throw new Error(msg('CFF: フォントが 1 つではありません', 'CFF: the font set does not hold exactly one font'));
   const top = readDict(b, topIdx.items[0][0], topIdx.items[0][1]);
   const strings = readIndex(b, topIdx.end);
   const gsubrs = readIndex(b, strings.end);
@@ -317,7 +317,7 @@ function glyphNames(p: Parsed, cff: Uint8Array): Map<string, number> {
 export function subsetCff(cff: Uint8Array, keep: Set<number>): Uint8Array {
   const p = parse(cff);
   if ((get(p.top, 1206)?.[0] ?? 2) !== 2) throw new Error(msg('CFF: Type 2 の字形ではありません', 'CFF: not Type 2 charstrings'));
-  if (get(p.top, 1220)) throw new Error(msg('CFF: SyntheticBase の書体は扱いません', 'CFF: SyntheticBase fonts are not supported'));
+  if (get(p.top, 1220)) throw new Error(msg('CFF: SyntheticBase のフォントは扱いません', 'CFF: SyntheticBase fonts are not supported'));
   const n = p.charStrings.items.length;
   const raw = (a: number, z: number) => cff.subarray(a, z);
   const keepAll = new Set(keep);
@@ -428,6 +428,6 @@ export function subsetCff(cff: Uint8Array, keep: Set<number>): Uint8Array {
     out.set(x, q);
     q += x.length;
   }
-  if (q !== at) throw new Error(msg('CFF: 部分書体の長さが合いません', 'CFF: the length of the subset font does not match'));
+  if (q !== at) throw new Error(msg('CFF: サブセットフォントの長さが合いません', 'CFF: the length of the subset font does not match'));
   return out;
 }

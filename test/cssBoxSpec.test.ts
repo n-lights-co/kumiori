@@ -282,7 +282,7 @@ describe('内容による大きさ (CSS Sizing 3 §3.2・§2.1)', () => {
   });
   it('flex・grid の容器、表とその中の箱の語の大きさは、auto として組んで知らせる。語の大きさを使わない文書には知らせない', async () => {
     const t = await lay(`<div style="display: flex; width: fit-content"><div>${A8}</div></div><table style="width: max-content"><tr><td>${A8}</td></tr></table><div style="height: 30pt; max-height: min-content">${A8}</div>`);
-    expect(t.warnings.find((x) => x.startsWith('未対応の CSS を無視しました: '))).toBe('未対応の CSS を無視しました: max-height: min-content (height の指定のある箱)、width: fit-content (flex・grid の容器)、width: max-content (表とその中の箱)');
+    expect(t.warnings.find((x) => x.startsWith('未対応の CSS を無視しました: '))).toBe('未対応の CSS を無視しました: max-height: min-content (height の指定のあるボックス)、width: fit-content (flex・grid のコンテナー)、width: max-content (表とその中のボックス)');
     const u = await lay(`<div style="width: min-content">${A8}</div><fieldset><legend>あ</legend>${A8}</fieldset><div style="float: left; width: fit-content">${A8}</div><table style="width: fit-content"><tr><td>${A8}</td></tr></table>`);
     expect(u.warnings.filter((x) => /未対応|知らない/.test(x))).toEqual([]);
   });
@@ -401,7 +401,7 @@ describe('initial-letter (CSS Inline 3 §7)', () => {
       expect([v, r1(u.glyphs('漢')[0].fontSize!)]).toEqual([v, 10]);
     }
     const w = await lay(`<p><span style="initial-letter: 2">漢</span>${'あ'.repeat(30)}</p><p class="h">${TEXT}</p>`, 'p.h::first-letter { initial-letter: 2; initial-letter-align: hanging }', page);
-    expect(w.warnings.find((x) => x.startsWith('未対応の CSS を無視しました: '))).toBe('未対応の CSS を無視しました: initial-letter (::first-letter 以外の箱)、initial-letter-align: hanging');
+    expect(w.warnings.find((x) => x.startsWith('未対応の CSS を無視しました: '))).toBe('未対応の CSS を無視しました: initial-letter (::first-letter 以外のボックス)、initial-letter-align: hanging');
   });
 });
 

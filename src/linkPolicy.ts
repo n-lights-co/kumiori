@@ -163,16 +163,16 @@ export function summarizeDroppedLinks(d: DroppedLinks | undefined): string | und
 export function droppedLinkWarning(summary: string, stage: 'pdf' | 'svg' | 'read' = 'pdf'): string {
   if (stage === 'read')
     return msg(
-      `安全のため、リンクの動作を通しません (PDF・SVG に書くときは、リンクにせず、字だけを組みます。links の設定で許せます): ${summary}`,
+      `安全のため、リンクの動作を通しません (PDF・SVG に書くときは、リンクにせず、文字だけを組みます。links の設定で許せます): ${summary}`,
       `for safety, these link actions are not allowed (when writing a PDF or SVG, the text is typeset without the link; the links option can allow them): ${summary}`,
     );
   if (stage === 'svg')
     return msg(
-      `安全のため、リンクを SVG に書きませんでした (字・図形はそのまま描きます。links の設定で許せます): ${summary}`,
+      `安全のため、リンクを SVG に書きませんでした (文字・図形はそのまま描画します。links の設定で許せます): ${summary}`,
       `for safety, links were not written to the SVG (the text and shapes are drawn as is; the links option can allow them): ${summary}`,
     );
   return msg(
-    `安全のため、リンクの動作を PDF に書きませんでした (字はそのまま組みます。links の設定で許せます): ${summary}`,
+    `安全のため、リンクの動作を PDF に書きませんでした (文字はそのまま組みます。links の設定で許せます): ${summary}`,
     `for safety, link actions were not written to the PDF (the text is typeset as is; the links option can allow them): ${summary}`,
   );
 }

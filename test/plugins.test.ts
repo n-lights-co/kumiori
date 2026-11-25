@@ -60,7 +60,7 @@ describe('プラグイン (plugins)', () => {
     expect(seen[0].lang).toBe('ja');
     expect(typeof seen[0].fetch).toBe('function');
     // 文字の幅は本体の書体で測る (12 字の W は 40px を超える)
-    expect(r.warnings).toContain('画像 a.box の一部を描けません: 文字が枠に収まらない');
+    expect(r.warnings).toContain('画像 a.box の一部を描画できません: 文字が枠に収まらない');
     expect(r.warnings).toContain('箱のプラグインの知らせ');
     // 画像の枠は、形式の決めた大きさの比 (40 × 20) で置き、描けない画像の仮の枠にしない
     const got: unknown[] = [];
@@ -108,7 +108,7 @@ describe('プラグイン (plugins)', () => {
     await typeset('<p><img src="a.box"></p>', { loadFont, files, plugins: [boxPlugin()], resolveResource: (u) => (asked.push(u), 'x') });
     expect(asked).toContain('https://example.com/x.png');
     const refused = await typeset('<p><img src="a.box"></p>', { loadFont, files, plugins: [boxPlugin()], fetchImages: false });
-    expect(refused.warnings).toContain('画像を取りません (fetchImages): https://example.com/x.png');
+    expect(refused.warnings).toContain('画像を取得しません (fetchImages): https://example.com/x.png');
   }, 60000);
 
   it('本体と一緒に配る形式 (draw.io の図) と一緒に動く。プラグインの形式を先に判定する。drawio: false でもプラグインは動く', async () => {

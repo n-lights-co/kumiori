@@ -174,14 +174,14 @@ describe('draw.io の図形ライブラリ (ステンシル)', () => {
     expect(r.warnings).toEqual([]);
     expect(pathDs(r.svg)).toEqual(['M10 10H50V30H10Z']);
     const bad = drawioToSvg(enc(model(cell('a', 'shape=stencil(!!);', 0, 0, 10, 10))))!;
-    expect(bad.warnings).toEqual(['埋め込んだ形 (stencil) が読めない (文字だけ描く)']);
+    expect(bad.warnings).toEqual(['埋め込んだ形 (stencil) が読めない (文字だけ描画する)']);
   });
 
   it('ライブラリが無い形と、ライブラリにあって形が無いもの (JavaScript で書かれた形) を分けて警告する', () => {
     const reg = new StencilRegistry();
     reg.add(LIBRARY);
     const r = drawioToSvg(enc(model(cell('a', 'shape=mxgraph.test.nothing;', 0, 0, 10, 10) + cell('b', 'shape=mxgraph.aws4.ec2;', 20, 0, 10, 10))), { stencils: reg })!;
-    expect(r.warnings).toEqual(['形 "mxgraph.test.nothing" は図形ライブラリ test に無い (JavaScript で書かれた形など。文字だけ描く)', '形 "mxgraph.aws4.ec2" は描けない (図形ライブラリ aws4 が無い。文字だけ描く)']);
+    expect(r.warnings).toEqual(['形 "mxgraph.test.nothing" は図形ライブラリ test に無い (JavaScript で書かれた形など。文字だけ描画する)', '形 "mxgraph.aws4.ec2" は描画できない (図形ライブラリ aws4 が無い。文字だけ描画する)']);
     expect(r.missingLibraries).toEqual(['aws4']);
   });
 
@@ -203,7 +203,7 @@ describe('draw.io の図形ライブラリ (ステンシル)', () => {
 
   it('包みの形の中のアイコンのライブラリが無ければ、警告して、そのライブラリを求める', () => {
     const r = drawioToSvg(enc(model(cell('a', 'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;', 0, 0, 50, 50))))!;
-    expect(r.warnings).toEqual(['形 "mxgraph.aws4.resourceIcon" の中の "mxgraph.aws4.lambda" は描けない (図形ライブラリ aws4 が無い)']);
+    expect(r.warnings).toEqual(['形 "mxgraph.aws4.resourceIcon" の中の "mxgraph.aws4.lambda" は描画できない (図形ライブラリ aws4 が無い)']);
     expect(r.missingLibraries).toEqual(['aws4']);
     // 包みの外の四角は描く
     expect(pathDs(r.svg)).toEqual(['M0 0L50 0L50 50L0 50Z']);
@@ -254,7 +254,7 @@ describe('draw.io の配布物の画像 (SAP のアイコンの中の画像)', (
   it('画像が無ければ円だけ描き、警告して、その画像を求める', () => {
     const r = drawioToSvg(enc(model(sap('Foo'))))!;
     expect(r.missingImages).toEqual(['img/lib/sap/Foo.svg']);
-    expect(r.warnings).toEqual(['形 "mxgraph.sap.icon" の画像 img/lib/sap/Foo.svg は描けない (draw.io の配布物の画像が無い。図形ライブラリと一緒に渡すか、取るのを許す)']);
+    expect(r.warnings).toEqual(['形 "mxgraph.sap.icon" の画像 img/lib/sap/Foo.svg は描画できない (draw.io の配布物の画像が無い。図形ライブラリと一緒に渡すか、取得するのを許す)']);
     expect(r.svg).not.toContain('<svg x=');
   });
 
@@ -335,7 +335,7 @@ describe('draw.io の図形ライブラリの選択肢 (API・コマンド)', ()
       ['fig.drawio#二', 226, 151, false],
       ['fig.drawio#page=5', 8, 8, false],
     ]);
-    expect(r.warnings).toEqual(['画像 fig.drawio#page=5 の一部を描けません: draw.io の図に 5 ページ目がありません (2 ページ。最初のページを描きます)']);
+    expect(r.warnings).toEqual(['画像 fig.drawio#page=5 の一部を描画できません: draw.io の図に 5 ページ目がありません (2 ページ。最初のページを描画します)']);
   });
 
   it('見本 examples/drawio-pages: 参照ごとに、指したページを描く (見本が壊れていないか)', async () => {
@@ -346,7 +346,7 @@ describe('draw.io の図形ライブラリの選択肢 (API・コマンド)', ()
     walkAreaTree(r.areaTree, (a) => void (a.type === 'image' && got.push([a.src, !!a.missing])));
     expect(got).toEqual(['diagrams.drawio', 'diagrams.drawio#page=2', 'diagrams.drawio#page-id=legend', 'diagrams.drawio#組版の流れ', 'diagrams.drawio#凡例', 'diagrams.drawio#page=9'].map((s) => [s, false]));
     expect(r.pageCount).toBe(3);
-    expect(r.warnings).toEqual(['画像 diagrams.drawio#page=9 の一部を描けません: draw.io の図に 9 ページ目がありません (3 ページ。最初のページを描きます)']);
+    expect(r.warnings).toEqual(['画像 diagrams.drawio#page=9 の一部を描画できません: draw.io の図に 9 ページ目がありません (3 ページ。最初のページを描画します)']);
     // 3 つのページは大きさが違い、同じページを指す書き方は同じ図になる
     const bytes = new Uint8Array(fs.readFileSync(path.join(dir, 'diagrams.drawio')));
     const svg = (page?: string) => drawioToSvg(bytes, page ? { page } : {})!;
@@ -367,10 +367,10 @@ describe('draw.io の図形ライブラリの選択肢 (API・コマンド)', ()
 
   it('既定ではネットワークから取らず、警告する。stencils のライブラリで描く。fetchStencils の関数は、許したときだけ、1 回だけ呼ぶ', async () => {
     const plain = await typeset(html, { loadFont, files: [{ name: 'fig.drawio', data: fig }], drawio: {} });
-    expect(plain.warnings).toContain('画像 fig.drawio の一部を描けません: 形 "mxgraph.test.box_arrow" は描けない (図形ライブラリ test が無い。文字だけ描く)');
+    expect(plain.warnings).toContain('画像 fig.drawio の一部を描画できません: 形 "mxgraph.test.box_arrow" は描画できない (図形ライブラリ test が無い。文字だけ描画する)');
     // draw.io の図を読まない (drawio: false) なら、図は画像として読まない
     const none = await typeset(html, { loadFont, files: [{ name: 'fig.drawio', data: fig }], drawio: false });
-    expect(none.warnings.some((w) => w.includes('fig.drawio') && !w.includes('一部を描けません'))).toBe(true);
+    expect(none.warnings.some((w) => w.includes('fig.drawio') && !w.includes('一部を描画できません'))).toBe(true);
     const given = await typeset(html, { loadFont, files: [{ name: 'fig.drawio', data: fig }], drawio: { stencils: [{ name: 'test.xml', data: LIBRARY }] } });
     expect(given.warnings.filter((w) => w.includes('fig.drawio'))).toEqual([]);
     let calls = 0;
@@ -420,8 +420,8 @@ describe('draw.io の図形ライブラリの選択肢 (API・コマンド)', ()
     expect(asked.sort()).toEqual(['https://example.com/a.png', 'img/lib/clip_art/a/b.png']);
     // fetchImages: false なら取らない (警告する)。配布物の画像は、許さなければ求めない
     const refused = await typeset(html, { loadFont, files: [{ name: 'fig.drawio', data: fig2 }], fetchImages: false, drawio: {} });
-    expect(refused.warnings).toContain('画像を取りません (fetchImages): https://example.com/a.png');
-    expect(refused.warnings.some((w) => w.includes('img/lib/clip_art/a/b.png は描けない'))).toBe(true);
+    expect(refused.warnings).toContain('画像を取得しません (fetchImages): https://example.com/a.png');
+    expect(refused.warnings.some((w) => w.includes('img/lib/clip_art/a/b.png は描画できない'))).toBe(true);
   }, 60000);
 
   it('警告の文は Kumiori の lang に従う (既定は日本語。lang: \'en\' なら英語)', async () => {

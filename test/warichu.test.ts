@@ -529,7 +529,7 @@ describe('割注: 組めない中身と、効かない指定', () => {
     const fo = await typeset(foDoc('本文<fo:inline k:warichu="auto" font-size="6pt">外の割注<fo:inline-container><fo:block><fo:inline k:warichu="auto">内の割注</fo:inline></fo:block></fo:inline-container>続き</fo:inline>後'), { ...opts, kind: 'fo' });
     for (const r of [h, fo]) {
       const w = r.warnings.join('\n');
-      expect(w).toContain('割注の中の字でない箱');
+      expect(w).toContain('割注の中の文字でないボックス');
       expect(w).not.toContain('割注の中の割注');
     }
   });
@@ -543,14 +543,14 @@ describe('割注: 組めない中身と、効かない指定', () => {
 
   it('画像・inline-block などの字でない箱は、割注の中では組まず、警告に出す', async () => {
     const r = await typeset(html('<p>本文<span class="w">中に<span style="display: inline-block; width: 20pt; height: 10pt; background: #f00"></span>箱と</span>後</p>'), opts);
-    expect(r.warnings.join('\n')).toContain('割注の中の字でない箱');
+    expect(r.warnings.join('\n')).toContain('割注の中の文字でないボックス');
     expect(boxes(r.areaTree).some((b) => b.bg === '#ff0000')).toBe(false);
     expect(pieces(glyphs(r.areaTree))).toEqual([['中に', '箱と']]);
     // 字でない箱だけの割注は、中身の無い割注と同じく、括弧を置かない
     const only = await typeset(html('<p>本文<span class="w"><span style="display: inline-block; width: 20pt; height: 10pt"></span></span>後</p>'), opts);
     expect(glyphs(only.areaTree).some((g) => /[（）]/.test(g.text))).toBe(false);
     const f = await typeset(foDoc('本文<fo:inline k:warichu="auto" font-size="6pt">中に<fo:inline-container width="20pt" height="10pt" background-color="#ff0000"><fo:block/></fo:inline-container>箱と</fo:inline>後'), { ...opts, kind: 'fo' });
-    expect(f.warnings.join('\n')).toContain('割注の中の字でない箱');
+    expect(f.warnings.join('\n')).toContain('割注の中の文字でないボックス');
     expect(boxes(f.areaTree).some((b) => b.bg === '#ff0000')).toBe(false);
   });
 

@@ -346,7 +346,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       const v = value(k++);
       const m = /^([a-z-]+)=(.+)$/.exec(v);
       if (!m || !(GENERIC_FONT_KEYS as readonly string[]).includes(m[1]))
-        throw new UsageError(msg(`--generic-font の値 "${v}" は使えません (${GENERIC_FONT_KEYS.join('・')} のどれか=<書体名>)`, `--generic-font cannot be "${v}" (one of ${GENERIC_FONT_KEYS.join(', ')}=<family>)`));
+        throw new UsageError(msg(`--generic-font の値 "${v}" は使えません (${GENERIC_FONT_KEYS.join('・')} のどれか=<フォント名>)`, `--generic-font cannot be "${v}" (one of ${GENERIC_FONT_KEYS.join(', ')}=<family>)`));
       out.genericFonts[m[1]] = m[2].trim();
     }
     else if (a === '--print') out.print = true;
@@ -387,7 +387,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     else if (a === '--document-lang') {
       const v = value(k++).trim();
       // BCP 47 の言語の札 (RFC 5646 §2.1 の字: 英数字と - だけ)
-      if (!/^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/.test(v)) throw new UsageError(msg(`--document-lang の値 "${v}" は言語の札 (ja・en-US など) ではありません`, `--document-lang "${v}" is not a language tag (such as ja or en-US)`));
+      if (!/^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/.test(v)) throw new UsageError(msg(`--document-lang の値 "${v}" は言語のタグ (ja・en-US など) ではありません`, `--document-lang "${v}" is not a language tag (such as ja or en-US)`));
       out.documentLang = v;
     }
     else if (a === '--link-schemes') {
@@ -412,7 +412,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       out.drawioFetch = v;
     }
     else if (a === '--no-drawio') out.noDrawio = true;
-    else if (a === '--plugin') out.plugins.push({ spec: pathValue(k++, ['パッケージの名前かファイルの道', 'a package name or a file path']), options: {} });
+    else if (a === '--plugin') out.plugins.push({ spec: pathValue(k++, ['パッケージの名前かファイルのパス', 'a package name or a file path']), options: {} });
     else if (a === '--plugin-option') {
       const v = value(k++);
       const eq = v.indexOf('=');
@@ -510,7 +510,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
   } else if (out.pages) throw new UsageError(msg('--pages は --format svg か png と一緒に使ってください (PDF は、すべてのページを書きます)', '--pages needs --format svg or png (PDF output always has all pages)'));
   // OS の書体のフォルダは入力のディレクトリの外なので、外のファイルを読まない指定とは一緒に使えない (黙ってどちらかを外さない)
   if (out.systemFonts && !out.outsideFiles)
-    throw new UsageError(msg('--system-fonts は --no-outside-files と一緒に使えません (OS の書体のフォルダは、入力のディレクトリの外です)', '--system-fonts cannot be combined with --no-outside-files (the OS font folders are outside the input directory)'));
+    throw new UsageError(msg('--system-fonts は --no-outside-files と一緒に使えません (OS のフォントのフォルダーは、入力のディレクトリの外です)', '--system-fonts cannot be combined with --no-outside-files (the OS font folders are outside the input directory)'));
   if (out.dpi !== undefined && out.format !== 'png') throw new UsageError(msg('--dpi は --format png と一緒に使ってください', '--dpi needs --format png'));
   // 暗号化は PDF/X・PDF/A と一緒に使えない (どちらの規格も暗号化を許さない)
   if (out.encrypt && (out.pdfx || out.pdfa))
@@ -526,7 +526,7 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     throw new UsageError(msg('--pdfua は --no-tagged と一緒に使えません (PDF/UA-1 はタグ付き PDF です)', '--pdfua cannot be combined with --no-tagged (PDF/UA-1 is tagged PDF)'));
   }
   if (out.tagged && out.pdfx && out.pdfx !== 'X-4') {
-    throw new UsageError(msg('--tagged は --pdfx x1a・x3 と一緒に使えません (透明を平らにする出力に、タグを付けられません。x4 は使えます)', '--tagged cannot be combined with --pdfx x1a or x3 (tags cannot be added to output whose transparency is flattened; x4 can)'));
+    throw new UsageError(msg('--tagged は --pdfx x1a・x3 と一緒に使えません (透明をフラット化する出力に、タグを付けられません。x4 は使えます)', '--tagged cannot be combined with --pdfx x1a or x3 (tags cannot be added to output whose transparency is flattened; x4 can)'));
   }
   if (out.pdfx === 'X-4' && !out.outputProfile) {
     throw new UsageError(msg('--pdfx x4 には、出力の CMYK の ICC プロファイル (--output-profile <ICC ファイル>) が要ります', '--pdfx x4 needs an output CMYK ICC profile (--output-profile <ICC file>)'));
@@ -939,7 +939,7 @@ export function reportDiagnostics(input: string, diagnostics: readonly Diagnosti
   }
   for (const line of diagnosticTextLines(args.verbose ? ds : ds.filter((d) => d.severity !== 'info'))) console.warn(line);
   // --no-outside-files とは一緒に使えないので、そのときは勧めない
-  if (!args.systemFonts && args.outsideFiles !== false && ds.some((d) => d.code === 'font/missing-glyph')) console.warn(msg('  (--system-fonts で、OS の書体から字形を探せます)', '  (--system-fonts looks for the glyphs in the OS fonts)'));
+  if (!args.systemFonts && args.outsideFiles !== false && ds.some((d) => d.code === 'font/missing-glyph')) console.warn(msg('  (--system-fonts で、OS のフォントから字形を探せます)', '  (--system-fonts looks for the glyphs in the OS fonts)'));
 }
 
 /** 文字の出力で、1 つの名前につき 1 件 1 行で書く数 (超えた分は「ほかに n 件 (m 種)」の 1 行にまとめる) */
@@ -993,7 +993,7 @@ function missingGlyphLine(items: readonly Diagnostic[], omittedKinds: number): s
   const more = chars.length - TEXT_LINES_PER_CODE + omittedKinds;
   const rest = more > 0 ? msg(` (多い順に ${TEXT_LINES_PER_CODE} 字) ほか ${more} 種`, ` (the ${TEXT_LINES_PER_CODE} most frequent) and ${more} more`) : '';
   return printable(
-    `  ${severityLabel('error')} [font/missing-glyph] ${msg('読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます)', 'no loaded font has a glyph for these characters (they are drawn as the missing-glyph box)')}: ${head}${rest}`,
+    `  ${severityLabel('error')} [font/missing-glyph] ${msg('読み込んだどのフォントにも字形の無い文字があります (字形の無い文字の形で出ます)', 'no loaded font has a glyph for these characters (they are drawn as the missing-glyph box)')}: ${head}${rest}`,
   );
 }
 
@@ -1010,7 +1010,7 @@ function omittedLine(d: Diagnostic, n: number, kinds: number): string {
 
 /** 重さの呼び名 (誤り・警告・知らせ) */
 function severityLabel(s: Diagnostic['severity']): string {
-  return s === 'error' ? msg('誤り', 'error') : s === 'warning' ? msg('警告', 'warning') : msg('知らせ', 'info');
+  return s === 'error' ? msg('エラー', 'error') : s === 'warning' ? msg('警告', 'warning') : msg('情報', 'info');
 }
 
 /**
@@ -1416,7 +1416,7 @@ export function watchInputDir(root: string, onChange: (ev: string, file: string)
       watchers.set(root, fs.watch(root, { recursive: true }, relay));
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM') throw e;
-      console.error(msg(`${root}: この OS では、下のディレクトリの変更は見張れません`, `${root}: changes in subdirectories cannot be watched on this OS`));
+      console.error(msg(`${root}: この OS では、下のディレクトリの変更は監視できません`, `${root}: changes in subdirectories cannot be watched on this OS`));
       watchers.set(root, fs.watch(root, relay));
     }
     return close;
@@ -1440,7 +1440,7 @@ export function watchInputDir(root: string, onChange: (ev: string, file: string)
       });
     } catch {
       // 見張れないディレクトリ (権限が無い・たどる途中で消えた) は飛ばす (root のほかは)
-      if (d === root) throw new Error(msg(`${root}: 変更を見張れません`, `${root}: cannot watch for changes`));
+      if (d === root) throw new Error(msg(`${root}: 変更を監視できません`, `${root}: cannot watch for changes`));
       return;
     }
     // 見張っているディレクトリが消えたら、見張りを外す (同じ名前で作り直されたら、親の見張りがまた張る)
@@ -1505,74 +1505,74 @@ export function sourceDateEpoch(env: Record<string, string | undefined>): Date |
 
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--encrypt] [--user-password <パスワード>] [--owner-password <パスワード>] [--deny <権限,…>] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--xhtml] [--watch] [--lang ja|en]',
-  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--encrypt] [--user-password <パスワード>] [--owner-password <パスワード>] [--deny <権限,…>] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--watch] [--lang ja|en]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <フォントファイル>]... [--generic-font <総称>=<フォント名>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--encrypt] [--user-password <パスワード>] [--owner-password <パスワード>] [--deny <権限,…>] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--xhtml] [--watch] [--lang ja|en]',
+  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <フォントファイル>]... [--generic-font <総称>=<フォント名>] [--system-fonts] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--encrypt] [--user-password <パスワード>] [--owner-password <パスワード>] [--deny <権限,…>] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--watch] [--lang ja|en]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
   '        kumiori --help | --version',
   '',
   '  -o, --output <PDF>        出力の PDF (--format svg・png では SVG・PNG。入力が複数か、既にあるディレクトリか、/ で終わるときは出力先のディレクトリ (ディレクトリにするのは、標準入力のときは使えない)。- は標準出力)',
-  '  --format pdf|svg|png      出力の形式 (既定 pdf。-o の拡張子が .svg・.png ならその形式。-o がディレクトリのときは拡張子を見ない)。svg・png はページごとに書く (字は書体の輪郭、画像は埋め込み。複数ページの文書は、1 ページだけ選んでも <名前>-<番号>.svg。-o の拡張子と食い違う形式は誤り)',
+  '  --format pdf|svg|png      出力の形式 (既定 pdf。-o の拡張子が .svg・.png ならその形式。-o がディレクトリのときは拡張子を見ない)。svg・png はページごとに書く (文字はフォントのアウトライン、画像は埋め込み。複数ページの文書は、1 ページだけ選んでも <名前>-<番号>.svg。-o の拡張子と食い違う形式はエラー)',
   '  --pages <範囲>            SVG・PNG に書くページ (1 から数える。1-3,5,7- のように , で区切る。既定はすべて)',
-  '  --dpi <値>                PNG の解像度 (1 インチあたりの画素の数。既定 96)',
+  '  --dpi <値>                PNG の解像度 (1 インチあたりのピクセルの数。既定 96)',
   '  --max-pages <N>           先頭から N ページまで組んだら止める (長い文書のプレビュー。N より後ろを指すページ番号の参照・総ページ数は "?" で組み、警告を出す)',
   '  --style <名前>            HTML の既定のスタイル (kumiori・browser・browser-margin・ah・vivliostyle・weasyprint。既定 kumiori)',
   '  --page-size <用紙>        HTML の既定の用紙 (@page で size を指定していない文書の用紙。A5・"A5 landscape"・148mm,210mm など。既定 A4)',
-  '  --svg-lang <ja,en>        SVG の systemLanguage を照らす言語 (SVG を置いた所に言語の指定が無いとき。既定は実行環境の言語)',
-  '  --css a.css,b.css         使う CSS (HTML から参照されていないものは利用者のスタイルシートとして足す。指定が無ければ、HTML が参照する CSS だけを使う)',
-  '  --font-dir <dir>          既定の書体 (NotoSerifJP-Regular.ttf など) を読むディレクトリ (無ければキャッシュ、次に Google Fonts から取る)',
-  '  --font-cache <dir>        Google Fonts から取った既定の書体を保存して使い回すディレクトリ (既定は環境変数 KUMIORI_FONT_CACHE か OS のキャッシュ:',
+  '  --svg-lang <ja,en>        SVG の systemLanguage を照合する言語 (SVG を置いた所に言語の指定が無いとき。既定は実行環境の言語)',
+  '  --css a.css,b.css         使う CSS (HTML から参照されていないものは利用者のスタイルシートとして追加する。指定が無ければ、HTML が参照する CSS だけを使う)',
+  '  --font-dir <dir>          既定のフォント (NotoSerifJP-Regular.ttf など) を読むディレクトリ (無ければキャッシュ、次に Google Fonts から取得する)',
+  '  --font-cache <dir>        Google Fonts から取得した既定のフォントを保存して再利用するディレクトリ (既定は環境変数 KUMIORI_FONT_CACHE か OS のキャッシュ:',
   '                            Linux は $XDG_CACHE_HOME か ~/.cache の kumiori/fonts、macOS は ~/Library/Caches/kumiori/fonts、Windows は %LOCALAPPDATA%\\kumiori\\fonts)',
-  '  --no-font-cache           書体のキャッシュを読まず、保存もしない (毎回 Google Fonts から取る)',
-  '  --font <書体ファイル>     書体を足す (TTF・OTF・TTC・WOFF・WOFF2。可変フォントは font-weight などに合う形で組む。何度でも)',
-  '  --generic-font <総称>=<書体名>  総称の書体に使う書体 (serif・sans-serif・monospace は欧文、serif-cjk・sans-serif-cjk は和文。何度でも)',
-  '  --system-fonts            どの書体にも字形の無い字を、OS の書体で組む (組んだ結果が機械の書体で変わる。--no-outside-files とは一緒に使えない)',
+  '  --no-font-cache           フォントのキャッシュを読まず、保存もしない (毎回 Google Fonts から取得する)',
+  '  --font <フォントファイル> フォントを追加する (TTF・OTF・TTC・WOFF・WOFF2。可変フォントは font-weight などに合う形で組む。何度でも)',
+  '  --generic-font <総称>=<フォント名>  総称ファミリーに使うフォント (serif・sans-serif・monospace は欧文、serif-cjk・sans-serif-cjk は和文。何度でも)',
+  '  --system-fonts            どのフォントにも字形の無い文字を、OS のフォントで組む (組んだ結果が機械のフォントで変わる。--no-outside-files とは一緒に使えない)',
   '  --compat spec|antenna     XSL-FO の既定値の流儀 (XSL-FO 1.1 の初期値 / アンテナハウスに合わせる。既定 spec)',
   '  --fo                      拡張子によらず XSL-FO として読む',
   '  --xhtml                   拡張子によらず XML の構文 (XHTML) で読む',
   '  --print                   トンボと塗り足し (3mm) を付ける',
   '  --spot-colors <JSON>      特色の名前と代わりの CMYK',
   '  --image-max-dpi <dpi>     JPEG の解像度の上限',
-  '  --pdfx x1a|x1a:2003|x3|x4 入稿用の PDF/X-1a:2001・PDF/X-1a:2003・PDF/X-3:2003・PDF/X-4 の印を付ける (RGB は CMYK にする。ページの中のリンク・注釈・フォームの欄と、動作 (しおりの外への飛び先など) は書かない。x1a・x3 は透明を平らにする (一部を画像にすることがある))',
+  '  --pdfx x1a|x1a:2003|x3|x4 入稿用の PDF/X-1a:2001・PDF/X-1a:2003・PDF/X-3:2003・PDF/X-4 の印を付ける (RGB は CMYK にする。ページの中のリンク・注釈・フォームフィールドと、動作 (しおりの外へのリンク先など) は書かない。x1a・x3 は透明をフラット化する (一部を画像にすることがある))',
   '  --output-profile <ICC>    出力の CMYK の ICC プロファイル (PDF/X。x4 では必須で出力機器 (prtr) のもの。x1a は AtoB1 の表 (A2B1) を持つもの)',
-  '  --output-condition <名前>  印刷条件の名前 (既定は --output-profile の説明 (desc)、それも無ければ JC200103。ICC の登録簿に無い名前なら、x1a・x3 でも --output-profile が要る)',
-  '  --tagged                  タグ付き PDF にする (既定。見出し・段落・リスト・図・リンク・表・脚注の構造、読む順、図の代わりの文、言語を入れる。--pdfx x1a・x3 とは使えない。指定しなければ、x1a・x3 ではタグを付けない)',
+  '  --output-condition <名前>  印刷条件の名前 (既定は --output-profile の説明 (desc)、それも無ければ JC200103。ICC のレジストリに無い名前なら、x1a・x3 でも --output-profile が要る)',
+  '  --tagged                  タグ付き PDF にする (既定。見出し・段落・リスト・図・リンク・表・脚注の構造、読む順、図の代替テキスト、言語を入れる。--pdfx x1a・x3 とは使えない。指定しなければ、x1a・x3 ではタグを付けない)',
   '  --no-tagged               タグを付けない (0.4 までの既定と同じ PDF)',
-  '  --pdfua                   PDF/UA-1 の印を付ける (--tagged を含む。XMP の pdfuaid・DisplayDocTitle を書き、字形の無い字を描かない。題・言語・図と数式の代わりの文・見出しの順の足りないものを警告に出す)',
+  '  --pdfua                   PDF/UA-1 の印を付ける (--tagged を含む。XMP の pdfuaid・DisplayDocTitle を書き、字形の無い文字を描画しない。タイトル・言語・図と数式の代替テキスト・見出しの順の足りないものを警告に出す)',
   '  --document-lang <言語>     文書の言語 (ja・en-US など。入力に言語が無いときだけ使う)',
-  '  --pdfa 2b|3b              長期保存用の PDF/A-2b・PDF/A-3b の印を付ける (出力意図は sRGB。ファイルを開く動作・フォームの欄は書かない。2b は添付ファイルを埋め込まない。--pdfx と合わせるときは --output-profile が要る)',
+  '  --pdfa 2b|3b              長期保存用の PDF/A-2b・PDF/A-3b の印を付ける (出力インテントは sRGB。ファイルを開く動作・フォームフィールドは書かない。2b は添付ファイルを埋め込まない。--pdfx と合わせるときは --output-profile が要る)',
   '  --encrypt                 PDF を暗号化する (AES-256。--user-password・--owner-password・--deny のどれかを書いても暗号化する。--pdfx・--pdfa とは使えない)',
   '  --user-password <パスワード>  開くときのパスワード (無ければパスワード無しで開けて、--deny の制限だけが付く)',
   '  --owner-password <パスワード> 権限を外して開くパスワード (無ければ乱数で、権限を外して開ける人はいない)',
   '  --deny <権限,…>           禁じること (print・modify・copy・annotate・fill-forms・accessibility・assemble・print-high-quality。--pdfua では accessibility を外せない)',
-  '  --no-fetch-images         文書が http(s) で参照する画像を取らない',
-  '  --no-fetch-styles         文書が http(s) で参照する CSS を取らない',
+  '  --no-fetch-images         文書が http(s) で参照する画像を取得しない',
+  '  --no-fetch-styles         文書が http(s) で参照する CSS を取得しない',
   '  --no-outside-files        文書が file: の URL や ../ で指した、入力のディレクトリの外のファイルを読まない (他人の書いた文書を組むとき)',
-  '  --low-memory              メモリを節約して組む (組み直しで前の回のページを使い回さない。数千ページの文書でメモリが 4 割ほど、時間は 1.5 倍ほど)',
-  '  --link-schemes <a,b>      PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて。ほかのスキームのリンクは字だけを組む)',
+  '  --low-memory              メモリを節約して組む (組み直しで前の回のページを再利用しない。数千ページの文書でメモリが 4 割ほど、時間は 1.5 倍ほど)',
+  '  --link-schemes <a,b>      PDF に動作を書くリンクの URL のスキーム (既定 http,https,mailto,tel。* はすべて。ほかのスキームのリンクは文字だけを組む)',
   '  --link-launch             ファイルを開く動作のリンク (PDF でない相対のファイル・絶対パス・//host/…) も PDF に書く (既定は書かない)',
-  '  --link-relative <file|uri> スキームの無い相対のリンク (x.pdf・a.mp3) の書き方。file: ファイルを開く動作 (GoToR・Launch。既定)、uri: 書かれた参照のままの URI の動作 (ブラウザの中の PDF ビューアでも開ける)',
+  '  --link-relative <file|uri> スキームの無い相対のリンク (x.pdf・a.mp3) の書き方。file: ファイルを開く動作 (GoToR・Launch。既定)、uri: 書かれた参照のままの URI の動作 (ブラウザーの中の PDF ビューアーでも開ける)',
   '  --drawio-stencils <files> draw.io の図の図形ライブラリ (stencils.min.js・ライブラリの XML) と配布物の画像。ファイルかディレクトリを , で区切る (何度でも)',
-  '  --fetch-drawio-stencils   draw.io の図に要る図形ライブラリ・画像が無ければ、draw.io の配布物 (v24.7.5) から取る (書体のキャッシュの場所に保存する)',
-  '  --drawio-stencils-url <URL> 取り先の stencils.min.js の URL (--fetch-drawio-stencils も付けたことになる)',
+  '  --fetch-drawio-stencils   draw.io の図に要る図形ライブラリ・画像が無ければ、draw.io の配布物 (v24.7.5) から取得する (フォントのキャッシュの場所に保存する)',
+  '  --drawio-stencils-url <URL> 取得先の stencils.min.js の URL (--fetch-drawio-stencils も付けたことになる)',
   '  --no-drawio               draw.io の図 (.drawio・.dio) を画像として読まない',
-  '  --plugin <モジュール>     プラグインを読み込む (./・../・絶対の道・file: の URL はファイル。ほかはパッケージの名前で探し、読めなければ今のディレクトリのファイル。何度でも。信頼できるものだけ)',
-  '  --plugin-option <名前=値> その前の --plugin に渡す選択肢 (何度でも)',
-  '  --base <dir>              標準入力の文書の CSS・画像・書体を探すディレクトリ (既定は今のディレクトリ)',
-  '  --watch                   入力のディレクトリの変更を見張って組み直す (Ctrl+C で終わる)',
+  '  --plugin <モジュール>     プラグインを読み込む (./・../・絶対のパス・file: の URL はファイル。ほかはパッケージの名前で探し、読めなければ今のディレクトリのファイル。何度でも。信頼できるものだけ)',
+  '  --plugin-option <名前=値> その前の --plugin に渡すオプション (何度でも)',
+  '  --base <dir>              標準入力の文書の CSS・画像・フォントを探すディレクトリ (既定は今のディレクトリ)',
+  '  --watch                   入力のディレクトリの変更を監視して組み直す (Ctrl+C で終わる)',
   '  --limit <名前>=<値>       入力の上限を変える (何度でも。…Bytes は 64MB のように K・M・G を付けられる。入れ子の深さの上限は下げるだけ。上げると時間とメモリを多く使いうる)',
   '  --list-limits             上限の名前・既定の値・上げられるかを書いて終わる',
-  '  --verbose                 知らせ (重さ info の診断。選択肢で止めた取得など) も書く',
-  '  --diagnostics text|json   診断の書き方 (既定 text。json は 1 件 1 行の JSON で、知らせも書く)。どちらも標準エラーに書く',
+  '  --verbose                 情報 (重大度 info の診断。オプションで止めた取得など) も書く',
+  '  --diagnostics text|json   診断の書き方 (既定 text。json は 1 件 1 行の JSON で、情報も書く)。どちらも標準エラーに書く',
   '  --ignore-warning <名前>   その名前の診断を出さない (css/unknown-property など。, で区切る・何度でも。知らない名前は警告して続ける)',
-  '  --fail-on error|warning   その重さ以上の診断があれば、出力を書いた上で終了コード 2 で終わる (出さない診断は数えない)',
+  '  --fail-on error|warning   その重大度以上の診断があれば、出力を書いた上で終了コード 2 で終わる (出さない診断は数えない)',
   '  --lang ja|en              文言の言語 (無ければ環境変数 KUMIORI_LANG、OS のロケール (LC_ALL・LC_MESSAGES・LANG) の順。既定は日本語)',
   '  -h, --help                この使い方を書いて終わる',
-  '  -v, --version             版を書いて終わる',
+  '  -v, --version             バージョンを書いて終わる',
   '',
   '  環境変数 SOURCE_DATE_EPOCH (1970-01-01 UTC からの秒) があれば、PDF の作成日・更新日にその日時を書きます (同じ入力から同じバイトの PDF になります)',
   '  未対応の CSS・XSL-FO の指定、読めない画像などは、「警告 [名前] ファイル:行:列: 文」の形で標準エラー (-o - のときも) に出ます',
-  '  (重さで 誤り・警告・知らせ。名前の一覧は docs/diagnostics.md)。',
+  '  (重大度で エラー・警告・情報。名前の一覧は docs/diagnostics.md)。',
 ].join('\n');
 
 /** 使い方。英語 */
@@ -1891,7 +1891,7 @@ async function main() {
     };
     watchInputDir(dir, onChange);
   }
-  console.error(msg('変更を見張っています (Ctrl+C で終わる)', 'watching for changes (Ctrl+C to stop)'));
+  console.error(msg('変更を監視しています (Ctrl+C で終わる)', 'watching for changes (Ctrl+C to stop)'));
 }
 
 type Args = ReturnType<typeof parseArgs>;

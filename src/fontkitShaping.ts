@@ -722,12 +722,12 @@ export function patchFontkitShaping(fk: unknown) {
         // 前と同じ (測る所が例外を受けて使っていた hmtx の送り) なので、知らせない
         if (typeof text0 === 'string' && MARKS_ONLY.test(text0)) return plain;
         const why = e instanceof Error ? e.message : String(e);
-        fontNotice(this, 'layout-run', () => msg(`整形の表 (GSUB・GPOS・morx) で組めない字の並びがあります (${why})。その並びは、合字・カーニングなどの機能を使わずに組みます`, `some text cannot be shaped with the layout tables (GSUB, GPOS, morx) (${why}); that text is set without ligatures, kerning or other features`));
+        fontNotice(this, 'layout-run', () => msg(`整形の表 (GSUB・GPOS・morx) で組めない文字の並びがあります (${why})。その並びは、合字・カーニングなどの機能を使わずに組みます`, `some text cannot be shaped with the layout tables (GSUB, GPOS, morx) (${why}); that text is set without ligatures, kerning or other features`));
         return plain;
       }
       if (depth !== 1 || !budget || !disableLayoutTables(this)) throw e;
       const why = e instanceof LookupBudgetError ? msg('Lookup の呼び出しが多すぎる', 'too many lookup calls') : msg('表の読みが大きすぎる', 'the tables take too much to read');
-      fontNotice(this, 'layout', () => msg(`整形の表 (GSUB・GPOS・morx) で字を組めません (${why})。この書体は、合字・カーニングなどの機能を使わずに組みます`, `cannot shape text with the layout tables (GSUB, GPOS, morx) (${why}); this font is set without ligatures, kerning or other features`));
+      fontNotice(this, 'layout', () => msg(`整形の表 (GSUB・GPOS・morx) で文字を組めません (${why})。このフォントは、合字・カーニングなどの機能を使わずに組みます`, `cannot shape text with the layout tables (GSUB, GPOS, morx) (${why}); this font is set without ligatures, kerning or other features`));
       resetLookupBudget();
       return withLayoutBudget(this, () => shaped.call(this, text0, ...rest), true);
     } finally {

@@ -39,7 +39,7 @@ describe('図の大きさの上限 (1,000 万 px) を超えさせるセル', () 
       expect(r.width).toBeLessThanOrEqual(FORMAT_MAX_SIZE);
       expect(r.height).toBeLessThanOrEqual(FORMAT_MAX_SIZE);
       expect(r.svg).toContain('#123456');
-      expect(r.warnings.join('\n')).toContain('図を大きさの上限より大きくするセルを描かない');
+      expect(r.warnings.join('\n')).toContain('図を大きさの上限より大きくするセルを描画しない');
     });
   it('上限いっぱいの影の付いた図も、本体の上限の内の大きさになる', () => {
     const r = drawioToSvg(enc(`<mxGraphModel shadow="1"><root><mxCell id="0"/><mxCell id="1" parent="0"/>${vertex('a', 'strokeColor=none;', 0, 0, 1e7 - 8, 10)}</root></mxGraphModel>`))!;
@@ -50,7 +50,7 @@ describe('図の大きさの上限 (1,000 万 px) を超えさせるセル', () 
     const files = [{ name: 'a.drawio', data: model(plain + vertex('big', 'strokeWidth=1e7;', 0, 0, 100, 60)) }];
     const r = await typeset('<img src="a.drawio">', { loadFont: loadCachedFont, files });
     expect(r.warnings.join('\n')).not.toContain('読めない画像');
-    expect(r.warnings.join('\n')).toContain('図を大きさの上限より大きくするセルを描かない');
+    expect(r.warnings.join('\n')).toContain('図を大きさの上限より大きくするセルを描画しない');
   }, 60_000);
 });
 
@@ -63,7 +63,7 @@ describe('SVG の長さの上限 (1,600 万字) を 1 つで超えるセル', ()
       expect(r).toBeDefined();
       expect(r.svg).toContain('#123456');
       expect(r.svg.length).toBeLessThan(10_000);
-      expect(r.warnings.join('\n')).toContain('SVG が大きすぎるセルを描かない');
+      expect(r.warnings.join('\n')).toContain('SVG が大きすぎるセルを描画しない');
     }
   }, 120_000);
   it('超えるセルを並べても、書いた字の合計の上限で止まる (後ろのセルは描かず、途中までを描いたと警告する)', () => {
@@ -76,8 +76,8 @@ describe('SVG の長さの上限 (1,600 万字) を 1 つで超えるセル', ()
     expect(r.svg).toContain('#123456');
     expect(r.svg).not.toContain('#654321');
     const w = r.warnings.join('\n');
-    expect(w).toContain('SVG が大きすぎるセルを描かない');
-    expect(w).toContain('図が大きすぎるので、途中までを描く');
+    expect(w).toContain('SVG が大きすぎるセルを描画しない');
+    expect(w).toContain('図が大きすぎるので、途中までを描画する');
     // 書いて捨てるのは、上限の 2 倍 (3,200 万字) まで (20 個を全部書くと 3 億字を超える)
     expect(Date.now() - t0).toBeLessThan(60_000);
   }, 120_000);

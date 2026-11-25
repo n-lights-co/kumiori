@@ -61,7 +61,7 @@ describe('メタファイル・CGM: 画素にできる数は、ファイルの�
     expect(pngSizes(r.svg)).toEqual([]);
     expect(r.svg).toContain('<path');
     expect(r.svg.length).toBeLessThan(1000);
-    expect(r.warnings.join()).toMatch(/CELL ARRAY は、文書の画像の画素の合計が上限 \(\d+ バイトのファイルでは \d+ 画素\) を超えるので描きません/);
+    expect(r.warnings.join()).toMatch(/CELL ARRAY は、文書の画像のピクセルの合計が上限 \(\d+ バイトのファイルでは \d+ ピクセル\) を超えるので描画しません/);
   });
   it('CGM: 72 バイトのタイルの並び (全部が背景の色のタイル 1 枚) から、900 万画素の画像を作らない。警告に出す', T, () => {
     const b = cgmTiles(N, N);
@@ -71,7 +71,7 @@ describe('メタファイル・CGM: 画素にできる数は、ファイルの�
     const line = [0x40, 0x28, 0, 0, 0, 0, 0, 10, 0, 10];
     const r2 = cgmToSvg(new Uint8Array([...b.subarray(0, b.length - 4), ...line, ...b.subarray(b.length - 4)]))!;
     expect(pngSizes(r2.svg)).toEqual([]);
-    expect(r2.warnings.join()).toContain('タイルの並び は、文書の画像の画素の合計が上限');
+    expect(r2.warnings.join()).toContain('タイルの並び は、文書の画像のピクセルの合計が上限');
   });
 
   it('上限の中の画像は、これまでどおり描く (ファイルの大きさに依らない分・ファイルの大きさに応じた分)', T, () => {

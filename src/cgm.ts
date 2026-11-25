@@ -1017,7 +1017,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const r: State = { ...st, lineWidth: [...st.lineWidth], markerSize: [...st.markerSize], edgeWidth: [...st.edgeWidth] };
     const get = <T,>(m: Map<number, T>, idx: number, what: string): T | undefined => {
       const b = m.get(idx);
-      if (!b) warn(msg(`${what}の束ね表の ${idx} 番が定められていないので、個別の値で描きます`, `bundle ${idx} of the ${what} bundle table is not defined; the individual values are used`));
+      if (!b) warn(msg(`${what}のバンドル表の ${idx} 番が定められていないので、個別の値で描画します`, `bundle ${idx} of the ${what} bundle table is not defined; the individual values are used`));
       return b;
     };
     if (a[0] || a[1] || a[2]) {
@@ -1043,7 +1043,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       }
     }
     if (a[6] || a[7] || a[8] || a[9] || a[10]) {
-      const b = get(st.bundles.text, st.textBundle, msg('字', 'text'));
+      const b = get(st.bundles.text, st.textBundle, msg('文字', 'text'));
       if (b) {
         if (a[6]) r.textFont = b.font;
         if (a[7]) r.textPrecision = b.precision;
@@ -1218,7 +1218,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     if (overflow) return false;
     if (svgChars + n > svgBudget) {
       overflow = true;
-      warn(msg(`CGM を SVG にした長さが上限 (${bytes.length} バイトのファイルでは ${svgBudget} 字) を超えるので、途中までを描きます`, `the SVG made from the CGM exceeds the length limit (${svgBudget} characters for a file of ${bytes.length} bytes); only the first part is drawn`));
+      warn(msg(`CGM を SVG にした長さが上限 (${bytes.length} バイトのファイルでは ${svgBudget} 字) を超えるので、途中までを描画します`, `the SVG made from the CGM exceeds the length limit (${svgBudget} characters for a file of ${bytes.length} bytes); only the first part is drawn`));
       return false;
     }
     svgChars += n;
@@ -1267,7 +1267,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     }
     // 入れ子は 8 段まで、読み直す要素は合わせて 20 万まで (互いに何度も写し合うセグメントで、止まらなくならないように)
     if (replayDepth >= 8 || replayBudget <= 0) {
-      warn(msg('COPY SEGMENT の入れ子が深すぎるか多すぎるので、途中から描きません', 'COPY SEGMENT is nested too deeply or used too many times; the rest is not drawn'));
+      warn(msg('COPY SEGMENT の入れ子が深すぎるか多すぎるので、途中から描画しません', 'COPY SEGMENT is nested too deeply or used too many times; the rest is not drawn'));
       return '';
     }
     // SVG の長さの上限を超えた後は、写さない (写しても何も出ない。写す手間は、セグメントの大きさだけかかる)
@@ -1377,7 +1377,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       const id = st === 2 ? tablePattern() : geometricPattern();
       if (id) emit(`<path d="${d}" fill="url(#${id})" fill-rule="evenodd" stroke="none"${clipAttr()}/>`);
       else {
-        warn(msg(`内側の塗り方 ${st === 2 ? 'pattern' : 'geometric pattern'} の模様が定められていないので、塗りの色で塗ります`, `the pattern for interior style ${st === 2 ? 'pattern' : 'geometric pattern'} is not defined; the fill color is used`));
+        warn(msg(`内側の塗り方 ${st === 2 ? 'pattern' : 'geometric pattern'} のパターンが定められていないので、塗りの色で塗ります`, `the pattern for interior style ${st === 2 ? 'pattern' : 'geometric pattern'} is not defined; the fill color is used`));
         emit(`<path d="${d}" ${paint('fill', s.fillColour)} fill-rule="evenodd" stroke="none"${clipAttr()}/>`);
       }
     } else if (st === 6) {
@@ -1468,7 +1468,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
   let pixelsLeft = pixelBudget;
   const takePixels = (n: number, what: string): boolean => {
     if (n > pixelsLeft) {
-      warn(msg(`${what} は、文書の画像の画素の合計が上限 (${bytes.length} バイトのファイルでは ${pixelBudget} 画素) を超えるので描きません`, `${what} is not drawn because the total pixels of the images in the document exceed the limit (${pixelBudget} pixels for a file of ${bytes.length} bytes)`));
+      warn(msg(`${what} は、文書の画像のピクセルの合計が上限 (${bytes.length} バイトのファイルでは ${pixelBudget} ピクセル) を超えるので描画しません`, `${what} is not drawn because the total pixels of the images in the document exceed the limit (${pixelBudget} pixels for a file of ${bytes.length} bytes)`));
       return false;
     }
     pixelsLeft -= n;
@@ -1540,7 +1540,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     // 違う色の数だけを調べ、その合計にも上限を置く (patternWork。超えたら、その後の模様の塗りは描かない)
     patternWork -= t.palette.length;
     if (patternWork < 0) {
-      warn(msg('PATTERN TABLE の模様の色を調べる手間が上限を超えたので、その後の模様の塗りは描きません', 'checking the colors of PATTERN TABLE patterns exceeded the work limit; later pattern fills are not drawn'));
+      warn(msg('PATTERN TABLE のパターンの色を調べる計算量が上限を超えたので、その後のパターンの塗りは描画しません', 'checking the colors of PATTERN TABLE patterns exceeded the work limit; later pattern fills are not drawn'));
       return undefined;
     }
     const pal = t.palette.map(colourOf);
@@ -1573,7 +1573,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       return `<image x="0" y="0" width="1" height="1" preserveAspectRatio="none" style="image-rendering:pixelated" href="data:image/png;base64,${base64(encodePngStored({ width: t.nx, height: t.ny, rgba }))}"/>`;
     };
     // 中身は、新しい色の並びのときだけ書き、画素の合計に数える
-    const body = patternBody(key, content, rects ? cells * RECT_CELL_WEIGHT : cells, msg('PATTERN TABLE の模様', 'a PATTERN TABLE pattern'));
+    const body = patternBody(key, content, rects ? cells * RECT_CELL_WEIGHT : cells, msg('PATTERN TABLE のパターン', 'a PATTERN TABLE pattern'));
     if (!body) return undefined;
     return patternUse(body, `patternUnits="userSpaceOnUse" x="0" y="0" width="1" height="1" patternTransform="matrix(${[a[0], a[1], c[0], c[1], o[0], o[1]].map((v) => String(Math.round(v * 10000) / 10000)).join(' ')})"`);
   };
@@ -1621,7 +1621,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const b = map([x1, y0]);
     const m = svgMatrix(B);
     // 中身 (セグメントの図形) は同じ図形ごとに 1 つ。画素ではないので数えない (図形の数はセグメントの定義の大きさまで)
-    const body = geo.body ?? (geo.body = patternBody(`g${frag}`, () => frag, 0, msg('GEOMETRIC PATTERN の模様', 'a GEOMETRIC PATTERN pattern')));
+    const body = geo.body ?? (geo.body = patternBody(`g${frag}`, () => frag, 0, msg('GEOMETRIC PATTERN のパターン', 'a GEOMETRIC PATTERN pattern')));
     if (!body) return undefined;
     return patternUse(
       body,
@@ -1774,7 +1774,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const ul = Math.hypot(ux, uy) || 1;
     // TEXT PATH (第 1 部 7.7.17): right は基準の向き、left はその逆、up は上の向き、down はその逆に字を進める
     const path = box && s.textPath >= 2 ? 0 : s.textPath;
-    if (box && s.textPath >= 2) warn(msg('RESTRICTED TEXT の TEXT PATH (up・down) は right で描きます', 'RESTRICTED TEXT with TEXT PATH up or down is drawn as right'));
+    if (box && s.textPath >= 2) warn(msg('RESTRICTED TEXT の TEXT PATH (up・down) は right で描画します', 'RESTRICTED TEXT with TEXT PATH up or down is drawn as right'));
     // 文字の局所座標 (x: 基準の向き、y: 上の向きの逆。単位は文字の高さに対する VDC) → SVG の行列 (第 1 部 7.7.16)
     const B = mapVec([(bx / ul) * s.charExpansion, (by / ul) * s.charExpansion]);
     const U = mapVec([ux / ul, uy / ul]);
@@ -1787,7 +1787,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       return;
     }
     if (path >= 2) {
-      if (s.scores.length) warn(msg('TEXT PATH が up・down の文字の TEXT SCORE TYPE は描きません', 'TEXT SCORE TYPE of text with TEXT PATH up or down is not drawn'));
+      if (s.scores.length) warn(msg('TEXT PATH が up・down の文字の TEXT SCORE TYPE は描画しません', 'TEXT SCORE TYPE of text with TEXT PATH up or down is not drawn'));
       drawVerticalText(str, h, path === 3, B, U, map(pos), fs, ha, va, cv);
       return;
     }
@@ -1851,7 +1851,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
    * non-tangential は回さない。経路の終わりを超える字は、終わりの接線の向きの直線の上に置く。横の揃えは経路の始め・真ん中・終わり
    */
   const drawTextOnPath = (str: string, h: number, U: Pt, ha: number, boxed: boolean) => {
-    if (boxed) warn(msg('GENERALIZED TEXT PATH MODE の RESTRICTED TEXT は、箱に合わせずに経路に沿って描きます', 'RESTRICTED TEXT in GENERALIZED TEXT PATH MODE is drawn along the path without fitting it to the box'));
+    if (boxed) warn(msg('GENERALIZED TEXT PATH MODE の RESTRICTED TEXT は、ボックスに合わせずにパスに沿って描画します', 'RESTRICTED TEXT in GENERALIZED TEXT PATH MODE is drawn along the path without fitting it to the box'));
     const e = defaultExtent(defaults);
     const d = s.textPathD ?? pathOf([[Math.min(e[0][0], e[1][0]), Math.min(e[0][1], e[1][1])], [Math.max(e[0][0], e[1][0]), Math.min(e[0][1], e[1][1])]], false);
     const id = `cgmtp${textPathSeq++}`;
@@ -1864,7 +1864,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const offset = ha === 2 ? '50%' : ha === 3 ? '100%' : '0';
     const spacing = s.charSpacing ? ` letter-spacing="${num(s.charSpacing * h * k)}"` : '';
     const el = `<text font-family="${font.family}"${font.bold ? ' font-weight="bold"' : ''}${font.italic ? ' font-style="italic"' : ''} font-size="${num(fs)}" ${paint('fill', s.textColour)}${anchor}${spacing} xml:space="preserve"><textPath href="#${id}" startOffset="${offset}" data-extend="true"${s.textPathMode === 1 ? ' data-rotate="none"' : ''}>${esc(str)}</textPath></text>`;
-    if (s.scores.length) warn(msg('GENERALIZED TEXT PATH MODE の文字の TEXT SCORE TYPE は描きません', 'TEXT SCORE TYPE of text in GENERALIZED TEXT PATH MODE is not drawn'));
+    if (s.scores.length) warn(msg('GENERALIZED TEXT PATH MODE の文字の TEXT SCORE TYPE は描画しません', 'TEXT SCORE TYPE of text in GENERALIZED TEXT PATH MODE is not drawn'));
     emit(clipId && !replayDepth ? `<g${clipAttr()}>${el}</g>` : el);
   };
   /** 文字の属性 (書体・大きさ・色) */
@@ -2155,7 +2155,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
           const r = first([12]);
           if (r) st.alpha = Math.min(1, Math.max(0, r.values[0] as number));
           else warn(msg('ESCAPE 45 (Alpha Transparency) の値が読めません', 'cannot read the value of ESCAPE 45 (Alpha Transparency)'));
-        } else warn(msg(`ESCAPE ${fid} は、登録簿に無いか Kumiori の知らない機能なので読み飛ばします`, `ESCAPE ${fid} is skipped (not in the register or not known to Kumiori)`));
+        } else warn(msg(`ESCAPE ${fid} は、レジストリに無いか Kumiori の知らない機能なので読み飛ばします`, `ESCAPE ${fid} is skipped (not in the register or not known to Kumiori)`));
         return;
       }
       case 8: // セグメントの制御と属性 (第 3 部 表 11)
@@ -2629,7 +2629,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         break;
       case 10:
         // GENERALIZED DRAWING PRIMITIVE (第 1 部 7.6.10): 中身は登録簿で決まるが、登録された GDP は無い (負の番号は処理系ごとの私用)
-        warn(msg(`GENERALIZED DRAWING PRIMITIVE (GDP ${p.I()}) は描きません (登録された GDP がありません)`, `GENERALIZED DRAWING PRIMITIVE (GDP ${p.I()}) is not drawn (no registered GDP)`));
+        warn(msg(`GENERALIZED DRAWING PRIMITIVE (GDP ${p.I()}) は描画しません (登録された GDP がありません)`, `GENERALIZED DRAWING PRIMITIVE (GDP ${p.I()}) is not drawn (no registered GDP)`));
         break;
       case 21:
         // CONNECTING EDGE: 閉じた図形の中で、前の線の要素の終わりから、次の点への辺を足す
@@ -2651,7 +2651,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const [al1, be1] = coef(s1);
         const branch = Math.sign(al0);
         if (!(Math.abs(al0) > Math.abs(be0)) || !(Math.abs(al1) > Math.abs(be1)) || Math.sign(al1) !== branch) {
-          warn(msg('HYPERBOLIC ARC の向きが双曲線と交わらない (または両方の枝にまたがる) ので描きません', 'HYPERBOLIC ARC is not drawn because its directions do not meet the hyperbola (or span both branches)'));
+          warn(msg('HYPERBOLIC ARC の向きが双曲線と交わらない (または両方の枝にまたがる) ので描画しません', 'HYPERBOLIC ARC is not drawn because its directions do not meet the hyperbola (or span both branches)'));
           break;
         }
         const t0 = Math.atanh(be0 / Math.abs(al0));
@@ -2682,7 +2682,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const n = p.I();
         // 次数は 64 まで (実用の次数は 10 未満。大きな次数は計算が次数の 2 乗で増えるので、細工したファイルで止まらないように)
         if (!(k >= 1 && k <= 64 && n >= k && n <= 100000)) {
-          warn(msg(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の次数か制御点の数が読めないので描きません`, `${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} is not drawn because its order or number of control points cannot be read`));
+          warn(msg(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の次数か制御点の数が読めないので描画しません`, `${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} is not drawn because its order or number of control points cannot be read`));
           break;
         }
         // 制御点・節点・重みは、残りの引数に入る数まで読む (引数の外は 0 と読めるので、数の欄だけを信じると、10 バイトの要素 1 つで
@@ -2696,7 +2696,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         const wts: number[] = [];
         if (id === 25) for (let i = 0; i < n && p.left > 0; i++) wts.push(p.R());
         if (ctrl.length !== n || knots.length !== n + k || (id === 25 && wts.length !== n)) {
-          warn(msg(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の制御点・節点が足りないので描きません`, `${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} is not drawn because it lacks control points or knots`));
+          warn(msg(`${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} の制御点・節点が足りないので描画しません`, `${id === 25 ? 'NON-UNIFORM RATIONAL B-SPLINE' : 'NON-UNIFORM B-SPLINE'} is not drawn because it lacks control points or knots`));
           break;
         }
         const v = bspline(k, ctrl, knots, Math.max(tmin, knots[k - 1]), Math.min(tmax, knots[n]), id === 25 ? wts : undefined);
@@ -2705,14 +2705,14 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
       }
       case 27:
         // POLYSYMBOL: 記号の表 (SYMBOL LIBRARY LIST の名前) はメタファイルの外のもので、形は規格に無く、登録簿にも登録された表が無い (第 1 部 6.6.12・7.3.23)
-        warn(msg('POLYSYMBOL は描きません (記号の表はメタファイルの外のもので、登録された表もありません)', 'POLYSYMBOL is not drawn (the symbol tables are outside the metafile and none is registered)'));
+        warn(msg('POLYSYMBOL は描画しません (記号の表はメタファイルの外のもので、登録された表もありません)', 'POLYSYMBOL is not drawn (the symbol tables are outside the metafile and none is registered)'));
         break;
       case 28:
       case 29:
         if (tiles) tile(id === 28, p);
         break;
       default:
-        warn(msg(`図形 ${elementName(4, id)} は描きません`, `graphical primitive ${elementName(4, id)} is not drawn`));
+        warn(msg(`図形 ${elementName(4, id)} は描画しません`, `graphical primitive ${elementName(4, id)} is not drawn`));
     }
   };
 
@@ -2805,7 +2805,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const prec = p.I();
     const mode = p.E();
     if (!(nx > 0 && ny > 0) || nx * ny > maxPixels() || ![0, 1, 2, 4, 8, 16, 24, 32].includes(prec)) {
-      warn(msg('CELL ARRAY の大きさか精度が読めないので描きません', 'CELL ARRAY is not drawn because its size or precision cannot be read'));
+      warn(msg('CELL ARRAY の大きさか精度が読めないので描画しません', 'CELL ARRAY is not drawn because its size or precision cannot be read'));
       return;
     }
     // データのある行だけを画素にする: 1 行は少なくとも、詰めた並びなら nx 個のセル、連なりなら 1 組 (数と色) のビットを使うので、
@@ -2852,7 +2852,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
     const w = ntp * ctp;
     const h = ntl * ctl;
     if (!(ntp > 0 && ntl > 0 && ctp > 0 && ctl > 0) || w * h > maxPixels() || !(csp > 0 && csl > 0)) {
-      warn(msg('BEGIN TILE ARRAY の大きさが読めないので、タイルの並びを描きません', 'the size of BEGIN TILE ARRAY cannot be read; the tile array is not drawn'));
+      warn(msg('BEGIN TILE ARRAY の大きさが読めないので、タイルの並びを描画しません', 'the size of BEGIN TILE ARRAY cannot be read; the tile array is not drawn'));
       return;
     }
     if (!takePixels(w * h, msg('タイルの並び', 'the tile array'))) return;
@@ -2991,7 +2991,7 @@ export function cgmToSvg(bytes: Uint8Array): CgmResult | undefined {
         }
       }
     } else {
-      warn(msg(`TILE の圧縮の形 ${kind} は、登録簿に無いか Kumiori の知らない形なので読みません`, `TILE compression type ${kind} is not read (not in the register or not known to Kumiori)`));
+      warn(msg(`TILE の圧縮の形 ${kind} は、レジストリに無いか Kumiori の知らない形なので読みません`, `TILE compression type ${kind} is not read (not in the register or not known to Kumiori)`));
       return;
     }
   };

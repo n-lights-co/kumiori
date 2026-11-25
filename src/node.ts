@@ -1,11 +1,11 @@
 /**
- * Kumiori の Node 用の部品 (kumiori/node)。ファイルシステムを使うので、ブラウザでは読み込まない。
+ * Kumiori の Node 用のモジュール (kumiori/node)。ファイルシステムを使うので、ブラウザーでは読み込まない。
  *
  * ```ts
  * import { typeset } from 'kumiori';
  * import { createFontLoader, createFileResolver } from 'kumiori/node';
  * const r = await typeset(html, {
- *   loadFont: createFontLoader(),            // 既定の書体: 置き場 → キャッシュ → ネットワーク (Node のコマンドと同じ)
+ *   loadFont: createFontLoader(),            // 既定のフォント: 格納先 → キャッシュ → ネットワーク (Node のコマンドと同じ)
  *   resolveResource: createFileResolver(),   // file:///…/style.css などの参照を読む
  * });
  * ```

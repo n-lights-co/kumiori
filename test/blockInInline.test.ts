@@ -77,7 +77,7 @@ describe('HTM-88 行内の要素の中のブロックを、行内の箱をブロ
         expect(r.lines).toEqual(want);
         // 上から順に並ぶ (ブロックの行は前の行の下、後ろの行はブロックの下)
         for (let k = 1; k < r.lineYs.length; k++) expect(r.lineYs[k]).toBeGreaterThan(r.lineYs[k - 1]);
-        expect(r.warnings.join('\n')).not.toMatch(/行内の箱の中のブロック|しおり/);
+        expect(r.warnings.join('\n')).not.toMatch(/行内のボックスの中のブロック|しおり/);
       });
     }
   }
@@ -124,6 +124,6 @@ describe('HTM-88 行内の要素の中のブロックを、行内の箱をブロ
     const { engine } = await makeEngine();
     const inl: LInline = { type: 'inline', children: ['a', { type: 'block', children: ['B'] } as LBlock as never, 'c'] };
     const t = engine.layout(doc([{ type: 'block', children: [inl] }]));
-    expect(t.warnings.join('\n')).toMatch(/行内の箱の中のブロック \(block\) を置けない/);
+    expect(t.warnings.join('\n')).toMatch(/行内のボックスの中のブロック \(block\) を置けない/);
   });
 });

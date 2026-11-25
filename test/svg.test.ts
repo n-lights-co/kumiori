@@ -104,7 +104,7 @@ describe('SVG → ベクタ', () => {
     const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
     const img = { type: 'image' as const, src: 'm.svg' };
     const tree = engine.layout(doc([{ type: 'block', children: [img, img] }]));
-    expect(tree.warnings).toEqual(['画像 m.svg を描けないため、仮の枠で描きます (foreignobject)']);
+    expect(tree.warnings).toEqual(['画像 m.svg を描画できないため、プレースホルダーで描画します (foreignobject)']);
   });
 });
 

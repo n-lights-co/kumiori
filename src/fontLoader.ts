@@ -56,13 +56,13 @@ export class FontFileError extends KumioriFontError {
 
 /** 位置と長さがファイルの中に収まっているか。収まっていなければ FontFileError (DataView の RangeError を外に出さない) */
 const check = (buf: ArrayBuffer, offset: number, length: number) => {
-  if (!(offset >= 0 && length >= 0 && offset + length <= buf.byteLength)) throw new FontFileError(msg('書体ファイルが壊れています (表の位置が範囲外)', 'the font file is broken (table offset out of range)'));
+  if (!(offset >= 0 && length >= 0 && offset + length <= buf.byteLength)) throw new FontFileError(msg('フォントファイルが壊れています (表の位置が範囲外)', 'the font file is broken (table offset out of range)'));
 };
 
 /** TTC 内の index 番目の書体を、単独の sfnt として取り出す。壊れたファイルは FontFileError */
 export function extractFromCollection(buf: ArrayBuffer, index: number): ArrayBuffer {
   const v = new DataView(buf);
-  if (countFonts(buf) <= index) throw new FontFileError(msg('TTC に該当の書体がありません', 'the TTC has no such font'));
+  if (countFonts(buf) <= index) throw new FontFileError(msg('TTC に該当のフォントがありません', 'the TTC has no such font'));
   check(buf, 12 + index * 4, 4);
   const off = v.getUint32(12 + index * 4);
   check(buf, off, 12);
@@ -78,7 +78,7 @@ export function extractFromCollection(buf: ArrayBuffer, index: number): ArrayBuf
   let total = headLen;
   for (const r of recs) total += (r.length + 3) & ~3;
   // 1 つの書体の表の合計は、ファイルの大きさより大きくならない (表が重なっているのは壊れた・細工したファイル。同じ場所を指す表を並べて、写しを増やせる)
-  if (total - headLen > buf.byteLength + numTables * 3) throw new FontFileError(msg('TTC の書体の表が重なっています', 'tables of a font in the TTC overlap'));
+  if (total - headLen > buf.byteLength + numTables * 3) throw new FontFileError(msg('TTC のフォントの表が重なっています', 'tables of a font in the TTC overlap'));
   const out = new Uint8Array(total);
   const ov = new DataView(out.buffer);
   out.set(new Uint8Array(buf, off, 12));
@@ -102,7 +102,7 @@ export function isCollection(buf: ArrayBuffer): boolean {
 
 /** ファイル内の書体の数 (TTF / OTF は 1)。sfnt の頭 (12 バイト) も無いファイルは FontFileError */
 export function countFonts(buf: ArrayBuffer): number {
-  if (buf.byteLength < 12) throw new FontFileError(msg('書体ファイルが短すぎます', 'the font file is too short'));
+  if (buf.byteLength < 12) throw new FontFileError(msg('フォントファイルが短すぎます', 'the font file is too short'));
   if (!isCollection(buf)) return 1;
   const n = new DataView(buf).getUint32(8);
   // 書体の位置の表 (4 バイトずつ) がファイルに収まらない数は壊れている
@@ -132,7 +132,7 @@ export function collectionFaces(buf: ArrayBuffer): ArrayBuffer[] {
   for (let i = 0; i < n; i++) {
     const face = extractFromCollection(buf, i);
     total += face.byteLength;
-    if (total > limits().fontCollectionBytes) throw new FontFileError(msg('TTC の書体の合計が大きすぎます', 'the fonts in the TTC are too large in total'));
+    if (total > limits().fontCollectionBytes) throw new FontFileError(msg('TTC のフォントの合計が大きすぎます', 'the fonts in the TTC are too large in total'));
     faces.push(face);
   }
   return faces;

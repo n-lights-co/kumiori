@@ -116,7 +116,7 @@ const STYLE_KEYS = new Set<string>([
 /** 行の長さの上限 (pt。PDF のページの大きさの上限 200 インチ。ISO 32000-2 の附属書 C) */
 export const MAX_MEASURE_LENGTH = 14400;
 
-const bad = (ja: string, en: string, option: string) => new KumioriOptionError(msg(`選択肢の誤り: ${ja}`, `invalid option: ${en}`), option);
+const bad = (ja: string, en: string, option: string) => new KumioriOptionError(msg(`オプションのエラー: ${ja}`, `invalid option: ${en}`), option);
 
 /** 測る文字列と、スタイル・行の長さを確認する (エラーは KumioriOptionError) */
 export function checkMeasureArgs(text: unknown, style: unknown, width?: unknown): asserts style is TextStyle {

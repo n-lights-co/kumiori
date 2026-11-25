@@ -417,7 +417,7 @@ export function isOmittedDiagnostic(d: Diagnostic): boolean {
 
 /** 省いた分をまとめた診断の文 (重さで「誤り・警告・知らせ」と呼ぶ) */
 function omittedMessage(severity: DiagnosticSeverity, omitted: number, kinds: number): string {
-  const ja = severity === 'error' ? '誤り' : severity === 'warning' ? '警告' : '知らせ';
+  const ja = severity === 'error' ? 'エラー' : severity === 'warning' ? '警告' : '情報';
   const en = severity === 'error' ? 'error' : severity === 'warning' ? 'warning' : 'notice';
   return msg(
     `同じ種類の${ja}がほかに ${omitted} 件 (${kinds} 種) あります (1 つの名前につき ${limits().diagnosticsPerCode} 件まで残します)`,

@@ -164,7 +164,7 @@ function invalidValueKey(p: string, v: string): string {
 }
 /** 読めない値の宣言の警告の文 (items は「prop: value」か、その並び) */
 export function invalidValueText(items: string): string {
-  return msg(`読めない値の CSS の宣言を無視しました (値の誤りか未対応): ${items}`, `ignored CSS declarations with invalid values (mistyped or unsupported): ${items}`);
+  return msg(`読めない値の CSS の宣言を無視しました (値のエラーか未対応): ${items}`, `ignored CSS declarations with invalid values (mistyped or unsupported): ${items}`);
 }
 /** 読めない値の項目の鍵を、性質と値に分ける (診断の args) */
 export function splitInvalidValueKey(key: string): { property: string; value: string } {

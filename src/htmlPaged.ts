@@ -379,7 +379,7 @@ const tooDeep = () => msg('深すぎる入れ子の規則 (rules nested too deep
  */
 const tooComplex = () =>
   msg(
-    `複合セレクタが ${MAX_BACKTRACK_COMPOUNDS} 個を超える、結合子の種類の混ざったセレクタ (当てない) (selectors with more than ${MAX_BACKTRACK_COMPOUNDS} compound selectors mixing kinds of combinators; not matched)`,
+    `複合セレクターが ${MAX_BACKTRACK_COMPOUNDS} 個を超える、結合子の種類の混ざったセレクター (当てない) (selectors with more than ${MAX_BACKTRACK_COMPOUNDS} compound selectors mixing kinds of combinators; not matched)`,
     `selectors with more than ${MAX_BACKTRACK_COMPOUNDS} compound selectors mixing kinds of combinators (not matched)`,
   );
 /**
@@ -388,7 +388,7 @@ const tooComplex = () =>
  */
 export const tooComplexTotal = () =>
   msg(
-    '照合の手間の合計が大きすぎるため、途中から当てなかった、結合子の種類の混ざったセレクタ (selectors mixing kinds of combinators, not matched after their total matching cost grew too large)',
+    '照合の計算量の合計が大きすぎるため、途中から当てなかった、結合子の種類の混ざったセレクター (selectors mixing kinds of combinators, not matched after their total matching cost grew too large)',
     'selectors mixing kinds of combinators, not matched after their total matching cost grew too large',
   );
 /** @layer の名前の、点で区切った段の数の上限 (layerRanks) */

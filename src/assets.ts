@@ -548,7 +548,7 @@ export class AssetStore {
       const budget = formatSvgBudget(bytes.length);
       const svgOk = typeof r.svg === 'string' && r.svg.length <= budget;
       if (typeof r.svg === 'string' && !svgOk)
-        warnings.push(msg(`形式 ${fmt.name} の SVG が長すぎるので描きません (${bytes.length} バイトのファイルでは ${budget} 字まで)`, `the SVG from the format ${fmt.name} is too long and is not drawn (up to ${budget} characters for a file of ${bytes.length} bytes)`));
+        warnings.push(msg(`形式 ${fmt.name} の SVG が長すぎるので描画しません (${bytes.length} バイトのファイルでは ${budget} 字まで)`, `the SVG from the format ${fmt.name} is too long and is not drawn (up to ${budget} characters for a file of ${bytes.length} bytes)`));
       const extra = { formatSource: { format: fmt.name, bytes }, ...(warnings.length ? { notes: [...new Set(warnings)] } : {}) };
       const seen = svgOk ? this.formatSvgs.get(r.svg) : undefined;
       if (seen && seen.width === r.width && seen.height === r.height) {
@@ -635,7 +635,7 @@ export class AssetStore {
       if (px) return this.register(name, { mime: 'image/png', bytes: rejoin(thisCall(), await encodePng(px)), width: size.width, height: size.height, ...(dpi ? { dpi } : {}) });
       // PNG は PDF に入れるとき (pdf-lib の embedPng) に展開するので、展開の大きさの上限を先に確かめる (pixels.ts の pngWithinLimits)
       if (mime === 'image/png' && !pngWithinLimits(bytes))
-        return this.register(name, { mime, bytes, width: size.width, height: size.height, drawable: false, unsupported: msg('PNG (画素の数か展開の大きさが上限を超える)', 'PNG (the number of pixels or the decompressed size exceeds the limit)') });
+        return this.register(name, { mime, bytes, width: size.width, height: size.height, drawable: false, unsupported: msg('PNG (ピクセルの数か展開の大きさが上限を超える)', 'PNG (the number of pixels or the decompressed size exceeds the limit)') });
       // PDF に入れられるのは PNG・JPEG・図形にできる SVG だけ (読めない GIF・BMP・WebP は画素に直せない)
       if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/svg+xml') {
         const label = mime === 'image/webp' ? 'WebP' : mime.replace(/^image\//, '').toUpperCase();
@@ -757,8 +757,8 @@ export class AssetStore {
       const detail = r.detail;
       this.warn(
         r.code === 'image/pdf-encrypted'
-          ? diag('image/pdf-encrypted', msg(`PDF の画像 ${shown} は暗号化されているので読めません。仮の枠で描きます`, `PDF image ${shown} is encrypted and cannot be read; a placeholder frame is drawn`), { src: shown })
-          : diag('image/pdf-invalid', msg(`PDF の画像 ${shown} を読めません (${detail})。仮の枠で描きます`, `PDF image ${shown} cannot be read (${detail}); a placeholder frame is drawn`), { src: shown, detail }),
+          ? diag('image/pdf-encrypted', msg(`PDF の画像 ${shown} は暗号化されているので読めません。プレースホルダーで描画します`, `PDF image ${shown} is encrypted and cannot be read; a placeholder frame is drawn`), { src: shown })
+          : diag('image/pdf-invalid', msg(`PDF の画像 ${shown} を読めません (${detail})。プレースホルダーで描画します`, `PDF image ${shown} cannot be read (${detail}); a placeholder frame is drawn`), { src: shown, detail }),
       );
       return this.register(name, { mime: 'application/pdf', bytes, width: 80, height: 160 / 3, drawable: false });
     }

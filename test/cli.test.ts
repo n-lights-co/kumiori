@@ -257,7 +257,7 @@ describe('Node のコマンド', () => {
     // 知らせ (重さ info) は、--verbose のときだけ標準エラー出力に出す
     expect(a.stderr).not.toContain('参照されていない CSS');
     const v = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir, '--verbose'], { encoding: 'utf8', env: JA_ENV });
-    expect(v.stderr).toContain('  知らせ [css/unreferenced-stylesheet] 文書から参照されていない CSS は当てません: other.css');
+    expect(v.stderr).toContain('  情報 [css/unreferenced-stylesheet] 文書から参照されていない CSS は当てません: other.css');
     // --diagnostics json: 1 件 1 行の JSON (知らせも書く)
     const j = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), html, '-o', out, '--font-dir', fontDir, '--diagnostics', 'json'], { encoding: 'utf8', env: JA_ENV });
     const lines = j.stderr.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
@@ -452,7 +452,7 @@ describe('Node のコマンド', () => {
       return re.test(log);
     };
     try {
-      expect(await until(/見張って/), log).toBe(true);
+      expect(await until(/監視して/), log).toBe(true);
       fs.writeFileSync(html, '<p>一</p><p style="break-before: page">二</p>');
       expect(await until(/w\.pdf: 2 ページ/), log).toBe(true);
     } finally {
@@ -473,7 +473,7 @@ describe('Node のコマンド', () => {
       return re.test(log);
     };
     try {
-      expect(await until(/見張って/), log).toBe(true);
+      expect(await until(/監視して/), log).toBe(true);
       fs.writeFileSync(html, '<p>一</p><p style="break-before: page">二</p><p style="break-before: page">三</p>');
       expect(await until(/3 ページを SVG/), log).toBe(true);
       // 前は、書いた w-1.svg などの変更で組み直しが続いた (見張りが除いていたのは w.svg だけ)
@@ -631,7 +631,7 @@ describe('Node のコマンド', () => {
       return re.test(log);
     };
     try {
-      expect(await until(/見張って/), log).toBe(true);
+      expect(await until(/監視して/), log).toBe(true);
       const save = (body: string) => {
         fs.writeFileSync(`${w}.tmp`, body);
         fs.renameSync(`${w}.tmp`, w);
@@ -770,7 +770,7 @@ describe('Node のコマンド', () => {
     fs.unlinkSync(path.join(cache, 'Tinos-Bold.ttf'));
     const bad = spawnSync(process.execPath, [cli, html, '-o', out, '--font-cache', path.join(work, 'cache.html'), '--font-dir', cache], { encoding: 'utf8', env: JA_ENV });
     expect(bad.status).toBe(0);
-    expect(bad.stderr).toContain('書体のキャッシュに書けません');
+    expect(bad.stderr).toContain('フォントのキャッシュに書けません');
     expect(fs.existsSync(path.join(cache, 'Tinos-Bold.ttf'))).toBe(false);
   }, 120_000);
 
@@ -890,7 +890,7 @@ describe('Node のコマンド', () => {
     fs.writeFileSync(c, '<style>@font-face{font-family:X;src:url(../fx/none.ttf)}p{font-family:X}</style><p>iiiWWW</p>');
     const r = spawnSync(process.execPath, [path.join(root, 'dist-cli/cli.js'), c, '-o', path.join(dir, 'c.pdf'), '--font-dir', fontDir], { encoding: 'utf8', env: JA_ENV });
     expect(r.status).toBe(0);
-    expect(r.stderr).toContain('@font-face の書体のファイルが見つかりません: X (../fx/none.ttf)');
+    expect(r.stderr).toContain('@font-face のフォントのファイルが見つかりません: X (../fx/none.ttf)');
   }, 120_000);
   it('警告の中の制御文字 (文書に書かれたエスケープ シーケンス・改行) は、見える形にして書く', () => {
     const dir = path.join(work, 'ctl');
@@ -1024,7 +1024,7 @@ describe('Node のコマンド', () => {
     expect(r.status).toBe(1);
     expect(r.stderr.split('プラグインが見つかりません: kumiori-no-such-plugin').length - 1).toBe(1);
     expect(r.stderr).not.toMatch(/^\s*at /m);
-    expect(r.stderr).not.toContain('見張って');
+    expect(r.stderr).not.toContain('監視して');
   }, 120_000);
   it('--no-outside-files: 入力のディレクトリの中の、外のファイルを指すシンボリックリンクも読まない', () => {
     const base = path.join(work, 'outside-link');
@@ -1078,7 +1078,7 @@ describe('Node のコマンド', () => {
     const plain = spawnSync(process.execPath, [cli, html, '-o', path.join(dir, 'a.pdf'), '--font-dir', fontDir], { encoding: 'utf8', env });
     expect(plain.status).toBe(0);
     expect(plain.stderr).toContain('[font/missing-glyph]');
-    expect(plain.stderr).toContain('--system-fonts で、OS の書体から字形を探せます');
+    expect(plain.stderr).toContain('--system-fonts で、OS のフォントから字形を探せます');
     // --no-outside-files のときは、一緒に使えない --system-fonts を勧めない
     const inside = spawnSync(process.execPath, [cli, html, '-o', path.join(dir, 'd.pdf'), '--font-dir', fontDir, '--no-outside-files'], { encoding: 'utf8', env });
     expect(inside.status).toBe(0);

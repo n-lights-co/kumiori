@@ -255,16 +255,16 @@ describe('CGM・WMF・EMF の警告を組版の警告に出す (IMG-19 (4))', ()
     for (const [name, bytes] of files) {
       const a = await assets.addBlob(name, new Blob([bytes as BlobPart]));
       expect(a?.mime).toBe('image/svg+xml');
-      expect(a?.notes?.join()).toMatch(/は、文書の画像の画素の合計が上限 \(\d+ バイトのファイルでは \d+ 画素\) を超えるので描きません/);
+      expect(a?.notes?.join()).toMatch(/は、文書の画像のピクセルの合計が上限 \(\d+ バイトのファイルでは \d+ ピクセル\) を超えるので描画しません/);
     }
     // 上限の内の画像には notes が無い
     expect((await assets.addBlob('ok.emf', new Blob([emfRle(100, 100) as BlobPart])))?.notes).toBeUndefined();
     const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: FAMILY, assets });
     const tree = engine.layout(doc([{ type: 'block', children: files.map(([src]) => ({ type: 'image' as const, src, width: 30, height: 30 })) }]));
     expect(tree.warnings).toEqual([
-      expect.stringMatching(/^画像 a\.wmf の一部を描けません: DIB の画像 は、文書の画像の画素の合計が上限/),
-      expect.stringMatching(/^画像 b\.emf の一部を描けません: DIB の画像 は、/),
-      expect.stringMatching(/^画像 c\.cgm の一部を描けません: CELL ARRAY は、/),
+      expect.stringMatching(/^画像 a\.wmf の一部を描画できません: DIB の画像 は、文書の画像のピクセルの合計が上限/),
+      expect.stringMatching(/^画像 b\.emf の一部を描画できません: DIB の画像 は、/),
+      expect.stringMatching(/^画像 c\.cgm の一部を描画できません: CELL ARRAY は、/),
     ]);
   });
 });

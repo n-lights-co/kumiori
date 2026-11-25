@@ -35,7 +35,7 @@ const KIND_TYPE = { option: '`KumioriOptionError`', input: '`KumioriInputError`'
 
 describe('診断と誤りの名前の一覧', () => {
   for (const [file, diagSection, errorSection] of [
-    ['docs/diagnostics.md', /^診断の名前/, /^誤りの型と名前/],
+    ['docs/diagnostics.md', /^診断の名前/, /^エラーの型と名前/],
     ['docs/en/diagnostics.md', /^Diagnostic codes/, /^Error types and codes/],
   ] as const) {
     const md = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
@@ -80,7 +80,7 @@ describe('DiagnosticList', () => {
     const o = l.list[MAX_DIAGNOSTICS_PER_CODE]!;
     expect(o).toMatchObject({ code: 'image/not-found', severity: 'error', args: { omitted: 9, omittedKinds: 6 } });
     expect(o.count).toBeUndefined();
-    expect(o.message).toBe(`同じ種類の誤りがほかに 9 件 (6 種) あります (1 つの名前につき ${MAX_DIAGNOSTICS_PER_CODE} 件まで残します)`);
+    expect(o.message).toBe(`同じ種類のエラーがほかに 9 件 (6 種) あります (1 つの名前につき ${MAX_DIAGNOSTICS_PER_CODE} 件まで残します)`);
     expect(isOmittedDiagnostic(o)).toBe(true);
     expect(l.list[MAX_DIAGNOSTICS_PER_CODE + 1]!.code).toBe('layout/line-overflow');
     // 別の入れ物に移しても (組版の後に、結果の診断へまとめるとき)、省いた分は 1 件のまま数を足す
@@ -125,14 +125,14 @@ describe('組版の結果の diagnostics', () => {
       '<body><div class="g"><p>a</p><p>b</p></div><p class="s" style="image-rendering: pixelated; colr: red; colr: blue">s</p><img src="none.png"></body></html>';
     const r = await typesetHtml(html, { name: 't.html', loadFont });
     expect(r.warnings).toContain('未対応の CSS を無視しました: grid-template-areas、image-rendering、position: sticky');
-    expect(r.warnings).toContain('知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr (2)');
+    expect(r.warnings).toContain('知らない CSS のプロパティを無視しました (スペルミスか未対応): colr (2)');
     const css = r.diagnostics.filter((d) => d.code === 'css/unsupported');
     expect(css.map((d) => d.args?.item)).toEqual(['grid-template-areas', 'image-rendering', 'position: sticky']);
     expect(css.every((d) => d.severity === 'warning')).toBe(true);
     expect(r.diagnostics.find((d) => d.code === 'css/unknown-property')).toMatchObject({
       code: 'css/unknown-property',
       severity: 'warning',
-      message: '知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr',
+      message: '知らない CSS のプロパティを無視しました (スペルミスか未対応): colr',
       args: { property: 'colr' },
       count: 2,
     });

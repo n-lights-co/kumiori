@@ -592,7 +592,7 @@ export class Graphics {
         // 「/Pattern setcolorspace」だけの状態など) では作らず、作るときは、作りながら点の数・メモリ・時間の上限を確かめる
         // (前は、200 万点のパスの輪郭 6,000 万点を、1 つの演算子の中で作り切ってから数えたので、50〜120 秒・2.5GB を使った)
         if (g.lineWidth > 0 && invert(g.ctm)) {
-          if (!patternUsable(this)) this.I.warn(msg('模様の塗り', 'pattern fills'));
+          if (!patternUsable(this)) this.I.warn(msg('パターンの塗り', 'pattern fills'));
           else {
             const outline = strokeOutline(segs, g.ctm, g.lineWidth, g.cap, g.join, g.dash, g.miter, this.outlineTally());
             if (outline.length) shadePatternFill(this, outline, false);
