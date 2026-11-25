@@ -6,10 +6,18 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
-import { childrenOf } from '../src/areaTree';
+import { childrenOf, estimateAreaTreeBytes } from '../src/areaTree';
 import { encodeJpeg } from '../src/jpeg';
 import { encodePngStored } from '../src/pixels';
 import { DEFAULT_FONTS, createTypesetter, typeset, typesetFo, typesetHtml, walkAreaTree, serializeAreaTree, parseAreaTree, type FontSpec, type GlyphArea } from '../src/index';
+import { AssetStore } from '../src/assets';
+import { elementOfImage, noteImageElement, releaseRenderCaches } from '../src/canvasRenderer';
+import { FONT_BYTES_PER_GLYPH, FontManager } from '../src/fontManager';
+import { __setMemoryRuntimeForTest, memoryRuntime } from '../src/memoryEstimate';
+import fontkit from '@pdf-lib/fontkit';
+import type { SystemFontSource } from '../src/index';
+import { KumioriError, isKumioriError } from '../src/errors';
+import { buildTestFont } from './sfntTestFont';
 import { testIccProfile } from './iccTestProfile';
 import { ensureFonts, fontDir } from './helpers';
 
@@ -1149,5 +1157,172 @@ describe('resolveResource: 名前に %xx のある画像の参照 (空白・括�
     const fo = `<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format"><fo:layout-master-set><fo:simple-page-master master-name="p" page-width="100mm" page-height="100mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set><fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body"><fo:block><fo:external-graphic src="url('/a%20b.png')"/></fo:block></fo:flow></fo:page-sequence></fo:root>`;
     const r = await typeset(fo, { loadFont, fetchImages: false, resolveResource: (u) => (u === '/a%20b.png' ? png(10, 20) : undefined) });
     expect(imagesOf(r).map((x) => x[0])).toEqual([false]);
+  });
+});
+
+describe('組んだ結果のメモリの見積もりと手放す (memoryUsage・dispose)', () => {
+  const png = (w: number, h: number) => encodePngStored({ width: w, height: h, rgba: new Uint8Array(w * h * 4).fill(200) });
+  const arimo = () => new Uint8Array(fs.readFileSync(path.join(fontDir, 'Arimo-Regular.ttf')));
+  /** 書体の読んだ表などの分の見積もり (字形の数 × FONT_BYTES_PER_GLYPH) */
+  const tableBytes = (b: Uint8Array) => (fontkit.create(b) as unknown as { numGlyphs: number }).numGlyphs * FONT_BYTES_PER_GLYPH.node;
+  const faceHtml = '<style>@font-face { font-family: Doc; src: url(doc.ttf) } p { font-family: Doc }</style><p>Kumiori</p>';
+
+  it('画像のファイルの中身・文書で足した書体・領域の木から見積もる (呼ぶ側の渡した書体のファイルは数えない)', async () => {
+    const image = png(40, 20);
+    const font = arimo();
+    // 同じ参照の画像は 1 度だけ数える
+    const r = await typeset(`${faceHtml}<img src="a.png"><img src="a.png">`, { loadFont, files: [{ name: 'doc.ttf', data: font }], resolveResource: (u) => (/a\.png$/.test(u) ? image : undefined) });
+    const u = r.memoryUsage();
+    // 画像の中身は写して持つので数える
+    expect(u.images).toBe(image.byteLength);
+    // 書体のファイルは呼ぶ側の Uint8Array をそのまま使うので数えず、読んだ表の分だけ
+    expect(u.fonts).toBe(tableBytes(font));
+    expect(u.layout).toBe(estimateAreaTreeBytes(r.areaTree));
+    expect(u.total).toBe(u.images + u.fonts + u.layout);
+    // 構造の木 (タグ付き PDF) も数える
+    const untagged = await typeset(`${faceHtml}<img src="a.png"><img src="a.png">`, { loadFont, tagged: false, files: [{ name: 'doc.ttf', data: font }], resolveResource: (x) => (/a\.png$/.test(x) ? image : undefined) });
+    expect(untagged.areaTree.structure).toBeUndefined();
+    expect(u.layout).toBeGreaterThan(untagged.memoryUsage().layout);
+  });
+
+  it('Typesetter と共有する書体 (既定の書体・OS の書体) は数えず、Typesetter.memoryUsage が数える。dispose しても、次の文書を組める', async () => {
+    const sys = buildTestFont({ family: 'Test Memory System', chars: [0xf0101] });
+    const systemFonts: SystemFontSource = {
+      find: async (req) => (req.chars.includes(String.fromCodePoint(0xf0101)) ? [{ key: 'sys', name: 'sys', kind: 'serif', forKind: 'serif', embeddable: true, chars: [String.fromCodePoint(0xf0101)], data: async () => sys.buffer.slice(sys.byteOffset, sys.byteOffset + sys.byteLength) as ArrayBuffer }] : []),
+    };
+    const t = await createTypesetter({ loadFont, systemFonts });
+    const before = t.memoryUsage();
+    expect(before.fonts).toBeGreaterThan(0);
+    const r = await t.typeset(`<p>本文です。${String.fromCodePoint(0xf0101)}</p>`);
+    expect(r.diagnostics.map((d) => d.code)).toContain('font/system-fallback');
+    expect(r.memoryUsage().fonts).toBe(0);
+    expect(r.memoryUsage().images).toBe(0);
+    // OS の書体 (と、字を探して読み込んだ記号などの書体) は Typesetter の書体に数える
+    expect(t.memoryUsage().fonts).toBeGreaterThanOrEqual(before.fonts + sys.byteLength + tableBytes(sys));
+    const date = new Date(Date.UTC(2024, 0, 1));
+    const pdf = await r.toPdf({ date });
+    r.dispose();
+    // Typesetter の書体は、ほかの結果のために残る
+    const again = await t.typeset(`<p>本文です。${String.fromCodePoint(0xf0101)}</p>`);
+    expect(again.pageCount).toBe(1);
+    expect(Buffer.from(await again.toPdf({ date })).equals(Buffer.from(pdf))).toBe(true);
+  });
+
+  it('Typesetter の再利用のキャッシュを数え、releaseCaches で手放す。手放した後も、同じ結果に組める', async () => {
+    const font = arimo();
+    const t = await createTypesetter({ loadFont });
+    const html = `${faceHtml}${'<p>段落の行分けを覚えるための文です。'.repeat(3)}</p>`.repeat(20);
+    const r1 = await t.typeset(html, { files: [{ name: 'doc.ttf', data: font }] });
+    const u = t.memoryUsage();
+    // 書体の下ごしらえ (元の中身のコピー)・段落の行分け・前の文書のページ
+    expect(u.caches).toBeGreaterThan(font.byteLength);
+    expect(u.total).toBe(u.fonts + u.caches);
+    // 文書の書体のファイルは、呼ぶ側が渡したもの (と、Typesetter の下ごしらえのキャッシュが持つもの) なので、結果には数えない
+    expect(r1.memoryUsage().fonts).toBe(tableBytes(font));
+    t.releaseCaches();
+    expect(t.memoryUsage()).toEqual({ total: u.fonts, fonts: u.fonts, caches: 0 });
+    const r2 = await t.typeset(html, { files: [{ name: 'doc.ttf', data: font }] });
+    expect(serializeAreaTree(r2.areaTree)).toBe(serializeAreaTree(r1.areaTree));
+    expect(t.memoryUsage().caches).toBeGreaterThan(0);
+  });
+
+  it('dispose の後は、PDF にする・描くと api/result-disposed (組んだときの言語の文)。見積もりは 0。木は空。2 度呼んでもよい', async () => {
+    const r = await typeset('<h1>見出し</h1><p>a</p><p style="break-before: page">b</p>', { loadFont, lang: 'en' });
+    expect(r.areaTree.structure).toBeDefined();
+    r.dispose();
+    r.dispose();
+    expect(r.memoryUsage()).toEqual({ total: 0, images: 0, fonts: 0, layout: 0 });
+    expect(r.pageCount).toBe(2);
+    expect(r.areaTree.sheets).toEqual([]);
+    expect(r.areaTree.structure).toBeUndefined();
+    expect(r.areaTree.bookmarks).toBeUndefined();
+    expect(r.areaTree.resources).toBeUndefined();
+    for (const call of [() => r.toPdf(), () => r.toPdfStream(() => {}), () => r.renderPageToSvg(0), () => r.renderPageToPng(0)]) {
+      const e = await call().then(() => undefined, (x: unknown) => x);
+      expect(isKumioriError(e)).toBe(true);
+      expect((e as KumioriError).code).toBe('api/result-disposed');
+      expect((e as KumioriError).message).toMatch(/dispose\(\)/);
+    }
+    expect(() => r.renderPage({} as OffscreenCanvas, 0)).toThrow(KumioriError);
+  });
+
+  it('toPdf・renderPageToSvg の途中で dispose したら、走っているものは同じ結果で終わり、その後に手放す。後から呼んだものは失敗する', async () => {
+    const html = '<p>a</p><p style="break-before: page">b</p><p style="break-before: page">c</p>';
+    const date = new Date(Date.UTC(2024, 0, 1));
+    const ref = await typeset(html, { loadFont });
+    const want = await ref.toPdf({ date });
+    const wantSvg = await ref.renderPageToSvg(2);
+    const r = await typeset(html, { loadFont });
+    const pdf = r.toPdf({ date });
+    const svg = r.renderPageToSvg(2);
+    r.dispose();
+    expect(r.memoryUsage().total).toBe(0);
+    // 走っている間は、木を空にしない
+    expect(r.areaTree.sheets.length).toBe(3);
+    const late = await r.toPdf().then(() => undefined, (x: unknown) => x);
+    expect((late as KumioriError).code).toBe('api/result-disposed');
+    expect(Buffer.from(await pdf).equals(Buffer.from(want))).toBe(true);
+    expect(await svg).toBe(wantSvg);
+    // 走っているものが全部終わったので、手放した
+    expect(r.areaTree.sheets).toEqual([]);
+  });
+
+  it('係数は処理系で分ける: Node では Node で測った係数、それ以外 (ブラウザ) では Chromium の Web Worker で測った係数', async () => {
+    expect(memoryRuntime()).toBe('node');
+    const font = arimo();
+    const glyphs = (fontkit.create(font) as unknown as { numGlyphs: number }).numGlyphs;
+    const t = await createTypesetter({ loadFont });
+    const html = `${faceHtml}${'<p>段落の行分けを覚えるための文です。'.repeat(3)}</p>`.repeat(20);
+    const r = await t.typeset(html, { files: [{ name: 'doc.ttf', data: font }] });
+    let areas = 0;
+    walkAreaTree(r.areaTree, () => void areas++);
+    const structure = r.areaTree.structure ? r.areaTree.structure.nodes.length * 200 + r.areaTree.structure.tags.length * 8 : 0;
+    const node = { result: r.memoryUsage(), typesetter: t.memoryUsage() };
+    try {
+      __setMemoryRuntimeForTest('browser');
+      expect(memoryRuntime()).toBe('browser');
+      const browser = { result: r.memoryUsage(), typesetter: t.memoryUsage() };
+      // 書体の表: 字形 1 つあたり、Node 500・ブラウザ 180 バイト
+      expect(node.result.fonts).toBe(glyphs * FONT_BYTES_PER_GLYPH.node);
+      expect(browser.result.fonts).toBe(glyphs * FONT_BYTES_PER_GLYPH.browser);
+      // 領域の木: 領域 1 つあたり、Node 340・ブラウザ 200 バイト (構造の木の節などは分けない)
+      expect(estimateAreaTreeBytes(r.areaTree)).toBe(areas * 200 + structure);
+      expect(node.result.layout - browser.result.layout).toBe(areas * 140);
+      // 再利用のキャッシュ (行分け・前の文書のページ) も、ブラウザの係数で少なく見積もる。書体の下ごしらえ (ファイルの大きさ) は同じ
+      expect(browser.typesetter.caches).toBeLessThan(node.typesetter.caches);
+      expect(browser.typesetter.caches).toBeGreaterThan(0);
+    } finally {
+      __setMemoryRuntimeForTest(undefined);
+    }
+    expect(r.memoryUsage()).toEqual(node.result);
+  });
+
+  it('ブラウザの画像 (ImageBitmap) の画素を数え、dispose で閉じる (同じ画像は 1 度)', () => {
+    const closed: number[] = [];
+    const bitmap = { width: 30, height: 10, close: () => closed.push(1) } as unknown as ImageBitmap;
+    const bytes = png(30, 10);
+    const store = new AssetStore();
+    store.register('a.png', { mime: 'image/png', bytes, width: 30, height: 10, element: bitmap });
+    store.register('dir/b.png', { mime: 'image/png', bytes, width: 30, height: 10, element: bitmap });
+    expect(store.memoryBytes()).toBe(bytes.buffer.byteLength + 30 * 10 * 4);
+    store.dispose();
+    expect(closed).toEqual([1]);
+    expect(store.get('a.png')).toBeUndefined();
+    expect(store.memoryBytes()).toBe(0);
+  });
+
+  it('画像のブラウザの画像の表は、結果 (画像の置き場) ごとに分ける: 同じバイト列の画像でも、手放した結果の閉じた画像を、ほかの結果が引かない', () => {
+    const bytes = png(4, 4);
+    const a = new AssetStore();
+    const b = new AssetStore();
+    const ea = { width: 4, height: 4, close: () => {} } as unknown as ImageBitmap;
+    const eb = { width: 4, height: 4, close: () => {} } as unknown as ImageBitmap;
+    noteImageElement(a, bytes, ea);
+    noteImageElement(b, bytes, eb);
+    expect(elementOfImage(a, bytes)).toBe(ea);
+    expect(elementOfImage(b, bytes)).toBe(eb);
+    releaseRenderCaches(a, new FontManager());
+    expect(elementOfImage(a, bytes)).toBeUndefined();
+    expect(elementOfImage(b, bytes)).toBe(eb);
   });
 });

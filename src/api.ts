@@ -11,13 +11,17 @@
  */
 
 import fontkit from '@pdf-lib/fontkit';
-import { FontManager, FontPrepCache, type LoadedFont } from './fontManager';
+import { estimateFontBytes, FontManager, FontPrepCache, type LoadedFont } from './fontManager';
 import { Measurer } from './measurer';
-import { LayoutEngine, SharedLineMemo, type LayoutControl } from './layoutEngine';
-import { renderPdf, renderPdfPages, svgTextWidth, type PdfRenderOptions } from './pdfRenderer';
+import { LayoutEngine, SharedLineMemo, type LayoutControl, type PageEmitter, type SheetSource } from './layoutEngine';
+import { areaStructure } from './structure';
+import { hasBackgroundImage } from './sourceRef';
+import { encryptIncompatible, renderPdf, renderPdfPages, svgTextWidth, type PdfRenderOptions } from './pdfRenderer';
+import { checkEncryptOptions, type PdfEncryptOptions } from './pdfEncrypt';
+import { checkMeasureArgs, measureDocument, measuredLines, type MeasuredText, type TextStyle } from './textMeasure';
 import { PdfOutputPort, type PdfOutput } from './pdfOutput';
-import { pdfDocumentDate, pdfStandardOf, type PdfAOptions, type PdfXOptions } from './pdfStandard';
-import { prepareSvgImagesForCanvas, renderSheetToCanvas } from './canvasRenderer';
+import { pdfAOf, pdfDocumentDate, pdfStandardOf, type PdfAOptions, type PdfXOptions } from './pdfStandard';
+import { preparedPixelBytes, prepareSvgImagesForCanvas, releaseRenderCaches, renderSheetToCanvas } from './canvasRenderer';
 import { renderSheetToSvg } from './svgRenderer';
 import { renderSheetToPng } from './pageRaster';
 import { importHtmlparser2, importLinkedom } from './linkedomModules';
@@ -33,14 +37,15 @@ import { xmlParse } from './xmlParse';
 import { fetchReportedImages, mathOptionsFor, type MathOptions } from './documentResources';
 import { collectionFaces, faceShapeOf, normalizeFamily, splitFontFile, type FaceTables, type UserFont } from './fontLoader';
 import type { AreaTree, FontSpec, GlyphArea, LDocument, SheetArea, SystemFontMatch, SystemFontSource } from './types';
-import { walkAreas, type AreaNode } from './areaTree';
+import { clearAreaTree, estimateAreaTreeBytes, walkAreas, type AreaNode } from './areaTree';
+import { memoryRuntime } from './memoryEstimate';
 import { splitVariation } from './fontVariation';
 import { documentMode, prepareHtml, type HtmlDefaults } from './htmlPrepare';
 import { ALL_AH, cascadeStyles, HTML_UA_CSS } from './cssCascade';
 import { patchHtmlParserStack } from './htmlParserStack';
 import { ensureHtmlLocations, setDocumentSource } from './sourceLocation';
 import { countedDiagnostics, diag, DIAGNOSTIC_CODES, DiagnosticList, type Diagnostic, type DiagnosticCode, type DiagnosticSource } from './diagnostics';
-import { KumioriFontError, KumioriOptionError } from './errors';
+import { KumioriError, KumioriFontError, KumioriOptionError } from './errors';
 import { invalidValueText, splitInvalidValueKey, summarizeCounts, unsupportedCssReport } from './cssUnsupported';
 import { MESSAGE_LANGS, messageLang, msg, type MessageLang } from './messages';
 import { bound, checkAbort, currentCall, fetchSignal, pacing, pause, rejoin, reportProgress, runInCall, thisCall, untilAbort, type CallContext, type TypesetProgress } from './callContext';
@@ -309,6 +314,59 @@ export interface TypesetResult {
    * 字は書体ファイルの輪郭から描く。画素にできない画像 (CMYK の JPEG・インターレースの PNG) は描かずに、warnings に足す
    */
   renderPageToPng(pageIndex: number, options?: RenderPagePngOptions): Promise<Uint8Array>;
+  /**
+   * この結果を手放す (dispose) と減るメモリの、おおよその見積もり (バイト)。いくつかの結果を持っておくとき (プレビューで前に組んだ結果を
+   * 再利用するときなど) に、どれを手放すかを決める目安。Typesetter (createTypesetter) と共有するもの (Typesetter のフォント・OS のフォント・
+   * 再利用のキャッシュ) は数えない (Typesetter.memoryUsage が数える)。呼ぶ側が渡した中身をそのまま持つもの (フォントのファイル・添付のファイル) も数えない。
+   * 領域の木とフォントの表の分は、数からの見積もりで、処理系によって違う (1.0 までに数え方を変えることがある)。dispose の後は、どれも 0
+   */
+  memoryUsage(): MemoryUsage;
+  /**
+   * この結果が持つものを手放す: ブラウザの画像 (ImageBitmap) を閉じ (GC を待たずに画素のメモリを返す)、画像・文書ごとのフォント・
+   * 描画のためのキャッシュ・領域の木 (areaTree の sheets などを空にする) を手放す。Typesetter と共有するものは手放さない。
+   * 後で toPdf・toPdfStream・renderPage・renderPageToSvg・renderPageToPng を呼ぶと、KumioriError (code は api/result-disposed) で失敗する。
+   * toPdf などが走っている途中で呼んだときは、走っているものが全部終わってから手放す (走っているものは、そのまま終わる)。
+   * 2 度呼んでもよい (2 度目は何もしない)
+   */
+  dispose(): void;
+}
+
+/**
+ * 組んだ結果のメモリの見積もり (TypesetResult.memoryUsage)。どれもバイトで、その結果を手放すと減る分の、おおよその値
+ * (1.0 までに数え方を変えることがある)
+ */
+export interface MemoryUsage {
+  /** 合計 (images・fonts・layout の和) */
+  total: number;
+  /**
+   * 画像: ファイルの中身 (渡されたものをコピーして持つ。同じ中身でも、参照の URL が違えば別に持つ)・描画のために画素にしたもの
+   * (ブラウザの画像。幅 × 高さ × 4)・前もって読んだ画素
+   */
+  images: number;
+  /**
+   * フォント: この文書で足したフォント (CSS の @font-face・XSL-FO と一緒に渡したフォント)。読んだ表・グリフのキャッシュ (フォントのグリフの数からの見積もり) と、
+   * この結果だけが持つファイル (WOFF・WOFF2 を戻したものなど)。直近に組んだ文書のフォントは、Typesetter の再利用のキャッシュも使うので、
+   * その結果を手放しても、次の文書を組むか Typesetter.releaseCaches を呼ぶまでは、表の分が残る
+   */
+  fonts: number;
+  /** 領域の木: 領域・構造の木 (タグ付き PDF)・しおり・飛び先の数からの見積もり */
+  layout: number;
+}
+
+/**
+ * Typesetter が持つメモリの見積もり (Typesetter.memoryUsage)。どれもバイトで、おおよその値 (1.0 までに数え方を変えることがある)。
+ * 使う側は、この total と、持っている結果の TypesetResult.memoryUsage の total の和で、メモリの上限を決められる
+ */
+export interface TypesetterMemoryUsage {
+  /** 合計 (fonts・caches の和) */
+  total: number;
+  /** フォント: Typesetter が読み込んだフォント (既定のフォント・fonts・数式や等幅のフォント・OS のフォント)。ファイルと読んだ表 (フォントのグリフの数からの見積もり)。releaseCaches では減らない */
+  fonts: number;
+  /**
+   * 再利用のキャッシュ (TypesetterOptions.reuse): フォントのファイルの下ごしらえ・段落の行分け・前の文書のページ。releaseCaches で手放せる。
+   * 行分けとページは、数からの見積もり
+   */
+  caches: number;
 }
 
 /** renderPageToPng の設定 */
@@ -351,7 +409,17 @@ export interface RenderPageOptions {
   guides?: boolean;
 }
 
-const bytesOf = (d: KumioriFileData): Uint8Array => (typeof d === 'string' ? new TextEncoder().encode(d) : d instanceof Uint8Array ? d : new Uint8Array(d));
+/**
+ * 呼ぶ側が渡した中身の ArrayBuffer (files・resolveResource の値)。組んだ結果のメモリの見積もり (TypesetResult.memoryUsage) は、
+ * これをそのまま持つもの (書体のファイル・添付のファイル) を数えない (結果を手放しても、呼ぶ側が持っていれば減らない)
+ */
+const givenBuffers = new WeakSet<ArrayBufferLike>();
+const bytesOf = (d: KumioriFileData): Uint8Array => {
+  if (typeof d === 'string') return new TextEncoder().encode(d);
+  const u = d instanceof Uint8Array ? d : new Uint8Array(d);
+  givenBuffers.add(u.buffer);
+  return u;
+};
 const bufferOf = (d: KumioriFileData): ArrayBuffer => {
   const b = bytesOf(d);
   return b.byteOffset === 0 && b.byteLength === b.buffer.byteLength ? (b.buffer as ArrayBuffer) : (b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
@@ -611,6 +679,18 @@ function checkPdfOnlyOptions(pdf: TypesetPdfOptions): void {
       throw optionError(msg(`typesetToPdf では、${k} は PDF の設定 (3 つ目の引数) でなく、組む設定 (2 つ目の引数) に渡してください`, `pass ${k} to typesetToPdf in the typesetting options (the second argument), not in the PDF options (the third argument)`), `pdf.${k}`);
   }
   if (pdf.date !== undefined) pdfDocumentDate(pdf.date);
+  checkPdfEncrypt(pdf, 'pdf.');
+}
+
+/**
+ * 暗号化の設定の形と、PDF/X・PDF/A と一緒でないことを、組む前に確認する (組み終えてから断らない)。null は暗号化しない。
+ * PDF/X・PDF/A と一緒なら KumioriPdfError (pdf/encrypt-incompatible)
+ */
+function checkPdfEncrypt(pdf: Pick<PdfOptions, 'encrypt' | 'pdfx' | 'pdfa'>, path: string): void {
+  if (pdf.encrypt == null) return;
+  checkEncryptOptions(pdf.encrypt, `${path}encrypt`);
+  if (pdf.pdfx != null) throw encryptIncompatible(pdfStandardOf(pdf.pdfx)?.label ?? 'PDF/X');
+  if (pdf.pdfa != null) throw encryptIncompatible(pdfAOf(pdf.pdfa)?.label ?? 'PDF/A');
 }
 
 /**
@@ -707,6 +787,15 @@ export interface PdfOptions {
    * 正しくない Date (NaN) と、0〜9999 年の外の日時は、選択肢の誤り (KumioriOptionError。option は 'date')
    */
   date?: Date;
+  /**
+   * PDF を暗号化する (AES-256。ISO 32000-2 §7.6 の標準セキュリティハンドラーの R 6)。開くときのパスワード (userPassword)・
+   * 権限を外して開くパスワード (ownerPassword。無ければ乱数で、権限を外して開ける人はいない)・許すこと (permissions。既定はどれも許す) を渡す。
+   * PDF/X・PDF/A とは一緒に使えない (どちらも暗号化を許さない。KumioriPdfError の pdf/encrypt-incompatible)。
+   * PDF/UA (TypesetOptions.pdfua) では、支援技術のための抽出の権限 (permissions.accessibility) を外せない (外そうとしたら、警告 pdfua/encrypt-accessibility-kept を出して残す)。
+   * 暗号化した PDF は、初期ベクトルなどが乱数なので、同じ入力・同じ日時からも毎回違うバイト列になる (文書の ID も乱数)。流して書く出力 (toPdfStream・typesetToPdfStream) でも使える。
+   * 権限に従うかどうかは PDF を読むソフトによる (守らないソフトもある)。1.0 までに形を変えることがある
+   */
+  encrypt?: PdfEncryptOptions;
 }
 /**
  * typesetToPdf の設定: PDF の設定 (PdfOptions) と、組み方。止める合図・進み具合 (signal・onProgress) は、組む設定 (options) の側に渡す
@@ -852,6 +941,30 @@ export interface Typesetter {
   typesetToPdf(text: string, options?: DocumentOptions, pdf?: TypesetPdfOptions): Promise<TypesetPdfResult>;
   /** 文書を組み、PDF を output へ流して書く (typesetToPdfStream と同じ。書体は読み込み済みのものを使い回す) */
   typesetToPdfStream(text: string, options: DocumentOptions | undefined, output: PdfOutput, pdf?: TypesetPdfOptions): Promise<TypesetPdfStreamResult>;
+  /**
+   * 文字列を、行を分けずに 1 行で組んだときの長さと高さを測る (pt。文書を作らずに、名前や見出しが枠に収まるかを先に知るときなど)。
+   * style は CSS のプロパティの一部 (TextStyle)。white-space の改行を残す指定 (pre など) なら、改行で行を分ける。
+   * 中では、文字列を 1 つのブロックの文書にして、この Typesetter のフォント・組版の処理で組むので、文書の中で同じ文字列・同じスタイルを組んだ行と同じ長さになる
+   * (1 回あたり、小さな文書を組むのと同じ手間がかかる)。測っても、文書をまたぐ再利用 (reuse) のキャッシュは変えない。1.0 までに形を変えることがある
+   */
+  measureText(text: string, style?: TextStyle): Promise<MeasuredText>;
+  /**
+   * 文字列を、行の長さ width (pt) で行に分けたときの、行と行数・全体の高さを測る (measureText と同じ組み方。文書の中で、同じ文字列・同じスタイルを、
+   * 内容の幅が width のブロックに組んだときと同じ行分けになる)。1.0 までに形を変えることがある
+   */
+  breakLines(text: string, style: TextStyle | undefined, width: number): Promise<MeasuredText>;
+  /**
+   * この Typesetter が持つメモリの、おおよその見積もり (バイト)。読み込んだフォントと、再利用のキャッシュ (reuse) の分。組んだ結果の分は入れない
+   * (TypesetResult.memoryUsage)。この total と、持っている結果の total の和で、メモリの上限を決められる。
+   * 行分けとページのキャッシュの分は、数からの見積もりで、処理系によって違う (1.0 までに数え方を変えることがある)
+   */
+  memoryUsage(): TypesetterMemoryUsage;
+  /**
+   * 再利用のキャッシュ (フォントのファイルの下ごしらえ・段落の行分け・前の文書のページ) を手放す。読み込んだフォントは手放さない。
+   * 手放した後も、次の typeset は正しく組める (再利用するものが無いので、初めて組むときと同じだけ時間がかかる。組んだ結果は同じ)。
+   * 組んでいる途中に呼んでもよい。組んだ結果 (TypesetResult) は、それぞれの dispose で手放す
+   */
+  releaseCaches(): void;
 }
 
 /**
@@ -909,7 +1022,28 @@ export async function createTypesetter(setup: TypesetterOptions = {}): Promise<T
         }));
       return withoutPdf(r, bytes);
     },
+    measureText: async (text, style = {}) => measureWith(run, setupLimits, text, style),
+    breakLines: async (text, style = {}, width) => measureWith(run, setupLimits, text, style, width ?? Number.NaN),
+    memoryUsage: () => run.memoryUsage(),
+    releaseCaches: () => run.releaseCaches(),
   };
+}
+
+/** 測るための文書を組むときの、文書ごとの設定の印 (Typesetter の reuse のキャッシュを変えない。公開しない) */
+const MEASURE_ONLY = Symbol('kumiori.measureOnly');
+
+/** measureText・breakLines の中身: 文字列を 1 つのブロックの文書にして、Typesetter で組み、行の領域を読む (textMeasure.ts) */
+async function measureWith(run: (text: string, options: DocumentOptions) => Promise<TypesetResult | TypesetPdfResult>, setupLimits: Parameters<typeof beginCall>[1], text: string, style: TextStyle, width?: number): Promise<MeasuredText> {
+  checkMeasureArgs(text, style, width);
+  return runInCall(beginCall({}, setupLimits), async () => {
+    const r = rejoin(thisCall(), await run(measureDocument(text, style, width), { tagged: false, [MEASURE_ONLY]: true } as DocumentOptions)) as TypesetResult;
+    // 測った値は数と文字列だけなので、組んだ結果はすぐ手放す (memoryUsage の数えに残さない)
+    try {
+      return measuredLines(r.areaTree.sheets, style.writingMode === 'vertical-rl' || style.writingMode === 'vertical-lr', width);
+    } finally {
+      r.dispose();
+    }
+  });
 }
 
 /** 器の文書ごとの設定に渡された、器を作るときの設定 (書体まわり) の警告 (使われないので、無言で捨てない) */
@@ -955,7 +1089,13 @@ function lineStartsOf(text: string): number[] {
 }
 
 /** 書体を読み込み、文書を組む関数を返す (createTypesetter と typeset の中身) */
-async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string, options: DocumentOptions, pdfOnly?: TypesetPdfOptions) => Promise<TypesetResult | TypesetPdfResult>> {
+/** 文書を組む関数 (buildTypesetter が返す)。Typesetter の memoryUsage・releaseCaches も持つ */
+type DocumentRunner = ((text: string, options: DocumentOptions, pdfOnly?: TypesetPdfOptions) => Promise<TypesetResult | TypesetPdfResult>) & {
+  memoryUsage(): TypesetterMemoryUsage;
+  releaseCaches(): void;
+};
+
+async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner> {
   checkOptions(setup);
   if (setup.reuse !== undefined && typeof setup.reuse !== 'boolean') throw optionError(msg('reuse は真偽値にしてください', 'reuse must be a boolean'), 'reuse');
   svgParser ??= rejoin(thisCall(), await parsers()).svg;
@@ -1068,6 +1208,8 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
   // ファミリー名は、文書の font-family から名指しできない内部の名前にする (名前の表 (FontNameTable) にも入れない)。
   // 読み込みの知らせ (font/repaired など) は覚えておき、その書体を使う文書ごとに出す
   const systemFaces = new Map<string, Promise<{ font: LoadedFont; notes: Diagnostic[] }>>();
+  /** 読み込み終えた OS の書体 (Typesetter.memoryUsage の fonts) */
+  const systemLoaded = new Set<LoadedFont>();
   let systemSerial = 0;
   const loadSystem = async (m: SystemFontMatch) => {
     let p = systemFaces.get(m.key);
@@ -1078,20 +1220,37 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<(text: string,
       const family = `Kumiori System ${++systemSerial}`;
       p = m.data().then(bound((buf: ArrayBuffer) => fm.registerBuffer(family, 400, buf, false).then((font) => ({ font, notes }))));
       systemFaces.set(m.key, p);
-      p.catch(() => systemFaces.delete(m.key));
+      p.then(
+        (got) => systemLoaded.add(got.font),
+        () => systemFaces.delete(m.key),
+      );
     }
     return rejoin(thisCall(), await untilAbort(p));
   };
   // 書体まわりの設定 (SETUP_ONLY_OPTIONS) は器のものだけを使う: 文書ごとの設定に渡したものは、警告 (api/setup-option-ignored) のとおり使わない
   // (器を作るときに読み終わる fonts・genericFonts と違い、systemFonts は文書ごとに探すので、重ねると、警告を出しながら使ってしまう)
-  return (text, options, pdfOnly) => {
+  const run = (text: string, options: DocumentOptions, pdfOnly?: TypesetPdfOptions) => {
     const merged: Record<string, unknown> = { ...setup, ...options };
     for (const k of SETUP_ONLY_OPTIONS) {
       if (setup[k] === undefined) delete merged[k];
       else merged[k] = setup[k];
     }
-    return typesetDocument(text, merged as TypesetOptions, base, loadOptional, baseWarnings, fontNames, pdfOnly, sharedLines, loadSystem);
+    // 測るための文書 (measureText・breakLines) は、文書をまたぐ再利用のキャッシュ (行分け・ページ・フォントの下ごしらえの世代) を変えない
+    // (測るたびに、前に組んだ文書の再利用のキャッシュが捨てられないように)
+    const measuring = (options as Record<symbol, unknown>)[MEASURE_ONLY] === true;
+    return typesetDocument(text, merged as TypesetOptions, base, loadOptional, baseWarnings, fontNames, pdfOnly, measuring ? undefined : sharedLines, loadSystem, measuring);
   };
+  return Object.assign(run, {
+    memoryUsage: (): TypesetterMemoryUsage => {
+      const fonts = estimateFontBytes([...base.loadedFonts(), ...systemLoaded]);
+      const caches = (base.prepCache?.memoryBytes((b) => givenBuffers.has(b)) ?? 0) + (sharedLines?.memoryBytes() ?? 0);
+      return { total: fonts + caches, fonts, caches };
+    },
+    releaseCaches: () => {
+      base.prepCache?.clear();
+      sharedLines?.clear();
+    },
+  });
 }
 
 /** 字と符号位置の並び (知らせの文に使う。多ければ先頭の 20 字と残りの数) */
@@ -1220,13 +1379,15 @@ async function typesetDocument(
   pdfOnly?: TypesetPdfOptions,
   sharedLines?: SharedLineMemo,
   loadSystem?: SystemFaceLoader,
+  /** Typesetter の再利用のキャッシュ (フォントの下ごしらえの世代) に、この文書を数えない (測るための文書。measureWith) */
+  isolated = false,
 ): Promise<TypesetResult | TypesetPdfResult> {
   const call = currentCall();
   // 器の覚えの、この文書の印 (typesetDocumentBody の初めに、同期で startDocument して入れる)。止めた・組み終えたの知らせは、この印に付ける
   // (止めた文書の知らせは、すぐ次の文書の startDocument の後に来ることがあるので、「いまの文書」に付けない)
   const marks: DocumentMarks = {};
   try {
-    const r = rejoin(thisCall(), await typesetDocumentBody(text, options, base, loadSpec, baseWarnings, baseNames, pdfOnly, sharedLines, loadSystem, marks));
+    const r = rejoin(thisCall(), await typesetDocumentBody(text, options, base, loadSpec, baseWarnings, baseNames, pdfOnly, sharedLines, loadSystem, marks, isolated));
     // 先頭から N ページで止めた文書は、器の覚えの世代を進めない (止める合図で止めた文書と同じ)。覚えたものは、中身で引く覚えなので残す。
     // プレビュー (maxPages) を何度組んでも、前に全体を組んだ文書の後ろのページの覚えを捨てないため
     if (r.truncated) {
@@ -1265,11 +1426,13 @@ async function typesetDocumentBody(
   loadSystem?: SystemFaceLoader,
   /** 器の覚えの、この文書の印を入れる所 (typesetDocument が、止めた・組み終えたの知らせに使う) */
   marks: DocumentMarks = {},
+  /** Typesetter の再利用のキャッシュ (フォントの下ごしらえの世代) に、この文書を数えない */
+  isolated = false,
 ): Promise<TypesetResult | TypesetPdfResult> {
   // 選択肢は入口で検証し、compat は 1 つの真偽値 (ah) に正規化して下流 (組版・PDF の設定) に渡す (読み込みの Importer も同じ判定 isAntennaCompat を使う)
   checkOptions(options);
   // 文書をまたぐ使い回しの覚え: 前の文書でも、その前の文書でも使わなかったものを捨てる
-  marks.prep = base.prepCache?.startDocument();
+  if (!isolated) marks.prep = base.prepCache?.startDocument();
   marks.lines = sharedLines?.startDocument();
   // タグ付き PDF は既定で付ける (tagged: false で外す)。PDF/UA-1 はタグ付き PDF を含む (構造の木は読み込みで作る)。
   // 作成者が tagged: true・pdfua と書いたか (透明を平らにする PDF/X-1a・X-3 と合わせたときに、誤りにするか、黙ってタグを外すかを分ける)
@@ -1577,7 +1740,7 @@ async function typesetDocumentBody(
   const control: LayoutControl | undefined = paced
     ? { page: (pass, pages) => reportProgress({ phase: 'layout', pass, pages }, layoutCall), boundary: () => pause(layoutCall) }
     : undefined;
-  const engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah), ...(ignore.size ? { ignoreDiagnostics: ignore } : {}), ...(sharedLines ? { sharedLineMemo: sharedLines, layoutReuse: sharedLines.layout } : {}), ...(control ? { control } : {}), ...(options.maxPages !== undefined ? { maxPages: options.maxPages } : {}) });
+  let engine = new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah), ...(ignore.size ? { ignoreDiagnostics: ignore } : {}), ...(sharedLines ? { sharedLineMemo: sharedLines, layoutReuse: sharedLines.layout } : {}), ...(control ? { control } : {}), ...(options.maxPages !== undefined ? { maxPages: options.maxPages } : {}) });
   /**
    * SVG の foreignObject の中身 (HTML・MathML) を、本文と同じ HTML の組版で、幅 width・高さ height (CSS px) の余白の無いページとして組む
    * (SVG 2 の foreignObject: 中身は CSS の組版で、foreignObject の枠を初めの包含ブロックとして組む)。中身の文書の警告は出さない。
@@ -1635,7 +1798,7 @@ async function typesetDocumentBody(
     const pdfWarnings: string[] = [];
     const pdfDiagnostics: Diagnostic[] = [];
     let pageCount: number;
-    let layoutMs: number;
+    let layoutMs = 0;
     let truncatedAt: number | undefined;
     let bytes: Uint8Array;
     if (lowMemory) {
@@ -1650,42 +1813,63 @@ async function typesetDocumentBody(
       truncatedAt = pages.truncatedAt;
       layoutMs = pages.layoutMs;
     } else {
-      const pages = paced ? rejoin(thisCall(), await engine.layoutSheetsPaced(res.document)) : engine.layoutSheets(res.document);
-      layoutMs = Date.now() - t0;
+      // 組みながら確定したページを描画し、組版の途中の木を手放す (文の多い文書のメモリの山を下げる。design/pdf-writer.md の 12)。
+      // 画像 (背景の画像・グラデーションも) の無い文書だけ: 画像の埋め込みは非同期で、組版は page-sequence の中で待てないので、画像のあるページは
+      // 組み終えてから描画することになり、PDF の番号の並びが、組み終えてから描画するとき (typeset の後の toPdf) と変わるため。OS のフォントを使う文書も
+      // (組版の途中でカラーフォントを読みうる)。カラーフォント・PDF/X・PDF/A は、renderPdfPages が断る
+      const emit = !systemUse && assets.size === 0 && !hasBackgroundImage(res.document);
+      let pages: SheetSource | undefined;
+      const lay = async (emitter?: PageEmitter) => {
+        pages = paced ? rejoin(thisCall(), await engine.layoutSheetsPaced(res.document, emitter)) : engine.layoutSheets(res.document, emitter);
+        layoutMs = Date.now() - t0;
+      };
+      if (!emit) rejoin(thisCall(), await lay());
+      /** 組み終えてから描画するページ (組みながら描画したページの後ろ) */
+      const rest = function* () {
+        for (let i = pages!.emitted; i < pages!.count; i++) yield i;
+      };
       bytes = rejoin(thisCall(), await renderPdfPages(
         {
-          title: pages.title,
-          info: pages.info,
-          structure: pages.structure,
+          title: res.document.title ?? res.document.info?.title,
+          info: res.document.info,
+          // 構造の木は、入力の節の並び (組版の番号と同じ並び) から作る (組む前に決まる。組みながら描画するページの印に要る)
+          structure: areaStructure(res.document),
+          ...(emit
+            ? {
+                layout: (early?: (sheet: SheetArea) => boolean) => lay(early && { page: (_i, sheet) => early(sheet) }),
+              }
+            : {}),
           scan: (visit) => {
-            for (let i = 0; i < pages.count; i++) visit(pages.sheet(i));
+            for (const i of rest()) visit(pages!.sheet(i));
           },
           paint:
             paced || port
               ? async (visit) => {
                   // 止める合図・進み具合を渡した呼び出しでは、ページを描く間で間をあける。流して書くときは、書き出し先が待たせたら待つ
-                  for (let i = 0; i < pages.count; i++) {
-                    const wait = countSystem(visit)(pages.sheet(i));
-                    pages.release(i);
+                  for (const i of rest()) {
+                    const wait = countSystem(visit)(pages!.sheet(i));
+                    pages!.release(i);
                     if (wait) rejoin(thisCall(), await wait);
                     if (paced) rejoin(thisCall(), await pause());
                   }
                 }
               : (visit) => {
-                  for (let i = 0; i < pages.count; i++) {
-                    countSystem(visit)(pages.sheet(i));
-                    pages.release(i);
+                  for (const i of rest()) {
+                    countSystem(visit)(pages!.sheet(i));
+                    pages!.release(i);
                   }
                 },
-          count: pages.count,
-          finish: () => (info = pages.finish()),
+          get count() {
+            return pages?.count;
+          },
+          finish: () => (info = pages!.finish()),
           scanned,
         },
         fonts,
         { ...pdfOptions(pdfOpts, pdfWarnings, pdfDiagnostics), releaseImageBytes: true, ...output },
       ));
-      pageCount = pages.count;
-      truncatedAt = pages.truncatedAt;
+      pageCount = pages!.count;
+      truncatedAt = pages!.truncatedAt;
     }
     const systemDiags = (systemUse?.diagnostics() ?? []).filter(shown);
     const out = [...warnings, ...systemDiags.map((d) => d.message), ...(info?.warnings ?? [])];
@@ -1708,6 +1892,12 @@ async function typesetDocumentBody(
   }
   const tree = paced ? rejoin(thisCall(), await engine.layoutPaced(res.document)) : engine.layout(res.document);
   const layoutMs = Date.now() - t0;
+  // 読み込んだ文書 (論理の木) は、組み終えたら使わない。結果のメソッドの閉じた変数の表 (このスコープの変数) から外す
+  // (外さないと、結果を持つ間、論理の木の全体と読み込みの報告を持ち続ける。Typesetter の再利用は、自分で前の文書を持つ)
+  res = undefined as unknown as Imported;
+  // 組版の処理 (LayoutEngine) も外す: PDF だけを作る枝のクロージャが engine を参照するので、engine はこの関数の閉じた変数の表に入り、外さないと
+  // 結果を持つ間、組み直しの回の記録 (1 回目と最後の回のページの論理の木) を持ち続ける (再利用のキャッシュを手放しても、その分が減らない)
+  engine = undefined as unknown as LayoutEngine;
   // Web Worker の中の renderPage (同期) が描く SVG の画像の用意 (SVG の @font-face・読めない形の中の画像)。画面の中と Node では何もしない
   rejoin(thisCall(), await prepareSvgImagesForCanvas(assets, fonts));
   // 結果の警告。組んだ後の書体の知らせ (PDF を書くときに初めて読む色つきの字形の上限など。fontSanity.ts の fontNotice) と、
@@ -1736,6 +1926,45 @@ async function typesetDocumentBody(
   };
   // toPdf は typeset の後に呼ばれるので、警告の言語 (TypesetOptions.lang) を、組んだときの言語に戻して書く
   const call: CallContext = currentCall() ?? { lang: messageLang() };
+  // dispose: 手放した後の toPdf・renderPage などは誤りにする (画像・書体・領域の木はもう無い)。走っている呼び出し (toPdf・toPdfStream・
+  // renderPageToSvg・renderPageToPng は await をまたぐ) の途中で呼ばれたら、走っているものが全部終わってから手放す (ページの欠けた PDF を黙って出さない)
+  let disposed = false;
+  let running = 0;
+  let released = false;
+  const disposedError = () => runInCall(call, () => new KumioriError('api/result-disposed', msg('dispose で手放した組んだ結果は使えません', 'this typeset result was released with dispose() and can no longer be used')));
+  const release = () => {
+    if (released) return;
+    released = true;
+    // 画像 (ブラウザの画像は閉じる)・描くためのキャッシュ・文書ごとの書体を手放す。Typesetter と共有する書体は残す
+    assets.dispose();
+    releaseRenderCaches(assets, fonts);
+    fonts.releaseOwnFonts(base);
+    measurer.clear();
+    // 領域の木は、呼ぶ側が areaTree を持ち続けていても手放せるよう、中身を空にする (pageCount などの数は残す)
+    clearAreaTree(tree);
+  };
+  /**
+   * await をまたぐ呼び出しを、走っている間だけ数える (dispose はその間、手放すのを遅らせる)。呼び出しの Promise をそのまま返す
+   * (await を 1 段足すと、AsyncLocalStorage の無い環境で、呼び出しが終わったときに呼び出しの外の文脈へ戻す順がずれる。callContext.ts)
+   */
+  const track = <T>(run: () => Promise<T>): Promise<T> => {
+    if (disposed) return Promise.reject(disposedError());
+    running++;
+    const done = () => {
+      if (--running === 0 && disposed) release();
+    };
+    let p: Promise<T>;
+    try {
+      p = run();
+    } catch (e) {
+      done();
+      return Promise.reject(e);
+    }
+    p.then(done, done);
+    return p;
+  };
+  // 領域の木の見積もり (木は変わらないので、係数の処理系ごとに 1 度だけ数える)
+  const layoutBytes = new Map<string, number>();
   /** 結果の toPdf・toPdfStream の書き出し (laterCall の文脈の中で呼ぶ)。流して書くときは、書き出し先の口 (port) を渡す */
   const laterPdf = async (o: PdfOptions, port?: PdfOutputPort): Promise<Uint8Array> => {
     const pdfWarnings: string[] = [];
@@ -1761,14 +1990,16 @@ async function typesetDocumentBody(
     diagnostics: resultDiags.list,
     layoutMs,
     truncated: !!tree.truncated,
-    toPdf: async (o = {}) => runInCall(laterCall(call, optionsObject(o, 'options'), ''), () => laterPdf(o)),
-    toPdfStream: async (output, o = {}) => {
-      const { bytes } = rejoin(thisCall(), await streamTo(output, (port) => runInCall(laterCall(call, optionsObject(o, 'options'), ''), () => (checkStreamablePdf(o, ''), laterPdf(o, port)))));
-      return { bytes };
-    },
+    toPdf: (o = {}) => track(() => runInCall(laterCall(call, optionsObject(o, 'options'), ''), () => (checkPdfEncrypt(o, ''), laterPdf(o)))),
+    toPdfStream: (output, o = {}) =>
+      track(async () => {
+        const { bytes } = rejoin(thisCall(), await streamTo(output, (port) => runInCall(laterCall(call, optionsObject(o, 'options'), ''), () => (checkStreamablePdf(o, ''), checkPdfEncrypt(o, ''), laterPdf(o, port)))));
+        return { bytes };
+      }),
     // renderPage (同期) も、組んだときの言語で書く (toPdf と同じ)
     renderPage: (canvas, pageIndex, o = {}) =>
       runInCall(call, () => {
+        if (disposed) throw disposedError();
         const sheet = tree.sheets[pageIndex];
         if (!sheet) throw new RangeError(msg(`ページ ${pageIndex} はありません (0〜${tree.sheets.length - 1})`, `there is no page ${pageIndex} (0 to ${tree.sheets.length - 1})`));
         renderSheetToCanvas(sheet, canvas, fonts, {
@@ -1781,8 +2012,8 @@ async function typesetDocumentBody(
           warn: addWarning,
         });
       }),
-    renderPageToSvg: async (pageIndex, o = {}) =>
-      runInCall(laterCall(call, optionsObject(o, 'options'), ''), async () => {
+    renderPageToSvg: (pageIndex, o = {}) =>
+      track(() => runInCall(laterCall(call, optionsObject(o, 'options'), ''), async () => {
         const sheet = tree.sheets[pageIndex];
         if (!sheet) throw new RangeError(msg(`ページ ${pageIndex} はありません (0〜${tree.sheets.length - 1})`, `there is no page ${pageIndex} (0 to ${tree.sheets.length - 1})`));
         if (o.pageHref !== undefined && typeof o.pageHref !== 'function') throw new TypeError(msg('pageHref は関数にしてください', 'pageHref must be a function'));
@@ -1804,9 +2035,9 @@ async function typesetDocumentBody(
         } finally {
           laterLimitsReached(later);
         }
-      }),
-    renderPageToPng: async (pageIndex, o = {}) =>
-      runInCall(laterCall(call, optionsObject(o, 'options'), ''), async () => {
+      })),
+    renderPageToPng: (pageIndex, o = {}) =>
+      track(() => runInCall(laterCall(call, optionsObject(o, 'options'), ''), async () => {
         const sheet = tree.sheets[pageIndex];
         if (!sheet) throw new RangeError(msg(`ページ ${pageIndex} はありません (0〜${tree.sheets.length - 1})`, `there is no page ${pageIndex} (0 to ${tree.sheets.length - 1})`));
         const later = thisCall();
@@ -1815,7 +2046,22 @@ async function typesetDocumentBody(
         } finally {
           laterLimitsReached(later);
         }
-      }),
+      })),
+    memoryUsage: () => {
+      if (disposed) return { total: 0, images: 0, fonts: 0, layout: 0 };
+      const images = assets.memoryBytes((b) => givenBuffers.has(b.buffer)) + preparedPixelBytes(assets);
+      // 書体のファイルは、呼ぶ側が渡したものと、Typesetter の下ごしらえのキャッシュが持つものを数えない (手放しても残る)
+      const fontBytes = estimateFontBytes(fonts.ownFonts(base), (b) => !givenBuffers.has(b) && !base.prepCache?.holds(b));
+      const rt = memoryRuntime();
+      let layout = layoutBytes.get(rt);
+      if (layout === undefined) layoutBytes.set(rt, (layout = estimateAreaTreeBytes(tree)));
+      return { total: images + fontBytes + layout, images, fonts: fontBytes, layout };
+    },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (running === 0) release();
+    },
   };
 }
 

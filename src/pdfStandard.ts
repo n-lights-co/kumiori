@@ -291,9 +291,11 @@ export function pdfText(s: string): PDFString | PDFHexString {
  * 規格の印 (OutputIntent・版・Trapped・ID・題・日付)。XMP を書く規格 (PDF/X-4 と PDF/A) では、版の印を XMP のメタデータ
  * (pdfxid:GTS_PDFXVersion・pdfaid:part・pdfaid:conformance) にも書き、Info の項目 (題・作者・主題・キーワード・日付・Trapped) と XMP を一致させる。
  * std・o は PDF/X (無ければ PDF/A だけ)、pdfa は PDF/A (無ければ PDF/X だけ)。pdfua は PDF/UA-1 (ISO 14289-1 §5: XMP の pdfuaid:part に版の印。
- * §7.1: 題を dc:title に書き、ViewerPreferences の DisplayDocTitle を true にする)
+ * §7.1: 題を dc:title に書き、ViewerPreferences の DisplayDocTitle を true にする)。
+ * idHex は文書の ID (無ければ印の値 DOCUMENT_ID_MARK を書き、書き出した後に finishDocumentId で書き換える。
+ * 暗号化した PDF は、XMP を暗号化して後から書き換えられないので、初めから ID を渡す)
  */
-export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, o: PdfXOptions | undefined, pdfa: PdfA | undefined, pdfua: boolean, date: Date) {
+export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, o: PdfXOptions | undefined, pdfa: PdfA | undefined, pdfua: boolean, date: Date, idHex: string = DOCUMENT_ID_MARK) {
   const ctx = pdf.context;
   const x = std && o ? { std, o } : undefined;
   // 出力意図のプロファイル: PDF/X の出力の CMYK のプロファイル。PDF/A だけなら sRGB (srgbIcc.ts)。
@@ -346,8 +348,8 @@ export function markPdfStandard(pdf: PDFDocument, std: PdfStandard | undefined, 
   pdf.setCreationDate(now);
   pdf.setModificationDate(now);
   // 文書の ID (trailer。ISO 32000-2 §14.4)。XMP の DocumentID・InstanceID にも同じ値を使う。
-  // ここでは印の値を書き、書き出した後に、中身から作った ID に書き換える (finishDocumentId)
-  const hex = DOCUMENT_ID_MARK;
+  // ここでは印の値を書き、書き出した後に、中身から作った ID に書き換える (finishDocumentId。暗号化した PDF は、渡された ID をそのまま書く)
+  const hex = idHex;
   ctx.trailerInfo.ID = ctx.obj([PDFHexString.of(hex), PDFHexString.of(hex)]);
   if (xmpWanted) {
     const xmp = pdfXmp({

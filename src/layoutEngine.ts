@@ -78,6 +78,7 @@ import { TOTAL_PAGES_ID } from './types';
 import { citedPageItems, collateCitedPages, type CitedPageItem, type IndexSource } from './indexCitation';
 import type { FontManager } from './fontManager';
 import type { Measurer } from './measurer';
+import { memoryRuntime } from './memoryEstimate';
 import { DEFAULT_LINE_BREAK, lineHeightOf, newNode, resolveStyle, type GlyphPayload, type LNode, type ResolvedStyle } from './lnode';
 import {
   borderToLogicalWidths,
@@ -1255,6 +1256,11 @@ export interface SheetSource {
   readonly info?: AreaTree['info'];
   /** タグ付き PDF の構造の木 (AreaTree の structure) */
   readonly structure?: AreaTree['structure'];
+  /**
+   * 組みながら渡し終えたページの数 (layoutSheets の emit。文書の初めからこの数のページは、渡した後で組版の途中の木を手放したので、
+   * sheet・release を呼べない)。渡さなかったときは 0
+   */
+  readonly emitted: number;
   /** ページ i の領域の木 (layout の返す木の sheets[i] と同じもの)。呼ぶたびに作る */
   sheet(i: number): SheetArea;
   /** ページ i の組版の途中の木を手放す (この後は sheet(i) を呼べない) */
@@ -1262,6 +1268,28 @@ export interface SheetSource {
   /** しおり・文書内リンクの飛び先・警告 (AreaTree の bookmarks・destinations・warnings)。ページを作った後で呼ぶ */
   finish(): Pick<AreaTree, 'bookmarks' | 'destinations' | 'warnings' | 'diagnostics'>;
 }
+
+/**
+ * 組みながら、確定したページを渡す先 (LayoutEngine.layoutSheets の emit。design/pdf-writer.md の 12)。
+ * 組版は、確定したページを、柱まで組んで領域の木にして page に渡し、受けたら、そのページの組版の途中の木を手放す (文書全体の木を持たない)。
+ * ページが確定するのは、組み直しの 1 回目で、そのページまでの本文と柱が、まだ置いていない参照先 (前向きのページ番号の参照・
+ * page-number-citation-last・総ページ数) を引いていないとき (後ろの組版と組み直しの回で、そのページは変わらない)。
+ * page は同期で呼ぶ (1 つの page-sequence の中では、組版は待てない)
+ */
+export interface PageEmitter {
+  /**
+   * 確定したページ (index は文書の初めから 0 から) を渡す。受けられなければ false を返す (そのページから後ろは渡さず、組み終えてから
+   * SheetSource.sheet で作る)
+   */
+  page(index: number, sheet: SheetArea): boolean;
+}
+
+/**
+ * 組みながら渡す作り (PageEmitter) の確認の切り替え (試しと道具だけが使う)。keep なら、渡したページの組版の途中の木を手放さずに持ち、
+ * 組み終えた所で、渡したときの領域の木と、組み終えたページから作り直した領域の木を比べ、違ったページを mismatches に足す
+ * (組版の結果は、切り替えの無いときと同じ)。emitted は、渡したページの数の合計
+ */
+export const emitProbe: { keep: boolean; emitted: number; mismatches: string[] } = { keep: false, emitted: 0, mismatches: [] };
 
 /** 組版の途中の木を持ち続けずに組み、ページを順に領域の木にして渡すもの (LayoutEngine.layoutLowMemory) */
 export interface LowMemorySheets {
@@ -10831,6 +10859,39 @@ interface SheetStatics {
   wm: WritingMode;
 }
 
+/** 組みながら確定したページを渡す状態 (LayoutEngine.layoutSheets の emit。design/pdf-writer.md の 12) */
+interface EmitState {
+  /** 渡したページの数 (文書の初めから) */
+  done: number;
+  /** 渡すのを止めた (受け手が断った・渡せない所に来た。そこから後ろのページは、組み終えてから作る) */
+  stopped: boolean;
+  /** 組み直しの 1 回目で、まだ置いていない参照先を本文で引いた最初のページ (文書の初めから。そこから後ろは渡さない) */
+  unsafeAt: number;
+  /** 柱を組む間に、まだ置いていない参照先・総ページ数を引いたか */
+  staticUnresolved: boolean;
+  /** 柱を組んでいる (参照を引いたら staticUnresolved にする) */
+  inStatics: boolean;
+  /** 組んでいる page-sequence のページを渡してよいか */
+  seq: boolean;
+  /** 組んでいる page-sequence の、渡したか手放したページの数 (page-sequence の中の番号) */
+  seqDone: number;
+  /** 渡したページ (後ろのページの柱が、前のページのマーカーを引く。手放した後もマーカーは残る) */
+  pages: PageBuild[];
+  /** 渡したページの柱の警告 (回の終わりの柱の警告の前に足す。柱を回の終わりにまとめて組むときと同じ並び) */
+  staticWarnings: Diagnostic[];
+  /** 渡した最後のページの柱を組んだ後の、行番号の数え (回の終わりに残りのページの柱を組むときの初め) */
+  lineCount: Map<LPageSequence, number>;
+  /** 組み直しの 1 回目で、渡すのを断ったページの柱を組んだ後の行番号の数え (そのページは行番号を付けてあるので、1 回目の終わりはここから) */
+  lineCountRefused?: Map<LPageSequence, number>;
+  /** 渡したページのフォント・字形の番号を付ける物 (残りのページにも同じ物を使う) */
+  resources: ReturnType<typeof resourceAttacher>;
+  /** 柱を組むときの host と文書の書式 (onceSteps が回の初めに置く) */
+  host?: FlowHost;
+  docStyle?: ResolvedStyle;
+  /** 確認 (emitProbe.keep): 渡したときの領域の木 (JSON) と柱 */
+  kept?: Array<{ json: string; statics: SheetStatics }>;
+}
+
 interface PageBuild {
   seq: LPageSequence;
   markers: PendingMarker[];
@@ -11386,6 +11447,10 @@ export class LayoutEngine {
   private lowScan?: { visit(sheet: SheetArea): void; restart(): void };
   /** メモリ節約: 収束した回を組み直して、ページを領域の木にして渡す先 */
   private replaySink?: (sheet: SheetArea) => void;
+  /** 組みながら確定したページを渡す先 (layoutSheets の emit)。渡さないときは undefined */
+  private emitter?: PageEmitter;
+  /** 組みながら渡す状態 (layoutSheets で emitter のあるとき) */
+  private emitState?: EmitState;
   /** メモリ節約: 組版 (layoutPasses) の中で組んだ回の数と、最後の回でページを lowScan に渡したか */
   private passNo = 0;
   private lastPassScanned = false;
@@ -12088,22 +12153,37 @@ export class LayoutEngine {
    * sheet(i) は、layout の返す木の sheets[i] と同じページを作る (字の書体・字形の番号を付け、グラデーション・描く効果を当てたもの)。
    * 同じページを何度作ってもよい。release(i) の後は、そのページを作れない。finish は、作ったページの後で、文書の情報 (しおり・飛び先・警告) を返す
    */
-  layoutSheets(doc: LDocument): SheetSource {
-    this.beginSheets();
-    return this.endSheets(doc, this.layoutPasses(doc));
+  layoutSheets(doc: LDocument, emit?: PageEmitter): SheetSource {
+    this.beginSheets(doc, emit);
+    try {
+      return this.endSheets(doc, this.layoutPasses(doc));
+    } finally {
+      this.emitter = undefined;
+    }
   }
 
   /** layoutSheets と同じ組版を、境目で control.boundary を待ちながら組む (layoutPaced と同じ) */
-  async layoutSheetsPaced(doc: LDocument): Promise<SheetSource> {
-    this.beginSheets();
-    return this.endSheets(doc, rejoin(thisCall(), await this.passesPaced(doc)));
+  async layoutSheetsPaced(doc: LDocument, emit?: PageEmitter): Promise<SheetSource> {
+    this.beginSheets(doc, emit);
+    try {
+      return this.endSheets(doc, rejoin(thisCall(), await this.passesPaced(doc)));
+    } finally {
+      this.emitter = undefined;
+    }
   }
 
-  private beginSheets(): void {
+  private beginSheets(doc: LDocument, emit: PageEmitter | undefined): void {
     this.fontEnv = undefined;
     this.lineMemoLru = new LineMemoLru(this.options.lineMemoAtoms ?? LINE_MEMO_ATOMS);
     this.stats.flows = this.stats.blocks = this.stats.tables = 0;
     this.stats.nestMax = this.stats.columnNestMax = 0;
+    // 組みながら確定したページを渡す (design/pdf-writer.md の 12)。渡したページは組版の途中の木を手放すので、組み直しの確認 (resumeCheck)・
+    // 先頭から N ページで止める組版 (見張りのページを捨てる)・索引 (並びが後ろのページで決まる) では渡さない
+    const probe = (this.options.resumeCheck ?? resumeProbe.check) || (resumeProbe.late ?? 0) > 0;
+    this.emitter = emit && !probe && this.options.maxPages === undefined && !doc.indexEntries?.length ? emit : undefined;
+    this.emitState = this.emitter
+      ? { done: 0, stopped: false, unsafeAt: Infinity, staticUnresolved: false, inStatics: false, seq: false, seqDone: 0, pages: [], staticWarnings: [], lineCount: new Map(), resources: resourceAttacher(this.fonts, this.options.assets), ...(emitProbe.keep ? { kept: [] } : {}) }
+      : undefined;
   }
 
   private endSheets(doc: LDocument, unsettled: Diagnostic[]): SheetSource {
@@ -12112,16 +12192,29 @@ export class LayoutEngine {
     const pages = this.pagesBuilt;
     const statics = this.passStatics;
     this.passStatics = [];
-    const resources = resourceAttacher(this.fonts, this.options.assets);
+    const e = this.emitState;
+    this.emitState = undefined;
+    // 渡したページと同じ物で、残りのページのフォント・字形の番号を付ける
+    const resources = e?.resources ?? resourceAttacher(this.fonts, this.options.assets);
+    const emitted = e?.done ?? 0;
+    if (e?.kept) {
+      // 確認: 渡したときの領域の木と、組み終えたページから作り直した領域の木を比べる
+      emitProbe.emitted += emitted;
+      for (let i = 0; i < emitted; i++) {
+        const json = JSON.stringify(this.buildSheet(pages[i], e.kept[i].statics));
+        if (json !== e.kept[i].json) emitProbe.mismatches.push(`${doc.title ?? doc.info?.title ?? ''} page ${i + 1}`);
+      }
+    }
     const released = new Set<number>();
     return {
       count: pages.length,
+      emitted,
       truncatedAt: this.truncatedAt,
       title: doc.title ?? doc.info?.title,
       info: doc.info,
       structure: areaStructure(doc, this.docNodes),
       sheet: (i) => {
-        if (released.has(i)) throw new Error(`page ${i} was released`);
+        if (released.has(i) || i < emitted) throw new Error(`page ${i} was released`);
         // finishTree と同じ順: 領域にする → グラデーション → 描く効果 → 書体・字形の番号 (layout の attachResources)
         const sheet = this.buildSheet(pages[i], statics[i]);
         this.registerGradients([sheet]);
@@ -12130,6 +12223,7 @@ export class LayoutEngine {
         return sheet;
       },
       release: (i) => {
+        if (i < emitted) return;
         released.add(i);
         releasePage(pages[i]);
         statics[i] = { nodes: [], wm: statics[i].wm };
@@ -12274,6 +12368,9 @@ export class LayoutEngine {
     this.seqMemo = [];
     this.lastDoc = doc;
     this.setupReuse(doc);
+    // 前の文書の組版を再利用できるとき (Typesetter が typeset でキャッシュした文書) は、再利用して組み、組みながらページを渡さない
+    // (再利用するページは前の文書の木で、渡したページを手放す決まりと両立しない)
+    if (this.reusePrev) this.emitter = this.emitState = undefined;
     this.passOneMemo = undefined;
     this.citeUndo = this.reuseNow ? { glyphs: new Map(), cites: new Map() } : undefined;
     this.citations = undefined;
@@ -12345,6 +12442,76 @@ export class LayoutEngine {
       }
       releasePage(pages[i]);
     }
+  }
+
+  /**
+   * 組みながらページを渡す (design/pdf-writer.md の 12): 組んでいる page-sequence のページ (seqPages。文書の初めからの番号は
+   * this.pagesBuilt.length から) のうち、upTo より前の、まだ渡していないページを、柱を組んで領域の木にして渡し、組版の途中の木を手放す。
+   * 渡せないページ (まだ置いていない参照先を引いた・受け手が断った・ページごとの脚注番号) に来たら、そこで止める (後ろは組み終えてから作る)。
+   * 組み直しの 2 回目からの回は、1 回目に渡したページを組み直したもの (1 回目と同じ値で組むので同じページ) を、渡さずに手放す
+   */
+  private emitPages(seqPages: PageBuild[], upTo: number): void {
+    const e = this.emitState!;
+    const base = this.pagesBuilt.length;
+    for (let j = e.seqDone; j < upTo; j++) {
+      const g = base + j;
+      if (this.passIndex > 1) {
+        if (g >= e.done) break;
+        if (!emitProbe.keep) releasePage(seqPages[j]);
+        e.seqDone = j + 1;
+        continue;
+      }
+      if (e.stopped || g >= e.unsafeAt || this.fnResetUsed || !this.emitOne(seqPages, j, g)) {
+        e.stopped = true;
+        e.seq = false;
+        return;
+      }
+      e.seqDone = j + 1;
+    }
+  }
+
+  /** 組みながらページを渡す: 組んでいる page-sequence の j 番目のページ (文書の初めから g 番目) を渡す。渡せなければ false */
+  private emitOne(seqPages: PageBuild[], j: number, g: number): boolean {
+    const e = this.emitState!;
+    const p = seqPages[j];
+    // 柱を組む (回の終わりに組むときと同じ: マーカーは、このページと前のページのものを引く)。柱の中の参照・警告は、このページの記録に入れない
+    const pageRecs = this.pageRecs;
+    const citeLog = this.citeLog;
+    this.pageRecs = undefined;
+    this.citeLog = undefined;
+    e.staticUnresolved = false;
+    e.inStatics = true;
+    const warnings: Diagnostic[] = [];
+    e.pages.push(p);
+    let st: SheetStatics;
+    try {
+      st = this.sheetStatics(p, g + 1, { ...e.host!, warn: (m) => warnings.push(m) }, e.docStyle!, e.pages, g);
+    } finally {
+      e.inStatics = false;
+      this.pageRecs = pageRecs;
+      this.citeLog = citeLog;
+    }
+    const refuse = () => {
+      e.pages.pop();
+      // このページは行番号を付けた (回の終わりに 2 度付けない) ので、1 回目の終わりの柱は、このページの後の数えから続ける
+      e.lineCountRefused = new Map(this.lineCount);
+      this.lineCount = new Map(e.lineCount);
+      return false;
+    };
+    // 柱が総ページ数・まだ置いていない参照先を引いた: このページは、組み終えるまで決まらない
+    if (e.staticUnresolved) return refuse();
+    const sheet = this.buildSheet(p, st);
+    const json = e.kept ? JSON.stringify(sheet) : undefined;
+    this.registerGradients([sheet]);
+    if (this.paintEffects) applyPaintEffects([sheet], this.paintEffects);
+    e.resources.visit(sheet);
+    if (!this.emitter!.page(g, sheet)) return refuse();
+    e.done = g + 1;
+    pushAll(e.staticWarnings, warnings);
+    e.lineCount = new Map(this.lineCount);
+    if (e.kept) e.kept.push({ json: json!, statics: st });
+    else releasePage(p);
+    return true;
   }
 
   /**
@@ -12982,6 +13149,13 @@ export class LayoutEngine {
       cite: (id, last, format, physical, style, pageNumber) => {
         this.citationUsed = true;
         let v: string | undefined;
+        // 組みながらページを渡すとき: 組み直しの 1 回目で、まだ置いていない参照先 (前向きの参照・最後のページ・物理的なページ番号・総ページ数) を
+        // 引いたページから後ろは、後ろの組版と組み直しの回で変わりうるので渡さない (柱の中なら、そのページを渡さない)
+        const e = this.emitState;
+        if (e && !this.citations && (last || physical || !this.idPages.get(id))) {
+          if (e.inStatics) e.staticUnresolved = true;
+          else e.unsafeAt = Math.min(e.unsafeAt, this.pagesBuilt.length + Math.max(0, this.seqBuilding.length - 1));
+        }
         if (!this.citations) {
           // 1 回目の組版: 置き済みの参照先 (後ろから前への参照) はそのページ番号。まだ置いていない参照先は、いまのページ番号を仮の値にする
           // (参照先のページ番号と桁数が同じになりやすく、2 回目に字だけ差し替えて済む)
@@ -13010,6 +13184,12 @@ export class LayoutEngine {
     const docStyle = resolveStyle(this.baseStyle(), doc);
     const pages: PageBuild[] = [];
     this.pagesBuilt = pages;
+    const emit = this.emitState;
+    if (emit) {
+      emit.host = host;
+      emit.docStyle = docStyle;
+      emit.unsafeAt = Infinity;
+    }
     let pageNo = 1;
     this.sidesByOrder = !!doc.pageSidesByOrder;
     this.rtlPages = !!doc.rtlPageProgression;
@@ -13094,6 +13274,16 @@ export class LayoutEngine {
       // 1 段の page-sequence は、ページの境目を写して組み、最後のページのマスターを選び直すとき、境目から続けて組む (design/resumable-flow.md の 4.3 の 1)
       // 器の使い回しで、前の文書のこの page-sequence と、直した所の後ろの境目で揃ったら、残りのページを前の組版から繋ぐ
       const run = sequenceMasters(seq).some((m) => (m.columns?.count ?? 1) > 1) ? undefined : this.sequenceRun(seq, docStyle, host, first, needsLast, this.spliceTarget(si, seq, first, sideDelta, pages.length, needsLast));
+      // 組みながらページを渡すか (design/pdf-writer.md の 12): 組み直しの 1 回目は、1 段で最後のページのマスターの無い page-sequence だけ
+      // (段組と最後のページのマスターは、組み終えるまでページが決まらない)。渡せない page-sequence の後ろは、ページの順を保つために渡さない。
+      // 2 回目からの回は、1 回目に渡したページを組み直したものを手放す
+      if (emit) {
+        emit.seqDone = 0;
+        if (this.passIndex === 1) {
+          if (!run || needsLast) emit.stopped = true;
+          emit.seq = !emit.stopped;
+        } else emit.seq = pages.length < emit.done;
+      }
       // 本文 (flow) の置かれたページの数 (force-page-count で末尾に足す白ページを含まない)
       let flowPages = 0;
       const layoutSequence = (li: number | null, again: boolean) => {
@@ -13165,6 +13355,9 @@ export class LayoutEngine {
       noteSpan(seq.id, built.length);
       noteSpan(seq.flow.id, Math.min(flowPages, built.length));
       if (this.indexKeys) built.forEach((pb, k) => this.pageOrdinal.set(pb, pages.length + k));
+      // 組み終えた page-sequence の、まだ渡していないページを渡す
+      if (emit?.seq) this.emitPages(built, built.length);
+      if (emit) emit.seq = false;
       pushAll(pages, built);
       pageNo = first + built.length;
       this.fnCarry = this.lastFoot?.lastNumber ?? this.fnCarry;
@@ -13195,9 +13388,15 @@ export class LayoutEngine {
     else {
       this.lineCount.clear();
       this.staticMemo = new Map();
+      // 組みながら渡したページの柱は、渡すときに組んだ (警告をここに足し、行番号の数えは、渡した最後のページの後から続ける)
+      const done = emit?.done ?? 0;
+      if (emit && done) {
+        pushAll(this.warnings, emit.staticWarnings);
+        this.lineCount = new Map(this.passIndex === 1 && emit.lineCountRefused ? emit.lineCountRefused : emit.lineCount);
+      }
       // ページの柱など (static-content) は、組み直しの回ごとに組む (中のページ番号の参照・索引の並びが、収束の判定に入る)。
       // メモリ節約のときは、判定のために組んで、箱は持たない (ページを領域の木にするのは、渡す先のある回)
-      const statics = pages.map((p, i) => this.sheetStatics(p, total, host, docStyle, pages, i));
+      const statics = pages.map((p, i) => (i < done ? { nodes: [], wm: p.root.wm } : this.sheetStatics(p, total, host, docStyle, pages, i)));
       if (!this.lowMemory) this.passStatics = statics;
     }
     this.staticMemo = new Map();
@@ -14021,6 +14220,8 @@ export class LayoutEngine {
       const p: PageBuild = { seq, number, root, abs: [], markers: [], master: m, staticContent: alt.staticContent ?? seq.staticContent ?? [] };
       pages.push(p);
       this.notePage(pages.length);
+      // 組みながらページを渡す: 次のページを作ったので、前のページまでは組み終えた
+      if (this.emitState?.seq) this.emitPages(pages, pages.length - 1);
       return { p, rootI, limit };
     };
     /** 次に作るページ (白ページでないもの) の本文領域の block 方向の上限 (mkPage と同じ求め方。ページは作らない) */
@@ -14746,6 +14947,8 @@ export class LayoutEngine {
       const used = { totalPages: false };
       const sc = substitute(resolveMarkers(c, allPages, index), { pageNumber: formatPageNumber(p.number, p.seq.pageNumberFormat), totalPages: total < 0 ? this.unresolvedMark : String(total) }, p.number, used);
       if (total < 0 && used.totalPages) this.beyondHits.push(['total-pages', TOTAL_PAGES_ID]);
+      // 組みながらページを渡すとき: 総ページ数を使う柱は、組み終えるまで決まらない (emitOne)
+      if (used.totalPages && this.emitState?.inStatics) this.emitState.staticUnresolved = true;
       const forced: LBlockContainer = { ...sc, absolutePosition: true };
       // 写した箱にも元の節の番号を引き継ぐ (描くときだけの効果 (paintEffect) を、柱・余白の箱・fixed の箱の Area にも付けるため)
       copySourceRef(sc, forced);
@@ -15250,6 +15453,24 @@ export class LayoutReuse {
   /** 覚えるページの論理の木の節の数の上限 (既定 REUSE_LNODES。超える page-sequence からは覚えない。stats.overLimit に数える) */
   limit = REUSE_LNODES;
 
+  /**
+   * 覚えている前の文書の組版のメモリの見積もり (バイト。Typesetter.memoryUsage の caches)。覚えた page-sequence のページ
+   * (組み直しの 1 回目のページ。2 回目からの回で組み直した page-sequence も、1 回目のページを覚える) の論理の木の節の数と、
+   * 2 回目からの回の字の差し替えの前の中身 (undo) の字の数に、1 つあたりの大きさ (REUSE_BYTES) を掛けたもの。
+   * 数えるのは、覚えた組版ごとに 1 度 (ページの節の数は、上限の数え (pageLNodes) と同じものを使う)
+   */
+  memoryBytes(): number {
+    const prev = this.prev;
+    if (!prev) return 0;
+    let n = prevLNodes.get(prev);
+    if (n === undefined) {
+      n = 0;
+      for (const q of prev.seqs) for (const b of q?.memo.built ?? []) n += pageLNodes(b);
+      prevLNodes.set(prev, n);
+    }
+    const k = REUSE_BYTES[memoryRuntime()];
+    return n * k.lnode + (prev.undo ? prev.undo.glyphs.size + prev.undo.cites.size : 0) * k.undo;
+  }
 }
 
 /** ページの論理の木の節の数 (本文と絶対配置の箱。ページごとに覚える。LayoutReuse の上限の数え) */
@@ -15277,6 +15498,23 @@ const pageLNodeCounts = new WeakMap<PageBuild, number>();
  * 1 つあたり約 200 バイト (Node。Chromium の Worker では約 0.6 倍) で、200 万はおよそ 400MB (行分けの覚えの上限 SHARED_LINE_MEMO_ATOMS と同じほど)
  */
 export const REUSE_LNODES = 2_000_000;
+
+/**
+ * Typesetter の再利用のキャッシュのメモリの見積もり (LayoutReuse.memoryBytes・SharedLineMemo.memoryBytes) の係数 (バイト)。
+ * scripts/measure-result-memory.mjs で、前の文書のページと行分けのキャッシュを手放したときに減ったヒープ (両方の和。2 つは行の節などを
+ * 共有し、どちらを先に手放すかで、それぞれの減り方が変わるので、和で見る) を、2 つの数に割り振った目安。Node 22 (V8) で、
+ * プレビューをまねた HTML (200 ページ)・対応仕様説明書の HTML と XSL-FO・文だけの文書 (215 ページ)・目次のある文だけの文書 (252 ページ) の和に、見積もりは −17〜+15% で合う
+ * (node の値)。Chromium 158 の Web Worker の中 (量は Worker の CDP の Runtime.getHeapUsage の usedSize) では、同じ文書で Node のおよそ 0.57 倍
+ * (V8 のポインタの圧縮) なので、browser の値は node の値の 0.57 倍にした (5 文書の和に −22〜+11% で合う)。どちらを使うかは memoryEstimate.ts の
+ * memoryRuntime (Firefox・Safari は測っていないが、browser の値を使う)
+ * (測った文書・処理系・条件は docs/development.md の「組んだ結果のメモリの見積もりの測り」)。
+ *  - lnode: 前の文書のページの論理の木の節 1 つ (ページの区切りの記録・入力の論理の木の分をならして入れる)
+ *  - atom: 段落の行分けのキャッシュの大きさ (lineMemoSize の数え方) 1 つ
+ *  - undo: 2 回目からの回の文字の差し替えの前の中身 (CiteUndo の glyphs と cites の項目) 1 つ。測った文書のどれでも 0 件だったので測っておらず、atom と同じにした
+ */
+const REUSE_BYTES = { node: { lnode: 200, atom: 300, undo: 300 }, browser: { lnode: 115, atom: 170, undo: 170 } };
+/** LayoutReuse.memoryBytes の、覚えた組版ごとのページの論理の木の節の数 */
+const prevLNodes = new WeakMap<PrevLayout, number>();
 
 /** 前の文書の組版 (LayoutReuse.prev) */
 interface PrevLayout {
@@ -15830,6 +16068,21 @@ export class SharedLineMemo {
   /** 覚えている段落の数 (試験で見る) */
   get size(): number {
     return this.entries.size;
+  }
+
+  /** 覚えている段落と、前の文書の組版 (layout) のメモリの見積もり (バイト。Typesetter.memoryUsage の caches) */
+  memoryBytes(): number {
+    return this.atoms * REUSE_BYTES[memoryRuntime()].atom + this.layout.memoryBytes();
+  }
+
+  /**
+   * 覚えている段落と、前の文書の組版を捨てる (Typesetter.releaseCaches)。文書の番号は残す (組んでいる途中の文書の印は、そのまま使える)。
+   * 組んでいる途中に呼んでもよい (その文書は、残りの段落を覚えから引かずに組む。組んだ結果は同じ)
+   */
+  clear(): void {
+    this.entries.clear();
+    this.atoms = 0;
+    this.layout.prev = undefined;
   }
 
   get(key: string, env: string, fonts: FontManager, hyphenate: FlowHost['hyphenate']): LineMemo | undefined {

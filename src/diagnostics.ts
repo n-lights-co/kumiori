@@ -132,6 +132,7 @@ export type DiagnosticCode =
   | 'pdfua/missing-formula-alt'
   | 'pdfua/heading-skipped'
   | 'pdfua/embedded-pdf'
+  | 'pdfua/encrypt-accessibility-kept'
   | 'snapshot/wait-timeout'
   | 'snapshot/iframe-skipped'
   | 'snapshot/canvas-tainted'
@@ -265,6 +266,7 @@ const DIAGNOSTIC_TABLE: Record<DiagnosticCode, DiagnosticSeverity> = {
   'pdfua/missing-formula-alt': 'warning',
   'pdfua/heading-skipped': 'warning',
   'pdfua/embedded-pdf': 'warning',
+  'pdfua/encrypt-accessibility-kept': 'warning',
   // ブラウザの画面で文書を写す (snapshotDocument)
   'snapshot/wait-timeout': 'warning',
   'snapshot/iframe-skipped': 'warning',
@@ -281,6 +283,7 @@ const DIAGNOSTIC_TABLE: Record<DiagnosticCode, DiagnosticSeverity> = {
 /** 誤り (例外) の名前。診断と同じ名前の体系 (投げる型の分けは ERROR_TABLE) */
 export type ErrorCode =
   | 'api/invalid-option'
+  | 'api/result-disposed'
   | 'input/xml-parse'
   | 'input/not-xsl-fo'
   | 'input/not-zip'
@@ -296,6 +299,7 @@ export type ErrorCode =
   | 'font/none-registered'
   | 'font/broken-file'
   | 'pdf/tagged-incompatible'
+  | 'pdf/encrypt-incompatible'
   | 'pdfua/requires-tagged'
   | 'pdfx/profile-required'
   | 'pdfx/profile-invalid'
@@ -306,11 +310,12 @@ export type ErrorCode =
   | 'internal/page-sealed';
 
 /** 誤りの分け (投げる型。errors.ts) */
-export type ErrorKind = 'option' | 'input' | 'limit' | 'font' | 'pdf' | 'internal';
+export type ErrorKind = 'option' | 'state' | 'input' | 'limit' | 'font' | 'pdf' | 'internal';
 
 /** 誤りの名前と分けの表 */
 const ERROR_TABLE: Record<ErrorCode, ErrorKind> = {
   'api/invalid-option': 'option',
+  'api/result-disposed': 'state',
   'input/xml-parse': 'input',
   'input/not-xsl-fo': 'input',
   'input/not-zip': 'input',
@@ -326,6 +331,7 @@ const ERROR_TABLE: Record<ErrorCode, ErrorKind> = {
   'font/none-registered': 'font',
   'font/broken-file': 'font',
   'pdf/tagged-incompatible': 'pdf',
+  'pdf/encrypt-incompatible': 'pdf',
   'pdfua/requires-tagged': 'pdf',
   'pdfx/profile-required': 'pdf',
   'pdfx/profile-invalid': 'pdf',

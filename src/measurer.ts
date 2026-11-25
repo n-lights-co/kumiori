@@ -210,6 +210,21 @@ export class Measurer {
     this.cache.clear();
   }
 
+  /**
+   * 字の測りのキャッシュをすべて空にする (TypesetResult.dispose)。キャッシュは書体 (LoadedFont) を鍵に持つので、空にしないと、
+   * 組んだ結果を手放しても、文書ごとの書体 (fontkit の表など) が残る
+   */
+  clear(): void {
+    this.cache.clear();
+    this.kernPairs.clear();
+    this.vertCache.clear();
+    this.vertFeatureCache = new WeakMap();
+    this.contextSpaces.clear();
+    this.extLig = null;
+    this.stackCache.clear();
+    this.clusterLigCache.clear();
+  }
+
   /** 測った幅が変わりうる状態 (測り方と書体の登録)。行分けの結果を覚えたものが古くなったかを見る */
   version(): string {
     return `${this.backend}:${this.fonts.generation}`;

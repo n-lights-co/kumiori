@@ -17,7 +17,8 @@
  * 測り方: 文書と形ごとに、新しい Node のプロセス (--expose-gc) で組む。組む前に片付け (gc) てから、20ms ごとと進み具合の呼び返しのたびに
  * process.memoryUsage() を見て、JS のヒープ (heapUsed)・外のバイト列 (arrayBuffers)・RSS の山と、PDF を書く間 (進み具合の phase が 'pdf' になってから) の
  * ヒープの山と、PDF を書く間の生きている量 (PDF を書き始めた所 (組版を終えた所) と、書く間に 20 回ほど、片付けてから見た量。
- * ヒープの山は片付けの時機で揺れるので、流すか流さないかの比べには、こちらを使う) を出す。進み具合の呼び返しを渡すので、組版はページと page-sequence の間で間をあける (どの形も同じ)。
+ * ヒープの山は片付けの時機で揺れるので、流すか流さないかの比べには、こちらを使う) と、組版の間の生きている量 (組み直しの回の 100 ページごとに、片付けてから見た量の山。
+ * 組みながら確定したページを描画して組版の途中の木を手放す作り (design/pdf-writer.md の 12) で下がるもの) を出す。進み具合の呼び返しを渡すので、組版はページと page-sequence の間で間をあける (どの形も同じ)。
  * 組版の途中の同期の所 (1 つの page-sequence を組む間) は、20ms ごとの見張りが動かないので、山は少し低めに出ることがある。
  * 時間は、組み始めから PDF を書き終えるまでの壁の時計の時間。
  *
@@ -43,7 +44,7 @@ if (process.argv[2] === '--child') {
   const ts = await lib.createTypesetter({ loadFont, ...d.setup, reuse: false });
   globalThis.gc();
   const base = process.memoryUsage();
-  const peak = { heap: base.heapUsed, buffers: base.arrayBuffers, rss: base.rss, pdfHeap: 0, pdfBuffers: 0, live: 0, liveBuffers: 0 };
+  const peak = { heap: base.heapUsed, buffers: base.arrayBuffers, rss: base.rss, pdfHeap: 0, pdfBuffers: 0, live: 0, liveBuffers: 0, liveLayout: 0 };
   let inPdf = false;
   /** 進み具合の段ごとの、外のバイト列の山 (どこで山になるかを見る) */
   let phase = 'start';
@@ -67,8 +68,14 @@ if (process.argv[2] === '--child') {
     peak.live = Math.max(peak.live, m.heapUsed);
     peak.liveBuffers = Math.max(peak.liveBuffers, m.arrayBuffers);
   };
+  /** 組版の間に片付けてから見た量 (組み直しの回の 100 ページごと) */
+  const liveLayout = () => {
+    globalThis.gc();
+    peak.liveLayout = Math.max(peak.liveLayout, process.memoryUsage().heapUsed);
+  };
   const onProgress = (p) => {
     phase = p.phase;
+    if (p.phase === 'layout' && p.pages % 100 === 0) liveLayout();
     if (p.phase === 'pdf') {
       const step = Math.max(1, Math.ceil((p.total ?? 100) / 20));
       if (!inPdf || (p.pages ?? 0) % step === 0) {
@@ -107,7 +114,7 @@ if (process.argv[2] === '--child') {
   sample();
   clearInterval(timer);
   const MB = (n) => Math.round((n / 1048576) * 10) / 10;
-  process.stdout.write(JSON.stringify({ doc: name, mode, pages, pdfMB: MB(bytes), heapMB: MB(peak.heap), buffersMB: MB(peak.buffers), rssMB: MB(peak.rss), pdfHeapMB: MB(peak.pdfHeap), pdfBuffersMB: MB(peak.pdfBuffers), liveMB: MB(peak.live), liveBuffersMB: MB(peak.liveBuffers), baseHeapMB: MB(base.heapUsed), baseBuffersMB: MB(base.arrayBuffers), seconds: Math.round(ms / 100) / 10, buffersByPhaseMB: Object.fromEntries(Object.entries(byPhase).map(([k, v]) => [k, MB(v)])) }) + '\n');
+  process.stdout.write(JSON.stringify({ doc: name, mode, pages, pdfMB: MB(bytes), heapMB: MB(peak.heap), buffersMB: MB(peak.buffers), rssMB: MB(peak.rss), pdfHeapMB: MB(peak.pdfHeap), pdfBuffersMB: MB(peak.pdfBuffers), liveMB: MB(peak.live), liveLayoutMB: MB(peak.liveLayout), liveBuffersMB: MB(peak.liveBuffers), baseHeapMB: MB(base.heapUsed), baseBuffersMB: MB(base.arrayBuffers), seconds: Math.round(ms / 100) / 10, buffersByPhaseMB: Object.fromEntries(Object.entries(byPhase).map(([k, v]) => [k, MB(v)])) }) + '\n');
   process.exit(0);
 }
 
@@ -166,10 +173,10 @@ for (const doc of args.docs)
   }
 
 // 表 (文書ごと)
-const head = ['文書', '形', 'ページ', 'PDF (MB)', 'ヒープの山', 'PDF を書く間の生きているヒープの山', '外のバイト列の山', 'PDF を書く間の生きている外のバイト列の山', 'RSS の山', '時間 (秒)'];
+const head = ['文書', '形', 'ページ', 'PDF (MB)', 'ヒープの山', '組版の間の生きているヒープの山', 'PDF を書く間の生きているヒープの山', '外のバイト列の山', 'PDF を書く間の生きている外のバイト列の山', 'RSS の山', '時間 (秒)'];
 console.log(`| ${head.join(' | ')} |\n|${head.map(() => '---').join('|')}|`);
 for (const r of rows)
-  console.log(r.failed ? `| ${r.doc} | ${r.mode} | 失敗 | | | | | | | |` : `| ${r.doc} | ${r.mode} | ${r.pages} | ${r.pdfMB} | ${r.heapMB} | ${r.liveMB} | ${r.buffersMB} | ${r.liveBuffersMB} | ${r.rssMB} | ${r.seconds} |`);
+  console.log(r.failed ? `| ${r.doc} | ${r.mode} | 失敗 | | | | | | | | |` : `| ${r.doc} | ${r.mode} | ${r.pages} | ${r.pdfMB} | ${r.heapMB} | ${r.liveLayoutMB} | ${r.liveMB} | ${r.buffersMB} | ${r.liveBuffersMB} | ${r.rssMB} | ${r.seconds} |`);
 if (args.json) fs.writeFileSync(args.json, JSON.stringify(rows, null, 2));
 
 // ── 文書

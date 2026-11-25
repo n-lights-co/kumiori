@@ -31,7 +31,7 @@ function tableRows(md: string, section: RegExp): Array<[string, string]> {
   return [...body.matchAll(/^\| `([a-z0-9/-]+)` \| ([^|]+) \|/gm)].map((m) => [m[1], m[2].trim()]);
 }
 
-const KIND_TYPE = { option: '`KumioriOptionError`', input: '`KumioriInputError`', limit: '`KumioriLimitError`', font: '`KumioriFontError`', pdf: '`KumioriPdfError`', internal: '`KumioriError`' } as const;
+const KIND_TYPE = { option: '`KumioriOptionError`', input: '`KumioriInputError`', limit: '`KumioriLimitError`', font: '`KumioriFontError`', pdf: '`KumioriPdfError`', state: '`KumioriError`', internal: '`KumioriError`' } as const;
 
 describe('診断と誤りの名前の一覧', () => {
   for (const [file, diagSection, errorSection] of [

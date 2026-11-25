@@ -19,6 +19,10 @@
  *    PDFInvalidObject・世代が 0 でないもの) を番号の順に (§7.5.3) → 流れでないものを、番号の順に 50 個ずつオブジェクトの流れ (§7.5.7) に
  *    まとめたもの (番号は largestObjectNumber + 1 から) → 相互参照の流れ (§7.5.8。その次の番号) → startxref と %%EOF (§7.5.5)
  *  - 相互参照の表で書く: 見出し → 全部を番号の順に → 相互参照の表 (§7.5.4) → trailer の辞書 (§7.5.5) → startxref と %%EOF
+ *
+ * 暗号化 (PdfWriteOptions.encryption。pdfEncrypt.ts) するときは、書くオブジェクトの文字列とストリームを、書く所で (同期で) 暗号化する。
+ * 暗号化の辞書・相互参照のストリームは暗号化しない。オブジェクトストリームにまとめるオブジェクトの文字列は個別に暗号化せず、オブジェクトストリームの全体を
+ * 暗号化する (ISO 32000-2 §7.6.2・§7.5.7)。読めなかったオブジェクト (PDFInvalidObject) は中身を読めないので、そのまま書く
  */
 import { PDFCrossRefSection, PDFCrossRefStream, PDFDocument, PDFFlateStream, PDFHeader, PDFInvalidObject, PDFName, PDFNumber, PDFObjectStream, PDFRef, PDFStream, PDFTrailer, PDFTrailerDict, Cache } from 'pdf-lib';
 import type { PDFContext, PDFDict, PDFObject } from 'pdf-lib';
@@ -27,6 +31,7 @@ import { msg } from './messages';
 import { pacing, pause, rejoin, thisCall } from './callContext';
 import type { PdfOutputPort } from './pdfOutput';
 import type { DocumentIdStream } from './pdfStandard';
+import type { PdfEncryption } from './pdfEncrypt';
 
 export interface PdfWriteOptions {
   /** オブジェクトの流れ (ISO 32000-1 §7.5.7) と相互参照の流れ (§7.5.8) で書く (既定 true)。false なら相互参照の表 (§7.5.4) と trailer (§7.5.5) */
@@ -40,6 +45,11 @@ export interface PdfWriteOptions {
   deflate?: (data: Uint8Array) => Uint8Array;
   /** ページが無ければ 1 枚足す (pdf-lib の save と同じ。既定 true) */
   addDefaultPage?: boolean;
+  /**
+   * 暗号化 (pdfEncrypt.ts の PdfEncryption)。暗号化の辞書は、finish の前の手順 (フォントを埋め込む flush) の後で文書に足す
+   * (ほかのオブジェクトの番号を、暗号化しないときと同じにする。流して書くときも、辞書は流れでないので先に書かず、最後に書く)
+   */
+  encryption?: PdfEncryption;
 }
 
 /** 流して書くとき (PdfWriter の 3 つ目の引数) */
@@ -303,8 +313,9 @@ export class PdfWriter {
       this.push(this.headerBytes());
     }
     if (this.opts.deflate) deflateWith(o[1], this.opts.deflate);
-    const buf = new Uint8Array(indirectSize(o));
-    const n = putIndirect(o, buf, 0);
+    const sealed = this.seal(o);
+    const buf = new Uint8Array(indirectSize(sealed));
+    const n = putIndirect(sealed, buf, 0);
     // 数えた大きさと書いた大きさが違えば、pdf-lib の部品の書き方が変わっている (相互参照の位置が狂う)
     if (n !== buf.length) throw internalsChanged(`sizeInBytes と copyBytesInto (${o[0].tag}: ${n} / ${buf.length} バイト)`);
     this.written.set(o[0].objectNumber, { ref: o[0], offset: this.offset });
@@ -313,6 +324,16 @@ export class PdfWriter {
     this.context.delete(o[0]);
     if (releasedLookupCheck) watchReleased(this.context, o[0]);
     this.push(buf);
+  }
+
+  /**
+   * 書くオブジェクトを暗号化したもの (暗号化しないときと、暗号化の辞書・読めなかったオブジェクトは、そのまま)。
+   * 相互参照のストリームは、ここを通さずに書く
+   */
+  private seal(o: Indirect): Indirect {
+    const enc = this.opts.encryption;
+    if (!enc || o[0] === this.context.trailerInfo.Encrypt || o[1] instanceof PDFInvalidObject) return o;
+    return [o[0], enc.encryptObject(o[1])];
   }
 
   /** 先に書いたバイト列を足す (流して書くときは、文書の ID のハッシュに足し、64KB たまったら書き出し先へ渡す) */
@@ -373,6 +394,7 @@ export class PdfWriter {
     if (this.finished) throw new Error('Kumiori: PdfWriter.finish twice');
     this.finished = true;
     rejoin(thisCall(), await this.prepare());
+    if (this.opts.encryption && !this.context.trailerInfo.Encrypt) this.opts.encryption.register(this.context, this.pdf.catalog);
     const ticks = new Ticks();
     // 流して書くとき、先に書いたバイト列は書き出し先にあるので、最後の塊は先の位置 (offset) から始まる
     const tailStart = this.stream ? this.offset : 0;
@@ -380,6 +402,8 @@ export class PdfWriter {
     let size = this.offset + headerSize;
     /** 残りの書くもの (番号の順) */
     const out: Indirect[] = [];
+    /** 暗号化したオブジェクトストリーム (PDFRawStream になる) の中のオブジェクトの数 (間をあける数え方を、暗号化しないときと同じにする) */
+    const objectsIn = new Map<PDFObject, number>();
     let xref: PDFCrossRefSection | undefined;
     let trailerDict: PDFTrailerDict | undefined;
     let trailer: PDFTrailer;
@@ -398,10 +422,11 @@ export class PdfWriter {
         }
         const [ref, obj] = item;
         if (ref === encrypt || obj instanceof PDFStream || obj instanceof PDFInvalidObject || ref.generationNumber !== 0) {
-          out.push(item);
+          const sealed = this.seal(item);
+          out.push(sealed);
           xrefStream.addUncompressedEntry(ref, size);
-          this.ranges.set(ref.objectNumber, [size, size + indirectSize(item)]);
-          size += indirectSize(item);
+          this.ranges.set(ref.objectNumber, [size, size + indirectSize(sealed)]);
+          size += indirectSize(sealed);
           rejoin(thisCall(), await ticks.step(1));
         } else {
           let chunk = compressed[compressed.length - 1];
@@ -417,7 +442,9 @@ export class PdfWriter {
         }
       }
       for (let i = 0; i < compressed.length; i++) {
-        const o: Indirect = [streamRefs[i], PDFObjectStream.withContextAndObjects(this.context, compressed[i], true)];
+        // オブジェクトストリームは、全体を暗号化する (中のオブジェクトの文字列は暗号化しない。§7.5.7)
+        const o = this.seal([streamRefs[i], PDFObjectStream.withContextAndObjects(this.context, compressed[i], true)]);
+        objectsIn.set(o[1], compressed[i].length);
         xrefStream.addUncompressedEntry(o[0], size);
         this.ranges.set(o[0].objectNumber, [size, size + indirectSize(o)]);
         size += indirectSize(o);
@@ -440,10 +467,11 @@ export class PdfWriter {
           xref.addEntry(item.ref, item.offset);
           continue;
         }
-        xref.addEntry(item[0], size);
-        this.ranges.set(item[0].objectNumber, [size, size + indirectSize(item)]);
-        size += indirectSize(item);
-        out.push(item);
+        const sealed = this.seal(item);
+        xref.addEntry(sealed[0], size);
+        this.ranges.set(sealed[0].objectNumber, [size, size + indirectSize(sealed)]);
+        size += indirectSize(sealed);
+        out.push(sealed);
         rejoin(thisCall(), await ticks.step(1));
       }
       const xrefOffset = size;
@@ -469,7 +497,7 @@ export class PdfWriter {
     this.chunks.length = 0;
     for (const o of out) {
       at += putIndirect(o, buf, at);
-      rejoin(thisCall(), await ticks.step(o[1] instanceof PDFObjectStream ? o[1].getObjectsCount() : 1));
+      rejoin(thisCall(), await ticks.step(o[1] instanceof PDFObjectStream ? o[1].getObjectsCount() : objectsIn.get(o[1]) ?? 1));
     }
     if (xref) {
       at += xref.copyBytesInto(buf, at);

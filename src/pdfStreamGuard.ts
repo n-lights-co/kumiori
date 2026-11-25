@@ -160,8 +160,31 @@ function guardedStream(o: PDFRawStream, objStm: boolean, guard: LoadGuard): PDFR
  */
 export function copierWith(src: PDFContext, dest: PDFContext, replaced: WeakMap<PDFStream, PDFStream>): PDFObjectCopier {
   const copier = PDFObjectCopier.for(src, dest);
-  const c = copier as unknown as { copyPDFStream: (s: PDFStream) => PDFStream };
+  const c = copier as unknown as { copyPDFStream: (s: PDFStream) => PDFStream; copyPDFDict: (d: PDFDict) => PDFDict };
   const copyStream = c.copyPDFStream;
   c.copyPDFStream = (s: PDFStream) => copyStream(replaced.get(s) ?? s);
+  const copyDict = c.copyPDFDict;
+  c.copyPDFDict = (d: PDFDict) => copyDict(withoutCidSet(d));
   return copier;
 }
+
+/**
+ * 書体の記述子 (FontDescriptor) の CIDSet を外したもの (無ければ元のまま)。CIDSet は、ISO 32000-2 §9.8.1 (Table 120) では任意の項目で、
+ * PDF 2.0 では使わない項目 (deprecated)。PDF/A-2・PDF/A-3 (ISO 19005-2 §6.2.11.4.2) と PDF/UA-1 (ISO 14289-1 §7.21.4.2) は、CIDSet を
+ * 書くなら書体のプログラムの CID をすべて示すことを求める。貼った PDF の書体の CIDSet は、元の文書が書いたもので、書体のプログラムと合わないことがある
+ * (中身のある字形だけを示し、空の字形の枠を示さないもの) ので、写さない。CIDSet を要るのは PDF/A-1 (ISO 19005-1 §6.3.5) だけで、
+ * Kumiori は PDF/A-1 を書かない (PDF/A-2b・A-3b だけ。pdfStandard.ts の pdfAOf)。PDF/A-1 を足すときは、そのときだけ元のまま写す
+ */
+function withoutCidSet(d: PDFDict): PDFDict {
+  if (d.get(PDFName.of('CIDSet')) === undefined) return d;
+  const t = d.get(PDFName.of('Type'));
+  if (!(t instanceof PDFName) || t.asString() !== '/FontDescriptor') return d;
+  let s = strippedDescriptors.get(d);
+  if (!s) {
+    s = d.clone(d.context);
+    s.delete(PDFName.of('CIDSet'));
+    strippedDescriptors.set(d, s);
+  }
+  return s;
+}
+const strippedDescriptors = new WeakMap<PDFDict, PDFDict>();

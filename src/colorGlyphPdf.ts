@@ -19,13 +19,13 @@
  * 止まり点の不透明度は、同じ形の灰色の網かけを輝度のソフトマスク (§11.6.5.2) にする。合成 (PaintComposite) は、透明のグループ
  * (§11.6.6) と、描画モード (§11.3.5)・不透明度のソフトマスクで表す。
  */
-import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFOperator, PDFOperatorNames as Ops, PDFPage, PDFRef, popGraphicsState, pushGraphicsState, type PDFImage } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFOperator, PDFOperatorNames as Ops, PDFPage, PDFRef, popGraphicsState, pushGraphicsState } from 'pdf-lib';
 import type { FontManager, LoadedFont } from './fontManager';
 import { walkAreaTree, type AreaNode } from './areaTree';
 import { parseColor } from './color';
 import { ITALIC_SLANT } from './paint';
 import { invert, type Seg } from './matrix';
-import { embedCmykImage, embedJpgNow, embedPngChecked, type PngEmbedOptions } from './pdfLibPatches';
+import { embedCmykImage, embedJpeg, embedPngChecked, type PdfImage, type PngEmbedOptions } from './imageEmbed';
 import { areaGlyphs, boxThrough, colorFontOf, COMPOSITE, paletteKey, plainStops, segsBox, sweepSampler, unrollStops, type Box, type ColorFill, type ColorFont, type ColorOp, type ColorStop, type Rgb } from './colorGlyph';
 import { ensureSvgGlyphReader } from './colorGlyphSvg';
 import { msg } from './messages';
@@ -131,7 +131,7 @@ export class PdfColorGlyphs {
   private resourcesRef: PDFRef;
   private names = 0;
   private gstates = new Map<string, string>();
-  private images = new Map<string, PDFImage>();
+  private images = new Map<string, PdfImage>();
   private pageFonts = new WeakMap<PDFPage, Map<Type3Font, PDFName>>();
   private warned = new Set<string>();
   /** 透明 (不透明度・ソフトマスク・描画モード) を使ったか (PDF/X の確認用) */
@@ -185,7 +185,7 @@ export class PdfColorGlyphs {
         const cmyk = opts.cmyk ? rejoin(thisCall(), await embedCmykImage(pdf, data, kind, opts.cmyk, 'smask', opts.png)) : undefined;
         if (cmyk?.hasAlpha) alpha = true;
         // 上限を超える PNG・壊れた PNG は、embedPngChecked が埋め込まずに投げる (pixels.ts の pngWithinLimits)
-        self.images.set(key, cmyk?.image ?? (kind === 'png' ? rejoin(thisCall(), await embedPngChecked(pdf, data, opts.png)) : rejoin(thisCall(), await embedJpgNow(pdf, data))));
+        self.images.set(key, cmyk?.image ?? (kind === 'png' ? rejoin(thisCall(), await embedPngChecked(pdf, data, opts.png)) : embedJpeg(pdf, data)));
       } catch (e) {
         // 埋め込めない画像は、字形の中で描かない (emit の image)。同じ理由の知らせは 1 度だけ
         const why = e instanceof Error ? e.message : String(e);
@@ -440,8 +440,8 @@ export class PdfColorGlyphs {
     return s;
   }
 
-  private imageNames = new Map<PDFImage, string>();
-  private imageName(img: PDFImage): string {
+  private imageNames = new Map<PdfImage, string>();
+  private imageName(img: PdfImage): string {
     let name = this.imageNames.get(img);
     if (!name) this.imageNames.set(img, (name = this.resource('XObject', 'I', img.ref)));
     return name;

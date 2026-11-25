@@ -65,6 +65,9 @@
  *    足りないもの (題・言語・図と数式の代わりの文・見出しの順) を警告に出す)。--document-lang <言語>: 入力に言語が無いときの文書の言語
  *  - --pdfa 2b|3b: 長期保存用の PDF/A-2b・PDF/A-3b の印を付ける (出力意図は sRGB。ファイルを開く動作 (Launch)・フォームの欄・字形の無い字は書かない。
  *    2b は添付ファイルを埋め込まない。書き出した PDF を調べて決まりに合わなければ誤り)。--pdfx と合わせるときは --output-profile が要る
+ *  - --encrypt・--user-password <パスワード>・--owner-password <パスワード>・--deny <権限,…>: PDF を暗号化する (AES-256。ISO 32000-2 §7.6 の R 6)。
+ *    --deny は禁じる権限 (print・modify・copy・annotate・fill-forms・accessibility・assemble・print-high-quality。, 区切り・何度でも)。
+ *    --pdfx・--pdfa とは一緒に使えない。コマンドの引数のパスワードは、同じ機械のほかの利用者に見えることがある
  *  - --spot-colors <JSON ファイル>: 特色の名前と、濃度 100% の代わりの CMYK ({"名前": "cmyk(20%,40%,60%,80%)"} か {"名前": [0.2,0.4,0.6,0.8]})。
  *    rgb-icc(…, #Separation, '名前', 濃度) を、PDF の特色 (Separation) にする。無い名前は、代わりの RGB で塗る
  *  - 既定の書体は 1 度だけ読み、変換ごとに使い回す。読む順は --font-dir → 書体のキャッシュ → ネットワーク (Google Fonts)。
@@ -92,6 +95,7 @@ import { decodeDocumentText, typeset, typesetToPdf, typesetToPdfStream, type Kum
 import { normalizeSrc } from './assets';
 import { RESOURCE_USE, type ResourceUse } from './resourceUse';
 import type { Diagnostic } from './diagnostics';
+import type { PdfEncryptOptions, PdfPermissions } from './pdfEncrypt';
 import { isOmittedDiagnostic } from './diagnostics';
 import { isKumioriError } from './errors';
 import type { KumioriPlugin } from './imageFormats';
@@ -184,6 +188,8 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
     documentLang?: string;
     /** 長期保存用の PDF/A の版と水準 (--pdfa 2b|3b) */
     pdfa?: 'A-2b' | 'A-3b';
+    /** PDF の暗号化 (--encrypt・--user-password・--owner-password・--deny) */
+    encrypt?: PdfEncryptOptions;
     /** 出力の CMYK の ICC プロファイル (--output-profile) */
     outputProfile?: Uint8Array;
     /** 印刷条件の名前 (--output-condition。ICC の登録名など) */
@@ -434,6 +440,25 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
       if (!m) throw new UsageError(msg(`--pdfx の値 "${v}" は使えません (x1a・x1a:2003・x3・x4)`, `--pdfx cannot be "${v}" (x1a, x1a:2003, x3 or x4)`));
       out.pdfx = m[1] === '4' ? 'X-4' : m[1] === '3' ? 'X-3' : m[2] === '2003' ? 'X-1a:2003' : 'X-1a';
     }
+    // 暗号化 (AES-256): どれかを書けば暗号化する。--deny は外す権限の並び (, 区切り・何度でも)
+    else if (a === '--encrypt') out.encrypt ??= {};
+    else if (a === '--user-password' || a === '--owner-password') {
+      const v = value(k++);
+      // 空のパスワードは、書かないのと同じ (開くときのパスワードが無い・所有者のパスワードが乱数) なので、黙って受けずにエラーにする
+      if (v === '') throw new UsageError(msg(`${a} の値が空です (パスワードを付けないときは、${a} を書かないでください)`, `${a} cannot be empty (to use no password, leave out ${a})`));
+      out.encrypt = { ...out.encrypt, [a === '--user-password' ? 'userPassword' : 'ownerPassword']: v };
+    }
+    else if (a === '--deny') {
+      const permissions: PdfPermissions = { ...out.encrypt?.permissions };
+      const list = value(k++);
+      if (!list.trim()) throw new UsageError(msg(`--deny の値が空です (${Object.keys(DENY_NAMES).join('・')} を , で区切って書きます)`, `--deny cannot be empty (give ${Object.keys(DENY_NAMES).join(', ')}, separated by commas)`));
+      for (const name of list.split(',').map((x) => x.trim()).filter(Boolean)) {
+        const key = DENY_NAMES[name];
+        if (!key) throw new UsageError(msg(`--deny の値 "${name}" は使えません (${Object.keys(DENY_NAMES).join('・')})`, `--deny cannot be "${name}" (${Object.keys(DENY_NAMES).join(', ')})`));
+        permissions[key] = false;
+      }
+      out.encrypt = { ...out.encrypt, permissions };
+    }
     else if (a === '--pdfa') {
       const v = value(k++);
       const m = /^(?:pdf\/?)?(?:a-?)?([23])-?b$/i.exec(v);
@@ -480,13 +505,16 @@ export function parseArgs(argv: string[], isDir: (p: string) => boolean = existi
   out.format ??= outExt === 'svg' ? 'svg' : outExt === 'png' ? 'png' : 'pdf';
   if (out.format !== 'pdf') {
     // PDF の規格・PDF の書き方の指定は、SVG・PNG の出力には使えない
-    const pdfOnly = [out.pdfx && '--pdfx', out.pdfa && '--pdfa', out.pdfua && '--pdfua', out.outputProfile && '--output-profile', out.outputCondition !== undefined && '--output-condition', out.tagged && '--tagged', out.imageMaxDpi && '--image-max-dpi', out.lowMemory && '--low-memory'].filter((x): x is string => !!x);
+    const pdfOnly = [out.pdfx && '--pdfx', out.pdfa && '--pdfa', out.pdfua && '--pdfua', out.outputProfile && '--output-profile', out.outputCondition !== undefined && '--output-condition', out.tagged && '--tagged', out.imageMaxDpi && '--image-max-dpi', out.lowMemory && '--low-memory', out.encrypt && '--encrypt・--user-password・--owner-password・--deny'].filter((x): x is string => !!x);
     if (pdfOnly.length) throw new UsageError(msg(`${pdfOnly.join('・')} は PDF の出力にだけ使えます (--format ${out.format} とは一緒に使えません)`, `${pdfOnly.join(', ')} can only be used for PDF output (not with --format ${out.format})`));
   } else if (out.pages) throw new UsageError(msg('--pages は --format svg か png と一緒に使ってください (PDF は、すべてのページを書きます)', '--pages needs --format svg or png (PDF output always has all pages)'));
   // OS の書体のフォルダは入力のディレクトリの外なので、外のファイルを読まない指定とは一緒に使えない (黙ってどちらかを外さない)
   if (out.systemFonts && !out.outsideFiles)
     throw new UsageError(msg('--system-fonts は --no-outside-files と一緒に使えません (OS の書体のフォルダは、入力のディレクトリの外です)', '--system-fonts cannot be combined with --no-outside-files (the OS font folders are outside the input directory)'));
   if (out.dpi !== undefined && out.format !== 'png') throw new UsageError(msg('--dpi は --format png と一緒に使ってください', '--dpi needs --format png'));
+  // 暗号化は PDF/X・PDF/A と一緒に使えない (どちらの規格も暗号化を許さない)
+  if (out.encrypt && (out.pdfx || out.pdfa))
+    throw new UsageError(msg(`${out.pdfx ? '--pdfx' : '--pdfa'} は暗号化 (--encrypt・--user-password・--owner-password・--deny) と一緒に使えません (PDF/X・PDF/A は暗号化を許しません)`, `${out.pdfx ? '--pdfx' : '--pdfa'} cannot be combined with encryption (--encrypt, --user-password, --owner-password, --deny); PDF/X and PDF/A do not allow encryption`));
   if ((out.outputProfile || out.outputCondition !== undefined) && !out.pdfx) {
     throw new UsageError(msg('--output-profile・--output-condition は --pdfx と一緒に使ってください', '--output-profile and --output-condition need --pdfx'));
   }
@@ -848,6 +876,7 @@ async function convert(input: string, output: string, args: Args, text: string) 
         }
       : {}),
     ...(args.pdfa ? { pdfa: { version: args.pdfa, warnings: pdfxWarnings } } : {}),
+    ...(args.encrypt ? { encrypt: args.encrypt } : {}),
   };
   // PDF/X・PDF/A のほかは、出力のファイルと同じディレクトリの一時のファイルへ流して書き、書き終えたら名前を替える
   // (PDF の全体を 1 つの配列に持たない。途中で失敗・中断したら一時のファイルを消すので、書きかけの PDF を残さない)。
@@ -1445,6 +1474,18 @@ function optionNames(): Set<string> {
 }
 
 /** 引数の誤り (使い方を表示して終わる。スタックトレースは出さない) */
+/** --deny に書く権限の名前 (PdfPermissions の名前。ISO 32000-2 §7.6.4.2 の Table 22) */
+const DENY_NAMES: Record<string, keyof PdfPermissions> = {
+  print: 'print',
+  modify: 'modify',
+  copy: 'copy',
+  annotate: 'annotate',
+  'fill-forms': 'fillForms',
+  accessibility: 'accessibility',
+  assemble: 'assemble',
+  'print-high-quality': 'printHighQuality',
+};
+
 export class UsageError extends Error {}
 
 /**
@@ -1464,8 +1505,8 @@ export function sourceDateEpoch(env: Record<string, string | undefined>): Date |
 
 /** 使い方 (--help と、使い方の誤りのときに出す)。日本語 */
 export const USAGE_JA = [
-  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--xhtml] [--watch] [--lang ja|en]',
-  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--watch] [--lang ja|en]',
+  '使い方: kumiori <HTML ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <用紙>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--encrypt] [--user-password <パスワード>] [--owner-password <パスワード>] [--deny <権限,…>] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--xhtml] [--watch] [--lang ja|en]',
+  '        kumiori <FO ファイル> [-o|--output <PDF ファイル>] [--format pdf|svg|png] [--pages <範囲>] [--max-pages <N>] [--dpi <値>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <書体ファイル>]... [--generic-font <総称>=<書体名>] [--system-fonts] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <名前>]] [--pdfa 2b|3b] [--encrypt] [--user-password <パスワード>] [--owner-password <パスワード>] [--deny <権限,…>] [--tagged|--no-tagged] [--pdfua] [--document-lang <言語>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--watch] [--lang ja|en]',
   '        kumiori a.html b.fo … -o <出力先のディレクトリ>',
   '        kumiori - -o - [--base <dir>] < 入力 > 出力.pdf',
   '        kumiori --help | --version',
@@ -1500,6 +1541,10 @@ export const USAGE_JA = [
   '  --pdfua                   PDF/UA-1 の印を付ける (--tagged を含む。XMP の pdfuaid・DisplayDocTitle を書き、字形の無い字を描かない。題・言語・図と数式の代わりの文・見出しの順の足りないものを警告に出す)',
   '  --document-lang <言語>     文書の言語 (ja・en-US など。入力に言語が無いときだけ使う)',
   '  --pdfa 2b|3b              長期保存用の PDF/A-2b・PDF/A-3b の印を付ける (出力意図は sRGB。ファイルを開く動作・フォームの欄は書かない。2b は添付ファイルを埋め込まない。--pdfx と合わせるときは --output-profile が要る)',
+  '  --encrypt                 PDF を暗号化する (AES-256。--user-password・--owner-password・--deny のどれかを書いても暗号化する。--pdfx・--pdfa とは使えない)',
+  '  --user-password <パスワード>  開くときのパスワード (無ければパスワード無しで開けて、--deny の制限だけが付く)',
+  '  --owner-password <パスワード> 権限を外して開くパスワード (無ければ乱数で、権限を外して開ける人はいない)',
+  '  --deny <権限,…>           禁じること (print・modify・copy・annotate・fill-forms・accessibility・assemble・print-high-quality。--pdfua では accessibility を外せない)',
   '  --no-fetch-images         文書が http(s) で参照する画像を取らない',
   '  --no-fetch-styles         文書が http(s) で参照する CSS を取らない',
   '  --no-outside-files        文書が file: の URL や ../ で指した、入力のディレクトリの外のファイルを読まない (他人の書いた文書を組むとき)',
@@ -1532,8 +1577,8 @@ export const USAGE_JA = [
 
 /** 使い方。英語 */
 export const USAGE_EN = [
-  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--format pdf|svg|png] [--pages <range>] [--max-pages <N>] [--dpi <value>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <lang>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--xhtml] [--watch] [--lang ja|en]',
-  '       kumiori <FO file> [-o|--output <PDF file>] [--format pdf|svg|png] [--pages <range>] [--max-pages <N>] [--dpi <value>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--system-fonts] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--pdfa 2b|3b] [--tagged|--no-tagged] [--pdfua] [--document-lang <lang>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--watch] [--lang ja|en]',
+  'Usage: kumiori <HTML file> [-o|--output <PDF file>] [--format pdf|svg|png] [--pages <range>] [--max-pages <N>] [--dpi <value>] [--style kumiori|browser|browser-margin|ah|vivliostyle|weasyprint] [--page-size <size>] [--svg-lang <ja,en>] [--css a.css,b.css] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--system-fonts] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--pdfa 2b|3b] [--encrypt] [--user-password <password>] [--owner-password <password>] [--deny <permission,...>] [--tagged|--no-tagged] [--pdfua] [--document-lang <lang>] [--no-fetch-images] [--no-fetch-styles] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--xhtml] [--watch] [--lang ja|en]',
+  '       kumiori <FO file> [-o|--output <PDF file>] [--format pdf|svg|png] [--pages <range>] [--max-pages <N>] [--dpi <value>] [--fo] [--compat spec|antenna] [--font-dir <dir>] [--font-cache <dir>|--no-font-cache] [--font <font file>]... [--generic-font <generic>=<family>] [--system-fonts] [--svg-lang <ja,en>] [--print] [--spot-colors <JSON>] [--image-max-dpi <dpi>] [--pdfx x1a|x1a:2003|x3|x4 [--output-profile <ICC>] [--output-condition <name>]] [--pdfa 2b|3b] [--encrypt] [--user-password <password>] [--owner-password <password>] [--deny <permission,...>] [--tagged|--no-tagged] [--pdfua] [--document-lang <lang>] [--no-fetch-images] [--no-outside-files] [--low-memory] [--link-schemes <a,b>] [--link-launch] [--link-relative file|uri] [--drawio-stencils <files>] [--fetch-drawio-stencils] [--drawio-stencils-url <URL>] [--no-drawio] [--plugin <module> [--plugin-option <k=v>]...]... [--limit <name>=<value>]... [--watch] [--lang ja|en]',
   '       kumiori a.html b.fo … -o <output directory>',
   '       kumiori - -o - [--base <dir>] < input > output.pdf',
   '       kumiori --help | --version',
@@ -1568,6 +1613,10 @@ export const USAGE_EN = [
   '  --pdfua                   write PDF/UA-1 markers (implies --tagged; writes the XMP pdfuaid and DisplayDocTitle, does not draw characters with no glyph, and warns about a missing title, language, alternate text for figures and formulas, and heading order)',
   '  --document-lang <lang>    document language (such as ja or en-US; used only when the input has none)',
   '  --pdfa 2b|3b              write PDF/A-2b or PDF/A-3b markers for long-term archiving (sRGB output intent; Launch actions and form fields are not written; 2b does not embed attachments; combining with --pdfx needs --output-profile)',
+  '  --encrypt                 encrypt the PDF (AES-256; giving --user-password, --owner-password or --deny also encrypts; not with --pdfx or --pdfa)',
+  '  --user-password <password>  password to open the PDF (without one, it opens without a password and only the --deny restrictions apply)',
+  '  --owner-password <password> password to open it without the restrictions (without one, a random password: nobody can remove them)',
+  '  --deny <permission,...>   what to forbid (print, modify, copy, annotate, fill-forms, accessibility, assemble, print-high-quality; with --pdfua, accessibility cannot be removed)',
   '  --no-fetch-images         do not fetch images the document references over http(s)',
   '  --no-fetch-styles         do not fetch stylesheets the document references over http(s)',
   '  --no-outside-files        do not read files outside the input directory that the document points at with file: URLs or ../ (for documents written by others)',
