@@ -21,7 +21,12 @@ import { fromBase64 } from './base64';
 import { resolveRef } from './resources';
 import { decodeBmp, decodeGif, encodePngStored } from './pixels';
 import { decodeWebp } from './webp';
+import { walkAreas } from './areaTree';
+import { hrefOfTag } from './xmlAttr';
 import { rejoin, thisCall } from './callContext';
+import { exifSwapsAxes } from './exifOrientation';
+
+export { exifSwapsAxes };
 
 export interface CanvasRenderOptions {
   /** 1pt あたりの CSS px (既定 1.3333 = 96dpi) */
@@ -45,6 +50,45 @@ export interface CanvasRenderOptions {
   warn?: (d: Diagnostic) => void;
   /** SVG の画像 1 つを画素にする手間の上限 (既定 SVG_RASTER_BUDGET。1 回の描画の合計は、この 4 倍)。試しで小さくするためのもの */
   svgRasterBudget?: number;
+  /**
+   * 読み込みのときに画素にしなかった画像 (ImageAsset.deferred) の、画像の中身ごとのブラウザーの画像 (画像のキャッシュから描画の前に引いたもの。
+   * imageCache.ts)。無い画像は描画しない
+   */
+  deferredImage?: (bytes: Uint8Array) => CanvasImageSource | undefined;
+}
+
+/**
+ * ページの描画に要る、読み込みのときに画素にしなかった画像 (ImageAsset.deferred) の中身と種類 (renderPage が、描画の前に画像のキャッシュから引く)。
+ * 画像の領域と背景の画像 (重ねた背景も) と、SVG の画像の中から参照する画像のファイル (Web Worker の中で SVG を図形にして描くとき)
+ */
+export function deferredImagesOf(sheet: SheetArea, assets: AssetStore): Array<{ bytes: Uint8Array; mime: string }> {
+  const out = new Map<Uint8Array, string>();
+  const seenSvg = new Set<ImageAsset>();
+  const add = (a: ImageAsset | undefined) => {
+    if (a?.deferred && a.bytes) out.set(a.bytes, a.mime);
+  };
+  const visit = (src: string) => {
+    const a = assets.peek(src);
+    add(a);
+    // SVG の中の image の外のファイル (SVG の場所が基準。svgShapesOf と同じ)
+    if (a?.mime === 'image/svg+xml' && a.bytes && !a.element && !seenSvg.has(a)) {
+      seenSvg.add(a);
+      const text = new TextDecoder().decode(a.bytes);
+      if (!/<(?:[\w-]+:)?image\b/i.test(text)) return;
+      const base = /^data:/i.test(a.key) ? undefined : a.key;
+      for (const m of text.matchAll(/<(?:[\w-]+:)?image\b[^>]*>/gi)) {
+        const href = hrefOfTag(m[0]);
+        if (href && !/^data:/i.test(href)) add(assets.peek(resolveRef(href, base)));
+      }
+    }
+  };
+  walkAreas(sheet, (a) => {
+    if (a.type === 'image') return void visit(a.src);
+    const bgi = a.backgroundImage;
+    if (bgi) visit(bgi.src);
+    for (const l of bgi?.under ?? []) visit(l.src);
+  });
+  return [...out].map(([bytes, mime]) => ({ bytes, mime }));
 }
 
 /** 描く先の Canvas (画面の canvas 要素か、Web Worker の中でも使える OffscreenCanvas) */
@@ -424,55 +468,6 @@ export async function prepareSvgImagesForCanvas(assets: AssetStore, fonts: FontM
   }
 }
 
-/**
- * 画像の EXIF の向き (TIFF 6.0 Section 8 の Orientation。札 274 = 0x0112) が、縦横を入れ替える値 (5〜8) か。JPEG は APP1 の「Exif\0\0」の後の
- * TIFF の構造 (CIPA DC-008 (Exif) の APP1)、PNG は eXIf の塊 (PNG 第 3 版) の TIFF の構造の、最初の IFD を読む。読めなければ false
- */
-export function exifSwapsAxes(b: Uint8Array, kind: 'png' | 'jpeg'): boolean {
-  const tiff = (o: number, end: number): boolean => {
-    if (o + 8 > end) return false;
-    const le = b[o] === 0x49 && b[o + 1] === 0x49;
-    if (!le && !(b[o] === 0x4d && b[o + 1] === 0x4d)) return false;
-    const u16 = (i: number) => (i + 2 <= end ? (le ? b[i] | (b[i + 1] << 8) : (b[i] << 8) | b[i + 1]) : -1);
-    const u32 = (i: number) => (i + 4 <= end ? (le ? (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16)) + b[i + 3] * 0x1000000 : b[i] * 0x1000000 + ((b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3])) : -1);
-    const ifd = o + u32(o + 4);
-    const n = u16(ifd);
-    for (let k = 0; k < n && k < 1000; k++) {
-      const e = ifd + 2 + k * 12;
-      if (e + 12 > end) return false;
-      if (u16(e) === 0x0112) {
-        const v = u16(e + 8);
-        return v >= 5 && v <= 8;
-      }
-    }
-    return false;
-  };
-  if (kind === 'jpeg') {
-    let p = 2;
-    while (p + 4 <= b.length && b[p] === 0xff) {
-      // 標識の前の埋め草 (0xFF の続き。ITU-T T.81 B.1.1.2) は読み飛ばす
-      if (b[p + 1] === 0xff) {
-        p++;
-        continue;
-      }
-      const m = b[p + 1];
-      if (m === 0xda || m === 0xd9) break;
-      const len = (b[p + 2] << 8) | b[p + 3];
-      if (m === 0xe1 && len >= 8 && b[p + 4] === 0x45 && b[p + 5] === 0x78 && b[p + 6] === 0x69 && b[p + 7] === 0x66 && b[p + 8] === 0 && b[p + 9] === 0) return tiff(p + 10, Math.min(b.length, p + 2 + len));
-      p += 2 + len;
-    }
-    return false;
-  }
-  let p = 8;
-  while (p + 8 <= b.length) {
-    const len = ((b[p] << 24) >>> 0) + ((b[p + 1] << 16) | (b[p + 2] << 8) | b[p + 3]);
-    const type = String.fromCharCode(b[p + 4], b[p + 5], b[p + 6], b[p + 7]);
-    if (type === 'eXIf') return tiff(p + 8, Math.min(b.length, p + 8 + len));
-    if (type === 'IDAT' || type === 'IEND') break;
-    p += 12 + len;
-  }
-  return false;
-}
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
@@ -522,6 +517,8 @@ type Outline = { paths: Path2D[]; offsets: { x: number; y: number }[] };
 
 class CanvasPainter implements Painter {
   private outlineCache = new Map<string, Outline>();
+  /** 画素にしていない画像の、描画の前に引いたブラウザーの画像 (CanvasRenderOptions.deferredImage) */
+  deferredImage?: (bytes: Uint8Array) => CanvasImageSource | undefined;
   /** この描画で、SVG の画像を画素にするのに使った手間 (svgBudget の 4 倍まで) */
   private svgWork = 0;
   /** SVG の画像 1 つを画素にする手間の上限 (CanvasRenderOptions.svgRasterBudget) */
@@ -624,8 +621,10 @@ class CanvasPainter implements Painter {
       this.warn?.(pdfPlaceholderDiagnostic(a.src, 'screen'));
       return paintPlaceholder(a, x, y, this);
     }
-    const el = asset?.element;
-    if (!el) {
+    const el = asset?.element ?? (asset?.deferred && asset.bytes ? this.deferredImage?.(asset.bytes) : undefined);
+    // 画素にしていない画像で、キャッシュから引けなかったもの (読めなかった画像) は描画しない
+    if (!el && asset?.deferred) return;
+    if (!el || !asset) {
       const g = asset && gradientOf(asset);
       if (g) this.drawGradient(g, x, y, a.width, a.height);
       else if (asset) this.drawSvgShapes(asset, a, x, y);
@@ -754,6 +753,9 @@ class CanvasPainter implements Painter {
 
   /** SVG の中の、組版の画素の読み取りで読めない画像の画素 (前もって読んだもの・登録した画像のブラウザの画像から読んだもの)。無ければ undefined */
   private missingImage(bytes: Uint8Array): Pixels | undefined {
+    // 画素にしていない画像のファイル (描画の前にキャッシュから引いたもの)。キャッシュの画像は後で閉じることがあるので、読んだ画素は覚えない
+    const deferred = this.deferredImage?.(bytes);
+    if (deferred) return pixelsOfElement(deferred) ?? undefined;
     const table = this.assets && elementsOf.get(this.assets);
     const el = this.assets && elementOfImage(this.assets, bytes);
     if (table && el) {
@@ -1115,5 +1117,6 @@ export function renderSheetToCanvas(sheet: SheetArea, canvas: RenderCanvas, font
   ctx.fillRect(0, 0, sheet.width, sheet.height);
   const painter = new CanvasPainter(ctx, fonts, opts.assets, !!opts.glyphOutlines, opts.parseXml, opts.warn);
   if (opts.svgRasterBudget !== undefined) painter.svgBudget = opts.svgRasterBudget;
+  painter.deferredImage = opts.deferredImage;
   paintSheet(sheet, painter, { guides: opts.guides });
 }

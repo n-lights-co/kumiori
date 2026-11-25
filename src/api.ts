@@ -15,13 +15,13 @@ import { estimateFontBytes, FontManager, FontPrepCache, type LoadedFont } from '
 import { Measurer } from './measurer';
 import { LayoutEngine, SharedLineMemo, type LayoutControl, type PageEmitter, type SheetSource } from './layoutEngine';
 import { areaStructure } from './structure';
-import { hasBackgroundImage } from './sourceRef';
 import { encryptIncompatible, renderPdf, renderPdfPages, svgTextWidth, type PdfRenderOptions } from './pdfRenderer';
 import { checkEncryptOptions, type PdfEncryptOptions } from './pdfEncrypt';
 import { checkMeasureArgs, measureDocument, measuredLines, type MeasuredText, type TextStyle } from './textMeasure';
 import { PdfOutputPort, type PdfOutput } from './pdfOutput';
 import { pdfAOf, pdfDocumentDate, pdfStandardOf, type PdfAOptions, type PdfXOptions } from './pdfStandard';
-import { preparedPixelBytes, prepareSvgImagesForCanvas, releaseRenderCaches, renderSheetToCanvas } from './canvasRenderer';
+import { deferredImagesOf, preparedPixelBytes, prepareSvgImagesForCanvas, releaseRenderCaches, renderSheetToCanvas } from './canvasRenderer';
+import { ImageCache, type ImageCacheLease } from './imageCache';
 import { renderSheetToSvg } from './svgRenderer';
 import { renderSheetToPng } from './pageRaster';
 import { importHtmlparser2, importLinkedom } from './linkedomModules';
@@ -299,9 +299,11 @@ export interface TypesetResult {
   /**
    * ページ (0 から数える) を canvas に描画する (ブラウザー。印刷プレビューなど)。canvas の大きさは、ページの大きさ × scale に合わせて設定し直す。
    * canvas は、画面の canvas 要素か OffscreenCanvas (Web Worker の中で組んで描画するとき。ラスタライズした結果は transferToImageBitmap で画面へ渡せる)。
-   * 文字はフォントファイルのアウトラインから描画するので、ページの外のフォントの設定 (CSS の `@font-face` など) に左右されない
+   * 文字はフォントファイルのアウトラインから描画するので、ページの外のフォントの設定 (CSS の `@font-face` など) に左右されない。
+   * 描画する前に、そのページの画像を画像のキャッシュ (TypesetterOptions.imageCache) から引き (無ければデコードし)、そろってから 1 度に描画する。
+   * 返す Promise は、描画し終えたときに解決する
    */
-  renderPage(canvas: HTMLCanvasElement | OffscreenCanvas, pageIndex: number, options?: RenderPageOptions): void;
+  renderPage(canvas: HTMLCanvasElement | OffscreenCanvas, pageIndex: number, options?: RenderPageOptions): Promise<void>;
   /**
    * ページ (0 から数える) を SVG の文書 (文字列) にする (ブラウザーでも Node でも使える)。大きさは紙の大きさ (pt)。
    * 文字はフォントファイルのアウトラインのパスにし、画像は文書の中に埋め込むので、SVG だけで描画できる (フォント・画像のファイルは要らない)。
@@ -318,17 +320,25 @@ export interface TypesetResult {
    * この結果を手放す (dispose) と減るメモリの、おおよその見積もり (バイト)。いくつかの結果を持っておくとき (プレビューで前に組んだ結果を
    * 再利用するときなど) に、どれを手放すかを決める目安。Typesetter (createTypesetter) と共有するもの (Typesetter のフォント・OS のフォント・
    * 再利用のキャッシュ) は数えない (Typesetter.memoryUsage が数える)。呼ぶ側が渡した中身をそのまま持つもの (フォントのファイル・添付のファイル) も数えない。
-   * エリアツリーとフォントの表の分は、数からの見積もりで、処理系によって違う (1.0 までに数え方を変えることがある)。dispose の後は、どれも 0
+   * エリアツリーとフォントの表の分は、数からの見積もりで、処理系によって違う (1.0 までに数え方を変えることがある)。
+   * 実際に手放した後 (dispose の返す Promise が解決した後) は、どれも 0。dispose を呼んでも、走っている toPdf などが終わるまで手放すのを遅らせている間は、
+   * 今の見積もりを返す (その間もメモリを使っているため)。何度呼んでもよい: 結果ごとの初めの 1 回はエリアツリーを数えてキャッシュし (200 ページの文書で数十 ms)、2 回目からは画像とフォントだけを数え直す (1 ms 未満)
    */
   memoryUsage(): MemoryUsage;
+  /**
+   * dispose を呼んだか (呼んだ時点で true になる)。true のとき、新しく toPdf・toPdfStream・renderPage・renderPageToSvg・renderPageToPng を呼ぶと、
+   * KumioriError (code は api/result-disposed) で失敗する。実際に手放し終えたかは、dispose の返す Promise で分かる
+   */
+  readonly disposed: boolean;
   /**
    * この結果が持つものを手放す: ブラウザーの画像 (ImageBitmap) を閉じ (GC を待たずにピクセルのメモリを返す)、画像・文書ごとのフォント・
    * 描画のためのキャッシュ・エリアツリー (areaTree の sheets などを空にする) を手放す。Typesetter と共有するものは手放さない。
    * 後で toPdf・toPdfStream・renderPage・renderPageToSvg・renderPageToPng を呼ぶと、KumioriError (code は api/result-disposed) で失敗する。
    * toPdf などが走っている途中で呼んだときは、走っているものが全部終わってから手放す (走っているものは、そのまま終わる)。
-   * 2 度呼んでもよい (2 度目は何もしない)
+   * 返す Promise は、手放し終えたときに解決する (走っているものが無ければ、すぐに手放すので、解決済みの Promise。失敗はしない)。
+   * 2 度呼んでもよい (2 度目からは何もせず、初めと同じ Promise を返す)
    */
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 /**
@@ -339,8 +349,10 @@ export interface MemoryUsage {
   /** 合計 (images・fonts・layout の和) */
   total: number;
   /**
-   * 画像: ファイルの中身 (渡されたものをコピーして持つ。同じ中身でも、参照の URL が違えば別に持つ)・描画のためにラスタライズしたもの
-   * (ブラウザーの画像。幅 × 高さ × 4)・前もって読んだピクセル
+   * 画像: Kumiori が作って持つファイルの中身 (data: の URL を戻したもの・ネットワークから取得したもの・SVGZ を展開したものなど。同じ中身でも、
+   * 参照の URL が違えば別に持つ)・ブラウザーで SVG・TIFF を描画するためにラスタライズしたもの (幅 × 高さ × 4)・前もって読んだピクセル。
+   * files・resolveResource で渡された画像の中身は、コピーせずにそのまま持つので数えない。描画 (renderPage) のためにデコードした画像は、
+   * Typesetter の画像のキャッシュ (TypesetterMemoryUsage.cacheDetail の images) に数え、ここには数えない
    */
   images: number;
   /**
@@ -363,11 +375,28 @@ export interface TypesetterMemoryUsage {
   /** フォント: Typesetter が読み込んだフォント (既定のフォント・fonts・数式や等幅のフォント・OS のフォント)。ファイルと読んだ表 (フォントのグリフの数からの見積もり)。releaseCaches では減らない */
   fonts: number;
   /**
-   * 再利用のキャッシュ (TypesetterOptions.reuse): フォントのファイルの下ごしらえ・段落の行分け・前の文書のページ。releaseCaches で手放せる。
-   * 行分けとページは、数からの見積もり
+   * キャッシュ: 描画 (renderPage) のためにデコードした画像と、再利用のキャッシュ (TypesetterOptions.reuse。フォントのファイルの下ごしらえ・段落の行分け・
+   * 前の文書のページ)。releaseCaches で手放せる。行分けとページは、数からの見積もり。内訳は cacheDetail
    */
   caches: number;
+  /** caches の内訳 (和が caches)。releaseCaches の引数の種類の名前と同じ */
+  cacheDetail: TypesetterCacheDetail;
 }
+
+/** Typesetter のキャッシュの内訳 (TypesetterMemoryUsage.cacheDetail。どれもバイト) */
+export interface TypesetterCacheDetail {
+  /** 描画 (renderPage) のためにデコードした画像 (ImageBitmap。幅 × 高さ × 4。上限は TypesetterOptions.imageCache) */
+  images: number;
+  /** 段落の行分け (reuse) */
+  lines: number;
+  /** 前の文書のページ (reuse。ページツリーとページの区切りの記録) */
+  pages: number;
+  /** フォントのファイルの下ごしらえ (reuse。WOFF・WOFF2 を戻したものなど) */
+  fontPrep: number;
+}
+
+/** Typesetter.releaseCaches で手放すキャッシュの種類 (true にしたものだけを手放す。名前は TypesetterCacheDetail と同じ) */
+export type ReleaseCacheKinds = { [K in keyof TypesetterCacheDetail]?: boolean };
 
 /** renderPageToPng の設定 */
 export interface RenderPagePngOptions {
@@ -743,7 +772,7 @@ function laterCall(call: CallContext, o: { signal?: unknown; onProgress?: unknow
 export async function typeset(text: string, options: TypesetOptions = {}): Promise<TypesetResult> {
   options = optionsObject(options, 'options');
   // 1 つの文書だけを組むので、文書をまたぐ使い回し (reuse) はしない (覚えの分のメモリを使わない)
-  return runInCall(beginCall(options), async () => rejoin(thisCall(), await buildTypesetter({ ...options, reuse: false }))(text, options) as Promise<TypesetResult>);
+  return runInCall(beginCall(options), async () => rejoin(thisCall(), await buildTypesetter({ ...options, reuse: false }, true))(text, options) as Promise<TypesetResult>);
 }
 
 /**
@@ -839,7 +868,7 @@ export async function typesetToPdf(text: string, options: TypesetOptions = {}, p
   pdf = optionsObject(pdf, 'pdf');
   return runInCall(beginCall(options), async () => {
     checkPdfOnlyOptions(pdf);
-    return rejoin(thisCall(), await buildTypesetter({ ...options, reuse: false }))(text, options, pdf) as Promise<TypesetPdfResult>;
+    return rejoin(thisCall(), await buildTypesetter({ ...options, reuse: false }, true))(text, options, pdf) as Promise<TypesetPdfResult>;
   });
 }
 
@@ -901,7 +930,7 @@ export async function typesetToPdfStream(text: string, options: TypesetOptions =
       return runInCall(beginCall(options), async () => {
         checkPdfOnlyOptions(pdf);
         checkStreamablePdf(pdf, 'pdf.');
-        const run = rejoin(thisCall(), await buildTypesetter({ ...options, reuse: false }));
+        const run = rejoin(thisCall(), await buildTypesetter({ ...options, reuse: false }, true));
         return run(text, options, { ...pdf, [PDF_OUTPUT]: port } as StreamPdfOptions) as Promise<TypesetPdfResult>;
       });
     }));
@@ -925,6 +954,11 @@ export type TypesetterOptions = Pick<TypesetOptions, 'fonts' | 'genericFonts' | 
    * (再利用を疑うときに比べる。使うメモリも少ない)。再利用しない場面と詳しい条件は、ライブラリのドキュメントの「入口の関数」の節
    */
   reuse?: boolean;
+  /**
+   * 描画 (renderPage) のためにデコードした画像のキャッシュ (Typesetter 全体で 1 つ。ブラウザーだけ)。maxBytes は上限 (バイト。画像の幅 × 高さ × 4 の合計。
+   * 既定 256MB)。超えたら、使っている結果 (dispose していない結果) の無くなった画像を先に、残りは使った順の古いものから捨てる
+   */
+  imageCache?: { maxBytes?: number };
   /** タイプセッターを作る間 (既定のフォントの取得と、fonts のフォントの解析) の止めるシグナル (TypesetOptions.signal と同じ)。作った後の typeset には効かない */
   signal?: AbortSignal;
   /** タイプセッターを作る間の進捗 (phase は 'fonts') */
@@ -954,17 +988,19 @@ export interface Typesetter {
    */
   breakLines(text: string, style: TextStyle | undefined, width: number): Promise<MeasuredText>;
   /**
-   * この Typesetter が持つメモリの、おおよその見積もり (バイト)。読み込んだフォントと、再利用のキャッシュ (reuse) の分。組んだ結果の分は入れない
+   * この Typesetter が持つメモリの、おおよその見積もり (バイト)。読み込んだフォントと、描画のための画像のキャッシュ・再利用のキャッシュ (reuse) の分。組んだ結果の分は入れない
    * (TypesetResult.memoryUsage)。この total と、持っている結果の total の和で、メモリの上限を決められる。
    * 行分けとページのキャッシュの分は、数からの見積もりで、処理系によって違う (1.0 までに数え方を変えることがある)
    */
   memoryUsage(): TypesetterMemoryUsage;
   /**
-   * 再利用のキャッシュ (フォントのファイルの下ごしらえ・段落の行分け・前の文書のページ) を手放す。読み込んだフォントは手放さない。
+   * キャッシュ (描画のためにデコードした画像・フォントのファイルの下ごしらえ・段落の行分け・前の文書のページ) を手放す。読み込んだフォントは手放さない。
+   * kinds を渡すと、true にした種類だけを手放す (例: { images: true } は画像のキャッシュだけ。名前は memoryUsage().cacheDetail と同じ)。渡さなければ全部。
    * 手放した後も、次の typeset は正しく組める (再利用するものが無いので、初めて組むときと同じだけ時間がかかる。組んだ結果は同じ)。
-   * 組んでいる途中に呼んでもよい。組んだ結果 (TypesetResult) は、それぞれの dispose で手放す
+   * 画像を手放した後の renderPage は、画像をデコードし直す。組んでいる途中・描画している途中に呼んでもよい (描画している途中の画像は、描画を終えてから捨てる)。
+   * 組んだ結果 (TypesetResult) は、それぞれの dispose で手放す
    */
-  releaseCaches(): void;
+  releaseCaches(kinds?: ReleaseCacheKinds): void;
 }
 
 /**
@@ -1025,10 +1061,16 @@ export async function createTypesetter(setup: TypesetterOptions = {}): Promise<T
     measureText: async (text, style = {}) => measureWith(run, setupLimits, text, style),
     breakLines: async (text, style = {}, width) => measureWith(run, setupLimits, text, style, width ?? Number.NaN),
     memoryUsage: () => run.memoryUsage(),
-    releaseCaches: () => run.releaseCaches(),
+    releaseCaches: (kinds) => run.releaseCaches(kinds),
   };
 }
 
+/**
+ * canvas ごとの、最後に始めた renderPage の描画 (終わったら解決する)。renderPage は画像をデコードするのを待ってから描画するので、
+ * 同じ canvas に続けて呼ぶと、先に呼んだページの描画が後に呼んだページの描画の後になりうる (画像の多いページを呼んで、すぐ次のページを呼ぶとき)。
+ * 描画は、同じ canvas では呼んだ順に行う (前の描画を待ってから描画する。後に呼んだページが canvas に残る)。別の結果の renderPage も同じ canvas なら並べる
+ */
+const canvasDraws = new WeakMap<object, Promise<void>>();
 /** 測るための文書を組むときの、文書ごとの設定の印 (Typesetter の reuse のキャッシュを変えない。公開しない) */
 const MEASURE_ONLY = Symbol('kumiori.measureOnly');
 
@@ -1041,7 +1083,7 @@ async function measureWith(run: (text: string, options: DocumentOptions) => Prom
     try {
       return measuredLines(r.areaTree.sheets, style.writingMode === 'vertical-rl' || style.writingMode === 'vertical-lr', width);
     } finally {
-      r.dispose();
+      void r.dispose();
     }
   });
 }
@@ -1092,12 +1134,20 @@ function lineStartsOf(text: string): number[] {
 /** 文書を組む関数 (buildTypesetter が返す)。Typesetter の memoryUsage・releaseCaches も持つ */
 type DocumentRunner = ((text: string, options: DocumentOptions, pdfOnly?: TypesetPdfOptions) => Promise<TypesetResult | TypesetPdfResult>) & {
   memoryUsage(): TypesetterMemoryUsage;
-  releaseCaches(): void;
+  releaseCaches(kinds?: ReleaseCacheKinds): void;
 };
 
-async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner> {
+/**
+ * privateImages: 画像のキャッシュを、結果ごとに持つ (Typesetter を使わない typeset など。その結果の dispose で手放す)。
+ * false なら Typesetter 全体で 1 つ (TypesetterOptions.imageCache)
+ */
+async function buildTypesetter(setup: TypesetterOptions, privateImages = false): Promise<DocumentRunner> {
   checkOptions(setup);
   if (setup.reuse !== undefined && typeof setup.reuse !== 'boolean') throw optionError(msg('reuse は真偽値にしてください', 'reuse must be a boolean'), 'reuse');
+  const maxImageBytes = setup.imageCache?.maxBytes;
+  if (setup.imageCache !== undefined && (typeof setup.imageCache !== 'object' || setup.imageCache === null)) throw optionError(msg('imageCache はオブジェクト ({ maxBytes }) にしてください', 'imageCache must be an object ({ maxBytes })'), 'imageCache');
+  if (maxImageBytes !== undefined && !(typeof maxImageBytes === 'number' && maxImageBytes >= 0 && Number.isFinite(maxImageBytes))) throw optionError(msg('imageCache.maxBytes は 0 以上の数にしてください', 'imageCache.maxBytes must be a number of 0 or more'), 'imageCache.maxBytes');
+  const imageCache = privateImages ? undefined : new ImageCache(maxImageBytes);
   svgParser ??= rejoin(thisCall(), await parsers()).svg;
   const timeout = setup.fetchTimeoutMs ?? 30_000;
   const bufferOfSpec = async (spec: FontSpec) => {
@@ -1238,17 +1288,27 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner
     // 測るための文書 (measureText・breakLines) は、文書をまたぐ再利用のキャッシュ (行分け・ページ・フォントの下ごしらえの世代) を変えない
     // (測るたびに、前に組んだ文書の再利用のキャッシュが捨てられないように)
     const measuring = (options as Record<symbol, unknown>)[MEASURE_ONLY] === true;
-    return typesetDocument(text, merged as TypesetOptions, base, loadOptional, baseWarnings, fontNames, pdfOnly, measuring ? undefined : sharedLines, loadSystem, measuring);
+    return typesetDocument(text, merged as TypesetOptions, base, loadOptional, baseWarnings, fontNames, pdfOnly, measuring ? undefined : sharedLines, loadSystem, measuring, imageCache);
   };
   return Object.assign(run, {
     memoryUsage: (): TypesetterMemoryUsage => {
       const fonts = estimateFontBytes([...base.loadedFonts(), ...systemLoaded]);
-      const caches = (base.prepCache?.memoryBytes((b) => givenBuffers.has(b)) ?? 0) + (sharedLines?.memoryBytes() ?? 0);
-      return { total: fonts + caches, fonts, caches };
+      const cacheDetail: TypesetterCacheDetail = {
+        images: imageCache?.memoryBytes() ?? 0,
+        lines: sharedLines?.lineBytes() ?? 0,
+        pages: sharedLines?.pageBytes() ?? 0,
+        fontPrep: base.prepCache?.memoryBytes((b) => givenBuffers.has(b)) ?? 0,
+      };
+      const caches = cacheDetail.images + cacheDetail.lines + cacheDetail.pages + cacheDetail.fontPrep;
+      return { total: fonts + caches, fonts, caches, cacheDetail };
     },
-    releaseCaches: () => {
-      base.prepCache?.clear();
-      sharedLines?.clear();
+    releaseCaches: (kinds?: ReleaseCacheKinds) => {
+      if (kinds !== undefined && (typeof kinds !== 'object' || kinds === null)) throw optionError(msg('releaseCaches の引数は、種類の名前を true にしたオブジェクト ({ images: true } など) にしてください', 'the argument of releaseCaches must be an object with kinds set to true (such as { images: true })'), 'kinds');
+      const all = kinds === undefined;
+      if (all || kinds.images) imageCache?.clear();
+      if (all || kinds.lines) sharedLines?.clearLines();
+      if (all || kinds.pages) sharedLines?.clearPages();
+      if (all || kinds.fontPrep) base.prepCache?.clear();
     },
   });
 }
@@ -1381,13 +1441,15 @@ async function typesetDocument(
   loadSystem?: SystemFaceLoader,
   /** Typesetter の再利用のキャッシュ (フォントの下ごしらえの世代) に、この文書を数えない (測るための文書。measureWith) */
   isolated = false,
+  /** 描画のためにデコードした画像のキャッシュ (Typesetter 全体のもの)。無ければ、結果ごとに作り、dispose で手放す */
+  imageCache?: ImageCache,
 ): Promise<TypesetResult | TypesetPdfResult> {
   const call = currentCall();
   // 器の覚えの、この文書の印 (typesetDocumentBody の初めに、同期で startDocument して入れる)。止めた・組み終えたの知らせは、この印に付ける
   // (止めた文書の知らせは、すぐ次の文書の startDocument の後に来ることがあるので、「いまの文書」に付けない)
   const marks: DocumentMarks = {};
   try {
-    const r = rejoin(thisCall(), await typesetDocumentBody(text, options, base, loadSpec, baseWarnings, baseNames, pdfOnly, sharedLines, loadSystem, marks, isolated));
+    const r = rejoin(thisCall(), await typesetDocumentBody(text, options, base, loadSpec, baseWarnings, baseNames, pdfOnly, sharedLines, loadSystem, marks, isolated, imageCache));
     // 先頭から N ページで止めた文書は、器の覚えの世代を進めない (止める合図で止めた文書と同じ)。覚えたものは、中身で引く覚えなので残す。
     // プレビュー (maxPages) を何度組んでも、前に全体を組んだ文書の後ろのページの覚えを捨てないため
     if (r.truncated) {
@@ -1428,6 +1490,8 @@ async function typesetDocumentBody(
   marks: DocumentMarks = {},
   /** Typesetter の再利用のキャッシュ (フォントの下ごしらえの世代) に、この文書を数えない */
   isolated = false,
+  /** 描画のためにデコードした画像のキャッシュ (Typesetter 全体のもの。無ければ結果ごとに作る) */
+  sharedImages?: ImageCache,
 ): Promise<TypesetResult | TypesetPdfResult> {
   // 選択肢は入口で検証し、compat は 1 つの真偽値 (ah) に正規化して下流 (組版・PDF の設定) に渡す (読み込みの Importer も同じ判定 isAntennaCompat を使う)
   checkOptions(options);
@@ -1568,6 +1632,8 @@ async function typesetDocumentBody(
     formats,
     report,
     pdfCompat: ah,
+    // ブラウザーで、ラスター画像を読み込むときに画素にしない (描画するときに、画像のキャッシュで画素にする。renderPage)
+    deferDecode: true,
     ...(use ? { onUse: (key: string) => use.usedKeys.add(key) } : {}),
     formatContext: {
       fetchTimeoutMs: timeout,
@@ -1598,9 +1664,10 @@ async function typesetDocumentBody(
     for (const n of mentionedFiles([rejoin(thisCall(), await f.text())], formats)) mentioned.add(n);
   }
   for (const f of images.filter(isMentioned)) {
-    const asset = rejoin(thisCall(), await assets.addBlob(f.path.split('\\').join('/'), new Blob([bytesOf(rejoin(thisCall(), await f.data())) as BlobPart])));
+    // 画像の格納先は、渡された中身を写さずに持つ (呼ぶ側が持つ中身を、もう 1 つ持たない。画像の多い文書で、画像の量の分のメモリになっていた)
+    const asset = rejoin(thisCall(), await assets.addBytes(f.path.split('\\').join('/'), bytesOf(rejoin(thisCall(), await f.data()))));
     resourceLoaded();
-    // 画像の置き場が中身を写して持つので、ファイルの読んだ中身は捨てる (同じ画像を 2 度持たない。画像の多い文書で、画像の量の分のメモリになっていた)
+    // 読んだ中身は格納先が持つので、ファイルの読んだ中身のキャッシュは捨てる
     f.forget();
     // 参照から取った画像は、参照の URL の全体 (問い合わせの ?… を含む) でも登録する。画像は「完全一致 → ファイル名」の順に引くので、
     // 問い合わせだけが違う 2 つの画像 (a.png?id=1 と a.png?id=2) が、それぞれの画像になる (名前だけだと、後に登録したものに両方が当たる)
@@ -1617,7 +1684,7 @@ async function typesetDocumentBody(
     if (f.url === undefined || isCss(f) || IMAGE_FILE.test(f.name) || /\.(ttf|otf|ttc|otc|woff2?)$/i.test(f.name) || assets.get(f.url)?.key === normalizeSrc(f.url)) continue;
     const bytes = bytesOf(rejoin(thisCall(), await f.data()));
     if (rejoin(thisCall(), await looksLikeImage(bytes, formats))) {
-      rejoin(thisCall(), await assets.addBlob(f.url, new Blob([bytes as BlobPart])));
+      rejoin(thisCall(), await assets.addBytes(f.url, bytes));
       resourceLoaded();
       f.forget();
     }
@@ -1813,11 +1880,10 @@ async function typesetDocumentBody(
       truncatedAt = pages.truncatedAt;
       layoutMs = pages.layoutMs;
     } else {
-      // 組みながら確定したページを描画し、組版の途中の木を手放す (文の多い文書のメモリの山を下げる。design/pdf-writer.md の 12)。
-      // 画像 (背景の画像・グラデーションも) の無い文書だけ: 画像の埋め込みは非同期で、組版は page-sequence の中で待てないので、画像のあるページは
-      // 組み終えてから描画することになり、PDF の番号の並びが、組み終えてから描画するとき (typeset の後の toPdf) と変わるため。OS のフォントを使う文書も
-      // (組版の途中でカラーフォントを読みうる)。カラーフォント・PDF/X・PDF/A は、renderPdfPages が断る
-      const emit = !systemUse && assets.size === 0 && !hasBackgroundImage(res.document);
+      // 組みながら確定したページを描画し、組版の途中の木を手放す (メモリの山を下げる。design/pdf-writer.md の 12・13)。
+      // 画像は、renderPdfPages が組む前に用意し、ページを描画する直前に埋め込む (用意できない画像のある文書・カラーフォント・PDF/X・PDF/A は、
+      // renderPdfPages が断る)。OS のフォントを使う文書は渡さない (組版の途中でカラーフォントを読みうる)
+      const emit = !systemUse;
       let pages: SheetSource | undefined;
       const lay = async (emitter?: PageEmitter) => {
         pages = paced ? rejoin(thisCall(), await engine.layoutSheetsPaced(res.document, emitter)) : engine.layoutSheets(res.document, emitter);
@@ -1931,6 +1997,12 @@ async function typesetDocumentBody(
   let disposed = false;
   let running = 0;
   let released = false;
+  // 描画 (renderPage) のためにデコードした画像のキャッシュ (Typesetter 全体のもの。無ければ、この結果だけのもの) と、キャッシュの中の、この結果の印
+  const imageCache = sharedImages ?? new ImageCache();
+  const imageOwner = {};
+  // dispose の返す Promise (手放し終えたときに解決する。2 度目からも同じものを返す)
+  let disposing: Promise<void> | undefined;
+  let finishDispose: (() => void) | undefined;
   const disposedError = () => runInCall(call, () => new KumioriError('api/result-disposed', msg('dispose で手放した組んだ結果は使えません', 'this typeset result was released with dispose() and can no longer be used')));
   const release = () => {
     if (released) return;
@@ -1938,10 +2010,14 @@ async function typesetDocumentBody(
     // 画像 (ブラウザの画像は閉じる)・描くためのキャッシュ・文書ごとの書体を手放す。Typesetter と共有する書体は残す
     assets.dispose();
     releaseRenderCaches(assets, fonts);
+    // 画像のキャッシュ: 結果ごとのものは全部捨て、Typesetter 全体のものは、この結果を持ち主から外す (ほかの結果と分け合う画像は残す。捨てるときに先に捨てる)
+    if (sharedImages) sharedImages.release(imageOwner);
+    else imageCache.clear();
     fonts.releaseOwnFonts(base);
     measurer.clear();
     // 領域の木は、呼ぶ側が areaTree を持ち続けていても手放せるよう、中身を空にする (pageCount などの数は残す)
     clearAreaTree(tree);
+    finishDispose?.();
   };
   /**
    * await をまたぐ呼び出しを、走っている間だけ数える (dispose はその間、手放すのを遅らせる)。呼び出しの Promise をそのまま返す
@@ -1996,13 +2072,26 @@ async function typesetDocumentBody(
         const { bytes } = rejoin(thisCall(), await streamTo(output, (port) => runInCall(laterCall(call, optionsObject(o, 'options'), ''), () => (checkStreamablePdf(o, ''), checkPdfEncrypt(o, ''), laterPdf(o, port)))));
         return { bytes };
       }),
-    // renderPage (同期) も、組んだときの言語で書く (toPdf と同じ)
+    // renderPage も、組んだときの言語で書く (toPdf と同じ)。描画の前に、そのページの画像を画像のキャッシュから引き (無ければデコードし)、
+    // そろってから同期で 1 度に描画する (Canvas に、途中まで描画した形を見せない)。引いた画像は、描画を終えるまで捨てない
     renderPage: (canvas, pageIndex, o = {}) =>
-      runInCall(call, () => {
-        if (disposed) throw disposedError();
+      track(() => runInCall(call, async () => {
         const sheet = tree.sheets[pageIndex];
         if (!sheet) throw new RangeError(msg(`ページ ${pageIndex} はありません (0〜${tree.sheets.length - 1})`, `there is no page ${pageIndex} (0 to ${tree.sheets.length - 1})`));
-        renderSheetToCanvas(sheet, canvas, fonts, {
+        const need = deferredImagesOf(sheet, assets);
+        const key: object | undefined = typeof canvas === 'object' && canvas !== null ? canvas : undefined;
+        const before = key && canvasDraws.get(key);
+        let drawn!: () => void;
+        const mine = new Promise<void>((ok) => (drawn = ok));
+        if (key) canvasDraws.set(key, mine);
+        let lease: ImageCacheLease | undefined;
+        try {
+          // 画像のデコードは前の描画と並べて進め、描画だけを前の描画の後にする
+          lease = need.length ? rejoin(thisCall(), await imageCache.lease(imageOwner, need)) : undefined;
+          if (before) rejoin(thisCall(), await before);
+          const got = lease;
+          renderSheetToCanvas(sheet, canvas, fonts, {
+            ...(got ? { deferredImage: (b: Uint8Array) => got.get(b) } : {}),
           ...(o.scale !== undefined ? { scale: o.scale } : {}),
           ...(o.devicePixelRatio !== undefined ? { devicePixelRatio: o.devicePixelRatio } : {}),
           guides: !!o.guides,
@@ -2010,8 +2099,13 @@ async function typesetDocumentBody(
           glyphOutlines: true,
           parseXml: svgParse,
           warn: addWarning,
-        });
-      }),
+          });
+        } finally {
+          lease?.done();
+          drawn();
+          if (key && canvasDraws.get(key) === mine) canvasDraws.delete(key);
+        }
+      })),
     renderPageToSvg: (pageIndex, o = {}) =>
       track(() => runInCall(laterCall(call, optionsObject(o, 'options'), ''), async () => {
         const sheet = tree.sheets[pageIndex];
@@ -2048,7 +2142,8 @@ async function typesetDocumentBody(
         }
       })),
     memoryUsage: () => {
-      if (disposed) return { total: 0, images: 0, fonts: 0, layout: 0 };
+      // dispose を呼んでも、走っている呼び出しが終わるまで手放すのを遅らせている間は、まだ持っているので、今の見積もりを返す
+      if (released) return { total: 0, images: 0, fonts: 0, layout: 0 };
       const images = assets.memoryBytes((b) => givenBuffers.has(b.buffer)) + preparedPixelBytes(assets);
       // 書体のファイルは、呼ぶ側が渡したものと、Typesetter の下ごしらえのキャッシュが持つものを数えない (手放しても残る)
       const fontBytes = estimateFontBytes(fonts.ownFonts(base), (b) => !givenBuffers.has(b) && !base.prepCache?.holds(b));
@@ -2057,10 +2152,15 @@ async function typesetDocumentBody(
       if (layout === undefined) layoutBytes.set(rt, (layout = estimateAreaTreeBytes(tree)));
       return { total: images + fontBytes + layout, images, fonts: fontBytes, layout };
     },
+    get disposed() {
+      return disposed;
+    },
     dispose: () => {
-      if (disposed) return;
+      if (disposing) return disposing;
       disposed = true;
+      disposing = new Promise<void>((resolve) => (finishDispose = resolve));
       if (running === 0) release();
+      return disposing;
     },
   };
 }

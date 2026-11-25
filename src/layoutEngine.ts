@@ -1981,6 +1981,13 @@ class Flow {
   private pageSize: () => PageSizeInfo;
   private cbBlock?: number;
   stack: Frame[] = [];
+  /**
+   * 開いている箱に、閉じるときに断片を書き換える箱 (Frame.frags を集める箱: 中の絶対配置の箱の基準の箱・position: relative でずらす箱) があるか。
+   * その箱の断片のあるページは、箱を閉じるまで決まらない (組みながらページを渡すときは、閉じるまで渡さない。LayoutEngine.emitPages)
+   */
+  holdsFragments(): boolean {
+    return this.stack.some((f) => !!f.frags);
+  }
   readonly markerSink: PendingMarker[];
   private foot?: FootnoteCtx;
   private side?: FlowInit['sideNotes'];
@@ -14220,8 +14227,10 @@ export class LayoutEngine {
       const p: PageBuild = { seq, number, root, abs: [], markers: [], master: m, staticContent: alt.staticContent ?? seq.staticContent ?? [] };
       pages.push(p);
       this.notePage(pages.length);
-      // 組みながらページを渡す: 次のページを作ったので、前のページまでは組み終えた
-      if (this.emitState?.seq) this.emitPages(pages, pages.length - 1);
+      // 組みながらページを渡す: 次のページを作ったので、前のページまでは組み終えた。ただし、開いている箱に、閉じるときに断片を書き換える箱
+      // (中の絶対配置の箱の基準の箱・position: relative でずらす箱) があれば、その断片のあるページは閉じるまで決まらないので、まだ渡さない
+      // (閉じた後に作るページ・page-sequence の終わりで、まとめて渡す)
+      if (this.emitState?.seq && !flow?.holdsFragments()) this.emitPages(pages, pages.length - 1);
       return { p, rootI, limit };
     };
     /** 次に作るページ (白ページでないもの) の本文領域の block 方向の上限 (mkPage と同じ求め方。ページは作らない) */
@@ -16072,7 +16081,28 @@ export class SharedLineMemo {
 
   /** 覚えている段落と、前の文書の組版 (layout) のメモリの見積もり (バイト。Typesetter.memoryUsage の caches) */
   memoryBytes(): number {
-    return this.atoms * REUSE_BYTES[memoryRuntime()].atom + this.layout.memoryBytes();
+    return this.lineBytes() + this.pageBytes();
+  }
+
+  /** 覚えている段落の行分けの見積もり (バイト。Typesetter.memoryUsage の cacheDetail.lines) */
+  lineBytes(): number {
+    return this.atoms * REUSE_BYTES[memoryRuntime()].atom;
+  }
+
+  /** 前の文書の組版 (ページ) の見積もり (バイト。Typesetter.memoryUsage の cacheDetail.pages) */
+  pageBytes(): number {
+    return this.layout.memoryBytes();
+  }
+
+  /** 覚えている段落だけを捨てる (Typesetter.releaseCaches({ lines: true })) */
+  clearLines(): void {
+    this.entries.clear();
+    this.atoms = 0;
+  }
+
+  /** 前の文書の組版だけを捨てる (Typesetter.releaseCaches({ pages: true })) */
+  clearPages(): void {
+    this.layout.prev = undefined;
   }
 
   /**

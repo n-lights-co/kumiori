@@ -6,7 +6,7 @@
  * const result = await typeset(html, { files: [{ name: 'style.css', data: css }] });
  * const pdf = await result.toPdf();          // Uint8Array
  * const { pdf: bytes } = await typesetToPdf(html); // PDF だけが要るとき (組んだ結果を持たないので、大きな文書で使うメモリが少ない)
- * result.renderPage(canvas, 0);              // 1 ページ目を canvas に描画する (ブラウザー)
+ * await result.renderPage(canvas, 0);        // 1 ページ目を canvas に描画する (ブラウザー)
  * walkAreaTree(result.areaTree, (a) => { … }); // 組んだ結果 (Area Tree) をたどる
  * ```
  *
@@ -19,7 +19,7 @@
  */
 
 export { typeset, typesetHtml, typesetFo, typesetToPdf, typesetToPdfStream, createTypesetter, decodeDocumentText } from './api';
-export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, TypesetPdfStreamResult, PdfOutput, PdfOptions, RenderPageOptions, RenderPageSvgOptions, RenderPagePngOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec, LinkPolicy, KumioriLimits, ResourceContext, TypesetProgress, MemoryUsage, TypesetterMemoryUsage } from './api';
+export type { TypesetOptions, TypesetResult, TypesetPdfResult, TypesetPdfOptions, TypesetPdfStreamResult, PdfOutput, PdfOptions, RenderPageOptions, RenderPageSvgOptions, RenderPagePngOptions, Typesetter, TypesetterOptions, DocumentOptions, KumioriFile, KumioriFileData, HtmlDefaults, FontSpec, LinkPolicy, KumioriLimits, ResourceContext, TypesetProgress, MemoryUsage, TypesetterMemoryUsage, TypesetterCacheDetail, ReleaseCacheKinds } from './api';
 export type { SystemFontSource, SystemFontRequest, SystemFontMatch, SystemFontKind } from './types';
 // オプションの値の型 (TypesetOptions の compat・lang、PdfOptions の pdfx・pdfa)
 export type { FoCompat } from './compat';

@@ -118,26 +118,3 @@ export function gridCopies(): { note(from: object, to: object): void; done(): vo
     },
   };
 }
-
-/**
- * 文書のどこかに背景の画像 (url の画像・グラデーション。CSS の background-image・XSL-FO の background-image、ページの領域の背景も) があるか
- * (組みながらページを描画するかを決める。api.ts の typesetToPdf。背景の画像は、組んだ後で画像の格納先に登録するので、組む前の格納先には無い)
- */
-export function hasBackgroundImage(doc: LDocument): boolean {
-  const seen = new Set<object>();
-  const stack: unknown[] = [doc];
-  while (stack.length) {
-    const v = stack.pop();
-    if (!v || typeof v !== 'object' || seen.has(v)) continue;
-    seen.add(v);
-    if (Array.isArray(v)) {
-      for (const x of v) if (x && typeof x === 'object') stack.push(x);
-      continue;
-    }
-    for (const [k, x] of Object.entries(v)) {
-      if (k === 'backgroundImage' && x) return true;
-      if (x && typeof x === 'object') stack.push(x);
-    }
-  }
-  return false;
-}

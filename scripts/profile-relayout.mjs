@@ -368,7 +368,7 @@ for (const name of args.docs) {
     const passes = passTimes.slice();
     const n = Math.min(args.pages, r.pageCount);
     t = performance.now();
-    for (let i = 0; i < n; i++) r.renderPage(stubCanvas(), i, { scale: 1 });
+    for (let i = 0; i < n; i++) await r.renderPage(stubCanvas(), i, { scale: 1 });
     w.renderPage = performance.now() - t;
     t = performance.now();
     for (let i = 0; i < n; i++) await r.renderPageToSvg(i);

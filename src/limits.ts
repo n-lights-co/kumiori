@@ -42,34 +42,34 @@ const PIXELS_CEILING = 2 ** 30;
  */
 export interface KumioriLimits {
   // 画像・ファイル・取得
-  /** 1 枚の画像の画素の数 (EPS の画像の合計、PNG に書き出すときに覚える画像も)。上げ下げできる */
+  /** 1 枚の画像のピクセルの数 (EPS の画像の合計、PNG に書き出すときにキャッシュする画像も)。上げ下げできる */
   imagePixels?: number;
-  /** 渡したファイル 1 つ・取る画像 1 件・EPUB の 1 項目の大きさ (バイト)。上げ下げできる */
+  /** 渡したファイル 1 つ・取得する画像 1 件・EPUB の 1 項目の大きさ (バイト)。上げ下げできる */
   fileBytes?: number;
-  /** 取る CSS 1 件の大きさ (バイト)。上げ下げできる */
+  /** 取得する CSS 1 件の大きさ (バイト)。上げ下げできる */
   cssBytes?: number;
-  /** 取る書体 1 件・WOFF を戻した書体の大きさ (バイト)。上げ下げできる */
+  /** 取得するフォント 1 件・WOFF を戻したフォントの大きさ (バイト)。上げ下げできる */
   fontBytes?: number;
-  /** 書体の集まり (TTC・OTC) から取り出す書体の合計 (バイト)。上げ下げできる */
+  /** フォントの集まり (TTC・OTC) から取り出すフォントの合計 (バイト)。上げ下げできる */
   fontCollectionBytes?: number;
-  /** 1 つの文書で使う OS の書体の数 (systemFonts)。上げ下げできる */
+  /** 1 つの文書で使う OS のフォントの数 (systemFonts)。上げ下げできる */
   systemFontFaces?: number;
   /** 文書の画像の取得の全体の時限 (ミリ秒。既定は fetchTimeoutMs の 10 倍)。上げ下げできる */
   imageFetchTotalMs?: number;
   /** 転送 (redirect) をたどる回数。下げるだけ */
   redirects?: number;
-  /** 集める CSS・書体の参照の数。上げ下げできる */
+  /** 集める CSS・フォントの参照の数。上げ下げできる */
   styleRefs?: number;
-  /** 取る CSS の @import の段の数。下げるだけ */
+  /** 取得する CSS の @import の段の数。下げるだけ */
   importDepth?: number;
-  /** @import で広げた CSS の長さの合計 (字)。上げ下げできる */
+  /** @import で広げた CSS の長さの合計 (文字)。上げ下げできる */
   importedCssChars?: number;
   /** @import の数。上げ下げできる */
   cssImports?: number;
   // プラグイン・draw.io の結果 (画像の形式)
   /** 画像の形式 (プラグイン・draw.io) の結果の幅・高さ (px。draw.io の図の大きさ・座標も)。上げ下げできる */
   formatSize?: number;
-  /** 画像の形式の結果の SVG の長さの絶対の上限 (字。ファイルの大きさによる縛りは変えない)。上げ下げできる */
+  /** 画像の形式の結果の SVG の長さの絶対の上限 (文字。ファイルの大きさによる制約は変えない)。上げ下げできる */
   formatSvgChars?: number;
   /** 画像の形式の読み込みの時限 (ミリ秒。これに fetchTimeoutMs の 3 倍を足す)。上げ下げできる */
   formatLoadMs?: number;
@@ -78,11 +78,11 @@ export interface KumioriLimits {
   // PDF の画像 (PDF のページを図として貼るもの)
   /** 1 つの PDF の画像の間接オブジェクトの数。上げ下げできる */
   pdfImageObjects?: number;
-  /** 1 つの PDF の画像のページの数 (ページの木をたどる数)。上げ下げできる */
+  /** 1 つの PDF の画像のページの数 (ページツリーをたどる数)。上げ下げできる */
   pdfImagePages?: number;
-  /** PDF の画像のページの木の段・資源の入れ子の深さ。下げるだけ */
+  /** PDF の画像のページツリーの段・リソースの入れ子の深さ。下げるだけ */
   pdfImageDepth?: number;
-  /** PDF の画像の 1 つのページ (ページの範囲は、範囲の全体) で圧縮を解く流れの合計 (バイト)。上げ下げできる */
+  /** PDF の画像の 1 つのページ (ページの範囲は、範囲の全体) で圧縮を解くストリームの合計 (バイト)。上げ下げできる */
   pdfImageStreamBytes?: number;
   /** 1 つの PDF の画像を読み込む時限 (ミリ秒。ページの範囲の埋め込みは、範囲の全体で)。上げ下げできる */
   pdfImageLoadMs?: number;
@@ -97,32 +97,32 @@ export interface KumioriLimits {
   epsMemoryBytes?: number;
   /** 1 つの EPS のパスの点の合計。上げ下げできる */
   epsPathPoints?: number;
-  /** EPS の image 1 枚の画素の数。上げ下げできる */
+  /** EPS の image 1 枚のピクセルの数。上げ下げできる */
   epsImagePixels?: number;
-  /** EPS・メタファイル・CGM を SVG にした長さの絶対の上限 (字)。上げ下げできる */
+  /** EPS・メタファイル・CGM を SVG にした長さの絶対の上限 (文字)。上げ下げできる */
   epsSvgChars?: number;
-  /** WMF・EMF・CGM の画像の画素の合計の絶対の上限 (ファイルの大きさによる縛りは変えない)。上げ下げできる */
+  /** WMF・EMF・CGM の画像のピクセルの合計の絶対の上限 (ファイルの大きさによる制約は変えない)。上げ下げできる */
   metafileImagePixels?: number;
-  /** WMF・EMF の切り抜きの演算の手間 (パスの切り抜きの点の数も同じ比で動かす)。上げ下げできる */
+  /** WMF・EMF のクリッピングの演算の計算量 (クリップパスの点の数も同じ比で動かす)。上げ下げできる */
   metafileClipWork?: number;
   /** 1 つの EPUB を展開する量の合計 (バイト)。上げ下げできる */
   epubTotalBytes?: number;
   /** EPUB の項目の数 (zip の項目・章の並び)。下げるだけ */
   epubEntries?: number;
-  /** EPUB の章と CSS の字の数の合計。上げ下げできる */
+  /** EPUB の章と CSS の文字の数の合計。上げ下げできる */
   epubTextChars?: number;
   // 文書の木・CSS・XML (入れ子の深さは下げるだけ。種類ごとの既定の上限と、この値の小さい方を使う: nestLimit・cssNestLimit)
   /** 要素の入れ子の深さ。既定の 300 は、いちばん大きい種類の値で、実際の既定は種類ごと (HTML 128・XSL-FO 250・SVG 250・MathML 300・変換の入れ子 300・draw.io 256)。値を渡すと、種類ごとの既定とその値の小さい方を使うので、下げると全部の種類に効く (HTML が 300 段まで組めるわけではない)。下げるだけ */
   nestingDepth?: number;
-  /** CSS の入れ子の深さ。既定の 64 は、いちばん大きい種類の値で、実際の既定は種類ごと (規則の入れ子・@supports・calc() 64、@layer の名前・数学の関数・セレクタ・SVG の calc() 32)。値を渡すと、種類ごとの既定とその値の小さい方を使うので、下げると全部の種類に効く。下げるだけ */
+  /** CSS の入れ子の深さ。既定の 64 は、いちばん大きい種類の値で、実際の既定は種類ごと (規則の入れ子・@supports・calc() 64、@layer の名前・数学の関数・セレクター・SVG の calc() 32)。値を渡すと、種類ごとの既定とその値の小さい方を使うので、下げると全部の種類に効く。下げるだけ */
   cssNesting?: number;
   /** XML の内部実体の入れ子の深さ。下げるだけ */
   entityDepth?: number;
-  /** XML の内部実体の展開で増える字の数。上げ下げできる */
+  /** XML の内部実体の展開で増える文字の数。上げ下げできる */
   entityChars?: number;
-  /** CSS の入れ子の規則を展開したセレクタの数。上げ下げできる */
+  /** CSS の入れ子の規則を展開したセレクターの数。上げ下げできる */
   nestedSelectors?: number;
-  /** セレクタの照合の覚えの手間。上げ下げできる */
+  /** セレクターの照合のキャッシュの計算量。上げ下げできる */
   selectorWork?: number;
   /** 同じ名前の診断の数 (超えた分は「ほかに n 件」にまとめる)。上げ下げできる */
   diagnosticsPerCode?: number;
@@ -131,50 +131,50 @@ export interface KumioriLimits {
   tableColumns?: number;
   /** 表の構造で、またがれるマスの数。上げ下げできる */
   tableSpannedCells?: number;
-  /** 1 つのリーダーに並べる字の数。上げ下げできる */
+  /** 1 つのリーダーに並べる文字の数。上げ下げできる */
   leaderRepeats?: number;
-  /** 1 つの数式の字の数。上げ下げできる */
+  /** 1 つの数式の文字の数。上げ下げできる */
   mathGlyphs?: number;
   /** グリッドの列の並びを展開した数 (repeat())。上げ下げできる */
   gridTracks?: number;
   // SVG
   /** SVG の use で広げた要素の数。上げ下げできる */
   svgElements?: number;
-  /** SVG の広げたパスの区間の数の絶対の上限 (ファイルの大きさによる縛りは変えない)。上げ下げできる */
+  /** SVG の広げたパスの区間の数の絶対の上限 (ファイルの大きさによる制約は変えない)。上げ下げできる */
   svgPathSegments?: number;
   /** SVG の中の CSS の照合の回数。上げ下げできる */
   svgCssMatches?: number;
-  /** SVG の filter を画素で計算する手間 (1 つの SVG)。上げ下げできる */
+  /** SVG の filter をピクセルで計算する計算量 (1 つの SVG)。上げ下げできる */
   svgFilterWork?: number;
   /** 1 ページの SVG のリンク (a) の注釈の数。上げ下げできる */
   svgLinksPerPage?: number;
-  // 描く (PNG・画面・PDF/X の平らにする処理)
-  /** PNG に書き出す 1 枚の画素の数。上げ下げできる */
+  // 描画 (PNG・画面・PDF/X のフラット化)
+  /** PNG に書き出す 1 枚のピクセルの数。上げ下げできる */
   pngPixels?: number;
-  /** PNG に書き出すときに覚える画像の画素の合計 (既定は imagePixels と同じ)。上げ下げできる */
+  /** PNG に書き出すときにキャッシュする画像のピクセルの合計 (既定は imagePixels と同じ)。上げ下げできる */
   pngImageCachePixels?: number;
-  /** PNG の 1 ページで画素に戻す画像の合計。上げ下げできる */
+  /** PNG の 1 ページでラスタライズする画像の合計。上げ下げできる */
   pngPageImagePixels?: number;
-  /** PNG の 1 ページを画素にする手間 (1 画素あたり。基本の 6,400 万も同じ比で動かす)。上げ下げできる */
+  /** PNG の 1 ページをラスタライズする計算量 (1 ピクセルあたり。基本の 6,400 万も同じ比で動かす)。上げ下げできる */
   pngRasterWork?: number;
-  /** PNG を描く間に同時に持つ板の画素の数の絶対の上限 (広がる板は、実際に広げた大きさで数える)。上げ下げできる */
+  /** PNG を描画する間に同時に持つオフスクリーンのバッファーのピクセルの数の絶対の上限 (広がるバッファーは、実際に広げた大きさで数える)。上げ下げできる */
   pngLayerPixels?: number;
-  /** 画面 (renderPage) で SVG の画像を画素にするときの画素の数。上げ下げできる */
+  /** 画面 (renderPage) で SVG の画像をラスタライズするときのピクセルの数。上げ下げできる */
   canvasSvgPixels?: number;
-  /** 画面 (renderPage) で SVG の画像 1 つを画素にする手間 (1 回の描画の合計は、その 4 倍)。上げ下げできる */
+  /** 画面 (renderPage) で SVG の画像 1 つをラスタライズする計算量 (1 回の描画の合計は、その 4 倍)。上げ下げできる */
   canvasSvgWork?: number;
-  /** PDF/X で透明を平らにするときの 1 つの画像の画素の数。上げ下げできる */
+  /** PDF/X で透明をフラット化するときの 1 つの画像のピクセルの数。上げ下げできる */
   flattenPixels?: number;
   // draw.io
   /** 圧縮した draw.io の図を戻した長さ (バイト)。上げ下げできる */
   drawioChars?: number;
   /** draw.io の図のセルの数 (XML の要素の数は、その 10 倍)。上げ下げできる */
   drawioCells?: number;
-  /** draw.io の 1 つの図のラベルの字の数の合計。上げ下げできる */
+  /** draw.io の 1 つの図のラベルの文字の数の合計。上げ下げできる */
   drawioLabelChars?: number;
-  /** draw.io の図を SVG にした長さ (字。書く字の合計は、その 2 倍まで)。上げ下げできる */
+  /** draw.io の図を SVG にした長さ (文字。書く文字の合計は、その 2 倍まで)。上げ下げできる */
   drawioSvgChars?: number;
-  /** draw.io の 1 つの図で取る画像の数 (配布物の画像・URL の画像のそれぞれ)。上げ下げできる */
+  /** draw.io の 1 つの図で取得する画像の数 (配布物の画像・URL の画像のそれぞれ)。上げ下げできる */
   drawioImages?: number;
 }
 

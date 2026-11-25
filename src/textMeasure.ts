@@ -74,7 +74,10 @@ export interface MeasuredText {
   width: number;
   /** 紙の上の高さ (pt。横書きは blockSize、縦書きは inlineSize) */
   height: number;
-  /** breakLines で、行の長さ (width) を超えた行があるか (分けられない長い語・ぶら下げなど)。measureText では false */
+  /**
+   * breakLines で、行の長さ (width) を超えた行があるか (分けられない長い語・ぶら下げ・字下げ (textIndent) で押し出した行・
+   * 負の字下げで行の初めの前へ出た行など)。measureText では false
+   */
   overflow: boolean;
   /** 行 (並ぶ順) */
   lines: MeasuredLine[];
@@ -172,9 +175,15 @@ export function measureDocument(text: string, style: TextStyle, width?: number):
 /** 領域の木の、行の領域を読んで、測った結果にする */
 export function measuredLines(sheets: readonly AreaNode[], vertical: boolean, width?: number): MeasuredText {
   const lines: MeasuredLine[] = [];
+  // 行の中身の始まりと終わり (行の領域の原点から。行の領域は、内容の幅のブロックの行の進む方向いっぱいに置く)。
+  // 字下げ (textIndent) で動いた分も、行の長さ (width) を超えたかに数える (inlineSize は、字下げを含まない中身の長さ)
+  let over = false;
   const visit = (a: AreaNode) => {
     if (a.type === 'line') {
-      lines.push(lineOf(a, vertical));
+      const { line, start, end } = lineOf(a, vertical);
+      lines.push(line);
+      // 計算の誤差 (1/1000 pt) は超えたと見ない
+      if (width !== undefined && end > start && (start < -1e-3 || end > width + 1e-3)) over = true;
       return;
     }
     for (const c of childrenOf(a)) visit(c);
@@ -188,14 +197,13 @@ export function measuredLines(sheets: readonly AreaNode[], vertical: boolean, wi
     blockSize,
     width: vertical ? blockSize : inlineSize,
     height: vertical ? inlineSize : blockSize,
-    // 計算の誤差 (1/1000 pt) は超えたと見ない
-    overflow: width !== undefined && lines.some((l) => l.inlineSize > width + 1e-3),
+    overflow: over,
     lines,
   };
 }
 
 /** 1 つの行の領域: 文字の領域 (glyph) の始まりと終わり (行の進む方向) と文字 */
-function lineOf(line: AreaNode, vertical: boolean): MeasuredLine {
+function lineOf(line: AreaNode, vertical: boolean): { line: MeasuredLine; start: number; end: number } {
   let start = Infinity;
   let end = -Infinity;
   let text = '';
@@ -213,5 +221,5 @@ function lineOf(line: AreaNode, vertical: boolean): MeasuredLine {
     }
   };
   walk(line, 0, 0);
-  return { text, inlineSize: end > start ? end - start : 0, blockSize: vertical ? line.width : line.height };
+  return { line: { text, inlineSize: end > start ? end - start : 0, blockSize: vertical ? line.width : line.height }, start, end };
 }

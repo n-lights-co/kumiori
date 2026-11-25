@@ -16,7 +16,7 @@ import { FONT_BYTES_PER_GLYPH, FontManager } from '../src/fontManager';
 import { __setMemoryRuntimeForTest, memoryRuntime } from '../src/memoryEstimate';
 import fontkit from '@pdf-lib/fontkit';
 import type { SystemFontSource } from '../src/index';
-import { KumioriError, isKumioriError } from '../src/errors';
+import { KumioriError, KumioriOptionError, isKumioriError } from '../src/errors';
 import { buildTestFont } from './sfntTestFont';
 import { testIccProfile } from './iccTestProfile';
 import { ensureFonts, fontDir } from './helpers';
@@ -1167,14 +1167,17 @@ describe('組んだ結果のメモリの見積もりと手放す (memoryUsage・
   const tableBytes = (b: Uint8Array) => (fontkit.create(b) as unknown as { numGlyphs: number }).numGlyphs * FONT_BYTES_PER_GLYPH.node;
   const faceHtml = '<style>@font-face { font-family: Doc; src: url(doc.ttf) } p { font-family: Doc }</style><p>Kumiori</p>';
 
-  it('画像のファイルの中身・文書で足した書体・領域の木から見積もる (呼ぶ側の渡した書体のファイルは数えない)', async () => {
+  it('画像のファイルの中身・文書で足した書体・領域の木から見積もる (呼ぶ側の渡した画像と書体のファイルは数えない)', async () => {
     const image = png(40, 20);
     const font = arimo();
-    // 同じ参照の画像は 1 度だけ数える
     const r = await typeset(`${faceHtml}<img src="a.png"><img src="a.png">`, { loadFont, files: [{ name: 'doc.ttf', data: font }], resolveResource: (u) => (/a\.png$/.test(u) ? image : undefined) });
     const u = r.memoryUsage();
-    // 画像の中身は写して持つので数える
-    expect(u.images).toBe(image.byteLength);
+    // 画像の中身は、呼ぶ側の渡したものを写さずに持つので数えない (結果を手放しても、呼ぶ側が持つ)
+    expect(u.images).toBe(0);
+    // data: の URL の画像は、格納先が中身を戻して持つので数える (同じ参照の画像は 1 度だけ)
+    const dataUrl = `data:image/png;base64,${Buffer.from(image).toString('base64')}`;
+    const d = await typeset(`<img src="${dataUrl}"><img src="${dataUrl}">`, { loadFont });
+    expect(d.memoryUsage().images).toBe(image.byteLength);
     // 書体のファイルは呼ぶ側の Uint8Array をそのまま使うので数えず、読んだ表の分だけ
     expect(u.fonts).toBe(tableBytes(font));
     expect(u.layout).toBe(estimateAreaTreeBytes(r.areaTree));
@@ -1219,19 +1222,39 @@ describe('組んだ結果のメモリの見積もりと手放す (memoryUsage・
     expect(u.total).toBe(u.fonts + u.caches);
     // 文書の書体のファイルは、呼ぶ側が渡したもの (と、Typesetter の下ごしらえのキャッシュが持つもの) なので、結果には数えない
     expect(r1.memoryUsage().fonts).toBe(tableBytes(font));
+    // 内訳の和が caches。Node では画像のキャッシュは使わない (描画のための画像のデコードはブラウザーだけ)
+    const d = u.cacheDetail;
+    expect(d.images + d.lines + d.pages + d.fontPrep).toBe(u.caches);
+    expect(d.images).toBe(0);
+    expect(d.lines).toBeGreaterThan(0);
+    expect(d.pages).toBeGreaterThan(0);
+    expect(d.fontPrep).toBeGreaterThan(font.byteLength - 1);
+    // 種類を選んで手放す: 行分けだけ、次にページだけ (ほかの種類は残る)
+    t.releaseCaches({ lines: true });
+    expect(t.memoryUsage().cacheDetail).toEqual({ ...d, lines: 0 });
+    t.releaseCaches({ pages: true, images: true });
+    expect(t.memoryUsage().cacheDetail).toEqual({ ...d, lines: 0, pages: 0 });
     t.releaseCaches();
-    expect(t.memoryUsage()).toEqual({ total: u.fonts, fonts: u.fonts, caches: 0 });
+    expect(t.memoryUsage()).toEqual({ total: u.fonts, fonts: u.fonts, caches: 0, cacheDetail: { images: 0, lines: 0, pages: 0, fontPrep: 0 } });
     const r2 = await t.typeset(html, { files: [{ name: 'doc.ttf', data: font }] });
     expect(serializeAreaTree(r2.areaTree)).toBe(serializeAreaTree(r1.areaTree));
     expect(t.memoryUsage().caches).toBeGreaterThan(0);
+    expect(() => t.releaseCaches('images' as never)).toThrow(KumioriOptionError);
+    await expect(createTypesetter({ loadFont, imageCache: { maxBytes: -1 } })).rejects.toThrow(KumioriOptionError);
   });
 
-  it('dispose の後は、PDF にする・描くと api/result-disposed (組んだときの言語の文)。見積もりは 0。木は空。2 度呼んでもよい', async () => {
+  it('dispose の後は、PDF にする・描くと api/result-disposed (組んだときの言語の文)。見積もりは 0。木は空。2 度呼んでもよい (同じ Promise)', async () => {
     const r = await typeset('<h1>見出し</h1><p>a</p><p style="break-before: page">b</p>', { loadFont, lang: 'en' });
     expect(r.areaTree.structure).toBeDefined();
-    r.dispose();
-    r.dispose();
+    expect(r.disposed).toBe(false);
+    const p1 = r.dispose();
+    const p2 = r.dispose();
+    expect(p2).toBe(p1);
+    expect(p1).toBeInstanceOf(Promise);
+    expect(r.disposed).toBe(true);
+    // 走っているものが無ければ、すぐに手放す
     expect(r.memoryUsage()).toEqual({ total: 0, images: 0, fonts: 0, layout: 0 });
+    await expect(p1).resolves.toBeUndefined();
     expect(r.pageCount).toBe(2);
     expect(r.areaTree.sheets).toEqual([]);
     expect(r.areaTree.structure).toBeUndefined();
@@ -1243,28 +1266,47 @@ describe('組んだ結果のメモリの見積もりと手放す (memoryUsage・
       expect((e as KumioriError).code).toBe('api/result-disposed');
       expect((e as KumioriError).message).toMatch(/dispose\(\)/);
     }
-    expect(() => r.renderPage({} as OffscreenCanvas, 0)).toThrow(KumioriError);
+    await expect(r.renderPage({} as OffscreenCanvas, 0)).rejects.toThrow(KumioriError);
   });
 
-  it('toPdf・renderPageToSvg の途中で dispose したら、走っているものは同じ結果で終わり、その後に手放す。後から呼んだものは失敗する', async () => {
+  it('toPdf・renderPageToSvg の途中で dispose したら、走っているものは同じ結果で終わり、その後に手放す。その間の見積もりは今のまま。後から呼んだものは失敗する', async () => {
     const html = '<p>a</p><p style="break-before: page">b</p><p style="break-before: page">c</p>';
     const date = new Date(Date.UTC(2024, 0, 1));
     const ref = await typeset(html, { loadFont });
     const want = await ref.toPdf({ date });
     const wantSvg = await ref.renderPageToSvg(2);
     const r = await typeset(html, { loadFont });
+    const usage = r.memoryUsage();
+    expect(usage.total).toBeGreaterThan(0);
     const pdf = r.toPdf({ date });
     const svg = r.renderPageToSvg(2);
-    r.dispose();
-    expect(r.memoryUsage().total).toBe(0);
-    // 走っている間は、木を空にしない
+    let released = false;
+    const disposing = r.dispose().then(() => void (released = true));
+    expect(r.dispose()).toBe(r.dispose());
+    // 手放しを頼んだ (新しい呼び出しは失敗する) が、走っている間は、まだ手放さないので、見積もりは今のまま。木も空にしない
+    expect(r.disposed).toBe(true);
+    expect(r.memoryUsage()).toEqual(usage);
     expect(r.areaTree.sheets.length).toBe(3);
     const late = await r.toPdf().then(() => undefined, (x: unknown) => x);
     expect((late as KumioriError).code).toBe('api/result-disposed');
+    expect(released).toBe(false);
     expect(Buffer.from(await pdf).equals(Buffer.from(want))).toBe(true);
     expect(await svg).toBe(wantSvg);
-    // 走っているものが全部終わったので、手放した
+    // 走っているものが全部終わったので、手放した (Promise が解決し、見積もりは 0)
+    await disposing;
+    expect(released).toBe(true);
+    expect(r.memoryUsage()).toEqual({ total: 0, images: 0, fonts: 0, layout: 0 });
     expect(r.areaTree.sheets).toEqual([]);
+  });
+
+  it('toPdf が失敗しても、走っているものが終われば dispose の Promise は解決する', async () => {
+    const r = await typeset('<p>a</p>', { loadFont });
+    // 暗号化の指定の誤りで、toPdf は失敗する (走っている間だけ数える)
+    const bad = r.toPdf({ encrypt: { userPassword: 1 } as never });
+    const disposing = r.dispose();
+    await bad.then(() => undefined, () => undefined);
+    await expect(disposing).resolves.toBeUndefined();
+    expect(r.memoryUsage().total).toBe(0);
   });
 
   it('係数は処理系で分ける: Node では Node で測った係数、それ以外 (ブラウザ) では Chromium の Web Worker で測った係数', async () => {

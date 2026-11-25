@@ -36,7 +36,7 @@ describe('OUT-03: renderPage の読めない字形', () => {
     const canvas = { getContext: () => ctx, style: {} } as unknown as HTMLCanvasElement;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      r.renderPage(canvas, 0);
+      await r.renderPage(canvas, 0);
     } finally {
       warn.mockRestore();
     }
@@ -60,7 +60,7 @@ describe('OUT-03: renderPage の読めない字形', () => {
       for (const html of cases) {
         for (const style of ['kumiori', 'browser'] as const) {
           const r = await typeset(`<html><body>${html}</body></html>`, { ...noNet, style });
-          for (let i = 0; i < r.pageCount; i++) expect(() => r.renderPage(canvas, i), html).not.toThrow();
+          for (let i = 0; i < r.pageCount; i++) await expect(r.renderPage(canvas, i), html).resolves.toBeUndefined();
         }
       }
       // 字形を読めない、という知らせも出ない (読めるようになった)

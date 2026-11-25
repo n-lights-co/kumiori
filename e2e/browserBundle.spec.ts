@@ -183,7 +183,7 @@ self.onmessage = async () => {
     const typesetter = await kumiori.createTypesetter();
     const res = await typesetter.typeset(html, { name: 'w.html', style: 'browser' });
     const canvas = new OffscreenCanvas(1, 1);
-    res.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    await res.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
     const ctx = canvas.getContext('2d');
     const at = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data);
     const size = [canvas.width, canvas.height];
@@ -278,7 +278,7 @@ self.onmessage = async (ev) => {
     const res = await typesetter.typeset(html, { name: 'w.html', style: 'browser' });
     const canvas = new OffscreenCanvas(1, 1);
     // toPdf より先に描く (SVG の書体は、組んだときに読み込んでおく)
-    res.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    await res.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
     const ctx = canvas.getContext('2d');
     const at = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data);
     const region = (x) => Array.from(ctx.getImageData(x, 60, 150, 50).data);
@@ -446,6 +446,106 @@ test('dist-browser/kumiori.js: Web Worker と画面の中で、α 付きの PNG 
     expect(ix.length).toBe(1);
     expect(Buffer.from(ix[0].contents).equals(indexed.idat)).toBe(true);
     expect(Buffer.from(zlib.inflateSync(ix[0].contents)).equals(indexed.raw)).toBe(true);
+  }
+  expect(errors).toEqual([]);
+});
+
+/**
+ * Web Worker の中で動かすスクリプト: Typesetter の画像のキャッシュ (TypesetterOptions.imageCache) を確かめる。
+ * 2 つの結果が同じ画像を分け合い、dispose した結果と分け合う画像を、生きている結果が描画でき、releaseCaches({ images: true }) の後も描画し直せる。
+ * 描画の途中 (renderPage を await している間) に releaseCaches を呼んでも、そのページは正しく描画する
+ */
+const WORKER_IMAGE_CACHE_SOURCE = `
+self.onmessage = async (ev) => {
+  try {
+    const kumiori = await import('/dist-browser/kumiori.js');
+    const { red, green, maxBytes } = ev.data;
+    const t = await kumiori.createTypesetter({ imageCache: { maxBytes } });
+    const files = [{ name: 'r.png', data: new Uint8Array(red) }, { name: 'g.png', data: new Uint8Array(green) }];
+    const css = '<style>@page { size: 200pt 100pt; margin: 0 } body { margin: 0 } img { display: block; width: 100pt; height: 100pt; float: left }</style>';
+    const a = await t.typeset('<!DOCTYPE html><html><head>' + css + '</head><body><img src="r.png"><img src="g.png"></body></html>', { name: 'a.html', files });
+    const b = await t.typeset('<!DOCTYPE html><html><head>' + css + '</head><body><img src="r.png"></body></html>', { name: 'b.html', files });
+    const canvas = new OffscreenCanvas(1, 1);
+    const at = (x, y) => Array.from(canvas.getContext('2d').getImageData(x, y, 1, 1).data);
+    const out = { before: t.memoryUsage().cacheDetail.images, resultImages: a.memoryUsage().images };
+    await a.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    out.aRed = at(50, 50);
+    out.aGreen = at(150, 50);
+    out.afterA = t.memoryUsage().cacheDetail.images;
+    await b.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    out.afterB = t.memoryUsage().cacheDetail.images;
+    await a.dispose();
+    await b.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    out.bRedAfterDispose = at(50, 50);
+    t.releaseCaches({ images: true });
+    out.afterRelease = t.memoryUsage().cacheDetail;
+    await b.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    out.bRedAfterRelease = at(50, 50);
+    out.afterRedraw = t.memoryUsage().cacheDetail.images;
+    // 描画の途中 (renderPage を await している間) に releaseCaches を呼ぶ: キャッシュにある画像を引くときと、デコードを待つときの両方
+    const clear = () => canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    clear();
+    const cached = b.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    t.releaseCaches();
+    t.releaseCaches({ images: true });
+    await cached;
+    out.bRedMidReleaseCached = at(50, 50);
+    t.releaseCaches({ images: true });
+    clear();
+    const decoding = b.renderPage(canvas, 0, { scale: 1, devicePixelRatio: 1 });
+    t.releaseCaches({ images: true });
+    t.releaseCaches();
+    await decoding;
+    out.bRedMidReleaseDecoding = at(50, 50);
+    out.afterMidRelease = t.memoryUsage().cacheDetail.images;
+    self.postMessage(out);
+  } catch (e) {
+    self.postMessage({ error: String((e && e.stack) || e) });
+  }
+};
+self.postMessage('ready');
+`;
+
+test('dist-browser/kumiori.js: Web Worker の中で、renderPage の画像を Typesetter 全体のキャッシュから描画する (分け合う・上限・dispose・releaseCaches)', async ({ page }) => {
+  const errors = await openWithBundle(page);
+  await page.route('**/e2e-image-cache-worker.js', (route) => route.fulfill({ body: WORKER_IMAGE_CACHE_SOURCE, contentType: 'text/javascript' }));
+  // 1 枚 100 × 100 (画素で 40,000 バイト)。上限 50,000 バイトなら、2 枚は持てない (描画を終えたら 1 枚まで捨てる)
+  const red = makePng(100, 100, 2, () => [255, 0, 0]).png;
+  const green = makePng(100, 100, 2, () => [0, 255, 0]).png;
+  for (const maxBytes of [1 << 20, 50_000]) {
+    const r = await page.evaluate(
+      async (data) => {
+        const worker = new Worker('/e2e-image-cache-worker.js', { type: 'module' });
+        return await new Promise<Record<string, unknown>>((resolve) => {
+          worker.onerror = (e) => resolve({ error: `worker error: ${e.message}` });
+          worker.onmessage = (e) => (e.data === 'ready' ? worker.postMessage(data) : resolve(e.data));
+        });
+      },
+      { red: Array.from(red), green: Array.from(green), maxBytes },
+    );
+    expect(r.error).toBeUndefined();
+    // 読み込みのときには画素を持たない。渡したファイルの中身は写さずに持つので、結果の見積もりに数えない
+    expect(r.before).toBe(0);
+    expect(r.resultImages).toBe(0);
+    expect(r.aRed).toEqual([255, 0, 0, 255]);
+    expect(r.aGreen).toEqual([0, 255, 0, 255]);
+    if (maxBytes > 50_000) {
+      expect(r.afterA).toBe(80_000);
+      // b は a と同じ赤の画像を分け合う
+      expect(r.afterB).toBe(80_000);
+    } else {
+      expect(r.afterA).toBe(40_000);
+      expect(r.afterB).toBe(40_000);
+    }
+    // dispose した a と分け合う画像を、生きている b が描画できる
+    expect(r.bRedAfterDispose).toEqual([255, 0, 0, 255]);
+    expect(r.afterRelease).toEqual(expect.objectContaining({ images: 0 }));
+    expect(r.bRedAfterRelease).toEqual([255, 0, 0, 255]);
+    expect(r.afterRedraw).toBe(40_000);
+    // 描画の途中に releaseCaches を呼んでも、そのページの画像は描き終えるまで捨てない (閉じた画像を引かない)
+    expect(r.bRedMidReleaseCached).toEqual([255, 0, 0, 255]);
+    expect(r.bRedMidReleaseDecoding).toEqual([255, 0, 0, 255]);
+    expect(r.afterMidRelease).toBe(40_000);
   }
   expect(errors).toEqual([]);
 });

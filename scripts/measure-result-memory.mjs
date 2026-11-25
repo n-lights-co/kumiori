@@ -87,8 +87,15 @@ async function measure({ lib, engine, doc, loadFont, live }) {
   const m1 = await live();
   const b = await ts.typeset(doc.text, options);
   const m2 = await live();
-  const usageA = a.memoryUsage();
+  // memoryUsage の 1 回あたりの時間 (ミリ秒): 初めの 1 回 (B。エリアツリーを数える) と、2 回目から (A。何度も呼ぶとき) の平均
+  let tu = performance.now();
   const usageB = b.memoryUsage();
+  const usageFirstMs = performance.now() - tu;
+  const usageA = a.memoryUsage();
+  const REPEAT = 200;
+  tu = performance.now();
+  for (let i = 0; i < REPEAT; i++) a.memoryUsage();
+  const usageRepeatMs = (performance.now() - tu) / REPEAT;
   const usageT = ts.memoryUsage();
   // 数 (係数を決めるため)。前の文書の組版を、この関数の変数に持たない (持つと、手放しても減らない)
   const counts = countsOf(lib, a, memo);
@@ -128,6 +135,8 @@ async function measure({ lib, engine, doc, loadFont, live }) {
     seconds: Math.round(ms / 100) / 10,
     secondsAfterRelease: Math.round(msAfterRelease / 100) / 10,
     samePages,
+    /** memoryUsage の 1 回あたりの時間 (ミリ秒): first は結果ごとの初めの 1 回、repeat は 2 回目から */
+    usageMs: { first: Math.round(usageFirstMs * 1000) / 1000, repeat: Math.round(usageRepeatMs * 1000) / 1000 },
     /** 実際の量 (MB) */
     measured: {
       /** 結果を 2 つ組んだ後に増えた量 (Typesetter の増えた分 + 結果 2 つ) */
@@ -228,7 +237,7 @@ else
     console.error(`${doc}: ${line}`);
   }
 
-const head = ['文書', '処理系', 'ページ', '領域', '持った量 (実際・見積もり)', '結果 A・B の dispose で減った量', '結果の見積もり (画像・書体・木)', 'キャッシュの見積もり (ページ・行分け・下ごしらえ)', 'キャッシュの段ごとに減った量', '残り'];
+const head = ['文書', '処理系', 'ページ', '領域', '持った量 (実際・見積もり)', '結果 A・B の dispose で減った量', '結果の見積もり (画像・書体・木)', 'キャッシュの見積もり (ページ・行分け・下ごしらえ)', 'キャッシュの段ごとに減った量', '残り', 'memoryUsage の時間 (初め・2 回目から。ms)'];
 console.log(`| ${head.join(' | ')} |\n|${head.map(() => '---').join('|')}|`);
 for (const r of rows) {
   if (r.failed) {
@@ -238,7 +247,7 @@ for (const r of rows) {
   const e = r.estimated;
   const m = r.measured;
   console.log(
-    `| ${r.doc} | ${r.runtime} | ${r.counts.pages} | ${r.counts.areas} | ${m.held}・${e.held} | ${m.freedA}・${m.freedB} | ${e.resultA.total} (${e.resultA.images}・${e.resultA.fonts}・${e.resultA.layout}) | ${e.typesetter.caches} (${e.prev}・${e.lines}・${e.prep}) | ${m.freedPrev}・${m.freedLines}・${m.freedPrep} | ${m.left} |`,
+    `| ${r.doc} | ${r.runtime} | ${r.counts.pages} | ${r.counts.areas} | ${m.held}・${e.held} | ${m.freedA}・${m.freedB} | ${e.resultA.total} (${e.resultA.images}・${e.resultA.fonts}・${e.resultA.layout}) | ${e.typesetter.caches} (${e.prev}・${e.lines}・${e.prep}) | ${m.freedPrev}・${m.freedLines}・${m.freedPrep} | ${m.left} | ${r.usageMs?.first ?? '—'}・${r.usageMs?.repeat ?? '—'} |`,
   );
 }
 if (args.json) fs.writeFileSync(args.json, JSON.stringify(rows, null, 2));
