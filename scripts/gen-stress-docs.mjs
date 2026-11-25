@@ -374,12 +374,60 @@ export function chaptersFo(n, seed = 13, kind = 'footnote') {
   );
 }
 
+/**
+ * 初めに目次 (前向きのページ番号の参照) のある、1 つの page-sequence の HTML (n 章。章は改ページで始める)。目次の値は、組み直しの 1 回目では
+ * 仮の値 (目次のページの番号) で、2 回目で決まる。章が 10 ページ目より後ろにあると、値の桁が変わり、字の差し替えができずに組み直す
+ * (組み直しの 2 回目からの回で、境目から組み直して前の回と繋ぐ確かめ)。本文の中にも、後ろの章を指す参照を置く
+ */
+export function tocHtml(n, seed = 15) {
+  const { r, int, text } = tools(seed);
+  const toc = Array.from({ length: n }, (_, k) => `<li><a href="#c${k}">第 ${k + 1} 章 ${text(int(4, 12))}</a></li>`).join('');
+  let body = '';
+  for (let c = 0; c < n; c++) {
+    body += `<h2 id="c${c}">第 ${c + 1} 章</h2>`;
+    const m = int(5, 12);
+    for (let i = 0; i < m; i++) {
+      const ref = c + 2 < n && r() < 0.15 ? ` (<a class="ref" href="#c${c + 2}">第 ${c + 3} 章</a>)` : '';
+      body += `<p>${text(int(60, 360))}${ref}</p>`;
+    }
+  }
+  return (
+    `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>目次のある文書</title><style>` +
+    `@page { size: 105mm 148mm; margin: 10mm } body { font-size: 9pt; line-height: 1.5 } h2 { break-before: page; font-size: 13pt }` +
+    `.toc a::after { content: leader(dotted) target-counter(attr(href url), page) } a.ref::after { content: " p. " target-counter(attr(href url), page) }` +
+    `</style></head><body><h1>目次</h1><ul class="toc">${toc}</ul>${body}</body></html>`
+  );
+}
+
+/** tocHtml の XSL-FO 版 (1 つの page-sequence。目次は fo:page-number-citation、章は break-before="page" のブロック) */
+export function tocFo(n, seed = 16) {
+  const { r, int, text } = tools(seed);
+  let toc = '';
+  let body = '';
+  for (let c = 0; c < n; c++) {
+    toc += `<fo:block text-align-last="justify">第 ${c + 1} 章 ${text(int(4, 12))}<fo:leader leader-pattern="dots"/><fo:page-number-citation ref-id="c${c}"/></fo:block>`;
+    body += `<fo:block id="c${c}" break-before="page" font-size="13pt" space-after="6pt">第 ${c + 1} 章</fo:block>`;
+    const m = int(5, 12);
+    for (let i = 0; i < m; i++) {
+      const ref = c + 2 < n && r() < 0.15 ? ` (第 ${c + 3} 章は <fo:page-number-citation ref-id="c${c + 2}"/> ページ)` : '';
+      body += `<fo:block space-after="4pt">${text(int(60, 360))}${ref}</fo:block>`;
+    }
+  }
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja"><fo:layout-master-set>` +
+    `<fo:simple-page-master master-name="p" page-width="105mm" page-height="148mm" margin="10mm"><fo:region-body/></fo:simple-page-master></fo:layout-master-set>` +
+    `<fo:page-sequence master-reference="p"><fo:flow flow-name="xsl-region-body" font-size="9pt" line-height="1.5"><fo:block font-size="14pt" space-after="6pt">目次</fo:block>${toc}${body}</fo:flow></fo:page-sequence></fo:root>`
+  );
+}
+
 /** createTypesetter の使い回しの確かめに使う形 (SHAPES と同じ形。書き出す一揃い・指標の試験には入れない)。大きさは REUSE_SIZES */
 export const REUSE_SHAPES = {
   fofootnotes: { make: (n, seed) => chaptersFo(n, seed ?? 13, 'footnote'), ext: 'fo' },
   fomarkers: { make: (n, seed) => chaptersFo(n, seed ?? 14, 'marker'), ext: 'fo' },
+  toc: { make: tocHtml, ext: 'html' },
+  fotoc: { make: tocFo, ext: 'fo' },
 };
-export const REUSE_SIZES = { fofootnotes: 8, fomarkers: 8 };
+export const REUSE_SIZES = { fofootnotes: 8, fomarkers: 8, toc: 14, fotoc: 14 };
 
 /** 続きから組む作りの確かめに使う形 (SHAPES と同じ形。書き出す一揃い・指標の試験には入れない)。大きさは RESUME_SIZES */
 export const RESUME_SHAPES = {

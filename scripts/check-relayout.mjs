@@ -12,13 +12,13 @@
  *     examples    … examples の HTML と FO (examples/preview の画面のコードは除く)
  *     samples     … samples の FO (--compat spec と antenna)
  *     generated   … scripts/gen-stress-docs.mjs の種を決めた乱数の文書 (書き出す大きさ。続きから組む確かめの、左右で本文の幅の違うページの文書と、
- *                   罫線をつぶした表がページをまたぐ文書 (RESUME_SHAPES) と、章ごとに page-sequence を分け、脚注・マーカーのある XSL-FO (REUSE_SHAPES) も)
+ *                   罫線をつぶした表がページをまたぐ文書 (RESUME_SHAPES) と、章ごとに page-sequence を分け、脚注・マーカーのある XSL-FO と、初めに目次のある HTML・XSL-FO (REUSE_SHAPES) も)
  *     ah          … アンテナハウスのサンプル FO 集 (.cache/samples/fo/samples。--compat antenna)
  *     css-print   … 『CSSページ組版入門』第 4 版 (.cache/samples/css-print/src。--style ah)
  *     weasyprint  … WeasyPrint の見本 (既定はリポジトリの隣の weasyprint-samples。--style weasyprint。見本の printall.sh と同じ組み合わせ)
  *   --seed: 直す所を選ぶ乱数の種 (既定 1。文書ごとに、種と文書の名前から種を作る)。--edits: 重ねて直す回数 (既定 3)。
  *     組む並びは「元の文書・直したもの (edits 個)・元の文書に戻したもの」で、どれも 2 つの器で組んで比べる。直しは字の直しが多く、
- *     5 回に 1 回ほどは、ブロックの開きタグに組み方の属性 (keep・区切り・widows・orphans) を足す直し、7 回に 1 回ほどは、ページのマスターだけの直し
+ *     5 回に 1 回ほどは、ブロック (fo:block・p・li) を 1 つ消すか、同じものをもう 1 つ足す直し、5 回に 1 回ほどは、ブロックの開きタグに組み方の属性 (keep・区切り・widows・orphans) を足す直し、7 回に 1 回ほどは、ページのマスターだけの直し
  *     (XSL-FO の領域・HTML の @page に背景の色を足す。本文は変えない)
  *   --jobs: 文書を分けて、いくつのプロセスで組むか (既定 1。空いたプロセスに、重い文書から 1 つずつ渡す。同時に組む文書のメモリの見積もりは、機械のメモリの 8 割まで)。--no-pdf: PDF のバイト列を比べない (速い)
  *   --subjects: 比べる器 (既定 reuse)。splice-verify … 使い回しをする器で、前の組版と揃った境目で繋がずに終わりまで組み、繋いだはずの
@@ -214,7 +214,7 @@ if (args.jobs > 1 && !args.shard) {
     try {
       const doc = await d.load();
       const loadFont = createFontLoader({ cacheDir: fontDir, log: () => {} });
-      const versions = args.edits > 0 ? editSequence(doc.text, { seed: seedOf(args.seed, d.id), edits: args.edits, attrRate: 0.2, masterRate: 0.15 }) : [{ label: '元の文書', text: doc.text }];
+      const versions = args.edits > 0 ? editSequence(doc.text, { seed: seedOf(args.seed, d.id), edits: args.edits, attrRate: 0.2, masterRate: 0.15, blockRate: 0.2 }) : [{ label: '元の文書', text: doc.text }];
       let last = hits;
       let lastSeq = seqHits;
       let lastSplice = spliceHits;

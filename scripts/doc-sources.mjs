@@ -88,8 +88,9 @@ export function listDocs({ groups, filter, samples, weasyprint: weasyDir, fontDi
           return { text: RESUME_SHAPES[shape].make(RESUME_SIZES[shape]), options: { kind: RESUME_SHAPES[shape].ext } };
         },
       });
-    // 章ごとに page-sequence を分け、脚注・マーカーのある XSL-FO (page-sequence の使い回しの当たりにくい形。gen-stress-docs.mjs の REUSE_SHAPES)
-    for (const shape of ['fofootnotes', 'fomarkers'])
+    // 章ごとに page-sequence を分け、脚注・マーカーのある XSL-FO (page-sequence の使い回しの当たりにくい形) と、初めに目次のある HTML・XSL-FO
+    // (前向きのページ番号の参照のあるページより後ろを前の文書から使う・組み直しの 2 回目からの回で前の回と繋ぐ。gen-stress-docs.mjs の REUSE_SHAPES)
+    for (const shape of ['fofootnotes', 'fomarkers', 'toc', 'fotoc'])
       add({
         id: `generated/${shape}`,
         load: async () => {

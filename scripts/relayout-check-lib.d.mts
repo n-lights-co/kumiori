@@ -1,6 +1,6 @@
 /** scripts/relayout-check-lib.mjs の型 (test/relayoutCheck.test.ts から読むため) */
 export interface TextEdit {
-  op: 'insert' | 'delete' | 'replace' | 'attr' | 'master';
+  op: 'insert' | 'delete' | 'replace' | 'attr' | 'master' | 'block-insert' | 'block-delete';
   /** 直した所 (文書の文字列の位置) と行の番号 (1 から) */
   at: number;
   line: number;
@@ -34,9 +34,10 @@ export function seededRandom(seed: number): () => number;
 export function seedOf(...parts: Array<string | number>): number;
 export function textRanges(text: string): Array<[number, number]>;
 export function editOnce(text: string, rng: () => number): { text: string; edit?: TextEdit };
-export function editSequence(text: string, o?: { seed?: number; edits?: number; revert?: boolean; attrRate?: number; masterRate?: number }): DocVersion[];
+export function editSequence(text: string, o?: { seed?: number; edits?: number; revert?: boolean; attrRate?: number; masterRate?: number; blockRate?: number }): DocVersion[];
 export function editAttr(text: string, rng: () => number): { text: string; edit?: TextEdit };
 export function editMaster(text: string, rng: () => number): { text: string; edit?: TextEdit };
+export function editBlock(text: string, rng: () => number): { text: string; edit?: TextEdit };
 export function describeEdit(e: TextEdit): string;
 export function freezeClockAndRandom(at?: string): () => void;
 export function checkRelayout(o: {

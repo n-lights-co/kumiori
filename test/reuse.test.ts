@@ -237,6 +237,30 @@ describe('createTypesetter の reuse: 使い回しても、組んだ結果は使
     expect(c.size).toBe(0);
   });
 
+  it('行分けの覚え: 前の組版を止めてすぐ次を組む (止めた知らせが、次の文書の初めの後に遅れて来る) ときも、最後に組み終えた文書の段落を残す。前の文書の組版も捨てない', async () => {
+    const fonts = (await import('../src/fontManager')).FontManager;
+    const fm = new fonts();
+    const memo = (n: number) => ({ atoms: Array.from({ length: n }, () => ({})), raws: [], pls: [], lms: [] }) as never;
+    const c = new SharedLineMemo();
+    // F: 段落 p を覚えて組み終える
+    const f = c.startDocument();
+    c.set('p', 'env', undefined, memo(5));
+    c.finishDocument(f);
+    const prev = {} as never;
+    c.layout.prev = prev;
+    // A・B・C を始めては止め、止めた知らせは次の文書の初めの後に来る (どの文書も p を組む前に止める)
+    const a = c.startDocument();
+    const b = c.startDocument();
+    c.cancelDocument(a);
+    const d = c.startDocument();
+    c.cancelDocument(b);
+    c.startDocument();
+    c.cancelDocument(d);
+    // p は、最後に組み終えた文書 (F) の段落なので残る (前は B の初めに捨てた)。前の文書の組版も、遅れて来た止めた知らせで捨てない
+    expect(c.get('p', 'env', fm, undefined)).toBeDefined();
+    expect(c.layout.prev).toBe(prev);
+  });
+
   it('行分けの覚え: 上限に達した後に別の文書へ移ると (いまの文書で 1 つも当たらない)、前の文書の項目を古いものから捨てて覚える', async () => {
     const fonts = (await import('../src/fontManager')).FontManager;
     const fm = new fonts();

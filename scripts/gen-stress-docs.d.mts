@@ -16,8 +16,10 @@ export type ResumeShape = 'sidewidth' | 'fosidewidth' | 'collapsetable' | 'focol
 export const RESUME_SHAPES: Record<ResumeShape, { make: (n: number, seed?: number) => string; ext: 'html' | 'fo' }>;
 export const RESUME_SIZES: Record<ResumeShape, number>;
 export function chaptersFo(n: number, seed?: number, kind?: 'footnote' | 'marker'): string;
-/** createTypesetter の使い回しの確かめに使う形 (章ごとの page-sequence に、脚注・マーカーのある XSL-FO) */
-export type ReuseShape = 'fofootnotes' | 'fomarkers';
+export function tocHtml(n: number, seed?: number): string;
+export function tocFo(n: number, seed?: number): string;
+/** createTypesetter の使い回しの確かめに使う形 (章ごとの page-sequence に、脚注・マーカーのある XSL-FO と、初めに目次のある HTML・XSL-FO) */
+export type ReuseShape = 'fofootnotes' | 'fomarkers' | 'toc' | 'fotoc';
 export const REUSE_SHAPES: Record<ReuseShape, { make: (n: number, seed?: number) => string; ext: 'html' | 'fo' }>;
 export const REUSE_SIZES: Record<ReuseShape, number>;
 export const SHAPES: Record<Shape, { make: (n: number, seed?: number) => string; ext: 'html' | 'fo' }>;

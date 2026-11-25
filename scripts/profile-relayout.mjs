@@ -18,6 +18,8 @@
  *   --runs: 1 つの器で組む回数 (既定 4。初めの回は JIT と書体の読み込みが温まっていないので、2 回目からが組み直しの目安)
  *   --edit: 2 回目からは、文書の中ほどの 1 段落に字を足してから組む (1 段落だけ直したときの組み直し)
  *   --edit-chars N: 足す字の数 (既定 7。行の増える直しを試すときは、100 など)
+ *   --edit-block: 2 回目からは、文書の中ほどの段落 (HTML の <p>・XSL-FO の <fo:block>。中に同じ名前の要素の無いもの) を 1 つ、すぐ後ろにもう 1 つ足してから組む
+ *          (ブロックを足したときの組み直し。--edit と一緒には使わない)
  *   --pages: 描画 (renderPage・renderPageToSvg) を測るページの数 (既定 3。プレビューで見えるページの目安)
  *   --no-pdf: PDF の書き出し (toPdf) を測らない
  *   --no-profile: プロファイルを取らない (段階に分けず、全体の時間だけを、プロファイルの手間の入らない値で測る)
@@ -52,7 +54,7 @@ import { CONFORMANCE_FONTS, ensureConformanceFonts, fontUrlsIn, urlBasename } fr
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // ── 引数
-const args = { src: undefined, build: true, buildOnly: false, docs: [], checkReuse: false, reuse: true, editChars: 7, diffPages: false, shareMeasurer: false, profile: true, runs: 4, edit: false, pages: 3, pdf: true, interval: 250, json: undefined, cpuProf: undefined };
+const args = { src: undefined, build: true, buildOnly: false, docs: [], checkReuse: false, reuse: true, editChars: 7, diffPages: false, shareMeasurer: false, profile: true, runs: 4, edit: false, editBlock: false, pages: 3, pdf: true, interval: 250, json: undefined, cpuProf: undefined };
 for (let i = 2; i < process.argv.length; i++) {
   const a = process.argv[i];
   const v = () => process.argv[++i];
@@ -62,6 +64,7 @@ for (let i = 2; i < process.argv.length; i++) {
   else if (a === '--build-only') args.buildOnly = true;
   else if (a === '--runs') args.runs = Number(v());
   else if (a === '--edit') args.edit = true;
+  else if (a === '--edit-block') args.editBlock = true;
   else if (a === '--pages') args.pages = Number(v());
   else if (a === '--no-pdf') args.pdf = false;
   else if (a === '--no-profile') args.profile = false;
@@ -174,11 +177,13 @@ async function loadDoc(name) {
   }
   if (name.startsWith('gen:')) {
     // 種を決めた乱数の文書 (scripts/gen-stress-docs.mjs)。gen:<形> は書き出す大きさ、gen:<形>:<大きさ> は大きさを決めて作る
-    const { SHAPES, STANDARD_SIZES } = await import('./gen-stress-docs.mjs');
+    // 使い回しの確かめの形 (REUSE_SHAPES。初めに目次のある toc・fotoc など) も選べる
+    const { SHAPES, STANDARD_SIZES, REUSE_SHAPES = {}, REUSE_SIZES = {} } = await import('./gen-stress-docs.mjs');
+    const all = { ...SHAPES, ...REUSE_SHAPES };
     const [, shape, size] = name.split(':');
-    if (!SHAPES[shape]) throw new Error(`${name}: 知らない形 (${Object.keys(SHAPES).join('・')})`);
-    const n = size ? Number(size) : STANDARD_SIZES[shape];
-    return { name, text: SHAPES[shape].make(n), setup: {}, options: { kind: SHAPES[shape].ext } };
+    if (!all[shape]) throw new Error(`${name}: 知らない形 (${Object.keys(all).join('・')})`);
+    const n = size ? Number(size) : (STANDARD_SIZES[shape] ?? REUSE_SIZES[shape]);
+    return { name, text: all[shape].make(n), setup: {}, options: { kind: all[shape].ext } };
   }
   if (name.startsWith('fo:')) {
     const dir = path.join(root, '.cache', 'samples', 'fo');
@@ -203,6 +208,16 @@ function editOnce(text, n) {
   const add = `直した${n}回目。`;
   const s = add.repeat(Math.ceil(args.editChars / add.length)).slice(0, args.editChars);
   return text.slice(0, at) + s + text.slice(at);
+}
+
+/** 文書の中ほどの段落 (中に同じ名前の要素の無いもの) を 1 つ、すぐ後ろにもう 1 つ足す (ブロックを足したときの組み直しを試す) */
+function editBlockOnce(text) {
+  const re = /<(p|fo:block)(?=[\s>])[^>]*>(?:(?!<(?:p|fo:block)[\s>/])[\s\S])*?<\/\1>/g;
+  re.lastIndex = Math.floor(text.length / 2);
+  const m = re.exec(text);
+  if (!m) return text;
+  const end = m.index + m[0].length;
+  return text.slice(0, end) + m[0] + text.slice(end);
 }
 
 // ── 何もしない 2D の文脈 (renderPage の JS の手間だけを測る)
@@ -340,6 +355,7 @@ for (const name of args.docs) {
   const plain = args.checkReuse ? await lib.createTypesetter({ loadFont, ...d.setup, reuse: false }) : undefined;
   for (let run = 1; run <= args.runs; run++) {
     if (args.edit && run > 1) text = editOnce(text, run);
+    if (args.editBlock && run > 1) text = editBlockOnce(text);
     passTimes = [];
     if (args.profile) await session.post('Profiler.start');
     const w = {};
@@ -417,10 +433,10 @@ for (const name of args.docs) {
       prevPages = pagesSvg;
     }
     if (!args.profile) {
-      console.log(`  ${run} 回目${args.edit && run > 1 ? ' (1 段落を直して)' : ''}: ${r.pageCount} ページ  typeset ${w.typeset.toFixed(0)}ms (うち layoutMs ${w.layoutMs}ms・組み直しの回 ${passes.length} 回 [${passes.map((p) => p.toFixed(0)).join(', ')}]ms)  renderPage×${n} ${w.renderPage.toFixed(0)}ms  renderPageToSvg×${n} ${w.renderSvg.toFixed(0)}ms${args.pdf ? `  toPdf ${w.toPdf.toFixed(0)}ms` : ''}  ヒープ ${w.heapMB}MB`);
+      console.log(`  ${run} 回目${args.edit && run > 1 ? ' (1 段落を直して)' : args.editBlock && run > 1 ? ' (段落を 1 つ足して)' : ''}: ${r.pageCount} ページ  typeset ${w.typeset.toFixed(0)}ms (うち layoutMs ${w.layoutMs}ms・組み直しの回 ${passes.length} 回 [${passes.map((p) => p.toFixed(0)).join(', ')}]ms)  renderPage×${n} ${w.renderPage.toFixed(0)}ms  renderPageToSvg×${n} ${w.renderSvg.toFixed(0)}ms${args.pdf ? `  toPdf ${w.toPdf.toFixed(0)}ms` : ''}  ヒープ ${w.heapMB}MB`);
       if (w.diffLine) console.log(w.diffLine);
       if (w.checkLine) console.log(w.checkLine);
-      results.push({ doc: name, run, edited: args.edit && run > 1, pages: r.pageCount, ...w, passes, warnings: r.warnings.length });
+      results.push({ doc: name, run, edited: (args.edit || args.editBlock) && run > 1, pages: r.pageCount, ...w, passes, warnings: r.warnings.length });
       continue;
     }
     const { profile } = await session.post('Profiler.stop');
@@ -429,7 +445,7 @@ for (const name of args.docs) {
     const outerSum = new Map();
     for (const [k, ms] of c.table) outerSum.set(k.split('\t')[0], (outerSum.get(k.split('\t')[0]) ?? 0) + ms);
     console.log(
-      `  ${run} 回目${args.edit && run > 1 ? ' (1 段落を直して)' : ''}: ${r.pageCount} ページ  typeset ${w.typeset.toFixed(0)}ms (うち layoutMs ${w.layoutMs}ms・組み直しの回 ${passes.length} 回 [${passes.map((p) => p.toFixed(0)).join(', ')}]ms)` +
+      `  ${run} 回目${args.edit && run > 1 ? ' (1 段落を直して)' : args.editBlock && run > 1 ? ' (段落を 1 つ足して)' : ''}: ${r.pageCount} ページ  typeset ${w.typeset.toFixed(0)}ms (うち layoutMs ${w.layoutMs}ms・組み直しの回 ${passes.length} 回 [${passes.map((p) => p.toFixed(0)).join(', ')}]ms)` +
         `  renderPage×${n} ${w.renderPage.toFixed(0)}ms  renderPageToSvg×${n} ${w.renderSvg.toFixed(0)}ms${args.pdf ? `  toPdf ${w.toPdf.toFixed(0)}ms (${(pdfBytes / 1048576).toFixed(1)}MB)` : ''}  警告 ${r.warnings.length}`,
     );
     const rows = [...c.table].sort((a, b) => b[1] - a[1]);
@@ -442,7 +458,7 @@ for (const name of args.docs) {
     if (w.checkLine) console.log(w.checkLine);
     const topFiles = [...c.files].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, ms]) => `${k.replace('\t', ':')} ${ms.toFixed(0)}`);
     console.log(`    ファイルの多い順: ${topFiles.join('・')}`);
-    results.push({ doc: name, run, edited: args.edit && run > 1, pages: r.pageCount, ...w, passes, warnings: r.warnings.length, sampledMs: c.total, phases: Object.fromEntries(c.table), files: Object.fromEntries([...c.files].sort((a, b) => b[1] - a[1]).slice(0, 40)) });
+    results.push({ doc: name, run, edited: (args.edit || args.editBlock) && run > 1, pages: r.pageCount, ...w, passes, warnings: r.warnings.length, sampledMs: c.total, phases: Object.fromEntries(c.table), files: Object.fromEntries([...c.files].sort((a, b) => b[1] - a[1]).slice(0, 40)) });
   }
 }
 await session.post('Profiler.disable');
