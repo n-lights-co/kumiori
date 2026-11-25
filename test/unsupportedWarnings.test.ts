@@ -86,7 +86,7 @@ describe('typeset の warnings', () => {
     const miss = r.warnings.find((w) => w.startsWith('未対応の CSS を無視しました: '));
     expect(miss).toBe('未対応の CSS を無視しました: grid-template-areas、image-rendering、position: sticky');
     const unknown = r.warnings.find((w) => w.startsWith('知らない CSS のプロパティを無視しました'));
-    expect(unknown).toBe('知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr');
+    expect(unknown).toBe('知らない CSS のプロパティを無視しました (スペルミスか未対応): colr');
     const clean = await typesetHtml('<!DOCTYPE html><html><head><title>t</title><style>p { margin: 1em; text-indent: 1em; hyphens: auto }</style></head><body><p>x</p></body></html>', { name: 't.html', loadFont });
     expect(clean.warnings.filter((w) => /未対応|知らない/.test(w))).toEqual([]);
   });

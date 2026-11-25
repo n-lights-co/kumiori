@@ -247,7 +247,7 @@ describe('PDF/A の注釈・フォーム・添付ファイル', () => {
       <fo:block><axf:form-field axf:field-type="button" axf:action-type="reset" axf:field-button-face="RESET" width="30mm" height="6mm"/></fo:block></axf:form>`;
     const warnings: string[] = [];
     const bytes = await foPdf(form, { pdfa: { version: 'A-2b', warnings } });
-    expect(warnings.join('\n')).toMatch(/フォームの欄 \(2 件\)/);
+    expect(warnings.join('\n')).toMatch(/フォームフィールド \(2 件\)/);
     expect(await verifyPdfA(bytes, 2)).toEqual([]);
     const pdf = await load(bytes);
     expect(pdf.catalog.get(PDFName.of('AcroForm'))).toBeUndefined();
@@ -351,7 +351,7 @@ describe('書き出した PDF の検査 (pdfaVerify.ts)', () => {
     const deep = 'q '.repeat(30) + 'Q '.repeat(30);
     page.node.set(PDFName.of('Contents'), ctx.obj([page.node.get(PDFName.of('Contents'))!, ctx.register(ctx.stream(new TextEncoder().encode(deep)))].flatMap((c) => (c instanceof PDFArray ? c.asArray() : [c]))));
     const problems = (await verifyPdfA(await pdf.save(), 2)).join('\n');
-    for (const re of [/XMP のメタデータ/, /PDF\/A の出力意図/, /Launch/, /JavaScript/, /追加の動作 \(AA\)/, /印刷の印/, /外観 \(AP\)/, /TR \(転送の関数\)/, /描画モード/, /Interpolate/, /28 段/, /PDF\/A-2 で埋め込めるのは/]) expect(problems).toMatch(re);
+    for (const re of [/XMP のメタデータ/, /PDF\/A の出力インテント/, /Launch/, /JavaScript/, /追加の動作 \(AA\)/, /印刷の印/, /外観 \(AP\)/, /TR \(転送の関数\)/, /描画モード/, /Interpolate/, /28 段/, /PDF\/A-2 で埋め込めるのは/]) expect(problems).toMatch(re);
   });
 
   it('出力意図の色空間と違う機器による色を見つける (sRGB の出力意図に DeviceCMYK の k)', async () => {

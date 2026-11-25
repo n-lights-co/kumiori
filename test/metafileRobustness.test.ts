@@ -279,7 +279,7 @@ describe('CGM: 細工した入力 (IMG-05・IMG-07)', () => {
     // BEGIN TILE ARRAY: 位置、セルの向き・行の向き、タイルの数 1×1、タイルのセルの数 8100×8100、セルの大きさ (実数 2 つ)、画像のずれ・セルの数
     const begin = cmd(0, 19, [...i16(0, 0, 0, 0, 1, 1, 8100, 8100), ...i32(0x10000, 0x10000), ...i16(0, 0, 8100, 8100)]);
     const r = cgmToSvg(cgm([...begin, ...cmd(0, 20), ...cmd(4, 1, i16(0, 0, 10, 10))]))!;
-    expect(r.warnings.join()).toContain('画素の合計が上限');
+    expect(r.warnings.join()).toContain('ピクセルの合計が上限');
     expect(count(r.svg, '<image')).toBe(0);
     expect(r.svg).toContain('<path'); // 後ろの折れ線は描く
   });

@@ -172,7 +172,7 @@ describe('コマンドの説明書 (docs/cli.md・docs/en/cli.md)', () => {
       // コマンドは、--watch でもプラグインを読めなければ見張らずに 1 で終わる (test/cli.test.ts で確かめる)。説明書の「--watch のときは
       // 終了コードは変わらない」と食い違わないように、断りを書く
       const text = fs.readFileSync(path.join(root, file), 'utf8');
-      const exit = text.slice(text.search(/^## (終了の状態|Exit status)$/m));
+      const exit = text.slice(text.search(/^## (終了ステータス|Exit status)$/m));
       const watch = exit.split(/\r?\n/).find((l) => l.startsWith('With `--watch`') || l.startsWith('`--watch` のときは')) ?? '';
       expect(watch, file).toMatch(/`--plugin`[^。.]*(終了コード 1|exit code is 1)/);
     });

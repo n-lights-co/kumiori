@@ -280,7 +280,7 @@ class SvgOut {
   readonly warnings = new Set<string>();
   takePixels(n: number, what = msg('画像', 'an image')): boolean {
     if (n > this.pixelsLeft) {
-      this.warnings.add(msg(`${what} は、文書の画像の画素の合計が上限 (${this.fileBytes} バイトのファイルでは ${this.pixelBudget} 画素) を超えるので描きません`, `${what} is not drawn because the total pixels of the images in the document exceed the limit (${this.pixelBudget} pixels for a file of ${this.fileBytes} bytes)`));
+      this.warnings.add(msg(`${what} は、文書の画像のピクセルの合計が上限 (${this.fileBytes} バイトのファイルでは ${this.pixelBudget} ピクセル) を超えるので描画しません`, `${what} is not drawn because the total pixels of the images in the document exceed the limit (${this.pixelBudget} pixels for a file of ${this.fileBytes} bytes)`));
       return false;
     }
     this.pixelsLeft -= n;
@@ -299,7 +299,7 @@ class SvgOut {
     if (this.overflow) return false;
     if (this.chars + n > this.charBudget) {
       this.overflow = true;
-      this.warnings.add(msg(`メタファイルを SVG にした長さが上限 (${this.fileBytes} バイトのファイルでは ${this.charBudget} 字) を超えるので、途中までを描きます`, `the SVG made from the metafile exceeds the length limit (${this.charBudget} characters for a file of ${this.fileBytes} bytes); only the first part is drawn`));
+      this.warnings.add(msg(`メタファイルを SVG にした長さが上限 (${this.fileBytes} バイトのファイルでは ${this.charBudget} 字) を超えるので、途中までを描画します`, `the SVG made from the metafile exceeds the length limit (${this.charBudget} characters for a file of ${this.fileBytes} bytes); only the first part is drawn`));
       return false;
     }
     this.chars += n;
@@ -316,7 +316,7 @@ class SvgOut {
   gradientSteps(nTri: number): number {
     let n = 8;
     while (n > 1 && nTri * n * n * SvgOut.GRAD_PATH_CHARS > this.gradChars) n >>= 1;
-    if (n < 8) this.warnings.add(msg('色を変えながら塗る三角形 (EMR_GRADIENTFILL) が多いので、色の変わり方を粗くして描きます', 'there are many gradient-filled triangles (EMR_GRADIENTFILL); the gradients are drawn more coarsely'));
+    if (n < 8) this.warnings.add(msg('色を変えながら塗る三角形 (EMR_GRADIENTFILL) が多いので、色の変わり方を粗くして描画します', 'there are many gradient-filled triangles (EMR_GRADIENTFILL); the gradients are drawn more coarsely'));
     this.gradChars -= nTri * n * n * SvgOut.GRAD_PATH_CHARS;
     return n;
   }
@@ -744,7 +744,7 @@ class SvgOut {
     const pts = (rs: Rings) => rs.reduce((n, r) => n + r.length, 0);
     this.clipPathWork -= pts(acc) + pts(add[0]) + layers.reduce((n, x) => n + pts(x.rings), 0) + (layers.length + 1) * pts(acc);
     if (this.clipPathWork < 0) {
-      this.warnings.add(msg('切り抜きのパスの演算の手間が上限を超えたので、その後の切り抜きの変更は読みません', 'clipping path operations exceeded the work limit; later changes of the clipping are not read'));
+      this.warnings.add(msg('クリップパスの演算の計算量が上限を超えたので、その後のクリッピングの変更は読みません', 'clipping path operations exceeded the work limit; later changes of the clipping are not read'));
       return;
     }
     for (const { l, rings } of layers) acc = polyBool(acc, false, rings, l.evenodd, l.invert ? 4 : 1);
@@ -753,7 +753,7 @@ class SvgOut {
   /** 領域の演算 (手間の合計が上限を超えたら、演算をやめて、切り抜きを変えずに警告を出す) */
   private regionRects(a: Rect[] | undefined, b: Rect[], mode: number): Rect[] | undefined {
     const r = regionOp(a, b, mode, this.regionWork);
-    if (this.regionWork.left < 0) this.warnings.add(msg('切り抜きの領域の演算の手間が上限を超えたので、その後の切り抜きの変更は読みません', 'clipping region operations exceeded the work limit; later changes of the clipping are not read'));
+    if (this.regionWork.left < 0) this.warnings.add(msg('クリッピングの領域の演算の計算量が上限を超えたので、その後のクリッピングの変更は読みません', 'clipping region operations exceeded the work limit; later changes of the clipping are not read'));
     return r;
   }
   clipRects(rs: Rect[], mode: number) {

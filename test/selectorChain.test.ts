@@ -81,7 +81,7 @@ describe('結合子の種類が混ざったセレクタの、複合セレクタ�
     const k = MAX_BACKTRACK_COMPOUNDS - 1;
     const r = parseCss(`${mixed(k)}, b { color: red } ${mixed(k - 1)} { color: blue }`);
     expect(r.ignored).toHaveLength(1);
-    expect(r.ignored![0]).toMatch(/複合セレクタが 64 個を超える、結合子の種類の混ざったセレクタ/);
+    expect(r.ignored![0]).toMatch(/複合セレクターが 64 個を超える、結合子の種類の混ざったセレクター/);
     expect(r.rules.length).toBe(3);
     expect(parseCss(`${mixed(k - 1)} { color: blue }`).ignored).toBeUndefined();
   });

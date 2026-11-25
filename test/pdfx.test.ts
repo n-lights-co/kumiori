@@ -107,7 +107,7 @@ describe('PDF/X-4 の出力 (O-06)', () => {
       const warnings: string[] = [];
       const pdf = await PDFDocument.load(await r.toPdf({ pdfx: { version, profile: CMYK_PROFILE, warnings } }), { updateMetadata: false });
       expect(annotCount(pdf)).toBe(0);
-      expect(warnings).toContain('PDF/X では、ページの中 (塗り足しまでの範囲 BleedBox に掛かる所) の注釈・リンク・フォームの欄を書きません (リンク 1 件)');
+      expect(warnings).toContain('PDF/X では、ページの中 (塗り足しまでの範囲 BleedBox に掛かる所) の注釈・リンク・フォームフィールドを書きません (リンク 1 件)');
       expect(warnings.some((w) => /透明/.test(w))).toBe(false);
       expect(pdf.getTitle()).toBe('Untitled');
     }
@@ -255,7 +255,7 @@ describe('PDF/X-1a の出力', () => {
     expect(String(intent.get(PDFName.of('OutputConditionIdentifier')))).toContain('JC200103');
     expect(intent.get(PDFName.of('DestOutputProfile'))).toBeUndefined();
     expect(await verifyPdfX1a(bytes, 'X-1a:2001')).toEqual([]);
-    expect(warnings).toEqual(['PDF/X では、ページの中 (塗り足しまでの範囲 BleedBox に掛かる所) の注釈・リンク・フォームの欄を書きません (リンク 1 件)']);
+    expect(warnings).toEqual(['PDF/X では、ページの中 (塗り足しまでの範囲 BleedBox に掛かる所) の注釈・リンク・フォームフィールドを書きません (リンク 1 件)']);
   });
 
   it('PDF/X-1a:2003: PDF 1.4、GTS_PDFXVersion が PDF/X-1a:2003 (GTS_PDFXConformance は書かない)', async () => {
@@ -279,7 +279,7 @@ describe('PDF/X-1a の出力', () => {
   it('検査は、ふつうの PDF の違反 (版・印・出力意図・ボックス・注釈・RGB の色) を見つける', async () => {
     const { verifyPdfX1a } = await import('../src/pdfxVerify');
     const problems = await verifyPdfX1a(await (await typesetHtml(html, { loadFont })).toPdf(), 'X-1a:2001');
-    for (const p of [/PDF の版が 1\.7/, /GTS_PDFXVersion/, /GTS_PDFXConformance/, /Trapped/, /出力意図/, /TrimBox か ArtBox/, /注釈 \(Link\)/, /RGB の色 \(rg・RG\)/]) {
+    for (const p of [/PDF のバージョンが 1\.7/, /GTS_PDFXVersion/, /GTS_PDFXConformance/, /Trapped/, /出力インテント/, /TrimBox か ArtBox/, /注釈 \(Link\)/, /RGB の色 \(rg・RG\)/]) {
       expect(problems.some((x) => p.test(x))).toBe(true);
     }
   });
@@ -495,7 +495,7 @@ describe('PDF/X-1a の透明を平らにする処理', () => {
     const got = [...r.data.slice(i, i + 4)].map((v) => v / 255);
     const exp = rgbToCmyk(30 / 255, 120 / 255, 200 / 255).map((v, k) => (1 - a8(0.5)) * v + a8(0.5) * [0, 0, 1, 0][k]);
     got.forEach((v, k) => expect(Math.abs(v - exp[k])).toBeLessThan(2 / 255));
-    expect(warnings).toContain('PDF/X-1a: 透明を平らにするため、1 か所 (1 ページ目) を画像 (300ppi 以上) にしました');
+    expect(warnings).toContain('PDF/X-1a: 透明をフラット化するため、1 か所 (1 ページ目) を画像 (300ppi 以上) にしました');
   });
 
   it('透明度つきの PNG は埋め込まず、下の物と合わせて画像にする。字の掛かる所は 600ppi にして、字の質の落ちることを警告に書く', async () => {
@@ -511,8 +511,8 @@ describe('PDF/X-1a の透明を平らにする処理', () => {
     expect(images.every((im) => !im.dict.get(PDFName.of('SMask')))).toBe(true);
     // 透明度つきの PNG の範囲 (60pt × 30pt。300ppi) と、字の掛かる範囲 (60pt × 20pt。600ppi)
     expect(images.map((im) => im.width).sort((p, q) => p - q)).toEqual([250, 500]);
-    expect(warnings).toContain('PDF/X-1a: 透明を平らにするため、2 か所 (1 ページ目) を画像 (300ppi 以上) にしました');
-    expect(warnings.some((w) => /画像にした所に字が掛かっています \(1 ページ目\)/.test(w))).toBe(true);
+    expect(warnings).toContain('PDF/X-1a: 透明をフラット化するため、2 か所 (1 ページ目) を画像 (300ppi 以上) にしました');
+    expect(warnings.some((w) => /画像にした所に文字が掛かっています \(1 ページ目\)/.test(w))).toBe(true);
   });
 
   it('SVG: 半透明の図形の下が 1 色ならベクタのまま、重なる半透明の図形は SVG の範囲を画像にする', async () => {
@@ -583,7 +583,7 @@ describe('PDF/X-1a の透明を平らにする処理', () => {
     expect(await verifyPdfX1a(bytes, 'X-1a:2001')).toEqual([]);
     const images = pageImages(await PDFDocument.load(bytes, { updateMetadata: false }));
     expect(images).toHaveLength(2);
-    expect(warnings).toContain('PDF/X-1a: 透明を平らにするため、2 か所 (1 ページ目) を画像 (300ppi 以上) にしました');
+    expect(warnings).toContain('PDF/X-1a: 透明をフラット化するため、2 か所 (1 ページ目) を画像 (300ppi 以上) にしました');
   });
 
   it('回した箱の背景 (凸の形の 1 色の塗り) の上の半透明の字・塗りも、ベクタのまま平らにする', async () => {
@@ -600,7 +600,7 @@ describe('PDF/X-1a の透明を平らにする処理', () => {
     const img = await solidPng(1, 1, () => [255, 0, 0, 255]);
     const html = `${page}<div style="position: relative; height: 150pt; background: url(${img}) repeat; background-size: 1pt 1pt"><div style="position: absolute; top: 0; left: 0; width: 50pt; height: 50pt; background: rgba(0, 0, 0, 0.5)"></div></div>`;
     const r = await typesetHtml(html, { loadFont });
-    await expect(r.toPdf({ pdfx: { version: 'X-1a' } })).rejects.toThrow(/PDF\/X-1a では透明を使えないので平らにしますが、平らにできない透明が残りました:[\s\S]*1 ページ目: 透明な物の下に、繰り返しの多い背景画像があるので[\s\S]*PDF\/X-4 を使ってください/);
+    await expect(r.toPdf({ pdfx: { version: 'X-1a' } })).rejects.toThrow(/PDF\/X-1a では透明を使えないのでフラット化しますが、フラット化できない透明が残りました:[\s\S]*1 ページ目: 透明な物の下に、繰り返しの多い背景画像があるので[\s\S]*PDF\/X-4 を使ってください/);
     // PDF/X-4 では透明のまま出せる
     await expect(r.toPdf({ pdfx: { version: 'X-4', profile: CMYK_PROFILE } })).resolves.toBeInstanceOf(Uint8Array);
   });
@@ -635,7 +635,7 @@ describe('PDF/X-3 の透明を平らにする処理と検査', () => {
     const images = pageImages(pdf).filter((im) => im.width > 100);
     expect(images).toHaveLength(1);
     expect(images[0].dict.get(PDFName.of('SMask'))).toBeUndefined();
-    expect(warnings).toContain('PDF/X-3: 透明を平らにするため、1 か所 (1 ページ目) を画像 (300ppi 以上) にしました');
+    expect(warnings).toContain('PDF/X-3: 透明をフラット化するため、1 か所 (1 ページ目) を画像 (300ppi 以上) にしました');
     expect(warnings.some((w) => /では透明 \(/.test(w))).toBe(false);
   });
 
@@ -849,7 +849,7 @@ describe('PDF/X の出力を規格 (ISO 15930-1・ISO 15930-7) に合わせる',
       expect(items[0].get(PDFName.of('Dest'))).toBeDefined();
       expect(items.every((d) => !d.get(PDFName.of('A')))).toBe(true);
       const label = version === 'X-1a' ? 'PDF/X-1a' : `PDF/${version}`;
-      expect(warnings).toContain(`${label} では動作 (Action) を書けないので、書きません (しおりの外への飛び先 1 件)。しおりは題と文書の中の飛び先だけを残します`);
+      expect(warnings).toContain(`${label} では動作 (Action) を書けないので、書きません (しおりの外へのリンク先 1 件)。しおりはタイトルと文書の中のリンク先だけを残します`);
     }
     // PDF/X でなければ、これまでどおり URI の動作を書く
     const plain = outlineItems(await PDFDocument.load(await f.toPdf(), { updateMetadata: false }));
@@ -867,7 +867,7 @@ describe('PDF/X の出力を規格 (ISO 15930-1・ISO 15930-7) に合わせる',
     const warnings: string[] = [];
     const pdf = await PDFDocument.load(await r.toPdf({ pdfx: { version: 'X-4', profile: CMYK_PROFILE, warnings } }), { updateMetadata: false });
     expect(annotCount(pdf)).toBe(0);
-    expect(warnings).toContain('PDF/X-4 では動作 (Action) を書けないので、書きません (動作を持つ注釈 1 件)。しおりは題と文書の中の飛び先だけを残します');
+    expect(warnings).toContain('PDF/X-4 では動作 (Action) を書けないので、書きません (動作を持つ注釈 1 件)。しおりはタイトルと文書の中のリンク先だけを残します');
     const en = await typesetHtml(html, { loadFont, style: 'ah', lang: 'en' });
     const enWarnings: string[] = [];
     await en.toPdf({ pdfx: { version: 'X-4', profile: CMYK_PROFILE, warnings: enWarnings } });
@@ -878,7 +878,7 @@ describe('PDF/X の出力を規格 (ISO 15930-1・ISO 15930-7) に合わせる',
     const r = await typesetHtml('<p>あ་い</p>', { loadFont });
     const warnings: string[] = [];
     const bytes = await r.toPdf({ pdfx: { version: 'X-4', profile: CMYK_PROFILE, warnings } });
-    expect(warnings.some((w) => /^PDF\/X-4 では字形の無い字 \(\.notdef\) を描けない/.test(w))).toBe(true);
+    expect(warnings.some((w) => /^PDF\/X-4 では字形の無い文字 \(\.notdef\) を描画できない/.test(w))).toBe(true);
     // 字の命令の符号に CID 0 を書かない (ToUnicode の CMap の <0000> は除いて見る)
     const glyphs = (pdf: PDFDocument) => contentOf(pdf).split(/begincmap[\s\S]*?endcmap/).join(' ');
     expect(glyphs(await PDFDocument.load(bytes, { updateMetadata: false }))).not.toMatch(/<(?:[0-9A-F]{4})*0000/i);
@@ -988,8 +988,8 @@ describe('PDF/X の検査が、わざと入れた違反を見つける', () => {
     ['GTS_PDFX の出力意図が 2 つ', 'both', (pdf) => {
       const intents = pdf.catalog.lookup(PDFName.of('OutputIntents'), PDFArray);
       intents.push(pdf.context.obj({ Type: 'OutputIntent', S: 'GTS_PDFX', OutputConditionIdentifier: PDFString.of('JC200103') }));
-    }, /GTS_PDFX の出力意図が 2 個/],
-    ['登録簿に無い印刷条件の RegistryName', 'both', (pdf) => pdfxIntentOf(pdf).set(PDFName.of('OutputConditionIdentifier'), PDFString.of('Japan Color 2001 Coated')), /登録簿の名前と一致しません/],
+    }, /GTS_PDFX の出力インテントが 2 個/],
+    ['登録簿に無い印刷条件の RegistryName', 'both', (pdf) => pdfxIntentOf(pdf).set(PDFName.of('OutputConditionIdentifier'), PDFString.of('Japan Color 2001 Coated')), /レジストリの名前と一致しません/],
     ['X-1a: 登録簿に無い印刷条件でプロファイルが無い', 'x1a', (pdf) => {
       const intent = pdfxIntentOf(pdf);
       intent.set(PDFName.of('OutputConditionIdentifier'), PDFString.of('My Press'));
@@ -1007,7 +1007,7 @@ describe('PDF/X の検査が、わざと入れた違反を見つける', () => {
       addResource(pdf, 'ColorSpace', 'CS0', ['Separation', 'Ink', 'DeviceRGB', { FunctionType: 2, Domain: [0, 1], C0: [1, 1, 1], C1: [1, 0, 0], N: 1 }]);
       pdf.getPage(0).node.addContentStream(pdf.context.register(pdf.context.flateStream(new TextEncoder().encode('1 0 0 rg 0 0 1 1 re f\n'))));
     }, /DeviceRGB|rg・RG/],
-    ['X-4: 出力意図と同じプロファイルの ICCBased', 'x4', (pdf) => addResource(pdf, 'ColorSpace', 'CS1', ['ICCBased', pdf.context.register(pdf.context.stream(CMYK_PROFILE, { N: 4 }))]), /出力意図と同じプロファイル/],
+    ['X-4: 出力意図と同じプロファイルの ICCBased', 'x4', (pdf) => addResource(pdf, 'ColorSpace', 'CS1', ['ICCBased', pdf.context.register(pdf.context.stream(CMYK_PROFILE, { N: 4 }))]), /出力インテントと同じプロファイル/],
     ['X-4: 決まっていない描画モード', 'x4', (pdf) => addResource(pdf, 'ExtGState', 'GB', { BM: 'Dissolve' }), /描画モード \(\/Dissolve\)/],
     ['X-1a: 透明 (不透明度)', 'x1a', (pdf) => addResource(pdf, 'ExtGState', 'GA', { ca: 0.5 }), /透明 \(不透明度\)/],
     ['TrimBox が CropBox の外', 'both', (pdf) => pdf.getPage(0).setCropBox(50, 50, 100, 100), /TrimBox \(か ArtBox\) が BleedBox・CropBox からはみ出し/],
@@ -1055,7 +1055,7 @@ describe('PDF/X の検査が、わざと入れた違反を見つける', () => {
       (pdf.context.lookup(pdf.context.trailerInfo.Info) as PDFDict).set(PDFName.of('GTS_PDFXConformance'), PDFString.of('PDF/X-1a:2001'));
     });
     const problems = (await verifyPdfX4(bytes)).join('\n');
-    for (const p of [/包みの頭 \(xpacket\) に bytes・encoding/, /xmp:MetadataDate がありません/, /xmpMM:RenditionClass がありません/, /dc:title/, /pdf:Trapped が True か False ではありません/, /GTS_PDFXVersion のほかの項目 \(GTS_PDFXConformance\)/, /Info に GTS_PDFXConformance があります/, /Info の CreationDate と XMP の日付が違います/, /Info の Title と XMP の値が違います/, /Info の Trapped と XMP の値が違います/])
+    for (const p of [/パケットのヘッダー \(xpacket\) に bytes・encoding/, /xmp:MetadataDate がありません/, /xmpMM:RenditionClass がありません/, /dc:title/, /pdf:Trapped が True か False ではありません/, /GTS_PDFXVersion のほかの項目 \(GTS_PDFXConformance\)/, /Info に GTS_PDFXConformance があります/, /Info の CreationDate と XMP の日付が違います/, /Info の Title と XMP の値が違います/, /Info の Trapped と XMP の値が違います/])
       expect(problems).toMatch(p);
     // メタデータが無ければ
     const none = await tamper(x4, (pdf) => pdf.catalog.delete(PDFName.of('Metadata')));
@@ -1102,7 +1102,7 @@ describe('PDF/X の検査が、内容の流れだけを読む', () => {
     expect(pdfStandardOf({ version: 'X-3' })?.label).toBe('PDF/X-3');
     for (const v of ['x4', 'X-5', '']) expect(() => pdfStandardOf({ version: v as never })).toThrow(expect.objectContaining({ name: 'KumioriOptionError', option: 'pdfx.version' }));
     const r = await typesetHtml('<p>本文</p>', { loadFont });
-    await expect(r.toPdf({ pdfx: { version: 'x4' as never, profile: CMYK_PROFILE } })).rejects.toThrow(/PDF\/X の版 "x4" は使えません/);
+    await expect(r.toPdf({ pdfx: { version: 'x4' as never, profile: CMYK_PROFILE } })).rejects.toThrow(/PDF\/X のバージョン "x4" は使えません/);
   });
 });
 

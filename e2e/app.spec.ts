@@ -436,7 +436,7 @@ test('画面: 読み込みの警告を左の欄に出す (落としたリンク�
   const text = (await page.locator('#warnings').textContent()) ?? '';
   expect(text).toContain('javascript:');
   expect(text).toContain('未対応の CSS を無視しました: image-rendering');
-  expect(text).toContain('知らない CSS のプロパティを無視しました (綴りの誤りか未対応): colr');
+  expect(text).toContain('知らない CSS のプロパティを無視しました (スペルミスか未対応): colr');
   expect(text).toContain('入れ子が深すぎます');
   // 読み込みが上限に当たったことの診断 (タグ付き PDF の表の構造の上限): 列を 1000 またぐセル 1 つと 20 行の表。
   // 読み込みの報告と組版の診断の両方から来ても、1 件だけ出す
@@ -949,7 +949,7 @@ test('画面: draw.io の図の図形ライブラリを設定で読み込み・�
   // 取るのを許すと、要るときに 1 回だけ取る。ここでは配信元を差し替えて、自作のライブラリの XML を返す。既定の取り先 (draw.io の
   // v24.7.5 のタグ) から取った中身は、版の SHA-256 の一覧と照らすので、v24.7.5 の中身でない差し替えは使わずに警告する
   // (画面の中でも照らす。設定で読み込んだライブラリ・開くファイルと一緒に渡したライブラリは、上のとおり照らさずに使う)
-  const mismatch = 'draw.io の配布物 (v24.7.5) から取ったファイルの中身が、版の SHA-256 の一覧と合わないので使いません (fetchStencils): js/stencils.min.js';
+  const mismatch = 'draw.io の配布物 (v24.7.5) から取得したファイルの中身が、そのバージョンの SHA-256 の一覧と合わないので使いません (fetchStencils): js/stencils.min.js';
   await page.click('#clearstencils');
   await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
   expect(fetched).toBe(0);
@@ -1017,7 +1017,7 @@ test('画面: draw.io の配布物の PNG の画像 (img/lib/…) を設定で�
       { name: 'a.html', mimeType: 'text/html', buffer: Buffer.from('<!doctype html><p><img src="fig.drawio"></p>') },
       { name: 'fig.drawio', mimeType: 'application/xml', buffer: Buffer.from(fig) },
     ]);
-  const missing = 'img/lib/clip_art/e2e.png は描けない';
+  const missing = 'img/lib/clip_art/e2e.png は描画できない';
   await openDoc();
   await expect(page.locator('#warnings')).toContainText(missing, { timeout: 30_000 });
   await openSettings(page);

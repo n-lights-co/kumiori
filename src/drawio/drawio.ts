@@ -266,13 +266,13 @@ function pageOf(pages: XEl[], fragment: string | undefined, warn: (m: string) =>
   if (n) {
     const k = Number(n[1]);
     if (k >= 1 && k <= pages.length) return pages[k - 1];
-    warn(msg(`draw.io の図に ${shown.slice(5)} ページ目がありません (${pages.length} ページ。最初のページを描きます)`, `the draw.io diagram has no page ${shown.slice(5)} (it has ${pages.length}; the first page is drawn)`));
+    warn(msg(`draw.io の図に ${shown.slice(5)} ページ目がありません (${pages.length} ページ。最初のページを描画します)`, `the draw.io diagram has no page ${shown.slice(5)} (it has ${pages.length}; the first page is drawn)`));
     return pages[0];
   }
   const id = /^page-id=(.*)$/s.exec(frag);
   const found = id ? pages.find((p) => p.attrs.get('id') === id[1]) : (pages.find((p) => p.attrs.get('name') === frag) ?? pages.find((p) => p.attrs.get('id') === frag));
   if (found) return found;
-  warn(msg(`draw.io の図に、指したページがありません: #${shown} (最初のページを描きます)`, `the draw.io diagram has no such page: #${shown} (the first page is drawn)`));
+  warn(msg(`draw.io の図に、指したページがありません: #${shown} (最初のページを描画します)`, `the draw.io diagram has no such page: #${shown} (the first page is drawn)`));
   return pages[0];
 }
 
@@ -806,12 +806,12 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
   if (!model) return undefined;
 
   // セルを集める (<root> の直下。UserObject・object は、中の mxCell を包みの id と label で読む)
-  const hugeGeo = () => warn(msg(`位置・大きさの値が大きすぎるセルを描かない (絶対値が ${LIMITS.coord} px まで)`, `cells with too large a position or size are not drawn (absolute values up to ${LIMITS.coord} px)`));
+  const hugeGeo = () => warn(msg(`位置・大きさの値が大きすぎるセルを描画しない (絶対値が ${LIMITS.coord} px まで)`, `cells with too large a position or size are not drawn (absolute values up to ${LIMITS.coord} px)`));
   const cells = new Map<string, Cell>();
   const order: Cell[] = [];
   for (const el of kids(kids(model, 'root')[0])) {
     if (order.length >= LIMITS.cells) {
-      warn(msg(`セルが多すぎる (${LIMITS.cells} 個までを描く)`, `too many cells (only the first ${LIMITS.cells} are drawn)`));
+      warn(msg(`セルが多すぎる (${LIMITS.cells} 個までを描画する)`, `too many cells (only the first ${LIMITS.cells} are drawn)`));
       break;
     }
     let mx: XEl | undefined = el;
@@ -1181,9 +1181,9 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
       missingImages.add(src);
       warn(
         isRemoteImage(src)
-          ? msg(`${what.ja} ${src.slice(0, 120)} は描けない (取れない・取るのを許していない)`, `${what.en} ${src.slice(0, 120)} cannot be drawn (it could not be fetched, or fetching is not allowed)`)
+          ? msg(`${what.ja} ${src.slice(0, 120)} は描画できない (取得できない・取得するのを許していない)`, `${what.en} ${src.slice(0, 120)} cannot be drawn (it could not be fetched, or fetching is not allowed)`)
           : msg(
-              `${what.ja} ${src.slice(0, 120)} は描けない (draw.io の配布物の画像が無い。図形ライブラリと一緒に渡すか、取るのを許す)`,
+              `${what.ja} ${src.slice(0, 120)} は描画できない (draw.io の配布物の画像が無い。図形ライブラリと一緒に渡すか、取得するのを許す)`,
               `${what.en} ${src.slice(0, 120)} cannot be drawn (the image from draw.io's distribution is missing; pass it with the shape libraries or allow fetching)`,
             ),
       );
@@ -1204,7 +1204,7 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
     if (!/^data:/i.test(src)) return externalImage(src, b, aspect, { ja: '画像', en: 'image' });
     const m = /^data:image\/(png|jpeg|jpg|svg\+xml)(;base64)?,([\s\S]*)$/i.exec(src);
     if (!m) {
-      warn(msg('画像の形式が読めない (PNG・JPEG・SVG の data: の画像だけを描く)', 'unreadable image format (only data: PNG, JPEG and SVG images are drawn)'));
+      warn(msg('画像の形式が読めない (PNG・JPEG・SVG の data: の画像だけを描画する)', 'unreadable image format (only data: PNG, JPEG and SVG images are drawn)'));
       return undefined;
     }
     const kind = m[1].toLowerCase();
@@ -1262,7 +1262,7 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
     }
     // 図の全体のラベルの字の数の上限 (LIMITS.labelTotal)。超えたら、そのラベルからあとは描かない
     if (v.length > labelLeft) {
-      if (v.trim()) warn(msg(`ラベルの字が多すぎる (1 つの図で ${LIMITS.labelTotal} 字まで。それを超えるラベルは描かない)`, `too many label characters (up to ${LIMITS.labelTotal} per diagram; labels beyond that are not drawn)`));
+      if (v.trim()) warn(msg(`ラベルの文字が多すぎる (1 つの図で ${LIMITS.labelTotal} 字まで。それを超えるラベルは描画しない)`, `too many label characters (up to ${LIMITS.labelTotal} per diagram; labels beyond that are not drawn)`));
       v = '';
     }
     labelLeft -= v.length;
@@ -1785,7 +1785,7 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
     const raw = e.style.edgeStyle ?? '';
     const es = raw === 'sideToSideEdgeStyle' || raw === 'topToBottomEdgeStyle' ? 'elbowEdgeStyle' : raw;
     const elbow = raw === 'topToBottomEdgeStyle' ? 'vertical' : raw === 'sideToSideEdgeStyle' ? 'horizontal' : e.style.elbow === 'vertical' ? 'vertical' : 'horizontal';
-    if (es && es !== 'none' && !KNOWN_EDGE_STYLES.has(es) && !OTHER_EDGE_STYLES.has(es)) warn(msg(`線の曲げ方 "${es.slice(0, 80)}" は知らない (まっすぐの線で描く)`, `unknown edge style "${es.slice(0, 80)}" (drawn as a straight line)`));
+    if (es && es !== 'none' && !KNOWN_EDGE_STYLES.has(es) && !OTHER_EDGE_STYLES.has(es)) warn(msg(`線の曲げ方 "${es.slice(0, 80)}" は知らない (まっすぐの線で描画する)`, `unknown edge style "${es.slice(0, 80)}" (drawn as a straight line)`));
     const exit = fixedPort(e, sb, 'exit');
     const entry = fixedPort(e, tb, 'entry');
     const ctr = (b: Box) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
@@ -2037,7 +2037,7 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
       out.push(`<g${shadowAttr(e)}${opAttr}>${sketchEdge(e, canvas.out.join(''), pts)}</g>`);
     }
     const layered = shape === 'wire' || shape === 'pipe' || shape === 'filledEdge';
-    if (shape !== 'connector' && !layered && !THICK_EDGES.has(shape) && !Object.hasOwn(JS_EDGES, shape)) warn(msg(`線の形 "${shape}" は描けない (ふつうの線で描く)`, `edge shape "${shape}" cannot be drawn (drawn as a plain line)`));
+    if (shape !== 'connector' && !layered && !THICK_EDGES.has(shape) && !Object.hasOwn(JS_EDGES, shape)) warn(msg(`線の形 "${shape}" は描画できない (ふつうの線で描画する)`, `edge shape "${shape}" cannot be drawn (drawn as a plain line)`));
     const line = [...pts];
     // 線の端の形 (drawioEdges.ts の edgeMarker。mxConnector.createMarker: 始まりの端を先に決め、端の点を縮めた端に置き換える)。
     // 塗りは線の色 (startFillColor・endFillColor で変えられる)、破線にしない
@@ -2058,7 +2058,7 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
       const pe = { ...tip };
       const fn = edgeMarker(markerCanvas, type, pe, (tip.x - from.x) / len, (tip.y - from.y) / len, size, end === 'start', sw, s[`${end}Fill`] !== '0', stroke, color(e, 'fillColor', '#ffffff'));
       if (!fn) {
-        warn(msg(`線の端の形 "${type}" は描けない`, `edge end "${type}" cannot be drawn`));
+        warn(msg(`線の端の形 "${type}" は描画できない`, `edge end "${type}" cannot be drawn`));
         continue;
       }
       const fillCol = color(e, `${end}FillColor`, '#ffffff') ?? stroke;
@@ -2100,7 +2100,7 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
         const jump = s.jumpStyle && !flag(s, 'curved') ? lineJumps(pts, drawnLines, jumpBudget) : undefined;
         if (jumpBudget.limited) {
           jumpBudget.limited = false;
-          warn(msg(`線の跳び越し (jumpStyle) の交わりが多すぎる線は、跳ばずに描く (1 本で ${MAX_LINE_JUMPS} 個まで、1 つの図で調べる線分の組 ${LIMITS.jumpPairs} まで)`, `lines with too many line-jump crossings (jumpStyle) are drawn without jumps (up to ${MAX_LINE_JUMPS} per line, and ${LIMITS.jumpPairs} segment pairs checked per diagram)`));
+          warn(msg(`線の跳び越し (jumpStyle) の交わりが多すぎる線は、跳ばずに描画する (1 本で ${MAX_LINE_JUMPS} 個まで、1 つの図で調べる線分の組 ${LIMITS.jumpPairs} まで)`, `lines with too many line-jump crossings (jumpStyle) are drawn without jumps (up to ${MAX_LINE_JUMPS} per line, and ${LIMITS.jumpPairs} segment pairs checked per diagram)`));
         }
         if (jump) {
           const jc = makeCanvas(e, shape);
@@ -2159,15 +2159,15 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
   const stencilShape = (c: Cell, shape: string, b: Box): string | undefined => {
     const st = stencilCtx.lookup(shape);
     if (!st) {
-      if (shape.startsWith('stencil(')) warn(msg('埋め込んだ形 (stencil) が読めない (文字だけ描く)', 'embedded shape (stencil) cannot be read (only its text is drawn)'));
+      if (shape.startsWith('stencil(')) warn(msg('埋め込んだ形 (stencil) が読めない (文字だけ描画する)', 'embedded shape (stencil) cannot be read (only its text is drawn)'));
       else {
         const lib = libraryOf(shape) ?? shape;
         if (isNewerShape(shape))
-          warn(msg(`形 "${shape.slice(0, 120)}" は描かない (draw.io の v24.7.5 より後に足された形。Kumiori は v24.7.5 の形を描く。文字だけ描く)`, `shape "${shape.slice(0, 120)}" is not drawn (it was added to draw.io after v24.7.5, and Kumiori draws the shapes of v24.7.5; only its text is drawn)`));
-        else if (opts.stencils?.hasLibrary(lib)) warn(msg(`形 "${shape.slice(0, 120)}" は図形ライブラリ ${lib} に無い (JavaScript で書かれた形など。文字だけ描く)`, `shape "${shape.slice(0, 120)}" is not in the shape library ${lib} (such as a shape written in JavaScript; only its text is drawn)`));
+          warn(msg(`形 "${shape.slice(0, 120)}" は描画しない (draw.io の v24.7.5 より後に追加された形。Kumiori は v24.7.5 の形を描画する。文字だけ描画する)`, `shape "${shape.slice(0, 120)}" is not drawn (it was added to draw.io after v24.7.5, and Kumiori draws the shapes of v24.7.5; only its text is drawn)`));
+        else if (opts.stencils?.hasLibrary(lib)) warn(msg(`形 "${shape.slice(0, 120)}" は図形ライブラリ ${lib} に無い (JavaScript で書かれた形など。文字だけ描画する)`, `shape "${shape.slice(0, 120)}" is not in the shape library ${lib} (such as a shape written in JavaScript; only its text is drawn)`));
         else {
           missing.add(lib);
-          warn(msg(`形 "${shape.slice(0, 120)}" は描けない (図形ライブラリ ${lib} が無い。文字だけ描く)`, `shape "${shape.slice(0, 120)}" cannot be drawn (the shape library ${lib} is missing; only its text is drawn)`));
+          warn(msg(`形 "${shape.slice(0, 120)}" は描画できない (図形ライブラリ ${lib} が無い。文字だけ描画する)`, `shape "${shape.slice(0, 120)}" cannot be drawn (the shape library ${lib} is missing; only its text is drawn)`));
         }
       }
       return undefined;
@@ -2216,8 +2216,8 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
             const lib = libraryOf(name);
             if (lib && !opts.stencils?.hasLibrary(lib)) {
               missing.add(lib);
-              warn(msg(`形 "${shape}" の中の "${name.slice(0, 120)}" は描けない (図形ライブラリ ${lib} が無い)`, `"${name.slice(0, 120)}" in shape "${shape}" cannot be drawn (the shape library ${lib} is missing)`));
-            } else warn(msg(`形 "${shape}" の中の "${name.slice(0, 120)}" は描けない (図形ライブラリに無い形)`, `"${name.slice(0, 120)}" in shape "${shape}" cannot be drawn (not in the shape libraries)`));
+              warn(msg(`形 "${shape}" の中の "${name.slice(0, 120)}" は描画できない (図形ライブラリ ${lib} が無い)`, `"${name.slice(0, 120)}" in shape "${shape}" cannot be drawn (the shape library ${lib} is missing)`));
+            } else warn(msg(`形 "${shape}" の中の "${name.slice(0, 120)}" は描画できない (図形ライブラリに無い形)`, `"${name.slice(0, 120)}" in shape "${shape}" cannot be drawn (not in the shape libraries)`));
           }
           return st;
         },
@@ -2278,7 +2278,7 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
     // 手書き風 (sketch・comic): 形の線と塗りを rough.js の線と塗りにする (drawioSketch.ts。文字・画像は変えない)
     const sketch = sketchKind(s);
     const svg = drawn && sketch ? sketchSvg(drawn, { id: c.id, style: s, size: sb.w + sb.h, budget: stencilCtx.budget }) : drawn;
-    if (svg === undefined && !library) warn(msg(`形 "${shape}" は描けない (文字だけ描く)`, `shape "${shape}" cannot be drawn (only its text is drawn)`));
+    if (svg === undefined && !library) warn(msg(`形 "${shape}" は描画できない (文字だけ描画する)`, `shape "${shape}" cannot be drawn (only its text is drawn)`));
     else if (svg) {
       const tr: string[] = [];
       if (turn) tr.push(`rotate(${turn} ${f(cx)} ${f(cy)})`);
@@ -2363,14 +2363,14 @@ function render(bytes: Uint8Array, opts: DrawioOptions): DrawioResult | undefine
         undo(!tooLarge());
         if (workLeft <= 0) {
           svgFull = true;
-          warn(msg(`図が大きすぎるので、途中までを描く (SVG にして ${LIMITS.svgChars} 字まで)`, `the diagram is too large; only part of it is drawn (up to ${LIMITS.svgChars} characters of SVG)`));
+          warn(msg(`図が大きすぎるので、途中までを描画する (SVG にして ${LIMITS.svgChars} 字まで)`, `the diagram is too large; only part of it is drawn (up to ${LIMITS.svgChars} characters of SVG)`));
           return;
         }
-        warn(msg(`SVG が大きすぎるセルを描かない (図を SVG にして ${LIMITS.svgChars} 字まで)`, `cells whose SVG is too large are not drawn (up to ${LIMITS.svgChars} characters of SVG per diagram)`));
+        warn(msg(`SVG が大きすぎるセルを描画しない (図を SVG にして ${LIMITS.svgChars} 字まで)`, `cells whose SVG is too large are not drawn (up to ${LIMITS.svgChars} characters of SVG per diagram)`));
       } else if (tooLarge()) {
         // 描いたら図が大きさの上限を超えるセル (線の太さ・字の大きさなどの値が大きすぎるか、ほかのセルから遠く離れたセル) は描かない
         undo(false);
-        warn(msg(`図を大きさの上限より大きくするセルを描かない (図の幅・高さは ${LIMITS.size} px まで)`, `cells that would make the diagram larger than the size limit are not drawn (width and height up to ${LIMITS.size} px)`));
+        warn(msg(`図を大きさの上限より大きくするセルを描画しない (図の幅・高さは ${LIMITS.size} px まで)`, `cells that would make the diagram larger than the size limit are not drawn (width and height up to ${LIMITS.size} px)`));
       } else svgLeft -= n;
     }
     if (c.collapsed && c.vertex) return;

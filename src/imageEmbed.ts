@@ -90,7 +90,7 @@ function jpegHeader(b: Uint8Array): JpegHeader | undefined {
  */
 export function embedJpeg(pdf: PDFDocument, jpg: Uint8Array): PdfImage {
   const h = jpegHeader(jpg);
-  if (!h) throw new Error(msg('JPEG: 画像の頭 (SOF) が読めません', 'JPEG: cannot read the frame header (SOF)'));
+  if (!h) throw new Error(msg('JPEG: 画像のヘッダー (SOF) が読めません', 'JPEG: cannot read the frame header (SOF)'));
   const colorSpace = ({ 1: 'DeviceGray', 3: 'DeviceRGB', 4: 'DeviceCMYK' } as Record<number, string>)[h.components];
   if (!colorSpace) throw new Error(msg(`JPEG: 成分の数 ${h.components} の画像は入れられません`, `JPEG: images with ${h.components} components are not supported`));
   return embedStream(pdf.context, h.width, h.height, (context) =>
@@ -216,7 +216,7 @@ export async function embedPngAsIs(pdf: PDFDocument, png: Uint8Array, o: Pick<Pn
 }
 
 /** 画素のデータが終わりまで展開できない PNG の誤り */
-const brokenPng = () => new Error(msg('PNG: 画素のデータが壊れています', 'PNG: the pixel data is broken'));
+const brokenPng = () => new Error(msg('PNG: ピクセルのデータが壊れています', 'PNG: the pixel data is broken'));
 
 /**
  * PNG を、8 ビットの RGB と α に展開する (pixels.ts の decodePngForPdf。どの形の PNG も)。
@@ -252,7 +252,7 @@ async function embedRgbAlpha(pdf: PDFDocument, px: PngPixelsForPdf, deflate: Ima
  * (展開せずに入れても、PDF を見る側が同じだけ展開する)
  */
 export async function embedPngChecked(pdf: PDFDocument, png: Uint8Array, o: PngEmbedOptions = {}): Promise<PdfImage> {
-  if (!pngWithinLimits(png)) throw new Error(msg('PNG: 画素の数か展開の大きさが上限を超えます', 'PNG: the number of pixels or the decompressed size exceeds the limit'));
+  if (!pngWithinLimits(png)) throw new Error(msg('PNG: ピクセルの数か展開の大きさが上限を超えます', 'PNG: the number of pixels or the decompressed size exceeds the limit'));
   const asIs = rejoin(thisCall(), await embedPngAsIs(pdf, png, o));
   if (asIs) return asIs;
   const px = rejoin(thisCall(), await decodePngPixels(png));

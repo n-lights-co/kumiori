@@ -911,7 +911,7 @@ class RasterPainter implements Painter {
         diag(
           'png/raster-budget',
           msg(
-            `ページを画素にする手間が上限 (${w.limit.toLocaleString('en')} 単位) を超えたので、残りの図形・字・画像を PNG に描きません (描き切れない SVG の画像は仮の枠)`,
+            `ページをラスタライズする計算量が上限 (${w.limit.toLocaleString('en')} 単位) を超えたので、残りの図形・文字・画像を PNG に描画しません (描画しきれない SVG の画像はプレースホルダー)`,
             `rasterizing the page took more than the limit (${w.limit.toLocaleString('en')} units), so the remaining shapes, glyphs and images are not drawn in the PNG (SVG images that could not be finished are drawn as placeholder boxes)`,
           ),
         ),
@@ -977,7 +977,7 @@ class RasterPainter implements Painter {
       diag(
         'png/layer-limit',
         msg(
-          `同時に持つ板の画素の数 (切り抜きを含めて) が上限 (${sh.layerLimit.toLocaleString('en')} 画素) を超えるので、不透明度のグループは、板に描いた所までを重ねてから続きを描くか、板を作らずに中の図形ごとに不透明度を掛けて描き (どちらも中の重なりは濃くなる)、広げられないマスク・合成の板の図形は描きません`,
+          `同時に持つオフスクリーンのバッファーが、クリッピングを含めて上限 (${sh.layerLimit.toLocaleString('en')} ピクセル) を超えるので、不透明度のグループは、バッファーに描画した所までを重ねてから続きを描画するか、バッファーを作らずに中の図形ごとに不透明度を掛けて描画し (どちらも中の重なりは濃くなる)、広げられないマスク・合成のバッファーの図形は描画しません`,
           `the layers held at once (clips included) would exceed the limit (${sh.layerLimit.toLocaleString('en')} pixels), so opacity groups are composited as far as drawn and then continued, or drawn with the opacity applied to each shape inside (overlaps inside get darker either way), and shapes that would need a larger mask or compositing layer are not drawn`,
         ),
       ),
@@ -1203,7 +1203,7 @@ class RasterPainter implements Painter {
         diag(
           'png/clip-limit',
           msg(
-            `入れ子の切り抜きが多く、同時に持つ切り抜きと板の大きさが上限 (板の ${sh.layerLimit.toLocaleString('en')} 画素分) を超えるので、深い所の切り抜きは、外側の切り抜きを囲むなら外側の切り抜きのまま描き (縁を描き分けない)、囲まないなら中を描きません`,
+            `入れ子のクリッピングが多く、同時に持つクリッピングとオフスクリーンのバッファーの大きさが上限 (バッファーの ${sh.layerLimit.toLocaleString('en')} ピクセル分) を超えるので、深い所のクリッピングは、外側のクリッピングを囲むなら外側のクリッピングのまま描画し (縁を分けて描画しない)、囲まないなら中を描画しません`,
             `nested clips would hold more clip and layer memory at once than the limit (${sh.layerLimit.toLocaleString('en')} layer pixels), so a deeper clip that encloses the outer clip is drawn with the outer clip only (its own edge is not applied), and the contents of other deeper clips are not drawn`,
           ),
         ),
@@ -1558,7 +1558,7 @@ class RasterPainter implements Painter {
           diag(
             'png/image-limit',
             msg(
-              `1 ページで画素に戻す画像が多すぎるので (合わせて ${limits().pngPageImagePixels.toLocaleString('en')} 画素まで)、画像${name ? ` ${name}` : ''}を PNG に描きません`,
+              `1 ページでラスタライズする画像が多すぎるので (合わせて ${limits().pngPageImagePixels.toLocaleString('en')} ピクセルまで)、画像${name ? ` ${name}` : ''}を PNG に描画しません`,
               `too many image pixels to decode on one page (up to ${limits().pngPageImagePixels.toLocaleString('en')} pixels in total), so image${name ? ` ${name}` : ''} is not drawn in the PNG`,
             ),
             // SVG の中の画像は、その画像を含む SVG の画像の src (shapeSampler)
@@ -1582,7 +1582,7 @@ class RasterPainter implements Painter {
         if (this.warned.has(p.src)) return;
         this.warned.add(p.src);
         const name = p.src.startsWith('data:') ? p.src.slice(0, 40) + '…' : p.src;
-        this.warn(diag('png/image-not-drawn', msg(`画像 ${name} を画素に戻せないので、PNG に描きません (CMYK の JPEG・インターレースの PNG など)`, `image ${name} cannot be decoded to pixels and is not drawn in the PNG (CMYK JPEG, interlaced PNG, etc.)`), { src: name }));
+        this.warn(diag('png/image-not-drawn', msg(`画像 ${name} をラスタライズできないので、PNG に描画しません (CMYK の JPEG・インターレースの PNG など)`, `image ${name} cannot be decoded to pixels and is not drawn in the PNG (CMYK JPEG, interlaced PNG, etc.)`), { src: name }));
       },
       p.src,
     );
@@ -1790,7 +1790,7 @@ class RasterPainter implements Painter {
         const src = (this.svgSrc ?? '').slice(0, 200);
         if (this.warned.has(`\u0000svg\u0000${src}`)) return;
         this.warned.add(`\u0000svg\u0000${src}`);
-        this.warn(diag('png/image-not-drawn', msg(`SVG の画像 ${src} の中の画像のうち、画素に戻せないもの (CMYK の JPEG・インターレースの PNG など) は描きません`, `images inside the SVG image ${src} that cannot be decoded to pixels (CMYK JPEG, interlaced PNG, etc.) are not drawn`), { src }));
+        this.warn(diag('png/image-not-drawn', msg(`SVG の画像 ${src} の中の画像のうち、ラスタライズできないもの (CMYK の JPEG・インターレースの PNG など) は描画しません`, `images inside the SVG image ${src} that cannot be decoded to pixels (CMYK JPEG, interlaced PNG, etc.) are not drawn`), { src }));
       },
       this.svgSrc,
     );
@@ -1931,7 +1931,7 @@ export async function renderSheetToPixels(sheet: SheetArea, fonts: FontManager, 
   const { width, height } = pngSize(sheet, dpi);
   const lim = limits();
   if (width * height > lim.pngPixels)
-    throw new RangeError(msg(`画像が大きすぎます (${width} × ${height} 画素。${lim.pngPixels.toLocaleString('en')} 画素まで)。dpi を下げてください`, `the image is too large (${width} × ${height} pixels; up to ${lim.pngPixels.toLocaleString('en')} pixels). Lower the dpi`));
+    throw new RangeError(msg(`画像が大きすぎます (${width} × ${height} ピクセル。${lim.pngPixels.toLocaleString('en')} ピクセルまで)。dpi を下げてください`, `the image is too large (${width} × ${height} pixels; up to ${lim.pngPixels.toLocaleString('en')} pixels). Lower the dpi`));
   const warn = opts.warn ?? (() => {});
   const images = rejoin(thisCall(), await prepareImages(sheet, fonts, opts));
   const page = new Layer(0, 0, width, height);

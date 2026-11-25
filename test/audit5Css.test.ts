@@ -39,7 +39,7 @@ describe('結合子の種類の混ざったセレクタの照合の覚えの予�
   it('組版の警告 (未対応の CSS) に出す', async () => {
     const css = Array.from({ length: 100 }, (_, i) => heavyRule(i)).join('\n');
     const r = await typeset(`<style>${css}</style>${nested(100, 50)}`, { loadFont: loadCachedFont });
-    expect(r.warnings.some((w) => w.includes('照合の手間の合計が大きすぎる'))).toBe(true);
+    expect(r.warnings.some((w) => w.includes('照合の計算量の合計が大きすぎる'))).toBe(true);
   }, 60000);
 
   it('予算の届かない文書では、知らせず、結果も予算の無い照合と同じ', () => {

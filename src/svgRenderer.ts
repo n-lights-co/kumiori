@@ -932,7 +932,7 @@ export async function renderSheetToSvg(sheet: SheetArea, fonts: FontManager, opt
   if (!ID_PREFIX.test(prefix))
     throw new RangeError(
       msg(
-        `idPrefix は、XML の名前 (英字・_・ほかの言語の字などで始め、数字・-・. なども続けられる。: は使えない) にしてください: ${JSON.stringify(prefix.slice(0, 40))}`,
+        `idPrefix は、XML の名前 (英字・_・ほかの言語の文字などで始め、数字・-・. なども続けられる。: は使えない) にしてください: ${JSON.stringify(prefix.slice(0, 40))}`,
         `idPrefix must be an XML name without colons (starting with a letter, _ or another name-start character, followed by name characters such as digits, - and .): ${JSON.stringify(prefix.slice(0, 40))}`,
       ),
     );

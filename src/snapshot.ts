@@ -73,16 +73,16 @@ const HTML_NS = 'http://www.w3.org/1999/xhtml';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const XLINK_NS = 'http://www.w3.org/1999/xlink';
 
-const optionError = (m: string, option?: string) => new KumioriOptionError(msg(`選択肢の誤り: ${m}`, `invalid option: ${m}`), option);
+const optionError = (m: string, option?: string) => new KumioriOptionError(msg(`オプションのエラー: ${m}`, `invalid option: ${m}`), option);
 
 const OPTION_NAMES = ['waitFor', 'timeoutMs', 'signal', 'shadowRoots', 'fontSources', 'canvas', 'limits', 'lang'] as const;
 
 /** 選択肢を確かめて、上限を埋めたものを返す */
 function checkOptions(o: unknown): { o: SnapshotOptions; limits: { imagePixels: number; fileBytes: number; snapshotBytes: number } } {
   if (o === undefined) o = {};
-  if (typeof o !== 'object' || o === null || Array.isArray(o)) throw optionError(msg('snapshotDocument の選択肢はオブジェクトにしてください', 'snapshotDocument options must be an object'));
+  if (typeof o !== 'object' || o === null || Array.isArray(o)) throw optionError(msg('snapshotDocument のオプションはオブジェクトにしてください', 'snapshotDocument options must be an object'));
   const so = o as SnapshotOptions & Record<string, unknown>;
-  for (const k of Object.keys(so)) if (so[k] !== undefined && !(OPTION_NAMES as readonly string[]).includes(k)) throw optionError(msg(`${k} は snapshotDocument の選択肢にありません`, `${k} is not a snapshotDocument option`), k);
+  for (const k of Object.keys(so)) if (so[k] !== undefined && !(OPTION_NAMES as readonly string[]).includes(k)) throw optionError(msg(`${k} は snapshotDocument のオプションにありません`, `${k} is not a snapshotDocument option`), k);
   const wf = so.waitFor as unknown;
   if (wf !== undefined && typeof wf !== 'function' && !isThenable(wf)) throw optionError(msg('waitFor は Promise か関数にしてください', 'waitFor must be a Promise or a function'), 'waitFor');
   const t = so.timeoutMs;
@@ -128,7 +128,7 @@ export async function snapshotDocument(doc?: Document, options?: SnapshotOptions
   if (!d || typeof d !== 'object' || !d.documentElement || !d.defaultView)
     throw optionError(
       msg(
-        'snapshotDocument は、DOM と画面のある所 (ブラウザの画面) で呼んでください。Web Worker では、画面で snapshotDocument を呼び、結果を postMessage で送ってください',
+        'snapshotDocument は、DOM と画面のある所 (ブラウザーの画面) で呼んでください。Web Worker では、画面で snapshotDocument を呼び、結果を postMessage で送ってください',
         'call snapshotDocument where there is a DOM and a rendered page (a browser window). For a Web Worker, call snapshotDocument in the window and send the result with postMessage',
       ),
       'doc',
@@ -190,7 +190,7 @@ async function waitReady(doc: Document, o: SnapshotOptions, snap: Snapshot): Pro
       // waitFor の段が、待ち終えた・時間が過ぎた・止めた (untilAbort が失敗した) のどれでも、waitFor の関数を呼ぶのをやめる
       if (waiting === 'waitFor') stopPolling = true;
     }
-    snap.warn(diag('snapshot/wait-timeout', msg(`待つ時間 (${limitMs}ms) が過ぎたので、その時の文書で文字にしました (待っていたもの: ${waiting})`, `the wait (${limitMs}ms) ran out, so the document was taken as it was (waiting for: ${waiting})`), { waiting, ms: limitMs }));
+    snap.warn(diag('snapshot/wait-timeout', msg(`待つ時間 (${limitMs}ms) が過ぎたので、その時の文書をシリアライズしました (待っていたもの: ${waiting})`, `the wait (${limitMs}ms) ran out, so the document was taken as it was (waiting for: ${waiting})`), { waiting, ms: limitMs }));
     return false;
   };
   if (doc.readyState !== 'complete' && !rejoin(thisCall(), await step('load', () => new Promise((ok) => win.addEventListener('load', ok, { once: true }))))) return;
@@ -422,7 +422,7 @@ class Snapshot {
       c.removeAttribute('srcdoc');
       c.replaceChildren();
       const src = c.getAttribute('src') ?? '';
-      this.warn(diag('snapshot/iframe-skipped', msg(`<iframe> の中の文書は写していません: ${src || '(srcdoc)'}`, `the document inside an <iframe> was not copied: ${src || '(srcdoc)'}`), { src }));
+      this.warn(diag('snapshot/iframe-skipped', msg(`<iframe> の中の文書はスナップショットに入れていません: ${src || '(srcdoc)'}`, `the document inside an <iframe> was not copied: ${src || '(srcdoc)'}`), { src }));
     }
     if (html && name === 'img') this.fixImage(o as HTMLImageElement, c);
     if (html && name === 'canvas' && this.canvasMode === 'png') {
@@ -518,7 +518,7 @@ class Snapshot {
     const r = o.getBoundingClientRect();
     if (!r.width && !r.height) return;
     const element = describeElement(o);
-    this.warn(diag('snapshot/shadow-root-closed', msg(`${element} には、閉じた影の根 (Shadow DOM) がありそうです (中身は写していません。shadowRoots の選択肢で根を渡せば写します)`, `${element} seems to have a closed shadow root (its content was not copied; pass the root in the shadowRoots option to copy it)`), { element }));
+    this.warn(diag('snapshot/shadow-root-closed', msg(`${element} には、閉じたシャドウルート (Shadow DOM) がありそうです (中身はスナップショットに入れていません。shadowRoots のオプションでルートを渡せば入れます)`, `${element} seems to have a closed shadow root (its content was not copied; pass the root in the shadowRoots option to copy it)`), { element }));
   }
 
   /**
@@ -615,15 +615,15 @@ class Snapshot {
   private noteShadowLimit(name: 'shadowImports' | 'shadowImportDepth' | 'shadowImportChars', limit: number): void {
     if (this.limitsNoted.has(name)) return;
     this.limitsNoted.add(name);
-    const what = { shadowImports: msg(`1 つの影の木で ${limit} 個`, `${limit} per shadow tree`), shadowImportDepth: msg(`${limit} 段`, `${limit} levels`), shadowImportChars: msg(`写しの全体で ${limit} 字`, `${limit} characters per snapshot`) }[name];
-    this.warn(diag('snapshot/limit', msg(`影の木 (Shadow DOM) のスタイルシートの @import が上限 (${name}: ${what}) を超えたので、超えた @import の規則を写しませんでした`, `@import rules in stylesheets of shadow trees (Shadow DOM) exceeded the limit (${name}: ${what}), so the rules of the @import rules beyond it were not copied`), { limit, name }));
+    const what = { shadowImports: msg(`1 つのシャドウツリーで ${limit} 個`, `${limit} per shadow tree`), shadowImportDepth: msg(`${limit} 段`, `${limit} levels`), shadowImportChars: msg(`スナップショットの全体で ${limit} 字`, `${limit} characters per snapshot`) }[name];
+    this.warn(diag('snapshot/limit', msg(`シャドウツリー (Shadow DOM) のスタイルシートの @import が上限 (${name}: ${what}) を超えたので、超えた @import の規則をスナップショットに入れませんでした`, `@import rules in stylesheets of shadow trees (Shadow DOM) exceeded the limit (${name}: ${what}), so the rules of the @import rules beyond it were not copied`), { limit, name }));
   }
 
   /** 影の木の中の、規則を読めないスタイルシート (別の origin の link・@import) を、写さずに知らせる */
   private warnShadowSheet(element: string, href: string): void {
     const url = href.slice(0, 200);
     this.warn(
-      diag('snapshot/shadow-stylesheet-unreadable', msg(`${element} の影の木 (Shadow DOM) の中のスタイルシートの規則を読めないので、写していません (別の origin で CORS の無いものなど): ${url || '(不明)'}`, `the rules of a stylesheet in the shadow tree (Shadow DOM) of ${element} cannot be read, so it was not copied (another origin without CORS, etc.): ${url || '(unknown)'}`), {
+      diag('snapshot/shadow-stylesheet-unreadable', msg(`${element} のシャドウツリー (Shadow DOM) の中のスタイルシートの規則を読めないので、スナップショットに入れていません (別の origin で CORS の無いものなど): ${url || '(不明)'}`, `the rules of a stylesheet in the shadow tree (Shadow DOM) of ${element} cannot be read, so it was not copied (another origin without CORS, etc.): ${url || '(unknown)'}`), {
         element,
         url,
       }),
@@ -687,11 +687,11 @@ class Snapshot {
         if (sources) got = rejoin(thisCall(), await untilAbort(Promise.resolve(sources(face))));
         let src: string | undefined;
         const tooLarge = (size: number) => () =>
-          this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で足した書体 ${family} の中身 (${size} バイト) が上限 (fileBytes: ${this.limits.fileBytes}) を超えるので、取り込みませんでした`, `the content of the font ${family} added by JavaScript (${size} bytes) is larger than the limit (fileBytes: ${this.limits.fileBytes}), so it was not taken in`), { family }));
+          this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で追加したフォント ${family} の中身 (${size} バイト) が上限 (fileBytes: ${this.limits.fileBytes}) を超えるので、取り込みませんでした`, `the content of the font ${family} added by JavaScript (${size} bytes) is larger than the limit (fileBytes: ${this.limits.fileBytes}), so it was not taken in`), { family }));
         if (typeof got === 'string') {
           src = this.resolveUrl(got) ?? undefined;
           // javascript: の URL は使わない (黙って落とさずに知らせる)
-          if (!src) this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で足した書体 ${family} の、fontSources が返した URL を使えません (javascript: など)`, `the URL that fontSources returned for the font ${family} added by JavaScript cannot be used (javascript:, etc.)`), { family }));
+          if (!src) this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で追加したフォント ${family} の、fontSources が返した URL を使えません (javascript: など)`, `the URL that fontSources returned for the font ${family} added by JavaScript cannot be used (javascript:, etc.)`), { family }));
           // data: の URL も、ファイル 1 つの上限と合計の上限に数える (中身は写しの文字に入る)
           else if (/^data:/i.test(src) && !this.count(dataUrlBytes(src), tooLarge(dataUrlBytes(src)))) src = undefined;
         } else if (got) {
@@ -709,7 +709,7 @@ class Snapshot {
             }
           }
         } else if (!this.unreadableSheets)
-          this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で足した書体 ${family} の中身を取れませんでした (fontSources の選択肢で渡してください。組むと、別の書体になります)`, `could not get the content of the font ${family} added by JavaScript (pass it with the fontSources option; it will be typeset with another font)`), { family }));
+          this.warn(diag('snapshot/font-face-source-unknown', msg(`JS で追加したフォント ${family} の中身を取得できませんでした (fontSources のオプションで渡してください。組むと、別のフォントになります)`, `could not get the content of the font ${family} added by JavaScript (pass it with the fontSources option; it will be typeset with another font)`), { family }));
         if (!src) return;
         // 中身も記述子も同じ書体 (同じ FontFace を 2 度作って足したもの) は、規則を 1 つにする
         const rule = fontFaceRule(face, family, src);
@@ -733,7 +733,7 @@ class Snapshot {
     const base = parsedRuleTexts(this.doc, text);
     if (!live || !base) return { added: [] };
     const { added, removed } = ruleDiff(base, live);
-    if (removed) this.warn(diag('snapshot/stylesheet-rule-removed', msg(`<style> の元の字にあって、CSSOM から消された規則が ${removed} 個あります (元の字から消せないので、残しました)`, `${removed} rule(s) in the source text of a <style> were removed through the CSSOM (they were kept, as they cannot be removed from the text)`), { count: removed }));
+    if (removed) this.warn(diag('snapshot/stylesheet-rule-removed', msg(`<style> の元の文字にあって、CSSOM から消された規則が ${removed} 個あります (元の文字から消せないので、残しました)`, `${removed} rule(s) in the source text of a <style> were removed through the CSSOM (they were kept, as they cannot be removed from the text)`), { count: removed }));
     return { added };
   }
 
@@ -787,7 +787,7 @@ class Snapshot {
     if (!w || !h) return undefined;
     const element = describeElement(o);
     if (w * h > this.limits.imagePixels) {
-      this.warn(diag('snapshot/canvas-too-large', msg(`${element} の画素の数 (${w * h}) が上限 (imagePixels: ${this.limits.imagePixels}) を超えるので、画像にしませんでした`, `${element} has more pixels (${w * h}) than the limit (imagePixels: ${this.limits.imagePixels}), so it was not turned into an image`), { element, size: w * h, limit: this.limits.imagePixels }));
+      this.warn(diag('snapshot/canvas-too-large', msg(`${element} のピクセルの数 (${w * h}) が上限 (imagePixels: ${this.limits.imagePixels}) を超えるので、画像にしませんでした`, `${element} has more pixels (${w * h}) than the limit (imagePixels: ${this.limits.imagePixels}), so it was not turned into an image`), { element, size: w * h, limit: this.limits.imagePixels }));
       return undefined;
     }
     const img = this.inert.createElement('img');
@@ -803,8 +803,8 @@ class Snapshot {
       try {
         data = rejoin(thisCall(), await canvasPng(o));
       } catch (e) {
-        if ((e as { name?: string })?.name === 'SecurityError') this.warn(diag('snapshot/canvas-tainted', msg(`${element} は別の origin の画像で汚れているので、画像にできませんでした (canvas のまま残しました)`, `${element} is tainted by a cross-origin image, so it could not be turned into an image (it was left as a canvas)`), { element }));
-        else this.warn(diag('snapshot/canvas-too-large', msg(`${element} を画像にできませんでした (ブラウザが PNG を作れなかった)`, `${element} could not be turned into an image (the browser could not make a PNG)`), { element, size: w * h, limit: this.limits.imagePixels }));
+        if ((e as { name?: string })?.name === 'SecurityError') this.warn(diag('snapshot/canvas-tainted', msg(`${element} は別の origin の画像で汚染されているので、画像にできませんでした (canvas のまま残しました)`, `${element} is tainted by a cross-origin image, so it could not be turned into an image (it was left as a canvas)`), { element }));
+        else this.warn(diag('snapshot/canvas-too-large', msg(`${element} を画像にできませんでした (ブラウザーが PNG を作れなかった)`, `${element} could not be turned into an image (the browser could not make a PNG)`), { element, size: w * h, limit: this.limits.imagePixels }));
       }
       const tooLarge = () =>
         this.warn(diag('snapshot/canvas-too-large', msg(`${element} の画像 (${data!.length} バイト) が上限 (fileBytes: ${this.limits.fileBytes}) を超えるので、取り込みませんでした`, `the image of ${element} (${data!.length} bytes) is larger than the limit (fileBytes: ${this.limits.fileBytes}), so it was not taken in`), { element, size: data!.length, limit: this.limits.fileBytes }));
@@ -836,7 +836,7 @@ class Snapshot {
       return false;
     }
     if (this.full || this.total + size > this.limits.snapshotBytes) {
-      if (!this.full) this.warn(diag('snapshot/limit', msg(`取り込んだものの合計が上限 (snapshotBytes: ${this.limits.snapshotBytes}) に届いたので、その後の canvas・blob: の中身・書体を取り込みませんでした`, `the total taken in reached the limit (snapshotBytes: ${this.limits.snapshotBytes}), so later canvases, blob: contents and fonts were not taken in`), { limit: this.limits.snapshotBytes, name: 'snapshotBytes' }));
+      if (!this.full) this.warn(diag('snapshot/limit', msg(`取り込んだものの合計が上限 (snapshotBytes: ${this.limits.snapshotBytes}) に届いたので、その後の canvas・blob: の中身・フォントを取り込みませんでした`, `the total taken in reached the limit (snapshotBytes: ${this.limits.snapshotBytes}), so later canvases, blob: contents and fonts were not taken in`), { limit: this.limits.snapshotBytes, name: 'snapshotBytes' }));
       this.full = true;
       return false;
     }

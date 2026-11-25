@@ -72,7 +72,7 @@ interface Written {
 }
 
 /** pdf-lib の中の欄が見つからないときの誤り */
-const internalsChanged = (what: string) => new KumioriError('internal/patch-mismatch', msg(`pdf-lib の ${what} が見つかりません (pdf-lib の版が変わり、pdfWriter.ts の書き手が合いません)`, `pdf-lib ${what} not found (the pdf-lib version has changed and the writer in pdfWriter.ts no longer fits)`));
+const internalsChanged = (what: string) => new KumioriError('internal/patch-mismatch', msg(`pdf-lib の ${what} が見つかりません (pdf-lib のバージョンが変わり、pdfWriter.ts のライターが合いません)`, `pdf-lib ${what} not found (the pdf-lib version has changed and the writer in pdfWriter.ts no longer fits)`));
 
 /** pdf-lib の書き手の、間をあける数 (save の objectsPerTick の既定) と、1 つのオブジェクトの流れにまとめる数 (PDFStreamWriter の objectsPerStream の既定) */
 const OBJECTS_PER_TICK = 50;

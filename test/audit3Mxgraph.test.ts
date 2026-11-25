@@ -225,7 +225,7 @@ describe('本体のプラグインの受け口 (assets.ts)', () => {
     const big = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50">${'<rect width="1" height="1"/>'.repeat(1_300_000)}</svg>`;
     const a = await store(async () => ({ svg: big, width: 100, height: 50, warnings: [] }), []).addBlob('x.fake', new Blob([enc('F')]));
     expect(a).toMatchObject({ width: 100, height: 50, drawable: false });
-    expect(a!.notes![0]).toMatch(/^形式 fake の SVG が長すぎるので描きません/);
+    expect(a!.notes![0]).toMatch(/^形式 fake の SVG が長すぎるので描画しません/);
     const b = await store(async () => ({ svg, width: 100, height: 50 }) as unknown as ImageFormatResult, []).addBlob('x.fake', new Blob([enc('F')]));
     expect(b).toMatchObject({ mime: 'image/svg+xml', width: 100 });
     expect(b!.notes).toBeUndefined();

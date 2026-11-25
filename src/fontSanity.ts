@@ -62,7 +62,7 @@ const MAX_COMPONENT_DEPTH = 64;
 const COMPOSITE_POINTS_PER_BYTE = 64;
 const COMPOSITE_POINTS_BASE = 4_000_000;
 
-const bad = (ja: string, en: string) => new FontFileError(msg(`読めない書体です (${ja})`, `the font cannot be read (${en})`));
+const bad = (ja: string, en: string) => new FontFileError(msg(`読めないフォントです (${ja})`, `the font cannot be read (${en})`));
 
 /** 表の集まりを sfnt にする (表は札の順、4 バイト境界)。検査で外した表を除いた書体を作るのに使う (表の中身は変えない) */
 function rebuild(buffer: ArrayBuffer, keep: Rec[]): ArrayBuffer {
@@ -275,7 +275,7 @@ export function checkFontFile(buffer: ArrayBuffer): CheckedFont {
   }
   notes.push(
     msg(
-      `部品の展開が大きすぎる・輪になっている複合の字形 ${emptied.length} 個を、空の字形として扱います`,
+      `コンポーネントの展開が大きすぎる・輪になっている複合の字形 ${emptied.length} 個を、空の字形として扱います`,
       `${emptied.length} composite glyph(s) whose components expand too far or form a cycle are treated as empty glyphs`,
     ),
   );
@@ -423,11 +423,11 @@ export function probeFont(fk: unknown): { over: string[] } {
       font.layout?.('A fi 1');
     } catch (e) {
       if (disableLayoutTables(font))
-        fontNotice(font, 'layout', () => msg(`整形の表 (GSUB・GPOS・morx) で字を組めません (${e instanceof Error ? e.message : String(e)})。この書体は、合字・カーニングなどの機能を使わずに組みます`, `cannot shape text with the layout tables (GSUB, GPOS, morx) (${e instanceof Error ? e.message : String(e)}); this font is set without ligatures, kerning or other features`));
+        fontNotice(font, 'layout', () => msg(`整形の表 (GSUB・GPOS・morx) で文字を組めません (${e instanceof Error ? e.message : String(e)})。このフォントは、合字・カーニングなどの機能を使わずに組みます`, `cannot shape text with the layout tables (GSUB, GPOS, morx) (${e instanceof Error ? e.message : String(e)}); this font is set without ligatures, kerning or other features`));
       font.layout?.('A fi 1');
     }
   });
-  if (r.error || r.over) throw fail(msg(`書体の値・字の表 (${r.error instanceof Error ? r.error.message : '読みが大きすぎる'})`, `font metrics or character tables (${r.error instanceof Error ? r.error.message : 'too much to read'})`));
+  if (r.error || r.over) throw fail(msg(`フォントの値・文字の表 (${r.error instanceof Error ? r.error.message : '読みが大きすぎる'})`, `font metrics or character tables (${r.error instanceof Error ? r.error.message : 'too much to read'})`));
   return { over: [] };
 }
 
@@ -547,8 +547,8 @@ export function patchFontkitCffBudget(fk: unknown) {
       st.bad.add(this.id);
       fontNotice(f, 'cff-glyph', () =>
         r.over
-          ? msg('字形の輪郭 (CFF の CharString) の読みが大きすぎる字があります。その字は、空の字形として扱います', 'some glyph outlines (CFF CharStrings) take too much to read; those glyphs are treated as empty')
-          : msg('字形の輪郭 (CFF の CharString) を読めない字があります。その字は、空の字形として扱います', 'some glyph outlines (CFF CharStrings) cannot be read; those glyphs are treated as empty'),
+          ? msg('字形のアウトライン (CFF の CharString) の読みが大きすぎる文字があります。その文字は、空の字形として扱います', 'some glyph outlines (CFF CharStrings) take too much to read; those glyphs are treated as empty')
+          : msg('字形のアウトライン (CFF の CharString) を読めない文字があります。その文字は、空の字形として扱います', 'some glyph outlines (CFF CharStrings) cannot be read; those glyphs are treated as empty'),
       );
     }
     this._usedSubrs = {};
@@ -700,7 +700,7 @@ export function checkGlyphData(fk: unknown, ids: readonly number[]): void {
         const len = offs && id + 1 < offs.length ? offs[id + 1] - offs[id] : Infinity;
         for (const c of d.components ?? []) {
           if (!(c.pos + 2 <= len)) {
-            why = msg('複合の字形の部品の記録が、字形のデータの外にある', 'a component record of the composite glyph lies outside the glyph data');
+            why = msg('複合の字形のコンポーネントの記録が、字形のデータの外にある', 'a component record of the composite glyph lies outside the glyph data');
             break;
           }
           todo.push(c.glyphID);
@@ -711,7 +711,7 @@ export function checkGlyphData(fk: unknown, ids: readonly number[]): void {
     }
     if (why !== undefined) {
       const reason = why;
-      fontNotice(font, 'glyph-data', () => msg(`字形 ${id} のデータが読めません (${reason})。PDF では、読めない字形を描きません`, `cannot read the data of glyph ${id} (${reason}); unreadable glyphs are not drawn in the PDF`));
+      fontNotice(font, 'glyph-data', () => msg(`字形 ${id} のデータが読めません (${reason})。PDF では、読めない字形を描画しません`, `cannot read the data of glyph ${id} (${reason}); unreadable glyphs are not drawn in the PDF`));
     }
   }
 }

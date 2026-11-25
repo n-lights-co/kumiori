@@ -260,7 +260,7 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
     if (textChars + src.length > maxTextChars) {
       // 字の数の合計の上限 (EPUB_MAX_TEXT_CHARS)。この章とその後の章は読まない (読んだ所までを組む)
       const rest = itemrefs.length - k;
-      warnings.push(msg(`EPUB の章の字の数の合計が上限 (${maxTextChars} 字) を超えるので、${item.href} から後の ${rest} 個の章を読みません`, `the total length of the EPUB chapters exceeds the limit (${maxTextChars} characters); ${rest} chapters from ${item.href} on are not read`));
+      warnings.push(msg(`EPUB の章の文字の数の合計が上限 (${maxTextChars} 字) を超えるので、${item.href} から後の ${rest} 個の章を読みません`, `the total length of the EPUB chapters exceeds the limit (${maxTextChars} characters); ${rest} chapters from ${item.href} on are not read`));
       break;
     }
     textChars += src.length;
@@ -276,7 +276,7 @@ export async function readEpub(bytes: Uint8Array, parse: ParseXml, limits: Parti
       if (seenCss.has(p)) continue;
       seenCss.add(p);
       const t = await skipTooLarge(() => text(p));
-      if (t && textChars + t.length > maxTextChars) warnings.push(msg(`${p}: EPUB の字の数の合計が上限 (${maxTextChars} 字) を超えるので、この CSS を読みません`, `${p}: the total length of the EPUB text exceeds the limit (${maxTextChars} characters); this stylesheet is not read`));
+      if (t && textChars + t.length > maxTextChars) warnings.push(msg(`${p}: EPUB の文字の数の合計が上限 (${maxTextChars} 字) を超えるので、この CSS を読みません`, `${p}: the total length of the EPUB text exceeds the limit (${maxTextChars} characters); this stylesheet is not read`));
       else if (t) (css.push(t), (textChars += t.length));
     }
     for (const s of Array.from(doc.getElementsByTagName('style'))) {

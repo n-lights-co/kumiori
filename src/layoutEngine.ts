@@ -207,7 +207,7 @@ function beyondDiagnostic(max: number, kind: BeyondKind, ids: string[], mark: st
     kind === 'index'
       ? msg(`先頭の ${max} ページで止めたので、${ja}には ${max} ページまでの所だけを並べました`, `stopped after the first ${max} pages, so ${en} list only the places within those pages`)
       : kind === 'bookmark'
-        ? msg(`先頭の ${max} ページで止めたので、それより後ろを指す${ja}を、飛び先の無いしおりにしました`, `stopped after the first ${max} pages, so ${en} pointing beyond them have no destination`)
+        ? msg(`先頭の ${max} ページで止めたので、それより後ろを指す${ja}を、リンク先の無いしおりにしました`, `stopped after the first ${max} pages, so ${en} pointing beyond them have no destination`)
         : msg(`先頭の ${max} ページで止めたので、それより後ろを指す${ja}が決まらず、${shown}で組みました`, `stopped after the first ${max} pages, so ${en} pointing beyond them could not be resolved and were set as ${shown}`);
   return diag('layout/beyond-max-pages', text, { maxPages: max, kind, count, ...(kind === 'index' ? {} : { ids: ids.slice(0, 10).join(' ') }) });
 }
@@ -373,8 +373,8 @@ function condenseLimit(node: LBlockContainer, memo: WeakMap<object, number>, lea
 /** 入れ子の詰め込みの上限の警告の文 (max は渡された上限 (LayoutOptions.maxCondenseMeasures)。無ければ既定の上限)。文書で 1 度にするため、文は上限によらず同じ */
 function condenseCappedMessage(max: number | undefined): Diagnostic {
   return diag('layout/condense-capped', max !== undefined
-    ? msg(`overflow="condense" の入れ子の詰め込みのために中身を測る回数が多すぎます (いちばん外の容器ごとに ${max} 回まで)。その容器の中の、以後の容器は詰めずに組みました`, `too many measurements of content for nested overflow="condense" (up to ${max} per outermost container); the remaining inner containers of that container were laid out without condensing`)
-    : msg('overflow="condense" の入れ子の詰め込みのために中身を測る回数が多すぎます (いちばん外の容器ごとの既定の上限まで)。その容器の中の、以後の容器は詰めずに組みました', 'too many measurements of content for nested overflow="condense" (up to the default limit per outermost container); the remaining inner containers of that container were laid out without condensing'));
+    ? msg(`overflow="condense" の入れ子の詰め込みのために中身を測る回数が多すぎます (いちばん外のコンテナーごとに ${max} 回まで)。そのコンテナーの中の、以後のコンテナーは詰めずに組みました`, `too many measurements of content for nested overflow="condense" (up to ${max} per outermost container); the remaining inner containers of that container were laid out without condensing`)
+    : msg('overflow="condense" の入れ子の詰め込みのために中身を測る回数が多すぎます (いちばん外のコンテナーごとの既定の上限まで)。そのコンテナーの中の、以後のコンテナーは詰めずに組みました', 'too many measurements of content for nested overflow="condense" (up to the default limit per outermost container); the remaining inner containers of that container were laid out without condensing'));
 }
 
 /** 組み直しで収束しなかったこと (unsettled) を、木の警告と診断に足す */
@@ -543,8 +543,8 @@ const MISSING_ID_WARNINGS: ReadonlyArray<{ re: RegExp; group: (n: number, ids: s
     group: (n, ids) => msg(`ページ番号参照の対象が見つかりません (${n} 件): ${ids}`, `targets of page number references were not found (${n}): ${ids}`),
   },
   {
-    re: /^(?:しおりの飛び先 id="(.*)" が見つかりません|bookmark destination id="(.*)" was not found)$/,
-    group: (n, ids) => msg(`しおりの飛び先が見つかりません (${n} 件): ${ids}`, `bookmark destinations were not found (${n}): ${ids}`),
+    re: /^(?:しおりのリンク先 id="(.*)" が見つかりません|bookmark destination id="(.*)" was not found)$/,
+    group: (n, ids) => msg(`しおりのリンク先が見つかりません (${n} 件): ${ids}`, `bookmark destinations were not found (${n}): ${ids}`),
   },
 ];
 /** まとめた行に並べる id の数 (残りは「ほか N 件」) */
@@ -3312,7 +3312,7 @@ class Flow {
         const pageEnd = this.room;
         if (this.cursor >= need - EPS || need + d.bpEnd <= pageEnd + d.keepEnd.size + EPS || pageEnd - f.contentStartB <= EPS) break;
         if (guard >= 50) {
-          this.host.warn(withSource(diag('layout/height-cut', msg('高さの指定が 50 ページを超える箱は、50 ページで打ち切ります', 'a box whose specified height exceeds 50 pages is cut off at 50 pages')), f.node));
+          this.host.warn(withSource(diag('layout/height-cut', msg('高さの指定が 50 ページを超えるボックスは、50 ページで打ち切ります', 'a box whose specified height exceeds 50 pages is cut off at 50 pages')), f.node));
           break;
         }
         this.cursor = Math.max(this.cursor, pageEnd);
@@ -4175,7 +4175,7 @@ class Flow {
     if (!c || (!(column && c.cd > c.cmax) && !((this.host.stats?.flows ?? 0) - c.base + (c.charged ?? 0) > c.budget))) return false;
     if (!c.hit) {
       c.hit = true;
-      c.warn(diag('limit/measure-nesting', msg(`幅を中身で決める箱・段組の入れ子が深すぎます (組む回数 ${c.budget} 回・段組の入れ子 ${c.cmax} 段まで)。以後の箱は中身の幅を測らずに組み、段組は 1 段に組みました`, `boxes sized by their content and multi-column containers are nested too deeply (up to ${c.budget} layout passes, ${c.cmax} nested multi-column containers); the remaining boxes were laid out without measuring their content, and multi-column containers as a single column`)));
+      c.warn(diag('limit/measure-nesting', msg(`幅を中身で決めるボックス・段組の入れ子が深すぎます (組む回数 ${c.budget} 回・段組の入れ子 ${c.cmax} 段まで)。以後のボックスは中身の幅を測らずに組み、段組は 1 段に組みました`, `boxes sized by their content and multi-column containers are nested too deeply (up to ${c.budget} layout passes, ${c.cmax} nested multi-column containers); the remaining boxes were laid out without measuring their content, and multi-column containers as a single column`)));
     }
     return true;
   }
@@ -5210,7 +5210,7 @@ class Flow {
         inlineBox: (c, ps) => this.inlineContainerBox(c, ps),
         containerI: L,
         // 行内の箱の子に入ったブロックは、行の中に置けない (読み込みがブロックの前後で行内の箱を分けなかった経路。CSS 2.1 §9.2.1.1)。黙って捨てずに知らせる
-        dropped: (t) => this.host.warn(withSource(diag('layout/inline-block-dropped', msg(`行内の箱の中のブロック (${t}) を置けないため、その中身を省きました`, `a block (${t}) inside an inline box cannot be placed; its content was omitted`)), this.blockAt)),
+        dropped: (t) => this.host.warn(withSource(diag('layout/inline-block-dropped', msg(`行内のボックスの中のブロック (${t}) を置けないため、その中身を省きました`, `a block (${t}) inside an inline box cannot be placed; its content was omitted`)), this.blockAt)),
         // アンテナハウス互換では、ギリシャ文字・キリル文字の語を欧文の書体に替えない (その製品に合わせる指定なので、書体の選び方を変えない)
         ...(this.host.kernAh ? { noLatinWords: true } : {}),
         ...(this.intrinsic ? { intrinsic: true } : {}),
@@ -5982,9 +5982,9 @@ class Flow {
     // 縮められる置換要素の百分率の幅として、min-content の寄与を 0 にする (CSS Sizing 3 §5.2.2)
     if (this.gridItemMin && c.estimatedWidth && this.wm === 'horizontal-tb') c = withRef(c, { ...c, width: 0, height: 0 });
     const asset = this.host.assets?.get(c.src);
-    if (asset?.unsupported) this.host.warn(withSource(diag('image/unsupported', msg(`画像 ${c.src} を描けないため、仮の枠で描きます (${asset.unsupported})`, `image ${c.src} cannot be drawn, so a placeholder frame is drawn (${asset.unsupported})`), { src: c.src, detail: asset.unsupported }), c));
+    if (asset?.unsupported) this.host.warn(withSource(diag('image/unsupported', msg(`画像 ${c.src} を描画できないため、プレースホルダーで描画します (${asset.unsupported})`, `image ${c.src} cannot be drawn, so a placeholder frame is drawn (${asset.unsupported})`), { src: c.src, detail: asset.unsupported }), c));
     // 描いたが、中の一部を描けなかったもの (CGM・WMF・EMF。assets.ts の ImageAsset.notes)
-    for (const n of asset?.notes ?? []) this.host.warn(withSource(diag('image/partial', msg(`画像 ${c.src} の一部を描けません: ${n}`, `part of image ${c.src} cannot be drawn: ${n}`), { src: c.src, detail: n }), c));
+    for (const n of asset?.notes ?? []) this.host.warn(withSource(diag('image/partial', msg(`画像 ${c.src} の一部を描画できません: ${n}`, `part of image ${c.src} cannot be drawn: ${n}`), { src: c.src, detail: n }), c));
     // 画像が見つからない・中身が画像でない (読めない) ときは、黙って省かずに知らせる (instream-foreign-object の仮の名前は除く)
     if (this.host.assets && !asset && !c.src.startsWith('instream-foreign-object:')) this.host.warn(withSource(diag('image/not-found', msg(`画像 ${c.src} が見つからないか、中身を画像として読めません`, `image ${c.src} is not found or its content cannot be read as an image`), { src: c.src }), c));
     // SVG の image が指す外のファイルのうち、描けないもの (文書のファイルに無い・PNG と JPEG でない) を知らせる (その image は描かない。svg.ts)
@@ -5997,12 +5997,12 @@ class Flow {
         const href = h.slice(0, 200);
         this.host.warn(
           use
-            ? withSource(diag('image/reference-not-found', msg(`画像 ${src} の use が指すファイル ${href} が見つからないか、SVG でないため、描きません`, `file ${href} referenced by use in image ${src} is not found or is not SVG, so it is not drawn`), { src, href, count: 1 }), c)
-            : withSource(diag('image/reference-not-found', msg(`画像 ${src} の中の画像 ${href} が見つからないか、PNG・JPEG・GIF・BMP・WebP でないため、描きません`, `image ${href} in image ${src} is not found or is not PNG, JPEG, GIF, BMP or WebP, so it is not drawn`), { src, href, count: 1 }), c),
+            ? withSource(diag('image/reference-not-found', msg(`画像 ${src} の use が指すファイル ${href} が見つからないか、SVG でないため、描画しません`, `file ${href} referenced by use in image ${src} is not found or is not SVG, so it is not drawn`), { src, href, count: 1 }), c)
+            : withSource(diag('image/reference-not-found', msg(`画像 ${src} の中の画像 ${href} が見つからないか、PNG・JPEG・GIF・BMP・WebP でないため、描画しません`, `image ${href} in image ${src} is not found or is not PNG, JPEG, GIF, BMP or WebP, so it is not drawn`), { src, href, count: 1 }), c),
         );
       }
       const rest = missing.length - SVG_MISSING_SHOWN;
-      if (rest > 0) this.host.warn(withSource(diag('image/reference-not-found', msg(`画像 ${src} の中で、ほかに ${rest} 個の参照 (画像・use) が見つからないか描けない形式なので、描きません`, `${rest} more references (images, use) in image ${src} are not found or not in a drawable format, so they are not drawn`), { src, href: '', count: rest }), c));
+      if (rest > 0) this.host.warn(withSource(diag('image/reference-not-found', msg(`画像 ${src} の中で、ほかに ${rest} 個の参照 (画像・use) が見つからないか描画できない形式なので、描画しません`, `${rest} more references (images, use) in image ${src} are not found or not in a drawable format, so they are not drawn`), { src, href: '', count: rest }), c));
     }
     // 画像本来の大きさ (pt)。intrinsicFromImage なら、画像に書かれた解像度で決める
     const k = c.intrinsicFromImage && asset?.dpi ? 96 / asset.dpi : 1;
@@ -7638,7 +7638,7 @@ class Flow {
       if (bal.raised) this.columnRaised = true;
     }
     const { roots, used } = run(limit, true);
-    if (roots.length > n) this.host.warn(withSource(diag('layout/column-overflow', msg(`段組のコンテナに内容が収まりません (${n} 段)`, `the content does not fit in the multi-column container (${n} columns)`), { columns: n }), node));
+    if (roots.length > n) this.host.warn(withSource(diag('layout/column-overflow', msg(`段組のコンテナーに内容が収まりません (${n} 段)`, `the content does not fit in the multi-column container (${n} columns)`), { columns: n }), node));
     const kids: LNode[] = [];
     const filled = (k: number) => k < roots.length && roots[k].children.length > 0;
     const height = contentB ?? Math.max(0, ...used.slice(0, n));
@@ -11635,7 +11635,7 @@ export class LayoutEngine {
       const entries = this.indexKeys?.get(r.refKey);
       // 鍵の付いた formatting object が 1 つも無いのは誤りで、その fo:index-key-reference を無視して続ける (§6.10.6)
       if (!entries) {
-        warn?.(diag('layout/index-key-missing', msg(`索引の鍵 "${r.refKey}" (ref-index-key) の付いた所がありません`, `no formatting object has the index key "${r.refKey}" (ref-index-key)`), { key: r.refKey }));
+        warn?.(diag('layout/index-key-missing', msg(`索引のキー "${r.refKey}" (ref-index-key) の付いた所がありません`, `no formatting object has the index key "${r.refKey}" (ref-index-key)`), { key: r.refKey }));
         return [];
       }
       const sources: IndexSource[] = [];
@@ -13463,7 +13463,7 @@ export class LayoutEngine {
         const pb = this.idPageBuild.get(b.ref);
         // 先頭から N ページで止めた組版で、N ページより後ろにある飛び先は、見つからない飛び先にしない (決まらないしおりとして数える)
         if (!pb && b.ref && this.cutInfo && (this.cutInfo.first.has(b.ref) || this.docIds().has(b.ref))) beyondBookmarks.add(b.ref);
-        else if (!pb && b.ref) this.warnings.push(diag('layout/missing-id', msg(`しおりの飛び先 id="${b.ref}" が見つかりません`, `bookmark destination id="${b.ref}" was not found`), { id: b.ref, kind: 'bookmark' }));
+        else if (!pb && b.ref) this.warnings.push(diag('layout/missing-id', msg(`しおりのリンク先 id="${b.ref}" が見つかりません`, `bookmark destination id="${b.ref}" was not found`), { id: b.ref, kind: 'bookmark' }));
         // 文書の外への飛び先 (fo:bookmark の external-destination。XSL 1.1 §6.11.2・§7.23.6) は、文書の中の飛び先 (ref) が無いときだけ通す
         return { title: b.title, sheet: pb ? pages.indexOf(pb) : -1, ...(!b.ref && b.href ? { external: b.href } : {}), open: b.open ?? true, children: resolve(b.children) };
       });

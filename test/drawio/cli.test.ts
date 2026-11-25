@@ -43,7 +43,7 @@ describe('コマンドの draw.io の図', () => {
       });
     const r = cli('--drawio-stencils', lib);
     expect(r.status).toBe(0);
-    expect(r.stderr).toContain('形 "mxgraph.other.x" は描けない (図形ライブラリ other が無い。文字だけ描く)');
+    expect(r.stderr).toContain('形 "mxgraph.other.x" は描画できない (図形ライブラリ other が無い。文字だけ描画する)');
     expect(r.stderr).not.toContain('mxgraph.test.box');
     expect(fs.statSync(path.join(dir, 'doc.pdf')).size).toBeGreaterThan(1000);
     // 図形ライブラリを渡さなければ、ライブラリの形も文字だけ描いて警告する

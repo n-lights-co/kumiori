@@ -513,7 +513,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
       const desc = dep && dep.t === 'array' && dep.n && dep.a[dep.o].t === 'dict' ? (dep.a[dep.o] as { d: PSDict }).d : undefined;
       const cm = cmapOfFont(fd);
       if (fmt !== 9 || !desc || !cm) {
-        I.warn(msg('複合書体の文字 (FMapType 9 以外・CMap が読めない)', 'text in composite fonts (other than FMapType 9, or an unreadable CMap)'));
+        I.warn(msg('複合フォントの文字 (FMapType 9 以外・CMap が読めない)', 'text in composite fonts (other than FMapType 9, or an unreadable CMap)'));
         return [];
       }
       const cidType = intOf(desc.get('CIDFontType'), -1);
@@ -869,7 +869,7 @@ export function installFontStubs(I: Interp, G: Graphics) {
     const s = I.popString();
     G.needCP();
     const gl = glyphsOf(G.g.font, s);
-    if (gl.some((g) => g.fallback)) I.warn(msg('代わりの書体の charpath', 'charpath with a substitute font'));
+    if (gl.some((g) => g.fallback)) I.warn(msg('代わりのフォントの charpath', 'charpath with a substitute font'));
     showGlyphs(gl, { paint: false, path: true });
   });
   d('setcachedevice', (I) => {

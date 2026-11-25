@@ -30,7 +30,7 @@ import { rejoin, thisCall } from './callContext';
 const PATCHED = Symbol.for('kumiori.pdfLibPatched');
 
 /** pdf-lib の中の欄・メソッドが見つからないときの誤り (pdf-lib の版が変わったことをはっきり知らせる) */
-const internalsChanged = (what: string) => new KumioriError('internal/patch-mismatch', msg(`pdf-lib の ${what} が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)`, `pdf-lib ${what} not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)`));
+const internalsChanged = (what: string) => new KumioriError('internal/patch-mismatch', msg(`pdf-lib の ${what} が見つかりません (pdf-lib のバージョンが変わり、pdfLibPatches.ts の差し替えが合いません)`, `pdf-lib ${what} not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)`));
 
 /** PDF の実数の最も大きい値 (ISO 32000-1 の附属書 C の表 C.1 の 32 ビットの浮動小数の値) */
 export const PDF_REAL_MAX = 3.403e38;
@@ -78,7 +78,7 @@ assertPdfLibInternals();
 export function pageOperators(page: PDFPage): PDFOperator[] {
   const p = page as unknown as { getContentStream?: () => { operators?: PDFOperator[] } };
   const ops = typeof p.getContentStream === 'function' ? p.getContentStream().operators : undefined;
-  if (!Array.isArray(ops)) throw new KumioriError('internal/patch-mismatch', msg('pdf-lib の PDFPage.getContentStream().operators が見つかりません (pdf-lib の版が変わり、pdfLibPatches.ts の差し替えが合いません)', 'pdf-lib PDFPage.getContentStream().operators not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)'));
+  if (!Array.isArray(ops)) throw new KumioriError('internal/patch-mismatch', msg('pdf-lib の PDFPage.getContentStream().operators が見つかりません (pdf-lib のバージョンが変わり、pdfLibPatches.ts の差し替えが合いません)', 'pdf-lib PDFPage.getContentStream().operators not found (the pdf-lib version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   return ops;
 }
 
@@ -101,7 +101,7 @@ export function patchFontkitSubset(font: FontManager) {
     [PATCHED]?: boolean;
   };
   if (proto[PATCHED]) return;
-  if (typeof proto._addGlyph !== 'function') throw new KumioriError('internal/patch-mismatch', msg('@pdf-lib/fontkit の部分書体の _addGlyph が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)', '_addGlyph of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
+  if (typeof proto._addGlyph !== 'function') throw new KumioriError('internal/patch-mismatch', msg('@pdf-lib/fontkit のサブセットフォントの _addGlyph が見つかりません (fontkit のバージョンが変わり、pdfLibPatches.ts の差し替えが合いません)', '_addGlyph of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   const orig = proto._addGlyph;
   proto._addGlyph = function (gid: number) {
     const r = addGlyphOrEmpty(this as unknown as SubsetGlyphs, gid, orig);
@@ -156,7 +156,7 @@ function addGlyphOrEmpty(s: SubsetGlyphs, gid: number, orig: (this: SubsetGlyphs
     }
     // 書き出しの流れ (restructure の EncodeStream) は、fontkit の中の Buffer の型だけを受けるので、fontkit の読みで長さ 0 のものを作る
     const empty = emptyFontkitBuffer(s);
-    if (!empty) throw new KumioriError('internal/patch-mismatch', msg('fontkit の部分書体の字形のデータの型が分かりません', 'unknown type of glyph data in the fontkit subset'));
+    if (!empty) throw new KumioriError('internal/patch-mismatch', msg('fontkit のサブセットフォントの字形のデータの型が分かりません', 'unknown type of glyph data in the fontkit subset'));
     s.glyf.push(empty);
     s.loca.offsets.push(s.offset);
     s.hmtx.metrics.push({ advance, bearing: 0 });
@@ -188,7 +188,7 @@ type SubsetLike = { encode(s: EncodeStreamLike): void; encodeStream(): EncodeStr
 function patchSubsetSerialize(sample: SubsetLike) {
   const proto = CustomFontSubsetEmbedder.prototype as unknown as { serializeFont(this: { subset: SubsetLike }): Promise<Uint8Array>; [PATCHED]?: boolean };
   if (proto[PATCHED]) return;
-  if (typeof sample.encodeStream !== 'function' || typeof sample.encode !== 'function') throw new KumioriError('internal/patch-mismatch', msg('@pdf-lib/fontkit の部分書体の encodeStream が見つかりません (fontkit の版が変わり、pdfLibPatches.ts の差し替えが合いません)', 'encodeStream of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
+  if (typeof sample.encodeStream !== 'function' || typeof sample.encode !== 'function') throw new KumioriError('internal/patch-mismatch', msg('@pdf-lib/fontkit のサブセットフォントの encodeStream が見つかりません (fontkit のバージョンが変わり、pdfLibPatches.ts の差し替えが合いません)', 'encodeStream of the @pdf-lib/fontkit subset not found (the fontkit version has changed and the patches in pdfLibPatches.ts no longer fit)'));
   // 流れの型 (restructure の EncodeStream) は、fontkit の外からは見えないので、何も書かない encode で 1 つ作らせて、その型を取る
   const Stream = sample.encodeStream.call({ encode() {} } as unknown as SubsetLike).constructor as new () => EncodeStreamLike;
   proto.serializeFont = function () {
@@ -419,7 +419,7 @@ export function sealContentStream(s: PDFContentStream, deflate?: (data: Uint8Arr
   return PDFRawStream.of(f.dict, contents);
 }
 const sealed = () => {
-  throw new KumioriError('internal/page-sealed', msg('PDF: 描き終えたページに命令を足そうとしました (sealPageContents の後)', 'PDF: tried to add operators to a page that was already finished (after sealPageContents)'));
+  throw new KumioriError('internal/page-sealed', msg('PDF: 描画し終えたページに命令を追加しようとしました (sealPageContents の後)', 'PDF: tried to add operators to a page that was already finished (after sealPageContents)'));
 };
 /** 置き換えた後のページの内容の流れの印 (命令を足す・読むと誤り) */
 const SEALED_CONTENTS = {

@@ -230,7 +230,7 @@ describe('公開 API: typeset', () => {
     // 画像でない中身: 読めない画像のまま。この 1 つだけ、これまでどおりネットワークから取るかを fetchImages に聞く (取らない)
     expect(got['https://example.com/page?x=1'][0]).toBe(true);
     expect(fetched).toBe(1);
-    expect(r.warnings.filter((w) => /見つからない|画像を取りません/.test(w)).every((w) => w.includes('https://example.com/page?x=1'))).toBe(true);
+    expect(r.warnings.filter((w) => /見つからない|画像を取得しません/.test(w)).every((w) => w.includes('https://example.com/page?x=1'))).toBe(true);
     // PDF にも画像が入る
     const pdf = await PDFDocument.load(await r.toPdf(), { updateMetadata: false });
     expect(pdf.getPageCount()).toBe(1);
@@ -1103,7 +1103,7 @@ describe('公開 API: typeset', () => {
   });
 
   it('書体を読めなければ、その名前を挙げた例外', async () => {
-    await expect(typesetHtml('<p>a</p>', { loadFont: async () => undefined, fetchTimeoutMs: 1 })).rejects.toThrow(/書体を読めません/);
+    await expect(typesetHtml('<p>a</p>', { loadFont: async () => undefined, fetchTimeoutMs: 1 })).rejects.toThrow(/フォントを読めません/);
   });
 });
 

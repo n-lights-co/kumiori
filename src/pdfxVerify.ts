@@ -114,7 +114,7 @@ async function verifyPdfX(bytes: Uint8Array, version: PdfXVersion): Promise<stri
   const x1a = version === 'X-1a:2001' || version === 'X-1a:2003';
   const maxVersion = version === 'X-1a:2001' ? 1.3 : x4 ? 1.6 : 1.4;
   const head = /^%PDF-(\d\.\d)/.exec(new TextDecoder('latin1').decode(bytes.subarray(0, 16)));
-  if (!head || Number(head[1]) > maxVersion) add(`PDF の版が ${head?.[1] ?? '不明'} です (${maxVersion} 以下にします)`, `the PDF version is ${head?.[1] ?? 'unknown'} (must be ${maxVersion} or lower)`);
+  if (!head || Number(head[1]) > maxVersion) add(`PDF のバージョンが ${head?.[1] ?? '不明'} です (${maxVersion} 以下にします)`, `the PDF version is ${head?.[1] ?? 'unknown'} (must be ${maxVersion} or lower)`);
   const pdf = rejoin(thisCall(), await loadWithoutCopy(bytes));
   const ctx = pdf.context;
   if (ctx.trailerInfo.Encrypt) add('暗号化しています', 'the file is encrypted');
@@ -144,12 +144,12 @@ async function verifyPdfX(bytes: Uint8Array, version: PdfXVersion): Promise<stri
     return v instanceof PDFString || v instanceof PDFHexString ? v.decodeText() : undefined;
   };
   const condition = intentText('OutputConditionIdentifier');
-  if (!intent || condition === undefined) add('出力意図 (OutputIntents の GTS_PDFX と OutputConditionIdentifier) がありません', 'the output intent (GTS_PDFX with OutputConditionIdentifier in OutputIntents) is missing');
-  if (pdfxIntents.length > 1) add(`S が GTS_PDFX の出力意図が ${pdfxIntents.length} 個あります (ちょうど 1 つにします)`, `there are ${pdfxIntents.length} output intents with S GTS_PDFX (there must be exactly one)`);
+  if (!intent || condition === undefined) add('出力インテント (OutputIntents の GTS_PDFX と OutputConditionIdentifier) がありません', 'the output intent (GTS_PDFX with OutputConditionIdentifier in OutputIntents) is missing');
+  if (pdfxIntents.length > 1) add(`S が GTS_PDFX の出力インテントが ${pdfxIntents.length} 個あります (ちょうど 1 つにします)`, `there are ${pdfxIntents.length} output intents with S GTS_PDFX (there must be exactly one)`);
   const registry = intentText('RegistryName');
   const registered = condition !== undefined && ICC_CMYK_REGISTRY.has(condition);
   if (condition !== undefined && registry !== undefined && isIccRegistry(registry) && !registered)
-    add(`出力意図の RegistryName が ICC の登録簿なのに、印刷条件 "${condition}" が登録簿の名前と一致しません`, `RegistryName of the output intent is the ICC registry, but the printing condition "${condition}" does not match a registered name`);
+    add(`出力インテントの RegistryName が ICC のレジストリなのに、印刷条件 "${condition}" がレジストリの名前と一致しません`, `RegistryName of the output intent is the ICC registry, but the printing condition "${condition}" does not match a registered name`);
   const profileObj = intent?.get(PDFName.of('DestOutputProfile'));
   const profileStream = intent?.lookup(PDFName.of('DestOutputProfile'));
   let profile: Uint8Array | undefined;
@@ -162,14 +162,14 @@ async function verifyPdfX(bytes: Uint8Array, version: PdfXVersion): Promise<stri
   }
   // 登録簿に無い印刷条件なら DestOutputProfile が要る (ISO 15930-1 §6.3.2。PDF/X-3:2003 にも同じ決まりを当てる。X-4 はいつも要る)
   if (intent && !x4 && !profileObj && condition !== undefined && !registered)
-    add(`印刷条件 "${condition}" が ICC の登録簿に無いのに、出力意図に DestOutputProfile がありません`, `the printing condition "${condition}" is not in the ICC registry, but the output intent has no DestOutputProfile`);
+    add(`印刷条件 "${condition}" が ICC のレジストリに無いのに、出力インテントに DestOutputProfile がありません`, `the printing condition "${condition}" is not in the ICC registry, but the output intent has no DestOutputProfile`);
   if (intent && x1a) {
-    if (profileObj && (!profile || !iccHasTag(profile, 'A2B1'))) add('出力意図の ICC プロファイルが AtoB1 の表 (タグ A2B1) を持ちません', 'the ICC profile of the output intent has no AtoB1 table (the A2B1 tag)');
+    if (profileObj && (!profile || !iccHasTag(profile, 'A2B1'))) add('出力インテントの ICC プロファイルが AtoB1 の表 (タグ A2B1) を持ちません', 'the ICC profile of the output intent has no AtoB1 table (the A2B1 tag)');
   }
   if (intent && x4) {
-    if (!profileObj) add('出力意図に DestOutputProfile がありません', 'the output intent has no DestOutputProfile');
-    if (intent.get(PDFName.of('DestOutputProfileRef'))) add('出力意図に DestOutputProfileRef があります', 'the output intent has DestOutputProfileRef');
-    if (profileObj && (!profile || iccDeviceClass(profile) !== 'prtr')) add('出力意図の ICC プロファイルが出力機器のもの (機器の種類 prtr) ではありません', 'the ICC profile of the output intent is not an output device profile (device class prtr)');
+    if (!profileObj) add('出力インテントに DestOutputProfile がありません', 'the output intent has no DestOutputProfile');
+    if (intent.get(PDFName.of('DestOutputProfileRef'))) add('出力インテントに DestOutputProfileRef があります', 'the output intent has DestOutputProfileRef');
+    if (profileObj && (!profile || iccDeviceClass(profile) !== 'prtr')) add('出力インテントの ICC プロファイルが出力機器のもの (機器の種類 prtr) ではありません', 'the ICC profile of the output intent is not an output device profile (device class prtr)');
   }
   /** 出力意図の色空間 (X-4 の機器の色空間の決まり。§6.4.3.2)。読めなければ CMYK とみなす */
   const intentSpace = profile && profile.length >= 20 ? String.fromCharCode(...profile.subarray(16, 20)).trim() : 'CMYK';
@@ -268,7 +268,7 @@ async function verifyPdfX(bytes: Uint8Array, version: PdfXVersion): Promise<stri
     }
     if (v instanceof PDFArray) {
       // X-4: 4 色の ICCBased の色空間に、出力意図と同じプロファイルを使わない (§6.4.3.3)
-      if (x4 && v.size() === 2 && String(v.get(0)) === '/ICCBased' && intentSpace === 'CMYK' && isIntentProfile(v.get(1))) add(`ICCBased の色空間に、出力意図と同じプロファイルを使っています (${path})`, `an ICCBased color space uses the same profile as the output intent (${path})`);
+      if (x4 && v.size() === 2 && String(v.get(0)) === '/ICCBased' && intentSpace === 'CMYK' && isIntentProfile(v.get(1))) add(`ICCBased の色空間に、出力インテントと同じプロファイルを使っています (${path})`, `an ICCBased color space uses the same profile as the output intent (${path})`);
       v.asArray().forEach((x) => scanValue(x, path));
       return;
     }
@@ -316,7 +316,7 @@ async function verifyPdfX(bytes: Uint8Array, version: PdfXVersion): Promise<stri
     if ((String(d.get(PDFName.of('S'))) === '/JavaScript' && String(d.get(PDFName.of('Type'))) !== '/StructElem') || d.get(PDFName.of('JS'))) add('JavaScript があります', 'contains JavaScript');
     // 書体
     if (String(d.get(PDFName.of('Type'))) === '/Font') checkFont(d);
-    if (String(d.get(PDFName.of('Subtype'))) === '/OpenType' && maxVersion < 1.6) add('書体を OpenType のまま埋め込んでいます (PDF 1.6 の機能)', 'embeds a font as OpenType (a PDF 1.6 feature)');
+    if (String(d.get(PDFName.of('Subtype'))) === '/OpenType' && maxVersion < 1.6) add('フォントを OpenType のまま埋め込んでいます (PDF 1.6 の機能)', 'embeds a font as OpenType (a PDF 1.6 feature)');
     for (const [key, value] of d.entries()) {
       // 名前 (/Name など) や書体の名前の値は、色空間ではない
       if (['Type', 'Subtype', 'BaseFont', 'FontName', 'Name', 'S', 'Filter', 'BM'].includes(key.asString().slice(1))) continue;
@@ -330,11 +330,11 @@ async function verifyPdfX(bytes: Uint8Array, version: PdfXVersion): Promise<stri
     const name = String(font.get(PDFName.of('BaseFont')) ?? '').slice(1);
     if (subtype === '/Type0') {
       const desc = font.lookupMaybe(PDFName.of('DescendantFonts'), PDFArray)?.lookup(0);
-      if (desc instanceof PDFDict && !embeddedFile(desc.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict))) add(`書体 ${name} を埋め込んでいません`, `the font ${name} is not embedded`);
+      if (desc instanceof PDFDict && !embeddedFile(desc.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict))) add(`フォント ${name} を埋め込んでいません`, `the font ${name} is not embedded`);
       return;
     }
     if (subtype === '/CIDFontType0' || subtype === '/CIDFontType2' || subtype === '/Type1' || subtype === '/MMType1' || subtype === '/TrueType') {
-      if (!embeddedFile(font.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict))) add(`書体 ${name} を埋め込んでいません`, `the font ${name} is not embedded`);
+      if (!embeddedFile(font.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict))) add(`フォント ${name} を埋め込んでいません`, `the font ${name} is not embedded`);
     }
   };
   /** 圧縮の方式 (ISO 15930-1 §6.8・ISO 15930-7 §6.8)。filters は方式の名前の並び、image は画像か、oneBit は 1 ビットの画像か */
@@ -404,7 +404,7 @@ function verifyX4Metadata(pdf: PDFDocument, info: PDFDict | undefined, add: (ja:
     return;
   }
   // メタデータの流れは圧縮しない (§6.10.1)
-  if (meta.dict.get(PDFName.of('Filter'))) add('XMP のメタデータの流れを圧縮しています (Filter があります)', 'the XMP metadata stream is compressed (it has a Filter)');
+  if (meta.dict.get(PDFName.of('Filter'))) add('XMP のメタデータのストリームを圧縮しています (Filter があります)', 'the XMP metadata stream is compressed (it has a Filter)');
   let xmp: string;
   try {
     xmp = new TextDecoder().decode(decodePDFRawStream(meta).decode());
@@ -414,7 +414,7 @@ function verifyX4Metadata(pdf: PDFDocument, info: PDFDict | undefined, add: (ja:
   }
   // 包みの頭に bytes・encoding の属性を書かない (§6.10.3)
   const packet = /<\?xpacket\s+begin=[^?]*\?>/.exec(xmp)?.[0];
-  if (packet && /\s(bytes|encoding)\s*=/.test(packet)) add('XMP の包みの頭 (xpacket) に bytes・encoding の属性があります', 'the XMP packet header (xpacket) has a bytes or encoding attribute');
+  if (packet && /\s(bytes|encoding)\s*=/.test(packet)) add('XMP のパケットのヘッダー (xpacket) に bytes・encoding の属性があります', 'the XMP packet header (xpacket) has a bytes or encoding attribute');
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   /** 簡単な値の項目 (要素の <p>値</p> か、属性の p="値") */
   const simple = (p: string): string | undefined => {

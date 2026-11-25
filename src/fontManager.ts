@@ -653,7 +653,7 @@ export class FontManager {
       const why = prepared.cff2Error;
       this.onNotice(
         diag('font/cff2-not-converted', msg(
-          `${family}: CFF2 の輪郭の書体を、PDF に埋め込める形 (CFF) にできません (${why})。PDF では字が正しく出ないことがあります`,
+          `${family}: CFF2 のアウトラインのフォントを、PDF に埋め込める形 (CFF) にできません (${why})。PDF では文字が正しく出ないことがあります`,
           `${family}: cannot convert the font with CFF2 outlines to an embeddable form (CFF) (${why}). Glyphs may not render correctly in the PDF`,
         ), { font: family }),
       );
@@ -677,7 +677,7 @@ export class FontManager {
       this.unsupportedWarned.add(input);
       this.onNotice(
         diag('font/variable-unsupported', msg(
-          `${family}: 輪郭の差分 (gvar の表か CFF2 の輪郭) を持たない可変フォントには対応していません。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
+          `${family}: アウトラインの差分 (gvar の表か CFF2 のアウトライン) を持たない可変フォントには対応していません。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
           `${family}: variable fonts without outline variations (a gvar table or CFF2 outlines) are not supported; the default instance is used and the weight, width and other axes have no effect`,
         ), { font: family }),
       );
@@ -1072,7 +1072,7 @@ export class FontManager {
           this.instanceCapWarned.add(master);
           this.onNotice(
             diag('font/variable-instances-capped', msg(
-              `${master.family}: 可変フォントの実体 (軸の値の組) が多すぎます (${capN} 個まで)。それより後の指定は、軸の値の最も近い実体で組みます`,
+              `${master.family}: 可変フォントのインスタンス (軸の値の組) が多すぎます (${capN} 個まで)。それより後の指定は、軸の値の最も近いインスタンスで組みます`,
               `${master.family}: too many instances (combinations of axis values) of the variable font (at most ${capN}); later requests use the instance with the nearest axis values`,
             ), { font: master.family }),
           );
@@ -1108,7 +1108,7 @@ export class FontManager {
             const why = e instanceof Error ? e.message : String(e);
             this.onNotice(
               diag('font/variable-failed', msg(
-                `${master.family}: 可変フォントの実体を作れません (${why})。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
+                `${master.family}: 可変フォントのインスタンスを作れません (${why})。既定の形 (default instance) で組み、太さ・幅などの軸は効きません`,
                 `${master.family}: cannot instantiate the variable font (${why}); the default instance is used and the weight, width and other axes have no effect`,
               ), { font: master.family }),
             );
@@ -1119,7 +1119,7 @@ export class FontManager {
           const why = e instanceof Error ? e.message : String(e);
           this.onNotice(
             diag('font/variable-failed', msg(
-              `${master.family}: CFF2 の可変フォント (輪郭が CFF2 の OpenType) の実体を作れません (${why})。既定の形 (default instance) で組み、太さ・幅などの軸は効きません。PDF では字が正しく出ないことがあります (TrueType の輪郭の可変フォントか、静的な書体を使ってください)`,
+              `${master.family}: CFF2 の可変フォント (アウトラインが CFF2 の OpenType) のインスタンスを作れません (${why})。既定の形 (default instance) で組み、太さ・幅などの軸は効きません。PDF では文字が正しく出ないことがあります (TrueType のアウトラインの可変フォントか、静的なフォントを使ってください)`,
               `${master.family}: cannot instantiate the CFF2 variable font (${why}); the default instance is used and the weight, width and other axes have no effect. Glyphs may not render correctly in the PDF (use a variable font with TrueType outlines, or static fonts)`,
             ), { font: master.family }),
           );
@@ -1133,7 +1133,7 @@ export class FontManager {
           // 作った実体が読めない (元の表の壊れ方による): 既定の形のまま使う
           v.failed = true;
           const why = e instanceof Error ? e.message : String(e);
-          this.onNotice(diag('font/variable-failed', msg(`${master.family}: 可変フォントの実体を作れません (${why})。既定の形 (default instance) で組みます`, `${master.family}: cannot instantiate the variable font (${why}); the default instance is used`), { font: master.family }));
+          this.onNotice(diag('font/variable-failed', msg(`${master.family}: 可変フォントのインスタンスを作れません (${why})。既定の形 (default instance) で組みます`, `${master.family}: cannot instantiate the variable font (${why}); the default instance is used`), { font: master.family }));
           return master;
         }
         metrics = fontMetricsOf(fk);

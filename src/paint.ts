@@ -1283,7 +1283,7 @@ export const pdfPlaceholderDiagnostic = (src: string, output: 'screen' | 'SVG' |
   diag(
     'image/pdf-placeholder',
     msg(
-      `PDF の画像 ${src.slice(0, 200)} は PDF の出力でだけ描けるので、この出力 (${output === 'screen' ? '画面' : output}) では仮の枠で描きます`,
+      `PDF の画像 ${src.slice(0, 200)} は PDF の出力でだけ描画できるので、この出力 (${output === 'screen' ? '画面' : output}) ではプレースホルダーで描画します`,
       `PDF image ${src.slice(0, 200)} can be drawn only in PDF output, so a placeholder frame is drawn in this output (${output})`,
     ),
     { src: src.slice(0, 200), output },

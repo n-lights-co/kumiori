@@ -34,13 +34,13 @@ const sigAt = (p: Uint8Array, o: number) => String.fromCharCode(...p.subarray(o,
  * 中身の色の表 (A2B0・B2A0 など) が変換に使えるかは見ない (表の読めないプロファイルは、変換に式を使って警告する。pdfRenderer.ts の pdfxConverter)
  */
 export function iccProfileProblem(profile: Uint8Array): { ja: string; en: string } | undefined {
-  if (profile.length < 132) return { ja: `大きさが ${profile.length} バイトで、頭とタグの表 (132 バイト以上) がありません`, en: `the size is ${profile.length} bytes, too small for the header and tag table (132 bytes or more)` };
+  if (profile.length < 132) return { ja: `大きさが ${profile.length} バイトで、ヘッダーとタグの表 (132 バイト以上) がありません`, en: `the size is ${profile.length} bytes, too small for the header and tag table (132 bytes or more)` };
   const size = u32At(profile, 0);
-  if (size > profile.length) return { ja: `頭の大きさの欄 (${size} バイト) が、ファイルの長さ (${profile.length} バイト) を超えます`, en: `the profile size in the header (${size} bytes) exceeds the file length (${profile.length} bytes)` };
-  if (sigAt(profile, 36) !== 'acsp') return { ja: '頭の 36〜39 バイト目が acsp ではありません', en: 'bytes 36 to 39 of the header are not acsp' };
+  if (size > profile.length) return { ja: `ヘッダーの大きさのフィールド (${size} バイト) が、ファイルの長さ (${profile.length} バイト) を超えます`, en: `the profile size in the header (${size} bytes) exceeds the file length (${profile.length} bytes)` };
+  if (sigAt(profile, 36) !== 'acsp') return { ja: 'ヘッダーの 36〜39 バイト目が acsp ではありません', en: 'bytes 36 to 39 of the header are not acsp' };
   const count = u32At(profile, 128);
   const tableEnd = 132 + 12 * count;
-  if (count === 0 || tableEnd > size) return { ja: `タグの表 (タグの数 ${count}) が、頭の大きさの欄 (${size} バイト) に収まりません`, en: `the tag table (tag count ${count}) does not fit in the profile size in the header (${size} bytes)` };
+  if (count === 0 || tableEnd > size) return { ja: `タグの表 (タグの数 ${count}) が、ヘッダーの大きさのフィールド (${size} バイト) に収まりません`, en: `the tag table (tag count ${count}) does not fit in the profile size in the header (${size} bytes)` };
   const seen = new Set<string>();
   for (let k = 0; k < count; k++) {
     const at = 132 + 12 * k;

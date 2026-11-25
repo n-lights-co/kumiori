@@ -747,7 +747,7 @@ export function stencilSvg(shape: XEl, box: StencilBox, paint: StencilPaint, ctx
         const src = g('src') ?? '';
         const m = /^data:image\/(png|jpeg|jpg)(;base64)?,([A-Za-z0-9+/=\s]*)$/i.exec(src);
         if (!m) {
-          ctx.warn(msg('形の中の画像は、data: の PNG・JPEG だけを描く', 'images in shapes are drawn only from data: PNG and JPEG'));
+          ctx.warn(msg('形の中の画像は、data: の PNG・JPEG だけを描画する', 'images in shapes are drawn only from data: PNG and JPEG'));
           break;
         }
         const x = X(g('x'));

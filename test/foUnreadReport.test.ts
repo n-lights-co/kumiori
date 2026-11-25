@@ -107,20 +107,20 @@ describe('FO-22 E: 読み込んだどの書体にも字形の無い字を知ら�
   beforeAll(async () => {
     await ensureFonts([...DEFAULT_FONTS.base]);
   }, 300_000);
-  const TOFU = /^読み込んだどの書体にも字形の無い字があります/;
+  const TOFU = /^読み込んだどのフォントにも字形の無い文字があります/;
   // U+E000・U+F8FF は私用領域 (既定の書体に字形が無い)。U+200B (ゼロ幅の空白)・U+FE0F (異体字セレクタ) は、字形が無くても見えないので数えない
   const text = 'あい​️ う';
 
   it('XSL-FO: 字と数を、多い順に 1 行で知らせる。無ければ出さない', async () => {
     const r = await typesetFo(fo(`<fo:block>${text}</fo:block>`), { name: 't.fo', loadFont });
-    expect(r.warnings.filter((w) => TOFU.test(w))).toEqual(['読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます):  (U+E000 ×2)、 (U+F8FF)']);
+    expect(r.warnings.filter((w) => TOFU.test(w))).toEqual(['読み込んだどのフォントにも字形の無い文字があります (字形の無い文字の形で出ます):  (U+E000 ×2)、 (U+F8FF)']);
     const ok = await typesetFo(fo('<fo:block>あいう abc 123 ①</fo:block>'), { name: 't.fo', loadFont });
     expect(ok.warnings.filter((w) => TOFU.test(w))).toEqual([]);
   });
 
   it('HTML: 同じ経路で知らせる', async () => {
     const r = await typesetHtml(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title></head><body><p>${text}</p></body></html>`, { name: 't.html', loadFont });
-    expect(r.warnings.filter((w) => TOFU.test(w))).toEqual(['読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます):  (U+E000 ×2)、 (U+F8FF)']);
+    expect(r.warnings.filter((w) => TOFU.test(w))).toEqual(['読み込んだどのフォントにも字形の無い文字があります (字形の無い文字の形で出ます):  (U+E000 ×2)、 (U+F8FF)']);
   });
 
   it('多すぎるときは、先頭の 20 種と残りの数', async () => {

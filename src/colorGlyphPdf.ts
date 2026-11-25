@@ -189,7 +189,7 @@ export class PdfColorGlyphs {
       } catch (e) {
         // 埋め込めない画像は、字形の中で描かない (emit の image)。同じ理由の知らせは 1 度だけ
         const why = e instanceof Error ? e.message : String(e);
-        self.warnOnce(`image:${why}`, diag('pdf/color-glyph-image', msg(`PDF: 色つきの字形の画像を埋め込めません (${why})。その画像は描きません`, `PDF: cannot embed the image of a color glyph (${why}); that image is not drawn`)));
+        self.warnOnce(`image:${why}`, diag('pdf/color-glyph-image', msg(`PDF: 色つきの字形の画像を埋め込めません (${why})。その画像は描画しません`, `PDF: cannot embed the image of a color glyph (${why}); that image is not drawn`)));
       }
     }
     if (alpha) self.usedAlpha = true;
@@ -314,7 +314,7 @@ export class PdfColorGlyphs {
     } else {
       // 色つきでない字形: 輪郭を、文字の色 (置くときの塗りの色) で塗る。
       // SVG の表に絵があるのに読めなかった字形 (XML を読む関数が無い、SVG の読み手が扱えない機能を使っている) は、書体ごとに 1 度知らせる
-      if (cf.tables.svg && cf.svgDocument(gid)) this.warnOnce(`svg:${font.key}`, diag('pdf/color-glyph-svg', msg(`PDF: ${font.family} の SVG の表の字形に、図形にできないものがあります。その字は、輪郭を文字の色で描きます`, `PDF: some glyphs in the SVG table of ${font.family} cannot be converted to shapes; those glyphs are drawn as outlines in the text color`), { font: font.family }));
+      if (cf.tables.svg && cf.svgDocument(gid)) this.warnOnce(`svg:${font.key}`, diag('pdf/color-glyph-svg', msg(`PDF: ${font.family} の SVG の表の字形に、図形にできないものがあります。その文字は、アウトラインを文字の色で描画します`, `PDF: some glyphs in the SVG table of ${font.family} cannot be converted to shapes; those glyphs are drawn as outlines in the text color`), { font: font.family }));
       const outline = cf.outline(gid);
       box = segsBox(outline);
       body = outline.length ? `${pathOps(outline)}f\n` : '';
@@ -490,7 +490,7 @@ export class PdfColorGlyphs {
       case COMPOSITE.XOR:
         return masked(o.source, o.backdrop, true) + masked(o.backdrop, o.source, true);
       default:
-        this.warnOnce('plus', diag('pdf/color-glyph-plus', msg('PDF: 色つきの字形の合成の種類 PLUS (足し算) は、ふつうの重ねで描きます', 'PDF: the color glyph composite mode PLUS is drawn as normal source-over compositing')));
+        this.warnOnce('plus', diag('pdf/color-glyph-plus', msg('PDF: 色つきの字形の合成の種類 PLUS (足し算) は、ふつうの重ねで描画します', 'PDF: the color glyph composite mode PLUS is drawn as normal source-over compositing')));
         return `/${form(o.backdrop)} Do\n/${form(o.source)} Do\n`;
     }
   }

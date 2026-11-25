@@ -80,11 +80,11 @@ describe('既定の取り先から取った中身を照らす (組版)', () => {
     const r = await typeset(html, { loadFont, files: [{ name: 'fig.drawio', data: fig }], drawio: { fetchStencils } });
     expect(asked.sort()).toEqual([drawioImageUrl('img/lib/clip_art/a/b.svg'), DRAWIO_STENCILS_URL]);
     const w = r.warnings.filter((x) => /draw\.io|drawio/.test(x));
-    expect(w).toContain(`draw.io の配布物 (${DRAWIO_HASH_TAG}) から取ったファイルの中身が、版の SHA-256 の一覧と合わないので使いません (fetchStencils): js/stencils.min.js`);
+    expect(w).toContain(`draw.io の配布物 (${DRAWIO_HASH_TAG}) から取得したファイルの中身が、そのバージョンの SHA-256 の一覧と合わないので使いません (fetchStencils): js/stencils.min.js`);
     expect(w).toContain(`draw.io の配布物 (${DRAWIO_HASH_TAG}) の SHA-256 の一覧に無いファイルなので使いません (fetchStencils): img/lib/clip_art/a/b.svg`);
-    expect(w.some((x) => x.includes('を取れません'))).toBe(false);
+    expect(w.some((x) => x.includes('を取得できません'))).toBe(false);
     // 使わなかったので、形は描けない
-    expect(w.some((x) => x.includes('mxgraph.test.box') && x.includes('描けない'))).toBe(true);
+    expect(w.some((x) => x.includes('mxgraph.test.box') && x.includes('描画できない'))).toBe(true);
     // 英語の文
     const en = await typeset(html, { loadFont, lang: 'en', files: [{ name: 'fig.drawio', data: fig }], drawio: { fetchStencils } });
     expect(en.warnings).toContain(`the file fetched from draw.io's distribution (${DRAWIO_HASH_TAG}) does not match the SHA-256 listed for that version, so it is not used (fetchStencils): js/stencils.min.js`);

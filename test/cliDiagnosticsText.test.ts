@@ -11,13 +11,13 @@ import { DiagnosticList, MAX_DIAGNOSTICS_PER_CODE, diag, type Diagnostic } from 
 const glyph = (cp: number, n = 1): Diagnostic => {
   const ch = String.fromCodePoint(cp);
   const u = `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
-  return { ...diag('font/missing-glyph', `読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます): ${ch} (${u})`, { char: ch, codePoint: u }), ...(n > 1 ? { count: n } : {}) };
+  return { ...diag('font/missing-glyph', `読み込んだどのフォントにも字形の無い文字があります (字形の無い文字の形で出ます): ${ch} (${u})`, { char: ch, codePoint: u }), ...(n > 1 ? { count: n } : {}) };
 };
 
 describe('診断の文字の出力のまとめ', () => {
   it('少ない診断は、1 件 1 行のまま', () => {
     const ds = [diag('layout/line-overflow', 'a'), diag('css/unknown-property', 'b', { property: 'x' }), glyph(0x0a2d, 4)];
-    expect(diagnosticTextLines(ds)).toEqual(['  誤り [layout/line-overflow] a', '  警告 [css/unknown-property] b', '  誤り [font/missing-glyph] 読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます): ਭ (U+0A2D) (4 件)']);
+    expect(diagnosticTextLines(ds)).toEqual(['  エラー [layout/line-overflow] a', '  警告 [css/unknown-property] b', '  エラー [font/missing-glyph] 読み込んだどのフォントにも字形の無い文字があります (字形の無い文字の形で出ます): ਭ (U+0A2D) (4 件)']);
   });
 
   it('字形の無い字は、多い順に 20 字の 1 行にまとめ、上限で省いた字も「ほか n 種」に数える', () => {
@@ -28,10 +28,10 @@ describe('診断の文字の出力のまとめ', () => {
     l.add(diag('layout/line-overflow', 'b'));
     const lines = diagnosticTextLines(l.list);
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toBe('  誤り [layout/line-overflow] a');
-    expect(lines[1]).toMatch(/^ {2}誤り \[font\/missing-glyph\] 読み込んだどの書体にも字形の無い字があります \(字形の無い字の形で出ます\): ਀ \(U\+0A00 ×10\)、ਁ \(U\+0A01 ×9\)、ਂ \(U\+0A02 ×8\)、ਃ \(U\+0A03\)、/);
+    expect(lines[0]).toBe('  エラー [layout/line-overflow] a');
+    expect(lines[1]).toMatch(/^ {2}エラー \[font\/missing-glyph\] 読み込んだどのフォントにも字形の無い文字があります \(字形の無い文字の形で出ます\): ਀ \(U\+0A00 ×10\)、ਁ \(U\+0A01 ×9\)、ਂ \(U\+0A02 ×8\)、ਃ \(U\+0A03\)、/);
     expect(lines[1]).toContain(`(多い順に ${TEXT_LINES_PER_CODE} 字) ほか ${MAX_DIAGNOSTICS_PER_CODE + 5 - TEXT_LINES_PER_CODE} 種`);
-    expect(lines[2]).toBe('  誤り [layout/line-overflow] b');
+    expect(lines[2]).toBe('  エラー [layout/line-overflow] b');
   });
 
   it('ほかの名前は 20 行まで書き、残りと上限で省いた分を「同じ種類の…がほかに n 件 (m 種)」の 1 行にする', () => {
@@ -45,7 +45,7 @@ describe('診断の文字の出力のまとめ', () => {
     // 残りは、残した 180 種 (うち 1 つは 4 件) と、上限で省いた 3 種
     const kinds = MAX_DIAGNOSTICS_PER_CODE - TEXT_LINES_PER_CODE + 3;
     expect(lines[TEXT_LINES_PER_CODE]).toBe(`  警告 [css/unsupported] 同じ種類の警告がほかに ${kinds + 3} 件 (${kinds} 種) あります (--diagnostics json では 1 件ずつ書きます)`);
-    expect(lines[TEXT_LINES_PER_CODE + 1]).toBe('  誤り [layout/line-overflow] a');
+    expect(lines[TEXT_LINES_PER_CODE + 1]).toBe('  エラー [layout/line-overflow] a');
   });
 });
 

@@ -447,7 +447,7 @@ export async function prepareHtml(
   if (ignored.length)
     warnings.push(
       diag('css/unreferenced-stylesheet', msg(
-        `文書から参照されていない CSS は当てません: ${ignored.join('、')} (--css で名指しすれば、利用者のスタイルシートとして足します)`,
+        `文書から参照されていない CSS は当てません: ${ignored.join('、')} (--css で名前を指定すれば、利用者のスタイルシートとして追加します)`,
         `CSS not referenced from the document is not applied: ${ignored.join(', ')} (name it with --css to add it as a user stylesheet)`,
       )),
     );

@@ -53,7 +53,7 @@ describe('SVG の foreignObject の中身を、本文と同じ組版で組む', 
   it('MathML の foreignObject も組む (前は仮の枠)', async () => {
     const body = '<foreignObject x="0" y="0" width="200" height="100"><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mi>a</mi><mi>b</mi></mfrac></math></foreignObject>';
     const r = await typesetHtml('<img src="m.svg" style="width:200px">', { loadFont, files: [{ name: 'm.svg', data: svgFile(body) }] });
-    expect(r.warnings.join('\n')).not.toMatch(/仮の枠/);
+    expect(r.warnings.join('\n')).not.toMatch(/プレースホルダー/);
     const ops = await pageOps(await r.toPdf());
     // 分数の線と字 (輪郭の曲線)
     expect((ops.match(/ c\n/g) ?? []).length).toBeGreaterThan(5);
@@ -114,7 +114,7 @@ describe('foreignObject の中身に、SVG の <style> と祖先の書式を当�
       expect(drawnText(a.ops)).toBeGreaterThan(0);
       expect(a.ops).toMatch(/0\.8 0 0 rg/);
       expect(glyphFills(a.ops)).toBeGreaterThan(3);
-      expect(a.warnings.join('\n')).not.toMatch(/foreignObject|行内の箱の中のブロック/);
+      expect(a.warnings.join('\n')).not.toMatch(/foreignObject|行内のボックスの中のブロック/);
       const b = await opsOf(direct(directLabel));
       expect(a.ops).toBe(b.ops);
       // 書体の指定が効いている (既定の明朝のものと違う)

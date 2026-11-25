@@ -340,7 +340,7 @@ export function installPathOperators(I: Interp, G: Graphics) {
     const p = I.pop();
     if (p.t !== 'array') throw new PSError('typecheck');
     if (p.n === 2 && p.a[p.o].t === 'string') {
-      I.warn(msg('符号化したユーザパス', 'encoded user paths'));
+      I.warn(msg('符号化したユーザーパス', 'encoded user paths'));
       return;
     }
     I.execProc({ ...p, x: true });

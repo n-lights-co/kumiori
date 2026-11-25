@@ -191,7 +191,7 @@ interface TypeCheck {
 }
 
 const TYPE_CHECKS: TypeCheck[] = [
-  { type: 'TypesetOptions', file: 'src/api.ts', decl: 'export interface TypesetOptions', section: '組み方の選択肢 (options)', where: 'table' },
+  { type: 'TypesetOptions', file: 'src/api.ts', decl: 'export interface TypesetOptions', section: '組み方のオプション (options)', where: 'table' },
   { type: 'TypesetterOptions', file: 'src/api.ts', decl: 'export type TypesetterOptions =', section: '入口の関数', where: 'text' },
   { type: 'TypesetResult', file: 'src/api.ts', decl: 'export interface TypesetResult', section: '組んだ結果 (TypesetResult)', where: 'table' },
   { type: 'PdfOptions', file: 'src/api.ts', decl: 'export interface PdfOptions', section: 'PDF にする (toPdf)', where: 'table' },
@@ -202,7 +202,7 @@ const TYPE_CHECKS: TypeCheck[] = [
   { type: 'TextStyle', file: 'src/textMeasure.ts', decl: 'export interface TextStyle', section: '文書を作らずに文字列を測る (measureText・breakLines)', where: 'table' },
   { type: 'MeasuredText', file: 'src/textMeasure.ts', decl: 'export interface MeasuredText', section: '文書を作らずに文字列を測る (measureText・breakLines)', where: 'table' },
   { type: 'MeasuredLine', file: 'src/textMeasure.ts', decl: 'export interface MeasuredLine', section: '文書を作らずに文字列を測る (measureText・breakLines)', where: 'table' },
-  { type: 'RenderPageOptions', file: 'src/api.ts', decl: 'export interface RenderPageOptions', section: 'Canvas に描く (renderPage)', where: 'table' },
+  { type: 'RenderPageOptions', file: 'src/api.ts', decl: 'export interface RenderPageOptions', section: 'Canvas に描画する (renderPage)', where: 'table' },
   { type: 'RenderPageSvgOptions', file: 'src/api.ts', decl: 'export interface RenderPageSvgOptions', section: 'SVG にする (renderPageToSvg)', where: 'table' },
   { type: 'RenderPagePngOptions', file: 'src/api.ts', decl: 'export interface RenderPagePngOptions', section: 'PNG にする (renderPageToPng)', where: 'text' },
   { type: 'TypesetPdfOptions', file: 'src/api.ts', decl: 'export interface TypesetPdfOptions', section: 'PDF だけを作る (typesetToPdf)', where: 'text' },
@@ -212,11 +212,11 @@ const TYPE_CHECKS: TypeCheck[] = [
   { type: 'KumioriPlugin', file: 'src/imageFormats.ts', decl: 'export interface KumioriPlugin', section: 'プラグイン', where: 'text' },
   { type: 'ImageFormat', file: 'src/imageFormats.ts', decl: 'export interface ImageFormat', section: 'プラグイン', where: 'text' },
   { type: 'ImageFormatContext', file: 'src/imageFormats.ts', decl: 'export interface ImageFormatContext', section: 'プラグイン', where: 'table' },
-  { type: 'FontLoaderOptions', file: 'src/nodeFonts.ts', decl: 'export interface FontLoaderOptions', section: 'Node の部品 (kumiori/node)', where: 'text' },
-  { type: 'SystemFontOptions', file: 'src/nodeSystemFonts.ts', decl: 'export interface SystemFontOptions', section: 'Node の部品 (kumiori/node)', where: 'text' },
+  { type: 'FontLoaderOptions', file: 'src/nodeFonts.ts', decl: 'export interface FontLoaderOptions', section: 'Node のモジュール (kumiori/node)', where: 'text' },
+  { type: 'SystemFontOptions', file: 'src/nodeSystemFonts.ts', decl: 'export interface SystemFontOptions', section: 'Node のモジュール (kumiori/node)', where: 'text' },
   { type: 'DEFAULT_FONTS', file: 'src/index.ts', decl: 'export const DEFAULT_FONTS:', section: '入口の関数', where: 'text' },
   { type: 'Diagnostic', file: 'src/diagnostics.ts', decl: 'export interface Diagnostic', section: '診断 (diagnostics)', where: 'table' },
-  { type: 'TypesetProgress', file: 'src/callContext.ts', decl: 'export interface TypesetProgress', section: '組版を止める・進み具合 (signal・onProgress)', where: 'text' },
+  { type: 'TypesetProgress', file: 'src/callContext.ts', decl: 'export interface TypesetProgress', section: '組版を止める・進捗 (signal・onProgress)', where: 'text' },
   { type: 'ResourceContext', file: 'src/api.ts', decl: 'export interface ResourceContext', section: 'resolveResource', where: 'text' },
   { type: 'SnapshotOptions', file: 'src/snapshot.ts', decl: 'export interface SnapshotOptions', section: 'JS が組み上げたページを組む (snapshotDocument)', where: 'table' },
   { type: 'DocumentSnapshot', file: 'src/snapshot.ts', decl: 'export interface DocumentSnapshot', section: 'JS が組み上げたページを組む (snapshotDocument)', where: 'table' },
@@ -226,7 +226,7 @@ const TYPE_CHECKS: TypeCheck[] = [
  * 公開の関数・値と、それを書く所。kumiori の入口のものは、説明書 (docs の同じ言語の文書) のどこか
  * (Area Tree をたどる関数は docs/area-tree.md、draw.io の関数は docs/drawio.md に書く)。kumiori/node の部品は、library.md のその節の表
  */
-const EXPORT_CHECKS: Array<{ file: string; section?: string }> = [{ file: 'src/index.ts' }, { file: 'src/node.ts', section: 'Node の部品 (kumiori/node)' }];
+const EXPORT_CHECKS: Array<{ file: string; section?: string }> = [{ file: 'src/index.ts' }, { file: 'src/node.ts', section: 'Node のモジュール (kumiori/node)' }];
 /** 同じ言語の説明書 (docs/*.md か docs/en/*.md) を 1 つにつないだもの */
 const allDocs = (libraryFile: string) => {
   const dir = path.dirname(libraryFile);

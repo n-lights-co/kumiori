@@ -24,7 +24,7 @@ describe('模様の線の輪郭', () => {
     const r = run('/Pattern setcolorspace 1 setlinejoin 0 0 moveto 100000 { 1 0 rlineto 0 1 rlineto } repeat stroke');
     expect(r.error).toBeUndefined();
     expect(r.G.items.length).toBe(0);
-    expect([...r.I.warnings]).toContain('模様の塗り');
+    expect([...r.I.warnings]).toContain('パターンの塗り');
     // 前は 20 万点の輪郭 (丸いつなぎ目で 1 つ 25 点) を作ってから捨てていた
     expect(cpuClock() - t).toBeLessThan(scaled(3000));
   });
@@ -105,7 +105,7 @@ describe('描画の件数の上限', () => {
       { maxDrawCost: 1000 },
     );
     expect(r.error).toBeUndefined();
-    expect([...r.I.warnings]).toContain('模様の写しが多すぎるので、途中まで描きます');
+    expect([...r.I.warnings]).toContain('パターンのコピーが多すぎるので、途中まで描画します');
     expect(r.G.items.length).toBeLessThanOrEqual(1000);
     // 最後の黒い四角が描かれている
     const last = r.G.items[r.G.items.length - 1];

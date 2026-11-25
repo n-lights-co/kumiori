@@ -124,8 +124,8 @@ describe('M2: fonts の壊れた書体ファイル', () => {
     new DataView(ttc.buffer).setUint32(8, 1_000_000);
     const t = await createTypesetter({ loadFont, fonts: [{ name: 'bad.ttc', data: ttc }, { name: 'short.ttf', data: new Uint8Array([1, 2, 3]) }, { name: 'Arimo-Regular.ttf', data: fontFile('Arimo-Regular.ttf') }] });
     const r = await t.typeset('<p style="font-family: Arimo">abc</p>', { kind: 'html' });
-    expect(r.warnings.filter((w) => /bad\.ttc の書体を読めません/.test(w))).toHaveLength(1);
-    expect(r.warnings.filter((w) => /short\.ttf の書体を読めません/.test(w))).toHaveLength(1);
+    expect(r.warnings.filter((w) => /bad\.ttc のフォントを読めません/.test(w))).toHaveLength(1);
+    expect(r.warnings.filter((w) => /short\.ttf のフォントを読めません/.test(w))).toHaveLength(1);
     expect(r.pageCount).toBe(1);
     expect(r.areaTree.resources?.fonts.some((f) => /Arimo/.test(f.family))).toBe(true);
   });
@@ -220,7 +220,7 @@ describe('M6: http(s) の画像の取得 (fetchImages)', () => {
     });
     const off = await typeset(doc, { kind: 'fo', loadFont, fetchImages: false });
     expect(fetched).toEqual([]);
-    expect(off.warnings.filter((w) => /画像を取りません/.test(w))).toHaveLength(2);
+    expect(off.warnings.filter((w) => /画像を取得しません/.test(w))).toHaveLength(2);
     await typeset(doc, { kind: 'fo', loadFont, fetchImages: (u) => /^https:\/\/example\.com\//.test(u) });
     expect(fetched).toEqual(['https://example.com/ok.png']);
     fetched.length = 0;

@@ -115,7 +115,7 @@ describe('リンクの動作を安全なものに限る (HTM-20)', () => {
     expect(w[0]).toContain('Launch ×1 (x.exe)');
     expect(w[0]).toContain('//host ×1');
     // 文書を読んだときの警告は、出力の形式 (PDF・SVG・PNG) によらない文 (「PDF に書きませんでした」とは言わない)
-    expect(w[0]).toMatch(/^安全のため、リンクの動作を通しません \(PDF・SVG に書くときは、リンクにせず、字だけを組みます。/);
+    expect(w[0]).toMatch(/^安全のため、リンクの動作を通しません \(PDF・SVG に書くときは、リンクにせず、文字だけを組みます。/);
   });
 
   it('警告の URL は先頭だけ', async () => {

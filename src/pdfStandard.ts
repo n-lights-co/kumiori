@@ -78,7 +78,7 @@ export function pdfAOf(o: PdfAOptions | undefined): PdfA | undefined {
   if (!o) return undefined;
   if (o.version === 'A-2b') return { label: 'PDF/A-2b', part: 2, conformance: 'B' };
   if (o.version === 'A-3b') return { label: 'PDF/A-3b', part: 3, conformance: 'B' };
-  throw new KumioriOptionError(msg(`PDF/A の版 "${String(o.version)}" は使えません (A-2b・A-3b)`, `PDF/A version "${String(o.version)}" is not supported (A-2b or A-3b)`), 'pdfa.version');
+  throw new KumioriOptionError(msg(`PDF/A のバージョン "${String(o.version)}" は使えません (A-2b・A-3b)`, `PDF/A version "${String(o.version)}" is not supported (A-2b or A-3b)`), 'pdfa.version');
 }
 
 /** ICC プロファイルの色空間 (頭の 16〜19 バイト目。ICC.1:2010 §7.2.6) と、その成分の数 (出力意図の流れの N) */
@@ -110,7 +110,7 @@ function conditionOf(o: PdfXOptions): { condition: string; registered: boolean }
  */
 function requireProfileIfUnregistered(o: PdfXOptions, label: string) {
   if (o.profile || conditionOf(o).registered) return;
-  throw new KumioriPdfError('pdfx/profile-required', msg(`${label} では、印刷条件 "${o.condition}" が ICC の登録簿に無いので、出力の ICC プロファイル (CMYK) が要ります (pdfx.profile)。登録簿の名前 (JC200103 など) にするか、プロファイルを渡してください`, `${label}: the printing condition "${o.condition}" is not in the ICC registry, so an output ICC profile (CMYK) is required (pdfx.profile). Use a registered name (such as JC200103) or pass a profile`));
+  throw new KumioriPdfError('pdfx/profile-required', msg(`${label} では、印刷条件 "${o.condition}" が ICC のレジストリに無いので、出力の ICC プロファイル (CMYK) が要ります (pdfx.profile)。レジストリの名前 (JC200103 など) にするか、プロファイルを渡してください`, `${label}: the printing condition "${o.condition}" is not in the ICC registry, so an output ICC profile (CMYK) is required (pdfx.profile). Use a registered name (such as JC200103) or pass a profile`));
 }
 
 /** PDF の出力の規格の方針 */
@@ -263,7 +263,7 @@ export function pdfStandardOf(o: PdfXOptions | undefined): PdfStandard | undefin
   if (o.version === 'X-4') return PDF_X4;
   if (o.version === 'X-1a') return PDF_X1A_2001;
   if (o.version === 'X-1a:2003') return PDF_X1A_2003;
-  throw new KumioriOptionError(msg(`PDF/X の版 "${String(o.version)}" は使えません (X-1a・X-1a:2003・X-3・X-4)`, `PDF/X version "${String(o.version)}" is not supported (X-1a, X-1a:2003, X-3 or X-4)`), 'pdfx.version');
+  throw new KumioriOptionError(msg(`PDF/X のバージョン "${String(o.version)}" は使えません (X-1a・X-1a:2003・X-3・X-4)`, `PDF/X version "${String(o.version)}" is not supported (X-1a, X-1a:2003, X-3 or X-4)`), 'pdfx.version');
 }
 
 /**

@@ -118,7 +118,7 @@ export function createState(options: DrawioOptions): DrawioState {
           const p = path.slice(0, 200);
           warn(
             pin === 'mismatch'
-              ? msgIn(ctx.lang, `draw.io の配布物 (${DRAWIO_HASH_TAG}) から取ったファイルの中身が、版の SHA-256 の一覧と合わないので使いません (fetchStencils): ${p}`, `the file fetched from draw.io's distribution (${DRAWIO_HASH_TAG}) does not match the SHA-256 listed for that version, so it is not used (fetchStencils): ${p}`)
+              ? msgIn(ctx.lang, `draw.io の配布物 (${DRAWIO_HASH_TAG}) から取得したファイルの中身が、そのバージョンの SHA-256 の一覧と合わないので使いません (fetchStencils): ${p}`, `the file fetched from draw.io's distribution (${DRAWIO_HASH_TAG}) does not match the SHA-256 listed for that version, so it is not used (fetchStencils): ${p}`)
               : msgIn(ctx.lang, `draw.io の配布物 (${DRAWIO_HASH_TAG}) の SHA-256 の一覧に無いファイルなので使いません (fetchStencils): ${p}`, `the file is not in the SHA-256 list of draw.io's distribution (${DRAWIO_HASH_TAG}), so it is not used (fetchStencils): ${p}`),
           );
           return null;
@@ -128,7 +128,7 @@ export function createState(options: DrawioOptions): DrawioState {
       if (!fetched && libraries.some((l) => !registry!.hasLibrary(l))) {
         fetched = true;
         const b = rejoin(thisCall(), await get(DRAWIO_STENCILS_PATH));
-        if (b !== null && (b === undefined || !registry.add(new TextDecoder().decode(b)))) warn(msgIn(ctx.lang, 'draw.io の図形ライブラリを取れません (fetchStencils)', 'could not fetch the draw.io shape libraries (fetchStencils)'));
+        if (b !== null && (b === undefined || !registry.add(new TextDecoder().decode(b)))) warn(msgIn(ctx.lang, 'draw.io の図形ライブラリを取得できません (fetchStencils)', 'could not fetch the draw.io shape libraries (fetchStencils)'));
       }
       const want = images.filter((p) => isDrawioImagePath(p) && !registry!.image(p) && !tried.has(p)).slice(0, Math.max(0, (ctx.limits?.drawioImages ?? MAX_BUNDLE_IMAGES) - tried.size));
       for (const p of want) tried.add(p);
@@ -136,7 +136,7 @@ export function createState(options: DrawioOptions): DrawioState {
       want.forEach((p, k) => {
         const b = got[k];
         if (b === null) return;
-        if (b === undefined) warn(msgIn(ctx.lang, `draw.io の配布物の画像を取れません (fetchStencils): ${p.slice(0, 200)}`, `could not fetch the image from draw.io's distribution (fetchStencils): ${p.slice(0, 200)}`));
+        if (b === undefined) warn(msgIn(ctx.lang, `draw.io の配布物の画像を取得できません (fetchStencils): ${p.slice(0, 200)}`, `could not fetch the image from draw.io's distribution (fetchStencils): ${p.slice(0, 200)}`));
         else if (!registry!.addImage(p, b)) warn(msgIn(ctx.lang, `draw.io の図の画像として読めません (PNG・JPEG・SVG でない): ${p.slice(0, 200)}`, `not a PNG, JPEG or SVG image for a draw.io diagram: ${p.slice(0, 200)}`));
       });
       return registry.empty ? undefined : registry;

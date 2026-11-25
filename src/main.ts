@@ -463,7 +463,7 @@ const readDocument = async (f: File) => decodeDocumentText(new Uint8Array(await 
 
 /** 取らなかった画像 (自分の計算機の URL) を、警告に足す (typeset の「画像を取りません」と同じ文) */
 function noteNotFetched(srcs: string[]) {
-  for (const src of srcs) loadWarnings.push(entryOf(diag('resource/not-fetched', msg(`画像を取りません: ${src.slice(0, 200)}`, `image not fetched: ${src.slice(0, 200)}`), { url: src.slice(0, 200), kind: 'image' })));
+  for (const src of srcs) loadWarnings.push(entryOf(diag('resource/not-fetched', msg(`画像を取得しません: ${src.slice(0, 200)}`, `image not fetched: ${src.slice(0, 200)}`), { url: src.slice(0, 200), kind: 'image' })));
 }
 /** 読み込みの報告のうち、黙って無視しないもの (未対応の指定・動作を書かなかったリンク) を、警告に足す (typeset の warnings と同じ文) */
 function noteReport(report: ImportReport, isFo: boolean, unknownCss?: Record<string, number>, invalidCss?: Record<string, number>) {
@@ -474,7 +474,7 @@ function noteReport(report: ImportReport, isFo: boolean, unknownCss?: Record<str
   if (dropped) loadWarnings.push(entryOf(diag('link/action-dropped', droppedLinkWarning(dropped, 'read'))));
   // 読み込みが上限に当たったことの診断 (タグ付き PDF の表の構造の上限など。ライブラリの typeset が出すものと同じ)
   for (const d of report.diagnostics ?? []) loadWarnings.push(entryOf(d));
-  const unknownText = (p: string) => msg(`知らない CSS のプロパティを無視しました (綴りの誤りか未対応): ${p}`, `ignored unknown CSS properties (misspelled or unsupported): ${p}`);
+  const unknownText = (p: string) => msg(`知らない CSS のプロパティを無視しました (スペルミスか未対応): ${p}`, `ignored unknown CSS properties (misspelled or unsupported): ${p}`);
   const unknown = summarizeCounts(unknownCss);
   if (unknown) loadWarnings.push({ text: unknownText(unknown), diags: countedDiagnostics(unknownCss, (property) => diag('css/unknown-property', unknownText(property), { property })) });
   const invalid = summarizeCounts(invalidCss);
@@ -717,7 +717,7 @@ function pickFromFolder(files: File[]): File[] {
   const path = (f: File) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
   const depth = (f: File) => path(f).split('/').length;
   const chosen = [...docs].sort((a, b) => Number(/^index\.x?html?$/i.test(b.name)) - Number(/^index\.x?html?$/i.test(a.name)) || depth(a) - depth(b) || path(a).localeCompare(path(b)))[0];
-  setStatus(`フォルダに文書が ${docs.length} 個あります。${path(chosen)} を開きます`);
+  setStatus(`フォルダーに文書が ${docs.length} 個あります。${path(chosen)} を開きます`);
   return files.filter((f) => !isDocument(f) || f === chosen);
 }
 
@@ -930,7 +930,7 @@ fontFile.addEventListener('change', async () => {
   const added: string[] = [];
   for (const file of files) {
     const list = splitFontFile(await file.arrayBuffer());
-    if (!list.length) setStatus(`${file.name}: 読み込める書体がありません`);
+    if (!list.length) setStatus(`${file.name}: 読み込めるフォントがありません`);
     for (const f of list) {
       if (await registerUserFont(f)) {
         added.push(f.family);
@@ -940,7 +940,7 @@ fontFile.addEventListener('change', async () => {
   }
   if (!added.length) return;
   clearFontsBtn.hidden = false;
-  setStatus(`書体を読み込みました: ${added.join(', ')}`);
+  setStatus(`フォントを読み込みました: ${added.join(', ')}`);
   // いま出している文書 (XSL-FO・HTML。見本なら見本) を組み直す (HTML を出しているときに、前に開いた XSL-FO に戻さない)
   if (deferWhileOpening()) return;
   if (lastSource) reloadCurrent();

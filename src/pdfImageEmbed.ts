@@ -189,7 +189,7 @@ export async function preparePdfPage(src: { bytes: Uint8Array; page: number; box
   const reach = walk(context, [resources, group].filter((o): o is PDFObject => o !== undefined), lim.pdfImageDepth, lim.pdfImageObjects);
   if ('limit' in reach) {
     noteLimitReached(reach.limit);
-    return { error: msg(`資源の${reach.limit === 'pdfImageDepth' ? '入れ子の深さ' : 'オブジェクトの数'}が上限 ${reach.limit} (${lim[reach.limit]}) を超えます`, `the ${reach.limit === 'pdfImageDepth' ? 'nesting depth' : 'number of objects'} of the resources exceeds the limit ${reach.limit} (${lim[reach.limit]})`) };
+    return { error: msg(`リソースの${reach.limit === 'pdfImageDepth' ? '入れ子の深さ' : 'オブジェクトの数'}が上限 ${reach.limit} (${lim[reach.limit]}) を超えます`, `the ${reach.limit === 'pdfImageDepth' ? 'nesting depth' : 'number of objects'} of the resources exceeds the limit ${reach.limit} (${lim[reach.limit]})`) };
   }
   // 中身の流れを解いてつなぐ (大きさは、資源の中の流れと合わせて pdfImageStreamBytes まで。時間は pdfImageLoadMs まで。
   // ページの範囲では、範囲の全体で分け合う)
@@ -206,7 +206,7 @@ export async function preparePdfPage(src: { bytes: Uint8Array; page: number; box
     }
     return { error: msg(`${what[0]}の圧縮を解けません`, `cannot decompress the ${what[1]}`) };
   };
-  const PAGE: [string, string] = ['中身の流れ', 'content streams'];
+  const PAGE: [string, string] = ['中身のストリーム', 'content streams'];
   if (Date.now() > deadline) return failed('time', PAGE);
   const contents = context.lookup(entry.dict.get(PDFName.of('Contents')) ?? PDFArray.withContext(context));
   const streams = contents instanceof PDFArray ? contents.asArray().map((o) => context.lookup(o)) : [contents];
@@ -221,7 +221,7 @@ export async function preparePdfPage(src: { bytes: Uint8Array; page: number; box
   // 中身の流れの MCID は、元の文書の構造の木を指すもので、組んだ文書では行き先が無い。タグ付き PDF でないときも意味を持たないので、いつも外す
   const content: Uint8Array = withoutMcids(concat(parts), resources);
   // 資源の中の内容の流れ: 解いて (縛りの中で) MCID を外し、StructParents を消したものに置き換える。ICCBased の流れは、解けることだけを確かめる
-  const NESTED: [string, string] = ['資源の中の流れ', 'streams in the resources'];
+  const NESTED: [string, string] = ['リソースの中のストリーム', 'streams in the resources'];
   for (const c of reach.contents) {
     const r = nestedContent(c.stream, c.resources ?? resources, budget, deadline);
     if (r !== true) return failed(r, NESTED);

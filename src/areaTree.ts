@@ -205,7 +205,7 @@ export function parseAreaTree(json: string): AreaTree {
   }
   if (!tree || typeof tree !== 'object') throw new AreaTreeFormatError(msg('Area Tree ではありません', 'not an Area Tree'));
   const version = (tree as { schemaVersion?: unknown }).schemaVersion;
-  if (version !== AREA_TREE_SCHEMA_VERSION && version !== 1 && version !== 2) throw new AreaTreeFormatError(msg(`版 ${String(version)} は読めません (読めるのは 1〜${AREA_TREE_SCHEMA_VERSION})`, `version ${String(version)} cannot be read (versions 1 to ${AREA_TREE_SCHEMA_VERSION} can)`));
+  if (version !== AREA_TREE_SCHEMA_VERSION && version !== 1 && version !== 2) throw new AreaTreeFormatError(msg(`バージョン ${String(version)} は読めません (読めるのは 1〜${AREA_TREE_SCHEMA_VERSION})`, `version ${String(version)} cannot be read (versions 1 to ${AREA_TREE_SCHEMA_VERSION} can)`));
   if (!Array.isArray(tree.sheets)) throw new AreaTreeFormatError(msg('sheets がありません', 'no sheets'));
   if (!Array.isArray(tree.warnings)) tree.warnings = [];
   const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
@@ -221,7 +221,7 @@ export function parseAreaTree(json: string): AreaTree {
       for (const k of ['x', 'y', 'width', 'height'] as const) if (!num(a[k])) throw new AreaTreeFormatError(msg(`${path} (${a.type}): ${k} が数ではありません`, `${path} (${a.type}): ${k} is not a number`));
       const kids =
         a.type === 'sheet' ? [a.page] : a.type === 'page' ? [a.regionBody, ...(a.behindAreas ?? []), ...(a.absoluteAreas ?? [])] : a.type === 'ruby' ? [...(a.base ?? []), ...(a.ruby ?? [])] : a.type === 'tate-chu-yoko' ? (a.glyphs ?? []) : a.type === 'glyph' || a.type === 'image' ? [] : (a as { children?: unknown }).children;
-      if (!Array.isArray(kids)) throw new AreaTreeFormatError(msg(`${path} (${a.type}): 子の欄がありません`, `${path} (${a.type}): no children field`));
+      if (!Array.isArray(kids)) throw new AreaTreeFormatError(msg(`${path} (${a.type}): 子のフィールドがありません`, `${path} (${a.type}): no children field`));
       if (a.type === 'page' && (!Array.isArray(a.behindAreas) || !Array.isArray(a.absoluteAreas))) throw new AreaTreeFormatError(msg(`${path} (page): behindAreas・absoluteAreas がありません`, `${path} (page): no behindAreas or absoluteAreas`));
       if (a.type === 'glyph' && typeof a.text !== 'string') throw new AreaTreeFormatError(msg(`${path} (glyph): text がありません`, `${path} (glyph): no text`));
       if (a.type === 'image' && typeof a.src !== 'string') throw new AreaTreeFormatError(msg(`${path} (image): src がありません`, `${path} (image): no src`));

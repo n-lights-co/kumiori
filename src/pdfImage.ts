@@ -106,7 +106,7 @@ export function parsePdfFragment(fragment: string | undefined, compat: boolean):
         out.notes.push({
           code: 'image/pdf-fragment',
           detail: compat
-            ? msg(`bbox=${shown(value)} は箱の名前 (MediaBox・CropBox・BleedBox・TrimBox・ArtBox) でないので、CropBox を使います`, `bbox=${shown(value)} is not a box name (MediaBox, CropBox, BleedBox, TrimBox, ArtBox); CropBox is used`)
+            ? msg(`bbox=${shown(value)} はボックスの名前 (MediaBox・CropBox・BleedBox・TrimBox・ArtBox) でないので、CropBox を使います`, `bbox=${shown(value)} is not a box name (MediaBox, CropBox, BleedBox, TrimBox, ArtBox); CropBox is used`)
             : msg(`bbox= は、互換の指定 (--compat antenna・--style ah) のときだけ読みます。CropBox を使います`, `bbox= is read only in compatibility mode (--compat antenna, --style ah); CropBox is used`),
         });
       continue;
@@ -157,8 +157,8 @@ export function countObjKeywords(b: Uint8Array): number {
 async function loadOnce(bytes: Uint8Array): Promise<LoadedPdf> {
   const notes: PdfNote[] = [];
   const at = pdfHeaderOffset(bytes);
-  if (at < 0) return invalid(msg('PDF の頭 (%PDF-) がありません', 'no PDF header (%PDF-)'));
-  if (at > 0) notes.push({ code: 'image/pdf-repaired', detail: msg(`PDF の頭の前に ${at} バイトの余分なバイトがあります`, `${at} extra bytes before the PDF header`) });
+  if (at < 0) return invalid(msg('PDF のヘッダー (%PDF-) がありません', 'no PDF header (%PDF-)'));
+  if (at > 0) notes.push({ code: 'image/pdf-repaired', detail: msg(`PDF のヘッダーの前に ${at} バイトの余分なバイトがあります`, `${at} extra bytes before the PDF header`) });
   const lim = limits();
   const tooMany = (what: string, name: 'pdfImageObjects' | 'pdfImagePages' | 'pdfImageDepth' | 'pdfImageLoadMs', value: number) => {
     noteLimitReached(name);
@@ -191,7 +191,7 @@ async function loadOnce(bytes: Uint8Array): Promise<LoadedPdf> {
       if (streamBytes === lim.pdfImageStreamBytes) noteLimitReached('pdfImageStreamBytes');
       return invalid(
         msg(
-          `オブジェクトの流れ・相互参照の流れを解いた大きさが、上限 pdfImageStreamBytes (${lim.pdfImageStreamBytes}) か、ファイルの大きさの ${PDF_OBJSTM_MAX_RATIO} 倍を超えます`,
+          `オブジェクトストリーム・相互参照ストリームを解いた大きさが、上限 pdfImageStreamBytes (${lim.pdfImageStreamBytes}) か、ファイルの大きさの ${PDF_OBJSTM_MAX_RATIO} 倍を超えます`,
           `the decompressed object streams and cross-reference streams exceed the limit pdfImageStreamBytes (${lim.pdfImageStreamBytes}) or ${PDF_OBJSTM_MAX_RATIO} times the file size`,
         ),
         notes,
@@ -207,7 +207,7 @@ async function loadOnce(bytes: Uint8Array): Promise<LoadedPdf> {
     return { ok: false, code: 'image/pdf-encrypted', detail: msg('暗号化されています', 'encrypted'), notes };
   const catalog = context.trailerInfo.Root ? context.lookup(context.trailerInfo.Root) : undefined;
   const root = catalog instanceof PDFDict ? catalog.lookup(PDFName.of('Pages')) : undefined;
-  if (!(root instanceof PDFDict)) return invalid(msg('ページの木 (カタログの Pages) がありません', 'no page tree (Pages in the catalog)'), notes);
+  if (!(root instanceof PDFDict)) return invalid(msg('ページツリー (カタログの Pages) がありません', 'no page tree (Pages in the catalog)'), notes);
   // ページの木を繰り返しでたどる (子の並びの順に、深さ優先)。輪は、たどった印で止める
   const pages: PdfPageEntry[] = [];
   const seen = new Set<PDFDict>();
@@ -220,7 +220,7 @@ async function loadOnce(bytes: Uint8Array): Promise<LoadedPdf> {
       continue;
     }
     seen.add(node);
-    if (depth > lim.pdfImageDepth) return tooMany(msg('ページの木の段の数', 'the depth of the page tree'), 'pdfImageDepth', lim.pdfImageDepth);
+    if (depth > lim.pdfImageDepth) return tooMany(msg('ページツリーの段の数', 'the depth of the page tree'), 'pdfImageDepth', lim.pdfImageDepth);
     const inherited: PdfPageEntry['inherited'] = { ...up };
     for (const k of ['MediaBox', 'CropBox', 'Rotate', 'Resources'] as const) {
       const v = node.get(PDFName.of(k));
@@ -239,10 +239,10 @@ async function loadOnce(bytes: Uint8Array): Promise<LoadedPdf> {
     if (pages.length > lim.pdfImagePages) return tooMany(msg('ページの数', 'the number of pages'), 'pdfImagePages', lim.pdfImagePages);
   }
   if (!pages.length) return invalid(msg('ページがありません', 'no pages'), notes);
-  if (cycles) notes.push({ code: 'image/pdf-repaired', detail: msg('ページの木が輪になっています (同じ節をたどり直しません)', 'the page tree has a cycle (nodes are not visited twice)') });
+  if (cycles) notes.push({ code: 'image/pdf-repaired', detail: msg('ページツリーが輪になっています (同じ節をたどり直しません)', 'the page tree has a cycle (nodes are not visited twice)') });
   const count = root.lookup(PDFName.of('Count'));
   if (count instanceof PDFNumber && count.asNumber() !== pages.length)
-    notes.push({ code: 'image/pdf-repaired', detail: msg(`ページの木の Count (${count.asNumber()}) と、たどったページの数 (${pages.length}) が違います`, `the Count of the page tree (${count.asNumber()}) differs from the pages found (${pages.length})`) });
+    notes.push({ code: 'image/pdf-repaired', detail: msg(`ページツリーの Count (${count.asNumber()}) と、たどったページの数 (${pages.length}) が違います`, `the Count of the page tree (${count.asNumber()}) differs from the pages found (${pages.length})`) });
   return { ok: true, doc, pages, notes };
 }
 

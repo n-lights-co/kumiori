@@ -1621,14 +1621,14 @@ class PdfPainter implements Painter {
         // 色つきの字形: 図形で描き直せないので、重なる透明な物は画素にできない
         const it = this.glyphItem(g, x, y, 1);
         if (it) {
-          it.opaqueOnly = msg('色つきの字形に重なる透明な物は、平らにできません', 'transparent objects overlapping a color glyph cannot be flattened');
+          it.opaqueOnly = msg('色つきの字形に重なる透明な物は、フラット化できません', 'transparent objects overlapping a color glyph cannot be flattened');
           if (fl.recording) {
             fl.recording.push({ item: it, alpha: 1 });
             return;
           }
           fl.page.items.push(it);
         }
-        if (fl.alphaMul < 1 || alphaOf(g.color) < 1) fl.doc.failures.push(msg(`${fl.pageNo} ページ目: 色つきの字形の透明は、平らにできません`, `page ${fl.pageNo}: transparency of a color glyph cannot be flattened`));
+        if (fl.alphaMul < 1 || alphaOf(g.color) < 1) fl.doc.failures.push(msg(`${fl.pageNo} ページ目: 色つきの字形の透明は、フラット化できません`, `page ${fl.pageNo}: transparency of a color glyph cannot be flattened`));
       } else if (this.flatPaint((css, k) => this.glyphItem({ ...g, color: css }, x, y, k), g.color, 1, (css) => this.drawGlyph({ ...g, color: css }, x, y))) return;
     }
     // 色つきの表 (COLR・CBDT・sbix・SVG) を持つ書体の字は、Type 3 書体の字として描く
@@ -1668,7 +1668,7 @@ class PdfPainter implements Painter {
       if (!this.failedFonts.has(g.fontFamily)) {
         this.failedFonts.add(g.fontFamily);
         const cp = (g.text.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0');
-        this.warn(diag('pdf/glyph-not-drawn', msg(`PDF: ${g.fontFamily} に描けない字があります (「${g.text}」U+${cp} など: ${errorText(e)})。その字は描きません`, `PDF: some characters cannot be drawn in ${g.fontFamily} (such as "${g.text}" U+${cp}: ${errorText(e)}); they are not drawn`), { font: g.fontFamily }));
+        this.warn(diag('pdf/glyph-not-drawn', msg(`PDF: ${g.fontFamily} に描画できない文字があります (「${g.text}」U+${cp} など: ${errorText(e)})。その文字は描画しません`, `PDF: some characters cannot be drawn in ${g.fontFamily} (such as "${g.text}" U+${cp}: ${errorText(e)}); they are not drawn`), { font: g.fontFamily }));
       }
       return;
     }
@@ -1677,7 +1677,7 @@ class PdfPainter implements Painter {
       if (!this.noNotdef.warned) {
         this.noNotdef.warned = true;
         const cp = (g.text.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0');
-        this.noNotdef.warn(diag('pdf/notdef-not-drawn', msg(`${this.noNotdef.label} では字形の無い字 (.notdef) を描けないので、書体 ${g.fontFamily} に字形の無い字 (U+${cp} など) を描きません`, `${this.noNotdef.label} does not allow the .notdef glyph, so characters with no glyph in the font ${g.fontFamily} (such as U+${cp}) are not drawn`), { font: g.fontFamily }));
+        this.noNotdef.warn(diag('pdf/notdef-not-drawn', msg(`${this.noNotdef.label} では字形の無い文字 (.notdef) を描画できないので、フォント ${g.fontFamily} に字形の無い文字 (U+${cp} など) を描画しません`, `${this.noNotdef.label} does not allow the .notdef glyph, so characters with no glyph in the font ${g.fontFamily} (such as U+${cp}) are not drawn`), { font: g.fontFamily }));
       }
       return;
     }
@@ -2766,8 +2766,8 @@ async function embedImages(
           // 透明を平らにする出力 (PDF/X-1a・X-3) は、置いた物を重なりごとに画素にする。PDF の画像は画素にする描き手が無い (3 節) ので、重なりに入れられない。
           // 順を崩して描かないように、貼らずに仮の枠にする
           if (std?.transparency === 'flatten')
-            return { which: 'pdfx', detail: msg(`${std.label} (透明を平らにする出力) では、PDF の画像を貼れません。PDF/X-4 を使ってください`, `PDF images cannot be placed in ${std.label} (output that flattens transparency); use PDF/X-4`) };
-          if (opts.pdfua && p.unembeddedFonts.length) return { which: 'pdfua', detail: msg(`埋め込まれていない書体があります (${p.unembeddedFonts.join('・')})`, `there are fonts that are not embedded (${p.unembeddedFonts.join(', ')})`) };
+            return { which: 'pdfx', detail: msg(`${std.label} (透明をフラット化する出力) では、PDF の画像を貼れません。PDF/X-4 を使ってください`, `PDF images cannot be placed in ${std.label} (output that flattens transparency); use PDF/X-4`) };
+          if (opts.pdfua && p.unembeddedFonts.length) return { which: 'pdfua', detail: msg(`埋め込まれていないフォントがあります (${p.unembeddedFonts.join('・')})`, `there are fonts that are not embedded (${p.unembeddedFonts.join(', ')})`) };
           const first = (problems: string[]) => problems.slice(0, 3).join(' / ') + (problems.length > 3 ? msg(` ほか ${problems.length - 3} 件`, ` and ${problems.length - 3} more`) : '');
           if (std?.verify) {
             const problems = rejoin(thisCall(), await pdfPageProblems(p, std.verify, { s: 'GTS_PDFX', space: 'CMYK' }));
@@ -2914,7 +2914,7 @@ async function embedImages(
       if ('refused' in r) {
         const { which, detail } = r.refused;
         const label = which === 'pdfx' ? std?.label : which === 'pdfa' ? pdfaStd?.label : 'PDF/UA-1';
-        const m = msg(`PDF の画像 ${shown} は ${label} の決まりに合わないので、埋め込まずに仮の枠で描きます: ${detail}`, `PDF image ${shown} does not meet the ${label} requirements, so it is not embedded and a placeholder frame is drawn: ${detail}`);
+        const m = msg(`PDF の画像 ${shown} は ${label} の要件に合わないので、埋め込まずにプレースホルダーで描画します: ${detail}`, `PDF image ${shown} does not meet the ${label} requirements, so it is not embedded and a placeholder frame is drawn: ${detail}`);
         if (which === 'pdfx') pdfxWarning(opts, diag('pdfx/embedded-pdf', m, { src: shown, detail }));
         else {
           const d = which === 'pdfa' ? diag('pdfa/embedded-pdf', m, { src: shown, detail }) : diag('pdfua/embedded-pdf', m, { src: shown, detail });
@@ -2931,7 +2931,7 @@ async function embedImages(
       }
       if ('error' in r) {
         const detail = r.error;
-        warn(diag('image/pdf-invalid', msg(`PDF の画像 ${shown} を埋め込めません (${detail})。仮の枠で描きます`, `PDF image ${shown} cannot be embedded (${detail}); a placeholder frame is drawn`), { src: shown, detail }));
+        warn(diag('image/pdf-invalid', msg(`PDF の画像 ${shown} を埋め込めません (${detail})。プレースホルダーで描画します`, `PDF image ${shown} cannot be embedded (${detail}); a placeholder frame is drawn`), { src: shown, detail }));
         pdfForms.set(src, null);
         continue;
       }
@@ -2939,10 +2939,10 @@ async function embedImages(
       pdfForms.set(src, { ref: r.ref, box: ps.box, rotate: ps.rotate, ...(row ? { row, W: row.reduce((a, p) => a + p.width, 0), H: Math.max(...row.map((p) => p.height)) } : {}) });
       if (r.annots) {
         const detail = msg(`注釈 ${r.annots} 個`, `${r.annots} annotation(s)`);
-        warn(diag('image/pdf-dropped', msg(`PDF の画像 ${shown} の注釈 (リンク・注記・フォームの欄など) ${r.annots} 個は持ち込みません`, `the ${r.annots} annotation(s) (links, notes, form fields and so on) of PDF image ${shown} are not carried over`), { src: shown, detail }));
+        warn(diag('image/pdf-dropped', msg(`PDF の画像 ${shown} の注釈 (リンク・注記・フォームフィールドなど) ${r.annots} 個は持ち込みません`, `the ${r.annots} annotation(s) (links, notes, form fields and so on) of PDF image ${shown} are not carried over`), { src: shown, detail }));
       }
       for (const font of r.unembeddedFonts)
-        warn(diag('image/pdf-font', msg(`PDF の画像 ${shown} の書体 ${font} は埋め込まれていません (ビューアが代わりの書体で描きます)`, `the font ${font} in PDF image ${shown} is not embedded (viewers draw it with a substitute font)`), { src: shown, font }));
+        warn(diag('image/pdf-font', msg(`PDF の画像 ${shown} のフォント ${font} は埋め込まれていません (ビューアーが代わりのフォントで描画します)`, `the font ${font} in PDF image ${shown} is not embedded (viewers draw it with a substitute font)`), { src: shown, font }));
       continue;
     }
     // SVG の image の外のファイル: SVG の場所を基準に、登録した画像を引く (文書の中の SVG (data: の URI) は、文書の場所が基準)
@@ -3119,12 +3119,12 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   // 長期保存用 (PDF/A) の版と水準。PDF/X と合わせるなら、2 つの出力意図に同じ ICC プロファイルを指させるので、プロファイルが要る (ISO 19005-2 §6.2.3)
   const pdfa = pdfAOf(opts.pdfa);
   const date = pdfDocumentDate(opts.date);
-  if (pdfa && std && !opts.pdfx?.profile) throw new KumioriPdfError('pdfx/profile-required', msg(`${std.label} と ${pdfa.label} を合わせるときは、出力の ICC プロファイル (pdfx.profile。CMYK のもの) が要ります (2 つの出力意図に同じプロファイルを指させるため)`, `Combining ${std.label} with ${pdfa.label} requires an output ICC profile (pdfx.profile, CMYK), because both output intents must refer to the same profile`));
+  if (pdfa && std && !opts.pdfx?.profile) throw new KumioriPdfError('pdfx/profile-required', msg(`${std.label} と ${pdfa.label} を合わせるときは、出力の ICC プロファイル (pdfx.profile。CMYK のもの) が要ります (2 つの出力インテントに同じプロファイルを指させるため)`, `Combining ${std.label} with ${pdfa.label} requires an output ICC profile (pdfx.profile, CMYK), because both output intents must refer to the same profile`));
   if (opts.subset ?? true) patchFontkitSubset(fonts);
   patchCffEmbedding();
   patchSmallNumbers();
   // 流して書く (opts.output): PDF/X・PDF/A は、後の検査が書いた全体を読み直し、合わなければ PDF を返さないので、流せない (api.ts が先に断る)
-  if (opts.output && (std || pdfa)) throw new KumioriOptionError(msg('PDF/X・PDF/A は流して書けません (typesetToPdf を使ってください)', 'PDF/X and PDF/A cannot be written as a stream (use typesetToPdf)'), opts.pdfx ? 'pdfx' : 'pdfa');
+  if (opts.output && (std || pdfa)) throw new KumioriOptionError(msg('PDF/X・PDF/A はストリームで書き出せません (typesetToPdf を使ってください)', 'PDF/X and PDF/A cannot be written as a stream (use typesetToPdf)'), opts.pdfx ? 'pdfx' : 'pdfa');
   // 暗号化は、PDF/X・PDF/A と一緒に使えない (どちらも暗号化を禁じる。ISO 15930-1 §6.1.11・ISO 15930-7 §6.1.13 (PDF/X)・ISO 19005-2 §6.1.3 (PDF/A) の Encrypt の決まり)
   if (opts.encrypt && (std || pdfa)) throw encryptIncompatible(std ? std.label : pdfa!.label);
   const pdf = rejoin(thisCall(), await PDFDocument.create());
@@ -3244,7 +3244,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   // 既定で付けるタグ ('auto') は、透明を平らにする出力 (PDF/X-1a・X-3) では付けない
   const tagsOn = opts.tagged === true || !!opts.pdfua || (opts.tagged === 'auto' && std?.transparency !== 'flatten');
   // 流して書くとき、描く前に分かる誤りは、画像を埋め込む (書き出し先へ書く) 前に投げる (書き出し先は空のまま。流さないときは、下の所で同じ誤り)
-  if (streamWriter && opts.pdfua && !(tagsOn && src.structure)) throw new KumioriPdfError('pdfua/requires-tagged', msg('PDF/UA-1 には、構造の木 (タグ付き PDF。tagged) が要ります', 'PDF/UA-1 requires a structure tree (tagged PDF; tagged)'));
+  if (streamWriter && opts.pdfua && !(tagsOn && src.structure)) throw new KumioriPdfError('pdfua/requires-tagged', msg('PDF/UA-1 には、構造ツリー (タグ付き PDF。tagged) が要ります', 'PDF/UA-1 requires a structure tree (tagged PDF; tagged)'));
   // 流して書くとき: 埋め込んだ画像を、すぐ書き出し先へ書いて除く (書体の番号は、まだ中身が無いので最後に書く)
   const afterEmbed = streamWriter && (() => (streamWriter.releaseAll(), streamWriter.drain()));
   let { images, vectors, svgImages, placed, pdfForms, flat } = rejoin(thisCall(), await embedImages(pdf, imageScan, fonts, opts, warn, afterEmbed));
@@ -3273,7 +3273,7 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   if (opts.tagged === true && flatDoc) throw new KumioriPdfError('pdf/tagged-incompatible', msg(`タグ付き PDF は ${flatDoc.label} と一緒に使えません (PDF/X-4 は使えます)`, `tagged PDF cannot be combined with ${flatDoc.label} (PDF/X-4 can)`));
   if (opts.pdfua && flatDoc) throw new KumioriPdfError('pdf/tagged-incompatible', msg(`PDF/UA-1 は ${flatDoc.label} と一緒に使えません (PDF/X-4 は使えます)`, `PDF/UA-1 cannot be combined with ${flatDoc.label} (PDF/X-4 can)`));
   const tagger = tagsOn && src.structure ? new PdfTagger(pdf, src.structure) : undefined;
-  if (opts.pdfua && !tagger) throw new KumioriPdfError('pdfua/requires-tagged', msg('PDF/UA-1 には、構造の木 (タグ付き PDF。tagged) が要ります', 'PDF/UA-1 requires a structure tree (tagged PDF; tagged)'));
+  if (opts.pdfua && !tagger) throw new KumioriPdfError('pdfua/requires-tagged', msg('PDF/UA-1 には、構造ツリー (タグ付き PDF。tagged) が要ります', 'PDF/UA-1 requires a structure tree (tagged PDF; tagged)'));
   // 同じ SVG を同じ大きさで置く 2 度目からは、1 度目に描いた Form XObject を使い回す (PdfPainter.drawVector)
   const svgForms: SvgForms = new WeakMap();
   const failedFonts = new Set<string>();
@@ -3384,19 +3384,19 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
       const list = [...new Set(flatDoc.failures)];
       const shown = list.slice(0, 10).map((p) => `  - ${p}`).join('\n');
       const more = list.length > 10 ? msg(`\n  ほか ${list.length - 10} 件`, `\n  and ${list.length - 10} more`) : '';
-      throw new KumioriPdfError('pdfx/flatten-failed', msg(`${flatDoc.label} では透明を使えないので平らにしますが、平らにできない透明が残りました:\n${shown}${more}\nPDF/X-4 を使ってください`, `${flatDoc.label} does not allow transparency, so it is flattened, but some transparency could not be flattened:\n${shown}${more}\nUse PDF/X-4`));
+      throw new KumioriPdfError('pdfx/flatten-failed', msg(`${flatDoc.label} では透明を使えないのでフラット化しますが、フラット化できない透明が残りました:\n${shown}${more}\nPDF/X-4 を使ってください`, `${flatDoc.label} does not allow transparency, so it is flattened, but some transparency could not be flattened:\n${shown}${more}\nUse PDF/X-4`));
     }
     if (flatDoc.rasters.length) {
       const pages = [...new Set(flatDoc.rasters.map((r) => r.page))];
       const ppi = Math.min(...flatDoc.rasters.map((r) => r.ppi));
       const at = pages.slice(0, 10).join(', ') + (pages.length > 10 ? ', …' : '');
-      pdfxWarning(opts, diag('pdfx/rasterized', msg(`${flatDoc.label}: 透明を平らにするため、${flatDoc.rasters.length} か所 (${at} ページ目) を画像 (${ppi}ppi 以上) にしました`, `${flatDoc.label}: to flatten transparency, ${flatDoc.rasters.length} area(s) (page ${at}) were rasterized (${ppi} ppi or more)`)));
+      pdfxWarning(opts, diag('pdfx/rasterized', msg(`${flatDoc.label}: 透明をフラット化するため、${flatDoc.rasters.length} か所 (${at} ページ目) を画像 (${ppi}ppi 以上) にしました`, `${flatDoc.label}: to flatten transparency, ${flatDoc.rasters.length} area(s) (page ${at}) were rasterized (${ppi} ppi or more)`)));
       const textPages = [...new Set(flatDoc.rasters.filter((r) => r.text).map((r) => r.page))];
       if (flatDoc.rasterSpots.size) {
         const names = [...flatDoc.rasterSpots].slice(0, 5).join('、');
         pdfxWarning(opts, diag('pdfx/spot-in-raster', msg(`${flatDoc.label}: 画像にした所に特色 (${names}) が掛かっています。画像の中では、特色の代わりの CMYK になります`, `${flatDoc.label}: spot colors (${names}) lie within rasterized areas; inside the image they become their alternate CMYK`)));
       }
-      if (textPages.length) pdfxWarning(opts, diag('pdfx/text-in-raster', msg(`${flatDoc.label}: 画像にした所に字が掛かっています (${textPages.slice(0, 10).join(', ')} ページ目)。その字は画像になるので、字の質が落ち、文字として選べません`, `${flatDoc.label}: text lies within rasterized areas (page ${textPages.slice(0, 10).join(', ')}); that text becomes part of the image, so its quality is lower and it cannot be selected as text`)));
+      if (textPages.length) pdfxWarning(opts, diag('pdfx/text-in-raster', msg(`${flatDoc.label}: 画像にした所に文字が掛かっています (${textPages.slice(0, 10).join(', ')} ページ目)。その文字は画像になるので、文字の質が落ち、文字として選べません`, `${flatDoc.label}: text lies within rasterized areas (page ${textPages.slice(0, 10).join(', ')}); that text becomes part of the image, so its quality is lower and it cannot be selected as text`)));
     }
   }
   // FreeText の表示 (appearance stream) に使う書体: 注釈の文字をすべて持つ、埋め込み済みの書体
@@ -3442,12 +3442,12 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
   const bookmarkAction: LinkAction = noActions ? () => (droppedBookmarks++, undefined) : linkAction;
   addAnnotations(pdf, painters, tree.destinations ?? {}, textFont, (src) => (opts.assets ?? new AssetStore()).getFile(src), linkAction, tagger, pdfa && { pdfa, cmyk: cmykOf, rgbOnly, warn: pdfaWarn, modDate: date });
   if (pdfa && rgbOnly?.converted)
-    pdfaWarn(diag('pdfa/cmyk-converted', msg(`${pdfa.label} (出力意図は sRGB) では CMYK の色を使えないので、CMYK の色・特色の代わりの色 (${rgbOnly.converted} か所) を RGB に直しました。CMYK のまま書くには、PDF/X と CMYK の ICC プロファイルを合わせてください (コマンドなら --pdfx x4 --output-profile <ICC>)`, `${pdfa.label} (sRGB output intent) does not allow CMYK colors, so ${rgbOnly.converted} CMYK color(s) and spot color alternates were converted to RGB. To keep CMYK, combine it with PDF/X and a CMYK ICC profile (on the command line: --pdfx x4 --output-profile <ICC>)`)));
+    pdfaWarn(diag('pdfa/cmyk-converted', msg(`${pdfa.label} (出力インテントは sRGB) では CMYK の色を使えないので、CMYK の色・特色の代わりの色 (${rgbOnly.converted} か所) を RGB に直しました。CMYK のまま書くには、PDF/X と CMYK の ICC プロファイルを合わせてください (コマンドなら --pdfx x4 --output-profile <ICC>)`, `${pdfa.label} (sRGB output intent) does not allow CMYK colors, so ${rgbOnly.converted} CMYK color(s) and spot color alternates were converted to RGB. To keep CMYK, combine it with PDF/X and a CMYK ICC profile (on the command line: --pdfx x4 --output-profile <ICC>)`)));
   if (pdfa) {
     // PDF/A では、フォームの欄を作らない (欄の見た目の書体を埋め込まず、押した時の見た目 (AP の R・D) と送信・取り消しの動作を持つため。
     // ISO 19005-2 §6.3.3・§6.4・§6.5.1)。欄の枠は Kumiori がページに描いたものが残る
     const forms = painters.reduce((n, p) => n + p.marks.filter((m) => m.form).length, 0);
-    if (forms) pdfaWarn(diag('pdfa/forms-dropped', msg(`${pdfa.label} では、フォームの欄 (${forms} 件) を書きません (枠の見た目は残ります)`, `${pdfa.label}: form fields (${forms}) are not written (their drawn frames remain)`)));
+    if (forms) pdfaWarn(diag('pdfa/forms-dropped', msg(`${pdfa.label} では、フォームフィールド (${forms} 件) を書きません (枠の見た目は残ります)`, `${pdfa.label}: form fields (${forms}) are not written (their drawn frames remain)`)));
   } else
     rejoin(thisCall(), await addFormFields(pdf, painters, textFont, (u) => {
       // 送り先の URL も、リンクと同じ決まりでスキームを見る (スキームの無い相対の送り先は、そのまま書く)
@@ -3457,19 +3457,19 @@ export async function renderPdfPages(src: PdfPageSource, fonts: FontManager, opt
     }, warn, tagger, !!opts.pdfua));
   if (tree.bookmarks?.length) addOutline(pdf, tree.bookmarks, bookmarkAction);
   if (std && (droppedActions || droppedBookmarks)) {
-    const ja = [droppedBookmarks && `しおりの外への飛び先 ${droppedBookmarks} 件`, droppedActions && `動作を持つ注釈 ${droppedActions} 件`].filter(Boolean);
+    const ja = [droppedBookmarks && `しおりの外へのリンク先 ${droppedBookmarks} 件`, droppedActions && `動作を持つ注釈 ${droppedActions} 件`].filter(Boolean);
     const en = [droppedBookmarks && `${droppedBookmarks} external bookmark destination(s)`, droppedActions && `${droppedActions} annotation(s) with actions`].filter(Boolean);
-    pdfxWarning(opts, diag('pdfx/actions-dropped', msg(`${std.label} では動作 (Action) を書けないので、書きません (${ja.join('・')})。しおりは題と文書の中の飛び先だけを残します`, `${std.label} does not allow actions, so these are not written (${en.join(', ')}); bookmarks keep only their titles and destinations within the document`)));
+    pdfxWarning(opts, diag('pdfx/actions-dropped', msg(`${std.label} では動作 (Action) を書けないので、書きません (${ja.join('・')})。しおりはタイトルと文書の中のリンク先だけを残します`, `${std.label} does not allow actions, so these are not written (${en.join(', ')}); bookmarks keep only their titles and destinations within the document`)));
   }
   const lacks = tagger?.finish();
   if (lacks?.cutLinks)
     warn(diag('limit/link-description', msg(`タグ付き PDF のリンク ${lacks.cutLinks} 個の注釈の説明 (Contents) を、${LINK_DESCRIPTION_MAX} 字で切りました`, `the descriptions (Contents) of the annotations of ${lacks.cutLinks} link(s) in the tagged PDF were cut at ${LINK_DESCRIPTION_MAX} characters`), { links: lacks.cutLinks }));
   if (opts.pdfua && lacks) {
     // PDF/UA-1 で足りないもの (ISO 14289-1 §7.1 の題・§7.2 の言語・§7.3 の図・§7.4 の見出し・§7.7 の数式)。PDF は書く (足りないものは文書の側で足す)
-    if (!pdf.getTitle()) pdfuaWarn(diag('pdfua/missing-title', msg('PDF/UA-1: 文書の題がありません (HTML の title、XSL-FO の axf:document-info の document-title で付けてください)', 'PDF/UA-1: the document has no title (set it with the HTML title or the XSL-FO axf:document-info document-title)')));
+    if (!pdf.getTitle()) pdfuaWarn(diag('pdfua/missing-title', msg('PDF/UA-1: 文書のタイトルがありません (HTML の title、XSL-FO の axf:document-info の document-title で付けてください)', 'PDF/UA-1: the document has no title (set it with the HTML title or the XSL-FO axf:document-info document-title)')));
     if (lacks.noLang) pdfuaWarn(diag('pdfua/missing-lang', msg('PDF/UA-1: 文書の言語がありません (HTML の lang、XSL-FO の xml:lang・language、または --document-lang で付けてください)', 'PDF/UA-1: the document has no language (set it with the HTML lang, the XSL-FO xml:lang or language, or --document-lang)')));
-    if (lacks.figures) pdfuaWarn(diag('pdfua/missing-figure-alt', msg(`PDF/UA-1: 代わりの文の無い図が ${lacks.figures} 個あります (HTML の alt・aria-label、XSL-FO の axf:alttext。飾りの画像は alt="" か axf:pdftag="Artifact")`, `PDF/UA-1: ${lacks.figures} figure(s) have no alternate text (HTML alt or aria-label, XSL-FO axf:alttext; mark decorative images with alt="" or axf:pdftag="Artifact")`)));
-    if (lacks.formulas) pdfuaWarn(diag('pdfua/missing-formula-alt', msg(`PDF/UA-1: 代わりの文の無い数式が ${lacks.formulas} 個あります (MathML の alttext、XSL-FO の axf:alttext)`, `PDF/UA-1: ${lacks.formulas} formula(s) have no alternate text (MathML alttext, XSL-FO axf:alttext)`)));
+    if (lacks.figures) pdfuaWarn(diag('pdfua/missing-figure-alt', msg(`PDF/UA-1: 代替テキストの無い図が ${lacks.figures} 個あります (HTML の alt・aria-label、XSL-FO の axf:alttext。飾りの画像は alt="" か axf:pdftag="Artifact")`, `PDF/UA-1: ${lacks.figures} figure(s) have no alternate text (HTML alt or aria-label, XSL-FO axf:alttext; mark decorative images with alt="" or axf:pdftag="Artifact")`)));
+    if (lacks.formulas) pdfuaWarn(diag('pdfua/missing-formula-alt', msg(`PDF/UA-1: 代替テキストの無い数式が ${lacks.formulas} 個あります (MathML の alttext、XSL-FO の axf:alttext)`, `PDF/UA-1: ${lacks.formulas} formula(s) have no alternate text (MathML alttext, XSL-FO axf:alttext)`)));
     if (lacks.skipped) pdfuaWarn(diag('pdfua/heading-skipped', msg(`PDF/UA-1: 見出しの段が ${lacks.skipped} か所で飛んでいます (最初の見出しは H1、深くなるときは 1 段ずつ)`, `PDF/UA-1: heading levels are skipped in ${lacks.skipped} place(s) (the first heading must be H1, and levels must deepen one at a time)`)));
   }
   const droppedSummary = summarizeDroppedLinks(droppedLinks);
@@ -3544,11 +3544,11 @@ async function verifyStandard(bytes: Uint8Array, std: PdfStandard) {
     const hint = !transparent
       ? ''
       : std.transparency === 'flatten'
-        ? msg(`\n平らにできない透明が残りました。PDF/X-4 を使ってください`, `\nSome transparency could not be flattened. Use PDF/X-4`)
+        ? msg(`\nフラット化できない透明が残りました。PDF/X-4 を使ってください`, `\nSome transparency could not be flattened. Use PDF/X-4`)
         : std.transparency === 'forbid'
-          ? msg(`\n透明を使う文書は、${std.label} では出せません (透明を平らにする処理が無いため)。PDF/X-4 を使ってください`, `\nDocuments that use transparency cannot be written as ${std.label} (transparency flattening is not supported). Use PDF/X-4`)
+          ? msg(`\n透明を使う文書は、${std.label} では出せません (透明をフラット化する処理が無いため)。PDF/X-4 を使ってください`, `\nDocuments that use transparency cannot be written as ${std.label} (transparency flattening is not supported). Use PDF/X-4`)
           : '';
-    throw new KumioriPdfError('pdfx/not-conforming', msg(`${std.label} の決まりに合わないので、${std.label} の PDF にできません:\n${shown}${more}${hint}`, `The output does not meet the ${std.label} requirements, so it cannot be written as ${std.label}:\n${shown}${more}${hint}`));
+    throw new KumioriPdfError('pdfx/not-conforming', msg(`${std.label} の要件に合わないので、${std.label} の PDF にできません:\n${shown}${more}${hint}`, `The output does not meet the ${std.label} requirements, so it cannot be written as ${std.label}:\n${shown}${more}${hint}`));
   }
 }
 
@@ -3565,11 +3565,11 @@ async function verifyStandardA(bytes: Uint8Array, pdfa: PdfA, withX: boolean) {
   const cmyk = !withX && problems.some((p) => /DeviceCMYK|\(k\)|\(K\)/.test(p));
   const hint = cmyk
     ? msg(
-        `\nRGB の出力意図 (sRGB) の ${pdfa.label} では、CMYK の画像 (CMYK の JPEG など) を使えません (色の値・特色は RGB に直しますが、CMYK の画像は直せません)。PDF/X と合わせ、CMYK の ICC プロファイルを渡してください (コマンドなら --pdfx x4 --output-profile <ICC>)`,
+        `\nRGB の出力インテント (sRGB) の ${pdfa.label} では、CMYK の画像 (CMYK の JPEG など) を使えません (色の値・特色は RGB に直しますが、CMYK の画像は直せません)。PDF/X と合わせ、CMYK の ICC プロファイルを渡してください (コマンドなら --pdfx x4 --output-profile <ICC>)`,
         `\n${pdfa.label} with an RGB (sRGB) output intent cannot use CMYK images (such as CMYK JPEGs; color values and spot colors are converted to RGB, but CMYK images are not). Combine it with PDF/X and pass a CMYK ICC profile (on the command line: --pdfx x4 --output-profile <ICC>)`,
       )
     : '';
-  throw new KumioriPdfError('pdfa/not-conforming', msg(`${pdfa.label} の決まりに合わないので、${pdfa.label} の PDF にできません:\n${shown}${more}${hint}`, `The output does not meet the ${pdfa.label} requirements, so it cannot be written as ${pdfa.label}:\n${shown}${more}${hint}`));
+  throw new KumioriPdfError('pdfa/not-conforming', msg(`${pdfa.label} の要件に合わないので、${pdfa.label} の PDF にできません:\n${shown}${more}${hint}`, `The output does not meet the ${pdfa.label} requirements, so it cannot be written as ${pdfa.label}:\n${shown}${more}${hint}`));
 }
 
 /**
@@ -3669,7 +3669,7 @@ async function typesetForeignObjects(
       if (shapes && !shapesMeet(shapes, c.width, c.height) && /\S/.test(c.content.replace(/<style[^>]*>[\s\S]*?<\/style>|<script[^>]*>[\s\S]*?<\/script>|<[^>]*>/gi, ''))) {
         warn(
           diag('pdf/foreign-object-approximated', msg(
-            `SVG の foreignObject の中身を組んだものが、枠 (幅 ${+c.width.toFixed(2)}・高さ ${+c.height.toFixed(2)}) の中に何も描かれないので、文字だけを近似して描きます`,
+            `SVG の foreignObject の中身を組んだものが、枠 (幅 ${+c.width.toFixed(2)}・高さ ${+c.height.toFixed(2)}) の中に何も描画されないので、文字だけを近似して描画します`,
             `The typeset content of an SVG foreignObject draws nothing inside its box (width ${+c.width.toFixed(2)}, height ${+c.height.toFixed(2)}); only its text is drawn, approximately`,
           )),
         );
@@ -4180,7 +4180,7 @@ async function addFormFields(pdf: PDFDocument, painters: PdfPainter[], textFont:
       if (tagger) tagFormField(pdf, page, form.getField(f.kind === 'radio' ? radios.get(f.name)!.getName() : lastUnique).acroField.dict, m, tagger, f);
     } catch (e) {
       // 欄を作れない (書体に字が無いなど) ときは、見た目 (Kumiori が描いた枠) だけ残す
-      warn(diag('pdf/form-field-failed', msg(`PDF: フォームの欄「${f.name}」を作れません (${errorText(e)})。枠の見た目だけを残します`, `PDF: cannot create the form field "${f.name}" (${errorText(e)}); only its drawn frame is kept`), { field: f.name }));
+      warn(diag('pdf/form-field-failed', msg(`PDF: フォームフィールド「${f.name}」を作れません (${errorText(e)})。枠の見た目だけを残します`, `PDF: cannot create the form field "${f.name}" (${errorText(e)}); only its drawn frame is kept`), { field: f.name }));
     }
   }
 }
@@ -4378,12 +4378,12 @@ function dropMarksInBleed(pdf: PDFDocument, painters: PdfPainter[], warn: (d: Di
       return false;
     });
   });
-  const ja = [links && `リンク ${links} 件`, annots && `注釈 ${annots} 件`, forms && `フォームの欄 ${forms} 件`].filter(Boolean);
+  const ja = [links && `リンク ${links} 件`, annots && `注釈 ${annots} 件`, forms && `フォームフィールド ${forms} 件`].filter(Boolean);
   const en = [links && `${links} link(s)`, annots && `${annots} annotation(s)`, forms && `${forms} form field(s)`].filter(Boolean);
   if (ja.length) {
     warn(
       diag('pdfx/annotations-dropped', msg(
-        `PDF/X では、ページの中 (塗り足しまでの範囲 BleedBox に掛かる所) の注釈・リンク・フォームの欄を書きません (${ja.join('・')})`,
+        `PDF/X では、ページの中 (塗り足しまでの範囲 BleedBox に掛かる所) の注釈・リンク・フォームフィールドを書きません (${ja.join('・')})`,
         `PDF/X: annotations, links and form fields on the pages (anything overlapping the area up to the bleed, BleedBox) are not written (${en.join(', ')})`,
       )),
     );
@@ -4658,7 +4658,7 @@ function addAnnotations(
   });
   if (af.length) pdf.catalog.set(PDFName.of('AF'), ctx.obj(af));
   if (a && droppedFiles) a.warn(diag('pdfa/attachments-dropped', msg(`${a.pdfa.label} では、PDF/A でないファイルを埋め込めないので、添付ファイル (${droppedFiles} 件) を埋め込まずにテキストの注釈にします (ファイルを添付するなら PDF/A-3b を使ってください)`, `${a.pdfa.label} cannot embed files that are not PDF/A, so ${droppedFiles} attachment(s) are written as text annotations without the file (use PDF/A-3b to attach files)`)));
-  if (a && noFont) a.warn(diag('pdfa/freetext-appearance', msg(`${a.pdfa.label}: 文字を描ける埋め込みの書体が無いので、FreeText の注釈 (${noFont} 件) の外観は背景だけです`, `${a.pdfa.label}: no embedded font can draw the text, so the appearance of ${noFont} FreeText annotation(s) is the background only`)));
+  if (a && noFont) a.warn(diag('pdfa/freetext-appearance', msg(`${a.pdfa.label}: 文字を描画できる埋め込みのフォントが無いので、FreeText の注釈 (${noFont} 件) の外観は背景だけです`, `${a.pdfa.label}: no embedded font can draw the text, so the appearance of ${noFont} FreeText annotation(s) is the background only`)));
 }
 
 /** しおり (PDF のアウトライン)。飛び先はシートの上端 (見つからないしおりは飛び先なし) */

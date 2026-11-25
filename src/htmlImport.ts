@@ -4146,7 +4146,7 @@ class HtmlImporter {
         if (s) kept.push(s);
       }
     }
-    if (cut) this.miss(msg('content (生成内容の字の数が上限を超えた分)', 'content (generated content beyond the character limit)'));
+    if (cut) this.miss(msg('content (生成内容の文字の数が上限を超えた分)', 'content (generated content beyond the character limit)'));
     return kept;
   }
 
@@ -5384,7 +5384,7 @@ class HtmlImporter {
       // flex・grid の容器、表とその中の箱 (セル・行・列) の語の大きさは未対応 (auto として組み、知らせる)
       const sizable = /^(block|list-item|flow-root|inline-block)$/.test(disp);
       if ((size || min || max) && !sizable && disp !== 'inline' && disp !== 'contents' && disp !== 'none') {
-        const name = /flex|grid/.test(disp) ? msg('flex・grid の容器', 'flex and grid containers') : msg('表とその中の箱', 'tables and boxes in them');
+        const name = /flex|grid/.test(disp) ? msg('flex・grid のコンテナー', 'flex and grid containers') : msg('表とその中のボックス', 'tables and boxes in them');
         for (const [p, k] of [['width', size], ['min-width', min], ['max-width', max]] as const) if (k) this.miss(`${B(p)}: ${typeof k === 'object' ? 'fit-content()' : k} (${name})`);
       }
       if ((size || min || max) && sizable) {
@@ -5407,7 +5407,7 @@ class HtmlImporter {
       const kwB = (p: string) => /^(min-content|max-content|fit-content)/.test((c(B(p)) || '').trim().toLowerCase());
       const hp = B('height') as 'width' | 'height';
       if (o[hp] !== undefined && !o.aspectRatio) {
-        if (kwB('max-height')) this.miss(msg(`${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (${hp} の指定のある箱)`, `${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (box with ${hp})`));
+        if (kwB('max-height')) this.miss(msg(`${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (${hp} の指定のあるボックス)`, `${B('max-height')}: ${c(B('max-height')).trim().toLowerCase().replace(/\(.*$/, '()')} (box with ${hp})`));
         else if (kwB('min-height')) {
           const bpB = vertB ? edge('left') + edge('right') : edge('top') + edge('bottom');
           o.minBlockSize = Math.max(o.minBlockSize ?? 0, o[hp]! - (bb ? bpB : 0));
@@ -5981,7 +5981,7 @@ class HtmlImporter {
       } else if (d !== 'list-item' && this.isBlock(d, e) && !/^(absolute|fixed)$/.test(this.cs(e)('position')) && (this.cs(e)('float') || 'none') === 'none') {
         // 切り替えを置けない所 (段組・表のセル・flex・grid の項目・リストの項目の中など) の箱の page は、黙って無視せず、未対応として知らせる
         // (リストの項目は list が見る)
-        this.pageIgnored(e, ['段組・表のセル・flex・grid の項目などの中の箱', 'boxes in multi-column containers, table cells, flex and grid items and so on']);
+        this.pageIgnored(e, ['段組・表のセル・flex・grid の項目などの中のボックス', 'boxes in multi-column containers, table cells, flex and grid items and so on']);
       }
       if (d !== 'list-item') this.enterCounters(this.cs(e), el);
       else {
@@ -6741,7 +6741,7 @@ class HtmlImporter {
       parseColor: (v) => cssColor(v),
     });
     // 1 つの数式で描く字の数の上限 (mathLayout.ts の MAX_MATH_GLYPHS) を超えて、超えた分の字を描かなかったときは、報告する
-    if (r.truncated) this.miss(msg('数式の字の数が上限を超えたので、超えた分の字を描きません', 'the number of characters in the formula exceeds the limit; the excess characters are not drawn'));
+    if (r.truncated) this.miss(msg('数式の文字の数が上限を超えたので、超えた分の文字を描画しません', 'the number of characters in the formula exceeds the limit; the excess characters are not drawn'));
     const bytes = new TextEncoder().encode(r.svg);
     let bin = '';
     for (let k = 0; k < bytes.length; k += 0x8000) bin += String.fromCharCode(...bytes.subarray(k, k + 0x8000));
@@ -7846,7 +7846,7 @@ class HtmlImporter {
     const wari = this.warichuOf(el);
     if (wari) inl.warichu = wari;
     // 割注の中の字でない箱 (画像・数式・inline-block など) は組まない (warichu.ts の dropWarichuBoxes)。知らせる
-    if (wari && dropWarichuBoxes(inl.children)) this.miss(msg('割注の中の字でない箱 (画像・inline-block など)', 'non-character boxes in warichu (images, inline-block, etc.)'));
+    if (wari && dropWarichuBoxes(inl.children)) this.miss(msg('割注の中の文字でないボックス (画像・inline-block など)', 'non-character boxes in warichu (images, inline-block, etc.)'));
     const inlId = el.getAttribute('id');
     if (inlId) inl.id = inlId;
     // 中身の無い行内要素も、字の大きさと行の高さを行の箱に入れる (CSS 2.1 §10.8)
@@ -8016,7 +8016,7 @@ class HtmlImporter {
     if (box.border) inl.border = box.border;
     if (box.padding) inl.padding = box.padding;
     // initial-letter は ::first-letter だけ (行の最初の行内の箱への指定 (CSS Inline 3 §7.3.1) は未対応。知らせる)
-    if (parseInitialLetter(c('initial-letter') || '')) this.miss(msg('initial-letter (::first-letter 以外の箱)', 'initial-letter (boxes other than ::first-letter)'));
+    if (parseInitialLetter(c('initial-letter') || '')) this.miss(msg('initial-letter (::first-letter 以外のボックス)', 'initial-letter (boxes other than ::first-letter)'));
     // box-decoration-break: clone: 行で分かれた枠の断片のそれぞれを、罫線と内側の余白で包む (CSS Fragmentation 3 §5.4)
     if ((box.border || box.padding) && c('box-decoration-break') === 'clone') inl.boxDecorationBreak = 'clone';
     // 行の進む方向の margin は行内の空き (横書きは左右。右から左へ書く段落では入れ替わる。縦書きは上下)

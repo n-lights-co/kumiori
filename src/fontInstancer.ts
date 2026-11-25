@@ -1535,7 +1535,7 @@ function instantiateCff2Font(buffer: ArrayBuffer, dir: Map<string, TableRec>, in
   if (made.emptied)
     notes.push(
       msg(
-        `字形の輪郭 (CFF2 の CharString) の実行が大きすぎる字形 ${made.emptied} 個を、空の字形として扱います`,
+        `字形のアウトライン (CFF2 の CharString) の実行が大きすぎる字形 ${made.emptied} 個を、空の字形として扱います`,
         `${made.emptied} glyph outline(s) (CFF2 CharStrings) take too much to run and are treated as empty glyphs`,
       ),
     );

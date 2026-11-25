@@ -103,7 +103,7 @@ export function localFont(fontDir: string | undefined, cacheDir: string | undefi
         throw new KumioriFontError(
           'font/load-failed',
           msg(
-            `書体を取得できません: ${spec.family}${spec.weight && spec.weight !== 400 ? ` (${spec.weight})` : ''} (ネットワークに接続できないときは、--font-dir で手元の書体 (${fontFileName(spec)}) を渡してください)`,
+            `フォントを取得できません: ${spec.family}${spec.weight && spec.weight !== 400 ? ` (${spec.weight})` : ''} (ネットワークに接続できないときは、--font-dir で手元のフォント (${fontFileName(spec)}) を渡してください)`,
             `cannot fetch the font ${spec.family}${spec.weight && spec.weight !== 400 ? ` (${spec.weight})` : ''} (without network access, pass a local copy (${fontFileName(spec)}) with --font-dir)`,
           ),
           { args: { font: spec.family } },
@@ -117,9 +117,9 @@ export function localFont(fontDir: string | undefined, cacheDir: string | undefi
           fs.writeFileSync(tmp, new Uint8Array(buf));
           fs.renameSync(tmp, file);
           from = file;
-          log(msg(`書体 ${path.basename(file)} を取得して ${cacheDir} に保存しました`, `fetched the font ${path.basename(file)} and saved it to ${cacheDir}`));
+          log(msg(`フォント ${path.basename(file)} を取得して ${cacheDir} に保存しました`, `fetched the font ${path.basename(file)} and saved it to ${cacheDir}`));
         } catch (e) {
-          if (!cacheWriteFailed) log(msg(`書体のキャッシュに書けません: ${cacheDir} (${e instanceof Error ? e.message : String(e)})`, `cannot write to the font cache: ${cacheDir} (${e instanceof Error ? e.message : String(e)})`));
+          if (!cacheWriteFailed) log(msg(`フォントのキャッシュに書けません: ${cacheDir} (${e instanceof Error ? e.message : String(e)})`, `cannot write to the font cache: ${cacheDir} (${e instanceof Error ? e.message : String(e)})`));
           cacheWriteFailed = true;
         }
       }

@@ -5,8 +5,8 @@
  *   const r = await typeset(html, { files: [{ name: 'style.css', data: css }] });
  *   const pdf = await r.toPdf();   // Uint8Array
  *
- * ファイルシステムには触らない。ネットワークは、既定の書体の取得 (loadFont で差し替えられる) と、文書が http(s) で参照する画像の取得
- * (fetchImages で止められる) にだけ使う。ブラウザでも Node でも動く。
+ * ファイルシステムには触らない。ネットワークは、既定のフォントの取得 (loadFont で差し替えられる) と、文書が http(s) で参照する画像の取得
+ * (fetchImages で止められる) にだけ使う。ブラウザーでも Node でも動く。
  * Node のコマンド (src/cli.ts) も、この関数で組む。
  */
 
@@ -69,40 +69,40 @@ export type { LinkPolicy } from './linkPolicy';
 export type KumioriFileData = ArrayBuffer | Uint8Array | string;
 
 /**
- * 入力と一緒に渡すファイル (CSS・画像・書体・SVG・MathML など)。name は入力の文書からの相対パス (例: "img/logo.png")。
+ * 入力と一緒に渡すファイル (CSS・画像・フォント・SVG・MathML など)。name は入力の文書からの相対パス (例: "img/logo.png")。
  * data は中身か、中身を返す関数 (使うときだけ読む。たくさんのファイルを渡すときに)
  */
 export interface KumioriFile {
-  /** 入力の文書からの相対パス (例: "img/logo.png")。書体のファイルは、ファイル名だけでもよい */
+  /** 入力の文書からの相対パス (例: "img/logo.png")。フォントのファイルは、ファイル名だけでもよい */
   name: string;
   /** 中身か、中身を返す関数 (使うときだけ呼ぶ。1 度だけ読む) */
   data: KumioriFileData | (() => Promise<KumioriFileData>);
 }
 
-/** resolveResource・loadFont に渡す 2 つ目の引数 (足した引数なので、受けない関数もそのまま使える) */
+/** resolveResource・loadFont に渡す 2 つ目の引数 (追加した引数なので、受けない関数もそのまま使える) */
 export interface ResourceContext {
-  /** その呼び出しの止める合図 (TypesetOptions.signal) と、取得の時限 (fetchTimeoutMs) を合わせたもの。自分で読む取得に渡せば、止めたときに一緒に止まる */
+  /** その呼び出しの止めるシグナル (TypesetOptions.signal) と、取得の時限 (fetchTimeoutMs) を合わせたもの。自分で読む取得に渡せば、止めたときに一緒に止まる */
   signal?: AbortSignal;
 }
 
 /**
- * 組み方の設定 (typeset・typesetToPdf の options。createTypesetter の器では、書体まわり (TypesetterOptions) と文書ごとの設定 (DocumentOptions) に分ける)。
- * どれも省略できる。知らない値は TypeError で拒む
+ * 組み方の設定 (typeset・typesetToPdf の options。createTypesetter のタイプセッターでは、フォントまわり (TypesetterOptions) と文書ごとの設定 (DocumentOptions) に分ける)。
+ * どれも省略できる。知らない値は TypeError で拒否する
  */
 export interface TypesetOptions {
   /**
-   * タグ付き PDF (ISO 32000-1 §14.8) にする: 文書の構造 (見出し・段落・リスト・図・リンク・表・脚注)・読む順・図の代わりの文・言語を PDF に入れ、
+   * タグ付き PDF (ISO 32000-1 §14.8) にする: 文書の構造 (見出し・段落・リスト・図・リンク・表・脚注)・読む順・図の代替テキスト・言語を PDF に入れ、
    * 背景・罫線・柱を飾り (Artifact) にする。既定 true (false でタグを付けない)。HTML・XSL-FO の入力で使える。
-   * PDF/X-1a・X-3 (透明を平らにする出力) には付けられない: 既定のままなら、その PDF にはタグを付けずに書き、true と書いたときは誤りにする
+   * PDF/X-1a・X-3 (透明をフラット化する出力) には付けられない: 既定のままなら、その PDF にはタグを付けずに書き、true と書いたときはエラーにする
    */
   tagged?: boolean;
   /**
-   * PDF/UA-1 (ISO 14289-1) の PDF にする: タグ付き PDF (tagged を含む) に、XMP の版の印 (pdfuaid:part)・dc:title と DisplayDocTitle を書き、
-   * 字形の無い字 (.notdef) を描かない。文書の題・言語・図と数式の代わりの文・見出しの順の足りないものを警告に出す
+   * PDF/UA-1 (ISO 14289-1) の PDF にする: タグ付き PDF (tagged を含む) に、XMP のバージョンの印 (pdfuaid:part)・dc:title と DisplayDocTitle を書き、
+   * 字形の無い文字 (.notdef) を描画しない。文書のタイトル・言語・図と数式の代替テキスト・見出しの順の足りないものを警告に出す
    * (true なら組版の警告に、{ warnings } ならその並びに)。PDF/X-1a・X-3 とは一緒に使えない。PDF/X-4・PDF/A とは合わせられる
    */
   pdfua?: boolean | {
-    /** PDF/UA-1 の足りないものの警告を足す配列 (無ければ、組版の警告 (TypesetResult.warnings) に足す) */
+    /** PDF/UA-1 の足りないものの警告を追加する配列 (無ければ、組版の警告 (TypesetResult.warnings) に追加する) */
     warnings?: string[];
   };
   /** 文書の言語 (BCP 47。タグ付き PDF のカタログの Lang)。入力に言語 (HTML の lang、XSL-FO の xml:lang・language) が無いときだけ使う */
@@ -111,31 +111,31 @@ export interface TypesetOptions {
   kind?: 'html' | 'xhtml' | 'fo';
   /** 入力のファイル名 (種類の判定に使う) */
   name?: string;
-  /** 入力と一緒に使うファイル。CSS は、文書から参照されていなければ利用者のスタイルシートとして足す。FO では、書体のファイルを FO の font-family の名前で使う */
+  /** 入力と一緒に使うファイル。CSS は、文書から参照されていなければ利用者のスタイルシートとして追加する。FO では、フォントのファイルを FO の font-family の名前で使う */
   files?: KumioriFile[];
   /**
-   * 文書 (HTML) から参照されていない CSS のファイル (files) の扱い。'user-stylesheet' (既定): 利用者のスタイルシートとして足す。
-   * 'ignore': 足さずに、警告に出す (コマンドの既定。入力のディレクトリのファイルを全部渡すので、文書と関係の無い CSS が当たらないように)
+   * 文書 (HTML) から参照されていない CSS のファイル (files) の扱い。'user-stylesheet' (既定): 利用者のスタイルシートとして追加する。
+   * 'ignore': 追加せずに、警告に出す (コマンドの既定。入力のディレクトリのファイルを全部渡すので、文書と関係の無い CSS が当たらないように)
    */
   unreferencedCss?: 'user-stylesheet' | 'ignore';
   /**
-   * 足す書体のファイル (TTF・OTF・TTC・WOFF・WOFF2。システムに入れた書体のように、書体のファミリー名・太さ・幅・傾きで使う)。
-   * 斜体の書体は font-style: italic の字に、幅の違う書体 (Arial Narrow など) は font-stretch の指定かその書体の名前で選ぶ (CSS Fonts 4 §5.2)
+   * 追加するフォントのファイル (TTF・OTF・TTC・WOFF・WOFF2。システムに入れたフォントのように、フォントのファミリー名・太さ・幅・傾きで使う)。
+   * 斜体のフォントは font-style: italic の文字に、幅の違うフォント (Arial Narrow など) は font-stretch の指定かそのフォントの名前で選ぶ (CSS Fonts 4 §5.2)
    */
   fonts?: KumioriFile[];
   /**
-   * 総称の書体に使う書体のファミリー名 (fonts で渡した書体か、既定の書体)。CSS Fonts 4 §2.1.3: 総称の書体に当てる書体は処理系が決める。
-   *  - serif・sans-serif・monospace: 欧文の字の書体 (既定は Tinos・Arimo・Cousine)
-   *  - serif-cjk・sans-serif-cjk: 和文 (欧文の書体に無い字) の書体 (既定は Noto Serif JP・Noto Sans JP)。
-   *    等幅の和文は、HTML は sans-serif-cjk、XSL-FO は serif-cjk の書体 (等幅の和文の既定と同じ側)
+   * 総称ファミリーに使うフォントのファミリー名 (fonts で渡したフォントか、既定のフォント)。CSS Fonts 4 §2.1.3: 総称ファミリーに当てるフォントは処理系が決める。
+   *  - serif・sans-serif・monospace: 欧文の文字のフォント (既定は Tinos・Arimo・Cousine)
+   *  - serif-cjk・sans-serif-cjk: 和文 (欧文のフォントに無い文字) のフォント (既定は Noto Serif JP・Noto Sans JP)。
+   *    等幅の和文は、HTML は sans-serif-cjk、XSL-FO は serif-cjk のフォント (等幅の和文の既定と同じ側)
    */
   genericFonts?: Partial<Record<GenericFontKey, string>>;
   /**
-   * 読み込んだどの書体にも字形の無い字を、OS の書体で組む (CSS Fonts 4 §5.2 の処理系の後備の書体)。既定は使わない。
-   * Node では kumiori/node の createSystemFonts() を渡す (ブラウザでは、Kumiori からは作れない)。
-   * 使うのは、既定の書体・記号と絵文字の書体のどれにも無い字だけで、その字だけを OS の書体で組む (ほかの字の書体は変わらない)。
-   * 文書の font-family からは、OS の書体を名指しできない。使ったときは、組んだ結果が組む機械に入っている書体で変わる
-   * (font/system-fallback の知らせ)。他人の書いた文書を組むときは渡さない (組んだ PDF から、機械に入っている書体が分かる)
+   * 読み込んだどのフォントにも字形の無い文字を、OS のフォントで組む (CSS Fonts 4 §5.2 の処理系のフォールバックのフォント)。既定は使わない。
+   * Node では kumiori/node の createSystemFonts() を渡す (ブラウザーでは、Kumiori からは作れない)。
+   * 使うのは、既定のフォント・記号と絵文字のフォントのどれにも無い文字だけで、その文字だけを OS のフォントで組む (ほかの文字のフォントは変わらない)。
+   * 文書の font-family からは、OS のフォントを名前の指定できない。使ったときは、組んだ結果が組む機械に入っているフォントで変わる
+   * (font/system-fallback の通知)。他人の書いた文書を組むときは渡さない (組んだ PDF から、機械に入っているフォントが分かる)
    */
   systemFonts?: SystemFontSource;
   /** HTML の既定のスタイル。既定 kumiori (本の組版向け) */
@@ -154,134 +154,134 @@ export interface TypesetOptions {
   print?: boolean;
   /** 特色の名前 → 濃度 100% の代わりの CMYK (0〜1) */
   spotColors?: Record<string, [number, number, number, number]>;
-  /** 既定の書体 (Noto Serif JP など。FONT_SPECS) を読む。既定は spec.urls を順に fetch する。undefined を返せば次の手段 (既定の取得) へ */
+  /** 既定のフォント (Noto Serif JP など。FONT_SPECS) を読む。既定は spec.urls を順に fetch する。undefined を返せば次の手段 (既定の取得) へ */
   loadFont?: (spec: FontSpec, context?: ResourceContext) => Promise<ArrayBuffer | undefined>;
-  /** ネットワークからの取得 (書体・画像) の時限 (ミリ秒)。既定 30000 */
+  /** ネットワークからの取得 (フォント・画像) の時限 (ミリ秒)。既定 30000 */
   fetchTimeoutMs?: number;
   /**
-   * 警告・誤りの文の言語 (ja・en)。省略すれば、呼び出しを始めたときの設定 (既定は日本語)。結果の toPdf・renderPage なども、組んだときの言語で書く。
+   * 警告・エラーの文の言語 (ja・en)。省略すれば、呼び出しを始めたときの設定 (既定は日本語)。結果の toPdf・renderPage なども、組んだときの言語で書く。
    * Node では、違う lang の呼び出しを同時に (await を待たずに) 走らせても、それぞれの呼び出しの言語になる。
-   * ブラウザ (AsyncLocalStorage の無い環境) では、重なっている間は、後に始まった呼び出しの言語になることがある
+   * ブラウザー (AsyncLocalStorage の無い環境) では、重なっている間は、後に始まった呼び出しの言語になることがある
    * (言語ごとに文を分けたいときは、呼び出しを順に待つか、別の Worker で組む)
    */
   lang?: MessageLang;
   /**
-   * 組版を止める合図 (WHATWG DOM §3.2 の AbortSignal)。止めると、返す Promise は signal.reason で失敗する
-   * (理由を渡さずに abort() したときは、AbortError の名前の DOMException)。止めた合図を渡せば、何も読まずに失敗する。
-   * 合図は、書体・資源を読むたびと、ページを組むたびに確かめ、読みかけの取得 (fetch) も止める。組版は同期の処理が長いので、
-   * 渡したときは、段階の境目で間をあけ (await を挟み)、ほかの処理 (abort の呼び出しなど) が走れるようにする。ただし、1 つの page-sequence
-   * (HTML は名前付きページで分けなければ文書全体) を組む間は間をあけないので、その途中で止めたいときは onProgress の中で abort() を呼ぶ。
+   * 組版を止めるシグナル (WHATWG DOM §3.2 の AbortSignal)。止めると、返す Promise は signal.reason で失敗する
+   * (理由を渡さずに abort() したときは、AbortError の名前の DOMException)。止めたシグナルを渡せば、何も読まずに失敗する。
+   * シグナルは、フォント・リソースを読むたびと、ページを組むたびに確認し、読みかけの取得 (fetch) も止める。組版は同期の処理が長いので、
+   * 渡したときは、段階の境界でイベントループに制御を返し (await を挟み)、ほかの処理 (abort の呼び出しなど) が走れるようにする。ただし、1 つの page-sequence
+   * (HTML は名前付きページで分けなければ文書全体) を組む間はイベントループに制御を返さないので、その途中で止めたいときは onProgress の中で abort() を呼ぶ。
    * 結果の toPdf などには効かない (それぞれの設定に渡す)
    */
   signal?: AbortSignal;
   /**
-   * 進み具合の呼び返し (TypesetProgress)。同期で呼ぶ。投げた誤りは、組版を止めて、返す Promise の失敗にする。
-   * 渡したときは、signal と同じく段階の境目で間をあける
+   * 進捗のコールバック (TypesetProgress)。同期で呼ぶ。投げたエラーは、組版を止めて、返す Promise の失敗にする。
+   * 渡したときは、signal と同じく段階の境界でイベントループに制御を返す
    */
   onProgress?: (progress: TypesetProgress) => void;
   /**
    * 先頭から maxPages ページまで組んだら、組むのをやめる (長い文書の初めの数ページのプレビュー)。1 以上の整数。既定は指定なし (全体を組む)。
    * 止めたら、結果の truncated が true になり、info の診断 layout/max-pages-reached を出す。そのページより後ろを指すページ番号の参照
    * (page-number-citation・target-counter など)・総ページ数 (counter(pages) など)・最後のページの番号は決まらないので "?" で組み
-   * (WeasyPrint の組み方では空)、索引は止めたページまでの所だけを並べ、しおりは飛び先の無いしおりにして、警告 layout/beyond-max-pages を
-   * 種類ごとに 1 件出す。後ろを指す参照のあるページは、その字の幅の違いで、全体を組んだときと行分けが違うことがある (無いページは同じ)。
+   * (WeasyPrint の組み方では空)、索引は止めたページまでの所だけを並べ、しおりはリンク先の無いしおりにして、警告 layout/beyond-max-pages を
+   * 種類ごとに 1 件出す。後ろを指す参照のあるページは、その文字の幅の違いで、全体を組んだときと行分けが違うことがある (無いページは同じ)。
    * 文書の読み込みとカスケードは全体で行う (速くなるのは、組版と PDF の書き出しの分)
    */
   maxPages?: number;
   /**
    * 診断の扱い。ignore: 出さない診断の名前 (docs/diagnostics.md。css/unknown-property など)。その名前の警告は、warnings にも diagnostics にも入れない
-   * (PDF を書く途中の警告も)。知らない名前は、止めずに api/unknown-diagnostic-code の警告で知らせる。指定しなければ、すべて出す
+   * (PDF を書く途中の警告も)。知らない名前は、止めずに api/unknown-diagnostic-code の警告に出す。指定しなければ、すべて出す
    */
   diagnostics?: { ignore?: readonly string[] };
   /**
-   * 文書が http(s) の URL で参照する画像 (external-graphic・img・background-image など) をネットワークから取るか。
-   * 既定 true (取る)。false なら取らない (読めない画像として組む)。関数なら、URL ごとに取るかどうかを決める。
-   * 他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする (内部のホストへの要求を防ぐ)。
+   * 文書が http(s) の URL で参照する画像 (external-graphic・img・background-image など) をネットワークから取得するか。
+   * 既定 true (取得する)。false なら取得しない (読めない画像として組む)。関数なら、URL ごとに取得するかどうかを決める。
+   * 他人の書いた文書をサーバーで組むときは、false か、取得してよい URL だけを許す関数にする (内部のホストへの要求を防ぐ)。
    * 関数には、文書に書かれた URL のほか、転送 (redirect) の先の URL も聞く (Node では、許されない先へは要求を出さない。たどるのは 20 回まで。
-   * https から http への転送と、http(s) でない先への転送は断る)。ブラウザでは転送の先を前もって読めないので、たどった後の最後の URL を聞いて、
+   * https から http への転送と、http(s) でない先への転送は拒否する)。ブラウザーでは転送の先を前もって読めないので、たどった後の最後の URL を聞いて、
    * 許されなければ応答を使わない (要求そのものは転送の先に届く)。
    * 関数が見るのは URL の文字列だけなので、内部のアドレスに解決されるホスト名 (DNS rebinding を含む) は、この関数では防げない。
-   * 内部の網を守るには、実行環境の側 (外向きの通信の制限・プロキシ) でも絞ること。
-   * 取るものの大きさには上限がある (画像 256MB・CSS 16MB・書体 128MB。超えたものは読めない資源として扱う)
+   * 内部のネットワークを守るには、実行環境の側 (外向きの通信の制限・プロキシ) でも絞ること。
+   * 取得するものの大きさには上限がある (画像 256MB・CSS 16MB・フォント 128MB。超えたものは読めないリソースとして扱う)
    */
   fetchImages?: boolean | ((url: string) => boolean);
   /**
-   * 文書・CSS が参照するファイル (CSS・画像・書体・SVG など) のうち、files に無いものの中身を返す関数。url は書かれた参照
+   * 文書・CSS が参照するファイル (CSS・画像・フォント・SVG など) のうち、files に無いものの中身を返す関数。url は書かれた参照
    * (file:///…/a.css・img/a.png・https://…)。CSS の中の相対参照は、その CSS の URL を基準に解決したもの。
    * 中身 (文字列・Uint8Array・ArrayBuffer) を返せば、その名前のファイルとして使う。undefined を返せば、これまでどおり
-   * (http(s) の画像・CSS はネットワークから取る。fetchImages・fetchStyles)。ファイルシステムやデータベースから読むときに
+   * (http(s) の画像・CSS はネットワークから取得する。fetchImages・fetchStyles)。ファイルシステムやデータベースから読むときに
    * 画像は、URL に拡張子が無くても (https://example.com/img?id=1 など)、返した中身の先頭のバイト列で画像と見分けて使う
    */
   resolveResource?: (url: string, context?: ResourceContext) => KumioriFileData | undefined | Promise<KumioriFileData | undefined>;
   /**
-   * SVG の systemLanguage (switch の子を選ぶ条件。SVG 2 §5.6.5) を照らす言語 (BCP 47 の言語タグ。好む順。例 ["ja", "en"])。
+   * SVG の systemLanguage (switch の子を選ぶ条件。SVG 2 §5.6.5) を照合する言語 (BCP 47 の言語タグ。好む順。例 ["ja", "en"])。
    * SVG を置いた所に言語の指定 (HTML の lang・XSL-FO の xml:lang・language) があれば、そちらが勝つ。省けば実行環境の言語
    */
   svgLanguages?: string[];
   /**
-   * 文書が http(s) の URL で参照する CSS (<link rel="stylesheet">・`@import`) と、CSS の `@font-face` が http(s) で参照する書体 (WOFF2 など。
-   * unicode-range が文書の字と重なるものだけ) をネットワークから取るか。既定 true (取る)。
-   * 関数なら、URL ごとに決める。他人の書いた文書をサーバーで組むときは、false か、取ってよい URL だけを許す関数にする。
+   * 文書が http(s) の URL で参照する CSS (<link rel="stylesheet">・`@import`) と、CSS の `@font-face` が http(s) で参照するフォント (WOFF2 など。
+   * unicode-range が文書の文字と重なるものだけ) をネットワークから取得するか。既定 true (取得する)。
+   * 関数なら、URL ごとに決める。他人の書いた文書をサーバーで組むときは、false か、取得してよい URL だけを許す関数にする。
    * 転送の先の URL の扱い・関数で防げないもの (名前の解決)・大きさの上限は、fetchImages と同じ
    */
   fetchStyles?: boolean | ((url: string) => boolean);
   /**
-   * PDF の圧縮 (zlib の deflate)。ページの中身・書体・画像の流れに使う。Node なら zlib.deflateSync を渡すと速い。
-   * 省くと、画像の流れは Node の zlib (Node)・CompressionStream (ブラウザ・Web Worker) で、ほかの流れは pdf-lib の圧縮 (pako) で圧縮する
+   * PDF の圧縮 (zlib の deflate)。ページの中身・フォント・画像のストリームに使う。Node なら zlib.deflateSync を渡すと速い。
+   * 省くと、画像のストリームは Node の zlib (Node)・CompressionStream (ブラウザー・Web Worker) で、ほかのストリームは pdf-lib の圧縮 (pako) で圧縮する
    */
   deflate?: (data: Uint8Array) => Uint8Array;
   /**
    * 文書の外へのリンク (HTML の <a href>・XSL-FO の fo:basic-link・fo:bookmark の external-destination) のうち、PDF に動作を書くもの。
    * 既定では、スキームが http・https・mailto・tel の URL (URI 動作) と、相対参照の PDF (別の PDF を開く動作 GoToR) だけを書く。
    * ほかのスキーム (javascript:・data:・file: など)、PDF でない相対のファイル・絶対パスのファイル (ファイルを開く動作)、スキームの無い //host/… は、
-   * 動作を書かず (字はそのまま組む)、warnings に知らせる (他人の書いた文書から作った PDF を、別の人が開くときのため)。
+   * 動作を書かず (文字はそのまま組む)、warnings に通知する (他人の書いた文書から作った PDF を、別の人が開くときのため)。
    * schemes: 許すスキームの一覧 (既定の一覧と置き換わる。'*' はすべて)。launch: true なら、ファイルを開く動作 (Launch など) も書く。
-   * 以前の版と同じ動き (すべて書く) にするには { schemes: ['*'], launch: true }。
+   * 以前のバージョンと同じ動き (すべて書く) にするには { schemes: ['*'], launch: true }。
    * relative: スキームの無い相対参照 (file.pdf・a.mp3 など) の書き方。'file' (既定) は、PDF の場所からの相対のファイルを開く動作 (GoToR・Launch)。
-   * 'uri' は、書かれた参照のままの URI 動作 (/S /URI /URI (file.pdf)。%xx は解かない)。ブラウザの中の PDF ビューアでも開けるようにするときに使う。
+   * 'uri' は、書かれた参照のままの URI 動作 (/S /URI /URI (file.pdf)。%xx は解かない)。ブラウザーの中の PDF ビューアーでも開けるようにするときに使う。
    * 'uri' のときは、PDF でない相対のファイルへのリンクも launch に関わらず書く (絶対パスと //host/… は launch: true のときだけ)。
    * #id は、どちらでも文書の中のリンク
    */
   links?: LinkPolicy;
   /**
-   * プラグイン (いまは画像の形式を足すものだけ。KumioriPlugin)。画像のファイルが、プラグインの形式の判定 (sniff) に当たれば、
+   * プラグイン (いまは画像の形式を追加するものだけ。KumioriPlugin)。画像のファイルが、プラグインの形式の判定 (sniff) に当たれば、
    * その形式が読み込んで SVG にする (PDF には図形のまま入る)。拡張子 (extensions) の名前のファイルも、文書に名前が出てくれば画像として読む。
    * プラグインはプログラムそのもので、Kumiori と同じ権限で動く。自分で選んだ、信頼できるものだけを渡すこと
    */
   plugins?: KumioriPlugin[];
   /**
-   * draw.io (diagrams.net) の図のファイル (.drawio・.dio) の選択肢。図は画像として読み、ページを SVG にして PDF に図形と文字のまま入れる
-   * (画像の参照の # の後ろで、描くページを選ぶ: #page=N・#page-id=ID・#ページの名前)。図を描く処理は、図が出てきたときだけ読み込む。
+   * draw.io (diagrams.net) の図のファイル (.drawio・.dio) のオプション。図は画像として読み、ページを SVG にして PDF に図形と文字のまま入れる
+   * (画像の参照の # の後ろで、描画するページを選ぶ: #page=N・#page-id=ID・#ページの名前)。図を描画する処理は、図が出てきたときだけ読み込む。
    * stencils: 図形ライブラリ (draw.io の js/stencils.min.js かライブラリの XML) と配布物の画像のファイル。
-   * fetchStencils: 図に要る図形ライブラリ・画像が stencils に無いとき、draw.io の配布物から取るか (既定 false。true なら draw.io v24.7.5 の公開のリポジトリから。取った中身は、その版の SHA-256 の一覧と照らす)。
+   * fetchStencils: 図に要る図形ライブラリ・画像が stencils に無いとき、draw.io の配布物から取得するか (既定 false。true なら draw.io v24.7.5 の公開のリポジトリから。取得した中身は、そのバージョンの SHA-256 の一覧と比較する)。
    * Kumiori は図形ライブラリを持たない (docs/drawio.md の「図形ライブラリの利用の条件」)。false なら、draw.io の図を画像として読まない。
-   * 同じオブジェクトを渡せば、取った図形ライブラリを、組むたびに取り直さずに使い回す
+   * 同じオブジェクトを渡せば、取得した図形ライブラリを、組むたびに取得し直さずに再利用する
    */
   drawio?: DrawioOptions | false;
   /**
    * 入力の上限 (小さな入力で時間とメモリを使い切らせないためのもの。名前と既定の値は KumioriLimits と docs/library.md の「入力の上限」)。
    * 渡さない名前は既定の値 (前と同じ)。時間・大きさの上限は上げ下げでき、入れ子の深さの上限は下げることだけができる (上げると KumioriOptionError)。
    * 上げると、その分だけ時間とメモリを多く使いうる (SECURITY.md)。上げた上限があれば、info の診断 limit/raised を 1 件出す。
-   * createTypesetter の設定に書けば、器の書体の読み込みに当て、文書ごとの既定になる (文書ごとの設定の limits は、名前ごとに上に重ねる)
+   * createTypesetter の設定に書けば、タイプセッターのフォントの読み込みに当て、文書ごとの既定になる (文書ごとの設定の limits は、名前ごとに上に重ねる)
    */
   limits?: KumioriLimits;
 }
 
-/** 組んだ結果 (typeset・Typesetter.typeset の返すもの)。PDF にする (toPdf)・ページを描く (renderPage)・組んだ結果をたどる (areaTree) */
+/** 組んだ結果 (typeset・Typesetter.typeset の返すもの)。PDF にする (toPdf)・ページを描画する (renderPage)・組んだ結果をたどる (areaTree) */
 export interface TypesetResult {
   /** 組んだ Area Tree (ページごとのシート) */
   areaTree: AreaTree;
   /** ページ数 */
   pageCount: number;
   /**
-   * 組版の警告 (読めない画像・溢れなど)。toPdf を呼ぶと、PDF を書く途中の警告 (描けない字・色つきの字形を色つきで描けないことなど) も、
-   * この配列に足す (同じ文は 1 度だけ)
+   * 組版の警告 (読めない画像・溢れなど)。toPdf を呼ぶと、PDF を書く途中の警告 (描画できない文字・色つきの字形を色つきで描画できないことなど) も、
+   * この配列に追加する (同じ文は 1 度だけ)
    */
   warnings: string[];
   /**
-   * 組版の診断: warnings と同じ出来事を、種類の名前 (code。版をまたいで変えない)・重さ (severity)・文に埋めた値 (args) で持つ (docs/diagnostics.md)。
+   * 組版の診断: warnings と同じイベントを、種類の名前 (code。バージョンをまたいで変えない)・重大度 (severity)・文に埋めた値 (args) で持つ (docs/diagnostics.md)。
    * 未対応・知らない CSS と XSL-FO の指定は、warnings では 1 つの文にまとめるが、ここでは名前ごとに 1 件にする。同じ診断は 1 件にして数える (count)。
-   * toPdf を呼ぶと、PDF を書く途中の診断も足す
+   * toPdf を呼ぶと、PDF を書く途中の診断も追加する
    */
   diagnostics: Diagnostic[];
   /** 組版にかかった時間 (ミリ秒。読み込み・PDF の書き出しは含まない) */
@@ -291,39 +291,39 @@ export interface TypesetResult {
   /** PDF にする */
   toPdf(options?: PdfOptions): Promise<Uint8Array>;
   /**
-   * toPdf と同じ PDF を、output へ流して書く (typesetToPdfStream と同じ書き出し先・同じ扱い)。返すのは書いたバイト数。
-   * 組んだ結果 (領域の木) は持ったままなので、下がるのは PDF の側のメモリだけ。PDF/X・PDF/A (options.pdfx・options.pdfa) は流して書けない
+   * toPdf と同じ PDF を、output へストリームで書き出す (typesetToPdfStream と同じ書き出し先・同じ扱い)。返すのは書いたバイト数。
+   * 組んだ結果 (エリアツリー) は持ったままなので、下がるのは PDF の側のメモリだけ。PDF/X・PDF/A (options.pdfx・options.pdfa) はストリームで書き出せない
    * (何も書く前に KumioriOptionError)
    */
   toPdfStream(output: PdfOutput, options?: PdfOptions): Promise<{ bytes: number }>;
   /**
-   * ページ (0 から数える) を canvas に描く (ブラウザ。印刷プレビューなど)。canvas の大きさは、ページの大きさ × scale に合わせて設定し直す。
-   * canvas は、画面の canvas 要素か OffscreenCanvas (Web Worker の中で組んで描くとき。画素にした結果は transferToImageBitmap で画面へ渡せる)。
-   * 字は書体ファイルの輪郭から描くので、ページの外の書体の設定 (CSS の `@font-face` など) に左右されない
+   * ページ (0 から数える) を canvas に描画する (ブラウザー。印刷プレビューなど)。canvas の大きさは、ページの大きさ × scale に合わせて設定し直す。
+   * canvas は、画面の canvas 要素か OffscreenCanvas (Web Worker の中で組んで描画するとき。ラスタライズした結果は transferToImageBitmap で画面へ渡せる)。
+   * 文字はフォントファイルのアウトラインから描画するので、ページの外のフォントの設定 (CSS の `@font-face` など) に左右されない
    */
   renderPage(canvas: HTMLCanvasElement | OffscreenCanvas, pageIndex: number, options?: RenderPageOptions): void;
   /**
-   * ページ (0 から数える) を SVG の文書 (文字列) にする (ブラウザでも Node でも使える)。大きさは紙の大きさ (pt)。
-   * 字は書体ファイルの輪郭の道にし、画像は文書の中に埋め込むので、SVG だけで描ける (書体・画像のファイルは要らない)。
-   * リンク (本文のリンクと SVG の画像の中のリンク) は、PDF と同じリンクの決まり (TypesetOptions.links) に通したものだけを a 要素にする
-   * (書き出した SVG を img で載せたときは、ブラウザの決まりでリンクは押せない。SVG をそのまま開くか、HTML に直に入れたときに押せる)
+   * ページ (0 から数える) を SVG の文書 (文字列) にする (ブラウザーでも Node でも使える)。大きさは紙の大きさ (pt)。
+   * 文字はフォントファイルのアウトラインのパスにし、画像は文書の中に埋め込むので、SVG だけで描画できる (フォント・画像のファイルは要らない)。
+   * リンク (本文のリンクと SVG の画像の中のリンク) は、PDF と同じリンクのポリシー (TypesetOptions.links) に通したものだけを a 要素にする
+   * (書き出した SVG を img で載せたときは、ブラウザーの規則でリンクは押せない。SVG をそのまま開くか、HTML に直に入れたときに押せる)
    */
   renderPageToSvg(pageIndex: number, options?: RenderPageSvgOptions): Promise<string>;
   /**
-   * ページ (0 から数える) を PNG (8 ビットの RGB。紙は白) にする (ブラウザでも Node でも使える。依存を足さない)。
-   * 字は書体ファイルの輪郭から描く。画素にできない画像 (CMYK の JPEG・インターレースの PNG) は描かずに、warnings に足す
+   * ページ (0 から数える) を PNG (8 ビットの RGB。紙は白) にする (ブラウザーでも Node でも使える。依存を追加しない)。
+   * 文字はフォントファイルのアウトラインから描画する。ピクセルにできない画像 (CMYK の JPEG・インターレースの PNG) は描画せずに、warnings に追加する
    */
   renderPageToPng(pageIndex: number, options?: RenderPagePngOptions): Promise<Uint8Array>;
   /**
    * この結果を手放す (dispose) と減るメモリの、おおよその見積もり (バイト)。いくつかの結果を持っておくとき (プレビューで前に組んだ結果を
    * 再利用するときなど) に、どれを手放すかを決める目安。Typesetter (createTypesetter) と共有するもの (Typesetter のフォント・OS のフォント・
    * 再利用のキャッシュ) は数えない (Typesetter.memoryUsage が数える)。呼ぶ側が渡した中身をそのまま持つもの (フォントのファイル・添付のファイル) も数えない。
-   * 領域の木とフォントの表の分は、数からの見積もりで、処理系によって違う (1.0 までに数え方を変えることがある)。dispose の後は、どれも 0
+   * エリアツリーとフォントの表の分は、数からの見積もりで、処理系によって違う (1.0 までに数え方を変えることがある)。dispose の後は、どれも 0
    */
   memoryUsage(): MemoryUsage;
   /**
-   * この結果が持つものを手放す: ブラウザの画像 (ImageBitmap) を閉じ (GC を待たずに画素のメモリを返す)、画像・文書ごとのフォント・
-   * 描画のためのキャッシュ・領域の木 (areaTree の sheets などを空にする) を手放す。Typesetter と共有するものは手放さない。
+   * この結果が持つものを手放す: ブラウザーの画像 (ImageBitmap) を閉じ (GC を待たずにピクセルのメモリを返す)、画像・文書ごとのフォント・
+   * 描画のためのキャッシュ・エリアツリー (areaTree の sheets などを空にする) を手放す。Typesetter と共有するものは手放さない。
    * 後で toPdf・toPdfStream・renderPage・renderPageToSvg・renderPageToPng を呼ぶと、KumioriError (code は api/result-disposed) で失敗する。
    * toPdf などが走っている途中で呼んだときは、走っているものが全部終わってから手放す (走っているものは、そのまま終わる)。
    * 2 度呼んでもよい (2 度目は何もしない)
@@ -339,17 +339,17 @@ export interface MemoryUsage {
   /** 合計 (images・fonts・layout の和) */
   total: number;
   /**
-   * 画像: ファイルの中身 (渡されたものをコピーして持つ。同じ中身でも、参照の URL が違えば別に持つ)・描画のために画素にしたもの
-   * (ブラウザの画像。幅 × 高さ × 4)・前もって読んだ画素
+   * 画像: ファイルの中身 (渡されたものをコピーして持つ。同じ中身でも、参照の URL が違えば別に持つ)・描画のためにラスタライズしたもの
+   * (ブラウザーの画像。幅 × 高さ × 4)・前もって読んだピクセル
    */
   images: number;
   /**
-   * フォント: この文書で足したフォント (CSS の @font-face・XSL-FO と一緒に渡したフォント)。読んだ表・グリフのキャッシュ (フォントのグリフの数からの見積もり) と、
+   * フォント: この文書で追加したフォント (CSS の @font-face・XSL-FO と一緒に渡したフォント)。読んだ表・グリフのキャッシュ (フォントのグリフの数からの見積もり) と、
    * この結果だけが持つファイル (WOFF・WOFF2 を戻したものなど)。直近に組んだ文書のフォントは、Typesetter の再利用のキャッシュも使うので、
    * その結果を手放しても、次の文書を組むか Typesetter.releaseCaches を呼ぶまでは、表の分が残る
    */
   fonts: number;
-  /** 領域の木: 領域・構造の木 (タグ付き PDF)・しおり・飛び先の数からの見積もり */
+  /** エリアツリー: 領域・構造ツリー (タグ付き PDF)・しおり・リンク先の数からの見積もり */
   layout: number;
 }
 
@@ -371,30 +371,30 @@ export interface TypesetterMemoryUsage {
 
 /** renderPageToPng の設定 */
 export interface RenderPagePngOptions {
-  /** 止める合図 (TypesetOptions.signal と同じ。組んだときの合図は引き継がない) */
+  /** 止めるシグナル (TypesetOptions.signal と同じ。組んだときのシグナルは引き継がない) */
   signal?: AbortSignal;
-  /** 解像度 (1 インチあたりの画素の数)。既定 96 (1pt = 1.333 画素)。画素の数は 4,000 万まで */
+  /** 解像度 (1 インチあたりのピクセルの数)。既定 96 (1pt = 1.333 ピクセル)。ピクセルの数は 4,000 万まで */
   dpi?: number;
-  /** 仕上がり・塗り足しのガイド線を描く (印刷用 print: true のとき)。既定 false */
+  /** 仕上がり・塗り足しのガイド線を描画する (印刷用 print: true のとき)。既定 false */
   guides?: boolean;
 }
 
 /** renderPageToSvg の設定 */
 export interface RenderPageSvgOptions {
-  /** 止める合図 (TypesetOptions.signal と同じ。組んだときの合図は引き継がない) */
+  /** 止めるシグナル (TypesetOptions.signal と同じ。組んだときのシグナルは引き継がない) */
   signal?: AbortSignal;
-  /** 仕上がり・塗り足しのガイド線を描く (印刷用 print: true のとき)。既定 false */
+  /** 仕上がり・塗り足しのガイド線を描画する (印刷用 print: true のとき)。既定 false */
   guides?: boolean;
   /**
-   * SVG の中の id (切り抜き・グラデーション・画像など) の頭に付ける文字列。既定 'k'。1 つの HTML に何枚もの SVG を直に入れるときは、
-   * ページごとに違う値にする (id がぶつからないように)。XML の名前 (XML 1.0 §2.3 の Name から「:」を除いたもの) で書く (ほかの字を含むと RangeError)。
-   * 頭の文字が別のページの頭の文字の頭にならないようにする (k と k1 では、k10 が重なる。p1-・p2- のように数字でない字で終える)
+   * SVG の中の id (クリッピング・グラデーション・画像など) の先頭に付ける文字列。既定 'k'。1 つの HTML に何枚もの SVG を直に入れるときは、
+   * ページごとに違う値にする (id がぶつからないように)。XML の名前 (XML 1.0 §2.3 の Name から「:」を除いたもの) で書く (ほかの文字を含むと RangeError)。
+   * 先頭の文字が別のページの先頭の文字の先頭にならないようにする (k と k1 では、k10 が重なる。p1-・p2- のように数字でない文字で終える)
    */
   idPrefix?: string;
   /**
    * 文書の中の、別のページへのリンクの書き先。ページの番号 (0 から) を受け、そのページを書き出した SVG の URL (この SVG からの相対参照など) を返す。
-   * リンクは、返した URL に飛び先の id を付けたもの (`a-3.svg#id`) になる。渡さなければ (undefined を返せば)、別のページへのリンクは書かない
-   * (同じページの中のリンクは、渡さなくても `#id` に書く)。返した URL は、リンクの決まり (links) に通さずに書く
+   * リンクは、返した URL にリンク先の id を付けたもの (`a-3.svg#id`) になる。渡さなければ (undefined を返せば)、別のページへのリンクは書かない
+   * (同じページの中のリンクは、渡さなくても `#id` に書く)。返した URL は、リンクのポリシー (links) に通さずに書く
    */
   pageHref?: (pageIndex: number) => string | undefined;
 }
@@ -403,15 +403,15 @@ export interface RenderPageSvgOptions {
 export interface RenderPageOptions {
   /** 1pt あたりの CSS px。既定 96 / 72 (等倍。1pt = 1.333px) */
   scale?: number;
-  /** 画面の画素の細かさ。既定は window.devicePixelRatio (window の無い Web Worker の中では 1。画面の値を渡す) */
+  /** 画面のピクセルの細かさ。既定は window.devicePixelRatio (window の無い Web Worker の中では 1。画面の値を渡す) */
   devicePixelRatio?: number;
-  /** 仕上がり・塗り足しのガイド線を描く (印刷用 print: true のとき)。既定 false */
+  /** 仕上がり・塗り足しのガイド線を描画する (印刷用 print: true のとき)。既定 false */
   guides?: boolean;
 }
 
 /**
  * 呼ぶ側が渡した中身の ArrayBuffer (files・resolveResource の値)。組んだ結果のメモリの見積もり (TypesetResult.memoryUsage) は、
- * これをそのまま持つもの (書体のファイル・添付のファイル) を数えない (結果を手放しても、呼ぶ側が持っていれば減らない)
+ * これをそのまま持つもの (フォントのファイル・添付のファイル) を数えない (結果を手放しても、呼ぶ側が持っていれば減らない)
  */
 const givenBuffers = new WeakSet<ArrayBufferLike>();
 const bytesOf = (d: KumioriFileData): Uint8Array => {
@@ -426,9 +426,9 @@ const bufferOf = (d: KumioriFileData): ArrayBuffer => {
 };
 const textOf = (d: KumioriFileData) => (typeof d === 'string' ? d : new TextDecoder().decode(bytesOf(d)));
 /**
- * 中の処理が使う形 (ブラウザの File と同じ: 名前はファイル名、読み出しは text・arrayBuffer)。関数の中身は 1 度だけ読む。
- * url: 参照から取ったファイルの、参照の URL の全体 (問い合わせの ?… も含む。名前が同じでも URL の違うものを取り違えないため)。
- * forget: 読んだ中身の覚えを捨てる (画像の置き場に写した画像。もう 1 度要るときは、関数を呼び直して読む。中身を値で渡されたものは、
+ * 中の処理が使う形 (ブラウザーの File と同じ: 名前はファイル名、読み出しは text・arrayBuffer)。関数の中身は 1 度だけ読む。
+ * url: 参照から取得したファイルの、参照の URL の全体 (問い合わせの ?… も含む。名前が同じでも URL の違うものを取り違えないため)。
+ * forget: 読んだ中身のキャッシュを捨てる (画像の格納先にコピーした画像。もう 1 度要るときは、関数を呼び直して読む。中身を値で渡されたものは、
  * 値を持つ側がいるので、捨てても空かない)
  */
 const toFile = (f: KumioriFile, css = false, url?: string) => {
@@ -440,7 +440,7 @@ const toFile = (f: KumioriFile, css = false, url?: string) => {
   return { name: f.name.split(/[\\/]/).pop()!, path: f.name, css, ...(url !== undefined ? { url } : {}), data, forget, text: async () => textOf(rejoin(thisCall(), await data())), arrayBuffer: async () => bufferOf(rejoin(thisCall(), await data())) };
 };
 /**
- * 相対の道を整える (\\ を / に、. と空の段を除き、a/../ を畳む。先頭の .. は残す)。sub/./note.txt・sub//note.txt・./sub/note.txt を
+ * 相対のパスを整える (\\ を / に、. と空の段を除き、a/../ を畳む。先頭の .. は残す)。sub/./note.txt・sub//note.txt・./sub/note.txt を
  * sub/note.txt にそろえる (添付ファイルを、files の名前と参照の両側で同じ形にして比べる。大文字と小文字は変えない)
  */
 function tidyRelPath(p: string): string {
@@ -453,13 +453,13 @@ function tidyRelPath(p: string): string {
   return out.join('/');
 }
 
-/** CSS として読むファイル (拡張子 .css か、参照から CSS として取ったもの) */
+/** CSS として読むファイル (拡張子 .css か、参照から CSS として取得したもの) */
 const isCss = (f: { name: string; css?: boolean }) => !!f.css || /\.css$/i.test(f.name);
 type InnerFile = ReturnType<typeof toFile>;
 
 /**
- * 既定の書体を spec.urls (https のもの) から取る (時限つき)。読めた書体は、同じ実行の中で使い回す。
- * 取れなければ undefined (投げない)。Node のコマンドは、これで取った書体をキャッシュに保存する (cli.ts)
+ * 既定のフォントを spec.urls (https のもの) から取得する (時限つき)。読めたフォントは、同じ実行の中で再利用する。
+ * 取得できなければ undefined (投げない)。Node のコマンドは、これで取得したフォントをキャッシュに保存する (cli.ts)
  */
 const fetchedFonts = new Map<string, Promise<ArrayBuffer | undefined>>();
 export async function fetchFont(spec: FontSpec, timeoutMs: number): Promise<ArrayBuffer | undefined> {
@@ -491,8 +491,8 @@ export { decodeDocumentText } from './documentText';
 export { expandInternalEntities } from './xmlParse';
 
 /**
- * HTML・SVG の読み取り。ブラウザの画面の中では、ブラウザに備わった DOMParser (HTML の仕様の読み取り) を使う。
- * Node と、DOMParser の無いブラウザの Web Worker の中では linkedom を使う。linkedom は、そのときだけ読み込む (linkedomModules.ts)
+ * HTML・SVG の読み取り。ブラウザーの画面の中では、ブラウザーに備わった DOMParser (HTML の仕様の読み取り) を使う。
+ * Node と、DOMParser の無いブラウザーの Web Worker の中では linkedom を使う。linkedom は、そのときだけ読み込む (linkedomModules.ts)
  */
 type Parsers = { html: (t: string) => Document; svg: (t: string) => unknown };
 let parsersP: Promise<Parsers> | undefined;
@@ -538,10 +538,10 @@ const imageFileRe = (formats: readonly ImageFormat[]) => new RegExp(`\\.(?:${ima
 /** 入力の種類 (TypesetOptions.kind) に使える値 */
 const KINDS = ['html', 'xhtml', 'fo'] as const;
 
-/** 選択肢の誤り。入口 (createTypesetter・typeset) で検証し、知らない値を無言で下流へ流さない (JavaScript や JSON の設定から呼ぶ利用者には型の守りが無い) */
-const optionError = (m: string, option?: string) => new KumioriOptionError(msg(`選択肢の誤り: ${m}`, `invalid option: ${m}`), option);
+/** オプションのエラー。入口 (createTypesetter・typeset) で検証し、知らない値を無言で下流へ流さない (JavaScript や JSON の設定から呼ぶ利用者には型の守りが無い) */
+const optionError = (m: string, option?: string) => new KumioriOptionError(msg(`オプションのエラー: ${m}`, `invalid option: ${m}`), option);
 /**
- * 選択肢の引数そのもの: 省略 (undefined) か、オブジェクト。null や文字列などは、中の値を読む前に選択肢の誤りにする
+ * オプションの引数そのもの: 省略 (undefined) か、オブジェクト。null や文字列などは、中の値を読む前にオプションのエラーにする
  * (前は null で、o.lang を読むところの生の TypeError になっていた)
  */
 function optionsObject<T extends object>(o: T | undefined, name: string): T {
@@ -557,8 +557,8 @@ function oneOf<T extends string>(name: string, v: unknown, allowed: readonly T[]
   return v as T;
 }
 /**
- * 選択肢の検証: kind・compat・style は決まった値、fetchTimeoutMs は正の数、files・fonts は配列、loadFont・deflate は関数、fetchImages は真偽値か関数。
- * createTypesetter の設定と、文書ごとの設定 (と両方を合わせたもの) に使う。誤りは TypeError
+ * オプションの検証: kind・compat・style は決まった値、fetchTimeoutMs は正の数、files・fonts は配列、loadFont・deflate は関数、fetchImages は真偽値か関数。
+ * createTypesetter の設定と、文書ごとの設定 (と両方を合わせたもの) に使う。エラーは TypeError
  */
 function checkOptions(o: TypesetOptions) {
   oneOf('kind', o.kind, KINDS);
@@ -591,7 +591,7 @@ function checkOptions(o: TypesetOptions) {
   }
   if (o.systemFonts !== undefined && !(typeof o.systemFonts === 'object' && o.systemFonts !== null && typeof (o.systemFonts as { find?: unknown }).find === 'function'))
     throw optionError(
-      msg('systemFonts は OS の書体を探す部品 (find を持つオブジェクト) にしてください (Node では kumiori/node の createSystemFonts() を渡す)', 'systemFonts must be an OS font finder (an object with find); in Node, pass createSystemFonts() from kumiori/node'),
+      msg('systemFonts は OS のフォントを探すモジュール (find を持つオブジェクト) にしてください (Node では kumiori/node の createSystemFonts() を渡す)', 'systemFonts must be an OS font finder (an object with find); in Node, pass createSystemFonts() from kumiori/node'),
       'systemFonts',
     );
   if (o.resolveResource !== undefined && typeof o.resolveResource !== 'function') throw optionError(msg('resolveResource は関数にしてください', 'resolveResource must be a function'), 'resolveResource');
@@ -626,7 +626,7 @@ function checkOptions(o: TypesetOptions) {
     if (ln.relative !== undefined && ln.relative !== 'file' && ln.relative !== 'uri') throw optionError(msg("links.relative は 'file' か 'uri' にしてください", "links.relative must be 'file' or 'uri'"), 'links.relative');
   }
 }
-/** createTypesetter の設定のうち、Typesetter.typeset の文書ごとの設定に渡しても使われないもの (器を作るときに読み込みが済んでいる) */
+/** createTypesetter の設定のうち、Typesetter.typeset の文書ごとの設定に渡しても使われないもの (タイプセッターを作るときに読み込みが済んでいる) */
 const SETUP_ONLY_OPTIONS = ['fonts', 'genericFonts', 'loadFont', 'systemFonts', 'reuse'] as const;
 
 /** 入力の種類を決める (kind は checkOptions で検証済み) */
@@ -639,7 +639,7 @@ function kindOf(text: string, o: TypesetOptions): 'html' | 'xhtml' | 'fo' {
 }
 
 /**
- * 入口の呼び出しの文脈を作る (callContext.ts)。lang を省けば、呼び出しを始めたときの言語 (既定の言語か、外の呼び出しの言語) を写して持つ
+ * 入口の呼び出しの文脈を作る (callContext.ts)。lang を省けば、呼び出しを始めたときの言語 (既定の言語か、外の呼び出しの言語) をコピーして持つ
  * (呼び出しの途中で setMessageLang しても、その呼び出しの言語は変わらない)
  */
 function beginCall(o: { lang?: MessageLang; limits?: unknown; signal?: unknown; onProgress?: unknown }, base: Limits = DEFAULT_LIMITS, path = 'limits'): CallContext {
@@ -657,8 +657,8 @@ function beginCall(o: { lang?: MessageLang; limits?: unknown; signal?: unknown; 
 }
 
 /**
- * 止める合図・進み具合の選択肢を確かめて返す (prefix は誤りの文の選択肢の名前の前に付けるもの: 'setup.' など)。
- * signal は AbortSignal の形 (aborted が真偽値で、addEventListener・throwIfAborted が関数。別の realm の合図も通すため instanceof では見ない)
+ * 止めるシグナル・進捗のオプションを確認して返す (prefix はエラーの文のオプションの名前の前に付けるもの: 'setup.' など)。
+ * signal は AbortSignal の形 (aborted が真偽値で、addEventListener・throwIfAborted が関数。別の realm のシグナルも通すため instanceof では見ない)
  */
 function callControl(o: { signal?: unknown; onProgress?: unknown }, prefix = ''): { signal?: AbortSignal; onProgress?: (p: TypesetProgress) => void } {
   const sg = o.signal as { aborted?: unknown; addEventListener?: unknown; throwIfAborted?: unknown } | undefined;
@@ -669,9 +669,9 @@ function callControl(o: { signal?: unknown; onProgress?: unknown }, prefix = '')
 }
 
 /**
- * typesetToPdf の PDF の設定 (TypesetPdfOptions) を、組む前に確かめる。
- * 止める合図・進み具合は、型では受けないが、JavaScript からは渡せるので、黙って捨てずに選択肢の誤りにする (合図は、組む設定 (options) の側で効く)。
- * 日時 (date) は、組んだ後の PDF の書き出しでも確かめるが、文書を全部組んでから誤りにしないよう、ここでも確かめる
+ * typesetToPdf の PDF の設定 (TypesetPdfOptions) を、組む前に確認する。
+ * 止めるシグナル・進捗は、型では受けないが、JavaScript からは渡せるので、黙って捨てずにオプションのエラーにする (シグナルは、組む設定 (options) の側で効く)。
+ * 日時 (date) は、組んだ後の PDF の書き出しでも確認するが、文書を全部組んでからエラーにしないよう、ここでも確認する
  */
 function checkPdfOnlyOptions(pdf: TypesetPdfOptions): void {
   for (const k of ['signal', 'onProgress'] as const) {
@@ -683,7 +683,7 @@ function checkPdfOnlyOptions(pdf: TypesetPdfOptions): void {
 }
 
 /**
- * 暗号化の設定の形と、PDF/X・PDF/A と一緒でないことを、組む前に確認する (組み終えてから断らない)。null は暗号化しない。
+ * 暗号化の設定の形と、PDF/X・PDF/A と一緒でないことを、組む前に確認する (組み終えてから拒否しない)。null は暗号化しない。
  * PDF/X・PDF/A と一緒なら KumioriPdfError (pdf/encrypt-incompatible)
  */
 function checkPdfEncrypt(pdf: Pick<PdfOptions, 'encrypt' | 'pdfx' | 'pdfa'>, path: string): void {
@@ -699,17 +699,17 @@ function checkPdfEncrypt(pdf: Pick<PdfOptions, 'encrypt' | 'pdfx' | 'pdfa'>, pat
  */
 const LIMIT_REACHED_WHAT: Partial<Record<LimitName, readonly [string, string]>> = {
   gridTracks: ['grid の列の並び (grid-template-columns) の列を、上限の数までにしました', 'the tracks of a grid track list (grid-template-columns) were cut to the limit'],
-  leaderRepeats: ['字を並べるリーダーのうち、字の数が上限を超えるものは、字を並べずに空きにしました', 'leaders that would repeat more characters than the limit were left as blank space'],
-  nestedSelectors: ['入れ子の規則を展開したセレクタの数が上限を超える規則を、読みませんでした (CSS Nesting 1 §3.1)', 'nested style rules whose expanded selectors exceed the limit were not read (CSS Nesting 1 §3.1)'],
-  styleRefs: ['集める CSS・書体の参照が上限の数を超えたので、残りを取りませんでした', 'more stylesheet and font references than the limit were found, so the rest were not fetched'],
+  leaderRepeats: ['文字を並べるリーダーのうち、文字の数が上限を超えるものは、文字を並べずに空きにしました', 'leaders that would repeat more characters than the limit were left as blank space'],
+  nestedSelectors: ['入れ子の規則を展開したセレクターの数が上限を超える規則を、読みませんでした (CSS Nesting 1 §3.1)', 'nested style rules whose expanded selectors exceed the limit were not read (CSS Nesting 1 §3.1)'],
+  styleRefs: ['集める CSS・フォントの参照が上限の数を超えたので、残りを取得しませんでした', 'more stylesheet and font references than the limit were found, so the rest were not fetched'],
   importDepth: ['@import の段が上限より深い CSS を読みませんでした', 'stylesheets nested in @import deeper than the limit were not read'],
   tableColumns: ['表の col の span・セルの colspan を、上限の数までにしました', 'the span of table columns (col) and the colspan of cells were cut to the limit'],
-  pdfImageObjects: ['上限を超える PDF の画像を描きませんでした (オブジェクトの数)', 'PDF images over the limit were not drawn (number of objects)'],
-  pdfImagePages: ['上限を超える PDF の画像を描きませんでした (ページの数)', 'PDF images over the limit were not drawn (number of pages)'],
-  systemFontFaces: ['OS の書体 (systemFonts) のうち、上限の数を超える書体を使いませんでした (その書体の字は、字形の無い字になります)', 'OS fonts (systemFonts) over the limit were not used (their characters are left without glyphs)'],
-  pdfImageDepth: ['上限を超える PDF の画像を描きませんでした (ページの木・資源の入れ子の深さ)', 'PDF images over the limit were not drawn (depth of the page tree or of nested resources)'],
-  pdfImageStreamBytes: ['上限を超える PDF の画像を描きませんでした (圧縮を解いた中身の流れの大きさ)', 'PDF images over the limit were not drawn (decompressed size of the content streams)'],
-  pdfImageLoadMs: ['上限を超える PDF の画像を描きませんでした (読み込みの時間)', 'PDF images over the limit were not drawn (loading time)'],
+  pdfImageObjects: ['上限を超える PDF の画像を描画しませんでした (オブジェクトの数)', 'PDF images over the limit were not drawn (number of objects)'],
+  pdfImagePages: ['上限を超える PDF の画像を描画しませんでした (ページの数)', 'PDF images over the limit were not drawn (number of pages)'],
+  systemFontFaces: ['OS のフォント (systemFonts) のうち、上限の数を超えるフォントを使いませんでした (そのフォントの文字は、字形の無い文字になります)', 'OS fonts (systemFonts) over the limit were not used (their characters are left without glyphs)'],
+  pdfImageDepth: ['上限を超える PDF の画像を描画しませんでした (ページツリー・リソースの入れ子の深さ)', 'PDF images over the limit were not drawn (depth of the page tree or of nested resources)'],
+  pdfImageStreamBytes: ['上限を超える PDF の画像を描画しませんでした (圧縮を解いた中身のストリームの大きさ)', 'PDF images over the limit were not drawn (decompressed size of the content streams)'],
+  pdfImageLoadMs: ['上限を超える PDF の画像を描画しませんでした (読み込みの時間)', 'PDF images over the limit were not drawn (loading time)'],
   pdfImageRangePages: ['PDF の画像のページの範囲を、初めから上限の数のページまでにしました', 'the page ranges of PDF images were cut to the first pages up to the limit'],
 };
 
@@ -729,8 +729,8 @@ function limitsReachedOf(names: readonly LimitName[]): Diagnostic[] {
 }
 
 /**
- * 結果の toPdf・renderPageToSvg などの文脈: 組んだときの文脈 (言語・上限) に、その呼び出しの止める合図・進み具合を替えて入れる。
- * 当たった上限の記録 (limitsReached) は、その呼び出しの分を新しく持つ (終わりに、組んだ結果の診断に足す。laterLimitsReached)
+ * 結果の toPdf・renderPageToSvg などの文脈: 組んだときの文脈 (言語・上限) に、その呼び出しの止めるシグナル・進捗を替えて入れる。
+ * 当たった上限の記録 (limitsReached) は、その呼び出しの分を新しく持つ (終わりに、組んだ結果の診断に追加する。laterLimitsReached)
  */
 function laterCall(call: CallContext, o: { signal?: unknown; onProgress?: unknown }, path: string): CallContext {
   const { signal: _s, onProgress: _p, limitsReached: _r, ...rest } = call;
@@ -747,33 +747,33 @@ export async function typeset(text: string, options: TypesetOptions = {}): Promi
 }
 
 /**
- * PDF の設定 (TypesetResult.toPdf・typesetToPdf): 文書の題・入稿用 (PDF/X)・長期保存用 (PDF/A)・JPEG の解像度の上限。
+ * PDF の設定 (TypesetResult.toPdf・typesetToPdf): 文書のタイトル・入稿用 (PDF/X)・長期保存用 (PDF/A)・JPEG の解像度の上限。
  * タグ付き PDF・PDF/UA-1・文書の言語は、組むときの設定 (TypesetOptions の tagged・pdfua・documentLang) で決める
  */
 export interface PdfOptions {
-  /** 止める合図 (TypesetOptions.signal と同じ。組んだときの合図は引き継がない。typesetToPdf では、組む設定 (options) の signal が PDF の書き出しまで効く) */
+  /** 止めるシグナル (TypesetOptions.signal と同じ。組んだときのシグナルは引き継がない。typesetToPdf では、組む設定 (options) の signal が PDF の書き出しまで効く) */
   signal?: AbortSignal;
-  /** 進み具合の呼び返し (TypesetOptions.onProgress と同じ。phase は 'pdf') */
+  /** 進捗のコールバック (TypesetOptions.onProgress と同じ。phase は 'pdf') */
   onProgress?: (progress: TypesetProgress) => void;
-  /** 文書の題 (PDF の文書情報の Title)。文書に題 (HTML の title・XSL-FO の文書情報) が無いときだけ使う */
+  /** 文書のタイトル (PDF の文書情報の Title)。文書にタイトル (HTML の title・XSL-FO の文書情報) が無いときだけ使う */
   title?: string;
   /**
-   * 入稿用 (PDF/X) の PDF にする: 出力意図 (印刷条件)・版の印 (GTS_PDFXVersion)・Trapped を書き、ページには TrimBox を書く。
-   * 版は PdfXOptions.version ('X-3' が既定。'X-4'・'X-1a'・'X-1a:2003')。CMYK の ICC プロファイル (profile) を渡せば、
+   * 入稿用 (PDF/X) の PDF にする: 出力インテント (印刷条件)・バージョンの印 (GTS_PDFXVersion)・Trapped を書き、ページには TrimBox を書く。
+   * バージョンは PdfXOptions.version ('X-3' が既定。'X-4'・'X-1a'・'X-1a:2003')。CMYK の ICC プロファイル (profile) を渡せば、
    * RGB の色と画像を、そのプロファイルで CMYK にする (X-4 では profile が要る)。
-   * X-3・X-1a は透明を使えないので、透明を平らにして書く。そのときタグ付き PDF にはできない (TypesetOptions.tagged)。
-   * 塗り足しまでの範囲に掛かる注釈・リンク・フォームの欄は書かずに、警告に件数を書く。
-   * 出力意図の辞書は ISO 32000-2 §14.11.5 (Table 401) による。PDF/X-1a:2001 (ISO 15930-1)・PDF/X-4 (ISO 15930-7) は、規格の本文を読んで作り、
-   * その決まりに適合することを確かめている。PDF/X-1a:2003・PDF/X-3 は、その本文では確かめておらず、PDF/X-1a:2001 と同じ決まりを当てる。
-   * 入稿の前には、プリフライト (Acrobat Pro など) で確かめること
+   * X-3・X-1a は透明を使えないので、透明をフラット化して書く。そのときタグ付き PDF にはできない (TypesetOptions.tagged)。
+   * 塗り足しまでの範囲に掛かる注釈・リンク・フォームフィールドは書かずに、警告に件数を書く。
+   * 出力インテントの辞書は ISO 32000-2 §14.11.5 (Table 401) による。PDF/X-1a:2001 (ISO 15930-1)・PDF/X-4 (ISO 15930-7) は、規格の本文を読んで作り、
+   * その要件に適合することを検証している。PDF/X-1a:2003・PDF/X-3 は、その本文では検証しておらず、PDF/X-1a:2001 と同じ要件を当てる。
+   * 入稿の前には、プリフライト (Acrobat Pro など) で確認すること
    */
   pdfx?: PdfXOptions;
   /**
-   * 長期保存用 (PDF/A) の PDF にする: 版は PdfAOptions.version ('A-2b' は ISO 19005-2、'A-3b' は ISO 19005-3。見た目を保存する水準 b)。
-   * 出力意図 (pdfx と合わせないときは sRGB) と、XMP のメタデータの pdfaid:part・pdfaid:conformance を書く。
-   * RGB の出力意図では CMYK の色を使えない (ISO 19005-2 §6.2.4.3) ので、CMYK の色と特色の代わりの色を RGB に直し、直した数を警告に書く。
-   * ファイルを開く動作 (Launch)・フォームの欄の動作・字形の無い字は書かない。書き出した PDF を読み直して調べ、合わなければ誤りとして投げる。
-   * pdfx と合わせるときは、pdfx.profile (CMYK の ICC プロファイル) が要る。規格の本文では確かめていないので、規格への適合は保証しない
+   * 長期保存用 (PDF/A) の PDF にする: バージョンは PdfAOptions.version ('A-2b' は ISO 19005-2、'A-3b' は ISO 19005-3。見た目を保存する水準 b)。
+   * 出力インテント (pdfx と合わせないときは sRGB) と、XMP のメタデータの pdfaid:part・pdfaid:conformance を書く。
+   * RGB の出力インテントでは CMYK の色を使えない (ISO 19005-2 §6.2.4.3) ので、CMYK の色と特色の代わりの色を RGB に直し、直した数を警告に書く。
+   * ファイルを開く動作 (Launch)・フォームフィールドの動作・字形の無い文字は書かない。書き出した PDF を読み直して調べ、合わなければエラーとして投げる。
+   * pdfx と合わせるときは、pdfx.profile (CMYK の ICC プロファイル) が要る。規格の本文では検証していないので、規格への適合は保証しない
    */
   pdfa?: PdfAOptions;
   /**
@@ -783,8 +783,8 @@ export interface PdfOptions {
   imageMaxDpi?: number;
   /**
    * PDF の作成日・更新日 (Info の CreationDate・ModDate と XMP の日付) と、添付ファイルの更新日に書く日時。秒より下は切り捨てる。
-   * 無ければ、PDF を書き出すときの時刻。同じ版の Kumiori で、同じ入力・同じ書体・同じ設定と同じ日時で組めば、同じバイトの PDF になる。
-   * 正しくない Date (NaN) と、0〜9999 年の外の日時は、選択肢の誤り (KumioriOptionError。option は 'date')
+   * 無ければ、PDF を書き出すときの時刻。同じバージョンの Kumiori で、同じ入力・同じフォント・同じ設定と同じ日時で組めば、同じバイトの PDF になる。
+   * 正しくない Date (NaN) と、0〜9999 年の外の日時は、オプションのエラー (KumioriOptionError。option は 'date')
    */
   date?: Date;
   /**
@@ -792,23 +792,23 @@ export interface PdfOptions {
    * 権限を外して開くパスワード (ownerPassword。無ければ乱数で、権限を外して開ける人はいない)・許すこと (permissions。既定はどれも許す) を渡す。
    * PDF/X・PDF/A とは一緒に使えない (どちらも暗号化を許さない。KumioriPdfError の pdf/encrypt-incompatible)。
    * PDF/UA (TypesetOptions.pdfua) では、支援技術のための抽出の権限 (permissions.accessibility) を外せない (外そうとしたら、警告 pdfua/encrypt-accessibility-kept を出して残す)。
-   * 暗号化した PDF は、初期ベクトルなどが乱数なので、同じ入力・同じ日時からも毎回違うバイト列になる (文書の ID も乱数)。流して書く出力 (toPdfStream・typesetToPdfStream) でも使える。
+   * 暗号化した PDF は、初期ベクトルなどが乱数なので、同じ入力・同じ日時からも毎回違うバイト列になる (文書の ID も乱数)。ストリームで書き出す出力 (toPdfStream・typesetToPdfStream) でも使える。
    * 権限に従うかどうかは PDF を読むソフトによる (守らないソフトもある)。1.0 までに形を変えることがある
    */
   encrypt?: PdfEncryptOptions;
 }
 /**
- * typesetToPdf の設定: PDF の設定 (PdfOptions) と、組み方。止める合図・進み具合 (signal・onProgress) は、組む設定 (options) の側に渡す
- * (組むところから PDF の書き出しまで効く。こちらに渡すと、選択肢の誤り (KumioriOptionError。option は 'pdf.signal'・'pdf.onProgress'))
+ * typesetToPdf の設定: PDF の設定 (PdfOptions) と、組み方。止めるシグナル・進捗 (signal・onProgress) は、組む設定 (options) の側に渡す
+ * (組むところから PDF の書き出しまで効く。こちらに渡すと、オプションのエラー (KumioriOptionError。option は 'pdf.signal'・'pdf.onProgress'))
  */
 export interface TypesetPdfOptions extends Omit<PdfOptions, 'signal' | 'onProgress'> {
   /**
-   * メモリ節約: 組み直しの回 (ページ番号の参照を決めるもの) で、前の回のページを使い回さず、組み終えた page-sequence の組版の途中の木を
+   * メモリ節約: 組み直しの回 (ページ番号の参照を決めるもの) で、前の回のページを再利用せず、組み終えた page-sequence の組版の途中の木を
    * 手放す (既定 false)。使うメモリは、文書全体の組版の途中の木から、いちばん大きな page-sequence と書きかけの PDF の分ほどに減る
    * (PostgreSQL の文書の FO (3,231 ページ) で、約 2.3GB → 約 0.9GB。いちばん多いのは FO の読み込みの所)。その代わり、組み直しの回ごとに文書全体を組み、決まった後に
-   * もう 1 度組む (同じ文書で、時間は約 1.5 倍)。PDF は、使い回すときと同じ (使い回すときは、前の回のページのページ番号の参照の字を、
-   * 組み直したときと同じ字・同じ位置になると確かめられたとき (字数・字の種類・書体・送りが同じで、前後の字との詰め (カーニング) に加わらないとき) だけ
-   * 差し替え、確かめられなければ、その page-sequence を組み直す)
+   * もう 1 度組む (同じ文書で、時間は約 1.5 倍)。PDF は、再利用するときと同じ (再利用するときは、前の回のページのページ番号の参照の文字を、
+   * 組み直したときと同じ文字・同じ位置になると確認できたとき (字数・文字の種類・フォント・送りが同じで、前後の文字との詰め (カーニング) に加わらないとき) だけ
+   * 差し替え、確認できなければ、その page-sequence を組み直す)
    */
   lowMemory?: boolean;
 }
@@ -818,20 +818,20 @@ export interface TypesetPdfResult {
   pdf: Uint8Array;
   /** ページ数 */
   pageCount: number;
-  /** 組版の警告と、PDF を書く途中の警告 (typeset の warnings に、toPdf の警告を足したものと同じ並び) */
+  /** 組版の警告と、PDF を書く途中の警告 (typeset の warnings に、toPdf の警告を追加したものと同じ並び) */
   warnings: string[];
   /** 組版の診断と、PDF を書く途中の診断 (TypesetResult.diagnostics と同じ) */
   diagnostics: Diagnostic[];
-  /** 組版にかかった時間 (ミリ秒)。ページを領域の木にする時間は含まない (PDF を書く時間に入る。TypesetResult.layoutMs より短い) */
+  /** 組版にかかった時間 (ミリ秒)。ページをエリアツリーにする時間は含まない (PDF を書く時間に入る。TypesetResult.layoutMs より短い) */
   layoutMs: number;
   /** 先頭から maxPages ページで止めたか (TypesetResult.truncated と同じ) */
   truncated: boolean;
 }
 
 /**
- * 文書を組み、PDF だけを作る (typeset の後に toPdf を呼ぶのと同じ PDF・警告・ページ数)。ページを 1 枚ずつ領域の木にして書き、
- * 書いたページを手放すので、文書全体の領域の木を 1 度に持たない (数千ページの文書で、使うメモリが少ない)。
- * 組んだ結果 (Area Tree) を使わず、PDF だけが要るときに使う。ページの領域の木を 2 度作る (使う書体・画像を集めるときと、描くとき)。
+ * 文書を組み、PDF だけを作る (typeset の後に toPdf を呼ぶのと同じ PDF・警告・ページ数)。ページを 1 枚ずつエリアツリーにして書き、
+ * 書いたページを手放すので、文書全体のエリアツリーを 1 度に持たない (数千ページの文書で、使うメモリが少ない)。
+ * 組んだ結果 (Area Tree) を使わず、PDF だけが要るときに使う。ページのエリアツリーを 2 度作る (使うフォント・画像を集めるときと、描画するとき)。
  * Node のコマンドもこれで PDF を作る
  */
 export async function typesetToPdf(text: string, options: TypesetOptions = {}, pdf: TypesetPdfOptions = {}): Promise<TypesetPdfResult> {
@@ -843,33 +843,33 @@ export async function typesetToPdf(text: string, options: TypesetOptions = {}, p
   });
 }
 
-/** 流して書く PDF の書き出し先 (typesetToPdfStream の output) を、TypesetPdfOptions に入れて組版へ渡す鍵 (公開しない) */
+/** ストリームで書き出す PDF の書き出し先 (typesetToPdfStream の output) を、TypesetPdfOptions に入れて組版へ渡すキー (公開しない) */
 const PDF_OUTPUT = Symbol('kumiori.pdfOutput');
 type StreamPdfOptions = TypesetPdfOptions & { [PDF_OUTPUT]?: PdfOutputPort };
 
 export type { PdfOutput };
 
-/** typesetToPdfStream の結果 (TypesetPdfResult から、PDF のバイト列 (pdf) を除き、書き出し先に書いたバイト数を足したもの) */
+/** typesetToPdfStream の結果 (TypesetPdfResult から、PDF のバイト列 (pdf) を除き、書き出し先に書いたバイト数を追加したもの) */
 export interface TypesetPdfStreamResult extends Omit<TypesetPdfResult, 'pdf'> {
   /** 書き出し先に書いたバイト数 */
   bytes: number;
 }
 
 /**
- * 流して書けない PDF の設定 (PDF/X・PDF/A。後の検査が書いた全体を読み直し、合わなければ PDF を返さないので) を、何も書く前に断る。
+ * ストリームで書き出せない PDF の設定 (PDF/X・PDF/A。後の検査が書いた全体を読み直し、合わなければ PDF を返さないので) を、何も書く前に拒否する。
  * null は、typesetToPdf・toPdf と同じく、PDF/X・PDF/A 無しとして通す
  */
 function checkStreamablePdf(pdf: Pick<PdfOptions, 'pdfx' | 'pdfa'>, path: string): void {
   for (const k of ['pdfx', 'pdfa'] as const)
     if (pdf[k] != null)
-      throw optionError(msg(`PDF/X・PDF/A は流して書けません (${path}${k})。typesetToPdf・toPdf を使ってください`, `PDF/X and PDF/A cannot be written as a stream (${path}${k}); use typesetToPdf or toPdf`), `${path}${k}`);
+      throw optionError(msg(`PDF/X・PDF/A はストリームで書き出せません (${path}${k})。typesetToPdf・toPdf を使ってください`, `PDF/X and PDF/A cannot be written as a stream (${path}${k}); use typesetToPdf or toPdf`), `${path}${k}`);
 }
 
 /**
- * 流して書く: 書き出し先を確かめて口を作り (WritableStream ならロックする)、run に渡し、終えたら閉じる。誤り・止める合図で終えたら、
- * 書き始める前の誤り (選択肢の誤り・PDF/X・PDF/A・前に止めた合図・書体の読み込みの誤り) でも、書き出し先を abort(理由) する
- * (書き出し先の誤りで終えたときは abort しない)。WritableStream の扱いは ReadableStream.prototype.pipeTo の既定 (WHATWG Streams §4.2.5。
- * 元が誤りなら書き先を abort する) に合わせる。書き出し先そのものの形の誤り (WritableStream でも関数でもない・ほかの書き手がロックしている) では、書き出し先に触らない
+ * ストリームで書き出す: 書き出し先を確認して口を作り (WritableStream ならロックする)、run に渡し、終えたら閉じる。エラー・止めるシグナルで終えたら、
+ * 書き始める前のエラー (オプションのエラー・PDF/X・PDF/A・前に止めたシグナル・フォントの読み込みのエラー) でも、書き出し先を abort(理由) する
+ * (書き出し先のエラーで終えたときは abort しない)。WritableStream の扱いは ReadableStream.prototype.pipeTo の既定 (WHATWG Streams §4.2.5。
+ * 元がエラーなら書き先を abort する) に合わせる。書き出し先そのものの形のエラー (WritableStream でも関数でもない・ほかのライターがロックしている) では、書き出し先に触らない
  */
 async function streamTo<T>(output: PdfOutput, run: (port: PdfOutputPort) => Promise<T>): Promise<{ result: T; bytes: number }> {
   const port = new PdfOutputPort(output);
@@ -885,14 +885,14 @@ async function streamTo<T>(output: PdfOutput, run: (port: PdfOutputPort) => Prom
 }
 
 /**
- * 文書を組み、PDF をページごとに output へ流して書く (typesetToPdf と同じ組み方・同じ PDF。PDF の全体を 1 つの配列に持たない)。
- * 書き終えた流れ (画像・ページの中身・Form XObject) を、埋め込んだ・描いた所で書き出し先へ書き、書体・注釈・辞書などの残りを最後に書く。
- * 中に印の付いた内容を持つ Form XObject (タグ付き PDF で、不透明度のある箱の中の字など) が無い文書は、typesetToPdf と同じバイト列。
+ * 文書を組み、PDF をページごとに output へストリームで書き出す (typesetToPdf と同じ組み方・同じ PDF。PDF の全体を 1 つの配列に持たない)。
+ * 書き終えたストリーム (画像・ページの中身・Form XObject) を、埋め込んだ・描画した所で書き出し先へ書き、フォント・注釈・辞書などの残りを最後に書く。
+ * 中にマーク付きコンテンツを持つ Form XObject (タグ付き PDF で、不透明度のあるボックスの中の文字など) が無い文書は、typesetToPdf と同じバイト列。
  * ある文書は、番号ごとのオブジェクトは同じで、その Form がファイルの後ろに回る (並びと位置の数だけが違う)。
  * 書き出し先は WritableStream か、バイト列の塊を受ける関数 (Promise を返したら、次の塊の前に待つ)。Node のファイルなら
- * Writable.toWeb(fs.createWriteStream(path)) か (c) => fs.writeSync(fd, c)。書き終えたら WritableStream を close し、誤り・止める合図
- * (options.signal) で終えたら abort(理由) する (書き出し先には途中までのバイト列が残り、PDF としては読めない)。書き出し先の誤りは、そのまま投げる。
- * PDF/X・PDF/A (pdf.pdfx・pdf.pdfa) は流して書けない (何も書く前に KumioriOptionError)
+ * Writable.toWeb(fs.createWriteStream(path)) か (c) => fs.writeSync(fd, c)。書き終えたら WritableStream を close し、エラー・止めるシグナル
+ * (options.signal) で終えたら abort(理由) する (書き出し先には途中までのバイト列が残り、PDF としては読めない)。書き出し先のエラーは、そのまま投げる。
+ * PDF/X・PDF/A (pdf.pdfx・pdf.pdfa) はストリームで書き出せない (何も書く前に KumioriOptionError)
  */
 export async function typesetToPdfStream(text: string, options: TypesetOptions = {}, output: PdfOutput, pdf: TypesetPdfOptions = {}): Promise<TypesetPdfStreamResult> {
   const { result, bytes } = rejoin(thisCall(), await streamTo(output, async (port) => {
@@ -908,44 +908,44 @@ export async function typesetToPdfStream(text: string, options: TypesetOptions =
   return withoutPdf(result, bytes);
 }
 
-/** typesetToPdf の結果を、流して書いた結果にする (pdf を除き、書いたバイト数を足す) */
+/** typesetToPdf の結果を、ストリームで書き出した結果にする (pdf を除き、書いたバイト数を追加する) */
 function withoutPdf(r: TypesetPdfResult, bytes: number): TypesetPdfStreamResult {
   const { pdf: _pdf, ...rest } = r;
   return { ...rest, bytes };
 }
 
-/** createTypesetter の設定: 書体まわり (何度組んでも同じもの) */
+/** createTypesetter の設定: フォントまわり (何度組んでも同じもの) */
 export type TypesetterOptions = Pick<TypesetOptions, 'fonts' | 'genericFonts' | 'loadFont' | 'systemFonts' | 'fetchTimeoutMs' | 'deflate' | 'limits'> & {
   /**
-   * 前の文書を組んだときの結果のうち、中身が同じなら同じ結果になるものを、次の文書を組むときに使い回す (既定 true)。使い回すのは、
-   * 書体のファイルの下ごしらえ、段落の行分け、中身の変わらない page-sequence のページ (直した page-sequence も、直した所の前のページを使い、
-   * 直した所から組み直して、組みの状態が揃ったら残りのページを使う)。使い回しても、組んだ結果 (領域の木・PDF) は使い回さないときと同じ。
-   * 使い回すために、前の文書の段落の行分け (上限は約 400MB) と、ページを使い回すときは前の文書のページの木とページの区切りの記録を、
-   * 次の typeset まで持つ (ページの木は文書 1 つ分を上限なしに持つ)。false にすると、文書ごとに初めから組み、前の文書の結果を持たない
-   * (使い回しを疑うときに比べる。使うメモリも少ない)。使い回さない場面と詳しい条件は、ライブラリの説明書の「器」の節
+   * 前の文書を組んだときの結果のうち、中身が同じなら同じ結果になるものを、次の文書を組むときに再利用する (既定 true)。再利用するのは、
+   * フォントのファイルの下ごしらえ、段落の行分け、中身の変わらない page-sequence のページ (直した page-sequence も、直した所の前のページを使い、
+   * 直した所から組み直して、組みの状態が揃ったら残りのページを使う)。再利用しても、組んだ結果 (エリアツリー・PDF) は再利用しないときと同じ。
+   * 再利用するために、前の文書の段落の行分け (上限は約 400MB) と、ページを再利用するときは前の文書のページツリーとページの区切りの記録を、
+   * 次の typeset まで持つ (ページツリーは文書 1 つ分を上限なしに持つ)。false にすると、文書ごとに初めから組み、前の文書の結果を持たない
+   * (再利用を疑うときに比べる。使うメモリも少ない)。再利用しない場面と詳しい条件は、ライブラリのドキュメントの「入口の関数」の節
    */
   reuse?: boolean;
-  /** 器を作る間 (既定の書体の取得と、fonts の書体の解析) の止める合図 (TypesetOptions.signal と同じ)。作った後の typeset には効かない */
+  /** タイプセッターを作る間 (既定のフォントの取得と、fonts のフォントの解析) の止めるシグナル (TypesetOptions.signal と同じ)。作った後の typeset には効かない */
   signal?: AbortSignal;
-  /** 器を作る間の進み具合 (phase は 'fonts') */
+  /** タイプセッターを作る間の進捗 (phase は 'fonts') */
   onProgress?: (progress: TypesetProgress) => void;
 };
-/** Typesetter.typeset の設定: 文書ごとのもの (limits は器と文書の両方に書ける。文書の limits は、器の limits の上に名前ごとに重ねる) */
+/** Typesetter.typeset の設定: 文書ごとのもの (limits はタイプセッターと文書の両方に書ける。文書の limits は、タイプセッターの limits の上に名前ごとに重ねる) */
 export type DocumentOptions = Omit<TypesetOptions, keyof TypesetterOptions> & Pick<TypesetOptions, 'limits' | 'signal' | 'onProgress'>;
 
-/** 書体を読み込んだ組版の器。同じ書体で、文書を何度でも組む (エディタの印刷プレビューなど) */
+/** フォントを読み込んだ組版のタイプセッター。同じフォントで、文書を何度でも組む (エディタの印刷プレビューなど) */
 export interface Typesetter {
-  /** 文書を組む (typeset と同じ。書体は読み込み済みのものを使い回す) */
+  /** 文書を組む (typeset と同じ。フォントは読み込み済みのものを再利用する) */
   typeset(text: string, options?: DocumentOptions): Promise<TypesetResult>;
-  /** 文書を組み、PDF だけを作る (typesetToPdf と同じ。書体は読み込み済みのものを使い回す) */
+  /** 文書を組み、PDF だけを作る (typesetToPdf と同じ。フォントは読み込み済みのものを再利用する) */
   typesetToPdf(text: string, options?: DocumentOptions, pdf?: TypesetPdfOptions): Promise<TypesetPdfResult>;
-  /** 文書を組み、PDF を output へ流して書く (typesetToPdfStream と同じ。書体は読み込み済みのものを使い回す) */
+  /** 文書を組み、PDF を output へストリームで書き出す (typesetToPdfStream と同じ。フォントは読み込み済みのものを再利用する) */
   typesetToPdfStream(text: string, options: DocumentOptions | undefined, output: PdfOutput, pdf?: TypesetPdfOptions): Promise<TypesetPdfStreamResult>;
   /**
    * 文字列を、行を分けずに 1 行で組んだときの長さと高さを測る (pt。文書を作らずに、名前や見出しが枠に収まるかを先に知るときなど)。
    * style は CSS のプロパティの一部 (TextStyle)。white-space の改行を残す指定 (pre など) なら、改行で行を分ける。
    * 中では、文字列を 1 つのブロックの文書にして、この Typesetter のフォント・組版の処理で組むので、文書の中で同じ文字列・同じスタイルを組んだ行と同じ長さになる
-   * (1 回あたり、小さな文書を組むのと同じ手間がかかる)。測っても、文書をまたぐ再利用 (reuse) のキャッシュは変えない。1.0 までに形を変えることがある
+   * (1 回あたり、小さな文書を組むのと同じコストがかかる)。測っても、文書をまたぐ再利用 (reuse) のキャッシュは変えない。1.0 までに形を変えることがある
    */
   measureText(text: string, style?: TextStyle): Promise<MeasuredText>;
   /**
@@ -968,9 +968,9 @@ export interface Typesetter {
 }
 
 /**
- * 書体を 1 度だけ読み込み (取得と字形の解析)、文書を何度でも組める器を作る。typeset を何度も呼ぶより速い。
- * 数式・等幅・記号の書体は、使う文書を初めて組むときに読み込み、その後は使い回す。
- * 文書ごとの書体 (XSL-FO と一緒に渡した書体ファイル・CSS の @font-face) は、その文書を組むときだけ使う
+ * フォントを 1 度だけ読み込み (取得と字形の解析)、文書を何度でも組めるタイプセッターを作る。typeset を何度も呼ぶより速い。
+ * 数式・等幅・記号のフォントは、使う文書を初めて組むときに読み込み、その後は再利用する。
+ * 文書ごとのフォント (XSL-FO と一緒に渡したフォントファイル・CSS の @font-face) は、その文書を組むときだけ使う
  */
 export async function createTypesetter(setup: TypesetterOptions = {}): Promise<Typesetter> {
   setup = optionsObject(setup, 'setup');
@@ -1046,7 +1046,7 @@ async function measureWith(run: (text: string, options: DocumentOptions) => Prom
   });
 }
 
-/** 器の文書ごとの設定に渡された、器を作るときの設定 (書体まわり) の警告 (使われないので、無言で捨てない) */
+/** タイプセッターの文書ごとの設定に渡された、タイプセッターを作るときの設定 (フォントまわり) の警告 (使われないので、無言で捨てない) */
 function setupOnlyWarnings(options: DocumentOptions, method: string): Diagnostic[] {
   if (options.diagnostics?.ignore?.includes('api/setup-option-ignored')) return [];
   return SETUP_ONLY_OPTIONS.filter((k) => (options as TypesetterOptions)[k] !== undefined).map((k) => diag('api/setup-option-ignored', msg(`${k} は createTypesetter の設定です (${method} の文書ごとの設定では使われません)`, `${k} is a createTypesetter option (it is not used in the per-document options of ${method})`), { option: k }));
@@ -1088,7 +1088,7 @@ function lineStartsOf(text: string): number[] {
   return out;
 }
 
-/** 書体を読み込み、文書を組む関数を返す (createTypesetter と typeset の中身) */
+/** フォントを読み込み、文書を組む関数を返す (createTypesetter と typeset の中身) */
 /** 文書を組む関数 (buildTypesetter が返す)。Typesetter の memoryUsage・releaseCaches も持つ */
 type DocumentRunner = ((text: string, options: DocumentOptions, pdfOnly?: TypesetPdfOptions) => Promise<TypesetResult | TypesetPdfResult>) & {
   memoryUsage(): TypesetterMemoryUsage;
@@ -1104,13 +1104,13 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner
     // 利用者の loadFont には、止める合図を渡す。既定の取得 (fetchFont) は、同じ実行のほかの呼び出しと分け合うので止めず、待つのをやめるだけ (untilAbort)
     const buf = rejoin(thisCall(), await setup.loadFont?.(spec, { signal: fetchSignal(timeout) })) ?? rejoin(thisCall(), await untilAbort(fetchFont(spec, timeout)));
     checkAbort();
-    if (!buf) throw new KumioriFontError('font/load-failed', msg(`書体を読めません: ${spec.family}`, `cannot load font: ${spec.family}`), { args: { font: spec.family } });
+    if (!buf) throw new KumioriFontError('font/load-failed', msg(`フォントを読めません: ${spec.family}`, `cannot load font: ${spec.family}`), { args: { font: spec.family } });
     return buf;
   };
   const base = new FontManager();
   const baseWarnings: Diagnostic[] = [];
   base.onNotice = (d) => baseWarnings.push(d);
-  /** 書体の名前 → ファミリー名の表 (fontMapping の FontNameTable)。ここには fonts で足した書体 (installed) を登録し、文書ごとの書体は文書を組むときに写しへ足す */
+  /** フォントの名前 → ファミリー名の表 (fontMapping の FontNameTable)。ここには fonts で追加したフォント (installed) を登録し、文書ごとのフォントは文書を組むときにコピーへ追加する */
   const fontNames = new FontNameTable();
   // 既定の書体 (明朝・ゴシックの標準と太字、欧文の標準と太字)。太字の枠に、同じファミリーの標準の太さと同じ中身のファイルが渡されたときは、
   // 太字の書体は無いものとして登録しない (FontManager.registerDefaults。太字の字は、標準の太さの書体を太らせて描く)
@@ -1133,7 +1133,7 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner
     try {
       faces = collectionFaces(rejoin(thisCall(), await f.arrayBuffer()));
     } catch (e) {
-      baseWarnings.push(diag('font/file-unreadable', msg(`${f.name} の書体を読めません${e instanceof Error && e.message ? ` (${e.message})` : ''}`, `cannot read the font file ${f.name}${e instanceof Error && e.message ? ` (${e.message})` : ''}`), { file: f.name }));
+      baseWarnings.push(diag('font/file-unreadable', msg(`${f.name} のフォントを読めません${e instanceof Error && e.message ? ` (${e.message})` : ''}`, `cannot read the font file ${f.name}${e instanceof Error && e.message ? ` (${e.message})` : ''}`), { file: f.name }));
       continue;
     }
     for (const buf of faces) {
@@ -1141,13 +1141,13 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner
       try {
         fk = fontkit.create(new Uint8Array(buf)) as unknown as typeof fk;
       } catch {
-        baseWarnings.push(diag('font/file-unreadable', msg(`${f.name} の書体を読めません`, `cannot read the font file ${f.name}`), { file: f.name }));
+        baseWarnings.push(diag('font/file-unreadable', msg(`${f.name} のフォントを読めません`, `cannot read the font file ${f.name}`), { file: f.name }));
         continue;
       }
       const shape = faceShapeOf(fk);
       const family = fk.name?.records?.preferredFamily?.en ?? fk.familyName;
       if (!family) {
-        baseWarnings.push(diag('font/family-unreadable', msg(`${f.name} の書体のファミリー名が読めません`, `cannot read the family name of the font file ${f.name}`), { file: f.name }));
+        baseWarnings.push(diag('font/family-unreadable', msg(`${f.name} のフォントのファミリー名が読めません`, `cannot read the family name of the font file ${f.name}`), { file: f.name }));
         continue;
       }
       // 足した書体は、HTML の line-height: normal の行の高さを書体の値から決める (@font-face の書体と同じ。fontMapping.ts の htmlNormalLineHeight)
@@ -1171,7 +1171,7 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner
     const family = setup.genericFonts?.[generic];
     if (!family) continue;
     if (!base.has(family)) {
-      baseWarnings.push(diag('font/generic-not-loaded', msg(`genericFonts の書体 "${family}" が読み込まれていません (fonts で書体ファイルを渡してください)`, `the genericFonts font "${family}" is not loaded (pass its font file in fonts)`), { font: family, generic }));
+      baseWarnings.push(diag('font/generic-not-loaded', msg(`genericFonts のフォント "${family}" が読み込まれていません (fonts でフォントファイルを渡してください)`, `the genericFonts font "${family}" is not loaded (pass its font file in fonts)`), { font: family, generic }));
       continue;
     }
     setGenericFont(base, generic, family);
@@ -1208,7 +1208,7 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner
   // ファミリー名は、文書の font-family から名指しできない内部の名前にする (名前の表 (FontNameTable) にも入れない)。
   // 読み込みの知らせ (font/repaired など) は覚えておき、その書体を使う文書ごとに出す
   const systemFaces = new Map<string, Promise<{ font: LoadedFont; notes: Diagnostic[] }>>();
-  /** 読み込み終えた OS の書体 (Typesetter.memoryUsage の fonts) */
+  /** 読み込み終えた OS のフォント (Typesetter.memoryUsage の fonts) */
   const systemLoaded = new Set<LoadedFont>();
   let systemSerial = 0;
   const loadSystem = async (m: SystemFontMatch) => {
@@ -1253,7 +1253,7 @@ async function buildTypesetter(setup: TypesetterOptions): Promise<DocumentRunner
   });
 }
 
-/** 字と符号位置の並び (知らせの文に使う。多ければ先頭の 20 字と残りの数) */
+/** 文字と符号位置の並び (通知の文に使う。多ければ先頭の 20 字と残りの数) */
 function charList(chars: readonly string[]): string {
   const cp = (ch: string) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`;
   const head = chars.slice(0, 20).map((ch) => `${ch} (${cp(ch)})`).join(msg('、', ', '));
@@ -1261,11 +1261,11 @@ function charList(chars: readonly string[]): string {
 }
 
 /**
- * 読み込んだどの書体にも字形の無い字を、OS の書体 (systemFonts) で探し、見つけた書体を、その字だけに限って文書の書体の組 (fonts) に入れる。
- * 探すのは、字の出る所の書体の指定の種類 (明朝・ゴシック。missingCharKinds) ごとに、その種類の所に出る字だけ: 明朝の文脈にしか無い字に、
- * ゴシックの書体を読み込まない。字を持つが埋め込めない書体ごとに font/system-font-not-embeddable を知らせる。
- * 組むのに使った書体の知らせ (font/system-fallback) は、組んだ後に、実際に字の領域に使った書体と字だけを出す (返す SystemFallbackUse)。
- * 探す・読むのに失敗したら font/load-failed にして続ける (止める合図は投げる)
+ * 読み込んだどのフォントにも字形の無い文字を、OS のフォント (systemFonts) で探し、見つけたフォントを、その文字だけに限って文書のフォントの組 (fonts) に入れる。
+ * 探すのは、文字の出る所の書体の指定の種類 (明朝・ゴシック。missingCharKinds) ごとに、その種類の所に出る文字だけ: 明朝の文脈にしか無い文字に、
+ * ゴシックのフォントを読み込まない。文字を持つが埋め込めないフォントごとに font/system-font-not-embeddable を通知する。
+ * 組むのに使ったフォントの通知 (font/system-fallback) は、組んだ後に、実際に文字の領域に使ったフォントと文字だけを出す (返す SystemFallbackUse)。
+ * 探す・読むのに失敗したら font/load-failed にして続ける (止めるシグナルは投げる)
  */
 async function useSystemFonts(source: SystemFontSource, loadSystem: SystemFaceLoader, fonts: FontManager, doc: LDocument, lang: string | undefined, report: (d: Diagnostic) => void): Promise<SystemFallbackUse | undefined> {
   const chars = [...missingGlyphChars(fonts, doc).keys()].sort((a, b) => a.codePointAt(0)! - b.codePointAt(0)!);
@@ -1300,7 +1300,7 @@ async function useSystemFonts(source: SystemFontSource, loadSystem: SystemFaceLo
     if (!m.embeddable) {
       const list = charList(m.chars);
       report(
-        diag('font/system-font-not-embeddable', msg(`OS の書体 ${m.name} は字を持ちますが、PDF に埋め込めない書体なので使いません: ${list}`, `the OS font ${m.name} has these characters but cannot be embedded in PDF, so it is not used: ${list}`), {
+        diag('font/system-font-not-embeddable', msg(`OS のフォント ${m.name} は文字を持ちますが、PDF に埋め込めないフォントなので使いません: ${list}`, `the OS font ${m.name} has these characters but cannot be embedded in PDF, so it is not used: ${list}`), {
           font: m.name,
           chars: m.chars.join(''),
         }),
@@ -1322,11 +1322,11 @@ async function useSystemFonts(source: SystemFontSource, loadSystem: SystemFaceLo
 }
 
 /**
- * 文書に入れた OS の書体のうち、組むのに使ったもの (字の領域の書体の名前で数える)。組んだ後に、使った書体ごとに 1 件の
- * font/system-fallback を、その書体で組んだ字だけで知らせる (部品が返しても、ほかの書体が先に字を受け持った書体は知らせない)
+ * 文書に入れた OS のフォントのうち、組むのに使ったもの (文字の領域のフォントの名前で数える)。組んだ後に、使ったフォントごとに 1 件の
+ * font/system-fallback を、そのフォントで組んだ文字だけで通知する (モジュールが返しても、ほかのフォントが先に文字を受け持ったフォントは通知しない)
  */
 class SystemFallbackUse {
-  /** 内部の名前 (Kumiori System N) → 部品の返した書体と、組んだ字 */
+  /** 内部の名前 (Kumiori System N) → モジュールの返したフォントと、組んだ文字 */
   private faces = new Map<string, { match: SystemFontMatch; used: Set<string> }>();
   get size() {
     return this.faces.size;
@@ -1334,7 +1334,7 @@ class SystemFallbackUse {
   add(family: string, match: SystemFontMatch) {
     if (!this.faces.has(family)) this.faces.set(family, { match, used: new Set() });
   }
-  /** 組んだページ (シート) の字の領域を数える */
+  /** 組んだページ (シート) の文字の領域を数える */
   visit(sheet: AreaNode) {
     walkAreas(sheet, (a) => {
       if (a.type !== 'glyph') return;
@@ -1344,7 +1344,7 @@ class SystemFallbackUse {
       if (face) for (const ch of g.text) face.used.add(ch);
     });
   }
-  /** 使った書体ごとの知らせ (部品の返した順) */
+  /** 使ったフォントごとの通知 (モジュールの返した順) */
   diagnostics(): Diagnostic[] {
     const out: Diagnostic[] = [];
     for (const { match: m, used } of this.faces.values()) {
@@ -1352,7 +1352,7 @@ class SystemFallbackUse {
       if (!chars.length) continue;
       const list = charList(chars);
       out.push(
-        diag('font/system-fallback', msg(`どの書体にも字形の無い字を、OS の書体 ${m.name} で組みました (組む機械の書体で結果が変わります): ${list}`, `characters no font has a glyph for were set in the OS font ${m.name} (the result depends on the fonts of the machine): ${list}`), {
+        diag('font/system-fallback', msg(`どのフォントにも字形の無い文字を、OS のフォント ${m.name} で組みました (組む機械のフォントで結果が変わります): ${list}`, `characters no font has a glyph for were set in the OS font ${m.name} (the result depends on the fonts of the machine): ${list}`), {
           font: m.name,
           chars: chars.join(''),
         }),
@@ -1362,12 +1362,12 @@ class SystemFallbackUse {
   }
 }
 
-/** OS の書体を読み込む関数 (buildTypesetter の loadSystem): 読み込んだ書体と、読み込みの知らせ */
+/** OS のフォントを読み込む関数 (buildTypesetter の loadSystem): 読み込んだフォントと、読み込みの通知 */
 type SystemFaceLoader = (m: SystemFontMatch) => Promise<{ font: LoadedFont; notes: Diagnostic[] }>;
 
 /**
- * 文書を 1 つ組む (typesetDocumentBody)。止める合図で止めたときは、器の覚えの世代 (前の文書・その前の文書) を進めない:
- * 止めた文書を「前の文書」に数えると、その前に組み終えた文書の覚えが捨てられ、打つたびに前の組版を止めて組み直す使い方で当たらなくなる
+ * 文書を 1 つ組む (typesetDocumentBody)。止めるシグナルで止めたときは、タイプセッターのキャッシュの世代 (前の文書・その前の文書) を進めない:
+ * 止めた文書を「前の文書」に数えると、その前に組み終えた文書のキャッシュが捨てられ、打つたびに前の組版を止めて組み直す使い方で当たらなくなる
  */
 async function typesetDocument(
   text: string,
@@ -1407,10 +1407,10 @@ async function typesetDocument(
   }
 }
 
-/** 器の覚え (書体の下ごしらえ・行分け) の、1 つの文書の印 (startDocument が返す番号) */
+/** タイプセッターのキャッシュ (フォントの下ごしらえ・行分け) の、1 つの文書の印 (startDocument が返す番号) */
 type DocumentMarks = { prep?: number; lines?: number };
 
-/** 文書を 1 つ組む: base (読み込み済みの書体) の写しに、文書ごとの書体を足して組む */
+/** 文書を 1 つ組む: base (読み込み済みのフォント) のコピーに、文書ごとのフォントを追加して組む */
 async function typesetDocumentBody(
   text: string,
   options: TypesetOptions,
@@ -1418,13 +1418,13 @@ async function typesetDocumentBody(
   loadSpec: (fonts: FontManager, spec: FontSpec) => Promise<void>,
   baseWarnings: Diagnostic[],
   baseNames: FontNameTable,
-  /** PDF だけを作るときの toPdf の設定 (typesetToPdf)。無ければ、領域の木を持つ結果 (TypesetResult) を返す */
+  /** PDF だけを作るときの toPdf の設定 (typesetToPdf)。無ければ、エリアツリーを持つ結果 (TypesetResult) を返す */
   pdfOnly?: TypesetPdfOptions,
-  /** 文書をまたいで使い回す行分けの結果の覚え (器の reuse) */
+  /** 文書をまたいで再利用する行分けの結果のキャッシュ (タイプセッターの reuse) */
   sharedLines?: SharedLineMemo,
-  /** OS の書体 (systemFonts) の読み込み (器が、書体ごとに 1 度だけ読む) */
+  /** OS のフォント (systemFonts) の読み込み (タイプセッターが、フォントごとに 1 度だけ読む) */
   loadSystem?: SystemFaceLoader,
-  /** 器の覚えの、この文書の印を入れる所 (typesetDocument が、止めた・組み終えたの知らせに使う) */
+  /** タイプセッターのキャッシュの、この文書の印を入れる所 (typesetDocument が、止めた・組み終えたの通知に使う) */
   marks: DocumentMarks = {},
   /** Typesetter の再利用のキャッシュ (フォントの下ごしらえの世代) に、この文書を数えない */
   isolated = false,
@@ -1488,7 +1488,7 @@ async function typesetDocumentBody(
     if (!(DIAGNOSTIC_CODES as readonly string[]).includes(name))
       report(diag('api/unknown-diagnostic-code', msg(`diagnostics.ignore の名前 "${name.slice(0, 100)}" は、診断の名前にありません (止めずに続けます)`, `diagnostics.ignore has "${name.slice(0, 100)}", which is not a diagnostic code (nothing is suppressed for it)`), { code: name.slice(0, 100) }));
   for (const d of baseWarnings) report(d);
-  /** 読み込みに失敗した書体 (数式・等幅・記号・絵文字) の知らせ */
+  /** 読み込みに失敗したフォント (数式・等幅・記号・絵文字) の通知 */
   // この呼び出しを止めたとき (待つのをやめた失敗) は、警告にせず、止めた理由で失敗する
   const fontLoadFailed = (spec: FontSpec) => {
     const call = thisCall();
@@ -1526,8 +1526,8 @@ async function typesetDocumentBody(
       const font = kind.startsWith('font');
       report(
         kind.endsWith('not-fetched')
-          ? diag('resource/not-fetched', msg(`${font ? '書体' : 'CSS'}を取りません (fetchStyles): ${url}`, `${font ? 'font' : 'stylesheet'} not fetched (fetchStyles): ${url}`), { url, kind: font ? 'font' : 'stylesheet' })
-          : diag('resource/fetch-failed', msg(`${font ? '書体' : 'CSS'}を取得できません: ${url}`, `cannot fetch the ${font ? 'font' : 'stylesheet'}: ${url}`), { url, kind: font ? 'font' : 'stylesheet' }),
+          ? diag('resource/not-fetched', msg(`${font ? 'フォント' : 'CSS'}を取得しません (fetchStyles): ${url}`, `${font ? 'font' : 'stylesheet'} not fetched (fetchStyles): ${url}`), { url, kind: font ? 'font' : 'stylesheet' })
+          : diag('resource/fetch-failed', msg(`${font ? 'フォント' : 'CSS'}を取得できません: ${url}`, `cannot fetch the ${font ? 'font' : 'stylesheet'}: ${url}`), { url, kind: font ? 'font' : 'stylesheet' }),
       );
     }
   }
@@ -1579,7 +1579,7 @@ async function typesetDocumentBody(
         const given = resolveResource ? rejoin(thisCall(), await Promise.resolve(resolveResource(url)).catch(() => undefined)) : undefined;
         if (given !== undefined) return bytesOf(given);
         if (!/^https?:\/\//i.test(url) || !allowFormatFetch(url)) {
-          if (/^https?:\/\//i.test(url)) report(diag('resource/not-fetched', msg(`画像を取りません (fetchImages): ${url.slice(0, 200)}`, `image not fetched (fetchImages): ${url.slice(0, 200)}`), { url: url.slice(0, 200), kind: 'image' }));
+          if (/^https?:\/\//i.test(url)) report(diag('resource/not-fetched', msg(`画像を取得しません (fetchImages): ${url.slice(0, 200)}`, `image not fetched (fetchImages): ${url.slice(0, 200)}`), { url: url.slice(0, 200), kind: 'image' }));
           return undefined;
         }
         return rejoin(thisCall(), await fetchGuarded(url, { timeoutMs: timeout, maxBytes: fetchLimits.imageBytes, allow: allowFormatFetch }).catch(() => undefined))?.bytes;
@@ -1646,7 +1646,7 @@ async function typesetDocumentBody(
   const notFetched = rejoin(thisCall(), await fetchReportedImages(assets, res.report.images, allowFetch, timeout));
   // 画像の取得の途中で止めた合図は、取得の失敗として飲まれるので、ここで確かめる
   checkAbort();
-  for (const src of notFetched) report(diag('resource/not-fetched', msg(`画像を取りません (fetchImages): ${src.slice(0, 200)}`, `image not fetched (fetchImages): ${src.slice(0, 200)}`), { url: src.slice(0, 200), kind: 'image' }));
+  for (const src of notFetched) report(diag('resource/not-fetched', msg(`画像を取得しません (fetchImages): ${src.slice(0, 200)}`, `image not fetched (fetchImages): ${src.slice(0, 200)}`), { url: src.slice(0, 200), kind: 'image' }));
   // 未対応の指定 (黙って無視しない): XSL-FO は読めなかった要素・プロパティ、HTML は未対応・知らない CSS (ブラウザの画面の変換レポートと同じ数え方)
   // 診断の場所: 読み込みが覚えた、最初に現れた要素。CSS の宣言から数えたもの (要素の分からないもの) は、CSS のファイルと文書から字面で探す
   const cssSources = isFo ? [] : [...rejoin(thisCall(), await Promise.all(files.filter(isCss).map(async (f) => ({ name: f.path, text: rejoin(thisCall(), await f.text()) })))), ...(kind === 'html' ? [{ name: options.name, text }] : [])];
@@ -1693,8 +1693,8 @@ async function typesetDocumentBody(
   const atUnknown = locator('css/unknown-property');
   if (unknown)
     reportSummary(
-      msg(`知らない CSS のプロパティを無視しました (綴りの誤りか未対応): ${unknown}`, `ignored unknown CSS properties (misspelled or unsupported): ${unknown}`),
-      countedDiagnostics(res.report.unknownCss, (property) => diag('css/unknown-property', msg(`知らない CSS のプロパティを無視しました (綴りの誤りか未対応): ${property}`, `ignored unknown CSS properties (misspelled or unsupported): ${property}`), { property }, atUnknown(property))),
+      msg(`知らない CSS のプロパティを無視しました (スペルミスか未対応): ${unknown}`, `ignored unknown CSS properties (misspelled or unsupported): ${unknown}`),
+      countedDiagnostics(res.report.unknownCss, (property) => diag('css/unknown-property', msg(`知らない CSS のプロパティを無視しました (スペルミスか未対応): ${property}`, `ignored unknown CSS properties (misspelled or unsupported): ${property}`), { property }, atUnknown(property))),
     );
   // 知っているプロパティの、読めない値の宣言 (CSS 2.1 §4.2 で宣言ごと無視したもの。値の誤りか、Kumiori が読まない値)
   const invalid = summarizeCounts(res.report.invalidCss);
@@ -1726,8 +1726,8 @@ async function typesetDocumentBody(
     const head = tofu.slice(0, 20).map(([ch, n]) => `${ch} (${cp(ch)}${n > 1 ? ` ×${n}` : ''})`).join(msg('、', ', '));
     const rest = tofu.length > 20 ? msg(` …ほか ${tofu.length - 20} 種`, ` … and ${tofu.length - 20} more`) : '';
     reportSummary(
-      msg(`読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます): ${head}${rest}`, `no loaded font has a glyph for these characters (they are drawn as the missing-glyph box): ${head}${rest}`),
-      tofu.map(([ch, n]) => ({ ...diag('font/missing-glyph', msg(`読み込んだどの書体にも字形の無い字があります (字形の無い字の形で出ます): ${ch} (${cp(ch)})`, `no loaded font has a glyph for these characters (they are drawn as the missing-glyph box): ${ch} (${cp(ch)})`), { char: ch, codePoint: cp(ch) }), ...(n > 1 ? { count: n } : {}) })),
+      msg(`読み込んだどのフォントにも字形の無い文字があります (字形の無い文字の形で出ます): ${head}${rest}`, `no loaded font has a glyph for these characters (they are drawn as the missing-glyph box): ${head}${rest}`),
+      tofu.map(([ch, n]) => ({ ...diag('font/missing-glyph', msg(`読み込んだどのフォントにも字形の無い文字があります (字形の無い文字の形で出ます): ${ch} (${cp(ch)})`, `no loaded font has a glyph for these characters (they are drawn as the missing-glyph box): ${ch} (${cp(ch)})`), { char: ch, codePoint: cp(ch) }), ...(n > 1 ? { count: n } : {}) })),
     );
   }
 
@@ -1745,7 +1745,7 @@ async function typesetDocumentBody(
    * SVG の foreignObject の中身 (HTML・MathML) を、本文と同じ HTML の組版で、幅 width・高さ height (CSS px) の余白の無いページとして組む
    * (SVG 2 の foreignObject: 中身は CSS の組版で、foreignObject の枠を初めの包含ブロックとして組む)。中身の文書の警告は出さない。
    * context.css (SVG の <style> の規則) は、作成者のスタイルシートとして入れる (中身は SVG の文書の中の要素なので、SVG の規則が当たる。SVG 2 §6.3)。
-   * 既定のスタイルは、本文の既定 (style。kumiori の p の字下げ・両端揃えなど) でなく、ブラウザの既定 (browser) にし、
+   * 既定のスタイルは、本文の既定 (style。kumiori の p の字下げ・両端揃えなど) でなく、ブラウザーの既定 (browser) にし、
    * 本文の CSS のファイル (文書から参照されないもの) も当てない: 中身は SVG の中の文書で、本文の書式を受け継がない
    */
   const typesetForeign = async (content: string, width: number, height: number, context?: { css?: string }) => {
@@ -1760,7 +1760,7 @@ async function typesetDocumentBody(
     return new LayoutEngine(fonts, measurer, { defaultFontFamily: SERIF, assets, hyphenate: hyphenPositions, ...compatLayoutOptions(ah) }).layout(r.document).sheets[0];
   };
   /**
-   * ページの SVG・PNG の書き出しで SVG の画像を図形にするときも、PDF と同じく、systemLanguage を svgLanguages で照らし、
+   * ページの SVG・PNG の書き出しで SVG の画像を図形にするときも、PDF と同じく、systemLanguage を svgLanguages で照合し、
    * foreignObject の中身を本文と同じ組版で組む (SVG 2 §5.6.5・§23.2)
    */
   const svgImageOptions = { typesetForeign, ...(options.svgLanguages ? { svgLanguages: options.svgLanguages } : {}) };
@@ -1945,7 +1945,7 @@ async function typesetDocumentBody(
   };
   /**
    * await をまたぐ呼び出しを、走っている間だけ数える (dispose はその間、手放すのを遅らせる)。呼び出しの Promise をそのまま返す
-   * (await を 1 段足すと、AsyncLocalStorage の無い環境で、呼び出しが終わったときに呼び出しの外の文脈へ戻す順がずれる。callContext.ts)
+   * (await を 1 段追加すると、AsyncLocalStorage の無い環境で、呼び出しが終わったときに呼び出しの外の文脈へ戻す順がずれる。callContext.ts)
    */
   const track = <T>(run: () => Promise<T>): Promise<T> => {
     if (disposed) return Promise.reject(disposedError());
@@ -1965,7 +1965,7 @@ async function typesetDocumentBody(
   };
   // 領域の木の見積もり (木は変わらないので、係数の処理系ごとに 1 度だけ数える)
   const layoutBytes = new Map<string, number>();
-  /** 結果の toPdf・toPdfStream の書き出し (laterCall の文脈の中で呼ぶ)。流して書くときは、書き出し先の口 (port) を渡す */
+  /** 結果の toPdf・toPdfStream の書き出し (laterCall の文脈の中で呼ぶ)。ストリームで書き出すときは、書き出し先の口 (port) を渡す */
   const laterPdf = async (o: PdfOptions, port?: PdfOutputPort): Promise<Uint8Array> => {
     const pdfWarnings: string[] = [];
     const pdfDiagnostics: Diagnostic[] = [];
@@ -2093,7 +2093,7 @@ async function importFo(text: string, o: TypesetOptions, compat: FoCompat, mappi
 }
 
 /**
- * linkedom の読み取りを、HTML の仕様の読み取り (ブラウザ) に合わせる:
+ * linkedom の読み取りを、HTML の仕様の読み取り (ブラウザー) に合わせる:
  *  - 書かれていない <head>・<body> を補う。html の直下に並んだ要素と文字を、メタデータ (meta・title・link・style・script・base) は head へ、ほかは body へ順に移す
  *  - </html> の後ろに書かれた要素と文字 (linkedom は、html 要素の後ろの、文書の直下の兄弟にする) を、body の終わりへ順に移す
  *    (HTML Living Standard §13.2.6.4.17「after body」・§13.2.6.4.20「after after body」の挿入モード。2026-11-11 取得: コメントのほかは、
@@ -2128,7 +2128,7 @@ export function fixImplicitStructure(doc: Document) {
 }
 
 /**
- * <html> の無い HTML (<p>… だけのもの) を <html> で包む (linkedom は、ブラウザのように文書の形を補わない)。
+ * <html> の無い HTML (<p>… だけのもの) を <html> で包む (linkedom は、ブラウザーのように文書の形を補わない)。
  * <!doctype> はそのまま前に残す。中身は fixImplicitStructure が head と body に分ける
  */
 export function wrapHtml(t: string): string {
@@ -2149,7 +2149,7 @@ async function importHtmlText(
   math: MathOpts,
   /** XML の構文 (XHTML) で読んだ文書 (互換モードにならない) */
   xml: boolean,
-  /** 診断の場所: 入力のファイルの名前と、html が入力の字そのものか (違えば、行・列を付けない) */
+  /** 診断の場所: 入力のファイルの名前と、html が入力の文字そのものか (違えば、行・列を付けない) */
   source: { name?: string; original: boolean } = { original: false },
 ): Promise<Imported> {
   const parsed0 = rejoin(thisCall(), await parsers()).html;
@@ -2179,7 +2179,7 @@ async function importHtmlText(
   // 当たるファイルの無かった face は、次の書体で組み (CSS Fonts 4 §4.3)、警告で知らせる
   const faceWarnings: Diagnostic[] = [];
   const faces = rejoin(thisCall(), await mapping.loadFontFaces(prepared.sheet, fontFiles, { ahFaceWeight: style === 'ah' }));
-  for (const m of faces.missing) faceWarnings.push(diag('font/face-not-found', msg(`@font-face の書体のファイルが見つかりません: ${m.family} (${m.src.slice(0, 200)})`, `font file of @font-face not found: ${m.family} (${m.src.slice(0, 200)})`), { font: m.family, url: m.src.slice(0, 200) }));
+  for (const m of faces.missing) faceWarnings.push(diag('font/face-not-found', msg(`@font-face のフォントのファイルが見つかりません: ${m.family} (${m.src.slice(0, 200)})`, `font file of @font-face not found: ${m.family} (${m.src.slice(0, 200)})`), { font: m.family, url: m.src.slice(0, 200) }));
   // 分綴を使う文書なら、文書に出てくる言語の分綴の規則を読み込む
   rejoin(thisCall(), await loadDocumentHyphenators(prepared.doc, prepared.css));
   // 作成者スタイルシート と style 属性のうち、読まない宣言 (未対応・知らないプロパティ) を数える

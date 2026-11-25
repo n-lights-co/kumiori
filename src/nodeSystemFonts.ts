@@ -592,13 +592,13 @@ function faceData(f: SystemFace): ArrayBuffer {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR')
-      throw new FaceChangedError(msg(`OS の書体のファイルが、探した後に無くなりました: ${f.file}`, `the OS font file disappeared after it was scanned: ${f.file}`));
+      throw new FaceChangedError(msg(`OS のフォントのファイルが、探した後に無くなりました: ${f.file}`, `the OS font file disappeared after it was scanned: ${f.file}`));
     throw e;
   }
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile() || st.size !== f.size || st.mtimeMs !== f.mtimeMs)
-      throw new FaceChangedError(msg(`OS の書体のファイルが、探した後に変わりました: ${f.file}`, `the OS font file changed after it was scanned: ${f.file}`));
+      throw new FaceChangedError(msg(`OS のフォントのファイルが、探した後に変わりました: ${f.file}`, `the OS font file changed after it was scanned: ${f.file}`));
     const b = Buffer.alloc(st.size);
     let got = 0;
     while (got < st.size) {
@@ -608,7 +608,7 @@ function faceData(f: SystemFace): ArrayBuffer {
     }
     let buf = b.buffer.slice(b.byteOffset, b.byteOffset + got) as ArrayBuffer;
     if (f.collection) buf = extractFromCollection(buf, f.index);
-    if (buf.byteLength > limits().fontBytes) throw new Error(msg(`OS の書体が大きすぎます: ${f.file}`, `the OS font is too large: ${f.file}`));
+    if (buf.byteLength > limits().fontBytes) throw new Error(msg(`OS のフォントが大きすぎます: ${f.file}`, `the OS font is too large: ${f.file}`));
     return buf;
   } finally {
     fs.closeSync(fd);
@@ -634,7 +634,7 @@ export function createSystemFonts(o: SystemFontOptions = {}): SystemFontSource {
   // (探すのは初めて find を呼んだときなので、その間にカレントディレクトリが変わっても、探す所を変えない)
   let dirs: string[] | undefined;
   if (o.dirs !== undefined) {
-    if (!Array.isArray(o.dirs)) throw new TypeError(msg('createSystemFonts の dirs は、ディレクトリの道の文字列の配列です', 'createSystemFonts: dirs must be an array of directory path strings'));
+    if (!Array.isArray(o.dirs)) throw new TypeError(msg('createSystemFonts の dirs は、ディレクトリのパスの文字列の配列です', 'createSystemFonts: dirs must be an array of directory path strings'));
     dirs = (o.dirs as readonly unknown[]).map((d) => {
       if (typeof d !== 'string' || !d) throw new TypeError(msg('createSystemFonts の dirs の項は、空でない文字列です', 'createSystemFonts: each item of dirs must be a non-empty string'));
       return path.resolve(d);

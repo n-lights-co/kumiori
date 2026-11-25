@@ -180,7 +180,7 @@ describe('色つきの字形の層の上限 (colorGlyph.ts)', () => {
     const t0 = performance.now();
     expect(cf.glyph(gid('A'))).toBeUndefined();
     expect(performance.now() - t0).toBeLessThan(5000);
-    expect(notes.join('\n')).toMatch(/層・輪郭が多すぎる/);
+    expect(notes.join('\n')).toMatch(/レイヤー・アウトラインが多すぎる/);
   });
 
   it('上限を超えた知らせは、PDF を書いた後の結果の警告 (warnings) に入る (OUT-30)', async () => {
@@ -188,10 +188,10 @@ describe('色つきの字形の層の上限 (colorGlyph.ts)', () => {
     const font = withTables(tinos, { COLR: colr0([{ gid: gid('A'), layers }]), CPAL: cpal([[[255, 0, 0, 255]]]) });
     const { res } = await typesetWith(font, '<p>AB</p>');
     // 字形の色つきの描き方は、PDF を書くときに初めて作る。その知らせも res.warnings に入る (前は console.warn・書体の知らせの出し先に出るだけ)
-    expect(res.warnings.filter((w) => /層・輪郭が多すぎる/.test(w))).toHaveLength(1);
+    expect(res.warnings.filter((w) => /レイヤー・アウトラインが多すぎる/.test(w))).toHaveLength(1);
     // もう 1 度書いても、同じ文を重ねない
     await res.toPdf();
-    expect(res.warnings.filter((w) => /層・輪郭が多すぎる/.test(w))).toHaveLength(1);
+    expect(res.warnings.filter((w) => /レイヤー・アウトラインが多すぎる/.test(w))).toHaveLength(1);
   });
 
   it('層の少ない字形は、これまでどおり色つき', async () => {
@@ -214,7 +214,7 @@ describe('可変フォント', () => {
     for (let w = 100; w <= 900; w += 5) made.add(fm.get('T', w));
     expect(made.size).toBeLessThanOrEqual(64);
     expect(made.size).toBeGreaterThan(16);
-    expect(notes.join('\n')).toMatch(/実体 \(軸の値の組\) が多すぎます/);
+    expect(notes.join('\n')).toMatch(/インスタンス \(軸の値の組\) が多すぎます/);
   });
 
   it('正当な可変フォントの実体は、差分の手間の上限 (fontInstancer.ts) の中で作れる', () => {
@@ -279,7 +279,7 @@ describe('組む途中で読めない書体の表 (OUT-29)', () => {
     const fk = lf.fk as unknown as { layout(s: string): { glyphs: Array<{ id: number }> } };
     // ギリシャ文字は、cmap の字形のまま (前は「reading 'flags'」の例外)
     expect(fk.layout('αβγ').glyphs.map((g) => g.id)).toEqual([gid('α'), gid('β'), gid('γ')]);
-    expect(notes.join('\n')).toMatch(/整形の表 \(GSUB・GPOS・morx\) で組めない字の並びがあります/);
+    expect(notes.join('\n')).toMatch(/整形の表 \(GSUB・GPOS・morx\) で組めない文字の並びがあります/);
     // 書体の整形は止めない (欧字は、これまでどおり整形の表で組む)
     const le = (lf.fk as unknown as { _layoutEngine: { engine: unknown } })._layoutEngine;
     expect(le.engine).not.toBeNull();
@@ -291,12 +291,12 @@ describe('組む途中で読めない書体の表 (OUT-29)', () => {
     expect(pdf.length).toBeGreaterThan(0);
     // 前は、ギリシャ文字の字形の番号が付かず、PDF で黙って抜けた
     expect(glyphs.filter((g) => !g.glyphIds?.length)).toEqual([]);
-    expect(res.warnings.join('\n')).toMatch(/整形の表 \(GSUB・GPOS・morx\) で組めない字の並びがあります/);
+    expect(res.warnings.join('\n')).toMatch(/整形の表 \(GSUB・GPOS・morx\) で組めない文字の並びがあります/);
   });
 
   it('正当な書体の文書は、知らせが無い', async () => {
     const { res } = await typesetWith(tinos, '<p>Alpha αβγ Omega Ω AVATAR</p>');
-    expect(res.warnings.join('\n')).not.toMatch(/組めない字の並び|字形 \d+ のデータが読めません/);
+    expect(res.warnings.join('\n')).not.toMatch(/組めない文字の並び|字形 \d+ のデータが読めません/);
   });
 
   it('字形のデータが読めない字形 (複合の字形の部品の記録が、字形のデータの外) があっても、PDF を作り、知らせる', async () => {
@@ -305,6 +305,6 @@ describe('組む途中で読めない書体の表 (OUT-29)', () => {
     // 前は、PDF の部分書体を書く所 (fontkit の _addGlyph) の例外で、toPdf の全体が失敗した
     expect(pdf.length).toBeGreaterThan(0);
     expect(glyphs.map((g) => g.text).join('')).toContain('CAC');
-    expect(res.warnings.join('\n')).toMatch(new RegExp(`字形 ${gid('A')} のデータが読めません \\(複合の字形の部品の記録が、字形のデータの外にある\\)`));
+    expect(res.warnings.join('\n')).toMatch(new RegExp(`字形 ${gid('A')} のデータが読めません \\(複合の字形のコンポーネントの記録が、字形のデータの外にある\\)`));
   });
 });

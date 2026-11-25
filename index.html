@@ -13,7 +13,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src * 'unsafe-inline'; img-src * data: blob:; font-src * data: blob:; media-src * data: blob:; connect-src * data: blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
     />
-    <title>Kumiori（組み織り）— ブラウザ組版エンジン</title>
+    <title>Kumiori（組み織り）— ブラウザー組版エンジン</title>
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -127,10 +127,10 @@
       </div>
       <div class="actions">
         <label class="zoom" title="表示の倍率">倍率 <input type="range" id="zoom" min="0.5" max="2" step="0.1" value="1" /></label>
-        <label class="btn" title="XSL-FO・HTML・EPUB を、使う CSS・画像・書体 (と draw.io の図形ライブラリ) と一緒に選ぶ (複数選べます。画面にドラッグ&ドロップしても開けます)">開く<input type="file" id="fofile" multiple accept=".fo,.xml,.xsl,.html,.htm,.xhtml,.epub,.css,.otf,.ttf,.png,.jpg,.jpeg,.gif,.bmp,.svg,.svgz,.webp,.tif,.tiff,.wmf,.emf,.eps,.cgm,.drawio,.dio,.js,.mml,text/xml,application/xml,text/html,image/*" hidden /></label>
-        <label class="btn folder" title="文書・CSS・画像の入ったフォルダを選ぶ">フォルダを開く<input type="file" id="folderfile" webkitdirectory multiple hidden /></label>
+        <label class="btn" title="XSL-FO・HTML・EPUB を、使う CSS・画像・フォント (と draw.io の図形ライブラリ) と一緒に選ぶ (複数選べます。画面にドラッグ&ドロップしても開けます)">開く<input type="file" id="fofile" multiple accept=".fo,.xml,.xsl,.html,.htm,.xhtml,.epub,.css,.otf,.ttf,.png,.jpg,.jpeg,.gif,.bmp,.svg,.svgz,.webp,.tif,.tiff,.wmf,.emf,.eps,.cgm,.drawio,.dio,.js,.mml,text/xml,application/xml,text/html,image/*" hidden /></label>
+        <label class="btn folder" title="文書・CSS・画像の入ったフォルダーを選ぶ">フォルダーを開く<input type="file" id="folderfile" webkitdirectory multiple hidden /></label>
         <button id="download" class="btn primary" disabled>PDF を保存</button>
-        <a class="btn docs" href="api/" target="_blank" rel="noopener" title="ライブラリの関数・型・選択肢の一覧 (新しいタブで開きます)">API の説明書</a>
+        <a class="btn docs" href="api/" target="_blank" rel="noopener" title="ライブラリの関数・型・オプションの一覧 (新しいタブで開きます)">API リファレンス</a>
         <button id="settingsbtn" class="btn" aria-expanded="false" aria-controls="settings">設定</button>
       </div>
     </header>
@@ -156,16 +156,16 @@
         <fieldset>
           <legend>HTML</legend>
           <label class="field" title="HTML を組むときの既定のスタイル (作者の CSS で上書きできる)">既定のスタイル
-            <select id="htmlstyle"><option value="kumiori">本の組版向け</option><option value="browser">ブラウザの既定</option><option value="browser-margin">ブラウザの既定 (body の余白を残す。WeasyPrint と同じ)</option><option value="ah">アンテナハウス互換 (CSS 2.1 の既定)</option><option value="vivliostyle">Vivliostyle 互換 (見出しの後ろで改ページしない)</option><option value="weasyprint">WeasyPrint 互換 (body の余白を残し、フォームの部品は WeasyPrint の既定)</option></select>
+            <select id="htmlstyle"><option value="kumiori">本の組版向け</option><option value="browser">ブラウザーの既定</option><option value="browser-margin">ブラウザーの既定 (body の余白を残す。WeasyPrint と同じ)</option><option value="ah">アンテナハウス互換 (CSS 2.1 の既定)</option><option value="vivliostyle">Vivliostyle 互換 (見出しの後ろで改ページしない)</option><option value="weasyprint">WeasyPrint 互換 (body の余白を残し、フォームのコントロールは WeasyPrint の既定)</option></select>
           </label>
           <label class="field" title="@page で size を指定していない HTML の用紙 (コマンドの --page-size、API の pageSize と同じ)">既定の用紙
             <select id="pagesize"><option value="A4">A4 (210×297mm)</option><option value="A5">A5 (148×210mm)</option><option value="B5">B5 (ISO。176×250mm)</option><option value="JIS-B5">JIS-B5 (182×257mm)</option><option value="letter">letter (8.5×11in)</option><option value="custom">自由入力…</option></select>
             <input type="text" id="pagesizecustom" hidden placeholder="A5 landscape、148mm 210mm など" aria-label="既定の用紙 (自由入力)" />
           </label>
           <label class="field">CSS の解釈
-            <select id="cssengine"><option value="kumiori">Kumiori</option><option value="browser">ブラウザ (比較用)</option></select>
+            <select id="cssengine"><option value="kumiori">Kumiori</option><option value="browser">ブラウザー (比較用)</option></select>
           </label>
-          <span class="hint">Kumiori は iframe を使わず自前のカスケードで計算値を決めます (Node のコマンドと同じ)。ブラウザ (比較用) は見えない iframe に読み込み、ブラウザの計算値と配置を使います。</span>
+          <span class="hint">Kumiori は iframe を使わず自前のカスケードで計算値を決めます (Node のコマンドと同じ)。ブラウザー (比較用) は見えない iframe に読み込み、ブラウザーの計算値と配置を使います。</span>
         </fieldset>
         <fieldset>
           <legend>XSL-FO</legend>
@@ -178,35 +178,35 @@
         </fieldset>
         <fieldset>
           <legend>PDF</legend>
-          <label class="check"><input type="checkbox" id="tagged" checked /><span>タグ付き PDF にする<br /><span class="hint">オン (既定): 文書の構造 (見出し・段落・リスト・表・図・リンク・脚注)・読む順・図の代わりの文・言語を PDF に入れます (画面の読み上げなどで使えます。見た目は変わりません)。オフ: タグを付けません (PDF が 1〜2 割小さくなります)</span></span></label>
+          <label class="check"><input type="checkbox" id="tagged" checked /><span>タグ付き PDF にする<br /><span class="hint">オン (既定): 文書の構造 (見出し・段落・リスト・表・図・リンク・脚注)・読む順・図の代替テキスト・言語を PDF に入れます (画面の読み上げなどで使えます。見た目は変わりません)。オフ: タグを付けません (PDF が 1〜2 割小さくなります)</span></span></label>
         </fieldset>
         <fieldset>
-          <legend>書体</legend>
-          <span class="hint">MS 明朝・MS ゴシックなど、お使いの PC にある書体 (TTF・OTF・TTC) を使えます。PC の外へは送りません。</span>
+          <legend>フォント</legend>
+          <span class="hint">MS 明朝・MS ゴシックなど、お使いの PC にあるフォント (TTF・OTF・TTC) を使えます。PC の外へは送りません。</span>
           <div class="row">
-            <label class="btn">書体を読み込む<input type="file" id="fontfile" multiple accept=".ttf,.otf,.ttc" hidden /></label>
-            <button id="clearfonts" class="btn" hidden>読み込んだ書体を消す</button>
+            <label class="btn">フォントを読み込む<input type="file" id="fontfile" multiple accept=".ttf,.otf,.ttc" hidden /></label>
+            <button id="clearfonts" class="btn" hidden>読み込んだフォントを消す</button>
           </div>
         </fieldset>
         <fieldset>
           <legend>draw.io の図</legend>
-          <label class="check"><input type="checkbox" id="drawio-on" checked /><span>draw.io の図を読む<br /><span class="hint">オン (既定): .drawio・.dio の図を画像として描きます。図を描く処理は、図を開いたときだけ読み込みます。オフ: 図を画像として読みません</span></span></label>
+          <label class="check"><input type="checkbox" id="drawio-on" checked /><span>draw.io の図を読む<br /><span class="hint">オン (既定): .drawio・.dio の図を画像として描画します。図を描画する処理は、図を開いたときだけ読み込みます。オフ: 図を画像として読みません</span></span></label>
           <div id="drawioopts" class="sub">
-            <span class="hint">draw.io の図の、図形ライブラリの形 (AWS・フローチャートなど、mxgraph.* の名前の形) を描くためのファイルです。draw.io の js/stencils.min.js か、ライブラリの XML を読み込みます (.svg・.png・.jpg は、形の中の画像 (SAP のアイコンなど、draw.io の img/lib/ のファイル) として読みます)。この PC のブラウザに覚え、外へは送りません。</span>
+            <span class="hint">draw.io の図の、図形ライブラリの形 (AWS・フローチャートなど、mxgraph.* の名前の形) を描画するためのファイルです。draw.io の js/stencils.min.js か、ライブラリの XML を読み込みます (.svg・.png・.jpg は、形の中の画像 (SAP のアイコンなど、draw.io の img/lib/ のファイル) として読みます)。この PC のブラウザーにキャッシュし、外へは送りません。</span>
             <div class="row">
               <label class="btn">図形ライブラリを読み込む<input type="file" id="stencilfile" multiple accept=".js,.xml,.svg,.png,.jpg,.jpeg" hidden /></label>
               <button id="clearstencils" class="btn" hidden>読み込んだ図形ライブラリを消す</button>
             </div>
             <span id="stencilstate" class="hint">読み込んだ図形ライブラリはありません</span>
-            <label class="check"><input type="checkbox" id="drawiofetch" /><span>図に要るときだけ draw.io から取る<br /><span class="hint">オフ (既定): 取りません。オン: 読み込んだライブラリに無い形を使う図があれば、draw.io の公開のリポジトリから stencils.min.js (約 6.6MB) を取ります。SAP のアイコンの中の画像なども、使う分だけ取ります</span></span></label>
+            <label class="check"><input type="checkbox" id="drawiofetch" /><span>図に要るときだけ draw.io から取得する<br /><span class="hint">オフ (既定): 取得しません。オン: 読み込んだライブラリに無い形を使う図があれば、draw.io の公開のリポジトリから stencils.min.js (約 6.6MB) を取得します。SAP のアイコンの中の画像なども、使う分だけ取得します</span></span></label>
           </div>
         </fieldset>
         <fieldset>
           <legend>そのほか</legend>
           <div class="row">
             <button id="savejson" class="btn" disabled>論理ツリーを JSON で保存</button>
-            <button id="resetsample" class="btn" hidden>見本の文書に戻す</button>
-            <a class="btn" href="api/" target="_blank" rel="noopener" title="ライブラリの関数・型・選択肢の一覧 (新しいタブで開きます)">API の説明書</a>
+            <button id="resetsample" class="btn" hidden>サンプルの文書に戻す</button>
+            <a class="btn" href="api/" target="_blank" rel="noopener" title="ライブラリの関数・型・オプションの一覧 (新しいタブで開きます)">API リファレンス</a>
           </div>
         </fieldset>
       </aside>
