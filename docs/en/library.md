@@ -921,7 +921,7 @@ The version published on npm can be loaded directly from the jsDelivr or unpkg C
 
 ```html
 <script type="module">
-  import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
+  import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.8.0/dist-browser/kumiori.js';
   const result = await typesetHtml(html, { name: 'a.html' });
   await result.renderPage(document.querySelector('canvas'), 0);
 </script>
@@ -1078,7 +1078,7 @@ This works from 0.5.0 (0.4.0 cannot typeset in a worker).
 
 ```js
 // worker.js (created with new Worker('worker.js', { type: 'module' }))
-import { createTypesetter } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
+import { createTypesetter } from 'https://cdn.jsdelivr.net/npm/kumiori@0.8.0/dist-browser/kumiori.js';
 const typesetter = createTypesetter();                          // Promise<Typesetter>; fonts are loaded only once
 let result;
 self.onmessage = async ({ data }) => {
