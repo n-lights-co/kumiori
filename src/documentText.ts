@@ -12,7 +12,8 @@ export function decodeDocumentText(bytes: Uint8Array): string {
   if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return utf8();
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes);
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes);
-  // 先頭を ASCII として見て、宣言の符号化の名前を探す (名前は ASCII で書かれる)
+  // 先頭を ASCII として見て、宣言の符号化の名前を探す (名前は ASCII で書かれる)。
+  // 見るのは先頭の 2048 バイトだけ (HTML §13.2.3.2 の prescan と同じ大きさ) なので、下の正規表現の手間は入力の大きさによらず上限がある
   const head = String.fromCharCode(...bytes.subarray(0, 2048));
   const label =
     /^\s*<\?xml[^>]*?\sencoding\s*=\s*["']([\w.:-]+)["']/i.exec(head)?.[1] ??

@@ -86,7 +86,10 @@ function xmlSafeUrl(u: string): string {
  */
 const fragmentOf = (id: string) => xmlSafeUrl(id.replace(/[\u0000-\u0020"<>`%#\u007f]/g, (c) => encodeURIComponent(c)));
 
-/** id の値に書けるか (XML に書けない字を含まない。空でない) */
+/**
+ * id の値に書けるか (XML に書けない字を含まない。空でない。XML 1.0 §2.2 の Char)。
+ * 2 つの選択肢は先頭の 1 文字で決まる (前者はサロゲートを含まない) ので、後戻りは伸びない (手間は長さに比例する)
+ */
 const XML_CHARS = /^(?:[\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd]|[\ud800-\udbff][\udc00-\udfff])+$/;
 
 /** 2 つの変換の積 (m を先に、a を後に掛ける) */

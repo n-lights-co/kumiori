@@ -353,7 +353,8 @@ class Snapshot {
   /**
    * 文書の中の URL を、絶対の URL にする (HTML §2.4.2 の URL の解決。URL Standard §4.4)。
    *  - # だけの参照と、文書の URL に # の付いた参照は、# からの形にする (PDF の中のリンクになるように)
-   *  - data: などの、基準に依らない URL はそのまま
+   *  - data: などの、基準に依らない URL はそのまま (data: は画像・書体に要る。写しはスクリプトを実行しない組版に渡すだけで、
+ *    リンクの URL は PDF のリンク注釈の URI アクション (ISO 32000-2 §12.6.4.8) になる。data: の文書を画面で開かせることにはならない)
    *  - javascript: は null (属性ごと取り除く)
    */
   resolveUrl(value: string, base = this.base, img?: HTMLImageElement, readBlob = true): string | null {

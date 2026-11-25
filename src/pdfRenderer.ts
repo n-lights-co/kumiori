@@ -3956,7 +3956,8 @@ async function typesetForeignObjects(
       const sheet = rejoin(thisCall(), await typeset(open + c.content + close, c.width, c.height, { css: c.css.replace(/<\/(style)/gi, '<\\/$1') }));
       const shapes = sheet ? sheetToSvgShapes(sheet, fonts, assets, svgDoc) : undefined;
       // 中身に字があるのに、組んだ結果が枠の中に何も描かない (枠の外に出た・組めずに落ちた) ときは、黙って消さずに知らせて、
-      // 文字だけの近似にする (Mermaid のラベルの <span><p>…</p></span> の形など)
+      // 文字だけの近似にする (Mermaid のラベルの <span><p>…</p></span> の形など)。
+      // 下のタグを外す置き換えは、空白でない文字が残るかを見るだけで、結果を HTML として出さない (サニタイズではない)
       if (shapes && !shapesMeet(shapes, c.width, c.height) && /\S/.test(c.content.replace(/<style[^>]*>[\s\S]*?<\/style>|<script[^>]*>[\s\S]*?<\/script>|<[^>]*>/gi, ''))) {
         warn(
           diag('pdf/foreign-object-approximated', msg(
