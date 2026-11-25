@@ -12,7 +12,7 @@ import { parseLanguageTag, type LanguageTagParts } from './languageTag';
  * トルコ語・セルビア語 (セルビア・クロアチア語のラテン文字とキリル文字)・ハンガリー語の規則を読み込む (PATTERNS)。
  * 言語のタグから規則を選ぶ決まりは hyphenationKey (XSL-FO の ISO 639-2 の 3 字の符号も読む)。
  * ほかの言語は分綴しない (CSS Text 3 §5.3: 自動の分綴は、文の言語が分かり、その言語に合う分綴の資源があるときだけ)。
- * 多調の綴りのギリシャ語 (el-polyton など)・古典ギリシャ語 (grc) は、規則を入れていないので分綴しない。
+ * 多調の綴りのギリシャ語 (el-polyton) と古典ギリシャ語 (grc) は、それぞれの規則で分綴する。
  */
 
 type Sync = (text: string, opts?: { hyphenChar?: string; minWordLength?: number }) => string;
@@ -44,6 +44,8 @@ const PATTERNS: Record<string, Pattern> = {
   ru: { load: () => import('hyphen/ru/index.js'), script: 'cyrl' },
   uk: { load: () => import('hyphen/uk/index.js'), script: 'cyrl' },
   'el-monoton': { load: () => import('hyphen/el-monoton/index.js'), script: 'grek' },
+  'el-polyton': { load: () => import('hyphen/el-polyton/index.js'), script: 'grek' },
+  grc: { load: () => import('hyphen/grc/index.js'), script: 'grek' },
   'de-1996': { load: () => import('hyphen/de-1996/index.js'), script: 'latn' },
   'de-1901': { load: () => import('hyphen/de-1901/index.js'), script: 'latn' },
   'de-ch-1901': { load: () => import('hyphen/de-ch-1901/index.js'), script: 'latn' },
@@ -97,9 +99,12 @@ function patternOf(t: LanguageTagParts): string | undefined {
     // 英語は英国 (GB) だけ英国式、ほかは米国式
     case 'en':
       return t.region === 'gb' ? 'en-gb' : 'en-us';
-    // 現代ギリシャ語は単調の綴りの規則。多調の綴り (el-polyton など) には当てない
+    // 現代ギリシャ語は、単調の綴りの規則。多調の綴り (異形 polyton。el-polyton) は、多調の綴りの規則
     case 'el':
-      return t.variants.includes('polyton') ? undefined : 'el-monoton';
+      return t.variants.includes('polyton') ? 'el-polyton' : 'el-monoton';
+    // 古典ギリシャ語 (grc)
+    case 'grc':
+      return 'grc';
     // ドイツ語: 旧正書法 (異形 1901) は、スイス・リヒテンシュタインはスイスの旧正書法、ほかは旧正書法。ほか (異形 1996・無し。スイスの新正書法も) は新正書法
     case 'de':
       if (t.variants.includes('1901')) return t.region === 'ch' || t.region === 'li' ? 'de-ch-1901' : 'de-1901';

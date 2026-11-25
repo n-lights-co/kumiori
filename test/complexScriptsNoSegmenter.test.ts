@@ -18,10 +18,13 @@ afterAll(() => vi.unstubAllGlobals());
 
 describe('Intl.Segmenter が無い環境', () => {
   const TEXT = 'สวัสดีครับยินดีต้อนรับสู่ประเทศไทยการเรียงพิมพ์ภาษาไทย';
-  it('語の境目は無い', () => {
-    expect(complexContextBreaks([...TEXT].map((c) => c.codePointAt(0)!), () => 'th')).toBeNull();
+  it('字の単位 (書記素クラスタ) の間が境目 (CSS Text 3 §5.1。結合文字の前は除く)', () => {
+    const cps = [...TEXT].map((c) => c.codePointAt(0)!);
+    const b = complexContextBreaks(cps, () => 'th')!;
+    expect(b.length).toBeGreaterThan(20);
+    expect(b.every((k) => !/\p{M}/u.test(String.fromCodePoint(cps[k])))).toBe(true);
   });
-  it('空白の無いタイ語の文は、語の境目では折り返さない (溢れる所で分けるだけで、語の途中に行の境目が来る。これまでと同じ)', async () => {
+  it('空白の無いタイ語の文は、字の単位の間で折り返す (語の境目は分からないので、語の途中にも行の境目が来る)', async () => {
     const fonts = new FontManager();
     await fonts.registerBuffer(FAMILY, 400, await fontBuffer(), false);
     const b = fs.readFileSync(await extraTestFont('NotoSansThai-Regular-v29.ttf'));

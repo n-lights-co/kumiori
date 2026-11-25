@@ -8,7 +8,7 @@
  */
 
 import { cssNestLimit, limits, noteLimitReached } from './limits';
-import { MAX_BACKTRACK_COMPOUNDS, parseSelectorList } from './cssSelector';
+import { MAX_BACKTRACK_COMPOUNDS, parseNth, parseSelectorList } from './cssSelector';
 import { spotColor } from './color';
 import { hex2, parseColor as parseCssColor, rgbHex, skipString, splitTop, splitWords, stripImportant, UNIT_PX, urlsIn } from './cssText';
 import type { FontPaletteRule } from './colorGlyph';
@@ -87,7 +87,7 @@ export function splitDecls(body: string): Decl[] {
 export interface PageRule {
   /** 名前付きページの名前 (無ければ全ページ) */
   name?: string;
-  /** first・left・right・blank */
+  /** first・left・right・blank と、:nth() (nthKey の形の文字列。CSS GCPM 3 §3.1) */
   pseudos: string[];
   decls: Record<string, string>;
   /** 余白の箱 (top-center など) ごとの宣言 */
@@ -152,7 +152,7 @@ export interface ParsedCss {
   fontPaletteValues?: FontPaletteRule[];
   /** 根元 (:root・html・*) の規則に書かれたカスタム プロパティ (自前で読む宣言の var() の置き換え用)。無ければ undefined */
   rootVars?: Record<string, string>;
-  /** 読まずに捨てた、未対応の規則・書き方 ('@namespace'・'@page :nth()')。現れた数だけ並べる。未対応の CSS の警告に出す (cssUnsupported)。無ければ undefined */
+  /** 読まずに捨てた、未対応の規則・書き方 ('@namespace' など)。現れた数だけ並べる。未対応の CSS の警告に出す (cssUnsupported)。無ければ undefined */
   ignored?: string[];
 }
 
@@ -504,8 +504,6 @@ export function parseCss(css: string, mediaPage?: MediaPage, ah?: AhFlags): Pars
       else if (/^@page\b/i.test(head)) {
         const sels = head.slice(5).split(',').map((x) => x.trim());
         for (const sel of sels.length ? sels : ['']) {
-          // :nth() のページの擬似クラス (CSS GCPM 3 §3) は読まない (その規則はどのページにも当たらない)。未対応として知らせる
-          if (/:nth\(/i.test(sel)) ignored.push('@page :nth()');
           const rule = parsePageBody(sel, body);
           // 用紙の大きさに依るメディアクエリ (width・height・orientation など) で条件づけた size の宣言は無視する (Page 3 §7.1)。
           // ほかの宣言 (余白など) は読む
@@ -749,12 +747,19 @@ function nextBraceOrSemi(s: string, from: number): number {
 
 function parsePageBody(sel: string, body: string): PageRule {
   // ページの名前は識別子 (CSS Syntax 3 §4.2: ASCII でない字も使える。@page 表紙 { … })
-  const m = /^(-?[a-z_\u0080-\uffff][-\w\u0080-\uffff]*)?((?::[a-z-]+)*)\s*$/i.exec(sel.trim());
+  // 擬似クラスは :first などの名前と、:nth(An+B [of <custom-ident>]) (CSS GCPM 3 §3.1)
+  const m = /^(-?[a-z_\u0080-\uffff][-\w\u0080-\uffff]*)?((?::(?:[a-z-]+|nth\([^()]*\)))*)\s*$/i.exec(sel.trim());
   // 余白の箱の表は、入力の名前 (@constructor { … } など) で引くので、原型を持たないものにする
   const rule: PageRule = { pseudos: [], decls: {}, boxes: Object.create(null) };
   if (m) {
     if (m[1]) rule.name = m[1];
-    rule.pseudos = (m[2] ?? '').split(':').filter(Boolean).map((p) => p.toLowerCase());
+    rule.pseudos = [...(m[2] ?? '').matchAll(/:(nth\(([^()]*)\)|[a-z-]+)/gi)].map((x) => {
+      if (x[2] === undefined) return x[1].toLowerCase();
+      // 引数の読めない :nth() は、セレクタごと無効 (どのページにも当たらない)
+      const of = /^(.*?)\s+of\s+(-?[a-z_\u0080-\uffff][-\w\u0080-\uffff]*)\s*$/i.exec(x[2]);
+      const ab = parseNth(of ? of[1] : x[2]);
+      return ab ? nthKey(ab[0], ab[1], of?.[2]) : 'unknown';
+    });
   } else rule.pseudos = ['unknown'];
   // 入れ子の余白の箱を取り出し、残りを宣言として読む
   let rest = '';
@@ -793,7 +798,18 @@ function declTable(list: Decl[]): Record<string, string> {
   return out;
 }
 
-/** ページの選び方 (名前・先頭・左右・白) */
+/** :nth() の擬似クラスを表す文字列 (PageRule.pseudos と PageSelect.nth の鍵)。of は、ページの組の名前 (CSS GCPM 3 §3.1) */
+export function nthKey(a: number, b: number, of?: string): string {
+  return `nth(${a},${b}${of !== undefined ? `,${of}` : ''})`;
+}
+
+/** nthKey の鍵を読み戻す (鍵でなければ undefined) */
+export function parseNthKey(key: string): { a: number; b: number; of?: string } | undefined {
+  const m = /^nth\((-?\d+),(-?\d+)(?:,(.+))?\)$/.exec(key);
+  return m ? { a: parseInt(m[1], 10), b: parseInt(m[2], 10), ...(m[3] !== undefined ? { of: m[3] } : {}) } : undefined;
+}
+
+/** ページの選び方 (名前・先頭・左右・白・:nth()) */
 export interface PageSelect {
   name?: string;
   first?: boolean;
@@ -801,6 +817,8 @@ export interface PageSelect {
   blank?: boolean;
   /** 名前の無い :first は、文書の先頭のページ (最初のシーケンス) だけに当てる */
   firstSequence?: boolean;
+  /** このページに合う :nth() の鍵 (nthKey) */
+  nth?: string[];
 }
 
 /**
@@ -826,11 +844,12 @@ function pageMarginSides(prop: string, wm: string, dir: string): Array<'top' | '
  * wm・dir はページの書字方向と向き (論理的な余白を物理の辺に写す基準。省略は横書き・左から右)
  */
 export function resolvePageRules(pages: PageRule[], sel: PageSelect, wm = 'horizontal-tb', dir = 'ltr'): { decls: Record<string, string>; boxes: Record<string, Record<string, string>> } {
-  const spec = (r: PageRule) => (r.name ? 100 : 0) + r.pseudos.reduce((a, p) => a + (p === 'first' || p === 'blank' ? 10 : 1), 0);
+  // :nth() の詳細度は :first と同じ (CSS GCPM 3 §3.1)
+  const spec = (r: PageRule) => (r.name ? 100 : 0) + r.pseudos.reduce((a, p) => a + (p === 'first' || p === 'blank' || p.startsWith('nth(') ? 10 : 1), 0);
   const matched = pages.filter((r) => {
     if (r.name && r.name !== sel.name) return false;
     return r.pseudos.every((p) =>
-      p === 'first' ? !!sel.first && (!!r.name || sel.firstSequence !== false) : p === 'left' || p === 'right' ? sel.side === p : p === 'blank' ? !!sel.blank : false,
+      p === 'first' ? !!sel.first && (!!r.name || sel.firstSequence !== false) : p === 'left' || p === 'right' ? sel.side === p : p === 'blank' ? !!sel.blank : p.startsWith('nth(') ? !!sel.nth?.includes(p) : false,
     );
   });
   const sorted = matched.map((r, k) => ({ r, k })).sort((a, b) => spec(a.r) - spec(b.r) || a.k - b.k);
@@ -1184,6 +1203,10 @@ function isAhFloatValue(v: string): boolean {
 /** 宣言のうち、ブラウザが確定させない (知らない) 値を持つもの。要素に当てはめて読む */
 export function isPagedDecl(prop: string, value: string): boolean {
   if (prop === 'string-set' || prop === 'page' || prop === 'bookmark-level' || prop === 'bookmark-label' || prop === 'bookmark-state') return true;
+  // 脚注が入らないときの扱い (CSS GCPM 3 §2.8。auto | line | block。継承しない)
+  if (prop === 'footnote-policy') return /^(auto|line|block)$/i.test(value.trim());
+  // 脚注の置き方 (CSS GCPM 3 §2.3。block | inline | compact。継承しない)
+  if (prop === 'footnote-display') return /^(block|inline|compact)$/i.test(value.trim());
   // アンテナハウスの拡張の長さの単位 gr (段組の段・段の間の幅。float: multicol の幅) は、ブラウザが読めないので自前で読む
   // (アンテナハウス互換のスタイルのときだけ使う。compatOnlyValue)
   if (prop === 'width' && /\dgr\b/i.test(value)) return true;
@@ -1224,7 +1247,7 @@ export function isPagedDecl(prop: string, value: string): boolean {
   // 行の中の揃え (CSS Inline 3 の alignment-baseline・アンテナハウスの -ah-alignment-baseline)
   if (prop === 'alignment-baseline' || prop === '-ah-alignment-baseline') return true;
   if (prop === 'text-combine-upright') return /digits/i.test(value);
-  if (prop === 'content') return /(target-counter|target-text|leader|string|element)\(|counter\(\s*pages?\s*[,)]/i.test(value);
+  if (prop === 'content') return /(target-counters?|target-text|leader|string|element)\(|counter\(\s*pages?\s*[,)]/i.test(value);
   return false;
 }
 

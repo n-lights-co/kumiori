@@ -625,12 +625,24 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
         while (ai > 0 && atoms[ai].clusterCont && atoms[ai - 1].kind === 'glyph') ai--;
         const base = atoms[ai];
         // 縦書きで正立にする字 (text-orientation: upright など) は、相手に数えない (§8.4.1)。縦中横は glyph の atom でないので、ここに来ない
-        const other = (x: Atom, ch: string) => x.g?.vertical?.mode !== 'upright' && autospaceNonIdeographic(ch) !== undefined;
+        // text-autospace の ideograph-alpha・ideograph-numeric (§8.4): 片方だけなら、その種類の字だけを相手にする。種類は字の側 (和字でない側) の書式で見る
+        const other = (x: Atom, ch: string) => {
+          if (x.g?.vertical?.mode === 'upright') return false;
+          const kind = autospaceNonIdeographic(ch);
+          const want = x.st.textAutospaceKinds ?? 'all';
+          return kind !== undefined && (want === 'all' || want === kind);
+        };
         pair = !b.clusterCont && ((wa(base.last) && other(b, b.first)) || (other(base, base.last) && wa(b.first)));
       } else {
         // XSL-FO (axf:text-autospace) と HTML の互換の指定: ラテン文字・数字 (0〜9) だけ。欧文の書体で組む語 (ギリシャ文字・キリル文字が
         // 2 字以上続く語) の字も、欧文の字と同じに空ける (単独の 1 字は空けない)
-        pair = (wa(a.last) && (isLatinAlnum(b.first) || !!b.latinWord)) || ((isLatinAlnum(a.last) || !!a.latinWord) && wa(b.first));
+        // text-autospace の値で相手の種類を限るとき (§8.4) は、数字 0〜9 と、それ以外の字 (欧文の字) に分ける
+        const latin = (x: Atom, ch: string) => {
+          if (!isLatinAlnum(ch) && !x.latinWord) return false;
+          const want = x.st.textAutospaceKinds ?? 'all';
+          return want === 'all' || (want === 'numeric') === /^[0-9]$/.test(ch);
+        };
+        pair = (wa(a.last) && latin(b, b.first)) || (latin(a, a.last) && wa(b.first));
       }
       if (pair) {
         const s = Math.min(fa, fb) * (a.st.textAutospaceWidth ?? 0.25);
@@ -639,6 +651,78 @@ export function adjustJapaneseSpacing(atoms: Atom[], kern?: (a: Atom, b: Atom) =
         // 右から左の字との境目は、双方向の深さが決まってから、見た目の境目に置き直す (placeAutospaceBidi)
         if (a.st.textAutospaceUnicode) a.autospaceAfter = s;
       }
+    }
+  }
+  autospaceReplaceAndPunct(atoms);
+}
+
+/** フランス語の約物の前後の細い空き (U+202F の幅の目安。字の大きさに対する比) と、: の前の語間の空き (U+00A0 の幅の目安) */
+const FR_THIN = 0.2;
+const FR_WORD = 0.25;
+/** 空白の字 (一般カテゴリ Z) */
+const SPACE_Z = /\p{Z}/u;
+/** 前の空きを並びの前に 1 つだけ入れる約物 (; ! ? :。続けて書いたときの 2 つ目からの前には入れない) */
+const FR_RUN = new Set([';', '!', '?', ':']);
+/** フランス語の約物の前の空き (CSS Text 4 §8.4 の punctuation): ; ! ? は細い空き、: は語間の空き、» は細い空き */
+const frBefore = (ch: string): number | undefined => (ch === ';' || ch === '!' || ch === '?' || ch === '»' ? FR_THIN : ch === ':' ? FR_WORD : undefined);
+
+/**
+ * text-autospace の punctuation (フランス語の約物の前後の空き) と replace (CSS Text 4 §8.4):
+ *  - punctuation: 内容の言語がフランス語の所 (TextStyle.textAutospacePunct) で、; ! ? » の前・« の後ろに細い空き (U+202F の幅)、: の前に語間の空き
+ *    (U+00A0 の幅) を入れる (insert: 間に空白の字があれば入れない)。その空きは改行しない空白なので、そこでは行を分けない (glue)。
+ *    空きの大きさは、仕様がフランス語の組版の決まりに任せているので、目安の比 (FR_THIN・FR_WORD) にする
+ *  - replace (TextStyle.textAutospaceReplace): 空きを入れる所にある U+0020 (空白 1 つ) を取り除いて、その空きにする。和欧間のアキ
+ *    (和字と欧文の字・数字の間の U+0020) は、和欧間のアキの大きさに、フランス語の約物の前後の U+0020 は、その空きにして、行を分けない
+ */
+function autospaceReplaceAndPunct(atoms: Atom[]) {
+  const plain = (x: Atom | undefined) => !!x && x.kind === 'glyph' && !x.isSpace;
+  const single = (x: Atom | undefined) => !!x && x.kind === 'glyph' && x.isSpace && x.first === ' ' && x.last === ' ' && !x.cluster;
+  for (let k = 0; k + 1 < atoms.length; k++) {
+    const a = atoms[k];
+    const b = atoms[k + 1];
+    if (a.kind !== 'glyph' || b.kind !== 'glyph') continue;
+    // フランス語の約物の前後
+    if (plain(a) && plain(b)) {
+      // insert: 間に空白の字 (一般カテゴリ Z。フランス語の文に書いた U+00A0・U+202F など) があれば入れない (CSS Text 4 §8.4)
+      if (SPACE_Z.test(a.last) || SPACE_Z.test(b.first)) continue;
+      // 続く約物 (!!・?! など) の間には入れない (空きは約物の並びの前に 1 つ)
+      const before = b.st.textAutospacePunct && !FR_RUN.has(a.last) ? frBefore(b.first) : undefined;
+      const after = a.st.textAutospacePunct && a.last === '«' ? FR_THIN : undefined;
+      const r = before ?? after;
+      if (r !== undefined && !(before !== undefined && a.last === '«')) {
+        const s = (before !== undefined ? b : a).st.fontSize * r;
+        a.advance += s;
+        a.trail = (a.trail ?? 0) + s;
+        b.glue = true;
+      }
+      continue;
+    }
+    // replace: 和字・欧文の字の間、フランス語の約物の前後の U+0020 1 つ
+    const c = atoms[k + 2];
+    if (!plain(a) || !single(b) || !plain(c) || !b.st.textAutospaceReplace) continue;
+    let w: number | undefined;
+    let keep = false;
+    const before = c!.st.textAutospacePunct ? frBefore(c!.first) : undefined;
+    if (before !== undefined) w = c!.st.fontSize * before;
+    else if (a.st.textAutospacePunct && a.last === '«') w = a.st.fontSize * FR_THIN;
+    else if (a.st.textAutospace && c!.st.textAutospace && a.st.textAutospaceUnicode) {
+      const ideo = (ch: string) => isAutospaceIdeograph(ch, false);
+      const other = (x: Atom, ch: string) => {
+        const kind = autospaceNonIdeographic(ch);
+        const want = x.st.textAutospaceKinds ?? 'all';
+        return kind !== undefined && (want === 'all' || want === kind);
+      };
+      if ((ideo(a.last) && other(c!, c!.first)) || (other(a, a.last) && ideo(c!.first))) {
+        w = Math.min(a.st.fontSize, c!.st.fontSize) * (a.st.textAutospaceWidth ?? 0.25);
+        // 和欧間のアキは、和字の前後と同じに行を分けてよい (空白を取り除いても、和字の前後の改行の機会は残る)
+        keep = true;
+      }
+    }
+    if (w === undefined) continue;
+    b.advance = w;
+    if (!keep) {
+      b.glue = true;
+      c!.glue = true;
     }
   }
 }

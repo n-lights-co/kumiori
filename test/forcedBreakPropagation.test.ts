@@ -254,6 +254,20 @@ describe('page (名前付きのページ) を、切り替えられない箱に�
     expect(n.widths.map(Math.round)).toEqual([200, 300, 200]);
   });
 
+  it('流れの中の表の本体の行の page は、表を分けてページを切り替える (見出しの行は分けた表ごとに繰り返す)', () => {
+    const r = layout(`<table><thead><tr><td>H1</td></tr></thead><tbody><tr><td>A1</td></tr><tr style="page: wide"><td>B1</td></tr><tr style="page: wide"><td>B2</td></tr><tr><td>C1</td></tr></tbody></table>`, css);
+    expect(r.pages).toEqual(['H1 A1', 'H1 B1 B2', 'H1 C1']);
+    expect(r.widths.map(Math.round)).toEqual([200, 300, 200]);
+    expect(Object.keys(r.report.unsupported).some((k) => /^page/.test(k))).toBe(false);
+    // 行グループの page は、その行に当たる。最初の行の名前が変われば、表ごと次のページの組から
+    const g = layout(`<p>A1</p><table><tbody style="page: wide"><tr><td>B1</td></tr></tbody><tbody><tr><td>C1</td></tr></tbody></table>`, css);
+    expect(g.pages).toEqual(['A1', 'B1', 'C1']);
+    expect(g.widths.map(Math.round)).toEqual([200, 300, 200]);
+    // 見出しの行の page は、前のとおり未対応として知らせる
+    const h = layout(`<table><thead><tr style="page: wide"><td>H1</td></tr></thead><tbody><tr><td>A1</td></tr></tbody></table>`, css);
+    expect(Object.keys(h.report.unsupported).some((k) => /^page/.test(k))).toBe(true);
+  });
+
   it('flex・grid の項目・段組の中・セルの中の page は、黙って無視しない', () => {
     for (const body of [
       `<div style="display: flex"><div>A1</div><div style="page: wide">B1</div></div>`,

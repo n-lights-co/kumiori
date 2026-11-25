@@ -48,9 +48,9 @@ describe('未対応の CSS の数え上げ (cssUnsupported)', () => {
     expect(props.length).toBeGreaterThan(40);
     expect(new Set(props)).toEqual(UNSUPPORTED_CSS_PROPERTIES);
   });
-  it('footnote-display: block (初期値。Kumiori の置き方そのもの) は数えず、inline・compact は未対応の値として数える', () => {
+  it('footnote-display は、block・inline・compact のどれも読むので数えない', () => {
     const r = unsupportedCssReport(parseCss('.a { footnote-display: block } .b { footnote-display: inline } .c { footnote-display: compact }'));
-    expect(r.unsupported).toEqual({ 'footnote-display: inline': 1, 'footnote-display: compact': 1 });
+    expect(r.unsupported).toEqual({});
     expect(r.unknown).toEqual({});
   });
   it('印刷では意味のないプロパティ (cursor・resize・appearance・アニメーション・スクロールなど) は数えない。sanitize.css の書き方', () => {

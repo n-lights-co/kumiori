@@ -153,12 +153,11 @@ describe('領域の頭で捨てる余白は、段の取れる高さから引か�
   }
 });
 
-describe('ページの途中で、残りに入らない分けない指定のある段組の箱は、いまのページの残りで分けて収める', () => {
-  // 行 8 本 (96pt) の後ろの残りは 164pt。padding 10pt の段組の段は 144pt で、keep の 13 行 (156pt) は入らないので、段組の中の keep を破って
-  // 2 段に分け、いまのページに収める (XSL 1.1 §7.20.3: keep は、満たせなければ破る。CSS Fragmentation 3 §3.3)。
-  // 次のページの頭なら入るときに、段組の箱ごと次のページへ送る (§4.8 の、すべての keep を満たす区切りを選ぶ) ことは、まだしない
-  // (枠の無い段組と同じく、いまのページで分ける。送ると、送った箱の中の絶対配置の箱が前のページに残り、次のページの方が低いと、
-  // 送った箱がはみ出していた)
+describe('ページの途中で、残りに入らない分けない指定のある段組の箱: 次のページの頭なら分けずに入れば次のページへ送り、入らなければいまのページで分ける', () => {
+  // 行 8 本 (96pt) の後ろの残りは 164pt。padding 10pt の段組の段は 144pt で、keep の 13 行 (156pt) は入らない。次のページの頭 (260pt) なら
+  // 分けずに入るので、段組の箱の前で改ページする (XSL 1.1 §4.8・CSS Fragmentation 3 §4.4: 区切りは、keep・avoid を破るものの少ない所を選ぶ)。
+  // 箱の中の絶対配置の箱も、送った先のページに置く。次のページの本文が低くて入らないとき・1 ページより高い keep は、いまのページで分ける
+  // (XSL 1.1 §7.20.3: keep は、満たせなければ破る。CSS Fragmentation 3 §3.3)。前の keep-with-next の見出しも、一緒に次のページへ送る
   const LI = (inner: string) => `<fo:list-block><fo:list-item><fo:list-item-label end-indent="label-end()"><fo:block>*</fo:block></fo:list-item-label><fo:list-item-body start-indent="body-start()">${inner}</fo:list-item-body></fo:list-item></fo:list-block>`;
   const ABS = `<fo:block-container absolute-position="absolute" top="150pt" left="200pt" width="60pt"><fo:block>ABSBOX</fo:block></fo:block-container>`;
   /** 1 ページ目は本文 260pt、続くページは本文 160pt (page-sequence-master の single と repeatable) */
@@ -166,6 +165,14 @@ describe('ページの途中で、残りに入らない分けない指定のあ�
     fo(body)
       .replace(/<fo:layout-master-set>.*<\/fo:layout-master-set>/, '<fo:layout-master-set><fo:simple-page-master master-name="f" page-width="300pt" page-height="300pt" margin="20pt"><fo:region-body/></fo:simple-page-master><fo:simple-page-master master-name="r" page-width="300pt" page-height="200pt" margin="20pt"><fo:region-body/></fo:simple-page-master><fo:page-sequence-master master-name="m"><fo:single-page-master-reference master-reference="f"/><fo:repeatable-page-master-reference master-reference="r"/></fo:page-sequence-master></fo:layout-master-set>')
       .replace('master-reference="p"', 'master-reference="m"');
+  /** 箱ごと次のページ (2 ページ目) に、分けずに置いた */
+  const moved = (r: Awaited<ReturnType<typeof lay>>) => {
+    const s = shape(r.lines);
+    expect(r.lines.find((l) => l.t === 'K0')?.page).toBe(1);
+    expect(s.pages).toBe(1);
+    expect(s.left === 0 || s.right === 0).toBe(true);
+    expect(r.warnings).not.toMatch(/ページより大きい/);
+  };
   const split = (r: Awaited<ReturnType<typeof lay>>) => {
     const s = shape(r.lines);
     expect(r.lines.find((l) => l.t === 'K0')?.page).toBe(0);
@@ -176,26 +183,26 @@ describe('ページの途中で、残りに入らない分けない指定のあ�
     expect(r.warnings).not.toMatch(/ページより大きい/);
   };
   for (const compat of FO_MODES) {
-    it(`padding のある段組・リストの項目の中・padding のあるブロックの中 (XSL-FO、${compat})`, async () => {
+    it(`padding のある段組・padding のあるブロックの中は送る。リストの項目の中 (表のセルの流れ) は、いまのページで分ける (XSL-FO、${compat})`, async () => {
       for (const body of [
         L(8, 'P') + BC(kt(13), 'padding="10pt"'),
         L(8, 'P') + BC(kt(13) + L(4, 'A'), 'padding="10pt"'),
-        L(8, 'P') + LI(BC(kt(13), 'padding="10pt"')),
         L(8, 'P') + `<fo:block padding="5pt" border="1pt solid black">${BC(kt(13), 'padding="5pt"')}</fo:block>`,
-      ]) split(await lay(fo(body), { compat }));
+      ]) moved(await lay(fo(body), { compat }));
+      split(await lay(fo(L(8, 'P') + LI(BC(kt(13), 'padding="10pt"'))), { compat }));
     });
 
-    it(`keep-with-next の見出しの後ろ (XSL-FO、${compat})`, async () => {
+    it(`keep-with-next の見出しも、一緒に次のページへ送る (XSL-FO、${compat})`, async () => {
       const r = await lay(fo(L(7, 'P') + `<fo:block keep-with-next.within-page="always">HEAD</fo:block>` + BC(kt(13), 'padding="10pt"')), { compat });
-      split(r);
-      expect(r.lines.find((l) => l.t === 'HEAD')?.page).toBe(0);
+      moved(r);
+      expect(r.lines.find((l) => l.t === 'HEAD')?.page).toBe(1);
     });
 
-    it(`段組の中の絶対配置の箱は、段組の箱と同じページに 1 つ (XSL-FO、${compat})`, async () => {
+    it(`段組の中の絶対配置の箱は、段組の箱と同じページ (送った先) に 1 つ (XSL-FO、${compat})`, async () => {
       const r = await lay(fo(L(8, 'P') + BC(ABS + kt(13), 'padding="10pt"')), { compat });
-      split(r);
+      moved(r);
       const abs = r.lines.filter((l) => l.t === 'ABSBOX');
-      expect(abs.map((l) => l.page)).toEqual([0]);
+      expect(abs.map((l) => l.page)).toEqual([1]);
     });
 
     it(`次のページが低いときも、いまのページで分けて収める (XSL-FO、${compat})`, async () => {
@@ -220,11 +227,11 @@ describe('ページの途中で、残りに入らない分けない指定のあ�
   for (const style of [undefined, 'ah', 'weasyprint', 'vivliostyle'] as const) {
     const opts: Record<string, string> = style ? { style } : {};
     it(`HTML の padding のある段組・中の絶対配置の箱・1 ページ目だけ高いページ (${style ?? '既定'})`, async () => {
-      split(await lay(html(`${HL(8, 'P')}<div class="c" style="padding:10pt 0">${hk(13)}</div>`), opts));
-      // position: relative の段組の中の絶対配置の箱 (top: 10pt): 段組の箱と同じ 1 ページ目に 1 つ
+      moved(await lay(html(`${HL(8, 'P')}<div class="c" style="padding:10pt 0">${hk(13)}</div>`), opts));
+      // position: relative の段組の中の絶対配置の箱 (top: 10pt): 段組の箱と同じ、送った先の 2 ページ目に 1 つ
       const r = await lay(html(`${HL(8, 'P')}<div class="c" style="padding:10pt 0;position:relative"><div style="position:absolute;top:10pt;left:200pt">ABSBOX</div>${hk(13)}</div>`), opts);
-      split(r);
-      expect(r.lines.filter((l) => l.t === 'ABSBOX').map((l) => l.page)).toEqual([0]);
+      moved(r);
+      expect(r.lines.filter((l) => l.t === 'ABSBOX').map((l) => l.page)).toEqual([1]);
       // 続くページの本文が低い (@page :first だけ余白 20pt、ほかは上の余白 140pt)
       const low = html(`${HL(8, 'P')}<div class="c" style="padding:10pt 0">${hk(13)}</div>`).replace('@page{size:300pt 300pt;margin:20pt}', '@page{size:300pt 300pt;margin:140pt 20pt 20pt}@page :first{margin:20pt}');
       split(await lay(low, opts));

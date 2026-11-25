@@ -350,7 +350,9 @@ export function lineBreakActions(cps: number[], opts: LineBreakOptions | ((i: nu
  * ここでは、実行環境の Intl.Segmenter (granularity: 'word'。ICU の辞書で、タイ・ラオ・クメール・ミャンマーの語を分ける) で語の境目を求める。
  * 戻り値は、cps の中の位置 i (字 i-1 と字 i の間が語の境目) の並び。SA の字が無ければ null (Intl.Segmenter を呼ばない)。
  *  - 辞書を持つ用字 (タイ・ラオ・クメール・ミャンマー) の字の並びだけを分ける。ほかの SA の用字 (タイ・ルー、タイ・タムなど) は分けない (AL のまま)
- *  - Intl.Segmenter が無い環境・並びを 1 つも分けない環境 (その言語の辞書が無い) では、境目は無い (AL のまま。これまでと同じ)
+ *  - Intl.Segmenter が無い環境では、字の単位 (書記素クラスタ) の間をすべて境目にする (CSS Text 3 §5.1: 辞書で語を分けられないときの
+ *    代わり。前は、境目が無く (AL のまま)、タイ語などの段落を折り返せずに、行からはみ出した)。並びを 1 つも分けない環境 (その言語の辞書が無い)
+ *    は、1 語の並びと見分けられないので、境目は無い (AL のまま。これまでと同じ)
  *  - 結合文字 (SA の Mn・Mc。LB1 で CM) の前は、境目にしない (LB9)
  *  - 語の境目は、ICU の版 (辞書) で変わりうる。同じ文書でも、実行環境 (Node・ブラウザの版) で改行の位置が変わりうる
  * langAt は、字の位置の言語 (要素の lang)。無ければ、字の用字から決める
@@ -367,7 +369,10 @@ export function complexContextBreaks(cps: number[], langAt: (i: number) => strin
     if (e - i > 1) {
       // 要素の lang の札で作れなければ (札が正しくない)、用字から決めた言語で
       const seg = wordSegmenter(langAt(i) || lang) ?? wordSegmenter(lang);
-      if (seg) {
+      if (!seg && !hasSegmenter()) {
+        // 結合文字 (Mn・Mc) の前は、字の単位の中なので分けない
+        for (let k = i + 1; k < e; k++) if (!/^M[nc]$/.test(gcOf(cps[k]))) (out ??= []).push(k);
+      } else if (seg) {
         const text = String.fromCodePoint(...cps.slice(i, e));
         let k = i;
         let off = 0;
@@ -390,6 +395,9 @@ function dictionaryLanguage(cp: number): string | undefined {
   const lang = cp <= 0xe7f ? 'th' : cp <= 0xeff ? 'lo' : (cp >= 0x1000 && cp <= 0x109f) || cp >= 0xa9e0 ? 'my' : (cp >= 0x1780 && cp <= 0x17ff) || (cp >= 0x19e0 && cp <= 0x19ff) ? 'km' : undefined;
   return lang && lineBreakClass(cp) === 'SA' ? lang : undefined;
 }
+
+/** 実行環境に Intl.Segmenter があるか */
+const hasSegmenter = () => typeof (globalThis as { Intl?: { Segmenter?: unknown } }).Intl?.Segmenter === 'function';
 
 type WordSegmenter = { segment(text: string): Iterable<{ index: number }> };
 const segmenters = new Map<string, WordSegmenter | null>();

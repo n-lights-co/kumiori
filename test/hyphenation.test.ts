@@ -30,11 +30,12 @@ describe('ロシア語・ウクライナ語・現代ギリシャ語の分綴', (
     expect(split('πληροφορία', 'el')).toBe('πλη-ρο-φο-ρία');
     expect(split('δικαιώματα', 'el-GR')).toBe('δι-καιώ-μα-τα');
   });
-  it('多調の綴りのギリシャ語・古典ギリシャ語・規則の無い言語は分綴しない。語の字に数える字は、言語で決まる', async () => {
-    expect(await loadHyphenator('el-polyton')).toBeUndefined();
-    expect(await loadHyphenator('grc')).toBeUndefined();
+  it('多調の綴りのギリシャ語・古典ギリシャ語は、それぞれの規則で分綴する。規則の無い言語は分綴しない。語の字に数える字は、言語で決まる', async () => {
+    expect(await loadHyphenator('el-polyton')).toBeDefined();
+    expect(await loadHyphenator('grc')).toBeDefined();
+    expect(split('πληροφορία', 'el-polyton')?.length).toBeGreaterThan(1);
+    expect(split('ἀνθρώπους', 'grc')?.length).toBeGreaterThan(1);
     expect(await loadHyphenator('vi')).toBeUndefined();
-    expect(split('πληροφορία', 'el-polyton')).toBeUndefined();
     expect(split('информация', 'be')).toBeUndefined();
     expect(hyphenationLetters('ru')?.test('я')).toBe(true);
     expect(hyphenationLetters('uk')?.test('ї')).toBe(true);
@@ -101,13 +102,13 @@ describe('言語のタグから分綴の規則を選ぶ (hyphenationKey)', () =>
     const { hyphenationKey } = await import('../src/hyphenation');
     const cases: Array<[string | undefined, string | undefined]> = [
       [undefined, 'en-us'], ['en', 'en-us'], ['en-US', 'en-us'], ['en-GB', 'en-gb'], ['en_GB', 'en-gb'], ['en-Latn-GB', 'en-gb'], ['EN-gb-oxendict', 'en-gb'],
-      ['la', 'la'], ['la-x-classic', 'la'], ['ru-RU', 'ru'], ['uk', 'uk'], ['el', 'el-monoton'], ['el-GR', 'el-monoton'], ['el-polyton', undefined],
+      ['la', 'la'], ['la-x-classic', 'la'], ['ru-RU', 'ru'], ['uk', 'uk'], ['el', 'el-monoton'], ['el-GR', 'el-monoton'], ['el-polyton', 'el-polyton'], ['grc', 'grc'],
       // ISO 639-2 の 3 字の符号 (XSL-FO の language)
       ['eng', 'en-us'], ['eng-GB', 'en-gb'], ['rus', 'ru'], ['ukr', 'uk'], ['lat', 'la'], ['gre', 'el-monoton'], ['ell', 'el-monoton'],
       // 文字が規則の文字と違えば当てない
       ['ru-Latn', undefined], ['en-Cyrl', undefined], ['ru-Cyrl', 'ru'],
       // 規則の無い言語・空のタグ
-      ['', undefined], ['x-klingon', undefined], ['vi', undefined], ['cs', undefined], ['ja', undefined], ['grc', undefined],
+      ['', undefined], ['x-klingon', undefined], ['vi', undefined], ['cs', undefined], ['ja', undefined],
     ];
     for (const [tag, key] of cases) expect([tag, hyphenationKey(tag)]).toEqual([tag, key]);
   });

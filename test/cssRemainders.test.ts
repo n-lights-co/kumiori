@@ -3,8 +3,8 @@
  *  - NC-10 @page の bleed: auto は、marks に crop があれば 6pt、無ければ 0 (CSS Paged Media 3 §7.3)
  *  - NC-16 text-spacing-trim の trim-all・space-first と、位置ごとの語の組 (CSS Text 4 §8.5)
  *  - NC-18 (7) 色の none の成分 (CSS Color 4 §4.4) と light-dark() (CSS Color 5 §7・CSS Color Adjust 1 §2)
- *  - 読まずに捨てていた指定を「未対応」の警告に出す: page-orientation (@page)・@page :nth()・target-counters()・@namespace・
- *    hanging-punctuation: last・shape-outside
+ *  - 読まずに捨てていた指定を「未対応」の警告に出す: 余白の箱の target-counters()・@namespace・hanging-punctuation: last・shape-outside
+ *    (page-orientation・@page :nth()・本文の target-counters() は読むので、警告に出さない)
  */
 import { describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
@@ -134,15 +134,13 @@ describe('未対応の指定を警告に出す', () => {
     const d = html ? (parseHTML(html).document as unknown as Document) : undefined;
     return unsupportedCssReport(parseCss(css), d);
   };
-  it('@page の page-orientation (CSS Paged Media 3 §7.1.2)', () => {
-    expect(rep('@page wide { page-orientation: rotate-left; size: A4 landscape }')).toEqual({ unsupported: { 'page-orientation': 1 }, unknown: {}, invalid: {} });
+  it('@page の page-orientation (CSS Paged Media 3 §7.1.2) と @page :nth() (CSS GCPM 3 §3.1) は読むので数えない', () => {
+    expect(rep('@page wide { page-orientation: rotate-left; size: A4 landscape }')).toEqual({ unsupported: {}, unknown: {}, invalid: {} });
+    expect(rep('@page :nth(2n+1) { margin: 1in } @page :first { margin: 2in }').unsupported).toEqual({});
   });
-  it('@page :nth() (CSS GCPM 3 §3)', () => {
-    expect(rep('@page :nth(2n+1) { margin: 1in } @page :first { margin: 2in }').unsupported).toEqual({ '@page :nth()': 1 });
-  });
-  it('target-counters() (CSS Content 3 §6.2。余白の箱の content も)', () => {
+  it('target-counters() は余白の箱の content だけを数える (本文の生成内容は読む。CSS Content 3 §2.6.2)', () => {
     const css = 'a::after { content: target-counters(attr(href url), item, ".") } @page { @top-center { content: target-counters(attr(href url), c, "-") } } b::after { content: target-counter(attr(href url), page) }';
-    expect(rep(css).unsupported).toEqual({ 'target-counters()': 2 });
+    expect(rep(css).unsupported).toEqual({ 'target-counters()': 1 });
   });
   it('@namespace (CSS Namespaces 3 §2)', () => {
     expect(rep('@namespace svg url(urn:x-svg); p { color: red }').unsupported).toEqual({ '@namespace': 1 });
@@ -164,7 +162,7 @@ describe('未対応の指定を警告に出す', () => {
     const css = '@namespace x url(urn:x); @page :nth(2) { margin: 1in } @page { page-orientation: rotate-left } p { shape-outside: circle(); hanging-punctuation: last }';
     const r = await typesetHtml(`<!DOCTYPE html><html><head><title>t</title><style>${css}</style></head><body><p>x</p></body></html>`, { name: 't.html', loadFont });
     const miss = r.warnings.find((w) => w.startsWith('未対応の CSS を無視しました: '));
-    expect(miss).toBe('未対応の CSS を無視しました: @namespace、@page :nth()、hanging-punctuation: last、page-orientation、shape-outside');
+    expect(miss).toBe('未対応の CSS を無視しました: @namespace、hanging-punctuation: last、shape-outside');
     expect(r.warnings.some((w) => /知らない CSS/.test(w))).toBe(false);
   });
 });

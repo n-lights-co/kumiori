@@ -195,6 +195,9 @@ export interface ResolvedStyle {
   fontOpticalSizeUnit?: 'pt' | 'px';
   textAutospace?: boolean;
   textAutospaceWidth?: number;
+  textAutospaceKinds?: 'all' | 'alpha' | 'numeric';
+  textAutospacePunct?: boolean;
+  textAutospaceReplace?: boolean;
   textAutospaceIdeographicSpace?: boolean;
   textAutospaceUnicode?: boolean;
   justifyPunctuationAh?: boolean;
@@ -405,6 +408,9 @@ function resolveStyleBase(parent: ResolvedStyle, n: BaseNode): ResolvedStyle {
     italic: n.fontStyle ? n.fontStyle === 'italic' : parent.italic,
     textAutospace: n.textAutospace ?? parent.textAutospace,
     textAutospaceWidth: n.textAutospaceWidth ?? parent.textAutospaceWidth,
+    textAutospaceKinds: n.textAutospaceKinds ?? parent.textAutospaceKinds,
+    textAutospacePunct: n.textAutospacePunct ?? parent.textAutospacePunct,
+    textAutospaceReplace: n.textAutospaceReplace ?? parent.textAutospaceReplace,
     textAutospaceIdeographicSpace: n.textAutospaceIdeographicSpace ?? parent.textAutospaceIdeographicSpace,
     textAutospaceUnicode: n.textAutospaceUnicode ?? parent.textAutospaceUnicode,
     justifyPunctuationAh: n.justifyPunctuationAh ?? parent.justifyPunctuationAh,

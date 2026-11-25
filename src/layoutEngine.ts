@@ -676,9 +676,11 @@ function trimEdgeRowHeights(node: LTable, wm: WritingMode): LTable {
  * 本体が注 (Note) の構造に入る)。タグ付き PDF では、頭の番号を、記号 (Lbl) の構造の節の番号の付いた inline で包む (LFootnote.tagParts)
  */
 function footBlock(fn: LFootnote, fo: FootnoteOptions, label: string, fontSize: number, wm: WritingMode): LBlock {
-  const { type: _t, children, label: _l, bodyLabel, tagParts, ...style } = fn;
+  const { type: _t, children, label: _l, bodyLabel, tagParts, footnoteDisplay: _d, inlineBox: _b, ...style } = fn;
   void _t;
   void _l;
+  void _d;
+  void _b;
   let lab: string | LInline = label;
   if (tagParts) {
     lab = { type: 'inline', children: [label] };
@@ -1134,6 +1136,8 @@ interface FlowHost {
    * ページの順 - ページ番号 (page-sequence の中では、番号も順も 1 ずつ増えるので一定)。ほかは 0 (ページ番号の偶奇)
    */
   sideDelta?: number;
+  /** ページが右から左へ進む本 (LDocument.rtlPageProgression。奇数ページの綴じ側が右) */
+  rtlPages?: boolean;
   /** 絶対配置の基準になる行内の箱 (LInline.cbKey) の、入力の節の番号の範囲 [その節, 子孫の次) */
   inlineCbRange?: (key: number) => [number, number] | undefined;
   /** 余白の解決を XSL 1.1 §4.3.1 の規則で行う (LDocument.spaceResolution) */
@@ -1697,6 +1701,33 @@ const percentCache = new WeakMap<object, Map<string, object>>();
  * 横書きの流れの中の箱だけで解く。margin・padding は、どの流れでも包含ブロックの inline の大きさが基準: CSS Writing Modes 4 §7.2)。
  * block は、ふつうのブロック (LBlock): 幅の百分率と上限・下限を、estimatedSize (組むときに置く場所の幅を抑える仕組み) に移す
  */
+/**
+ * 表のセルの百分率の padding (BoxStyle.percent.padding) を、基準 cb (pt) で解いた表の写し (そのセルが無ければ undefined)。
+ * 幅の決まらない表 (fitContent) のセルの padding の百分率の基準は、表の幅 (tableColumnWidths)
+ */
+function cellPercentPadding(node: LTable, cb: number): LTable | undefined {
+  let hit = false;
+  const mapRows = (rows: LTableRow[]) =>
+    rows.map((r) => {
+      if (!r.cells.some((c) => c.percent?.padding)) return r;
+      hit = true;
+      return withRef(r, {
+        ...r,
+        cells: r.cells.map((c) => {
+          const P = c.percent?.padding;
+          if (!P) return c;
+          const pad = normEdges(c.padding);
+          for (const sd of ['top', 'right', 'bottom', 'left'] as const) if (P[sd]) pad[sd] = Math.max(P[sd]!.pct * cb + P[sd]!.len, 0);
+          return withRef(c, { ...c, padding: pad });
+        }),
+      });
+    });
+  const out: LTable = { ...node, body: { ...node.body, rows: mapRows(node.body.rows) } };
+  if (node.header) out.header = { ...node.header, rows: mapRows(node.header.rows) };
+  if (node.footer) out.footer = { ...node.footer, rows: mapRows(node.footer.rows) };
+  return hit ? withRef(node, out) : undefined;
+}
+
 function withPercent<T extends BoxStyle>(node: T, cb: number | undefined, horizontal: boolean, block: boolean): T {
   const P = node.percent;
   if (!P) return node;
@@ -2062,6 +2093,8 @@ class Flow {
   /** 挿入点の直上にある「空き」(前行の下側ハーフレディング + 保留マージン)。ルビの張り出しに使う */
   private adjacent = 0;
   private pageHasContent = false;
+  /** いま置くブロックが、前のブロックとつなげる指定 (前の keep-with-next・自分の keep-with-previous) を持つか (layoutChildren が決める) */
+  private chainedToPrev = false;
   /** ページ (段) を改めるたびに増やす番号 (同じページの上か、を見分ける) */
   private pageSerial = 0;
   /** keepOverflow のブロックを、改ページせずに置く (holdKeepTogether が立てる。keepTogetherCheck は改ページしない) */
@@ -2161,16 +2194,25 @@ class Flow {
    * 脚注 entries を積むと増える脚注の領域の高さ。reserve は積む前の脚注の領域の高さ (既定は今の高さ)。
    * 脚注の領域に高さの上限 (maxHeight) があれば、上限を超える分は数えない (超える分は次のページへ送るので、参照の行は置ける)
    */
-  private footCost(entries: FootEntry[], existing: number, reserve = this.footReserve): number {
+  private footCost(entries: FootEntry[], existing: number, reserve = this.footReserve, uncapped = false, last?: FootEntry | null): number {
     if (this.pageLevel) return 0;
     let r = 0;
     let prev: FootEntry | undefined = existing > 0 ? this.footnotes[existing - 1] : undefined;
+    // 行内に並べる脚注をつなぐ相手: last (行の見積もりで、前の行の脚注まで積んだと見なした最後の脚注。null は無し)。省略なら prev
+    let joinTo: FootEntry | undefined = last !== undefined ? (last ?? undefined) : prev;
     for (const e of entries) {
+      // 行内に並べる脚注は、前の脚注の段落に続けて組む (増えるのは、つないだ段落の高さとの差。pushFootnote と同じ)
+      const j = this.foot!.join(joinTo, e);
+      if (j) {
+        r += j.height - joinTo!.height;
+        prev = joinTo = j;
+        continue;
+      }
       r += this.foot!.gapAfter(prev) + e.height;
-      prev = e;
+      prev = joinTo = e;
     }
     const max = this.foot!.maxHeight;
-    if (max === undefined) return r;
+    if (max === undefined || uncapped) return r;
     // 既に次のページへ送った脚注があれば、後の脚注もこのページに積まない (pushFootnote) ので、数えない
     return this.carry.length ? 0 : Math.min(r, Math.max(0, max - reserve));
   }
@@ -2194,7 +2236,28 @@ class Flow {
       return;
     }
     const first = this.footnotes.length === 0;
-    const lead = this.foot!.gapAfter(first ? undefined : this.footnotes[this.footnotes.length - 1]);
+    // 行内に並べる脚注 (CSS GCPM 3 §2.3 の footnote-display: inline・compact、axf:footnote-stacking="inline"): 前の脚注の段落に続けて組み、
+    // 前の脚注の代わりに置く。入らなければ、つないだ段落を行で分け、残りを次のページへ続ける (分けた頭が前の脚注より低くなるとき
+    // (前の脚注の行を次のページへ送ることになるとき) は、つながずに、下のブロックの置き方で置く)
+    const last = first ? undefined : this.footnotes[this.footnotes.length - 1];
+    const joined = this.foot!.join(last, e);
+    if (joined) {
+      const base = this.footReserve - last!.height;
+      const room = Math.min(this.limit - this.cursor - base, cap - base, max === undefined ? Infinity : max - base);
+      if (joined.height <= room + EPS) {
+        this.footnotes[this.footnotes.length - 1] = joined;
+        this.footReserve = base + joined.height;
+        return;
+      }
+      const sp = splitEntry(joined, room);
+      if (sp && sp.head.height + EPS >= last!.height) {
+        this.footnotes[this.footnotes.length - 1] = sp.head;
+        this.footReserve = base + sp.head.height;
+        this.carry.push(sp.rest);
+        return;
+      }
+    }
+    const lead = this.foot!.gapAfter(last);
     const free = Math.min(this.limit - this.cursor - this.footReserve, cap - this.footReserve, max === undefined ? Infinity : max - this.footReserve);
     if (lead + e.height <= free + EPS) {
       this.footnotes.push(e);
@@ -2366,9 +2429,11 @@ class Flow {
     if (node.float === 'inside' || node.float === 'outside') {
       // 綴じ側・小口側は、組むページの偶奇 (左右。sideNumber) で start / end に読み替える
       const even = (this.sideNumber() ?? 1) % 2 === 0;
-      // 綴じ側は、奇数ページ (右ページ) では左、偶数ページでは右。縦書きでは左右は block 方向なので、段の先頭・末尾の float にする
-      // (vertical-rl は右が block-start。偶数ページの float: inside は箱の右端、outside は左端に置く)
-      const left = (node.float === 'inside') !== even;
+      // 綴じ側は、左から右へ進む本では、奇数ページ (右ページ) で左、偶数ページで右。右から左へ進む本 (LDocument.rtlPageProgression。
+      // 縦書きの本) では逆で、奇数ページ (左ページ) で右 (CSS Paged Media 3 §3.3)。縦書きでは左右は block 方向なので、段の先頭・末尾の
+      // float にする (vertical-rl は右が block-start: 右から左へ進む本の奇数ページの float: inside は箱の右端、outside は左端に置く)。
+      // 前は、右から左へ進む本でも奇数ページの綴じ側を左にしていたので、inside が小口側に出た
+      const left = ((node.float === 'inside') !== even) !== !!this.host.rtlPages;
       const side = this.wm === 'horizontal-tb' ? (left ? 'start' : 'end') : (left === (this.wm === 'vertical-lr')) ? 'before' : 'after';
       node = withRef(node, { ...node, float: side });
     } else if (node.float === 'alternate') {
@@ -3471,6 +3536,8 @@ class Flow {
     if (np.credit) this.pendAdjust = -np.credit;
     this.areaTop = 0;
     this.pageHasContent = false;
+    // 前とつながる指定は、ページ・段の頭では効かない (前の流れ・前のページの値を、新しいページの最初の子へ受け継がない)
+    this.chainedToPrev = false;
     this.pageSerial++;
     this.pageItems = 0;
     this.refStartItems = -1; // 参照領域の途中でページ・段が変わったら、その先頭はページ・段の先頭として扱う
@@ -3807,6 +3874,14 @@ class Flow {
           topAt = ci;
           topPage = this.pageSerial + (this.pageHasContent ? 1 : 0); // break-before で改めた次のページ
         }
+      }
+      // 前のブロックとつなげる指定 (前の keep-with-next・自分の keep-with-previous) があるか (段組を次のページへ送るかを決めるのに使う)。
+      // 最初の子は、親が前とつながっていれば、前とつながる (親の頭は最初の子の頭なので、見出しの後ろの section の中の最初の段組を送ると、
+      // 見出しだけがページの末尾に残る。親の値は、親を組む直前に、この同じ欄に入れてある)
+      {
+        const prev = ci > 0 ? children[ci - 1] : undefined;
+        const own = (!!prev && typeof prev !== 'string' && !!(prev as { keepWithNext?: boolean }).keepWithNext) || !!(c as { keepWithPrevious?: boolean }).keepWithPrevious;
+        this.chainedToPrev = ci === 0 ? this.chainedToPrev || own : own;
       }
       const hold = from !== 'child' && c.type === 'block' && c.keepOverflow && c.keepTogether ? this.holdKeepTogether(children, ci, topAt, topPage, style) : undefined;
       if (hold !== undefined) {
@@ -4407,7 +4482,8 @@ class Flow {
     const estAll = !node.inlineSizing ? node.estimatedSize?.[this.wm === 'horizontal-tb' ? 'width' : 'height'] : undefined;
     const est = this.intrinsic ? estAll : undefined;
     const estAdj = (v: number | undefined) => (v === undefined ? undefined : node.boxSizing === 'border-box' ? Math.max(v - desc.bpI, 0) : v);
-    if (estAll && desc.isizeExplicit != null && (est || estAll.auto)) {
+    // 縦書きの箱の、高さ (inline の向き) が auto の上限・下限 (estimatedSize.height の auto。読み込みは見積もりの長さを入れない) も同じ
+    if (estAll && (desc.isizeExplicit != null || (estAll.auto && this.wm !== 'horizontal-tb')) && (est || estAll.auto)) {
       const hi = estAdj(estAll.max);
       const lo = estAdj(estAll.min);
       const avail = Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI, 0);
@@ -5267,7 +5343,11 @@ class Flow {
       let fit = 0;
       let resv = this.footReserve;
       let nFoot = this.footnotes.length;
+      /** 見積もりで積んだと見なす最後の脚注 (行内に並べる脚注を、前の行の脚注につなぐ高さで見積もる) */
+      let simLast: FootEntry | null = this.footnotes[this.footnotes.length - 1] ?? null;
       let simOrigin: number | undefined;
+      /** footnote-policy: block の脚注が入らないので、行の前で切った (段落がこのページで始まっていれば、段落の前で改ページする) */
+      let policyBlock = false;
       const inGrid = this.inGrid();
       for (let k = idx; k < n; k++) {
         const lm = lms[k];
@@ -5286,11 +5366,22 @@ class Flow {
         // 行グリッドの中では、最後の行の後ろの半行間は空けない (アンテナハウスの baseline-grid)。入るかの判定に数えない
         const gridTrail = this.gridTrailOf(lm, st);
         // 参照を含む行は「行 + その脚注」が一緒に入る場合だけ置く (入らなければ参照行ごと次ページへ)
-        const { count, inc } = this.footCostOfRefs(refs[k], useFoot, nFoot, resv);
-        if (c + h - gridTrail + tail + resv + inc > this.limit + (this.host.lineFitTolerance ?? EPS)) break;
+        const { count, inc, full, block, last: footLast } = this.footCostOfRefs(refs[k], useFoot, nFoot, resv, simLast);
+        const tol = this.host.lineFitTolerance ?? EPS;
+        if (c + h - gridTrail + tail + resv + inc > this.limit + tol) {
+          if (block && c + h - gridTrail + tail + resv <= this.limit + tol) policyBlock = true;
+          break;
+        }
+        // footnote-policy: line・block の脚注が、上限で分けないと入らないときも、参照の行の前で改ページする (ページに内容があるときだけ。
+        // 空のページでも入らない脚注は、auto と同じに上限で後のページへ送る)
+        if (full > inc && this.pageHasContent && c + h - gridTrail + tail + resv + full > this.limit + tol) {
+          if (block) policyBlock = true;
+          break;
+        }
         c += h;
         resv += inc;
         nFoot += count;
+        if (footLast !== undefined) simLast = footLast;
         above = lm.leading / 2;
         fit++;
       }
@@ -5300,6 +5391,8 @@ class Flow {
         // widows / orphans
         if (remaining < st.widows) take = Math.max(0, n - idx - st.widows);
         if (take < st.orphans) take = 0;
+        // footnote-policy: block (CSS GCPM 3 §2.8): 参照を含む段落の前で改ページする。段落の前のページで始まった段落は、行の前で切る (line と同じ)
+        if (policyBlock && idx === 0) take = 0;
       }
       if (take === 0) {
         if (this.pageHasContent) {
@@ -5362,9 +5455,26 @@ class Flow {
    * 行に含まれる脚注の参照 (refs) の本体を、このページの脚注領域に積むときに増える高さ (inc) と、積む脚注の数 (count)。
    * 本体はここで組む (組んだ結果は FootnoteCtx が覚える)。脚注をこの Flow が積まないとき (useFoot でない) と、側の領域 (sideArea) では 0
    */
-  private footCostOfRefs(refs: LFootnote[], useFoot: boolean, existing: number, reserve?: number): { count: number; inc: number } {
+  private footCostOfRefs(
+    refs: LFootnote[],
+    useFoot: boolean,
+    existing: number,
+    reserve?: number,
+    last?: FootEntry | null,
+  ): { count: number; inc: number; full: number; block: boolean; last: FootEntry | null | undefined } {
     const es = useFoot && !this.sideArea() ? refs.map((fn) => this.foot!.entry(fn, this.footWidth())) : [];
-    return { count: es.length, inc: es.length ? this.footCost(es, existing, reserve) : 0 };
+    const inc = es.length ? this.footCost(es, existing, reserve, false, last) : 0;
+    // footnote-policy: line・block (CSS GCPM 3 §2.8) の脚注は、上限 (max-height) で後のページへ送らずに、参照の行と同じページに丸ごと置く高さで見る
+    const policy = es.length ? refs.filter((fn) => fn.policy) : [];
+    const full = policy.length ? this.footCost(es, existing, reserve, true, last) : inc;
+    // 積んだ後の最後の脚注 (行内に並べる脚注は、前の脚注とつないだもの。次の行の見積もりで、その後ろにつなぐ)
+    let after = last;
+    if (es.length && this.foot) {
+      let prev: FootEntry | undefined = last !== undefined ? (last ?? undefined) : existing > 0 ? this.footnotes[existing - 1] : undefined;
+      for (const e of es) prev = this.foot.join(prev, e) ?? e;
+      after = prev ?? null;
+    }
+    return { count: es.length, inc, full, block: policy.some((fn) => fn.policy === 'block'), last: after };
   }
 
   /**
@@ -5601,7 +5711,7 @@ class Flow {
       reorderLine(pl, range.width, this.wm === 'horizontal-tb' && st.direction === 'rtl');
       const lm = lineMetrics(pl, this.wm, st, this.nominalRatio(st), this.strutOf(st), this.nominalDiff(st));
       const refs = lineFootnotes(pl.raw.items);
-      const { inc } = this.footCostOfRefs(refs, useFoot, this.footnotes.length);
+      const { inc, full, block } = this.footCostOfRefs(refs, useFoot, this.footnotes.length);
       // 同じページに置いた、この段落の前の行との半行間の重ね合わせ (line-height.precedence)
       const prevLm = placedHere.length ? placedHere[placedHere.length - 1].lm : undefined;
       const cut = prevLm ? precedenceCut(prevLm, lm, st) : this.discardTopLeading(lm, st);
@@ -5610,11 +5720,19 @@ class Flow {
       // 行グリッド: 回り込みの無い経路 (layoutInlineRun) と同じく、行の基線をグリッドに揃える分を足し、最後の行の下の部分は入るかの判定に数えない
       const gdSim = this.gridDelta(y0 + extra0, lm, st, y0 + extra0, this.inGrid() ? { above: this.gridEmOf(pl, st).above, prevTrail: pv ? 0 : this.gridPrevTrail(this.cursor) } : undefined);
       const gridTrail = this.gridTrailOf(lm, st);
-      if (this.paginating && this.cursor + pv + extra0 + gdSim + lm.base - gridTrail + tail + this.footReserve + inc > this.limit + (this.host.lineFitTolerance ?? EPS)) {
+      const lineEnd = this.cursor + pv + extra0 + gdSim + lm.base - gridTrail + tail + this.footReserve;
+      const lim = this.limit + (this.host.lineFitTolerance ?? EPS);
+      // footnote-policy: line・block (CSS GCPM 3 §2.8) の脚注が、上限 (max-height) で分けないと参照の行と同じページに入らないときも、
+      // 参照の行の前で改ページする (回り込みの無い経路 (layoutInlineRun) と同じ。ページに内容があるときだけ)
+      const policyOver = full > inc && this.pageHasContent && lineEnd + inc <= lim && lineEnd + full > lim;
+      if (this.paginating && (lineEnd + inc > lim || policyOver)) {
         if (this.pageHasContent) {
           // widows / orphans: 次のページへ行く行が widows より少なければ、このページに置いた行を送る
           // (残りの行の数は、回り込みの無い幅で数える)
-          const k = this.widowShift(atoms, start, placedHere, st, firstLine, hyRun);
+          let k = this.widowShift(atoms, start, placedHere, st, firstLine, hyRun);
+          // footnote-policy: block: 行だけなら入るのに脚注が入らないときは、参照を含む段落の前で改ページする (段落がこのページで始まっていれば、
+          // このページに置いた段落の行をすべて送る。前のページから続く段落は、行の前で切る。ページにほかの中身が無くなるなら送らない)
+          if (block && lineEnd <= lim && placedHere.length && placedHere[0].first && !placedHere.some((p) => p.fns) && placedHere.length < this.pageItems) k = placedHere.length;
           if (k > 0) {
             const back = placedHere[placedHere.length - k];
             hyRun = back.hyRun;
@@ -5794,7 +5912,7 @@ class Flow {
     const mnH = P.minHeight ?? 0;
     const mxH = P.maxHeight ?? Infinity;
     // 本来の比の無い画像 (大きさも viewBox も無い SVG) は、HTML の属性の比 (LImage.attrRatio)
-    const ratio = this.host.assets?.get(c.src)?.noRatio && c.attrRatio ? c.attrRatio : nat.h / nat.w;
+    const ratio = (this.host.assets?.get(c.src)?.noRatio || c.ratioForced) && c.attrRatio ? c.attrRatio : nat.h / nat.w;
     let w: number;
     let h: number;
     const clampW = (v: number) => Math.max(Math.min(v, mx), mn);
@@ -5862,7 +5980,10 @@ class Flow {
     const k = c.intrinsicFromImage && asset?.dpi ? 96 / asset.dpi : 1;
     const nat = asset ? { w: asset.width * 0.75 * k, h: asset.height * 0.75 * k } : undefined;
     // 百分率の幅・上限・下限 (HTML の CSS。LImage.percentSize): 行を組む包含ブロックの内容の幅で解き直す (横書きの行の中だけ)
-    if (c.percentSize && nat && nat.w > 0 && nat.h > 0 && st.wm === 'horizontal-tb' && this.wm === 'horizontal-tb') c = this.percentImage(c, nat);
+    // 縦書きの行の中でも、長さだけの幅・上限・下限 (百分率の部分が 0。読み込みのときに画像本来の大きさが分からず、当てずに渡したもの) は当てる
+    // (物理の幅・高さの上限なので、包含ブロックの大きさによらない。前は当てず、縦書きの max-width・max-block-size の画像を本来の大きさで描いていた)
+    const lenOnly = (P: NonNullable<LImage['percentSize']>) => [P.width, P.maxWidth, P.minWidth].every((v) => !v || v.pct === 0);
+    if (c.percentSize && nat && nat.w > 0 && nat.h > 0 && ((st.wm === 'horizontal-tb' && this.wm === 'horizontal-tb') || lenOnly(c.percentSize))) c = this.percentImage(c, nat);
     // 画像に書かれた解像度を優先する (image-resolution: from-image)。書かれていなければ widthScale / heightScale
     const own = c.resolutionFromImage && asset?.dpi ? 96 / asset.dpi : undefined;
     const ws = own ?? c.widthScale;
@@ -5873,12 +5994,13 @@ class Flow {
       // 倍率で指定された寸法は、そのまま使う (縦横比を保つ縮尺の対象にしない)
     } else if (w === undefined && h === undefined) {
       w = nat?.w ?? 60;
-      h = nat?.h ?? 40;
-    } else if (w === undefined) w = nat && !(asset?.noRatio && c.attrRatio) ? (h! * nat.w) / nat.h : c.attrRatio ? h! / c.attrRatio : h! * 1.5;
-    // 本来の比が無ければ、HTML の属性の比 (aspect-ratio: auto w / h。HTML §15.4.3。LImage.attrRatio)、それも無ければ 3 : 2
-    else if (h === undefined) h = nat && !(asset?.noRatio && c.attrRatio) ? (w * nat.h) / nat.w : c.attrRatio ? w * c.attrRatio : w / 1.5;
+      h = c.ratioForced && c.attrRatio ? w * c.attrRatio : (nat?.h ?? 40);
+    } else if (w === undefined) w = nat && !((asset?.noRatio || c.ratioForced) && c.attrRatio) ? (h! * nat.w) / nat.h : c.attrRatio ? h! / c.attrRatio : h! * 1.5;
+    // 本来の比が無ければ、HTML の属性の比 (aspect-ratio: auto w / h。HTML §15.4.3。LImage.attrRatio)、それも無ければ 3 : 2。
+    // CSS の aspect-ratio の比 (LImage.ratioForced) は、本来の比より先に使う (CSS Sizing 4 §5.1)
+    else if (h === undefined) h = nat && !((asset?.noRatio || c.ratioForced) && c.attrRatio) ? (w * nat.h) / nat.w : c.attrRatio ? w * c.attrRatio : w / 1.5;
     // 本来の比の無い画像の、属性の比で決めた大きさは、そのまま (縦横比を保つ縮尺の対象にしない)
-    else if (c.scaling !== 'non-uniform' && !c.fit && nat && !(asset?.noRatio && c.attrRatio)) {
+    else if (c.scaling !== 'non-uniform' && !c.fit && nat && !((asset?.noRatio || c.ratioForced) && c.attrRatio)) {
       const k = Math.min(w / nat.w, h / nat.h);
       w = nat.w * k;
       h = nat.h * k;
@@ -6566,6 +6688,8 @@ class Flow {
     // 終わりは、もう条件を満たす)。HTML の段組は、読み込みで容器へ移してある (htmlImport の段組の容器)
     let breakBefore = node.breakBefore;
     let breakAfter = node.breakAfter;
+    // 前のブロックとつなげる指定があるか (中身を組むと書き換わるので、先に覚える)
+    const chained = this.chainedToPrev;
     if (this.host.xslSpace && node.columns && node.columns.count > 1) {
       breakBefore = combinePageBreaks(breakBefore, columnEdgeBreak(node.children, 'before'));
       breakAfter = combinePageBreaks(columnEdgeBreak(node.children, 'after'), breakAfter);
@@ -6625,11 +6749,21 @@ class Flow {
     // 要素、中の脚注、前の余白 (捨てるものは数えない) は、置いてみた箱で数えるので、見積もらない。
     // ページ (段) の途中でも、いまのページで分ける (箱ごと次のページへ送ることはしない: 枠の無い段組 layoutColumnsPaged と同じ)
     let redo = false;
+    let moved = false;
     if (this.columnRaised && held) {
       this.columnRaised = false;
       this.applyPendingBreak();
       const over = this.placeOverflow(n, outer.m.bs, outer.precBs);
-      if (over > EPS) {
+      // 次のページの頭なら、分けない指定のブロックを分けずに箱ごと入るなら、箱の前で改ページして、組んだ箱をそのまま次のページに置く
+      // (CSS Fragmentation 3 §4.4・XSL 1.1 §4.8: 避ける指定を破らない区切り (箱の前) を選ぶ。layoutColumnsPaged と同じ)。次のページの高さは
+      // ページの型から求める (nextLimit)。箱の中の絶対配置の箱も、送った先のページに積み直す (holdEffects の move)。前は、いまのページで分けた
+      const nextRoom = this.nextLimit - (this.limit - this.room);
+      if (over > EPS && this.pageHasContent && !node.keepWithPrevious && !chained && n.bsize <= nextRoom + EPS) {
+        this.breakPage();
+        if (!(node as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
+        held('move');
+        moved = true;
+      } else if (over > EPS) {
         redo = true;
         held(false);
         this.columnRoom = Math.max(n.bsize - desc.bpStart - desc.bpEnd - over, 0);
@@ -6637,7 +6771,7 @@ class Flow {
         n = this.buildContainer(node, st, undefined, undefined);
       }
     }
-    if (held && !redo) held(true);
+    if (held && !redo && !moved) held(true);
     this.columnRaised = false;
     this.columnRoom = undefined;
     // 直交する箱の、親の行の向きの auto の余白 (CSS 2.1 §10.3.3): 箱の大きさが決まったので、置く場所の残りを配る
@@ -6658,15 +6792,17 @@ class Flow {
   private layoutColumnsPaged(node: LBlockContainer, st: ResolvedStyle, desc: ReturnType<typeof describeBox>, ps: ResolvedStyle): boolean {
     this.applyPendingBreak();
     // 段を釣り合わせずに順に埋める段の組か (layoutColumnSegments が、強制のページの区切りの前の段の組に置く)
-    const fillSequential = this.columnFillNext;
-    this.columnFillNext = false;
     const cols = node.columns!;
+    // column-fill: auto (CSS Multi-column 1 §7.1) の段組も、段の高さをページの残りにして順に埋める
+    const fillSequential = this.columnFillNext || cols.fill === 'auto';
+    this.columnFillNext = false;
     const n = cols.count;
     const gap = cols.gap ?? 12;
     const isize = (desc.isizeExplicit ?? this.contentI() - desc.m.is - desc.m.ie - desc.bpI) + desc.bpI;
     const colI = Math.max((isize - desc.bpI - gap * (n - 1)) / n, 1);
     const wm = st.wm;
-    let avail = this.room - this.cursor - this.pendingValue() - desc.m.bs;
+    // ページの頭で捨てる前の余白 (送った段組の頭: discardLeading) は、1 行目の段の高さから引かない
+    let avail = this.room - this.cursor - this.pendingValue() - (this.discardLeading && !this.pageHasContent && !(node as { retainSpaceBefore?: boolean }).retainSpaceBefore ? 0 : desc.m.bs);
     // 続くページの段の高さ: 次のページの上限 (セルの中の流れ (箇条の項目など) では、いまのページの残りではなく、次のページで使える高さ)。
     // 脚注の領域・断片の末尾に残す罫線の分 (limit と room の差) は、いまのページと同じだけ引く
     const fullRoom = () => (this.pages?.nextLimit ? this.pages.nextLimit() - (this.limit - this.room) : this.room);
@@ -6734,9 +6870,11 @@ class Flow {
       this.breakPage();
       // XSL-FO: 送ったコンテナの space-before は、強制でない改ページに接するので捨てる (XSL 1.1 §4.3.1。ふだんのブロックを送るときと
       // 同じ。retain の余白は残す)。前は、新しいページの頭に残していた
-      if (this.host.xslSpace && !(node as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
+      // HTML も同じ (CSS Fragmentation 3 §5.2: 強制でない区切りに接する余白は切り詰める)。前は、新しいページの頭に残し、そのうえ、捨てた余白を
+      // 1 行目の段の高さから引いていた (ページの頭の段組の 1 行目の段が、余白の分だけ短かった)
+      if (!(node as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
       // 新しいページの高さで決め直す (段の高さの上限も新しいページのもの)。釣り合わせた 1 行が収まるなら、従来どおり
-      avail = this.room - this.cursor - this.pendingValue() - desc.m.bs;
+      avail = this.room - this.cursor - this.pendingValue() - (this.discardLeading && !(node as { retainSpaceBefore?: boolean }).retainSpaceBefore ? 0 : desc.m.bs);
       full = fullRoom();
       if (fitsOneRow(avail + EPS)) return oneBox(avail + EPS);
     }
@@ -6749,11 +6887,11 @@ class Flow {
       return true;
     }
     const rowOf = (col: number) => Math.floor(col / n);
-    const { rows, lastLimit } = this.memoMeasure('colpaged', node.children, st, [...memoParts, avail, full, fillSequential], this.foot, () => {
+    const { rows, lastLimit, split } = this.memoMeasure('colpaged', node.children, st, [...memoParts, avail, full, fillSequential], this.foot, () => {
       const greedy = run((c) => (rowOf(c) === 0 ? avail : full), false);
       const rows = Math.max(1, Math.ceil(greedy.roots.length / n));
       // 順に埋める段の組は、最後の行も釣り合わせない
-      if (fillSequential) return { rows, lastLimit: rows === 1 ? avail : full };
+      if (fillSequential) return { rows, lastLimit: rows === 1 ? avail : full, split: greedy.split };
       // 最後の行を釣り合わせる (段数に収まる最小の高さ)
       let lastLimit = rows === 1 ? avail : full;
       if (rows > 1) {
@@ -6789,8 +6927,20 @@ class Flow {
           if (ok(b)) lastLimit = b;
         }
       }
-      return { rows, lastLimit };
+      return { rows, lastLimit, split: greedy.split };
     });
+    // いまのページから始めると、中の分けない指定のブロック (break-inside: avoid・keep-together) を分けるが、次のページから始めれば分ける数が
+    // 減るなら、段組の前で改ページする (CSS Fragmentation 3 §4.4: 区切りは、避ける指定を破るものの少ない所を選ぶ。段組の前は、段組に
+    // break-before: avoid が無ければ、どの指定も破らない区切り。XSL 1.1 §4.8 の keep も同じ)。前は、いまのページで分けていた。
+    // 次のページの段の高さは、ページの型から求めた次のページの高さ (fullRoom)
+    if (split > 0 && this.pageHasContent && !node.keepWithPrevious && !this.chainedToPrev) {
+      const fresh = this.memoMeasure('colfresh', node.children, st, [...memoParts, full], this.foot, () => run(() => full, false).split);
+      if (fresh < split) {
+        this.breakPage();
+        if (!(node as { retainSpaceBefore?: boolean }).retainSpaceBefore) this.discardLeading = true;
+        return this.layoutColumnsPaged(node, st, desc, ps);
+      }
+    }
     const { roots, used, colMarkers, rowKinds } = run((c) => (rowOf(c) === 0 ? avail : rowOf(c) < rows - 1 ? full : lastLimit), true);
     // 段の行の箱は、コンテナ自身の断片: inline 方向の罫線と padding (block 方向のものは無い。呼ぶ側の条件)・id (page-number-citation の
     // 参照先)・元の入力の節を持つ。段は、その内容の箱 (padding と罫線の内側) の始めの端から並べる。
@@ -7379,6 +7529,10 @@ class Flow {
         raised = true;
         return false;
       };
+      // 段が取れるいちばん高い高さ (room) で収まるなら、それより高い段は探さない。収まるかは高さについて単調でない (段より高い分けない指定の
+      // ブロックは、段の高さがそのブロックより高くなると次の段へ送られ、段が 1 つ余る) ので、探す範囲に room より高い所を残すと、
+      // ブロックを分けずに 1 段に積んだ、room より高い段 (ページより高い段組) に行き着いていた
+      if (room !== undefined && room >= lo && room < hi && fits(ref)) hi = room;
       const first = run(lo, false);
       if (fits(first)) {
         hi = lo;
@@ -7448,7 +7602,9 @@ class Flow {
       // 分けない指定のブロックを分けずに釣り合わせた段が、段の取れる高さ (roomH) より高いとき (1 段より高い分けない指定のブロックを、1 段に
       // 積んだ): その高さでも分かれるブロックは分けてよいとして、釣り合わせ直す (段に入るブロックは、これまでどおり分けない)。
       // 段に収まるときは、試し組みを増やさない
-      if (bal.raised && roomH !== undefined && bal.limit > roomH + EPS) bal = this.memoMeasure('colbal', node.children, st, [...balKey, roomH], this.foot, () => balanced(roomH));
+      // 分けない指定のブロックを次の段へ送ると段が余るために、段の取れる高さより高い段に行き着いたとき (段より高い分けない指定のブロックの前に
+      // 中身があるとき) も同じ (前は、そのブロックを 1 段に積んで、段組がページの下へはみ出した)
+      if ((bal.raised || roomH !== undefined) && roomH !== undefined && bal.limit > roomH + EPS) bal = this.memoMeasure('colbal', node.children, st, [...balKey, roomH], this.foot, () => balanced(roomH));
       limit = bal.limit;
       // 分けない指定を守って段を高くした: 置く場所に入るかを、置く前に確かめる (layoutBlockContainer)
       if (bal.raised) this.columnRaised = true;
@@ -7669,7 +7825,7 @@ class Flow {
    * 段の試し組みの流れ (置き場が trialAbs) では、箱を置かなくても「試し組みが箱を置いた」印 (FlowHost.volatile) が立ち、外の釣り合わせの
    * 覚えが効かなくなる (入れ子の段組で、組む回数が段ごとに何倍にもなる)
    */
-  private holdEffects(): (keep: boolean) => void {
+  private holdEffects(): (keep: boolean | 'move') => void {
     const host = this.host;
     const warned: Diagnostic[] = [];
     const abs = this.abs;
@@ -7684,6 +7840,11 @@ class Flow {
     return (keep) => {
       this.host = host;
       this.abs = abs;
+      // move: 組んだ箱を次のページへ送った。その組みで積んだ絶対配置の箱を、いまのページ (送った先) の並びへ移す
+      if (keep === 'move') {
+        const to = abs();
+        for (const [list, at] of absAt) if (list !== to) pushAll(to, list.splice(at));
+      }
       if (keep) for (const m of warned) host.warn(m);
       else {
         for (const [list, at] of absAt) list.length = at;
@@ -7707,6 +7868,22 @@ class Flow {
    * flex の項目の列 (LTableColumn.flexItem) は、上限 (max-width) で止め、列の幅の合計が avail (列に配れる幅) を超えたら縮める (flexShrinkColumns)
    */
   private fitContentColumns(table: LTable, st: ResolvedStyle, avail: number): LTable {
+    // 百分率の主軸の大きさの項目 (percentWidth): 組むときの容器の内容の幅 avail で解き、縮める基準の大きさ・自動の最小の大きさの上限
+    // (指定の大きさ。Flexbox 1 §4.5) も、その幅にする (読み込みの見積もりの幅で解いた値に代える)
+    if (!this.intrinsic && table.columns.some((c) => c.percentWidth)) {
+      table = withRef(table, {
+        ...table,
+        columns: table.columns.map((c) => {
+          if (!c.percentWidth) return c;
+          const w = Math.max(c.percentWidth.f * avail + c.percentWidth.edge, 0);
+          const fix = (f: LFlexItemColumn | undefined) => (f ? { ...f, basis: Math.max(w - f.edge, 0), ...(f.minAuto && !c.percentWidth!.basis ? { minCap: Math.min(f.minCap ?? Infinity, w), floor: Math.min(f.floor, w) } : {}) } : undefined);
+          const fi = fix(c.flexItem);
+          const fl = fix(c.flexLate);
+          // 仮の主軸の大きさは、下限 (min-width か自動の最小の大きさ) で下から抑える (Flexbox 1 §9.2 の 3 の後)
+          return { ...c, width: Math.max(w, (fi ?? fl)?.floor ?? 0), ...(fi ? { flexItem: fi } : {}), ...(fl ? { flexLate: fl } : {}) };
+        }),
+      });
+    }
     const rows = [...(table.header?.rows ?? []), ...table.body.rows, ...(table.footer?.rows ?? [])];
     const fit = new Map<number, number>();
     /** 列 → その列のセル (縮める下限の min-content を測るのに使う) */
@@ -7724,16 +7901,19 @@ class Flow {
       const pc = fc?.replacedMin?.maxPct !== undefined ? { f: fc.replacedMin.maxPct, edge: fc.replacedMin.maxEdge ?? 0 } : fc?.capPct;
       const itemCap = pc ? pc.f * avail + pc.edge : fc?.cap;
       if (itemCap !== undefined && !this.intrinsic && itemImageOf(cell)) this.flexItemCaps.set(cell, itemCap);
-      if (!table.columns[col]?.fitContent) continue;
+      // 百分率の主軸の大きさの項目 (percentWidth): 中身の幅を測る組版では、中身の幅の列として測る (CSS Sizing 3 §5.2.1)
+      if (!table.columns[col]?.fitContent && !(this.intrinsic && table.columns[col]?.percentWidth)) continue;
       fit.set(col, Math.max(fit.get(col) ?? 0, widthOf(cell, cst, false)));
     }
+    // 百分率の主軸の大きさの項目は、組むときの容器の内容の幅 avail で解いた幅 (Flexbox 1 §7.2.3。上で解き直した width)
+    const pctW = (c: LTableColumn) => (c.percentWidth && !this.intrinsic && typeof c.width === 'number' ? c.width : undefined);
     // 読み込みの見積もりで縮めた flex の項目の列 (flexLate) だけの行: 実際の置く場所に入りきらなければ縮める
-    if (!fit.size && !table.columns.some((c) => c.flexLate)) return table;
+    if (!fit.size && !table.columns.some((c) => c.flexLate || c.percentWidth)) return table;
     const isStar = (c: LTableColumn) => typeof c.width === 'string';
     /** 列の外側の幅 (比例の列は、足す固定の長さ)。base0 は、測る・抑える前の幅 */
-    const base0 = table.columns.map((c, k) => fit.get(k) ?? (isStar(c) ? (c.widthExtra ?? 0) : typeof c.width === 'number' ? c.width : 0));
+    const base0 = table.columns.map((c, k) => fit.get(k) ?? pctW(c) ?? (isStar(c) ? (c.widthExtra ?? 0) : typeof c.width === 'number' ? c.width : 0));
     const widths = table.columns.map((c, k) => {
-      const w = fit.get(k) ?? (isStar(c) ? (c.widthExtra ?? 0) : typeof c.width === 'number' ? c.width : 0);
+      const w = fit.get(k) ?? pctW(c) ?? (isStar(c) ? (c.widthExtra ?? 0) : typeof c.width === 'number' ? c.width : 0);
       // 仮の主軸の大きさは、上限 (max-width) と、指定の下限 (min-width) で止める (Flexbox 1 §9.2 の 3 の後・§9.7)
       const f = c.flexItem;
       // 画像そのものの項目の百分率の max-width は、容器の内容の幅 avail で解く (読み込みの見積もりの幅で解いた cap ではない。Flexbox 1 §9.2・
@@ -8182,11 +8362,16 @@ class Flow {
     };
     const explicitI = desc.isizeExplicit != null;
     if (node.fitContent && desc.isizeExplicit == null) {
+      // セルの百分率の padding: 幅の決まらない表では、列の幅を測るときは百分率の部分を 0 とし (CSS Sizing 3 §5.2.1: 循環する百分率)、
+      // 表の幅が決まってから、その幅で解く (Chrome と同じ。表の幅は広げない)。読み込みの見積もり (包含ブロックの幅) では解かない
+      const pctCells = cellPercentPadding(node, 0);
+      if (pctCells) node = pctCells;
       // 列の幅を中身の長さに合わせ、表の幅はその合計にする
       let widths = this.measureColumns(node, st, Math.max(this.contentI() - desc.m.is - desc.m.ie - desc.bpI - gaps, 0));
       if (node.captions?.length) widths = widen(widths, capMin() - gaps);
       node = withRef(node, { ...node, columns: widths.map((w) => ({ type: 'table-column' as const, width: w })) });
       desc = { ...desc, isizeExplicit: widths.reduce((a, b) => a + b, 0) + gaps };
+      if (pctCells) node = cellPercentPadding(node, desc.isizeExplicit!)!;
       // 余白が auto なら、残りをその余白に配る (CSS 2.1 §10.3.3)。'start' は margin-left が auto (rtl でも物理の左右で決まる)
       // 中身の幅の計測 (intrinsic) では、auto の余白は 0 (layoutBlock と同じ。測る行の長さの残りを配ると、その余白が中身の幅に入る)
       if (node.autoMargins && !this.intrinsic) {
@@ -8634,7 +8819,7 @@ class Flow {
     let autoFree: number | undefined;
     let autoRtl: true | undefined;
     ({ node, desc, autoFree, autoRtl } = this.tableColumnWidths(node, desc, st, ps, out, gaps));
-    if (node.columns.some((c) => c.fitContent || c.flexLate)) node = this.fitContentColumns(node, st, Math.max((desc.isizeExplicit ?? this.contentI() - desc.m.is - desc.m.ie - desc.bpI) - gaps, 0));
+    if (node.columns.some((c) => c.fitContent || c.flexLate || c.percentWidth)) node = this.fitContentColumns(node, st, Math.max((desc.isizeExplicit ?? this.contentI() - desc.m.is - desc.m.ie - desc.bpI) - gaps, 0));
     // 表の見出し (CSS の caption): 表と見出しを包む箱 (table wrapper box) の中で、表の上か下に置く (CSS 2.1 §17.4)。
     // 包む箱が表の余白を持ち、幅は表の罫線の外側の幅。見出しはその幅のブロックとして組む
     const caps = node.captions ?? [];
@@ -10362,20 +10547,15 @@ function itemImageOf(cell: LTableCell): { block: LBlock; img: LImage } | undefin
 }
 
 /**
- * 画像そのものの flex の項目のセル (項目を包むブロック 1 つの中に、画像 1 つ) の、画像が持つ行の向きの余白・枠・内側の余白 (pt)。
- * 包むブロックも同じ余白・枠を持つので、セルの中身の幅から、この分を引くと、項目の外側の幅になる。その形でなければ 0
+ * 画像そのものの flex の項目のセル (項目を包むブロック 1 つの中に、画像 1 つ) の、セルの中身の幅 (max-content) と、項目の外側の幅の差 (pt)。
+ * 余白・枠・内側の余白は、項目を包むブロックだけが持つ (読み込みが画像から外す: htmlImport の stripImageFrame)。中身の幅は、包むブロックの
+ * 負の余白で縮まないので、その分を引くと、項目の外側の幅 (画像の幅 + 枠・内側の余白 + 余白) になる。その形でなければ 0
  */
 function itemImageEdges(cell: LTableCell, wm: WritingMode): number {
   const it = itemImageOf(cell);
   if (!it) return 0;
-  const { block: b, img } = it;
-  const d = describeBox(img, wm);
-  const outer = describeBox(b, wm);
-  // セルの中身の幅 (行の中身の最も長い長さ) に、画像が足す分: 枠・内側の余白と、正の余白 (行の中の画像の負の余白は、行の長さを縮めない)。
-  // 余白と、枠・内側の余白は、分けて数える (和で見ると、負の余白と内側の余白が打ち消し合って 0 になり、引かずに 2 度数える)
-  const own = d.bpI + Math.max(d.m.is, 0) + Math.max(d.m.ie, 0);
-  // 包むブロックが、画像と同じだけの余白・枠を持つときだけ (2 度数えているときだけ) 引く
-  return own > 0 && outer.bpI >= d.bpI - EPS && outer.m.is >= d.m.is - EPS && outer.m.ie >= d.m.ie - EPS ? own : 0;
+  const outer = describeBox(it.block, wm);
+  return -(Math.min(outer.m.is, 0) + Math.min(outer.m.ie, 0));
 }
 
 function percentImage<T extends BackgroundImage & { width: number; height: number }>(bi: T, W: number, H: number): T {
@@ -10628,6 +10808,19 @@ function conditionalMasters(seq: LPageSequence): ConditionalPageMaster[] {
 }
 
 /** page-sequence が使いうるページマスターのすべて (既定のものと、条件付きのもの)。段組・傍注を使うかは、このどれかが持つかで決める */
+/** An+B (Selectors 4 §14.1): n = a·k + b となる 0 以上の整数 k があるか (n は 1 始まり) */
+function anPlusB(a: number, b: number, n: number): boolean {
+  if (a === 0) return n === b;
+  const k = (n - b) / a;
+  return Number.isInteger(k) && k >= 0;
+}
+
+/** 文書の先頭からのページの順で選ぶマスター (:nth() の group の無いもの) があるか */
+function docOrdinalMasters(seq: LPageSequence): boolean {
+  const has = (c: ConditionalPageMaster) => !!c.when.nth?.some((x) => !x.group);
+  return !!seq.masterAlternatives?.some(has) || !!seq.masterSequence?.some((it) => it.masters.some(has));
+}
+
 function sequenceMasters(seq: LPageSequence): PageMaster[] {
   return [seq.master, ...conditionalMasters(seq).map((a) => a.master)];
 }
@@ -10747,7 +10940,27 @@ function placeColumnFoots(p: {
   const out: FootEntry[] = [];
   /** 溢れの警告を出す脚注 (ページに入らないまま置いたもの) */
   const warns: FootEntry[] = [];
+  /**
+   * 行内に並べる脚注 (CSS GCPM 3 §2.3 の footnote-display: inline・compact、axf:footnote-stacking="inline"): 最後に置いた脚注の段落に続けて組んだもの
+   * (1 段のページの Flow.pushFootnote と同じ)。最後に置いた脚注の代わりに、その位置に置く
+   */
+  const joined = (e: FootEntry) => foot.join(placed[placed.length - 1], e);
+  /** 最後に置いた脚注を j に替える */
+  const replaceLast = (j: FootEntry) => {
+    b -= placed[placed.length - 1].height;
+    placed[placed.length - 1] = j;
+    if (!p.dry) {
+      j.node.i = 0;
+      j.node.b = b;
+    }
+    b += j.height;
+  };
   const put = (e: FootEntry) => {
+    const j = joined(e);
+    if (j) {
+      replaceLast(j);
+      return;
+    }
     b += foot.gapAfter(placed[placed.length - 1]);
     if (!p.dry) {
       e.node.i = 0;
@@ -10761,6 +10974,21 @@ function placeColumnFoots(p: {
    * strict なら、先頭の単位 (行) も budget に入らないときは分けずに丸ごと送る (本文の行と重ねない)
    */
   const splitPut = (e: FootEntry, budget: number, strict: boolean): boolean => {
+    const j = joined(e);
+    if (j) {
+      // つないだ段落を行で分ける (分けた頭が、最後に置いた脚注より低くなるなら、つながずに、下のブロックの分け方で分ける)
+      const last = placed[placed.length - 1];
+      const start = b - last.height;
+      const sj = splitEntry(j, budget - start);
+      if (sj && sj.head.height + EPS >= last.height) {
+        if (strict && start + sj.head.height > budget + EPS) out.push(e);
+        else {
+          replaceLast(sj.head);
+          out.push(sj.rest);
+        }
+        return true;
+      }
+    }
     const sp = splitEntry(e, budget - b - foot.gapAfter(placed[placed.length - 1]));
     if (!sp) return false;
     if (strict && b + foot.gapAfter(placed[placed.length - 1]) + sp.head.height > budget + EPS) out.push(e);
@@ -10770,7 +10998,11 @@ function placeColumnFoots(p: {
     }
     return true;
   };
-  const over = (e: FootEntry, lim: number) => b + foot.gapAfter(placed[placed.length - 1]) + e.height > lim + EPS;
+  const over = (e: FootEntry, lim: number) => {
+    const j = joined(e);
+    if (j) return b - placed[placed.length - 1].height + j.height > lim + EPS;
+    return b + foot.gapAfter(placed[placed.length - 1]) + e.height > lim + EPS;
+  };
   /** 本文の行と重ねないための上限 (cap) が、ページに入る高さ (room) より低いか */
   const strict = cap < room - EPS;
   // 前のページからの続き: 脚注領域の先頭に置く。本文領域の 6 割まで (1 段のページと同じ上限)
@@ -11451,8 +11683,14 @@ export class LayoutEngine {
   private fnCarry = 0;
   /** ページの左右を、ページの順で決める文書か (LDocument.pageSidesByOrder) */
   private sidesByOrder = false;
+  /** ページが右から左へ進む本か (LDocument.rtlPageProgression。奇数ページの綴じ側が右) */
+  private rtlPages = false;
+  /** 最初のページの左右を逆にする分 (LDocument.firstPageSideShift) */
+  private sideShift = 0;
   /** いま組んでいる page-sequence の、ページの左右のずれ (FlowHost.sideDelta) */
   private sideDelta = 0;
+  /** いま組んでいる page-sequence の前にあるページの数 (:nth() の文書の先頭からのページの順。PageMasterCondition.nth) */
+  private seqOrdinal = 0;
   private lastFoot?: FootnoteCtx;
   /** 前回の組版での page-sequence ごとの結果 (layoutPasses の中でだけ使う) */
   private seqMemo: Array<SeqMemo | undefined> = [];
@@ -11799,6 +12037,12 @@ export class LayoutEngine {
     const h = bi.height ?? (bi.width !== undefined ? (bi.width * nh) / nw : nh);
     if (W === undefined || H === undefined) return { backgroundImage: { ...bi, width: w, height: h } };
     return { backgroundImage: percentImage({ ...bi, width: w, height: h, ...(bi.widthPct !== undefined || bi.heightPct !== undefined ? { aspect: nw / nh } : {}) }, W, H) };
+  }
+
+  /** ページ領域 box に重ねる背景 (PageMaster.rootBackground)。画像の大きさ・グラデーションは、ページ領域で決める */
+  private sheetRootBackground(rb: NonNullable<PageMaster['rootBackground']>, box: SheetArea['trimBox']): NonNullable<SheetArea['rootBackground']> {
+    const img = rb.backgroundImage ? (rb.backgroundImage.gradient ? gradientImage(rb.backgroundImage, box.width, box.height) : this.sheetBackgroundImage(rb.backgroundImage, box.width, box.height).backgroundImage) : undefined;
+    return { box, ...(rb.backgroundColor ? { backgroundColor: rb.backgroundColor } : {}), ...(img ? { backgroundImage: img } : {}) };
   }
 
   layout(doc: LDocument): AreaTree {
@@ -12320,7 +12564,7 @@ export class LayoutEngine {
       const rec = m?.run;
       const nodes = this.docNodes;
       if (!m || !rec || !nodes || needsLast || this.indexKeys || this.fnResetUsed || seq.footnotes?.reset === 'page' || this.citeCut) return undefined;
-      if (m.first !== first || m.sideDelta !== sideDelta || m.fnCarryIn !== this.fnCarry || m.indexLists?.size || m.beyond || m.limits || m.notices) return undefined;
+      if (m.first !== first || m.sideDelta !== sideDelta || (docOrdinalMasters(seq) && m.ordinal !== ordinal) || m.fnCarryIn !== this.fnCarry || m.indexLists?.size || m.beyond || m.limits || m.notices) return undefined;
       const own = (this.withinOwners ??= arrayOwners(nodes));
       return { memo: m, rec, map: { P: nodes.length, oldEnd: nodes.length, newEnd: nodes.length, delta: 0 }, ordinal, within: { owners: { old: own, now: own } } };
     }
@@ -12330,7 +12574,7 @@ export class LayoutEngine {
     if (!map || !m || !rec || needsLast || this.passIndex !== 1 || this.seqMemo[si] || this.indexKeys || this.fnResetUsed || seq.footnotes?.reset === 'page') return undefined;
     // ページ番号の参照は、1 回目の組版 (this.citations が無い) だけで繋ぐ (繋ぐページの参照を、1 回目の組版の決まりで引き直して確かめる。spliceCites)
     // 上限に当たったもの・書体の知らせが出たものは繋がない (繋ぐページの分の知らせを、ページごとに持っていないので)
-    if (m.first !== first || m.sideDelta !== sideDelta || m.fnCarryIn !== this.fnCarry || this.citations || m.indexLists?.size || m.beyond || m.limits || m.notices) return undefined;
+    if (m.first !== first || m.sideDelta !== sideDelta || (docOrdinalMasters(seq) && m.ordinal !== ordinal) || m.fnCarryIn !== this.fnCarry || this.citations || m.indexLists?.size || m.beyond || m.limits || m.notices) return undefined;
     // page-sequence の節そのもの (ページのマスター・柱の並び・塗り足しなど、本文の外の欄) が前の文書と同じときだけ繋ぐ。節の対応では、
     // 直した所が page-sequence の節だけになり、本文は全部「直した所の後ろ」になるので、繋いだページが前のマスターのまま残る
     const e = this.reusePrev!.seqs[si];
@@ -12768,6 +13012,8 @@ export class LayoutEngine {
     this.pagesBuilt = pages;
     let pageNo = 1;
     this.sidesByOrder = !!doc.pageSidesByOrder;
+    this.rtlPages = !!doc.rtlPageProgression;
+    this.sideShift = this.sidesByOrder ? (doc.firstPageSideShift ?? 0) : 0;
 
     for (const [si, seq] of doc.sequences.entries()) {
       // 組み直しの回と page-sequence の境目 (間をあけるときは、ここで control.boundary を待つ)
@@ -12781,9 +13027,13 @@ export class LayoutEngine {
       // ページの左右 (FlowHost.sideDelta): ページの順で決める文書では、この page-sequence の最初のページの、文書の最初からの順 (pages.length + 1) と
       // 番号 (first) の差。CSS Paged Media 3 §3.3: 左右のページは交互に来て、最初のページの左右はページの進む向きで決まる (ページ番号の
       // 振り直し (§6.1 の page のカウンター) では変わらない)
-      const sideDelta = this.sidesByOrder ? pages.length + 1 - first : 0;
+      const sideDelta = this.sidesByOrder ? pages.length + 1 - first + this.sideShift : 0;
       this.sideDelta = sideDelta;
       host.sideDelta = sideDelta;
+      if (this.rtlPages) host.rtlPages = true;
+      this.seqOrdinal = pages.length;
+      // 文書の先頭からのページの順で選ぶマスター (:nth()) のある sequence は、前のページの数が同じときだけ使い回す
+      const ordinalOk = (m: SeqMemo) => !docOrdinalMasters(seq) || m.ordinal === pages.length;
       // 前回の組版と同じ条件 (開始ページ・左右のずれ・脚注の続き番号・参照したページ番号の値) なら、前回のページをそのまま使う。
       // ページごとに脚注番号を振り直す文書は、脚注の置き場所が前回の結果に依るので使い回さない
       // メモリ節約のときは、前の回のページを持たないので使い回さない
@@ -12792,7 +13042,7 @@ export class LayoutEngine {
       // 索引の並びを持つ sequence は、いまのページで作り直しても同じ並びになるときだけ使い回す (索引の無い sequence は、いつも同じ)
       const sameIndexLists = (m: SeqMemo) => !m.indexLists?.size || (!!this.indexPrev && [...m.indexLists].every(([list, ex]) => (this.indexUsed.get(list) ?? this.buildIndexList(list, this.indexPrev!)).sig === ex.sig));
       // 前の文書の記録は、参照の値を adoptPrev が確かめる (reuseCites は、前の回の値と引き比べるもので、組み直しの 1 回目には使えない)
-      if (memo && !this.fnResetUsed && memo.first === first && memo.sideDelta === sideDelta && memo.fnCarryIn === this.fnCarry && sameIndexLists(memo) && (this.seqMemo[si] === memo ? this.reuseCites(memo) : this.adoptPrev(si, memo, pages.length))) {
+      if (memo && !this.fnResetUsed && memo.first === first && memo.sideDelta === sideDelta && ordinalOk(memo) && memo.fnCarryIn === this.fnCarry && sameIndexLists(memo) && (this.seqMemo[si] === memo ? this.reuseCites(memo) : this.adoptPrev(si, memo, pages.length))) {
         if (this.indexKeys) memo.built.forEach((pb, k) => this.pageOrdinal.set(pb, pages.length + k));
         for (const [list, ex] of memo.indexLists ?? []) this.indexUsed.set(list, ex);
         pushAll(pages, memo.built);
@@ -13129,7 +13379,9 @@ export class LayoutEngine {
       const parityOk = oe === 'any' || (oe === 'odd') === ((pageNumber + this.sideDelta) % 2 === 1);
       const bn = c.blankOrNotBlank ?? 'any';
       const blankOk = (bn === 'any' || (bn === 'blank') === blank) && (!c.trailingBlank || (blank && trailing));
-      return pos(c) && parityOk && blankOk;
+      // :nth(An+B) (CSS GCPM 3 §3.1): 順 n が、ある 0 以上の整数 k で a·k + b になるか (Selectors 4 §14.1 の An+B)
+      const nthOk = !c.nth || c.nth.every(({ a, b, group }) => anPlusB(a, b, group ? index : this.seqOrdinal + index));
+      return pos(c) && parityOk && blankOk && nthOk;
     };
     // page-sequence-master の部分列: 先頭から順に、それぞれの最大ページ数ぶん使う (§6.4.8)
     if (seq.masterSequence?.length) {
@@ -13771,6 +14023,15 @@ export class LayoutEngine {
       this.notePage(pages.length);
       return { p, rootI, limit };
     };
+    /** 次に作るページ (白ページでないもの) の本文領域の block 方向の上限 (mkPage と同じ求め方。ページは作らない) */
+    const nextPageLimit = () => {
+      const m = this.selectMaster(seq, pages.length + 1, firstNumber + pages.length, lastIndex, false).master;
+      const rw = mm(m.width) - mm(m.margins.left) - mm(m.margins.right);
+      const rh = mm(m.height) - mm(m.margins.top) - mm(m.margins.bottom);
+      const brot = m.bodyRotation ?? 0;
+      const [lw, lh] = brot === 90 || brot === 270 ? [rh, rw] : [rw, rh];
+      return wm === 'horizontal-tb' ? lh : lw;
+    };
     let firstPage!: ReturnType<typeof mkPage>;
     let cur!: PageBuild;
     let foot!: FootnoteCtx;
@@ -14069,6 +14330,9 @@ export class LayoutEngine {
             cur = n.p;
             return { root: n.p.root, limit: n.limit, rootI: n.rootI };
           },
+          // 次のページの本文領域の block 方向の上限 (ページの型から求める。:first・:left・:right などで、いまのページと高さが違うことがある)。
+          // 段組を次のページへ送るか (layoutColumnsPaged・layoutBlockContainer) と、表の行を送るかを決めるのに使う
+          nextLimit: () => nextPageLimit(),
           ...(keep ? { boundary: onBoundary } : {}),
         },
         abs: () => cur.abs,
@@ -14439,7 +14703,7 @@ export class LayoutEngine {
    */
   private sheetStatics(p: PageBuild, total: number, host: FlowHost, docStyle: ResolvedStyle, allPages: PageBuild[], index: number): SheetStatics {
     // ページの左右のずれ (FlowHost.sideDelta): ページの順で決める文書では、このページの順 (index + 1) と番号の差
-    host = { ...host, sideDelta: this.sidesByOrder ? index + 1 - p.number : 0 };
+    host = { ...host, sideDelta: this.sidesByOrder ? index + 1 - p.number + this.sideShift : 0 };
     const m: PageMaster = p.master;
     const W = mm(m.width);
     const H = mm(m.height);
@@ -14586,6 +14850,7 @@ export class LayoutEngine {
       ...(mms ? { trimMarkMargins: mms } : {}),
       ...(m.cornerMarks === false ? { cornerMarks: false } : {}),
       ...(m.centerMarks === false ? { centerMarks: false } : {}),
+      ...(m.rotation ? { rotation: m.rotation } : {}),
       ...(m.trimMarkLineWidth !== undefined ? { trimMarkLineWidth: m.trimMarkLineWidth } : {}),
       backgroundColor: m.backgroundColor,
       ...(m.backgroundImage
@@ -14595,6 +14860,7 @@ export class LayoutEngine {
         : {}),
       ...(m.backgroundArea === 'content' ? { backgroundBox: { x: ex.left + rx, y: ex.top + ry, width: regionW, height: regionH } } : {}),
       ...(originBox ? { backgroundOriginBox: originBox } : {}),
+      ...(m.rootBackground ? { rootBackground: this.sheetRootBackground(m.rootBackground, { x: ex.left + rx, y: ex.top + ry, width: regionW, height: regionH }) } : {}),
     };
   }
 }
