@@ -456,7 +456,7 @@ for (const name of args.docs) {
     }
     if (w.diffLine) console.log(w.diffLine);
     if (w.checkLine) console.log(w.checkLine);
-    const topFiles = [...c.files].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, ms]) => `${k.replace('\t', ':')} ${ms.toFixed(0)}`);
+    const topFiles = [...c.files].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, ms]) => `${k.replaceAll('\t', ':')} ${ms.toFixed(0)}`);
     console.log(`    ファイルの多い順: ${topFiles.join('・')}`);
     results.push({ doc: name, run, edited: (args.edit || args.editBlock) && run > 1, pages: r.pageCount, ...w, passes, warnings: r.warnings.length, sampledMs: c.total, phases: Object.fromEntries(c.table), files: Object.fromEntries([...c.files].sort((a, b) => b[1] - a[1]).slice(0, 40)) });
   }

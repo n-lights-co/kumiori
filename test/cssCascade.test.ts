@@ -380,6 +380,21 @@ q:dir(rtl) { font-weight: bold; }`;
   });
 });
 
+describe('入力の大きさ・書き方に強い (CodeQL の指摘)', () => {
+  it('閉じ括弧の無い rgb( の後の長い空白で、時間が 2 乗に伸びない', () => {
+    const t = Date.now();
+    expect(parseColor('rgb(' + ' '.repeat(200_000) + 'x')).toBeUndefined();
+    expect(Date.now() - t).toBeLessThan(1000);
+    expect(parseColor('rgb(   1, 2, 3)')).toEqual(parseColor('rgb(1, 2, 3)'));
+  });
+  it('body の background 属性の \\ と " を、CSS の文字列のエスケープにする', () => {
+    const doc = parse('');
+    doc.getElementsByTagName('body')[0].setAttribute('background', 'a\\b"c.png');
+    const s = cascadeStyles(doc, '', { viewport: { width: 600, height: 800 } });
+    expect(s.style(doc.getElementsByTagName('body')[0]).getPropertyValue('background-image')).toContain('a\\\\b\\"c.png');
+  });
+});
+
 describe('HTML の属性による指定 (HTML Living Standard §15.3・§15.4)', () => {
   const doc = parse(
     '<table id="t1" border="3" cellspacing="5" cellpadding="7" align="right"><tr><td id="c1" nowrap height="0">a</td><td id="c2" align="absmiddle">b</td></tr></table>' +

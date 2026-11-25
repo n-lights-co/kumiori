@@ -3917,7 +3917,8 @@ function presentational(el: Element, quirks = false): Array<[string, string]> {
     const bg = legacyColor(at('bgcolor'));
     if (bg) out.push(['background-color', bg]);
     const im = at('background');
-    if (im && im.trim()) out.push(['background-image', `url("${im.trim().replace(/"/g, '\\"')}")`]);
+    // CSS の文字列に入れる (CSS Syntax 3 §4.3.5: \ と " はエスケープする)。タブ・改行は URL の解析で取り除かれる文字 (URL Standard §4.4) なので、先に取り除く
+    if (im && im.trim()) out.push(['background-image', `url("${im.trim().replace(/[\t\n\r]/g, '').replace(/[\\"]/g, '\\$&')}")`]);
   }
   if (n === 'table') {
     const cs = nonNegInt(at('cellspacing'));

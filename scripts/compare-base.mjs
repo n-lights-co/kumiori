@@ -634,7 +634,7 @@ function writeReport(revs, results, totalSec) {
   const groupCount = Object.fromEntries(groups.map((g) => [g, results.filter((r) => r.group === g).length]).filter(([, n]) => n));
   const json = { base: { rev: opt.base, sha: b.sha, label: b.label }, head: { rev: opt.head, sha: h.sha, label: h.label }, dpi: opt.dpi, groups: groupCount, skipped, notes, totalSec, ...(intendedResult ? { intended: intendedResult } : {}), results };
   fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify(json, null, 2) + '\n');
-  const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  const esc = (s) => String(s ?? '').replace(/[\\|]/g, '\\$&').replace(/\n/g, ' ');
   const pagesOf = (r) => (r.pages ? (r.pages.base === r.pages.head ? `${r.pages.base}` : `${r.pages.base} → ${r.pages.head} ⚠`) : '—');
   const pageList = (r) => {
     const ps = (r.changedPages ?? []).map((p) => p.page);

@@ -302,7 +302,8 @@ export function prefixedForeignToHtml(html: string): string {
   for (const m of html.matchAll(/\sxmlns:([A-Za-z_][\w.-]*)\s*=\s*(["'])http:\/\/www\.w3\.org\/(?:1998\/Math\/MathML|2000\/svg)\2/g)) prefixes.add(m[1]);
   let out = html;
   for (const p of prefixes) {
-    const q = p.replace(/[.]/g, '\\.');
+    // 正規表現の特別な文字をエスケープする (接頭辞は上の [A-Za-z_][\w.-]* なので、実際に出るのは . だけ)
+    const q = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // 書き直すのはタグだけ (本文の文字の &lt;m:math …&gt; は変えない)。タグの中の、その接頭辞の宣言は取り除く
     const decl = new RegExp(`\\sxmlns:${q}\\s*=\\s*(["'])[^"']*\\1`, 'g');
     out = out.replace(new RegExp(`<(/?)${q}:([A-Za-z][\\w.-]*)([^<>]*)>`, 'g'), (_t, slash: string, name: string, rest: string) => `<${slash}${name}${rest.replace(decl, '')}>`);

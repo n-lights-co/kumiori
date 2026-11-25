@@ -150,7 +150,8 @@ export function parseColor(v: string, current?: RGBA): RGBA | 'current' | undefi
   }
   // none の成分 (Color 4 §4.4。新しい構文だけ) を書いた rgb()・hsl() は、Color 4 の関数と同じに読む (欠けた成分は 0)
   if (hasNoneComponent(s)) return parseColorFunction(s, (x) => parseColor(x), current ?? [0, 0, 0, 1]);
-  const m = /^(rgba?|hsla?)\(\s*([^)]*)\)$/.exec(s);
+  // 括弧の中の前の空白は、下の split で落とす (\s* と [^)]* を並べると、閉じ括弧の無い長い空白で時間が 2 乗に伸びる)
+  const m = /^(rgba?|hsla?)\(([^)]*)\)$/.exec(s);
   if (!m) return isColorFunction(s) ? parseColorFunction(s, (x) => parseColor(x), current ?? [0, 0, 0, 1]) : undefined;
   const parts = m[2].split(/[\s,/]+/).filter(Boolean);
   if (parts.length < 3 || parts.length > 4) return undefined;

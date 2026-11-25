@@ -117,7 +117,10 @@ export class Sha256Js implements Sha256 {
   }
 }
 
-/** §6.2.2 の 1 ブロック (64 バイト) の計算。h は途中の値 (8 語)、w は作業用の 64 語 */
+/**
+ * §6.2.2 の 1 ブロック (64 バイト) の計算。h は途中の値 (8 語)、w は作業用の 64 語。
+ * 加算・回転は 2^32 を法とする計算 (§3.2) で、乱数を範囲に縮める計算ではない (暗号化の乱数のバイト列をハッシュにかけても、偏りは生まれない)
+ */
 function compress(h: Int32Array, w: Int32Array, b: Uint8Array, off: number) {
   for (let t = 0; t < 16; t++) {
     const i = off + t * 4;
