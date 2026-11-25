@@ -75,6 +75,37 @@ describe('一時のファイルに流して書き、名前を替える', () => {
     expect(parts(d)).toEqual([]);
   });
 
+  it('書いた量が holdBytes を超えるまでは一時のファイルを作らず、合図の受け手も置かない (組んでいる間の Ctrl+C がすぐ止まるように)', async () => {
+    const d = fs.mkdtempSync(path.join(dir, 's-'));
+    const out = path.join(d, 'o.pdf');
+    // 前の試験の受け手が外れるのを待つ (受け手は、書き終えた次の回りで外す)
+    await new Promise((r) => setImmediate(r));
+    const before = process.listenerCount('SIGINT');
+    const seen: Array<[number, number]> = [];
+    await streamOutput(
+      out,
+      async (write) => {
+        // 書き出し側が塊を使い回しても、持っている塊は変わらない
+        const head = new Uint8Array([1, 2, 3]);
+        await write(head);
+        head.fill(9);
+        seen.push([parts(d).length, process.listenerCount('SIGINT') - before]);
+        await write(new Uint8Array(8));
+        seen.push([parts(d).length, process.listenerCount('SIGINT') - before]);
+      },
+      () => {},
+      50,
+      8,
+    );
+    // 3 バイトは持つ (一時のファイルも受け手も無い)。3 + 8 バイトで 8 を超えたので、一時のファイルを作り、受け手を置く
+    expect(seen).toEqual([
+      [0, 0],
+      [1, 1],
+    ]);
+    expect([...fs.readFileSync(out)]).toEqual([1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(parts(d)).toEqual([]);
+  });
+
   it('失敗したら一時のファイルを消し、前のファイルを残す (名前を替える前の確かめの誤りも)', async () => {
     const d = fs.mkdtempSync(path.join(dir, 's-'));
     const out = path.join(d, 'o.pdf');
