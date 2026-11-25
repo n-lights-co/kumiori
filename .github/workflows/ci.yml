@@ -37,6 +37,8 @@ jobs:
           key: unicode-test-${{ hashFiles('test/ucdTestData.ts') }}
           restore-keys: |
             unicode-test-
+      # 出来た PDF の検査の軽い組 (test/pdfChecks.test.ts) の道具。veraPDF の検査は、下の pdf のジョブで (ここでは、置き場に無いので飛ばす)
+      - run: sudo apt-get update && sudo apt-get install -y qpdf poppler-utils
       - run: npm run build
       # ライブラリとしてのビルド (dist-lib。ES モジュールと型の宣言) と、ブラウザで単体で動くバンドル (dist-browser)
       - run: npm run build:lib
@@ -99,3 +101,77 @@ jobs:
       # ブラウザで単体で動くバンドル (dist-browser) も e2e で読んで試す
       - run: npm run build:browser
       - run: npm run e2e
+
+  # 組み直しの再利用の確かめ (createTypesetter の使い回し・前の組版と繋ぐ所・続きから組む作り・遅く戻る試し)。リポジトリの文書の全部で、
+  # 初めから使い回さずに組んだ結果と違えば落とす (速い組は npm test に入っている)。外の見本では確かめない。
+  # 1 つのプロセスが大きな文書で 4GB ほどになるので、同時に組む数は 3 (ubuntu-latest のメモリは 16GB)
+  relayout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/fonts
+          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts', 'scripts/conformance-fonts.mjs') }}
+          restore-keys: |
+            fonts-test-
+            fonts-defaults-v1
+      - run: node scripts/check-relayout.mjs --only conformance,examples,samples,generated --subjects reuse,splice-verify --jobs 3
+      - run: node scripts/check-resume.mjs --only conformance,examples,samples,generated --jobs 3 --no-build
+      - run: node scripts/check-resume.mjs --late 4 --only conformance,examples,samples,generated --jobs 3 --no-build
+
+  # 意図した変化の一覧 (test/intended-changes.json) を空にしたコミットと組み比べ、一覧に無い文書・ページの変化があれば落とす
+  # (リポジトリの文書の全部。前のコミットを取り出すので、履歴を全部取る)
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/fonts
+          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts', 'scripts/conformance-fonts.mjs') }}
+          restore-keys: |
+            fonts-test-
+            fonts-defaults-v1
+      - run: node scripts/compare-base.mjs --intended --only conformance,examples,samples,generated --jobs 4
+
+  # 出来た PDF の検査 (リポジトリの文書を PDF/UA-1・PDF/A・PDF/X で組み、qpdf --check・Poppler・veraPDF で検査する。
+  # veraPDF の落ちた規則は test/pdf-checks.json の基準と比べ、基準に無い規則が落ちたら落とす)。外の見本では確かめない
+  pdf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y qpdf poppler-utils
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/fonts
+          key: fonts-test-${{ hashFiles('src/fontMapping.ts', 'test/helpers.ts', 'scripts/conformance-fonts.mjs') }}
+          restore-keys: |
+            fonts-test-
+            fonts-defaults-v1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/verapdf
+          # veraPDF の jar (版と SHA-256 は scripts/verapdf-lib.mjs にある。版を上げればキーが変わる)
+          key: verapdf-${{ hashFiles('scripts/verapdf-lib.mjs') }}
+      # veraPDF を Maven Central から取る (置き場にあれば取り直さない)。Java は ubuntu-latest に入っているものを使う
+      - run: node scripts/verapdf.mjs --fetch-only
+      - run: node scripts/check-pdfs.mjs --only conformance,examples,samples --jobs 3

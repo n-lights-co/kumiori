@@ -9,7 +9,7 @@
  *    説明書を組むとき (scripts/build-conformance.mjs) は、先に置き場へ取得したファイルを、組む文書の隣に URL の末尾の名前で置く
  *    (Kumiori は、@font-face の url() を、一緒に渡したファイルの名前でも突き合わせるので、組むたびにネットワークへ取りに行かない)。
  *  - XSL-FO 編: XSL-FO には書体のファイルを指す書き方が無いので、fo: true の書体を、コマンドの --font で渡す (見本の font-family は family の名前)。
- *  - テスト (test/conformance.test.ts): 置き場 (.cache/fonts) へ取得して、HTML には resolveResource で、XSL-FO には fonts で渡す。
+ *  - テスト (test/conformanceSuite.ts。test/conformance.test.ts・conformanceEn.test.ts が使う): 置き場 (.cache/fonts) へ取得して、HTML には resolveResource で、XSL-FO には fonts で渡す。
  *
  * 説明書の中の fonts.gstatic.com の URL は、すべてこの一覧にあること (test/conformance.test.ts が確かめる)。
  * 書体を足す・版を上げるときは、ここと説明書 (4 冊) の URL・書体の一覧の表を一緒に直す。

@@ -1,7 +1,7 @@
 /**
  * リポジトリの見本の文書 (examples・samples) の領域の木の指紋を、test/fingerprints/documents.json と比べる (test/fingerprint.ts)。
  * 組版の結果が変わったら気づくための試験。意図して変えたときは npm run fingerprints:update で書き直す。
- * 対応仕様説明書の指紋は test/conformance.test.ts が比べる (test/fingerprints/conformance.json)。
+ * 対応仕様説明書の指紋は test/conformance.test.ts・test/conformanceEn.test.ts が比べる (test/fingerprints/conformance.json・conformance-en.json)。
  * 書体は既定の書体 (.cache/fonts。無ければ 1 度だけ取得して置く。置いてあればネットワークを使わない)
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

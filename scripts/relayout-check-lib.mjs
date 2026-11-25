@@ -353,3 +353,79 @@ export async function checkRelayout({ lib, setup = {}, options = {}, versions, s
     restore();
   }
 }
+
+/**
+ * 組み直しの再利用の確かめで比べる対象 (組版の内部の印 resumeProbe を、その対象で組む間だけ立てる。scripts/check-relayout.mjs の --subjects と同じ):
+ *  - resume: 1 段の page-sequence の続きから組める境目のすべてで、1 ページ先まで組んでから境目に戻り、境目で保存した状態から続けて組む (resumeProbe.check)
+ *  - resume-late: page-sequence を終わりまで組んだ後、続きから組める境目を late 個ほど選び、後ろから順に境目に戻って終わりまで組み直す (resumeProbe.late)
+ *  - splice-verify: 前の組版と揃った境目で繋がずに終わりまで組み、繋いだはずの前の組版のページと同じかを確かめる (resumeProbe.spliceVerify)
+ * 結果の stats は、resume・resume-late は { resume: { boundaries, resumable, resumed, mismatched, reasons } }、
+ * splice-verify は { verify: { same, pages, diff: [{ at, why }] } }。probeFailures で、誤り (指紋の違い・繋ぐ確かめの違い) を取り出す
+ */
+export function probeSubjects(resumeProbe, { late = 4 } = {}) {
+  const counted = (name, on, off) => {
+    let rs;
+    return {
+      name,
+      wrap: async (typeset) => {
+        rs = { boundaries: 0, resumable: 0, resumed: 0, mismatched: 0, reasons: {} };
+        on();
+        resumeProbe.onStats = (st) => {
+          for (const k of ['boundaries', 'resumable', 'resumed', 'mismatched']) rs[k] += st[k];
+          for (const [k, n] of Object.entries(st.reasons)) rs.reasons[k] = (rs.reasons[k] ?? 0) + n;
+        };
+        try {
+          return await typeset();
+        } finally {
+          off();
+          resumeProbe.onStats = undefined;
+        }
+      },
+      stats: () => ({ resume: rs }),
+    };
+  };
+  let v;
+  return {
+    resume: counted(
+      'resume',
+      () => (resumeProbe.check = true),
+      () => (resumeProbe.check = false),
+    ),
+    'resume-late': counted(
+      'resume-late',
+      () => (resumeProbe.late = late),
+      () => (resumeProbe.late = undefined),
+    ),
+    'splice-verify': {
+      name: 'splice-verify',
+      wrap: async (typeset) => {
+        v = { same: 0, pages: 0, diff: [] };
+        resumeProbe.spliceVerify = (x) => {
+          if (x.same) {
+            v.same++;
+            v.pages += x.pages;
+          } else v.diff.push(x);
+        };
+        try {
+          return await typeset();
+        } finally {
+          resumeProbe.spliceVerify = undefined;
+        }
+      },
+      stats: () => ({ verify: v }),
+    },
+  };
+}
+
+/** checkRelayout の結果の、誤りの説明の並び (結果の違い・境目の指紋の違い・繋ぐ確かめの違い)。空なら誤りは無い */
+export function probeFailures(rows) {
+  const out = [];
+  for (const r of rows)
+    for (const x of r.subjects) {
+      if (x.diff) out.push(`${r.index}: ${r.label}: ${x.name} が違う: ${JSON.stringify(x.diff)}`);
+      const st = x.stats;
+      if (st?.resume?.mismatched) out.push(`${r.index}: ${r.label}: ${x.name}: 境目の指紋の違い ${st.resume.mismatched}`);
+      if (st?.verify?.diff.length) out.push(`${r.index}: ${r.label}: ${x.name}: 繋ぐ確かめの違い ${st.verify.diff.map((d) => `${d.at}: ${d.why}`).join(' / ')}`);
+    }
+  return out;
+}

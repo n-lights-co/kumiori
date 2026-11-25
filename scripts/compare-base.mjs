@@ -6,10 +6,13 @@
  * 使い方 (リポジトリの直下で):
  *   npm run compare:base -- --base <コミット> [--head <コミット>|.] [--out <出力先>] [--only <群>,…] [--skip <群>,…] [--filter <正規表現>]
  *                           [--jobs <数>] [--dpi <解像度>] [--max-images <数>] [--timeout <秒>]
- *                           [--samples <dir>] [--weasyprint <dir>] [--fonts <dir>] [--spot-colors <JSON>] [--no-cache]
+ *                           [--samples <dir>] [--weasyprint <dir>] [--fonts <dir>] [--spot-colors <JSON>] [--no-cache] [--intended]
  *
  *  - --base: 前のコミット (git rev-parse で読める名前。例: main~3・e5b2f6d)。--head: 後のコミット (既定 HEAD)。
  *    --head . は、作業の場所のいまのファイル (まだコミットしていない変更を含む) を後とする。
+ *  - --intended: 組み比べた結果を、後の版の意図した変化の一覧 (test/intended-changes.json。書き方は scripts/intended-changes.mjs) と照らし、
+ *    一覧に無い文書・ページの変化があれば、終わりの状態を 1 にする (npm run ci:local の compare のジョブ)。--base を付けなければ、
+ *    一覧を空にした、いちばん新しいコミットを前とする (前と後が同じコミットなら、組まずに終える)
  *  - 2 つのコミットを一時的な場所に取り出し (git worktree。scripts/ci-local.mjs の --worktree と同じ作り)、それぞれで Node のコマンド (dist-cli) を作る。
  *    作ったコマンドは .cache/compare-base/<コミット>/ に置き、次からは作り直さない (--no-cache で作り直す)。
  *    依存 (node_modules) は、コミットの package-lock.json がいまのものと同じなら、このリポジトリのものを使い、違えば、その置き場に npm ci で入れる。
@@ -59,6 +62,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PNG } from 'pngjs';
 import { shellArg } from './shellArg.mjs';
+import { checkIntended, findBase, INTENDED_PATH, readIntended } from './intended-changes.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const freeze = path.join(root, 'scripts', 'compare-base-freeze.mjs');
@@ -68,7 +72,7 @@ const GROUPS = ['conformance', 'examples', 'samples', 'generated', 'ah', 'css-pr
 function usage(message) {
   if (message) console.error(message);
   console.error(
-    '使い方: npm run compare:base -- --base <コミット> [--head <コミット>|.] [--out <dir>] [--only <群>,…] [--skip <群>,…] [--filter <正規表現>] [--jobs <数>] [--dpi <解像度>] [--max-images <数>] [--timeout <秒>] [--samples <dir>] [--weasyprint <dir>] [--fonts <dir>] [--spot-colors <JSON>] [--no-cache]',
+    '使い方: npm run compare:base -- --base <コミット> [--head <コミット>|.] [--out <dir>] [--only <群>,…] [--skip <群>,…] [--filter <正規表現>] [--jobs <数>] [--dpi <解像度>] [--max-images <数>] [--timeout <秒>] [--samples <dir>] [--weasyprint <dir>] [--fonts <dir>] [--spot-colors <JSON>] [--no-cache] [--intended]',
   );
   console.error(`群: ${GROUPS.join('・')}`);
   process.exit(2);
@@ -81,11 +85,26 @@ const valued = new Set(['base', 'head', 'out', 'only', 'skip', 'filter', 'jobs',
     const a = argv[i];
     if (a === '--help' || a === '-h') usage();
     else if (a === '--no-cache') opt.cache = false;
+    else if (a === '--intended') opt.intended = true;
     else if (a.startsWith('--') && valued.has(a.slice(2))) {
       const v = argv[++i];
       if (v === undefined) usage(`${a} に値がありません`);
       opt[a.slice(2).replace(/-(\w)/g, (_, c) => c.toUpperCase())] = v;
     } else usage(`知らない選択肢: ${a}`);
+  }
+}
+if (opt.intended && !opt.base) {
+  // 一覧を空にした、いちばん新しいコミットを前とする
+  opt.base = findBase(root, opt.head === '.' ? 'HEAD' : opt.head, { worktree: opt.head === '.' });
+  if (!opt.base) {
+    console.error(`${INTENDED_PATH} を空にしたコミットが、${opt.head === '.' ? 'HEAD' : opt.head} までの履歴に見つかりません (浅く取り出したリポジトリなら、git fetch --unshallow で履歴を取る。--base で前を渡してもよい)`);
+    process.exit(2);
+  }
+  console.log(`意図した変化の一覧を空にしたコミット ${opt.base.slice(0, 7)} を前とします`);
+  const headSha = opt.head === '.' ? undefined : spawnSync('git', ['rev-parse', `${opt.head}^{commit}`], { cwd: root, encoding: 'utf8' }).stdout.trim();
+  if (headSha === opt.base) {
+    console.log('前と後が同じコミットなので、組み比べる変化はありません');
+    process.exit(0);
   }
 }
 if (!opt.base) usage('--base が要ります');
@@ -101,7 +120,8 @@ const outDir = path.resolve(opt.out);
 const samplesDir = path.resolve(opt.samples ?? path.join(root, '.cache', 'samples'));
 const weasyDir = path.resolve(opt.weasyprint ?? process.env.KUMIORI_WEASYPRINT_SAMPLES ?? path.join(root, '..', 'weasyprint-samples'));
 const msFontsDir = opt.fonts ? path.resolve(opt.fonts) : fs.existsSync(path.join(root, '.cache', 'ms-fonts')) ? path.join(root, '.cache', 'ms-fonts') : undefined;
-const fontCache = path.join(root, '.cache', 'fonts');
+// 既定の書体の置き場 (環境変数 KUMIORI_FONT_CACHE があればそこ。npm run ci:local の --worktree は、元の作業の場所の .cache/fonts を渡す)
+const fontCache = process.env.KUMIORI_FONT_CACHE ? path.resolve(process.env.KUMIORI_FONT_CACHE) : path.join(root, '.cache', 'fonts');
 
 // ---- 道具 ----
 const git = (args, cwd = root) => spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -274,6 +294,8 @@ function msFontArgs() {
 /** 版ごとに組む文書の準備 (対応仕様説明書は、コードの表示を差し込んだ文書を作業の場所に書く) */
 const skipped = [];
 const notes = [];
+/** 意図した変化の一覧と照らした結果 (--intended のとき) */
+let intendedResult;
 
 /**
  * 文書の一覧: { id, group, name, input: (版) => 入力のファイル, args: (版) => 引数 }。
@@ -439,11 +461,11 @@ async function listDocs(revs) {
 
 // ---- 組む ----
 const safe = (id) => id.replace(/[^\w.-]+/g, '_');
-/** 警告・誤りの行 (場所の前の、取り出した場所のパスは除く) */
+/** 警告・エラー・情報の行 (場所の前の、取り出した場所のパスは除く。重さの名前は src/cli.ts の severityLabel。誤りは前の名前) */
 const diagLines = (stderr, v) =>
   stderr
     .split('\n')
-    .filter((l) => /^\s*(警告|誤り|warning|error)\b/i.test(l) || /^\s*(警告|誤り) \[/.test(l))
+    .filter((l) => /^\s*(warning|error|info)\b/i.test(l) || /^\s*(警告|エラー|情報|誤り) \[/.test(l))
     .map((l) => l.replaceAll(path.join(outDir, 'work', v.key), '<work>').replaceAll(v.dir, '<dir>').replaceAll(outDir, '<out>').trim());
 
 async function typeset(doc, v) {
@@ -610,7 +632,7 @@ function writeReport(revs, results, totalSec) {
   const [b, h] = revs;
   const by = (s) => results.filter((r) => r.status === s);
   const groupCount = Object.fromEntries(groups.map((g) => [g, results.filter((r) => r.group === g).length]).filter(([, n]) => n));
-  const json = { base: { rev: opt.base, sha: b.sha, label: b.label }, head: { rev: opt.head, sha: h.sha, label: h.label }, dpi: opt.dpi, groups: groupCount, skipped, notes, totalSec, results };
+  const json = { base: { rev: opt.base, sha: b.sha, label: b.label }, head: { rev: opt.head, sha: h.sha, label: h.label }, dpi: opt.dpi, groups: groupCount, skipped, notes, totalSec, ...(intendedResult ? { intended: intendedResult } : {}), results };
   fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify(json, null, 2) + '\n');
   const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
   const pagesOf = (r) => (r.pages ? (r.pages.base === r.pages.head ? `${r.pages.base}` : `${r.pages.base} → ${r.pages.head} ⚠`) : '—');
@@ -628,6 +650,15 @@ function writeReport(revs, results, totalSec) {
     `- 変わった文書: ${by('changed').length}。バイトも同じ: ${by('same').length}。見た目は同じ (バイトは違う): ${by('looks-same').length}。警告・誤りだけ変わった: ${by('diagnostics').length}。組めなかった: ${by('error').length}。片方だけ: ${by('only-base').length + by('only-head').length}`,
     ...notes.map((n) => `- ${n}`),
     ...(skipped.length ? ['', '## 飛ばした群', '', ...skipped.map((s) => `- ${s.group}: ${s.reason}`)] : []),
+    ...(intendedResult
+      ? [
+          '',
+          `## 意図した変化の一覧 (${INTENDED_PATH}) と照らした結果`,
+          '',
+          ...(intendedResult.unlisted.length ? ['一覧に無い変化:', '', ...intendedResult.unlisted.map((u) => `- ${u.id}: ${u.why}`)] : ['一覧に無い変化は無い']),
+          ...(intendedResult.unused.length ? ['', '一覧にあるが、変わらなかった文書:', '', ...intendedResult.unused.map((u) => `- ${u.doc} (${u.commit})`)] : []),
+        ]
+      : []),
     '',
     '## 変わった文書',
     '',
@@ -734,12 +765,22 @@ try {
   results.sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group) || order.get(a.id) - order.get(b.id));
   fs.rmSync(path.join(outDir, 'tmp'), { recursive: true, force: true });
   fs.rmSync(path.join(outDir, 'work'), { recursive: true, force: true });
+  if (opt.intended) intendedResult = checkIntended(readIntended(root, opt.head), results);
   writeReport(revs, results, (Date.now() - t0) / 1000);
   const changed = results.filter((r) => r.status === 'changed');
   console.log(`\n変わった文書: ${changed.length} / ${results.length}${changed.length ? ` (${changed.map((r) => r.id).join('、')})` : ''}`);
   const looks = results.filter((r) => r.status === 'looks-same').length;
   if (looks) console.log(`見た目は同じでバイトの違う文書: ${looks} (色・構造・メタデータの変わりは、この比べ方では見えない。report.md を見る)`);
   console.log(`${path.join(outDir, 'report.md')} に書き出しました`);
+  if (intendedResult) {
+    for (const u of intendedResult.unused) console.log(`一覧にあるが、変わらなかった文書: ${u.doc} (${u.commit})`);
+    if (intendedResult.unlisted.length) {
+      console.log(`\n意図した変化の一覧 (${INTENDED_PATH}) に無い変化: ${intendedResult.unlisted.length} 文書`);
+      for (const u of intendedResult.unlisted) console.log(`  ${u.id}: ${u.why}`);
+      console.log('意図した変化なら、その文書とページを一覧に書き足す (書き方は docs/development.md の「意図した変化の一覧」)');
+      process.exitCode = 1;
+    } else console.log(`意図した変化の一覧 (${INTENDED_PATH}) に無い変化は無い`);
+  }
 } finally {
   cleanup();
 }

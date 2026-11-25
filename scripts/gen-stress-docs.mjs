@@ -266,12 +266,129 @@ export function sideWidthFo(n, seed = 10) {
   );
 }
 
+/**
+ * 罫線をつぶした表 (border-collapse: collapse) がページをまたぐ HTML。表は見出しの行 (thead) を繰り返し、2 行をまたぐセル (rowspan) と
+ * 分けない指定の行 (break-inside: avoid) を混ぜ、長さの違うセルで、行の境目の改ページ・行の中の改ページの両方が起きるようにする。n は表の数。
+ * 改ページの境目では、ページの最後の行の後ろ側の線と、表ヘッダーの後の最初の行の前側の線を、組んだ行のセルの辺を書き換えて決める。
+ * 境目から組み直す確かめ (遅く戻る試し) で、前の組みの書き換えが組み直しに漏れる誤りを探す
+ */
+export function collapseTableHtml(n, seed = 11) {
+  const { r, int, text } = tools(seed);
+  let body = '';
+  for (let t = 0; t < n; t++) {
+    body += `<p>${text(int(40, 300))}</p>`;
+    let rows = '';
+    let spanLeft = 0;
+    const m = int(8, 16);
+    for (let i = 0; i < m; i++) {
+      const avoid = r() < 0.25 ? ' style="break-inside: avoid"' : '';
+      // 2 列目は、2 行をまたぐセルか、またいだセルの続きの行 (セルを置かない)
+      const span = spanLeft === 0 && i + 1 < m && r() < 0.35;
+      const second = spanLeft > 0 ? '' : `<td${span ? ' rowspan="2"' : ''}>r${i}</td>`;
+      spanLeft = span ? 1 : Math.max(0, spanLeft - 1);
+      rows += `<tr${avoid}><td>${i}</td>${second}<td>${text(r() < 0.15 ? int(200, 500) : int(5, 80))}</td></tr>`;
+    }
+    // 罫線は、表ごとに、すべてのセル・表ヘッダーの下の線だけ・ところどころのセルの上の線と表ヘッダーの下の線、のどれか
+    // (セルに後ろ側の線が無く、次の行のセルや表ヘッダーに線のある所で、ページの最後の行の後ろ側の線を決める)
+    const cls = ['all', 'head', 'some'][t % 3];
+    body += `<table class="${cls}"${t % 4 === 3 ? ' style="break-before: right"' : ''}><thead><tr><th>番号</th><th>H</th><th>中身</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  return (
+    '<!doctype html><html lang="ja"><head><meta charset="utf-8"><style>@page { size: A6; margin: 9mm } @page :first { margin-top: 30mm } body { font-size: 9pt } ' +
+    'table { border-collapse: collapse; width: 100% } td, th { padding: 1pt 3pt } .all td, .all th { border: 0.5pt solid black } th { border-bottom: 1.5pt solid black } ' +
+    '.some tr:nth-child(3n) td { border-top: 0.25pt solid black }</style></head><body>' +
+    body +
+    '</body></html>'
+  );
+}
+
+/**
+ * 罫線をつぶした表がページをまたぐ XSL-FO。最後のページのマスター (page-position="last"。余白が広い) で、最後のページを組み直すとき、
+ * 境目から続けて組む。表は表ヘッダーを繰り返し、2 行をまたぐセル (number-rows-spanned) と、分けない指定の行 (keep-together) を混ぜる。n は表の数
+ */
+export function collapseTableFo(n, seed = 12) {
+  const { r, int, text } = tools(seed);
+  // 罫線は、表ごとに、すべてのセル・表ヘッダーの下の線だけ・ところどころのセルの上の線と表ヘッダーの下の線、のどれか (collapseTableHtml と同じ)
+  let cls = 'all';
+  let row = 0;
+  const cell = (body, extra = '') =>
+    `<fo:table-cell padding="1pt"${cls === 'all' ? ' border="0.5pt solid black"' : cls === 'some' && row % 3 === 2 ? ' border-before-style="solid" border-before-width="0.25pt"' : ''}${extra}><fo:block>${body}</fo:block></fo:table-cell>`;
+  const head = ' border-after-style="solid" border-after-width="1.5pt"';
+  let s = '';
+  for (let t = 0; t < n; t++) {
+    cls = ['all', 'head', 'some'][t % 3];
+    s += `<fo:block space-after="4pt">${text(int(40, 300))}</fo:block>`;
+    let rows = '';
+    let spanLeft = 0;
+    const m = int(8, 16);
+    for (let i = 0; i < m; i++) {
+      row = i;
+      const keep = r() < 0.25 ? ' keep-together.within-page="always"' : '';
+      const span = spanLeft === 0 && i + 1 < m && r() < 0.35;
+      const second = spanLeft > 0 ? '' : cell(`r${i}`, span ? ' number-rows-spanned="2"' : '');
+      spanLeft = span ? 1 : Math.max(0, spanLeft - 1);
+      rows += `<fo:table-row${keep}>${cell(String(i))}${second}${cell(text(r() < 0.15 ? int(200, 500) : int(5, 80)))}</fo:table-row>`;
+    }
+    row = -1;
+    s +=
+      `<fo:table table-layout="fixed" width="100%" border-collapse="collapse" space-after="4pt"><fo:table-column column-width="12mm"/><fo:table-column column-width="12mm"/><fo:table-column column-width="proportional-column-width(1)"/>` +
+      `<fo:table-header><fo:table-row>${cell('番号', head)}${cell('H', head)}${cell('中身', head)}</fo:table-row></fo:table-header><fo:table-body>${rows}</fo:table-body></fo:table>`;
+  }
+  const spm = (name, extra) => `<fo:simple-page-master master-name="${name}" page-width="105mm" page-height="148mm" margin="9mm"${extra}><fo:region-body/></fo:simple-page-master>`;
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja"><fo:layout-master-set>` +
+    spm('p', '') +
+    spm('last', ' margin-bottom="40mm"') +
+    `<fo:page-sequence-master master-name="m"><fo:repeatable-page-master-alternatives><fo:conditional-page-master-reference master-reference="last" page-position="last"/>` +
+    `<fo:conditional-page-master-reference master-reference="p"/></fo:repeatable-page-master-alternatives></fo:page-sequence-master></fo:layout-master-set>` +
+    `<fo:page-sequence master-reference="m"><fo:flow flow-name="xsl-region-body" font-size="8pt">${s}</fo:flow></fo:page-sequence></fo:root>`
+  );
+}
+
+/**
+ * 章ごとに page-sequence を分けた XSL-FO (n は章の数)。createTypesetter の使い回し (前の文書の page-sequence を、そのまま使い回す作り) の確かめに使う。
+ * kind が footnote なら、本文の段落に脚注を付ける (タグ付きの PDF では、脚注の構造の要素を、文書の初めからの通し番号で名付ける)。
+ * marker なら、章の段落にマーカーを置き、柱 (region-before) で retrieve-marker で引く
+ */
+export function chaptersFo(n, seed = 13, kind = 'footnote') {
+  const { r, int, text } = tools(seed);
+  let seqs = '';
+  for (let c = 0; c < n; c++) {
+    let body = `<fo:block font-size="14pt" space-after="6pt">第 ${c + 1} 章</fo:block>`;
+    const m = int(6, 14);
+    for (let i = 0; i < m; i++) {
+      const note = kind === 'footnote' && r() < 0.4 ? `<fo:footnote><fo:inline baseline-shift="super" font-size="6pt">*</fo:inline><fo:footnote-body><fo:block font-size="7pt">${text(int(20, 120))}</fo:block></fo:footnote-body></fo:footnote>` : '';
+      const marker = kind === 'marker' ? `<fo:marker marker-class-name="sec">${c + 1}.${i + 1} ${text(int(3, 10))}</fo:marker>` : '';
+      body += `<fo:block space-after="4pt">${marker}${text(int(60, 400))}${note}${text(int(10, 80))}</fo:block>`;
+    }
+    const head = kind === 'marker' ? '<fo:retrieve-marker retrieve-class-name="sec" retrieve-position="first-including-carryover"/>' : `第 ${c + 1} 章`;
+    seqs +=
+      `<fo:page-sequence master-reference="p"><fo:static-content flow-name="xsl-region-before"><fo:block font-size="7pt" text-align="end">${head}</fo:block></fo:static-content>` +
+      `<fo:flow flow-name="xsl-region-body" font-size="9pt" line-height="1.5">${body}</fo:flow></fo:page-sequence>`;
+  }
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?><fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format" xml:lang="ja"><fo:layout-master-set>` +
+    `<fo:simple-page-master master-name="p" page-width="105mm" page-height="148mm" margin="9mm"><fo:region-body margin-top="8mm"/><fo:region-before extent="6mm"/></fo:simple-page-master></fo:layout-master-set>` +
+    seqs +
+    '</fo:root>'
+  );
+}
+
+/** createTypesetter の使い回しの確かめに使う形 (SHAPES と同じ形。書き出す一揃い・指標の試験には入れない)。大きさは REUSE_SIZES */
+export const REUSE_SHAPES = {
+  fofootnotes: { make: (n, seed) => chaptersFo(n, seed ?? 13, 'footnote'), ext: 'fo' },
+  fomarkers: { make: (n, seed) => chaptersFo(n, seed ?? 14, 'marker'), ext: 'fo' },
+};
+export const REUSE_SIZES = { fofootnotes: 8, fomarkers: 8 };
+
 /** 続きから組む作りの確かめに使う形 (SHAPES と同じ形。書き出す一揃い・指標の試験には入れない)。大きさは RESUME_SIZES */
 export const RESUME_SHAPES = {
   sidewidth: { make: sideWidthHtml, ext: 'html' },
   fosidewidth: { make: sideWidthFo, ext: 'fo' },
+  collapsetable: { make: collapseTableHtml, ext: 'html' },
+  focollapsetable: { make: collapseTableFo, ext: 'fo' },
 };
-export const RESUME_SIZES = { sidewidth: 12, fosidewidth: 12 };
+export const RESUME_SIZES = { sidewidth: 12, fosidewidth: 12, collapsetable: 6, focollapsetable: 6 };
 
 /** 形の一覧: 名前 → { make(n, seed), ext } */
 export const SHAPES = {

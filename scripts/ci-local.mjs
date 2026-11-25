@@ -2,20 +2,26 @@
  * ci-local — CI (.github/workflows/ci.yml) のジョブと、GitHub Pages (.github/workflows/pages.yml) の画面のビルドと同じ手順を、手元で走らせる。
  *
  * 使い方 (リポジトリの直下で):
- *   node scripts/ci-local.mjs                     (npm run ci:local と同じ。build・pages・e2e のジョブ。node-min は Node の下限に切り替えて、下のように別に走らせる)
+ *   node scripts/ci-local.mjs                     (npm run ci:local と同じ。build・pages・e2e・relayout・compare・pdf のジョブ。node-min は Node の下限に切り替えて、下のように別に走らせる)
  *   node scripts/ci-local.mjs --job node-min      (Node の下限のジョブ。Node 22.12.x で走らせる)
  *   node scripts/ci-local.mjs --job build --job e2e --no-install --worktree
  *
- *  - --job <名前> (何度でも): 走らせるジョブ (build・pages・node-min・e2e)。無ければ build・pages・e2e。
+ *  - --job <名前> (何度でも): 走らせるジョブ (build・pages・node-min・e2e・relayout・compare・pdf)。無ければ node-min のほかの全部。
  *    node-min は、動かせる Node の下限 (package.json の engines) で確かめるジョブなので、Node 22.12.x で走らせたときだけ動く
  *    (このスクリプトは Node を切り替えない。nvm などで切り替えてから走らせる)。
  *    pages は、pages.yml の build のジョブと同じく、アセットの土台 (base) をリポジトリ名にして画面を作る (下の pagesBase)。
  *    続けて、API の説明書を画面の下の api/ に作る (npm run docs:api。TypeDoc を tools/api-docs に入れる npm ci も、そのスクリプトがする)。
  *    出力は一時の場所に出して、終われば消す (build のジョブの dist/ と混ざらず、dist/ も変えない)
+ *    relayout は、組み直しの再利用の確かめ (createTypesetter の使い回しと前の組版と繋ぐ所: scripts/check-relayout.mjs、続きから組む作りと遅く戻る試し:
+ *    scripts/check-resume.mjs) を、リポジトリの文書の全部 (群 conformance・examples・samples・generated) で走らせる。
+ *    compare は、意図した変化の一覧 (test/intended-changes.json) を空にしたコミットと組み比べ (scripts/compare-base.mjs --intended)、
+ *    一覧に無い文書・ページの変化があれば落とす (リポジトリの文書の全部。git の履歴と poppler が要る)。
+ *    pdf は、リポジトリの文書 (群 conformance・examples・samples) を PDF/UA-1・PDF/A・PDF/X で組み、出来た PDF を qpdf --check・Poppler・veraPDF で検査する
+ *    (scripts/check-pdfs.mjs。veraPDF の落ちた規則は test/pdf-checks.json の基準と比べる。qpdf・poppler・Java が要る。veraPDF は .cache/verapdf に無ければ取る)。
  *  - --no-install: 初めの npm ci (package-lock.json のとおりに依存を入れ直す) をしない
  *  - --worktree: いまのコミット (HEAD) を一時的な場所に取り出して (git worktree)、そこで走らせる。CI と同じく、コミットした中身だけを試す
  *    (まだコミットしていない変更・前のビルドの出力 (dist-*) が混ざらない)。終われば取り出した場所を消す。
- *    テストの書体・Unicode の適合試験・e2e の書体の置き場は、このリポジトリの .cache を使う (取り直さない)
+ *    テストの書体・Unicode の適合試験・e2e の書体・veraPDF の置き場は、このリポジトリの .cache を使う (取り直さない)
  *
  * ジョブの手順は ci.yml・pages.yml と同じ (actions/checkout・setup-node・cache・upload-pages-artifact・Pages への配置は、手元に当たるものが無いので除く)。
  * ci.yml・pages.yml を変えたら、下の JOBS も合わせる。1 つのジョブの中では、失敗した手順で止め、次のジョブへ進む (CI のジョブは互いに別に動くため)。
@@ -100,8 +106,48 @@ function checkApiDocs() {
 }
 
 /**
+ * 組み直しの再利用の確かめと組み比べで、同時に組む数。CPU の数と、メモリ 5GB に 1 つの小さい方
+ * (check-relayout.mjs は、1 つのプロセスで基準と比べる対象の組版を並べて持つので、大きな文書 (対応仕様説明書の HTML) で 4GB ほどになる)
+ */
+const cpus = String(Math.max(1, Math.min(os.availableParallelism?.() ?? os.cpus().length, Math.floor(os.totalmem() / 5 / 2 ** 30))));
+/**
+ * 組み直しの再利用の確かめ (check-relayout.mjs・check-resume.mjs) で同時に組む数は、CPU の数。check-relayout.mjs が、同時に組む文書のメモリの見積もりの合計を
+ * 機械のメモリの 8 割までに抑える (重い文書を重ねない。scripts/doc-sources.mjs の docMemoryGB) ので、メモリで数を減らさない
+ */
+const relayoutJobs = String(Math.max(1, os.availableParallelism?.() ?? os.cpus().length));
+/** リポジトリの文書の群 (scripts/check-relayout.mjs・compare-base.mjs の --only) */
+const REPO_GROUPS = 'conformance,examples,samples,generated';
+/** 出来た PDF の検査をするリポジトリの文書の群 (scripts/check-pdfs.mjs の --only) */
+const PDF_GROUPS = 'conformance,examples,samples';
+/** 組み直しの再利用の確かめの 3 つの手順 (群と、足す引数) */
+const relayoutSteps = (groups, extra = () => []) => [
+  // createTypesetter の使い回しと、前の組版と繋ぐ所の確かめ (種を決めた乱数の所で直しながら組む)
+  { label: `check-relayout (reuse・splice-verify。${groups})`, node: () => ['scripts/check-relayout.mjs', '--only', groups, '--subjects', 'reuse,splice-verify', '--jobs', relayoutJobs, ...extra()] },
+  // 続きから組む作り (境目のすべてで 1 ページ先まで組んでから戻る)
+  { label: `check-resume (resume。${groups})`, node: () => ['scripts/check-resume.mjs', '--only', groups, '--jobs', relayoutJobs, '--no-build', ...extra()] },
+  // 遅く戻る試し (page-sequence を終わりまで組んだ後、前の境目から終わりまで組み直す)
+  { label: `check-resume --late 4 (resume-late。${groups})`, node: () => ['scripts/check-resume.mjs', '--late', '4', '--only', groups, '--jobs', relayoutJobs, '--no-build', ...extra()] },
+];
+/** 組み比べの手順 (意図した変化の一覧と照らす。出力は一時の場所に出して、終われば消す) */
+const compareStep = (groups, extra = () => []) => ({
+  label: `compare-base --intended (${groups})`,
+  node: () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'kumiori-ci-compare-'));
+    compareOuts.push(out);
+    return ['scripts/compare-base.mjs', '--intended', '--only', groups, '--jobs', cpus, '--out', out, ...extra()];
+  },
+});
+
+/** 出来た PDF の検査の手順 (scripts/check-pdfs.mjs。PDF/UA-1・PDF/A・PDF/X で組み、qpdf・Poppler・veraPDF で検査する) */
+const pdfCheckStep = (groups, extra = () => []) => ({ label: `check-pdfs (${groups})`, node: () => ['scripts/check-pdfs.mjs', '--only', groups, '--jobs', cpus, ...extra()] });
+
+/** compare のジョブの組み比べの出力の場所 (一時の場所。終われば消す) */
+const compareOuts = [];
+
+/**
  * ci.yml・pages.yml のジョブ (npm ci の後の手順)。
- * 手順は npm の引数の配列か、それを返す関数 (走らせる場所 dir を受け取る)、または { label, fn } (このスクリプトの中で確かめるもの。真を返せば通った)
+ * 手順は npm の引数の配列か、それを返す関数 (走らせる場所 dir を受け取る)、または { label, fn } (このスクリプトの中で確かめるもの。真を返せば通った)、
+ * { label, node } (node の引数の並びを返す関数。いまの Node で、走らせる場所のスクリプトを動かす)
  */
 const JOBS = {
   // Node 22。画面・ライブラリ・ブラウザ用の 1 ファイルを作り、単体テスト (中で Node のコマンドも作る) を走らせる
@@ -122,11 +168,17 @@ const JOBS = {
   'node-min': [['run', 'typecheck'], ['run', 'build:lib'], ['run', 'build:browser'], ['test']],
   // ブラウザでの結合テスト (dist-browser も読んで試す)
   e2e: [['run', 'build:browser'], ['run', 'e2e']],
+  // 組み直しの再利用の確かめ (リポジトリの文書の全部)。速い組は npm test (test/relayoutAlways.test.ts など) に入っている
+  relayout: relayoutSteps(REPO_GROUPS),
+  // 意図した変化の一覧と照らす組み比べ (リポジトリの文書の全部)
+  compare: [compareStep(REPO_GROUPS)],
+  // 出来た PDF の検査 (リポジトリの文書。対応仕様説明書・examples・samples)。軽い組は npm test (test/pdfChecks.test.ts) に入っている
+  pdf: [pdfCheckStep(PDF_GROUPS)],
 };
 
 function usage(message) {
   if (message) console.error(message);
-  console.error('使い方: node scripts/ci-local.mjs [--job build|pages|node-min|e2e]... [--no-install] [--worktree]');
+  console.error('使い方: node scripts/ci-local.mjs [--job build|pages|node-min|e2e|relayout|compare|pdf]... [--no-install] [--worktree]');
   process.exit(2);
 }
 
@@ -145,7 +197,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--help' || a === '-h') usage();
   else usage(`知らない選択肢: ${a}`);
 }
-if (!jobs.length) jobs.push('build', 'pages', 'e2e');
+if (!jobs.length) jobs.push('build', 'pages', 'e2e', 'relayout', 'compare', 'pdf');
 
 // node-min は Node 22.12.x で走らせたときだけ (ほかの版で走らせても、下限で確かめたことにならない)
 const [major, minor] = process.versions.node.split('.').map(Number);
@@ -169,9 +221,12 @@ if (worktree) {
     console.error(r.stderr);
     process.exit(1);
   }
-  // 書体・Unicode の適合試験は、このリポジトリの .cache を使う (取り出した場所で取り直さない)
+  // 書体・Unicode の適合試験は、このリポジトリの .cache を使う (取り出した場所で取り直さない。KUMIORI_FONT_CACHE は、組み直しの確かめと組み比べの書体の置き場)
   env.KUMIORI_FONT_DIR ??= path.join(root, '.cache', 'fonts');
+  env.KUMIORI_FONT_CACHE ??= path.join(root, '.cache', 'fonts');
   env.KUMIORI_UCD_DIR ??= path.join(root, '.cache', 'unicode');
+  // veraPDF (npm test の test/pdfChecks.test.ts と、pdf のジョブの scripts/check-pdfs.mjs) も、このリポジトリの .cache/verapdf を使う
+  env.KUMIORI_VERAPDF_DIR ??= path.join(root, '.cache', 'verapdf');
   console.log(`HEAD (${git(['rev-parse', '--short', 'HEAD']).stdout.trim()}) を ${cwd} に取り出して試します`);
 }
 
@@ -182,7 +237,11 @@ const run = (job, step) => {
   let label = typeof step === 'object' && !Array.isArray(step) ? step.label : '';
   let ok;
   try {
-    if (label) {
+    if (label && step.node) {
+      const args = step.node(cwd);
+      console.log(`\n▶ [${job}] ${label}\n  node ${args.join(' ')}`);
+      ok = spawnSync(process.execPath, args, { cwd, env, stdio: 'inherit' }).status === 0;
+    } else if (label) {
       console.log(`\n▶ [${job}] ${label}`);
       ok = step.fn(cwd) === true;
     } else {
@@ -213,6 +272,7 @@ try {
     }
 } finally {
   if (pagesOut) fs.rmSync(pagesOut, { recursive: true, force: true });
+  for (const d of compareOuts) fs.rmSync(d, { recursive: true, force: true });
   if (worktree) {
     git(['worktree', 'remove', '--force', cwd]);
     fs.rmSync(cwd, { recursive: true, force: true });

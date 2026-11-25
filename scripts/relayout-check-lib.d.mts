@@ -49,3 +49,7 @@ export function checkRelayout(o: {
   pdf?: boolean;
   onVersion?: (row: RelayoutRow) => void | Promise<void>;
 }): Promise<{ ok: boolean; versions: RelayoutRow[] }>;
+export type ProbeSubject = { name: string; stats?: (result: never) => unknown; wrap?: (typeset: () => Promise<unknown>) => Promise<unknown> };
+/** resumeProbe は組版の内部の印 (src/layoutEngine.ts の resumeProbe か、ビルドしたものの同じもの) */
+export function probeSubjects(resumeProbe: object, o?: { late?: number }): Record<'resume' | 'resume-late' | 'splice-verify', ProbeSubject>;
+export function probeFailures(rows: RelayoutRow[]): string[];
