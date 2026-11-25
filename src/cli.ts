@@ -1316,24 +1316,51 @@ function canCreatePart(output: string): boolean {
  * dest と同じディレクトリの一時のファイル (<dest>.part-<乱数>) へ流して書き、書き終えたら名前を dest に替える。
  * 前の dest があれば、そのファイルの許可の印 (mode) を一時のファイルに写す (writeFileSync が前のファイルに書くのと同じ許可になる)。
  * before は名前を替える前に呼ぶ (出力が読むファイルでないかの確かめ)。失敗・中断したら一時のファイルを消して、誤りを投げる。
- * 一時のファイルは、最初に書くときに作る (組んでいる間は作らないので、その間の Ctrl+C は前のとおりすぐ止まる)。書いている間は、止める合図
- * (SIGINT・SIGTERM・SIGHUP) を受けたら一時のファイルを消してから同じ合図で終わり (onStopSignal)、合図を扱えるよう、yieldMs (既定 50ms) ごとに間をあける。
- * yieldMs が 0 なら間をあけない (メモリ節約の組版は、ページの間で待てない所があり、待たせると塊がたまるため。その間の合図は、待てる所まで遅れる)
+ * 一時のファイルは、書いた量が holdBytes (既定 1MB) を超えたとき、または書き終えたときに作る。それまでの塊はメモリに持つ
+ * (組みながら書く PDF は、組版の前に PDF の頭を書くが、1 つの page-sequence を組む間はイベントループに制御を返さない。頭を書いた所で一時のファイルと
+ * 合図の受け手を置くと、組んでいる間の Ctrl+C が、組み終えて次に書くまで扱われないため。持っている間は受け手を置かないので、前のとおりすぐ止まる)。
+ * 書いている間は、止める合図 (SIGINT・SIGTERM・SIGHUP) を受けたら一時のファイルを消してから同じ合図で終わり (onStopSignal)、合図を扱えるよう、
+ * yieldMs (既定 50ms) ごとに間をあける。組み始める前と、名前を替える前にも 1 度間をあける (名前を替える前は、それまでに届いた合図を扱い、
+ * 書き終えた PDF を残さない)。
+ * yieldMs が 0 なら書く間は間をあけない (メモリ節約の組版は、ページの間で待てない所があり、待たせると塊がたまるため。その間の合図は、待てる所まで遅れる)
  */
-export async function streamOutput<T>(dest: string, run: (write: (chunk: Uint8Array) => void | Promise<void>) => Promise<T>, before: () => void = () => {}, yieldMs = 50): Promise<T> {
+export async function streamOutput<T>(
+  dest: string,
+  run: (write: (chunk: Uint8Array) => void | Promise<void>) => Promise<T>,
+  before: () => void = () => {},
+  yieldMs = 50,
+  holdBytes = 1024 * 1024,
+): Promise<T> {
   const tmp = `${dest}.part-${randomBytes(6).toString('hex')}`;
   let fd: number | undefined;
+  /** 一時のファイルを作る前に持っている塊 (書き出し側が塊を使い回してもよいように、コピーを持つ) */
+  const held: Uint8Array[] = [];
+  let heldBytes = 0;
+  const writeAll = (f: number, chunk: Uint8Array) => {
+    for (let at = 0; at < chunk.length; ) at += fs.writeSync(f, chunk, at);
+  };
   const create = () => {
     // 合図の受け手を、一時のファイルを作る前に置く (作った後に置くと、その間に来た合図で、受け手の無いまま終わってファイルが残る)
     watchSignals(tmp);
-    fd = fs.openSync(tmp, 'wx');
-    return fd;
+    const f = fs.openSync(tmp, 'wx');
+    fd = f;
+    for (const c of held) writeAll(f, c);
+    held.length = 0;
+    heldBytes = 0;
+    return f;
   };
+  // 組み始める前に 1 度イベントループに制御を返す (出力の確かめ canCreatePart の受け手は、次の回りで外す。組版はイベントループに制御を返さずに
+  // 始まるので、ここで返さないと、受け手が組み終えるまで残り、組んでいる間の Ctrl+C が組み終えるまで扱われない)
+  await new Promise<void>((resolve) => setImmediate(resolve));
   let last = Date.now();
   try {
     const r = await run((chunk) => {
-      const f = fd ?? create();
-      for (let at = 0; at < chunk.length; ) at += fs.writeSync(f, chunk, at);
+      if (fd === undefined && heldBytes + chunk.length <= holdBytes) {
+        held.push(chunk.slice());
+        heldBytes += chunk.length;
+        return;
+      }
+      writeAll(fd ?? create(), chunk);
       // 合図を扱う間 (同期で書き続けると、合図の受け手が書き終えるまで動かない)
       if (!yieldMs || Date.now() - last < yieldMs) return;
       last = Date.now();
@@ -1341,6 +1368,8 @@ export async function streamOutput<T>(dest: string, run: (write: (chunk: Uint8Ar
     });
     fs.closeSync(fd ?? create());
     fd = -1;
+    // 名前を替える前に、届いている合図を扱う (受け手が一時のファイルを消して、同じ合図で終わる)
+    await new Promise<void>((resolve) => setImmediate(resolve));
     before();
     const prev = fs.statSync(dest, { throwIfNoEntry: false });
     if (prev) fs.chmodSync(tmp, prev.mode & 0o7777);
