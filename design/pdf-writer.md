@@ -44,7 +44,7 @@ src で pdf-lib を読み込むのは 12 ファイル。@pdf-lib/fontkit を読�
 | (b) ページと描く命令 | pdfRenderer.ts (167)・colorGlyphPdf.ts (11)・pdfLibPatches.ts (5)・pdfTags.ts (4)・pdfxVerify.ts (3)・pdfImageEmbed.ts (2) | `PDFPage` (`addPage`・`pushOperators`・`node`)・`PDFOperator`・`PDFOperatorNames`・命令の関数 (`pushGraphicsState`・`showText` など)・色 (`rgb`・`cmyk`) | pdf-lib のまま |
 | (c) 書き出し (保存) | pdfRenderer.ts (`save` 2 か所: 3287・3290 行)・pdfImageEmbed.ts (`save` 1 か所: 192 行)・pdfStandard.ts (`finishDocumentId`・版の書き換えの前提)・pdfLibPatches.ts (`useDeflate`・`sealPageContents`) | `PDFDocument.save`・`flush`・`PDFStreamWriter`・`PDFWriter`・`PDFHeader`・`PDFTrailer`・`PDFCrossRefStream`・`PDFObjectStream`・`PDFCrossRefSection`・`PDFTrailerDict` | **自前にする (P1)** |
 | (d) 書体の埋め込み | pdfRenderer.ts (38)・pdfLibPatches.ts (25)・drawio/drawioText.ts (6。標準の書体の字の幅だけ)・fontSanity.ts・fontkitShaping.ts (各 1) | `embedFont`・`PDFFont`・`CustomFontEmbedder`・`CustomFontSubsetEmbedder`・`StandardFontEmbedder`・`StandardFonts` (フォームの欄の Helvetica・ZapfDingbats) | pdf-lib のまま |
-| (e) 画像の埋め込み | pdfLibPatches.ts (30)・pdfRenderer.ts (12)・colorGlyphPdf.ts (5) | `embedJpg`・`embedPng`・`PDFImage`・`PngEmbedder` (原型の上に、自前の埋め込みを作る) | pdf-lib のまま (P2 で、先に埋め込む所だけ変える。2.4) |
+| (e) 画像の埋め込み | pdfLibPatches.ts (30)・pdfRenderer.ts (12)・colorGlyphPdf.ts (5) | `embedJpg`・`embedPng`・`PDFImage`・`PngEmbedder` (原型の上に、自前の埋め込みを作る) | pdf-lib のまま (P2 で、先に埋め込む所だけ変える。2.4)。**0.8.0 で自前にした (11 節)** |
 | (f) フォームの欄 | pdfRenderer.ts (`addFormFields`・`checkAppearance` など。3860〜4110 行) | `getForm`・`PDFWidgetAnnotation`・欄の `updateAppearances` | pdf-lib のまま |
 | (g) PDF を読む | pdfxVerify.ts (10)・pdfStreamGuard.ts (9)・pdfaVerify.ts (6)・pdfImageEmbed.ts (4)・pdfRenderer.ts (2) | `PDFParser`・`decodePDFRawStream`・`PDFObjectCopier` (PDF の画像を写す)・`PDFDocument` の内の作り方 (`loadWithoutCopy`) | pdf-lib のまま |
 | (h) 書体を読む・字を並べる (fontkit) | fontManager.ts (32)・fontkitShaping.ts (40)・fontSanity.ts (27)・pdfRenderer.ts (26)・fontkitCffFlex.ts (23)・colorGlyph.ts (17)・fontLoader.ts (9)・fontkitEmptyGlyph.ts (8)・api.ts (7)・webFont.ts (6)・colorGlyphPdf.ts (3) | `@pdf-lib/fontkit` の `create`・`layout`・`getGlyph`・`createSubset`・WOFF2 の Brotli の展開 | @pdf-lib/fontkit のまま (1.4) |
@@ -70,7 +70,7 @@ src で pdf-lib を読み込むのは 12 ファイル。@pdf-lib/fontkit を読�
 |---|---|---|---|
 | 1 | TrueType の部分書体の字形を 4 バイトにそろえる (`patchFontkitSubset`。読めない字形を空にする所・書き出しの例外を受ける所を含む) | (d)(h) | 書体の埋め込みを自前にするとき (0.8.0 以降) に、自前の部分書体の書き手に入れる。fontkit 3.0.0 でも直っていない (1.4) |
 | 2 | CFF の OpenType を CIDFontType0C で埋め込む (`patchCffEmbedding`) | (d) | 書体の埋め込みを自前にするとき、その本体になる (CFF の部分書体は、もう `cff.ts` が作っている) |
-| 3 | PNG の IDAT をそのまま FlateDecode の画像にする (`embedPngAsIs`。自前の展開の `decodedPngEmbedder`・CMYK の画像も同じ形) | (e) | 画像の埋め込みを自前にするとき、`PngEmbedder` の原型を借りずに、画像の XObject を直に作る形にする |
+| 3 | PNG の IDAT をそのまま FlateDecode の画像にする (`embedPngAsIs`。自前の展開の `decodedPngEmbedder`・CMYK の画像も同じ形) | (e) | 画像の埋め込みを自前にするとき、`PngEmbedder` の原型を借りずに、画像の XObject を直に作る形にする。**0.8.0 でそうした (11 節。差し替えは消え、`src/imageEmbed.ts` に移った)** |
 | 4 | `encodeText` を覚えるものにし、字形の番号から符号にする (`memoEncode`) | (d) | 書体の埋め込みを自前にするとき、自前の符号の作り方になる |
 | 5 | 圧縮の関数を替える (`useDeflate`) | (c) | **P1 で書き手に取り込む**。書き手が、書くときに、圧縮する流れ (`PDFFlateStream`) を渡された関数で圧縮する (いまと同じバイト列。2.2)。差し替えは消す |
 | 6 | ページの命令の並びをじかに読み書きする (`pageOperators`) | (b) | ページの形を自前にするまで残す (0.8.0 より後。外さなくてもよい) |
@@ -108,7 +108,7 @@ src で pdf-lib を読み込むのは 12 ファイル。@pdf-lib/fontkit を読�
 
 1. **0.7.0: 書き出し (c)** (P1)。小さく、バイトで比べられ、流し書き (P2) の土台になる。
 2. **0.7.0: 流し書き** (P2)。
-3. 0.8.0: 画像の埋め込み (e)。小さく、ほとんどもう自前。先に埋め込む作り (P2 の 2.4) とも合う。
+3. 0.8.0: 画像の埋め込み (e)。小さく、ほとんどもう自前。先に埋め込む作り (P2 の 2.4) とも合う。**済み (11 節)**。
 4. 0.8.0 以降: 書体の埋め込み (d) と、上流の fontkit への移り (h)。一緒にする (1.4)。標準の書体の字の幅も、ここで表を持つ。
 5. その後: フォームの欄 (f)。使う文書が少ないので、急がない。
 6. 外さなくてもよいもの: オブジェクトの形と描く命令 (a)(b)、PDF を読む所 (g)。(a)(b) は量が多いだけで、困っていることが無い。(g) は、読む所の安全を自前で持つ重さが大きい。
@@ -522,3 +522,248 @@ PDF を書く間の生きている量は、PDF を書き始めた所と、書く
   (前は、作って消す間に受け手が無く、合図で終わると確かめのファイルが残った。全体の試験の重いときに 1 度だけ出た揺れは、試験がこのファイルを見つけて合図を送った形と合う)。
 - 受け手は、書いている一時のファイルが無くなっても、次の回り (`setImmediate`) まで外さない (すぐ外すと、同期の処理の間に届いて、まだ受け手に渡っていない合図が落ち、合図で終わらなくなる)。
 - 一時のファイルを作る前に、合図の受け手を置く (前は作った後に置いていて、その間に来た合図で残りえた)。
+
+## 11. 画像の埋め込みを自前にした (2026-11-24。0.8.0)
+
+利用者の決め (D-099) で、1.2 の (e) を 0.8.0 に入れた。ブラウザ・Web Worker で α 付きの PNG を PDF に入れる時間を縮める直し (OUT-111) と同じ束。
+
+- 置き場: `src/imageEmbed.ts` (新しいファイル)。`pdfLibPatches.ts` の差し替え 3 (`PngEmbedder` の原型の上の部品 `streamEmbedder`・`embedNow`) と、
+  PNG・JPEG の埋め込みの関数 (`embedPngChecked`・`embedPngAsIs`・`embedCmykImage`・`embedJpgNow`) を移し、pdf-lib の `embedJpg`・`embedPng`・`PngEmbedder`・
+  `JpegEmbedder`・`PDFImage` を使わない形にした。埋め込んだ画像は `PdfImage` (`ref`・`width`・`height` だけ) で、描く側 (`pdfRenderer.ts`・`colorGlyphPdf.ts`) は
+  `PDFImage` の代わりにこれを持つ。番号の取り方は pdf-lib と同じ (画像の番号を先に取り、SMask は後)。辞書の鍵と並びも同じ。
+- JPEG (`embedJpeg`): SOF (ITU-T T.81 §B.2.2) から幅・高さ・精度・成分の数を読み、ファイルをそのまま DCTDecode の流れにする。辞書は pdf-lib の `JpegEmbedder` と同じ
+  (CMYK は Decode [1 0 1 0 1 0 1 0])。pdf-lib との違いは、印の読み方を規格に合わせたこと: 詰め物の 0xFF・長さの無い印 (TEM・RST) を飛ばす、DAC (0xFFCC) を SOF と
+  取り違えない、バイト列の途中を指す JPEG (`subarray`) を初めから読む (pdf-lib は `imageData.buffer` の頭から読んでいた)。
+- PNG の展開 (`pixels.ts` の `decodePngForPdf`。非同期にした): どの形 (色の型 0・2・3・4・6、深さ 1〜16、tRNS、Adam7 の飛び越し) も自前で 8 ビットの RGB と α にする。
+  値は pdf-lib の展開 (UPNG の `toRGBA8` と `embedPng` の分け方) と同じ (16 ビットは上位の 8 ビット、色の表に無い番号は黒、α が全部 255 なら α は無し)。
+  UPNG の誤りは引き継がない: 1・2・4 ビットの飛び越しの PNG の走査線の大きさを少なく見積もって終わりの画素を落とす (画像の大きさによる)、
+  2 つ目からのパスの最初の行の平均のフィルタを違う位置に当てる、16 ビットの灰の tRNS を違う位置の 2 バイトと比べる。これらに当たる PNG を含む文書は、絵が仕様どおりに変わる。
+  動く PNG は、コマが 2 つ以上なら断り (pdf-lib も断っていた)、1 つなら IDAT の画像を入れる。壊れた画素のデータは、前と同じく「PNG: 画素のデータが壊れています」。
+  UPNG の止まらない展開を避けるための前の確かめ (`pngDataComplete`) は要らなくなったので消した。
+- 展開 (`imageDeflate.ts` の `inflateZlib`): Node は zlib (前と同じ)、Node でなく `DecompressionStream` があれば (ブラウザ・Web Worker) それ (出たバイト数が
+  走査線の大きさに届いたら読むのを止める)、どちらも断ったら自前の展開 (`inflateFast`。壊れた所まで)。展開せずに入れる PNG の確かめ (`idatComplete`) も同じ関数にした。
+- フィルタを戻す・RGB と α に分けるのは、行ごとに 1 度の走査にした。8 ビットの RGBA (画面の写しの形) は、行を 4 バイト境界の作業の行に写し、
+  Sub・Up・Average を 1 画素 (32 ビットの数) ずつまとめて戻す (バイトをまたぐ桁の上がりを出さない足し算と平均)。
+- 画素の圧縮 (`imageDeflater` の `CompressionStream` の道): Blob と Response を通さずに、書き手に 1 度に書き、読み手で集める (同じバイト列。1.5 倍ほど速い)。
+- pdf-lib に残る画像まわり: なし (`PDFHexString` などのオブジェクトの形 (a) は使う)。`@pdf-lib/upng` は pdf-lib の依存として入るが、Kumiori は呼ばない。
+
+### 11.1 測った値 (scripts/measure-png-embed.mjs。4 CPU の機械)
+
+197 ページ・1600×1000 の 8 ビット RGBA の PNG 333 枚 (計 55MB) の試しの文書を、利用者と同じ流れ (`createTypesetter` → `typeset` → `toPdf({ title, date, onProgress })`) で組んだ。
+秒。(a)〜(c) は画像ごとの処理を足した時間、(d) は toPdf から (a)〜(c) を引いたもの。
+
+| 所 | | (a) 展開 | (b) フィルタを戻す・α を分ける | (c) 画素の圧縮 | (d) そのほか | toPdf | 最初の onProgress まで | 全体 |
+|---|---|---|---|---|---|---|---|---|
+| Worker (Chromium) | 前 | 12.14 | 7.84 | 17.56 | −1.22 | 36.33 | 40.01 | 41.05 |
+| Worker (Chromium) | 後 | 3.46 | 5.69 | 10.28 | 0.96 | 20.39 | 24.89 | 25.71 |
+| Node | 前 | 2.30 | 6.12 | 11.62 | 1.88 | 21.92 | 22.49 | 22.97 |
+| Node | 後 | 1.82 | 4.64 | 11.28 | 0.98 | 18.72 | 19.61 | 20.15 |
+
+(d) は、別に測った (a)〜(c) を toPdf から引いた見積もりなので、揺れて負にもなる (前の Worker)。組版 (typeset) は Node 1.0〜1.4 秒・Worker 4.7〜5.3 秒で、変わらない。
+PDF は、前と後、Node と Worker のどれも同じバイト列 (同じ SHA-1)。リポジトリの文書と手元の見本の 270 文書 (`npm run compare:base`) も、どれも前と同じバイト列。
+
+残った時間の大半は、(c) の画素の圧縮 (Worker の `CompressionStream`、Node の zlib。どちらも圧縮の強さ 6 で、Node と Worker で同じバイト列を出す)。
+強さを下げる・画像ごとに別の Worker で圧縮するのは、PDF のバイト列が変わるか、Kumiori の外の作り (Worker の数) に関わるので、しない。
+速さの要る利用者は、`toPdf` の `deflate` に速い圧縮の関数を渡せる (画像の画素にも使う)。
+
+## 12. 文の多い文書のメモリの山を下げる (BACKLOG の P-01。設計の覚え書き 2026-11-24)
+
+### 12.1 測って分かったこと (文だけの 1,600 ページ。`scripts/measure-memory.mjs --doc text:11200 --mode stream`。このコンテナ、Node 22)
+
+- いま: ヒープの山 982MB・PDF を書く間の生きているヒープ 524MB・RSS の山 1,297MB・33.2 秒。
+- 組み終えた所 (`endSheets` の初め) で片付けた後のヒープは 520MB。全部のページの組版の途中の木 (`PageBuild` の `root`・`abs`) を手放すと 107MB。
+  **山の 410MB (8 割) は、全ページの組版の途中の木**で、残り (入力の木・スタイル・フォント・行分けのキャッシュ) は 107MB。
+- 同じ全ページを領域の木 (`SheetArea`) にして持つと 548MB (組版の途中の木より大きい)。JSON にすると 786MB。
+  中間の形にして持つのでは下がらない。下げるには、**確定したページを、組んでいる間に PDF の命令 (圧縮した中身の流れ。この文書で全部で 2.2MB) にして、木を手放す**しかない。
+
+### 12.2 いまの作りで、組みながら手放せない理由
+
+- PDF の側 (`renderPdfPages`) は、先に全部のページをたどって (scan) 使うフォント・画像・色つきの文字を集め、`fonts.all()` の順でフォントを埋め込み、画像を埋め込んでから、
+  ページを描画する (paint)。フォントの資源の名前・部分フォントの印 (`subsetTag(埋め込んだ順)`)・オブジェクトの番号 (フォントと画像が先、ページの流れが後) は、全部のページを見てから決まる。
+  そのため、ページを描画するには全部のページが組み終わっている必要があり、組み終えるまで全部の木を持つ (いまの 520MB)。
+- フォント・画像の番号を後で決める (取っておく) こともできない (いくつ要るかが、組み終えるまで分からない)。
+  **組みながら描画すると、PDF のバイト列 (オブジェクトの番号と並び・部分フォントの印・資源の名前) は、どうしても変わる** (ページの中身の命令・見た目は同じ)。
+  (12.4 では、画像・色つきの文字の無い文書だけを組みながら描画し、そうした文書は、どの書き出しでもフォントを初めて使うページの前で埋め込む形にして、
+  変わる文書を、2 ページ目から後で初めて使うフォントのある文書に減らした)
+- 画像の埋め込み (展開・圧縮) と色つきの文字の用意は非同期で、組版は 1 つの page-sequence の中では同期 (Flow の再帰の中) なので、
+  画像・色つきの文字の要るページは、組版が待てる所 (page-sequence の境目・組み終わり) まで描画できない。フォントの埋め込みは同期にできる (fontkit は同期)。
+
+### 12.3 案 (利用者の決めを取りまとめ役に尋ねた。推奨を最初に)
+
+1. (推奨。これで作った。下の 12.4) PDF の書き出しを「初めて使う所で埋め込む」形にし、組みながら確定したページを描画して手放す。
+2. 流し書き (`typesetToPdfStream`・コマンド) だけ「初めて使う所で埋め込む」(流した PDF と流さない PDF のバイト列が違うようになる)。
+3. PDF のバイト列を変えない: メモリ節約 (`lowMemory`) の組版で、page-sequence の中でもページごとに手放す (2 回組むので、時間は約 2 倍)。
+
+利用者が 1 を選んだ (D-106。問 2 の Typesetter の扱いは、前の文書の組版のキャッシュがあるときは再利用して手放さない、無いときは手放す)。1 は、尋ねた後で、バイト列の変わる文書がずっと少ない形に詰め (12.4 の「PDF の側」)、取りまとめ役が 1 の範囲の中として承った。
+
+### 12.4 作ったもの
+
+**組版の側** (`layoutEngine.ts` の `PageEmitter`・`emitPages`・`emitOne`):
+
+- `layoutSheets`・`layoutSheetsPaced` に渡す先 (`PageEmitter`。内部の口で、公開の API には出さない) を渡すと、1 段の page-sequence で次のページを作った所 (`mkPage`) で、
+  前のページを確定したページとして、柱を組んで領域の木にして渡し、受けたら組版の途中の木を手放す (`releasePage`。マーカー・番号・マスターは残す。後ろのページの柱が引く)。
+  page-sequence を組み終えたら、残りのページを渡す。`SheetSource.emitted` が渡したページの数で、`sheet`・`release` は、その後ろのページだけを作る。
+- 渡せるのは、組み直しの 1 回目で、そのページまでの本文が、まだ置いていない参照先 (前向きのページ番号の参照・page-number-citation-last・物理的なページ番号・総ページ数) を
+  引いていないとき (`host.cite` が、引いたページを `unsafeAt` にする)。柱を組む間に、まだ置いていない参照先か総ページ数を引いたら、そのページを渡さない。
+  ページごとの脚注番号・段組・最後のページのマスター (last・only・rest) の page-sequence に来たら、そこから後ろは渡さない (ページの順を保つ)。
+  索引・先頭から N ページで止める組版・組み直しの確認 (resumeCheck・遅く戻る試し) の文書と、前の文書の組版を再利用できるとき (Typesetter が `typeset` でキャッシュした文書) は、渡さない。
+- 組み直しの 2 回目からの回は、1 回目に渡したページを組み直したもの (同じ値で組むので同じページ) を、渡さずに手放す。回の終わりの柱は、渡したページを飛ばし
+  (渡すときに組んだ柱の警告を、柱の警告の初めに足す)、行番号の数えは、渡した最後のページの後から続ける (1 回目に、柱を組んでから断ったページがあれば、その後から)。
+- 確認の切り替え (`emitProbe.keep`): 渡したページの組版の途中の木を手放さずに持ち、組み終えた所で、渡したときの領域の木と、組み終えたページから作り直した領域の木を、
+  JSON で比べる (`test/pdfEmit.test.ts`。違えば、確定の決まりに漏れがある)。
+
+**PDF の側** (`pdfRenderer.ts` の `PdfPageSource.layout`・`pageFonts`・`embedFontSync`):
+
+- 画像 (背景の画像を含む)・色つきの文字の無い文書 (先のたどりで見つからない文書) は、フォントを、初めて使うページを描画する前に埋め込む
+  (同じページで初めて使うフォントどうしは `fonts.all()` の順)。組みながら描画するかどうかに関わらず、どの書き出し (`typesetToPdf`・`typesetToPdfStream`・
+  Typesetter の版・`toPdf`・`toPdfStream`・メモリ節約) でも同じにするので、`typesetToPdf` と `typeset` の後の `toPdf` と流し書きのバイト列は、いまのまま同じ。
+  それ以外の文書 (画像・色つきの文字のある文書) は、いまのまま、描画する前に使うフォントを全部埋め込む。
+- バイト列が変わるのは、画像・色つきの文字の無い文書のうち、2 ページ目から後で初めて使うフォントのある文書だけ (フォントの番号と部分フォントの印の並び。ページの中身・見た目は同じ)。
+- 出どころが `layout` を持つと、先のたどりの前に、ページを描画する関数を渡して呼ぶ (出どころは組みながら確定したページを渡す)。描画する関数は同期で
+  (組版は 1 つの page-sequence の中では待てない)、フォントの埋め込みも同期で作る (`embedFontSync`。pdf-lib の `embedFont` と同じ物・同じ番号の取り方)。
+  画像・色つきの文字のあるページは断る (画像の埋め込みは非同期)。カラーフォントのある文書・PDF/X・PDF/A では、組みながら描画しない
+  (`layout` を、描画する関数を渡さずに呼ぶ)。組み終えたら、残りのページを、いまのとおり先にたどってから描画する。
+- 流し書きでは、描画したページの流れを、描画し終えた所で書き出し先へ書く (いまと同じ)。組版の間は書き出し先を待てないので、待たせる書き出し先 (`Promise`・`WritableStream`) では、
+  圧縮した塊をためる (メモリ節約の組み直しと同じ)。組みながら描画する間は、PDF の進み具合を知らせず、組み終えた所で、描画したページの数を 1 度知らせる。
+
+**API の側** (`api.ts`): `typesetToPdf`・`typesetToPdfStream` (関数と Typesetter の版) は、画像の格納先が空で、文書に背景の画像 (url の画像・グラデーション) が無く、
+OS のフォント (`systemFonts`) を使わない文書で、組みながら描画する (画像のあるページが後ろにあると、そのページから後ろを組み終えてから描画することになり、
+フォントと画像の番号の並びが、組み終えてから描画するとき (`toPdf`) と変わるため。OS のフォントは、組版の途中でカラーフォントを読みうるため)。
+構造の木は、組む前に、入力の節の並びから作る。`TypesetResult.toPdfStream` は、組んだ結果が全部の領域の木を持つので、メモリは変わらない。
+
+
+### 12.5 測った値 (`scripts/measure-memory.mjs`。このコンテナ、Node 22・4 CPU)
+
+前は 875f85a (束 D の後)、後はこの変更。「組版の間の生きているヒープ」は、組み直しの回の 100 ページごとに片付けてから見た量の山 (この変更で道具に足した)。
+「PDF を書く間」は 9.1 と同じ。時間は、組み始めから PDF を書き終えるまで (片付けの時間を含む)。
+
+| 文書 | 形 | 組版の間の生きているヒープ | PDF を書く間の生きているヒープ | ヒープの山 | RSS の山 | 時間 |
+|---|---|---|---|---|---|---|
+| 文だけ (1,600 ページ・PDF 2.2MB) | `typesetToPdf` | 525 → 127MB | 523 → 121MB | 627 → 373MB | 1,054 → 564MB | 37.4 → 30.2 秒 |
+| 同 | 流し書き | 525 → 126MB | 523 → 121MB | 617 → 358MB | 1,043 → 555MB | 37.5 → 28.1 秒 |
+| 対応仕様説明書 (HTML。147 ページ。画像があるので組みながら描画しない) | `typesetToPdf` | 184 → 184MB | 209 → 211MB | 342 → 433MB | 735 → 796MB | 28.5 → 25.2 秒 |
+| 同 | 流し書き | 184 → 184MB | 211 → 209MB | 352 → 331MB | 757 → 732MB | 27.5 → 26.6 秒 |
+| 画像 200 枚 (PDF 196MB。組みながら描画しない) | `typesetToPdf` | 49 → 49MB | 53 → 53MB | 68 → 68MB | 1,155 → 1,160MB | 3.8 → 3.5 秒 |
+| 同 | 流し書き | 49 → 49MB | 53 → 53MB | 68 → 67MB | 975 → 966MB | 3.7 → 3.8 秒 |
+
+- 文だけの文書は、全部のページを組みながら描画し、生きているヒープは、ページの木の無い 107MB (12.1) に近くなった。時間が短くなったのは、組みながら描画したページの
+  領域の木を 1 度だけ作るため (前は、先のたどりと描画で 2 度作っていた)。
+- 対応仕様説明書と画像の多い文書は、組みながら描画しないので、生きている量は変わらない (ヒープの山・RSS の山・時間の違いは、片付けの時機と機械の揺れ)。
+  画像のある文書の山を下げるのは P-05 (画像の格納先が組む前に全部を読む作りの見直し) と一緒に、画像を初めて使う所で埋め込む形を作るとき。
+- `npm run perf:compare -- --base 875f85a --head .` (組版の `typeset` の CPU の時間。5 組) は、遅い文書なし (比 html-spec 0.961・fo-spec 1.019・gen:table 1.076・gen:rules 0.881・gen:para 0.985・gen:fonest 0.957)。
+- `npm run compare:base -- --base 875f85a --head .` (270 文書。ah・css-print は既定のフォント) は、変わった文書 0・バイトも同じ 257・見た目は同じでバイトの違う文書 13
+  (アンテナハウスのサンプル 12 と WeasyPrint の book-classical。2 ページ目から後で初めて使うフォントの番号と部分フォントの印が、後ろに回った。`test/intended-changes.json` に足した)。
+  13 文書は、どのページも `pdftoppm -r 150` の画素が前とまったく同じ (前と後の PPM のバイト列を比べた)。
+
+### 12.6 残したもの
+
+- 画像・色つきの文字のある文書を組みながら描画すること。画像・色つきの文字の埋め込み (展開・圧縮) は非同期で、組版は 1 つの page-sequence の中では待てないので、
+  いまは、そうした文書のメモリは下がらない (12.5 の対応仕様説明書・画像 200 枚の文書)。下げるには、画像を組む前に非同期で用意しておき (展開・圧縮。画像の格納先が
+  組む前に全部を読むいまの作りに乗る)、組版の中では番号を取って書くだけにする形 (コード 300 行・試し 200 行ほど。用意した画像の圧縮したデータを書くまで持つので、
+  画像の多い文書の山 (約 780MB) は、それだけでは下がらない) と、P-05 の、画像を初めて使う所で読み、埋め込んだら手放す作りを合わせる (合わせて 2〜3 日の見込み)。
+- 前向きの参照 (目次など) のある文書の、参照のあるページから後ろ。組み直しの 2 回目からの回で、値の決まったページから渡す作りが要る (resumable-flow の 8.1 の (a))。
+- 段組・最後のページのマスターの page-sequence (組み終えるまでページが決まらない)。
+- Typesetter が前の文書の組版を再利用するとき (再利用するページは前の文書の木。再利用した後のページを渡す決まりが要る)。
+
+## 13. 画像と色つきの文字のある文書のメモリ (束 E2。BACKLOG の P-01 の残りと P-05。設計の覚え書き 2026-11-25)
+
+### 13.1 測って分かったこと (画像 200 枚の文書。`scripts/measure-memory.mjs --doc images`。前は 3fe6117)
+
+- 外のバイト列の山は、読み込み (resources) の所で 787MB。うち 533MB は測る側が組む前から持つもの (渡した画像のファイル 216MB と、既定のフォントなど)。
+  Kumiori が足すのは 254MB で、その大半は、画像の格納先 (`AssetStore`) が、渡されたファイルの中身を写して持つ分 (216MB)。
+  画像のピクセルは、Node では持たない (PNG は、展開せずにそのまま入れるか、埋め込むときに 1 枚ずつ展開する)。
+- ブラウザー (画面・Web Worker) では、読み込みのときに、どの画像も `createImageBitmap` (SVG は `<img>`) で画素にして、結果ごとに持つ。
+  使う側の測りでは、197 ページの本の結果の見積もり 328MB の大半が、この画素。
+
+### 13.2 案 (取りまとめ役に尋ねた。推奨を最初に。利用者が 3 つとも推奨 (A) を選んだ: D-111)
+
+**PDF の側**
+
+- (a) 画像を「用意」と「埋め込み」に分ける。用意 (非同期) は、PDF のオブジェクトを作らずに、画像の流れの中身を作る (PNG は、そのまま入れる形かを確かめるか、
+  展開して RGB と α を圧縮する。JPEG は頭を読む。SVG は、図形にして、中の画像を用意し、`@font-face`・foreignObject を読む)。
+  埋め込み (同期) は、用意したものを、番号を取って PDF に入れるだけ。
+- (b) 埋め込みは、どの書き出しでも、画像を初めて使うページを描画する直前にする (フォントも、初めて使うページの前。12.4 の文だけの文書と同じ決まりを、
+  画像のある文書に広げる)。組みながら描画するときは、組む前に用意しておく。組みながら描画しないとき (`typeset` の後の `toPdf` など) は、描画の前に用意する。
+  番号の並びは、ページの順だけで決まるので、組みながら描画しても、しなくても、同じバイト列になる。組版の途中で増える画像 (背景のグラデーションを SVG にしたもの)
+  は、同期で用意できるので、そのページで用意して埋め込む。
+- (c) 画像のある文書の PDF は、どれもバイト列が 1 度変わる (オブジェクトの番号の並び。フォントと画像が、文書の初めでなく、初めて使うページの前に回る。見た目は同じ)。
+- (d) 用意できない画像 (置く大きさで中身が変わるもの: `imageMaxDpi` で縮める JPEG、ブラウザーで PNG に直す GIF・BMP・WebP・TIFF、filter を画素で計算する SVG、
+  `systemLanguage` のある SVG、PDF の画像 (ページを写すので、作るのが重い)) が 1 つでもある文書と、PDF/X・PDF/A は、いまのまま
+  (組み終えてから、先に全部を埋め込む)。どの書き出しでも同じ決まりにする (画像の格納先にある画像で決める)。
+- (e) P-05: 画像の格納先は、値で渡された中身 (`files` の `Uint8Array`・`ArrayBuffer`、`resolveResource` の返したもの) を写さずに、そのまま持つ (呼ぶ側も持っているので、
+  Kumiori の分は 0 になる。結果の `memoryUsage()` の `images` にも数えない)。PDF だけを作るとき (`typesetToPdf`・`typesetToPdfStream`) は、用意し終えた画像の中身を、
+  画像の格納先から手放す (いまは全部を埋め込み終えてから)。関数で渡されたファイルは、いまのとおり 1 度だけ読む
+  (組版には画像の大きさが要るので、組む前に読む。読み直して 2 度読むことはしない)。
+  - 別の案: 関数で渡されたファイルは、大きさを読んだら手放し、埋め込むときに読み直す (呼ぶ側が持たない形で渡せば Kumiori の分は 0 になるが、読みが 2 度になる)。
+- (f) 色つきの文字 (カラーフォント): いまは、先に文書の全部をたどって、使う字形の画像 (CBDT・sbix・SVG の中の画像) を埋め込む。
+  案: 色つきの文字の描き手を、文書の初めに作り (番号を取らない。初めて描く字で取る)、字形の画像は、初めて描く所で同期で埋め込む
+  (そのまま入れられない PNG の圧縮は、同期の圧縮 (`deflate` の指定、無ければ pako) にする。Node と Worker で同じバイト列)。
+  カラーフォントを使う文書の PDF のバイト列も 1 度変わる (字形の画像の圧縮の結果も変わることがある。見た目は同じ)。
+
+**描画の側** (D-109・API-74)
+
+- (g) `renderPage` を `Promise<void>` にする (推奨)。描画する前に、そのページの画像を、Typesetter 全体の画像のキャッシュから引き、無ければデコードして入れ
+  (非同期)、そろってから同期で 1 度に描画する (Canvas が途中まで描かれた形で見えない)。読み込みのときには画素を作らず、大きさは画像の頭から読む。
+  - 別の案: `renderPage` は同期のまま、読み込みのときに画素を作り (いまのとおり)、そのキャッシュを Typesetter 全体で 1 つにして中身ごとに分け合うだけにする
+    (上限で捨てた画像は、描けなくなる (同期では作り直せない) ので、上限を置けない)。
+- (h) キャッシュは Typesetter 全体で 1 つ (鍵は画像の中身)。上限は `createTypesetter({ imageCache: { maxBytes } })` (既定 256MB)。
+  捨てる順は、使っている結果 (dispose していない結果) が無くなった画像を先に、残りは LRU。描画の途中の画像は捨てない (閉じた `ImageBitmap` を引かない)。
+  Typesetter を使わない `typeset` の結果は、結果ごとのキャッシュ (同じ既定の上限) を持ち、`dispose` で手放す。
+- (i) `Typesetter.memoryUsage()` の `caches` に数え、内訳の欄 `cacheDetail: { images, lines, pages, fontPrep }` を足す。`releaseCaches(kinds?)` の `kinds` は
+  `{ images?, lines?, pages?, fontPrep? }` (引数なしは全部)。結果の `memoryUsage().images` からは、このキャッシュの分を外す。
+
+### 13.3 作ったもの
+
+**PDF の側** (`imageEmbed.ts`・`pdfRenderer.ts` の `lazyImages`・`colorGlyphPdf.ts`・`api.ts`):
+
+- `imageEmbed.ts`: 埋め込みを、用意 (`preparePng`・`prepareJpeg`。PNG の確かめ・展開・圧縮をここでする。PDF のオブジェクトを作らない) と、
+  埋め込み (`embedPrepared`。番号を取って流れを入れるだけ。同期) に分けた。`embedPngChecked`・`embedJpeg` は、この 2 つをつないだもの (番号の取り方は前と同じ)。
+  そのまま入れる PNG の IDAT は、埋め込むときにつなぐ (用意した画像が、元のファイルの写しを持たない。中身は元のファイルの部分の配列)。
+- `lazyImages`: 画像の格納先の画像を全部用意する (`prepareAll`。SVG を先に: 中の画像のファイルの中身を読むため)。ページを描画する直前に、そのページで初めて使う画像
+  (画像の領域と背景の画像。`imageScanner` と同じ順) を埋め込み (`commit`)、埋め込んだ SVG の中の文字のフォントを埋め込む。同じ中身の画像は 1 つの XObject (embedImages と同じ)。
+  使ったことの数え (`AssetStore` の `onUse`。コマンドの、使った画像の一覧) は、用意では数えず (`AssetStore.peek`)、埋め込むときに数える。
+  組版の途中で足す背景のグラデーションの SVG (`@font-face`・foreignObject・中の画像の無いもの) は、待たずに用意する。
+  - 用意できない画像 (`ok` が false): PDF の画像、`imageMaxDpi` の JPEG、ブラウザーで PNG に直してから入れる画像 (PNG・JPEG でないラスター画像と、埋め込めない PNG・JPEG)、
+    `systemLanguage` のある SVG、filter を画素で計算する SVG (近似しても画素の計算の要る SVG)。
+- `renderPdfPages`: PDF/X・PDF/A でなければ、まず `prepareAll` し、用意できない画像が無ければ、どの書き出しでも、フォントと画像を初めて使うページの直前で埋め込む。
+  組みながら描画するときは、画像の用意できていないページ (組版の途中で足した、待たずに用意できない画像のあるページ) を断る (そのページから後ろは、組み終えてから用意して描画する)。
+- 色つきの文字: 描き手 (`PdfColorGlyphs`) を、色つきの字を初めて描くページの直前で作り (`PdfColorGlyphs.lazy`。Type 3 書体の資源の番号を、そこで取る)、
+  字形の画像は、先のたどりで集めて用意し (`imageCollector`・`prepareGlyphImages`)、初めて描く所で埋め込む (圧縮は前と同じ関数なので、字形の画像の中身は前と同じ)。
+  組みながら描画するときは、組む前には使う字形が分からないので、画像のある色つきの字形 (CBDT・sbix・SVG の中の画像) のページを断る (COLR の字形・SVG の図形の字形は描画する)。
+- `api.ts`: 組みながら描画するかを `renderPdfPages` が決めるので、`typesetToPdf`・`typesetToPdfStream` は、OS のフォントを使う文書のほかは、どれも渡す
+  (前は画像・背景の画像のある文書を渡さなかった)。
+- P-05: 画像の格納先は、渡された中身 (`files`・`resolveResource`) を写さずに持つ (`AssetStore.addBytes`)。PDF だけを作るとき (`releaseImageBytes`) は、用意し終えたラスター画像の中身を、
+  格納先から手放す (呼ぶ側が持つ中身は、呼ぶ側が持ち続ける)。関数で渡されたファイルは、いまのとおり 1 度だけ読む (読み直さない)。
+
+**描画の側** (`imageCache.ts`・`assets.ts`・`canvasRenderer.ts`・`api.ts`):
+
+- `AssetStore` の `deferDecode` (api.ts の組んだ結果だけ。画面 (`main.ts`) は今のまま): ブラウザーの PNG・JPEG・GIF・WebP・BMP は、読み込みのときに 1 度デコードして
+  読めるかと大きさ (EXIF の向きを当てた大きさ) を確かめ、すぐ閉じる (`ImageAsset.deferred`)。読めない画像の扱いと大きさは、前と同じ (頭から読むだけにすると、壊れた画像の知らせが出なくなり、
+  EXIF の向きの読み違えで大きさが変わりうる)。読み込みのデコードの時間は前と同じで、描画するときに、もう 1 度デコードする。
+- `ImageCache`: 鍵は画像の中身 (長さ・FNV-1a の 2 つの散らし値・種類)。`lease(持ち主, 画像)` で、そろえてから返し、`done` まで捨てない。上限を超えたら、持ち主の無い画像を古いものから、
+  次に残りを古いものから捨てて `close()` する。`release(持ち主)` は持ち主を外すだけ (閉じない)。`clear()` は、引いていない画像を全部捨てる。
+- `renderPage` は `Promise<void>`。`deferredImagesOf` (ページの画像の領域・背景の画像・SVG の中の外の画像のファイル) をキャッシュから引き、そろってから `renderSheetToCanvas` で
+  同期で描画する (`CanvasRenderOptions.deferredImage`)。SVG の中の画像は、キャッシュの画像から読んだ画素を覚えない (キャッシュの画像は後で閉じることがある)。
+- キャッシュは `createTypesetter` が 1 つ作る (`TypesetterOptions.imageCache.maxBytes`。既定 256MB)。関数の `typeset` などは、結果ごとに作り (`buildTypesetter` の privateImages)、
+  `dispose` で全部捨てる。`Typesetter.memoryUsage()` に `cacheDetail` (`images`・`lines`・`pages`・`fontPrep`)、`releaseCaches(kinds?)` (`SharedLineMemo` の `clearLines`・`clearPages`)。
+
+### 13.4 測った値
+
+`scripts/measure-memory.mjs` (Node 22.23.5・4 CPU) と `scripts/measure-render-memory.mjs` (Chromium 158 の Web Worker) の前 (3fe6117) と後の値は、`docs/development.md` の
+「メモリの山の測り」と「描画のメモリと時間の測り」の表にある。要点:
+
+- 画像の多い文書 (PNG 200 枚): 外のバイト列の山 787 → 565MB、RSS の山 1,170 → 925MB (ストリームは 962 → 744MB)、時間 3.7 → 2.4 秒。下がったのは、主に画像をコピーしなくなったため。
+- 画像の多い本 (197 ページ・α 付きの PNG 333 枚): `typesetToPdf` の RSS の山 537 → 485MB、時間 21.5 → 18.9 秒。ストリームでは、組む前に用意した画像を持つので、外のバイト列の山が 188 → 221MB に上がる
+  (組版の途中の木は 56MB ほどで、もともと小さい)。
+- 対応仕様説明書 (HTML): 先頭の目次 (前向きのページ番号の参照) で、2 ページ目から後ろは組み終えてから描画するので、変わらない (12.6 の残り)。
+- 描画 (結果 2 件・全部のページ): Chromium の RSS の山 5,634 → 1,598MB (上限 64MB で 1,475MB)。全部のページの描画は 1.2 → 7.1 秒 (上限に収まらない画像をデコードし直す)。
+- `npm run compare:base -- --base 3fe6117 --head .` (270 文書): 変わった文書 0・見た目は同じでバイトの違う文書 17 (対応仕様説明書 4・アンテナハウスのサンプル 9・examples の draw.io の図・
+  『CSSページ組版入門』・WeasyPrint の book と report)。17 文書は、どのページも `pdftoppm -r 150` の画素が前とまったく同じ (前と後の PPM のバイト列を比べた)。`test/intended-changes.json` に足した。
+- `npm run perf:compare -- --base 3fe6117 --head .` (組版の `typeset` の CPU の時間。5 組): 遅い文書なし (比 html-spec 0.960・fo-spec 0.970・gen:table 1.031・gen:rules 0.979・gen:para 0.884・gen:fonest 0.982)。
+
+### 13.5 残したもの
+
+- 組む前に用意した画像を、初めて使うページまで持つこと (13.4 の本のストリーム)。組版は page-sequence の中で待てないので、用意を組版と並べて進めるには、組版の途中で待てる所が要る。
+- 置く大きさで中身が変わる画像・PDF の画像のある文書 (13.3 の `ok` が false の文書)。PDF の画像は、ページを写す所 (`pdfImageEmbed.ts`) を、用意と埋め込みに分ければ入れられる。
+- ビットマップの色つきの字形のある字のページから後ろ (組み終えるまで、使う字形が分からない)。
+- 前向きの参照のある文書の、参照のあるページから後ろ (12.6 のまま)。

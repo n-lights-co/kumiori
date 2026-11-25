@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 490" width="960" height="490" role="img" aria-labelledby="title">
+<title id="title">Overview: four entry points into one typesetting pipeline</title>
+<style>
+:root { --bg: #ffffff; --fg: #1c2230; --muted: #5a6476; --line: #b9c1cf; --panel: #f4f6f9;
+  --accent: #2c4c8a; --accent-soft: #e3e9f5; --hot: #b8432a; --hot-soft: #f8e6e1; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1a2030; --fg: #e2e7f0; --muted: #9aa4b6; --line: #48526a; --panel: #141925;
+  --accent: #8eaeea; --accent-soft: #1e2a44; --hot: #f08b6d; --hot-soft: #3a231e; } }
+.bg { fill: var(--bg); }
+text { fill: var(--fg); font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", "Meiryo", system-ui, sans-serif; font-size: 12px; }
+.t { font-weight: 700; font-size: 13px; }
+.m { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11px; fill: var(--muted); }
+.m.strong { fill: var(--fg); font-size: 12px; }
+.s, .lab { font-size: 11px; fill: var(--muted); }
+.labh { font-size: 11px; fill: var(--hot); }
+.lane { font-size: 12px; font-weight: 700; fill: var(--accent); }
+.colh, .gt { font-size: 12px; font-weight: 700; fill: var(--muted); }
+.b { fill: var(--bg); stroke: var(--line); stroke-width: 1.2; }
+.k { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+.h { fill: var(--hot-soft); stroke: var(--hot); stroke-width: 1.5; }
+.g { fill: none; stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 6 4; }
+.g2 { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
+.lazy { fill: none; stroke: var(--hot); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.tree { fill: none; stroke: var(--line); stroke-width: 1.2; }
+.wait { stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 3 4; }
+.a { fill: none; stroke: var(--fg); stroke-width: 1.3; }
+.a.dash { stroke-dasharray: 5 4; stroke: var(--muted); }
+.a.hot { stroke: var(--hot); stroke-width: 1.5; }
+.mk { fill: var(--fg); }
+.mkh { fill: var(--hot); }
+</style>
+<defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" class="mk"/></marker>
+<marker id="mh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" class="mkh"/></marker></defs>
+<rect class="bg" x="0" y="0" width="960" height="490" rx="8"/>
+<rect class="b" x="20" y="20" width="210" height="56" rx="6"/><text class="t" x="125" y="44.5" text-anchor="middle">Web app</text><text class="m" x="125" y="59.5" text-anchor="middle">index.html・main.ts</text><rect class="b" x="250" y="20" width="210" height="56" rx="6"/><text class="t" x="355" y="44.5" text-anchor="middle">Node CLI</text><text class="m" x="355" y="59.5" text-anchor="middle">cli.ts</text><rect class="b" x="480" y="20" width="210" height="56" rx="6"/><text class="t" x="585" y="44.5" text-anchor="middle">Library</text><text class="m" x="585" y="59.5" text-anchor="middle">kumiori・kumiori/node</text><rect class="b" x="710" y="20" width="230" height="56" rx="6"/><text class="t" x="825" y="44.5" text-anchor="middle">Browser bundle</text><text class="m" x="825" y="59.5" text-anchor="middle">kumiori/browser</text><rect class="k" x="250" y="130" width="690" height="56" rx="6"/><text class="t" x="595" y="154.5" text-anchor="middle">Public API (api.ts)</text><text class="m" x="595" y="169.5" text-anchor="middle">typeset・typesetToPdf・typesetToPdfStream・createTypesetter</text><polyline class="a" points="355,76 355,128" marker-end="url(#m)"/><polyline class="a" points="585,76 585,128" marker-end="url(#m)"/><polyline class="a" points="825,76 825,128" marker-end="url(#m)"/><text class="lab" x="362" y="106" text-anchor="start">typesetToPdf etc.</text><rect class="g" x="10" y="228" width="940" height="116" rx="10"/><text class="gt" x="24" y="248">Typesetting pipeline</text><polyline class="a dash" points="125,76 125,226" marker-end="url(#m)"/><text class="lab" x="132" y="140" text-anchor="start">calls modules directly</text><text class="lab" x="132" y="156" text-anchor="start">(EPUB only here)</text><polyline class="a" points="595,186 595,226" marker-end="url(#m)"/><text class="lab" x="602" y="212" text-anchor="start">runs each stage</text><rect class="b" x="20" y="256" width="170" height="70" rx="6"/><text class="t" x="105" y="287.5" text-anchor="middle">Import</text><text class="s" x="105" y="302.5" text-anchor="middle">HTML+CSS・XSL-FO</text><rect class="k" x="217" y="256" width="150" height="70" rx="6"/><text class="t" x="292" y="287.5" text-anchor="middle">Logical tree</text><text class="m" x="292" y="302.5" text-anchor="middle">LDocument</text><rect class="h" x="394" y="256" width="170" height="70" rx="6"/><text class="t" x="479" y="287.5" text-anchor="middle">Layout</text><text class="m" x="479" y="302.5" text-anchor="middle">LayoutEngine</text><rect class="k" x="591" y="256" width="150" height="70" rx="6"/><text class="t" x="666" y="287.5" text-anchor="middle">Area tree</text><text class="m" x="666" y="302.5" text-anchor="middle">AreaTree</text><rect class="b" x="768" y="256" width="172" height="70" rx="6"/><text class="t" x="854" y="287.5" text-anchor="middle">Rendering</text><text class="m" x="854" y="302.5" text-anchor="middle">PDF・Canvas・SVG・PNG</text><polyline class="a" points="190,291 215,291" marker-end="url(#m)"/><polyline class="a" points="367,291 392,291" marker-end="url(#m)"/><polyline class="a" points="564,291 589,291" marker-end="url(#m)"/><polyline class="a" points="741,291 766,291" marker-end="url(#m)"/><polyline class="a dash" points="480,344 480,378" marker-end="url(#m)"/><text class="lab" x="488" y="366" text-anchor="start">uses</text><rect class="g" x="10" y="380" width="940" height="100" rx="10"/><text class="gt" x="24" y="400">Shared by every stage</text><rect class="b" x="26" y="408" width="214" height="56" rx="6"/><text class="t" x="133" y="432.5" text-anchor="middle">Fonts and measuring</text><text class="m" x="133" y="447.5" text-anchor="middle">FontManager・Measurer</text><rect class="b" x="255" y="408" width="214" height="56" rx="6"/><text class="t" x="362" y="432.5" text-anchor="middle">Image store</text><text class="m" x="362" y="447.5" text-anchor="middle">AssetStore</text><rect class="b" x="484" y="408" width="214" height="56" rx="6"/><text class="t" x="591" y="432.5" text-anchor="middle">Call context</text><text class="m" x="591" y="447.5" text-anchor="middle">callContext・limits</text><rect class="b" x="713" y="408" width="221" height="56" rx="6"/><text class="t" x="823.5" y="432.5" text-anchor="middle">Diagnostics and messages</text><text class="m" x="823.5" y="447.5" text-anchor="middle">diagnostics・messages</text>
+</svg>

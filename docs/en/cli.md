@@ -170,7 +170,7 @@ A "—" in the "Default" column means that the behavior is off unless the option
   - What gets faster is laying out and writing the PDF; reading the document and the cascade are done for the whole document
   - A `--pages` range pointing after page N is an error, as a page the document does not have
 - SVG gets links (links on the pages and links inside SVG images) that pass the same rules as the PDF (`--link-schemes`, `--link-launch`, `--link-relative`; see [Links](#links)). A link to another page of the document becomes the file name that page is written to with `#id` added (`book-3.svg#id`, in the same directory; pages not chosen with `--pages` get that name too), and a link within the same page becomes `#id` (links to other pages are not written when writing to standard output). ⚠️ When the written SVG is shown with an HTML `img`, browsers do not let its links be followed (they can be followed when the SVG is opened directly or put straight into HTML)
-- PNG gets no links. SVG and PNG get no annotations or form fields. They cannot be combined with options that only apply to PDF (`--pdfx`, `--pdfa`, `--pdfua`, `--output-profile`, `--output-condition`, `--tagged`, `--image-max-dpi`, `--low-memory`)
+- PNG gets no links. SVG and PNG get no annotations or form fields. They cannot be combined with options that only apply to PDF (`--pdfx`, `--pdfa`, `--pdfua`, `--output-profile`, `--output-condition`, `--tagged`, `--image-max-dpi`, `--low-memory`, `--encrypt`, `--user-password`, `--owner-password`, `--deny`)
 
 ### Style and compatibility
 
@@ -240,6 +240,25 @@ A "—" in the "Default" column means that the behavior is off unless the option
 - The written PDF is read back and checked against the requirements, and the output stops with an error if it does not meet them
 - Combining it with `--pdfx` needs `--output-profile` (CMYK); colors are then converted to CMYK as for PDF/X (two output intents are written, referring to the same profile)
 - PDF/A-1b and the a level (accessible; needs tagged PDF) cannot be written
+
+### Encryption
+
+| Option | Argument / type | Default | Description |
+| --- | --- | --- | --- |
+| `--encrypt` | — | — | encrypt the PDF (AES-256; revision 6 of the standard security handler, ISO 32000-2 §7.6). Giving any of the three below also encrypts |
+| `--user-password` | string | — | the password to open the PDF. Without it, the PDF opens without a password and only the `--deny` restrictions apply |
+| `--owner-password` | string | random | the password to open it without the restrictions. Without it, a random password: nobody can remove them |
+| `--deny` | list of permissions (`,`-separated; repeatable) | — | what to forbid: `print` (printing), `modify` (changes), `copy` (copying and extraction), `annotate` (annotations), `fill-forms` (filling in forms), `accessibility` (extraction for assistive technology), `assemble` (inserting and deleting pages and so on), `print-high-quality` (high-quality printing) |
+
+- Not with `--pdfx` or `--pdfa` (neither standard allows encryption), nor with SVG or PNG output
+- With `--pdfua`, `--deny accessibility` cannot be used: a warning (`pdfua/encrypt-accessibility-kept`) is given and extraction for assistive technology stays allowed
+- An encrypted PDF has different bytes every time (the initialization vectors and the document ID are random, even with `SOURCE_DATE_EPOCH`)
+- Passwords given as command-line arguments can be seen by other users of the same machine (in the process list) and stay in the shell history. To protect a password, pass it with `encrypt` in the library
+- Whether the permissions are honored depends on the software that reads the PDF (to hide the contents, use `--user-password`)
+
+```sh
+kumiori report.html -o report.pdf --user-password 'open-me' --owner-password 'admin' --deny print,copy
+```
 
 ### Tagged PDF and PDF/UA
 

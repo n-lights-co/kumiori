@@ -1,6 +1,6 @@
 {
  "examples/drawio-pages/pages.fo": {
-  "sha256": "f9fa2250d9750a1929570047116e9b227fbdb44ed9ab201a9e4a281eed22d166",
+  "sha256": "f188a3462307d45ac31bfb00d8f1aecba7d6a889043641921f38586910b0420e",
   "pages": [
    "35d654106b2f19ab56f4e5fdca08eff071401155e38e436d481652b24e82e9b2",
    "aa4253869e1d24da76b73f585358ccf74ae445daba7dccfd89f1c35b905c9e8a",
@@ -8,7 +8,7 @@
   ]
  },
  "examples/drawio-pages/pages.html": {
-  "sha256": "f19f3bf366b5cc4e00cbb4128bfe027bbe2ad5d0b787df4a7a521a578b7d82bd",
+  "sha256": "29c161966122bddbedff717a6622b0d9115f35c0e9bacd1b7a14a09a2668e093",
   "pages": [
    "d6a4b514376bee902c95a31a139fce5be5a41ec76b02b2efb6d4885edfd07d1d",
    "61077d0aa017d08879be17415b5c253729d99d5192100c5b7820678057ae756f",
@@ -16,17 +16,17 @@
   ]
  },
  "samples/check/fo/indent-inheritance-1.fo (--compat antenna)": {
-  "sha256": "b768b7a40e8b7b253127dc3434020399b717c576ad15dd0aea23b052e9ca6f9a",
+  "sha256": "e6ace2dc1637e3cf26dccbc5cad62ba7eb33c33678ea9167b03bfe4ca1d2f56b",
   "pages": [
-   "bb79ce3338f7567902db1d2edcef26173e11dd64e147216cbdefd111a63e22c2",
-   "6f572ee46da1a90375880db63690a331d5de2b494fb7f29defa665783e338b35"
+   "3fa1add619fdf436baae93716ed95aa42ab2c43b24a02f617f29bf3f80107c14",
+   "141cec6fbabd616dd1bc6c8443ce0ce87f98e761e7a01f38850d70e0b27e1d5c"
   ]
  },
  "samples/check/fo/indent-inheritance-1.fo (--compat spec)": {
-  "sha256": "252eb0ec3275338d07fc8b1a1ebe5fb64c4af5cb6eb196eddfebf08e63a8ae00",
+  "sha256": "061ce54914226edc048a6a8b3bfe495758d33cc935a36ad6c18750fc18ef769f",
   "pages": [
-   "140979532d05434279ed5d18724f5e3d8f3ccecc315ebe04ac491db00a404aa5",
-   "6331bdf92192520928138c869660220d0acc7360b2f13a4f09baecb44c9754db"
+   "5d3938d6b04ea298a80cf58fe0a522189785ffbcb8f3a906ab8740249290c849",
+   "89bbe964558a40ebc197452064d245907b52838c1790862b84dff18ca464188b"
   ]
  }
 }

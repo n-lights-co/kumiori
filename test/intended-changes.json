@@ -1,4 +1,344 @@
 {
   "$comment": "意図した変化の一覧。組版の結果を変えるコミットは、変わる文書とページを changes に書き足す (書き方は docs/development.md の「意図した変化の一覧」)。npm run ci:local の compare のジョブは、この一覧を空にした、いちばん新しいコミットと組み比べ、一覧に無い変化があれば落とす。一覧を空にするのは、組版の結果を変えないコミットで行う。",
-  "changes": []
+  "changes": [
+    {
+      "commit": "貼った PDF の書体の記述子の CIDSet を写さない (見た目は同じで、PDF のバイトだけ変わる)",
+      "docs": [
+        {
+          "doc": "ah/graphics-pdf-1"
+        },
+        {
+          "doc": "ah/import-annotation-types-1"
+        },
+        {
+          "doc": "ah/pdf-embedding-1"
+        },
+        {
+          "doc": "ah/pdf-embedding-2"
+        },
+        {
+          "doc": "ah/pdf-embedding-3"
+        }
+      ]
+    },
+    {
+      "commit": "画像・色つきの文字の無い文書で、フォントを初めて使うページの前で埋め込む (見た目は同じで、2 ページ目から後で初めて使うフォントのある文書の PDF のバイトだけ変わる)",
+      "docs": [
+        {
+          "doc": "ah/keep-with-next-1"
+        },
+        {
+          "doc": "ah/axf-font-face-1"
+        },
+        {
+          "doc": "ah/color-hsl-1"
+        },
+        {
+          "doc": "ah/axf-line-break-BPIL-1"
+        },
+        {
+          "doc": "ah/axf-line-number-1"
+        },
+        {
+          "doc": "ah/line-height-2"
+        },
+        {
+          "doc": "ah/page-number-1"
+        },
+        {
+          "doc": "ah/page-number-format-1"
+        },
+        {
+          "doc": "ah/axf-destination-type-1"
+        },
+        {
+          "doc": "ah/basic-link-1"
+        },
+        {
+          "doc": "ah/axf-page-sequence-1"
+        },
+        {
+          "doc": "ah/table-within-page-1"
+        },
+        {
+          "doc": "weasyprint/book-classical"
+        }
+      ]
+    },
+    {
+      "commit": "@page :nth()・page-orientation・marks・target-counters()・footnote-policy・最初の箱の左右の区切りを読み、対応仕様説明書の文を直す (変わるのは説明書の文の直しのページ)",
+      "docs": [
+        {
+          "doc": "conformance/kumiori-html-css.html"
+        },
+        {
+          "doc": "conformance/kumiori-html-css.en.html"
+        }
+      ]
+    },
+    {
+      "commit": "text-autospace の ideograph-alpha と ideograph-numeric を分け、説明書の 6.10 節を直す",
+      "docs": [
+        {
+          "doc": "conformance/kumiori-html-css.html",
+          "pages": [
+            74
+          ]
+        },
+        {
+          "doc": "conformance/kumiori-html-css.en.html",
+          "pages": [
+            76,
+            77
+          ]
+        }
+      ]
+    },
+    {
+      "commit": "段組のコンテナの column-fill: auto を読み、説明書の 12.3 節を直す",
+      "docs": [
+        {
+          "doc": "conformance/kumiori-html-css.html",
+          "pages": [
+            103,
+            104
+          ]
+        },
+        {
+          "doc": "conformance/kumiori-html-css.en.html",
+          "pages": [
+            106,
+            107
+          ]
+        }
+      ]
+    },
+    {
+      "commit": "対応仕様説明書 (日本語版) の本文を用語集の語に直す (ページ数は XSL-FO 編が 100 → 101、HTML・CSS 編は 148 のまま)",
+      "docs": [
+        {
+          "doc": "conformance/kumiori-xsl-fo.fo"
+        },
+        {
+          "doc": "conformance/kumiori-html-css.html"
+        }
+      ]
+    },
+    {
+      "commit": "samples の確認用の FO の文を用語集の語に直す",
+      "docs": [
+        {
+          "doc": "samples/check/fo/indent-inheritance-1.fo (--compat spec)"
+        },
+        {
+          "doc": "samples/check/fo/indent-inheritance-1.fo (--compat antenna)"
+        }
+      ]
+    },
+    {
+      "commit": "警告・エラーのメッセージの日本語を用語集の語に直す (組版の結果は変わらず、警告の文だけが変わる)",
+      "docs": [
+        {
+          "doc": "examples/drawio-pages/pages.fo"
+        },
+        {
+          "doc": "examples/drawio-pages/pages.html"
+        },
+        {
+          "doc": "ah/barcode-1"
+        },
+        {
+          "doc": "ah/barcode-color-size-1"
+        },
+        {
+          "doc": "ah/barcode-color-space-1"
+        },
+        {
+          "doc": "ah/axf-baseline-grid-1"
+        },
+        {
+          "doc": "ah/axf-text-stroke-1"
+        },
+        {
+          "doc": "ah/axf-float-column-1"
+        },
+        {
+          "doc": "ah/axf-table-float-move-1"
+        },
+        {
+          "doc": "ah/axf-display-alttext-1"
+        },
+        {
+          "doc": "ah/axf-image-preproc-1"
+        },
+        {
+          "doc": "ah/language-1"
+        },
+        {
+          "doc": "ah/axf-hanging-punctuation-2"
+        },
+        {
+          "doc": "ah/line-height-3"
+        },
+        {
+          "doc": "ah/axf-multimedia-treatment-1"
+        },
+        {
+          "doc": "ah/axf-richmedia-1"
+        },
+        {
+          "doc": "ah/multimedia-1"
+        },
+        {
+          "doc": "ah/axf-spread-page-1"
+        },
+        {
+          "doc": "ah/table-background-1"
+        },
+        {
+          "doc": "css-print/CSS-Print-ja"
+        }
+      ]
+    },
+    {
+      "commit": "画像のある文書で、画像とフォントを初めて使うページの直前で埋め込む (見た目は同じで、2 ページ目から後で初めて使う画像・フォントのある文書の PDF のバイトだけ変わる)",
+      "docs": [
+        {
+          "doc": "examples/drawio-pages/pages.html"
+        },
+        {
+          "doc": "ah/axf-column-fill-1"
+        },
+        {
+          "doc": "ah/keep-together-1"
+        },
+        {
+          "doc": "ah/axf-initial-letters-1"
+        },
+        {
+          "doc": "ah/color-Pantone-1"
+        },
+        {
+          "doc": "ah/graphics-cgm-1"
+        },
+        {
+          "doc": "ah/mathml3-1"
+        },
+        {
+          "doc": "ah/axf-unbreakable-words-1"
+        },
+        {
+          "doc": "ah/axf-document-info-2"
+        },
+        {
+          "doc": "ah/axf-table-headers-scope-1"
+        },
+        {
+          "doc": "weasyprint/report"
+        },
+        {
+          "doc": "weasyprint/book"
+        }
+      ]
+    },
+    {
+      "commit": "色つきの文字を使う文書で、色つきの字の描き手と字形の画像を、初めて描くページで作る (見た目は同じで、PDF のバイトだけ変わる)",
+      "docs": [
+        {
+          "doc": "conformance/kumiori-xsl-fo.fo"
+        },
+        {
+          "doc": "conformance/kumiori-html-css.html"
+        },
+        {
+          "doc": "conformance/kumiori-xsl-fo.en.fo"
+        },
+        {
+          "doc": "conformance/kumiori-html-css.en.html"
+        },
+        {
+          "doc": "css-print/CSS-Print-ja"
+        }
+      ]
+    },
+    {
+      "commit": "対応表を、表の行の page・回り込みの横の footnote-policy・text-autospace の punctuation と replace・ギリシャ語の分綴・Intl.Segmenter の無い環境の折り返しに合わせる (説明書の文の直し)",
+      "docs": [
+        {
+          "doc": "conformance/kumiori-xsl-fo.fo",
+          "pages": [
+            36,
+            37
+          ]
+        },
+        {
+          "doc": "conformance/kumiori-html-css.html",
+          "pages": [
+            "9-15",
+            2,
+            56,
+            74,
+            112
+          ]
+        },
+        {
+          "doc": "conformance/kumiori-xsl-fo.en.fo",
+          "pages": [
+            27,
+            39
+          ]
+        },
+        {
+          "doc": "conformance/kumiori-html-css.en.html",
+          "pages": [
+            10,
+            44,
+            58,
+            59,
+            76,
+            77,
+            115
+          ]
+        }
+      ]
+    },
+    {
+      "commit": "footnote-display の inline・compact と axf:footnote-stacking=\"inline\" で、脚注を行内に並べる (対応仕様説明書の文も直した)",
+      "docs": [
+        {
+          "doc": "conformance/kumiori-xsl-fo.fo",
+          "pages": [
+            3,
+            "94-97"
+          ]
+        },
+        {
+          "doc": "conformance/kumiori-xsl-fo.en.fo",
+          "pages": [
+            "99-100"
+          ]
+        },
+        {
+          "doc": "conformance/kumiori-html-css.html",
+          "pages": [
+            "112-113",
+            "121-124"
+          ]
+        },
+        {
+          "doc": "conformance/kumiori-html-css.en.html",
+          "pages": [
+            "115-116",
+            "125-127"
+          ]
+        },
+        {
+          "doc": "ah/axf-footnote-1",
+          "pages": [
+            2
+          ]
+        }
+      ]
+    }
+  ]
 }

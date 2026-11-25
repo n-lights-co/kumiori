@@ -25,6 +25,88 @@ physical tree (Area Tree)
 
 The rules for units and coordinates are in "Units and coordinates" in [`docs/en/library.md`](library.md), and the JSON of the Area Tree is in [`docs/en/area-tree.md`](area-tree.md).
 
+## Architecture diagrams
+
+Each diagram shows one mechanism. Names in the diagrams are functions, classes and files in `src`.
+The diagrams are made by `scripts/architecture-diagrams.mjs`. To change one, edit the script and run `node scripts/architecture-diagrams.mjs` (do not edit the SVG by hand). `npm test` checks that the diagrams match the script's output and that every `src` name in them still exists.
+
+### 1. Overview
+
+![Overview: four entry points into one typesetting pipeline](images/architecture/01-overview.svg)
+
+There are four entry points, and all of them go through the same pipeline (import → logical tree → layout → Area Tree → rendering). Only the web app (`src/main.ts`) skips the public API and combines the modules directly (it is also the only place that reads EPUB).
+The logical tree can be saved as JSON (web app), and the Area Tree can be written and read as JSON (`serializeAreaTree`, `parseAreaTree`). All units are pt.
+
+### 2. Import
+
+![Import: from a document to the logical tree](images/architecture/02-import.svg)
+
+Fonts and images are prepared first, then the document kind is detected. HTML+CSS and XSL-FO are read by separate paths into the same logical tree (`LDocument`). No browser is used; the CSS cascade is Kumiori's own. Once the logical tree exists, the characters it uses decide which extra fonts to load (monospace, symbol, emoji, math, OS fonts).
+HTML is parsed with htmlparser2 and linkedom, XML with @xmldom/xmldom.
+
+### 3. Layout passes
+
+![Layout engine: lay out again until it converges](images/architecture/03-passes.svg)
+
+Page-number citations, footnote numbers and indexes have no value until the document is laid out. `LayoutEngine` lays the document out once and lays it out again when those values change (up to 4 times). Page sequences that did not change are reused from the previous pass, and with `createTypesetter` line breaking results are reused across documents (`SharedLineMemo`).
+Intermediate passes stop at the page build trees (`PageBuild`); only the converged pass becomes an Area Tree (so a document of thousands of pages does not hold the whole tree several times). Layout is written as a generator: with `signal` or `onProgress`, it checks for cancellation and reports progress at page-sequence boundaries.
+
+### 4. Inside one layout pass
+
+![Inside one layout pass](images/architecture/04-flow.svg)
+
+For each page-sequence a page master is selected and the body flow (`Flow`) is filled into the page. Lines inside a block are flattened into atoms, broken into lines (break opportunities from UAX #14, kinsoku, hanging and pushing out, hyphenation, warichu) and positioned within the line.
+Table cells are laid out by the same mechanism (a Flow inside `layoutCell`). At a page boundary the layout state is captured (`captureBoundary`, `resumeFrom`) and layout continues from there. Vertical writing is laid out in logical coordinates (inline, block) and turned into physical coordinates in `toArea`.
+
+### 5. The logical tree and the Area Tree
+
+![The logical tree and the area tree](images/architecture/05-trees.svg)
+
+The logical tree is the document's structure and knows nothing about pages. The Area Tree is the result placed on pages, with positions and sizes in pt. One page-sequence becomes one sheet per page, one block is split at page breaks, and text becomes lines and one area per glyph.
+Paint-only `transform` and `opacity` are attached to areas; layout does not see them. The shape of the Area Tree is described in [`docs/en/area-tree.md`](area-tree.md).
+
+### 6. Rendering
+
+![Rendering: one traversal, four outputs](images/architecture/06-render.svg)
+
+The paint order of the Area Tree is decided in one place, `src/paint.ts`. Differences between outputs stay inside the implementations of the `Painter` interface (Canvas, SVG, PNG, PDF).
+PNG is painted by Kumiori's own rasterizer without Canvas, so it also works in Node. SVG images inside documents are turned into shapes by `src/svg.ts` for every output.
+
+### 7. Three ways to make a PDF
+
+![Three ways to make a PDF, and what each keeps in memory](images/architecture/07-pdf-modes.svg)
+
+`toPdf` on a `typeset` result writes the PDF while holding the whole Area Tree. When only the PDF is needed (`typesetToPdf`, `typesetToPdfStream`), areas are built page by page from the page build trees, so the whole Area Tree is never held (page areas are built twice: once to collect fonts and images, once to paint). `typesetToPdfStream` also streams finished parts to the output.
+With `lowMemory`, layout runs through `layoutLowMemory()`: pages of earlier passes are not reused, and the intermediate trees of finished page-sequences are released (layout does more work).
+
+### 8. Fonts
+
+![Fonts: where they come from and who uses them](images/architecture/08-fonts.svg)
+
+Font files are registered with `FontManager` wherever they come from, and layout measuring, Canvas and PDF embedding all use the same font data. Math, monospace, symbol and emoji fonts are loaded only when the document needs them.
+Measuring uses Canvas in the browser and fontkit in Node. A variable font is turned into an instance (a static font) with fixed axis values before use.
+
+### 9. Images and drawings
+
+![Images and drawings: detect the format, then pixels or shapes](images/architecture/09-images.svg)
+
+Image references go to `AssetStore`, which detects the format from the content. Photographic images become pixels and drawing formats become shapes, drawn the same way in every output. EPS (a PostScript interpreter), WMF, EMF, CGM and draw.io are loaded only when that format appears.
+Plugins (`ImageFormat` in `TypesetOptions.plugins`) are checked before the built-in formats.
+
+### 10. Call context
+
+![Call context: restore it after every await](images/architecture/10-call-context.svg)
+
+The message language, limits, cancellation signal and progress callback apply only during one `typeset` call. In Node, AsyncLocalStorage carries them across awaits; in the browser they live in one module variable, which overlapping calls overwrite.
+So every async function on the call path writes `rejoin(thisCall(), await …)` to restore its own context after the await (`test/callContextAwait.test.ts` catches a missing one).
+
+### 11. Builds and checks
+
+![Builds and checks](images/architecture/11-build.svg)
+
+From the same `src`, each Vite configuration builds the library, the CLI, the browser bundle or the web app. Checks are unit tests (vitest), browser tests (Playwright) and before/after comparisons.
+How to use the comparison tools is in [`docs/en/development.md`](development.md).
+
 ## Files
 
 | File | Role |

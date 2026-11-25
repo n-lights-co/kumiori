@@ -10,9 +10,11 @@ Every function, type and option is listed in the API reference (<https://n-light
 - [Entry points](#entry-points)
 - [Typesetting options](#typesetting-options)
 - [The typeset result (TypesetResult)](#the-typeset-result-typesetresult)
-  - [PDF (toPdf)](#pdf-topdf) · [PDF/X and PDF/A](#pdfx-and-pdfa) · [Canvas (renderPage)](#canvas-renderpage) · [SVG (renderPageToSvg)](#svg-renderpagetosvg) · [PNG (renderPageToPng)](#png-renderpagetopng)
+  - [PDF (toPdf)](#pdf-topdf) · [PDF/X and PDF/A](#pdfx-and-pdfa) · [Canvas (renderPage)](#canvas-renderpage) · [SVG (renderPageToSvg)](#svg-renderpagetosvg) · [PNG (renderPageToPng)](#png-renderpagetopng) · [Memory estimate and releasing (memoryUsage, dispose, releaseCaches)](#memory-estimate-and-releasing-memoryusage-dispose-releasecaches)
 - [Making only the PDF (typesetToPdf)](#making-only-the-pdf-typesettopdf)
 - [Writing the PDF as a stream (typesetToPdfStream)](#writing-the-pdf-as-a-stream-typesettopdfstream)
+- [Encrypting the PDF (encrypt)](#encrypting-the-pdf-encrypt)
+- [Measuring text without a document (measureText, breakLines)](#measuring-text-without-a-document-measuretext-breaklines)
 - [Files and external resources](#files-and-external-resources)
 - [Errors and diagnostics](#errors-and-diagnostics)
 - [draw.io diagrams](#drawio-diagrams)
@@ -52,7 +54,7 @@ console.log(result.pageCount, result.warnings);
 walkAreaTree(result.areaTree, (area) => { /* walk the typeset result (Area Tree) */ });
 const pdf = await result.toPdf();                              // Uint8Array
 const { pdf: bytes } = await typesetToPdf(html, { name: 'book.html' }); // when only the PDF is needed (it keeps no layout result, so large documents use less memory)
-result.renderPage(canvas, 0);                                  // draw page 1 onto a canvas (browser)
+await result.renderPage(canvas, 0);                            // draw page 1 onto a canvas (browser)
 const svg = await result.renderPageToSvg(0);                   // page 1 as an SVG string (browser or Node)
 const png = await result.renderPageToPng(0, { dpi: 150 });     // page 1 as PNG (a Uint8Array; browser or Node)
 ```
@@ -65,7 +67,7 @@ const png = await result.renderPageToPng(0, { dpi: 150 });     // page 1 as PNG 
 | `typesetHtml`, `typesetFo` | `typeset` with the kind fixed |
 | `typesetToPdf(text, options, pdfOptions)` | Makes only the PDF ([below](#making-only-the-pdf-typesettopdf)) |
 | `typesetToPdfStream(text, options, output, pdfOptions)` | Writes the PDF to an output page by page, as a stream ([below](#writing-the-pdf-as-a-stream-typesettopdfstream)) |
-| `await createTypesetter(setup)` | Creates a container that loads the fonts only once. Typeset with `typesetter.typeset(...)`, `typesetter.typesetToPdf(...)` and `typesetter.typesetToPdfStream(...)` |
+| `await createTypesetter(setup)` | Creates a container that loads the fonts only once. Typeset with `typesetter.typeset(...)`, `typesetter.typesetToPdf(...)` and `typesetter.typesetToPdfStream(...)`. `typesetter.measureText(...)` and `typesetter.breakLines(...)` measure text without making a document ([below](#measuring-text-without-a-document-measuretext-breaklines)). `typesetter.memoryUsage()` and `typesetter.releaseCaches()` estimate the Typesetter's memory and release its caches (images for drawing and the reuse caches) ([Memory estimate and releasing](#memory-estimate-and-releasing-memoryusage-dispose-releasecaches)) |
 | `decodeDocumentText(bytes)` | Turns the bytes of a file into a string according to the BOM, the XML declaration's `encoding` and `<meta charset>` |
 | `walkAreaTree(tree, fn)` | Walks the typeset result (Area Tree) ([`docs/en/area-tree.md`](area-tree.md)) |
 | `snapshotDocument(document, options)` | In the browser window, turns the document as JavaScript left it into a form that can be passed to `typeset` ([below](#typesetting-a-page-built-by-javascript-snapshotdocument)) |
@@ -85,7 +87,7 @@ Also exported:
 - `typeset` does not touch the file system. It uses the network only to fetch the default fonts (replaceable with `loadFont`) and the images and stylesheets the document references via `http(s):` (can be stopped with `fetchImages` and `fetchStyles`). So it runs both in the browser and in Node.
 - `text` is a string. When reading from a file, convert it with `decodeDocumentText(bytes)` (reading as fixed UTF-8 garbles Shift_JIS FO and the like).
 - When typesetting repeatedly (e.g. for an editor preview), create a container with `await createTypesetter(setup)`. It is faster because the fonts are not fetched and parsed every time (the math, monospace and symbol fonts are loaded the first time a document that uses them is typeset).
-- The options that stay the same however many times you typeset, mostly about fonts (`fonts`, `genericFonts`, `loadFont`, `systemFonts`, `fetchTimeoutMs`, `deflate`, `reuse`; type `TypesetterOptions`) are passed in `setup` when the container is created. `limits` can be given both to the container and per document (the container's `limits` apply to loading its fonts and become the default for each document; a document's `limits` are laid over them name by name). They are not part of the per-document options of `typesetter.typeset` and `typesetter.typesetToPdf` (type `DocumentOptions`); `fonts`, `genericFonts`, `loadFont`, `systemFonts` and `reuse` passed there are not used, and an `api/setup-option-ignored` warning is given. `signal` and `onProgress` in `setup` apply only while the container is created; the per-document `signal` and `onProgress` apply while that document is typeset ([Stopping and progress](#stopping-and-progress-signal-onprogress)).
+- The options that stay the same however many times you typeset, mostly about fonts (`fonts`, `genericFonts`, `loadFont`, `systemFonts`, `fetchTimeoutMs`, `deflate`, `reuse`, `imageCache`; type `TypesetterOptions`) are passed in `setup` when the container is created. `limits` can be given both to the container and per document (the container's `limits` apply to loading its fonts and become the default for each document; a document's `limits` are laid over them name by name). They are not part of the per-document options of `typesetter.typeset` and `typesetter.typesetToPdf` (type `DocumentOptions`); `fonts`, `genericFonts`, `loadFont`, `systemFonts` and `reuse` passed there are not used, and an `api/setup-option-ignored` warning is given. `signal` and `onProgress` in `setup` apply only while the container is created; the per-document `signal` and `onProgress` apply while that document is typeset ([Stopping and progress](#stopping-and-progress-signal-onprogress)).
 - Internal entities declared in the internal subset of the FO's DOCTYPE (such as `<!ENTITY nbsp "&#160;">`) are expanded before import (external entities are not read).
 
 ## Typesetting options
@@ -166,15 +168,18 @@ Check the exact names and syntax of the options in the Command column in the lis
 | `truncated` | Whether layout stopped early because of `maxPages` ([Laying out only the first pages](#laying-out-only-the-first-pages-maxpages)) |
 | `toPdf(options)` | Returns the PDF bytes (`Uint8Array`) |
 | `toPdfStream(output, options)` | Writes the same PDF as `toPdf` to an output as a stream and returns `{ bytes }` (the number of bytes written) ([Writing the PDF as a stream](#writing-the-pdf-as-a-stream-typesettopdfstream)) |
-| `renderPage(canvas, i, options)` | Draws a page onto a canvas (browser) |
+| `renderPage(canvas, i, options)` | Draws a page onto a canvas (browser). Returns a `Promise<void>` that resolves when the page is drawn |
 | `renderPageToSvg(i, options)` | Turns a page into an SVG string (browser or Node) |
 | `renderPageToPng(i, options)` | Turns a page into PNG bytes (browser or Node) |
+| `memoryUsage()` | Returns a rough estimate of the memory freed by releasing this result (`{ total, images, fonts, layout }`, in bytes) ([Memory estimate and releasing](#memory-estimate-and-releasing-memoryusage-dispose-releasecaches)) |
+| `dispose()` | Releases what this result holds (images, the document's own fonts, caches for drawing, the area tree). Returns a `Promise<void>` that resolves when the release is done. Writing a PDF or drawing afterwards fails with `api/result-disposed` |
+| `disposed` | Whether `dispose()` has been called (`boolean`; `true` as soon as it is called) |
 
 Pages are counted from 0.
 
 ### PDF (toPdf)
 
-`result.toPdf({ title, pdfx, pdfa, imageMaxDpi, date })` (type `PdfOptions`).
+`result.toPdf({ title, pdfx, pdfa, imageMaxDpi, date, encrypt })` (type `PdfOptions`).
 
 | Option | Contents |
 | --- | --- |
@@ -183,6 +188,7 @@ Pages are counted from 0.
 | `pdfa` | PDF/A marking for long-term archiving (below) |
 | `imageMaxDpi` | The upper limit of JPEG resolution |
 | `date` | The time written as the PDF creation and modification dates (Info and XMP) and as the modification date of attached files (a `Date`; anything below a second is dropped). Without it, the time the PDF is written. The same version of Kumiori gives the same PDF bytes for the same input, fonts, settings and `date` in the same environment (Node version, browser). Without `deflate`, image streams are compressed with the zlib of the environment (Node's zlib, the browser's `CompressionStream`), so across environments the bytes of PDFs with images can differ (they look the same). To get the same bytes everywhere, pass a fixed function to `deflate` (such as pako's `deflate`). An invalid `Date` or one outside the years 0 to 9999 is a `KumioriOptionError` (`option` is `'date'`). On the command line, the `SOURCE_DATE_EPOCH` environment variable |
+| `encrypt` | Encrypts the PDF (AES-256, with passwords and permissions; [below](#encrypting-the-pdf-encrypt)). Not with PDF/X or PDF/A |
 | `signal` | A signal to stop writing the PDF (the signal used for typesetting is not inherited; [Stopping and progress](#stopping-and-progress-signal-onprogress)) |
 | `onProgress` | Progress of writing the PDF (`phase` is `pdf`) |
 
@@ -219,7 +225,12 @@ The PDF gets page labels (the page numbers a viewer shows) from the page number 
 | `guides` | Guide lines for the trim box and bleed |
 
 Glyphs are drawn from the outlines in the font files, so the page's CSS and `@font-face` have no effect on them.
-A nonexistent page number is a `RangeError`. An example is in [Showing a print preview in the browser](#showing-a-print-preview-in-the-browser).
+It returns a `Promise<void>` that resolves when the page is drawn (since 0.8.0; before, `void`). A nonexistent page number fails with a `RangeError`.
+
+- Images (PNG, JPEG, GIF, WebP, BMP) hold no pixels while typesetting (they are decoded once to check that they can be read and their size, and closed at once) and are decoded when drawing.
+  `renderPage` takes the page's images from the Typesetter-wide image cache (decoding and adding the missing ones) and draws the page in one go once they are all ready (the canvas never shows a partly drawn page).
+  The cache's limit and eviction order are in [Memory estimate and releasing](#memory-estimate-and-releasing-memoryusage-dispose-releasecaches).
+- If you call `renderPage` again on the same canvas before the previous call finishes, the drawing is still done in the order of the calls, and the page called last stays on the canvas (images are decoded in parallel, and only the drawing waits for the previous drawing; the same holds for `renderPage` of different results on the same canvas). An example is in [Showing a print preview in the browser](#showing-a-print-preview-in-the-browser).
 
 ### SVG (renderPageToSvg)
 
@@ -264,6 +275,103 @@ For a nonexistent page number, the returned Promise is rejected with a `RangeErr
 - Speed: a text-heavy A4 page at 150dpi takes about 0.5 seconds (Node 22 on a 2026 x86 machine).
 - For a nonexistent page number, the returned Promise is rejected with a `RangeError`.
 
+### Memory estimate and releasing (memoryUsage, dispose, releaseCaches)
+
+These APIs help decide, under a memory budget, which result to release when you keep several earlier results so that the same document does not have to be typeset again (for example, when a preview goes back to a document seen before).
+The Typesetter's part (`createTypesetter`) plus the parts of the results you hold is roughly the memory in use.
+
+```js
+const typesetter = await createTypesetter(setup);
+const held = new Map(); // HTML → typeset result (oldest first)
+const used = () => typesetter.memoryUsage().total + [...held.values()].reduce((n, r) => n + r.memoryUsage().total, 0);
+// Over the budget: release the oldest results (and, if still over, first the image cache for drawing, then the reuse caches too)
+while (used() > budget && held.size > 1) {
+  const [key, oldest] = held.entries().next().value;
+  oldest.dispose(); // while toPdf and so on are running, memoryUsage() keeps its value until they finish
+  held.delete(key);
+}
+if (used() > budget) typesetter.releaseCaches({ images: true });
+if (used() > budget) typesetter.releaseCaches();
+```
+
+- All of these are rough estimates (in bytes). The parts for the area tree, font tables and reuse caches multiply counts (areas, glyphs, the size of the line-breaking cache and so on) by a size per item, and differ between JavaScript engines. The way of counting and the factors may change before 1.0.
+  The size of JS objects differs between engines (V8 pointer compression: Node does not use it, Chromium does), so the factors measured in Node 22 are used in Node (an engine with `process.versions.node`), and those measured in a Chromium 158 Web Worker elsewhere (browsers, Web Workers). Firefox and Safari were not measured; they use the Chromium factors.
+- `result.memoryUsage()` (`{ total, images, fonts, layout }`) is what `dispose()` on that result frees.
+  What is shared with the Typesetter (the Typesetter's fonts, OS fonts (`systemFonts`), the reuse caches) and what holds the caller's contents as they are (font files and attachments from `files` and `resolveResource`) are not counted.
+  - `images`: the contents of image files that Kumiori makes and holds (decoded data: URLs, images fetched from the network, expanded SVGZ, GIF and the like converted to PNG in Node;
+    the same contents are held again for a different reference URL), the pixels rasterized for drawing SVG and TIFF on a browser page (width × height × 4 bytes), and in a Web Worker the pixels read in advance for images inside SVG.
+    Image contents given through `files` and `resolveResource` are held as they are, without a copy, and are not counted (since 0.8.0; before, they were copied and counted). While you use the result, do not modify
+    the contents you passed or transfer them with `postMessage`. Images decoded for drawing (`ImageBitmap` of PNG, JPEG and so on) are counted in the Typesetter's cache (below), not in the result.
+  - `fonts`: the parsed tables and glyph caches of the fonts added for the document (CSS `@font-face`, fonts passed with XSL-FO; 500 bytes per glyph in Node, 180 in the browser), and the files held only by this result (such as WOFF and WOFF2 decoded to plain font files).
+  - `layout`: the area tree: 340 bytes per area in Node and 200 in the browser, 200 bytes per node of the structure tree (Tagged PDF), and bookmarks and destinations.
+- `typesetter.memoryUsage()` (`{ total, fonts, caches, cacheDetail }`): `fonts` is the fonts the Typesetter loaded (the default fonts and `fonts`, fonts for math, monospace and so on, and OS fonts);
+  `caches` is the image cache for drawing and the reuse caches (`reuse`). Typeset results are not included. `cacheDetail` breaks `caches` down (its fields add up to `caches`).
+
+  | `cacheDetail` field | Contents |
+  | --- | --- |
+  | `images` | Images decoded for drawing (`renderPage`) (`ImageBitmap`; width × height × 4 bytes; browsers only, 0 in Node) |
+  | `lines` | Line breaking of paragraphs (`reuse`) |
+  | `pages` | The pages of the previous document (`reuse`; the page trees and the records of page breaks) |
+  | `fontPrep` | Prepared font files (`reuse`; WOFF and WOFF2 decoded to plain font files and so on) |
+
+- `typesetter.releaseCaches(kinds?)` releases caches (not the loaded fonts). Pass `kinds`, an object with the kinds to release set to `true`, to release only those
+  (the names are the `cacheDetail` fields; for example, `releaseCaches({ images: true })` releases only the images for drawing, and `releaseCaches({ lines: true, pages: true })` only line breaking and the previous document's pages).
+  Without it, everything is released. The next `typeset` has nothing to reuse and takes as long as the first one. After the images are released, `renderPage` decodes them again.
+  The typeset result does not change. It may be called while a document is being typeset, and while a page is being drawn (while `renderPage` is being awaited): the images of the page being drawn are not dropped until that page is drawn.
+  The caches of line breaking, the previous document's pages and font preparation are used only by typesetting, and do not affect drawing (which reads the area tree of the typeset result).
+- **Image cache for drawing** (since 0.8.0): the images that `renderPage` decodes are held in one cache for the whole Typesetter. The key is the image contents, so results that use the same image
+  (a document typeset again, chapters with common images and so on) share one decoded image.
+  - Set the limit with `createTypesetter({ imageCache: { maxBytes } })` (bytes: the total of width × height × 4 of the decoded images; default 256MB).
+  - Over the limit, images no longer used by any live result (one not `dispose()`d) are dropped first, then the rest from the least recently used (LRU), and closed with `close()`.
+    Images being drawn are not dropped. When the images of one page exceed the limit, they are held over the limit only while drawing, and dropped down to the limit afterwards.
+  - `dispose()` only removes the result from the users of its images, and does not close images shared with other results (drawing a live result never picks up a closed image).
+    Images with no users are dropped first when over the limit, and all images are dropped by `releaseCaches({ images: true })`.
+  - Choosing the limit: a few times the total width × height × 4 of the images on the pages shown (redrawn) together. For example, a 1600 × 1000 image is 6.4MB, so
+    with two per page and a preview that moves back and forth over a few pages, about 64MB; when readers often leaf through the whole book and come back, a part of the whole (256MB holds about 40 of them).
+    A lower limit means more time decoding again when returning to a page drawn before (about 10ms for one 1600 × 1000 PNG in a Chromium 158 Web Worker).
+  - Results of `typeset`, `typesetHtml` and `typesetFo` without a Typesetter have a cache of their own (with the same default limit), released entirely by that result's `dispose()`.
+- `result.dispose()` closes the browser images held only by that result (returning the pixel memory without waiting for GC) and releases the images, the document's fonts, caches for drawing and the area tree (the `sheets`, `structure`, `bookmarks`, `destinations` and `resources` of `areaTree` become empty). The memory is freed even if the result is still referenced somewhere.
+  - Calling `toPdf`, `toPdfStream`, `renderPage`, `renderPageToSvg` or `renderPageToPng` afterwards fails with a `KumioriError` (`code` is `api/result-disposed`). Once released, `memoryUsage()` returns 0 for everything. Count fields such as `pageCount` remain.
+  - If called while `toPdf` and so on are running, the result is released after all of them finish (they finish with the same output; for example, when the user moves to another document while a PDF is being saved).
+    The result still uses that memory meanwhile, so `memoryUsage()` keeps returning the current estimate, and becomes 0 after the release.
+  - `dispose()` returns a `Promise<void>` that resolves when the release is done. With nothing running, it releases at once and the promise is already resolved. It resolves once the running calls finish, even if they fail (the promise never rejects).
+    Later calls do nothing and return the same promise as the first. After `await result.dispose()`, `memoryUsage()` is 0.
+  - `result.disposed` (`boolean`) tells whether `dispose()` has been called. It becomes `true` as soon as it is called, and new calls fail with `api/result-disposed`. Whether the release is done is told by the promise of `dispose()`
+    (there is no separate field for "requested" and "done": waiting for the release is easier to write with the promise, and for budget decisions `memoryUsage()` returns the amount before and after the release).
+- `result.memoryUsage()` may be called any number of times. The first call on each result counts the areas of the area tree, which takes time (about 25ms for the documents in the table below), and caches that count (the area tree does not change after layout).
+  Later calls count the image registry (image file contents, rasterized images, pixels read in advance) and the document's fonts again. These grow when drawing (rasterized images and so on), so they are not cached.
+  `cacheDetail.images` of `typesetter.memoryUsage()` is a running total kept by the cache, so nothing is walked for it.
+  For a document of 200 pages with 342 images ("HTML like a preview (342 images)" in the table below; 187,000 areas), one call took 30ms in Node 22 and 24ms in a Chromium 158 Web Worker the first time, and 0.07ms in Node and 0.27ms in the Web Worker afterwards
+  (the "memoryUsage time" column of `scripts/measure-result-memory.mjs`). Recounting every held result each time one is released over the budget takes a few ms for a few dozen results.
+  - The result of the most recently typeset document shares its font tables and part of the logical page tree with the Typesetter's reuse caches. Releasing that result leaves that part until the next document is typeset or `releaseCaches()` is called ("latest result" in the table below).
+  - A result that is no longer referenced is released by GC without `dispose()`. Use `dispose()` to release earlier (especially browser images).
+- Measured (`scripts/measure-result-memory.mjs`; Typesetter reuse on, `resolveResource` returning the same `ArrayBuffer`; MB):
+
+| Document | Pages | Earlier result (estimate, freed by dispose) | Latest result (freed by dispose) | Reuse caches (estimate, freed by releaseCaches) | Result without reuse (estimate, freed by dispose) |
+|---|---|---|---|---|---|
+| HTML like a preview (5 images) | 3 | 5.9, 1.7 | 4.3 | 2.9, 9.4 | — |
+| same (34 images) | 20 | 15.8, 11.3 | 13.9 | 14.4, 20.6 | — |
+| same (342 images) | 200 | 120.8, 113.9 | 116.1 | 136.6, 140.5 | 120.8, 121.0 |
+| Conformance document, HTML and CSS | 148 | 152.5, 154.4 | 97.7 | 275.4, 288.7 | 157.2, 158.4 |
+| Conformance document, XSL-FO | 100 | 53.3, 54.4 | 58.8 | 126.2, 152.7 | 53.3, 59.4 |
+| Text-only HTML | 215 | 77.6, 73.5 | 73.1 | 194.0, 180.2 | 77.6, 76.1 |
+| Text-only HTML with a table of contents | 252 | 88.7, 87.2 | 88.1 | 227.0, 197.3 | 88.7, 89.8 |
+
+  In Node 22, the same document was typeset twice (the earlier and the latest result), each was released with `dispose()`, then `releaseCaches()` was called, and the drop of the heap (`heapUsed + arrayBuffers`) was taken at each step.
+  "HTML like a preview" has a shared CSS with three TrueType fonts in `@font-face` (0.9MB) and, per page, six paragraphs and about 1.7 images (300×200 PNG).
+  In small documents the tables of the document's fonts (4.2MB in this document) stay until the reuse caches are released (the earlier result frees less, and the caches free more).
+  Measured the same way inside a Chromium 158 Web Worker (the browser factors; MB). The amount is `usedSize` of `Runtime.getHeapUsage` through the Worker's CDP,
+  which does not include external bytes (contents of image files, `ImageBitmap`, font files), so the estimates are given without `images` and prepared fonts (images are as estimated, by content size and width × height × 4, in both engines).
+
+| Document | Pages | Earlier result (estimate, freed by dispose) | Latest result (freed by dispose) | Reuse caches (estimate, freed by releaseCaches) | Result without reuse (estimate, freed by dispose) |
+|---|---|---|---|---|---|
+| HTML like a preview (34 images) | 20 | 5.1, 3.4 | 4.4 | 7.7, 10.5 | — |
+| same (342 images) | 200 | 37.9, 34.2 | 34.9 | 77.2, 80.2 | 37.9, 37.4 |
+| Conformance document, HTML and CSS | 148 | 75.8, 70.8 | 53.3 | 136.5, 135.3 | 80.5, 71.2 |
+| Conformance document, XSL-FO | 100 | 31.8, 32.3 | 34.4 | 69.7, 89.0 | 31.8, 34.8 |
+| Text-only HTML | 215 | 46.0, 42.9 | 42.7 | 110.3, 106.1 | 46.0, 44.3 |
+| Text-only HTML with a table of contents | 252 | 53.1, 50.5 | 50.8 | 129.0, 116.3 | — |
+
 ## Making only the PDF (typesetToPdf)
 
 `typesetToPdf(text, options, pdfOptions)` makes only the PDF. It gives the same PDF, warnings and page count as calling `toPdf(pdfOptions)` after `typeset`.
@@ -272,7 +380,18 @@ For a nonexistent page number, the returned Promise is rejected with a `RangeErr
 - `pdfOptions` has the type `TypesetPdfOptions`: `PdfOptions` of `toPdf` plus `lowMemory`. With `lowMemory: true`, it typesets with less memory (the same as the command's `--low-memory`).
 - It turns the pages into the layout result (Area Tree) one at a time, writes each to the PDF and releases it. It never holds the layout result of the whole document, so documents of thousands of pages use less memory.
   In exchange, the layout result of a page is built twice, once to collect the fonts and images used and once to draw it.
-- `layoutMs` does not include the time to turn the pages into layout results (it is part of writing the PDF).
+- It draws the settled pages into the PDF while typesetting and releases the intermediate layout result of those pages
+  (a page is settled when the body and the static content up to that page do not refer to anything not yet typeset, such as forward page-number references in a table of contents or the total page count).
+  Images are prepared for the PDF before typesetting (expanding and compressing PNGs and so on) and put into the PDF just before the first page that uses them is drawn (since 0.8.0; before, documents with images or color fonts were not drawn while typesetting).
+  Documents with images whose contents depend on the size they are placed at (JPEG shrunk by `imageMaxDpi`, GIF, BMP, WebP and TIFF converted to PNG in the browser, SVG with filters computed as pixels, SVG with `systemLanguage`)
+  or with PDF images are drawn after typesetting ends. So are the pages from the first one with characters of bitmap color glyphs (CBDT, sbix and so on), since the glyphs used are not known until typesetting ends.
+  Text-heavy documents use less memory while they are typeset (for a 1,600-page text-only document, the peak live heap during typesetting went down from 525MB to 127MB and the RSS peak from 1,054MB to 564MB; `scripts/measure-memory.mjs`, Node 22). The layout result of a page drawn while typesetting is built only once.
+  The pages from the first one with a forward reference, and from the first page-sequence with columns, a last-page master or per-page footnote numbers, are drawn after typesetting ends.
+  Documents with an index, PDF/X, PDF/A, documents using the operating system's fonts (`systemFonts`), `maxPages`, low-memory typesetting (`lowMemory`), and a Typesetter that has cached the layout of the previous document with `typeset`
+  (it reuses pages of the previous document) are not drawn while typesetting. The PDF is the same either way
+  (every way of writing puts the fonts and images into the PDF just before the first page that uses them; PDF/X, PDF/A and the documents above whose images are drawn after typesetting put them all in before drawing).
+- When making only a PDF, the contents of prepared images are released from the image store (contents passed through `files` and `resolveResource` are held without a copy, so the caller's copy remains).
+- `layoutMs` does not include the time to turn the pages into layout results (it is part of writing the PDF). When pages are drawn while typesetting, it includes the time to draw them.
 - The Node command also makes PDFs with it. The container from `createTypesetter()` also has `typesetter.typesetToPdf(text, options, pdfOptions)`.
 
 ## Writing the PDF as a stream (typesetToPdfStream)
@@ -298,10 +417,9 @@ It never holds the whole PDF in one `Uint8Array`, so documents with many images 
   (`option` is `pdf.pdfx` or `pdf.pdfa`; for `toPdfStream`, `pdfx` or `pdfa`). Use `typesetToPdf` or `toPdf`. PDF/UA-1 and tagged PDF can be written as a stream.
 - It can be combined with `lowMemory`. Low-memory typesetting cannot wait between pages in some places, so with an output that returns a `Promise` or a `WritableStream`, chunks are gathered until it can wait.
   With `lowMemory`, a function that returns nothing (such as Node's `fs.writeSync`) is recommended.
-- Only the memory on the PDF side goes down. Measured values (`scripts/measure-memory.mjs`, Node 22): for a document with many images (200 PNGs that do not compress, a 196MB PDF), the peak of external bytes (`arrayBuffers`) while the PDF is written went down from 660MB to 266MB,
-  and the RSS peak from 1,176MB to 961MB. For a text-heavy document (1,600 pages, a 2.2MB PDF), the live heap while the PDF is written stays at 522MB (the peak is the intermediate layout result, and the PDF side is small).
-  The highest point for the document with many images (about 780MB) is where the images are read before typesetting, and streaming does not change it.
-  There is not yet a way to lower the peak of text-heavy documents (the intermediate layout tree); a later version will deal with it.
+- Streaming lowers the memory on the PDF side. Measured values (`scripts/measure-memory.mjs`, Node 22): for a document with many images (200 PNGs that do not compress, a 196MB PDF), the peak of external bytes (`arrayBuffers`) while the PDF is written went down from 660MB to 266MB,
+  and the RSS peak from 1,176MB to 961MB. Since 0.8.0 the image store does not copy the images it is given, so the peak where the images are read before typesetting (about 780MB, including 533MB that the measuring side holds from the start) went down to 574MB and the RSS peak to 744MB.
+  The peak of text-heavy documents is in the intermediate layout result; as with `typesetToPdf`, drawing the settled pages while typesetting and releasing them lowers it (for a 1,600-page text-only document, the peak live heap during typesetting went down from 525MB to 127MB and the RSS peak from 1,054MB to 564MB; `scripts/measure-memory.mjs`, Node 22).
 
 Writing to a file in Node:
 
@@ -334,6 +452,101 @@ const { readable, writable } = new TransformStream();
 typesetToPdfStream(html, {}, writable).catch((e) => console.error(e)); // the error also shows up on readable
 return new Response(readable);
 ```
+
+## Encrypting the PDF (encrypt)
+
+Passing `encrypt` in the PDF options (`PdfOptions` of `toPdf`, `toPdfStream`, `typesetToPdf` and `typesetToPdfStream`) encrypts the PDF with AES-256
+(revision 6 of the standard security handler, ISO 32000-2 §7.6; the PDF keeps the 1.7 header and the catalog gets the Adobe extension marker (ExtensionLevel 8)).
+Node uses `crypto`; browsers and workers use WebCrypto (for the hashes that make the key) and a built-in AES (both give the same result). It also works for stream output.
+The shape may change before 1.0.
+
+```ts
+const { pdf } = await typesetToPdf(html, { loadFont }, {
+  encrypt: { userPassword: 'password to open', ownerPassword: 'password to remove the restrictions', permissions: { print: false, copy: false } },
+});
+```
+
+`encrypt` (type `PdfEncryptOptions`):
+
+| Field | Contents |
+| --- | --- |
+| `userPassword` | The password to open the PDF (user password). Without it, the password is empty: the PDF opens without a password and only the `permissions` restrictions apply |
+| `ownerPassword` | The password to open it without the restrictions (owner password). Without it, a random password: nobody can remove the restrictions. If it is the same as `userPassword`, anyone who opens the PDF can remove them. An empty one (also one made only of characters that SASLprep maps to nothing) is an error (anyone could open the PDF without a password) |
+| `permissions` | What is allowed (type `PdfPermissions`; the table below; permissions not written are allowed) |
+
+The password used is the first 127 bytes of its UTF-8 after SASLprep (RFC 4013) normalization (ISO 32000-2 §7.6.4.3.2; full-width letters and digits become half-width). Control characters, private-use characters and the like cannot be used and give a `KumioriOptionError` (`option` is `encrypt.userPassword` and so on).
+
+`permissions` (Table 22 of ISO 32000-2 §7.6.4.2; all booleans, default `true`):
+
+| Field | What is allowed |
+| --- | --- |
+| `print` | Printing (bit 3) |
+| `modify` | Changing the contents (bit 4; other than annotations, forms and assembly) |
+| `copy` | Copying and extracting text and graphics (bit 5) |
+| `annotate` | Adding and changing annotations, and filling in forms (bit 6) |
+| `fillForms` | Filling in forms (bit 9; allows filling in even when `annotate` is `false`) |
+| `accessibility` | Extracting for assistive technology such as screen readers (bit 10). It cannot be removed with PDF/UA (`pdfua`): `false` gives the warning `pdfua/encrypt-accessibility-kept` and keeps it allowed. ISO 32000-2 deprecates this bit and readers ignore it, so `false` has no effect in some software |
+| `assemble` | Assembling the document (bit 11; inserting, rotating and deleting pages, creating bookmarks) |
+| `printHighQuality` | High-quality printing (bit 12; `false` allows only low-quality printing) |
+
+- It cannot be combined with PDF/X (`pdfx`) or PDF/A (`pdfa`) (neither standard allows encryption). Passing them together throws a `KumioriPdfError` (`code` is `pdf/encrypt-incompatible`) before typesetting.
+- An encrypted PDF has different bytes every time, even for the same input and the same `date`, because the initialization vectors and salts are random. The document ID is random too (unencrypted PDFs still get it from the contents).
+- Whether the permissions are honored depends on the software that reads the PDF (some do not). To hide the contents, set `userPassword`.
+- On the command line: `--encrypt`, `--user-password`, `--owner-password` and `--deny` ([`docs/en/cli.md`](cli.md)).
+
+## Measuring text without a document (measureText, breakLines)
+
+`measureText(text, style)` and `breakLines(text, style, width)` of the `Typesetter` from `createTypesetter` measure the length of a string, how it breaks into lines and the number of lines, without making a document
+(for example, to know beforehand whether a name or a heading fits in a box in a template or an editor). They use the fonts the Typesetter loaded (the default fonts, `fonts`, `systemFonts`).
+The shape may change before 1.0.
+
+```ts
+const t = await createTypesetter({ loadFont });
+const one = await t.measureText('A typeset heading', { fontSize: 18, fontWeight: 700, fontFamily: 'sans-serif' });
+one.inlineSize; // the length set on one line (pt)
+const lines = await t.breakLines(text, { fontSize: 10.5, lang: 'ja' }, 120);
+lines.lineCount; // the number of lines at a width of 120pt
+lines.blockSize; // the total height (pt)
+lines.lines.map((l) => l.text); // the characters of each line
+```
+
+- Internally, the string is made into a document with a single block (an HTML `div`), typeset with the same Typesetter, and the lines are read. So line breaking (line-breaking rules, hanging punctuation, hyphenation, spacing adjustment), font selection and kerning are the same as when the same string with the same style is set in a document in a block whose content width is `width`. Each call costs about as much as typesetting a small document (a few to a dozen or so milliseconds).
+- Measuring does not change the reuse caches of the Typesetter (`reuse`: the pages of the previous document, line breaks, font preparation).
+- `measureText` does not break lines (with `whiteSpace` `pre`, `pre-wrap`, `break-spaces` or `pre-line`, it breaks only at line feeds). `breakLines` breaks at the line length `width` (pt; greater than 0 and at most 14400).
+- Properties not given are the same as the body text of Kumiori's default HTML style (10pt, `line-height: 1.75`, serif, `text-align: justify`, `hanging-punctuation: allow-end`). No paragraph indent is added (add one with `textIndent`).
+
+`style` (type `TextStyle`; names are CSS properties in camelCase; values are CSS value strings, lengths can also be numbers, in pt):
+
+| Field | Contents |
+| --- | --- |
+| `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `fontStretch`, `fontKerning`, `fontFeatureSettings`, `fontVariantEastAsian` | The font. A number for `fontSize` is in pt; a number for `fontWeight` is a CSS weight (400, 700 and so on) |
+| `letterSpacing`, `wordSpacing` | Letter and word spacing (numbers are pt) |
+| `lineHeight` | The line height. A number is a factor, as in CSS (multiplied by the font size); a length such as `'14pt'` also works |
+| `lang` | The language tag (`ja`, `en` and so on). It affects line-breaking rules, hyphenation and glyph selection |
+| `writingMode`, `textOrientation`, `direction` | The writing direction. In vertical writing (`vertical-rl`, `vertical-lr`), the line length is vertical |
+| `textAlign`, `textAlignLast`, `textJustify`, `textIndent` | Alignment and indent (a number for `textIndent` is pt) |
+| `whiteSpace`, `wordBreak`, `lineBreak`, `overflowWrap`, `hyphens`, `hangingPunctuation`, `textSpacingTrim`, `textAutospace` | White space, line breaking and punctuation |
+
+Other names, characters that would leave the CSS declaration (`;`, `{`, `}`, `<`, `>`, `\`), comments and `url()` give a `KumioriOptionError` (`option` is `style.<name>`).
+
+The result (type `MeasuredText`):
+
+| Field | Contents |
+| --- | --- |
+| `lineCount` | The number of lines |
+| `inlineSize` | The `inlineSize` of the longest line (pt) |
+| `blockSize` | The sum of the `blockSize` of the lines (pt; the total height, or the total width in vertical writing) |
+| `width`, `height` | The width and height on the page (pt; `inlineSize` and `blockSize` in horizontal writing, `blockSize` and `inlineSize` in vertical writing) |
+| `overflow` | With `breakLines`, whether a line is longer than `width` (a long word that cannot be broken, hanging punctuation and so on). Always `false` with `measureText` |
+| `lines` | The lines in order (type `MeasuredLine`; below) |
+
+A line (type `MeasuredLine`):
+
+| Field | Contents |
+| --- | --- |
+| `text` | The characters of the line (in the order set; including a hyphen where a word is broken at the end of the line, and excluding white space removed at the start and end of the line) |
+| `inlineSize` | The length of the contents of the line in the line direction (pt; from the start of the first character to the end of the last, including letter spacing, kerning and hanging punctuation). A justified line other than the last fills `width` |
+| `blockSize` | The height of the line (pt; set by `line-height`; the width of the line in vertical writing) |
 
 ## Stopping and progress (signal, onProgress)
 
@@ -710,7 +923,7 @@ The version published on npm can be loaded directly from the jsDelivr or unpkg C
 <script type="module">
   import { typesetHtml } from 'https://cdn.jsdelivr.net/npm/kumiori@0.7.0/dist-browser/kumiori.js';
   const result = await typesetHtml(html, { name: 'a.html' });
-  result.renderPage(document.querySelector('canvas'), 0);
+  await result.renderPage(document.querySelector('canvas'), 0);
 </script>
 ```
 
@@ -742,7 +955,7 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
   container.replaceChildren();
   for (let i = 0; i < r.pageCount; i++) {
     const canvas = document.createElement('canvas');
-    r.renderPage(canvas, i, { scale: 1 });                      // 1pt = 1 CSS px (actual size is 96 / 72)
+    await r.renderPage(canvas, i, { scale: 1 });                // 1pt = 1 CSS px (actual size is 96 / 72)
     container.append(canvas);
   }
 }
@@ -752,20 +965,26 @@ async function showPreview(bodyHtml: string, container: HTMLElement) {
   - The container remembers the parts of the previous document's typesetting that come out the same when their input is the same (the preparation of `@font-face` font files, such as decompressing WOFF2, and the line breaking of paragraphs with the same content, style and width) and reuses them for the next document.
     When a document is edited a little at a time and typeset again, typesetting is faster from the second time on (about 13 s → about 9 s for a 151-page document). Reuse does not change the result (the area tree or the PDF).
     With `typeset`, the pages of page sequences whose content and starting conditions (first page number, left/right, footnote numbering carried over) do not change are also reused from the previous document.
-    An edited page sequence also takes the pages before the edit (after any page with a forward page number reference) from the previous document and lays out from that page break,
+    An edited page sequence also takes the pages before the edit from the previous document and lays out from that page break,
     and takes its remaining pages from the previous document once the layout state at a page break after the edit matches the previous document
     (when the edit changes the page count so that later page numbers shift, the rest is laid out; edited page sequences with columns or a last-page master are laid out in full).
-    Pages are taken from the previous document when text or attributes are edited. An edit that adds or removes a block (a paragraph, heading, table and so on) makes the container lay out every page sequence without taking pages from the previous document
-    (it cannot match the structure of the document with the previous one, so unedited page sequences and the pages before and after the edit are laid out again).
-    The same applies to edits of the document-wide fields outside the page sequences: bookmark titles (HTML `h1`–`h6` become bookmarks by default, so this includes editing the text of a heading; `fo:bookmark-title` in XSL-FO),
-    the document title and information (`<title>` and `meta` in HTML, `axf:document-info` in XSL-FO), and, when a tagged PDF (`tagged`) is made, the fields of the structure tree (alternative text (`alt`), abbreviation expansions, languages and so on).
-    These are part of the document fingerprint, so after such an edit no page sequence takes pages from the previous document (the result does not change).
+    Pages are taken from the previous document not only when text or attributes are edited but also when a block (a paragraph, heading, table and so on) is added or removed (the structure of the document is matched with the previous one, and the nodes outside the edit are put in correspondence).
+    When a node outside the body (flow) of a page sequence (static content, region backgrounds, the footnote separator and so on, which affect every page) is added, removed or edited, that page sequence is laid out in full.
+    The content of `fo:retrieve-marker` in static content (the text of markers) is laid out again from the current document also on reused pages, so editing a marker does not prevent reusing the pages of other page sequences.
+    A preview of the first N pages (`maxPages`) in between does not discard the pages of the document laid out in full before it (the preview neither uses nor remembers them).
+    Edits of the document-wide fields outside the page sequences that layout does not read do not prevent reuse: bookmark titles (HTML `h1`–`h6` become bookmarks by default, so this includes the bookmark title when the text of a heading is edited; `fo:bookmark-title` in XSL-FO),
+    the document title and information (`<title>` and `meta` in HTML, `axf:document-info` in XSL-FO), and, when a tagged PDF (`tagged`) is made, the structure tree (structure types, alternative text, abbreviation expansions, languages, and the shift of structure element numbers caused by structure elements added earlier).
+    These are rebuilt from the current document, also for reused pages.
     Page sequences and pages with page number references are used only when the references give the same values as in the previous document. Documents and page sequences with indexes or per-page footnote numbers do not reuse pages.
+    Forward page number references, such as a table of contents, are laid out with provisional values in the first layout pass and get their values in the second, so the Typesetter keeps the pages of the first pass of the previous document and compares them with the first pass of the next document
+    (the pages before the edit can be used also in a page sequence with a table of contents). A page sequence whose reference values change their number of digits in the second or a later pass, so that only the text cannot be replaced, is laid out
+    from the page break before the first page that looked up a changed value, and once the layout state matches the previous pass, the remaining pages are taken from the previous pass (also without a previous document; only when a Typesetter lays it out).
     Nor do documents near the internal layout effort limit, page sequences that reached a limit (`limits`) or gave a font notice (errors in a font's shaping tables and so on) while being laid out, and documents whose warnings are in another language; these are laid out without reuse.
     `typesetToPdf` and `typesetToPdfStream` (which write and release each page) do not remember pages (pages remembered by an earlier `typeset` are used).
     Re-typesetting the HTML and CSS Conformance Guide (147 pages, one page sequence) after editing one paragraph takes about 6.0–6.3 s instead of about 9.5–9.9 s for `typeset` (about 2.0–2.1 s instead of about 5.6–6.1 s for the layout; the 3rd and 4th runs of `scripts/profile-relayout.mjs --edit`).
-    It uses memory for what it remembers (the line breaking of one previous document: about 200 MB for a book of about 140 pages, at most about 400 MB; when pages are reused, the page trees and page-break records of the previous document are kept as well); turn it off with `createTypesetter({ reuse: false })` if not needed.
-    The page trees of the previous document are kept for one whole document with no size limit (leave room in the heap when re-typesetting large documents).
+    It uses memory for what it remembers (the line breaking of one previous document: about 200 MB for a book of about 140 pages, at most about 400 MB; when pages are reused, the page trees and page-break records of the previous document are kept as well, and for page sequences laid out again in the second or a later pass, the pages of the first pass too); turn it off with `createTypesetter({ reuse: false })` if not needed.
+    Of the page trees of the previous document, page sequences from the point where the number of nodes exceeds about 2 million (about 400 MB in Node) are not remembered (those page sequences are laid out in full in the next document).
+  - When you keep several earlier results, decide the budget from `typesetter.memoryUsage()` plus each `result.memoryUsage()`, and release old results with `result.dispose()` and the reuse caches with `typesetter.releaseCaches()` ([Memory estimate and releasing](#memory-estimate-and-releasing-memoryusage-dispose-releasecaches)).
 - Working sample: after `npm run dev`, open http://localhost:5173/examples/preview/ (`examples/preview/`).
   Edit the editing area on the left, the "HTML" box below it (write headings, ruby, tables and so on directly; it and the editing area mirror each other) or the print CSS, and the right side is re-typeset when you pause.
   It uses only Kumiori's public API and has no other dependencies.
@@ -868,7 +1087,7 @@ self.onmessage = async ({ data }) => {
     self.postMessage({ type: 'typeset', pageCount: result.pageCount, sheets: result.areaTree.sheets.map((s) => [s.width, s.height]) });
   } else if (data.type === 'render') {
     const canvas = new OffscreenCanvas(1, 1);
-    result.renderPage(canvas, data.page, { scale: data.scale, devicePixelRatio: data.dpr });
+    await result.renderPage(canvas, data.page, { scale: data.scale, devicePixelRatio: data.dpr });
     const bitmap = canvas.transferToImageBitmap();
     self.postMessage({ type: 'render', page: data.page, bitmap }, [bitmap]);
   } else if (data.type === 'pdf') {
@@ -899,7 +1118,7 @@ If you send progress (`onProgress`) to the parent with `postMessage`, the parent
 
 ### Images and limits
 
-- A worker has no browser images (`<img>`), so SVG images are drawn as shapes in the PDF, as in Node, and `renderPage` draws the shapes as pixels (redrawn at the resolution of the current scale). Images in other formats are read with `createImageBitmap`.
+- A worker has no browser images (`<img>`), so SVG images are drawn as shapes in the PDF, as in Node, and `renderPage` draws the shapes as pixels (redrawn at the resolution of the current scale). Images in other formats are read with `createImageBitmap` (while typesetting, only to check that they can be read and their size, closed at once; they are decoded again in the Typesetter's image cache when drawing. The same holds when typesetting on a page).
 - Limits when `renderPage` rasterizes SVG images:
   - One image is drawn with up to 16 million pixels. An image placed larger is drawn at a lower resolution.
   - The work of rasterizing the shapes (number of shapes × number of pixels) is limited too, so an image with many shapes placed large is also drawn at a lower resolution.
@@ -960,7 +1179,9 @@ The following may change, even incompatibly, in a minor version. Changes are wri
 - New and experimental options:
   `systemFonts`, `spotColors`, `svgLanguages`, `deflate`, `unreferencedCss`, `diagnostics`, `plugins`, `drawio` (and `createDrawioStencilRegistry`, `DRAWIO_MIME`, `isDrawio`), `reuse`, `TypesetPdfOptions.lowMemory`, `RenderPageOptions.guides`,
   `RenderPageSvgOptions.pageHref` and how links are written in page SVG, added in 0.6.0, `snapshotDocument`, added in 0.6.0,
-  and writing the PDF as a stream, added in 0.7.0 (`typesetToPdfStream`, the container's `typesetToPdfStream`, `TypesetResult.toPdfStream`, `PdfOutput`, `TypesetPdfStreamResult`, including how the output is handled, the chunk size and the order of writing)
+  writing the PDF as a stream, added in 0.7.0 (`typesetToPdfStream`, the container's `typesetToPdfStream`, `TypesetResult.toPdfStream`, `PdfOutput`, `TypesetPdfStreamResult`, including how the output is handled, the chunk size and the order of writing),
+  and PDF encryption (`PdfOptions.encrypt`, `PdfEncryptOptions`, `PdfPermissions`) and the text measuring API (the Typesetter's `measureText`, `breakLines`, `TextStyle`, `MeasuredText`, `MeasuredLine`), added in 0.8.0,
+  and the APIs to estimate and release memory, added in 0.8.0 (`TypesetResult.memoryUsage`, `TypesetResult.dispose`, `Typesetter.memoryUsage`, `Typesetter.releaseCaches`, `MemoryUsage`, `TypesetterMemoryUsage`, including how the estimates are counted and their factors)
 - Anything not exported from `src/index.ts` or `src/node.ts` (it is not public API)
 
 ### The two version numbers

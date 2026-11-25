@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 280" width="960" height="280" role="img" aria-labelledby="title">
+<title id="title">Three ways to make a PDF, and what each keeps in memory</title>
+<style>
+:root { --bg: #ffffff; --fg: #1c2230; --muted: #5a6476; --line: #b9c1cf; --panel: #f4f6f9;
+  --accent: #2c4c8a; --accent-soft: #e3e9f5; --hot: #b8432a; --hot-soft: #f8e6e1; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1a2030; --fg: #e2e7f0; --muted: #9aa4b6; --line: #48526a; --panel: #141925;
+  --accent: #8eaeea; --accent-soft: #1e2a44; --hot: #f08b6d; --hot-soft: #3a231e; } }
+.bg { fill: var(--bg); }
+text { fill: var(--fg); font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", "Meiryo", system-ui, sans-serif; font-size: 12px; }
+.t { font-weight: 700; font-size: 13px; }
+.m { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11px; fill: var(--muted); }
+.m.strong { fill: var(--fg); font-size: 12px; }
+.s, .lab { font-size: 11px; fill: var(--muted); }
+.labh { font-size: 11px; fill: var(--hot); }
+.lane { font-size: 12px; font-weight: 700; fill: var(--accent); }
+.colh, .gt { font-size: 12px; font-weight: 700; fill: var(--muted); }
+.b { fill: var(--bg); stroke: var(--line); stroke-width: 1.2; }
+.k { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+.h { fill: var(--hot-soft); stroke: var(--hot); stroke-width: 1.5; }
+.g { fill: none; stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 6 4; }
+.g2 { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
+.lazy { fill: none; stroke: var(--hot); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.tree { fill: none; stroke: var(--line); stroke-width: 1.2; }
+.wait { stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 3 4; }
+.a { fill: none; stroke: var(--fg); stroke-width: 1.3; }
+.a.dash { stroke-dasharray: 5 4; stroke: var(--muted); }
+.a.hot { stroke: var(--hot); stroke-width: 1.5; }
+.mk { fill: var(--fg); }
+.mkh { fill: var(--hot); }
+</style>
+<defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" class="mk"/></marker>
+<marker id="mh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" class="mkh"/></marker></defs>
+<rect class="bg" x="0" y="0" width="960" height="280" rx="8"/>
+<text class="colh" x="235" y="22" text-anchor="middle">Layout</text><text class="colh" x="425" y="22" text-anchor="middle">Kept in memory</text><text class="colh" x="635" y="22" text-anchor="middle">Writing</text><text class="colh" x="850" y="22" text-anchor="middle">Result</text><text class="m strong" x="20" y="69">typeset → toPdf</text><rect class="b" x="170" y="36" width="130" height="56" rx="6"/><text class="t" x="235" y="60.5" text-anchor="middle">Lay out</text><text class="m" x="235" y="75.5" text-anchor="middle">layout()</text><rect class="h" x="330" y="36" width="190" height="56" rx="6"/><text class="t" x="425" y="60.5" text-anchor="middle">Whole area tree</text><text class="s" x="425" y="75.5" text-anchor="middle">kept in the result</text><rect class="b" x="550" y="36" width="170" height="56" rx="6"/><text class="t" x="635" y="60.5" text-anchor="middle">Paint and write</text><text class="m" x="635" y="75.5" text-anchor="middle">renderPdf</text><rect class="b" x="750" y="36" width="200" height="56" rx="6"/><text class="t" x="850" y="60.5" text-anchor="middle">Uint8Array</text><text class="s" x="850" y="75.5" text-anchor="middle">renderPage also works</text><polyline class="a" points="300,64 328,64" marker-end="url(#m)"/><polyline class="a" points="520,64 548,64" marker-end="url(#m)"/><polyline class="a" points="720,64 748,64" marker-end="url(#m)"/><text class="m strong" x="20" y="149">typesetToPdf</text><rect class="b" x="170" y="116" width="130" height="56" rx="6"/><text class="t" x="235" y="140.5" text-anchor="middle">Lay out</text><text class="m" x="235" y="155.5" text-anchor="middle">layoutSheets()</text><rect class="k" x="330" y="116" width="190" height="56" rx="6"/><text class="t" x="425" y="140.5" text-anchor="middle">Page build trees</text><text class="s" x="425" y="155.5" text-anchor="middle">areas made page by page</text><rect class="b" x="550" y="116" width="170" height="56" rx="6"/><text class="t" x="635" y="140.5" text-anchor="middle">Paint and write</text><text class="m" x="635" y="155.5" text-anchor="middle">renderPdfPages</text><rect class="b" x="750" y="116" width="200" height="56" rx="6"/><text class="t" x="850" y="140.5" text-anchor="middle">Uint8Array</text><text class="s" x="850" y="155.5" text-anchor="middle">used by the CLI</text><polyline class="a" points="300,144 328,144" marker-end="url(#m)"/><polyline class="a" points="520,144 548,144" marker-end="url(#m)"/><polyline class="a" points="720,144 748,144" marker-end="url(#m)"/><text class="m strong" x="20" y="229">typesetToPdfStream</text><rect class="b" x="170" y="196" width="130" height="56" rx="6"/><text class="t" x="235" y="220.5" text-anchor="middle">Lay out</text><text class="m" x="235" y="235.5" text-anchor="middle">layoutSheets()</text><rect class="k" x="330" y="196" width="190" height="56" rx="6"/><text class="t" x="425" y="220.5" text-anchor="middle">Page build trees</text><text class="s" x="425" y="235.5" text-anchor="middle">written streams released</text><rect class="b" x="550" y="196" width="170" height="56" rx="6"/><text class="t" x="635" y="220.5" text-anchor="middle">Paint and write</text><text class="m" x="635" y="235.5" text-anchor="middle">renderPdfPages</text><rect class="b" x="750" y="196" width="200" height="56" rx="6"/><text class="t" x="850" y="220.5" text-anchor="middle">Streamed to output</text><text class="s" x="850" y="235.5" text-anchor="middle">no PDF/X or PDF/A</text><polyline class="a" points="300,224 328,224" marker-end="url(#m)"/><polyline class="a" points="520,224 548,224" marker-end="url(#m)"/><polyline class="a" points="720,224 748,224" marker-end="url(#m)"/>
+</svg>

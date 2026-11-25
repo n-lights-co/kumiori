@@ -75,7 +75,7 @@ The fonts each script needs, the image formats, the details of the PDF/X standar
 
 ## Requirements
 
-Node 22.12.0 or later (CI tests with the minimum, 22.12.0, and with a recent Node 22).
+Node 22.12.0 or later (the same steps as CI (`npm run ci:local`) are run locally on a recent Node 22, and before each release also on the minimum, 22.12.0).
 The library and the command also run on Deno (2.x) and Bun (1.x), through their Node compatibility APIs. In browsers, it can also typeset inside a Web Worker. What has been checked is in [Package entry points and requirements](docs/en/library.md#package-entry-points-and-requirements).
 
 ## License
